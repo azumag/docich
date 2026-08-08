@@ -212,9 +212,10 @@ pactl set-default-sink soren_null
    - 【確認済】`claude` CLI を直接起動（L110-122、`claude --print -p ...`）。macOS では OAuth ログイン済みだが、**VPS ではブラウザ認証が回らない** → `claude setup-token` / `ANTHROPIC_API_KEY` によるヘッドレス認証が可能か要検証。`.env` の `OPENROUTER_API_KEY` は opencode 経由で使える想定（要検証）。
    - 【確認済】opencode CLI は XDG ベースの状態管理（L173-304）で Linux と相性が良い。`opencode auth login`（API キー方式）を VPS で要検証。
    - ollama: arm64 Linux ビルドあり（要確認）。
-2. **OBS Linux arm64 ビルドの有無**
-   - 【確認済】GitHub Releases（32.2.1）に Linux arm64 バイナリなし（Ubuntu 24.04 x86_64 の .deb のみ）。
-   - 【未確認】Flathub の aarch64 配布。無ければソースビルド（工数大）。**Phase 0 で最優先に検証**（これが成立しないと計画全体が変わる）。
+2. **OBS Linux arm64 ビルドの有無 → 【解決済み】**
+   - 【確認済】Ubuntu 24.04 (noble) の universe に **arm64 版 obs-studio (30.0.2)** が存在（.deb 実在を確認）。noble-backports に 30.2.3 もあり。
+   - 【確認済】GitHub Releases（32.2.1）は x86_64 .deb のみ、Flathub は x86_64 のみ — **本命は apt**。
+   - 残課題: OBS 30.x の `window_capture`（X11）の実挙動のみ実機検証（Phase 0 で実施）。
 3. **Playwright chromium の Linux arm64**
    - 【確認済】存在する（Playwright 公式が arm64 ビルドを配布）。`npx playwright install chromium` で解決。
 4. **COEIROINK の ARM 非対応の可能性** → §2.8（未使用化が現実解）。
@@ -234,7 +235,7 @@ pactl set-default-sink soren_null
 ### Phase 0: Oracle セットアップ（1〜2 日）
 - A1 インスタンス作成・SSH・セキュリティ（ガイド §1-3）
 - Xvfb / xrdp / Tailscale（ガイド §4）
-- **OBS arm64 の検証（リスク②の解消）**、VOICEVOX arm64 起動、Playwright 導入（ガイド §5-8）
+- **OBS arm64 のインストール（apt で 30.x、検証は window_capture の実挙動）**、VOICEVOX arm64 起動、Playwright 導入（ガイド §5-8）
 - 完了条件: `DISPLAY=:99` 上で OBS が起動し、`obs-websocket` が 4455 で応答する
 
 ### Phase 1: コア移植 — ゲームループ headless 化 + 配信（3〜5 日）

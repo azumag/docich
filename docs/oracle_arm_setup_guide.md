@@ -136,18 +136,32 @@ sudo tailscale up
 
 ### 導入方法
 
-- 【確認済】公式配布は 2 系統:
-  - **Ubuntu 24.04+ は PPA**: `sudo add-apt-repository ppa:obsproject/obs-studio`
-  - **Flatpak (Flathub)**: `com.obsproject.Studio`
-- **arm64 の注意**: 【確認済】GitHub Releases（OBS 32.2.1 時点）には **Linux arm64 バイナリは存在しません**（Ubuntu 24.04 x86_64 の .deb のみ）。**【未確認】** Flathub の aarch64 ビルド有無は要確認。ダメならソースビルド（OBS は aarch64 Linux でビルド実績あり。工数大）か、代替を検討します。
+**arm64 環境（本ガイドの構成）では Ubuntu 公式リポジトリが本命です。**
+
+- 【確認済】Ubuntu 24.04 (noble) の universe に **arm64 版 `obs-studio` が存在**します:
+  - noble: `obs-studio_30.0.2+dfsg-3build1_arm64.deb`（ダウンロードページで実在を確認）
+  - noble-backports: `obs-studio_30.2.3+dfsg-3~bpo24.04.1_arm64.deb`
+  - どちらも OBS 28+ 相当なので obs-websocket 同梱（§「obs-websocket の有効化」参照）
+- 【確認済】他系統は arm64 非対応:
+  - GitHub Releases（OBS 32.2.1 時点）: Linux は Ubuntu 24.04/26.04 の **x86_64 .deb のみ**、arm64 なし
+  - Flathub (`com.obsproject.Studio`): 配布アーキテクチャは **`["x86_64"]` のみ**（aarch64 配布なし）
+  - PPA (obsproject/obs-studio): arm64 には対応していません
+- 【未確認】OBS 30.x の `window_capture`（X11）の実挙動は実機検証が必要（新しめの Chrome ウィンドウの列挙・キャプチャが 30.x で安定するか）
 
 ```bash
-# x86_64 環境の場合（参考）:
-sudo add-apt-repository ppa:obsproject/obs-studio
+# arm64 (Oracle A1, Ubuntu 24.04) — 本命
 sudo apt update && sudo apt install -y obs-studio
 
-# arm64 の検証:
-flatpak install flathub org.obsproject.Studio   # aarch64 が配布されているかで可否が決まる
+# より新しい 30.2.x (noble-backports) を選ぶ場合:
+#   /etc/apt/sources.list.d/ubuntu.sources の Suites 行に noble-backports が
+#   あればそのまま -t noble-backports で。無ければ:
+#   echo "deb http://archive.ubuntu.com/ubuntu noble-backports main universe" \
+#     | sudo tee /etc/apt/sources.list.d/noble-backports.list
+sudo apt update && sudo apt install -y -t noble-backports obs-studio
+
+# 参考: x86_64 環境で最新版 (32.x) が欲しい場合
+sudo add-apt-repository ppa:obsproject/obs-studio
+sudo apt update && sudo apt install -y obs-studio
 ```
 
 ### obs-websocket の有効化
@@ -327,7 +341,7 @@ DISPLAY=:99 xdpyinfo | head # Xvfb :99 が生きている
 #    xrdp: ローカルから SSH トンネル経由で RDP 接続できる
 
 # 4. OBS
-DISPLAY=:99 obs --version  # 起動する (arm64 で手に入るビルド次第)
+DISPLAY=:99 obs --version  # 起動する (Ubuntu リポジトリの arm64 版 30.x)
 #    WebSocket サーバー有効化 → 4455 で obs-websocket が応答
 
 # 5. VOICEVOX
