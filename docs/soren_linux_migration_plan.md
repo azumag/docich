@@ -26,10 +26,7 @@ OBS 版の移植はフォールバックとして維持する。CPU 使用量と
 | free-safe | 2 OCPU / 12 GB | free-only テナンシの A1 合計上限 | 現行 720p30 条件では不合格 |
 | trial / PAYG | 4 OCPU / 24 GB | トライアル credit または Always Free 超過分の課金対象 | 短時間試験は合格 |
 
-Oracle 公式文書上、free-only テナンシの A1 は合計 2 OCPU / 12 GB である。4 OCPU / 24 GB を常時稼働しても全量無料になるわけではない。トライアル終了前に、次のどちらかを選ぶ。
-
-1. PAYG に移行し、予算アラートと利用量監視を設定して 4/24 を継続する。
-2. 合計 2/12 以下へ縮退し、画質・ゲーム描画・音声負荷を再設計する。
+Oracle 公式文書上、free-only テナンシの A1 は合計 2 OCPU / 12 GB である。4 OCPU / 24 GB を常時稼働しても全量無料になるわけではない。実2/12は受入不合格、4/24は合格だったため、2026-08-12のユーザー判断で本番ターゲットを4/24に確定した。トライアル終了前にPAYGへ移行し、予算アラートと利用量監視を設定する。
 
 トライアル終了時に A1 が free-only 上限を超えていると、既存 A1 が無効化され、アップグレードしなければ 30 日後に削除される可能性がある。詳細は [Oracle Free Tier](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier.htm) と [Always Free Resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm) を参照する。
 
@@ -140,7 +137,7 @@ PulseAudio daemon が複数起動すると、OBS/FFmpeg と再生プロセスが
 | system CPU busy | 99.45% |
 | short acceptance | fail |
 
-2/12 でも encoder 自体は約 30 fps を維持したが、ゲーム描画が 30 fps を満たさず、drop/duplicate も許容外だった。現行 workload のまま free-safe を本番採用しない。
+2/12 でも encoder 自体は約 30 fps を維持したが、ゲーム描画が 30 fps を満たさず、drop/duplicate も許容外だった。free-safeは比較結果として残すが、画質や機能をさらに削って本番採用しない。本番受入は4/24で行う。
 
 ## 9. 段階的 cutover
 
