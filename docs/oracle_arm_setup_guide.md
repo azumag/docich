@@ -2,6 +2,8 @@
 
 Soren Game AI の 24 時間ヘッドレス配信環境を Oracle Cloud Always Free (Ampere A1, 2 OCPU / 12GB RAM, Ubuntu 24.04 LTS ARM64) に構築するためのハンズオン手順書。
 
+> Oracle の無料枠を 2026-08-12 に公式文書で再確認。free-only テナンシの A1 上限は合計 2 OCPU / 12 GB。4 OCPU / 24 GB は無料トライアルまたは PAYG 前提であり、常時稼働の全量が無料になる構成ではない。
+
 ## 表記ルール
 
 - 【確認済】: 本ガイド作成時に Oracle 公式ドキュメント・公式リリースページ・実リポジトリを直接確認した事実
@@ -21,6 +23,21 @@ Soren Game AI の 24 時間ヘッドレス配信環境を Oracle Cloud Always Fr
 5. **Home Region がすべての起点**: 無料枠のリソース（コンピュート・ブロックボリューム）は home region でのみ作成可能で、home region は後から変更できません。配信先サーバーとして使うリージョンを最初に決めます（東京・大阪は人気のため容量不足になりがち。その分リージョン選択が勝負）。
 6. MFA: セキュリティ向上のためコンソールに追加認証を設定することを推奨。
 
+### Free Trial・Always Free・PAYG の違い
+
+| アカウント状態 | A1 の扱い |
+|---|---|
+| Free Trial | $300 credit の有効期間中は 2/12 を超える構成も credit で実行できる |
+| free-only | A1 合計 2 OCPU / 12 GB まで |
+| PAYG | Always Free 分は残るが、月間無料量を超えた利用は課金対象 |
+
+【確認済】Oracle は A1 の月間無料量を 1,500 OCPU-hours / 9,000 GB-hours としている。4 OCPU / 24 GB を 24 時間連続で動かすと、この両方を超えるため「PAYG にすれば 4/24 も無料」ではない。
+
+【確認済】トライアル終了時に A1 合計が 2 OCPU / 12 GB を超えている free-only テナンシでは、既存 A1 が無効化され、PAYG へ移行しなければ 30 日後に削除される。終了前に PAYG へ移行するか、合計 2/12 以下へ縮退する。
+
+- [Oracle Free Tier](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier.htm)
+- [Oracle Always Free Resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm)
+
 ---
 
 ## 2. A1 Flex インスタンス作成（2 OCPU / 12GB）
@@ -31,12 +48,16 @@ Soren Game AI の 24 時間ヘッドレス配信環境を Oracle Cloud Always Fr
 2. Name: `soren-prod` など
 3. Image: **Ubuntu 24.04** を選択（【確認済】公式ドキュメントで A1 形状の対応イメージに Ubuntu が明記されている。Oracle Linux も可）
 4. Shape: **VM.Standard.A1.Flex**（Always Free eligible）を選択し、OCPU 数 **2**、メモリ **12 GB** に設定
-   - 【確認済】Always Free テナンシでは「2 OCPU + 12GB 相当」が無料（1,500 OCPU 時間 / 9,000 GB 時間 per month の範囲）
+   - 【確認済】free-only テナンシでは A1 全体で **2 OCPU + 12 GB** が上限（1,500 OCPU-hours / 9,000 GB-hours per month）
    - 2 台に分ける場合: 1 OCPU / 6GB × 2 台も可能
 5. Networking: 新規 VCN とパブリックサブネットを作成（後述のセキュリティ設定）
 6. Boot volume: 既定 **50 GB**（【確認済】無料枠のブロックボリュームは合計 **200 GB** で boot と追加ボリュームを合わせてカウント。boot は 50 GB 既定、最小 47 GB。必要なら 200 GB まで拡張可だが無料枠を使い切る）
 7. SSH キー: コンソールで **Generate a key pair**（秘密鍵を安全に保存）または自分の公開鍵を貼り付け。**パスワード認証は使えない**ため鍵は必須
 8. Create → 起動後に表示されるパブリック IP を控える
+
+### Soren の性能比較用 4 OCPU / 24 GB
+
+無料トライアル中または PAYG では 4/24 を選べる。Soren の短時間ベンチマークでは 4/24 が 720p30 を満たし、2/12 はゲーム描画と drop/duplicate 条件を満たさなかった。ただし 4/24 の継続は課金または trial credit 消費を伴う。トライアル終了前に必ず構成方針を決める。
 
 ### "Out of capacity" エラー時の対処
 
@@ -79,7 +100,7 @@ sudo timedatectl set-timezone Asia/Tokyo
 
 ```bash
 sudo apt install -y xvfb x11-utils xdotool wmctrl
-Xvfb :99 -screen 0 1280x800x24   # 動作確認
+Xvfb :99 -screen 0 1280x720x24   # 720p 配信用の動作確認
 ```
 
 systemd サービス化（/etc/systemd/system/xvfb.service）:
@@ -90,7 +111,7 @@ Description=Xvfb virtual display :99
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/Xvfb :99 -screen 0 1280x800x24 -nolisten tcp
+ExecStart=/usr/bin/Xvfb :99 -screen 0 1280x720x24 -nolisten tcp
 Restart=always
 
 [Install]
@@ -146,7 +167,8 @@ sudo tailscale up
   - GitHub Releases（OBS 32.2.1 時点）: Linux は Ubuntu 24.04/26.04 の **x86_64 .deb のみ**、arm64 なし
   - Flathub (`com.obsproject.Studio`): 配布アーキテクチャは **`["x86_64"]` のみ**（aarch64 配布なし）
   - PPA (obsproject/obs-studio): arm64 には対応していません
-- 【未確認】OBS 30.x の `window_capture`（X11）の実挙動は実機検証が必要（新しめの Chrome ウィンドウの列挙・キャプチャが 30.x で安定するか）
+- 【確認済】OBS 30.0.2 の XComposite source id は `xcomposite_input`、設定キーは `capture_window`。item value は XID・title・WM_CLASS を改行で連結した形式。
+- 【確認済】Oracle A1 実機では XSHM 全画面キャプチャを 1280x720 で動作確認済み。OBS UI やブラウザのアドレスバーを前面に出すと写り込むため、ゲーム配置の固定または FFmpeg direct backend を使う。
 
 ```bash
 # arm64 (Oracle A1, Ubuntu 24.04) — 本命
@@ -304,22 +326,16 @@ sudo swapon /swapfile
 
 ## 10. 無料枠の回収ポリシーへの対処
 
-### アイドル判定条件（公式ドキュメントの文言）
+### アイドル判定条件
 
-【確認済】Oracle 公式ドキュメント（Always Free Resources）より:
+【確認済】Oracle は、7 日間の CPU、network、memory（A1 のみ）の各利用率がすべて 20% 未満の場合、Always Free compute を idle と判定して回収することがある。
 
-> Idle Always Free compute instances may be reclaimed by Oracle. Oracle will deem VM/Bare Metal instances as idle if, **during a 7-day period**, the following are true:
-> - **CPU utilization for the 95th percentile is less than 20%**
-> - **Network utilization is less than 20%**
-> - **Memory utilization is less than 20%** (applies to A1 shapes only)
-
-- つまり「**7 日間**、CPU・ネットワーク・メモリの 95 パーセンタイルがすべて **20% 未満**」のとき回収対象になります。
-- **24 時間配信中は RTMP アップロードでネットワーク利用率が常時高く、この条件に実質該当しません。** 配信が長時間止まったまま放置した場合のみリスクが出ます。
+RTMP を送っているだけで network 利用率が 20% を超えるとは限らない。24 時間配信中でも回収されないと断定せず、OCI Monitoring で 3 指標を確認する。
 
 ### 対処方針
 
-1. 配信稼働の継続が最善の防御（停止時は systemd `Restart=always` 等で自動復旧）。
-2. 完全アイドル時に軽い負荷（数秒の CPU タスクを定期実行）を入れる選択肢もありますが、**【未確認】** 判定を確実に回避できる保証はありません。
+1. 配信と runtime の死活を監視し、停止時は systemd の restart policy で復旧する。
+2. 回収回避だけを目的に人工的な負荷を生成せず、Monitoring とバックアップで備える。
 3. 回収の通知・復旧プロセスは【未確認】（通知を試みた後、インスタンス終了 → 手動復旧となる運用と理解。自動再起動はありません）。**ブロックボリュームのスナップショットは 5 つまで無料**なので、定期的なスナップショット＋リポジトリの rsync バックアップを推奨します。
 4. 運用の冗長化がしたい場合は 1 OCPU × 2 台構成も選択肢です（片方が回収されても片方が生き残る）。
 
