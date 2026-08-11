@@ -21,7 +21,7 @@ Issue #96 の FFmpeg 直接配信経路を Oracle A1 上で実配信まで検証
 - [soviet_now #95](https://github.com/azumag/soviet_now/pull/95): Linux OBS portability Phase 1。2026-08-12 に merge commit `8170da044` で `main` へマージ済み。
 - [soviet_now #97](https://github.com/azumag/soviet_now/pull/97): FFmpeg 直接配信バックエンド。`main` を base にした Draft PR。
 
-#97 は #95 マージ後に `main` へ積み替え済みで、3 コミット差分・mergeable の状態。
+#97 は #95 マージ後に `main` へ積み替え済みで、Draft・mergeable の状態。最新 head は `69ee8099a`。
 
 ## 実装済みの直接配信経路
 
@@ -40,6 +40,7 @@ PulseAudio soren_null
 
 - `start_all.sh` から OBS / FFmpeg バックエンドを選択できる。
 - 外部 RTMP 宛先は `/etc/soren-rtmp/push.conf` に隔離し、リポジトリや `.env` に保存しない。
+- cutover は `push.conf` が通常ファイル・非 symlink・`root:soren-relay` 所有・mode `0640` の全条件を満たさない限り、OBS や `.env` を変更しない。
 - cutover は relay の構文・資格情報・reload 成功を確認してから OBS と `.env` を変更する。
 - rollback は OBS を既定経路へ戻す。
 - 意図的停止を示す既存 `tmp/stop` がある場合、runtime installer は変更前に失敗する。
@@ -69,7 +70,15 @@ VM は比較後に 4 OCPU / 24 GB へ戻した。2/12は受入不合格だった
 - 最終確認時の VM: Oracle A1、Ubuntu 24.04 ARM64、4 OCPU / 24 GB。
 - VM 上のコード: `/home/ubuntu/soren`。
 - OBS 経路はフォールバックとして維持している。
-- FFmpeg の外部 Twitch cutover は、root-only push 設定が未配置のため実施していない。
+- FFmpeg の外部 Twitch cutover は、root-only `push.conf` が安全な所有者・権限で存在するものの空であるため実施していない。
+- VM の `cutover_direct_stream.sh` は `5cceaecc8` 相当へバックアップ付きで更新済み。checksum はローカル検証済みファイルと一致する。
+- GNU `stat` で一般音声・VOICEVOX合成の孤児lockを回収できない問題を `33d262e5a` で修正し、VMへバックアップ付きで配備済み。実GNU `stat` で数値mtimeを確認した。
+- supervisor・phantom-game判定・runtime toggle・AI/chat lock・status・soren91 runnerに残っていた同じinline `stat` 問題を `69ee8099a` で修正し、VMへtarバックアップ付きで配備済み。旧式が6行の非数値を返すことと、修正後の全サイトをBSD/GNU/両失敗で確認した。
+- 空の `push.conf` に対する `--preflight` は rc=2 で安全停止し、前後で `.env` checksum と OBS active 状態が不変であることを確認済み。
+- `--rollback` は明示確認なしで rc=2 を返し、前後で `.env` checksum と OBS active 状態が不変であることを確認済み。
+- direct-pathのx11grab・Pulse・libx264・loopback relay・A/V probe設定、BGM/SE 6ファイル、overlay 3出力を実機で確認済み。Pulse monitorは平均 -23.7 dB、最大 -8.3 dBで無音ではない。
+- 現在のゲーム状態 `makeSorenCount=0` に対して「インターナショナル」が再生され、drop/merge SEの直近dispatchがある。VOICEVOXはHTTP 200で2.07秒のPCM生成に成功した。Twitch上の聞こえ方は未検証。
+- runtime portability反映後もOBS active、supervisor alive、`game_state.json`更新継続、Pulse平均 -22.5 dB・最大 -7.4 dBを確認した。サービス再起動は行っていない。
 - ストリームキー、OAuth token、秘密鍵、push target はこの文書に書かない。
 
 ## 次の実行順序
