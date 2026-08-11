@@ -14,10 +14,10 @@ OBS 版の移植はフォールバックとして維持する。CPU 使用量と
 
 - 実装本体: [`azumag/soviet_now`](https://github.com/azumag/soviet_now)
 - 設計文書: [`azumag/docich`](https://github.com/azumag/docich)
-- Linux OBS portability: [PR #95](https://github.com/azumag/soviet_now/pull/95)
-- FFmpeg direct backend: [Draft PR #97](https://github.com/azumag/soviet_now/pull/97)
+- Linux OBS portability: [PR #95](https://github.com/azumag/soviet_now/pull/95)（2026-08-12、merge commit `8170da044`）
+- FFmpeg direct backend: [Draft PR #97](https://github.com/azumag/soviet_now/pull/97)（base: `main`）
 
-#97 は #95 に積んだ PR である。#95 のマージ後に #97 の base を `main` へ変更または rebase する。Issue #96 は実装 PR の作成だけでは閉じず、実配信の受入条件をすべて満たしてから閉じる。
+#95 はマージ済みで、#97 は `main` に対する 3 コミット差分へ積み替え済み。Issue #96 は実装 PR の作成だけでは閉じず、実配信の受入条件をすべて満たしてから閉じる。
 
 ## 3. Oracle A1 の運用モード
 
@@ -213,8 +213,7 @@ Twitch 側で映像・音声・統計を確認し、異常があれば直ちに 
 
 ## 12. 完了後の整理
 
-1. #95 をマージする。
-2. #97 を `main` に積み替えてレビュー・CI を通す。
-3. 1h/24h の実測 artifact と結論を Issue #96 に残す。
-4. 受入条件をすべて満たした時だけ #97 を ready 化し、Issue #96 を閉じる。
-5. PR の積み替えとマージ後に、一時 worktree `/Users/azumag/work/docich/soren-phase1` を Git worktree の手順で安全に削除する。
+1. #97 のレビューを通す。実配信ゲートが残る間は Draft を維持する。
+2. 1h/24h の実測 artifact と結論を Issue #96 に残す。
+3. 受入条件をすべて満たした時だけ #97 を ready 化し、Issue #96 を閉じる。
+4. #97 のマージ後に、一時 worktree `/Users/azumag/work/docich/soren-phase1` を Git worktree の手順で安全に削除する。
