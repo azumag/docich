@@ -18,10 +18,10 @@ Issue #96 の FFmpeg 直接配信経路を Oracle A1 上で実配信まで検証
 
 関連 PR:
 
-- [soviet_now #95](https://github.com/azumag/soviet_now/pull/95): Linux OBS portability Phase 1。
-- [soviet_now #97](https://github.com/azumag/soviet_now/pull/97): FFmpeg 直接配信バックエンド。#95 を base にした Draft PR。
+- [soviet_now #95](https://github.com/azumag/soviet_now/pull/95): Linux OBS portability Phase 1。2026-08-12 に merge commit `8170da044` で `main` へマージ済み。
+- [soviet_now #97](https://github.com/azumag/soviet_now/pull/97): FFmpeg 直接配信バックエンド。`main` を base にした Draft PR。
 
-#95 を先にマージし、その後 #97 の base を `main` に変更または rebase する。
+#97 は #95 マージ後に `main` へ積み替え済みで、3 コミット差分・mergeable の状態。
 
 ## 実装済みの直接配信経路
 
@@ -74,14 +74,13 @@ VM は比較後に 4 OCPU / 24 GB へ戻した。これは無料トライアル�
 
 ## 次の実行順序
 
-1. #95 をレビュー・マージする。
-2. #97 を `main` に積み替え、CI とレビューを通す。
-3. VM 管理者が `/etc/soren-rtmp/push.conf` を root 権限で設定する。値はチャットやログへ貼らない。
-4. `./install_direct_stream_relay.sh --status` と `./cutover_direct_stream.sh --preflight` を実行する。
-5. 計画を確認して `./cutover_direct_stream.sh --cutover --confirm-live-cutover` を実行する。
-6. Twitch 側で 720p30、codec、bitrate、ゲーム画面、BGM、SE、TTS、同期、オーバーレイを確認する。
-7. `./direct_stream_soak.sh start --duration 3600 --interval 60` で 1 時間試験を行い、合格後に 86400 秒へ進む。
-8. 異常時は `./cutover_direct_stream.sh --rollback --confirm-live-rollback` で OBS へ戻し、60 秒以内の復旧を測る。
+1. #97 のレビューを通す。実配信ゲートが残るため Draft のまま維持する。
+2. VM 管理者が `/etc/soren-rtmp/push.conf` を root 権限で設定する。値はチャットやログへ貼らない。
+3. `./install_direct_stream_relay.sh --status` と `./cutover_direct_stream.sh --preflight` を実行する。
+4. 計画を確認して `./cutover_direct_stream.sh --cutover --confirm-live-cutover` を実行する。
+5. Twitch 側で 720p30、codec、bitrate、ゲーム画面、BGM、SE、TTS、同期、オーバーレイを確認する。
+6. `./direct_stream_soak.sh start --duration 3600 --interval 60` で 1 時間試験を行い、合格後に 86400 秒へ進む。
+7. 異常時は `./cutover_direct_stream.sh --rollback --confirm-live-rollback` で OBS へ戻し、60 秒以内の復旧を測る。
 
 ## Issue #96 の未完了ゲート
 
