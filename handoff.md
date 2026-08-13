@@ -1,6 +1,6 @@
 # Soren Linux 配信・改善ループ 引き継ぎ
 
-> 更新: 2026-08-13 17:45 JST
+> 更新: 2026-08-13 18:10 JST
 > 文書リポジトリ: `/Users/azumag/work/docich`（コミット管理）
 > 実装リポジトリ: `azumag/soviet_now`
 > この文書にストリームキー・OAuth token・秘密鍵・push target は書かない
@@ -163,6 +163,8 @@ worktree `codex/soren-ffmpeg-direct` に未 commit 差分 5 ファイル:
 
 ## 9. 既知の問題・注意点
 
+- **VM 反映とリポジトリ同期は同時に行う（リポジトリルール、AGENTS.md 記載）**: VM（git 管理外）へ反映する変更は、同時に soviet_now の作業ブランチへコミット・push する。コミット前は「反映済み」と報告しない。乖離時は新しい側へ同期。
+- **ローカル worktree / 調査ディレクトリは VM の正ではない**: `soren-harness`（soviet_now の worktree、ブランチ `codex/harness-codex`、ローカル未 push）は 8/12 時点のスナップショット。VM とハッシュ比較した結果、`improve_daemon.sh` と `core/config.sh` は一致、`strategy/ai.sh` と `eloop_improve.sh` は VM 側が新しい。`soren-voicevox-investigation` は調査用ローカル資料で VM 反映対象外。
 - **worktree と VM の乖離**: `strategy/ai.sh` や `strategy.py` は VM が本番最新。worktree 同期時は VM 基準
 - **litellm が単一障害点**: flash 含む全 codex 呼び出しが port 4100 依存。health チェック + systemd 自動再起動でカバー
 - **時事ニュース読み上げ**: 「時事ニュースコーナー」が「時事、ュースコ、です」になる問題は調査中（`soren-voicevox-investigation/HANDOFF.md`）。別スレッドで fable に相談中
