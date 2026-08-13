@@ -206,6 +206,22 @@ pactl set-default-sink soren_null
 
 ---
 
+## 5.1 フォールバックモデルの統一（Minimax M3）
+
+**方針**: soren が利用する各エージェント／CLI のフォールバックモデルは **Minimax M3** に統一する。`codex` CLI 経由のエージェントは既に Minimax M3 をフォールバックモデルとして設定済みで、これを基準に他の箇所も揃える。
+
+| 対象 | 現状 | 対応 |
+|---|---|---|
+| `codex` CLI 経由のエージェント | フォールバックモデル: **Minimax M3**（設定済み） | 変更不要（この設定を基準にする） |
+| `MODEL_IMPROVE=minimax`（claude CLI 経由、§5） | フォールバックモデル未指定 | Minimax M3 をフォールバックに指定 |
+| `RADIO_AGENTS` / `COMMENT_AGENTS` 内の `opencode:...` / `qwen35e`（§5） | フォールバックモデル未指定 | 各エントリのフォールバックモデルを Minimax M3 に統一 |
+| `strategy/ai.sh` が起動する `claude` / `opencode` / `ollama` CLI（§6-1） | フォールバックモデル未指定 | 各 CLI 呼び出しのフォールバック先を Minimax M3 に統一 |
+
+- 【未確認】各 CLI（claude / opencode / ollama）でフォールバックモデルを指定する具体的なオプション・環境変数名は実装時に要確認。`codex` の設定（`~/.codex/config.toml` 等）を参考に揃える。
+- VPS 移行（Phase 3 完了目安）までに、上記すべての箇所でフォールバックモデルが Minimax M3 になっていることを確認してから本番切り替えする。
+
+---
+
 ## 6. リスクと未確認事項（正直な列挙）
 
 1. **strategy/ai.sh の CLI 依存（最大リスク）**
@@ -256,6 +272,7 @@ pactl set-default-sink soren_null
 - chat daemon（twitch / youtube）の動作確認と `stat` フォールバック適用（§1, §2.9）
 - wildcard 並列の調整（`WILDCARD_PARALLEL_JOBS=1` で実測 → 2 へ増やすか判断）
 - launchd → systemd / cron の置換（§4）、24h 監視の確立
+- 全エージェントのフォールバックモデルを Minimax M3 に統一（§5.1）
 - 完了条件: 無人運用 1 週間、キャプチャ・音声・chat・並列すべて自己修復が働く
 
 **全体で 1〜2 週間**。Phase 1 完了時点で配信自体は成立するため、そこで macOS から完全切り替えし、Phase 2/3 は本番を止めずに進めることも可能。
@@ -283,3 +300,4 @@ pactl set-default-sink soren_null
 | OBS プロファイル | RTMP / ストリームキー再設定 | 作り直し |
 | launchd plist | systemd --user / cron @reboot へ | 置換 |
 | `.env` | §5 の一覧 | 変更 |
+| フォールバックモデル（`MODEL_IMPROVE` / `RADIO_AGENTS` / `COMMENT_AGENTS` / `strategy/ai.sh` の CLI 呼び出し） | Minimax M3 に統一（§5.1、`codex` は設定済み） | 変更 |
