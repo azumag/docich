@@ -1,6 +1,6 @@
 # Soren Linux 配信・改善ループ 引き継ぎ
 
-> 更新: 2026-08-13 18:40 JST
+> 更新: 2026-08-13 22:10 JST
 > 文書リポジトリ: `/Users/azumag/work/docich`（コミット管理）
 > 実装リポジトリ: `azumag/soviet_now`
 > この文書にストリームキー・OAuth token・秘密鍵・push target は書かない
@@ -109,13 +109,22 @@ codex CLI 0.147.0 と opencode.ai の `deepseek-v4-pro` は直接接続で 2 障
   - `deepseek-v4-flash`: Responses 透過（ツール実行を維持）
   - `deepseek-v4-pro`: chat 変換（`use_chat_completions_api: true`、`-o` 出力修復）
 - systemd: `soren-litellm.service`（port 4100、127.0.0.1、Restart=always、enabled）
-- env: `/home/ubuntu/.config/soren-litellm.env`（`OPENCODE_GO_API_KEY` のみ、mode 600）
+- env: `/home/ubuntu/.config/soren-litellm.env`（`OPENCODE_GO_API_KEY` / `MINIMAX_API_KEY`、mode 600）
 - codex config: `/home/ubuntu/.codex/config.toml`
   - `base_url = "http://127.0.0.1:4100/v1"`
   - `web_search = "disabled"`（pro の reject 回避）
   - `model_catalog_json = "/home/ubuntu/.codex/merged-models.json"`（pro/flash のメタデータ供給）
 - モデル指定: `strategy/ai.sh` の `run_cmd` が `agent` を尊重（`codex_model="${agent:-${CODEX_MODEL:-deepseek-v4-flash}}"`）
 - `.env`: `MODEL_IMPROVE=codex:deepseek-v4-pro` / `MODEL_FALLBACK_IMPROVE=codex:deepseek-v4-flash` / `RADIO_AGENTS=codex:deepseek-v4-flash` / `CODEX_MODEL=deepseek-v4-flash`
+
+### MiniMax M3（公式 API）追加（2026-08-13）
+
+- litellm に `minimax-m3` を追加: `model: openai/MiniMax-M3` / `api_base: https://api.minimax.io/v1` / `api_key: os.environ/MINIMAX_API_KEY` / `use_chat_completions_api: true`。litellm 1.96 の minimax ネイティブ provider は M2.1 まで対応のため、OpenAI 互換パススルーで追加
+- キー: `.env` の既存 `MINIMAX_API_KEY`（公式 API で有効確認済み）を `/home/ubuntu/.config/soren-litellm.env` へ追加
+- codex カタログ: `/home/ubuntu/.codex/merged-models.json` に `minimax-m3` を追加
+- 検証: `curl http://127.0.0.1:4100/health` で 3 モデル healthy / unhealthy 0、`codex exec --model minimax-m3 "1+1=?"` が正常応答
+- 既定の `MODEL_IMPROVE` は変更していない。改善に MiniMax 公式を使う場合は `MODEL_IMPROVE=codex:minimax-m3` へ変更
+- バックアップ: `litellm.yaml.bak.20260813_220326` / `soren-litellm.env.bak.20260813_220326` / `merged-models.json.bak.20260813_220326`
 
 ### 障害時
 
