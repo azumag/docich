@@ -1,4 +1,4 @@
-"""Dataclasses and TOML loader for docich configuration (architecture.md SS8)."""
+"""Dataclasses and TOML loader for docich configuration (architecture.md §8)."""
 from __future__ import annotations
 
 import os
@@ -17,7 +17,7 @@ class ConfigError(Exception):
 
 @dataclass
 class DisplayConfig:
-    # 既定 :98。soren が :99 を使用中のため衝突を避ける (architecture.md SS0)。
+    # 既定 :98。soren が :99 を使用中のため衝突を避ける (architecture.md §0)。
     number: int = 98
     width: int = 1280
     height: int = 720
@@ -32,7 +32,7 @@ class DisplayConfig:
 class AudioConfig:
     enabled: bool = True
     sink_name: str = "docich_sink"
-    # true にしない限り set-default-sink はしない (soren 共存。architecture.md SS0)。
+    # true にしない限り set-default-sink はしない (soren 共存。architecture.md §0)。
     set_default: bool = False
 
 

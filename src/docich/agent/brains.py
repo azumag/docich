@@ -1,4 +1,4 @@
-"""Brain implementations: the observe/act boundary (architecture.md SS6).
+"""Brain implementations: the observe/act boundary (architecture.md §6).
 
 A brain only needs to implement `decide(obs) -> list[Action]`. `CommandBrain`
 delegates to an external process (stateless, spawned fresh every cycle);
@@ -19,7 +19,7 @@ from ..config import GameConfig, GlobalConfig
 
 class CommandBrain:
     """Runs `game.agent.command` fresh every cycle: stdin=Observation JSON,
-    stdout=Action JSON (architecture.md SS6). No memory across cycles is kept
+    stdout=Action JSON (architecture.md §6). No memory across cycles is kept
     by docich; that is the brain script's own responsibility."""
 
     def __init__(self, g: GlobalConfig, game: GameConfig):
@@ -68,7 +68,7 @@ class CommandBrain:
 
 
 class RandomBrain:
-    """Random action generator for wiring tests / demos (architecture.md SS6).
+    """Random action generator for wiring tests / demos (architecture.md §6).
     The action space depends on the adapter kind reported in the Observation."""
 
     def __init__(self, g: GlobalConfig, game: GameConfig):

@@ -1,4 +1,4 @@
-"""ffmpeg command construction for the docich stream pipeline (architecture.md SS5)."""
+"""ffmpeg command construction for the docich stream pipeline (architecture.md §5)."""
 from __future__ import annotations
 
 import os

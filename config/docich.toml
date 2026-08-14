@@ -1,5 +1,5 @@
 [display]
-number = 98          # DISPLAY=:98 (soren が :99 を使用中のため衝突回避。SS0)
+number = 98          # DISPLAY=:98 (soren が :99 を使用中のため衝突回避。§0)
 width = 1280
 height = 720
 color_depth = 24
@@ -7,7 +7,7 @@ color_depth = 24
 [audio]
 enabled = true       # pulseaudio が無い環境では false (無音配信)
 sink_name = "docich_sink"
-set_default = false  # true にしない限り set-default-sink はしない (soren 共存。SS0)
+set_default = false  # true にしない限り set-default-sink はしない (soren 共存。§0)
 
 [stream]
 ffmpeg_bin = "ffmpeg"              # DOCICH_FFMPEG_BIN で上書き可能

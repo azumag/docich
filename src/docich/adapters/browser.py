@@ -1,5 +1,5 @@
 """Browser adapter: launches a browser (kiosk) and projects it on the shared
-X11 display (architecture.md SS4.3). The real soren game automation lives in
+X11 display (architecture.md §4.3). The real soren game automation lives in
 the soren repo; docich here only provides "a place to render" (launch + generic
 key/mouse input)."""
 from __future__ import annotations
