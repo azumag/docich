@@ -184,22 +184,25 @@ docich は **retroarch.cfg を毎起動時に自分で生成**し (`run/retroarc
 
 ### 4.1 `retroarch` (SFC 半熟英雄)
 
-- 起動: `retroarch --config run/retroarch/retroarch.cfg -L <core.so> <rom>`
-- コア解決: `core = "auto"` なら `/usr/lib/*/libretro/` から `snes9x → bsnes_mercury_performance → bsnes_mercury_balanced` の順で探索。【確認済】Ubuntu 24.04 universe に `retroarch 1.18.0` / `libretro-snes9x 1.61` の **arm64 版が存在** (packages.ubuntu.com で確認)。snes9x は軽量で A1 (2 OCPU) に適する。
+- 起動: `dbus-run-session -- retroarch --config run/retroarch/retroarch.cfg -L <core.so> <rom>`
+  - 【確認済】`dbus-run-session` ラップは**必須**。Ubuntu の RetroArch 1.18 は GameMode 統合がセッション D-Bus に接続できないと **libdbus のアサートで abort する** (ヘッドレス環境で実証。`gamemode_enable=false` でも回避不可)。プライベートセッションバスで包むと正常起動する (実証済)。提供パッケージ: `dbus-daemon` (`dbus` メタパッケージで導入)
+- コア解決: `core = "auto"` なら `/usr/lib/*/libretro/` から `snes9x → bsnes_mercury_performance → bsnes_mercury_balanced` の順で探索。【確認済】Ubuntu 24.04 universe に `retroarch 1.18.0` / `libretro-snes9x 1.61` / `libretro-bsnes-mercury-*` の **arm64 版が存在** (packages.ubuntu.com で確認)。snes9x は軽量で A1 (2 OCPU) に適する。実インストール先は `/usr/lib/<arch>-linux-gnu/libretro/` (コンテナで確認)。
 - 生成する cfg の要点 (全文は実装参照):
 
   | 設定 | 値 | 理由 |
   |---|---|---|
-  | `input_driver` | `"x"` | **最重要の落とし穴**。既定の `udev` は evdev を直接読むため、Xvfb 上の xdotool (XTEST) 入力が届かない。X11 ドライバにすると XTEST が効く【要検証】 |
-  | `video_driver` | `"sdl2"` | Xvfb は GLX が無い/不安定なことがある。SNES コアはソフトレンダなので sdl2 で十分。だめなら mesa llvmpipe + `"gl"`【要検証】 |
+  | `input_driver` | `"sdl2"` | 【確認済】既定の `udev` は evdev 直読みで Xvfb 上の XTEST が届かない。`"x"` も **sdl2 ビデオドライバがウィンドウを渡さないため不発** (ログ実証)。`"sdl2"` で XTEST キーが届くことをメニュー操作で実証済 |
+  | `video_driver` | `"sdl2"` | 【確認済】Xvfb (GLX なし) で RGUI メニューの描画を実証。SNES コアはソフトレンダなので sdl2 で十分 |
+  | `gamemode_enable` | `false` | GameMode を使わない意思表示 (ただし abort 回避には dbus-run-session が必要。上記) |
   | `audio_driver` | `"pulse"` | `PULSE_SINK=docich_sink` 環境変数で docich の sink に直接ルーティング (既定 sink は変更しない。§0) |
   | `video_fullscreen` | `true` | 1280x720 にアスペクト維持でスケール (4:3 なので左右黒帯) |
   | `pause_nonactive` | `false` | フォーカス管理に敏感にならないため |
   | `config_save_on_exit` | `false` | 生成 cfg を汚さない (決定論性) |
-  | `network_cmd_enable` | `true` (port 55355) | UDP で `SAVE_STATE`/`LOAD_STATE`/`PAUSE_TOGGLE` 等を送れる。`docich ra-cmd` として公開 (配信中のステート保存に有用) |
+  | `network_cmd_enable` | `true` (port 55355) | UDP で `SAVE_STATE`/`LOAD_STATE`/`PAUSE_TOGGLE` 等を送れる。`docich ra-cmd` として公開 (配信中のステート保存に有用)。【確認済】`VERSION`/`GET_STATUS` の送受信をコンテナで実証 |
   | `input_exit_emulator` | 無効化 | 誤爆でエミュレータが落ちるのを防ぐ。停止は SIGTERM |
 - observe: 画面全体のスクリーンショット (kind=screenshot)。
-- act: `pad`/`key`/`wait`。実行前に `xdotool search → windowactivate` で RetroArch ウィンドウへフォーカスを保証してから XTEST (`xdotool keydown/keyup`) で押下・解放。同時押し (例: ↓+A) は keydown を並べて hold 後にまとめて keyup。
+- act: `pad`/`key`/`wait`。実行前に `xdotool search → windowfocus --sync` で RetroArch ウィンドウへフォーカスを保証してから XTEST (`xdotool keydown/keyup`) で押下・解放 (§9-2: WM 無し Xvfb では windowactivate は不可)。同時押し (例: ↓+A) は keydown を並べて hold 後にまとめて keyup。
+- 【確認済・最重要】**押下は hold 時間を挟むこと**。RetroArch はフレーム毎にキー状態をポーリングするため、`xdotool key` の瞬間 press/release は**取りこぼされる** (実証: 瞬間押しではメニューが動かず、keydown→150ms→keyup で動いた)。`tap(keys, hold_ms)` の既定 100ms を下回らない。
 - ROM は `games/roms/` の自己吸い出しファイルを config で指定。**docich は ROM の取得・配布に一切関与しない**。
 
 ### 4.2 `cli` (NetHack)
@@ -383,7 +386,8 @@ enabled = false        # soren 側の自動化が運転するため docich agent
 
 ## 9. リスクと落とし穴 (実装が守るべき知見)
 
-1. **RetroArch の入力ドライバ**: 既定 `udev` は Xvfb + xdotool では**一切入力が届かない**。生成 cfg で `input_driver = "x"` を強制する。それでも届かない場合の代替は (a) SDL ドライバ、(b) RetroArch Network Remote (UDP パッド)。【要検証: 実機】
+1. **RetroArch の入力ドライバ**: 既定 `udev` は evdev 直読みで Xvfb + xdotool では入力が届かない。`"x"` ドライバも **sdl2 ビデオドライバと組むと「Graphics driver did not initialize an input driver」となり不発** (ログ実証)。【確認済】正解は **`input_driver = "sdl2"`** (video も sdl2)。XTEST キーでの RGUI メニュー操作をコンテナで実証済。フォールバックは RetroArch Network Remote (UDP パッド)。
+1b. **GameMode の D-Bus abort**: Ubuntu ビルドの RetroArch 1.18 は、セッション D-Bus が無い環境で起動すると GameMode 統合の dbus 呼び出しが **assert → abort する** (【確認済】`gamemode_enable=false` でも、`DBUS_SESSION_BUS_ADDRESS` を無効値にしても回避不可)。**`dbus-run-session --` で包んで起動する** (実証済。パッケージ `dbus-daemon`)。
 2. **XTEST とフォーカス**: `xdotool key --window` (XSendEvent) は SDL/RetroArch に無視されがち。**必ずフォーカスを取ってから XTEST** (`keydown`/`keyup`、--window なし) を使う。【確認済】WM の無い Xvfb では `windowactivate` (EWMH 依存) は機能しないため **`windowfocus --sync` (XSetInputFocus 直叩き) を使う**。この経路でキー入力が X アプリに届くことをコンテナで実証済。
 3. **Xvfb と GL**: `video_driver = "gl"` は Xvfb で GLX が無く失敗し得る。`sdl2` を既定とし、必要になったら mesa (llvmpipe) を検証する。【要検証】
 4. **ffmpeg の CPU 負荷**: A1 2 OCPU で libx264 720p30 が回るかは preset 次第。`veryfast` で始め、溢れたら `superfast/ultrafast`・framerate 24・ビットレート減で逃がす。【要検証】
