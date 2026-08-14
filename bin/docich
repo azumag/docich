@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# docich 起動ランチャ: スクリプト自身の場所からリポジトリルートを解決し、
+# src/ を PYTHONPATH に通してパッケージを実行する。
+set -euo pipefail
+
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
+
+export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m docich "$@"

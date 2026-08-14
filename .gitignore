@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+run/
+games/roms/*
+!games/roms/README.md
+.env
+*.flv
