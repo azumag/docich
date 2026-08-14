@@ -212,6 +212,19 @@ class TestMainErrorHandling(IsolatedConfigTestBase):
         self.assertEqual(rc, 2)
         self.assertIn("docich up", err)
 
+    def test_snap_wraps_called_process_error_as_cli_error(self):
+        # xkit.screenshot は procs.run(check=True) 経由で CalledProcessError を投げうる
+        # (ディスプレイ未起動時の ffmpeg 失敗など)。CliError に変換され docich: エラー で終わること。
+        with mock.patch(
+            "docich.cli.XKit.screenshot",
+            side_effect=subprocess.CalledProcessError(1, ["ffmpeg"]),
+        ):
+            rc, _out, err = self.run_main(["snap"])
+        self.assertEqual(rc, 2)
+        self.assertIn("docich: エラー", err)
+        self.assertIn("スクリーンショットに失敗しました", err)
+        self.assertIn("docich up", err)
+
 
 if __name__ == "__main__":
     unittest.main()

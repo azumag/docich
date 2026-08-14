@@ -1,0 +1,15 @@
+[game]
+name = "hanjuku-hero"
+title = "半熟英雄 (SFC)"
+adapter = "retroarch"
+
+[retroarch]
+rom = "games/roms/hanjuku-hero.sfc"   # 自己吸い出し ROM を配置
+core = "auto"                          # or コア .so の絶対パス
+# [retroarch.pad_map] で既定マップの上書きも可能
+
+[agent]
+enabled = false                        # 半熟英雄 brain は Phase 2
+brain = "command"
+command = ""
+interval_ms = 2000

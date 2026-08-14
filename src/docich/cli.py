@@ -5,6 +5,7 @@ import argparse
 import glob
 import os
 import shlex
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -407,7 +408,12 @@ def cmd_snap(g: GlobalConfig, output: str | None) -> int:
     state.ensure()
     xkit = XKit(g.display.name)
     out_path = Path(output) if output else state.screenshots_dir / "manual.png"
-    result = xkit.screenshot(out_path, g.display.width, g.display.height)
+    try:
+        result = xkit.screenshot(out_path, g.display.width, g.display.height)
+    except subprocess.CalledProcessError as exc:
+        raise CliError(
+            "スクリーンショットに失敗しました。ディスプレイは起動していますか? (`docich up`)"
+        ) from exc
     print(str(result))
     return 0
 

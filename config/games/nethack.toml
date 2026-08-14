@@ -1,0 +1,16 @@
+[game]
+name = "nethack"
+title = "NetHack"
+adapter = "cli"
+
+[cli]
+command = "nethack"
+cols = 80
+rows = 24
+font = "monospace"
+font_size = 18
+
+[agent]
+enabled = false        # random brain の配線テストは CLI から明示実行
+brain = "random"
+interval_ms = 1500
