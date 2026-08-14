@@ -1,0 +1,8 @@
+[submodule "games/soviet_now"]
+	path = games/soviet_now
+	url = https://github.com/azumag/soviet_now.git
+	branch = main
+[submodule "games/hanjuku-sfc-speedrun"]
+	path = games/hanjuku-sfc-speedrun
+	url = https://github.com/azumag/hanjuku-sfc-speedrun.git
+	branch = main
