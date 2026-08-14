@@ -70,10 +70,18 @@ class TestModeNull(StreamTestBase):
 
 
 class TestModeFile(StreamTestBase):
-    def test_mode_file_outputs_flv_with_overwrite(self):
+    def test_mode_file_relative_path_is_resolved_against_repo_root(self):
+        # tmux window の cwd に依存しないよう、相対パスは repo_root 基準で絶対化する。
         g = self._load('[stream]\nmode = "file"\nfile_path = "run/out.flv"\n')
         cmd = stream.build_ffmpeg_cmd(g)
-        self.assertEqual(cmd[-4:], ["-y", "-f", "flv", "run/out.flv"])
+        expected = str(self.repo_root / "run" / "out.flv")
+        self.assertEqual(cmd[-4:], ["-y", "-f", "flv", expected])
+
+    def test_mode_file_absolute_path_is_passed_through(self):
+        abs_path = str(self.repo_root / "elsewhere" / "custom.flv")
+        g = self._load(f'[stream]\nmode = "file"\nfile_path = "{abs_path}"\n')
+        cmd = stream.build_ffmpeg_cmd(g)
+        self.assertEqual(cmd[-4:], ["-y", "-f", "flv", abs_path])
 
 
 class TestModeRtmp(StreamTestBase):

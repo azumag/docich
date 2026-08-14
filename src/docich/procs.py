@@ -30,12 +30,15 @@ def run(
     env_extra: dict | None = None,
     capture: bool = True,
     strip_tmux: bool = False,
+    input: str | None = None,
 ) -> subprocess.CompletedProcess:
     env = _build_env(env_extra, strip_tmux)
     kwargs: dict = {}
     if capture:
         kwargs["stdout"] = subprocess.PIPE
         kwargs["stderr"] = subprocess.PIPE
+    if input is not None:
+        kwargs["input"] = input
     return subprocess.run(
         cmd,
         env=env,

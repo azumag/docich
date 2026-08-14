@@ -59,6 +59,10 @@ class Tmux:
 
     # --- named (separate) sessions, e.g. "docich-game" ---
 
+    def has_session_named(self, session: str) -> bool:
+        r = self._run(["has-session", "-t", session])
+        return r.returncode == 0
+
     def new_game_session(self, session: str, cmd: list[str], cols: int, rows: int) -> None:
         self._run(["new-session", "-d", "-s", session, "-x", str(cols), "-y", str(rows), shlex.join(cmd)])
         # 配信画面に tmux の緑ステータスバーが映り込むため off にする (architecture.md SS4.2)

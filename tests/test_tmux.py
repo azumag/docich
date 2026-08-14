@@ -40,6 +40,7 @@ class TestTmuxCallsUseStripTmux(unittest.TestCase):
         self.tmux.list_windows()
         self.tmux.new_window("w", ["true"])
         self.tmux.kill_window("w")
+        self.tmux.has_session_named("docich-game")
         self.tmux.new_game_session("docich-game", ["nethack"], 80, 24)
         self.tmux.set_status_off("docich-game")
         self.tmux.capture_pane("docich-game")
@@ -104,6 +105,23 @@ class TestHasWindow(unittest.TestCase):
     def test_list_windows_empty_on_failure(self, mock_run):
         mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="no session")
         self.assertEqual(self.tmux.list_windows(), [])
+
+
+class TestHasSessionNamed(unittest.TestCase):
+    def setUp(self):
+        self.tmux = tmux_mod.Tmux()
+
+    @mock.patch("docich.tmux.procs.run")
+    def test_true_when_session_exists(self, mock_run):
+        mock_run.return_value = _ok()
+        self.assertTrue(self.tmux.has_session_named("docich-game"))
+        (args,), kwargs = mock_run.call_args
+        self.assertEqual(args, ["tmux", "has-session", "-t", "docich-game"])
+
+    @mock.patch("docich.tmux.procs.run")
+    def test_false_when_session_missing(self, mock_run):
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="no session")
+        self.assertFalse(self.tmux.has_session_named("docich-game"))
 
 
 class TestKillIgnoresErrors(unittest.TestCase):

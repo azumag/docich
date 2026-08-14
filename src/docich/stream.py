@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from .config import GlobalConfig
 
@@ -49,7 +50,11 @@ def build_ffmpeg_cmd(g: GlobalConfig, *, mask_key: bool = False) -> list[str]:
         shown_key = MASK if mask_key else key
         cmd += ["-f", "flv", f"{s.rtmp_url}/{shown_key}"]
     elif s.mode == "file":
-        cmd += ["-y", "-f", "flv", s.file_path]
+        # tmux window の cwd に依存しないよう、相対パスは repo_root 基準で絶対化する。
+        file_path = Path(s.file_path)
+        if not file_path.is_absolute():
+            file_path = g.repo_root / file_path
+        cmd += ["-y", "-f", "flv", str(file_path)]
     else:
         cmd += ["-f", "null", "-"]
 
