@@ -1,4 +1,4 @@
-"""Action JSON schema and parsing (architecture.md SS3.2)."""
+"""Action JSON schema and parsing (architecture.md §3.2)."""
 from __future__ import annotations
 
 import json

@@ -1,4 +1,4 @@
-"""Adapter contract: lifecycle + AI I/O for a docich game (architecture.md SS3)."""
+"""Adapter contract: lifecycle + AI I/O for a docich game (architecture.md §3)."""
 from __future__ import annotations
 
 import json
@@ -64,7 +64,7 @@ class Adapter(ABC):
 
     def env(self) -> dict:
         # PULSE_SINK により既定 sink を変更せずに docich 配下の音声だけを
-        # docich_sink へルーティングする (soren 共存。architecture.md SS0)。
+        # docich_sink へルーティングする (soren 共存。architecture.md §0)。
         e = {"DISPLAY": self.ctx.g.display.name}
         if self.ctx.g.audio.enabled:
             e["PULSE_SINK"] = self.ctx.g.audio.sink_name

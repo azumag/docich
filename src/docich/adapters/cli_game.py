@@ -1,6 +1,6 @@
 """CLI/TUI game adapter: the game runs in a dedicated tmux session and is
 projected onto the shared X11 display via a read-only xterm attach
-(architecture.md SS4.2)."""
+(architecture.md §4.2)."""
 from __future__ import annotations
 
 import shlex

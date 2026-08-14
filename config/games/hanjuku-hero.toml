@@ -10,6 +10,7 @@ core = "auto"                          # or コア .so の絶対パス
 
 [agent]
 enabled = false                        # 半熟英雄 brain は Phase 2
+# brain は games/hanjuku-sfc-speedrun (submodule) のチャート/データを知識ベースにする (Phase 2)
 brain = "command"
 command = ""
 interval_ms = 2000

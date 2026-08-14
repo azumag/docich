@@ -1,4 +1,4 @@
-"""Observe -> brain -> act loop (architecture.md SS6)."""
+"""Observe -> brain -> act loop (architecture.md §6)."""
 from __future__ import annotations
 
 import time
