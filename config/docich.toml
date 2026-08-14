@@ -1,0 +1,32 @@
+[display]
+number = 98          # DISPLAY=:98 (soren が :99 を使用中のため衝突回避。SS0)
+width = 1280
+height = 720
+color_depth = 24
+
+[audio]
+enabled = true       # pulseaudio が無い環境では false (無音配信)
+sink_name = "docich_sink"
+set_default = false  # true にしない限り set-default-sink はしない (soren 共存。SS0)
+
+[stream]
+mode = "null"                    # null | rtmp | file
+rtmp_url = "rtmp://live.twitch.tv/app"
+stream_key_env = "DOCICH_STREAM_KEY"
+file_path = "run/out.flv"
+framerate = 30
+video_bitrate = "4500k"
+maxrate = "5000k"
+bufsize = "9000k"
+preset = "veryfast"
+audio_bitrate = "160k"
+gop_seconds = 2
+
+[agent]
+default_interval_ms = 2000
+brain_timeout_s = 120
+
+[paths]
+state_dir = "run"                # リポジトリ相対
+games_dir = "config/games"
+roms_dir = "games/roms"
