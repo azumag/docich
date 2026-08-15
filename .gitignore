@@ -5,3 +5,10 @@ games/roms/*
 !games/roms/README.md
 .env
 *.flv
+
+# Soren implementation lives in azumag/soviet_now. This is a temporary linked worktree.
+/soren-phase1/
+# soviet_now の別 worktree（codex/harness-codex）。リポジトリ本体は azumag/soviet_now。
+/soren-harness/
+# 時事ニュース読み上げ調査のローカル資料（WAV・HANDOFF）。VM 反映対象外。
+/soren-voicevox-investigation/

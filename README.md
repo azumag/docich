@@ -1,198 +1,205 @@
 # docich — マルチゲーム AI 配信基盤
 
-docich は、VM 上で AI がゲームをプレイし、その画面と音声を ffmpeg で配信するための基盤である。
-プレイするゲームは「アダプタ」で抽象化されており、`browser` (ブラウザゲーム) / `retroarch`
-(レトロエミュレータ) / `cli` (端末ゲーム) を差し替えて同じ配信基盤の上で動かせる。
+docich は、ヘッドレス Linux 上で表示・音声・配信を常駐させたまま、
+ゲームと AI 操作系だけを差し替えるための基盤です。現在のアダプタは
+ブラウザ、RetroArch、CLI/TUI の3種類です。
 
-設計の一次情報は **`docs/architecture.md`**。本 README はそこへの入り口として、
-クイックスタートと日常操作をまとめる。
+設計の一次情報は [`docs/architecture.md`](docs/architecture.md) です。
+本READMEは導入・日常操作・本番Sorenとの境界をまとめています。
 
-## 表記ルール
+## 構成
 
-- 【確認済】: 一次情報 (パッケージリポジトリ・`docs/architecture.md`・実機コンテナでの動作実証) で裏取りした事実
-- 【要検証】: Oracle ARM 実機での検証が必要な事項
-
----
-
-## 1. アーキテクチャ概要
-
-ディスプレイ (Xvfb) と配信 (ffmpeg) を常駐させ続け、ゲームだけを入れ替える設計。
-tmux セッション `docich` の中に、常駐コンポーネントごとの window が並ぶ:
-
-```
-tmux セッション "docich"
-┌────────────────────────────────────────────────────┐
-│ display  Xvfb :98 (1280x720)                        │
-│ audio    null sink 確保 (既存 pulseaudio を再利用)   │
-│ stream   ffmpeg (x11grab + pulse) → RTMP/file/null   │
-│ game     アダプタが起動するゲーム本体                │
-│           (retroarch / chromium / xterm+tmux)        │
-│ agent    観測 → brain → 行動 のループ (ゲームごとに任意) │
-└────────────────────────────────────────────────────┘
-       docich CLI が各 window を生成/破棄する
-       brain (外部コマンド) は stdin/stdout の JSON でつながる
+```text
+tmux session: docich
+  display  Xvfb :98 (1280x720)
+  audio    docich_sink (既存PulseAudioを再利用)
+  stream   FFmpeg x11grab + Pulse -> null/file/RTMP
+  game     browser / retroarch / cli adapter
+  agent    observe -> external brain -> action (任意)
 ```
 
-- ゲーム切替 (`docich switch`) は game/agent window の作り直しだけで行われるため、
-  **配信ストリームは切替中も途切れない**。
-- ゲームの「頭脳」(brain) は外部コマンドとして差し替え可能。`claude` CLI・自作スクリプト・
-  ランダムテスト器を同じ stdin/stdout JSON の口に差せる。
+`display`、`audio`、`stream` はゲームから独立しています。
+`docich switch` は `game` と `agent` だけを交換するため、配信プロセスを
+維持したままゲームを切り替えられる設計です。
 
-詳しい設計 (アダプタ契約・観測/行動 JSON スキーマ・配信コマンド構築・フェーズ計画など) は
-**`docs/architecture.md`** を参照。上の図は簡略化してあるので、正確な構成は必ずそちらで確認すること。
+各windowは監督ループ配下で動き、異常終了時は指数バックオフで再起動します。
+RTMPキーは状態表示と監督ログでマスクされます。
 
----
+## 本番Sorenとの境界
 
-## 2. soren との共存 (重要)
+同じVMで稼働する現在の sorengame 本番は
+[`azumag/soviet_now`](https://github.com/azumag/soviet_now) が所有します。
+docichをマージまたは起動しても、本番の所有権は移りません。
 
-**この VM では、既に soren (sorengame) が本番稼働中である。** docich は soren のリソースに
-一切触れず、名前空間を分離して同居する設計になっている (詳細: `docs/architecture.md` §0)。
-
-| リソース | soren (稼働中) | docich |
+| リソース | Soren本番 | docich既定 |
 |---|---|---|
-| X ディスプレイ | `:99` | **`:98`** (既定。`:99` は使わない) |
-| PulseAudio | 既存デーモン + 既定 sink | 同一デーモンに `docich_sink` を追加するのみ。**`set-default-sink` は実行しない** |
-| tmux セッション | soren 側のセッション | `docich` / `docich-game` (名前分離) |
-| 配信 | soren が配信中 | `stream.mode = "null"` が既定 (明示設定なしでは配信しない) |
-| セットアップ | — | `scripts/setup_ubuntu_arm.sh` は apt install と mkdir のみ。既存サービス・設定は変更しない |
+| X display | `:99` | `:98` |
+| audio sink | `soren_null` | `docich_sink` |
+| stream | FFmpeg live | `stream.mode = "null"` |
+| supervisor | `soren-runtime.service` | tmux `docich` |
+| game AI | soviet_now戦略/改善ループ | ゲームごとの任意agent |
 
-docich の導入・起動・停止が、稼働中の soren の配信・プロセスに影響を与えないことを設計上の
-大前提としている。ただし実機上での最終確認は未実施の項目があるため、個々の挙動は
-`docs/architecture.md` の 【要検証】表記に従うこと。
+docichは既存PulseAudioを再利用しますが、既定sinkは変更しません。
+`config/games/sorengame.toml` は `http://127.0.0.1:8080` を表示する
+viewer専用定義で、Sorenの `start_all.sh` は呼びません。詳しくは
+[`docs/games/sorengame.md`](docs/games/sorengame.md) を参照してください。
 
----
+## クイックスタート
 
-## 3. クイックスタート
-
-対象は Ubuntu 24.04 (arm64/amd64)。
+対象は Ubuntu 24.04 (arm64/amd64)、Python 3.11以上です。
 
 ```bash
-# 1. VM の依存パッケージを導入 (xvfb/tmux/ffmpeg/retroarch/nethack-console 等)
 scripts/setup_ubuntu_arm.sh
-
-# 2. 依存コマンド・環境の点検
 bin/docich doctor
-
-# 3. 基盤 (display/audio/stream) を起動
 bin/docich up
-
-# 4. ゲームを起動 (例: NetHack)
 bin/docich start nethack
-
-# 5. 状態確認・ゲーム切替・全停止
 bin/docich status
 bin/docich switch hanjuku-hero
 bin/docich down
 ```
 
-### ストリーム配信を有効にする
-
-既定 (`config/docich.toml` の `[stream] mode = "null"`) では配信しない (事故防止。soren の
-配信・キーと混同しないための既定でもある。§2 参照)。実配信する場合:
-
-1. `config/docich.toml` の `[stream] mode` を `"rtmp"` に変更する。
-2. ストリームキーは **環境変数のみ** で渡す (リポジトリ・設定ファイルには書かない):
-   ```bash
-   export DOCICH_STREAM_KEY="<配信キー>"
-   ```
-3. `bin/docich up` (または `down` → `up`) で反映する。
-
-`mode = "file"` にすると `run/out.flv` へローカル保存でき、動作確認用に使える。
-
----
-
-## 4. CLI コマンド一覧
-
-`docs/architecture.md` §7 と同一の体系:
-
-| コマンド | 説明 |
-|---|---|
-| `docich doctor` | 依存コマンド・環境の点検 (アダプタ別に OK/NG 表示) |
-| `docich games` | `config/games/` の一覧と有効アダプタ |
-| `docich up` / `down` | 基盤 (display/audio/stream) の起動・全停止 |
-| `docich start <game>` | ゲーム起動 (`agent.enabled` なら agent も起動) |
-| `docich stop` | 現在のゲーム停止 (基盤は残る) |
-| `docich switch <game>` | `stop` + `start` (配信は継続) |
-| `docich status` | 各コンポーネントの生死・現在のゲーム |
-| `docich snap [-o out.png]` | 手動スクリーンショット |
-| `docich obs [<game>]` | 観測 JSON を出力 (brain 開発用) |
-| `docich send <game> '<json>'` | 行動を単発注入 (デバッグ用) |
-| `docich ra-cmd <CMD>` | RetroArch へ UDP コマンド (`SAVE_STATE` 等) |
-| `docich run <component> [...]` | (内部用) tmux window 内の supervise 実行 |
-
-設定ファイルの探索順序: `--config` > `$DOCICH_CONFIG` > リポジトリの `config/docich.toml`。
-
----
-
-## 5. 設定の要点
-
-- **`config/docich.toml`**: グローバル設定 (`[display]` `[audio]` `[stream]` `[agent]` `[paths]`)。
-  ディスプレイ番号・解像度、配信モード・ビットレート、agent の既定タイムアウトなどを定義する
-  1 ファイル。`[display] number` の既定は `98`、`[audio] sink_name` の既定は `docich_sink`
-  (§2 の共存ポリシーに対応した既定値)。
-- **`config/games/*.toml`**: ゲーム定義。1 ゲーム 1 ファイルで、`[game]` (名前・アダプタ種別) +
-  アダプタ固有セクション (`[retroarch]` / `[cli]` / `[browser]`) + `[agent]` (brain の有無・種類) を持つ。
-  同梱例: `hanjuku-hero.toml` (retroarch) / `nethack.toml` (cli) / `sorengame.toml` (browser)。
-
-各ゲームの個別セットアップ手順は `docs/games/` 以下を参照 (下記「関連ドキュメント」)。
-
----
-
-## 6. ROM ポリシーとストリームキー
-
-- **ROM**: 自己吸い出しした ROM のみを `games/roms/` に置く。このディレクトリの ROM 本体は
-  git にコミットしない (README のみコミット対象)。docich は ROM の入手方法には一切関与しない。
-  詳細は `games/roms/README.md` を参照。
-- **ストリームキー**: `DOCICH_STREAM_KEY` などの環境変数からのみ読み込む。設定ファイルや
-  リポジトリに直接書かない。ログ・`docich status` 等の表示ではキーをマスクする設計になっている
-  (`docs/architecture.md` §5, §9-7)。
-
----
-
-## 7. リポジトリ構成
-
-```
-docich/
-├── README.md                   # 本ファイル
-├── bin/docich                  # 起動ランチャ
-├── src/docich/                 # Python パッケージ (標準ライブラリのみ)
-│   ├── adapters/                #   retroarch / cli_game / browser
-│   └── agent/                   #   loop + brains (command / random)
-├── config/
-│   ├── docich.toml              # グローバル設定
-│   └── games/*.toml             # ゲーム定義 (1 ゲーム 1 ファイル)
-├── games/roms/                  # ROM 置き場 (gitignore。README のみコミット)
-├── scripts/
-│   ├── setup_ubuntu_arm.sh      # VM 初期構築 (apt install + mkdir のみ)
-│   └── smoke_cli.sh             # E2E スモーク
-├── tests/                       # unittest
-└── docs/
-    ├── architecture.md          # 設計の一次情報 (共存原則 §0 含む)
-    ├── oracle_arm_setup_guide.md
-    ├── soren_linux_migration_plan.md
-    └── games/                   # ゲーム別セットアップ手順
-        ├── hanjuku-hero.md
-        ├── nethack.md
-        └── sorengame.md
-```
-
----
-
-## 8. 開発
+安全のため、既定では配信しません。ローカル確認は
+`stream.mode = "file"`、本番RTMPは `stream.mode = "rtmp"` を明示し、
+キーを環境変数だけで渡します。
 
 ```bash
-# 単体テスト (pip 不要)
-python3 -m unittest discover -s tests
+export DOCICH_STREAM_KEY="<stream key>"
+bin/docich up
+```
 
-# E2E スモーク (Xvfb + nethack + ffmpeg + xdotool)
+キーを設定ファイル、Git、Issue、Wiki、ログへ保存しないでください。
+
+## ネイティブTwitch字幕
+
+docichは、VOICEVOX等の日本語音声に合わせて英語のTwitchネイティブ字幕を
+H.264へ埋め込む再利用可能な基盤を持ちます。標準FFmpegには含まれない
+`docichcc` filterを使うため、字幕は明示的なopt-inです。
+
+```bash
+native/ffmpeg/build.sh /tmp/docich-cc-build
+export DOCICH_FFMPEG_BIN=/tmp/docich-cc-build/ffmpeg-install/bin/ffmpeg
+export DOCICH_CC_ENABLED=1
+export DOCICH_CC_SOCKET="$XDG_RUNTIME_DIR/docich/ffmpeg-cc.sock"
+bin/docich doctor
+bin/docich status
+```
+
+字幕機能を要求していても、custom FFmpegが無い、`docichcc`が無い、
+または`libx264 a53cc`が無い場合は、通常の映像・音声コマンドへfail-open
+します。字幕の失敗で音声や配信を止めません。`status` は
+`captions.requested` と `captions.active` を分けて表示します。
+
+字幕計画とsocket操作:
+
+```bash
+bin/docich caption plan \
+  --chunks-file speech.txt \
+  --translations-file translations.json \
+  --execution-id speech-123 \
+  --output speech-123.plan.json
+
+bin/docich caption send prepare --plan speech-123.plan.json --chunk 0 --page 0
+bin/docich caption send commit  --plan speech-123.plan.json --chunk 0 --page 0
+bin/docich caption send clear   --plan speech-123.plan.json
+```
+
+翻訳出力は完全一致のJSON schemaだけを受理します。thinking、Web検索や
+toolの進行表示、Markdown、説明文、余分なkeyは抽出せず拒否するため、
+字幕本文へ混入しません。Soren本番の読み上げ本文には、これとは別に
+soviet_now側の全on-air出力guardが適用されています。
+
+詳細:
+
+- [`docs/twitch_closed_captions.md`](docs/twitch_closed_captions.md)
+- [`native/ffmpeg/README.md`](native/ffmpeg/README.md)
+
+## CLI
+
+| Command | Purpose |
+|---|---|
+| `docich doctor` | 依存コマンド、ゲーム定義、custom FFmpeg字幕能力を点検 |
+| `docich games` | ゲーム定義一覧 |
+| `docich up` / `down` | 表示・音声・配信基盤を起動 / 全停止 |
+| `docich start <game>` | ゲームと任意agentを起動 |
+| `docich stop` | ゲームとagentだけを停止 |
+| `docich switch <game>` | 配信を維持してゲームを交換 |
+| `docich status` | component、game、stream、caption状態を表示 |
+| `docich snap [-o path]` | スクリーンショット |
+| `docich obs [game]` | brain向け観測JSON |
+| `docich send <game> '<json>'` | 行動JSONを単発注入 |
+| `docich ra-cmd <CMD>` | RetroArch UDP command |
+| `docich caption plan/send ...` | 字幕計画とFFmpeg IPC |
+| `docich run <component>` | tmux内の監督ループ用内部command |
+
+設定探索順は `--config`、`$DOCICH_CONFIG`、
+`config/docich.toml` です。
+
+## 設定
+
+グローバル設定は `config/docich.toml` にあります。
+
+```toml
+[display]
+number = 98
+
+[audio]
+enabled = true
+sink_name = "docich_sink"
+set_default = false
+
+[stream]
+ffmpeg_bin = "ffmpeg"
+mode = "null" # null | file | rtmp
+stream_key_env = "DOCICH_STREAM_KEY"
+
+[captions]
+enabled = false
+socket_path = ""
+```
+
+字幕の環境変数上書きは `DOCICH_FFMPEG_BIN`、
+`DOCICH_CC_ENABLED`、`DOCICH_CC_SOCKET` です。socketは104 byte未満の
+安全な絶対Unix pathだけを受け付けます。
+
+ゲームは `config/games/<name>.toml` に1本ずつ定義します。
+
+- `hanjuku-hero`: RetroArch + SFC core。ROMは自己吸い出し品のみ。
+- `nethack`: tmux + xtermのCLI/TUI adapter。
+- `sorengame`: ローカルWebGL viewer。production controllerではない。
+
+## Repository layout
+
+```text
+bin/docich                    CLI launcher
+src/docich/                   config, adapters, agent, stream, captions
+config/docich.toml            global safe defaults
+config/games/*.toml           per-game definitions
+native/ffmpeg/                docichcc source, pinned build, PoC, stress proof
+scripts/                      Ubuntu setup and smoke tests
+tests/                        stdlib unittest suite
+docs/architecture.md          canonical architecture
+docs/games/                   per-game contracts
+docs/twitch_closed_captions.md caption architecture and production evidence
+handoff.md                    current Soren/docich operational handoff
+```
+
+## Development and verification
+
+```bash
+python3 -m compileall -q src tests
+python3 -m unittest discover -s tests
+bash -n native/ffmpeg/*.sh
 scripts/smoke_cli.sh
 ```
 
----
+`scripts/smoke_cli.sh` は Xvfb、NetHack、FFmpeg、入力注入を使うため、
+必要なLinux依存が揃った環境で実行してください。native captionのbuildと
+transport proofは `native/ffmpeg/README.md` の手順を使います。
 
-## 関連ドキュメント
+## Documentation
 
-- 設計・用語の一次情報 (共存原則 §0 含む): `docs/architecture.md`
-- ゲーム別セットアップ: `docs/games/hanjuku-hero.md` / `docs/games/nethack.md` / `docs/games/sorengame.md`
-- soren game の Linux 移植計画: `docs/soren_linux_migration_plan.md`
-- 実機 (Oracle Ampere A1) セットアップ: `docs/oracle_arm_setup_guide.md`
+- [`docs/architecture.md`](docs/architecture.md): adapter・runtime・ownershipの一次情報
+- [`docs/oracle_arm_setup_guide.md`](docs/oracle_arm_setup_guide.md): Oracle A1 setup
+- [`docs/soren_linux_migration_plan.md`](docs/soren_linux_migration_plan.md): Soren移行の完了状況と将来gate
+- [`docs/games/sorengame.md`](docs/games/sorengame.md): Soren productionとの統合境界
+- [`docs/twitch_closed_captions.md`](docs/twitch_closed_captions.md): native captions
