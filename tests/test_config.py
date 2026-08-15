@@ -312,5 +312,74 @@ class TestListGames(unittest.TestCase):
             self.assertEqual(config.list_games(g), [])
 
 
+class TestLoadGlobalWatchdogAndRotation(unittest.TestCase):
+    """Phase 3: [watchdog] / [rotation] のロードとバリデーション。"""
+
+    def test_defaults_when_sections_omitted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g = config.load_global(Path(tmp))
+            self.assertFalse(g.watchdog.enabled)
+            self.assertEqual(g.watchdog.interval_s, 60)
+            self.assertEqual(g.watchdog.freeze_cycles, 5)
+            self.assertTrue(g.watchdog.recover_windows)
+            self.assertEqual(g.rotation.games, [])
+
+    def test_loads_watchdog_and_rotation_from_toml(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            toml_path = repo_root / "watchdog.toml"
+            toml_path.write_text(
+                """
+[watchdog]
+enabled = true
+interval_s = 30
+freeze_cycles = 8
+recover_windows = false
+
+[rotation]
+games = ["nethack", "hanjuku-hero"]
+""",
+                encoding="utf-8",
+            )
+            g = config.load_global(repo_root, config_path=toml_path)
+            self.assertTrue(g.watchdog.enabled)
+            self.assertEqual(g.watchdog.interval_s, 30)
+            self.assertEqual(g.watchdog.freeze_cycles, 8)
+            self.assertFalse(g.watchdog.recover_windows)
+            self.assertEqual(g.rotation.games, ["nethack", "hanjuku-hero"])
+
+    def test_interval_s_below_minimum_raises_config_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            toml_path = repo_root / "bad.toml"
+            toml_path.write_text("[watchdog]\ninterval_s = 1\n", encoding="utf-8")
+            with self.assertRaises(config.ConfigError):
+                config.load_global(repo_root, config_path=toml_path)
+
+    def test_freeze_cycles_below_minimum_raises_config_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            toml_path = repo_root / "bad.toml"
+            toml_path.write_text("[watchdog]\nfreeze_cycles = 1\n", encoding="utf-8")
+            with self.assertRaises(config.ConfigError):
+                config.load_global(repo_root, config_path=toml_path)
+
+    def test_rotation_games_must_be_a_list_of_strings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            toml_path = repo_root / "bad.toml"
+            toml_path.write_text("[rotation]\ngames = [1, 2]\n", encoding="utf-8")
+            with self.assertRaises(config.ConfigError):
+                config.load_global(repo_root, config_path=toml_path)
+
+    def test_rotation_games_rejects_non_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            toml_path = repo_root / "bad.toml"
+            toml_path.write_text('[rotation]\ngames = "nethack"\n', encoding="utf-8")
+            with self.assertRaises(config.ConfigError):
+                config.load_global(repo_root, config_path=toml_path)
+
+
 if __name__ == "__main__":
     unittest.main()

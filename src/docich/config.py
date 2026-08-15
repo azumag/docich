@@ -5,7 +5,7 @@ import os
 import re
 import sys
 import tomllib
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 STREAM_MODES = ("null", "rtmp", "file")
@@ -65,6 +65,23 @@ class AgentDefaults:
 
 
 @dataclass
+class WatchdogConfig:
+    # 既定は無効 (Phase 3 の付加機能)。フリーズ検知の条件は watchdog.py の
+    # run_watchdog / docstring を参照 (agent window 稼働中のみ判定する)。
+    enabled: bool = False
+    interval_s: int = 60  # 点検周期 (秒)
+    freeze_cycles: int = 5  # 連続同一スクリーンショットでフリーズ判定する回数
+    recover_windows: bool = True  # display/audio/stream window 消失時に up 相当で再生成する
+
+
+@dataclass
+class RotationConfig:
+    # `docich rotate` が巡回するゲーム名の順序 (例: ["nethack", "hanjuku-hero"])。
+    # 空のままだと `docich rotate` は ConfigError ではなく CliError で止まる (cli.py)。
+    games: list = field(default_factory=list)
+
+
+@dataclass
 class GlobalConfig:
     repo_root: Path
     config_path: Path
@@ -73,6 +90,8 @@ class GlobalConfig:
     stream: StreamConfig
     captions: CaptionConfig
     agent: AgentDefaults
+    watchdog: WatchdogConfig
+    rotation: RotationConfig
     state_dir: Path
     games_dir: Path
     roms_dir: Path
@@ -165,6 +184,12 @@ def load_global(repo_root: Path, config_path: Path | None = None) -> GlobalConfi
         **_filtered(CaptionConfig, data.get("captions", {}), "captions")
     )
     agent = AgentDefaults(**_filtered(AgentDefaults, data.get("agent", {}), "agent"))
+    watchdog = WatchdogConfig(
+        **_filtered(WatchdogConfig, data.get("watchdog", {}), "watchdog")
+    )
+    rotation = RotationConfig(
+        **_filtered(RotationConfig, data.get("rotation", {}), "rotation")
+    )
 
     stream.ffmpeg_bin = os.environ.get("DOCICH_FFMPEG_BIN", stream.ffmpeg_bin).strip()
     captions.enabled = _env_bool("DOCICH_CC_ENABLED", captions.enabled)
@@ -190,6 +215,18 @@ def load_global(repo_root: Path, config_path: Path | None = None) -> GlobalConfi
         raise ConfigError(
             "captions.socket_path は104バイト未満の安全な絶対Unix socketパスである必要があります"
         )
+    if watchdog.interval_s < 5:
+        raise ConfigError(
+            f"watchdog.interval_s は5以上である必要があります (現在値: {watchdog.interval_s!r})"
+        )
+    if watchdog.freeze_cycles < 2:
+        raise ConfigError(
+            f"watchdog.freeze_cycles は2以上である必要があります (現在値: {watchdog.freeze_cycles!r})"
+        )
+    if not isinstance(rotation.games, list) or not all(
+        isinstance(x, str) for x in rotation.games
+    ):
+        raise ConfigError("rotation.games は文字列のリストである必要があります")
 
     paths_raw = data.get("paths", {})
     if not isinstance(paths_raw, dict):
@@ -206,6 +243,8 @@ def load_global(repo_root: Path, config_path: Path | None = None) -> GlobalConfi
         stream=stream,
         captions=captions,
         agent=agent,
+        watchdog=watchdog,
+        rotation=rotation,
         state_dir=state_dir,
         games_dir=games_dir,
         roms_dir=roms_dir,

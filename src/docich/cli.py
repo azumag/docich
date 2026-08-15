@@ -29,6 +29,7 @@ from .stream import (
 )
 from .supervise import run_callable_loop, run_loop
 from .tmux import Tmux
+from .watchdog import next_rotation_game
 from .xkit import XKit
 
 CORE_BINARIES = ["tmux", "Xvfb", "xdpyinfo", "xdotool"]
@@ -112,6 +113,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_switch = sub.add_parser("switch", help="ゲームを切り替える (stop + start)")
     p_switch.add_argument("game", help="切り替え先のゲーム名")
 
+    p_rotate = sub.add_parser("rotate", help="[rotation] games を順に切り替える (時間割ローテーション)")
+    p_rotate.add_argument(
+        "--dry-run", action="store_true", help="切り替えを実行せず、切替先のゲーム名を表示するだけにする"
+    )
+
     sub.add_parser("status", help="各コンポーネントの状態を表示する")
 
     p_snap = sub.add_parser("snap", help="手動スクリーンショットを撮る")
@@ -131,7 +137,9 @@ def build_parser() -> argparse.ArgumentParser:
     captions.configure_parser(p_caption)
 
     p_run = sub.add_parser("run", help="(内部用) tmux window 内で監督ループを実行する")
-    p_run.add_argument("component", choices=["display", "audio", "stream", "game", "agent"])
+    p_run.add_argument(
+        "component", choices=["display", "audio", "stream", "game", "agent", "watchdog"]
+    )
     p_run.add_argument("name", nargs="?", help="game/agent の場合のゲーム名")
 
     return parser
@@ -166,6 +174,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return cmd_stop(g)
     if command == "switch":
         return cmd_switch(g, args.game)
+    if command == "rotate":
+        return cmd_rotate(g, args.dry_run)
     if command == "status":
         return cmd_status(g)
     if command == "snap":
@@ -310,7 +320,7 @@ def cmd_games(g: GlobalConfig) -> int:
 
 
 # ---------------------------------------------------------------------------
-# up / down / start / stop / switch / status
+# up / down / start / stop / switch / rotate / status
 # ---------------------------------------------------------------------------
 
 
@@ -345,6 +355,15 @@ def cmd_up(g: GlobalConfig) -> int:
             print("docich: stream window は既に起動しています")
     else:
         print("docich: stream.mode が null のため stream window は起動しません")
+
+    if g.watchdog.enabled:
+        if not tmux.has_window("watchdog"):
+            tmux.new_window("watchdog", _run_argv(g, "watchdog"))
+            print("docich: watchdog window を起動しました")
+        else:
+            print("docich: watchdog window は既に起動しています")
+    # watchdog.enabled が false の場合は既定無効の付加機能なので何も表示しない
+    # (audio/stream と異なり、無効メッセージを毎回出すほどの情報価値がない)。
 
     xkit = XKit(g.display.name)
     if xkit.wait_display():
@@ -427,6 +446,18 @@ def cmd_switch(g: GlobalConfig, name: str) -> int:
     return cmd_start(g, name)
 
 
+def cmd_rotate(g: GlobalConfig, dry_run: bool) -> int:
+    if not g.rotation.games:
+        raise CliError("[rotation] games を設定してください (config/docich.toml)")
+    state = State(g)
+    target = next_rotation_game(g.rotation.games, state.current_game())
+    if dry_run:
+        print(f"docich: rotate 切替先 = {target} (dry-run のため切り替えません)")
+        return 0
+    print(f"docich: rotate 切替先 = {target}")
+    return cmd_switch(g, target)
+
+
 def cmd_status(g: GlobalConfig) -> int:
     tmux = Tmux()
     state = State(g)
@@ -437,7 +468,7 @@ def cmd_status(g: GlobalConfig) -> int:
     print(f"  session: {'起動中' if session_alive else '停止中'}")
 
     window_states: dict[str, bool] = {}
-    for w in ("display", "audio", "stream", "game", "agent"):
+    for w in ("display", "audio", "stream", "game", "agent", "watchdog"):
         window_states[w] = tmux.has_window(w) if session_alive else False
         print(f"  window[{w}]: {'起動中' if window_states[w] else '停止中'}")
 
@@ -558,6 +589,8 @@ def cmd_run(g: GlobalConfig, component: str, name: str | None) -> int:
         if not name:
             raise CliError("`docich run agent <name>` にはゲーム名が必要です")
         return _run_agent(g, name)
+    if component == "watchdog":
+        return _run_watchdog(g)
     raise CliError(f"未知のコンポーネントです: {component}")
 
 
@@ -729,4 +762,14 @@ def _run_agent(g: GlobalConfig, name: str) -> int:
         run_agent(g, name)
 
     run_callable_loop("agent", g, fn)
+    return 0
+
+
+def _run_watchdog(g: GlobalConfig) -> int:
+    def fn() -> None:
+        from .watchdog import run_watchdog
+
+        run_watchdog(g)
+
+    run_callable_loop("watchdog", g, fn)
     return 0
