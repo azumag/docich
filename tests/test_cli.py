@@ -48,6 +48,16 @@ class TestParseArgsAcceptsAllSubcommands(unittest.TestCase):
         self.assertEqual(args.command, "switch")
         self.assertEqual(args.game, "hanjuku-hero")
 
+    def test_rotate(self):
+        args = self.parser.parse_args(["rotate"])
+        self.assertEqual(args.command, "rotate")
+        self.assertFalse(args.dry_run)
+
+    def test_rotate_dry_run(self):
+        args = self.parser.parse_args(["rotate", "--dry-run"])
+        self.assertEqual(args.command, "rotate")
+        self.assertTrue(args.dry_run)
+
     def test_status(self):
         args = self.parser.parse_args(["status"])
         self.assertEqual(args.command, "status")
@@ -101,6 +111,12 @@ class TestParseArgsAcceptsAllSubcommands(unittest.TestCase):
         args = self.parser.parse_args(["run", "game", "nethack"])
         self.assertEqual(args.component, "game")
         self.assertEqual(args.name, "nethack")
+
+    def test_run_watchdog(self):
+        args = self.parser.parse_args(["run", "watchdog"])
+        self.assertEqual(args.command, "run")
+        self.assertEqual(args.component, "watchdog")
+        self.assertIsNone(args.name)
 
     def test_run_rejects_unknown_component(self):
         with self.assertRaises(SystemExit):
