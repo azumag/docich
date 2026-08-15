@@ -46,7 +46,7 @@ git add games/soviet_now && git commit -m "Bump soviet_now to <sha> (<理由>)"
 
 ### 1.2 ゲーム定義との接続
 
-- `config/games/sorengame.toml`: 形態 B (soren 本体で運転) の `launch_command` は `games/soviet_now/` 配下の起動スクリプトを指す (Codex の直結配信移行の完了後に実パスを確定する。§5)
+- `config/games/sorengame.toml`: **viewer 専用定義** (`http://127.0.0.1:8080` のローカル WebGL viewer を表示するのみ)。本番運転 (start_all.sh 等) は browser アダプタ契約の対象外で、soviet_now の `soren-runtime.service` が所有する (【確認済】docich main PR #3 / handoff.md で確定)。本番運転の docich への移管は将来の別 cutover として扱う (§5)。
 - `config/games/hanjuku-hero.toml`: Phase 2 の brain (`[agent] command`) は `games/hanjuku-sfc-speedrun/` のチャート・データを読み込む実装をサブモジュール側 (または docich 側 brain スクリプト + サブモジュール参照) に置く
 
 ---
@@ -81,9 +81,10 @@ docich の設計 (ffmpeg 直結) と同一方向であり、共通部品化の�
 | 段階 | 内容 | 前提 |
 |---|---|---|
 | C0 (完了) | サブモジュール組み込み・main 監視の開始 | 本書 |
-| C1 | Codex の直結配信移行の完了確認 → soviet_now の配信経路と docich `stream.py` の役割整理 (どちらを正とするか判断) | §4 の監視で main 更新を検知 |
-| C2 | コメント応答・ラジオを docich から**参照実行**するアダプタ非依存の口を設計 (`docich chat` / `docich radio` 相当。ゲーム名を渡すだけで動く形) | C1 |
-| C3 | オーバーレイ: docich の ffmpeg drawtext フック + `generate_*_overlay` の生成物を接続 | C1 |
+| C1 (完了) | 配信経路の役割整理: 【確認済】Soren 本番は soviet_now の FFmpeg direct (`soren-runtime.service`, custom FFmpeg + ネイティブ字幕) が所有。docich `stream.py` は :98 側の汎用基盤として分離維持。字幕要求時のみ `docichcc + libx264 a53cc` を追加し、能力が無ければ fail-open (docich main PR #3 / handoff.md) | Codex の移行完了 (2026-08-15 確認) |
+| C-caption (完了・前倒し) | **字幕が最初の共通部品として docich に昇格済み**: `src/docich/captions.py` (バイリンガル plan + Unix socket IPC) + `native/ffmpeg/` (docichcc フィルタ・pinned build)。soviet_now 側はプロトコル v1 検証で対になる (PR #101-103)。残課題: soviet_now 側の互換コピーとの同期 (handoff.md「Remaining gates」#2) | Codex 実装 (docich PR #3) |
+| C2 | コメント応答・ラジオを docich から**参照実行**するアダプタ非依存の口を設計 (`docich chat` / `docich radio` 相当。ゲーム名を渡すだけで動く形) | broadcast/ 系の変更が落ち着くこと |
+| C3 | オーバーレイ: docich の ffmpeg drawtext フック + `generate_*_overlay` の生成物を接続 | C2 と同時期に判断 |
 | C4 | 実証済み部品の docich への昇格 (tts/ → chat/ → radio/ の順を想定)、soviet_now 側のラッパ化 | C2/C3 + ユーザー合意 |
 
 ---
@@ -103,6 +104,7 @@ docich の設計 (ffmpeg 直結) と同一方向であり、共通部品化の�
 
 ## 5. 未決事項 (次の判断ポイント)
 
-1. **配信経路の一本化**: soviet_now の `direct_stream.sh` (Codex) と docich の `stream.py` は同じ ffmpeg 直結。sorengame を docich 配下で流す際にどちらを配信の正とするか — Codex の移行完了形を見てから決める (C1)。【要検証】
-2. **sorengame の `launch_command` 実パス**: 同上 (soviet_now の Linux 起動口が確定してから `config/games/sorengame.toml` に反映)。
+1. ~~配信経路の一本化~~ → **解決済み** (C1)。Soren 本番 = soviet_now 所有、docich = :98 の汎用基盤 + 再利用可能な字幕部品の正典、という分担で確定 (handoff.md)。
+2. **sorengame 本番の docich への移管**: 将来の別 cutover。game 専用の Soren エントリポイント (start_all.sh 非依存) とロールバック証明が前提 (handoff.md「Remaining gates」#4)。それまで docich の sorengame 定義は viewer 専用。
 3. **半熟英雄 brain の置き場**: brain スクリプト本体を hanjuku-sfc-speedrun 側に置くか、docich 側 (`brains/`) に置いてデータのみ参照するか — Phase 2 着手時に決定。チャート/データの参照パスは `games/hanjuku-sfc-speedrun/charts/`・`data/` (【確認済】卵落ちテーブル・キャラデータ・話数別チャートが存在)。
+4. **docichcc フィルタの二重管理解消**: docich の `native/ffmpeg/` と soviet_now 側互換コピーを、バージョン付きアーティファクト依存に置き換えるまで手動同期 (handoff.md「Remaining gates」#2)。
