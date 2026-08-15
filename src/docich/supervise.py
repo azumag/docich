@@ -1,4 +1,4 @@
-"""Supervised restart loop used by `docich run <component>` (architecture.md SS2)."""
+"""Supervised restart loop used by `docich run <component>` (architecture.md §2)."""
 from __future__ import annotations
 
 import datetime

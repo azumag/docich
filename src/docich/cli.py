@@ -1,4 +1,4 @@
-"""docich CLI: argparse サブコマンド (architecture.md SS7)."""
+"""docich CLI: argparse サブコマンド (architecture.md §7)."""
 from __future__ import annotations
 
 import argparse
@@ -572,7 +572,7 @@ def _run_display(g: GlobalConfig) -> int:
     return 0
 
 
-# --- audio: soren と同居するため、既存デーモンの有無で経路を分ける (architecture.md SS0) ---
+# --- audio: soren と同居するため、既存デーモンの有無で経路を分ける (architecture.md §0) ---
 
 
 def _pactl_alive() -> bool:
@@ -603,7 +603,7 @@ def _load_null_sink(sink_name: str) -> None:
 
 
 def _apply_default_sink(g: GlobalConfig) -> None:
-    # set_default=true にしない限り set-default-sink はしない (soren 共存。SS0)
+    # set_default=true にしない限り set-default-sink はしない (soren 共存。§0)
     if g.audio.set_default:
         procs.run(["pactl", "set-default-sink", g.audio.sink_name])
 

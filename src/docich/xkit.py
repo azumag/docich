@@ -41,7 +41,7 @@ class XKit:
             procs.run(
                 [
                     "ffmpeg", "-loglevel", "error", "-y",
-                    # -draw_mouse 0 が無いとマウスポインタが画面中央に映り込む (architecture.md SS5)
+                    # -draw_mouse 0 が無いとマウスポインタが画面中央に映り込む (architecture.md §5)
                     "-f", "x11grab", "-draw_mouse", "0",
                     "-video_size", f"{width}x{height}", "-i", self.display,
                     "-frames:v", "1",
@@ -70,7 +70,7 @@ class XKit:
 
     def focus(self, window_id: str) -> None:
         # WM の無い Xvfb では windowactivate (EWMH 依存) が機能しないため、
-        # XSetInputFocus を直接叩く windowfocus --sync を主とする (architecture.md SS9.2)。
+        # XSetInputFocus を直接叩く windowfocus --sync を主とする (architecture.md §9.2)。
         r = procs.run(
             ["xdotool", "windowfocus", "--sync", window_id], env_extra=self._env()
         )

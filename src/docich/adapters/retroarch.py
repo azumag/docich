@@ -1,4 +1,4 @@
-"""RetroArch adapter: SFC games via RetroArch + a libretro core (architecture.md SS4.1)."""
+"""RetroArch adapter: SFC games via RetroArch + a libretro core (architecture.md §4.1)."""
 from __future__ import annotations
 
 import glob
@@ -12,10 +12,10 @@ from .base import Adapter, AdapterError, Observation
 WINDOW_PATTERN = "RetroArch"
 NETWORK_CMD_PORT = 55355
 
-# core = "auto" の探索順 (architecture.md SS4.1)。
+# core = "auto" の探索順 (architecture.md §4.1)。
 CORE_CANDIDATES = ("snes9x", "bsnes_mercury_performance", "bsnes_mercury_balanced")
 
-# 意味ボタン -> (RetroArch cfg 値, xdotool キー名)。既定マップ (architecture.md SS3.3)。
+# 意味ボタン -> (RetroArch cfg 値, xdotool キー名)。既定マップ (architecture.md §3.3)。
 DEFAULT_BUTTONS: dict[str, tuple[str, str]] = {
     "a": ("x", "x"),
     "b": ("z", "z"),
@@ -160,7 +160,7 @@ class RetroArchAdapter(Adapter):
             f'savestate_directory = "{states_dir}"',
             f'savefile_directory = "{saves_dir}"',
             f'system_directory = "{system_dir}"',
-            # 誤爆でエミュレータが終了するのを防ぐ (停止は SIGTERM 経由。architecture.md SS4.1)
+            # 誤爆でエミュレータが終了するのを防ぐ (停止は SIGTERM 経由。architecture.md §4.1)
             'input_exit_emulator = "nul"',
         ]
         for button, (cfg_val, _xdotool_key) in buttons.items():
@@ -171,7 +171,7 @@ class RetroArchAdapter(Adapter):
     def command(self) -> list[str]:
         rom = self._rom_path or self._resolve_rom()
         core = self._core_path or self._resolve_core()
-        # dbus-run-session が無いと GameMode 統合の dbus 呼び出しで abort する (architecture.md SS9-1b)。
+        # dbus-run-session が無いと GameMode 統合の dbus 呼び出しで abort する (architecture.md §9-1b)。
         return [
             "dbus-run-session", "--", "retroarch",
             "--config", str(self._cfg_path()),

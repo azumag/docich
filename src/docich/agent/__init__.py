@@ -1,1 +1,1 @@
-"""Agent harness: observe -> brain -> act loop (architecture.md SS6)."""
+"""Agent harness: observe -> brain -> act loop (architecture.md §6)."""
