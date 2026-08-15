@@ -102,16 +102,41 @@ bin/docich ra-cmd PAUSE_TOGGLE    # 一時停止の切替
 60 秒以上生きていた場合はバックオフを 1s にリセットする (瞬間クラッシュの連続と、たまたま
 長時間稼働後に落ちたケースを区別する設計)。
 
+## 時間割ローテーション (`docich rotate`)
+
+`config/docich.toml` の `[rotation] games = ["nethack", "hanjuku-hero"]` のように巡回順を
+定義しておくと、`docich rotate` が「現在のゲームの次」へ `switch` する (`--dry-run` で
+切替先の確認のみ)。定期実行は cron や `scripts/systemd/docich-rotate.timer` から叩く想定で、
+docich 自身は常駐スケジューラを持たない。
+
+## watchdog (フリーズ検知と window 復旧)
+
+`[watchdog] enabled = true` にすると `docich up` が watchdog window も起動する。
+
+- **フリーズ検知**: game window・agent window の両方が稼働中のときだけ、`interval_s` (既定60秒)
+  ごとのスクリーンショット digest を比較し、`freeze_cycles` (既定5) 回連続で同一なら
+  `docich switch <現在のゲーム>` で復旧する (配信は維持)。agent が動いていない静的画面を
+  誤検知しないための条件になっている。長い静止画面が正常なゲームでは `freeze_cycles` を
+  大きくする。
+- **window 復旧**: `display` / `audio` / `stream` の window が消えていたら冪等な `up` で再生成する。
+
+## systemd ユニット (任意)
+
+`scripts/systemd/` に `--user` ユニットの雛形がある (`docich.service` = up/down、
+`docich-rotate.timer` = 毎時 rotate)。`__DOCICH_ROOT__` を置換して導入する手順と、
+soren-runtime.service とは完全独立である旨の警告は `scripts/systemd/README.md` を参照。
+既定では何も enable しない。
+
 ## スモークテスト
 
 ```bash
-scripts/smoke_cli.sh
+scripts/smoke_cli.sh    # 基盤: 起動・観測・入力注入・配信・切替の一括検証
+scripts/smoke_brain.sh  # 半熟英雄 brain: fake LLM で観測→行動→RetroArch メニュー入力到達まで
 ```
 
-Xvfb + NetHack + ffmpeg (file 出力) + xdotool を使い、起動・観測・入力注入・スクリーンショット・
-配信・ゲーム切替までの一連の流れを一括検証する。display 番号は `:96` を使うため、本番設定
-(`:98`) や soren (`:99`) とは衝突しない。
+いずれも Xvfb + xdotool を使い、display 番号は `:96` のため本番設定 (`:98`) や soren (`:99`)
+とは衝突しない。
 
-**警告**: このスクリプトは実行中の `docich` tmux セッションを `down` する
-(終了時にも `docich down` を呼ぶ後始末が入っている)。**本番稼働中 (実配信中) の環境では
+**警告**: これらのスクリプトは実行中の `docich` tmux セッションを `down` する
+(開始時・終了時に `docich down` を呼ぶ後始末が入っている)。**本番稼働中 (実配信中) の環境では
 実行しないこと。**
