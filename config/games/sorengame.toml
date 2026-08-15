@@ -4,10 +4,9 @@ title = "soren game (Unity WebGL)"
 adapter = "browser"
 
 [browser]
-url = "https://example.invalid/sorengame"   # TODO: 実 URL に差し替え
+url = "http://127.0.0.1:8080"  # soren が同一VMで公開するローカルWebGL viewer
 kiosk = true
 binary = "auto"
-# launch_command = ["bash","-lc","cd ~/soren && ..."] # soren 本体で運転する場合
 
 [agent]
-enabled = false        # soren 側の自動化が運転するため docich agent は使わない
+enabled = false  # viewer専用。現在の本番運転はsoviet_nowが所有する

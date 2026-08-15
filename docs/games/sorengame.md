@@ -1,77 +1,109 @@
-# soren game (Unity WebGL) を docich で動かす
+# sorengame integration contract
 
-soren game は docich の `browser` アダプタで動かす。**soren 本体 (AI 戦略・自動プレイ・配信システム)
-の Linux 移植そのものは本書の管轄ではない。** 移植計画は `docs/soren_linux_migration_plan.md` を、
-移植先の VM 構築は `docs/oracle_arm_setup_guide.md` を参照。docich が担うのは
-「ブラウザを起動し、その画面を Xvfb 上に映して ffmpeg で配信する」という**表示の場の提供**である
-(`docs/architecture.md` §4.3)。
+> Current as of 2026-08-15. This page separates the live Soren broadcast from
+> docich's generic multi-game viewer so that the two runtimes cannot accidentally
+> control the same display, audio bus, browser, or stream.
 
-## 表記ルール
+## Current production owner
 
-- 【確認済】: 一次情報 (パッケージリポジトリ・`docs/architecture.md`・実機コンテナでの動作実証) で裏取りした事実
-- 【要検証】: Oracle ARM 実機での検証が必要な事項
+The live sorengame broadcast is owned by
+[`azumag/soviet_now`](https://github.com/azumag/soviet_now), not by the docich
+CLI. On the production VM it runs as the system service
+`soren-runtime.service` from `/home/ubuntu/soren` and owns:
 
----
+- Xvfb display `:99`;
+- the `soren_null` PulseAudio bus;
+- Chrome/Unity gameplay and Playwright/CDP input;
+- strategy, improvement, radio, comment, and audio workers;
+- the FFmpeg direct stream and native Twitch captions.
 
-## 0. 前提: soren 本番稼働との関係 (重要)
+Stopping, switching, or starting a docich game must not alter any of those
+resources. Production changes remain governed by the soviet_now repository and
+its VM synchronization rule.
 
-**この VM では soren (sorengame) の本番システムが既に稼働している** (docich CLI とは別に、
-soren 自身の tmux セッション・ディスプレイ `:99`・PulseAudio sink で動作中)。本書で説明する
-docich の `browser` アダプタは、**docich 自身のディスプレイ `:98` 上に同じゲームを表示する
-別インスタンス**であり、稼働中の soren 本番配信とは完全に独立している (`docs/architecture.md` §0)。
-`bin/docich start sorengame` 等の docich 側の操作が、本番 soren のプロセス・配信に影響することはない。
+## What the docich entry does today
 
----
+`config/games/sorengame.toml` is a local viewer definition for the generic
+`browser` adapter:
 
-## 1. 位置づけ: 2 つの運転形態
+```toml
+[browser]
+url = "http://127.0.0.1:8080"
+kiosk = true
+binary = "auto"
 
-### 形態 A: docich 単体の最小利用 (URL を開いて配信に乗せるだけ)
+[agent]
+enabled = false
+```
 
-docich の `browser` アダプタが chromium を kiosk 起動し、指定 URL を開いて画面を docich の配信に
-乗せる。汎用の `key` / `mouse` 入力のみで、soren 独自の戦略 AI は使わない最小構成。
+It opens the local WebGL server on docich's isolated display `:98`. It is useful
+for adapter development, screenshots, and a future migration rehearsal. It is
+not a second production controller, and it does not start `soviet_now`.
 
 ```bash
 bin/docich up
 bin/docich start sorengame
 ```
 
-### 形態 B: soren 側システムで運転する場合
+The local URL must already be served. If nothing is listening on port 8080, the
+browser page will fail normally; docich does not infer or launch a Soren server.
 
-soren game の本運転は soren リポジトリの既存システム (Playwright/CDP + 戦略 AI) が担う。
-docich 側は `launch_command` の差し替え (soren の起動スクリプトを呼ぶ) と `[agent] enabled = false`
-で「場所と映像の提供」に徹する (`docs/architecture.md` §4.3)。
+## Why `start_all.sh` is not a launch command
 
-```toml
-# config/games/sorengame.toml (形態 B の例)
-[browser]
-launch_command = ["bash", "-lc", "cd ~/soren && ..."]  # soren 本体の起動スクリプトに差し替え
-
-[agent]
-enabled = false   # soren 側の自動化が運転するため docich agent は使わない
-```
-
----
-
-## 2. `config/games/sorengame.toml` について
-
-既定値の `url` は仮値であり、実 URL への差し替えが必要:
+Do not configure the browser adapter with a command such as:
 
 ```toml
-[browser]
-url = "https://example.invalid/sorengame"   # TODO: 実 URL に差し替え
-kiosk = true
-binary = "auto"
+launch_command = ["bash", "-lc", "cd /home/ubuntu/soren && ./start_all.sh"]
 ```
 
-`binary = "auto"` は `chromium` / `chromium-browser` / `google-chrome` / playwright の chrome を
-順に自動検出する (`docs/architecture.md` §4.3)。`scripts/setup_ubuntu_arm.sh` は既定では
-chromium をインストールしないため、いずれかを別途用意する必要がある (選択肢はスクリプト本体の
-コメントを参照)。
+`start_all.sh` owns the whole Soren production runtime, including display,
+audio, stream, workers, and supervisors. Calling it from a docich game window
+would create duplicate ownership and defeat `docich switch` semantics.
 
----
+The integration remains viewer-only until soviet_now exposes an explicit
+**game-only** entry point with this contract:
 
-## 関連ドキュメント
+1. receives `DISPLAY`, `PULSE_SERVER`, and `PULSE_SINK` from docich;
+2. starts only the WebGL server/browser/game bridge needed for play;
+3. does not start Xvfb, PulseAudio, FFmpeg/OBS, radio/audio workers, or another
+   supervisor;
+4. exits cleanly on SIGTERM without touching unrelated processes;
+5. stores its game-only state under a caller-selected runtime directory.
 
-- soren 本体の Linux 移植計画・リスク: `docs/soren_linux_migration_plan.md`
-- 移植先 VM (Oracle Ampere A1) の構築手順: `docs/oracle_arm_setup_guide.md`
-- docich 側のアダプタ設計・共存原則: `docs/architecture.md` §0, §4.3
+Only after that contract has its own tests may docich set `launch_command` and
+become the owner of display/audio/stream for a migrated sorengame instance.
+
+## Caption mapping
+
+The current production caption implementation entered soviet_now in PR #98.
+docich now hosts the canonical reusable implementation:
+
+| Soren production concept | docich configuration/API |
+|---|---|
+| custom FFmpeg binary | `stream.ffmpeg_bin` / `DOCICH_FFMPEG_BIN` |
+| caption opt-in | `captions.enabled` / `DOCICH_CC_ENABLED` |
+| Unix socket | `captions.socket_path` / `DOCICH_CC_SOCKET` |
+| bilingual plan | `bin/docich caption plan` |
+| audio-bound lifecycle | `caption send prepare/commit/clear` |
+| caption failure behavior | fail open to unchanged audio/video |
+
+See `docs/twitch_closed_captions.md` and `native/ffmpeg/README.md`.
+
+## Migration gate
+
+Moving production ownership from soviet_now to docich is a separate release,
+not a side effect of merging this foundation. It requires:
+
+- a game-only Soren entry point;
+- an isolated rehearsal on `:98` and `docich_sink`;
+- proof that `docich switch` leaves FFmpeg connected;
+- game, BGM, SE, TTS, caption, and A/V-sync acceptance;
+- explicit production cutover and rollback approval;
+- updated systemd ownership with no duplicate supervisor.
+
+Until every gate passes, the safe topology is:
+
+```text
+soviet_now production :99 / soren_null / live FFmpeg
+docich rehearsal      :98 / docich_sink / stream.mode=null
+```

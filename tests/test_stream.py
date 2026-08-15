@@ -1,8 +1,10 @@
 import os
+import socket
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -113,6 +115,113 @@ class TestModeRtmp(StreamTestBase):
         joined = " ".join(cmd)
         self.assertNotIn("SECRET123", joined)
         self.assertIn(stream.MASK, joined)
+
+
+class TestNativeCaptions(StreamTestBase):
+    def test_caption_filter_and_a53_encoder_option_are_opt_in(self):
+        g = self._load(
+            '[stream]\nmode = "null"\nffmpeg_bin = "/opt/docich/bin/ffmpeg"\n\n'
+            '[captions]\nenabled = true\nsocket_path = "/tmp/docich/cc.sock"\n'
+        )
+        cmd = stream.build_ffmpeg_cmd(g)
+        self.assertEqual(cmd[0], "/opt/docich/bin/ffmpeg")
+        self.assertIn("docichcc=socket=/tmp/docich/cc.sock", cmd)
+        self.assertIn("-a53cc", cmd)
+        self.assertEqual(cmd[cmd.index("-a53cc") + 1], "1")
+
+    def test_disabled_captions_keep_the_original_video_path(self):
+        g = self._load('[stream]\nmode = "null"\n\n[captions]\nenabled = false\n')
+        cmd = stream.build_ffmpeg_cmd(g)
+        self.assertNotIn("-vf", cmd)
+        self.assertNotIn("-a53cc", cmd)
+
+    def test_missing_custom_binary_fails_open_to_system_ffmpeg_without_cc(self):
+        g = self._load(
+            '[stream]\nmode = "null"\nffmpeg_bin = "/missing/custom-ffmpeg"\n\n'
+            '[captions]\nenabled = true\nsocket_path = "/tmp/docich/cc.sock"\n'
+        )
+
+        def resolve(binary):
+            return "/usr/bin/ffmpeg" if binary == "ffmpeg" else None
+
+        with mock.patch("docich.stream._resolve_binary", side_effect=resolve):
+            runtime = stream.resolve_runtime(g)
+        self.assertFalse(runtime.captions_active)
+        self.assertEqual(runtime.command[0], "/usr/bin/ffmpeg")
+        self.assertNotIn("-vf", runtime.command)
+        self.assertIn("fail-open", runtime.caption_detail)
+
+    def test_capable_custom_binary_keeps_captions_active(self):
+        g = self._load(
+            '[stream]\nmode = "null"\nffmpeg_bin = "/opt/docich/bin/ffmpeg"\n\n'
+            '[captions]\nenabled = true\nsocket_path = "/tmp/docich/cc.sock"\n'
+        )
+        with (
+            mock.patch("docich.stream._resolve_binary", return_value="/opt/docich/bin/ffmpeg"),
+            mock.patch(
+                "docich.stream.caption_capability",
+                return_value=(True, "docichcc + libx264 a53cc"),
+            ),
+        ):
+            runtime = stream.resolve_runtime(g)
+        self.assertTrue(runtime.captions_active)
+        self.assertIn("docichcc=socket=/tmp/docich/cc.sock", runtime.command)
+
+    def test_redaction_masks_stream_key_in_runtime_log_command(self):
+        os.environ["DOCICH_STREAM_KEY"] = "SECRET123"
+        try:
+            g = self._load('[stream]\nmode = "rtmp"\n')
+            command = stream.build_ffmpeg_cmd(g)
+            redacted = stream.redact_stream_command(command, g)
+        finally:
+            os.environ.pop("DOCICH_STREAM_KEY", None)
+        self.assertNotIn("SECRET123", " ".join(redacted))
+        self.assertIn(stream.MASK, " ".join(redacted))
+
+    def test_caption_socket_parent_is_created_private(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            parent = Path(temp_dir) / "runtime" / "docich"
+            stream.ensure_caption_socket_parent(str(parent / "cc.sock"))
+            self.assertTrue(parent.is_dir())
+            self.assertEqual(parent.stat().st_mode & 0o777, 0o700)
+
+    def test_caption_socket_parent_rejects_group_access(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            parent = Path(temp_dir) / "docich"
+            parent.mkdir(mode=0o750)
+            parent.chmod(0o750)
+            with self.assertRaises(stream.CaptionSocketDirectoryError):
+                stream.ensure_caption_socket_parent(str(parent / "cc.sock"))
+
+    def test_caption_socket_parent_rejects_symlink(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            real = root / "real"
+            real.mkdir(mode=0o700)
+            link = root / "link"
+            link.symlink_to(real, target_is_directory=True)
+            with self.assertRaises(stream.CaptionSocketDirectoryError):
+                stream.ensure_caption_socket_parent(str(link / "cc.sock"))
+
+    def test_caption_socket_ready_requires_private_owned_unix_socket(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "cc.sock"
+            ready, detail = stream.caption_socket_ready(str(path))
+            self.assertFalse(ready)
+            self.assertIn("未準備", detail)
+
+            path.write_text("not a socket", encoding="utf-8")
+            ready, detail = stream.caption_socket_ready(str(path))
+            self.assertFalse(ready)
+            self.assertIn("Unix socketではありません", detail)
+            path.unlink()
+
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+                listener.bind(str(path))
+                path.chmod(0o600)
+                ready, detail = stream.caption_socket_ready(str(path))
+            self.assertTrue(ready)
+            self.assertEqual(detail, "caption socket ready")
 
 
 if __name__ == "__main__":

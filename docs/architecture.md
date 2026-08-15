@@ -18,17 +18,21 @@ docich は「VM 上で AI がゲームをプレイし、その画面と音声を
 
 ---
 
-## 0. 共存原則 — 稼働中の soren を壊さない
+## 0. 共存原則 — 稼働中の Soren を壊さない
 
-**VM では既に soren (sorengame) が本番稼働している。** docich は soren のリソースに一切触れず、名前空間を分離して同居する:
+**VM では既に soviet_now の Soren (sorengame) が本番稼働している。**
+本番は system `soren-runtime.service` が所有し、FFmpeg直接配信とネイティブ
+Twitch字幕を運用している。docich の merge/up/start は所有権移管ではない。
+docich は名前空間を分離して同居する:
 
 | リソース | soren (稼働中) | docich | 分離方法 |
 |---|---|---|---|
 | X ディスプレイ | `:99` | **`:98` (既定)** | 別番号。docich は `:99` を既定にしない |
-| PulseAudio | デーモン + 既定 sink (`soren_null`) | 同一デーモンに `docich_sink` を追加 | **`set-default-sink` は絶対に実行しない**。docich 配下のプロセスは `PULSE_SINK=docich_sink` 環境変数で個別ルーティング |
+| PulseAudio | デーモン + 既定 sink (`soren_null`) | 同一デーモンに `docich_sink` を追加 | 共存運転では `set_default=false` を維持する。docich 配下のプロセスは `PULSE_SINK=docich_sink` 環境変数で個別ルーティング |
 | PulseAudio デーモン | 稼働中 | **既存デーモンを再利用** (`pactl info` が通れば起動しない) | 二重起動しない |
 | tmux | soren のセッション | セッション名 `docich` / `docich-game` | 名前分離。他セッションに触れない |
-| 配信 | soren が配信中 | `stream.mode = "null"` が既定 | 明示設定なしでは配信しない (キー競合事故の防止) |
+| 配信 | custom FFmpegで本番配信中 | `stream.mode = "null"` が既定 | 明示設定なしでは配信しない (キー競合事故の防止) |
+| 字幕 | `/run/user/1001/docich/ffmpeg-cc.sock` を本番FFmpegが所有 | `$XDG_RUNTIME_DIR/docich/ffmpeg-cc.sock`、既定無効 | display/audio/streamと同様にproduction所有者を重複させない |
 | セットアップ | — | `setup_ubuntu_arm.sh` は **apt install と mkdir のみ** | 既存設定・サービスを変更しない |
 
 ## 1. 基本方針
@@ -36,7 +40,7 @@ docich は「VM 上で AI がゲームをプレイし、その画面と音声を
 1. **ディスプレイは常に生かし、ゲームだけを入れ替える。**
    Xvfb 仮想ディスプレイ (`:98`, 1280x720) と PulseAudio null sink を常駐させ、ffmpeg はその全画面+音声を配信し続ける。ゲーム切替は「ディスプレイ上のアプリの入れ替え」なので、**配信ストリームは切替中も途切れない**。
 2. **OBS は使わず ffmpeg 直結。**
-   soren (macOS) は OBS 構成だったが、docich は `x11grab + pulse → libx264 → RTMP` の単一 ffmpeg プロセスに簡素化する。オーバーレイが必要になったら drawtext (`textfile= + reload=1`) から始め、OBS は将来の選択肢として残す。
+   docich は `x11grab + pulse → libx264 → RTMP` の単一 ffmpeg プロセスを使う。Soren本番もLinux移行後はFFmpeg directを使用し、OBSはrollbackとして保持する。ネイティブ字幕を要求した場合だけ `docichcc + libx264 a53cc` を追加する。
 3. **ゲームは「アダプタ」で抽象化する。**
    アダプタは lifecycle (start/stop/alive) と AI I/O (observe/act) の 2 面の契約を実装する。配信・切替・エージェントループはアダプタの中身を知らない。
 4. **AI の頭脳 (brain) は外部コマンドとして差し替え可能にする。**
@@ -57,6 +61,7 @@ docich は「VM 上で AI がゲームをプレイし、その画面と音声を
   │ window: audio     null sink 確保 (既存 pulse 再利用/新規起動) │
   │ window: stream    ffmpeg x11grab(:98) + pulse(monitor)      │
   │                     → RTMP / ファイル / null                 │
+  │                     + optional docichcc Unix socket         │
   │ window: game      アダプタが起動するゲームプロセス            │
   │                     retroarch / chromium / xterm+tmux        │
   │ window: agent     観測→brain→行動 ループ (ゲームごとに任意)   │
@@ -84,6 +89,7 @@ docich/
 │   ├── tmux.py                 # tmux 操作ラッパ
 │   ├── xkit.py                 # xdotool / スクリーンショット (X11 入出力)
 │   ├── stream.py               # ffmpeg コマンド構築
+│   ├── captions.py             # bilingual plan + Unix socket client
 │   ├── supervise.py            # 再起動ループ (docich run)
 │   ├── actions.py              # 行動 JSON のスキーマとパース
 │   ├── adapters/               # base + retroarch / cli_game / browser
@@ -96,6 +102,7 @@ docich/
 │   ├── setup_ubuntu_arm.sh     # VM 初期構築 (apt インストール等)
 │   └── smoke_cli.sh            # E2E スモーク (Xvfb+nethack+ffmpeg+xdotool)
 ├── tests/                      # unittest (pip 不要, python3 -m unittest)
+├── native/ffmpeg/              # docichcc source, pinned build, proofs
 └── docs/                       # 本書・ゲーム別セットアップ手順
 ```
 
@@ -219,13 +226,15 @@ docich は **retroarch.cfg を毎起動時に自分で生成**し (`run/retroarc
 
 - 起動: chromium (自動検出: `chromium` / `chromium-browser` / `google-chrome` / playwright の chrome) を `--kiosk --window-size=WxH --app=<url>` 相当で DISPLAY 上に起動。
 - observe: スクリーンショット。act: `key` / `mouse` (xdotool)。
-- **soren game の本運転は soren リポジトリの既存システム (Playwright/CDP + 戦略 AI) が担う**。docich 側は `launch_command` の差し替え (例: soren の起動スクリプトを呼ぶ) と `agent.enabled = false` で「場所と映像の提供」に徹する。docich の browser アダプタ単体は「URL を開いて映す + 汎用入力」の最小機能とする。soren 側の Linux 移植は `soren_linux_migration_plan.md` の管轄。
+- **現在の本運転は soviet_now の既存システム (Playwright/CDP + 戦略AI + worker + 配信) が担う**。docichの `sorengame` 定義は `http://127.0.0.1:8080` を `:98` に開くviewerで、`agent.enabled = false` とする。
+- `start_all.sh` を `launch_command` に設定してはならない。これはgameだけでなくdisplay/audio/stream/supervisorを所有するため、docichと二重起動になる。
+- 将来の統合には、呼出側の `DISPLAY` / `PULSE_*` / state directoryを尊重し、game/browser/bridgeだけを起動・SIGTERM停止するSorenの **game-only entry point** が必要。契約は `docs/games/sorengame.md` を一次情報とする。
 
 ---
 
 ## 5. 配信 (stream)
 
-ffmpeg 1 プロセス。コマンドは `stream.py` が設定から構築する:
+ffmpeg 1 プロセス。コマンドは `stream.py` が設定から構築する。通常構成:
 
 ```
 ffmpeg -f x11grab -draw_mouse 0 -framerate 30 -video_size 1280x720 -i :98 \
@@ -244,6 +253,31 @@ ffmpeg -f x11grab -draw_mouse 0 -framerate 30 -video_size 1280x720 -i :98 \
 - 音声無効時は `anullsrc` で無音トラックを合成する (配信先は音声トラック必須のため)。
 - x264 preset は A1 (2 OCPU) では `veryfast`〜`ultrafast` を実測で選ぶ【要検証】。720p30 4.5Mbps を基準とする。
 - observe 用スクリーンショットは配信とは独立に `ffmpeg -f x11grab ... -frames:v 1` の単発実行 (同一ディスプレイへの並行 x11grab は問題ない)。
+
+### 5.1 Native Twitch closed captions
+
+字幕を明示的に要求し、custom FFmpegが `docichcc` filterと
+`libx264 a53cc` optionを持つ場合、映像経路へ次を追加する:
+
+```text
+-vf docichcc=socket=/run/user/<uid>/docich/ffmpeg-cc.sock
+-c:v libx264 -a53cc 1
+```
+
+`captions.py` は日本語音声chunkと英訳を揃えたprivate planを作り、
+`prepare → commit → clear` をacknowledgement付きUnix IPCで送る。
+`executionId`により古い音声のlate clearが新しい字幕を消すことを防ぐ。
+
+字幕は補助経路であり、custom binary不在、能力不足、翻訳失敗、socket失敗の
+どれでも映像・音声は継続する。`resolve_runtime()`はcaptionless commandへ
+fail-openし、`doctor` / `status` は requested/active/detailを分けて表示する。
+stream起動時はsocket親directoryを`0700`で作成し、symlink・他user所有・
+group/other accessを拒否する。この準備に失敗した場合も字幕だけを外す。
+
+翻訳は完全一致JSON schemaだけを受理する。reasoning、tool trace、Web検索の
+進行、Markdown、説明文、余分なkeyを部分抽出しない。CEA-608向けASCII正規化、
+32 columns × 2 linesのhard bound、4 KiB IPC上限を適用する。詳しくは
+`docs/twitch_closed_captions.md` と `native/ffmpeg/README.md` を参照。
 
 ---
 
@@ -279,6 +313,8 @@ docich snap [-o out.png]      # 手動スクリーンショット
 docich obs [<game>]           # 観測 JSON を出力 (brain 開発用)
 docich send <game> '<json>'   # 行動を単発注入 (デバッグ用)
 docich ra-cmd <CMD>           # RetroArch へ UDP コマンド (SAVE_STATE 等)
+docich caption plan ...       # 日本語chunkと英訳からprivate字幕計画を作る
+docich caption send ...       # prepare/commit/clear/resetをFFmpegへ送る
 docich run <component> [...]  # (内部用) tmux window 内の supervise 実行
 ```
 
@@ -303,6 +339,7 @@ sink_name = "docich_sink"
 set_default = false  # true にしない限り set-default-sink はしない (soren 共存。§0)
 
 [stream]
+ffmpeg_bin = "ffmpeg"              # custom buildはDOCICH_FFMPEG_BINでも指定
 mode = "null"                    # null | rtmp | file
 rtmp_url = "rtmp://live.twitch.tv/app"
 stream_key_env = "DOCICH_STREAM_KEY"
@@ -314,6 +351,10 @@ bufsize = "9000k"
 preset = "veryfast"
 audio_bitrate = "160k"
 gop_seconds = 2
+
+[captions]
+enabled = false                    # DOCICH_CC_ENABLED=1でも上書き可能
+socket_path = ""                  # 空なら$XDG_RUNTIME_DIR/docich/ffmpeg-cc.sock
 
 [agent]
 default_interval_ms = 2000
@@ -373,13 +414,12 @@ title = "soren game (Unity WebGL)"
 adapter = "browser"
 
 [browser]
-url = "https://example.invalid/sorengame"   # TODO: 実 URL に差し替え
+url = "http://127.0.0.1:8080"     # 同一VMのlocal WebGL viewer
 kiosk = true
 binary = "auto"
-# launch_command = ["bash","-lc","cd ~/soren && ..."] # soren 本体で運転する場合
 
 [agent]
-enabled = false        # soren 側の自動化が運転するため docich agent は使わない
+enabled = false        # viewer専用。productionはsoviet_nowが運転
 ```
 
 ---
@@ -395,20 +435,24 @@ enabled = false        # soren 側の自動化が運転するため docich agent
 6. **tmux ネスト**: cli アダプタは「docich の tmux」の window 内で xterm → その中で `tmux attach` する。`TMUX` 環境変数が伝播するとネスト拒否されるため、xterm 起動時に `TMUX` を必ず unset する。
 7. **ストリームキー漏えい**: ffmpeg の引数はプロセスリストに露出する。VM はシングルユーザー前提で許容するが、docich 自身のログ/status 表示では必ずマスクする。
 8. **著作権と配信ポリシー**: ROM は自己吸い出し品のみ・リポジトリ非コミット。配信プラットフォーム側のゲーム配信ガイドラインへの適合は運用者の責任範囲。
+9. **字幕をstream readinessと混同しない**: caption能力が無くてもA/Vは起動する。逆に`captions.requested=yes`だけでTwitch表示済みと判断せず、`captions.active`、socket、SEI、decoder、実playerを段階的に確認する。
+10. **生成出力を字幕へ直結しない**: model応答からJSONらしいsubstringを抽出しない。完全schema不一致はcaption failureとして破棄し、audioを継続する。
 
 ---
 
 ## 10. フェーズ計画
 
-### Phase 1: 基盤 (本ブランチの成果物)
-- 本書 + Python パッケージ一式 + アダプタ 3 種 + agent ハーネス + 設定 + セットアップ/スモークスクリプト + 単体テスト。
-- 完了条件: (a) `python3 -m unittest` 緑、(b) コンテナ/実機で `smoke_cli.sh` が Xvfb+NetHack+スクリーンショット+入力注入の E2E を通す。
+### Phase 1: Generic repository foundation (implemented)
+- Python package、adapter 3種、agent boundary、safe defaults、setup/smoke、unit tests。
+- Native caption planner/filter/build/proofsとgeneric fail-open stream integration。
+- stdlib unit suiteは244件通過。`smoke_cli.sh`を使うXvfb/NetHack/入力注入の
+  Linux実機確認は、対象環境ごとのrelease gateとして残る。
 
-### Phase 2: 実機立ち上げ + 半熟英雄
+### Phase 2: Game bring-up
 - Oracle ARM で `setup_ubuntu_arm.sh` → `doctor` → RetroArch 実機検証 (§9 の 1-5)。
 - RTMP 実配信 (24h 連続・CPU 実測で preset 決定)。
 - 半熟英雄 brain: スクリーンショット→claude CLI→pad 操作のプロンプト設計。ステート保存 (`ra-cmd SAVE_STATE`) を絡めた復帰運用。
-- soren game: soren リポジトリの Linux 移植 (`soren_linux_migration_plan.md`) と接続し、`launch_command` で統合。
+- sorengame: viewer rehearsalは可能。本番所有権移管はgame-only entry pointと別cutoverが揃うまで行わない。
 
 ### Phase 3: 運用
 - systemd --user ユニット化 (tmux セッションを 1 ユニットで包む)、ログローテーション、ヘルスウォッチドッグ (フリーズ検出=スクリーンショット差分)、ゲームの時間割スケジューラ (`docich switch` を cron/Routine から叩く)、配信オーバーレイ (drawtext / OBS 再評価)、チャット連携 (soren の chat 資産の移植)。
@@ -422,6 +466,7 @@ enabled = false        # soren 側の自動化が運転するため docich agent
 | 配信経路 | ffmpeg 直結 | OBS | ヘッドレス簡素化。ウィンドウ単位キャプチャが不要 (全画面=ゲームのみ) なら ffmpeg で足りる |
 | オーケストレータ言語 | Python stdlib | bash / Node | JSON/TOML/プロセス管理/テスト容易性。pip ゼロで VM にそのまま乗る |
 | SFC エミュレータ | RetroArch + libretro-snes9x (apt) | 単体 snes9x-gtk, stable-retro | arm64 の apt 供給を確認済。cfg 生成で入力を決定論化できる。stable-retro はビルド重・配信映像に別経路が必要 |
-| SFC 入力注入 | xdotool XTEST + input_driver=x | RetroArch Network Remote | 汎用 (browser とも共通化)。Network Remote はプロトコルが薄文書でフォールバック扱い |
+| SFC 入力注入 | xdotool XTEST + input_driver=sdl2 | RetroArch Network Remote | 汎用 (browser とも共通化)。Network Remote はプロトコルが薄文書でフォールバック扱い |
+| Native captions | pinned FFmpeg `docichcc` + libx264 A/53 | OBS caption plugin / overlay-only text | Twitch playerで選択可能なCC、音声同期、generic fail-openを同一direct streamで実現 |
 | CLI ゲーム映像化 | tmux + xterm 表示 | ttyrec→動画, pty 直描画 | 観測はテキスト (LLM 最適)、映像は「見えている端末」で兼ねる。分離構造で頑健 |
 | ゲーム切替 | ディスプレイ常駐・アプリ入替 | ゲームごとに配信再起動 | 無停止切替。ffmpeg/エンコード状態を保てる |

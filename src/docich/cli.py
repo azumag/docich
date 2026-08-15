@@ -10,18 +10,28 @@ import sys
 import time
 from pathlib import Path
 
-from . import procs
+from . import captions, procs
 from .actions import Action, ActionError, parse_actions
 from .adapters import AdapterError, make_adapter
 from .config import ConfigError, GlobalConfig, list_games, load_game, load_global
 from .netcmd import send_ra_cmd
 from .state import State
-from .stream import StreamKeyError, build_ffmpeg_cmd
+from .stream import (
+    CaptionSocketDirectoryError,
+    StreamRuntime,
+    StreamKeyError,
+    build_ffmpeg_cmd,
+    caption_capability,
+    caption_socket_ready,
+    ensure_caption_socket_parent,
+    redact_stream_command,
+    resolve_runtime,
+)
 from .supervise import run_callable_loop, run_loop
 from .tmux import Tmux
 from .xkit import XKit
 
-CORE_BINARIES = ["tmux", "ffmpeg", "Xvfb", "xdpyinfo", "xdotool"]
+CORE_BINARIES = ["tmux", "Xvfb", "xdpyinfo", "xdotool"]
 RETROARCH_CORE_CANDIDATES = ("snes9x", "bsnes_mercury_performance", "bsnes_mercury_balanced")
 BROWSER_CANDIDATES = ("chromium", "chromium-browser", "google-chrome", "google-chrome-stable")
 AUDIO_SINK_POLL_S = 30
@@ -32,7 +42,14 @@ class CliError(Exception):
     """User-facing CLI error that is not a configuration problem per se."""
 
 
-USER_ERRORS = (ConfigError, ActionError, AdapterError, StreamKeyError, CliError)
+USER_ERRORS = (
+    ConfigError,
+    ActionError,
+    AdapterError,
+    StreamKeyError,
+    captions.CaptionError,
+    CliError,
+)
 
 
 def _repo_root() -> Path:
@@ -43,8 +60,23 @@ def _docich_bin() -> str:
     return str(_repo_root() / "bin" / "docich")
 
 
-def _run_argv(*parts: str) -> list[str]:
-    return [_docich_bin(), "run", *parts]
+def _run_argv(g: GlobalConfig, *parts: str) -> list[str]:
+    # Supervisors may outlive the invoking shell. Pin the exact configuration
+    # path so a tmux respawn cannot silently fall back to another config file.
+    return [_docich_bin(), "--config", str(g.config_path), "run", *parts]
+
+
+def _stream_window_env(g: GlobalConfig) -> dict[str, str]:
+    """Freeze caption settings for a tmux server with an older environment."""
+    env = {
+        "DOCICH_FFMPEG_BIN": g.stream.ffmpeg_bin,
+        "DOCICH_CC_ENABLED": "1" if g.captions.enabled else "0",
+        "DOCICH_CC_SOCKET": g.captions.socket_path,
+    }
+    key_value = os.environ.get(g.stream.stream_key_env)
+    if key_value:
+        env[g.stream.stream_key_env] = key_value
+    return env
 
 
 def _load_global(args: argparse.Namespace) -> GlobalConfig:
@@ -95,6 +127,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_ra = sub.add_parser("ra-cmd", help="RetroArch へ UDP コマンドを送る")
     p_ra.add_argument("cmd", nargs="+", help="コマンド (例: SAVE_STATE)")
 
+    p_caption = sub.add_parser("caption", help="英語字幕計画とFFmpeg字幕IPCを操作する")
+    captions.configure_parser(p_caption)
+
     p_run = sub.add_parser("run", help="(内部用) tmux window 内で監督ループを実行する")
     p_run.add_argument("component", choices=["display", "audio", "stream", "game", "agent"])
     p_run.add_argument("name", nargs="?", help="game/agent の場合のゲーム名")
@@ -141,6 +176,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return cmd_send(g, args.game, args.json)
     if command == "ra-cmd":
         return cmd_ra_cmd(g, args.cmd)
+    if command == "caption":
+        return captions.run_args(args, default_socket=g.captions.socket_path)
     if command == "run":
         return cmd_run(g, args.component, args.name)
     raise CliError(f"未知のコマンドです: {command}")
@@ -188,6 +225,28 @@ def cmd_doctor(g: GlobalConfig) -> int:
         ok = path is not None
         _print_row(ok, name, path or "見つかりません")
         core_ok = core_ok and ok
+
+    ffmpeg_path = (
+        g.stream.ffmpeg_bin
+        if (
+            "/" in g.stream.ffmpeg_bin
+            and Path(g.stream.ffmpeg_bin).is_file()
+            and os.access(g.stream.ffmpeg_bin, os.X_OK)
+        )
+        else procs.which(g.stream.ffmpeg_bin)
+    )
+    _print_row(ffmpeg_path is not None, "ffmpeg", ffmpeg_path or g.stream.ffmpeg_bin)
+    core_ok = core_ok and ffmpeg_path is not None
+
+    print("\n[captions]")
+    if g.captions.enabled:
+        caption_ok, caption_detail = caption_capability(g.stream.ffmpeg_bin)
+        _print_row(caption_ok, "native CC", caption_detail)
+        core_ok = core_ok and caption_ok
+        _print_row(True, "fail-open", "字幕障害時も映像・音声を継続")
+        _print_row(True, "socket", g.captions.socket_path)
+    else:
+        _print_row(True, "native CC", "無効 (DOCICH_CC_ENABLED=1で有効化)")
 
     if g.audio.enabled:
         print("\n[audio]")
@@ -262,14 +321,14 @@ def cmd_up(g: GlobalConfig) -> int:
     tmux.ensure_session()
 
     if not tmux.has_window("display"):
-        tmux.new_window("display", _run_argv("display"))
+        tmux.new_window("display", _run_argv(g, "display"))
         print("docich: display window を起動しました")
     else:
         print("docich: display window は既に起動しています")
 
     if g.audio.enabled:
         if not tmux.has_window("audio"):
-            tmux.new_window("audio", _run_argv("audio"))
+            tmux.new_window("audio", _run_argv(g, "audio"))
             print("docich: audio window を起動しました")
         else:
             print("docich: audio window は既に起動しています")
@@ -278,11 +337,9 @@ def cmd_up(g: GlobalConfig) -> int:
 
     if g.stream.mode != "null":
         if not tmux.has_window("stream"):
-            env = None
-            key_value = os.environ.get(g.stream.stream_key_env)
-            if key_value:
-                env = {g.stream.stream_key_env: key_value}
-            tmux.new_window("stream", _run_argv("stream"), env=env)
+            tmux.new_window(
+                "stream", _run_argv(g, "stream"), env=_stream_window_env(g)
+            )
             print("docich: stream window を起動しました")
         else:
             print("docich: stream window は既に起動しています")
@@ -322,14 +379,14 @@ def cmd_start(g: GlobalConfig, name: str) -> int:
     if tmux.has_window("game"):
         print("docich: game window は既に起動しています (先に `docich stop` してください)", file=sys.stderr)
     else:
-        tmux.new_window("game", _run_argv("game", game.name))
+        tmux.new_window("game", _run_argv(g, "game", game.name))
         print(f"docich: game window を起動しました ({game.name})")
 
     if game.agent.enabled:
         if tmux.has_window("agent"):
             print("docich: agent window は既に起動しています", file=sys.stderr)
         else:
-            tmux.new_window("agent", _run_argv("agent", game.name))
+            tmux.new_window("agent", _run_argv(g, "agent", game.name))
             print(f"docich: agent window を起動しました ({game.name})")
 
     state.set_current_game(game.name)
@@ -379,20 +436,32 @@ def cmd_status(g: GlobalConfig) -> int:
     session_alive = tmux.has_session()
     print(f"  session: {'起動中' if session_alive else '停止中'}")
 
+    window_states: dict[str, bool] = {}
     for w in ("display", "audio", "stream", "game", "agent"):
-        alive = tmux.has_window(w) if session_alive else False
-        print(f"  window[{w}]: {'起動中' if alive else '停止中'}")
+        window_states[w] = tmux.has_window(w) if session_alive else False
+        print(f"  window[{w}]: {'起動中' if window_states[w] else '停止中'}")
 
     print(f"  display_ready: {'はい' if xkit.display_ready() else 'いいえ'}")
     print(f"  current_game: {state.current_game() or '(なし)'}")
     print(f"  stream.mode: {g.stream.mode}")
+    print(f"  captions.requested: {'はい' if g.captions.enabled else 'いいえ'}")
 
     if g.stream.mode == "null":
         print("  ffmpeg: (配信しない設定です)")
+        print("  captions.active: いいえ (stream.mode=null)")
     else:
         try:
-            cmd = build_ffmpeg_cmd(g, mask_key=True)
-            print(f"  ffmpeg: {shlex.join(cmd)}")
+            runtime = resolve_runtime(g, mask_key=True)
+            active = False
+            detail = runtime.caption_detail
+            if runtime.captions_active and not window_states["stream"]:
+                detail = f"{detail}; stream windowは停止中です"
+            elif runtime.captions_active:
+                active, socket_detail = caption_socket_ready(g.captions.socket_path)
+                detail = f"{detail}; {socket_detail}"
+            print(f"  captions.active: {'はい' if active else 'いいえ'}")
+            print(f"  captions.detail: {detail}")
+            print(f"  ffmpeg: {shlex.join(runtime.command)}")
         except StreamKeyError as exc:
             print(f"  ffmpeg: 構築できません ({exc})")
     return 0
@@ -599,13 +668,36 @@ def _run_stream(g: GlobalConfig) -> int:
         xkit.wait_display()
 
     def build():
-        cmd = build_ffmpeg_cmd(g, mask_key=False)
+        runtime = resolve_runtime(g, mask_key=False)
+        if runtime.captions_active:
+            try:
+                ensure_caption_socket_parent(g.captions.socket_path)
+            except CaptionSocketDirectoryError as exc:
+                runtime = StreamRuntime(
+                    command=build_ffmpeg_cmd(
+                        g,
+                        mask_key=False,
+                        captions_enabled=False,
+                        ffmpeg_bin=runtime.command[0],
+                    ),
+                    captions_active=False,
+                    caption_detail=f"fail-open: {exc}",
+                )
+        if g.captions.enabled and not runtime.captions_active:
+            print(f"docich: 警告: 字幕を無効化して配信を継続します ({runtime.caption_detail})")
+        cmd = runtime.command
         env_extra = {}
         if g.audio.enabled:
             env_extra["PULSE_SINK"] = g.audio.sink_name
         return cmd, env_extra
 
-    run_loop("stream", g, build, pre=pre)
+    run_loop(
+        "stream",
+        g,
+        build,
+        pre=pre,
+        log_command=lambda command: redact_stream_command(command, g),
+    )
     return 0
 
 
