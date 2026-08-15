@@ -106,5 +106,5 @@ docich の設計 (ffmpeg 直結) と同一方向であり、共通部品化の�
 
 1. ~~配信経路の一本化~~ → **解決済み** (C1)。Soren 本番 = soviet_now 所有、docich = :98 の汎用基盤 + 再利用可能な字幕部品の正典、という分担で確定 (handoff.md)。
 2. **sorengame 本番の docich への移管**: 将来の別 cutover。game 専用の Soren エントリポイント (start_all.sh 非依存) とロールバック証明が前提 (handoff.md「Remaining gates」#4)。それまで docich の sorengame 定義は viewer 専用。
-3. **半熟英雄 brain の置き場**: brain スクリプト本体を hanjuku-sfc-speedrun 側に置くか、docich 側 (`brains/`) に置いてデータのみ参照するか — Phase 2 着手時に決定。チャート/データの参照パスは `games/hanjuku-sfc-speedrun/charts/`・`data/` (【確認済】卵落ちテーブル・キャラデータ・話数別チャートが存在)。
+3. ~~半熟英雄 brain の置き場~~ → **解決済み** (Phase 2 着手時に決定)。brain 本体は docich 側 `brains/hanjuku/` に置き、`games/hanjuku-sfc-speedrun/charts/`・`data/` を読み取り専用の知識ベースとして参照する (【確認済】卵落ちテーブル・キャラデータ・話数別チャートが存在)。理由と設計は `docs/hanjuku_brain.md` §0。
 4. **docichcc フィルタの二重管理解消**: docich の `native/ffmpeg/` と soviet_now 側互換コピーを、バージョン付きアーティファクト依存に置き換えるまで手動同期 (handoff.md「Remaining gates」#2)。
