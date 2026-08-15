@@ -9,8 +9,8 @@ core = "auto"                          # or コア .so の絶対パス
 # [retroarch.pad_map] で既定マップの上書きも可能
 
 [agent]
-enabled = false                        # 半熟英雄 brain は Phase 2
-# brain は games/hanjuku-sfc-speedrun (submodule) のチャート/データを知識ベースにする (Phase 2)
+enabled = false                        # 有効化はユーザー判断 (認証・ROM・コスト確認後)
+# brain の詳細設計・知識注入 (games/hanjuku-sfc-speedrun submodule) は docs/hanjuku_brain.md 参照
 brain = "command"
-command = ""
-interval_ms = 2000
+command = ["python3", "brains/hanjuku/brain.py"]
+interval_ms = 7000                     # LLM レイテンシ (3〜6秒) を織り込んだ周期

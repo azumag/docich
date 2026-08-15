@@ -49,7 +49,7 @@ run/brain/hanjuku/      # brain の状態 (gitignore 済みの run/ 配下)
 
 | 値 | 動作 | 用途 |
 |---|---|---|
-| `claude-cli` (既定) | `claude -p` を子プロセスで実行。プロンプトは stdin 渡し、スクリーンショットは**プロンプト中に絶対パスを記載**し claude 側の Read ツールに読ませる (画像対応)。argv: `[$DOCICH_BRAIN_CLAUDE_BIN, "-p", "--model", $DOCICH_BRAIN_MODEL, "--output-format", "text"]` | VM 本番 (claude CLI 認証済み環境)。【要検証】`-p` モードで cwd 配下の Read が無承認で通ること |
+| `claude-cli` (既定) | `claude -p` を子プロセスで実行。プロンプトは stdin 渡し、スクリーンショットは**プロンプト中に絶対パスを記載**し claude 側の Read ツールに読ませる (画像対応)。argv: `[$DOCICH_BRAIN_CLAUDE_BIN, "-p", "--model", $DOCICH_BRAIN_MODEL, "--output-format", "text"]` | VM 本番 (claude CLI 認証済み環境)。【確認済】`-p` モードで **cwd (リポジトリ) 配下**の Read は無承認で通り、claude-opus-5 が RetroArch メニューのスクリーンショットを認識して fail-soft 判断まで一連動作した (2026-08-15 コンテナ実測、1サイクル約11秒)。**制約**: `state_dir` をリポジトリ外へ移すとスクリーンショットが cwd 外になり Read が権限拒否される (その場合も brain は note に理由を残し actions 空で正常終了する)。既定の `state_dir = "run"` のまま使うこと |
 | `api` | Anthropic Python SDK (`anthropic`)。**選択時のみ関数内 import** し、無ければ導入手順を stderr に出して exit 3 (docich 本体の stdlib-only 制約を破らない)。画像は base64 の image ブロックで渡し、応答テキストは claude-cli と同一の解析経路に通す (v1 では `output_config` 構造化出力を使わず経路を1本に保つ。将来の改善候補) | SDK を入れた環境・レイテンシ比較用 |
 | `fake:<path>` | LLM を呼ばず `<path>` の内容を応答として返す。`.json` = 毎回同一応答 / `.jsonl` = 1サイクル1行を順番に消費 (`fake_cursor` で継続、末尾で先頭へ戻る) | ユニットテスト・スモーク・E2E (ネットワーク不要) |
 
