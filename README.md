@@ -128,6 +128,7 @@ soviet_now側の全on-air出力guardが適用されています。
 | `docich start <game>` | ゲームと任意agentを起動 |
 | `docich stop` | ゲームとagentだけを停止 |
 | `docich switch <game>` | 配信を維持してゲームを交換 |
+| `docich rotate [--dry-run]` | `[rotation]` games を順に切替 (cron/systemd timer 用) |
 | `docich status` | component、game、stream、caption状態を表示 |
 | `docich snap [-o path]` | スクリーンショット |
 | `docich obs [game]` | brain向け観測JSON |
@@ -160,6 +161,12 @@ stream_key_env = "DOCICH_STREAM_KEY"
 [captions]
 enabled = false
 socket_path = ""
+
+[watchdog]
+enabled = false  # true で up が watchdog window (フリーズ検知+window復旧) も起動
+
+[rotation]
+games = []       # docich rotate が巡回する順序
 ```
 
 字幕の環境変数上書きは `DOCICH_FFMPEG_BIN`、
@@ -169,6 +176,7 @@ socket_path = ""
 ゲームは `config/games/<name>.toml` に1本ずつ定義します。
 
 - `hanjuku-hero`: RetroArch + SFC core。ROMは自己吸い出し品のみ。
+  LLM brain (`brains/hanjuku/`) 同梱、既定無効 ([`docs/hanjuku_brain.md`](docs/hanjuku_brain.md))。
 - `nethack`: tmux + xtermのCLI/TUI adapter。
 - `sorengame`: ローカルWebGL viewer。production controllerではない。
 
@@ -176,14 +184,15 @@ socket_path = ""
 
 ```text
 bin/docich                    CLI launcher
-src/docich/                   config, adapters, agent, stream, captions
+src/docich/                   config, adapters, agent, stream, captions, watchdog
+brains/hanjuku/               半熟英雄 LLM brain (claude-cli / api / fake)
 config/docich.toml            global safe defaults
 config/games/*.toml           per-game definitions
 games/roms/                   ROM 置き場 (gitignore。自己吸い出し品のみ)
 games/soviet_now/             submodule → azumag/soviet_now (sorengame 本体, main 追跡)
 games/hanjuku-sfc-speedrun/   submodule → azumag/hanjuku-sfc-speedrun (半熟英雄 RTA データ)
 native/ffmpeg/                docichcc source, pinned build, PoC, stress proof
-scripts/                      Ubuntu setup, smoke tests, wiki publish
+scripts/                      Ubuntu setup, smoke tests, systemd units, wiki publish
 tests/                        stdlib unittest suite
 wiki/                         GitHub wiki 原稿 (scripts/publish_wiki.sh で発行)
 docs/architecture.md          canonical architecture
@@ -214,6 +223,7 @@ GitHub wiki のページ原稿は `wiki/` ディレクトリでバージョン�
 
 - [`docs/architecture.md`](docs/architecture.md): adapter・runtime・ownershipの一次情報
 - [`docs/multi_repo_plan.md`](docs/multi_repo_plan.md): マルチリポジトリ構成 (submodule 化・共通部品化ロードマップ)
+- [`docs/hanjuku_brain.md`](docs/hanjuku_brain.md): 半熟英雄 brain (LLM バックエンド・知識注入・検証)
 - [`docs/games/hanjuku-hero.md`](docs/games/hanjuku-hero.md) / [`docs/games/nethack.md`](docs/games/nethack.md): ゲーム別セットアップ
 - [`docs/games/sorengame.md`](docs/games/sorengame.md): Soren productionとの統合境界
 - [`docs/oracle_arm_setup_guide.md`](docs/oracle_arm_setup_guide.md): Oracle A1 setup

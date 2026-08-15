@@ -11,9 +11,11 @@ README, コード) が正しい。**
 ## 現在地
 
 **Phase 1 完了 (PR #2 マージ済み)**: 基盤 (CLI・設定読み込み・状態管理・監督ループ・配信コマンド
-構築) + アダプタ 3 種 (`retroarch` / `cli` / `browser`) + 単体テスト 202 件がそろっている。
-実機 (Oracle ARM) での検証と、半熟英雄の本物の brain (画面認識・戦略プロンプト) の実装は
-Phase 2 (詳細: [[アーキテクチャ|Architecture]] / `docs/architecture.md` §10)。
+構築) + アダプタ 3 種 (`retroarch` / `cli` / `browser`) がそろっている。
+**Phase 2 の半熟英雄 LLM brain (`brains/hanjuku/`、既定無効) と Phase 3 の運用強化
+(watchdog / `docich rotate` / systemd 雛形) も実装済み** ([[半熟英雄 (SFC)|Game-Hanjuku-Hero]]、
+[[日常運用|Operations]])。残るは実機 (Oracle ARM) での ROM 実プレイ検証
+(詳細: [[アーキテクチャ|Architecture]] / `docs/architecture.md` §10)。
 
 マルチリポジトリ構成の**C0 (サブモジュール組み込み・main 監視の開始) も完了**している。
 ゲーム固有の実装は `games/soviet_now` (sorengame 本体) と `games/hanjuku-sfc-speedrun`
@@ -24,7 +26,7 @@ Phase 2 (詳細: [[アーキテクチャ|Architecture]] / `docs/architecture.md`
 続く **C1 (配信経路の役割整理) と C-caption (字幕の共通部品化) も完了**している。Codex の
 作業により字幕の共通部品 (`src/docich/captions.py` + `native/ffmpeg/`) が最初の共通部品として
 docich へ昇格し (main PR #3)、Soren 本番は soviet_now の `soren-runtime.service` が FFmpeg
-直接配信とネイティブ Twitch 字幕で稼働中である。単体テストは 202 件から 244 件に増えている
+直接配信とネイティブ Twitch 字幕で稼働中である。単体テストは 371 件
 (詳細: [[アーキテクチャ|Architecture]]、`docs/multi_repo_plan.md`、
 `docs/twitch_closed_captions.md`、`handoff.md`)。
 

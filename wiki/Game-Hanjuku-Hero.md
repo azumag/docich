@@ -53,18 +53,27 @@ bin/docich ra-cmd SAVE_STATE
 
 半熟英雄の RTA チャート・ゲーム機構データ (卵落ち判定・切り札ダメージ等の分析ツールを含む)
 は git submodule `games/hanjuku-sfc-speedrun` (`azumag/hanjuku-sfc-speedrun`, main 追跡)
-として取り込まれている。**Phase 2 で実装する brain の知識ベース** (プロンプトの grounding
-素材) として使う計画になっている。詳細は
+として取り込まれている。**brain の知識ベース** (プロンプトの grounding 素材) として、
+README・チャート概要・進行中ステージのチャートが毎サイクル選択注入される。詳細は
 [docs/multi_repo_plan.md](https://github.com/azumag/docich/blob/main/docs/multi_repo_plan.md)
 §1・§5 を参照。
 
-## Phase 2: 本物の brain (計画中)
+## LLM brain (実装済み・既定無効)
 
-半熟英雄の本物の brain (画面認識・戦略プロンプト) は Phase 2 で実装する計画。スクリーン
-ショット → claude CLI → pad 操作、というプロンプト設計と、`ra-cmd SAVE_STATE` を絡めた
-復帰運用が予定されている。brain は `games/hanjuku-sfc-speedrun` のチャート/データを知識
-ベースにする想定 (上記参照)。Phase 1 時点では `config/games/hanjuku-hero.toml` の
-`[agent] enabled = false` のまま、`bin/docich send` での単発操作確認にとどまる。
+半熟英雄の本物の brain は `brains/hanjuku/brain.py` に実装済み
+(設計書: [docs/hanjuku_brain.md](https://github.com/azumag/docich/blob/main/docs/hanjuku_brain.md))。
+スクリーンショット → LLM → pad 操作を `[agent] interval_ms = 7000` の周期で回す。
+
+- **バックエンド 3系統** (`DOCICH_BRAIN_LLM`): `claude-cli` (既定。`claude -p`、モデル既定
+  `claude-opus-5`) / `api` (Anthropic Python SDK。`pip install anthropic` 時のみ) /
+  `fake:<path>` (テスト用)。
+- LLM 自身のメモ・進行状態は `run/brain/hanjuku/` (notes.md / state.json / brain.log) に残る。
+- 検証済み: fake 経路の E2E (`scripts/smoke_brain.sh`) と、実 LLM (claude-opus-5) が RetroArch
+  メニューを画像認識して安全側の判断を返す 1 サイクル (コンテナ実測、約11秒/サイクル)。
+- **有効化はユーザー操作**: VM で `claude` CLI が認証済みであることを確認し、
+  `config/games/hanjuku-hero.toml` の `[agent] enabled = true` にする (ROM 配置も前提)。
+  それまでは `bin/docich send` での単発操作確認にとどまる。
+- `ra-cmd SAVE_STATE` を絡めた復帰運用は今後の運用課題。
 
 ## 詳細
 

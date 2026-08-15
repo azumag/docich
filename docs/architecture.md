@@ -294,7 +294,7 @@ loop:
 - brain の種類 (game config の `[agent]`):
   - `command`: 設定した任意コマンドを**毎回起動** (ステートレス)。会話履歴・長期記憶は brain スクリプト側の責務とする (docich は関与しない)。タイムアウト (既定 120s) 超過は kill してスキップ。
   - `random`: 行動空間からランダムに 1 手 (配線テスト・デモ用)。
-- 半熟英雄の本物の brain (画面認識・戦略プロンプト) は **Phase 2** で `command` brain として実装する。claude CLI をここに差す場合の認証問題は `soren_linux_migration_plan.md` §6 と共通。
+- 半熟英雄の本物の brain (画面認識・戦略プロンプト) は `brains/hanjuku/brain.py` に**実装済み** (設計: `docs/hanjuku_brain.md`。LLM バックエンド3系統: claude-cli 既定 / anthropic SDK / fake)。【確認済】claude-cli 経路は実 LLM (claude-opus-5) で RetroArch メニューを認識し fail-soft 判断まで一連動作。制約: スクリーンショットがリポジトリ内 (`run/`、既定) にないと claude CLI の Read が権限拒否になる。claude CLI の認証問題は `soren_linux_migration_plan.md` §6 と共通。
 - `docich obs <game>` / `docich send <game> '<json>'` で brain 開発を CLI から単発試行できる (ループ外デバッグ)。
 
 ---
@@ -308,6 +308,7 @@ docich up / down              # 基盤 (display/audio/stream) の起動・全停
 docich start <game>           # ゲーム起動 (+ agent.enabled なら agent も)
 docich stop                   # 現在のゲーム停止 (基盤は残る)
 docich switch <game>          # stop + start (配信は継続)
+docich rotate [--dry-run]     # [rotation] games を順に切替 (cron/systemd timer から叩く)
 docich status                 # 各コンポーネントの生死・現在のゲーム
 docich snap [-o out.png]      # 手動スクリーンショット
 docich obs [<game>]           # 観測 JSON を出力 (brain 開発用)
@@ -360,6 +361,15 @@ socket_path = ""                  # 空なら$XDG_RUNTIME_DIR/docich/ffmpeg-cc.s
 default_interval_ms = 2000
 brain_timeout_s = 120
 
+[watchdog]
+enabled = false       # true で `docich up` が watchdog window も起動 (Phase 3)
+interval_s = 60       # 点検周期 (5以上)
+freeze_cycles = 5     # 連続同一スクリーンショットでフリーズ判定 (2以上)
+recover_windows = true # display/audio/stream window 消失時に冪等な up で再生成
+
+[rotation]
+games = []            # `docich rotate` が巡回する順序 (例: ["nethack", "hanjuku-hero"])
+
 [paths]
 state_dir = "run"                # リポジトリ相対
 games_dir = "config/games"
@@ -381,10 +391,11 @@ core = "auto"                          # or コア .so の絶対パス
 # [retroarch.pad_map] で既定マップの上書きも可能
 
 [agent]
-enabled = false                        # 半熟英雄 brain は Phase 2
+enabled = false                        # 有効化はユーザー判断 (認証・ROM・コスト確認後)
+# brain の詳細設計・知識注入 (games/hanjuku-sfc-speedrun submodule) は docs/hanjuku_brain.md 参照
 brain = "command"
-command = ""
-interval_ms = 2000
+command = ["python3", "brains/hanjuku/brain.py"]
+interval_ms = 7000                     # LLM レイテンシ (3〜6秒) を織り込んだ周期
 ```
 
 ```toml
@@ -445,17 +456,18 @@ enabled = false        # viewer専用。productionはsoviet_nowが運転
 ### Phase 1: Generic repository foundation (implemented)
 - Python package、adapter 3種、agent boundary、safe defaults、setup/smoke、unit tests。
 - Native caption planner/filter/build/proofsとgeneric fail-open stream integration。
-- stdlib unit suiteは244件通過。`smoke_cli.sh`を使うXvfb/NetHack/入力注入の
+- stdlib unit suiteは全件通過 (Phase 2/3 実装後の現在 371 件)。`smoke_cli.sh`を使うXvfb/NetHack/入力注入の
   Linux実機確認は、対象環境ごとのrelease gateとして残る。
 
 ### Phase 2: Game bring-up
+- **半熟英雄 brain: 実装済み** (`brains/hanjuku/` + `docs/hanjuku_brain.md`)。コンテナで fake/claude-cli 両経路の E2E 済み (`scripts/smoke_brain.sh` + 実 LLM 1サイクル)。残り: VM で ROM 実プレイ (`[agent] enabled = true` 化)。
 - Oracle ARM で `setup_ubuntu_arm.sh` → `doctor` → RetroArch 実機検証 (§9 の 1-5)。
-- RTMP 実配信 (24h 連続・CPU 実測で preset 決定)。
-- 半熟英雄 brain: スクリーンショット→claude CLI→pad 操作のプロンプト設計。ステート保存 (`ra-cmd SAVE_STATE`) を絡めた復帰運用。
+- RTMP 実配信 (24h 連続・CPU 実測で preset 決定)。ステート保存 (`ra-cmd SAVE_STATE`) を絡めた復帰運用。
 - sorengame: viewer rehearsalは可能。本番所有権移管はgame-only entry pointと別cutoverが揃うまで行わない。
 
 ### Phase 3: 運用
-- systemd --user ユニット化 (tmux セッションを 1 ユニットで包む)、ログローテーション、ヘルスウォッチドッグ (フリーズ検出=スクリーンショット差分)、ゲームの時間割スケジューラ (`docich switch` を cron/Routine から叩く)、配信オーバーレイ (drawtext / OBS 再評価)、チャット連携 (soren の chat 資産の移植)。
+- **実装済み**: ヘルスウォッチドッグ (`src/docich/watchdog.py`。フリーズ検出=スクリーンショット sha256 の連続一致、agent 稼働中のみ判定。window 消失は冪等な `up` で復旧)、ゲームの時間割ローテーション (`docich rotate` + `[rotation]`)、systemd --user ユニット雛形 (`scripts/systemd/`。既定では何も enable しない)。
+- 残り: ログローテーション、配信オーバーレイ (drawtext / OBS 再評価)、チャット連携 (multi_repo_plan.md C2/C3 として soviet_now の落ち着きを待つ)。
 
 ---
 
