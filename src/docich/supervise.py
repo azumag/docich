@@ -89,6 +89,7 @@ def run_loop(
     *,
     pre: Callable[[], None] | None = None,
     post_start: Callable[[subprocess.Popen], None] | None = None,
+    log_command: Callable[[list[str]], list[str]] | None = None,
 ) -> None:
     """Run `build()` -> spawn -> wait forever, restarting with backoff on exit/error."""
     state = State(g)
@@ -135,7 +136,8 @@ def run_loop(
                 if pre is not None:
                     pre()
                 cmd, env_extra = build()
-                log_line(fh, component, f"起動: {' '.join(cmd)}")
+                shown_cmd = log_command(cmd) if log_command is not None else cmd
+                log_line(fh, component, f"起動: {' '.join(shown_cmd)}")
                 started_at = time.monotonic()
                 p = procs.spawn(cmd, env_extra=env_extra, strip_tmux=True, log_fh=fh)
                 current_proc[0] = p
