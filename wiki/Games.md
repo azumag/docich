@@ -6,7 +6,7 @@
 |---|---|---|---|
 | [[NetHack|Game-NetHack]] | `cli` | 標準例。テキスト観測、コンテナでの動作実証済み。既定で agent 無効 | なし |
 | [[半熟英雄 (SFC)|Game-Hanjuku-Hero]] | `retroarch` | `dbus-run-session` での起動が必須。Phase 1 時点は `send` での単発操作確認まで、本物の brain は Phase 2 | `games/hanjuku-sfc-speedrun` (知識ベース) |
-| [[soren game|Game-Sorengame]] | `browser` | 本番 soren とは独立したインスタンス。`url` は仮値のため要差し替え | `games/soviet_now` |
+| [[soren game|Game-Sorengame]] | `browser` | viewer 専用。`http://127.0.0.1:8080` を表示するのみで agent 無効。本番は soviet_now が所有 | `games/soviet_now` |
 
 各ゲームの定義は `config/games/<name>.toml` にある (1 ゲーム 1 ファイル)。有効なゲーム名と
 アダプタは `bin/docich games` でも確認できる:
