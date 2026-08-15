@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import tomllib
 from dataclasses import dataclass, fields
@@ -37,6 +38,7 @@ class AudioConfig:
 
 @dataclass
 class StreamConfig:
+    ffmpeg_bin: str = "ffmpeg"
     mode: str = "null"
     rtmp_url: str = "rtmp://live.twitch.tv/app"
     stream_key_env: str = "DOCICH_STREAM_KEY"
@@ -51,6 +53,12 @@ class StreamConfig:
 
 
 @dataclass
+class CaptionConfig:
+    enabled: bool = False
+    socket_path: str = ""
+
+
+@dataclass
 class AgentDefaults:
     default_interval_ms: int = 2000
     brain_timeout_s: int = 120
@@ -59,9 +67,11 @@ class AgentDefaults:
 @dataclass
 class GlobalConfig:
     repo_root: Path
+    config_path: Path
     display: DisplayConfig
     audio: AudioConfig
     stream: StreamConfig
+    captions: CaptionConfig
     agent: AgentDefaults
     state_dir: Path
     games_dir: Path
@@ -120,12 +130,29 @@ def _abs_path(repo_root: Path, value: str) -> Path:
     return p if p.is_absolute() else (repo_root / p)
 
 
+def _env_bool(name: str, fallback: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return fallback
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigError(f"環境変数 {name} は 0/1 または true/false で指定してください")
+
+
+def _default_caption_socket_path() -> str:
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.geteuid()}"
+    return str(Path(runtime_dir) / "docich" / "ffmpeg-cc.sock")
+
+
 def load_global(repo_root: Path, config_path: Path | None = None) -> GlobalConfig:
     """探索順: config_path 引数 > $DOCICH_CONFIG > repo_root/config/docich.toml。
     ファイルが無ければ既定値で動く。
     """
     repo_root = Path(repo_root)
-    path = _config_search_path(repo_root, config_path)
+    path = _config_search_path(repo_root, config_path).expanduser().resolve()
 
     data: dict = {}
     if path.is_file():
@@ -134,13 +161,34 @@ def load_global(repo_root: Path, config_path: Path | None = None) -> GlobalConfi
     display = DisplayConfig(**_filtered(DisplayConfig, data.get("display", {}), "display"))
     audio = AudioConfig(**_filtered(AudioConfig, data.get("audio", {}), "audio"))
     stream = StreamConfig(**_filtered(StreamConfig, data.get("stream", {}), "stream"))
+    captions = CaptionConfig(
+        **_filtered(CaptionConfig, data.get("captions", {}), "captions")
+    )
     agent = AgentDefaults(**_filtered(AgentDefaults, data.get("agent", {}), "agent"))
+
+    stream.ffmpeg_bin = os.environ.get("DOCICH_FFMPEG_BIN", stream.ffmpeg_bin).strip()
+    captions.enabled = _env_bool("DOCICH_CC_ENABLED", captions.enabled)
+    captions.socket_path = os.environ.get(
+        "DOCICH_CC_SOCKET", captions.socket_path or _default_caption_socket_path()
+    ).strip()
 
     if stream.mode not in STREAM_MODES:
         raise ConfigError(
             "stream.mode は "
             + "/".join(STREAM_MODES)
             + f" のいずれかである必要があります (現在値: {stream.mode!r})"
+        )
+    if not stream.ffmpeg_bin or "\x00" in stream.ffmpeg_bin:
+        raise ConfigError("stream.ffmpeg_bin は空でない実行ファイル名またはパスである必要があります")
+    if not isinstance(captions.enabled, bool):
+        raise ConfigError("captions.enabled は true または false である必要があります")
+    if (
+        not captions.socket_path.startswith("/")
+        or len(os.fsencode(captions.socket_path)) >= 104
+        or re.fullmatch(r"/[A-Za-z0-9._/-]+", captions.socket_path) is None
+    ):
+        raise ConfigError(
+            "captions.socket_path は104バイト未満の安全な絶対Unix socketパスである必要があります"
         )
 
     paths_raw = data.get("paths", {})
@@ -152,9 +200,11 @@ def load_global(repo_root: Path, config_path: Path | None = None) -> GlobalConfi
 
     return GlobalConfig(
         repo_root=repo_root,
+        config_path=path,
         display=display,
         audio=audio,
         stream=stream,
+        captions=captions,
         agent=agent,
         state_dir=state_dir,
         games_dir=games_dir,

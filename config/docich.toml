@@ -10,6 +10,7 @@ sink_name = "docich_sink"
 set_default = false  # true にしない限り set-default-sink はしない (soren 共存。SS0)
 
 [stream]
+ffmpeg_bin = "ffmpeg"              # DOCICH_FFMPEG_BIN で上書き可能
 mode = "null"                    # null | rtmp | file
 rtmp_url = "rtmp://live.twitch.tv/app"
 stream_key_env = "DOCICH_STREAM_KEY"
@@ -21,6 +22,11 @@ bufsize = "9000k"
 preset = "veryfast"
 audio_bitrate = "160k"
 gop_seconds = 2
+
+[captions]
+enabled = false                    # DOCICH_CC_ENABLED=1 で有効化
+# 空なら $XDG_RUNTIME_DIR/docich/ffmpeg-cc.sock。DOCICH_CC_SOCKET で上書き可能
+socket_path = ""
 
 [agent]
 default_interval_ms = 2000

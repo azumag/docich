@@ -1,4 +1,6 @@
 import io
+import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -82,6 +84,12 @@ class TestParseArgsAcceptsAllSubcommands(unittest.TestCase):
     def test_ra_cmd_multi_word(self):
         args = self.parser.parse_args(["ra-cmd", "SAVE_STATE_SLOT", "1"])
         self.assertEqual(args.cmd, ["SAVE_STATE_SLOT", "1"])
+
+    def test_caption_send_reset(self):
+        args = self.parser.parse_args(["caption", "send", "reset"])
+        self.assertEqual(args.command, "caption")
+        self.assertEqual(args.caption_action, "send")
+        self.assertEqual(args.op, "reset")
 
     def test_run_display(self):
         args = self.parser.parse_args(["run", "display"])
@@ -190,6 +198,29 @@ class TestDoctorSmoke(IsolatedConfigTestBase):
         self.assertIn(rc, (0, 1))
         self.assertIn("broken", out)
 
+    def test_doctor_returns_nonzero_when_requested_native_cc_is_unavailable(self):
+        self._write_config(
+            "[audio]\n"
+            "enabled = false\n\n"
+            "[captions]\n"
+            "enabled = true\n"
+            'socket_path = "/tmp/docich-test/cc.sock"\n'
+        )
+
+        def available(name: str) -> str:
+            return f"/usr/bin/{name}"
+
+        with (
+            mock.patch("docich.cli.procs.which", side_effect=available),
+            mock.patch(
+                "docich.cli.caption_capability",
+                return_value=(False, "docichcc filterがありません"),
+            ),
+        ):
+            rc, out, _err = self.run_main(["doctor"])
+        self.assertEqual(rc, 1)
+        self.assertIn("[NG] native CC", out)
+
 
 class TestMainErrorHandling(IsolatedConfigTestBase):
     def test_send_to_missing_game_exits_2_with_japanese_error(self):
@@ -224,6 +255,113 @@ class TestMainErrorHandling(IsolatedConfigTestBase):
         self.assertIn("docich: エラー", err)
         self.assertIn("スクリーンショットに失敗しました", err)
         self.assertIn("docich up", err)
+
+
+class TestCaptionCli(IsolatedConfigTestBase):
+    def test_status_requires_live_stream_socket_before_reporting_active(self):
+        self._write_config(
+            "[stream]\n"
+            'mode = "file"\n\n'
+            "[captions]\n"
+            "enabled = true\n"
+            f'socket_path = "{self.tmp_path / "cc" / "cc.sock"}"\n'
+        )
+        g = cli.load_global(self.tmp_path, config_path=self.toml_path)
+        runtime = cli.StreamRuntime(
+            command=["/opt/docich/ffmpeg", "-f", "null", "-"],
+            captions_active=True,
+            caption_detail="docichcc + libx264 a53cc",
+        )
+        with (
+            mock.patch("docich.cli.Tmux") as tmux_class,
+            mock.patch("docich.cli.XKit") as xkit_class,
+            mock.patch("docich.cli.resolve_runtime", return_value=runtime),
+            mock.patch(
+                "docich.cli.caption_socket_ready",
+                return_value=(False, "caption socketは未準備です"),
+            ),
+        ):
+            tmux_class.return_value.has_session.return_value = True
+            tmux_class.return_value.has_window.side_effect = lambda name: name == "stream"
+            xkit_class.return_value.display_ready.return_value = True
+            output = io.StringIO()
+            with redirect_stdout(output):
+                rc = cli.cmd_status(g)
+        self.assertEqual(rc, 0)
+        self.assertIn("captions.active: いいえ", output.getvalue())
+        self.assertIn("caption socketは未準備です", output.getvalue())
+
+    def test_supervised_stream_pins_config_and_caption_environment(self):
+        self._write_config(
+            "[stream]\n"
+            'ffmpeg_bin = "/opt/docich/bin/ffmpeg"\n'
+            'mode = "file"\n\n'
+            "[captions]\n"
+            "enabled = true\n"
+            f'socket_path = "{self.tmp_path / "cc" / "cc.sock"}"\n'
+        )
+        g = cli.load_global(self.tmp_path, config_path=self.toml_path)
+        argv = cli._run_argv(g, "stream")
+        self.assertEqual(argv[1:3], ["--config", str(self.toml_path.resolve())])
+        with mock.patch.dict(os.environ, {"DOCICH_STREAM_KEY": "test-key"}):
+            env = cli._stream_window_env(g)
+        self.assertEqual(env["DOCICH_FFMPEG_BIN"], "/opt/docich/bin/ffmpeg")
+        self.assertEqual(env["DOCICH_CC_ENABLED"], "1")
+        self.assertEqual(env["DOCICH_CC_SOCKET"], str(self.tmp_path / "cc" / "cc.sock"))
+        self.assertEqual(env["DOCICH_STREAM_KEY"], "test-key")
+
+    def test_caption_plan_with_fixture_writes_aligned_private_plan(self):
+        chunks = self.tmp_path / "chunks.txt"
+        translations = self.tmp_path / "translations.json"
+        output = self.tmp_path / "plan.json"
+        chunks.write_text("一つ目。\n二つ目。\n", encoding="utf-8")
+        translations.write_text('["First.","Second."]', encoding="utf-8")
+
+        rc, _out, err = self.run_main([
+            "caption", "plan",
+            "--chunks-file", str(chunks),
+            "--translations-file", str(translations),
+            "--execution-id", "test-speech-1",
+            "--output", str(output),
+        ])
+        self.assertEqual(rc, 0, err)
+        plan = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(plan["executionId"], "test-speech-1")
+        self.assertEqual([chunk["enText"] for chunk in plan["chunks"]], ["First.", "Second."])
+
+    def test_stream_fails_open_when_caption_socket_directory_is_unsafe(self):
+        self._write_config(
+            "[stream]\n"
+            'mode = "file"\n'
+            f'file_path = "{self.tmp_path / "out.flv"}"\n\n'
+            "[captions]\n"
+            "enabled = true\n"
+            f'socket_path = "{self.tmp_path / "cc" / "cc.sock"}"\n'
+        )
+        observed: list[str] = []
+
+        def run_once(_component, _g, build, **_kwargs):
+            command, _env = build()
+            observed.extend(command)
+
+        requested = cli.StreamRuntime(
+            command=["/opt/docich/ffmpeg", "-vf", "docichcc=socket=/tmp/cc.sock"],
+            captions_active=True,
+            caption_detail="docichcc + libx264 a53cc",
+        )
+        with (
+            mock.patch("docich.cli.resolve_runtime", return_value=requested),
+            mock.patch(
+                "docich.cli.ensure_caption_socket_parent",
+                side_effect=cli.CaptionSocketDirectoryError("unsafe directory"),
+            ),
+            mock.patch("docich.cli.run_loop", side_effect=run_once),
+        ):
+            rc, out, err = self.run_main(["run", "stream"])
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("-vf", observed)
+        self.assertNotIn("-a53cc", observed)
+        self.assertIn("字幕を無効化して配信を継続", out)
 
 
 if __name__ == "__main__":

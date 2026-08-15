@@ -1,3 +1,4 @@
+import os
 import sys
 import tempfile
 import unittest
@@ -28,8 +29,12 @@ class TestLoadGlobalDefaults(unittest.TestCase):
             self.assertFalse(g.audio.set_default)
 
             self.assertEqual(g.stream.mode, "null")
+            self.assertEqual(g.stream.ffmpeg_bin, "ffmpeg")
             self.assertEqual(g.stream.framerate, 30)
             self.assertEqual(g.stream.gop_seconds, 2)
+
+            self.assertFalse(g.captions.enabled)
+            self.assertTrue(g.captions.socket_path.endswith("/docich/ffmpeg-cc.sock"))
 
             self.assertEqual(g.agent.default_interval_ms, 2000)
             self.assertEqual(g.agent.brain_timeout_s, 120)
@@ -67,10 +72,15 @@ sink_name = "custom_sink"
 set_default = true
 
 [stream]
+ffmpeg_bin = "/opt/docich-ffmpeg/bin/ffmpeg"
 mode = "file"
 file_path = "run/custom.flv"
 framerate = 24
 gop_seconds = 3
+
+[captions]
+enabled = true
+socket_path = "/run/user/1001/docich/ffmpeg-cc.sock"
 
 [agent]
 default_interval_ms = 500
@@ -84,6 +94,8 @@ roms_dir = "custom_roms"
             )
             g = config.load_global(repo_root, config_path=toml_path)
 
+            self.assertEqual(g.config_path, toml_path.resolve())
+
             self.assertEqual(g.display.number, 42)
             self.assertEqual(g.display.name, ":42")
             self.assertEqual(g.display.width, 640)
@@ -94,9 +106,15 @@ roms_dir = "custom_roms"
             self.assertTrue(g.audio.set_default)
 
             self.assertEqual(g.stream.mode, "file")
+            self.assertEqual(g.stream.ffmpeg_bin, "/opt/docich-ffmpeg/bin/ffmpeg")
             self.assertEqual(g.stream.file_path, "run/custom.flv")
             self.assertEqual(g.stream.framerate, 24)
             self.assertEqual(g.stream.gop_seconds, 3)
+
+            self.assertTrue(g.captions.enabled)
+            self.assertEqual(
+                g.captions.socket_path, "/run/user/1001/docich/ffmpeg-cc.sock"
+            )
 
             self.assertEqual(g.agent.default_interval_ms, 500)
 
@@ -157,6 +175,42 @@ roms_dir = "custom_roms"
             toml_path.write_text("this is not [valid toml", encoding="utf-8")
             with self.assertRaises(config.ConfigError):
                 config.load_global(repo_root, config_path=toml_path)
+
+    def test_caption_socket_must_be_safe_absolute_unix_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            toml_path = repo_root / "bad-caption.toml"
+            toml_path.write_text(
+                '[captions]\nenabled = true\nsocket_path = "relative.sock"\n',
+                encoding="utf-8",
+            )
+            with self.assertRaises(config.ConfigError):
+                config.load_global(repo_root, config_path=toml_path)
+
+    def test_caption_environment_overrides_toml(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            toml_path = repo_root / "caption.toml"
+            toml_path.write_text("[captions]\nenabled = false\n", encoding="utf-8")
+            old = {name: os.environ.get(name) for name in (
+                "DOCICH_CC_ENABLED", "DOCICH_CC_SOCKET", "DOCICH_FFMPEG_BIN"
+            )}
+            os.environ.update({
+                "DOCICH_CC_ENABLED": "1",
+                "DOCICH_CC_SOCKET": "/tmp/docich-test/cc.sock",
+                "DOCICH_FFMPEG_BIN": "/opt/docich/bin/ffmpeg",
+            })
+            try:
+                g = config.load_global(repo_root, config_path=toml_path)
+            finally:
+                for name, value in old.items():
+                    if value is None:
+                        os.environ.pop(name, None)
+                    else:
+                        os.environ[name] = value
+            self.assertTrue(g.captions.enabled)
+            self.assertEqual(g.captions.socket_path, "/tmp/docich-test/cc.sock")
+            self.assertEqual(g.stream.ffmpeg_bin, "/opt/docich/bin/ffmpeg")
 
 
 class TestLoadGame(unittest.TestCase):
