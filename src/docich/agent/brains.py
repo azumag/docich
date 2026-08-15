@@ -41,6 +41,9 @@ class CommandBrain:
                 self.cmd,
                 timeout=self.g.agent.brain_timeout_s,
                 input=obs.to_json(),
+                # tmux セッションの cwd に依存せず、brain の相対パス参照
+                # (例: "brains/hanjuku/brain.py") を安定させる (hanjuku_brain.md §1)。
+                cwd=str(self.g.repo_root),
             )
         except subprocess.TimeoutExpired:
             print(f"docich: 警告: brain がタイムアウトしました ({self.game.name})", file=sys.stderr)

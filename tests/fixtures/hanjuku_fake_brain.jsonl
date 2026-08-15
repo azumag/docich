@@ -1,0 +1,2 @@
+{"note": "menu down", "actions": [{"type": "pad", "buttons": ["down"], "hold_ms": 150}]}
+{"note": "menu up", "actions": [{"type": "pad", "buttons": ["up"], "hold_ms": 150}]}

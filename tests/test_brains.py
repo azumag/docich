@@ -138,6 +138,19 @@ class TestCommandBrainDecide(BrainsTestBase):
             actions = brain.decide(_obs("cli"))
         self.assertEqual(actions, [])
 
+    def test_decide_runs_command_with_cwd_repo_root(self):
+        # tmux window の cwd に依存せず、brain の相対パス参照 (例: "brains/hanjuku/brain.py")
+        # が安定するよう、CommandBrain は procs.run に cwd=repo_root を渡す (hanjuku_brain.md §1)。
+        script = (
+            "import os, json; "
+            "print(json.dumps({'actions': [{'type': 'special', 'key': os.getcwd()}]}))"
+        )
+        game = self._game(brain="command", command=[sys.executable, "-c", script])
+        brain = brains.CommandBrain(self.g, game)
+        actions = brain.decide(_obs("cli"))
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(Path(actions[0].key).resolve(), self.repo_root.resolve())
+
 
 class TestBuildBrain(BrainsTestBase):
     def test_command_kind_builds_command_brain(self):

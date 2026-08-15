@@ -31,6 +31,7 @@ def run(
     capture: bool = True,
     strip_tmux: bool = False,
     input: str | None = None,
+    cwd: str | None = None,
 ) -> subprocess.CompletedProcess:
     env = _build_env(env_extra, strip_tmux)
     kwargs: dict = {}
@@ -45,6 +46,7 @@ def run(
         timeout=timeout,
         text=True,
         check=check,
+        cwd=cwd,
         **kwargs,
     )
 
