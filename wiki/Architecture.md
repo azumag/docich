@@ -12,6 +12,8 @@
    「ディスプレイ上のアプリの入れ替え」であるため、配信は途切れない。
 2. **OBS は使わず ffmpeg 直結**: `x11grab + pulse → libx264 → RTMP` の単一 ffmpeg プロセスに
    簡素化する。オーバーレイが必要になれば drawtext から始め、OBS は将来の選択肢として残す。
+   字幕を要求したときだけ `docichcc + libx264 a53cc` を追加し、能力が無ければ字幕なしの通常
+   コマンドへ fail-open する。
 3. **ゲームは「アダプタ」で抽象化する**: lifecycle (start/stop/alive) と AI I/O
    (observe/act) の 2 面の契約を実装する。配信・切替・エージェントループはアダプタの中身を
    知らない。
@@ -100,8 +102,11 @@ docich を親 (配信基盤) とし、ゲーム固有の実装は別リポジト
 | `games/hanjuku-sfc-speedrun` (submodule) | 半熟英雄の RTA チャート・ゲーム機構データ。Phase 2 brain の知識ベース |
 
 コメント応答・ラジオ・オーバーレイ・TTS などは「参照利用 → 実証後に docich へ昇格」という
-段階方式 (C0〜C4) で共通部品化する計画になっている (C0 = サブモジュール組み込みと main 監視
-の開始。現在地はここ)。詳細は
+段階方式 (C0〜C4) で共通部品化する計画になっている。**現在地は C0・C1・C-caption まで完了**:
+C0 (サブモジュール組み込み・main 監視の開始)、C1 (配信経路の役割整理。Soren 本番は
+soviet_now の FFmpeg direct が所有し、docich `stream.py` は `:98` 側の汎用基盤として分離
+維持)、C-caption (字幕が最初の共通部品として docich へ昇格。`src/docich/captions.py` +
+`native/ffmpeg/`。soviet_now 側の互換コピーとの同期は残課題)。詳細は
 [docs/multi_repo_plan.md](https://github.com/azumag/docich/blob/main/docs/multi_repo_plan.md)
 を参照。
 
@@ -116,6 +121,7 @@ docich を親 (配信基盤) とし、ゲーム固有の実装は別リポジト
 | PulseAudio | デーモン + 既定 sink | 同一デーモンに `docich_sink` を追加するのみ | `set-default-sink` は実行しない (`set_default=false` が既定) |
 | tmux セッション | soren 側のセッション | `docich` / `docich-game` | 名前分離。他セッションに触れない |
 | 配信 | soren が配信中 | `stream.mode = "null"` が既定 | 明示設定なしでは配信しない (キー競合事故の防止) |
+| 字幕 | `/run/user/1001/docich/ffmpeg-cc.sock` を本番 FFmpeg が所有 | `$XDG_RUNTIME_DIR/docich/ffmpeg-cc.sock`、既定無効 | display/audio/stream と同様に本番所有者と重複させない |
 
 詳細・裏付け (【確認済】/【要検証】の別) は `docs/architecture.md` §0 を参照。
 

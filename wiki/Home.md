@@ -21,6 +21,13 @@ Phase 2 (詳細: [[アーキテクチャ|Architecture]] / `docs/architecture.md`
 変化があれば docich 側が後追いで反映する運用になっている (詳細: [[アーキテクチャ|Architecture]]
 のマルチリポジトリ構成、`docs/multi_repo_plan.md`)。
 
+続く **C1 (配信経路の役割整理) と C-caption (字幕の共通部品化) も完了**している。Codex の
+作業により字幕の共通部品 (`src/docich/captions.py` + `native/ffmpeg/`) が最初の共通部品として
+docich へ昇格し (main PR #3)、Soren 本番は soviet_now の `soren-runtime.service` が FFmpeg
+直接配信とネイティブ Twitch 字幕で稼働中である。単体テストは 202 件から 244 件に増えている
+(詳細: [[アーキテクチャ|Architecture]]、`docs/multi_repo_plan.md`、
+`docs/twitch_closed_captions.md`、`handoff.md`)。
+
 ## 全体像 (簡約)
 
 ```

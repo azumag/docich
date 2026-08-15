@@ -64,3 +64,17 @@
   ログ書き込みは例外を握りつぶして何が起きても後始末を止めない」「生死確認は
   `os.waitpid(WNOHANG)` を直接ポーリングする」という構造になっており、この問題は解消
   済みである。再発する場合は回帰の可能性があるため報告すること。
+
+## 字幕が表示されない
+
+- **症状**: Twitch 配信に英語字幕 (CC) が出ない。
+- **原因**: docich 側では (1) `DOCICH_CC_ENABLED` 等の opt-in 環境変数が未設定、または
+  (2) custom FFmpeg・`docichcc` filter・`libx264 a53cc` option のいずれかが揃っておらず
+  fail-open し、字幕なしの通常コマンドで配信している場合がある。加えて Twitch 側で
+  broadcaster/視聴者が字幕を有効化していないと、docich が正しく送出していても表示されない。
+- **対処**: `bin/docich status` の `captions.requested` / `captions.active` /
+  `captions.detail` で opt-in と実際の有効化状況・fail-open 理由を確認する
+  (`bin/docich doctor` でも同じ能力チェックを事前確認できる)。本番実績では、Twitch 側で
+  broadcaster が字幕設定を明示的に有効化し配信を再起動して初めて表示された
+  (`handoff.md` の Live evidence)。視聴者側は player メニューでの有効化が必要な場合もある。
+  詳細: `docs/twitch_closed_captions.md`、[[日常運用|Operations]] の「字幕 (caption)」。

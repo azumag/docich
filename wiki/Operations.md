@@ -29,6 +29,35 @@ bin/docich switch hanjuku-hero
 `browser` アダプタなら `kind:"screenshot"` (PNG パス) を返す。迷ったら「`status` で生きて
 いるか確認 → `obs` で見えている内容を確認 → `send` で反応を試す」の順で使うとよい。
 
+## 字幕 (caption)
+
+ネイティブ Twitch 字幕は既定で無効の opt-in 機能である。有効化には `docichcc` filter 入りの
+custom FFmpeg と環境変数が要る:
+
+```bash
+export DOCICH_FFMPEG_BIN=/path/to/docichcc-ffmpeg/bin/ffmpeg
+export DOCICH_CC_ENABLED=1
+export DOCICH_CC_SOCKET="$XDG_RUNTIME_DIR/docich/ffmpeg-cc.sock"  # 省略可 (既定パスを使う)
+```
+
+字幕計画の作成と FFmpeg への送信は CLI から行う:
+
+```bash
+bin/docich caption plan --chunks-file <jp.txt> --translations-file <en.json> \
+  --execution-id <id> --output <plan.json>
+bin/docich caption send prepare --plan <plan.json> --chunk 0 --page 0
+bin/docich caption send commit  --plan <plan.json> --chunk 0 --page 0
+bin/docich caption send clear   --plan <plan.json>
+```
+
+`bin/docich status` は `captions.requested` (opt-in で要求されたか) と `captions.active`
+(custom FFmpeg・`docichcc`・`libx264 a53cc` の能力が揃って実際に有効化されたか) を分けて表示し、
+食い違う場合は `captions.detail` に fail-open の理由が出る (`doctor` でも同じ能力チェックを
+事前確認できる)。
+
+字幕は補助経路であり、能力不足・翻訳失敗・socket 失敗のいずれでも通常の映像・音声コマンドへ
+fail-open する (配信・音声は止まらない)。詳細: `docs/twitch_closed_captions.md`。
+
 ## RetroArch のステート保存 (`ra-cmd`)
 
 半熟英雄 (`retroarch` アダプタ) 実行中は、RetroArch の Network Command インターフェース
