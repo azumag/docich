@@ -49,6 +49,11 @@ viewer専用定義で、Sorenの `start_all.sh` は呼びません。詳しく�
 対象は Ubuntu 24.04 (arm64/amd64)、Python 3.11以上です。
 
 ```bash
+# リポジトリを clone する (ゲーム実装はサブモジュールなので --recurse-submodules を付ける)
+git clone --recurse-submodules git@github.com:azumag/docich.git
+cd docich
+# 既に clone 済みでサブモジュールが未取得の場合は代わりに: git submodule update --init
+
 scripts/setup_ubuntu_arm.sh
 bin/docich doctor
 bin/docich up
@@ -174,10 +179,15 @@ bin/docich                    CLI launcher
 src/docich/                   config, adapters, agent, stream, captions
 config/docich.toml            global safe defaults
 config/games/*.toml           per-game definitions
+games/roms/                   ROM 置き場 (gitignore。自己吸い出し品のみ)
+games/soviet_now/             submodule → azumag/soviet_now (sorengame 本体, main 追跡)
+games/hanjuku-sfc-speedrun/   submodule → azumag/hanjuku-sfc-speedrun (半熟英雄 RTA データ)
 native/ffmpeg/                docichcc source, pinned build, PoC, stress proof
-scripts/                      Ubuntu setup and smoke tests
+scripts/                      Ubuntu setup, smoke tests, wiki publish
 tests/                        stdlib unittest suite
+wiki/                         GitHub wiki 原稿 (scripts/publish_wiki.sh で発行)
 docs/architecture.md          canonical architecture
+docs/multi_repo_plan.md       submodule 構成と共通部品化ロードマップ
 docs/games/                   per-game contracts
 docs/twitch_closed_captions.md caption architecture and production evidence
 handoff.md                    current Soren/docich operational handoff
@@ -196,10 +206,16 @@ scripts/smoke_cli.sh
 必要なLinux依存が揃った環境で実行してください。native captionのbuildと
 transport proofは `native/ffmpeg/README.md` の手順を使います。
 
+GitHub wiki のページ原稿は `wiki/` ディレクトリでバージョン管理する (入り口・運用ハンドブック。
+詳細は複製せず `docs/` へリンクする)。GitHub 側への発行は、GitHub 認証のあるマシンで
+`scripts/publish_wiki.sh` を実行する。
+
 ## Documentation
 
 - [`docs/architecture.md`](docs/architecture.md): adapter・runtime・ownershipの一次情報
+- [`docs/multi_repo_plan.md`](docs/multi_repo_plan.md): マルチリポジトリ構成 (submodule 化・共通部品化ロードマップ)
+- [`docs/games/hanjuku-hero.md`](docs/games/hanjuku-hero.md) / [`docs/games/nethack.md`](docs/games/nethack.md): ゲーム別セットアップ
+- [`docs/games/sorengame.md`](docs/games/sorengame.md): Soren productionとの統合境界
 - [`docs/oracle_arm_setup_guide.md`](docs/oracle_arm_setup_guide.md): Oracle A1 setup
 - [`docs/soren_linux_migration_plan.md`](docs/soren_linux_migration_plan.md): Soren移行の完了状況と将来gate
-- [`docs/games/sorengame.md`](docs/games/sorengame.md): Soren productionとの統合境界
 - [`docs/twitch_closed_captions.md`](docs/twitch_closed_captions.md): native captions

@@ -41,6 +41,7 @@ adapter = "cli"
 command = "nethack"
 cols = 80
 rows = 24
+font = "monospace"
 font_size = 18
 
 [agent]

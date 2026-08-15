@@ -2,7 +2,7 @@
 
 All tmux invocations go through procs.run(strip_tmux=True) so that docich can
 be operated from inside a tmux session without the nested `tmux` refusing to
-run (architecture.md SS9.6).
+run (architecture.md §9.6).
 """
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ class Tmux:
 
     def new_game_session(self, session: str, cmd: list[str], cols: int, rows: int) -> None:
         self._run(["new-session", "-d", "-s", session, "-x", str(cols), "-y", str(rows), shlex.join(cmd)])
-        # 配信画面に tmux の緑ステータスバーが映り込むため off にする (architecture.md SS4.2)
+        # 配信画面に tmux の緑ステータスバーが映り込むため off にする (architecture.md §4.2)
         self.set_status_off(session)
 
     def set_status_off(self, session: str) -> None:
