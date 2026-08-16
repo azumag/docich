@@ -1,6 +1,6 @@
 # Twitch native closed captions
 
-> Current as of 2026-08-15. This document is the cross-repository architecture
+> Current as of 2026-08-16. This document is the cross-repository architecture
 > record for [docich Issue #1](https://github.com/azumag/docich/issues/1).
 
 ## Outcome
@@ -105,9 +105,12 @@ bin/docich caption plan \
   --output /run/user/1001/docich/speech-123.plan.json
 ```
 
-The planner accepts at most 32 chunks. Each normalized translation must fit the
-declared page shape. Production asks for roughly 32 English characters and
-enforces the absolute 64-character default page limit.
+The planner does not impose a fixed chunk-count cap. Each normalized translation
+must fit the declared page shape. Production asks for roughly 32 English
+characters and enforces the absolute 64-character default page limit. The
+FFmpeg protocol still exposes 32 page slots (`0`–`31`); an unbounded speech
+sequence is mapped to a reusable slot with `sequence % 32` after the previous
+chunk has committed.
 
 For the built-in local MiniMax-compatible route, the request sets deterministic
 JSON mode and disables reasoning for the simple translation task. Regardless of
@@ -117,10 +120,13 @@ provider behavior, the parser accepts only:
 {"translations":["Caption one.","Caption two."]}
 ```
 
-Surrounding analysis, Web-search/tool progress, markdown, duplicate keys, wrong
-array length, non-strings, non-ASCII residue, and over-length text are rejected.
-There is no substring extraction fallback. This is the trust boundary that
-prevents thinking or tool traces from becoming captions.
+Surrounding analysis, Web-search/tool progress, markdown, duplicate keys,
+non-strings, non-ASCII residue, and over-length text are rejected. A non-empty
+translation array may contain only the available ordered prefix; the matching
+speech prefix is captioned and the untranslated tail continues audio-only.
+Extra translations are truncated to the speech chunk count, while an empty
+array remains an error. There is no substring extraction fallback. This is the
+trust boundary that prevents thinking or tool traces from becoming captions.
 
 ## FFmpeg socket operations
 
@@ -129,6 +135,14 @@ bin/docich caption send prepare --plan /path/to/plan.json --chunk 0 --page 0
 bin/docich caption send commit  --plan /path/to/plan.json --chunk 0 --page 0
 bin/docich caption send clear   --plan /path/to/plan.json
 bin/docich caption send reset
+```
+
+For speech sequences beyond the first 32 chunks, pass the unbounded sequence
+identity separately; docich maps it onto the reusable protocol slot:
+
+```bash
+bin/docich caption send prepare --plan /path/to/plan.json --chunk 32 --page 0 --sequence 32
+bin/docich caption send commit  --plan /path/to/plan.json --chunk 32 --page 0 --sequence 32
 ```
 
 Every operation waits for a matching acknowledgement. A request is capped at
@@ -154,9 +168,9 @@ fail-open caption policy, not a silent claim that captions are active;
 
 | Gate | Evidence |
 |---|---|
-| Planner schema and bounds | unit tests for malformed/extra/thinking output, ASCII normalization, page limits |
+| Planner schema and bounds | unit tests for malformed/extra/thinking output, partial prefixes, long chunk lists, ASCII normalization, page limits |
 | IPC ownership | stale socket replacement and live-socket collision proof |
-| Ordering | prepare/commit/clear acknowledgements and stale-clear rejection |
+| Ordering | prepare/commit/clear acknowledgements, reusable sequence slots, and stale-clear rejection |
 | Transport | A/53 SEI inspection plus libcaption decode from generated MPEG-TS |
 | Load | 20-cycle stress proof with latency bound and first/last decode |
 | Generic runtime | opt-in, capability detection, fail-open, secret redaction tests |
