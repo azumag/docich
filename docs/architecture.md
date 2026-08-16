@@ -460,7 +460,7 @@ enabled = false        # viewer専用。productionはsoviet_nowが運転
   Linux実機確認は、対象環境ごとのrelease gateとして残る。
 
 ### Phase 2: Game bring-up
-- **半熟英雄 brain: 実装済み** (`brains/hanjuku/` + `docs/hanjuku_brain.md`)。コンテナで fake/claude-cli 両経路の E2E 済み (`scripts/smoke_brain.sh` + 実 LLM 1サイクル)。残り: VM で ROM 実プレイ (`[agent] enabled = true` 化)。
+- **半熟英雄 brain: 実装済み** (`brains/hanjuku/` + `docs/hanjuku_brain.md`)。コンテナで fake/claude-cli 両経路の E2E 済み (`scripts/smoke_brain.sh` + 実 LLM 1サイクル)。残り: VM で ROM 実プレイ (`[agent] enabled = true` 化) — **ユーザー判断で一旦ペンディング中** (2026-08-16。引き継ぎ: `docs/handoff_common_parts.md`)。
 - Oracle ARM で `setup_ubuntu_arm.sh` → `doctor` → RetroArch 実機検証 (§9 の 1-5)。
 - RTMP 実配信 (24h 連続・CPU 実測で preset 決定)。ステート保存 (`ra-cmd SAVE_STATE`) を絡めた復帰運用。
 - sorengame: viewer rehearsalは可能。本番所有権移管はgame-only entry pointと別cutoverが揃うまで行わない。
