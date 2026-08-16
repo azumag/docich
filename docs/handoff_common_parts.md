@@ -13,8 +13,8 @@
 
 | 項目 | 状態 |
 |---|---|
-| 作業ブランチ | `claude/docich-game-switching-lsom1e` = docich main (`e261c31`) + Phase 2/3 実装一式。push 済み。**PR は未作成** (ユーザー指示があるまで作らない) |
-| テスト | stdlib unittest **371 件全緑**。`scripts/smoke_cli.sh` / `scripts/smoke_brain.sh` とも PASS |
+| 作業ブランチ | `claude/docich-game-switching-lsom1e` = docich main (`e261c31`) + Phase 2/3 実装一式 + 字幕 drift 同期 (`2a29313`)。push 済み。**PR は未作成** (ユーザー指示があるまで作らない) |
+| テスト | 字幕同期前の最終全体確認は stdlib unittest **371 件全緑**、`scripts/smoke_cli.sh` / `scripts/smoke_brain.sh` とも PASS。字幕同期後は `py_compile` と `tests/test_captions.py` **28 件全緑**。このコネクタセッションでは全体 371 件と smoke は再実行していない |
 | submodule | `games/soviet_now` = `dcb2992` (本日 bump 済み) / `games/hanjuku-sfc-speedrun` = `5e98294` |
 | 監視 | 毎時 Routine が soviet_now main と docich main を監視 (multi_repo_plan.md §4 のプロトコル)。変化がなければ沈黙 |
 | wiki | `wiki/` 原稿は最新。GitHub への発行はユーザーが `scripts/publish_wiki.sh` を実行した時点で反映 |
@@ -47,39 +47,56 @@ churn は大きく異なる:
 
 | 領域 | 直近の変更 | 判定 |
 |---|---|---|
-| TTS (`broadcast/say_enqueue.sh`, `google_tts.sh`, `coeiroink_tts.sh`) | **6週間変更なし** | 安定。着手可 |
+| TTS (`say_enqueue.sh`, `google_tts.sh`, `coeiroink_tts.sh`) | **6週間変更なし** | 安定。次に着手 |
 | オーバーレイ (`generate_*_overlay*`, `dashboard_data.py` — リポジトリ直下) | 6週間で3件 | ほぼ安定 |
 | コメント応答 (`broadcast/comment*.sh`, chat 系) | **本日も変更あり** (英語コメント分類、rate-limit backoff 等) | 活発。設計のみ可 |
 | ラジオ (`broadcast/radio_*`) | 直近3週間で複数 (deferred queue、caption 同期等) | 活発。設計のみ可 |
-| 字幕 (soviet_now 側 `lib/closed_captions.py`) | 改善2件が入った (下記 3.2) | **drift 対応が必要** |
+| 字幕 (soviet_now 側 `lib/closed_captions.py`) | 改善2件を docich 正典へ同期 | **完了 (`2a29313`)** |
 
-### 3.2 最初の実務タスク: 字幕 drift の同期
+### 3.2 完了: 字幕 drift の同期
 
 字幕は既に docich へ昇格済みの共通部品 (`src/docich/captions.py` が正典) だが、Codex が
-soviet_now 側の互換実装に改善を入れた:
+soviet_now 側の互換実装へ入れた以下の改善を同期した:
 
 - `a9fcc4c0a` fix: remove closed caption chunk count cap
 - `9fb403afe` fix: keep partial caption translations
 
-これは handoff.md「Remaining gates」#2 (互換コピーの手動同期) が**実際に発火した状態**。
-次セッションの1歩目はこの同期評価が最適:
-`games/soviet_now/lib/closed_captions.py` と docich `src/docich/captions.py` を diff し、
-2コミットの意味 (チャンク数上限の撤廃・部分翻訳の維持) を docich 正典に取り込むか判断
-→ 取り込むならテスト (`tests/test_captions.py`) ごと移植。
+反映コミット: `2a293138e914ae932b12cf0f4b3b06c3a4bde899`
 
-### 3.3 その後の進め方 (提案順)
+- 翻訳配列が不足した場合は、順序付きの非空 prefix だけを字幕化し、後半は音声のみ継続
+- 翻訳が余った場合は音声チャンク数まで切り詰め、空配列は従来どおり拒否
+- 論理上の発話チャンク数から固定 32 件上限を撤廃
+- FFmpeg の 32 制御スロットは維持し、`sequence % 32` で安全に再利用
+- thinking、説明文、壊れた JSON、余計な schema key、非文字列、長すぎる字幕を拒否する境界は維持
+- `tests/test_captions.py` へ部分翻訳・余剰翻訳・40チャンク・スロット循環の回帰テストを移植
+- `docs/twitch_closed_captions.md` を新しい契約へ更新
+- `soviet_now` には書き込んでいない
 
-1. **TTS の共通部品化設計** (C4 先頭 tts/ の前倒し設計)。say_enqueue 系の依存
-   (VOICEVOX/GOOGLE/COEIROINK の環境変数・キュー・再生経路) を洗い出し、docich 側の口
-   (例: `docich say` または adapters と並ぶ `tts` モジュール) を設計 → 参照実行の PoC。
-   6週間安定しており、churn との衝突リスクが最小。
-2. **C2 のインターフェース設計** (`docich chat <game>` / `docich radio <game>` 相当)。
+確認: `python3 -m py_compile` PASS、字幕単体テスト 28 件 PASS。GitHub に反映した source/test の
+Blob SHA と、ローカル検証に使ったファイルの Git Blob SHA は一致。
+
+### 3.3 次の実務タスク: TTS の共通部品化設計
+
+1. **inventory を作る**。`games/soviet_now/say_enqueue.sh`、`google_tts.sh`、
+   `coeiroink_tts.sh` を読み、ゲーム非依存度、churn、環境変数、外部コマンド、キュー、
+   一時ファイル、再生経路、字幕連携、失敗時挙動を分類する。soviet_now は読むだけ。
+2. **docich 側の口を設計する**。候補は `docich say <game>` または adapters と並ぶ
+   `tts` モジュール。最初は `games/soviet_now/...` をサブモジュール相対パスで参照実行し、
+   実装を複製・移動しない。
+3. **参照実行 PoC の境界を決める**。既存の VOICEVOX / Google / COEIROINK 選択、FIFO、
+   再生、caption hook のどこまでを既存スクリプトへ任せ、docich が何を正規化するかを文書化する。
+4. 設計文書は `docs/common_parts_tts.md` を候補とする。実装へ進む前に、stdlib-only、
+   `:98` / `docich_sink`、`stream.mode="null"` 既定、set-default-sink しない原則を再確認する。
+
+### 3.4 その後の進め方
+
+1. **C2 のインターフェース設計** (`docich chat <game>` / `docich radio <game>` 相当)。
    設計自体は churn と独立に進められる。**実装着手は broadcast/ の落ち着きを毎時監視
    Routine で確認してから** (目安: コメント/ラジオ系ファイルが2週間程度無変更)。
-3. **C3 (オーバーレイ)** は C2 と同時期に判断 (ffmpeg drawtext フック + `generate_*` 生成物の接続)。
-4. **C4 (昇格・soviet_now 側のラッパ化)** はユーザー合意ゲート。
+2. **C3 (オーバーレイ)** は C2 と同時期に判断 (ffmpeg drawtext フック + `generate_*` 生成物の接続)。
+3. **C4 (昇格・soviet_now 側のラッパ化)** はユーザー合意ゲート。
 
-### 3.4 進め方の作法
+### 3.5 進め方の作法
 
 - 部品の inventory (ゲーム非依存度 × churn × 依存環境変数の分類表) を最初に作ると
   以後の判断が速い。soviet_now は読むだけ (書かない)。
@@ -108,5 +125,5 @@ soviet_now 側の互換実装に改善を入れた:
 | `docs/multi_repo_plan.md` | サブモジュール構成・C0〜C4 ロードマップ・監視プロトコル |
 | `docs/hanjuku_brain.md` | 半熟英雄 brain の設計と検証状況 (再開時の正典) |
 | `handoff.md` (リポジトリ直下) | Codex 側の運用引き継ぎ (Soren 本番の正体・残ゲート)。**Codex が所有** |
-| `docs/twitch_closed_captions.md` | 字幕アーキテクチャ (drift 同期の背景知識) |
+| `docs/twitch_closed_captions.md` | 字幕アーキテクチャ (同期済みの正典) |
 | `wiki/` | 入り口・運用ハンドブック (発行は `scripts/publish_wiki.sh`) |
