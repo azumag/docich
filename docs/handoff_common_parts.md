@@ -6,6 +6,7 @@
 
 - 【確認済】= 一次情報 (実クローン・実コミット・実測) で裏取りした事実
 - 実測日はすべて 2026-08-16
+- 2026-08-17 更新: TTS 共通部品化の inventory と reference-run PoC を追加
 
 ---
 
@@ -16,6 +17,8 @@
 | 作業ブランチ | `claude/docich-game-switching-lsom1e` = docich main (`e261c31`) + Phase 2/3 実装一式 + 字幕 drift 同期 (`2a29313`)。push 済み。**PR は未作成** (ユーザー指示があるまで作らない) |
 | テスト | 字幕同期前の最終全体確認は stdlib unittest **371 件全緑**、`scripts/smoke_cli.sh` / `scripts/smoke_brain.sh` とも PASS。字幕同期後は `py_compile` と `tests/test_captions.py` **28 件全緑**。このコネクタセッションでは全体 371 件と smoke は再実行していない |
 | submodule | `games/soviet_now` = `dcb2992` (本日 bump 済み) / `games/hanjuku-sfc-speedrun` = `5e98294` |
+| TTS 設計 | `docs/common_parts_tts.md`: inventory + `docich say` 設計 (2026-08-17) |
+| TTS PoC | `src/docich/tts.py` + CLI `say` + `tests/test_tts.py` (2026-08-17) |
 | 監視 | 毎時 Routine が soviet_now main と docich main を監視 (multi_repo_plan.md §4 のプロトコル)。変化がなければ沈黙 |
 | wiki | `wiki/` 原稿は最新。GitHub への発行はユーザーが `scripts/publish_wiki.sh` を実行した時点で反映 |
 
@@ -95,6 +98,31 @@ Blob SHA と、ローカル検証に使ったファイルの Git Blob SHA は一
    Routine で確認してから** (目安: コメント/ラジオ系ファイルが2週間程度無変更)。
 2. **C3 (オーバーレイ)** は C2 と同時期に判断 (ffmpeg drawtext フック + `generate_*` 生成物の接続)。
 3. **C4 (昇格・soviet_now 側のラッパ化)** はユーザー合意ゲート。
+
+### 3.5 完了: TTS 共通部品化 設計・参照実行 PoC (2026-08-17)
+
+- `docs/common_parts_tts.md` に、`say_enqueue.sh` / `voicevox_tts.sh` / `google_tts.sh` /
+  `coeiroink_tts.sh` / `english_tts.sh` / `bilingual_comment_tts.sh` /
+  `lib/closed_captions.sh` / `lib/outbound_queue.sh` の inventory と、
+  `bin/docich say <game>` を推奨口とする設計を記録。
+- PoC は docich 側のみに実装:
+  - `src/docich/tts.py`: ゲーム名→`games/<name>/say_enqueue.sh` の安全解決
+    (repo 内パス制限・allowlist `say_enqueue.sh`・実行可能チェック)
+  - CLI `say`: `-f/テキスト`、`--rate`、`--pre-delay`、`--render-only -o`、
+    `--wav-playlist --caption-chunks`、`--dry-run`。argv 配列のみで shell 結合しない
+  - `config/games/sorengame.toml` に `submodule = "games/soviet_now"` を追加
+  - 既定 env: `SAY_CONTEXT_LABEL=docich`、`DOCICH_CC_ENABLED=0`、
+    `PULSE_SINK/SAY_AUDIO_DEVICE=docich_sink`、`OUTBOUND_CHAT_QUEUE_DIR=一時dir`
+  - cwd はサブモジュールルート (soviet_now の相対参照をそのまま利用)
+- `tests/test_tts.py` 20 件: 相対パス、submodule 欠落、不正 game/パス拒否、
+  argv/env、dry-run、CLI エラーを追加。
+- 検証: `python3 -m py_compile` PASS。`docich say sorengame --dry-run ...` PASS。
+  内部テスト 280 件 (tts/cli/config/captions plan/actions/brains/state/supervise/
+  watchdog/tmux/agent/adapters/native_captions) 全緑。
+- 制約: このサンドボックスは AF_UNIX socket bind を拒否するため、
+  `test_captions` の socket 3 件と `test_stream` の socket 1 件は変更前後とも
+  同じ環境要因で失敗。実体は 398 件の全体テストでもその 4 件のみ。
+  `scripts/smoke_cli.sh` / `scripts/smoke_brain.sh` は Xvfb/tmux 依存のため未実行。
 
 ### 3.5 進め方の作法
 

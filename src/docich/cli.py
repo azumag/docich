@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import captions, procs
+from . import captions, procs, tts
 from .actions import Action, ActionError, parse_actions
 from .adapters import AdapterError, make_adapter
 from .config import ConfigError, GlobalConfig, list_games, load_game, load_global
@@ -50,6 +50,7 @@ USER_ERRORS = (
     StreamKeyError,
     captions.CaptionError,
     CliError,
+    tts.TtsError,
 )
 
 
@@ -136,6 +137,33 @@ def build_parser() -> argparse.ArgumentParser:
     p_caption = sub.add_parser("caption", help="英語字幕計画とFFmpeg字幕IPCを操作する")
     captions.configure_parser(p_caption)
 
+    p_say = sub.add_parser("say", help="ゲーム対応のTTSを参照実行する (soviet_now say_enqueue)")
+    p_say.add_argument("game", help="ゲーム名 (config/games/<name>.toml)")
+    p_say.add_argument(
+        "-f", "--file", dest="file", metavar="PATH",
+        help="読み上げるテキストファイル (docichが一時コピーして渡す)",
+    )
+    p_say.add_argument("text", nargs="*", help="読み上げるテキスト (ファイルと併用不可)")
+    p_say.add_argument("--rate", type=int, default=120, metavar="N", help="読み上げ速度 (既定120)")
+    p_say.add_argument(
+        "--pre-delay", dest="pre_delay", type=int, default=60, metavar="SEC",
+        help="再生前の待ち時間 (既定60)",
+    )
+    p_say.add_argument(
+        "--render-only", action="store_true",
+        help="WAV生成のみで再生しない",
+    )
+    p_say.add_argument("-o", "--output", metavar="WAV", help="render結果のWAV出力先")
+    p_say.add_argument(
+        "--wav-playlist", metavar="PATH",
+        help="再生するWAV playlist (--caption-chunksとセット)",
+    )
+    p_say.add_argument(
+        "--caption-chunks", metavar="PATH",
+        help="playlistに対応する字幕チャンク (--wav-playlistとセット)",
+    )
+    p_say.add_argument("--dry-run", action="store_true", help="実行せずargv/env/cwdを表示する")
+
     p_run = sub.add_parser("run", help="(内部用) tmux window 内で監督ループを実行する")
     p_run.add_argument(
         "component", choices=["display", "audio", "stream", "game", "agent", "watchdog"]
@@ -188,6 +216,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return cmd_ra_cmd(g, args.cmd)
     if command == "caption":
         return captions.run_args(args, default_socket=g.captions.socket_path)
+    if command == "say":
+        return tts.cli_say(args)
     if command == "run":
         return cmd_run(g, args.component, args.name)
     raise CliError(f"未知のコマンドです: {command}")

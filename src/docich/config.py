@@ -110,9 +110,10 @@ class GameConfig:
     name: str
     title: str
     adapter: str
-    raw: dict
-    agent: GameAgentConfig
-    path: Path
+    submodule: str = ""
+    raw: dict = field(default_factory=dict)
+    agent: GameAgentConfig = field(default_factory=GameAgentConfig)
+    path: Path = field(default_factory=Path)
 
 
 def _filtered(cls, raw, table_name: str) -> dict:
@@ -260,6 +261,9 @@ def _parse_game(name: str, path: Path, data: dict) -> GameConfig:
     if not adapter:
         raise ConfigError(f"[game].adapter は必須です: {path}")
     title = game_raw.get("title") or game_name
+    submodule = game_raw.get("submodule") or ""
+    if not isinstance(submodule, str):
+        raise ConfigError(f"[game].submodule は文字列である必要があります: {path}")
 
     agent_raw = data.get("agent", {})
     agent = GameAgentConfig(**_filtered(GameAgentConfig, agent_raw, "agent"))
@@ -268,6 +272,7 @@ def _parse_game(name: str, path: Path, data: dict) -> GameConfig:
         name=game_name,
         title=title,
         adapter=adapter,
+        submodule=submodule,
         raw=data,
         agent=agent,
         path=path,
