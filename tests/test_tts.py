@@ -289,3 +289,59 @@ class TestCliSay(TtsTestBase):
             rc = cli.main(["--config", str(self.toml), "say", "missing"])
         self.assertEqual(rc, 2)
         self.assertIn("docich: エラー", err.getvalue())
+
+    def test_say_text_argument_creates_temp_content(self):
+        self._write_game("sorengame")
+        self._write_script()
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = cli.main([
+                "--config", str(self.toml), "say", "sorengame",
+                "こんにちは", "世界", "--pre-delay", "0", "--dry-run",
+            ])
+        self.assertEqual(rc, 0, err.getvalue())
+        content = out.getvalue()
+        self.assertIn("docich: dry-run:", content)
+        self.assertIn("content.txt", content)
+
+    def test_say_text_content_written_to_private_file(self):
+        from docich import tts as tts_mod
+
+        self._write_game("sorengame")
+        self._write_script()
+        captured: list[str] = []
+
+        def fake_run_tts(*args, **kwargs):
+            path = Path(kwargs["text_file"])
+            captured.append(path.read_text(encoding="utf-8"))
+            return 7, ""
+
+        with mock.patch.object(tts_mod, "run_tts", side_effect=fake_run_tts):
+            out, err = io.StringIO(), io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                rc = cli.main([
+                    "--config", str(self.toml), "say", "sorengame",
+                    "こんにちは", "世界", "--pre-delay", "0",
+                ])
+        self.assertEqual(rc, 7)
+        self.assertTrue(captured)
+        self.assertEqual(captured[0], "こんにちは 世界")
+
+    def test_say_text_and_file_are_mutually_exclusive(self):
+        self._write_game("sorengame")
+        self._write_script()
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = cli.main([
+                "--config", str(self.toml), "say", "sorengame",
+                "-f", str(self._text()), "テキスト", "--dry-run",
+            ])
+        self.assertEqual(rc, 2)
+        self.assertIn("併用できません", err.getvalue())
+
+    def test_say_without_text_or_file_exits_2(self):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = cli.main(["--config", str(self.toml), "say", "sorengame"])
+        self.assertEqual(rc, 2)
+        self.assertIn("読み上げるテキスト", err.getvalue())
