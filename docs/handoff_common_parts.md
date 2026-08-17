@@ -149,6 +149,11 @@ Blob SHA と、ローカル検証に使ったファイルの Git Blob SHA は一
    (VM / Ubuntu 環境で実行する)。実行時は「実配信中に実行しない」警告に従う。
 3. **字幕有効化の設計**。`DOCICH_CC_ENABLED=1` は FFmpeg socket との接続確認が必要。
    PoC では既定無効のまま。
+   → **設計済み (2026-08-17)**: `docich say --cc [--cc-socket PATH]` を追加。
+   socket 準備を `caption_socket_ready` で検査し、準備済みのみ
+   `DOCICH_CC_ENABLED=1` + `DOCICH_CC_SOCKET` を渡す。未準備は fail-open で
+   stderr 警告、`--cc --render-only` はエラー。実効条件 (Linux + VOICEVOX +
+   非 render-only) は say_enqueue.sh 側の判定に従う (docs/common_parts_tts.md §4.1 / §5)。
 4. **C2 設計**。broadcast/ が 2 週間程度無変更になったら、同じ参照パターンで
    `docich chat <game>` / `docich radio <game>` の inventory と interface を設計する。
 5. **C4 昇格**。ユーザー合意後に、実証済みの TTS 部品だけ docich 正典へ移し、

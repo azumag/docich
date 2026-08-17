@@ -162,6 +162,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--caption-chunks", metavar="PATH",
         help="playlistに対応する字幕チャンク (--wav-playlistとセット)",
     )
+    p_say.add_argument(
+        "--cc", action="store_true",
+        help="FFmpeg caption socket が準備済みなら字幕を有効化する (fail-open)",
+    )
+    p_say.add_argument(
+        "--cc-socket", metavar="PATH",
+        help="caption socket の上書き (既定: config の socket_path / XDG_RUNTIME_DIR)",
+    )
     p_say.add_argument("--dry-run", action="store_true", help="実行せずargv/env/cwdを表示する")
 
     p_run = sub.add_parser("run", help="(内部用) tmux window 内で監督ループを実行する")
