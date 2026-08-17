@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import captions, chat, procs, speech, tts
+from . import captions, chat, overlay, procs, speech, tts
 from .actions import Action, ActionError, parse_actions
 from .adapters import AdapterError, make_adapter
 from .config import ConfigError, GlobalConfig, list_games, load_game, load_global
@@ -197,6 +197,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     speech.configure_parser(sub)
 
+    p_overlay = sub.add_parser(
+        "overlay", help="soviet_now のオーバーレイ生成を参照実行する (C3)"
+    )
+    p_overlay.add_argument("game", help="ゲーム名 (config/games/<name>.toml)")
+    p_overlay.add_argument(
+        "kind", choices=sorted(overlay.ALLOWED_OVERLAY_KINDS),
+        help="オーバーレイ種別",
+    )
+    p_overlay.add_argument(
+        "--output", metavar="DIR", help="HTML 出力先ディレクトリ (既定: 一時ディレクトリ)"
+    )
+    p_overlay.add_argument("--dry-run", action="store_true", help="実行せずargv/env/cwdを表示する")
+
     p_run = sub.add_parser("run", help="(内部用) tmux window 内で監督ループを実行する")
     p_run.add_argument(
         "component", choices=["display", "audio", "stream", "game", "agent", "watchdog"]
@@ -257,6 +270,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return chat.cli_radio(args)
     if command == "voicevox":
         return speech.run_args(args)
+    if command == "overlay":
+        return overlay.cli_overlay(args)
     if command == "run":
         return cmd_run(g, args.component, args.name)
     raise CliError(f"未知のコマンドです: {command}")
