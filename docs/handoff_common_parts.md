@@ -147,6 +147,10 @@ Blob SHA と、ローカル検証に使ったファイルの Git Blob SHA は一
    → **unittest 分は確定済み (2026-08-17)**: sandbox 外のローカル (socket bind 可) で
    405 件全緑を確認。smoke 2 本はローカルに `xdotool` がないため未実行のまま
    (VM / Ubuntu 環境で実行する)。実行時は「実配信中に実行しない」警告に従う。
+   → **smoke 2 本も VM で PASS (2026-08-17)**: VM へ docich clone +
+   `smoke_cli.sh` SMOKE PASS (obs/send/snap/stream/switch まで) +
+   `smoke_brain.sh` PASS (fake brain 2回連続、retroarch 無しのため手順4は SKIP)。
+   本番 soren_bridge (:99) とは別の :96 + 一時 config で実行。実配信は継続。
 3. **字幕有効化の設計**。`DOCICH_CC_ENABLED=1` は FFmpeg socket との接続確認が必要。
    PoC では既定無効のまま。
    → **設計済み (2026-08-17)**: `docich say --cc [--cc-socket PATH]` を追加。

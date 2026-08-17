@@ -65,3 +65,6 @@
   `docich voicevox synth --dry-run` 確認
 - 実機検証は VOICEVOX が起動している環境 (VM 等) で `docich voicevox synth` を実行し、
   出力 WAV のヘッダ/サイズを確認する。初回は本番キューに触れない別 checkout で行う
+- **実機合成は完了 (2026-08-17)**: ローカル VOICEVOX (127.0.0.1:50021, v0.25.2) で
+  `docich voicevox speakers` (話者一覧) と `docich voicevox synth` (267,308 bytes WAV,
+  RIFF ヘッダ確認) を実行して成功。VM とは独立したローカル合成で本番に触れていない。
