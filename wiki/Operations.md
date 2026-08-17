@@ -102,6 +102,10 @@ bin/docich ra-cmd PAUSE_TOGGLE    # 一時停止の切替
 60 秒以上生きていた場合はバックオフを 1s にリセットする (瞬間クラッシュの連続と、たまたま
 長時間稼働後に落ちたケースを区別する設計)。
 
+**配信 (FFmpeg → Twitch) だけを明示終了したい場合は、`down` による強制終了ではなく、
+FFmpeg へ `q` を送って正常終了させる方法がある** (RTMP の `FCUnpublish` / `deleteStream`
+が実行され、Twitch が即 OFF LINE になる)。詳細は [[配信の明示終了|Stream-Ending]] を参照。
+
 ## 時間割ローテーション (`docich rotate`)
 
 `config/docich.toml` の `[rotation] games = ["nethack", "hanjuku-hero"]` のように巡回順を

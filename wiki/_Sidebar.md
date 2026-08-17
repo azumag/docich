@@ -5,6 +5,7 @@
 
 **運用**
 - [[日常運用|Operations]]
+- [[配信の明示終了|Stream-Ending]]
 - [[トラブルシューティング|Troubleshooting]]
 
 **ゲーム**

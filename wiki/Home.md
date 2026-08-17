@@ -55,6 +55,7 @@ tmux セッション "docich"
 - [[Home]] — この wiki のトップページ (現在地)
 - [[クイックスタート|Quickstart]] — 導入から起動・配信有効化までの最短手順
 - [[日常運用|Operations]] — ゲーム切替・状態確認・ログ・停止再起動の運用ハンドブック
+- [[配信の明示終了|Stream-Ending]] — FFmpeg を kill せず正常終了させ Twitch 配信を即offする手順
 - [[対応ゲーム|Games]] — 対応ゲーム一覧表とゲームの追加方法
 - [[半熟英雄 (SFC)|Game-Hanjuku-Hero]] — RetroArch アダプタでの半熟英雄の動かし方
 - [[NetHack|Game-NetHack]] — cli アダプタの標準例、テキスト観測
