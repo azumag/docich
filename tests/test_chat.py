@@ -182,6 +182,39 @@ class TestCliChat(ChatTestBase):
         self.assertIn("docich: radio dry-run:", out.getvalue())
         self.assertIn("_radio_generate_and_play", out.getvalue())
 
+    def test_radio_failure_prints_stderr(self):
+        from docich import chat as chat_mod
+
+        self._write_broadcast()
+        with mock.patch.object(
+            chat_mod, "run_radio", return_value=(1, "ADVICE: エラーメッセージXYZ")
+        ):
+            out, err = io.StringIO(), io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                rc = cli.main(
+                    ["--config", str(self.toml), "radio", "sorengame",
+                     "--topic", "x"]
+                )
+        self.assertEqual(rc, 1)
+        self.assertIn("エラー終了しました", out.getvalue())
+        self.assertIn("エラーメッセージXYZ", err.getvalue())
+
+    def test_chat_failure_prints_stderr(self):
+        from docich import chat as chat_mod
+
+        self._write_broadcast()
+        with mock.patch.object(
+            chat_mod, "run_comment", return_value=(1, "CHAT: エラー詳細ABC")
+        ):
+            out, err = io.StringIO(), io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                rc = cli.main(
+                    ["--config", str(self.toml), "chat", "sorengame"]
+                )
+        self.assertEqual(rc, 1)
+        self.assertIn("エラー終了しました", out.getvalue())
+        self.assertIn("エラー詳細ABC", err.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

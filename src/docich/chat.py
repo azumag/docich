@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 from shlex import quote
+import sys
 import tempfile
 
 from .config import ConfigError, GlobalConfig
@@ -271,6 +272,8 @@ def cli_chat(args) -> int:
         return 0
     if rc != 0:
         print(f"docich: chat 参照実行がエラー終了しました (rc={rc})", flush=True)
+        if detail:
+            print(detail, file=sys.stderr, flush=True)
         return rc
     print("docich: chat 完了")
     return 0
@@ -298,6 +301,8 @@ def cli_radio(args) -> int:
         return 0
     if rc != 0:
         print(f"docich: radio 参照実行がエラー終了しました (rc={rc})", flush=True)
+        if detail:
+            print(detail, file=sys.stderr, flush=True)
         return rc
     print("docich: radio 完了")
     return 0
