@@ -187,6 +187,12 @@ Blob SHA と、ローカル検証に使ったファイルの Git Blob SHA は一
    `[stream] overlay_text_file` の drawtext 合成を追加 (font/size/x/y 設定可)。
    ファイル無し・不安全パスは fail-open。字幕と併用時は 1 つの `-vf` に連結。
    検証: tests/test_stream.py の drawtext 4 件 + 全体 455 件全緑。
+   → **C4 chat/radio 責務分割設計 + AI 出力ガード移植 (2026-08-17)**:
+   `docs/common_parts_chat_c4.md` に責務分割 (C-S1〜C-S7) を設計。最優先の
+   C-S2 (AI 出力ガード) を `src/docich/model_output_guard.py` として docich 正典へ
+   移植し、CLI `docich ai-guard` を追加 (stdin → stdout 純フィルタ)。
+   検証: tests/test_model_output_guard.py 9 件 + 全体 464 件全緑。
+   C-S1 (AI ディスパッチ) 以降は C2 実実行の実証後に昇格判断。
 5. **C4 昇格**。ユーザー合意後に、実証済みの TTS 部品だけ docich 正典へ移し、
    soviet_now 側を薄いラッパへ置換する。
    → **ユーザー合意済み (2026-08-17)**。責務分割設計を
