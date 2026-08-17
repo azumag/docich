@@ -193,6 +193,12 @@ Blob SHA と、ローカル検証に使ったファイルの Git Blob SHA は一
    移植し、CLI `docich ai-guard` を追加 (stdin → stdout 純フィルタ)。
    検証: tests/test_model_output_guard.py 9 件 + 全体 464 件全緑。
    C-S1 (AI ディスパッチ) 以降は C2 実実行の実証後に昇格判断。
+   → **soviet_now 側のガード委譲ラッパを実装 (2026-08-17)**: `lib/ai_generate.sh` の
+   `_ai_guard_model_output` が `DOCICH_BIN` (または PATH の docich) を使い
+   `docich ai-guard` へ委譲し、無ければローカル `lib/model_output_guard.py` へ
+   フォールバック (CI・探索モード互換)。ローカルコミット
+   `93c26f395` (branch codex/ai-guard-docich-delegate)。docich と soviet_now の
+   guard 実装は同一であることを diff で確認済み。**PR 作成・本番反映はユーザー承認待ち**。
 5. **C4 昇格**。ユーザー合意後に、実証済みの TTS 部品だけ docich 正典へ移し、
    soviet_now 側を薄いラッパへ置換する。
    → **ユーザー合意済み (2026-08-17)**。責務分割設計を
