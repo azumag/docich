@@ -256,6 +256,9 @@ docich say <game> "読み上げるテキスト" [options]
   - `DOCICH_CC_ENABLED=0` を既定 (字幕 socket 未作成なら false。明示有効化は将来)
   - `.env` 由来の VOICEVOX/Google 設定は `say_enqueue.sh` が自身で読み込む
 - 再生なし・合成のみ: `--render-only` を渡す
+- 実再生ガード: `--render-only` も `--dry-run` も指定せず実行する場合は
+  `DOCICH_ALLOW_REAL_PLAYBACK=1` を要求する。無ければ TtsError で拒否
+  (`src/docich/tts.py` の `run_tts` が検査)。理由は §4.2-8 / §5 のキュー分離
 - 生成物: `-o <wav>` を指定すると render 結果をコピーし、`--wav-playlist` 時は
   bundle (playlist + captions) の扱いを文書化
 - `--dry-run`: 実行せず argv/env/cwd を表示
@@ -281,13 +284,22 @@ docich say <game> "読み上げるテキスト" [options]
 6. `DOCICH_CC_ENABLED=0` 既定。実再生する場合も broadcast/radio の queue や
    `soren-runtime.service` には触れない
 7. 実 TTS や音声を鳴らさない検証は、`--dry-run` + unit tests で行う
+8. **キュー分離 (2026-08-17 確定)**: `say_enqueue.sh` の `QUEUE_DIR="tmp/.say_queue"`
+   は cwd (サブモジュールルート) 基準の固定パスで、`SAY_QUEUE_DIR` 等の上書き環境変数は
+   存在しない (dcb2992 で確認)。このため docich からの**実再生は、本番 soviet_now
+   ツリー (VM `/home/ubuntu/soren` / `soren-runtime.service`) とは別 checkout の
+   サブモジュールでのみ許可**する。docich-integration の `games/soviet_now` は VM と
+   物理的に別なので対象だが、同じツリー上で実再生して本番キューと衝突させる構成は禁止。
+   実行側は `DOCICH_ALLOW_REAL_PLAYBACK=1` の明示で合意を示し、既定は `--dry-run` /
+   `--render-only` に留める
 
 ## 5. 残余リスク・次段階
 
-- `say_enqueue.sh` は `tmp/.say_queue/` をサブモジュールルートに作る。docich 側の実行でも
-  同じキューを使うため、本番 soviet_now のキューと衝突する可能性がある。PoC では
-  `SAY_QUEUE_DIR` のような環境変数が存在しないため、**docich からは `--dry-run` /
-  unit tests で呼び、実再生は本番キューを使わない**。
+- `say_enqueue.sh` は `tmp/.say_queue/` をサブモジュールルートに作る (固定パス、上書き不可)。
+  **キュー分離は §4.2-8 で確定済み**: 実再生は `DOCICH_ALLOW_REAL_PLAYBACK=1` +
+  本番ツリーと別 checkout の 2 条件で許可し、既定は `--dry-run` / `--render-only`。
+  実再生の初回検証 (VOICEVOX 合成 → 再生) は、本番を止めずに docich-integration の
+  サブモジュール checkout 上で行う。
 - `say_enqueue.sh` 内部の `lib/outbound_queue.sh` source は、`OUTBOUND_CHAT_QUEUE_DIR` を
   docich の一時ディレクトリへ向けることで無効化できる (チャット投稿なし)。
 - 字幕を docich 側から有効化する場合は、`DOCICH_CC_SOCKET` を docich の FFmpeg socket に

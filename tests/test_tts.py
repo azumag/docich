@@ -247,19 +247,69 @@ class TestRunTts(TtsTestBase):
         self._write_game("sorengame")
         self._write_script()
         fake_run.return_value = mock.Mock(returncode=0, stderr="")
-        rc, _detail = tts.run_tts(
-            self.g,
-            game_name="sorengame",
-            text_file=self._text(),
-            rate=120,
-            pre_delay=0,
-        )
+        with mock.patch.dict(os.environ, {"DOCICH_ALLOW_REAL_PLAYBACK": "1"}):
+            rc, _detail = tts.run_tts(
+                self.g,
+                game_name="sorengame",
+                text_file=self._text(),
+                rate=120,
+                pre_delay=0,
+            )
         self.assertEqual(rc, 0)
         fake_run.assert_called_once()
         kwargs = fake_run.call_args.kwargs
         self.assertEqual(kwargs["cwd"], str(self.submodule.resolve()))
         self.assertEqual(kwargs["env_extra"]["DOCICH_CC_ENABLED"], "0")
         self.assertEqual(kwargs["timeout"], None)
+
+    @mock.patch("docich.tts.run")
+    def test_real_playback_requires_explicit_env(self, fake_run):
+        self._write_game("sorengame")
+        self._write_script()
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(tts.TtsError) as cm:
+                tts.run_tts(
+                    self.g,
+                    game_name="sorengame",
+                    text_file=self._text(),
+                    rate=120,
+                    pre_delay=0,
+                )
+        self.assertIn("DOCICH_ALLOW_REAL_PLAYBACK", str(cm.exception))
+        fake_run.assert_not_called()
+
+    @mock.patch("docich.tts.run")
+    def test_real_playback_allowed_with_env(self, fake_run):
+        self._write_game("sorengame")
+        self._write_script()
+        fake_run.return_value = mock.Mock(returncode=0, stderr="")
+        with mock.patch.dict(os.environ, {"DOCICH_ALLOW_REAL_PLAYBACK": "1"}):
+            rc, _detail = tts.run_tts(
+                self.g,
+                game_name="sorengame",
+                text_file=self._text(),
+                rate=120,
+                pre_delay=0,
+            )
+        self.assertEqual(rc, 0)
+        fake_run.assert_called_once()
+
+    @mock.patch("docich.tts.run")
+    def test_render_only_does_not_require_env(self, fake_run):
+        self._write_game("sorengame")
+        self._write_script()
+        fake_run.return_value = mock.Mock(returncode=0, stderr="")
+        rc, _detail = tts.run_tts(
+            self.g,
+            game_name="sorengame",
+            text_file=self._text(),
+            rate=120,
+            pre_delay=0,
+            render_only=True,
+            render_output=self.repo_root / "out.wav",
+        )
+        self.assertEqual(rc, 0)
+        fake_run.assert_called_once()
 
 
 class TestCliSay(TtsTestBase):

@@ -186,6 +186,11 @@ def run_tts(
 ) -> tuple[int, str]:
     """Build and optionally execute the reference invocation.
 
+    Real playback (no ``--render-only``) requires ``DOCICH_ALLOW_REAL_PLAYBACK=1``.
+    The referenced ``say_enqueue.sh`` owns ``tmp/.say_queue/`` under the submodule
+    root, so playback is only permitted in a checkout that is not the production
+    soviet_now tree (docs/common_parts_tts.md §4.2).
+
     Returns (returncode, stderr_text) for tests without spawning audio.  The
     caller prints a dry-run preview and docich errors as needed.
     """
@@ -203,6 +208,13 @@ def run_tts(
     )
     if dry_run:
         return 0, inv.repro()
+
+    if not render_only and os.environ.get("DOCICH_ALLOW_REAL_PLAYBACK") != "1":
+        raise TtsError(
+            "実再生は既定で無効です。合成のみの場合は --render-only を指定するか、"
+            "DOCICH_ALLOW_REAL_PLAYBACK=1 で明示許可してください "
+            "(キュー分離: docs/common_parts_tts.md §4.2)"
+        )
 
     result = run(
         inv.argv,
