@@ -170,6 +170,14 @@ Blob SHA と、ローカル検証に使ったファイルの Git Blob SHA は一
    AI 実実行は未実施 (初回は別 checkout + dry-run から)。
 5. **C4 昇格**。ユーザー合意後に、実証済みの TTS 部品だけ docich 正典へ移し、
    soviet_now 側を薄いラッパへ置換する。
+   → **ユーザー合意済み (2026-08-17)**。責務分割設計を
+   `docs/common_parts_tts_c4.md` に作成。S1 (VOICEVOX 合成) を docich 正典
+   `src/docich/speech.py` として実装し、CLI `docich voicevox synth|speakers` を追加。
+   キュー/再生 (S2/S3) は `say_enqueue.sh` 参照実行のまま。字幕 (S4) は既に正典。
+   話者運用 (S5) は環境変数/引数で選択。
+   検証: tests/test_speech.py 16 件 + 全体 443 件全緑、CLI dry-run 確認済み。
+   残: soviet_now 側 `voicevox_tts.sh` の薄いラッパ化は Codex 作業完了後に別 PR
+   (外部 push はユーザー承認が必要)。実機合成は VOICEVOX 起動環境で未実施。
 
 ### 3.5 進め方の作法
 
