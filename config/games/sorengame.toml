@@ -2,6 +2,7 @@
 name = "sorengame"
 title = "soren game (Unity WebGL)"
 adapter = "browser"
+submodule = "games/soviet_now"
 
 [browser]
 url = "http://127.0.0.1:8080"  # soren が同一VMで公開するローカルWebGL viewer
