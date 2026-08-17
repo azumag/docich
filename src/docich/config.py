@@ -50,6 +50,12 @@ class StreamConfig:
     preset: str = "veryfast"
     audio_bitrate: str = "160k"
     gop_seconds: int = 2
+    # --- C3 overlay: drawtext フック (空なら無効) ---
+    overlay_text_file: str = ""
+    overlay_font: str = "sans"
+    overlay_fontsize: int = 24
+    overlay_x: str = "20"
+    overlay_y: str = "20"
 
 
 @dataclass

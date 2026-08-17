@@ -129,8 +129,15 @@ def build_ffmpeg_cmd(
     else:
         cmd += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
 
+    filters: list[str] = []
     if use_captions:
-        cmd += ["-vf", f"docichcc=socket={g.captions.socket_path}"]
+        filters.append(f"docichcc=socket={g.captions.socket_path}")
+
+    overlay_filter = _overlay_drawtext_filter(g)
+    if overlay_filter:
+        filters.append(overlay_filter)
+    if filters:
+        cmd += ["-vf", ",".join(filters)]
 
     gop = s.framerate * s.gop_seconds
     cmd += [
@@ -163,6 +170,35 @@ def build_ffmpeg_cmd(
         cmd += ["-f", "null", "-"]
 
     return cmd
+
+
+def _overlay_drawtext_filter(g: GlobalConfig) -> str | None:
+    """Return a drawtext filter for the configured overlay text file, or None.
+
+    Fails open: a missing text file or an unsafe path simply disables the
+    overlay instead of breaking the stream command (C3, common_parts_overlay.md).
+    """
+
+    s = g.stream
+    if not s.overlay_text_file:
+        return None
+    path = Path(s.overlay_text_file)
+    if not path.is_absolute():
+        path = g.repo_root / path
+    path = path.resolve()
+    if not path.is_file():
+        return None
+    if any(ch in str(path) for ch in (":", ",", "'", "\\")):
+        return None
+    textfile = str(path)
+    font = s.overlay_font.replace("'", "")
+    fontsize = max(8, int(s.overlay_fontsize))
+    x = s.overlay_x.replace("'", "")
+    y = s.overlay_y.replace("'", "")
+    return (
+        f"drawtext=textfile='{textfile}':font='{font}':fontsize={fontsize}:"
+        f"x='{x}':y='{y}':fontcolor=white:box=1:boxcolor=black@0.5:boxborderw=6"
+    )
 
 
 def resolve_runtime(g: GlobalConfig, *, mask_key: bool = False) -> StreamRuntime:
