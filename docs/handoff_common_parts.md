@@ -197,8 +197,13 @@ Blob SHA と、ローカル検証に使ったファイルの Git Blob SHA は一
    `_ai_guard_model_output` が `DOCICH_BIN` (または PATH の docich) を使い
    `docich ai-guard` へ委譲し、無ければローカル `lib/model_output_guard.py` へ
    フォールバック (CI・探索モード互換)。ローカルコミット
-   `93c26f395` (branch codex/ai-guard-docich-delegate)。docich と soviet_now の
-   guard 実装は同一であることを diff で確認済み。**PR 作成・本番反映はユーザー承認待ち**。
+   `93c26f395` (branch codex/ai-guard-docich-delegate)。
+   → **実装→PR #114 マージ→本番反映まで完了 (2026-08-17)**。soviet_now main へ
+   マージ (`05fe3c4ff`)、docich の submodule bump (`0570c18`)。本番
+   `/home/ubuntu/soren/lib/ai_generate.sh` を委譲版へ置換 (バックアップ
+   `.codex_deploy/backup-20260817-ai-guard-docich-delegate/`)。本番で
+   `_ai_guard_model_output` の DOCICH_BIN 委譲と `docich ai-guard` のフィルタ
+   (<analysis> 除去) を実機確認済み。次回の AI 生成から委譲経路が有効。
 5. **C4 昇格**。ユーザー合意後に、実証済みの TTS 部品だけ docich 正典へ移し、
    soviet_now 側を薄いラッパへ置換する。
    → **ユーザー合意済み (2026-08-17)**。責務分割設計を
