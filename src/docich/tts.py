@@ -220,11 +220,26 @@ def cli_say(args) -> int:
     from .cli import _load_global
 
     g = _load_global(args)
+    text_parts = list(getattr(args, "text", None) or [])
+    if args.file and text_parts:
+        raise TtsError("-f と直接テキスト指定は併用できません")
+    if not args.file and not text_parts:
+        raise TtsError("読み上げるテキストを指定してください (-f または引数)")
+
+    text_file = args.file
+    temp_dir = None
+    if text_parts:
+        import tempfile
+
+        temp_dir = tempfile.TemporaryDirectory(prefix="docich-say-text-")
+        text_path = Path(temp_dir.name) / "content.txt"
+        text_path.write_text(" ".join(text_parts), encoding="utf-8")
+        text_file = text_path
     try:
         rc, detail = run_tts(
             g,
             game_name=args.game,
-            text_file=args.file,
+            text_file=text_file,
             rate=args.rate,
             pre_delay=args.pre_delay,
             render_only=args.render_only,
@@ -235,6 +250,9 @@ def cli_say(args) -> int:
         )
     except (ConfigError, TtsError, OSError) as exc:
         raise TtsError(str(exc)) from exc
+    finally:
+        if temp_dir is not None:
+            temp_dir.cleanup()
     if args.dry_run:
         print(f"docich: dry-run: {detail}")
         return 0

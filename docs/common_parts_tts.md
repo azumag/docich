@@ -232,6 +232,7 @@
 
 ```
 docich say <game> -f <text_file> [options]
+docich say <game> "読み上げるテキスト" [options]
 ```
 
 実装:
@@ -242,7 +243,8 @@ docich say <game> -f <text_file> [options]
 - ゲーム名は `load_game` 経由で解決し、`games/` 内の実行スクリプトは **allowlist 固定**
   (`say_enqueue.sh` のみ。将来 `english_tts.sh` 等は明示追加)
 - 入力テキストは `-f <path>` と `<text>` 直指定の両方を許し、`-f` はファイルを
-  **docich の一時ディレクトリへコピー**してから渡す (元ファイル破壊防止)
+  **docich の一時ディレクトリへコピー**、`<text>` は一時ファイルへ書き出してから
+  渡す (元ファイル破壊防止・argv 肥大化回避)。両方の併用はエラー
 - 相対パス解決:
   - サブモジュールルート = `repo_root/games/<name>`。`resolve()` で実在確認
   - スクリプトは `repo_root/games/<name>/say_enqueue.sh` の 1 つだけ

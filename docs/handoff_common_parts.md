@@ -108,7 +108,7 @@ Blob SHA と、ローカル検証に使ったファイルの Git Blob SHA は一
 - PoC は docich 側のみに実装:
   - `src/docich/tts.py`: ゲーム名→`games/<name>/say_enqueue.sh` の安全解決
     (repo 内パス制限・allowlist `say_enqueue.sh`・実行可能チェック)
-  - CLI `say`: `-f/テキスト`、`--rate`、`--pre-delay`、`--render-only -o`、
+  - CLI `say`: `-f/テキスト直指定`、`--rate`、`--pre-delay`、`--render-only -o`、
     `--wav-playlist --caption-chunks`、`--dry-run`。argv 配列のみで shell 結合しない
   - `config/games/sorengame.toml` に `submodule = "games/soviet_now"` を追加
   - 既定 env: `SAY_CONTEXT_LABEL=docich`、`DOCICH_CC_ENABLED=0`、
