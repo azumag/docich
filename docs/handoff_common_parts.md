@@ -192,6 +192,12 @@ Blob SHA と、ローカル検証に使ったファイルの Git Blob SHA は一
    まだ dcb2992 のまま**。本番へ適用する場合は、docich バイナリを VM で利用可能に
    (DOCICH_BIN 設定または PATH) した上で、ユーザー承認を得て submodule を更新する
    (サービス再起動を伴う可能性)。
+   → **本番適用済み (2026-08-17)**: ユーザー承認を得て実施。
+   - `voicevox_tts.sh` をラッパーへ置換 (旧実装は `.codex_deploy/backup-20260817-docich-wrapper/voicevox_tts.sh.old` に保存)
+   - `.env` 末尾へ `DOCICH_BIN=/home/ubuntu/docich/bin/docich` を追記 (バックアップ `.env.bak` あり)
+   - 検証: 本番ディレクトリで `voicevox_tts.sh -o ... -f ...` (180,268 bytes WAV) と
+     `say_enqueue.sh --render-only` (153,132 bytes WAV) が成功。サービスは停止せず稼働継続
+     (`start_all.sh --supervisor` / `soren_loop.sh` 稼働中、soren_bridge :99 維持)。
 
 ### 3.5 進め方の作法
 
