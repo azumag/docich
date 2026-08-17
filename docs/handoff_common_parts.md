@@ -198,6 +198,13 @@ Blob SHA と、ローカル検証に使ったファイルの Git Blob SHA は一
    - 検証: 本番ディレクトリで `voicevox_tts.sh -o ... -f ...` (180,268 bytes WAV) と
      `say_enqueue.sh --render-only` (153,132 bytes WAV) が成功。サービスは停止せず稼働継続
      (`start_all.sh --supervisor` / `soren_loop.sh` 稼働中、soren_bridge :99 維持)。
+   → **本番 audio_worker 不整合を修復 (2026-08-17)**: ラッパー適用と無関係に、
+   8/17 10:22 の supervisor 再起動時に audio_worker が多重起動し、pidfile と
+   lock が不整合 (pid=4055251 死亡 / lock=4055251 死亡) のまま実効ワーカーが
+   ゼロになり、10:20:22 以降 TTS 再生が停止。修復: 孤児 4055427 を TERM、
+   stale pidfile/lock を掃除して supervisor に再起動させ、16:48:23 に
+   audio_worker 2557348 が通常稼働に復帰。played.log は 16:49:54 から
+   コメント再生を再開し、ラッパー経由の VOICEVOX 合成・字幕も動作確認済み。
 
 ### 3.5 進め方の作法
 
