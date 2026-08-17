@@ -193,6 +193,12 @@ Blob SHA と、ローカル検証に使ったファイルの Git Blob SHA は一
    移植し、CLI `docich ai-guard` を追加 (stdin → stdout 純フィルタ)。
    検証: tests/test_model_output_guard.py 9 件 + 全体 464 件全緑。
    C-S1 (AI ディスパッチ) 以降は C2 実実行の実証後に昇格判断。
+   → **C2 実実行を部分実証 (2026-08-18)**: 本番 `.env` の `OPENCODE_GO_API_KEY` を
+   source すれば docich 経由で codex が呼べることを確認。ただしラジオ生成は
+   `ON_AIR_SCRIPT_START` + `===SUMMARY===` の出力形式を要求するため、
+   `--topic` 直指定では不合格 (radio_parser.py 検証)。docich からラジオ生成を使うには
+   本番のプロンプト組立 (radio_persona.sh 等) を参照実行する形が正しい。詳細は
+   docs/common_parts_chat.md §4.2。
    → **soviet_now 側のガード委譲ラッパを実装 (2026-08-17)**: `lib/ai_generate.sh` の
    `_ai_guard_model_output` が `DOCICH_BIN` (または PATH の docich) を使い
    `docich ai-guard` へ委譲し、無ければローカル `lib/model_output_guard.py` へ
