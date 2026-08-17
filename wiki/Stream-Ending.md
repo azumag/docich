@@ -68,6 +68,35 @@ docich の `build_ffmpeg_cmd` は `-nostdin` を使っていないため、stdin
 強制切断の場合は Disconnect Protection の最大90秒待ちが観測されることがあり、
 `q` による正常終了はこれよりもはるかに速い。
 
+## Soren 本番 (supervisor 管理下) での注意 — paused マーカー必須
+
+`direct_stream.py stop` は FFmpeg を `q` で正常終了させるが、**Soren 本番では
+`start_all.sh --supervisor` が `direct_stream` worker を監視しており、FFmpeg が
+落ちると自動再起動する**。そのため `direct_stream.py stop` だけでは配信が復活して
+「明示終了」にならない (2026-08-18 に実測)。
+
+配信を明示的に終了・やり直す正しい手順は、**supervisor の再起動を paused マーカーで
+抑止してから `q` を送る**:
+
+```bash
+# 1. supervisor が配信 worker を再起動しないようにする
+touch /home/ubuntu/soren/tmp/state/direct_stream.paused
+
+# 2. FFmpeg へ stdin q で正常終了 (RTMP の FCUnpublish / deleteStream が走る)
+cd /home/ubuntu/soren && python3 lib/direct_stream.py stop
+
+# 3. 配信が止まったことの確認
+#    ps aux | grep -E "direct_stream.py run|libx264.*1935/soren"  → 0
+#    Twitch 公開 GQL で stream: None
+
+# 4. 再開する場合のみ paused を外す (supervisor が配信 worker を再起動)
+rm /home/ubuntu/soren/tmp/state/direct_stream.paused
+```
+
+`tmp/state/<name>.paused` は `start_all.sh` の `_worker_paused` で利用され、対応する
+worker を「起動せず・再起動せず」保持する汎用の高水準停止ゲートである。配信以外の
+worker (`radio_worker` / `audio_worker` 等) の明示保留にも同じ仕組みが使える。
+
 ## 受け入れ条件
 
 1. 「配信終了」操作で FFmpeg を直接 kill しない。
