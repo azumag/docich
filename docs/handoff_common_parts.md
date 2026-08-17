@@ -114,15 +114,39 @@ Blob SHA と、ローカル検証に使ったファイルの Git Blob SHA は一
   - 既定 env: `SAY_CONTEXT_LABEL=docich`、`DOCICH_CC_ENABLED=0`、
     `PULSE_SINK/SAY_AUDIO_DEVICE=docich_sink`、`OUTBOUND_CHAT_QUEUE_DIR=一時dir`
   - cwd はサブモジュールルート (soviet_now の相対参照をそのまま利用)
-- `tests/test_tts.py` 20 件: 相対パス、submodule 欠落、不正 game/パス拒否、
-  argv/env、dry-run、CLI エラーを追加。
+- `tests/test_tts.py` 24 件: 相対パス、submodule 欠落、不正 game/パス拒否、
+  argv/env、dry-run、CLI エラー、テキスト直指定を追加。
 - 検証: `python3 -m py_compile` PASS。`docich say sorengame --dry-run ...` PASS。
-  内部テスト 280 件 (tts/cli/config/captions plan/actions/brains/state/supervise/
+  内部テスト 284 件 (tts/cli/config/captions plan/actions/brains/state/supervise/
   watchdog/tmux/agent/adapters/native_captions) 全緑。
 - 制約: このサンドボックスは AF_UNIX socket bind を拒否するため、
   `test_captions` の socket 3 件と `test_stream` の socket 1 件は変更前後とも
   同じ環境要因で失敗。実体は 398 件の全体テストでもその 4 件のみ。
   `scripts/smoke_cli.sh` / `scripts/smoke_brain.sh` は Xvfb/tmux 依存のため未実行。
+
+### 3.6 追加: `docich say` テキスト直指定 (2026-08-17)
+
+- `docich say <game> "テキスト"` をサポート。複数語はスペース結合し、一時ファイルへ
+  書き出して `say_enqueue.sh` へ渡す。`-f` との併用と両方なしはエラー。
+- 反映: `src/docich/tts.py` / `tests/test_tts.py` / `docs/common_parts_tts.md`。
+- 検証: `tests/test_tts.py` 24 件全緑、tts+cli+config 84 件全緑、
+  `docich say sorengame "こんにちは 世界" --pre-delay 0 --dry-run` PASS。
+
+### 3.7 一旦区切り (2026-08-17) — 再開時の残課題
+
+1. **実再生時のキュー分離を確定する**。`say_enqueue.sh` はサブモジュール内の
+   `tmp/.say_queue/` を使うため、本番 soviet_now と同一ツリー上で実再生すると衝突する。
+   soviet_now は読み取り専用なので、別 worktree/別 clone で参照するか、
+   実行対象を dry-run / render-only に留めるかを `docs/common_parts_tts.md` に確定する。
+2. **socket 環境で全体テストを再実行する**。AF_UNIX socket bind が使えるローカル環境か
+   VM で、`python3 -m unittest` 全 398 件と `scripts/smoke_cli.sh` /
+   `scripts/smoke_brain.sh` を通す。
+3. **字幕有効化の設計**。`DOCICH_CC_ENABLED=1` は FFmpeg socket との接続確認が必要。
+   PoC では既定無効のまま。
+4. **C2 設計**。broadcast/ が 2 週間程度無変更になったら、同じ参照パターンで
+   `docich chat <game>` / `docich radio <game>` の inventory と interface を設計する。
+5. **C4 昇格**。ユーザー合意後に、実証済みの TTS 部品だけ docich 正典へ移し、
+   soviet_now 側を薄いラッパへ置換する。
 
 ### 3.5 進め方の作法
 
