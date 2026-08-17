@@ -106,6 +106,12 @@ bin/docich ra-cmd PAUSE_TOGGLE    # 一時停止の切替
 FFmpeg へ `q` を送って正常終了させる方法がある** (RTMP の `FCUnpublish` / `deleteStream`
 が実行され、Twitch が即 OFF LINE になる)。詳細は [[配信の明示終了|Stream-Ending]] を参照。
 
+**Soren 本番 (soviet_now の `start_all.sh --supervisor` 管理下) では、`direct_stream`
+worker が自動再起動するため、`q` 送信の前に `tmp/state/direct_stream.paused` を作成して
+再起動を抑止する** (下記マーカー。抑止しないと FFmpeg 停止直後に supervisor が配信を
+再起動する)。再開時は同マーカーを削除する。正確な手順は wiki の
+「配信の明示終了」→「Soren 本番 (supervisor 管理下) での注意」を参照。
+
 ## 時間割ローテーション (`docich rotate`)
 
 `config/docich.toml` の `[rotation] games = ["nethack", "hanjuku-hero"]` のように巡回順を
