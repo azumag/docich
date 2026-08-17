@@ -138,6 +138,9 @@ Blob SHA と、ローカル検証に使ったファイルの Git Blob SHA は一
    `tmp/.say_queue/` を使うため、本番 soviet_now と同一ツリー上で実再生すると衝突する。
    soviet_now は読み取り専用なので、別 worktree/別 clone で参照するか、
    実行対象を dry-run / render-only に留めるかを `docs/common_parts_tts.md` に確定する。
+   → **確定済み (2026-08-17)**: `DOCICH_ALLOW_REAL_PLAYBACK=1` ガードを
+   `src/docich/tts.py` に追加し、実再生は本番ツリーと別 checkout でのみ許可。
+   既定は `--dry-run` / `--render-only` (docs/common_parts_tts.md §4.2-8 / §5)。
 2. **socket 環境で全体テストを再実行する**。AF_UNIX socket bind が使えるローカル環境か
    VM で、`python3 -m unittest` 全 398 件と `scripts/smoke_cli.sh` /
    `scripts/smoke_brain.sh` を通す。
