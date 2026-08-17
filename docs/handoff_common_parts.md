@@ -205,6 +205,13 @@ Blob SHA と、ローカル検証に使ったファイルの Git Blob SHA は一
    stale pidfile/lock を掃除して supervisor に再起動させ、16:48:23 に
    audio_worker 2557348 が通常稼働に復帰。played.log は 16:49:54 から
    コメント再生を再開し、ラッパー経由の VOICEVOX 合成・字幕も動作確認済み。
+   → **再発防止を実装・マージ・本番適用 (2026-08-17)**: soviet_now PR #111
+   (audio_worker lock race fix) を main へマージ (`1350c073`) し、docich の
+   submodule を bump (`18120bd`)。本番 `/home/ubuntu/soren` の audio_worker.sh を
+   修正版へ置換 (バックアップ `.codex_deploy/backup-20260817-audio-worker-lock-race-fix/`)
+   し、audio_worker を再起動 (18:28:20 新 PID 3552230)。再生継続を確認。
+   対策内容: ロック所有者 pid が空の場合に 3 秒まで 0.2 秒間隔で再検証し、
+   真に stale な場合のみ奪取する (起動競合時の worker ゼロ化を防止)。
 
 ### 3.5 進め方の作法
 
