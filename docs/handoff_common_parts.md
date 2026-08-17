@@ -156,6 +156,10 @@ Blob SHA と、ローカル検証に使ったファイルの Git Blob SHA は一
    非 render-only) は say_enqueue.sh 側の判定に従う (docs/common_parts_tts.md §4.1 / §5)。
 4. **C2 設計**。broadcast/ が 2 週間程度無変更になったら、同じ参照パターンで
    `docich chat <game>` / `docich radio <game>` の inventory と interface を設計する。
+   → **inventory / interface 設計案を作成 (2026-08-17)**: `docs/common_parts_chat.md`。
+   broadcast/ の直近変更は 2026-08-16 のため安定条件未達。実装は 2 週間無変更を
+   確認してから。設計案は AI 実行なし・チャット投稿なし・`--dry-run` 検証の PoC に
+   留める方針。
 5. **C4 昇格**。ユーザー合意後に、実証済みの TTS 部品だけ docich 正典へ移し、
    soviet_now 側を薄いラッパへ置換する。
 
