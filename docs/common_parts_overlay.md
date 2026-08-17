@@ -4,8 +4,9 @@
 同じく「移動より先に参照」で、soviet_now の `generate_*_overlay` 一式を docich から
 参照実行する PoC から始める。soviet_now は読み取り専用。
 
-> **ステータス**: PoC 実装済み (2026-08-17)。`src/docich/overlay.py` +
-> CLI `docich overlay <game> <kind>`。検証は dry-run + unit tests。
+> **ステータス**: PoC + drawtext フック実装済み (2026-08-17)。
+> `src/docich/overlay.py` + CLI `docich overlay <game> <kind>`、
+> `stream.py` の drawtext フィルタ (`[stream] overlay_text_file`)。
 
 ## 1. 対象とスナップショット
 
@@ -100,6 +101,22 @@ kind: status | show_status | improve | event | notify
 
 - HTML オーバーレイは OBS ブラウザソース前提。docich の FFmpeg drawtext フックへ載せる
   場合は、HTML → 画像 (またはプレーンテキスト抽出) の変換設計が必要 (次段階)
+- **drawtext フック実装済み (2026-08-17)**: `stream.py` の `build_ffmpeg_cmd` が
+  `[stream] overlay_text_file` (テキストファイル) を drawtext フィルタで配信に合成する。
+  設定例:
+  ```toml
+  [stream]
+  overlay_text_file = "run/status.txt"   # 空なら無効
+  overlay_font = "sans"
+  overlay_fontsize = 28
+  overlay_x = "20"
+  overlay_y = "20"
+  ```
+  - テキストファイルが無ければ fail-open (オーバーレイなしで配信継続)
+  - パスに `:` `,` `'` `\` を含む場合は無効化 (drawtext の壊れ防止)
+  - 字幕 (`docichcc`) と併用時は 1 つの `-vf` に連結する
+  - `docich overlay <game> status --output run/` で生成した HTML の代わりに、
+    `status_dashboard.py` 相当のテキスト出力を `run/status.txt` に置けば合成できる
 - `generate_improve_overlay.sh` は `EXPLORE_MODE=1` で即 exit する。docich からの
   参照実行は `EXPLORE_MODE=0` のまま (既定) で行う
 - `ensure-obs` は OBS WebSocket に触れるため、docich 側では許可しない (allowlist から

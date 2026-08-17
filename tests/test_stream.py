@@ -64,6 +64,64 @@ class TestGop(StreamTestBase):
         self.assertEqual(cmd[idx + 1], "72")
 
 
+class TestOverlayDrawtext(StreamTestBase):
+    def _text_file(self) -> Path:
+        path = self.repo_root / "run" / "overlay.txt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("status line", encoding="utf-8")
+        return path
+
+    def test_drawtext_added_when_text_file_configured(self):
+        text = self._text_file()
+        g = self._load(
+            '[stream]\nmode = "null"\n'
+            f'overlay_text_file = "{text}"\n'
+            'overlay_fontsize = 28\n'
+        )
+        cmd = stream.build_ffmpeg_cmd(g)
+        vf_idx = cmd.index("-vf")
+        self.assertIn("drawtext=textfile=", cmd[vf_idx + 1])
+        self.assertIn(f"'{text.resolve()}'", cmd[vf_idx + 1])
+        self.assertIn("fontsize=28", cmd[vf_idx + 1])
+
+    def test_drawtext_fails_open_when_file_missing(self):
+        missing = self.repo_root / "run" / "nope.txt"
+        g = self._load(
+            '[stream]\nmode = "null"\n'
+            f'overlay_text_file = "{missing}"\n'
+        )
+        cmd = stream.build_ffmpeg_cmd(g)
+        self.assertNotIn("-vf", cmd)
+
+    def test_drawtext_fails_open_when_path_unsafe(self):
+        text = self._text_file()
+        # カンマを含むパスは drawtext で壊れるため無効化する
+        unsafe = self.repo_root / "run,unsafe.txt"
+        unsafe.write_text("x", encoding="utf-8")
+        g = self._load(
+            '[stream]\nmode = "null"\n'
+            f'overlay_text_file = "{unsafe}"\n'
+        )
+        cmd = stream.build_ffmpeg_cmd(g)
+        self.assertNotIn("-vf", cmd)
+
+    def test_drawtext_and_captions_share_single_vf(self):
+        text = self._text_file()
+        g = self._load(
+            '[stream]\nmode = "null"\n'
+            f'overlay_text_file = "{text}"\n'
+            '\n[captions]\nenabled = true\n'
+            'socket_path = "/tmp/cc.sock"\n'
+        )
+        cmd = stream.build_ffmpeg_cmd(g, captions_enabled=True)
+        vf_idx = cmd.index("-vf")
+        vf = cmd[vf_idx + 1]
+        self.assertIn("docichcc=socket=", vf)
+        self.assertIn("drawtext=textfile=", vf)
+        # 1 つの -vf にカンマ連結されている (複数 -vf は最後が勝つため)
+        self.assertEqual([p for p in cmd if p == "-vf"].count("-vf"), 1)
+
+
 class TestModeNull(StreamTestBase):
     def test_mode_null_outputs_null_muxer(self):
         g = self._load('[stream]\nmode = "null"\n')

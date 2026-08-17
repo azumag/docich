@@ -183,6 +183,10 @@ Blob SHA と、ローカル検証に使ったファイルの Git Blob SHA は一
    出力先を一時ディレクトリへ向けて本番 HTML を汚さない。OBS 連動 (ensure-obs) は
    公開しない。実実行は `DOCICH_ALLOW_REAL_OVERLAY=1` で明示許可。
    検証: tests/test_overlay.py 8 件 + 全体 451 件全緑、CLI dry-run 確認済み。
+   → **C3 drawtext フック実装 (2026-08-17)**: `stream.py` の `build_ffmpeg_cmd` に
+   `[stream] overlay_text_file` の drawtext 合成を追加 (font/size/x/y 設定可)。
+   ファイル無し・不安全パスは fail-open。字幕と併用時は 1 つの `-vf` に連結。
+   検証: tests/test_stream.py の drawtext 4 件 + 全体 455 件全緑。
 5. **C4 昇格**。ユーザー合意後に、実証済みの TTS 部品だけ docich 正典へ移し、
    soviet_now 側を薄いラッパへ置換する。
    → **ユーザー合意済み (2026-08-17)**。責務分割設計を
