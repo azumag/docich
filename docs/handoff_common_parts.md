@@ -177,6 +177,12 @@ Blob SHA と、ローカル検証に使ったファイルの Git Blob SHA は一
    `DOCICH_ALLOW_REAL_COMMENT` / `DOCICH_ALLOW_REAL_RADIO` で明示許可。
    検証: tests/test_chat.py 16 件 + 全体 427 件全緑、CLI dry-run 確認済み。
    AI 実実行は未実施 (初回は別 checkout + dry-run から)。
+   → **C3 オーバーレイ参照実行 PoC 実装 (2026-08-17)**: `docs/common_parts_overlay.md`
+   (inventory + 設計) と `src/docich/overlay.py` + CLI `docich overlay <game> <kind>`
+   (status / show_status / improve / event / notify)。`once` モードのみ公開し、
+   出力先を一時ディレクトリへ向けて本番 HTML を汚さない。OBS 連動 (ensure-obs) は
+   公開しない。実実行は `DOCICH_ALLOW_REAL_OVERLAY=1` で明示許可。
+   検証: tests/test_overlay.py 8 件 + 全体 451 件全緑、CLI dry-run 確認済み。
 5. **C4 昇格**。ユーザー合意後に、実証済みの TTS 部品だけ docich 正典へ移し、
    soviet_now 側を薄いラッパへ置換する。
    → **ユーザー合意済み (2026-08-17)**。責務分割設計を
