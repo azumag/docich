@@ -8,7 +8,10 @@ soviet_now は読み取り専用。実装は broadcast/ が 2 週間程度無変
 
 > **ステータス**: PoC 実装済み (2026-08-17)。安定条件 (2 週間無変更) は
 > ユーザー判断により無視。実装は `src/docich/chat.py` + CLI `chat` / `radio`。
-> 検証は dry-run + unit tests のみ (AI 実行・音声再生は実装しない方針)。
+> **C2 実実行は部分実証 (2026-08-18)**: 本番 `.env` の `OPENCODE_GO_API_KEY` を
+> source すれば docich 経由で codex が呼べることを確認。ただしラジオ生成は
+> `ON_AIR_SCRIPT_START` + `===SUMMARY===` の出力形式を要求 (radio_parser.py 検証) するため、
+> `docich radio --topic "..."` 直指定では合格しない (詳細 §4.2)。
 > broadcast/ の直近変更は 2026-08-16 (`40d7f1b78` "fix: back off models only on
 > explicit rate limits")。
 
@@ -114,6 +117,22 @@ docich radio <game> --prompt-file <path> [--corner NAME] [--dry-run]
 - `--topic` と `--prompt-file` はどちらか一方のみ。`--game-num` は 0 以上、score は
   安全トークン検証済み
 - 字幕・TTS との連携は `say_enqueue.sh` 参照実行側に委ねる (common_parts_tts.md)
+
+### 4.2 C2 実実行の実証結果と制約 (2026-08-18)
+
+本番で `DOCICH_ALLOW_REAL_RADIO=1` で `docich radio` を実行した結果:
+
+- **認証**: codex の `soren-litellm` provider は `OPENCODE_GO_API_KEY` env (soviet_now
+  `.env` 内) を使う。docich clone には `.env` が無いため、本番 `.env` を source して
+  渡さないと `codex call` が認証失敗 (codex rc=1)。**シークレットは code に埋めず、
+  実行時に本番 `.env` から source する**必要がある。
+- **出力形式**: ラジオ生成は `radio_persona.sh` のプロンプトが
+  `ON_AIR_SCRIPT_START` (最初の行) + `===SUMMARY===` を要求し、`lib/radio_parser.py`
+  が検証する。`--topic "..."` 直指定のプロンプトはこの形式要求を含まないため、AI 出力が
+  `radio output missing ON_AIR_SCRIPT_START` で不合格 → fallback → 全エージェント失敗。
+- **結論**: docich からラジオ生成を実際に使うには、**本番のラジオプロンプト組立
+  (radio_persona.sh 等) を参照実行する**形が正しく、`--topic` 単独の直実行ではない。
+  C-S1 (AI ディスパッチ) / C-S5 (ラジオ生成) の昇格はこのプロンプト契約を前提に設計する。
 
 ## 5. 残余リスク・次段階
 
