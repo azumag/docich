@@ -144,6 +144,9 @@ Blob SHA と、ローカル検証に使ったファイルの Git Blob SHA は一
 2. **socket 環境で全体テストを再実行する**。AF_UNIX socket bind が使えるローカル環境か
    VM で、`python3 -m unittest` 全 398 件と `scripts/smoke_cli.sh` /
    `scripts/smoke_brain.sh` を通す。
+   → **unittest 分は確定済み (2026-08-17)**: sandbox 外のローカル (socket bind 可) で
+   405 件全緑を確認。smoke 2 本はローカルに `xdotool` がないため未実行のまま
+   (VM / Ubuntu 環境で実行する)。実行時は「実配信中に実行しない」警告に従う。
 3. **字幕有効化の設計**。`DOCICH_CC_ENABLED=1` は FFmpeg socket との接続確認が必要。
    PoC では既定無効のまま。
 4. **C2 設計**。broadcast/ が 2 週間程度無変更になったら、同じ参照パターンで
