@@ -212,6 +212,14 @@ Blob SHA と、ローカル検証に使ったファイルの Git Blob SHA は一
    し、audio_worker を再起動 (18:28:20 新 PID 3552230)。再生継続を確認。
    対策内容: ロック所有者 pid が空の場合に 3 秒まで 0.2 秒間隔で再検証し、
    真に stale な場合のみ奪取する (起動競合時の worker ゼロ化を防止)。
+   → **ラジオ原稿バックアップを実装・マージ・本番適用 (2026-08-17)**: soviet_now
+   PR #112 を main へマージ (`18fddd37`)、docich の submodule bump (`caea793`)。
+   本番 `/home/ubuntu/soren/broadcast/radio_state.sh` を修正版へ置換
+   (バックアップ `.codex_deploy/backup-20260817-radio-script-backup/`)。
+   再生完了時に原稿 `.txt` を `backups/radio_scripts/<YYYYMMDD>/<元名>.txt` へ
+   自動コピー (`.history` / `.meta.json` も同梱)。git への自動コミットはしない
+   (VM ローカルのファイル蓄積。GitHub へ残す場合は別途同期が必要)。
+   動作確認: バックアップ関数を本番で直接実行して生成を確認後、テストファイルは削除済み。
 
 ### 3.5 進め方の作法
 
