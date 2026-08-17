@@ -160,6 +160,14 @@ Blob SHA と、ローカル検証に使ったファイルの Git Blob SHA は一
    broadcast/ の直近変更は 2026-08-16 のため安定条件未達。実装は 2 週間無変更を
    確認してから。設計案は AI 実行なし・チャット投稿なし・`--dry-run` 検証の PoC に
    留める方針。
+   → **PoC 実装済み (2026-08-17、安定条件はユーザー判断で無視)**:
+   `src/docich/chat.py` + CLI `chat` / `radio`。allowlist 関数は
+   `generate_comment_response` (comment.sh) と `_radio_generate_and_play`
+   (radio_engine.sh)。固定ラッパ `broadcast_ref.sh` が `eloop_lib.sh` を source して
+   実行。チャット投稿は `OUTBOUND_CHAT_QUEUE_DIR` で無効化、実実行は
+   `DOCICH_ALLOW_REAL_COMMENT` / `DOCICH_ALLOW_REAL_RADIO` で明示許可。
+   検証: tests/test_chat.py 16 件 + 全体 427 件全緑、CLI dry-run 確認済み。
+   AI 実実行は未実施 (初回は別 checkout + dry-run から)。
 5. **C4 昇格**。ユーザー合意後に、実証済みの TTS 部品だけ docich 正典へ移し、
    soviet_now 側を薄いラッパへ置換する。
 

@@ -6,9 +6,11 @@ inventory と interface 設計案である (`docs/multi_repo_plan.md` §3 C2 /
 soviet_now は読み取り専用。実装は broadcast/ が 2 週間程度無変更になるのを待ってから
 判断する。
 
-> **ステータス**: 設計案のみ。コードはまだ実装していない。
+> **ステータス**: PoC 実装済み (2026-08-17)。安定条件 (2 週間無変更) は
+> ユーザー判断により無視。実装は `src/docich/chat.py` + CLI `chat` / `radio`。
+> 検証は dry-run + unit tests のみ (AI 実行・音声再生は実装しない方針)。
 > broadcast/ の直近変更は 2026-08-16 (`40d7f1b78` "fix: back off models only on
-> explicit rate limits")。安定条件 (2 週間無変更) は未達。
+> explicit rate limits")。
 
 ---
 
@@ -87,25 +89,39 @@ soviet_now は読み取り専用。実装は broadcast/ が 2 週間程度無変
 | 内部モジュール + CLI ラッパ | 実装方向それ自体。`src/docich/chat.py` / `src/docich/radio.py` に argv/env 構築を置く |
 | adapter として扱う | 不採用。TTS と同じ理由 |
 
-### 4.1 `docich chat` / `docich radio` の契約 (PoC 実装方針)
+### 4.1 `docich chat` / `docich radio` の契約 (PoC 実装済み)
 
 ```
-docich chat <game> -f <text_file> [--dry-run]
+docich chat <game> [--source twitch|youtube] [--dry-run]
 docich radio <game> --topic <text> [--dry-run]
+docich radio <game> --prompt-file <path> [--corner NAME] [--dry-run]
 ```
+
+実装:
 
 - `src/docich/chat.py` に参照実行の argv/env/cwd 構築を置く。allowlist は
-  `broadcast/comment.sh` / `broadcast/radio_engine.sh` の関数単位 (または scheduler 入口) を想定
+  `broadcast/comment.sh` の `generate_comment_response` と
+  `broadcast/radio_engine.sh` の `_radio_generate_and_play` のみ
+- 実行は固定ラッパ `broadcast_ref.sh` (一時生成) 経由。ラッパは `eloop_lib.sh` を
+  source して本番と同じ source 順で関数を呼ぶ。ユーザーテキストは argv に渡さず、
+  `--topic` は一時プロンプトファイルへ、`--source` / `--corner` は allowlist /
+  安全トークン検証 (`[A-Za-z0-9._:-]{1,128}`) を通す
 - 既定は **チャット投稿なし**。`OUTBOUND_CHAT_QUEUE_DIR` を一時ディレクトリへ向け、
   本番 Twitch チャットへ投稿しない (common_parts_tts.md §4.2-5 と同じ)
-- AI 実行はしない。`--dry-run` で argv/env/cwd を表示する検証に留める
-- 実再生・実投稿は `DOCICH_ALLOW_REAL_PLAYBACK=1` 相当の明示許可が必須 (TTS と同じ方針)
-- 字幕・TTS との連携は `say_enqueue.sh` 参照実行側に委ねる
+- `--dry-run` は argv/env/cwd/function を表示する検証 (実コマンドは実行しない)
+- 実実行は明示許可が必須: comment は `DOCICH_ALLOW_REAL_COMMENT=1`、radio は
+  `DOCICH_ALLOW_REAL_RADIO=1`。無ければ TtsError 相当で拒否 (AI 実行・音声再生を含むため)
+- `--topic` と `--prompt-file` はどちらか一方のみ。`--game-num` は 0 以上、score は
+  安全トークン検証済み
+- 字幕・TTS との連携は `say_enqueue.sh` 参照実行側に委ねる (common_parts_tts.md)
 
 ## 5. 残余リスク・次段階
 
-- broadcast/ は直近変更あり (2026-08-16)。**2 週間無変更を確認してから**実装判断する
-- AI 実行は認証・コスト・並行衝突のリスクがある。PoC では実行せず `--dry-run` に留める
+- broadcast/ は直近変更あり (2026-08-16) だが、ユーザー判断で安定条件を無視して
+  PoC 実装済み。**実実行 (AI 生成) はまだ一度も行っていない**
+- AI 実行は認証・コスト・並行衝突のリスクがある。実実行は
+  `DOCICH_ALLOW_REAL_COMMENT` / `DOCICH_ALLOW_REAL_RADIO` の明示で許可する設計
+  だが、初回検証は dry-run と、本番キューを汚さない別 checkout で行う
 - チャット投稿は本番チャットを汚す可能性がある。投稿経路の実装は C2 後半として別途設計する
 - `radio_engine.sh` は improve と defer 連携 (`IMPROVE_LOCK_FILE`) を持つ。参照実行時に
   本番 improve と衝突しない設計が必要
