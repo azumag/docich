@@ -259,6 +259,13 @@ docich say <game> "読み上げるテキスト" [options]
 - 実再生ガード: `--render-only` も `--dry-run` も指定せず実行する場合は
   `DOCICH_ALLOW_REAL_PLAYBACK=1` を要求する。無ければ TtsError で拒否
   (`src/docich/tts.py` の `run_tts` が検査)。理由は §4.2-8 / §5 のキュー分離
+- 字幕有効化: `--cc` を付けると caption socket が準備済みの場合のみ
+  `DOCICH_CC_ENABLED=1` + `DOCICH_CC_SOCKET=<path>` を渡す。socket の解決順は
+  `--cc-socket` > `config [captions] socket_path` > `$XDG_RUNTIME_DIR/docich/ffmpeg-cc.sock`
+  (`src/docich/captions.py` の `DEFAULT_SOCKET_PATH`)。socket 未準備 (未存在・非
+  socket・所有者不一致・0600 でない) の場合は `caption_socket_ready` で検出し、
+  字幕なしで実行して stderr へ警告 (fail-open。`--dry-run` では repro 末尾に
+  `# 警告` として表示)。`--cc` と `--render-only` は併用不可 (字幕は実再生時にのみ有効)
 - 生成物: `-o <wav>` を指定すると render 結果をコピーし、`--wav-playlist` 時は
   bundle (playlist + captions) の扱いを文書化
 - `--dry-run`: 実行せず argv/env/cwd を表示
@@ -302,7 +309,9 @@ docich say <game> "読み上げるテキスト" [options]
   サブモジュール checkout 上で行う。
 - `say_enqueue.sh` 内部の `lib/outbound_queue.sh` source は、`OUTBOUND_CHAT_QUEUE_DIR` を
   docich の一時ディレクトリへ向けることで無効化できる (チャット投稿なし)。
-- 字幕を docich 側から有効化する場合は、`DOCICH_CC_SOCKET` を docich の FFmpeg socket に
-  向ける設計を将来追加する。今回の PoC では無効のまま。
+- 字幕有効化は §4.1 の `--cc` / `--cc-socket` で設計済み (2026-08-17)。実効条件は
+  `say_enqueue.sh` 側の `docich_cc_is_enabled()` に従い、Linux + VOICEVOX 実合成 +
+  非 render-only + socket 実在のすべてが必要 (fail-open)。docich 側は socket 準備だけ
+  を検査し、字幕が効かない場合も再生を止めない。
 - C4 昇格時に `say_enqueue.sh` 本体を docich へ移す場合は、本稿 inventory を起点に
   責務分割 (合成 / キュー / 再生 / 字幕 / 話者運用) を先に設計する。

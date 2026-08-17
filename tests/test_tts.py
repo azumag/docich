@@ -1,6 +1,8 @@
 import io
 import os
 from pathlib import Path
+import socket
+import stat
 import sys
 import tempfile
 import unittest
@@ -216,6 +218,88 @@ class TestBuildInvocation(TtsTestBase):
         self.assertIsInstance(inv.argv, list)
         self.assertTrue(all(isinstance(x, str) for x in inv.argv))
 
+    def _ready_socket(self, path: Path) -> socket.socket:
+        sock = socket.socket(socket.AF_UNIX)
+        sock.bind(str(path))
+        os.chmod(path, 0o600)
+        return sock
+
+    def test_cc_enabled_with_ready_socket_sets_env(self):
+        self._write_game("sorengame")
+        self._write_script()
+        sock_path = Path(self._tmpdir.name) / "ffmpeg-cc.sock"
+        sock = self._ready_socket(sock_path)
+        try:
+            inv = tts.build_invocation(
+                self.g,
+                game_name="sorengame",
+                text_file=self._text(),
+                rate=120,
+                pre_delay=0,
+                cc_enabled=True,
+                cc_socket=str(sock_path),
+            )
+        finally:
+            sock.close()
+        self.assertEqual(inv.env["DOCICH_CC_ENABLED"], "1")
+        self.assertEqual(inv.env["DOCICH_CC_SOCKET"], str(sock_path))
+        self.assertEqual(inv.cc_note, "")
+
+    def test_cc_enabled_with_missing_socket_fails_open(self):
+        self._write_game("sorengame")
+        self._write_script()
+        missing = Path(self._tmpdir.name) / "missing-cc.sock"
+        inv = tts.build_invocation(
+            self.g,
+            game_name="sorengame",
+            text_file=self._text(),
+            rate=120,
+            pre_delay=0,
+            cc_enabled=True,
+            cc_socket=str(missing),
+        )
+        self.assertEqual(inv.env["DOCICH_CC_ENABLED"], "0")
+        self.assertNotIn("DOCICH_CC_SOCKET", inv.env)
+        self.assertIn("caption socket未準備", inv.cc_note)
+
+    def test_cc_with_render_only_is_rejected(self):
+        self._write_game("sorengame")
+        self._write_script()
+        with self.assertRaises(tts.TtsError) as cm:
+            tts.build_invocation(
+                self.g,
+                game_name="sorengame",
+                text_file=self._text(),
+                rate=120,
+                pre_delay=0,
+                render_only=True,
+                render_output=self.repo_root / "out.wav",
+                cc_enabled=True,
+            )
+        self.assertIn("--cc と --render-only", str(cm.exception))
+
+    def test_cc_dry_run_repro_shows_socket(self):
+        self._write_game("sorengame")
+        self._write_script()
+        sock_path = Path(self._tmpdir.name) / "ffmpeg-cc.sock"
+        sock = self._ready_socket(sock_path)
+        try:
+            rc, detail = tts.run_tts(
+                self.g,
+                game_name="sorengame",
+                text_file=self._text(),
+                rate=120,
+                pre_delay=0,
+                dry_run=True,
+                cc_enabled=True,
+                cc_socket=str(sock_path),
+            )
+        finally:
+            sock.close()
+        self.assertEqual(rc, 0)
+        self.assertIn(f"DOCICH_CC_SOCKET={sock_path}", detail)
+        self.assertIn("DOCICH_CC_ENABLED=1", detail)
+
 
 class TestRunTts(TtsTestBase):
     def test_dry_run_does_not_execute_and_returns_preview(self):
@@ -311,6 +395,29 @@ class TestRunTts(TtsTestBase):
         self.assertEqual(rc, 0)
         fake_run.assert_called_once()
 
+    @mock.patch("docich.tts.run")
+    def test_cc_fail_open_warns_when_socket_missing(self, fake_run):
+        self._write_game("sorengame")
+        self._write_script()
+        fake_run.return_value = mock.Mock(returncode=0, stderr="")
+        warnings: list[str] = []
+        missing = Path(self._tmpdir.name) / "missing-cc.sock"
+        with mock.patch.dict(os.environ, {"DOCICH_ALLOW_REAL_PLAYBACK": "1"}):
+            rc, _detail = tts.run_tts(
+                self.g,
+                game_name="sorengame",
+                text_file=self._text(),
+                rate=120,
+                pre_delay=0,
+                cc_enabled=True,
+                cc_socket=str(missing),
+                warn=warnings.append,
+            )
+        self.assertEqual(rc, 0)
+        self.assertTrue(warnings)
+        self.assertIn("caption socket未準備", warnings[0])
+        self.assertEqual(fake_run.call_args.kwargs["env_extra"]["DOCICH_CC_ENABLED"], "0")
+
 
 class TestCliSay(TtsTestBase):
     def test_say_parse(self):
@@ -321,6 +428,14 @@ class TestCliSay(TtsTestBase):
         self.assertEqual(args.file, "x.txt")
         self.assertEqual(args.pre_delay, 0)
         self.assertTrue(args.dry_run)
+
+    def test_say_parse_cc_flags(self):
+        args = cli.build_parser().parse_args(
+            ["say", "sorengame", "--cc", "--cc-socket", "/tmp/x.sock",
+             "-f", "x.txt", "--dry-run"]
+        )
+        self.assertTrue(args.cc)
+        self.assertEqual(args.cc_socket, "/tmp/x.sock")
 
     def test_say_dry_run_prints_preview(self):
         self._write_game("sorengame")

@@ -14,10 +14,13 @@ import os
 from pathlib import Path
 import shutil
 from shlex import quote
+import sys
 import tempfile
 
+from .captions import DEFAULT_SOCKET_PATH
 from .config import ConfigError, GlobalConfig, load_game
 from .procs import run
+from .stream import caption_socket_ready
 
 
 ALLOWED_TTS_SCRIPTS = {
@@ -36,11 +39,14 @@ class TtsInvocation:
     argv: list[str]
     env: dict[str, str]
     rcs_note: str = ""
+    cc_note: str = ""
 
     def repro(self) -> str:
         parts = [f"cwd={self.cwd}"]
         for key, value in sorted(self.env.items()):
             parts.append(f"{key}={value}")
+        if self.cc_note:
+            parts.append(f"# {self.cc_note}")
         parts.append("argv=" + " ".join(quote(str(part)) for part in self.argv))
         return " ".join(parts)
 
@@ -89,7 +95,31 @@ def resolve_script(g: GlobalConfig, game_name: str) -> tuple[Path, Path]:
     return script, root
 
 
-def _env_for(g: GlobalConfig, game_name: str, queue_dir: Path) -> dict[str, str]:
+def resolve_cc_socket(g: GlobalConfig, override: str | None) -> tuple[str, str]:
+    """Resolve the caption socket and return (path, reason).
+
+    reason is empty when the socket is ready.  A non-empty reason means the
+    reference run continues without captions (fail-open, docs/common_parts_tts.md
+    §4.1).
+    """
+
+    socket_path = override or g.captions.socket_path or DEFAULT_SOCKET_PATH
+    if not socket_path:
+        return "", "captions が設定されていません"
+    ready, reason = caption_socket_ready(socket_path)
+    if not ready:
+        return socket_path, f"caption socket未準備のため字幕なしで実行します: {reason}"
+    return socket_path, ""
+
+
+def _env_for(
+    g: GlobalConfig,
+    game_name: str,
+    queue_dir: Path,
+    *,
+    cc_enabled: bool = False,
+    cc_socket: str | None = None,
+) -> tuple[dict[str, str], str]:
     env = {
         "SAY_CONTEXT_LABEL": "docich",
         "SAY_CC_TEXT": "",
@@ -101,7 +131,15 @@ def _env_for(g: GlobalConfig, game_name: str, queue_dir: Path) -> dict[str, str]
     if g.audio.enabled:
         env["PULSE_SINK"] = g.audio.sink_name
         env["SAY_AUDIO_DEVICE"] = g.audio.sink_name
-    return env
+    cc_note = ""
+    if cc_enabled:
+        socket_path, reason = resolve_cc_socket(g, cc_socket)
+        if reason:
+            cc_note = reason
+        else:
+            env["DOCICH_CC_ENABLED"] = "1"
+            env["DOCICH_CC_SOCKET"] = socket_path
+    return env, cc_note
 
 
 def build_invocation(
@@ -116,6 +154,8 @@ def build_invocation(
     wav_playlist: Path | None = None,
     caption_chunks: Path | None = None,
     env_overrides: dict[str, str] | None = None,
+    cc_enabled: bool = False,
+    cc_socket: str | None = None,
 ) -> TtsInvocation:
     if rate < 1:
         raise TtsError("rate は 1 以上である必要があります")
@@ -125,6 +165,8 @@ def build_invocation(
         raise TtsError("--render-only と --wav-playlist/--caption-chunks は併用できません")
     if bool(wav_playlist) != bool(caption_chunks):
         raise TtsError("--wav-playlist と --caption-chunks は常にセットで指定してください")
+    if cc_enabled and render_only:
+        raise TtsError("--cc と --render-only は併用できません (字幕は実再生時にのみ有効)")
 
     script, root = resolve_script(g, game_name)
 
@@ -157,7 +199,13 @@ def build_invocation(
             str(caption_chunks),
         ]
 
-    env = _env_for(g, game_name, queue_dir=Path(tmp_dir) / "outbound")
+    env, cc_note = _env_for(
+        g,
+        game_name,
+        queue_dir=Path(tmp_dir) / "outbound",
+        cc_enabled=cc_enabled,
+        cc_socket=cc_socket,
+    )
     if env_overrides:
         env.update(env_overrides)
 
@@ -167,6 +215,7 @@ def build_invocation(
         argv=argv,
         env=env,
         rcs_note="rc 0=再生完了/1=失敗/2=引数エラー/75=render保留",
+        cc_note=cc_note,
     )
 
 
@@ -183,6 +232,9 @@ def run_tts(
     caption_chunks: Path | None = None,
     dry_run: bool = False,
     timeout: float | None = None,
+    cc_enabled: bool = False,
+    cc_socket: str | None = None,
+    warn: callable | None = None,
 ) -> tuple[int, str]:
     """Build and optionally execute the reference invocation.
 
@@ -205,9 +257,14 @@ def run_tts(
         render_output=render_output,
         wav_playlist=wav_playlist,
         caption_chunks=caption_chunks,
+        cc_enabled=cc_enabled,
+        cc_socket=cc_socket,
     )
     if dry_run:
         return 0, inv.repro()
+
+    if inv.cc_note and warn is not None:
+        warn(inv.cc_note)
 
     if not render_only and os.environ.get("DOCICH_ALLOW_REAL_PLAYBACK") != "1":
         raise TtsError(
@@ -259,6 +316,9 @@ def cli_say(args) -> int:
             wav_playlist=args.wav_playlist,
             caption_chunks=args.caption_chunks,
             dry_run=args.dry_run,
+            cc_enabled=getattr(args, "cc", False),
+            cc_socket=getattr(args, "cc_socket", None),
+            warn=lambda m: print(f"docich: 警告: {m}", file=sys.stderr),
         )
     except (ConfigError, TtsError, OSError) as exc:
         raise TtsError(str(exc)) from exc
