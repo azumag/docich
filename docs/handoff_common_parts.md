@@ -151,6 +151,11 @@ Blob SHA と、ローカル検証に使ったファイルの Git Blob SHA は一
    `smoke_cli.sh` SMOKE PASS (obs/send/snap/stream/switch まで) +
    `smoke_brain.sh` PASS (fake brain 2回連続、retroarch 無しのため手順4は SKIP)。
    本番 soren_bridge (:99) とは別の :96 + 一時 config で実行。実配信は継続。
+   → **submodule bump + ラッパー実動検証 (2026-08-17)**: docich の soviet_now を
+   `a466960` (PR #110 ラッパー + #106/#107/#109 のマージ済み修正) へ bump して
+   main へ反映済み。VM smoke clone (/home/ubuntu/docich) で、`voicevox_tts.sh
+   --speakers` / `-o ... -f ...` / `say_enqueue.sh --render-only` (179,244 bytes WAV)
+   のすべてが docich CLI 委譲で成功することを実機 VOICEVOX で確認。
 3. **字幕有効化の設計**。`DOCICH_CC_ENABLED=1` は FFmpeg socket との接続確認が必要。
    PoC では既定無効のまま。
    → **設計済み (2026-08-17)**: `docich say --cc [--cc-socket PATH]` を追加。
@@ -182,6 +187,11 @@ Blob SHA と、ローカル検証に使ったファイルの Git Blob SHA は一
    検証: tests/test_speech.py 16 件 + 全体 443 件全緑、CLI dry-run 確認済み。
    残: soviet_now 側 `voicevox_tts.sh` の薄いラッパ化は Codex 作業完了後に別 PR
    (外部 push はユーザー承認が必要)。実機合成は VOICEVOX 起動環境で未実施。
+   → **ラッパー PR #110 をマージ済み (2026-08-17)**: soviet_now main へ反映
+   (`a466960`)、docich 側 submodule も bump 済み。**本番 VM (/home/ubuntu/soren) は
+   まだ dcb2992 のまま**。本番へ適用する場合は、docich バイナリを VM で利用可能に
+   (DOCICH_BIN 設定または PATH) した上で、ユーザー承認を得て submodule を更新する
+   (サービス再起動を伴う可能性)。
 
 ### 3.5 進め方の作法
 
