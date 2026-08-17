@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import captions, procs, tts
+from . import captions, chat, procs, tts
 from .actions import Action, ActionError, parse_actions
 from .adapters import AdapterError, make_adapter
 from .config import ConfigError, GlobalConfig, list_games, load_game, load_global
@@ -172,6 +172,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_say.add_argument("--dry-run", action="store_true", help="実行せずargv/env/cwdを表示する")
 
+    p_chat = sub.add_parser(
+        "chat", help="コメント応答を参照実行する (soviet_now broadcast/comment.sh)"
+    )
+    p_chat.add_argument("game", help="ゲーム名 (config/games/<name>.toml)")
+    p_chat.add_argument(
+        "--source", choices=sorted(chat.ALLOWED_CHAT_SOURCES), default="twitch",
+        help="チャット source (既定 twitch)",
+    )
+    p_chat.add_argument("--dry-run", action="store_true", help="実行せずargv/env/cwdを表示する")
+
+    p_radio = sub.add_parser(
+        "radio", help="ラジオ生成を参照実行する (soviet_now broadcast/radio_engine.sh)"
+    )
+    p_radio.add_argument("game", help="ゲーム名 (config/games/<name>.toml)")
+    p_radio.add_argument(
+        "--prompt-file", metavar="PATH", help="ラジオ生成プロンプトファイル"
+    )
+    p_radio.add_argument("--topic", metavar="TEXT", help="トピック直指定 (一時プロンプトへ書き出し)")
+    p_radio.add_argument("--corner", default="main", metavar="NAME", help="コーナー名 (既定 main)")
+    p_radio.add_argument("--game-num", type=int, default=0, metavar="N", help="ゲーム番号 (既定 0)")
+    p_radio.add_argument("--score", default="", metavar="SCORE", help="スコア (省略可)")
+    p_radio.add_argument("--dry-run", action="store_true", help="実行せずargv/env/cwdを表示する")
+
     p_run = sub.add_parser("run", help="(内部用) tmux window 内で監督ループを実行する")
     p_run.add_argument(
         "component", choices=["display", "audio", "stream", "game", "agent", "watchdog"]
@@ -226,6 +249,10 @@ def _dispatch(args: argparse.Namespace) -> int:
         return captions.run_args(args, default_socket=g.captions.socket_path)
     if command == "say":
         return tts.cli_say(args)
+    if command == "chat":
+        return chat.cli_chat(args)
+    if command == "radio":
+        return chat.cli_radio(args)
     if command == "run":
         return cmd_run(g, args.component, args.name)
     raise CliError(f"未知のコマンドです: {command}")
