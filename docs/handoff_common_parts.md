@@ -199,6 +199,13 @@ Blob SHA と、ローカル検証に使ったファイルの Git Blob SHA は一
    `--topic` 直指定では不合格 (radio_parser.py 検証)。docich からラジオ生成を使うには
    本番のプロンプト組立 (radio_persona.sh 等) を参照実行する形が正しい。詳細は
    docs/common_parts_chat.md §4.2。
+   → **C2 実実行 (コメント応答) を成功実証 (2026-08-18)**: `docich chat sorengame
+   --source twitch` を本番 .env (OPENCODE_GO_API_KEY) source + `DOCICH_ALLOW_REAL_COMMENT=1`
+   で実行し、RC=0。codex (deepseek-v4-flash) の AI 生成 → AI 出力ガード →
+   VOICEVOX 3 チャンク再生 → 字幕まで一続きで動作を確認。生成応答はクリーン。
+   コメント応答はラジオと違い ON_AIR_SCRIPT_START 形式制約が無いため、docich chat は
+   そのまま実使用可能。ラジオ (docich radio --topic) はプロンプト形式契約を要する
+   (common_parts_chat.md §4.3)。
    → **soviet_now 側のガード委譲ラッパを実装 (2026-08-17)**: `lib/ai_generate.sh` の
    `_ai_guard_model_output` が `DOCICH_BIN` (または PATH の docich) を使い
    `docich ai-guard` へ委譲し、無ければローカル `lib/model_output_guard.py` へ

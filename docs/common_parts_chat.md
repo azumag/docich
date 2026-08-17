@@ -134,6 +134,24 @@ docich radio <game> --prompt-file <path> [--corner NAME] [--dry-run]
   (radio_persona.sh 等) を参照実行する**形が正しく、`--topic` 単独の直実行ではない。
   C-S1 (AI ディスパッチ) / C-S5 (ラジオ生成) の昇格はこのプロンプト契約を前提に設計する。
 
+### 4.3 C2 実実行 (コメント応答) の成功実証 (2026-08-18)
+
+ラジオとは対照的に、**コメント応答 (`docich chat`) は docich 経由で実用できる**ことを本番で確認。
+
+- test コメントを `tmp/.twitch_chat/raw.log` に投入して fetch させ、`docich chat sorengame
+  --source twitch` を本番 `.env` (OPENCODE_GO_API_KEY) source + `DOCICH_ALLOW_REAL_COMMENT=1`
+  で実行 → **RC=0 (chat 完了)**。
+- 一連の流れを実測: codex (deepseek-v4-flash) の AI 生成 (`ai_dispatch` に
+  `COMMENT_codex_deepseek-v4-flash_output.txt` 809B) → `_play_comment_queue` →
+  VOICEVOX speaker=109 で 3 チャンク再生 → 字幕 (closed captions 3 chunks)。
+- 生成応答はクリーンで、AI 出力ガード (`docich ai-guard` 委譲) が理由付け/tool 漏れを
+  除去していることを確認。
+- コメント応答はラジオのような `ON_AIR_SCRIPT_START` 形式制約が無い (prompts/
+  comment_response_*.md は簡易応答形式) ため、`docich chat` はそのまま実使用に耐える。
+
+**教訓**: ラジオ (C-S5) とコメント (C-S3) はプロンプト形式契約が異なる。昇格設計は
+それぞれ個別に行い、ラジオだけが本番プロンプト組立への依存が強い。
+
 ## 5. 残余リスク・次段階
 
 - broadcast/ は直近変更あり (2026-08-16) だが、ユーザー判断で安定条件を無視して
