@@ -1,6 +1,6 @@
 # Soren Linux 配信・改善ループ 引き継ぎ
 
-> 更新: 2026-08-18 17:40 JST（strategy.py リファクタ + 性能改善検討、末尾 §12 参照）
+> 更新: 2026-08-19 03:15 JST（strategy.py クリップバグ修正、末尾 §12 参照）
 > 文書リポジトリ: `/Users/azumag/work/docich`（コミット管理）
 > 実装リポジトリ: `azumag/soviet_now`
 > この文書にストリームキー・OAuth token・秘密鍵・push target は書かない
@@ -234,20 +234,48 @@ opus サブエージェントに設計を委任し、fable サブエージェン
     （併合結果位置の直接情報）を使う方向で別セッションが着手中
     （`/Users/azumag/work/docich` 側の scratchpad にのみ存在、VM/repo未反映）
 
+### 追加完了（2026-08-19・VM本番反映済み・soviet_now main へ push 済み、commit `4e664ce`）
+
+前夜の性能改善検討（NO-GO）の副産物として見つかった「出力クリップ破損」を、別セッションが
+実データ検証（`analyze_board.py`でanalysisを実ログから再構成し`decide()`を直接実行するリプレイ
+基盤を構築）の末に発見。セッション制限で一度「failed」表示になったが実際には作業完了しており、
+`PATCH_B_V2_PLAN.md`（579行）にまとまっていた内容を引き継いで対応した。
+
+- **`decide()`末尾の出力クリップ修正（1行）**:
+  `best_x = max(-0.991, min(4.362, best_x))` → `max(-3.0, min(3.0, best_x))`。
+  コメント自身が「clip to drop range [-3.0, +3.0]」と明記し、`analyze_board.py`の
+  `DROP_X_MIN/MAX`とも一致する値への復元（新規閾値の発明ではない）
+- 実測根拠（2日分・独立した集計で再現）: 全決定の約11%がちょうど`x=-0.991`に丸められ、
+  その位置で併合を宣言した決定の成功率が有意に低い（80.5% vs 他位置95.4%、Fisher検定p≈0.003）。
+  盤面左1/3が事実上選択不能だった
+- 検証: `extract_decide_hash.py`（`80e1c297a82a`→`77134db06ae2`）、`validate_strategy_with_helpers`、
+  合成入力2000件（契約違反0件）、実ログ由来analysisでのdecide()直接実行（契約違反 17.4%→0%に解消、
+  reason文字列は全て不変=スコアリング軸自体は無変更）。opus 3連続529エラーのため sonnet
+  サブエージェントで独立レビューしGO判定（統計検定込みで自前実装により再現）
+- VM反映手順: `docs/strategy_refactor_checklist.md`通り by_hash登録・`active_branch.json`更新
+  （2026-08-19に同ファイルが初めて出現し repair 機構が有効化されたため、今回から手順が必須に
+  なった）・`repair_strategy_to_active_branch_head_if_needed`のno-op確認まで実施
+- 当初依頼の性能改善軸（単独T13→2個目T13/T14誘導）はNO-GO確定（`next`にT12が来ないため
+  構造的に発火し得ない、実測: 直近20試合のT13生成16件は全て連鎖の副産物）。なお同時期に
+  **VM自律改善ループ自身がロシア(type15)建国に初到達**（best_max_type=15, russia_count=1）
+  しており、当該課題は自律ループの通常進化で前進していた
+
 ### 作業ファイルの所在（このセッションのローカルscratchpad、次回参照用）
 `/private/tmp/claude-501/-Users-azumag-work-docich/314ad3cc-f42c-48c3-a727-60c8af94e279/scratchpad/vm-pull/`
-に `OPUS_PLAN.md` / `FABLE_PLAN.md` / `SELF_REVIEW.md` / `PATCH_B_V2_PLAN.md`
-（設計根拠・実測データの全文）。セッション終了後は失われる可能性がある一時ディレクトリのため、
-再利用する場合は早めに永続化すること。
+に `OPUS_PLAN.md` / `FABLE_PLAN.md` / `SELF_REVIEW.md` / `PATCH_B_V2_PLAN.md`（579行、実リプレイ
+検証基盤`v2work/`付き）/ `CLIP_FIX_REVIEW.md`（sonnetによる独立レビュー全文）。
+セッション終了後は失われる可能性がある一時ディレクトリのため、再利用する場合は早めに永続化すること。
 
 ### 副産物として見つかった構造的所見（今回は未対応、単独サイクル推奨）
 - phase判定のしきい値順序バグ（HIGH分岐が構造的に到達不能）。docstringにのみ明記、コードは温存
   （wildcard摂動の探索余地として残す方が安全、という2モデル共通の判断）
 - axis 9.3 (AVOID_BLOCK_REACTIVE_PAIR): 長さガード条件が実データと合わず実質no-op
 - `board_stats.has_reactive_for_type`/`has_near_for_type` が常にFalseを返し axis 9.6 が不発火
-- 最終 x クリップ `max(-0.991, min(4.362, x))` により盤面左側が実質選択不能
-  （全ターンの11.3%が -0.991 ちょうどで確定）
-- 詳細・実測値は上記 SELF_REVIEW.md / OPUS_PLAN.md 付録参照
+- FALLBACK_ALL_SUPPRESSED経路の同種クリップ破損（line 1403 `max(-1.612, min(0.862, x))`）。
+  実測でdead code確認済み（piece_count最大51、候補数最小31）だが次サイクルでの修正推奨
+- `HIGH_TYPE_COVER_AVOID`（高type併合レーンの被覆抑止軸）: クリップ修正後に条件付きGOと判定済み。
+  実装案は `PATCH_B_V2_PLAN.md` §6 参照。次サイクル候補
+- 詳細・実測値は上記 SELF_REVIEW.md / OPUS_PLAN.md / PATCH_B_V2_PLAN.md 付録参照
 
 ## 13. 参照
 
