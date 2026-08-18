@@ -1,6 +1,6 @@
 # Soren Linux 配信・改善ループ 引き継ぎ
 
-> 更新: 2026-08-13 22:10 JST
+> 更新: 2026-08-18 17:40 JST（strategy.py リファクタ + 性能改善検討、末尾 §12 参照）
 > 文書リポジトリ: `/Users/azumag/work/docich`（コミット管理）
 > 実装リポジトリ: `azumag/soviet_now`
 > この文書にストリームキー・OAuth token・秘密鍵・push target は書かない
@@ -190,7 +190,66 @@ worktree `codex/soren-ffmpeg-direct` に未 commit 差分 5 ファイル:
 4. **戦略改善ループ監視ジョブ**: `soren-1`（1 時間毎）が automations に無いため再作成 or 確認
 5. **ハーネス系**: コメント応答・ラジオコーナー・改善 AI の稼働確認と継続改善
 
-## 11. 参照
+## 12. strategy.py リファクタ + 性能改善検討（2026-08-18）
+
+### 依頼と進め方
+「VM の strategy.py を修正して性能を上げる、適切にリファクタリングする」という依頼。
+opus サブエージェントに設計を委任し、fable サブエージェントにも独立に相談（ユーザー指定）。
+両者は独立に同じ2つの結論（Change History圧縮によるリファクタ／単独T13→2個目T13,T14誘導の
+新axis追加）に収束した。実装後、別の opus サブエージェントに最終差分の自己レビューを依頼。
+
+### 完了（VM本番反映済み・soviet_now main へ push 済み、commit `933c6d6`）
+- **Patch A（リファクタ）のみ反映**。decide() の AST は完全不変
+  （`extract_decide_hash.py` 出力は前後とも `83f5995eda15`）。
+  - module-level Change History ブロック（191行）+ decide() 内の v番号付き履歴・
+    rollback failure mode コメントを削除、docstring を実挙動（phase 到達不能バグ・
+    height_mult 床値による平坦化）に合わせて書き換え。2025行→1375行
+  - 削除したコメント（rollback failure mode の知見含む）は
+    `docs/strategy_decide_history_archive_20260818.txt` に全文アーカイブ（VM・repo両方に配置）
+  - 検証: ランダム合成入力1300件超で新旧 decide() 出力 完全一致（0 mismatch）、
+    `validate_strategy_with_helpers` 通過、VM本番反映後に実ゲーム turn 30-43 の
+    連続正常動作をライブ確認（Monitor tool でtail -f）
+  - 反映先: VM `/home/ubuntu/soren/strategy.py`（バックアップ:
+    `tmp/deploy-backups/patchA_20260818/strategy.py.bak`）+ `azumag/soviet_now` main
+    直接コミット（PRなし、ユーザー指定）
+
+### 見送り（NO-GO・重要な教訓）
+- **性能改善案（`T13_FRONTIER_LANE_GUIDANCE`: 単独T13以上→2個目生成レーンへの
+  誘導axis）は本番反映していない**。今朝11:09の実rollback postmortem
+  （`単独T13が盤面にある局面で2個目のT13/T14を作る経路を優先する`という具体的指示）を
+  根拠に、opus設計→自分で1300件超の検証→別opusによる最終レビュー、の3段階を経たが、
+  **最終レビューが実ゲームログ20試合の実測データを使って設計の中核前提の破綻を発見**:
+  - 幾何ヘルパー`contact_lane_xs`の`reach_mult*半径`が実際のピース半径
+    （T11≈1.65, T12≈1.33）に対して盤面幅の約半分に達し、意図と逆に
+    「anchorから遠ざかる」誘導が64.1%で発生
+  - 30.2%で単独T13の真上（守るべき対象）へ誘導
+  - 狙った行動（feederピースを接触点へ落とす）は`next_type`の実分布と
+    `merge_grade=="NO"`ゲートの組み合わせで構造的にほぼ発火しえない
+    （実測 A/B で決定が変わった33件中 0件が意図通り）
+  - 整合するよう修正しても実ゲーム20試合中で意味のある発火はわずか2ターン
+  - **教訓**: 合成データでの検証（fired=0/changed=0等のゲート確認）だけでは
+    「発火した結果どこへ誘導されるか」の欠陥は検出できない。実データでの
+    方向・頻度・大きさの検証が必須
+  - 再設計は `analysis["results"]` の `merges`/`merge_result_*`
+    （併合結果位置の直接情報）を使う方向で別セッションが着手中
+    （`/Users/azumag/work/docich` 側の scratchpad にのみ存在、VM/repo未反映）
+
+### 作業ファイルの所在（このセッションのローカルscratchpad、次回参照用）
+`/private/tmp/claude-501/-Users-azumag-work-docich/314ad3cc-f42c-48c3-a727-60c8af94e279/scratchpad/vm-pull/`
+に `OPUS_PLAN.md` / `FABLE_PLAN.md` / `SELF_REVIEW.md` / `PATCH_B_V2_PLAN.md`
+（設計根拠・実測データの全文）。セッション終了後は失われる可能性がある一時ディレクトリのため、
+再利用する場合は早めに永続化すること。
+
+### 副産物として見つかった構造的所見（今回は未対応、単独サイクル推奨）
+- phase判定のしきい値順序バグ（HIGH分岐が構造的に到達不能）。docstringにのみ明記、コードは温存
+  （wildcard摂動の探索余地として残す方が安全、という2モデル共通の判断）
+- axis 9.3 (AVOID_BLOCK_REACTIVE_PAIR): 長さガード条件が実データと合わず実質no-op
+- `board_stats.has_reactive_for_type`/`has_near_for_type` が常にFalseを返し axis 9.6 が不発火
+- 最終 x クリップ `max(-0.991, min(4.362, x))` により盤面左側が実質選択不能
+  （全ターンの11.3%が -0.991 ちょうどで確定）
+- 詳細・実測値は上記 SELF_REVIEW.md / OPUS_PLAN.md 付録参照
+
+## 13. 参照
 
 - [Issue #96](https://github.com/azumag/soviet_now/issues/96)
 - [soviet_now #97](https://github.com/azumag/soviet_now/pull/97)（マージ済み・実配信ゲートは未完了のまま）
