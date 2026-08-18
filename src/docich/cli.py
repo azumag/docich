@@ -10,7 +10,16 @@ import sys
 import time
 from pathlib import Path
 
-from . import captions, chat, model_output_guard, overlay, procs, speech, tts
+from . import (
+    ai_generate,
+    captions,
+    chat,
+    model_output_guard,
+    overlay,
+    procs,
+    speech,
+    tts,
+)
 from .actions import Action, ActionError, parse_actions
 from .adapters import AdapterError, make_adapter
 from .config import ConfigError, GlobalConfig, list_games, load_game, load_global
@@ -44,6 +53,7 @@ class CliError(Exception):
 
 
 USER_ERRORS = (
+    ai_generate.AiError,
     ConfigError,
     ActionError,
     AdapterError,
@@ -195,6 +205,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_radio.add_argument("--score", default="", metavar="SCORE", help="スコア (省略可)")
     p_radio.add_argument("--dry-run", action="store_true", help="実行せずargv/env/cwdを表示する")
 
+    p_ai = sub.add_parser(
+        "ai", help="AI ディスパッチを参照実行する (soviet_now lib/ai_generate.sh, C-S1)"
+    )
+    p_ai.add_argument("game", help="ゲーム名 (config/games/<name>.toml)")
+    p_ai.add_argument("--label", required=True, help="ラベル (COMMENT または RADIO で始まる識別子)")
+    p_ai.add_argument("--agents", required=True, metavar="AGENTS", help="カンマ区切りエージェントリスト (優先度順)")
+    p_ai.add_argument("--prompt-file", required=True, metavar="PROMPT_FILE", help="生成プロンプトファイル")
+    p_ai.add_argument("--timeout", type=int, default=None, metavar="SEC", help="codex タイムアウト (省略時はラベル既定)")
+    p_ai.add_argument("--run-timeout", type=float, default=None, metavar="SEC", help="プロセス全体のタイムアウト")
+    p_ai.add_argument("--dry-run", action="store_true", help="実行せずargv/env/cwdを表示する")
+
     speech.configure_parser(sub)
 
     p_overlay = sub.add_parser(
@@ -273,6 +294,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return chat.cli_chat(args)
     if command == "radio":
         return chat.cli_radio(args)
+    if command == "ai":
+        return ai_generate.cli_ai(args)
     if command == "voicevox":
         return speech.run_args(args)
     if command == "overlay":

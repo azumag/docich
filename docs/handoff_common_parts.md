@@ -270,6 +270,15 @@ Blob SHA と、ローカル検証に使ったファイルの Git Blob SHA は一
 - docich 本体は stdlib-only を維持。参照実行する shell 部品はサブモジュール相対パス
   `games/soviet_now/...` で呼ぶ (multi_repo_plan.md §1.1)。
 
+### 3.8 C-S1 (AI ディスパッチ) 契約固定 (2026-08-18)
+
+C2 実実行 (docich chat 成功) の実証後に、C-S1 を「docich 正典への完全移植」ではなく
+**参照実行ラッパ `docich ai`** として契約を固定した (common_parts_chat_c4.md §5)。
+`ai_generate_list` を安全に参照実行し、バックオフ/生成キュー/opencode lock を一時ディレクトリへ
+分離して本番を汚さない。実実行は `DOCICH_ALLOW_REAL_AI=1` で明示許可。実装は
+`src/docich/ai_generate.py` + CLI + `tests/test_ai_generate.py` (8 件)。
+soviet_now 側ラッパ置換は将来の別 PR (外部 push はユーザー承認後)。
+
 ## 4. 変わらない原則 (このプロジェクトの前提)
 
 1. **役割分担**: 計画・設計・レビュー = このセッション (Fable)。実装 = sonnet サブエージェント。
