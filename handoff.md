@@ -1095,3 +1095,31 @@ config.sh:108, ai_generate.sh は rc!=0 の一過性障害のみに適用) を W
 - `deepseek-v4-flash-free` の恒常 429 は継続 (コードで解消不可)。free が落ちている間も
   amd/openrouter/local が 5分バックオフで復帰を試み、成功すれば deepseek-v4-flash 使用率は
   下がる見込み。
+
+### 28. コメント応答から local を除外 — 2026-08-20
+
+ユーザー提案「コメント応答から local ははずしたほうがいいかも」に基づき実測調査して採用。
+
+**実測理由**
+- 本番 COMMENT の統計 (08-20): local は attempt 3 / ok 1 / fail 2 (rc=1)。
+  失敗 2 件は開始から約 90 秒 (COMMENT のタイムアウト枠 COMMENT_CODEX_TIMEOUT=90)。
+- local 成功時の所要時間は約 55 秒。クラウド (amd/deepseek) は 19-30 秒で返答。
+  コメント返しは視聴者を待たせるため、遅延とタイムアウトは品質に直結。
+- local の実体: gemma4:12b (Ollama, Tailscale 経由 100.112.104.102:11434)。
+  大きなコメントプロンプト (~19KB) では生成が間に合わない模様。
+- なお local はラジオ生成/prepass では有用 (今日は jiji/theme/music_knowledge/prepass で
+  複数勝者) のため、ラジオ側のチェーンは変更していない。
+
+**実施**
+- VM `/home/ubuntu/soren/.env` の `COMMENT_AGENTS` から `local` を除去
+  (バックアップ: `.env.bak-20260820-comment-no-local`)。
+  → `codex:deepseek-v4-flash-free,codex:amd-token-factory-deepseek-v4-flash,codex:openrouter/free,
+  codex:deepseek-v4-flash,codex:minimax-m3`。
+- chat_worker へ USR1 (reload complete 確認) → 次コメント生成で新チェーン適用を実測確認
+  (`agents=...openrouter/free,codex:deepseek-v4-flash,...`、local 無し)。
+  その返信は amd-token-factory が約 19 秒で生成 (360字)。
+- `COMMENT_TRANSLATION_AGENTS` は COMMENT_AGENTS を継承するため同様に local 無し。
+
+**影響**: free(429) かつ amd/openrouter も失敗した場合、コメント返しは直接
+deepseek-v4-flash (有償) に落ちる。ラジオ側と違い local がバッファにならない点に留意。
+必要なら free の復帰で元に戻る見込み。
