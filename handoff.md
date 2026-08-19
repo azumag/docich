@@ -153,6 +153,7 @@ source commit is not a completed change.
 
 
 > 更新: 2026-08-19 05:45 JST（クリップ修正rollback判明 + HIGH_TYPE_COVER_AVOID軸投入、末尾 §12 参照）
+> 追記: 2026-08-19 16:50 JST（main追従 + RADIO_AGENTS/COMMENT_AGENTSへのOpenRouter free/AMD Token Factory追加、§14 参照）
 > 文書リポジトリ: `/Users/azumag/work/docich`（コミット管理）
 > 実装リポジトリ: `azumag/soviet_now`
 > この文書にストリームキー・OAuth token・秘密鍵・push target は書かない
@@ -537,7 +538,54 @@ CURRENT_RUN_SCORE_KEEP=100
 検証はopus 2段階（設計レビュー→適用後の自己レビュー）＋自分でのVM実測（n実測、
 strategy.pyのenv非依存確認、無効トグル4件の実測確認）で行った。
 
-### 14. 参照
+### 14. main追従 + AIハーネスのフォールバックチェーン拡張（2026-08-19、Claude Codeセッション）
+
+#### main追従（このリポジトリ docich 自体）
+`codex/soren-repo-handoff` ブランチが `origin/main` から分岐後に大きく乖離（main側は
+`src/docich/` 本体・ゲームsubmodule・docsを多数追加、本ブランチは本 handoff.md の
+Soren運用ログのみ拡張）していたため、`git merge origin/main` で追従した。
+`handoff.md` のみ衝突（main側が2026-08-15に英語のdocich多ゲーム/字幕向けhandoffへ
+全面書き換えしていたため）。ユーザー指示によりmain版をベースとして採用し、本ブランチの
+日本語Soren運用ログ（この節を含む全体）は「Soren strategy.py / improve-loop 運用ログ」
+という節としてそのまま追記保持した（内容の要約・削除なし）。他ファイルは無衝突。
+マージコミット後、**まだ push していない**。
+
+#### OpenRouter free / AMD Token Factory を RADIO_AGENTS・COMMENT_AGENTS に追加
+VM `soren-litellm`（port 4100）の litellm.yaml には `openrouter/free` モデルが
+以前から定義済みだったが `OPENROUTER_API_KEY` 未設定で常に失敗していた
+（`/health` で `Missing credentials` を実測確認）。AMD Token Factory は未定義だった。
+
+- **OpenRouter**: ユーザー提供の新規キーを VM `/home/ubuntu/.config/soren-litellm.env` の
+  `OPENROUTER_API_KEY` に設定。モデルIDは `openrouter/free`（OpenRouter公式の
+  「無料モデルをランダムに選ぶルーター」、`GET /api/v1/models` で実在確認済み。
+  廃止/新規モデルへの追従が自動な代わりに、どの実モデルが応答するかは毎回変わる）
+- **AMD Token Factory**: ローカル codex-router (`~/.codex/codex-router/amd-token-factory-api-key.secret`)
+  のキーをそのまま再利用（ユーザー指示）。VM `soren-litellm.env` に `AMD_API_KEY` として追加、
+  litellm.yaml に `amd-token-factory-deepseek-v4-flash`
+  （`model: openai/DeepSeek-V4-Flash`, `api_base: https://developer.amd.com.cn/radeon/api/v1`）
+  を新規追加
+- `soren/.env` の `RADIO_AGENTS` と `COMMENT_AGENTS` 両方に
+  `codex:amd-token-factory-deepseek-v4-flash` を `codex:openrouter/free` の直後に挿入
+  （`MODEL_IMPROVE`/`MODEL_FALLBACK_IMPROVE` は意図的な `disabled` のため変更していない）
+- `soren-litellm` を再起動し `curl :4100/health` で実測: `openrouter/free` と
+  AMD の `DeepSeek-V4-Flash` はともに healthy（実際の completion 呼び出しで確認）
+- バックアップ: VM `~/tmp/deploy-backups/fallback_chain_20260819_164749/`
+  （`litellm.yaml.bak` / `soren-litellm.env.bak` / `soren.env.bak`）
+- **未確認・要注意**: ユーザーは当初「AMD Token Factoryは本日分のクォータを使い切った」と
+  申告していたが、投入直後の `/health` 実測では AMD (`DeepSeek-V4-Flash`) は healthy
+  （実際に応答した）だった。ローカル codex-router 側の `rate-limits.json` に記録されていた
+  cooldown（`retryAt` 2026-08-19T06:01 UTC）は本確認時点で既に経過していたため、日次上限と
+  この一時的レート制限は別物である可能性が高い。今回の投入順序では `openrouter/free` が
+  AMD より先に試行されるため、通常運用でAMDまで到達するのは openrouter/free 失敗時のみ。
+  実際にAMDへ到達して課金/消費が発生するかは今後の実運用ログで要確認
+- 秘密鍵の値そのものはこの文書はもちろんVM外にも一切記録していない
+
+#### リポジトリルール: handoff.md の運用を明文化
+ユーザー指示により、本リポジトリ直下に `AGENTS.md`（+ `CLAUDE.md` からの参照）を新設し、
+「作業再開時は handoff.md を読む」「一段落したら handoff.md を更新する」を明文化した
+（`/handoff` スキルを使う運用、詳細は当該ファイル参照）。
+
+### 15. 参照
 
 - [Issue #96](https://github.com/azumag/soviet_now/issues/96)
 - [soviet_now #97](https://github.com/azumag/soviet_now/pull/97)（マージ済み・実配信ゲートは未完了のまま）
