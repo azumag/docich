@@ -61,7 +61,7 @@ viewer 専用として動く。`binary = "auto"` は `chromium` /
 (選択肢: snap 版 chromium の導入、または soren の Playwright chromium
 (`~/.cache/ms-playwright/`) を `[browser] binary` に指定して共用する)。
 
-## 本番 AI モデルフォールバックチェーン (参考情報、2026-08-19 時点)
+## 本番 AI モデルフォールバックチェーン (参考情報、2026-08-19 更新)
 
 soviet_now 側の実装は上記の通り読み取り専用として扱うが、本番 VM 上の AI ディスパッチ
 (ラジオ生成・コメント応答) がどのモデルを順に試すかは、運用上よく参照するため参考情報として
@@ -69,22 +69,43 @@ soviet_now 側の実装は上記の通り読み取り専用として扱うが、
 `.env` の `RADIO_AGENTS` / `COMMENT_AGENTS` であり、いずれも docich 側からは変更しない
 soviet_now 管轄の設定である。
 
+**共通チェーン `AI_COMMON_AGENTS`**: ラジオ/コメント/翻訳/プレパスはすべてこの単一の順序
+原典を継承する (2026-08-19 導入、トークン効率改善):
+
+```
+codex:deepseek-v4-flash-free → codex:amd-token-factory-deepseek-v4-flash →
+codex:openrouter/free → local → codex:deepseek-v4-flash → codex:minimax-m3
+```
+
 | チェーン | 現在の順序 |
 |---|---|
-| `RADIO_AGENTS` | `local` → `codex:deepseek-v4-flash-free` → `codex:openrouter/free` → `codex:amd-token-factory-deepseek-v4-flash` → `codex:deepseek-v4-flash` → `codex:minimax-m3` |
-| `COMMENT_AGENTS` | `local` → `codex:deepseek-v4-flash-free` → `codex:openrouter/free` → `codex:amd-token-factory-deepseek-v4-flash` → `codex:deepseek-v4-flash` → `codex:minimax-m3` |
+| `RADIO_AGENTS` | 共通チェーン (`AI_COMMON_AGENTS`) |
+| `COMMENT_AGENTS` | 共通チェーン (`AI_COMMON_AGENTS`) |
+| `COMMENT_TRANSLATION_AGENTS` | 共通チェーン (`AI_COMMON_AGENTS`) |
+| `RADIO_PREPASS_AGENTS` | 共通チェーン (`AI_COMMON_AGENTS`) |
+| `MODEL_IMPROVE_LIST` | 共通から `local` と `openrouter/free` を除外 (4段) |
+| `DOCICH_CC_TRANSLATION_MODELS` (字幕) | 共通から `local` を除外 (5段) |
 
 - `codex:openrouter/free` は OpenRouter 公式の「無料モデルをランダムに選ぶ」ルーター
   (`openrouter/free`)。`codex:amd-token-factory-deepseek-v4-flash` は AMD Token Factory
   経由の DeepSeek V4 Flash。どちらも無料/クォータ制の枠のため、上位が失敗した場合のみ
   実際に呼ばれる。
+- **モデル別バックオフ (2026-08-19)**: `deepseek-v4-flash-free` / `amd-token-factory…` /
+  `openrouter/free` = 1日、`local` = 30分、`deepseek-v4-flash` / `minimax-m3` = 5時間。
+  フォールバック基準の精査により、プロバイダ/CLI 失敗 (rc≠0) でもモデル別に
+  バックオフを設定する (形式不正・空出力の rc=0 はバックオフしない)。
+- **ピーク時の優先順序 (2026-08-19)**: どんなチェーンも
+  `minimax-m3 → openrouter/free → local → deepseek系` の順に並べ直す (候補は削除しない)。
+- **統計 (2026-08-19)**: モデル呼び回数とフォールバック結果を 1 日 1 ファイルの JSONL
+  (`tmp/state/ai_stats/<yyyymmdd>.jsonl`) に記録 (attempt / ok / fail / winner /
+  all_failed)。
 - `MODEL_IMPROVE` (戦略改善ループ) は `codex:deepseek-v4-flash` 固定で
   `MODEL_FALLBACK_IMPROVE=disabled`（意図的にフォールバック無し）であり、上記チェーンとは
   無関係。
 - 各モデルの実接続先・API キー参照は VM `/home/ubuntu/litellm.yaml` /
   `/home/ubuntu/.config/soren-litellm.env`（git 管理外、秘密鍵につきここには書かない）。
   健全性は `curl http://127.0.0.1:4100/health`（VM 上 or SSH 経由）で確認できる。
-- 詳細な変更履歴・検証ログは docich `handoff.md` §14/§15 を参照。この表はスナップショットで
+- 詳細な変更履歴・検証ログは docich `handoff.md` §14/§15・§21 を参照。この表はスナップショットで
   あり、soviet_now 側の運用変更で随時ズレうる（正は常に VM の `.env`/`litellm.yaml`）。
 - **実データ確認済み（2026-08-19 18:32 JST）**: 設定変更なしの通常運用中に実際の
   `[RADIO:news]` コーナー生成で `codex:amd-token-factory-deepseek-v4-flash` が勝者になり、
@@ -100,13 +121,14 @@ ANALYZE/IMPLEMENT/FIX/REVIEW) とラジオ pre-pass (事前調査) にもモデ�
 同名で存在する古い `config.sh` ではない点に注意）:
 
 ```text
-MODEL_IMPROVE_LIST (既定) = codex:deepseek-v4-flash-free → codex:openrouter/free →
+MODEL_IMPROVE_LIST (既定) = codex:deepseek-v4-flash-free → codex:amd-token-factory-deepseek-v4-flash →
                              codex:deepseek-v4-flash → codex:minimax-m3
-RADIO_PREPASS_AGENTS (既定) = 同上 (local を除いた同じ4段)
+RADIO_PREPASS_AGENTS (既定) = 共通チェーン (AI_COMMON_AGENTS、local を含む6段)
 ```
 
-- 2026-08-19 時点でどちらにも `amd-token-factory` は**含めていない**（今回のユーザー依頼は
-  RADIO_AGENTS/COMMENT_AGENTS への追加のみ。この2つへ追加するかは別途要判断）
+- 2026-08-19 のトークン効率改善で、`MODEL_IMPROVE_LIST` は共通チェーンから
+  `local` と `openrouter/free` を除外し、`amd-token-factory` を含む 4 段へ更新。
+  `RADIO_PREPASS_AGENTS` は共通チェーン (6段、`local` を含む) を継承。
 - **解決済み（2026-08-19 追記）**: 上の「未解決の疑問」は誤りだった。`soren/radio_engine.sh`
   （リポジトリ直下）と `soren/broadcast/radio_engine.sh` の**2ファイルが同時に存在**しており、
   `eloop_lib.sh` が実際に `source` するのは **`broadcast/radio_engine.sh`** の方
