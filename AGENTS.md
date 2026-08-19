@@ -41,3 +41,12 @@
 `/home/ubuntu/soren`（Oracle VM、git 管理外）へ本番反映する変更は、同時に `azumag/soviet_now`
 の作業ブランチへコミット・push する。コミット前は「反映済み」と報告しない。VM とリポジトリが
 乖離した場合は、新しい側（実際に動いている側）を正として同期し直す。
+
+## 6. soviet_now の config.sh 既定値変更は worker 完全再起動で反映する
+
+`/home/ubuntu/soren` の worker（radio/chat/improve_daemon）は起動時に `core/config.sh` の
+`VAR="${VAR:-default}"` 既定値をシェル環境に取り込むため、**config.sh の既定値を変更しただけ
+では USR1/HUP reload で反映されない**（設定済み値が優先される罠。2026-08-20 に prepass が
+共通チェーンを無視し続けた実例あり）。変更時は必ず worker を完全再起動
+（`kill -TERM` → supervisor 自動 respawn）し、ログ（`prepass agents=` 等）で実測確認する。
+詳細は soviet_now の AGENTS.md「config.sh 既定値の変更は worker 完全再起動で反映する」を参照。
