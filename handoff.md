@@ -989,3 +989,52 @@ LiteLLM モデルに存在せず、字幕翻訳クライアントは OpenAI 互�
   - 旧SSHフォワード (`ssh -L 8787:...`) は不要になった (トンネルは切断済み)。
 - 停止方法: `systemctl --user disable --now docich-webui` (unit は
   ~/.config/systemd/user/docich-webui.service、__DOCICH_ROOT__ 置換 + --soren-root 追記済み)。
+
+### 25. トークン効率 A/B/C 完了: deepseek 過使用の原因特定 + バックオフ種別分割 — 2026-08-20
+
+ユーザー依頼「まだ割と `codex:deepseek-v4-flash` の呼び出しがあるが前段のモデルが
+ちゃんと呼ばれているか調べて」に対し、A/B/C の順で対処した。
+
+**A. 本番 `.env` のチェーン有効化 (完了)**
+- 本番 `.env` の `RADIO_AGENTS`/`COMMENT_AGENTS` を共通チェーン順
+  `deepseek-v4-flash-free → amd-token-factory → openrouter/free → local → deepseek-v4-flash → minimax-m3`
+  へ更新し、radio/comment worker へ HUP を送って即反映 (worker は生存・無停止)。
+- 実効値確認: `RADIO_AGENTS`/`COMMENT_AGENTS`/`COMMENT_TRANSLATION_AGENTS`/`RADIO_PREPASS_AGENTS`
+  いずれも共通チェーンを継承 (source .env + core/config.sh で実測)。
+- バックアップ: `.env.bak-20260820-chain-activate`。
+
+**B. free-tier 失敗診断 (完了): deepseek-v4-flash 過使用の原因**
+- 前段モデルは「呼ばれていなかった」のではなく「呼ばれて失敗していた」。
+- `codex:deepseek-v4-flash-free` → 直接プローブで **429 Too Many Requests**
+  (opencode.ai 無料枠のクォータ枯渇、実測)。ここが実質プライマリとして機能していない主因。
+- `codex:openrouter/free` → プローブ成功 (有効応答) だが 1日バックオフ中。
+- `local` → Tailscale ローカル LLM 到達不能で失敗 → 30分バックオフ。
+- `codex:amd-token-factory` → 24h バックオフ中だった。
+- 実測 24h winner (radio 本文): `deepseek-v4-flash`=308, `minimax-m3`=174,
+  `amd-token-factory`=14, `deepseek-v4-flash-free`=2。→ 無料枠が一斉にパークされ
+  deepseek-v4-flash が実質プライマリになっていた。
+
+**C. バックオフ種別分割 (PR #125, 完了・マージ・VM反映)**
+- 原因: PR #124 で「プロバイダ失敗 (rc!=0) でもモデル別 1日バックオフ」にしたため、
+  無料枠どれか一つの一過性障害で無料枠全体が 24h パークされた。
+- 修正 (soviet_now `codex/backoff-type-split` → PR #125 を main へマージ、`522f644f9`):
+  - レート制限/クォータ (rc=79 系・429 検出) → 従来どおりモデル別の長バックオフ
+    (free 系 1日 / local 30分 / deepseek・minimax 5h)。
+  - 一過性のプロバイダ/認証/CLI 失敗 → 短い `AI_BACKOFF_FAILURE_SEC` (既定 300s)。
+- テスト追加: `test_rate_limit_uses_long_backoff_but_generic_failure_uses_short`
+  (18000 vs 300)。ローカル実測 16 件 PASS。
+- VM 反映 (sha256 一致確認後): `core/config.sh`・`lib/ai_generate.sh` を
+  リポジトリ main と同一内容で反映。構文 check OK、checksum 一致
+  (config `6f5970afa…`, ai_generate `403842255…`)。
+- 反映後、radio/chat worker へ USR1 を送り reload (ログで "reload complete" 確認)。
+- 実効値確認 (ワーカーと同じ source 経路): `AI_BACKOFF_FAILURE_SEC=300`、
+  `AI_BACKOFF_SEC_ITEMS` は free 系 86400 / local 1800 / deepseek・minimax 18000 のまま、
+  `AI_COMMON_AGENTS` は共通チェーンのまま。
+- バックアップ: VM `.codex_deploy/backup-20260820-backoff-type-split-<TS>/`。
+
+**残課題・留意**
+- `deepseek-v4-flash-free` の 429 は上流 opencode.ai 無料枠クォータ枯渇であり、
+  コードでは解消不可。短バックオフ (C) で他無料枠 (openrouter/amd) は早期復帰できるが、
+  free が本当に 429 の間は `deepseek-v4-flash` の使用率が高止まりする。
+- レガシー経路 (celebration/corners) の `RADIO_MAIN_AGENT/FALLBACK` は
+  ハードコード deepseek→minimax のまま。必要なら共通チェーンへ寄せる追検討あり。
