@@ -68,3 +68,25 @@
 - **実機合成は完了 (2026-08-17)**: ローカル VOICEVOX (127.0.0.1:50021, v0.25.2) で
   `docich voicevox speakers` (話者一覧) と `docich voicevox synth` (267,308 bytes WAV,
   RIFF ヘッダ確認) を実行して成功。VM とは独立したローカル合成で本番に触れていない。
+
+## 5. TTS 残判断の解決 (2026-08-19)
+
+common_parts_tts.md で「将来」「優先度低」とされていた未解決判断を確定する。
+
+### 5.1 他の TTS (google_tts / coeiroink / english_tts) の HTTP 共通化 → 実施しない
+
+CHAT/ラジオの判断と同様、docich には翻訳や TTS の「第三実装」を作らない。
+VOICEVOX 合成 (S1) だけが docich 正典 (`src/docich/speech.py`)。google/coeiroink/
+english の HTTP クライアント共通化は価値が低く (API トークン管理・chunk 結合の移動費が
+見合わない)、参照実行のままとする。「優先度低」→ **実施しない**。
+
+### 5.2 soviet_now 側ラッパ化 (S1 の委譲) → 将来の別 PR (外部 push ゲート)
+
+soviet_now 側 `voicevox_tts.sh` の薄いブリッジ (docich `voicevox` 呼び出し) 化は、
+soviet_now リポジトリ変更 + 外部 push を伴うため、Codex 作業完了とユーザー承認の後に
+別 PR で行う。**現時点では実施しない** (docich からの作業範囲外)。
+
+### 5.3 話者運用 (S5)
+
+docich 側は環境変数 (`SAY_VOICEVOX_SPEAKER_OVERRIDE`) と引数で話者を選択。sidecar
+(`.voice`) 運用は soviet_now 側のまま。docich 実装は変更なし。
