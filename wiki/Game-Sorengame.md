@@ -61,6 +61,32 @@ viewer 専用として動く。`binary = "auto"` は `chromium` /
 (選択肢: snap 版 chromium の導入、または soren の Playwright chromium
 (`~/.cache/ms-playwright/`) を `[browser] binary` に指定して共用する)。
 
+## 本番 AI モデルフォールバックチェーン (参考情報、2026-08-19 時点)
+
+soviet_now 側の実装は上記の通り読み取り専用として扱うが、本番 VM 上の AI ディスパッチ
+(ラジオ生成・コメント応答) がどのモデルを順に試すかは、運用上よく参照するため参考情報として
+ここに記す。実体は `soren-litellm` (VM 上の litellm プロキシ、port 4100) と soviet_now
+`.env` の `RADIO_AGENTS` / `COMMENT_AGENTS` であり、いずれも docich 側からは変更しない
+soviet_now 管轄の設定である。
+
+| チェーン | 現在の順序 |
+|---|---|
+| `RADIO_AGENTS` | `local` → `codex:deepseek-v4-flash-free` → `codex:openrouter/free` → `codex:amd-token-factory-deepseek-v4-flash` → `codex:deepseek-v4-flash` → `codex:minimax-m3` |
+| `COMMENT_AGENTS` | `local` → `codex:deepseek-v4-flash-free` → `codex:openrouter/free` → `codex:amd-token-factory-deepseek-v4-flash` → `codex:deepseek-v4-flash` → `codex:minimax-m3` |
+
+- `codex:openrouter/free` は OpenRouter 公式の「無料モデルをランダムに選ぶ」ルーター
+  (`openrouter/free`)。`codex:amd-token-factory-deepseek-v4-flash` は AMD Token Factory
+  経由の DeepSeek V4 Flash。どちらも無料/クォータ制の枠のため、上位が失敗した場合のみ
+  実際に呼ばれる。
+- `MODEL_IMPROVE` (戦略改善ループ) は `codex:deepseek-v4-flash` 固定で
+  `MODEL_FALLBACK_IMPROVE=disabled`（意図的にフォールバック無し）であり、上記チェーンとは
+  無関係。
+- 各モデルの実接続先・API キー参照は VM `/home/ubuntu/litellm.yaml` /
+  `/home/ubuntu/.config/soren-litellm.env`（git 管理外、秘密鍵につきここには書かない）。
+  健全性は `curl http://127.0.0.1:4100/health`（VM 上 or SSH 経由）で確認できる。
+- 詳細な変更履歴・検証ログは docich `handoff.md` §14 を参照。この表はスナップショットであり、
+  soviet_now 側の運用変更で随時ズレうる（正は常に VM の `.env`/`litellm.yaml`）。
+
 ## 関連ドキュメント
 
 - [docs/games/sorengame.md](https://github.com/azumag/docich/blob/main/docs/games/sorengame.md) — 本ページの詳細版

@@ -580,6 +580,34 @@ VM `soren-litellm`（port 4100）の litellm.yaml には `openrouter/free` モ�
   実際にAMDへ到達して課金/消費が発生するかは今後の実運用ログで要確認
 - 秘密鍵の値そのものはこの文書はもちろんVM外にも一切記録していない
 
+#### 追記: `.env` は自動リロードされない。反映には reload signal が必須（実測で判明）
+`.env` 更新直後、`radio_worker.sh`/`chat_worker.sh` は**自動では反映されなかった**
+（本節冒頭の「§6 `.env` は毎試合再読込される」という記載は `soren_loop.sh`/`improve_daemon.sh`
+（試合ごとにファイルを再読込する設計）についての記述であり、`radio_worker.sh`/`chat_worker.sh`
+には当てはまらない。両者は起動時に一度 `.env` を `set -a; . ./.env; set +a` するだけで、
+以後は親プロセスの環境変数がそのまま子プロセス（コーナー生成のたび fork される）に
+継承され続ける）。
+
+- 実測: `.env` 編集後、`RADIO_AGENTS` の peak-hours ログ（`peak hours → agents=...`）は
+  複数回（17:00:20〜17:01:54）にわたり**旧リスト（amd無し）のまま**だった
+- 両ワーカーとも `SIGHUP`/`SIGUSR1`/`SIGUSR2` で `.env` 再読込する reload ハンドラを持つ
+  （`_request_reload` → `_reload_runtime`、ログに `reload requested`/`reload complete` が出る）。
+  **ただし signal は worker の最上位プロセス（`start_all.sh --supervisor` の直接の子、
+  例: 今回は radio_worker.sh の PID 3802950）に送る必要がある**。長時間稼働 VM では PID が
+  一巡している場合があり、`pgrep -f ... | sort -n | head -1`（最小PID）は誤ったプロセス
+  （実は新しく fork された子プロセス）を拾うことがあるため、`ps -o pid,ppid,lstart,cmd` で
+  `ppid` が supervisor（`start_all.sh --supervisor` の PID）であることを確認してから送ること
+- `chat_worker.sh`（COMMENT_AGENTS）は reload signal を送らなくても次のコメント生成時点で
+  新しいリストを使っていた（13:32→17:03 の呼び出しで自然反映、reload ログなし）。
+  仕組みは未調査だが、radio 側と挙動が異なる点として記録しておく
+- radio 側は `kill -USR1 3802950`（正しい最上位PID）で `reload requested`/`reload complete`
+  をログで確認。ただしその後の実際のコーナー生成で新リストが使われたかは、ライブ配信中で
+  コーナー発火が疎（数分〜十数分間隔）なため本セッション内では未確認のまま報告する
+  （確認でき次第この節を更新すること）
+- **今後の教訓**: soren の `.env` 変更は「ファイルを書き換えた」＝「反映された」ではない。
+  対象プロセスの env 読み込み方式（毎回再読込 / 起動時一度のみ）を確認し、後者なら
+  最上位PIDへ reload signal を送るか再起動するまでは変更は effectiveでない
+
 #### リポジトリルール: handoff.md の運用を明文化
 ユーザー指示により、本リポジトリ直下に `AGENTS.md`（+ `CLAUDE.md` からの参照）を新設し、
 「作業再開時は handoff.md を読む」「一段落したら handoff.md を更新する」を明文化した
