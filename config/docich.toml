@@ -47,3 +47,14 @@ recover_windows = true # display/audio/stream window 消失時に `up` 相当で
 
 [rotation]
 games = []            # `docich rotate` が巡回するゲーム名の順序 (例: ["nethack", "hanjuku-hero"])。空だとエラー
+
+# --- Web UI (モデルチェーン / バックオフ管理) ---
+
+[webui]
+bind = "127.0.0.1"         # Tailscale serve 経由で公開する想定。0.0.0.0 は警告付きで許可
+port = 8787
+soren_root = ""            # 空なら games/soviet_now (未導入ゲームなら "$DOCICH_SOREN_ROOT" または ELOOP_LIB_DIR 相当を指定)
+token = ""                 # 空なら Tailscale ACL のみ。設定時は 8 文字以上
+token_env = "DOCICH_WEBUI_TOKEN"   # token の上書き環境変数名
+allow_cors = false         # 別オリジンからの API 呼び出しを許可 (開発用)
+read_only = false          # true だと閲覧専用 (設定変更・backoff 操作・reload 不可)

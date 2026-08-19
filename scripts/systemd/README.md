@@ -10,6 +10,7 @@ tmux 常駐 (architecture.md §2) を systemd --user ユニットで包むため
 | `docich.service` | `docich up` / `docich down` を包む oneshot ユニット (`RemainAfterExit=yes`) |
 | `docich-rotate.service` | `docich rotate` を1回実行する oneshot ユニット (`[Install]` なし。timer 専用) |
 | `docich-rotate.timer` | `docich-rotate.service` を毎時起動する timer ([rotation] 利用時のみ) |
+| `docich-webui.service` | `docich webui` を常駐させる simple ユニット (Tailscale serve で公開する場合のみ利用) |
 
 ## 導入手順
 
@@ -35,6 +36,27 @@ systemctl --user enable --now docich-rotate.timer
 `docich-rotate.service` は `[Install]` を持たないため `enable` できない
 (= timer 経由でのみ起動する設計)。単発で試すだけなら
 `systemctl --user start docich-rotate.service` を直接使う。
+
+## Web UI (docich-webui.service) の導入
+
+モデルチェーン / バックオフ管理 UI を systemd で常駐させる場合のみ導入する
+(既定では enable しない。`docich webui` を手動で起動してもよい):
+
+```sh
+cd /path/to/docich
+sed "s|__DOCICH_ROOT__|$(pwd)|g" scripts/systemd/docich-webui.service \
+  > ~/.config/systemd/user/docich-webui.service
+systemctl --user daemon-reload
+systemctl --user enable --now docich-webui.service
+
+# Tailscale 経由で公開する場合 (Web UI 側は 127.0.0.1:8787 でバインド):
+tailscale serve --bg --https=443 http://127.0.0.1:8787
+```
+
+- バインド先・ポートは `config/docich.toml` の `[webui]` セクションで変更できる。
+- `tailscale serve` を使わない場合は、直接 `http://<tailnet-IP>:8787/` へ
+  アクセスできる (Tailscale ACL で到達制御すること)。
+- ログは `journalctl --user -u docich-webui -f` で確認できる。
 
 ## `loginctl enable-linger` が必要な理由
 

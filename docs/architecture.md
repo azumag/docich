@@ -313,6 +313,7 @@ docich status                 # 各コンポーネントの生死・現在のゲ
 docich snap [-o out.png]      # 手動スクリーンショット
 docich obs [<game>]           # 観測 JSON を出力 (brain 開発用)
 docich send <game> '<json>'   # 行動を単発注入 (デバッグ用)
+docich webui [--dry-run]      # モデルチェーン/バックオフ管理 Web UI (Tailscale serve 経由)
 docich ra-cmd <CMD>           # RetroArch へ UDP コマンド (SAVE_STATE 等)
 docich caption plan ...       # 日本語chunkと英訳からprivate字幕計画を作る
 docich caption send ...       # prepare/commit/clear/resetをFFmpegへ送る
@@ -369,6 +370,15 @@ recover_windows = true # display/audio/stream window 消失時に冪等な up �
 
 [rotation]
 games = []            # `docich rotate` が巡回する順序 (例: ["nethack", "hanjuku-hero"])
+
+[webui]
+bind = "127.0.0.1"    # Tailscale serve で公開する想定 (0.0.0.0 は警告付き)
+port = 8787
+soren_root = ""       # 空なら games/soviet_now を自動検出
+token = ""            # 空なら Tailscale ACL のみ (設定時 8文字以上)
+token_env = "DOCICH_WEBUI_TOKEN"
+allow_cors = false    # 別オリジン API 呼び出しを許可 (開発用)
+read_only = false     # true で閲覧専用 (設定変更/backoff操作/reload 不可)
 
 [paths]
 state_dir = "run"                # リポジトリ相対

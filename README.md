@@ -134,6 +134,7 @@ soviet_now側の全on-air出力guardが適用されています。
 | `docich obs [game]` | brain向け観測JSON |
 | `docich send <game> '<json>'` | 行動JSONを単発注入 |
 | `docich ra-cmd <CMD>` | RetroArch UDP command |
+| `docich webui [--dry-run]` | モデルチェーン/バックオフ管理 Web UI (Tailscale経由) |
 | `docich caption plan/send ...` | 字幕計画とFFmpeg IPC |
 | `docich run <component>` | tmux内の監督ループ用内部command |
 
