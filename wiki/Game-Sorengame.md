@@ -125,6 +125,31 @@ RADIO_PREPASS_AGENTS (既定) = 同上 (local を除いた同じ4段)
   改善ループ自体が稼働していることは確認したが、ログには `primary` としか出ず、実際に
   どのモデル名で成功したかまでは today's 実測では確認していない
 
+## 共通部品化 (common parts) の現状 (2026-08-19)
+
+docich は soren 配信で使う部品を「docich 正典 + soviet_now 参照実行」の段階方式で
+共通部品化している。詳細な設計は `docs/common_parts_chat_c4.md` / `docs/common_parts_tts.md` /
+`docs/common_parts_overlay.md`(docich リポジトリ) を参照。
+
+| 部品 | 判定 | 正典の置き場 |
+|---|---|---|
+| 字幕翻訳 | **docich 正典** | `src/docich/captions.py` (LiteLLM 127.0.0.1:4100、厳格 JSON) |
+| TTS 合成 (VOICEVOX) | **docich 正典** | `src/docich/speech.py` (`docich voicevox`) |
+| TTS キュー/再生 | 参照実行 | soviet_now `say_enqueue.sh` (`docich say`) |
+| AI ディスパッチ | 参照実行 (`docich ai`) | soviet_now `ai_generate_list` |
+| AI 出力ガード | **docich 正典** (`docich ai-guard`) | `src/docich/model_output_guard.py` |
+| コメント分類 / 翻訳 / ラジオ生成 | soviet_now 所有 (参照実行) | `broadcast/comment*.sh` etc. |
+| オーバーレイ HTML | 参照実行 (`docich overlay`) | soviet_now `generate_*_overlay.sh` |
+
+- **実実行検証 3 件完了 (2026-08-19)**: `docich overlay` (隔離ディレクトリへ HTML 生成 4.1KB)・
+  `docich say` 実再生 (`played.log` で確認)・`docich ai` (VM 上で
+  `codex:deepseek-v4-flash` 勝者、本番キーは VM に留めた)。
+- **本番反映済み (2026-08-19)**: soviet_now PR #121 (`core/config.sh` のオーバーレイ
+  HTML 変数を `${VAR:-default}` 方式へ。docich からの出力分離が有効) をマージ・VM 反映。
+  VM の docich インストール (`/home/ubuntu/docich`) も最新 main へ更新 (`ai` 対応)。
+- soviet_now 側ラッパ (`voicevox_tts.sh` → `docich voicevox`、`_ai_guard_model_output` →
+  `docich ai-guard`) は既に本番稼働中。
+
 ## 関連ドキュメント
 
 - [docs/games/sorengame.md](https://github.com/azumag/docich/blob/main/docs/games/sorengame.md) — 本ページの詳細版
