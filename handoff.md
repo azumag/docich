@@ -699,3 +699,24 @@ amd-token-factory までの到達・成功を実データで確認**。openroute
 - `docs/soren_linux_migration_plan.md`
 - `soren-voicevox-investigation/HANDOFF.md`
 - VM 側: `docs/strategy_refactor_checklist.md`
+
+### 17. 共通部品化 (common parts) 進捗 — 2026-08-19
+
+docich の共通部品化は、chat/radio 責務の残り (C-S3〜C-S7) まで**すべて設計解決済み**。
+詳細は [docs/common_parts_chat_c4.md](docs/common_parts_chat_c4.md) §6、設計履歴は
+[docs/handoff_common_parts.md](docs/handoff_common_parts.md)。
+
+| # | 責務 | 判定 |
+|---|---|---|
+| C-S1 | AI ディスパッチ | `docich ai` 参照実行で固定 |
+| C-S2 | AI 出力ガード | `src/docich/model_output_guard.py` 正典 (soviet_now へ委譲済み) |
+| C-S3 | コメント分類 | soviet_now 所有 (参照実行)。昇格しない |
+| C-S4 | コメント翻訳 | soviet_now 所有 (参照実行)。第三実装を作らない |
+| C-S5 | ラジオ生成 | soviet_now 所有。バックアップは参照実行で接続済み |
+| C-S6 | 再生キュー | `docich say` の契約に委ねる |
+| C-S7 | チャット投稿 | docich からは投稿しない |
+
+字幕翻訳 (docich 正典 `captions.py`) とコメント翻訳 (soviet_now) はモデルチェーンのみ共有
+(LiteLLM 127.0.0.1:4100 経由、本番実測値と wiki Game-Sorengame の表は一致)。サブモジュール
+(soviet_now c4860fdc / hanjuku 5e98294) を取得し、全体 unittest 470 件緑・残 6 件は
+AF_UNIX socket のサンドボックス環境要因 (既知) のみ。コード・VM・soviet_now は変更なし。
