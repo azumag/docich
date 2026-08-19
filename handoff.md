@@ -720,3 +720,39 @@ docich の共通部品化は、chat/radio 責務の残り (C-S3〜C-S7) まで**
 (LiteLLM 127.0.0.1:4100 経由、本番実測値と wiki Game-Sorengame の表は一致)。サブモジュール
 (soviet_now c4860fdc / hanjuku 5e98294) を取得し、全体 unittest 470 件緑・残 6 件は
 AF_UNIX socket のサンドボックス環境要因 (既知) のみ。コード・VM・soviet_now は変更なし。
+
+### 18. 共通部品化 実実行検証 — 2026-08-19 (overlay / TTS 完了、docich ai は認証待ち)
+
+#### Overlay 実実行: 完了 + 2 件の実バグ修正
+
+- `docich overlay sorengame status` を `DOCICH_ALLOW_REAL_OVERLAY=1` で実実行し、
+  分離出力ディレクトリへ `status_overlay.html` (4,144 bytes) が生成されることを確認。
+- 修正 1 (docich 側, commit `a0b7e0d`): wrapper がスクリプトを素の名前で実行して
+  PATH 解決に失敗 (rc=127) → `./<script>` 相対指定に変更。
+- 修正 2 (docich 側): soviet_now `core/config.sh` がオーバーレイ HTML 変数を
+  無条件に本番 `tmp/state/` へ上書きし分離が効かなかった → wrapper で
+  eloop_lib.sh source 後に docich の出力パスを再 export。
+- 修正 3 (soviet_now 側 PR 準備, branch `codex/docich-overlay-env-isolation`,
+  commit `21f45f27d`): `core/config.sh` の 5 変数
+  (STATUS/SHOW_STATUS/IMPROVE/EVENT_OVERLAY_HTML_FILE, EVENT_OVERLAY_EVENTS_FILE) を
+  `${VAR:-default}` 方式へ変更し caller の事前設定を尊重。本番既定は不変。
+
+#### TTS 実再生: 完了 + 1 件の実バグ修正
+
+- ローカル VOICEVOX (Docker, v0.25.2) を起動し、`docich say sorengame "..."` を
+  `DOCICH_ALLOW_REAL_PLAYBACK=1` で実実行 → `played.log` に
+  `[21:41:56] played [docich]` を確認 (実再生成功)。
+- 修正 (docich 側, commit `a0b7e0d`): macOS に `PULSE_SINK/SAY_AUDIO_DEVICE=docich_sink`
+  を渡すと `say -a docich_sink` が失敗し 7 回リトライで rc=1 → Linux のみ設定に変更。
+  tests/test_tts.py もプラットフォーム分岐へ更新。
+
+#### docich ai 実実行: dry-run 完了、実実行は本番キー認証待ち
+
+- `docich ai sorengame --label COMMENT --agents codex:deepseek-v4-flash,codex:minimax-m3
+  --prompt-file ... --dry-run` は正常 (バックオフ/生成キュー/opencode run lock が
+  一時 dir へ分離されることを確認)。
+- 実実行は本番 `.env` の `OPENCODE_GO_API_KEY` が必要。シークレットは取り扱わないため、
+  **ユーザー側で本番 .env を source して実行** (docs/common_parts_chat.md §4.2 と同じ)。
+  プロンプト例: `tmp/docich_ai_real_prompt.txt`。
+- 注意: VM の `/home/ubuntu/docich` は `ai` サブコマンド未対応 (2026-08-18 追加分が
+  未反映)。VM で実行する場合は先に docich clone を更新する承認が必要。
