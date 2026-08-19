@@ -953,3 +953,32 @@ LiteLLM モデルに存在せず、字幕翻訳クライアントは OpenAI 互�
   allowlist 外 400・token 401/200・backoffs clear。検証後 .env / backup /
   webui_reload.json / webui.log は削除済み (git clean)。
 - 未検証: VM での `tailscale serve` 公開 (ACL 含む)。VM 反映・コミットは未実施。
+
+### 24. Web UI 本番反映 + VM 検証 — 2026-08-20
+
+- コミット: `a40d649` (feat: add webui subcommand) を `codex/soren-repo-handoff` →
+  main へ fast-forward マージ (30b5f9d..a40d649)、origin/main と両ブランチを push。
+  main の作業ツリー (`docich-integration/`) にあった未コミットの
+  `wiki/Game-Sorengame.md` (AI モデルラダー節, 旧内容) は merge 前に stash 済み
+  (ブランチ側の「本番 AI モデルフォールバックチェーン」節が新しく包括的)。
+- VM 反映: `/home/ubuntu/docich` を main (a40d649) へ ff 更新。systemd --user ユニット
+  `docich-webui.service` を導入・有効化 (linger 済み、Restart=on-failure):
+  - `ExecStart=/home/ubuntu/docich/bin/docich webui --soren-root /home/ubuntu/soren`
+  - **重要**: VM では必ず `--soren-root /home/ubuntu/soren` を明示すること。
+    auto-discover だと docich サブモジュール `/home/ubuntu/docich/games/soviet_now`
+    (本番 .env とは別) を指してしまう。
+- VM 検証 (実測): health / config (14 keys, 実効値が本番一致) / backoffs
+  (本番で 4 エージェント active を確認) / stats (20260820 の実績) / PUT の
+  無変化書き込み (AI_AGENT_BACKOFF_SEC=600 → 600、backup `.env.bak.<ns>` 作成、
+  bash source round-trip OK、worker へ USR1 自動送信で radio/chat 両方 "ok") /
+  POST /api/reload / journalctl に traceback 0。
+- **注意: POST /api/backoffs/clear を本番で実行し、稼働中だった 4 件の backoff
+  (deepseek-v4-flash-free / amd-token-factory / openrouter/free / local) を消去した**
+  (2026-08-20 01:29 JST)。検証操作として実施。ファイルは次のレート制限失敗時に
+  自動作成され直す設計 (自己回復) のため、実害は無い見込みだが要観察。
+- **ブロック中: `tailscale serve` は tailnet 側で未有効** (要管理画面の承認):
+  `https://login.tailscale.com/f/serve?node=nvbjZwkWke11CNTRL` を開いて有効化するまで
+  外部からの HTTPS 公開は不可。現状は SSH ポートフォワードで到達可能
+  (`ssh -L 8787:127.0.0.1:8787 ubuntu@129.146.54.105` → localhost:8787)。
+- 停止方法: `systemctl --user disable --now docich-webui` (unit は
+  ~/.config/systemd/user/docich-webui.service、__DOCICH_ROOT__ 置換 + --soren-root 追記済み)。
