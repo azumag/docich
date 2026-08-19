@@ -1144,3 +1144,83 @@ VM 配信ファイルとリポジトリの md5 一致確認済み。
 `overlays/direct_broadcast_overlay.html` へ直接配置済み(バックアップ:
 `direct_broadcast_overlay.html.bak-20260820-toast-wrap`)。配信サーバはファイルを
 リクエスト毎に読むため再起動不要(no-cache 配信を確認)。
+
+### 30. 「歌ってください」で楽譜 JSON が読み上げられる問題の修正 — 2026-08-20
+
+ユーザー報告「歌ってください」リクエストで (歌は再生されるのに) 楽譜 JSON がそのまま
+読み上げられる問題を修正。原因は 2 点:
+
+- `_extract_sing_score` / `_remove_sing_score_block` が `python3 - <<'PY'` (heredoc)
+  で stdin を奪うため、パイプで渡した `attempt_talk` が読めず、抽出が常に空だった。
+  これにより歌唱は「歌唱宣言あり」フォールバックのデフォルト楽譜でしか始まらず、
+  JSON は本文から除去されず TTS に流れていた。
+- モデルが `===SING===` マーカー無しで本文に楽譜 JSON を直接埋め込んだ場合、
+  旧ロジックでは抽出・除去とも対象外だった (ストレイ JSON が読み上げ対象に残る)。
+
+修正 (soviet_now `games/soviet_now/broadcast/`):
+- 両関数を `python3 -c "$(cat <<'PY' ...)"` パターンへ変更し、パイプ入力を正しく読む。
+- `_extract_sing_score`: `===SING===` ブロック優先に加え、マーカー無しの `"notes"` を
+  含む楽譜 JSON も抽出 (ネスト対応の JSON オブジェクト走査)。→ マーカー無しでも歌が
+  始まるようになった。
+- `_remove_sing_score_block`: `===SING===` ブロックを**全て**除去 + 残ったインライン
+  楽譜 JSON も除去。→ 本文 (読み上げ) に JSON が残らない。
+- `_sanitize_onair_text`: `^\s*\{.*"(notes|lyric|frame_length|f0)".*\}\s*$` な
+  生 JSON 行を落とす防御パターンを追加 (マルパース残留分への保険)。
+- 呼び出し側: マーカー有無によらず抽出・除去を必ず実行。
+
+検証 (ローカル): `tests/test_comment_sing_json.sh` を新規追加 (5 assertions)。
+マーカー/インライン JSON の抽出と除去、通常本文の無傷保持を確認。`bash -n` 両ファイル OK。
+
+**未実施**: VM (`/home/ubuntu/soren`) への反映は未実施。コミット・push・マージも未実施
+(反映は別ゲートとして要承認)。
+
+### 31. 「同じ返答が何度も読まれる」調査 — ワーカーは二重起動ではない (2026-08-20)
+
+ユーザー「同じ返答を何度も読み上げられている。ワーカーが二重起動しているとか?」に対して
+VM を読み取り診断。
+
+**結論: ワーカーは二重起動していない。**
+- 各 worker (chat/radio/youtube/audio/improve_daemon/prediction) は supervisor
+  (`start_all.sh --supervisor`) 直下にルート1つずつ。同じ名前の子プロセスは PID
+  ハートビートのサブシェル (`( while true; echo $$ >pidfile; sleep 5; done ) &`) で正常。
+  e.g. chat_worker ルート 132913 → 子 133006。
+- IRC は `nc irc.chat.twitch.tv 6667` が1本のみ。二重取り込みではない。
+- 直近のコメントキュー (`tmp/.comment_queue/comment_*.txt`) に重複内容なし。
+
+**実際に観測した異常 (読み上げ重複の有力要因)**
+- **sing 楽譜 JSON の読み上げが継続**: 視聴者コメントで「キー 69 フレーム レングス 45
+  リリック とかって読んでるから歌えてないですね」をログ確認。chat_worker.log に
+  `malformed ===SING=== block ignored` が発生し、JSON が本文に残って読まれている。
+  → 前回の §30 修正が **VM 未反映**のため継続。反映で解決見込み。
+- **dedup が実質機能していない痕跡**: `played_hashes.txt` は 50 空行のみ (非空行 0)。
+  `processed_line_hashes.log` は 0 bytes。→ 再生成 (retry) 時に同一コメントから複数
+  返答が積まれる可能性あり。
+- **outbound 送信滞留**: `tmp/.outbound_chat_queue/pending` に `_eloop_5.msg`
+  (ゲーム状況メッセージ) 約 3626 ファイル滞留。これは Twitch/YouTube へのチャット投稿
+  用であり TTS 読み上げではないが、送信チェーンが詰まっている別課題。
+
+**次の対応候補 (要承認)**: §30 の sing JSON 修正を VM 反映 → 読み上げ症状の直接解消。
+その後 dedup 空行・outbound 滞留の調査を個別に。
+
+### 30. chat_worker / radio_worker 完全再起動 (§28 修正の有効化) — 2026-08-20
+
+ユーザー依頼により両 worker を SIGTERM → supervisor 自動 respawn で完全再起動。
+
+**実施・実測確認**
+- chat_worker: 旧 132913 → 新 873540 (04:17:50 起動)。再起動後の生成ログ
+  `[04:22:37] agents=codex:deepseek-v4-flash-free,codex:amd-token-factory-deepseek-v4-flash,
+  codex:openrouter/free,codex:deepseek-v4-flash,codex:minimax-m3` (local 無し) を実測、
+  04:23:02 に amd が 374字の返信を生成 (attempt=1/1)。IRC daemon も再起動 (PID=873811)。
+- radio_worker: 旧 132242 → 新 873613 (04:17:51 起動)。04:27:47 に news 生成成功
+  (codex:minimax-m3 OK, 1388字)。prepass チェーンは共通チェーン (local 含む) のまま。
+- 両 worker の生存は kill -0 と ps で確認済み。
+
+**調査で判明した補足事項**
+- worker の /proc/<pid>/environ には `COMMENT_AGENTS=codex:deepseek-v4-flash,
+  codex:minimax-m3` (旧既定値) が exec 時に焼き付いている。出所は VM ルートの
+  `./config.sh` (Aug 17 作成・**リポジトリに無い VM 専用ファイル**、eloop_lib.sh 等が
+  source) の旧既定値。しかし worker は起動時に .env を再 source するため実行時値は
+  正しく (ログ実測)、environ の値は実行時には影響しない。
+- 注意: この VM ルート `./config.sh` は core/config.sh (リポジトリ現行) と二重管理の
+  古い残骸。.env 未設定の変数には旧既定値が入り得るため、将来削除・統合の検討候補
+  (リポジトリに無いため同期対象外)。
