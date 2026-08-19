@@ -1,0 +1,13 @@
+[Unit]
+Description=docich webui (model chain / backoff manager)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__DOCICH_ROOT__
+ExecStart=__DOCICH_ROOT__/bin/docich webui
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

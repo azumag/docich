@@ -88,6 +88,19 @@ class RotationConfig:
 
 
 @dataclass
+class WebUIConfig:
+    # Tailscale 経由の管理UI。既定は 127.0.0.1 バインドで tailscale serve で公開する。
+    # 起動は手動 (`docich webui`) または systemd (scripts/systemd/docich-webui.service)。
+    bind: str = "127.0.0.1"
+    port: int = 8787
+    soren_root: str = ""
+    token: str = ""
+    token_env: str = "DOCICH_WEBUI_TOKEN"
+    allow_cors: bool = False
+    read_only: bool = False
+
+
+@dataclass
 class GlobalConfig:
     repo_root: Path
     config_path: Path
@@ -98,6 +111,7 @@ class GlobalConfig:
     agent: AgentDefaults
     watchdog: WatchdogConfig
     rotation: RotationConfig
+    webui: WebUIConfig
     state_dir: Path
     games_dir: Path
     roms_dir: Path
@@ -197,6 +211,7 @@ def load_global(repo_root: Path, config_path: Path | None = None) -> GlobalConfi
     rotation = RotationConfig(
         **_filtered(RotationConfig, data.get("rotation", {}), "rotation")
     )
+    webui = WebUIConfig(**_filtered(WebUIConfig, data.get("webui", {}), "webui"))
 
     stream.ffmpeg_bin = os.environ.get("DOCICH_FFMPEG_BIN", stream.ffmpeg_bin).strip()
     captions.enabled = _env_bool("DOCICH_CC_ENABLED", captions.enabled)
@@ -235,6 +250,17 @@ def load_global(repo_root: Path, config_path: Path | None = None) -> GlobalConfi
     ):
         raise ConfigError("rotation.games は文字列のリストである必要があります")
 
+    # webui validation
+    if not isinstance(webui.bind, str) or not webui.bind.strip():
+        raise ConfigError("webui.bind は空でない文字列である必要があります")
+    # bind は IP リテラルか hostname を許容するが、危険な 0.0.0.0 は警告付きで許可する
+    if webui.port < 1024 or webui.port > 65535:
+        raise ConfigError(f"webui.port は1024-65535である必要があります (現在値: {webui.port!r})")
+    if webui.token and len(webui.token.strip()) < 8:
+        raise ConfigError("webui.token は8文字以上である必要があります (空なら無効)")
+    if not isinstance(webui.token_env, str) or not webui.token_env.strip():
+        raise ConfigError("webui.token_env は空でない文字列である必要があります")
+
     paths_raw = data.get("paths", {})
     if not isinstance(paths_raw, dict):
         raise ConfigError("[paths] はテーブルである必要があります")
@@ -252,6 +278,7 @@ def load_global(repo_root: Path, config_path: Path | None = None) -> GlobalConfi
         agent=agent,
         watchdog=watchdog,
         rotation=rotation,
+        webui=webui,
         state_dir=state_dir,
         games_dir=games_dir,
         roms_dir=roms_dir,

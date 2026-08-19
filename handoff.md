@@ -881,3 +881,75 @@ AF_UNIX socket のサンドボックス環境要因 (既知) のみ。コード�
 で本番 `.env` を更新 (backup `.env.bak-20260819-chain-cleanup`)。理由: `local` は
 LiteLLM モデルに存在せず、字幕翻訳クライアントは OpenAI 互換 HTTP のみのため。
 ※ 字幕 `local` 除外はユーザー承認済み (選択肢1)。
+
+### 22. codex-router opencode-go モデルリスト更新 — 2026-08-20
+
+ローカル codex-router の opencode-go リストへ、ユーザー依頼の 2 モデルを追加中。
+状態ファイルは `~/.codex/codex-router/`（git 管理外・HOME 配下のローカル状態）。
+
+- `opencode-go/muse-spark-1.2-contributor`: `user-models.json`・`litellm.yaml`・
+  `merged-models.json` に反映済み。上流 (`https://opencode.ai/zen/go/v1/models`) に
+  実在を確認。ルーター経由の最小実クエリ成功 (HTTP 200, markerReceived)。
+- `opencode-go/hy3-preview`: 反映済み・上流のモデル一覧にも存在。ただし現時点で
+  ルーター経由・上流直接どちらも `Model is unavailable` (Console Go 400) を返す。
+  `muse-spark-1.2-contributor` は成功するため、これは opencode 側の配信未準備で、
+  ローカル設定の問題ではない (上流が配信開始するまで待ち)。
+- ユーザーが書いた `muse-sparc-contrributor` / `hy-preview` は表記ゆれで、正しい
+  上流 ID は上記の 2 つ。`muse-spark-1.2`（non-contributor）も上流に存在するが
+  今回の追加対象外。
+- `(curated)` の表示: この 2 件はユーザー追加 (curate) モデルのため、表示名に
+  `(curated)` が付く。`provider: opencode-go` であり、プロバイダ自体は
+  opencode-go のまま (ネイティブ登録モデルと区別するラベル)。
+- 別件: ネイティブ `opencode-go/hy3` で `tools is required when tool_choice is set`
+  (400001) が出る事象を確認。上流は `tool_choice` を関数オブジェクト指定した状態で
+  `tools` が無いと拒否する (`[400002] tool_choice is invalid`)。curated 2 件は
+  `requestProfile: auto-tool-choice` で forced tool_choice を auto に下げるため対策済み。
+  ただしネイティブ hy3 (requestProfile 無し) は未対策。ソース修正が必要。
+- 本タスクで docich / soviet_now のコード・VM・Git への変更はなし。
+  codex-router ソース (`~/.local/share/codex-router`) の未コミット変更
+  (amd-token-factory 関連) は他作業のため触っていない。
+- 追加確認 (2026-08-20): ユーザー再現の reject `chatcmpl_e1b9rizk8vi` は一時的で、
+  同日に `opencode-go/muse-spark-1.2-contributor` を live テスト 2 回連続 HTTP 200
+  (markerReceived true) で確認。上流モデル一覧には `hy3-preview` も存在するが、
+  live クエリは依然 `Model is unavailable` (Console Go 400) のままで、上流配信待ち。
+
+### 23. Web UI (モデルチェーン/バックオフ管理) — 2026-08-20
+
+ユーザー要望「用途別モデルチェーンとバックオフ設定を外部から操作する Web UI
+(Tailscale 経由)」を docich に実装。設計は opus サブエージェント委任で完了済み。
+
+- 確定方針: bind 127.0.0.1 + `tailscale serve` で公開 / Bearer token なし
+  (Tailscale ACL のみ) / `read_only` モードあり・`docich up` には常駐させない
+  (手動または systemd のみ)。
+- 実装済み (ローカル・未デプロイ):
+  - `src/docich/webui.py` (新規, stdlib only): ThreadingHTTPServer + vanilla JS SPA。
+    タブ: Chains / Backoff / Peak / Stats / Health。操作対象は WEBUI_ALLOWLIST
+    (AI_COMMON_AGENTS, MODEL_IMPROVE_LIST, RADIO_AGENTS, RADIO_PREPASS_AGENTS,
+    COMMENT_AGENTS, COMMENT_TRANSLATION_AGENTS, AI_BACKOFF_SEC_ITEMS,
+    AI_AGENT_BACKOFF_SEC, PEAK_HOURS_*)。.env 原子更新 (backup + mkstemp +
+    os.replace + chmod 600 + mtime 排他)。radio/chat worker へ USR1 reload。
+  - `config.py`: `WebUIConfig` 追加 (bind/port/soren_root/token/token_env/
+    allow_cors/read_only。`enabled` はデッド設定のため不採用)。config/docich.toml
+    に `[webui]` 追記。
+  - `cli.py`: `docich webui [--bind --port --soren-root --read-only --dry-run]`。
+  - `scripts/systemd/docich-webui.service` 雛形 + README に導入手順追記。
+  - `tests/test_webui.py` 51 件 (実 HTTP サーバー起動テスト 14 件含む)。
+- レビュー (サブエージェント2回) で見つかり修正済みの重要事項:
+  - **.env は worker が bash で source する (set -a; . ./.env)** ため、
+    PEAK_HOURS_TZ を `$(...)` 等のシェル構文で PUT すると任意コマンド実行
+    (実測確認)。TZ_RE + 全キー isinstance(str) 検証で遮断 (実測 400)。
+  - 空白入り値 (AI_BACKOFF_SEC_ITEMS) は無引用だとソース時に変数が空になる
+    (実測)。_dotenv_quote で `"..."` エスケープ書き出し (実測ソース OK)。
+  - PEAK_HOURS_WINDOWS 空=無効は config.sh の `${VAR-...}` のため行削除では
+    既定に戻る → 空行を残す方式 (実測ソースで空)。
+  - token 認証時の SPA: JS が ?token= / sessionStorage → Bearer 付与。
+    クエリ token はログ (tmp/debug/webui.log) に残らないよう parsed.path のみ
+    記録。Content-Length は 0..64KB 検証 (400/413)。boolean は 0/1 のみ
+    (ランタイム helpers.sh が "1" 判定のため)。DELETE は ".." "/" "\" 遮断。
+    PUT/POST/DELETE の認証失敗時の parsed 未初期化 (UnboundLocalError) も修正。
+- 実測確認済み (ローカル, games/soviet_now を対象): dry-run / GET /・
+  /api/health・/api/config・/api/backoffs・/api/stats / PUT で .env 書き込み
+  (600, backup 作成, ソース round-trip)・mtime 不一致 409・validation 400・
+  allowlist 外 400・token 401/200・backoffs clear。検証後 .env / backup /
+  webui_reload.json / webui.log は削除済み (git clean)。
+- 未検証: VM での `tailscale serve` 公開 (ACL 含む)。VM 反映・コミットは未実施。

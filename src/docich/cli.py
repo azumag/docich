@@ -236,6 +236,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_ai_guard.set_defaults(func=lambda args: model_output_guard.main())
 
+    p_webui = sub.add_parser("webui", help="モデルチェーン / バックオフ管理 Web UI を起動する (Tailscale経由)")
+    p_webui.add_argument("--bind", metavar="ADDR", help="バインドアドレス (既定 127.0.0.1)")
+    p_webui.add_argument("--port", type=int, metavar="PORT", help="ポート (既定 8787)")
+    p_webui.add_argument("--soren-root", metavar="PATH", help="Soren ルート (既定 games/soviet_now または g.webui.soren_root)")
+    p_webui.add_argument("--read-only", action="store_true", help="読み取り専用で起動する")
+    p_webui.add_argument("--dry-run", action="store_true", help="起動せず設定解決結果だけ表示する")
+
     p_run = sub.add_parser("run", help="(内部用) tmux window 内で監督ループを実行する")
     p_run.add_argument(
         "component", choices=["display", "audio", "stream", "game", "agent", "watchdog"]
@@ -302,6 +309,17 @@ def _dispatch(args: argparse.Namespace) -> int:
         return overlay.cli_overlay(args)
     if command == "ai-guard":
         return model_output_guard.main()
+    if command == "webui":
+        from .webui import run_webui
+
+        return run_webui(
+            g,
+            bind=getattr(args, "bind", None),
+            port=getattr(args, "port", None),
+            soren_root=getattr(args, "soren_root", None),
+            read_only=True if getattr(args, "read_only", False) else None,
+            dry_run=getattr(args, "dry_run", False),
+        )
     if command == "run":
         return cmd_run(g, args.component, args.name)
     raise CliError(f"未知のコマンドです: {command}")
