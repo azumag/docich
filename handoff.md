@@ -976,9 +976,16 @@ LiteLLM モデルに存在せず、字幕翻訳クライアントは OpenAI 互�
   (deepseek-v4-flash-free / amd-token-factory / openrouter/free / local) を消去した**
   (2026-08-20 01:29 JST)。検証操作として実施。ファイルは次のレート制限失敗時に
   自動作成され直す設計 (自己回復) のため、実害は無い見込みだが要観察。
-- **ブロック中: `tailscale serve` は tailnet 側で未有効** (要管理画面の承認):
-  `https://login.tailscale.com/f/serve?node=nvbjZwkWke11CNTRL` を開いて有効化するまで
-  外部からの HTTPS 公開は不可。現状は SSH ポートフォワードで到達可能
-  (`ssh -L 8787:127.0.0.1:8787 ubuntu@129.146.54.105` → localhost:8787)。
+- **解決: `tailscale serve` 有効化完了 (2026-08-20 01:38 JST)**:
+  ユーザーが tailnet 管理画面で serve を承認 → VM で
+  `sudo tailscale serve --bg --https=443 http://127.0.0.1:8787` を投入。
+  ACME 証明書の取得後 (初回は数分待ち)、tailnet 内から HTTPS 配信を実測確認:
+  - 公開 URL: `https://soren-prod-vnic.tail85a080.ts.net/` (tailnet 限定)
+  - 実測: `/api/health`・`/api/config` (14 keys)・`/api/backoffs`・`/api/stats` が
+    Mac (azmacminim4, tailnet) からすべて 200。
+  - serve 停止: `sudo tailscale serve --https=443 off`。
+  - 注意: serve 設定は root 権限が必要 (`sudo tailscale serve` か
+    `sudo tailscale set --operator=$USER` を先に実行)。
+  - 旧SSHフォワード (`ssh -L 8787:...`) は不要になった (トンネルは切断済み)。
 - 停止方法: `systemctl --user disable --now docich-webui` (unit は
   ~/.config/systemd/user/docich-webui.service、__DOCICH_ROOT__ 置換 + --soren-root 追記済み)。
