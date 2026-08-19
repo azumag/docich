@@ -1123,3 +1123,24 @@ config.sh:108, ai_generate.sh は rc!=0 の一過性障害のみに適用) を W
 **影響**: free(429) かつ amd/openrouter も失敗した場合、コメント返しは直接
 deepseek-v4-flash (有償) に落ちる。ラジオ側と違い local がバッファにならない点に留意。
 必要なら free の復帰で元に戻る見込み。
+
+### 29. 画面下の通知枠(トースト)の長文を折り返し表示に変更 — 2026-08-20
+
+ユーザー指摘「画面下の通知枠で横長の文字が ... でカット → 折り返しにしたい」。
+
+**原因**: `games/soviet_now/overlays/direct_broadcast_overlay.html` の `.toast-body` が
+`white-space: nowrap; text-overflow: ellipsis` のため1行で切れていた。長文の実例は
+`コメント返信 playback` のステータス行(150字超)など。
+
+**変更**: `.toast-body` を `display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:
+vertical; overflow-wrap:anywhere` に変更。固定 73px のカード内で最大3行まで折り返す
+(3行超は楕円でカット。カードは枠内に収まりレイアウト不変)。
+
+**検証(実測)**: kiosk ブラウザへ CDP 接続して確認 — LIVE STATUS カードが2行に折り返し、
+150字の試験ボディは bodyClientHeight=36px(3行)・表示3行・カード/グリッド 73px のまま。
+VM 配信ファイルとリポジトリの md5 一致確認済み。
+
+**反映**: soviet_now PR #127 (`codex/toast-wrap` → main `4587a3f8a`)。VM の
+`overlays/direct_broadcast_overlay.html` へ直接配置済み(バックアップ:
+`direct_broadcast_overlay.html.bak-20260820-toast-wrap`)。配信サーバはファイルを
+リクエスト毎に読むため再起動不要(no-cache 配信を確認)。
