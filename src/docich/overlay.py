@@ -13,6 +13,7 @@ import argparse
 from dataclasses import dataclass
 import os
 from pathlib import Path
+import shlex
 import tempfile
 from shlex import quote
 
@@ -38,6 +39,10 @@ cd "$ROOT" || exit 2
 export ELOOP_LIB_DIR="$ROOT"
 [ -f "eloop_lib.sh" ] || exit 2
 source ./eloop_lib.sh
+# soviet_now core/config.sh unconditionally points the overlay HTML file env
+# vars at its own tmp/state.  Re-apply docich's isolated output paths here so
+# reference runs never write into the runtime tree.
+{overlay_env_exports}
 "$@"
 """
 
@@ -71,26 +76,37 @@ def _overlay_root(g: GlobalConfig, game_name: str) -> Path:
     return root
 
 
-def _env_for(g: GlobalConfig, output: Path) -> dict[str, str]:
-    env = {
-        "SAY_CONTEXT_LABEL": "docich",
-        "DOCICH_CC_ENABLED": "0",
-        # OBS 連動 (ensure-obs) は PoC では無効化し、HTML 生成のみ行う。
+def _overlay_output_vars(output: Path) -> dict[str, str]:
+    """Overlay HTML file paths that docich isolates from the runtime tree."""
+    return {
         "STATUS_OVERLAY_HTML_FILE": str(output / "status_overlay.html"),
         "SHOW_STATUS_OVERLAY_HTML_FILE": str(output / "show_status_overlay.html"),
         "IMPROVE_OVERLAY_HTML_FILE": str(output / "improve_overlay.html"),
         "EVENT_OVERLAY_HTML_FILE": str(output / "event_overlay.html"),
         "EVENT_OVERLAY_EVENTS_FILE": str(output / "overlay_events.jsonl"),
     }
+
+
+def _env_for(g: GlobalConfig, output: Path) -> dict[str, str]:
+    env = {
+        "SAY_CONTEXT_LABEL": "docich",
+        "DOCICH_CC_ENABLED": "0",
+        # OBS 連動 (ensure-obs) は PoC では無効化し、HTML 生成のみ行う。
+    }
+    env.update(_overlay_output_vars(output))
     if g.audio.enabled:
         env["PULSE_SINK"] = g.audio.sink_name
         env["SAY_AUDIO_DEVICE"] = g.audio.sink_name
     return env
 
 
-def _write_wrapper(tmp_dir: Path) -> Path:
+def _write_wrapper(tmp_dir: Path, output_dir: Path) -> Path:
     wrapper = tmp_dir / "overlay_ref.sh"
-    wrapper.write_text(WRAPPER, encoding="utf-8")
+    exports = "\n".join(
+        f"export {key}={shlex.quote(str(value))}"
+        for key, value in _overlay_output_vars(output_dir).items()
+    )
+    wrapper.write_text(WRAPPER.format(overlay_env_exports=exports), encoding="utf-8")
     wrapper.chmod(0o700)
     return wrapper
 
@@ -115,9 +131,12 @@ def build_overlay_invocation(
     tmp_dir = Path(tempfile.mkdtemp(prefix="docich-overlay-"))
     output_dir = (output or tmp_dir / "out").resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    wrapper = _write_wrapper(tmp_dir)
+    wrapper = _write_wrapper(tmp_dir, output_dir)
 
-    argv = ["bash", str(wrapper), str(root), script_name, "once"]
+    # The wrapper runs the script from cwd (the soviet_now root).  A bare
+    # script name is not resolvable from PATH, so always invoke it as a
+    # relative path from that root.
+    argv = ["bash", str(wrapper), str(root), f"./{script_name}", "once"]
     env = _env_for(g, output_dir)
     return OverlayInvocation(
         script_path=script,
