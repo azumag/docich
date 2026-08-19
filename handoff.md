@@ -859,3 +859,25 @@ AF_UNIX socket のサンドボックス環境要因 (既知) のみ。コード�
   (`bef4bc9a...`) で反映済み (バックアップ `.codex_deploy/backup-20260819-wiki-chain-align-config.sh`)。
 - 実効チェーンは `.env` 優先のため不変 (確認済み)。
 - テスト: `test_peak_hours_agent_order.sh` PASS、`test_ai_generate_backoff` 13件 PASS。
+
+### 21. トークン効率改善: チェーン統合・モデル別バックオフ・ピーク順序・統計 — 2026-08-19
+
+共通チェーン `AI_COMMON_AGENTS` = `codex:deepseek-v4-flash-free, codex:amd-token-factory-deepseek-v4-flash, codex:openrouter/free, local, codex:deepseek-v4-flash, codex:minimax-m3` を導入。
+
+- `RADIO_AGENTS` / `COMMENT_AGENTS` / `COMMENT_TRANSLATION_AGENTS` / `RADIO_PREPASS_AGENTS` はすべてこの共通チェーンを継承。
+- `MODEL_IMPROVE_LIST` = 共通から `local` と `openrouter/free` を除外。
+- **モデル別バックオフ**: `deepseek-v4-flash-free`/`amd-token-factory-deepseek-v4-flash`/`openrouter/free`=1日、`local`=30分、`deepseek-v4-flash`/`minimax-m3`=5時間 (`AI_BACKOFF_SEC_ITEMS`)。
+- **ピーク時順序**: いかなるチェーンも `minimax-m3 > openrouter/free > local > deepseek系` に並べ直す (`PEAK_HOURS_AGENT_PREFERENCE`)。
+- **統計**: 1日1ファイルの JSONL (`tmp/state/ai_stats/<yyyymmdd>.jsonl`) へ attempt/ok/fail/winner/all_failed を記録。stdout には出さない。
+- **フォールバック基準の精査**: rc!=0 (プロバイダ/認証/CLI 失敗) でもモデル別バックオフを設定（死んだ無料枠を毎サイクル再試行しない）。rc=0 の形式不正・空出力は従来どおりバックオフしない（品質問題は呼び出し元のリトライに委ねる）。
+- 未使用の `COMMENT_MAIN_AGENT/FALLBACK/OLLAMA_FALLBACK/ALLOW_CLAUDE` と `RADIO_MAIN_OLLAMA_FALLBACK` を削除。`RADIO_MAIN_AGENT/FALLBACK` はレガシー経路 (celebration/corners) で使用継続。
+
+反映: soviet_now PR #123 (チェーン統合)・PR #124 (フォールバック基準) をマージし、本番
+`/home/ubuntu/soren` の `core/config.sh` / `core/helpers.sh` / `lib/ai_generate.sh` を
+リポジトリ main と同一ハッシュで反映 (backup `.codex_deploy/backup-20260819-chain-cleanup/`)。実効値を実測確認 (チェーン・バックオフとも)。
+
+字幕翻訳 (`DOCICH_CC_TRANSLATION_MODELS`): 共通チェーンから `local` を除いた
+`deepseek-v4-flash-free, amd-token-factory…, openrouter/free, deepseek-v4-flash, minimax-m3`
+で本番 `.env` を更新 (backup `.env.bak-20260819-chain-cleanup`)。理由: `local` は
+LiteLLM モデルに存在せず、字幕翻訳クライアントは OpenAI 互換 HTTP のみのため。
+※ 字幕 `local` 除外はユーザー承認済み (選択肢1)。
