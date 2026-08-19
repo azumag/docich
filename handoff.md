@@ -158,7 +158,23 @@ source commit is not a completed change.
 > 実装リポジトリ: `azumag/soviet_now`
 > この文書にストリームキー・OAuth token・秘密鍵・push target は書かない
 
-### 1. 現在の目標（何をしようとしているのか）
+#### 棚卸しメモ（2026-08-19 18:50 JST、`AGENTS.md` の運用ルールに基づく）
+
+直下の §1・§10 は 2026-08-13/14 時点のまま更新されておらず、その後の §5〜§9・§12〜§15 の
+進捗を反映していない。読む場合は**歴史的経緯としてのみ**扱い、現在の状態は以下を参照:
+
+- **直近の実運用状態**: §13（rolling score窓整合）→ §14/§15（AIハーネスのフォールバック
+  チェーン拡張、2026-08-19 実施・実データ確認済み）が最新
+- **strategy.py 本体の状態**: §12 末尾の追記群（clip修正rollback → HIGH_TYPE_COVER_AVOID
+  投入・12試合窓通過）が最新の意思決定
+- **Issue #96 / PR #97 の実際の状態（本棚卸し時に GitHub で実測確認）**: PR #97 は
+  2026-08-12 に merge 済み（`gh pr view 97` で確認）。**Issue #96 は 2026-08-19 時点でも
+  open のまま**、GitHub 上の最終更新は 2026-08-11（`gh issue view 96` で確認）。§1 が
+  言う「soak合格後にIssueを閉じる」は、少なくとも soak 完了の記録以降 GitHub 側では
+  一度も触られていない＝**未実施のまま放置されている**。次にこの筋に触るなら、まず
+  soak (`20260813-021426`) が実際に合格したのかどうかの再確認から。
+
+### 1. 現在の目標（何をしようとしているのか、2026-08-13/14 時点・歴史的経緯）
 
 1. **Issue #96 の 24 時間受入を完了する**。BGM 自動再起動修正後の soak が現在進行中で、2026-08-14 11:14 JST 頃に終了予定。合格後に残ゲート（オーバーレイ DOM 再確認、screenshot、サマリ整理、PR #97 CI/review 確認）を済ませて Issue を閉じる。
 2. **ハーネス系を復活させる**。コメント応答・ラジオコーナー・改善 AI が動く状態を維持・改善する。ハーネスは codex に統一、モデルは deepseek 系（改善のみ pro、それ以外 flash）。
@@ -335,13 +351,13 @@ worktree `codex/soren-ffmpeg-direct` に未 commit 差分 5 ファイル:
 - **Oracle 無料ティア**: 現在 4 OCPU / 24 GB。トライアル終了前に PAYG 移行 or 2 OCPU / 12 GB への縮退が必要（Always Free は 2 OCPU / 12 GB）
 - **`__pycache__`**: strategy_helpers 配下の pyc は helper 差分検知を汚染するため除外済み（eloop_improve.sh / sandbox.sh）。生成されたら削除してよい
 
-### 10. 次の実行順序
+### 10. 次の実行順序（2026-08-13/14 時点・歴史的経緯。現状は上部の「棚卸しメモ」参照）
 
 1. **24h soak 完了確認**（2026-08-14 11:14 JST 頃）: `./direct_stream_soak.sh status` で passed を確認、monitor 終了、マージ overlay DOM・fresh 非付与・1280x720 screenshot 再確認
-2. **Issue #96 完了処理**: summary、Twitch 720p30、BGM/SE、overlay、A/V 同期、relay 復旧 9 秒、OBS rollback 27 秒、PR #97 CI/review を整理して Issue を閉じる
+2. **Issue #96 完了処理**: summary、Twitch 720p30、BGM/SE、overlay、A/V 同期、relay 復旧 9 秒、OBS rollback 27 秒、PR #97 CI/review を整理して Issue を閉じる — **未実施（2026-08-19 GitHub実測で open のまま確認、上部の棚卸しメモ参照）**
 3. **改善中オーバーレイのサイドバー化**: 完了（VM 反映・実機確認済み、§8）
-4. **戦略改善ループ監視ジョブ**: `soren-1`（1 時間毎）が automations に無いため再作成 or 確認
-5. **ハーネス系**: コメント応答・ラジオコーナー・改善 AI の稼働確認と継続改善
+4. **戦略改善ループ監視ジョブ**: `soren-1`（1 時間毎）が automations に無いため再作成 or 確認 — 未確認のまま放置されている可能性あり
+5. **ハーネス系**: コメント応答・ラジオコーナー・改善 AI の稼働確認と継続改善 — §14/§15 で継続中
 
 ### 12. strategy.py リファクタ + 性能改善検討（2026-08-18）
 
