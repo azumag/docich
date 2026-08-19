@@ -1,0 +1,23 @@
+diff --git a/libavfilter/Makefile b/libavfilter/Makefile
+index a16c0239ab..8cbec3accd 100644
+--- a/libavfilter/Makefile
++++ b/libavfilter/Makefile
+@@ -221,5 +221,6 @@
+ OBJS-$(CONFIG_CAS_FILTER)                    += vf_cas.o
+ OBJS-$(CONFIG_CCREPACK_FILTER)               += vf_ccrepack.o
++OBJS-$(CONFIG_DOCICHCC_FILTER)               += vf_docichcc.o
+ OBJS-$(CONFIG_CHROMABER_VULKAN_FILTER)       += vf_chromaber_vulkan.o vulkan.o vulkan_filter.o
+ OBJS-$(CONFIG_CHROMAHOLD_FILTER)             += vf_chromakey.o
+ OBJS-$(CONFIG_CHROMAKEY_FILTER)              += vf_chromakey.o
+diff --git a/libavfilter/allfilters.c b/libavfilter/allfilters.c
+index a79ad87684..1d65b32e42 100644
+--- a/libavfilter/allfilters.c
++++ b/libavfilter/allfilters.c
+@@ -203,6 +203,7 @@
+ extern const AVFilter ff_vf_bwdif_vulkan;
+ extern const AVFilter ff_vf_cas;
+ extern const AVFilter ff_vf_ccrepack;
++extern const AVFilter ff_vf_docichcc;
+ extern const AVFilter ff_vf_chromaber_vulkan;
+ extern const AVFilter ff_vf_chromahold;
+ extern const AVFilter ff_vf_chromakey;

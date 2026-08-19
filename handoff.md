@@ -1,18 +1,170 @@
-# Soren Linux 配信・改善ループ 引き継ぎ
+# Soren / docich operational handoff
+
+> Updated: 2026-08-15 JST
+> Runtime source: [`azumag/soviet_now`](https://github.com/azumag/soviet_now)
+> Multi-game and caption source: [`azumag/docich`](https://github.com/azumag/docich)
+> Never place stream keys, tokens, API keys, prompts, generated speech, or raw
+> model/improvement logs in this document.
+
+## Current outcome
+
+The live Soren broadcast is running on the Oracle VM with FFmpeg direct
+streaming, Japanese VOICEVOX audio, and English native Twitch captions. The
+game continues after GAME OVER and also continues while improvement work is in
+progress. Radio/search/tool reasoning is filtered from on-air output. The say
+path has bounded retry, foreground priority, and deferred radio recovery.
+
+docich now aligns that Soren work with the reusable multi-game foundation:
+
+- generic display/audio/stream lifecycle remains isolated on `:98`;
+- sorengame remains owned by soviet_now production on `:99`;
+- docich contains the canonical reusable caption planner, Unix IPC client,
+  native FFmpeg filter, pinned build, proof scripts, configuration, and tests;
+- the generic stream fails open to normal audio/video if caption capability is
+  unavailable;
+- `start_all.sh` is explicitly excluded from the browser-adapter contract.
+
+## Production identity
+
+| Item | Value |
+|---|---|
+| SSH identity | `ubuntu@129.146.54.105` (`soren-prod-vnic`) |
+| Runtime directory | `/home/ubuntu/soren` |
+| Service | system `soren-runtime.service` |
+| Display | `:99` |
+| Audio bus | `soren_null.monitor` |
+| Caption socket | `/run/user/1001/docich/ffmpeg-cc.sock` |
+| Custom FFmpeg | `/home/ubuntu/build/docich-cc-c13837ddf/bin/ffmpeg` |
+| Caption opt-in | `DOCICH_CC_ENABLED=1` |
+
+The external RTMP push target is root-managed outside the repository. Do not
+read or reproduce it during routine verification.
+
+## Merged implementation
+
+| PR | Main result |
+|---|---|
+| [soviet_now #98](https://github.com/azumag/soviet_now/pull/98) | output guard, synchronized VOICEVOX/English CC, fail-open audio, MiniMax JSON/reasoning controls, say retry/fairness |
+| [soviet_now #99](https://github.com/azumag/soviet_now/pull/99) | current GitHub/local/VM integration and production retry fixes |
+| [soviet_now #100](https://github.com/azumag/soviet_now/pull/100) | improve daemon supervisor ownership and GNU/BSD status fixes |
+| [soviet_now #101](https://github.com/azumag/soviet_now/pull/101) | durable failed-improvement batch snapshot and retry-lock restoration |
+| [soviet_now #102](https://github.com/azumag/soviet_now/pull/102) | native-caption response protocol version validation |
+| [soviet_now #103](https://github.com/azumag/soviet_now/pull/103) | exact plan schema and hard 32-column x 2-line validation |
+
+Current soviet_now `main` after #103:
+`b647179983bca7520ad3a53a83d218fa7a8aa36e`.
+
+The local `main` at `/Volumes/satelite/work_satelite/soren` is fast-forwarded to
+that commit. Its unrelated untracked files are intentionally preserved.
+
+## Live evidence from this rollout
+
+- Twitch captions required explicit player/broadcaster enablement and a stream
+  restart. After that, captions displayed, changed, and cleared in the live
+  stream while audio continued.
+- FFmpeg ran at about 29.94 fps and the A/V sync probe passed after deployment.
+- The service had one supervised improve daemon. The daemon was a direct child
+  of the service main process; duplicate detached daemons were removed.
+- The game counter advanced through multiple GAME OVER cycles, disproving the
+  earlier stopped-at-GAME-OVER state.
+- A real 100-game improvement attempt ended `failed_no_apply`. Gameplay kept
+  advancing, but the retry lock/backoff were absent and the batch was lost.
+  PR #101 was merged and hot-deployed before the next threshold. It preserves a
+  separate batch snapshot and restores only a current-hash eligible retry.
+
+The production cycle is intentionally `MIN_GAMES_BEFORE_IMPROVE=100`; the two
+fresh-objective early-trigger flags observed during this rollout are disabled.
+Do not lower the threshold simply to make a test fire. Verify the next natural
+threshold with structured state.
+
+## Safe verification
+
+Use only aggregate/structured fields for routine monitoring:
+
+- service active state and MainPID;
+- daemon PID, parent PID, and cgroup;
+- game count and `game_state.json.state`;
+- accumulated count, current strategy-hash prefix, Russia/Soviet counts, and
+  best type;
+- improve status/PID/phase/progress/timestamps;
+- presence and age of improve lock, retry snapshot, and backoff;
+- worker count, FFmpeg fps, A/V probe, caption socket readiness, and audio queue
+  health.
+
+Do not dump `.env`, process arguments containing a stream key, raw model output,
+raw improve logs, private radio text, or full production history.
+
+## Deployment rule
+
+The VM runtime is not a normal Git worktree. A production change is complete
+only when both sides are synchronized:
+
+1. compare target VM files with the last known repository baseline;
+2. stop if the VM has a newer or unexplained difference;
+3. commit, push, review, and merge the source change;
+4. stage only the named files on the VM;
+5. verify checksum and syntax before replacement;
+6. keep a timestamped/exact backup and rollback trap;
+7. restart only when necessary and authorized;
+8. verify live service, game, stream, audio, and captions separately.
+
+Local tests do not prove VM deployment, and VM deployment without a pushed
+source commit is not a completed change.
+
+## Test status and known debt
+
+- The focused runtime/config/continuous-gameplay/retry suites for PR #101 pass
+  (48 tests).
+- docich's complete stdlib suite passes after this integration (244 tests),
+  including Unix-socket protocol and tampered-plan rejection coverage.
+- The large legacy soviet_now `tests.test_escape_mechanisms` suite is not a
+  clean release gate for the current runtime: the last full run executed 383
+  tests with 105 failures and 3 errors, mostly stale static fixtures and a
+  missing `sorengame/build/index.html`. Focused new tests pass, but the legacy
+  suite still needs a separate fixture-alignment effort.
+
+## Remaining gates
+
+1. Observe the next natural improvement threshold. Confirm retry snapshot,
+   running PID/state, continued game advancement, and either a strategy apply or
+   preserved lock/backoff after failure.
+2. Keep the docich native filter and the soviet_now compatibility copy in sync
+   until a versioned artifact dependency replaces the copy.
+3. Keep docich Issue #1 linked to the merged implementation, README, Wiki, and
+   production evidence so the administrative record matches the deployed work.
+4. Treat moving sorengame production ownership into docich as a separate
+   cutover requiring a game-only Soren entry point and rollback proof.
+
+## Documentation
+
+- [`docs/architecture.md`](docs/architecture.md)
+- [`docs/games/sorengame.md`](docs/games/sorengame.md)
+- [`docs/twitch_closed_captions.md`](docs/twitch_closed_captions.md)
+- [`docs/soren_linux_migration_plan.md`](docs/soren_linux_migration_plan.md)
+- [`native/ffmpeg/README.md`](native/ffmpeg/README.md)
+
+## Soren strategy.py / improve-loop 運用ログ（並行ブランチより統合, 2026-08-11〜08-19 JST）
+
+> 以下は同リポジトリの別ブランチ（`codex/soren-repo-handoff`）で並行更新されていた日本語運用ログを、
+> main 追従（`git merge origin/main`）の際にそのまま統合したセクションです。上記の英語セクション
+> （docich 側の多ゲーム／字幕統合の観点）とは別に、VM 上の soviet_now `strategy.py` 改善ループの
+> 日次運用・rollback 判定・パラメータ調整を時系列で記録しています。統合前の元文書はこのセクション
+> のトップレベル見出しでした（`# 1.` 〜 `# 14.`）。原文ママ、内容の要約・削除は行っていません。
+
 
 > 更新: 2026-08-19 05:45 JST（クリップ修正rollback判明 + HIGH_TYPE_COVER_AVOID軸投入、末尾 §12 参照）
 > 文書リポジトリ: `/Users/azumag/work/docich`（コミット管理）
 > 実装リポジトリ: `azumag/soviet_now`
 > この文書にストリームキー・OAuth token・秘密鍵・push target は書かない
 
-## 1. 現在の目標（何をしようとしているのか）
+### 1. 現在の目標（何をしようとしているのか）
 
 1. **Issue #96 の 24 時間受入を完了する**。BGM 自動再起動修正後の soak が現在進行中で、2026-08-14 11:14 JST 頃に終了予定。合格後に残ゲート（オーバーレイ DOM 再確認、screenshot、サマリ整理、PR #97 CI/review 確認）を済ませて Issue を閉じる。
 2. **ハーネス系を復活させる**。コメント応答・ラジオコーナー・改善 AI が動く状態を維持・改善する。ハーネスは codex に統一、モデルは deepseek 系（改善のみ pro、それ以外 flash）。
 3. **配信オーバーレイを改善する**。改善中に improve daemon の出力が全面表示されゲームが見えなくなる問題を解消し、右サイドバーへ統合する（VM 反映・実機確認済み）。
 4. **戦略改善ループを健全に回す**。改善 AI を deepseek-v4-pro に切り替え済み。停滞時は戦略自体を含むループを改善する監視も別途検討中。
 
-## 2. VM 接続方法と設定
+### 2. VM 接続方法と設定
 
 ```bash
 ssh -i /Users/azumag/.ssh/id_rsa ubuntu@129.146.54.105
@@ -40,7 +192,7 @@ ssh -i /Users/azumag/.ssh/id_rsa ubuntu@129.146.54.105
 - `lib/direct_stream.py run`（FFmpeg 配信）
 - `litellm`（/home/ubuntu/litellm-venv）
 
-## 3. リポジトリ構成
+### 3. リポジトリ構成
 
 - `azumag/soviet_now`: 実装本体（VM の `/home/ubuntu/soren` が実運用ソース）
 - `azumag/docich`: 構成判断・移行計画・引き継ぎ文書のみ
@@ -50,7 +202,7 @@ ssh -i /Users/azumag/.ssh/id_rsa ubuntu@129.146.54.105
 
 **注意**: worktree と VM の `strategy/ai.sh` は大幅に乖離している（VM が codex ハーネス版、worktree は旧 multi-provider 版）。同期時は VM を基準にすること。
 
-## 4. 現在の進捗状態
+### 4. 現在の進捗状態
 
 ### 完了済み
 
@@ -74,7 +226,7 @@ ssh -i /Users/azumag/.ssh/id_rsa ubuntu@129.146.54.105
 - **戦略改善ループ監視ジョブ（soren-1・1 時間毎）**: 作成を試みたが `~/.codex/automations/` に存在しない。再作成 or 確認が必要
 - **Issue #96 の完了処理**: 24h soak 合格後のサマリ・ゲート確認（§10）
 
-## 5. 24 時間受入（soak）の状態
+### 5. 24 時間受入（soak）の状態
 
 ### 前回 run（`20260811-222340`）は不合格
 
@@ -96,7 +248,7 @@ ssh -i /Users/azumag/.ssh/id_rsa ubuntu@129.146.54.105
 - 監視コマンド: `./direct_stream_soak.sh status` / `./direct_stream_status.sh`
 - 合格条件: 出力平均 29.5fps 以上、ゲーム平均 29.5fps 以上、speed p05 0.98 以上、drop/dup 各 1% 未満、音声 probe/非無音 99% 以上、publisher/relay 各 1、OBS inactive
 
-## 6. codex CLI pro 対応（litellm）
+### 6. codex CLI pro 対応（litellm）
 
 ### 経緯
 
@@ -131,7 +283,7 @@ codex CLI 0.147.0 と opencode.ai の `deepseek-v4-pro` は直接接続で 2 障
 - `run_cmd` 先頭の health チェック（`http://127.0.0.1:4100/health`）が失敗すると rc=79 で即フォールバック（flash へ）
 - litellm 停止 → `systemctl start soren-litellm`、復旧は自動（Restart=always）
 
-## 7. strategy.py リファクタ
+### 7. strategy.py リファクタ
 
 ### 変更内容（VM 本番反映済み）
 
@@ -151,7 +303,7 @@ decide hash を変える手動リファクタは `eloop.sh` の `repair_strategy
 
 手順は `docs/strategy_refactor_checklist.md`（VM 側と worktree 側に配置）に明文化済み。
 
-## 8. 配信オーバーレイ（現行と改善予定）
+### 8. 配信オーバーレイ（現行と改善予定）
 
 ### 現行（VM 反映済み）
 
@@ -170,7 +322,7 @@ worktree `codex/soren-ffmpeg-direct` に未 commit 差分 5 ファイル:
 - VM 反映済み: scp 3 ファイル + bridge 再起動（ユーザー承認済み）。現行版は `tmp/deploy-backups/474fe91ac/` に退避
 - 実機確認: 改善中はサイドバーが IMPROVE + OPS に切替（GAME 非表示・改善ログ 24 行・状態テキスト表示）。ゲーム画面 960x540 は全面表示のまま、全画面 improve surface なし。idle 時は従来どおり G + STATUS
 
-## 9. 既知の問題・注意点
+### 9. 既知の問題・注意点
 
 - **VM 反映とリポジトリ同期は同時に行う（リポジトリルール、AGENTS.md 記載）**: VM（git 管理外）へ反映する変更は、同時に soviet_now の作業ブランチへコミット・push する。コミット前は「反映済み」と報告しない。乖離時は新しい側へ同期。
 - **ローカル worktree / 調査ディレクトリは VM の正ではない**: `soren-harness`（soviet_now の worktree、ブランチ `codex/harness-codex`）は 2026-08-13 に **VM 基準で同期・push 済み**（commit `2adeecee6`、37 ファイル）。同期対象: 乖離 35 ファイル + 新規 `strategy_helpers/board_stats.py`・`docs/strategy_refactor_checklist.md`。`soren-voicevox-investigation` は調査用ローカル資料で VM 反映対象外。
@@ -182,7 +334,7 @@ worktree `codex/soren-ffmpeg-direct` に未 commit 差分 5 ファイル:
 - **Oracle 無料ティア**: 現在 4 OCPU / 24 GB。トライアル終了前に PAYG 移行 or 2 OCPU / 12 GB への縮退が必要（Always Free は 2 OCPU / 12 GB）
 - **`__pycache__`**: strategy_helpers 配下の pyc は helper 差分検知を汚染するため除外済み（eloop_improve.sh / sandbox.sh）。生成されたら削除してよい
 
-## 10. 次の実行順序
+### 10. 次の実行順序
 
 1. **24h soak 完了確認**（2026-08-14 11:14 JST 頃）: `./direct_stream_soak.sh status` で passed を確認、monitor 終了、マージ overlay DOM・fresh 非付与・1280x720 screenshot 再確認
 2. **Issue #96 完了処理**: summary、Twitch 720p30、BGM/SE、overlay、A/V 同期、relay 復旧 9 秒、OBS rollback 27 秒、PR #97 CI/review を整理して Issue を閉じる
@@ -190,7 +342,7 @@ worktree `codex/soren-ffmpeg-direct` に未 commit 差分 5 ファイル:
 4. **戦略改善ループ監視ジョブ**: `soren-1`（1 時間毎）が automations に無いため再作成 or 確認
 5. **ハーネス系**: コメント応答・ラジオコーナー・改善 AI の稼働確認と継続改善
 
-## 12. strategy.py リファクタ + 性能改善検討（2026-08-18）
+### 12. strategy.py リファクタ + 性能改善検討（2026-08-18）
 
 ### 依頼と進め方
 「VM の strategy.py を修正して性能を上げる、適切にリファクタリングする」という依頼。
@@ -327,7 +479,7 @@ best_max_type=15, russia_count=1）。現在は `e5b671c8d352` という新し�
 得点/comp面での「改善」を統計的に主張できるほどのサンプル数ではないが、
 少なくとも「悪化ではない」ことをrollback機構自身が判定した。
 
-## 13. 改善ループ評価窓の整合（ROLLING_SCORE_KEEP, 2026-08-19）
+### 13. 改善ループ評価窓の整合（ROLLING_SCORE_KEEP, 2026-08-19）
 
 ユーザー指摘: 「改善ループが100試合分（`MIN_GAMES_BEFORE_IMPROVE=100`）なのに、
 戦略スコア評価が20試合になっているのはおかしい。改善ループ分に合わせるべきでは」。
@@ -385,7 +537,7 @@ CURRENT_RUN_SCORE_KEEP=100
 検証はopus 2段階（設計レビュー→適用後の自己レビュー）＋自分でのVM実測（n実測、
 strategy.pyのenv非依存確認、無効トグル4件の実測確認）で行った。
 
-## 14. 参照
+### 14. 参照
 
 - [Issue #96](https://github.com/azumag/soviet_now/issues/96)
 - [soviet_now #97](https://github.com/azumag/soviet_now/pull/97)（マージ済み・実配信ゲートは未完了のまま）

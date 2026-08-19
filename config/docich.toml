@@ -1,0 +1,49 @@
+[display]
+number = 98          # DISPLAY=:98 (soren が :99 を使用中のため衝突回避。§0)
+width = 1280
+height = 720
+color_depth = 24
+
+[audio]
+enabled = true       # pulseaudio が無い環境では false (無音配信)
+sink_name = "docich_sink"
+set_default = false  # true にしない限り set-default-sink はしない (soren 共存。§0)
+
+[stream]
+ffmpeg_bin = "ffmpeg"              # DOCICH_FFMPEG_BIN で上書き可能
+mode = "null"                    # null | rtmp | file
+rtmp_url = "rtmp://live.twitch.tv/app"
+stream_key_env = "DOCICH_STREAM_KEY"
+file_path = "run/out.flv"
+framerate = 30
+video_bitrate = "4500k"
+maxrate = "5000k"
+bufsize = "9000k"
+preset = "veryfast"
+audio_bitrate = "160k"
+gop_seconds = 2
+
+[captions]
+enabled = false                    # DOCICH_CC_ENABLED=1 で有効化
+# 空なら $XDG_RUNTIME_DIR/docich/ffmpeg-cc.sock。DOCICH_CC_SOCKET で上書き可能
+socket_path = ""
+
+[agent]
+default_interval_ms = 2000
+brain_timeout_s = 120
+
+[paths]
+state_dir = "run"                # リポジトリ相対
+games_dir = "config/games"
+roms_dir = "games/roms"
+
+# --- Phase 3: 運用強化 (architecture.md §10) ---
+
+[watchdog]
+enabled = false       # 既定は無効。true にすると `docich up` が watchdog window も起動する
+interval_s = 60       # 点検周期 (秒)。5以上
+freeze_cycles = 5      # 連続同一スクリーンショットでフリーズ判定する回数。2以上
+recover_windows = true # display/audio/stream window 消失時に `up` 相当で再生成する
+
+[rotation]
+games = []            # `docich rotate` が巡回するゲーム名の順序 (例: ["nethack", "hanjuku-hero"])。空だとエラー

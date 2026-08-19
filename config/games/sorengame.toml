@@ -1,0 +1,15 @@
+[game]
+name = "sorengame"
+title = "soren game (Unity WebGL)"
+adapter = "browser"
+submodule = "games/soviet_now"
+
+[browser]
+url = "http://127.0.0.1:8080"  # soren が同一VMで公開するローカルWebGL viewer
+kiosk = true
+binary = "auto"
+# 本番運転 (start_all.sh 等) は browser アダプタ契約の対象外。docich への
+# 本番移管は将来の別 cutover (handoff.md / docs/multi_repo_plan.md §5)
+
+[agent]
+enabled = false  # viewer専用。現在の本番運転はsoviet_nowが所有する
