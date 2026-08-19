@@ -84,8 +84,13 @@ soviet_now 管轄の設定である。
 - 各モデルの実接続先・API キー参照は VM `/home/ubuntu/litellm.yaml` /
   `/home/ubuntu/.config/soren-litellm.env`（git 管理外、秘密鍵につきここには書かない）。
   健全性は `curl http://127.0.0.1:4100/health`（VM 上 or SSH 経由）で確認できる。
-- 詳細な変更履歴・検証ログは docich `handoff.md` §14 を参照。この表はスナップショットであり、
-  soviet_now 側の運用変更で随時ズレうる（正は常に VM の `.env`/`litellm.yaml`）。
+- 詳細な変更履歴・検証ログは docich `handoff.md` §14/§15 を参照。この表はスナップショットで
+  あり、soviet_now 側の運用変更で随時ズレうる（正は常に VM の `.env`/`litellm.yaml`）。
+- **実データ確認済み（2026-08-19 18:32 JST）**: 設定変更なしの通常運用中に実際の
+  `[RADIO:news]` コーナー生成で `codex:amd-token-factory-deepseek-v4-flash` が勝者になり、
+  1298字のコンテンツが配信キューに投入された（`local`/`deepseek-v4-flash-free`/
+  `openrouter/free` は先に失敗/スキップされた上での到達とみられる）。RADIO_AGENTS の
+  amd-token-factory までの到達・成功を実ログで確認済み。
 
 ## AI モデルラダー (改善ループ / ラジオ pre-pass、参考情報)
 
@@ -102,11 +107,20 @@ RADIO_PREPASS_AGENTS (既定) = 同上 (local を除いた同じ4段)
 
 - 2026-08-19 時点でどちらにも `amd-token-factory` は**含めていない**（今回のユーザー依頼は
   RADIO_AGENTS/COMMENT_AGENTS への追加のみ。この2つへ追加するかは別途要判断）
-- **未解決の疑問（要調査、今回は深追いしていない）**: `radio_engine.sh` の実際の pre-pass
-  呼び出しは `radio_prepass_agent="${RADIO_MAIN_PREPASS_AGENT:-codex:deepseek-v4-flash}"`
-  という**単一モデル**（複数形の `RADIO_PREPASS_AGENTS` ではない）を単発呼び出ししている
-  ように見えた。`RADIO_PREPASS_AGENTS`（複数形・ラダー）が実際にどこから参照されているかは
-  今回のセッションでは特定できていない。次に触るときはまずここを確認すること
+- **解決済み（2026-08-19 追記）**: 上の「未解決の疑問」は誤りだった。`soren/radio_engine.sh`
+  （リポジトリ直下）と `soren/broadcast/radio_engine.sh` の**2ファイルが同時に存在**しており、
+  `eloop_lib.sh` が実際に `source` するのは **`broadcast/radio_engine.sh`** の方
+  （直下の同名ファイルは古いコピーで未使用）。前回はうっかり直下の古い方を読んでいた。
+  `broadcast/radio_engine.sh` は当日 15:52 JST（本セッションとは別の並行作業）に更新されており、
+  そちらでは `radio_prepass_agent`（単数、`RADIO_MAIN_PREPASS_AGENT` 由来）は
+  「pre-pass を実行するかどうかの on/off 判定」にしか使われておらず、実際のモデル選択は
+  `radio_prepass_agents`（複数形、`RADIO_PREPASS_AGENTS` 由来、上記の4段ラダー）を
+  `ai_generate_list` に渡す形で行っている。ログにも `prepass agents=...` と
+  `prepass provider=...` が出る。`ai_generate.sh`/`config.sh` も同様に直下とサブディレクトリ
+  (`lib/`, `core/`) に重複があり、`eloop_lib.sh` の `source` 行が常に正（`lib/ai_generate.sh`,
+  `core/config.sh`）。この手の「直下 vs サブディレクトリの重複ファイル」は soviet_now の
+  リファクタ移行途上の産物と見られ、今後もこのリポジトリを読むときは `eloop_lib.sh` の
+  `source` 行で実体を確認してから読むこと
 - `MODEL_IMPROVE_LIST` は improve_daemon.log の `[ANALYZE(1)] primary OK` 等のログで
   改善ループ自体が稼働していることは確認したが、ログには `primary` としか出ず、実際に
   どのモデル名で成功したかまでは today's 実測では確認していない
