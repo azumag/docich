@@ -33,6 +33,7 @@ WEBUI_ALLOWLIST = {
     # backoff
     "AI_BACKOFF_SEC_ITEMS",
     "AI_AGENT_BACKOFF_SEC",
+    "AI_BACKOFF_FAILURE_SEC",  # PR #125: 一過性のプロバイダ/CLI失敗用の短バックオフ
     # peak hours (core/config.sh:88-104)
     "PEAK_HOURS_AGENT_SWAP_ENABLED",
     "PEAK_HOURS_WINDOWS",
@@ -52,6 +53,7 @@ DEFAULTS: dict[str, str] = {
     "COMMENT_TRANSLATION_AGENTS": "",  # inherits COMMENT_AGENTS
     "AI_BACKOFF_SEC_ITEMS": "deepseek-v4-flash-free:86400 amd-token-factory-deepseek-v4-flash:86400 openrouter/free:86400 local:1800 deepseek-v4-flash:18000 minimax-m3:18000",
     "AI_AGENT_BACKOFF_SEC": "600",
+    "AI_BACKOFF_FAILURE_SEC": "300",
     "PEAK_HOURS_AGENT_SWAP_ENABLED": "1",
     "PEAK_HOURS_WINDOWS": "10-13,15-19",
     "PEAK_HOURS_TZ": "Asia/Tokyo",
@@ -245,6 +247,14 @@ def _validate_value(key: str, value: str) -> None:
         if int(value.strip()) < 60:
             raise ValueError(f"{key} は60以上である必要があります")
         return
+    if key == "AI_BACKOFF_FAILURE_SEC":
+        # レート制限以外の一過性障害用の短バックオフ (既定 300s)。短すぎる値は
+        # リトライの連打になるため 30 秒以上に制限する (config.sh は 1 以上を許容)。
+        if not value.strip().isdigit():
+            raise ValueError(f"{key} は整数である必要があります")
+        if int(value.strip()) < 30:
+            raise ValueError(f"{key} は30以上である必要があります")
+        return
     if key == "PEAK_HOURS_WINDOWS":
         if not value.strip():
             return
@@ -428,8 +438,9 @@ canvas{width:100%;height:220px;background:#111319;border:1px solid var(--border)
 </section>
 <!-- BACKOFF -->
 <section id="tab-backoff" style="display:none">
-<div class="card"><h2>モデル別バックオフ設定</h2><p class="desc"><code>AI_BACKOFF_SEC_ITEMS</code> は "model:sec" を空白区切り。例: <code>deepseek-v4-flash-free:86400 local:1800</code></p>
+<div class="card"><h2>モデル別バックオフ設定</h2><p class="desc"><code>AI_BACKOFF_SEC_ITEMS</code> は "model:sec" を空白区切り。例: <code>deepseek-v4-flash-free:86400 local:1800</code>。レート制限(429)はモデル別の長バックオフ、<code>AI_BACKOFF_FAILURE_SEC</code> は一過性のプロバイダ/CLI失敗(rc≠0)に使う短いバックオフ (PR #125)。</p>
 <div class="row"><div><label>AI_BACKOFF_SEC_ITEMS</label><textarea id="backoff-items" rows="3"></textarea></div><div><label>AI_AGENT_BACKOFF_SEC (既定)</label><input id="backoff-default" placeholder="600"/></div></div>
+<div class="row"><div><label>AI_BACKOFF_FAILURE_SEC (一過性障害)</label><input id="backoff-failure" placeholder="300"/></div><div class="help" style="align-self:end;margin:0">429/クォータ枯渇のみ長バックオフ。それ以外はこの秒数で早期復帰させる。</div></div>
 <div class="actions"><button class="btn primary" id="backoff-save">保存</button><button class="btn" id="backoff-reload">再読込</button></div>
 <div id="backoff-msg" class="help"></div>
 </div>
@@ -538,10 +549,13 @@ async function loadConfig(){
   // backoff
   const bi = entries["AI_BACKOFF_SEC_ITEMS"];
   const bd = entries["AI_AGENT_BACKOFF_SEC"];
+  const bf = entries["AI_BACKOFF_FAILURE_SEC"];
   $("#backoff-items").value = bi?bi.value:"";
   $("#backoff-items").placeholder = bi?bi.default:"";
   $("#backoff-default").value = bd?bd.value:"";
   $("#backoff-default").placeholder = bd?bd.default:"";
+  $("#backoff-failure").value = bf?bf.value:"";
+  $("#backoff-failure").placeholder = bf?bf.default:"";
   // peak
   const pw = entries["PEAK_HOURS_WINDOWS"], tz = entries["PEAK_HOURS_TZ"], pp = entries["PEAK_HOURS_PRIORITY_AGENT"], pr = entries["PEAK_HOURS_AGENT_PREFERENCE"], sw = entries["PEAK_HOURS_AGENT_SWAP_ENABLED"], gate = entries["PEAK_HOURS_QUEUE_GATE_ENABLED"];
   $("#peak-windows").value = pw?pw.value:""; $("#peak-windows").placeholder = pw?pw.default:"";
@@ -564,7 +578,7 @@ async function saveKeys(keysToSave){
   if(READ_ONLY){ toast("read-only モードのため保存できません"); return; }
   const payload = {};
   for(const k of keysToSave){
-    const el = document.querySelector(`[data-key="${k}"]`) || document.getElementById({AI_BACKOFF_SEC_ITEMS:"backoff-items",AI_AGENT_BACKOFF_SEC:"backoff-default",PEAK_HOURS_WINDOWS:"peak-windows",PEAK_HOURS_TZ:"peak-tz",PEAK_HOURS_PRIORITY_AGENT:"peak-priority",PEAK_HOURS_AGENT_PREFERENCE:"peak-pref",PEAK_HOURS_AGENT_SWAP_ENABLED:"peak-swap",PEAK_HOURS_QUEUE_GATE_ENABLED:"peak-gate"}[k]);
+    const el = document.querySelector(`[data-key="${k}"]`) || document.getElementById({AI_BACKOFF_SEC_ITEMS:"backoff-items",AI_AGENT_BACKOFF_SEC:"backoff-default",AI_BACKOFF_FAILURE_SEC:"backoff-failure",PEAK_HOURS_WINDOWS:"peak-windows",PEAK_HOURS_TZ:"peak-tz",PEAK_HOURS_PRIORITY_AGENT:"peak-priority",PEAK_HOURS_AGENT_PREFERENCE:"peak-pref",PEAK_HOURS_AGENT_SWAP_ENABLED:"peak-swap",PEAK_HOURS_QUEUE_GATE_ENABLED:"peak-gate"}[k]);
     if(!el) continue;
     payload[k]=el.value;
   }
@@ -691,7 +705,7 @@ document.addEventListener("DOMContentLoaded",()=>{
   // handlers
   $("#chains-save").onclick=()=>saveKeys(chainKeys());
   $("#chains-reload").onclick=()=>loadConfig().catch(e=>toast(String(e)));
-  $("#backoff-save").onclick=()=>saveKeys(["AI_BACKOFF_SEC_ITEMS","AI_AGENT_BACKOFF_SEC"]);
+  $("#backoff-save").onclick=()=>saveKeys(["AI_BACKOFF_SEC_ITEMS","AI_AGENT_BACKOFF_SEC","AI_BACKOFF_FAILURE_SEC"]);
   $("#backoff-reload").onclick=()=>loadConfig().catch(e=>toast(String(e)));
   $("#backoff-refresh").onclick=()=>loadBackoffs();
   $("#backoff-clear-all").onclick=async()=>{

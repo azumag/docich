@@ -117,6 +117,18 @@ class TestValidateValue(unittest.TestCase):
         with self.assertRaises(ValueError):
             webui._validate_value("AI_AGENT_BACKOFF_SEC", "abc")
 
+    def test_failure_backoff_sec(self):
+        # PR #125: 一過性障害用の短バックオフ (既定 300)
+        webui._validate_value("AI_BACKOFF_FAILURE_SEC", "300")
+        self.assertEqual(webui.DEFAULTS["AI_BACKOFF_FAILURE_SEC"], "300")
+        self.assertIn("AI_BACKOFF_FAILURE_SEC", webui.WEBUI_ALLOWLIST)
+        with self.assertRaises(ValueError):
+            webui._validate_value("AI_BACKOFF_FAILURE_SEC", "abc")
+        with self.assertRaises(ValueError):
+            webui._validate_value("AI_BACKOFF_FAILURE_SEC", "5")  # 30未満は拒否
+        with self.assertRaises(ValueError):
+            webui._validate_value("AI_BACKOFF_FAILURE_SEC", "-10")
+
     def test_peak_windows(self):
         webui._validate_value("PEAK_HOURS_WINDOWS", "10-13,15-19")
         webui._validate_value("PEAK_HOURS_WINDOWS", "22-02")

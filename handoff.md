@@ -1038,3 +1038,21 @@ LiteLLM モデルに存在せず、字幕翻訳クライアントは OpenAI 互�
   free が本当に 429 の間は `deepseek-v4-flash` の使用率が高止まりする。
 - レガシー経路 (celebration/corners) の `RADIO_MAIN_AGENT/FALLBACK` は
   ハードコード deepseek→minimax のまま。必要なら共通チェーンへ寄せる追検討あり。
+
+### 26. webui を PR #125 追従 (AI_BACKOFF_FAILURE_SEC) — 2026-08-20
+
+§25 C (バックオフ種別分割) で新設された `AI_BACKOFF_FAILURE_SEC` (既定 300s,
+config.sh:108, ai_generate.sh は rc!=0 の一過性障害のみに適用) を Web UI へ追従。
+
+- `src/docich/webui.py`: WEBUI_ALLOWLIST / DEFAULTS ("300") / _validate_value
+  (整数 30 以上。config.sh が 1 以上を許容するが、リトライ連打防止で 30 下限) /
+  Backoff カードに `AI_BACKOFF_FAILURE_SEC` 入力欄追加 / JS (loadConfig・saveKeys・
+  backoff-save) に配線。
+- `tests/test_webui.py`: test_failure_backoff_sec 追加 (allowlist 存在・既定 300・
+  "abc"/"5"/"-10" 拒否)。
+- ローカル実測: 単体 529 件 PASS。E2E (実 HTTP) で /api/config に
+  `AI_BACKOFF_FAILURE_SEC` (effective 300) が出ること、PUT で .env への書き込みと
+  atomic backup (`.env.bak.<ns>`、chmod 600) を確認。
+- wiki: `wiki/WebUI.md` に PR #125 の説明を追記 (再発行済み)。
+- VM 反映: docich main 更新 + `systemctl --user restart docich-webui` 後に
+  tailnet URL から /api/config の新キーを実測確認 (未確認の場合は要確認)。

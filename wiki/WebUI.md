@@ -13,8 +13,13 @@ Tailscale (tailnet) 経由で安全に公開する想定の機能である。
 - **Chains**: チェーン 6 種の表示・編集 (先頭が最優先、失敗時に次へフォールバック)
   - `AI_COMMON_AGENTS` (共通原典) / `MODEL_IMPROVE_LIST` / `RADIO_AGENTS` /
     `RADIO_PREPASS_AGENTS` / `COMMENT_AGENTS` / `COMMENT_TRANSLATION_AGENTS`
-- **Backoff**: モデル別バックオフ設定 (`AI_BACKOFF_SEC_ITEMS`, `AI_AGENT_BACKOFF_SEC`) の編集と、
-  稼働中 backoff ファイル (`tmp/state/ai_backoff/<sanitized>`) の残り時間表示・個別クリア・全クリア
+- **Backoff**: モデル別バックオフ設定 (`AI_BACKOFF_SEC_ITEMS`, `AI_AGENT_BACKOFF_SEC`,
+  `AI_BACKOFF_FAILURE_SEC`) の編集と、稼働中 backoff ファイル
+  (`tmp/state/ai_backoff/<sanitized>`) の残り時間表示・個別クリア・全クリア
+  - `AI_BACKOFF_FAILURE_SEC` は PR #125 (backoff type split) で新設された「一過性の
+    プロバイダ/CLI 失敗 (rc≠0) 用の短いバックオフ」(既定 300 秒)。レート制限/429 のみ
+    モデル別の長バックオフ (`AI_BACKOFF_SEC_ITEMS`) に留め、無料枠が 1 日級に
+    パークされないようにする
 - **Peak**: ピーク時間帯設定 (`PEAK_HOURS_WINDOWS` / `TZ` / `PRIORITY_AGENT` /
   `AGENT_PREFERENCE` / `AGENT_SWAP_ENABLED` / `QUEUE_GATE_ENABLED`)
 - **Stats**: `tmp/state/ai_stats/<YYYYMMDD>.jsonl` の試行/成功/失敗を直近 N 日分グラフ表示
