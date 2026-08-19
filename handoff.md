@@ -167,12 +167,13 @@ source commit is not a completed change.
   チェーン拡張、2026-08-19 実施・実データ確認済み）が最新
 - **strategy.py 本体の状態**: §12 末尾の追記群（clip修正rollback → HIGH_TYPE_COVER_AVOID
   投入・12試合窓通過）が最新の意思決定
-- **Issue #96 / PR #97 の実際の状態（本棚卸し時に GitHub で実測確認）**: PR #97 は
-  2026-08-12 に merge 済み（`gh pr view 97` で確認）。**Issue #96 は 2026-08-19 時点でも
-  open のまま**、GitHub 上の最終更新は 2026-08-11（`gh issue view 96` で確認）。§1 が
-  言う「soak合格後にIssueを閉じる」は、少なくとも soak 完了の記録以降 GitHub 側では
-  一度も触られていない＝**未実施のまま放置されている**。次にこの筋に触るなら、まず
-  soak (`20260813-021426`) が実際に合格したのかどうかの再確認から。
+- **Issue #96 / PR #97 の実際の状態**: PR #97 は 2026-08-12 に merge 済み（`gh pr view 97`
+  で確認）。**Issue #96 は 2026-08-19 にクローズ済み**（`gh issue close 96`、ユーザー判断）。
+  本棚卸し時点では GitHub 上の最終更新が作成時の2026-08-11のままで、soak合格後の正式な
+  受入記録・報告は issue 上に一度も残っていなかった。ただし本番 VM は
+  `SOREN_STREAM_BACKEND=ffmpeg` で稼働中（実測確認済み）であり、FFmpeg直接配信が実運用の
+  デフォルトとして動き続けていることをもって、issue本文が定義する形式的な受入条件の
+  最終記録は無いままユーザー判断で完了扱いとした（クローズコメントに同旨を記載済み）。
 
 ### 1. 現在の目標（何をしようとしているのか、2026-08-13/14 時点・歴史的経緯）
 
@@ -354,7 +355,7 @@ worktree `codex/soren-ffmpeg-direct` に未 commit 差分 5 ファイル:
 ### 10. 次の実行順序（2026-08-13/14 時点・歴史的経緯。現状は上部の「棚卸しメモ」参照）
 
 1. **24h soak 完了確認**（2026-08-14 11:14 JST 頃）: `./direct_stream_soak.sh status` で passed を確認、monitor 終了、マージ overlay DOM・fresh 非付与・1280x720 screenshot 再確認
-2. **Issue #96 完了処理**: summary、Twitch 720p30、BGM/SE、overlay、A/V 同期、relay 復旧 9 秒、OBS rollback 27 秒、PR #97 CI/review を整理して Issue を閉じる — **未実施（2026-08-19 GitHub実測で open のまま確認、上部の棚卸しメモ参照）**
+2. **Issue #96 完了処理**: summary、Twitch 720p30、BGM/SE、overlay、A/V 同期、relay 復旧 9 秒、OBS rollback 27 秒、PR #97 CI/review を整理して Issue を閉じる — **2026-08-19 クローズ済み（正式な受入記録は無いまま、本番稼働実績を根拠にユーザー判断で完了扱い。上部の棚卸しメモ参照）**
 3. **改善中オーバーレイのサイドバー化**: 完了（VM 反映・実機確認済み、§8）
 4. **戦略改善ループ監視ジョブ**: `soren-1`（1 時間毎）が automations に無いため再作成 or 確認 — 未確認のまま放置されている可能性あり
 5. **ハーネス系**: コメント応答・ラジオコーナー・改善 AI の稼働確認と継続改善 — §14/§15 で継続中
