@@ -316,6 +316,17 @@ anchor `95b4310bee23` まで戻った。**現在の本番はクリップ修正�
   クリップ修正版を反映したままだったため、今回VMの実際の現状（95b4310bee23系統）
   を正としてリポジトリを同期し直した
 
+### 追記（2026-08-19 13:17 JST）: HIGH_TYPE_COVER_AVOID は12試合窓を通過し anchor 昇格
+
+デプロイから約7時間後、`active_branch.json` の `anchor_hash` が `1888e7d7ed65`
+（本軸を含む版）に更新されているのを確認。`logs/change_log.txt` に本ハッシュへの
+rollback記録は無い。**クリップ修正（最初の評価窓で即rollback）とは対照的に、
+実ゲーム評価を通過して新しい最良戦略として採用された**（comp=9277.51, n=12,
+best_max_type=15, russia_count=1）。現在は `e5b671c8d352` という新しい探索
+ブランチ（depth=1）がこのanchorを土台に自律ループの通常サイクルを継続中。
+得点/comp面での「改善」を統計的に主張できるほどのサンプル数ではないが、
+少なくとも「悪化ではない」ことをrollback機構自身が判定した。
+
 ## 13. 参照
 
 - [Issue #96](https://github.com/azumag/soviet_now/issues/96)
