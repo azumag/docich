@@ -87,6 +87,30 @@ soviet_now 管轄の設定である。
 - 詳細な変更履歴・検証ログは docich `handoff.md` §14 を参照。この表はスナップショットであり、
   soviet_now 側の運用変更で随時ズレうる（正は常に VM の `.env`/`litellm.yaml`）。
 
+## AI モデルラダー (改善ループ / ラジオ pre-pass、参考情報)
+
+上記の RADIO_AGENTS/COMMENT_AGENTS とは別に、改善ループ (`eloop_improve.sh` の
+ANALYZE/IMPLEMENT/FIX/REVIEW) とラジオ pre-pass (事前調査) にもモデルフォールバックが
+ある。実体は VM `soren/core/config.sh`（`eloop_lib.sh` が読むのはこちらで、リポジトリ内に
+同名で存在する古い `config.sh` ではない点に注意）:
+
+```text
+MODEL_IMPROVE_LIST (既定) = codex:deepseek-v4-flash-free → codex:openrouter/free →
+                             codex:deepseek-v4-flash → codex:minimax-m3
+RADIO_PREPASS_AGENTS (既定) = 同上 (local を除いた同じ4段)
+```
+
+- 2026-08-19 時点でどちらにも `amd-token-factory` は**含めていない**（今回のユーザー依頼は
+  RADIO_AGENTS/COMMENT_AGENTS への追加のみ。この2つへ追加するかは別途要判断）
+- **未解決の疑問（要調査、今回は深追いしていない）**: `radio_engine.sh` の実際の pre-pass
+  呼び出しは `radio_prepass_agent="${RADIO_MAIN_PREPASS_AGENT:-codex:deepseek-v4-flash}"`
+  という**単一モデル**（複数形の `RADIO_PREPASS_AGENTS` ではない）を単発呼び出ししている
+  ように見えた。`RADIO_PREPASS_AGENTS`（複数形・ラダー）が実際にどこから参照されているかは
+  今回のセッションでは特定できていない。次に触るときはまずここを確認すること
+- `MODEL_IMPROVE_LIST` は improve_daemon.log の `[ANALYZE(1)] primary OK` 等のログで
+  改善ループ自体が稼働していることは確認したが、ログには `primary` としか出ず、実際に
+  どのモデル名で成功したかまでは today's 実測では確認していない
+
 ## 関連ドキュメント
 
 - [docs/games/sorengame.md](https://github.com/azumag/docich/blob/main/docs/games/sorengame.md) — 本ページの詳細版
