@@ -840,3 +840,22 @@ AF_UNIX socket のサンドボックス環境要因 (既知) のみ。コード�
 **現状のまとめ**: docich 共通部品は main 反映済み・実実行検証 3 件完了・soviet_now
 ラッパ (voicevox/ai-guard) とオーバーレイ分離も本番反映済み。残るのは一時検証 clone
 (VM `/home/ubuntu/docich-ai-verify`) の後片付けのみ (削除は承認待ち・report-only)。
+
+### 20. wiki と実装デフォルトの剥離を解消 — 2026-08-19 (PR #122)
+
+トークン効率改善の事前確認で、wiki (Game-Sorengame) とコミット済み実装デフォルトに
+剥離があることを検出:
+
+- wiki/本番 `.env` には `codex:amd-token-factory-deepseek-v4-flash` が含まれるが、
+  `core/config.sh` の既定値 (`RADIO_AGENTS`/`COMMENT_AGENTS`) には無かった。
+- 本番は `.env` が上書きするため実効チェーンは wiki と一致 (正常) だが、新規環境や
+  .env 欠落時は amd-token-factory を飛ばす別チェーンになるリスクがあった。
+
+対応: soviet_now PR #122 (branch `codex/docich-wiki-chain-align`) をマージ
+(main `c4b45311d`)。両既定に `codex:amd-token-factory-deepseek-v4-flash` を追加し、
+ピーク時テストの古い期待値 (2件) も wiki 追従の 6 件へ更新。
+
+- 本番 VM `/home/ubuntu/soren/core/config.sh` も main と同一ハッシュ
+  (`bef4bc9a...`) で反映済み (バックアップ `.codex_deploy/backup-20260819-wiki-chain-align-config.sh`)。
+- 実効チェーンは `.env` 優先のため不変 (確認済み)。
+- テスト: `test_peak_hours_agent_order.sh` PASS、`test_ai_generate_backoff` 13件 PASS。
