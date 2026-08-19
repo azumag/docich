@@ -1055,4 +1055,5 @@ config.sh:108, ai_generate.sh は rc!=0 の一過性障害のみに適用) を W
   atomic backup (`.env.bak.<ns>`、chmod 600) を確認。
 - wiki: `wiki/WebUI.md` に PR #125 の説明を追記 (再発行済み)。
 - VM 反映: docich main 更新 + `systemctl --user restart docich-webui` 後に
-  tailnet URL から /api/config の新キーを実測確認 (未確認の場合は要確認)。
+  tailnet URL から /api/config の新キーを実測確認 (`AI_BACKOFF_FAILURE_SEC` effective 300、
+  UI HTTP 200)。
