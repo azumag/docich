@@ -1057,3 +1057,41 @@ config.sh:108, ai_generate.sh は rc!=0 の一過性障害のみに適用) を W
 - VM 反映: docich main 更新 + `systemctl --user restart docich-webui` 後に
   tailnet URL から /api/config の新キーを実測確認 (`AI_BACKOFF_FAILURE_SEC` effective 300、
   UI HTTP 200)。
+
+### 27. prepass が共通チェーンを無視していた問題: worker の stale env — 2026-08-20
+
+ユーザー報告「stats で codex:deepseek-v4-flash 以外全然成功していない」から調査・修正。
+
+**実測診断**
+- stats (08-20 02:02-02:09): winner = deepseek-v4-flash 8, local 3, amd 1。
+  free 5/5, openrouter 3/3 失敗 (rc=1)。prepass は全て deepseek-v4-flash が勝者。
+- `deepseek-v4-flash-free` 直接プローブ → `429 Too Many Requests` (上流クォータ枯渇、§25B と同根)。
+  openrouter/amd/minimax はプローブ成功 (一時的 429 だった)。
+- **主因**: メイン radio_worker は Aug 19 05:34 起動 (config.sh 更新 Aug 20 01:21 より前)。
+  起動時に旧 config.sh の既定値 `RADIO_PREPASS_AGENTS=free,openrouter/free,deepseek-v4-flash,minimax-m3`
+  (amd と local を含まない) が export され、その後 config.sh が共通チェーン継承に更新されても
+  **USR1/HUP reload の再 source では `${VAR:-default}` が設定済み env を上書きしない**ため、
+  prepass は旧リストを使い続けた (ログ実測: 02:02 以降も prepass agents=旧リスト)。
+  → prepass が amd/local をスキップし deepseek-v4-flash に直行していた。
+- 同様に `MODEL_IMPROVE_LIST` (改善ループ、amd 欠落の旧リスト) も improve_daemon の env に stale。
+  8-19 backup config.sh との diff で全差分を特定。
+
+**修正 (ユーザー承認で実施)**
+- radio_worker / chat_worker / improve_daemon を SIGTERM → supervisor respawn で完全再起動
+  (reload では直らない点がポイント)。
+- 実測確認:
+  - 新 radio_worker (PID 132242) の prepass agents = 共通チェーン (free,amd,openrouter/free,local,deepseek,minimax)。
+  - `[03:10:17] [RADIO:soviet] prepass provider=codex:amd-token-factory-deepseek-v4-flash`
+    → **prepass を amd が勝者に** (修正前は常に deepseek-v4-flash)。
+  - stats で free fail → amd → openrouter → local と正しくフォールバックが進行。
+- すべて supervisor が自動 respawn (無停止運用、ログで起動・reload complete 確認)。
+
+**残留意**
+- この問題は「config.sh の既定値変更を worker へ反映するには完全再起動が必要」という設計上の
+  罠に起因。USR1/HUP の `source eloop_lib.sh` は既に設定済みの env を更新しない。
+  将来的な対処候補: reload 時に config.sh 由来の env (RADIO_PREPASS_AGENTS 等) を unset して
+  から再 source する、または config.sh の既定値適用を専用関数化して明示再評価する
+  (soviet_now 側の追検討課題)。
+- `deepseek-v4-flash-free` の恒常 429 は継続 (コードで解消不可)。free が落ちている間も
+  amd/openrouter/local が 5分バックオフで復帰を試み、成功すれば deepseek-v4-flash 使用率は
+  下がる見込み。
