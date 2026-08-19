@@ -653,16 +653,25 @@ VM `soren-litellm`（port 4100）の litellm.yaml には `openrouter/free` モ�
 **直接呼び出しでの確認は断念**。
 
 代わりに本番 `.env` には一切触れず、`radio_worker.log` を受動的に監視して自然に
-openrouter/free または amd-token-factory が「OK」になるログを待つ方式に切り替えた
-（結果は本節末尾または次回更新时に追記）。
+openrouter/free または amd-token-factory が「OK」になるログを待つ方式に切り替えた。
 
-**現時点の到達確信度（未確定を前提とした整理）**:
-- ほぼ確実: `.env` の `RADIO_AGENTS` に amd-token-factory が含まれている（実測済み）
-- ほぼ確実: reload 機構自体は正しく動作する（COMMENT_AGENTS 側で実際の生成呼び出しにより
-  amd-token-factory を含む候補リストが使われることを実測済み。radio 側も reload
-  complete ログは確認済みで、コードパスは COMMENT と共通）
-- **未確認**: RADIO_AGENTS の実際のコーナー生成で amd-token-factory / openrouter/free が
-  勝者になった実例（またはその手前の候補として試行された実例）
+#### → 解決（2026-08-19 18:32:43 JST、本番ログで実例確認）
+
+設定変更なしの通常運用中に、実際のラジオ生成で amd-token-factory が勝者になった:
+
+```
+[18:32:43] [RADIO:news] codex:amd-token-factory-deepseek-v4-flash OK
+[18:32:43] [RADIO:news] 生成プロバイダ: codex:amd-token-factory-deepseek-v4-flash (attempt=1)
+[18:32:44] [RADIO:news] 1298字
+[18:32:44] [RADIO:news] deferred queue投入: radio_1787131964_43249_news_15480.txt
+```
+
+`local`・`codex:deepseek-v4-flash-free`・`codex:openrouter/free`（RADIO_AGENTS でこれより
+前に並ぶ3候補）は全て失敗/スキップされた上でこの結果に到達したとみられる（`attempt=1` は
+外側のリトライループの回数で、候補ごとの内訳は引き続きログに出ない）。**RADIO_AGENTS の
+amd-token-factory までの到達・成功を実データで確認**。openrouter/free 単体が勝者になった
+実例はまだ捕捉していないが、この経路の手前に位置するため通常は到達している。§14/§15 の
+「未確認」は解消。
 
 ### 16. 参照
 
