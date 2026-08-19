@@ -327,7 +327,65 @@ best_max_type=15, russia_count=1）。現在は `e5b671c8d352` という新し�
 得点/comp面での「改善」を統計的に主張できるほどのサンプル数ではないが、
 少なくとも「悪化ではない」ことをrollback機構自身が判定した。
 
-## 13. 参照
+## 13. 改善ループ評価窓の整合（ROLLING_SCORE_KEEP, 2026-08-19）
+
+ユーザー指摘: 「改善ループが100試合分（`MIN_GAMES_BEFORE_IMPROVE=100`）なのに、
+戦略スコア評価が20試合になっているのはおかしい。改善ループ分に合わせるべきでは」。
+
+**調査結果（実測）**: `strategy/regression.sh`の`update_rolling_scores()`が
+`tmp/state/rolling_scores.json`の各hashの`scores`配列を毎回`ROLLING_SCORE_KEEP`
+（デフォルト20、`.env`に未設定＝常にデフォルト適用）で切り詰めていた。この配列から
+`comp = 0.55*p50 + 0.30*p25 + 0.15*lcb`（rollback判定・anchor昇格ランキングの
+実質的な唯一の評価指標）を算出しているため、`MIN_GAMES_BEFORE_IMPROVE=100`で
+100試合分辛抱して蓄積しても、評価は直近20試合分しか見ていなかった。
+さらに調査で、`strategy/improve.sh:2309`に**別変数**`CURRENT_RUN_SCORE_KEEP`
+（同じくデフォルト20）があり、`check_regression`が優先的に参照する「現戦略側」
+metrics(`tmp/state/current_strategy_run.json`)はこちらに支配されることが判明。
+片方だけ変更するとn非対称でlcb項にバイアスが生じるため、両方同時変更が必要。
+
+**設計根拠**（opusサブエージェント、本番スコアの実データでブートストラップ
+シミュレーション実施）: rollback閾値`REGRESSION_MIN_COMP_GAP=1000`は、n=20では
+comp差の標準誤差538に対し1.3σでしかなく、同一実力の戦略同士でも約18.2%の頻度で
+誤って閾値超過が観測される計算。n=100なら誤判定率0.2%まで低下し、閾値が
+意図通りの「有意差フィルタ」として機能する。
+
+**適用した変更**: VM `.env` に2行追加（コード変更なし、`strategy.py`/decide()の
+hashには一切影響しない。`strategy.py`はos.environ/getenvを1つも参照しないことを
+実測確認済み）:
+```
+ROLLING_SCORE_KEEP=100
+CURRENT_RUN_SCORE_KEEP=100
+```
+`.env`は毎試合`soren_loop.sh`・`improve_daemon.sh`双方から再読込される実装のため
+再起動不要（実測確認: デプロイ直後の次ゲームからrolling/current_run双方の
+`scores`配列長がn=20→21→22→23→24とロックステップで伸長、非対称なし）。
+
+**変更不要と判断したもの**（ユーザーも早期粛清はOKと明言）: `MIN_GAMES_BEFORE_REGRESSION=12`,
+`EARLY_OBJECTIVE_REGRESSION_MIN_GAMES=4`等の早期粛清フロア値、`HOT_STREAK_ROLLING_KEEP=200`
+（コード内`max(normal_keep, hot_keep)`ガードにより無害と実コードで確認）。
+
+**残存リスク（現状は無害、将来のtoggle再有効化時に要対処と記録）**:
+1. `best_strategy_anchor.json`のanchor側comp/p50/p25/lcb/nは**昇格時点のスナップショットで
+   固定**（現在n=12のまま）。current側のnが100に伸びるにつれ、lcb項の差で
+   comp換算約85点current側に有利なバイアスが新規に生じる（rollbackしにくくなる方向）。
+   `REGRESSION_MIN_BREACH_COUNT=2`（comp単独では発火しない）により実害は限定的。
+   次にanchorが更新されれば対称性は自然回復するため、今すぐの対処は不要。
+2. `_recent_archives`の保持上限がハードコード（rolling側25件・current_run側50件、
+   さらに`infra/cleanup.sh`がgame_history実体を直近13試合しか残さない）で、
+   score窓を100に広げても連動していない。窓が広がるほど`nation_progress()`が
+   "no-archive"の0埋めを返す比率が増える。ただし影響を受けるはずの4トグル
+   （`STAGE_ACHIEVEMENT_REGRESSION_ENABLED`, `EARLY_OBJECTIVE_REGRESSION_ENABLED`,
+   `CURRENT_RUN_FRESH_OBJECTIVE_REGRESSION_ENABLED`, `EARLY_COMP_TOP_GAP_ENABLED`）は
+   全て`.env`で`=0`（無効）であることを実測確認済みのため、**現状は不発**。
+   これらのトグルを将来再有効化する前に、必ずprogress窓とscore窓の整合を
+   先に直すこと（`strategy/improve.sh:2277`の`seed_scores = scores[-20:]`リテラルも
+   同じ課題としてセットで対応。単独修正すると`recent_archives`上限との不整合で
+   かえって悪化するため、今回は据え置き）。
+
+検証はopus 2段階（設計レビュー→適用後の自己レビュー）＋自分でのVM実測（n実測、
+strategy.pyのenv非依存確認、無効トグル4件の実測確認）で行った。
+
+## 14. 参照
 
 - [Issue #96](https://github.com/azumag/soviet_now/issues/96)
 - [soviet_now #97](https://github.com/azumag/soviet_now/pull/97)（マージ済み・実配信ゲートは未完了のまま）
