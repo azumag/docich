@@ -1224,3 +1224,25 @@ VM を読み取り診断。
 - 注意: この VM ルート `./config.sh` は core/config.sh (リポジトリ現行) と二重管理の
   古い残骸。.env 未設定の変数には旧既定値が入り得るため、将来削除・統合の検討候補
   (リポジトリに無いため同期対象外)。
+
+### 31. 「コメントで歌って」で歌が再生されない不具合の修正 — 2026-08-20
+
+ユーザー報告: 「コメントで歌って」で `歌わせていただきます` と返事は来るが歌が再生されない。
+
+**原因2点（実測）**
+- `broadcast/comment.sh:2929` のフォールバック判定が `歌います|歌ってみます|...` のみで `歌わせていただきます` を含む敬体を拾わず、`=SING=` 無しのテキストのみ返答でデフォルト楽譜補完が発火しなかった。旧正規表現では `歌わせていただきます` が `False`、新正規表現 `歌わせて|...` で `True` を実測。
+- `broadcast/comment.sh:2098,2128` の `_extract_sing_score` / `_remove_sing_score_block` が `python3 - <<'PY'` で heredoc が stdin を奪い、パイプの `attempt_talk` を読めず抽出が常に空だった。`tests/test_comment_sing_json.sh` で再現。さらに `=SING=` 無しのインライン JSON も未対応で除去漏れがあった。
+- `prompts/comment_response_sing_request.md:40` と `prompts/comment_template.md:212` が「楽譜生成が難しい場合はテキストのみOK」を許容し、モデルが `歌わせていただきます` だけで `=SING=` を出さない選択を正当化していた。
+
+**修正（soviet_now `8c8352a`、docich `062593e`、VM 反映済み 2026-08-20 04:3x JST）**
+- `broadcast/comment.sh`: `python3 -c "$(cat <<'PY'"` に変更しパイプ入力を正しく読む。`_extract_sing_score` は `=SING=` ブロック優先＋マーカー無しの `notes` JSON も抽出。`_remove_sing_score_block` は全ブロック除去＋インライン JSON 除去。フォールバックを `歌わせて|歌います|歌ってみます|歌いましょう|歌をお届け|歌声をお届け|お歌|うたいます|をどうぞ` に拡張し、`dominant_category==sing_request` なら宣言句なしでも補完（`broadcast/comment.sh:2929-2930`）。
+- `broadcast/radio_engine.sh:1063`: `_sanitize_onair_text` に生 JSON 行除去パターン `^\s*\{.*"(notes|lyric|frame_length|f0)".*\}\s*$` を追加。
+- `prompts/comment_response_sing_request.md`, `prompts/comment_template.md`: `sing_request` では必ず `=SING=` を出す（きらきら星をデフォルトで必ず出力、テキストのみ禁止）に変更し、敬語 `歌わせていただきます` も例示。`tests/test_comment_sing_json.sh` を新規追加（5 assertions）。
+
+**VM 反映・検証（実測）**
+- VM `/home/ubuntu/soren` の `broadcast/comment.sh` (`bf00a57...` → `e6b4b8e...`), `prompts/*` 2件をバックアップ `tmp/deploy-backups/sing_fix_20250820_20260820_043453/` 後に `sha256` 一致・`bash -n` PASS を確認して atomic replace。`broadcast/radio_engine.sh` は既に同ハッシュ（前回 §30 の sanitizer が反映済み）で置換のみ。`tests/test_comment_sing_json.sh` も配置。
+- `VOICEVOX` エンジン `0.25.2` は `sing_frame_audio_query` が平均 26s、`frame_synthesis` が 13s で `singers` 30件・`frame_decode` 多数・`3016`/`3014` 存在を実測。`./voicevox_sing.sh -o /tmp/voice_test.wav /tmp/short_score.json` で `381K` の wav 生成を実測（`120s` timeout で成功、`30s` ではタイムアウト）。
+- `chat_worker` は `eloop_lib.sh` を毎ループで再 source するため `USR1` で reload（`[04:42:06] reload requested` → `[04:42:08] reload complete` をログで確認）。`source ./eloop_lib.sh` 後に `_extract_sing_score` のパイプ抽出と新 fallback 正規表現が有効であることを VM 上で直接テストし PASS。
+- 実地注入試験: `tmp/.twitch_chat/raw.log` に `singtest_114514: コメントで歌って` を注入 → `twitch_chat.sh fetch` で `pending 2件` → `_classify_comments` で `sing_request` を実測。修正前（`04:25:58` の `歌ってみてください`）は `sing_request` 分類後に `歌唱宣言あり` ログなし（フォールバック不発）。修正後（`04:45:29` の `コメントで歌って`）は `04:46:26` に `歌唱宣言あり but ===SING=== なし → デフォルト楽譜で補完` と `歌声合成開始 (score=/tmp/sing_score_1787168786_873540.json)` が出て `740B` の JSON と `381K` の wav が生成されたことを実測。同期の `comment_1787168786_25711.txt`（`歌わせていただきます...きらきら星を歌わせていただきます`）もキュー追加された。
+- サービス `soren-runtime` / `soren-litellm` は `active`、worker `873540`/`873613` は生存、`tmp/.say_queue` で `played [comment:sing]` が過去に複数回出ていることを実測（今回の `singtest` の wav も `say_enqueue --wav` でキュー投入済み、再生は TTS キュー消化後に順次）。
+- リポジトリ: `soviet_now` `8c8352a` を `main` へ push、`docich` は submodule ポインタを `062593e` に更新して `codex/soren-repo-handoff` へ push 済み。`origin/main` へのマージは未実施（`codex/soren-repo-handoff` ブランチでの検証段階）。
