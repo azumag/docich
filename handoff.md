@@ -756,3 +756,15 @@ AF_UNIX socket のサンドボックス環境要因 (既知) のみ。コード�
   プロンプト例: `tmp/docich_ai_real_prompt.txt`。
 - 注意: VM の `/home/ubuntu/docich` は `ai` サブコマンド未対応 (2026-08-18 追加分が
   未反映)。VM で実行する場合は先に docich clone を更新する承認が必要。
+
+#### docich ai 実実行: 完了 (VM 上、本番キーは VM に留めた)
+
+- VM `/home/ubuntu/docich-ai-verify` に最新 docich main を一時 clone
+  (submodule soviet_now c4860fdc 含む)。本番 `/home/ubuntu/docich` は変更していない。
+- 本番 `.env` (`/home/ubuntu/soren/.env`) を VM 内シェルで source し、
+  `DOCICH_ALLOW_REAL_AI=1 ./bin/docich ai sorengame --label COMMENT
+  --agents codex:deepseek-v4-flash,codex:minimax-m3 --prompt-file ... --timeout 120`
+  を実行 → **RC=0 (`docich: ai 完了`)**。
+- 証跡: wrapper の temp dir に `last_agent.txt=codex:deepseek-v4-flash`、
+  `failure_kind.txt` 空 (失敗なし)。AI 生成 (deepseek-v4-flash) の実成功を確認。
+- キーは VM 内に留まり、出力・ログ・会話に一切出していない。
