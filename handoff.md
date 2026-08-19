@@ -768,3 +768,26 @@ AF_UNIX socket のサンドボックス環境要因 (既知) のみ。コード�
 - 証跡: wrapper の temp dir に `last_agent.txt=codex:deepseek-v4-flash`、
   `failure_kind.txt` 空 (失敗なし)。AI 生成 (deepseek-v4-flash) の実成功を確認。
 - キーは VM 内に留まり、出力・ログ・会話に一切出していない。
+
+### 19. 残課題のクローズ — 2026-08-19 (soviet_now PR #121 マージ + VM docich 更新)
+
+共通部品化の「本番反映」残り 2 件をクローズした:
+
+1. **soviet_now オーバーレイ分離修正をマージ・本番反映済み**
+   - PR #121 (branch `codex/docich-overlay-env-isolation`、commit `21f45f27d`) を
+     squash merge → main `1fade1542`。
+   - 本番 VM `/home/ubuntu/soren/core/config.sh` を置換 (バックアップ
+     `.codex_deploy/backup-20260819-overlay-env-isolation/`)。bash -n PASS、
+     repo main と VM の sha256 一致 (`2a958581...`)、本番既定値 (tmp/state へ) は
+     不変を実測確認。5 変数が `${VAR:-default}` 方式になり、docich からの
+     オーバーレイ出力分離が本番でも有効。
+2. **VM の docich インストールを最新 main へ更新済み**
+   - `/home/ubuntu/docich` を `69ff900` → `30b5f9d` (main) へ更新、submodule 同期
+     (soviet_now c4860fdc)。`ai` サブコマンドが利用可能に。
+   - スモーク: `docich ai-guard` (`<analysis>` 除去)、`voicevox speakers`、
+     `ai/chat/overlay/say/voicevox` の各サブコマンドを確認。本番委譲経路
+     (DOCICH_BIN) は正常。
+
+**現状のまとめ**: docich 共通部品は main 反映済み・実実行検証 3 件完了・soviet_now
+ラッパ (voicevox/ai-guard) とオーバーレイ分離も本番反映済み。残るのは一時検証 clone
+(VM `/home/ubuntu/docich-ai-verify`) の後片付けのみ (削除は承認待ち・report-only)。
