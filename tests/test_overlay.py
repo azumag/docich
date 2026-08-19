@@ -34,10 +34,18 @@ class TestBuildOverlay(OverlayTestBase):
         self._write_overlay()
         inv = overlay.build_overlay_invocation(self.g, game_name="sorengame", kind="status")
         self.assertEqual(inv.cwd, self.submodule.resolve())
-        self.assertIn("generate_status_overlay.sh", inv.argv)
+        self.assertIn("./generate_status_overlay.sh", inv.argv)
         self.assertIn("once", inv.argv)
         self.assertEqual(inv.env["STATUS_OVERLAY_HTML_FILE"].endswith("status_overlay.html"), True)
         self.assertEqual(inv.env["DOCICH_CC_ENABLED"], "0")
+
+    def test_script_invoked_as_relative_path_from_cwd(self):
+        # A bare script name is not on PATH inside the reference wrapper, so
+        # the invocation must pass "./<script>" relative to the submodule root.
+        self._write_overlay()
+        inv = overlay.build_overlay_invocation(self.g, game_name="sorengame", kind="status")
+        self.assertEqual(inv.argv[-2:], ["./generate_status_overlay.sh", "once"])
+        self.assertNotIn("generate_status_overlay.sh", inv.argv[2:])
 
     def test_kind_allowlist(self):
         self._write_overlay()
@@ -100,7 +108,7 @@ class TestCliOverlay(OverlayTestBase):
             )
         self.assertEqual(rc, 0, err.getvalue())
         self.assertIn("docich: overlay dry-run:", out.getvalue())
-        self.assertIn("generate_status_overlay.sh", out.getvalue())
+        self.assertIn("./generate_status_overlay.sh", out.getvalue())
 
 
 if __name__ == "__main__":

@@ -128,7 +128,10 @@ def _env_for(
         # queue so a reference run can never publish chat to Twitch.
         "OUTBOUND_CHAT_QUEUE_DIR": str(queue_dir),
     }
-    if g.audio.enabled:
+    # PulseAudio null-sink isolation is Linux-only.  On macOS the referenced
+    # script plays through `say -a <device>` / afplay, and forcing a Linux sink
+    # name here makes every real-playback attempt fail device resolution.
+    if g.audio.enabled and sys.platform.startswith("linux"):
         env["PULSE_SINK"] = g.audio.sink_name
         env["SAY_AUDIO_DEVICE"] = g.audio.sink_name
     cc_note = ""

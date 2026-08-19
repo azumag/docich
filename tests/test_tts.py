@@ -188,8 +188,14 @@ class TestBuildInvocation(TtsTestBase):
         )
         self.assertEqual(inv.env["SAY_CONTEXT_LABEL"], "docich")
         self.assertEqual(inv.env["DOCICH_CC_ENABLED"], "0")
-        self.assertEqual(inv.env["PULSE_SINK"], "docich_sink")
-        self.assertEqual(inv.env["SAY_AUDIO_DEVICE"], "docich_sink")
+        if sys.platform.startswith("linux"):
+            self.assertEqual(inv.env["PULSE_SINK"], "docich_sink")
+            self.assertEqual(inv.env["SAY_AUDIO_DEVICE"], "docich_sink")
+        else:
+            # macOS real playback uses the default output device; forcing a
+            # Linux PulseAudio sink name makes every say attempt fail.
+            self.assertNotIn("PULSE_SINK", inv.env)
+            self.assertNotIn("SAY_AUDIO_DEVICE", inv.env)
         self.assertTrue(Path(inv.env["OUTBOUND_CHAT_QUEUE_DIR"]).is_absolute())
 
     def test_env_overrides_are_applied(self):
