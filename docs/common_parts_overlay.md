@@ -113,6 +113,20 @@ kind: status | show_status | improve | event | notify
   overlay_y = "20"
   ```
   - テキストファイルが無ければ fail-open (オーバーレイなしで配信継続)
+
+## 6. 残判断の解決 (2026-08-19)
+
+### 6.1 HTML → drawtext 変換 → 実施しない
+
+「残余リスク・次段階」の HTML オーバーレイを drawtext へ載せる変換設計は**実施しない**。
+本番の配信合成は soviet_now 側 (OBS ブラウザソース + `generate_*_overlay`) が所有し、
+docich の drawtext フック (`[stream] overlay_text_file`) はテキストファイル向けの
+汎用フックとして維持する。HTML → 画像/テキスト変換を作ると OBS 経路と二重管理になるため。
+
+### 6.2 `docich overlay` の公開範囲 → once + dry-run のまま
+
+OBS 連動 (`ensure-obs`) と `watch` モードは公開しない (本番 OBS 運用に任せる)。
+`DOCICH_ALLOW_REAL_OVERLAY=1` の実実行ガードも維持。docich 実装は変更なし。
   - パスに `:` `,` `'` `\` を含む場合は無効化 (drawtext の壊れ防止)
   - 字幕 (`docichcc`) と併用時は 1 つの `-vf` に連結する
   - `docich overlay <game> status --output run/` で生成した HTML の代わりに、
