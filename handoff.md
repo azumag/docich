@@ -609,7 +609,7 @@ VM `soren-litellm`（port 4100）の litellm.yaml には `openrouter/free` モ�
   そもそも到達していないのか）は本セッション内では**直接確認できなかった**。
   reload完了ログと COMMENT_AGENTS 側の同一メカニズムでの実証を踏まえれば有効になっている
   可能性は高いが、次に触るときは候補ごとの試行ログ（あれば）か、意図的に上位候補を一時的に
-  無効化してAMDまで到達させる等で直接確認すること
+  無効化してAMDまで到達させる等で直接確認すること（※ 追試を §15 で実施。§15 の結果を正とする）
 - **今後の教訓**: soren の `.env` 変更は「ファイルを書き換えた」＝「反映された」ではない。
   対象プロセスの env 読み込み方式（毎回再読込 / 起動時一度のみ）を確認し、後者なら
   最上位PIDへ reload signal を送るか再起動するまでは変更は effectiveでない
@@ -619,7 +619,52 @@ VM `soren-litellm`（port 4100）の litellm.yaml には `openrouter/free` モ�
 「作業再開時は handoff.md を読む」「一段落したら handoff.md を更新する」を明文化した
 （`/handoff` スキルを使う運用、詳細は当該ファイル参照）。
 
-### 15. 参照
+### 15. §14 の未確認事項の追試（2026-08-19 続き）
+
+ユーザー指示で2点を追試した。
+
+#### (a) RADIO_PREPASS_AGENTS vs RADIO_MAIN_PREPASS_AGENT の食い違い → 解決
+原因は自分の調査ミスだった。`soren/radio_engine.sh`（直下）と `soren/broadcast/radio_engine.sh`
+が**同時に存在**しており、`eloop_lib.sh` が実際に `source` するのは `broadcast/` の方
+（直下は古い未使用コピー、`ai_generate.sh`/`config.sh` も同様に直下と `lib/`・`core/` に
+重複があり `eloop_lib.sh` の `source` 行が常に正）。前回は直下の古いファイルを読んで
+「複数形の RADIO_PREPASS_AGENTS は使われていない」と誤って結論していた。実際の
+`broadcast/radio_engine.sh`（当日15:52、本セッションとは別の並行作業で更新）では
+`radio_prepass_agent`（単数）は on/off 判定にしか使われず、実際のモデル選択は
+`radio_prepass_agents`（複数形、`RADIO_PREPASS_AGENTS` 由来の4段ラダー）を
+`ai_generate_list` に渡す形で行われている。wiki（`Game-Sorengame.md`）に反映済み。
+
+#### (b) RADIO_AGENTS で amd-token-factory / openrouter free まで実際に到達するか → 未確定のまま終了（重要インシデントあり）
+
+**セキュリティインシデント**: 直接 `ai_generate_list` を呼んで検証しようとした際、
+診断目的で `set -x` を付けたまま VM 上で `.env` を `source` してしまい、Twitch/YouTube の
+トークン・ストリームキー・各種APIキーなど**全環境変数がツール出力に平文で出力された**
+（外部送信はしていないが、このセッションの transcript とローカル一時ファイルに一度乗った）。
+出力ファイルは削除・該当バックグラウンドタスクは停止済み。ユーザーに即座に報告し、
+ローテーションを提案したが**ユーザー判断で不要**とのこと（記録のみ残す）。
+**教訓: `.env` を `source` する診断コマンドには `set -x` を絶対に使わない。**
+
+その後 `set -x` なしで再試行したが、`eloop_lib.sh` を対話的に `source` してから
+`ai_generate_list` を直接呼ぶと、呼び出し直後に**シェル全体が `exit trap` 経由で
+（rc=0で）終了してしまう**という別の問題に遭遇した（`timeout`/`bash -c` でラップすると
+関数がサブシェルに引き継がれず `command not found` になる問題も別途あり）。原因は
+未特定（`eloop_lib.sh` 系のどこかで `set -e` 相当が現在のシェルに効いている可能性）。
+これ以上の追求はリスク（本番スクリプトの前提外の使い方を続けること）に見合わないと判断し、
+**直接呼び出しでの確認は断念**。
+
+代わりに本番 `.env` には一切触れず、`radio_worker.log` を受動的に監視して自然に
+openrouter/free または amd-token-factory が「OK」になるログを待つ方式に切り替えた
+（結果は本節末尾または次回更新时に追記）。
+
+**現時点の到達確信度（未確定を前提とした整理）**:
+- ほぼ確実: `.env` の `RADIO_AGENTS` に amd-token-factory が含まれている（実測済み）
+- ほぼ確実: reload 機構自体は正しく動作する（COMMENT_AGENTS 側で実際の生成呼び出しにより
+  amd-token-factory を含む候補リストが使われることを実測済み。radio 側も reload
+  complete ログは確認済みで、コードパスは COMMENT と共通）
+- **未確認**: RADIO_AGENTS の実際のコーナー生成で amd-token-factory / openrouter/free が
+  勝者になった実例（またはその手前の候補として試行された実例）
+
+### 16. 参照
 
 - [Issue #96](https://github.com/azumag/soviet_now/issues/96)
 - [soviet_now #97](https://github.com/azumag/soviet_now/pull/97)（マージ済み・実配信ゲートは未完了のまま）
