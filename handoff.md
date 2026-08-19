@@ -690,6 +690,55 @@ amd-token-factory までの到達・成功を実データで確認**。openroute
 実例はまだ捕捉していないが、この経路の手前に位置するため通常は到達している。§14/§15 の
 「未確認」は解消。
 
+### 17. axis 9.3削除 + FALLBACK_ALL_SUPPRESSEDクリップ修正（2026-08-19、Claude Codeセッション）
+
+「戦略の改善を進めて」という依頼を受け、ユーザー選択（「構造的バグ修正・低リスク」）に
+基づき、§12末尾「副産物として見つかった構造的所見」の3件を検討・実装した。
+
+**ユーザーが待っていた「ループ側の改善」の正体**: 作業着手前にVM自律ループが独自に
+`v705: HIGH_TYPE_COVER_AVOID`のopen判定改善（真上遮蔽のみへ厳格化、抑止-200→-400）を
+strategy.pyへ反映済みだった（リポジトリ未反映のままVM上でのみ進行）。今回このVM現状を
+正としてリポジトリへ同期した。
+
+**実装（VM反映済み・soviet_now main へ push 済み、commit `e1c21c705`）**:
+- **axis 9.3 (AVOID_BLOCK_REACTIVE_PAIR) を削除**: `len(rp)>=6`ガードが実データの
+  3要素タプルと矛盾し、実ログ4007ターン中0回発火のゴースト軸だった（`decision_reason`の
+  66.0%にラベルのみ付与、スコアには`merge_grade=="NO"`の全候補に一律+0.0798）。
+  正しく動作させる案(len>=3+id修正)も検証したが9.3%のターンで決定変化・追加併合0件・
+  盤端側へ5:1偏重（過去rollback postmortemの edge scatter パターンと一致）でNO-GO
+- **FALLBACK_ALL_SUPPRESSED経路のクリップを`[-3.0,+3.0]`に修正**: 旧`[-1.612,0.862]`。
+  **訂正**: 前回セッション(§12末尾)の「dead code確認済み」は誤りだった。実ログで
+  3回実発火（発火率0.05%、deadline非超過候補が1本だけ残る危険局面）しており、毎回
+  誤ったxを返していたが、別系統`RUNTIME_DEADLINE_SAFETY_OVERRIDE`が3回とも事後救済して
+  いたためゲーム結果には出ていなかった
+- **見送り**: `has_reactive_for_type`/`has_near_for_type`(axis 9.6関連)の機能修正は
+  NO-GO。歴史調査で、この判定式は元は正しく(`rp[2]==type,len>=3`)意図的抑制装置(v360)
+  だったが2.5ヶ月のwildcard摂動で中立浮動しバグ化したと判明。正しく直すと13.2%の
+  ターンで分岐反転するが追加併合0件・同typeから59-60%逆方向・T13ゲート専用軸
+  `CLUSTER_SETUP_FOR_NEXT_MERGE`を23%破壊。`strategy_helpers/board_stats.py`に
+  警告docstringのみ追記（additive-only原則遵守、関数ロジック・decide hashとも無変更）
+
+**新hash**: `1888e7d7ed65`(旧) → `0890dbefd73e`
+
+**検証プロセス**: opusサブエージェントが実データ(VM game_history 50試合4007ターン)で
+設計・検証 → 自分で実装（opusの生成物と独立に手で編集し、hash・paired replay結果が
+完全一致することを確認）→ 別のopusサブエージェントが実装差分を独立自己レビュー
+（GO、BLOCKER/HIGHなし。MEDIUM指摘2件・LOW指摘5件は反映・対処済み）→ 自分でVM上
+`validate_strategy_with_helpers`実行・checksum照合・swap後hash確認・
+`repair_strategy_to_active_branch_head_if_needed`no-op確認・swap直後の実ゲームログで
+新reason文字列（AVOID_BLOCK_REACTIVE_PAIRラベル消失）とゲーム継続を実測確認
+
+**未実証（正直な限界）**: 実ゲーム成績への影響。決定が変わらない/改善方向であることは
+実証済みだが、12試合のrollback評価窓を通過するかはこれから。現anchor(`e5b671c8d352`,
+comp=10395.34,n=51)は本デプロイ直前に既に51試合分の実績があり、挙動同一でもhash変更で
+評価窓がゼロから始まる（分散だけでsoft_fail rollbackが起きうるが、戻り先の挙動は
+今と同一なので実害はない、というリスクは把握した上でユーザー承認済みでデプロイ）
+
+**リポジトリ**: soviet_now `e1c21c705`（strategy.py, strategy_helpers/board_stats.py）、
+docich `4abe66b`（submodule pointer更新）。VM側バックアップ:
+`tmp/deploy-backups/axis93_fallback_clip_20260819_2220/`、
+`strategy_versions/by_hash/0890dbefd73e.py`
+
 ### 16. 参照
 
 - [Issue #96](https://github.com/azumag/soviet_now/issues/96)
