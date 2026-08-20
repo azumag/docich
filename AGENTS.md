@@ -59,3 +59,12 @@
 - **終了時**: 検証・再起動確認まで含めて作業が完全に終わったら `codex_work_indicator.sh stop`（または webui で `無効化`）で必ず消灯する。最終応答・制御を返す前に消し忘れがないか確認する。
 - **対象**: エージェントによるプロジェクト作業（調査・実装・検証・デプロイ）全て。自動の戦略改善ループ（strategy_runner）の進捗表示とは別であり、作業中バナーは `eventOverlay` の HTML のみを更新し `systemMsg` の表示/非表示は操作しない。エージェント種別（Codex か Claude か等）で表示有無を変えない。
 - **VM 反映時**: `soviet_now` の変更を VM へ反映する場合も、VM 側で `codex_work_indicator.sh` を実行するか、webui の作業中バナーで同等の表示を行う。詳細は `soviet_now/AGENTS.md`「OBS Working Indicator」を参照。
+
+## 8. 作業中はVMの読み上げキューにも進捗を入れる
+
+`codex_work_indicator.sh` と連動し、**VM 側の `audio-worker` に作業内容を読み上げさせる**。`7` の作業中バナー表示と同時に、適宜 VM の読み上げキューへ進捗を enqueue する。
+
+- **自動**: `codex_work_indicator.sh` は `start`/`stop` 時に `lib/outbound_queue.sh` の `enqueue_audio_text "作業中: $title $body" work_indicator` を呼ぶ。VM 上では `/home/ubuntu/soren/tmp/.comment_queue`、ローカル実行時は SSH（`ubuntu@129.146.54.105`）経由で VM 側にも enqueue する。`enqueue_audio_text` の 120s dedup により同一タイトルの連投は抑止される。
+- **手動（直接 enqueue したい場合）**: `ssh -i ~/.ssh/id_rsa ubuntu@129.146.54.105 "cd /home/ubuntu/soren && source lib/outbound_queue.sh && enqueue_audio_text \"作業中: <内容>\" work_indicator"`。ローカルの `audio_worker` が動いていなくても VM 側の `audio_worker` が再生する。
+- **粒度**: バナーと同様、フェーズが変わるたびに `start` で更新したタイトル/本文が読み上げられる。短時間に何度も呼ばれても dedup で spam にならない。`stop` 時は `作業完了: <最後のタイトル>` が読まれる。
+- **対象**: `7` と同じく全てのプロジェクト作業。戦略改善ループ等の自動プロセスの進捗は対象外。
