@@ -1663,7 +1663,7 @@ function renderBackoff(entries){
 }
 function renderPeak(entries){
   const pw=entries["PEAK_HOURS_WINDOWS"], tz=entries["PEAK_HOURS_TZ"], pp=entries["PEAK_HOURS_PRIORITY_AGENT"], pr=entries["PEAK_HOURS_AGENT_PREFERENCE"], sw=entries["PEAK_HOURS_AGENT_SWAP_ENABLED"], gate=entries["PEAK_HOURS_QUEUE_GATE_ENABLED"];
-  const windows = pw? pw.value : "";
+  const windows = pw? pw.effective : "";
   const tzVal = tz? (tz.value||tz.default) : "Asia/Tokyo";
   const pref = pr? (pr.value||pr.effective||pr.default) : "";
   const swap = sw? (sw.value||sw.default||"1") : "1";
