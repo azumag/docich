@@ -219,3 +219,19 @@
 - **リポジトリ**: soviet_now `9eb0e4ff8 fix: render score timeline as a connected line` を `origin/codex/no-apply-liveliness` へpush。親 `cd86cd4` のサブモジュール参照は `9eb0e4ff8` を指している。
 - **VM反映**: `/home/ubuntu/soren/.codex_deploy/backup-20260821-score-timeline/status_dashboard.py` に反映前ファイルをバックアップ後、修正版を反映。ローカル/VM SHA256 `763b9230acba965e52143cfce3c4d25f34c199c721088af41ec1c157830a7109` 一致、`py_compile` 成功。`generate_status_overlay.sh once` でブラウザ用overlayを再生成し、実データのScore Timelineが連続線として出力されることを確認。表示スクリプトのみの変更のためworker完全再起動は未実施。
 - **テスト**: `tests.test_score_timeline` 3件、`tests.test_status_dashboard_founding_rate` 22件、direct broadcast overlay Node 11件、dashboard関連escapeテスト3件、`git diff --check` が成功。
+
+## 2026-08-21 07:44 JST — Stats `__invalid_agent__` の実データ確認（変更なし）
+
+- VM `/home/ubuntu/soren/tmp/state/ai_stats/20260821.jsonl` の06:07:31 JSTに、`RADIO:batch_commentary` が `agent:"__invalid_agent__"` で `attempt` → `fail` となり、直後に `all_failed` が1件記録されていた。成功 `winner` はない。
+- Statsのagent表は `attempt` を1、`winner` を0として表示するため、`__invalid_agent__ 1 0` は実モデルの呼出回数ではなく、不正なagent識別子で失敗した1試行を示す。該当行は今回のmuse/DeepSeek通常チェーンの成功行ではない。
+- 当時のdispatcherは未知のagentをCodex既定モデルへ送る旧経路があり、課金の有無はこのJSONLだけでは確定できない。現在のチェーン設定と反映後の新規Statsでは同じsentinelの追加発生は確認していない。今回は診断のみでコード変更なし。
+
+## 2026-08-21 07:48 JST — deferred radioレンダー飢餓の根本修正・VM復旧
+
+- **原因（確認済み）**: `say_enqueue.sh` の `radio_render:*` は、チャンク境界で前景音声の priority waiter を検出すると `rc=75` で終了していた。`render-only` は完成品全量を要求するため部分WAVを削除し、`radio_state.sh` が同じ本文をチャンク0から再試行した。FIFO先頭にready WAVがない間は後続項目も再生しないため、AI原稿の `generating` 状態が進んでも音声再生世代は進まなかった。
+- **修正**: `say_enqueue.sh:_acquire_voicevox_synth_lock` で背景ラジオは前景priority waiterと合成ロックの解放を待ち、同じプロセス・同じレンダー世代で次チャンクを継続する。既定は無期限待機（`VOICEVOX_RADIO_PRIORITY_WAIT_SEC` / `VOICEVOX_RADIO_LOCK_WAIT_SEC` の正数指定時のみ上限）。チャンク間ログとテスト期待値も「後で再試行」から「同一世代継続」へ更新。
+- **リポジトリ**: `soviet_now` `8e4a1b7e2 fix: keep deferred radio render generation alive` を `origin/codex/no-apply-liveliness` へpush。変更は `say_enqueue.sh` と音声ロック公平性テスト2本のみで、無関係な作業ツリー変更はコミットしていない。
+- **テスト**: `bash -n`、`test_say_voicevox_fairness.sh`、`test_say_voicevox_priority.sh`、`test_radio_render_retry.sh`、`test_radio_deferred_queue.sh`、`test_radio_caption_bundle.sh`、`test_radio_backpressure.sh`、`test_radio_time_sync.sh`、`test_audio_worker_failure_warning.sh`、`test_radio_script_backup.sh`、`tests.test_radio_parser`（8件）、`tests.test_say_streaming`（8件）が成功。
+- **VM反映**: `/home/ubuntu/soren/.codex_deploy/backup-20260821-073215-radio-render-generation/` に反映前 `say_enqueue.sh` と、停止時の先頭 `jiji` 本文・`.rendering` をバックアップ。修正版SHA256 `b499ed5ac7636497063222efc6b5a279473cf0e7cdb3bb738485814a491e1a02` をローカル/VMで一致、`bash -n` 成功。`soren-runtime.service` を停止して旧レンダーを終了し、先頭の stale `.rendering`/`.render_retry` だけをクリアして起動。再起動後のserviceはactive、worker PIDファイルは audio `371226` / radio `371362` / chat `371179`。
+- **実パス確認**: 再起動後の先頭 `radio_1787251174_43806_jiji_7636.txt` は07:39:45の1/24から同じレンダー世代で進み、07:47:22に24/24完了。`ready.wav` 公開07:47:26、`再生開始`07:47:28を確認し、`render_retry`は作成されなかった。旧ログにあった「優先音声へ合成順を譲る → 再試行」は新レンダー区間には出ていない。次のFIFO先頭は `radio_1787251458_43806_news_9891.txt`。
+- **作業報告音声**: VMの `played.log` で `work_indicator` 音声を07:36:11、07:37:13に確認。共有の15分抑止状態（`work_audio_last.json`）が有効なため、この修正専用の重複音声は追加していない。バナーは作業中のまま、最終停止時にactive=falseを確認する。
