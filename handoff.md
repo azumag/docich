@@ -35,9 +35,9 @@
 
 ## 📍 現在の状態
 
-- **ブランチ / 変更状況**: `docich` は `codex/soren-repo-handoff`。`games/soviet_now` は `e497637c2`（`origin/main` も同じ）。ルートは `AGENTS.md`・`handoff.md`・submodule pointer を本タスクのコミット対象として更新中。既存の未追跡ファイル群には触れていない。
+- **ブランチ / 変更状況**: `docich` は `codex/soren-repo-handoff` @ `4728fdb`（`origin/main`・同名remote branchも同じ）。`games/soviet_now` は `e497637c2`（`origin/main` も同じ）。既存の未追跡ファイル群には触れていない。
 - **VM 本番**: `VM:/home/ubuntu/docich` `a37a20f`（`git log` 2件、`status` clean、`grep -c audio-enqueue` 等は別セッション webui audio panel）、`games/soviet_now` `715251b7a`。`VM:/home/ubuntu/soren` は `lib/outbound_queue.sh`（`_outbound_chat_paused` 2件）/`codex_work_indicator.sh`（plain-polite）/`AGENTS.md` を最新へ `scp` 済み、`tmp/state/chat_worker.paused` 有効で pending 0・`twitch_chat.sh send` 0件を実測。`.env` は `TWITCH_BOT_TOKEN=zd7y...`（dociai）、`TWITCH_BROADCASTER_ID=1526886844`、`TWITCH_CHANNEL=dociai`、`TWITCH_ADS_ENABLED=1`、`STAT_GATE_MODE=enforce` 等。`STATGATE` 156件、`docich-webui` active（`/api/prompts` 37件）。
-- **作業中バナー**: VMでは `反映確認中` で active。本更新・同期後に `stop` 予定。新しい頻度制御により、このフェーズ更新の音声は追加されていない。
+- **作業中バナー**: 最終検証時にローカル・VMとも `active:false` を確認。handoff追記中だけ音声なしで再表示し、最終応答前に再度 `stop` する。
 
 ## ⏭️ 次にやること
 
