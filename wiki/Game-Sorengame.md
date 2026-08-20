@@ -73,8 +73,9 @@ soviet_now 管轄の設定である。
 原典を継承する (2026-08-19 導入、トークン効率改善):
 
 ```
-codex:deepseek-v4-flash-free → codex:amd-token-factory-deepseek-v4-flash →
-codex:openrouter/free → local → codex:deepseek-v4-flash → codex:minimax-m3
+opencode:deepseek-v4-flash-free → codex:amd-token-factory-deepseek-v4-flash →
+codex:openrouter/free → local → codex:deepseek-v4-flash → codex:minimax-m3 →
+opencode:muse-spark-1.2-contributor
 ```
 
 | チェーン | 現在の順序 |
@@ -90,8 +91,13 @@ codex:openrouter/free → local → codex:deepseek-v4-flash → codex:minimax-m3
   (`openrouter/free`)。`codex:amd-token-factory-deepseek-v4-flash` は AMD Token Factory
   経由の DeepSeek V4 Flash。どちらも無料/クォータ制の枠のため、上位が失敗した場合のみ
   実際に呼ばれる。
+- **`opencode:muse-spark-1.2-contributor` (2026-08-20 追加)**: opencode-go 契約の
+  contributor 枠 (`https://opencode.ai/workspace/wrk_01M04NATCGAVB03SVAEZ4RBV1Y/go`
+  の opt-in が必要)。`opencode:` プレフィックス (opencode CLI 直呼び) でのみ呼び、
+  codex 経由では受け付けない。チェーン末尾の最終フォールバック枠。
 - **モデル別バックオフ (2026-08-19)**: `deepseek-v4-flash-free` / `amd-token-factory…` /
-  `openrouter/free` = 1日、`local` = 30分、`deepseek-v4-flash` / `minimax-m3` = 5時間。
+  `openrouter/free` / `muse-spark-1.2-contributor` = 1日、`local` = 30分、
+  `deepseek-v4-flash` / `minimax-m3` = 5時間。
   フォールバック基準の精査により、プロバイダ/CLI 失敗 (rc≠0) でもモデル別に
   バックオフを設定する (形式不正・空出力の rc=0 はバックオフしない)。
 - **ピーク時の優先順序 (2026-08-19)**: どんなチェーンも
@@ -121,14 +127,15 @@ ANALYZE/IMPLEMENT/FIX/REVIEW) とラジオ pre-pass (事前調査) にもモデ�
 同名で存在する古い `config.sh` ではない点に注意）:
 
 ```text
-MODEL_IMPROVE_LIST (既定) = codex:deepseek-v4-flash-free → codex:amd-token-factory-deepseek-v4-flash →
+MODEL_IMPROVE_LIST (既定) = opencode:deepseek-v4-flash-free → codex:amd-token-factory-deepseek-v4-flash →
                              codex:deepseek-v4-flash → codex:minimax-m3
-RADIO_PREPASS_AGENTS (既定) = 共通チェーン (AI_COMMON_AGENTS、local を含む6段)
+RADIO_PREPASS_AGENTS (既定) = 共通チェーン (AI_COMMON_AGENTS、local を含む7段)
 ```
 
 - 2026-08-19 のトークン効率改善で、`MODEL_IMPROVE_LIST` は共通チェーンから
   `local` と `openrouter/free` を除外し、`amd-token-factory` を含む 4 段へ更新。
-  `RADIO_PREPASS_AGENTS` は共通チェーン (6段、`local` を含む) を継承。
+  2026-08-20 に `deepseek-v4-flash-free` の経路を `opencode:` へ統一。
+  `RADIO_PREPASS_AGENTS` は共通チェーン (7段、`local` を含む) を継承。
 - **解決済み（2026-08-19 追記）**: 上の「未解決の疑問」は誤りだった。`soren/radio_engine.sh`
   （リポジトリ直下）と `soren/broadcast/radio_engine.sh` の**2ファイルが同時に存在**しており、
   `eloop_lib.sh` が実際に `source` するのは **`broadcast/radio_engine.sh`** の方

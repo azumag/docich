@@ -46,13 +46,13 @@ WEBUI_ALLOWLIST = {
 
 # hard defaults from core/config.sh
 DEFAULTS: dict[str, str] = {
-    "AI_COMMON_AGENTS": "codex:deepseek-v4-flash-free,codex:amd-token-factory-deepseek-v4-flash,codex:openrouter/free,local,codex:deepseek-v4-flash,codex:minimax-m3",
-    "MODEL_IMPROVE_LIST": "codex:deepseek-v4-flash-free,codex:amd-token-factory-deepseek-v4-flash,codex:deepseek-v4-flash,codex:minimax-m3",
+    "AI_COMMON_AGENTS": "opencode:deepseek-v4-flash-free,codex:amd-token-factory-deepseek-v4-flash,codex:openrouter/free,local,codex:deepseek-v4-flash,codex:minimax-m3,opencode:muse-spark-1.2-contributor",
+    "MODEL_IMPROVE_LIST": "opencode:deepseek-v4-flash-free,codex:amd-token-factory-deepseek-v4-flash,codex:deepseek-v4-flash,codex:minimax-m3",
     "RADIO_AGENTS": "",  # inherits AI_COMMON_AGENTS
     "RADIO_PREPASS_AGENTS": "",  # inherits AI_COMMON_AGENTS
     "COMMENT_AGENTS": "",  # inherits AI_COMMON_AGENTS
     "COMMENT_TRANSLATION_AGENTS": "",  # inherits COMMENT_AGENTS
-    "AI_BACKOFF_SEC_ITEMS": "deepseek-v4-flash-free:86400 amd-token-factory-deepseek-v4-flash:86400 openrouter/free:86400 local:1800 deepseek-v4-flash:18000 minimax-m3:18000",
+    "AI_BACKOFF_SEC_ITEMS": "deepseek-v4-flash-free:86400 amd-token-factory-deepseek-v4-flash:86400 openrouter/free:86400 local:1800 deepseek-v4-flash:18000 minimax-m3:18000 muse-spark-1.2-contributor:86400",
     "AI_AGENT_BACKOFF_SEC": "600",
     "AI_BACKOFF_FAILURE_SEC": "300",
     "PEAK_HOURS_AGENT_SWAP_ENABLED": "1",
