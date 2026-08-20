@@ -11,6 +11,7 @@ import json
 import os
 import re
 import signal
+import subprocess
 import tempfile
 import time
 import urllib.parse
@@ -70,6 +71,15 @@ BACKOFF_NAME_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 # 混入させてはならない。TZ は IANA 名に限定する。
 TZ_RE = re.compile(r"^[A-Za-z0-9_+./:-]{1,64}$")
 SECRET_SUBSTRINGS = ("API_KEY", "TOKEN", "SECRET", "STREAM_KEY", "PASSWORD")
+
+# --- overlay constants --------------------------------------------------------
+OVERLAY_CATEGORIES = {"game", "worker", "chat", "radio", "prediction", "rollback", "system"}
+OVERLAY_TITLE_LIMIT = 120
+OVERLAY_BODY_LIMIT = 500
+WORK_TITLE_LIMIT = 80
+WORK_BODY_LIMIT = 240
+TOP_LINE_LIMIT = 120
+TOP_MAX_LINES = 4
 
 # --- helpers -----------------------------------------------------------------
 
@@ -279,6 +289,45 @@ def _validate_value(key: str, value: str) -> None:
     raise ValueError(f"未知のキーです: {key}")
 
 
+def _sanitize_overlay_text(s: str, limit: int) -> str:
+    if not isinstance(s, str):
+        raise ValueError("文字列である必要があります")
+    # forbid control chars
+    if any(ord(c) < 32 and c not in ("\n", "\r", "\t") for c in s):
+        raise ValueError("制御文字は使用できません")
+    # for overlay events, disallow newlines in title, allow in body? Keep simple: strip
+    s = s.strip()
+    if len(s) > limit:
+        raise ValueError(f"{limit}文字以内である必要があります")
+    return s
+
+
+def _validate_overlay_event(ev: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(ev, dict):
+        raise ValueError("eventはオブジェクトである必要があります")
+    cat = str(ev.get("category", "")).strip()
+    if cat not in OVERLAY_CATEGORIES:
+        raise ValueError(f"categoryは {sorted(OVERLAY_CATEGORIES)} のいずれかである必要があります")
+    title = _sanitize_overlay_text(str(ev.get("title", "")), OVERLAY_TITLE_LIMIT)
+    if not title:
+        raise ValueError("titleは必須です")
+    body = _sanitize_overlay_text(str(ev.get("body", "")), OVERLAY_BODY_LIMIT)
+    level = str(ev.get("level", "info")).strip() or "info"
+    if level not in ("info", "warn", "error"):
+        level = "info"
+    ts = ev.get("ts")
+    try:
+        ts_int = int(ts) if ts is not None else int(time.time())
+    except Exception:
+        ts_int = int(time.time())
+    now = int(time.time())
+    # allow ts within 7 days past to 60s future
+    if ts_int > now + 60 or ts_int < now - 7 * 86400:
+        # clamp to now if out of range
+        ts_int = now
+    return {"ts": ts_int, "category": cat, "title": title, "body": body, "level": level}
+
+
 def _effective_token(g: GlobalConfig) -> str:
     env_name = g.webui.token_env.strip() or "DOCICH_WEBUI_TOKEN"
     env_val = os.environ.get(env_name, "")
@@ -430,6 +479,349 @@ def _get_peak_status(soren_root: Path) -> dict[str, Any]:
         "now_minutes": now_min,
         "now_str": now_str,
     }
+
+
+def _overlay_events_path(soren_root: Path) -> Path:
+    raw = os.environ.get("EVENT_OVERLAY_EVENTS_FILE", "")
+    if raw:
+        p = Path(raw)
+        return p if p.is_absolute() else (soren_root / p)
+    return soren_root / "tmp/state/overlay_events.jsonl"
+
+
+def _overlay_html_path(soren_root: Path) -> Path:
+    raw = os.environ.get("EVENT_OVERLAY_HTML_FILE", "")
+    if raw:
+        p = Path(raw)
+        return p if p.is_absolute() else (soren_root / p)
+    return soren_root / "tmp/state/event_overlay.html"
+
+
+def _work_indicator_path(soren_root: Path) -> Path:
+    raw = os.environ.get("CODEX_WORK_OVERLAY_STATE_FILE", "")
+    if raw:
+        p = Path(raw)
+        return p if p.is_absolute() else (soren_root / p)
+    return soren_root / "tmp/state/codex_work_indicator.json"
+
+
+def _comment_gen_state_path(soren_root: Path) -> Path:
+    raw = os.environ.get("COMMENT_GEN_STATE_FILE", "")
+    if raw:
+        p = Path(raw)
+        return p if p.is_absolute() else (soren_root / p)
+    return soren_root / "tmp/state/.comment_gen_state"
+
+
+def _radio_state_path(soren_root: Path) -> Path:
+    raw = os.environ.get("RADIO_STATE_FILE", "")
+    if raw:
+        p = Path(raw)
+        return p if p.is_absolute() else (soren_root / p)
+    return soren_root / "tmp/state/.radio_state"
+
+
+def _wildcard_status_path(soren_root: Path) -> Path:
+    raw = os.environ.get("WILDCARD_PARALLEL_STATUS_FILE", "")
+    if raw:
+        p = Path(raw)
+        return p if p.is_absolute() else (soren_root / p)
+    return soren_root / "tmp/state/wildcard_parallel_status.json"
+
+
+def _top_override_path(soren_root: Path) -> Path:
+    raw = os.environ.get("BROADCAST_TOP_OVERRIDE_FILE", "")
+    if raw:
+        p = Path(raw)
+        return p if p.is_absolute() else (soren_root / p)
+    return soren_root / "tmp/state/broadcast_top_override.json"
+
+
+def _is_pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def _load_work_indicator(soren_root: Path) -> dict[str, Any] | None:
+    p = _work_indicator_path(soren_root)
+    try:
+        txt = p.read_text(encoding="utf-8", errors="ignore")
+        if not txt.strip():
+            return None
+        data = json.loads(txt)
+        if not isinstance(data, dict) or not data.get("active"):
+            return None
+        return data
+    except Exception:
+        return None
+
+
+def _load_overlay_events(soren_root: Path, keep: int | None = None) -> list[dict[str, Any]]:
+    p = _overlay_events_path(soren_root)
+    try:
+        lines = p.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except FileNotFoundError:
+        return []
+    except Exception:
+        return []
+    events: list[dict[str, Any]] = []
+    for line in lines[-keep:] if keep else lines:
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(item, dict):
+            events.append(item)
+    if keep:
+        return events[-keep:]
+    return events
+
+
+def _load_top_override(soren_root: Path) -> dict[str, Any] | None:
+    p = _top_override_path(soren_root)
+    try:
+        txt = p.read_text(encoding="utf-8", errors="ignore")
+        if not txt.strip():
+            return None
+        data = json.loads(txt)
+        if isinstance(data, dict):
+            return data
+        return None
+    except Exception:
+        return None
+
+
+def _get_overlay_keep_visible(soren_root: Path) -> tuple[int, int]:
+    keep = 180
+    visible = 18
+    try:
+        keep = int(os.environ.get("EVENT_OVERLAY_KEEP_EVENTS", "180") or "180")
+    except Exception:
+        keep = 180
+    try:
+        visible = int(os.environ.get("EVENT_OVERLAY_VISIBLE_SEC", "18") or "18")
+    except Exception:
+        visible = 18
+    # dotenv may have different values; check .env as well
+    try:
+        dotenv = _read_dotenv_dict(soren_root)
+        if "EVENT_OVERLAY_KEEP_EVENTS" in dotenv and dotenv["EVENT_OVERLAY_KEEP_EVENTS"].strip().isdigit():
+            keep = int(dotenv["EVENT_OVERLAY_KEEP_EVENTS"].strip())
+        if "EVENT_OVERLAY_VISIBLE_SEC" in dotenv and dotenv["EVENT_OVERLAY_VISIBLE_SEC"].strip().isdigit():
+            visible = int(dotenv["EVENT_OVERLAY_VISIBLE_SEC"].strip())
+    except Exception:
+        pass
+    return max(1, keep), max(1, visible)
+
+
+def _get_gen_indicators(soren_root: Path, now: int | None = None) -> list[dict[str, Any]]:
+    if now is None:
+        now = int(time.time())
+    indicators: list[dict[str, Any]] = []
+    # comment
+    try:
+        c_path = _comment_gen_state_path(soren_root)
+        stale = 90
+        try:
+            stale = int(os.environ.get("EVENT_OVERLAY_COMMENT_GEN_STALE_SEC", "90") or "90")
+        except Exception:
+            stale = 90
+        try:
+            line = c_path.read_text(encoding="utf-8", errors="ignore").strip()
+        except Exception:
+            line = ""
+        if line.startswith("generating:"):
+            parts = line.split(":")
+            ts = 0
+            if len(parts) >= 3 and parts[-1].isdigit():
+                try:
+                    ts = int(parts[-1])
+                except Exception:
+                    ts = 0
+            if ts <= 0:
+                try:
+                    ts = int(c_path.stat().st_mtime)
+                except Exception:
+                    ts = now
+            age = now - ts
+            fresh = 0 <= age <= stale
+            indicators.append({
+                "key": "comment",
+                "icon": "💬",
+                "label": "コメント生成中",
+                "ts": ts,
+                "age": age,
+                "fresh": fresh,
+                "stale_sec": stale,
+                "raw": line,
+            })
+    except Exception:
+        pass
+    # radio
+    try:
+        r_path = _radio_state_path(soren_root)
+        alive_stale = 600
+        dead_stale = 20
+        try:
+            alive_stale = int(os.environ.get("EVENT_OVERLAY_RADIO_GEN_STALE_SEC", "600") or "600")
+        except Exception:
+            alive_stale = 600
+        try:
+            dead_stale = int(os.environ.get("EVENT_OVERLAY_RADIO_GEN_DEAD_STALE_SEC", "20") or "20")
+        except Exception:
+            dead_stale = 20
+        # also try RADIO_STATE_STALE_SEC as fallback
+        try:
+            alt = os.environ.get("RADIO_STATE_STALE_SEC")
+            if alt and alt.strip().isdigit():
+                alive_stale = int(alt.strip())
+        except Exception:
+            pass
+        try:
+            line = r_path.read_text(encoding="utf-8", errors="ignore").strip()
+        except Exception:
+            line = ""
+        if line:
+            fields = line.split(":")
+            mode = fields[0] if fields else ""
+            corner = fields[1] if len(fields) > 1 else ""
+            ts = int(fields[2]) if len(fields) > 2 and fields[2].isdigit() else 0
+            owner_pid = int(fields[3]) if len(fields) > 3 and fields[3].isdigit() else 0
+            if ts <= 0:
+                try:
+                    ts = int(r_path.stat().st_mtime)
+                except Exception:
+                    ts = now
+            age = now - ts
+            if mode in ("generating", "verifying"):
+                alive = bool(owner_pid) and _is_pid_alive(owner_pid)
+                window = alive_stale if alive else dead_stale
+                fresh = 0 <= age <= window
+                label = "ラジオ生成中" if mode == "generating" else "ラジオ検証中"
+                if corner:
+                    label = f"{label} ({corner})"
+                indicators.append({
+                    "key": "radio",
+                    "icon": "📻",
+                    "label": label,
+                    "mode": mode,
+                    "corner": corner,
+                    "ts": ts,
+                    "age": age,
+                    "fresh": fresh,
+                    "stale_sec": window,
+                    "owner_pid": owner_pid,
+                    "owner_alive": alive,
+                    "raw": line,
+                })
+    except Exception:
+        pass
+    return indicators
+
+
+def _get_wildcard_status(soren_root: Path) -> dict[str, Any] | None:
+    p = _wildcard_status_path(soren_root)
+    try:
+        txt = p.read_text(encoding="utf-8", errors="ignore")
+        if not txt.strip():
+            return None
+        data = json.loads(txt)
+        if isinstance(data, dict):
+            return data
+        return None
+    except Exception:
+        return None
+
+
+def _atomic_overlay_write(soren_root: Path, rel_path: Path, data: str, mode: int = 0o644) -> None:
+    # rel_path is absolute path already; use its parent
+    parent = rel_path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    lock_dir = soren_root / "tmp/state/.webui_overlay.lock"
+    try:
+        lock_dir.mkdir(parents=True, exist_ok=False)
+    except FileExistsError:
+        try:
+            age = time.time() - lock_dir.stat().st_mtime
+            if age > 10:
+                import shutil
+                shutil.rmtree(lock_dir, ignore_errors=True)
+                lock_dir.mkdir(parents=True, exist_ok=False)
+            else:
+                raise FileExistsError(f"another overlay edit in progress (age {int(age)}s)")
+        except FileExistsError:
+            raise
+    try:
+        fd, tmp = tempfile.mkstemp(dir=str(parent), prefix=".overlay.")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(data)
+                fh.flush()
+                os.fsync(fh.fileno())
+            Path(tmp).chmod(mode)
+            os.replace(tmp, str(rel_path))
+        finally:
+            try:
+                if Path(tmp).exists():
+                    Path(tmp).unlink()
+            except Exception:
+                pass
+    finally:
+        try:
+            lock_dir.rmdir()
+        except Exception:
+            try:
+                import shutil
+                shutil.rmtree(lock_dir, ignore_errors=True)
+            except Exception:
+                pass
+
+
+def _regenerate_event_overlay(soren_root: Path) -> bool:
+    # Best-effort regeneration via generate_event_overlay.py
+    try:
+        gen_py = soren_root / "generate_event_overlay.py"
+        if not gen_py.is_file():
+            # try repo root
+            cand = Path(__file__).resolve().parents[2] / "games/soviet_now/generate_event_overlay.py"
+            if cand.is_file():
+                gen_py = cand
+            else:
+                return False
+        events = _overlay_events_path(soren_root)
+        html = _overlay_html_path(soren_root)
+        work = _work_indicator_path(soren_root)
+        keep, visible = _get_overlay_keep_visible(soren_root)
+        env = os.environ.copy()
+        env["EVENT_OVERLAY_STATE_BASE"] = str(soren_root)
+        # ensure COMMENT_GEN_STATE and RADIO_STATE are set for generator
+        if "EVENT_OVERLAY_COMMENT_GEN_STATE" not in env:
+            env["EVENT_OVERLAY_COMMENT_GEN_STATE"] = str(_comment_gen_state_path(soren_root))
+        if "EVENT_OVERLAY_RADIO_STATE" not in env:
+            env["EVENT_OVERLAY_RADIO_STATE"] = str(_radio_state_path(soren_root))
+        # run generator
+        subprocess.run(
+            ["python3", str(gen_py), str(events), str(html), str(keep), str(visible), str(work)],
+            cwd=str(soren_root),
+            env=env,
+            timeout=5,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return True
+    except Exception:
+        return False
 
 
 def _game_state_path(soren_root: Path) -> Path:
@@ -659,6 +1051,8 @@ input:checked+.slider:before{transform:translateX(20px)}
 </header>
 <nav id="tabs">
 <button data-tab="dashboard" class="active">Dashboard</button>
+<button data-tab="status">Status</button>
+<button data-tab="overlay">Overlay</button>
 <button data-tab="chains">Chains</button>
 <button data-tab="backoff">Backoff</button>
 <button data-tab="peak">Peak</button>
@@ -680,6 +1074,101 @@ input:checked+.slider:before{transform:translateX(20px)}
 <div class="card" style="flex:1"><h2>Top 3 Agents</h2><p class="desc">直近7日の winner 上位。</p><table><thead><tr><th>agent</th><th>winner</th></tr></thead><tbody id="dash-top3"></tbody></table></div>
 </div>
 <div class="card"><h2>Workers</h2><div style="overflow:auto"><table><thead><tr><th>worker</th><th>pid</th><th>status</th></tr></thead><tbody id="dash-workers"></tbody></table></div></div>
+</section>
+<!-- STATUS -->
+<section id="tab-status" style="display:none">
+<div class="card"><h2>生成ステータス</h2><p class="desc">コメント/ラジオ生成中、improve/wildcard、game状態を統合表示。10秒ごとに自動更新。</p>
+<div class="grid2">
+<div class="card kpi"><h3>コメント</h3><div class="val" id="status-comment">-</div><div class="subk mono" id="status-comment-sub">-</div></div>
+<div class="card kpi"><h3>ラジオ</h3><div class="val" id="status-radio">-</div><div class="subk mono" id="status-radio-sub">-</div></div>
+<div class="card kpi"><h3>Improve</h3><div class="val" id="status-improve">-</div><div class="subk mono" id="status-improve-sub">-</div></div>
+<div class="card kpi"><h3>Wildcard</h3><div class="val" id="status-wildcard">-</div><div class="subk mono" id="status-wildcard-sub">-</div></div>
+</div>
+<div class="card"><h3>生成中インジケータ</h3><div id="status-generators"></div><div class="help">source: tmp/state/.comment_gen_state / .radio_state（フレッシュ判定は comment 90s / radio 600s alive, 20s dead）</div></div>
+<div class="row">
+<div class="card" style="flex:1"><h3>Game</h3><div class="kv" id="status-game-kv"></div></div>
+<div class="card" style="flex:1"><h3>Improve 詳細</h3><div class="kv" id="status-improve-kv"></div><div class="help" style="margin-top:8px">log tail (直近6行)</div><pre id="status-improve-log" class="mono" style="white-space:pre-wrap;background:#111319;border:1px solid var(--border);border-radius:8px;padding:8px;max-height:160px;overflow:auto"></pre></div>
+</div>
+<div class="card"><h3>Workers 詳細</h3><div style="overflow:auto"><table><thead><tr><th>worker</th><th>pid</th><th>status</th></tr></thead><tbody id="status-workers"></tbody></table></div></div>
+<div class="card"><h3>Game Count</h3><div class="kv"><dt>value</dt><dd id="status-game-count" class="mono">-</dd><dt>path</dt><dd id="status-game-count-path" class="mono">-</dd></div></div>
+<div class="actions"><button class="btn" id="status-refresh">更新</button></div>
+</div>
+</section>
+<!-- OVERLAY -->
+<section id="tab-overlay" style="display:none">
+<div class="card"><h2>Overlay 制御</h2><p class="desc">画面に表示される通知・上部サマリ・作業中バナーを編集。変更は <code>tmp/state/overlay_events.jsonl</code> / <code>codex_work_indicator.json</code> / <code>broadcast_top_override.json</code> へ原子書き込み → <code>generate_event_overlay.py</code> でHTML再生成。</p>
+<div style="display:flex;gap:6px;margin-bottom:12px">
+<button class="btn" data-overlay-sub="notifications" style="background:var(--accent);color:#0a0c10">通知</button>
+<button class="btn" data-overlay-sub="work">作業中バナー</button>
+<button class="btn" data-overlay-sub="top">上部</button>
+<button class="btn" data-overlay-sub="preview">プレビュー</button>
+</div>
+<!-- Notifications sub -->
+<div id="overlay-sub-notifications">
+<div class="card"><h3>現在の通知キュー</h3><p class="desc">直近 <span id="overlay-events-keep"></span> 件を保持、画面では <span id="overlay-events-visible"></span> 秒表示。重複はカテゴリ別レベルで色分け。</p>
+<div style="overflow:auto"><table><thead><tr><th>#</th><th>time</th><th>category</th><th>title</th><th>body</th><th></th></tr></thead><tbody id="overlay-events-table"></tbody></table></div>
+<div class="actions"><button class="btn" id="overlay-events-refresh">更新</button><button class="btn danger" id="overlay-events-clear">全クリア</button></div>
+</div>
+<div class="card"><h3>通知を追加</h3>
+<div class="row"><div><label>category</label><select id="overlay-notify-category"><option value="system">system</option><option value="game">game</option><option value="worker">worker</option><option value="chat">chat</option><option value="radio">radio</option><option value="prediction">prediction</option><option value="rollback">rollback</option></select></div>
+<div><label>level</label><select id="overlay-notify-level"><option value="info">info</option><option value="warn">warn</option><option value="error">error</option></select></div></div>
+<div style="margin-top:8px"><label>title (1-120)</label><input id="overlay-notify-title" maxlength="120" placeholder="タイトル"/></div>
+<div style="margin-top:8px"><label>body (0-500)</label><textarea id="overlay-notify-body" rows="3" maxlength="500" placeholder="本文"></textarea></div>
+<div class="actions"><button class="btn primary" id="overlay-notify-push">追加</button></div>
+<div id="overlay-notify-msg" class="help"></div>
+</div>
+<div class="card"><h3>一括編集 (JSON配列)</h3><p class="desc">全キューをJSON配列で上書き。高度な編集用。</p>
+<textarea id="overlay-events-bulk" rows="6" class="mono" placeholder='[{"category":"system","title":"...","body":"..."}]'></textarea>
+<div class="actions"><button class="btn" id="overlay-events-bulk-save">一括保存</button><button class="btn" id="overlay-events-bulk-load">現在のJSONを読み込む</button></div>
+<div id="overlay-events-bulk-msg" class="help"></div>
+</div>
+</div>
+<!-- Work banner sub -->
+<div id="overlay-sub-work" style="display:none">
+<div class="card"><h3>作業中バナー状態</h3><div class="kv"><dt>active</dt><dd id="work-banner-active">-</dd><dt>title</dt><dd id="work-banner-title" class="mono">-</dd><dt>body</dt><dd id="work-banner-body" class="mono">-</dd><dt>ts</dt><dd id="work-banner-ts" class="mono">-</dd></div>
+<div class="actions"><button class="btn" id="work-banner-refresh">更新</button></div>
+</div>
+<div class="card"><h3>作業中バナーを編集</h3><p class="desc">有効時は画面上部にオレンジの作業中バナー（`event_overlay.html` の `#work`）が4行サマリの代わりに表示される。`codex_work_indicator.sh start/stop` と同等。</p>
+<div style="margin-bottom:8px"><label class="switch"><input type="checkbox" id="work-banner-enabled"><span class="slider"></span></label><span id="work-banner-enabled-label" class="badge" style="margin-left:8px">off</span></div>
+<div><label>title (1-80)</label><input id="work-banner-title-input" maxlength="80" placeholder="システム自動分析・修正作業中"/></div>
+<div style="margin-top:8px"><label>body (0-240)</label><textarea id="work-banner-body-input" rows="2" maxlength="240" placeholder="メリケンAI が確認・修正・検証を進めています"></textarea></div>
+<div class="actions"><button class="btn primary" id="work-banner-save">保存</button><button class="btn danger" id="work-banner-disable">無効化</button></div>
+<div id="work-banner-msg" class="help"></div>
+</div>
+</div>
+<!-- Top sub -->
+<div id="overlay-sub-top" style="display:none">
+<div class="card"><h3>上部サマリ</h3><div class="kv"><dt>mode</dt><dd id="top-mode">-</dd><dt>enabled</dt><dd id="top-enabled">-</dd><dt>path</dt><dd id="top-path" class="mono">-</dd></div>
+<div id="top-current-lines" class="help"></div>
+<div class="actions"><button class="btn" id="top-refresh">更新</button><button class="btn danger" id="top-delete">自動に戻す</button></div>
+</div>
+<div class="card"><h3>上部を編集</h3><p class="desc">`top-rail` の4行サマリを手動上書き。`broadcast_top_override.json` に保存。未設定時は SOREN/OBS などの自動導出。</p>
+<div style="margin-bottom:8px">
+<label><input type="radio" name="top-mode" value="auto" checked> 自動（上書きなし）</label>
+<label><input type="radio" name="top-mode" value="manual"> 手動 1-4行</label>
+<label><input type="radio" name="top-mode" value="hidden"> 非表示</label>
+</div>
+<div id="top-manual-inputs">
+<div><label>行1</label><input id="top-line-1" maxlength="120" placeholder="例: LIVE 720p30 | 43.9k games"/></div>
+<div><label>行2</label><input id="top-line-2" maxlength="120"/></div>
+<div><label>行3</label><input id="top-line-3" maxlength="120"/></div>
+<div><label>行4</label><input id="top-line-4" maxlength="120"/></div>
+</div>
+<div class="actions"><button class="btn primary" id="top-save">保存</button></div>
+<div id="top-msg" class="help"></div>
+</div>
+</div>
+<!-- Preview sub -->
+<div id="overlay-sub-preview" style="display:none">
+<div class="card"><h3>プレビュー</h3><p class="desc">生成されたHTMLのプレビュー。eventはトースト/work/banner、broadcastはtop/bottom rail。</p>
+<div class="row"><div><label>type</label><select id="preview-type"><option value="event">event</option><option value="broadcast">broadcast</option><option value="status">status</option><option value="improve">improve</option></select></div>
+<div><label>region (broadcastのみ)</label><select id="preview-region"><option value="full">full</option><option value="top">top</option><option value="bottom">bottom</option><option value="sidebar">sidebar</option></select></div>
+<div style="align-self:end"><button class="btn" id="preview-refresh">更新</button></div></div>
+<div style="margin-top:10px"><label>HTML (readonly)</label><textarea id="preview-html" rows="12" class="mono" readonly></textarea></div>
+<div style="margin-top:8px"><iframe id="preview-iframe" style="width:100%;height:260px;border:1px solid var(--border);border-radius:8px;background:#111319"></iframe></div>
+</div>
+</div>
+</div>
 </section>
 <!-- CHAINS -->
 <section id="tab-chains" style="display:none">
@@ -1529,6 +2018,206 @@ function drawSparkline(days){
   poly2.setAttribute("opacity","0.7");
   svg.appendChild(poly2);
 }
+let statusTimer=null;
+let overlayPreviewTimer=null;
+async function loadStatus(){
+  try{
+    const data=await api("/api/overlay/status");
+    // comment / radio
+    const gens=data.generators||[];
+    // kpi cards
+    const cGen=data.generators.find(g=>g.key==="comment");
+    const rGen=data.generators.find(g=>g.key==="radio");
+    const imp=data.improve||{};
+    const wc=data.wildcard||{};
+    const game=data.game||{};
+    // status-comment
+    if(cGen){
+      $("#status-comment").textContent=cGen.fresh?"生成中":"古い";
+      $("#status-comment").className="val "+(cGen.fresh?"badge ok":"badge warn");
+      $("#status-comment-sub").textContent=`${cGen.label} age ${cGen.age}s / ${cGen.stale_sec}s ts ${fmtTime(cGen.ts)} raw ${esc(cGen.raw||"")}`;
+    } else {
+      $("#status-comment").textContent="待機中";
+      $("#status-comment-sub").textContent=`raw: ${esc(data.comment_gen.raw||"-")} fresh: -`;
+    }
+    if(rGen){
+      $("#status-radio").textContent=rGen.fresh?"生成中":"古い";
+      $("#status-radio").className="val "+(rGen.fresh?"badge ok":"badge warn");
+      $("#status-radio-sub").textContent=`${rGen.label} age ${rGen.age}s / ${rGen.stale_sec}s pid ${rGen.owner_pid||"-"} alive ${rGen.owner_alive?"yes":"no"} raw ${esc(rGen.raw||"")}`;
+    } else {
+      $("#status-radio").textContent="待機中";
+      $("#status-radio-sub").textContent=`raw: ${esc(data.radio_state.raw||"-")}`;
+    }
+    $("#status-improve").textContent=imp.status||"idle";
+    $("#status-improve-sub").textContent=`pid ${imp.pid||"-"} alive ${imp.alive?"yes":"no"} locked ${imp.is_locked?"yes":"no"} mtime ${fmtTime(imp.mtime)}`;
+    const wcActive=wc.data && (wc.data.phase==="generating"||wc.data.phase==="running");
+    $("#status-wildcard").textContent=wcActive? (wc.data.phase||"active"):"idle";
+    $("#status-wildcard-sub").textContent= wc.data? `phase ${wc.data.phase||"-"} pid ${wc.data.controller_pid||"-"} exists ${wc.exists?"yes":"no"}`:"-";
+    // generators list
+    const gCont=$("#status-generators");
+    gCont.innerHTML="";
+    if(gens.length===0) gCont.innerHTML='<div class="help">生成中なし</div>';
+    else for(const g of gens){
+      const d=document.createElement("div");
+      d.className="card"; d.style.background="#111319"; d.style.marginBottom="6px";
+      d.innerHTML=`<div style="display:flex;gap:8px;align-items:center"><span style="font-size:18px">${esc(g.icon||"")}</span><span class="mono" style="flex:1">${esc(g.label)}</span><span class="badge ${g.fresh?"ok":"warn"}">${g.fresh?"fresh":"stale"}</span><span class="badge">${g.age}s</span><span class="mono" style="font-size:11px">${fmtTime(g.ts)}</span></div><div class="help">key ${esc(g.key)} stale ${g.stale_sec}s raw ${esc(g.raw||"")}</div>`;
+      gCont.appendChild(d);
+    }
+    // game kv
+    const gKv=$("#status-game-kv");
+    gKv.innerHTML="";
+    for(const [k,v] of [["state",game.state||"-"],["score",String(game.score!=null?game.score:"-")],["mtime",fmtTime(game.mtime)],["path",game.path||"-"]]){
+      const dt=document.createElement("dt"); dt.textContent=k;
+      const dd=document.createElement("dd"); dd.textContent=v; dd.className="mono";
+      gKv.appendChild(dt); gKv.appendChild(dd);
+    }
+    // improve kv
+    const iKv=$("#status-improve-kv");
+    iKv.innerHTML="";
+    for(const [k,v] of [["status",imp.status||"-"],["phase",(imp.data&&imp.data.phase)||"-"],["detail",(imp.data&&imp.data.detail)||"-"],["progress",String((imp.data&&imp.data.progress)||0)],["pid",String(imp.pid||"-")],["alive",imp.alive?"yes":"no"],["locked",imp.is_locked?"yes":"no"],["mtime",fmtTime(imp.mtime)]]){
+      const dt=document.createElement("dt"); dt.textContent=k;
+      const dd=document.createElement("dd"); dd.textContent=v; dd.className="mono";
+      iKv.appendChild(dt); iKv.appendChild(dd);
+    }
+    $("#status-improve-log").textContent=(imp.log_tail||[]).join("\n")||"(log empty)";
+    // workers
+    const wBody=$("#status-workers");
+    wBody.innerHTML="";
+    for(const w of (data.workers||[])){
+      const tr=document.createElement("tr");
+      tr.innerHTML=`<td class="mono">${esc(w.worker)}</td><td>${w.pid||"-"}</td><td>${w.alive?'<span class="badge ok">alive</span>':'<span class="badge bad">down</span>'}</td>`;
+      wBody.appendChild(tr);
+    }
+    $("#status-game-count").textContent=data.game_count.value!=null?String(data.game_count.value):"-";
+    $("#status-game-count-path").textContent=data.game_count.path||"-";
+  }catch(e){ console.warn("loadStatus",e); toast(String(e),4000); }
+}
+async function loadOverlayEvents(){
+  try{
+    const data=await api("/api/overlay/events");
+    $("#overlay-events-keep").textContent=data.keep;
+    $("#overlay-events-visible").textContent=data.visible_sec;
+    const tb=$("#overlay-events-table");
+    tb.innerHTML="";
+    (data.events||[]).forEach((ev, idx)=>{
+      const tr=document.createElement("tr");
+      tr.innerHTML=`<td>${idx}</td><td class="mono" style="font-size:11px">${fmtTime(ev.ts)}</td><td><span class="badge">${esc(ev.category)}</span> <span class="badge ${ev.level==="error"?"bad":ev.level==="warn"?"warn":""}">${esc(ev.level||"info")}</span></td><td class="mono">${esc(ev.title)}</td><td class="mono" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(ev.body||"")}</td><td><button class="btn danger" data-del-ev="${idx}" style="padding:4px 8px">×</button></td>`;
+      tb.appendChild(tr);
+    });
+    if((data.events||[]).length===0) tb.innerHTML='<tr><td colspan="6" class="help">キュー空</td></tr>';
+    for(const btn of $$("[data-del-ev]")){
+      btn.onclick=async()=>{
+        const idx=btn.getAttribute("data-del-ev");
+        try{ await api(`/api/overlay/events/${idx}`,{method:"DELETE"}); toast(`削除 ${idx}`); await loadOverlayEvents(); }catch(e){ toast(String(e)); }
+      };
+    }
+    // bulk textarea sync
+    const bulk=$("#overlay-events-bulk");
+    if(bulk && document.activeElement!==bulk) bulk.value=JSON.stringify(data.events||[],null,2);
+  }catch(e){ toast(String(e)); }
+}
+async function pushOverlayEvent(){
+  const cat=$("#overlay-notify-category").value;
+  const level=$("#overlay-notify-level").value;
+  const title=$("#overlay-notify-title").value.trim();
+  const body=$("#overlay-notify-body").value.trim();
+  if(!title){ toast("title 必須"); return; }
+  try{
+    await api("/api/overlay/events",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({category:cat,title,body,level})});
+    toast("通知を追加しました");
+    $("#overlay-notify-title").value=""; $("#overlay-notify-body").value="";
+    await loadOverlayEvents();
+  }catch(e){ toast(String(e),5000); $("#overlay-notify-msg").textContent=String(e); }
+}
+async function saveOverlayBulk(){
+  const txt=$("#overlay-events-bulk").value.trim();
+  let arr=[];
+  try{ arr= txt? JSON.parse(txt):[]; }catch(e){ toast("JSON parse error: "+e); return; }
+  if(!Array.isArray(arr)){ toast("配列である必要があります"); return; }
+  try{
+    await api("/api/overlay/events",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({events:arr})});
+    toast("一括保存しました");
+    await loadOverlayEvents();
+  }catch(e){ toast(String(e),5000); $("#overlay-events-bulk-msg").textContent=String(e); }
+}
+async function loadWorkBanner(){
+  try{
+    const data=await api("/api/overlay/work_banner");
+    const active=!!data.active;
+    $("#work-banner-active").textContent=active?"有効":"無効";
+    $("#work-banner-active").className="badge "+(active?"bad":"ok");
+    $("#work-banner-title").textContent=data.title||"-";
+    $("#work-banner-body").textContent=data.body||"-";
+    $("#work-banner-ts").textContent=data.ts?fmtTime(data.ts):"-";
+    $("#work-banner-enabled").checked=active;
+    $("#work-banner-enabled-label").textContent=active?"on":"off";
+    if(active){
+      $("#work-banner-title-input").value=data.title||"";
+      $("#work-banner-body-input").value=data.body||"";
+    }
+  }catch(e){ toast(String(e)); }
+}
+async function saveWorkBanner(){
+  const enabled=$("#work-banner-enabled").checked;
+  const title=$("#work-banner-title-input").value.trim();
+  const body=$("#work-banner-body-input").value.trim();
+  try{
+    await api("/api/overlay/work_banner",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({active:enabled,title,body})});
+    toast(enabled?"作業中バナー有効化":"バナー無効化");
+    await loadWorkBanner();
+  }catch(e){ toast(String(e),5000); $("#work-banner-msg").textContent=String(e); }
+}
+async function disableWorkBanner(){
+  try{ await api("/api/overlay/work_banner",{method:"DELETE"}); toast("無効化"); await loadWorkBanner(); }catch(e){ toast(String(e)); }
+}
+async function loadTop(){
+  try{
+    const data=await api("/api/overlay/top");
+    $("#top-mode").textContent=data.mode||"auto";
+    $("#top-enabled").textContent= String(data.enabled);
+    $("#top-path").textContent=data.path||"-";
+    const cur=document.getElementById("top-current-lines");
+    if(data.lines && data.lines.length) cur.textContent="現在: "+data.lines.join(" | ");
+    else cur.textContent=data.mode==="hidden"?"非表示":data.mode==="manual"?"(lines empty)":"自動";
+    // radio sync
+    const mode=data.mode||"auto";
+    for(const r of $$('input[name="top-mode"]')) r.checked=(r.value===mode);
+    // inputs
+    for(let i=1;i<=4;i++){
+      const el=document.getElementById(`top-line-${i}`);
+      el.value=(data.lines && data.lines[i-1])||"";
+      el.disabled=(mode!=="manual");
+    }
+  }catch(e){ toast(String(e)); }
+}
+async function saveTop(){
+  const modeEl=$$('input[name="top-mode"]:checked')[0];
+  const mode=modeEl?modeEl.value:"auto";
+  let enabled=null; let lines=[];
+  if(mode==="auto"){ enabled=null; lines=[]; }
+  else if(mode==="hidden"){ enabled=false; lines=[]; }
+  else { enabled=true; for(let i=1;i<=4;i++){ const v=document.getElementById(`top-line-${i}`).value.trim(); if(v) lines.push(v); } }
+  try{
+    if(enabled===null){
+      await api("/api/overlay/top",{method:"DELETE"});
+      toast("自動に戻しました");
+    } else {
+      await api("/api/overlay/top",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled,lines})});
+      toast("上部保存");
+    }
+    await loadTop();
+  }catch(e){ toast(String(e),5000); $("#top-msg").textContent=String(e); }
+}
+async function loadPreview(){
+  const typ=$("#preview-type").value;
+  const region=$("#preview-region").value;
+  try{
+    const data=await api(`/api/overlay/preview?type=${encodeURIComponent(typ)}&region=${encodeURIComponent(region)}`);
+    $("#preview-html").value=data.html||"";
+    const iframe=document.getElementById("preview-iframe");
+    try{ iframe.srcdoc=data.html||""; }catch(e){ iframe.src="about:blank"; }
+  }catch(e){ toast(String(e)); }
+}
 document.addEventListener("DOMContentLoaded",()=>{
   $$("#tabs button").forEach(btn=>btn.onclick=()=>{
     $$("#tabs button").forEach(b=>b.classList.remove("active"));
@@ -1540,7 +2229,31 @@ document.addEventListener("DOMContentLoaded",()=>{
     if(tab==="stats") loadStats();
     if(tab==="health") loadHealth();
     if(tab==="dashboard") loadDashboard();
+    if(tab==="status") { loadStatus(); if(statusTimer) clearInterval(statusTimer); statusTimer=setInterval(loadStatus,10000); }
+    else { if(statusTimer) { clearInterval(statusTimer); statusTimer=null; } }
+    if(tab==="overlay") { loadOverlayEvents(); loadWorkBanner(); loadTop(); loadPreview(); }
   });
+  // overlay sub tabs
+  $$("[data-overlay-sub]").forEach(btn=>btn.onclick=()=>{
+    $$("[data-overlay-sub]").forEach(b=>{ b.style.background=""; b.style.color=""; });
+    btn.style.background="var(--accent)"; btn.style.color="#0a0c10";
+    const sub=btn.getAttribute("data-overlay-sub");
+    $$("#overlay-sub-notifications, #overlay-sub-work, #overlay-sub-top, #overlay-sub-preview").forEach(el=>el.style.display="none");
+    const target=document.getElementById(`overlay-sub-${sub}`);
+    if(target) target.style.display="block";
+    if(sub==="notifications") loadOverlayEvents();
+    if(sub==="work") loadWorkBanner();
+    if(sub==="top") loadTop();
+    if(sub==="preview") loadPreview();
+  });
+  // top mode radio change
+  $$('input[name="top-mode"]').forEach(r=>r.onchange=()=>{
+    const mode=$$('input[name="top-mode"]:checked')[0]?.value||"auto";
+    for(let i=1;i<=4;i++){ const el=document.getElementById(`top-line-${i}`); if(el) el.disabled=(mode!=="manual"); }
+  });
+  // work banner toggle label
+  const wbEn=document.getElementById("work-banner-enabled");
+  if(wbEn) wbEn.onchange=(e)=>{ document.getElementById("work-banner-enabled-label").textContent=e.target.checked?"on":"off"; };
   // initial load
   loadConfig().catch(e=>toast(String(e),5000));
   loadBackoffs().catch(()=>{});
@@ -1563,6 +2276,38 @@ document.addEventListener("DOMContentLoaded",()=>{
   $("#do-reload").onclick=async()=>{
     try{ const r=await api("/api/reload",{method:"POST"}); toast(JSON.stringify(r.results)); await loadHealth(); }catch(e){ toast(String(e)); }
   };
+  // status
+  const sRefresh=document.getElementById("status-refresh");
+  if(sRefresh) sRefresh.onclick=()=>loadStatus();
+  // overlay
+  const oERefresh=document.getElementById("overlay-events-refresh");
+  if(oERefresh) oERefresh.onclick=()=>loadOverlayEvents();
+  const oEClear=document.getElementById("overlay-events-clear");
+  if(oEClear) oEClear.onclick=async()=>{ if(!confirm("全クリアしますか？")) return; try{ await api("/api/overlay/events",{method:"DELETE"}); toast("全クリア"); await loadOverlayEvents(); }catch(e){ toast(String(e)); } };
+  const oPush=document.getElementById("overlay-notify-push");
+  if(oPush) oPush.onclick=()=>pushOverlayEvent();
+  const oBulkSave=document.getElementById("overlay-events-bulk-save");
+  if(oBulkSave) oBulkSave.onclick=()=>saveOverlayBulk();
+  const oBulkLoad=document.getElementById("overlay-events-bulk-load");
+  if(oBulkLoad) oBulkLoad.onclick=()=>loadOverlayEvents();
+  const wSave=document.getElementById("work-banner-save");
+  if(wSave) wSave.onclick=()=>saveWorkBanner();
+  const wDisable=document.getElementById("work-banner-disable");
+  if(wDisable) wDisable.onclick=()=>disableWorkBanner();
+  const wRefresh=document.getElementById("work-banner-refresh");
+  if(wRefresh) wRefresh.onclick=()=>loadWorkBanner();
+  const tSave=document.getElementById("top-save");
+  if(tSave) tSave.onclick=()=>saveTop();
+  const tRefresh=document.getElementById("top-refresh");
+  if(tRefresh) tRefresh.onclick=()=>loadTop();
+  const tDel=document.getElementById("top-delete");
+  if(tDel) tDel.onclick=async()=>{ try{ await api("/api/overlay/top",{method:"DELETE"}); toast("自動に戻しました"); await loadTop(); }catch(e){ toast(String(e)); } };
+  const pRefresh=document.getElementById("preview-refresh");
+  if(pRefresh) pRefresh.onclick=()=>loadPreview();
+  const pType=document.getElementById("preview-type");
+  if(pType) pType.onchange=()=>loadPreview();
+  const pRegion=document.getElementById("preview-region");
+  if(pRegion) pRegion.onchange=()=>loadPreview();
 });
 </script>
 </body>
@@ -1675,6 +2420,19 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_get_workers()
             elif path == "/api/peak_status":
                 status = self._handle_get_peak_status()
+            elif path == "/api/overlay/status":
+                status = self._handle_get_overlay_status()
+            elif path == "/api/overlay/events":
+                status = self._handle_get_overlay_events()
+            elif path == "/api/overlay/work_banner":
+                status = self._handle_get_work_banner()
+            elif path == "/api/overlay/top":
+                status = self._handle_get_top()
+            elif path == "/api/overlay/preview":
+                # ?type=event|broadcast&region=full|top|bottom|sidebar
+                t = query.get("type", ["event"])[0]
+                region = query.get("region", ["full"])[0]
+                status = self._handle_get_preview(t, region)
             else:
                 status = 404
                 self._send_error_json(404, "not_found")
@@ -1697,6 +2455,12 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/config":
                 status = self._handle_put_config()
+            elif parsed.path == "/api/overlay/work_banner":
+                status = self._handle_put_work_banner()
+            elif parsed.path == "/api/overlay/top":
+                status = self._handle_put_top()
+            elif parsed.path == "/api/overlay/events":
+                status = self._handle_put_overlay_events()
             else:
                 status = 404
                 self._send_error_json(404, "not_found")
@@ -1723,6 +2487,16 @@ class _Handler(BaseHTTPRequestHandler):
                 # decode
                 sanitized = urllib.parse.unquote(part)
                 status = self._handle_delete_backoff(sanitized)
+            elif parsed.path == "/api/overlay/work_banner":
+                status = self._handle_delete_work_banner()
+            elif parsed.path == "/api/overlay/top":
+                status = self._handle_delete_top()
+            elif parsed.path == "/api/overlay/events":
+                status = self._handle_clear_overlay_events()
+            elif parsed.path.startswith("/api/overlay/events/"):
+                # /api/overlay/events/<idx>
+                part = parsed.path[len("/api/overlay/events/") :]
+                status = self._handle_delete_overlay_event(part)
             else:
                 status = 404
                 self._send_error_json(404, "not_found")
@@ -1747,6 +2521,12 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_clear_all_backoffs()
             elif parsed.path == "/api/reload":
                 status = self._handle_reload()
+            elif parsed.path == "/api/overlay/events":
+                status = self._handle_post_overlay_event()
+            elif parsed.path == "/api/overlay/events/bulk":
+                status = self._handle_post_overlay_events_bulk()
+            elif parsed.path == "/api/overlay/preview/refresh":
+                status = self._handle_reload()  # alias
             else:
                 status = 404
                 self._send_error_json(404, "not_found")
@@ -2177,6 +2957,518 @@ class _Handler(BaseHTTPRequestHandler):
         results = _send_reload(self.soren_root)
         self._send_json(200, {"ok": True, "results": results})
         return 200
+
+    def _handle_get_overlay_status(self) -> int:
+        now = int(time.time())
+        # game
+        g_path = _game_state_path(self.soren_root)
+        g_data = _load_json_file(g_path)
+        try:
+            g_mtime = int(g_path.stat().st_mtime) if g_path.is_file() else 0
+        except Exception:
+            g_mtime = 0
+        # improve
+        imp_path = _improve_state_path(self.soren_root)
+        lock_path = _improve_lock_path(self.soren_root)
+        imp_data = _load_json_file(imp_path)
+        imp_exists = imp_data is not None
+        if imp_data is None:
+            imp_data = {}
+        is_locked = lock_path.is_file()
+        pid = None
+        alive = False
+        try:
+            pid = int(imp_data.get("pid", 0) or 0) if isinstance(imp_data, dict) else 0
+            if pid:
+                try:
+                    os.kill(pid, 0)
+                    alive = True
+                except ProcessLookupError:
+                    alive = False
+                except PermissionError:
+                    alive = True
+            else:
+                pid = None
+        except Exception:
+            pid = None
+            alive = False
+        try:
+            imp_mtime = int(imp_path.stat().st_mtime) if imp_path.is_file() else 0
+        except Exception:
+            imp_mtime = 0
+        status = str(imp_data.get("status", "idle") if isinstance(imp_data, dict) else "idle")
+        # wildcard
+        wc_data = _get_wildcard_status(self.soren_root)
+        wc_path = _wildcard_status_path(self.soren_root)
+        try:
+            wc_mtime = int(wc_path.stat().st_mtime) if wc_path.is_file() else 0
+        except Exception:
+            wc_mtime = 0
+        # generators
+        gens = _get_gen_indicators(self.soren_root, now)
+        # comment/raw
+        c_path = _comment_gen_state_path(self.soren_root)
+        try:
+            c_raw = c_path.read_text(encoding="utf-8", errors="ignore").strip() if c_path.is_file() else ""
+        except Exception:
+            c_raw = ""
+        c_mtime = 0
+        try:
+            c_mtime = int(c_path.stat().st_mtime) if c_path.is_file() else 0
+        except Exception:
+            c_mtime = 0
+        # radio
+        r_path = _radio_state_path(self.soren_root)
+        try:
+            r_raw = r_path.read_text(encoding="utf-8", errors="ignore").strip() if r_path.is_file() else ""
+        except Exception:
+            r_raw = ""
+        try:
+            r_mtime = int(r_path.stat().st_mtime) if r_path.is_file() else 0
+        except Exception:
+            r_mtime = 0
+        # work banner
+        work = _load_work_indicator(self.soren_root)
+        w_path = _work_indicator_path(self.soren_root)
+        try:
+            w_mtime = int(w_path.stat().st_mtime) if w_path.is_file() else 0
+        except Exception:
+            w_mtime = 0
+        # game count
+        gc_path = self.soren_root / "game_count.txt"
+        gc_val = None
+        try:
+            if gc_path.is_file():
+                txt = gc_path.read_text(encoding="utf-8", errors="ignore").strip().splitlines()[0]
+                gc_val = int(txt.strip()) if txt.strip().isdigit() else None
+        except Exception:
+            gc_val = None
+        try:
+            gc_mtime = int(gc_path.stat().st_mtime) if gc_path.is_file() else 0
+        except Exception:
+            gc_mtime = 0
+        # workers
+        workers = _get_workers_status(self.soren_root)
+        # overlay events
+        ev_keep, ev_visible = _get_overlay_keep_visible(self.soren_root)
+        ev_path = _overlay_events_path(self.soren_root)
+        try:
+            ev_count = len(_load_overlay_events(self.soren_root))
+        except Exception:
+            ev_count = 0
+        try:
+            ev_mtime = int(ev_path.stat().st_mtime) if ev_path.is_file() else 0
+        except Exception:
+            ev_mtime = 0
+        # log tail for improve
+        log_tail: list[str] = []
+        try:
+            log_path = self.soren_root / "tmp/debug/improve_ai.log"
+            if log_path.is_file():
+                txt = log_path.read_text(encoding="utf-8", errors="ignore")
+                lines = [l for l in txt.splitlines() if l.strip()]
+                # strip ANSI
+                import re as _re
+                ansi_re = _re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+                log_tail = [ansi_re.sub("", l) for l in lines[-6:]]
+        except Exception:
+            log_tail = []
+        self._send_json(200, {
+            "now": now,
+            "game": {"exists": g_data is not None, "path": str(g_path), "mtime": g_mtime, "data": g_data, "state": str(g_data.get("state","") if isinstance(g_data, dict) else ""), "score": g_data.get("score") if isinstance(g_data, dict) else None},
+            "improve": {"exists": imp_exists, "path": str(imp_path), "mtime": imp_mtime, "data": imp_data, "status": status, "pid": pid, "alive": alive, "is_locked": is_locked, "log_tail": log_tail},
+            "wildcard": {"exists": wc_data is not None, "path": str(wc_path), "mtime": wc_mtime, "data": wc_data},
+            "generators": gens,
+            "comment_gen": {"path": str(c_path), "mtime": c_mtime, "raw": c_raw, "exists": bool(c_raw)},
+            "radio_state": {"path": str(r_path), "mtime": r_mtime, "raw": r_raw, "exists": bool(r_raw)},
+            "work_banner": work,
+            "work_banner_path": str(w_path),
+            "work_banner_mtime": w_mtime,
+            "game_count": {"path": str(gc_path), "mtime": gc_mtime, "value": gc_val, "exists": gc_val is not None},
+            "workers": workers,
+            "overlay_events": {"path": str(ev_path), "mtime": ev_mtime, "count": ev_count, "keep": ev_keep, "visible_sec": ev_visible},
+        })
+        return 200
+
+    def _handle_get_overlay_events(self) -> int:
+        keep, visible = _get_overlay_keep_visible(self.soren_root)
+        events = _load_overlay_events(self.soren_root)
+        p = _overlay_events_path(self.soren_root)
+        try:
+            mtime = int(p.stat().st_mtime) if p.is_file() else 0
+        except Exception:
+            mtime = 0
+        self._send_json(200, {"path": str(p), "mtime": mtime, "keep": keep, "visible_sec": visible, "count": len(events), "events": events})
+        return 200
+
+    def _handle_post_overlay_event(self) -> int:
+        body, err = self._read_body()
+        if err:
+            return err
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except Exception as exc:
+            self._send_error_json(400, "invalid_json", str(exc))
+            return 400
+        try:
+            ev = _validate_overlay_event(data if isinstance(data, dict) else {})
+        except ValueError as exc:
+            self._send_error_json(400, "validation_error", str(exc))
+            return 400
+        keep, _ = _get_overlay_keep_visible(self.soren_root)
+        # load existing, append, trim to keep
+        events = _load_overlay_events(self.soren_root)
+        events.append(ev)
+        if len(events) > keep:
+            events = events[-keep:]
+        # write
+        p = _overlay_events_path(self.soren_root)
+        content = "\n".join(json.dumps(e, ensure_ascii=False) for e in events) + ("\n" if events else "")
+        try:
+            _atomic_overlay_write(self.soren_root, p, content, 0o644)
+        except FileExistsError as exc:
+            self._send_error_json(409, "concurrent_edit", str(exc))
+            return 409
+        except Exception as exc:
+            self._send_error_json(500, "write_failed", str(exc))
+            return 500
+        _regenerate_event_overlay(self.soren_root)
+        self._send_json(200, {"ok": True, "event": ev, "count": len(events)})
+        return 200
+
+    def _handle_post_overlay_events_bulk(self) -> int:
+        # For completeness, not used directly; PUT /api/overlay/events handles bulk replace
+        return self._handle_put_overlay_events()
+
+    def _handle_put_overlay_events(self) -> int:
+        body, err = self._read_body()
+        if err:
+            return err
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except Exception as exc:
+            self._send_error_json(400, "invalid_json", str(exc))
+            return 400
+        # support either {"events": [...]} or raw array
+        arr = None
+        if isinstance(data, dict) and "events" in data:
+            arr = data["events"]
+        elif isinstance(data, list):
+            arr = data
+        elif isinstance(data, dict) and any(k in data for k in ("category", "title")):
+            # single event
+            arr = [data]
+        else:
+            arr = data.get("events", []) if isinstance(data, dict) else []
+        if not isinstance(arr, list):
+            self._send_error_json(400, "validation_error", "events must be array")
+            return 400
+        keep, _ = _get_overlay_keep_visible(self.soren_root)
+        if len(arr) > keep:
+            self._send_error_json(400, "validation_error", f"events too many (keep {keep})")
+            return 400
+        validated: list[dict[str, Any]] = []
+        for idx, item in enumerate(arr):
+            try:
+                validated.append(_validate_overlay_event(item if isinstance(item, dict) else {}))
+            except ValueError as exc:
+                self._send_error_json(400, "validation_error", f"index {idx}: {exc}")
+                return 400
+        p = _overlay_events_path(self.soren_root)
+        content = "\n".join(json.dumps(e, ensure_ascii=False) for e in validated) + ("\n" if validated else "")
+        try:
+            _atomic_overlay_write(self.soren_root, p, content, 0o644)
+        except FileExistsError as exc:
+            self._send_error_json(409, "concurrent_edit", str(exc))
+            return 409
+        except Exception as exc:
+            self._send_error_json(500, "write_failed", str(exc))
+            return 500
+        _regenerate_event_overlay(self.soren_root)
+        self._send_json(200, {"ok": True, "count": len(validated)})
+        return 200
+
+    def _handle_clear_overlay_events(self) -> int:
+        p = _overlay_events_path(self.soren_root)
+        try:
+            _atomic_overlay_write(self.soren_root, p, "", 0o644)
+        except FileExistsError as exc:
+            self._send_error_json(409, "concurrent_edit", str(exc))
+            return 409
+        except Exception as exc:
+            self._send_error_json(500, "write_failed", str(exc))
+            return 500
+        _regenerate_event_overlay(self.soren_root)
+        self._send_json(200, {"ok": True, "cleared": True})
+        return 200
+
+    def _handle_delete_overlay_event(self, part: str) -> int:
+        try:
+            idx = int(part.strip())
+        except Exception:
+            self._send_error_json(400, "invalid_index", "index must be integer")
+            return 400
+        events = _load_overlay_events(self.soren_root)
+        if idx < 0 or idx >= len(events):
+            self._send_error_json(404, "not_found", f"index {idx} out of range")
+            return 404
+        events.pop(idx)
+        p = _overlay_events_path(self.soren_root)
+        content = "\n".join(json.dumps(e, ensure_ascii=False) for e in events) + ("\n" if events else "")
+        try:
+            _atomic_overlay_write(self.soren_root, p, content, 0o644)
+        except FileExistsError as exc:
+            self._send_error_json(409, "concurrent_edit", str(exc))
+            return 409
+        except Exception as exc:
+            self._send_error_json(500, "write_failed", str(exc))
+            return 500
+        _regenerate_event_overlay(self.soren_root)
+        self._send_json(200, {"ok": True, "deleted": idx, "count": len(events)})
+        return 200
+
+    def _handle_get_work_banner(self) -> int:
+        p = _work_indicator_path(self.soren_root)
+        work = _load_work_indicator(self.soren_root)
+        try:
+            mtime = int(p.stat().st_mtime) if p.is_file() else 0
+        except Exception:
+            mtime = 0
+        if work is None:
+            self._send_json(200, {"active": False, "exists": False, "path": str(p), "mtime": mtime})
+            return 200
+        self._send_json(200, {"active": True, "exists": True, "path": str(p), "mtime": mtime, "title": work.get("title",""), "body": work.get("body",""), "ts": work.get("ts",0), "data": work})
+        return 200
+
+    def _handle_put_work_banner(self) -> int:
+        body, err = self._read_body()
+        if err:
+            return err
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except Exception as exc:
+            self._send_error_json(400, "invalid_json", str(exc))
+            return 400
+        if not isinstance(data, dict):
+            self._send_error_json(400, "validation_error", "body must be object")
+            return 400
+        active = bool(data.get("active", True))
+        title = str(data.get("title", "")).strip()
+        body_txt = str(data.get("body", "")).strip()
+        if active:
+            if not title:
+                title = "システム自動分析・修正作業中"
+            if not body_txt:
+                body_txt = "メリケンAI が確認・修正・検証を進めています"
+            try:
+                title = _sanitize_overlay_text(title, WORK_TITLE_LIMIT)
+                body_txt = _sanitize_overlay_text(body_txt, WORK_BODY_LIMIT)
+            except ValueError as exc:
+                self._send_error_json(400, "validation_error", str(exc))
+                return 400
+            state = {"active": True, "ts": int(time.time()), "title": title, "body": body_txt}
+            content = json.dumps(state, ensure_ascii=False) + "\n"
+            p = _work_indicator_path(self.soren_root)
+            try:
+                _atomic_overlay_write(self.soren_root, p, content, 0o644)
+            except FileExistsError as exc:
+                self._send_error_json(409, "concurrent_edit", str(exc))
+                return 409
+            except Exception as exc:
+                self._send_error_json(500, "write_failed", str(exc))
+                return 500
+            _regenerate_event_overlay(self.soren_root)
+            self._send_json(200, {"ok": True, "active": True, "title": title, "body": body_txt})
+            return 200
+        else:
+            p = _work_indicator_path(self.soren_root)
+            try:
+                if p.is_file():
+                    p.unlink()
+            except Exception:
+                pass
+            _regenerate_event_overlay(self.soren_root)
+            self._send_json(200, {"ok": True, "active": False})
+            return 200
+
+    def _handle_delete_work_banner(self) -> int:
+        p = _work_indicator_path(self.soren_root)
+        deleted = False
+        try:
+            if p.is_file():
+                p.unlink()
+                deleted = True
+        except Exception as exc:
+            self._send_error_json(500, "delete_failed", str(exc))
+            return 500
+        _regenerate_event_overlay(self.soren_root)
+        self._send_json(200, {"ok": True, "deleted": deleted, "active": False})
+        return 200
+
+    def _handle_get_top(self) -> int:
+        p = _top_override_path(self.soren_root)
+        data = _load_top_override(self.soren_root)
+        try:
+            mtime = int(p.stat().st_mtime) if p.is_file() else 0
+        except Exception:
+            mtime = 0
+        if data is None:
+            self._send_json(200, {"exists": False, "path": str(p), "mtime": mtime, "enabled": None, "mode": "auto", "lines": []})
+            return 200
+        enabled = data.get("enabled")
+        lines = data.get("lines", [])
+        if not isinstance(lines, list):
+            lines = []
+        # sanitize for display
+        lines = [str(x) for x in lines][:TOP_MAX_LINES]
+        mode = "auto"
+        if enabled is True:
+            mode = "manual"
+        elif enabled is False:
+            mode = "hidden"
+        self._send_json(200, {"exists": True, "path": str(p), "mtime": mtime, "enabled": enabled, "mode": mode, "lines": lines, "updated_at": data.get("updated_at"), "data": data})
+        return 200
+
+    def _handle_put_top(self) -> int:
+        body, err = self._read_body()
+        if err:
+            return err
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except Exception as exc:
+            self._send_error_json(400, "invalid_json", str(exc))
+            return 400
+        if not isinstance(data, dict):
+            self._send_error_json(400, "validation_error", "body must be object")
+            return 400
+        enabled = data.get("enabled")
+        # enabled can be None (auto), True (manual), False (hidden)
+        if enabled is None and "enabled" not in data and "lines" not in data:
+            self._send_error_json(400, "validation_error", "enabled or lines required")
+            return 400
+        if enabled is None and "enabled" not in data:
+            # treat as delete auto?
+            enabled = None
+        elif enabled is not None and not isinstance(enabled, bool):
+            # allow string "true"/"false" ?
+            if isinstance(enabled, str):
+                if enabled.lower() in ("true","1"):
+                    enabled = True
+                elif enabled.lower() in ("false","0"):
+                    enabled = False
+                else:
+                    self._send_error_json(400, "validation_error", "enabled must be boolean")
+                    return 400
+            else:
+                self._send_error_json(400, "validation_error", "enabled must be boolean")
+                return 400
+        lines = data.get("lines", [])
+        if not isinstance(lines, list):
+            self._send_error_json(400, "validation_error", "lines must be array")
+            return 400
+        if enabled is True:
+            if not lines:
+                self._send_error_json(400, "validation_error", "manual mode requires 1-4 lines")
+                return 400
+            if len(lines) > TOP_MAX_LINES:
+                self._send_error_json(400, "validation_error", f"lines max {TOP_MAX_LINES}")
+                return 400
+            cleaned: list[str] = []
+            for idx, l in enumerate(lines):
+                s = str(l).strip()
+                if not s:
+                    self._send_error_json(400, "validation_error", f"line {idx} empty")
+                    return 400
+                if len(s) > TOP_LINE_LIMIT:
+                    self._send_error_json(400, "validation_error", f"line {idx} too long")
+                    return 400
+                if any(ord(c) < 32 and c not in ("\t",) for c in s):
+                    self._send_error_json(400, "validation_error", f"line {idx} has control chars")
+                    return 400
+                cleaned.append(s)
+            lines = cleaned
+        elif enabled is False:
+            lines = []
+        else: # enabled is None -> auto (delete)
+            p = _top_override_path(self.soren_root)
+            try:
+                if p.is_file():
+                    p.unlink()
+            except Exception:
+                pass
+            self._send_json(200, {"ok": True, "mode": "auto", "deleted": True})
+            return 200
+        # write manual/hidden
+        p = _top_override_path(self.soren_root)
+        payload = {"enabled": enabled, "lines": lines, "updated_at": int(time.time()), "updated_by": "webui"}
+        content = json.dumps(payload, ensure_ascii=False) + "\n"
+        try:
+            _atomic_overlay_write(self.soren_root, p, content, 0o644)
+        except FileExistsError as exc:
+            self._send_error_json(409, "concurrent_edit", str(exc))
+            return 409
+        except Exception as exc:
+            self._send_error_json(500, "write_failed", str(exc))
+            return 500
+        mode = "manual" if enabled is True else "hidden"
+        self._send_json(200, {"ok": True, "mode": mode, "enabled": enabled, "lines": lines})
+        return 200
+
+    def _handle_delete_top(self) -> int:
+        p = _top_override_path(self.soren_root)
+        deleted = False
+        try:
+            if p.is_file():
+                p.unlink()
+                deleted = True
+        except Exception as exc:
+            self._send_error_json(500, "delete_failed", str(exc))
+            return 500
+        self._send_json(200, {"ok": True, "deleted": deleted, "mode": "auto"})
+        return 200
+
+    def _handle_get_preview(self, typ: str, region: str) -> int:
+        if typ not in ("event", "broadcast", "status", "improve"):
+            typ = "event"
+        if region not in ("full", "top", "bottom", "sidebar"):
+            region = "full"
+        if typ == "event":
+            p = _overlay_html_path(self.soren_root)
+            try:
+                html = p.read_text(encoding="utf-8", errors="ignore")
+                mtime = int(p.stat().st_mtime) if p.is_file() else 0
+            except Exception:
+                html = ""
+                mtime = 0
+            self._send_json(200, {"type": typ, "region": region, "path": str(p), "mtime": mtime, "html": html})
+            return 200
+        elif typ == "broadcast":
+            # For broadcast, we return the static HTML source for preview; dynamic state is via /__soren_overlay/broadcast/state but we can embed.
+            # Try to find direct_broadcast_overlay.html
+            cand = self.soren_root / "overlays/direct_broadcast_overlay.html"
+            if not cand.is_file():
+                # try games/soviet_now
+                cand2 = Path(__file__).resolve().parents[2] / "games/soviet_now/overlays/direct_broadcast_overlay.html"
+                if cand2.is_file():
+                    cand = cand2
+            try:
+                html = cand.read_text(encoding="utf-8", errors="ignore") if cand.is_file() else ""
+                mtime = int(cand.stat().st_mtime) if cand.is_file() else 0
+                self._send_json(200, {"type": typ, "region": region, "path": str(cand), "mtime": mtime, "html": html})
+            except Exception as exc:
+                self._send_error_json(500, "read_failed", str(exc))
+                return 500
+            return 200
+        else:
+            p = self.soren_root / f"tmp/state/{'status' if typ=='status' else 'improve'}_overlay.html"
+            try:
+                html = p.read_text(encoding="utf-8", errors="ignore") if p.is_file() else ""
+                mtime = int(p.stat().st_mtime) if p.is_file() else 0
+                self._send_json(200, {"type": typ, "region": region, "path": str(p), "mtime": mtime, "html": html})
+            except Exception as exc:
+                self._send_error_json(500, "read_failed", str(exc))
+                return 500
+            return 200
 
 
 def _dotenv_quote(value: str) -> str:
