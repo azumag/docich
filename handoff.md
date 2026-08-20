@@ -1295,3 +1295,26 @@ VM を読み取り診断。
 - **実測検証（反映後）**: VM上で `core/config.sh` を fresh に source し `STAT_GATE_MODE=off`/`DEAD_EVAL_THRESHOLD=3000`/`MIN_GAMES_FOR_BEST_ROLLBACK=12`/`DEAD_NEAR_TOTAL_RATE=0.90` の期待通りの既定値を確認。両プロセスとも再起動後3分以上安定稼働、`soren_loop.log`/`improve_daemon.log` にエラー・トレースバックなし（`grep -iE "error|traceback|exception"` で該当0件）、`journalctl` にも該当なし。再起動後に**ゲーム2試合が正常完了**（12:16:24 score=894, 12:18:55 score=441）してスコア履歴・戦略バージョン保存・アーカイブが正常動作することを確認。
 - **状態**: Phase 0 の VM 反映は完了。`STAT_GATE_MODE=off`/`INSTADEATH_SPLIT_ENABLED=0` のため統計ゲート・即死分離ロジック自体はまだ無効（Phase 1/2 で別途配線・承認）。`_seed_current_strategy_run_from_rolling` の `CURRENT_RUN_SCORE_KEEP` 修正は次回のロールバック/戦略切替イベントで効果を発揮する見込み（ライブ確認は次のロールバック発生時）。
 - **次のアクション**: 24h 程度 `rolling_scores.json` の comp/p50/p25 が反映前後で bit 一致することを確認（挙動変更ゼロの検証）。Phase 1 以降は別途ユーザー承認を得てから着手。
+
+### 34. 統計ゲート Phase 1 実装 — 即死観測 + quarantine、opus 3ラウンドレビュー完了 (2026-08-20)
+
+**ユーザー指示「phase 1 go」を受けて着手**。設計は opus Plan サブエージェントに委任（VM実データ調査込み）、実装・テスト・レビューはメインセッションで実施。
+
+**実装内容**:
+- `lib/instadeath_monitor.py`（新規）: `tmp/state/instadeath_monitor.json` の唯一のI/O層。全戦略横断・時系列の観測ウィンドウ、by_hash/runs/alert 派生値、quarantine 状態機械（start/clear、`_classify()` は `lib/eval_stats.py` の `classify_instadeath()` を利用）。初回起動時 n=1 での誤発火を防ぐ cold-start ガード実装。
+- `strategy/regression.sh`（`update_rolling_scores`）/ `strategy/improve.sh`（`_update_current_strategy_run`）両方に対称的に `progress` 配列（`scores` と長さ不変条件）と `quarantined_scores`/`quarantined_progress` 退避ロジックを追加。既存の `nation_progress`/`max_types`/`russia_count` 等の派生ロジックには一切手を入れず（anchor選定・objectiveゲートへの影響を避ける、Phase 1の「観測のみ」原則）。`update_rolling_scores` のみが monitor window の書き手（二重計上防止）。
+- `eloop_improve.sh`（wildcard-parallel経路）・`repair_current_run_from_history.sh`（過去試合再生経路）は monitor 更新から除外し、`LAST_RAW_SCORE`/`LAST_TURNS` の汚染を防止。
+- `core/config.sh`/`core/runtime_toggles.sh`: 新設定の export 追加・ホワイトリスト追加。
+
+**opus レビュー3ラウンド**（実装計画→実装→レビュー1→修正→レビュー2→修正→レビュー3で収束）:
+- **レビュー1**（ブロッキング3件発見）: B1 `_instadeath_observe` が dead フラグを monitor の応答から誤って読み取り（dedup/エラー経路で不正確）。B2 quarantine 退避中のアーカイブが `_recent_archives` を汚染し `max_types` 等を破壊。B3 `DEAD_QUARANTINE_RATE=0.30` が実質未使用で実効閾値が3倍過敏（0.10相当）。次善5件も発見。
+- **修正中に自分のテストで新規バグを2件検出**: (1) `_instadeath_observe` 初版で `quarantine_active` と `dead` の AND を取り忘れ、生存試合まで誤って退避。(2) B1修正の初版が bash prefix 環境変数代入（`VAR=x cmd1 | cmd2`）を使っており、これがパイプ2番目のプロセスに伝播しないため機能せず（argv経由に変更して解消）。
+- **レビュー2**（round-2修正の確認、全7件解消を確認）。
+- **レビュー3**（round-3、境界値1件発見: 設計は「即死率 > 0.30」だが実装が `rate < 0.30` で0.30ちょうどが通過してしまう off-by-one。`<=` に修正）。全項目、修正を一時的に戻すとテストが実際に失敗することまで検証。
+- **Phase 2への申し送り事項**（design doc に記録済み）: 最重要は、B3のrateゲートが `q["active"]` の発動だけでなく verdict 算出自体（STRATEGY判定含む）も塞いでいる点。Phase 1では `ref_flags=None` のため実害ゼロだが、Phase 2で anchor 比較を配線すると戦略起因の劣化がサイレントに見逃される恐れがある（Phase 0 の R3 = export漏れと同型の罠）。
+
+**テスト**: `tests/test_instadeath_monitor.py`（18件、pure Python）+ `tests/test_instadeath_split.py`（15件、実際に bash 経由で `update_rolling_scores` 等を呼ぶ統合テスト）+ `tests/test_eval_stats.py` 追加分。全84→続く追加で最終合計、既存の広範なテストスイート（548件）は変更前後で失敗数が完全一致（108失敗+2エラー、新規破壊ゼロ）。
+
+**コミット**: `019738674`（Phase1本体）、`3071a6f91`（round-2修正）、`f663e22b6`（round-3境界値修正）、いずれも soviet_now main へ push 済み。
+
+**状態**: 実装・レビュー完了。**VM反映は次のアクション**（config.sh変更のため全worker完全再起動が必要。VM側で別セッションが `.env` のAIエージェント優先順位を並行変更中だが、私のPhase1変更ファイルとは重複なしを確認済み）。

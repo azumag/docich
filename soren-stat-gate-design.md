@@ -1,7 +1,7 @@
 # 実装設計書: 改善ループの統計的判定 + 即死ゲーム分離
 
 - 作成: 2026-08-20（opus Plan サブエージェントによる設計。コードポインタ・VM 実測事実はメインセッションで裏取り済み）
-- ステータス: **Phase 0 実装完了・opus 3回レビュー済み・soviet_now main へコミット/push 済み（`f59ce8b21`, `6fd3b6326`）・VM 反映完了（2026-08-20 12:19、ユーザー承認・soren_loop/improve_daemon 完全再起動、動作検証済み）。Phase 1 以降は未着手**
+- ステータス: **Phase 0 実装完了・VM反映済み。Phase 1（即死観測・quarantine）実装完了・opus 3回レビュー済み・soviet_now main へコミット/push 済み（`019738674`, `3071a6f91`）。VM 反映は次のアクション。Phase 2 以降は未着手**
 - 背景: 戦績分析（handoff §32 参照）で「改善ループが統計的に区別できない差で採択・棄却・ロールバックを繰り返している」ことが判明したため
 
 ## Phase 0 実装状況（2026-08-20）
@@ -14,6 +14,17 @@
 3. `decide()` の PROMOTE reason 文言 "soft-layer lcb above delta_promote (at alpha_promote)" が若干不正確（実体は alpha_promote 側の値）。
 
 VM への反映（`core/config.sh` を含むため全 worker 完全再起動が必要）は、作業中に**別セッションがこの同じ VM に並行してデプロイしている痕跡**（無関係なコミットが割り込み、未コミット編集4ファイルが一時消失する事故が発生。復旧・再コミット済み）を確認したため一旦保留したが、11:45時点で並行活動が収まっていることを確認した上でユーザー承認を得て **2026-08-20 12:10-12:19 に反映完了**。手順・実測検証結果は handoff.md §33 を参照。soren_loop/improve_daemon を SIGTERM→supervisor respawn で完全再起動し、反映後2試合の正常完了とエラーなしを確認済み。
+
+## Phase 1 実装状況（2026-08-20）
+
+`lib/instadeath_monitor.py`（新規）+ `tests/test_instadeath_monitor.py`（18件）+ `tests/test_instadeath_split.py`（15件、実バッシュ経由の統合テスト）を実装。`strategy/regression.sh`/`strategy/improve.sh` の両関数に `progress` 配列（scores と長さ不変条件）と quarantine 退避ロジックを対称に追加。opus 実装計画→実装→レビュー1（B1-B3ブロッキング3件+次善5件発見）→修正→レビュー2（全7件解消を実測確認、うち2件は「修正を一時的に戻すとテストが実際に落ちる」ことまで検証）という3ラウンドを経て収束。詳細は handoff.md §34、コミットメッセージ（`019738674`, `3071a6f91`）参照。
+
+**Phase 2 で対応すべき事項（今回は非ブロッキングと判定済み、レビュー3回目で発見）**:
+1. **【最重要】B3 の rate ゲート（`_classify()` の `rate <= dead_quarantine_rate → NORMAL`）が STRATEGY 判定も一緒に塞いでいる**。Phase 1 では `classify_instadeath(cur_flags, None, ...)` と `ref_flags=None` で呼ぶため実害ゼロだが、Phase 2 で `ref_flags`（anchor の即死率）を配線すると、即死率20%・anchor 1%のような「戦略起因の劣化」でも `rate(0.20) <= 0.30` でゲートに引っかかり Fisher 検定に到達せずサイレント no-op になる（R3=export漏れと同型の罠）。配線時は rate ゲートを「quarantine (`q["active"]`) の発動可否」だけに限定し、verdict 算出自体（STRATEGY判定含む）は塞がない形に分離すること。
+2. `DEAD_QUARANTINE_CLEAR_WINDOW < DEAD_QUARANTINE_WINDOW` の設定だと start/clear が毎tickフラッピングする（既定値20/20では発生しない）。`CLEAR_WINDOW >= WINDOW` のクランプ、または「verdict が HARNESS のままなら再発動抑制」のガードを検討。
+3. `_instadeath_observe`（monitor書き込み失敗時のフォールバック `divert=0`）と `_instadeath_read_state`（`state()` 読み取り成功時は `active` をそのまま反映）の非対称: monitor ファイルが「読めるが書けない」という狭い条件で rolling/current_run 間に n 非対称が起きうる（発生確率は低い）。
+4. `INSTADEATH_MONITOR_UPDATE=0` の経路（wildcard-parallel・repair）は `diverted_total` をインクリメントしない（`quarantine_meta.count` 側は正しい）。診断表示にのみ影響。
+5. `_merge_rolling_scores_on_normalize` は stale hash 側の `quarantined_scores`/`quarantined_progress` を保持しない（`games_total` は合算されるのに退避記録は失われる）。意図的な仕様として許容中。
 
 ## 0. 事前実測で判明した決定的事実（設計の前提）
 
