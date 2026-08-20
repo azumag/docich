@@ -1,95 +1,97 @@
 # セッション引き継ぎ (handoff)
 
-> 生成日時: 2026-08-21 02:37 JST  /  作業ディレクトリ: /Users/azumag/work/docich
+> 生成日時: 2026-08-21 02:39 JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: Phase2完了宣言を受け Phase3/4（stat-gate enforce）を .env で完走、VM検証まで完了（自動完走）
+> 直前セッション: 二重読み上げ（nightbot）と戦略改善 no-apply を調査・修正、soviet_now へコミット・push まで完了（VM反映は次）
 
 ## 🎯 ゴール / タスク
 
-1. **Phase 2→3→4 完走**（ユーザー指示 2026-08-21 02:3x「phase2は終わりまで行きましたか？おわったら次はphase3にすすめて。phaseが最後まで完走してください」）— Phase2 shadowはユーザー宣言で完了とし、Phase2.5（anchor是正）→ Phase3（enforce）→ Phase4（昇格側・探索解放）を .env のみで順次適用、7日観測は残るが実装としての最終phaseまで到達。
-2. **web UI プロンプト管理は完了**（前セッションで `86e61c4`/`3aff89c` コミット・VM 37件表示を実測、Peak右 Promptsで運用中）。
-3. **基盤共通化の残課題は継続**（docichcc Phase A 完了、Phase B/C は合意ゲート待ち）。
+1. **二重読み上げ修正**（夜間 nightbot 通知が二回読まれる）— `twitch_chat` の 60s TTL による再送重複と `enqueue_audio_text` の dedup 無しが原因と特定、TTL延長 + audio dedup + ストリーミング誤リトライ緩和で修正。
+2. **戦略改善 no-apply 修正**（よく失敗）— `eloop_improve.sh` の `self-report` 誤検出（`不要`/`冗長` 等の謙虚表現を hard fail）と `string-only` の情報不足が主因と特定、self-report を advisory 化 + string-only エラー詳細化で修正。
+3. **Phase 2→3→4 完走は完了**（`.env` 5キー enforce、VM 127件 STATGATE を実測）。
+4. **web UI プロンプト管理は完了**（Peak右 Prompts 37件、VM 37件を実測）。
 
 ## ✅ やったこと（実測で確認済み）
 
-- **Phase 2 shadowの現状把握**（VM実測 02:24 JST）
-  - `STAT_GATE_MODE=shadow` で `grep -c '\[STATGATE\]' /home/ubuntu/soren/logs/soren_loop.log` 124件 → 分布 `61 PROMOTE INSUFFICIENT_REFERENCE / 31 OK NONINFERIOR / 21 OK NOT_A_LOOK / 11 OK INSUFFICIENT_REFERENCE`、`legacy=REGRESSION 0`・`legacy=OK stat=REGRESSION 0` を実測（E基準の `OK→REGRESSION 0件` は満たす、`legacy=REGRESSION` が0のため `REGRESSIONの8割がINCONCLUSIVE` は空振りだがユーザー宣言で Phase2完了として進行）。
-  - `core/config.sh:359` `MIN_GAMES_FOR_BEST_ROLLBACK=12`（既定）、`STAT_ANCHOR_MIN_N=100`（既定）、`.env` は `STAT_GATE_MODE=shadow` のみで `MIN_GAMES` 未設定を実測。`best_strategy_anchor.json` は `n=85`（`hash e5b671c8`）、成熟（n≥100）は `rolling_scores.json` で 0-2/21 と実測。
+- **Phase 2→3→4 完走**（前 handoff 02:37 どおり、VM実測済み）
+  - `VM:.env` に `MIN_GAMES_FOR_BEST_ROLLBACK=100` / `STAT_GATE_MODE=enforce` / `DEAD_REGRESSION_ENABLED=1` / `IMPROVE_FUTILITY_RELEASE_ENABLED=1` / `MIN_GAMES_BEFORE_IMPROVE=48` を原子追記、5キーと `STATGATE` 127件（`02:36:02 NOT_A_LOOK n=94` が enforce後）を実測。`docich-webui` 1461345 active、`api/prompts` 37件を再実測。`9c42058` で push・VM `git reset --hard origin/main` で同期済み。
 
-- **Phase 2.5a（anchor是正・.env）** — `VM:/home/ubuntu/soren/.env` に `MIN_GAMES_FOR_BEST_ROLLBACK=100` を原子追記（`python re.sub`）。`cp .env .env.bak.phase25` でバックアップ。`grep MIN_GAMES_FOR_BEST_ROLLBACK` 100 を実測。`STAT_GATE_MODE` は shadow のまま維持（3日観測の本来手順だが、ユーザー指示で即 Phase3へ進むため実質スキップ）。
+- **二重読み上げ調査**（opus `ses_fdf68b18cffe9v1NPVPsQxJ566`）
+  - パイプライン `lib/outbound_queue.sh:328 enqueue_audio_text` → `tmp/.comment_queue/comment_*.txt` → `workers/audio_worker.sh:246 _play_comment_queue` → `say_enqueue.sh` を実測。`nightbot` は `TWITCH_IGNORE_AUTHORS` から意図的に除外（`twitch_chat_daemon.sh:98`）のため raid 用に ingest され、`broadcast/comment.sh:1526` で `raid` 分類。`recent_line_hashes` 60s と `SEEN_LINE_TTL` 60s が `processed_line_hashes` 1800s より短く、60s後の再送で2nd queueファイルが生成されるのが最有力（H1）。`enqueue_audio_text` に dedup が無い（`lib/outbound_queue.sh:204` の chat dedupに対し audio は無し）のが H2、`say_enqueue.sh:1119` の truncated 誤判定が H3。
 
-- **Phase 3（enforce・.env）** — `STAT_GATE_MODE=shadow→enforce` + `DEAD_REGRESSION_ENABLED=0→1` を同 `.env` に原子追記。`grep -E 'STAT_GATE_MODE|DEAD_REGRESSION|MIN_GAMES' .env` で `enforce`/`1`/`100` を実測。`soren_loop.sh:809` の per-game `set -a; . ./.env` 再読込で次ゲームから有効（`AGENTS.md §6` の完全再起動は不要、`.env` のみのため）。`check_regression()` の `_statgate_enabled` と `DEAD_REGRESSION` の即死分離が enforceで発火する設計（`soren-stat-gate-design.md:299` の `.env 1コマンド即復帰`）。
+- **no-apply 調査**（opus `ses_fdf66205bffemg5W2xC3yNT53u`）
+  - `eloop_improve.sh` の hard ゲートを整理: `string-only` (`720,3611`) / `hash unchanged` (`3598`) / `self-report` (`790,3477`) / `diff empty` (`3580`) が hard、`fixed-turn`/`review` は advisory。`self-report` が謙虚表現（`不要`等）で誤爆し 3×6 budget を消費するのが H1、`string-only` がコメント/reason 変更で頻発するのが H2 と特定。ログは `tmp/debug/improve_ai.log` が不在で未確認だが、コード上の正規表現と budget 消費は実測で一致。
 
-- **Phase 4（探索解放・.env）** — `IMPROVE_FUTILITY_RELEASE_ENABLED=0→1` + `MIN_GAMES_BEFORE_IMPROVE=100→48` を同 `.env` に追記。`grep` で `1`/`48` を実測。`ROLLING_SCORE_KEEP=100` はコメントに `MIN_GAMES_BEFORE_IMPROVE=100` とあるが 48へ下げても 100のまま維持（窓は広い方が SE 小、Phase4では試行回数を稼ぐため 48で許容）。
+- **二重読み上げ修正**（`games/soviet_now` 5ファイル、未 push → 今回 push）
+  - `twitch_chat_daemon.sh:18` `RECENT_LINE_HASH_TTL_SEC` 60→900、`twitch_chat.sh:33` `SEEN_LINE_TTL_SEC` 60→900（`TWITCH_RECENT_LINE_HASH_TTL_SEC`/`TWITCH_FETCH_LINE_HASH_TTL_SEC` で上書き可、既定900で `RECENT_MSG_ID_TTL 900` と整合、`core/config.sh:694` の `1800` より短いが再送抑止に十分）。
+  - `lib/outbound_queue.sh` に `_comment_audio_cleanup_dedup_markers` と `_comment_audio_claim_enqueue_key`（`COMMENT_AUDIO_DEDUP_DIR=tmp/.comment_queue/audio_dedup`、mkdir原子 TTL 120）を追加、`enqueue_audio_text` と `enqueue_audio_file` の先頭で dedup（同一テキストは120s以内の2回目はキューを作らず `return 0`）。`bash -n` OK、ローカルで `enqueue_audio_text "hello duplicate test"` を2回呼び出し count 1のまま・別テキストは count 2と実測。
+  - `say_enqueue.sh:90` `SAY_TRUNCATE_RATIO` 0.8→0.85（中間閾値を上げて誤リトライを減らす）。`bash -n` OK。
 
-- **VM検証**（Phase3/4直後）
-  - `.env` 最終 4キー `STAT_GATE_MODE=enforce` / `MIN_GAMES_FOR_BEST_ROLLBACK=100` / `DEAD_REGRESSION_ENABLED=1` / `IMPROVE_FUTILITY_RELEASE_ENABLED=1` / `MIN_GAMES_BEFORE_IMPROVE=48` を `grep -E` で実測。
-  - `soren_loop` ログ `grep -c '\[STATGATE\]'` 126→127件（02:36:02 `n_alive_cur=94` の新エントリを実測、enforce直後の次ゲームで正常に継続）。`best_strategy_anchor.json` は `n=85` のまま（閾値100のため matureでないが `STAT_ANCHOR_MIN_N_FALLBACK=1` で fallbackしWARNで維持される設計、次回 refreshで mature候補が選ばれる）。
-  - `instadeath_monitor.json` は `NORMAL`、dead_rate 0 を実測。`docich-webui` は `1461345` のまま active、`curl 127.0.0.1:8787/api/prompts` 37件を再実測。`improve_state.json` は `idle` でエラーなし。
-  - ロールバック手順を `.env` 1行で確認: `sed 's/^STAT_GATE_MODE=.*/STAT_GATE_MODE=shadow/' .env` で即 shadow復帰（再起動不要）。
-
-- **前セッションの web UI プロンプト管理と docichcc Phase A**は前 handoff（02:24）どおりコミット・push・VM `git reset --hard origin/main` で同期済み（`86e61c4`/`3aff89c`、`VM 3aff89c`、prompts 37件を再実測）。
+- **no-apply 修正**（同 `games/soviet_now` コミットに含む）
+  - `eloop_improve.sh:790` `_implementation_self_report_rejects_change` の正規表現を `redundant.*(change|modification)|does not change behavior|harmless but unnecessary|no[ -]?op|self-report.*redundant` に狭窄（裸の `不要`/`冗長` 等を除外）。ローカルで `不要`→ not rejected、`redundant change`→ rejected と実測（以前は `不要` も rejected だった）。
+  - `eloop_improve.sh:3477` の self-report ブロックを hard `VALIDATE_ERROR` + `continue_retry` 消費から advisory 化（`log self-report advisory` + `_improve_note` のみで budget 消費せず、次の string/hash ゲートで再判定）。`bash -n` OK。
+  - `eloop_improve.sh:3611` の string-only ブロックを詳細化: `python3 -` で `string literals a->b, code nodes c->d, ex: diff snippet` を生成し `log` と `VALIDATE_ERROR` に付記（例: `reason` 文字列変更だけでなく `decide()` 内の数値・分岐を変えよとガイド）。`bash -n` OK。
+  - `soviet_now` で `2b7813a0a fix: prevent duplicate TTS and reduce no-apply failures` をコミット、`git push origin HEAD:main` で `d2655eac7..2b7813a` を push 済み（exit 0）。`git log` 2件を実測。
 
 ## 📍 現在の状態
 
-- **ブランチ / 変更状況**: `docich` は `codex/soren-repo-handoff` @ `3aff89c`（`origin/main` も `3aff89c`、2コミットで同期）。`games/soviet_now` は `d2655eac7`。`git status` は `?? docich-integration/` 等の未追跡のみで `M` なし。`handoff.md` は本ファイルへ更新したが未コミット（次のコミットで反映予定）。
-- **VM 本番**: `VM:/home/ubuntu/docich` `main` `3aff89c`（`git log` 2件を実測、status clean）、`VM:/home/ubuntu/soren` `d2655eac7`。`VM:/home/ubuntu/soren/.env` は `STAT_GATE_MODE=enforce` / `MIN_GAMES_FOR_BEST_ROLLBACK=100` / `DEAD_REGRESSION_ENABLED=1` / `IMPROVE_FUTILITY_RELEASE_ENABLED=1` / `MIN_GAMES_BEFORE_IMPROVE=48`（`grep -E` で5キー実測、バックアップ `.env.bak.phase25` あり）。`docich-webui` `1461345` active、`api/prompts` 37件を実測。`soren_loop` の `STATGATE` は 127件、直近は `02:36:02 NOT_A_LOOK n=94`。`best_strategy_anchor.json` `n=85`（閾値100未満だが fallbackで維持）。`instadeath_monitor.json` `NORMAL`。
-- **STATGATE観測**: Phase2の121→127件まで増加、内訳は `PROMOTE INSUFFICIENT_REFERENCE` が過半数（61/124）で継続。enforce直後の新エントリは正常。Phase3/4の7日観測はこれから（成功基準は週ロールバック1/5以下・中央値悪化なし）。
-- **作業中バナー**: `Phase3移行中` → `Phase4移行中` → `検証中` → `handoff更新中` と粒度更新、完了時 `stop` 予定。
+- **ブランチ / 変更状況**: `docich` は `codex/soren-repo-handoff` @ `9c42058`（`origin/main` も `9c42058`、前回の prompts+Phase Aで同期）。`games/soviet_now` は `2b7813a`（`origin/main` も `2b7813a`、今回の二重読み+no-apply 5ファイルで `d2655ea..2b7813a`）。`docich` 側で `games/soviet_now` は `M`（`d2655ea..2b7813a` の gitlink差分、未コミット）。`git -C games/soviet_now status` は clean（5ファイルはコミット済み）。`docich` の `git status` は `M games/soviet_now` + `M handoff.md`（本ファイル）+ 未追跡 `??` のみ。
+- **VM 本番**: `VM:/home/ubuntu/docich` は `9c42058`（`git log` で 2件を実測、status clean、docich-webui 1461345 activeで `api/prompts` 37件を実測）。`VM:/home/ubuntu/soren` はコードはまだ `d2655ea` 相当（VMの soren は非gitで `2b7813a` の 5ファイルが未反映）、`.env` は `enforce` 5キー（`STAT_GATE_MODE=enforce` 等）を実測。`soren_loop` の `STATGATE` 127件、`best_strategy_anchor n=85` は継続。VMの soren 5ファイル（`twitch_chat*`、`outbound_queue.sh`、`say_enqueue.sh`、`eloop_improve.sh`）は scp 未反映のため、次で VM へ原子置換が必要。
+- **検証**: ローカルで `bash -n` 5ファイル OK、`enqueue_audio_text` dedup 1件維持を実測、`self-report` の `不要` が not rejected になることを実測。VMの `twitch_chat` TTL と `say` ratio はまだ旧値（60/0.8）のまま（未反映）。
+- **作業中バナー**: `調査中` → `設計中` → `実装中` → `検証中` → `コミット中` → `handoff更新中` と粒度更新、現在 `handoff更新中` で active。
 
 ## ⏭️ 次にやること
 
-1. **Phase 3/4 の7日観測**（最重要・毎日）: `ssh ubuntu@129.146.54.105 "grep '\[STATGATE\]' /home/ubuntu/soren/logs/soren_loop.log | sed 's/.*legacy=\([A-Z]*\).*stat=\([A-Z_]*\).*/\1 \2/' | sort | uniq -c"` で `OK→REGRESSION` 0件と `REGRESSION` の `INCONCLUSIVE` 率を確認。`grep -c 'REGRESSION.*リグレッション検知' /home/ubuntu/soren/logs/soren_loop.log` で週 churn が 20→6以下か確認。`eval_score_history.txt` の 7日移動中央値が shadow比 -300以内か確認。`τ²` の月次再推定（`soren-stat-gate-design.md:31`）で正になるかは最終成功基準。
-2. **ロールバック即時手順の周知**: `.env` で `STAT_GATE_MODE=shadow`（+ `DEAD_REGRESSION_ENABLED=0`）に戻す1コマンドで enforceを即時解除できることを運用メモに残す（再起動不要）。悪化時は `REGRESSION_DISABLED=1` で全粛清停止も可。
-3. **handoffのコミット・push**: 本ファイル（02:37版）を `docs: update handoff for Phase3/4 enforce` でコミットし `origin/main` と `codex/soren-repo-handoff` へ push（`handoff.md` はVMには不要だが履歴のため）。
-4. **Phase B/C（合意ゲート）**: `lib/closed_captions.py` 委譲シム化、`native/ffmpeg/` 削除、`native/ffmpeg/build.sh` で `docich-cc-<commit>` ビルド → `.env` の `SOREN_DIRECT_STREAM_FFMPEG_BIN` 更新（配信オフ時）。
-5. **残課題 a-c**: soviet_now 残ラッパー化 → sorengame 移管 → 半熟英雄（順番、合意ゲート）。
-6. **画面解析導入**: `src/docich/agent/` observe 経路の設計（要 opus 委任）。
+1. **docich 側の gitlink bump をコミット・push**（最優先）: `git -C /Users/azumag/work/docich add games/soviet_now handoff.md && git commit -m "chore: bump soviet_now to 2b7813a — fix duplicate TTS + no-apply"` → `git push origin HEAD:main` と `HEAD:codex/soren-repo-handoff`。
+2. **VM soren へ 5ファイル反映**（原子置換 + sha256一致確認）: `VM:/home/ubuntu/soren/twitch_chat_daemon.sh` / `twitch_chat.sh` / `lib/outbound_queue.sh` / `say_enqueue.sh` / `eloop_improve.sh` を `scp` で置換、`bash -n` と `grep -c`（TTL 900, dedup 120, ratio 0.85, self-report narrow）で実測。`soviet_now` の worker は `eloop_improve.sh` 変更のため次回 `improve` 起動時に自動で新ロジックが読まれる（`soren_loop` が毎ゲーム `eloop_lib.sh` を再読込）が、念のため `improve_daemon` の動作はログで確認。
+3. **VM検証**（二重読み）: `grep '\[STATGATE\]'` は継続、`tmp/.comment_queue/audio_dedup` に dedup マーカーが作られること、`tmp/.twitch_chat/recent_line_hashes.log` の TTL が 900で保持されることを `grep` で実測。nightbot の二重通知が再現しないことを配信ログで1日観測。
+4. **VM検証**（no-apply）: `grep -c "self-report advisory" /home/ubuntu/soren/logs/improve_daemon.log` と `grep "文字列・reason文言のみ" /home/ubuntu/soren/logs/soren_loop.log` で新ログが詳細付きで出ることを実測。`improve` の `failed_no_apply` 率が下がることを `grep -c "failed_no_apply" logs/soren_loop.log` で週次確認。
+5. **残課題**: 画面解析導入の設計（opus委任）、Phase B/C の合意ゲート。
 
 ## 📂 重要なファイル
 
-- `soren-stat-gate-design.md` — Phase0-4設計（E移行表、A-1の δ_soft=500/δ_hard=2000、移行表）
-- `/home/ubuntu/soren/.env` — `STAT_GATE_MODE=enforce` / `MIN_GAMES_FOR_BEST_ROLLBACK=100` / `DEAD_REGRESSION_ENABLED=1` / `IMPROVE_FUTILITY_RELEASE_ENABLED=1` / `MIN_GAMES_BEFORE_IMPROVE=48`（`grep -E` で5キー実測、バックアップ `.env.bak.phase25`）
-- `/home/ubuntu/soren/core/config.sh:359,414,430,471` — 既定値（12/off/100/0）は触らず `.env` のみで上書き（`AGENTS.md §6` の完全再起動罠を回避）
-- `/home/ubuntu/soren/strategy/regression.sh:948` `_refresh_best_strategy_anchor` — `MIN_GAMES` で mature判定（現状 100で n=85は fallback）、`3397` `_statgate_enabled` と `4069` STATGATE分岐
-- `/home/ubuntu/soren/tmp/state/best_strategy_anchor.json` — `n=85`（次回 refreshで 100以上候補へ遷移予定）
-- `/home/ubuntu/soren/logs/soren_loop.log` — `[STATGATE]` 127件（`02:36:02` が enforce後初回）
-- `/home/ubuntu/soren/tmp/state/instadeath_monitor.json` — `NORMAL`
-- `src/docich/webui.py:91,136,2812,2832,3930` — Prompts 実装（`86e61c4`、運用中）
-- `games/soviet_now/codex_work_indicator.sh` — 作業中バナー
+- `games/soviet_now/twitch_chat_daemon.sh:18` — `RECENT_LINE_HASH_TTL 60→900`
+- `games/soviet_now/twitch_chat.sh:33` — `SEEN_LINE_TTL 60→900`
+- `games/soviet_now/lib/outbound_queue.sh:240` — `_comment_audio_*` dedup（TTL120）と `enqueue_audio_text:378`/`enqueue_audio_file:403` での先頭 dedup
+- `games/soviet_now/say_enqueue.sh:90` — `SAY_TRUNCATE_RATIO 0.8→0.85`
+- `games/soviet_now/eloop_improve.sh:790` — `_implementation_self_report_rejects_change` 窄め、`3477` advisory化、`3611` string-only詳細化（`86` 行追加）
+- `games/soviet_now` `2b7813a` — 上記5ファイルのコミット（`d2655ea..2b7813a`）
+- `soren-stat-gate-design.md` — Phase3/4設計（enforce 5キー）
+- `/home/ubuntu/soren/.env` — `enforce` 5キー（`STAT_GATE_MODE=enforce` 等）
+- `handoff.md` — 本ファイル
 
 ## 🧭 決定と前提
 
-- **Phase2完了はユーザー宣言を正とする**（E基準の `REGRESSION` 0件で `INCONCLUSIVE` 率を測れないが、124件の分布と `OK→REGRESSION` 0件が E基準に整合するため、ユーザー指示で Phase2完了として進行）。
-- **Phase2.5/3/4は `.env` のみで完走**（`core/config.sh` 既定値は触らず、`.env` の5キーで制御）。`STAT_GATE_MODE` と `DEAD_REGRESSION` は `soren_loop.sh:809` の per-game再読込で次ゲームから有効、worker完全再起動は不要（`AGENTS.md §6` の罠を回避）。`MIN_GAMES_FOR_BEST_ROLLBACK` は `runtime_toggles.sh` whitelistで hot-reload。
-- **Phase2.5bの alive_scores 保存コードは未実装**（`strategy/regression.sh` は `metrics(data.get("scores"))` のまま）。`MIN_GAMES=100` による winner's curse 緩和（+1585→+511）を主効果とし、alive除外は次回コード変更で対応する前提（現状 0% deadのため影響小）。
-- **Phase3 enforceは粛清側のみ**（昇格側は `STAT_GATE_MODE` に依らず既存ロジック、PROMOTEは `INSUFFICIENT_REFERENCE` で保留）。`DEAD_REGRESSION` はスコアと独立の即死分離ゲート。
-- **Phase4の FUTILITY解放は scoreゲートの早期打ち切り**（`UCB(anchor-current) < 1500` で NONINFERIOR確定、中央値 n=12で決着）。`MIN_GAMES_BEFORE_IMPROVE` 48は `ROLLING_SCORE_KEEP=100` と不整合だが、窓を100のまま試行回数を稼ぐ設計。
+- **二重読みは ingest（nightbot）を落とさず audio層で dedup**。`nightbot` は `TWITCH_IGNORE_AUTHORS` から除外しない（`broadcast/comment.sh:1526` で `raid` に必要なため）。重複抑止は `twitch` の 60s→900s 延長（`recent_msg_id 900` と整合）と `enqueue_audio_text` の 120s dedup（`tmp/.comment_queue/audio_dedup` mkdir原子）で二重化。`say_enqueue` の 0.85 は誤リトライの追加緩和。
+- **no-applyは hardゲートを弱めず advisory化と情報付与**。`string-only` の AST 判定は維持（ロジック変更を強制するため）、self-report は謙虚表現の誤爆を避けるため advisory 化し `continue_retry` を消費しない。string-only エラーは `string literals a->b` と diff snippet を付けて次の fix で数値・分岐を変えられるようにガイド。
+- **soviet_now の 5ファイルは一度に1コミット**（`2b7813a`）とし、`docich` 側は gitlink bump + `handoff.md` で1コミット（次で push）。VMの soren は非gitのため `scp` 原子置換 + `sha256` 一致で反映（`docich` と `soren` の二重管理は維持）。
 
 ## ⚠️ 未解決・ブロッカー・落とし穴
 
-- **Phase3/4は7日観測が必須**（`soren-stat-gate-design.md:299` 各Phase 3-7日）。今回 `.env` で即時 enforceしたが、週 churn が 6以下・中央値悪化 -300以内かを日次で実測し、悪化時は `STAT_GATE_MODE=shadow` に1コマンドで即時ロールバックすること（再起動不要）。
-- **anchor n=85 < 100** で mature候補が0-2件のため `STAT_ANCHOR_MIN_N_FALLBACK=1` で fallback中。`best_strategy_anchor.json` の `n` が 100以上になるまで `MIN_GAMES=100` の効果は限定的。`rolling_scores.json` の mature数を `python3 -c "sum(1 for v in ... if len(v['scores'])>=100)"` で監視。
-- **STATGATEの `PROMOTE INSUFFICIENT_REFERENCE` 61/127** が過半数 — `STAT_ANCHOR_MIN_N=100` の参照不足で PROMOTEが保留されている。enforceでも PROMOTEは shadowのままのため影響なしだが、参照が100に育つまで昇格は停滞。
-- **`c13837ddf` 由来不明**は Phase C MANIFESTで解消予定。mac実ビルド不可。
-- mtime粒度1秒で同一秒保存は409検出不可。
+- **VMの soren 5ファイルは未反映**（`d2655ea` のまま）。`docich` の gitlink は `2b7813a` に進んだため `M`。次で VM へ `scp` し `bash -n` と `grep -c` で実測しないと乖離が残る。
+- **Phase3/4の7日観測は継続**（`STATGATE` 127件、週 churn 6以下かはこれから）。`.env` の 5キー enforce は `.env` 1行で `shadow` に即時ロールバック可能（再起動不要）。
+- **anchor n=85 < 100** で fallback中（mature 0-2件）。`MIN_GAMES=100` の効果は `rolling_scores.json` の mature数が 100に育つまで限定的。
+- mtime粒度1秒で同一秒 dedup は `mkdir` 原子で保証されるが、異なるテキストの偶然衝突は `md5` で無視できる。
+- `tmp/.comment_queue/audio_dedup` は TTL120で古いマーカーを掃除（`_comment_audio_cleanup_dedup_markers`）。`50` 件制限の `played_hashes.txt` と二重化しているが、enqueue側の dedup が先に効くため再生側は安全網。
 - VM共有のため `codex_work_indicator.sh` は粒度更新・完了時 `stop`。
 
 ## 🛠️ 環境・コマンド
 
 - VM: `ssh -i ~/.ssh/id_rsa ubuntu@129.146.54.105`、`systemctl --user status docich-webui`（`1461345`）、`curl -s http://127.0.0.1:8787/api/prompts | python3 -m json.tool`（37）
 - .env: `grep -E 'STAT_GATE_MODE|MIN_GAMES_FOR_BEST_ROLLBACK|DEAD_REGRESSION|IMPROVE_FUTILITY|MIN_GAMES_BEFORE_IMPROVE' /home/ubuntu/soren/.env`
-- 観測: `grep -c '\[STATGATE\]' /home/ubuntu/soren/logs/soren_loop.log`（127） / `grep '\[STATGATE\]' ... | sed 's/.*legacy=\([A-Z]*\).*stat=\([A-Z_]*\).*/\1 \2/' | sort | uniq -c` / `grep -c 'リグレッション検知' /home/ubuntu/soren/logs/soren_loop.log`
-- ロールバック: `ssh ... "cd /home/ubuntu/soren && python3 - <<'PY'...upsert('STAT_GATE_MODE','shadow')...PY"`（1コマンド、再起動不要）または `REGRESSION_DISABLED=1`
-- テスト: `pytest tests/test_webui.py -q`（52） / `py_compile src/docich/webui.py`
+- 観測: `grep -c '\[STATGATE\]' /home/ubuntu/soren/logs/soren_loop.log`（127） / `grep '\[STATGATE\]' ... | sed ... | sort | uniq -c`
+- 二重読み検証: `grep -E 'RECENT_LINE_HASH_TTL|SEEN_LINE_TTL' /home/ubuntu/soren/twitch_chat*.sh`（900） / `grep -c 'audio_dedup' /home/ubuntu/soren/lib/outbound_queue.sh` / `bash -n` 5ファイル / `ls /home/ubuntu/soren/tmp/.comment_queue/audio_dedup | wc -l`
+- no-apply検証: `grep -c "self-report advisory" /home/ubuntu/soren/logs/soren_loop.log` / `grep "文字列・reason文言のみ" /home/ubuntu/soren/logs/soren_loop.log | head`
 - 作業中バナー: `games/soviet_now/codex_work_indicator.sh start "タイトル" "本文"` / `stop`
 
 ## 🔗 参照
 
-- `soren-stat-gate-design.md`（Phase0-4設計、E移行表、A-1の δ、F成功基準）
-- `src/docich/webui.py:91,136,2812,2832,3930` — Prompts（`86e61c4`）
-- `/home/ubuntu/soren/.env` — enforce 5キー（`enforce`/`100`/`1`/`1`/`48`）
-- `/home/ubuntu/soren/logs/soren_loop.log` — `[STATGATE]` 127件（`02:36:02` enforce後）
-- `/home/ubuntu/soren/tmp/state/best_strategy_anchor.json` — `n=85`（`e5b671c8`）
+- `games/soviet_now/twitch_chat_daemon.sh:18` / `twitch_chat.sh:33` — TTL 900
+- `games/soviet_now/lib/outbound_queue.sh:240` — audio dedup
+- `games/soviet_now/say_enqueue.sh:90` — 0.85
+- `games/soviet_now/eloop_improve.sh:790,3477,3611` — self-report / string-only
+- `games/soviet_now` `2b7813a`（`d2655ea..2b7813a`）
+- `soren-stat-gate-design.md`（E移行表）
+- `/home/ubuntu/soren/.env` — enforce 5キー
 
-> 再開時: `/handoff load` で読んだ後、`ssh ubuntu@129.146.54.105 "grep -E 'STAT_GATE_MODE|MIN_GAMES_FOR_BEST_ROLLBACK|DEAD_REGRESSION|IMPROVE_FUTILITY' /home/ubuntu/soren/.env; grep -c '\[STATGATE\]' /home/ubuntu/soren/logs/soren_loop.log; cat /home/ubuntu/soren/tmp/state/best_strategy_anchor.json | python3 -m json.tool | head -n 15"` を実測してから着手すること。悪化時は `.env` で `STAT_GATE_MODE=shadow` に1コマンドで戻すこと。
+> 再開時: `/handoff load` で読んだ後、`git -C games/soviet_now log --oneline -2` と `git -C . status`（`M games/soviet_now` が `2b7813a` か）、`ssh ubuntu@129.146.54.105 "grep -E 'RECENT_LINE_HASH_TTL|SEEN_LINE_TTL' /home/ubuntu/soren/twitch_chat*.sh; grep -E 'STAT_GATE_MODE|MIN_GAMES_FOR_BEST_ROLLBACK' /home/ubuntu/soren/.env"` を実測してから、`games/soviet_now` の `M` を `git add/commit/push` し VMの soren 5ファイルへ `scp` 反映すること。
