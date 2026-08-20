@@ -1317,4 +1317,12 @@ VM を読み取り診断。
 
 **コミット**: `019738674`（Phase1本体）、`3071a6f91`（round-2修正）、`f663e22b6`（round-3境界値修正）、いずれも soviet_now main へ push 済み。
 
-**状態**: 実装・レビュー完了。**VM反映は次のアクション**（config.sh変更のため全worker完全再起動が必要。VM側で別セッションが `.env` のAIエージェント優先順位を並行変更中だが、私のPhase1変更ファイルとは重複なしを確認済み）。
+**状態**: 実装・レビュー完了。
+
+**VM反映完了 (2026-08-20 13:52-13:58, ユーザー承認済み「phase 1 go」で実施)**:
+- デプロイ前チェック: VM上の対象8ファイル（Phase 0で反映済みの分）がローカルの `6fd3b6326`（Phase0時点）と全てsha256一致することを確認（他セッションによる不整合なし）。VM側で別セッションが `.env` のAIエージェント優先順位を並行変更中（13:40, 13:46）だったが、対象ファイルとは重複しないことを確認済み。
+- 手順: `tmp/deploy-backups/stat-gate-phase1_20260820_135244/` へ既存8ファイルをバックアップ → 新規/変更11ファイル（`core/config.sh`, `core/runtime_toggles.sh`, `eloop_improve.sh`, `lib/eval_stats.py`, `lib/instadeath_monitor.py`, `repair_current_run_from_history.sh`, `strategy/improve.sh`, `strategy/regression.sh`, `tests/test_eval_stats.py`, `tests/test_instadeath_monitor.py`, `tests/test_instadeath_split.py`）を `.new` として転送 → sha256一致確認 → `bash -n`/`python3 ast.parse` 構文確認 → atomic replace → 反映後sha256再確認 → VM上で `python3 -m unittest tests.test_eval_stats tests.test_instadeath_monitor tests.test_instadeath_split` 実行し86件全PASSを確認。
+- **完全再起動**: `soren_loop.sh`(旧PID 1572098)・`improve_daemon.sh`(旧PID 1576480)に SIGTERM → supervisor 自動 respawn（新PID: soren_loop=2566929, improve_daemon=2567158）。chat_worker/radio_worker は対象外のため未タッチ（稼働継続確認済み、uptime 2h17m超）。
+- **実測検証**: 反映後 `INSTADEATH_SPLIT_ENABLED=0`（既定のまま）を確認。再起動後4分以上安定稼働、ゲーム1試合が正常完了（13:58:40 score=1262）。`grep -c INSTADEATH logs/soren_loop.log` = 0、`instadeath_monitor.json` 不存在 — flag=off で完全に無変更であることを実測確認。`journalctl`・各種ログにエラー・トレースバックなし。
+- **状態**: Phase 1 の VM 反映は完了。`INSTADEATH_SPLIT_ENABLED=0` のため即死観測・quarantine 機構自体はまだ無効。有効化は `.env` に `INSTADEATH_SPLIT_ENABLED=1` を1行追加するだけで次の試合から反映される（`soren_loop.sh` が毎試合 `.env` を re-source するため worker 再起動は不要）。
+- **次のアクション**: しばらく `INSTADEATH_SPLIT_ENABLED=0` のまま運用し異常がないことを確認した後、ユーザー承認を得て `.env` で有効化 → `instadeath_monitor.json` の生成・`dead_rate=0`（直近クリーン期間の想定）を実測確認。Phase 2（統計ゲート shadow 化）以降は別途承認を得てから着手。
