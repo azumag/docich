@@ -311,6 +311,8 @@ def _validate_overlay_event(ev: dict[str, Any]) -> dict[str, Any]:
     title = _sanitize_overlay_text(str(ev.get("title", "")), OVERLAY_TITLE_LIMIT)
     if not title:
         raise ValueError("titleは必須です")
+    if "\n" in title or "\r" in title:
+        raise ValueError("titleに改行は使用できません")
     body = _sanitize_overlay_text(str(ev.get("body", "")), OVERLAY_BODY_LIMIT)
     level = str(ev.get("level", "info")).strip() or "info"
     if level not in ("info", "warn", "error"):
@@ -2445,13 +2447,13 @@ class _Handler(BaseHTTPRequestHandler):
         status = 200
         parsed = urllib.parse.urlparse(self.path)
         try:
-            if self.read_only:
-                status = 403
-                self._send_error_json(403, "read_only", "read-only mode")
-                return
             if not self._check_auth():
                 status = 401
                 self._send_error_json(401, "unauthorized")
+                return
+            if self.read_only:
+                status = 403
+                self._send_error_json(403, "read_only", "read-only mode")
                 return
             if parsed.path == "/api/config":
                 status = self._handle_put_config()
@@ -2473,13 +2475,13 @@ class _Handler(BaseHTTPRequestHandler):
         status = 200
         parsed = urllib.parse.urlparse(self.path)
         try:
-            if self.read_only:
-                status = 403
-                self._send_error_json(403, "read_only")
-                return
             if not self._check_auth():
                 status = 401
                 self._send_error_json(401, "unauthorized")
+                return
+            if self.read_only:
+                status = 403
+                self._send_error_json(403, "read_only")
                 return
             if parsed.path.startswith("/api/backoffs/"):
                 # /api/backoffs/<sanitized>
@@ -2509,13 +2511,13 @@ class _Handler(BaseHTTPRequestHandler):
         status = 200
         parsed = urllib.parse.urlparse(self.path)
         try:
-            if self.read_only:
-                status = 403
-                self._send_error_json(403, "read_only")
-                return
             if not self._check_auth():
                 status = 401
                 self._send_error_json(401, "unauthorized")
+                return
+            if self.read_only:
+                status = 403
+                self._send_error_json(403, "read_only")
                 return
             if parsed.path == "/api/backoffs/clear":
                 status = self._handle_clear_all_backoffs()
