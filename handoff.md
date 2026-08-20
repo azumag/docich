@@ -1326,3 +1326,12 @@ VM を読み取り診断。
 - **実測検証**: 反映後 `INSTADEATH_SPLIT_ENABLED=0`（既定のまま）を確認。再起動後4分以上安定稼働、ゲーム1試合が正常完了（13:58:40 score=1262）。`grep -c INSTADEATH logs/soren_loop.log` = 0、`instadeath_monitor.json` 不存在 — flag=off で完全に無変更であることを実測確認。`journalctl`・各種ログにエラー・トレースバックなし。
 - **状態**: Phase 1 の VM 反映は完了。`INSTADEATH_SPLIT_ENABLED=0` のため即死観測・quarantine 機構自体はまだ無効。有効化は `.env` に `INSTADEATH_SPLIT_ENABLED=1` を1行追加するだけで次の試合から反映される（`soren_loop.sh` が毎試合 `.env` を re-source するため worker 再起動は不要）。
 - **次のアクション**: しばらく `INSTADEATH_SPLIT_ENABLED=0` のまま運用し異常がないことを確認した後、ユーザー承認を得て `.env` で有効化 → `instadeath_monitor.json` の生成・`dead_rate=0`（直近クリーン期間の想定）を実測確認。Phase 2（統計ゲート shadow 化）以降は別途承認を得てから着手。
+
+**INSTADEATH_SPLIT_ENABLED=1 有効化 (2026-08-20 14:35、ユーザー承認「反映して」で実施)**:
+- `.env` にバックアップ（`.env.bak.stat-gate-phase1-enable.*`）を取った上で `INSTADEATH_SPLIT_ENABLED=1` を追記。`soren_loop.sh` が毎試合 `.env` を re-source するため worker 再起動は不要（設計通り）。
+- **実測検証（本番データで確認）**: 有効化後2試合が正常完了（14:40:33 score=1316, 14:43:52 score=1183）。
+  - `tmp/state/instadeath_monitor.json` が新規生成され、`window` に2件・`games_seen=2, dead_seen=0`・`quarantine.evaluated=False`（`DEAD_QUARANTINE_WINDOW=20`未満のためcold-startガードが正しく機能、誤発火なし）を確認。
+  - `rolling_scores.json`/`current_strategy_run.json` 両方の稼働中hash（`e5b671c8d352`）に `progress` 配列が生成され、`scores`（長さ100）と完全に同じ長さで同期していることを確認。最新レコードは `{s:11182, raw:1316, turns:80, d:0, t:13, r:0, v:0}` で、実際のゲーム結果（raw score 1316等）と正確に一致。rolling側とcurrent_run側で同一試合のレコード内容が一致（対称性、handoff §13の教訓通り）。
+  - `logs/soren_loop.log` にエラー・トレースバック0件。
+- **状態**: Phase 1 完全稼働中。即死観測・quarantine機構が実際にライブデータを記録し始めた。直近の即死率は実測ゼロ（8/11以降の傾向と整合）ため、quarantine発火は当面発生しない見込み。
+- **次のアクション**: 24h程度、`instadeath_monitor.json` の `dead_seen`/`by_hash` 推移と `[INSTADEATH]` ログ（QUARANTINE START等が出ないこと）を継続監視。Phase 2（統計ゲート shadow 化・`STAT_GATE_MODE=shadow`）は別途ユーザー承認を得てから着手。
