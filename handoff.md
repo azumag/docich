@@ -240,9 +240,10 @@
 
 - **現在の常駐系**: `soren-runtime.service` はactive。Loop/ChatW/YouTubeW/AudioW/RadioW/PredW/ImproveDは各1本、重複検知stateも`status=ok`。FFmpeg direct streamは`running=true`、字幕`active=true/requested=true`。VoiceVox・LiteLLM・WebUIも稼働中。
 - **設定ONだが機能単位で未稼働**: YouTube Chatはworker自体は動くが`last_poll=-`、`activeLiveChatId`解決失敗の900秒backoff、OAuth refresh `invalid_grant`。Twitch Chatは受信/IRC接続は動く一方、送信はAPI/IRCとも`Invalid OAuth token`/`Login authentication failed`。Twitch Adsは`TWITCH_ADS_ENABLED=1`だが直近API GETがHTTP401で、成功snooze実績なし。改善daemonはaliveだがstateが`failed_no_apply:rate_limited`、primary利用上限でfallbackなし。
-- **バッチ解説**: `BATCH_COMMENTARY_ENABLED=1`・閾値48。現在の蓄積は36/48で、今は閾値待ち。直前の48試合バッチは`RADIO:batch_commentary`の`__invalid_agent__`失敗記録のみで、done/explanation/audio投入を確認できないため未達（現チェーン設定はnon-empty）。
+- **バッチ解説**: `BATCH_COMMENTARY_ENABLED=1`・閾値48。現在の蓄積は38/48で、今は閾値待ち。直前の48試合バッチは`RADIO:batch_commentary`の`__invalid_agent__`失敗記録のみで、done/explanation/audio投入を確認できないため未達（現チェーン設定はnon-empty）。
 - **意図的に動いていない設定**: `GAME_RESULT_CHAT_ENABLED=0`（試合ごとの自動投稿停止）、`SOREN91_ENABLED=0`、`RADIO_BRIEFING_ENABLED=0`、旧peak-hour defer/改善後parallel系の0設定。OBS unit inactiveも、現在の`SOREN_STREAM_BACKEND=ffmpeg`では想定どおりで、配信と字幕はFFmpeg側で稼働。
-- **動作中だが要観測**: Twitch Predictions APIはHTTP200で予想作成済み、現在remote statusは`LOCKED`。30分の受付終了後で、サイクル36/48のため解決待ちと判定（自動投票は07:09に63pt成功）。Radio worker/Audio workerは動作し、生成も再生も進むがdeferred queueは47件で古い項目が滞留。
+- **動作中だが要観測**: Twitch Predictions APIはHTTP200で予想作成済み、現在remote statusは`LOCKED`。30分の受付終了後で、サイクル38/48のため解決待ちと判定（自動投票は07:09に63pt成功）。Radio worker/Audio workerは動作し、生成も再生も進むがdeferred queueは直近確認で42件、古い項目が滞留。
+- **表示履歴の注意**: `viewer_chat_monitor.json` の最新履歴には旧形式の`[36/100]`メッセージが残っていたが、現行のoverlay・蓄積state・予想タイトルは48基準。これは過去チャット履歴であり、現行カウンターの値ではない。
 - **一時障害**: 07:38:07にruntime全体のTERM停止、07:39:21にsystemdが自動起動。現在は復帰しているが、停止契機はjournal上で特定できていない。今回の調査では再起動操作は行っていない。
 
 ## 2026-08-21 07:54 JST — Score Timelineのブラウザ表示をスパークラインへ再修正・VM反映
@@ -256,3 +257,11 @@
   `396└──────────────────────────────────────────`
 - **テスト**: `tests.test_score_timeline`、`tests.test_status_dashboard_founding_rate`の25件、direct broadcast overlay Node 11件、dashboard関連escape 3件、`py_compile`、`git diff --check`が成功。
 - **作業報告音声**: 今回専用の「score timelineのブラウザ表示がまだ崩れる原因を確認し、点字グリフを使わない表示へ修正しています。」をVMへ重複抑止付きでenqueue。VM `tmp/state/overlay_events.jsonl` の07:52:35 `コメント返信 playback`イベントで再生を確認した。ラジオレンダー負荷のため投入直後は待機していたが、キュー残存なしになった。
+
+## 2026-08-21 08:10 JST — Score Timelineの時間軸・上下スケールを復元・VM反映
+
+- **再評価**: 一行の強度文字列は左から右の傾向しか示さず、上下のスコア位置と時間方向が読み取りにくかったため、タイムラインとして不十分と判断した。
+- **実装**: `render_score_timeline()` を7段のブラウザ対応テキスト折れ線へ変更。直近100件を横幅42区間へ平均化し、`2825`/`396`の上下ラベル、`old -> now`の見出し、横軸、`old`/`now`目盛りを表示する。Brailleは使わず、`*`, `/`, `\\`, `-`と軸文字で描画する。
+- **リポジトリ**: `soviet_now` `5ea608039`（実装 `d791e5494`を含む）を`origin/codex/no-apply-liveliness`へpush。親リポジトリのサブモジュールポインタ更新は次のコミットで行う。
+- **VM反映**: `/home/ubuntu/soren/.codex_deploy/backup-20260821-score-timeline-axes/` および説明更新用バックアップへ反映前ファイルを保存。最終ローカル/VM SHA256 `03ca1be2b76c182308a7bc42fd1324114e53fc2f25e4945efc1e5b6b60bc7a42` 一致、`py_compile`成功。実データで7段折れ線、上下ラベル、`old`/`now`、軸線、Braille文字数0を確認した。worker再起動は不要な表示変更のみ。
+- **テスト**: `tests.test_score_timeline`、`tests.test_status_dashboard_founding_rate`の25件、direct broadcast overlay Node 11件、dashboard関連escape 3件、`py_compile`、`git diff --check`が成功。
