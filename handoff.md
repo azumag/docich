@@ -180,9 +180,24 @@
 - **テスト**: モックAPIで`MIN_GAMES_BEFORE_IMPROVE=48`のpayloadが`prediction_window=1800`になることを確認。WebUI回帰は`71 passed`（sandbox内のlocalhost bind制限による初回22件失敗は権限付き再実行で解消）。
 - **作業中表示/音声**: ローカル・VM双方の作業中バナーを明示的に有効化し、VM側stateで`active=true`を実測。作業開始文をaudio-workerへenqueue済み。完了時に双方を停止しinactiveを確認する。
 
+## 2026-08-21 07:06 JST — ラジオキュー滞留と音声レンダー飢餓の原因確認（未変更）
+
+- **VM実測**: `tmp/.radio_deferred_queue` は本文`radio_*.txt`が3件、`ready.wav`が1件、`rendering`が0件、`render_retry`が1件。先頭は`radio_1787250972_43806_theme_24531.txt`で、対応する`ready.wav`は存在しない。`tmp/.say_queue/current_source`/`pid`は不在で、音声再生中ではなかった。
+- **直近の停止条件**: 先頭themeのレンダーは07:01:29に15チャンク中1から開始し、07:04:39に6チャンクまで進んだところで「優先音声へ合成順を譲る」となり、07:04:42に`render_retry`が`7 1787263782`（07:09:42再試行予定）へ更新された。部分WAVは破棄され、再試行は毎回チャンク0から始まる。
+- **再現した履歴**: 同一本文で06:24、06:29、06:36、06:42、06:44、06:51、07:01にレンダーを開始したが、コメント/作業中音声の到着時にチャンク境界で譲り、11/15、8/15、1/15、3/15、13/15、6/15、6/15で中断した。したがってAIのラジオ生成停止ではなく、VOICEVOX事前合成の再試行ループで音声世代が完成しない。
+- **構造上の要因**: `broadcast/radio_state.sh` は本文を`sort | head -n 1`でFIFO選択し、先頭にready WAVがない場合はレンダー開始だけでreturnする。先頭を飛ばして後続ready項目を再生しない。`say_enqueue.sh` は`radio_render:*`をbackground renderとしてコメント音声のpriority waiterに譲り、render-onlyは完成品全量を要求するため途中チャンクをcheckpointしない。
+- **別状態との混同**: `tmp/state/.radio_state` の`generating:theme:...`はradio_workerのAI原稿生成状態であり、audio_workerの再生世代・再生状態ではない。radio_workerが進んでいても、先頭deferred項目の音声がreadyになるまで再生は進まない。
+- **未実施**: 今回は診断のみで、キュー削除・worker再起動・コード変更は行っていない。修正候補は、(1) render-onlyのチャンクcheckpoint/再開、(2) コメント優先の譲りに飢餓防止の予約枠またはbounded waitを設ける、(3) 先頭レンダー待ちの間に後続ready項目を安全に再生できる順序規則、のいずれかをテスト付きで設計すること。
+
 ## 2026-08-21 — TwiCa `/live` の overlay presence 概算案（調査のみ）
 
 - `/Volumes/satelite/work_satelite/twica` の overlay realtime は配信者 UUID ごとの Durable Object room で、room 内の WebSocket 接続数は取得できる。ただし `do-primary` の overlay だけが WebSocket を使い、`polling-only` は対象外になる。
 - 生接続数はチャネル数ではない。複数 OBS ソース、ダッシュボードのプレビュー iframe、切断遅延・残留タブ、公開 overlay URL の直接接続で過大/過小になるため、表示するなら「TwiCa overlay 接続中チャネルの概算」とする。
 - 全 room を横断するには、IP・ユーザー名を保存せず、room の短期 lease を集約する presence registry（小規模なら Durable Object、将来は分割）を追加する必要がある。正確な Twitch 配信数の代替にはせず、Helix 判定とは別指標として扱う。
 - 今回はコード変更・デプロイ・本番設定変更を行っていない。
+
+## 2026-08-21 07:15 JST — 予想タイトルのサイクル値を照合（変更なし）
+
+- **現行の正本**: VM `/home/ubuntu/soren/.env` は `MIN_GAMES_BEFORE_IMPROVE=48`、`soren_loop`・`improve_daemon`・`prediction_worker` の実行時環境も48。`tmp/state/accumulated_games.json` は25試合で、現在のACTIVE予想タイトル「48ゲーム中に建国できる？」と一致している。
+- **100の出所**: `.env` の `ROLLING_SCORE_KEEP=100` は評価窓であり、改善サイクル長ではない。過去のコメント/AIプロンプトには100ゲーム時代の文面が残っているが、直近の予想作成プロンプトと実行設定は48。したがって現行予想を100へ変更する根拠は確認できなかった。
+- **保留**: 100ゲームへ戻す場合は改善ループ自体の`MIN_GAMES_BEFORE_IMPROVE`変更とworker完全再起動が必要で、ACTIVE予想のcancel/recreateも伴うため、ユーザー明示なしには実施しない。
