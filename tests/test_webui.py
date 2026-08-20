@@ -342,6 +342,38 @@ class TestAudioQueue(unittest.TestCase):
         self.assertEqual(len(webui._comment_audio_hash("abc")), 32)
 
 
+class TestPredictions(unittest.TestCase):
+    def test_clean_remote_prediction_drops_unknown_fields(self):
+        item = webui._prediction_clean_remote_item(
+            {
+                "id": "prediction-1",
+                "title": "12ゲーム中に建国できる？",
+                "status": "ACTIVE",
+                "outcomes": [{"id": "outcome-1", "title": "建国なし", "users": 2, "secret": "drop"}],
+                "secret_token": "must-not-escape",
+            }
+        )
+        self.assertEqual(item["id"], "prediction-1")
+        self.assertNotIn("secret_token", item)
+        self.assertNotIn("secret", item["outcomes"][0])
+
+    def test_status_snapshot_is_safe_when_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tmp/state").mkdir(parents=True)
+            (root / "eloop_lib.sh").write_text("# x\n")
+            status = webui._prediction_status_snapshot(root)
+            self.assertIn("enabled", status)
+            self.assertNotIn("TWITCH_PREDICTIONS_TOKEN", json.dumps(status))
+
+    def test_action_argument_validation(self):
+        # The allowlisted action vocabulary is intentionally small; this also
+        # guards against accidentally turning the shell wrapper into a command
+        # injection surface.
+        self.assertEqual(webui.PREDICTION_ACTIONS, {"create", "resolve", "cancel", "sync"})
+        self.assertEqual(len(webui.PREDICTION_OUTCOME_LABELS), 4)
+
+
 class TestRunWebuiDryRun(unittest.TestCase):
     def test_dry_run_returns_zero(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -466,6 +498,18 @@ class TestHttpHandlers(unittest.TestCase):
         status, data = self._request("GET", "/api/stats?days=3")
         self.assertEqual(status, 200)
         self.assertIn("days", data)
+
+    def test_predictions_status_is_secret_safe(self):
+        status, data = self._request("GET", "/api/predictions")
+        self.assertEqual(status, 200)
+        self.assertIn("remote", data)
+        self.assertIn("worker", data)
+        self.assertNotIn("TWITCH_PREDICTIONS_TOKEN", json.dumps(data))
+
+    def test_predictions_action_rejects_unknown_action(self):
+        status, data = self._request("POST", "/api/predictions/action", {"action": "shell"})
+        self.assertEqual(status, 400)
+        self.assertEqual(data["error"], "invalid_action")
 
     def test_audio_enqueue_and_list(self):
         status, data = self._request("POST", "/api/audio/enqueue", {"text": "読み上げテストです", "source": "webui_test"})
