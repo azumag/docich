@@ -88,6 +88,13 @@ WORK_BODY_LIMIT = 240
 TOP_LINE_LIMIT = 120
 TOP_MAX_LINES = 4
 
+# --- prompts constants ----------------------------------------------------------
+PROMPTS_REL_DIRS = ["prompts", "soren91/prompts"]
+PROMPTS_MAX_BYTES = 200 * 1024
+PROMPTS_MAX_FILES = 64
+PROMPTS_PREVIEW_LEN = 500
+PROMPT_FNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.md$")
+
 # --- helpers -----------------------------------------------------------------
 
 
@@ -124,6 +131,197 @@ def _dotenv_mtime(soren_root: Path) -> int:
         return int(p.stat().st_mtime)
     except Exception:
         return 0
+
+
+# --- prompts helpers ---------------------------------------------------------
+
+def _prompts_dirs(soren_root: Path) -> list[Path]:
+    return [(soren_root / rel).resolve() for rel in PROMPTS_REL_DIRS]
+
+
+def _prompt_mtime(p: Path) -> int:
+    try:
+        return int(p.stat().st_mtime)
+    except Exception:
+        return 0
+
+
+def _resolve_prompt_path(soren_root: Path, prompt_id: str) -> Path:
+    if not isinstance(prompt_id, str) or not prompt_id:
+        raise ValueError("prompt id は必須です")
+    if "\x00" in prompt_id or "\\" in prompt_id:
+        raise ValueError("prompt id に不正な文字が含まれます")
+    # forbid absolute and traversal
+    if prompt_id.startswith("/") or prompt_id.startswith("./") or "//" in prompt_id:
+        raise ValueError("prompt id が不正です")
+    parts = prompt_id.split("/")
+    if any(p in ("", ".", "..") for p in parts):
+        raise ValueError("prompt id に不正なパス要素が含まれます")
+    if len(parts) < 2:
+        raise ValueError("prompt id は dir/file.md 形式である必要があります")
+    # dir must be one of PROMPTS_REL_DIRS
+    dir_part = "/".join(parts[:-1])
+    if dir_part not in PROMPTS_REL_DIRS:
+        raise ValueError(f"prompt dir は {PROMPTS_REL_DIRS} のいずれかである必要があります: {dir_part!r}")
+    fname = parts[-1]
+    if not PROMPT_FNAME_RE.match(fname):
+        raise ValueError(f"prompt filename が不正です: {fname!r}")
+    if len(prompt_id) > 200:
+        raise ValueError("prompt id が長すぎます")
+    candidate = (soren_root / prompt_id).resolve()
+    # must be inside one of the prompts dirs
+    allowed = False
+    for root in _prompts_dirs(soren_root):
+        try:
+            if candidate.is_relative_to(root):
+                allowed = True
+                break
+        except Exception:
+            # Python <3.9 fallback: check string prefix
+            try:
+                candidate.relative_to(root)
+                allowed = True
+                break
+            except Exception:
+                continue
+    if not allowed:
+        raise ValueError("prompt path が許可されたディレクトリ外です")
+    return candidate
+
+
+def _validate_prompt_content(text: str) -> None:
+    if not isinstance(text, str):
+        raise ValueError("content は文字列である必要があります")
+    b = text.encode("utf-8")
+    if len(b) > PROMPTS_MAX_BYTES:
+        raise ValueError(f"content が大きすぎます ({len(b)} > {PROMPTS_MAX_BYTES})")
+    if any(ord(c) < 32 and c not in ("\n", "\r", "\t") for c in text):
+        raise ValueError("制御文字は使用できません")
+
+
+def _list_prompts(soren_root: Path) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for rel_dir in PROMPTS_REL_DIRS:
+        root = (soren_root / rel_dir).resolve()
+        if not root.is_dir():
+            continue
+        for p in sorted(root.glob("*.md")):
+            # skip hidden / resource forks and non-conforming names
+            if p.name.startswith(".") or p.name.startswith("._"):
+                continue
+            if not PROMPT_FNAME_RE.match(p.name):
+                continue
+            try:
+                rel = p.relative_to(soren_root.resolve())
+            except Exception:
+                try:
+                    rel = p.relative_to(soren_root)
+                except Exception:
+                    rel = Path(rel_dir) / p.name
+            try:
+                txt = p.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                txt = ""
+            try:
+                size = p.stat().st_size
+            except Exception:
+                size = len(txt.encode("utf-8"))
+            items.append(
+                {
+                    "id": str(rel),
+                    "name": p.name,
+                    "rel": str(rel),
+                    "dir": rel_dir,
+                    "size": size,
+                    "mtime": _prompt_mtime(p),
+                    "preview": txt[:PROMPTS_PREVIEW_LEN],
+                }
+            )
+    # sort by dir then name for stable order
+    items.sort(key=lambda x: (x["dir"], x["name"]))
+    if len(items) > PROMPTS_MAX_FILES:
+        items = items[:PROMPTS_MAX_FILES]
+    return items
+
+
+def _atomic_prompt_write(soren_root: Path, target: Path, content: str, expected_mtime: int | None) -> int:
+    lock_dir = soren_root / "tmp/state/.webui_prompts.lock"
+    try:
+        lock_dir.mkdir(parents=True, exist_ok=False)
+    except FileExistsError:
+        try:
+            age = time.time() - lock_dir.stat().st_mtime
+            if age > 30:
+                import shutil
+
+                shutil.rmtree(lock_dir, ignore_errors=True)
+                lock_dir.mkdir(parents=True, exist_ok=False)
+            else:
+                raise FileExistsError(f"another prompt edit in progress (age {int(age)}s)")
+        except FileExistsError:
+            raise
+        except Exception as exc:
+            raise FileExistsError(str(exc))
+    try:
+        if target.is_file() and expected_mtime is not None:
+            try:
+                cur = int(target.stat().st_mtime)
+            except Exception:
+                cur = 0
+            if int(expected_mtime) != cur:
+                raise ValueError(f"mtime mismatch: expected {expected_mtime}, current {cur} (concurrent edit)")
+        # backup if exists
+        if target.is_file():
+            backup = target.parent / f"{target.name}.bak.{time.time_ns()}"
+            try:
+                data = target.read_bytes()
+                backup.write_bytes(data)
+                backup.chmod(0o600)
+            except Exception:
+                print(f"docich: 警告: prompt バックアップ作成に失敗しました ({backup.name})", flush=True)
+            cutoff = time.time() - 7 * 86400
+            try:
+                for old in target.parent.glob(f"{target.name}.bak.*"):
+                    try:
+                        if old.stat().st_mtime < cutoff:
+                            old.unlink()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        # atomic write
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path_str = tempfile.mkstemp(dir=str(target.parent), prefix=".prompt.")
+        tmp_path = Path(tmp_path_str)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(content)
+                # ensure newline at EOF? keep as-is
+                fh.flush()
+                os.fsync(fh.fileno())
+            tmp_path.chmod(0o644)
+            os.replace(str(tmp_path), str(target))
+            try:
+                target.touch(exist_ok=True)
+            except Exception:
+                pass
+        finally:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except Exception:
+                pass
+        return _prompt_mtime(target)
+    finally:
+        try:
+            lock_dir.rmdir()
+        except Exception:
+            try:
+                import shutil
+
+                shutil.rmtree(lock_dir, ignore_errors=True)
+            except Exception:
+                pass
 
 
 def _read_dotenv_dict(soren_root: Path) -> dict[str, str]:
@@ -996,7 +1194,7 @@ def _log_request(soren_root: Path, method: str, path: str, status: int, latency_
 
 # --- HTTP handler --------------------------------------------------------
 
-MAX_BODY_BYTES = 64 * 1024
+MAX_BODY_BYTES = 256 * 1024
 
 INDEX_HTML = r"""<!doctype html>
 <html lang="ja">
@@ -1088,6 +1286,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 <button data-tab="chains">Chains</button>
 <button data-tab="backoff">Backoff</button>
 <button data-tab="peak">Peak</button>
+<button data-tab="prompts">Prompts</button>
 <button data-tab="stats">Stats</button>
 <button data-tab="health">Health</button>
 </nav>
@@ -1252,6 +1451,22 @@ input:checked+.slider:before{transform:translateX(20px)}
 <div id="peak-msg" class="help"></div>
 </div>
 </section>
+<!-- PROMPTS -->
+<section id="tab-prompts" style="display:none">
+<div class="card"><h2>Prompts</h2><p class="desc"><code>prompts/</code> + <code>soren91/prompts/</code> の Markdown プロンプトを参照・編集。保存は mtime 楽観ロック（競合時は 409）。変更は <code>soren_root/prompts/*.md</code> へ原子書き込み。</p>
+<div style="overflow:auto"><table><thead><tr><th>id</th><th>size</th><th>mtime</th><th>preview</th></tr></thead><tbody id="prompts-table"></tbody></table></div>
+<div class="actions"><button class="btn" id="prompts-refresh">更新</button></div>
+<div class="help" id="prompts-roots" style="margin-top:6px"></div>
+</div>
+<div class="card"><h3 id="prompts-edit-title">編集</h3>
+<div class="kv"><dt>file</dt><dd id="prompts-edit-file" class="mono">-</dd><dt>mtime</dt><dd id="prompts-edit-mtime" class="mono">-</dd><dt>size</dt><dd id="prompts-edit-size" class="mono">-</dd></div>
+<textarea id="prompts-content" rows="22" class="mono" placeholder="markdown..."></textarea>
+<div class="help" id="prompts-size-help"></div>
+<div class="actions"><button class="btn primary" id="prompts-save">保存</button><button class="btn" id="prompts-reload">再読込</button></div>
+<div id="prompts-msg" class="help"></div>
+<details style="margin-top:10px"><summary>プレビュー (raw)</summary><pre id="prompts-preview" class="mono" style="white-space:pre-wrap;background:#111319;border:1px solid var(--border);border-radius:8px;padding:8px;max-height:360px;overflow:auto"></pre></details>
+</div>
+</section>
 <!-- STATS -->
 <section id="tab-stats" style="display:none">
 <div class="card"><h2>AI 統計 (ai_stats)</h2><p class="desc"><code>tmp/state/ai_stats/&lt;YYYYMMDD&gt;.jsonl</code> の attempt/winner/fail。直近7日。</p>
@@ -1277,6 +1492,7 @@ let chainState = {};
 let paletteSet = new Set();
 let backoffState = {items:[], def:"600", fail:"300"};
 let peakState = {hoursSet:new Set(), tz:"Asia/Tokyo", prefItems:[], swap:"1", gate:"1", priority:"", improveInherit:true, improveItems:[], improveEnabled:"0", improveDefer:"0", improveEffective:"", improvePeakRaw:""};
+let promptsState = {list:[], currentId:null, expectedMtime:0};
 let dashTimer = null;
 const AGENT_RE = /^[A-Za-z0-9][A-Za-z0-9._:\/-]{0,127}$/;
 const BACKOFF_NAME_RE = /^[A-Za-z0-9._\/-]+$/;
@@ -2401,6 +2617,79 @@ async function loadPreview(){
     try{ iframe.srcdoc=data.html||""; }catch(e){ iframe.src="about:blank"; }
   }catch(e){ toast(String(e)); }
 }
+async function loadPrompts(){
+  try{
+    const data=await api("/api/prompts");
+    promptsState.list=data.prompts||[];
+    const tb=$("#prompts-table");
+    tb.innerHTML="";
+    const rootsEl=$("#prompts-roots");
+    if(rootsEl) rootsEl.textContent="roots: "+(data.roots||[]).join(" , ");
+    for(const p of promptsState.list){
+      const tr=document.createElement("tr");
+      tr.style.cursor="pointer";
+      if(promptsState.currentId===p.id) tr.style.background="rgba(110,168,254,0.15)";
+      tr.innerHTML=`<td class="mono">${esc(p.id)}</td><td>${p.size}</td><td class="mono" style="font-size:11px">${fmtTime(p.mtime)}</td><td class="mono" style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc((p.preview||"").slice(0,120))}</td>`;
+      tr.onclick=()=> loadPrompt(p.id);
+      tb.appendChild(tr);
+    }
+    if(!promptsState.list.length) tb.innerHTML='<tr><td colspan="4" class="help">promptsなし</td></tr>';
+  }catch(e){ toast(String(e),4000); }
+}
+async function loadPrompt(id){
+  try{
+    const data=await api(`/api/prompts/${encodeURIComponent(id)}`);
+    promptsState.currentId=id; promptsState.expectedMtime=data.mtime||0;
+    $("#prompts-edit-file").textContent=id;
+    $("#prompts-edit-mtime").textContent=`${data.mtime} (${fmtTime(data.mtime)})`;
+    $("#prompts-edit-size").textContent=`${data.size||0} bytes`;
+    $("#prompts-edit-title").textContent=`編集: ${id}`;
+    const ta=$("#prompts-content");
+    ta.value=data.content||"";
+    $("#prompts-msg").textContent="";
+    updatePromptsPreview();
+    // highlight selection
+    loadPrompts();
+  }catch(e){ toast(String(e),5000); $("#prompts-msg").textContent=String(e); }
+}
+function updatePromptsPreview(){
+  const txt=$("#prompts-content").value||"";
+  const pre=$("#prompts-preview");
+  if(pre) pre.textContent=txt;
+  const help=$("#prompts-size-help");
+  if(help){
+    const sz=new Blob([txt]).size;
+    help.textContent=`${sz} bytes / ${200*1024} max ${sz>200*1024?"(超過)":""}`;
+    help.style.color= sz>200*1024 ? "var(--bad)" : "";
+  }
+  const sizeEl=$("#prompts-edit-size");
+  if(sizeEl) sizeEl.textContent=`${new Blob([txt]).size} bytes`;
+}
+async function savePrompt(){
+  if(READ_ONLY){ toast("read-only モードのため保存できません"); return; }
+  const id=promptsState.currentId;
+  if(!id){ toast("ファイルを選択してください"); return; }
+  const content=$("#prompts-content").value;
+  const sz=new Blob([content]).size;
+  if(sz>200*1024){ toast("サイズ超過 200KB"); return; }
+  try{
+    const res=await api(`/api/prompts/${encodeURIComponent(id)}`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({content, expected_mtime: promptsState.expectedMtime})});
+    promptsState.expectedMtime=res.mtime||promptsState.expectedMtime;
+    $("#prompts-edit-mtime").textContent=`${res.mtime} (${fmtTime(res.mtime)})`;
+    toast(`保存: ${id}`);
+    $("#prompts-msg").textContent="";
+    await loadPrompts();
+  }catch(e){
+    const msg=String(e);
+    if(msg.includes("409")){
+      toast("競合: 他で更新されました。再読込してマージしてください",5000);
+      $("#prompts-msg").textContent=msg;
+    } else {
+      toast(msg,5000);
+      $("#prompts-msg").textContent=msg;
+    }
+  }
+}
 document.addEventListener("DOMContentLoaded",()=>{
   $$("#tabs button").forEach(btn=>btn.onclick=()=>{
     $$("#tabs button").forEach(b=>b.classList.remove("active"));
@@ -2415,6 +2704,7 @@ document.addEventListener("DOMContentLoaded",()=>{
     if(tab==="status") { loadStatus(); if(statusTimer) clearInterval(statusTimer); statusTimer=setInterval(loadStatus,10000); }
     else { if(statusTimer) { clearInterval(statusTimer); statusTimer=null; } }
     if(tab==="overlay") { loadOverlayEvents(); loadWorkBanner(); loadTop(); loadPreview(); }
+    if(tab==="prompts") loadPrompts();
   });
   // overlay sub tabs
   $$("[data-overlay-sub]").forEach(btn=>btn.onclick=()=>{
@@ -2491,6 +2781,15 @@ document.addEventListener("DOMContentLoaded",()=>{
   if(pType) pType.onchange=()=>loadPreview();
   const pRegion=document.getElementById("preview-region");
   if(pRegion) pRegion.onchange=()=>loadPreview();
+  // prompts handlers
+  const prRefresh=document.getElementById("prompts-refresh");
+  if(prRefresh) prRefresh.onclick=()=>loadPrompts();
+  const prSave=document.getElementById("prompts-save");
+  if(prSave) prSave.onclick=()=>savePrompt();
+  const prReload=document.getElementById("prompts-reload");
+  if(prReload) prReload.onclick=()=>{ if(promptsState.currentId) loadPrompt(promptsState.currentId); };
+  const prContent=document.getElementById("prompts-content");
+  if(prContent) prContent.addEventListener("input", updatePromptsPreview);
 });
 </script>
 </body>
@@ -2616,6 +2915,11 @@ class _Handler(BaseHTTPRequestHandler):
                 t = query.get("type", ["event"])[0]
                 region = query.get("region", ["full"])[0]
                 status = self._handle_get_preview(t, region)
+            elif path == "/api/prompts":
+                status = self._handle_list_prompts()
+            elif path.startswith("/api/prompts/"):
+                prompt_id = urllib.parse.unquote(path[len("/api/prompts/") :])
+                status = self._handle_get_prompt(prompt_id)
             else:
                 status = 404
                 self._send_error_json(404, "not_found")
@@ -2644,6 +2948,9 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_put_top()
             elif parsed.path == "/api/overlay/events":
                 status = self._handle_put_overlay_events()
+            elif parsed.path.startswith("/api/prompts/"):
+                prompt_id = urllib.parse.unquote(parsed.path[len("/api/prompts/") :])
+                status = self._handle_put_prompt(prompt_id)
             else:
                 status = 404
                 self._send_error_json(404, "not_found")
@@ -3651,6 +3958,100 @@ class _Handler(BaseHTTPRequestHandler):
                 return 500
             return 200
 
+    def _handle_list_prompts(self) -> int:
+        try:
+            items = _list_prompts(self.soren_root)
+        except Exception as exc:
+            self._send_error_json(500, "list_failed", str(exc))
+            return 500
+        roots = [str(p) for p in _prompts_dirs(self.soren_root)]
+        self._send_json(200, {"prompts": items, "count": len(items), "roots": roots})
+        return 200
+
+    def _handle_get_prompt(self, prompt_id: str) -> int:
+        try:
+            target = _resolve_prompt_path(self.soren_root, prompt_id)
+        except ValueError as exc:
+            self._send_error_json(400, "invalid_id", str(exc))
+            return 400
+        if not target.is_file():
+            self._send_error_json(404, "not_found", f"prompt not found: {prompt_id}")
+            return 404
+        try:
+            txt = target.read_text(encoding="utf-8", errors="ignore")
+        except Exception as exc:
+            self._send_error_json(500, "read_failed", str(exc))
+            return 500
+        # double-check size
+        if len(txt.encode("utf-8")) > PROMPTS_MAX_BYTES:
+            self._send_error_json(500, "too_large", "file exceeds max size")
+            return 500
+        self._send_json(
+            200,
+            {
+                "id": prompt_id,
+                "content": txt,
+                "mtime": _prompt_mtime(target),
+                "size": len(txt.encode("utf-8")),
+                "path": str(target),
+            },
+        )
+        return 200
+
+    def _handle_put_prompt(self, prompt_id: str) -> int:
+        body, err = self._read_body()
+        if err:
+            return err
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except Exception as exc:
+            self._send_error_json(400, "invalid_json", str(exc))
+            return 400
+        if not isinstance(data, dict):
+            self._send_error_json(400, "validation_error", "body must be object")
+            return 400
+        content = data.get("content")
+        if content is None:
+            self._send_error_json(400, "validation_error", "content required")
+            return 400
+        if not isinstance(content, str):
+            self._send_error_json(400, "validation_error", "content must be string")
+            return 400
+        expected_mtime = data.get("expected_mtime")
+        if expected_mtime is not None:
+            try:
+                expected_mtime = int(expected_mtime)
+            except Exception:
+                self._send_error_json(400, "validation_error", "expected_mtime must be integer")
+                return 400
+        try:
+            _validate_prompt_content(content)
+        except ValueError as exc:
+            self._send_error_json(400, "validation_error", str(exc))
+            return 400
+        try:
+            target = _resolve_prompt_path(self.soren_root, prompt_id)
+        except ValueError as exc:
+            self._send_error_json(400, "invalid_id", str(exc))
+            return 400
+        try:
+            new_mtime = _atomic_prompt_write(self.soren_root, target, content, expected_mtime)
+        except FileExistsError as exc:
+            self._send_error_json(409, "concurrent_edit", str(exc))
+            return 409
+        except ValueError as exc:
+            msg = str(exc)
+            if "mtime mismatch" in msg or "concurrent" in msg:
+                self._send_error_json(409, "conflict", msg)
+                return 409
+            self._send_error_json(400, "validation_error", msg)
+            return 400
+        except Exception as exc:
+            self._send_error_json(500, "write_failed", str(exc))
+            return 500
+        self._send_json(200, {"ok": True, "id": prompt_id, "mtime": new_mtime})
+        return 200
+
 
 def _dotenv_quote(value: str) -> str:
     # .env は bash で source される。空白やシェルメタ文字を含む値は
@@ -3806,7 +4207,7 @@ def run_webui(
             print(f"  WARNING: {eff_soren_root}/eloop_lib.sh not found (soren_root may be wrong)")
         if not (eff_soren_root / ".env").is_file():
             print(f"  WARNING: {eff_soren_root}/.env not found (will be created on first save)")
-        print("  endpoints: /, /api/health, /api/config, /api/backoffs, /api/stats, /api/reload, /api/game_state, /api/improve_state, /api/workers, /api/peak_status")
+        print("  endpoints: /, /api/health, /api/config, /api/backoffs, /api/stats, /api/reload, /api/game_state, /api/improve_state, /api/workers, /api/peak_status, /api/prompts")
         return 0
 
     # validate soren_root
