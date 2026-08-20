@@ -75,7 +75,7 @@ soviet_now 管轄の設定である。
 ```
 opencode:deepseek-v4-flash-free → codex:amd-token-factory-deepseek-v4-flash →
 codex:openrouter/free → local → codex:deepseek-v4-flash → codex:minimax-m3 →
-opencode:muse-spark-1.2-contributor
+opencode-go:muse-spark-1.2-contributor
 ```
 
 | チェーン | 現在の順序 |
@@ -91,10 +91,10 @@ opencode:muse-spark-1.2-contributor
   (`openrouter/free`)。`codex:amd-token-factory-deepseek-v4-flash` は AMD Token Factory
   経由の DeepSeek V4 Flash。どちらも無料/クォータ制の枠のため、上位が失敗した場合のみ
   実際に呼ばれる。
-- **`opencode:muse-spark-1.2-contributor` (2026-08-20 追加)**: opencode-go 契約の
+- **`opencode-go:muse-spark-1.2-contributor` (2026-08-20 追加)**: opencode-go 契約の
   contributor 枠 (`https://opencode.ai/workspace/wrk_01M04NATCGAVB03SVAEZ4RBV1Y/go`
-  の opt-in が必要)。`opencode:` プレフィックス (opencode CLI 直呼び) でのみ呼び、
-  codex 経由では受け付けない。チェーン末尾の最終フォールバック枠。
+  の opt-in が必要)。`opencode-go:` プレフィックス (opencode CLI 直呼び、provider `opencode-go`) でのみ呼び、
+  codex 経由では受け付けない。チェーン末尾の最終フォールバック枠（`opencode:` だと zen 側の free 枠と衝突し Model not found になる）。
 - **モデル別バックオフ (2026-08-19)**: `deepseek-v4-flash-free` / `amd-token-factory…` /
   `openrouter/free` / `muse-spark-1.2-contributor` = 1日、`local` = 30分、
   `deepseek-v4-flash` / `minimax-m3` = 5時間。
