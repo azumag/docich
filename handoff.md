@@ -1287,3 +1287,11 @@ VM を読み取り診断。
 **VM 反映は意図的に保留**: VM (`/home/ubuntu/soren`) は現在ライブ配信中で全ワーカー（soren_loop, chat_worker, radio_worker, improve_daemon 等）稼働中。`core/config.sh` の反映には全ワーカー完全再起動が必要（§27ルール）。VM 側 `core/config.sh` の mtime が上記の別セッションのコミット時刻と一致しており、**同じVMに対して並行してデプロイ作業をしている別プロセスがいる**ことを示唆。この状況で破壊的な全ワーカー再起動を行うのはリスクが高いと判断し、次の安全な機会まで反映を見送った。次回反映時は VM 側の状態（`ps aux`、config.sh の mtime）を確認してから着手すること。
 
 **次のアクション**: (1) 並行活動が収まったことを確認後、Phase 0 を VM へ反映（config.sh 変更のため全 worker 完全再起動必須）→ 24h 程度 `rolling_scores.json` の comp/p50/p25 が反映前と bit 一致することを確認。(2) Phase 1（即死分離、observation only）以降はユーザー承認を得てから着手。
+
+**VM 反映完了 (2026-08-20 12:10-12:19, ユーザー承認で実施)**:
+- 11:45時点で確認した並行活動（他プロセスによる同時デプロイ）が11:41以降 `.sh`/config系ファイルへの追加変更なしと確認できたため反映を実施。
+- 手順: `tmp/deploy-backups/stat-gate-phase0_20260820_121046/` へ既存4ファイルをバックアップ → 新規/変更6ファイル（`core/config.sh`, `eloop.sh`, `strategy/improve.sh`, `lib/eval_stats.py`, `tests/test_eval_stats.py`, `tests/test_escape_mechanisms.py`）を `.new` として転送 → sha256一致確認 → `bash -n`/`python3 ast.parse` で構文確認 → atomic replace → 反映後ファイルのsha256再確認 → VM上で `python3 -m unittest tests.test_eval_stats` 実行し50件全PASSを確認。
+- **完全再起動（config.sh変更の反映に必須、§27ルール）**: `soren_loop.sh`(旧PID 2791384) と `improve_daemon.sh`(旧PID 137224) に SIGTERM → supervisor (`start_all.sh --supervisor`) が自動 respawn（無停止運用、§27/§30と同じ実績のある手順）。新PID: soren_loop=1572098, improve_daemon=1576480。chat_worker/radio_worker は対象外の変更のため未タッチ（稼働継続確認済み）。
+- **実測検証（反映後）**: VM上で `core/config.sh` を fresh に source し `STAT_GATE_MODE=off`/`DEAD_EVAL_THRESHOLD=3000`/`MIN_GAMES_FOR_BEST_ROLLBACK=12`/`DEAD_NEAR_TOTAL_RATE=0.90` の期待通りの既定値を確認。両プロセスとも再起動後3分以上安定稼働、`soren_loop.log`/`improve_daemon.log` にエラー・トレースバックなし（`grep -iE "error|traceback|exception"` で該当0件）、`journalctl` にも該当なし。再起動後に**ゲーム2試合が正常完了**（12:16:24 score=894, 12:18:55 score=441）してスコア履歴・戦略バージョン保存・アーカイブが正常動作することを確認。
+- **状態**: Phase 0 の VM 反映は完了。`STAT_GATE_MODE=off`/`INSTADEATH_SPLIT_ENABLED=0` のため統計ゲート・即死分離ロジック自体はまだ無効（Phase 1/2 で別途配線・承認）。`_seed_current_strategy_run_from_rolling` の `CURRENT_RUN_SCORE_KEEP` 修正は次回のロールバック/戦略切替イベントで効果を発揮する見込み（ライブ確認は次のロールバック発生時）。
+- **次のアクション**: 24h 程度 `rolling_scores.json` の comp/p50/p25 が反映前後で bit 一致することを確認（挙動変更ゼロの検証）。Phase 1 以降は別途ユーザー承認を得てから着手。
