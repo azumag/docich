@@ -12,7 +12,7 @@
 4. **#18 広告スヌーズ / 作業中音声 / 二重読み / no-apply** — 完了（`715251b7a` まで、`lib/twitch_ads.sh`/`speaking.json`/TTL 900/audio dedup/advisory 化）。
 5. **webui Audio 手動 enqueue パネル**（別セッション `ea5a250`、継続）— `src/docich/webui.py` Audioタブ、`_comment_queue_dir`/`_handle_post_audio_enqueue` 等、`/api/audio/queue` で count 8 を実測。
 6. **Phase 2→3→4 完走** — `.env` 5キー enforce、VM 156件 STATGATE。
-7. **作業中音声の文面を毎回ユニークに**（本セッション）— `codex_work_indicator.sh` の `_enqueue_work_audio` で固定定型文を廃止、内容ハッシュ＋時刻シードでテンプレート（開始5種/詳細4種/完了4種）から毎回異なる表現を選択。spam 抑止は `work_audio_last.json` のタイトル比較（300s/180s・stop常読）が主体（`enqueue_audio_text` のテキストハッシュ dedup は可変文のため実質不発だが title 判定で代替）。ルート `AGENTS.md` §8・`soviet_now/AGENTS.md` OBS節・`handoff.md` を更新。`bash -n` OK、同内容で複数回呼んで文面が変わるのを実測。**未コミット・未VM反映**。
+7. **作業中音声の文面を毎回ユニークに**（本セッション）— 完了。`codex_work_indicator.sh` の `_enqueue_work_audio` で固定定型文を廃止、内容ハッシュ＋時刻シードでテンプレート（開始5種/詳細4種/完了4種）から毎回異なる表現を選択。spam 抑止は `work_audio_last.json` のタイトル比較（300s/180s・stop常読）が主体（`enqueue_audio_text` のテキストハッシュ dedup は可変文のため実質不発だが title 判定で代替）。ルート `AGENTS.md` §8・`soviet_now/AGENTS.md` OBS節・`handoff.md` を更新。`soviet_now` `076b466cc` → `docich` `9975a35` でコミット・push。`VM:/home/ubuntu/docich` を `9975a35`（submodule `076b466cc`）へ同期、`VM:/home/ubuntu/soren` の `codex_work_indicator.sh`/`AGENTS.md` を scp。VMで `ただいま検証中を進めています。 詳細は「...」です。`（旧固定文の非出現）を実測、同一タイトル2回目は300s dedup で抑制、`bash -n` OK。
 
 ## ✅ やったこと（実測で確認済み）
 
