@@ -1246,3 +1246,44 @@ VM を読み取り診断。
 - 実地注入試験: `tmp/.twitch_chat/raw.log` に `singtest_114514: コメントで歌って` を注入 → `twitch_chat.sh fetch` で `pending 2件` → `_classify_comments` で `sing_request` を実測。修正前（`04:25:58` の `歌ってみてください`）は `sing_request` 分類後に `歌唱宣言あり` ログなし（フォールバック不発）。修正後（`04:45:29` の `コメントで歌って`）は `04:46:26` に `歌唱宣言あり but ===SING=== なし → デフォルト楽譜で補完` と `歌声合成開始 (score=/tmp/sing_score_1787168786_873540.json)` が出て `740B` の JSON と `381K` の wav が生成されたことを実測。同期の `comment_1787168786_25711.txt`（`歌わせていただきます...きらきら星を歌わせていただきます`）もキュー追加された。
 - サービス `soren-runtime` / `soren-litellm` は `active`、worker `873540`/`873613` は生存、`tmp/.say_queue` で `played [comment:sing]` が過去に複数回出ていることを実測（今回の `singtest` の wav も `say_enqueue --wav` でキュー投入済み、再生は TTS キュー消化後に順次）。
 - リポジトリ: `soviet_now` `8c8352a` を `main` へ push、`docich` は submodule ポインタを `062593e` に更新して `codex/soren-repo-handoff` へ push 済み。`origin/main` へのマージは未実施（`codex/soren-repo-handoff` ブランチでの検証段階）。
+
+### 32. 戦績分析: 改善ループはノイズを選択している → 統計ゲート設計完了（未実装） — 2026-08-20
+
+**発端**: ユーザー「戦略に進歩が感じられない」→ VM の `score_history.txt`（2026-03-01〜の47,053試合）/ `eval_score_history.txt` / `rolling_scores.json` を実測。
+
+**実測結果（戦績）**:
+- 素点の月次中央値: 3月1286 → **4月1415（ピーク）** → 5月1354 → 6月1197 → 8月1023。即死ゲーム(<300点)除外後も 8月1109 で4月比 −22%。eval 軸も 4月平均12075 → 8月9274。**進歩なし、むしろ後退**（ユーザーの体感は正しい）。
+- 7月は 6/29〜8/6 の約5週間、試合記録が完全欠落（システム停止）。8/6 は障害日（848試合中571件即死）。**8/11 以降の即死率はゼロ**。
+- 1戦略あたり評価スコアの SD 2,200〜3,400。n=20 窓の95%CIは±950〜1,480 で、直近8日で入れ替わった戦略ハッシュ20個の平均差（数百〜1,500）はCIに埋まる。
+- opus 設計エージェントの追加実測: 戦略間の真の分散 τ²≒0（負の推定値）、現行 `check_regression` の**誤ロールバック率 17.8〜23.6%**（同一戦略同士のブートストラップ）、anchor 昇格の winner's curse が n=12/K=20 で **comp +1,585**（REGRESSION_MIN_COMP_GAP=1000 を単独超過 = 「改善→粛清」ラチェットの正体）。実例: 8/19 04:11 の rollback（80e1c297a82a→95b4310bee23）は anchor n=12 p50=13205（+2.9SE）との比較で、平均差 −252 の誤差内粛清だった（`last_rollback_analysis.md` で確認）。
+
+**設計（opus Plan サブエージェント委任、コードポインタ・VM事実はメインで裏取り済み）**: 詳細は **`soren-stat-gate-design.md`**（docich ルート）。骨子:
+1. Winsorized平均差 + 固定look群逐次検定(Bonferroni) + 二層閾値(δ_soft=500/δ_hard=2000)。標準ライブラリのみ(VMにscipyなし実測)。誤ロールバック 23.6%→0.4%。
+2. 有意差なし時は「ロールバックしない」+ 非劣性(δ=1500)確立で n中央値12 で評価打ち切り→探索解放。tie-break は目的進捗(soviet/frontier/max_type)。
+3. anchor 要件 n≥100 化(winner's curse +1,585→+511)、昇格は α=0.01+holdout 48試合で自動demote。
+4. 即死は eval<3000 で分離(二峰性の谷、誤分類0.023%)。バースト検知(実測連長比9.5=ハーネス起因)で quarantine、Fisher検定で戦略起因のみ regression。
+5. `lib/eval_stats.py` 新設(regression.sh 内の quantile×5/metrics×4 重複を集約)、improve.sh:2277 の `[-20:]` リテラル解消(§13負債)、`_recent_archives` 依存を progress 配列化で解消(§13残存リスク2)。
+6. ロールアウトは Phase 0(挙動ゼロ)→1(即死分離)→2(shadow 7日)→2.5(anchor是正)→3(enforce粛清側)→4(昇格側+探索解放)。常にAND合成で判定差し替えなし、enforce からの復帰は `.env` 1行。
+
+**状態: Phase 0 実装完了（下記§33参照）。Phase 1以降は未着手**。config.sh を触る Phase 0/2.5 は worker 完全再起動必須（§27/AGENTS.md の stale env 事故ルール）。
+
+### 33. 統計ゲート Phase 0 実装 — soviet_now main へコミット/push 済み、VM 反映は保留 (2026-08-20)
+
+**やったこと**: §32 設計書（`soren-stat-gate-design.md`）の Phase 0（挙動変更ゼロの基盤整備）を実装。
+
+- `lib/eval_stats.py`（新規）: `strategy/regression.sh` に5箇所重複していた `quantile()`/`metrics()`/`composite_score()` の埋め込み実装を単一化する共通モジュール。まだ regression.sh 側からは呼ばれていない（Phase 2以降で配線）。統計判定ゲート `decide()`（群逐次検定、HARD/SOFT/PROMOTE/NONINFERIOR/INCONCLUSIVE/INSUFFICIENT_REFERENCE/INSUFFICIENT_CURRENT/NOT_A_LOOK の8verdict）と即死分類 `classify_instadeath()`/`fisher_one_sided()` も同梱（Phase 1/2用、未配線）。
+- `tests/test_eval_stats.py`（新規、50件）: 既存5バリアント全てとの数値互換性、統計判定の全分岐、即死分類の境界値を検証。
+- `core/config.sh`: `MIN_GAMES_FOR_BEST_ROLLBACK` 等13変数を `${VAR:-default}` 化（既定値は不変、VM `.env` にも該当変数なしを確認済み＝挙動変更ゼロ）。新設 `STAT_*`/`DEAD_*`/`IMPROVE_FUTILITY_*` ブロック追加（全て off/0 既定）。
+- `eloop.sh`: `LAST_TURNS` を export 追加（即死のハーネス/戦略起因判別に使用予定）。
+- `strategy/improve.sh`: `_seed_current_strategy_run_from_rolling()` の `[-20:]` ハードコードを `CURRENT_RUN_SCORE_KEEP`（VM `.env` で既に100設定済み）に修正。**これのみ Phase 0 で唯一の実挙動変更**（ロールバック時に current_run が20件へ縮退し §13 の n非対称バイアスが再発していたのを解消）。
+
+**検証（実測）**:
+- 新規50テスト全て PASS。既存の関連テストスイート（512件）を変更前後で実行し、失敗数が108失敗+2エラーで完全一致（新規追加分を除き新規の破壊ゼロ）。
+- `bash -n` 全ファイル syntax OK。config.sh は実際に `source` して主要変数の解決値が変更前と一致することを確認。
+- opus によるコードレビュー**3回**（バグ発見→修正→確認→さらなる指摘→修正→最終確認）を実施。1回目で burst_ratio の全滅ケース検出漏れ・alpha_promote 欠落（ブロッキング2件）等9件、2回目で PROMOTE/NONINFERIOR の返り値内部不整合・burst_ratio の p=0.85-0.99 盲点・design doc の FP数値誤り等8件を発見、全て修正・実測確認済み。3回目（最終）で全8件の解消を独立実測で確認、残るのは Phase 1 配線時に対応すべき軽微な次善事項5件のみ（design doc に記録）。
+
+**運用上のインシデント（実測）**: 作業中、`/Users/azumag/work/docich/games/soviet_now` の同一ローカルチェックアウトに**別セッション/プロセスが並行してコミット**（`006bd5963`, deepseek-v4-flash-free ルーティング修正）しており、そのタイミングで未コミットだった編集4ファイル（`eloop.sh`/`core/config.sh`/`strategy/improve.sh`/`tests/test_escape_mechanisms.py`）が working tree から消失（`git clean`/`checkout` 相当の操作と推定、reflog上の2回の `reset: moving to HEAD` と符合）。opus レビューエージェントがバイトコードキャッシュ突合で対象2ファイルを復旧、自分でも grep で4ファイル全ての消失を確認・全て再適用・即座にコミット/push して事態収拾。**教訓: このチェックアウトは他プロセスと共有されており、未コミットの変更を長時間放置するとロストする。作業単位を小さく切ってこまめにコミットすること。**
+
+**VM 反映は意図的に保留**: VM (`/home/ubuntu/soren`) は現在ライブ配信中で全ワーカー（soren_loop, chat_worker, radio_worker, improve_daemon 等）稼働中。`core/config.sh` の反映には全ワーカー完全再起動が必要（§27ルール）。VM 側 `core/config.sh` の mtime が上記の別セッションのコミット時刻と一致しており、**同じVMに対して並行してデプロイ作業をしている別プロセスがいる**ことを示唆。この状況で破壊的な全ワーカー再起動を行うのはリスクが高いと判断し、次の安全な機会まで反映を見送った。次回反映時は VM 側の状態（`ps aux`、config.sh の mtime）を確認してから着手すること。
+
+**次のアクション**: (1) 並行活動が収まったことを確認後、Phase 0 を VM へ反映（config.sh 変更のため全 worker 完全再起動必須）→ 24h 程度 `rolling_scores.json` の comp/p50/p25 が反映前と bit 一致することを確認。(2) Phase 1（即死分離、observation only）以降はユーザー承認を得てから着手。
