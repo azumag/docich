@@ -159,3 +159,14 @@
 - **VM反映**: `/home/ubuntu/docich/src/docich/webui.py` と `/home/ubuntu/soren/twitch_predictions.sh` を `prediction-webui-20260821-064544` のバックアップ後に反映。ローカル/VM SHA256はWebUI `887f8e1b...`、予想ラッパー `fa52bee5...` で一致。`python3 -m py_compile` / `bash -n` 成功、`docich-webui.service` active。
 - **実パス確認**: VM `GET http://127.0.0.1:8787/api/predictions` はJSON 200、`enabled=true`、`configured=true`、remote予想0件、prediction worker稼働中を実測。予想の作成・解決・キャンセルは検証中に実行していない。
 - **テスト**: `tests/test_webui.py` はHTTP込み `71 passed`。Nodeの埋め込みWebUI JavaScript構文、予想statusモック、秘密情報非露出も確認済み。
+
+## 2026-08-21 06:47 JST — ラジオ時報の本文・事前音声世代同期を実装・VM反映
+
+- **実装**: `games/soviet_now/broadcast/radio_state.sh` に本文SHA-256と `.render_meta` の照合を追加。deferred再生前に時報本文を更新し、ready WAV/bundleが別世代なら破棄して同じ本文から再レンダリングする。再生直前の本文だけの更新は削除し、成功時に本文ハッシュを保存する。
+- **時刻処理**: `broadcast/radio_persona.sh:_radio_time_context` は1回の `date '+%H %M'` スナップショットから時刻を作る。deferred時報は既定で「N時」までとし、分までの告知は `RADIO_TIME_ANNOUNCE_MINUTES=1` で opt-in。`core/config.sh` の `RADIO_TIME_SYNC_ENABLED=1` が既定。
+- **リポジトリ**: `soviet_now` の `c41d146bf fix: keep deferred radio time audio in sync` を作業ブランチへコミット済み。現在のブランチ先端 `cfec799e4`（後続の別変更を含む）に内包され、originと一致。無関係な作業ツリー変更はステージしていない。
+- **VM反映**: `/home/ubuntu/soren/.codex_deploy/backup-20260821-064422-radio-time-sync` に対象3ファイルをバックアップ後、ローカル/VM SHA256一致、`bash -n`、誤配置コピーなしを確認。`soren-runtime.service` を 06:46:23 JST に完全再起動し、service active、`audio_worker=4009538`、`radio_worker=4009639`、`chat_worker=4009480` のPIDファイルを確認。同名の追加プロセスは各workerのheartbeat子プロセスで、systemd supervisor直下のメインPIDは各1本。
+- **実パス観測**: 再起動後の先頭キュー `radio_1787250972_43806_theme_24531.txt` は `おはようございます、現在時刻は6時です。` に更新され、ready音声がない状態で再レンダリング待ちになった。後続の旧時分本文は先頭項目処理待ちで、全件の新音声再生までは未確認。
+- **テスト**: `test_radio_time_sync.sh`、`test_radio_deferred_queue.sh`、`test_radio_render_retry.sh`、caption bundle、backpressure が成功。`test_radio_peak_hour_defer.py` の2件は今回触れていない既存runtime toggle差分で失敗したため未達として記録（時報同期の失敗ではない）。
+- **作業中音声**: `時報本文と事前生成WAVの世代照合を検証しています。` はVMの `played.log` で06:42:38に再生済み。反映フェーズの `バックアップとハッシュ照合を終え、VMのワーカーを再起動しています。` はoverlay上で再生イベントを確認し、played.logへの最終追記は継続観測。
+- **残課題**: 時刻行を静的本文から分離して再生直前に短い音声を連結する方式、時報付き項目の最大経過時間ルールは未実装。現行修正は、時単位の時報と本文/WAV世代ゲートで不一致を防ぐ範囲。
