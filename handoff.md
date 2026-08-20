@@ -4,6 +4,14 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: chat pause中の outbound queue 蓄積防止（enqueue_chat_message の no-op）を soviet_now 715251b7a → docich a37a20f で完遂、VM反映・検証（queue 0維持）まで完了。chat は pause 中。
 
+## 2026-08-21 05:44 JST — 中華AI改善の no-apply 多発修正
+
+- **原因（本番実測）**: `strategy/ai.sh` の改善前チェックが LiteLLM の `/health` を使用していた。これは単純な生存確認ではなく設定モデルへの能動的な疎通確認で、`deepseek-v4-flash-free` の `FreeUsageLimitError` (HTTP 429) 時に5秒タイムアウトした。その結果、AMD枠・Muse・通常DeepSeek・MiniMaxも実呼び出し前に一律 `rc=79` とされ、`failed_no_apply:rate_limited` になっていた。`/health/liveliness` は本番で約3ms・HTTP 200・`"I'm alive!"` を実測。
+- **修正**: 既定の `LITELLM_HEALTH_URL` を `http://127.0.0.1:4100/health/liveliness` に変更し、回帰テストを追加。soviet_now `f958ad8cc` (`codex/no-apply-liveliness`) に commit/push。
+- **検証**: `bash -n strategy/ai.sh`、`tests.test_improve_retry_reliability` + `tests.test_ai_generate_backoff` の30件がローカルで成功。本番 `/home/ubuntu/soren/strategy/ai.sh` SHA256 `d0aa99449ff542fdb70654cdd5d51dd7d0ed46a31d536fd45d4d572ed2a182f4`、`bash -n` 成功。実モデルを消費しないスタブで本番 `run_cmd` を通し、旧 `LITELLM_DOWN` で遮断されずモデル実行地点まで到達することも確認（スタブが空出力のため最終rc=78は想定内）。
+- **VM反映**: `.codex_deploy/backup-20260821-054059-no-apply-liveliness/strategy/ai.sh` にバックアップ後、`soren-runtime.service` を stop/start。6/6 worker online、duplicates none、Audio/Radio/Improve daemon の新PIDを確認。chat pause は維持。
+- **再試行状態**: 誤判定で作られた `rate_limit_backoff` は `.codex_deploy/rate_limit_backoff-20260821-054158-pre-liveliness` へ退避済み。既存 `tmp/improve.lock` は保持され、現在の試合終了境界で daemon が再試行する予定。05:43時点では `strategy_runner active` のため実モデル呼び出し再開は未確認。
+
 ## 🎯 ゴール / タスク
 
 1. **chat send 停止中も outbound queue を蓄積させない**（ユーザー指示 05:10）— 完了。`enqueue_chat_message` を `tmp/state/chat_worker.paused` 存在時は no-op（`OUTBOUND_CHAT_PAUSE_MARKER`）、40箇所以上の呼び出し元を一括抑止。VMで queue 0維持を実測。
