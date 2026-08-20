@@ -150,3 +150,12 @@
 - **リポジトリ**: `games/soviet_now` `d293231fd fix: prevent duplicate speech from comment retries` を `origin/codex/no-apply-liveliness` へpush。無関係な作業ツリー変更はステージ・コミットしていない。
 - **VM反映**: `/home/ubuntu/soren/tmp/deploy_backup_d293231fd/` に対象ファイルをバックアップ後、5ファイルのSHA256一致、`bash -n`、重複ガード7項目を実測。audio-workerはTERM後、旧PID 3586769から新PID 3928313へ1秒で自動復旧し、後続の監督再起動後もPID 3965941で生存。各時点でロック所有者・メインworkerは1本（同一workerのheartbeat子プロセス1本）を確認。
 - **テスト**: ローカル/VMのストリーミング8テスト、ローカルのコメント周辺34テスト、重複ガード7項目が全て成功。実運用の再発有無は今後のコメント再生ログで継続観測する（反映後は新規コメント再生がなく、実音声の再発ゼロまでは未確認）。
+
+## 2026-08-21 06:45 JST — WebUIにTwitch予想管理を追加・VM反映
+
+- **実装**: `src/docich/webui.py` に Predictions タブと `/api/predictions`（リモート状態・ローカルstate・retry・worker表示）、`POST /api/predictions/action`（create/resolve/cancel/sync）を追加。トークンはレスポンスへ返さず、操作引数は固定allowlistと整数範囲で検証する。
+- **ラッパー**: `games/soviet_now/twitch_predictions.sh` に `status` と `sync` を追加し、resolve/cancel成功時は構造化JSONを出力。既存の自動ワーカーと同じAPI経路・chat告知・retryを使用する。
+- **リポジトリ**: soviet_now `3dd550561`、親 `f9d3694` を各originへpush済み。並行作業中の無関係な変更はコミットしていない。
+- **VM反映**: `/home/ubuntu/docich/src/docich/webui.py` と `/home/ubuntu/soren/twitch_predictions.sh` を `prediction-webui-20260821-064544` のバックアップ後に反映。ローカル/VM SHA256はWebUI `887f8e1b...`、予想ラッパー `fa52bee5...` で一致。`python3 -m py_compile` / `bash -n` 成功、`docich-webui.service` active。
+- **実パス確認**: VM `GET http://127.0.0.1:8787/api/predictions` はJSON 200、`enabled=true`、`configured=true`、remote予想0件、prediction worker稼働中を実測。予想の作成・解決・キャンセルは検証中に実行していない。
+- **テスト**: `tests/test_webui.py` はHTTP込み `71 passed`。Nodeの埋め込みWebUI JavaScript構文、予想statusモック、秘密情報非露出も確認済み。
