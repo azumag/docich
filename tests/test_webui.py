@@ -271,6 +271,77 @@ class TestBackoffDir(unittest.TestCase):
             self.assertEqual(webui._stats_dir(root), root / "tmp/state/ai_stats")
 
 
+class TestAudioQueue(unittest.TestCase):
+    def test_comment_queue_dir_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(webui._comment_queue_dir(root), root / "tmp/.comment_queue")
+
+    def test_comment_queue_dir_from_dotenv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_env(root, 'COMMENT_QUEUE_DIR="tmp/custom_queue"\n')
+            self.assertEqual(webui._comment_queue_dir(root), root / "tmp/custom_queue")
+
+    def test_enqueue_audio_text_creates_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tmp/state").mkdir(parents=True)
+            res = webui._enqueue_audio_text(root, "お待たせしております。", "webui_test")
+            self.assertTrue(res["ok"])
+            self.assertFalse(res["dedup"])
+            self.assertIsNotNone(res["filename"])
+            f = root / "tmp/.comment_queue" / res["filename"]
+            self.assertTrue(f.is_file())
+            self.assertEqual(f.read_text(encoding="utf-8").strip(), "お待たせしております。")
+
+    def test_enqueue_audio_text_dedup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tmp/state").mkdir(parents=True)
+            r1 = webui._enqueue_audio_text(root, "同じテキストです", "webui_test")
+            self.assertFalse(r1["dedup"])
+            r2 = webui._enqueue_audio_text(root, "同じテキストです", "webui_test")
+            self.assertTrue(r2["dedup"])
+            self.assertIsNone(r2["filename"])
+
+    def test_enqueue_speaker_sidecar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tmp/state").mkdir(parents=True)
+            res = webui._enqueue_audio_text(root, "話者テスト", "webui_test", speaker="46")
+            side = Path(str(root / "tmp/.comment_queue" / res["filename"]) + ".speaker")
+            self.assertTrue(side.is_file())
+            self.assertEqual(side.read_text(encoding="utf-8"), "46")
+
+    def test_enqueue_validation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaises(ValueError):
+                webui._enqueue_audio_text(root, "", "webui_test")
+            with self.assertRaises(ValueError):
+                webui._enqueue_audio_text(root, "a" * 1001, "webui_test")
+            with self.assertRaises(ValueError):
+                webui._enqueue_audio_text(root, "ok", "bad source!")
+            with self.assertRaises(ValueError):
+                webui._enqueue_audio_text(root, "ok", "webui_test", speaker="bad speaker!")
+
+    def test_list_audio_queue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tmp/state").mkdir(parents=True)
+            webui._enqueue_audio_text(root, "一件目", "webui_test")
+            webui._enqueue_audio_text(root, "二件目", "webui_test", speaker="109")
+            items = webui._list_audio_queue(root)
+            self.assertEqual(len(items), 2)
+            self.assertEqual(items[0]["preview"], "一件目")
+            self.assertEqual(items[1]["preview"], "二件目")
+            self.assertEqual(items[1]["speaker"], "109")
+
+    def test_audio_hash(self):
+        self.assertEqual(len(webui._comment_audio_hash("abc")), 32)
+
+
 class TestRunWebuiDryRun(unittest.TestCase):
     def test_dry_run_returns_zero(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -395,6 +466,55 @@ class TestHttpHandlers(unittest.TestCase):
         status, data = self._request("GET", "/api/stats?days=3")
         self.assertEqual(status, 200)
         self.assertIn("days", data)
+
+    def test_audio_enqueue_and_list(self):
+        status, data = self._request("POST", "/api/audio/enqueue", {"text": "読み上げテストです", "source": "webui_test"})
+        self.assertEqual(status, 200, data)
+        self.assertFalse(data["dedup"])
+        status, data = self._request("GET", "/api/audio/queue")
+        self.assertEqual(status, 200)
+        self.assertGreaterEqual(data["count"], 1)
+        self.assertIn("queue_dir", data)
+        fname = data["items"][0]["filename"]
+        self.assertTrue(fname.startswith("comment_announce_"))
+
+    def test_audio_enqueue_dedup_http(self):
+        status, data = self._request("POST", "/api/audio/enqueue", {"text": "重複テスト", "source": "webui_test"})
+        self.assertEqual(status, 200, data)
+        self.assertFalse(data["dedup"])
+        status, data = self._request("POST", "/api/audio/enqueue", {"text": "重複テスト", "source": "webui_test"})
+        self.assertEqual(status, 200, data)
+        self.assertTrue(data["dedup"])
+
+    def test_audio_enqueue_validation_http(self):
+        status, data = self._request("POST", "/api/audio/enqueue", {"text": ""})
+        self.assertEqual(status, 400)
+        self.assertEqual(data["error"], "validation_error")
+        status, data = self._request("POST", "/api/audio/enqueue", {"text": "x", "source": "../etc"})
+        self.assertEqual(status, 400)
+
+    def test_audio_delete_item(self):
+        status, data = self._request("POST", "/api/audio/enqueue", {"text": "削除対象", "source": "webui_test"})
+        self.assertEqual(status, 200, data)
+        fname = data["filename"]
+        status, data = self._request("DELETE", f"/api/audio/queue/{fname}")
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["deleted"], fname)
+        status, data = self._request("DELETE", f"/api/audio/queue/{fname}")
+        self.assertEqual(status, 404)
+
+    def test_audio_delete_traversal_rejected(self):
+        status, data = self._request("DELETE", "/api/audio/queue/..%2F..%2Fetc%2Fpasswd.txt")
+        self.assertEqual(status, 400)
+
+    def test_audio_clear(self):
+        self._request("POST", "/api/audio/enqueue", {"text": "クリア対象", "source": "webui_test"})
+        status, data = self._request("DELETE", "/api/audio/queue")
+        self.assertEqual(status, 200, data)
+        self.assertIn("cleared", data)
+        status, data = self._request("GET", "/api/audio/queue")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["count"], 0)
 
     def test_token_auth_required(self):
         self.g.webui.token = "supersecret123"

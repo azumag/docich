@@ -7,6 +7,7 @@ State: soren_root = ELOOP_LIB_DIR 相当 (games/soviet_now or /home/ubuntu/soren
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -94,6 +95,12 @@ PROMPTS_MAX_BYTES = 200 * 1024
 PROMPTS_MAX_FILES = 64
 PROMPTS_PREVIEW_LEN = 500
 PROMPT_FNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.md$")
+
+# --- audio queue constants ----------------------------------------------------
+AUDIO_TEXT_LIMIT = 1000
+AUDIO_SOURCE_RE = re.compile(r"^[A-Za-z0-9._-]{1,32}$")
+AUDIO_SPEAKER_RE = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
+AUDIO_QUEUE_PREVIEW_LEN = 120
 
 # --- helpers -----------------------------------------------------------------
 
@@ -767,6 +774,314 @@ def _top_override_path(soren_root: Path) -> Path:
     return soren_root / "tmp/state/broadcast_top_override.json"
 
 
+def _comment_queue_dir(soren_root: Path) -> Path:
+    raw = os.environ.get("COMMENT_QUEUE_DIR", "")
+    if raw:
+        p = Path(raw)
+        return p if p.is_absolute() else (soren_root / p)
+    try:
+        dotenv = _read_dotenv_dict(soren_root)
+        cand = dotenv.get("COMMENT_QUEUE_DIR", "").strip()
+        if cand:
+            # dotenv dict already strips quotes
+            p = Path(cand)
+            return p if p.is_absolute() else (soren_root / p)
+    except Exception:
+        pass
+    return soren_root / "tmp/.comment_queue"
+
+
+def _comment_audio_dedup_dir(soren_root: Path) -> Path:
+    raw = os.environ.get("COMMENT_AUDIO_DEDUP_DIR", "")
+    if raw:
+        p = Path(raw)
+        return p if p.is_absolute() else (soren_root / p)
+    try:
+        dotenv = _read_dotenv_dict(soren_root)
+        cand = dotenv.get("COMMENT_AUDIO_DEDUP_DIR", "").strip()
+        if cand:
+            p = Path(cand)
+            return p if p.is_absolute() else (soren_root / p)
+    except Exception:
+        pass
+    # default mirrors outbound_queue.sh: ${COMMENT_QUEUE_DIR:-tmp/.comment_queue}/audio_dedup
+    return _comment_queue_dir(soren_root) / "audio_dedup"
+
+
+def _comment_audio_hash(text: str) -> str:
+    return hashlib.md5(text.encode("utf-8")).hexdigest()
+
+
+def _comment_audio_cleanup_dedup_markers(soren_root: Path, ttl: int) -> None:
+    if ttl <= 0:
+        return
+    dedup_dir = _comment_audio_dedup_dir(soren_root)
+    now = int(time.time())
+    try:
+        if not dedup_dir.is_dir():
+            return
+        for marker in dedup_dir.iterdir():
+            if not marker.is_dir():
+                continue
+            try:
+                mt = int(marker.stat().st_mtime)
+            except Exception:
+                mt = now
+            age = now - mt
+            if age > ttl:
+                try:
+                    import shutil
+
+                    shutil.rmtree(marker, ignore_errors=True)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
+def _comment_audio_claim_enqueue_key(soren_root: Path, text: str) -> bool:
+    # returns True if claimed (not deduped), False if dedup within TTL
+    ttl_raw = os.environ.get("COMMENT_AUDIO_DEDUP_TTL_SEC", "")
+    ttl = 120
+    if ttl_raw:
+        try:
+            ttl = int(ttl_raw.strip())
+        except Exception:
+            ttl = 120
+    else:
+        try:
+            dotenv = _read_dotenv_dict(soren_root)
+            cand = dotenv.get("COMMENT_AUDIO_DEDUP_TTL_SEC", "").strip()
+            if cand:
+                ttl = int(cand)
+        except Exception:
+            ttl = 120
+    if ttl <= 0:
+        return True
+    dedup_dir = _comment_audio_dedup_dir(soren_root)
+    try:
+        dedup_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return True
+    key = _comment_audio_hash(text)
+    if not key:
+        return True
+    marker = dedup_dir / key
+    now = int(time.time())
+    try:
+        marker.mkdir(parents=False, exist_ok=False)
+        try:
+            (marker / "ts").write_text(str(now), encoding="utf-8")
+        except Exception:
+            pass
+        return True
+    except FileExistsError:
+        try:
+            mt = int(marker.stat().st_mtime)
+        except Exception:
+            mt = now
+        age = now - mt
+        if age <= ttl:
+            return False
+        # expired -> replace
+        try:
+            import shutil
+
+            shutil.rmtree(marker, ignore_errors=True)
+        except Exception:
+            pass
+        try:
+            marker.mkdir(parents=False, exist_ok=False)
+            try:
+                (marker / "ts").write_text(str(now), encoding="utf-8")
+            except Exception:
+                pass
+            _comment_audio_cleanup_dedup_markers(soren_root, ttl)
+            return True
+        except FileExistsError:
+            return False
+        except Exception:
+            return False
+
+
+def _validate_audio_text(text: str) -> str:
+    if not isinstance(text, str):
+        raise ValueError("text は文字列である必要があります")
+    s = text.strip()
+    if not s:
+        raise ValueError("text は必須です")
+    if len(s) > AUDIO_TEXT_LIMIT:
+        raise ValueError(f"text は {AUDIO_TEXT_LIMIT} 文字以内である必要があります")
+    if any(ord(c) < 32 and c not in ("\n", "\r", "\t") for c in s):
+        raise ValueError("制御文字は使用できません")
+    return s
+
+
+def _validate_audio_source(source: str) -> str:
+    if not source:
+        return "webui_manual"
+    s = str(source).strip()
+    if not s:
+        return "webui_manual"
+    if not AUDIO_SOURCE_RE.match(s):
+        raise ValueError(f"source が不正です: {s!r} (英数字._- 1-32)")
+    return s
+
+
+def _validate_audio_speaker(speaker: str) -> str:
+    if not speaker:
+        return ""
+    s = str(speaker).strip()
+    if not s:
+        return ""
+    if len(s) > 64:
+        raise ValueError("speaker は 64 文字以内である必要があります")
+    if not AUDIO_SPEAKER_RE.match(s):
+        raise ValueError(f"speaker が不正です: {s!r}")
+    return s
+
+
+def _enqueue_audio_text(soren_root: Path, text: str, source: str = "webui_manual", speaker: str = "") -> dict[str, Any]:
+    cleaned = _validate_audio_text(text)
+    src = _validate_audio_source(source)
+    spk = _validate_audio_speaker(speaker)
+    if not _comment_audio_claim_enqueue_key(soren_root, cleaned):
+        return {"ok": True, "dedup": True, "filename": None}
+    queue_dir = _comment_queue_dir(soren_root)
+    queue_dir.mkdir(parents=True, exist_ok=True)
+    ts = time.time_ns()
+    filename = f"comment_announce_{ts}_{src}.txt"
+    dest = queue_dir / filename
+    tmp_fd = None
+    tmp_path = None
+    try:
+        tmp_fd, tmp_path_str = tempfile.mkstemp(dir=str(queue_dir), prefix=".audio.")
+        tmp_path = Path(tmp_path_str)
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
+            fh.write(cleaned + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        tmp_fd = None
+        tmp_path.chmod(0o644)
+        os.replace(str(tmp_path), str(dest))
+        if spk:
+            try:
+                (Path(str(dest) + ".speaker")).write_text(spk, encoding="utf-8")
+            except Exception:
+                pass
+        return {"ok": True, "dedup": False, "filename": filename, "path": str(dest)}
+    finally:
+        if tmp_fd is not None:
+            try:
+                os.close(tmp_fd)
+            except Exception:
+                pass
+        if tmp_path is not None:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except Exception:
+                pass
+
+
+def _list_audio_queue(soren_root: Path, limit: int = 50) -> list[dict[str, Any]]:
+    qdir = _comment_queue_dir(soren_root)
+    items: list[dict[str, Any]] = []
+    if not qdir.is_dir():
+        return items
+    try:
+        candidates: list[Path] = []
+        for p in qdir.glob("*.txt"):
+            if p.name.startswith("."):
+                continue
+            if p.name == "played_hashes.txt":
+                continue
+            if p.suffix == ".txt":
+                candidates.append(p)
+        # sort by mtime ascending (oldest first, worker consumes oldest)
+        candidates.sort(key=lambda x: x.stat().st_mtime if x.exists() else 0)
+        for p in candidates[:limit]:
+            try:
+                txt = p.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                txt = ""
+            try:
+                st = p.stat()
+                mtime = int(st.st_mtime)
+                size = st.st_size
+            except Exception:
+                mtime = 0
+                size = len(txt.encode("utf-8"))
+            preview = txt.strip()[:AUDIO_QUEUE_PREVIEW_LEN]
+            # detect .speaker sidecar
+            speaker = ""
+            try:
+                sp_path = Path(str(p) + ".speaker")
+                if sp_path.is_file():
+                    speaker = sp_path.read_text(encoding="utf-8", errors="ignore").strip()
+            except Exception:
+                speaker = ""
+            # detect .playing
+            playing = (p.with_suffix(".playing")).exists() if p.suffix == ".txt" else False
+            # need check alternative .playing name: file is .txt, playing is .playing; but if file is already .playing? glob not include.
+            items.append(
+                {
+                    "filename": p.name,
+                    "path": str(p),
+                    "mtime": mtime,
+                    "size": size,
+                    "preview": preview,
+                    "speaker": speaker,
+                    "playing": playing,
+                }
+            )
+        # also include *.playing files that are currently playing
+        try:
+            for p in qdir.glob("*.playing"):
+                if p.name.startswith("."):
+                    continue
+                # avoid double count if already listed? .playing not in txt list
+                try:
+                    txt = p.read_text(encoding="utf-8", errors="ignore")
+                except Exception:
+                    txt = ""
+                try:
+                    st = p.stat()
+                    mtime = int(st.st_mtime)
+                    size = st.st_size
+                except Exception:
+                    mtime = 0
+                    size = len(txt.encode("utf-8"))
+                preview = txt.strip()[:AUDIO_QUEUE_PREVIEW_LEN]
+                speaker = ""
+                try:
+                    # sidecars for playing use original .txt name? check both
+                    for cand in [Path(str(p) + ".speaker"), Path(str(p).replace(".playing", ".txt") + ".speaker")]:
+                        if cand.is_file():
+                            speaker = cand.read_text(encoding="utf-8", errors="ignore").strip()
+                            break
+                except Exception:
+                    speaker = ""
+                items.append(
+                    {
+                        "filename": p.name,
+                        "path": str(p),
+                        "mtime": mtime,
+                        "size": size,
+                        "preview": preview,
+                        "speaker": speaker,
+                        "playing": True,
+                    }
+                )
+        except Exception:
+            pass
+        # sort again by mtime
+        items.sort(key=lambda x: x["mtime"])
+        return items[:limit]
+    except Exception:
+        return items
+
+
 def _is_pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
@@ -1283,6 +1598,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 <button data-tab="dashboard" class="active">Dashboard</button>
 <button data-tab="status">Status</button>
 <button data-tab="overlay">Overlay</button>
+<button data-tab="audio">Audio</button>
 <button data-tab="chains">Chains</button>
 <button data-tab="backoff">Backoff</button>
 <button data-tab="peak">Peak</button>
@@ -1401,6 +1717,27 @@ input:checked+.slider:before{transform:translateX(20px)}
 </div>
 </div>
 </section>
+<!-- AUDIO -->
+<section id="tab-audio" style="display:none">
+<div class="card"><h2>Audio キュー (audio-worker)</h2><p class="desc"><code>tmp/.comment_queue/</code> にテキストを積むと <code>audio_worker</code> が <code>say_enqueue.sh</code> で再生する。手動enqueueは <code>lib/outbound_queue.sh:enqueue_audio_text</code> と同等（120秒 dedup）。</p>
+<div class="kv"><dt>queue_dir</dt><dd id="audio-queue-dir" class="mono">-</dd><dt>dedup_dir</dt><dd id="audio-dedup-dir" class="mono">-</dd><dt>dedup_count</dt><dd id="audio-dedup-count" class="mono">-</dd><dt>worker</dt><dd id="audio-worker-status" class="mono">-</dd></div>
+<div class="actions"><button class="btn" id="audio-queue-refresh">更新</button><button class="btn danger" id="audio-queue-clear">キュー全クリア</button></div>
+<div style="overflow:auto;margin-top:10px"><table><thead><tr><th>filename</th><th>time</th><th>speaker</th><th>preview</th><th></th></tr></thead><tbody id="audio-queue-table"></tbody></table></div>
+<div class="help">audio_worker が消化するとファイルは自動で消える（.playing → 削除）。dedup は 120秒間 同一テキストの再投入を抑止。</div>
+</div>
+<div class="card"><h3>手動 enqueue</h3><p class="desc">任意のテキストを読み上げキューに投入。丁寧な敬語で書くと配信で自然に聞こえる。例: <code>お待たせしております。現在、システムの解析を進めております。</code></p>
+<div><label>text (1-1000文字) <span id="audio-text-count" class="badge">0/1000</span></label><textarea id="audio-text" rows="4" maxlength="1000" placeholder="お待たせしております。現在、…何卒よろしくお願い申し上げます。"></textarea></div>
+<div class="row" style="margin-top:8px"><div><label>source (1-32, 英数字._- )</label><input id="audio-source" maxlength="32" placeholder="webui_manual" value="webui_manual"/></div><div><label>speaker override (任意, 例: 46, 109)</label><input id="audio-speaker" maxlength="64" placeholder="(空=既定話者)"/></div></div>
+<div class="help">source はファイル名に含まれる識別子。speaker は VOICEVOX話者ID等（空なら既定）。120秒以内の重複テキストはスキップされる。</div>
+<div class="actions"><button class="btn primary" id="audio-enqueue">enqueue して読み上げ</button><button class="btn" id="audio-enqueue-clear">クリア</button></div>
+<div id="audio-enqueue-msg" class="help"></div>
+<div style="margin-top:10px"><label>プリセット</label>
+<button class="preset-btn" data-audio-preset="お待たせしております。現在、システムの自動解析を丁寧に進めております。詳細につきまして、少々お待ちくださいませ。何卒よろしくお願い申し上げます。">丁寧: 解析中</button>
+<button class="preset-btn" data-audio-preset="作業が完了いたしました。ご協力ありがとうございました。引き続きよろしくお願い申し上げます。">丁寧: 完了</button>
+<button class="preset-btn" data-audio-preset="テストです。音声キューが正常に動作しているか確認しています。">テスト</button>
+</div>
+</div>
+</section>
 <!-- CHAINS -->
 <section id="tab-chains" style="display:none">
 <div class="card"><h2>モデルチェーン</h2><p class="desc">カンマ区切りで優先度順。先頭が最優先で失敗時に次へフォールバック（lib/ai_generate.sh）。<code>AI_COMMON_AGENTS</code> が原典で、他は空ならそれを継承します。変更は .env へ原子書き込み → 10秒以内に hot-reload。</p>
@@ -1494,6 +1831,7 @@ let backoffState = {items:[], def:"600", fail:"300"};
 let peakState = {hoursSet:new Set(), tz:"Asia/Tokyo", prefItems:[], swap:"1", gate:"1", priority:"", improveInherit:true, improveItems:[], improveEnabled:"0", improveDefer:"0", improveEffective:"", improvePeakRaw:""};
 let promptsState = {list:[], currentId:null, expectedMtime:0};
 let dashTimer = null;
+let audioState = {items:[], queueDir:"", dedupDir:"", dedupCount:0, worker:null};
 const AGENT_RE = /^[A-Za-z0-9][A-Za-z0-9._:\/-]{0,127}$/;
 const BACKOFF_NAME_RE = /^[A-Za-z0-9._\/-]+$/;
 const CHAIN_PRESETS = {
@@ -2690,6 +3028,61 @@ async function savePrompt(){
     }
   }
 }
+async function loadAudioQueue(){
+  try{
+    const data=await api("/api/audio/queue");
+    audioState.items=data.items||[];
+    audioState.queueDir=data.queue_dir||"";
+    audioState.dedupDir=data.dedup_dir||"";
+    audioState.dedupCount=data.dedup_count||0;
+    audioState.worker=data.worker||null;
+    $("#audio-queue-dir").textContent=audioState.queueDir;
+    $("#audio-dedup-dir").textContent=audioState.dedupDir;
+    $("#audio-dedup-count").textContent=audioState.dedupCount;
+    const w=audioState.worker;
+    const wEl=$("#audio-worker-status");
+    if(w) wEl.innerHTML=(w.alive?`<span class="badge ok">alive</span>`:`<span class="badge bad">down</span>`)+` <span class="mono">pid ${w.pid||"-"}</span>`;
+    else wEl.textContent="-";
+    const tb=$("#audio-queue-table");
+    tb.innerHTML="";
+    if(audioState.items.length===0){
+      tb.innerHTML='<tr><td colspan="5" class="help">キュー空（再生待ちなし）</td></tr>';
+    } else {
+      for(const it of audioState.items){
+        const tr=document.createElement("tr");
+        const st=it.playing?'<span class="badge warn">playing</span>':'';
+        tr.innerHTML=`<td class="mono" style="font-size:11px">${esc(it.filename)}</td><td class="mono" style="font-size:11px">${fmtTime(it.mtime)}</td><td class="mono">${esc(it.speaker||"-")}</td><td class="mono" style="max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${st} ${esc(it.preview)}</td><td>${it.playing?'':`<button class="btn danger" data-adel="${esc(it.filename)}" style="padding:4px 8px">×</button>`}</td>`;
+        tb.appendChild(tr);
+      }
+    }
+    for(const btn of $$("[data-adel]")){
+      btn.onclick=async()=>{
+        const fname=btn.getAttribute("data-adel");
+        try{ await api(`/api/audio/queue/${encodeURIComponent(fname)}`,{method:"DELETE"}); toast(`削除: ${fname}`); await loadAudioQueue(); }catch(e){ toast(String(e)); }
+      };
+    }
+  }catch(e){ toast(String(e)); }
+}
+async function enqueueAudio(){
+  if(READ_ONLY){ toast("read-only モードのため enqueue できません"); return; }
+  const text=$("#audio-text").value;
+  const source=$("#audio-source").value.trim()||"webui_manual";
+  const speaker=$("#audio-speaker").value.trim();
+  if(!text.trim()){ toast("text を入力してください"); return; }
+  try{
+    const res=await api("/api/audio/enqueue",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text, source, speaker})});
+    if(res.dedup){ toast("dedup: 同一テキストが120秒以内にenqueue済みのためスキップ",4000); }
+    else { toast("読み上げキューに追加しました"); $("#audio-text").value=""; $("#audio-speaker").value=""; }
+    $("#audio-enqueue-msg").textContent=res.filename?`enqueued: ${res.filename}`:(res.dedup?"dedup スキップ":"");
+    updateAudioTextCount();
+    await loadAudioQueue();
+  }catch(e){ toast(String(e),5000); $("#audio-enqueue-msg").textContent=String(e); }
+}
+function updateAudioTextCount(){
+  const el=$("#audio-text");
+  const cnt=$("#audio-text-count");
+  if(el && cnt) cnt.textContent=`${el.value.length}/1000`;
+}
 document.addEventListener("DOMContentLoaded",()=>{
   $$("#tabs button").forEach(btn=>btn.onclick=()=>{
     $$("#tabs button").forEach(b=>b.classList.remove("active"));
@@ -2704,6 +3097,7 @@ document.addEventListener("DOMContentLoaded",()=>{
     if(tab==="status") { loadStatus(); if(statusTimer) clearInterval(statusTimer); statusTimer=setInterval(loadStatus,10000); }
     else { if(statusTimer) { clearInterval(statusTimer); statusTimer=null; } }
     if(tab==="overlay") { loadOverlayEvents(); loadWorkBanner(); loadTop(); loadPreview(); }
+    if(tab==="audio") loadAudioQueue();
     if(tab==="prompts") loadPrompts();
   });
   // overlay sub tabs
@@ -2781,6 +3175,20 @@ document.addEventListener("DOMContentLoaded",()=>{
   if(pType) pType.onchange=()=>loadPreview();
   const pRegion=document.getElementById("preview-region");
   if(pRegion) pRegion.onchange=()=>loadPreview();
+  // audio handlers
+  const aRefresh=document.getElementById("audio-queue-refresh");
+  if(aRefresh) aRefresh.onclick=()=>loadAudioQueue();
+  const aClear=document.getElementById("audio-queue-clear");
+  if(aClear) aClear.onclick=async()=>{ if(!confirm("読み上げキューを全クリアしますか？")) return; try{ await api("/api/audio/queue",{method:"DELETE"}); toast("キュー全クリア"); await loadAudioQueue(); }catch(e){ toast(String(e)); } };
+  const aEnqueue=document.getElementById("audio-enqueue");
+  if(aEnqueue) aEnqueue.onclick=()=>enqueueAudio();
+  const aEnqClear=document.getElementById("audio-enqueue-clear");
+  if(aEnqClear) aEnqClear.onclick=()=>{ $("#audio-text").value=""; $("#audio-speaker").value=""; $("#audio-enqueue-msg").textContent=""; updateAudioTextCount(); };
+  const aText=document.getElementById("audio-text");
+  if(aText) aText.addEventListener("input", updateAudioTextCount);
+  for(const btn of $$("[data-audio-preset]")){
+    btn.onclick=()=>{ $("#audio-text").value=btn.getAttribute("data-audio-preset"); updateAudioTextCount(); };
+  }
   // prompts handlers
   const prRefresh=document.getElementById("prompts-refresh");
   if(prRefresh) prRefresh.onclick=()=>loadPrompts();
@@ -2920,6 +3328,8 @@ class _Handler(BaseHTTPRequestHandler):
             elif path.startswith("/api/prompts/"):
                 prompt_id = urllib.parse.unquote(path[len("/api/prompts/") :])
                 status = self._handle_get_prompt(prompt_id)
+            elif path == "/api/audio/queue":
+                status = self._handle_get_audio_queue()
             else:
                 status = 404
                 self._send_error_json(404, "not_found")
@@ -2987,6 +3397,16 @@ class _Handler(BaseHTTPRequestHandler):
                 # /api/overlay/events/<idx>
                 part = parsed.path[len("/api/overlay/events/") :]
                 status = self._handle_delete_overlay_event(part)
+            elif parsed.path.startswith("/api/audio/queue/"):
+                part = parsed.path[len("/api/audio/queue/") :]
+                # decode file name
+                fname = urllib.parse.unquote(part)
+                if fname == "clear":
+                    status = self._handle_clear_audio_queue()
+                else:
+                    status = self._handle_delete_audio_queue_item(fname)
+            elif parsed.path == "/api/audio/queue":
+                status = self._handle_clear_audio_queue()
             else:
                 status = 404
                 self._send_error_json(404, "not_found")
@@ -3017,6 +3437,10 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_post_overlay_events_bulk()
             elif parsed.path == "/api/overlay/preview/refresh":
                 status = self._handle_reload()  # alias
+            elif parsed.path == "/api/audio/enqueue":
+                status = self._handle_post_audio_enqueue()
+            elif parsed.path == "/api/audio/queue/clear":
+                status = self._handle_clear_audio_queue()
             else:
                 status = 404
                 self._send_error_json(404, "not_found")
@@ -3957,6 +4381,151 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_error_json(500, "read_failed", str(exc))
                 return 500
             return 200
+
+    def _handle_get_audio_queue(self) -> int:
+        try:
+            items = _list_audio_queue(self.soren_root, limit=50)
+        except Exception as exc:
+            self._send_error_json(500, "list_failed", str(exc))
+            return 500
+        qdir = _comment_queue_dir(self.soren_root)
+        dedup_dir = _comment_audio_dedup_dir(self.soren_root)
+        try:
+            dedup_count = len(list(dedup_dir.iterdir())) if dedup_dir.is_dir() else 0
+        except Exception:
+            dedup_count = 0
+        # also report audio_worker status
+        worker_info = None
+        try:
+            # reuse _find_worker_pid; soren_root workers
+            pid = _find_worker_pid(self.soren_root, "audio_worker")
+            alive = pid is not None
+            worker_info = {"worker": "audio_worker", "pid": pid, "alive": alive}
+        except Exception:
+            worker_info = {"worker": "audio_worker", "pid": None, "alive": False}
+        self._send_json(
+            200,
+            {
+                "queue_dir": str(qdir),
+                "dedup_dir": str(dedup_dir),
+                "dedup_count": dedup_count,
+                "count": len(items),
+                "items": items,
+                "worker": worker_info,
+            },
+        )
+        return 200
+
+    def _handle_post_audio_enqueue(self) -> int:
+        body, err = self._read_body()
+        if err:
+            return err
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except Exception as exc:
+            self._send_error_json(400, "invalid_json", str(exc))
+            return 400
+        if not isinstance(data, dict):
+            self._send_error_json(400, "validation_error", "body must be object")
+            return 400
+        text = data.get("text", "")
+        source = data.get("source", "webui_manual")
+        speaker = data.get("speaker", "")
+        # allow alternative keys: content, message
+        if not text and "content" in data:
+            text = data.get("content", "")
+        if not text and "message" in data:
+            text = data.get("message", "")
+        try:
+            result = _enqueue_audio_text(self.soren_root, str(text), str(source), str(speaker))
+        except ValueError as exc:
+            self._send_error_json(400, "validation_error", str(exc))
+            return 400
+        except Exception as exc:
+            self._send_error_json(500, "enqueue_failed", str(exc))
+            return 500
+        # result includes dedup flag
+        if result.get("dedup"):
+            self._send_json(200, {"ok": True, "dedup": True, "message": "dedup: 同一テキストが120秒以内にenqueue済みのためスキップされました"})
+            return 200
+        self._send_json(200, {"ok": True, "dedup": False, "filename": result.get("filename"), "path": result.get("path")})
+        return 200
+
+    def _handle_delete_audio_queue_item(self, fname: str) -> int:
+        if not fname or "/" in fname or "\\" in fname or ".." in fname:
+            self._send_error_json(400, "invalid_filename", "path traversal not allowed")
+            return 400
+        # allow only known queue filenames
+        if not (fname.endswith(".txt") or fname.endswith(".playing")):
+            self._send_error_json(400, "invalid_filename", "only .txt or .playing allowed")
+            return 400
+        # extra safety: must match comment* pattern or comment_announce*
+        if not (fname.startswith("comment_") or fname.startswith("comment_announce_")):
+            self._send_error_json(400, "invalid_filename", "filename must start with comment_")
+            return 400
+        if len(fname) > 200:
+            self._send_error_json(400, "invalid_filename", "filename too long")
+            return 400
+        qdir = _comment_queue_dir(self.soren_root)
+        target = qdir / fname
+        # ensure inside qdir
+        try:
+            target.resolve().relative_to(qdir.resolve())
+        except Exception:
+            self._send_error_json(400, "invalid_filename", "outside queue dir")
+            return 400
+        deleted = False
+        try:
+            if target.is_file():
+                target.unlink()
+                deleted = True
+            # also remove sidecars
+            for suf in [".speaker", ".mode", ".meta"]:
+                side = Path(str(target) + suf)
+                try:
+                    if side.is_file():
+                        side.unlink()
+                except Exception:
+                    pass
+            # if deleted .txt, also check .playing counterpart? not needed
+        except Exception as exc:
+            self._send_error_json(500, "delete_failed", str(exc))
+            return 500
+        if not deleted:
+            self._send_error_json(404, "not_found", f"{fname} not found")
+            return 404
+        self._send_json(200, {"ok": True, "deleted": fname})
+        return 200
+
+    def _handle_clear_audio_queue(self) -> int:
+        qdir = _comment_queue_dir(self.soren_root)
+        count = 0
+        try:
+            if qdir.is_dir():
+                for p in list(qdir.glob("*.txt")) + list(qdir.glob("*.playing")):
+                    if p.name.startswith("."):
+                        continue
+                    if p.name == "played_hashes.txt":
+                        continue
+                    if not (p.name.startswith("comment_") or p.name.startswith("comment_announce_")):
+                        continue
+                    try:
+                        p.unlink()
+                        count += 1
+                        for suf in [".speaker", ".mode", ".meta"]:
+                            side = Path(str(p) + suf)
+                            try:
+                                if side.is_file():
+                                    side.unlink()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+        except Exception as exc:
+            self._send_error_json(500, "clear_failed", str(exc))
+            return 500
+        self._send_json(200, {"ok": True, "cleared": count})
+        return 200
 
     def _handle_list_prompts(self) -> int:
         try:
