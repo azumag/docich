@@ -28,6 +28,7 @@ WEBUI_ALLOWLIST = {
     # chain (core/config.sh:33-78)
     "AI_COMMON_AGENTS",
     "MODEL_IMPROVE_LIST",
+    "MODEL_IMPROVE_PEAK_LIST",
     "RADIO_AGENTS",
     "RADIO_PREPASS_AGENTS",
     "COMMENT_AGENTS",
@@ -43,12 +44,16 @@ WEBUI_ALLOWLIST = {
     "PEAK_HOURS_PRIORITY_AGENT",
     "PEAK_HOURS_AGENT_PREFERENCE",
     "PEAK_HOURS_QUEUE_GATE_ENABLED",
+    # improve peak (core/config.sh:289-292)
+    "IMPROVE_PEAK_CHAIN_ENABLED",
+    "IMPROVE_PEAK_HOUR_DEFER_ENABLED",
 }
 
 # hard defaults from core/config.sh
 DEFAULTS: dict[str, str] = {
     "AI_COMMON_AGENTS": "opencode:deepseek-v4-flash-free,codex:amd-token-factory-deepseek-v4-flash,codex:openrouter/free,local,codex:deepseek-v4-flash,codex:minimax-m3,opencode-go:muse-spark-1.2-contributor",
     "MODEL_IMPROVE_LIST": "opencode:deepseek-v4-flash-free,codex:amd-token-factory-deepseek-v4-flash,codex:deepseek-v4-flash,codex:minimax-m3",
+    "MODEL_IMPROVE_PEAK_LIST": "",  # inherits MODEL_IMPROVE_LIST
     "RADIO_AGENTS": "",  # inherits AI_COMMON_AGENTS
     "RADIO_PREPASS_AGENTS": "",  # inherits AI_COMMON_AGENTS
     "COMMENT_AGENTS": "",  # inherits AI_COMMON_AGENTS
@@ -62,6 +67,8 @@ DEFAULTS: dict[str, str] = {
     "PEAK_HOURS_PRIORITY_AGENT": "codex:minimax-m3",
     "PEAK_HOURS_AGENT_PREFERENCE": "codex:minimax-m3,codex:openrouter/free,local",
     "PEAK_HOURS_QUEUE_GATE_ENABLED": "1",
+    "IMPROVE_PEAK_CHAIN_ENABLED": "0",
+    "IMPROVE_PEAK_HOUR_DEFER_ENABLED": "0",
 }
 
 AGENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
@@ -166,6 +173,14 @@ def _effective_value(key: str, dotenv: dict[str, str]) -> str:
         if ca:
             return ca
         return DEFAULTS["AI_COMMON_AGENTS"]
+    if key == "MODEL_IMPROVE_PEAK_LIST":
+        if "MODEL_IMPROVE_PEAK_LIST" in dotenv and dotenv["MODEL_IMPROVE_PEAK_LIST"]:
+            return dotenv["MODEL_IMPROVE_PEAK_LIST"]
+        # inherits MODEL_IMPROVE_LIST effective
+        ml = _effective_value("MODEL_IMPROVE_LIST", dotenv)
+        if ml:
+            return ml
+        return DEFAULTS["MODEL_IMPROVE_LIST"]
     return DEFAULTS.get(key, "")
 
 
@@ -218,7 +233,7 @@ def _validate_value(key: str, value: str) -> None:
     if not isinstance(value, str):
         raise ValueError(f"{key} の値は文字列である必要があります")
     # .env は bash で source されるため、シェルメタ文字を許すキーは存在しない
-    if key in ("AI_COMMON_AGENTS", "MODEL_IMPROVE_LIST", "RADIO_AGENTS", "RADIO_PREPASS_AGENTS", "COMMENT_AGENTS", "COMMENT_TRANSLATION_AGENTS", "PEAK_HOURS_AGENT_PREFERENCE"):
+    if key in ("AI_COMMON_AGENTS", "MODEL_IMPROVE_LIST", "MODEL_IMPROVE_PEAK_LIST", "RADIO_AGENTS", "RADIO_PREPASS_AGENTS", "COMMENT_AGENTS", "COMMENT_TRANSLATION_AGENTS", "PEAK_HOURS_AGENT_PREFERENCE"):
         if key == "AI_COMMON_AGENTS" and not value.strip():
             raise ValueError(f"{key} は空にできません")
         if not value.strip():
@@ -277,7 +292,7 @@ def _validate_value(key: str, value: str) -> None:
             if not _is_valid_peak_time(a.strip()) or not _is_valid_peak_time(b.strip()):
                 raise ValueError(f"{key} の時刻 {part!r} が不正です (HH/HHMM/HH:MM)")
         return
-    if key in ("PEAK_HOURS_AGENT_SWAP_ENABLED", "PEAK_HOURS_QUEUE_GATE_ENABLED"):
+    if key in ("PEAK_HOURS_AGENT_SWAP_ENABLED", "PEAK_HOURS_QUEUE_GATE_ENABLED", "IMPROVE_PEAK_CHAIN_ENABLED", "IMPROVE_PEAK_HOUR_DEFER_ENABLED"):
         # ランタイム (core/helpers.sh) は "1" のみ有効と判定する
         if value.strip() not in ("0", "1"):
             raise ValueError(f"{key} は 0 または 1 である必要があります")
@@ -451,6 +466,10 @@ def _get_peak_status(soren_root: Path) -> dict[str, Any]:
     gate = _effective_value("PEAK_HOURS_QUEUE_GATE_ENABLED", dotenv)
     pref = _effective_value("PEAK_HOURS_AGENT_PREFERENCE", dotenv)
     prio = _effective_value("PEAK_HOURS_PRIORITY_AGENT", dotenv)
+    improve_defer = _effective_value("IMPROVE_PEAK_HOUR_DEFER_ENABLED", dotenv)
+    improve_peak_enabled = _effective_value("IMPROVE_PEAK_CHAIN_ENABLED", dotenv)
+    improve_list = _effective_value("MODEL_IMPROVE_LIST", dotenv)
+    improve_peak_list = _effective_value("MODEL_IMPROVE_PEAK_LIST", dotenv)
     now_min = _current_minutes_in_tz(tz)
     is_peak = False
     if now_min is not None:
@@ -470,6 +489,12 @@ def _get_peak_status(soren_root: Path) -> dict[str, Any]:
             now_str = f"{lt.tm_hour:02d}:{lt.tm_min:02d}"
         except Exception:
             now_str = ""
+    # effective improve list based on peak
+    if improve_peak_enabled == "1" and improve_peak_list:
+        # reuse same logic as _get_improve_agents: peak -> peak list else normal
+        improve_effective = improve_peak_list if is_peak else improve_list
+    else:
+        improve_effective = improve_list
     return {
         "windows": windows,
         "tz": tz,
@@ -480,6 +505,11 @@ def _get_peak_status(soren_root: Path) -> dict[str, Any]:
         "is_peak_now": is_peak,
         "now_minutes": now_min,
         "now_str": now_str,
+        "improve_defer_enabled": improve_defer,
+        "improve_peak_enabled": improve_peak_enabled,
+        "improve_list": improve_list,
+        "improve_peak_list": improve_peak_list,
+        "improve_effective_list": improve_effective,
     }
 
 
@@ -1209,7 +1239,15 @@ input:checked+.slider:before{transform:translateX(20px)}
 <div><label>PEAK_HOURS_PRIORITY_AGENT</label><input id="peak-priority" placeholder="codex:minimax-m3"/></div></div>
 <div style="margin-top:12px"><label>PEAK_HOURS_AGENT_PREFERENCE (ドラッグで順序変更)</label><div id="peak-pref-palette" style="margin-bottom:6px"></div><ul id="peak-pref-list" class="ordered"></ul><div class="row"><div style="flex:1"><input id="peak-pref-custom" placeholder="codex:xxx"/><div class="help">AGENT_RE で検証</div></div><div style="align-self:end"><button class="btn" id="peak-pref-add">追加</button></div></div></div>
 <div class="row" style="margin-top:12px"><div><label>PEAK_HOURS_AGENT_SWAP_ENABLED</label><label class="switch"><input type="checkbox" id="peak-swap"><span class="slider"></span></label><span id="peak-swap-label" class="badge" style="margin-left:8px">1</span></div><div><label>PEAK_HOURS_QUEUE_GATE_ENABLED</label><label class="switch"><input type="checkbox" id="peak-gate"><span class="slider"></span></label><span id="peak-gate-label" class="badge" style="margin-left:8px">1</span></div></div>
-<div class="card" style="margin-top:12px;background:#111319"><h3>現在ピーク判定</h3><div class="kv"><dt>is_peak_now</dt><dd id="peak-now">-</dd><dt>now</dt><dd id="peak-now-str">-</dd><dt>windows</dt><dd id="peak-now-windows" class="mono">-</dd></div></div>
+<div class="card" style="margin-top:12px"><h3>改善ピークチェーン</h3><p class="desc">ピーク時のみ使用する改善モデルチェーン。空なら通常の <code>MODEL_IMPROVE_LIST</code> を継承。<code>IMPROVE_PEAK_CHAIN_ENABLED=1</code> かつピーク中の時のみ有効。旧 defer（ピーク時に改善を遅延）は既定で無効（<code>IMPROVE_PEAK_HOUR_DEFER_ENABLED=0</code>）。</p>
+<div class="inherit-row"><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="peak-improve-inherit"> 継承（空で通常チェーンへ）</label><span class="help">effective: <span class="mono" id="peak-improve-effective"></span></span></div>
+<div><label>パレット (クリックで追加)</label><div class="palette" id="peak-improve-palette"></div></div>
+<div><label>順序 (ドラッグ / 上下 / 削除)</label><ul class="ordered" id="peak-improve-list"></ul></div>
+<div class="row"><div style="flex:1"><input id="peak-improve-custom" placeholder="codex:xxx または local"/><div class="help">AGENT_RE で検証</div></div><div style="align-self:end"><button class="btn" id="peak-improve-add">追加</button></div></div>
+<div class="row" style="margin-top:12px"><div><label>IMPROVE_PEAK_CHAIN_ENABLED</label><label class="switch"><input type="checkbox" id="peak-improve-enabled"><span class="slider"></span></label><span id="peak-improve-enabled-label" class="badge" style="margin-left:8px">0</span></div><div><label>IMPROVE_PEAK_HOUR_DEFER_ENABLED (旧 defer)</label><label class="switch"><input type="checkbox" id="peak-improve-defer"><span class="slider"></span></label><span id="peak-improve-defer-label" class="badge" style="margin-left:8px">0</span> <span class="help">1=ピーク時に改善を遅延（旧挙動） 0=即時実行</span></div></div>
+<div class="help">ピーク時の effective improve chain: <span class="mono" id="peak-improve-effective-preview"></span> <span id="peak-improve-peak-badge" class="badge"></span></div>
+</div>
+<div class="card" style="margin-top:12px;background:#111319"><h3>現在ピーク判定</h3><div class="kv"><dt>is_peak_now</dt><dd id="peak-now">-</dd><dt>now</dt><dd id="peak-now-str">-</dd><dt>windows</dt><dd id="peak-now-windows" class="mono">-</dd><dt>improve_defer</dt><dd id="peak-improve-defer-status">-</dd><dt>improve_effective</dt><dd id="peak-improve-effective-status" class="mono">-</dd></div></div>
 <div class="actions"><button class="btn primary" id="peak-save">保存</button><button class="btn" id="peak-reload">再読込</button></div>
 <div id="peak-msg" class="help"></div>
 </div>
@@ -1238,7 +1276,7 @@ let READ_ONLY = false;
 let chainState = {};
 let paletteSet = new Set();
 let backoffState = {items:[], def:"600", fail:"300"};
-let peakState = {hoursSet:new Set(), tz:"Asia/Tokyo", prefItems:[], swap:"1", gate:"1", priority:""};
+let peakState = {hoursSet:new Set(), tz:"Asia/Tokyo", prefItems:[], swap:"1", gate:"1", priority:"", improveInherit:true, improveItems:[], improveEnabled:"0", improveDefer:"0", improveEffective:"", improvePeakRaw:""};
 let dashTimer = null;
 const AGENT_RE = /^[A-Za-z0-9][A-Za-z0-9._:\/-]{0,127}$/;
 const BACKOFF_NAME_RE = /^[A-Za-z0-9._\/-]+$/;
@@ -1691,6 +1729,86 @@ function renderPeak(entries){
   const swEl=$("#peak-swap"), gateEl=$("#peak-gate");
   if(swEl){ swEl.checked=peakState.swap==="1"; swEl.onchange=(e)=>{ peakState.swap=e.target.checked?"1":"0"; $("#peak-swap-label").textContent=peakState.swap; }; $("#peak-swap-label").textContent=peakState.swap; }
   if(gateEl){ gateEl.checked=peakState.gate==="1"; gateEl.onchange=(e)=>{ peakState.gate=e.target.checked?"1":"0"; $("#peak-gate-label").textContent=peakState.gate; }; $("#peak-gate-label").textContent=peakState.gate; }
+  // improve peak chain
+  const impPeakEnt=entries["MODEL_IMPROVE_PEAK_LIST"], impEnEnt=entries["IMPROVE_PEAK_CHAIN_ENABLED"], impDeferEnt=entries["IMPROVE_PEAK_HOUR_DEFER_ENABLED"];
+  const impPeakVal=impPeakEnt?impPeakEnt.value:"";
+  const impPeakEff=impPeakEnt?impPeakEnt.effective:"";
+  const impEnVal=impEnEnt? (impEnEnt.value||impEnEnt.default||"0"):"0";
+  const impDeferVal=impDeferEnt? (impDeferEnt.value||impDeferEnt.default||"0"):"0";
+  peakState.improveInherit=!impPeakVal;
+  peakState.improveItems=impPeakVal? impPeakVal.split(",").map(s=>s.trim()).filter(Boolean):[];
+  peakState.improveEnabled=impEnVal;
+  peakState.improveDefer=impDeferVal;
+  peakState.improveEffective=impPeakEff;
+  const impInhEl=document.getElementById("peak-improve-inherit");
+  if(impInhEl){
+    impInhEl.checked=peakState.improveInherit;
+    impInhEl.onchange=(e)=>{
+      peakState.improveInherit=e.target.checked;
+      if(e.target.checked){
+        const eff=peakState.improveEffective||"";
+        peakState.improveItems=eff?eff.split(",").map(s=>s.trim()).filter(Boolean):[];
+      }
+      refreshPeakImproveList();
+      document.getElementById("peak-improve-effective").textContent=peakState.improveInherit?("(継承: "+(peakState.improveEffective||"")+")"):peakState.improveItems.join(",");
+      updatePeakImprovePreview();
+    };
+  }
+  const impEnEl=document.getElementById("peak-improve-enabled");
+  const impDeferEl=document.getElementById("peak-improve-defer");
+  if(impEnEl){
+    impEnEl.checked=peakState.improveEnabled==="1";
+    impEnEl.onchange=(e)=>{ peakState.improveEnabled=e.target.checked?"1":"0"; document.getElementById("peak-improve-enabled-label").textContent=peakState.improveEnabled; updatePeakImprovePreview(); };
+    document.getElementById("peak-improve-enabled-label").textContent=peakState.improveEnabled;
+  }
+  if(impDeferEl){
+    impDeferEl.checked=peakState.improveDefer==="1";
+    impDeferEl.onchange=(e)=>{ peakState.improveDefer=e.target.checked?"1":"0"; document.getElementById("peak-improve-defer-label").textContent=peakState.improveDefer; };
+    document.getElementById("peak-improve-defer-label").textContent=peakState.improveDefer;
+  }
+  // palette for improve
+  const impPal=document.getElementById("peak-improve-palette");
+  if(impPal){
+    impPal.innerHTML="";
+    const palSet=new Set([...paletteSet, ...peakState.improveItems]);
+    // also add from MODEL_IMPROVE_LIST effective
+    const baseList=entries["MODEL_IMPROVE_LIST"]?.effective||"";
+    for(const p of baseList.split(",")){ const t=p.trim(); if(t) palSet.add(t); }
+    for(const ag of [...palSet].sort()){
+      const chip=document.createElement("span");
+      chip.className="chip"; chip.textContent=ag;
+      chip.onclick=()=>{
+        if(peakState.improveInherit){ toast("継承中は編集できません。チェックを外してください"); return; }
+        if(!AGENT_RE.test(ag)){ toast("不正なエージェント: "+ag); return; }
+        peakState.improveItems.push(ag);
+        refreshPeakImproveList();
+        document.getElementById("peak-improve-effective").textContent=peakState.improveItems.join(",");
+        updatePeakImprovePreview();
+      };
+      impPal.appendChild(chip);
+    }
+  }
+  refreshPeakImproveList();
+  const impCustomAdd=document.getElementById("peak-improve-add");
+  if(impCustomAdd) impCustomAdd.onclick=()=>{
+    if(peakState.improveInherit){ toast("継承中は編集できません"); return; }
+    const inp=document.getElementById("peak-improve-custom");
+    const v=inp.value.trim();
+    if(!v){ toast("値を入力してください"); return; }
+    if(!AGENT_RE.test(v)){ toast(`不正なエージェント: ${v}`); return; }
+    peakState.improveItems.push(v);
+    inp.value="";
+    refreshPeakImproveList();
+    document.getElementById("peak-improve-effective").textContent=peakState.improveItems.join(",");
+    updatePeakImprovePreview();
+  };
+  document.getElementById("peak-improve-effective").textContent=peakState.improveInherit?("(継承: "+(peakState.improveEffective||"")+")"):peakState.improveItems.join(",");
+  updatePeakImprovePreview();
+  // status preview
+  const deferSt=document.getElementById("peak-improve-defer-status");
+  if(deferSt) deferSt.textContent=peakState.improveDefer;
+  const effSt=document.getElementById("peak-improve-effective-status");
+  if(effSt) effSt.textContent=peakState.improveEnabled==="1" ? (peakState.improveInherit? peakState.improveEffective : peakState.improveItems.join(",")) : (entries["MODEL_IMPROVE_LIST"]?.effective||"");
 }
 function updatePeakPreview(){
   const w=hoursSetToWindows(peakState.hoursSet);
@@ -1732,6 +1850,61 @@ function refreshPeakPrefList(){
       }
     }
   };
+}
+function refreshPeakImproveList(){
+  const ul=document.getElementById("peak-improve-list");
+  if(!ul) return;
+  ul.innerHTML="";
+  const disabled=peakState.improveInherit;
+  peakState.improveItems.forEach((item, idx)=>{
+    const li=document.createElement("li");
+    li.draggable=!disabled;
+    if(disabled) li.classList.add("inherited");
+    li.dataset.idx=String(idx);
+    li.innerHTML=`<span class="drag">≡</span><span class="mono" style="flex:1">${esc(item)}</span>
+      <button class="btn" data-iup="${idx}" style="padding:4px 8px">↑</button>
+      <button class="btn" data-idown="${idx}" style="padding:4px 8px">↓</button>
+      <button class="btn danger" data-iremove="${idx}" style="padding:4px 8px">×</button>`;
+    const up=li.querySelector(`[data-iup="${idx}"]`);
+    const down=li.querySelector(`[data-idown="${idx}"]`);
+    const rem=li.querySelector(`[data-iremove="${idx}"]`);
+    if(up) up.onclick=()=>{ if(disabled) return; if(idx>0){ const a=peakState.improveItems.splice(idx,1)[0]; peakState.improveItems.splice(idx-1,0,a); refreshPeakImproveList(); updatePeakImprovePreview(); }};
+    if(down) down.onclick=()=>{ if(disabled) return; if(idx<peakState.improveItems.length-1){ const a=peakState.improveItems.splice(idx,1)[0]; peakState.improveItems.splice(idx+1,0,a); refreshPeakImproveList(); updatePeakImprovePreview(); }};
+    if(rem) rem.onclick=()=>{ if(disabled) return; peakState.improveItems.splice(idx,1); refreshPeakImproveList(); updatePeakImprovePreview(); };
+    if(disabled){ if(up) up.disabled=true; if(down) down.disabled=true; if(rem) rem.disabled=true; }
+    li.addEventListener("dragstart",(e)=>{ if(disabled){ e.preventDefault(); return; } li.classList.add("dragging"); e.dataTransfer.setData("text/plain", String(idx)); });
+    li.addEventListener("dragend",()=>li.classList.remove("dragging"));
+    ul.appendChild(li);
+  });
+  ul.ondragover=(e)=>{ e.preventDefault(); };
+  ul.ondrop=(e)=>{
+    e.preventDefault();
+    if(disabled) return;
+    const fromIdx=parseInt(e.dataTransfer.getData("text/plain"),10);
+    const target=e.target.closest("li");
+    if(target){
+      const toIdx=parseInt(target.dataset.idx,10);
+      if(!isNaN(fromIdx)&&!isNaN(toIdx)&&fromIdx!==toIdx){
+        const [m]=peakState.improveItems.splice(fromIdx,1);
+        peakState.improveItems.splice(toIdx,0,m);
+        refreshPeakImproveList();
+        updatePeakImprovePreview();
+      }
+    }
+  };
+  document.getElementById("peak-improve-effective").textContent=peakState.improveInherit?("(継承: "+(peakState.improveEffective||"")+")"):peakState.improveItems.join(",");
+}
+function updatePeakImprovePreview(){
+  const enabled=peakState.improveEnabled==="1";
+  const isPeak=document.getElementById("peak-now")?.textContent==="ピーク中";
+  let effective="";
+  if(!enabled) effective="(無効: 常に通常チェーン)";
+  else if(peakState.improveInherit) effective=`継承: ${peakState.improveEffective||""} ${isPeak?"(ピーク中)":"(オフピーク)"}`;
+  else effective=peakState.improveItems.join(",") || "(空)";
+  const el=document.getElementById("peak-improve-effective-preview");
+  if(el) el.textContent=effective + (enabled && isPeak ? " → ピークチェーン有効" : enabled? " (オフピークは通常チェーン)":"");
+  const badge=document.getElementById("peak-improve-peak-badge");
+  if(badge){ badge.textContent=isPeak?"ピーク中":"オフピーク"; badge.className=isPeak?"badge warn":"badge ok"; }
 }
 async function saveChains(){
   if(READ_ONLY){ toast("read-only モードのため保存できません"); return; }
@@ -1784,13 +1957,21 @@ async function saveBackoff(){
 }
 async function savePeak(){
   if(READ_ONLY){ toast("read-only"); return; }
+  let impPeakVal="";
+  if(!peakState.improveInherit){
+    for(const ag of peakState.improveItems){ if(!AGENT_RE.test(ag)){ toast("PEAK_IMPROVE 不正: "+ag); return; } }
+    impPeakVal=peakState.improveItems.join(",");
+  }
   const payload={
     "PEAK_HOURS_WINDOWS": peakState.windows,
     "PEAK_HOURS_TZ": peakState.tz.trim(),
     "PEAK_HOURS_PRIORITY_AGENT": peakState.priority.trim(),
     "PEAK_HOURS_AGENT_PREFERENCE": peakState.prefItems.join(","),
     "PEAK_HOURS_AGENT_SWAP_ENABLED": peakState.swap,
-    "PEAK_HOURS_QUEUE_GATE_ENABLED": peakState.gate
+    "PEAK_HOURS_QUEUE_GATE_ENABLED": peakState.gate,
+    "MODEL_IMPROVE_PEAK_LIST": impPeakVal,
+    "IMPROVE_PEAK_CHAIN_ENABLED": peakState.improveEnabled,
+    "IMPROVE_PEAK_HOUR_DEFER_ENABLED": peakState.improveDefer
   };
   // validate priority
   if(payload["PEAK_HOURS_PRIORITY_AGENT"] && !AGENT_RE.test(payload["PEAK_HOURS_PRIORITY_AGENT"])){ toast("PRIORITY_AGENT 不正"); return; }
