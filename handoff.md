@@ -194,6 +194,7 @@
 - `/Volumes/satelite/work_satelite/twica` の overlay realtime は配信者 UUID ごとの Durable Object room で、room 内の WebSocket 接続数は取得できる。ただし `do-primary` の overlay だけが WebSocket を使い、`polling-only` は対象外になる。
 - 生接続数はチャネル数ではない。複数 OBS ソース、ダッシュボードのプレビュー iframe、切断遅延・残留タブ、公開 overlay URL の直接接続で過大/過小になるため、表示するなら「TwiCa overlay 接続中チャネルの概算」とする。
 - 全 room を横断するには、IP・ユーザー名を保存せず、room の短期 lease を集約する presence registry（小規模なら Durable Object、将来は分割）を追加する必要がある。正確な Twitch 配信数の代替にはせず、Helix 判定とは別指標として扱う。
+- 低負荷優先の候補は、既存 room alarm に相乗りして状態変化時と数分おきの更新だけを presence registry へ送り、lease TTL を数分、`/live` 側のスナップショットを 60 秒キャッシュする方式。overlay ごとの追加ポーリングや Twitch/PlanetScale 全件走査は行わない。
 - 今回はコード変更・デプロイ・本番設定変更を行っていない。
 
 ## 2026-08-21 07:15 JST — 予想タイトルのサイクル値を照合（変更なし）
@@ -201,3 +202,20 @@
 - **現行の正本**: VM `/home/ubuntu/soren/.env` は `MIN_GAMES_BEFORE_IMPROVE=48`、`soren_loop`・`improve_daemon`・`prediction_worker` の実行時環境も48。`tmp/state/accumulated_games.json` は25試合で、現在のACTIVE予想タイトル「48ゲーム中に建国できる？」と一致している。
 - **100の出所**: `.env` の `ROLLING_SCORE_KEEP=100` は評価窓であり、改善サイクル長ではない。過去のコメント/AIプロンプトには100ゲーム時代の文面が残っているが、直近の予想作成プロンプトと実行設定は48。したがって現行予想を100へ変更する根拠は確認できなかった。
 - **保留**: 100ゲームへ戻す場合は改善ループ自体の`MIN_GAMES_BEFORE_IMPROVE`変更とworker完全再起動が必要で、ACTIVE予想のcancel/recreateも伴うため、ユーザー明示なしには実施しない。
+
+## 2026-08-21 07:32 JST — LIVE試合番号表示・開始通知を実装・VM反映
+
+- **表示**: `show_status.sh` と `status_dashboard.py` の蓄積表示を `Game 31試合目 (games)` / `♦ 31試合目 (games)` へ変更。direct broadcast overlay の旧 `Queued` 検索も新表記を扱うよう更新。
+- **通知**: `eloop.sh` は実プレイ用スナップショット準備後に `Game #N 開始 [n/48]` の `game` 通知を下部イベントバーへ追加。既存の試合終了通知（`Game #N 終了 [n/48]`）と対になる。VMで `Game #43877 開始 [33/48]` を実測し、直前の `Game #43876 終了 [32/48]` も確認。
+- **リポジトリ**: soviet_now `93d518bba` を実装コミットとしてpush。親 `cd86cd4` でサブモジュールポインタを更新（並行作業で先行していた別コミットも先端に含む）。
+- **VM反映**: `/home/ubuntu/soren/.codex_deploy/backups/20260821-072738-live-game-progress/` に対象4ファイルをバックアップ。ローカル/VM SHA256一致、`bash -n`、`py_compile` 成功。設定既定値変更ではないためworker完全再起動は行わず、次試合の再source経路で反映を実測。
+- **テスト**: 開始/終了/表示のPythonテスト3件、direct broadcast overlay Nodeテスト11件、構文・`git diff --check` 成功。`-k 'overlay or live_count'` の広い実行は、今回触れていない並行変更中の`outbound_queue.sh`期待値不一致1件を除き26件成功。
+- **進捗報告**: ローカル/VMの作業中バナーを開始時に有効化し、VM音声キューへ開始文を1回enqueue。完了時に双方を停止しinactiveを確認する。
+
+## 2026-08-21 07:33 JST — Score Timelineの縦棒表示を連続線へ修正・VM反映
+
+- **原因**: `games/soviet_now/status_dashboard.py` の `render_score_timeline()` が各サンプルを下端まで塗りつぶしていたため、直近100ゲームが縦棒の集合に見えていた。スコア履歴の入力値・上下限は正常だった。
+- **実装**: Braille dot座標上で隣接サンプルをBresenham線分として連結し、基準線までの塗りつぶしを廃止。`tests/test_score_timeline.py` に連続線・極値ラベル・短履歴の回帰テストを追加。
+- **リポジトリ**: soviet_now `9eb0e4ff8 fix: render score timeline as a connected line` を `origin/codex/no-apply-liveliness` へpush。親 `cd86cd4` のサブモジュール参照は `9eb0e4ff8` を指している。
+- **VM反映**: `/home/ubuntu/soren/.codex_deploy/backup-20260821-score-timeline/status_dashboard.py` に反映前ファイルをバックアップ後、修正版を反映。ローカル/VM SHA256 `763b9230acba965e52143cfce3c4d25f34c199c721088af41ec1c157830a7109` 一致、`py_compile` 成功。`generate_status_overlay.sh once` でブラウザ用overlayを再生成し、実データのScore Timelineが連続線として出力されることを確認。表示スクリプトのみの変更のためworker完全再起動は未実施。
+- **テスト**: `tests.test_score_timeline` 3件、`tests.test_status_dashboard_founding_rate` 22件、direct broadcast overlay Node 11件、dashboard関連escapeテスト3件、`git diff --check` が成功。
