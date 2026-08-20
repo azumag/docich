@@ -1163,7 +1163,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 <div class="card"><h3>作業中バナーを編集</h3><p class="desc">有効時は画面上部にオレンジの作業中バナー（`event_overlay.html` の `#work`）が4行サマリの代わりに表示される。`codex_work_indicator.sh start/stop` と同等。</p>
 <div style="margin-bottom:8px"><label class="switch"><input type="checkbox" id="work-banner-enabled"><span class="slider"></span></label><span id="work-banner-enabled-label" class="badge" style="margin-left:8px">off</span></div>
 <div><label>title (1-80)</label><input id="work-banner-title-input" maxlength="80" placeholder="システム自動分析・修正作業中"/></div>
-<div style="margin-top:8px"><label>body (0-240)</label><textarea id="work-banner-body-input" rows="2" maxlength="240" placeholder="メリケンAI が確認・修正・検証を進めています"></textarea></div>
+<div style="margin-top:8px"><label>body (0-240)</label><textarea id="work-banner-body-input" rows="2" maxlength="240" placeholder=""></textarea></div>
 <div class="actions"><button class="btn primary" id="work-banner-save">保存</button><button class="btn danger" id="work-banner-disable">無効化</button></div>
 <div id="work-banner-msg" class="help"></div>
 </div>
@@ -3441,8 +3441,6 @@ class _Handler(BaseHTTPRequestHandler):
         if active:
             if not title:
                 title = "システム自動分析・修正作業中"
-            if not body_txt:
-                body_txt = "メリケンAI が確認・修正・検証を進めています"
             try:
                 title = _sanitize_overlay_text(title, WORK_TITLE_LIMIT)
                 body_txt = _sanitize_overlay_text(body_txt, WORK_BODY_LIMIT)
