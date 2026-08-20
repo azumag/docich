@@ -170,3 +170,19 @@
 - **テスト**: `test_radio_time_sync.sh`、`test_radio_deferred_queue.sh`、`test_radio_render_retry.sh`、caption bundle、backpressure が成功。`test_radio_peak_hour_defer.py` の2件は今回触れていない既存runtime toggle差分で失敗したため未達として記録（時報同期の失敗ではない）。
 - **作業中音声**: `時報本文と事前生成WAVの世代照合を検証しています。` はVMの `played.log` で06:42:38に再生済み。反映フェーズの `バックアップとハッシュ照合を終え、VMのワーカーを再起動しています。` はoverlay上で再生イベントを確認し、played.logへの最終追記は継続観測。
 - **残課題**: 時刻行を静的本文から分離して再生直前に短い音声を連結する方式、時報付き項目の最大経過時間ルールは未実装。現行修正は、時単位の時報と本文/WAV世代ゲートで不一致を防ぐ範囲。
+
+## 2026-08-21 07:03 JST — Twitch予想の受付時間上限エラー修正・VM反映
+
+- **原因**: 改善サイクルが45試合を超える設定で、`1試合40秒 × 試合数` がTwitch Predictions APIの`prediction_window`上限1800秒を超え、HTTP 400になっていた。VMにはこの失敗のcreateリトライ記録が残っていたが、予想stateは存在しなかった。
+- **実装**: `games/soviet_now/twitch_predictions.sh` で受付時間を1〜1800秒へ丸める処理を追加。既定計算値・明示的な`TWITCH_PREDICTION_WINDOW_SEC`のどちらも上限超過で1800秒に収め、解決用stateは従来どおりサイクル完了まで保持する。soviet_now `1797a999b`、親 `523e131` を各originへpush済み。
+- **VM反映**: `/home/ubuntu/soren/.codex_deploy/backup-20260821-070059-prediction-window/` に現行ラッパーと400エラーのリトライ記録をバックアップ後、修正版を反映。ローカル/VM SHA256 `af2592f9265a9866dcc1dc102c5778ed0efe31ff0a47f365d48d7bdbc533eb40`、`bash -n` 成功。反映後に今回のcreateリトライ記録だけを削除した。
+- **実測**: VM `twitch_predictions.sh status` はHTTP 200、`enabled=true`/`configured=true`、remote予想0件。local prediction stateなし、create retryなし、prediction worker稼働中、`docich-webui.service` active。予想の作成自体は副作用を避けて未実行。
+- **テスト**: モックAPIで`MIN_GAMES_BEFORE_IMPROVE=48`のpayloadが`prediction_window=1800`になることを確認。WebUI回帰は`71 passed`（sandbox内のlocalhost bind制限による初回22件失敗は権限付き再実行で解消）。
+- **作業中表示/音声**: ローカル・VM双方の作業中バナーを明示的に有効化し、VM側stateで`active=true`を実測。作業開始文をaudio-workerへenqueue済み。完了時に双方を停止しinactiveを確認する。
+
+## 2026-08-21 — TwiCa `/live` の overlay presence 概算案（調査のみ）
+
+- `/Volumes/satelite/work_satelite/twica` の overlay realtime は配信者 UUID ごとの Durable Object room で、room 内の WebSocket 接続数は取得できる。ただし `do-primary` の overlay だけが WebSocket を使い、`polling-only` は対象外になる。
+- 生接続数はチャネル数ではない。複数 OBS ソース、ダッシュボードのプレビュー iframe、切断遅延・残留タブ、公開 overlay URL の直接接続で過大/過小になるため、表示するなら「TwiCa overlay 接続中チャネルの概算」とする。
+- 全 room を横断するには、IP・ユーザー名を保存せず、room の短期 lease を集約する presence registry（小規模なら Durable Object、将来は分割）を追加する必要がある。正確な Twitch 配信数の代替にはせず、Helix 判定とは別指標として扱う。
+- 今回はコード変更・デプロイ・本番設定変更を行っていない。
