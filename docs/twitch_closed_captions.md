@@ -46,15 +46,17 @@ must never gate playback. The timing contract is:
 
 | Area | docich | soviet_now / Soren production |
 |---|---|---|
-| FFmpeg filter and pinned build | canonical reusable source | compatibility copy currently deployed |
+| FFmpeg filter and pinned build | canonical reusable source | versioned build artifact (see `native/ffmpeg/README.md`) |
 | Caption schema and Unix client | `src/docich/captions.py` | integrated with radio and speech queues |
 | Generic stream opt-in/fail-open | `src/docich/stream.py` | direct-stream runtime and custom binary |
 | Japanese TTS timing | integration contract only | VOICEVOX/say queue implementation |
 | Output/thinking guard | strict caption parser | all on-air radio/comment speech paths |
 | Production process ownership | none by default | `soren-runtime.service` on display `:99` |
 
-Until Soren consumes a versioned docich build artifact, any native-filter or
-protocol change must be ported to both repositories in the same change window.
+Soren consumes versioned docich build artifacts: `native/ffmpeg/build.sh`
+produces a binary plus `MANIFEST.json` (docich commit, pinned upstream commits,
+filter sha256, architecture, build date). The source of truth for the filter is
+`native/ffmpeg/` in docich only; no compatibility copy is maintained.
 
 ## Configuration
 

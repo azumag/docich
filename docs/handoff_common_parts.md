@@ -78,6 +78,13 @@ soviet_now 側の互換実装へ入れた以下の改善を同期した:
 確認: `python3 -m py_compile` PASS、字幕単体テスト 28 件 PASS。GitHub に反映した source/test の
 Blob SHA と、ローカル検証に使ったファイルの Git Blob SHA は一致。
 
+→ **docichcc 二重管理解消 (2026-08-20)**: soviet_now の互換コピー (`lib/closed_captions.py` 726行 /
+  `native/ffmpeg/`) は、docich 正典 (`src/docich/captions.py` 740行、実質同一と実測) のバージョン付き
+  アーティファクト消費へ置換予定。計画: Phase A (docich: `build.sh` の MANIFEST.json 出力 +
+  README/docs 更新、実施済) → Phase B (soviet_now: `closed_captions.py` を docich caption CLI への
+  exec 委譲シム化 + `native/ffmpeg` 削除、ユーザー合意ゲート) → Phase C (VM: `docich-cc-<sha>`
+  ビルド + `.env` の `SOREN_DIRECT_STREAM_FFMPEG_BIN` 切替 + direct_stream respawn 実測)。
+
 ### 3.3 次の実務タスク: TTS の共通部品化設計
 
 1. **inventory を作る**。`games/soviet_now/say_enqueue.sh`、`google_tts.sh`、
