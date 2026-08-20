@@ -30,6 +30,24 @@
 - **VM 実測**: 2日分の `label=RADIO` attempt は deepseek 27、MiniMax 23、muse 1。deepseek の `tmp/debug/ai_dispatch/*_RADIO_codex_deepseek-v4-flash_prompt.txt` 63件は全て fact-check 冒頭で、muse の同ラベル1件は `Say hi` の手動テスト。従って表示上の「deepseek 62 vs muse 16」は、通常フォールバック順の矛盾ではなく fact-check 直呼びの合算で膨らんでいる。
 - **未実施**: fact-check も muse 先行にする設定・コード変更、VM反映、worker再起動はまだ行っていない。変更する場合は `RADIO_FACT_CHECK_AGENT` を muse 先行にし、deepseek を後段へ置く設計をリポジトリと VM で同時に同期してから検証する。
 
+## 2026-08-21 06:xx JST — 当日VMログで有料deepseek課金経路を再確認（未変更）
+
+- **当日Stats（`tmp/state/ai_stats/20260821.jsonl`）**: attempt は `codex:deepseek-v4-flash=6`、`opencode-go:muse-spark-1.2-contributor=12`。したがってStats単体ではmuseの方が多いが、これは `_ai_dispatch`（放送・コメント）だけで、改善ループの `strategy/ai.sh` 呼出を含まない。
+- **museを迂回する直呼び**: 当日 `label=RADIO` の有料deepseekは 00:12、01:22、02:24、03:27 の4回。VM `.env` に `RADIO_FACT_CHECK_AGENT` はなく、`core/config.sh` 既定の `codex:deepseek-v4-flash` と `codex:minimax-m3` を `radio_factcheck.sh` が直接順番に呼ぶため、`RADIO_AGENTS` のmuse先行順はこの経路には適用されない。
+- **チェーン内の有料deepseek**: `RADIO:theme` は 00:24 のmuse失敗後に 00:27 有料deepseek、`RADIO:news` はmuse出力が検証を通らず 03:43 有料deepseekへ進んだ。こちらはmuseを先に試しているが、`ok` は生成成功であって最終winnerとは限らない。
+- **改善ループの誤ルーティング**: `logs/improve_daemon.log` で 03:09 と 04:08 に `START spec=opencode:deepseek-v4-flash-free target=codex`、直後に `model: deepseek-v4-flash / provider: soren-litellm` を確認。実行時間はそれぞれ439秒、828秒で、free指定が有料deepseekとして実行された。原因は `strategy/ai.sh` が非codex specの `agent` を空にして `CODEX_MODEL=deepseek-v4-flash` を選ぶ実装。
+- **muse改善試行**: 02:57、03:47、04:22、05:34 のmuse選択は旧 `/health` の `LITELLM_DOWN`（rc=79）で止まり、プロバイダ実呼出に到達していない。05:53再起動後はliveliness既定値のプロセスに切り替わっている。
+- **結論**: ユーザーが見た「有料deepseekが大量・muse attemptが少ない」は、(1) fact-check直呼びが共通チェーン外、(2) 改善ループのfree/muse識別子が有料deepseekへ正規化、(3) Statsが改善ループを数えない、の合成で発生する。今回の調査では設定・VMファイル・worker状態を変更していない。
+
+## 2026-08-21 06:45 JST — muse/free経路の有料DeepSeekすり替え修正（実装・VM反映済み）
+
+- **実装**: `soviet_now` の `10887d141` / `34af37d92` / `cfec799e4`（現在の作業ブランチ先頭）で、`strategy/ai.sh` が `opencode:*` / `opencode-go:*` を `CODEX_MODEL` へ正規化せず、OpenCode CLIへ実モデル名を渡すよう修正。`opencode:deepseek-v4-flash-free` は `opencode/deepseek-v4-flash-free`、muse は `opencode-go/muse-spark-1.2-contributor`、`codex:deepseek-v4-flash` はCodexの `deepseek-v4-flash` として解決する。直接OpenCode経路はLiteLLM livelinessゲートで遮断しない。
+- **fact-check順序**: `RADIO_FACT_CHECK_AGENT` → `RADIO_FACT_CHECK_SECONDARY` → 既存の `RADIO_FACT_CHECK_FALLBACK` → `RADIO_FACT_CHECK_TERTIARY` の順に変更。VM `.env` の既存 `RADIO_FACT_CHECK_FALLBACK=codex:minimax-m3` を変更せず、実効順を `opencode-go:muse-spark-1.2-contributor` → `codex:deepseek-v4-flash` → `codex:minimax-m3` にした。重複候補はスキップする。
+- **統計**: `run_cmd`、直接fact-check、共通 `_ai_dispatch` の attempt/ok/fail に `resolved_model` を追加し、改善ループの呼出しも `tmp/state/ai_stats` へ記録する。fact-checkの採用候補は `winner` として記録する。既存JSONLの後方互換を保つ追加フィールドのみ。
+- **テスト**: `bash -n`（変更シェル全件）、`tests/test_improve_retry_reliability.py`、`tests/test_ai_generate_backoff.py`、`tests/test_model_output_guard.py` の計72件が成功。課金を発生させないスタブでmuse/free/codexのCLI・モデル分離と直接OpenCodeのLiteLLMゲート迂回を確認。大規模 `test_escape_mechanisms.py` は今回と無関係な既存作業ツリー差分由来の失敗が残るため、今回の受入れ判定には使用していない。
+- **VM反映**: `/home/ubuntu/soren/.codex_deploy/backup-20260821-0635-model-routing/` に対象ファイルと誤転送されたルート直下の一時ファイルを退避後、`strategy/ai.sh`、`lib/ai_generate.sh`、`broadcast/radio_engine.sh`、`broadcast/radio_factcheck.sh`、`core/config.sh` を反映。5ファイルのSHA集合はローカルと一致し、`bash -n` 成功。`soren-runtime.service` は完全停止→起動を2回行い、現在 active。再起動後のVMヘルパー実測は `muse=opencode-go/muse-spark-1.2-contributor`、`free=opencode/deepseek-v4-flash-free`、`paid=deepseek-v4-flash`。workerはsupervisor配下で復帰。
+- **未確認**: 実プロバイダを追加課金するライブ呼出しは行っていない。次の実呼出しでStatsの改善ラベルと `resolved_model` が増えること、muse失敗時だけDeepSeekへ進むことは未観測。既存チャットpause状態は今回変更していない。
+
 ## 🎯 ゴール / タスク
 
 1. **chat send 停止中も outbound queue を蓄積させない**（ユーザー指示 05:10）— 完了。`enqueue_chat_message` を `tmp/state/chat_worker.paused` 存在時は no-op（`OUTBOUND_CHAT_PAUSE_MARKER`）、40箇所以上の呼び出し元を一括抑止。VMで queue 0維持を実測。
@@ -64,6 +82,14 @@
 - **ブランチ / 変更状況**: `docich` は `codex/soren-repo-handoff` @ `4728fdb`（`origin/main`・同名remote branchも同じ）。`games/soviet_now` は `e497637c2`（`origin/main` も同じ）。既存の未追跡ファイル群には触れていない。
 - **VM 本番**: `VM:/home/ubuntu/docich` `a37a20f`（`git log` 2件、`status` clean、`grep -c audio-enqueue` 等は別セッション webui audio panel）、`games/soviet_now` `715251b7a`。`VM:/home/ubuntu/soren` は `lib/outbound_queue.sh`（`_outbound_chat_paused` 2件）/`codex_work_indicator.sh`（plain-polite）/`AGENTS.md` を最新へ `scp` 済み、`tmp/state/chat_worker.paused` 有効で pending 0・`twitch_chat.sh send` 0件を実測。`.env` は `TWITCH_BOT_TOKEN=zd7y...`（dociai）、`TWITCH_BROADCASTER_ID=1526886844`、`TWITCH_CHANNEL=dociai`、`TWITCH_ADS_ENABLED=1`、`STAT_GATE_MODE=enforce` 等。`STATGATE` 156件、`docich-webui` active（`/api/prompts` 37件）。
 - **作業中バナー**: 最終検証時にローカル・VMとも `active:false` を確認。handoff追記中だけ音声なしで再表示し、最終応答前に再度 `stop` する。
+
+## 2026-08-21 06:27 JST — ラジオ時報の生成・再生時差を実測（未変更）
+
+- **本番遅延**: `radio_1787247331_43788_news_24768` は生成時刻 02:35:31 JST、事前音声生成完了 05:48:57、再生開始 05:48:59（約3時間13分後）。`radio_1787247572_43788_jiji_3073` も生成 02:39:32 → 再生 05:58:40（約3時間19分後）、`radio_1787250493_43806_fortune_6904` は生成 03:28:13 → 再生 06:17:30（約2時間49分後）。
+- **直接原因**: `broadcast/radio_engine.sh` が生成時に `現在時刻は〜です` を本文へ挿入し、deferred queue の `broadcast/radio_state.sh:_radio_start_deferred_render_if_needed` がその本文から WAV/bundle を事前生成する。一方、再生直前の `_play_deferred_radio_queue_once` は `mv` 後に `_refresh_radio_intro_for_playback_file` で本文ファイルだけ現在時刻へ書き換え、既存 WAV/bundle は更新しない。したがって字幕/バックアップ本文と実際の音声が別の時刻になる。
+- **補助要因**: `radio_worker` は5分周期、スケジューラの時刻窓は±15分で、コメント優先・VOICEVOX前景優先のためキューが数時間滞留し得る。既存のキュー上限は新規生成を抑止するが、古い時報原稿を再生時に期限切れにする規則はない。
+- **推奨方針（未実装）**: (1) 再生直前の本文だけの更新をやめ、時刻を反映した本文を WAV/bundle と同一世代でレンダリングする整合性ゲートを入れる、(2) 長期的には時刻行を静的ラジオ本文から分離し、audio-worker が再生直前に短い時刻音声だけを合成・連結する、(3) 時報付き項目には最大経過時間を設け、期限切れは時刻行を省略するか再生成する。`_radio_time_context` は1回の日時スナップショットから時/分を作る形に統一する。
+- **変更/反映**: 今回は調査のみ。リポジトリ・VMのラジオ実装は変更していない。作業中音声はVMの `tmp/.comment_queue` へ投入済み（`work_indicator`）。
 
 ## ⏭️ 次にやること
 
@@ -115,3 +141,12 @@
 - `/home/ubuntu/soren/.env` — dociaiトークン等
 
 > 再開時: `/handoff load` で読んだ後、`git -C games/soviet_now log --oneline -3` と `git status`、`ssh ubuntu@129.146.54.105 "ls /home/ubuntu/soren/tmp/state/chat_worker.paused; ls /home/ubuntu/soren/tmp/.outbound_chat_queue/pending/*.msg 2>/dev/null | wc -l; grep -E '^TWITCH_BOT_TOKEN=' /home/ubuntu/soren/.env | sed 's/=.*/=***/'"` を実測してから着手すること。
+
+## 2026-08-21 06:40 JST — 二重読み上げの原因調査・修正・VM反映
+
+- **原因1（確認済み）**: VM/Linuxに `md5` がなく、`broadcast/comment.sh` と `broadcast/comment_lib.sh` の `md5 -q` が空文字になっていた。コメント本文・バッチ・処理済み行・再生済みファイルの重複ハッシュ抑止が実質無効だった。VMで `_comment_hash_text "重複確認"` が `c586b6557078cb68832b1a09e20ceb46` を返すことを修正後に実測。
+- **原因2（確認済み）**: `say_enqueue.sh` のストリーミング経路が、チャンクを数秒再生した後の途中切断を同じWAVの先頭から再試行していた。VMログに `途中切断の疑い (elapsed=3s/4s)` と `再試行` が残っていた。2秒以上再生済みの異常終了・短尺判定は、先頭再試行せず完了扱いに変更（短い起動失敗は従来どおり再試行）。
+- **重複ガード**: 直接コメント生成のキュー投入にも本文単位の原子的な投入権（既定TTL 120秒）を追加し、同一本文の2本目を破棄してバッチをackする。
+- **リポジトリ**: `games/soviet_now` `d293231fd fix: prevent duplicate speech from comment retries` を `origin/codex/no-apply-liveliness` へpush。無関係な作業ツリー変更はステージ・コミットしていない。
+- **VM反映**: `/home/ubuntu/soren/tmp/deploy_backup_d293231fd/` に対象ファイルをバックアップ後、5ファイルのSHA256一致、`bash -n`、重複ガード7項目を実測。audio-workerはTERM後、旧PID 3586769から新PID 3928313へ1秒で自動復旧し、後続の監督再起動後もPID 3965941で生存。各時点でロック所有者・メインworkerは1本（同一workerのheartbeat子プロセス1本）を確認。
+- **テスト**: ローカル/VMのストリーミング8テスト、ローカルのコメント周辺34テスト、重複ガード7項目が全て成功。実運用の再発有無は今後のコメント再生ログで継続観測する（反映後は新規コメント再生がなく、実音声の再発ゼロまでは未確認）。
