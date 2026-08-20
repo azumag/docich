@@ -235,3 +235,24 @@
 - **VM反映**: `/home/ubuntu/soren/.codex_deploy/backup-20260821-073215-radio-render-generation/` に反映前 `say_enqueue.sh` と、停止時の先頭 `jiji` 本文・`.rendering` をバックアップ。修正版SHA256 `b499ed5ac7636497063222efc6b5a279473cf0e7cdb3bb738485814a491e1a02` をローカル/VMで一致、`bash -n` 成功。`soren-runtime.service` を停止して旧レンダーを終了し、先頭の stale `.rendering`/`.render_retry` だけをクリアして起動。再起動後のserviceはactive、worker PIDファイルは audio `371226` / radio `371362` / chat `371179`。
 - **実パス確認**: 再起動後の先頭 `radio_1787251174_43806_jiji_7636.txt` は07:39:45の1/24から同じレンダー世代で進み、07:47:22に24/24完了。`ready.wav` 公開07:47:26、`再生開始`07:47:28を確認し、`render_retry`は作成されなかった。旧ログにあった「優先音声へ合成順を譲る → 再試行」は新レンダー区間には出ていない。次のFIFO先頭は `radio_1787251458_43806_news_9891.txt`。
 - **作業報告音声**: VMの `played.log` で既存の `work_indicator` 音声を07:36:11、07:37:13に確認。15分抑止が解けた07:52に「ラジオの先頭キューを同じレンダー世代で完成させ、再生開始まで確認しています。」を1件enqueueし、07:53:21に再生完了した。以後は追加しない。バナーは共有作業中状態のため、他作業を消さないよう最終停止時のactive状態を再確認する。
+
+## 2026-08-21 07:54 JST — VM設定ON機能の実稼働棚卸し（調査のみ）
+
+- **現在の常駐系**: `soren-runtime.service` はactive。Loop/ChatW/YouTubeW/AudioW/RadioW/PredW/ImproveDは各1本、重複検知stateも`status=ok`。FFmpeg direct streamは`running=true`、字幕`active=true/requested=true`。VoiceVox・LiteLLM・WebUIも稼働中。
+- **設定ONだが機能単位で未稼働**: YouTube Chatはworker自体は動くが`last_poll=-`、`activeLiveChatId`解決失敗の900秒backoff、OAuth refresh `invalid_grant`。Twitch Chatは受信/IRC接続は動く一方、送信はAPI/IRCとも`Invalid OAuth token`/`Login authentication failed`。Twitch Adsは`TWITCH_ADS_ENABLED=1`だが直近API GETがHTTP401で、成功snooze実績なし。改善daemonはaliveだがstateが`failed_no_apply:rate_limited`、primary利用上限でfallbackなし。
+- **バッチ解説**: `BATCH_COMMENTARY_ENABLED=1`・閾値48。現在の蓄積は36/48で、今は閾値待ち。直前の48試合バッチは`RADIO:batch_commentary`の`__invalid_agent__`失敗記録のみで、done/explanation/audio投入を確認できないため未達（現チェーン設定はnon-empty）。
+- **意図的に動いていない設定**: `GAME_RESULT_CHAT_ENABLED=0`（試合ごとの自動投稿停止）、`SOREN91_ENABLED=0`、`RADIO_BRIEFING_ENABLED=0`、旧peak-hour defer/改善後parallel系の0設定。OBS unit inactiveも、現在の`SOREN_STREAM_BACKEND=ffmpeg`では想定どおりで、配信と字幕はFFmpeg側で稼働。
+- **動作中だが要観測**: Twitch Predictions APIはHTTP200で予想作成済み、現在remote statusは`LOCKED`。30分の受付終了後で、サイクル36/48のため解決待ちと判定（自動投票は07:09に63pt成功）。Radio worker/Audio workerは動作し、生成も再生も進むがdeferred queueは47件で古い項目が滞留。
+- **一時障害**: 07:38:07にruntime全体のTERM停止、07:39:21にsystemdが自動起動。現在は復帰しているが、停止契機はjournal上で特定できていない。今回の調査では再起動操作は行っていない。
+
+## 2026-08-21 07:54 JST — Score Timelineのブラウザ表示をスパークラインへ再修正・VM反映
+
+- **再診断**: 連続線へ修正した多段ドットグリッドでも、direct broadcast overlayの極小モノスペース表示では各点が密なマス目に見えた。入力の`score_history.txt`と上下限（実データの2825/396）は正常だった。
+- **実装**: `status_dashboard.py:render_score_timeline()` を、直近100件を幅42区間へ平均化するASCII一行スパークライン（`.:-=+*#@`）へ変更。Braille依存を削除し、上限・下限ラベルと基準線を維持。`chart_h`引数は後方互換のため受け付ける。CLAUDE.mdの説明も更新。
+- **リポジトリ**: `soviet_now` `3000426f2`（表示実装本体 `cbdbf0fc9` を含む）を`origin/codex/no-apply-liveliness`へpush。親リポジトリのサブモジュールポインタ更新は次のコミットで行う。
+- **VM反映**: `/home/ubuntu/soren/.codex_deploy/backup-20260821-score-timeline-sparkline/status_dashboard.py` に反映前ファイルをバックアップ後、VMへ反映。ローカル/VM SHA256 `9396a2adad61762a813fe74d586b486656eb81089954749fc966b829297dfa41` 一致、`py_compile`成功。`generate_status_overlay.sh once` の実データ出力は次の3行になり、Braille文字数0を確認。
+  `Score Timeline (last 100 games)`
+  `2825│:==:--:-:==*-+=:=+-:-:=:==+==--::=-:-+--=-`
+  `396└──────────────────────────────────────────`
+- **テスト**: `tests.test_score_timeline`、`tests.test_status_dashboard_founding_rate`の25件、direct broadcast overlay Node 11件、dashboard関連escape 3件、`py_compile`、`git diff --check`が成功。
+- **作業報告音声**: 今回専用の「score timelineのブラウザ表示がまだ崩れる原因を確認し、点字グリフを使わない表示へ修正しています。」をVMへ重複抑止付きでenqueue。VM `tmp/state/overlay_events.jsonl` の07:52:35 `コメント返信 playback`イベントで再生を確認した。ラジオレンダー負荷のため投入直後は待機していたが、キュー残存なしになった。
