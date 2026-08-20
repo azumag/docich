@@ -265,3 +265,19 @@
 - **リポジトリ**: `soviet_now` `5ea608039`（実装 `d791e5494`を含む）を`origin/codex/no-apply-liveliness`へpush。親リポジトリのサブモジュールポインタ更新は次のコミットで行う。
 - **VM反映**: `/home/ubuntu/soren/.codex_deploy/backup-20260821-score-timeline-axes/` および説明更新用バックアップへ反映前ファイルを保存。最終ローカル/VM SHA256 `03ca1be2b76c182308a7bc42fd1324114e53fc2f25e4945efc1e5b6b60bc7a42` 一致、`py_compile`成功。実データで7段折れ線、上下ラベル、`old`/`now`、軸線、Braille文字数0を確認した。worker再起動は不要な表示変更のみ。
 - **テスト**: `tests.test_score_timeline`、`tests.test_status_dashboard_founding_rate`の25件、direct broadcast overlay Node 11件、dashboard関連escape 3件、`py_compile`、`git diff --check`が成功。
+
+## 2026-08-21 08:30 JST — 有料DeepSeek残存経路の再照合（変更なし）
+
+- **実測された新規到達**: VMの`resolved_model=deepseek-v4-flash`は07:11:12 JSTの`RADIO` `attempt` 1件のみで、07:11:57に`fail`。直前にmuseの`RADIO`がprovider `ok`になっているため、fact-checkの意味検証を通らず`RADIO_FACT_CHECK_SECONDARY`へ進んだ候補と一致する。`winner`はない。
+- **実効チェーンの上書き**: 起動経路で読み込むVM `.env`（06:23:47更新）が、`AI_COMMON_AGENTS`/`RADIO_AGENTS`/`RADIO_PREPASS_AGENTS`を`AMD → deepseek-free → openrouter/free → muse → local → paid DeepSeek → MiniMax`、`MODEL_IMPROVE_LIST`を`AMD → deepseek-free → muse → paid DeepSeek → MiniMax`に固定している。リポジトリ側`core/config.sh`のmuse先頭既定値は、VM `.env`があるため実効値になっていない。
+- **補助経路**: `RADIO_FACT_CHECK_ENABLED=1`でmuse→有料DeepSeek→MiniMaxの二次候補が稼働中。Soren91、celebration、AI classifier、bug dispatchは各トグル0。Stats外の改善`run_cmd`ログも反映後の有料DeepSeek開始はなく、最後の`codex:deepseek-v4-flash`は05:34台（反映前）で、現在のcodex子プロセスはAMD版。未知specを`CODEX_MODEL`（有料DeepSeek）へ正規化する後方互換はコード上残るが、反映後の`__invalid_agent__`再発はない。OpenCodeのセッションDBは非無料`deepseek-v4-flash`が0件で、直接`opencode run --agent minimax`は有料版経路ではない。
+- **状態**: 今回はコード・VM設定・workerを変更していない。修正する場合は、VM `.env`のチェーン順とfact-check二次候補を別々に判断し、`.env`変更後はworker完全再起動とStats再確認が必要。
+
+## 2026-08-21 08:34 JST — YouTube保留・残りのVM機能修正と再実測
+
+- **YouTube**: relay serverが必要なため、今回の対応対象から外した。workerは停止せず、OAuth `invalid_grant`／900秒backoffが残る未達として扱う。
+- **バッチ解説**: `lib/ai_generate.sh` にagent仕様検証を追加し、未知の値をCodex既定モデルへ黙って流さないよう変更。`batch_commentary.sh` は無効候補を除去し、全候補が無効なら `RADIO_AGENTS` → `AI_COMMON_AGENTS` の順に有効チェーンへフォールバックする。`__invalid_agent__` の再発を防ぐテストを追加した。soviet_now `ad088ebe0`。
+- **改善再開**: VM実測で旧 `strategy/ai.sh` がLiteLLM `/health`を確認していたため、実際の生存確認先 `/health/liveliness` を反映（ローカル/VM SHA256一致、`bash -n`、HTTP 200）。さらに、失敗状態だけ残ってロックが消えた場合に保存済み同一hashバッチを復元する `strategy/improve.sh` 修正を追加し、soviet_now `28a4f8670` としてpush・VM反映した。VMでは`count=95`のretry batchが`tmp/improve.lock`へ復元され、`improve_state=running / phase=analyze_retry1`へ遷移した。分析中の`improve_ai.log`に新しい`LITELLM_DOWN`はない。
+- **予想**: 既存の`48ゲーム中に建国できる？`はHTTP 200／LOCKEDのまま。現時点の蓄積は46/48で、分析中は解決条件未到達のため、作成・解決コードの追加変更は行わず次の2試合後に実測する。
+- **Twitchチャット／広告**: 送信・広告APIは依然としてInvalid OAuth token／HTTP401。トークン本文は取得・保存せず、ユーザー側の有効な権限付きトークン更新が必要な未達として残す。
+- **検証**: `tests.test_ai_generate_backoff` と `tests.test_improve_retry_reliability` 合計35件、`bash -n`、`git diff --check` 成功。VM反映前バックアップは `.codex_deploy/backup-20260821-0816-ai-chain-runtime` と `.codex_deploy/backup-20260821-0822-improve-retry-restore`。
