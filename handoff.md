@@ -13,6 +13,22 @@
 - **再試行状態**: 誤判定で作られた `rate_limit_backoff` は `.codex_deploy/rate_limit_backoff-20260821-054158-pre-liveliness` へ退避済み。既存 `tmp/improve.lock` は保持され、現在の試合終了境界で daemon が再試行する予定。05:43時点では `strategy_runner active` のため実モデル呼び出し再開は未確認。
 - **main統合・再反映（05:53 JST）**: soviet_now main `7d4d907d0f`、docich main `e52d47a356` へGitHub merge済み。VM `/home/ubuntu/docich` をcleanな状態からfast-forwardし、submoduleも `7d4d907d0f` へ同期。確定mainの `strategy/ai.sh` を `/home/ubuntu/soren` へ再反映（backup `.codex_deploy/backup-20260821-055254-main-no-apply`）、`soren-runtime.service` を完全再起動した。LiteLLM liveliness 200、worker 6/6、duplicates none、FFMPEG LIVE、chat pause維持を実測。
 
+## 2026-08-21 05:59 JST — バッチ解説・自動予想再開（進行中）
+
+- **実装**: `soviet_now` に改善サイクル（`MIN_GAMES_BEFORE_IMPROVE`）単位の `batch_commentary.sh` を追加。`batch_summary.py` の実測値をAIに解説させ、形式検証後に `audio_worker` キューへ一度だけ渡す。AI失敗時はバッチID単位の再試行状態を残す。
+- **チャット**: 試合ごとの旧進捗投稿は `GAME_RESULT_CHAT_ENABLED=0` を既定にして停止。既存のチャット経路は、検証後に VM の `tmp/state/chat_worker.paused` を解除して再開する予定。
+- **予想**: `twitch_predictions.sh` に作成・解決の指数バックオフ、HTTPエラー記録、再起動時の Twitch 側 ACTIVE/LOCKED 予想取り込みを追加。`prediction_worker.sh` はバックオフ中の5秒再試行を抑止する。
+- **ローカル検証**: 対象シェル5ファイルの `bash -n` と `git diff --check` は通過。既存の `batch_summary.py`／supervisor テストには変更前からの期待値不一致が残っているため、今回の変更の成否とは分離して扱う。
+- **ライブ確認の前提**: VM の `TWITCH_PREDICTIONS_ENABLED=1` は確認済みだが、既存 `TWITCH_PREDICTIONS_TOKEN` は Twitch API で HTTP 401（Invalid OAuth token）。`channel:manage:predictions` を持つ有効な配信者トークンがユーザー側で更新されるまでは、予想の作成・解決は未確認のまま。
+
+## 2026-08-21 05:xx JST — muse/deepseek attempt 統計の経路差を診断（未変更）
+
+- **Stats の読み方**: Soren WebUI の Stats はチェーン単位ではなく、`tmp/state/ai_stats/<YYYYMMDD>.jsonl` の全用途・全ラベルの `_ai_dispatch` を合算する。2026-08-20/21 の表示は `codex:deepseek-v4-flash` が attempt 62 / winner 31、`opencode-go:muse-spark-1.2-contributor` が attempt 16 / winner 9。
+- **通常チェーン**: WebUI Chains と VM `.env` の `AI_COMMON_AGENTS` / `RADIO_AGENTS` / `RADIO_PREPASS_AGENTS` は `...opencode-go:muse-spark-1.2-contributor,...codex:deepseek-v4-flash,...` の順で、muse が deepseek より前。`MODEL_IMPROVE_LIST` と `COMMENT_AGENTS` も muse が前。
+- **実際に deepseek を増やす別経路**: VM `.env` に `RADIO_FACT_CHECK_AGENT` はなく、`core/config.sh:157` の既定 `codex:deepseek-v4-flash` が有効。`RADIO_FACT_CHECK_FALLBACK` は `codex:minimax-m3`。`broadcast/radio_factcheck.sh` はこの2つを順番に `_run_opencode_radio` → `_ai_dispatch "RADIO"` で呼ぶため、`RADIO_AGENTS` を通らず、`winner` も記録しない（attempt/ok/fail のみ）。
+- **VM 実測**: 2日分の `label=RADIO` attempt は deepseek 27、MiniMax 23、muse 1。deepseek の `tmp/debug/ai_dispatch/*_RADIO_codex_deepseek-v4-flash_prompt.txt` 63件は全て fact-check 冒頭で、muse の同ラベル1件は `Say hi` の手動テスト。従って表示上の「deepseek 62 vs muse 16」は、通常フォールバック順の矛盾ではなく fact-check 直呼びの合算で膨らんでいる。
+- **未実施**: fact-check も muse 先行にする設定・コード変更、VM反映、worker再起動はまだ行っていない。変更する場合は `RADIO_FACT_CHECK_AGENT` を muse 先行にし、deepseek を後段へ置く設計をリポジトリと VM で同時に同期してから検証する。
+
 ## 🎯 ゴール / タスク
 
 1. **chat send 停止中も outbound queue を蓄積させない**（ユーザー指示 05:10）— 完了。`enqueue_chat_message` を `tmp/state/chat_worker.paused` 存在時は no-op（`OUTBOUND_CHAT_PAUSE_MARKER`）、40箇所以上の呼び出し元を一括抑止。VMで queue 0維持を実測。
