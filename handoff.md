@@ -1,18 +1,25 @@
 # セッション引き継ぎ (handoff)
 
-> 生成日時: 2026-08-21 05:08 JST  /  作業ディレクトリ: /Users/azumag/work/docich
+> 生成日時: 2026-08-21 05:20 JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: dociai用 Twitchトークン更新（401→200検証）と作業中音声の丁寧化・大くくり化（1434820ff）を実施、VM反映まで完了
+> 直前セッション: docich webui に audio-worker 手動enqueue パネル（Audioタブ）を追加し、ローカル検証→コミット ea5a250→push→VM反映（docich-webui 再起動）→実測まで完了
 
 ## 🎯 ゴール / タスク
 
-1. **#18 広告スヌーズ** — 完了（`speaking.json` + `lib/twitch_ads.sh`、VMで `GET` 200 `snooze 2→1` を実測、5分効果を `poll 240s` で繋ぐ）。
+1. **webui に audio-worker 手動enqueue パネル追加**（完了・VM反映済み）— `src/docich/webui.py` に Audioタブ（キュー一覧 + 手動enqueue + 削除/全クリア + プリセット）と API（`GET /api/audio/queue`、`POST /api/audio/enqueue`、`DELETE /api/audio/queue/<fname>`、`DELETE /api/audio/queue`）を追加、`tests/test_webui.py` 14件追加（計66件 pass）、VM `docich-webui` 3166488 で enqueue→dedup→list→delete を実測。
+2. **#18 広告スヌーズ** — 完了（`speaking.json` + `lib/twitch_ads.sh`、VMで `GET` 200 `snooze 2→1` を実測、5分効果を `poll 240s` で繋ぐ）。
 2. **作業中→VM読み上げの丁寧化・大くくり化**（ユーザー指示 04:36/04:50）— `codex_work_indicator.sh` の音声を丁寧な敬語で詳細に、バナーは細かく・音声は大くくり（300s同一タイトル、180s包含はスキップ、`stop` は常に読む、300s dedup）へ更新、`AGENTS.md` §8 を更新。
 3. **dociai用トークン・設定の更新**（ユーザー指示 05:0x）— `TWITCH_BOT_TOKEN` を `zd7y...`（dociai）で更新、`TWITCH_CHANNEL=dociai`/`TWITCH_BROADCASTER_ID=1526886844` が一致することを `helix/users` で検証、`TWITCH_ADS_ENABLED=1` を `.env` で明示して有効化、 `GET /helix/channels/ads` 200 `snooze_count 2` と `POST /snooze` 200 `1` を実測。
 4. **二重読み上げと no-apply は 2b7813a で完遂**（TTL 900 + dedup、advisory 化）、`docich` 08d9bd5 で bump・VM 反映済み。
 5. **Phase 2→3→4 完走は完了**（`.env` 5キー enforce、VM 156件）。
 
 ## ✅ やったこと（実測で確認済み）
+
+- **webui Audio パネル**（docich `ea5a250`）
+  - `src/docich/webui.py`: `AUDIO_TEXT_LIMIT=1000` 等定数、`_comment_queue_dir`/`_comment_audio_dedup_dir`（`.env`/env の `COMMENT_QUEUE_DIR`/`COMMENT_AUDIO_DEDUP_DIR` を参照、既定 `tmp/.comment_queue`）、`_comment_audio_claim_enqueue_key`（md5 + mkdir dedup、TTL 120s）、`_enqueue_audio_text`（原子書き込み `comment_announce_{ns}_{source}.txt` + `.speaker` sidecar）、`_list_audio_queue`（txt + .playing、speaker、mtime順）、ハンドラ 4種（GET/POST/DELETE単品/DELETE全クリア、read_only は既存ゲートで 403）を追加。`python3 -c ast.parse` OK、`tests/test_webui.py` 66件 pass を実測。
+  - フロントエンド: nav に Audioタブ、`#tab-audio`（キュー一覧 table + 手動enqueue textarea/source/speaker + プリセット3種 + 全クリア/削除）、`loadAudioQueue`/`enqueueAudio`/`updateAudioTextCount` を追加。ローカル実サーバーで HTML に `data-tab="audio"`/`audio-enqueue`/`loadAudioQueue` が含まれること、read_only で enqueue/clear が 403・GET が 200 を実測。
+  - コミット `ea5a250 feat: add audio-worker manual enqueue panel to webui (Audio tab)`（webui.py + tests 2ファイル 689 ins）を `docich` で実施、`push origin HEAD:main`（614aaf0..ea5a250）と `HEAD:codex/soren-repo-handoff`（ead5b2e..ea5a250）を実測。
+  - **VM反映**: `VM:/home/ubuntu/docich` を `git fetch`→`reset --hard origin/main`→`submodule update` で `ea5a250`/`1434820ff` に同期（`git status` clean、`grep -c audio-enqueue|_handle_post_audio_enqueue` 9件を実測）、`systemctl --user restart docich-webui.service` で新 PID 3166488（active running を実測）。`GET /api/audio/queue` が `queue_dir=/home/ubuntu/soren/tmp/.comment_queue`、`dedup_count 22`、`count 8`（実データ）を実測。`POST /api/audio/enqueue`（source=webui_test, speaker=46）→ `comment_announce_*_webui_test.txt` 生成、同一テキスト再投で `dedup:true`、DELETE で削除、`count 8` 復帰、HTML に `data-tab="audio"` 等 14件を実測。テストアイテムは配信再生前に削除した。
 
 - **Twitch OAuth URL生成とトークン検証**
   - `TWITCH_CLIENT_ID=6gr8gpkyjtcjp20w8iwn9a98iazucv`（`VM:.env` から実測）で `https://id.twitch.tv/oauth2/authorize?response_type=token&client_id=...&redirect_uri=http://localhost&scope=channel:manage:ads+channel:read:ads+chat:read+chat:edit+channel:manage:broadcast+user:read:email&state=dociai_ads_20260821` を生成、ユーザーに提示。ユーザーが `http://localhost/#access_token=zd7yllewm6fraw1mlriqdalbn8yv4y&...` を貼り付けたため、VMの `TWITCH_BOT_TOKEN` を同値で原子更新（`printf ... | ssh ... cat > /tmp/new_token.txt && python3 - <<PY upsert`）。
@@ -29,21 +36,20 @@
 
 ## 📍 現在の状態
 
-- **ブランチ / 変更状況**: `docich` は `codex/soren-repo-handoff` @ `08d9bd5`（`origin/main` も `08d9bd5`、前回の `6960a37` bump）。`games/soviet_now` は `1434820ff`（`origin/main` も `1434820ff`、今回の丁寧化で `6960a37..1434820ff`）。`docich` 側で `games/soviet_now` は `M`（`6960a37..1434820ff` の差分、未コミット）。`git -C games/soviet_now status` は clean（`codex_work_indicator.sh` は `1434820ff` でコミット済み）。`docich` の `git status` は `M AGENTS.md`（§8 丁寧化） + `M games/soviet_now` + `M handoff.md`（本ファイル）を実測。`bash -n` 4ファイル OK。
-- **VM 本番**: `VM:/home/ubuntu/docich` は `08d9bd5`（`git log` 2件、`status` clean、`grep prompts` 1件を実測、前回同期のまま `1434820ff` は未反映）。`VM:/home/ubuntu/docich/games/soviet_now` は `6960a37`（`git rev-parse` で実測、丁寧化版の `1434820ff` は未反映）。`VM:/home/ubuntu/soren` はコード 5ファイル（`twitch_chat 900`/`outbound_queue dedup`/`say 0.85`）は `6960a37` 相当だが、`codex_work_indicator.sh` は旧 `6960a37` 版（丁寧化前）、`lib/twitch_ads.sh` は `6960a37` 版（`7078` bytes）を実測。`.env` は `TWITCH_BOT_TOKEN=zd7y...`（新、len 30）、`TWITCH_CHANNEL=dociai`、`TWITCH_BROADCASTER_ID=1526886844`（`helix/users` で一致を実測）、`TWITCH_ADS_ENABLED=1`、`STAT_GATE_MODE=enforce` 等 5キーを `grep -E` で実測。`soren_loop` の `STATGATE` 156件、`docich-webui` 1461345 activeで `api/prompts` 37件を実測。`VM` の `codex_work_indicator.sh` は丁寧化前だが、トークン更新後の `GET` 200 `snooze 2→1` は `python3 /tmp/test_snooze.py` で実測。
-- **作業中バナー**: `設計中`→`実装中`→`検証中`→`handoff更新中` と粒度更新、現在 `handoff更新中` で active（`tmp/state/codex_work_indicator.json` に `設定中`→`handoff更新中`）。
-- **検証**: 新トークンで `helix/users` 200、`validate` で `scopes` に `channel:manage:ads` を含むこと、`ads GET` 200 `snooze_count 2`、 `POST snooze` 200 `1` を `python3 /tmp/test_snooze.py` で実測。旧トークンでは `401` を実測していたため、更新で解消。`codex_work_indicator.sh` の新版は `bash -n` OKだが VM 未反映。
+- **ブランチ / 変更状況**: `docich` は `codex/soren-repo-handoff` @ `ea5a250`（`origin/main` も `ea5a250`、`origin/codex/soren-repo-handoff` も `ea5a250`）。`games/soviet_now` は `1434820ff`（`origin/main` も `1434820ff`）。`docich` 側で `games/soviet_now` は `M`（サブモジュール実体 `e3bb58fab` と親参照 `1434820ff` の乖離、前回からの継続、今回の webui 変更とは無関係）。`handoff.md` は本ファイルが未コミット（`M`）。
+- **VM 本番**: `VM:/home/ubuntu/docich` は `ea5a250`（`git log` で実測、`status` clean、`grep -c audio-enqueue|_handle_post_audio_enqueue` 9件）、`games/soviet_now` は `1434820ff`。`docich-webui.service` は `3166488` active running。`/api/audio/queue` は実データ（count 8、dedup_count 22）を実測、enqueue/dedup/delete round-trip を実測。`VM:/home/ubuntu/soren` の `.env`（dociaiトークン等）と `STATGATE` 156件は前回のまま。
+- **作業中バナー**: `デプロイ中` を表示→検証完了後 `stop` 済み（VM `codex_work_indicator.json` が空になったことを実測）。
 
 ## ⏭️ 次にやること
 
-1. **soviet_now 丁寧化版を VM へ反映**（最優先）: `VM:/home/ubuntu/soren/codex_work_indicator.sh` を `scp` で `1434820ff` 版へ更新、`AGENTS.md` 2ファイル（`docich/AGENTS.md` と `soviet_now/AGENTS.md`）を `VM` へ `scp`（`soren` と `docich/games/soviet_now` の両方）、`bash -n` と `grep -c "お待たせしております"` で実測。
-2. **docich 側の bump をコミット・push**: `git -C . add AGENTS.md games/soviet_now handoff.md && git commit -m "chore: bump soviet_now to 1434820ff — refine work audio polite + dociai token + handoff" && git push origin HEAD:main` / `HEAD:codex/soren-repo-handoff`。
-3. **VM docich を `git fetch`→`reset --hard origin/main`→`submodule update` で `1434820ff` に同期**（`git status` clean、`grep -c 900` 3件を実測）。
-4. **最終検証**（今回のトークン）: `ssh ... "source lib/twitch_ads.sh; TWITCH_SNOOZE_THRESHOLD_SEC=100000 twitch_ads_maybe_snooze test"` で `tmp/debug/twitch_ads.log` に `snoozed` が残ることを実測（前回は旧トークンで `401` だったが、新トークンでは `snooze_count 2→1` を実測済みのため、次は `1` のまま dedup されるはず）。`codex_work_indicator.sh start "テスト丁寧"` で `VM` の `tmp/.comment_queue/comment_announce_*` に `お待たせしております。` で始まるファイルができることを実測。
-5. **1週間観測**: 既存の二重読み・no-apply・STATGATE 156件と合わせて、広告スヌーズが `tmp/debug/twitch_ads.log` で `snoozed` と `429` 時の backoff で TTS を壊さないことを配信ログで確認。作業中音声が丁寧な敬語で大くくりに読まれることを `tmp/state/work_audio_last.json` の `ts` 間隔で確認。
+1. **handoff のコミット・push**（残り）: `git add handoff.md && git commit -m "docs: update handoff for webui audio enqueue panel" && git push origin HEAD:main` / `HEAD:codex/soren-repo-handoff`。
+2. **webui Audio パネルの実運用観測**: 配信視聴者操作で `POST /api/audio/enqueue` が audio_worker により `say_enqueue.sh` で再生されること（`.playing` 経由）を確認。dedup 120s・TTL掃除（`audio_dedup`）の動作も観測。
+3. **1週間観測**（#18 広告スヌーズ・二重読み・STATGATE 156件）は継続。
 
 ## 📂 重要なファイル
 
+- `src/docich/webui.py` — Audioタブ + `_comment_queue_dir`/`_enqueue_audio_text`/`_list_audio_queue`/ハンドラ 4種（`ea5a250`、AUDIO_TEXT_LIMIT 1000、dedup 120s）
+- `tests/test_webui.py` — `TestAudioQueue` + HTTP 8件（計66件 pass）
 - `games/soviet_now/codex_work_indicator.sh` — 丁寧化版（`1434820ff`、240字丸め、300s/180sスキップ、`work_audio_last.json`）
 - `AGENTS.md:61` / `games/soviet_now/AGENTS.md:19` — §8 丁寧化・大くくり化（`お待たせしております…`）
 - `games/soviet_now/lib/twitch_ads.sh` — `6960a37` 版（GET/POST、600s閾値）
@@ -55,6 +61,7 @@
 
 ## 🧭 決定と前提
 
+- **webui Audio パネル**は `lib/outbound_queue.sh:enqueue_audio_text` と同等の契約（`comment_announce_*` ファイル + `.speaker` sidecar + md5 dedup 120s）を Python で再実装。キュー実体は `COMMENT_QUEUE_DIR`（既定 `tmp/.comment_queue`）で、audio_worker が消化する本番キューを直接操作する。read_only 時は POST/DELETE が 403。
 - **dociai用トークンは `zd7y...`（30字）**で `helix/users` が `login=dociai id=1526886844` と `broadcaster_id` 一致、`scopes` に `channel:manage:ads` を含むことを実測。旧トークン（`412gv...`）は `401 Invalid OAuth token` を実測していたため更新で解消。`TWITCH_BOT_TOKEN` は `.env` に平文で保存するが、handoff やログには `***` で秘匿。
 - **作業中音声は丁寧な敬語で大くくり**（`7` のバナーは細かく、`8` の音声は 300s同一タイトル・180s包含はスキップ、 `stop` は常に読む）。`codex_work_indicator.sh` の `work_audio_last.json` で判定、`enqueue_audio_text` の 300s dedup でも二重抑止。手動でも丁寧な敬語で詳細に書く。
 - **soviet_now `1434820ff` は `codex_work_indicator.sh` の丁寧化のみ**、前回の `6960a37`（広告スヌーズ本体）は既に `docich` `08d9bd5` と `VM` `6960a37` で反映済み。`VM` の `codex_work_indicator.sh` はまだ旧版のため次で `scp` する。
@@ -76,6 +83,8 @@
 
 ## 🔗 参照
 
+- `src/docich/webui.py` — Audioタブ/API（`ea5a250`）
+- `tests/test_webui.py` — `TestAudioQueue`
 - `games/soviet_now/twitch_chat_daemon.sh:18` / `twitch_chat.sh:33` — 900
 - `lib/twitch_ads.sh` — `6960a37` 版
 - `say_enqueue.sh:95,2613` — speaking
