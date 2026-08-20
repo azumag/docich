@@ -13,13 +13,14 @@
 - **再試行状態**: 誤判定で作られた `rate_limit_backoff` は `.codex_deploy/rate_limit_backoff-20260821-054158-pre-liveliness` へ退避済み。既存 `tmp/improve.lock` は保持され、現在の試合終了境界で daemon が再試行する予定。05:43時点では `strategy_runner active` のため実モデル呼び出し再開は未確認。
 - **main統合・再反映（05:53 JST）**: soviet_now main `7d4d907d0f`、docich main `e52d47a356` へGitHub merge済み。VM `/home/ubuntu/docich` をcleanな状態からfast-forwardし、submoduleも `7d4d907d0f` へ同期。確定mainの `strategy/ai.sh` を `/home/ubuntu/soren` へ再反映（backup `.codex_deploy/backup-20260821-055254-main-no-apply`）、`soren-runtime.service` を完全再起動した。LiteLLM liveliness 200、worker 6/6、duplicates none、FFMPEG LIVE、chat pause維持を実測。
 
-## 2026-08-21 05:59 JST — バッチ解説・自動予想再開（進行中）
+## 2026-08-21 06:08 JST — バッチ解説・自動予想再開（実装・反映済み）
 
-- **実装**: `soviet_now` に改善サイクル（`MIN_GAMES_BEFORE_IMPROVE`）単位の `batch_commentary.sh` を追加。`batch_summary.py` の実測値をAIに解説させ、形式検証後に `audio_worker` キューへ一度だけ渡す。AI失敗時はバッチID単位の再試行状態を残す。
-- **チャット**: 試合ごとの旧進捗投稿は `GAME_RESULT_CHAT_ENABLED=0` を既定にして停止。既存のチャット経路は、検証後に VM の `tmp/state/chat_worker.paused` を解除して再開する予定。
-- **予想**: `twitch_predictions.sh` に作成・解決の指数バックオフ、HTTPエラー記録、再起動時の Twitch 側 ACTIVE/LOCKED 予想取り込みを追加。`prediction_worker.sh` はバックオフ中の5秒再試行を抑止する。
-- **ローカル検証**: 対象シェル5ファイルの `bash -n` と `git diff --check` は通過。既存の `batch_summary.py`／supervisor テストには変更前からの期待値不一致が残っているため、今回の変更の成否とは分離して扱う。
-- **ライブ確認の前提**: VM の `TWITCH_PREDICTIONS_ENABLED=1` は確認済みだが、既存 `TWITCH_PREDICTIONS_TOKEN` は Twitch API で HTTP 401（Invalid OAuth token）。`channel:manage:predictions` を持つ有効な配信者トークンがユーザー側で更新されるまでは、予想の作成・解決は未確認のまま。
+- **実装**: `soviet_now` `3eb30f62f`（親 `docich` `90a7a75`）に、改善サイクル（`MIN_GAMES_BEFORE_IMPROVE`）単位の `batch_commentary.sh` を追加。`batch_summary.py` の実測値をAIに解説させ、形式検証後に `audio_worker` キューへ一度だけ渡す。AI失敗時はバッチID単位の再試行状態を残す。
+- **チャット**: 試合ごとの旧進捗投稿は `GAME_RESULT_CHAT_ENABLED=0` を既定にして停止。VMの `tmp/state/chat_worker.paused` を解除し、`soren-runtime.service` 再起動後に `chat_worker` とIRC daemonの起動、送信待ち0件を実測した。
+- **予想**: `twitch_predictions.sh` に作成・解決の指数バックオフ、HTTPエラー記録、再起動時の Twitch 側 ACTIVE/LOCKED 予想取り込みを追加。`prediction_worker.sh` はバックオフ中の5秒再試行を抑止する。VMで無効トークンへのcreateを一度実行し、HTTP 401を `tmp/state/prediction_retry/create.json` に記録、900秒バックオフ中にattemptが増えないことを確認した。
+- **VM反映**: `.codex_deploy/backup-20260821-060351-batch-commentary/` に対象ファイルをバックアップ後、5ファイルのSHA256一致と `bash -n` を確認し、`soren-runtime.service` を再起動した。チャットpauseは解除済み。
+- **バッチ経路スモーク**: 本番状態を変更しない一時fixtureで48試合分の集計を生成（summary 9,937 bytes）、AI失敗時に `retry.json` が300秒で作られることを確認。実AI成功と音声再生は次の実バッチ到達時に確認する。
+- **ライブ未達**: VMの `TWITCH_PREDICTIONS_ENABLED=1` は確認済みだが、既存 `TWITCH_PREDICTIONS_TOKEN` は Twitch API で HTTP 401（Invalid OAuth token）。`channel:manage:predictions` を持つ有効な配信者トークンがユーザー側で更新されるまでは、予想の実作成・実解決は未確認のまま。
 
 ## 2026-08-21 05:xx JST — muse/deepseek attempt 統計の経路差を診断（未変更）
 
