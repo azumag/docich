@@ -6,6 +6,7 @@ State: soren_root = ELOOP_LIB_DIR 相当 (games/soviet_now or /home/ubuntu/soren
 """
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
@@ -304,6 +305,212 @@ def _stats_dir(soren_root: Path) -> Path:
     return soren_root / "tmp/state/ai_stats"
 
 
+def _peak_hours_to_minutes_py(token: str) -> int | None:
+    token = token.strip()
+    if not token:
+        return None
+    if ":" in token:
+        parts = token.split(":")
+        if len(parts) != 2:
+            return None
+        h_str, m_str = parts[0].strip(), parts[1].strip()
+        if not h_str.isdigit() or not m_str.isdigit():
+            return None
+        h, m = int(h_str), int(m_str)
+    elif token.isdigit() and len(token) in (3, 4):
+        if len(token) == 3:
+            h = int(token[0])
+            m = int(token[1:])
+        else:
+            h = int(token[:2])
+            m = int(token[2:])
+    elif token.isdigit():
+        h = int(token)
+        m = 0
+    else:
+        return None
+    if h == 24 and m == 0:
+        return 1440
+    if not (0 <= h <= 23 and 0 <= m <= 59):
+        return None
+    return h * 60 + m
+
+
+def _is_peak_at(now_min: int, windows: str) -> bool:
+    if not windows or not windows.strip():
+        return False
+    for win in windows.split(","):
+        win = win.strip()
+        if not win or "-" not in win:
+            continue
+        a, b = win.split("-", 1)
+        a = a.strip()
+        b = b.strip()
+        start = _peak_hours_to_minutes_py(a)
+        end = _peak_hours_to_minutes_py(b)
+        if start is None or end is None:
+            continue
+        if start == end:
+            continue
+        if start < end:
+            if start <= now_min < end:
+                return True
+        else:
+            if now_min >= start or now_min < end:
+                return True
+    return False
+
+
+def _current_minutes_in_tz(tz: str) -> int | None:
+    tz = (tz or "").strip() or "Asia/Tokyo"
+    try:
+        from zoneinfo import ZoneInfo
+
+        dt = datetime.datetime.now(ZoneInfo(tz))
+        return dt.hour * 60 + dt.minute
+    except Exception:
+        pass
+    try:
+        old_tz = os.environ.get("TZ")
+        os.environ["TZ"] = tz
+        try:
+            time.tzset()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        lt = time.localtime()
+        mins = lt.tm_hour * 60 + lt.tm_min
+        if old_tz is not None:
+            os.environ["TZ"] = old_tz
+        else:
+            os.environ.pop("TZ", None)
+        try:
+            time.tzset()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        return mins
+    except Exception:
+        return None
+
+
+def _get_peak_status(soren_root: Path) -> dict[str, Any]:
+    dotenv = _read_dotenv_dict(soren_root)
+    windows = _effective_value("PEAK_HOURS_WINDOWS", dotenv)
+    tz = _effective_value("PEAK_HOURS_TZ", dotenv)
+    swap = _effective_value("PEAK_HOURS_AGENT_SWAP_ENABLED", dotenv)
+    gate = _effective_value("PEAK_HOURS_QUEUE_GATE_ENABLED", dotenv)
+    pref = _effective_value("PEAK_HOURS_AGENT_PREFERENCE", dotenv)
+    prio = _effective_value("PEAK_HOURS_PRIORITY_AGENT", dotenv)
+    now_min = _current_minutes_in_tz(tz)
+    is_peak = False
+    if now_min is not None:
+        try:
+            is_peak = _is_peak_at(now_min, windows)
+        except Exception:
+            is_peak = False
+    now_str = ""
+    try:
+        from zoneinfo import ZoneInfo
+
+        dt = datetime.datetime.now(ZoneInfo(tz))
+        now_str = dt.strftime("%H:%M")
+    except Exception:
+        try:
+            lt = time.localtime()
+            now_str = f"{lt.tm_hour:02d}:{lt.tm_min:02d}"
+        except Exception:
+            now_str = ""
+    return {
+        "windows": windows,
+        "tz": tz,
+        "swap_enabled": swap,
+        "gate_enabled": gate,
+        "preference": pref,
+        "priority_agent": prio,
+        "is_peak_now": is_peak,
+        "now_minutes": now_min,
+        "now_str": now_str,
+    }
+
+
+def _game_state_path(soren_root: Path) -> Path:
+    return soren_root / "game_state.json"
+
+
+def _improve_state_path(soren_root: Path) -> Path:
+    return soren_root / "tmp/state/improve_state.json"
+
+
+def _improve_lock_path(soren_root: Path) -> Path:
+    return soren_root / "tmp/improve.lock"
+
+
+def _load_json_file(path: Path) -> Any | None:
+    try:
+        if not path.is_file():
+            return None
+        txt = path.read_text(encoding="utf-8", errors="ignore")
+        if not txt.strip():
+            return None
+        return json.loads(txt)
+    except Exception:
+        return None
+
+
+def _get_workers_status(soren_root: Path) -> list[dict[str, Any]]:
+    workers = [
+        "radio_worker",
+        "chat_worker",
+        "improve_daemon",
+        "audio_worker",
+        "prediction_worker",
+        "youtube_worker",
+    ]
+    results: list[dict[str, Any]] = []
+    for w in workers:
+        pid = _find_worker_pid(soren_root, w)
+        if w == "improve_daemon" and pid is None:
+            try:
+                pf = soren_root / "tmp/state/improve_daemon.pid"
+                if pf.is_file():
+                    raw = pf.read_text(encoding="utf-8", errors="ignore").strip().splitlines()[0]
+                    cand = int(raw.strip())
+                    try:
+                        os.kill(cand, 0)
+                        pid = cand
+                    except ProcessLookupError:
+                        pid = None
+                    except PermissionError:
+                        pid = cand
+            except Exception:
+                pid = None
+        alive = pid is not None
+        results.append({"worker": w, "pid": pid, "alive": alive, "status": "ok" if alive else "not_running"})
+    try:
+        sdir = soren_root / "tmp/state"
+        if sdir.is_dir():
+            for p in sdir.glob("*.pid"):
+                name = p.stem
+                if any(r["worker"] == name for r in results):
+                    continue
+                pid = None
+                try:
+                    raw = p.read_text(encoding="utf-8", errors="ignore").strip().splitlines()[0]
+                    cand = int(raw.strip())
+                    try:
+                        os.kill(cand, 0)
+                        pid = cand
+                    except ProcessLookupError:
+                        pid = None
+                    except PermissionError:
+                        pid = cand
+                except Exception:
+                    pid = None
+                results.append({"worker": name, "pid": pid, "alive": pid is not None, "status": "ok" if pid is not None else "not_running"})
+    except Exception:
+        pass
+    return results
+
+
 def _find_worker_pid(soren_root: Path, worker: str) -> int | None:
     # worker e.g. "radio_worker" -> pid file tmp/state/radio_worker.pid
     pid_file = soren_root / "tmp/state" / f"{worker}.pid"
@@ -383,9 +590,10 @@ header .env{margin-left:auto;font-size:13px;color:var(--muted)}
 nav{display:flex;gap:6px;padding:10px 12px;border-bottom:1px solid var(--border);overflow:auto}
 nav button{padding:8px 14px;border:1px solid var(--border);background:var(--card);color:var(--text);border-radius:8px;cursor:pointer;white-space:nowrap}
 nav button.active{background:var(--accent);color:#0a0c10;border-color:transparent;font-weight:600}
-main{padding:16px;max-width:1100px;margin:0 auto}
+main{padding:16px;max-width:1150px;margin:0 auto}
 .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:14px}
 .card h2{margin:0 0 8px 0;font-size:15px}
+.card h3{margin:0 0 6px 0;font-size:14px}
 .card p.desc{margin:0 0 10px 0;color:var(--muted);font-size:13px;line-height:1.5}
 label{font-size:13px;color:var(--muted);display:block;margin-bottom:6px}
 textarea,input,select{width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:#111319;color:var(--text);font-size:14px}
@@ -408,9 +616,39 @@ th{color:var(--muted);font-weight:600}
 .kv{display:grid;grid-template-columns:140px 1fr;gap:6px 12px;font-size:13px}
 .kv dt{color:var(--muted)}
 .kv dd{margin:0;word-break:break-all}
-.toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:#222836;border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,0.4);display:none;max-width:90vw}
+.toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:#222836;border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,0.4);display:none;max-width:90vw;z-index:50}
 canvas{width:100%;height:220px;background:#111319;border:1px solid var(--border);border-radius:8px}
 .help{font-size:12px;color:var(--muted);margin-top:6px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.kpi .val{font-size:22px;font-weight:700;margin:6px 0}
+.kpi .subk{font-size:12px;color:var(--muted)}
+.sparkline{width:100%;height:80px;background:#111319;border:1px solid var(--border);border-radius:8px}
+.bar{height:8px;background:#2a3040;border-radius:999px;overflow:hidden}
+.bar>i{display:block;height:100%;background:var(--accent);transition:width .3s}
+.chip{display:inline-block;padding:6px 10px;border:1px solid var(--border);background:#111319;border-radius:999px;font-size:12px;margin:4px 4px 0 0;cursor:pointer}
+.chip:hover{border-color:var(--accent);background:#1a2333}
+.ordered{list-style:none;padding:0;margin:8px 0}
+.ordered li{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);background:#111319;border-radius:8px;margin-bottom:6px}
+.ordered li.inherited{opacity:0.55;border-style:dashed}
+.ordered li.dragging{opacity:0.5}
+.drag{cursor:grab;padding:2px 6px;color:var(--muted);font-size:14px;user-select:none}
+.timeline{display:grid;grid-template-columns:repeat(12,1fr);gap:6px}
+@media(max-width:640px){.timeline{grid-template-columns:repeat(6,1fr)}}
+.tl{padding:8px 2px;border:1px solid var(--border);border-radius:8px;text-align:center;font-size:12px;background:#111319;cursor:pointer;user-select:none}
+.tl.active{background:var(--accent);color:#0a0c10;border-color:transparent;font-weight:600}
+.tl input{display:none}
+.switch{position:relative;display:inline-block;width:44px;height:24px;vertical-align:middle}
+.switch input{opacity:0;width:0;height:0}
+.slider{position:absolute;inset:0;background:#2a3040;border-radius:999px;transition:.2s}
+.slider:before{content:"";position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:white;border-radius:50%;transition:.2s}
+input:checked+.slider{background:var(--accent)}
+input:checked+.slider:before{transform:translateX(20px)}
+.range{width:100%}
+.backoff-card{border:1px solid var(--border);background:#111319;border-radius:10px;padding:12px;margin-bottom:10px}
+.backoff-card .head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.preset-btn{padding:6px 10px;border:1px solid var(--border);background:#222836;color:var(--text);border-radius:999px;font-size:12px;margin:2px;cursor:pointer}
+.preset-btn:hover{border-color:var(--accent)}
+.inherit-row{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:13px;color:var(--muted)}
 </style>
 </head>
 <body>
@@ -420,27 +658,50 @@ canvas{width:100%;height:220px;background:#111319;border:1px solid var(--border)
 <div class="env"><span id="env-mtime"></span> <span class="badge" id="health-badge">...</span> <span id="soren-root" class="mono" style="color:var(--muted);font-size:12px"></span></div>
 </header>
 <nav id="tabs">
-<button data-tab="chains" class="active">Chains</button>
+<button data-tab="dashboard" class="active">Dashboard</button>
+<button data-tab="chains">Chains</button>
 <button data-tab="backoff">Backoff</button>
 <button data-tab="peak">Peak</button>
 <button data-tab="stats">Stats</button>
 <button data-tab="health">Health</button>
 </nav>
 <main>
+<!-- DASHBOARD -->
+<section id="tab-dashboard">
+<div class="grid2">
+<div class="card kpi"><h3>Game</h3><div class="val" id="kpi-game">-</div><div class="subk" id="kpi-game-sub">-</div></div>
+<div class="card kpi"><h3>Improve</h3><div class="val" id="kpi-improve">-</div><div class="subk" id="kpi-improve-sub">-</div></div>
+<div class="card kpi"><h3>Workers</h3><div class="val" id="kpi-workers">-</div><div class="subk" id="kpi-workers-sub">-</div></div>
+<div class="card kpi"><h3>Peak</h3><div class="val" id="kpi-peak">-</div><div class="subk" id="kpi-peak-sub">-</div></div>
+</div>
+<div class="card"><h2>7日トレンド (sparkline)</h2><p class="desc">直近7日の winner/attempt。SVG sparkline。</p><svg id="dash-sparkline" class="sparkline" viewBox="0 0 400 80" preserveAspectRatio="none"></svg><div class="help" id="dash-spark-help"></div></div>
+<div class="row">
+<div class="card" style="flex:1"><h2>Backoff 残り</h2><p class="desc">アクティブなバックオフの残り時間バー。</p><div id="dash-backoff-bars"></div></div>
+<div class="card" style="flex:1"><h2>Top 3 Agents</h2><p class="desc">直近7日の winner 上位。</p><table><thead><tr><th>agent</th><th>winner</th></tr></thead><tbody id="dash-top3"></tbody></table></div>
+</div>
+<div class="card"><h2>Workers</h2><div style="overflow:auto"><table><thead><tr><th>worker</th><th>pid</th><th>status</th></tr></thead><tbody id="dash-workers"></tbody></table></div></div>
+</section>
 <!-- CHAINS -->
-<section id="tab-chains">
-<div class="card"><h2>モデルチェーン</h2><p class="desc">カンマ区切りで優先度順。先頭が最優先で失敗時に次へフォールバック（lib/ai_generate.sh:962）。<code>AI_COMMON_AGENTS</code> が原典で、他は空ならそれを継承します。変更は .env へ原子書き込み → 10秒以内に hot-reload。</p>
-<div id="chains-form"></div>
+<section id="tab-chains" style="display:none">
+<div class="card"><h2>モデルチェーン</h2><p class="desc">カンマ区切りで優先度順。先頭が最優先で失敗時に次へフォールバック（lib/ai_generate.sh）。<code>AI_COMMON_AGENTS</code> が原典で、他は空ならそれを継承します。変更は .env へ原子書き込み → 10秒以内に hot-reload。</p>
+<div id="chains-container"></div>
 <div class="actions"><button class="btn primary" id="chains-save">保存</button><button class="btn" id="chains-reload">再読込</button></div>
-<div class="help">保存後に radio/chat の reload を自動試行します（PIDファイル経由 USR1）。失敗時は手動 <code>kill -USR1 &lt;PID&gt;</code>。</div>
+<div class="help">保存後に radio/chat の reload を自動試行します（PIDファイル経由 USR1）。</div>
 <div id="chains-msg" class="help"></div>
 </div>
 </section>
 <!-- BACKOFF -->
 <section id="tab-backoff" style="display:none">
-<div class="card"><h2>モデル別バックオフ設定</h2><p class="desc"><code>AI_BACKOFF_SEC_ITEMS</code> は "model:sec" を空白区切り。例: <code>deepseek-v4-flash-free:86400 local:1800</code>。レート制限(429)はモデル別の長バックオフ、<code>AI_BACKOFF_FAILURE_SEC</code> は一過性のプロバイダ/CLI失敗(rc≠0)に使う短いバックオフ (PR #125)。</p>
-<div class="row"><div><label>AI_BACKOFF_SEC_ITEMS</label><textarea id="backoff-items" rows="3"></textarea></div><div><label>AI_AGENT_BACKOFF_SEC (既定)</label><input id="backoff-default" placeholder="600"/></div></div>
-<div class="row"><div><label>AI_BACKOFF_FAILURE_SEC (一過性障害)</label><input id="backoff-failure" placeholder="300"/></div><div class="help" style="align-self:end;margin:0">429/クォータ枯渇のみ長バックオフ。それ以外はこの秒数で早期復帰させる。</div></div>
+<div class="card"><h2>モデル別バックオフ設定</h2><p class="desc"><code>AI_BACKOFF_SEC_ITEMS</code> は "model:sec" を空白区切り。例: <code>deepseek-v4-flash-free:86400 local:1800</code>。レート制限(429)はモデル別の長バックオフ、<code>AI_BACKOFF_FAILURE_SEC</code> は一過性のプロバイダ/CLI失敗に使う短いバックオフ。</p>
+<div id="backoff-presets" style="margin-bottom:10px"><label>クイックプリセット (全モデル一括)</label>
+<button class="preset-btn" data-bpreset="1800">短 30分</button>
+<button class="preset-btn" data-bpreset="3600">1時間</button>
+<button class="preset-btn" data-bpreset="18000">5時間</button>
+<button class="preset-btn" data-bpreset="86400">24時間</button>
+</div>
+<div id="backoff-cards"></div>
+<div class="row"><div><label>AI_AGENT_BACKOFF_SEC (既定) <span id="backoff-default-val" class="badge"></span></label><input type="range" min="60" max="3600" step="60" id="backoff-default" class="range"/><input id="backoff-default-num" placeholder="600"/></div>
+<div><label>AI_BACKOFF_FAILURE_SEC (一過性障害) <span id="backoff-failure-val" class="badge"></span></label><input type="range" min="30" max="3600" step="30" id="backoff-failure" class="range"/><input id="backoff-failure-num" placeholder="300"/></div></div>
 <div class="actions"><button class="btn primary" id="backoff-save">保存</button><button class="btn" id="backoff-reload">再読込</button></div>
 <div id="backoff-msg" class="help"></div>
 </div>
@@ -451,10 +712,13 @@ canvas{width:100%;height:220px;background:#111319;border:1px solid var(--border)
 </section>
 <!-- PEAK -->
 <section id="tab-peak" style="display:none">
-<div class="card"><h2>ピーク時間帯</h2><p class="desc">ピーク中は minimax 等を優先（PEAK_HOURS_AGENT_PREFERENCE）。WINDOWS は "10-13,15-19" のようにカンマ区切り、日跨ぎ "22-02" も可。</p>
-<div class="row"><div><label>PEAK_HOURS_WINDOWS</label><input id="peak-windows" placeholder="10-13,15-19"/></div><div><label>PEAK_HOURS_TZ</label><input id="peak-tz"/></div></div>
-<div class="row"><div><label>PEAK_HOURS_PRIORITY_AGENT</label><input id="peak-priority" placeholder="codex:minimax-m3"/></div><div><label>PEAK_HOURS_AGENT_PREFERENCE</label><input id="peak-pref" placeholder="codex:minimax-m3,codex:openrouter/free,local"/></div></div>
-<div class="row"><div><label>PEAK_HOURS_AGENT_SWAP_ENABLED</label><select id="peak-swap"><option value="1">1 (有効)</option><option value="0">0 (無効)</option></select></div><div><label>PEAK_HOURS_QUEUE_GATE_ENABLED</label><select id="peak-gate"><option value="1">1 (有効)</option><option value="0">0 (無効)</option></select></div></div>
+<div class="card"><h2>ピーク時間帯</h2><p class="desc">ピーク中は minimax 等を優先（PEAK_HOURS_AGENT_PREFERENCE）。WINDOWS は "10-13,15-19" のようにカンマ区切り、日跨ぎ "22-02" も可。チェックで hours を選択し、保存時に <code>start-end</code> (end exclusive) にマージされます。</p>
+<div><label>PEAK_HOURS_WINDOWS (24h タイムライン)</label><div id="peak-timeline" class="timeline"></div><div class="help">クリックで選択。選択された時間は青。保存時に <span class="mono" id="peak-windows-preview"></span> にシリアライズ。</div></div>
+<div class="row" style="margin-top:12px"><div><label>PEAK_HOURS_TZ</label><input id="peak-tz" list="tz-list" placeholder="Asia/Tokyo"/><datalist id="tz-list"><option value="Asia/Tokyo"><option value="UTC"><option value="Asia/Shanghai"><option value="America/New_York"><option value="Europe/London"><option value="Australia/Sydney"><option value="Asia/Seoul"><option value="Europe/Berlin"><option value="America/Los_Angeles"><option value="Asia/Singapore"></datalist></div>
+<div><label>PEAK_HOURS_PRIORITY_AGENT</label><input id="peak-priority" placeholder="codex:minimax-m3"/></div></div>
+<div style="margin-top:12px"><label>PEAK_HOURS_AGENT_PREFERENCE (ドラッグで順序変更)</label><div id="peak-pref-palette" style="margin-bottom:6px"></div><ul id="peak-pref-list" class="ordered"></ul><div class="row"><div style="flex:1"><input id="peak-pref-custom" placeholder="codex:xxx"/><div class="help">AGENT_RE で検証</div></div><div style="align-self:end"><button class="btn" id="peak-pref-add">追加</button></div></div></div>
+<div class="row" style="margin-top:12px"><div><label>PEAK_HOURS_AGENT_SWAP_ENABLED</label><label class="switch"><input type="checkbox" id="peak-swap"><span class="slider"></span></label><span id="peak-swap-label" class="badge" style="margin-left:8px">1</span></div><div><label>PEAK_HOURS_QUEUE_GATE_ENABLED</label><label class="switch"><input type="checkbox" id="peak-gate"><span class="slider"></span></label><span id="peak-gate-label" class="badge" style="margin-left:8px">1</span></div></div>
+<div class="card" style="margin-top:12px;background:#111319"><h3>現在ピーク判定</h3><div class="kv"><dt>is_peak_now</dt><dd id="peak-now">-</dd><dt>now</dt><dd id="peak-now-str">-</dd><dt>windows</dt><dd id="peak-now-windows" class="mono">-</dd></div></div>
 <div class="actions"><button class="btn primary" id="peak-save">保存</button><button class="btn" id="peak-reload">再読込</button></div>
 <div id="peak-msg" class="help"></div>
 </div>
@@ -480,7 +744,18 @@ const $$ = (s)=>[...document.querySelectorAll(s)];
 let ENV_MTIME = 0;
 let SOREN_ROOT = "";
 let READ_ONLY = false;
-
+let chainState = {};
+let paletteSet = new Set();
+let backoffState = {items:[], def:"600", fail:"300"};
+let peakState = {hoursSet:new Set(), tz:"Asia/Tokyo", prefItems:[], swap:"1", gate:"1", priority:""};
+let dashTimer = null;
+const AGENT_RE = /^[A-Za-z0-9][A-Za-z0-9._:\/-]{0,127}$/;
+const BACKOFF_NAME_RE = /^[A-Za-z0-9._\/-]+$/;
+const CHAIN_PRESETS = {
+  "Latency": "local,codex:deepseek-v4-flash,codex:minimax-m3",
+  "Cost": "codex:deepseek-v4-flash-free,codex:amd-token-factory-deepseek-v4-flash,codex:openrouter/free,local,codex:deepseek-v4-flash,codex:minimax-m3",
+  "Local": "local"
+};
 function toast(msg, ms=3000){
   const el = $("#toast");
   el.textContent = msg;
@@ -498,8 +773,6 @@ function esc(s){
 }
 async function api(path, opts={}){
   const headers = opts.headers||{};
-  // token が設定されている場合: URL の ?token= (または sessionStorage) を
-  // Authorization: Bearer として送る (サーバは GET 以外はヘッダのみ受付)
   if(!headers["Authorization"]){
     let t = sessionStorage.getItem("webui_token");
     if(!t){
@@ -524,6 +797,71 @@ function fieldLabel(k){
   const m={AI_COMMON_AGENTS:"AI_COMMON_AGENTS (共通原典)",MODEL_IMPROVE_LIST:"MODEL_IMPROVE_LIST (改善)",RADIO_AGENTS:"RADIO_AGENTS",RADIO_PREPASS_AGENTS:"RADIO_PREPASS_AGENTS",COMMENT_AGENTS:"COMMENT_AGENTS",COMMENT_TRANSLATION_AGENTS:"COMMENT_TRANSLATION_AGENTS"};
   return m[k]||k;
 }
+function peakToMinutes(tok){
+  tok=String(tok).trim();
+  if(!tok) return null;
+  if(tok.includes(":")){
+    const p=tok.split(":");
+    if(p.length!==2) return null;
+    const h=parseInt(p[0].trim(),10), m=parseInt(p[1].trim(),10);
+    if(isNaN(h)||isNaN(m)) return null;
+    if(h===24&&m===0) return 1440;
+    if(h<0||h>23||m<0||m>59) return null;
+    return h*60+m;
+  }
+  if(/^\d{3,4}$/.test(tok)){
+    let h,m;
+    if(tok.length===3){h=parseInt(tok[0],10); m=parseInt(tok.slice(1),10);}
+    else{h=parseInt(tok.slice(0,2),10); m=parseInt(tok.slice(2),10);}
+    if(isNaN(h)||isNaN(m)) return null;
+    if(h===24&&m===0) return 1440;
+    if(h<0||h>23||m<0||m>59) return null;
+    return h*60+m;
+  }
+  if(/^\d{1,2}$/.test(tok)){
+    const h=parseInt(tok,10);
+    if(isNaN(h)) return null;
+    if(h===24) return 1440;
+    if(h<0||h>23) return null;
+    return h*60;
+  }
+  return null;
+}
+function windowsToHoursSet(windows){
+  const set=new Set();
+  if(!windows||!windows.trim()) return set;
+  for(const win of windows.split(",")){
+    const t=win.trim(); if(!t||!t.includes("-")) continue;
+    const [a,b]=t.split("-",2);
+    const sa=peakToMinutes(a.trim()), ea=peakToMinutes(b.trim());
+    if(sa==null||ea==null) continue;
+    const sh=Math.floor(sa/60), eh=Math.floor(ea/60);
+    if(sh===eh) continue;
+    if(sh<eh){ for(let h=sh;h<eh;h++) set.add(h%24); }
+    else { for(let h=sh;h<24;h++) set.add(h); for(let h=0;h<eh;h++) set.add(h); }
+  }
+  return set;
+}
+function hoursSetToWindows(set){
+  if(!set||set.size===0) return "";
+  const hours=[...set].sort((a,b)=>a-b);
+  let ranges=[];
+  let start=hours[0], prev=hours[0];
+  for(let i=1;i<hours.length;i++){
+    const cur=hours[i];
+    if(cur===prev+1){ prev=cur; }
+    else { ranges.push([start,prev+1]); start=cur; prev=cur; }
+  }
+  ranges.push([start,prev+1]);
+  if(ranges.length>=2 && ranges[0][0]===0 && ranges[ranges.length-1][1]===24){
+    const last=ranges.pop(); const first=ranges.shift();
+    ranges.unshift([last[0], first[1]]);
+  }
+  return ranges.map(([s,e])=>`${s}-${e}`).join(",");
+}
+function sanitizeAgent(agent){
+  return String(agent||"").toLowerCase().replace(/[^a-z0-9._-]+/g,"_").replace(/^_+|_+$/g,"");
+}
 async function loadConfig(){
   const data = await api("/api/config");
   ENV_MTIME = data.env_mtime||0;
@@ -533,85 +871,488 @@ async function loadConfig(){
   $("#soren-root").textContent = SOREN_ROOT;
   const entries = {};
   for(const e of data.entries) entries[e.key]=e;
-  // chains form
-  const form = $("#chains-form");
-  form.innerHTML = "";
+  // build paletteSet from all chain defaults/effective
+  paletteSet = new Set();
   for(const k of chainKeys()){
-    const e = entries[k]||{value:"",effective:"",in_env:false,default:""};
-    const wrap = document.createElement("div");
-    wrap.className = "card";
-    wrap.style.marginBottom="10px";
-    wrap.innerHTML = `<label>${fieldLabel(k)} ${e.in_env?'<span class="badge ok">.envあり</span>':'<span class="badge">既定継承</span>'} ${e.effective && e.effective!==e.value?`<span class="badge warn">effective</span>`:''}</label>
-      <textarea data-key="${k}" rows="2" placeholder="${esc(e.default)}">${esc(e.value)}</textarea>
-      <div class="help">effective: <span class="mono">${esc(e.effective)}</span> ${e.default?` / default: <span class="mono">${esc(e.default)}</span>`:''}</div>`;
-    form.appendChild(wrap);
+    const e=entries[k]; if(!e) continue;
+    const srcs=[e.default, e.effective, e.value].filter(Boolean);
+    for(const s of srcs) for(const p of s.split(",")){ const t=p.trim(); if(t) paletteSet.add(t); }
   }
-  // backoff
-  const bi = entries["AI_BACKOFF_SEC_ITEMS"];
-  const bd = entries["AI_AGENT_BACKOFF_SEC"];
-  const bf = entries["AI_BACKOFF_FAILURE_SEC"];
-  $("#backoff-items").value = bi?bi.value:"";
-  $("#backoff-items").placeholder = bi?bi.default:"";
-  $("#backoff-default").value = bd?bd.value:"";
-  $("#backoff-default").placeholder = bd?bd.default:"";
-  $("#backoff-failure").value = bf?bf.value:"";
-  $("#backoff-failure").placeholder = bf?bf.default:"";
-  // peak
-  const pw = entries["PEAK_HOURS_WINDOWS"], tz = entries["PEAK_HOURS_TZ"], pp = entries["PEAK_HOURS_PRIORITY_AGENT"], pr = entries["PEAK_HOURS_AGENT_PREFERENCE"], sw = entries["PEAK_HOURS_AGENT_SWAP_ENABLED"], gate = entries["PEAK_HOURS_QUEUE_GATE_ENABLED"];
-  $("#peak-windows").value = pw?pw.value:""; $("#peak-windows").placeholder = pw?pw.default:"";
-  $("#peak-tz").value = tz?tz.value:""; $("#peak-tz").placeholder = tz?tz.default:"";
-  $("#peak-priority").value = pp?pp.value:""; $("#peak-priority").placeholder = pp?pp.default:"";
-  $("#peak-pref").value = pr?pr.value:""; $("#peak-pref").placeholder = pr?pr.default:"";
-  if(sw) $("#peak-swap").value = sw.value||sw.default||"1";
-  if(gate) $("#peak-gate").value = gate.value||gate.default||"1";
+  // also add backoff names? not needed
+  renderChains(entries);
+  renderBackoff(entries);
+  renderPeak(entries);
   // health badge
   const hb = $("#health-badge");
   hb.textContent = READ_ONLY?"read-only":"read-write";
   hb.className = READ_ONLY?"badge warn":"badge ok";
   applyReadOnly();
+  // also update peak now via peak_status
+  try{ const ps=await api("/api/peak_status"); $("#peak-now").textContent=ps.is_peak_now?"ピーク中":"オフピーク"; $("#peak-now-str").textContent=ps.now_str||"-"; $("#peak-now-windows").textContent=ps.windows||"(なし)"; }catch(e){}
 }
 function applyReadOnly(){
   $$("main button").forEach(b=>{ b.disabled = READ_ONLY && b.id !== "backoff-refresh" && b.id !== "stats-refresh" && b.id !== "health-refresh" && b.id !== "chains-reload" && b.id !== "backoff-reload" && b.id !== "peak-reload"; });
-  $$("main textarea, main input").forEach(el=>{ el.disabled = READ_ONLY; });
+  $$("main input, main textarea, main select").forEach(el=>{ if(READ_ONLY) el.disabled=true; else el.disabled=false; });
+  // disable chain inherit etc will be handled in render
 }
-async function saveKeys(keysToSave){
-  if(READ_ONLY){ toast("read-only モードのため保存できません"); return; }
-  const payload = {};
-  for(const k of keysToSave){
-    const el = document.querySelector(`[data-key="${k}"]`) || document.getElementById({AI_BACKOFF_SEC_ITEMS:"backoff-items",AI_AGENT_BACKOFF_SEC:"backoff-default",AI_BACKOFF_FAILURE_SEC:"backoff-failure",PEAK_HOURS_WINDOWS:"peak-windows",PEAK_HOURS_TZ:"peak-tz",PEAK_HOURS_PRIORITY_AGENT:"peak-priority",PEAK_HOURS_AGENT_PREFERENCE:"peak-pref",PEAK_HOURS_AGENT_SWAP_ENABLED:"peak-swap",PEAK_HOURS_QUEUE_GATE_ENABLED:"peak-gate"}[k]);
-    if(!el) continue;
-    payload[k]=el.value;
+function renderChains(entries){
+  const cont=$("#chains-container");
+  cont.innerHTML="";
+  for(const k of chainKeys()){
+    const e=entries[k]||{value:"",effective:"",in_env:false,default:""};
+    const inherited = !e.value;
+    const src = inherited? e.effective : e.value;
+    const items = src? src.split(",").map(s=>s.trim()).filter(Boolean):[];
+    chainState[k]={e, inherited, items, value:e.value, effective:e.effective};
+    const wrap=document.createElement("div");
+    wrap.className="card";
+    wrap.dataset.key=k;
+    const badges = `${e.in_env?'<span class="badge ok">.envあり</span>':'<span class="badge">既定継承</span>'} ${e.effective && e.effective!==e.value?'<span class="badge warn">effective</span>':''}`;
+    wrap.innerHTML=`
+      <label>${fieldLabel(k)} ${badges}</label>
+      <div class="inherit-row"><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-inh="${k}" ${inherited?"checked":""}> 継承 (空で既定に戻す)</label><span class="help">effective: <span class="mono">${esc(e.effective)}</span></span></div>
+      <div><label>パレット (クリックで追加)</label><div class="palette" id="palette-${k}"></div></div>
+      <div><label>順序 (ドラッグ / 上下 / 削除)</label><ul class="ordered" id="list-${k}"></ul></div>
+      <div class="row"><div style="flex:1"><input id="custom-${k}" placeholder="codex:xxx または local"/><div class="help">AGENT_RE <span class="mono">^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$</span></div></div><div style="align-self:end"><button class="btn" data-add="${k}">追加</button></div></div>
+      <div style="margin-top:8px"><label>プリセット</label>
+        <button class="preset-btn" data-preset="${k}" data-val="Latency">Latency</button>
+        <button class="preset-btn" data-preset="${k}" data-val="Cost">Cost</button>
+        <button class="preset-btn" data-preset="${k}" data-val="Local">Local</button>
+      </div>
+      <div class="help">保存時はカンマ区切りにシリアライズ: <span class="mono" id="serial-${k}">${esc(items.join(","))}</span></div>
+    `;
+    cont.appendChild(wrap);
   }
-  // also handle select peak
-  if(keysToSave.includes("PEAK_HOURS_AGENT_SWAP_ENABLED")) payload["PEAK_HOURS_AGENT_SWAP_ENABLED"] = $("#peak-swap").value;
-  if(keysToSave.includes("PEAK_HOURS_QUEUE_GATE_ENABLED")) payload["PEAK_HOURS_QUEUE_GATE_ENABLED"] = $("#peak-gate").value;
+  // populate palettes and lists
+  for(const k of chainKeys()){
+    const palEl=document.getElementById(`palette-${k}`);
+    if(palEl){
+      palEl.innerHTML="";
+      for(const ag of [...paletteSet].sort()){
+        const chip=document.createElement("span");
+        chip.className="chip"; chip.textContent=ag;
+        chip.onclick=()=>{
+          if(chainState[k].inherited){ toast("継承中は編集できません。チェックを外してください"); return; }
+          if(!AGENT_RE.test(ag)){ toast(`不正なエージェント: ${ag}`); return; }
+          chainState[k].items.push(ag);
+          refreshChainList(k);
+        };
+        palEl.appendChild(chip);
+      }
+    }
+    refreshChainList(k);
+    // inherit toggle
+    const inh=document.querySelector(`[data-inh="${k}"]`);
+    if(inh) inh.onchange=(e)=>{
+      chainState[k].inherited=e.target.checked;
+      if(e.target.checked){
+        const eff=chainState[k].effective||"";
+        chainState[k].items = eff? eff.split(",").map(s=>s.trim()).filter(Boolean):[];
+      } else {
+        // keep current items but if inherited previously, start from effective
+        // leave as is
+      }
+      refreshChainList(k);
+    };
+    // custom add
+    const btn=document.querySelector(`[data-add="${k}"]`);
+    if(btn) btn.onclick=()=>{
+      if(chainState[k].inherited){ toast("継承中は編集できません"); return; }
+      const inp=document.getElementById(`custom-${k}`);
+      const v=inp.value.trim();
+      if(!v){ toast("値を入力してください"); return; }
+      if(!AGENT_RE.test(v)){ toast(`不正なエージェント: ${v}`); return; }
+      chainState[k].items.push(v);
+      inp.value="";
+      refreshChainList(k);
+    };
+    // presets
+    for(const pb of $$(`[data-preset="${k}"]`)){
+      pb.onclick=()=>{
+        if(chainState[k].inherited){ toast("継承中はプリセットを適用できません"); return; }
+        const kind=pb.getAttribute("data-val");
+        const presetStr=CHAIN_PRESETS[kind]||"";
+        if(!presetStr) return;
+        chainState[k].items = presetStr.split(",").map(s=>s.trim()).filter(Boolean);
+        refreshChainList(k);
+      };
+    }
+  }
+}
+function refreshChainList(k){
+  const ul=document.getElementById(`list-${k}`);
+  if(!ul) return;
+  const st=chainState[k];
+  ul.innerHTML="";
+  const disabled = st.inherited;
+  st.items.forEach((item, idx)=>{
+    const li=document.createElement("li");
+    li.draggable=!disabled;
+    if(disabled) li.classList.add("inherited");
+    li.dataset.idx=String(idx);
+    li.innerHTML=`<span class="drag">≡</span><span class="mono" style="flex:1">${esc(item)}</span>
+      <button class="btn" data-up="${idx}" style="padding:4px 8px">↑</button>
+      <button class="btn" data-down="${idx}" style="padding:4px 8px">↓</button>
+      <button class="btn danger" data-rem="${idx}" style="padding:4px 8px">×</button>`;
+    // buttons
+    const up=li.querySelector(`[data-up="${idx}"]`);
+    const down=li.querySelector(`[data-down="${idx}"]`);
+    const rem=li.querySelector(`[data-rem="${idx}"]`);
+    if(up) up.onclick=()=>{ if(disabled) return; if(idx>0){ const a=st.items.splice(idx,1)[0]; st.items.splice(idx-1,0,a); refreshChainList(k); }};
+    if(down) down.onclick=()=>{ if(disabled) return; if(idx<st.items.length-1){ const a=st.items.splice(idx,1)[0]; st.items.splice(idx+1,0,a); refreshChainList(k); }};
+    if(rem) rem.onclick=()=>{ if(disabled) return; st.items.splice(idx,1); refreshChainList(k); };
+    if(disabled){ up.disabled=true; down.disabled=true; rem.disabled=true; }
+    // drag
+    li.addEventListener("dragstart", (e)=>{ if(disabled){ e.preventDefault(); return; } li.classList.add("dragging"); e.dataTransfer.effectAllowed="move"; e.dataTransfer.setData("text/plain", String(idx)); });
+    li.addEventListener("dragend", ()=>li.classList.remove("dragging"));
+    ul.appendChild(li);
+  });
+  // dragover/drop on ul
+  ul.ondragover=(e)=>{ e.preventDefault(); e.dataTransfer.dropEffect="move"; };
+  ul.ondrop=(e)=>{
+    e.preventDefault();
+    if(disabled) return;
+    const fromIdx=parseInt(e.dataTransfer.getData("text/plain"),10);
+    const targetLi=e.target.closest("li");
+    if(targetLi){
+      const toIdx=parseInt(targetLi.dataset.idx,10);
+      if(!isNaN(fromIdx)&&!isNaN(toIdx)&&fromIdx!==toIdx){
+        const [moved]=st.items.splice(fromIdx,1);
+        st.items.splice(toIdx,0,moved);
+        refreshChainList(k);
+      }
+    }
+  };
+  const ser=document.getElementById(`serial-${k}`);
+  if(ser) ser.textContent = st.inherited? "(継承: "+esc(st.effective)+")" : st.items.join(",");
+}
+function renderBackoff(entries){
+  const bi=entries["AI_BACKOFF_SEC_ITEMS"];
+  const bd=entries["AI_AGENT_BACKOFF_SEC"];
+  const bf=entries["AI_BACKOFF_FAILURE_SEC"];
+  const src=(bi && bi.value)? bi.value : (bi? bi.effective : "");
+  const defVal = (bd && bd.value)? bd.value : (bd? bd.default:"600");
+  const failVal = (bf && bf.value)? bf.value : (bf? bf.default:"300");
+  // parse items
+  const rawItems = src? src.trim().split(/\s+/).filter(Boolean):[];
+  backoffState.items=[];
+  for(const it of rawItems){
+    const [name,sec]=it.split(":",2);
+    if(!name||!sec) continue;
+    if(!BACKOFF_NAME_RE.test(name)) continue;
+    const s=parseInt(sec,10);
+    if(isNaN(s)||s<60) continue;
+    backoffState.items.push({name, sec:s});
+  }
+  // ensure at least defaults exist if empty
+  if(backoffState.items.length===0 && bi && bi.default){
+    for(const it of bi.default.trim().split(/\s+/)){
+      const [name,sec]=it.split(":",2);
+      if(!name||!sec) continue;
+      backoffState.items.push({name, sec:parseInt(sec,10)||600});
+    }
+  }
+  backoffState.def=defVal; backoffState.fail=failVal; backoffState.raw=src;
+  const cont=$("#backoff-cards");
+  cont.innerHTML="";
+  backoffState.items.forEach((it, idx)=>{
+    const card=document.createElement("div");
+    card.className="backoff-card";
+    card.innerHTML=`
+      <div class="head"><span class="mono">${esc(it.name)}</span><span class="badge">${it.sec}s</span> <button class="btn danger" data-brem="${idx}" style="padding:4px 8px">削除</button></div>
+      <div class="row"><div style="flex:1"><input type="range" min="60" max="86400" step="60" value="${it.sec}" data-bslider="${idx}" class="range"/><div class="help">60〜86400秒</div></div><div style="width:120px"><input type="number" min="60" max="86400" value="${it.sec}" data-bnum="${idx}"/></div></div>
+      <div class="bar" style="margin-top:8px"><i id="bbar-${idx}" style="width:0%"></i></div><div class="help" id="bbar-text-${idx}">remaining: -</div>
+    `;
+    cont.appendChild(card);
+  });
+  // add new model row
+  const addRow=document.createElement("div");
+  addRow.className="card"; addRow.style.background="#111319";
+  addRow.innerHTML=`<label>新規モデル追加 (name:sec 形式、例: local:1800)</label><div class="row"><div style="flex:1"><input id="backoff-new-name" placeholder="モデル名"/><input id="backoff-new-sec" type="number" min="60" max="86400" placeholder="秒数" style="margin-top:6px"/></div><div style="align-self:end"><button class="btn" id="backoff-add">追加</button></div></div>`;
+  cont.appendChild(addRow);
+  // wire sliders
+  backoffState.items.forEach((it,idx)=>{
+    const sl=document.querySelector(`[data-bslider="${idx}"]`);
+    const num=document.querySelector(`[data-bnum="${idx}"]`);
+    const badge=cont.querySelectorAll(".backoff-card")[idx]?.querySelector(".badge");
+    const sync=(v)=>{
+      let n=parseInt(v,10); if(isNaN(n)||n<60) n=60; if(n>86400) n=86400;
+      it.sec=n;
+      if(sl) sl.value=String(n);
+      if(num) num.value=String(n);
+      if(badge) badge.textContent=n+"s";
+    };
+    if(sl) sl.oninput=(e)=>sync(e.target.value);
+    if(num) num.oninput=(e)=>sync(e.target.value);
+    const remBtn=document.querySelector(`[data-brem="${idx}"]`);
+    if(remBtn) remBtn.onclick=()=>{
+      backoffState.items.splice(idx,1);
+      renderBackoff(entries);
+    };
+  });
+  const addBtn=document.getElementById("backoff-add");
+  if(addBtn) addBtn.onclick=()=>{
+    const nEl=document.getElementById("backoff-new-name");
+    const sEl=document.getElementById("backoff-new-sec");
+    const name=nEl.value.trim(), secStr=sEl.value.trim();
+    if(!name||!secStr){ toast("名前と秒数を入力"); return; }
+    if(!BACKOFF_NAME_RE.test(name)){ toast("モデル名が不正: "+name); return; }
+    const sec=parseInt(secStr,10);
+    if(isNaN(sec)||sec<60){ toast("秒数は60以上"); return; }
+    if(backoffState.items.some(x=>x.name===name)){ toast("既に存在: "+name); return; }
+    backoffState.items.push({name, sec});
+    nEl.value=""; sEl.value="";
+    renderBackoff(entries);
+  };
+  // presets for all
+  for(const btn of $$("[data-bpreset]")){
+    btn.onclick=()=>{
+      const v=parseInt(btn.getAttribute("data-bpreset"),10);
+      backoffState.items.forEach(it=>it.sec=v);
+      renderBackoff(entries);
+    };
+  }
+  // def/fail sliders
+  const defSl=$("#backoff-default"), defNum=$("#backoff-default-num"), defBadge=$("#backoff-default-val");
+  const failSl=$("#backoff-failure"), failNum=$("#backoff-failure-num"), failBadge=$("#backoff-failure-val");
+  if(defSl && defNum){
+    defSl.value=backoffState.def; defNum.value=backoffState.def;
+    if(defBadge) defBadge.textContent=backoffState.def+"s";
+    const syncDef=(v)=>{ let n=parseInt(v,10); if(isNaN(n)||n<60) n=60; if(n>3600) n=3600; backoffState.def=String(n); defSl.value=String(n); defNum.value=String(n); if(defBadge) defBadge.textContent=n+"s"; };
+    defSl.oninput=(e)=>syncDef(e.target.value);
+    defNum.oninput=(e)=>syncDef(e.target.value);
+  }
+  if(failSl && failNum){
+    failSl.value=backoffState.fail; failNum.value=backoffState.fail;
+    if(failBadge) failBadge.textContent=backoffState.fail+"s";
+    const syncFail=(v)=>{ let n=parseInt(v,10); if(isNaN(n)||n<30) n=30; if(n>3600) n=3600; backoffState.fail=String(n); failSl.value=String(n); failNum.value=String(n); if(failBadge) failBadge.textContent=n+"s"; };
+    failSl.oninput=(e)=>syncFail(e.target.value);
+    failNum.oninput=(e)=>syncFail(e.target.value);
+  }
+  // update remaining bars after fetch
+  loadBackoffs();
+}
+function renderPeak(entries){
+  const pw=entries["PEAK_HOURS_WINDOWS"], tz=entries["PEAK_HOURS_TZ"], pp=entries["PEAK_HOURS_PRIORITY_AGENT"], pr=entries["PEAK_HOURS_AGENT_PREFERENCE"], sw=entries["PEAK_HOURS_AGENT_SWAP_ENABLED"], gate=entries["PEAK_HOURS_QUEUE_GATE_ENABLED"];
+  const windows = pw? pw.value : "";
+  const tzVal = tz? (tz.value||tz.default) : "Asia/Tokyo";
+  const pref = pr? (pr.value||pr.effective||pr.default) : "";
+  const swap = sw? (sw.value||sw.default||"1") : "1";
+  const gateV = gate? (gate.value||gate.default||"1") : "1";
+  const prio = pp? (pp.value||"") : "";
+  peakState.windows=windows; peakState.tz=tzVal; peakState.prefItems = pref? pref.split(",").map(s=>s.trim()).filter(Boolean):[];
+  peakState.swap=swap; peakState.gate=gateV; peakState.priority=prio;
+  peakState.hoursSet = windowsToHoursSet(windows);
+  // timeline
+  const tl=$("#peak-timeline");
+  tl.innerHTML="";
+  for(let h=0;h<24;h++){
+    const cell=document.createElement("label");
+    cell.className="tl"+(peakState.hoursSet.has(h)?" active":"");
+    cell.innerHTML=`<input type="checkbox" data-hour="${h}" ${peakState.hoursSet.has(h)?"checked":""}>${h}`;
+    cell.onclick=(e)=>{
+      // toggle
+      if(e.target.tagName==="INPUT") return;
+      const cb=cell.querySelector("input");
+      cb.checked=!cb.checked;
+      cell.classList.toggle("active", cb.checked);
+      if(cb.checked) peakState.hoursSet.add(h); else peakState.hoursSet.delete(h);
+      updatePeakPreview();
+    };
+    const cb=cell.querySelector("input");
+    if(cb) cb.onchange=(e)=>{
+      if(e.target.checked){ peakState.hoursSet.add(h); cell.classList.add("active"); } else { peakState.hoursSet.delete(h); cell.classList.remove("active"); }
+      updatePeakPreview();
+    };
+    tl.appendChild(cell);
+  }
+  updatePeakPreview();
+  // tz
+  const tzEl=$("#peak-tz"); if(tzEl) tzEl.value=tzVal;
+  if(tzEl) tzEl.oninput=(e)=>{ peakState.tz=e.target.value; };
+  // priority
+  const prEl=$("#peak-priority"); if(prEl) prEl.value=prio;
+  if(prEl) prEl.oninput=(e)=>{ peakState.priority=e.target.value.trim(); };
+  // pref palette and list
+  const pal=$("#peak-pref-palette"); pal.innerHTML="";
+  const prefPalette = new Set([...paletteSet, ...peakState.prefItems]);
+  for(const ag of [...prefPalette].sort()){
+    const chip=document.createElement("span");
+    chip.className="chip"; chip.textContent=ag;
+    chip.onclick=()=>{
+      if(!AGENT_RE.test(ag)){ toast("不正: "+ag); return; }
+      if(peakState.prefItems.includes(ag)){ toast("既に追加済み"); return; }
+      peakState.prefItems.push(ag);
+      refreshPeakPrefList();
+    };
+    pal.appendChild(chip);
+  }
+  refreshPeakPrefList();
+  const addBtn=$("#peak-pref-add");
+  if(addBtn) addBtn.onclick=()=>{
+    const inp=$("#peak-pref-custom"); const v=inp.value.trim();
+    if(!v){ toast("値を入力"); return; }
+    if(!AGENT_RE.test(v)){ toast("不正なエージェント: "+v); return; }
+    if(peakState.prefItems.includes(v)){ toast("既に追加済み"); return; }
+    peakState.prefItems.push(v); inp.value=""; refreshPeakPrefList();
+  };
+  // switches
+  const swEl=$("#peak-swap"), gateEl=$("#peak-gate");
+  if(swEl){ swEl.checked=peakState.swap==="1"; swEl.onchange=(e)=>{ peakState.swap=e.target.checked?"1":"0"; $("#peak-swap-label").textContent=peakState.swap; }; $("#peak-swap-label").textContent=peakState.swap; }
+  if(gateEl){ gateEl.checked=peakState.gate==="1"; gateEl.onchange=(e)=>{ peakState.gate=e.target.checked?"1":"0"; $("#peak-gate-label").textContent=peakState.gate; }; $("#peak-gate-label").textContent=peakState.gate; }
+}
+function updatePeakPreview(){
+  const w=hoursSetToWindows(peakState.hoursSet);
+  $("#peak-windows-preview").textContent = w||"(なし: 常にオフピーク)";
+  peakState.windows=w;
+}
+function refreshPeakPrefList(){
+  const ul=$("#peak-pref-list");
+  ul.innerHTML="";
+  peakState.prefItems.forEach((item, idx)=>{
+    const li=document.createElement("li");
+    li.draggable=true;
+    li.dataset.idx=String(idx);
+    li.innerHTML=`<span class="drag">≡</span><span class="mono" style="flex:1">${esc(item)}</span>
+      <button class="btn" data-pup="${idx}" style="padding:4px 8px">↑</button>
+      <button class="btn" data-pdown="${idx}" style="padding:4px 8px">↓</button>
+      <button class="btn danger" data-prem="${idx}" style="padding:4px 8px">×</button>`;
+    const up=li.querySelector(`[data-pup="${idx}"]`);
+    const down=li.querySelector(`[data-pdown="${idx}"]`);
+    const rem=li.querySelector(`[data-prem="${idx}"]`);
+    if(up) up.onclick=()=>{ if(idx>0){ const a=peakState.prefItems.splice(idx,1)[0]; peakState.prefItems.splice(idx-1,0,a); refreshPeakPrefList(); }};
+    if(down) down.onclick=()=>{ if(idx<peakState.prefItems.length-1){ const a=peakState.prefItems.splice(idx,1)[0]; peakState.prefItems.splice(idx+1,0,a); refreshPeakPrefList(); }};
+    if(rem) rem.onclick=()=>{ peakState.prefItems.splice(idx,1); refreshPeakPrefList(); };
+    li.addEventListener("dragstart",(e)=>{ li.classList.add("dragging"); e.dataTransfer.setData("text/plain", String(idx)); });
+    li.addEventListener("dragend",()=>li.classList.remove("dragging"));
+    ul.appendChild(li);
+  });
+  ul.ondragover=(e)=>{ e.preventDefault(); };
+  ul.ondrop=(e)=>{
+    e.preventDefault();
+    const fromIdx=parseInt(e.dataTransfer.getData("text/plain"),10);
+    const target=e.target.closest("li");
+    if(target){
+      const toIdx=parseInt(target.dataset.idx,10);
+      if(!isNaN(fromIdx)&&!isNaN(toIdx)&&fromIdx!==toIdx){
+        const [m]=peakState.prefItems.splice(fromIdx,1);
+        peakState.prefItems.splice(toIdx,0,m);
+        refreshPeakPrefList();
+      }
+    }
+  };
+}
+async function saveChains(){
+  if(READ_ONLY){ toast("read-only モードのため保存できません"); return; }
+  const payload={};
+  for(const k of chainKeys()){
+    const st=chainState[k];
+    if(!st) continue;
+    let val="";
+    if(st.inherited) val="";
+    else {
+      // validate
+      for(const ag of st.items){ if(!AGENT_RE.test(ag)){ toast(`${k} に不正なエージェント ${ag}`); return; } }
+      if(k==="AI_COMMON_AGENTS" && st.items.length===0){ toast("AI_COMMON_AGENTS は空にできません"); return; }
+      val=st.items.join(",");
+    }
+    payload[k]=val;
+  }
   try{
-    const res = await api("/api/config",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({values:payload,expected_mtime:ENV_MTIME})});
-    ENV_MTIME = res.env_mtime||ENV_MTIME;
-    $("#env-mtime").textContent = `mtime=${ENV_MTIME} ${fmtTime(ENV_MTIME)}`;
+    const res=await api("/api/config",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({values:payload,expected_mtime:ENV_MTIME})});
+    ENV_MTIME=res.env_mtime||ENV_MTIME;
+    $("#env-mtime").textContent=`mtime=${ENV_MTIME} ${fmtTime(ENV_MTIME)}`;
     toast("保存しました。10秒以内に hot-reload されます");
     await loadConfig();
-    // trigger reload signal
-    try{ await api("/api/reload",{method:"POST"}); }catch(e){ console.warn(e); }
+    try{ await api("/api/reload",{method:"POST"}); }catch(e){}
+  }catch(e){ toast(String(e),5000); }
+}
+async function saveBackoff(){
+  if(READ_ONLY){ toast("read-only"); return; }
+  const itemsStr = backoffState.items.map(it=>`${it.name}:${it.sec}`).join(" ");
+  const payload={
+    "AI_BACKOFF_SEC_ITEMS": itemsStr,
+    "AI_AGENT_BACKOFF_SEC": String(backoffState.def),
+    "AI_BACKOFF_FAILURE_SEC": String(backoffState.fail)
+  };
+  // validate
+  for(const it of backoffState.items){
+    if(!BACKOFF_NAME_RE.test(it.name)){ toast(`モデル名不正 ${it.name}`); return; }
+    if(it.sec<60){ toast(`秒数は60以上 ${it.name}`); return; }
+  }
+  if(parseInt(payload["AI_AGENT_BACKOFF_SEC"],10)<60){ toast("AI_AGENT_BACKOFF_SEC は60以上"); return; }
+  if(parseInt(payload["AI_BACKOFF_FAILURE_SEC"],10)<30){ toast("AI_BACKOFF_FAILURE_SEC は30以上"); return; }
+  try{
+    const res=await api("/api/config",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({values:payload,expected_mtime:ENV_MTIME})});
+    ENV_MTIME=res.env_mtime||ENV_MTIME;
+    $("#env-mtime").textContent=`mtime=${ENV_MTIME} ${fmtTime(ENV_MTIME)}`;
+    toast("保存しました");
+    await loadConfig();
+    try{ await api("/api/reload",{method:"POST"}); }catch(e){}
+  }catch(e){ toast(String(e),5000); }
+}
+async function savePeak(){
+  if(READ_ONLY){ toast("read-only"); return; }
+  const payload={
+    "PEAK_HOURS_WINDOWS": peakState.windows,
+    "PEAK_HOURS_TZ": peakState.tz.trim(),
+    "PEAK_HOURS_PRIORITY_AGENT": peakState.priority.trim(),
+    "PEAK_HOURS_AGENT_PREFERENCE": peakState.prefItems.join(","),
+    "PEAK_HOURS_AGENT_SWAP_ENABLED": peakState.swap,
+    "PEAK_HOURS_QUEUE_GATE_ENABLED": peakState.gate
+  };
+  // validate priority
+  if(payload["PEAK_HOURS_PRIORITY_AGENT"] && !AGENT_RE.test(payload["PEAK_HOURS_PRIORITY_AGENT"])){ toast("PRIORITY_AGENT 不正"); return; }
+  for(const ag of peakState.prefItems){ if(!AGENT_RE.test(ag)){ toast("PREFERENCE 不正: "+ag); return; } }
+  if(payload["PEAK_HOURS_TZ"] && !/^[A-Za-z0-9_+.\/:-]{1,64}$/.test(payload["PEAK_HOURS_TZ"])){ toast("TZ 不正"); return; }
+  try{
+    const res=await api("/api/config",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({values:payload,expected_mtime:ENV_MTIME})});
+    ENV_MTIME=res.env_mtime||ENV_MTIME;
+    $("#env-mtime").textContent=`mtime=${ENV_MTIME} ${fmtTime(ENV_MTIME)}`;
+    toast("保存しました");
+    await loadConfig();
+    try{ await api("/api/reload",{method:"POST"}); }catch(e){}
   }catch(e){ toast(String(e),5000); }
 }
 async function loadBackoffs(){
   const data = await api("/api/backoffs");
   const tbody = $("#backoff-table");
-  tbody.innerHTML="";
-  for(const b of data.backoffs){
-    const tr = document.createElement("tr");
-    const untilTxt = b.until?fmtTime(b.until):"-";
-    const state = b.active?'<span class="badge bad">active</span>':'<span class="badge ok">ready</span>';
-    tr.innerHTML = `<td class="mono">${esc(b.agent)}</td><td class="mono">${esc(b.sanitized)}</td><td>${untilTxt}</td><td>${b.remaining_text}</td><td>${state}</td><td>${b.active?`<button class="btn danger" data-clear="${esc(b.sanitized)}">クリア</button>`:""}</td>`;
-    tbody.appendChild(tr);
+  if(tbody){
+    tbody.innerHTML="";
+    for(const b of data.backoffs){
+      const tr = document.createElement("tr");
+      const untilTxt = b.until?fmtTime(b.until):"-";
+      const state = b.active?'<span class="badge bad">active</span>':'<span class="badge ok">ready</span>';
+      tr.innerHTML = `<td class="mono">${esc(b.agent)}</td><td class="mono">${esc(b.sanitized)}</td><td>${untilTxt}</td><td>${b.remaining_text}</td><td>${state}</td><td>${b.active?`<button class="btn danger" data-clear="${esc(b.sanitized)}">クリア</button>`:""}</td>`;
+      tbody.appendChild(tr);
+    }
+    for(const btn of $$("[data-clear]")){
+      btn.onclick = async ()=>{
+        const id = btn.getAttribute("data-clear");
+        try{ await api(`/api/backoffs/${encodeURIComponent(id)}`,{method:"DELETE"}); toast(`クリア: ${id}`); await loadBackoffs(); await loadDashboard(); }catch(e){ toast(String(e)); }
+      };
+    }
   }
-  for(const btn of $$("[data-clear]")){
-    btn.onclick = async ()=>{
-      const id = btn.getAttribute("data-clear");
-      try{ await api(`/api/backoffs/${encodeURIComponent(id)}`,{method:"DELETE"}); toast(`クリア: ${id}`); await loadBackoffs(); }catch(e){ toast(String(e)); }
-    };
+  // update backoff cards bars
+  for(const it of backoffState.items){
+    const sanit=sanitizeAgent(it.name);
+    const found=data.backoffs.find(x=>x.sanitized===sanit||x.agent===it.name);
+    const idx=backoffState.items.indexOf(it);
+    const bar=document.getElementById(`bbar-${idx}`);
+    const txt=document.getElementById(`bbar-text-${idx}`);
+    if(found && bar && txt){
+      if(found.active){
+        const pct=Math.min(100, Math.round(found.remaining / it.sec * 100));
+        bar.style.width=pct+"%";
+        bar.style.background="var(--bad)";
+        txt.textContent=`remaining ${found.remaining_text} / ${it.sec}s`;
+      } else {
+        bar.style.width="0%";
+        txt.textContent="ready";
+      }
+    }
   }
+  // dashboard bars also update via renderDashboard but we keep
 }
 async function loadStats(){
   const days = parseInt($("#stats-days").value||"7",10);
@@ -644,7 +1385,6 @@ function drawStats(days){
   const max = Math.max(1, ...days.map(d=>Math.max(d.attempt,d.winner,d.fail)));
   const padL=40, padR=10, padT=10, padB=24;
   const plotW=W-padL-padR, plotH=H-padT-padB;
-  // grid
   ctx.strokeStyle="#2a3040"; ctx.lineWidth=1;
   for(let i=0;i<=4;i++){
     const y=padT + (plotH*i/4);
@@ -659,14 +1399,12 @@ function drawStats(days){
       const val=d[c[0]]||0;
       const h=(val/max)*plotH;
       ctx.fillStyle=c[1];
-      // 3 bars per day, side by side
       const bw2=bw/3-2;
       const xx=x+ci*(bw/3);
       ctx.fillRect(xx, padT+plotH-h, bw2, h);
     });
     ctx.fillStyle="#9aa3b2"; ctx.font="10px system-ui"; ctx.fillText(d.day.slice(4), x, H-6);
   });
-  // legend
   ctx.fillStyle="#6ea8fe"; ctx.fillRect(W-160,8,10,10); ctx.fillStyle="#e6e8ee"; ctx.font="11px system-ui"; ctx.fillText("attempt",W-145,17);
   ctx.fillStyle="#7bd88f"; ctx.fillRect(W-100,8,10,10); ctx.fillStyle="#e6e8ee"; ctx.fillText("winner",W-85,17);
   ctx.fillStyle="#ff6b6b"; ctx.fillRect(W-45,8,10,10); ctx.fillStyle="#e6e8ee"; ctx.fillText("fail",W-30,17);
@@ -687,8 +1425,111 @@ async function loadHealth(){
     kv.appendChild(dt); kv.appendChild(dd);
   }
 }
+async function loadDashboard(){
+  try{
+    const [gs, is, workers, peak, backoffs, stats] = await Promise.all([
+      api("/api/game_state").catch(()=>({exists:false,state:"-",score:"-"})),
+      api("/api/improve_state").catch(()=>({status:"unknown",is_locked:false})),
+      api("/api/workers").catch(()=>({workers:[]})),
+      api("/api/peak_status").catch(()=>({is_peak_now:false,windows:"",now_str:"-"})),
+      api("/api/backoffs").catch(()=>({backoffs:[]})),
+      api("/api/stats?days=7").catch(()=>({days:[],by_agent:{}}))
+    ]);
+    renderDashboard(gs,is,workers,peak,backoffs,stats);
+  }catch(e){ console.warn("dashboard",e); }
+}
+function renderDashboard(gs,is,workers,peak,backoffs,stats){
+  // kpi game
+  const gsState = gs.exists? (gs.state||"UNKNOWN") : "no file";
+  const gsScore = gs.score!=null? gs.score : "-";
+  const gsMtime = gs.mtime? fmtTime(gs.mtime) : "-";
+  $("#kpi-game").textContent = gsState;
+  $("#kpi-game-sub").textContent = `score ${gsScore} / mtime ${gsMtime}`;
+  // improve
+  const impStatus = is.status||"idle";
+  const impLock = is.is_locked? "locked" : "unlocked";
+  const impPid = is.pid? `pid ${is.pid}` : "no pid";
+  const impAlive = is.alive? "alive" : "not alive";
+  $("#kpi-improve").textContent = impStatus;
+  $("#kpi-improve-sub").textContent = `${impLock} ${impPid} ${impAlive}`;
+  // workers
+  const wlist = workers.workers||[];
+  const aliveCount = wlist.filter(w=>w.alive).length;
+  $("#kpi-workers").textContent = `${aliveCount}/${wlist.length}`;
+  $("#kpi-workers-sub").textContent = wlist.map(w=>`${w.worker}:${w.alive?"ok":"down"}`).join(" ")||"-";
+  const wtbody=$("#dash-workers");
+  if(wtbody){
+    wtbody.innerHTML="";
+    for(const w of wlist){
+      const tr=document.createElement("tr");
+      tr.innerHTML=`<td class="mono">${esc(w.worker)}</td><td>${w.pid||"-"}</td><td>${w.alive?'<span class="badge ok">alive</span>':'<span class="badge bad">down</span>'}</td>`;
+      wtbody.appendChild(tr);
+    }
+  }
+  // peak
+  $("#kpi-peak").textContent = peak.is_peak_now? "ピーク中":"オフピーク";
+  $("#kpi-peak-sub").textContent = `${peak.windows||"-"} TZ:${peak.tz} now ${peak.now_str||"-"}`;
+  // sparkline
+  const days=stats.days||[];
+  drawSparkline(days);
+  $("#dash-spark-help").textContent = days.length? `${days.length}日分`:"データなし";
+  // backoff bars
+  const barCont=$("#dash-backoff-bars");
+  barCont.innerHTML="";
+  const active = (backoffs.backoffs||[]).filter(b=>b.active).sort((a,b)=>b.remaining-a.remaining).slice(0,5);
+  if(active.length===0) barCont.innerHTML='<div class="help">アクティブな backoff なし</div>';
+  else {
+    for(const b of active){
+      const row=document.createElement("div");
+      row.style.marginBottom="8px";
+      row.innerHTML=`<div style="display:flex;justify-content:space-between;font-size:12px"><span class="mono">${esc(b.agent)}</span><span>${esc(b.remaining_text)}</span></div><div class="bar"><i style="width:${Math.min(100, Math.round(b.remaining/86400*100))}%"></i></div>`;
+      barCont.appendChild(row);
+    }
+  }
+  // top3
+  const byAgent=stats.by_agent||{};
+  const sorted=Object.entries(byAgent).sort((a,b)=>b[1].winner - a[1].winner).slice(0,3);
+  const top3=$("#dash-top3");
+  top3.innerHTML="";
+  if(sorted.length===0) top3.innerHTML='<tr><td colspan="2" class="help">データなし</td></tr>';
+  else for(const [agent,v] of sorted){
+    const tr=document.createElement("tr");
+    tr.innerHTML=`<td class="mono">${esc(agent)}</td><td>${v.winner}</td>`;
+    top3.appendChild(tr);
+  }
+}
+function drawSparkline(days){
+  const svg=$("#dash-sparkline");
+  svg.innerHTML="";
+  if(!days.length) return;
+  const W=400, H=80, pad=6;
+  const max = Math.max(1, ...days.map(d=>Math.max(d.winner||0, d.attempt||0)));
+  const points = days.map((d,i)=>{
+    const x = pad + (W-2*pad)* i / Math.max(1,days.length-1);
+    const y = H-pad - (H-2*pad)*( (d.winner||0)/max );
+    return `${x},${y}`;
+  }).join(" ");
+  const poly=document.createElementNS("http://www.w3.org/2000/svg","polyline");
+  poly.setAttribute("points", points);
+  poly.setAttribute("fill","none");
+  poly.setAttribute("stroke","#7bd88f");
+  poly.setAttribute("stroke-width","2");
+  svg.appendChild(poly);
+  // attempt line
+  const points2 = days.map((d,i)=>{
+    const x = pad + (W-2*pad)* i / Math.max(1,days.length-1);
+    const y = H-pad - (H-2*pad)*( (d.attempt||0)/max );
+    return `${x},${y}`;
+  }).join(" ");
+  const poly2=document.createElementNS("http://www.w3.org/2000/svg","polyline");
+  poly2.setAttribute("points", points2);
+  poly2.setAttribute("fill","none");
+  poly2.setAttribute("stroke","#6ea8fe");
+  poly2.setAttribute("stroke-width","1.5");
+  poly2.setAttribute("opacity","0.7");
+  svg.appendChild(poly2);
+}
 document.addEventListener("DOMContentLoaded",()=>{
-  // tabs
   $$("#tabs button").forEach(btn=>btn.onclick=()=>{
     $$("#tabs button").forEach(b=>b.classList.remove("active"));
     btn.classList.add("active");
@@ -698,21 +1539,24 @@ document.addEventListener("DOMContentLoaded",()=>{
     if(tab==="backoff") loadBackoffs();
     if(tab==="stats") loadStats();
     if(tab==="health") loadHealth();
-    if(tab==="peak") {} // no extra
+    if(tab==="dashboard") loadDashboard();
   });
+  // initial load
   loadConfig().catch(e=>toast(String(e),5000));
   loadBackoffs().catch(()=>{});
+  loadDashboard();
+  dashTimer=setInterval(loadDashboard,10000);
   // handlers
-  $("#chains-save").onclick=()=>saveKeys(chainKeys());
+  $("#chains-save").onclick=saveChains;
   $("#chains-reload").onclick=()=>loadConfig().catch(e=>toast(String(e)));
-  $("#backoff-save").onclick=()=>saveKeys(["AI_BACKOFF_SEC_ITEMS","AI_AGENT_BACKOFF_SEC","AI_BACKOFF_FAILURE_SEC"]);
+  $("#backoff-save").onclick=saveBackoff;
   $("#backoff-reload").onclick=()=>loadConfig().catch(e=>toast(String(e)));
   $("#backoff-refresh").onclick=()=>loadBackoffs();
   $("#backoff-clear-all").onclick=async()=>{
     if(!confirm("全 backoff をクリアしますか？")) return;
-    try{ await api("/api/backoffs/clear",{method:"POST"}); toast("全クリア"); await loadBackoffs(); }catch(e){ toast(String(e)); }
+    try{ await api("/api/backoffs/clear",{method:"POST"}); toast("全クリア"); await loadBackoffs(); await loadDashboard(); }catch(e){ toast(String(e)); }
   };
-  $("#peak-save").onclick=()=>saveKeys(["PEAK_HOURS_WINDOWS","PEAK_HOURS_TZ","PEAK_HOURS_PRIORITY_AGENT","PEAK_HOURS_AGENT_PREFERENCE","PEAK_HOURS_AGENT_SWAP_ENABLED","PEAK_HOURS_QUEUE_GATE_ENABLED"]);
+  $("#peak-save").onclick=savePeak;
   $("#peak-reload").onclick=()=>loadConfig().catch(e=>toast(String(e)));
   $("#stats-refresh").onclick=()=>loadStats();
   $("#health-refresh").onclick=()=>loadHealth();
@@ -723,6 +1567,7 @@ document.addEventListener("DOMContentLoaded",()=>{
 </script>
 </body>
 </html>
+
 """
 
 
@@ -822,6 +1667,14 @@ class _Handler(BaseHTTPRequestHandler):
                     days = 7
                 days = max(1, min(30, days))
                 status = self._handle_get_stats(days)
+            elif path == "/api/game_state":
+                status = self._handle_get_game_state()
+            elif path == "/api/improve_state":
+                status = self._handle_get_improve_state()
+            elif path == "/api/workers":
+                status = self._handle_get_workers()
+            elif path == "/api/peak_status":
+                status = self._handle_get_peak_status()
             else:
                 status = 404
                 self._send_error_json(404, "not_found")
@@ -1243,6 +2096,83 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"days": day_stats, "by_agent": by_agent, "stats_dir": str(sdir)})
         return 200
 
+    def _handle_get_game_state(self) -> int:
+        path = _game_state_path(self.soren_root)
+        mtime = 0
+        try:
+            mtime = int(path.stat().st_mtime) if path.is_file() else 0
+        except Exception:
+            mtime = 0
+        data = _load_json_file(path)
+        exists = data is not None
+        if not exists:
+            data = None
+        state = ""
+        score = None
+        if isinstance(data, dict):
+            state = str(data.get("state", "") or "")
+            score = data.get("score")
+        self._send_json(200, {"exists": exists, "path": str(path), "mtime": mtime, "data": data, "state": state, "score": score})
+        return 200
+
+    def _handle_get_improve_state(self) -> int:
+        path = _improve_state_path(self.soren_root)
+        lock_path = _improve_lock_path(self.soren_root)
+        data = _load_json_file(path)
+        exists = data is not None
+        if data is None:
+            data = {}
+        is_locked = lock_path.is_file()
+        pid = None
+        alive = False
+        try:
+            pid = int(data.get("pid", 0) or 0) if isinstance(data, dict) else 0
+            if pid:
+                try:
+                    os.kill(pid, 0)
+                    alive = True
+                except ProcessLookupError:
+                    alive = False
+                except PermissionError:
+                    alive = True
+            else:
+                pid = None
+        except Exception:
+            pid = None
+            alive = False
+        mtime = 0
+        try:
+            mtime = int(path.stat().st_mtime) if path.is_file() else 0
+        except Exception:
+            mtime = 0
+        status = str(data.get("status", "idle") if isinstance(data, dict) else "idle")
+        self._send_json(200, {"exists": exists, "path": str(path), "mtime": mtime, "data": data, "status": status, "is_locked": is_locked, "pid": pid, "alive": alive})
+        return 200
+
+    def _handle_get_workers(self) -> int:
+        workers = _get_workers_status(self.soren_root)
+        self._send_json(200, {"workers": workers, "now": int(time.time())})
+        return 200
+
+    def _handle_get_peak_status(self) -> int:
+        try:
+            info = _get_peak_status(self.soren_root)
+        except Exception as exc:
+            info = {
+                "windows": "",
+                "tz": "Asia/Tokyo",
+                "swap_enabled": "1",
+                "gate_enabled": "1",
+                "preference": "",
+                "priority_agent": "",
+                "is_peak_now": False,
+                "now_minutes": None,
+                "now_str": "",
+                "error": str(exc),
+            }
+        self._send_json(200, info)
+        return 200
+
     def _handle_reload(self) -> int:
         results = _send_reload(self.soren_root)
         self._send_json(200, {"ok": True, "results": results})
@@ -1403,7 +2333,7 @@ def run_webui(
             print(f"  WARNING: {eff_soren_root}/eloop_lib.sh not found (soren_root may be wrong)")
         if not (eff_soren_root / ".env").is_file():
             print(f"  WARNING: {eff_soren_root}/.env not found (will be created on first save)")
-        print("  endpoints: /, /api/health, /api/config, /api/backoffs, /api/stats, /api/reload")
+        print("  endpoints: /, /api/health, /api/config, /api/backoffs, /api/stats, /api/reload, /api/game_state, /api/improve_state, /api/workers, /api/peak_status")
         return 0
 
     # validate soren_root
