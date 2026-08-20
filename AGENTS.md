@@ -50,3 +50,12 @@
 共通チェーンを無視し続けた実例あり）。変更時は必ず worker を完全再起動
 （`kill -TERM` → supervisor 自動 respawn）し、ログ（`prepass agents=` 等）で実測確認する。
 詳細は soviet_now の AGENTS.md「config.sh 既定値の変更は worker 完全再起動で反映する」を参照。
+
+## 7. 作業中は codex_work_indicator.sh で粒度細かく進捗を報告する
+
+Codex / Claude Code いずれのエージェントも、人手による調査・実装・検証・デプロイ等の**プロジェクト作業中は、進捗を粒度細かく可視化**するため `codex_work_indicator.sh`（VM では `/home/ubuntu/soren/codex_work_indicator.sh`、ローカルでは `games/soviet_now/codex_work_indicator.sh`）または webui `Overlay→作業中バナー`（`PUT /api/overlay/work_banner`）で作業中バナーを制御する。
+
+- **開始時**: `codex_work_indicator.sh start "タイトル" "本文"` でバナーを有効化。タイトルは 80字・本文は 240字以内。`start` はフェーズが変わるたびに再実行してタイトル/本文を更新する（例: `解析中 → 実装中 → 検証中 → デプロイ中`）。粗く `start` したまま放置しない。
+- **終了時**: 検証・再起動確認まで含めて作業が完全に終わったら `codex_work_indicator.sh stop`（または webui で `無効化`）で必ず消灯する。最終応答・制御を返す前に消し忘れがないか確認する。
+- **対象**: 人手/Codexのプロジェクト作業のみ。自動の戦略改善ループ（strategy_runner）の進捗表示とは別であり、`eventOverlay` の HTML のみを更新し `systemMsg` の表示/非表示は操作しない。
+- **VM 反映時**: `soviet_now` の変更を VM へ反映する場合も、VM 側で `codex_work_indicator.sh` を実行するか、webui の作業中バナーで同等の表示を行う。詳細は `soviet_now/AGENTS.md`「OBS Working Indicator」を参照。
