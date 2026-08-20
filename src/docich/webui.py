@@ -1393,6 +1393,238 @@ def _load_json_file(path: Path) -> Any | None:
         return None
 
 
+# --- Twitch predictions -----------------------------------------------------
+
+PREDICTION_OUTCOME_LABELS = ("建国なし", "ロシア建国(ソ連不成立)", "ソ連建国", "粛清")
+PREDICTION_ACTIONS = {"create", "resolve", "cancel", "sync"}
+PREDICTION_COMMAND_TIMEOUT_SEC = 35
+
+
+def _prediction_state_dir(soren_root: Path) -> Path:
+    """Resolve the same state directory used by the shell worker."""
+    raw = os.environ.get("TMP_STATE_DIR", "")
+    if not raw:
+        try:
+            raw = _read_dotenv_dict(soren_root).get("TMP_STATE_DIR", "").strip()
+        except Exception:
+            raw = ""
+    if raw:
+        p = Path(raw)
+        return p if p.is_absolute() else soren_root / p
+    return soren_root / "tmp/state"
+
+
+def _prediction_script_path(soren_root: Path, allow_fallback: bool = False) -> Path:
+    candidate = soren_root / "twitch_predictions.sh"
+    if candidate.is_file():
+        return candidate
+    # A local reference-run WebUI can still point at a VM-like soren_root.  Use
+    # the checked-out implementation only as a read-only fallback for status.
+    fallback = Path(__file__).resolve().parents[2] / "games/soviet_now/twitch_predictions.sh"
+    return fallback if allow_fallback and fallback.is_file() else candidate
+
+
+def _prediction_command_message(stderr: str, stdout: str = "") -> str:
+    """Return a short, secret-safe command message for the UI."""
+    for raw in reversed((stderr or "").splitlines()):
+        line = raw.strip()
+        if line:
+            return line[:300]
+    for raw in reversed((stdout or "").splitlines()):
+        line = raw.strip()
+        if line:
+            return line[:300]
+    return ""
+
+
+def _run_prediction_command(soren_root: Path, args: list[str], timeout: int = PREDICTION_COMMAND_TIMEOUT_SEC) -> dict[str, Any]:
+    """Run the allowlisted prediction wrapper without exposing environment secrets."""
+    script = _prediction_script_path(soren_root, allow_fallback=(args[:1] == ["status"]))
+    if not script.is_file():
+        return {"ok": False, "available": False, "returncode": 127, "result": None, "message": "twitch_predictions.sh not found"}
+    if any("\x00" in str(arg) for arg in args):
+        return {"ok": False, "available": True, "returncode": 400, "result": None, "message": "invalid prediction command argument"}
+    try:
+        completed = subprocess.run(
+            ["bash", str(script), *args],
+            cwd=str(soren_root),
+            capture_output=True,
+            text=True,
+            timeout=max(5, int(timeout)),
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "available": True, "returncode": 124, "result": None, "message": "prediction command timed out"}
+    except Exception as exc:
+        return {"ok": False, "available": True, "returncode": 1, "result": None, "message": f"prediction command failed: {exc}"[:300]}
+    stdout = (completed.stdout or "").strip()
+    result: Any = None
+    if stdout:
+        try:
+            result = json.loads(stdout)
+        except Exception:
+            result = None
+    # Parsed JSON is the structured result; do not echo the entire payload as
+    # a human-facing message.  Fall back to stdout only for non-JSON failures.
+    message = _prediction_command_message(completed.stderr or "", "" if result is not None else stdout)
+    return {
+        "ok": completed.returncode == 0,
+        "available": True,
+        "returncode": int(completed.returncode),
+        "result": result,
+        "message": message,
+    }
+
+
+def _prediction_clean_local_state(data: Any) -> dict[str, Any] | None:
+    if not isinstance(data, dict):
+        return None
+    allowed = {
+        "prediction_id",
+        "outcome_ids",
+        "game_num",
+        "created_at",
+        "russia_created",
+        "best_outcome",
+        "regression_reason_label",
+        "recovered",
+    }
+    clean: dict[str, Any] = {}
+    for key in allowed:
+        if key not in data:
+            continue
+        value = data[key]
+        if key == "outcome_ids":
+            if isinstance(value, list):
+                clean[key] = [str(v)[:200] for v in value[:8] if v]
+        elif key in {"prediction_id", "regression_reason_label"}:
+            clean[key] = str(value)[:300]
+        elif key in {"game_num", "created_at", "best_outcome"}:
+            try:
+                clean[key] = int(value)
+            except Exception:
+                continue
+        elif key in {"russia_created", "recovered"}:
+            clean[key] = bool(value)
+    if not clean.get("prediction_id"):
+        return None
+    return clean
+
+
+def _prediction_clean_remote_item(item: Any) -> dict[str, Any] | None:
+    if not isinstance(item, dict) or not item.get("id"):
+        return None
+    clean: dict[str, Any] = {
+        "id": str(item.get("id", ""))[:300],
+        "title": str(item.get("title", ""))[:300],
+        "status": str(item.get("status", ""))[:32],
+        "created_at": str(item.get("created_at", ""))[:64],
+        "ended_at": str(item.get("ended_at", ""))[:64],
+        "prediction_window": item.get("prediction_window"),
+        "channel_points_used": item.get("channel_points_used"),
+        "users": item.get("users"),
+        "winning_outcome_id": str(item.get("winning_outcome_id", "") or "")[:300],
+    }
+    outcomes: list[dict[str, Any]] = []
+    raw_outcomes = item.get("outcomes", [])
+    if isinstance(raw_outcomes, list):
+        for outcome in raw_outcomes[:8]:
+            if not isinstance(outcome, dict) or not outcome.get("id"):
+                continue
+            outcomes.append(
+                {
+                    "id": str(outcome.get("id", ""))[:300],
+                    "title": str(outcome.get("title", ""))[:200],
+                    "color": str(outcome.get("color", "") or "")[:32],
+                    "users": outcome.get("users"),
+                    "channel_points": outcome.get("channel_points"),
+                }
+            )
+    clean["outcomes"] = outcomes
+    return clean
+
+
+def _prediction_retry_status(soren_root: Path, operation: str) -> dict[str, Any] | None:
+    if operation not in {"create", "resolve"}:
+        return None
+    path = _prediction_state_dir(soren_root) / "prediction_retry" / f"{operation}.json"
+    data = _load_json_file(path)
+    if not isinstance(data, dict):
+        return None
+    now = int(time.time())
+    try:
+        next_retry_at = int(data.get("next_retry_at", 0) or 0)
+    except Exception:
+        next_retry_at = 0
+    try:
+        attempt = int(data.get("attempt", 0) or 0)
+    except Exception:
+        attempt = 0
+    return {
+        "operation": operation,
+        "attempt": max(0, attempt),
+        "next_retry_at": max(0, next_retry_at),
+        "remaining": max(0, next_retry_at - now),
+        "active": next_retry_at > now,
+        "http_code": str(data.get("http_code", ""))[:16],
+        "message": str(data.get("message", ""))[:240],
+    }
+
+
+def _prediction_status_snapshot(soren_root: Path) -> dict[str, Any]:
+    command = _run_prediction_command(soren_root, ["status"], timeout=20)
+    remote = command.get("result") if isinstance(command.get("result"), dict) else {}
+    state_dir = _prediction_state_dir(soren_root)
+    local = _prediction_clean_local_state(_load_json_file(state_dir / "current_prediction.json"))
+    remote_items: list[dict[str, Any]] = []
+    raw_items = remote.get("data", []) if isinstance(remote, dict) else []
+    if isinstance(raw_items, list):
+        for item in raw_items:
+            clean = _prediction_clean_remote_item(item)
+            if clean:
+                remote_items.append(clean)
+    accumulated = _load_json_file(state_dir / "accumulated_games.json")
+    if not isinstance(accumulated, dict):
+        accumulated = {}
+    acc: dict[str, Any] = {}
+    for key in ("count", "best_outcome", "russia_created", "soviet_created"):
+        if key not in accumulated:
+            continue
+        value = accumulated[key]
+        if key in {"count", "best_outcome"}:
+            try:
+                acc[key] = int(value)
+            except Exception:
+                continue
+        else:
+            acc[key] = bool(value)
+    result: dict[str, Any] = {
+        "ok": bool(remote.get("ok", False)) if remote else bool(command.get("ok")),
+        "available": bool(command.get("available", False)),
+        "enabled": bool(remote.get("enabled", False)) if remote else False,
+        "configured": bool(remote.get("configured", False)) if remote else False,
+        "explore_mode": bool(remote.get("explore_mode", False)) if remote else False,
+        "http_code": remote.get("http_code") if isinstance(remote, dict) else None,
+        "error": str(remote.get("error", ""))[:240] if isinstance(remote, dict) else "",
+        "remote": remote_items,
+        "local": local,
+        "retry": {
+            "create": _prediction_retry_status(soren_root, "create"),
+            "resolve": _prediction_retry_status(soren_root, "resolve"),
+        },
+        "accumulated": acc,
+        "worker": {
+            "alive": _find_worker_pid(soren_root, "prediction_worker") is not None,
+            "pid": _find_worker_pid(soren_root, "prediction_worker"),
+        },
+    }
+    if not result["available"]:
+        result["error"] = command.get("message", "prediction script unavailable")[:240]
+    elif not result["error"] and not command.get("ok"):
+        result["error"] = command.get("message", "prediction status unavailable")[:240]
+    return result
+
+
 def _get_workers_status(soren_root: Path) -> list[dict[str, Any]]:
     workers = [
         "radio_worker",
@@ -1599,6 +1831,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 <button data-tab="status">Status</button>
 <button data-tab="overlay">Overlay</button>
 <button data-tab="audio">Audio</button>
+<button data-tab="predictions">Predictions</button>
 <button data-tab="chains">Chains</button>
 <button data-tab="backoff">Backoff</button>
 <button data-tab="peak">Peak</button>
@@ -1738,6 +1971,23 @@ input:checked+.slider:before{transform:translateX(20px)}
 </div>
 </div>
 </section>
+<!-- PREDICTIONS -->
+<section id="tab-predictions" style="display:none">
+<div class="card"><h2>Twitch 予想管理</h2><p class="desc">自動予想ワーカーと同じ <code>twitch_predictions.sh</code> を通じて、リモートの予想状態を確認・作成・同期・解決・キャンセルします。アクセストークンは画面やAPIレスポンスへ返しません。</p>
+<div class="grid2">
+<div class="card kpi"><h3>自動予想</h3><div class="val" id="prediction-enabled">-</div><div class="subk" id="prediction-enabled-sub">-</div></div>
+<div class="card kpi"><h3>リモート予想</h3><div class="val" id="prediction-remote-count">-</div><div class="subk" id="prediction-remote-sub">-</div></div>
+<div class="card kpi"><h3>prediction worker</h3><div class="val" id="prediction-worker">-</div><div class="subk" id="prediction-worker-sub">-</div></div>
+<div class="card kpi"><h3>サイクル進捗</h3><div class="val" id="prediction-progress">-</div><div class="subk" id="prediction-progress-sub">-</div></div>
+</div>
+<div class="actions"><button class="btn" id="prediction-refresh">更新</button><button class="btn" id="prediction-sync">リモート予想を同期</button></div>
+<div id="prediction-status-msg" class="help"></div>
+</div>
+<div class="card"><h3>ローカル予想状態</h3><div id="prediction-local-state" class="kv"></div><div class="help">リモートに ACTIVE/LOCKED があるのにローカル状態がない場合は、先に「リモート予想を同期」を実行してください。</div></div>
+<div class="card"><h3>リモート予想一覧</h3><div style="overflow:auto"><table><thead><tr><th>status</th><th>title</th><th>created</th><th>window</th><th>points/users</th><th>id</th></tr></thead><tbody id="prediction-remote-table"></tbody></table></div></div>
+<div class="card"><h3>予想を作成</h3><p class="desc">通常は自動ワーカーが改善サイクルの開始時に作成します。手動作成は既存の ACTIVE/LOCKED 予想を確認してから実行してください。</p><div class="row"><div><label>game number (任意)</label><input id="prediction-game-num" type="number" min="0" max="1000000000" value="0"/></div><div style="align-self:end"><button class="btn primary" id="prediction-create">予想を作成</button></div></div><div id="prediction-create-msg" class="help"></div></div>
+<div class="card"><h3>現在の予想を操作</h3><p class="desc">解決・キャンセルは Twitch 側の予想を直ちに確定または取り消します。選択肢は自動ワーカーと同じです。</p><div id="prediction-actions" class="actions"></div><div id="prediction-actions-msg" class="help"></div></div>
+</section>
 <!-- CHAINS -->
 <section id="tab-chains" style="display:none">
 <div class="card"><h2>モデルチェーン</h2><p class="desc">カンマ区切りで優先度順。先頭が最優先で失敗時に次へフォールバック（lib/ai_generate.sh）。<code>AI_COMMON_AGENTS</code> が原典で、他は空ならそれを継承します。変更は .env へ原子書き込み → 10秒以内に hot-reload。</p>
@@ -1832,6 +2082,8 @@ let peakState = {hoursSet:new Set(), tz:"Asia/Tokyo", prefItems:[], swap:"1", ga
 let promptsState = {list:[], currentId:null, expectedMtime:0};
 let dashTimer = null;
 let audioState = {items:[], queueDir:"", dedupDir:"", dedupCount:0, worker:null};
+let predictionState = {remote:[], local:null, retry:{}, accumulated:{}, worker:null};
+const PREDICTION_LABELS = ["建国なし","ロシア建国(ソ連不成立)","ソ連建国","粛清"];
 const AGENT_RE = /^[A-Za-z0-9][A-Za-z0-9._:\/-]{0,127}$/;
 const BACKOFF_NAME_RE = /^[A-Za-z0-9._\/-]+$/;
 const CHAIN_PRESETS = {
@@ -1974,7 +2226,7 @@ async function loadConfig(){
   try{ const ps=await api("/api/peak_status"); $("#peak-now").textContent=ps.is_peak_now?"ピーク中":"オフピーク"; $("#peak-now-str").textContent=ps.now_str||"-"; $("#peak-now-windows").textContent=ps.windows||"(なし)"; }catch(e){}
 }
 function applyReadOnly(){
-  $$("main button").forEach(b=>{ b.disabled = READ_ONLY && b.id !== "backoff-refresh" && b.id !== "stats-refresh" && b.id !== "health-refresh" && b.id !== "chains-reload" && b.id !== "backoff-reload" && b.id !== "peak-reload"; });
+  $$("main button").forEach(b=>{ b.disabled = READ_ONLY && b.id !== "backoff-refresh" && b.id !== "stats-refresh" && b.id !== "health-refresh" && b.id !== "chains-reload" && b.id !== "backoff-reload" && b.id !== "peak-reload" && b.id !== "prediction-refresh"; });
   $$("main input, main textarea, main select").forEach(el=>{ if(READ_ONLY) el.disabled=true; else el.disabled=false; });
   // disable chain inherit etc will be handled in render
 }
@@ -3063,6 +3315,94 @@ async function loadAudioQueue(){
     }
   }catch(e){ toast(String(e)); }
 }
+function predictionStatusBadge(status){
+  const s=String(status||"unknown").toUpperCase();
+  const cls=(s==="ACTIVE"?"ok":(s==="LOCKED"?"warn":(s==="RESOLVED"?"ok":(s==="CANCELED"?"":"bad"))));
+  return '<span class="badge '+cls+'">'+esc(s||"-")+'</span>';
+}
+function predictionOutcomeTitle(index, local, remote){
+  const outcomes=(remote&&remote.outcomes)||[];
+  const id=local&&local.outcome_ids&&local.outcome_ids[index];
+  const found=outcomes.find(o=>o.id===id);
+  return (found&&found.title)||PREDICTION_LABELS[index]||("index="+index);
+}
+function renderPredictionState(data){
+  predictionState=data||{};
+  const remote=data.remote||[];
+  const local=data.local||null;
+  const retry=data.retry||{};
+  const worker=data.worker||{};
+  const acc=data.accumulated||{};
+  const enabled=$("#prediction-enabled");
+  enabled.textContent=data.enabled?"有効":"無効";
+  enabled.className="val "+(data.enabled?"badge ok":"badge warn");
+  const configured=data.configured?"設定済み":"未設定";
+  const http=data.http_code?("HTTP "+data.http_code):"HTTP -";
+  $("#prediction-enabled-sub").textContent=configured+" / "+http+(data.explore_mode?" / explore mode":"");
+  const active=remote.filter(p=>["ACTIVE","LOCKED"].includes(String(p.status||"").toUpperCase()));
+  $("#prediction-remote-count").textContent=String(remote.length);
+  $("#prediction-remote-sub").textContent=active.length?(active.length+"件が受付中/ロック中"):(remote.length?"受付中なし":"リモート履歴なし");
+  $("#prediction-worker").textContent=worker.alive?"稼働中":"停止";
+  $("#prediction-worker").className="val "+(worker.alive?"badge ok":"badge bad");
+  $("#prediction-worker-sub").textContent=worker.pid?("pid "+worker.pid):"pid -";
+  const count=Number(acc.count||0), max=(local&&local.game_num)?Number(local.game_num):0;
+  $("#prediction-progress").textContent=local?("best "+Number(local.best_outcome||0)):"待機";
+  $("#prediction-progress-sub").textContent=count?("蓄積 "+count+"ゲーム"+(max?" / 開始game "+max:"")):"蓄積状態なし";
+  const msg=$("#prediction-status-msg");
+  if(data.error) { msg.textContent="状態取得: "+data.error; msg.style.color="var(--bad)"; }
+  else {
+    const c=retry.create&&retry.create.active?("create retry "+retry.create.remaining+"s"):"";
+    const r=retry.resolve&&retry.resolve.active?("resolve retry "+retry.resolve.remaining+"s"):"";
+    msg.textContent=[c,r].filter(Boolean).join(" / ")||"状態を確認しました。";
+    msg.style.color="";
+  }
+  const kv=$("#prediction-local-state"); kv.innerHTML="";
+  const localRows=local?
+    [["prediction_id",local.prediction_id],["game_num",local.game_num==null?"-":local.game_num],["created_at",fmtTime(local.created_at)],["best_outcome",PREDICTION_LABELS[Number(local.best_outcome||0)]||String(local.best_outcome||0)],["russia_created",String(!!local.russia_created)],["recovered",String(!!local.recovered)]]:
+    [["state","なし"]];
+  for(const [k,v] of localRows){ const dt=document.createElement("dt"); dt.textContent=k; const dd=document.createElement("dd"); dd.textContent=String(v==null?"-":v); dd.className="mono"; kv.appendChild(dt); kv.appendChild(dd); }
+  const tb=$("#prediction-remote-table"); tb.innerHTML="";
+  if(remote.length===0){ tb.innerHTML='<tr><td colspan="6" class="help">リモート予想なし</td></tr>'; }
+  else for(const p of remote){
+    const tr=document.createElement("tr");
+    const points=p.channel_points_used==null?"-":p.channel_points_used;
+    const users=p.users==null?"-":p.users;
+    tr.innerHTML='<td>'+predictionStatusBadge(p.status)+'</td><td>'+esc(p.title||"-")+'</td><td class="mono">'+esc(p.created_at||"-")+'</td><td>'+esc(p.prediction_window==null?"-":String(p.prediction_window)+"秒")+'</td><td>'+esc(String(points))+" / "+esc(String(users))+'</td><td class="mono" style="font-size:11px">'+esc(p.id)+'</td>';
+    tb.appendChild(tr);
+  }
+  const remoteActive=active.find(p=>local&&p.id===local.prediction_id)||active[0]||null;
+  const actions=$("#prediction-actions"); actions.innerHTML="";
+  if(local){
+    for(let i=0;i<PREDICTION_LABELS.length;i++){
+      const b=document.createElement("button"); b.className="btn"; b.textContent=i+": "+predictionOutcomeTitle(i,local,remoteActive); b.disabled=READ_ONLY;
+      b.onclick=()=>runPredictionAction("resolve",{outcome_index:i}); actions.appendChild(b);
+    }
+    const cancel=document.createElement("button"); cancel.className="btn danger"; cancel.textContent="キャンセル"; cancel.disabled=READ_ONLY; cancel.onclick=()=>runPredictionAction("cancel"); actions.appendChild(cancel);
+  } else {
+    const hint=document.createElement("span"); hint.className="help"; hint.textContent=active.length?"ローカル状態がないため、先に同期してください。":"操作対象のローカル予想はありません。"; actions.appendChild(hint);
+  }
+  applyReadOnly();
+}
+async function loadPredictions(){
+  try{ const data=await api("/api/predictions"); renderPredictionState(data); }
+  catch(e){ toast(String(e),5000); const msg=$("#prediction-status-msg"); if(msg) msg.textContent=String(e); }
+}
+async function runPredictionAction(action, payload={}){
+  if(READ_ONLY){ toast("read-only モードのため予想を操作できません"); return; }
+  const labels={create:"予想を作成",sync:"リモート予想を同期",cancel:"予想をキャンセル",resolve:"予想を解決"};
+  if(action==="create" && !confirm("Twitchに新しい予想を作成しますか？")) return;
+  if(action==="cancel" && !confirm("現在の予想をキャンセルしますか？")) return;
+  if(action==="resolve"){
+    const i=Number(payload.outcome_index);
+    if(!confirm("「"+(PREDICTION_LABELS[i]||i)+"」で予想を解決しますか？")) return;
+  }
+  try{
+    const res=await api("/api/predictions/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(Object.assign({action},payload))});
+    toast((labels[action]||action)+"を実行しました");
+    const msg=$(action==="create"?"#prediction-create-msg":"#prediction-actions-msg"); if(msg) msg.textContent=res.message||"完了";
+    await loadPredictions();
+  }catch(e){ toast(String(e),5000); const msg=$(action==="create"?"#prediction-create-msg":"#prediction-actions-msg"); if(msg) msg.textContent=String(e); }
+}
 async function enqueueAudio(){
   if(READ_ONLY){ toast("read-only モードのため enqueue できません"); return; }
   const text=$("#audio-text").value;
@@ -3098,6 +3438,7 @@ document.addEventListener("DOMContentLoaded",()=>{
     else { if(statusTimer) { clearInterval(statusTimer); statusTimer=null; } }
     if(tab==="overlay") { loadOverlayEvents(); loadWorkBanner(); loadTop(); loadPreview(); }
     if(tab==="audio") loadAudioQueue();
+    if(tab==="predictions") loadPredictions();
     if(tab==="prompts") loadPrompts();
   });
   // overlay sub tabs
@@ -3189,6 +3530,13 @@ document.addEventListener("DOMContentLoaded",()=>{
   for(const btn of $$("[data-audio-preset]")){
     btn.onclick=()=>{ $("#audio-text").value=btn.getAttribute("data-audio-preset"); updateAudioTextCount(); };
   }
+  // predictions handlers
+  const predRefresh=document.getElementById("prediction-refresh");
+  if(predRefresh) predRefresh.onclick=()=>loadPredictions();
+  const predSync=document.getElementById("prediction-sync");
+  if(predSync) predSync.onclick=()=>runPredictionAction("sync");
+  const predCreate=document.getElementById("prediction-create");
+  if(predCreate) predCreate.onclick=()=>runPredictionAction("create",{game_num:Number(document.getElementById("prediction-game-num").value||0)});
   // prompts handlers
   const prRefresh=document.getElementById("prompts-refresh");
   if(prRefresh) prRefresh.onclick=()=>loadPrompts();
@@ -3330,6 +3678,8 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_get_prompt(prompt_id)
             elif path == "/api/audio/queue":
                 status = self._handle_get_audio_queue()
+            elif path == "/api/predictions":
+                status = self._handle_get_predictions()
             else:
                 status = 404
                 self._send_error_json(404, "not_found")
@@ -3441,6 +3791,8 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_post_audio_enqueue()
             elif parsed.path == "/api/audio/queue/clear":
                 status = self._handle_clear_audio_queue()
+            elif parsed.path == "/api/predictions/action":
+                status = self._handle_post_prediction_action()
             else:
                 status = 404
                 self._send_error_json(404, "not_found")
@@ -3846,6 +4198,74 @@ class _Handler(BaseHTTPRequestHandler):
     def _handle_get_workers(self) -> int:
         workers = _get_workers_status(self.soren_root)
         self._send_json(200, {"workers": workers, "now": int(time.time())})
+        return 200
+
+    def _handle_get_predictions(self) -> int:
+        try:
+            snapshot = _prediction_status_snapshot(self.soren_root)
+        except Exception as exc:
+            self._send_error_json(500, "prediction_status_failed", str(exc)[:300])
+            return 500
+        self._send_json(200, snapshot)
+        return 200
+
+    def _handle_post_prediction_action(self) -> int:
+        body, err = self._read_body()
+        if err:
+            return err
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except Exception as exc:
+            self._send_error_json(400, "invalid_json", str(exc))
+            return 400
+        if not isinstance(data, dict):
+            self._send_error_json(400, "validation_error", "body must be object")
+            return 400
+        action = str(data.get("action", "")).strip().lower()
+        if action not in PREDICTION_ACTIONS:
+            self._send_error_json(400, "invalid_action", "action must be create, resolve, cancel, or sync")
+            return 400
+        args: list[str]
+        if action == "create":
+            raw_game_num = data.get("game_num", 0)
+            try:
+                game_num = int(raw_game_num)
+            except Exception:
+                self._send_error_json(400, "validation_error", "game_num must be an integer", field="game_num")
+                return 400
+            if game_num < 0 or game_num > 1_000_000_000:
+                self._send_error_json(400, "validation_error", "game_num must be between 0 and 1000000000", field="game_num")
+                return 400
+            args = ["create", str(game_num)]
+        elif action == "resolve":
+            raw_index = data.get("outcome_index")
+            try:
+                outcome_index = int(raw_index)
+            except Exception:
+                self._send_error_json(400, "validation_error", "outcome_index must be an integer", field="outcome_index")
+                return 400
+            if outcome_index not in range(len(PREDICTION_OUTCOME_LABELS)):
+                self._send_error_json(400, "validation_error", "outcome_index must be 0..3", field="outcome_index")
+                return 400
+            args = ["resolve", str(outcome_index)]
+        elif action == "cancel":
+            args = ["cancel"]
+        else:
+            args = ["sync"]
+        result = _run_prediction_command(self.soren_root, args)
+        if not result.get("available"):
+            self._send_error_json(503, "prediction_unavailable", str(result.get("message", "prediction script unavailable"))[:300])
+            return 503
+        if not result.get("ok"):
+            self._send_error_json(502, "prediction_command_failed", str(result.get("message", "prediction command failed"))[:300])
+            return 502
+        if action in PREDICTION_ACTIONS and result.get("result") is None:
+            self._send_error_json(409, "prediction_not_operable", str(result.get("message", "prediction command made no change"))[:300])
+            return 409
+        response: dict[str, Any] = {"ok": True, "action": action, "result": result.get("result")}
+        if result.get("message"):
+            response["message"] = str(result["message"])[:300]
+        self._send_json(200, response)
         return 200
 
     def _handle_get_peak_status(self) -> int:
@@ -4776,7 +5196,7 @@ def run_webui(
             print(f"  WARNING: {eff_soren_root}/eloop_lib.sh not found (soren_root may be wrong)")
         if not (eff_soren_root / ".env").is_file():
             print(f"  WARNING: {eff_soren_root}/.env not found (will be created on first save)")
-        print("  endpoints: /, /api/health, /api/config, /api/backoffs, /api/stats, /api/reload, /api/game_state, /api/improve_state, /api/workers, /api/peak_status, /api/prompts")
+        print("  endpoints: /, /api/health, /api/config, /api/backoffs, /api/stats, /api/reload, /api/game_state, /api/improve_state, /api/workers, /api/peak_status, /api/predictions, /api/predictions/action, /api/prompts")
         return 0
 
     # validate soren_root
