@@ -108,5 +108,28 @@ install -m 0644 \
 "$ffmpeg_prefix/bin/ffmpeg" -hide_banner -h encoder=libx264 | grep -E '(^|[[:space:]])-?a53cc([[:space:]]|$)'
 "$ffmpeg_prefix/bin/ffmpeg" -hide_banner -protocols | grep -x '  rtmp'
 test -x "$caption_prefix/bin/ts2srt"
+
+# --- バージョン付きアーティファクト: MANIFEST.json 出力 ---
+docich_commit="$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || echo unknown)"
+if command -v sha256sum >/dev/null 2>&1; then
+	vf_sha256="$(sha256sum "$repo_root/native/ffmpeg/vf_docichcc.c" | awk '{print $1}')"
+else
+	vf_sha256="$(shasum -a 256 "$repo_root/native/ffmpeg/vf_docichcc.c" | awk '{print $1}')"
+fi
+build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+manifest="$build_root/MANIFEST.json"
+{
+	printf '{\n'
+	printf '  "artifact": "docich-ffmpeg",\n'
+	printf '  "docich_commit": "%s",\n' "$docich_commit"
+	printf '  "ffmpeg_commit": "%s",\n' "$ffmpeg_commit"
+	printf '  "caption_commit": "%s",\n' "$caption_commit"
+	printf '  "vf_docichcc_sha256": "%s",\n' "$vf_sha256"
+	printf '  "architecture": "%s",\n' "$build_arch"
+	printf '  "build_date": "%s",\n' "$build_date"
+	printf '  "ffmpeg_bin": "%s"\n' "$ffmpeg_prefix/bin/ffmpeg"
+	printf '}\n'
+} > "$manifest"
+echo "manifest=$manifest" >&2
 echo "architecture=$build_arch" >&2
 echo "$ffmpeg_prefix/bin/ffmpeg"

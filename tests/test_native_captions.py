@@ -35,6 +35,19 @@ class NativeCaptionSourceTests(unittest.TestCase):
         self.assertIn('"$repo_root/bin/docich" caption send prepare', poc)
         self.assertIn("verify_a53_sei.py", poc)
 
+    def test_build_writes_a_versioned_manifest(self) -> None:
+        build = (REPO_ROOT / "native/ffmpeg/build.sh").read_text(encoding="utf-8")
+        for token in (
+            "MANIFEST.json",
+            "docich_commit",
+            "vf_docichcc_sha256",
+            "architecture",
+            "build_date",
+            "ffmpeg_bin",
+        ):
+            self.assertIn(token, build)
+        self.assertIn('"artifact": "docich-ffmpeg"', build)
+
 
 if __name__ == "__main__":
     unittest.main()

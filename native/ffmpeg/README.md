@@ -13,9 +13,11 @@ socket protocol directly.
 
 - `azumag/docich` is the canonical reusable source for the filter, build recipe,
   controller, tests, and architecture documentation.
-- The current live Soren broadcast still runs the compatibility copy merged in
-  `azumag/soviet_now` PR #98. That copy and this directory must remain
-  semantically synchronized until Soren consumes a versioned docich artifact.
+- Soren production consumes versioned build artifacts of this directory. Each
+  build writes `MANIFEST.json` at the build root (docich commit, pinned
+  upstream commits, `vf_docichcc.c` sha256, architecture, build date, binary
+  path); production points its FFmpeg launcher at the artifact path recorded in
+  the manifest. No compatibility copy is maintained in soviet_now.
 - The generic docich runtime does not take control of the live Soren display,
   audio bus, or stream. See `docs/games/sorengame.md`.
 
@@ -46,6 +48,20 @@ The last output line is the custom FFmpeg path, normally:
 ```text
 /tmp/docich-cc-build/ffmpeg-install/bin/ffmpeg
 ```
+
+Use an artifact-root convention of `docich-cc-<docich commit>` so the consumed
+binary is traceable back to the source it was built from:
+
+```bash
+docich_sha="$(git -C . rev-parse --short HEAD)"
+native/ffmpeg/build.sh "/home/ubuntu/build/docich-cc-$docich_sha"
+```
+
+Each build writes `<build root>/MANIFEST.json` with the docich commit, pinned
+FFmpeg/libcaption commits, `vf_docichcc.c` sha256, architecture, build date,
+and the binary path. Consumers (e.g. `SOREN_DIRECT_STREAM_FFMPEG_BIN`) point at
+the binary named in the manifest; keep the previous build root until the new
+binary is verified, so rollback is a one-line environment change.
 
 The build fails unless it can verify `docichcc`, `x11grab`, PulseAudio input,
 `libx264`, the `a53cc` encoder option, RTMP support, and the local `ts2srt`
