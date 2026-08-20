@@ -62,9 +62,9 @@
 
 ## 8. 作業中はVMの読み上げキューにも進捗を入れる
 
-`codex_work_indicator.sh` と連動し、**VM 側の `audio-worker` に作業内容を丁寧な敬語で読み上げさせる**。`7` の作業中バナー表示と同時に、適宜 VM の読み上げキューへ進捗を enqueue する。
+`codex_work_indicator.sh` と連動し、**VM 側の `audio-worker` に作業内容を適切な丁寧さ（です・ます調で簡潔、過度なへりくだりは避ける）で読み上げさせる**。`7` の作業中バナー表示と同時に、適宜 VM の読み上げキューへ進捗を enqueue する。
 
-- **自動**: `codex_work_indicator.sh` は `start` 時に `お待たせしております。現在、タイトルの作業を丁寧に進めております。詳細としまして、本文でございます。…何卒よろしくお願い申し上げます。`（240字丸め）、`stop` 時に `作業が完了いたしました。タイトルの作業が無事に終了いたしました。…` を `lib/outbound_queue.sh` の `enqueue_audio_text` で `work_indicator` として呼ぶ。VM 上では `/home/ubuntu/soren/tmp/.comment_queue`、ローカル実行時は SSH（`ubuntu@129.146.54.105`）経由で VM 側にも enqueue する。
+- **自動**: `codex_work_indicator.sh` は `start` 時に `現在、タイトルの作業を進めています。詳細：本文。進捗があり次第お知らせします。`（240字丸め）、`stop` 時に `タイトルの作業が完了しました。ご確認ください。` を `lib/outbound_queue.sh` の `enqueue_audio_text` で `work_indicator` として呼ぶ。VM 上では `/home/ubuntu/soren/tmp/.comment_queue`、ローカル実行時は SSH（`ubuntu@129.146.54.105`）経由で VM 側にも enqueue する。へりくだりすぎる定型句（「お待たせしております」「何卒よろしくお願い申し上げます」「でございます」の連発等）は使わない。
 - **粒度（大くくり）**: バナーは粒度細かく（フェーズごと）だが、**音声は大くくり**。同一タイトルは 300s 以内、タイトルが包含される軽微な更新は 180s 以内ならスキップ（`tmp/state/work_audio_last.json` で判定）。`enqueue_audio_text` の 300s dedup でも二重抑止。`stop`（完了）は常に読む。短時間に何度も呼ばれても spam にならない。
-- **手動（直接 enqueue したい場合）**: `ssh -i ~/.ssh/id_rsa ubuntu@129.146.54.105 "cd /home/ubuntu/soren && source lib/outbound_queue.sh && enqueue_audio_text \"お待たせしております。現在、…\" work_indicator"`。ローカルの `audio_worker` が動いていなくても VM 側の `audio_worker` が再生する。手動でも丁寧な敬語で詳細に書く。
+- **手動（直接 enqueue したい場合）**: `ssh -i ~/.ssh/id_rsa ubuntu@129.146.54.105 "cd /home/ubuntu/soren && source lib/outbound_queue.sh && enqueue_audio_text \"現在、…の作業を進めています。…\" work_indicator"`。ローカルの `audio_worker` が動いていなくても VM 側の `audio_worker` が再生する。手動でもです・ます調で簡潔に書く。過度なへりくだりは避ける。
 - **対象**: `7` と同じく全てのプロジェクト作業。戦略改善ループ等の自動プロセスの進捗は対象外。
