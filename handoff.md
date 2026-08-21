@@ -4,6 +4,19 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: chat pause中の outbound queue 蓄積防止（enqueue_chat_message の no-op）を soviet_now 715251b7a → docich a37a20f で完遂、VM反映・検証（queue 0維持）まで完了。chat は pause 中。
 
+## 2026-08-21 19:xx JST — ラジオ「でございます」過剰敬語の抑制（実装・VM反映済み）
+
+- **ユーザー観測**: ラジオで「〜でございます」が異常に頻発する時がある。プロンプトで防ぎたい。
+- **実測（VM `tmp/debug/ai_dispatch` 直近7日、RADIO出力687本）**: 「でございます」入りは9本。最悪は 20260821_181529 night_snack（minimax-m3）で**1本23回**、次いで8回・6回・5回。ほぼ全て minimax-m3 由来（deepseek-free は1回×2のみ）。
+- **原因**: ペルソナ/出力ルールが「だ・である」「ね」「よ」「しまして/でして」は禁止するが**「でございます」系の過剰敬語は未指定**。「ですます調の徹底」「1文でも混じったら失格」の強い圧力で弱めモデルが過剰敬語へ暴走。既存 `_normalize_radio_tone`（radio_engine.sh）は「ね/よ」除去のみで「でございます」無対応。コメント側プロンプト（comment_response.md:129）には既に ございます 禁止があり、ラジオ側だけ抜けていた。
+- **実装**（soviet_now `acaeec49c`）:
+  - `broadcast/radio_persona.sh`: ペルソナ3ブロック（soren91/main/rollback）と `_radio_output_rules` に「でございます」「〜でございました」「〜ております」禁止＋×→○例を追加。
+  - `broadcast/radio_engine.sh` `_normalize_radio_tone`: 冒頭に機械的置換を追加（でございまして→です／でございました→でした／でございます→です／ております→ています）。`おはようございます` は影響なしを実測。
+- **検証**: bash -n（ローカル/VM）、radio系シェルテスト6本成功。実物の悪例23回（9行）が正規化関数で0行化、挨拶の保存を確認。VM反映後 `_radio_persona_block`/`_radio_output_rules` の出力に新規則が出ることを実測。radio_worker は USR1 reload 完了（19:10:33、PID 2769060 維持）。
+- **VM反映**: `.codex_deploy/backup-20260821-1930-gozaimasu-tone/` 退避後2ファイル scp、SHA256一致。docich main/handoff branch `9c1afed`（submodule bump）、VM `/home/ubuntu/docich` も同期済み。
+- **未確認**: 次回以降の実ラジオ生成での発話レベルの改善（観測は今後の debug 出力で継続）。
+- **作業ツリー訂正**: ローカル `games/soviet_now/broadcast/radio_persona.sh` に前セッションの壊れた未コミット編集（二重 else で syntax error、一人称「私」追加のボツ案）が残っていたため HEAD へ復元した上で本修正を適用。一人称規定の追加自体は引き続き未実施（19:xx調査節の「ユーザー確認待ち」のまま）。他セッションの変更中ファイル（batch_commentary.sh, comment.sh, prompts/celebration.md, comment_persona_main.md）には触れていない。
+
 ## 2026-08-21 19:1x JST — free枠(opencode)失敗率の原因特定と観測・レジリエンス実装（実装・VM反映・実測済み）
 
 - **原因（実測）**: レートリミット枯渇ではなく上流free gatewayの不安定さ。(1) `opencode/deepseek-v4-flash-free` は07:06以降ほぼ終日ダウン（CLI直接実行で `UnknownError: Unexpected server error` rc=1 を再現、30/30失敗。ユーザーが16:19の.env更新でチェーン外へ）。(2) `x-preview-f-free` / `muse-spark-1.2-contributor-free` は断続的なストリーム中断 — opencode.db のセッション記録で、失敗呼び出しは reasoning 出力後に `step-finish reason=unknown, output tokens=0` で死んでいる（成功時は reason=stop）。15〜17時にバースト、数分後には自然復旧。
