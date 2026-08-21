@@ -281,11 +281,67 @@ class TestStreamControl(unittest.TestCase):
 
     def test_stop_is_noop_when_no_processes(self):
         soren = self._soren()
+        # スクリプトが無い環境ではフォールバック経路になり、プロセスが無いため即完了
         result = webui._stop_stream_runner(soren)
         self.assertTrue(result["stopped"])
+        self.assertEqual(result["method"], "signal_fallback")
         self.assertFalse(result["escalated_kill"])
         self.assertEqual(result["remaining_pids"], [])
         self.assertTrue(webui._is_worker_paused(soren, "direct_stream"))
+
+    def test_stop_prefers_direct_stream_stop_script(self):
+        soren = self._soren()
+        calls = []
+
+        def fake_script(root):
+            calls.append(root)
+            return {"ok": True, "rc": 0, "detail": ""}
+
+        original = webui._run_direct_stream_stop_script
+        webui._run_direct_stream_stop_script = fake_script
+        try:
+            result = webui._stop_stream_runner(soren)
+        finally:
+            webui._run_direct_stream_stop_script = original
+        self.assertEqual(calls, [soren])
+        self.assertTrue(result["stopped"])
+        self.assertEqual(result["method"], "direct_stream_stop")
+        self.assertFalse(result["escalated_kill"])
+        self.assertTrue(webui._is_worker_paused(soren, "direct_stream"))
+
+    def test_stop_falls_back_to_signals_when_script_fails(self):
+        import subprocess as _subprocess
+
+        soren = self._soren()
+        original_script = webui._run_direct_stream_stop_script
+        original_pids = webui._stream_runner_pids
+        sleeper = _subprocess.Popen(["sleep", "30"])
+
+        def fake_pids(root):
+            # 子プロセスのゾンビ化 (未 wait) は OS 由来のノイズなので、
+            # 生存判定だけをスタブしてシグナル送信ロジックを検証する
+            return [sleeper.pid] if sleeper.poll() is None else []
+
+        try:
+            webui._run_direct_stream_stop_script = lambda root: {"ok": False, "detail": "stub failure"}
+            webui._stream_runner_pids = fake_pids
+            result = webui._stop_stream_runner(soren)
+            self.assertEqual(result["method"], "signal_fallback")
+            self.assertTrue(result["stopped"])
+            self.assertFalse(result["escalated_kill"])
+            self.assertEqual(result["remaining_pids"], [])
+        finally:
+            webui._run_direct_stream_stop_script = original_script
+            webui._stream_runner_pids = original_pids
+            if sleeper.poll() is None:
+                sleeper.kill()
+                sleeper.wait(timeout=5)
+
+    def test_stop_script_helper_missing_script(self):
+        soren = self._soren()
+        result = webui._run_direct_stream_stop_script(soren)
+        self.assertFalse(result["ok"])
+        self.assertIn("missing", result["detail"])
 
 
 class TestDotenvQuote(unittest.TestCase):
