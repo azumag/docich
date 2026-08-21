@@ -1,8 +1,20 @@
 # セッション引き継ぎ (handoff)
 
-> 生成日時: 2026-08-22 02:4x JST  /  作業ディレクトリ: /Users/azumag/work/docich
+> 生成日時: 2026-08-22 03:0x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: WebUIにStreamタブ（配信オンオフ・チャット停止/再開・配信設定）を追加し、VM実測（画面描画＋本番stop→startサイクル）まで完了。docich `d15f6cb`。
+> 直前セッション: WebUI配信停止ボタンを wiki「Stream-Ending」の正規手順（stdin q による RTMP 正常終了）へ準拠させ、VM反映まで完了。実配信でのstop/startテストはユーザー指示により未実施。docich `bcb4e47`。
+
+## 2026-08-22 03:0x JST — WebUI配信停止をwiki正規手順(stdin q)へ準拠（実装・VM反映・単体テスト済み／ライブstop未実施）
+
+- **ユーザー指摘**: 配信停止は送信をやめただけでは Twitch 上の配信停止にならない。wiki `Stream-Ending` を参考に停止ボタンを実装すること。**停止・開始のテストはもうしなくてよい**。
+- **問題（前実装 bcb4e47 の親コミット d15f6cb）**: stop を runner への SIGTERM＋5秒でKILLエスカレートとしていた。runner のシグナルハンドラは ffmpeg stdin へ `q` を流して RTMP 正常終了 (FCUnpublish/deleteStream) する経路だが、猶予は q15秒+SIGINT15秒=最大約30秒であり、5秒でのKILLはこの正常終了を打ち切り得た（回線断扱い→Disconnect Protection 最大90秒 LIVE 残存リスク）。
+- **実装**（docich `bcb4e47`、main/handoff branch push済み）:
+  - `_run_direct_stream_stop_script`: 第一選択として `python3 lib/direct_stream.py stop` を subprocess 実行 (cwd=soren_root、timeout 25s)。wiki記載の正規手順そのもの。
+  - スクリプト不在・失敗時のみフォールバックで runner へ SIGTERM (`direct_stream.py stop` と同等の効果)。KILL エスカレートは 35秒経過後（runner の q/SIGINT 猶予を保護）。
+  - レスポンスへ `method` (direct_stream_stop|signal_fallback) を追加。UIヘルプ文を wiki 手順の説明に更新。
+  - テスト +3件（スクリプト優先・フォールバック・missing）。macOS では TERM 死滅子プロセスがゾンビのまま `os.kill(pid,0)` 成功＝生存誤判定になるため、pid検出もスタブしてロジック検証。計89件全成功。
+- **VM反映**: `/home/ubuntu/docich` → origin/main `bcb4e47` 同期、`systemctl --user restart docich-webui` active。GET /api/stream state=live・invalid action 400・新ヘルプ文配信を確認。**pause マーカー無し＝配信には一切触れていない**。
+- **未確認（意図的に未実施）**: 実配信に対する webui 経由 stop→Twitch OFFLINE 確認、および start 復帰。次回実際にボタンを使う際に Twitch GQL / 画面で OFFLINE 化（wiki実測では約15秒）を観測すること。
 
 ## 2026-08-22 02:4x JST — WebUI Streamタブ追加（配信オンオフ・設定UI）（実装・VM反映・実測済み）
 
