@@ -291,3 +291,17 @@
 - **予想**: 直前の「48ゲーム中に建国できる？」は、 outcome「ロシア建国(ソ連不成立)」でRESOLVED。改善後に新しい同名予想（`prediction_window=1800`）が自動作成され、09:20 JST時点でACTIVE、蓄積2/48。自動作成・解決機構の再開を実測した。
 - **残る外部認証ブロッカー**: Twitchチャット送信と広告APIはInvalid OAuth/HTTP401のまま。トークン本文は取得・保存しておらず、ユーザー側で適切な権限付きトークンを更新するまで未達。YouTubeも同様に今回の対象外。
 - **検証**: AI/改善回帰36件、stat-gate/continuous改善6件、dashboard回帰25件、`bash -n`、`py_compile`、`git diff --check`が成功。VM `soren-runtime.service=active`、LiteLLM liveliness=`I'm alive!`を確認。
+
+## 2026-08-21 — TwiCa #1114 presence estimate / preview PR #1115
+
+- **リポジトリ**: `/private/tmp/twica-1114-live-presence` の `codex/issue-1114-live-presence` で実装。最終HEADは `6c4d3abde7e1b097424a887db8e79de8e7aa2024`、[preview PR #1115](https://github.com/azumag/twica/pull/1115) は未マージ。
+- **実装**: overlay接続済みroomの短期leaseを匿名集約し、`/live` に5件単位で切り下げた「overlay接続中チャネルの推定下限」を表示。認証済み設定画面からHMAC capabilityを発行し、socketごとに認可。30日更新tokenは配信者単位のlocalStorageへ保存し、明示的な `presence` 付きURLだけで復元。設定画面内のiframe/demoはtokenlessのまま。presence Workerはsingle-flight、60秒成功キャッシュ、15秒負キャッシュ、短期lease掃除を持ち、polling-only・preview・切断遅延・残留タブをUI注記。
+- **検証**: focused 4 files/99 tests、unit 285 files/3722 tests、integration 13 tests、overlay Worker typecheck、`tsc --noEmit`、対象eslint、`git diff --check`、application/auxiliary Workers build が成功。GitHub CI run `32437475806` と Claude Auto Review `32437475877` が最終HEADで成功。Workers Builds のpreview反映も成功（commit preview URLはPRコメントの記録を参照）。
+- **実パスの境界**: 匿名 `/live` はpreviewで表示まで確認。dashboardはTwitchログインへリダイレクトされ、認証済みoverlay接続→presence→`/live` 更新の正経路は未確認。資格情報を取得・保存しておらず、channel point redemptionや本番反映は実施していない。
+
+## 2026-08-21 12:15 JST — Twitch広告スヌーズのepochパース不具合修正・VM反映
+
+- **原因（本番実測）**: `lib/twitch_ads.sh:154` の `next_ad_at` パースが `RFC3339 datetime.fromisoformat` のみで、Twitch `GET /helix/channels/ads` が返す epoch 整数 `1787283212` を `Invalid isoformat` として `next_sec=0` にしていた。`twitch_ads_maybe_snooze` は `case 0 return 0` で `snooze` に到達せず、`snooze_count=3` でも `diff` 計算が常に失敗していた。`04:43 401` 時代は backoff で隠れていたが、現在の `zd7y...` トークンで `HTTP 200` になった後も `diff 1194` が閾値 `600` 外でスヌーズ待ちの間に再現した。
+- **修正**: `soviet_now` `173a72cea fix: parse Twitch ads next_ad_at as epoch or RFC3339` で epoch `1e9-4e9` を先に整数として解釈し、失敗時のみ RFC3339 へフォールバックする。`bash -n`、epoch/RFC3339/範囲外/小数のローカルパーステスト、閾値内・閾値外・count 0・dedup の `maybe_snooze` スタブテストが成功。
+- **VM反映**: `.codex_deploy/backup-20260821-ads-parse-fix/` に退避後、`lib/twitch_ads.sh` を `08812946...` でローカル/VM SHA256一致、`bash -n` 成功を確認。手動 `VM _twitch_ads_get_status` は `snooze_count=3 next_ad_at=1787283212` で `HTTP 200`、修正後パーサーで `next_sec=1787283212 diff=1194 PARSE_OK` を実測。`TWITCH_SNOOZE_THRESHOLD_SEC=2000` で拡大したスタブでは `STUB_SNOOZE_WOULD_BE_CALLED` と `dedup` 書き込みを確認し、テスト用の `last_next_ad_at` と追加ログを削除してクリーンに戻した（`tmp/debug/twitch_ads.log` は `04:43 401` の1行のみに復元、backoff は期限切れで削除済み）。現在の `next_ad 12:33 JST` まで `diff 1194>600` のため実 `POST /snooze` は正しく未発火で、約10分後に閾値内へ入った次の `speaking` で実 POST が検証される。
+- **未確認**: 閾値内での実 Twitch `POST /helix/channels/ads/schedule/snooze` の `200/204` 成功と `snooze_count 3→2`、`tmp/state/last_next_ad_at`/`last_snooze_at` の本番記録は、次回の閾値内 `speaking` 時点で観測する。
