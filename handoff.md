@@ -2,7 +2,26 @@
 
 > 生成日時: 2026-08-22 03:0x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: WebUI配信停止ボタンを wiki「Stream-Ending」の正規手順（stdin q による RTMP 正常終了）へ準拠させ、VM反映まで完了。実配信でのstop/startテストはユーザー指示により未実施。docich `bcb4e47`。
+> 直前セッション: Ralph Loop「ソ連建国できるように改善ループ自体の改善を含む戦略(strategy.py)改善」の反復1。failed_no_apply多発の根本対策（no_apply backoff上限分離・分析タイムアウト短縮）を実装・VM反映。soviet_now `8117b12e5`。
+
+## 2026-08-22 04:0x JST — 改善ループ自体の改善（no_apply backoff上限600s・Stage1タイムアウト900s）実装・VM反映済み
+
+- **Ralph Loop タスク**: 「ソ連が建国できるように、改善ループ自体の改善を含む、戦略（strategy.py) 改善をせよ。ソ連が建国できるまで終わってはならない」。ループ継続中。
+- **ゲーム現状（04:00実測）**: 蓄積33試合、ウクライナ(T13)率74%、カザフ(T14)13%、ロシア(T15)3%、**ソ連(T16)0回**。
+- **敗因パターン（実測2試合分析）**:
+  - 最高スコア試合(3293点): **T14×2まで作ったのにT15併合前にdeadline超過死**(margin -1.22)。最終盤面 `{14:2, 13:1, 11:3...}` — T14+T14→T15 の素材は揃っていた。
+  - 別試合(1534点): guard発火ターン78/96(**81%**)で延命→素材残したまま死(margin -2.7)。
+  - 共通構造: 終盤、高type育成とdeadline回避が両立できずガード延命→詰み。improve_brief の hard_signal「ロシア到達後に type16 へ進めていない」と一致。
+- **改善ループ問題（実測）**: failed_no_apply が本日5回 (07:37/19:45/20:56/22:22/00:48)。原因は wall timeout 3600s — Stage1(モデル1800s上限×2リトライ)が予算を食い潰し Stage2 実装中に死亡 (`elapsed=3704s phase=ai_retry1`)。失敗のたび指数backoffが伸び count=6=9600s待ち → 改善頻度激減。
+- **実装**（soviet_now `8117b12e5` push済み、VM反映・daemon再起動済み）:
+  - `_schedule_improve_retry_backoff`: backoffファイル行3へ `no_apply` 種別タグ追加（1〜2行目形式は不変＝既存テスト互換）。
+  - 新関数 `_improve_backoff_wait_sec`: no_apply系は `IMPROVE_NO_APPLY_BACKOFF_MAX_SEC`(既定600s)で上限キャップ、rate_limit系(タグ無し)は従来どおり300×2^min(n-1,5)=最大9600s。daemon側判定も同関数経由へ変更。
+  - eloop_improve.sh: Stage1分析専用 `IMPROVE_ANALYZE_CMD_TIMEOUT_SEC`(既定900s)を新設、Stage2突入時に `${IMPROVE_RUN_CMD_TIMEOUT_SEC:-1800}` へ復元。
+- **テスト**: tests/test_improve_retry_reliability.py +2件（no_apply上限・タグ、Stage1/Stage2タイムアウト切替位置）→ 20件全成功。test_escape_mechanisms.py 107 failures は stash比較で**クリーンHEADでも同数＝既存の無関係な失敗**（handoff L181記載どおり受入れ判定外）。test_improve_peak_hour_defer 16件成功。
+- **VM反映**: `.codex_deploy/backup-20260822-0340-noapply-backoff/` 退避後2ファイルscp、SHA256一致(eloop `168ddeed…` / improve.sh `0913626e…`)、bash -n OK。improve_daemon 完全再起動(旧2861945→新4175869)、新関数ロードと計算値実測(`_improve_backoff_wait_sec 6 no_apply`=600 ✓ / `99`=9600 ✓)。
+- **設計判断**: wall timeout延長(3600→5400)は見送り。改善中は放送系AI生成が待機(AI_RADIO_IMPROVE_WAIT_MAX_SEC=1200s上限)するため、ジョブ長期化は放送停止を悪化させる。C+B適用後の成功率観察が先。
+- **稼働中ジョブ注意**: 03:29開始のジョブ(PID 3854979)は旧スナップショット設定で動作中（新設定は次回ジョブから）。このジョブがwall timeout死しても、次回からはbackoff 600sで早期再試行される。
+- **未確認**: (1) 次回改善ジョブでの新タイムアウト・新backoffの実運用挙動。(2) 改善AIによる戦略改善の適用成功（harvest時 hash_before≠hash_now）。(3) strategy.py 本体の数値調整は改善AIサイクルへ委ねている（手動変更は regression 機構と冒頭警告「数値を書き換えるのは危険」により非推奨）。
 
 ## 2026-08-22 03:0x JST — WebUI配信停止をwiki正規手順(stdin q)へ準拠（実装・VM反映・単体テスト済み／ライブstop未実施）
 
