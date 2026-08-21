@@ -1,8 +1,17 @@
 # セッション引き継ぎ (handoff)
 
-> 生成日時: 2026-08-22 05:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
+> 生成日時: 2026-08-22 03:0x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: WebUIに予想・改善ワーカーの停止/開始APIとUIカードを実装。prediction_workerのライブstop/start実測済み。docich `2121565`。
+> 直前セッション: タイムアウト追加余裕(COMMENT 240s/RADIO 360s)へ再設定・実測、改善レーンANALYZE 900s timeout を issue #22 へ起票。
+
+## 2026-08-22 05:3x JST — タイムアウト値の更なる余裕増し＋改善レーンtimeout起票（VM反映・実測済み）
+
+- **ユーザー指示**: 「もう少し余裕入れてもいいかも」＋「改善レーンの修正はissueに」。
+- **反映**（VM `.env`）: `COMMENT_CODEX_TIMEOUT=180→240` / `RADIO_CODEX_TIMEOUT=300→360`。sourcing proof `comment=240 radio=360` ✓。radio/chat worker全インスタンスTERM→respawn（radio 879816/chat 879723）、重複全1・配信LIVE維持 ✓。improve稼働中のためsoren_loopは触らず。
+- **効果の直接実証（前段・05:17実測）**: COMMENT(amd)が173秒でok→winner＝旧90sでは死んでいた呼び出しが成功。240sで更に余裕。
+- **issue起票**: https://github.com/azumag/docich/issues/22 — ANALYZE(1):primary の900秒rc=124が2回連続(05:01:41/05:16:41実測)。**訂正・補足**: 900s自体は同日04:0xセッションが意図的に新設したStage1分析専用上限(wall 3600s食い潰し対策)。ただし実測で900s超えが連続しており、`.env` の `IMPROVE_ANALYZE_CMD_TIMEOUT_SEC` 上書きで調整可。issueへ文脈コメント済み。
+- **並行セッションとの絡み**: 05:21の `improve_daemon.paused` / `prediction_worker.paused` マーカー(source:"webui" 実測)は05:1xセッションのwebui worker停止/開始機能によるもの。improveの実ジョブ(ANALYZE#3)はpause後も孤児プロセスで稼働継続・heartbeat生きている(soren_loop harvest設計)。勝手な解除禁止。
+- **未確認**: 新値240/360での実トラフィック観測（次回生成時）。
 
 ## 2026-08-22 05:1x JST — WebUI予想・改善ワーカー停止/開始コントロール（実装・VM反映・ライブ実測済み）
 
