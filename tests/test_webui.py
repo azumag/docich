@@ -166,6 +166,127 @@ class TestValidateValue(unittest.TestCase):
         with self.assertRaises(ValueError):
             webui._validate_value("STREAM_KEY", "x" * 30)
 
+    def test_stream_settings_validators(self):
+        # allowlist/defaults 登録
+        for k in (
+            "SOREN_DIRECT_STREAM_SIZE",
+            "SOREN_DIRECT_STREAM_FPS",
+            "SOREN_DIRECT_STREAM_VIDEO_KBPS",
+            "SOREN_DIRECT_STREAM_AUDIO_KBPS",
+            "SOREN_DIRECT_STREAM_AUDIO_DELAY_MS",
+            "DOCICH_CC_ENABLED",
+        ):
+            self.assertIn(k, webui.WEBUI_ALLOWLIST)
+            self.assertIn(k, webui.DEFAULTS)
+        # size
+        webui._validate_value("SOREN_DIRECT_STREAM_SIZE", "1280x720")
+        with self.assertRaises(ValueError):
+            webui._validate_value("SOREN_DIRECT_STREAM_SIZE", "1280")  # 形式不正
+        with self.assertRaises(ValueError):
+            webui._validate_value("SOREN_DIRECT_STREAM_SIZE", "100x720")  # 幅 < 320
+        with self.assertRaises(ValueError):
+            webui._validate_value("SOREN_DIRECT_STREAM_SIZE", "4096x2160")  # 幅 > 3840
+        with self.assertRaises(ValueError):
+            webui._validate_value("SOREN_DIRECT_STREAM_SIZE", "1281x720")  # 奇数
+        # int range (lib/direct_stream.py load_config と同じ範囲)
+        webui._validate_value("SOREN_DIRECT_STREAM_FPS", "30")
+        with self.assertRaises(ValueError):
+            webui._validate_value("SOREN_DIRECT_STREAM_FPS", "0")
+        with self.assertRaises(ValueError):
+            webui._validate_value("SOREN_DIRECT_STREAM_FPS", "61")
+        webui._validate_value("SOREN_DIRECT_STREAM_VIDEO_KBPS", "4500")
+        with self.assertRaises(ValueError):
+            webui._validate_value("SOREN_DIRECT_STREAM_VIDEO_KBPS", "499")
+        with self.assertRaises(ValueError):
+            webui._validate_value("SOREN_DIRECT_STREAM_VIDEO_KBPS", "6001")
+        webui._validate_value("SOREN_DIRECT_STREAM_AUDIO_KBPS", "160")
+        with self.assertRaises(ValueError):
+            webui._validate_value("SOREN_DIRECT_STREAM_AUDIO_KBPS", "63")
+        webui._validate_value("SOREN_DIRECT_STREAM_AUDIO_DELAY_MS", "150")
+        with self.assertRaises(ValueError):
+            webui._validate_value("SOREN_DIRECT_STREAM_AUDIO_DELAY_MS", "-1")
+        with self.assertRaises(ValueError):
+            webui._validate_value("SOREN_DIRECT_STREAM_FPS", "abc")
+        # cc bool
+        webui._validate_value("DOCICH_CC_ENABLED", "0")
+        webui._validate_value("DOCICH_CC_ENABLED", "1")
+        for bad in ("true", "2", "", "yes"):
+            with self.assertRaises(ValueError):
+                webui._validate_value("DOCICH_CC_ENABLED", bad)
+
+
+class TestStreamControl(unittest.TestCase):
+    def _soren(self) -> Path:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        soren = Path(tmp.name) / "soren"
+        (soren / "tmp/state").mkdir(parents=True)
+        return soren
+
+    def _write_status(self, soren: Path, payload: dict):
+        d = soren / "tmp/state/direct_stream"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "status.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    def test_state_off_without_status_file(self):
+        soren = self._soren()
+        st = webui._get_stream_status(soren)
+        self.assertEqual(st["state"], "off")
+        self.assertFalse(st["paused"])
+        self.assertFalse(st["running"])
+
+    def test_state_live_with_alive_pid(self):
+        soren = self._soren()
+        self._write_status(
+            soren,
+            {"running": True, "pid": os.getpid(), "ffmpeg_pid": os.getpid(), "backend": "ffmpeg", "fps": 30.0},
+        )
+        st = webui._get_stream_status(soren)
+        self.assertEqual(st["state"], "live")
+        self.assertTrue(st["runner_alive"])
+        self.assertTrue(st["ffmpeg_alive"])
+
+    def test_state_off_with_dead_pid(self):
+        soren = self._soren()
+        self._write_status(soren, {"running": True, "pid": 3999999, "ffmpeg_pid": 3999998})
+        st = webui._get_stream_status(soren)
+        self.assertEqual(st["state"], "off")
+
+    def test_state_paused_marker_wins_over_stale_status(self):
+        soren = self._soren()
+        self._write_status(soren, {"running": False, "pid": None, "ffmpeg_pid": None})
+        webui._set_worker_paused(soren, "direct_stream", True)
+        st = webui._get_stream_status(soren)
+        self.assertEqual(st["state"], "paused")
+        self.assertTrue(st["paused"])
+        webui._set_worker_paused(soren, "direct_stream", False)
+        self.assertFalse(webui._is_worker_paused(soren, "direct_stream"))
+
+    def test_pause_marker_content_and_unsupported_worker(self):
+        soren = self._soren()
+        webui._set_worker_paused(soren, "chat_worker", True)
+        marker = soren / "tmp/state/chat_worker.paused"
+        self.assertTrue(marker.is_file())
+        data = json.loads(marker.read_text(encoding="utf-8"))
+        self.assertTrue(data["paused"])
+        self.assertEqual(data["source"], "webui")
+        with self.assertRaises(ValueError):
+            webui._set_worker_paused(soren, "radio_worker", True)
+
+    def test_chat_flag_in_stream_status(self):
+        soren = self._soren()
+        self.assertFalse(webui._get_stream_status(soren)["chat_paused"])
+        webui._set_worker_paused(soren, "chat_worker", True)
+        self.assertTrue(webui._get_stream_status(soren)["chat_paused"])
+
+    def test_stop_is_noop_when_no_processes(self):
+        soren = self._soren()
+        result = webui._stop_stream_runner(soren)
+        self.assertTrue(result["stopped"])
+        self.assertFalse(result["escalated_kill"])
+        self.assertEqual(result["remaining_pids"], [])
+        self.assertTrue(webui._is_worker_paused(soren, "direct_stream"))
+
 
 class TestDotenvQuote(unittest.TestCase):
     def test_plain_value_unquoted(self):
@@ -510,6 +631,76 @@ class TestHttpHandlers(unittest.TestCase):
         status, data = self._request("POST", "/api/predictions/action", {"action": "shell"})
         self.assertEqual(status, 400)
         self.assertEqual(data["error"], "invalid_action")
+
+    def test_stream_get_off_state(self):
+        status, data = self._request("GET", "/api/stream")
+        self.assertEqual(status, 200)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["state"], "off")
+        self.assertFalse(data["paused"])
+        self.assertFalse(data["chat_paused"])
+
+    def test_stream_stop_creates_marker_and_start_clears_it(self):
+        webui.STREAM_START_WAIT_SEC = 1
+        try:
+            # stop: プロセスなし → 即完了、マーカー作成
+            status, data = self._request("POST", "/api/stream", {"action": "stop"})
+            self.assertEqual(status, 200)
+            self.assertTrue(data["ok"])
+            self.assertEqual(data["state"], "paused")
+            self.assertTrue((self.soren / "tmp/state/direct_stream.paused").is_file())
+            # start: supervisor がいないので off のまま (マーカーは消える)
+            status, data = self._request("POST", "/api/stream", {"action": "start"})
+            self.assertEqual(status, 200)
+            self.assertFalse((self.soren / "tmp/state/direct_stream.paused").exists())
+            self.assertEqual(data["state"], "off")
+            self.assertFalse(data["ok"])
+            self.assertTrue(data.get("hint"))
+        finally:
+            webui.STREAM_START_WAIT_SEC = 20
+
+    def test_stream_invalid_action_rejected(self):
+        status, data = self._request("POST", "/api/stream", {"action": "restart"})
+        self.assertEqual(status, 400)
+        self.assertEqual(data["error"], "invalid_action")
+        status, data = self._request("POST", "/api/stream", {})
+        self.assertEqual(status, 400)
+
+    def test_chat_toggle_roundtrip(self):
+        status, data = self._request("POST", "/api/chat", {"action": "stop"})
+        self.assertEqual(status, 200)
+        self.assertTrue(data["chat_paused"])
+        self.assertTrue((self.soren / "tmp/state/chat_worker.paused").is_file())
+        status, data = self._request("GET", "/api/stream")
+        self.assertTrue(data["chat_paused"])
+        status, data = self._request("POST", "/api/chat", {"action": "start"})
+        self.assertEqual(status, 200)
+        self.assertFalse(data["chat_paused"])
+        self.assertFalse((self.soren / "tmp/state/chat_worker.paused").exists())
+
+    def test_chat_invalid_action_rejected(self):
+        status, data = self._request("POST", "/api/chat", {"action": "pause"})
+        self.assertEqual(status, 400)
+        self.assertEqual(data["error"], "invalid_action")
+
+    def test_stream_and_chat_read_only_enforced(self):
+        webui._Handler.read_only = True
+        try:
+            status, _ = self._request("POST", "/api/stream", {"action": "stop"})
+            self.assertEqual(status, 403)
+            status, _ = self._request("POST", "/api/chat", {"action": "stop"})
+            self.assertEqual(status, 403)
+            self.assertFalse((self.soren / "tmp/state/direct_stream.paused").exists())
+            self.assertFalse((self.soren / "tmp/state/chat_worker.paused").exists())
+        finally:
+            webui._Handler.read_only = False
+
+    def test_index_includes_stream_tab(self):
+        self.client.request("GET", "/")
+        res = self.client.getresponse()
+        body = res.read().decode("utf-8")
+        self.assertIn('data-tab="stream"', body)
+        self.assertIn("/api/stream", body)
 
     def test_audio_enqueue_and_list(self):
         status, data = self._request("POST", "/api/audio/enqueue", {"text": "読み上げテストです", "source": "webui_test"})
