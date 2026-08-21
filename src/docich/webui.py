@@ -13,6 +13,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.parse
@@ -122,8 +123,13 @@ AUDIO_QUEUE_PREVIEW_LEN = 120
 # ある間 supervisor は当該 worker を起動・respawn しない。
 TOGGLEABLE_WORKERS = ("direct_stream", "chat_worker")
 STREAM_WORKER = "direct_stream"
-STREAM_STOP_WAIT_SEC = 10
+# フォールバック信号経路の総猶予。runner の正常終了チェーンは
+# stdin q (15秒) → SIGINT (15秒) の最大約30秒+起動分を要し得るため、
+# KILL への切替はその猶予が尽きた後 (35秒経過後) のみとする。
+STREAM_STOP_WAIT_SEC = 45
+STREAM_STOP_GRACE_BEFORE_KILL_SEC = 35
 STREAM_START_WAIT_SEC = 20
+STREAM_STOP_SCRIPT_TIMEOUT_SEC = 25
 STREAM_SIZE_RE = re.compile(r"^([0-9]{2,5})x([0-9]{2,5})$")
 
 # lib/direct_stream.py load_config の検証範囲と一致させる
@@ -1968,36 +1974,75 @@ def _stream_runner_pids(soren_root: Path) -> list[int]:
     return pids
 
 
+def _run_direct_stream_stop_script(soren_root: Path) -> dict[str, Any]:
+    """wiki「Stream-Ending」の正規手順: `python3 lib/direct_stream.py stop`。
+
+    runner へ SIGTERM が送られ、runner のシグナルハンドラ
+    (_graceful_stop_ffmpeg) が FFmpeg stdin へ `q` を流して RTMP を正常終了
+    (FCUnpublish / deleteStream) させる。これが Twitch 側に「意図的な配信終了」
+    として伝わり、即座に OFF LINE になる。単純な強制切断は回線断扱いになり
+    Disconnect Protection の待ち時間が生じるため、第一選択は必ずこれ。
+    """
+    script = soren_root / "lib/direct_stream.py"
+    if not script.is_file():
+        return {"ok": False, "detail": f"missing script: {script}"}
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(script), "stop"],
+            cwd=str(soren_root),
+            capture_output=True,
+            text=True,
+            timeout=STREAM_STOP_SCRIPT_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "detail": f"timeout after {STREAM_STOP_SCRIPT_TIMEOUT_SEC}s"}
+    except OSError as exc:
+        return {"ok": False, "detail": str(exc)[:200]}
+    detail = ((proc.stderr or "") + "\n" + (proc.stdout or "")).strip()
+    return {"ok": proc.returncode == 0, "rc": proc.returncode, "detail": detail[-300:]}
+
+
 def _stop_stream_runner(soren_root: Path) -> dict[str, Any]:
-    """pause マーカー作成後、runner へ SIGTERM (graceful)。猶予内に止まらなければ KILL へ切替。"""
+    """pause マーカー作成後、配信を明示終了する。
+
+    第一選択は `_run_direct_stream_stop_script` (stdin q による RTMP 正常終了)。
+    スクリプトが使えない・失敗した場合のみ、同等の効果を持つ runner への
+    SIGTERM 送信にフォールバックする (runner のハンドラが q を ffmpeg へ転送する)。
+    SIGKILL へのエスカレートは runner の q/SIGINT 猶予 (最大約30秒) を守るため
+    STREAM_STOP_GRACE_BEFORE_KILL_SEC 経過後のみ。
+    """
     _set_worker_paused(soren_root, STREAM_WORKER, True)
-    deadline = time.monotonic() + STREAM_STOP_WAIT_SEC
+    script_result = _run_direct_stream_stop_script(soren_root)
+    method = "direct_stream_stop" if script_result.get("ok") else "signal_fallback"
     escalated = False
-    while time.monotonic() < deadline:
-        alive = [p for p in _stream_runner_pids(soren_root) if _is_pid_alive(p)]
-        if not alive:
-            break
-        if escalated:
+
+    def alive_pids() -> list[int]:
+        return [p for p in _stream_runner_pids(soren_root) if _is_pid_alive(p)]
+
+    remaining = alive_pids()
+    if remaining or not script_result.get("ok"):
+        deadline = time.monotonic() + STREAM_STOP_WAIT_SEC
+        kill_after = deadline - (STREAM_STOP_WAIT_SEC - STREAM_STOP_GRACE_BEFORE_KILL_SEC)
+        while time.monotonic() < deadline:
+            alive = alive_pids()
+            if not alive:
+                break
+            sig = signal.SIGKILL if escalated else signal.SIGTERM
             for p in alive:
                 try:
-                    os.kill(p, signal.SIGKILL)
+                    os.kill(p, sig)
                 except (ProcessLookupError, PermissionError):
                     pass
-        else:
-            for p in alive:
-                try:
-                    os.kill(p, signal.SIGTERM)
-                except (ProcessLookupError, PermissionError):
-                    pass
-        time.sleep(0.5)
-        # 猶予の半分を過ぎたら強制終了へ切り替え
-        if not escalated and time.monotonic() > deadline - STREAM_STOP_WAIT_SEC / 2:
-            escalated = True
-    remaining = [p for p in _stream_runner_pids(soren_root) if _is_pid_alive(p)]
+            time.sleep(0.5)
+            if not escalated and time.monotonic() > kill_after:
+                escalated = True
+        remaining = alive_pids()
     return {
         "stopped": not remaining,
+        "method": method,
         "escalated_kill": escalated,
         "remaining_pids": remaining,
+        "stop_detail": str(script_result.get("detail", "")),
     }
 
 
@@ -2220,7 +2265,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 <button class="btn" id="stream-refresh">更新</button>
 <span id="stream-msg" class="help"></span>
 </div>
-<div class="help">stop は <code>tmp/state/direct_stream.paused</code> マーカー作成後に runner へ SIGTERM (graceful、猶予後半で KILL)。start はマーカー削除後、supervisor の自動再起動 (約3秒周期) を最大20秒待ちます。supervisor (soren-runtime) 停止中は自動起動しません。</div>
+<div class="help">stop は <code>tmp/state/direct_stream.paused</code> マーカー作成後、<code>lib/direct_stream.py stop</code> を実行し FFmpeg stdin へ <code>q</code> を送って RTMP 正常終了 (FCUnpublish / deleteStream) させます。Twitch が「意図的な終了」として即座に OFF LINE にするための正規手順 (wiki: Stream-Ending)。強制切断だと回線断扱いになり LIVE が最大90秒残ります。start はマーカー削除後、supervisor の自動再起動 (約3秒周期) を最大20秒待ちます。</div>
 </div>
 <div class="card"><h3>チャット送信の停止 / 再開</h3><p class="desc"><code>tmp/state/chat_worker.paused</code> で制御。停止中は IRC 受信・コメント生成・投稿キュー消費が止まり、新規 enqueue も積まれません (worker が自己 park / marker 削除で自動復帰)。</p>
 <div class="actions">
@@ -5152,6 +5197,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "action": action,
                     "state": after.get("state"),
                     "stopped": result.get("stopped"),
+                    "method": result.get("method"),
                     "escalated_kill": result.get("escalated_kill"),
                     "remaining_pids": result.get("remaining_pids"),
                 },
