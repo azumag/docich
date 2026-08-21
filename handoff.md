@@ -1,8 +1,22 @@
 # セッション引き継ぎ (handoff)
 
-> 生成日時: 2026-08-22 04:4x JST  /  作業ディレクトリ: /Users/azumag/work/docich
+> 生成日時: 2026-08-22 05:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: 正午監査ワーカー(stream_noon_audit)を実装・VM反映。次の正午(JST)発火と定常サイクル化が未観測。docich `0ae8436` / soviet_now `969078497`。
+> 直前セッション: WebUIに予想・改善ワーカーの停止/開始APIとUIカードを実装。prediction_workerのライブstop/start実測済み。docich `2121565`。
+
+## 2026-08-22 05:1x JST — WebUI予想・改善ワーカー停止/開始コントロール（実装・VM反映・ライブ実測済み）
+
+- **ユーザー要件**: webuiに予想ワーカー(prediction_worker)・改善ワーカー(improve_daemon)の停止/開始を追加したい。
+- **既存機構の確認（実測）**: supervisor (`start_all.sh`) の pause gate — `tmp/state/<worker名>.paused` マーカーがある間そのworkerを起動しない・死んでもrespawnしない (start_all.sh `_worker_paused`)。prediction_worker.sh は起動時マーカー自己検知でexit。improve_daemon.sh にはマーカー自己検知が**ない**（supervisor経由なら効く）。
+- **実装**（docich `2121565`、main/handoff branch push済み、VM `/home/ubuntu/docich` 同期・`docich-webui` 再起動済み）:
+  - `POST /api/workers {worker: prediction_worker|improve_daemon, action: start|stop}`: **stop** = マーカー作成 → pidfileのPIDへSIGTERM（`_pid_matches_worker_process` cmdlineガード、macOSは許可）→ 最大10秒pidfile除去待ち。**start** = マーカー削除 → supervisor respawn (pidfile出現+生存) を最大30秒待ち、未復帰ならhint返却。
+  - `GET /api/workers` 各要素へ `paused` フィールド追加、status に "paused" 値。TOGGLEABLE_WORKERS に2workerを追加。
+  - improve_daemon stop 時、improve_state.json status=running+PID生存なら `job_continues_in_background: true` を返す（ジョブ子プロセスは孤児化してバックグラウンド継続、harvestはsoren_loopが担うため結果は失われない設計）。
+  - UI: Streamタブ内に「予想・改善ワーカーの停止 / 開始」カード（状態badge/pid/start/stopボタン、confirm文はworker毎に分岐）。StatusタブのWorkers詳細表もpaused badge対応。10秒自動更新。
+- **テスト**: `tests/test_webui.py` +8件（stop/start往復、job_continues通知、invalid worker/action 400、read_only 403、pausedフィールド、UI要素、cmdlineガードのunknown workerフォールトクローズ）→ 計97件全成功。
+- **VM反映・ライブ実測**（05:11-05:12 JST）: GET /api/workers pausedフィールド配信 ✓。invalid値400 ✓。index にwc-rows ✓。**prediction_worker ライブサイクル**: stop=term_sent/stopped true・マーカー作成・プロセス消滅 ✓ → 10秒経過してもsupervisor respawn無し ✓ → start=新PID 734365で復帰、workerログ「起動 (PID=734365, game=44234)」✓。
+- **未確認**: (1) improve_daemonのライブstop/start（実施時に改善ジョブstatus=running稼働中のため意図的に未実施。機構は同一・単体テスト済み。ジョブ稼働中の停止はジョブがバックグラウンド継続する点をUI/レスポンスで警告）。(2) supervisor不在時のstart hint表示の画面確認。(3) 改善ジョブ稼働中の実際の孤児化→soren_loop harvestの運用観測。
+- **備考**: レビュー委任サブエージェントは2回とも空回答（handoff既知事象）のためメインループでセルフレビュー実施。作業中バナー開始/終了・音声enqueueを実施済み。
 
 ## 2026-08-22 04:4x JST — 配信開始位相の正午監査ワーカー新設（実装・VM反映・テスト済み／実正午発火は未観測）
 
