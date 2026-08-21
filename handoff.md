@@ -61,12 +61,24 @@
 - **VM反映**: `/home/ubuntu/soren/.codex_deploy/backup-20260821-0635-model-routing/` に対象ファイルと誤転送されたルート直下の一時ファイルを退避後、`strategy/ai.sh`、`lib/ai_generate.sh`、`broadcast/radio_engine.sh`、`broadcast/radio_factcheck.sh`、`core/config.sh` を反映。5ファイルのSHA集合はローカルと一致し、`bash -n` 成功。`soren-runtime.service` は完全停止→起動を2回行い、現在 active。再起動後のVMヘルパー実測は `muse=opencode-go/muse-spark-1.2-contributor`、`free=opencode/deepseek-v4-flash-free`、`paid=deepseek-v4-flash`。workerはsupervisor配下で復帰。
 - **未確認**: 実プロバイダを追加課金するライブ呼出しは行っていない。次の実呼出しでStatsの改善ラベルと `resolved_model` が増えること、muse失敗時だけDeepSeekへ進むことは未観測。既存チャットpause状態は今回変更していない。
 
-## 2026-08-21 16:2x JST — show_status_g グラフの彩色化（実装・VM反映済み）
+## 2026-08-21 17:2x JST — show_status_g グラフ彩色が配信に届いていなかった修正（実装・VM反映・画面実測済み）
+
+- **ユーザー観測**: 「show status g のグラフがカラフルになったはずなのに変わって見えない」→ **観測は正しかった**。
+- **原因（実測）**: 前セッション（16:2x）の彩色化は `status_dashboard.py` / `generate_status_overlay.sh` までで、`tmp/state/status_overlay.html` には確かに勾配色spanが生成されていた（再実測でも35span確認）。しかしVM配信は ffmpeg backend の **broadcast surface 経路**（`soviet_local.log` に `broadcastSidebar/Top/Bottom` のpoll記録）で、`lib/direct_broadcast_overlay.mjs` の `extractLegacyOverlayText` が `<pre>` 内から**タグごと剥ぎ取って平文化**し、サイドバー `overlays/direct_broadcast_overlay.html` が `textContent` で再描画するため、色は配信に一切届いていなかった。個別stats iframeを使うのは `useBroadcastSurface=false` のときだけで、VM `.env` は該当しない。
+- **修正**（soviet_now `716190f21`）:
+  - `lib/direct_broadcast_overlay.mjs` に `extractLegacyOverlayLineSegments` を新設。`<pre>` 内の色付きHTMLを許可リスト（`color:#hex` / `font-weight:700` / `opacity:.68` 形式のみ）でパースし、`{t,c,b,o}` テキストセグメント配列へ変換。未知タグ・未知スタイルは装飾なし平文として残し、マークアップはクライアントへ渡さない。`feeds.showStatusG.segments` としてstate routeに追加（ops/improveは従来どおり平文）。
+  - `overlays/direct_broadcast_overlay.html` はセグメントを `createElement`+`textContent`+`style` で描画（**innerHTML不使用**。既存テストのinnerHTML禁止不変条件を維持）。セグメント未達時はtextフォールバック。
+- **テスト**: `tests/test_direct_broadcast_overlay.mjs` 13件全成功（セグメント化・サニタイズ・state経路・描画スパン・フォールバックを追加）。実物 `status_overlay.html` 43行が43セグメント行へ一致することも確認。
+- **VM反映**: `.codex_deploy/backup-20260821-1710-sidebar-graph-color/` 退避後2ファイルscp、SHA256一致。node bridge（soviet_local.mjs）は kill → watchdog/guardianが5秒で自動復旧（新PID 2051323、tmux soren_bridge再構築）。
+- **実測検証**: state route `/__soren_overlay/broadcast/state` が41セグメント行・色付き96セグメント（#facc15/#fb923c/#f59e0b等）を返すこと、CDPスクリーンショットで**配信合成画面のサイドバーに Timeline黄オレンジ・Distribution赤→緑グラデ・Strategy comp勾配が表示されていること**を画像で確認。
+
+## 2026-08-21 16:2x JST — show_status_g グラフの彩色化（※配信までは届いていなかった → 17:2xに修正済み）
 
 - **実装**: `soviet_now` `4ea4b77b6` — `status_dashboard.py` の Score Timeline をスコア値に応じた赤→緑グラデーション（SCORE_GRADIENT 256色）で線分・マーカーごとに彩色（従来は単色シアン）。Strategy Comparison の中立行バーも comp 値勾配で色分け（current=緑/rollback=黄は維持）。`_render_timeline_grid` は (rows, color_rows) を返すようになり、`_colorize_plot_row` で同色ランをまとめてANSI化。可視テキスト・幅は不変。
-- **オーバーレイ**: `generate_status_overlay.sh` のANSI→HTMLパレットに `38;5;190`(=#bef264) を追加。SCORE_GRADIENTの全コードがパレットカバー内ことを出力全体で確認。
+- **オーバーレイ**: `generate_show_status_overlay.sh` のANSI→HTMLパレットに `38;5;190`(=#bef264) を追加。SCORE_GRADIENTの全コードがパレットカバー内ことを出力全体で確認。
 - **VM反映**: `.codex_deploy/backup-20260821-1620-colorful-graphs/` 退避後、2ファイルscp。SHA256一致（dashboard `ceca0864…` / overlay `08ddfdc5…`）、py_compile/bash -n成功。`generate_status_overlay.sh once` で再生成し、`tmp/state/status_overlay.html` に勾配色span（#facc15/#f59e0b/#fb923c等59件）が出力されることを実測。Nodeテスト(direct broadcast overlay)11件pass。
 - **テスト**: `tests.test_score_timeline` + `tests.test_status_dashboard_founding_rate` 25件、`tests.test_overlay_text` 成功。表示のみの変更のためworker再起動は不要（次回overlay生成周期から自動反映）。
+- **訂正（17:2x）**: この時点の検証は中間生成物 `status_overlay.html` までで、実際の配信はbroadcast sidebarが平文で再描画するため色は視聴者に見えていなかった。修正は上の17:2x節を参照。
 
 ## 2026-08-21 16:xx JST — codex dispatch修復・fact-checkタイムアウト・improve統計の修正（実装・VM反映・実測済み）
 
