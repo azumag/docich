@@ -61,6 +61,16 @@
 - **VM反映**: `/home/ubuntu/soren/.codex_deploy/backup-20260821-0635-model-routing/` に対象ファイルと誤転送されたルート直下の一時ファイルを退避後、`strategy/ai.sh`、`lib/ai_generate.sh`、`broadcast/radio_engine.sh`、`broadcast/radio_factcheck.sh`、`core/config.sh` を反映。5ファイルのSHA集合はローカルと一致し、`bash -n` 成功。`soren-runtime.service` は完全停止→起動を2回行い、現在 active。再起動後のVMヘルパー実測は `muse=opencode-go/muse-spark-1.2-contributor`、`free=opencode/deepseek-v4-flash-free`、`paid=deepseek-v4-flash`。workerはsupervisor配下で復帰。
 - **未確認**: 実プロバイダを追加課金するライブ呼出しは行っていない。次の実呼出しでStatsの改善ラベルと `resolved_model` が増えること、muse失敗時だけDeepSeekへ進むことは未観測。既存チャットpause状態は今回変更していない。
 
+## 2026-08-21 16:xx JST — codex dispatch修復・fact-checkタイムアウト・improve統計の修正（実装・VM反映・実測済み）
+
+- **修正1（主因）**: `soviet_now` `3c5e68a95` — `lib/ai_generate.sh` の `_ai_dispatch` 内 `codex|codex:*)` 空分支（`ad088ebe0`で混入）に `_ai_call_codex` 呼び出しを復元。スタブ検証（ローカル+VM）でCLI実呼び出し・出力透過・ok記録を確認。
+- **修正2**: `995515ce9` — `broadcast/radio_factcheck.sh` のfact-checkタイムアウト既定値 45s→120s（実測応答33-70sに対し45sではdeepseek/minimaxがkillされ全候補失敗→原稿ごと破棄されていた）。VM `.env` には上書き設定なし、リポジトリ既定値が有効。
+- **修正3**: `8fd0a2e3a` — `strategy/ai.sh` のrun_cmd統計で、expect watchdogによる結果ファイル書き込み後の意図的SIGTERM（rc=143）をログマーカー(`stopping provider after completed write`)検出でok記録に変更。REVIEW:primaryの0%表示問題を解消。
+- **タイムライン確定（矛盾点の解決）**: chat_workerはメインループ毎に `eloop_lib.sh` を親プロセスで再sourceするため**08:20に即壊れた**（最終COMMENT codex winner=08:17:43）。radio_workerは反復内のサブシェルsourceのため親関数は不変で**14:22のUSR1まで旧コードで稼働**（codex winner最終=14:10:52、実セッション=14:24:59まで）。ダッシュボードの281回は各ワーカーが壊れる前の実呼び出し累計＋改善ループ（独自ハーネス・影響外）。opencode.dbに今日の有料deepseekは0件＝Codex CLI→LiteLLM→zen/go経路のため。
+- **VM反映**: `.codex_deploy/backup-20260821-1600-codex-dispatch-fix/` に退避後、3ファイルをscp。SHA256一致（ai_generate `2702e4c7…` / radio_factcheck `a7c20b9e…` / strategy/ai `ca1e0b0d…`）、`bash -n` 成功。chat_workerは自動反映（毎ループ再source）、radio_workerは16:03:17にUSR1 reload完了を実測。improve_daemonはサイクル実行中のため再起動せず、次回ジョブspawn時に新ai.shを取得。
+- **実トラフィック検証**: 16:06:09のCOMMENT生成で `attempt codex:minimax-m3` →44秒の実呼び出し→`ok`→**`winner`**（08:17以来初）。16:06:56に435字をキュー追加(model=codex:minimax-m3)。16:07:56の2回目も12秒でok→winner(455字)。muse一本立ち状態からcodexチェーン復活を実測。REVIEW:primaryも16:07にok記録を確認。
+- **テスト**: `tests.test_ai_generate_backoff` + `tests.test_improve_retry_reliability` 36件中35件成功。1件失敗(`test_codex_backend_returns_rate_limit_code_only_for_explicit_signal`)はクリーンHEADでも失敗するmacOS環境依存(GNU timeout不在)で今回の変更と無関係。radio系シェルテスト3本成功。
+
 ## 2026-08-21 15:xx JST — WebUIチェーン統計の失敗率原因調査（診断のみ・未変更）
 
 - **主因①（重大・実装バグ）**: `soviet_now` `ad088ebe0`（08:16 commit、VM反映 08:19:45）で `lib/ai_generate.sh` の `_ai_dispatch` 内 case 文が `'' ) return 1 ;;` → `codex|codex:*) ;;` に置き換わり、**codex系エージェントのcase分支が空**になった。codex指定はどのCLIも呼ばず、直前コマンドの stale `PIPESTATUS[0]`=0 を拾って **「ok・空出力」で即return** する（VMで stale PIPESTATUS=0 を再現実測）。`*` 分枝の `_ai_call_codex` は有効specでは到達不能の死に枝。`chat_worker.log` の `codex call` ログ0件、codex dispatchの `_output.txt` が今日1件も存在しないことで裏取り済み。
@@ -361,3 +371,11 @@
 - **実測検証**: 新 worker の environ に新 preference を確認。`.env` を source した上で `_peak_priority_agent_list` を実行し、ピーク時の実効順を実測: COMMENT/RADIO とも `minimax → openrouter/free → ox-alpha → muse → ...`、IMPROVE は入替対象外で `amd → ox-alpha → muse → ...`。全経路で ox-alpha が muse より先。
 - **教訓**: `_peak_priority_agent_list` 単体テスト時は必ず先に `.env` を source する（省くと repo 既定チェーンで並べ替わり、見かけ上別リストになる。本検証で一度やり直した）。
 - **未確認**: 次回の自然発生 dispatch で `agents=` 行に ox-alpha が muse より先に出ること、ox-alpha が winner を取ること。
+
+## 2026-08-21 16:05 JST — 残りの muse 先行経路（fact-check / improve peak / 翻訳）にも ox-alpha を挿入
+
+- **背景**: ユーザー指示「Ox alphaをmuseの前に持ってきて」。棚卸しで muse が ox-alpha より先に残っていた経路は3つ: (1) fact-check（repo 既定 `RADIO_FACT_CHECK_AGENT=muse`、`.env` 未設定）、(2) `MODEL_IMPROVE_PEAK_LIST`（ピーク時の改善チェーン、muse 先頭。`IMPROVE_PEAK_CHAIN_ENABLED=1` で有効）、(3) `COMMENT_TRANSLATION_AGENTS`（`.env` 明示値で ox-alpha なし）。
+- **変更**: VM `.env`（バックアップ `.env.bak-20260821-ox-alpha-fullchain`）へ (1) `RADIO_FACT_CHECK_AGENT=opencode:x-preview-f-free` + `RADIO_FACT_CHECK_SECONDARY=opencode-go:muse-spark-1.2-contributor` を追加（FALLBACK=minimax は既存のまま、実効順 ox-alpha → muse → minimax）、(2) `MODEL_IMPROVE_PEAK_LIST` の muse 直前に ox-alpha を挿入、(3) `COMMENT_TRANSLATION_AGENTS` の muse 直前に ox-alpha を挿入。`radio_factcheck.sh:220` は AGENT → SECONDARY → FALLBACK → TERTIARY の順で1件ずつ試行を確認済み。
+- **反映**: `soren-runtime.service` 完全再起動（improve idle 確認済み）。再起動後 supervisor `1118487` 直下に全7 worker 各1本。
+- **実測検証**: 新 worker（radio/chat）の environ に4変数すべての新値を確認。これで全経路（基本チェーン・ピーク入替・改善通常/ピーク・翻訳・fact-check）で ox-alpha が muse より先に試行される。
+- **未確認**: 自然発生の fact-check / 改善ピーク / 翻訳で ox-alpha が実際に獲得するかは継続観測（Stats の `resolved_model=opencode/x-preview-f-free` と `logs/radio_worker.log` の `fact-check中... (opencode:x-preview-f-free)` で判別可能）。
