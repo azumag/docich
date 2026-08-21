@@ -576,6 +576,75 @@ def _stats_dir(soren_root: Path) -> Path:
     return soren_root / "tmp/state/ai_stats"
 
 
+# --- stats helpers: chain / stage aggregation --------------------------------
+
+_STATS_LABEL_NORMALIZE_RE = re.compile(r"^(ANALYZE|IMPLEMENT|FIX|REVIEW|ROLLBACK-POSTMORTEM)(?:\(.*\))?$")
+
+
+def _normalize_stats_label(label: str) -> str:
+    """Run_cmd 由来の IMPROVE ラベルを正規化し、CHAIN 集計のフラグメント化を防ぐ.
+
+    例: "ANALYZE(1):primary#2" / "IMPLEMENT(2):fallback" -> "ANALYZE" / "IMPLEMENT"
+    RADIO 等のコーナー付きラベルはそのまま返す（段階の区別に必要）。
+    """
+    if not label:
+        return "(empty)"
+    # IMPROVE run_cmd は ":primary" / ":fallback" / ":last_resort" を付与する
+    if ":primary" in label or ":fallback" in label or ":last_resort" in label:
+        base = label.split(":", 1)[0]
+        # strip parenthetical retry suffix like "(1)" or "(1.2)"
+        base = re.sub(r"\(.*\)$", "", base).strip()
+        if base:
+            return base
+        return label.split(":", 1)[0]
+    # 括弧付きの素の IMPROVE ラベルも正規化 (例: "IMPLEMENT(1)")
+    m = _STATS_LABEL_NORMALIZE_RE.match(label)
+    if m:
+        return m.group(1)
+    # also handle bare "ANALYZE(1)" etc
+    if label.startswith(("ANALYZE", "IMPLEMENT", "FIX(", "REVIEW", "ROLLBACK")):
+        stripped = re.sub(r"\(.*\)$", "", label).strip()
+        if stripped in ("ANALYZE", "IMPLEMENT", "FIX", "REVIEW", "ROLLBACK-POSTMORTEM", "ROLLBACK"):
+            return stripped
+        if re.match(r"^(ANALYZE|IMPLEMENT|FIX|REVIEW)", label):
+            return re.sub(r"\(.*\)", "", label).split(":")[0].strip() or label
+    return label
+
+
+def _label_chain_hint(label: str) -> str:
+    """ラベルから対応するチェーン設定名を推定（表示用ヒント）。"""
+    if not label or label == "(empty)":
+        return "-"
+    base = _normalize_stats_label(label)
+    if base in ("ANALYZE", "IMPLEMENT", "FIX", "REVIEW"):
+        return "MODEL_IMPROVE_LIST"
+    if base == "ROLLBACK-POSTMORTEM" or label.startswith("ROLLBACK"):
+        return "ROLLBACK_POSTMORTEM_MODEL"
+    if label.startswith("RADIO:"):
+        if label.endswith(":prepass"):
+            return "RADIO_PREPASS_AGENTS"
+        if "batch_commentary" in label:
+            return "BATCH_COMMENTARY_AGENTS"
+        if "JIJI" in label:
+            return "RADIO:JIJI_RESEARCH"
+        return "RADIO_AGENTS"
+    if label.startswith("COMMENT_TRANSLATION"):
+        return "COMMENT_TRANSLATION_AGENTS"
+    if label.startswith("COMMENT_CLASSIFIER"):
+        return "COMMENT_CLASSIFIER"
+    if label.startswith("COMMENT"):
+        return "COMMENT_AGENTS"
+    if label == "RADIO":
+        return "RADIO_AGENTS"
+    if label in ("opencode", "opencode-go"):
+        return label
+    if label.startswith("opencode"):
+        return "opencode*"
+    if base != label:
+        return base
+    return "-"
+
+
 def _peak_hours_to_minutes_py(token: str) -> int | None:
     token = token.strip()
     if not token:
@@ -1818,6 +1887,23 @@ input:checked+.slider:before{transform:translateX(20px)}
 .preset-btn{padding:6px 10px;border:1px solid var(--border);background:#222836;color:var(--text);border-radius:999px;font-size:12px;margin:2px;cursor:pointer}
 .preset-btn:hover{border-color:var(--accent)}
 .inherit-row{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:13px;color:var(--muted)}
+.stats-toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px}
+.table-wrap{overflow:auto;position:relative;border:1px solid var(--border);border-radius:8px}
+.table-wrap table{margin:0}
+.table-wrap::after{content:"";position:absolute;right:0;top:0;bottom:0;width:24px;background:linear-gradient(to right, transparent, rgba(0,0,0,0.25));pointer-events:none;opacity:0.6}
+.stats-label{font-weight:600}
+.stats-hint{font-size:11px;color:var(--muted);display:block;margin-top:2px}
+.rate-bar{height:6px;background:var(--border);border-radius:999px;overflow:hidden;margin-top:4px}
+.rate-bar>i{display:block;height:100%;border-radius:999px;transition:width .25s}
+.rate-bar.ok>i{background:var(--ok)}
+.rate-bar.warn>i{background:var(--warn)}
+.rate-bar.bad>i{background:var(--bad)}
+.depth-mini{font-size:11px;color:var(--muted)}
+.accordion-item{border:1px solid var(--border);background:#111319;border-radius:10px;margin-bottom:8px;overflow:hidden}
+.accordion-summary{cursor:pointer;display:flex;justify-content:space-between;align-items:center;padding:10px 12px;user-select:none}
+.accordion-summary:hover{background:#1a2333}
+.accordion-body{padding:0 12px 12px 12px}
+.accordion-item.open .accordion-summary{background:#1a2333}
 </style>
 </head>
 <body>
@@ -2056,11 +2142,20 @@ input:checked+.slider:before{transform:translateX(20px)}
 </section>
 <!-- STATS -->
 <section id="tab-stats" style="display:none">
-<div class="card"><h2>AI 統計 (ai_stats)</h2><p class="desc"><code>tmp/state/ai_stats/&lt;YYYYMMDD&gt;.jsonl</code> の attempt/winner/fail。直近7日。</p>
-<div class="actions" style="margin-bottom:8px"><button class="btn" id="stats-refresh">更新</button><label style="display:flex;gap:6px;align-items:center">days <input id="stats-days" type="number" value="7" min="1" max="30" style="width:80px"/></label></div>
+<div class="card"><h2>AI 統計 (ai_stats)</h2><p class="desc"><code>tmp/state/ai_stats/&lt;YYYYMMDD&gt;.jsonl</code> の attempt/winner/fail。直近7日。attempt=dispatch試行、winner=最終採用、all_failed=全滅。</p>
+<div class="stats-toolbar"><button class="btn" id="stats-refresh">更新</button><label style="display:flex;gap:6px;align-items:center">days <input id="stats-days" type="number" value="7" min="1" max="30" style="width:80px"/></label><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="stats-group-base" checked/> IMPROVE正規化</label><input id="stats-search" placeholder="chain/agentで絞り込み" style="width:200px"/></div>
 <canvas id="stats-canvas" width="900" height="220"></canvas>
-<div style="overflow:auto;margin-top:10px"><table><thead><tr><th>day</th><th>attempt</th><th>winner</th><th>fail</th><th>all_failed</th></tr></thead><tbody id="stats-table"></tbody></table></div>
-<div style="overflow:auto;margin-top:10px"><table><thead><tr><th>agent</th><th>attempt</th><th>winner</th></tr></thead><tbody id="stats-agents"></tbody></table></div>
+<div class="table-wrap" style="margin-top:10px"><table><thead><tr><th>day</th><th>attempt</th><th>winner</th><th>fail</th><th>all_failed</th></tr></thead><tbody id="stats-table"></tbody></table></div>
+<div class="table-wrap" style="margin-top:10px"><table><thead><tr><th>agent</th><th>attempt</th><th>winner</th><th>winner率</th></tr></thead><tbody id="stats-agents"></tbody></table></div>
+</div>
+<div class="card"><h2>チェーン別統計 (label)</h2><p class="desc">どのチェーンが呼ばれ、どれだけ成功したか。成功率は <code>winner/attempt</code>。PENDINGは生成途中。</p>
+<div class="actions" style="margin-bottom:8px"><span class="help">表示: <span id="stats-label-mode" class="badge">base</span> に正規化 <span class="help" id="stats-label-count"></span></span></div>
+<div class="table-wrap"><table><thead><tr><th style="min-width:180px">chain</th><th style="min-width:110px">成功率</th><th>attempt</th><th>winner</th><th>all_failed</th><th style="min-width:140px">深度</th><th>pending</th></tr></thead><tbody id="stats-labels"></tbody></table></div>
+<div class="help">深度 = 1回で何段目まで試したか。1=先頭で成功、大きいほど深くフォールバック。</div>
+</div>
+<div class="card"><h2>チェーン×モデル 詳細</h2><p class="desc">各チェーン内でどのモデルが何回 attempt / winner になったか。上位3チェーンを展開、他は折りたたみ。</p>
+<div id="stats-label-agents"></div>
+<div class="actions"><button class="btn" id="stats-expand-all">全て展開</button><button class="btn" id="stats-collapse-all">全て折りたたむ</button></div>
 </div>
 </section>
 <!-- HEALTH -->
@@ -2832,9 +2927,11 @@ async function loadBackoffs(){
   }
   // dashboard bars also update via renderDashboard but we keep
 }
+let _lastStatsData = null;
 async function loadStats(){
   const days = parseInt($("#stats-days").value||"7",10);
   const data = await api(`/api/stats?days=${days}`);
+  _lastStatsData = data;
   const tbody = $("#stats-table");
   tbody.innerHTML="";
   for(const d of data.days){
@@ -2847,11 +2944,128 @@ async function loadStats(){
   const agents = data.by_agent||{};
   const sorted = Object.entries(agents).sort((a,b)=>b[1].winner - a[1].winner);
   for(const [agent, v] of sorted){
+    const rate = v.attempt? (v.winner / v.attempt * 100).toFixed(1) + "%" : "-";
     const tr=document.createElement("tr");
-    tr.innerHTML=`<td class="mono">${esc(agent)}</td><td>${v.attempt}</td><td>${v.winner}</td>`;
+    tr.innerHTML=`<td class="mono">${esc(agent)}</td><td>${v.attempt}</td><td>${v.winner}</td><td>${esc(rate)}</td>`;
     agBody.appendChild(tr);
   }
   drawStats(data.days);
+  const groupBase = $("#stats-group-base")?.checked ?? true;
+  renderStatsLabels(data, groupBase);
+  renderStatsLabelAgents(data, groupBase);
+}
+function renderStatsLabels(data, groupBase){
+  const tb = $("#stats-labels");
+  if(!tb) return;
+  tb.innerHTML="";
+  const byLabel = groupBase ? (data.by_base_label||{}) : (data.by_label||{});
+  const byDepth = groupBase ? (data.by_base_depth||{}) : (data.by_label_depth||{});
+  let entries = Object.entries(byLabel);
+  const q = ($("#stats-search")?.value||"").trim().toLowerCase();
+  if(q){
+    entries = entries.filter(([label,v])=>{
+      const hint=(v.chain_hint||"").toLowerCase();
+      return label.toLowerCase().includes(q) || hint.includes(q);
+    });
+  }
+  if(entries.length===0){
+    tb.innerHTML='<tr><td colspan="7" class="help">データなし</td></tr>';
+    const cnt=$("#stats-label-count"); if(cnt) cnt.textContent="";
+    return;
+  }
+  // sort by attempt desc
+  entries.sort((a,b)=>(b[1].attempt||0)-(a[1].attempt||0));
+  const modeEl = $("#stats-label-mode");
+  if(modeEl) modeEl.textContent = groupBase? "base (正規化)":"raw";
+  const cntEl=$("#stats-label-count"); if(cntEl) cntEl.textContent=`(${entries.length}チェーン)`;
+  for(const [label, v] of entries){
+    const d = byDepth[label] || {winner_depth:{}, failed_depth:{}, avg_winner_depth:0, avg_failed_depth:0, pending:0, total_generations:0};
+    const attempt=v.attempt||0, winner=v.winner||0;
+    const rate = attempt? (winner/attempt*100):0;
+    const rateText = attempt? rate.toFixed(1)+"%":"-";
+    let barClass="ok"; if(rate<40) barClass="bad"; else if(rate<70) barClass="warn";
+    const wd = d.winner_depth||{}, fd = d.failed_depth||{};
+    const wdEntries=Object.entries(wd).sort((a,b)=>parseInt(a[0])-parseInt(b[0]));
+    const avgW = d.avg_winner_depth? d.avg_winner_depth.toFixed(1) : "-";
+    const wdMini = wdEntries.length? wdEntries.map(([k,c])=>`d${k}:${c}`).join(" "):"-";
+    const pending=v.pending!=null? v.pending : (d.pending||0);
+    const pendingBadge = pending>0? `<span class="badge bad">${pending}</span>` : `<span class="badge" style="opacity:0.5">0</span>`;
+    const chainHint = esc(v.chain_hint||"-");
+    const tr=document.createElement("tr");
+    tr.style.cursor="pointer";
+    tr.title=`${label} → クリックで詳細へ`;
+    tr.onclick=()=>{
+      const target=document.getElementById(`stats-card-${CSS.escape(label)}`);
+      if(target){ target.scrollIntoView({behavior:"smooth",block:"start"}); target.classList.add("open"); const body=target.querySelector(".accordion-body"); if(body) body.style.display="block"; }
+    };
+    tr.innerHTML=`<td><div class="stats-label mono" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(label)}">${esc(label)}</div><span class="stats-hint mono">${chainHint}</span></td>
+      <td><div class="mono" style="font-size:12px">${rateText}</div><div class="rate-bar ${barClass}"><i style="width:${Math.min(100,Math.round(rate))}%"></i></div></td>
+      <td>${attempt}</td><td>${winner}</td><td>${v.all_failed||0}</td>
+      <td><span class="mono" style="font-size:12px">${avgW}</span><div class="depth-mini">${esc(wdMini)}</div></td>
+      <td>${pendingBadge}</td>`;
+    tb.appendChild(tr);
+  }
+}
+function renderStatsLabelAgents(data, groupBase){
+  const cont = $("#stats-label-agents");
+  if(!cont) return;
+  cont.innerHTML="";
+  const byLabelAgent = groupBase ? (data.by_base_label_agent||{}) : (data.by_label_agent||{});
+  const byLabel = groupBase ? (data.by_base_label||{}) : (data.by_label||{});
+  let labels = Object.keys(byLabelAgent).sort((a,b)=> (byLabel[b]?.attempt||0) - (byLabel[a]?.attempt||0));
+  const q = ($("#stats-search")?.value||"").trim().toLowerCase();
+  if(q){
+    labels = labels.filter(label=>{
+      const v=byLabel[label]||{};
+      const hint=(v.chain_hint||"").toLowerCase();
+      if(label.toLowerCase().includes(q) || hint.includes(q)) return true;
+      const agents=byLabelAgent[label]||{};
+      return Object.keys(agents).some(ag=>ag.toLowerCase().includes(q));
+    });
+  }
+  if(labels.length===0){
+    cont.innerHTML='<div class="help">データなし</div>';
+    return;
+  }
+  const expandedBySearch = !!q;
+  labels.forEach((label, idx)=>{
+    const agents = byLabelAgent[label]||{};
+    const v = byLabel[label]||{};
+    const details = document.createElement("div");
+    details.className="accordion-item";
+    details.id=`stats-card-${label}`;
+    const shouldOpen = expandedBySearch || idx<3;
+    if(shouldOpen) details.classList.add("open");
+    const agentRows = Object.entries(agents).sort((a,b)=>b[1].winner - a[1].winner || b[1].attempt - a[1].attempt).map(([ag, c])=>{
+      const rate = c.attempt? (c.winner/c.attempt*100).toFixed(1)+"%" : "-";
+      let barClass="ok"; const rv=c.attempt? c.winner/c.attempt*100:0; if(rv<40) barClass="bad"; else if(rv<70) barClass="warn";
+      return `<tr><td class="mono" style="max-width:200px;overflow:hidden;text-overflow:ellipsis" title="${esc(ag)}">${esc(ag)}</td><td>${c.attempt}</td><td>${c.winner}</td><td><span class="mono">${rate}</span><div class="rate-bar ${barClass}" style="margin-top:2px"><i style="width:${Math.min(100,Math.round(rv))}%"></i></div></td><td>${c.fail||0}</td></tr>`;
+    }).join("");
+    const table = agentRows? `<div class="table-wrap"><table><thead><tr><th>agent</th><th>attempt</th><th>winner</th><th>winner率</th><th>fail</th></tr></thead><tbody>${agentRows}</tbody></table></div>` : '<div class="help">agent詳細なし (all_failedのみ等)</div>';
+    const depthInfo = (groupBase? data.by_base_depth : data.by_label_depth)?.[label];
+    const depthHelp = depthInfo? `avg深度 ${depthInfo.avg_winner_depth?depthInfo.avg_winner_depth.toFixed(1):"-"} / 世代 ${depthInfo.total_generations||0} / pending ${depthInfo.pending||0}` : "";
+    const attempt=v.attempt||0, winner=v.winner||0;
+    const rate = attempt? (winner/attempt*100).toFixed(1)+"%":"-";
+    const summary = document.createElement("div");
+    summary.className="accordion-summary";
+    summary.innerHTML=`<span class="mono" style="font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(label)}</span><span class="badge" style="margin-left:8px">${esc(v.chain_hint||"")}</span><span class="mono" style="font-size:12px;margin-left:8px">${attempt}→${winner} ${rate}</span><span style="margin-left:8px;color:var(--muted)">${shouldOpen?"▾":"▸"}</span>`;
+    const body=document.createElement("div");
+    body.className="accordion-body";
+    body.style.display=shouldOpen?"block":"none";
+    body.innerHTML=`<div class="help" style="margin-bottom:6px">attempt ${attempt} winner ${winner} all_failed ${v.all_failed||0} | ${esc(depthHelp)}</div>${table}`;
+    summary.onclick=()=>{
+      const isOpen=details.classList.contains("open");
+      if(isOpen){ details.classList.remove("open"); body.style.display="none"; summary.querySelector("span:last-child").textContent="▸"; }
+      else { details.classList.add("open"); body.style.display="block"; summary.querySelector("span:last-child").textContent="▾"; }
+    };
+    details.appendChild(summary);
+    details.appendChild(body);
+    cont.appendChild(details);
+  });
+  if(!q && labels.length>20){
+    const more=document.createElement("div"); more.className="help"; more.textContent=`他 ${labels.length-20} チェーンは省略。検索で絞り込むか「全て展開」で表示`;
+    cont.appendChild(more);
+  }
 }
 function drawStats(days){
   const canvas=$("#stats-canvas");
@@ -3480,6 +3694,36 @@ document.addEventListener("DOMContentLoaded",()=>{
   $("#peak-save").onclick=savePeak;
   $("#peak-reload").onclick=()=>loadConfig().catch(e=>toast(String(e)));
   $("#stats-refresh").onclick=()=>loadStats();
+  const statsGroupCb = document.getElementById("stats-group-base");
+  if(statsGroupCb) statsGroupCb.onchange=()=>{
+    if(_lastStatsData){
+      const gb = statsGroupCb.checked;
+      renderStatsLabels(_lastStatsData, gb);
+      renderStatsLabelAgents(_lastStatsData, gb);
+    } else {
+      loadStats();
+    }
+  };
+  const statsSearch=document.getElementById("stats-search");
+  if(statsSearch){
+    let t; statsSearch.oninput=()=>{
+      clearTimeout(t); t=setTimeout(()=>{
+        if(_lastStatsData){
+          const gb=document.getElementById("stats-group-base")?.checked ?? true;
+          renderStatsLabels(_lastStatsData, gb);
+          renderStatsLabelAgents(_lastStatsData, gb);
+        }
+      },200);
+    };
+  }
+  const statsExpandAll=document.getElementById("stats-expand-all");
+  if(statsExpandAll) statsExpandAll.onclick=()=>{
+    $$("#stats-label-agents .accordion-item").forEach(el=>{ el.classList.add("open"); const b=el.querySelector(".accordion-body"); if(b) b.style.display="block"; });
+  };
+  const statsCollapseAll=document.getElementById("stats-collapse-all");
+  if(statsCollapseAll) statsCollapseAll.onclick=()=>{
+    $$("#stats-label-agents .accordion-item").forEach((el,idx)=>{ if(idx>=3){ el.classList.remove("open"); const b=el.querySelector(".accordion-body"); if(b) b.style.display="none"; } });
+  };
   $("#health-refresh").onclick=()=>loadHealth();
   $("#do-reload").onclick=async()=>{
     try{ const r=await api("/api/reload",{method:"POST"}); toast(JSON.stringify(r.results)); await loadHealth(); }catch(e){ toast(String(e)); }
@@ -4101,6 +4345,38 @@ class _Handler(BaseHTTPRequestHandler):
         files = all_files[-days:] if len(all_files) > days else all_files
         day_stats: list[dict[str, Any]] = []
         by_agent: dict[str, dict[str, int]] = {}
+        # --- new: chain / stage breakdown ---
+        by_label: dict[str, dict[str, Any]] = {}
+        by_label_agent: dict[str, dict[str, dict[str, int]]] = {}
+        by_base_label: dict[str, dict[str, Any]] = {}
+        by_base_label_agent: dict[str, dict[str, dict[str, int]]] = {}
+        pending_by_label: dict[str, int] = {}
+        depth_winner_by_label: dict[str, dict[int, int]] = {}
+        depth_failed_by_label: dict[str, dict[int, int]] = {}
+        pending_by_base: dict[str, int] = {}
+        depth_winner_by_base: dict[str, dict[int, int]] = {}
+        depth_failed_by_base: dict[str, dict[int, int]] = {}
+
+        def _ensure_label_entry(lbl: str) -> None:
+            if lbl not in by_label:
+                by_label[lbl] = {"attempt": 0, "ok": 0, "fail": 0, "winner": 0, "all_failed": 0, "chain_hint": _label_chain_hint(lbl)}
+            if lbl not in by_label_agent:
+                by_label_agent[lbl] = {}
+            if lbl not in pending_by_label:
+                pending_by_label[lbl] = 0
+                depth_winner_by_label[lbl] = {}
+                depth_failed_by_label[lbl] = {}
+
+        def _ensure_base_entry(base: str) -> None:
+            if base not in by_base_label:
+                by_base_label[base] = {"attempt": 0, "ok": 0, "fail": 0, "winner": 0, "all_failed": 0, "chain_hint": _label_chain_hint(base)}
+            if base not in by_base_label_agent:
+                by_base_label_agent[base] = {}
+            if base not in pending_by_base:
+                pending_by_base[base] = 0
+                depth_winner_by_base[base] = {}
+                depth_failed_by_base[base] = {}
+
         for f in files:
             day = f.stem
             attempt = 0
@@ -4118,28 +4394,127 @@ class _Handler(BaseHTTPRequestHandler):
                         continue
                     ev = rec.get("event", "")
                     ag = rec.get("agent", "")
+                    lbl = str(rec.get("label", "") or "")
+                    lbl_display = lbl if lbl else "(empty)"
+                    base = _normalize_stats_label(lbl) if lbl else "(empty)"
+                    _ensure_label_entry(lbl_display)
+                    _ensure_base_entry(base)
                     if ev == "attempt":
                         attempt += 1
+                        by_label[lbl_display]["attempt"] += 1
+                        by_base_label[base]["attempt"] += 1
+                        pending_by_label[lbl_display] = pending_by_label.get(lbl_display, 0) + 1
+                        pending_by_base[base] = pending_by_base.get(base, 0) + 1
                         if ag:
                             by_agent.setdefault(ag, {"attempt": 0, "winner": 0})
                             by_agent[ag]["attempt"] += 1
+                            by_label_agent[lbl_display].setdefault(ag, {"attempt": 0, "winner": 0, "ok": 0, "fail": 0})
+                            by_label_agent[lbl_display][ag]["attempt"] += 1
+                            by_base_label_agent[base].setdefault(ag, {"attempt": 0, "winner": 0, "ok": 0, "fail": 0})
+                            by_base_label_agent[base][ag]["attempt"] += 1
                     elif ev == "ok":
                         ok += 1
+                        by_label[lbl_display]["ok"] += 1
+                        by_base_label[base]["ok"] += 1
+                        if ag and ag in by_label_agent.get(lbl_display, {}):
+                            by_label_agent[lbl_display][ag]["ok"] += 1
+                        if ag and ag in by_base_label_agent.get(base, {}):
+                            by_base_label_agent[base][ag]["ok"] += 1
                     elif ev == "fail":
                         fail += 1
+                        by_label[lbl_display]["fail"] += 1
+                        by_base_label[base]["fail"] += 1
+                        if ag:
+                            by_label_agent[lbl_display].setdefault(ag, {"attempt": 0, "winner": 0, "ok": 0, "fail": 0})
+                            by_base_label_agent[base].setdefault(ag, {"attempt": 0, "winner": 0, "ok": 0, "fail": 0})
+                        if ag and ag in by_label_agent.get(lbl_display, {}):
+                            by_label_agent[lbl_display][ag]["fail"] += 1
+                        if ag and ag in by_base_label_agent.get(base, {}):
+                            by_base_label_agent[base][ag]["fail"] += 1
                     elif ev == "winner":
                         winner += 1
+                        by_label[lbl_display]["winner"] += 1
+                        by_base_label[base]["winner"] += 1
                         if ag:
                             by_agent.setdefault(ag, {"attempt": 0, "winner": 0})
                             by_agent[ag]["winner"] += 1
+                            by_label_agent[lbl_display].setdefault(ag, {"attempt": 0, "winner": 0, "ok": 0, "fail": 0})
+                            by_label_agent[lbl_display][ag]["winner"] += 1
+                            by_base_label_agent[base].setdefault(ag, {"attempt": 0, "winner": 0, "ok": 0, "fail": 0})
+                            by_base_label_agent[base][ag]["winner"] += 1
+                        d = pending_by_label.get(lbl_display, 0)
+                        if d <= 0:
+                            d = 1
+                        depth_winner_by_label[lbl_display][d] = depth_winner_by_label[lbl_display].get(d, 0) + 1
+                        db = pending_by_base.get(base, 0)
+                        if db <= 0:
+                            db = 1
+                        depth_winner_by_base[base][db] = depth_winner_by_base[base].get(db, 0) + 1
+                        pending_by_label[lbl_display] = 0
+                        pending_by_base[base] = 0
                     elif ev == "all_failed":
                         all_failed += 1
+                        by_label[lbl_display]["all_failed"] += 1
+                        by_base_label[base]["all_failed"] += 1
+                        d = pending_by_label.get(lbl_display, 0)
+                        if d <= 0:
+                            d = 1
+                        depth_failed_by_label[lbl_display][d] = depth_failed_by_label[lbl_display].get(d, 0) + 1
+                        db = pending_by_base.get(base, 0)
+                        if db <= 0:
+                            db = 1
+                        depth_failed_by_base[base][db] = depth_failed_by_base[base].get(db, 0) + 1
+                        pending_by_label[lbl_display] = 0
+                        pending_by_base[base] = 0
             except Exception:
                 continue
             day_stats.append(
                 {"day": day, "attempt": attempt, "ok": ok, "fail": fail, "winner": winner, "all_failed": all_failed}
             )
-        self._send_json(200, {"days": day_stats, "by_agent": by_agent, "stats_dir": str(sdir)})
+        by_label_depth: dict[str, dict[str, Any]] = {}
+        for lbl in set(list(by_label.keys()) + list(depth_winner_by_label.keys()) + list(depth_failed_by_label.keys())):
+            wd = depth_winner_by_label.get(lbl, {})
+            fd = depth_failed_by_label.get(lbl, {})
+            total_gen = sum(wd.values()) + sum(fd.values())
+            avg_w = (sum(k * v for k, v in wd.items()) / sum(wd.values())) if wd else 0
+            avg_f = (sum(k * v for k, v in fd.items()) / sum(fd.values())) if fd else 0
+            by_label_depth[lbl] = {
+                "winner_depth": {str(k): v for k, v in sorted(wd.items())},
+                "failed_depth": {str(k): v for k, v in sorted(fd.items())},
+                "total_generations": total_gen,
+                "avg_winner_depth": round(avg_w, 2) if wd else 0,
+                "avg_failed_depth": round(avg_f, 2) if fd else 0,
+                "pending": pending_by_label.get(lbl, 0),
+            }
+        by_base_depth: dict[str, dict[str, Any]] = {}
+        for base in set(list(by_base_label.keys()) + list(depth_winner_by_base.keys()) + list(depth_failed_by_base.keys())):
+            wd = depth_winner_by_base.get(base, {})
+            fd = depth_failed_by_base.get(base, {})
+            total_gen = sum(wd.values()) + sum(fd.values())
+            avg_w = (sum(k * v for k, v in wd.items()) / sum(wd.values())) if wd else 0
+            avg_f = (sum(k * v for k, v in fd.items()) / sum(fd.values())) if fd else 0
+            by_base_depth[base] = {
+                "winner_depth": {str(k): v for k, v in sorted(wd.items())},
+                "failed_depth": {str(k): v for k, v in sorted(fd.items())},
+                "total_generations": total_gen,
+                "avg_winner_depth": round(avg_w, 2) if wd else 0,
+                "avg_failed_depth": round(avg_f, 2) if fd else 0,
+                "pending": pending_by_base.get(base, 0),
+            }
+        self._send_json(
+            200,
+            {
+                "days": day_stats,
+                "by_agent": by_agent,
+                "by_label": by_label,
+                "by_label_agent": by_label_agent,
+                "by_label_depth": by_label_depth,
+                "by_base_label": by_base_label,
+                "by_base_label_agent": by_base_label_agent,
+                "by_base_depth": by_base_depth,
+                "stats_dir": str(sdir),
+            },
+        )
         return 200
 
     def _handle_get_game_state(self) -> int:
