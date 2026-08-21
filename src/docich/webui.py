@@ -2146,7 +2146,10 @@ input:checked+.slider:before{transform:translateX(20px)}
 <div class="stats-toolbar"><button class="btn" id="stats-refresh">更新</button><label style="display:flex;gap:6px;align-items:center">days <input id="stats-days" type="number" value="7" min="1" max="30" style="width:80px"/></label><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="stats-group-base" checked/> IMPROVE正規化</label><input id="stats-search" placeholder="chain/agentで絞り込み" style="width:200px"/></div>
 <canvas id="stats-canvas" width="900" height="220"></canvas>
 <div class="table-wrap" style="margin-top:10px"><table><thead><tr><th>day</th><th>attempt</th><th>winner</th><th>fail</th><th>all_failed</th></tr></thead><tbody id="stats-table"></tbody></table></div>
-<div class="table-wrap" style="margin-top:10px"><table><thead><tr><th>agent</th><th>attempt</th><th>winner</th><th>winner率</th></tr></thead><tbody id="stats-agents"></tbody></table></div>
+<div class="table-wrap" style="margin-top:10px"><table><thead><tr><th>agent</th><th>attempt</th><th>winner</th><th>winner率</th><th>fail</th><th>失敗率</th></tr></thead><tbody id="stats-agents"></tbody></table></div>
+</div>
+<div class="card"><h2>最近のAI失敗理由</h2><p class="desc">fail レコードの <code>error</code> フィールド（プロバイダエラー・タイムアウト等の実原因）。最大40件、新しい順。</p>
+<div class="table-wrap"><table><thead><tr><th>時刻</th><th>chain</th><th>model</th><th style="min-width:280px">error</th></tr></thead><tbody id="stats-errors"></tbody></table></div>
 </div>
 <div class="card"><h2>チェーン別統計 (label)</h2><p class="desc">どのチェーンが呼ばれ、どれだけ成功したか。成功率は <code>winner/attempt</code>。PENDINGは生成途中。</p>
 <div class="actions" style="margin-bottom:8px"><span class="help">表示: <span id="stats-label-mode" class="badge">base</span> に正規化 <span class="help" id="stats-label-count"></span></span></div>
@@ -2945,9 +2948,25 @@ async function loadStats(){
   const sorted = Object.entries(agents).sort((a,b)=>b[1].winner - a[1].winner);
   for(const [agent, v] of sorted){
     const rate = v.attempt? (v.winner / v.attempt * 100).toFixed(1) + "%" : "-";
+    const frate = v.attempt? (v.fail / v.attempt * 100).toFixed(1) + "%" : "-";
     const tr=document.createElement("tr");
-    tr.innerHTML=`<td class="mono">${esc(agent)}</td><td>${v.attempt}</td><td>${v.winner}</td><td>${esc(rate)}</td>`;
+    tr.innerHTML=`<td class="mono">${esc(agent)}</td><td>${v.attempt}</td><td>${v.winner}</td><td>${esc(rate)}</td><td>${v.fail||0}</td><td>${esc(frate)}</td>`;
     agBody.appendChild(tr);
+  }
+  const errBody=$("#stats-errors");
+  if(errBody){
+    errBody.innerHTML="";
+    const errs=data.recent_errors||[];
+    if(errs.length===0){
+      errBody.innerHTML='<tr><td colspan="4" class="help">error記録付きのfailなし</td></tr>';
+    } else {
+      for(const e of errs){
+        const t=e.ts? new Date(e.ts*1000).toLocaleTimeString("ja-JP",{hour12:false}) : "-";
+        const tr=document.createElement("tr");
+        tr.innerHTML=`<td>${esc(t)}</td><td class="mono">${esc(e.label)}</td><td class="mono">${esc(e.agent)}</td><td class="mono" style="font-size:11px;word-break:break-all">${esc(e.error)}</td>`;
+        errBody.appendChild(tr);
+      }
+    }
   }
   drawStats(data.days);
   const groupBase = $("#stats-group-base")?.checked ?? true;
@@ -4345,6 +4364,7 @@ class _Handler(BaseHTTPRequestHandler):
         files = all_files[-days:] if len(all_files) > days else all_files
         day_stats: list[dict[str, Any]] = []
         by_agent: dict[str, dict[str, int]] = {}
+        recent_errors: list[dict[str, Any]] = []
         # --- new: chain / stage breakdown ---
         by_label: dict[str, dict[str, Any]] = {}
         by_label_agent: dict[str, dict[str, dict[str, int]]] = {}
@@ -4406,7 +4426,7 @@ class _Handler(BaseHTTPRequestHandler):
                         pending_by_label[lbl_display] = pending_by_label.get(lbl_display, 0) + 1
                         pending_by_base[base] = pending_by_base.get(base, 0) + 1
                         if ag:
-                            by_agent.setdefault(ag, {"attempt": 0, "winner": 0})
+                            by_agent.setdefault(ag, {"attempt": 0, "winner": 0, "fail": 0})
                             by_agent[ag]["attempt"] += 1
                             by_label_agent[lbl_display].setdefault(ag, {"attempt": 0, "winner": 0, "ok": 0, "fail": 0})
                             by_label_agent[lbl_display][ag]["attempt"] += 1
@@ -4425,18 +4445,31 @@ class _Handler(BaseHTTPRequestHandler):
                         by_label[lbl_display]["fail"] += 1
                         by_base_label[base]["fail"] += 1
                         if ag:
+                            by_agent.setdefault(ag, {"attempt": 0, "winner": 0, "fail": 0})
+                            by_agent[ag]["fail"] += 1
                             by_label_agent[lbl_display].setdefault(ag, {"attempt": 0, "winner": 0, "ok": 0, "fail": 0})
                             by_base_label_agent[base].setdefault(ag, {"attempt": 0, "winner": 0, "ok": 0, "fail": 0})
                         if ag and ag in by_label_agent.get(lbl_display, {}):
                             by_label_agent[lbl_display][ag]["fail"] += 1
                         if ag and ag in by_base_label_agent.get(base, {}):
                             by_base_label_agent[base][ag]["fail"] += 1
+                        err_text = str(rec.get("error", "") or "")
+                        if err_text:
+                            recent_errors.append(
+                                {
+                                    "ts": rec.get("ts", 0),
+                                    "day": day,
+                                    "label": lbl_display,
+                                    "agent": ag or str(rec.get("resolved_model", "") or ""),
+                                    "error": err_text[:200],
+                                }
+                            )
                     elif ev == "winner":
                         winner += 1
                         by_label[lbl_display]["winner"] += 1
                         by_base_label[base]["winner"] += 1
                         if ag:
-                            by_agent.setdefault(ag, {"attempt": 0, "winner": 0})
+                            by_agent.setdefault(ag, {"attempt": 0, "winner": 0, "fail": 0})
                             by_agent[ag]["winner"] += 1
                             by_label_agent[lbl_display].setdefault(ag, {"attempt": 0, "winner": 0, "ok": 0, "fail": 0})
                             by_label_agent[lbl_display][ag]["winner"] += 1
@@ -4501,11 +4534,15 @@ class _Handler(BaseHTTPRequestHandler):
                 "avg_failed_depth": round(avg_f, 2) if fd else 0,
                 "pending": pending_by_base.get(base, 0),
             }
+        recent_errors.sort(key=lambda r: r.get("ts", 0))
+        recent_errors = recent_errors[-40:]
+        recent_errors.reverse()
         self._send_json(
             200,
             {
                 "days": day_stats,
                 "by_agent": by_agent,
+                "recent_errors": recent_errors,
                 "by_label": by_label,
                 "by_label_agent": by_label_agent,
                 "by_label_depth": by_label_depth,
