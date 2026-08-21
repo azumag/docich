@@ -281,3 +281,13 @@
 - **予想**: 既存の`48ゲーム中に建国できる？`はHTTP 200／LOCKEDのまま。現時点の蓄積は46/48で、分析中は解決条件未到達のため、作成・解決コードの追加変更は行わず次の2試合後に実測する。
 - **Twitchチャット／広告**: 送信・広告APIは依然としてInvalid OAuth token／HTTP401。トークン本文は取得・保存せず、ユーザー側の有効な権限付きトークン更新が必要な未達として残す。
 - **検証**: `tests.test_ai_generate_backoff` と `tests.test_improve_retry_reliability` 合計35件、`bash -n`、`git diff --check` 成功。VM反映前バックアップは `.codex_deploy/backup-20260821-0816-ai-chain-runtime` と `.codex_deploy/backup-20260821-0822-improve-retry-restore`。
+
+## 2026-08-21 09:22 JST — YouTube保留・バッチ解説/改善/予想の実パス完了
+
+- **YouTube**: リレーサーバーが必要なため今回も保留。workerは停止せず、OAuth `invalid_grant` と900秒backoffが残る未達として扱う。
+- **バッチ解説**: 完全な48試合単位へ修正し、48〜95試合は同じバッチIDを使う。作業メモ風の先頭行を除去するガードも追加した。VMで `99bace571ca533a545dcd2e3`（48試合）のdone/explanationを生成し、平均1362.9、最高4354、ロシア1/48、ソ連0/48を含む解説本文を確認。`comment_announce_1787270675328069271_batch_commentary.playing` が09:06:14に再生済み。旧仕様で作られた49試合doneは履歴として残るが、今後のトリガーは完全バッチ単位。
+- **改善AI**: LiteLLM生存確認を`/health/liveliness`へ修正し、失敗状態で失われた同一hash retry lockを復元する経路を追加。今回の改善はVMへ適用され、`strategy.py`のdecide hashはVM/ローカルとも`1a99aa3e5244`、`accumulated_games.json`は新サイクルの2試合、`improve_state=idle`となった。type14ではロシアフェーズを発火させず、type15のみで発火する差分とT14 merge priorityの再キーイングを実際に同期した（soviet_now `3d2fb70c6`）。
+- **レビュー引数長対策**: 旧実行ではStage 3のCodex/opencode候補が`Argument list too long`で全滅したが、runtime smoke後の適用は完了した。`strategy/ai.sh`をCodex/opencodeともプロンプトargv渡しから標準入力へ変更し、次回レビューで同じ失敗を避ける。VM反映前バックアップは`.codex_deploy/backup-20260821-0915-ai-stdin`。
+- **予想**: 直前の「48ゲーム中に建国できる？」は、 outcome「ロシア建国(ソ連不成立)」でRESOLVED。改善後に新しい同名予想（`prediction_window=1800`）が自動作成され、09:20 JST時点でACTIVE、蓄積2/48。自動作成・解決機構の再開を実測した。
+- **残る外部認証ブロッカー**: Twitchチャット送信と広告APIはInvalid OAuth/HTTP401のまま。トークン本文は取得・保存しておらず、ユーザー側で適切な権限付きトークンを更新するまで未達。YouTubeも同様に今回の対象外。
+- **検証**: AI/改善回帰36件、stat-gate/continuous改善6件、dashboard回帰25件、`bash -n`、`py_compile`、`git diff --check`が成功。VM `soren-runtime.service=active`、LiteLLM liveliness=`I'm alive!`を確認。
