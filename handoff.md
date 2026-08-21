@@ -1,8 +1,25 @@
 # セッション引き継ぎ (handoff)
 
-> 生成日時: 2026-08-21 05:38 JST  /  作業ディレクトリ: /Users/azumag/work/docich
+> 生成日時: 2026-08-22 02:4x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: chat pause中の outbound queue 蓄積防止（enqueue_chat_message の no-op）を soviet_now 715251b7a → docich a37a20f で完遂、VM反映・検証（queue 0維持）まで完了。chat は pause 中。
+> 直前セッション: WebUIにStreamタブ（配信オンオフ・チャット停止/再開・配信設定）を追加し、VM実測（画面描画＋本番stop→startサイクル）まで完了。docich `d15f6cb`。
+
+## 2026-08-22 02:4x JST — WebUI Streamタブ追加（配信オンオフ・設定UI）（実装・VM反映・実測済み）
+
+- **ユーザー要求**: webuiに配信のオンオフ、設定などのUIがほしい。
+- **実装**（docich `d15f6cb`、main/handoff branch push済み）:
+  - `GET /api/stream`: `tmp/state/direct_stream/status.json` ＋ pause マーカー判定で `{state: live|paused|off, fps, bitrate, drop_frames, out_time, uptime_sec, pid, ffmpeg_pid, chat_paused, ...}` を返す。runningはPID生存確認込み。
+  - `POST /api/stream {action}`: **stop** = `tmp/state/direct_stream.paused` マーカー作成 → runner/ffmpegへSIGTERM（猶予半分超過でKILL、最大10秒）。**start** = マーカー削除 → supervisor自動respawnを最大20秒待機。無関係プロセス誤殺防止に `/proc/<pid>/cmdline` ガード（`direct_stream` or ffmpeg basename。macOSは読めないため許可）。
+  - `POST /api/chat {action}`: `tmp/state/chat_worker.paused` のトグル。シグナル不要 — chat_workerがマーカーを自己検知して park/resume（既存機構のUI化）。
+  - 配信設定キーを WEBUI_ALLOWLIST/DEFAULTS へ追加（`SOREN_DIRECT_STREAM_SIZE/FPS/VIDEO_KBPS/AUDIO_KBPS/AUDIO_DELAY_MS`、`DOCICH_CC_ENABLED`）。バリデータは lib/direct_stream.py load_config と同じ範囲（例: FPS 1-60、映像500-6000kbps、解像度偶数320-3840x180-2160）。**反映には配信再起動が必要**な旨をUI明記。
+  - UI: 新「Stream」タブ。状態KPI（LIVE緑表示）、詳細kv、start/stopボタン（confirm付き、状態でdisable）、チャットトグル、設定フォーム。10秒自動更新。read_onlyモードでは操作ボタン無効。
+- **テスト**: `tests/test_webui.py` +15件（バリデータ、state遷移3態、マーカー、HTTP roundtrip、read_only 403、invalid action 400）→ 計86件全成功（python3.14）。
+- **VM反映**: `/home/ubuntu/docich` fetch→reset→origin/main `d15f6cb` 同期、`systemctl --user restart docich-webui` active。
+- **実測検証**:
+  - 画面: VM上で独立headless chromium（playwright、ゲームbridgeには非接触）でStreamタブを開き、「LIVE」表示・ffmpeg|1280x720|29.99fps|4634.5kbits/s・stop有効/start無効・fps入力30 をスクリーンショット+DOM実測。
+  - API: pre state=live（runner pid 2862374、Twitch 35.55.x＋YouTube 64.233.x レグESTAB）。
+  - **本番stop→startサイクル（ユーザー承諾済み）**: stop=4.0秒でgraceful完了（escalated_kill:false、runner/ffmpeg 0件、マーカー作成）。8秒以上pause維持でsupervisor再起動なし・レグ0を確認。start=2.0秒でlive復帰（新PID 3213009/3213100）、12秒後にbitrate 4536kbps安定、Twitch/YouTube両レグESTAB再確認。
+- **備考**: 検証中に `.env` へ `SOREN_DIRECT_STREAM_FPS=30` を書くPUT試験を実施（既定値と同値のため挙動不変。webuiが自動バックアップ `.env.bak.1787332928394114748` 作成）。chatトグルの実運用テストは未実施（機構自体はhandoff既記載のpause/resume実測済み）。opusサブエージェントは設計委任時に空回答×2だったため設計・セルフレビューはメインループで実施。
 
 ## 2026-08-22 02:2x JST — AIレーン同時実行制御の実装（実装・VM反映・実測済み）
 
