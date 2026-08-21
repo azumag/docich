@@ -1,8 +1,22 @@
 # セッション引き継ぎ (handoff)
 
-> 生成日時: 2026-08-22 03:0x JST  /  作業ディレクトリ: /Users/azumag/work/docich
+> 生成日時: 2026-08-22 04:4x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: Ralph Loop「ソ連建国できるように改善ループ自体の改善を含む戦略(strategy.py)改善」の反復1。failed_no_apply多発の根本対策（no_apply backoff上限分離・分析タイムアウト短縮）を実装・VM反映。soviet_now `8117b12e5`。
+> 直前セッション: 正午監査ワーカー(stream_noon_audit)を実装・VM反映。次の正午(JST)発火と定常サイクル化が未観測。docich `0ae8436` / soviet_now `969078497`。
+
+## 2026-08-22 04:4x JST — 配信開始位相の正午監査ワーカー新設（実装・VM反映・テスト済み／実正午発火は未観測）
+
+- **ユーザー要件**: Twitchの48h強制切断後に「JST 12:00 正午開始・約2日周期」へ自動是正したい。当初案「正午チェックで稼働34h以上なら再起動」は**不十分**と解析: カット後のsupervisor即再接続が位相を保存するため、正午に観測される稼働時間は位相φにつき `{24−φ}, {48−φ}` の2値のみ。開始が02:00〜12:00帯(φ>14h)だと閾値に届く前に48hカットが来て永久に非正午ループに固定される(例: 08:00開始では正午uptimeが4h/28hを行き来)。
+- **採用設計**: Twitchカットを「正確な48hタイマー」として利用し位相だけ監査。毎日JST 12:00に1回、現在の `started_at` のJST時刻が正午±`STREAM_NOON_AUDIT_TOLERANCE_SEC`(既定600s)以内なら無処置、外れていれば wiki正規手順 (`lib/direct_stream.py stop`) → 一時pause marker(`tmp/state/direct_stream.paused`)でsupervisor再spawnを防ぎつつ graceful停止 → marker削除 → respawn待ち(90s) → 超過時は自前起動フォールバック(direct_stream.py run の flock が二重防止)。任意の乱れから最長2日で正午グリッドへ収束。定常状態ではTwitchカットが正午付近で来るため強制再起動ゼロ。EXIT trapで異常終了時もmarker解除(dead air防止)。是正過渡期だけ配信短縮があり得る(位相とラン長は両立不可、仕様)。
+- **実装**（soviet_now `50f3cb057`+`969078497`、親 docich submodule bump `0ae8436`、各push済み）:
+  - 新規 `workers/stream_noon_audit.sh`: 日次マーカー `tmp/state/stream_noon_audit/<jst_day>.json` に decision/outcome を記録(1日1回保証)。skipped_paused(意図的停止は触れない)/skipped_not_running/skipped_bad_status/no_action/restart_required→restarted|restart_failed を判別。
+  - `start_all.sh`: ffmpeg backend roster へ `stream_noon_audit` 追加(pidfile/pattern/重複検出python辞書/`STREAM_NOON_AUDIT_ENABLED!=1`時スキップ)。
+  - 新規 `tests/test_stream_noon_audit.sh` 27項目(stub status/stop/run/now で分岐網羅)。config.sh は未変更(既定値はワーカー内蔵、`.env` 上書き可: ENABLED/POLL_SEC/TOLERANCE_SEC/RESPAWN_WAIT_SEC/STOP_TIMEOUT_SEC ほかパス系)。webui の worker 一覧は `tmp/state/*.pid` glob で自動表示されるためUI変更なし。
+- **テスト**: ローカルmacOS 4回・VM 1回すべて 27/27。開発中に検出したバグ: `_log`がstdoutへ流れて`_restart_stream`の戻り値を汚染(stderrへ修正)、実行ビット欠落(100755へ修正)、テスト側はgrep -c終端コード/grep -E交互パターン/launch直後0.3sのpidfileレースを修正。
+- **VM反映**: `.codex_deploy/backup-20260822-0430-noon-audit/start_all.sh` 退避後、start_all.sh+worker+testをscp、SHA256一致(`13d82c3b`/`e74fc7a0`/`62072017`)、bash -n成功。`sudo systemctl restart soren-runtime.service` 完全再起動(**配信が04:38:49→04:38:57の約8秒途切れ**)。新rosterで `stream_noon_audit`(PID 389335)起動・workerログに起動行を実測。Twitch(35.55.x)/YouTube(74.125.x)両レグESTAB再確認。
+- **dry-run実測**: 再開直後のstatus.jsonに対し位相計算を実行 → started_at=1787341137(04:38:57 JST)、offset_diff=-26463s>600s → restart_required 判定。**本日12:00 JSTに最初の自動張り直しが入る**(視聴者からは数十秒の切断)。
+- **未確認**: (1) 実正午での初回発火と、その後Twitchカットが正午付近に定着するサイクルの運用観測(本日12:00と翌日以降)。(2) Twitch 48hカット実際の実施時刻ジッタ(±600s許容に入るか。外れる日は1回余分に是正が走るだけだが観測は必要)。(3) 日中の手動stop/start直後が正午へ引き戻される挙動の実運用確認。
+- **運用メモ**: 無効化は VM `.env` へ `STREAM_NOON_AUDIT_ENABLED=0` + soren-runtime再起動。当日分の再監査は `tmp/state/stream_noon_audit/<jst_day>.json` 削除で。
 
 ## 2026-08-22 04:0x JST — 改善ループ自体の改善（no_apply backoff上限600s・Stage1タイムアウト900s）実装・VM反映済み
 
