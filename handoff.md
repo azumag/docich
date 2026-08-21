@@ -61,6 +61,11 @@
 - **運用知見（重要）**: ①`soren-runtime.service` ユニットは現存しない（`systemctl --user cat` → No files found）。実態は `start_all.sh --supervisor`(PPID=1) 直下＋python watchdog。旧handoffの同unit表記は要読み替え。②watchdogは `_find_existing_worker_pid` で**残存プロセスを採用する**ため、単一PIDだけTERMすると旧環境のstrayサブシェルを採用してしまう。正規の完全再起動は **同名プロセスを全部killしてから** watchdogにspawnさせること。③soren_loopは `tmp/improve.lock` 存命中は意図的にrespawnしない設計（`start_all.sh` 監視ループ内 `continue`）— 改善完了後に自動復帰。④`/proc/<pid>/environ` はexec時スナップショットなので、起動後にsourceした `.env` 値は映らない（検証はworker起動経路の再現 `bash -c 'set -a && . ./.env && echo ...'` で行う）。
 - **検証実測**: sourcing-proof `comment=180 radio=300` ✓（worker起動経路そのもの、新PIDは.env改変後の起動）。配信 running=True/30fps/4632kbps 維持 ✓。chat_worker IRC起動ログ ✓。
 - **未確認**: (1) 実トラフィックでの `timeout after 180s/300s` ログへの変化（次回タイムアウト時に観測）。(2) soren_loopの改善完了後自動復帰（設計上の待ち。強制spawnはしていない）。(3) RADIO 300sでも x-preview-f-free のp90 376s超え層は落ちる可能性（チェーン後段で拾う）。
+- **反映後の実トラフィック観測（05:01-05:22実測）**:
+  - **効果の直接実証**: 05:17:45にCOMMENT(amd-deepseek-flash)が**173秒でok→winner**。旧90s制限ならタイムアウトしていた呼び出しが新180sで成功。ただし残り7秒の僅差であり、さらに余裕を持たせる検討余地あり。
+  - **RADIO prepassは未試験**: deals/news/soviet prepassはimproveゲートで1200s満額待ち→05:21-05:22にrc=1でゲート放棄（タイムアウトではなく設計どおりの諦め）。新300sのcodex呼出しには未到達。次回改善サイクル非稼働時の生成で初観測となる。
+  - **soren_loop自動復帰確認**: 04:38:54にwatchdogがrespawn ✓（improve.lock待ち設計どおり）。
+  - **新たな観測課題（未対応）**: 改善レーンの `ANALYZE(1):primary` が**900秒タイムアウトで2回連続rc=124**（05:01:41・05:16:41、`strategy/ai.sh` run_cmdの `/usr/bin/timeout 900` を実測）。今回変更外のIMPROVE系固有上限だが「タイムアウト短すぎ」パターンが改善レーンにも存在。900の出所と適正値の調査は次タスク候補。
 
 ## 2026-08-22 03:0x JST — WebUI配信停止をwiki正規手順(stdin q)へ準拠（実装・VM反映・単体テスト済み／ライブstop未実施）
 
