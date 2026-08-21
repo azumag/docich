@@ -48,6 +48,13 @@ WEBUI_ALLOWLIST = {
     # improve peak (core/config.sh:289-292)
     "IMPROVE_PEAK_CHAIN_ENABLED",
     "IMPROVE_PEAK_HOUR_DEFER_ENABLED",
+    # stream (lib/direct_stream.py load_config) — 変更反映には direct_stream の再起動が必要
+    "SOREN_DIRECT_STREAM_SIZE",
+    "SOREN_DIRECT_STREAM_FPS",
+    "SOREN_DIRECT_STREAM_VIDEO_KBPS",
+    "SOREN_DIRECT_STREAM_AUDIO_KBPS",
+    "SOREN_DIRECT_STREAM_AUDIO_DELAY_MS",
+    "DOCICH_CC_ENABLED",
 }
 
 # hard defaults from core/config.sh
@@ -70,6 +77,13 @@ DEFAULTS: dict[str, str] = {
     "PEAK_HOURS_QUEUE_GATE_ENABLED": "1",
     "IMPROVE_PEAK_CHAIN_ENABLED": "0",
     "IMPROVE_PEAK_HOUR_DEFER_ENABLED": "0",
+    # lib/direct_stream.py load_config の既定値
+    "SOREN_DIRECT_STREAM_SIZE": "1280x720",
+    "SOREN_DIRECT_STREAM_FPS": "30",
+    "SOREN_DIRECT_STREAM_VIDEO_KBPS": "4500",
+    "SOREN_DIRECT_STREAM_AUDIO_KBPS": "160",
+    "SOREN_DIRECT_STREAM_AUDIO_DELAY_MS": "0",
+    "DOCICH_CC_ENABLED": "0",
 }
 
 AGENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
@@ -101,6 +115,24 @@ AUDIO_TEXT_LIMIT = 1000
 AUDIO_SOURCE_RE = re.compile(r"^[A-Za-z0-9._-]{1,32}$")
 AUDIO_SPEAKER_RE = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
 AUDIO_QUEUE_PREVIEW_LEN = 120
+
+# --- stream control constants ---------------------------------------------------
+# 配信 (direct_stream worker) とチャット送信のオンオフは supervisor (start_all.sh)
+# の pause gate (`tmp/state/<worker>.paused` マーカー) を通じて行う。マーカーが
+# ある間 supervisor は当該 worker を起動・respawn しない。
+TOGGLEABLE_WORKERS = ("direct_stream", "chat_worker")
+STREAM_WORKER = "direct_stream"
+STREAM_STOP_WAIT_SEC = 10
+STREAM_START_WAIT_SEC = 20
+STREAM_SIZE_RE = re.compile(r"^([0-9]{2,5})x([0-9]{2,5})$")
+
+# lib/direct_stream.py load_config の検証範囲と一致させる
+STREAM_INT_RANGES: dict[str, tuple[int, int]] = {
+    "SOREN_DIRECT_STREAM_FPS": (1, 60),
+    "SOREN_DIRECT_STREAM_VIDEO_KBPS": (500, 6000),
+    "SOREN_DIRECT_STREAM_AUDIO_KBPS": (64, 320),
+    "SOREN_DIRECT_STREAM_AUDIO_DELAY_MS": (0, 2000),
+}
 
 # --- helpers -----------------------------------------------------------------
 
@@ -505,6 +537,30 @@ def _validate_value(key: str, value: str) -> None:
     if key == "PEAK_HOURS_TZ":
         if not TZ_RE.match(value.strip()):
             raise ValueError(f"{key} は IANA タイムゾーン名 (例: Asia/Tokyo) である必要があります")
+        return
+    if key == "SOREN_DIRECT_STREAM_SIZE":
+        m = STREAM_SIZE_RE.match(value.strip())
+        if not m:
+            raise ValueError(f"{key} は WIDTHxHEIGHT 形式 (例: 1280x720) である必要があります")
+        w, h = int(m.group(1)), int(m.group(2))
+        if not (320 <= w <= 3840) or not (180 <= h <= 2160):
+            raise ValueError(f"{key} は 320-3840 x 180-2160 の範囲で指定してください")
+        if w % 2 or h % 2:
+            raise ValueError(f"{key} は偶数の幅・高さである必要があります")
+        return
+    if key in STREAM_INT_RANGES:
+        lo, hi = STREAM_INT_RANGES[key]
+        v = value.strip()
+        if not v.isdigit():
+            raise ValueError(f"{key} は整数である必要があります")
+        if not (lo <= int(v) <= hi):
+            raise ValueError(f"{key} は {lo}-{hi} の範囲で指定してください")
+        return
+    if key == "DOCICH_CC_ENABLED":
+        # lib/direct_stream.py の _strict_bool は true/1/yes/on を真と判定するが、
+        # .env は bash source されるため安全な 0/1 のみ許容する
+        if value.strip() not in ("0", "1"):
+            raise ValueError(f"{key} は 0 または 1 である必要があります")
         return
     raise ValueError(f"未知のキーです: {key}")
 
@@ -1767,6 +1823,195 @@ def _find_worker_pid(soren_root: Path, worker: str) -> int | None:
         return None
 
 
+def _worker_pause_marker_path(soren_root: Path, worker: str) -> Path:
+    if worker not in TOGGLEABLE_WORKERS:
+        raise ValueError(f"unsupported worker: {worker}")
+    return soren_root / "tmp/state" / f"{worker}.paused"
+
+
+def _is_worker_paused(soren_root: Path, worker: str) -> bool:
+    try:
+        return _worker_pause_marker_path(soren_root, worker).is_file()
+    except Exception:
+        return False
+
+
+def _set_worker_paused(soren_root: Path, worker: str, paused: bool) -> None:
+    marker = _worker_pause_marker_path(soren_root, worker)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    if paused:
+        payload = json.dumps(
+            {"paused": True, "ts": int(time.time()), "source": "webui"},
+            ensure_ascii=False,
+        )
+        tmp = marker.with_name(marker.name + f".tmp{os.getpid()}")
+        tmp.write_text(payload + "\n", encoding="utf-8")
+        os.replace(tmp, marker)
+        try:
+            os.chmod(marker, 0o644)
+        except OSError:
+            pass
+    else:
+        try:
+            marker.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _stream_status_file(soren_root: Path) -> Path:
+    # lib/direct_stream.py load_config 既定の SOREN_DIRECT_STREAM_STATE_DIR
+    return soren_root / "tmp/state/direct_stream/status.json"
+
+
+def _get_stream_status(soren_root: Path) -> dict[str, Any]:
+    """配信 (direct_stream) の状態スナップショット。
+
+    state は次の3値:
+      - "live":   runner/ffmpeg プロセスが生存し status.json も running
+      - "paused": 停止マーカーあり (オペレータ意図によるオフ、supervisor respawn 対象外)
+      - "off":    マーカーなしでプロセスがいない (異常終了・supervisor 停止など)
+    """
+    paused = _is_worker_paused(soren_root, STREAM_WORKER)
+    data = _load_json_file(_stream_status_file(soren_root))
+    if not isinstance(data, dict):
+        data = {}
+    runner_pid = data.get("pid")
+    ffmpeg_pid = data.get("ffmpeg_pid")
+    runner_alive = isinstance(runner_pid, int) and _is_pid_alive(runner_pid)
+    ffmpeg_alive = isinstance(ffmpeg_pid, int) and _is_pid_alive(ffmpeg_pid)
+    reported_running = bool(data.get("running"))
+    running = reported_running and (runner_alive or ffmpeg_alive)
+    if running:
+        state = "live"
+    elif paused:
+        state = "paused"
+    else:
+        state = "off"
+    started_at = data.get("started_at") if isinstance(data.get("started_at"), int) else None
+    updated_at = data.get("updated_at") if isinstance(data.get("updated_at"), int) else None
+    now = int(time.time())
+    out: dict[str, Any] = {
+        "ok": True,
+        "state": state,
+        "paused": paused,
+        "running": running,
+        "backend": str(data.get("backend", "")) or None,
+        "mode": data.get("mode"),
+        "fps": data.get("fps"),
+        "bitrate": data.get("bitrate"),
+        "speed": data.get("speed"),
+        "progress": data.get("progress"),
+        "frame": data.get("frame"),
+        "drop_frames": data.get("drop_frames"),
+        "dup_frames": data.get("dup_frames"),
+        "out_time": data.get("out_time"),
+        "pid": runner_pid if isinstance(runner_pid, int) and runner_pid > 0 else None,
+        "ffmpeg_pid": ffmpeg_pid if isinstance(ffmpeg_pid, int) and ffmpeg_pid > 0 else None,
+        "runner_alive": runner_alive,
+        "ffmpeg_alive": ffmpeg_alive,
+        "started_at": started_at,
+        "updated_at": updated_at,
+        "uptime_sec": (now - started_at) if isinstance(started_at, int) and started_at > 0 else None,
+        "status_age_sec": (now - updated_at) if isinstance(updated_at, int) and updated_at > 0 else None,
+        "now": now,
+    }
+    cfg = data.get("config")
+    if isinstance(cfg, dict):
+        for k in ("width", "height", "video_kbps", "audio_kbps", "closed_captions_active"):
+            if k in cfg:
+                out[k] = cfg.get(k)
+    out["chat_paused"] = _is_worker_paused(soren_root, "chat_worker")
+    return out
+
+
+def _pid_matches_stream_process(pid: int) -> bool:
+    """Linux /proc で cmdline を確認し、誤って無関係プロセスを殺さないガード。
+
+    /proc が読めない環境 (macOS 等) は確認不能のため True (許可) を返す。
+    runner (`lib/direct_stream.py run`) と ffmpeg バイナリの両方を許容する。
+    """
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return True
+    except Exception:
+        return True
+    parts = [p.decode("utf-8", "ignore") for p in raw.split(b"\x00") if p]
+    if not parts:
+        return False
+    joined = " ".join(parts)
+    if "direct_stream" in joined:
+        return True
+    argv0 = Path(parts[0]).name
+    return argv0 == "ffmpeg"
+
+
+def _stream_runner_pids(soren_root: Path) -> list[int]:
+    """停止対象の runner / ffmpeg pid を status.json と pidfile の両方から収集する。"""
+    pids: list[int] = []
+    seen: set[int] = set()
+    candidates: list[Any] = []
+    data = _load_json_file(_stream_status_file(soren_root))
+    if isinstance(data, dict):
+        candidates.extend([data.get("pid"), data.get("ffmpeg_pid")])
+    pid_file = soren_root / "tmp/state" / f"{STREAM_WORKER}.pid"
+    try:
+        raw = pid_file.read_text(encoding="utf-8", errors="ignore").strip().splitlines()[0]
+        candidates.append(int(raw.strip()))
+    except Exception:
+        pass
+    for c in candidates:
+        if isinstance(c, int) and c > 0 and c not in seen:
+            seen.add(c)
+            if _pid_matches_stream_process(c):
+                pids.append(c)
+    return pids
+
+
+def _stop_stream_runner(soren_root: Path) -> dict[str, Any]:
+    """pause マーカー作成後、runner へ SIGTERM (graceful)。猶予内に止まらなければ KILL へ切替。"""
+    _set_worker_paused(soren_root, STREAM_WORKER, True)
+    deadline = time.monotonic() + STREAM_STOP_WAIT_SEC
+    escalated = False
+    while time.monotonic() < deadline:
+        alive = [p for p in _stream_runner_pids(soren_root) if _is_pid_alive(p)]
+        if not alive:
+            break
+        if escalated:
+            for p in alive:
+                try:
+                    os.kill(p, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+        else:
+            for p in alive:
+                try:
+                    os.kill(p, signal.SIGTERM)
+                except (ProcessLookupError, PermissionError):
+                    pass
+        time.sleep(0.5)
+        # 猶予の半分を過ぎたら強制終了へ切り替え
+        if not escalated and time.monotonic() > deadline - STREAM_STOP_WAIT_SEC / 2:
+            escalated = True
+    remaining = [p for p in _stream_runner_pids(soren_root) if _is_pid_alive(p)]
+    return {
+        "stopped": not remaining,
+        "escalated_kill": escalated,
+        "remaining_pids": remaining,
+    }
+
+
+def _wait_for_stream_start(soren_root: Path) -> dict[str, Any]:
+    """マーカー削除後、supervisor による respawn を最大 STREAM_START_WAIT_SEC 待つ。"""
+    deadline = time.monotonic() + STREAM_START_WAIT_SEC
+    while time.monotonic() < deadline:
+        st = _get_stream_status(soren_root)
+        if st.get("state") == "live":
+            return st
+        time.sleep(1.0)
+    return _get_stream_status(soren_root)
+
+
 def _send_reload(soren_root: Path) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for worker in ("radio_worker", "chat_worker"):
@@ -1915,6 +2160,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 <nav id="tabs">
 <button data-tab="dashboard" class="active">Dashboard</button>
 <button data-tab="status">Status</button>
+<button data-tab="stream">Stream</button>
 <button data-tab="overlay">Overlay</button>
 <button data-tab="audio">Audio</button>
 <button data-tab="predictions">Predictions</button>
@@ -1958,6 +2204,44 @@ input:checked+.slider:before{transform:translateX(20px)}
 <div class="card"><h3>Workers 詳細</h3><div style="overflow:auto"><table><thead><tr><th>worker</th><th>pid</th><th>status</th></tr></thead><tbody id="status-workers"></tbody></table></div></div>
 <div class="card"><h3>Game Count</h3><div class="kv"><dt>value</dt><dd id="status-game-count" class="mono">-</dd><dt>path</dt><dd id="status-game-count-path" class="mono">-</dd></div></div>
 <div class="actions"><button class="btn" id="status-refresh">更新</button></div>
+</div>
+</section>
+<!-- STREAM -->
+<section id="tab-stream" style="display:none">
+<div class="card"><h2>配信コントロール</h2><p class="desc">ffmpeg direct_stream (supervisor 管理) のオンオフ。10秒ごとに自動更新。</p>
+<div class="grid2">
+<div class="card kpi"><h3>配信状態</h3><div class="val" id="stream-state">-</div><div class="subk mono" id="stream-state-sub">-</div></div>
+<div class="card kpi"><h3>チャット送信</h3><div class="val" id="chat-state">-</div><div class="subk mono" id="chat-state-sub">-</div></div>
+</div>
+<div class="kv" id="stream-detail"></div>
+<div class="actions">
+<button class="btn primary" id="stream-start">配信開始 (start)</button>
+<button class="btn danger" id="stream-stop">配信停止 (stop)</button>
+<button class="btn" id="stream-refresh">更新</button>
+<span id="stream-msg" class="help"></span>
+</div>
+<div class="help">stop は <code>tmp/state/direct_stream.paused</code> マーカー作成後に runner へ SIGTERM (graceful、猶予後半で KILL)。start はマーカー削除後、supervisor の自動再起動 (約3秒周期) を最大20秒待ちます。supervisor (soren-runtime) 停止中は自動起動しません。</div>
+</div>
+<div class="card"><h3>チャット送信の停止 / 再開</h3><p class="desc"><code>tmp/state/chat_worker.paused</code> で制御。停止中は IRC 受信・コメント生成・投稿キュー消費が止まり、新規 enqueue も積まれません (worker が自己 park / marker 削除で自動復帰)。</p>
+<div class="actions">
+<button class="btn primary" id="chat-start">チャット再開 (start)</button>
+<button class="btn danger" id="chat-stop">チャット停止 (stop)</button>
+</div>
+<div id="chat-msg" class="help"></div>
+</div>
+<div class="card"><h3>配信設定 (.env)</h3><p class="desc"><code>SOREN_DIRECT_STREAM_*</code> 設定 (.env へ保存)。変更は <b>配信の再起動 (stop → start) 後に反映</b>されます。</p>
+<div class="row">
+<div><label>解像度 WIDTHxHEIGHT (320-3840 x 180-2160, 偶数)</label><input id="stream-size" placeholder="1280x720"/></div>
+<div><label>FPS (1-60)</label><input id="stream-fps" placeholder="30"/></div>
+<div><label>映像ビットレート kbps (500-6000)</label><input id="stream-vkbps" placeholder="4500"/></div>
+</div>
+<div class="row">
+<div><label>音声ビットレート kbps (64-320)</label><input id="stream-akbps" placeholder="160"/></div>
+<div><label>音声遅延 ms (0-2000)</label><input id="stream-delay" placeholder="0"/></div>
+<div style="align-self:end;display:flex;gap:8px;align-items:center"><label class="switch"><input type="checkbox" id="stream-cc"><span class="slider"></span></label><span id="stream-cc-label" class="badge" style="margin-left:8px">CC off</span></div>
+</div>
+<div class="actions"><button class="btn primary" id="stream-settings-save">設定を保存</button><button class="btn" id="stream-settings-reload">再読込</button></div>
+<div id="stream-settings-msg" class="help"></div>
 </div>
 </section>
 <!-- OVERLAY -->
@@ -2315,6 +2599,7 @@ async function loadConfig(){
   renderChains(entries);
   renderBackoff(entries);
   renderPeak(entries);
+  renderStreamSettings(entries);
   // health badge
   const hb = $("#health-badge");
   hb.textContent = READ_ONLY?"read-only":"read-write";
@@ -2324,7 +2609,7 @@ async function loadConfig(){
   try{ const ps=await api("/api/peak_status"); $("#peak-now").textContent=ps.is_peak_now?"ピーク中":"オフピーク"; $("#peak-now-str").textContent=ps.now_str||"-"; $("#peak-now-windows").textContent=ps.windows||"(なし)"; }catch(e){}
 }
 function applyReadOnly(){
-  $$("main button").forEach(b=>{ b.disabled = READ_ONLY && b.id !== "backoff-refresh" && b.id !== "stats-refresh" && b.id !== "health-refresh" && b.id !== "chains-reload" && b.id !== "backoff-reload" && b.id !== "peak-reload" && b.id !== "prediction-refresh"; });
+  $$("main button").forEach(b=>{ b.disabled = READ_ONLY && b.id !== "backoff-refresh" && b.id !== "stats-refresh" && b.id !== "health-refresh" && b.id !== "chains-reload" && b.id !== "backoff-reload" && b.id !== "peak-reload" && b.id !== "prediction-refresh" && b.id !== "stream-refresh" && b.id !== "stream-settings-reload"; });
   $$("main input, main textarea, main select").forEach(el=>{ if(READ_ONLY) el.disabled=true; else el.disabled=false; });
   // disable chain inherit etc will be handled in render
 }
@@ -3242,6 +3527,107 @@ function drawSparkline(days){
 }
 let statusTimer=null;
 let overlayPreviewTimer=null;
+let streamTimer=null;
+function renderStream(d){
+  const stateMap={live:"LIVE",paused:"停止中 (paused)",off:"オフ"};
+  const el=$("#stream-state");
+  if(el){ el.textContent=stateMap[d.state]||String(d.state); el.style.color=d.state==="live"?"#4ade80":"inherit"; }
+  const sub=$("#stream-state-sub");
+  if(sub){
+    const parts=[];
+    if(d.backend) parts.push(String(d.backend));
+    if(d.width&&d.height) parts.push(`${d.width}x${d.height}`);
+    if(d.fps) parts.push(`${d.fps}fps`);
+    if(d.bitrate) parts.push(String(d.bitrate));
+    sub.textContent=parts.join(" | ")||"-";
+  }
+  const kv=$("#stream-detail");
+  if(kv){
+    const rows=[
+      ["state",d.state],["running",d.running],["paused(マーカー)",d.paused],
+      ["pid",d.pid],["ffmpeg_pid",d.ffmpeg_pid],["runner_alive",d.runner_alive],["ffmpeg_alive",d.ffmpeg_alive],
+      ["drop_frames",d.drop_frames],["dup_frames",d.dup_frames],["out_time",d.out_time],
+      ["uptime_sec",d.uptime_sec],["status_age_sec",d.status_age_sec]
+    ];
+    kv.innerHTML=rows.map(([k,v])=>`<dt>${esc(k)}</dt><dd class="mono">${esc(String(v??"-"))}</dd>`).join("");
+  }
+  const cs=$("#chat-state");
+  if(cs) cs.textContent=d.chat_paused?"停止中":"稼働";
+  const css=$("#chat-state-sub");
+  if(css) css.textContent=d.chat_paused?"chat_worker.paused":"chat_worker 稼働中";
+  const sBtn=$("#stream-start"), stBtn=$("#stream-stop"), cStart=$("#chat-start"), cStop=$("#chat-stop");
+  if(sBtn) sBtn.disabled=(d.state==="live")||READ_ONLY;
+  if(stBtn) stBtn.disabled=(d.state==="paused")||READ_ONLY;
+  if(cStart) cStart.disabled=(!d.chat_paused)||READ_ONLY;
+  if(cStop) cStop.disabled=(!!d.chat_paused)||READ_ONLY;
+}
+async function loadStream(){
+  try{
+    const data=await api("/api/stream");
+    renderStream(data);
+  }catch(e){ console.warn("loadStream",e); toast(String(e),4000); }
+}
+async function streamAction(action){
+  if(READ_ONLY){ toast("read-only"); return; }
+  const confirmMsg=action==="stop"?"配信を停止しますか？視聴者には配信終了として見えます。":"配信を開始しますか？";
+  if(!confirm(confirmMsg)) return;
+  const msg=$("#stream-msg"); if(msg) msg.textContent="処理中...";
+  try{
+    const res=await api("/api/stream",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action})});
+    if(msg) msg.textContent=res.hint||((res.ok?"完了":"終了状態: ")+res.state);
+    toast(`配信 ${action}: ${res.state}`);
+    await loadStream();
+  }catch(e){ if(msg) msg.textContent=String(e); toast(String(e),5000); }
+}
+async function chatAction(action){
+  if(READ_ONLY){ toast("read-only"); return; }
+  const confirmMsg=action==="stop"?"チャット送信を停止しますか？（IRC受信・コメント生成・投稿が止まります）":"チャット送信を再開しますか？";
+  if(!confirm(confirmMsg)) return;
+  const msg=$("#chat-msg"); if(msg) msg.textContent="処理中...";
+  try{
+    const res=await api("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action})});
+    if(msg) msg.textContent=res.chat_paused?"停止しました (worker がループ周期内で park します)":"再開しました (worker が自動復帰します)";
+    toast(`チャット ${action}`);
+    await loadStream();
+  }catch(e){ if(msg) msg.textContent=String(e); toast(String(e),5000); }
+}
+const STREAM_SETTING_KEYS=["SOREN_DIRECT_STREAM_SIZE","SOREN_DIRECT_STREAM_FPS","SOREN_DIRECT_STREAM_VIDEO_KBPS","SOREN_DIRECT_STREAM_AUDIO_KBPS","SOREN_DIRECT_STREAM_AUDIO_DELAY_MS","DOCICH_CC_ENABLED"];
+function renderStreamSettings(entries){
+  const val=k=>{ const e=entries[k]; return e ? (e.value||e.effective||e.default||"") : ""; };
+  const set=(id,v)=>{ const el=document.getElementById(id); if(el) el.value=v; };
+  set("stream-size",val("SOREN_DIRECT_STREAM_SIZE")||"1280x720");
+  set("stream-fps",val("SOREN_DIRECT_STREAM_FPS")||"30");
+  set("stream-vkbps",val("SOREN_DIRECT_STREAM_VIDEO_KBPS")||"4500");
+  set("stream-akbps",val("SOREN_DIRECT_STREAM_AUDIO_KBPS")||"160");
+  set("stream-delay",val("SOREN_DIRECT_STREAM_AUDIO_DELAY_MS")||"0");
+  const cc=val("DOCICH_CC_ENABLED")==="1";
+  const ccEl=document.getElementById("stream-cc");
+  if(ccEl){ ccEl.checked=cc; const lb=document.getElementById("stream-cc-label"); if(lb) lb.textContent=cc?"CC on":"CC off"; }
+}
+async function saveStreamSettings(){
+  if(READ_ONLY){ toast("read-only"); return; }
+  const payload={
+    SOREN_DIRECT_STREAM_SIZE:String($("#stream-size").value||"").trim(),
+    SOREN_DIRECT_STREAM_FPS:String($("#stream-fps").value||"").trim(),
+    SOREN_DIRECT_STREAM_VIDEO_KBPS:String($("#stream-vkbps").value||"").trim(),
+    SOREN_DIRECT_STREAM_AUDIO_KBPS:String($("#stream-akbps").value||"").trim(),
+    SOREN_DIRECT_STREAM_AUDIO_DELAY_MS:String($("#stream-delay").value||"").trim(),
+    DOCICH_CC_ENABLED:(document.getElementById("stream-cc")&&document.getElementById("stream-cc").checked)?"1":"0"
+  };
+  if(!/^[0-9]{2,5}x[0-9]{2,5}$/.test(payload.SOREN_DIRECT_STREAM_SIZE)){ toast("解像度は WIDTHxHEIGHT 形式で入力してください"); return; }
+  for(const k of ["SOREN_DIRECT_STREAM_FPS","SOREN_DIRECT_STREAM_VIDEO_KBPS","SOREN_DIRECT_STREAM_AUDIO_KBPS","SOREN_DIRECT_STREAM_AUDIO_DELAY_MS"]){
+    if(!/^[0-9]+$/.test(payload[k])){ toast(k+" は整数で入力してください"); return; }
+  }
+  const msg=$("#stream-settings-msg"); if(msg) msg.textContent="保存中...";
+  try{
+    const res=await api("/api/config",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({values:payload,expected_mtime:ENV_MTIME})});
+    ENV_MTIME=res.env_mtime||ENV_MTIME;
+    $("#env-mtime").textContent=`mtime=${ENV_MTIME} ${fmtTime(ENV_MTIME)}`;
+    if(msg) msg.textContent="保存しました。配信の再起動 (stop → start) 後に反映されます。";
+    toast("保存しました");
+    await loadConfig();
+  }catch(e){ if(msg) msg.textContent=String(e); toast(String(e),5000); }
+}
 async function loadStatus(){
   try{
     const data=await api("/api/overlay/status");
@@ -3669,6 +4055,8 @@ document.addEventListener("DOMContentLoaded",()=>{
     if(tab==="dashboard") loadDashboard();
     if(tab==="status") { loadStatus(); if(statusTimer) clearInterval(statusTimer); statusTimer=setInterval(loadStatus,10000); }
     else { if(statusTimer) { clearInterval(statusTimer); statusTimer=null; } }
+    if(tab==="stream") { loadStream(); if(streamTimer) clearInterval(streamTimer); streamTimer=setInterval(loadStream,10000); }
+    else { if(streamTimer) { clearInterval(streamTimer); streamTimer=null; } }
     if(tab==="overlay") { loadOverlayEvents(); loadWorkBanner(); loadTop(); loadPreview(); }
     if(tab==="audio") loadAudioQueue();
     if(tab==="predictions") loadPredictions();
@@ -3750,6 +4138,23 @@ document.addEventListener("DOMContentLoaded",()=>{
   // status
   const sRefresh=document.getElementById("status-refresh");
   if(sRefresh) sRefresh.onclick=()=>loadStatus();
+  // stream
+  const stStart=document.getElementById("stream-start");
+  if(stStart) stStart.onclick=()=>streamAction("start");
+  const stStop=document.getElementById("stream-stop");
+  if(stStop) stStop.onclick=()=>streamAction("stop");
+  const stRefresh=document.getElementById("stream-refresh");
+  if(stRefresh) stRefresh.onclick=()=>loadStream();
+  const chStart=document.getElementById("chat-start");
+  if(chStart) chStart.onclick=()=>chatAction("start");
+  const chStop=document.getElementById("chat-stop");
+  if(chStop) chStop.onclick=()=>chatAction("stop");
+  const stSave=document.getElementById("stream-settings-save");
+  if(stSave) stSave.onclick=()=>saveStreamSettings();
+  const stReload=document.getElementById("stream-settings-reload");
+  if(stReload) stReload.onclick=()=>loadConfig().catch(e=>toast(String(e)));
+  const ccToggle=document.getElementById("stream-cc");
+  if(ccToggle) ccToggle.onchange=(e)=>{ const lb=document.getElementById("stream-cc-label"); if(lb) lb.textContent=e.target.checked?"CC on":"CC off"; };
   // overlay
   const oERefresh=document.getElementById("overlay-events-refresh");
   if(oERefresh) oERefresh.onclick=()=>loadOverlayEvents();
@@ -3919,6 +4324,8 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_get_improve_state()
             elif path == "/api/workers":
                 status = self._handle_get_workers()
+            elif path == "/api/stream":
+                status = self._handle_get_stream()
             elif path == "/api/peak_status":
                 status = self._handle_get_peak_status()
             elif path == "/api/overlay/status":
@@ -4044,6 +4451,10 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_clear_all_backoffs()
             elif parsed.path == "/api/reload":
                 status = self._handle_reload()
+            elif parsed.path == "/api/stream":
+                status = self._handle_post_stream()
+            elif parsed.path == "/api/chat":
+                status = self._handle_post_chat_toggle()
             elif parsed.path == "/api/overlay/events":
                 status = self._handle_post_overlay_event()
             elif parsed.path == "/api/overlay/events/bulk":
@@ -4702,6 +5113,94 @@ class _Handler(BaseHTTPRequestHandler):
     def _handle_reload(self) -> int:
         results = _send_reload(self.soren_root)
         self._send_json(200, {"ok": True, "results": results})
+        return 200
+
+    def _handle_get_stream(self) -> int:
+        try:
+            status = _get_stream_status(self.soren_root)
+        except Exception as exc:
+            self._send_error_json(500, "stream_status_failed", str(exc)[:300])
+            return 500
+        self._send_json(200, status)
+        return 200
+
+    def _handle_post_stream(self) -> int:
+        body, err = self._read_body()
+        if err:
+            return err
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except Exception as exc:
+            self._send_error_json(400, "invalid_json", str(exc))
+            return 400
+        if not isinstance(data, dict):
+            self._send_error_json(400, "validation_error", "body must be object")
+            return 400
+        action = str(data.get("action", "")).strip().lower()
+        if action not in ("start", "stop"):
+            self._send_error_json(400, "invalid_action", "action must be start or stop")
+            return 400
+        before = _get_stream_status(self.soren_root)
+        if action == "stop":
+            result = _stop_stream_runner(self.soren_root)
+            after = _get_stream_status(self.soren_root)
+            ok = bool(result.get("stopped")) or after.get("state") in ("paused", "off")
+            self._send_json(
+                200,
+                {
+                    "ok": ok,
+                    "action": action,
+                    "state": after.get("state"),
+                    "stopped": result.get("stopped"),
+                    "escalated_kill": result.get("escalated_kill"),
+                    "remaining_pids": result.get("remaining_pids"),
+                },
+            )
+            return 200
+        # start: pause マーカーを外し、supervisor による respawn を待つ
+        _set_worker_paused(self.soren_root, STREAM_WORKER, False)
+        after = _wait_for_stream_start(self.soren_root)
+        hint = None
+        if after.get("state") != "live":
+            hint = "supervisor (start_all.sh / soren-runtime) が稼働していれば数秒〜数十秒で自動起動します。稼働していない場合は手動で起動してください。"
+        self._send_json(
+            200,
+            {"ok": after.get("state") == "live", "action": action, "state": after.get("state"), "hint": hint},
+        )
+        return 200
+
+    def _handle_post_chat_toggle(self) -> int:
+        body, err = self._read_body()
+        if err:
+            return err
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except Exception as exc:
+            self._send_error_json(400, "invalid_json", str(exc))
+            return 400
+        if not isinstance(data, dict):
+            self._send_error_json(400, "validation_error", "body must be object")
+            return 400
+        action = str(data.get("action", "")).strip().lower()
+        if action not in ("start", "stop"):
+            self._send_error_json(400, "invalid_action", "action must be start or stop")
+            return 400
+        paused = action == "stop"
+        _set_worker_paused(self.soren_root, "chat_worker", paused)
+        pid = _find_worker_pid(self.soren_root, "chat_worker")
+        # chat_worker はマーカーを自身のループで検知して park / resume する
+        # (_worker_is_paused → _park_while_paused)。プロセスへのシグナルは不要で、
+        # 停止時は IRC daemon・コメント生成・queue 消費がループ周期内で止まり、
+        # 再開時も marker 削除で自動復帰する。
+        self._send_json(
+            200,
+            {
+                "ok": True,
+                "action": action,
+                "chat_paused": _is_worker_paused(self.soren_root, "chat_worker"),
+                "worker_pid": pid,
+            },
+        )
         return 200
 
     def _handle_get_overlay_status(self) -> int:
@@ -5608,7 +6107,7 @@ def run_webui(
             print(f"  WARNING: {eff_soren_root}/eloop_lib.sh not found (soren_root may be wrong)")
         if not (eff_soren_root / ".env").is_file():
             print(f"  WARNING: {eff_soren_root}/.env not found (will be created on first save)")
-        print("  endpoints: /, /api/health, /api/config, /api/backoffs, /api/stats, /api/reload, /api/game_state, /api/improve_state, /api/workers, /api/peak_status, /api/predictions, /api/predictions/action, /api/prompts")
+        print("  endpoints: /, /api/health, /api/config, /api/backoffs, /api/stats, /api/reload, /api/game_state, /api/improve_state, /api/workers, /api/stream (GET/POST), /api/chat (POST), /api/peak_status, /api/predictions, /api/predictions/action, /api/prompts")
         return 0
 
     # validate soren_root
