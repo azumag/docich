@@ -23,6 +23,17 @@
 - **稼働中ジョブ注意**: 03:29開始のジョブ(PID 3854979)は旧スナップショット設定で動作中（新設定は次回ジョブから）。このジョブがwall timeout死しても、次回からはbackoff 600sで早期再試行される。
 - **未確認**: (1) 次回改善ジョブでの新タイムアウト・新backoffの実運用挙動。(2) 改善AIによる戦略改善の適用成功（harvest時 hash_before≠hash_now）。(3) strategy.py 本体の数値調整は改善AIサイクルへ委ねている（手動変更は regression 機構と冒頭警告「数値を書き換えるのは危険」により非推奨）。
 
+## 2026-08-22 04:xx JST — AIタイムアウト値引き上げ（VM .env反映・worker再起動・実測済み）
+
+- **ユーザー指摘**: 「AIの失敗理由にタイムアウトが多い。タイムアウト時間が短いのでは？」→ 実測で一部正当と確認。
+- **実測（VM `tmp/state/ai_stats/2026082{0,1,2}.jsonl` 4,359件）**: 失敗453件中タイムアウト31件。ただし394件はエラーフィールド記録開始(8/21夜)前の無記録で、**記録済み失敗59件中31件(53%)がタイムアウト**＝Stats画面での体感どおり。内訳: 240s×17(RADIOレーン)/120s×8(fact-check等)/90s×6(COMMENTレーン)。
+- **乖離の実証**（`tmp/debug/ai_dispatch/*_output.txt`−`_prompt.txt` のmtime差、成功呼び出しのみ）: x-preview-f-free 中央値145s/p90 376s（成功の60%が90s超え・32%が240s超え）、amd-deepseek-flash p90 233s（30%が90s超え）、minimax-m3 の39%が120s超え。→ COMMENTレーン90s(`lib/ai_generate.sh:1003` `${COMMENT_CODEX_TIMEOUT:-90}`)が特に短すぎ。タイムアウト(rc=124)はリトライ対象外で即フォールバック(`ai_generate.sh:744`)。
+- **反映**: VM `.env` へ `COMMENT_CODEX_TIMEOUT=180` / `RADIO_CODEX_TIMEOUT=300` を追加（バックアップ `.codex_deploy/backup-env-20260822-timeout/.env.042915`）。config.shは両変数を定義しないため上書き競合なし。
+- **再起動**: improveジョブ稼働中(phase ai_retry1)のため **improve_daemon・direct_stream配信は触らず** radio_worker(2862162)/chat_worker(2861962)/audio_worker(2862014)/soren_loop(2861680) をTERM。watchdogがradio/audio/chatを新PID(308284/304052/292180)でrespawn、重複カウント全て1。
+- **運用知見（重要）**: ①`soren-runtime.service` ユニットは現存しない（`systemctl --user cat` → No files found）。実態は `start_all.sh --supervisor`(PPID=1) 直下＋python watchdog。旧handoffの同unit表記は要読み替え。②watchdogは `_find_existing_worker_pid` で**残存プロセスを採用する**ため、単一PIDだけTERMすると旧環境のstrayサブシェルを採用してしまう。正規の完全再起動は **同名プロセスを全部killしてから** watchdogにspawnさせること。③soren_loopは `tmp/improve.lock` 存命中は意図的にrespawnしない設計（`start_all.sh` 監視ループ内 `continue`）— 改善完了後に自動復帰。④`/proc/<pid>/environ` はexec時スナップショットなので、起動後にsourceした `.env` 値は映らない（検証はworker起動経路の再現 `bash -c 'set -a && . ./.env && echo ...'` で行う）。
+- **検証実測**: sourcing-proof `comment=180 radio=300` ✓（worker起動経路そのもの、新PIDは.env改変後の起動）。配信 running=True/30fps/4632kbps 維持 ✓。chat_worker IRC起動ログ ✓。
+- **未確認**: (1) 実トラフィックでの `timeout after 180s/300s` ログへの変化（次回タイムアウト時に観測）。(2) soren_loopの改善完了後自動復帰（設計上の待ち。強制spawnはしていない）。(3) RADIO 300sでも x-preview-f-free のp90 376s超え層は落ちる可能性（チェーン後段で拾う）。
+
 ## 2026-08-22 03:0x JST — WebUI配信停止をwiki正規手順(stdin q)へ準拠（実装・VM反映・単体テスト済み／ライブstop未実施）
 
 - **ユーザー指摘**: 配信停止は送信をやめただけでは Twitch 上の配信停止にならない。wiki `Stream-Ending` を参考に停止ボタンを実装すること。**停止・開始のテストはもうしなくてよい**。
