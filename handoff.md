@@ -61,6 +61,13 @@
 - **VM反映**: `/home/ubuntu/soren/.codex_deploy/backup-20260821-0635-model-routing/` に対象ファイルと誤転送されたルート直下の一時ファイルを退避後、`strategy/ai.sh`、`lib/ai_generate.sh`、`broadcast/radio_engine.sh`、`broadcast/radio_factcheck.sh`、`core/config.sh` を反映。5ファイルのSHA集合はローカルと一致し、`bash -n` 成功。`soren-runtime.service` は完全停止→起動を2回行い、現在 active。再起動後のVMヘルパー実測は `muse=opencode-go/muse-spark-1.2-contributor`、`free=opencode/deepseek-v4-flash-free`、`paid=deepseek-v4-flash`。workerはsupervisor配下で復帰。
 - **未確認**: 実プロバイダを追加課金するライブ呼出しは行っていない。次の実呼出しでStatsの改善ラベルと `resolved_model` が増えること、muse失敗時だけDeepSeekへ進むことは未観測。既存チャットpause状態は今回変更していない。
 
+## 2026-08-21 16:2x JST — show_status_g グラフの彩色化（実装・VM反映済み）
+
+- **実装**: `soviet_now` `4ea4b77b6` — `status_dashboard.py` の Score Timeline をスコア値に応じた赤→緑グラデーション（SCORE_GRADIENT 256色）で線分・マーカーごとに彩色（従来は単色シアン）。Strategy Comparison の中立行バーも comp 値勾配で色分け（current=緑/rollback=黄は維持）。`_render_timeline_grid` は (rows, color_rows) を返すようになり、`_colorize_plot_row` で同色ランをまとめてANSI化。可視テキスト・幅は不変。
+- **オーバーレイ**: `generate_status_overlay.sh` のANSI→HTMLパレットに `38;5;190`(=#bef264) を追加。SCORE_GRADIENTの全コードがパレットカバー内ことを出力全体で確認。
+- **VM反映**: `.codex_deploy/backup-20260821-1620-colorful-graphs/` 退避後、2ファイルscp。SHA256一致（dashboard `ceca0864…` / overlay `08ddfdc5…`）、py_compile/bash -n成功。`generate_status_overlay.sh once` で再生成し、`tmp/state/status_overlay.html` に勾配色span（#facc15/#f59e0b/#fb923c等59件）が出力されることを実測。Nodeテスト(direct broadcast overlay)11件pass。
+- **テスト**: `tests.test_score_timeline` + `tests.test_status_dashboard_founding_rate` 25件、`tests.test_overlay_text` 成功。表示のみの変更のためworker再起動は不要（次回overlay生成周期から自動反映）。
+
 ## 2026-08-21 16:xx JST — codex dispatch修復・fact-checkタイムアウト・improve統計の修正（実装・VM反映・実測済み）
 
 - **修正1（主因）**: `soviet_now` `3c5e68a95` — `lib/ai_generate.sh` の `_ai_dispatch` 内 `codex|codex:*)` 空分支（`ad088ebe0`で混入）に `_ai_call_codex` 呼び出しを復元。スタブ検証（ローカル+VM）でCLI実呼び出し・出力透過・ok記録を確認。
@@ -379,3 +386,14 @@
 - **反映**: `soren-runtime.service` 完全再起動（improve idle 確認済み）。再起動後 supervisor `1118487` 直下に全7 worker 各1本。
 - **実測検証**: 新 worker（radio/chat）の environ に4変数すべての新値を確認。これで全経路（基本チェーン・ピーク入替・改善通常/ピーク・翻訳・fact-check）で ox-alpha が muse より先に試行される。
 - **未確認**: 自然発生の fact-check / 改善ピーク / 翻訳で ox-alpha が実際に獲得するかは継続観測（Stats の `resolved_model=opencode/x-preview-f-free` と `logs/radio_worker.log` の `fact-check中... (opencode:x-preview-f-free)` で判別可能）。
+
+## 2026-08-21 16:20 JST — フリー枠 Muse Spark 1.2 Free を ox-alpha 直後に追加
+
+- **経過**: 16:0x の実運用で `REVIEW:primary` が `opencode/x-preview-f-free` を ok 記録（改善ループで実獲得を確認）。一方 COMMENT はピーク入替の第1候補 minimax が winner となり ox-alpha 未到達（現行設計どおり。ox-alpha を最前面へ上げるかはユーザーに確認したが回答なし）。
+- **ユーザー指示**: 「Ox freeと同様に、おなじフリー枠にmuseもあるようなので、oxの後ろにフリーのmuse設定したい」。
+- **事前実測**: VM カタログに `opencode/muse-spark-1.2-contributor-free` を確認。`_run_cmd_resolved_model opencode:muse-spark-1.2-contributor-free` → `opencode/muse-spark-1.2-contributor-free`、`_ai_dispatch OXTEST2` 実呼び出しで `MUSE_FREE_OK` rc=0（無料）。
+- **変更**: VM `.env`（バックアップ `.env.bak-20260821-musefree`）。8つのリスト変数（AI_COMMON_AGENTS / MODEL_IMPROVE_LIST / RADIO_AGENTS / RADIO_PREPASS_AGENTS / COMMENT_AGENTS / COMMENT_TRANSLATION_AGENTS / MODEL_IMPROVE_PEAK_LIST / PEAK_HOURS_AGENT_PREFERENCE）の `opencode:x-preview-f-free` 直後に `opencode:muse-spark-1.2-contributor-free` を挿入。fact-check は単値4段を再編: AGENT=ox-alpha → SECONDARY=muse-free → FALLBACK=muse-go → TERTIARY=minimax。
+- **反映**: `soren-runtime.service` 完全再起動（improve idle 確認済み）、supervisor `1419423` 直下に全7 worker 各1本。新 radio_worker の environ に新チェーン・新 fact-check 変数を実測。
+- **実効順の例**: RADIO ピーク時 `minimax → openrouter/free → ox-alpha → muse-free → muse-go → local → ...`、改善ピーク `ox-alpha → muse-free → muse-go → minimax → ...`、fact-check `ox-alpha → muse-free → muse-go → minimax`。
+- **注意**: `RADIO_FACT_CHECK_AGENT` は単値変数のためリスト一括 sed の対象から除外済み（誤ってカンマ入り1specにすると無効specになる）。`AI_BACKOFF_SEC_ITEMS` の backoff キーは `muse-spark-1.2-contributor:86400` で、free 版 id `-free` は別キー（既定 backoff 適用）。
+- **未確認**: 自然発生 dispatch での muse-free 獲得は継続観測（Stats `resolved_model=opencode/muse-spark-1.2-contributor-free`）。
