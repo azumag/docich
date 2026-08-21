@@ -4,6 +4,19 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: chat pause中の outbound queue 蓄積防止（enqueue_chat_message の no-op）を soviet_now 715251b7a → docich a37a20f で完遂、VM反映・検証（queue 0維持）まで完了。chat は pause 中。
 
+## 2026-08-21 15:xx JST — 歌唱機能をきらきら星以外にも対応（実装・VM反映済み）
+
+- **実装**（soviet_now `536739a4e`、親 `f7a080f`）:
+  - `data/voicevox_sing_reference.md` に完全な楽譜JSON（歌詞付き）を5曲収録: きらきら星・ちょうちょう・メリーさんの羊・かえるのうた・ハッピーバースデー。「リクエストへの応え方」節を新設し、収録曲はそのまま使う・未収録曲は自作可（C4〜D5）・フォールバックは曲を変えるよう指示。
+  - `prompts/comment_response_sing_request.md` と `prompts/comment_template.md`: リクエスト曲が収録ならその楽譜を出力、未知曲でもきらきら星固定ではなく収録曲から選ばせる規則に変更。
+  - `broadcast/comment.sh` の ===SING=== なし補完（歌唱宣言あり時）を3曲（きらきら星/ちょうちょう/メリーさんの羊）から `RANDOM` 選択に変更。ログに `song=` 付き。
+- **テスト**: `tests/test_comment_sing_json.sh` にフォールバック配列の複数曲・JSON妥当性検査を追加（9項目全て成功）。`test_comment_duplicate_guard.sh`、`tests/test_comment_bilingual.py` 34件も成功。`bash -n` ローカル/VM 成功。
+- **実エンジン検証**: VM の VOICEVOX で5曲全部の合成に成功（WAV 343KB〜537KB、出力は `/tmp` のみでキューには未投入）。これでスコア形式が実パイプラインで通ることを実測。
+- **VM反映**: `.codex_deploy/backup-20260821-sing-multisong/` に4ファイル退避後、SHA256 ローカル/VM一致（comment.sh + prompts 2件 + data/voicevox_sing_reference.md）。※reference.md を誤って `prompts/` へ scp したが削除し `data/` へ再配置済み。`soren-runtime.service` 完全再起動し、各workerとも supervisor 直下のメイン1本＋heartbeat子1本を確認（chat_worker PID 1023585、IRC daemon 起動）。
+- **リポジトリ同期**: soviet_now `codex/no-apply-liveliness` へ push、docich main `f7a080f`（submodule bump。origin/main の webui コミットとローカル同内容コミットの乖離は cherry-pick で解消）、VM `/home/ubuntu/docich` を fast-forward で `f7a080f`/`536739a4e` へ同期。
+- **未確認**: 実視聴者からの sing_request でのエンドツーエンド歌唱（リクエスト待ち）。歌詞の聞こえ方（「めりいさんのーの・ひつじー」等の意訳アライメント）は放送での実聴がまだ。
+- **備考**: VM の webui は systemd unit ではなく plain プロセス（`python3 -m docich webui`、PID 157671、8787番ポート HTTP 200）。旧 handoff の `docich-webui.service` 表記は実態と不一致。VM docich の reset 時に未コミットの `webui.py` 差分は破棄（main 版が正）。
+
 ## 2026-08-21 05:44 JST — 中華AI改善の no-apply 多発修正
 
 - **原因（本番実測）**: `strategy/ai.sh` の改善前チェックが LiteLLM の `/health` を使用していた。これは単純な生存確認ではなく設定モデルへの能動的な疎通確認で、`deepseek-v4-flash-free` の `FreeUsageLimitError` (HTTP 429) 時に5秒タイムアウトした。その結果、AMD枠・Muse・通常DeepSeek・MiniMaxも実呼び出し前に一律 `rc=79` とされ、`failed_no_apply:rate_limited` になっていた。`/health/liveliness` は本番で約3ms・HTTP 200・`"I'm alive!"` を実測。
@@ -47,6 +60,14 @@
 - **テスト**: `bash -n`（変更シェル全件）、`tests/test_improve_retry_reliability.py`、`tests/test_ai_generate_backoff.py`、`tests/test_model_output_guard.py` の計72件が成功。課金を発生させないスタブでmuse/free/codexのCLI・モデル分離と直接OpenCodeのLiteLLMゲート迂回を確認。大規模 `test_escape_mechanisms.py` は今回と無関係な既存作業ツリー差分由来の失敗が残るため、今回の受入れ判定には使用していない。
 - **VM反映**: `/home/ubuntu/soren/.codex_deploy/backup-20260821-0635-model-routing/` に対象ファイルと誤転送されたルート直下の一時ファイルを退避後、`strategy/ai.sh`、`lib/ai_generate.sh`、`broadcast/radio_engine.sh`、`broadcast/radio_factcheck.sh`、`core/config.sh` を反映。5ファイルのSHA集合はローカルと一致し、`bash -n` 成功。`soren-runtime.service` は完全停止→起動を2回行い、現在 active。再起動後のVMヘルパー実測は `muse=opencode-go/muse-spark-1.2-contributor`、`free=opencode/deepseek-v4-flash-free`、`paid=deepseek-v4-flash`。workerはsupervisor配下で復帰。
 - **未確認**: 実プロバイダを追加課金するライブ呼出しは行っていない。次の実呼出しでStatsの改善ラベルと `resolved_model` が増えること、muse失敗時だけDeepSeekへ進むことは未観測。既存チャットpause状態は今回変更していない。
+
+## 2026-08-21 15:xx JST — WebUIチェーン統計の失敗率原因調査（診断のみ・未変更）
+
+- **主因①（重大・実装バグ）**: `soviet_now` `ad088ebe0`（08:16 commit、VM反映 08:19:45）で `lib/ai_generate.sh` の `_ai_dispatch` 内 case 文が `'' ) return 1 ;;` → `codex|codex:*) ;;` に置き換わり、**codex系エージェントのcase分支が空**になった。codex指定はどのCLIも呼ばず、直前コマンドの stale `PIPESTATUS[0]`=0 を拾って **「ok・空出力」で即return** する（VMで stale PIPESTATUS=0 を再現実測）。`*` 分枝の `_ai_call_codex` は有効specでは到達不能の死に枝。`chat_worker.log` の `codex call` ログ0件、codex dispatchの `_output.txt` が今日1件も存在しないことで裏取り済み。
+- **主因②（14:22に顕在化）**: workerは起動時にライブラリをsourceするため、08:19反映直後は旧コードがメモリ内で稼働し被害は限定的だった。**14:22:02のUSR1 reloadが `eloop_lib.sh` を再source** し壊れたdispatchがロード。以後COMMENTは365 attempt → 363 ok（ほぼ全て空）→ **winner 1件・all_failed 90件** に崩壊（実測）。15:02-15:04には同秒all_failedが約6秒周期で連発。現在も `コメント返し生成失敗` が継続中（15:13-15:14実測、muse経由の成功のみ）。codex候補は空出力=rc0のためbackoffも入らず毎周期無消費で再試行される。
+- **RADIOラベル1.5%（fact-check直呼び）**: 14:22以前の実呼び出しでは `RADIO_FACT_CHECK_OPENCODE_TIMEOUT_SEC:-45` の45秒タイムアウトで有料deepseek/minimaxがほぼ毎回kill（attempt→fail 45-46秒のパターンを実測）。museは45秒内でも後段の長さ/スタイル検証で落ちて次候補へ。全候補失敗時は `radio_engine.sh:1615` で生成済み原稿ごと破棄（fact_check_failed）。
+- **REVIEW:primary 0%**: 09:11の5連敗はrc=126（Argument list too long、09:15のstdin化で既修正済み）。12:48のrc=143は `EXPECT_READY ... stopping provider after completed write` → `primary OK` の**実質成功**だがstatsはrc≠0をfail記録する表示問題。
+- **未実施**: `_ai_dispatch` のcodex分枝修復（`_ai_call_codex` 呼び出しへ復元）、worker完全再起動、fact-checkタイムアウト見直し、rc=143成功扱いのstats修正はすべて未着手。ユーザー確認待ち。
 
 ## 🎯 ゴール / タスク
 
@@ -317,3 +338,26 @@
 - **リポジトリ**: `soviet_now` `617428acf` (OBS/Predictions/Direct) + `b43e37e94` (Wildcard) + `862170af3` (Chat) を `origin/codex/no-apply-liveliness` へ push。
 - **VM反映**: `.codex_deploy/backup-20260821-obs-predict-direct/` と `backup-20260821-wildcard-chat` に退避後、4ファイルのSHA256一致（`eloop.sh dbc3d8de…` `obs_control.sh 0eafea…` `twitch_predictions.sh 33383c…` `direct_stream.py 1f4295…` `wildcard_parallel.py fdd9a9de…` `twitch_chat_daemon.sh a8c599…`）、`bash -n`/`py_compile`、手動 `SOREN_STREAM_BACKEND=ffmpeg` の `obs_control` スキップ、`prediction already` 検出、`validate ok`、wildcard `prepare` 成功を実測。`SOREN_DIRECT_STREAM_RECONNECT_OFFLINE_THRESHOLD=3` は `.env` で `python load_reconnect_config` が `3` になることを `set -a; . .env` で実測。
 - **未確認**: 次ゲームでの `OBS dashboard show failed` ゼロ、`direct_stream` の `Twitch offline streak 3` 閾値での誤再起動抑制、次改善での `REVIEW 144282B rc=0`、次Wildcard実行での `infra_failed` 解消、長時間運用での `prediction already active` の INFO化と `Broken pipe` ゼロは、次回サイクルで継続観測する。
+
+## 2026-08-21 15:20 JST — OpenCode フリー枠 Ox Alpha Free をローカル・VM の使用可能モデルへ追加
+
+- **ローカル**: `~/.config/opencode/opencode.json` の `provider.opencode.models` に `x-preview-f-free`（Ox Alpha Free、context 1M / output 131072、入力 text/image/video）を明示追加。`bunx opencode-ai models` で `opencode/x-preview-f-free` 表示と他 opencode/ モデル7件が制限されず残ることを実測。
+- **VM**: `ubuntu@129.146.54.105` の `~/.config/opencode/opencode.jsonc` へ同じ定義を追加（バックアップ `opencode.jsonc.bak-20260821-ox-alpha`）。反映前から snap 版 opencode 1.18.18 のカタログに同モデルは表示されていたが、明示定義でローカルと状態を揃えた。反映後も opencode/ モデル7件を確認。
+- **実呼び出し検証**: VM で `opencode run -m opencode/x-preview-f-free 'Reply with exactly: OX_ALPHA_VM_OK'` が `OX_ALPHA_VM_OK` を返すことを実測（無料モデルのため課金なし）。
+- **リポジトリ同期**: VM の `~/.config/opencode/` は soren/docich いずれのリポジトリ外のため、今回コミット・push 対象なし。soren 側のチェーン設定（`.env` の AGENTS 系）は変更していない。
+
+## 2026-08-21 15:35 JST — Ox Alpha Free を既存モデルチェーンへ組み込み（muse 直前）・VM反映
+
+- **変更**: VM `/home/ubuntu/soren/.env`（バックアップ `.env.bak-20260821-ox-alpha-chain`）の `AI_COMMON_AGENTS` / `MODEL_IMPROVE_LIST` / `RADIO_AGENTS` / `RADIO_PREPASS_AGENTS` / `COMMENT_AGENTS` の5チェーンで、`opencode-go:muse-spark-1.2-contributor` の直前に `opencode:x-preview-f-free` を挿入。実効順は例えば RADIO 系が `amd → openrouter/free → ox-alpha → muse → local → paid DeepSeek → MiniMax`。fact-check チェーン（repo 既定の muse 先行 + `.env` の FALLBACK=minimax）は今回の対象外。
+- **コード適合の確認**: `lib/ai_generate.sh:_ai_agent_spec_valid` は `opencode:<model>` を許容し、`_ai_call_opencode_unqueued` は `opencode:x-preview-f-free` → `opencode/x-preview-f-free` へ解決して CLI 直接呼出（LiteLLM ゲート迂回）。`strategy/ai.sh:_run_cmd_resolved_model` も同解決。VM の `lib/ai_generate.sh` / `strategy/ai.sh` はローカルと SHA256 一致。
+- **反映**: `soren-runtime.service` を完全 stop/start。改善 daemon は idle だったため安全。再起動後、supervisor 直下に soren_loop/improve/chat/youtube/audio/radio/prediction の各メインPID 1本を確認。
+- **実測検証**: (1) 新 worker の `/proc/PID/environ` に新チェーンを確認。(2) VM で `_run_cmd_resolved_model opencode:x-preview-f-free` → `opencode/x-preview-f-free`。(3) `_ai_dispatch OXTEST opencode:x-preview-f-free` の実呼び出しで stdout `OX_ALPHA_CHAIN_OK` rc=0（無料モデルのため課金なし）。(4) `tmp/state/ai_stats/20260821.jsonl` に `OXTEST` の attempt+ok、`resolved_model=opencode/x-preview-f-free` を記録確認。
+- **未確認**: 実運用の放送・コメント・改善ループで amd/openrouter 失敗後に ox-alpha が獲得する様子は次回以降の自然発生待ち（Stats の `RADIO`/改善ラベルで継続観測）。
+
+## 2026-08-21 15:50 JST — ピーク時間帯も ox-alpha が muse より先になるよう PEAK_HOURS_AGENT_PREFERENCE へ追加
+
+- **ユーザー観測の解明（実測）**: 15:33 JST の COMMENT で muse が winner になったのは、ピーク時間帯（`PEAK_HOURS_WINDOWS=10-13,15-19` JST）に `_peak_priority_agent_list`（`core/helpers.sh:163`）が `PEAK_HOURS_AGENT_PREFERENCE`（旧値 `minimax,openrouter/free,muse,local`）順へ候補を並べ替えるため。15:33 の実際の試行順は `minimax → openrouter/free → muse → amd → ox-alpha → paid DeepSeek`（`logs/chat_worker.log` の `コメント返し生成中... agents=` 行で実測）で、muse が先に winner になり ox-alpha は未到達。基本チェーン自体の挿入は正しく機能していた。
+- **変更**: VM `.env`（バックアップ `.env.bak-20260821-ox-alpha-peakpref`）の `PEAK_HOURS_AGENT_PREFERENCE` を `codex:minimax-m3,codex:openrouter/free,opencode:x-preview-f-free,opencode-go:muse-spark-1.2-contributor,local` へ変更し、`soren-runtime.service` を完全再起動（improve idle 確認済み）。再起動後 supervisor 直下に全7 worker 各1本。
+- **実測検証**: 新 worker の environ に新 preference を確認。`.env` を source した上で `_peak_priority_agent_list` を実行し、ピーク時の実効順を実測: COMMENT/RADIO とも `minimax → openrouter/free → ox-alpha → muse → ...`、IMPROVE は入替対象外で `amd → ox-alpha → muse → ...`。全経路で ox-alpha が muse より先。
+- **教訓**: `_peak_priority_agent_list` 単体テスト時は必ず先に `.env` を source する（省くと repo 既定チェーンで並べ替わり、見かけ上別リストになる。本検証で一度やり直した）。
+- **未確認**: 次回の自然発生 dispatch で `agents=` 行に ox-alpha が muse より先に出ること、ox-alpha が winner を取ること。
