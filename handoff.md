@@ -4,6 +4,16 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: chat pause中の outbound queue 蓄積防止（enqueue_chat_message の no-op）を soviet_now 715251b7a → docich a37a20f で完遂、VM反映・検証（queue 0維持）まで完了。chat は pause 中。
 
+## 2026-08-21 20:4x JST — YouTube同時配信 push 実装（VM反映・サーバ側実測済み）
+
+- **実装**: issue #7 の計画どおり、VM `/etc/soren-rtmp/push.conf` に `push rtmp://a.rtmp.youtube.com/live2/<KEY>;` を追加（2行構成: Twitch＋YouTube、再エンコードなし）。キーはユーザー提供（ローカル /tmp/ytk 経由で VM /tmp へ転送後削除。push.conf のみに記録、repo/.env/issue には不記載）。事前バックアップ: `soren/.codex_deploy/backup-20260821-2025-youtube-push/push.conf`。権限 root:soren-relay 0640 維持。
+- **再起動**: `sudo systemctl restart soren-rtmp-relay.service` → active・127.0.0.1:1935 LISTEN 再確認。エンコーダ ffmpeg は `lib/direct_stream.py` の supervise ループが自動再起動（新PIDで publish 再確立を実測）。
+- **実測（反映直後）**: 3レグ ESTAB — ffmpeg→127.0.0.1:1935、nginx→35.55.x（Twitch）、nginx→173.194.194.134:1935（YouTube ingest）。
+- **安定性**: YouTube レグ接続が 60秒間サンプリング6回すべて ESTAB（無切断＝キー拒否なら再接続チェーンが出る）。relay journal の error/fail 0件。
+- **増分**: TX 合計 ~9.5Mbps（60sで71MB、Twitch分+YouTube分。issue予測 ~9.2Mbpsと一致）。nginx worker CPU 30s平均 **0.4% core**（publish 込み。issue予測どおり増分微小）。
+- **未確認**: (1) ユーザー視点の YouTube Studio ストリームヘルス／実際の視聴画面。(2) `.env` の `YOUTUBE_VIDEO_ID` は 5/20 の旧配信（chat poll 用）で現行配信と紐付かないため API での live 判定は不能だった。
+- **残課題（必須条件が未実施）**: issue #7 の必須条件「AI 同時実行数の制限」は未実装。CPU idle は反映後も 0.4〜1.7% で飽和気味。次タスク候補。
+
 ## 2026-08-21 19:xx JST — ラジオ「でございます」過剰敬語の抑制（実装・VM反映済み）
 
 - **ユーザー観測**: ラジオで「〜でございます」が異常に頻発する時がある。プロンプトで防ぎたい。
@@ -44,6 +54,18 @@
 - **3本目以降**: レグあたり +4.7Mbps・CPU 0.3〜0.5% 見込みで問題なし。ただしレグ単位増分は未測定のため追加のつど実測する。
 - **記録先**: azumag/docich issue #7「youtube用dociを統合する」にコメント保存済み（https://github.com/azumag/docich/issues/7#issuecomment-5368564672）。キー等の機密は書いていない。
 - **未確認**: 実 push 追加状態での増分、YouTube キー発行・受付品質。`youtube_worker.sh` はチャット受信専用で動画は未対応。
+
+## 2026-08-21 20:0x JST — 中華AI一人称「私」統一＋履歴モード分離（実装・VM反映・部分実測）
+
+- **実装**（soviet_now `0df683c18`、docich `78f9277`）:
+  - 一人称: `radio_persona.sh` mainブロック（214行目）、`comment_persona_main.md`、`celebration.md`、`batch_commentary.sh` に「一人称は「私」。「僕」「俺」「自分」は使わない」を追加。soren91側（僕）・rollback DJ（私）は既存どおり。
+  - 履歴モード分離: `_remember_comment_reply_text` が第2引数modeを受け `_<mode>.txt` 接尾辞付きファイル名に変更（デフォルト・不正値はmain）。`_remember_spoken_comment` は再生ファイルの `.mode` サイドカー→ホストモード順に解決。`_build_recent_spoken_comment_context` / `_build_comment_followup_hints` はmode引数でフィルタし、「再生中」項目もサイドカー照合。旧形式（接尾辞なし）ファイルはmainのみ参照（現行16件は全てmain期のものを実測済み、16件ローテーションで自然消滅）。`.reply_hashes` のモード間共有dedupは意図的に維持。
+  - 新テスト `tests/test_comment_persona_mode.sh` 19項目（ローカル/VM両方で全成功）。
+- **並行セッションとの競合**: 作業中に別セッションが `acaeec49c`（でございます抑制）を同一ファイル群へコミット。私の一人称行が一時消失→再追加。最終的にコミットは完全分離（私の変更は `0df683c18` のみ）。
+- **VM反映**: `.codex_deploy/backup-20260821-persona-mode-split/` 退避後、5ファイルscp、SHA256一致、`bash -n` 成功。
+- **反映経緯（重要な落とし穴）**: USR1リロード（radio/chat両方、19:33完了）だけでは **soren_loop.sh 系の長命生成プロセスが旧 `_radio_persona_block` を保持し続け**、19:40:19のjijiプロンプトに一人称ルールが入らないことを実測。→ `soren-runtime.service` を 19:45:50 に完全再起動し、全プロセス（soren_loop 3449493 ほか全worker）が新PIDで復帰。
+- **実測済み**: chat_worker がリロード後に `20260821_194029_3456_main.txt`（mode接尾辞付き）を生成。worker再起動後も新試合検知・deferred再生は正常継続。
+- **未確認**: (1) 再起動後の次回RADIO AI生成プロンプトへの `一人称は「私」` 載載（deferredキュー5件の再生優先でAI生成が抑止中、キュー消化後に初回生成で確認する）。(2) 実放送での中華AI発話の一人称。（3) soren91代打稼働時の履歴分離の実運用挙動。
 
 ## 2026-08-21 19:xx JST — 中華AIが「僕」と自称する原因調査（診断のみ・未変更）
 
