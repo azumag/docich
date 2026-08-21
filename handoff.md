@@ -4,6 +4,25 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: chat pause中の outbound queue 蓄積防止（enqueue_chat_message の no-op）を soviet_now 715251b7a → docich a37a20f で完遂、VM反映・検証（queue 0維持）まで完了。chat は pause 中。
 
+## 2026-08-22 02:2x JST — AIレーン同時実行制御の実装（実装・VM反映・実測済み）
+
+- **ユーザー要件**: 放送系AI生成の並行起動はおかしいのでキュー化。全体は放送系1・コメント返し1・改善1の最大3並列。改善中は新規の放送系生成を止めるが、改善開始前に始まった放送系生成はキャンセルしない。読み上げは継続。コメント返しもキュー化。
+- **実装**（soviet_now `6b5ddc70e`、docich `1499bad`）:
+  - `lib/ai_generate.sh`: `_ai_queue_lock_scope` が RADIO*/NEWS*/JIJI*/CELEBRATION* を単一 `radio` ロックへ畳む（従来はモデル別スコープで別モデルが並行していた＝20:56実測のprepass二重起動の原因）。COMMENT* は `comment` レーン。新 `_improve_job_active`（improve_state.json の status==running ＋PID生存＋7200s stale）。新 `_ai_radio_improve_gate`（改善稼働中、新規RADIO系呼び出しのみ待機。`RADIO_GEN_STARTED_AT` < improve started_at なら通過=キャンセルしない。上限 `AI_RADIO_IMPROVE_WAIT_MAX_SEC`=1200s 超過でその生成だけ諦め rc=1）。
+  - `broadcast/radio_engine.sh`: `_radio_opencode_should_defer_for_improve` を rate_limit_backoff 判定のみに縮小（**improve.lock は常時存在するデータファイルなので信号に使えない**旧バグを修正。これで opencode 系が改善中にほぼ常時 fail-fast していた状態も解消）。`_radio_generate_and_play` 冒頭で `RADIO_GEN_STARTED_AT` をexport。
+  - `broadcast/radio_corners.sh`: jiji研究呼出が generate_and_play 前に先行するため `start_radio_corner_jiji` 冒頭でも同export。
+  - `core/config.sh`: 新既定値 `AI_RADIO_LANE_LOCK/AI_COMMENT_LANE_LOCK/AI_RADIO_IMPROVE_GATE=1`, `AI_RADIO_IMPROVE_WAIT_MAX_SEC=1200`。
+  - 新テスト `tests/test_ai_lane_queue.sh` 22項目（ローカル/VM両方で全成功。bashの「代入文への前置代入は永続する」罠と `AI_GENERATION_QUEUE_LOCK_DIR` がスコープ接尾辞を付けない既存仕様に注意）。
+- **VM反映**: `.codex_deploy/backup-20260822-0145-ai-lane-control/` 退避後4ファイルscp、md5一致、`bash -n` 成功。config.sh 既定値変更のため **soren-runtime.service 完全再起動**（radio/chat/audio worker・improve_daemon・soren_loop 全て新PID）。VM側 tests/test_ai_generate_backoff.py が古かったため現行版を同期（31テスト全成功）。
+- **実測検証**: 実idle状態で `_improve_job_active`→INACTIVE ✓。本番パスと同一ラベル形状で `_ai_generation_queue_run` 実行中に `tmp/state/.ai_generation_locks/{radio,comment}` 出現を実測 ✓。読み上げ（VOICEVOX合成・再生）は再起動後も継続 ✓。デッドロック無しの構造確認（ゲートはロック取得前、improveはレーンを取らない）。
+- **未確認**: (1) 実際の改善ジョブ稼働中の放送系待機ログ `[AIQ:...] improve cycle active` は自然発火で未観測（遅延キュー60件>5により新規ラジオ生成が抑制中＝既存挙動。ユニットテストでは動作確認済み）。(2) 次回改善サイクル中の放送系生成が実際に待つかの運用観測。(3) chat再開後のコメント返しの comment レーン経由化。
+
+## 2026-08-21 21:0x JST — AI同時実行上限の現状確認（調査のみ・未変更・→翌日実装済み、上の節参照）
+
+- **結論**: 上限機構は未実装のまま（handoff既記載どおり）。`lib/ai_generate.sh` にロック/セマフォ/同時数制御なし（ローカル+VM grep実測）。`WILDCARD_PARALLEL_*` はゲーム並列でAI呼出制御とは無関係。
+- **VM実測 (20:56-20:59)**: 放送系ラジオprepass codex exec ×2（amd-token-factory-deepseek-v4-flash）と改善系 `strategy_runner.py` → codex exec が**同時3呼出で走行中**。CPU idle ~1%（vmstat実測、Chromium 86%/VOICEVOX 58%/ffmpeg 47%が主占有）。`tmp/improve.lock` は改善サイクル稼働中のものが存在。
+- **含意**: 現状は放送系と改善系が無制限に重なる。ユーザーは「AI Improve はできれば止めたくない」と表明。次タスク（issue #7必須条件）は Improve を止めない形での同時実数制限の設計。
+
 ## 2026-08-21 20:4x JST — YouTube同時配信 push 実装（VM反映・サーバ側実測済み）
 
 - **実装**: issue #7 の計画どおり、VM `/etc/soren-rtmp/push.conf` に `push rtmp://a.rtmp.youtube.com/live2/<KEY>;` を追加（2行構成: Twitch＋YouTube、再エンコードなし）。キーはユーザー提供（ローカル /tmp/ytk 経由で VM /tmp へ転送後削除。push.conf のみに記録、repo/.env/issue には不記載）。事前バックアップ: `soren/.codex_deploy/backup-20260821-2025-youtube-push/push.conf`。権限 root:soren-relay 0640 維持。
