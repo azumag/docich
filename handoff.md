@@ -2,7 +2,20 @@
 
 > 生成日時: 2026-08-22 03:0x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: 改善ゲート打ち切りをAI統計から分離(gate_giveupイベント化・soviet_now `7b7b328e0`・VM反映・テスト31/31)。
+> 直前セッション: issue #22 解決(ANALYZE 1100s+リトライ2回限定・OPENCODE_BIN対応・soviet_now `7160a34a3`・VM反映・テスト20/20)。
+
+## 2026-08-22 06:3x JST — issue #22 解決： ANALYZEタイムアウト1100s＋Stage1リトライ限定（実装・VM反映・テスト済み）
+
+- **ユーザー指示**: 「イシュー22の解決しておいて」。
+- **実測（ai_stats の完了ANALYZE 22件）**: 成功10件の所要 48-1298s、**900s超えが30%**。900s上限は成功裾を切断していた。
+- **修正**（soviet_now `7160a34a3`、VM反映・backup `.codex_deploy/backup-20260822-0625-analyze-timeout/`）:
+  - `IMPROVE_ANALYZE_CMD_TIMEOUT_SEC` 既定 900→**1100**(config.shへも既定新設)
+  - Stage1のprimaryリトライを `IMPROVE_ANALYZE_PRIMARY_RETRIES=2` へ限定(worst 2200s)し、分析ループ後にグローバル値へ復元 → wall 3600s の Stage2 予算 ≥1300s を保証
+  - `strategy/ai.sh` run_cmd に `OPENCODE_BIN` 上書き追加(CODEX_BIN規約と同一)。**VMで本テストが関数スタブを素通りし /snap/bin/opencode 実バイナリ(上流エラー中)を叩く既存問題**を発見修正
+  - テスト期待値更新。ローカル・VMとも **20/20**
+- **VM反映**: SHA一致(eloop a341d497…/config 5d6900fa…)・bash -n成功。`.env` へ `IMPROVE_ANALYZE_CMD_TIMEOUT_SEC=1100` / `IMPROVE_ANALYZE_PRIMARY_RETRIES=2` 追加済み → 次回spawnジョブから有効(生成スクリプトは実行時env展開)。improve_daemonはWebUI pause中のため再開後の初回ジョブで新設定稼働。
+- **issue**: [#22](https://github.com/azumag/docich/issues/22) クローズ済み(実測データ付きコメント)。切り分け過程でVMの一時ファイル `/tmp/tmp.*` にrepro残骸あり(放置可)。
+- **未確認**: 次回改善ジョブでの analyze 成功率向上(1100s内に収まるか)。稼働中だった孤児ジョブは06:45:44のwall deadlineで自然終了見込み(終着確認はまだ)。
 
 ## 2026-08-22 06:0x JST — ゲート打ち切りをattempt/fail統計から分離（実装・VM反映・テスト済み）
 
