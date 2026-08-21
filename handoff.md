@@ -4,6 +4,27 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: chat pause中の outbound queue 蓄積防止（enqueue_chat_message の no-op）を soviet_now 715251b7a → docich a37a20f で完遂、VM反映・検証（queue 0維持）まで完了。chat は pause 中。
 
+## 2026-08-21 19:1x JST — free枠(opencode)失敗率の原因特定と観測・レジリエンス実装（実装・VM反映・実測済み）
+
+- **原因（実測）**: レートリミット枯渇ではなく上流free gatewayの不安定さ。(1) `opencode/deepseek-v4-flash-free` は07:06以降ほぼ終日ダウン（CLI直接実行で `UnknownError: Unexpected server error` rc=1 を再現、30/30失敗。ユーザーが16:19の.env更新でチェーン外へ）。(2) `x-preview-f-free` / `muse-spark-1.2-contributor-free` は断続的なストリーム中断 — opencode.db のセッション記録で、失敗呼び出しは reasoning 出力後に `step-finish reason=unknown, output tokens=0` で死んでいる（成功時は reason=stop）。15〜17時にバースト、数分後には自然復旧。
+- **観測ブラックホール（副因）**: `workers/chat_worker.sh:314`・`workers/radio_worker.sh:189,202`・`broadcast/radio_engine.sh:1386` の `2>/dev/null` でAI失敗診断が全廃棄され、workerログに stderr 系ログ0件だった。
+- **実装**（soviet_now `35d8c418c` + `069961326`）: ①ai_stats JSONL の fail レコードへ `error` フィールド追加（teeパイプラインのサブシェル対策でテンポラリファイル経由。JSON妥当性を回帰テストで担保）②stderr廃棄を `logs/ai_stderr.log` へ変更＋高頻度ノイズ `twitch_chat fetch: 未読コメントなし` を無音化 ③連続provider失敗のサーキットブレーカ（300→×2/×4/×8、上限 `AI_FAILURE_STREAK_MAX_BACKOFF_SEC=3600`、成功で解除。`tmp/state/ai_fail_streak/`）④opencode CLIの一過性失敗（タイムアウト・レート制限以外）を同一モデルで1回だけ自動再試行（`OPENCODE_ABORT_RETRY=0` で無効、`OPENCODE_BIN` でスタブ差し替え可）⑤`UnknownError`/`unexpected server error` を provider error 判定に追加。
+- **テスト**: 新規 `tests/test_ai_dispatch_diagnostics.sh` 17項目がローカル(macOS)・VM両方で成功。既存 `test_ai_generate_backoff` + `test_improve_retry_reliability` + `test_model_output_guard` + `test_comment_bilingual` の110件も成功。
+- **VM反映**: `.codex_deploy/backup-20260821-1825-free-slot-resilience/` へ6ファイル退避後、lib/ai_generate.sh・core/helpers.sh・workers/2本・broadcast/radio_engine.sh・twitch_chat.sh を反映（SHA256一致、bash -n成功）。chat/radio worker を完全再起動（新PID 2768893/2769060、28分以上安定稼働を確認）+ radio_worker USR1 reload。
+- **実トラフィック検証**: ダウン中の deepseek-v4-flash-free への実dispatchで fail レコードに `"error":"rc=1 (4s): Error: { \"name\": \"UnknownError\"...}"` が記録されることを実測。19:00台の実運用では amd の `rc=1: Reading additional input from stdin...` や openrouter/free の `timeout after 90s` など従来不可視だった失敗理由が記録され、x-preview-f-free は ok→winner で自然復旧も実測。ai_stderr.log はノイズなし（2.8KBの診断のみ）。
+- **リポジトリ同期**: soviet_now `codex/no-apply-liveliness` へ push（`069961326`）、docich `codex/soren-repo-handoff` `eacdbe9` でsubmodule bump。origin/main は別セッションの merge (`7d4d907d0`) で乖離しているため今回は未マージ。
+- **フォローアップ候補**: ①codex CLI が稀に `Reading additional input from stdin...` で即死する件（`_ai_call_codex_unqueued` の stdin `</dev/null` 化で直る可能性・要調査）②WebUI Stats へ error フィールド表示を追加 ③deepseek-v4-flash-free の上流復旧監視。
+
+## 2026-08-21 19:xx JST — 中華AIが「僕」と自称する原因調査（診断のみ・未変更）
+
+- **ユーザー観測**: 資本主義（メリケンAI）と共産主義（中華AI）のペルソナが合わさった返答がある。「僕」はメリケンAI専用のはずが中華AIも使っている。
+- **主因（実測）**: 中華AI（mainモード）の全プロンプト系統に**一人称の指定が一切ない**。soren91側だけ規定がある: `broadcast/radio_persona.sh:176`（ラジオsoren91ブロック=僕）、`prompts/comment_persona_soren91.md:5`（コメントsoren91=僕）。main側は `radio_persona.sh:202-233`（ラジオmainブロック）・`comment_persona_main.md`・`batch_commentary.sh:181`（バッチ解説、当日追加）・`prompts/celebration.md` のどれにも一人称規定がないため、モデルが自由選択している。
+- **実出力の裏取り**: VM `tmp/debug/ai_dispatch/` で 8/18〜8/20 の main モード RADIO 生成9本（soviet/theme/news/jiji/strategy、deepseek系）が「僕」を使用。プロンプト側には「僕」「メリケンAI」は皆無（モデルの自発選択）。8/21は211本中0本、COMMENT 146本中0本。内容は生産計画・ソ連ネタ等の中華AI版なのに一人称だけ漂白されていない状態。
+- **構造的な混線リスク（現時点で実害未確認）**: `_build_recent_spoken_comment_context`（`comment.sh:573-655`）は `tmp/.comment_queue/spoken_history`（`core/config.sh:695`）を**モード無関係に全件**読み、「最近自分が実際に読み上げたコメント返し」としてプロンプトへ入れる。soren91代打が稼働して「僕」入り返信を喋ると、中華AI生成時に自分の過去返信として提示され得る。現在は履歴16件中「僕」0件・代打未稼働（`soren_loop.log` で「soren91代打を起動せず」を確認）のため未発火。
+- **性格記述の重複**: main側ペルソナも「斜に構えた」「褒めるときも素直に褒めない」「皮肉」（`radio_persona.sh:208-209`）とメリケンAIのひねくれ系 traits が重なり、声の方向性が近い。
+- **逆方向の混ざりは仕様**: 共有テンプレ `comment_template.md:104` と `comment_persona_soren91.md:4` が両モードに「同志○○」呼びかけを指示（メリケンAIが共産用語を使うのは意図済み、「仲間」の意味と明記）。
+- **未実施**: 一人称規定の追加、spoken_history のモード分離、性格記述の差別化はすべて未着手。ユーザー確認待ち。
+
 ## 2026-08-21 15:xx JST — 歌唱機能をきらきら星以外にも対応（実装・VM反映済み）
 
 - **実装**（soviet_now `536739a4e`、親 `f7a080f`）:
