@@ -121,7 +121,7 @@ AUDIO_QUEUE_PREVIEW_LEN = 120
 # 配信 (direct_stream worker) とチャット送信のオンオフは supervisor (start_all.sh)
 # の pause gate (`tmp/state/<worker>.paused` マーカー) を通じて行う。マーカーが
 # ある間 supervisor は当該 worker を起動・respawn しない。
-TOGGLEABLE_WORKERS = ("direct_stream", "chat_worker")
+TOGGLEABLE_WORKERS = ("direct_stream", "chat_worker", "prediction_worker", "improve_daemon")
 STREAM_WORKER = "direct_stream"
 # フォールバック信号経路の総猶予。runner の正常終了チェーンは
 # stdin q (15秒) → SIGINT (15秒) の最大約30秒+起動分を要し得るため、
@@ -139,6 +139,16 @@ STREAM_INT_RANGES: dict[str, tuple[int, int]] = {
     "SOREN_DIRECT_STREAM_AUDIO_KBPS": (64, 320),
     "SOREN_DIRECT_STREAM_AUDIO_DELAY_MS": (0, 2000),
 }
+
+# --- worker control constants ---------------------------------------------------
+# 予想 (prediction_worker) / 改善 (improve_daemon) ワーカーのオンオフも
+# supervisor (start_all.sh) の pause gate (`tmp/state/<worker>.paused` マーカー)
+# を通じて行う。マーカーがある間 supervisor は当該 worker を起動・respawn しない。
+WORKER_CONTROL_TARGETS = ("prediction_worker", "improve_daemon")
+# TERM 後の退出待ち。prediction_worker/improve_daemon は trap で即終了するため短くて足りる。
+WORKER_STOP_WAIT_SEC = 10
+# start 後、supervisor の自動 respawn (poll 3秒 + backoff) を待つ時間。
+WORKER_START_WAIT_SEC = 30
 
 # --- helpers -----------------------------------------------------------------
 
@@ -1784,7 +1794,18 @@ def _get_workers_status(soren_root: Path) -> list[dict[str, Any]]:
             except Exception:
                 pid = None
         alive = pid is not None
-        results.append({"worker": w, "pid": pid, "alive": alive, "status": "ok" if alive else "not_running"})
+        if w in TOGGLEABLE_WORKERS:
+            paused = _is_worker_paused(soren_root, w)
+            if alive and not paused:
+                status = "ok"
+            elif paused:
+                status = "paused"
+            else:
+                status = "not_running"
+        else:
+            paused = False
+            status = "ok" if alive else "not_running"
+        results.append({"worker": w, "pid": pid, "alive": alive, "paused": bool(paused), "status": status})
     try:
         sdir = soren_root / "tmp/state"
         if sdir.is_dir():
@@ -1833,6 +1854,87 @@ def _worker_pause_marker_path(soren_root: Path, worker: str) -> Path:
     if worker not in TOGGLEABLE_WORKERS:
         raise ValueError(f"unsupported worker: {worker}")
     return soren_root / "tmp/state" / f"{worker}.paused"
+
+
+def _pid_matches_worker_process(pid: int, worker: str) -> bool:
+    """Linux /proc で cmdline を確認し、誤って無関係プロセスを殺さないガード。
+
+    /proc が読めない環境 (macOS 等) は確認不能のため True (許可) を返す。
+    判定は start_all.sh の `_pattern_for_worker` と同じ形状 (basename 含む
+    スクリプトパス) を Python 正規表現に置き換えたもの。
+    """
+    patterns: dict[str, str] = {
+        "prediction_worker": r"[/ ]workers/prediction_worker\.sh(\s|$)",
+        "improve_daemon": r"[/ ]improve_daemon\.sh(\s|$)",
+    }
+    pat = patterns.get(worker)
+    if pat is None:
+        return False
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return True
+    except Exception:
+        return True
+    parts = [p.decode("utf-8", "ignore") for p in raw.split(b"\x00") if p]
+    if not parts:
+        return False
+    joined = " ".join(parts)
+    return re.search(pat, joined) is not None
+
+
+def _controlled_worker_pid(soren_root: Path, worker: str) -> int | None:
+    """pidfile から稼働中の対象 worker pid を返す (cmdline ガード込み)。"""
+    pid = _find_worker_pid(soren_root, worker)
+    if pid is None:
+        return None
+    if not _pid_matches_worker_process(pid, worker):
+        return None
+    return pid
+
+
+def _stop_controlled_worker(soren_root: Path, worker: str) -> dict[str, Any]:
+    """pause マーカー作成後、稼働中の worker へ SIGTERM を送り退出を待つ。
+
+    supervisor はマーカーがある間 respawn しないため、TERM 後は完全停止のまま。
+    improve_daemon を改善ジョブ (status=running) 稼働中に停止した場合、ジョブ
+    子プロセスは孤児化してバックグラウンド継続する (harvest は soren_loop が
+    ループ内で行うため結果は失われない)。
+    """
+    _set_worker_paused(soren_root, worker, True)
+    pid = _controlled_worker_pid(soren_root, worker)
+    term_sent = False
+    if pid is not None:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            term_sent = True
+        except (ProcessLookupError, PermissionError):
+            pass
+        # macOS の TERM 死滅子プロセスはゾンビのまま kill(0) 成功し得るため、
+        # pidfile 除去 (trap の cleanup) を主完了信号にする
+        deadline = time.monotonic() + WORKER_STOP_WAIT_SEC
+        while time.monotonic() < deadline:
+            if _find_worker_pid(soren_root, worker) is None:
+                break
+            time.sleep(0.5)
+    remaining = _controlled_worker_pid(soren_root, worker)
+    return {
+        "marker": True,
+        "term_sent": term_sent,
+        "stopped": remaining is None,
+        "remaining_pid": remaining,
+    }
+
+
+def _wait_for_worker_start(soren_root: Path, worker: str) -> dict[str, Any]:
+    """マーカー削除後、supervisor による respawn (pidfile 出現+生存) を待つ。"""
+    deadline = time.monotonic() + WORKER_START_WAIT_SEC
+    while time.monotonic() < deadline:
+        pid = _find_worker_pid(soren_root, worker)
+        if pid is not None:
+            return {"pid": pid, "running": True}
+        time.sleep(1.0)
+    return {"pid": None, "running": False}
 
 
 def _is_worker_paused(soren_root: Path, worker: str) -> bool:
@@ -2273,6 +2375,11 @@ input:checked+.slider:before{transform:translateX(20px)}
 <button class="btn danger" id="chat-stop">チャット停止 (stop)</button>
 </div>
 <div id="chat-msg" class="help"></div>
+</div>
+<div class="card"><h3>予想・改善ワーカーの停止 / 開始</h3><p class="desc">prediction_worker / improve_daemon を supervisor の pause gate (<code>tmp/state/&lt;name&gt;.paused</code>) で制御。stop はマーカー作成後に SIGTERM、start はマーカー削除後の supervisor 自動再起動 (約3秒周期 + backoff) を最大30秒待ちます。</p>
+<div id="wc-rows"></div>
+<div class="help" style="margin-top:8px">improve_daemon を改善ジョブ稼働中に停止した場合、実行中のジョブはバックグラウンドで継続します (結果の harvest はメインループが行います)。予想ワーカー停止中は Twitch 予想の自動作成・解決が止まります。</div>
+<div id="wc-msg" class="help"></div>
 </div>
 <div class="card"><h3>配信設定 (.env)</h3><p class="desc"><code>SOREN_DIRECT_STREAM_*</code> 設定 (.env へ保存)。変更は <b>配信の再起動 (stop → start) 後に反映</b>されます。</p>
 <div class="row">
@@ -3636,6 +3743,72 @@ async function chatAction(action){
     await loadStream();
   }catch(e){ if(msg) msg.textContent=String(e); toast(String(e),5000); }
 }
+const WC_WORKERS=[["prediction_worker","予想 prediction_worker"],["improve_daemon","改善 improve_daemon"]];
+function wcEl(worker,suffix){ return document.getElementById(`wc-${worker}-${suffix}`); }
+function renderWorkersControl(workers){
+  const wrap=document.getElementById("wc-rows");
+  if(!wrap) return;
+  if(!wrap.dataset.built){
+    wrap.innerHTML=WC_WORKERS.map(([w,label])=>`
+      <div class="row" style="align-items:center;margin-bottom:10px">
+        <div style="min-width:200px"><b>${esc(label)}</b><div class="mono" id="wc-${w}-pid" style="font-size:11px;color:var(--muted)">pid=-</div></div>
+        <div><span class="badge" id="wc-${w}-badge">-</span></div>
+        <div style="display:flex;gap:6px;margin-left:auto">
+          <button class="btn primary" id="wc-${w}-start">開始</button>
+          <button class="btn danger" id="wc-${w}-stop">停止</button>
+        </div>
+      </div>`).join("");
+    wrap.dataset.built="1";
+    for(const [w] of WC_WORKERS){
+      const sb=wcEl(w,"start"), tb=wcEl(w,"stop");
+      if(sb) sb.onclick=()=>workerControl(w,"start");
+      if(tb) tb.onclick=()=>workerControl(w,"stop");
+    }
+  }
+  for(const [w] of WC_WORKERS){
+    const row=(workers||[]).find(x=>x.worker===w)||{};
+    const badge=wcEl(w,"badge"), pidEl=wcEl(w,"pid");
+    if(badge){
+      badge.textContent=row.paused?"停止中 (paused)":(row.alive?"稼働中":"停止中");
+      badge.className=row.paused?"badge warn":(row.alive?"badge ok":"badge");
+    }
+    if(pidEl) pidEl.textContent=row.pid?`pid=${row.pid}`:"pid=-";
+    const sb=wcEl(w,"start"), tb=wcEl(w,"stop");
+    if(sb) sb.disabled=(!!row.alive&&!row.paused)||READ_ONLY;
+    if(tb) tb.disabled=(!!row.paused)||READ_ONLY;
+  }
+}
+async function loadWorkersControl(){
+  try{
+    const data=await api("/api/workers");
+    renderWorkersControl(data.workers);
+  }catch(e){ console.warn("loadWorkersControl",e); }
+}
+async function workerControl(worker,action){
+  if(READ_ONLY){ toast("read-only"); return; }
+  let confirmMsg;
+  if(action==="stop"){
+    confirmMsg=worker==="improve_daemon"
+      ?"改善ワーカーを停止しますか？改善ジョブが稼働中の場合、そのジョブはバックグラウンドで継続します。"
+      :"予想ワーカーを停止しますか？Twitch 予想の自動作成・解決が止まります。";
+  }else{
+    confirmMsg=(worker==="improve_daemon"?"改善ワーカー":"予想ワーカー")+"を開始しますか？";
+  }
+  if(!confirm(confirmMsg)) return;
+  const msg=$("#wc-msg"); if(msg) msg.textContent="処理中...";
+  try{
+    const res=await api("/api/workers",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({worker,action})});
+    if(msg){
+      if(action==="start"&&!res.ok&&res.hint) msg.textContent=res.hint;
+      else if(res.job_continues_in_background) msg.textContent="停止しました。実行中の改善ジョブはバックグラウンドで継続しています。";
+      else if(action==="stop"&&res.stopped===false) msg.textContent="マーカーを作成しましたが、プロセスの退出を確認できていません。";
+      else if(action==="stop") msg.textContent="停止しました (supervisor による再起動は抑止されます)。";
+      else msg.textContent="開始しました。";
+    }
+    toast(`${worker} ${action}`);
+    await loadWorkersControl();
+  }catch(e){ if(msg) msg.textContent=String(e); toast(String(e),5000); }
+}
 const STREAM_SETTING_KEYS=["SOREN_DIRECT_STREAM_SIZE","SOREN_DIRECT_STREAM_FPS","SOREN_DIRECT_STREAM_VIDEO_KBPS","SOREN_DIRECT_STREAM_AUDIO_KBPS","SOREN_DIRECT_STREAM_AUDIO_DELAY_MS","DOCICH_CC_ENABLED"];
 function renderStreamSettings(entries){
   const val=k=>{ const e=entries[k]; return e ? (e.value||e.effective||e.default||"") : ""; };
@@ -3738,7 +3911,8 @@ async function loadStatus(){
     wBody.innerHTML="";
     for(const w of (data.workers||[])){
       const tr=document.createElement("tr");
-      tr.innerHTML=`<td class="mono">${esc(w.worker)}</td><td>${w.pid||"-"}</td><td>${w.alive?'<span class="badge ok">alive</span>':'<span class="badge bad">down</span>'}</td>`;
+      const st=w.paused?'<span class="badge warn">paused</span>':(w.alive?'<span class="badge ok">alive</span>':'<span class="badge bad">down</span>');
+      tr.innerHTML=`<td class="mono">${esc(w.worker)}</td><td>${w.pid||"-"}</td><td>${st}</td>`;
       wBody.appendChild(tr);
     }
     $("#status-game-count").textContent=data.game_count.value!=null?String(data.game_count.value):"-";
@@ -4100,7 +4274,7 @@ document.addEventListener("DOMContentLoaded",()=>{
     if(tab==="dashboard") loadDashboard();
     if(tab==="status") { loadStatus(); if(statusTimer) clearInterval(statusTimer); statusTimer=setInterval(loadStatus,10000); }
     else { if(statusTimer) { clearInterval(statusTimer); statusTimer=null; } }
-    if(tab==="stream") { loadStream(); if(streamTimer) clearInterval(streamTimer); streamTimer=setInterval(loadStream,10000); }
+    if(tab==="stream") { loadStream(); loadWorkersControl(); if(streamTimer) clearInterval(streamTimer); streamTimer=setInterval(()=>{ loadStream(); loadWorkersControl(); },10000); }
     else { if(streamTimer) { clearInterval(streamTimer); streamTimer=null; } }
     if(tab==="overlay") { loadOverlayEvents(); loadWorkBanner(); loadTop(); loadPreview(); }
     if(tab==="audio") loadAudioQueue();
@@ -4500,6 +4674,8 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_post_stream()
             elif parsed.path == "/api/chat":
                 status = self._handle_post_chat_toggle()
+            elif parsed.path == "/api/workers":
+                status = self._handle_post_workers()
             elif parsed.path == "/api/overlay/events":
                 status = self._handle_post_overlay_event()
             elif parsed.path == "/api/overlay/events/bulk":
@@ -5245,6 +5421,75 @@ class _Handler(BaseHTTPRequestHandler):
                 "action": action,
                 "chat_paused": _is_worker_paused(self.soren_root, "chat_worker"),
                 "worker_pid": pid,
+            },
+        )
+        return 200
+
+    def _handle_post_workers(self) -> int:
+        body, err = self._read_body()
+        if err:
+            return err
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except Exception as exc:
+            self._send_error_json(400, "invalid_json", str(exc))
+            return 400
+        if not isinstance(data, dict):
+            self._send_error_json(400, "validation_error", "body must be object")
+            return 400
+        worker = str(data.get("worker", "")).strip().lower()
+        if worker not in WORKER_CONTROL_TARGETS:
+            self._send_error_json(400, "invalid_worker", "worker must be prediction_worker or improve_daemon")
+            return 400
+        action = str(data.get("action", "")).strip().lower()
+        if action not in ("start", "stop"):
+            self._send_error_json(400, "invalid_action", "action must be start or stop")
+            return 400
+        if action == "stop":
+            job_active = False
+            if worker == "improve_daemon":
+                imp = _load_json_file(_improve_state_path(self.soren_root))
+                status = str(imp.get("status", "")) if isinstance(imp, dict) else ""
+                pid = int(imp.get("pid", 0) or 0) if isinstance(imp, dict) else 0
+                alive = False
+                if pid:
+                    try:
+                        os.kill(pid, 0)
+                        alive = True
+                    except OSError:
+                        alive = False
+                # ジョブ子プロセスは孤児化してバックグラウンド継続する
+                # (harvest は soren_loop のループ内処理が担うため結果は失われない)
+                job_active = status == "running" and alive
+            result = _stop_controlled_worker(self.soren_root, worker)
+            response: dict[str, Any] = {
+                "ok": True,
+                "worker": worker,
+                "action": action,
+                "paused": True,
+                "stopped": result.get("stopped"),
+                "term_sent": result.get("term_sent"),
+                "remaining_pid": result.get("remaining_pid"),
+            }
+            if worker == "improve_daemon":
+                response["job_continues_in_background"] = job_active
+            self._send_json(200, response)
+            return 200
+        # start: pause マーカーを外し、supervisor による respawn を待つ
+        _set_worker_paused(self.soren_root, worker, False)
+        started = _wait_for_worker_start(self.soren_root, worker)
+        hint = None
+        if not started.get("running"):
+            hint = "supervisor (start_all.sh / soren-runtime) が稼働していれば数秒〜数十秒で自動起動します。稼働していない場合は手動で起動してください。"
+        self._send_json(
+            200,
+            {
+                "ok": bool(started.get("running")),
+                "worker": worker,
+                "action": action,
+                "paused": False,
+                "pid": started.get("pid"),
+                "hint": hint,
             },
         )
         return 200
@@ -6153,7 +6398,7 @@ def run_webui(
             print(f"  WARNING: {eff_soren_root}/eloop_lib.sh not found (soren_root may be wrong)")
         if not (eff_soren_root / ".env").is_file():
             print(f"  WARNING: {eff_soren_root}/.env not found (will be created on first save)")
-        print("  endpoints: /, /api/health, /api/config, /api/backoffs, /api/stats, /api/reload, /api/game_state, /api/improve_state, /api/workers, /api/stream (GET/POST), /api/chat (POST), /api/peak_status, /api/predictions, /api/predictions/action, /api/prompts")
+        print("  endpoints: /, /api/health, /api/config, /api/backoffs, /api/stats, /api/reload, /api/game_state, /api/improve_state, /api/workers (GET/POST), /api/stream (GET/POST), /api/chat (POST), /api/peak_status, /api/predictions, /api/predictions/action, /api/prompts")
         return 0
 
     # validate soren_root
