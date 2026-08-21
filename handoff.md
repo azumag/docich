@@ -17,6 +17,14 @@
 - **未確認**: 次回以降の実ラジオ生成での発話レベルの改善（観測は今後の debug 出力で継続）。
 - **作業ツリー訂正**: ローカル `games/soviet_now/broadcast/radio_persona.sh` に前セッションの壊れた未コミット編集（二重 else で syntax error、一人称「私」追加のボツ案）が残っていたため HEAD へ復元した上で本修正を適用。一人称規定の追加自体は引き続き未実施（19:xx調査節の「ユーザー確認待ち」のまま）。他セッションの変更中ファイル（batch_commentary.sh, comment.sh, prompts/celebration.md, comment_persona_main.md）には触れていない。
 
+## 2026-08-21 19:3x JST — フォローアップ3件完了（実装・VM反映・実測済み）
+
+- **①codex失敗の可視化**: エラーpreviewがstderr先頭のセッションバナーで埋まり真因が切れていたため、`_ai_error_preview_from_text` を200字超で「先頭70字…総字数…末尾90字」のhead+tail形式へ変更。併せて `_ai_call_codex_unqueued` の codex exec に `</dev/null` を固定（stdinがパイプだと `<stdin>` ブロックとして読まれる仕様の回避）。
+- **②WebUI Stats拡張**（docich `66adafb`）: `/api/stats` に `recent_errors`（error付きfail最大40件・新しい順）と `by_agent[].fail` を追加。Statsタブに「最近のAI失敗理由」カードと agentテーブルの fail/失敗率 列を追加。VM webui は user systemd unit `docich-webui.service`（`bin/docich` ラッパー）で再起動し、API実測で recent_errors 6件・x-preview attempt35/winner13/fail10 を確認。※handoff旧記載の「plain プロセス」は実態と不一致だった。
+- **③free枠復旧監視**（soviet_now `446b56308`）: `probe_free_slot.sh` を新設（単発プローブ、cron想定 `*/30 * * * *`、FREE_PROBE_MODELS で対象指定、down→recovered 遷移で overlay_notify）。streak≥3の解除では `_ai_fail_streak_clear` が復旧ログを出す。VMで1回実行し `deepseek-v4-flash-free down (rc=1)` / `x-preview-f-free ok` を実測（19:22時点でdeepseek-v4-flash-freeはまだダウン中）。cron登録は未実施（ユーザー判断）。
+- **テスト**: `tests/test_ai_dispatch_diagnostics.sh` 21項目成功、`tests/test_webui.py` 71件成功。
+- **リポジトリ同期**: soviet_now `codex/no-apply-liveliness` `446b56308` push、docich `codex/soren-repo-handoff` `66adafb` push済み。
+
 ## 2026-08-21 19:1x JST — free枠(opencode)失敗率の原因特定と観測・レジリエンス実装（実装・VM反映・実測済み）
 
 - **原因（実測）**: レートリミット枯渇ではなく上流free gatewayの不安定さ。(1) `opencode/deepseek-v4-flash-free` は07:06以降ほぼ終日ダウン（CLI直接実行で `UnknownError: Unexpected server error` rc=1 を再現、30/30失敗。ユーザーが16:19の.env更新でチェーン外へ）。(2) `x-preview-f-free` / `muse-spark-1.2-contributor-free` は断続的なストリーム中断 — opencode.db のセッション記録で、失敗呼び出しは reasoning 出力後に `step-finish reason=unknown, output tokens=0` で死んでいる（成功時は reason=stop）。15〜17時にバースト、数分後には自然復旧。
@@ -27,6 +35,15 @@
 - **実トラフィック検証**: ダウン中の deepseek-v4-flash-free への実dispatchで fail レコードに `"error":"rc=1 (4s): Error: { \"name\": \"UnknownError\"...}"` が記録されることを実測。19:00台の実運用では amd の `rc=1: Reading additional input from stdin...` や openrouter/free の `timeout after 90s` など従来不可視だった失敗理由が記録され、x-preview-f-free は ok→winner で自然復旧も実測。ai_stderr.log はノイズなし（2.8KBの診断のみ）。
 - **リポジトリ同期**: soviet_now `codex/no-apply-liveliness` へ push（`069961326`）、docich `codex/soren-repo-handoff` `eacdbe9` でsubmodule bump。origin/main は別セッションの merge (`7d4d907d0`) で乖離しているため今回は未マージ。
 - **フォローアップ候補**: ①codex CLI が稀に `Reading additional input from stdin...` で即死する件（`_ai_call_codex_unqueued` の stdin `</dev/null` 化で直る可能性・要調査）②WebUI Stats へ error フィールド表示を追加 ③deepseek-v4-flash-free の上流復旧監視。
+
+## 2026-08-21 19:xx JST — YouTube同時配信の処理能力検討（調査のみ・未実装・方針決定）
+
+- **結論**: 可能。新規リレーサーバではなく既存ローカル nginx-rtmp（`/etc/soren-rtmp/nginx.conf`、push.conf でTwitchへpush中）に `push` を1行追加する形（再エンコードなし）。ユーザーがやる方向で決定。
+- **必須条件（ユーザー決定）**: AI 同時実行数の制限を必須とする。CPU idle 平均1.6%・最小0%でほぼ飽和（主因: Chromium SwiftShader ~86%、VOICEVOX ~58%、ffmpeg x264 ~47%、AI生成バースト）。
+- **実測**: VMは Oracle A1.Flex 4 vCPU/24GB/NW上限4Gbps。remux プル14秒で CPU<0.1%コア・+4.7Mbps。nginx ワーカー全体(publish+Twitch push)平均0.9%コア。YouTube ingest TCP 1935 到達 OK。再エンコード方式は +40〜50% コアで非推奨。
+- **3本目以降**: レグあたり +4.7Mbps・CPU 0.3〜0.5% 見込みで問題なし。ただしレグ単位増分は未測定のため追加のつど実測する。
+- **記録先**: azumag/docich issue #7「youtube用dociを統合する」にコメント保存済み（https://github.com/azumag/docich/issues/7#issuecomment-5368564672）。キー等の機密は書いていない。
+- **未確認**: 実 push 追加状態での増分、YouTube キー発行・受付品質。`youtube_worker.sh` はチャット受信専用で動画は未対応。
 
 ## 2026-08-21 19:xx JST — 中華AIが「僕」と自称する原因調査（診断のみ・未変更）
 
