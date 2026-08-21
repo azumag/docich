@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -757,6 +758,89 @@ class TestHttpHandlers(unittest.TestCase):
         body = res.read().decode("utf-8")
         self.assertIn('data-tab="stream"', body)
         self.assertIn("/api/stream", body)
+
+    def test_workers_stop_start_roundtrip(self):
+        webui.WORKER_START_WAIT_SEC = 1
+        try:
+            # stop: プロセスなし → マーカー作成のみ
+            status, data = self._request("POST", "/api/workers", {"worker": "prediction_worker", "action": "stop"})
+            self.assertEqual(status, 200, data)
+            self.assertTrue(data["ok"])
+            self.assertTrue(data["paused"])
+            self.assertFalse(data["term_sent"])
+            self.assertTrue(data["stopped"])
+            self.assertTrue((self.soren / "tmp/state/prediction_worker.paused").is_file())
+            status, data = self._request("GET", "/api/workers")
+            row = next(w for w in data["workers"] if w["worker"] == "prediction_worker")
+            self.assertTrue(row["paused"])
+            self.assertEqual(row["status"], "paused")
+            # start: supervisor がいないので pid 出ない (マーカーは消える)
+            status, data = self._request("POST", "/api/workers", {"worker": "prediction_worker", "action": "start"})
+            self.assertEqual(status, 200, data)
+            self.assertFalse(data["ok"])
+            self.assertFalse((self.soren / "tmp/state/prediction_worker.paused").exists())
+            self.assertTrue(data.get("hint"))
+        finally:
+            webui.WORKER_START_WAIT_SEC = 30
+
+    def test_workers_stop_improve_reports_job_continues(self):
+        proc = subprocess.Popen(["sleep", "30"])
+        try:
+            (self.soren / "tmp/state/improve_state.json").write_text(
+                json.dumps({"status": "running", "pid": proc.pid}), encoding="utf-8"
+            )
+            (self.soren / "tmp/state/improve_daemon.pid").write_text(f"{proc.pid}\n", encoding="utf-8")
+            webui.WORKER_STOP_WAIT_SEC = 1
+            try:
+                status, data = self._request("POST", "/api/workers", {"worker": "improve_daemon", "action": "stop"})
+            finally:
+                webui.WORKER_STOP_WAIT_SEC = 10
+            self.assertEqual(status, 200, data)
+            self.assertTrue(data["ok"])
+            self.assertTrue(data["paused"])
+            # macOS (/proc 無し) では cmdline ガードが許可のため sleep へ TERM が飛ぶ
+            self.assertTrue(data["term_sent"])
+            self.assertTrue(data["job_continues_in_background"])
+            self.assertTrue((self.soren / "tmp/state/improve_daemon.paused").is_file())
+        finally:
+            proc.wait(timeout=5)
+
+    def test_workers_stop_improve_no_job(self):
+        status, data = self._request("POST", "/api/workers", {"worker": "improve_daemon", "action": "stop"})
+        self.assertEqual(status, 200, data)
+        self.assertTrue(data["ok"])
+        self.assertFalse(data["job_continues_in_background"])
+
+    def test_workers_invalid_worker_rejected(self):
+        status, data = self._request("POST", "/api/workers", {"worker": "soren_loop", "action": "stop"})
+        self.assertEqual(status, 400)
+        self.assertEqual(data["error"], "invalid_worker")
+
+    def test_workers_invalid_action_rejected(self):
+        status, data = self._request("POST", "/api/workers", {"worker": "prediction_worker", "action": "restart"})
+        self.assertEqual(status, 400)
+        self.assertEqual(data["error"], "invalid_action")
+
+    def test_workers_read_only_enforced(self):
+        webui._Handler.read_only = True
+        try:
+            status, _ = self._request("POST", "/api/workers", {"worker": "prediction_worker", "action": "stop"})
+            self.assertEqual(status, 403)
+            self.assertFalse((self.soren / "tmp/state/prediction_worker.paused").exists())
+        finally:
+            webui._Handler.read_only = False
+
+    def test_workers_control_card_in_index(self):
+        self.client.request("GET", "/")
+        res = self.client.getresponse()
+        body = res.read().decode("utf-8")
+        self.assertIn('id="wc-rows"', body)
+        self.assertIn("/api/workers", body)
+
+    def test_pid_matches_worker_process_unknown_worker(self):
+        # 未知 worker は常に不許可 (誤殺防止のフォールトクローズ)
+        self.assertFalse(webui._pid_matches_worker_process(12345, "unknown_worker"))
+
 
     def test_audio_enqueue_and_list(self):
         status, data = self._request("POST", "/api/audio/enqueue", {"text": "読み上げテストです", "source": "webui_test"})
