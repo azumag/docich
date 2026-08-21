@@ -2,7 +2,20 @@
 
 > 生成日時: 2026-08-22 03:0x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: タイムアウト追加余裕(COMMENT 240s/RADIO 360s)へ再設定・実測、改善レーンANALYZE 900s timeout を issue #22 へ起票。
+> 直前セッション: 改善ゲート打ち切りをAI統計から分離(gate_giveupイベント化・soviet_now `7b7b328e0`・VM反映・テスト31/31)。
+
+## 2026-08-22 06:0x JST — ゲート打ち切りをattempt/fail統計から分離（実装・VM反映・テスト済み）
+
+- **ユーザー指摘**: 「アテンプトの統計が狂うので、(ゲート待ちを)別にしてほしい」。
+- **問題の機構（実測）**: `_ai_dispatch` は入口で attempt 記録→`_ai_call_codex` 内の `_ai_generation_queue_run` でゲート待ち(最大1200s)→打ち切りrc=1がfail記録。つまり**モデル呼び出しゼロの待ちがattempt+fail両方を汚染**していた(05:21-05:22のdeals/news prepass fail rc=1が実例)。
+- **実装**（soviet_now `7b7b328e0`、VM `/home/ubuntu/soren` 反映・backup `.codex_deploy/backup-20260822-0548-gate-giveup/`）:
+  - 新定数 `AI_GATE_GIVEUP_RC=91`。ゲート打ち切り時はこれを返す(queue_run経由でも伝播)。
+  - `_ai_dispatch` 入口へゲートをhoist: 打ち切り時は **`gate_giveup` イベントのみ記録**(attempt/fail無し)でreturn 91。チェーンフォールバック挙動は従来どおり(次候補へ)。
+  - 通過後は `AI_GATE_PASSED_FOR_DISPATCH=1` を立てて内側キューゲートの二重待機を防止。dispatch末尾(PIPESTATUS取得後)で必ず解除し同一シェル内の次候補へ漏出しない。
+  - webui側は未知イベントを無視する集計のため無変更で安全(`src/docich/webui.py` の ev==attempt/fail 分岐を実測確認)。
+- **テスト**: `tests/test_ai_lane_queue.sh` 22→31項目(ゲート打ち切りrc91・gate_giveupのみ記録・attempt/fail非計上・通常呼び出しはattempt/ok・二重待機防止フラグ)。ローカル(macOS, e2eはtimeout不在skip)23ok/0ng、**VMで31/31全成功**。
+- **VM反映・再起動**: SHA256一致(c1cf9ee4…/210dee73…)・bash -n成功。radio/chat worker全インスタンスTERM→respawn(radio 1295724/chat 1295616)、重複なし・配信LIVE維持 ✓。
+- **未確認**: 実トラフィックでの gate_giveup イベント初観測(次回改善ジョブ稼働中の放送系生成時)。webui Stats画面への gate_giveup 表示追加は今後の候補(現在は単にattempt/failから抜けるだけ)。
 
 ## 2026-08-22 05:3x JST — タイムアウト値の更なる余裕増し＋改善レーンtimeout起票（VM反映・実測済み）
 
