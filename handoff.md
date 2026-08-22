@@ -4,6 +4,14 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: issue #22 解決(ANALYZE 1100s+リトライ2回限定・OPENCODE_BIN対応・soviet_now `7160a34a3`・VM反映・テスト20/20)。
 
+## 2026-08-23 04:5x JST — 直接AI呼び出しのwinner観測修正（VM反映済み）
+
+- **目的**: `_ai_dispatch`直行のJIJI調査・翻訳・分類・postmortemなどが`ok`のみで`winner`を持たず、モデル別勝率を実態より低く見せていた問題を修正する。
+- **実装**: `_ai_dispatch`へvalidator/empty出力判定と`AI_DISPATCH_RECORD_WINNER`を追加。`ai_generate_list`はvalidatorをdispatchに渡しつつ二重winner記録を回避。radio opencode直接経路・comment翻訳・comment分類・rollback postmortemの成功時のみwinner記録を有効化。soviet_now `462930248` push。
+- **VM反映**: 4ファイルを`.codex_deploy/backup-20260823-0445-direct-winner-stats/`退避後にscp、SHA256一致、bash -n成功。radio/chatワーカーをTERM→respawnし、配信running・30fps・約4568kbpsを確認。
+- **検証**: ローカル diagnostics 26/26、backoff 18/18、improve 21/21、comment 34/34。VM diagnostics 26/26、VM unittest 73/73。反映後の実trafficでmuse-spark-free 51回/42勝=82.35%を確認。
+- **未確認**: 反映後の直接経路winner初観測と、十分なサンプルでの全モデル/全体80%到達。低勝率モデルは当日累計の上流障害・旧観測が残るため、新しい観測窓での再評価が必要。
+
 ## 2026-08-23 03:xx JST — OpenRouter ox-alpha を x-preview 直前へ挿入（VM反映・実測済み）
 
 - **目的**: OpenRouter経由の `codex:openrouter/ox-alpha` を、既存の `opencode:x-preview-f-free` の直前に配置する。
