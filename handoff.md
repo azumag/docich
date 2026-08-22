@@ -16,6 +16,14 @@
 - **未変更**: `RADIO_FACT_CHECK_AGENT` 系は4段固定 (`AGENT → SECONDARY → FALLBACK → TERTIARY`) のため触っていない。現状は `opencode:x-preview-f-free → muse-free → muse-go → minimax`。OpenRouter版を先頭追加して既存4候補も保持するには5段対応のコード拡張が必要。
 - **リポジトリ同期**: 変更はVM外の `.env` 運用値のみのため、soviet_nowソースコミット対象なし。本handoff更新のみdocichブランチへ記録。
 
+## 2026-08-23 03:2x JST — winner統計の帰属修正と無限ループ切分け（VM反映済み）
+
+- **ユーザー質問**: 「無限ループしてる？」に対する実測は**否**。VMにはsupervisor配下の`soren_loop` 1本と、その子のメインゲーム用`strategy_runner` 1本のみ。`tmp/state/improve_daemon.paused` が存在し、改善ジョブ状態はidle。短時間に見えた別PIDはゲーム境界処理・hash archive prune等であり、AI改善の無限再実行ではなかった。
+- **統計問題**: 当日分を`resolved_model`で集計すると全体winner率は約52%。`opencode/deepseek-v4-flash-free` 0%(5/5上流UnknownError)、`x-preview-f-free` 28.6%(空出力2)、`amd-token-factory-deepseek-v4-flash` 37.5%(timeout+error無し3)、`minimax-m3` 37.5%(ok8/winner3でvalidator等の拒否疑い)が低位。`muse-spark-free` 75.7%まで改善。
+- **修正**: 放送系`ai_generate_list`の`all_failed`に候補resolved_model一覧を記録。改善系`run_ai_list`の成功に`winner`、全失敗に候補resolved_model一覧を記録。soviet_now `c92c41ed0` push、VM4ファイル反映、backup `.codex_deploy/backup-20260823-0310-winner-attribution/`、SHA256一致。
+- **検証**: ローカル diagnostics 26/26、backoff 18/18、improve reliability 21/21。VM diagnostics 26/26、VM unittest 39/39（VMにpytest無しのためunittest使用）。radio/chat workerを現行PIDへTERM→respawnし、再起動後の実trafficでwinner記録を確認。
+- **未確認**: 修正後の十分なサンプルでの80%到達。特にminimaxのok→winnerにならない理由と、`openrouter/ox-alpha` の初回attemptの完了結果。作業ツリーには別セッション系の`soren_loop.sh`/`strategy/improve.sh`/`stream_noon_audit`変更が残っており、今回は触れていない。
+
 ## 2026-08-23 — コメント戦略指示の受付時保存と改善優先化（ローカル実装・未VM反映）
 
 - **目的**: 視聴者コメントの戦略指示が返信生成の成否に依存せず、次回戦略改善へ確実に届くようにする。
