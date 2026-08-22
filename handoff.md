@@ -13,8 +13,9 @@
   - `eloop_improve.sh` / `prompts/improve_strategy.md`: improve_brief と実装プロンプトで `comment_intake` を優先表示し、新しい未処理指示を古い繰り返しメモより先に照合させる方針を明記。ログ裏取り要件は維持。
   - `tests/test_escape_mechanisms.py`: 受付時保存順序・source/received・improve_brief優先化の焦点回帰を追加。
 - **検証**: 焦点テスト2件 OK、`bash -n comment.sh eloop_improve.sh` OK、`git diff --check` OK、`test_comment_bilingual` 34件 OK。`test_escape_mechanisms` 全件は既存 strategy/wildcard 関連失敗と sandbox socket 制限があり中断したため、今回変更とは別のベースラインとして扱う。
-- **同期**: soviet_now `a7fc5bdbc` を `origin/codex/no-apply-liveliness` に push済み。親 handoff/submodule bump はこのセクションで実施。
-- **未完了**: VM `/home/ubuntu/soren` への反映・backup・worker再起動・本番ログでの初回intake観測は未実施。
+- **VM反映**: soviet_now `a7fc5bdbc` を `origin/codex/no-apply-liveliness` に push済み。VM `/home/ubuntu/soren` へ4ファイル反映、backup `.codex_deploy/backup-20260823-comment-intake/` 作成、SHA256一致と `bash -n` 確認。
+- **再起動・検証**: chat/youtubeワーカーをTERM→supervisor respawnで更新し、chat2本・youtube2本へ復帰。VM焦点テスト2件 OK。改善daemonはpaused/idleのまま触らず、次回spawnから新improve経路が有効。
+- **未確認**: 実コメントによる初回 `source=comment_intake` 追記と、その項目が improve_brief の Advice Priorities 先頭側に出る運用観測。
 
 ## 2026-08-22 14:xx JST — Ox Alpha を OpenRouter 経由でも使用可能に（ローカル・VM反映・実呼び出し確認）
 
