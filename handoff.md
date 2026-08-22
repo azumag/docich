@@ -4,6 +4,54 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: issue #22 解決(ANALYZE 1100s+リトライ2回限定・OPENCODE_BIN対応・soviet_now `7160a34a3`・VM反映・テスト20/20)。
 
+## 2026-08-23 — コメント戦略指示の受付時保存と改善優先化（ローカル実装・未VM反映）
+
+- **目的**: 視聴者コメントの戦略指示が返信生成の成否に依存せず、次回戦略改善へ確実に届くようにする。
+- **実装（soviet_now 作業ツリー）**:
+  - `broadcast/comment.sh`: 機械抽出した `strategy` 候補を分類直後・コメント生成前に `advice.md`/`advice91.md` へ保存。`[source=comment_intake received=<epoch>]` を付与し、非助言カテゴリでは従来どおり抑制。
+  - 本体が同一の intake/reply 記録は `_strategy_advice_core_matches_existing` で重複排除。既存行から source/received メタを除いた本体比較を行う。
+  - `eloop_improve.sh` / `prompts/improve_strategy.md`: improve_brief と実装プロンプトで `comment_intake` を優先表示し、新しい未処理指示を古い繰り返しメモより先に照合させる方針を明記。ログ裏取り要件は維持。
+  - `tests/test_escape_mechanisms.py`: 受付時保存順序・source/received・improve_brief優先化の焦点回帰を追加。
+- **検証**: 焦点テスト2件 OK、`bash -n comment.sh eloop_improve.sh` OK、`git diff --check` OK、`test_comment_bilingual` 34件 OK。`test_escape_mechanisms` 全件は既存 strategy/wildcard 関連失敗と sandbox socket 制限があり中断したため、今回変更とは別のベースラインとして扱う。
+- **同期**: soviet_now `a7fc5bdbc` を `origin/codex/no-apply-liveliness` に push済み。親 handoff/submodule bump はこのセクションで実施。
+- **未完了**: VM `/home/ubuntu/soren` への反映・backup・worker再起動・本番ログでの初回intake観測は未実施。
+
+## 2026-08-22 14:xx JST — Ox Alpha を OpenRouter 経由でも使用可能に（ローカル・VM反映・実呼び出し確認）
+
+- **目的**: `x-preview-f-free` と同一系統の Ox Alpha を OpenRouter 枠でも fallback/picker として使えるようにする。
+- **OpenRouter 上流ID**: `stealth/ox-alpha`。公開カタログは context 1,048,576 / max output 131,072 / prompt/completion 無料。
+- **ローカル codex-router**:
+  - `~/.codex/codex-router/user-models.json` へ `openrouter/stealth/ox-alpha` を追加。gateway は `openrouter-stealth-ox-alpha`、context 1,048,576、autoCompact 891,289、efforts low/high/max。
+  - 既存の `opencode-free/x-preview-f-free` は温存。OpenRouter key も既存のまま使用し、値は取得・表示していない。
+  - `doctor --fix` + `refresh-catalog` 後、merged catalog 29 routed models / gateway routes 一致を確認。Codex 設定読み込みも成功。
+  - Codex 側新カタログ検証が `gpt-5.2.supports_parallel_tool_calls` 必須で失敗したため、native/merged の該当フィールドへ `true` を補完し backups `.bak-20260822-gpt52-parallel` を残した。これは router checkout 更新時に再発可能性がある互換修正。
+  - 実呼び出し: `test-model openrouter/stealth/ox-alpha --live --yes --quick --json` が status 200 + marker true。sandbox 内 doctor の router health は false だが、承認付き直接 `GET :4202/health` は `ok:true` で sandbox 制限と判断。
+- **VM**:
+  - VM には codex-router 本体はなく、従来どおり `/home/ubuntu/.codex/merged-models.json` + `/home/ubuntu/litellm.yaml` + `soren-litellm.service` 構成。
+  - `openrouter/free` のカタログ雛形から `openrouter/ox-alpha`（Ox Alpha via OpenRouter）を追加。context 1,048,576、autoCompact 900,000、parallel tools true、multi-agent v1。
+  - LiteLLM route は upstream `openai/stealth/ox-alpha`、base URL OpenRouter、key env 参照のみ。Codex が Responses API を要求して Stealth 400 になったため、`use_chat_completions_api: true` を追加して解消。
+  - backup: `/home/ubuntu/.codex/backups/20260822-openrouter-ox-alpha/`。
+  - 検証: `soren-litellm` active、chat completions が `OX_ALPHA_OPENROUTER_VM_OK` を返す。さらに VM `codex exec ... -m openrouter/ox-alpha` が `OX_ALPHA_CODEX_VM_OK` を返す。Codex CLI には `OutputTextDelta without active item` 警告が2回出たが最終応答は成功。
+- **未確認**: 自然発生 fallback での獲得観測、長時間 agentic workload での安定性、ローカル router checkout 更新後も gpt-5.2 互換パッチが不要になるか。
+
+## 2026-08-22 08:xx JST — v708: T14×2生存モード＋ソ連建国直前併合優先（実装・VM反映済み）
+
+- **ユーザー指示**: 「ソ連が建国できるように、戦略の改善を行ってください。戦略改善ループはいまは止めています。こちらのスレッドで、ソ連が建国できるまで終わらないこと。」
+- **実測分析**（game_history/20260822_060733_score3200.jsonl）:
+  - 最高スコア試合(3200点): T14×2をturn 93〜140（48ターン）保持したが、next=T14は一度も出現せずdeadline超過で死亡。
+  - T14×2の状態では「いつT14が来るか」は確率的事象であり、制御可能なのは「どれだけ長く生存するか」のみ。
+  - 直近48試合: T14×2到達1回、russia_count=0、soviet_count=0、best_max_type=14。
+- **v708実装**（soviet_now `6bd92ea28` push済み、VM `/home/ubuntu/soren` 反映済み）:
+  - `t14_count >= 2` 時に新軸を追加:
+    - (a) `merge_grade == "NO" && next_type != 14`: 低配置強化 `-800 × max(1, landing_y + 3)` → 盤面上昇最小化で生存時間延長
+    - (b) `merge_grade in ("DIRECT","NEAR") && next_type == 14`: `+3000` → T14+T14→T15（ソ連建国直前）の確定マージ
+    - 加えてT14間の中間エリア保護（gap内配置 -300）
+  - decide hash: `42c79aab4a68` → `96c6a1719420`
+- **テスト**: py_compile OK、extract_decide_hash OK、TestSovietBoardAnalysis 2/2 OK、test_stat_gate_shadow 2/2 OK
+- **VM反映**: SHA一致(`5a479a1e5a22dd8085c0beaa5a6bd2d09b54c3d456e2694164436ecc7750abc5`)、backup `.codex_deploy/backup-20260822-v708-t14-pair-survival/`
+- **改善ループ再開**: `tmp/state/improve_daemon.paused` 削除済み。improve_daemon PID 156181 稼働中。次ゲームからv708反映。
+- **未確認**: v708でのT14×2到達率・ソ連建国率の実運用観測（今後のaccumulated_games.jsonとsoren_loop.logで確認）。
+
 ## 2026-08-22 06:3x JST — issue #22 解決： ANALYZEタイムアウト1100s＋Stage1リトライ限定（実装・VM反映・テスト済み）
 
 - **ユーザー指示**: 「イシュー22の解決しておいて」。
