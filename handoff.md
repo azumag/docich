@@ -22,6 +22,7 @@
 - **統計問題**: 当日分を`resolved_model`で集計すると全体winner率は約52%。`opencode/deepseek-v4-flash-free` 0%(5/5上流UnknownError)、`x-preview-f-free` 28.6%(空出力2)、`amd-token-factory-deepseek-v4-flash` 37.5%(timeout+error無し3)、`minimax-m3` 37.5%(ok8/winner3でvalidator等の拒否疑い)が低位。`muse-spark-free` 75.7%まで改善。
 - **修正**: 放送系`ai_generate_list`の`all_failed`に候補resolved_model一覧を記録。改善系`run_ai_list`の成功に`winner`、全失敗に候補resolved_model一覧を記録。soviet_now `c92c41ed0` push、VM4ファイル反映、backup `.codex_deploy/backup-20260823-0310-winner-attribution/`、SHA256一致。
 - **検証**: ローカル diagnostics 26/26、backoff 18/18、improve reliability 21/21。VM diagnostics 26/26、VM unittest 39/39（VMにpytest無しのためunittest使用）。radio/chat workerを現行PIDへTERM→respawnし、再起動後の実trafficでwinner記録を確認。
+- **ループ追補**: 03:49と03:53に別セッション経由で`soren_loop`が再開された。1本目は1試合後に自然終了、2本目は継続したため04:09にTERM停止。見かけ上複数あった`soren_loop.sh`表示の一部はhash archive prune workerの親子プロセスだった。停止後は`strategy_runner`無し・lock空を確認。改善paused markerは温存。
 - **未確認**: 修正後の十分なサンプルでの80%到達。特にminimaxのok→winnerにならない理由と、`openrouter/ox-alpha` の初回attemptの完了結果。作業ツリーには別セッション系の`soren_loop.sh`/`strategy/improve.sh`/`stream_noon_audit`変更が残っており、今回は触れていない。
 
 ## 2026-08-23 — コメント戦略指示の受付時保存と改善優先化（ローカル実装・未VM反映）
