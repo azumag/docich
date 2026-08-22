@@ -4,7 +4,7 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: issue #22 解決(ANALYZE 1100s+リトライ2回限定・OPENCODE_BIN対応・soviet_now `7160a34a3`・VM反映・テスト20/20)。
 
-## 2026-08-23 03:xx JST — OpenRouter ox-alpha を x-preview 直前へ挿入（VM .env反映済み）
+## 2026-08-23 03:xx JST — OpenRouter ox-alpha を x-preview 直前へ挿入（VM反映・実測済み）
 
 - **目的**: OpenRouter経由の `codex:openrouter/ox-alpha` を、既存の `opencode:x-preview-f-free` の直前に配置する。
 - **変更対象**: VM `/home/ubuntu/soren/.env` の8リスト変数。`AI_COMMON_AGENTS` / `MODEL_IMPROVE_LIST` / `RADIO_AGENTS` / `RADIO_PREPASS_AGENTS` / `COMMENT_AGENTS` / `COMMENT_TRANSLATION_AGENTS` / `MODEL_IMPROVE_PEAK_LIST` / `PEAK_HOURS_AGENT_PREFERENCE`。
@@ -13,8 +13,8 @@
 - **事前実測**: VMで `_ai_dispatch OXROUTERTEST codex:openrouter/ox-alpha` を実行し stdout `OX_ROUTER_ALPHA_OK`、rc=0。
 - **反映**: `soren-runtime.service` を再起動。improve_daemon.paused があるため改善ワーカーは停止状態を維持。service active、radio/chat/audio workerの `/proc/<PID>/environ` に新共通チェーンを確認。
 - **整合確認**: 8変数それぞれで `codex:openrouter/ox-alpha` 出現数=1、かつ `x-preview` 直前であることをgrep/awkで確認。配信statusは `running`、fps約30.5、bitrate約4264kbits/sで復帰。
-- **未変更**: `RADIO_FACT_CHECK_AGENT` 系は4段固定 (`AGENT → SECONDARY → FALLBACK → TERTIARY`) のため触っていない。現状は `opencode:x-preview-f-free → muse-free → muse-go → minimax`。OpenRouter版を先頭追加して既存4候補も保持するには5段対応のコード拡張が必要。
-- **リポジトリ同期**: 変更はVM外の `.env` 運用値のみのため、soviet_nowソースコミット対象なし。本handoff更新のみdocichブランチへ記録。
+- **fact-check対応**: 既存の4段固定ではOpenRouter版を先頭追加すると最後のminimax fallbackが失われるため、soviet_now `33b8cce` で `RADIO_FACT_CHECK_QUINARY` を第5スロットとして追加。VM `.env.bak-20260823-034303-factcheck-quinary`退避後、実効順を `openrouter/ox-alpha → x-preview → muse-free → muse-go → minimax` へ変更。config.shとradio_factcheck.shのVM SHA256一致、bash -n、source後のQUINARY値、radio worker environを確認。soren-runtime.serviceを再起動しactive。
+- **リポジトリ同期**: soviet_nowソース拡張は `codex/no-apply-liveliness` `33b8cce` にpush済み。本handoff更新はdocichブランチへ記録する。
 
 ## 2026-08-23 03:2x JST — winner統計の帰属修正と無限ループ切分け（VM反映済み）
 
