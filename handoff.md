@@ -4,6 +4,14 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: issue #22 解決(ANALYZE 1100s+リトライ2回限定・OPENCODE_BIN対応・soviet_now `7160a34a3`・VM反映・テスト20/20)。
 
+## 2026-08-23 15:0x JST — 手動戦略v711「FIRST_RUSSIA_ASSEMBLY_MODES」（VM反映済み）
+
+- **v710実測**: 完了12試合でT13到達7/12、T14到達1/12、ソ連0。レーン誘導は343遷移中262遷移がanchor近接へ改善したが、被覆は343遷移中129遷移に残留。最高スコア3455試合はT14を作れたが、T14x1 + T13x1 + T12/T10素材から第2T13を作れず終了。
+- **修正**: soviet_now `c601c891b` で旧実績系の3モードを復活: ①T14後のT12ペアlock、②T13ペアlift、③T14+単体T13時のT12/T11/T10 bank lift。runner側に既存だった `SECOND_RUSSIA_T12_PAIR_LOCK` / `FIRST_RUSSIA_T13_PAIR_LIFT` / `FIRST_RUSSIA_SINGLE_T13_T12_BANK_LIFT` の安全上書きフックが再び有効になる。
+- **検証**: pycompile成功。decide hash `859fabbf1252`、SHA256 `73e5a0c5...`。VM `/home/ubuntu/soren/strategy.py` へbackup付き反映済み。改善ワーカーpaused・daemon/jobプロセスなし・lockなしを維持。
+- **誤仮説訂正**: 当初「nextNext=12供給待ちのT12ペア保護」を試したが、全履歴で `next_type=12` は0回のため撤去した。実際は連鎖生成後の高type供給（T10/T11）を既存ペアへ集約する設計に変更。
+- **永久保存**: soviet_now branch `codex/no-apply-liveliness` `c601c891b` push済み、親docich submodule bump `474daac` push済み。実戦hash/結果は次観測対象。
+
 ## 2026-08-23 13:3x JST — 改善ループ確定停止とWebUI停止経路強化（VM反映・実API検証済み）
 
 - **停止状態**: `/home/ubuntu/soren/tmp/state/improve_daemon.paused` を作成し、`tmp/improve.lock` は除去、`improve_state.json` は `status=idle / phase=webui_stopped`。`eloop_improve*.sh` / `improve_daemon.sh` 実プロセスなし。v710の `soren_loop.sh:179,854` と `strategy/improve.sh:2975` ガードをVM実コードで確認。
