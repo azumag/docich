@@ -4,6 +4,15 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: issue #22 解決(ANALYZE 1100s+リトライ2回限定・OPENCODE_BIN対応・soviet_now `7160a34a3`・VM反映・テスト20/20)。
 
+## 2026-08-23 16:1x JST — 手動戦略v712b「SECOND_T13_CONTACT_LANE」（VM反映済み・実戦観測中）
+
+- **v711実測**: 8試合でT13到達4/8、T14到達1/8、ソ連0。最高2750点試合ではT14+T13+T12x2を最大27ターン保持したが、v711レーンが既存T14/T13側へ戻す誘導になり、T12ペア中心への接触誘導が不足。新モード発火は銀行lift2ターンのみ。
+- **修正**: soviet_now `e6caa743a` + `8366e72a3`。T14x0/1かつT13x0/1でT12x2以上のとき、最も近接なT12ペア中心へ `russia_lane_x` を上書きし、T12ペアもcover保護対象に追加。critical deadline guardの被覆回避対象にも同ペアを追加。当初T14必須条件だったため1408点試合のT12x2+T13局面に効かなかった問題を `t14_count<=1` へ拡張して修正。
+- **検証**: pycompile成功。v712a decide hash `91fd34ad01b8`、v712b decide hash `e66e82e11279`。VM `/home/ubuntu/soren/strategy.py` はv712b SHA256 `f2ec477b...` で一致。改善ワーカーpaused・daemon/jobプロセスなし・lockなしを維持。
+- **永久保存**: soviet_now branch `codex/no-apply-liveliness` へ `e6caa743a` / `8366e72a3` push済み。親docich submodule bump `0f27115` / `0aa2fed` push済み。
+- **実戦初期観測**: v712aは完了1試合（54点、peak T12）。v712bは完了1試合（1523点、peak T13x2、T14未達）、現在ソ連0。改善ループは引き続き停止したまま。
+- **次**: v712bのT12ペア接触誘導が第2T13/T14生成率を上げるか観測。十分サンプル後、T12ペア中心とdeadline安全のトレードオフを再評価。
+
 ## 2026-08-23 15:0x JST — 手動戦略v711「FIRST_RUSSIA_ASSEMBLY_MODES」（VM反映済み）
 
 - **v710実測**: 完了12試合でT13到達7/12、T14到達1/12、ソ連0。レーン誘導は343遷移中262遷移がanchor近接へ改善したが、被覆は343遷移中129遷移に残留。最高スコア3455試合はT14を作れたが、T14x1 + T13x1 + T12/T10素材から第2T13を作れず終了。
