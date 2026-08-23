@@ -14,6 +14,16 @@
 - **ライブ実測**: `docich-webui` を起動し `127.0.0.1:8787` 待受と `/api/health ok=true` を確認。実POST `/api/workers {worker:improve_daemon,action:stop}` は `ok=true/stopped=true/job_continues_in_background=false/lock_removed=true`。GETでは improve `paused=true/status=paused`。改善startは呼んでいない。prediction_worker は既存のpaused状態を温存。
 - **配信影響**: 最終確認で `/api/stream state=live`、29.99fps、約4619.7kbits/s、runner/ffmpeg生存。ロールバック抑止ENV5項目は全て `0`、strategy decide hashは `cb3fc745833d` のまま。
 
+## 2026-08-23 13:5x JST — 手動戦略v710「RUSSIA_LANE_ASSEMBLY」（VM反映済み・実戦観測中）
+
+- **実測根拠**: 74試合分析で、最初のT14出現後150遷移中113遷移がT14被覆帯へ着地し、該当遷移の55%でdeadline marginが悪化。v709のtype>=11平均クラスタは「2個目のT14を作るべきanchor」を埋める主要敗因と特定。
+- **実装**: soviet_now `540e2e416`。T14優先・無ければT13をレーンanchor化。通常スコアでは非併合dropをanchor横に誘導し、anchor直上被覆へ強ペナルティ。重要修正としてcritical deadline guard内のNO_MERGE fallbackもlane被覆回避を選択（旧fallbackはx=0固定）。v709の汎用高type平均は専用レーン存在時に停止。
+- **オフライン回放**: 直近T14到達5試合155局面では、T14被覆選択97→21、変更111局面、候補margin p25 0.275→0.450 / 中央値0.900→1.217。全履歴半分サンプル1274局面ではdeadline超過選択256→146、margin p25 0.154→0.474 / 中央値1.024→1.510。
+- **検証**: `py_compile`成功、decide hash `16c7e5e65ba2`、SHA256 `2337b668...`。VM `/home/ubuntu/soren/strategy.py`へbackup付き反映済み。改善ワーカーpaused・job/daemonプロセスなし・lockなしを維持。
+- **永久保存**: soviet_now branch `codex/no-apply-liveliness` `540e2e416` push済み。親docich submodule bump `eaf6daf` push済み。
+- **実戦初期観測**: v710 hash `16c7e5e65ba2` を `latest.jsonl` と完了履歴両方で確認。最初の3試合は max type `12/12/13`、スコア `829/893/778`、ソ連0。第3試合でT13peak1に到達し、実ログに `RUSSIA_LANE_GUIDE` / `NO_MERGE_RUSSIA_LANE_GUARD` が出現。改善ワーカーは引き続きpaused。
+- **未確認**: T14/T15出現率変化とソ連建国は引き続き観測中。改善ループは意図的に停止したまま再開しない。
+
 ## 2026-08-23 12:4x JST — winner率80%目標の実測達成（検証済み）
 
 - **結論**: orphan対策後の窓（10:24以降）で、完了呼び出し分母 `ok+fail` のwinner率が **20/21=95.24%** となり、80%目標を満たした。attempt分母には実行中呼び出しが含まれるため、確定値の判定は完了ベースを使用した。
