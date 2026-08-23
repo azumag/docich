@@ -147,8 +147,13 @@ STREAM_INT_RANGES: dict[str, tuple[int, int]] = {
 WORKER_CONTROL_TARGETS = ("prediction_worker", "improve_daemon")
 # TERM 後の退出待ち。prediction_worker/improve_daemon は trap で即終了するため短くて足りる。
 WORKER_STOP_WAIT_SEC = 10
+# improve_daemon 自身は即終了しても、その子として稼働する改善ジョブは
+# AI 呼び出し等の退出に時間を要するため別猶予を持つ。
+IMPROVE_JOB_TERM_WAIT_SEC = 6
+IMPROVE_JOB_KILL_WAIT_SEC = 3
 # start 後、supervisor の自動 respawn (poll 3秒 + backoff) を待つ時間。
 WORKER_START_WAIT_SEC = 30
+IMPROVE_JOB_COMMAND_RE = re.compile(r"[/ ]eloop_improve(_runtime\.[^ ]+)?\.sh(?:\s|$)")
 
 # --- helpers -----------------------------------------------------------------
 
@@ -1841,7 +1846,7 @@ def _find_worker_pid(soren_root: Path, worker: str) -> int | None:
         # check alive
         try:
             os.kill(pid, 0)
-            return pid
+            return pid if _pid_is_active(pid) else None
         except ProcessLookupError:
             return None
         except PermissionError:
@@ -1893,15 +1898,184 @@ def _controlled_worker_pid(soren_root: Path, worker: str) -> int | None:
     return pid
 
 
+def _process_is_zombie(pid: int) -> bool:
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="ignore")
+        # comm は括弧を含み得るため、末尾側の安定フィールドから状態を読む。
+        return raw.rsplit(")", 1)[1].split()[0].startswith("Z")
+    except OSError:
+        pass
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.stdout.strip().startswith("Z")
+
+
+def _pid_is_active(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return not _process_is_zombie(pid)
+
+
+def _pid_is_improve_job(pid: int) -> bool:
+    if not _pid_is_active(pid):
+        return False
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+        command = " ".join(p.decode("utf-8", "ignore") for p in raw.split(b"\x00") if p)
+    except OSError:
+        try:
+            result = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "command="],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        command = result.stdout.strip()
+    return IMPROVE_JOB_COMMAND_RE.search(command) is not None
+
+
+def _active_improve_job_pid(soren_root: Path) -> int | None:
+    imp = _load_json_file(_improve_state_path(soren_root))
+    if not isinstance(imp, dict) or str(imp.get("status", "")) != "running":
+        return None
+    try:
+        pid = int(imp.get("pid", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    return pid if _pid_is_improve_job(pid) else None
+
+
+def _descendant_pids(root_pid: int) -> list[int]:
+    try:
+        result = subprocess.run(
+            ["ps", "-Ao", "pid=,ppid="],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    children: dict[int, list[int]] = {}
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) < 2:
+            continue
+        try:
+            pid, ppid = int(fields[0]), int(fields[1])
+        except ValueError:
+            continue
+        children.setdefault(ppid, []).append(pid)
+
+    descendants: list[int] = []
+    seen: set[int] = {root_pid}
+    queue = [root_pid]
+    while queue:
+        parent = queue.pop(0)
+        for child in children.get(parent, []):
+            if child in seen:
+                continue
+            seen.add(child)
+            descendants.append(child)
+            queue.append(child)
+    # 葉から止めると、親が子の終了待ちから抜ける前に全経路を閉じられる。
+    descendants.reverse()
+    return descendants
+
+
+def _terminate_process_tree(root_pid: int, known_pids: list[int] | None = None) -> dict[str, Any]:
+    if known_pids is not None:
+        pids = list(known_pids)
+    elif not _pid_is_active(root_pid):
+        return {"term_sent": False, "kill_sent": False, "stopped": True, "remaining_pids": []}
+    else:
+        pids = [root_pid] + _descendant_pids(root_pid)
+    term_sent = False
+    for pid in pids:
+        if _pid_is_active(pid):
+            try:
+                os.kill(pid, signal.SIGTERM)
+                term_sent = True
+            except OSError:
+                pass
+
+    deadline = time.monotonic() + IMPROVE_JOB_TERM_WAIT_SEC
+    while time.monotonic() < deadline:
+        alive = [pid for pid in pids if _pid_is_active(pid)]
+        if not alive:
+            return {"term_sent": term_sent, "kill_sent": False, "stopped": True, "remaining_pids": []}
+        time.sleep(0.25)
+
+    kill_sent = False
+    remaining_after_kill: set[int] = set()
+    for pid in reversed([pid for pid in pids if _pid_is_active(pid)]):
+        try:
+            os.kill(pid, signal.SIGKILL)
+            kill_sent = True
+            remaining_after_kill.add(pid)
+        except OSError:
+            pass
+    deadline = time.monotonic() + IMPROVE_JOB_KILL_WAIT_SEC
+    while time.monotonic() < deadline:
+        remaining_after_kill = {pid for pid in remaining_after_kill if _pid_is_active(pid)}
+        if not remaining_after_kill:
+            break
+        time.sleep(0.25)
+    return {
+        "term_sent": term_sent,
+        "kill_sent": kill_sent,
+        "stopped": not remaining_after_kill,
+        "remaining_pids": sorted(remaining_after_kill),
+    }
+
+
+def _mark_improve_job_stopped(soren_root: Path) -> bool:
+    path = _improve_state_path(soren_root)
+    data = _load_json_file(path)
+    if not isinstance(data, dict):
+        data = {}
+    data.update(
+        {
+            "status": "idle",
+            "pid": 0,
+            "phase": "webui_stopped",
+            "progress": 100,
+            "detail": "job_stopped_by_webui",
+            "updated_at": int(time.time()),
+            "pid_birth_epoch": 0,
+        }
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.tmp{os.getpid()}")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+    return True
+
+
 def _stop_controlled_worker(soren_root: Path, worker: str) -> dict[str, Any]:
-    """pause マーカー作成後、稼働中の worker へ SIGTERM を送り退出を待つ。
+    """pause マーカー作成後、worker と improve ジョブのプロセスツリーを止める。
 
     supervisor はマーカーがある間 respawn しないため、TERM 後は完全停止のまま。
-    improve_daemon を改善ジョブ (status=running) 稼働中に停止した場合、ジョブ
-    子プロセスは孤児化してバックグラウンド継続する (harvest は soren_loop が
-    ループ内で行うため結果は失われない)。
+    improve_daemon の foreground wait を先に解除してから、記録済み改善ジョブの
+    子孫まで検証付きで停止する。これにより AI 子プロセスの孤児化を防ぐ。
     """
     _set_worker_paused(soren_root, worker, True)
+    job_pid = _active_improve_job_pid(soren_root) if worker == "improve_daemon" else None
+    # daemonへTERMすると子は即座に孤児化・親変更し得るため、対象を先に固定する。
+    job_pids = [job_pid] + (_descendant_pids(job_pid) if job_pid is not None else [])
     pid = _controlled_worker_pid(soren_root, worker)
     term_sent = False
     if pid is not None:
@@ -1911,19 +2085,29 @@ def _stop_controlled_worker(soren_root: Path, worker: str) -> dict[str, Any]:
         except (ProcessLookupError, PermissionError):
             pass
         # macOS の TERM 死滅子プロセスはゾンビのまま kill(0) 成功し得るため、
-        # pidfile 除去 (trap の cleanup) を主完了信号にする
+        # ゾンビ判定を含めて実プロセス消滅を待つ
         deadline = time.monotonic() + WORKER_STOP_WAIT_SEC
         while time.monotonic() < deadline:
-            if _find_worker_pid(soren_root, worker) is None:
+            if pid is None or not _pid_is_active(pid):
                 break
             time.sleep(0.5)
     remaining = _controlled_worker_pid(soren_root, worker)
-    return {
+    result: dict[str, Any] = {
         "marker": True,
         "term_sent": term_sent,
         "stopped": remaining is None,
         "remaining_pid": remaining,
     }
+    if worker == "improve_daemon":
+        job_result = (
+            _terminate_process_tree(job_pid, job_pids)
+            if job_pid is not None
+            else {"term_sent": False, "kill_sent": False, "stopped": True, "remaining_pids": []}
+        )
+        result["job_pid"] = job_pid
+        result["job"] = job_result
+        result["stopped"] = result.get("stopped", False) and bool(job_result.get("stopped"))
+    return result
 
 
 def _wait_for_worker_start(soren_root: Path, worker: str) -> dict[str, Any]:
@@ -2378,7 +2562,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 </div>
 <div class="card"><h3>予想・改善ワーカーの停止 / 開始</h3><p class="desc">prediction_worker / improve_daemon を supervisor の pause gate (<code>tmp/state/&lt;name&gt;.paused</code>) で制御。stop はマーカー作成後に SIGTERM、start はマーカー削除後の supervisor 自動再起動 (約3秒周期 + backoff) を最大30秒待ちます。</p>
 <div id="wc-rows"></div>
-<div class="help" style="margin-top:8px">improve_daemon を改善ジョブ稼働中に停止した場合、実行中のジョブはバックグラウンドで継続します (結果の harvest はメインループが行います)。予想ワーカー停止中は Twitch 予想の自動作成・解決が止まります。</div>
+<div class="help" style="margin-top:8px">improve_daemon を停止すると、稼働中の改善ジョブと AI 子プロセスもツリーごと停止します。予想ワーカー停止中は Twitch 予想の自動作成・解決が止まります。</div>
 <div id="wc-msg" class="help"></div>
 </div>
 <div class="card"><h3>配信設定 (.env)</h3><p class="desc"><code>SOREN_DIRECT_STREAM_*</code> 設定 (.env へ保存)。変更は <b>配信の再起動 (stop → start) 後に反映</b>されます。</p>
@@ -3789,7 +3973,7 @@ async function workerControl(worker,action){
   let confirmMsg;
   if(action==="stop"){
     confirmMsg=worker==="improve_daemon"
-      ?"改善ワーカーを停止しますか？改善ジョブが稼働中の場合、そのジョブはバックグラウンドで継続します。"
+      ?"改善ワーカーを停止しますか？実行中の改善ジョブも停止します。"
       :"予想ワーカーを停止しますか？Twitch 予想の自動作成・解決が止まります。";
   }else{
     confirmMsg=(worker==="improve_daemon"?"改善ワーカー":"予想ワーカー")+"を開始しますか？";
@@ -3800,7 +3984,7 @@ async function workerControl(worker,action){
     const res=await api("/api/workers",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({worker,action})});
     if(msg){
       if(action==="start"&&!res.ok&&res.hint) msg.textContent=res.hint;
-      else if(res.job_continues_in_background) msg.textContent="停止しました。実行中の改善ジョブはバックグラウンドで継続しています。";
+      else if(res.job_continues_in_background) msg.textContent="停止できません。改善ジョブがまだ稼働しています。";
       else if(action==="stop"&&res.stopped===false) msg.textContent="マーカーを作成しましたが、プロセスの退出を確認できていません。";
       else if(action==="stop") msg.textContent="停止しました (supervisor による再起動は抑止されます)。";
       else msg.textContent="開始しました。";
@@ -5446,24 +5630,13 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_error_json(400, "invalid_action", "action must be start or stop")
             return 400
         if action == "stop":
-            job_active = False
-            if worker == "improve_daemon":
-                imp = _load_json_file(_improve_state_path(self.soren_root))
-                status = str(imp.get("status", "")) if isinstance(imp, dict) else ""
-                pid = int(imp.get("pid", 0) or 0) if isinstance(imp, dict) else 0
-                alive = False
-                if pid:
-                    try:
-                        os.kill(pid, 0)
-                        alive = True
-                    except OSError:
-                        alive = False
-                # ジョブ子プロセスは孤児化してバックグラウンド継続する
-                # (harvest は soren_loop のループ内処理が担うため結果は失われない)
-                job_active = status == "running" and alive
             result = _stop_controlled_worker(self.soren_root, worker)
+            job_stopped = True
+            if worker == "improve_daemon":
+                job_stopped = bool((result.get("job") or {}).get("stopped", True))
+                _mark_improve_job_stopped(self.soren_root)
             response: dict[str, Any] = {
-                "ok": True,
+                "ok": bool(result.get("stopped")) and job_stopped,
                 "worker": worker,
                 "action": action,
                 "paused": True,
@@ -5472,7 +5645,20 @@ class _Handler(BaseHTTPRequestHandler):
                 "remaining_pid": result.get("remaining_pid"),
             }
             if worker == "improve_daemon":
-                response["job_continues_in_background"] = job_active
+                response["job_continues_in_background"] = not job_stopped
+                response["job_pid"] = result.get("job_pid")
+                response["job_stop"] = result.get("job")
+                # v710以降: markerで新規spawnを封じ、稼働中ジョブもツリーごと止める。
+                # lockは次回start時に蓄積データから再作成されるため、停止応答時点で除去する。
+                lock = _improve_lock_path(self.soren_root)
+                lock_removed = False
+                if lock.is_file():
+                    try:
+                        lock.unlink()
+                        lock_removed = True
+                    except OSError:
+                        pass
+                response["lock_removed"] = lock_removed
             self._send_json(200, response)
             return 200
         # start: pause マーカーを外し、supervisor による respawn を待つ

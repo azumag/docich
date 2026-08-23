@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+import signal
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -783,8 +784,20 @@ class TestHttpHandlers(unittest.TestCase):
         finally:
             webui.WORKER_START_WAIT_SEC = 30
 
-    def test_workers_stop_improve_reports_job_continues(self):
-        proc = subprocess.Popen(["sleep", "30"])
+    def test_workers_stop_improve_terminates_job_tree(self):
+        runtime = self.soren / "tmp/state/eloop_improve_runtime.test.sh"
+        runtime.write_text("sleep 30 &\nwait $!\n", encoding="utf-8")
+        runtime.chmod(0o755)
+        proc = subprocess.Popen(["bash", str(runtime)])
+        child_pid = None
+        for _ in range(20):
+            child_poll = subprocess.run(["pgrep", "-P", str(proc.pid)], capture_output=True, text=True)
+            fields = child_poll.stdout.split()
+            if fields:
+                child_pid = int(fields[0])
+                break
+            time.sleep(0.05)
+        self.assertIsNotNone(child_pid)
         try:
             (self.soren / "tmp/state/improve_state.json").write_text(
                 json.dumps({"status": "running", "pid": proc.pid}), encoding="utf-8"
@@ -798,11 +811,36 @@ class TestHttpHandlers(unittest.TestCase):
             self.assertEqual(status, 200, data)
             self.assertTrue(data["ok"])
             self.assertTrue(data["paused"])
-            # macOS (/proc 無し) では cmdline ガードが許可のため sleep へ TERM が飛ぶ
+            # 改善ジョブの root と sleep 子は孤児化せず停止する。
             self.assertTrue(data["term_sent"])
-            self.assertTrue(data["job_continues_in_background"])
+            self.assertFalse(data["job_continues_in_background"])
+            self.assertEqual(data["job_pid"], proc.pid)
+            self.assertTrue(data["job_stop"]["stopped"])
+            self.assertEqual(data["job_stop"]["remaining_pids"], [])
+            self.assertFalse(webui._pid_is_active(child_pid))  # type: ignore[arg-type]
+            imp = json.loads((self.soren / "tmp/state/improve_state.json").read_text(encoding="utf-8"))
+            self.assertEqual(imp["status"], "idle")
+            self.assertEqual(imp["pid"], 0)
+            self.assertIn(proc.wait(timeout=5), (signal.SIGTERM, -signal.SIGTERM, 143))
             self.assertTrue((self.soren / "tmp/state/improve_daemon.paused").is_file())
         finally:
+            proc.wait(timeout=5)
+
+    def test_workers_stop_improve_ignores_non_improve_pid(self):
+        proc = subprocess.Popen(["sleep", "30"])
+        try:
+            (self.soren / "tmp/state/improve_state.json").write_text(
+                json.dumps({"status": "running", "pid": proc.pid}), encoding="utf-8"
+            )
+            self.assertIsNone(webui._active_improve_job_pid(self.soren))
+            status, data = self._request("POST", "/api/workers", {"worker": "improve_daemon", "action": "stop"})
+            self.assertEqual(status, 200, data)
+            self.assertTrue(data["ok"])
+            self.assertIsNone(data["job_pid"])
+            self.assertFalse(data["job_continues_in_background"])
+            self.assertEqual(proc.poll(), None)
+        finally:
+            proc.terminate()
             proc.wait(timeout=5)
 
     def test_workers_stop_improve_no_job(self):
@@ -810,6 +848,18 @@ class TestHttpHandlers(unittest.TestCase):
         self.assertEqual(status, 200, data)
         self.assertTrue(data["ok"])
         self.assertFalse(data["job_continues_in_background"])
+
+    def test_improve_job_command_guard_rejects_unrelated_process(self):
+        proc = subprocess.Popen(["sleep", "30"])
+        try:
+            self.assertFalse(webui._pid_is_improve_job(proc.pid))
+            (self.soren / "tmp/state/improve_state.json").write_text(
+                json.dumps({"status": "running", "pid": proc.pid}), encoding="utf-8"
+            )
+            self.assertIsNone(webui._active_improve_job_pid(self.soren))
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
 
     def test_workers_invalid_worker_rejected(self):
         status, data = self._request("POST", "/api/workers", {"worker": "soren_loop", "action": "stop"})
