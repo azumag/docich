@@ -812,7 +812,7 @@ class TestHttpHandlers(unittest.TestCase):
             self.assertTrue(data["ok"])
             self.assertTrue(data["paused"])
             # 改善ジョブの root と sleep 子は孤児化せず停止する。
-            self.assertTrue(data["term_sent"])
+            self.assertTrue(data["job_stop"]["term_sent"])
             self.assertFalse(data["job_continues_in_background"])
             self.assertEqual(data["job_pid"], proc.pid)
             self.assertTrue(data["job_stop"]["stopped"])
