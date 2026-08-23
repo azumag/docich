@@ -4,6 +4,14 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: issue #22 解決(ANALYZE 1100s+リトライ2回限定・OPENCODE_BIN対応・soviet_now `7160a34a3`・VM反映・テスト20/20)。
 
+## 2026-08-23 16:5x JST — 手動戦略v713「PRE_RUSSIA_T13_PAIR_MODES」（VM反映済み・T14到達）
+
+- **v712b実測**: 完了9試合でT13到達8/9、T14到達1/9、ソ連0。T13x2を作れても距離が離れたままdeadline fallbackへ移行する敗因が継続。
+- **修正**: soviet_now `8d6e4c9ee`。lean resetで失われたpre-Russia T13ペアのcluster/compress/tether/ladder系モードを復活し、安全候補ではペア中心からの距離を強く評価。あわせてrunnerの `pre_russia_t13_pair_replacement_for` をreasonタグ有無に依存しない状態条件発火へ変更（no-T14 + T13x2以上）。
+- **検証**: `strategy.py` / `strategy_runner.py` pycompile成功。decide hash `bde7dacbc6b2`、VM SHA256 `6d59c18b...`。focus testsは新復活系7/10成功で、残り3件はlean reset以前から期待が乖離している古いcluster/ladderテスト。追加のfirst-Russia/second-Russia focusは既存退行あり（今回未修正）。
+- **実戦**: v713最初3試合で **T14到達1/3**、最高1516点。v712bは1/9だったため初期趨勢は改善。ただしソ連累計は0。
+- **永久保存**: soviet_now branch `codex/no-apply-liveliness` `8d6e4c9ee` push済み、親docich submodule bump `2993f48` push済み。改善ワーカーpaused・daemon/jobプロセスなし・lockなしを維持。
+
 ## 2026-08-23 16:1x JST — 手動戦略v712b「SECOND_T13_CONTACT_LANE」（VM反映済み・実戦観測中）
 
 - **v711実測**: 8試合でT13到達4/8、T14到達1/8、ソ連0。最高2750点試合ではT14+T13+T12x2を最大27ターン保持したが、v711レーンが既存T14/T13側へ戻す誘導になり、T12ペア中心への接触誘導が不足。新モード発火は銀行lift2ターンのみ。
