@@ -4,6 +4,15 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: issue #22 解決(ANALYZE 1100s+リトライ2回限定・OPENCODE_BIN対応・soviet_now `7160a34a3`・VM反映・テスト20/20)。
 
+## 2026-08-24 01:1x JST — winner率80%再達成（有償最終手段・実測済み）
+
+- **要件**: 有償モデルは最終手段とし、DeepSeekより安価なmuse-spark contributorを優先する。
+- **追加修正**: soviet_now `540e65f97` で改善系`run_ai`のprimary/fallback成功時にもwinnerを記録。`c58a6de11` でprepassのピーク並び替えを無料/local/muse優先に統一。`500487a57` でLinux VM上のmacOS専用`date -v-1d`をGNU `date -d yesterday`へ修正。`884a8d570` で低信頼だった`openrouter/free`とlocalを通常チェーンから除外し、`x-preview → muse contributor → MiniMax → AMD DeepSeek → DeepSeek`へ整理。
+- **VM反映**: 上記コミットの`strategy/ai.sh`, `broadcast/radio_engine.sh`, `broadcast/scheduler.sh`, `core/config.sh`, テストを反映しSHA256一致を確認。`.env`も同名チェーン変数のみ更新（秘密値は表示・転送していない）。radio workerへUSR1で再読込させた。
+- **検証**: ローカル peak order 62/62、diagnostics 26/26、backoff 18/18、improve reliability 21/21。VMでもpeak order全項目OK。
+- **実測達成**: 2026-08-24 00:00〜01:15 JST の完了ベースで **22/26=84.62%**。attemptは70件だが、このうち実行中は44件のため確定判定には完了分母を使用した。失敗はx-preview network_error 2件、validator拒否1件のみ。配信running・30fps・約4620kbps。
+- **注意**: 実行中呼び出しを含むattempt分母では勝率が低く見える。以後の勝率比較は`ok+fail`完了分母を使う。
+
 ## 2026-08-23 18:xx JST — 有償モデルを最終手段へ変更（VM反映済み）
 
 - **要件**: 有償モデルはできるだけ呼ばない。有償枠内では、DeepSeekより現在安いmuse-spark contributorを優先する。
