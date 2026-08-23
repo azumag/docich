@@ -11,6 +11,7 @@
 - **VM反映**: `core/config.sh`, `README.md`, `tests/test_peak_hours_agent_order.sh` をscpしSHA256一致。`.env` は `.codex_deploy/backup-20260823-130x-paid-last-resort/env` へ退避後、同名変数のみ更新（秘密値は表示・転送していない）。VM peak order test 全項目OK、`bash -n core/config.sh` OK。
 - **実効確認**: VM source後の通常/ピーク並びは上記チェーンと一致。radio/chat/audio workerは18:32にTERM→respawn済み。`soren_loop` は18:32のTERM後に自動respawnしなかったため、pause/lockなしを確認して18:38に復帰させた（PID=1028943）。
 - **検証**: ローカル peak order 62/62、diagnostics 26/26、backoff 18/18、improve reliability 21/21。READMEのfact-check既定表記も現行経路へ修正。
+- **未確認**: 反映直後はradio deferred queue 3件とコメント/音声処理があり新規ラジオ生成が抑制されていたため、新しいチェーンでの自然発生ログはまだ未観測。設定source・ピーク並び替え関数・worker再起動までは確認済み。
 
 ## 2026-08-23 16:5x JST — 手動戦略v713「PRE_RUSSIA_T13_PAIR_MODES」（VM反映済み・T14到達）
 
