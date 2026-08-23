@@ -4,6 +4,17 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: issue #22 解決(ANALYZE 1100s+リトライ2回限定・OPENCODE_BIN対応・soviet_now `7160a34a3`・VM反映・テスト20/20)。
 
+## 2026-08-24 05:5x JST — AMD DS/MiniMax を muse 前へ＋JIJI timeout分離（VM反映済み）
+
+- **要件**: muse contributorも有償のため、AMD DeepSeekとMiniMaxをmuseより先へ変更。
+- **実装**: soviet_now `codex/no-apply-liveliness` `b290960c0` push済み。8つのリスト系チェーンを `x-preview → AMD DS → MiniMax → muse → paid DeepSeek` へ変更し、単一fallback系とピーク優先も同方針へ整合。`MODEL_LAST_RESORT`は `paid DeepSeek`。
+- **検証**: ローカル/VMとも peak order 62項目成功、improve reliability 21 passed。VM `core/config.sh` / テストのSHA256はローカル一致。`.env`の8変数も新順序を確認。サービスunitに旧チェーンのEnvironmentは無し。
+- **旧「worker environが旧値」の訂正**: `/proc/<PID>/environ`はexec時点の初期環境であり、worker起動後に`.env`を読んで変数を上書きしても表示は更新されない。これはブロッカーではなく観測方法の問題。03:50台/05:36台/05:42台の自然発生ログで新チェーン動作を確認し、特に05:42はx-preview network_error後にAMD DSがfallback成功した。
+- **低勝率切分けと追加修正**: 完了分母では記録上のwinnerイベント25/35=71.43%だが、AMD DSのJIJI_RESEARCH timeout3件は共有radioレーン待ちとの競合中に180秒上限へ達していた（うち2回はslot獲得約1秒前にtimeout）。成功出力ベースのok数は28/35=80.00%。そこで `RADIO_JIJI_RESEARCH_TIMEOUT` 既定300秒を新設し、JIJI調査のみ通常ラジオの180秒から分離。soviet_now `495a6aacf` push済み。
+- **VM反映**: config/radio_corners/testをbackup付き反映しSHA256一致、bash -n成功、VM peak order 64項目成功。`.env`へ `RADIO_JIJI_RESEARCH_TIMEOUT=300` 追加。radio/chatを05:57:5xにTERM→respawnし、新PID3418573/3418478でsource実効値 `RADIO_AGENTS=x-preview → AMD → MiniMax → muse → paid DS` / `timeout=300` を確認。
+- **未確認**: 十分な非競合トラフィックでのwinner率>=80%再達成。次回はqueue待ち込みtimeoutが解消された新しい窓で完了分母を再評価する。
+- **運用**: 配信running、30.01fps、約4659kbits/s、speed=1.00を確認。作業バナーは本節記録後にstop予定。
+
 ## 2026-08-24 01:1x JST — winner率80%再達成（有償最終手段・実測済み）
 
 - **要件**: 有償モデルは最終手段とし、DeepSeekより安価なmuse-spark contributorを優先する。
