@@ -4,6 +4,14 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: issue #22 解決(ANALYZE 1100s+リトライ2回限定・OPENCODE_BIN対応・soviet_now `7160a34a3`・VM反映・テスト20/20)。
 
+## 2026-08-23 18:xx JST — 有償モデルを最終手段へ変更（VM反映済み）
+
+- **要件**: 有償モデルはできるだけ呼ばない。有償枠内では、DeepSeekより現在安いmuse-spark contributorを優先する。
+- **実装**: soviet_now `2fd094c61`（`codex/no-apply-liveliness` push済み）。`AI_COMMON_AGENTS` / `RADIO_AGENTS` / `RADIO_PREPASS_AGENTS` / `COMMENT_AGENTS` / `COMMENT_TRANSLATION_AGENTS` を `x-preview → openrouter/free → local → muse contributor → AMD DeepSeek → MiniMax → DeepSeek` へ変更。改善系も `x-preview → muse → AMD DeepSeek → MiniMax → DeepSeek` に統一。単一primary/fallback系も無料→安価有償へ寄せ、fact-checkの重複スロットを空にした。ピーク優先は `x-preview` 先頭＋無料/local/muse優先へ変更。
+- **VM反映**: `core/config.sh`, `README.md`, `tests/test_peak_hours_agent_order.sh` をscpしSHA256一致。`.env` は `.codex_deploy/backup-20260823-130x-paid-last-resort/env` へ退避後、同名変数のみ更新（秘密値は表示・転送していない）。VM peak order test 全項目OK、`bash -n core/config.sh` OK。
+- **実効確認**: VM source後の通常/ピーク並びは上記チェーンと一致。radio/chat/audio workerは18:32にTERM→respawn済み。`soren_loop` は18:32のTERM後に自動respawnしなかったため、pause/lockなしを確認して18:38に復帰させた（PID=1028943）。
+- **検証**: ローカル peak order 62/62、diagnostics 26/26、backoff 18/18、improve reliability 21/21。READMEのfact-check既定表記も現行経路へ修正。
+
 ## 2026-08-23 16:5x JST — 手動戦略v713「PRE_RUSSIA_T13_PAIR_MODES」（VM反映済み・T14到達）
 
 - **v712b実測**: 完了9試合でT13到達8/9、T14到達1/9、ソ連0。T13x2を作れても距離が離れたままdeadline fallbackへ移行する敗因が継続。
