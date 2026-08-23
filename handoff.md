@@ -4,6 +4,16 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: issue #22 解決(ANALYZE 1100s+リトライ2回限定・OPENCODE_BIN対応・soviet_now `7160a34a3`・VM反映・テスト20/20)。
 
+## 2026-08-23 13:3x JST — 改善ループ確定停止とWebUI停止経路強化（VM反映・実API検証済み）
+
+- **停止状態**: `/home/ubuntu/soren/tmp/state/improve_daemon.paused` を作成し、`tmp/improve.lock` は除去、`improve_state.json` は `status=idle / phase=webui_stopped`。`eloop_improve*.sh` / `improve_daemon.sh` 実プロセスなし。v710の `soren_loop.sh:179,854` と `strategy/improve.sh:2975` ガードをVM実コードで確認。
+- **誤操作訂正**: 当初 `tmp/stop` を作成したが、これは改善専用ではなく supervisor 全体停止フラグだったため即時削除した。削除後、supervisor・soren_loop・direct stream は稼働維持を確認。最終時点で `tmp/stop` は存在しない。
+- **WebUI実装**: improve_daemon stop時に改善ジョブPIDを先に特定し、子孫PIDも固定してからdaemon→jobツリー順にTERM/KILLする。コマンドガードは `eloop_improve(_runtime...).sh` のみ許可し、無関係PIDを保護。停止成功後にstateをidleへ書き、lockを除去。UI説明も「バックグラウンド継続」から「ツリーごと停止」へ更新。
+- **コミット**: docich `codex/soren-repo-handoff` へ `faf7d70` / `5a45ab1` をpush済み。VM `/home/ubuntu/docich` は同ブランチの2ファイルを checkout して反映（webui.py=`8b7b140b...`、test_webui.py=`e87175dd...`）。親checkout自体はmainのまま。
+- **テスト**: ローカル pytest `tests/test_webui.py` 99/99成功。VM unittest 同99件成功（初回Linux差分のテスト期待値は `5a45ab1` で修正）。
+- **ライブ実測**: `docich-webui` を起動し `127.0.0.1:8787` 待受と `/api/health ok=true` を確認。実POST `/api/workers {worker:improve_daemon,action:stop}` は `ok=true/stopped=true/job_continues_in_background=false/lock_removed=true`。GETでは improve `paused=true/status=paused`。改善startは呼んでいない。prediction_worker は既存のpaused状態を温存。
+- **配信影響**: 最終確認で `/api/stream state=live`、29.99fps、約4619.7kbits/s、runner/ffmpeg生存。ロールバック抑止ENV5項目は全て `0`、strategy decide hashは `cb3fc745833d` のまま。
+
 ## 2026-08-23 12:4x JST — winner率80%目標の実測達成（検証済み）
 
 - **結論**: orphan対策後の窓（10:24以降）で、完了呼び出し分母 `ok+fail` のwinner率が **20/21=95.24%** となり、80%目標を満たした。attempt分母には実行中呼び出しが含まれるため、確定値の判定は完了ベースを使用した。
