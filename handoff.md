@@ -1,8 +1,37 @@
 # セッション引き継ぎ (handoff)
 
-> 生成日時: 2026-08-22 03:0x JST  /  作業ディレクトリ: /Users/azumag/work/docich
+> 生成日時: 2026-08-24 17:8x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: issue #22 解決(ANALYZE 1100s+リトライ2回限定・OPENCODE_BIN対応・soviet_now `7160a34a3`・VM反映・テスト20/20)。
+> 直前セッション: Say生成中をLIVE STATUSへ表示（VM反映済み・実測済み）。
+
+## 2026-08-24 17:8x JST — Say生成中をLIVE STATUSへ表示（VM反映済み・実測済み）
+
+- **ユーザー要望**: 「Sayのgeneration中も、LIVE STATUS 枠にAI思考中と同じ用に表示してほしい」。
+- **実装**: `soviet_now e2d9ee5a3 feat: show Say generation in LIVE STATUS like AI thinking`。`generate_event_overlay.py:147-265` で `tmp/.say_queue/current_source` (phase=waiting/playing/retry_wait) と `.voicevox_synth_lock` / `pid` を `_pid_alive` と `EVENT_OVERLAY_SAY_STALE_SEC=40` / `DEAD=10` で freshness 判定し、`🔊 Say生成中 (コメント/ラジオ)` を `GEN` へ追加。`direct_broadcast_overlay.html:308-317` で `AI思考中` カードの `labels.join(' / ')` に Say が含まれ、イベント無し時は `AI思考中` + LIVE STATUS 2枚、イベント有り時は `🔊 Say生成中` 個別トーストとしてページング。レガシー `#gen-loaders` も `.gen-loader.say` (オレンジ) で同様表示。
+- **検証**: ローカル `python3 -m py_compile` 成功、`node --test tests/test_direct_broadcast_overlay.mjs` 15/15、`read_gen_indicators` の6パターン（current_source / synth lock / stale / dead window / radio hint / comment+say 同時）で手動シミュレーション成功。`tmp` で `generate_event_overlay.py` を直接実行し `GEN` に `say` が含まれることを確認。
+- **VM反映**: backup `.codex_deploy/backup-20260824-say-live-status/` 作成後、4ファイルを `scp` し SHA256 一致を確認（`85a0de28f03e…` / `f12f9e649e8…` / `f6b83a5d2c1e…` / `ec8a30eb778f…`）。VM `generate_event_overlay.py` は既に新SHAで `Say生成中` を含むことを `grep -c` で確認。`tests/test_direct_broadcast_overlay.mjs` も同時反映。
+- **リポジトリ**: `soviet_now` `e2d9ee5a3` を `origin/codex/no-apply-liveliness` へ push、親 `docich` の submodule bump を本節で push 予定。
+
+## 2026-08-24 16:4x JST — コメントsayリトライ＝外部プロセスのspeaker=3014誤指定（実測のみ・VMコード変更なし）
+
+## 2026-08-24 16:4x JST — コメントsayリトライ＝外部プロセスのspeaker=3014誤指定（実測のみ・VMコード変更なし）
+
+- **ユーザー報告**: 「コメントsayが頻繁にリトライになる。ラジオキューも溜まっている」。その後、該当アナウンスは **VM外プロセスからの投入**で、そちらの指定ミスとユーザーが確認。VM側修正は不要と指示（調査・掃除・実測のみ実施）。
+- **原因（実測）**: VM外から `lib/outbound_queue.sh` 経由で `comment_announce_<ts>_manual_move_<n>` （source=チャットメッセージID+手動着手番号）が **speaker=3014** 指定で投入された。稼働中VOICEVOX (`127.0.0.1:50021`, PID 1451255, Aug12起動) の話者一覧は **全127スタイル/ID 0〜126** で3014は存在しない。`audio_query` が Internal Server Error → say_enqueueが7回リトライ→「再生失敗」で破棄。本日16:27〜16:37に3件(_025/_026/_027)、計38回のVOICEVOX合成失敗。最後の1件は16:37:26に再試行上限で自然破棄。
+- **副作用**: 失敗する優先音声がラジオ描画レーンを圧迫（「優先音声の合成完了待ち」）し、deferredキューが11件滞留（11:57〜13:35 JST投入分）。ラジオ1項目の消化は約20チャンク×15〜25秒の事前合成＋再生6〜7分で1項目あたり15〜25分程度。>5件で新規ラジオ生成抑制ゲートが効いている設計どおり。
+- **確認（16:43実測）**: comment_queueに .playing/.txt/.speaker 残骸ゼロ。16:37以降の新規合成失敗0件・新規announce投入なし。ラジオ描画は正規話者 speaker=109（東北イタコ）で再開し消化中。
+- **正しい話者ID（実測値）**: 冥鳴ひまり=14 / 九州そら=16 / 小夜/SAYO=46 / 東北イタコ=109 / ずんだもん=3 / 四国めたん=2。
+- **関連の潜在地雷（未修正・ユーザー側情報として共有済み）**: READMEと `voicevox_sing.sh:49-53` の歌シンガー固定「中華AI=九州そら(id=3016)/メリケンAI=冥鳴ひまり(id=3014)」は旧カタログ値で現行エンジンでは無効。`.env` に `VOICEVOX_SING_SPEAKER_SOREN91` は未設定のため、歌リクエスト経路も同じ失敗になり得る。
+
+## 2026-08-24 15:5x JST — 正午貼り直しのOFFLINE保持修正（VM反映済み・自然発火未確認）
+
+- **依存**: 「正午の配信貼り直し機構（２日に一回）が効いてない」調査。`handoff.md`、MEMORY の `stream_noon_audit` 履歴、VM 実測を確認。
+- **確認**: VM 監査ワーカー PID `3574461` 稼働中。2026-08-23/24 とも正午に `restart_required` を判定し、停止・再起動処理は実行された。ただし両日の marker は `restart_failed`、`session_before == session_after == 317949940056`。08-24 12:00:34 JST に supervisor は direct_stream を再起動し、現在のローカル `started_at` は 12:00:35 JST。
+- **外部実測**: 15:24 JST 時点の Twitch 公開 GraphQL は同じ stream id `317949940056`、`createdAt=2026-08-22T18:53:40Z`（JST 08-23 03:53:40）。つまりローカル再起動はあっても Twitch 側同一配信セッションが継続しており、ユーザー観測どおり外部貼り直しができていない。
+- **推定原因（強い）**: `_restart_stream` は旧 Twitch ID 消滅またはローカル停止のいずれかを確認した直後に pause marker を解除する。supervisor が即時 respawn し、Twitch Disconnect Protection が同一外部セッションとして吸収する。wiki 手順にある「Twitch OFFLINE 確認後、約30秒維持してから復帰」が実装されていない。
+- **実装/検証**: `STREAM_NOON_AUDIT_OFFLINE_HOLD_SEC` 既定30秒を追加。旧 Twitch ID が消え、かつローカル配信が停止している状態を連続保持してから pause marker を解除する。旧 ID が確認不能でも復帰優先フォールバックを維持。ローカル・VMとも焦点回帰 **38/38** 成功、`bash -n` 成功。コミットは soviet_now `b51ed26b9 fix: hold Twitch offline before noon repost`、`origin/codex/no-apply-liveliness` push済み。
+- **VM反映**: backup `.codex_deploy/backup-20260824-noon-offline-hold/` 作成後、worker/test を反映し SHA256 一致。worker SHA `7b5377bf5569...`、test SHA `2f781ebcf065...`。監査ワーカーのみ TERM→respawn し、新 PID `1038381` 単独稼働を確認。反映後も direct stream `running=true / state=running / 30.01fps`。テスト中の一時 duplicate ログは残存プロセスなしで解消済み。
+- **未確認**: 上記修正の自然発火による新しい Twitch stream id/createdAt。本節時点ではコード変更なし。
 
 ## 2026-08-24 13:0x JST — 手動戦略v726「第2ロシア直前ペア・テザー」（VM反映済み・実戦観測開始）
 
