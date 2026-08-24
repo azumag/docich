@@ -2,7 +2,7 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: /loop 1h「ソ連建国を目標に戦略を改善せよ」1回目 — 02:26/05:06 の n=13 粛清を統計化で修正 (soviet_now f37148b8a)、v727 を 07:06 に復元。[STAGEGATE] 実戦出力は次回 (08:13) に確認。
+> 直前セッション: /loop 1h「ソ連建国を目標に戦略を改善せよ」2回目 — STAGEGATE 実戦初観測 (n=12 で粛清回避を実測)、analyze_board indent 修正を VM 反映、v728 設計中。1回目 — 02:26/05:06 の n=13 粛清を統計化で修正 (soviet_now f37148b8a)、v727 を 07:06 に復元。[STAGEGATE] 実戦出力は次回 (08:13) に確認。
 
 ## 2026-08-25 05:4x JST — 毎時メンテ(リモート): SSH/push遮断4時間目。外部監視は継続成功 — 配信正常、ただし本番hashがさらに 42c79aab へ変化・Rejected 1→2（v727 は表示から消滅、anneal 機構による回転の可能性）
 
@@ -64,6 +64,13 @@
 - **v727 実装・レビュー・デプロイ（ユーザー承認済み・稼働実測）**: 設計はユーザー指示で自分で実施、実装後の独立レビューは opus に委任。当初2案のうち「ロシア後contact解禁」はレビューH2（手動ゲーム125局面リプレイで発火0＝envelope が実ロシア盤面を全ブロック、実質no-op）により撤回し、`POST_FIRST_RUSSIA_LANE_COVER_AVOID` の到達性修正のみに絞った。レビューHIGH/MEDIUM全反映: 床着地はリスク品質下限に算入(H1)、hit_id は None のみ床扱いで他はfail-closed(M1)、selected の越線/併合結果越線は置換しない(M2)、置換候補に pre-Russia クランプ検査(L2)。実履歴2545局面リプレイの最終差分は「v726 がクランプ外 x=-2.2 を発火していた1件の是正」のみ。焦点テスト110+278 subtests パス（既存失敗1件は v726 でも再現、レビューアも独立確認）。soviet_now `c4e9c30fe` push、decide hash `aac603521570 → 5c9ab0ea6b6c`。VM はゲーム境界（マーカーpause）で差替え、by_hash/永久archive登録、`tmp/revert_strategy.py`=v726。**01:36 新ゲームが hash `5c9ab0ea6b6c` で稼働中を latest.jsonl で実測**。
 - **注意**: ローカル作業ツリーに 8/24 19:04 時点の別セッション由来 strategy.py WIP（tether閾値緩和+テスト）が残っていたため、scratchpad `foreign_wip_20260824_1904.diff` に退避してから v727 を実装した（未コミット・未デプロイのWIPで、粛清カスケードと同時刻帯に放置されたもの）。
 - **次（v728候補）**: (1) ロシア後の contact recovery は envelope 再設計が必要 — 手動ゲーム obs_109〜126（ロシア盤面18局面、margin 0.12〜1.46）を fixture に、`deadline_margin>=1.0`/`dx<=0.06` ゲートを実盤面に合わせて再測定する（壁分岐 at_wall は実測1/4なので緩めない、垂直開放路のみ）。(2) analyze_board.py:345-366 の O(n²) インデントバグ修正（40倍高速化・挙動不変）。(3) v727 の実戦発火と粛清 grace の長期観測（`grep 'STATGATE\|REGRESSION\|PROMOTE\|LANE_COVER' logs/soren_loop.log`）。
+
+## 2026-08-25 07:5x JST — loop 2回目: STAGEGATE 実戦初観測（粛清回避を実測）+ analyze_board O(n²) 修正を適用・VM反映
+
+- **STAGEGATE 実戦初観測（実測）**: v727 復元後 n=12 の境界 07:54:59 に `[STAGEGATE] graced=0 rank=20 t14=1/12 vs 3/24 p=0.5927 gap=0.042 fired=0`、verdict `legacy=OK`。旧コードなら T14 1/12 < 3/24 で `lost_kazakhstan_gate` が発火し v727 は再度 n=12 で粛清されていた局面。`breach_count=0` の objective_regression は出ていない。v727 の 12 試合: 1183/1115/788/748/1674/**3196(カザフスタン)**/1117/1690/1275/694/…、max_types に 14 が 1、ロシア 0。anchor は `42c79aab4a68` のまま（russia 1 → v727 は best 14 で grace 対象外、昇格も guard で抑止、生存はする）。
+- **analyze_board.py O(n²) インデント修正（リモート節が退避したパッチ）を適用**: 自分で再検証 — 手動ゲーム 128 盤面 + 実履歴 8 試合 704 局面 = 832 盤面 × (shapes あり/なし) で `calc_reactor_state` 出力 **0 mismatch**、n≈40 で 3.7ms→0.23ms（16倍）。`git am` で soviet_now `13cac205b`（原著者・メッセージ維持）を push。VM へ backup (`.codex_deploy/backup-20260825-analyze-board-indent/`) 後 temp+mv で反映、SHA `2ca667d4…` 一致、py_compile OK（07:33:44）。strategy_runner はゲーム毎の新プロセス（07:34:01 起動、07:35:32 試合開始）で新ファイルを import、DROP 進行・analyze_board エラー無しを実測。decide hash は不変（`5c9ab0ea6b6c`）。`docs/patches/…indent.patch` は適用済みとして扱ってよい。
+- **v728 設計（進行中）**: 手動ゲーム知見「垂直開放路の同型直撃 3/3 併合（解析は NO）」を analyze_board の grade 昇格として設計中（opus Plan に委任、データ: 前セッション scratchpad `manual_game1/obs_*.json` 128 件 + 実履歴 8 試合 + VM shapes）。コード読みでは NO の出所は dist 閾値ではなく `hit_id==target` 後の `has_obstruction` か landing_hit 予測ずれの可能性が高く、まず根本原因の特定を依頼。analyzer 変更は decide hash に映らないため env トグル (`ANALYZE_BOARD_VERTICAL_LANE_DIRECT`) 付き・fail-closed が前提。設計結果は次節に記録。
+- **未確認**: v727 のロシア/ソ連到達。STAGEGATE の `fired=1` 実例（真の劣化での発火）はまだ観測なし。
 
 ## 2026-08-25 07:1x JST — 粛清ゲート統計化 (STAGE_GATE_STAT) + v727 復元（/loop 1h「ソ連建国を目標に戦略を改善せよ」1回目）
 
