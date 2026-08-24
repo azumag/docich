@@ -1,8 +1,15 @@
 # セッション引き継ぎ (handoff)
 
-> 生成日時: 2026-08-24 22:0x JST  /  作業ディレクトリ: /Users/azumag/work/docich
+> 生成日時: 2026-08-24 22:4x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: ポッドキャストMVP Phase1完了（tools/podcast_build.py + RSS + timer、VM反映済み）。
+> 直前セッション: Short動画 Phase2完了（tools/short_video_build.py + doci soren_newsチャンネル、VM反映済み）。
+
+## 2026-08-24 22:4x JST — Short動画 Phase2完了（tools/short_video_build.py + doci soren_newsチャンネル、VM反映済み）
+
+- **実装**: `soviet_now 3fe8a59 feat(short-video): single news to vertical short`。`tools/short_video_build.py` は `backups/radio_scripts/<YYYYMMDD>/radio_*_news_*.txt` から最新1本を選定 (doci `history.jsonl` で重複排除) → `doci` 外部呼出し (`python -m doci.run_daily --channel soren_news --corner news_short --no-upload --date <iso>`)。`tools/soviet_video_build.py` は `soviet` 系 (`soviet`, `soviet_quiz`, `soviet_lifehack`, `theme`内のソ連言及) を `doci` の `ideology/communism` へ委譲。`tests/test_short_video_build.sh` 4ケース。
+- **doci**: `azumag/doci` に `channels/soren_news` (techテーマ, VOICEVOX 109, research/factcheck true, 7日クールダウン, 3本/日, unlisted) を `soren-news-channel` branchへ push。`persona_news.md` / `corner_news_short.md` / `voices.json` を新規作成。
+- **検証**: ローカル `bash tests/test_short_video_build.sh` 4ケース pass (pick news, theme除外, jiji除外, no files, doci not found)。`./tools/short_video_build.py --date 20260824 --dry-run` で 17 newsを検出し `picked: radio_1787543424...news_10321.txt`、VMでも同様に 17 newsを検出。`./tools/soviet_video_build.py --dry-run` で 5 sovietを検出。`doci` 未導入のVMでは `doci not found, skipping` で fail-open。
+- **VM反映**: `tools/short_video_build.py` (`813a5e64…`)、`tools/soviet_video_build.py` (`02e67c68…`)、`tests/test_short_video_build.sh` を scp し SHA256一致、`python3 -m py_compile` OK。VMで `--dry-run` で 17/5件の選定を確認。`doci` はVM未導入のため現在は dry-run のみ。
 
 ## 2026-08-24 22:0x JST — ポッドキャストMVP Phase1完了（tools/podcast_build.py + RSS + timer、VM反映済み）
 
