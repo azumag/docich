@@ -1,8 +1,18 @@
 # セッション引き継ぎ (handoff)
 
-> 生成日時: 2026-08-24 21:5x JST  /  作業ディレクトリ: /Users/azumag/work/docich
+> 生成日時: 2026-08-24 22:0x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: ラジオ原稿VM外永続化 Phase0完了（soren-radio-archiveへ729ファイル初回push・timer有効化）。
+> 直前セッション: ポッドキャストMVP Phase1完了（tools/podcast_build.py + RSS + timer、VM反映済み）。
+
+## 2026-08-24 22:0x JST — ポッドキャストMVP Phase1完了（tools/podcast_build.py + RSS + timer、VM反映済み）
+
+- **実装**: `soviet_now 6e40454f2 feat(podcast): daily podcast build` + `fd7e95590 fix: xmllint`。`tools/podcast_build.py` は `backups/radio_scripts/<YYYYMMDD>` から `news/jiji` のみ抽出 → 時報除去 → `voicevox_tts.sh` (109) でWAV合成 (or `--dummy` 無音) → `ffmpeg concat + loudnorm + mp3` → `output/podcast/<YYYY-MM-DD>.mp3` + `feed.xml` (RSS2.0+iTunes, 50件, `xmllint` 検証) + `chapters.json`。`core/config.sh: PODCAST_*` 定数、`deploy/podcast.{service,timer}` (05:30 JST)、`tests/test_podcast_build.sh` (4ケース)。
+- **検証**: ローカル `bash tests/test_podcast_build.sh` 4ケース pass (dry-run/theme除外、dummyでMP3/feed/chapters/idempotent/no-source/intro除去)。fake remoteでも同様。`./tools/podcast_build.py --date 20260825 --dry-run` で 2ファイル抽出、`--dummy` で 15秒MP3と1エピソードRSSが生成され `xmllint OK`。VMでも `bash tests/test_podcast_build.sh` pass (xmllint無しはスキップ)、`./voicevox_tts.sh -o /tmp/test_voice.wav` でVOICEVOX 109が68K WAVを生成することを確認。
+- **VM反映**: `core/config.sh` (`962b3b60…`)、`tools/podcast_build.py` (`780ea234…`)、`deploy/podcast/*`、`tests/test_podcast_build.sh` (`ffd93d25…`) を scp し SHA256一致。`sudo install` で `podcast.{service,timer}` を `/etc/systemd/system/` へ配置し `systemctl enable --now podcast.timer` — 次回 `Tue 2026-08-25 05:30:49 JST`。`./tools/podcast_build.py --date 20260823 --dry-run` で 58ファイル (news+jiji) を検出。
+- **ホスティング**: `PODCAST_RCLONE_ENABLED=0` のため現在はローカル `output/podcast/` のみ。`rclone` 有効時は `PODCAST_RCLONE_REMOTE:PODCAST_RCLONE_BUCKET/podcast/` へ自動 copy するフックをスクリプト内に用意。`PODCAST_BASE_URL` は既定 `https://example.com/podcast`。
+- **次**: Phase2 Short動画 (`azumag/doci` の `channels/soren_news` 連携) は `tools/short_video_build.py` から `doci` を外部呼出しする設計。Q4は `A) 外部呼出し` で決定済み。Phase1はMVPとして `soviet_now#113` を close 可能。
+
+## 2026-08-24 21:5x JST — ラジオ原稿VM外永続化 Phase0完了（soren-radio-archiveへ729ファイル初回push・timer有効化）
 
 ## 2026-08-24 21:5x JST — ラジオ原稿VM外永続化 Phase0完了（soren-radio-archiveへ729ファイル初回push・timer有効化）
 
