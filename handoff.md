@@ -4,6 +4,18 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: 手動チャレンジ1ゲーム完走（127手2897点・ロシア建国、歴代2例目）+ 19:46粛清事故発見。
 
+## 2026-08-25 05:4x JST — 毎時メンテ(リモート): SSH/push遮断4時間目。外部監視は継続成功 — 配信正常、ただし本番hashがさらに 42c79aab へ変化・Rejected 1→2（v727 は表示から消滅、anneal 機構による回転の可能性）
+
+- **環境制約（実測、02:5x〜04:5x と同一）**: `ssh` バイナリ無し・`129.146.54.105:22` raw TCP timeout。`azumag/soviet_now` push は `add_repo(access=push)` 後の `git push --dry-run` でも 403（"Claude doesn't have GitHub access ... An org admin can install the Claude GitHub App"）。`azumag/docich` push は可。VM 内部確認は依然不可。
+- **配信（外部実測 05:44-05:46 JST、Twitch 公開 GQL）**: dociai **LIVE**、game=Soren Game、viewers 2。**stream id 317965866584 / createdAt 08-25 03:56 JST のまま** — 04:5x 節で観測した 03:56 の配信セッション新規化以降、新たな切断は無し。
+- **プロセス（プレビュー画像オーバーレイ読取り 05:45:04 JST）**: Loop RUNNING **PID 2904410（前時間と同一＝soren_loop は連続稼働）**、ChatW/YouTubeW/AudioW/RadioW RUNNING、Twitch/YouTube チャット CONNECTED、PredW PAUSED (idle)、**ImproveD = STOPPED 継続（赤）**、Workers 5/6。Backend `FFMPEG LIVE fps=30.0 speed=1.0 drop=29`、AVSync PASSED (drift=10.0ms)。ゲームは10試合目進行中（Live MOVE score=644 pieces=18、LastDrop 37手目アルメニア）。#48874 games、Recent30:1126 Trend ▼-19% Rus:2%。
+- **音声**: Say SILENT、VOICEVOX SYNTH streaming、CommentQ empty、RadioQ 7 queued、PlaybackQ 1 waiting — 滞留なし。
+- **【重要・続報】戦略hashがさらに変化**: ヘッダ「Strategy: **42c79aab** v45340 1473L R:1」（04:50 の e5b671c8 n100 からまた交代）。top bar **Rejected:2（04:50 は 1）**。Reg NO a=42c79aab n=100。**AnnealObs は e5b6 p=0.90 gap=57 38m**（04:50 は 5c9a p=1.00 gap=0 2h）→ e5b671c8 が anneal 観測枠へ移り、**v727 (5c9ab0ea) はパネル上のどこにも表示されない**。Strategy Comparison 上位は 0b6d4deb 10312 / 922fb1f7 10282 / 2dfa9b77 10274 / 505b0cfb 10183 で不変。解釈: 1時間で active hash が2回入替わっており、単発の誤粛清というより **anneal/observation 機構が候補hashを順に active へ回している**挙動に見える。ただし Rejected が 1→2 に増えており **v727 が観測の末 reject された可能性**がある。確定には VM ログ（STATGATE/REGRESSION/ANNEAL、tmp/history/rejected_hashes.txt、latest.jsonl）が必要。
+- **低信頼の観測**: オーバーレイに「Sock FAILED fps=29.99 speed=1.0 audio=99」風のグレー行あり（JPEG 解像度の限界で綴り不確か）。VM 回復後に show_status.sh の該当行を確認のこと。
+- **実施できなかったこと**: VM 内部調査・バナー表示・soviet_now への push（analyze_board indent fix は `docich/docs/patches/20260825_analyze_board_reactive_pairs_indent.patch` が引き続き正）・v728 着手。
+- **通知**: 4時間連続の遮断と v727 消滅の件をユーザーへ push 通知で送付（本セッション）。
+- **次セッションへ（優先順）**: (1) ユーザー対応 — network policy に SSH(22) 許可 + GitHub App に soviet_now write 付与。(2) VM 回復後最優先: 02:46 以降の rollback/anneal 履歴の解明（`grep 'STATGATE\|REGRESSION\|PROMOTE\|ANNEAL\|LANE_COVER' logs/soren_loop.log`、`tmp/history/rejected_hashes.txt`、`extract_decide_hash.py strategy.py`）。v727 が誤 reject なら境界デプロイ手順で復元。ImproveD STOPPED の経緯・03:56 配信セッション新規化の原因も確認。(3) analyze_board パッチ適用・push・VM 反映・submodule bump。(4) 遮断中も本外部監視手法（GQL + プレビュー画像）で毎時 liveness / hash 確認を続ける。
+
 ## 2026-08-25 04:5x JST — 毎時メンテ(リモート): SSH/push遮断3時間目。Twitch公開API+プレビュー画像による外部ヘルスチェックに成功 — 配信は正常稼働、ただし本番戦略hashがv727でない（e5b671c8、要VM調査）
 
 - **環境制約（実測、02:5x/03:5x と同一）**: `ssh` バイナリ無し・`~/.ssh` 空・`129.146.54.105:22` raw TCP timeout。`azumag/soviet_now` push は `add_repo(access=push)` 再試行後も 403（git/proxy とも）。`azumag/docich` push は可。VM 内部の直接確認（ログ・latest.jsonl・キューファイル・hash 実測）は依然不可。
