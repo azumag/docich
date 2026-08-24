@@ -4,6 +4,14 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: issue #22 解決(ANALYZE 1100s+リトライ2回限定・OPENCODE_BIN対応・soviet_now `7160a34a3`・VM反映・テスト20/20)。
 
+## 2026-08-24 13:0x JST — 手動戦略v726「第2ロシア直前ペア・テザー」（VM反映済み・実戦観測開始）
+
+- **根拠**: v725初戦2016点で89手目にカザフスタンとウクライナを生成したが、90〜95手に余裕1.24〜1.80があるうちに距離を閉じられず、96手目以降は締切余裕0.35以下へ低下した。最終盤面はカザフスタン1個・ウクライナ1個・トルクメニスタン1個。
+- **v726実装**: `POST_FIRST_RUSSIA_PAIR_TETHER` を追加。カザフスタン1個＋ウクライナ1個＋ロシア/ソ連なしの状態で、両国の中点から遠い安全選択を、余裕0.55以上・非DIRECT・リスク許容内かつ距離を0.75以上改善する候補へ置き換える。欠損・非有限・締切越えはfail closed。
+- **検証/永久保存**: pycompile、焦点10件＋7 subtests、diff check成功。`1848fa902 feat: tether second Russia pair early` をpush。hash `aac603521570`。
+- **VM反映**: ゲーム境界で `_archive_strategy_snapshot_by_hash` と `_branch_transition_after_improve` を実行し、root / snapshot / runtime のSHA一致とactive branch head更新を確認。lineage `[...,244348f0f6ed,aac603521570]`、depth6、closed63。v725はbest `comp=12804.3441,n=4` として記録された。
+- **次**: v726の `POST_FIRST_RUSSIA_PAIR_TETHER` 発火・着地、ロシア/ソ連到達を国名で観測する。
+
 ## 2026-08-24 12:5x JST — 手動戦略v725「第2ロシア素材の被覆回避」（VM反映済み・初戦観測済み）
 
 - **継続目標**: ソ連建国まで人手改善を続ける。自動改善ワーカーは意図的停止のまま。ロシア・ソ連は本節時点で未到達なので完了扱いにしない。利用者向け表示・進捗・音声は番号やタイプ名ではなく国名を使う。
