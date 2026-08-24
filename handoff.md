@@ -4,6 +4,14 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: 手動チャレンジ1ゲーム完走（127手2897点・ロシア建国、歴代2例目）+ 19:46粛清事故発見。
 
+## 2026-08-25 02:5x JST — 毎時メンテ(リモートセッション): analyze_board O(n²)インデントバグ修正を検証済みパッチとして退避（VM未反映・soviet_now push不可）
+
+- **環境制約（実測）**: このリモート実行環境から VM への SSH は不可 — port 22 が network policy でブロック（raw TCP timeout、HTTPS proxy も CONNECT :22 拒否）、`~/.ssh` に鍵も無し。**VM ヘルスチェック・配信/プロセス/戦略確認は今回一切未実施**（v727 の実戦観測も不可）。さらに `azumag/soviet_now` への push も全経路 403（git push は proxy が "Claude doesn't have GitHub access"、GitHub API も "Resource not accessible by integration" = read-only）。`azumag/docich` へは push 可能。
+- **実施（次候補(2): analyze_board.py:345-366 インデントバグ修正、リポジトリ側のみ）**: `calc_reactor_state` の reactive_pairs/near_pairs O(n²) 走査が type_count の `for p in pieces:` ループ内側にインデントされ n 回再実行されていたのを1段デデント。ブロックは外側ループ変数 p を参照せず毎回再初期化のため挙動不変。
+- **検証（実測）**: tests/fixtures 実盤面8件 + ランダム盤面54件 + 縮退2件（同座標スタック・空）の計64ケースで修正前後の `calc_reactor_state` 出力**完全一致**。n=40 で 4.05ms→0.26ms（約16倍）。`python3 -m py_compile` OK。test_escape_mechanisms は修正前後で FAIL/ERROR 集合が**完全同一**（106 failures + 2 errors、全て既存。00:3x 節の 104+1 から今回とは無関係に増えている点は未調査）。test_post_russia_contact 22/22 OK（PYTHONPATH=repo root 必要）、test_pre_russia_ukraine_pair_lane は既存の1 failure のみで前後同一。
+- **退避先**: `docich/docs/patches/20260825_analyze_board_reactive_pairs_indent.patch`（git format-patch 形式、コミットメッセージ込み）。ローカル soviet_now コミット b15f87b3 は push できずコンテナ消滅で失われるため、このパッチが正。
+- **次セッションへ（soviet_now push 権限のある環境で）**: (1) `git am docs/patches/20260825_analyze_board_reactive_pairs_indent.patch` を soviet_now `codex/no-apply-liveliness` に適用して push、docich サブモジュール bump。(2) VM の `/home/ubuntu/soren/analyze_board.py` へ反映（strategy.py 非変更なので decide hash 不変・境界デプロイ手順は不要だが、バナー表示と反映後の新ゲーム正常動作確認はすること）。(3) 未実施の VM ヘルスチェック（v727 = 5c9ab0ea6b6c 稼働・STATGATE/REGRESSION/LANE_COVER ログ・キュー滞留）を実施。(4) ユーザーへ: このリモート環境の network policy に SSH(22) 許可、または GitHub App に soviet_now write 付与があると毎時メンテが完結できる。
+
 ## 2026-08-25 00:3x JST — 手動チャレンジ完走: 51手カザフスタン→108手ロシア建国（実測済み）
 
 - **実施**: goal「ソ連建国に向けた戦略改善: 手動1ゲームで知見蓄積」。`tmp/state/manual_meriken_mode.json` を直接書いて soren_loop をゲーム境界で pause（`manual_meriken_mode_enable()` は SOREN91_ENABLED=0 だと no-op のため直書き。soren_loop:844 の判定はファイルのみ見る）。VM の bridge はそのまま、`tmp/manual_challenge/{observe,drop}.py` ヘルパー（tmp 限定・リポジトリ外）で一手ずつ 観測→スクショ scp→目視→判断→冥鳴ひまり speaker=14 で理由 enqueue→commands.txt 書込を127手完走。開始文「メリケンAIによるチャレンジコーナーです」、全手音声、手数プレフィックスで dedup 回避。
