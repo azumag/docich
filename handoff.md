@@ -1,8 +1,21 @@
 # セッション引き継ぎ (handoff)
 
-> 生成日時: 2026-08-24 17:8x JST  /  作業ディレクトリ: /Users/azumag/work/docich
+> 生成日時: 2026-08-24 21:5x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: Say生成中をLIVE STATUSへ表示（VM反映済み・実測済み）。
+> 直前セッション: ラジオ原稿VM外永続化 Phase0完了（soren-radio-archiveへ729ファイル初回push・timer有効化）。
+
+## 2026-08-24 21:5x JST — ラジオ原稿VM外永続化 Phase0完了（soren-radio-archiveへ729ファイル初回push・timer有効化）
+
+- **背景**: `docich#10` のポッドキャスト/ショート動画化は `backups/radio_scripts/<YYYYMMDD>/` のVM外永続化が前提 (`soviet_now#113`)。VMはgit管理外で `backups` はローカルのみ。
+- **決定**: ADR `docs/radio_archive_adr.md` でハイブリッド (Git鏡 private + Object Storage) を決定。テキストのみ退避 (WAVは再合成)。Git鏡は新規 private `azumag/soren-radio-archive` (main) を採用。`soviet_now` public の `main` へは `pre-push` hookで誤爆防止。
+- **実装**: `soviet_now 605bab080 feat(radio-archive): VM外永続化 Phase0` + `678728dca fix: SIGPIPE`。`core/config.sh:756 RADIO_ARCHIVE_*` 定数、`tools/radio_archive_push.sh` (Git鏡+rclone、dry-run/now、public mainガード、3回リトライ、冪等)、`deploy/radio-archive.{service,timer}` (04:00 JST 日次)、`deploy/hooks/pre-push`、`docs/radio_archive_{adr,restore}.md`、`tests/test_radio_archive_push.sh` (7ケース)。
+- **検証**: ローカル `bash tests/test_radio_archive_push.sh` 14アサーション pass (push/冪等/dry-run/guard/disabled/no-files/date/state)。fake bare remoteでの dry-run→push→再pushの冪等性をVMとローカルで検証。`head -n 20` によるSIGPIPEバグを `cat` に修正して再push。
+- **VM作成**: `gh repo create azumag/soren-radio-archive --private` で新規作成 (PRIVATE)。`gh auth` は `repo` スコープで `https` push可能。
+- **VM反映**: `core/config.sh` (`d061f8ba…`)、`tools/radio_archive_push.sh` (`d88feb5d…`)、`deploy/radio-archive/*`、`docs/*`、`tests/*` を backup `.codex_deploy/backup-20260824-radio-archive/` 作成後に scp し SHA256一致。`.env` に `RADIO_ARCHIVE_GIT_REPO=https://github.com/azumag/soren-radio-archive.git` を追記。
+- **本番push**: 初回 `RADIO_ARCHIVE_GIT_REPO=... ./tools/radio_archive_push.sh --now` で `729` ファイル (20260817-20260824) を `main` へ push 成功 (`f6286fe…` HEAD)。2回目は `no changes to push` で冪等。状態は `tmp/state/radio_archive_pushed.json` に記録。
+- **timer**: `sudo install` で `/etc/systemd/system/radio-archive.{service,timer}` を配置し `systemctl enable --now radio-archive.timer`。`systemctl list-timers` で `Tue 2026-08-25 04:04:03 JST` に次回発火、`systemctl start radio-archive.service` で手動実行も成功 (`status=0`, `logs/radio_archive.log` に `no changes` )。
+- **リポジトリ**: `soviet_now 605bab080` と `678728dca` を `origin/codex/no-apply-liveliness` へ push、親 `docich 16ed1b0` で submodule bump を push。
+- **次**: Phase1 Podcast (`tools/podcast_build.py` + RSS) は Phase0完了後に着手可能。Phase2 Short動画は `azumag/doci` の `channels/soren_news` 連携が前提。Q1-Q4は推奨値で決定済み。
 
 ## 2026-08-24 17:8x JST — Say生成中をLIVE STATUSへ表示（VM反映済み・実測済み）
 
@@ -11,8 +24,6 @@
 - **検証**: ローカル `python3 -m py_compile` 成功、`node --test tests/test_direct_broadcast_overlay.mjs` 15/15、`read_gen_indicators` の6パターン（current_source / synth lock / stale / dead window / radio hint / comment+say 同時）で手動シミュレーション成功。`tmp` で `generate_event_overlay.py` を直接実行し `GEN` に `say` が含まれることを確認。
 - **VM反映**: backup `.codex_deploy/backup-20260824-say-live-status/` 作成後、4ファイルを `scp` し SHA256 一致を確認（`85a0de28f03e…` / `f12f9e649e8…` / `f6b83a5d2c1e…` / `ec8a30eb778f…`）。VM `generate_event_overlay.py` は既に新SHAで `Say生成中` を含むことを `grep -c` で確認。`tests/test_direct_broadcast_overlay.mjs` も同時反映。
 - **リポジトリ**: `soviet_now` `e2d9ee5a3` を `origin/codex/no-apply-liveliness` へ push、親 `docich` の submodule bump を本節で push 予定。
-
-## 2026-08-24 16:4x JST — コメントsayリトライ＝外部プロセスのspeaker=3014誤指定（実測のみ・VMコード変更なし）
 
 ## 2026-08-24 16:4x JST — コメントsayリトライ＝外部プロセスのspeaker=3014誤指定（実測のみ・VMコード変更なし）
 
