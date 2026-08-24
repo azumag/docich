@@ -1,8 +1,24 @@
 # セッション引き継ぎ (handoff)
 
-> 生成日時: 2026-08-24 23:5x JST  /  作業ディレクトリ: /Users/azumag/work/docich
+> 生成日時: 2026-08-25 00:3x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: MacでShort動画を分離実行（VM負荷回避・soren_newsチャンネルを06:00 JSTに分離、バッティング対策済み）。
+> 直前セッション: 手動チャレンジ1ゲーム完走（127手2897点・ロシア建国、歴代2例目）+ 19:46粛清事故発見。
+
+## 2026-08-25 00:3x JST — 手動チャレンジ完走: 51手カザフスタン→108手ロシア建国（実測済み）
+
+- **実施**: goal「ソ連建国に向けた戦略改善: 手動1ゲームで知見蓄積」。`tmp/state/manual_meriken_mode.json` を直接書いて soren_loop をゲーム境界で pause（`manual_meriken_mode_enable()` は SOREN91_ENABLED=0 だと no-op のため直書き。soren_loop:844 の判定はファイルのみ見る）。VM の bridge はそのまま、`tmp/manual_challenge/{observe,drop}.py` ヘルパー（tmp 限定・リポジトリ外）で一手ずつ 観測→スクショ scp→目視→判断→冥鳴ひまり speaker=14 で理由 enqueue→commands.txt 書込を127手完走。開始文「メリケンAIによるチャレンジコーナーです」、全手音声、手数プレフィックスで dedup 回避。
+- **結果（実測）**: 51手目カザフスタン（自動戦略の約半分の手数）、108手目に ウクライナ×2→カザフ×2→**ロシア建国**の8駒メガ連鎖(+294)。最終127手・raw 2897・eval 18787（ロシア+トルクメ+ウズベク4 残存）。GAMEOVER スクショ/最終盤面 JSON は VM `tmp/manual_challenge/` とローカル scratchpad に保存。手動ゲームは game_history/rolling_scores に入らない（pause 中は bookkeeping が走らない）ことを確認。
+- **返却（順序重要・実測済み）**: retry→MOVE/score0/pieces0 確認→マーカー削除→`tmp/state/soren_display_mode` 削除（meriken 残留で OBS watchdog が死ぬ opus 指摘 CRITICAL-2 対応）→soren_loop 自動再開・新 strategy_runner 稼働を実測。0手ゲーム汚染なし。
+- **知見**: `games/soviet_now/docs/manual_challenge_20260825_insights.md` に整理。骨子: (1) 垂直開放路の同型直撃は3/3で確実併合（解析はNO判定）、gap≤0.05もほぼ併合、掠りタップは弾かれる (2) analyzer は dist 閾値のせいで面接触併合を NO 扱い・パーチ静止と転がり量を予測しない (3) 縦積みラダー/斜面シェディング/pair-on-anchor で+100〜294の連鎖を人為的に量産できた (4) 敗着は退避駒の転がり被覆5回と大玉置き場枯渇。
+- **【重大】粛清事故を発見**: 2026-08-24 19:46 の regression rollback が `curr_comp 9598 > anchor 9208`・`curr_russia=3 vs anchor_russia=0`・`breach_count=0` なのに `objective_regression+lost_turkmenistan_gate` 理由で **v72x 手動改善系譜（ロシア3回到達）を旧 anchor `0890dbefd73e`（v360世代）へ破棄**。"rollback validation failed but accepted by policy"、regression_streak=4 のカスケード中。VM 現行 strategy.py に v721-726 機構は grep 0件（実測）。v727 設計と復旧判断は次フェーズ。
+- **次**: 知見の v727 反映（ユーザー指示により自分で設計）。候補: analyze_board の垂直開放路DIRECT昇格・gap≤0.05 NEAR昇格・indent バグ修正（40倍高速化）。
+
+## 2026-08-25 01:0x JST — 粛清カスケード再発防止をVM反映 + v726系譜復元（ユーザー承認済み・稼働実測）
+
+- **原因確定（実コード+ログ）**: 19:34〜19:46 の4連続ロールバックは全て `breach_count=0`・stat NONINFERIOR・comp現行優位で、`stage_gate_regression_reason`（T11/T14到達率が anchor 比で1でも低いと発火、`rank<=ROLLING_SCORE_RUSSIA_GRACE_RANK(7)` のみ免除）だけが理由。初手は **19:31にanchor昇格したばかりの v726 (comp 10054/n47)** を `lost_kazakhstan_gate` で破棄。rolling に comp 10k超の legacy エントリが8件以上あり rank>7 となり免除されず、comp 10017→9208 / russia 3→0 まで機械的降下。さらに rollback 復元 validation は `tmp/state/` 実行時に `strategy_helpers` を import できず**常に失敗→"accepted by policy" で素通し**（実測再現）だった。
+- **修正（soviet_now `8e03c379`、VM反映済み・SHA一致・bash -n OK）**: (1) `strategy/regression.sh` に `stage_gate_noninferior_grace` — breach 0 かつ russia数/best_max_type/comp が anchor 以上なら段階到達率ゲート（stage_achievement / objective stage gate）を発火させない。`STAGE_GATE_NONINFERIOR_GRACE=0` で旧挙動。判定不能時は旧挙動（rollback側）へ fail。lost_soviet_path は grace 対象外。 (2) `strategy/sandbox.sh` validate_strategy の直接実行テストに PYTHONPATH=リポジトリルートを付与。検証: 抽出heredoc の fixture 3ケース（19:34カスケード再現= grace ON で PROMOTE / OFF で REGRESSION 再現、真の劣化・ソ連喪失は両方 REGRESSION）全PASS、VM で import 失敗→解消を実測。eloop_lib.sh は毎試合再sourceされるため再起動不要で次境界から有効。
+- **v726復元（AskUserQuestionで承認取得）**: `tmp/history/rejected_hashes.txt` から `aac603521570` を除去（backup: `tmp/manual_challenge/rejected_hashes.bak.txt`）→ manual_meriken_mode マーカーで境界pause → `strategy_versions_archive/by_hash/aac603521570.py` を root `strategy.py` へ復元（旧0890dbefは `.codex_deploy/backup-20260825-stage-gate-grace/strategy.py.0890dbef` に退避）+ by_hash 再登録 → マーカー解除。**復元後の新ゲームが hash `aac603521570` で稼働中を latest.jsonl で実測**（01:00時点9手目）。active_branch.json はVM上に存在せず repair は no-op（都度確認済み）。
+- **未確認**: v726復元後の初回境界での regression 判定結果（grace の本番初発火）。背景監視を仕掛けた。次セッションは `grep 'STATGATE\|REGRESSION\|PROMOTE' logs/soren_loop.log | tail` で確認すること。
 
 ## 2026-08-24 23:5x JST — MacでShort動画を分離実行（VM負荷回避・バッティング対策済み）
 
