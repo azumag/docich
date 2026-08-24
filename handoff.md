@@ -1,8 +1,17 @@
 # セッション引き継ぎ (handoff)
 
-> 生成日時: 2026-08-24 22:4x JST  /  作業ディレクトリ: /Users/azumag/work/docich
+> 生成日時: 2026-08-24 23:5x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: Short動画 Phase2完了（tools/short_video_build.py + doci soren_newsチャンネル、VM反映済み）。
+> 直前セッション: MacでShort動画を分離実行（VM負荷回避・soren_newsチャンネルを06:00 JSTに分離、バッティング対策済み）。
+
+## 2026-08-24 23:5x JST — MacでShort動画を分離実行（VM負荷回避・バッティング対策済み）
+
+- **背景**: VMでShort動画生成はCPU的に厳しいとの指摘。`doci` の Minimax/Hailuo + ffmpeg は VMのゲーム描画と競合する。
+- **対策**: PodcastはVM残留 (音声のみ)、ShortはMac (`azumag/work/doci` が既に3時間毎に `--all-channels` で動作中) に分離。既存の `com.azumag.doci.generate` (10800秒, --all-channels) とバッティングしないよう、`soren_news` は `max_uploads_per_day=3` と `topic_cooldown_days=7` で冪等にスキップされる設計だが、別途 `com.azumag.soren-news.generate` (06:00 JST 日次) を新設し `tools/short_video_build.sh` (VOICEVOX起動待ち + soren-radio-archive pull + doci pull + `short_video_build.py`) を呼ぶ方式に。
+- **Macセットアップ**: `~/soren-radio-archive` を `gh repo clone` で作成 (729ファイル)。`soren_news` チャンネルは `azumag/doci` の `soren-news-channel` branchにpush済みだが、VMには未導入のため `doci not found` で fail-open。Macでは `SOREN_RADIO_ARCHIVE=~/soren-radio-archive` で `short_video_build.py` が 17 newsを検出。`tools/short_video_build.sh` の `git pull` が `origin/soren-news-channel` の tracking 無しで失敗していたため `pull --ff-only origin soren-news-channel` に修正。`short_video_build.py` / `podcast_build.py` / `soviet_video_build.py` に `from __future__ import annotations` を追加し、Macの `/usr/bin/python3` (3.9) でも `Path | None` が評価されないように修正。
+- **検証**: Macで `SOREN_RADIO_ARCHIVE=~/soren-radio-archive ./tools/short_video_build.py --dry-run` で 17 newsを検出・pick成功。`./tools/short_video_build.sh --dry-run` で `VOICEVOX 起動待ち → git pull soren-radio-archive (Already up to date) → git pull doci (Already up to date) → backup_root: ~/soren-radio-archive/backups/radio_scripts → picked` まで成功。`launchctl bootstrap` で `com.azumag.soren-news.generate` を登録し `launchctl list | grep soren` で確認。
+- **VM反映**: `tools/short_video_build.py` / `podcast_build.py` / `soviet_video_build.py` に future import を追加し、VMへ scp し `python3 -m py_compile` OK。`tools/short_video_build.sh` の wrapper も `zsh -n` OK。`soviet_now` は `e642ffa fix: future annotations` で push、VMへ再反映済み。
+- **次**: Macの `com.azumag.soren-news.generate` は明日06:00に初回発火。VMの `podcast.timer` (05:30) と `radio-archive.timer` (04:00) は既に有効。Shortの本番投稿は `PUBLISH_DRY_RUN=0` と `secrets/soren_news` の OAuth設定後に `--do-upload` で可能。
 
 ## 2026-08-24 22:4x JST — Short動画 Phase2完了（tools/short_video_build.py + doci soren_newsチャンネル、VM反映済み）
 
