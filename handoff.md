@@ -2,7 +2,7 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: /loop 1h「ソ連建国を目標に戦略を改善せよ」3回目 — 09:11 ロシア建国を実測 (123手・埋没)、v729 併合後高さ較正 (e2e396bda) を 09:58 VM 反映。2回目 — STAGEGATE 実戦初観測 (n=12 で粛清回避を実測)、analyze_board indent 修正 + v728 垂直開放路 DIRECT 維持 (efbcd7724) を VM 反映 (08:36)。1回目 — 02:26/05:06 の n=13 粛清を統計化で修正 (soviet_now f37148b8a)、v727 を 07:06 に復元。[STAGEGATE] 実戦出力は次回 (08:13) に確認。
+> 直前セッション: /loop 1h「ソ連建国を目標に戦略を改善せよ」4回目 — v727 が anchor 昇格 (10:25)、ソ連併合の締切扱いは非問題と確定、T13→T14 が最大ギャップ (70 vs 51 手) で v731 設計中。3回目 — 09:11 ロシア建国を実測 (123手・埋没)、v729 併合後高さ較正 (e2e396bda) を 09:58 VM 反映。2回目 — STAGEGATE 実戦初観測 (n=12 で粛清回避を実測)、analyze_board indent 修正 + v728 垂直開放路 DIRECT 維持 (efbcd7724) を VM 反映 (08:36)。1回目 — 02:26/05:06 の n=13 粛清を統計化で修正 (soviet_now f37148b8a)、v727 を 07:06 に復元。[STAGEGATE] 実戦出力は次回 (08:13) に確認。
 
 ## 2026-08-25 05:4x JST — 毎時メンテ(リモート): SSH/push遮断4時間目。外部監視は継続成功 — 配信正常、ただし本番hashがさらに 42c79aab へ変化・Rejected 1→2（v727 は表示から消滅、anneal 機構による回転の可能性）
 
@@ -64,6 +64,14 @@
 - **v727 実装・レビュー・デプロイ（ユーザー承認済み・稼働実測）**: 設計はユーザー指示で自分で実施、実装後の独立レビューは opus に委任。当初2案のうち「ロシア後contact解禁」はレビューH2（手動ゲーム125局面リプレイで発火0＝envelope が実ロシア盤面を全ブロック、実質no-op）により撤回し、`POST_FIRST_RUSSIA_LANE_COVER_AVOID` の到達性修正のみに絞った。レビューHIGH/MEDIUM全反映: 床着地はリスク品質下限に算入(H1)、hit_id は None のみ床扱いで他はfail-closed(M1)、selected の越線/併合結果越線は置換しない(M2)、置換候補に pre-Russia クランプ検査(L2)。実履歴2545局面リプレイの最終差分は「v726 がクランプ外 x=-2.2 を発火していた1件の是正」のみ。焦点テスト110+278 subtests パス（既存失敗1件は v726 でも再現、レビューアも独立確認）。soviet_now `c4e9c30fe` push、decide hash `aac603521570 → 5c9ab0ea6b6c`。VM はゲーム境界（マーカーpause）で差替え、by_hash/永久archive登録、`tmp/revert_strategy.py`=v726。**01:36 新ゲームが hash `5c9ab0ea6b6c` で稼働中を latest.jsonl で実測**。
 - **注意**: ローカル作業ツリーに 8/24 19:04 時点の別セッション由来 strategy.py WIP（tether閾値緩和+テスト）が残っていたため、scratchpad `foreign_wip_20260824_1904.diff` に退避してから v727 を実装した（未コミット・未デプロイのWIPで、粛清カスケードと同時刻帯に放置されたもの）。
 - **次（v728候補）**: (1) ロシア後の contact recovery は envelope 再設計が必要 — 手動ゲーム obs_109〜126（ロシア盤面18局面、margin 0.12〜1.46）を fixture に、`deadline_margin>=1.0`/`dx<=0.06` ゲートを実盤面に合わせて再測定する（壁分岐 at_wall は実測1/4なので緩めない、垂直開放路のみ）。(2) analyze_board.py:345-366 の O(n²) インデントバグ修正（40倍高速化・挙動不変）。(3) v727 の実戦発火と粛清 grace の長期観測（`grep 'STATGATE\|REGRESSION\|PROMOTE\|LANE_COVER' logs/soren_loop.log`）。
+
+## 2026-08-25 10:3x JST — loop 4回目: v727 が anchor に昇格（実測）+ v729 初期監視 + ソ連併合の締切扱いは非問題と確定 + 段階到達ターン比較
+
+- **v727 anchor 昇格（実測）**: 10:25:32 `[BRANCH] current strategy promoted to anchor: 5c9ab0ea6b6c`（comp 10015.9 / n=51 / russia 1 → objective guard 通過）。`best_strategy_anchor.json` = `5c9ab0ea6b6c`。以後 v727 系譜は粛清機構に守られる側。`[STAGEGATE] graced=1 skipped=rank_grace rank=6`。
+- **v729 初期監視（#45406〜、7 試合）**: DIRECT 併合率 97.8%（v728 期 97.8%）、`FALLBACK` 0、`urgent_direct` 1.7/試合（v728 期 2.2）、赤線上に残った駒 1.4/試合（1.3）、mrc/turn 0.022（0.023）、cross/turn 0.082（0.079）。スコア 818〜1918（平均 1154、v728 期 18 試合 1446）は 7 試合ではノイズ範囲。異常なし、継続観測。
+- **ソ連併合の締切扱い（v730 候補）は非問題と確定（フルパイプライン probe `scratchpad/v730/soviet_shot_probe.py`）**: ロシア (T15) は横半径 2.24（幅 4.5/7）なので、盤上にロシアがあれば次の T15 は必ずロシアに着地し全候補が DIRECT。ロシア y=0.3/0.6/1.0（落下自体が交差扱い、mrc 有無問わず）でも pipeline はロシアへの直撃を選択（`DIRECT_MERGE_*` / `..._RESULT_CROSS_PENALTY`）。T16 半径 0.5 フォールバックは順位に影響しない。**ソ連の実ボトルネックは (a) 第1ロシアを早く低い盤面で作る (b) T14 ペアをロシアに隣接して組み、新ロシアが即連鎖する形**。
+- **段階到達ターン比較（v727 26 試合 median vs 手動 1 試合）**: T11 6 vs 5、T12 17 vs 23、T13 40.5 vs 33、**T14 70 vs 51（到達 4/26 のみ）**、T15 123 vs 109（1/26）。ボトルネックはウクライナ→カザフスタン（T13 ペアの併合）。v731 の設計（データ根拠付き、opus Plan に委任中）はこのギャップを対象。
+- **衛生項目（未対応）**: `piece_deadline_top_y` 等 5 箇所の `float(p.get("y", FLOOR_Y) or FLOOR_Y)` は y==0.0 を欠損扱い（実データでは事実上発生しない）。
 
 ## 2026-08-25 10:0x JST — loop 3回目: ロシア建国を実測 (v727+v728) + v729 併合後高さ較正を VM 反映 + ソ連経路の実態調査
 
