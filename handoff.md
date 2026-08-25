@@ -2,7 +2,7 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: /loop 1h「ソ連建国を目標に戦略を改善せよ」5回目 — v731 が n=12 で PROMOTE 判定 (comp 10333 vs 9708)、T11 ペア指標 0.56→−0.07。v732 (pair-on-anchor) 設計中。4回目(続) — v731 SAME_TYPE_SEED_CONTACT (hash 6cf9bd5c6ab0) を 12:03 VM 反映、v729 23 試合で異常なし。4回目 — v727 が anchor 昇格 (10:25)、ソ連併合の締切扱いは非問題と確定、T13→T14 が最大ギャップ (70 vs 51 手) で v731 設計中。3回目 — 09:11 ロシア建国を実測 (123手・埋没)、v729 併合後高さ較正 (e2e396bda) を 09:58 VM 反映。2回目 — STAGEGATE 実戦初観測 (n=12 で粛清回避を実測)、analyze_board indent 修正 + v728 垂直開放路 DIRECT 維持 (efbcd7724) を VM 反映 (08:36)。1回目 — 02:26/05:06 の n=13 粛清を統計化で修正 (soviet_now f37148b8a)、v727 を 07:06 に復元。[STAGEGATE] 実戦出力は次回 (08:13) に確認。
+> 直前セッション: /loop 1h「ソ連建国を目標に戦略を改善せよ」5回目(続) — v732 ANCHOR_LANE_SEED_CONTACT (hash 46d7040d4153) を 14:18 VM 反映。5回目 — v731 が n=12 で PROMOTE 判定 (comp 10333 vs 9708)、T11 ペア指標 0.56→−0.07。v732 (pair-on-anchor) 設計中。4回目(続) — v731 SAME_TYPE_SEED_CONTACT (hash 6cf9bd5c6ab0) を 12:03 VM 反映、v729 23 試合で異常なし。4回目 — v727 が anchor 昇格 (10:25)、ソ連併合の締切扱いは非問題と確定、T13→T14 が最大ギャップ (70 vs 51 手) で v731 設計中。3回目 — 09:11 ロシア建国を実測 (123手・埋没)、v729 併合後高さ較正 (e2e396bda) を 09:58 VM 反映。2回目 — STAGEGATE 実戦初観測 (n=12 で粛清回避を実測)、analyze_board indent 修正 + v728 垂直開放路 DIRECT 維持 (efbcd7724) を VM 反映 (08:36)。1回目 — 02:26/05:06 の n=13 粛清を統計化で修正 (soviet_now f37148b8a)、v727 を 07:06 に復元。[STAGEGATE] 実戦出力は次回 (08:13) に確認。
 
 ## 2026-08-25 05:4x JST — 毎時メンテ(リモート): SSH/push遮断4時間目。外部監視は継続成功 — 配信正常、ただし本番hashがさらに 42c79aab へ変化・Rejected 1→2（v727 は表示から消滅、anneal 機構による回転の可能性）
 
@@ -64,6 +64,17 @@
 - **v727 実装・レビュー・デプロイ（ユーザー承認済み・稼働実測）**: 設計はユーザー指示で自分で実施、実装後の独立レビューは opus に委任。当初2案のうち「ロシア後contact解禁」はレビューH2（手動ゲーム125局面リプレイで発火0＝envelope が実ロシア盤面を全ブロック、実質no-op）により撤回し、`POST_FIRST_RUSSIA_LANE_COVER_AVOID` の到達性修正のみに絞った。レビューHIGH/MEDIUM全反映: 床着地はリスク品質下限に算入(H1)、hit_id は None のみ床扱いで他はfail-closed(M1)、selected の越線/併合結果越線は置換しない(M2)、置換候補に pre-Russia クランプ検査(L2)。実履歴2545局面リプレイの最終差分は「v726 がクランプ外 x=-2.2 を発火していた1件の是正」のみ。焦点テスト110+278 subtests パス（既存失敗1件は v726 でも再現、レビューアも独立確認）。soviet_now `c4e9c30fe` push、decide hash `aac603521570 → 5c9ab0ea6b6c`。VM はゲーム境界（マーカーpause）で差替え、by_hash/永久archive登録、`tmp/revert_strategy.py`=v726。**01:36 新ゲームが hash `5c9ab0ea6b6c` で稼働中を latest.jsonl で実測**。
 - **注意**: ローカル作業ツリーに 8/24 19:04 時点の別セッション由来 strategy.py WIP（tether閾値緩和+テスト）が残っていたため、scratchpad `foreign_wip_20260824_1904.diff` に退避してから v727 を実装した（未コミット・未デプロイのWIPで、粛清カスケードと同時刻帯に放置されたもの）。
 - **次（v728候補）**: (1) ロシア後の contact recovery は envelope 再設計が必要 — 手動ゲーム obs_109〜126（ロシア盤面18局面、margin 0.12〜1.46）を fixture に、`deadline_margin>=1.0`/`dx<=0.06` ゲートを実盤面に合わせて再測定する（壁分岐 at_wall は実測1/4なので緩めない、垂直開放路のみ）。(2) analyze_board.py:345-366 の O(n²) インデントバグ修正（40倍高速化・挙動不変）。(3) v727 の実戦発火と粛清 grace の長期観測（`grep 'STATGATE\|REGRESSION\|PROMOTE\|LANE_COVER' logs/soren_loop.log`）。
+
+## 2026-08-25 14:2x JST — loop 5回目(続): v732 ANCHOR_LANE_SEED_CONTACT（decide 変更・新 hash）を VM 反映
+
+- **v731 監視（n=21, 13:29）**: 平均 1381 / 中央値 1172 / 最高 2854、カザフスタン 4/19、DIRECT 併合率 97.3%、粛清なし（rank 7 で grace）。
+- **v732 設計（opus Plan、62 試合 5048 手）**: T9〜T11 の併合地点を最寄り T(N+1) アンカーに対して軸別半径で分類すると、同ターン連鎖率は「横で縦接触」63%・「横で縦隙間」21%・「開いたアンカーの真上に乗る」67%・「埋もれたアンカーの上」3%・「遠い」8%・「アンカー無し」0%（GOOD vs BAD Fisher p=1e-12）。T12 併合の 72% は T11 併合からの同ターン連鎖。手動ゲームのラダーは「開いたアンカーの真上」に組んでいたので、私が設計依頼で書いた「真上は禁止」は誤りで、正しい不変条件は「埋もれたアンカーの上・他の開いた高型上端の上には置かない」。v731 の +400 窓内には GOOD/BAD 両候補があるのに BAD を選ぶ手が 38%（指標コスト +0.03）。
+- **v732 実装（soviet_now `6f8d8881f`、decide hash `6cf9bd5c6ab0 → 46d7040d4153`）**: v731 と同じ安全条件 + T(N+1) アンカー在盤で、着地が「開いたアンカーの真上に乗る（下端が上端±0.25）」または「横（水平ギャップ≤0.15 かつ 縦 AABB ギャップ≤0.5）」なら +120、タグ `ANCHOR_LANE_SEED_CONTACT`。他の開いた T≥10 上端を覆う着地には加点しない（guard）。+120 は HIGH_TYPE_COVER_AVOID(−400) を覆せず、v731 窓内の順位決めのみ。純粋ヘルパー `board_stats.seed_top_radius / seed_bottom_radius` 追加。**本番 sandbox validator の load-before-assign 検査**で初版が弾かれた（try 内代入）ため `_as_float` で書き直し（`tests/test_post_russia_contact.py::test_current_strategy_passes_production_sandbox_validation` が守っている）。
+- **レビュー（opus, SHIP WITH FIXES）反映**: F1 横判定に縦ゲート（接触 63% vs 隙間 21%）、F2 真上判定に上限（上端+0.25、初版は 55% が離れた高さ）。指摘のみ記録: 回転無視（解析器は angle で回転、軸は平板半径。v731 と同じ結合、13.5% のタグが解析幾何では GOOD でない）、T12_CHAIN_LANE_GUIDANCE(+140) との二重加点（約半数で共起）、`_clip_final_drop_x` により約 20% の決定が加点した候補と別の x で実行される（既存、HEAD と同率）。
+- **v732 検証（実測、ゲート後）**: A/B（v731 vs v732、5048 手）: タグ 189 手（3.7%）、着手変化 43（0.85%）、併合喪失 0、非交差→交差 0、例外 0、変更後の着地は全て厳密クラス（接触）、margin 低下>0.5 が 2、|Δx|>2 が 5、選択候補 margin 中央値 2.52→2.75。戦略系 9 スイートの失敗集合は v731 と同一（106 既存）。新規 8 テスト（6 実局面 fixture ×厳密分類、埋もれたアンカー無加点、guard、margin=1.0）。v731 の T11 fixture は競合しない局面 (070111 t48) に差替え。
+- **VM 反映（実測）**: ヘルパー先行配置 + import 検証 (1.39/0.873/0.831) → 境界 pause 14:18:31 → 差替え・by_hash 登録・revert 点 v731 → **14:18:45 `Strategy hash: 46d7040d4153`**、3 箇所一致、VM unittest OK、初手 21 DROP エラー無し。backup `.codex_deploy/backup-20260825-v732/`。
+- **監視（v732）**: `ANCHOR_LANE_SEED_CONTACT` 約 3.7%/手（`SEED_CONTACT` の grep は v731 にも当たるので完全名で）、`decide_exception` 0（出たら即 v731 復元＝eloop の自動 revert が commit/push まで走る点に注意）、正直な効果指標 = T9〜T11 併合地点の GOOD/(GOOD+BAD) 比率（v727 期 58%、v731 期 53% → 目標 ≥62%）、同ターン連鎖/試合（1.8〜1.9 → ≥2.0）、v731 指標のドリフト（≤ +0.3）。n≥12 で anchor（0890dbef comp 9708 か v727 10016 の往復）と比較。
+- **次**: v732 12 試合の判定確認。効果指標の集計スクリプト化。回転を考慮した軸別半径ヘルパー（v731/v732 共通の改善候補、hash 外結合の注意）。
 
 ## 2026-08-25 12:5x JST — loop 5回目: v731 が n=12 の判定を通過（PROMOTE 判定、昇格は objective guard で抑止＝想定どおり）
 
