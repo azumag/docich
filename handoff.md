@@ -2,7 +2,7 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: v738 STAIRCASE_ADJ を fable 再設計の A2 で実装・テスト・コミット済み（soviet_now c257fadbb、hash 4a3b4c7acdc2、**未投入**、VM は 253cc67e0c1b + 静止待ち 4）。静止待ち 4 は n=14 で中立圏（平均 1613、併合/手 0.337、ロシア 1）、n≥24 で判定 → その後 v738 を単独で境界投入。設計委任は fable（ユーザー指示）。
+> 直前セッション: 静止待ち 4 は n=21 で中立 → REQUIRED=3 に戻した。v738 STAIRCASE_ADJ（hash 4a3b4c7acdc2）を 06:32 境界で VM 反映、06:33 の試合で発火を実測（revert 先 v736 253cc67e0c1b）。判定は n≥24/50 で v736@settle3 窓と比較（stair_kpi.py）。設計委任は fable。
 
 ## 2026-08-26 04:3x-05:5x JST — docich#10: Podcast を VM->Mac へ移設 + 「1日1本の番組へ編成し直す」設計へ作り替え + Short 投稿導線
 
@@ -107,6 +107,13 @@
 - **v727 実装・レビュー・デプロイ（ユーザー承認済み・稼働実測）**: 設計はユーザー指示で自分で実施、実装後の独立レビューは opus に委任。当初2案のうち「ロシア後contact解禁」はレビューH2（手動ゲーム125局面リプレイで発火0＝envelope が実ロシア盤面を全ブロック、実質no-op）により撤回し、`POST_FIRST_RUSSIA_LANE_COVER_AVOID` の到達性修正のみに絞った。レビューHIGH/MEDIUM全反映: 床着地はリスク品質下限に算入(H1)、hit_id は None のみ床扱いで他はfail-closed(M1)、selected の越線/併合結果越線は置換しない(M2)、置換候補に pre-Russia クランプ検査(L2)。実履歴2545局面リプレイの最終差分は「v726 がクランプ外 x=-2.2 を発火していた1件の是正」のみ。焦点テスト110+278 subtests パス（既存失敗1件は v726 でも再現、レビューアも独立確認）。soviet_now `c4e9c30fe` push、decide hash `aac603521570 → 5c9ab0ea6b6c`。VM はゲーム境界（マーカーpause）で差替え、by_hash/永久archive登録、`tmp/revert_strategy.py`=v726。**01:36 新ゲームが hash `5c9ab0ea6b6c` で稼働中を latest.jsonl で実測**。
 - **注意**: ローカル作業ツリーに 8/24 19:04 時点の別セッション由来 strategy.py WIP（tether閾値緩和+テスト）が残っていたため、scratchpad `foreign_wip_20260824_1904.diff` に退避してから v727 を実装した（未コミット・未デプロイのWIPで、粛清カスケードと同時刻帯に放置されたもの）。
 - **次（v728候補）**: (1) ロシア後の contact recovery は envelope 再設計が必要 — 手動ゲーム obs_109〜126（ロシア盤面18局面、margin 0.12〜1.46）を fixture に、`deadline_margin>=1.0`/`dx<=0.06` ゲートを実盤面に合わせて再測定する（壁分岐 at_wall は実測1/4なので緩めない、垂直開放路のみ）。(2) analyze_board.py:345-366 の O(n²) インデントバグ修正（40倍高速化・挙動不変）。(3) v727 の実戦発火と粛清 grace の長期観測（`grep 'STATGATE\|REGRESSION\|PROMOTE\|LANE_COVER' logs/soren_loop.log`）。
+
+## 2026-08-26 06:3x JST — loop 22回目: 静止待ち 4 は中立 → 3 に戻す / v738 STAIRCASE_ADJ を 06:32 境界で VM 反映（hash 4a3b4c7acdc2）
+
+- **静止待ち 4 判定（n=21、同 hash v736）**: 平均 1691 / 中央値 1516 / p25 1123、手数 95.1、併合/手 0.339、複数併合 9.7%、NO 手併合 12.1%、40 手時点 22 駒、カザフ 5、ロシア 1 — REQUIRED=3（残存 17: 1698 / 1546 / 1187、94.0、0.335、10.1%、13.6%、22、カザフ 6）と**中立**。改善なしで 1 手 +0.15 s 遅くなるだけなので `./set_toggle.sh SOREN_SETTLE_REQUIRED=3` に戻した（06:29、次試合から）。v738 の対照窓は v736@settle3（n≈50: 平均 ≈1640、併合/手 0.333–0.347、複数併合 10–11%、NO 手併合 13.4–13.8%、40 手時点 18.5–22 駒）。
+- **v738 反映（実測）**: `vm_deploy_strategy.sh 4a3b4c7acdc2 prepare`（06:29）→ `[PAUSE]` 06:32:44 → tests/fixtures 配置 → swap/finish。root / by_hash = `4a3b4c7acdc2`、revert 先 `tmp/revert_strategy.py` = v736 `253cc67e0c1b`、マーカー除去、VM で test_staircase_adj + test_probable_merge_contact OK。06:33:02 の新試合から `Strategy hash: 4a3b4c7acdc2`、全手 settle.required=3 / wall_clamp=1、**STAIRCASE_ADJ が 12 手目（T2、7 駒）で初発火**、decide_exception 0。
+- **運用メモ**: バックグラウンドの境界デプロイジョブが PAUSE 前に外部要因で停止された（3 回目、原因未特定）。VM は安全な状態（マーカーあり・swap 未実行）だったのでフォアグラウンドで再実行。**境界デプロイはフォアグラウンド（timeout 600 s）で行う**。
+- **判定計画（fable 案）**: n≥24 で平均 < 窓−500 なら即停止; n≥50 で平均 < 窓−300 / 併合/手 < 窓−0.03 / 複数併合 < 窓−1.2pt / NO 手併合 < 窓−1.7pt / 40 手時点の駒数 > 窓+2 / T14 到達率 −10pt 超 / 発火手の次手で開いた T≥9 を覆う率 > 8% のいずれかで no-go。go は発火 2–4% かつ発火手の実着地横隣接 ≥50%（域内基準 13.9%）、沈黙域の実着地横隣接 +4pt 以上。集計: `python3 tmp/manual_challenge/stair_kpi.py 4a3b4c7acdc2`、`mode_stats.py` 相当は `settle_table.py` / `v736_stats.py <hash>`。regression は anchor（v736）との比較で n≥12 から。
 
 ## 2026-08-26 04:3x JST — loop 20回目: 壁反射修正は中立で維持 / 静止待ち 3→4 の単独実験を開始（04:30）/ 差は序盤 40 手の「階段配置」と特定、v738 設計を委任
 
