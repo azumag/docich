@@ -4,6 +4,49 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: v738 STAIRCASE_ADJ を fable 再設計の A2 で実装・テスト・コミット済み（soviet_now c257fadbb、hash 4a3b4c7acdc2、**未投入**、VM は 253cc67e0c1b + 静止待ち 4）。静止待ち 4 は n=14 で中立圏（平均 1613、併合/手 0.337、ロシア 1）、n≥24 で判定 → その後 v738 を単独で境界投入。設計委任は fable（ユーザー指示）。
 
+## 2026-08-26 04:3x-05:5x JST — docich#10: Podcast を VM->Mac へ移設 + 「1日1本の番組へ編成し直す」設計へ作り替え + Short 投稿導線
+
+- **VM 実績の確定（実測）**: `podcast.timer` の 08-25 05:30 実行(08-24分)は 05:30→07:17 の **1h47m** を消費し、
+  `logs/podcast.log` で **37 本が voicevox timeout**、成功 2 本、`podcast.service` exit 1。成果物は 98KB / **8.4 秒**。
+  配信本体と VOICEVOX を奪い合い 1 本 180 秒のタイムアウトを踏み続けたのが原因。
+- **VM 停止（実測）**: `sudo systemctl disable --now podcast.timer` → is-enabled=disabled / is-active=inactive /
+  list-timers から消滅を確認。残っていた failed unit も `reset-failed` して `systemctl --failed` = 0 units。
+  `radio-archive.timer` は無傷(08-26 04:01 に files=825 で push 成功)。soren_loop も無傷。
+- **設計是正 1（長さの実測）**: 「1日分をそのまま連結」は **3〜5 時間**になる。VOICEVOX 実測 **306 字/分**
+  (294 字 → 57.6 秒) で換算し、08-19〜08-25 の 7 日で 2h43m〜5h24m、平均約 4 時間。08-25 は 51 本 67,411 字 = **3h40m**。
+  当初「70 分」と見積もったのは誤りで実際は 3 倍以上。コメント類も全て訂正済み。
+- **設計是正 2（三段編成）**: 素材は「配信中のラジオ」として書かれているため連結では番組にならない。
+  **要約(map, 8 本ずつ並列) → 構成案 → コーナーごとに執筆(並列)** の三段に作り替えた。
+  執筆段には要約ではなく**元の原稿**を素材として渡す(要約経由だと中身が痩せる)。
+  配信・ゲーム要素(時報挨拶/試合数/スコア/盤面/コーナー進行/視聴者・コメント・チャット/末尾の締め)の除去を明示。
+- **生成経路（ユーザー指定）**: doci の ai_text(opencode_go) から **codex CLI + gpt-5.6-luna** へ変更。
+  `--output-schema` で JSON を強制するため出力途中切れの解釈失敗が構造的に消える。
+  旧経路は 59,909 字 1 発で **15 分タイムアウト**、その前の回は JSON 途中切れで失敗していた。
+- **実測（08-25, news 25 + jiji 26 = 51 本 / 67,411 字）**: 要約 7 バッチ 60 秒 → 構成案 25 秒 →
+  執筆 11 コーナー 174 秒 → 本文 21,992 字。合成 15m42s → **72 分 24 秒の MP3**(49MB)、13 チャプター。
+  `used_count: 51` で全 51 本が反映。本文検査で配信・ゲーム由来の語は検出ゼロ
+  (Twitch の AI 学習方針など、その日の実ニュースとしての「配信」「チャット」は正当な用法として残る)。
+- **長さの knob**: `PODCAST_TARGET_CHARS`(0=自動で全話題を拾う)。3500≒11分 / 20000≒65分 / 55000≒3時間。
+  市場調査ではデイリー番組の推奨帯は 8〜15 分、合成音声は 12 分前後で聴取疲労とされるが、
+  ユーザー方針は「まず全部拾って後から絞る」なので既定は自動。
+- **Mac 移設の落とし穴**: `bin/docich` は PATH の `python3` を exec するため `/usr/bin/python3`(3.9) が
+  選ばれると `tomllib` 不在で**全 synth が失敗**する(実際に発生)。ラッパーで tomllib を持つ python を PATH 先頭へ。
+- **Short 投稿導線**: `short_video_build.py` の `--do-upload` が `--no-upload`(default=True) と AND されて
+  **恒常的に False**だったバグを修正(これまで投稿は構造的に不可能)。
+  `short_video_build.sh` に token 検出ゲートを追加し、`secrets/soren_news/youtube_token.json` が出来たら自動で実投稿。
+  doci `channels/soren_news/channel.toml` の privacy を public に(doci bd34386)。client_secret は配置済み。
+- **反映**: soviet_now `086b46584` push 済み、VM へ 7 ファイル scp し SHA256 全一致・構文チェック OK。
+  PODCAST_* を読むワーカーは config.sh と podcast_build.py だけなので worker 再起動は不要(VM 上で grep 確認済み)。
+  Mac launchd `com.azumag.soren-podcast.build`(04:30 JST) を bootstrap 済み、初回は明日 04:30。
+- **【注意】別セッション事故**: 並行稼働中の /loop が `git add` で本作業のステージ済みファイルを巻き込み、
+  soviet_now `c257fadbb`(v738 のコミット)に podcast 系 6 ファイルが混入して push された。
+  push 済み + 並行セッション稼働中のため履歴書き換えはせず、続きを `086b46584` に分けた。
+  **教訓: 並行セッションがある間は git add したまま放置しない**。
+- **残**: (1) YouTube 認証はユーザー作業 `python -m doci.youtube --auth --channel soren_news`。
+  (2) ポッドキャストの配信先未決(ユーザー選択は「今は決めない」)。`PODCAST_BASE_URL` は example.com のまま。
+  (3) ソ連ネタ動画(`tools/soviet_video_build.py`)はスケジュール未登録。
+  (4) 尺の調整は `PODCAST_TARGET_CHARS` を触って実測を重ねる。
+
 ## 2026-08-25 05:4x JST — 毎時メンテ(リモート): SSH/push遮断4時間目。外部監視は継続成功 — 配信正常、ただし本番hashがさらに 42c79aab へ変化・Rejected 1→2（v727 は表示から消滅、anneal 機構による回転の可能性）
 
 - **環境制約（実測、02:5x〜04:5x と同一）**: `ssh` バイナリ無し・`129.146.54.105:22` raw TCP timeout。`azumag/soviet_now` push は `add_repo(access=push)` 後の `git push --dry-run` でも 403（"Claude doesn't have GitHub access ... An org admin can install the Claude GitHub App"）。`azumag/docich` push は可。VM 内部確認は依然不可。
