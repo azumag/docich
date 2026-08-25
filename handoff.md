@@ -2,7 +2,7 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: /loop 1h「ソ連建国を目標に戦略を改善せよ」5回目(続) — v732 ANCHOR_LANE_SEED_CONTACT (hash 46d7040d4153) を 14:18 VM 反映。5回目 — v731 が n=12 で PROMOTE 判定 (comp 10333 vs 9708)、T11 ペア指標 0.56→−0.07。v732 (pair-on-anchor) 設計中。4回目(続) — v731 SAME_TYPE_SEED_CONTACT (hash 6cf9bd5c6ab0) を 12:03 VM 反映、v729 23 試合で異常なし。4回目 — v727 が anchor 昇格 (10:25)、ソ連併合の締切扱いは非問題と確定、T13→T14 が最大ギャップ (70 vs 51 手) で v731 設計中。3回目 — 09:11 ロシア建国を実測 (123手・埋没)、v729 併合後高さ較正 (e2e396bda) を 09:58 VM 反映。2回目 — STAGEGATE 実戦初観測 (n=12 で粛清回避を実測)、analyze_board indent 修正 + v728 垂直開放路 DIRECT 維持 (efbcd7724) を VM 反映 (08:36)。1回目 — 02:26/05:06 の n=13 粛清を統計化で修正 (soviet_now f37148b8a)、v727 を 07:06 に復元。[STAGEGATE] 実戦出力は次回 (08:13) に確認。
+> 直前セッション: /loop 1h「ソ連建国を目標に戦略を改善せよ」6回目 — 効果指標ツール tools/seed_metrics.py 追加、v731 は GOOD 比率 40.7% (v727 47.1%) と判明、v732 判定待ち。5回目(続) — v732 ANCHOR_LANE_SEED_CONTACT (hash 46d7040d4153) を 14:18 VM 反映。5回目 — v731 が n=12 で PROMOTE 判定 (comp 10333 vs 9708)、T11 ペア指標 0.56→−0.07。v732 (pair-on-anchor) 設計中。4回目(続) — v731 SAME_TYPE_SEED_CONTACT (hash 6cf9bd5c6ab0) を 12:03 VM 反映、v729 23 試合で異常なし。4回目 — v727 が anchor 昇格 (10:25)、ソ連併合の締切扱いは非問題と確定、T13→T14 が最大ギャップ (70 vs 51 手) で v731 設計中。3回目 — 09:11 ロシア建国を実測 (123手・埋没)、v729 併合後高さ較正 (e2e396bda) を 09:58 VM 反映。2回目 — STAGEGATE 実戦初観測 (n=12 で粛清回避を実測)、analyze_board indent 修正 + v728 垂直開放路 DIRECT 維持 (efbcd7724) を VM 反映 (08:36)。1回目 — 02:26/05:06 の n=13 粛清を統計化で修正 (soviet_now f37148b8a)、v727 を 07:06 に復元。[STAGEGATE] 実戦出力は次回 (08:13) に確認。
 
 ## 2026-08-25 05:4x JST — 毎時メンテ(リモート): SSH/push遮断4時間目。外部監視は継続成功 — 配信正常、ただし本番hashがさらに 42c79aab へ変化・Rejected 1→2（v727 は表示から消滅、anneal 機構による回転の可能性）
 
@@ -64,6 +64,12 @@
 - **v727 実装・レビュー・デプロイ（ユーザー承認済み・稼働実測）**: 設計はユーザー指示で自分で実施、実装後の独立レビューは opus に委任。当初2案のうち「ロシア後contact解禁」はレビューH2（手動ゲーム125局面リプレイで発火0＝envelope が実ロシア盤面を全ブロック、実質no-op）により撤回し、`POST_FIRST_RUSSIA_LANE_COVER_AVOID` の到達性修正のみに絞った。レビューHIGH/MEDIUM全反映: 床着地はリスク品質下限に算入(H1)、hit_id は None のみ床扱いで他はfail-closed(M1)、selected の越線/併合結果越線は置換しない(M2)、置換候補に pre-Russia クランプ検査(L2)。実履歴2545局面リプレイの最終差分は「v726 がクランプ外 x=-2.2 を発火していた1件の是正」のみ。焦点テスト110+278 subtests パス（既存失敗1件は v726 でも再現、レビューアも独立確認）。soviet_now `c4e9c30fe` push、decide hash `aac603521570 → 5c9ab0ea6b6c`。VM はゲーム境界（マーカーpause）で差替え、by_hash/永久archive登録、`tmp/revert_strategy.py`=v726。**01:36 新ゲームが hash `5c9ab0ea6b6c` で稼働中を latest.jsonl で実測**。
 - **注意**: ローカル作業ツリーに 8/24 19:04 時点の別セッション由来 strategy.py WIP（tether閾値緩和+テスト）が残っていたため、scratchpad `foreign_wip_20260824_1904.diff` に退避してから v727 を実装した（未コミット・未デプロイのWIPで、粛清カスケードと同時刻帯に放置されたもの）。
 - **次（v728候補）**: (1) ロシア後の contact recovery は envelope 再設計が必要 — 手動ゲーム obs_109〜126（ロシア盤面18局面、margin 0.12〜1.46）を fixture に、`deadline_margin>=1.0`/`dx<=0.06` ゲートを実盤面に合わせて再測定する（壁分岐 at_wall は実測1/4なので緩めない、垂直開放路のみ）。(2) analyze_board.py:345-366 の O(n²) インデントバグ修正（40倍高速化・挙動不変）。(3) v727 の実戦発火と粛清 grace の長期観測（`grep 'STATGATE\|REGRESSION\|PROMOTE\|LANE_COVER' logs/soren_loop.log`）。
+
+## 2026-08-25 14:3x JST — loop 6回目: 効果指標ツール `tools/seed_metrics.py` を追加（v731/v732 の正直な評価軸）
+
+- **ツール（soviet_now、VM にも配置）**: `python3 tools/seed_metrics.py "game_history/*.jsonl" [--since HHMMSS] [--hash H]` — hash ごとに、T9〜T11 併合地点の最寄り T(N+1) アンカー分類（BESIDE/ABOVE_OPEN=GOOD、ABOVE_COVERED/FAR=BAD、軸別 Unity 半径・縦ゲート込み）とその同ターン連鎖率、連鎖/試合、T10/T11/T12 ペア形成指標の中央値、タグ率、DIRECT 次ターン併合率、decide エラー数。
+- **ベースライン（実測）**: GOOD 地点の連鎖率 54〜60% vs BAD 7〜11%（前提が厳密分類でも成立）。v727 (26 試合, scratch): GOOD/(GOOD+BAD) **47.1%**、連鎖 1.92/試合、T11 ペア指標 0.84。42c79aab (24 試合): 45.5%、1.62。**v731 (VM 31 試合): 40.7%、1.90、T11 指標 0.03、v731 タグ 5.1%/手** — v731 はペアを密にした代わりにアンカー品質を下げた（レビューの予測どおり、v732 の対象）。v732 (4 試合): 46.7%、1.25、v732 タグ 3.4%/手、エラー 0 — n 不足。
+- **v732 判定待ち**: n=2〜4、次回 (15:13) に n≥12 の判定と上記指標を確認。目標 GOOD 比率 ≥ 50%（v727 比で改善）、連鎖/試合 ≥ 2.0。
 
 ## 2026-08-25 14:2x JST — loop 5回目(続): v732 ANCHOR_LANE_SEED_CONTACT（decide 変更・新 hash）を VM 反映
 
