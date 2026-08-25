@@ -65,6 +65,13 @@
 - **注意**: ローカル作業ツリーに 8/24 19:04 時点の別セッション由来 strategy.py WIP（tether閾値緩和+テスト）が残っていたため、scratchpad `foreign_wip_20260824_1904.diff` に退避してから v727 を実装した（未コミット・未デプロイのWIPで、粛清カスケードと同時刻帯に放置されたもの）。
 - **次（v728候補）**: (1) ロシア後の contact recovery は envelope 再設計が必要 — 手動ゲーム obs_109〜126（ロシア盤面18局面、margin 0.12〜1.46）を fixture に、`deadline_margin>=1.0`/`dx<=0.06` ゲートを実盤面に合わせて再測定する（壁分岐 at_wall は実測1/4なので緩めない、垂直開放路のみ）。(2) analyze_board.py:345-366 の O(n²) インデントバグ修正（40倍高速化・挙動不変）。(3) v727 の実戦発火と粛清 grace の長期観測（`grep 'STATGATE\|REGRESSION\|PROMOTE\|LANE_COVER' logs/soren_loop.log`）。
 
+## 2026-08-25 19:4x JST — loop 11回目: v734 判定通過 + ユーザー指摘「振動を待たずに落としている」を実測（runner の静止判定）
+
+- **v734 判定（実測 19:30:07, n=14）**: `PROMOTE: anchor 0890dbefd73e comp 9707.7 vs v734 comp 9800.4 / p50 10254 / p25 8888.5` → objective guard で抑止。`[STAGEGATE] t14=2/14 vs 6/25 p=0.39 fired=0`。14 試合: 平均 1402 / 中央値 1479 / 最高 2854、**小駒が開いた T9〜T11 に落ちる率 16.5%→13.5%**、40/60 手目の駒数 21→19.5 / 31→29、GOOD 52.1%、連鎖 2.40/試合、DIRECT 併合率 94.6%、エラー 0（anchor ファイルは再び 0890dbef に往復中）。
+- **ユーザー指摘の実測（VM game_state.json を 0.1 秒間隔で 4 分・94 ドロップ）**: 新駒が盤面に現れた瞬間、**awake 駒 中央値 27**、最大速度 中央値 0.106・上位 25% は 0.397 以上（runner の静止閾値 √0.1=0.316 超）、**完全静止後のドロップは 1%**、着地間隔 中央値 1.9 秒。原因: `wait_for_move_state` は MOVE 後に「速度² < 0.1」を **1 サンプル (0.15 秒間隔) 観測しただけで**ドロップ (`SETTLE_REQUIRED=1`)、振動の一瞬の凪を静止と誤認。締切接触時は待機スキップ（4%）。
+- **対処（soviet_now 未コミット→レビュー後）**: `strategy_runner.py` の静止判定を .env 化: `SOREN_SETTLE_REQUIRED`（連続静止観測回数、既定 1=従来）、`SOREN_SETTLE_MAX_SPEED2`（既定 0.1）、`SOREN_SETTLE_MAX_AWAKE`（awake 駒数上限、既定 −1=無視）。毎ターン記録に `settle: {wait_sec, awake, maxv, fast_drop, forced, required}` を追加（同一 decide hash のまま実戦 A/B 可能）。config.sh 既定+export、runtime_toggles/set_toggle whitelist、`tests/test_settle_wait.py` 6 件。runner はゲーム毎プロセスなので .env は次ゲームから有効。opus レビュー中。
+- **実験計画**: 反映後に `.env` で `SOREN_SETTLE_REQUIRED=4`（約 0.6 秒の連続静止）を 12 試合、指標 = 併合/手、NO 判定ターンの併合（連鎖）率、DIRECT 併合率、スコア、1 手あたり実時間（配信ペース）。悪化なら 1 に戻すだけ。
+
 ## 2026-08-25 18:3x JST — loop 10回目: v734 を VM 反映（18:34、v733 の 1 窓経過後）
 
 - **v733 最終（anchor、n=44）**: 42 試合 平均 1437 / 中央値 1302 / 最高 4065、カザフ 13/42 (31%)、ロシア 1、GOOD 比率 50.4%、連鎖 2.19/試合、DIRECT 併合率 96.1%、粛清・エラーなし。anchor comp 10818.4。
