@@ -2,7 +2,7 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: v736（253cc67e0c1b）は n=14 で判定通過し anchor 昇格（n=16: 平均 1624、NO 手併合率 14.0%、ロシア 1）。v737(c) は利得が小さく投入見送り。診断: 人間との差は併合/手 0.30 vs 0.45（T14 時 27 駒 vs 10 駒）、解析器の着地予測は 32% の手で 0.5 以上転がりズレ → 次は転がり込み着地モデル（トグル、hash 不変）。SOREN_SETTLE_REQUIRED=3 維持。
+> 直前セッション: 解析器の壁反射バグ修正 ANALYZE_BOARD_WALL_CLAMP=1 を 03:07 に VM 反映（hash 253cc67e0c1b 不変、analyzer_modes.wall_clamp=1 で帰属）。壁際着地誤差 0.274→0.089、DIRECT 精度同一。転がりモデルは実測で否定。v736 は n=26 で anchor 維持（NO 手併合率 13.8%）。判定は mode 1 で ≥12 試合後。SOREN_SETTLE_REQUIRED=3 維持。
 
 ## 2026-08-25 05:4x JST — 毎時メンテ(リモート): SSH/push遮断4時間目。外部監視は継続成功 — 配信正常、ただし本番hashがさらに 42c79aab へ変化・Rejected 1→2（v727 は表示から消滅、anneal 機構による回転の可能性）
 
@@ -64,6 +64,17 @@
 - **v727 実装・レビュー・デプロイ（ユーザー承認済み・稼働実測）**: 設計はユーザー指示で自分で実施、実装後の独立レビューは opus に委任。当初2案のうち「ロシア後contact解禁」はレビューH2（手動ゲーム125局面リプレイで発火0＝envelope が実ロシア盤面を全ブロック、実質no-op）により撤回し、`POST_FIRST_RUSSIA_LANE_COVER_AVOID` の到達性修正のみに絞った。レビューHIGH/MEDIUM全反映: 床着地はリスク品質下限に算入(H1)、hit_id は None のみ床扱いで他はfail-closed(M1)、selected の越線/併合結果越線は置換しない(M2)、置換候補に pre-Russia クランプ検査(L2)。実履歴2545局面リプレイの最終差分は「v726 がクランプ外 x=-2.2 を発火していた1件の是正」のみ。焦点テスト110+278 subtests パス（既存失敗1件は v726 でも再現、レビューアも独立確認）。soviet_now `c4e9c30fe` push、decide hash `aac603521570 → 5c9ab0ea6b6c`。VM はゲーム境界（マーカーpause）で差替え、by_hash/永久archive登録、`tmp/revert_strategy.py`=v726。**01:36 新ゲームが hash `5c9ab0ea6b6c` で稼働中を latest.jsonl で実測**。
 - **注意**: ローカル作業ツリーに 8/24 19:04 時点の別セッション由来 strategy.py WIP（tether閾値緩和+テスト）が残っていたため、scratchpad `foreign_wip_20260824_1904.diff` に退避してから v727 を実装した（未コミット・未デプロイのWIPで、粛清カスケードと同時刻帯に放置されたもの）。
 - **次（v728候補）**: (1) ロシア後の contact recovery は envelope 再設計が必要 — 手動ゲーム obs_109〜126（ロシア盤面18局面、margin 0.12〜1.46）を fixture に、`deadline_margin>=1.0`/`dx<=0.06` ゲートを実盤面に合わせて再測定する（壁分岐 at_wall は実測1/4なので緩めない、垂直開放路のみ）。(2) analyze_board.py:345-366 の O(n²) インデントバグ修正（40倍高速化・挙動不変）。(3) v727 の実戦発火と粛清 grace の長期観測（`grep 'STATGATE\|REGRESSION\|PROMOTE\|LANE_COVER' logs/soren_loop.log`）。
+
+## 2026-08-26 03:1x JST — loop 18回目: 転がりモデルは実測で否定 → 解析器の壁反射バグ（ANALYZE_BOARD_WALL_CLAMP）を修正して VM 反映（03:07、hash 不変）
+
+- **v736 経過（実測）**: n=26 で平均 1645 / 中央値 1560 / p25 1258、カザフ 6、ロシア 1、NO 手併合率 13.8%、DIRECT 97.2%、anchor 維持（comp 11032）。T14 到達時の駒数 KPI: v736 中央値 28（n=4）、v734 26、全体 27、人間 10（変化なし）。
+- **転がり込み着地モデル（opus Plan 委任、3,667 手で 3 案を実測）**: (b) 接触法線ロール、(a) 表面プロファイル降下、(c) 傾斜からの Δx 学習のいずれも旧式（|Δx| 中央値 0.323）を超えず、**平坦な支持面のほうが誤差が大きい**（|slope|<0.1: 0.371 / 37% vs 急斜面 0.24 / 19%）＝残差は転がりではなく等方的な着地ノイズ（σ≈0.35、駒数 0–9 で 0.44 → 40+ で 0.24）。目標「転がり率 ≤20%」は幾何モデルでは到達不能と判定。学習で残ったのは (W) 壁反射の系統誤差と (D) 分散の層別のみ。
+- **(W) 壁反射バグ（自分で裏取り）**: `estimate_polygon_drift`（analyze_board.py:150–153）の壁クランプがスプライト半径 `next_r` を使用。壁からの実着地オフセット中央値は T1 0.52 / T4 0.72 / T8 1.08 / T11 1.89 に対し予測 0.48 / 0.42 / 0.66 / 0.98 ＝ **当たり判定半幅 + 約 0.30**。壁際（|x|≥2.4、798 手）のバイアス +0.27 / −0.25。v727/v733 系が T11 を壁に置く局面で接触 gap が最大 0.9 ずれていた。
+- **実装（soviet_now `067385b53` + `be853b0bf`）**: `_wall_clamp_mode()`（env `ANALYZE_BOARD_WALL_CLAMP`、既定 0）、`_wall_half_width()`（mode 1 = `_type_deadline_extents(...)["horiz"] + WALL_CLAMP_PAD 0.30`、判定不能は旧式へ）、`estimate_polygon_drift` に `eff_radii` 追加引数、runner の `analyzer_modes` に `wall_clamp` を記録、config.sh 既定 0 + 両 whitelist。`tests/test_wall_clamp.py`（5 本: env 解釈、HEAD 解析器との mode 0 完全一致、壁際の内側移動、締切系フィールド不変、fail-closed）。全体 111 failed / 922 passed、decide hash `253cc67e0c1b` 不変。
+- **コーパス評価（61 試合 5,514 手、mode 0 vs 1）**: 壁際 798 手の |Δx| 中央値 **0.274 → 0.089**、0.5 超 **19.5% → 9.0%**（全体 0.323 → 0.266、31.7 → 28.7%）。DIRECT 精度は完全同一（1286/1327 = 96.9%）、候補判定変化は NO→NEAR 76 / NEAR→NO 23 のみ。v736 パイプラインの決定変化 114 手（2.1%、うち壁際 104）、DIRECT 喪失 0、DIRECT 獲得 1、risk_top −0.025、新規交差 1（初戦 turn 54: margin −0.08 で既に締切超え、mode 1 は 147 候補すべて crossing → DIRECT 危険併合を選択＝保守側。締切系は drift 非依存だが `wall_rotation_risk` 経由で壁際の crossing 判定が変わり得ることが判明、テストは fixture では不変を確認）。
+- **反映（実測）**: マーカー → `[PAUSE]` 03:07:07 → 5 ファイル差し替え（バックアップ `.codex_deploy/backup-20260826_0307-wallclamp`）→ `./set_toggle.sh ANALYZE_BOARD_WALL_CLAMP=1` → マーカー除去。03:07:38 の新試合から `analyzer_modes = {wall_clamp: 1, merge_top_model: 2, vertical_lane_direct: 1}` を全手で確認、hash 不変、decide_exception 0。**同 hash で mode が変わるため帰属は `analyzer_modes.wall_clamp` で分ける**（v736 mode 0: 26+ 試合が対照）。切戻しは `./set_toggle.sh ANALYZE_BOARD_WALL_CLAMP=0`（次試合から）。
+- **判定計画**: mode 1 で ≥12 試合後に mode 0 窓と比較: NO 手併合率（13.8% → ≥15%）、DIRECT ≥96%、併合/手、スコア p50/p25、壁際（|x|≥2.4）の決定比率。v737(c) は着地精度が上がった状態で corpus 再評価（gap の意味が変わる）。
+- **運用メモ**: Plan エージェントの初回起動が API 403（organization membership）で失敗、再起動で成功。ローカルのバックグラウンド解析 3 本停止（00:47）の原因は未特定のまま。
 
 ## 2026-08-26 01:4x JST — loop 17回目: v736 判定通過・anchor 昇格 / v737(c) は投入見送り / 残る主因は「併合効率 0.30 vs 人間 0.45」と解析器の着地誤差（転がり 32%）
 
