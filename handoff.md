@@ -2,7 +2,7 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: v736 vs v738 の A/B（30+30、5 時間）は「結論なし・v738 は 14 ブロック一貫して劣後（−345、p=0.11）」で v736 継続に確定（15:16 finish A、gate 復帰、改善 pause は復元）。ユーザー承認で次の施策 = (1) next/nextNext の 2 手先読み（fable 設計→A/B）、(2) 改善ループの A/B ゲート化 — 両設計を fable に委任中。本番 v736 253cc67e0c1b、SETTLE=3、WALL_CLAMP=1。
+> 直前セッション: A/B ゲート（改善候補→自動 A/B→逐次判定→採用/棄却）を実装・VM 反映し dry-run で改善 daemon を再稼働（15:43）。v736 が root。次は 2 手先読み v739 の実装（設計受領済み）→ オフライン検証 → `tools/ab_ctl.sh start` で A/B。soviet_now checkout は他セッションと共有（パス指定コミットのみ）。
 
 ## 2026-08-26 13:5x-15:1x JST — 正午の配信貼り直しが Twitch へ届いていなかった件を修正・実測で復旧確認
 
@@ -132,6 +132,13 @@
 - **v727 実装・レビュー・デプロイ（ユーザー承認済み・稼働実測）**: 設計はユーザー指示で自分で実施、実装後の独立レビューは opus に委任。当初2案のうち「ロシア後contact解禁」はレビューH2（手動ゲーム125局面リプレイで発火0＝envelope が実ロシア盤面を全ブロック、実質no-op）により撤回し、`POST_FIRST_RUSSIA_LANE_COVER_AVOID` の到達性修正のみに絞った。レビューHIGH/MEDIUM全反映: 床着地はリスク品質下限に算入(H1)、hit_id は None のみ床扱いで他はfail-closed(M1)、selected の越線/併合結果越線は置換しない(M2)、置換候補に pre-Russia クランプ検査(L2)。実履歴2545局面リプレイの最終差分は「v726 がクランプ外 x=-2.2 を発火していた1件の是正」のみ。焦点テスト110+278 subtests パス（既存失敗1件は v726 でも再現、レビューアも独立確認）。soviet_now `c4e9c30fe` push、decide hash `aac603521570 → 5c9ab0ea6b6c`。VM はゲーム境界（マーカーpause）で差替え、by_hash/永久archive登録、`tmp/revert_strategy.py`=v726。**01:36 新ゲームが hash `5c9ab0ea6b6c` で稼働中を latest.jsonl で実測**。
 - **注意**: ローカル作業ツリーに 8/24 19:04 時点の別セッション由来 strategy.py WIP（tether閾値緩和+テスト）が残っていたため、scratchpad `foreign_wip_20260824_1904.diff` に退避してから v727 を実装した（未コミット・未デプロイのWIPで、粛清カスケードと同時刻帯に放置されたもの）。
 - **次（v728候補）**: (1) ロシア後の contact recovery は envelope 再設計が必要 — 手動ゲーム obs_109〜126（ロシア盤面18局面、margin 0.12〜1.46）を fixture に、`deadline_margin>=1.0`/`dx<=0.06` ゲートを実盤面に合わせて再測定する（壁分岐 at_wall は実測1/4なので緩めない、垂直開放路のみ）。(2) analyze_board.py:345-366 の O(n²) インデントバグ修正（40倍高速化・挙動不変）。(3) v727 の実戦発火と粛清 grace の長期観測（`grep 'STATGATE\|REGRESSION\|PROMOTE\|LANE_COVER' logs/soren_loop.log`）。
+
+## 2026-08-26 15:4x JST — A/B ゲート（改善候補を root に適用せず A/B で採否）を実装・VM 反映、dry-run で改善 daemon を再稼働 / 2 手先読み v739 の設計受領
+
+- **A/B ゲート実装（fable 設計、soviet_now `2cfb6fa38` + `594ce1800`）**: `tools/ab_decide.py`（逐次判定: 害 UCB90<0 で k≥6 停止、無益 k≥12 で UCB90<150、採用は k=19/37 で n≥30・符号反転 p<α/2・m≥MDE・ガードレール、それ以外は結論なし。v738 の履歴を再生すると 24 試合目 (k=6) で REJECT_HARM）。`strategy/ab_gate.sh`（候補出力 `_ab_gate_emit_candidate` / 境界の自動開始 `_ab_gate_before_game` / 試合後の判定 `_ab_gate_after_game` / 共通 `_ab_start_from_bundle` `_ab_finish`）。eloop_improve.sh は `AB_GATE_ENABLED=1` のとき root に適用せず `tmp/state/ab_candidate/` へ出力（param trial / commit / 系統樹はスキップ）、improve.sh は候補出力を成功として回収（`candidate_ready`）、A/B 中の蓄積は A 腕のみ。`ab_interleave.sh` は gate 有効時 pause/lock 前提を緩和、B 腕の helper 同梱、試合ごとの指標（併合/手・20/40 手時点の駒数・max_type・締切交差）を記録。`ab_ctl.sh` は start/finish を共通関数化、`simulate` 追加、finish は improve pause を触らない・記録は mv。トグル: `AB_GATE_ENABLED=0` / `AB_GATE_DRY_RUN=1` / `AB_GATE_LOOKS=19,37` / `AB_GATE_MAX_BLOCKS=37` / `AB_GATE_FUTILITY_UCB_DELTA=150`（.env を直接読むので set_toggle で即時）。テスト: test_ab_gate.sh 33、test_ab_decide.py 9、全体 111 failed / 935 passed。
+- **VM 反映（実測）**: 15:41:45 の境界 pause で 17 ファイル差し替え（バックアップ `.codex_deploy/backup-20260826_1541-abgate`）、VM 上でテスト全通過、15:42:14 の試合は v736 で正常再開。
+- **dry-run 稼働開始（15:43）**: `set_toggle.sh AB_GATE_ENABLED=1 AB_GATE_DRY_RUN=1`（REGRESSION_DISABLED は 0 のまま）、`tmp/state/improve_daemon.paused` を除去（バックアップ `.paused.bak-20260826`）→ improve_daemon が 15:43:58 に再起動（poll 30 s）。蓄積 6 試合 → 12 で改善ジョブ → 候補出力 `[IMPROVE] AB gate: candidate emitted` → 境界で `[AB-GATE] (dry-run) would start A/B` を確認するのが次の検証。実運用化は `AB_GATE_DRY_RUN=0`（＋ REGRESSION_DISABLED=1 推奨）。**戻し方**: `set_toggle.sh AB_GATE_ENABLED=0` + `touch tmp/state/improve_daemon.paused`（+ 進行中なら `tools/ab_ctl.sh finish A`）。
+- **2 手先読み v739 設計（fable、scratchpad `look/` に計測スクリプトとプロトタイプ `la_search.py`）**: `strategy_helpers/lookahead.py`（新、`rerank(pieces, shapes, nt, nnt, cands, cfg)`、例外は全て握って None、呼び出し回数上限 16 で決定的）＋ decide() の 3 箇所（候補収集、FALLBACK 後・clip 前で再順位付け、`LOOKAHEAD_NEXT` 理由）。lite 解析器（粗い 16 x + 相方 ±0.3、`get_landing_info`/`polygon_contact_gap`/`has_obstruction`）は full の 1/4〜1/10 のコストで nextNext の DIRECT/NEAR 有無を 96% 一致。盤面更新は併合確率 pm（DIRECT 0.97 / gap テーブル）で併合・非併合の期待値、V2 = pm2 + 0.3·pm2·chain − 高さ罰、E2 単調ガード（期待 2 手併合が下がる flip は禁止）。**実測（40 試合 1,606 手）**: 変更 5.8%、期待併合 +0.029/手（評価手）、併合喪失 0、新規交差 0、コスト p50 10–27 ms / max 211 ms。full 解析器や decide 再帰は不採用。正直な見立て: 人間との差（0.55→0.63）の約 1/3。A/B の主指標は試合ごとの併合/手（SD 0.043、+0.02 は 74/腕）。
 
 ## 2026-08-26 15:2x JST — A/B 判定「結論なし・v738 は一貫して劣後」→ v736 継続で終了 / ユーザー承認: 2 手先読み（fable 設計→A/B）＋改善ループの A/B ゲート化
 
