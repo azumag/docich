@@ -4,6 +4,55 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: v739 LOOKAHEAD（2 手先読み、hash 8fcb13b11d0c）を実装・オフライン検証（変更 3.3%、併合喪失 0）し、16:10 から v736(A) vs v739(B) のインターリーブ A/B を実行中（主指標 併合/手、74/腕）。A/B ゲートは dry-run で改善 daemon 再稼働中。状況は VM で `bash tools/ab_ctl.sh status`。
 
+## 2026-08-26 23:0x-23:2x JST — コメント返しプロンプトへ「いまの配信・運用状況メモ」を追加（VM 状態 + handoff 反映）
+
+- **ユーザー要望**: 「コメント返し用のプロンプトには、現状の VM の状態や handoff を反映したい。
+  ただしプロンプトが大きくなりすぎないように。」
+- **実測した問題**: レンダリング済みのコメント返しプロンプト（VM `tmp/debug/ai_dispatch/*COMMENT*prompt.txt`、
+  17〜18KB）には、ゲーム状態・建国履歴・OCR・過去トークは入っているが、
+  **VM の運用状態（画面右上の作業中バナー、改善ループの実行有無、A/B の実施、メリケンAI の登板）も
+  裏側の改修内容も一切入っていなかった**。バナーは視聴者に見えているのに AI だけが知らない状態だった。
+- **実装 (`games/soviet_now` commit `a9ab78a0c`, 追加のみ)**:
+  - `broadcast/comment.sh`: `_build_comment_ops_context` を新設。
+    `tmp/state/codex_work_indicator.json`（作業中バナー）/ `improve_state.json`（改善ループ）/
+    `ab_state.json`（A/B 記録試合数）/ `_broadcast_host_mode`（main か soren91 か）/
+    `prompts/ops_brief.md`（直近の裏側の改修 3 件）から短い箇条書きを作る。
+    `${comment_ops_context}` として 3 箇所の envsubst 許可リストと export へ追加。
+  - **肥大対策**: brief 3 件・1 件 70 字・バナー本文 140 字・全体 900 字で必ず切る
+    （`COMMENT_OPS_BRIEF_ITEMS` / `COMMENT_OPS_CONTEXT_MAX_CHARS`）。
+    実測は 375〜520 字（既存 17KB プロンプトに対し +3% 程度）。hash・ファイル名は出力しない。
+  - `prompts/`: `comment_template.md` / `comment_response.md` / `_default` / `_game` / `_chitchat` の
+    5 テンプレへ埋め込み。注意書きは「聞かれた時だけ使う・自分から持ち出さない・
+    内部識別子は言わない・書かれていないことを足さない」の 3 行のみ。
+    card_gacha / raid / sing_request は用途が違うので入れていない（意図的）。
+  - `tools/build_ops_brief.sh`（新規）: docich の `handoff.md` の最新 `## ` 見出し 3 件から
+    `prompts/ops_brief.md` を生成。日付/時刻の前置きは落とし 70 字で切る。
+    **VM の `handoff.md` は 8/6 のまま古いので `./handoff.md` は自動探索しない**（誤って古い内容が
+    本番プロンプトへ入るのを防ぐ）。VM で引数なし実行すると exit 1 になることを実測。
+  - `tests/test_comment_ops_context.sh`（新規, 24 assertion）。
+  - `AGENTS.md` ルール 2 に「handoff 更新後は build_ops_brief.sh を回して VM へ配る」を追記。
+- **検証**:
+  - 新テスト 24/24 pass（ローカル / VM 双方で実行）。
+  - 既存 `test_comment_duplicate_guard.sh` 7 / `test_comment_persona_mode.sh` 19 /
+    `test_comment_sing_json.sh` pass、`test_country_stage_names.py` + `test_comment_bilingual.py` 54 pass。
+  - `test_escape_mechanisms.py` は 103 failed / 285 passed だが、**`git archive HEAD` の素の木でも
+    同じ 103 failed / 285 passed**（strategy 系の既存 failure）で本変更とは無関係と確認。
+  - VM 反映後、**実状態からのレンダリングを実測**: 作業中バナー（soren91 表示負荷調整中）・
+    改善待機中・A/B 90 試合・handoff 3 件が `【いまの配信・運用状況メモ】` として
+    `comment_template.md` に埋まることを確認。
+- **VM 反映**: `.codex_deploy/backup-20260826-231655-comment-ops-context/` へ退避後、
+  staging → `mv` で置換（実行中プロセスのオフセットずれ回避）。**SHA256 9 ファイル全一致**。
+  `chat_worker` / `kick_worker` へ USR1 → 23:17:56 / 23:18:05 `reload complete`、
+  `youtube_worker` は次周回（60s 間隔）で反映。
+- **作業中バナーについて**: 並行稼働中の soren91 セッションがバナーを占有していたため
+  （`{"title":"soren91 表示負荷を調整中"}`、22:56 設定）、**今回は上書きしていない**。
+  `codex_work_indicator.sh` はスロットが 1 つしかなく、`stop` は相手の表示も消してしまう。
+- **未確認 / 次にやること**:
+  - 実際の視聴者コメントに対する生成プロンプト（`tmp/debug/ai_dispatch/*COMMENT*prompt.txt`）へ
+    このメモが入ることのライブ実測（次のコメント到来待ち）。
+  - 「今なにしてるの」系のコメントへ、このメモを使った返答が実際に出るかの実測。
+  - `ops_brief.md` の鮮度は handoff 更新時の手動再生成に依存する。回し忘れると古い 3 件が残る。
+
 ## 2026-08-26 22:5x-23:1x JST — 時事(jiji)コーナーの繰り返し読み上げを修正: 同じ事件の別媒体見出しが「未読」を素通りしていた
 
 - **ユーザー報告**: 「パキスタンのニュースも何度も読まれてるよ」。
@@ -54,6 +103,32 @@
 - **残課題**: jiji 自主探索時の `--selected-news` にプレースホルダ文
   「最近の注目ニュースやトレンドを自分で探して1つ選んでください」が入り、
   オーバーレイのニュース見出し表示がそれになる。今回は触っていない。
+
+## 2026-08-26 23:0x-23:1x JST — 「YouTube live 止まってる」の実体は soren91 ウィンドウによる画面被り（復旧済み）
+
+- **ユーザー報告**: 「youtube live 止まってますよ」（23:03 頃）。
+- **配信インフラは正常だった（実測）**: nginx→YouTube ingest レグ ESTAB（`bytes_acked` 増加、~4.4Mbps）、
+  ffmpeg は 22:47:17 から連続稼働（`progress=continue`）、YouTube Data API と watch ページとも
+  `isLiveNow=true / playabilityStatus=OK`。つまり「配信が切れた」のではない。
+- **実際の原因（実測）**: soren91 が**本番と同じ Chromium インスタンス（PID 687389）・同じ `DISPLAY=:99`** に
+  `【91人対戦】ソ連ゲーム91 - Chromium` ウィンドウを `_NET_WM_STATE_FULLSCREEN` で開き、本番の
+  `Unity WebGL Player | soren-game - Chromium`（0x01000004）を覆っていた。x11grab はそれをそのまま配信しており、
+  ライブサムネイル（23:07 取得）は**真っ青な画面 + Chrome 権限ダイアログ
+  「74337.play.unityroom.com wants to Access other apps and services on this device」**だった。
+- **復旧**: 23:11 に `DISPLAY=:99 wmctrl -i -a 0x01000004` で本番ウィンドウを最前面へ（soren91 のプロセスは停止していない）。
+  検証: VM の X 実キャプチャで本番ゲーム画面（23:11:27）、`wmctrl -l` は本番ウィンドウのみ・active も本番、
+  **YouTube ライブサムネイル 23:14:14 でゲーム画面（score 245）を実測**。
+  なお soren91 側は 23:12 に自分で SIGTERM 終了しており（`Shared browser left running for owner (main-finally)`）、
+  現在 :99 に残っているのは本番ウィンドウのみ。
+- **付随して判明**:
+  - 22:47:08 に `systemctl restart soren-runtime.service`（全 worker 停止→再起動）が実行されており、配信は約10秒断。
+  - 16:21:23 の `direct_stream reconnect reason=ffmpeg_exit consecutive=2` で YouTube 側の旧ブロードキャストが終了し、
+    **新しいライブ ID `3H5lXGvvDo4`（actualStartTime 16:21:51 JST）へ切り替わっている**。
+    16:21 以前の live URL は死んでいる。現行 URL: https://www.youtube.com/watch?v=3H5lXGvvDo4
+    （チャンネルの `/live` は現行ライブへ正しく解決する）。
+- **未確認 / 次にやること**: soren91 は本番と同じブラウザ・同じ :99 を共有しているため**同じ被りは再発する**。
+  恒久策（soren91 を別 DISPLAY / headless にする、または本番側にウィンドウ最前面ウォッチドッグを置く）は
+  soren91 並行プロジェクトの領分のためユーザー判断待ち。今回はウィンドウの前後関係のみ変更し、soren91 には触っていない。
 
 ## 2026-08-26 21:2x-21:5x JST — 同じニュース(ドリー・パートン死去)を1日4回読み上げた問題を修正
 
