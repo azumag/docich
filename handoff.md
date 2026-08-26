@@ -4,6 +4,23 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: fable 比較で残る改善余地は小（最大 v740 +0.005/手、実戦検出に 48 時間）→ 律速は評価速度と判断し、Mac 上のヘッドレス並列自己対戦 A/B（`tools/selfplay_ab.py`、1 試合 ~200 s、~90 試合/時）を構築・動作確認。A/A 較正を実行中。次は v740 実装 → ローカル A/B → 実戦 A/B。本番 v736、改善ループ dry-run。共有 checkout は他セッションのブランチ（worktree 経由でコミット）。
 
+## 2026-08-27 01:5x-02:0x JST — capitalism ラジオをメリケンAI音声へ分離
+
+- **ユーザー報告**: capitalism ラジオの台本はメリケンAIだが、中華AI側の声で読まれているように聞こえる。
+- **原因（VM実測）**: `start_radio_corner_capitalism` はメリケンAI人格の台本を生成していた一方、
+  `_radio_voicevox_speaker_override` が全ラジオで空を返し、メイン話者の東北イタコ（speaker 109）へ
+  固定していた。直前4本のcapitalism事前合成ログもすべて `speaker=109`。
+- **修正 (`soviet_now` commit `d1f52bbf4`)**: capitalism のみ
+  `RADIO_CAPITALISM_VOICEVOX_SPEAKER`、未設定時は `SOREN91_VOICEVOX_SPEAKER` を使う。
+  その他のコーナーは空を返して従来のメイン話者へ委任する。VMのメリケンAI話者は
+  冥鳴ひまり（speaker 14）。専用変数で将来capitalismだけ差し替え可能。
+- **検証**: 新規 `tests/test_radio_corner_voice.sh` 4件、既存 deferred queue 2ケース、shell構文、
+  `git diff --check` が成功。VMでも同テスト成功。SHA256 2ファイル一致。
+- **VM反映**: `.codex_deploy/backup-20260827-capitalism-voice-d1f52bbf4/` へ退避して反映。
+  radio worker は 01:56:20 USR1、01:56:22 `reload complete`。稼働関数は
+  `capitalism=14` / `news=`。反映後の次回capitalismは 01:59:56 に
+  **`VOICEVOX 事前合成 speaker=14`** で実合成を開始した。
+
 ## 2026-08-27 01:0x-01:1x JST — メリケンAI の在否をプロンプト直書きから実測値へ（23:3x に書いた紹介文が 30 分で陳腐化した）
 
 - **何が起きたか**: 23:3x に「レイド時の自配信紹介」を更新した際、当時の実測（`SOREN91_DAILY_ENABLED=1`、
