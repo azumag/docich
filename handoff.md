@@ -22,7 +22,9 @@
   `TWITCH_IGNORE_AUTHORS=dociai azumagdev` であることを確認。
 - **検証（関数単位・VM 上の実ファイル＋実 env）**: `azumagbanjo/あずまぐ` = READ、`dociai/DoCiAI` と `azumagdev` = IGNORED、
   行フィルタも `あずまぐ: …` = READ / `DoCiAI: …` = IGNORED。
-- **未確認**: 実際に「あずまぐ」が Twitch へ投稿したコメントが pending に載って返答されるところは**ライブ未実測**。
+- **ライブ実測（17:00-17:03 JST）**: あずまぐの実コメントが `tmp/.twitch_chat/pending.log` に載り（17:00 前後）、
+  `chat_worker` が 17:00:30 に分類（`user":"あずまぐ"`）、17:03:05 に 619 字の返答を生成してキュー投入
+  （`tmp/.comment_queue/comment_1787731384_18582.txt`、本文で「あずまぐさん、…」と名指しで返答）。**読める状態を end-to-end で確認**。
   YouTube 側は元から `YOUTUBE_IGNORE_AUTHORS=DoCiAIch` のみで、あずまぐは読めていた（ログで確認）。
 - **注意**: カードガチャ結果（`AがBを獲得しました`）は `dociai` が投稿しており、無視リストに残っているので
   「無視対象 かつ ガチャ結果なら読む＋名前プレフィックスを外す」という既存の例外は従来どおり効く。
