@@ -715,6 +715,7 @@
 - **ローカル並列自己対戦（Mac、実物理、配信・VM 無影響）**: 既存 `wildcard_parallel.py`（ヘッドレス Chromium × スロット、Mac 向けに開発済み）の実行部を再利用した `tools/selfplay_ab.py`（soviet_now `2d5fffcf8`）を作成。自己対戦ルートは scratchpad `selfplay_root/`（自分のブランチのコード + VM の `sorengame/build` 28 MB + `/Users/azumag/work/soren/node_modules` の playwright）。**実測**: 2 スロット×2 試合が完走、1 試合 173–230 s（配信の ~300 s より速い）、6 スロットで ~90 試合/時 ≈ 配信の 7.5 倍。本番 env（SETTLE=3、WALL_CLAMP=1 等）を既定で付与、出力は `ab_games.jsonl` 互換（`ab_report.py` / `ab_decide.py` がそのまま使える）。VM は 4 コア・load 10 超なので VM 上の並列は不可。
 - **進行中**: A/A 較正（v736 vs v736、4 スロット×8 試合 = 32 試合、~30 分）で局所 SD と腕対称性を測定中（`selfplay_root/tmp/selfplay/aa_calib`）。
 - **次**: (1) A/A 結果で必要 n を再計算、(2) v740 を実装（fable の擬似コード、fixture は c8_out.json）→ ローカル A/B（6 スロット、腕 60〜150 試合、数時間）→ 有意なら実戦 A/B、(3) 以後の候補も「オフライン → ローカル自己対戦 → 実戦」の 3 段で評価。
+- **v740 NEAR_MISS_DOMINANCE は実装・計測の結果ゼロ余地（却下）**: fable の擬似コードどおり実装（hash 40cbbc3f9387、バリデータ RC=0）してコーパス 57 試合 5,169 手で v736 と比較すると変更 **1 手（0.02%）**。fable の例（053925 t30 の x=2.4 など）は HIGH_TYPE_COVER_AVOID / LOW_DROP_HIGH_LANE_COVER_AVOID 付きの「開いた高型の上に乗る」候補で、v736 が正しく避けている手だった（fable の 0.79 手/試合は被覆タグ除外前の数）。決定側の配置軸はこれで打ち止め。worktree の変更は破棄（未コミット）。
 - **注意**: 共有 checkout は他セッションのブランチのままなので、私のコミットは一時 worktree（`/private/tmp/sn-mine`）経由で `codex/no-apply-liveliness` に載せ、docich のサブモジュール参照は `git update-index --cacheinfo` で固定している。
 
 ## 2026-08-26 23:3x JST — v739（2 手先読み）A/B は無益停止で不採用 → v736 継続 / 共有 checkout のブランチ切替事故を復旧
