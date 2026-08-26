@@ -394,6 +394,7 @@
 - **音声解説（ユーザー依頼 17:3x）**: 「今の戦略についての解説」を `enqueue_audio_text`（タグ `strategy_explain`）で投入、overlay「戦略解説」表示、VOICEVOX 16 チャンク合成完了 17:42:24、キューから消えたことで再生済みと判断（再生行の直接ログは未取得）。文面は `tmp/strategy_explain.txt`（VM）。
 - **loop（19:3x）**: A/B 42 試合（各腕 21、k=10、tainted 0）: raw A 1434（sd 588）vs B 1498（sd 580）、**mean(B−A) = +43（SE 202、UCB90 +303）→ CONTINUE**、併合/手 B 0.517 vs A 0.490（**+0.027、オフライン期待 +0.03 と一致**）、手数 89.5 vs 82.8、カザフ B 6 / A 4、ロシア 0/0。序盤の劣勢は消え、わずかに v739 優勢。次 look は k=19（各腕 38、~23:30）。
 - **訂正**: 改善ジョブが始まらない理由は「ピーク延期」ではなく `.env` の **`MIN_GAMES_BEFORE_IMPROVE=48`**（`IMPROVE_PEAK_HOUR_DEFER_ENABLED=0`）。過去ログでも 48/48 で `[CYCLE]` が発火（22:38 / 10:17 / 22:08 / 04:16、当時は daemon なし）。蓄積 33/48、A/B 中は A 腕のみ蓄積するので初候補（dry-run の `would start`）は **~22 時**の見込み。
+- **loop（20:3x）**: A/B 55 試合（A 27 / B 28、k=13、tainted 0）: raw A 1468（sd 552）vs B 1515（sd 570）、**mean(B−A) = +31（SE 158、UCB90 +233）→ CONTINUE**、eval −85（SE 871）、併合/手 B 0.513 vs A 0.503、手数 89.2 vs 82.8、カザフ B 8 / A 7、20/40 手時点の駒数 B 11.5/21 vs A 12/23、ロシア 0/0。中立〜わずかに優勢。次 look k=19（~23:00）。改善ゲート: 蓄積 39/48、候補未出。
 - **リポジトリ状態**: soviet_now HEAD の strategy.py は v739（本番 root は v736、B 腕として実戦中）。A/B の結果で root を確定したら HEAD と一致させる（`finish B` なら一致、`finish A` なら revert コミット）。
 
 ## 2026-08-26 15:4x JST — A/B ゲート（改善候補を root に適用せず A/B で採否）を実装・VM 反映、dry-run で改善 daemon を再稼働 / 2 手先読み v739 の設計受領
