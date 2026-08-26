@@ -6,12 +6,14 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 import signal
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich import config  # noqa: E402
+from docich import speech  # noqa: E402
 from docich import webui  # noqa: E402
 
 
@@ -995,3 +997,69 @@ read_only = true
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestVoiceEndpoints(unittest.TestCase):
+    """/api/voice/endpoints: chain status + actions backed by docich.speech state."""
+
+    def _soren(self, urls="http://mac:50021,http://desk:50021,http://127.0.0.1:50021") -> Path:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        soren = Path(tmp.name) / "soren"
+        (soren / "tmp/state").mkdir(parents=True)
+        (soren / ".env").write_text(
+            f"VOICEVOX_URLS={urls}\nVOICEVOX_BACKOFF_BASE_SEC=30\nVOICEVOX_BACKOFF_MULT=2\n", encoding="utf-8"
+        )
+        return soren
+
+    def test_status_reads_env_chain_and_state_file(self):
+        soren = self._soren()
+        data = webui._get_voice_endpoints(soren)
+        self.assertEqual([e["url"] for e in data["endpoints"]], ["http://mac:50021", "http://desk:50021", "http://127.0.0.1:50021"])
+        self.assertEqual(data["urls_source"], "VOICEVOX_URLS")
+        self.assertEqual(data["state_file"], str(soren / "tmp/state/voicevox_endpoints.json"))
+        self.assertEqual(data["backoff"]["base_sec"], 30.0)
+        self.assertTrue(all(e["status"] == "ready" for e in data["endpoints"]))
+
+    def test_actions_update_shared_state(self):
+        soren = self._soren()
+        res = webui._voice_endpoint_action(soren, "disable", "http://desk:50021")
+        rows = {r["url"]: r for r in res["endpoints"]}
+        self.assertEqual(rows["http://desk:50021"]["status"], "disabled")
+        # the synth-side config resolves to the same state file -> same view
+        cfg = speech.SpeechConfig.from_env(env={"VOICEVOX_URLS": "http://mac:50021,http://desk:50021"}, soren_root=soren)
+        self.assertEqual([i["url"] for i in speech.plan_endpoints(cfg)], ["http://mac:50021"])
+        speech.record_failure(cfg, "http://mac:50021", "boom")
+        data = webui._get_voice_endpoints(soren)
+        rows = {r["url"]: r for r in data["endpoints"]}
+        self.assertEqual(rows["http://mac:50021"]["status"], "backoff")
+        self.assertEqual(rows["http://mac:50021"]["failures"], 1)
+        webui._voice_endpoint_action(soren, "reset", "http://mac:50021")
+        webui._voice_endpoint_action(soren, "enable", "http://desk:50021")
+        data = webui._get_voice_endpoints(soren)
+        self.assertTrue(all(r["status"] == "ready" for r in data["endpoints"]))
+        self.assertTrue(any(e["event"] == "enable" for e in data["events"]))
+
+    def test_action_validation(self):
+        soren = self._soren()
+        with self.assertRaises(ValueError):
+            webui._voice_endpoint_action(soren, "explode", "")
+        with self.assertRaises(ValueError):
+            webui._voice_endpoint_action(soren, "disable", "")
+        with self.assertRaises(ValueError):
+            webui._voice_endpoint_action(soren, "disable", "http://not-in-chain:1")
+
+    def test_probe_records_results(self):
+        soren = self._soren("http://down:1,http://up:1")
+
+        def fake_get(url, timeout):
+            if url.startswith("http://down"):
+                raise speech.SpeechError("nope")
+            return b'"0.25.2"'
+
+        with mock.patch.object(speech, "_http_get_bytes", side_effect=fake_get):
+            data = webui._get_voice_endpoints(soren, probe=True)
+        rows = {r["url"]: r for r in data["endpoints"]}
+        self.assertFalse(rows["http://down:1"]["probe"]["ok"])
+        self.assertEqual(rows["http://down:1"]["status"], "backoff")
+        self.assertTrue(rows["http://up:1"]["probe"]["ok"])

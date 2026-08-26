@@ -22,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from . import speech
 from .config import GlobalConfig
 
 # --- allowlist / validation --------------------------------------------------
@@ -2150,6 +2151,63 @@ def _set_worker_paused(soren_root: Path, worker: str, paused: bool) -> None:
             pass
 
 
+# ---------------------------------------------------------------------------
+# VOICEVOX endpoint chain (docich voicevox synth: VOICEVOX_URLS + backoff)
+# ---------------------------------------------------------------------------
+
+VOICE_ENDPOINT_ACTIONS = ("probe", "reset", "disable", "enable")
+
+
+def _voice_speech_config(soren_root: Path) -> "speech.SpeechConfig":
+    """Build the synth config the workers see: .env of soren overrides our env."""
+
+    env: dict[str, str] = dict(os.environ)
+    env.update(_read_dotenv_dict(soren_root))
+    return speech.SpeechConfig.from_env(env=env, soren_root=soren_root)
+
+
+def _get_voice_endpoints(soren_root: Path, probe: bool = False) -> dict[str, Any]:
+    cfg = _voice_speech_config(soren_root)
+    report = speech.endpoint_report(cfg, probe=probe)
+    report["urls_source"] = "VOICEVOX_URLS" if _read_dotenv_dict(soren_root).get("VOICEVOX_URLS") else "legacy_keys"
+    report["chain"] = list(cfg.urls)
+    report["speaker"] = cfg.speaker
+    log_path = Path(cfg.state_file).with_name(speech.CHAIN_LOG_NAME) if cfg.state_file else None
+    tail: list[str] = []
+    if log_path and log_path.is_file():
+        try:
+            tail = log_path.read_text(encoding="utf-8", errors="ignore").splitlines()[-30:]
+        except OSError:
+            tail = []
+    report["log_tail"] = tail
+    return report
+
+
+def _voice_endpoint_action(soren_root: Path, action: str, url: str = "") -> dict[str, Any]:
+    action = str(action or "").strip().lower()
+    if action not in VOICE_ENDPOINT_ACTIONS:
+        raise ValueError(f"action must be one of {', '.join(VOICE_ENDPOINT_ACTIONS)}")
+    cfg = _voice_speech_config(soren_root)
+    url = str(url or "").strip().rstrip("/")
+    if action in ("disable", "enable") and not url:
+        raise ValueError("url is required for disable/enable")
+    if url and url not in cfg.urls:
+        raise ValueError("url is not in the configured chain")
+    if action == "probe":
+        report = speech.endpoint_report(cfg, probe=True)
+        if url:
+            report["endpoints"] = [r for r in report["endpoints"] if r["url"] == url]
+        return {"ok": True, "action": action, "url": url, "endpoints": report["endpoints"]}
+    if action == "reset":
+        speech.reset_endpoint(cfg, url or None)
+    elif action == "disable":
+        speech.set_endpoint_disabled(cfg, url, True)
+    elif action == "enable":
+        speech.set_endpoint_disabled(cfg, url, False)
+    report = speech.endpoint_report(cfg, probe=False)
+    return {"ok": True, "action": action, "url": url, "endpoints": report["endpoints"]}
+
+
 def _stream_status_file(soren_root: Path) -> Path:
     # lib/direct_stream.py load_config 既定の SOREN_DIRECT_STREAM_STATE_DIR
     return soren_root / "tmp/state/direct_stream/status.json"
@@ -2663,6 +2721,13 @@ input:checked+.slider:before{transform:translateX(20px)}
 <div class="actions"><button class="btn" id="audio-queue-refresh">更新</button><button class="btn danger" id="audio-queue-clear">キュー全クリア</button></div>
 <div style="overflow:auto;margin-top:10px"><table><thead><tr><th>filename</th><th>time</th><th>speaker</th><th>preview</th><th></th></tr></thead><tbody id="audio-queue-table"></tbody></table></div>
 <div class="help">audio_worker が消化するとファイルは自動で消える（.playing → 削除）。dedup は 120秒間 同一テキストの再投入を抑止。</div>
+</div>
+<div class="card"><h2>音声合成チェーン (VOICEVOX endpoints)</h2><p class="desc"><code>docich voicevox synth</code> は <code>.env</code> の <code>VOICEVOX_URLS</code>（優先順）を上から試し、失敗したエンドポイントは乗数バックオフ（<span id="voice-backoff-desc" class="mono">-</span>）で休ませる。全部休止中でも順に再試行し、合成を拒否はしない。</p>
+<div class="kv"><dt>active</dt><dd id="voice-active" class="mono">-</dd><dt>設定元</dt><dd id="voice-urls-source" class="mono">-</dd><dt>state</dt><dd id="voice-state-file" class="mono" style="font-size:11px">-</dd></div>
+<div class="actions"><button class="btn" id="voice-refresh">更新</button><button class="btn primary" id="voice-probe-all">全エンドポイント疎通確認</button><button class="btn" id="voice-reset-all">backoff 全リセット</button></div>
+<div style="overflow:auto;margin-top:10px"><table><thead><tr><th>#</th><th>endpoint</th><th>状態</th><th>連続失敗</th><th>成功/失敗</th><th>直近 ms (平均)</th><th>直近成功</th><th>直近エラー</th><th></th></tr></thead><tbody id="voice-table"></tbody></table></div>
+<div class="help">状態: <b>ready</b>=次の合成で使う候補（上から順） / <b>backoff</b>=失敗後の休止中（残り秒） / <b>disabled</b>=手動で外している。「疎通確認」は GET /version を打って結果を記録する（成功なら backoff 解除、失敗なら backoff 延長）。</div>
+<details style="margin-top:8px"><summary>直近イベント / ログ</summary><pre id="voice-log" class="mono" style="font-size:11px;max-height:220px;overflow:auto;white-space:pre-wrap"></pre></details>
 </div>
 <div class="card"><h3>手動 enqueue</h3><p class="desc">任意のテキストを読み上げキューに投入。丁寧な敬語で書くと配信で自然に聞こえる。例: <code>お待たせしております。現在、システムの解析を進めております。</code></p>
 <div><label>text (1-1000文字) <span id="audio-text-count" class="badge">0/1000</span></label><textarea id="audio-text" rows="4" maxlength="1000" placeholder="お待たせしております。現在、…何卒よろしくお願い申し上げます。"></textarea></div>
@@ -3864,6 +3929,7 @@ function drawSparkline(days){
 let statusTimer=null;
 let overlayPreviewTimer=null;
 let streamTimer=null;
+let audioTimer=null;
 function renderStream(d){
   const stateMap={live:"LIVE",paused:"停止中 (paused)",off:"オフ"};
   const el=$("#stream-state");
@@ -4337,6 +4403,59 @@ async function loadAudioQueue(){
     }
   }catch(e){ toast(String(e)); }
 }
+function voiceStatusBadge(row){
+  const st=row.status;
+  if(st==="ready") return `<span class="badge ok">ready</span>`;
+  if(st==="backoff") return `<span class="badge warn">backoff ${Math.round(row.retry_in_sec||0)}s</span>`;
+  if(st==="disabled") return `<span class="badge">disabled</span>`;
+  return `<span class="badge">${esc(st||"-")}</span>`;
+}
+function voiceAge(now, ts){
+  if(!ts) return "-";
+  const d=Math.max(0, Math.round(now-ts));
+  if(d<60) return d+"s前";
+  if(d<3600) return Math.floor(d/60)+"m前";
+  return Math.floor(d/3600)+"h"+String(Math.floor((d%3600)/60)).padStart(2,"0")+"m前";
+}
+function renderVoiceChain(data){
+  const now=data.now||(Date.now()/1000);
+  const bo=data.backoff||{};
+  $("#voice-backoff-desc").textContent=`${Math.round(bo.base_sec||0)}s × ${bo.mult||"-"} 乗 / 上限 ${Math.round(bo.max_sec||0)}s, probe ${bo.probe_timeout||"-"}s`;
+  $("#voice-active").innerHTML=data.active_url?`<span class="badge ok">${esc(data.active_url)}</span> <span class="help">最終成功 ${esc(voiceAge(now,data.last_ok_at))}</span>`:"-";
+  $("#voice-urls-source").textContent=data.urls_source||"-";
+  $("#voice-state-file").textContent=data.state_file||"(未永続化)";
+  const tb=$("#voice-table"); tb.innerHTML="";
+  for(const r of (data.endpoints||[])){
+    const tr=document.createElement("tr");
+    const probe=r.probe?(r.probe.ok?` <span class="badge ok">probe ${r.probe.ms}ms</span>`:` <span class="badge bad">probe NG</span>`):"";
+    const toggle=r.enabled?`<button class="btn danger" data-vact="disable" data-vurl="${esc(r.url)}" style="padding:4px 8px">無効化</button>`:`<button class="btn primary" data-vact="enable" data-vurl="${esc(r.url)}" style="padding:4px 8px">有効化</button>`;
+    tr.innerHTML=`<td class="mono">${r.position}</td><td class="mono" style="font-size:12px">${esc(r.url)}${r.active?' <span class="badge ok">active</span>':''}</td><td>${voiceStatusBadge(r)}${probe}</td><td class="mono">${r.failures||0}</td><td class="mono">${r.ok_count||0}/${r.fail_count||0}</td><td class="mono">${r.last_ms!=null?r.last_ms:"-"} (${r.avg_ms!=null?r.avg_ms:"-"})</td><td class="mono" style="font-size:11px">${esc(voiceAge(now,r.last_ok_at))}</td><td class="mono" style="font-size:11px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.last_error||"")}">${esc(r.last_error?voiceAge(now,r.last_error_at)+" "+r.last_error:"-")}</td><td style="white-space:nowrap"><button class="btn" data-vact="probe" data-vurl="${esc(r.url)}" style="padding:4px 8px">疎通確認</button> <button class="btn" data-vact="reset" data-vurl="${esc(r.url)}" style="padding:4px 8px">backoff解除</button> ${toggle}</td>`;
+    tb.appendChild(tr);
+  }
+  if(!(data.endpoints||[]).length) tb.innerHTML='<tr><td colspan="9" class="help">エンドポイント未設定</td></tr>';
+  for(const btn of $$("[data-vact]")){
+    btn.onclick=async()=>{
+      const action=btn.getAttribute("data-vact"), url=btn.getAttribute("data-vurl");
+      if(action==="disable" && !confirm(`${url} をチェーンから外しますか？（再び有効化するまで使われません）`)) return;
+      btn.disabled=true;
+      try{ await api("/api/voice/endpoints",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action,url})}); toast(`${action}: ${url}`); await loadVoiceChain(); }
+      catch(e){ toast(String(e)); btn.disabled=false; }
+    };
+  }
+  const ev=(data.events||[]).slice(-20).reverse().map(e=>{
+    const t=new Date((e.t||0)*1000).toLocaleTimeString();
+    const extra=e.error?` ${e.error}`:(e.from?` from ${e.from}`:"")+(e.backoff_sec!=null?` backoff=${Math.round(e.backoff_sec)}s`:"")+(e.ms!=null?` ${e.ms}ms`:"");
+    return `${t} ${e.event.toUpperCase().padEnd(8)} ${e.url||""}${extra}`;
+  });
+  const logTail=(data.log_tail||[]).slice(-15);
+  $("#voice-log").textContent=(ev.length?ev.join("\n"):"(イベントなし)")+(logTail.length?"\n--- voicevox_chain.log ---\n"+logTail.join("\n"):"");
+}
+async function loadVoiceChain(probe=false){
+  try{
+    const data=await api("/api/voice/endpoints"+(probe?"?probe=1":""));
+    renderVoiceChain(data);
+  }catch(e){ toast(String(e)); }
+}
 function predictionStatusBadge(status){
   const s=String(status||"unknown").toUpperCase();
   const cls=(s==="ACTIVE"?"ok":(s==="LOCKED"?"warn":(s==="RESOLVED"?"ok":(s==="CANCELED"?"":"bad"))));
@@ -4461,7 +4580,8 @@ document.addEventListener("DOMContentLoaded",()=>{
     if(tab==="stream") { loadStream(); loadWorkersControl(); if(streamTimer) clearInterval(streamTimer); streamTimer=setInterval(()=>{ loadStream(); loadWorkersControl(); },10000); }
     else { if(streamTimer) { clearInterval(streamTimer); streamTimer=null; } }
     if(tab==="overlay") { loadOverlayEvents(); loadWorkBanner(); loadTop(); loadPreview(); }
-    if(tab==="audio") loadAudioQueue();
+    if(tab==="audio") { loadAudioQueue(); loadVoiceChain(); if(audioTimer) clearInterval(audioTimer); audioTimer=setInterval(()=>{ loadVoiceChain(); },10000); }
+    else { if(audioTimer) { clearInterval(audioTimer); audioTimer=null; } }
     if(tab==="predictions") loadPredictions();
     if(tab==="prompts") loadPrompts();
   });
@@ -4591,6 +4711,10 @@ document.addEventListener("DOMContentLoaded",()=>{
   const aRefresh=document.getElementById("audio-queue-refresh");
   if(aRefresh) aRefresh.onclick=()=>loadAudioQueue();
   const aClear=document.getElementById("audio-queue-clear");
+  const vRefresh=$("#voice-refresh"), vProbe=$("#voice-probe-all"), vReset=$("#voice-reset-all");
+  if(vRefresh) vRefresh.onclick=()=>loadVoiceChain();
+  if(vProbe) vProbe.onclick=async()=>{ vProbe.disabled=true; try{ await loadVoiceChain(true); toast("疎通確認を記録しました"); } finally { vProbe.disabled=false; } };
+  if(vReset) vReset.onclick=async()=>{ if(!confirm("全エンドポイントの backoff をリセットしますか？")) return; try{ await api("/api/voice/endpoints",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"reset"})}); toast("backoff 全リセット"); await loadVoiceChain(); }catch(e){ toast(String(e)); } };
   if(aClear) aClear.onclick=async()=>{ if(!confirm("読み上げキューを全クリアしますか？")) return; try{ await api("/api/audio/queue",{method:"DELETE"}); toast("キュー全クリア"); await loadAudioQueue(); }catch(e){ toast(String(e)); } };
   const aEnqueue=document.getElementById("audio-enqueue");
   if(aEnqueue) aEnqueue.onclick=()=>enqueueAudio();
@@ -4729,6 +4853,8 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_get_workers()
             elif path == "/api/stream":
                 status = self._handle_get_stream()
+            elif path == "/api/voice/endpoints":
+                status = self._handle_get_voice_endpoints(query.get("probe", ["0"])[0] in ("1", "true"))
             elif path == "/api/peak_status":
                 status = self._handle_get_peak_status()
             elif path == "/api/overlay/status":
@@ -4856,6 +4982,8 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_reload()
             elif parsed.path == "/api/stream":
                 status = self._handle_post_stream()
+            elif parsed.path == "/api/voice/endpoints":
+                status = self._handle_post_voice_endpoints()
             elif parsed.path == "/api/chat":
                 status = self._handle_post_chat_toggle()
             elif parsed.path == "/api/workers":
@@ -5518,6 +5646,38 @@ class _Handler(BaseHTTPRequestHandler):
     def _handle_reload(self) -> int:
         results = _send_reload(self.soren_root)
         self._send_json(200, {"ok": True, "results": results})
+        return 200
+
+    def _handle_get_voice_endpoints(self, probe: bool = False) -> int:
+        try:
+            report = _get_voice_endpoints(self.soren_root, probe=probe)
+        except Exception as exc:
+            self._send_error_json(500, "voice_endpoints_failed", str(exc)[:300])
+            return 500
+        self._send_json(200, report)
+        return 200
+
+    def _handle_post_voice_endpoints(self) -> int:
+        body, err = self._read_body()
+        if err:
+            return err
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except Exception as exc:
+            self._send_error_json(400, "invalid_json", str(exc))
+            return 400
+        if not isinstance(data, dict):
+            self._send_error_json(400, "validation_error", "body must be object")
+            return 400
+        try:
+            result = _voice_endpoint_action(self.soren_root, str(data.get("action", "")), str(data.get("url", "")))
+        except ValueError as exc:
+            self._send_error_json(400, "invalid_action", str(exc))
+            return 400
+        except Exception as exc:
+            self._send_error_json(500, "voice_endpoint_action_failed", str(exc)[:300])
+            return 500
+        self._send_json(200, result)
         return 200
 
     def _handle_get_stream(self) -> int:
@@ -6584,7 +6744,7 @@ def run_webui(
             print(f"  WARNING: {eff_soren_root}/eloop_lib.sh not found (soren_root may be wrong)")
         if not (eff_soren_root / ".env").is_file():
             print(f"  WARNING: {eff_soren_root}/.env not found (will be created on first save)")
-        print("  endpoints: /, /api/health, /api/config, /api/backoffs, /api/stats, /api/reload, /api/game_state, /api/improve_state, /api/workers (GET/POST), /api/stream (GET/POST), /api/chat (POST), /api/peak_status, /api/predictions, /api/predictions/action, /api/prompts")
+        print("  endpoints: /, /api/health, /api/config, /api/backoffs, /api/stats, /api/reload, /api/game_state, /api/improve_state, /api/workers (GET/POST), /api/stream (GET/POST), /api/voice/endpoints (GET/POST), /api/chat (POST), /api/peak_status, /api/predictions, /api/predictions/action, /api/prompts")
         return 0
 
     # validate soren_root

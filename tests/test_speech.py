@@ -118,6 +118,8 @@ class TestSynthesis(SpeechBase):
         def fake_get(url, timeout):
             if url.endswith("/speakers"):
                 return b"[]"
+            if url.endswith("/version"):
+                return b'"0.25.2"'
             raise AssertionError(f"unexpected GET {url}")
 
         def fake_post(url, data, timeout):
@@ -254,3 +256,192 @@ class TestCliVoicevox(SpeechBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEndpointChain(SpeechBase):
+    """VOICEVOX_URLS chain + persisted multiplicative backoff (docich, 2026-08-27)."""
+
+    def _cfg(self, urls, **kw):
+        kw.setdefault("state_file", self.root / "tmp/state/voicevox_endpoints.json")
+        kw.setdefault("backoff_base_sec", 30.0)
+        kw.setdefault("backoff_mult", 2.0)
+        kw.setdefault("backoff_max_sec", 900.0)
+        return speech.SpeechConfig(urls=tuple(urls), **kw)
+
+    def test_parse_url_chain(self):
+        self.assertEqual(
+            speech.parse_url_chain("http://a:50021, http://b:50021/ http://a:50021\nhttp://c:1"),
+            ["http://a:50021", "http://b:50021", "http://c:1"],
+        )
+        self.assertEqual(speech.parse_url_chain(""), [])
+
+    def test_from_env_urls_chain_and_state_file(self):
+        env = {
+            "VOICEVOX_URLS": "http://mac:50021,http://desktop:50021,http://127.0.0.1:50021",
+            "VOICEVOX_BACKOFF_BASE_SEC": "10",
+            "VOICEVOX_BACKOFF_MULT": "3",
+            "VOICEVOX_BACKOFF_MAX_SEC": "100",
+        }
+        cfg = speech.SpeechConfig.from_env(env=env, soren_root=self.root / "soren")
+        self.assertEqual(cfg.urls, ("http://mac:50021", "http://desktop:50021", "http://127.0.0.1:50021"))
+        self.assertEqual(cfg.state_file, self.root / "soren/tmp/state" / speech.STATE_FILE_NAME)
+        self.assertEqual((cfg.backoff_base_sec, cfg.backoff_mult, cfg.backoff_max_sec), (10.0, 3.0, 100.0))
+
+    def test_from_env_legacy_keys_still_build_chain(self):
+        env = {"VOICEVOX_URL_PRIMARY": "http://remote:50021", "VOICEVOX_URL_FALLBACK": "http://127.0.0.1:50021"}
+        cfg = speech.SpeechConfig.from_env(env=env)
+        self.assertEqual(cfg.urls[0], "http://remote:50021")
+        self.assertIn("http://127.0.0.1:50021", cfg.urls)
+
+    def test_backoff_is_multiplicative_and_capped(self):
+        cfg = self._cfg(["http://a"], backoff_base_sec=30, backoff_mult=2, backoff_max_sec=900)
+        self.assertEqual([speech.backoff_delay(n, cfg) for n in (1, 2, 3, 4, 5, 6, 7)],
+                         [30.0, 60.0, 120.0, 240.0, 480.0, 900.0, 900.0])
+        self.assertEqual(speech.backoff_delay(0, cfg), 0.0)
+
+    def test_failure_persists_backoff_and_reorders_plan(self):
+        cfg = self._cfg(["http://a", "http://b"])
+        self.assertEqual([i["url"] for i in speech.plan_endpoints(cfg)], ["http://a", "http://b"])
+        d1 = speech.record_failure(cfg, "http://a", "boom")
+        d2 = speech.record_failure(cfg, "http://a", "boom again")
+        self.assertEqual((d1, d2), (30.0, 60.0))
+        state = speech.load_endpoint_state(cfg.state_file)
+        self.assertEqual(state["endpoints"]["http://a"]["failures"], 2)
+        self.assertEqual(state["endpoints"]["http://a"]["fail_count"], 2)
+        plan = speech.plan_endpoints(cfg)
+        self.assertEqual([(i["url"], i["status"]) for i in plan], [("http://b", "ready"), ("http://a", "backoff")])
+        self.assertGreater(plan[1]["retry_in_sec"], 50)
+        # backoff expiry restores chain order
+        later = speech.load_endpoint_state(cfg.state_file)
+        plan2 = speech.plan_endpoints(cfg, later, now=later["endpoints"]["http://a"]["next_retry_at"] + 1)
+        self.assertEqual([i["url"] for i in plan2], ["http://a", "http://b"])
+        # success resets counters and records the active endpoint
+        speech.record_success(cfg, "http://a", 1234.0)
+        state = speech.load_endpoint_state(cfg.state_file)
+        self.assertEqual(state["endpoints"]["http://a"]["failures"], 0)
+        self.assertNotIn("next_retry_at", state["endpoints"]["http://a"])
+        self.assertEqual(state["active_url"], "http://a")
+        self.assertEqual(state["events"][-1]["event"], "recover")
+
+    def test_all_in_backoff_still_tries_in_chain_order(self):
+        cfg = self._cfg(["http://a", "http://b"])
+        speech.record_failure(cfg, "http://a", "x")
+        speech.record_failure(cfg, "http://b", "y")
+        plan = speech.plan_endpoints(cfg)
+        self.assertEqual([i["url"] for i in plan], ["http://a", "http://b"])
+        self.assertTrue(all(i["status"] == "backoff" for i in plan))
+
+    def test_disabled_endpoint_is_skipped_unless_nothing_else(self):
+        cfg = self._cfg(["http://a", "http://b"])
+        speech.set_endpoint_disabled(cfg, "http://a", True)
+        self.assertEqual([i["url"] for i in speech.plan_endpoints(cfg)], ["http://b"])
+        speech.set_endpoint_disabled(cfg, "http://b", True)
+        self.assertEqual([i["status"] for i in speech.plan_endpoints(cfg)], ["disabled", "disabled"])
+        speech.set_endpoint_disabled(cfg, "http://a", False)
+        self.assertEqual([i["url"] for i in speech.plan_endpoints(cfg)], ["http://a"])
+
+    def _chain_http(self, down: set, synth_fail: set = frozenset()):
+        gets: list[str] = []
+        posts: list[str] = []
+
+        def fake_get(url, timeout):
+            gets.append(url)
+            if any(url.startswith(d) for d in down):
+                raise speech.SpeechError(f"VOICEVOX 接続失敗: {url}")
+            return b'"0.25.2"' if url.endswith("/version") else b"[]"
+
+        def fake_post(url, data, timeout):
+            posts.append(url)
+            if "/audio_query" in url:
+                return json.dumps({"accent_phrases": [], "speedScale": 1.0}).encode()
+            if any(url.startswith(d) for d in synth_fail):
+                raise speech.SpeechError("HTTP 500")
+            return _wav_bytes()
+
+        return (
+            mock.patch.object(speech, "_http_get_bytes", side_effect=fake_get),
+            mock.patch.object(speech, "_http_post_bytes", side_effect=fake_post),
+            gets,
+            posts,
+        )
+
+    def test_synthesize_falls_through_and_records_state(self):
+        cfg = self._cfg(["http://down:50021", "http://ok:50021"])
+        get_p, post_p, gets, posts = self._chain_http(down={"http://down"})
+        out = self.root / "out.wav"
+        with get_p, post_p:
+            speech.synthesize("こんにちは。", out, cfg)
+        self.assertTrue(out.is_file())
+        # the unreachable endpoint is only probed, never posted to
+        self.assertFalse(any(p.startswith("http://down") for p in posts))
+        self.assertTrue(any(g == "http://down:50021/version" for g in gets))
+        state = speech.load_endpoint_state(cfg.state_file)
+        self.assertEqual(state["endpoints"]["http://down:50021"]["failures"], 1)
+        self.assertEqual(state["active_url"], "http://ok:50021")
+        # second call: the failed endpoint is in backoff -> not even probed
+        gets.clear(); posts.clear()
+        with get_p, post_p:
+            speech.synthesize("また。", out, cfg)
+        self.assertEqual(gets, ["http://ok:50021/version"])
+        self.assertTrue(all(p.startswith("http://ok") for p in posts))
+        self.assertEqual(state["endpoints"]["http://down:50021"]["fail_count"], 1)
+
+    def test_synthesis_error_mid_chunk_moves_to_next_endpoint(self):
+        cfg = self._cfg(["http://flaky:50021", "http://ok:50021"], max_chars=2)
+        get_p, post_p, gets, posts = self._chain_http(down=set(), synth_fail={"http://flaky"})
+        out = self.root / "out.wav"
+        with get_p, post_p:
+            speech.synthesize("あ。い。", out, cfg)
+        self.assertTrue(out.is_file())
+        state = speech.load_endpoint_state(cfg.state_file)
+        self.assertEqual(state["endpoints"]["http://flaky:50021"]["failures"], 1)
+        self.assertEqual(state["endpoints"]["http://ok:50021"]["ok_count"], 1)
+        self.assertFalse(list(out.parent.glob(".voicevox_chunk_*")))
+
+    def test_all_endpoints_down_raises_with_details(self):
+        cfg = self._cfg(["http://a:1", "http://b:1"])
+        get_p, post_p, _, _ = self._chain_http(down={"http://a", "http://b"})
+        with get_p, post_p, self.assertRaises(speech.SpeechError) as ctx:
+            speech.synthesize("x。", self.root / "o.wav", cfg)
+        self.assertIn("http://a:1", str(ctx.exception))
+        self.assertIn("http://b:1", str(ctx.exception))
+
+    def test_endpoint_report_probe_records_and_heals(self):
+        cfg = self._cfg(["http://a:1", "http://b:1"])
+        speech.record_failure(cfg, "http://b:1", "earlier")
+        get_p, post_p, _, _ = self._chain_http(down={"http://a"})
+        with get_p, post_p:
+            report = speech.endpoint_report(cfg, probe=True)
+        rows = {r["url"]: r for r in report["endpoints"]}
+        self.assertFalse(rows["http://a:1"]["probe"]["ok"])
+        self.assertEqual(rows["http://a:1"]["status"], "backoff")
+        self.assertTrue(rows["http://b:1"]["probe"]["ok"])
+        self.assertEqual(rows["http://b:1"]["status"], "ready")
+        self.assertEqual(rows["http://b:1"]["failures"], 0)
+        self.assertIn("base_sec", report["backoff"])
+
+    def test_reset_clears_backoff(self):
+        cfg = self._cfg(["http://a", "http://b"])
+        speech.record_failure(cfg, "http://a", "x")
+        speech.record_failure(cfg, "http://b", "y")
+        speech.reset_endpoint(cfg, "http://a")
+        self.assertEqual([i["status"] for i in speech.plan_endpoints(cfg)], ["ready", "backoff"])
+        speech.reset_endpoint(cfg)
+        self.assertEqual([i["status"] for i in speech.plan_endpoints(cfg)], ["ready", "ready"])
+        self.assertTrue((self.root / "tmp/state" / speech.CHAIN_LOG_NAME).is_file())
+
+    def test_cli_endpoints_json(self):
+        state = self.root / "state.json"
+        env = {"VOICEVOX_URLS": "http://x:1,http://y:1", "VOICEVOX_STATE_FILE": str(state)}
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, env, clear=False), redirect_stdout(buf):
+            rc = cli.main(["voicevox", "endpoints", "--json"])
+        self.assertEqual(rc, 0)
+        data = json.loads(buf.getvalue())
+        self.assertEqual([r["url"] for r in data["endpoints"]], ["http://x:1", "http://y:1"])
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, env, clear=False), redirect_stdout(buf):
+            rc = cli.main(["voicevox", "endpoints", "--disable", "--url", "http://x:1"])
+        self.assertEqual(rc, 0)
+        self.assertIn("disabled", buf.getvalue())
+        self.assertTrue(json.loads(state.read_text())["endpoints"]["http://x:1"]["disabled"])
