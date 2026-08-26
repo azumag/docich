@@ -4,6 +4,45 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: v739 LOOKAHEAD（2 手先読み、hash 8fcb13b11d0c）を実装・オフライン検証（変更 3.3%、併合喪失 0）し、16:10 から v736(A) vs v739(B) のインターリーブ A/B を実行中（主指標 併合/手、74/腕）。A/B ゲートは dry-run で改善 daemon 再稼働中。状況は VM で `bash tools/ab_ctl.sh status`。
 
+## 2026-08-26 21:0x JST — YouTube 公開後の Bluesky 告知を実装 (実投稿は認証待ちで未検証) ＋ 重複アップロード事故と対処
+
+- **ユーザー指示**: 「podcast が生成されて動画がアップロードされたら、bluesky に投稿したい」。
+  認証情報は `~/.config/soren/bluesky.json` に置く / 実投稿でのテストは「投稿して後で消す」方針で合意。
+- **事故 (対処済み)**: 検証で `podcast_daily.sh --date 20260825` を `PODCAST_AUTO_PUBLISH=0` を**付け忘れて**実行し、
+  08-25 の動画を YouTube へ**重複アップロード**した (新 `KcM0GQDN87M` public / 元 `jOPFZKSvm3c`)。
+  ユーザー承認のうえ `videos.delete` で削除し、再生リスト `PLNycKe9FEAGU` の項目も除去。
+  実測確認: `KcM0GQDN87M`=GONE、`jOPFZKSvm3c`=EXISTS(public)、playlist=`['jOPFZKSvm3c']`。
+  `output/podcast/2026-08-25.publish.json` は元の video_id へ復元（誤アップ分は
+  `2026-08-25.publish.dup-20260826-2057.json` に退避）。
+  → 再発防止として **`podcast_publish.py` に冪等ガード**を入れた（下記）。手動実行時は
+  `PODCAST_AUTO_PUBLISH=0` を付ける習慣も維持すること。
+- **追加 (`games/soviet_now` commit `a572e5d90`)**:
+  - `tools/bluesky_post.py`（新規）: AT Protocol の XRPC を **urllib だけ**で叩く（外部ライブラリ不要、
+    Mac の system python 3.9 でも doci venv でも動作確認済み）。
+    `createSession` → `uploadBlob`（サムネ）→ `createRecord`。
+    `<日付>.publish.json` / `.meta.json` / `.thumbnail.png` から本文と `app.bsky.embed.external`
+    カードを組み立て、URL と #タグの facet を **UTF-8 バイト位置**で付ける。本文は 300 文字に収まるよう
+    見出しと URL を残して要約から削る。投稿後 `<日付>.bluesky.json` を残して二重投稿を防ぐ（`--force` で再投稿）。
+    `--delete`（at:// か bsky.app URL、`--podcast` 併用で記録済み投稿）でテスト投稿を消せる。
+    認証: `BLUESKY_HANDLE`/`BLUESKY_APP_PASSWORD` → `BLUESKY_CREDENTIALS_FILE` → `~/.config/soren/bluesky.json`。
+    **アプリパスワードを使う**。鍵はリポジトリにも .env にも置かない。
+  - `tools/podcast_daily.sh`: `[4/4]` として公開後に告知。`publish.json` が無い回は流さない。
+    `PODCAST_BLUESKY_ENABLED=0` で無効。認証情報が無ければ rc=4 で**黙ってスキップ**（fail-open）。
+  - `tools/podcast_publish.py`: **`publish.json` がある回は既定でスキップ**（`--force` で再アップロード）。
+  - `core/config.sh`: `PODCAST_BLUESKY_ENABLED` / `PODCAST_BLUESKY_TAGS`（既定は空＝タグ無し）を追記。VM worker は読まない。
+  - テスト: `tests/test_bluesky_post.py`（23, `_request` を差し替えてネットワークに出ない）/
+    `tests/test_podcast_publish_guard.py`（3）。ともに全 pass。
+- **実測で確認したこと**:
+  - 日次パイプラインの `[4/4]` が実際に走り、認証情報が無い状態で
+    `Bluesky: 認証情報が無いのでスキップ` で止まること（20:57 の `output/podcast_daily.log`）。
+  - 本文組み立ては実データ（08-25）で 122 文字 + カード + link facet を生成（`--dry-run` の JSON を確認）。
+  - 冪等ガード: `podcast_publish.py --date 20260825` が `公開済みなのでスキップ` で**アップロードしない**こと。
+- **未確認 / 次の一歩**:
+  - **Bluesky への実投稿は未実施**（認証情報がまだ無い）。`~/.config/soren/bluesky.json`（`chmod 700` の
+    ディレクトリは作成済み）に `{"handle": "...", "app_password": "xxxx-xxxx-xxxx-xxxx"}` を置けば、
+    `./tools/bluesky_post.py --podcast --date 20260825` で投稿し、確認後 `--delete` で消す段取り。
+  - カードのサムネ表示・facet のリンク化は**実投稿で目視するまで未確認**。
+
 ## 2026-08-26 20:4x JST — ポッドキャスト動画のローカル保持を 3 日に (実装・テスト・日次パイプライン結線まで確認)
 
 - **ユーザー指示**: 「podcast 動画の生成だが、一回で数百MB使うので、3日分すぎたら削除したい」
