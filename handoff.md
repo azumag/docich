@@ -4,6 +4,30 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: fable 比較で残る改善余地は小（最大 v740 +0.005/手、実戦検出に 48 時間）→ 律速は評価速度と判断し、Mac 上のヘッドレス並列自己対戦 A/B（`tools/selfplay_ab.py`、1 試合 ~200 s、~90 試合/時）を構築・動作確認。A/A 較正を実行中。次は v740 実装 → ローカル A/B → 実戦 A/B。本番 v736、改善ループ dry-run。共有 checkout は他セッションのブランチ（worktree 経由でコミット）。
 
+## 2026-08-27 00:1x-01:1x JST — Issue #23 再評価: Soren91 は現VMでは描画コストが構造的に不足 → 「諦める」を正式結論（無効のまま維持）
+
+- **ユーザー指示**: handoff の「反映済み」を実測で突き合わせ、共有 Chrome 方式を含め構成自体を再評価。合格条件は実配信の滑らかさ。
+- **突き合わせ結果（実測）**:
+  - VM `.env` は `SOREN91_ENABLED=0` / `SOREN91_DAILY_ENABLED=0`。ただし `tmp/state/soren91_daily.json` は **00:04:46 に本日 14:00:06 JST 予定で `planned` に再生成されていた**（00:04 の試合境界で soren_loop が `.env` 変更前の値で再計画）。soren_loop は毎試合 `.env` を再読込（`soren_loop.sh` main loop 冒頭）するので実発火はしないが、念のため `status=disabled_env` へ書き換え（backup `tmp/state/soren91_daily.json.bak-20260827-0030`）。worker の `/proc/*/environ` に `SOREN91_*=1` が残るが、それは起動時スナップショットで判定には使われない。
+  - 通常ゲーム稼働中の CPU 配分（30 s 窓, 4vCPU=400%, `tools/cpu_breakdown.py`）: **描画 136%**（Chrome GPU process＝SwiftShader 92% ＋ Unity renderer 33% ＋ Xvfb/xfwm4 7%）、**VOICEVOX 112%**（合成中。生涯平均 62.7%/コア）、ffmpeg 47%、AI worker 12%、短命 bash/python 67%。合計 397% ＝ 飽和、load avg 14〜20。
+  - **「解像度を下げた」は無効だった**: unityroom の loader は `matchWebGLToCanvasSize` 未指定（既定 true）のため Unity が毎フレーム canvas を CSS サイズ×DPR に戻す。`soren91/tmp/soren91.log:962` に `<canvas width="960" height="540">` の実証。480×270/640×360 試験は**全て 960×540 で走っていた**。正しい縮小は `config.devicePixelRatio` 注入（`tools/soren91_iso_probe.mjs` で drawingBuffer 480×270 を実測）。
+  - **「枠が再起動する」の実体**: `_soren91_restart_bridge_after_improve` が AudioContext running+BlackHole を 15 s 待って満たさず `_br_relaunch`（23:59:50 `[SOREN91] 改善復帰: soviet_local を再起動し...`）。Linux/ffmpeg 構成では Chrome の再生ストリームは pulse に存在しない（sink-input は ffplay/paplay のみ。ゲーム音は `ExternalGameAudio` の外部再生）ため、このゲートは Linux では意味がなく、再起動の唯一の起点。さらに 1 時間停止後は `lib/bridge_recovery.sh` の game_state 停滞判定（240 s）でも再起動する。
+  - **「青い帯」**: 旧方式で Soren91 ページへ注入していた stage panel（`rgba(56,189,248,.28)` の水色ボーダー、navy グラデ）と同一 Chrome 内フルスクリーン窓の構造由来。
+- **隔離計測**（`tools/soren91_iso_probe.mjs`、別 Xvfb :98 ＋ 別 Chrome ＋ 別 pulse sink、本番非接触。soviet_now commit `b781dcad7`）:
+  | run | 条件 | 描画バッファ | native rAF | Unity fps | Soren91 GPU proc |
+  |---|---|---|---|---|---|
+  | R1c | SwiftShader, DPR0.5, 30fps cap | 480×270 | 8.9 Hz (p50 106 ms) | 10.5 | 84% |
+  | R2 | 同, DPR0.25 | 240×135 | 14.7 Hz | 13.2 | 76% |
+  | R4 | llvmpipe (ANGLE GL, Mesa 25.2) 100 s 末尾 | 480×270 | 6.3 Hz | 5.8 | 85% (+renderer 59%) |
+  | R5 | SwiftShader DPR0.5、**本番 Unity を試合境界で一時停止**（main GPU 92→11%） | 480×270 | 7.8 Hz (p50 113 ms) | 5.9 | 94% |
+  → **1 フレーム ≈110〜120 ms CPU、GPU process は 1 コアを超えて並列化しない（シングルスレッド律速）**。91 面のミニ盤面（スクショで確認）を毎フレーム描く固定コストで、解像度を 1/4 にしても 15 Hz。空きコアを増やしても（VOICEVOX 外出し等）fps は上がらない。
+- **構成面で確認できたこと（:98 で実証、本番未適用）**: `--app=URL` の別 Chrome ＋ `_MOTIF_WM_HINTS` で無装飾窓を (0,90) 960×540 に固定でき、アドレスバー/タブ/権限確認なし、本番の rails をそのまま残せる。別 Chrome は pulse に "Chromium" 再生ストリームを出す（`PULSE_SINK` で切替可）。→ 将来 Soren91 以外の軽いゲームを同じ枠に置くなら、共有 Chrome のタブ/コンテキスト切替ではなく **別プロセス＋X11 窓重ね** が適切（枠再読込・音声ゲート・タブガード競合が構造的に消える）。
+- **結論: Soren91 は現 VM では諦める（正式）**。`.env` は `SOREN91_ENABLED=0` / `SOREN91_DAILY_ENABLED=0` のまま、`codex/issue-23-soren91-daily` は保存のみ。
+- **再開条件**: (a) GPU 付き、または 1 コア性能が大幅に高い VM（コア数より 1 コア性能が支配的）、(b) Soren91 側に観戦盤面の描画を落とす低負荷モードが入る、(c) Soren91 を Mac 等の GPU 機で描画して映像として VM へ送る構成（未設計・ユーザー判断）。再開時は上記「構成面」方式＋DPR 注入＋Linux では AudioContext ゲートを外す、を前提に `tools/soren91_iso_probe.mjs pause_main=1` で 25 fps 以上を実測してから。
+- **後片付け（実測）**: Xvfb :98 停止、pulse iso sink unload、`tmp/iso_probe_profile` 削除、`manual_meriken_mode` marker 削除。本番は Game #45902（00:53:38）から通常再開、bridge PID 不変（再起動なし）、配信 fps 30.0 / speed 1.0。計測中は配信の dup フレームが増えた（累計 44→9684）。
+- **未実施**: Issue #23 へのコメント投稿（外部投稿はユーザー未承認）。
+- **別件発見（未対応）**: 00:55 に VOICEVOX へ英語の LLM 思考文（`"i need to reply to this comment in japanese, polite style..."`）が `/audio_query` として流れていた（`journalctl -u voicevox`）。コメント返し経路の要確認。
+
 ## 2026-08-26 22:2x - 2026-08-27 00:0x JST — Issue #23 Soren91日次枠は実配信不合格のため無効化
 
 - **実装・保存**: `soviet_now` の `codex/issue-23-soren91-daily` に、1日1回ランダム・約1時間、通常ゲームの試合終了境界で切り替える仕組みを実装した。通常ゲームとは別のBrowserContextでcookies/localStorageを分離し、Soren91所有プロセスだけを停止する。共通ゲーム領域は出力1280×720の左960×540、右320px、上下90pxとし、今後の別ゲームにも再利用できる `installDirectGameStage` とした。最終commitは `986dcd0cc`。
