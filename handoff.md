@@ -2,7 +2,7 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: A/B ゲート（改善候補→自動 A/B→逐次判定→採用/棄却）を実装・VM 反映し dry-run で改善 daemon を再稼働（15:43）。v736 が root。次は 2 手先読み v739 の実装（設計受領済み）→ オフライン検証 → `tools/ab_ctl.sh start` で A/B。soviet_now checkout は他セッションと共有（パス指定コミットのみ）。
+> 直前セッション: v739 LOOKAHEAD（2 手先読み、hash 8fcb13b11d0c）を実装・オフライン検証（変更 3.3%、併合喪失 0）し、16:10 から v736(A) vs v739(B) のインターリーブ A/B を実行中（主指標 併合/手、74/腕）。A/B ゲートは dry-run で改善 daemon 再稼働中。状況は VM で `bash tools/ab_ctl.sh status`。
 
 ## 2026-08-26 15:3x-15:5x JST — YouTube 配信が 15:06:57 に停止（正午監査の 180 秒断が原因）。VM 側は正常だが YouTube が新しい配信を開始しない（ユーザー確認待ち）
 
@@ -165,6 +165,14 @@
 - **v727 実装・レビュー・デプロイ（ユーザー承認済み・稼働実測）**: 設計はユーザー指示で自分で実施、実装後の独立レビューは opus に委任。当初2案のうち「ロシア後contact解禁」はレビューH2（手動ゲーム125局面リプレイで発火0＝envelope が実ロシア盤面を全ブロック、実質no-op）により撤回し、`POST_FIRST_RUSSIA_LANE_COVER_AVOID` の到達性修正のみに絞った。レビューHIGH/MEDIUM全反映: 床着地はリスク品質下限に算入(H1)、hit_id は None のみ床扱いで他はfail-closed(M1)、selected の越線/併合結果越線は置換しない(M2)、置換候補に pre-Russia クランプ検査(L2)。実履歴2545局面リプレイの最終差分は「v726 がクランプ外 x=-2.2 を発火していた1件の是正」のみ。焦点テスト110+278 subtests パス（既存失敗1件は v726 でも再現、レビューアも独立確認）。soviet_now `c4e9c30fe` push、decide hash `aac603521570 → 5c9ab0ea6b6c`。VM はゲーム境界（マーカーpause）で差替え、by_hash/永久archive登録、`tmp/revert_strategy.py`=v726。**01:36 新ゲームが hash `5c9ab0ea6b6c` で稼働中を latest.jsonl で実測**。
 - **注意**: ローカル作業ツリーに 8/24 19:04 時点の別セッション由来 strategy.py WIP（tether閾値緩和+テスト）が残っていたため、scratchpad `foreign_wip_20260824_1904.diff` に退避してから v727 を実装した（未コミット・未デプロイのWIPで、粛清カスケードと同時刻帯に放置されたもの）。
 - **次（v728候補）**: (1) ロシア後の contact recovery は envelope 再設計が必要 — 手動ゲーム obs_109〜126（ロシア盤面18局面、margin 0.12〜1.46）を fixture に、`deadline_margin>=1.0`/`dx<=0.06` ゲートを実盤面に合わせて再測定する（壁分岐 at_wall は実測1/4なので緩めない、垂直開放路のみ）。(2) analyze_board.py:345-366 の O(n²) インデントバグ修正（40倍高速化・挙動不変）。(3) v727 の実戦発火と粛清 grace の長期観測（`grep 'STATGATE\|REGRESSION\|PROMOTE\|LANE_COVER' logs/soren_loop.log`）。
+
+## 2026-08-26 16:2x JST — v739 LOOKAHEAD（2 手先読み）を実装・検証し、v736 vs v739 のインターリーブ A/B を開始（16:10）
+
+- **実装（soviet_now `c6c5c9ba5`、hash `8fcb13b11d0c`）**: `strategy_helpers/lookahead.py`（`rerank(pieces, shapes, nt, nnt, cands, cfg)`: lane 別 K≤8・margin 900 の上位候補について pm（DIRECT 0.96 / NEAR 0.70 / 開いた相方 gap テーブル）で併合あり/なしの盤面を作り、nextNext を軽量解析器で V2 = pm2 + 0.3·pm2·chain − 高さ罰 として評価、score + 600·E[V2] で再順位付け。E2 単調ガード +0.05、被覆タグ/AVOID_BLOCK_NEXTNEXT 候補の除外、**保護タグ**（SAME_TYPE_SEED_CONTACT / ANCHOR_LANE_SEED_CONTACT / PROBABLE_MERGE_CONTACT が付いた基準手は同タグ候補にしか覆さない — これが無いと `anchor_lane_t9_ladder_turn47` が退行した）、呼び出し上限 16、純関数・例外は None）。decide() は候補収集 `_la_cands`、FALLBACK 後・clip 前で `lookahead.rerank`（ゲート: 非 deadline_crossed・margin≥1.0・危険駒なし・ロシア不在）、理由 `LOOKAHEAD_NEXT`。バリデータ RC=0。
+- **オフライン（57 試合 5,169 手、壁反射 ON）**: 変更 3.29%、`LOOKAHEAD_NEXT` 3.60%、**併合喪失 0・新規交差 0・例外 0**、risk_top +0.017、decide 所要 p50 7–15 ms / p90 21–37 ms / max 256 ms。テスト `tests/test_lookahead_next.py` 7 本（flip fixture 3 件、lam=0 で不変、nextNext 無し/margin<1 で無効、解析器例外で 1 手へ、v736 fixture 不変、呼び出し上限/所要時間、fail-closed）。全体 111 failed / 942 passed。**既知**: `anchor_lane_t9_beside_turn14` は v736 でも `ANALYZE_BOARD_WALL_CLAMP=1` だと失敗する mode-0 fixture（v739 の退行ではない、要 fixture 更新）。
+- **A/B 開始（実測）**: `strategy_helpers/lookahead.py` を root の helpers に先行配置（additive）→ `tools/ab_ctl.sh start tmp/manual_challenge/strategy_8fcb13b11d0c.py ABBA` 16:10:05（初回はバリデータ拒否で失敗、同入力の再試行で成功 — 単体では RC=0 で原因未特定、シャドウテスト直後の一時的要因の疑い）。state: A=253cc67e0c1b、B=8fcb13b11d0c、revert 先 = v736、REGRESSION_DISABLED=1、game_num_start 45794。16:11 腕 A（記録 eval 8304）→ 16:15:47 腕 B `Strategy hash: 8fcb13b11d0c`、20 手で LOOKAHEAD_NEXT 1 回、例外 0。A/B ゲートは dry-run のまま（`_ab_gate_after_game` が毎試合 `[AB-GATE] k= mean= verdict=` を記録するが行動しない）。
+- **事前登録（fable）**: 主指標 = 試合ごとの併合/手（`merges_per_turn`、SD 0.043 → +0.02 は 74/腕）、副 = raw score（+300 は 74/腕）、20/40 手時点の駒数、手数、T14/T15、発火率（期待 3–4%）、新規交差 0、例外 0。中間 look は 40/腕で併合/手のみ。停止: B−A raw < −300 で p<0.1、または decide 例外。判定: 併合/手 ≥ +0.02（p<0.05）かつ raw が負でなければ `finish B`、それ以外 `finish A`。`tools/ab_decide.py --trail` と `ab_report.py` で毎 tick 集計。
+- **リポジトリ状態**: soviet_now HEAD の strategy.py は v739（本番 root は v736、B 腕として実戦中）。A/B の結果で root を確定したら HEAD と一致させる（`finish B` なら一致、`finish A` なら revert コミット）。
 
 ## 2026-08-26 15:4x JST — A/B ゲート（改善候補を root に適用せず A/B で採否）を実装・VM 反映、dry-run で改善 daemon を再稼働 / 2 手先読み v739 の設計受領
 
