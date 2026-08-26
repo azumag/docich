@@ -66,7 +66,7 @@
   - 中断が頻発する時間帯にニュース render が完走しきるかの長時間観察は未実施（部分再開があるため
     理論上は必ず前進するが、ピーク時の実測は今後）。
 
-## 2026-08-26 18:0x JST — 配信リレーとコメント取得の Kick 対応（実装・コミット済み / 配信開始は未実測）
+## 2026-08-26 18:3x JST — 配信リレーとコメント取得の Kick 対応（Kick 配信開始まで実測確認済み）
 
 - **ユーザー指示**: 配信リレーを Kick にも対応させ、コメント取得も Kick に対応させる。サーバURL/キーは `/tmp/kickrtmp` `/tmp/kickkey` に用意された。
 
@@ -81,7 +81,7 @@
   VM は AES-NI 搭載で AES-128-GCM 2.65GB/s/コア、配信は 0.59MB/s なので暗号自体は 1コアの 0.02%。増えるのは送出帯域 9.4→14.1 Mbps。
 - **Kick チャットは公開 Pusher チャンネルを匿名購読できる**。`chatrooms.<chatroom_id>.v2` を購読して `ChatMessageEvent` を受信できることを、混雑中の実チャンネル(lonche)で実測（本文・投稿者・IDが取れる）。`dociai` の chatroom_id は 124700318。
 
-### 実装（soviet_now `e6e61a625` / docich `bf039ac`、push 済み）
+### 実装（soviet_now `e6e61a625` + `ddb604d8a` / docich `bf039ac`、push 済み）
 - 配信リレー: `install_rtmps_bridge.sh` + `deploy/soren-rtmp/{rtmps-bridge.conf.template,soren-rtmps-bridge.service}`。
   stunnel を `soren-relay` ユーザーの専用ユニットで動かし、`127.0.0.1:19351` → RTMPS 443 へ中継する。
   **配信キーは従来どおり `/etc/soren-rtmp/push.conf` だけに置く**（ブリッジ設定にも argv にも出ない）。ingest ホストは `--host` で渡しリポジトリに残さない。
@@ -90,21 +90,34 @@
   `broadcast/comment.sh` に `kick` ソースを追加、`start_all.sh` / `reload_worker.sh` / `show_status.sh`(KickW 行) / `core/config.sh` に登録。
 - テスト: `tests/test_rtmps_bridge.py`(8件)、`tests/test_kick_chat.sh`(11件)、`tests/test_kick_chat_daemon.mjs`（偽 Pusher サーバでネットワーク非依存）。いずれも green。
 
-### VM の状態
-- `.env` に `KICK_CHAT_ENABLED=1` / `KICK_CHANNEL=dociai` / `KICK_CHATROOM_ID=124700318` / `KICK_IGNORE_AUTHORS="dociai DoCiAI"` を追記（バックアップ `.env.bak.20260826_kick`）。
-- `workers/kick_worker.sh` を手動起動済み。daemon が本番 chatroom 124700318 に接続していることをログで確認。
-  ※ supervisor は起動時に worker 一覧を読むため、`kick_worker` の supervisor 管理は次回 supervisor 再起動から。
+### VM の状態（2026-08-26 18:33 時点、すべて実測確認済み）
+- **stunnel ブリッジ稼働中**: `soren-rtmps-bridge.service` active、`127.0.0.1:19351` で LISTEN。
+  設定 `/etc/soren-rtmp/rtmps-bridge.conf` は `root:soren-relay` 0640、中身はホストとポートのみ（キー無し）。
+  実測 CPU 0.7% / RSS 9MB。証明書検証も通過（journal に `Certificate accepted at depth=0: CN=*.global-contribute.live-video.net`）。
+  - **ハマり所**: 最初 `output = /dev/stderr` を書いていたら systemd 配下で stunnel が
+    `Cannot open log file: /dev/stderr` で起動直後に落ちた（stderr が journal ソケットのため）。`output` を書かないのが正解（commit `ddb604d8a`）。
+- **push.conf に Kick を追加済み**（3 destination: Twitch / YouTube / `rtmp://127.0.0.1:19351/app/<KEY>`）。
+  バックアップ `/etc/soren-rtmp/push.conf.bak.20260826_kick`。`nginx -t` 通過 → reload 済み。
+- **reload だけでは push 先が増えないことを実測**（reload 後も外向き接続は 2 本のまま）。`direct_stream` を再起動して 3 本になった。
+- **3 プラットフォーム同時配信を実測確認**（18:33）:
+  - relay/stunnel の外向き接続 3 本（Twitch 35.55.39.21:1935 / YouTube 142.251.189.134:1935 / stunnel→Kick 35.55.39.25:443）
+  - Kick `dociai` LIVE（09:12:57Z〜）/ Twitch `dociai` LIVE（06:09:56Z〜）/ YouTube `live`（07:21:51Z〜）
+  - **Kick の公開 playback から 1 フレーム取得して本番映像（ゲーム画面＋オーバーレイ）が映っていることを目視確認**。
+  - publisher 再起動と supervisor 再起動をまたいでも Twitch/YouTube のセッションは切れなかった（開始時刻が変わっていない）。
+- **`.env`**: `KICK_CHAT_ENABLED=1` / `KICK_CHANNEL=dociai` / `KICK_CHATROOM_ID=124700318` / `KICK_IGNORE_AUTHORS="dociai DoCiAI"`（バックアップ `.env.bak.20260826_kick`）。
+- **supervisor を再起動済み**（`sudo systemctl restart soren-runtime.service`）。`kick_worker.sh dociai` が supervisor の子プロセスとして稼働（＝落ちても自動復帰）。
+  Kick chat daemon も chatroom 124700318 へ再接続済み。
+- **stream key は VM 上の一時ファイルから消去済み**（`/home/ubuntu/soren` 配下に key 文字列が残っていないことを grep で確認）。
 
-### 未完了 / 未実測（重要）
-- **stunnel のインストールが未実施**: `apt`/`systemctl` がエージェント権限で弾かれたため、VM で以下を人手実行する必要がある。
-  `cd /home/ubuntu/soren && ./install_rtmps_bridge.sh --install --host fa723fc1b171.global-contribute.live-video.net --name kick --local-port 19351 --confirm-package-install`
-- **push.conf への Kick 追加・relay reload・publisher 再起動が未実施** → **Kick への実配信はまだ始まっていない**。
-  `push rtmp://127.0.0.1:19351/app/<KICK_KEY>;` を `sudoedit /etc/soren-rtmp/push.conf` で追記 → `sudo nginx -t -c /etc/soren-rtmp/nginx.conf` → `sudo systemctl reload soren-rtmp-relay.service` → `direct_stream` を落として supervisor に再起動させる。
-  **reload だけでは効かない**（nginx は旧worker が既存 publish 接続を持ち続けるため、追加 push は次の publish セッションから）。再起動時 Twitch/YouTube も数秒途切れる（ユーザー承諾済み）。
-- **Kick の実コメントが読めることは未実測**（`dociai` のチャットに実際の投稿が無いため）。仕組み自体は他チャンネルで実測済み。
-- **Kick への送信（返答の投稿）は未対応**。Kick 側の認証が別途必要。返答は Twitch / YouTube にだけ出る。
-- **注意（作業手順の反省）**: VM へ scp する前に VM 側の差分を確認しなかった。今回は上書き後の全体照合で
-  コードファイルの乖離は自分の変更分だけだったが、`/home/ubuntu/soren` は git 管理外なので**次回は scp 前に必ず差分を取る**。
+### 未完了 / 未実測
+- **Kick の実コメントが読めることは end-to-end 未実測**（`dociai` の Kick チャットに実投稿が無いため）。
+  仕組み自体（購読・本文/投稿者/IDの取得・emote 正規化・pending 化）は混雑中の他チャンネルと偽 Pusher サーバで実測済み。
+  確認するには https://kick.com/dociai で一言投稿し、`tail tmp/.kick_chat/raw.log` と `logs/kick_worker.log` を見る。
+- **Kick への送信（返答の投稿）は未対応**。Kick 側の認証が別途必要で、返答は Twitch / YouTube にだけ出る。
+- **教訓（今回やらかした手順ミス）**: VM へ scp する前に VM 側の差分を確認しなかった。さらに
+  **稼働中の `start_all.sh` を上書きしたため bash のスクリプト fd オフセットがずれた**（`/proc/<pid>/fdinfo/255` の pos が
+  新ファイルの別位置を指す＝ループ終了時に断片を読む状態）。今回は supervisor 再起動で解消したが、
+  **稼働中スクリプトを上書きしたら、そのプロセスを必ず再起動する**。詳細はメモリ `soren-live-script-overwrite-hazard`。
 
 ## 2026-08-26 16:5x JST — Twitch チャットで「あずまぐ」(azumagbanjo) のコメントを再び読むようにした
 
