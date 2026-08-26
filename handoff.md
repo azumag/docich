@@ -4,6 +4,17 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: v739（2 手先読み）は A/B 46+46 で無益停止（+4、UCB90 139<150）→ 不採用、v736 継続（root/HEAD とも 253cc67e0c1b、soviet_now 9143d4654）。共有 checkout が他セッションのブランチに切り替わる事故を復旧（コミット前にブランチ確認、必要なら worktree）。改善ループは dry-run 継続。次候補は「埋没を解く併合」計測 / ロシア以後モード / 解析器精度から fable と選定。
 
+## 2026-08-26 22:2x - 2026-08-27 00:0x JST — Issue #23 Soren91日次枠は実配信不合格のため無効化
+
+- **実装・保存**: `soviet_now` の `codex/issue-23-soren91-daily` に、1日1回ランダム・約1時間、通常ゲームの試合終了境界で切り替える仕組みを実装した。通常ゲームとは別のBrowserContextでcookies/localStorageを分離し、Soren91所有プロセスだけを停止する。共通ゲーム領域は出力1280×720の左960×540、右320px、上下90pxとし、今後の別ゲームにも再利用できる `installDirectGameStage` とした。最終commitは `986dcd0cc`。
+- **表示修正**: ChromeのアドレスバーはCDP fullscreenで除去。公開UnityページからVMローカルURLをfetchしたことで出たLocal Network Access確認は、状態JSONをNode側から親ページへ渡すsrcdoc方式に変えて除去した。Soren91用ステータス面には無彩色テーマも追加した。
+- **低負荷化の実測**: 内部canvasを960×540 → 640×360 → メインと同じ480×270へ段階的に低下。ログで最終 `canvasWidth=480, canvasHeight=270` を確認したが、共通960×540枠へCSS拡大するため表示サイズ自体は変わらない。通常ページのcanvas非表示、lifecycle frozen、CPU throttle、描画一時停止も追加した。
+- **不合格根拠**: ユーザーの実視聴で480×270でもゲーム自体のカクつきが継続。VM実測もChrome GPU process約98%、Soren91 renderer約23%、ffmpeg約46%で余裕なし。配信出力の一時点は約30fps/等速だったが、外部の視聴挙動を優先して不合格とした。これ以上の解像度低下は行わない。
+- **復帰挙動**: 終了後にTERMで `cleanupRuntime` を通すよう修正し、Soren91本体はKILLではなくgraceful終了できた。ただし通常UnityのAudioContextが15秒以内にrunning+BlackHoleへ復帰せず、安全策のbridge再起動は残った。ユーザー報告の「枠が再起動する」も未解消。
+- **本番状態**: VM `.env` は `SOREN91_ENABLED=0` / `SOREN91_DAILY_ENABLED=0`。`tmp/state/soren91_daily.json`、mode/mute marker、Soren91残存プロセスを除去した。通常ゲームは `game_state`更新・CDP 9322応答を確認済み。Soren91は日次・手動とも発火しない。
+- **検証**: 日次切替25件、共通枠/overlay 33件、起動停止6件、VM overlay 16件が成功。バックアップは `.codex_deploy/backup-20260826-232908-soren91-640`、`backup-20260826-234259-soren91-480`、無効化前 `.env` backup。Issue #23への外部コメント投稿は承認境界で拒否されたため未投稿・IssueはOPENのまま。
+- **再開条件**: 現VMでは再開しない。VMのGPU/CPU増強、またはSoren91自身の描画方式をWebGL/SwiftShader依存から変えた場合のみ、保存ブランチから再評価する。
+
 ## 2026-08-26 23:2x-23:4x JST — レイド時の自配信紹介プロンプトを実測ベースで更新（古い記述を一掃）
 
 - **ユーザー指示**: 「レイド来たときの自配信紹介プロンプトが古いままなので、VM や現在の配信にあわせてアップデートしたい」。
