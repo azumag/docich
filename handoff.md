@@ -2,7 +2,20 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: v741（序盤ジャンク隅寄せ、f93dbf2edf97）は自己対戦 96+24 試合で raw +313（z 2.4、ブロック p 0.043）→ 05:30 から実戦 A/B（A=v736 root、B=v741、ABBA、revert=v736、REGRESSION_DISABLED=1）。各 tick で `tools/ab_ctl.sh status` / `ab_decide.py` を確認し finish を判断。改善ループは dry-run。
+> 直前セッション: v741（序盤ジャンク隅寄せ、f93dbf2edf97）の実戦 A/B は k=7（各 14）で mean(B−A) −528、UCB90 −235 → 事前登録どおり害停止（REJECT_HARM）、07:30 `finish A` で v736（253cc67e0c1b）継続。自己対戦 +313 との乖離は診断の結果「機構・物理・タグ分布は両環境で同一」で環境差説は否定、残るのは局所ハーネスの B 腕バイアス（A/A でも B +236）か実戦 n=14 のノイズ。切り分けに 07:37 から局所で腕入替え自己対戦（A=v741/B=v736、60 試合、`selfplay_root/tmp/selfplay/v741_swap`、~08:40）を実行中。次 tick: `v741_swap/ab_state.json`・`games/` を集計し、B(v736) 勝ちならハーネスの B 腕バイアス確定（局所 A/B はクロスオーバー必須化）、v741 勝ちなら v741 棚上げのまま実戦 A/B の n 増加へ。v741 は本番採用しない。
+
+## 2026-08-27 07:3x JST — v741 実戦 A/B は害停止（REJECT_HARM）で不採用 → v736 継続 / 自己対戦(+313)と実戦(−528)の乖離を調査中
+
+- **実測（07:30 `tools/ab_ctl.sh status`）**: k=7、n=14/14、mean(B−A)=−528、SE 229、UCB90 −235 → 事前登録「k≥6 で UCB90<0 なら害停止」に該当。raw A 1773 / B 1245、併合/手 0.548 / 0.464、手数 96.9 / 81.2、pieces@40 19 / 21。B は 14 試合で 2300 超がゼロ（A は 5/14）。dry-run の A/B ゲートも `would finish A (REJECT_HARM)` で一致。
+- **処置**: `bash tools/ab_ctl.sh finish A "REJECT_HARM k=7 ..."` → root `253cc67e0c1b`（v736）、`REGRESSION_DISABLED=0`、`SOREN_AB_ALT_STRATEGY` 空を実測。記録 `tmp/history/ab_20260827_073044_{state,games,report}`（29 件。finish 後に進行中だった idx 28 A 1040 の迷子 `tmp/state/ab_{state,games}` を履歴へ統合して削除）。v741 は本番採用しない。
+- **乖離診断（実戦 B 14 試合 vs 局所 B 60 試合。VM `tmp/manual_challenge/{junk_diag,land_diag,tag_freq}.py`、局所は scratchpad 同名）**:
+  - 機構は同一: JUNK 発火 4.9%/手 vs 4.5%（オフライン予測 4.6%）、隅ジャンクの 20 手内併合 49% vs 50%、5 手後の埋没 14% vs 15%、20 手目の壁際(|x|≥1.8)ジャンク 2.0 vs 1.9（A は 1.1/1.0）、pieces@20 11.6 vs 11.5、@40 20.3 vs 20.3。
+  - 物理/settle も同一: 着地ずれ |x_actual−x_decision| 実戦 B 0.48 / 局所 B 0.48（A 0.57 / 0.51）、JUNK 壁ドロップのずれ 0.35 / 0.28、settle 待ち 0.92s / 0.89s、awake 21 / 23。
+  - 決定理由タグ分布（4 群）: B 腕だけで消える挙動なし、decide 例外 0、helper import 失敗の痕跡なし。
+  - → 「配信環境で v741 の挙動が変わった」説は否定。差はスコアへの帰結だけ。
+- **残る仮説**: (a) 局所ハーネスの B 腕バイアス（A/A 較正 32 試合でも B +236、p 0.62。方向は一致）、(b) 実戦 n=14 の偶然（p≈0.08）。局所 +313（SE≈130）と実戦 −528（SE 229）の異質性 z≈3.2 なので、どちらかは実在。
+- **切り分け（実行中）**: 07:37 から局所で腕入替え自己対戦 `python3 tools/selfplay_ab.py --a strategy_v741.py --b strategy.py --slots 4 --games 15 --pattern ABBA --stagger --out tmp/selfplay/v741_swap --cdp-base-port 19440 --serve-base-port 18200`（nohup、ログ `selfplay_root/tmp/selfplay/v741_swap.log`、~08:40 完了見込み）。判定: B(v736) が勝てば局所ハーネスの B 腕バイアス確定 → 局所 A/B は腕入替えの対（クロスオーバー）を必須化し、v741 の局所効果を +313−bias に修正。A(v741) が勝てば局所は一貫して v741 有利＝実戦との真の乖離（真因未特定）→ v741 は棚上げのまま、実戦 A/B の n を増やす設計へ。
+- **未確認**: 乖離の真因。**soren91 再稼働作業は並行中**（load 6–8）。改善 daemon は dry-run 継続、新候補なし。作業バナーは停止。
 
 ## 2026-08-27 12:37-12:43 JST — ポッドキャスト連続回の類似タイトルを自動回避（実装・実行環境反映済み）
 
