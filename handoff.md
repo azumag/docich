@@ -43,13 +43,23 @@
 - **VM 反映**: `.codex_deploy/backup-20260826-214350-news-self-search-dedup/` へ退避後、
   staging → `mv` で置換（実行中プロセスのオフセットずれ回避）。SHA256 4 ファイル全一致。
   `radio_worker` へ USR1 → 21:46:03 `reload complete`（PID 2394866 維持）。
+- **ユーザー判断 (2026-08-26 22:0x)**: 「wikinews は終了したのでむり。ソースからは削除したい。
+  ニュースソースは自己探索でいいが、重複回避が働いてさえいれば良い」
+  → **自主探索を正規の主経路として運用する**方針。追加のニュースフィード導入はしない。
+- **追加修正 (`games/soviet_now` commit `ee5e4bd2b`)**:
+  - `lib/fetch_news.py`: **Wikinews 13 ソースを削除**（SOURCES は 22 → 9、Global Voices のみ）。
+    削除理由をコード内コメントに記載。1 回の取得で 13 本の無駄な HTTP リクエストも止まる。
+    実フィードに対する隔離実行で `status=ok / sources 9 / fetched_sources 9 / items 100 / selected 100` を実測。
+  - `broadcast/radio_news.sh`: `_recent_news_corner_topics_block` の既定窓を 20 → 30 行
+    （`NEWS_SELF_SEARCH_TOPIC_LIMIT`）。自主探索が主経路になるため news/jiji 約 10〜13 時間分を渡す。
+  - VM 反映: `.codex_deploy/backup-20260826-220434-drop-wikinews/` へ退避 → staging → `mv`、SHA256 一致。
+    `radio_worker` USR1 → 22:05:02 `reload complete`（PID 2394866 維持）。
+    `fetch_news.py` はサブプロセス実行なので reload 不要。
 - **未確認 / 次にやること**:
-  - 実運用のフォールバックで `[NEWS] 自主探索の既読記録: ...` が出ることのライブ実測（本稿執筆時点で次回待ち）。
-  - **ニュース供給の枯渇そのものは未解決**。wikinews が復活しない限り Global Voices 9 本
-    （1 日十数件）だけが供給源で、自主探索が主になる。対策候補: (a) CC ライセンスの
-    フィードを追加、(b) 既読台帳を日数で失効させて再読を許す、(c) 自主探索を正式なコーナーとして
-    設計し直す。**どれを採るかはユーザー判断が要る**。
+  - 実運用のフォールバックで `[NEWS] 自主探索の既読記録: ...` が出ることのライブ実測（次回発生待ち）。
+  - 本番ログの取得行が `sources=N/9` になることのライブ実測（次回取得待ち）。
   - `PAST_NEWS_TOPIC_KEYS` のストップワード問題（`la` / `في` 等）は未修正。
+    先頭単語だけを topic key にするため無意味なキーが並ぶ。実害は今のところ観測していない。
 
 ## 2026-08-26 21:0x-21:1x JST — YouTube 公開後の Bluesky 告知を実装 (実投稿までライブ実測済み) ＋ 重複アップロード事故と対処
 
