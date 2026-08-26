@@ -4,6 +4,29 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: インターリーブ A/B 基盤（試合ごとに root(A)/代替(B) を交互実行、hash で帳簿）を実装・VM 反映し、10:16 から v736(A) vs v738(B) の A/B を ABBA で実行中（REGRESSION_DISABLED=1、improve pause）。状況は VM で `bash tools/ab_ctl.sh status`。判定は ≥30/腕・完全ブロック ≥8・並べ替え p<0.05・|δ|≥MDE。A/B 中は他の変更を入れない。設計委任は fable。
 
+## 2026-08-26 13:5x-15:1x JST — 正午の配信貼り直しが Twitch へ届いていなかった件を修正・実測で復旧確認
+
+- **ユーザー報告**: 「正午の配信貼り直しが動いてない」。
+- **実測した現象**: Twitch のセッションは `id=317965866584 / createdAt 08-25 03:56 JST` のまま 34 時間継続、VOD も 1 本のまま。
+  一方 VM の `direct_stream.py status` の started_at は 08-25 12:00:56（＝正午）で、今日 12:00 の監査は `no_action (offset_diff=56s)` だった。
+- **原因1（張り直しが Twitch へ届かない）**: OFFLINE 保持 30 秒では Twitch が再接続を**同一セッションへマージ**する。
+  08-25 は約35秒の断でローカル ffmpeg は 12:00:56 に復帰したが Twitch 側 id は不変。過去 VOD の並びでは 1〜2 分の断で新セッションになっている。
+  08-23/08-24 の監査も同様に `restart_failed` を記録していた（`logs/stream_noon_audit.log`）。
+- **原因2（失敗の自己マスク）**: 位相判定がローカル started_at 基準だったため、ローカルだけ正午に揃うと翌日以降 `no_action` となり再試行されない。今日の no_action がこれ。
+- **修正（soviet_now `902cf9d64` + `56d9de98d`, `workers/stream_noon_audit.sh`）**:
+  1. 位相基準を Twitch セッション `createdAt` へ（GQL query に createdAt 追加）。取得不能時のみ started_at へフォールバック。marker に `phase_source` / `session_created_before` を追加。
+  2. `STREAM_NOON_AUDIT_OFFLINE_HOLD_SEC` 既定 30→**180 秒**（ユーザー了承済み）。offline 待ちの deadline 余裕も 5s→30s。
+  3. `_wait_running_with_new_session` を `_wait_local_respawn` + `_wait_session_rotated` に分離。ローカル復帰済みでセッションだけ回らない場合は `restart_session_merged` として区別し、二重起動になる自前起動フォールバックを行わない。
+  4. 起動ログに `offline_hold` / `session_rotate_wait` を出力。
+- **テスト**: `tests/test_stream_noon_audit.sh` に 2b（ローカルが正午でも Twitch がずれていれば張り直す＝今回の実障害の回帰）、2c（Twitch が正午ならローカルがずれていても触らない）、5b の自前起動抑止を追加。**ローカル・VM とも 44/44 pass**（修正前は 38/38 pass）。
+- **VM 反映と実測**: scp で sha256 一致を確認し worker 再起動（PID 629093、起動ログ `offline_hold=180s session_rotate_wait=60s`）。今日の marker を削除して手動で1回監査させた実測:
+  - `15:06:44 restart_required (phase=twitch offset_diff=-29011s)` — 旧コードが no_action と誤判定していた状況で正しく検出
+  - `15:09:52 Twitch offline confirmed (180s)` → `15:10:09 配信を再開しました (stream_id 317965866584 → 317977691864)`
+  - 外部 GQL でも 15:10:07 に `id=317977691864 / createdAt 08-26 15:09:56 JST` を確認。**新 VOD `2856736357`(08-26 15:10) が生成され旧 VOD は 35h11m で確定**＝貼り直しが外から見える形で成立。
+  - 断は 15:06:44〜15:09:56 の約 **3分12秒**。復帰後 fps 30.2 / speed 1.01 / bitrate 4542kbps。A/B は `games_recorded=58 tainted=0` で無影響（strategy.py 非変更・decide hash 不変）。
+- **明日の挙動（予告）**: 今回の再開は 15:09 なので、明日 12:00 の監査で再度 `restart_required` となり約3分の断で正午へアンカーされる。以後は Twitch の 48h 強制切断が正午に来るため定常状態では張り直し自体が不要。
+- **残（未測定）**: 180 秒はマージ猶予の上限を厳密に測った値ではない（**35秒＝マージ / 180秒＝回転** を実測、境界は未測定）。短縮したい場合は `STREAM_NOON_AUDIT_OFFLINE_HOLD_SEC` を下げ、marker の outcome が `restart_session_merged` にならないか観察すること。
+
 ## 2026-08-26 04:3x-05:5x JST — docich#10: Podcast を VM->Mac へ移設 + 「1日1本の番組へ編成し直す」設計へ作り替え + Short 投稿導線
 
 - **VM 実績の確定（実測）**: `podcast.timer` の 08-25 05:30 実行(08-24分)は 05:30→07:17 の **1h47m** を消費し、
