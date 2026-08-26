@@ -4,6 +4,69 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: fable 比較で残る改善余地は小（最大 v740 +0.005/手、実戦検出に 48 時間）→ 律速は評価速度と判断し、Mac 上のヘッドレス並列自己対戦 A/B（`tools/selfplay_ab.py`、1 試合 ~200 s、~90 試合/時）を構築・動作確認。A/A 較正を実行中。次は v740 実装 → ローカル A/B → 実戦 A/B。本番 v736、改善ループ dry-run。共有 checkout は他セッションのブランチ（worktree 経由でコミット）。
 
+## 2026-08-27 01:0x-01:1x JST — メリケンAI の在否をプロンプト直書きから実測値へ（23:3x に書いた紹介文が 30 分で陳腐化した）
+
+- **何が起きたか**: 23:3x に「レイド時の自配信紹介」を更新した際、当時の実測（`SOREN91_DAILY_ENABLED=1`、
+  `soren91_daily.json` が本日 `completed`）に基づき「メリケンAIは…1 日 1 回の短い枠だけプレイする」と書いた。
+  その直後 00:0x に**別セッション（issue-23）が soren91 を無効化**したため、この記述は 30 分で古くなった。
+  実測: VM `.env` は `SOREN91_ENABLED=0` / `SOREN91_DAILY_ENABLED=0`、
+  `tmp/state/soren91_daily.json` は `status=disabled_env`。
+- **教訓**: 「実測して書いた」だけでは足りず、**変わりうる事実をプロンプトへ直書きすると必ず腐る**。
+  静的な紹介文には条件を書かず、実測値を毎回差し込む経路へ寄せる。
+- **修正 (`games/soviet_now` commit `7566622ae`)**:
+  - `_build_comment_ops_context` が `.env` の `SOREN91_ENABLED` / `SOREN91_DAILY_ENABLED` **だけ**を読み、
+    「停止中で登場しない」/「改善時だけ登場」/「改善時＋1 日 1 回」を出し分ける。
+    **worker のシェル環境は起動時スナップショットで無効化後も `1` が残る**（issue-23 の実測）ため、
+    環境変数ではなく `.env` を直に読む。soren91 が実際に走っている時は従来どおり
+    `_broadcast_host_mode` の結果を優先。
+  - `comment_channel_intro_{main,soren91}.md` からメリケンAIの登場条件の直書きを外し、
+    運用状況メモの行に従わせる。
+  - `tools/build_ops_brief.sh`: 見出しから課題番号（`Issue #23` / `docich#10` 等）を除去。
+    視聴者向けメモに内部識別子を載せない（実際に `Issue #23` が 2 回入っていた）。
+- **検証**: `tests/test_comment_ops_context.sh` を 33 → **38 assertion** に拡張（無効 / 日次有効 /
+  日次無効 / 実モード優先 / 紹介メモに直書きが無いこと）、ローカル・VM とも PASS。
+  VM の実 `.env` で描画して「メリケンAI(ソ連ゲーム91)はいま停止中で登場しない」が出ることを実測。
+- **VM 反映**: `.codex_deploy/backup-20260827-010726-meriken-live/` へ退避 → staging → `mv`、
+  SHA256 6 ファイル一致。chat 01:08:23 / kick 01:08:26 / youtube 01:09:32 `reload complete`。
+- **別セッションとの符合**: issue-23 セッションも 00:55 に「VOICEVOX へ英語の LLM 思考文が
+  `/audio_query` として流れていた」を**別件発見（未対応）**として記録している。
+  これは直前の commit `8ea3bd459` で修正済み（同じ事象）。
+
+## 2026-08-27 00:5x-01:0x JST — コメント返しで英語の思考が VOICEVOX に読み上げられた件を修正
+
+- **ユーザー報告**: 「GeForce Now に関するコメント返しで英語になった。英語を VOICEVOX で読み上げてしまっている」。
+- **実体は英訳の読み上げ先違いではなかった（実測）**: 生成モデルが**英語の思考をそのまま本文として出力**し、
+  それが日本語返信として VOICEVOX に渡っていた。
+  - `tmp/debug/ai_dispatch/20260827_004054_COMMENT_codex_amd-token-factory-deepseek-v4-flash_output.txt`
+    は `The indicator script is failing ... Let me write it.` の英語思考のあと、**孤立した `</think>`** を挟んで
+    日本語本文が続く形（開始タグは別チャネルへ出たらしく本文には無い）。
+  - `tmp/.comment_queue/spoken_history/20260827_004221_20235_main.txt` に、その英語思考ごと
+    読み上げ本文として保存されていた（＝実際に読まれた）。
+- **原因**: ラジオ側は `_ai_guard_model_output`（`lib/model_output_guard.py`）を通していた
+  （`radio_engine.sh:72 / 172 / 993 / 1451 / 1459`）が、**コメント側は一度も通していなかった**。
+  `_clean_comment_talk`（`radio_engine.sh:663`）は行単位のフィルタで `<think>` / `</think>` を扱わない。
+- **修正 (`games/soviet_now` commit `8ea3bd459`)**: `_comment_guard_model_text()` を追加し、3 経路で通す。
+  1. `_comment_is_valid_generation_candidate`（ガードが空なら次モデルへフォールバック）
+  2. 本文生成（`===SING===` / `===ADVICE===` 抽出より**前**）
+  3. 英訳生成（`_comment_is_valid_translation_candidate` は think 系を見ていなかった）
+  ガードが空を返したら**生テキストへは戻さない**（fail-closed）。
+- **検証**: 実際に漏れた出力ファイルへ適用し、英語思考が消えて日本語本文だけが残ることを実測（before/after 比較）。
+  `tests/test_comment_think_leak_guard.sh`（新規, 13 assertion）: 孤立 `</think>` / 対応ペア /
+  通常本文の素通し / `===SING===` JSON 非破壊 / 空入力 / 3 経路の配線とガード位置。
+  既存 comment 系 4 本 pass、`test_model_output_guard` + `test_comment_bilingual` +
+  `test_country_stage_names` 94 pass。
+- **VM 反映**: `.codex_deploy/backup-20260827-010203-think-leak/` へ退避 → staging → `mv`、
+  SHA256 2 ファイル一致。chat 01:04:20 / kick 01:04:25 / youtube 01:05:18 `reload complete`。
+- **未修正で残っている別の漏れ（要判断）**: 00:51:23 の返答
+  （`spoken_history/20260827_005123_14629_main.txt`）は**日本語の作業メモ**が漏れている。
+  「インジケーターのスクリプトはこのサンドボックス環境では…／以下、2件のコメント返しです。／`---`」
+  のあとに本文。これは `<think>` を使っていないため今回のガードでは落ちず、
+  `model_output_guard.py` の `WORK_NOTE_RE` にもマッチしない（`実行できない` は
+  `(検索|調査|確認).{0,16}(できない)` に該当しない）。`_clean_comment_talk` の先頭行スキップも
+  1 行目が該当しないため break する。**対処するなら** `WORK_NOTE_RE` の拡張（ラジオ側にも影響）か、
+  コメント側で「`---` 区切りの前が作業メモなら捨てる」判定を足すかの二択。ユーザー判断待ち。
+- **未確認**: 修正後に実際のコメント返しで漏れが起きないことのライブ実測（次の生成待ち）。
+
 ## 2026-08-27 00:1x-01:1x JST — Issue #23 再評価: Soren91 は現VMでは描画コストが構造的に不足 → 「諦める」を正式結論（無効のまま維持）
 
 - **ユーザー指示**: handoff の「反映済み」を実測で突き合わせ、共有 Chrome 方式を含め構成自体を再評価。合格条件は実配信の滑らかさ。
