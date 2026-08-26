@@ -4,6 +4,38 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: v739 LOOKAHEAD（2 手先読み、hash 8fcb13b11d0c）を実装・オフライン検証（変更 3.3%、併合喪失 0）し、16:10 から v736(A) vs v739(B) のインターリーブ A/B を実行中（主指標 併合/手、74/腕）。A/B ゲートは dry-run で改善 daemon 再稼働中。状況は VM で `bash tools/ab_ctl.sh status`。
 
+## 2026-08-26 20:4x JST — ポッドキャスト動画のローカル保持を 3 日に (実装・テスト・日次パイプライン結線まで確認)
+
+- **ユーザー指示**: 「podcast 動画の生成だが、一回で数百MB使うので、3日分すぎたら削除したい」
+  （補足: 「ショート動画にはすでに入ってるはず」）。
+- **実測した現状**: `games/soviet_now/output/podcast/2026-08-25.mp4` = **299MB**、同 `.mp3` = 36MB。
+  掃除の仕組みは podcast 側に無かった（`infra/cleanup.sh` にも項目なし）。
+  ショート動画側にあるのは doci の `doci/output_cleanup.py`＝「**投稿成功したら workdir の媒体を消す**」で、
+  日数ベースの保持ではない（`run_daily.py:892` から呼ばれる）。今回は日数ベースで podcast に新規実装した。
+- **追加 (`games/soviet_now`)**:
+  - `tools/podcast_gc.sh`（新規）: `output/podcast/<YYYY-MM-DD>.mp4` を既定 3 日で削除。
+    - 未公開（`<日付>.publish.json` 無し）は手で公開できるよう `PODCAST_GC_UNPUBLISHED_DAYS`（既定 7 日）まで残す。
+    - **mtime ガード**: 日付が古くても最近作り直した回は消さない（バックフィル保護）。
+    - 対象拡張子は `PODCAST_GC_SUFFIXES`（既定 `.mp4`。mp3 も消すなら `".mp4 .mp3"`）。
+      台本 `.script.txt` / `.meta.json` / `.chapters.json` / `.segments.json` / `feed.xml` は再生成の入力なので対象外。
+    - `--dry-run` / `--days N` / `--out-dir DIR`。BSD/GNU 両方の `date`/`stat` に対応。
+  - `tools/podcast_daily.sh`: 生成の**前**に `[0/3] 掃除` として `podcast_gc.sh` を呼ぶ（失敗しても以降は続く）。
+    `PODCAST_SKIP_GC=1` で止められる。前段に置いたのは、音声で落ちた日でも容量が減るようにするため。
+  - `core/config.sh`: `PODCAST_RETENTION_DAYS`（既定 3）を追記。**VM の worker は読まない**ドキュメント用の既定値
+    （podcast 生成は Mac 側 launchd 担当）。よって worker 再起動も VM 反映も不要。
+  - `tests/test_podcast_gc.sh`（新規, 17 assertion）: 保持/削除の境界、未公開の猶予、mtime ガード、
+    suffix 追加、`--days`、ディレクトリ欠如。**17/17 pass**。既存 `tests/test_podcast_build.sh` も全 pass。
+- **実測確認**:
+  - 実データに対する `--dry-run`: 「削除対象なし（保持 3日 / 未公開 7日）」= 1 日前の 08-25 は保持される。
+  - `PODCAST_SKIP_AUDIO=1 PODCAST_SKIP_VIDEO=1 PODCAST_AUTO_PUBLISH=0 tools/podcast_daily.sh --date 20260825`
+    を実行し、ログに `[0/3]` 相当の GC 行が出ること・299MB の mp4 が無傷であることを確認。
+  - 実削除そのものは一時ディレクトリのテスト（17/17）で確認。**本番で 3 日超の mp4 が消える瞬間は未実測**
+    （最古が 08-25 の 1 本しか無いため。次に古い回が 3 日を超える 08-29 頃の `podcast_daily.log` で確認できる）。
+- **判断が要る点**: `.mp3`（36MB/日）は既定で残している。feed.xml の enclosure は
+  `PODCAST_BASE_URL`（現状 example.com のプレースホルダ、`PODCAST_RCLONE_ENABLED=0`）で、
+  実配信していないため消しても実害は無さそうだが、指示は「動画」だったので触っていない。
+  消すなら `PODCAST_GC_SUFFIXES=".mp4 .mp3"`。
+
 ## 2026-08-26 17:5x-18:2x JST — コメント滞留中はニュース(ラジオ)の音声合成を即中断してコメントを優先（実装・本番反映・ライブ実測済み）
 
 - **ユーザー指示**: 「ニュースの再生合成(voicevox)が重くてコメント返信が遅れるので、コメントキューがあるときは、
