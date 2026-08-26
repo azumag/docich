@@ -4,6 +4,14 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: v741 JUNK_CONSOLIDATION（序盤 T1–3 の隅/塊寄せ、hash f93dbf2edf97、soviet_now 8edcb8e34）を実装・テスト済み。ローカル自己対戦 A/B（v736 vs v741）第 2 バッチ 96 試合を分離起動中（主指標 40 手時点の駒数）。第 1 バッチ 12+12 は雑音圏でわずかに B 優勢。本番は v736、改善ループ dry-run。
 
+## 2026-08-27 — Issue #8 自動アンケートコーナー — ローカル実装・検証済み、本番有効化は Twitch OAuth scope 待ち
+
+- **Issue**: `azumag/docich#8`「自動でアンケートを発行して、結果についてなにかいう」。
+- **実装（submodule commit `fd3ed6f0c` / branch `codex/issue-8-auto-polls`、VM未反映）**: `games/soviet_now` に Twitch Polls API wrapper `twitch_polls.sh` と常駐 `workers/poll_worker.sh` を追加。配信中だけ既定1時間ごと（初回15分後）にAIが安全な軽い質問を生成し、120秒Pollを開始する。終了後はAPIから確定得票を再取得し、AIの短い感想を outbound chat と audio queue へ一度だけ登録する。再起動時state復旧、手動Poll競合時の延期、探索モード非操作、無効時非操作、API失敗時10分延期、worker重複監視・`show_status` 表示を含む。既定は `TWITCH_POLLS_ENABLED=0`。
+- **検証済み**: `bash -n`、ShellCheck、新規 `tests/test_twitch_polls.sh` 11項目、supervisor配線・既存 `TestShowStatusOnce` / duplicate監視系6項目、`git diff --check` が成功。公式仕様も `channel:manage:polls`、質問60字、選択肢2–5個/各25字、同時1Poll、15–1800秒を確認。
+- **本番ゲート（実測）**: VMの既存 `TWITCH_PREDICTIONS_TOKEN` は有効・broadcaster本人一致だが、scopeは **`channel:manage:predictions` のみ**で **`channel:manage:polls` は無し**。したがって作成APIは認可されず、VM反映・有効化・実Poll・結果読み上げは未実施。トークン値は取得・表示していない。
+- **次に必要**: ユーザー側で broadcaster user token を `channel:manage:polls`（予想も継続するなら `channel:manage:predictions` も同時）付きで再認可してVMへ設定。その後、変更をcommit/push → parent submodule pin更新 → VMへ同期 → `TWITCH_POLLS_ENABLED=1` → worker完全起動確認 → 実Poll作成・投票・COMPLETED得票・チャット送信・音声再生まで外部実測してからIssueを閉じる。
+
 ## 2026-08-27 01:0x-04:0x JST — 音声合成を Tailscale 上の Windows desktop / Mac mini の VOICEVOX へ外出し（連鎖＋乗数バックオフ、WebUI から状態確認・操作）— 実装・VM反映・ライブ実測済み
 
 - **ユーザー指示**: VM の CPU 配分（VOICEVOX が生涯平均 62.7%/コア、合成中 ≈1 コア）を受け、「tailscale で動かしている PC 2 つ（desktop / azumacminim4）の VOICEVOX を呼び、最終フォールバックは VM ローカル。フォールバックは乗数で増えるバックオフ」「完成したら webui からも状態確認・操作できるように」。
