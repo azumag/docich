@@ -66,7 +66,7 @@
   - 中断が頻発する時間帯にニュース render が完走しきるかの長時間観察は未実施（部分再開があるため
     理論上は必ず前進するが、ピーク時の実測は今後）。
 
-## 2026-08-26 18:3x JST — 配信リレーとコメント取得の Kick 対応（Kick 配信開始まで実測確認済み）
+## 2026-08-26 18:5x JST — 配信リレーとコメント取得の Kick 対応（配信・コメント取得とも end-to-end 実測確認済み）
 
 - **ユーザー指示**: 配信リレーを Kick にも対応させ、コメント取得も Kick に対応させる。サーバURL/キーは `/tmp/kickrtmp` `/tmp/kickkey` に用意された。
 
@@ -81,7 +81,7 @@
   VM は AES-NI 搭載で AES-128-GCM 2.65GB/s/コア、配信は 0.59MB/s なので暗号自体は 1コアの 0.02%。増えるのは送出帯域 9.4→14.1 Mbps。
 - **Kick チャットは公開 Pusher チャンネルを匿名購読できる**。`chatrooms.<chatroom_id>.v2` を購読して `ChatMessageEvent` を受信できることを、混雑中の実チャンネル(lonche)で実測（本文・投稿者・IDが取れる）。`dociai` の chatroom_id は 124700318。
 
-### 実装（soviet_now `e6e61a625` + `ddb604d8a` / docich `bf039ac`、push 済み）
+### 実装（soviet_now `e6e61a625` + `ddb604d8a` + `eaf941f50` / docich `bf039ac`、push 済み）
 - 配信リレー: `install_rtmps_bridge.sh` + `deploy/soren-rtmp/{rtmps-bridge.conf.template,soren-rtmps-bridge.service}`。
   stunnel を `soren-relay` ユーザーの専用ユニットで動かし、`127.0.0.1:19351` → RTMPS 443 へ中継する。
   **配信キーは従来どおり `/etc/soren-rtmp/push.conf` だけに置く**（ブリッジ設定にも argv にも出ない）。ingest ホストは `--host` で渡しリポジトリに残さない。
@@ -109,10 +109,22 @@
   Kick chat daemon も chatroom 124700318 へ再接続済み。
 - **stream key は VM 上の一時ファイルから消去済み**（`/home/ubuntu/soren` 配下に key 文字列が残っていないことを grep で確認）。
 
+### Kick コメントの end-to-end 実測（2026-08-26 18:53-18:55、成功）
+- Kick 投稿 `azumag: コメントテスト`(09:53:48Z) → daemon が raw.log へ
+  (`id=49e5f5ce-… azumag: コメントテスト`) → `kick_worker` の fetch で pending / `tmp/kick_comments.txt`
+  → `generate_comment_response kick` が 18:55:50 に返答生成
+  (`tmp/.comment_queue/comment_1787738149_18850.txt`、本文で「あずまぐさん、テストコメント確かに届いていますよ。」と名指し返答)
+  → pending 消化。**取得から返答生成まで全経路を実測確認**。
+- **既定の無視リストで取りこぼす不具合を1件修正（commit `eaf941f50`）**:
+  Twitch の慣習（`dociai` = AI 返答の送信元＝エコー）をそのまま持ち込み `KICK_IGNORE_AUTHORS` の既定を
+  `"dociai DoCiAI"` にしていたため、`dociai` アカウントからのテスト投稿 2 件
+  (09:14:30Z「コメントテスト」/ 09:48:42Z「komenttest」) が raw.log に入らなかった。
+  **Kick へは何も送信していない＝エコーは発生しない**ので既定を空にした。原因特定には Kick 履歴 API
+  `https://kick.com/api/v2/channels/<channel_id>/messages` が有効（投稿者と本文が見える）。
+  VM `.env` も `KICK_IGNORE_AUTHORS=""`（バックアップ `.env.bak.20260826_kickignore`）。
+  **Kick 送信を実装したら、その送信元アカウントを `KICK_IGNORE_AUTHORS` に入れないと自分の返答を読み返す。**
+
 ### 未完了 / 未実測
-- **Kick の実コメントが読めることは end-to-end 未実測**（`dociai` の Kick チャットに実投稿が無いため）。
-  仕組み自体（購読・本文/投稿者/IDの取得・emote 正規化・pending 化）は混雑中の他チャンネルと偽 Pusher サーバで実測済み。
-  確認するには https://kick.com/dociai で一言投稿し、`tail tmp/.kick_chat/raw.log` と `logs/kick_worker.log` を見る。
 - **Kick への送信（返答の投稿）は未対応**。Kick 側の認証が別途必要で、返答は Twitch / YouTube にだけ出る。
 - **教訓（今回やらかした手順ミス）**: VM へ scp する前に VM 側の差分を確認しなかった。さらに
   **稼働中の `start_all.sh` を上書きしたため bash のスクリプト fd オフセットがずれた**（`/proc/<pid>/fdinfo/255` の pos が
