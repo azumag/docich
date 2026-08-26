@@ -4,6 +4,29 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: v739 LOOKAHEAD（2 手先読み、hash 8fcb13b11d0c）を実装・オフライン検証（変更 3.3%、併合喪失 0）し、16:10 から v736(A) vs v739(B) のインターリーブ A/B を実行中（主指標 併合/手、74/腕）。A/B ゲートは dry-run で改善 daemon 再稼働中。状況は VM で `bash tools/ab_ctl.sh status`。
 
+## 2026-08-26 16:5x JST — Twitch チャットで「あずまぐ」(azumagbanjo) のコメントを再び読むようにした
+
+- **ユーザー指示**: 「あずまぐ」からのコメントを無視せず読むようにする。
+- **経緯**: 2026-05-26 `4a1d03ce6` で「bot / 配信者の自己投稿はエコー」として
+  `TWITCH_IGNORE_AUTHORS` 既定を `azumagdev azumagbanjo あずまぐ` にしていた。VM の `.env` はさらに `dociai` を追加。
+- **実測で確定したアカウントの対応（Helix `users`）**:
+  - `azumagbanjo` = 表示名 **あずまぐ**（視聴者本人。id 130871908）
+  - `dociai` = 表示名 DoCiAI（配信チャンネル。**`TWITCH_BOT_TOKEN` の所有者＝AI の返答を投稿している送信元**）
+  - `azumagdev` = 表示名 azumagdev（`TWITCH_BOT_NICK`、旧 bot）
+  → エコー対策に必要なのは `dociai` と `azumagdev` だけで、`azumagbanjo` / `あずまぐ` は外して良い。
+- **変更（soviet_now `fd5541d45`）**: `twitch_chat.sh` / `twitch_chat_daemon.sh` の既定を
+  `${TWITCH_IGNORE_AUTHORS:-dociai azumagdev}` に。VM `.env` の `TWITCH_IGNORE_AUTHORS` も
+  `"dociai azumagdev"` へ（旧値のバックアップ `.env.bak.20260826_ignoreauthors`）。
+- **反映**: scp で sha256 一致確認 → `kill -USR1 <chat_worker>` で .env 再読込（`reload complete`）→
+  IRC daemon を kill して chat_worker に再起動させ（新 PID 1576041）、`/proc/<pid>/environ` が
+  `TWITCH_IGNORE_AUTHORS=dociai azumagdev` であることを確認。
+- **検証（関数単位・VM 上の実ファイル＋実 env）**: `azumagbanjo/あずまぐ` = READ、`dociai/DoCiAI` と `azumagdev` = IGNORED、
+  行フィルタも `あずまぐ: …` = READ / `DoCiAI: …` = IGNORED。
+- **未確認**: 実際に「あずまぐ」が Twitch へ投稿したコメントが pending に載って返答されるところは**ライブ未実測**。
+  YouTube 側は元から `YOUTUBE_IGNORE_AUTHORS=DoCiAIch` のみで、あずまぐは読めていた（ログで確認）。
+- **注意**: カードガチャ結果（`AがBを獲得しました`）は `dociai` が投稿しており、無視リストに残っているので
+  「無視対象 かつ ガチャ結果なら読む＋名前プレフィックスを外す」という既存の例外は従来どおり効く。
+
 ## 2026-08-26 15:3x-15:5x JST — YouTube 配信が 15:06:57 に停止（正午監査の 180 秒断が原因）。VM 側は正常だが YouTube が新しい配信を開始しない（ユーザー確認待ち）
 
 - **ユーザー報告**: 「YouTube へのライブ配信が死んでいるようです」。
