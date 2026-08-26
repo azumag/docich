@@ -4,6 +4,53 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: v739 LOOKAHEAD（2 手先読み、hash 8fcb13b11d0c）を実装・オフライン検証（変更 3.3%、併合喪失 0）し、16:10 から v736(A) vs v739(B) のインターリーブ A/B を実行中（主指標 併合/手、74/腕）。A/B ゲートは dry-run で改善 daemon 再稼働中。状況は VM で `bash tools/ab_ctl.sh status`。
 
+## 2026-08-26 21:2x-21:5x JST — 同じニュース(ドリー・パートン死去)を1日4回読み上げた問題を修正
+
+- **ユーザー報告**: 「ドリー・パートンのニュースが３回も読まれている」。
+- **実測した事実**: `tmp/history/past_radio_topics.txt` より **13:26 (Game#45755) / 15:32 (#45784) /
+  18:49 (#45825) / 19:54 (#45834) の 4 回**、[news] コーナーで同じ訃報を読んでいた（報告の 3 回より多い）。
+- **原因は 3 段重ね（すべて実測で確認）**:
+  1. **RSS 候補が終日ゼロ** — `tmp/state/.news_fetch_status.json` は
+     `all_seen_or_filtered / fetched=100 / candidates=0`、内訳は `past_title=87, past_link=13`。
+     **wikinews 13 ソースが全滅（各 0 件）**で、生きているのは Global Voices 9 ソースだけ。
+     VM から直接 `Special:NewPages&feed=rss` を叩くと **HTTP 200・item 0**（ja/en/ru/fr/de すべて）。
+     API (`list=recentchanges&rctype=new&rcnamespace=0`) でも 0 件、RC フィードに出るのは `User:` ページのみ。
+     → **上流(Wikinews)が事実上休止しており、当方のバグではない**。
+     今日のニュースコーナー約 20 回のうち **15 回が自主探索フォールバック**。
+  2. **自主探索フォールバックが「何を読んだか」を記録していなかった** —
+     `_news_self_search_fallback` は `_radio_generate_and_play` を呼ぶだけで、
+     `PAST_NEWS_READ` / `_KEYS` / `_TOPIC_KEYS` へ一切書かない。
+     よって次回プロンプトの【直近で読んだニュース一覧】に自主探索分が載らず、AI は毎回同じ大ニュースを選ぶ。
+  3. **`_radio_past_topics_block` が話題をコーナー名の定型文へ丸める** —
+     `333d1a13d` 以降 `[news]: ドリー・パートン,...` の中身を捨てて「ニュース考察をしました」に置換するため、
+     重複回避メモからは何を扱ったか分からない。しかも同メモは「人名そのものは扱ってよい」と明記しており、
+     モデルは再選定を許可されていた（18:45 のプロンプト実物で確認）。
+     `PAST_NEWS_TOPIC_KEYS` も先頭単語だけを取るため `la` / `في` / `من` / `without` 等のストップワードが並び役に立っていない。
+- **修正 (`games/soviet_now` commit `38324c60a`)**:
+  - `broadcast/radio_engine.sh`: `RADIO_GEN_RESULT_DIR` が指定されていれば、解析済みの
+    `selected_news.txt` / `summary.txt` を呼び出し側へ渡す（追加のみ・既定動作は不変）。
+  - `broadcast/radio_news.sh`: 既読台帳追記の共通ヘルパ `_append_news_read_entry`（title 必須、
+    source_key/url_hash 任意）と、news/jiji コーナーの**実際の話題**を返す
+    `_recent_news_corner_topics_block` を追加。
+  - `broadcast/radio_corners.sh`: 自主探索プロンプトに ①【この番組で既に扱ったニュース話題（絶対に再度選ばないこと）】
+    ② `===SELECTED_NEWS===` の出力要求 を追加し、生成成功後に見出し（無ければ要約行）を既読台帳へ記録。
+  - `tests/test_news_self_search_dedup.sh`（新規, 19 assertion）。
+- **検証**: ローカル・VM とも新テスト 19/19 pass、既存 radio 系テスト 6 本 pass、`bash -n` 全通過。
+  実データ検証: 本番 `past_radio_topics.txt` に対し `_recent_news_corner_topics_block` が
+  ドリー・パートン 2 件を含む 20 行を返すことを実測。19:52 の実出力を実 parser にかけ、
+  `selected_news` 空・`summary` にキーワード列が出る（＝要約フォールバックが効く経路）ことを実測。
+  jiji の直近出力 5 本中 4 本に `===SELECTED_NEWS===` があり、モデルがこの指示に従うことも確認。
+- **VM 反映**: `.codex_deploy/backup-20260826-214350-news-self-search-dedup/` へ退避後、
+  staging → `mv` で置換（実行中プロセスのオフセットずれ回避）。SHA256 4 ファイル全一致。
+  `radio_worker` へ USR1 → 21:46:03 `reload complete`（PID 2394866 維持）。
+- **未確認 / 次にやること**:
+  - 実運用のフォールバックで `[NEWS] 自主探索の既読記録: ...` が出ることのライブ実測（本稿執筆時点で次回待ち）。
+  - **ニュース供給の枯渇そのものは未解決**。wikinews が復活しない限り Global Voices 9 本
+    （1 日十数件）だけが供給源で、自主探索が主になる。対策候補: (a) CC ライセンスの
+    フィードを追加、(b) 既読台帳を日数で失効させて再読を許す、(c) 自主探索を正式なコーナーとして
+    設計し直す。**どれを採るかはユーザー判断が要る**。
+  - `PAST_NEWS_TOPIC_KEYS` のストップワード問題（`la` / `في` 等）は未修正。
+
 ## 2026-08-26 21:0x-21:1x JST — YouTube 公開後の Bluesky 告知を実装 (実投稿までライブ実測済み) ＋ 重複アップロード事故と対処
 
 - **ユーザー指示**: 「podcast が生成されて動画がアップロードされたら、bluesky に投稿したい」。
