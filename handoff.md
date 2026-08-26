@@ -4,7 +4,7 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: v739 LOOKAHEAD（2 手先読み、hash 8fcb13b11d0c）を実装・オフライン検証（変更 3.3%、併合喪失 0）し、16:10 から v736(A) vs v739(B) のインターリーブ A/B を実行中（主指標 併合/手、74/腕）。A/B ゲートは dry-run で改善 daemon 再稼働中。状況は VM で `bash tools/ab_ctl.sh status`。
 
-## 2026-08-26 21:0x JST — YouTube 公開後の Bluesky 告知を実装 (実投稿は認証待ちで未検証) ＋ 重複アップロード事故と対処
+## 2026-08-26 21:0x-21:1x JST — YouTube 公開後の Bluesky 告知を実装 (実投稿までライブ実測済み) ＋ 重複アップロード事故と対処
 
 - **ユーザー指示**: 「podcast が生成されて動画がアップロードされたら、bluesky に投稿したい」。
   認証情報は `~/.config/soren/bluesky.json` に置く / 実投稿でのテストは「投稿して後で消す」方針で合意。
@@ -37,11 +37,20 @@
     `Bluesky: 認証情報が無いのでスキップ` で止まること（20:57 の `output/podcast_daily.log`）。
   - 本文組み立ては実データ（08-25）で 122 文字 + カード + link facet を生成（`--dry-run` の JSON を確認）。
   - 冪等ガード: `podcast_publish.py --date 20260825` が `公開済みなのでスキップ` で**アップロードしない**こと。
+  - **実投稿 (21:15, 本番アカウント `dociai.bsky.social`)**: 08-25 分を投稿し、
+    公開 API (`app.bsky.feed.getPosts`) で視聴者に届く形を確認した。
+    投稿: https://bsky.app/profile/dociai.bsky.social/post/3mtycq646h625
+    - text 122 字 / `langs: ["ja"]` / link facet 1 件（YouTube URL）
+    - `app.bsky.embed.external#view`（uri=jOPFZKSvm3c, title=`…｜同志のための時事ニュース`, description=要約）
+    - thumb は cdn.bsky.app が **HTTP 200 / image/webp 8946 bytes** で配信（PNG は Bluesky 側で webp 化）
+    - **ユーザー判断でこのテスト投稿は消さずに残した**。`2026-08-25.bluesky.json` も残るので
+      同じ回が二重投稿されることはない。
+  - 認証情報は `~/.config/soren/bluesky.json`（handle=`dociai.bsky.social`, アプリパスワード）。
+    ファイルは `chmod 600`、ディレクトリは `chmod 700` に修正済み。
 - **未確認 / 次の一歩**:
-  - **Bluesky への実投稿は未実施**（認証情報がまだ無い）。`~/.config/soren/bluesky.json`（`chmod 700` の
-    ディレクトリは作成済み）に `{"handle": "...", "app_password": "xxxx-xxxx-xxxx-xxxx"}` を置けば、
-    `./tools/bluesky_post.py --podcast --date 20260825` で投稿し、確認後 `--delete` で消す段取り。
-  - カードのサムネ表示・facet のリンク化は**実投稿で目視するまで未確認**。
+  - **日次パイプラインが通しで（生成→公開→告知まで）自動で回る様子は未実測**。次の 04:30
+    (`com.azumag.soren-podcast.build`) の `output/podcast_daily.log` で `[4/4] Bluesky done` を確認すること。
+  - タグ (`PODCAST_BLUESKY_TAGS`) は既定で空。付けるなら投稿前に本文長 (300 字) の余裕を見る。
 
 ## 2026-08-26 20:4x JST — ポッドキャスト動画のローカル保持を 3 日に (実装・テスト・日次パイプライン結線まで確認)
 
