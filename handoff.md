@@ -2,7 +2,7 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: v739 LOOKAHEAD（2 手先読み、hash 8fcb13b11d0c）を実装・オフライン検証（変更 3.3%、併合喪失 0）し、16:10 から v736(A) vs v739(B) のインターリーブ A/B を実行中（主指標 併合/手、74/腕）。A/B ゲートは dry-run で改善 daemon 再稼働中。状況は VM で `bash tools/ab_ctl.sh status`。
+> 直前セッション: v739（2 手先読み）は A/B 46+46 で無益停止（+4、UCB90 139<150）→ 不採用、v736 継続（root/HEAD とも 253cc67e0c1b、soviet_now 9143d4654）。共有 checkout が他セッションのブランチに切り替わる事故を復旧（コミット前にブランチ確認、必要なら worktree）。改善ループは dry-run 継続。次候補は「埋没を解く併合」計測 / ロシア以後モード / 解析器精度から fable と選定。
 
 ## 2026-08-26 23:0x-23:2x JST — コメント返しプロンプトへ「いまの配信・運用状況メモ」を追加（VM 状態 + handoff 反映）
 
@@ -649,6 +649,15 @@
 - **v727 実装・レビュー・デプロイ（ユーザー承認済み・稼働実測）**: 設計はユーザー指示で自分で実施、実装後の独立レビューは opus に委任。当初2案のうち「ロシア後contact解禁」はレビューH2（手動ゲーム125局面リプレイで発火0＝envelope が実ロシア盤面を全ブロック、実質no-op）により撤回し、`POST_FIRST_RUSSIA_LANE_COVER_AVOID` の到達性修正のみに絞った。レビューHIGH/MEDIUM全反映: 床着地はリスク品質下限に算入(H1)、hit_id は None のみ床扱いで他はfail-closed(M1)、selected の越線/併合結果越線は置換しない(M2)、置換候補に pre-Russia クランプ検査(L2)。実履歴2545局面リプレイの最終差分は「v726 がクランプ外 x=-2.2 を発火していた1件の是正」のみ。焦点テスト110+278 subtests パス（既存失敗1件は v726 でも再現、レビューアも独立確認）。soviet_now `c4e9c30fe` push、decide hash `aac603521570 → 5c9ab0ea6b6c`。VM はゲーム境界（マーカーpause）で差替え、by_hash/永久archive登録、`tmp/revert_strategy.py`=v726。**01:36 新ゲームが hash `5c9ab0ea6b6c` で稼働中を latest.jsonl で実測**。
 - **注意**: ローカル作業ツリーに 8/24 19:04 時点の別セッション由来 strategy.py WIP（tether閾値緩和+テスト）が残っていたため、scratchpad `foreign_wip_20260824_1904.diff` に退避してから v727 を実装した（未コミット・未デプロイのWIPで、粛清カスケードと同時刻帯に放置されたもの）。
 - **次（v728候補）**: (1) ロシア後の contact recovery は envelope 再設計が必要 — 手動ゲーム obs_109〜126（ロシア盤面18局面、margin 0.12〜1.46）を fixture に、`deadline_margin>=1.0`/`dx<=0.06` ゲートを実盤面に合わせて再測定する（壁分岐 at_wall は実測1/4なので緩めない、垂直開放路のみ）。(2) analyze_board.py:345-366 の O(n²) インデントバグ修正（40倍高速化・挙動不変）。(3) v727 の実戦発火と粛清 grace の長期観測（`grep 'STATGATE\|REGRESSION\|PROMOTE\|LANE_COVER' logs/soren_loop.log`）。
+
+## 2026-08-26 23:3x JST — v739（2 手先読み）A/B は無益停止で不採用 → v736 継続 / 共有 checkout のブランチ切替事故を復旧
+
+- **A/B 最終（16:10–23:30、ABBA、各腕 46、k=23、tainted 0）**: raw A(v736) 1399（sd 610）vs B(v739) 1403（sd 568）、mean(B−A) = **+4（SE 106、UCB90 139 < 150）→ REJECT_FUTILE**（事前登録の無益停止）。eval −11、併合/手 0.494 vs 0.493、手数 83.3 vs 85.9、カザフ 10 vs 11、ロシア 0/0。序盤 8 試合の −522 → 中盤 +67 → 最終 +4 と推移。**2 手先読みは実戦では中立**（オフライン期待 +0.03 併合/手は出ず）。`tools/ab_ctl.sh finish A` 23:30:44: root=v736、REGRESSION_DISABLED=0、記録 `tmp/history/ab_20260826_233044_*`、`ab_history.jsonl` 2 件目。dry-run ゲートも同時刻に「would finish A (REJECT_FUTILE)」を記録 = 逐次判定の配線は実戦で一致。
+- **リポジトリ**: soviet_now `9143d4654`（`codex/no-apply-liveliness`）で strategy.py を v736 に戻し、v739 のテスト/fixture を削除（`strategy_helpers/lookahead.py` は additive なので残置、decide 変更は c6c5c9ba5 に残る）。`tools/ab_ctl.sh` の `set +u` も同コミットに含めた。HEAD と本番が一致。
+- **事故と復旧**: 共有 checkout `games/soviet_now` が他セッション（soren91 再稼働）により `codex/issue-23-soren91-daily` に切り替えられており、私の revert コミットがそのブランチに乗った（push は未実施）。`git reset --mixed HEAD~1` で彼らのブランチ先端（012690713）に戻し、私が変更した 5 ファイルだけ `git checkout HEAD --` で復元、別 worktree（`/private/tmp/sn-mine`、作業後に削除）で自分のブランチに同内容をコミット・push。docich のサブモジュール参照は `git update-index --cacheinfo` で私のコミットに固定（共有 checkout の HEAD は使わない）。**以後: コミット前に必ず `git status -sb` でブランチ名を確認し、自分のブランチでなければ worktree 経由でコミットする。**
+- **soren91 側の動き（参考）**: 23:23 `[SOREN91] Stopping soren91` → KILL、chrome 94% CPU（新プロセス）。A/B は対比較なので帰属に影響なし。
+- **改善ループ**: dry-run 継続、蓄積 10/48（次候補 ~7 時間後）。初候補 `af24f8469e58` は見送り済み。
+- **次の設計候補（Claude 主体）**: v737/v738/v739 が中立〜劣後で、decide 側の配置・先読み軸は検出可能な効果を出せていない。次は (1) 「埋没を解く併合」優先の**計測**（DIRECT 複数時の露出差の分布、1〜2 時間）、(2) ロシア以後モード（T15 出現後の目的切替）、(3) 解析器精度（着地 σ 0.35 の低減: 実測 settle 位置の学習）— を fable に比較させて 1 つ選ぶ。
 
 ## 2026-08-26 16:2x JST — v739 LOOKAHEAD（2 手先読み）を実装・検証し、v736 vs v739 のインターリーブ A/B を開始（16:10）
 
