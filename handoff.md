@@ -4,6 +4,22 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: fable 比較で残る改善余地は小（最大 v740 +0.005/手、実戦検出に 48 時間）→ 律速は評価速度と判断し、Mac 上のヘッドレス並列自己対戦 A/B（`tools/selfplay_ab.py`、1 試合 ~200 s、~90 試合/時）を構築・動作確認。A/A 較正を実行中。次は v740 実装 → ローカル A/B → 実戦 A/B。本番 v736、改善ループ dry-run。共有 checkout は他セッションのブランチ（worktree 経由でコミット）。
 
+## 2026-08-27 01:0x-03:2x JST — 音声合成を Tailscale 上の Mac mini / desktop の VOICEVOX へ外出し（連鎖＋乗数バックオフ、WebUI から状態確認・操作）— 実装・VM反映・ライブ実測済み
+
+- **ユーザー指示**: VM の CPU 配分（VOICEVOX が生涯平均 62.7%/コア、合成中 ≈1 コア）を受け、「tailscale で動かしている PC 2 つ（desktop / azumacminim4）の VOICEVOX を呼び、最終フォールバックは VM ローカル。フォールバックは乗数で増えるバックオフ」「完成したら webui からも状態確認・操作できるように」。
+- **実装（docich `95029cd`、`main` へ fast-forward 済み）**: 合成の正典 `src/docich/speech.py`（`docich voicevox synth`、VM の `voicevox_tts.sh` が委譲）に
+  - `.env` の **`VOICEVOX_URLS`**（カンマ区切り・優先順）を連鎖として上から試す。旧 `VOICEVOX_URL_PRIMARY/REMOTE/FALLBACK/LOCAL` は `VOICEVOX_URLS` が無いときだけ同じ連鎖に畳む。
+  - 失敗（GET /version 疎通 2.5 s、audio_query/synthesis）を **`tmp/state/voicevox_endpoints.json`**（flock、`voicevox_chain.log` 併記）に永続化し、連続失敗 n 回で **30s×2^(n-1)（上限 900s）** 休ませる。全部休止中でも連鎖順に再試行し合成を拒否しない。成功で失敗数リセット・`active_url`・平均 ms を記録。
+  - CLI `docich voicevox endpoints [--probe|--json|--reset|--disable/--enable --url URL]`、`synth --dry-run` に plan 表示。
+  - WebUI: `GET/POST /api/voice/endpoints`、**Audio タブ「音声合成チェーン」**に順位/状態(ready・backoff 残秒・disabled)/連続失敗/成功・失敗数/直近 ms/直近エラー、ボタン「疎通確認」「backoff 解除」「無効化/有効化」「全疎通確認」「全リセット」、直近イベント＋ログ。10 s 自動更新。
+  - tests: `tests/test_speech.py`（連鎖選択・バックオフ・永続化・フェイルオーバー・CLI）、`tests/test_webui.py`（API 側）。docich 全体 594 件 OK。ローカル webui を Chrome で開き表示・疎通確認・backoff 解除の動作を目視確認。
+- **Mac mini 側（この Mac = `azmacminim4`）**: VOICEVOX 0.25.2 は OrbStack の docker で `127.0.0.1:50021` のみ listen していたため、**`tailscale serve --bg --tcp 50021 tcp://127.0.0.1:50021`** で tailnet に公開（解除は `tailscale serve --tcp=50021 off`）。VM から `http://azmacminim4:50021/version` 200（connect ≈125 ms、DERP 中継 "lax"）。話者 ID セットは VM ローカルと同一（127 styles、sha 一致）。同じ文の合成が **VM ローカル 17.1 s → Mac 4.4 s**。
+- **desktop 側（`desktop-9j2it17`, Windows）**: VM から `:50021` が **タイムアウトで到達不可**（VOICEVOX が 127.0.0.1 bind か Windows FW）。連鎖の 2 位に入れてあり、到達可になれば自動で使われる（今は mac が生きている限り probe されない）。ユーザー側で公開が必要。
+- **VM 反映（実測）**: `/home/ubuntu/docich` を `main`（95029cd）へ `git pull --ff-only --no-recurse-submodules`（VM に staged で残っていた 08-23 の webui 編集は upstream `faf7d70` に含まれていたため `git stash` に退避、VM ローカル handoff.md は `handoff.md.vm-local-bak-20260827`）。`.env` に `VOICEVOX_URLS=http://azmacminim4:50021,http://desktop-9j2it17:50021,http://127.0.0.1:50021` 追記（backup `.env.bak.20260827-voicevox-chain`）。`docich-webui.service` 再起動、`/api/voice/endpoints` 200。`say_enqueue.sh` は `.env` を毎回読むので worker 再起動は不要。
+- **ライブ実測**: 01:26 の読み上げから **Mac が active**（03:22 までに ok=312、avg 4.8 s、VM ローカルへの `/synthesis` は 0 件、Mac の docker ログに VM 由来の `POST /synthesis` 375 件）。**切り戻し試験** 03:22: WebUI API で mac を無効化 → 次の読み上げで desktop probe 失敗（連続 2 回目 → backoff 60 s、乗数どおり）→ VM ローカルで合成（11.8 s、journal に 1 件、イベント `switch`）→ mac を再有効化。
+- **落とし穴**: (1) VM の docich checkout は他セッションが VM 上で直接編集することがある。pull 前に `git status` を見て stash する。(2) `git pull` は submodule の未 push コミットを fetch しようとして失敗する → `--no-recurse-submodules`。(3) Mac の tailscale serve は再起動後も維持されるが、OrbStack/docker が落ちると mac は backoff に入り VM ローカルへ自動で戻る（WebUI の状態表で分かる）。
+- **未実施**: desktop 側 VOICEVOX の tailnet 公開（ユーザー作業）。VOICEVOX 外出し後の VM CPU 配分の再計測（`tools/cpu_breakdown.py`）。
+
 ## 2026-08-27 01:5x-02:0x JST — capitalism ラジオをメリケンAI音声へ分離
 
 - **ユーザー報告**: capitalism ラジオの台本はメリケンAIだが、中華AI側の声で読まれているように聞こえる。
