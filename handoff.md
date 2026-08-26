@@ -2,7 +2,7 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: v738 は n=25 で平均 1380 vs v736 1649（−269、z≈2.0）→ 08:32 に v736（253cc67e0c1b）へ切り戻し・実測済み（revert 先は v738）。リポジトリ HEAD の strategy.py は v738 のまま（本番と不一致、次 tick で整理）。設計委任は fable。SOREN_SETTLE_REQUIRED=3、ANALYZE_BOARD_WALL_CLAMP=1。
+> 直前セッション: v736 復帰後も平均 1393（n=12）で、v738 の低下は時間順比較の交絡（序盤指標は v738 が同等以上）と判明。時間順の窓では戦略差を測れないため、試合ごとに交互実行するインターリーブ A/B の設計を fable に委任中。本番は v736（253cc67e0c1b）、SOREN_SETTLE_REQUIRED=3、ANALYZE_BOARD_WALL_CLAMP=1。soviet_now checkout は他セッションと共有中（パス指定コミットのみ）。
 
 ## 2026-08-26 04:3x-05:5x JST — docich#10: Podcast を VM->Mac へ移設 + 「1日1本の番組へ編成し直す」設計へ作り替え + Short 投稿導線
 
@@ -107,6 +107,13 @@
 - **v727 実装・レビュー・デプロイ（ユーザー承認済み・稼働実測）**: 設計はユーザー指示で自分で実施、実装後の独立レビューは opus に委任。当初2案のうち「ロシア後contact解禁」はレビューH2（手動ゲーム125局面リプレイで発火0＝envelope が実ロシア盤面を全ブロック、実質no-op）により撤回し、`POST_FIRST_RUSSIA_LANE_COVER_AVOID` の到達性修正のみに絞った。レビューHIGH/MEDIUM全反映: 床着地はリスク品質下限に算入(H1)、hit_id は None のみ床扱いで他はfail-closed(M1)、selected の越線/併合結果越線は置換しない(M2)、置換候補に pre-Russia クランプ検査(L2)。実履歴2545局面リプレイの最終差分は「v726 がクランプ外 x=-2.2 を発火していた1件の是正」のみ。焦点テスト110+278 subtests パス（既存失敗1件は v726 でも再現、レビューアも独立確認）。soviet_now `c4e9c30fe` push、decide hash `aac603521570 → 5c9ab0ea6b6c`。VM はゲーム境界（マーカーpause）で差替え、by_hash/永久archive登録、`tmp/revert_strategy.py`=v726。**01:36 新ゲームが hash `5c9ab0ea6b6c` で稼働中を latest.jsonl で実測**。
 - **注意**: ローカル作業ツリーに 8/24 19:04 時点の別セッション由来 strategy.py WIP（tether閾値緩和+テスト）が残っていたため、scratchpad `foreign_wip_20260824_1904.diff` に退避してから v727 を実装した（未コミット・未デプロイのWIPで、粛清カスケードと同時刻帯に放置されたもの）。
 - **次（v728候補）**: (1) ロシア後の contact recovery は envelope 再設計が必要 — 手動ゲーム obs_109〜126（ロシア盤面18局面、margin 0.12〜1.46）を fixture に、`deadline_margin>=1.0`/`dx<=0.06` ゲートを実盤面に合わせて再測定する（壁分岐 at_wall は実測1/4なので緩めない、垂直開放路のみ）。(2) analyze_board.py:345-366 の O(n²) インデントバグ修正（40倍高速化・挙動不変）。(3) v727 の実戦発火と粛清 grace の長期観測（`grep 'STATGATE\|REGRESSION\|PROMOTE\|LANE_COVER' logs/soren_loop.log`）。
+
+## 2026-08-26 09:4x JST — loop 25回目: v736 復帰後も低スコア（n=12 平均 1393）→ v738 の「害」は時間順比較の交絡と判明 / インターリーブ A/B の設計を fable に委任
+
+- **実測**: v736 復帰（08:32–09:30）n=12 平均 1393 / 中央値 1393 / p25 1115 — v738 窓（1384）と同水準、v736 の以前の窓（1649）より低い。VM 負荷（run 62% / ffmpeg 47% / chrome 41%、radio の opencode 生成あり）・試合間隔（4.5–5.4 分）・静止待ち（0.8–1.0 s）は窓間で差なし。時刻別（3 時間ブロック、08-22〜08-26）に系統的な朝の落ち込みなし（08-26: 00–03h 1563、03–06h 1688、06–09h 1434、09–12h 1537(n=6)）。
+- **序盤指標の直接比較（残存ログ）**: v736 早期 n=14 / v738 n=15 / v736 復帰 n=12 で、20/40/60 手時点の駒数 11/18.5/29 vs 11/20/30 vs 11.5/22.5/31、上端 −1.7/−0.3/1.5 vs −1.5/−0.3/1.5 vs −1.1/0.8/1.9、20 手ごとの併合 6.5/8/7/6 vs **8**/8/7/5 vs 6/7/7/6。**v738 の序盤は v736 早期と同等以上で、復帰後の v736 のほうが悪い** → v738 のスコア低下は v738 では説明できず、同時期の変動（原因未特定）が主因。切り戻し判断自体は「期待利得が検出不能」なので維持するが、**時間順の窓比較では ±150–250 の漂流があり戦略差（<300）は測れない**ことが確定（v732/v733、静止待ち、v738 で繰り返し起きた帰属問題の根）。
+- **対策 = インターリーブ A/B（試合ごとに 2 戦略を交互実行、hash で帰属、同一期間で比較）**: 設計を fable Plan に委任（バックグラウンド）。論点: シェル側で root strategy.py を試合ごとに入れ替える案 vs runner の `SOREN_STRATEGY_FILE` 上書き案、粛清/anchor/branch との干渉（A/B 中は REGRESSION_DISABLED=1 か gate を A/B 対応に）、`tools/ab_report.py`（ABBA ブロック差・並べ替え p 値・必要 n）、境界での開始/終了手順、テスト。eloop.sh の hash 算出点 :80 / :196 / :232、runner の strategy 読込 strategy_runner.py:506、`Strategy hash:` :2991。
+- **注意**: game_history は直近 ~15 試合しか残らないので、窓集計は score_history.txt（時刻+スコア）と rolling_scores.json（hash 別）を併用する。分析用にローカル scratchpad `gh_close3/` に 27 試合を取得済み。
 
 ## 2026-08-26 08:3x JST — loop 24回目: v738 は n=25 で平均 −269（z≈2.0）→ v736 に切り戻し（08:32 境界、実測済み）
 
