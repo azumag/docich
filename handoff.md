@@ -4,6 +4,39 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: A/B ゲート（改善候補→自動 A/B→逐次判定→採用/棄却）を実装・VM 反映し dry-run で改善 daemon を再稼働（15:43）。v736 が root。次は 2 手先読み v739 の実装（設計受領済み）→ オフライン検証 → `tools/ab_ctl.sh start` で A/B。soviet_now checkout は他セッションと共有（パス指定コミットのみ）。
 
+## 2026-08-26 15:3x-15:5x JST — YouTube 配信が 15:06:57 に停止（正午監査の 180 秒断が原因）。VM 側は正常だが YouTube が新しい配信を開始しない（ユーザー確認待ち）
+
+- **ユーザー報告**: 「YouTube へのライブ配信が死んでいるようです」。
+- **実測（YouTube Data API / 公開ページ）**:
+  - 常設ブロードキャスト `M8GABUS1EXw`（同志Ch, UCdlddCsAmT4cYMMSTO7kBvw）は
+    `actualStartTime 2026-08-21T11:46:20Z` → **`actualEndTime 2026-08-26T06:06:57Z`(= 15:06:57 JST)** で終了。
+  - `eventType=live` の検索 0 件、uploads プレイリスト最新 8 件にもライブ無し、watch ページも `isLiveNow:false`。
+    **15:51 時点で YouTube は停止したまま**。
+- **原因（時刻の一致）**: 15:06:57 は正午監査が Twitch セッション回転のため ffmpeg を落とした **15:06:44 の 13 秒後**。
+  昨日入れた `STREAM_NOON_AUDIT_OFFLINE_HOLD_SEC` 30→**180 秒**の断が YouTube の許容を超えて配信を終了させた。
+  08-25 03:56 の約 35 秒断（リレー reload）では YouTube セッションは継続していた（同一 actualStartTime のまま）。
+  **正午監査は Twitch しか見ておらず、YouTube の死活監視は存在しない**ため 30 分以上気付かれなかった。
+- **VM 側は正常（実測）**: ffmpeg 稼働、nginx リレーから YouTube ingest へ **約 4.7Mbps が実際に流れ ACK もされている**
+  （`bytes_acked` が 4 秒で約 2.3MB 増加を 2 回計測）。Twitch へも送出中で Twitch は LIVE。
+- **試した復旧（いずれも効かず）**:
+  1. 15:42 `sudo ss -K` で YouTube への push ソケットのみ切断 → `push_reconnect` で別 IP へ新規 push 成立。
+     3〜4 分待っても配信開始せず（Twitch は無傷）。
+  2. 15:47 `sudo systemctl restart soren-rtmp-relay.service` → 両 push が新規確立。4 分後も配信開始せず。
+     **Twitch セッションは回転せず維持**（id 317977691864 / createdAt 15:09:56 JST のまま、viewers 5）＝再起動のコストは無かった。
+- **前例**: 08-21 20:45:56 のリレー再起動の 24 秒後（20:46:20 JST）に YouTube 配信が開始している。
+  ただしこれが自動開始だったのか当時ユーザーが Studio で「配信開始」を押したのかは**未確定**。
+- **判定**: VM→YouTube の映像経路は生きており、**ブロック要因は YouTube アカウント／ブロードキャスト側**。
+  自動開始が無効、ライブ配信機能の制限、または常設ブロードキャストが完了状態のまま、のいずれか。
+  API での確定には OAuth が必要だが、**YouTube チャットの refresh token が `invalid_grant` で失効**しており
+  `liveBroadcasts/liveStreams` を読めない（チャット送信も現在不能。`tmp/.youtube_chat/last_send_error.txt`）。
+- **ユーザー作業（依頼中）**: YouTube Studio のライブ管理画面で (1) 受信状態が「受信中/良好」か、
+  (2)「ライブ配信を開始」ボタンが出ていないか（＝自動開始オフ）、(3) ライブ配信機能の制限が出ていないか、
+  (4) 配信キーが変わっていないか（変わっていれば `/etc/soren-rtmp/push.conf` の更新が必要）。加えて OAuth 再認証。
+- **再発防止（未実装・要設計）**: 正午監査の 180 秒断が YouTube を巻き込む構造は残っている。案は
+  (a) 断の対象を Twitch push だけに限定する（push.conf から Twitch だけ外して reload → 180 秒後に戻す）、
+  (b) Twitch へは relay から copy の別 ffmpeg で出し独立に止められるようにする、
+  (c) YouTube の死活監視を監査に追加する。設計は fable へ委任予定。
+
 ## 2026-08-26 13:5x-15:1x JST — 正午の配信貼り直しが Twitch へ届いていなかった件を修正・実測で復旧確認
 
 - **ユーザー報告**: 「正午の配信貼り直しが動いてない」。
