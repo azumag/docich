@@ -4,6 +4,15 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: v741 JUNK_CONSOLIDATION（序盤 T1–3 の隅/塊寄せ、hash f93dbf2edf97、soviet_now 8edcb8e34）を実装・テスト済み。ローカル自己対戦 A/B（v736 vs v741）第 2 バッチ 96 試合を分離起動中（主指標 40 手時点の駒数）。第 1 バッチ 12+12 は雑音圏でわずかに B 優勢。本番は v736、改善ループ dry-run。
 
+## 2026-08-27 04:30-06:02 JST — 日次ポッドキャストのPython起動ハングを修正、8/26分はローカル生成完了（外部公開は未実施）
+
+- **障害（実測）**: Mac launchd `com.azumag.soren-podcast.build` は04:30に起動したが、`tools/podcast_build.sh` が `tomllib` 対応Pythonを探す際、外付け `/Volumes/satelite` を指す `/opt/homebrew/bin/python3 -c 'import tomllib'` で約52分停止した。候補確認がログ・多重起動ロックより前かつタイムアウト無しだったため、`podcast_daily.log` は `[1/4] 音声を生成` から進まず、8/26分の成果物も無かった。
+- **修正（soviet_now PR #128、merge `7aeaef4f6` / fix `e29ab61bb`）**: `tools/podcast_build.sh` で (1) doci venv / uv Pythonを外付けHomebrewより優先、(2) 各候補の `tomllib` 確認を既定5秒で打ち切り、(3) 候補確認より前にログと多重起動ロックを作る。ハングする偽Pythonを1秒で打ち切り、`/Users/azumag/azumag/work/doci/repo/.venv/bin/python` (3.14.3) へフォールバックして8/26 dry-runが完走することを確認。`zsh -n` / `git diff --check` も成功。
+- **旧ジョブ終了と実行環境同期**: launchdの旧PID群をSIGTERMで終了し、Mac実行チェックアウトのサブモジュールを `7aeaef4f6` へfast-forward。終了後に旧PID 0、daily/build lock無しを確認。LaunchAgentは登録済み・次回04:30トリガーをwatch中で、単発完了後のため現在 `not running` が正常。
+- **実生成（公開禁止で実測）**: `PODCAST_AUTO_PUBLISH=0 PODCAST_BLUESKY_ENABLED=0 ./tools/podcast_daily.sh --date 20260826` が05:31:07→06:01:36（1829秒）でrc=0。53原稿/74,830字を12コーナー/25,531字へ編成し、612音声断片を合成。MP3は47,891,575 bytes / 4184.515秒 / mono 44.1kHz、MP4は378,452,103 bytes / 4184.533秒 / H.264 1920x1080 + AAC mono 44.1kHz。ffprobeで両方のストリームと長さを確認した。
+- **外部公開は未実施**: 安全のためYouTube自動公開とBluesky投稿を明示的に無効化した。`2026-08-26.publish.json` / `.bluesky.json` は存在しない。公開する場合は別途、`podcast_publish.py --date 20260826` の実行許可が必要。
+- **引き継ぎ同期**: `prompts/ops_brief.md` を再生成し、soviet_now `1aea65722` へ保存・push。VMへバックアップ付きで配布し、ローカル/VM SHA256 `a9ea6f5da609db52499f455aa70161df6423b387ba19da694bcb7ce8ea7f6d94` 一致を確認した。
+
 ## 2026-08-27 — Issue #8 自動アンケートコーナー — ローカル実装・検証済み、本番有効化は Twitch OAuth scope 待ち
 
 - **Issue**: `azumag/docich#8`「自動でアンケートを発行して、結果についてなにかいう」。
