@@ -2,7 +2,7 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: v736 復帰後も平均 1393（n=12）で、v738 の低下は時間順比較の交絡（序盤指標は v738 が同等以上）と判明。時間順の窓では戦略差を測れないため、試合ごとに交互実行するインターリーブ A/B の設計を fable に委任中。本番は v736（253cc67e0c1b）、SOREN_SETTLE_REQUIRED=3、ANALYZE_BOARD_WALL_CLAMP=1。soviet_now checkout は他セッションと共有中（パス指定コミットのみ）。
+> 直前セッション: インターリーブ A/B 基盤（試合ごとに root(A)/代替(B) を交互実行、hash で帳簿）を実装・VM 反映し、10:16 から v736(A) vs v738(B) の A/B を ABBA で実行中（REGRESSION_DISABLED=1、improve pause）。状況は VM で `bash tools/ab_ctl.sh status`。判定は ≥30/腕・完全ブロック ≥8・並べ替え p<0.05・|δ|≥MDE。A/B 中は他の変更を入れない。設計委任は fable。
 
 ## 2026-08-26 04:3x-05:5x JST — docich#10: Podcast を VM->Mac へ移設 + 「1日1本の番組へ編成し直す」設計へ作り替え + Short 投稿導線
 
@@ -107,6 +107,18 @@
 - **v727 実装・レビュー・デプロイ（ユーザー承認済み・稼働実測）**: 設計はユーザー指示で自分で実施、実装後の独立レビューは opus に委任。当初2案のうち「ロシア後contact解禁」はレビューH2（手動ゲーム125局面リプレイで発火0＝envelope が実ロシア盤面を全ブロック、実質no-op）により撤回し、`POST_FIRST_RUSSIA_LANE_COVER_AVOID` の到達性修正のみに絞った。レビューHIGH/MEDIUM全反映: 床着地はリスク品質下限に算入(H1)、hit_id は None のみ床扱いで他はfail-closed(M1)、selected の越線/併合結果越線は置換しない(M2)、置換候補に pre-Russia クランプ検査(L2)。実履歴2545局面リプレイの最終差分は「v726 がクランプ外 x=-2.2 を発火していた1件の是正」のみ。焦点テスト110+278 subtests パス（既存失敗1件は v726 でも再現、レビューアも独立確認）。soviet_now `c4e9c30fe` push、decide hash `aac603521570 → 5c9ab0ea6b6c`。VM はゲーム境界（マーカーpause）で差替え、by_hash/永久archive登録、`tmp/revert_strategy.py`=v726。**01:36 新ゲームが hash `5c9ab0ea6b6c` で稼働中を latest.jsonl で実測**。
 - **注意**: ローカル作業ツリーに 8/24 19:04 時点の別セッション由来 strategy.py WIP（tether閾値緩和+テスト）が残っていたため、scratchpad `foreign_wip_20260824_1904.diff` に退避してから v727 を実装した（未コミット・未デプロイのWIPで、粛清カスケードと同時刻帯に放置されたもの）。
 - **次（v728候補）**: (1) ロシア後の contact recovery は envelope 再設計が必要 — 手動ゲーム obs_109〜126（ロシア盤面18局面、margin 0.12〜1.46）を fixture に、`deadline_margin>=1.0`/`dx<=0.06` ゲートを実盤面に合わせて再測定する（壁分岐 at_wall は実測1/4なので緩めない、垂直開放路のみ）。(2) analyze_board.py:345-366 の O(n²) インデントバグ修正（40倍高速化・挙動不変）。(3) v727 の実戦発火と粛清 grace の長期観測（`grep 'STATGATE\|REGRESSION\|PROMOTE\|LANE_COVER' logs/soren_loop.log`）。
+
+## 2026-08-26 10:3x JST — loop 26回目: インターリーブ A/B 基盤を実装・VM 反映（10:04）、v736 vs v738 の A/B を開始（10:16、ABBA）
+
+- **設計（fable Plan）→ 実装（soviet_now `593df1213`）**: runner は毎試合スナップショット（`tmp/state/main_game_strategy_runtime/strategy.py`、eloop.sh:297–302 で `strategy_runtime_create_game_snapshot "$STRATEGY_FILE" …`）を読み、帳簿（rolling_scores / version / played hash）もスナップショットの hash で付くので、**スナップショットの元ファイルを試合ごとに選ぶだけで root には触れない**（案 c）。
+  - `strategy/ab_interleave.sh`: `_ab_active`（fail-closed: `SOREN_AB_ALT_STRATEGY` 非空 / `tmp/state/ab_state.json` / abort マーカーなし / **.env の** `REGRESSION_DISABLED=1`（config.sh:26 が変数を 0 に固定するため .env を直接読む）/ `improve_daemon.paused` / `improve.lock` なし / root と代替の hash が state と一致）、`_ab_select_arm`（`SOREN_AB_PATTERN` 既定 ABBA を `games_recorded` で巡回、不成立試合は同じ腕を打ち直す）、`_ab_record_game`（`tmp/state/ab_games.jsonl` に idx/arm/hash/score/eval/turns/archive、snapshot と archive の hash 突合で `tainted`）、`_ab_abort`、`_ab_is_arm_hash`。
+  - eloop.sh: スナップショット元の切替、A/B 中の decide_exception は abort（B 腕は root の自動復旧を起動しない）、post_game_bookkeeping で記録。improve.sh: A/B 中は B 腕の試合を別戦略混入扱いにせず腕の hash に帳簿、同 hash ロック更新停止。config/whitelist: `SOREN_AB_ALT_STRATEGY`（空=無効）/ `SOREN_AB_PATTERN`。
+  - `tools/ab_ctl.sh start <path> [pattern] | status | stop | finish <A|B>`、`tools/ab_report.py`（腕別 n/平均/中央値/p25/SD、手数、残存 archive から併合/手・複数併合・T14/T15、ABBA ブロック差 mean(B−A)・SE・符号反転並べ替え p、必要 n: sd 650 で +150 → 295/腕、+300 → 74/腕、MDE(50)=364）。テスト `tests/test_ab_interleave.sh`（20）、`tests/test_ab_report.py`（5）、全体 111 failed / 926 passed。
+- **VM 反映（実測）**: 10:04 の境界 pause で 11 ファイル差し替え（バックアップ `.codex_deploy/backup-20260826_1004-abinfra`）、VM 上で source / 単体テスト OK、10:04:22 の試合は v736 で正常再開（`[AB]` 行なし＝不活性）。
+- **A/B 開始（10:16:06）**: `tools/ab_ctl.sh start tmp/manual_challenge/strategy_4a3b4c7acdc2.py ABBA`（hash 指定は `_find_strategy_archive_for_hash` が解決できず失敗 → **パス指定で起動する**。要修正）。state: A=253cc67e0c1b（v736 root）、B=4a3b4c7acdc2（v738）、revert 先 = v736、.env `REGRESSION_DISABLED=1` / `SOREN_AB_ALT_STRATEGY=tmp/state/ab_alt_strategy.py` / `SOREN_AB_PATTERN=ABBA`。improve daemon は 08-23 から pause 済み。
+- **端から端まで実測**: 10:18:35 `[AB] idx=0 arm=A hash=253cc67e0c1b` → 試合終了で `[AB] recorded idx=0 arm=A eval=18561 tainted=False`（score 2480、106 手、played/history hash 一致）→ 10:24:44 `[AB] idx=1 arm=B hash=4a3b4c7acdc2 src=tmp/state/ab_alt_strategy.py` → `Strategy hash: 4a3b4c7acdc2`。games_recorded=1。
+- **運用**: 状況 `bash tools/ab_ctl.sh status`（ab_games.jsonl が主、game_history は直近 13 試合のみ）。判定は事前登録: ≥30/腕かつ完全ブロック ≥8 で、raw score の並べ替え p<0.05 かつ |δ| ≥ MDE でのみ勝敗、それ以外は「結論なし」。2×50 で MDE≈364（v738 の −269 は検出限界未満＝この A/B は「大きな害がないか」の確認）。終了 `tools/ab_ctl.sh finish <A|B>`（B なら root 差し替え・revert 先更新・anchor 昇格・REGRESSION_DISABLED=0・pause 解除）、その後リポジトリの strategy.py も合わせて commit。**A/B 中は他の変更（decide/analyzer/settle）を入れない**。注意: eval（建国ボーナス込み、~10⁴）と raw（~10³）を混同しない（必要 n の sd は raw 用）。
+- **既知の不備**: `ab_ctl.sh start <hash>` の解決失敗、`game_num_start` が null（`GAME_COUNT_FILE` のパス違い）。次 tick で修正。
 
 ## 2026-08-26 09:4x JST — loop 25回目: v736 復帰後も低スコア（n=12 平均 1393）→ v738 の「害」は時間順比較の交絡と判明 / インターリーブ A/B の設計を fable に委任
 
