@@ -2,7 +2,7 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: v739（2 手先読み）は A/B 46+46 で無益停止（+4、UCB90 139<150）→ 不採用、v736 継続（root/HEAD とも 253cc67e0c1b、soviet_now 9143d4654）。共有 checkout が他セッションのブランチに切り替わる事故を復旧（コミット前にブランチ確認、必要なら worktree）。改善ループは dry-run 継続。次候補は「埋没を解く併合」計測 / ロシア以後モード / 解析器精度から fable と選定。
+> 直前セッション: fable 比較で残る改善余地は小（最大 v740 +0.005/手、実戦検出に 48 時間）→ 律速は評価速度と判断し、Mac 上のヘッドレス並列自己対戦 A/B（`tools/selfplay_ab.py`、1 試合 ~200 s、~90 試合/時）を構築・動作確認。A/A 較正を実行中。次は v740 実装 → ローカル A/B → 実戦 A/B。本番 v736、改善ループ dry-run。共有 checkout は他セッションのブランチ（worktree 経由でコミット）。
 
 ## 2026-08-26 22:2x - 2026-08-27 00:0x JST — Issue #23 Soren91日次枠は実配信不合格のため無効化
 
@@ -708,6 +708,14 @@
 - **v727 実装・レビュー・デプロイ（ユーザー承認済み・稼働実測）**: 設計はユーザー指示で自分で実施、実装後の独立レビューは opus に委任。当初2案のうち「ロシア後contact解禁」はレビューH2（手動ゲーム125局面リプレイで発火0＝envelope が実ロシア盤面を全ブロック、実質no-op）により撤回し、`POST_FIRST_RUSSIA_LANE_COVER_AVOID` の到達性修正のみに絞った。レビューHIGH/MEDIUM全反映: 床着地はリスク品質下限に算入(H1)、hit_id は None のみ床扱いで他はfail-closed(M1)、selected の越線/併合結果越線は置換しない(M2)、置換候補に pre-Russia クランプ検査(L2)。実履歴2545局面リプレイの最終差分は「v726 がクランプ外 x=-2.2 を発火していた1件の是正」のみ。焦点テスト110+278 subtests パス（既存失敗1件は v726 でも再現、レビューアも独立確認）。soviet_now `c4e9c30fe` push、decide hash `aac603521570 → 5c9ab0ea6b6c`。VM はゲーム境界（マーカーpause）で差替え、by_hash/永久archive登録、`tmp/revert_strategy.py`=v726。**01:36 新ゲームが hash `5c9ab0ea6b6c` で稼働中を latest.jsonl で実測**。
 - **注意**: ローカル作業ツリーに 8/24 19:04 時点の別セッション由来 strategy.py WIP（tether閾値緩和+テスト）が残っていたため、scratchpad `foreign_wip_20260824_1904.diff` に退避してから v727 を実装した（未コミット・未デプロイのWIPで、粛清カスケードと同時刻帯に放置されたもの）。
 - **次（v728候補）**: (1) ロシア後の contact recovery は envelope 再設計が必要 — 手動ゲーム obs_109〜126（ロシア盤面18局面、margin 0.12〜1.46）を fixture に、`deadline_margin>=1.0`/`dx<=0.06` ゲートを実盤面に合わせて再測定する（壁分岐 at_wall は実測1/4なので緩めない、垂直開放路のみ）。(2) analyze_board.py:345-366 の O(n²) インデントバグ修正（40倍高速化・挙動不変）。(3) v727 の実戦発火と粛清 grace の長期観測（`grep 'STATGATE\|REGRESSION\|PROMOTE\|LANE_COVER' logs/soren_loop.log`）。
+
+## 2026-08-27 00:3x JST — 次の施策比較（fable）: 残る改善余地は小さく律速は評価速度 → ローカル並列自己対戦 A/B 基盤を構築（動作確認済み）
+
+- **fable の比較（188 試合 16,283 手を再評価、scratchpad `next/`）**: A 埋没を解く併合 = 選択肢あり 1.4%、上限 +0.06 併合/試合（却下）。B ロシア以後モード = T15 到達 3/188、到達後 +11〜+20 手（A/B 不能、手動継続が必要）。C 解析器精度 = 着地 y のバイアス −0.65 は学習可能（R² 0.61）だが消費側 +0.28 併合/試合、締切ガード誤検出 44–50% でも偽陰性 9.5% のため緩めない。D 死因ガード = 死は飽和（41.5 駒・80% 埋没・全レーン 2.95 以上）、単発ガードで +10 手は不可。**最大余地 = v740 NEAR_MISS_DOMINANCE**（v736 域内で gap≤0.2 の安全で低い候補があるのに gap>0.5 を選ぶ 0.79 手/試合、+0.46 併合/試合 ≈ +0.005/手）— 実戦検出には ~300 試合/腕（48 時間）。結論: **律速は評価速度**（1 配信 12 試合/時）。
+- **ローカル並列自己対戦（Mac、実物理、配信・VM 無影響）**: 既存 `wildcard_parallel.py`（ヘッドレス Chromium × スロット、Mac 向けに開発済み）の実行部を再利用した `tools/selfplay_ab.py`（soviet_now `2d5fffcf8`）を作成。自己対戦ルートは scratchpad `selfplay_root/`（自分のブランチのコード + VM の `sorengame/build` 28 MB + `/Users/azumag/work/soren/node_modules` の playwright）。**実測**: 2 スロット×2 試合が完走、1 試合 173–230 s（配信の ~300 s より速い）、6 スロットで ~90 試合/時 ≈ 配信の 7.5 倍。本番 env（SETTLE=3、WALL_CLAMP=1 等）を既定で付与、出力は `ab_games.jsonl` 互換（`ab_report.py` / `ab_decide.py` がそのまま使える）。VM は 4 コア・load 10 超なので VM 上の並列は不可。
+- **進行中**: A/A 較正（v736 vs v736、4 スロット×8 試合 = 32 試合、~30 分）で局所 SD と腕対称性を測定中（`selfplay_root/tmp/selfplay/aa_calib`）。
+- **次**: (1) A/A 結果で必要 n を再計算、(2) v740 を実装（fable の擬似コード、fixture は c8_out.json）→ ローカル A/B（6 スロット、腕 60〜150 試合、数時間）→ 有意なら実戦 A/B、(3) 以後の候補も「オフライン → ローカル自己対戦 → 実戦」の 3 段で評価。
+- **注意**: 共有 checkout は他セッションのブランチのままなので、私のコミットは一時 worktree（`/private/tmp/sn-mine`）経由で `codex/no-apply-liveliness` に載せ、docich のサブモジュール参照は `git update-index --cacheinfo` で固定している。
 
 ## 2026-08-26 23:3x JST — v739（2 手先読み）A/B は無益停止で不採用 → v736 継続 / 共有 checkout のブランチ切替事故を復旧
 
