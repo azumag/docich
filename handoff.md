@@ -4,6 +4,54 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: v739（2 手先読み）は A/B 46+46 で無益停止（+4、UCB90 139<150）→ 不採用、v736 継続（root/HEAD とも 253cc67e0c1b、soviet_now 9143d4654）。共有 checkout が他セッションのブランチに切り替わる事故を復旧（コミット前にブランチ確認、必要なら worktree）。改善ループは dry-run 継続。次候補は「埋没を解く併合」計測 / ロシア以後モード / 解析器精度から fable と選定。
 
+## 2026-08-26 23:2x-23:4x JST — レイド時の自配信紹介プロンプトを実測ベースで更新（古い記述を一掃）
+
+- **ユーザー指示**: 「レイド来たときの自配信紹介プロンプトが古いままなので、VM や現在の配信にあわせてアップデートしたい」。
+- **実測で見つけた食い違い（すべて VM 実測）**:
+  1. **メリケンAI の登場条件が古い** — プロンプトは「中華AIが戦略改善モードの時だけソ連ゲーム91をプレイ」。
+     実際は `.env` に `SOREN91_DAILY_ENABLED=1`（`EARLIEST_HOUR=8` / `LATEST_START_HOUR=22` /
+     `DURATION_SEC=180`）で **1 日 1 回の枠**があり、`tmp/state/soren91_daily.json` は本日
+     `status=completed`（started 23:20 / ended 23:25）。さらに `_broadcast_host_mode`
+     （`broadcast/radio_persona.sh:102`）は改善状態ではなく **`soren91_is_running` で切り替わる**。
+  2. **配信先が Twitch だけの説明だった** — 実際は ffmpeg → nginx-rtmp（`/etc/soren-rtmp/nginx.conf`）
+     + stunnel（Kick の RTMPS ブリッジ）で **Twitch / YouTube / Kick の 3 か所へ同時配信**。
+     `chat_worker` / `youtube_worker` / `kick_worker`（slug=dociai）とも稼働中。
+  3. **日英読み上げと字幕に触れていない** — 英語コメントは分類 → 翻訳 → 順序マージで日英両方読む
+     （`broadcast/comment.sh:3313` のログ）。`direct_stream_status.sh` は
+     `closed_captions: {active: true}`（ffmpeg `-a53cc 1` + docichcc フィルタ）。
+  4. **ラジオコーナーに触れていない** — 直近 40 件の内訳は jiji 19 / news 13 / theme 3 /
+     local_japan 3 / whatday 1 / soviet 1。
+  5. **チャネルポイント予想（サナエトークン）は停止中** — `tmp/state/prediction_worker.paused`
+     は **2026-08-22 05:21 に webui から**作られたまま（`{"paused":true,"source":"webui"}`）、
+     pid ファイルも無い。`comment_template.md` には「トークンを賭けて参加できます」という
+     案内が残っており、レイド客に**動いていない機能を案内しうる**状態だった。
+- **修正 (`games/soviet_now` commit `2f0204a05`)**:
+  - `prompts/comment_channel_intro_{main,soren91}.md`: **自配信紹介の事実の単一ソース**として書き直し。
+    3 プラットフォーム同時配信 / 日英読み上げ・字幕 / ラジオコーナー / メリケンAI の正しい登場条件を
+    「話の流れに合うものだけ短く添える」形にした（全部を並べ立てさせない）。
+    soren91 版は「改善中の代打」か「1 日 1 回の枠」かを **運用状況メモの改善行で判断**させる。
+  - `prompts/comment_response_raid.md`: 項目 5 の英語直書き（speedruns〜/ only plays the sequel〜）を削除し、
+    **紹介メモと【いまの配信・運用状況メモ】だけを事実の出所**にする指示へ差し替え。
+    `${comment_ops_context}` を追加し、レイド時は「今どちらの AI が画面に出ているか」を
+    言ってよいと明示（通常コメントでは自分から出さない、との違い）。末尾の重複変数も整理。
+  - `prompts/comment_template.md`: レイド項目 5 の古いメリケンAI条件を削除。
+  - `broadcast/comment.sh`: 予想が**停止中のときだけ** 1 行出す（稼働中は行そのものを出さないので増分ゼロ）。
+  - `tests/test_comment_ops_context.sh`: 24 → **33 assertion**（予想の停止/稼働、レイドの直書き除去、
+    3 プラットフォーム記載を検査）。
+- **検証**: 新テスト 33/33 pass（ローカル・VM とも）、既存 comment 系 3 本 pass、
+  `test_country_stage_names` + `test_comment_bilingual` 54 pass。
+  実 VM 状態でレイドプロンプトを描画して実測（7,111 バイト。運用状況メモ + 紹介メモが正しく展開）。
+- **VM 反映**: `.codex_deploy/backup-20260826-233246-raid-intro/` へ退避 → staging → `mv`、
+  **SHA256 6 ファイル全一致**。chat 23:34:38 / kick 23:34:50 / youtube 23:34:57 `reload complete`。
+- **監視**: ユーザー指示により「今なにしてる」系コメントとその返答、運用状況メモの欠落・未置換を
+  監視する常駐ウォッチャーを起動済み（VM のコメント履歴と生成プロンプトをポーリング）。
+- **未確認 / 次にやること**:
+  - **実レイドでの出力は未実測**（レイド発生待ち）。nightbot 通知がないと経路自体が走らない。
+  - 予想（サナエトークン）を再開する場合は `prediction_worker.paused` を消す運用が必要。
+    再開すればメモの停止行は自動で消える。
+  - `comment_template.md` の予想セクション本体（サナエトークンの仕組み説明）は残してある。
+    停止が長期化するなら本文側も整理するか要判断。
+
 ## 2026-08-26 23:0x-23:2x JST — コメント返しプロンプトへ「いまの配信・運用状況メモ」を追加（VM 状態 + handoff 反映）
 
 - **ユーザー要望**: 「コメント返し用のプロンプトには、現状の VM の状態や handoff を反映したい。
