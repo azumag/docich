@@ -4,6 +4,108 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: v739 LOOKAHEAD（2 手先読み、hash 8fcb13b11d0c）を実装・オフライン検証（変更 3.3%、併合喪失 0）し、16:10 から v736(A) vs v739(B) のインターリーブ A/B を実行中（主指標 併合/手、74/腕）。A/B ゲートは dry-run で改善 daemon 再稼働中。状況は VM で `bash tools/ab_ctl.sh status`。
 
+## 2026-08-26 17:5x-18:2x JST — コメント滞留中はニュース(ラジオ)の音声合成を即中断してコメントを優先（実装・本番反映・ライブ実測済み）
+
+- **ユーザー指示**: 「ニュースの再生合成(voicevox)が重くてコメント返信が遅れるので、コメントキューがあるときは、
+  ニュースの音声合成が始まっていてもキャンセルし、コメント消化を先にする」。
+- **原因（実測で特定）**: 背景の `radio_render:*`（deferred ラジオの事前合成）とコメントの
+  ストリーミング合成が VOICEVOX 合成ロックを**チャンク単位で 1:1 交互**に奪い合っていた。
+  `_acquire_voicevox_synth_lock` の priority waiter はコメントがロックを取った瞬間に消えるため、
+  背景ラジオ側の「90秒譲ったら諦める」上限に永久に到達せず、実質ずっと ping-pong する構造だった。
+  - 実測 (`logs/audio_worker.log` 17:34:33-17:42:24): ラジオ chunk8→chunk16 の各境界で
+    `優先音声の合成完了待ち (background radio)` を出しつつ、コメント1チャンク→ラジオ1チャンクを交互に実行。
+  - コメント側チャンク合成: 交互時 **約50〜60秒/チャンク**（17:34 の comment、18:03 の comment は
+    6分経っても chunk 7）、ラジオ非稼働時 約20〜30秒/チャンク。**約2倍に伸びていた**。
+  - 背景: VM は 4 vCPU / load average 13 で慢性的に CPU 飽和。VOICEVOX 単体でも 100字チャンクに 20〜30秒かかる。
+- **変更 (soviet_now `35ebac77e` + `df7a98e73`, ブランチ `codex/no-apply-liveliness`（push 済み）)**:
+  - `say_enqueue.sh`
+    - `_comment_backlog_pending`: `comment_*.txt`（未再生）と `comment_*.playing`（合成・再生中）の両方を検出。
+    - `_radio_render_should_abort_for_comment`: 対象は `radio_render:*`（背景合成）のみ。
+      コメント自身・ラジオ「再生」(`radio:*`) は対象外。
+    - `_synthesize_chunk_yielding`: チャンク合成を背景ジョブで走らせ 1 秒ポーリング。コメントを検知したら
+      `_kill_process_tree` で timeout→env→bash→docich まで確実に停止し、中途 WAV を削除して rc=9。
+      チャンク開始前にもチェック。中断時は `exit 75`。
+    - **部分レンダーの保持と再開**: ラジオ render のチャンクを `tmp/.say_queue/render_<キュー名>/` の
+      固定パスに置き、中断しても捨てない。次回は `source_stamp`（本文ハッシュ＋チャンク数）が一致すれば
+      合成済みチャンクを再利用して続きから再開する。render 完了時にディレクトリ削除。
+      （毎回チャンク0からやり直すと ready.wav に永久に到達しない。旧コードのコメントにも同じ罠が記録されていた）
+  - `broadcast/radio_state.sh`: rc=75 は失敗ではなく意図的な譲りなので、指数バックオフ(30→300秒)を進めず
+    `RADIO_RENDER_COMMENT_YIELD_RETRY_SEC`（既定 20 秒）で再開予約する
+    (`_radio_schedule_deferred_render_yield_retry`)。実再開は既存の「コメント残数 0 ゲート」で更に抑えられる。
+  - `infra/cleanup.sh`: `tmp/.say_queue/render_*` 残骸の GC（180分）。
+  - `tests/test_radio_comment_priority_abort.sh`（新規, 21 assertion）。ローカル・VM とも 21/21 pass。
+    既存の `test_say_voicevox_priority.sh` / `test_say_voicevox_fairness.sh` / `test_radio_render_retry.sh` /
+    `test_radio_deferred_queue.sh` / `test_radio_caption_bundle.sh` / `test_radio_backpressure.sh` /
+    `test_radio_time_sync.sh` / `test_peak_hour_queue_gate.sh` / `test_say_streaming.py` も全て pass。
+  - **knob**: `RADIO_RENDER_COMMENT_ABORT=0` で従来の交互合成に戻せる。`core/config.sh` には**入れていない**
+    （同ファイルが別セッションの podcast 変更で未コミット状態だったため巻き込み回避）。既定値は
+    `say_enqueue.sh` / `broadcast/radio_state.sh` 内の `${VAR:-...}` にあり、`.env` で上書きできる。
+- **VM 反映**: 18:05:49 に `say_enqueue.sh` / `broadcast/radio_state.sh` / `infra/cleanup.sh` / 新テストを scp、
+  sha256 一致を確認。worker 再起動は不要（audio_worker は毎周回 `eloop_lib.sh` を再 source し、
+  `say_enqueue.sh` は毎回新規プロセス）。
+  - 反映時に走っていた**旧コードの render (PID 2127046)** は、実行中スクリプトを上書きした際の
+    オフセットずれを避けるため 18:09:22 に `kill -TERM` して終了させた（`rc=143` で正規の再試行予約へ、
+    `.render_lock` / marker / stream_ ディレクトリも trap で掃除済みを確認）。
+- **ライブ実測（本番、18:09-18:18 JST）**:
+  - 18:09:55 新コードで render 開始 → チャンクが `tmp/.say_queue/render_radio_1787726720_45782_news_896/` へ出力（新パス動作確認）。
+  - 18:13:04 コメント着弾 → `コメント優先: ラジオ事前合成を合成中に中断 (チャンク8/21)` →
+    `合成済みチャンクを保持（次回再開用）` → `render-only 一時保留（コメント優先）` →
+    18:13:08 `[RADIO:deferred] コメント優先で合成を中断・保留（合成済みチャンクは保持）… retry=1 in=20s`。
+    **合成の途中でキャンセルされることを実測**。
+  - そのコメント (405字/6チャンク) は chunk_0 を **15 秒**で合成し 18:13:24 に発話開始。
+    交互合成時の 28〜33 秒（17:44/17:49 の実測）から短縮。全 6 チャンクを 18:13:09→18:15:30 の
+    **141 秒**（約23.5秒/チャンク）で消化＝交互時の約50〜60秒/チャンクの半分以下。
+  - 18:15:43 コメント完了 → 18:15:44 render 再開、**チャンク1〜7を再利用**（`事前合成を再利用`）して
+    chunk 8 から続行。18:17:31 時点で 11/21 まで進行。**中断しても進捗を失わないことを実測**。
+- **未確認/残**:
+  - ニュース**再生中**（`radio:news`, `SAY_DISABLE_COMMENT_YIELD=1`）はコメントに譲らない仕様のまま。
+    実測では 17:45:42-17:49:38 の約4分の再生中に 17:47:21 のコメントが 17:49:45 まで **2分24秒**待った。
+    今回の指示は「合成のキャンセル」だったので再生側は変更していない。再生も割り込むかは要判断
+    （文の途中で切れるため配信上の副作用がある）。
+  - VOICEVOX 自体の遅さ（4 vCPU / load 13 で 100字あたり20〜30秒）は未改善。根本的にはリソース側の問題。
+  - 中断が頻発する時間帯にニュース render が完走しきるかの長時間観察は未実施（部分再開があるため
+    理論上は必ず前進するが、ピーク時の実測は今後）。
+
+## 2026-08-26 18:0x JST — 配信リレーとコメント取得の Kick 対応（実装・コミット済み / 配信開始は未実測）
+
+- **ユーザー指示**: 配信リレーを Kick にも対応させ、コメント取得も Kick に対応させる。サーバURL/キーは `/tmp/kickrtmp` `/tmp/kickkey` に用意された。
+
+### 実測で確定した事実
+- **Kick の ingest は RTMPS(443) のみ受理し、平文RTMP(1935) を拒否する**。VM から ffmpeg で実測:
+  平文 = `Error opening output ... Input/output error`、RTMPS = 成功（rc=0）。
+  ホストは `fa723fc1b171.global-contribute.live-video.net`（Amazon IVS 系、キーは `sk_us-` 形式）。
+- **キーの所属チャンネルは Kick の `dociai`**。テスト配信中に Kick API を叩き `dociai` だけ LIVE になることを確認（`azumag` は offline のまま）。
+- **nginx-rtmp の push は RTMPS 非対応**（モジュールに rtmps 実装なし）。→ ループバックの TLS ブリッジが必要。
+- **ブリッジ越しでも Kick は受理する**（RTMP の tcUrl ホストは見ていない）。ローカルTLS中継経由の ffmpeg push が成功。
+- **TLS の負荷はほぼ無い**: 本番同等（1280x720@30 / 4500k+160k）で中継プロセスは 1コアの 0.9〜1.2%、RSS 18MB（Python実装での上限値。stunnel はこれより低い）。
+  VM は AES-NI 搭載で AES-128-GCM 2.65GB/s/コア、配信は 0.59MB/s なので暗号自体は 1コアの 0.02%。増えるのは送出帯域 9.4→14.1 Mbps。
+- **Kick チャットは公開 Pusher チャンネルを匿名購読できる**。`chatrooms.<chatroom_id>.v2` を購読して `ChatMessageEvent` を受信できることを、混雑中の実チャンネル(lonche)で実測（本文・投稿者・IDが取れる）。`dociai` の chatroom_id は 124700318。
+
+### 実装（soviet_now `e6e61a625` / docich `bf039ac`、push 済み）
+- 配信リレー: `install_rtmps_bridge.sh` + `deploy/soren-rtmp/{rtmps-bridge.conf.template,soren-rtmps-bridge.service}`。
+  stunnel を `soren-relay` ユーザーの専用ユニットで動かし、`127.0.0.1:19351` → RTMPS 443 へ中継する。
+  **配信キーは従来どおり `/etc/soren-rtmp/push.conf` だけに置く**（ブリッジ設定にも argv にも出ない）。ingest ホストは `--host` で渡しリポジトリに残さない。
+- コメント取得: `kick_chat_daemon.mjs`（Pusher 購読 → raw.log へ `id=<msg-id>\t<user>: <本文>`）、
+  `kick_chat.sh`（twitch_chat.sh と同じ fetch/ack/ack-batch 契約）、`workers/kick_worker.sh`（daemon 死活監視＋`generate_comment_response kick`）。
+  `broadcast/comment.sh` に `kick` ソースを追加、`start_all.sh` / `reload_worker.sh` / `show_status.sh`(KickW 行) / `core/config.sh` に登録。
+- テスト: `tests/test_rtmps_bridge.py`(8件)、`tests/test_kick_chat.sh`(11件)、`tests/test_kick_chat_daemon.mjs`（偽 Pusher サーバでネットワーク非依存）。いずれも green。
+
+### VM の状態
+- `.env` に `KICK_CHAT_ENABLED=1` / `KICK_CHANNEL=dociai` / `KICK_CHATROOM_ID=124700318` / `KICK_IGNORE_AUTHORS="dociai DoCiAI"` を追記（バックアップ `.env.bak.20260826_kick`）。
+- `workers/kick_worker.sh` を手動起動済み。daemon が本番 chatroom 124700318 に接続していることをログで確認。
+  ※ supervisor は起動時に worker 一覧を読むため、`kick_worker` の supervisor 管理は次回 supervisor 再起動から。
+
+### 未完了 / 未実測（重要）
+- **stunnel のインストールが未実施**: `apt`/`systemctl` がエージェント権限で弾かれたため、VM で以下を人手実行する必要がある。
+  `cd /home/ubuntu/soren && ./install_rtmps_bridge.sh --install --host fa723fc1b171.global-contribute.live-video.net --name kick --local-port 19351 --confirm-package-install`
+- **push.conf への Kick 追加・relay reload・publisher 再起動が未実施** → **Kick への実配信はまだ始まっていない**。
+  `push rtmp://127.0.0.1:19351/app/<KICK_KEY>;` を `sudoedit /etc/soren-rtmp/push.conf` で追記 → `sudo nginx -t -c /etc/soren-rtmp/nginx.conf` → `sudo systemctl reload soren-rtmp-relay.service` → `direct_stream` を落として supervisor に再起動させる。
+  **reload だけでは効かない**（nginx は旧worker が既存 publish 接続を持ち続けるため、追加 push は次の publish セッションから）。再起動時 Twitch/YouTube も数秒途切れる（ユーザー承諾済み）。
+- **Kick の実コメントが読めることは未実測**（`dociai` のチャットに実際の投稿が無いため）。仕組み自体は他チャンネルで実測済み。
+- **Kick への送信（返答の投稿）は未対応**。Kick 側の認証が別途必要。返答は Twitch / YouTube にだけ出る。
+- **注意（作業手順の反省）**: VM へ scp する前に VM 側の差分を確認しなかった。今回は上書き後の全体照合で
+  コードファイルの乖離は自分の変更分だけだったが、`/home/ubuntu/soren` は git 管理外なので**次回は scp 前に必ず差分を取る**。
+
 ## 2026-08-26 16:5x JST — Twitch チャットで「あずまぐ」(azumagbanjo) のコメントを再び読むようにした
 
 - **ユーザー指示**: 「あずまぐ」からのコメントを無視せず読むようにする。
