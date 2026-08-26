@@ -217,6 +217,55 @@
   「経過48hか/次の自然切断が夜中に落ちるか」を見て介入を遅らせる案は提示したが、**変更不要**との回答。以後この方針を勝手に変えないこと。
 - **残（未測定）**: 180 秒はマージ猶予の上限を厳密に測った値ではない（**35秒＝マージ / 180秒＝回転** を実測、境界は未測定）。短縮したい場合は `STREAM_NOON_AUDIT_OFFLINE_HOLD_SEC` を下げ、marker の outcome が `restart_session_merged` にならないか観察すること。
 
+## 2026-08-26 15:xx-18:5x JST — docich#10: ポッドキャストの動画化と YouTube 公開まで到達（初回エピソード公開済み・日次自動化まで完了）
+
+- **公開済み**: https://www.youtube.com/watch?v=jOPFZKSvm3c 「【8/25】揺らぐ世界で問われる連帯と暮らし｜同志のための時事ニュース」
+  53分34秒 / 1920x1080 / public / チャンネル **同志Ch (UCdlddCsAmT4cYMMSTO7kBvw)**。
+  再生リスト `PLNycKe9FEAGU`「同志のための時事ニュース」へ追加、**podcastStatus=enabled** を実測確認。
+- **音声の確定仕様（ユーザーが聴き比べて決定）**: 話者109 / 話速1.2 / ピッチ-0.02 / ny ポーズ補正**オフ** /
+  BGM インターナショナル 0.15 / コーナー区切りは「無音2.6秒 → 見出し読み上げ → 無音0.5秒」。
+  すべてポッドキャスト側の env で渡し、**配信側の設定は不変**（VM の tempo map は 109→1.15 のまま）。
+- **ny ポーズ補正の件（重要な発見）**: docich `apply_ny_pause_fix` は i 母音直後の「ニュ」の前に 0.20 秒の
+  ポーズを強制挿入する。番組名「同志のための時事ニュース」が ジジ‖ニュウス に割れて聞こえていた原因。
+  A/B 実測 1.781s vs 1.611s（差 0.171s = 0.20/1.2）。silencedetect には出ない（ノイズフロア付きで書き出されるため）。
+  導入理由の記録は git 履歴を遡っても見つからず**未確認**。ポッドキャストのみ `PODCAST_NY_PAUSE_FIX=0` で無効化。
+- **編成の設計**: 「1日分をそのまま連結」は **3〜5時間**になる（実測 08-19〜08-25 で 2h43m〜5h24m、平均4h）。
+  VOICEVOX 実測 **306字/分**（話速1.0）/ **367字/分**（1.2）。要約→構成案→コーナー執筆の三段で 1 本の番組へ。
+  生成は **codex CLI + gpt-5.6-luna**（`--output-schema` で JSON 強制。旧 opencode_go は 59,909字1発で15分タイムアウト）。
+- **【最重要】ffmpeg のメモリ 30GB → 2.27GB**: 1本の filter_complex に画像concat（1枚69秒保持=実質0.014fps）・
+  字幕トラック（30fps）・showwaves（30fps）を同居させると、overlay が遅い側を待つ間に速い側を溜め込む。
+  `1920x1080x4B x 69s x 30fps ≒ 17GB`。frame=0 のまま526秒進まず出力48バイトだった。
+  **対策**: (1) 背景を先に 30fps CFR の中間ファイルへ書き出す2段構成 (2) 字幕PNGを全画面から実際に使う帯
+  (1762x230、全画面比19%) へ切り詰め（8.3MB→1.4MB/frame） (3) 波形は2段目で asplit して重ねる。
+  **フル尺53分の実測: ピーク2.27GB / 所要5分57秒 / 299MB**。長さに比例しない（150秒テストで2.50GB）。
+- **この環境の ffmpeg 8.0.1 には libass が無い**（`subtitles`/`ass` フィルタ不在）。ASS 焼き込みは使えず PNG 方式。
+- **字幕**: doci の `build_subtitles` / `_render_caption_png` / `_wrap` をそのまま流用。ただしチャンク上限が
+  9:16 前提の26字なので **16:9 の46字（1行23字x2行）へ広げる**必要があった（26字のままだと語の途中で切れる）。
+  タイミングは `<date>.segments.json`（文単位 start/end）。音声と動画が同じ合成結果を共有するのでズレない。
+- **素材**: シーンは文境界を割らずに65秒ごと（53分で46枚）。検索語は **LLM に英語で作らせる**
+  （日本語キーワード抽出だと「パーセント」「万人」が混ざり Pexels の関連度が落ちた）。取得は `doci.assets.fetch_image`。
+- **YouTube 認証の落とし穴**: Google は増分認可で要求より多いスコープを返し、oauthlib が例外にする
+  （`Scope has changed ...`）。**`OAUTHLIB_RELAX_TOKEN_SCOPE=1`** で回避。publish/short_video 両方に設定済み。
+  取得できたスコープは upload / readonly / **force-ssl**。
+- **Podcast 指定は初回のみ Studio 必須**: API の `playlists.update` に `status.podcastStatus=enabled` を渡すと
+  `400 failedPrecondition`。`podcastStatus` を外した update は成功するので権限問題ではない。
+  動画の processingStatus=succeeded 後も同じ。**ユーザーが Studio で手動指定したら enabled になった**。
+  以降のエピソードは再生リストに追加するだけでエピソード扱い。API 側の前提条件は公式に明記が無く**未確認**。
+- **クレジット**: VOICEVOX は表記が規約上必須（東北イタコ: 動画内または概要欄に「VOICEVOX:東北イタコ」、
+  https://zunko.jp/con_ongen_kiyaku.html）。説明欄へ自動挿入。公開済み動画にも遡って反映済み。
+  **BGM のインターナショナル音源の出所は不明で、クレジットは空のまま（ユーザー保留）**。
+- **日次自動化（Mac launchd 04:30、明日から）**: `tools/podcast_daily.sh` が
+  音声(13分) → 動画(6分) → 公開(30秒) を通しで実行。前段失敗で停止、lock で多重起動防止。
+  06:00 の Short 動画ジョブより前に終わる。`PODCAST_SKIP_AUDIO/VIDEO` `PODCAST_AUTO_PUBLISH` で段ごとに停止可。
+  **無人で public 公開する設定（ユーザー承認済み）**。
+- **反映**: soviet_now `631fca749` `c764f90af` `18f01fe3f` push 済み。
+  VM へは **config.sh と podcast_build.py のみ** scp（動画化・公開は doci/Pillow/Chrome 依存で VM では動かないため送らない）。
+  SHA256 一致・構文チェック OK・配信影響なし。
+- **成果物**: `output/podcast/` に mp3 / mp4 / script.txt / segments.json / chapters.json / description.txt /
+  publish.json / **podcast_cover.png（1280x1280 カバーアート）** / **podcast_show.txt（説明文4種）**。
+- **残**: (1) R2 等への MP3/RSS 公開は**ユーザー保留**（`PODCAST_BASE_URL` は example.com のまま、購読不可）
+  (2) BGM クレジット保留 (3) ソ連ネタ動画はスケジュール未登録 (4) Mac スリープ時に生成が飛ぶ点の運用整理。
+
 ## 2026-08-26 04:3x-05:5x JST — docich#10: Podcast を VM->Mac へ移設 + 「1日1本の番組へ編成し直す」設計へ作り替え + Short 投稿導線
 
 - **VM 実績の確定（実測）**: `podcast.timer` の 08-25 05:30 実行(08-24分)は 05:30→07:17 の **1h47m** を消費し、
