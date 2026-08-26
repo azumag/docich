@@ -2,7 +2,16 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: v741（序盤ジャンク隅寄せ、f93dbf2edf97）の実戦 A/B は k=7（各 14）で mean(B−A) −528、UCB90 −235 → 事前登録どおり害停止（REJECT_HARM）、07:30 `finish A` で v736（253cc67e0c1b）継続。自己対戦 +313 との乖離は診断の結果「機構・物理・タグ分布は両環境で同一」で環境差説は否定、残るのは局所ハーネスの B 腕バイアス（A/A でも B +236）か実戦 n=14 のノイズ。切り分けに 07:37 から局所で腕入替え自己対戦（A=v741/B=v736、60 試合、`selfplay_root/tmp/selfplay/v741_swap`、~08:40）を実行中。次 tick: `v741_swap/ab_state.json`・`games/` を集計し、B(v736) 勝ちならハーネスの B 腕バイアス確定（局所 A/B はクロスオーバー必須化）、v741 勝ちなら v741 棚上げのまま実戦 A/B の n 増加へ。v741 は本番採用しない。
+> 直前セッション: v741 は実戦 A/B で害停止（−528）→ v736 継続、リポジトリの strategy.py も v736 に戻した（sn-mine `a0e8a9f59`）。腕入替え自己対戦（60 試合）は v741 +52 で、元向き +313 と合わせると局所ハーネスの B 腕バイアス ≈ +130、v741 の局所効果 ≈ +183 — 実戦 −528 との乖離は残る。次に疑うのは実戦 A/B 計測器（v738 −411、v741 −528 と候補 2 本連続で B 腕 z≈−2）なので、08:38 から**実戦 A/A**（A=v736 root 253cc67e0c1b、B=v736+無害 1 文 6bfc2fb0c486、ABBA、REGRESSION_DISABLED=1）を開始。事前登録: k≥10 ブロック（40 試合、~11:30）まで回し、mean(B−A) の UCB90<0 なら実戦計測器の B 腕バイアス確定（候補 A/B は全て再評価）、LCB90>−300 なら計測器は健全＝乖離は真因未特定のまま v741 棚上げ。各 tick で `bash tools/ab_ctl.sh status` を見るだけで、**途中で finish しない**（害停止は A/A には適用しない）。終了時は `finish A`。オフライン再生ツール ab737.py には「同一ファイルでも changed 3.0%」のアーティファクトがあり、過去の changed% は 3.0 を引いて読む。
+
+## 2026-08-27 08:1x-08:5x JST — 腕入替え自己対戦で局所ハーネスの B 腕バイアス ≈ +130 を実測 / 実戦 A/A（計測器検証）を開始 / リポジトリを v736 へ戻した
+
+- **腕入替え自己対戦（A=v741 f93dbf2edf97 / B=v736、4 slots × 15、ABBA stagger、`selfplay_root/tmp/selfplay/v741_swap`、07:37–08:40）**: score A(v741) 1684 / B(v736) 1632、ブロック k=15 mean(B−A)=−56（SE 145、p 0.72）→ v741 +52。元向き（B=v741）は +313 だったので、連立で **局所ハーネスの B 腕バイアス ≈ +130、v741 の局所効果 ≈ +183（SE≈100）**。A/A 較正の B +236 とも整合。**局所 A/B は今後クロスオーバー（両向き）必須**。バイアスの機序は未特定（候補: B 腕だけ候補 dir を都度準備／bridge リセットの差）。
+- **乖離は残る**: 局所 +183 vs 実戦 −528（SE 229）、異質性 z≈2.8。機構・物理・タグ分布は両環境で同一（07:3x 節）なので、次に疑うのは**実戦 A/B 計測器**（v738 −411 p 0.055、v741 −528 p 0.08 と候補 2 本連続で B 腕が z≈−2。偶然なら ~1/400）。
+- **実戦 A/A 開始（08:38:39）**: B = VM root strategy.py の `def decide` 直後に `_aa_probe = 1` を 1 行挿入（`tmp/manual_challenge/strategy_aa.py`、hash `6bfc2fb0c486`、ast parse OK）。`bash tools/ab_ctl.sh start tmp/manual_challenge/strategy_aa.py ABBA` → state a=253cc67e0c1b b=6bfc2fb0c486、`.env` REGRESSION_DISABLED=1（元 0）、SOREN_AB_ALT_STRATEGY=tmp/state/ab_alt_strategy.py。ゲートは dry-run のまま（`would finish` ログのみ）。**事前登録**: k≥10 ブロック（40 試合、実戦ペース ~13/h で ~11:30）まで途中停止しない。判定: mean(B−A) の UCB90<0 → 実戦計測器に B 腕バイアスあり（v738/v741 の判定は無効、機序調査へ）。LCB90>−300 → 計測器は健全（MDE ≈ 300）＝乖離は真因未特定、v741 は棚上げ継続。終了は `bash tools/ab_ctl.sh finish A "A/A instrument check"`（root 不変、REGRESSION_DISABLED を 0 に戻す）。finish 後の迷子 `tmp/state/ab_{state,games}` は履歴へ統合して削除。
+- **オフライン再生ツールのアーティファクト**: `scratchpad/v737/ab737.py` で無害プローブが changed 338/11155（3.0%）。deep-copy を入れても同じ、**v736 の同一コピーでも 338**（probe と完全一致）→ CUR（cwd import）と spec-load モジュールの差によるツール起因。過去の候補 changed%（v741 4.6%、LLM 候補 8%）は 3.0 を引いて読む。修正（CUR も同じ経路で load）は未実施。
+- **リポジトリ整合**: sn-mine（`codex/no-apply-liveliness`）の strategy.py を VM 本番 v736（バイト一致を diff で確認）に戻し `tests/test_junk_consolidation.py` を削除（fixture は残置）→ commit `a0e8a9f59`、push 済み。v741 本体は git 履歴 `8edcb8e34` と VM `tmp/manual_challenge/strategy_f93dbf2edf97.py` に残る。
+- **未確認**: 実戦計測器のバイアス有無（A/A 進行中）、局所 B 腕バイアスの機序。作業バナー「A/B 計測器検証」は A/A 中は点灯のまま。soren91 作業並行中（load 9–10）。
 
 ## 2026-08-27 07:3x JST — v741 実戦 A/B は害停止（REJECT_HARM）で不採用 → v736 継続 / 自己対戦(+313)と実戦(−528)の乖離を調査中
 
