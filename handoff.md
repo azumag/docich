@@ -4,6 +4,57 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: v739 LOOKAHEAD（2 手先読み、hash 8fcb13b11d0c）を実装・オフライン検証（変更 3.3%、併合喪失 0）し、16:10 から v736(A) vs v739(B) のインターリーブ A/B を実行中（主指標 併合/手、74/腕）。A/B ゲートは dry-run で改善 daemon 再稼働中。状況は VM で `bash tools/ab_ctl.sh status`。
 
+## 2026-08-26 22:5x-23:1x JST — 時事(jiji)コーナーの繰り返し読み上げを修正: 同じ事件の別媒体見出しが「未読」を素通りしていた
+
+- **ユーザー報告**: 「パキスタンのニュースも何度も読まれてるよ」。
+- **実測した事実**（`tmp/history/.past_jiji_titles.txt` と `logs` の `[JIJI] AI調査中:` 行）:
+  - パキスタン病院火災 **3 回** — 15:09 Reuters「At least 15 infants killed in Islamabad hospital fire」/
+    17:30 Al Jazeera「At least 14 newborn babies killed in Pakistan hospital nursery fire」/
+    19:12 NYT「14 Newborns Die in Hospital Fire in Pakistan's Capital」。
+    さらに 4 本目「Fire in a hospital nursery kills 14 newborns… - AP News」が候補に残っていた。
+  - ホルムズ海峡のイラン・オマーン合意 **3 回**（FT 15:30 / CNBC 17:25 / CBS 18:40）。
+  - ネパール鉄砲水 **2 回**（AP 21:14 / BBC 21:30）。西岸の入植者包囲も媒体違いで複数回。
+- **原因（news 側とは別物）**: jiji は Google News 見出しを使うが、既読判定は
+  **タイトル一致と URL 一致だけ**。同じ事件でも媒体が違えば見出しも URL も違うので全部「未読」になる。
+  加えて jiji の**自主探索モードは既読記録を丸ごとスキップ**していた（news 側と同じ穴）。
+- **修正 (`games/soviet_now` commit `74d39cbfa`)**:
+  - `lib/news_filter.py`: 見出しの内容語（`event_tokens`）の重なりで同一事件を判定する
+    `same_event` を追加し、`filter_unread` に組み込んだ。
+    - 末尾の `" - 媒体名"` は落とす（媒体名は同一性と無関係で共通語になりやすい）。
+    - `ukraine` / `iran` のような期間中の頻出語は `generic_tokens`（コーパス = 既読 60 件 + 候補）
+      で割り出して判定から除外する。除外しないと
+      「Vatican foreign minister … Ukraine war must end」と
+      「Ukraine needs changes to avoid losing war … minister says」を誤って同一視した（実測）。
+      コーパスが 80 件未満なら頻出語判定自体を行わない（1 事件の別媒体見出しが数本並ぶだけで
+      その事件固有の語が閾値を超えてしまうため）。
+    - batch 内の比較は**採用・不採用にかかわらず**記録する。
+      「Islamabad hospital fire」と「Hospital Fire in Pakistan's Capital」は直接は結び付かず、
+      間に入る Al Jazeera 見出しを経由してしか繋がらない。
+    - 切戻し `NEWS_EVENT_DEDUP=0`、閾値 `NEWS_EVENT_OVERLAP_MIN`（既定 3）、
+      履歴窓 `NEWS_EVENT_HISTORY_LIMIT`（既定 60）。
+  - `broadcast/radio_corners.sh`: jiji 自主探索でも生成後の見出し（無ければ要約行）を
+    `_append_jiji_read_title` で既読台帳へ記録。プロンプトにも
+    【この番組で既に扱ったニュース話題】を渡す。
+  - `tests/test_news_event_dedup.py`（新規 12 件）+ `tests/fixtures/` に**当日の本番データ**
+    （既読 100 件・候補 41 件）をフィクスチャとして同梱。
+- **検証（実データ）**: ローカル・VM とも 12/12 pass。本番スナップショットで候補 41 件のうち
+  **4 件が「既読事件の別見出し」として落ち**（パキスタン AP 版 / Hormuz 船舶通航量 /
+  済州島失踪 / 中東大使館復帰）、別事件（Hormuz のタンカー攻撃、Vatican の発言）は残ることを実測。
+  VM 上のライブデータでも 40 → 36 件。既存 radio 系テストも pass。
+- **VM 反映**: `.codex_deploy/backup-20260826-230608-event-dedup/` へ退避 → staging → `mv`、
+  SHA256 4 ファイル全一致。`radio_worker` USR1 → 23:06:41 `reload complete`。
+  `news_filter.py` はサブプロセス実行なので reload 不要。
+- **注意（他セッションとの並行作業）**: `games/soviet_now` の作業ブランチが作業中に
+  `codex/no-apply-liveliness` → `codex/issue-23-soren91-daily` へ切り替わっていた（別セッション）。
+  自分のコミット 3 本は現ブランチの祖先として残っており取りこぼしなし。
+  `git add` は自分のファイルだけを明示指定したので、相手の未ステージ変更
+  （`broadcast/comment.sh` / `prompts/comment_*`）は巻き込んでいない。
+- **未確認**: 本番のライブ実行で `[JIJI] 自主探索の既読記録:` が出ること、
+  および同一事件の見出しが実際に選ばれなくなること（次回発生待ち）。
+- **残課題**: jiji 自主探索時の `--selected-news` にプレースホルダ文
+  「最近の注目ニュースやトレンドを自分で探して1つ選んでください」が入り、
+  オーバーレイのニュース見出し表示がそれになる。今回は触っていない。
+
 ## 2026-08-26 21:2x-21:5x JST — 同じニュース(ドリー・パートン死去)を1日4回読み上げた問題を修正
 
 - **ユーザー報告**: 「ドリー・パートンのニュースが３回も読まれている」。
