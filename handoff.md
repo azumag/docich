@@ -19,7 +19,7 @@
 - **VM反映**: `.codex_deploy/backup-20260827-capitalism-voice-d1f52bbf4/` へ退避して反映。
   radio worker は 01:56:20 USR1、01:56:22 `reload complete`。稼働関数は
   `capitalism=14` / `news=`。反映後の次回capitalismは 01:59:56 に
-  **`VOICEVOX 事前合成 speaker=14`** で実合成を開始した。
+  **`VOICEVOX 事前合成 speaker=14`** で実合成し、02:03:55 に12チャンクの実再生を開始した。
 
 ## 2026-08-27 01:0x-01:1x JST — メリケンAI の在否をプロンプト直書きから実測値へ（23:3x に書いた紹介文が 30 分で陳腐化した）
 
