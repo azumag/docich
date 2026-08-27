@@ -4,6 +4,14 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: **v744 実戦 A/B（A=v736 / B=v744 aa37f7327d1f、18:43 開始）は k=6（各 12）で mean(B−A) +122（SE 311、UCB90 +520）→ 害停止なし、継続中**。次の判定は look 19（各 38、~00:30）で `ab_decide`（ADOPT: n≥30・p<α/2・m≥MDE・ガードレール / REJECT_FUTILE: k≥12 & UCB90<150）。各 tick は `bash tools/ab_ctl.sh status` + `python3 tools/ab_decide.py --games tmp/state/ab_games.jsonl --state tmp/state/ab_state.json`。実戦 B 腕の機構は局所と一致（直落とし実現併合 62%）。LLM 候補 51d22b6b10e2 は局所 P/Q で ≈ −132 → 不採用（`tmp/history/ab_candidate_skipped_local_*_51d22b6b10e2/decision.txt`）。局所では v744 の再現 run（`v744_p2`/`v744_q2`、20:30–~22:00）を実行中。採用時: sn-mine の `tests/test_v744_exposure.py`＋fixtures（未コミット）と strategy.py を一緒にコミット。バナー「v744 実戦 A/B」点灯中。
 
+## 2026-08-27 20:5x-21:1x JST — ユーザー指摘 2 件の再評価（影響ベース）→ v745 = v744 ＋ NEXTNEXT_TWIN_COVER_AVOID ＋ 直落としの margin 緩和
+
+- **「併合できるのにわざとしない」の再評価**（ユーザー: 頻度でなく影響で見よ。見送りは差し引き 2 個の盤面圧迫）: 実戦直近 14 試合で「解析器 DIRECT/NEAR あり ∧ 併合以外を選択 ∧ 実際に併合せず」は **1 件のみ**（0.07/試合。タグ上 (a) と数えた 15 件の大半は runtime override `NO_TO_DIR` や物理で結局併合していた）。つまり**ユーザーが見ているのは (b)＝解析器が併合不可とするが露出双子がある手**で、v736 では **9.4%/手 ≈ 9 回/試合**、直落とし成功率 60–80% → **≈6 併合/試合の損失 ≈ 12 個分の盤面圧迫**。08:5x 以降の「小さい漏れ」という私の枠組みは影響を過小評価していた（訂正）。v744 はこれを 5.0%/手に半減、残りは deadline 余裕 <2.0 の安全フィルタ（18/22）。
+- **残りの安全フィルタの妥当性（`resid_margin.py`、実戦 14 試合の露出双子・候補あり 40 件）**: margin≥2.0（v744 発火）7、margin<2.0 33 → うち直落とし候補が交差/壁回転 19（フィルタは正当）、非交差 14（risk_top 差 平均 +0.39、うち +0.3 以内 7、margin∈[1.0,2.0) 9）。→ **v745 で margin ≥1.0 まで許可、ただし非交差かつ risk_top ≤ 元の手 +0.5**。
+- **「次々ピースの双子の上に今のピースを置いて機会を潰す」（ユーザー指摘）**: 実戦 14 試合で次々ピースの露出双子（relief≤1.0）がある手 26 回/試合、その 23%（**5.9 回/試合**）で真上に非併合で置き、次のピースが併合し損ねた 1.7 回/試合（局所 v736 2.3、v744 でも 6.7 回/試合で未対処）。**既存 `AVOID_BLOCK_NEXTNEXT` は `next_next_type == next_type` のときだけ**（strategy.py 2649 行）で一般ケースは未実装。
+- **v745（hash `df1b2c323ea9`、`selfplay_root/strategy_v745.py`）= v744 ＋ (1) `NEXTNEXT_TWIN_COVER_AVOID`: 次々ピースの露出双子（relief≤1.0）の真上を非併合手で覆う候補に −350（露出双子が複数なら −150、同じ安全条件、pre-computation は v743 の直後、ループは v743 ブロック直後）＋ (2) OPEN_TWIN の margin 閾値 2.0→1.0（margin<2.0 のときは risk_top ≤ 元の手 +0.5 を追加要件）。オフライン: changed 2210/11155（19.8%）、DIRECT 損失 0、newcross 0、risk_top −0.098。局所同時 P/Q は v744 再現 run 終了後（~22:00）に起動。
+- 実戦 A/B（v744）は継続中（21:00 時点 k≈9、次 tick で status）。
+
 ## 2026-08-27 20:1x-20:3x JST — v744 実戦 A/B k=6: +122（害停止なし）/ LLM 候補は局所 −132 で不採用 / v744 の局所再現 run 起動
 
 - **実戦 A/B 20:20 時点**: games=24（各 12）、A 1553（med 1322、90.2 手）/ B 1675（med 1568、93.2 手）、ブロック k=6 **mean(B−A)=+122（SE 311、p 0.88）、UCB90 +520** → 事前登録の害停止（UCB90<0）に該当せず CONTINUE。v741 のとき（k=6 で −871）とは異なる推移。次の判定は k≥12（REJECT_FUTILE: UCB90<150）と look 19（各 38、~00:30）。
