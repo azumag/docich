@@ -4,6 +4,13 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: v741 は実戦 A/B で害停止（−528）→ v736 継続、リポジトリの strategy.py も v736 に戻した（sn-mine `a0e8a9f59`）。腕入替え自己対戦（60 試合）は v741 +52 で、元向き +313 と合わせると局所ハーネスの B 腕バイアス ≈ +130、v741 の局所効果 ≈ +183 — 実戦 −528 との乖離は残る。次に疑うのは実戦 A/B 計測器（v738 −411、v741 −528 と候補 2 本連続で B 腕 z≈−2）なので、08:38 から**実戦 A/A**（A=v736 root 253cc67e0c1b、B=v736+無害 1 文 6bfc2fb0c486、ABBA、REGRESSION_DISABLED=1）を開始。事前登録: k≥10 ブロック（40 試合、~11:30）まで回し、mean(B−A) の UCB90<0 なら実戦計測器の B 腕バイアス確定（候補 A/B は全て再評価）、LCB90>−300 なら計測器は健全＝乖離は真因未特定のまま v741 棚上げ。各 tick で `bash tools/ab_ctl.sh status` を見るだけで、**途中で finish しない**（害停止は A/A には適用しない）。終了時は `finish A`。オフライン再生ツール ab737.py には「同一ファイルでも changed 3.0%」のアーティファクトがあり、過去の changed% は 3.0 を引いて読む。
 
+## 2026-08-27 09:1x JST — 実戦 A/A 進行中（k=3、B +321）/ 局所 B 腕バイアスはコード上の非対称なし（run 間分散の可能性大）
+
+- **実戦 A/A（08:38 開始）09:15 時点**: games=12、A 1333（n=6）/ B 1654（n=6）、ブロック k=3 mean(B−A)=+321（SE 94、p 0.24）。`ab_decide` は CONTINUE（k<6）。事前登録どおり k≥10（~11:30）まで継続、途中 finish しない。
+- **局所ハーネスの B 腕バイアス（≈+130 と推定した件）の再解釈**: `tools/selfplay_ab.py` は両腕を同じ workdir/bridge にコピーして同一手順で回し、非対称は「各スロットの g=0 だけ bridge reset なし」のみ。stagger 時は g=0 の腕が A,B,B,A で均衡するので v741 の両向き run には効かない（A/A 較正は stagger なしで g=0 が常に A → そこだけ cold-start の疑い）。両 run で v736 は 1581 / 1632 と安定、v741 が 1900 / 1684 と動いたので、+130 は「B 腕バイアス」より **v741 の run 間分散（各 SE≈100）**の可能性が高い。結論は変わらず: 局所は v741 +50〜+310 で一貫して正、実戦 −528。`ab_report.py` のブロック計算は `arm` フィールド基準で stagger と整合（確認済み）。
+- **実戦側の腕非対称も確認**: `eloop.sh` play_one_game は A/B とも `strategy_runtime_create_game_snapshot "$AB_SOURCE" … ${STRATEGY_FILE}.game_snapshot` の同一経路で、差は source パス（A=strategy.py、B=tmp/state/ab_alt_strategy.py）のみ。コード上の非対称は見つからず → A/A の実測で決める。
+- 次 tick（10:13）: `bash tools/ab_ctl.sh status` のみ。11:30 前後に k≥10 で判定 → `finish A "A/A instrument check"` → 迷子 state の統合。
+
 ## 2026-08-27 08:1x-08:5x JST — 腕入替え自己対戦で局所ハーネスの B 腕バイアス ≈ +130 を実測 / 実戦 A/A（計測器検証）を開始 / リポジトリを v736 へ戻した
 
 - **腕入替え自己対戦（A=v741 f93dbf2edf97 / B=v736、4 slots × 15、ABBA stagger、`selfplay_root/tmp/selfplay/v741_swap`、07:37–08:40）**: score A(v741) 1684 / B(v736) 1632、ブロック k=15 mean(B−A)=−56（SE 145、p 0.72）→ v741 +52。元向き（B=v741）は +313 だったので、連立で **局所ハーネスの B 腕バイアス ≈ +130、v741 の局所効果 ≈ +183（SE≈100）**。A/A 較正の B +236 とも整合。**局所 A/B は今後クロスオーバー（両向き）必須**。バイアスの機序は未特定（候補: B 腕だけ候補 dir を都度準備／bridge リセットの差）。
