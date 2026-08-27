@@ -4,6 +4,14 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: v741 JUNK_CONSOLIDATION（序盤 T1–3 の隅/塊寄せ、hash f93dbf2edf97、soviet_now 8edcb8e34）を実装・テスト済み。ローカル自己対戦 A/B（v736 vs v741）第 2 バッチ 96 試合を分離起動中（主指標 40 手時点の駒数）。第 1 バッチ 12+12 は雑音圏でわずかに B 優勢。本番は v736、改善ループ dry-run。
 
+## 2026-08-27 12:37-12:43 JST — ポッドキャスト連続回の類似タイトルを自動回避（実装・実行環境反映済み）
+
+- **ユーザー指摘**: 8/25「揺らぐ世界で問われる連帯と暮らし」と8/26「揺れる世界で問われる命と責任」が、「揺らぐ/揺れる世界で問われる…と…」という語彙・構文で似ていた。
+- **実測**: 正規化した2タイトルの `SequenceMatcher` 類似度は **0.60**。自動再生成の判定閾値を **0.55** とした。
+- **修正（soviet_now PR #129、merge `7a178aaff8` / fix `f7a36bbc1`）**: 過去7回分の `meta.json` からタイトルを新しい順に読み、生成指示へ渡す。過去タイトルの冒頭・中心語・構文を避け、その日固有の具体語を使うよう明示。生成結果が過去回と0.55以上なら最大2回再生成（計3回）し、それでも近い場合は当日の具体的な節見出しを使う決定的フォールバックへ切り替える。
+- **検証**: 新規 `tests/test_podcast_title_variety.py` 4件、既存 `tests/test_podcast_build.sh`、Python構文確認、`git diff --check` が成功。実成果物ディレクトリから8/26→8/25の順で履歴を取得できることも確認した。
+- **反映範囲**: Macの日次実行チェックアウトをmerge commitへfast-forward済み。今後の生成に適用される。公開済みの8/25・8/26のタイトルは変更していない。`prompts/ops_brief.md` も再生成してsoviet_now `4fb96adb3` へ保存・pushし、VMへバックアップ付きで配布。ローカル/VM SHA256 `2f631a9cc455183fee5b423980e6d704946c9a2ff4aa35c30517e9b659bd1192` の一致を確認した。
+
 ## 2026-08-27 04:30-12:33 JST — 日次ポッドキャストのPython起動ハングを修正、8/26分の生成・YouTube公開・Bluesky告知完了
 
 - **障害（実測）**: Mac launchd `com.azumag.soren-podcast.build` は04:30に起動したが、`tools/podcast_build.sh` が `tomllib` 対応Pythonを探す際、外付け `/Volumes/satelite` を指す `/opt/homebrew/bin/python3 -c 'import tomllib'` で約52分停止した。候補確認がログ・多重起動ロックより前かつタイムアウト無しだったため、`podcast_daily.log` は `[1/4] 音声を生成` から進まず、8/26分の成果物も無かった。
