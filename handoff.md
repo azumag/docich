@@ -4,6 +4,13 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: v744 実戦 A/B（A=v736 / B=v744 aa37f7327d1f）は k=15（31/30）で +40（SE 174、UCB90 +263）→ 継続、look 19（各 38、~00:30）で `ab_decide` 判定。ユーザー指摘（22:3x 終了の試合で終盤に併合可能なのに安全着地して死亡）を再現・原因特定: strategy の DEADLINE_GUARD「不可侵の安全不変条件」が超過フラグ付き候補を併合グレードに関係なく捨て、さらに strategy_runner.enforce_deadline_safety が併合を差し戻す。較正実測: 余裕 0.5–1.0 の「越える」落下で 2 手以内ゲームオーバーは 0.1%、超過状態後も中央値 6 手生存＝判定は保守的。**v747（hash c437ab723ed8）= v744 ＋ ガードで超過 DIRECT を残す（DEADLINE_GUARD_DIRECT_MERGE_CROSSING）＋ desperate モード（NO_VALID/超過状態では露出同型へ直落とし OPEN_TWIN_MERGE_DESPERATE）＋ ランナー側フック（戦略が `DEADLINE_ALLOW_DIRECT_CROSS=True` を宣言した場合のみ差し戻さない。v736 には不活性、同一コピー再生 changed 0）**。局所同時 P/Q `v747_p`/`v747_q` を 23:14 起動（~00:40）。**実戦投入にはランナー `strategy_runner.py` の VM 反映（境界で cp、v736 挙動不変）が必要**。v746（v744＋次々双子抑止のみ）P/Q も走行中（~23:50）。
 
+## 2026-08-27 23:2x-23:4x JST — v744 実戦 k=16 +34 / v746 は中立（≈+26）/ v747 P/Q 序盤は両インスタンス正
+
+- **実戦 A/B（v744）23:29**: games=65（33/32）、A 1612（med 1449）/ B 1656（med 1533）、k=16 mean(B−A)=+34（SE 163）、UCB90 +243 → CONTINUE。look 19（各 38）は ~00:20。
+- **v746（v744＋NEXTNEXT_TWIN_COVER_AVOID のみ）最終（各 30）**: P +6（SE 305）、Q −46（SE 175）→ **効果 ≈ +26**（中立）。v745（+49）と合わせ、次々双子の被覆抑止も直落としの margin 緩和も局所スコアには効かない（機構としては正しいが、代替位置の質で相殺されている可能性）。v744 に対する上乗せ候補としては採用しない。
+- **v747（終盤併合優先＋desperate＋ランナーフック、c437ab723ed8）P/Q 途中（23:29、6/7 試合）**: P: v747 1703 vs v736 1576、Q: v747 2204 vs v736 1227（k=1）。判定は ~00:40。
+- 次 tick（00:13）: v744 の look 19 判定（各 38 到達なら `ab_decide` の ADOPT/REJECT に従って `finish`）、v747 途中。
+
 ## 2026-08-27 22:4x-23:2x JST — ユーザー指摘「終盤に併合すれば空いたのに安全着地して死亡」を再現・原因特定 → v747（終盤は併合優先）＋ランナーフック
 
 - **該当試合**: `game_history/20260827_223432_score3184.jsonl`（v736 腕、152 手）。終盤 t141/t149 は next=T7 で左上 (−2.3, 2.3) に露出 T7、解析器は x=−3.0 に DIRECT 候補を出すが `crosses_deadline`/`merge_result_crosses_deadline`=True → `DEADLINE_GUARD_SAFE_LANDING`（x=−0.5 / +3.0）。t148 は露出 T8 (−2.4, 1.5) があるのに `NO_MERGE_DEADLINE_GUARD_NO_VALID` で x=−1.3。t147 は露出 T11 の真上 x=1.3 を選んだが併合せず。→ 4 手で余裕 1.64 → −0.36 で死亡。
