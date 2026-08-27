@@ -4,6 +4,21 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: v741 JUNK_CONSOLIDATION（序盤 T1–3 の隅/塊寄せ、hash f93dbf2edf97、soviet_now 8edcb8e34）を実装・テスト済み。ローカル自己対戦 A/B（v736 vs v741）第 2 バッチ 96 試合を分離起動中（主指標 40 手時点の駒数）。第 1 バッチ 12+12 は雑音圏でわずかに B 優勢。本番は v736、改善ループ dry-run。
 
+## 2026-08-27 21:16-22:00 JST — Issue #8 自動アンケート本番有効化完了（外部実測）
+
+- **前提**: ユーザーが `/tmp/tw` に配置した broadcaster token を `channel:manage:polls` + `channel:manage:predictions` 付きで検証。`id.twitch.tv/oauth2/validate` で `user_id=1526886844` (dociai)、`client_id` がVM `TWITCH_CLIENT_ID` と一致、両scope有、有効期限 5066262s を確認。`exists=true` `nonempty=true` `mode=600` に修正済み。トークン値は表示・ログ・保存なし。
+- **VM設定**: SSH暗号化経路で `/home/ubuntu/soren/tmp/.poll_token_<random>` (600) へ転送、`.env` を `20260827-211715-poll-enable` として timestamp backup (600) し、`.env` の `TWITCH_PREDICTIONS_TOKEN` / `TWITCH_POLLS_TOKEN` を新tokenへ、`TWITCH_POLLS_ENABLED=1` を原子的に更新 (stdin経由、コマンドライン引数不使用)。VM上で `/validate` を再実行し5条件を再確認、`.env`/backupとも600を維持。転送用一時fileとローカル `/tmp/tw` を削除し、秘密コピーは `.env` とbackupのみに限定。
+- **PR/コード**: `azumag/docich#28` の head を `099b592` (cef562) へ更新し Draft→Ready→main `c5d0bd5` へmerge、続いて surrogates 対応 `e8c63e9` (poll fix + guard mine fix) を `7e2d167` → main `baaaf76` へ反映。`core/config.sh` 43200、 `twitch_polls.sh` live/create/status、 `poll_worker.sh` AI質問/結果/enqueue/復旧、 `start_all.sh`/`show_status.sh` 配線、 `tests/test_twitch_polls.sh` 12項目を確認。`bash -n`、ShellCheck (SC2164/SC1091のみ)、`test_twitch_polls.sh` 12/12、`TestShowStatusOnce` 4/4、`test_start_all_stream_backend` 13/13、`test_youtube_broadcast_guard` 14/14、`git diff --check` が成功。`lib/youtube_broadcast_guard.py` の guard は VMの新fix `6bca5999e` (000e7...) を保持し、上書きせずに統合。`prompts/ops_brief.md` は再生成対象。
+- **VM配置**: `tmp/deploy_backups/poll-enable-20260827-212348` に5ファイルをbackup。`twitch_polls.sh`/`poll_worker.sh`/`core/config.sh`/`start_all.sh`/`show_status.sh`/`lib/youtube_broadcast_guard.py`/`workers/youtube_broadcast_guard.sh` を `/tmp/docich-clone/games/soviet_now` (e8c63e9) から配置し、5ファイルのSHA256一致を確認 (`twitch_polls 3a09...`, `poll_worker b9be...` (surrogates fix), `config b0a7...`, `start_all cfdc...`, `show_status 9e5a...`)。実行権限を維持。`poll_worker` は supervisor (PID 2828060) の子として `3434312` で起動、pidfileとPPID一致、二重起動なしを `ps` と `tmp/state/poll_worker.pid` で確認。`show_status` は PollW を表示。
+- **実Poll E2E (外部実測)**:
+  - 事前: `twitch_polls.sh live` → `live:true`、`status` → `poll:null` で手動pollなしを確認。`poll_schedule.json` を `next_run_at=now` へ更新し初回15分待ちを短縮（`.env` の12時間既定値は不変）。
+  - Poll #1 (手動 60s, ID `9f512b0a-8129-45de-8774-abc7ea871580`, title `好きな季節は？`, 4 choices, ACTIVE 60s): `twitch_polls.sh create` で作成、APIで ACTIVE確認、60s後に `status` で `COMPLETED→ARCHIVED` と `冬 1票` を確認。`tmp/state/current_poll.json` に保存、worker再起動後に `tmp/history/polls.jsonl` へ1件記録、重複なし、 `outbound_chat_queue/sent` に `アンケート結果：投票ありがとう...冬...` を確認、 `tmp/.comment_queue` に `comment_announce_*_polls.txt` を確認し、audio_workerで再生完了（.playing→削除、played_hashesへ記録）を確認。`poll_schedule.json` は `completed` で次回 `43200` 秒後に更新。
+  - Poll #2 (AI自動 120s, ID `e10923bb-4949-4301-89e3-68b166360664`, title `配信を観る時、画面とスマホどっち見てる？`, 4 choices, AI質問生成 `codex:amd-token-factory-deepseek-v4-flash` で成功、 `twitch_polls.sh create` で ACTIVE 120s、APIで ACTIVE確認、120s後に `COMPLETED→ARCHIVED` と `PCの画面でガッツリ 1票` を確認。`tmp/history/polls.jsonl` に2件目を記録（重複なし）、`outbound_chat_queue/sent` に `アンケートを始めました...` (21:53) と `アンケート結果：投票ありがとう...` (21:56) の2件を確認、 `tmp/.comment_queue` に `comment_announce_*_polls.txt` (118B) を確認し、audio_workerで再生完了（.playing→削除）を確認。`poll_schedule.json` は `completed` で次回 `43200` 秒後 (`1787878616` = `1787835416+43200`) に更新。Poll時間120秒、間隔12時間を実測。
+- **不具合対応**: `poll_worker` の result AIが surrogates (`\udce3`) を返した際に `json.dump` で `UnicodeEncodeError` となり結果登録が止まる事象を実測。VMで `workers/poll_worker.sh` に `surrogateescape` 除去を `_store_commentary` と `history` へ追加し再起動、SHA `b9be...` でVM/Repo一致を確認。改善は `e8c63e9` として repoへ反映・push済み。
+- **保存/共有**: docich `main` は `baaaf76` (submodule `e8c63e9`), soviet_now `codex/issue-8-auto-polls` は `e8c63e9`、VMの7ファイルは同commitとSHA一致。`handoff.md` を本件で更新し、`tools/build_ops_brief.sh` で `prompts/ops_brief.md` を再生成してVMへ配布予定（SHA一致確認後に完了扱い）。
+- **未確認**: 次回12時間後の自動Pollが時刻通りに発火するか（今回は手動で `next_run_at` を現在へ変更して検証したため、12時間後の自然発火は未実測）。
+
+
 ## 2026-08-27 12:37-12:43 JST — ポッドキャスト連続回の類似タイトルを自動回避（実装・実行環境反映済み）
 
 - **ユーザー指摘**: 8/25「揺らぐ世界で問われる連帯と暮らし」と8/26「揺れる世界で問われる命と責任」が、「揺らぐ/揺れる世界で問われる…と…」という語彙・構文で似ていた。
