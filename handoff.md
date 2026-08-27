@@ -4,6 +4,32 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: v741 JUNK_CONSOLIDATION（序盤 T1–3 の隅/塊寄せ、hash f93dbf2edf97、soviet_now 8edcb8e34）を実装・テスト済み。ローカル自己対戦 A/B（v736 vs v741）第 2 バッチ 96 試合を分離起動中（主指標 40 手時点の駒数）。第 1 バッチ 12+12 は雑音圏でわずかに B 優勢。本番は v736、改善ループ dry-run。
 
+## 2026-08-27 12:37-12:43 JST — ポッドキャスト連続回の類似タイトルを自動回避（実装・実行環境反映済み）
+
+- **ユーザー指摘**: 8/25「揺らぐ世界で問われる連帯と暮らし」と8/26「揺れる世界で問われる命と責任」が、「揺らぐ/揺れる世界で問われる…と…」という語彙・構文で似ていた。
+- **実測**: 正規化した2タイトルの `SequenceMatcher` 類似度は **0.60**。自動再生成の判定閾値を **0.55** とした。
+- **修正（soviet_now PR #129、merge `7a178aaff8` / fix `f7a36bbc1`）**: 過去7回分の `meta.json` からタイトルを新しい順に読み、生成指示へ渡す。過去タイトルの冒頭・中心語・構文を避け、その日固有の具体語を使うよう明示。生成結果が過去回と0.55以上なら最大2回再生成（計3回）し、それでも近い場合は当日の具体的な節見出しを使う決定的フォールバックへ切り替える。
+- **検証**: 新規 `tests/test_podcast_title_variety.py` 4件、既存 `tests/test_podcast_build.sh`、Python構文確認、`git diff --check` が成功。実成果物ディレクトリから8/26→8/25の順で履歴を取得できることも確認した。
+- **反映範囲**: Macの日次実行チェックアウトをmerge commitへfast-forward済み。今後の生成に適用される。公開済みの8/25・8/26のタイトルは変更していない。`prompts/ops_brief.md` も再生成してsoviet_now `4fb96adb3` へ保存・pushし、VMへバックアップ付きで配布。ローカル/VM SHA256 `2f631a9cc455183fee5b423980e6d704946c9a2ff4aa35c30517e9b659bd1192` の一致を確認した。
+
+## 2026-08-27 04:30-12:33 JST — 日次ポッドキャストのPython起動ハングを修正、8/26分の生成・YouTube公開・Bluesky告知完了
+
+- **障害（実測）**: Mac launchd `com.azumag.soren-podcast.build` は04:30に起動したが、`tools/podcast_build.sh` が `tomllib` 対応Pythonを探す際、外付け `/Volumes/satelite` を指す `/opt/homebrew/bin/python3 -c 'import tomllib'` で約52分停止した。候補確認がログ・多重起動ロックより前かつタイムアウト無しだったため、`podcast_daily.log` は `[1/4] 音声を生成` から進まず、8/26分の成果物も無かった。
+- **修正（soviet_now PR #128、merge `7aeaef4f6` / fix `e29ab61bb`）**: `tools/podcast_build.sh` で (1) doci venv / uv Pythonを外付けHomebrewより優先、(2) 各候補の `tomllib` 確認を既定5秒で打ち切り、(3) 候補確認より前にログと多重起動ロックを作る。ハングする偽Pythonを1秒で打ち切り、`/Users/azumag/azumag/work/doci/repo/.venv/bin/python` (3.14.3) へフォールバックして8/26 dry-runが完走することを確認。`zsh -n` / `git diff --check` も成功。
+- **旧ジョブ終了と実行環境同期**: launchdの旧PID群をSIGTERMで終了し、Mac実行チェックアウトのサブモジュールを `7aeaef4f6` へfast-forward。終了後に旧PID 0、daily/build lock無しを確認。LaunchAgentは登録済み・次回04:30トリガーをwatch中で、単発完了後のため現在 `not running` が正常。
+- **実生成（公開禁止で実測）**: `PODCAST_AUTO_PUBLISH=0 PODCAST_BLUESKY_ENABLED=0 ./tools/podcast_daily.sh --date 20260826` が05:31:07→06:01:36（1829秒）でrc=0。53原稿/74,830字を12コーナー/25,531字へ編成し、612音声断片を合成。MP3は47,891,575 bytes / 4184.515秒 / mono 44.1kHz、MP4は378,452,103 bytes / 4184.533秒 / H.264 1920x1080 + AAC mono 44.1kHz。ffprobeで両方のストリームと長さを確認した。
+- **外部公開（ユーザー明示許可後、12:31-12:33実測）**: `podcast_publish.py --date 20260826` で public 公開し、動画 `L2mdR3EFpW8`（`https://www.youtube.com/watch?v=L2mdR3EFpW8`）へサムネイルを設定、Podcast再生リスト `PLNycKe9FEAGU` へ追加、`publish.json` を記録。続けて `bluesky_post.py --podcast --date 20260826` で `https://bsky.app/profile/dociai.bsky.social/post/3mtzvz3pf3t2y` へカード付き投稿し、`bluesky.json` を記録。両URLとも外部HTTP 200、YouTube oEmbedタイトルと公開タイトル一致を確認した。
+- **引き継ぎ同期**: 公開完了後に `prompts/ops_brief.md` を再生成し、soviet_now `6b2006f3c` へ保存・push。VMへバックアップ付きで配布し、ローカル/VM SHA256 `412963a0ef242af0d8d1e8087b75fc42b2591dfd439e3c687ae0f1138bf6dada` 一致を確認した。
+
+## 2026-08-27 — Issue #8 自動アンケートコーナー — ローカル実装・検証済み、本番有効化は Twitch OAuth scope 待ち
+
+- **Issue**: `azumag/docich#8`「自動でアンケートを発行して、結果についてなにかいう」。
+- **実装（submodule commit `f912017fe` / branch `codex/issue-8-auto-polls`、VM未反映）**: `games/soviet_now` に Twitch Polls API wrapper `twitch_polls.sh` と常駐 `workers/poll_worker.sh` を追加。配信中だけ既定12時間ごと（初回15分後）にAIが安全な軽い質問を生成し、120秒Pollを開始する。終了後はAPIから確定得票を再取得し、AIの短い感想を outbound chat と audio queue へ一度だけ登録する。再起動時state復旧、手動Poll競合時の延期、探索モード非操作、無効時非操作、API失敗時10分延期、worker重複監視・`show_status` 表示を含む。既定は `TWITCH_POLLS_ENABLED=0`。当初の1時間間隔は多すぎるとのユーザー判断で12時間へ変更した。
+- **検証済み**: `bash -n`、ShellCheck、新規 `tests/test_twitch_polls.sh` 12項目（12時間既定値の回帰検査を含む）、supervisor配線・既存 `TestShowStatusOnce` / duplicate監視系6項目、`git diff --check` が成功。公式仕様も `channel:manage:polls`、質問60字、選択肢2–5個/各25字、同時1Poll、15–1800秒を確認。
+- **本番ゲート（実測）**: VMの既存 `TWITCH_PREDICTIONS_TOKEN` は有効・broadcaster本人一致だが、scopeは **`channel:manage:predictions` のみ**で **`channel:manage:polls` は無し**。したがって作成APIは認可されず、VM反映・有効化・実Poll・結果読み上げは未実施。トークン値は取得・表示していない。
+- **保存/共有**: parent commits `e753227` / `80d628c`、Draft PR `azumag/docich#28`（実測前の誤closeを避け `Refs #8`）。`prompts/ops_brief.md` は再生成し、VMへバックアップ付きで配布してSHA256一致を確認した（アンケート実装コード自体は未配布）。
+- **次に必要**: ユーザー側で broadcaster user token を `channel:manage:polls`（予想も継続するなら `channel:manage:predictions` も同時）付きで再認可してVMへ設定。その後、Draft PRをReady/merge → VMへコード同期 → `TWITCH_POLLS_ENABLED=1` → worker完全起動確認 → 実Poll作成・投票・COMPLETED得票・チャット送信・音声再生まで外部実測してからIssueを閉じる。
+
 ## 2026-08-27 01:0x-04:0x JST — 音声合成を Tailscale 上の Windows desktop / Mac mini の VOICEVOX へ外出し（連鎖＋乗数バックオフ、WebUI から状態確認・操作）— 実装・VM反映・ライブ実測済み
 
 - **ユーザー指示**: VM の CPU 配分（VOICEVOX が生涯平均 62.7%/コア、合成中 ≈1 コア）を受け、「tailscale で動かしている PC 2 つ（desktop / azumacminim4）の VOICEVOX を呼び、最終フォールバックは VM ローカル。フォールバックは乗数で増えるバックオフ」「完成したら webui からも状態確認・操作できるように」。
