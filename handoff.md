@@ -2,7 +2,16 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: **v748 SEAT_LANES（897803192d9f）実戦 A/B（03:30 開始）は k=6（13/14）で mean(B−A) +266（SE 247、UCB90 +582）→ 害停止なし・継続**。次の判定は k≥12 の無益（UCB90<150）と look 19（各 38、~09:30）の `ab_decide`（ADOPT → `finish B`＋repo commit: sn-mine の `tmp_strategy_v748_candidate.py` を strategy.py に、`tests/test_v748_seat_lanes.py`＋fixtures 5 件と一緒に）。局所は 3 組の同時 P/Q（各 30+30）で効果 +144 / +318 / +357 → **プール ≈ +273**、手数は 6 instance 全てで v748 が長い。v744 実戦は 02:30 に無益停止（−39）。バナー「v748 実戦 A/B」点灯中。
+> 直前セッション: **v748 実戦 A/B は k=13（各 27）で REJECT_FUTILE（mean −160、UCB90 103<150）→ 07:30 `finish A`、root v736、REGRESSION_DISABLED=0、バナー停止**（記録 `tmp/history/ab_20260828_073043_*`、進行中だった試合の迷子 state は次 tick で統合）。これで「局所 +200〜300 ／ 実戦 ≈0〜負」が v741・v744・v748（＋v742 系）で一貫し、**局所ハーネスの go/no-go 判定は信用できない**。原因候補を発見: VM は `SOREN_GAME_RENDER_FPS=30`（frame limiter、非 headless 1280×720、internal 576×324）だが macOS の局所ハーネスは fallback 0（無制限、headless）。**局所で FPS=30・internal 576×324 にした v748 の同時 P/Q（`v748_fps30_p`/`_q`、07:31–~09:00）を実行中**: 局所効果が消えれば FPS が乖離の原因＝以後の局所評価は FPS=30 で行う。実戦は A/B なし。
+
+## 2026-08-28 07:1x-07:4x JST — v748 実戦は無益停止（finish A）→ 4 候補連続の局所/実戦乖離 → 描画 FPS 制限の不一致を発見、FPS=30 で局所再評価
+
+- **実戦 A/B（v748 897803192d9f、03:30–07:30、54 試合）最終**: k=13（27/27）**mean(B−A)=−160（SE 205）、UCB90 103 < 150 → REJECT_FUTILE**。A 1796（med 1709）/ B 1680（med 1512）、手数 96.1 / 93.5。`finish A` 実行、root 253cc67e0c1b、REGRESSION_DISABLED=0、バナー `{"active":false}`。記録 `tmp/history/ab_20260828_073043_*`（54 件）。
+- **v748s（±350）局所最終**: P −2 / Q −648（SE 507、B=v736）→ 効果 ≈ +323。局所ではやはり正。
+- **乖離の総括**: 実戦 vs 局所 — v741 −528 vs +183、v744 −39 vs +190、v748 −160 vs +273（すべて局所同時 P/Q または多 run）。実戦 A/A は −79（偏りなし）、局所同一腕 A/A は +36。機構指標（発火率・pieces@20/40・着地ずれ・settle・終了条件）は両環境で一致するのに、**手数への変換だけ局所で起きて実戦で起きない**。
+- **環境差の発見**: VM `.env`: `SOREN_GAME_RENDER_FPS='30'`（`soviet_local.mjs` の rAF 整流、Linux 既定 30）、`SOREN_CHROME_HEADLESS='0'`、`SOREN_CHROME_WINDOW_SIZE='1280,720'`、`SOREN_GAME_INTERNAL_SIZE='576,324'`。局所ハーネス（macOS）は `SOREN_GAME_RENDER_FPS` 未設定 → fallback **0（無制限）**、headless=1。Unity WebGL の物理は rAF 駆動なので 30fps 整流（＋VM 負荷 8–10 でのフレーム落ち）は落下・転がり・併合接触のタイミングに影響し得る。
+- **検証 run**: `SOREN_GAME_RENDER_FPS=30 SOREN_GAME_INTERNAL_SIZE=576,324` を付けて v748 の同時 P/Q（`v748_fps30_p`/`v748_fps30_q`、各 2 slots × 15、ports 20100/18860, 20120/18880）を 07:31 起動（~09:00）。判定: 局所効果が ≈0 に落ちれば FPS が主因 → 以後の局所評価は FPS=30（＋internal size）を標準にし、v741–v748 を FPS=30 で再評価。効果が残れば別要因（headless／Chrome 版／ウィンドウ描画）を順に合わせる。
+- 次 tick（08:13）: fps30 run 途中、迷子 state 統合。
 
 ## 2026-08-28 06:1x-06:4x JST — v748 実戦 k=10 で −60 に後退 / 機構は実戦でも動くが手数が伸びない / v748s（加点 ±350）は比例せず
 
