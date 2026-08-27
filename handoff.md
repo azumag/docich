@@ -2,7 +2,16 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: v744 実戦 A/B（A=v736 / B=v744 aa37f7327d1f）は k=15（31/30）で +40（SE 174、UCB90 +263）→ 継続、look 19（各 38、~00:30）で `ab_decide` 判定。ユーザー指摘（22:3x 終了の試合で終盤に併合可能なのに安全着地して死亡）を再現・原因特定: strategy の DEADLINE_GUARD「不可侵の安全不変条件」が超過フラグ付き候補を併合グレードに関係なく捨て、さらに strategy_runner.enforce_deadline_safety が併合を差し戻す。較正実測: 余裕 0.5–1.0 の「越える」落下で 2 手以内ゲームオーバーは 0.1%、超過状態後も中央値 6 手生存＝判定は保守的。**v747（hash c437ab723ed8）= v744 ＋ ガードで超過 DIRECT を残す（DEADLINE_GUARD_DIRECT_MERGE_CROSSING）＋ desperate モード（NO_VALID/超過状態では露出同型へ直落とし OPEN_TWIN_MERGE_DESPERATE）＋ ランナー側フック（戦略が `DEADLINE_ALLOW_DIRECT_CROSS=True` を宣言した場合のみ差し戻さない。v736 には不活性、同一コピー再生 changed 0）**。局所同時 P/Q `v747_p`/`v747_q` を 23:14 起動（~00:40）。**実戦投入にはランナー `strategy_runner.py` の VM 反映（境界で cp、v736 挙動不変）が必要**。v746（v744＋次々双子抑止のみ）P/Q も走行中（~23:50）。
+> 直前セッション: v744 実戦 A/B は look 19 を通過し k=20（各 40）で mean(B−A) −7（SE 140、UCB90 +172）→ 採用基準未達・無益停止（UCB90<150）僅かに未達で事前登録どおり look 37 まで継続中（実戦効果は ≈0 とみる）。v747（終盤併合優先＋desperate＋ランナーフック、c437ab723ed8）の局所 P/Q は P −343 / Q +691（p 0.046）と割れ合成 ≈ +174（SE ≈190）→ 再現 run `v747_p2`/`v747_q2`（00:30–~02:00）実行中。ランナーフックは sn-mine に commit 済み（`14a0f34e9`、単体テスト 3 件、insert-only 12 行）だが **VM への反映（strategy_runner.py 差し替え）は自動モードの分類器にブロックされ未実施** → ユーザー判断待ち（手順: VM で `cp strategy_runner.py tmp/strategy_runner.pre_v747.py && cp <新版> strategy_runner.py`、現行 md5 e4d41184…、新版 md5 0b8719035ee4…、両腕に不活性）。v747 の実戦 A/B はこの反映が前提。
+
+## 2026-08-28 00:1x-00:5x JST — v744 look 19 は採用基準未達（−7）で継続 / v747 局所は P/Q 割れ（合成 +174）→ 再現 run / ランナーフックを commit（VM 反映は分類器ブロックで保留）
+
+- **実戦 A/B（v744）00:29**: games=80（各 40）、A 1616（med 1463）/ B 1608（med 1506）、k=20 **mean(B−A)=−7（SE 140）、UCB90 +172** → `ab_decide` CONTINUE（ADOPT 条件未達、REJECT_FUTILE は UCB90<150 に僅かに届かず）。事前登録どおり look 37（各 74、~05:00）まで継続するが、実戦効果は ≈0（局所 +190 との乖離は v741 と同型で小さめ）。k≥24 で UCB90<150 なら無益停止。
+- **v747 局所同時 P/Q 最終（各 30）**: P（B=v747）mean(B−A)=−343（SE 287、raw 1674 vs 1885）、Q（A=v747）mean(B−A)=−691（SE 255、p 0.046、raw 2192 vs 1645）→ **効果 ≈ +174（SE ≈190）、腕文字 ≈ −517**（同時実行なので時間効果ではなく v747 自身の分散: v747 の raw が 1674 / 2192 と instance 間で 518 差）。raw プール: v747 1916 vs v736 1757（+159）。再現 `v747_p2`/`v747_q2`（各 2 slots × 15、ports 19900/18660, 19920/18680）を 00:30 起動（~02:00）。
+- **v747 fixture テスト**: `tests/test_v747_endgame_merge.py`（t141/t149 超過 DIRECT がランナーを通る、t148 desperate、t151 不変）v747 で 4/4、v736 で 3 失敗。sn-mine に未コミット配置（採用時に strategy.py と一緒に）。
+- **ランナーフック commit**: sn-mine `14a0f34e9`（`strategy_runner.py` insert-only 12 行 ＋ `tests/test_runner_direct_cross_hook.py` 3 件 ＋ fixture t141）、push 済み。関連テスト実行で `tests/test_escape_mechanisms.py` の 2 件が失敗するが、`def merge_result_deadline_guard_active` の不在を検出するもので **HEAD~1 でも不在＝既存の失敗**（私の差分は削除 0 行）。
+- **VM 反映は未実施**: `scp`＋`mv` による strategy_runner.py 差し替えが自動モードの分類器にブロックされた（本番ファイル上書き）。VM の現行 md5 は e4d41184d28b2c528ac68944b1f11881（selfplay_root の原本と一致）、新版は 0b8719035ee4fe6fdc957f96124b5702。反映はユーザー判断後（または `! ` で手動）。宣言の無い v736/v744 には不活性なので稼働中の A/B に影響しない。v747 の実戦 A/B はこの反映が前提。
+- 次 tick（01:13）: v744 status（k≈24 で無益判定）、v747 再現途中。
 
 ## 2026-08-27 23:2x-23:4x JST — v744 実戦 k=16 +34 / v746 は中立（≈+26）/ v747 P/Q 序盤は両インスタンス正
 
