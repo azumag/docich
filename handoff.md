@@ -4,6 +4,14 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: **v744（露出保持 −180 ＋ 露出同型・relief≤1.0 直落とし）は局所同時 P/Q 各 30 で効果 ≈ +335（SE ≈122、P +359 p 0.107 / Q で +310 p 0.185、腕文字効果 +25）** → 18:43 から**実戦 A/B**（A=v736 253cc67e0c1b / B=v744 `aa37f7327d1f`、ABBA、REGRESSION_DISABLED=1、VM `tmp/manual_challenge/strategy_aa37f7327d1f.py`、局所版 `selfplay_root/strategy_v744.py`）。事前登録: k≥6 で UCB90<0 → 害停止 `finish A`、looks 19/37 で `ab_decide` の ADOPT 基準（n≥30、p<α/2、m≥MDE、ガードレール）→ `finish B`。各 tick は `bash tools/ab_ctl.sh status` と `python3 tools/ab_decide.py --games tmp/state/ab_games.jsonl --state tmp/state/ab_state.json`。バリデータ対策（`relief=99.0` 初期化、ラッパーを `__main__` ブロックの前に配置）を施した版で、hash は af427ce3b5c0 → aa37f7327d1f（オフライン挙動同一）。LLM 候補 `51d22b6b10e2` の局所 P/Q（`llm2_p`/`llm2_q`、18:44–~20:15）も並走。バナー「v744 実戦 A/B」点灯中。
 
+## 2026-08-27 19:1x-19:3x JST — v744 実戦 A/B 初期（k=2、−416）: 機構は局所と一致 / LLM 候補は局所 ≈ −90
+
+- **実戦 A/B（18:43 開始）19:20 時点**: games=10（各 5）、A 1912 / B 1391、ブロック k=2 mean(B−A)=−416（SE 168）。k<6 のため観察のみ（事前登録どおり）。decide_exception 増加なし（累計 1 = 旧）。
+- **実戦 B 腕の機構診断（5 試合・441 手）**: LAST_EXPOSED_COVER_AVOID 14.1%/手（局所 13.8%）、OPEN_TWIN_MERGE 5.4%/手（局所 3.8%）、**直落としの実現併合 62%（局所 60%）**、他の併合なし手 11%、解析器判定併合 97%、着地ずれ 0.50（局所 0.48）。→ v744 の機構は実戦でも同じに働いている。初期の −416 は n=5 のノイズか下流効果。v741 と同じ経路（局所＋／実戦−）になるかは k≥6（~20:40）以降で判定。
+- **LLM 候補 `51d22b6b10e2` 局所 P/Q 途中（25/26 試合）**: P（B=llm2）−276（SE 118）、Q（A=llm2）−99（SE 101）→ **効果 ≈ −89、腕文字効果 ≈ −188**。v744（+335）を下回るため、完了後に不採用として履歴に記録予定。
+- v744 の fixture テスト（`tests/test_v744_exposure.py` + fixtures 7 件）は sn-mine に未コミットで待機（v744 で 3 合格、v736 で変化系 2 失敗を確認）。採用時に `strategy.py`（v744）と一緒にコミットする。
+- 次 tick（20:13）: LLM P/Q 最終、実戦 A/B status。21:13 で k≥6 判定。
+
 ## 2026-08-27 18:4x JST — v744 最終 ≈ +335 → 実戦 A/B 開始（18:43）/ バリデータ拒否 2 件の修正 / LLM 候補の局所 P/Q 起動
 
 - **v744 局所同時 P/Q 最終（17:32–18:40、各 30）**: P（A=v736/B=v744）mean(B−A)=+359（SE 171、p 0.107）、raw 2121 vs 1770、手数 107 vs 98。Q（A=v744/B=v736）mean(B−A)=−310（SE 173、p 0.185）、raw 1748 vs 1441、手数 94 vs 89 → **効果 ≈ +335（SE ≈122、z≈2.7）、腕文字効果 ≈ +25**。タグ: LAST_EXPOSED_COVER_AVOID 13.8%/手、OPEN_TWIN_MERGE 3.8%/手（3.8/試合、実現併合 60%）。単独 v742 ≈ +100・v743 ≈ 0 に対し相乗。
