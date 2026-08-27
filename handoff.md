@@ -2,7 +2,15 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: **v744（v743 露出保持 −180 ＋ v742 露出同型・relief≤1.0 の直落とし、hash af427ce3b5c0）が局所同時 P/Q の途中で効果 ≈ +377（SE ≈124、P +443 p 0.098 / Q で +310）**。~19:00 に最終（`v744_p`/`v744_q`）。正なら fixture テスト追加 → 実戦 A/B（`bash tools/ab_ctl.sh start tmp/manual_challenge/strategy_af427ce3b5c0.py ABBA`、待機配置済み、事前登録は v741 と同じ: k≥6 で UCB90<0 なら害停止、looks 19/37 で採否）。v743 単独は ≈0、v742 単独 ≈ +100（相乗効果）。共通乱数実験は失敗・打ち切り。改善ループの LLM 候補 `51d22b6b10e2`（16:54、dry-run）はオフラインで changed 6.8%・損失 0・risk −0.10 → v744 の後に局所 P/Q で比較予定。整列度は成績とほぼ無相関（露出率 +0.22、ピース数 −0.27）で座席レーン方針は優先度低。実戦 root v736、A/B なし、REGRESSION_DISABLED=0。
+> 直前セッション: **v744（露出保持 −180 ＋ 露出同型・relief≤1.0 直落とし）は局所同時 P/Q 各 30 で効果 ≈ +335（SE ≈122、P +359 p 0.107 / Q で +310 p 0.185、腕文字効果 +25）** → 18:43 から**実戦 A/B**（A=v736 253cc67e0c1b / B=v744 `aa37f7327d1f`、ABBA、REGRESSION_DISABLED=1、VM `tmp/manual_challenge/strategy_aa37f7327d1f.py`、局所版 `selfplay_root/strategy_v744.py`）。事前登録: k≥6 で UCB90<0 → 害停止 `finish A`、looks 19/37 で `ab_decide` の ADOPT 基準（n≥30、p<α/2、m≥MDE、ガードレール）→ `finish B`。各 tick は `bash tools/ab_ctl.sh status` と `python3 tools/ab_decide.py --games tmp/state/ab_games.jsonl --state tmp/state/ab_state.json`。バリデータ対策（`relief=99.0` 初期化、ラッパーを `__main__` ブロックの前に配置）を施した版で、hash は af427ce3b5c0 → aa37f7327d1f（オフライン挙動同一）。LLM 候補 `51d22b6b10e2` の局所 P/Q（`llm2_p`/`llm2_q`、18:44–~20:15）も並走。バナー「v744 実戦 A/B」点灯中。
+
+## 2026-08-27 18:4x JST — v744 最終 ≈ +335 → 実戦 A/B 開始（18:43）/ バリデータ拒否 2 件の修正 / LLM 候補の局所 P/Q 起動
+
+- **v744 局所同時 P/Q 最終（17:32–18:40、各 30）**: P（A=v736/B=v744）mean(B−A)=+359（SE 171、p 0.107）、raw 2121 vs 1770、手数 107 vs 98。Q（A=v744/B=v736）mean(B−A)=−310（SE 173、p 0.185）、raw 1748 vs 1441、手数 94 vs 89 → **効果 ≈ +335（SE ≈122、z≈2.7）、腕文字効果 ≈ +25**。タグ: LAST_EXPOSED_COVER_AVOID 13.8%/手、OPEN_TWIN_MERGE 3.8%/手（3.8/試合、実現併合 60%）。単独 v742 ≈ +100・v743 ≈ 0 に対し相乗。
+- **バリデータ拒否と修正**（`validate_strategy_with_helpers`）: (1) `decide() load-before-local-assign: relief` → ラッパー内で `relief = 99.0` を try の前に初期化。(2) `NameError: name 'decide' is not defined` → 元ファイル末尾の `if __name__ == "__main__":` ブロックがスクリプト実行時に decide を呼ぶため、ラッパー（`_v742_open_twin`/`decide`）を **`__main__` ブロックの前**に移動。修正後 hash `aa37f7327d1f`（decide AST は同一なので (2) では不変）、オフライン再生で v744 と同一（changed 2072、risk −0.099）。**ラッパー方式の候補は今後この 2 点を最初から守る**。
+- **実戦 A/B 開始 18:43:31**: `ab_ctl.sh start tmp/manual_challenge/strategy_aa37f7327d1f.py ABBA` → state a=253cc67e0c1b b=aa37f7327d1f、REGRESSION_DISABLED=1。事前登録は v741 と同一。実戦ペース ~13 試合/h → k=6 は ~20:40、look 19（各 38）は翌 00:30 頃。
+- **LLM 候補 `51d22b6b10e2`**: 18:44 から局所同時 P/Q（`llm2_p`/`llm2_q`、各 2 slots × 15、ports 19700/18460, 19720/18480、~20:15）。v744（+335）を上回らなければ不採用。
+- 次 tick（19:13）: 実戦 A/B status（早期は見るだけ）、fixture テスト作成の続き。
 
 ## 2026-08-27 18:1x-18:4x JST — v744 途中 ≈ +377（両インスタンス同方向）/ LLM 候補 51d22b6b10e2 をオフライン篩 / 整列度は無相関・露出率が有効
 
