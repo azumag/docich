@@ -2,7 +2,33 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: 実戦 A/A（計測器検証）は k=21 で mean(B−A) −79（SE 193、UCB90 +169、LCB90 −326）→ 偏りの証拠なし（形式上は MDE 未達で未決）、14:32 `finish A`（root v736 不変、REGRESSION_DISABLED=0）。v742 OPEN_TWIN_MERGE（6dd86219ecd2）の局所クロスオーバーは run 1 +417 / run 2 −385 と正反対（プール ≈ +16）で、局所ハーネスの run 間効果が疑わしく、14:34 から同一時間帯で腕文字を入替えた 2 インスタンス（`v742_x3p`/`v742_x3q`、各 2 slots × 30、~16:20）を同時実行中。根本原因の診断: 解析器は発火事例の 98% で「隣のピースに一次着地」と予測し twin との二次接触を併合判定に入れていない（実際は 60–84% 併合）→ **解析器アップグレード（二次接触の併合判定、env トグル、relief で較正）**が次の本命。視聴者コメント（T11/T12 の残留）は実測で裏付け、返答音声を `viewer_reply` でキュー投入（再生未確認）。v741 は不採用。
+> 直前セッション: 解析器の偽陰性は広域プローブ（447 発火）で「露出＋低 relief」に集中（露出 49%／半被覆 19%／被覆 9%＝対照並み）→ 解析器アップグレードの上振れは +1 併合/試合程度。本命は配置側: v736 は「露出した唯一の同型 T3–9」がある非併合手の **54% でその真上に載せて埋める**（オフライン 3,382 手）。v743 LAST_EXPOSED_COVER_AVOID（hash 1e16634198aa、−180、`selfplay_root/strategy_v743.py`）で 30% に低減（changed 15.6%、DIRECT 損失 0、risk_top −0.17）。15:39 から局所の同時クロスオーバー（`v743_p` A=v736/B=v743、`v743_q` 入替え、各 2 slots × 15、~17:00）。v742 の run 3（`v742_x3p/q`、~16:25）も進行中（途中: P −13 / Q で v742 +230 → 合成 ≈ +108）。実戦 A/A は偏りなし（−79）で終了、root v736、REGRESSION_DISABLED=0。視聴者返答音声はキューから消化済み（再生ログ未確認）。
+
+## 2026-08-27 15:1x-15:4x JST — 広域プローブで解析器偽陰性の全体像 / v742 run 3 途中 / **v743 LAST_EXPOSED_COVER_AVOID**（埋めの主因を直撃）を実装・局所同時クロスオーバー起動
+
+- **広域プローブ `ANY_TWIN_PROBE`（hash 778e67dee8ad、露出条件なし、局所 24 試合、447 発火、`probe_feat2.py`）**: 実現併合 18%（対照 11%）。被覆状態別: **露出 67 件 49%**（relief<0.5: 85%、0.5–1.0: 47%、>1.0: 15%）、半被覆 155 件 19%（relief<1.0 なら 36–100% だが少数）、被覆 225 件 9%（対照並み＝解析器は正しい）。オフラインでは全手の 22% がこのプローブの対象だが、拾える偽陰性は露出・低 relief の ≈1.7 件/試合 → **解析器アップグレードの上振れは +1 併合/試合程度**（やる価値はあるが本命ではない）。
+- **v742 run 3 途中（15:29、各 ~28 試合）**: P（A=v736/B=v742）mean(B−A)=−13（SE 174）、Q（A=v742/B=v736）mean(B−A)=−230（SE 334）→ v742 効果 ≈ ((−13)−(−230))/2 = **+108**、腕文字効果 ≈ −122（run 1/2 では +400 側）→ 腕文字効果は run ごとに符号が変わる＝run 単位の時間効果。同時 P/Q 設計は必須。
+- **埋めの主因を定量化（`cover_metric.py`、オフライン 3,382 手 = DIRECT/NEAR 候補なし ∧ 露出した唯一の同型 T3–9 が存在）**: v736 は **54.4%** でその同型の真上に載せて埋める。既存の被覆抑止 HIGH_TYPE_COVER_AVOID は type≥10 限定だった。
+- **v743（hash `1e16634198aa`、`selfplay_root/strategy_v743.py`）**: `# --- HIGH_TYPE_COVER_AVOID pre-computation ---` の直後に `_v743_cover_free`（T3–9 で露出かつその type の唯一の露出個体、next_type と next_type−1 は除外）を計算し、ループでは HIGH_TYPE_COVER_AVOID ブロック直後に同じ安全条件（merge_grade NO、非 deadline_crossed、margin≥1.0、非 crossing、非 death_spiral、T15 不在）で **−180、tag `LAST_EXPOSED_COVER_AVOID`**。オフライン: changed 1745/11155（15.6%）、DIRECT 損失 0、newcross 0、risk_top −0.167。埋め率 54.4% → **30.2%**。単体テスト未作成（局所 A/B が正なら fixture 化して追加）。
+- **局所同時クロスオーバー（15:39 起動、~17:00）**: `v743_p`（A=v736/B=v743、2 slots × 15、ports 19600/18360）と `v743_q`（A=v743/B=v736、ports 19620/18380）。run 3（v742）と並走（load 5–6/10 cores）。効果 = ((B−A)_p − (B−A)_q)/2。
+- **視聴者返答**: `viewer_reply` はキューから消化済み（`tmp/.comment_queue` に残なし）。再生ログの直接確認はできず。
+- 次 tick（16:13）: run 3 最終（v742 判定）、v743 途中集計。
+
+## 2026-08-27 14:5x-15:1x JST — YouTube復旧済み、自動枠作成ガードを実装・PRマージ・VMへ無効配置（OAuth再認証待ち）
+
+- **ライブ復旧（外部実測）**: YouTube Studioで新しい公開枠 `qHNLCzOdic4` を作成して既存stream keyへ接続後、ffmpegだけをPID `935122`→`2841595`へ再起動。ゲームPID `1149028` とTwitch session `317323942007` は維持。YouTube Data APIで `liveBroadcastContent=live`、`actualStartTime=2026-08-27T05:50:12Z`、終了時刻なし、`privacy=public`、active live chatありを確認。15:0xの再確認でも同じ枠が `live/public`。
+- **自動化実装**: `lib/youtube_broadcast_guard.py` / `workers/youtube_broadcast_guard.sh` を追加。active/upcoming枠が無い状態を3回確認した時だけ、明示的なAUTO_CREATE有効時に `enableAutoStart=true` / `enableAutoStop=false` の枠を1件作成し、単独active streamへbindする。その後、`/proc/<pid>/cmdline` がローカルRTMP宛ffmpegと一致する時だけpublisherを再起動し、新PIDとactive枠を確認する。作成直後にworkerが落ちても、自分が作成したupcoming枠だけ再接続を再開する。複数stream・既存枠・OAuth/API異常はfail closed。ゲームは操作しない。
+- **検証・保存**: 関連unittest 42件、worker ShellCheck、bash構文、Python compile、`git diff --check` 成功。commit `201522704`、PR `azumag/soviet_now#130` を基底 `codex/issue-8-auto-polls` へmerge（merge commit `cef562dc1a452853b2ad8a2ff485273e2d49b2d2`）。
+- **VM配置**: `/home/ubuntu/soren` へ4ファイルをバックアップ `tmp/deploy_backups/youtube-auto-20260827-1504/` 付きで配置し、ローカルcommitとSHA256一致。`.env` は `YOUTUBE_BROADCAST_GUARD_ENABLED=1` ではなく、supervisor設定にもguard workerは不在。つまり**コードは配置済みだが機能はOFF**。配置後もdirect stream running、ffmpeg PID `2841595`、ゲームPID `1149028` を維持。
+- **残るブロッカー**: VMの既存YouTube OAuth refresh tokenは `invalid_grant`。ユーザー側で `youtube` または `youtube.force-ssl` scope付き再認証とVM設定が必要。再認証後は、まず監視のみ（ENABLED=1 / AUTO_CREATE=0）で現在live枠を検出し、次にAUTO_CREATE=1へ上げ、worker完全再起動と状態JSON・YouTube外部表示を実測して有効化完了とする。token値はhandoff/logへ残さない。
+
+## 2026-08-27 14:4x-14:5x JST — ランダム落語の「深夜」固定案内を時間帯非依存へ修正・本番反映
+
+- **原因**: 落語は `broadcast/scheduler.sh` の毎時5分ランダム候補に移行済みだったが、`radio_engine.sh` の強制案内と `radio_corners.sh` の生成プロンプトが旧来の深夜固定のままだった。14:14生成・14:44再生の落語も旧文言で、ユーザー報告と一致。
+- **修正**: 案内を「創作落語コーナーです。」へ変更。生成プロンプトは現在の時間帯に合う導入とし、「深夜のリスナー」指定を撤去。README/CLAUDEの旧固定時刻表も、現行の毎時ランダム選択の説明へ更新。回帰テスト `tests/test_rakugo_time_neutral.sh` を追加。
+- **検証・保存**: 回帰テスト PASS、関連3 shellの `bash -n`、`git diff --check` PASS。`soviet_now` commit `54d15166e` を `codex/issue-8-auto-polls` へ push。
+- **VM反映**: 反映前の2ファイルはローカルHEADとSHA256一致。バックアップ `.codex_deploy/backup-20260827-rakugo-54d15166e/` を作成して2ファイルだけ反映し、反映後SHA256はローカルと一致。radio worker PID 1149762 は維持し、14:49:39 USR1 `reload complete`。反映前生成の落語は14:44:54に既に再生済みで、古い落語原稿の待機キュー残留なし。
+- **未検証**: 反映後にランダム抽選された新しい落語の実生成・再生はまだ発生していない。次回抽選時に案内と本文を実聴確認する。
 
 ## 2026-08-27 15:0x JST — ユーザー観察 2 件の定量化（挟み込み／わざと併合しない→隣接→離散）→ 「隣接未併合ペア」が試合終了時 4 組/試合という新しい漏れ
 
@@ -10,6 +36,16 @@
 - **「併合できるのにわざとしない→隣接→後で離散・挟み込み」（`pair_fate.py`）**: (a) 解析器が DIRECT/NEAR とした 1388 手のうち併合以外を選んだのは 50（3.6%。理由: AVOID_BLOCK_REACTIVE_PAIR/T12_CHAIN_LANE 14、DEADLINE_GUARD 12、MEDIUM_TOWER 5、NEAR の deadline リスク 4）。**意図的スキップは少ない**。(b) 近接同型ペア（T≥3、隙間≤0.35、未併合）は **15.2 組/試合**。発生経路: 自分の落下が解析器 NO のまま隣接着地 354（39%、うち後で併合 64%、終了時残存 24%、離散/挟み 2%）、解析器 DIRECT 予測なのに即併合せず隣接 198（後で併合 63%）、既存ピースが寄った 205（併合 47%、残存 40%）、併合/転がりで新ピースが隣接 150。運命の合計: 併合 58%、**終了時に隣接未併合のまま 26%（240 組 = 4 組/試合）**、片方消失 11%、離散 1%、挟み込み 2%、60 手停滞 2%。
 - **解釈**: ユーザーが見る「併合できるのにしない」は主に解析器 NO（二次接触未評価）→隣接着地のケース。離散・挟み込みは稀（2–3%）で、真の損失は **触れそうで触れない同型ペアが終了時に平均 4 組残る**こと。人間はこれを「寄せる」（軽く押して接触させる）。
 - **次の計測プローブ（run 3 終了後に局所で）**: `REACTIVE_NUDGE_PROBE` = 併合候補なし ∧ 近接同型ペアあり（`reactor_reactive_pairs`>0）∧ deadline 安全 → ペアの中点の真上（または高い側）に落として押し当てる。指標: ペアが 2 手以内に併合する率 vs 無介入時の 2 手ハザード（データから算出）。効けば v744 候補。解析器の二次接触アップグレードは (b) の 354 件を直接減らす。
+
+## 2026-08-27 13:3x-14:0x JST — YouTube停止再発を確認、自動枠作成は可能だがOAuth再認証が先（未実装・未復旧）
+
+- **ユーザー報告**: 「またyoutube配信止まってる」。YouTube公開ページとStudioのライブ一覧に現在のライブ枠はなく、最新枠 `3H5lXGvvDo4` は **19:38:19 で終了**し「ライブ配信済み」。新しい待機中/配信中の枠も無い。
+- **VM実測**: `lib/direct_stream.py status` は running、30.0fps、約4629kbps。YouTube ingestへのTCPはESTABLISHEDで、`bytes_acked` が5秒で約2.75MB増加。Twitchは外部GQLでLIVE（session `317323942007`、createdAt 12:03:09 JST）。ゲーム `node soviet_local.mjs` は継続しており、盤面は触っていない。
+- **再発時刻**: 今日の正午監査 marker は `restart_required` → 180秒OFFLINE保持 → `restarted`、ローカル再開12:03:07 / Twitch新session 12:03:09。前日と同じく、共有ffmpegの停止でYouTube枠だけが終了し、送出再開後も終了済み枠には再接続されない構造。
+- **自動化案（公式APIで可能）**: 新規枠を `liveBroadcasts.insert`（公開、`enableAutoStart=true`、**`enableAutoStop=false`**）で作り、現在の `liveStream` へ `liveBroadcasts.bind`。単独のactive streamを確定できた場合だけ進み、紐付け後にffmpegだけを再起動してtimestamp 0から送る。新枠がliveになったことを公開ページ/APIで確認するまで成功扱いにしない。複数stream・既存live/upcoming・APIエラー時はfail closed。
+- **第一防止線**: `enableAutoStop=false` により、正午監査の約3分断でYouTube枠自体を自動終了させない。API自動作成は枠が本当に無い場合だけの第二防止線にする。
+- **ブロッカー（実測）**: VMのYouTube OAuth設定3項目は存在するが、refreshは現在も `invalid_grant / Bad Request`。配信枠のlist/insert/bind/transitionには `youtube` または `youtube.force-ssl` scopeの有効なOAuthが必要。**一度だけユーザー側で再認証が必要**で、token値は表示・保存し直さない。
+- **未実施**: 新規配信枠作成、現在のYouTube復旧、worker実装、OAuth再認証。公開操作を伴うため、Studioでの新枠作成はユーザー確認待ち。
 
 ## 2026-08-27 14:1x-14:5x JST — 実戦 A/A 終了（偏りなし）/ v742 run 2 は −385 で run 1 と正反対 → run 3（同時・腕文字入替え）/ 解析器の根本原因を特定（二次接触を見ていない）/ 視聴者返答を音声投入
 
