@@ -2,7 +2,14 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: **v744（露出保持 −180 ＋ 露出同型・relief≤1.0 直落とし）は局所同時 P/Q 各 30 で効果 ≈ +335（SE ≈122、P +359 p 0.107 / Q で +310 p 0.185、腕文字効果 +25）** → 18:43 から**実戦 A/B**（A=v736 253cc67e0c1b / B=v744 `aa37f7327d1f`、ABBA、REGRESSION_DISABLED=1、VM `tmp/manual_challenge/strategy_aa37f7327d1f.py`、局所版 `selfplay_root/strategy_v744.py`）。事前登録: k≥6 で UCB90<0 → 害停止 `finish A`、looks 19/37 で `ab_decide` の ADOPT 基準（n≥30、p<α/2、m≥MDE、ガードレール）→ `finish B`。各 tick は `bash tools/ab_ctl.sh status` と `python3 tools/ab_decide.py --games tmp/state/ab_games.jsonl --state tmp/state/ab_state.json`。バリデータ対策（`relief=99.0` 初期化、ラッパーを `__main__` ブロックの前に配置）を施した版で、hash は af427ce3b5c0 → aa37f7327d1f（オフライン挙動同一）。LLM 候補 `51d22b6b10e2` の局所 P/Q（`llm2_p`/`llm2_q`、18:44–~20:15）も並走。バナー「v744 実戦 A/B」点灯中。
+> 直前セッション: **v744 実戦 A/B（A=v736 / B=v744 aa37f7327d1f、18:43 開始）は k=6（各 12）で mean(B−A) +122（SE 311、UCB90 +520）→ 害停止なし、継続中**。次の判定は look 19（各 38、~00:30）で `ab_decide`（ADOPT: n≥30・p<α/2・m≥MDE・ガードレール / REJECT_FUTILE: k≥12 & UCB90<150）。各 tick は `bash tools/ab_ctl.sh status` + `python3 tools/ab_decide.py --games tmp/state/ab_games.jsonl --state tmp/state/ab_state.json`。実戦 B 腕の機構は局所と一致（直落とし実現併合 62%）。LLM 候補 51d22b6b10e2 は局所 P/Q で ≈ −132 → 不採用（`tmp/history/ab_candidate_skipped_local_*_51d22b6b10e2/decision.txt`）。局所では v744 の再現 run（`v744_p2`/`v744_q2`、20:30–~22:00）を実行中。採用時: sn-mine の `tests/test_v744_exposure.py`＋fixtures（未コミット）と strategy.py を一緒にコミット。バナー「v744 実戦 A/B」点灯中。
+
+## 2026-08-27 20:1x-20:3x JST — v744 実戦 A/B k=6: +122（害停止なし）/ LLM 候補は局所 −132 で不採用 / v744 の局所再現 run 起動
+
+- **実戦 A/B 20:20 時点**: games=24（各 12）、A 1553（med 1322、90.2 手）/ B 1675（med 1568、93.2 手）、ブロック k=6 **mean(B−A)=+122（SE 311、p 0.88）、UCB90 +520** → 事前登録の害停止（UCB90<0）に該当せず CONTINUE。v741 のとき（k=6 で −871）とは異なる推移。次の判定は k≥12（REJECT_FUTILE: UCB90<150）と look 19（各 38、~00:30）。
+- **LLM 候補 `51d22b6b10e2` 局所 P/Q 最終（各 30）**: P（B=cand）mean(B−A)=−318（SE 89、p 0.029）、Q（A=cand）−54（SE 96）→ **効果 ≈ −132、腕文字効果 ≈ −186** → 不採用。バンドルを `tmp/history/ab_candidate_skipped_local_20260827_2027xx_51d22b6b10e2/`（decision.txt 付き）へ移動、`tmp/state/ab_candidate` は空。
+- **v744 局所再現**: 20:30 から `v744_p2`（A=v736/B=v744、ports 19740/18500）/`v744_q2`（入替え、19760/18520）、各 2 slots × 15（~22:00）。初回（+335、SE 122）の再現性確認と推定精度向上（プール SE ≈ 86）。
+- 次 tick（21:13）: 実戦 A/B status（k≈9）、再現 run 途中。
 
 ## 2026-08-27 19:1x-19:3x JST — v744 実戦 A/B 初期（k=2、−416）: 機構は局所と一致 / LLM 候補は局所 ≈ −90
 
