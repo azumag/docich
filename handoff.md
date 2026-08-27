@@ -2,7 +2,14 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: **v744 実戦 A/B（A=v736 / B=v744 aa37f7327d1f、18:43 開始）は k=6（各 12）で mean(B−A) +122（SE 311、UCB90 +520）→ 害停止なし、継続中**。次の判定は look 19（各 38、~00:30）で `ab_decide`（ADOPT: n≥30・p<α/2・m≥MDE・ガードレール / REJECT_FUTILE: k≥12 & UCB90<150）。各 tick は `bash tools/ab_ctl.sh status` + `python3 tools/ab_decide.py --games tmp/state/ab_games.jsonl --state tmp/state/ab_state.json`。実戦 B 腕の機構は局所と一致（直落とし実現併合 62%）。LLM 候補 51d22b6b10e2 は局所 P/Q で ≈ −132 → 不採用（`tmp/history/ab_candidate_skipped_local_*_51d22b6b10e2/decision.txt`）。局所では v744 の再現 run（`v744_p2`/`v744_q2`、20:30–~22:00）を実行中。採用時: sn-mine の `tests/test_v744_exposure.py`＋fixtures（未コミット）と strategy.py を一緒にコミット。バナー「v744 実戦 A/B」点灯中。
+> 直前セッション: v744 実戦 A/B（A=v736 / B=v744 aa37f7327d1f、18:43 開始）は k=9（各 19）で mean(B−A) +51（SE 261）、中央値 1545 vs 1346 → 継続。判定は look 19（各 38、~00:30）で `ab_decide`（ADOPT / REJECT_FUTILE k≥12 & UCB90<150）。21:00 に soren_loop が TERM で再起動したが A/B 状態・env は保持され記録は継続（idx 34–38）。局所: v744 再現 run（P2 +112 / Q2 −12 → ≈ +50）で初回（+335）と合わせたプール **≈ +190 ± 90**。**v745（v744 ＋ 次々ピース露出双子の被覆抑止 −350 ＋ 直落としの margin 1.0 まで緩和、hash df1b2c323ea9）**の局所同時 P/Q（`v745_p`/`v745_q`、21:34–~23:00）を実行中。v745 は「わざと併合しない」「次々ピースの双子の上に置く」というユーザー指摘 2 件への直接対応。バナー「v744 実戦 A/B」点灯中。
+
+## 2026-08-27 21:1x-21:4x JST — v744 実戦 k=9 +51 / 局所再現は +50（プール ≈ +190±90）/ v745 局所 P/Q 起動 / 21:00 の loop 再起動は A/B に影響なし
+
+- **実戦 A/B（v744）21:33 時点**: games=38（各 19）、A 1587（med 1346、p25 995）/ B 1637（med 1545、p25 1236）、ブロック k=9 mean(B−A)=+51（SE 261）→ CONTINUE。21:00:33 に `[SIGNAL] TERM` で soren_loop が停止→再起動（他セッションの作業と推定）。`tmp/state/ab_state.json`・`.env`（REGRESSION_DISABLED=1、SOREN_AB_ALT_STRATEGY）は保持され、21:19 以降も `[AB] idx=34..38` を記録（誤警報だった）。
+- **v744 局所再現（`v744_p2`/`v744_q2`、20:30–21:30、各 30）**: P2 mean(B−A)=+112（SE 263）、Q2 +12（SE 122、B=v736）→ **効果 ≈ +50、腕文字 ≈ +62**。初回（P +359 / Q −310 → +335）とプールすると **v744 ≈ +190（SE ≈ 90）**。初回はやや上振れ、方向は一貫。
+- **v745（df1b2c323ea9）局所同時 P/Q**: 21:34 起動、`v745_p`（A=v736/B=v745、ports 19780/18540）/`v745_q`（入替え、19800/18560）、各 2 slots × 15（~23:00）。
+- 次 tick（22:13）: 実戦 A/B status（k≈12、無益判定 UCB90<150 に注意）、v745 途中集計。
 
 ## 2026-08-27 20:5x-21:1x JST — ユーザー指摘 2 件の再評価（影響ベース）→ v745 = v744 ＋ NEXTNEXT_TWIN_COVER_AVOID ＋ 直落としの margin 緩和
 
