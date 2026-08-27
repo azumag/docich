@@ -4,6 +4,21 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: v744 実戦 A/B（A=v736 / B=v744 aa37f7327d1f、18:43 開始）は k=9（各 19）で mean(B−A) +51（SE 261）、中央値 1545 vs 1346 → 継続。判定は look 19（各 38、~00:30）で `ab_decide`（ADOPT / REJECT_FUTILE k≥12 & UCB90<150）。21:00 に soren_loop が TERM で再起動したが A/B 状態・env は保持され記録は継続（idx 34–38）。局所: v744 再現 run（P2 +112 / Q2 −12 → ≈ +50）で初回（+335）と合わせたプール **≈ +190 ± 90**。**v745（v744 ＋ 次々ピース露出双子の被覆抑止 −350 ＋ 直落としの margin 1.0 まで緩和、hash df1b2c323ea9）**の局所同時 P/Q（`v745_p`/`v745_q`、21:34–~23:00）を実行中。v745 は「わざと併合しない」「次々ピースの双子の上に置く」というユーザー指摘 2 件への直接対応。バナー「v744 実戦 A/B」点灯中。
 
+## 2026-08-27 22:1x-22:3x JST — v744 実戦 k=12 +59（無益停止なし）/ v745 局所 ≈ +49（v744 を上回らず）/ v746（v744＋次々双子抑止のみ）で成分分離
+
+- **実戦 A/B（v744）22:29 時点**: games=51（25/26）、A 1595（med 1395、p25 1105）/ B 1669（med 1568、p25 1236）、ブロック k=12 **mean(B−A)=+59（SE 201、p 0.79）、UCB90 +317** → REJECT_FUTILE（k≥12 & UCB90<150）に該当せず CONTINUE。判定は look 19（各 38、~00:30–01:00）。
+- **v745 局所同時 P/Q 最終（各 30）**: P（B=v745）+66（SE 214）、Q（A=v745）−32（SE 196）→ **効果 ≈ +49（SE ≈145）、腕文字 ≈ +17**。v744（プール ≈ +190）を上回らず。次々双子の被覆抑止（−350）と直落としの margin 緩和のどちらが効かない（または相殺する）かを切り分ける。
+- **v746（hash `e6367ea10dfd`、`selfplay_root/strategy_v746.py`）= v744 ＋ NEXTNEXT_TWIN_COVER_AVOID のみ（margin 緩和なし）**: 22:30 から局所同時 P/Q（`v746_p`/`v746_q`、ports 19820/18580, 19840/18600、~23:50）。v746 ≈ v744 なら被覆抑止は中立で margin 緩和が負、v746 < v744 なら被覆抑止が負（露出双子を守るために別の悪い場所へ置いている可能性）。
+- 次 tick（23:13）: 実戦 A/B status（k≈15）、v746 途中。
+
+## 2026-08-27 21:3x-22:0x JST — Soren91をVast GPUで最大5分だけ測る隔離PoCをドラフトPR化・実市場dry-run成功
+
+- **実装**: `azumag/soviet_now` の `codex/issue-23-vast-poc`（base `codex/issue-23-soren91-daily`）へ、Vast.aiのon-demand GPUを最大300秒だけ使うコントローラとGPUランナーを追加。作成開始から最大600秒でdestroyし、別プロセスのwatchdogと`finally`の双方で後始末する。実市場の最安帯に合わせ、単価上限はGPU `$0.08/h`、受信・送信とも `$0.02/GB`。既定はdry-runで、明示的な`--execute`なしでは作成しない。
+- **合格条件**: NVIDIA WebGL（software renderer不可）、WebGL2、960x540、60秒平均25fps以上、NVENC実エンコードをすべて満たす場合だけpass。本配信、SRT、日次スケジュールには未接続。
+- **リポジトリ**: commit `e8905b290`（PoC本体）+ `4c329c6f7`（GHCR公開CI）+ `653f17372`（実市場単価・受信費上限と最大費用見積もり）をpush。[draft PR #131](https://github.com/azumag/soviet_now/pull/131)。最新GitHub Actions run `33074044553` は成功し、`ghcr.io/azumag/soren91-gpu-runner:poc` の匿名manifest取得も成功。
+- **検証**: Nodeテスト7件、構文、ShellCheck、diff check、linux/amd64イメージビルド、npm audit 0、GPUなし環境でのfail-closedを確認。認証済みVast CLIの実市場dry-runではRTX 3060（`$0.0535556/h`）を選択し、最大10分のGPU・受信1.2GB・5分送信・ストレージ込みの保守的概算は `$0.01020`。dry-runなので課金なし。
+- **未実施**: `--execute`による課金インスタンス作成と実GPU計測は未実施。APIキー本文は取得・表示・保存していない。VMの`SOREN91_ENABLED=0` / `SOREN91_DAILY_ENABLED=0`は維持し、本番反映・有効化は行っていない。
+
 ## 2026-08-27 21:1x-21:4x JST — v744 実戦 k=9 +51 / 局所再現は +50（プール ≈ +190±90）/ v745 局所 P/Q 起動 / 21:00 の loop 再起動は A/B に影響なし
 
 - **実戦 A/B（v744）21:33 時点**: games=38（各 19）、A 1587（med 1346、p25 995）/ B 1637（med 1545、p25 1236）、ブロック k=9 mean(B−A)=+51（SE 261）→ CONTINUE。21:00:33 に `[SIGNAL] TERM` で soren_loop が停止→再起動（他セッションの作業と推定）。`tmp/state/ab_state.json`・`.env`（REGRESSION_DISABLED=1、SOREN_AB_ALT_STRATEGY）は保持され、21:19 以降も `[AB] idx=34..38` を記録（誤警報だった）。
