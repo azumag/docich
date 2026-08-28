@@ -18,12 +18,14 @@
 - **v752 = v748 ＋ v747 の終盤修正**（`selfplay_root/strategy_v752.py`、hash は起動中のバックグラウンド task b88r6dosp の出力を参照）: ガード不変条件で DIRECT を残す／`DEADLINE_GUARD_DIRECT_MERGE_CROSSING`／desperate モード／`DEADLINE_ALLOW_DIRECT_CROSS=True`。オフライン検査・該当 2 試合の再生も同 task。
 - **提案（ユーザー判断待ち）**: (1) VM のランナー差し替え（`cp strategy_runner.py tmp/strategy_runner.pre_v747.py` → sn-mine の `strategy_runner.py` を配置、md5 0b8719035ee4…、両腕に不活性）。(2) 実戦 A/B の切替時期: 案 A = v748 長期を k=50（翌 08:30）まで完走してから v752 vs v748（推奨、v748 の証拠を無駄にしない）／案 B = 今すぐ v748 を finish（k=26 +276 p 0.05 を記録）して v752 vs v736 を開始（終盤修正を早く実戦に出す）。
 
-## 2026-08-28 16:4x JST — 8/27ポッドキャストのBluesky告知は一時的HTTP 502で失敗、再試行されず未投稿
+## 2026-08-28 16:4x-17:3x JST — 8/27ポッドキャストのBluesky告知を再投稿し、公開側まで確認
 
 - **実測**: Mac launchd `com.azumag.soren-podcast.build` は 04:30:05 に開始し、8/27分を YouTube `RuFN4hJhpi4` へ public 公開、`2026-08-27.publish.json` を 05:23 に記録した。Bluesky はログインとサムネイル送信まで成功したが、`com.atproto.repo.createRecord` が `HTTP 502 {"error":"UpstreamFailure"}` で失敗した。
 - **未投稿の確認**: `2026-08-27.bluesky.json` は無く、Bluesky公開APIの直近50件にも動画ID `RuFN4hJhpi4`・該当タイトルは無かった。502の裏で投稿だけ成立した形ではない。
 - **原因**: `bluesky_post.py` に一時障害の再試行がなく、`podcast_daily.sh` は Bluesky rc=3 をログへ出すだけで全体を rc=0 のまま終了する。launchd は `last exit code = 0` と認識し、カレンダー起動も翌日まで再実行しない。
-- **未実施**: 8/27分の手動再投稿、再試行・冪等化のコード修正は未実施。外部投稿はユーザーの明示許可後に行う。修正時は createRecord の応答欠落時にも二重投稿しない仕組みを先に入れる。
+- **再投稿（ユーザー明示許可後、17:29実測）**: 公開フィードに重複が無いことと dry-run 本文129字を確認後、`bluesky_post.py --podcast --date 20260827` を実行。`https://bsky.app/profile/dociai.bsky.social/post/3mu4x2mbtbc2j` へ投稿し、`2026-08-27.bluesky.json` を記録した。
+- **公開側検証**: 公開API `app.bsky.feed.getPosts` で本文、YouTubeカード（`RuFN4hJhpi4`）、カード題、`app.bsky.embed.external#view` を確認。投稿ページは通常GETで HTTP 200、カード画像は HTTP 200 / `image/webp` / 11,140 bytes。
+- **残課題**: 一時的な502に対する自動再試行と、応答欠落時にも二重投稿しない冪等化は未実装。今回は対象回の再投稿のみ実施した。
 
 ## 2026-08-28 16:4x JST — ユーザー指示: 局所自己対戦の一時データ（12 GiB）を整理 → 941 MB
 
