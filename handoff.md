@@ -4,6 +4,15 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: **v748 SEAT_LANES を実戦 root に採用（2026-08-28 23:32）**。長期 A/B（A=v736 / B=v748、08:31–23:32、各 100 試合）k=50 で mean(B−A) **+194（SE 91、sign-flip p 0.041、90% CI 下限 +78）**、中央値 1760 vs 1484、手数 98.8 vs 91.4、T15 5 vs 6（ガードレール OK）→ 事前登録どおり ADOPT、`finish B` → root `897803192d9f`（revert point v736 253cc67e0c1b）、REGRESSION_DISABLED=0、記録 `tmp/history/ab_20260828_233218_*`。リポジトリ: sn-mine `cfd651b28`（strategy.py=v748、`tests/test_v748_seat_lanes.py`・`tests/test_v744_exposure.py`・fixtures 12 件、9 テスト合格、push 済み）。**続けて 23:33 から長期 A/B: A=v748 / B=v752（a557db55896b、終盤併合優先＋desperate＋次々双子ガード、要ランナーフック＝反映済み）**、事前登録は同じ（害停止 k≥6 UCB90<0、無益停止なし、k=50 で CI 下限 >0 ∧ T15 率 ≥ A の半分なら ADOPT）。バナー「v752 実戦 A/B(長期)」。
 
+## 2026-08-29 00:4x JST — 廃止された x-preview free を Muse Spark 1.2 Free へ全チェーン置換
+
+- **ユーザー指示**: 利用不能になった `opencode:x-preview-f-free` をチェーンから外し、OpenCode 無料枠の Muse Spark 1.2 Free へ変更。
+- **正しいモデルIDと実応答**: VM の現行カタログで `opencode/muse-spark-1.2-contributor-free` を確認。直接呼び出しは `MUSE_SPARK_FREE_OK`、rc=0。
+- **リポジトリ**: soviet_now `codex/issue-8-auto-polls` commit `3ff19f632` を push。`core/config.sh` の共通・改善・ラジオ・分類・Soren91・ピーク・postmortem・fact-check既定、`probe_free_slot.sh`、READMEと期待値テストを `opencode:muse-spark-1.2-contributor-free` へ更新。旧モデル名を使う診断テストはルーティング異常系のfixtureとしてのみ残し、実運用チェーンには残していない。
+- **検証**: `bash -n`、`test_peak_hours_agent_order.sh`（全件ok）、`test_improve_retry_reliability.py` 21件が成功。VM `core/config.sh` / `probe_free_slot.sh` はローカルと SHA256 一致。
+- **VM反映**: `.env` の全実効チェーン・単値指定を Muse Spark Free へ置換し、`soren-runtime.service` を完全再起動。radio/chat/improve の `/proc/<PID>/environ` で共通・改善・ラジオ・prepass・コメント・翻訳・ピーク各リストと単値指定が新ID、`.env` の旧ID 0件を確認。サービス active、RTMP ffmpeg publisher 2本が復帰。
+- **ロールバック**: `.env` は `/home/ubuntu/soren/.codex_deploy/backup-20260829-muse-free/.env`。コードは直前commit `4e2c8a75e` を基準に戻せる。
+
 ## 2026-08-29 00:1x-00:3x JST — v752 vs v748 長期 A/B 初期（k=2、混入なし）
 
 - **実戦長期 A/B（A=v748 / B=v752、23:33 開始）00:29**: games=12（各 6）、A 1338 / B 2056（med 1588、107 手）、k=2 mean(B−A)=+1144（SE 209）→ 観察（害停止判定は k≥6、~01:30）。tainted 0（finish 直前の v736 試合 idx 200 は新 A/B に混入せず）。root 897803192d9f、decide_exception 増なし、VM load 10–12（soren91 作業）。
