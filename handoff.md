@@ -4,6 +4,11 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: ユーザー承認（17:3x）: (1) **VM のランナーフックを反映済み**（`strategy_runner.py` md5 e4d41184… → 0b8719035ee4…、バックアップ `tmp/strategy_runner.pre_v747.py`、import OK、宣言の無い v736/v748 には不活性、repo は sn-mine `14a0f34e9`）。(2) 推奨案 A: **v748 長期 A/B（k=29 で +274、SE 125、sign-flip p 0.043、T15 5 vs 4）を k=50（翌 08:30 頃）まで完走 → 判定後に v752（a557db55896b、VM `tmp/manual_challenge/strategy_a557db55896b.py`、validator OK）vs 勝者の A/B を開始**。v752 = v748 ＋ 終盤併合優先（DEADLINE_GUARD_DIRECT_MERGE_CROSSING／desperate、要ランナーフック）＋ 次々双子ガード。並行して v753（数手先の期待併合数 EV_FUTURE_MERGE）を局所で実装・機構検証中。
 
+## 2026-08-28 21:1x-21:3x JST — 長期 A/B（v748）k=43 +163（p 0.118、CI 下限 +34）
+
+- **実戦長期 A/B（v748）21:29**: games=172（各 86）、A 1670（med 1494、92.1 手）/ B 1833（med 1732、99.0 手）、k=43 **mean(B−A)=+163（SE 101、p 0.118）**、90% CI 下限 +34。天井: T14+ 38 vs 27、T15 4 vs 6（比 0.67 ≥ 0.5 OK）、3000 点超 4 vs 5。decide_exception 増なし。k=50（~08:30）で判定（CI 下限 >0 かつ T15 率 ≥ A の半分なら ADOPT）。直近ブロックで縮小傾向のため、判定は事前登録どおり機械的に行う（境界なら不採用側）。
+- 次 tick（22:13）: status（k≈46）。
+
 ## 2026-08-28 20:1x-20:3x JST — 長期 A/B（v748）k=39 +234（p 0.032）/ v753 再現最終 ≈ +54（プール ≈ −150）→ v753 は保留
 
 - **実戦長期 A/B（v748）20:29**: games=159（79/80）、A 1613（med 1439、90.8 手）/ B 1858（med 1732、100.0 手）、k=39 **mean(B−A)=+234（SE 103、p 0.032）** → 継続。decide_exception 増なし。
