@@ -4,6 +4,12 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: ユーザー承認（17:3x）: (1) **VM のランナーフックを反映済み**（`strategy_runner.py` md5 e4d41184… → 0b8719035ee4…、バックアップ `tmp/strategy_runner.pre_v747.py`、import OK、宣言の無い v736/v748 には不活性、repo は sn-mine `14a0f34e9`）。(2) 推奨案 A: **v748 長期 A/B（k=29 で +274、SE 125、sign-flip p 0.043、T15 5 vs 4）を k=50（翌 08:30 頃）まで完走 → 判定後に v752（a557db55896b、VM `tmp/manual_challenge/strategy_a557db55896b.py`、validator OK）vs 勝者の A/B を開始**。v752 = v748 ＋ 終盤併合優先（DEADLINE_GUARD_DIRECT_MERGE_CROSSING／desperate、要ランナーフック）＋ 次々双子ガード。並行して v753（数手先の期待併合数 EV_FUTURE_MERGE）を局所で実装・機構検証中。
 
+## 2026-08-28 19:1x-19:3x JST — 長期 A/B（v748）k=36 +237（p 0.046）/ v753 再現 ≈ +32（プール ≈ −160、v752 を上回らず）
+
+- **実戦長期 A/B（v748）19:29**: games=146（各 73）、A 1625（med 1477、91.0 手）/ B 1875（med 1742、100.1 手）、k=36 **mean(B−A)=+237（SE 111、p 0.046）**。T14+ 33 vs 20、T15 4 vs 5、3000 点超 4 vs 4。decide_exception 増なし。k=50 判定（~08:30）: 90% CI 下限 >0（現状 +237−1.28×111 = +95 > 0）かつ T15 率が A の半分以上（4/73 vs 5/73 → OK）なら ADOPT → `finish B`、sn-mine で strategy.py=v748＋`tests/test_v748_seat_lanes.py`＋fixtures を commit・push、docich も更新。その後 v752 vs v748 の A/B を開始。
+- **v752 vs v753 局所再現（`v753_p2`/`v753_q2`、27/30）**: P2 −126（SE 155）、Q2 −189（SE 136、B=v752）→ v753 ≈ +32。初回（−352）とプール ≈ −160 → v753（EV 再順位付け）が v752 を上回る証拠は無い。EV の重み（250）や範囲（top-12）は要調整だが、局所では判別できないので v752 の実戦結果を待つ。
+- 次 tick（20:13）: status（k≈39）。
+
 ## 2026-08-28 18:1x-18:3x JST — 新ランナー下で実戦は正常（k=33 +267 p 0.033）/ v753 オフライン OK だが局所 P/Q は割れ（P +168 / Q −858）
 
 - **実戦長期 A/B（v748）18:29**: games=133（67/66）、A 1626（med 1492、90.6 手）/ B 1894（med 1744、100.2 手）、k=33 **mean(B−A)=+267（SE 117、sign-flip p 0.033）** → 継続（k=50 判定、~08:30）。新ランナー（17:33 反映）下で idx 121–132 が正常に記録、decide_exception 増なし、Traceback は 17:33 以降 0（ログ内の 37 件は過去の regression rollback validation のもの）。
