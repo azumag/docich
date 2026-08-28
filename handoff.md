@@ -4,6 +4,13 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: **v748（897803192d9f）の実戦 A/B を 08:31 に長期事前登録で再開**（A=v736 / B=v748、ABBA、REGRESSION_DISABLED=1、バナー「v748 実戦 A/B(長期)」）。**新しい事前登録: 害停止のみ（k≥6 で UCB90<0 → finish A）、無益停止は適用しない、判定は k=50（各 100、~24 h）で mean(B−A) の 90% CI 下限 >0 なら ADOPT（finish B＋repo commit）、そうでなければ finish A。途中の `ab_decide` の REJECT_FUTILE は無視する（記録は残す）。** 根拠: 実戦 v736 187 試合で pieces@40 が手数と −0.41 相関（勾配 ≈2.1 手/個）、v748 の実戦圧縮 −1.45 個 ≈ +3 手 ≈ +80 点で、前回の −160±205 と整合＝検出限界未満の小さな正の可能性。局所 FPS=30 でも v748 は +496（FPS は乖離の原因ではない）。前回の v748 実戦（03:30–07:30、54 試合）は REJECT_FUTILE で finish 済み。
 
+## 2026-08-28 16:4x JST — 8/27ポッドキャストのBluesky告知は一時的HTTP 502で失敗、再試行されず未投稿
+
+- **実測**: Mac launchd `com.azumag.soren-podcast.build` は 04:30:05 に開始し、8/27分を YouTube `RuFN4hJhpi4` へ public 公開、`2026-08-27.publish.json` を 05:23 に記録した。Bluesky はログインとサムネイル送信まで成功したが、`com.atproto.repo.createRecord` が `HTTP 502 {"error":"UpstreamFailure"}` で失敗した。
+- **未投稿の確認**: `2026-08-27.bluesky.json` は無く、Bluesky公開APIの直近50件にも動画ID `RuFN4hJhpi4`・該当タイトルは無かった。502の裏で投稿だけ成立した形ではない。
+- **原因**: `bluesky_post.py` に一時障害の再試行がなく、`podcast_daily.sh` は Bluesky rc=3 をログへ出すだけで全体を rc=0 のまま終了する。launchd は `last exit code = 0` と認識し、カレンダー起動も翌日まで再実行しない。
+- **未実施**: 8/27分の手動再投稿、再試行・冪等化のコード修正は未実施。外部投稿はユーザーの明示許可後に行う。修正時は createRecord の応答欠落時にも二重投稿しない仕組みを先に入れる。
+
 ## 2026-08-28 16:4x JST — ユーザー指示: 局所自己対戦の一時データ（12 GiB）を整理 → 941 MB
 
 - 内訳: `scratchpad/selfplay_root/tmp/selfplay/<run>/slot-*`（Chromium プロファイル／キャッシュ、100–150 MB/個 × 約 40 run）が大半。判定に使う `games/*.jsonl`・`ab_games.jsonl`・`ab_state.json` は合計 417 MB。
