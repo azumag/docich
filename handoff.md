@@ -4,6 +4,13 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: **v748（897803192d9f）の実戦 A/B を 08:31 に長期事前登録で再開**（A=v736 / B=v748、ABBA、REGRESSION_DISABLED=1、バナー「v748 実戦 A/B(長期)」）。**新しい事前登録: 害停止のみ（k≥6 で UCB90<0 → finish A）、無益停止は適用しない、判定は k=50（各 100、~24 h）で mean(B−A) の 90% CI 下限 >0 なら ADOPT（finish B＋repo commit）、そうでなければ finish A。途中の `ab_decide` の REJECT_FUTILE は無視する（記録は残す）。** 根拠: 実戦 v736 187 試合で pieces@40 が手数と −0.41 相関（勾配 ≈2.1 手/個）、v748 の実戦圧縮 −1.45 個 ≈ +3 手 ≈ +80 点で、前回の −160±205 と整合＝検出限界未満の小さな正の可能性。局所 FPS=30 でも v748 は +496（FPS は乖離の原因ではない）。前回の v748 実戦（03:30–07:30、54 試合）は REJECT_FUTILE で finish 済み。
 
+## 2026-08-28 17:1x-17:4x JST — v752 完成（v748 ＋ 終盤併合優先 ＋ 次々双子ガード）/ ユーザー指摘 3 件（終盤見送り・次々双子の被覆・数手先の期待値）への対応方針
+
+- **v752（hash `a557db55896b`、`selfplay_root/strategy_v752.py`、VM `tmp/manual_challenge/strategy_v752_pending.py` に配置済み・validator 未実行）= v748 ＋ (1) ガード不変条件で DIRECT を残す ＋ (2) `DEADLINE_GUARD_DIRECT_MERGE_CROSSING`（結果安全 DIRECT → 安全 NEAR → 任意 DIRECT の順）＋ (3) desperate モード `OPEN_TWIN_MERGE_DESPERATE` ＋ (4) `DEADLINE_ALLOW_DIRECT_CROSS=True` ＋ (5) `NEXTNEXT_TWIN_COVER_AVOID`（v746、−350/−150）。オフライン（対 v736）: changed 4259/11155（38%）、DIRECT 損失 0、newcross 116（意図的な終盤併合）、risk_top −0.096。該当 2 試合の再生: 16:55 の試合 t78 x=−0.3・t82 x=−0.1 で T6 併合、22:34 の試合 t141/t149 で T7 併合、t148 で desperate 直落とし。**(1)〜(3) はランナーフックの VM 反映が前提**（宣言の無い v736 には不活性、sn-mine `14a0f34e9`）。
+- **ユーザー指摘（17:1x）「nextnext で併合できるピースに next を置いて邪魔する」**: 対策は (5) で v752 に含めた（実戦の両腕は未対応のまま）。
+- **ユーザー指摘（17:0x）「数手先の組合せ・期待値を見よ」**: 実現可能性を実測 — `build_analysis` は 1 盤面 16 ms（候補 66/手）、既存 `strategy_helpers/lookahead.py`（v739）に post-drop 盤面生成 `next_board` と軽量候補 `lite_results` がある。設計案 v753 **EV_FUTURE_MERGE**: 各候補の落下後盤面（併合結果込み）について「次々ピース（既知、重み 1.0）＋未知の今後 3 手（型分布 1/11 ずつ）」の併合可能期待値 Σ_t w_t·p_merge(t | 盤面) を、較正済みの露出/relief 別成功率（露出 relief<0.5: 0.8、0.5–1.0: 0.6、半被覆: 0.3、被覆: 0.1）で評価し、候補スコアに加算（top-12 候補に限定して +0.2 s/手）。v739（2 手先の即時併合機会だけを見る先読み）が無益だった反省として、評価は「次の 1 手」でなく「今後数手の期待併合数」に置く。v752 の実戦判定と並行して局所で機構検証。
+- **保留中のユーザー判断**: ランナー差し替えの可否（手順は 08-28 00:4x 節）、実戦 A/B の切替（案 A: v748 長期を k=50 まで完走後に v752 vs v748 ／ 案 B: 今すぐ v752 vs v736）。
+
 ## 2026-08-28 16:5x-17:1x JST — ユーザー指摘（再）: 終盤の併合見送りで死亡（16:55 終了 A 腕 v736、88 手 1018 点）→ v752 = v748 ＋ v747 終盤修正を準備
 
 - **該当試合 `game_history/20260828_165502_score1018.jsonl`（A 腕 253cc67e0c1b、88 手）**: t78 next=T6、露出 T6 (0.2, 2.2)、解析器 DIRECT x=−0.3（cross/res_cross=True）→ 不可侵の安全不変条件で除外 → `DEADLINE_GUARD_SAFE_LANDING` x=−3.0。t82 も T6・DIRECT x=−3.0 → 安全着地 +3.0。t84–88 は全候補超過（NO_VALID）で死亡。再生: v736/v748 は同じ挙動、**v747（パッチ済みランナー）は t78 x=−0.3・t82 x=−0.1 で併合**。
