@@ -4,6 +4,11 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: ユーザー承認（17:3x）: (1) **VM のランナーフックを反映済み**（`strategy_runner.py` md5 e4d41184… → 0b8719035ee4…、バックアップ `tmp/strategy_runner.pre_v747.py`、import OK、宣言の無い v736/v748 には不活性、repo は sn-mine `14a0f34e9`）。(2) 推奨案 A: **v748 長期 A/B（k=29 で +274、SE 125、sign-flip p 0.043、T15 5 vs 4）を k=50（翌 08:30 頃）まで完走 → 判定後に v752（a557db55896b、VM `tmp/manual_challenge/strategy_a557db55896b.py`、validator OK）vs 勝者の A/B を開始**。v752 = v748 ＋ 終盤併合優先（DEADLINE_GUARD_DIRECT_MERGE_CROSSING／desperate、要ランナーフック）＋ 次々双子ガード。並行して v753（数手先の期待併合数 EV_FUTURE_MERGE）を局所で実装・機構検証中。
 
+## 2026-08-28 22:1x-22:3x JST — 長期 A/B（v748）k=46 +176（p 0.072、CI 下限 +54）
+
+- **実戦長期 A/B（v748）22:29**: games=185（93/92）、A 1658（med 1477、92.1 手）/ B 1836（med 1744、98.9 手）、k=46 **mean(B−A)=+176（SE 95、p 0.072）**、90% CI 下限 +54。T14+ 42 vs 30、T15 4 vs 6（比 0.67 OK）、3000 点超 4 vs 5。decide_exception 増なし。k=50 到達は ~23:45–00:00（実戦ペースが速い）。
+- 判定手順（k=50）: `ab_ctl.sh status` で mean/SE、`ab_games.jsonl` で T15 率 → 条件（CI 下限 >0 ∧ B の T15 率 ≥ A の半分）→ ADOPT なら `bash tools/ab_ctl.sh finish B "long-horizon k=50 ..."`、VM root=897803192d9f を確認、sn-mine: `cp tmp_strategy_v748_candidate.py strategy.py`、`tests/test_v748_seat_lanes.py`＋fixtures 5 件を add、commit・push（docich handoff も）。その後 `ab_ctl.sh start tmp/manual_challenge/strategy_a557db55896b.py ABBA`（v752 vs v748、長期事前登録: 害停止のみ、k=50 判定）。不採用なら `finish A` → v752 vs v736 で同様に開始。
+
 ## 2026-08-28 21:1x-21:3x JST — 長期 A/B（v748）k=43 +163（p 0.118、CI 下限 +34）
 
 - **実戦長期 A/B（v748）21:29**: games=172（各 86）、A 1670（med 1494、92.1 手）/ B 1833（med 1732、99.0 手）、k=43 **mean(B−A)=+163（SE 101、p 0.118）**、90% CI 下限 +34。天井: T14+ 38 vs 27、T15 4 vs 6（比 0.67 ≥ 0.5 OK）、3000 点超 4 vs 5。decide_exception 増なし。k=50（~08:30）で判定（CI 下限 >0 かつ T15 率 ≥ A の半分なら ADOPT）。直近ブロックで縮小傾向のため、判定は事前登録どおり機械的に行う（境界なら不採用側）。
