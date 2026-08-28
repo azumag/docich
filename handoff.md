@@ -10,7 +10,7 @@
 - **正しいモデルIDと実応答**: VM の現行カタログで `opencode/muse-spark-1.2-contributor-free` を確認。直接呼び出しは `MUSE_SPARK_FREE_OK`、rc=0。
 - **リポジトリ**: soviet_now `codex/issue-8-auto-polls` commit `3ff19f632` を push。`core/config.sh` の共通・改善・ラジオ・分類・Soren91・ピーク・postmortem・fact-check既定、`probe_free_slot.sh`、READMEと期待値テストを `opencode:muse-spark-1.2-contributor-free` へ更新。旧モデル名を使う診断テストはルーティング異常系のfixtureとしてのみ残し、実運用チェーンには残していない。
 - **検証**: `bash -n`、`test_peak_hours_agent_order.sh`（全件ok）、`test_improve_retry_reliability.py` 21件が成功。VM `core/config.sh` / `probe_free_slot.sh` はローカルと SHA256 一致。
-- **VM反映**: `.env` の全実効チェーン・単値指定を Muse Spark Free へ置換し、`soren-runtime.service` を完全再起動。radio/chat/improve の `/proc/<PID>/environ` で共通・改善・ラジオ・prepass・コメント・翻訳・ピーク各リストと単値指定が新ID、`.env` の旧ID 0件を確認。サービス active、RTMP ffmpeg publisher 2本が復帰。
+- **VM反映**: `.env` の全実効チェーン・単値指定を Muse Spark Free へ置換し、`soren-runtime.service` を完全再起動。radio/chat/improve の `/proc/<PID>/environ` で共通・改善・ラジオ・prepass・コメント・翻訳・ピーク各リストと単値指定が新ID、`.env` の旧ID 0件を確認。サービス active、ローカルrelay向けRTMP ffmpeg publisher 1プロセスが復帰。
 - **ロールバック**: `.env` は `/home/ubuntu/soren/.codex_deploy/backup-20260829-muse-free/.env`。コードは直前commit `4e2c8a75e` を基準に戻せる。
 
 ## 2026-08-29 00:1x-00:3x JST — v752 vs v748 長期 A/B 初期（k=2、混入なし）
