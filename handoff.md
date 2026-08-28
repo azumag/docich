@@ -4,6 +4,12 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: **v748 SEAT_LANES を実戦 root に採用（2026-08-28 23:32）**。長期 A/B（A=v736 / B=v748、08:31–23:32、各 100 試合）k=50 で mean(B−A) **+194（SE 91、sign-flip p 0.041、90% CI 下限 +78）**、中央値 1760 vs 1484、手数 98.8 vs 91.4、T15 5 vs 6（ガードレール OK）→ 事前登録どおり ADOPT、`finish B` → root `897803192d9f`（revert point v736 253cc67e0c1b）、REGRESSION_DISABLED=0、記録 `tmp/history/ab_20260828_233218_*`。リポジトリ: sn-mine `cfd651b28`（strategy.py=v748、`tests/test_v748_seat_lanes.py`・`tests/test_v744_exposure.py`・fixtures 12 件、9 テスト合格、push 済み）。**続けて 23:33 から長期 A/B: A=v748 / B=v752（a557db55896b、終盤併合優先＋desperate＋次々双子ガード、要ランナーフック＝反映済み）**、事前登録は同じ（害停止 k≥6 UCB90<0、無益停止なし、k=50 で CI 下限 >0 ∧ T15 率 ≥ A の半分なら ADOPT）。バナー「v752 実戦 A/B(長期)」。
 
+## 2026-08-29 02:1x-02:3x JST — v752 vs v748 長期 A/B k=8 +121（害停止なし、継続）
+
+- **実戦長期 A/B（A=v748 / B=v752）02:29**: games=36（各 18）、A 1959（med 1851、103.5 手）/ B 2052（med 2030、106.8 手）、k=8 mean(B−A)=+121（SE 337）、UCB90 +553 → 害停止に該当せず継続。T14+ 9 vs 7、T15 1 vs 1、3000 点超 2 vs 3。decide_exception 増なし。
+- 参考: 新 root v748 の A 腕平均 1959（前 A/B での v748 は 1837）— 水準は維持。
+- 次 tick（03:13）: status（k≈11）。
+
 ## 2026-08-29 01:1x-01:3x JST — v752 vs v748 長期 A/B k=5 +262（継続）
 
 - **実戦長期 A/B（A=v748 / B=v752）01:29**: games=24（各 12）、A 1800（med 1563、101.3 手）/ B 1997（med 1906、104.6 手）、k=5 mean(B−A)=+262（SE 444）、UCB90 +831 → 害停止なし（k≥6 でも UCB90>0 見込み）。T14+ 6 vs 3、T15 1 vs 0、3000 点超 2 vs 2。decide_exception 増なし。
