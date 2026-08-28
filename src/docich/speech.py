@@ -715,7 +715,28 @@ def synthesize_chunks(chunks: list[str], output: Path, config: SpeechConfig) -> 
     if not chunks:
         raise SpeechError("テキストが空です")
     errors: list[str] = []
-    plan = plan_endpoints(config)
+    # Distributed synthesis: if say_enqueue.sh selected a free endpoint via
+    # per-endpoint mkdir lock (Tailscale chain windows→mac→local), honor it
+    # even if the generic ready/backoff ordering would try another endpoint
+    # first. This makes "windows queued → next to mac" work without
+    # waiting for the global synth lock.
+    active = os.environ.get("VOICEVOX_ACTIVE_URL", "").strip().rstrip("/")
+    base_plan = plan_endpoints(config)
+    if active and active in config.urls:
+        for idx, item in enumerate(base_plan):
+            if item["url"] == active:
+                # bashの分散ロックは ready な端点だけを選ぶので、activeが ready
+                # の時だけ強制的に先頭へ。backoff/disabledなら通常の ready優先
+                # 順序に従い、空いている ready 端点を使う。
+                if item["status"] == "ready":
+                    plan = [base_plan[idx]] + base_plan[:idx] + base_plan[idx + 1 :]
+                else:
+                    plan = base_plan
+                break
+        else:
+            plan = base_plan
+    else:
+        plan = base_plan
     for item in plan:
         url = item["url"]
         t0 = time.monotonic()
