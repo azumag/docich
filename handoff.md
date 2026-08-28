@@ -4,6 +4,13 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: ユーザー承認（17:3x）: (1) **VM のランナーフックを反映済み**（`strategy_runner.py` md5 e4d41184… → 0b8719035ee4…、バックアップ `tmp/strategy_runner.pre_v747.py`、import OK、宣言の無い v736/v748 には不活性、repo は sn-mine `14a0f34e9`）。(2) 推奨案 A: **v748 長期 A/B（k=29 で +274、SE 125、sign-flip p 0.043、T15 5 vs 4）を k=50（翌 08:30 頃）まで完走 → 判定後に v752（a557db55896b、VM `tmp/manual_challenge/strategy_a557db55896b.py`、validator OK）vs 勝者の A/B を開始**。v752 = v748 ＋ 終盤併合優先（DEADLINE_GUARD_DIRECT_MERGE_CROSSING／desperate、要ランナーフック）＋ 次々双子ガード。並行して v753（数手先の期待併合数 EV_FUTURE_MERGE）を局所で実装・機構検証中。
 
+## 2026-08-28 17:3x-17:4x JST — v753 EV_FUTURE_MERGE（数手先の期待併合数で上位候補を再順位付け）を実装、局所 P/Q 起動
+
+- **設計**（ユーザー指摘「nextnext だけでなく数手先の組合せ・期待値を見よ」）: 新ヘルパ `strategy_helpers/future_ev.py`（additive）。`board_after(pieces, result, next_type, bs, radii)` で候補の落下後盤面（DIRECT 併合なら相方を type+1 に置換、それ以外は landing_x/landing_y に追加）を作り、`expected_future_merges(board, nnt, bs)` = Σ_t w_t·p_t（w: 次々ピース 1.0 ＋ 今後 3 手を型分布 1/11 ずつ、p: 双子の露出状態別の実測率 露出 relief<0.5 0.8 / 0.5–1.0 0.6 / >1.0 0.2 / 半被覆 0.3 / 被覆 0.1）。decide 側（v752 ベース、`strategy_v753.py`、hash `6f2c972b01b7`）: 候補ループで `_v753_pool` に (score, x, reasons, result) を蓄積し、最終 clip 直前で上位 12 候補に `250 × (EV_after − EV_now)` を加えて再選択（tag `EV_FUTURE_MERGE`）。無効条件: death_spiral／T15 在盤／超過状態／margin<1.0（安全規則に干渉しない）。
+- **実測**: decide 1 手 v752 0.001 s → v753 0.005 s（最大 0.015 s）。該当試合 40 手の再生で 6 手（15%）が変わる。オフライン検査（対 v752、`scratchpad/v737/screen_v753.txt`）は背景実行中。
+- **局所同時 P/Q（A=v752 / B=v753、FPS=30、`v753_p`/`v753_q`、各 2 slots × 15、ports 20260/19020, 20280/19040）**: 17:38 起動（~19:00）。見る指標: 併合/手、pieces@40、手数、T14+/T15。
+- 実戦: 新ランナー下の初戦 idx 121（B）進行中、decide 例外増なし。次 tick で記録を確認。
+
 ## 2026-08-28 17:3x JST — ユーザー承認: ランナーフックを VM 反映 / A/B は案 A（v748 完走 → v752）
 
 - **実戦長期 A/B（v748）17:30**: games=119（59/60）、k=29 **mean(B−A)=+274（SE 125、sign-flip p 0.043）**。天井: T15 5 vs 4、3000 点超 4 vs 4（差は解消）。k=50 まで継続。
