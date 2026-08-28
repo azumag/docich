@@ -2,7 +2,15 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: ユーザー承認（17:3x）: (1) **VM のランナーフックを反映済み**（`strategy_runner.py` md5 e4d41184… → 0b8719035ee4…、バックアップ `tmp/strategy_runner.pre_v747.py`、import OK、宣言の無い v736/v748 には不活性、repo は sn-mine `14a0f34e9`）。(2) 推奨案 A: **v748 長期 A/B（k=29 で +274、SE 125、sign-flip p 0.043、T15 5 vs 4）を k=50（翌 08:30 頃）まで完走 → 判定後に v752（a557db55896b、VM `tmp/manual_challenge/strategy_a557db55896b.py`、validator OK）vs 勝者の A/B を開始**。v752 = v748 ＋ 終盤併合優先（DEADLINE_GUARD_DIRECT_MERGE_CROSSING／desperate、要ランナーフック）＋ 次々双子ガード。並行して v753（数手先の期待併合数 EV_FUTURE_MERGE）を局所で実装・機構検証中。
+> 直前セッション: **v748 SEAT_LANES を実戦 root に採用（2026-08-28 23:32）**。長期 A/B（A=v736 / B=v748、08:31–23:32、各 100 試合）k=50 で mean(B−A) **+194（SE 91、sign-flip p 0.041、90% CI 下限 +78）**、中央値 1760 vs 1484、手数 98.8 vs 91.4、T15 5 vs 6（ガードレール OK）→ 事前登録どおり ADOPT、`finish B` → root `897803192d9f`（revert point v736 253cc67e0c1b）、REGRESSION_DISABLED=0、記録 `tmp/history/ab_20260828_233218_*`。リポジトリ: sn-mine `cfd651b28`（strategy.py=v748、`tests/test_v748_seat_lanes.py`・`tests/test_v744_exposure.py`・fixtures 12 件、9 テスト合格、push 済み）。**続けて 23:33 から長期 A/B: A=v748 / B=v752（a557db55896b、終盤併合優先＋desperate＋次々双子ガード、要ランナーフック＝反映済み）**、事前登録は同じ（害停止 k≥6 UCB90<0、無益停止なし、k=50 で CI 下限 >0 ∧ T15 率 ≥ A の半分なら ADOPT）。バナー「v752 実戦 A/B(長期)」。
+
+## 2026-08-28 23:3x JST — **v748 採用（実戦 root）** → v752 vs v748 の長期 A/B 開始
+
+- **k=50 最終（各 100）**: A v736 1643（sd 707、med 1484、p25 1207、91.4 手）/ B v748 1837（sd 689、med 1760、p25 1385、98.8 手）、ブロック **mean(B−A)=+194（SE 91、p 0.041）**、90% CI 下限 +78 > 0。天井: T14+ 46 vs 31、T15 5 vs 6（比 0.83 ≥ 0.5）、3000 点超 5 vs 5 → ADOPT。
+- **VM**: `ab_ctl.sh finish B` → root 897803192d9f、`tmp/revert_strategy.py`=v736、REGRESSION_DISABLED=0、SOREN_AB_ALT_STRATEGY 空。バナー停止後、新 A/B で再点灯。
+- **リポジトリ**: sn-mine（`codex/no-apply-liveliness`）`cfd651b28`: strategy.py=v748（hash 一致）、`tests/test_v748_seat_lanes.py`（3）・`tests/test_v744_exposure.py`（3）・`tests/test_runner_direct_cross_hook.py`（3、既存）計 9 合格、fixtures 12 件。push 済み。docich 側の submodule pin は共有 checkout 事情により未更新（`docich-shared-checkout-branches` メモリ参照）。
+- **次の A/B（23:33:01 開始）**: A=v748 / B=v752（`tmp/manual_challenge/strategy_a557db55896b.py`、validator OK 17:34）。v752 の終盤規則はランナーフック（反映済み 17:33）に依存。各 tick: `ab_ctl.sh status`、害停止判定 k≥6（~01:30）、k=50 は 29 日 ~15:00。
+- **教訓**: +100〜+200 級の改善は各腕 100 試合の長期 A/B で初めて判定できた（短期 k=13 の無益停止は v748 を 2 回棄却していた）。局所自己対戦は go/no-go には使わない（機構指標と順位付けの参考のみ）。
 
 ## 2026-08-28 22:1x-22:3x JST — 長期 A/B（v748）k=46 +176（p 0.072、CI 下限 +54）
 
