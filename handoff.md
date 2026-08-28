@@ -2,7 +2,14 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: **v748（897803192d9f）の実戦 A/B を 08:31 に長期事前登録で再開**（A=v736 / B=v748、ABBA、REGRESSION_DISABLED=1、バナー「v748 実戦 A/B(長期)」）。**新しい事前登録: 害停止のみ（k≥6 で UCB90<0 → finish A）、無益停止は適用しない、判定は k=50（各 100、~24 h）で mean(B−A) の 90% CI 下限 >0 なら ADOPT（finish B＋repo commit）、そうでなければ finish A。途中の `ab_decide` の REJECT_FUTILE は無視する（記録は残す）。** 根拠: 実戦 v736 187 試合で pieces@40 が手数と −0.41 相関（勾配 ≈2.1 手/個）、v748 の実戦圧縮 −1.45 個 ≈ +3 手 ≈ +80 点で、前回の −160±205 と整合＝検出限界未満の小さな正の可能性。局所 FPS=30 でも v748 は +496（FPS は乖離の原因ではない）。前回の v748 実戦（03:30–07:30、54 試合）は REJECT_FUTILE で finish 済み。
+> 直前セッション: ユーザー承認（17:3x）: (1) **VM のランナーフックを反映済み**（`strategy_runner.py` md5 e4d41184… → 0b8719035ee4…、バックアップ `tmp/strategy_runner.pre_v747.py`、import OK、宣言の無い v736/v748 には不活性、repo は sn-mine `14a0f34e9`）。(2) 推奨案 A: **v748 長期 A/B（k=29 で +274、SE 125、sign-flip p 0.043、T15 5 vs 4）を k=50（翌 08:30 頃）まで完走 → 判定後に v752（a557db55896b、VM `tmp/manual_challenge/strategy_a557db55896b.py`、validator OK）vs 勝者の A/B を開始**。v752 = v748 ＋ 終盤併合優先（DEADLINE_GUARD_DIRECT_MERGE_CROSSING／desperate、要ランナーフック）＋ 次々双子ガード。並行して v753（数手先の期待併合数 EV_FUTURE_MERGE）を局所で実装・機構検証中。
+
+## 2026-08-28 17:3x JST — ユーザー承認: ランナーフックを VM 反映 / A/B は案 A（v748 完走 → v752）
+
+- **実戦長期 A/B（v748）17:30**: games=119（59/60）、k=29 **mean(B−A)=+274（SE 125、sign-flip p 0.043）**。天井: T15 5 vs 4、3000 点超 4 vs 4（差は解消）。k=50 まで継続。
+- **ランナー反映（承認済み）**: 現行 md5 e4d41184… を確認 → `tmp/strategy_runner.pre_v747.py` にバックアップ → sn-mine の `strategy_runner.py`（`14a0f34e9`）を配置、md5 0b8719035ee4…、`import strategy_runner` OK、フック 2 箇所。分類器に 1 回ブロックされたが分割して再試行で通過。次の試合から新ランナー（v736/v748 には不活性）。**次 tick で新ランナー下の試合が正常に記録されることを確認する**（`[AB] recorded` と decide_exception）。
+- **v752 待機**: `tmp/manual_challenge/strategy_a557db55896b.py`、validator OK（17:34）。v748 の k=50 判定後、勝者（v748 採用なら v748、そうでなければ v736）を A にして v752 の A/B を開始（事前登録は従来: k≥6 害停止、無益は長期なら不適用、k=50 判定）。
+- 次: v753 EV_FUTURE_MERGE の実装（局所）。
 
 ## 2026-08-28 17:1x-17:4x JST — v752 完成（v748 ＋ 終盤併合優先 ＋ 次々双子ガード）/ ユーザー指摘 3 件（終盤見送り・次々双子の被覆・数手先の期待値）への対応方針
 
