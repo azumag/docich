@@ -4,6 +4,13 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: **v748（897803192d9f）の実戦 A/B を 08:31 に長期事前登録で再開**（A=v736 / B=v748、ABBA、REGRESSION_DISABLED=1、バナー「v748 実戦 A/B(長期)」）。**新しい事前登録: 害停止のみ（k≥6 で UCB90<0 → finish A）、無益停止は適用しない、判定は k=50（各 100、~24 h）で mean(B−A) の 90% CI 下限 >0 なら ADOPT（finish B＋repo commit）、そうでなければ finish A。途中の `ab_decide` の REJECT_FUTILE は無視する（記録は残す）。** 根拠: 実戦 v736 187 試合で pieces@40 が手数と −0.41 相関（勾配 ≈2.1 手/個）、v748 の実戦圧縮 −1.45 個 ≈ +3 手 ≈ +80 点で、前回の −160±205 と整合＝検出限界未満の小さな正の可能性。局所 FPS=30 でも v748 は +496（FPS は乖離の原因ではない）。前回の v748 実戦（03:30–07:30、54 試合）は REJECT_FUTILE で finish 済み。
 
+## 2026-08-28 16:5x-17:1x JST — ユーザー指摘（再）: 終盤の併合見送りで死亡（16:55 終了 A 腕 v736、88 手 1018 点）→ v752 = v748 ＋ v747 終盤修正を準備
+
+- **該当試合 `game_history/20260828_165502_score1018.jsonl`（A 腕 253cc67e0c1b、88 手）**: t78 next=T6、露出 T6 (0.2, 2.2)、解析器 DIRECT x=−0.3（cross/res_cross=True）→ 不可侵の安全不変条件で除外 → `DEADLINE_GUARD_SAFE_LANDING` x=−3.0。t82 も T6・DIRECT x=−3.0 → 安全着地 +3.0。t84–88 は全候補超過（NO_VALID）で死亡。再生: v736/v748 は同じ挙動、**v747（パッチ済みランナー）は t78 x=−0.3・t82 x=−0.1 で併合**。
+- 実戦の両腕（v736 / v748）はこの修正を含まない。修正には (a) 戦略側（ガード不変条件の緩和＋merge-first＋desperate）と (b) **ランナー側フック**（`strategy_runner.py`、sn-mine `14a0f34e9`、宣言の無い戦略には不活性）の両方が必要で、(b) の VM 反映は 08-28 00:4x に自動モードの分類器にブロックされたまま。
+- **v752 = v748 ＋ v747 の終盤修正**（`selfplay_root/strategy_v752.py`、hash は起動中のバックグラウンド task b88r6dosp の出力を参照）: ガード不変条件で DIRECT を残す／`DEADLINE_GUARD_DIRECT_MERGE_CROSSING`／desperate モード／`DEADLINE_ALLOW_DIRECT_CROSS=True`。オフライン検査・該当 2 試合の再生も同 task。
+- **提案（ユーザー判断待ち）**: (1) VM のランナー差し替え（`cp strategy_runner.py tmp/strategy_runner.pre_v747.py` → sn-mine の `strategy_runner.py` を配置、md5 0b8719035ee4…、両腕に不活性）。(2) 実戦 A/B の切替時期: 案 A = v748 長期を k=50（翌 08:30）まで完走してから v752 vs v748（推奨、v748 の証拠を無駄にしない）／案 B = 今すぐ v748 を finish（k=26 +276 p 0.05 を記録）して v752 vs v736 を開始（終盤修正を早く実戦に出す）。
+
 ## 2026-08-28 16:4x JST — 8/27ポッドキャストのBluesky告知は一時的HTTP 502で失敗、再試行されず未投稿
 
 - **実測**: Mac launchd `com.azumag.soren-podcast.build` は 04:30:05 に開始し、8/27分を YouTube `RuFN4hJhpi4` へ public 公開、`2026-08-27.publish.json` を 05:23 に記録した。Bluesky はログインとサムネイル送信まで成功したが、`com.atproto.repo.createRecord` が `HTTP 502 {"error":"UpstreamFailure"}` で失敗した。
