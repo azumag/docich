@@ -4,6 +4,13 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: **改善ループ（LLM）はユーザー指示で停止 → 原因を修正済み（再開はしていない）**。停止は正規手順 `tmp/state/improve_daemon.paused`（`_ab_finish` はこれを消さないと確認済み、稼働プロセス 0・lock なし・state=idle）。**タイムアウトの真因は AI キューの枯渇ではなく、改善チェーン先頭の `opencode`（snap）プロバイダのハング**（「OK と返して」だけで 120 秒無応答。ラジオは短いタイムアウトで即フェイルオーバーするため無傷だった）。修正: (1) `MODEL_IMPROVE_LIST` / `MODEL_IMPROVE_PEAK_LIST` を **codex 優先の順に並べ替え**（`set_toggle.sh`）、(2) `IMPROVE_ANALYZE_CMD_TIMEOUT_SEC` を **1100 → 420 秒**（wall 3600 秒内で複数エージェントを試せる）、(3) `prompts/improve_strategy.md` に**実測で確定した力学 7 項目**を追記（容量モデル・併合/手が唯一の目的関数・寄せ不可・露出同型が唯一の経路・覆わない系と直落とし強化は再提案禁止・既存軸は飽和）＝ sn-mine `2f0aab4c9`。**再開は未実施**（実戦 A/B 枠が数日埋まっているため、再開のタイミングは要相談）。実戦は解析器 A/B が k=29 で継続中（score −162、UCB90 +34）。
 
+## 2026-08-30 00:1x-00:4x JST — 解析器 A/B k=32（害停止せず）/ A/B 記録に analyzer_modes を追加（腕別実験の事後検証用）
+
+- **解析器 A/B（00:29、k=32、n=65/64）**: score −141（UCB90 +38）、併合/手 −0.0225（CI90 [−0.043, −0.002]）、T15 4 vs 3 → 害停止せず継続。k=50 は ~06:00。
+- **改善ループは停止を維持**（`LC_ALL=C pgrep -f "[e]loop_improve"` = 0、paused マーカーあり）。VM load は 6.9〜8.6 に低下（停止前 8.9〜9.1）。
+- **A/B 記録に `analyzer_modes` を追加**（sn-mine `02b9676d7`、VM 反映済み・旧版 `tmp/ab_interleave.prev.sh`）: `_ab_record_game` が試合アーカイブの `analyzer_modes`（`landing_arc` を含む）を記録に写す。**game_history は直近数十試合しか残らない**ため、これまで腕別 env の検証は一時的にしかできなかった。今後は `tmp/history/ab_*_games.jsonl` から恒久的に「どの試合がどの解析器モードだったか」を確認できる。`eloop_lib.sh` は毎試合 source されるので次の試合から有効（idx 129/130 は反映前、131 以降で確認する）。
+- 次 tick（01:13）: 記録に `analyzer_modes` が入ったことを確認 → 以後は status のみ。k=50（~06:00）で判定 → `finish A|B`（`.env` は不変）→ **v757 vs v752 の長期 A/B を開始**し音声進捗で報告。
+
 ## 2026-08-29 23:3x-23:4x JST — 改善ループを停止し、タイムアウトの真因を特定・修正（ユーザー指示「止めてから直して」）
 
 - **停止（正規手順）**: `touch tmp/state/improve_daemon.paused`。このマーカーは supervisor の respawn・soren_loop からの直接 spawn・`trigger_adaptive_improvement` のすべてを止める（improve.sh 3005–3010）。`_ab_finish` はこのファイルを消さない（読むのは `_ab_start_from_bundle` の `pause_preexisting` 記録だけ）ことをコードで確認済み。停止後: eloop_improve プロセス 0、improve.lock なし、state=idle。
