@@ -4,6 +4,12 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: **v752 を実戦 root に採用（2026-08-29 14:41）**。長期 A/B（A=v748 / B=v752、各 100 試合）で score +141（SE 101、90% CI [+12, +270]）、併合/手 +0.0155、T15 5 vs 3、手数 101.3 vs 97.8 → 事前登録どおり ADOPT、root `a557db55896b`（revert point v748 897803192d9f）。リポジトリ sn-mine `dc978fa5a`＋`8bc448c5f`（strategy.py=v752、v747 fixture・テスト 4 件、関連 11 テスト合格）。**続けて 14:45 から解析器 A/B を開始**: 両腕とも同一戦略 v752、**B 腕だけ `ANALYZE_BOARD_LANDING_ARC=3`（締切の着地を円弧接触モデルに）**。これは今回新設した腕別 env（state の `a_env`/`b_env` → `AB_EXTRA_ENV` → runner env、sn-mine `ed4640661`/`d763ab1ef`/import 修正）で初めて可能になった純粋な解析器 A/B。事前登録は同じ（害停止 k≥6 で UCB90<0、k=50 で score の 90% CI 下限 >0 ∧ T15 率 ≥ A の半分）。バナー「解析器 A/B(締切モデル)」。
 
+## 2026-08-29 15:1x-15:4x JST — 解析器 A/B 稼働確認（腕別 env が runner に届いている）/ 記録に landing_arc を追加
+
+- **解析器 A/B（14:45 開始、両腕 v752、B 腕のみ `ANALYZE_BOARD_LANDING_ARC=3`）15:38**: games=8。ログに `[AB] idx=5 arm=B ... env=ANALYZE_BOARD_LANDING_ARC=3` が出ており**腕別 env は runner に渡っている**。decide_exception 増なし、root は a557db55896b のまま。序盤 6 試合は A 3630 / B 1826 だが n=3 ずつでノイズ（A 側に 5127・3919 の当たり試合）。
+- **記録の自己検証**: `strategy_runner._analyzer_modes_for_record()` に **`landing_arc`** を追加（sn-mine `6a43f7e6b`、VM 反映済み・旧版 `tmp/strategy_runner.prev.py`）。既存の analyze_board に関数が無い場合は追加しない fail-safe 付き。反映後の最初の試合（A 腕）で `landing_arc=0` を確認、B 腕（idx 9 以降）で 3 になるはず。これで**どの試合がどの解析器モードで打たれたか**が game_history / ab_games から事後検証できる。
+- 事前登録（再掲）: 害停止 k≥6 で UCB90<0 → `finish A`（＝mode 3 不採用、`.env` は変更しない）。k=50 で score の 90% CI 下限 >0 ∧ T15 率 ≥ A の半分 → 採用＝`./set_toggle.sh ANALYZE_BOARD_LANDING_ARC=3`（戦略ファイルは両腕同じなので `finish` の勝者に関わらず root は不変）。
+
 ## 2026-08-29 14:4x JST — **v752 採用（実戦 root）** → 腕別 env を本番反映 → **解析器 A/B（締切の円弧モデル）を開始**
 
 - **v752 の k=50 判定（汚染 1 件を除外した 100/100）**: score A 1795（med 1682、97.8 手）/ B 1931（med 1908、101.3 手）、ブロック k=49 **mean(B−A)=+141（SE 101）→ 90% CI [+12, +270]、下限 >0**。併合/手 +0.0155（z 1.22）。**T15 5 vs 3**（ガードレール OK）→ **ADOPT**。`finish B` → root `a557db55896b`、revert point v748、REGRESSION_DISABLED=0、記録 `tmp/history/ab_20260829_144145_*`（進行中だった idx 201 も統合済み）。
