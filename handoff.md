@@ -4,6 +4,13 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: 実戦 root = **v752 `a557db55896b`**。解析器 A/B（両腕 v752、B のみ `ANALYZE_BOARD_LANDING_ARC=3`）は k=42 で score −97（UCB90 +61）・併合/手 −0.014（CI90 が 0 をまたぐ）＝中立寄り、k=50（~05:30–06:00）で判定。**判定と移行はワンコマンド化済み: VM `bash tmp/manual_challenge/decide_and_switch.sh`**（事前登録どおり score CI90 下限 >0 ∧ T15 率 ≥ A の半分 なら `finish B`＋`.env` に mode 3、それ以外は `finish A`。どちらでも root は不変）。その後 `bash tools/ab_ctl.sh start tmp/manual_challenge/strategy_351b06dae2bd.py ABBA` で **v757 SURFACE_DIVERSITY の長期 A/B** を開始する（validator OK 済み）。改善ループは停止維持（プロセス 0）。v757 の期待効果は +0.038 併合/手（表面スロット 5.5・露出型 4.97 の実測から上限 45%→50%）。
 
+## 2026-08-30 04:1x-05:0x JST — アンケート集計の英語自己訂正文・Markdown混入を修正
+
+- **実害を本番履歴で確認**: 04:13終了のアンケートで、結果生成AIの `The output I produced is not in the required format. Let me redo this correctly.` と `**集計結果**` が採用され、従来の220文字切断により4番目の選択肢まで届かない本文がチャット・読み上げ用に保存された。質問は「資本主義に生まれ変わったソ連、最初にやるべき政策は？」、実票は「工場の株を国民に配る」1票、他3択0票。
+- **修正**: 得票一覧はAPI結果から機械的に生成し、AIには60文字以内・票数再掲なしの一言だけを担当させる。英語の自己訂正文、Markdown、見出し、票数再掲は validator で拒否し、全モデル不正時は「投票ありがとうございました。」へフォールバック。最終文は200文字以内。
+- **保存・反映**: soviet_now `f62bfdb2d`（branch `codex/fix-news-date-freshness`）をpush。VMバックアップ `.codex_deploy/backup-20260830-poll-result-f62bfdb2d/` を作成して2ファイルを反映。ローカル/VM SHA256一致。VM専用回帰7項目成功、ローカル既存Poll統合12項目成功（VMには既存統合テストファイルが無いため未実行）。
+- **稼働確認**: Poll workerをTERMで完全再起動し、新PID `3758997` が05:00:49に起動、`show_status.sh --once` でRUNNING。過去の誤文は監査履歴として残し、重複を避けるため訂正文は再送していない。**次回の実アンケートで新形式がチャット・読み上げへ出ることは未確認**。
+
 ## 2026-08-30 04:1x-04:4x JST — v757 の decide 所要時間を確認（+0.2 ms、実質影響なし）/ 解析器 A/B は k=45
 
 - **解析器 A/B（04:30、k=45、n=90/90）**: score −94、90% CI 下限 **−249**（採用条件は下限 >0 なので、このまま推移すれば **REJECT** が確定的）。k=50 まで残り 5 ブロック（~1.5 時間）。
