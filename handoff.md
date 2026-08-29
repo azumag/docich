@@ -8,7 +8,7 @@
 
 - **実害と根因**: 22:46開始の実ニュース原稿が1行目「現在時刻は22時です」、3行目「21時を回りました」と読み上げた。既存の再生前同期はcanonical introだけを更新し、生成モデルが時間帯オープニングへ追加した生成時点の時刻を残していた。
 - **修正**: `broadcast/radio_persona.sh` がcanonical intro後の冒頭5行を文単位で確認し、「21時になりました」「21時を回りました」等の完結した現在時刻claimだけを除去する。生成ルールにも本文へ数字の現在時刻を二重記載しない指示を追加。ニュース事実の「午後3時台に地震」「正午に会見」「午後9時ですべての列車」等は保持する境界テストを追加。soviet_now branch `codex/fix-news-date-freshness` commit `9a26bc71f`、push・VM反映済み。VMバックアップ `.codex_deploy/backup-20260829-radio-clock-9a26bc71f/`、USR1 reload complete 23:04:22。
-- **検証**: 時刻同期・deferred queue・render retry・caption bundleテスト、bash構文、diff check成功。独立レビューは最終no findings。修正前22:58生成の実原稿を23:10に補正し、1行目「現在時刻は23時です」、旧「22時を回りました」は消失。23:11:45に字幕同期bundle付き音声生成完了、captions先頭も単一の23時、23:11:47に実再生開始を確認。再生完了までは未確認だが、問題の時刻部分は先頭チャンクで実再生経路へ入った。
+- **検証**: 時刻同期・deferred queue・render retry・caption bundleテスト、bash構文、diff check成功。独立レビューは最終no findings。修正前22:58生成の実原稿を23:10に補正し、1行目「現在時刻は23時です」、旧「22時を回りました」は消失。23:11:45に字幕同期bundle付き音声生成完了、captions先頭も単一の23時、23:11:47に実再生開始、23:17:21に再生完了を確認。完了報告音声もVM audio-workerで23:17:57に実再生済み。作業中バナーはVM側でactive:falseを確認。
 
 ## 2026-08-29 22:1x-22:5x JST — v757 と「同型直落とし」の干渉なしを確認 / 併合率 88% の経路を定量化
 
