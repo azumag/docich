@@ -2,7 +2,30 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: **issue #132 に着手。最優先の P0-0（建国すると評価が 23,256 点下がる逆転）を実測で確認し修正済み**（sn-mine `330a73630`、VM 反映済み）。`eloop.sh` / `wildcard_parallel.py` / `repair_current_run_from_history.sh` の評価表が type 15 (12096) で終わっており type 16 が無かった。表の隣接比 2.1 に合わせて **16: 25402** を追加 → 建国 26,338 vs T15×2 24,192 で **+2,146**。**T16 は過去 1 度も出ていないので既存・進行中の記録の値は一切変わらない**（no-op）。テスト `tests/test_soviet_terminal_utility.py` 5 件（両表の一致、type16 の存在、建国 > T15×2、tier 単調・隣接比 ≥2、残り駒同一での優位）。Phase 0 として **v757 A/B の manifest を凍結**（decide hash・トグル・14 ファイルの SHA256、VM `tmp/history/manifests/` と repo `experiments/v757_ab_20260830_0602.json`、sn-mine `b42b44c1e`）。実戦は v757 A/B が n=3/2 で進行中（規則は不変）、改善ループは停止維持。音声進捗も投入。
+> 直前セッション: issue #132 対応中。P0-0（建国で評価が 23,256 点下がる逆転）は修正・VM 反映済み（sn-mine `330a73630`、type 16 = 25402、既存記録には no-op）。**P0-2 を実測で確認**: (1) `reactive_pairs` は実データで全て 3 要素なのに `AVOID_BLOCK_REACTIVE_PAIR` は `len(rp) >= 6` を要求 → 内側の判定は**一度も発火せず**、`blocking_penalty=-0.0798` のまま `score -= -0.0798`（＝ +0.08 加点）して reason を付ける。**実戦 1,141 手の 59.8% にこのタグが出ている**。(2) `HIGH` phase は `MEDIUM`(max_y<2.894) の後ろに `max_y<1.275` があり到達不能、`HIGH_TOWER` は 1,141 手で 0 回。(3) 連続単項マイナス 12 箇所。**これにより 08-29 23:1x の私の分析「露出同型を見送った理由の最多は AVOID_BLOCK_REACTIVE_PAIR」は誤り**（このタグは 6 割の手に無条件で付くノイズ）。静的検出テスト `tests/test_strategy_semantic_lint.py`（既知欠陥を凍結、sn-mine `e7bce2244`）を追加。**strategy.py 自体は v757 A/B 進行中のため未修正**（両腕の差分を意図した 1 点だけに保つため）。v757 A/B は n=3/3 で継続。
+
+## 2026-08-30 06:4x-07:0x JST — issue #132 P0-2 を実測で確認 / **過去の分析に誤りがあったので訂正** / 意味 lint を追加
+
+- **確認 1: `AVOID_BLOCK_REACTIVE_PAIR` は完全な no-op でありながら 6 割の手に出ている**
+  - `analyze_board` が返す `reactive_pairs` の要素は実データ 359/359 すべて **3 要素**。コードは `len(rp) >= 6` を要求しているので**内側のブロック判定は一度も実行されない**。
+  - その結果 `blocking_penalty` は初期値 `-0.0798` のままで、`if blocking_penalty > -1` が真になり `score -= min(-0.0798, 810.9)` ＝ **+0.08 の加点**をして `reasons.append("AVOID_BLOCK_REACTIVE_PAIR")` する。
+  - 実戦直近 12 試合 1,141 手のうち **682 手（59.8%）にこのタグが出ている**。加点は 0.08 点なので着手への影響はほぼ無いが、**観測を汚染している**。
+  - さらに `pos1` と `pos2` がどちらも `rp[1]` を参照しており、仮に長さガードを直しても同じ駒を 2 回見ることになる。
+- **訂正（重要）**: 08-29 23:1x に「露出同型があるのに落とさなかった手の理由の最多は `AVOID_BLOCK_REACTIVE_PAIR_T12_CHAIN_LANE_GUIDANCE`（53 件）」と報告したが、**このタグは 6 割の手に無条件で付くノイズなので原因の特定になっていない**。実際に競合していた軸は `T12_CHAIN_LANE_GUIDANCE`（27.7%/手）等であり、AVOID_BLOCK は無関係。当該 tick の結論（回収余地は全手の 0.8% で小さい）自体は理由の内訳に依存しないので変わらないが、**理由の帰属は誤りだった**。
+- **確認 2: `HIGH` phase は到達不能**。`elif max_y < 2.894: phase="MEDIUM"`（1556 行）の後に `elif max_y < 1.275: phase="HIGH"`（1560 行）があり、後者は永久に成立しない。実戦 1,141 手で `HIGH_TOWER` は **0 回**（`MEDIUM_TOWER` 26.9%、`HIGH_LAYER` 49.8%）。
+- **確認 3: 連続単項マイナス 12 箇所**（1577, 1962, 1963, 2105, 2218, 2238, 2309, 2708, 2907, 2962, 3081, 3097）。例: `next_next_piece.get("type", ----1)` は既定値が **+1**、`result.get("landing_y", --1)` も **+1**、`reactive_pair_count >= --1` は `>= 1` の意味になる。欠測 sentinel として書かれた意図と符号が反転している。
+- **追加した静的検出**: `tests/test_strategy_semantic_lint.py`（sn-mine `e7bce2244`、3 件合格）。AST で (a) 連続単項マイナス (b) 同一変数の到達不能な `elif v < X` 連鎖 を検出し、**現在の既知欠陥集合を凍結**する。修正が入れば落ちるので更新を促し、新しい欠陥が増えても落ちる。lint 自体の自己テスト付き。
+- **strategy.py は未修正**: v757 A/B 進行中で、root（A 腕）だけを書き換えると両腕の差分が「v757 の 1 点」でなくなり実験が壊れる。修正は A/B 終了後に、issue Phase 1.5 のとおり **1 軸ずつ feature flag で分離 → fixture → shadow 差分 → A/A → 事前登録 A/B** の順で行う。
+- **修正候補の見立て**: `AVOID_BLOCK_REACTIVE_PAIR` は (a) タグだけ止める（観測修正、挙動不変）(b) 長さガードと id 参照を直して本来の 88.8 減点を有効化（挙動変更、要 A/B）の 2 段階に分ける。`HIGH` phase は使うなら閾値順の修正、使わないなら phase ごと削除（`HIGH_TOWER` 3.635 倍も同時に死んでいる）。
+
+## 2026-08-30 05:4x-06:3x JST — docich / soviet_now の全体棚卸しを27件のIssueへ分割
+
+- **全体Epic**: private `azumag/docich#44`。アーキテクチャ、運用信頼性、security、test/CI、Git/本番状態を並列監査し、**private側12件（#32〜#43）・public側14件（soviet_now #133〜#146）・Epic 1件**を起票した。既存 `#84/#87/#88/#113` には重複しない追加設計/完了条件だけをコメントした。独立reviewを2回通し、巨大Issueは1〜2 PRで閉じる最初の縦切りへ分割、#87/#88のclose条件は広げず、archive #113は既存実装を「実装済み」として残作業だけに修正した。
+- **P0 security（確認済みの構造、実攻撃は未確認）**: viewer commentから生promptで書込可能Coding Agent/権限迂回fallbackを自動起動、AI生成strategyをhost Pythonで`exec`、Unity静的serverの全IF bind/包含検査不足、未認証Twitch tagsを使う副作用command、WebUIのnon-loopback writable認証なし/query tokenをprivate Issue化した。悪用可能な詳細はpublic soviet_nowへ出していない。credential値・`.env`・秘密fileは読んでいない。**codeの止血・credential rotation・本番設定変更は本タスクでは未実施**。
+- **test/CIの実測**: docich本体は`unittest discover -s tests` **594件pass**（unclosed socketの`ResourceWarning`あり）。soviet_nowはcode snapshot `02e0ddf2729e41044b2b813431e7e97f68db7261`、macOS 26.6.1 / Python 3.14.7 / pytest 9.1.1で **1025 passed / 111 failed / 1 skipped / 564 subtests passed**（271.28秒）。`tests/`指定は1,135件collect成功だが、repository rootは`test_cleanup.py`のimport副作用でcollect失敗。両repoともCI workflow 0件。root/soren91の`npm audit --omit=dev`は`sharp`由来high 1件。
+- **source/releaseの実測**: soviet_now production作業branchは監査終了時`origin/main`比 **1 behind / 219 ahead**、release tag 0件、baseline昇格PRなし。P0はVM/source hash inventoryとcanonical baseline ADR（#141）、P1はcode/configだけを補償するtransactional deploy（#142）へ分けた。
+- **live read-only確認（06:30）**: core workers稼働、Predictionはpause、FFmpeg live / AV sync pass。statusは **Workers 8/7**、Soak FAILED表示、AI 429履歴、Radio 1 playing / 5 queued。v757 A/Bは6 games・tainted 0（A mean score 1859 / B 1119）だがn=3/armで採否不能。**worker、A/B規則、配信、queueは変更していない**。
+- **推奨着手順**: private #32/#34/#36/#37/#41 とsoviet_now #133/#138を止血 → #139でgreen baseline → #140 CI → #141 source of truth → #142 deploy gate。config/worker/reloadは既存#84、queueは#87/#88→#135、scheduler#136、state#137の順。全Issue本文に設計、対象外、受入条件、異常系test、rollbackを記載した。
 
 ## 2026-08-30 06:1x-06:3x JST — **issue #132 P0-0 を修正: 建国すると評価が 23,256 点下がる逆転**（+ Phase 0 の manifest 凍結）
 
