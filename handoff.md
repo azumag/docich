@@ -2,7 +2,25 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: **解析器の締切円弧モデル（mode 3）は k=50 で不採用**（score −127、SE 113、90% CI 下限 −273、併合/手 −0.0169、T15 5 vs 6）。`finish A` 済みで **`.env` は未設定＝従来モードのまま、root も v752 `a557db55896b` のまま**。記録 `tmp/history/ab_20260830_060116_*`（200 件）。**続けて 06:02:41 から v757 SURFACE_DIVERSITY（`351b06dae2bd`）の長期 A/B を開始**（A=v752 / B=v757、両腕 env 空、REGRESSION_DISABLED=1、バナー「v757 実戦 A/B(長期)」、音声進捗投入済み）。事前登録: 害停止 k≥6 で score UCB90<0 → `finish A`／k=50（~21:00）で score の 90% CI 下限 >0 ∧ B の T15 率 ≥ A の半分 → `finish B`＋リポジトリ commit。主要指標 併合/手 を併記（期待 +0.038）。判定は `bash tmp/manual_challenge/decide_and_switch.sh` を v757 用に書き換えて使うか手動で。改善ループは停止維持。
+> 直前セッション: **issue #132 に着手。最優先の P0-0（建国すると評価が 23,256 点下がる逆転）を実測で確認し修正済み**（sn-mine `330a73630`、VM 反映済み）。`eloop.sh` / `wildcard_parallel.py` / `repair_current_run_from_history.sh` の評価表が type 15 (12096) で終わっており type 16 が無かった。表の隣接比 2.1 に合わせて **16: 25402** を追加 → 建国 26,338 vs T15×2 24,192 で **+2,146**。**T16 は過去 1 度も出ていないので既存・進行中の記録の値は一切変わらない**（no-op）。テスト `tests/test_soviet_terminal_utility.py` 5 件（両表の一致、type16 の存在、建国 > T15×2、tier 単調・隣接比 ≥2、残り駒同一での優位）。Phase 0 として **v757 A/B の manifest を凍結**（decide hash・トグル・14 ファイルの SHA256、VM `tmp/history/manifests/` と repo `experiments/v757_ab_20260830_0602.json`、sn-mine `b42b44c1e`）。実戦は v757 A/B が n=3/2 で進行中（規則は不変）、改善ループは停止維持。音声進捗も投入。
+
+## 2026-08-30 06:1x-06:3x JST — **issue #132 P0-0 を修正: 建国すると評価が 23,256 点下がる逆転**（+ Phase 0 の manifest 凍結）
+
+- **実測で確認**: `eloop.sh` の EVAL_SCORE 用インライン表と `wildcard_parallel.TYPE_BONUS` はどちらも `15: 12096` で終わり **type 16 の項目が無い**。`soviet_created` の加点は 800 のみ。T16 併合の raw 増分は 136。→ T15×2 を持ったまま終局 = 24,192 に対し、建国 = 136 + 800 = 936。**差 −23,256**（issue の記載と一致）。この EVAL_SCORE は候補選抜・rolling scores・回帰判定・改善蓄積が読むため、**自動系はすべて「建国の一歩手前で止まる」ほうを高く評価していた**。
+- **修正**: 表の隣接比は T4 以降ほぼ 2.1 で一貫（3.0, 2.33, 2.14, 2.13, 2.09, 2.1×7）。その法則の続きとして **`16: 25402`（= 12096 × 2.1）** を `eloop.sh` / `wildcard_parallel.py` / `repair_current_run_from_history.sh` の全 3 箇所に追加。結果: 建国 26,338 vs T15×2 24,192 → **+2,146 で必ず上回る**。
+- **安全性**: T16 は 710 試合以上で 1 度も出ていないため、**この変更は既存・進行中のすべての記録に対して no-op**（値が変わるのは建国が起きたときだけ）。進行中の v757 A/B は score(raw) と 併合/手 で判定しており eval を使わないので影響なし。回帰は REGRESSION_DISABLED=1、改善ループは停止中。
+- **テスト**: `tests/test_soviet_terminal_utility.py` 5 件 — 両表の一致 / type 16 の存在 / 建国 > T15×2 / tier 単調かつ隣接比 ≥2 / 残り駒が同じなら建国盤面が上。sn-mine `330a73630`、VM 反映済み（旧版 `tmp/eloop.prev_evalfix.sh`、`tmp/wildcard_parallel.prev.py`）。
+- **Phase 0（進行中実験の凍結）**: v757 A/B の manifest を作成 — 仮説、腕ごとの decide hash（A a557db55896b / B 351b06dae2bd）と env、pattern、**事前登録（primary=score ブロック差の 90% CI 下限 >0、secondary=併合/手、guardrail=T15 率、害停止 k≥6 UCB90<0、無益停止は適用しない、k=50）**、トグル（WALL_CLAMP=1、SETTLE=3、FPS=30、REGRESSION_DISABLED=1 等）、**主要 14 ファイルの SHA256**。VM `tmp/history/manifests/v757_ab_20260830_0602.json` と repo `experiments/`（sn-mine `b42b44c1e`）の両方に保存。
+- **issue #132 の残タスク**（未着手、優先順）: P0-2 の semantic 破損（到達不能な HIGH phase、`AVOID_BLOCK_REACTIVE_PAIR` の len>=6 と pos1/pos2 の同一参照、連続単項マイナス、russia_phase の T14/T15 齟齬）→ P0-5 の A/B 基盤（manifest 駆動の判定器、attempt ledger、ブロック完全性、tainted 除外の統一）→ P0-1 の目的指標統一 → P0-6 の fail-closed 化 → Phase 3/4。**進行中の A/B と改善ループには触れない**。
+
+## 2026-08-30 06:1x JST — ソ連建国戦略の構造課題を整理し、改善計画を策定
+
+- **Issue 作成**: `azumag/soviet_now#132`「ソ連建国戦略の目的関数・段階観測・A/Bゲートを makeSorenCount 基準へ再設計する」。現行コード、VM実測、過去A/B、実戦アーカイブを照合し、P0/P1、Phase 0〜4、異常系テスト、完了条件まで記載した。#91（探索方法）とは分離している。
+- **最重要の確定問題**: `eloop.sh` / `wildcard_parallel.py` の評価式は T15 を1個12,096点、建国を800点で扱う。現行 `SCORE_TABLE` の最終併合 +136 を含めても `T15×2 → Soviet` は **−23,256評価点**となり、建国直前を建国後より高く評価する。wildcard最終選抜のSoviet bitは一部補償するが、候補comp・cull・通常評価/回帰と目的が経路別に不一致。
+- **ほかの主要問題**: A/Bは`makeSorenCount`を必須保存せずraw score中心、v757は第一T15後に発火せず期待効果も必要差の約14%、`strategy.py`に到達不能/no-op/符号反転条件、runnerの多層overrideで提案→実行の因果が失われる、実験manifest・欠測/taint・完全ブロック・逐次停止が再現可能でない。
+- **推奨順序**: 進行中v757 A/Bを事前登録どおり維持 → 配置を変えない観測/目的契約 → versioned manifestとattempt ledger/A-A → 意味修正を1軸ずつshadow/A-B → 段階別policy。最終成功は本番`makeSorenCount > 0`で確認し、1回の建国は実現可能性milestone、建国率改善は別途目標率と標本数を事前登録する。
+- **本番状態を06:17実測**: v757 A/BはA=`a557db55896b` / B=`351b06dae2bd`、ABBA、2試合・tainted 0で継続中。`improve_daemon.paused`あり、`.soviet_created`なし。本タスクでは戦略・A/B規則・workerを変更していない。
+- **引き継ぎ同期**: `prompts/ops_brief.md` を再生成し、soviet_now `cf13d15e3` へ保存・push。VMの旧版を `.codex_deploy/backup-20260830-ops-brief-issue132/` へ退避して配布し、ローカル/VM SHA256 `57bde007188e4cafcddfedc08ceb038f2276f57efe50240eaa1ef3ceb65f4772` 一致を確認した。VM変更はこの運用メモだけ。
 
 ## 2026-08-30 06:0x JST — **解析器 mode 3 は不採用（k=50、score −127）** → v757 SURFACE_DIVERSITY の長期 A/B を開始
 
