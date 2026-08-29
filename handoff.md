@@ -4,6 +4,13 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: **解析器の初の検証済み改善: `ANALYZE_BOARD_LANDING_ARC`（既定 0 = 従来、sn-mine `281ff93d9` に commit・push 済み）**。箱積みモデルが着地 y を +0.69 過大予測していた（実戦 852 手、95% が過大）ことが、締切超過の誤警報（予測 52 件中 25 件が誤り、実際 27 件）の原因。**mode 3（締切の着地だけ円弧接触）は誤警報を 25→20 に減らし、見落としは 0 のまま、併合判定はビット単位で不変**。DIRECT があるのに全部超過扱いになる手は 13.3%→8.5%（ユーザー指摘「終盤に併合できるのに安全着地して死ぬ」の直接対策）。mode 1（着地も円弧）は併合判定を壊す（正答 88.8→81.4%）ので不採用、mode 2（接触のみ沈み込み補正）は +0.5pt で小さい。**次: 実戦検証には A/B の腕ごとに env を渡す仕組みが必要**（`_ab_select_arm` で `AB_EXTRA_ENV` を export → `play_one_game` の runner 起動に適用）。実戦 A/B（v752 vs v748）は 15:00 頃 k=50 判定。
 
+## 2026-08-29 13:1x-13:5x JST — v752 判定前の準備（テスト確認・VM 事前配置）/ 実戦 k=45 で score +150
+
+- **実戦 A/B（A=v748 / B=v752）13:29**: 各 91/92、score ブロック k=45 **+150（SE 109）**＝90% CI 下限 +11、併合/手 +0.0149（z 1.16、CI90 −0.002〜+0.032）、T15 4 vs 2。k=50 到達は ~14:30–15:00。**判定は事前登録どおり score の 90% CI 下限 >0 ∧ T15 率 ≥ A の半分**（現状ではぎりぎり ADOPT 側だが、k=50 の値で機械的に判定する）。
+- **採用時の準備（完了）**: v752（`selfplay_root/strategy_v752.py`、VM `tmp/manual_challenge/strategy_a557db55896b.py`）を隔離環境でテスト → `test_v747_endgame_merge.py`（4）・`test_v748_seat_lanes.py`（3）・`test_v744_exposure.py`（3）＝**6 ファイル 10 テスト相当がすべて合格**（fixture 込み）。採用なら sn-mine に strategy.py=v752 と v747 fixture 4 件を追加 commit する。
+- **腕別 env スクリプトを VM に事前配置**（適用はしていない）: `tmp/armenv_staging/{eloop.sh, strategy/ab_interleave.sh, strategy/ab_gate.sh}`。`bash -n` OK、現行との diff は私の変更のみ（eloop は runner 起動の if/else 分岐、ab_interleave は AB_EXTRA_ENV の読み出し＋ログ、ab_gate は state への a_env/b_env 追加）。md5: eloop cbcab9f9→e4e70e7b、ab_interleave 2525c903→cc5a3260、ab_gate d5a40205→68714fc2。**A/B 終了直後の境界で `cp` して適用**する（稼働中の書き換えを避けるため、finish 後・次の start 前に実施）。
+- 判定後の手順: (1) `ab_ctl.sh finish B|A` → (2) 採用なら repo commit → (3) `tmp/armenv_staging/*` を適用 → (4) `AB_B_ENV="ANALYZE_BOARD_LANDING_ARC=3" bash tools/ab_ctl.sh start <root と同じ戦略ファイル> ABBA` で解析器 A/B 開始（両腕同一戦略・B 腕だけ mode 3）。**この A/B には解析器の VM 反映も必要**（sn-mine `281ff93d9` の analyze_board.py、既定 0 なので A 腕は不変）。
+
 ## 2026-08-29 12:1x-12:5x JST — A/B の腕別環境変数を実装（解析器レベルの A/B が可能に）/ v752 は +0.020 併合/手 に好転
 
 - **実戦 A/B（A=v748 / B=v752）12:29**: 各 84/86、**併合/手 +0.0200（z 1.50）**、score +176（z 1.79）、手数 102.3 vs 96.9、**T15 4 vs 2** → k=50 は 15:00 頃。
