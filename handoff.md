@@ -4,6 +4,13 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: **改善ループ（LLM）はユーザー指示で停止 → 原因を修正済み（再開はしていない）**。停止は正規手順 `tmp/state/improve_daemon.paused`（`_ab_finish` はこれを消さないと確認済み、稼働プロセス 0・lock なし・state=idle）。**タイムアウトの真因は AI キューの枯渇ではなく、改善チェーン先頭の `opencode`（snap）プロバイダのハング**（「OK と返して」だけで 120 秒無応答。ラジオは短いタイムアウトで即フェイルオーバーするため無傷だった）。修正: (1) `MODEL_IMPROVE_LIST` / `MODEL_IMPROVE_PEAK_LIST` を **codex 優先の順に並べ替え**（`set_toggle.sh`）、(2) `IMPROVE_ANALYZE_CMD_TIMEOUT_SEC` を **1100 → 420 秒**（wall 3600 秒内で複数エージェントを試せる）、(3) `prompts/improve_strategy.md` に**実測で確定した力学 7 項目**を追記（容量モデル・併合/手が唯一の目的関数・寄せ不可・露出同型が唯一の経路・覆わない系と直落とし強化は再提案禁止・既存軸は飽和）＝ sn-mine `2f0aab4c9`。**再開は未実施**（実戦 A/B 枠が数日埋まっているため、再開のタイミングは要相談）。実戦は解析器 A/B が k=29 で継続中（score −162、UCB90 +34）。
 
+## 2026-08-30 03:1x-03:2x JST — ニュース出典表示を Global Voices だけに限定
+
+- **生成経路の確認**: 通常ニュースは元記事全文の朗読ではない。`fetch_news.py` が RSS の**タイトルと description/summary**を取得し、選ばれた1件を前段AIが必要に応じて WebFetch で追加調査、その材料から約1000字の日本語トークへ再構成する。したがって「タイトルだけから調べる」でもなく、**RSS概要＋必要時のWeb調査から再構成**が正確。自主探索フォールバックはAIがWebで題材を探して再構成する。
+- **ユーザー指示**: ニュースは Global Voices 以外の出典を示さない。修正後は生成AIへ渡す表示用ブロック、音声本文への機械的な「出典は〜です」挿入、字幕・チャットのCC表記をすべて `source_key=globalvoices*`（各言語版を含む）だけに限定。Google News/NHK等は内部の選定・鮮度・既読管理メタデータには残すが、視聴者向け本文へ媒体名・配信元・URLを出さない。生成プロンプトにも同ルールを明記。
+- **保存と検証**: soviet_now `1df69fcfc`（`codex/fix-news-date-freshness`）をpush。新規 `test_news_attribution_policy.sh` 8項目、`test_news_freshness.py` 5件、caption bundle、deferred queue、time sync、bash構文、diff checkが成功。VMへ4ファイルを `.codex_deploy/backup-20260830-news-attribution-1df69fcfc/` 付きで原子的に反映し、VMテスト成功・ローカル/VM SHA256一致。radio worker PID `528038` は03:19:15にUSR1 reload complete。
+- **未確認**: 反映後に新しく生成された非Global Voicesニュースの実再生はまだ無い。反映前03:04:38開始のニュース生成がAI待ちで残っていたが、03:20時点のニュース待機キューは空。旧生成が後から完了した場合は、その待機本文に旧出典行がないか確認し、次の新規ニュースでは音声・字幕・チャットの実出力を確認する。
+
 ## 2026-08-30 02:1x-02:4x JST — 表面スロットの実測で v757 の伸びしろを再評価（観測データでの機構探索は限界）
 
 - **解析器 A/B（02:29、k=38、n=77/77）**: score −100（UCB90 +71）、併合/手 −0.0152（CI90 [−0.034, +0.004]）、T15 4 vs 5 → 中立寄りで継続。k=50 は ~05:30–06:00。
