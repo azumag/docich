@@ -4,6 +4,12 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: 実戦 root = **v752 `a557db55896b`**。解析器 A/B（両腕 v752、B のみ `ANALYZE_BOARD_LANDING_ARC=3`）は k=42 で score −97（UCB90 +61）・併合/手 −0.014（CI90 が 0 をまたぐ）＝中立寄り、k=50（~05:30–06:00）で判定。**判定と移行はワンコマンド化済み: VM `bash tmp/manual_challenge/decide_and_switch.sh`**（事前登録どおり score CI90 下限 >0 ∧ T15 率 ≥ A の半分 なら `finish B`＋`.env` に mode 3、それ以外は `finish A`。どちらでも root は不変）。その後 `bash tools/ab_ctl.sh start tmp/manual_challenge/strategy_351b06dae2bd.py ABBA` で **v757 SURFACE_DIVERSITY の長期 A/B** を開始する（validator OK 済み）。改善ループは停止維持（プロセス 0）。v757 の期待効果は +0.038 併合/手（表面スロット 5.5・露出型 4.97 の実測から上限 45%→50%）。
 
+## 2026-08-30 04:1x-04:4x JST — v757 の decide 所要時間を確認（+0.2 ms、実質影響なし）/ 解析器 A/B は k=45
+
+- **解析器 A/B（04:30、k=45、n=90/90）**: score −94、90% CI 下限 **−249**（採用条件は下限 >0 なので、このまま推移すれば **REJECT** が確定的）。k=50 まで残り 5 ブロック（~1.5 時間）。
+- **v757 の decide 所要時間（実局面 200 手）**: v752 1.7 ms（p50 1.4 / p90 3.3 / max 5.6）に対し **v757 1.9 ms（p50 1.6 / p90 3.6 / max 5.9）**。1 手あたり +0.2 ms で、ターン周期（~2.5 秒）に対して無視できる。露出型の事前計算（駒数 × 駒数）と候補ごとのループ（候補 66 × 露出 5.5）を足しても軽い。→ **投入によるドロップ落としの懸念なし**。
+- 次 tick（05:13 か 06:13）: k=50 到達 → `bash tmp/manual_challenge/decide_and_switch.sh` → `bash tools/ab_ctl.sh start tmp/manual_challenge/strategy_351b06dae2bd.py ABBA` → バナー更新・音声進捗。
+
 ## 2026-08-30 03:1x-03:3x JST — k=50 判定と v757 移行をワンコマンド化 / v757 を再検証
 
 - **解析器 A/B（03:29、k=42、n=84/84）**: score −97（UCB90 +61）、併合/手 −0.0140（CI90 [−0.032, +0.004]）、T15 4 vs 5。k=50 まで残り約 8 ブロック（~2 時間）。
