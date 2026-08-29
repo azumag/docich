@@ -2,7 +2,13 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: **v752 を実戦 root に採用（2026-08-29 14:41）**。長期 A/B（A=v748 / B=v752、各 100 試合）で score +141（SE 101、90% CI [+12, +270]）、併合/手 +0.0155、T15 5 vs 3、手数 101.3 vs 97.8 → 事前登録どおり ADOPT、root `a557db55896b`（revert point v748 897803192d9f）。リポジトリ sn-mine `dc978fa5a`＋`8bc448c5f`（strategy.py=v752、v747 fixture・テスト 4 件、関連 11 テスト合格）。**続けて 14:45 から解析器 A/B を開始**: 両腕とも同一戦略 v752、**B 腕だけ `ANALYZE_BOARD_LANDING_ARC=3`（締切の着地を円弧接触モデルに）**。これは今回新設した腕別 env（state の `a_env`/`b_env` → `AB_EXTRA_ENV` → runner env、sn-mine `ed4640661`/`d763ab1ef`/import 修正）で初めて可能になった純粋な解析器 A/B。事前登録は同じ（害停止 k≥6 で UCB90<0、k=50 で score の 90% CI 下限 >0 ∧ T15 率 ≥ A の半分）。バナー「解析器 A/B(締切モデル)」。
+> 直前セッション: 実戦 root = **v752 `a557db55896b`**（08-29 14:41 採用、revert point v748）。**解析器 A/B（両腕 v752、B 腕だけ `ANALYZE_BOARD_LANDING_ARC=3`、14:45 開始）は k=12 で score −249（SE 303、UCB90 +138）、併合/手 −0.042（z −1.45、CI90 [−0.079, −0.005] で全域が負）**。`ab_decide` は REJECT_FUTILE を出すが、この実験の事前登録は「害停止（score UCB90<0）と k=50 判定のみ、無益停止は適用しない」なので継続中。機構は設計どおり（超過ドロップ 10.5%→7.8%）だが成績には結びついていない。**`.env` は未変更（本番＝mode 0）なので棄却時の後処理は不要**。次の戦略候補 **v756（hash `4b618d728ca7`、= v752 ＋ EXPOSURE_KEEP: 露出した T3–9 を覆う非併合候補を覆う個数×120 で減点、最大 2 個分）** を実装・検証済み（オフライン changed 4718/11155、DIRECT 損失 0、newcross 116＝v752 と同数、risk −0.114、fixture テスト 6 件合格、VM `tmp/manual_challenge/strategy_4b618d728ca7.py` に validator OK で待機）。解析器 A/B 終了後に v756 vs v752 の長期 A/B を開始する。
+
+## 2026-08-29 18:1x-18:4x JST — 解析器 A/B k=12（併合/手 CI90 が全域マイナス、規則どおり継続）/ 次候補 v756 を準備
+
+- **解析器 A/B（18:29、k=12、n=24/24）**: score A 2066 相当 → ブロック mean(B−A)=**−249（SE 303、UCB90 +138）**、**併合/手 −0.0419（z −1.45、CI90 [−0.079, −0.005]）**、手数 100.0 vs 95.9、T15 3 vs 1。`ab_decide` は REJECT_FUTILE（UCB90 138 < 150）だが、**この実験の事前登録は「害停止（score UCB90<0）と k=50 判定のみ」で無益停止は適用しない**と明記しているので規則どおり継続する。併合/手 の CI90 が全域マイナスなので、このまま推移すれば score 側の害停止（UCB90<0）も近く成立する見込み。
+- **v756（hash `4b618d728ca7`、`selfplay_root/strategy_v756.py`）= 現 root v752 ＋ EXPOSURE_KEEP**: 非併合手で「露出した T3–9」を覆う候補を、覆う個数 × 120（最大 2 個分＝240）で減点。v743 の「その type の唯一の露出個体 −180」と併存。狙いは実測で最大の損失源（**同型が盤上にあるのに全部覆われている手が 41%**）を配置側で減らすこと。オフライン（対 v736 コーパス）: changed 4718/11155（v752 は 4259）、**DIRECT 損失 0、newcross 116（v752 と同数＝終盤併合の意図的超過のみ）**、risk_top −0.114。既存 fixture テスト 6 件合格。VM `tmp/manual_challenge/strategy_4b618d728ca7.py` に配置、validator OK。
+- 手順: 解析器 A/B が終わり次第 `bash tools/ab_ctl.sh start tmp/manual_challenge/strategy_4b618d728ca7.py ABBA`（長期事前登録: 害停止 k≥6 UCB90<0、k=50 で score CI90 下限 >0 ∧ T15 率 ≥ A の半分、主要指標は 併合/手 を併記）。
 
 ## 2026-08-29 17:1x-17:4x JST — 解析器 A/B k=8: 害停止せず継続 / 機構は設計どおり（超過ドロップ 10.5%→7.8%）だが併合/手 は −0.058
 
