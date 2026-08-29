@@ -16,8 +16,9 @@
 
 - **生成経路の確認**: 通常ニュースは元記事全文の朗読ではない。`fetch_news.py` が RSS の**タイトルと description/summary**を取得し、選ばれた1件を前段AIが必要に応じて WebFetch で追加調査、その材料から約1000字の日本語トークへ再構成する。したがって「タイトルだけから調べる」でもなく、**RSS概要＋必要時のWeb調査から再構成**が正確。自主探索フォールバックはAIがWebで題材を探して再構成する。
 - **ユーザー指示**: ニュースは Global Voices 以外の出典を示さない。修正後は生成AIへ渡す表示用ブロック、音声本文への機械的な「出典は〜です」挿入、字幕・チャットのCC表記をすべて `source_key=globalvoices*`（各言語版を含む）だけに限定。Google News/NHK等は内部の選定・鮮度・既読管理メタデータには残すが、視聴者向け本文へ媒体名・配信元・URLを出さない。生成プロンプトにも同ルールを明記。
-- **保存と検証**: soviet_now `1df69fcfc`（`codex/fix-news-date-freshness`）をpush。新規 `test_news_attribution_policy.sh` 8項目、`test_news_freshness.py` 5件、caption bundle、deferred queue、time sync、bash構文、diff checkが成功。VMへ4ファイルを `.codex_deploy/backup-20260830-news-attribution-1df69fcfc/` 付きで原子的に反映し、VMテスト成功・ローカル/VM SHA256一致。radio worker PID `528038` は03:19:15にUSR1 reload complete。
-- **未確認**: 反映後に新しく生成された非Global Voicesニュースの実再生はまだ無い。反映前03:04:38開始のニュース生成がAI待ちで残っていたが、03:20時点のニュース待機キューは空。旧生成が後から完了した場合は、その待機本文に旧出典行がないか確認し、次の新規ニュースでは音声・字幕・チャットの実出力を確認する。
+- **保存と検証**: soviet_now `1df69fcfc`（表示制限）＋`6767cd59f`（再生直前ガード）を `codex/fix-news-date-freshness` へpush。新規 `test_news_attribution_policy.sh` 10項目、`test_news_freshness.py` 5件、caption bundle、deferred queue、time sync、bash構文、diff checkが成功。VMへバックアップ `.codex_deploy/backup-20260830-news-attribution-1df69fcfc/` / `...playback-6767cd59f/` 付きで原子的に反映し、VMテスト成功・ローカル/VM SHA256一致。
+- **reloadの罠と防波堤**: radio worker PID `528038` のUSR1は03:19:15にreload completeを出したが、反映前から長時間残る生成子プロセスは旧関数を保持し、03:23開始の実Google Newsプロンプトにも旧 `出典: Google News 日本社会` が残った。TERM後も孤児化した生成孫プロセスがPIDファイルを再取得した。一括SIGKILLは安全審査で拒否され実施していない。代わりに `radio_state.sh` がニュース再生直前に現行メタを再確認し、非Global Voicesの独立した `出典は...` / `出典:...` 行を除去、既存ready WAV・字幕bundleを無効化して再合成する最後の防波堤を追加した。
+- **実再生確認**: 03:29:23に非Global Voicesの「日米外務次官協議 中国や北朝鮮対応で緊密な連携を確認」を1051字でキュー投入。本文に出典行なし、`.cc_text`なし。13チャンクの字幕同期bundleを作り、03:30:35に実再生開始。`.playing`本文とbundle内字幕をgrepし、`出典` / Google News / TBS NEWS / NHK / Global Voicesはいずれも0件、チャット出典sidecarも不在。**視聴者向け実経路で無出典を確認済み**。Global Voices側の実再生は未発生だが、VM回帰で音声・生成プロンプト・字幕/チャットに出典が残ることを確認済み。
 
 ## 2026-08-30 02:1x-02:4x JST — 表面スロットの実測で v757 の伸びしろを再評価（観測データでの機構探索は限界）
 
