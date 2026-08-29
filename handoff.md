@@ -4,6 +4,12 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: **解析器の初の検証済み改善: `ANALYZE_BOARD_LANDING_ARC`（既定 0 = 従来、sn-mine `281ff93d9` に commit・push 済み）**。箱積みモデルが着地 y を +0.69 過大予測していた（実戦 852 手、95% が過大）ことが、締切超過の誤警報（予測 52 件中 25 件が誤り、実際 27 件）の原因。**mode 3（締切の着地だけ円弧接触）は誤警報を 25→20 に減らし、見落としは 0 のまま、併合判定はビット単位で不変**。DIRECT があるのに全部超過扱いになる手は 13.3%→8.5%（ユーザー指摘「終盤に併合できるのに安全着地して死ぬ」の直接対策）。mode 1（着地も円弧）は併合判定を壊す（正答 88.8→81.4%）ので不採用、mode 2（接触のみ沈み込み補正）は +0.5pt で小さい。**次: 実戦検証には A/B の腕ごとに env を渡す仕組みが必要**（`_ab_select_arm` で `AB_EXTRA_ENV` を export → `play_one_game` の runner 起動に適用）。実戦 A/B（v752 vs v748）は 15:00 頃 k=50 判定。
 
+## 2026-08-29 12:1x-12:5x JST — A/B の腕別環境変数を実装（解析器レベルの A/B が可能に）/ v752 は +0.020 併合/手 に好転
+
+- **実戦 A/B（A=v748 / B=v752）12:29**: 各 84/86、**併合/手 +0.0200（z 1.50）**、score +176（z 1.79）、手数 102.3 vs 96.9、**T15 4 vs 2** → k=50 は 15:00 頃。
+- **腕別 env（sn-mine `ed4640661`、push 済み）**: `tmp/state/ab_state.json` の **`a_env` / `b_env`**（`"KEY=VALUE KEY2=VALUE2"` 形式、既定は空）を `_ab_select_arm` が読んで `AB_EXTRA_ENV` として export し、`eloop.sh` の `play_one_game` が `env $AB_EXTRA_ENV python3 -u strategy_runner.py` で適用する。**空なら従来と完全に同一の起動行**（if/else で分岐、既存経路は無変更）。形式は正規表現で検証し、不正なら無視してログに残す。`[AB] idx=... env=...` にも出力。開始時は `AB_A_ENV` / `AB_B_ENV` 環境変数から state に書き込む（`_ab_start_from_bundle`）。テスト `tests/test_ab_arm_env.sh` 5 項目（未設定で空、読み出し、形式の許可/拒否）。`bash -n` OK、`test_ab_decide.py` 9 件 OK。**VM 未反映**（v752 の A/B 中なので、終了後の境界で `eloop.sh` / `strategy/ab_interleave.sh` / `strategy/ab_gate.sh` を差し替える）。
+- **これで解析器 A/B が可能に**: v752 判定後に `AB_B_ENV="ANALYZE_BOARD_LANDING_ARC=3" bash tools/ab_ctl.sh start <同一戦略> ABBA` の形で、**両腕とも同じ戦略・B 腕だけ解析器 mode 3** という純粋な解析器 A/B を回せる（オフライン検証: 締切誤警報 25→20、見落とし 0、併合判定は不変）。
+
 ## 2026-08-29 11:1x-11:5x JST — **解析器の初の検証済み改善（締切の誤警報 −20%、見落としゼロ維持）** を実装・commit
 
 - **根因の確定**: `analyze_board.get_landing_info` / `get_deadline_landing_y` はどちらも「横方向の外接が重なれば相手の真上に乗る」箱積みモデル。実測（実戦 852 手）で着地 y を平均 **+0.69** 過大予測（駒の上 +0.72、95% が過大）。
