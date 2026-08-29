@@ -4,6 +4,12 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: **解析器の初の検証済み改善: `ANALYZE_BOARD_LANDING_ARC`（既定 0 = 従来、sn-mine `281ff93d9` に commit・push 済み）**。箱積みモデルが着地 y を +0.69 過大予測していた（実戦 852 手、95% が過大）ことが、締切超過の誤警報（予測 52 件中 25 件が誤り、実際 27 件）の原因。**mode 3（締切の着地だけ円弧接触）は誤警報を 25→20 に減らし、見落としは 0 のまま、併合判定はビット単位で不変**。DIRECT があるのに全部超過扱いになる手は 13.3%→8.5%（ユーザー指摘「終盤に併合できるのに安全着地して死ぬ」の直接対策）。mode 1（着地も円弧）は併合判定を壊す（正答 88.8→81.4%）ので不採用、mode 2（接触のみ沈み込み補正）は +0.5pt で小さい。**次: 実戦検証には A/B の腕ごとに env を渡す仕組みが必要**（`_ab_select_arm` で `AB_EXTRA_ENV` を export → `play_one_game` の runner 起動に適用）。実戦 A/B（v752 vs v748）は 15:00 頃 k=50 判定。
 
+## 2026-08-29 14:1x-14:4x JST — v752 A/B は k=49（99/100）で判定直前、score +141（CI90 下限 +12）
+
+- **実戦 A/B（A=v748 / B=v752）14:40**: games=200（99/100、idx=0 の v736 汚染 1 件を除外）、score A 1794（med 1682、97.6 手）/ B 1937（med 1915、101.5 手）、**ブロック k=49 mean(B−A)=+141（SE 101）→ 90% CI 下限 +12 > 0**、T15 4 vs 2。あと A 腕 1 試合で k=50。
+- 判定は次 tick（15:13）で機械的に実施する: **score の 90% CI 下限 >0 ∧ B の T15 率 ≥ A の半分** → ADOPT なら `bash tools/ab_ctl.sh finish B "long-horizon k=50 ..."`、そうでなければ `finish A`。
+- 採用時の後続手順（準備済み）: (1) sn-mine に strategy.py=v752（`selfplay_root/strategy_v752.py`、hash a557db55896b）＋ `tests/fixtures/v747_*.json` 4 件を commit（テストは隔離環境で 10 件合格済み）。(2) VM の `tmp/armenv_staging/{eloop.sh,strategy/ab_interleave.sh,strategy/ab_gate.sh}` を適用（腕別 env、`bash -n` OK・diff 確認済み）。(3) sn-mine `281ff93d9` の `analyze_board.py`（既定 mode 0 で従来と同一）を VM に反映。(4) `AB_B_ENV="ANALYZE_BOARD_LANDING_ARC=3" bash tools/ab_ctl.sh start <root と同一の戦略ファイル> ABBA` で解析器 A/B を開始（両腕同一戦略・B 腕だけ締切の円弧モデル）。
+
 ## 2026-08-29 13:1x-13:5x JST — v752 判定前の準備（テスト確認・VM 事前配置）/ 実戦 k=45 で score +150
 
 - **実戦 A/B（A=v748 / B=v752）13:29**: 各 91/92、score ブロック k=45 **+150（SE 109）**＝90% CI 下限 +11、併合/手 +0.0149（z 1.16、CI90 −0.002〜+0.032）、T15 4 vs 2。k=50 到達は ~14:30–15:00。**判定は事前登録どおり score の 90% CI 下限 >0 ∧ T15 率 ≥ A の半分**（現状ではぎりぎり ADOPT 側だが、k=50 の値で機械的に判定する）。
