@@ -2,7 +2,14 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: 実戦 root = **v752 `a557db55896b`**。解析器 A/B（両腕 v752、B のみ `ANALYZE_BOARD_LANDING_ARC=3`）は k=42 で score −97（UCB90 +61）・併合/手 −0.014（CI90 が 0 をまたぐ）＝中立寄り、k=50（~05:30–06:00）で判定。**判定と移行はワンコマンド化済み: VM `bash tmp/manual_challenge/decide_and_switch.sh`**（事前登録どおり score CI90 下限 >0 ∧ T15 率 ≥ A の半分 なら `finish B`＋`.env` に mode 3、それ以外は `finish A`。どちらでも root は不変）。その後 `bash tools/ab_ctl.sh start tmp/manual_challenge/strategy_351b06dae2bd.py ABBA` で **v757 SURFACE_DIVERSITY の長期 A/B** を開始する（validator OK 済み）。改善ループは停止維持（プロセス 0）。v757 の期待効果は +0.038 併合/手（表面スロット 5.5・露出型 4.97 の実測から上限 45%→50%）。
+> 直前セッション: **解析器の締切円弧モデル（mode 3）は k=50 で不採用**（score −127、SE 113、90% CI 下限 −273、併合/手 −0.0169、T15 5 vs 6）。`finish A` 済みで **`.env` は未設定＝従来モードのまま、root も v752 `a557db55896b` のまま**。記録 `tmp/history/ab_20260830_060116_*`（200 件）。**続けて 06:02:41 から v757 SURFACE_DIVERSITY（`351b06dae2bd`）の長期 A/B を開始**（A=v752 / B=v757、両腕 env 空、REGRESSION_DISABLED=1、バナー「v757 実戦 A/B(長期)」、音声進捗投入済み）。事前登録: 害停止 k≥6 で score UCB90<0 → `finish A`／k=50（~21:00）で score の 90% CI 下限 >0 ∧ B の T15 率 ≥ A の半分 → `finish B`＋リポジトリ commit。主要指標 併合/手 を併記（期待 +0.038）。判定は `bash tmp/manual_challenge/decide_and_switch.sh` を v757 用に書き換えて使うか手動で。改善ループは停止維持。
+
+## 2026-08-30 06:0x JST — **解析器 mode 3 は不採用（k=50、score −127）** → v757 SURFACE_DIVERSITY の長期 A/B を開始
+
+- **解析器 A/B 最終（08-29 14:45 – 08-30 06:01、各 100 試合）**: score A → B で **−127（SE 113、90% CI [−273, +18]）**、併合/手 −0.0169、T15 5 vs 6（ガードレールは満たすが score 条件が不成立）→ **REJECT**。`decide_and_switch.sh` が事前登録どおり `finish A` を実行し、**`.env` に `ANALYZE_BOARD_LANDING_ARC` は書き込まれていない（＝従来の箱積みモデルのまま）**。root は v752 のまま、revert point も v752、REGRESSION_DISABLED=0 に復帰。記録 `tmp/history/ab_20260830_060116_*`（200 件）。
+- **教訓**: オフラインでは「締切の誤警報 25→20、見落とし 0、併合判定は不変」という厳密に良い結果だったのに、実戦では負けた。原因は 08-29 19:1x に特定済み（締切余裕が広く見える → 自作評価軸の安全ゲートが開いて発火 +4pt → 悪化）。**解析器の局所的な精度改善は、それを入力にしている戦略の較正を壊す**。今後、解析器を変えるなら戦略側の閾値も同時に再較正するか、素の戦略で評価する必要がある。
+- **`active_branch.json` でブロック**: `ab_ctl.sh start` は分岐探索中を拒否する。08-29 15:24 に作られた分岐（anchor=head=v752、depth 1、探索 0 件）が残っていたので、バックアップを取ってから正規関数 `_clear_active_branch` で解消して開始した。
+- **v757 の長期 A/B 開始（06:02:41）**: A=v752 `a557db55896b` / B=v757 `351b06dae2bd`、両腕 env 空、ABBA。k=50 は本日 ~21:00。音声進捗（不採用の理由と v757 の狙い）を投入済み。
 
 ## 2026-08-30 05:1x-05:4x JST — 解析器 A/B は k=48（残り 2 ブロック、~06:10 到達見込み）
 
