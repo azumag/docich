@@ -2,7 +2,15 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: **解析器の初の検証済み改善: `ANALYZE_BOARD_LANDING_ARC`（既定 0 = 従来、sn-mine `281ff93d9` に commit・push 済み）**。箱積みモデルが着地 y を +0.69 過大予測していた（実戦 852 手、95% が過大）ことが、締切超過の誤警報（予測 52 件中 25 件が誤り、実際 27 件）の原因。**mode 3（締切の着地だけ円弧接触）は誤警報を 25→20 に減らし、見落としは 0 のまま、併合判定はビット単位で不変**。DIRECT があるのに全部超過扱いになる手は 13.3%→8.5%（ユーザー指摘「終盤に併合できるのに安全着地して死ぬ」の直接対策）。mode 1（着地も円弧）は併合判定を壊す（正答 88.8→81.4%）ので不採用、mode 2（接触のみ沈み込み補正）は +0.5pt で小さい。**次: 実戦検証には A/B の腕ごとに env を渡す仕組みが必要**（`_ab_select_arm` で `AB_EXTRA_ENV` を export → `play_one_game` の runner 起動に適用）。実戦 A/B（v752 vs v748）は 15:00 頃 k=50 判定。
+> 直前セッション: **v752 を実戦 root に採用（2026-08-29 14:41）**。長期 A/B（A=v748 / B=v752、各 100 試合）で score +141（SE 101、90% CI [+12, +270]）、併合/手 +0.0155、T15 5 vs 3、手数 101.3 vs 97.8 → 事前登録どおり ADOPT、root `a557db55896b`（revert point v748 897803192d9f）。リポジトリ sn-mine `dc978fa5a`＋`8bc448c5f`（strategy.py=v752、v747 fixture・テスト 4 件、関連 11 テスト合格）。**続けて 14:45 から解析器 A/B を開始**: 両腕とも同一戦略 v752、**B 腕だけ `ANALYZE_BOARD_LANDING_ARC=3`（締切の着地を円弧接触モデルに）**。これは今回新設した腕別 env（state の `a_env`/`b_env` → `AB_EXTRA_ENV` → runner env、sn-mine `ed4640661`/`d763ab1ef`/import 修正）で初めて可能になった純粋な解析器 A/B。事前登録は同じ（害停止 k≥6 で UCB90<0、k=50 で score の 90% CI 下限 >0 ∧ T15 率 ≥ A の半分）。バナー「解析器 A/B(締切モデル)」。
+
+## 2026-08-29 14:4x JST — **v752 採用（実戦 root）** → 腕別 env を本番反映 → **解析器 A/B（締切の円弧モデル）を開始**
+
+- **v752 の k=50 判定（汚染 1 件を除外した 100/100）**: score A 1795（med 1682、97.8 手）/ B 1931（med 1908、101.3 手）、ブロック k=49 **mean(B−A)=+141（SE 101）→ 90% CI [+12, +270]、下限 >0**。併合/手 +0.0155（z 1.22）。**T15 5 vs 3**（ガードレール OK）→ **ADOPT**。`finish B` → root `a557db55896b`、revert point v748、REGRESSION_DISABLED=0、記録 `tmp/history/ab_20260829_144145_*`（進行中だった idx 201 も統合済み）。
+- **リポジトリ**: sn-mine `dc978fa5a`（strategy.py=v752＋v747 fixture 4 件）、`8bc448c5f`（`tests/test_v747_endgame_merge.py`）。`test_v748_seat_lanes`/`test_v744_exposure`/`test_landing_arc_mode` と合わせ 11 テスト合格。
+- **VM 反映（境界で実施）**: (1) 腕別 env の `eloop.sh`/`strategy/ab_interleave.sh`/`strategy/ab_gate.sh`（旧版は `tmp/armenv_staging/*.prev` にバックアップ）。(2) `analyze_board.py`（`ANALYZE_BOARD_LANDING_ARC`、既定 0 = 従来と完全同一、旧版 `tmp/analyze_board.pre_arc.py`）。いずれも `bash -n`・import 確認済み。
+- **同一 hash A/B の解禁**: `_ab_start_from_bundle` は a==b を拒否していたので、**腕別 env が異なるときだけ許可**するよう緩和（sn-mine `d763ab1ef`）。加えて `import os` が別のヒアドキュメントに入っていた不具合を修正（`NameError: name 'os' is not defined` で 1 回失敗）。
+- **解析器 A/B（14:45:47 開始）**: a_hash = b_hash = a557db55896b（同一戦略）、`a_env=""` / `b_env="ANALYZE_BOARD_LANDING_ARC=3"`。オフライン根拠: 締切の誤警報 25→20（見落とし 0 維持、適合率 52%→57%）、DIRECT があるのに全部超過扱いの手 13.3%→8.5%、併合判定はビット単位で不変。各 tick で `bash tools/ab_ctl.sh status`。**注意: 採用/棄却とも戦略ファイルは変わらない**ので、採用時は `.env` に `ANALYZE_BOARD_LANDING_ARC=3` を入れる（`set_toggle.sh`）／棄却時は何もしない、という後処理になる。
 
 ## 2026-08-29 14:1x-14:4x JST — v752 A/B は k=49（99/100）で判定直前、score +141（CI90 下限 +12）
 
