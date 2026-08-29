@@ -2,7 +2,15 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: **改善ループ（LLM）はユーザー指示で停止 → 原因を修正済み（再開はしていない）**。停止は正規手順 `tmp/state/improve_daemon.paused`（`_ab_finish` はこれを消さないと確認済み、稼働プロセス 0・lock なし・state=idle）。**タイムアウトの真因は AI キューの枯渇ではなく、改善チェーン先頭の `opencode`（snap）プロバイダのハング**（「OK と返して」だけで 120 秒無応答。ラジオは短いタイムアウトで即フェイルオーバーするため無傷だった）。修正: (1) `MODEL_IMPROVE_LIST` / `MODEL_IMPROVE_PEAK_LIST` を **codex 優先の順に並べ替え**（`set_toggle.sh`）、(2) `IMPROVE_ANALYZE_CMD_TIMEOUT_SEC` を **1100 → 420 秒**（wall 3600 秒内で複数エージェントを試せる）、(3) `prompts/improve_strategy.md` に**実測で確定した力学 7 項目**を追記（容量モデル・併合/手が唯一の目的関数・寄せ不可・露出同型が唯一の経路・覆わない系と直落とし強化は再提案禁止・既存軸は飽和）＝ sn-mine `2f0aab4c9`。**再開は未実施**（実戦 A/B 枠が数日埋まっているため、再開のタイミングは要相談）。実戦は解析器 A/B が k=29 で継続中（score −162、UCB90 +34）。
+> 直前セッション: 実戦 root = **v752 `a557db55896b`**。解析器 A/B（両腕 v752、B のみ `ANALYZE_BOARD_LANDING_ARC=3`）は k=42 で score −97（UCB90 +61）・併合/手 −0.014（CI90 が 0 をまたぐ）＝中立寄り、k=50（~05:30–06:00）で判定。**判定と移行はワンコマンド化済み: VM `bash tmp/manual_challenge/decide_and_switch.sh`**（事前登録どおり score CI90 下限 >0 ∧ T15 率 ≥ A の半分 なら `finish B`＋`.env` に mode 3、それ以外は `finish A`。どちらでも root は不変）。その後 `bash tools/ab_ctl.sh start tmp/manual_challenge/strategy_351b06dae2bd.py ABBA` で **v757 SURFACE_DIVERSITY の長期 A/B** を開始する（validator OK 済み）。改善ループは停止維持（プロセス 0）。v757 の期待効果は +0.038 併合/手（表面スロット 5.5・露出型 4.97 の実測から上限 45%→50%）。
+
+## 2026-08-30 03:1x-03:3x JST — k=50 判定と v757 移行をワンコマンド化 / v757 を再検証
+
+- **解析器 A/B（03:29、k=42、n=84/84）**: score −97（UCB90 +61）、併合/手 −0.0140（CI90 [−0.032, +0.004]）、T15 4 vs 5。k=50 まで残り約 8 ブロック（~2 時間）。
+- **判定スクリプトを VM に配置**: `tmp/manual_challenge/decide_and_switch.sh`（`bash -n` OK）。中身は事前登録の機械的適用 — ブロック差の score 90% CI 下限 >0 かつ B の T15 率 ≥ A の半分なら `finish B` ＋ `set_toggle.sh ANALYZE_BOARD_LANDING_ARC=3`、それ以外は `finish A`（`.env` 不変）。**両腕とも戦略ファイルは同一なので、どちらでも root は v752 のまま**。実行後に `.env` と root hash を表示して確認できる。
+- **v757 を再検証**: 解析器（landing_arc 追加）と runner の更新後も `validate_strategy_with_helpers` OK、hash `351b06dae2bd` 一致。
+- **改善ループは停止維持**（`[e]loop_improve` プロセス 0）。VM load 8.2–9.1。
+- 次 tick（04:13 / 05:13）: k=50 到達を確認 → `decide_and_switch.sh` 実行 → `ab_ctl.sh start tmp/manual_challenge/strategy_351b06dae2bd.py ABBA` で v757 の長期 A/B 開始 → バナー更新と音声進捗（節目報告）。
 
 ## 2026-08-30 03:1x-03:2x JST — ニュース出典表示を Global Voices だけに限定
 
