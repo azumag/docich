@@ -2,7 +2,15 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: 実戦 root = **v752 `a557db55896b`**。解析器 A/B（B のみ `ANALYZE_BOARD_LANDING_ARC=3`）は k=22 で score −79（UCB90 +173）、併合/手 −0.011（CI90 が 0 をまたぐ）＝中立に回帰、規則どおり k=50（~06:00）まで継続。**本日の核心的発見: 併合の唯一の実効経路は「落とす駒が露出した同型に届くこと」**（該当する手は 38%、その手の併合率 76%）。settled 済みの同型ペアは寄せで併合できず（3%、位置無関係）、終了時の駒の 96% はこの回収不能な状態。→ **次候補 v757 SURFACE_DIVERSITY（hash `351b06dae2bd`、v752 ＋「落下後に露出している型の種類数」の増減 × 200）を実装、オフラインで機構を確認（1 手あたりの露出型数の損失 −0.561 → −0.366、タグ発火 20%、DIRECT 損失 0、newcross は v752 と同数 116、risk −0.178）**。VM `tmp/manual_challenge/strategy_351b06dae2bd.py` に validator OK で待機。解析器 A/B 終了後、**v757 vs v752 の長期 A/B を最優先**（v756 EXPOSURE_KEEP は「覆わない」系で期待値を下方修正したため後回し）。
+> 直前セッション: **改善ループ（LLM）はユーザー指示で停止 → 原因を修正済み（再開はしていない）**。停止は正規手順 `tmp/state/improve_daemon.paused`（`_ab_finish` はこれを消さないと確認済み、稼働プロセス 0・lock なし・state=idle）。**タイムアウトの真因は AI キューの枯渇ではなく、改善チェーン先頭の `opencode`（snap）プロバイダのハング**（「OK と返して」だけで 120 秒無応答。ラジオは短いタイムアウトで即フェイルオーバーするため無傷だった）。修正: (1) `MODEL_IMPROVE_LIST` / `MODEL_IMPROVE_PEAK_LIST` を **codex 優先の順に並べ替え**（`set_toggle.sh`）、(2) `IMPROVE_ANALYZE_CMD_TIMEOUT_SEC` を **1100 → 420 秒**（wall 3600 秒内で複数エージェントを試せる）、(3) `prompts/improve_strategy.md` に**実測で確定した力学 7 項目**を追記（容量モデル・併合/手が唯一の目的関数・寄せ不可・露出同型が唯一の経路・覆わない系と直落とし強化は再提案禁止・既存軸は飽和）＝ sn-mine `2f0aab4c9`。**再開は未実施**（実戦 A/B 枠が数日埋まっているため、再開のタイミングは要相談）。実戦は解析器 A/B が k=29 で継続中（score −162、UCB90 +34）。
+
+## 2026-08-29 23:3x-23:4x JST — 改善ループを停止し、タイムアウトの真因を特定・修正（ユーザー指示「止めてから直して」）
+
+- **停止（正規手順）**: `touch tmp/state/improve_daemon.paused`。このマーカーは supervisor の respawn・soren_loop からの直接 spawn・`trigger_adaptive_improvement` のすべてを止める（improve.sh 3005–3010）。`_ab_finish` はこのファイルを消さない（読むのは `_ab_start_from_bundle` の `pause_preexisting` 記録だけ）ことをコードで確認済み。停止後: eloop_improve プロセス 0、improve.lock なし、state=idle。
+- **真因（当初の推定は誤りだった）**: 私は最初「ラジオ／コメントに AI キューを奪われている」と推定したが、`lib/ai_generate.sh` の `_ai_queue_lock_scope` を読むと RADIO/COMMENT は専用レーンで改善とはスコープが別。実測すると **`opencode`（snap）プロバイダが「Reply with exactly: OK」だけで 120 秒応答なし**＝ハング。改善チェーンの先頭がこれで、`IMPROVE_ANALYZE_CMD_TIMEOUT_SEC=1100` のため 1 エージェントで 18 分、リトライ 1 回で wall 3600 秒を使い切っていた（14:24 開始 → 15:24 に「Stage 1 分析失敗（試行 1/2）」がログに一致）。ラジオが無傷なのは `RADIO_CODEX_TIMEOUT=360` 等で短く切ってフェイルオーバーするから。直近 100 件の dispatch は codex 93 / opencode-go 4 / opencode 3 で、出力があるのは codex と opencode-go のみ。
+- **修正 3 点**: (1) `MODEL_IMPROVE_LIST` と `MODEL_IMPROVE_PEAK_LIST` を `codex:amd-token-factory-deepseek-v4-flash, codex:minimax-m3, opencode-go:muse-spark-1.2-contributor, codex:deepseek-v4-flash, opencode:muse-spark-1.2-contributor-free` の順に並べ替え（動くプロバイダを先頭に、ハングするものを最後尾に）。(2) `IMPROVE_ANALYZE_CMD_TIMEOUT_SEC` 1100 → **420**（wall 3600 で 2 リトライ × 4 エージェントを試せる）。(3) `prompts/improve_strategy.md` に「実測で確定した力学」節を追加（sn-mine `2f0aab4c9`、+34 行）: 容量モデル `手数 = 42/(1−併合/手)`・**併合/手 が唯一の目的関数（ソ連には 0.83、現在 0.56）**・寄せは物理的に不可能（3%、位置無関係）で提案禁止・併合の唯一の経路は露出同型（38% / 76% / relief 別 79-59-20%）・「覆わない」系と「直落としを強化」系は実測で効かないので再提案禁止・既存軸は飽和（発火 +4pt で悪化）・残るレバーは表面の型多様性。
+- **再開は未実施**。実戦 A/B の枠は v757 とその次で数日埋まっており、LLM 候補が出ても評価できない。再開するなら「A/B 枠が空いたタイミング」か「候補をオフライン選別だけして貯める」運用。**判断はユーザーに委ねる**。
+- なお `prompts/analyze_strategy.md` は未更新（分析フェーズ用）。必要なら同様の節を入れる。
 
 ## 2026-08-29 23:2x-23:3x JST — AIラジオが配信全体をClaude Code製と断定する説明を停止
 
