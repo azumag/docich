@@ -4,6 +4,12 @@
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: 実戦 root = **v752 `a557db55896b`**。解析器 A/B（両腕 v752、B のみ `ANALYZE_BOARD_LANDING_ARC=3`）は k=42 で score −97（UCB90 +61）・併合/手 −0.014（CI90 が 0 をまたぐ）＝中立寄り、k=50（~05:30–06:00）で判定。**判定と移行はワンコマンド化済み: VM `bash tmp/manual_challenge/decide_and_switch.sh`**（事前登録どおり score CI90 下限 >0 ∧ T15 率 ≥ A の半分 なら `finish B`＋`.env` に mode 3、それ以外は `finish A`。どちらでも root は不変）。その後 `bash tools/ab_ctl.sh start tmp/manual_challenge/strategy_351b06dae2bd.py ABBA` で **v757 SURFACE_DIVERSITY の長期 A/B** を開始する（validator OK 済み）。改善ループは停止維持（プロセス 0）。v757 の期待効果は +0.038 併合/手（表面スロット 5.5・露出型 4.97 の実測から上限 45%→50%）。
 
+## 2026-08-30 05:1x-05:4x JST — 解析器 A/B は k=48（残り 2 ブロック、~06:10 到達見込み）
+
+- **解析器 A/B（05:40）**: k=48、n=97/96。k=50 まで残り 2 ブロック（8 試合 ≈ 36 分）。90% CI 下限は −249 付近で推移しており、**不採用（`finish A`、`.env` 不変）が確定的**。
+- 判定は `bash tmp/manual_challenge/decide_and_switch.sh`（配置済み）で機械的に実行する。その直後に `bash tools/ab_ctl.sh start tmp/manual_challenge/strategy_351b06dae2bd.py ABBA` で **v757 SURFACE_DIVERSITY の長期 A/B** を開始し、バナーを「v757 実戦 A/B(長期)」に更新、音声進捗（節目報告）を投入する。
+- v757 の事前登録: 害停止 k≥6 で score UCB90<0 → `finish A`／k=50 で score の 90% CI 下限 >0 ∧ B の T15 率 ≥ A の半分 → `finish B`＋リポジトリ commit。主要指標として 併合/手 を併記（期待 +0.038）。
+
 ## 2026-08-30 04:1x-05:0x JST — アンケート集計の英語自己訂正文・Markdown混入を修正
 
 - **実害を本番履歴で確認**: 04:13終了のアンケートで、結果生成AIの `The output I produced is not in the required format. Let me redo this correctly.` と `**集計結果**` が採用され、従来の220文字切断により4番目の選択肢まで届かない本文がチャット・読み上げ用に保存された。質問は「資本主義に生まれ変わったソ連、最初にやるべき政策は？」、実票は「工場の株を国民に配る」1票、他3択0票。
