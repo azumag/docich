@@ -21,7 +21,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Compare repository wiki source with live GitHub Wiki
+      - name: Publish repository wiki source to live GitHub Wiki
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -29,4 +29,4 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
-          WIKI_URL="https://github.com/${GITHUB_REPOSITORY}.wiki.git" scripts/publish_wiki.sh --dry-run
+          WIKI_URL="https://github.com/${GITHUB_REPOSITORY}.wiki.git" scripts/publish_wiki.sh
