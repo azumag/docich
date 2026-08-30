@@ -2,7 +2,17 @@
 
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
-> 直前セッション: issue #132 対応中。P0-0（建国で評価が 23,256 点下がる逆転）は修正・VM 反映済み（sn-mine `330a73630`、type 16 = 25402、既存記録には no-op）。**P0-2 を実測で確認**: (1) `reactive_pairs` は実データで全て 3 要素なのに `AVOID_BLOCK_REACTIVE_PAIR` は `len(rp) >= 6` を要求 → 内側の判定は**一度も発火せず**、`blocking_penalty=-0.0798` のまま `score -= -0.0798`（＝ +0.08 加点）して reason を付ける。**実戦 1,141 手の 59.8% にこのタグが出ている**。(2) `HIGH` phase は `MEDIUM`(max_y<2.894) の後ろに `max_y<1.275` があり到達不能、`HIGH_TOWER` は 1,141 手で 0 回。(3) 連続単項マイナス 12 箇所。**これにより 08-29 23:1x の私の分析「露出同型を見送った理由の最多は AVOID_BLOCK_REACTIVE_PAIR」は誤り**（このタグは 6 割の手に無条件で付くノイズ）。静的検出テスト `tests/test_strategy_semantic_lint.py`（既知欠陥を凍結、sn-mine `e7bce2244`）を追加。**strategy.py 自体は v757 A/B 進行中のため未修正**（両腕の差分を意図した 1 点だけに保つため）。v757 A/B は n=3/3 で継続。
+> 直前セッション: Twitchコメント返信の既読漏れを修正。投稿者別記憶の `emit-batch` が本文をNFKC正規化する一方、`pending.log` は原文を保持していたため、`～！` と `~!` の差で `ack-batch` が0件削除となり、30分TTL後に同じコメントを再処理していた。PR #147を `codex/comment-viewer-memory` へmergeし、本番3ファイルをbackup付き反映。滞留3件は `pending=0`、chat workerはPID 1542543へ監督下復帰。30分超の実コメント再発観測は未確認。
+
+## 2026-08-30 18:5x-19:1x JST — Twitchコメントをmessage_idで既読消化し、30分ごとの再返信を停止
+
+- **実障害**: `Osha_neko` の「わあぁエピックだ～」「わ～！（5回目）…」「まだです！」が `pending.log` に残り、処理済み本文hashのTTL 1800秒が切れるたび再返信されていた。ログでは11:38〜18:26に同じ不具合報告を反復処理。
+- **根因**: 投稿者別記憶の `lib/comment_viewer_memory.py emit-batch` はモデル向け本文をNFKC正規化するが、Twitch pending envelopeの末尾本文はプロバイダ原文のまま。従来の `ack-batch` は平文完全一致だったため、全角の `～！（）` がASCIIの `~!()` になったバッチを削除できなかった。Twitch `message_id` 自体はsidecarへ正しく保存済みだったがackに使っていなかった。
+- **修正**: `emit-ack-batch` でsidecarの位置対応が一致する行へ `message_id` を付与し、`twitch_chat.sh ack-batch` はID一致を最優先して該当1件だけ削除。旧形式の平文バッチはNFKC比較へフォールバック。照合処理が失敗した場合はpendingを維持してfail-closed。
+- **リポジトリ**: soviet_now PR #147 `Fix Twitch comment acknowledgement by message ID` をbase `codex/comment-viewer-memory`へsquash merge。merge commit `254bba6061`。必須CIチェックは設定なし、GitHub上でMERGEABLEを確認してmerge。
+- **検証**: Python 60件pass、投稿者別記憶prompt/playback、コメントpersona/duplicate guard、Kick、ops-context、think-leak、singの回帰pass。新テストで (1) 全角→ASCII正規化後もIDで対象だけ削除、(2) 同じ本文の別IDは残す、(3) 旧平文ackでもNFKC差を消化、を確認。bash構文、py_compile、diff check成功。Kick daemonはsocket sandbox外でpass。
+- **VM反映**: `/home/ubuntu/soren/.codex_deploy/backup-20260830-comment-read-id/` に旧3ファイルとpending/sidecarを保存後、`broadcast/comment.sh`、`lib/comment_viewer_memory.py`、`twitch_chat.sh`を反映。ローカル/VM SHA256一致、bash構文・py_compile成功。反映直後に稼働中workerが新しい互換ackを使用し、滞留3件が `pending=0` まで消化された。chat workerをTERMし、旧PID 2178507→新PID 1542543、Twitch daemonも監督下で復帰。
+- **未確認**: 本番の新しい実視聴コメントでmessage_id付きackログを得ること、反映後30分超で同じコメントが再処理されないこと。現時点では再発元のpendingは空で、同じ3件を再処理する経路は閉じている。
 
 ## 2026-08-30 08:3x-08:4x JST — コメント返信に投稿者別記憶を追加（共通タイムラインは保持、source/mode/stable_id分離、Dociai除外、再生成功後だけ保存）
 
