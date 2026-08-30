@@ -55,6 +55,7 @@ tmux セッション "docich"
 - [[Home]] — この wiki のトップページ (現在地)
 - [[クイックスタート|Quickstart]] — 導入から起動・配信有効化までの最短手順
 - [[日常運用|Operations]] — ゲーム切替・状態確認・ログ・停止再起動の運用ハンドブック
+- [[OCI Ampere A1 料金・容量判断|Oracle-A1-Cost-and-Capacity]] — 4/24の料金、トライアル終了時の扱い、2/12への縮小可否
 - [[Web UI (モデルチェーン/バックオフ管理)|WebUI]] — モデルチェーン/バックオフ/ピーク帯のブラウザ操作 (Tailscale 経由)
 - [[配信の明示終了|Stream-Ending]] — FFmpeg を kill せず正常終了させ Twitch 配信を即offする手順
 - [[対応ゲーム|Games]] — 対応ゲーム一覧表とゲームの追加方法
