@@ -6,7 +6,7 @@
 
 ## 2026-08-30 18:5x-19:1x JST — Twitchコメントをmessage_idで既読消化し、30分ごとの再返信を停止
 
-- **実障害**: `Osha_neko` の「わあぁエピックだ～」「わ～！（5回目）…」「まだです！」が `pending.log` に残り、処理済み本文hashのTTL 1800秒が切れるたび再返信されていた。ログでは11:38〜18:26に同じ不具合報告を反復処理。
+- **実障害**: `Osha_neko` の「わあぁエピックだ～」「わ～！（5回目）…」「まだです！」が `pending.log` に残り、処理済み本文hashのTTL 1800秒が切れるたび再返信されていた。ログでは11:38〜18:56に同じ不具合報告を反復処理。
 - **根因**: 投稿者別記憶の `lib/comment_viewer_memory.py emit-batch` はモデル向け本文をNFKC正規化するが、Twitch pending envelopeの末尾本文はプロバイダ原文のまま。従来の `ack-batch` は平文完全一致だったため、全角の `～！（）` がASCIIの `~!()` になったバッチを削除できなかった。Twitch `message_id` 自体はsidecarへ正しく保存済みだったがackに使っていなかった。
 - **修正**: `emit-ack-batch` でsidecarの位置対応が一致する行へ `message_id` を付与し、`twitch_chat.sh ack-batch` はID一致を最優先して該当1件だけ削除。旧形式の平文バッチはNFKC比較へフォールバック。照合処理が失敗した場合はpendingを維持してfail-closed。
 - **リポジトリ**: soviet_now PR #147 `Fix Twitch comment acknowledgement by message ID` をbase `codex/comment-viewer-memory`へsquash merge。merge commit `254bba6061`。必須CIチェックは設定なし、GitHub上でMERGEABLEを確認してmerge。
