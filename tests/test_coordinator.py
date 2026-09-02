@@ -597,7 +597,8 @@ class TestFailureRollback(CoordinatorTestBase):
 
     def test_rollback_republished_previous_requires_readiness(self):
         """A living previous runtime is not necessarily ready: the rollback
-        must require readiness before re-publishing it as active."""
+        must require readiness before re-publishing it as active, and a
+        readiness failure must not leave a fresh-lease agent behind."""
         self.behaviors["robots"]["preflight_error"] = AdapterError("preflight boom")
         self.behaviors["nethack"]["readiness_error"] = FailOn(
             game_switch.ReadinessTimeoutError("not ready yet"), 2
@@ -610,14 +611,20 @@ class TestFailureRollback(CoordinatorTestBase):
         self.assertEqual(state["phase"], "failed")
         self.assertEqual(state["previous"]["game"], "nethack")
         self.assertIsNone(state["active"])
+        old = self.factory.adapter("nethack", 1)
+        self.assertEqual(old.runtime.events.count("readiness"), 1)
+        # The failed readiness happened BEFORE the agent restart: no agent
+        # was left running on a fresh lease.
+        self.assertEqual(old.runtime.events.count("agent_start"), 1)
+        self.assertEqual(old.runtime.events.count("agent_stop"), 1)
 
         recovered = self.coordinator.recover()
         self.assertEqual(recovered.status, "rolled_back")
         state = self.canonical()
         self.assertEqual(state["phase"], "ready")
         self.assertEqual(state["active"]["game"], "nethack")
-        old = self.factory.adapter("nethack", 1)
         self.assertEqual(old.runtime.events.count("readiness"), 2)
+        self.assertEqual(old.runtime.events.count("agent_start"), 2)
 
     def test_rollback_agent_restart_failure_fails_closed(self):
         self.behaviors["robots"]["preflight_error"] = AdapterError("preflight boom")
@@ -700,6 +707,28 @@ class TestCleanupPending(CoordinatorTestBase):
         pending = [r["game"] for r in state["retiring"]]
         self.assertIn("robots", pending)
 
+    def test_rollback_propagates_existing_retiring_cleanup_pending(self):
+        """A successful rollback must not hide cleanup failures of retiring
+        runtimes that predate the request."""
+        self.behaviors["nethack"]["cleanup_error"] = FailAfter(AdapterError("cleanup boom"))
+        self.behaviors["nethack"]["readiness_error"] = FailOn(
+            game_switch.ReadinessTimeoutError("slow"), 2
+        )
+        self.coordinator.start("nethack")
+        first = self.coordinator.switch("robots")
+        self.assertEqual(first.status, "succeeded")
+        self.assertTrue(first.cleanup_pending)
+        state = self.canonical()
+        self.assertEqual(len(state["retiring"]), 1)
+
+        second = self.coordinator.switch("nethack")
+        self.assertEqual(second.status, "rolled_back")
+        self.assertTrue(second.cleanup_pending)
+        state = self.canonical()
+        self.assertEqual(state["phase"], "ready")
+        self.assertEqual(state["active"]["game"], "robots")
+        self.assertEqual(state["active"]["generation"], 4)
+
     def test_recover_cleans_pending_retiring(self):
         state, _ = self.store.canonical.load()
         active = _runtime_dict(2, "robots")
@@ -754,6 +783,76 @@ class TestRuntimeTracking(CoordinatorTestBase):
         self.assertEqual(self.canonical()["active"]["game"], "nethack")
         self.assertFalse(candidate.runtime.alive)
         self.assertEqual(candidate.runtime.events[-2:], ["agent_stop", "cleanup"])
+
+    def test_dead_active_is_torn_down_before_forgetting(self):
+        state, _ = self.store.canonical.load()
+        active = _runtime_dict(2, "robots")
+        state.update(
+            {
+                "phase": "ready",
+                "active": active,
+                "next_generation": 3,
+                "last_result": {
+                    "request_id": str(uuid.uuid4()),
+                    "operation": "switch",
+                    "status": "succeeded",
+                    "from_game": "nethack",
+                    "to_game": "robots",
+                    "generation": 2,
+                },
+            }
+        )
+        self.store.canonical.save(state)
+        adapter = self.factory(game_switch.RuntimeSpec.from_runtime(self.state_dir, active))
+        adapter.runtime.materialized = True
+        adapter.runtime.alive = False  # game is dead, agent may linger
+
+        result = self.coordinator.recover()
+        self.assertEqual(result.status, "failed")
+        state = self.canonical()
+        self.assertEqual(state["phase"], "failed")
+        self.assertIsNone(state["active"])
+        self.assertFalse(result.cleanup_pending)
+        # The agent was torn down and the identity is gone from retiring
+        # only after stop confirmation succeeded (cleanup of an already-dead
+        # runtime is a no-op).
+        self.assertEqual(adapter.runtime.events, ["agent_stop"])
+        self.assertEqual(state["retiring"], [])
+
+    def test_dead_active_with_surviving_agent_keeps_identity(self):
+        state, _ = self.store.canonical.load()
+        active = _runtime_dict(2, "robots")
+        state.update(
+            {
+                "phase": "ready",
+                "active": active,
+                "next_generation": 3,
+                "last_result": {
+                    "request_id": str(uuid.uuid4()),
+                    "operation": "switch",
+                    "status": "succeeded",
+                    "from_game": "nethack",
+                    "to_game": "robots",
+                    "generation": 2,
+                },
+            }
+        )
+        self.store.canonical.save(state)
+        adapter = self.factory(game_switch.RuntimeSpec.from_runtime(self.state_dir, active))
+        adapter.runtime.materialized = True
+        adapter.runtime.alive = False
+        adapter.runtime.agent_started = True
+        self.behaviors["robots"]["agent_stop_error"] = AdapterError("agent stop boom")
+
+        result = self.coordinator.recover()
+        self.assertEqual(result.status, "failed")
+        state = self.canonical()
+        self.assertEqual(state["phase"], "failed")
+        self.assertIsNone(state["active"])
+        self.assertTrue(result.cleanup_pending)
+        # The unconfirmed runtime identity stays tracked in retiring.
+        pending = [r["game"] for r in state["retiring"]]
+        self.assertIn("robots", pending)
 
     def test_alive_probe_exception_keeps_active_and_fails_closed(self):
         state, _ = self.store.canonical.load()

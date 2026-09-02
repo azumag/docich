@@ -2161,6 +2161,7 @@ class GameSwitchCoordinator:
                 crash_hook=self.crash_hook,
             )
 
+        pending_out: list[bool] = []
         restored = self._restore_previous_locked(
             tx,
             request_id,
@@ -2171,7 +2172,9 @@ class GameSwitchCoordinator:
             deadline,
             warnings=warnings,
             finish_receipt=True,
+            cleanup_pending_out=pending_out,
         )
+        cleanup_pending = cleanup_pending or any(pending_out)
         if restored is None:
             return self._fail_locked(
                 tx,
@@ -2201,6 +2204,7 @@ class GameSwitchCoordinator:
         *,
         warnings: list[str],
         finish_receipt: bool = True,
+        cleanup_pending_out: list[bool] | None = None,
     ) -> Mapping[str, object] | None:
         """Restore the previous runtime.  Returns the terminal receipt when
         the restore commits, or None when the restore failed."""
@@ -2220,14 +2224,27 @@ class GameSwitchCoordinator:
             warnings.append("previous runtimeの生存確認ができません (probe失敗)")
             return None
         if previous_alive:
+            # The runtime was quiescing: a living process is not necessarily a
+            # ready game.  Verify readiness BEFORE re-issuing the agent so a
+            # readiness failure cannot leave a fresh-lease agent behind.
+            try:
+                self._call_adapter(
+                    lambda cancel: previous_adapter.stop_agent(deadline, cancel),
+                    deadline,
+                    self.step_timeouts.stop_agent_s,
+                    "stop_agent",
+                )
+                self._call_adapter(
+                    lambda cancel: previous_adapter.readiness(deadline, cancel),
+                    deadline,
+                    max(deadline - time.monotonic(), 0.0),
+                    "readiness",
+                )
+            except Exception as exc:
+                warnings.append(f"previous readiness確認失敗: {_safe_detail(exc)}")
+                return None
             if previous_adapter.agent_enabled:
                 try:
-                    self._call_adapter(
-                        lambda cancel: previous_adapter.stop_agent(deadline, cancel),
-                        deadline,
-                        self.step_timeouts.stop_agent_s,
-                        "stop_agent",
-                    )
                     self._call_adapter(
                         lambda cancel: previous_adapter.start_agent(deadline, cancel),
                         deadline,
@@ -2240,18 +2257,6 @@ class GameSwitchCoordinator:
                     # runtime whose agent is gone.
                     warnings.append(f"agent再起動失敗: {_safe_detail(exc)}")
                     return None
-            # The runtime was quiescing: a living process is not necessarily a
-            # ready game.  Require readiness before re-publishing it as active.
-            try:
-                self._call_adapter(
-                    lambda cancel: previous_adapter.readiness(deadline, cancel),
-                    deadline,
-                    max(deadline - time.monotonic(), 0.0),
-                    "readiness",
-                )
-            except Exception as exc:
-                warnings.append(f"previous readiness確認失敗: {_safe_detail(exc)}")
-                return None
             restored = dict(previous)
             restored["lease_id"] = new_lease
             last_result = {
@@ -2282,7 +2287,9 @@ class GameSwitchCoordinator:
             receipt_done = (
                 tx.finish_request(request_id, "rolled_back", last_result) if finish_receipt else last_result
             )
-            self._finalize_locked(tx, deadline, warnings=warnings)
+            pending = self._finalize_locked(tx, deadline, warnings=warnings)
+            if cleanup_pending_out is not None:
+                cleanup_pending_out.append(pending)
             return receipt_done
 
         # Replace mode: the previous game was stopped, so restore it as a
@@ -2394,7 +2401,9 @@ class GameSwitchCoordinator:
         receipt_done = (
             tx.finish_request(request_id, "rolled_back", last_result) if finish_receipt else last_result
         )
-        self._finalize_locked(tx, deadline, warnings=warnings)
+        pending = self._finalize_locked(tx, deadline, warnings=warnings)
+        if cleanup_pending_out is not None:
+            cleanup_pending_out.append(pending)
         return receipt_done
 
     def _fail_locked(
@@ -2606,6 +2615,15 @@ class GameSwitchCoordinator:
                 else:
                     alive = None
                 if alive is False:
+                    # The game process is gone, but the agent may still be
+                    # alive.  Keep the runtime identity tracked and tear it
+                    # down (stop_agent -> cleanup -> confirmed dead) before
+                    # forgetting it; an unconfirmed teardown stays in
+                    # retiring so recovery can retry.
+                    try:
+                        torn_down = self._teardown_runtime(adapter, deadline)
+                    except Exception:
+                        torn_down = False
                     last_result = {
                         "request_id": "",
                         "operation": "recover",
@@ -2615,22 +2633,29 @@ class GameSwitchCoordinator:
                         "generation": active["generation"],
                         "error_code": ERROR_START_FAILED,
                         "detail": "active runtimeが失われています",
-                        "cleanup_pending": None,
+                        "cleanup_pending": None if torn_down else True,
                     }
+                    updates = {
+                        "active": None,
+                        "candidate": state.get("candidate"),
+                        "previous": state.get("previous"),
+                        "last_result": last_result,
+                        "last_error": {
+                            "error_code": ERROR_START_FAILED,
+                            "detail": "active runtimeが失われています",
+                        },
+                    }
+                    if not torn_down:
+                        updates["retiring"] = [active, *(state.get("retiring") or [])]
                     tx.transition(
                         {"ready"}, "failed",
-                        updates={
-                            "active": None,
-                            "candidate": state.get("candidate"),
-                            "previous": state.get("previous"),
-                            "last_result": last_result,
-                            "last_error": {
-                                "error_code": ERROR_START_FAILED,
-                                "detail": "active runtimeが失われています",
-                            },
-                        },
+                        updates=updates,
                         crash_hook=self.crash_hook,
                     )
+                    try:
+                        self._write_mirror(None)
+                    except Exception as exc:
+                        warnings.append(f"mirror修復失敗: {_safe_detail(exc)}")
                     return SwitchResult(
                         request_id="",
                         operation="recover",
@@ -2642,7 +2667,7 @@ class GameSwitchCoordinator:
                         error_code=ERROR_START_FAILED,
                         detail="active runtimeが失われています",
                         warnings=tuple(warnings),
-                        cleanup_pending=False,
+                        cleanup_pending=not torn_down,
                         receipt=None,
                     )
                 if alive is None:
@@ -2801,6 +2826,7 @@ class GameSwitchCoordinator:
         # The restore is a rollback-style recovery: give it its own budget so
         # an expired request/recover deadline cannot block the restore.
         deadline = time.monotonic() + self.rollback_timeout_s
+        pending_out: list[bool] = []
         restored = self._restore_previous_locked(
             tx,
             request_id,
@@ -2811,13 +2837,18 @@ class GameSwitchCoordinator:
             deadline,
             warnings=warnings,
             finish_receipt=False,
+            cleanup_pending_out=pending_out,
         )
         if restored is None:
             return self._recover_fail_locked(
                 tx, state, warnings, "previous runtimeの復旧に失敗しました", "rollback_failed"
             )
         self._reconcile_dangling_receipt_locked(tx)
-        return _result_from_receipt(restored, warnings=tuple(warnings), cleanup_pending=cleanup_pending)
+        return _result_from_receipt(
+            restored,
+            warnings=tuple(warnings),
+            cleanup_pending=cleanup_pending or any(pending_out),
+        )
 
     def _recover_stop_locked(
         self,
