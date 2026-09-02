@@ -230,9 +230,15 @@ class CliCoordinatorAdapter:
             )
         return [resolved, *cmd[1:]]
 
+    def _xterm_bin(self) -> str:
+        resolved = procs.which("xterm")
+        if not resolved:
+            raise AdapterError("xterm が見つかりません (PATH を確認してください)")
+        return resolved
+
     def _xterm_command(self) -> list[str]:
         return [
-            "xterm", "-fa", cli_font(self.game), "-fs", str(cli_font_size(self.game)),
+            self._xterm_bin(), "-fa", cli_font(self.game), "-fs", str(cli_font_size(self.game)),
             "-bg", "black", "-fg", "grey90",
             "-geometry", f"{cli_cols(self.game)}x{cli_rows(self.game)}+0+0",
             "-T", f"docich-{self.game.name}",
@@ -251,7 +257,11 @@ class CliCoordinatorAdapter:
 
     def preflight(self, deadline: float, cancel) -> None:
         self._check_active(deadline, cancel)
-        self._game_command()  # コマンド解決のみ (副作用なし)。未解決は AdapterError
+        self._game_command()
+        self._xterm_bin()
+        if self.agent_enabled and not Path(_docich_bin()).is_file():
+            raise AdapterError(f"docich executable が見つかりません: {_docich_bin()}")
+        self._check_active(deadline, cancel)
 
     def materialize_runtime(self, deadline: float, cancel) -> None:
         self._check_active(deadline, cancel)
@@ -261,6 +271,7 @@ class CliCoordinatorAdapter:
         if self.tmux.session_target_exists(self.spec.adapter_session):
             self._verify_session_ownership()
         else:
+            self._check_active(deadline, cancel)
             self.tmux.create_game_session_owned(
                 self.spec.adapter_session,
                 self._game_command(),
@@ -274,6 +285,7 @@ class CliCoordinatorAdapter:
         if self.tmux.window_target_exists(game_target):
             self._verify_window_ownership(game_target, "game")
         else:
+            self._check_active(deadline, cancel)
             self.tmux.create_window_owned(
                 self.spec.game_window, self._xterm_command(), self._ownership("game")
             )
@@ -312,9 +324,11 @@ class CliCoordinatorAdapter:
             self._check_active(deadline, cancel)
             target = f"{SESSION}:{name}"
             if self.tmux.window_target_exists(target):
+                self._check_active(deadline, cancel)
                 self.tmux.kill_window_owned(target, self._ownership(role))
         self._check_active(deadline, cancel)
         if self.tmux.session_target_exists(self.spec.adapter_session):
+            self._check_active(deadline, cancel)
             self.tmux.kill_session_owned(self.spec.adapter_session, self._ownership("adapter"))
 
     def start_agent(self, deadline: float, cancel) -> None:
@@ -323,6 +337,7 @@ class CliCoordinatorAdapter:
         if self.tmux.window_target_exists(target):
             self._verify_window_ownership(target, "agent")
             return
+        self._check_active(deadline, cancel)
         self.tmux.create_window_owned(
             self.spec.agent_window,
             self._agent_command(),
@@ -335,4 +350,5 @@ class CliCoordinatorAdapter:
         self._check_active(deadline, cancel)
         target = self._agent_window_target()
         if self.tmux.window_target_exists(target):
+            self._check_active(deadline, cancel)
             self.tmux.kill_window_owned(target, self._ownership("agent"))
