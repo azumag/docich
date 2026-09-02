@@ -7,6 +7,7 @@ tmux ownership options (design v2 §3, §4).
 """
 from __future__ import annotations
 
+import os
 import shlex
 import time
 from pathlib import Path
@@ -14,10 +15,12 @@ from pathlib import Path
 from .. import procs
 from ..actions import Action
 from ..game_switch import DeadlineExceededError, ReadinessTimeoutError, RuntimeSpec
+from ..naming import NameValidationError, validate_tmux_name
 from ..tmux import OwnershipMismatchError, SESSION, Tmux, TmuxOwnership
 from .base import Adapter, AdapterError, Observation
 
 GAME_SESSION = "docich-game"
+RUNTIME_GAME_SESSION_ENV = "DOCICH_GAME_SESSION"
 
 
 # --- shared [cli] table helpers --------------------------------------------
@@ -55,6 +58,22 @@ def cli_font_size(game) -> int:
     return int(cli_raw(game).get("font_size", 18))
 
 
+def cli_game_session() -> str:
+    """Return the CLI session bound to this process.
+
+    Legacy processes use ``docich-game``.  A generation-scoped coordinator
+    agent receives a validated session name through ``DOCICH_GAME_SESSION`` so
+    the unchanged agent loop observes/acts on its own runtime instead of the
+    legacy fixed session.
+    """
+
+    value = os.environ.get(RUNTIME_GAME_SESSION_ENV, GAME_SESSION)
+    try:
+        return validate_tmux_name(value)
+    except NameValidationError as exc:
+        raise AdapterError(f"{RUNTIME_GAME_SESSION_ENV} が不正です") from exc
+
+
 def _docich_bin() -> str:
     # cli.py の _docich_bin() と同じ repo root を指す。cli_game.py は
     # src/docich/adapters/ 配下なので cli.py より1階層深い。
@@ -63,6 +82,9 @@ def _docich_bin() -> str:
 
 class CliGameAdapter(Adapter):
     name = "cli"
+
+    def _session(self) -> str:
+        return cli_game_session()
 
     def _command_list(self) -> list[str]:
         return cli_command_list(self.ctx.game)
@@ -90,23 +112,24 @@ class CliGameAdapter(Adapter):
                 f"コマンドが見つかりません: {cmd[0]} (PATH を確認してください。/usr/games も探索します)"
             )
         resolved_cmd = [resolved, *cmd[1:]]
+        session = self._session()
 
-        if not self.ctx.tmux.has_session_named(GAME_SESSION):
-            self.ctx.tmux.new_game_session(GAME_SESSION, resolved_cmd, self._cols(), self._rows())
-            self.ctx.tmux.set_manual_size(GAME_SESSION, self._cols(), self._rows())
+        if not self.ctx.tmux.has_session_named(session):
+            self.ctx.tmux.new_game_session(session, resolved_cmd, self._cols(), self._rows())
+            self.ctx.tmux.set_manual_size(session, self._cols(), self._rows())
 
     def command(self) -> list[str]:
-        # 映像化用の xterm。ゲーム本体は GAME_SESSION 内で走り続ける (read-only attach)。
+        # 映像化用の xterm。ゲーム本体は session 内で走り続ける (read-only attach)。
         return [
             "xterm", "-fa", self._font(), "-fs", str(self._font_size()),
             "-bg", "black", "-fg", "grey90",
             "-geometry", f"{self._cols()}x{self._rows()}+0+0",
             "-T", f"docich-{self.ctx.game.name}",
-            "-e", "tmux", "attach-session", "-r", "-t", GAME_SESSION,
+            "-e", "tmux", "attach-session", "-r", "-t", self._session(),
         ]
 
     def observe(self) -> Observation:
-        text = self.ctx.tmux.capture_pane(GAME_SESSION)
+        text = self.ctx.tmux.capture_pane(self._session())
         meta = {}
         if text == "":
             meta["warning"] = "capture が空です (セッション停止の可能性)"
@@ -121,21 +144,22 @@ class CliGameAdapter(Adapter):
         )
 
     def act(self, action: Action) -> None:
+        session = self._session()
         if action.type == "text":
-            self.ctx.tmux.send_keys(GAME_SESSION, [action.text], literal=True)
+            self.ctx.tmux.send_keys(session, [action.text], literal=True)
             return
         if action.type == "special":
-            self.ctx.tmux.send_keys(GAME_SESSION, [action.key], literal=False)
+            self.ctx.tmux.send_keys(session, [action.key], literal=False)
             return
         if action.type == "key":
-            self.ctx.tmux.send_keys(GAME_SESSION, action.keys, literal=False)
+            self.ctx.tmux.send_keys(session, action.keys, literal=False)
             return
         if action.type == "wait":
             return
         raise AdapterError(f"cli アダプタは action type '{action.type}' に対応していません")
 
     def cleanup(self) -> None:
-        self.ctx.tmux.kill_session_named(GAME_SESSION)
+        self.ctx.tmux.kill_session_named(self._session())
 
 
 class CliCoordinatorAdapter:
@@ -216,8 +240,8 @@ class CliCoordinatorAdapter:
         ]
 
     def _agent_command(self) -> list[str]:
-        # Agent は世代別 window 内で run ループとして起動する。runtime identity
-        # の束縛 (lease fence) は P3 で追加する。
+        # Agent は世代別 window 内で run ループとして起動する。lease fence は P3
+        # で追加するが、P2では session identity を環境変数で固定する。
         return [
             _docich_bin(), "--config", str(self.g.config_path),
             "run", "agent", self.spec.game,
@@ -300,7 +324,10 @@ class CliCoordinatorAdapter:
             self._verify_window_ownership(target, "agent")
             return
         self.tmux.create_window_owned(
-            self.spec.agent_window, self._agent_command(), self._ownership("agent")
+            self.spec.agent_window,
+            self._agent_command(),
+            self._ownership("agent"),
+            env={RUNTIME_GAME_SESSION_ENV: self.spec.adapter_session},
         )
         self._check_active(deadline, cancel)
 
