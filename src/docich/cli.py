@@ -21,8 +21,18 @@ from . import (
     tts,
 )
 from .actions import Action, ActionError, parse_actions
-from .adapters import AdapterError, make_adapter
+from .adapters import AdapterError, make_adapter, make_coordinator_adapter
 from .config import ConfigError, GlobalConfig, list_games, load_game, load_global
+from .game_switch import (
+    ERROR_ALREADY_ACTIVE,
+    GameSwitchCoordinator,
+    GameSwitchError,
+    GameSwitchStore,
+    SwitchResult,
+    new_request_id,
+    validate_request_id,
+)
+from .naming import NameValidationError
 from .netcmd import send_ra_cmd
 from .state import State
 from .stream import (
@@ -118,16 +128,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_start = sub.add_parser("start", help="ゲームを起動する")
     p_start.add_argument("game", help="ゲーム名 (config/games/<name>.toml)")
+    p_start.add_argument("--request-id", metavar="UUID", help="再送用の request_id")
+    p_start.add_argument("--timeout", type=float, metavar="SEC", help="request 全体の deadline (秒)")
 
-    sub.add_parser("stop", help="現在のゲームを停止する")
+    p_stop = sub.add_parser("stop", help="現在のゲームを停止する")
+    p_stop.add_argument("--request-id", metavar="UUID", help="再送用の request_id")
+    p_stop.add_argument("--timeout", type=float, metavar="SEC", help="request 全体の deadline (秒)")
 
-    p_switch = sub.add_parser("switch", help="ゲームを切り替える (stop + start)")
+    p_switch = sub.add_parser("switch", help="ゲームを切り替える (transactional switch)")
     p_switch.add_argument("game", help="切り替え先のゲーム名")
+    p_switch.add_argument("--request-id", metavar="UUID", help="再送用の request_id")
+    p_switch.add_argument("--timeout", type=float, metavar="SEC", help="request 全体の deadline (秒)")
 
     p_rotate = sub.add_parser("rotate", help="[rotation] games を順に切り替える (時間割ローテーション)")
     p_rotate.add_argument(
         "--dry-run", action="store_true", help="切り替えを実行せず、切替先のゲーム名を表示するだけにする"
     )
+    p_rotate.add_argument("--request-id", metavar="UUID", help="再送用の request_id")
+    p_rotate.add_argument("--timeout", type=float, metavar="SEC", help="request 全体の deadline (秒)")
 
     sub.add_parser("status", help="各コンポーネントの状態を表示する")
 
@@ -276,13 +294,13 @@ def _dispatch(args: argparse.Namespace) -> int:
     if command == "down":
         return cmd_down(g)
     if command == "start":
-        return cmd_start(g, args.game)
+        return cmd_start(g, args.game, request_id=args.request_id, timeout_s=args.timeout)
     if command == "stop":
-        return cmd_stop(g)
+        return cmd_stop(g, request_id=args.request_id, timeout_s=args.timeout)
     if command == "switch":
-        return cmd_switch(g, args.game)
+        return cmd_switch(g, args.game, request_id=args.request_id, timeout_s=args.timeout)
     if command == "rotate":
-        return cmd_rotate(g, args.dry_run)
+        return cmd_rotate(g, args.dry_run, request_id=args.request_id, timeout_s=args.timeout)
     if command == "status":
         return cmd_status(g)
     if command == "snap":
@@ -516,78 +534,131 @@ def cmd_down(g: GlobalConfig) -> int:
     return 0
 
 
-def cmd_start(g: GlobalConfig, name: str) -> int:
+# ---------------------------------------------------------------------------
+# start / stop / switch / rotate via the GameSwitchCoordinator (design v2 §8)
+# ---------------------------------------------------------------------------
+
+
+def _coordinator(g: GlobalConfig) -> GameSwitchCoordinator:
+    store = GameSwitchStore(g.state_dir)
+    return GameSwitchCoordinator(store, lambda spec: make_coordinator_adapter(g, spec))
+
+
+def _checked_request_id(request_id: str | None) -> str:
+    if request_id is None:
+        return new_request_id()
+    try:
+        return validate_request_id(request_id)
+    except NameValidationError as exc:
+        raise CliError(f"--request-id が不正です: {exc}") from exc
+
+
+def _checked_timeout(timeout_s: float | None) -> float | None:
+    if timeout_s is None:
+        return None
+    if timeout_s <= 0:
+        raise CliError("--timeout は正の秒数で指定してください")
+    return float(timeout_s)
+
+
+def _read_active_game(g: GlobalConfig) -> str | None:
+    """canonical があれば active、無ければ互換 mirror (current_game) を読む。"""
+    store = GameSwitchStore(g.state_dir)
+    try:
+        state, _ = store.canonical.load()
+    except GameSwitchError as exc:
+        raise CliError(f"canonical state が読み込めません: {exc}") from exc
+    active = state.get("active")
+    if isinstance(active, dict) and isinstance(active.get("game"), str):
+        return active["game"]
+    return State(g).current_game()
+
+
+def _result_exit_code(result: SwitchResult) -> int:
+    if result.status == "succeeded":
+        return 0
+    if result.status in {"in_progress", "busy"}:
+        return 1
+    if result.status == "rolled_back":
+        return 1
+    return 2
+
+
+def _print_switch_result(verb: str, result: SwitchResult) -> None:
+    direction = ""
+    if result.from_game and result.to_game:
+        direction = f" ({result.from_game} -> {result.to_game})"
+    elif result.to_game:
+        direction = f" ({result.to_game})"
+    elif result.from_game:
+        direction = f" ({result.from_game})"
+    detail = f" [request_id={result.request_id}]"
+    if result.status == "succeeded":
+        print(f"docich: {verb}しました{direction} (generation={result.generation}){detail}")
+    elif result.status == "rolled_back":
+        print(f"docich: {verb}に失敗したため旧ゲームを復元しました{direction}{detail}", file=sys.stderr)
+    elif result.status == "in_progress":
+        print(f"docich: {verb}は既に進行中です{direction}{detail}", file=sys.stderr)
+    elif result.status == "busy":
+        print(f"docich: 別のゲーム切替が進行中のため{verb}できません{direction}{detail}", file=sys.stderr)
+    elif result.status == "request_conflict":
+        print(f"docich: 同じ request_id が異なる内容で使われています{detail}", file=sys.stderr)
+    else:
+        why = result.error_code or "unknown"
+        extra = f": {result.detail}" if result.detail else ""
+        print(f"docich: {verb}に失敗しました ({why}{extra}){detail}", file=sys.stderr)
+
+
+def cmd_start(g: GlobalConfig, name: str, *, request_id: str | None = None, timeout_s: float | None = None) -> int:
     tmux = Tmux()
     if not tmux.has_window("display"):
         raise CliError("display window がありません。先に `docich up` を実行してください")
-
-    game = load_game(g, name)
-    state = State(g)
-    xkit = XKit(g.display.name)
-    # import/構築の検証のみ (実際の起動は `docich run game <name>` 側で行う)
-    make_adapter(g, game, state=state, tmux=tmux, xkit=xkit)
-
-    if tmux.has_window("game"):
-        print("docich: game window は既に起動しています (先に `docich stop` してください)", file=sys.stderr)
-    else:
-        tmux.new_window("game", _run_argv(g, "game", game.name))
-        print(f"docich: game window を起動しました ({game.name})")
-
-    if game.agent.enabled:
-        if tmux.has_window("agent"):
-            print("docich: agent window は既に起動しています", file=sys.stderr)
-        else:
-            tmux.new_window("agent", _run_argv(g, "agent", game.name))
-            print(f"docich: agent window を起動しました ({game.name})")
-
-    state.set_current_game(game.name)
-    print(f"docich: 現在のゲーム = {game.name}")
-    return 0
+    result = _coordinator(g).start(
+        name,
+        request_id=_checked_request_id(request_id),
+        timeout_s=_checked_timeout(timeout_s),
+    )
+    if result.status == "failed" and result.error_code == ERROR_ALREADY_ACTIVE:
+        # 別 game が active の場合、設計どおり switch を要求する。
+        return cmd_switch(g, name, request_id=None, timeout_s=timeout_s)
+    _print_switch_result(f"ゲームを起動", result)
+    return _result_exit_code(result)
 
 
-def cmd_stop(g: GlobalConfig) -> int:
-    state = State(g)
-    tmux = Tmux()
-    current = state.current_game()
-
-    tmux.kill_window("agent")
-    tmux.kill_window("game")
-
-    if current is not None:
-        try:
-            game = load_game(g, current)
-            xkit = XKit(g.display.name)
-            adapter = make_adapter(g, game, state=state, tmux=tmux, xkit=xkit)
-            adapter.cleanup()
-        except Exception as exc:
-            # cleanup 失敗は警告ログのみで継続する (spec: 失敗はログのみ)
-            print(f"docich: 警告: {current} の cleanup に失敗しました: {exc}", file=sys.stderr)
-
-    state.clear_current_game()
-    if current is not None:
-        print(f"docich: ゲームを停止しました ({current})")
-    else:
-        print("docich: 実行中のゲームはありませんでした")
-    return 0
+def cmd_stop(g: GlobalConfig, *, request_id: str | None = None, timeout_s: float | None = None) -> int:
+    result = _coordinator(g).stop(
+        request_id=_checked_request_id(request_id),
+        timeout_s=_checked_timeout(timeout_s),
+    )
+    _print_switch_result("ゲームを停止", result)
+    return _result_exit_code(result)
 
 
-def cmd_switch(g: GlobalConfig, name: str) -> int:
-    state = State(g)
-    if state.current_game() is not None:
-        cmd_stop(g)
-    return cmd_start(g, name)
+def cmd_switch(g: GlobalConfig, name: str, *, request_id: str | None = None, timeout_s: float | None = None) -> int:
+    result = _coordinator(g).switch(
+        name,
+        request_id=_checked_request_id(request_id),
+        timeout_s=_checked_timeout(timeout_s),
+    )
+    _print_switch_result("ゲームを切り替え", result)
+    return _result_exit_code(result)
 
 
-def cmd_rotate(g: GlobalConfig, dry_run: bool) -> int:
+def cmd_rotate(g: GlobalConfig, dry_run: bool, *, request_id: str | None = None, timeout_s: float | None = None) -> int:
     if not g.rotation.games:
         raise CliError("[rotation] games を設定してください (config/docich.toml)")
-    state = State(g)
-    target = next_rotation_game(g.rotation.games, state.current_game())
     if dry_run:
+        target = next_rotation_game(g.rotation.games, _read_active_game(g))
         print(f"docich: rotate 切替先 = {target} (dry-run のため切り替えません)")
         return 0
-    print(f"docich: rotate 切替先 = {target}")
-    return cmd_switch(g, target)
+    result = _coordinator(g).rotate(
+        list(g.rotation.games),
+        request_id=_checked_request_id(request_id),
+        timeout_s=_checked_timeout(timeout_s),
+    )
+    print(f"docich: rotate 切替先 = {result.to_game or '(なし)'}")
+    _print_switch_result("ゲームを切り替え", result)
+    return _result_exit_code(result)
 
 
 def cmd_status(g: GlobalConfig) -> int:
