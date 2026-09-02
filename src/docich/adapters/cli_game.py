@@ -13,8 +13,8 @@ from pathlib import Path
 
 from .. import procs
 from ..actions import Action
-from ..game_switch import ReadinessTimeoutError, RuntimeSpec
-from ..tmux import SESSION, Tmux, TmuxOwnership
+from ..game_switch import DeadlineExceededError, ReadinessTimeoutError, RuntimeSpec
+from ..tmux import OwnershipMismatchError, SESSION, Tmux, TmuxOwnership
 from .base import Adapter, AdapterError, Observation
 
 GAME_SESSION = "docich-game"
@@ -56,9 +56,9 @@ def cli_font_size(game) -> int:
 
 
 def _docich_bin() -> str:
-    # cli.py の _docich_bin() と同じ導出。ここで cli を import すると
-    # (cli -> adapters -> cli の) 循環importになるため独立に計算する。
-    return str(Path(__file__).resolve().parents[2] / "bin" / "docich")
+    # cli.py の _docich_bin() と同じ repo root を指す。cli_game.py は
+    # src/docich/adapters/ 配下なので cli.py より1階層深い。
+    return str(Path(__file__).resolve().parents[3] / "bin" / "docich")
 
 
 class CliGameAdapter(Adapter):
@@ -163,11 +163,33 @@ class CliCoordinatorAdapter:
             role=role,
         )
 
+    def _check_active(self, deadline: float, cancel) -> None:
+        if cancel is not None and cancel.is_set():
+            raise DeadlineExceededError("adapter call はcancelされました")
+        if time.monotonic() >= deadline:
+            raise DeadlineExceededError("adapter call のdeadlineを超過しました")
+
     def _game_window_target(self) -> str:
         return f"{SESSION}:{self.spec.game_window}"
 
     def _agent_window_target(self) -> str:
         return f"{SESSION}:{self.spec.agent_window}"
+
+    def _verify_session_ownership(self) -> None:
+        expected = self._ownership("adapter")
+        actual = self.tmux.read_session_ownership(self.spec.adapter_session)
+        if actual != expected:
+            raise OwnershipMismatchError(
+                f"session ownershipが一致しません (expected={expected}, actual={actual})"
+            )
+
+    def _verify_window_ownership(self, target: str, role: str) -> None:
+        expected = self._ownership(role)
+        actual = self.tmux.read_window_ownership(target)
+        if actual != expected:
+            raise OwnershipMismatchError(
+                f"window ownershipが一致しません (expected={expected}, actual={actual})"
+            )
 
     def _game_command(self) -> list[str]:
         cmd = cli_command_list(self.game)
@@ -198,11 +220,17 @@ class CliCoordinatorAdapter:
     # --- CoordinatorAdapter contract -------------------------------------
 
     def preflight(self, deadline: float, cancel) -> None:
+        self._check_active(deadline, cancel)
         self._game_command()  # コマンド解決のみ (副作用なし)。未解決は AdapterError
 
     def materialize_runtime(self, deadline: float, cancel) -> None:
+        self._check_active(deadline, cancel)
         self.spec.runtime_dir.mkdir(parents=True, exist_ok=True)
-        if not self.tmux.session_target_exists(self.spec.adapter_session):
+        self._check_active(deadline, cancel)
+
+        if self.tmux.session_target_exists(self.spec.adapter_session):
+            self._verify_session_ownership()
+        else:
             self.tmux.create_game_session_owned(
                 self.spec.adapter_session,
                 self._game_command(),
@@ -210,44 +238,68 @@ class CliCoordinatorAdapter:
                 cli_rows(self.game),
                 self._ownership("adapter"),
             )
-        if not self.tmux.window_target_exists(self._game_window_target()):
+        self._check_active(deadline, cancel)
+
+        game_target = self._game_window_target()
+        if self.tmux.window_target_exists(game_target):
+            self._verify_window_ownership(game_target, "game")
+        else:
             self.tmux.create_window_owned(
                 self.spec.game_window, self._xterm_command(), self._ownership("game")
             )
+        self._check_active(deadline, cancel)
 
     def readiness(self, deadline: float, cancel) -> None:
-        if cancel is not None and cancel.is_set():
-            raise ReadinessTimeoutError("adapter call はcancelされました")
+        self._check_active(deadline, cancel)
         if not self.tmux.session_target_exists(self.spec.adapter_session):
             raise ReadinessTimeoutError("adapter sessionがありません")
-        if not self.tmux.window_target_exists(self._game_window_target()):
+        self._verify_session_ownership()
+
+        game_target = self._game_window_target()
+        if not self.tmux.window_target_exists(game_target):
             raise ReadinessTimeoutError("game windowがありません")
+        self._verify_window_ownership(game_target, "game")
+
         states = self.tmux.pane_states_checked(self.spec.adapter_session)
         if any(pane.dead for pane in states):
             raise ReadinessTimeoutError("paneがdeadです")
         # capture-pane 自体が成功すること (内容が空でも即失敗にしない)
         self.tmux.capture_pane_checked(self.spec.adapter_session)
+        self._check_active(deadline, cancel)
 
     def alive(self, deadline: float, cancel) -> bool:
-        return self.tmux.session_target_exists(self.spec.adapter_session)
+        self._check_active(deadline, cancel)
+        if not self.tmux.session_target_exists(self.spec.adapter_session):
+            return False
+        self._verify_session_ownership()
+        return True
 
     def cleanup_runtime(self, deadline: float, cancel) -> None:
         for name, role in (
             (self.spec.agent_window, "agent"),
             (self.spec.game_window, "game"),
         ):
+            self._check_active(deadline, cancel)
             target = f"{SESSION}:{name}"
             if self.tmux.window_target_exists(target):
                 self.tmux.kill_window_owned(target, self._ownership(role))
+        self._check_active(deadline, cancel)
         if self.tmux.session_target_exists(self.spec.adapter_session):
             self.tmux.kill_session_owned(self.spec.adapter_session, self._ownership("adapter"))
 
     def start_agent(self, deadline: float, cancel) -> None:
-        if not self.tmux.window_target_exists(self._agent_window_target()):
-            self.tmux.create_window_owned(
-                self.spec.agent_window, self._agent_command(), self._ownership("agent")
-            )
+        self._check_active(deadline, cancel)
+        target = self._agent_window_target()
+        if self.tmux.window_target_exists(target):
+            self._verify_window_ownership(target, "agent")
+            return
+        self.tmux.create_window_owned(
+            self.spec.agent_window, self._agent_command(), self._ownership("agent")
+        )
+        self._check_active(deadline, cancel)
 
     def stop_agent(self, deadline: float, cancel) -> None:
-        if self.tmux.window_target_exists(self._agent_window_target()):
-            self.tmux.kill_window_owned(self._agent_window_target(), self._ownership("agent"))
+        self._check_active(deadline, cancel)
+        target = self._agent_window_target()
+        if self.tmux.window_target_exists(target):
+            self.tmux.kill_window_owned(target, self._ownership("agent"))
