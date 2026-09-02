@@ -321,12 +321,12 @@ def validate_state(state: Mapping[str, object]) -> None:
         raise StateCorruptError("ready phaseはactiveだけを保持する必要があります")
     if phase in {"validating", "stopping"} and candidate is not None:
         raise StateCorruptError(f"{phase} phaseはcandidateを保持できません")
-    identities: list[tuple[str, int]] = []
+    runtime_generations: list[int] = []
     for runtime in [active, candidate, previous, *retiring]:
         if isinstance(runtime, dict):
-            identities.append((str(runtime["runtime_id"]), int(runtime["generation"])))
-    if len(identities) != len(set(identities)):
-        raise StateCorruptError("runtime identityが重複しています")
+            runtime_generations.append(int(runtime["generation"]))
+    if len(runtime_generations) != len(set(runtime_generations)):
+        raise StateCorruptError("runtime generationが重複しています")
     generations = _runtime_generations(state)
     if generations and next_generation <= max(generations):
         raise StateCorruptError("next_generation が既存generationより先へ進んでいません")
