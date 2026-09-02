@@ -168,6 +168,42 @@ class TestCheckedOperations(unittest.TestCase):
         self.assertIn("window作成", str(ctx.exception))
 
     @mock.patch("docich.tmux.procs.run")
+    def test_owned_window_creation_tags_and_verifies_stable_id(self, mock_run):
+        mock_run.side_effect = [
+            _ok("@7\n"),
+            _ok(), _ok(), _ok(),
+            _ok("g1-abcdef\n"), _ok("1\n"), _ok("game\n"),
+        ]
+        window_id = self.tmux.create_window_owned("game-g1", ["true"], self.owner)
+        self.assertEqual(window_id, "@7")
+        calls = [call.args[0] for call in mock_run.call_args_list]
+        self.assertEqual(calls[0][1:6], ["new-window", "-d", "-P", "-F", "#{window_id}"])
+        self.assertTrue(all("@7" in call for call in calls[1:]))
+
+    @mock.patch("docich.tmux.procs.run")
+    def test_owned_window_creation_rolls_back_exact_id_on_tag_failure(self, mock_run):
+        mock_run.side_effect = [
+            _ok("@7\n"),
+            subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="tag failed"),
+            _ok(),
+        ]
+        with self.assertRaises(tmux_mod.TmuxError):
+            self.tmux.create_window_owned("game-g1", ["true"], self.owner)
+        self.assertEqual(mock_run.call_args_list[-1].args[0], ["tmux", "kill-window", "-t", "@7"])
+
+    @mock.patch("docich.tmux.procs.run")
+    def test_owned_session_creation_rolls_back_exact_id_when_status_off_fails(self, mock_run):
+        owner = tmux_mod.TmuxOwnership("g1-abcdef", 1, "adapter")
+        mock_run.side_effect = [
+            _ok("$4\n"),
+            subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="status failed"),
+            _ok(),
+        ]
+        with self.assertRaises(tmux_mod.TmuxError):
+            self.tmux.create_game_session_owned("docich-game-g1", ["true"], 80, 24, owner)
+        self.assertEqual(mock_run.call_args_list[-1].args[0], ["tmux", "kill-session", "-t", "$4"])
+
+    @mock.patch("docich.tmux.procs.run")
     def test_set_window_ownership_writes_all_tags(self, mock_run):
         mock_run.return_value = _ok()
         self.tmux.set_window_ownership("docich:game-g1", self.owner)

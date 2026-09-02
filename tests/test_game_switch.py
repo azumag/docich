@@ -68,7 +68,7 @@ class TestCanonicalState(GameSwitchTestBase):
         with self.assertRaises(game_switch.StateCorruptError):
             self.store.initialize()
 
-    def test_explicit_v1_state_is_migrated_and_persisted(self):
+    def test_explicit_v1_state_is_rejected_fail_closed(self):
         self.state_dir.mkdir(parents=True)
         game_switch.atomic_write_json(
             self.state_dir / "game_switch.json",
@@ -79,12 +79,10 @@ class TestCanonicalState(GameSwitchTestBase):
                 "next_generation": 4,
             },
         )
-        state = self.store.initialize()
-        self.assertEqual(state["schema_version"], 2)
-        self.assertEqual(state["revision"], 8)
-        self.assertEqual(state["next_generation"], 4)
+        with self.assertRaises(game_switch.StateCorruptError):
+            self.store.initialize()
         on_disk = json.loads((self.state_dir / "game_switch.json").read_text(encoding="utf-8"))
-        self.assertEqual(on_disk["schema_version"], 2)
+        self.assertEqual(on_disk["schema_version"], 1)
 
     def test_invalid_runtime_identity_is_rejected(self):
         self.store.initialize()
@@ -95,6 +93,31 @@ class TestCanonicalState(GameSwitchTestBase):
         state["phase"] = "ready"
         with self.assertRaises(game_switch.StateCorruptError):
             self.store.canonical.save(state)
+
+    def test_cross_field_invariants_are_rejected_before_save(self):
+        self.store.initialize()
+        state, _ = self.store.canonical.load()
+        invalid_states = []
+
+        operation_without_request = dict(state)
+        operation_without_request["operation"] = "start"
+        invalid_states.append(operation_without_request)
+
+        progress_without_owner = dict(state)
+        progress_without_owner["phase"] = "starting"
+        progress_without_owner["candidate"] = _runtime()
+        progress_without_owner["next_generation"] = 2
+        invalid_states.append(progress_without_owner)
+
+        idle_with_runtime = dict(state)
+        idle_with_runtime["active"] = _runtime()
+        idle_with_runtime["next_generation"] = 2
+        invalid_states.append(idle_with_runtime)
+
+        for invalid in invalid_states:
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(game_switch.StateCorruptError):
+                    self.store.canonical.save(invalid)
 
 
 class TestAtomicCommit(GameSwitchTestBase):
@@ -278,8 +301,68 @@ class TestRequestReceipts(GameSwitchTestBase):
 
         with self.assertRaises(InjectedCrash):
             self.store.accept_request(first_id, "start", "nethack", crash_hook=crash)
-        second = self.store.accept_request(str(uuid.uuid4()), "start", "robots")
-        self.assertEqual(second.generation, 2)
+        with self.assertRaises(game_switch.GameSwitchBusyError):
+            self.store.accept_request(str(uuid.uuid4()), "start", "robots")
+        recovered = self.store.accept_request(first_id, "start", "nethack")
+        self.assertTrue(recovered.existing)
+        self.assertEqual(recovered.generation, 1)
+
+    def test_in_progress_canonical_cannot_be_overwritten_by_other_request(self):
+        first_id = str(uuid.uuid4())
+        self.store.accept_request(first_id, "start", "nethack")
+        candidate = _runtime()
+        self.store.canonical.transition(
+            {"validating"},
+            "starting",
+            updates={"candidate": candidate, "next_generation": 2},
+        )
+
+        with self.assertRaises(game_switch.GameSwitchBusyError):
+            self.store.accept_request(str(uuid.uuid4()), "switch", "robots")
+
+        state, _ = self.store.canonical.load()
+        self.assertEqual(state["request_id"], first_id)
+        self.assertEqual(state["phase"], "starting")
+        self.assertEqual(state["candidate"], candidate)
+
+    def test_same_request_retry_does_not_rewind_in_progress_canonical(self):
+        request_id = str(uuid.uuid4())
+        first = self.store.accept_request(request_id, "start", "nethack")
+        candidate = _runtime()
+        self.store.canonical.transition(
+            {"validating"},
+            "starting",
+            updates={"candidate": candidate, "next_generation": 2},
+        )
+
+        retried = self.store.accept_request(request_id, "start", "nethack")
+
+        state, _ = self.store.canonical.load()
+        self.assertTrue(retried.existing)
+        self.assertEqual(retried.generation, first.generation)
+        self.assertEqual(state["phase"], "starting")
+        self.assertEqual(state["candidate"], candidate)
+
+    def test_receipt_save_rejects_invalid_data_before_replace(self):
+        request_id = str(uuid.uuid4())
+        self.store.accept_request(request_id, "start", "nethack")
+        valid = self.store.receipts.load(request_id)
+        self.assertIsNotNone(valid)
+
+        corruptions = (
+            {"status": "typo"},
+            {"status": "succeeded", "result": None},
+            {"status": "accepted", "result": {"unexpected": True}},
+            {"operation": "unknown"},
+            {"runtime_id": "g999-abcdef"},
+        )
+        for updates in corruptions:
+            invalid = dict(valid)
+            invalid.update(updates)
+            with self.subTest(updates=updates):
+                with self.assertRaises(game_switch.StateCorruptError):
+                    self.store.receipts.save(invalid)
+                self.assertEqual(self.store.receipts.load(request_id), valid)
 
     def test_invalid_request_id_cannot_escape_receipt_directory(self):
         with self.assertRaises(NameValidationError):
@@ -288,10 +371,15 @@ class TestRequestReceipts(GameSwitchTestBase):
 
     def test_prune_never_removes_nonterminal_receipts(self):
         ids = [str(uuid.uuid4()) for _ in range(3)]
-        for request_id in ids:
+        for request_id in ids[:2]:
             self.store.accept_request(request_id, "start", "nethack")
-        self.store.finish_request(ids[0], "succeeded", {})
-        self.store.finish_request(ids[1], "failed", {})
+            self.store.finish_request(request_id, "succeeded", {})
+            self.store.canonical.transition(
+                {"validating"},
+                "idle",
+                updates={"operation": None, "request_id": None},
+            )
+        self.store.accept_request(ids[2], "start", "nethack")
         removed = self.store.receipts.prune_terminal(max_receipts=2)
         self.assertEqual(removed, 1)
         self.assertIsNotNone(self.store.receipts.load(ids[2]))

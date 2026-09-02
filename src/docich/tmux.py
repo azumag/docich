@@ -10,7 +10,16 @@ import shlex
 from dataclasses import dataclass
 
 from . import procs
-from .naming import runtime_id_generation, validate_runtime_id, validate_tmux_name, validate_tmux_target
+from .naming import (
+    runtime_id_generation,
+    validate_runtime_id,
+    validate_tmux_name,
+    validate_tmux_session_id,
+    validate_tmux_session_ref,
+    validate_tmux_target,
+    validate_tmux_window_id,
+    validate_tmux_window_ref,
+)
 
 SESSION = "docich"
 
@@ -99,6 +108,41 @@ class Tmux:
         args.append(shlex.join(cmd))
         self._checked(args, "window作成")
 
+    def create_window_owned(
+        self,
+        name: str,
+        cmd: list[str],
+        ownership: TmuxOwnership,
+        env: dict | None = None,
+    ) -> str:
+        """Create, tag and verify a window, rolling back its stable ID on failure."""
+
+        validate_tmux_name(name)
+        args = [
+            "new-window", "-d", "-P", "-F", "#{window_id}",
+            "-t", self.session, "-n", name,
+        ]
+        if env:
+            for key, value in env.items():
+                args += ["-e", f"{key}={value}"]
+        args.append(shlex.join(cmd))
+        result = self._checked(args, "window作成")
+        try:
+            window_id = validate_tmux_window_id(result.stdout.strip())
+        except ValueError as exc:
+            raise TmuxError("tmux window作成の応答IDが不正です") from exc
+        try:
+            self.set_window_ownership(window_id, ownership)
+            actual = self.read_window_ownership(window_id)
+            if actual != ownership:
+                raise OwnershipMismatchError(
+                    f"window ownership検証に失敗しました (expected={ownership}, actual={actual})"
+                )
+        except Exception as exc:
+            self._rollback_created("window", window_id, exc)
+            raise
+        return window_id
+
     def kill_window(self, name: str) -> None:
         # 存在しない window の kill はエラーになるが無視する
         self._run(["kill-window", "-t", f"{self.session}:{name}"])
@@ -125,6 +169,50 @@ class Tmux:
         )
         self._checked(["set-option", "-t", session, "status", "off"], "status設定")
 
+    def create_game_session_owned(
+        self,
+        session: str,
+        cmd: list[str],
+        cols: int,
+        rows: int,
+        ownership: TmuxOwnership,
+    ) -> str:
+        """Create, configure, tag and verify a session as one rollback-safe primitive."""
+
+        validate_tmux_name(session)
+        result = self._checked(
+            [
+                "new-session", "-d", "-P", "-F", "#{session_id}",
+                "-s", session, "-x", str(cols), "-y", str(rows), shlex.join(cmd),
+            ],
+            "session作成",
+        )
+        try:
+            session_id = validate_tmux_session_id(result.stdout.strip())
+        except ValueError as exc:
+            raise TmuxError("tmux session作成の応答IDが不正です") from exc
+        try:
+            self._checked(["set-option", "-t", session_id, "status", "off"], "status設定")
+            self.set_session_ownership(session_id, ownership)
+            actual = self.read_session_ownership(session_id)
+            if actual != ownership:
+                raise OwnershipMismatchError(
+                    f"session ownership検証に失敗しました (expected={ownership}, actual={actual})"
+                )
+        except Exception as exc:
+            self._rollback_created("session", session_id, exc)
+            raise
+        return session_id
+
+    def _rollback_created(self, object_type: str, object_id: str, cause: Exception) -> None:
+        command = "kill-window" if object_type == "window" else "kill-session"
+        result = self._run([command, "-t", object_id])
+        if result.returncode != 0 and not self._target_missing(result.stderr):
+            detail = (result.stderr or "unknown error").replace("\n", " ").strip()[:200]
+            raise TmuxError(
+                f"tmux {object_type}初期化失敗後のrollbackにも失敗しました: {detail}"
+            ) from cause
+
     def set_status_off(self, session: str) -> None:
         self._run(["set-option", "-t", session, "status", "off"])
 
@@ -141,7 +229,7 @@ class Tmux:
         )
 
     def set_window_ownership(self, target: str, ownership: TmuxOwnership) -> None:
-        validate_tmux_target(target)
+        validate_tmux_window_ref(target)
         for option, value in self._ownership_values(ownership):
             self._checked(
                 ["set-option", "-w", "-t", target, option, value],
@@ -149,7 +237,7 @@ class Tmux:
             )
 
     def set_session_ownership(self, session: str, ownership: TmuxOwnership) -> None:
-        validate_tmux_name(session)
+        validate_tmux_session_ref(session)
         for option, value in self._ownership_values(ownership):
             self._checked(
                 ["set-option", "-t", session, option, value],
@@ -165,7 +253,7 @@ class Tmux:
         return result.stdout.strip()
 
     def window_target_exists(self, target: str) -> bool:
-        validate_tmux_target(target)
+        validate_tmux_window_ref(target)
         result = self._run(["display-message", "-p", "-t", target, "#{window_id}"])
         if result.returncode == 0:
             return True
@@ -175,7 +263,7 @@ class Tmux:
         raise TmuxError(f"tmux window存在確認に失敗しました: {detail or 'unknown error'}")
 
     def session_target_exists(self, session: str) -> bool:
-        validate_tmux_name(session)
+        validate_tmux_session_ref(session)
         result = self._run(["has-session", "-t", session])
         if result.returncode == 0:
             return True
@@ -198,7 +286,7 @@ class Tmux:
         )
 
     def read_window_ownership(self, target: str) -> TmuxOwnership:
-        validate_tmux_target(target)
+        validate_tmux_window_ref(target)
         try:
             return TmuxOwnership(
                 runtime_id=self._read_option(target, "@docich_runtime_id", window=True),
@@ -209,7 +297,7 @@ class Tmux:
             raise OwnershipMismatchError("window ownership tagが不正です") from exc
 
     def read_session_ownership(self, session: str) -> TmuxOwnership:
-        validate_tmux_name(session)
+        validate_tmux_session_ref(session)
         try:
             return TmuxOwnership(
                 runtime_id=self._read_option(session, "@docich_runtime_id", window=False),
@@ -220,7 +308,7 @@ class Tmux:
             raise OwnershipMismatchError("session ownership tagが不正です") from exc
 
     def kill_window_owned(self, target: str, expected: TmuxOwnership) -> bool:
-        validate_tmux_target(target)
+        validate_tmux_window_ref(target)
         if not self.window_target_exists(target):
             return False
         actual = self.read_window_ownership(target)
@@ -232,7 +320,7 @@ class Tmux:
         return True
 
     def kill_session_owned(self, session: str, expected: TmuxOwnership) -> bool:
-        validate_tmux_name(session)
+        validate_tmux_session_ref(session)
         if not self.session_target_exists(session):
             return False
         actual = self.read_session_ownership(session)

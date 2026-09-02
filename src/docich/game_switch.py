@@ -210,34 +210,6 @@ def _runtime_generations(state: Mapping[str, object]) -> list[int]:
     return values
 
 
-def _migrate_v1(raw: Mapping[str, object]) -> dict[str, object]:
-    migrated = _initial_state()
-    for key in (
-        "revision",
-        "phase",
-        "operation",
-        "request_id",
-        "active",
-        "candidate",
-        "previous",
-        "last_result",
-        "last_error",
-        "updated_at",
-    ):
-        if key in raw:
-            migrated[key] = copy.deepcopy(raw[key])
-    retiring = raw.get("retiring", [])
-    migrated["retiring"] = copy.deepcopy(retiring)
-    generations = _runtime_generations(migrated)
-    supplied_next = raw.get("next_generation", 1)
-    if not isinstance(supplied_next, int) or isinstance(supplied_next, bool):
-        supplied_next = 1
-    migrated["next_generation"] = max([supplied_next, 1, *[g + 1 for g in generations]])
-    migrated["deadline_at"] = raw.get("deadline_at")
-    migrated["schema_version"] = SCHEMA_VERSION
-    return migrated
-
-
 def _validate_runtime(value: object, label: str) -> None:
     if value is None:
         return
@@ -319,6 +291,13 @@ def validate_state(state: Mapping[str, object]) -> None:
             validate_request_id(request_id)
         except NameValidationError as exc:
             raise StateCorruptError("request_id が不正です") from exc
+    in_progress_phases = PHASES - {"idle", "ready", "failed", "recovery_required"}
+    if phase in in_progress_phases and (operation is None or request_id is None):
+        raise StateCorruptError("進行中phaseにはoperationとrequest_idが必要です")
+    if phase in {"idle", "ready"} and (operation is not None or request_id is not None):
+        raise StateCorruptError("安定phaseではoperationとrequest_idを保持できません")
+    if (operation is None) != (request_id is None):
+        raise StateCorruptError("operationとrequest_idは同時に設定または解除してください")
     next_generation = state.get("next_generation")
     if (
         not isinstance(next_generation, int)
@@ -333,6 +312,21 @@ def validate_state(state: Mapping[str, object]) -> None:
         raise StateCorruptError("retiring はlistである必要があります")
     for index, runtime in enumerate(retiring):
         _validate_runtime(runtime, f"retiring[{index}]")
+    active = state.get("active")
+    candidate = state.get("candidate")
+    previous = state.get("previous")
+    if phase == "idle" and any(value is not None for value in (active, candidate, previous)):
+        raise StateCorruptError("idle phaseはruntimeを保持できません")
+    if phase == "ready" and (active is None or candidate is not None or previous is not None):
+        raise StateCorruptError("ready phaseはactiveだけを保持する必要があります")
+    if phase in {"validating", "stopping"} and candidate is not None:
+        raise StateCorruptError(f"{phase} phaseはcandidateを保持できません")
+    identities: list[tuple[str, int]] = []
+    for runtime in [active, candidate, previous, *retiring]:
+        if isinstance(runtime, dict):
+            identities.append((str(runtime["runtime_id"]), int(runtime["generation"])))
+    if len(identities) != len(set(identities)):
+        raise StateCorruptError("runtime identityが重複しています")
     generations = _runtime_generations(state)
     if generations and next_generation <= max(generations):
         raise StateCorruptError("next_generation が既存generationより先へ進んでいません")
@@ -398,14 +392,10 @@ class CanonicalStateStore:
         if not isinstance(raw, dict):
             raise StateCorruptError("canonical stateはJSON objectである必要があります")
         schema = raw.get("schema_version")
-        migrated = False
-        if schema == 1:
-            raw = _migrate_v1(raw)
-            migrated = True
-        elif schema != SCHEMA_VERSION:
+        if schema != SCHEMA_VERSION:
             raise StateCorruptError("未対応または欠落したgame_switch schemaです")
         validate_state(raw)
-        return raw, migrated
+        return raw, False
 
     def save(
         self,
@@ -464,8 +454,87 @@ def _request_payload_hash(operation: str, target: str | None, payload: Mapping[s
     return hashlib.sha256(encoded).hexdigest()
 
 
+def validate_receipt(
+    receipt: Mapping[str, object],
+    state_dir: Path,
+    *,
+    expected_request_id: str | None = None,
+) -> None:
+    required = {
+        "schema_version",
+        "request_id",
+        "operation",
+        "target",
+        "payload_hash",
+        "generation",
+        "runtime_id",
+        "runtime_dir",
+        "game_window",
+        "agent_window",
+        "adapter_session",
+        "status",
+        "result",
+        "created_at",
+        "updated_at",
+    }
+    missing = sorted(required - receipt.keys())
+    if missing:
+        raise StateCorruptError(f"request receiptに必須項目がありません: {missing}")
+    if receipt.get("schema_version") != RECEIPT_SCHEMA_VERSION:
+        raise StateCorruptError("request receiptのschemaが不正です")
+    try:
+        request_id = validate_request_id(receipt.get("request_id"))
+    except NameValidationError as exc:
+        raise StateCorruptError("request receiptのIDが不正です") from exc
+    if expected_request_id is not None and request_id != validate_request_id(expected_request_id):
+        raise StateCorruptError("request receiptのIDがファイル名と一致しません")
+    try:
+        validate_request(receipt.get("operation"), receipt.get("target"))
+    except NameValidationError as exc:
+        raise StateCorruptError("request receiptのoperation/targetが不正です") from exc
+    generation = receipt.get("generation")
+    if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
+        raise StateCorruptError("request receiptのgenerationが不正です")
+    payload_hash = receipt.get("payload_hash")
+    if (
+        not isinstance(payload_hash, str)
+        or len(payload_hash) != 64
+        or any(ch not in "0123456789abcdef" for ch in payload_hash)
+    ):
+        raise StateCorruptError("request receiptのpayload hashが不正です")
+    try:
+        runtime_id = validate_runtime_id(receipt.get("runtime_id"))
+        names = runtime_names(generation)
+        expected_dir = runtime_directory(Path(state_dir), runtime_id)
+    except (NameValidationError, TypeError) as exc:
+        raise StateCorruptError("request receiptのruntime identityが不正です") from exc
+    if runtime_id_generation(runtime_id) != generation:
+        raise StateCorruptError("request receiptのruntime_idがgenerationと一致しません")
+    if receipt.get("runtime_dir") != str(expected_dir):
+        raise StateCorruptError("request receiptのruntime_dirが不正です")
+    if receipt.get("game_window") != names.game_window:
+        raise StateCorruptError("request receiptのgame_windowが不正です")
+    if receipt.get("agent_window") != names.agent_window:
+        raise StateCorruptError("request receiptのagent_windowが不正です")
+    if receipt.get("adapter_session") != names.adapter_session:
+        raise StateCorruptError("request receiptのadapter_sessionが不正です")
+    status = receipt.get("status")
+    if status not in {"allocating", "accepted", *TERMINAL_RECEIPT_STATUSES}:
+        raise StateCorruptError("request receiptのstatusが不正です")
+    result = receipt.get("result")
+    if status in TERMINAL_RECEIPT_STATUSES:
+        if not isinstance(result, dict):
+            raise StateCorruptError("terminal request receiptにはresult objectが必要です")
+    elif result is not None:
+        raise StateCorruptError("非terminal request receiptのresultはnullである必要があります")
+    for label in ("created_at", "updated_at"):
+        if not isinstance(receipt.get(label), str) or not receipt.get(label):
+            raise StateCorruptError(f"request receiptの{label}が不正です")
+
+
 class RequestReceiptStore:
     def __init__(self, state_dir: Path):
+        self.state_dir = Path(state_dir)
         self.directory = Path(state_dir) / REQUESTS_DIR
 
     def _path(self, request_id: str) -> Path:
@@ -480,49 +549,9 @@ class RequestReceiptStore:
             receipt = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             raise StateCorruptError(f"request receiptを読み込めません: {_safe_detail(exc)}") from exc
-        if not isinstance(receipt, dict) or receipt.get("schema_version") != RECEIPT_SCHEMA_VERSION:
-            raise StateCorruptError("request receiptのschemaが不正です")
-        if receipt.get("request_id") != validate_request_id(request_id):
-            raise StateCorruptError("request receiptのIDがファイル名と一致しません")
-        try:
-            validate_request(receipt.get("operation"), receipt.get("target"))
-        except NameValidationError as exc:
-            raise StateCorruptError("request receiptのoperation/targetが不正です") from exc
-        generation = receipt.get("generation")
-        if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
-            raise StateCorruptError("request receiptのgenerationが不正です")
-        payload_hash = receipt.get("payload_hash")
-        if (
-            not isinstance(payload_hash, str)
-            or len(payload_hash) != 64
-            or any(ch not in "0123456789abcdef" for ch in payload_hash)
-        ):
-            raise StateCorruptError("request receiptのpayload hashが不正です")
-        try:
-            runtime_id = validate_runtime_id(receipt.get("runtime_id"))
-            names = runtime_names(generation)
-            expected_dir = runtime_directory(self.directory.parents[1], runtime_id)
-        except (NameValidationError, TypeError) as exc:
-            raise StateCorruptError("request receiptのruntime identityが不正です") from exc
-        if runtime_id_generation(runtime_id) != generation:
-            raise StateCorruptError("request receiptのruntime_idがgenerationと一致しません")
-        if receipt.get("runtime_dir") != str(expected_dir):
-            raise StateCorruptError("request receiptのruntime_dirが不正です")
-        if receipt.get("game_window") != names.game_window:
-            raise StateCorruptError("request receiptのgame_windowが不正です")
-        if receipt.get("agent_window") != names.agent_window:
-            raise StateCorruptError("request receiptのagent_windowが不正です")
-        if receipt.get("adapter_session") != names.adapter_session:
-            raise StateCorruptError("request receiptのadapter_sessionが不正です")
-        status = receipt.get("status")
-        if status not in {"allocating", "accepted", *TERMINAL_RECEIPT_STATUSES}:
-            raise StateCorruptError("request receiptのstatusが不正です")
-        if receipt.get("result") is not None and not isinstance(receipt.get("result"), dict):
-            raise StateCorruptError("request receiptのresultが不正です")
-        if not isinstance(receipt.get("created_at"), str) or not isinstance(
-            receipt.get("updated_at"), str
-        ):
-            raise StateCorruptError("request receiptのtimestampが不正です")
+        if not isinstance(receipt, dict):
+            raise StateCorruptError("request receiptはJSON objectである必要があります")
+        validate_receipt(receipt, self.state_dir, expected_request_id=request_id)
         return receipt
 
     def save(
@@ -537,6 +566,7 @@ class RequestReceiptStore:
         saved["schema_version"] = RECEIPT_SCHEMA_VERSION
         saved["request_id"] = request_id
         saved["updated_at"] = _utc_now()
+        validate_receipt(saved, self.state_dir, expected_request_id=request_id)
         atomic_write_json(self._path(request_id), saved, crash_hook=crash_hook)
         return saved
 
@@ -741,11 +771,43 @@ class GameSwitchStore:
         existing = self.receipts.load(request_id)
         if existing is not None:
             classified = self._classify_existing(existing, payload_hash)
+            if existing.get("status") in TERMINAL_RECEIPT_STATUSES:
+                return classified
+        canonical_request_id = state.get("request_id")
+        if canonical_request_id is not None and canonical_request_id != request_id:
+            raise GameSwitchBusyError(
+                "別requestの未完了canonical stateがあるため、先に復旧が必要です"
+            )
+        if state.get("phase") in {"failed", "recovery_required"}:
+            raise GameSwitchBusyError("canonical stateの復旧が必要です")
+        if canonical_request_id == request_id and existing is None:
+            raise StateCorruptError("canonical requestに対応するreceiptがありません")
+
+        nonterminal_receipts = [
+            receipt
+            for receipt in self.receipts.receipts()
+            if receipt.get("status") not in TERMINAL_RECEIPT_STATUSES
+            and receipt.get("request_id") != request_id
+        ]
+        if nonterminal_receipts:
+            raise GameSwitchBusyError(
+                "別requestの未完了receiptがあるため、先に復旧が必要です"
+            )
+
+        if existing is not None:
             if state["next_generation"] <= classified.generation:
                 next_state = copy.deepcopy(state)
                 next_state["next_generation"] = classified.generation + 1
                 state = self.canonical.save(next_state)
             if existing.get("status") == "allocating":
+                if canonical_request_id == request_id and state.get("phase") != "validating":
+                    raise StateCorruptError(
+                        "allocating receiptとcanonical phaseを安全にreconcileできません"
+                    )
+                if canonical_request_id is None and state.get("phase") not in {"idle", "ready"}:
+                    raise StateCorruptError(
+                        "allocating receiptとcanonical phaseを安全にreconcileできません"
+                    )
                 next_state = copy.deepcopy(state)
                 next_state.update(
                     {
@@ -759,7 +821,12 @@ class GameSwitchStore:
                 existing["status"] = "accepted"
                 existing = self.receipts.save(existing)
                 classified = self._classify_existing(existing, payload_hash)
+            elif canonical_request_id is None:
+                raise StateCorruptError("accepted receiptに対応するcanonical requestがありません")
             return classified
+
+        if canonical_request_id is not None or state.get("phase") not in {"idle", "ready"}:
+            raise GameSwitchBusyError("未完了canonical stateがあるため、先に復旧が必要です")
 
         generation = max(int(state["next_generation"]), self.receipts.max_generation() + 1)
         runtime_id = new_runtime_id(generation)
