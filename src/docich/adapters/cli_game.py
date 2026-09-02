@@ -177,7 +177,10 @@ class CliCoordinatorAdapter:
 
     def _verify_session_ownership(self) -> None:
         expected = self._ownership("adapter")
-        actual = self.tmux.read_session_ownership(self.spec.adapter_session)
+        try:
+            actual = self.tmux.read_session_ownership(self.spec.adapter_session)
+        except (ValueError, TypeError) as exc:
+            raise OwnershipMismatchError("session ownership tagが不正です") from exc
         if actual != expected:
             raise OwnershipMismatchError(
                 f"session ownershipが一致しません (expected={expected}, actual={actual})"
@@ -185,7 +188,10 @@ class CliCoordinatorAdapter:
 
     def _verify_window_ownership(self, target: str, role: str) -> None:
         expected = self._ownership(role)
-        actual = self.tmux.read_window_ownership(target)
+        try:
+            actual = self.tmux.read_window_ownership(target)
+        except (ValueError, TypeError) as exc:
+            raise OwnershipMismatchError("window ownership tagが不正です") from exc
         if actual != expected:
             raise OwnershipMismatchError(
                 f"window ownershipが一致しません (expected={expected}, actual={actual})"
