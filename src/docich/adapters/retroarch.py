@@ -389,12 +389,24 @@ class RetroArchCoordinatorAdapter:
         while True:
             if cancel is not None and cancel.is_set():
                 raise ReadinessTimeoutError("adapter call はcancelされました")
-            if time.monotonic() >= deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 raise ReadinessTimeoutError("network command port からの応答がありません")
-            reply = send_ra_cmd("GET_STATUS", port=self._network_port())
+            # socket wait は残り時間に束縛し、cancel 中でも最大 RA_READY_POLL_S
+            # で返るようにする (cancel grace 内の収束を保証)。
+            reply = send_ra_cmd(
+                "GET_STATUS",
+                port=self._network_port(),
+                wait_reply_s=min(remaining, RA_READY_POLL_S),
+            )
             if reply is not None:
                 return
-            time.sleep(RA_READY_POLL_S)
+            wait_s = min(remaining, RA_READY_POLL_S)
+            if cancel is not None:
+                if cancel.wait(wait_s):
+                    raise ReadinessTimeoutError("adapter call はcancelされました")
+            else:
+                time.sleep(wait_s)
 
     def alive(self, deadline: float, cancel) -> bool:
         self._check_active(deadline, cancel)
