@@ -17,9 +17,9 @@ _REGISTRY = {
 }
 
 # P2: runtime-aware adapters for the GameSwitchCoordinator (design v2 §4).
-# retroarch/browser は P2 後半スライスで追加する。
 _COORDINATOR_REGISTRY = {
     "cli": "docich.adapters.cli_game:CliCoordinatorAdapter",
+    "browser": "docich.adapters.browser:BrowserCoordinatorAdapter",
 }
 
 
