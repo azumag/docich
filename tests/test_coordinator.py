@@ -3,6 +3,7 @@ crash boundaries over the P0 store with fake replace-mode adapters."""
 
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import uuid
@@ -68,6 +69,7 @@ class FakeRuntime:
         self.cleaned = False
         self.agent_started = False
         self.agent_stopped = False
+        self.agent_lease = None
         self.events = []
 
 
@@ -89,12 +91,19 @@ class FakeAdapter:
         else:
             raise value
 
-    def preflight(self):
+    def _maybe_hang(self, key):
+        value = self.behavior.get(key)
+        if value is not None:
+            value.wait()
+
+    def preflight(self, deadline):
+        self._maybe_hang("hang_preflight")
         self._maybe_fail("preflight_error")
 
-    def materialize_runtime(self):
+    def materialize_runtime(self, deadline):
+        self._maybe_hang("hang_materialize")
         self._maybe_fail("materialize_error")
-        if not self.runtime.materialized:
+        if not self.runtime.materialized and not self.runtime.cleaned:
             self.runtime.materialized = True
             self.runtime.alive = True
             self.runtime.events.append("materialize")
@@ -107,10 +116,12 @@ class FakeAdapter:
             raise game_switch.ReadinessTimeoutError("runtime dead before ready")
         self.runtime.events.append("readiness")
 
-    def alive(self):
+    def alive(self, deadline):
+        self._maybe_fail("alive_error")
         return self.runtime.materialized and self.runtime.alive and not self.runtime.cleaned
 
-    def cleanup_runtime(self):
+    def cleanup_runtime(self, deadline):
+        self._maybe_hang("hang_cleanup")
         self._maybe_fail("cleanup_error")
         if self.behavior.get("immortal"):
             return
@@ -119,19 +130,26 @@ class FakeAdapter:
             self.runtime.cleaned = True
             self.runtime.events.append("cleanup")
 
-    def start_agent(self):
+    def start_agent(self, deadline):
+        self._maybe_hang("hang_agent_start")
         self._maybe_fail("agent_start_error")
         self.runtime.agent_started = True
+        self.runtime.agent_lease = self.spec.lease_id
         self.runtime.events.append("agent_start")
 
-    def stop_agent(self):
+    def stop_agent(self, deadline):
         self._maybe_fail("agent_stop_error")
         self.runtime.agent_stopped = True
         self.runtime.events.append("agent_stop")
 
 
 class FakeAdapterFactory:
-    """Resolves ``(game, generation)`` to one persistent adapter instance."""
+    """Resolves ``(game, generation)`` to one persistent adapter instance.
+
+    Re-calling with the same identity refreshes the bound spec (the real
+    factory would construct an adapter for that spec), so a re-issued lease
+    is observable through the adapter.
+    """
 
     def __init__(self, behaviors):
         self.behaviors = behaviors
@@ -143,6 +161,8 @@ class FakeAdapterFactory:
         key = (spec.game, spec.generation)
         if key not in self.adapters:
             self.adapters[key] = FakeAdapter(spec, self.behaviors[spec.game], FakeRuntime(spec))
+        else:
+            self.adapters[key].spec = spec
         return self.adapters[key]
 
     def adapter(self, game, generation):
@@ -181,6 +201,14 @@ class CoordinatorTestBase(unittest.TestCase):
             quiesce_verify_timeout_s=0.3,
             poll_interval_s=0.01,
             default_timeout_s=60,
+            step_timeouts=game_switch.StepTimeouts(
+                preflight_s=2.0,
+                stop_agent_s=2.0,
+                start_s=2.0,
+                agent_start_s=2.0,
+                cleanup_s=2.0,
+                probe_s=0.5,
+            ),
         )
 
     def tearDown(self):
@@ -204,6 +232,17 @@ class CoordinatorTestBase(unittest.TestCase):
                 count["n"] += 1
                 if count["n"] == n:
                     raise InjectedCrash(f"replace#{n}")
+
+        return hook
+
+    def _crash_on_fsync(self, n):
+        count = {"n": 0}
+
+        def hook(stage, _path):
+            if stage == "after_file_fsync":
+                count["n"] += 1
+                if count["n"] == n:
+                    raise InjectedCrash(f"fsync#{n}")
 
         return hook
 
@@ -272,7 +311,10 @@ class TestSwitch(CoordinatorTestBase):
         self.assertEqual(self.mirror_text(), "robots")
         old = self.factory.adapter("nethack", 1)
         new = self.factory.adapter("robots", 2)
-        self.assertEqual(old.runtime.events, ["materialize", "readiness", "agent_start", "agent_stop", "cleanup"])
+        self.assertEqual(
+            old.runtime.events,
+            ["materialize", "readiness", "agent_start", "agent_stop", "cleanup", "agent_stop"],
+        )
         self.assertEqual(new.runtime.events, ["materialize", "readiness", "agent_start"])
         self.assertEqual(old.runtime.events.index("agent_stop") < old.runtime.events.index("cleanup"), True)
 
@@ -410,6 +452,7 @@ class TestFailureRollback(CoordinatorTestBase):
     def test_preflight_failure_keeps_previous_alive_with_new_lease(self):
         self.behaviors["robots"]["preflight_error"] = AdapterError("preflight boom")
         self.coordinator.start("nethack")
+        original_lease = self.canonical()["active"]["lease_id"]
         result = self.coordinator.switch("robots")
         self.assertEqual(result.status, "rolled_back")
         state = self.canonical()
@@ -421,7 +464,11 @@ class TestFailureRollback(CoordinatorTestBase):
         self.assertEqual(receipt["status"], "rolled_back")
         old = self.factory.adapter("nethack", 1)
         self.assertEqual(old.runtime.events.count("agent_start"), 2)
-        self.assertNotEqual(state["active"]["lease_id"], old.spec.lease_id)
+        # The canonical lease and the agent's bound lease must agree, and
+        # both must differ from the pre-rollback lease.
+        self.assertNotEqual(state["active"]["lease_id"], original_lease)
+        self.assertEqual(state["active"]["lease_id"], old.spec.lease_id)
+        self.assertEqual(old.runtime.agent_lease, state["active"]["lease_id"])
         self.assertEqual(self.mirror_text(), "nethack")
 
     def test_materialize_failure_restarts_previous_with_new_generation(self):
@@ -447,6 +494,11 @@ class TestFailureRollback(CoordinatorTestBase):
         state = self.canonical()
         self.assertEqual(state["active"]["game"], "nethack")
         self.assertEqual(state["active"]["generation"], 3)
+        restored = self.factory.adapter("nethack", 3)
+        # The canonical lease must be the one the restored agent was bound to.
+        self.assertEqual(state["active"]["lease_id"], restored.spec.lease_id)
+        self.assertEqual(restored.runtime.agent_lease, state["active"]["lease_id"])
+        self.assertEqual(restored.runtime.events, ["materialize", "readiness", "agent_start"])
 
     def test_agent_start_failure_restarts_previous(self):
         self.behaviors["robots"]["agent_start_error"] = AdapterError("agent boom")
@@ -572,6 +624,186 @@ class TestCleanupPending(CoordinatorTestBase):
         state = self.canonical()
         self.assertEqual(state["retiring"], [])
         self.assertEqual(self.mirror_text(), "robots")
+
+
+class TestRuntimeTracking(CoordinatorTestBase):
+    def test_candidate_agent_is_never_orphaned_on_rollback(self):
+        """Crash after the candidate agent started: the retry's rollback must
+        stop the candidate agent as well as the game."""
+        request_id = str(uuid.uuid4())
+        self.coordinator.start("nethack")
+        # Switch: preparing#1, quiescing#2, starting#3, probing#4, commit#5.
+        # Crash inside the commit write (before replace) leaves the candidate
+        # materialized with its agent running in the probing phase.
+        self.coordinator.crash_hook = self._crash_on_fsync(5)
+        with self.assertRaises(InjectedCrash):
+            self.coordinator.switch("robots", request_id=request_id)
+        candidate = self.factory.adapter("robots", 2)
+        self.assertEqual(self.canonical()["phase"], "probing")
+        self.assertEqual(candidate.runtime.events, ["materialize", "readiness", "agent_start"])
+        self.assertTrue(candidate.runtime.alive)
+
+        self.coordinator.crash_hook = None
+        retried = self.coordinator.switch("robots", request_id=request_id)
+        self.assertEqual(retried.status, "rolled_back")
+        self.assertEqual(self.canonical()["active"]["game"], "nethack")
+        self.assertFalse(candidate.runtime.alive)
+        self.assertEqual(candidate.runtime.events[-2:], ["agent_stop", "cleanup"])
+
+    def test_alive_probe_exception_keeps_active_and_fails_closed(self):
+        state, _ = self.store.canonical.load()
+        active = _runtime_dict(2, "robots")
+        state.update(
+            {
+                "phase": "ready",
+                "active": active,
+                "next_generation": 3,
+                "last_result": {
+                    "request_id": str(uuid.uuid4()),
+                    "operation": "switch",
+                    "status": "succeeded",
+                    "from_game": "nethack",
+                    "to_game": "robots",
+                    "generation": 2,
+                },
+            }
+        )
+        self.store.canonical.save(state)
+        adapter = self.factory(game_switch.RuntimeSpec.from_runtime(self.state_dir, active))
+        adapter.runtime.materialized = True
+        adapter.runtime.alive = True
+        self.behaviors["robots"]["alive_error"] = AdapterError("probe boom")
+
+        result = self.coordinator.recover()
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, game_switch.ERROR_PROBE_FAILED)
+        state = self.canonical()
+        self.assertEqual(state["phase"], "ready")
+        self.assertEqual(state["active"]["game"], "robots")
+        self.assertIsNotNone(state["active"])
+
+    def test_stop_immortal_fails_closed_without_losing_runtime(self):
+        self.behaviors["nethack"]["immortal"] = True
+        self.coordinator.start("nethack")
+        result = self.coordinator.stop()
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, game_switch.ERROR_QUIESCE_FAILED)
+        state = self.canonical()
+        self.assertEqual(state["phase"], "failed")
+        self.assertEqual(state["active"]["game"], "nethack")
+        self.assertEqual(self.mirror_text(), "nethack")
+
+    def test_stop_recovery_requires_stop_confirmation(self):
+        request_id = str(uuid.uuid4())
+        self.behaviors["nethack"]["immortal"] = True
+        self.coordinator.start("nethack")
+        self.coordinator.crash_hook = self._crash_on_replace(1)
+        with self.assertRaises(InjectedCrash):
+            self.coordinator.stop(request_id=request_id)
+        self.coordinator.crash_hook = None
+        self.assertEqual(self.canonical()["phase"], "quiescing")
+
+        retried = self.coordinator.stop(request_id=request_id)
+        self.assertEqual(retried.status, "failed")
+        state = self.canonical()
+        self.assertEqual(state["phase"], "failed")
+        self.assertEqual(state["active"]["game"], "nethack")
+
+        recovered = self.coordinator.recover()
+        self.assertEqual(recovered.status, "failed")
+        state = self.canonical()
+        self.assertEqual(state["phase"], "failed")
+        self.assertEqual(state["active"]["game"], "nethack")
+        self.assertIsNotNone(state["active"])
+
+
+class TestRequestContract(CoordinatorTestBase):
+    def test_restart_same_request_resend_returns_terminal(self):
+        request_id = str(uuid.uuid4())
+        self.coordinator.start("nethack")
+        first = self.coordinator.restart(request_id=request_id)
+        self.assertEqual(first.status, "succeeded")
+        next_generation = self.canonical()["next_generation"]
+        second = self.coordinator.restart(request_id=request_id)
+        self.assertEqual(second.status, "succeeded")
+        self.assertEqual(second.request_id, request_id)
+        self.assertEqual(second.generation, first.generation)
+        self.assertEqual(second.to_game, "nethack")
+        self.assertEqual(self.canonical()["next_generation"], next_generation)
+        self.assertEqual(len(self.store.receipts.receipts()), 2)
+
+    def test_restart_crash_resend_converges_to_terminal(self):
+        request_id = str(uuid.uuid4())
+        self.coordinator.start("nethack")
+        self.coordinator.crash_hook = self._crash_on_replace(2)
+        with self.assertRaises(InjectedCrash):
+            self.coordinator.restart(request_id=request_id)
+        self.coordinator.crash_hook = None
+
+        retried = self.coordinator.restart(request_id=request_id)
+        self.assertIn(retried.status, {"rolled_back", "succeeded"})
+        self.assertEqual(self.canonical()["phase"], "ready")
+        receipt = self.store.receipts.load(request_id)
+        self.assertIn(receipt["status"], game_switch.TERMINAL_RECEIPT_STATUSES)
+
+    def test_rotate_same_request_with_different_games_is_conflict(self):
+        request_id = str(uuid.uuid4())
+        first = self.coordinator.rotate(["nethack", "robots"], request_id=request_id)
+        self.assertEqual(first.status, "succeeded")
+        conflict = self.coordinator.rotate(["nethack", "hanjuku"], request_id=request_id)
+        self.assertEqual(conflict.status, "request_conflict")
+        self.assertEqual(conflict.error_code, game_switch.ERROR_REQUEST_CONFLICT)
+        resend = self.coordinator.rotate(["nethack", "robots"], request_id=request_id)
+        self.assertEqual(resend.status, "succeeded")
+        self.assertEqual(resend.to_game, first.to_game)
+        self.assertEqual(self.canonical()["next_generation"], resend.generation + 1)
+
+
+class TestAdapterTimeouts(CoordinatorTestBase):
+    def _hanging_coordinator(self):
+        return game_switch.GameSwitchCoordinator(
+            self.store,
+            self.factory,
+            quiesce_verify_timeout_s=0.3,
+            poll_interval_s=0.01,
+            default_timeout_s=60,
+            step_timeouts=game_switch.StepTimeouts(
+                preflight_s=2.0,
+                stop_agent_s=2.0,
+                start_s=0.2,
+                agent_start_s=2.0,
+                cleanup_s=2.0,
+                probe_s=0.5,
+            ),
+        )
+
+    def test_adapter_call_timeout_rolls_back_and_releases_lock(self):
+        self.behaviors["nethack"]["hang_materialize"] = threading.Event()
+        coordinator = self._hanging_coordinator()
+        started = time.monotonic()
+        result = coordinator.start("nethack")
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 2.0, "adapter hang must not hold the lock")
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, game_switch.ERROR_TIMEOUT)
+        self.assertEqual(self.canonical()["phase"], "failed")
+
+        # The exclusive lock was released: recovery and a fresh start work.
+        self.behaviors["nethack"].pop("hang_materialize")
+        recovered = coordinator.recover()
+        self.assertEqual(recovered.status, "succeeded")
+        self.coordinator.start("robots")
+        self.assertEqual(self.canonical()["active"]["game"], "robots")
+
+    def test_hung_readiness_obeys_request_deadline(self):
+        self.behaviors["robots"]["hang_preflight"] = threading.Event()
+        coordinator = self._hanging_coordinator()
+        started = time.monotonic()
+        result = coordinator.start("robots", timeout_s=0.2)
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 2.0)
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, game_switch.ERROR_TIMEOUT)
 
 
 class TestMirror(CoordinatorTestBase):
