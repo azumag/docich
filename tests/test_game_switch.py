@@ -119,6 +119,27 @@ class TestCanonicalState(GameSwitchTestBase):
                 with self.assertRaises(game_switch.StateCorruptError):
                     self.store.canonical.save(invalid)
 
+    def test_same_generation_with_different_runtime_id_is_rejected(self):
+        self.store.initialize()
+        state, _ = self.store.canonical.load()
+        request_id = str(uuid.uuid4())
+        active = _runtime(1, "nethack")
+        candidate = _runtime(1, "robots")
+        candidate["runtime_id"] = "g1-bbbbbb"
+        state.update(
+            {
+                "phase": "starting",
+                "operation": "switch",
+                "request_id": request_id,
+                "active": active,
+                "candidate": candidate,
+                "next_generation": 2,
+            }
+        )
+
+        with self.assertRaises(game_switch.StateCorruptError):
+            self.store.canonical.save(state)
+
 
 class TestAtomicCommit(GameSwitchTestBase):
     def setUp(self):
