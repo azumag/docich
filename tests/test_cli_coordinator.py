@@ -315,6 +315,164 @@ class TestCompatLayer(CliCoordinatorTestBase):
         self.assertEqual(ra_mock.call_args.kwargs["port"], 55358)
 
 
+class TestStartResendWhileSwitchInProgress(CliCoordinatorTestBase):
+    def test_start_resend_converges_to_in_progress_switch(self):
+        import uuid
+
+        from docich.game_switch import GameSwitchLock
+
+        self._call(cli.cmd_start, "nethack")
+        request_id = "12345678-1234-5678-1234-567812345678"
+        robots = self.root / "config" / "games" / "robots.toml"
+        robots.write_text(
+            '[game]\nname = "robots"\nadapter = "cli"\n\n[cli]\ncommand = "robots"\n',
+            encoding="utf-8",
+        )
+        store = GameSwitchStore(self.g.state_dir)
+        store.accept_request(request_id, "switch", "robots")
+        held = GameSwitchLock(self.g.state_dir).acquire(exclusive=True)
+        try:
+            with self._coordinator_adapter_tmux(), self._display_tmux():
+                rc = cli.cmd_start(self.g, "robots", request_id=request_id)
+        finally:
+            held.release()
+        # in_progress (1), not request_conflict (2)
+        self.assertEqual(rc, 1)
+
+    def test_start_resend_converges_to_terminal_switch(self):
+        import uuid
+
+        from docich.game_switch import GameSwitchLock
+
+        self._call(cli.cmd_start, "nethack")
+        request_id = "12345678-1234-5678-1234-567812345678"
+        robots = self.root / "config" / "games" / "robots.toml"
+        robots.write_text(
+            '[game]\nname = "robots"\nadapter = "cli"\n\n[cli]\ncommand = "robots"\n',
+            encoding="utf-8",
+        )
+        with mock.patch(
+            "docich.adapters.cli_game.procs.which", return_value="/usr/games/robots"
+        ):
+            with self._coordinator_adapter_tmux(), self._display_tmux():
+                rc = cli.cmd_start(self.g, "robots", request_id=request_id)
+        self.assertEqual(rc, 0)
+        held = GameSwitchLock(self.g.state_dir).acquire(exclusive=True)
+        try:
+            with self._coordinator_adapter_tmux(), self._display_tmux():
+                rc = cli.cmd_start(self.g, "robots", request_id=request_id)
+        finally:
+            held.release()
+        self.assertEqual(rc, 0)
+
+
+class TestNeedsWriteReads(CliCoordinatorTestBase):
+    def _runtime(self, generation, game):
+        from docich.naming import runtime_names
+
+        names = runtime_names(generation)
+        return {
+            "game": game,
+            "adapter": "cli",
+            "generation": generation,
+            "runtime_id": f"g{generation}-abcdef",
+            "lease_id": "12345678-1234-5678-1234-567812345678",
+            "game_window": names.game_window,
+            "agent_window": names.agent_window,
+            "adapter_session": names.adapter_session,
+            "started_at": "2026-09-03T00:00:00Z",
+        }
+
+    def test_omitted_game_resolution_prefers_canonical_active(self):
+        self._call(cli.cmd_start, "nethack")
+        # stale mirror pointing elsewhere must not win over canonical active
+        (self.g.state_dir / "current_game").write_text("robots\n", encoding="utf-8")
+        seen = {}
+
+        def fake_make_adapter(g, game, **kwargs):
+            seen["game"] = game.name
+            from docich.adapters import base
+
+            class FakeAdapter:
+                name = "cli"
+
+                def observe(self):
+                    return base.Observation(
+                        game=game.name, title="", adapter="cli", ts=0.0, kind="text", text="s"
+                    )
+
+            return FakeAdapter()
+
+        with mock.patch("docich.cli.make_adapter", side_effect=fake_make_adapter):
+            rc = cli.cmd_obs(self.g, None)
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen["game"], "nethack")
+
+    def test_omitted_game_falls_back_to_mirror_without_canonical(self):
+        state = cli.State(self.g)
+        state.set_current_game("nethack")
+        seen = {}
+
+        def fake_make_adapter(g, game, **kwargs):
+            seen["game"] = game.name
+            from docich.adapters import base
+
+            class FakeAdapter:
+                name = "cli"
+
+                def observe(self):
+                    return base.Observation(
+                        game=game.name, title="", adapter="cli", ts=0.0, kind="text", text="s"
+                    )
+
+            return FakeAdapter()
+
+        with mock.patch("docich.cli.make_adapter", side_effect=fake_make_adapter):
+            rc = cli.cmd_obs(self.g, None)
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen["game"], "nethack")
+
+    def test_rotate_dry_run_ignores_stale_mirror_when_canonical_idle(self):
+        path = self.root / "docich.toml"
+        path.write_text('[rotation]\ngames = ["nethack", "hanjuku-hero"]\n', encoding="utf-8")
+        g = config.load_global(self.root, config_path=path)
+        self._call(cli.cmd_start, "nethack")
+        self._call(cli.cmd_stop)
+        # canonical file exists (idle) but mirror is stale
+        (self.g.state_dir / "current_game").write_text("hanjuku-hero\n", encoding="utf-8")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = cli.cmd_rotate(g, True)
+        self.assertEqual(rc, 0)
+        self.assertIn("nethack", out.getvalue())  # current=None -> games[0]
+
+    def test_corrupt_canonical_is_cli_error(self):
+        (self.g.state_dir).mkdir(parents=True, exist_ok=True)
+        (self.g.state_dir / "game_switch.json").write_text("{broken", encoding="utf-8")
+        with self.assertRaises(cli.CliError):
+            cli.cmd_obs(self.g, None)
+
+    def test_send_clears_stale_session_binding_on_mismatch(self):
+        import os
+
+        self._call(cli.cmd_start, "nethack")
+        (self.root / "config" / "games" / "robots.toml").write_text(
+            '[game]\nname = "robots"\nadapter = "cli"\n\n[cli]\ncommand = "robots"\n',
+            encoding="utf-8",
+        )
+        real_env = dict(os.environ)
+        os.environ["DOCICH_GAME_SESSION"] = "docich-game-g1"
+        try:
+            with mock.patch("docich.cli.make_adapter") as make_mock:
+                make_mock.side_effect = AssertionError("should not be called")
+                with self.assertRaises(AssertionError):
+                    cli.cmd_send(self.g, "robots", '{"type":"wait","ms":1}')
+            self.assertNotIn("DOCICH_GAME_SESSION", os.environ)
+        finally:
+            os.environ.clear()
+            os.environ.update(real_env)
+
+
 class TestCmdRotate(CliCoordinatorTestBase):
     def _write_rotation(self, games):
         literal = ", ".join(f'"{name}"' for name in games)
