@@ -1,3 +1,4 @@
+import hashlib
 import io
 import subprocess
 import sys
@@ -204,6 +205,89 @@ class TestCheckFreeze(WatchdogConfigTestBase):
             detector = watchdog.FreezeDetector(g.watchdog.freeze_cycles)
             # 例外を外へ漏らさず完了することを確認する (digest=None として feed する)。
             watchdog._check_freeze(g, state, tmux, xkit, detector, Path(tmp) / "frame.png")
+
+
+class TestFreezeTargets(unittest.TestCase):
+    """watchdog._freeze_targets: canonical active があれば世代別 window、
+    無ければ legacy (固定 window + mirror) にフォールバックする。"""
+
+    def _write_config(self, tmp: Path) -> Path:
+        toml_path = tmp / "docich.toml"
+        toml_path.write_text(
+            "[paths]\n"
+            f'state_dir = "{tmp / "run"}"\n'
+            f'games_dir = "{tmp / "games"}"\n'
+            f'roms_dir = "{tmp / "roms"}"\n',
+            encoding="utf-8",
+        )
+        return toml_path
+
+    def test_legacy_fallback_without_canonical(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            toml_path = self._write_config(tmp_path)
+            g = config.load_global(tmp_path, config_path=toml_path)
+            state = State(g)
+            state.set_current_game("nethack")
+            current, game_window, agent_window = watchdog._freeze_targets(g, state)
+            self.assertEqual((current, game_window, agent_window), ("nethack", "game", "agent"))
+
+    def test_generation_windows_when_canonical_active(self):
+        import uuid
+
+        from docich.game_switch import GameSwitchStore
+        from docich.naming import runtime_names
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            toml_path = self._write_config(tmp_path)
+            g = config.load_global(tmp_path, config_path=toml_path)
+            state = State(g)
+            names = runtime_names(2)
+            store = GameSwitchStore(g.state_dir)
+            canonical, _ = store.canonical.load()
+            canonical.update(
+                {
+                    "phase": "ready",
+                    "active": {
+                        "game": "robots",
+                        "adapter": "cli",
+                        "generation": 2,
+                        "runtime_id": "g2-abcdef",
+                        "lease_id": str(uuid.uuid4()),
+                        "game_window": names.game_window,
+                        "agent_window": names.agent_window,
+                        "adapter_session": names.adapter_session,
+                        "started_at": "2026-09-03T00:00:00Z",
+                    },
+                    "next_generation": 3,
+                }
+            )
+            store.canonical.save(canonical)
+            current, game_window, agent_window = watchdog._freeze_targets(g, state)
+            self.assertEqual((current, game_window, agent_window), ("robots", "game-g2", "agent-g2"))
+
+    def test_freeze_detection_triggers_on_generation_windows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            toml_path = self._write_config(tmp_path)
+            g = config.load_global(tmp_path, config_path=toml_path)
+            state = State(g)
+            tmux = mock.MagicMock()
+            # legacy "game"/"agent" は存在せず、世代別 window だけがある
+            tmux.has_window.side_effect = lambda name: name in ("game-g2", "agent-g2")
+            xkit = mock.MagicMock()
+            digest = hashlib.sha256(b"frame").hexdigest()
+            frame_path = tmp_path / "frame.png"
+            frame_path.write_bytes(b"frame")
+            xkit.screenshot.side_effect = lambda *a: frame_path
+            detector = mock.MagicMock()
+            detector.feed.return_value = False
+            from unittest.mock import patch as _patch
+
+            with _patch("docich.watchdog._freeze_targets", return_value=("robots", "game-g2", "agent-g2")):
+                watchdog._check_freeze(g, state, tmux, xkit, detector, frame_path)
+            self.assertTrue(detector.feed.called)
 
 
 class TestCmdRotate(unittest.TestCase):

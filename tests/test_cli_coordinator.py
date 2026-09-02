@@ -154,6 +154,28 @@ class TestCmdStart(CliCoordinatorTestBase):
         self.assertEqual(state["active"]["game"], "robots")
         self.assertEqual(state["active"]["generation"], 2)
 
+    def test_start_switch_fallback_reuses_resolved_request_id(self):
+        request_id = "12345678-1234-5678-1234-567812345678"
+        start_result = cli.SwitchResult(
+            request_id=request_id, operation="start", status="failed",
+            target="robots", from_game="nethack", to_game="robots",
+            generation=1, error_code=cli.ERROR_ALREADY_ACTIVE, detail=None,
+            warnings=(), cleanup_pending=False, receipt=None,
+        )
+        with mock.patch("docich.cli._coordinator") as coordinator_mock, \
+                mock.patch("docich.cli.Tmux"):
+            coordinator_mock.return_value.start.return_value = start_result
+            coordinator_mock.return_value.switch.return_value = cli.SwitchResult(
+                request_id=request_id, operation="switch", status="succeeded",
+                target="robots", from_game="nethack", to_game="robots",
+                generation=2, error_code=None, detail=None,
+                warnings=(), cleanup_pending=False, receipt=None,
+            )
+            rc = cli.cmd_start(self.g, "robots", request_id=request_id)
+        self.assertEqual(rc, 0)
+        switch_kwargs = coordinator_mock.return_value.switch.call_args
+        self.assertEqual(switch_kwargs.kwargs["request_id"], request_id)
+
     def test_start_unknown_game_returns_2(self):
         rc, _out, err = self._call(cli.cmd_start, "nosuchgame")
         self.assertEqual(rc, 2)
@@ -199,6 +221,98 @@ class TestCmdStop(CliCoordinatorTestBase):
     def test_stop_when_idle_is_noop(self):
         rc, _out, _err = self._call(cli.cmd_stop)
         self.assertEqual(rc, 0)
+
+
+class TestCmdDown(CliCoordinatorTestBase):
+    def test_down_does_not_kill_session_when_stop_is_busy(self):
+        busy = cli.SwitchResult(
+            request_id="r", operation="stop", status="busy",
+            target=None, from_game=None, to_game=None,
+            generation=None, error_code="busy", detail=None,
+            warnings=(), cleanup_pending=False, receipt=None,
+        )
+        tmux = mock.Mock()
+        with mock.patch("docich.cli._coordinator") as coordinator_mock, \
+                mock.patch("docich.cli.Tmux", return_value=tmux):
+            coordinator_mock.return_value.stop.return_value = busy
+            rc = cli.cmd_down(self.g)
+        self.assertEqual(rc, 1)
+        tmux.kill_session.assert_not_called()
+
+    def test_down_runs_stop_then_kills_session(self):
+        self._call(cli.cmd_start, "nethack")
+        tmux = mock.Mock()
+        with self._coordinator_adapter_tmux(), \
+                mock.patch("docich.cli.Tmux") as tmux_class:
+            tmux_class.return_value = tmux
+            out = io.StringIO()
+            with redirect_stdout(out):
+                rc = cli.cmd_down(self.g)
+        self.assertEqual(rc, 0)
+        tmux.kill_session.assert_called_once()
+        self.assertEqual(self._canonical()["phase"], "idle")
+
+
+class TestCompatLayer(CliCoordinatorTestBase):
+    def test_obs_binds_active_generation_session(self):
+        self._call(cli.cmd_start, "nethack")
+        seen = {}
+        real_env = dict(__import__("os").environ)
+
+        def fake_make_adapter(g, game, **kwargs):
+            seen["env"] = __import__("os").environ.get("DOCICH_GAME_SESSION")
+            from docich.adapters import base
+
+            class FakeAdapter:
+                name = "cli"
+
+                def observe(self):
+                    return base.Observation(
+                        game=game.name, title="", adapter="cli", ts=0.0, kind="text", text="screen"
+                    )
+
+            return FakeAdapter()
+
+        try:
+            with mock.patch("docich.cli.make_adapter", side_effect=fake_make_adapter):
+                rc = cli.cmd_obs(self.g, "nethack")
+            self.assertEqual(rc, 0)
+            self.assertEqual(seen["env"], "docich-game-g1")
+        finally:
+            __import__("os").environ.clear()
+            __import__("os").environ.update(real_env)
+
+    def test_ra_cmd_uses_derived_port_for_retroarch_active(self):
+        import uuid
+
+        from docich.naming import runtime_names
+
+        names = runtime_names(3)
+        store = GameSwitchStore(self.g.state_dir)
+        state, _ = store.canonical.load()
+        state.update(
+            {
+                "phase": "ready",
+                "active": {
+                    "game": "hanjuku-hero",
+                    "adapter": "retroarch",
+                    "generation": 3,
+                    "runtime_id": "g3-abcdef",
+                    "lease_id": str(uuid.uuid4()),
+                    "game_window": names.game_window,
+                    "agent_window": names.agent_window,
+                    "adapter_session": names.adapter_session,
+                    "started_at": "2026-09-03T00:00:00Z",
+                },
+                "next_generation": 4,
+            }
+        )
+        store.canonical.save(state)
+        with mock.patch("docich.cli.send_ra_cmd", return_value="OK") as ra_mock:
+            rc = cli.cmd_ra_cmd(self.g, ["GET_STATUS"])
+        self.assertEqual(rc, 0)
+        # 55355 + 3 (generation-derived)
+        self.assertEqual(ra_mock.call_args.kwargs["port"], 55358)
 
 
 class TestCmdRotate(CliCoordinatorTestBase):
