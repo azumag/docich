@@ -1961,6 +1961,29 @@ class GameSwitchCoordinator:
             time.sleep(self.poll_interval_s)
         return self._probe_alive(adapter, deadline) is False
 
+    def _teardown_runtime(self, adapter: CoordinatorAdapter, deadline: float) -> bool:
+        """Stop agent and game, then confirm the runtime is actually gone.
+
+        A cleanup that returns without raising is not enough: the runtime
+        must be observed dead before the coordinator drops it from tracking.
+        """
+        try:
+            self._call_adapter(
+                lambda cancel: adapter.stop_agent(deadline, cancel),
+                deadline,
+                self.step_timeouts.stop_agent_s,
+                "stop_agent",
+            )
+            self._call_adapter(
+                lambda cancel: adapter.cleanup_runtime(deadline, cancel),
+                deadline,
+                self.step_timeouts.cleanup_s,
+                "cleanup",
+            )
+            return self._wait_stopped(adapter, deadline)
+        except Exception:
+            return False
+
     # --- stop ---------------------------------------------------------------
 
     def _stop_locked(
@@ -2090,22 +2113,12 @@ class GameSwitchCoordinator:
                 adapter = self._make_adapter(
                     RuntimeSpec.from_runtime(self.store.state_dir, candidate), deadline
                 )
-                # Never leave a candidate agent running after rollback.
-                self._call_adapter(
-                    lambda cancel: adapter.stop_agent(deadline, cancel),
-                    deadline,
-                    self.step_timeouts.stop_agent_s,
-                    "stop_agent",
-                )
-                self._call_adapter(
-                    lambda cancel: adapter.cleanup_runtime(deadline, cancel),
-                    deadline,
-                    self.step_timeouts.cleanup_s,
-                    "cleanup",
-                )
+                torn_down = self._teardown_runtime(adapter, deadline)
             except Exception as exc:
+                torn_down = False
+            if not torn_down:
                 cleanup_pending = True
-                warnings.append(f"candidate cleanup失敗: {_safe_detail(exc)}")
+                warnings.append("candidateの停止を確認できませんでした")
                 # Keep the un-cleanable runtime durably tracked so recovery
                 # retries it; otherwise the restore commit would forget it.
                 tx.transition(
@@ -2227,6 +2240,18 @@ class GameSwitchCoordinator:
                     # runtime whose agent is gone.
                     warnings.append(f"agent再起動失敗: {_safe_detail(exc)}")
                     return None
+            # The runtime was quiescing: a living process is not necessarily a
+            # ready game.  Require readiness before re-publishing it as active.
+            try:
+                self._call_adapter(
+                    lambda cancel: previous_adapter.readiness(deadline, cancel),
+                    deadline,
+                    max(deadline - time.monotonic(), 0.0),
+                    "readiness",
+                )
+            except Exception as exc:
+                warnings.append(f"previous readiness確認失敗: {_safe_detail(exc)}")
+                return None
             restored = dict(previous)
             restored["lease_id"] = new_lease
             last_result = {
@@ -2317,27 +2342,28 @@ class GameSwitchCoordinator:
                 )
         except Exception as exc:
             try:
-                self._call_adapter(
-                    lambda cancel: adapter.stop_agent(deadline, cancel),
-                    deadline,
-                    self.step_timeouts.stop_agent_s,
-                    "stop_agent",
-                )
-                self._call_adapter(
-                    lambda cancel: adapter.cleanup_runtime(deadline, cancel),
-                    deadline,
-                    self.step_timeouts.cleanup_s,
-                    "cleanup",
-                )
-                state, _migrated = self.store.canonical.load()
-                if state.get("candidate") is not None:
+                torn_down = self._teardown_runtime(adapter, deadline)
+            except Exception:
+                torn_down = False
+            state, _migrated = self.store.canonical.load()
+            if state.get("candidate") is not None:
+                if torn_down:
                     tx.transition(
                         {"rolling_back"}, "rolling_back",
                         updates={"candidate": None},
                         crash_hook=self.crash_hook,
                     )
-            except Exception:
-                warnings.append("rollback candidate cleanup失敗")
+                else:
+                    # Keep the rollback candidate tracked: it could not be
+                    # confirmed stopped, so it must not vanish from canonical.
+                    tx.transition(
+                        {"rolling_back"}, "rolling_back",
+                        updates={
+                            "candidate": None,
+                            "retiring": [state["candidate"], *(state.get("retiring") or [])],
+                        },
+                        crash_hook=self.crash_hook,
+                    )
             warnings.append(f"rollback起動失敗: {_safe_detail(exc)}")
             return None
         last_result = {
@@ -2437,22 +2463,13 @@ class GameSwitchCoordinator:
                 adapter = self._make_adapter(
                     RuntimeSpec.from_runtime(self.store.state_dir, runtime), deadline
                 )
-                self._call_adapter(
-                    lambda cancel: adapter.stop_agent(deadline, cancel),
-                    deadline,
-                    self.step_timeouts.stop_agent_s,
-                    "stop_agent",
-                )
-                self._call_adapter(
-                    lambda cancel: adapter.cleanup_runtime(deadline, cancel),
-                    deadline,
-                    self.step_timeouts.cleanup_s,
-                    "cleanup",
-                )
-            except Exception as exc:
+                torn_down = self._teardown_runtime(adapter, deadline)
+            except Exception:
+                torn_down = False
+            if not torn_down:
                 cleanup_pending = True
                 remaining.append(runtime)
-                warnings.append(f"retiring cleanup失敗: {_safe_detail(exc)}")
+                warnings.append("retiring runtimeの停止を確認できませんでした")
         if len(remaining) != len(retiring):
             tx.transition(
                 {state["phase"]}, str(state["phase"]),
@@ -2943,21 +2960,12 @@ class GameSwitchCoordinator:
                 adapter = self._make_adapter(
                     RuntimeSpec.from_runtime(self.store.state_dir, candidate), deadline
                 )
-                self._call_adapter(
-                    lambda cancel: adapter.stop_agent(deadline, cancel),
-                    deadline,
-                    self.step_timeouts.stop_agent_s,
-                    "stop_agent",
-                )
-                self._call_adapter(
-                    lambda cancel: adapter.cleanup_runtime(deadline, cancel),
-                    deadline,
-                    self.step_timeouts.cleanup_s,
-                    "cleanup",
-                )
+                torn_down = self._teardown_runtime(adapter, deadline)
             except Exception as exc:
+                torn_down = False
+            if not torn_down:
                 cleanup_pending = True
-                warnings.append(f"candidate cleanup失敗: {_safe_detail(exc)}")
+                warnings.append("candidateの停止を確認できませんでした")
                 # A later restore commit would overwrite candidate with None,
                 # losing track of this runtime.  Keep it durably tracked in
                 # retiring so recovery/finalize retries the cleanup.
