@@ -2,6 +2,8 @@
 
 import sys
 import tempfile
+import threading
+import time
 import unittest
 import uuid
 from pathlib import Path
@@ -12,8 +14,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from docich import config  # noqa: E402
 from docich.adapters import AdapterError, make_coordinator_adapter  # noqa: E402
 from docich.adapters import cli_game  # noqa: E402
-from docich.game_switch import ReadinessTimeoutError, RuntimeSpec  # noqa: E402
-from docich.tmux import OwnershipMismatchError, PaneState  # noqa: E402
+from docich.game_switch import (  # noqa: E402
+    DeadlineExceededError,
+    ReadinessTimeoutError,
+    RuntimeSpec,
+)
+from docich.tmux import OwnershipMismatchError, PaneState, TmuxOwnership  # noqa: E402
 from docich.naming import runtime_names  # noqa: E402
 
 
@@ -52,6 +58,10 @@ class FakeTmux:
             ownership.role,
         )
 
+    @staticmethod
+    def _ownership(value):
+        return TmuxOwnership(runtime_id=value[0], generation=value[1], role=value[2])
+
     def session_target_exists(self, session):
         self.calls.append(("session_target_exists", session))
         return session in self.sessions
@@ -61,6 +71,18 @@ class FakeTmux:
         if self.window_exists is not None:
             return self.window_exists
         return target in self.windows
+
+    def read_session_ownership(self, session):
+        self.calls.append(("read_session_ownership", session))
+        if session not in self.sessions:
+            raise OwnershipMismatchError("missing session")
+        return self._ownership(self.sessions[session])
+
+    def read_window_ownership(self, target):
+        self.calls.append(("read_window_ownership", target))
+        if target not in self.windows:
+            raise OwnershipMismatchError("missing window")
+        return self._ownership(self.windows[target])
 
     def create_game_session_owned(self, session, cmd, cols, rows, ownership):
         self.calls.append(("create_game_session_owned", session, list(cmd), cols, rows, self._expected(ownership)))
@@ -116,6 +138,7 @@ class CoordinatorAdapterTestBase(unittest.TestCase):
             encoding="utf-8",
         )
         self.tmux = FakeTmux()
+        self.deadline = time.monotonic() + 60.0
         self.spec = _spec()
         self.spec = RuntimeSpec(
             game=self.spec.game,
@@ -141,12 +164,22 @@ class TestPreflight(CoordinatorAdapterTestBase):
         with mock.patch(
             "docich.adapters.cli_game.procs.which", return_value="/usr/games/nethack"
         ):
-            self.adapter.preflight(60.0, None)  # 副作用なし
+            self.adapter.preflight(self.deadline, None)  # 副作用なし
 
     def test_preflight_missing_command_raises(self):
         with mock.patch("docich.adapters.cli_game.procs.which", return_value=None):
             with self.assertRaises(AdapterError):
-                self.adapter.preflight(60.0, None)
+                self.adapter.preflight(self.deadline, None)
+
+    def test_preflight_honors_cancel(self):
+        cancel = threading.Event()
+        cancel.set()
+        with self.assertRaises(DeadlineExceededError):
+            self.adapter.preflight(self.deadline, cancel)
+
+    def test_docich_bin_points_to_repo_root(self):
+        expected = Path(cli_game.__file__).resolve().parents[3] / "bin" / "docich"
+        self.assertEqual(Path(cli_game._docich_bin()), expected)
 
 
 class TestMaterialize(CoordinatorAdapterTestBase):
@@ -154,7 +187,7 @@ class TestMaterialize(CoordinatorAdapterTestBase):
         with mock.patch(
             "docich.adapters.cli_game.procs.which", return_value="/usr/games/nethack"
         ):
-            self.adapter.materialize_runtime(60.0, None)
+            self.adapter.materialize_runtime(self.deadline, None)
         expected = (
             "g1-abcdef",
             1,
@@ -176,22 +209,44 @@ class TestMaterialize(CoordinatorAdapterTestBase):
         self.assertIn("docich-game-g1", cmd)
         self.assertEqual(ownership, ("g1-abcdef", 1, "game"))
 
-    def test_materialize_is_idempotent(self):
+    def test_materialize_is_idempotent_and_verifies_ownership(self):
         self.tmux.sessions["docich-game-g1"] = ("g1-abcdef", 1, "adapter")
         self.tmux.windows["docich:game-g1"] = ("g1-abcdef", 1, "game")
         with mock.patch(
             "docich.adapters.cli_game.procs.which", return_value="/usr/games/nethack"
         ):
-            self.adapter.materialize_runtime(60.0, None)
+            self.adapter.materialize_runtime(self.deadline, None)
         self.assertFalse(any(c[0] == "create_game_session_owned" for c in self.tmux.calls))
         self.assertFalse(any(c[0] == "create_window_owned" for c in self.tmux.calls))
+        self.assertTrue(any(c[0] == "read_session_ownership" for c in self.tmux.calls))
+        self.assertTrue(any(c[0] == "read_window_ownership" for c in self.tmux.calls))
+
+    def test_materialize_rejects_foreign_existing_session(self):
+        self.tmux.sessions["docich-game-g1"] = ("g1-zzzzzz", 1, "adapter")
+        with self.assertRaises(OwnershipMismatchError):
+            self.adapter.materialize_runtime(self.deadline, None)
+
+    def test_materialize_rejects_foreign_existing_window(self):
+        self.tmux.sessions["docich-game-g1"] = ("g1-abcdef", 1, "adapter")
+        self.tmux.windows["docich:game-g1"] = ("g1-zzzzzz", 1, "game")
+        with self.assertRaises(OwnershipMismatchError):
+            self.adapter.materialize_runtime(self.deadline, None)
 
     def test_materialize_creates_runtime_dir(self):
         with mock.patch(
             "docich.adapters.cli_game.procs.which", return_value="/usr/games/nethack"
         ):
-            self.adapter.materialize_runtime(60.0, None)
+            self.adapter.materialize_runtime(self.deadline, None)
         self.assertTrue(self.spec.runtime_dir.is_dir())
+
+    def test_materialize_cancelled_before_side_effects(self):
+        cancel = threading.Event()
+        cancel.set()
+        with self.assertRaises(DeadlineExceededError):
+            self.adapter.materialize_runtime(self.deadline, cancel)
+        self.assertFalse(self.spec.runtime_dir.exists())
+        self.assertEqual(self.tmux.sessions, {})
+        self.assertEqual(self.tmux.windows, {})
 
 
 class TestReadiness(CoordinatorAdapterTestBase):
@@ -201,41 +256,52 @@ class TestReadiness(CoordinatorAdapterTestBase):
 
     def test_readiness_ok_when_session_window_pane_capture_ok(self):
         self._ready()
-        self.adapter.readiness(60.0, None)
+        self.adapter.readiness(self.deadline, None)
         self.assertTrue(any(c[0] == "capture_pane_checked" for c in self.tmux.calls))
 
     def test_readiness_empty_capture_is_not_failure(self):
         self._ready()
         self.tmux.capture = ""
-        self.adapter.readiness(60.0, None)  # 空画面は失敗にしない
+        self.adapter.readiness(self.deadline, None)  # 空画面は失敗にしない
 
     def test_readiness_missing_session_fails(self):
         with self.assertRaises(ReadinessTimeoutError):
-            self.adapter.readiness(60.0, None)
+            self.adapter.readiness(self.deadline, None)
 
     def test_readiness_missing_window_fails(self):
         self.tmux.sessions["docich-game-g1"] = ("g1-abcdef", 1, "adapter")
         with self.assertRaises(ReadinessTimeoutError):
-            self.adapter.readiness(60.0, None)
+            self.adapter.readiness(self.deadline, None)
 
     def test_readiness_dead_pane_fails(self):
         self._ready()
         self.tmux.pane_states = [PaneState(dead=True, pid=0)]
         with self.assertRaises(ReadinessTimeoutError):
-            self.adapter.readiness(60.0, None)
+            self.adapter.readiness(self.deadline, None)
 
     def test_readiness_cancelled_fails(self):
-        cancel = __import__("threading").Event()
+        cancel = threading.Event()
         cancel.set()
-        with self.assertRaises(ReadinessTimeoutError):
-            self.adapter.readiness(60.0, cancel)
+        with self.assertRaises(DeadlineExceededError):
+            self.adapter.readiness(self.deadline, cancel)
+
+    def test_readiness_rejects_foreign_window(self):
+        self.tmux.sessions["docich-game-g1"] = ("g1-abcdef", 1, "adapter")
+        self.tmux.windows["docich:game-g1"] = ("g1-zzzzzz", 1, "game")
+        with self.assertRaises(OwnershipMismatchError):
+            self.adapter.readiness(self.deadline, None)
 
 
 class TestAlive(CoordinatorAdapterTestBase):
     def test_alive_reflects_session_existence(self):
-        self.assertFalse(self.adapter.alive(60.0, None))
+        self.assertFalse(self.adapter.alive(self.deadline, None))
         self.tmux.sessions["docich-game-g1"] = ("g1-abcdef", 1, "adapter")
-        self.assertTrue(self.adapter.alive(60.0, None))
+        self.assertTrue(self.adapter.alive(self.deadline, None))
+
+    def test_alive_rejects_foreign_session(self):
+        self.tmux.sessions["docich-game-g1"] = ("g1-zzzzzz", 1, "adapter")
+        with self.assertRaises(OwnershipMismatchError):
+            self.adapter.alive(self.deadline, None)
 
 
 class TestCleanup(CoordinatorAdapterTestBase):
@@ -243,44 +309,52 @@ class TestCleanup(CoordinatorAdapterTestBase):
         self.tmux.sessions["docich-game-g1"] = ("g1-abcdef", 1, "adapter")
         self.tmux.windows["docich:game-g1"] = ("g1-abcdef", 1, "game")
         self.tmux.windows["docich:agent-g1"] = ("g1-abcdef", 1, "agent")
-        self.adapter.cleanup_runtime(60.0, None)
+        self.adapter.cleanup_runtime(self.deadline, None)
         self.assertEqual(self.tmux.sessions, {})
         self.assertEqual(self.tmux.windows, {})
         kills = [c[0] for c in self.tmux.calls if c[0].startswith("kill_")]
         self.assertEqual(kills, ["kill_window_owned", "kill_window_owned", "kill_session_owned"])
 
     def test_cleanup_missing_objects_is_success(self):
-        self.adapter.cleanup_runtime(60.0, None)  # 何も無くても成功
+        self.adapter.cleanup_runtime(self.deadline, None)  # 何も無くても成功
 
     def test_cleanup_ownership_mismatch_raises(self):
         self.tmux.windows["docich:game-g1"] = ("g1-zzzzzz", 1, "game")
         self.tmux.sessions["docich-game-g1"] = ("g1-abcdef", 1, "adapter")
         with self.assertRaises(OwnershipMismatchError):
-            self.adapter.cleanup_runtime(60.0, None)
+            self.adapter.cleanup_runtime(self.deadline, None)
         # mismatch の object は残っている
         self.assertIn("docich:game-g1", self.tmux.windows)
 
 
 class TestAgent(CoordinatorAdapterTestBase):
-    def test_start_agent_creates_generation_window(self):
-        self.adapter.start_agent(60.0, None)
+    def test_start_agent_creates_generation_window_with_repo_docich_bin(self):
+        self.adapter.start_agent(self.deadline, None)
         window_calls = [c for c in self.tmux.calls if c[0] == "create_window_owned"]
         self.assertEqual(len(window_calls), 1)
         _, name, cmd, ownership = window_calls[0]
         self.assertEqual(name, "agent-g1")
         self.assertEqual(ownership, ("g1-abcdef", 1, "agent"))
+        expected_bin = str(Path(cli_game.__file__).resolve().parents[3] / "bin" / "docich")
+        self.assertEqual(cmd[0], expected_bin)
         self.assertIn("run", cmd)
         self.assertIn("agent", cmd)
         self.assertIn("nethack", cmd)
 
-    def test_start_agent_is_idempotent(self):
+    def test_start_agent_is_idempotent_and_verifies_ownership(self):
         self.tmux.windows["docich:agent-g1"] = ("g1-abcdef", 1, "agent")
-        self.adapter.start_agent(60.0, None)
+        self.adapter.start_agent(self.deadline, None)
         self.assertFalse(any(c[0] == "create_window_owned" for c in self.tmux.calls))
+        self.assertTrue(any(c[0] == "read_window_ownership" for c in self.tmux.calls))
+
+    def test_start_agent_rejects_foreign_existing_window(self):
+        self.tmux.windows["docich:agent-g1"] = ("g1-zzzzzz", 1, "agent")
+        with self.assertRaises(OwnershipMismatchError):
+            self.adapter.start_agent(self.deadline, None)
 
     def test_stop_agent_kills_owned_window(self):
         self.tmux.windows["docich:agent-g1"] = ("g1-abcdef", 1, "agent")
-        self.adapter.stop_agent(60.0, None)
+        self.adapter.stop_agent(self.deadline, None)
         self.assertEqual(self.tmux.windows, {})
         self.assertTrue(any(c[0] == "kill_window_owned" for c in self.tmux.calls))
 
