@@ -1,8 +1,16 @@
-"""Crash-safe P0 primitives for transactional game switching.
+"""Crash-safe primitives and replace-mode coordinator for game switching.
 
-This module deliberately does not change the existing CLI lifecycle yet.
-It establishes the canonical state, locking, generation allocation and
-request-receipt contracts that the P1 coordinator will use.
+P0 (:class:`GameSwitchStore`) establishes the canonical state, locking,
+generation allocation and request-receipt contracts.
+
+P1 (:class:`GameSwitchCoordinator`) drives those contracts through the
+design's replace-mode state machine. It is deliberately not wired to the
+existing CLI lifecycle yet: adapters that implement the P1 contract
+(:class:`CoordinatorAdapter`) arrive in P2.
+
+The coordinator runs every adapter call inside a bounded worker thread so a
+hung adapter cannot hold the exclusive game-switch lock forever.  Adapters
+must additionally respect the monotonic deadline passed to each call.
 """
 from __future__ import annotations
 
@@ -14,11 +22,15 @@ import json
 import os
 import secrets
 import tempfile
+import threading
+import time
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable, Iterator, Mapping
+from typing import Callable, Iterator, Mapping, Protocol, runtime_checkable
+
+from .watchdog import next_rotation_game
 
 from .naming import (
     NameValidationError,
@@ -920,3 +932,2127 @@ class GameSwitchStore:
     ) -> dict[str, object]:
         with self.transaction() as transaction:
             return transaction.finish_request(request_id, status, result)
+
+
+# ---------------------------------------------------------------------------
+# P1: replace-mode coordinator
+# ---------------------------------------------------------------------------
+#
+# State machine (design v2 §5):
+#
+#   switch/restart/rotate:
+#     validating --accept--> preparing --preflight--> quiescing --stop old-->
+#     starting --materialize--> probing --readiness/agent--> committing --commit-->
+#     ready
+#   start:  same sequence with no previous runtime to quiesce
+#   stop:   validating --> quiescing --stop agent--> stopping --cleanup game--> idle
+#
+# Any pre-commit failure enters rolling_back: the candidate is cleaned up and
+# the previous game is restored (re-lease when still alive, otherwise a fresh
+# generation restart).  A failed restore leaves phase=failed with `previous`
+# retained so recover() can retry.
+#
+# Canonical writes are never caught: a crash hook or I/O failure propagates and
+# the durable atomic write leaves either the old or the new state.  Only
+# adapter calls (preflight/materialize/readiness/cleanup/agent) are treated as
+# recoverable step failures.
+
+DEFAULT_REQUEST_TIMEOUT_S = 600.0
+QUIESCE_VERIFY_TIMEOUT_S = 60.0
+POLL_INTERVAL_S = 0.1
+PREFLIGHT_TIMEOUT_S = 60.0
+STOP_AGENT_TIMEOUT_S = 60.0
+START_TIMEOUT_S = 60.0
+AGENT_START_TIMEOUT_S = 60.0
+CLEANUP_TIMEOUT_S = 120.0
+PROBE_TIMEOUT_S = 5.0
+CANCEL_GRACE_S = 0.5
+ROLLBACK_TIMEOUT_S = 120.0
+
+ERROR_BUSY = "busy"
+ERROR_REQUEST_CONFLICT = "request_conflict"
+ERROR_INVALID_GAME = "invalid_game"
+ERROR_ALREADY_ACTIVE = "already_active"
+ERROR_NO_ACTIVE_GAME = "no_active_game"
+ERROR_INVALID_ROTATION = "invalid_rotation"
+ERROR_PREPARE_FAILED = "prepare_failed"
+ERROR_QUIESCE_FAILED = "quiesce_failed"
+ERROR_START_FAILED = "start_failed"
+ERROR_READINESS_TIMEOUT = "readiness_timeout"
+ERROR_AGENT_START_FAILED = "agent_start_failed"
+ERROR_ROLLBACK_FAILED = "rollback_failed"
+ERROR_STATE_CORRUPT = "state_corrupt"
+ERROR_RECOVERY_REQUIRED = "recovery_required"
+ERROR_PROBE_FAILED = "probe_failed"
+ERROR_TIMEOUT = "timeout"
+ERROR_INTERNAL = "internal"
+
+IN_PROGRESS_PHASES = frozenset(PHASES - {"idle", "ready", "failed", "recovery_required"})
+
+
+@dataclass(frozen=True)
+class StepTimeouts:
+    """Per-step caps for adapter calls, each also bounded by the request
+    deadline.  A cap keeps one hung adapter call from holding the exclusive
+    game-switch lock forever (design v2 §5: individual limits per step)."""
+
+    preflight_s: float = PREFLIGHT_TIMEOUT_S
+    stop_agent_s: float = STOP_AGENT_TIMEOUT_S
+    start_s: float = START_TIMEOUT_S
+    agent_start_s: float = AGENT_START_TIMEOUT_S
+    cleanup_s: float = CLEANUP_TIMEOUT_S
+    probe_s: float = PROBE_TIMEOUT_S
+
+
+class ReadinessTimeoutError(GameSwitchError):
+    """The runtime did not become ready before its deadline."""
+
+
+class DeadlineExceededError(GameSwitchError):
+    """The request-wide deadline passed before a step could complete."""
+
+
+@dataclass(frozen=True)
+class RuntimeSpec:
+    """Identity of one runtime, derived from canonical/receipt or allocated.
+
+    ``adapter`` may be empty until the factory resolves the game; it is filled
+    from the produced adapter's ``name`` before any canonical write.
+    """
+
+    game: str
+    adapter: str
+    generation: int
+    runtime_id: str
+    lease_id: str | None
+    runtime_dir: Path
+    game_window: str
+    agent_window: str
+    adapter_session: str
+
+    @classmethod
+    def from_runtime(
+        cls, state_dir: Path, runtime: Mapping[str, object]
+    ) -> "RuntimeSpec":
+        generation = int(runtime["generation"])
+        names = runtime_names(generation)
+        runtime_id = validate_runtime_id(str(runtime["runtime_id"]))
+        return cls(
+            game=str(runtime["game"]),
+            adapter=str(runtime["adapter"]),
+            generation=generation,
+            runtime_id=runtime_id,
+            lease_id=runtime.get("lease_id"),
+            runtime_dir=runtime_directory(state_dir, runtime_id),
+            game_window=names.game_window,
+            agent_window=names.agent_window,
+            adapter_session=names.adapter_session,
+        )
+
+
+def runtime_state_dict(spec: RuntimeSpec, started_at: str) -> dict[str, object]:
+    return {
+        "game": spec.game,
+        "adapter": spec.adapter,
+        "generation": spec.generation,
+        "runtime_id": spec.runtime_id,
+        "lease_id": spec.lease_id,
+        "game_window": spec.game_window,
+        "agent_window": spec.agent_window,
+        "adapter_session": spec.adapter_session,
+        "started_at": started_at,
+    }
+
+
+@runtime_checkable
+class CoordinatorAdapter(Protocol):
+    """P1 adapter contract driven by :class:`GameSwitchCoordinator`.
+
+    An instance is bound to exactly one runtime and must only touch that
+    runtime's generation-specific resources (windows, sessions, runtime dir).
+
+    Every call receives the request-wide monotonic deadline and must respect
+    it: raise :class:`ReadinessTimeoutError` (or return promptly) once the
+    deadline passes.  The coordinator additionally bounds each call in a
+    worker thread and sets ``cancel`` when the step times out.  An adapter
+    MUST stop its in-flight side effects once ``cancel`` is set: a late
+    completion after a timeout would otherwise race with the coordinator's
+    rollback and create a runtime that canonical no longer tracks.  A
+    non-cooperative adapter that keeps running after cancel is a contract
+    violation and its late side effects cannot be prevented by the
+    coordinator.
+
+    ``materialize_runtime`` must be idempotent per runtime: a retry or
+    recovery may call it again for an already-created runtime.
+    ``cleanup_runtime`` must tear down the whole runtime; the coordinator
+    also calls ``stop_agent`` first whenever teardown ordering matters.
+    """
+
+    name: str
+    agent_enabled: bool
+
+    def preflight(self, deadline: float, cancel: threading.Event) -> None:
+        """Validate the game definition and dependencies. Side-effect free."""
+
+    def materialize_runtime(self, deadline: float, cancel: threading.Event) -> None:
+        """Create this runtime's sessions/windows and ownership tags."""
+
+    def readiness(self, deadline: float, cancel: threading.Event) -> None:
+        """Raise :class:`ReadinessTimeoutError` unless ready by ``deadline``."""
+
+    def alive(self, deadline: float, cancel: threading.Event) -> bool:
+        """True while this runtime's game process/session still exists."""
+
+    def cleanup_runtime(self, deadline: float, cancel: threading.Event) -> None:
+        """Stop this runtime's own game process/session. Missing targets are
+        treated as success, ownership mismatches are errors."""
+
+    def start_agent(self, deadline: float, cancel: threading.Event) -> None:
+        """Start this runtime's agent window bound to its runtime identity."""
+
+    def stop_agent(self, deadline: float, cancel: threading.Event) -> None:
+        """Stop this runtime's agent window. A missing target is success."""
+
+
+AdapterFactory = Callable[[RuntimeSpec], CoordinatorAdapter]
+MirrorWriter = Callable[[Path, str | None], None]
+
+
+@dataclass(frozen=True)
+class SwitchResult:
+    """Terminal or pending outcome of a coordinator request."""
+
+    request_id: str
+    operation: str
+    status: str  # succeeded | rolled_back | failed | in_progress | busy | request_conflict
+    target: str | None
+    from_game: str | None
+    to_game: str | None
+    generation: int | None
+    error_code: str | None
+    detail: str | None
+    warnings: tuple[str, ...]
+    cleanup_pending: bool
+    receipt: Mapping[str, object] | None
+
+
+def _result_from_receipt(
+    receipt: Mapping[str, object],
+    *,
+    warnings: tuple[str, ...] = (),
+    cleanup_pending: bool = False,
+) -> SwitchResult:
+    result = receipt.get("result") or {}
+    return SwitchResult(
+        request_id=str(receipt["request_id"]),
+        operation=str(receipt["operation"]),
+        status=str(receipt["status"]),
+        target=receipt.get("target"),
+        from_game=result.get("from_game"),
+        to_game=result.get("to_game"),
+        generation=receipt.get("generation"),
+        error_code=result.get("error_code"),
+        detail=result.get("detail"),
+        warnings=tuple(warnings),
+        cleanup_pending=bool(cleanup_pending or result.get("cleanup_pending")),
+        receipt=copy.deepcopy(dict(receipt)),
+    )
+
+
+def atomic_write_text(path: Path, text: str, *, mode: int = 0o600) -> None:
+    """Durably replace a private text file (used for the compat mirror)."""
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    temporary_path = Path(temporary)
+    try:
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, path)
+        _fsync_directory(path.parent)
+    finally:
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+class GameSwitchCoordinator:
+    """Replace-mode state machine over the P0 store (design v2 §5, §7)."""
+
+    def __init__(
+        self,
+        store: GameSwitchStore,
+        adapter_factory: AdapterFactory,
+        *,
+        mirror_writer: MirrorWriter | None = None,
+        crash_hook: CrashHook | None = None,
+        default_timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S,
+        quiesce_verify_timeout_s: float = QUIESCE_VERIFY_TIMEOUT_S,
+        poll_interval_s: float = POLL_INTERVAL_S,
+        step_timeouts: StepTimeouts | None = None,
+        cancel_grace_s: float = CANCEL_GRACE_S,
+        rollback_timeout_s: float = ROLLBACK_TIMEOUT_S,
+    ):
+        self.store = store
+        self.adapter_factory = adapter_factory
+        self.crash_hook = crash_hook
+        self.default_timeout_s = default_timeout_s
+        self.quiesce_verify_timeout_s = quiesce_verify_timeout_s
+        self.poll_interval_s = poll_interval_s
+        self.step_timeouts = step_timeouts or StepTimeouts()
+        self.cancel_grace_s = cancel_grace_s
+        self.rollback_timeout_s = rollback_timeout_s
+        self.mirror_writer = mirror_writer
+        self.mirror_path = store.state_dir / "current_game"
+
+    # --- public API --------------------------------------------------------
+
+    def start(
+        self,
+        game: str,
+        *,
+        request_id: str | None = None,
+        timeout_s: float | None = None,
+        payload: Mapping[str, object] | None = None,
+    ) -> SwitchResult:
+        return self._execute("start", game, request_id=request_id, timeout_s=timeout_s, payload=payload)
+
+    def stop(
+        self,
+        *,
+        request_id: str | None = None,
+        timeout_s: float | None = None,
+        payload: Mapping[str, object] | None = None,
+    ) -> SwitchResult:
+        return self._execute("stop", None, request_id=request_id, timeout_s=timeout_s, payload=payload)
+
+    def switch(
+        self,
+        target: str,
+        *,
+        request_id: str | None = None,
+        timeout_s: float | None = None,
+        payload: Mapping[str, object] | None = None,
+    ) -> SwitchResult:
+        return self._execute("switch", target, request_id=request_id, timeout_s=timeout_s, payload=payload)
+
+    def restart(
+        self,
+        *,
+        request_id: str | None = None,
+        timeout_s: float | None = None,
+        payload: Mapping[str, object] | None = None,
+    ) -> SwitchResult:
+        return self._execute("restart", None, request_id=request_id, timeout_s=timeout_s, payload=payload)
+
+    def rotate(
+        self,
+        games: list[str],
+        *,
+        request_id: str | None = None,
+        timeout_s: float | None = None,
+        payload: Mapping[str, object] | None = None,
+    ) -> SwitchResult:
+        if not isinstance(games, list) or not games:
+            return SwitchResult(
+                request_id=request_id or "",
+                operation="rotate",
+                status="failed",
+                target=None,
+                from_game=None,
+                to_game=None,
+                generation=None,
+                error_code=ERROR_INVALID_ROTATION,
+                detail="rotation games が空です",
+                warnings=(),
+                cleanup_pending=False,
+                receipt=None,
+            )
+        try:
+            games = [validate_game_name(game) for game in games]
+        except NameValidationError as exc:
+            return SwitchResult(
+                request_id=request_id or "",
+                operation="rotate",
+                status="failed",
+                target=None,
+                from_game=None,
+                to_game=None,
+                generation=None,
+                error_code=ERROR_INVALID_ROTATION,
+                detail=_safe_detail(exc),
+                warnings=(),
+                cleanup_pending=False,
+                receipt=None,
+            )
+        return self._execute(
+            "rotate", None, games=games, request_id=request_id, timeout_s=timeout_s, payload=payload
+        )
+
+    def recover(
+        self,
+        *,
+        timeout_s: float | None = None,
+    ) -> SwitchResult:
+        try:
+            with self.store.transaction() as tx:
+                deadline = time.monotonic() + (timeout_s if timeout_s is not None else self.default_timeout_s)
+                return self._recover_locked(tx, deadline=deadline)
+        except GameSwitchBusyError as exc:
+            return SwitchResult(
+                request_id="",
+                operation="recover",
+                status="busy",
+                target=None,
+                from_game=None,
+                to_game=None,
+                generation=None,
+                error_code=ERROR_BUSY,
+                detail=_safe_detail(exc),
+                warnings=(),
+                cleanup_pending=False,
+                receipt=None,
+            )
+
+    # --- request plumbing --------------------------------------------------
+
+    def _execute(
+        self,
+        operation: str,
+        target: str | None,
+        *,
+        games: list[str] | None = None,
+        request_id: str | None = None,
+        timeout_s: float | None = None,
+        payload: Mapping[str, object] | None = None,
+    ) -> SwitchResult:
+        request_id = new_request_id() if request_id is None else validate_request_id(request_id)
+        if operation == "restart":
+            if target is not None:
+                raise NameValidationError("restart にはtarget gameを指定できません")
+            target = None  # resolved from the active runtime inside the lock
+        else:
+            operation, target = validate_request(operation, target)
+        if operation == "rotate":
+            # The rotation list selects the target, so it must be part of the
+            # request identity: a resend with a different list is a conflict.
+            payload = {**(payload or {}), "rotation_games": list(games or [])}
+        timeout = float(timeout_s if timeout_s is not None else self.default_timeout_s)
+        if timeout <= 0:
+            raise ValueError("timeout_s は正の値である必要があります")
+        deadline = time.monotonic() + timeout
+        deadline_at = (
+            dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=timeout)
+        ).isoformat().replace("+00:00", "Z")
+        try:
+            with self.store.transaction() as tx:
+                return self._execute_locked(
+                    tx,
+                    request_id,
+                    operation,
+                    target,
+                    payload,
+                    deadline,
+                    deadline_at,
+                    games=games,
+                )
+        except GameSwitchBusyError:
+            return self._classify_busy(request_id, operation, target, payload)
+
+    def _classify_busy(
+        self,
+        request_id: str,
+        operation: str,
+        target: str | None,
+        payload: Mapping[str, object] | None,
+    ) -> SwitchResult:
+        if operation == "restart":
+            # restart resolves its target inside the lock, so on lock
+            # contention the target is unknown unless the request was
+            # already accepted.  A fresh restart under contention is simply
+            # busy (P0's validate_request would otherwise reject target=None).
+            receipt = self.store.receipts.load(request_id)
+            if receipt is None or receipt.get("target") is None:
+                return SwitchResult(
+                    request_id=request_id,
+                    operation=operation,
+                    status="busy",
+                    target=None,
+                    from_game=None,
+                    to_game=None,
+                    generation=None,
+                    error_code=ERROR_BUSY,
+                    detail="別のゲーム切替が進行中です",
+                    warnings=(),
+                    cleanup_pending=False,
+                    receipt=None,
+                )
+            target = str(receipt["target"])
+        try:
+            classified = self.store.classify_request(request_id, operation, target, payload)
+        except RequestConflictError as exc:
+            return SwitchResult(
+                request_id=request_id,
+                operation=operation,
+                status="request_conflict",
+                target=target,
+                from_game=None,
+                to_game=None,
+                generation=None,
+                error_code=ERROR_REQUEST_CONFLICT,
+                detail=_safe_detail(exc),
+                warnings=(),
+                cleanup_pending=False,
+                receipt=None,
+            )
+        except GameSwitchBusyError as exc:
+            return SwitchResult(
+                request_id=request_id,
+                operation=operation,
+                status="busy",
+                target=target,
+                from_game=None,
+                to_game=None,
+                generation=None,
+                error_code=ERROR_BUSY,
+                detail=_safe_detail(exc),
+                warnings=(),
+                cleanup_pending=False,
+                receipt=None,
+            )
+        if classified.status in TERMINAL_RECEIPT_STATUSES:
+            return _result_from_receipt(classified.receipt)
+        return SwitchResult(
+            request_id=request_id,
+            operation=operation,
+            status="in_progress",
+            target=target,
+            from_game=None,
+            to_game=None,
+            generation=classified.generation,
+            error_code=None,
+            detail="同じrequestが進行中です",
+            warnings=(),
+            cleanup_pending=False,
+            receipt=copy.deepcopy(dict(classified.receipt)),
+        )
+
+    def _execute_locked(
+        self,
+        tx: GameSwitchTransaction,
+        request_id: str,
+        operation: str,
+        target: str | None,
+        payload: Mapping[str, object] | None,
+        deadline: float,
+        deadline_at: str,
+        *,
+        games: list[str] | None = None,
+    ) -> SwitchResult:
+        state = self.store.canonical.initialize()
+        if state["phase"] in {"failed", "recovery_required"}:
+            return SwitchResult(
+                request_id=request_id,
+                operation=operation,
+                status="failed",
+                target=target,
+                from_game=None,
+                to_game=None,
+                generation=None,
+                error_code=ERROR_RECOVERY_REQUIRED,
+                detail="canonical stateの復旧が必要です (`docich recover`)",
+                warnings=(),
+                cleanup_pending=False,
+                receipt=None,
+            )
+        if operation == "start":
+            active = state.get("active")
+            if active is not None:
+                if active["game"] == target:
+                    return SwitchResult(
+                        request_id=request_id,
+                        operation=operation,
+                        status="succeeded",
+                        target=target,
+                        from_game=target,
+                        to_game=target,
+                        generation=active["generation"],
+                        error_code=None,
+                        detail="既に起動中です",
+                        warnings=(),
+                        cleanup_pending=False,
+                        receipt=None,
+                    )
+                return SwitchResult(
+                    request_id=request_id,
+                    operation=operation,
+                    status="failed",
+                    target=target,
+                    from_game=active["game"],
+                    to_game=target,
+                    generation=active["generation"],
+                    error_code=ERROR_ALREADY_ACTIVE,
+                    detail=f"{active['game']} が起動中です。switch を要求してください",
+                    warnings=(),
+                    cleanup_pending=False,
+                    receipt=None,
+                )
+        if operation == "restart":
+            # The target is fixed at first acceptance: a resend must keep the
+            # recorded target so the payload hash matches and the request
+            # converges to the same terminal result.
+            existing_receipt = self.store.receipts.load(request_id)
+            if existing_receipt is not None:
+                target = existing_receipt.get("target")
+                if target is None:
+                    raise StateCorruptError("restart receiptにtargetが記録されていません")
+            else:
+                active = state.get("active")
+                if active is None:
+                    return SwitchResult(
+                        request_id=request_id,
+                        operation=operation,
+                        status="failed",
+                        target=None,
+                        from_game=None,
+                        to_game=None,
+                        generation=None,
+                        error_code=ERROR_NO_ACTIVE_GAME,
+                        detail="実行中のゲームがありません",
+                        warnings=(),
+                        cleanup_pending=False,
+                        receipt=None,
+                    )
+                target = active["game"]
+        if operation == "stop" and state.get("active") is None:
+            return SwitchResult(
+                request_id=request_id,
+                operation=operation,
+                status="succeeded",
+                target=None,
+                from_game=None,
+                to_game=None,
+                generation=None,
+                error_code=None,
+                detail="実行中のゲームはありません",
+                warnings=(),
+                cleanup_pending=False,
+                receipt=None,
+            )
+        if operation == "rotate":
+            current = state["active"]["game"] if state.get("active") else None
+            rotate_target = next_rotation_game(games or [], current)
+        else:
+            rotate_target = None
+
+        try:
+            acceptance = tx.accept_request(
+                request_id,
+                operation,
+                None if operation == "rotate" else target,
+                payload,
+                crash_hook=self.crash_hook,
+            )
+        except RequestConflictError as exc:
+            return SwitchResult(
+                request_id=request_id,
+                operation=operation,
+                status="request_conflict",
+                target=target,
+                from_game=None,
+                to_game=None,
+                generation=None,
+                error_code=ERROR_REQUEST_CONFLICT,
+                detail=_safe_detail(exc),
+                warnings=(),
+                cleanup_pending=False,
+                receipt=None,
+            )
+        except StateCorruptError:
+            reconciled = self._reconcile_stale_receipt(
+                tx, request_id, operation, None if operation == "rotate" else target, payload
+            )
+            if reconciled is not None:
+                return reconciled
+            raise
+        if acceptance.status in TERMINAL_RECEIPT_STATUSES:
+            return _result_from_receipt(acceptance.receipt)
+        if acceptance.existing:
+            # The previous driver is provably dead (we hold the lock).
+            # Converge fail-closed through the recovery path.
+            return self._recover_locked(tx, deadline=deadline)
+        transition_target = rotate_target if rotate_target is not None else target
+        return self._run_operation_locked(
+            tx, acceptance, operation, transition_target, deadline, deadline_at
+        )
+
+    def _reconcile_stale_receipt(
+        self,
+        tx: GameSwitchTransaction,
+        request_id: str,
+        operation: str,
+        target: str | None,
+        payload: Mapping[str, object] | None,
+    ) -> SwitchResult | None:
+        """Repair a receipt left non-terminal by a crash after the commit
+        write.  Only converges when canonical ``last_result`` names the same
+        request; anything else fails closed with StateCorruptError."""
+        state, _migrated = self.store.canonical.load()
+        last_result = state.get("last_result")
+        if not isinstance(last_result, dict) or last_result.get("request_id") != request_id:
+            return None
+        status = last_result.get("status")
+        if status not in TERMINAL_RECEIPT_STATUSES:
+            return None
+        receipt = self.store.receipts.load(request_id)
+        if receipt is None or receipt.get("status") in TERMINAL_RECEIPT_STATUSES:
+            return None
+        expected_hash = _request_payload_hash(operation, target, payload or {})
+        if receipt.get("payload_hash") != expected_hash:
+            raise RequestConflictError("同じrequest_idが異なるpayloadで使用されています")
+        saved = tx.finish_request(request_id, str(status), dict(last_result))
+        return _result_from_receipt(saved)
+
+    def _run_operation_locked(
+        self,
+        tx: GameSwitchTransaction,
+        acceptance: RequestAcceptance,
+        operation: str,
+        target: str | None,
+        deadline: float,
+        deadline_at: str,
+    ) -> SwitchResult:
+        try:
+            if operation == "stop":
+                return self._stop_locked(tx, acceptance, deadline)
+            if operation in {"start", "switch", "restart", "rotate"}:
+                return self._switch_locked(
+                    tx, acceptance, operation, target, deadline, deadline_at
+                )
+            raise InvalidTransitionError(f"coordinatorは operation {operation} を実行できません")
+        except StateCorruptError:
+            raise
+        except InvalidTransitionError:
+            raise
+        except DeadlineExceededError as exc:
+            return self._rollback_locked(
+                tx,
+                acceptance,
+                deadline,
+                target=target,
+                error_code=ERROR_TIMEOUT,
+                detail=_safe_detail(exc),
+            )
+
+    def _check_deadline(self, deadline: float) -> None:
+        if time.monotonic() >= deadline:
+            raise DeadlineExceededError("request deadline を超過しました")
+
+    def _call_adapter(
+        self,
+        fn: Callable[[threading.Event], object],
+        deadline: float,
+        timeout_s: float,
+        step_name: str,
+    ) -> object:
+        """Run one adapter call with a bounded wait.
+
+        The call runs in a daemon worker so that a hung adapter cannot keep
+        the exclusive lock forever: after ``timeout_s`` (bounded by the
+        request deadline) the step fails with DeadlineExceededError and the
+        coordinator rolls back while the lock is released.
+
+        On timeout the ``cancel`` event passed to the adapter is set and the
+        worker is given a short grace period to stop, so a cooperative
+        adapter cannot complete its side effects after the rollback.  A
+        worker still alive after the grace period is abandoned; its late
+        side effects are the adapter's contract violation.
+        """
+        remaining = min(deadline - time.monotonic(), timeout_s)
+        if remaining <= 0:
+            raise DeadlineExceededError(f"adapter {step_name} のdeadlineを超過しました")
+        cancel = threading.Event()
+        result: list[object] = []
+        error: list[BaseException] = []
+
+        def run() -> None:
+            try:
+                result.append(fn(cancel))
+            except BaseException as exc:  # noqa: BLE001 - re-raised in caller
+                error.append(exc)
+
+        worker = threading.Thread(
+            target=run, name=f"docich-adapter-{step_name}", daemon=True
+        )
+        worker.start()
+        worker.join(remaining)
+        timed_out = False
+        if worker.is_alive():
+            timed_out = True
+            cancel.set()
+            worker.join(self.cancel_grace_s)
+        if worker.is_alive():
+            raise DeadlineExceededError(
+                f"adapter {step_name} がtimeoutし、cancelにも応答しません"
+            )
+        if timed_out:
+            raise DeadlineExceededError(f"adapter {step_name} がtimeoutしました")
+        if error:
+            raise error[0]
+        return result[0] if result else None
+
+    def _probe_alive(self, adapter: CoordinatorAdapter, deadline: float) -> bool | None:
+        """Probe liveness; None means the probe itself failed (unknown).
+
+        An unknown probe must not be treated as dead: the caller keeps the
+        runtime tracked and fails closed instead of clearing it.
+        """
+        try:
+            result = self._call_adapter(
+                lambda cancel: adapter.alive(deadline, cancel), deadline, self.step_timeouts.probe_s, "alive"
+            )
+        except Exception:
+            return None
+        return bool(result)
+
+    def _make_adapter(self, spec: RuntimeSpec, deadline: float) -> CoordinatorAdapter:
+        adapter = self._call_adapter(
+            lambda cancel: self.adapter_factory(spec), deadline, self.step_timeouts.start_s, "factory"
+        )
+        if not isinstance(adapter, CoordinatorAdapter):
+            raise GameSwitchError("adapter factory が CoordinatorAdapter を返していません")
+        if not isinstance(adapter.name, str) or not adapter.name:
+            raise GameSwitchError("adapter が name を返していません")
+        if spec.adapter and adapter.name != spec.adapter:
+            # A runtime recorded under one adapter kind must not be torn down
+            # by another: fail closed instead of mis-cleaning.
+            raise GameSwitchError(
+                f"adapter種別が一致しません (canonical={spec.adapter}, factory={adapter.name})"
+            )
+        return adapter
+
+    # --- start/switch/restart/rotate --------------------------------------
+
+    def _switch_locked(
+        self,
+        tx: GameSwitchTransaction,
+        acceptance: RequestAcceptance,
+        operation: str,
+        target: str,
+        deadline: float,
+        deadline_at: str,
+    ) -> SwitchResult:
+        state, _migrated = self.store.canonical.load()
+        old_active = state.get("active")
+        spec = self._candidate_spec(acceptance, target)
+        try:
+            adapter = self._make_adapter(spec, deadline)
+        except Exception as exc:
+            return self._rollback_locked(
+                tx,
+                acceptance,
+                deadline,
+                target=target,
+                error_code=ERROR_INVALID_GAME,
+                detail=_safe_detail(exc),
+            )
+        spec = replace(spec, adapter=adapter.name)
+
+        self._check_deadline(deadline)
+        tx.transition(
+            {"validating"}, "preparing", updates={"deadline_at": deadline_at},
+            crash_hook=self.crash_hook,
+        )
+        try:
+            self._call_adapter(
+                lambda cancel: adapter.preflight(deadline, cancel),
+                deadline,
+                self.step_timeouts.preflight_s,
+                "preflight",
+            )
+        except Exception as exc:
+            return self._rollback_locked(
+                tx,
+                acceptance,
+                deadline,
+                target=target,
+                error_code=_failure_code(exc, ERROR_PREPARE_FAILED),
+                detail=_safe_detail(exc),
+            )
+        self._check_deadline(deadline)
+
+        if old_active is not None:
+            old_spec = RuntimeSpec.from_runtime(self.store.state_dir, old_active)
+            try:
+                old_adapter = self._make_adapter(old_spec, deadline)
+            except Exception as exc:
+                return self._rollback_locked(
+                    tx,
+                    acceptance,
+                    deadline,
+                    target=target,
+                    error_code=ERROR_PREPARE_FAILED,
+                    detail=f"old runtime adapter: {_safe_detail(exc)}",
+                )
+            tx.transition(
+                {"preparing"}, "quiescing",
+                updates={"active": None, "previous": old_active},
+                crash_hook=self.crash_hook,
+            )
+            try:
+                self._call_adapter(
+                    lambda cancel: old_adapter.stop_agent(deadline, cancel),
+                    deadline,
+                    self.step_timeouts.stop_agent_s,
+                    "stop_agent",
+                )
+                self._call_adapter(
+                    lambda cancel: old_adapter.cleanup_runtime(deadline, cancel),
+                    deadline,
+                    self.step_timeouts.cleanup_s,
+                    "cleanup",
+                )
+            except Exception as exc:
+                return self._rollback_locked(
+                    tx,
+                    acceptance,
+                    deadline,
+                    target=target,
+                    error_code=_failure_code(exc, ERROR_QUIESCE_FAILED),
+                    detail=_safe_detail(exc),
+                )
+            if not self._wait_stopped(old_adapter, deadline):
+                return self._rollback_locked(
+                    tx,
+                    acceptance,
+                    deadline,
+                    target=target,
+                    error_code=ERROR_QUIESCE_FAILED,
+                    detail="旧runtimeの停止を確認できませんでした",
+                )
+        else:
+            tx.transition({"preparing"}, "quiescing", crash_hook=self.crash_hook)
+
+        candidate_rd = runtime_state_dict(spec, _utc_now())
+        tx.transition(
+            {"quiescing"}, "starting", updates={"candidate": candidate_rd},
+            crash_hook=self.crash_hook,
+        )
+        try:
+            self._call_adapter(
+                lambda cancel: adapter.materialize_runtime(deadline, cancel),
+                deadline,
+                self.step_timeouts.start_s,
+                "materialize",
+            )
+        except Exception as exc:
+            return self._rollback_locked(
+                tx,
+                acceptance,
+                deadline,
+                target=target,
+                error_code=_failure_code(exc, ERROR_START_FAILED),
+                detail=_safe_detail(exc),
+            )
+        self._check_deadline(deadline)
+
+        tx.transition({"starting"}, "probing", crash_hook=self.crash_hook)
+        try:
+            self._call_adapter(
+                lambda cancel: adapter.readiness(deadline, cancel),
+                deadline,
+                max(deadline - time.monotonic(), 0.0),
+                "readiness",
+            )
+        except Exception as exc:
+            return self._rollback_locked(
+                tx,
+                acceptance,
+                deadline,
+                target=target,
+                error_code=_failure_code(exc),
+                detail=_safe_detail(exc),
+            )
+        self._check_deadline(deadline)
+
+        if adapter.agent_enabled:
+            try:
+                self._call_adapter(
+                    lambda cancel: adapter.start_agent(deadline, cancel),
+                    deadline,
+                    self.step_timeouts.agent_start_s,
+                    "start_agent",
+                )
+            except Exception as exc:
+                return self._rollback_locked(
+                    tx,
+                    acceptance,
+                    deadline,
+                    target=target,
+                    error_code=_failure_code(exc, ERROR_AGENT_START_FAILED),
+                    detail=_safe_detail(exc),
+                )
+        self._check_deadline(deadline)
+
+        state, _migrated = self.store.canonical.load()
+        old_for_retiring = state.get("previous")
+        retiring = state.get("retiring") or []
+        if old_for_retiring is not None:
+            retiring = [old_for_retiring, *retiring]
+        from_game = old_active["game"] if old_active is not None else None
+        last_result = {
+            "request_id": acceptance.request_id,
+            "operation": operation,
+            "status": "succeeded",
+            "from_game": from_game,
+            "to_game": target,
+            "generation": acceptance.generation,
+        }
+        # The single atomic commit write is the commit point (design §5 E).
+        tx.transition(
+            {"probing"}, "ready",
+            updates={
+                "active": candidate_rd,
+                "candidate": None,
+                "previous": None,
+                "retiring": retiring,
+                "operation": None,
+                "request_id": None,
+                "deadline_at": None,
+                "last_result": last_result,
+                "last_error": None,
+            },
+            crash_hook=self.crash_hook,
+        )
+        receipt = tx.finish_request(acceptance.request_id, "succeeded", last_result)
+        warnings: list[str] = []
+        cleanup_pending = self._finalize_locked(tx, deadline, warnings=warnings)
+        return _result_from_receipt(receipt, warnings=tuple(warnings), cleanup_pending=cleanup_pending)
+
+    def _candidate_spec(self, acceptance: RequestAcceptance, target: str) -> RuntimeSpec:
+        receipt = acceptance.receipt
+        generation = int(receipt["generation"])
+        names = runtime_names(generation)
+        runtime_id = str(receipt["runtime_id"])
+        return RuntimeSpec(
+            game=target,
+            adapter="",
+            generation=generation,
+            runtime_id=runtime_id,
+            lease_id=str(uuid.uuid4()),
+            runtime_dir=runtime_directory(self.store.state_dir, runtime_id),
+            game_window=names.game_window,
+            agent_window=names.agent_window,
+            adapter_session=names.adapter_session,
+        )
+
+    def _wait_stopped(self, adapter: CoordinatorAdapter, deadline: float) -> bool:
+        """Confirm the runtime is gone.  An unknown probe (exception) is never
+        treated as stopped, so a hang or probe failure fails the wait."""
+        limit = min(deadline, time.monotonic() + self.quiesce_verify_timeout_s)
+        while time.monotonic() < limit:
+            if self._probe_alive(adapter, deadline) is False:
+                return True
+            time.sleep(self.poll_interval_s)
+        return self._probe_alive(adapter, deadline) is False
+
+    def _teardown_runtime(self, adapter: CoordinatorAdapter, deadline: float) -> bool:
+        """Stop agent and game, then confirm the runtime is actually gone.
+
+        A cleanup that returns without raising is not enough: the runtime
+        must be observed dead before the coordinator drops it from tracking.
+        """
+        try:
+            self._call_adapter(
+                lambda cancel: adapter.stop_agent(deadline, cancel),
+                deadline,
+                self.step_timeouts.stop_agent_s,
+                "stop_agent",
+            )
+            self._call_adapter(
+                lambda cancel: adapter.cleanup_runtime(deadline, cancel),
+                deadline,
+                self.step_timeouts.cleanup_s,
+                "cleanup",
+            )
+            return self._wait_stopped(adapter, deadline)
+        except Exception:
+            return False
+
+    # --- stop ---------------------------------------------------------------
+
+    def _stop_locked(
+        self,
+        tx: GameSwitchTransaction,
+        acceptance: RequestAcceptance,
+        deadline: float,
+    ) -> SwitchResult:
+        state, _migrated = self.store.canonical.load()
+        active = state.get("active")
+        tx.transition({"validating"}, "quiescing", crash_hook=self.crash_hook)
+        warnings: list[str] = []
+        cleanup_pending = False
+        if active is not None:
+            try:
+                adapter = self._make_adapter(RuntimeSpec.from_runtime(self.store.state_dir, active), deadline)
+            except Exception as exc:
+                return self._fail_locked(
+                    tx,
+                    acceptance,
+                    deadline,
+                    error_code=ERROR_QUIESCE_FAILED,
+                    detail=f"old runtime adapter: {_safe_detail(exc)}",
+                    keep_active=True,
+                )
+            try:
+                self._call_adapter(
+                    lambda cancel: adapter.stop_agent(deadline, cancel),
+                    deadline,
+                    self.step_timeouts.stop_agent_s,
+                    "stop_agent",
+                )
+            except Exception as exc:
+                return self._fail_locked(
+                    tx,
+                    acceptance,
+                    deadline,
+                    error_code=_failure_code(exc, ERROR_QUIESCE_FAILED),
+                    detail=_safe_detail(exc),
+                    keep_active=True,
+                )
+            tx.transition({"quiescing"}, "stopping", crash_hook=self.crash_hook)
+            try:
+                self._call_adapter(
+                    lambda cancel: adapter.cleanup_runtime(deadline, cancel),
+                    deadline,
+                    self.step_timeouts.cleanup_s,
+                    "cleanup",
+                )
+            except Exception as exc:
+                return self._fail_locked(
+                    tx,
+                    acceptance,
+                    deadline,
+                    error_code=_failure_code(exc, ERROR_QUIESCE_FAILED),
+                    detail=_safe_detail(exc),
+                    keep_active=True,
+                )
+            if not self._wait_stopped(adapter, deadline):
+                return self._fail_locked(
+                    tx,
+                    acceptance,
+                    deadline,
+                    error_code=ERROR_QUIESCE_FAILED,
+                    detail="旧runtimeの停止を確認できませんでした",
+                    keep_active=True,
+                )
+        else:
+            tx.transition({"quiescing"}, "stopping", crash_hook=self.crash_hook)
+        last_result = {
+            "request_id": acceptance.request_id,
+            "operation": "stop",
+            "status": "succeeded",
+            "from_game": active["game"] if active is not None else None,
+            "to_game": None,
+            "generation": active["generation"] if active is not None else None,
+        }
+        tx.transition(
+            {"stopping"}, "idle",
+            updates={
+                "active": None,
+                "candidate": None,
+                "previous": None,
+                "operation": None,
+                "request_id": None,
+                "deadline_at": None,
+                "last_result": last_result,
+                "last_error": None,
+            },
+            crash_hook=self.crash_hook,
+        )
+        receipt = tx.finish_request(acceptance.request_id, "succeeded", last_result)
+        cleanup_pending = self._finalize_locked(tx, deadline, warnings=warnings)
+        return _result_from_receipt(receipt, warnings=tuple(warnings), cleanup_pending=cleanup_pending)
+
+    # --- rollback / failure -------------------------------------------------
+
+    def _rollback_locked(
+        self,
+        tx: GameSwitchTransaction,
+        acceptance: RequestAcceptance,
+        deadline: float,
+        *,
+        target: str | None = None,
+        error_code: str,
+        detail: str,
+        warnings: list[str] | None = None,
+    ) -> SwitchResult:
+        warnings = list(warnings or [])
+        cleanup_pending = False
+        request_id = acceptance.request_id
+        receipt = acceptance.receipt
+        operation = str(receipt["operation"])
+        target = receipt.get("target") if target is None else target
+        generation = int(receipt["generation"])
+
+        # Rollback runs on its own budget: the request-wide deadline is often
+        # already spent when a step times out, and restoring the previous
+        # game must not fail merely because the original request expired.
+        deadline = time.monotonic() + self.rollback_timeout_s
+
+        tx.transition(IN_PROGRESS_PHASES, "rolling_back", crash_hook=self.crash_hook)
+        state, _migrated = self.store.canonical.load()
+        candidate = state.get("candidate")
+        if candidate is not None:
+            try:
+                adapter = self._make_adapter(
+                    RuntimeSpec.from_runtime(self.store.state_dir, candidate), deadline
+                )
+                torn_down = self._teardown_runtime(adapter, deadline)
+            except Exception as exc:
+                torn_down = False
+            if not torn_down:
+                cleanup_pending = True
+                warnings.append("candidateの停止を確認できませんでした")
+                # Keep the un-cleanable runtime durably tracked so recovery
+                # retries it; otherwise the restore commit would forget it.
+                tx.transition(
+                    {"rolling_back"}, "rolling_back",
+                    updates={
+                        "candidate": None,
+                        "retiring": [candidate, *(state.get("retiring") or [])],
+                    },
+                    crash_hook=self.crash_hook,
+                )
+            else:
+                state, _migrated = self.store.canonical.load()
+                if state.get("candidate") is not None:
+                    tx.transition(
+                        {"rolling_back"}, "rolling_back",
+                        updates={"candidate": None},
+                        crash_hook=self.crash_hook,
+                    )
+
+        state, _migrated = self.store.canonical.load()
+        previous = state.get("previous") or state.get("active")
+        if previous is None:
+            # Nothing to restore (plain start with no previous game).
+            return self._fail_locked(
+                tx,
+                acceptance,
+                deadline,
+                error_code=error_code,
+                detail=detail,
+                warnings=warnings,
+                cleanup_pending=cleanup_pending,
+            )
+        if state.get("previous") is None:
+            # Pre-quiesce failure: the rollback target still lives in active.
+            # Track it as previous so a failed restore leaves recovery with a
+            # durable reference to retry.
+            tx.transition(
+                {"rolling_back"}, "rolling_back",
+                updates={"active": None, "previous": previous},
+                crash_hook=self.crash_hook,
+            )
+
+        pending_out: list[bool] = []
+        restored = self._restore_previous_locked(
+            tx,
+            request_id,
+            operation,
+            target,
+            generation,
+            previous,
+            deadline,
+            warnings=warnings,
+            finish_receipt=True,
+            cleanup_pending_out=pending_out,
+        )
+        cleanup_pending = cleanup_pending or any(pending_out)
+        if restored is None:
+            return self._fail_locked(
+                tx,
+                acceptance,
+                deadline,
+                error_code=ERROR_ROLLBACK_FAILED,
+                detail=f"rollback失敗 (原因: {error_code}: {detail})",
+                warnings=warnings,
+                cleanup_pending=cleanup_pending,
+                keep_previous=True,
+            )
+        return _result_from_receipt(
+            restored,
+            warnings=tuple(warnings),
+            cleanup_pending=cleanup_pending,
+        )
+
+    def _restore_previous_locked(
+        self,
+        tx: GameSwitchTransaction,
+        request_id: str,
+        operation: str,
+        target: str | None,
+        generation: int,
+        previous: Mapping[str, object],
+        deadline: float,
+        *,
+        warnings: list[str],
+        finish_receipt: bool = True,
+        cleanup_pending_out: list[bool] | None = None,
+    ) -> Mapping[str, object] | None:
+        """Restore the previous runtime.  Returns the terminal receipt when
+        the restore commits, or None when the restore failed."""
+        # Issue a fresh lease up front and bind the adapter to it, so an
+        # agent started by the restore carries the lease that canonical
+        # active will publish (no lease mismatch on rollback).
+        previous_spec = RuntimeSpec.from_runtime(self.store.state_dir, previous)
+        new_lease = str(uuid.uuid4())
+        previous_spec = replace(previous_spec, lease_id=new_lease)
+        try:
+            previous_adapter = self._make_adapter(previous_spec, deadline)
+        except Exception as exc:
+            warnings.append(f"previous adapter生成失敗: {_safe_detail(exc)}")
+            return None
+        previous_alive = self._probe_alive(previous_adapter, deadline)
+        if previous_alive is None:
+            warnings.append("previous runtimeの生存確認ができません (probe失敗)")
+            return None
+        if previous_alive:
+            # The runtime was quiescing: a living process is not necessarily a
+            # ready game.  Verify readiness BEFORE re-issuing the agent so a
+            # readiness failure cannot leave a fresh-lease agent behind.
+            try:
+                self._call_adapter(
+                    lambda cancel: previous_adapter.stop_agent(deadline, cancel),
+                    deadline,
+                    self.step_timeouts.stop_agent_s,
+                    "stop_agent",
+                )
+                self._call_adapter(
+                    lambda cancel: previous_adapter.readiness(deadline, cancel),
+                    deadline,
+                    max(deadline - time.monotonic(), 0.0),
+                    "readiness",
+                )
+            except Exception as exc:
+                warnings.append(f"previous readiness確認失敗: {_safe_detail(exc)}")
+                return None
+            if previous_adapter.agent_enabled:
+                try:
+                    self._call_adapter(
+                        lambda cancel: previous_adapter.start_agent(deadline, cancel),
+                        deadline,
+                        self.step_timeouts.agent_start_s,
+                        "start_agent",
+                    )
+                except Exception as exc:
+                    # A restore is only complete when the agent is running
+                    # again: an agent-enabled rollback must not publish a
+                    # runtime whose agent is gone.
+                    warnings.append(f"agent再起動失敗: {_safe_detail(exc)}")
+                    return None
+            restored = dict(previous)
+            restored["lease_id"] = new_lease
+            last_result = {
+                "request_id": request_id,
+                "operation": operation,
+                "status": "rolled_back",
+                "from_game": previous["game"],
+                "to_game": target,
+                "generation": generation,
+                "restored_generation": int(previous["generation"]),
+                "error_code": None,
+                "detail": None,
+            }
+            tx.transition(
+                {"rolling_back", "failed"}, "ready",
+                updates={
+                    "active": restored,
+                    "candidate": None,
+                    "previous": None,
+                    "operation": None,
+                    "request_id": None,
+                    "deadline_at": None,
+                    "last_result": last_result,
+                    "last_error": None,
+                },
+                crash_hook=self.crash_hook,
+            )
+            receipt_done = (
+                tx.finish_request(request_id, "rolled_back", last_result) if finish_receipt else last_result
+            )
+            pending = self._finalize_locked(tx, deadline, warnings=warnings)
+            if cleanup_pending_out is not None:
+                cleanup_pending_out.append(pending)
+            return receipt_done
+
+        # Replace mode: the previous game was stopped, so restore it as a
+        # fresh generation (design §5 F).
+        state, _migrated = self.store.canonical.load()
+        restore_generation = int(state["next_generation"])
+        runtime_id = new_runtime_id(restore_generation)
+        names = runtime_names(restore_generation)
+        rollback_spec = RuntimeSpec(
+            game=str(previous["game"]),
+            adapter=str(previous["adapter"]),
+            generation=restore_generation,
+            runtime_id=runtime_id,
+            lease_id=str(uuid.uuid4()),
+            runtime_dir=runtime_directory(self.store.state_dir, runtime_id),
+            game_window=names.game_window,
+            agent_window=names.agent_window,
+            adapter_session=names.adapter_session,
+        )
+        rollback_rd = runtime_state_dict(rollback_spec, _utc_now())
+        # Persist the generation allocation before any side effect.
+        tx.transition(
+            {"rolling_back", "failed"}, "rolling_back",
+            updates={
+                "next_generation": restore_generation + 1,
+                "candidate": rollback_rd,
+                "operation": operation,
+                "request_id": request_id,
+            },
+            crash_hook=self.crash_hook,
+        )
+        try:
+            adapter = self._make_adapter(rollback_spec, deadline)
+        except Exception as exc:
+            warnings.append(f"rollback adapter生成失敗: {_safe_detail(exc)}")
+            return None
+        try:
+            self._call_adapter(
+                lambda cancel: adapter.materialize_runtime(deadline, cancel),
+                deadline,
+                self.step_timeouts.start_s,
+                "materialize",
+            )
+            self._check_deadline(deadline)
+            self._call_adapter(
+                lambda cancel: adapter.readiness(deadline, cancel),
+                deadline,
+                max(deadline - time.monotonic(), 0.0),
+                "readiness",
+            )
+            if adapter.agent_enabled:
+                self._call_adapter(
+                    lambda cancel: adapter.start_agent(deadline, cancel),
+                    deadline,
+                    self.step_timeouts.agent_start_s,
+                    "start_agent",
+                )
+        except Exception as exc:
+            try:
+                torn_down = self._teardown_runtime(adapter, deadline)
+            except Exception:
+                torn_down = False
+            state, _migrated = self.store.canonical.load()
+            if state.get("candidate") is not None:
+                if torn_down:
+                    tx.transition(
+                        {"rolling_back"}, "rolling_back",
+                        updates={"candidate": None},
+                        crash_hook=self.crash_hook,
+                    )
+                else:
+                    # Keep the rollback candidate tracked: it could not be
+                    # confirmed stopped, so it must not vanish from canonical.
+                    tx.transition(
+                        {"rolling_back"}, "rolling_back",
+                        updates={
+                            "candidate": None,
+                            "retiring": [state["candidate"], *(state.get("retiring") or [])],
+                        },
+                        crash_hook=self.crash_hook,
+                    )
+            warnings.append(f"rollback起動失敗: {_safe_detail(exc)}")
+            return None
+        last_result = {
+            "request_id": request_id,
+            "operation": operation,
+            "status": "rolled_back",
+            "from_game": previous["game"],
+            "to_game": target,
+            "generation": generation,
+            "restored_generation": restore_generation,
+            "error_code": None,
+            "detail": None,
+        }
+        tx.transition(
+            {"rolling_back", "failed"}, "ready",
+            updates={
+                "active": rollback_rd,
+                "candidate": None,
+                "previous": None,
+                "operation": None,
+                "request_id": None,
+                "deadline_at": None,
+                "last_result": last_result,
+                "last_error": None,
+            },
+            crash_hook=self.crash_hook,
+        )
+        receipt_done = (
+            tx.finish_request(request_id, "rolled_back", last_result) if finish_receipt else last_result
+        )
+        pending = self._finalize_locked(tx, deadline, warnings=warnings)
+        if cleanup_pending_out is not None:
+            cleanup_pending_out.append(pending)
+        return receipt_done
+
+    def _fail_locked(
+        self,
+        tx: GameSwitchTransaction,
+        acceptance: RequestAcceptance,
+        deadline: float,
+        *,
+        error_code: str,
+        detail: str,
+        warnings: list[str] | None = None,
+        cleanup_pending: bool = False,
+        keep_previous: bool = False,
+        keep_active: bool = False,
+    ) -> SwitchResult:
+        warnings = list(warnings or [])
+        state, _migrated = self.store.canonical.load()
+        last_result = {
+            "request_id": acceptance.request_id,
+            "operation": str(acceptance.receipt["operation"]),
+            "status": "failed",
+            "from_game": state.get("active")["game"] if state.get("active") else None,
+            "to_game": acceptance.receipt.get("target"),
+            "generation": acceptance.generation,
+            "error_code": error_code,
+            "detail": detail,
+            "cleanup_pending": True if cleanup_pending else None,
+        }
+        updates = {
+            "active": state.get("active") if keep_active else None,
+            "candidate": state.get("candidate"),
+            "previous": state.get("previous") if keep_previous else None,
+            "operation": None,
+            "request_id": None,
+            "deadline_at": None,
+            "last_result": last_result,
+            "last_error": {"error_code": error_code, "detail": detail},
+        }
+        tx.transition(
+            IN_PROGRESS_PHASES | {"rolling_back"}, "failed",
+            updates=updates,
+            crash_hook=self.crash_hook,
+        )
+        receipt = tx.finish_request(acceptance.request_id, "failed", last_result)
+        cleanup_pending = self._finalize_locked(tx, deadline, warnings=warnings) or cleanup_pending
+        return _result_from_receipt(
+            receipt,
+            warnings=tuple(warnings),
+            cleanup_pending=cleanup_pending,
+        )
+
+    def _finalize_locked(self, tx: GameSwitchTransaction, deadline: float, warnings: list[str]) -> bool:
+        """Post-terminal housekeeping: mirror the active game and clean
+        retiring runtimes.  Failures are warnings, never rollback reasons."""
+        state, _migrated = self.store.canonical.load()
+        active = state.get("active")
+        try:
+            self._write_mirror(active["game"] if active else None)
+        except Exception as exc:
+            warnings.append(f"current_game mirror更新失敗: {_safe_detail(exc)}")
+        cleanup_pending = False
+        retiring = list(state.get("retiring") or [])
+        remaining: list[Mapping[str, object]] = []
+        for runtime in retiring:
+            try:
+                adapter = self._make_adapter(
+                    RuntimeSpec.from_runtime(self.store.state_dir, runtime), deadline
+                )
+                torn_down = self._teardown_runtime(adapter, deadline)
+            except Exception:
+                torn_down = False
+            if not torn_down:
+                cleanup_pending = True
+                remaining.append(runtime)
+                warnings.append("retiring runtimeの停止を確認できませんでした")
+        if len(remaining) != len(retiring):
+            tx.transition(
+                {state["phase"]}, str(state["phase"]),
+                updates={"retiring": remaining},
+                crash_hook=self.crash_hook,
+            )
+        return cleanup_pending
+
+    def _write_mirror(self, game: str | None) -> None:
+        if self.mirror_writer is not None:
+            self.mirror_writer(self.mirror_path, game)
+            return
+        if game is None:
+            try:
+                self.mirror_path.unlink()
+            except FileNotFoundError:
+                pass
+        else:
+            atomic_write_text(self.mirror_path, f"{game}\n")
+
+    # --- recovery -----------------------------------------------------------
+
+    def _recover_locked(
+        self,
+        tx: GameSwitchTransaction,
+        *,
+        deadline: float,
+    ) -> SwitchResult:
+        state = self.store.canonical.initialize()
+        phase = state["phase"]
+        warnings: list[str] = []
+        if phase == "idle":
+            try:
+                self._write_mirror(None)
+            except Exception as exc:
+                warnings.append(f"mirror修復失敗: {_safe_detail(exc)}")
+            self._reconcile_dangling_receipt_locked(tx)
+            return SwitchResult(
+                request_id="",
+                operation="recover",
+                status="succeeded",
+                target=None,
+                from_game=None,
+                to_game=None,
+                generation=None,
+                error_code=None,
+                detail="recovery は不要でした",
+                warnings=tuple(warnings),
+                cleanup_pending=False,
+                receipt=None,
+            )
+        if phase == "recovery_required":
+            return SwitchResult(
+                request_id="",
+                operation="recover",
+                status="failed",
+                target=None,
+                from_game=None,
+                to_game=None,
+                generation=None,
+                error_code=ERROR_RECOVERY_REQUIRED,
+                detail="canonical stateが壊れているため自動復旧できません",
+                warnings=(),
+                cleanup_pending=False,
+                receipt=None,
+            )
+        if phase == "failed":
+            state, _migrated = self.store.canonical.load()
+            cleanup_pending = self._cleanup_leftovers_locked(tx, state, deadline, warnings)
+            state, _migrated = self.store.canonical.load()
+            previous = state.get("previous")
+            active = state.get("active")
+            if previous is not None:
+                return self._recover_from_previous_locked(
+                    tx, previous, deadline, warnings, cleanup_pending
+                )
+            if active is not None:
+                return self._recover_stop_locked(tx, active, deadline, warnings, cleanup_pending)
+            last_result = {
+                "request_id": "",
+                "operation": "recover",
+                "status": "succeeded",
+                "from_game": None,
+                "to_game": None,
+                "generation": None,
+                "error_code": None,
+                "detail": "failed状態から復旧しました",
+            }
+            tx.transition(
+                {"failed"}, "idle",
+                updates={
+                    "candidate": None,
+                    "previous": None,
+                    "operation": None,
+                    "request_id": None,
+                    "deadline_at": None,
+                    "last_result": last_result,
+                    "last_error": None,
+                },
+                crash_hook=self.crash_hook,
+            )
+            try:
+                self._write_mirror(None)
+            except Exception as exc:
+                warnings.append(f"mirror修復失敗: {_safe_detail(exc)}")
+            self._reconcile_dangling_receipt_locked(tx)
+            return SwitchResult(
+                request_id="",
+                operation="recover",
+                status="succeeded",
+                target=None,
+                from_game=None,
+                to_game=None,
+                generation=None,
+                error_code=None,
+                detail="failed状態から復旧しました",
+                warnings=tuple(warnings),
+                cleanup_pending=cleanup_pending,
+                receipt=None,
+            )
+        if phase == "ready":
+            state, _migrated = self.store.canonical.load()
+            active = state.get("active")
+            if active is not None:
+                try:
+                    adapter = self._make_adapter(
+                        RuntimeSpec.from_runtime(self.store.state_dir, active), deadline
+                    )
+                except Exception as exc:
+                    adapter = None
+                    warnings.append(f"active probe失敗 (adapter生成): {_safe_detail(exc)}")
+                if adapter is not None:
+                    alive = self._probe_alive(adapter, deadline)
+                else:
+                    alive = None
+                if alive is False:
+                    # The game process is gone, but the agent may still be
+                    # alive.  Keep the runtime identity tracked and tear it
+                    # down (stop_agent -> cleanup -> confirmed dead) before
+                    # forgetting it; an unconfirmed teardown stays in
+                    # retiring so recovery can retry.
+                    try:
+                        torn_down = self._teardown_runtime(adapter, deadline)
+                    except Exception:
+                        torn_down = False
+                    last_result = {
+                        "request_id": "",
+                        "operation": "recover",
+                        "status": "failed",
+                        "from_game": active["game"],
+                        "to_game": None,
+                        "generation": active["generation"],
+                        "error_code": ERROR_START_FAILED,
+                        "detail": "active runtimeが失われています",
+                        "cleanup_pending": None if torn_down else True,
+                    }
+                    updates = {
+                        "active": None,
+                        "candidate": state.get("candidate"),
+                        "previous": state.get("previous"),
+                        "last_result": last_result,
+                        "last_error": {
+                            "error_code": ERROR_START_FAILED,
+                            "detail": "active runtimeが失われています",
+                        },
+                    }
+                    if not torn_down:
+                        updates["retiring"] = [active, *(state.get("retiring") or [])]
+                    tx.transition(
+                        {"ready"}, "failed",
+                        updates=updates,
+                        crash_hook=self.crash_hook,
+                    )
+                    try:
+                        self._write_mirror(None)
+                    except Exception as exc:
+                        warnings.append(f"mirror修復失敗: {_safe_detail(exc)}")
+                    return SwitchResult(
+                        request_id="",
+                        operation="recover",
+                        status="failed",
+                        target=None,
+                        from_game=active["game"],
+                        to_game=None,
+                        generation=active["generation"],
+                        error_code=ERROR_START_FAILED,
+                        detail="active runtimeが失われています",
+                        warnings=tuple(warnings),
+                        cleanup_pending=not torn_down,
+                        receipt=None,
+                    )
+                if alive is None:
+                    # Probe failed: we do NOT know whether the runtime is
+                    # alive.  Keep canonical untouched (active retained) and
+                    # fail closed instead of clearing it.
+                    return SwitchResult(
+                        request_id="",
+                        operation="recover",
+                        status="failed",
+                        target=None,
+                        from_game=active["game"],
+                        to_game=None,
+                        generation=active["generation"],
+                        error_code=ERROR_PROBE_FAILED,
+                        detail="active runtimeの生存確認ができません (probe失敗)",
+                        warnings=tuple(warnings),
+                        cleanup_pending=False,
+                        receipt=None,
+                    )
+            cleanup_pending = self._finalize_locked(tx, deadline, warnings=warnings)
+            self._reconcile_dangling_receipt_locked(tx)
+            return SwitchResult(
+                request_id="",
+                operation="recover",
+                status="succeeded",
+                target=None,
+                from_game=None,
+                to_game=None,
+                generation=None,
+                error_code=None,
+                detail="ready状態を確認しました",
+                warnings=tuple(warnings),
+                cleanup_pending=cleanup_pending,
+                receipt=None,
+            )
+        if state["operation"] == "stop":
+            state, _migrated = self.store.canonical.load()
+            active = state.get("active")
+            if active is not None:
+                try:
+                    adapter = self._make_adapter(
+                        RuntimeSpec.from_runtime(self.store.state_dir, active), deadline
+                    )
+                except Exception as exc:
+                    return self._recover_fail_locked(
+                        tx, state, warnings, "adapter生成に失敗しました", _safe_detail(exc)
+                    )
+                try:
+                    self._call_adapter(
+                        lambda cancel: adapter.stop_agent(deadline, cancel),
+                        deadline,
+                        self.step_timeouts.stop_agent_s,
+                        "stop_agent",
+                    )
+                    self._call_adapter(
+                        lambda cancel: adapter.cleanup_runtime(deadline, cancel),
+                        deadline,
+                        self.step_timeouts.cleanup_s,
+                        "cleanup",
+                    )
+                except Exception as exc:
+                    return self._recover_fail_locked(
+                        tx, state, warnings, "stop再開に失敗しました", _safe_detail(exc)
+                    )
+                if not self._wait_stopped(adapter, deadline):
+                    return self._recover_fail_locked(
+                        tx,
+                        state,
+                        warnings,
+                        "旧runtimeの停止を確認できません (runtimeを保持してfailedに留めます)",
+                        ERROR_QUIESCE_FAILED,
+                    )
+            last_result = {
+                "request_id": str(state.get("request_id") or ""),
+                "operation": "stop",
+                "status": "succeeded",
+                "from_game": active["game"] if active is not None else None,
+                "to_game": None,
+                "generation": active["generation"] if active is not None else None,
+            }
+            tx.transition(
+                IN_PROGRESS_PHASES, "idle",
+                updates={
+                    "active": None,
+                    "candidate": None,
+                    "previous": None,
+                    "operation": None,
+                    "request_id": None,
+                    "deadline_at": None,
+                    "last_result": last_result,
+                    "last_error": None,
+                },
+                crash_hook=self.crash_hook,
+            )
+            request_id = state.get("request_id")
+            if request_id is not None:
+                self._finish_recovering_receipt(tx, str(request_id), "succeeded", last_result)
+            try:
+                self._write_mirror(None)
+            except Exception as exc:
+                warnings.append(f"mirror修復失敗: {_safe_detail(exc)}")
+            return SwitchResult(
+                request_id=str(request_id or ""),
+                operation="recover",
+                status="succeeded",
+                target=None,
+                from_game=last_result["from_game"],
+                to_game=None,
+                generation=last_result["generation"],
+                error_code=None,
+                detail="停止を完了しました",
+                warnings=tuple(warnings),
+                cleanup_pending=False,
+                receipt=None,
+            )
+        # start/switch/restart/rotate crashed mid-transition: cleanup the
+        # candidate and restore the previous game.
+        request_id = state.get("request_id")
+        receipt = self.store.receipts.load(str(request_id)) if request_id else None
+        if receipt is None:
+            raise StateCorruptError("進行中canonicalに対応するrequest receiptがありません")
+        pseudo = RequestAcceptance(
+            request_id=str(request_id),
+            generation=int(receipt["generation"]),
+            status="in_progress",
+            existing=True,
+            receipt=receipt,
+        )
+        return self._rollback_locked(
+            tx,
+            pseudo,
+            deadline,
+            error_code="recovery",
+            detail="crash後にrecoveryで復旧しました",
+        )
+
+    def _recover_from_previous_locked(
+        self,
+        tx: GameSwitchTransaction,
+        previous: Mapping[str, object],
+        deadline: float,
+        warnings: list[str],
+        cleanup_pending: bool,
+    ) -> SwitchResult:
+        state, _migrated = self.store.canonical.load()
+        last_result = state.get("last_result")
+        if not isinstance(last_result, dict):
+            raise StateCorruptError("failed phaseの復旧に必要なlast_resultがありません")
+        request_id = str(last_result.get("request_id") or "")
+        operation = str(last_result.get("operation") or "recover")
+        target = last_result.get("to_game")
+        generation = last_result.get("generation")
+        if not isinstance(generation, int):
+            raise StateCorruptError("failed phaseの復旧に必要なgenerationがありません")
+        # The restore is a rollback-style recovery: give it its own budget so
+        # an expired request/recover deadline cannot block the restore.
+        deadline = time.monotonic() + self.rollback_timeout_s
+        pending_out: list[bool] = []
+        restored = self._restore_previous_locked(
+            tx,
+            request_id,
+            operation,
+            target,
+            generation,
+            previous,
+            deadline,
+            warnings=warnings,
+            finish_receipt=False,
+            cleanup_pending_out=pending_out,
+        )
+        if restored is None:
+            return self._recover_fail_locked(
+                tx, state, warnings, "previous runtimeの復旧に失敗しました", "rollback_failed"
+            )
+        self._reconcile_dangling_receipt_locked(tx)
+        return _result_from_receipt(
+            restored,
+            warnings=tuple(warnings),
+            cleanup_pending=cleanup_pending or any(pending_out),
+        )
+
+    def _recover_stop_locked(
+        self,
+        tx: GameSwitchTransaction,
+        active: Mapping[str, object],
+        deadline: float,
+        warnings: list[str],
+        cleanup_pending: bool,
+    ) -> SwitchResult:
+        try:
+            adapter = self._make_adapter(
+                RuntimeSpec.from_runtime(self.store.state_dir, active), deadline
+            )
+            self._call_adapter(
+                lambda cancel: adapter.stop_agent(deadline, cancel),
+                deadline,
+                self.step_timeouts.stop_agent_s,
+                "stop_agent",
+            )
+            self._call_adapter(
+                lambda cancel: adapter.cleanup_runtime(deadline, cancel),
+                deadline,
+                self.step_timeouts.cleanup_s,
+                "cleanup",
+            )
+        except Exception as exc:
+            state, _migrated = self.store.canonical.load()
+            return self._recover_fail_locked(
+                tx, state, warnings, "stop再開に失敗しました", _safe_detail(exc)
+            )
+        if not self._wait_stopped(adapter, deadline):
+            state, _migrated = self.store.canonical.load()
+            return self._recover_fail_locked(
+                tx,
+                state,
+                warnings,
+                "旧runtimeの停止を確認できません (runtimeを保持してfailedに留めます)",
+                ERROR_QUIESCE_FAILED,
+            )
+        last_result = {
+            "request_id": "",
+            "operation": "recover",
+            "status": "succeeded",
+            "from_game": active["game"],
+            "to_game": None,
+            "generation": active["generation"],
+            "error_code": None,
+            "detail": None,
+        }
+        tx.transition(
+            {"failed"}, "idle",
+            updates={
+                "active": None,
+                "candidate": None,
+                "previous": None,
+                "operation": None,
+                "request_id": None,
+                "deadline_at": None,
+                "last_result": last_result,
+                "last_error": None,
+            },
+            crash_hook=self.crash_hook,
+        )
+        try:
+            self._write_mirror(None)
+        except Exception as exc:
+            warnings.append(f"mirror修復失敗: {_safe_detail(exc)}")
+        self._reconcile_dangling_receipt_locked(tx)
+        return SwitchResult(
+            request_id="",
+            operation="recover",
+            status="succeeded",
+            target=None,
+            from_game=active["game"],
+            to_game=None,
+            generation=active["generation"],
+            error_code=None,
+            detail="停止を完了しました",
+            warnings=tuple(warnings),
+            cleanup_pending=cleanup_pending,
+            receipt=None,
+        )
+
+    def _recover_fail_locked(
+        self,
+        tx: GameSwitchTransaction,
+        state: Mapping[str, object],
+        warnings: list[str],
+        detail: str,
+        error_code: str,
+    ) -> SwitchResult:
+        last_result = {
+            "request_id": str(state.get("request_id") or ""),
+            "operation": "recover",
+            "status": "failed",
+            "from_game": None,
+            "to_game": None,
+            "generation": None,
+            "error_code": error_code,
+            "detail": detail,
+            "cleanup_pending": None,
+        }
+        try:
+            tx.transition(
+                {str(state["phase"])}, "failed",
+                updates={
+                    "last_result": last_result,
+                    "last_error": {"error_code": error_code, "detail": detail},
+                },
+                crash_hook=self.crash_hook,
+            )
+        except InvalidTransitionError:
+            pass
+        return SwitchResult(
+            request_id="",
+            operation="recover",
+            status="failed",
+            target=None,
+            from_game=None,
+            to_game=None,
+            generation=None,
+            error_code=error_code,
+            detail=detail,
+            warnings=tuple(warnings),
+            cleanup_pending=False,
+            receipt=None,
+        )
+
+    def _cleanup_leftovers_locked(
+        self,
+        tx: GameSwitchTransaction,
+        state: Mapping[str, object],
+        deadline: float,
+        warnings: list[str],
+    ) -> bool:
+        cleanup_pending = False
+        candidate = state.get("candidate")
+        if candidate is not None:
+            try:
+                adapter = self._make_adapter(
+                    RuntimeSpec.from_runtime(self.store.state_dir, candidate), deadline
+                )
+                torn_down = self._teardown_runtime(adapter, deadline)
+            except Exception as exc:
+                torn_down = False
+            if not torn_down:
+                cleanup_pending = True
+                warnings.append("candidateの停止を確認できませんでした")
+                # A later restore commit would overwrite candidate with None,
+                # losing track of this runtime.  Keep it durably tracked in
+                # retiring so recovery/finalize retries the cleanup.
+                current, _migrated = self.store.canonical.load()
+                tx.transition(
+                    {str(current["phase"])}, str(current["phase"]),
+                    updates={
+                        "candidate": None,
+                        "retiring": [candidate, *(current.get("retiring") or [])],
+                    },
+                    crash_hook=self.crash_hook,
+                )
+            else:
+                state, _migrated = self.store.canonical.load()
+                if state.get("candidate") is not None:
+                    tx.transition(
+                        {str(state["phase"])}, str(state["phase"]),
+                        updates={"candidate": None},
+                        crash_hook=self.crash_hook,
+                    )
+        return cleanup_pending
+
+    def _finish_recovering_receipt(
+        self,
+        tx: GameSwitchTransaction,
+        request_id: str,
+        status: str,
+        result: Mapping[str, object],
+    ) -> None:
+        receipt = self.store.receipts.load(request_id)
+        if receipt is None or receipt.get("status") in TERMINAL_RECEIPT_STATUSES:
+            return
+        tx.finish_request(request_id, status, result)
+
+    def _reconcile_dangling_receipt_locked(self, tx: GameSwitchTransaction) -> None:
+        """Finish a receipt left non-terminal by a crash between the terminal
+        canonical write and finish_request, using canonical last_result."""
+        state, _migrated = self.store.canonical.load()
+        last_result = state.get("last_result")
+        if not isinstance(last_result, dict):
+            return
+        status = last_result.get("status")
+        if status not in TERMINAL_RECEIPT_STATUSES:
+            return
+        request_id = last_result.get("request_id")
+        if not isinstance(request_id, str) or not request_id:
+            return
+        receipt = self.store.receipts.load(request_id)
+        if receipt is None or receipt.get("status") in TERMINAL_RECEIPT_STATUSES:
+            return
+        tx.finish_request(request_id, str(status), dict(last_result))
+
+
+def _failure_code(exc: BaseException, default: str = ERROR_START_FAILED) -> str:
+    if isinstance(exc, ReadinessTimeoutError):
+        return ERROR_READINESS_TIMEOUT
+    if isinstance(exc, DeadlineExceededError):
+        return ERROR_TIMEOUT
+    return default
