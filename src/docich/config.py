@@ -8,6 +8,8 @@ import tomllib
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 
+from .naming import NameValidationError, ensure_contained, validate_game_name
+
 STREAM_MODES = ("null", "rtmp", "file")
 
 
@@ -249,6 +251,10 @@ def load_global(repo_root: Path, config_path: Path | None = None) -> GlobalConfi
         isinstance(x, str) for x in rotation.games
     ):
         raise ConfigError("rotation.games は文字列のリストである必要があります")
+    try:
+        rotation.games = [validate_game_name(name) for name in rotation.games]
+    except NameValidationError as exc:
+        raise ConfigError(f"rotation.games に不正なゲーム名があります: {exc}") from exc
 
     # webui validation
     if not isinstance(webui.bind, str) or not webui.bind.strip():
@@ -286,10 +292,23 @@ def load_global(repo_root: Path, config_path: Path | None = None) -> GlobalConfi
 
 
 def _parse_game(name: str, path: Path, data: dict) -> GameConfig:
+    try:
+        requested_name = validate_game_name(name)
+    except NameValidationError as exc:
+        raise ConfigError(f"ゲーム定義ファイル名が不正です: {path} ({exc})") from exc
     game_raw = data.get("game", {})
     if not isinstance(game_raw, dict):
         raise ConfigError(f"[game] はテーブルである必要があります: {path}")
-    game_name = game_raw.get("name") or name
+    game_name = game_raw.get("name") or requested_name
+    try:
+        game_name = validate_game_name(game_name)
+    except NameValidationError as exc:
+        raise ConfigError(f"[game].name が不正です: {path} ({exc})") from exc
+    if game_name != requested_name:
+        raise ConfigError(
+            f"ゲーム名がファイル名と一致しません: {path} "
+            f"([game].name={game_name!r}, filename={requested_name!r})"
+        )
     adapter = game_raw.get("adapter")
     if not adapter:
         raise ConfigError(f"[game].adapter は必須です: {path}")
@@ -313,7 +332,11 @@ def _parse_game(name: str, path: Path, data: dict) -> GameConfig:
 
 
 def load_game(g: GlobalConfig, name: str) -> GameConfig:
-    path = g.games_dir / f"{name}.toml"
+    try:
+        name = validate_game_name(name)
+        path = ensure_contained(g.games_dir, g.games_dir / f"{name}.toml")
+    except NameValidationError as exc:
+        raise ConfigError(f"ゲーム名または定義パスが不正です: {exc}") from exc
     if not path.is_file():
         raise ConfigError(
             f"ゲーム定義が見つかりません: {name} ({path})。`docich games` で一覧を確認してください"
@@ -328,8 +351,9 @@ def list_games(g: GlobalConfig) -> list[GameConfig]:
         return games
     for p in sorted(g.games_dir.glob("*.toml")):
         try:
-            data = _load_toml_file(p)
-            games.append(_parse_game(p.stem, p, data))
-        except ConfigError as exc:
+            safe_path = ensure_contained(g.games_dir, p)
+            data = _load_toml_file(safe_path)
+            games.append(_parse_game(p.stem, safe_path, data))
+        except (ConfigError, NameValidationError) as exc:
             print(f"docich: 警告: {p} の読み込みに失敗しました: {exc}", file=sys.stderr)
     return games
