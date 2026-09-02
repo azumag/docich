@@ -25,6 +25,7 @@ WINDOW_PATTERN = "RetroArch"
 NETWORK_CMD_PORT = 55355
 NETWORK_PORT_RANGE = 1000
 RA_READY_POLL_S = 0.5
+RA_READY_IO_TIMEOUT_S = 0.1
 
 # core = "auto" の探索順 (architecture.md §4.1)。
 CORE_CANDIDATES = ("snes9x", "bsnes_mercury_performance", "bsnes_mercury_balanced")
@@ -392,15 +393,16 @@ class RetroArchCoordinatorAdapter:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise ReadinessTimeoutError("network command port からの応答がありません")
-            # socket wait は残り時間に束縛し、cancel 中でも最大 RA_READY_POLL_S
-            # で返るようにする (cancel grace 内の収束を保証)。
             reply = send_ra_cmd(
                 "GET_STATUS",
                 port=self._network_port(),
-                wait_reply_s=min(remaining, RA_READY_POLL_S),
+                wait_reply_s=min(remaining, RA_READY_IO_TIMEOUT_S),
             )
             if reply is not None:
                 return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ReadinessTimeoutError("network command port からの応答がありません")
             wait_s = min(remaining, RA_READY_POLL_S)
             if cancel is not None:
                 if cancel.wait(wait_s):
