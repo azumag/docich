@@ -31,6 +31,7 @@ from .game_switch import (
     GameSwitchCoordinator,
     GameSwitchError,
     GameSwitchStore,
+    StateCorruptError,
     SwitchResult,
     new_request_id,
     validate_request_id,
@@ -574,16 +575,16 @@ def _checked_timeout(timeout_s: float | None) -> float | None:
 
 
 def _read_active_runtime(g: GlobalConfig) -> Mapping[str, object] | None:
-    """canonical active runtime (設計の正本) を返す。壊れていれば None。
+    """canonical active runtime (設計の正本) を返す。
 
-    runtime-aware 移行の互換層: obs/send/ra-cmd が legacy の固定 identity
-    ではなく active runtime の世代別 identity を使うための読み取り専用。
-    P3 の fence/action lock までは action 自体の実行は legacy のまま。
+    canonical がまだ作成されていない移行前だけ None を返し (legacy 互換)、
+    canonical が存在する場合は active (または None) を正とする。壊れている
+    場合は StateCorruptError を投げ、呼び出し側で CliError に変換する
+    (fail-closed)。P3 の fence/action lock までは action 実行自体は legacy。
     """
     store = GameSwitchStore(g.state_dir)
-    try:
-        state, _ = store.canonical.load()
-    except GameSwitchError:
+    state, needs_write = store.canonical.load()
+    if needs_write:
         return None
     active = state.get("active")
     if not isinstance(active, dict):
@@ -595,16 +596,24 @@ def _read_active_runtime(g: GlobalConfig) -> Mapping[str, object] | None:
 
 
 def _read_active_game(g: GlobalConfig) -> str | None:
-    """canonical があれば active、無ければ互換 mirror (current_game) を読む。"""
+    """canonical があれば active を正とし、未作成時だけ互換 mirror を読む。
+
+    canonical が存在して active=None (idle) の場合、stale mirror は使わない。
+    壊れている場合は CliError (fail-closed)。
+    """
     store = GameSwitchStore(g.state_dir)
     try:
-        state, _ = store.canonical.load()
+        state, needs_write = store.canonical.load()
     except GameSwitchError as exc:
         raise CliError(f"canonical state が読み込めません: {exc}") from exc
+    if needs_write:
+        return State(g).current_game()
     active = state.get("active")
-    if isinstance(active, dict) and isinstance(active.get("game"), str):
-        return active["game"]
-    return State(g).current_game()
+    if isinstance(active, dict):
+        game = active.get("game")
+        if isinstance(game, str) and game:
+            return game
+    return None
 
 
 def _result_exit_code(result: SwitchResult) -> int:
@@ -756,21 +765,27 @@ def cmd_snap(g: GlobalConfig, output: str | None) -> int:
     return 0
 
 
-def _resolve_game_name(state: State, name: str | None, *, dash_means_current: bool) -> str:
+def _resolve_game_name(g: GlobalConfig, state: State, name: str | None, *, dash_means_current: bool) -> str:
     if dash_means_current and name == "-":
         name = None
     if name:
         return name
-    current = state.current_game()
-    if not current:
+    current = _read_active_game(g)
+    if current is not None:
+        return current
+    legacy = state.current_game()
+    if not legacy:
         raise CliError("現在実行中のゲームがありません。ゲーム名を指定してください")
-    return current
+    return legacy
 
 
 def cmd_obs(g: GlobalConfig, name: str | None) -> int:
     state = State(g)
-    resolved = _resolve_game_name(state, name, dash_means_current=False)
-    _bind_active_cli_session(g, resolved)
+    try:
+        resolved = _resolve_game_name(g, state, name, dash_means_current=False)
+        _bind_active_cli_session(g, resolved)
+    except StateCorruptError as exc:
+        raise CliError(f"canonical state が読み込めません: {exc}") from exc
     game = load_game(g, resolved)
     tmux = Tmux()
     xkit = XKit(g.display.name)
@@ -782,8 +797,11 @@ def cmd_obs(g: GlobalConfig, name: str | None) -> int:
 
 def cmd_send(g: GlobalConfig, game_arg: str, json_text: str) -> int:
     state = State(g)
-    resolved = _resolve_game_name(state, game_arg, dash_means_current=True)
-    _bind_active_cli_session(g, resolved)
+    try:
+        resolved = _resolve_game_name(g, state, game_arg, dash_means_current=True)
+        _bind_active_cli_session(g, resolved)
+    except StateCorruptError as exc:
+        raise CliError(f"canonical state が読み込めません: {exc}") from exc
     game = load_game(g, resolved)
     tmux = Tmux()
     xkit = XKit(g.display.name)
@@ -804,21 +822,30 @@ def _bind_active_cli_session(g: GlobalConfig, resolved: str) -> None:
     adapter の観測/入力先を世代別 session に束縛する (互換層)。
 
     RUNTIME_GAME_SESSION_ENV は legacy CliGameAdapter が参照する。
+    一致しない場合は継承済みの stale binding を消して fail-closed にする
+    (generation-scoped agent 等の subprocess から呼ばれた場合に旧 session
+    へ誤注入しない)。
     """
     active = _read_active_runtime(g)
-    if active is None or active.get("game") != resolved:
-        return
-    if active.get("adapter") != "cli":
-        return
-    session = active.get("adapter_session")
-    if not isinstance(session, str) or not session:
-        return
-    os.environ[RUNTIME_GAME_SESSION_ENV] = session
+    if (
+        active is not None
+        and active.get("game") == resolved
+        and active.get("adapter") == "cli"
+    ):
+        session = active.get("adapter_session")
+        if isinstance(session, str) and session:
+            os.environ[RUNTIME_GAME_SESSION_ENV] = session
+            return
+    os.environ.pop(RUNTIME_GAME_SESSION_ENV, None)
 
 
 def cmd_ra_cmd(g: GlobalConfig, cmd_parts: list[str]) -> int:
     cmd_text = " ".join(cmd_parts)
-    reply = send_ra_cmd(cmd_text, port=_read_ra_port(g))
+    try:
+        port = _read_ra_port(g)
+    except StateCorruptError as exc:
+        raise CliError(f"canonical state が読み込めません: {exc}") from exc
+    reply = send_ra_cmd(cmd_text, port=port)
     if reply is not None:
         print(reply)
     else:
