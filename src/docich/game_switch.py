@@ -7,6 +7,10 @@ P1 (:class:`GameSwitchCoordinator`) drives those contracts through the
 design's replace-mode state machine. It is deliberately not wired to the
 existing CLI lifecycle yet: adapters that implement the P1 contract
 (:class:`CoordinatorAdapter`) arrive in P2.
+
+The coordinator runs every adapter call inside a bounded worker thread so a
+hung adapter cannot hold the exclusive game-switch lock forever.  Adapters
+must additionally respect the monotonic deadline passed to each call.
 """
 from __future__ import annotations
 
@@ -18,12 +22,13 @@ import json
 import os
 import secrets
 import tempfile
+import threading
 import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable, Iterator, Mapping, Protocol
+from typing import Callable, Iterator, Mapping, Protocol, runtime_checkable
 
 from .watchdog import next_rotation_game
 
@@ -955,6 +960,12 @@ class GameSwitchStore:
 DEFAULT_REQUEST_TIMEOUT_S = 600.0
 QUIESCE_VERIFY_TIMEOUT_S = 60.0
 POLL_INTERVAL_S = 0.1
+PREFLIGHT_TIMEOUT_S = 60.0
+STOP_AGENT_TIMEOUT_S = 60.0
+START_TIMEOUT_S = 60.0
+AGENT_START_TIMEOUT_S = 60.0
+CLEANUP_TIMEOUT_S = 120.0
+PROBE_TIMEOUT_S = 5.0
 
 ERROR_BUSY = "busy"
 ERROR_REQUEST_CONFLICT = "request_conflict"
@@ -970,9 +981,25 @@ ERROR_AGENT_START_FAILED = "agent_start_failed"
 ERROR_ROLLBACK_FAILED = "rollback_failed"
 ERROR_STATE_CORRUPT = "state_corrupt"
 ERROR_RECOVERY_REQUIRED = "recovery_required"
+ERROR_PROBE_FAILED = "probe_failed"
+ERROR_TIMEOUT = "timeout"
 ERROR_INTERNAL = "internal"
 
 IN_PROGRESS_PHASES = frozenset(PHASES - {"idle", "ready", "failed", "recovery_required"})
+
+
+@dataclass(frozen=True)
+class StepTimeouts:
+    """Per-step caps for adapter calls, each also bounded by the request
+    deadline.  A cap keeps one hung adapter call from holding the exclusive
+    game-switch lock forever (design v2 §5: individual limits per step)."""
+
+    preflight_s: float = PREFLIGHT_TIMEOUT_S
+    stop_agent_s: float = STOP_AGENT_TIMEOUT_S
+    start_s: float = START_TIMEOUT_S
+    agent_start_s: float = AGENT_START_TIMEOUT_S
+    cleanup_s: float = CLEANUP_TIMEOUT_S
+    probe_s: float = PROBE_TIMEOUT_S
 
 
 class ReadinessTimeoutError(GameSwitchError):
@@ -1035,38 +1062,48 @@ def runtime_state_dict(spec: RuntimeSpec, started_at: str) -> dict[str, object]:
     }
 
 
+@runtime_checkable
 class CoordinatorAdapter(Protocol):
     """P1 adapter contract driven by :class:`GameSwitchCoordinator`.
 
     An instance is bound to exactly one runtime and must only touch that
     runtime's generation-specific resources (windows, sessions, runtime dir).
+
+    Every call receives the request-wide monotonic deadline and must respect
+    it: raise :class:`ReadinessTimeoutError` (or return promptly) once the
+    deadline passes.  The coordinator additionally bounds each call in a
+    worker thread, but a late completion after a timeout can race with
+    rollback, so self-bounding is part of the contract.
+
     ``materialize_runtime`` must be idempotent per runtime: a retry or
     recovery may call it again for an already-created runtime.
+    ``cleanup_runtime`` must tear down the whole runtime; the coordinator
+    also calls ``stop_agent`` first whenever teardown ordering matters.
     """
 
     name: str
     agent_enabled: bool
 
-    def preflight(self) -> None:
+    def preflight(self, deadline: float) -> None:
         """Validate the game definition and dependencies. Side-effect free."""
 
-    def materialize_runtime(self) -> None:
+    def materialize_runtime(self, deadline: float) -> None:
         """Create this runtime's sessions/windows and ownership tags."""
 
     def readiness(self, deadline: float) -> None:
         """Raise :class:`ReadinessTimeoutError` unless ready by ``deadline``."""
 
-    def alive(self) -> bool:
+    def alive(self, deadline: float) -> bool:
         """True while this runtime's game process/session still exists."""
 
-    def cleanup_runtime(self) -> None:
+    def cleanup_runtime(self, deadline: float) -> None:
         """Stop this runtime's own game process/session. Missing targets are
         treated as success, ownership mismatches are errors."""
 
-    def start_agent(self) -> None:
+    def start_agent(self, deadline: float) -> None:
         """Start this runtime's agent window bound to its runtime identity."""
 
-    def stop_agent(self) -> None:
+    def stop_agent(self, deadline: float) -> None:
         """Stop this runtime's agent window. A missing target is success."""
 
 
@@ -1150,6 +1187,7 @@ class GameSwitchCoordinator:
         default_timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S,
         quiesce_verify_timeout_s: float = QUIESCE_VERIFY_TIMEOUT_S,
         poll_interval_s: float = POLL_INTERVAL_S,
+        step_timeouts: StepTimeouts | None = None,
     ):
         self.store = store
         self.adapter_factory = adapter_factory
@@ -1157,6 +1195,7 @@ class GameSwitchCoordinator:
         self.default_timeout_s = default_timeout_s
         self.quiesce_verify_timeout_s = quiesce_verify_timeout_s
         self.poll_interval_s = poll_interval_s
+        self.step_timeouts = step_timeouts or StepTimeouts()
         self.mirror_writer = mirror_writer
         self.mirror_path = store.state_dir / "current_game"
 
@@ -1288,6 +1327,10 @@ class GameSwitchCoordinator:
             target = None  # resolved from the active runtime inside the lock
         else:
             operation, target = validate_request(operation, target)
+        if operation == "rotate":
+            # The rotation list selects the target, so it must be part of the
+            # request identity: a resend with a different list is a conflict.
+            payload = {**(payload or {}), "rotation_games": list(games or [])}
         timeout = float(timeout_s if timeout_s is not None else self.default_timeout_s)
         if timeout <= 0:
             raise ValueError("timeout_s は正の値である必要があります")
@@ -1427,23 +1470,32 @@ class GameSwitchCoordinator:
                     receipt=None,
                 )
         if operation == "restart":
-            active = state.get("active")
-            if active is None:
-                return SwitchResult(
-                    request_id=request_id,
-                    operation=operation,
-                    status="failed",
-                    target=None,
-                    from_game=None,
-                    to_game=None,
-                    generation=None,
-                    error_code=ERROR_NO_ACTIVE_GAME,
-                    detail="実行中のゲームがありません",
-                    warnings=(),
-                    cleanup_pending=False,
-                    receipt=None,
-                )
-            target = active["game"]
+            # The target is fixed at first acceptance: a resend must keep the
+            # recorded target so the payload hash matches and the request
+            # converges to the same terminal result.
+            existing_receipt = self.store.receipts.load(request_id)
+            if existing_receipt is not None:
+                target = existing_receipt.get("target")
+                if target is None:
+                    raise StateCorruptError("restart receiptにtargetが記録されていません")
+            else:
+                active = state.get("active")
+                if active is None:
+                    return SwitchResult(
+                        request_id=request_id,
+                        operation=operation,
+                        status="failed",
+                        target=None,
+                        from_game=None,
+                        to_game=None,
+                        generation=None,
+                        error_code=ERROR_NO_ACTIVE_GAME,
+                        detail="実行中のゲームがありません",
+                        warnings=(),
+                        cleanup_pending=False,
+                        receipt=None,
+                    )
+                target = active["game"]
         if operation == "stop" and state.get("active") is None:
             return SwitchResult(
                 request_id=request_id,
@@ -1560,7 +1612,7 @@ class GameSwitchCoordinator:
                 acceptance,
                 deadline,
                 target=target,
-                error_code=ERROR_READINESS_TIMEOUT,
+                error_code=ERROR_TIMEOUT,
                 detail=_safe_detail(exc),
             )
 
@@ -1568,8 +1620,64 @@ class GameSwitchCoordinator:
         if time.monotonic() >= deadline:
             raise DeadlineExceededError("request deadline を超過しました")
 
-    def _make_adapter(self, spec: RuntimeSpec) -> CoordinatorAdapter:
-        adapter = self.adapter_factory(spec)
+    def _call_adapter(
+        self,
+        fn: Callable[[], object],
+        deadline: float,
+        timeout_s: float,
+        step_name: str,
+    ) -> object:
+        """Run one adapter call with a bounded wait.
+
+        The call runs in a daemon worker so that a hung adapter cannot keep
+        the exclusive lock forever: after ``timeout_s`` (bounded by the
+        request deadline) the step fails with DeadlineExceededError and the
+        coordinator rolls back while the lock is released.  Adapters must
+        self-bound by the deadline; the worker is only a backstop.
+        """
+        remaining = min(deadline - time.monotonic(), timeout_s)
+        if remaining <= 0:
+            raise DeadlineExceededError(f"adapter {step_name} のdeadlineを超過しました")
+        result: list[object] = []
+        error: list[BaseException] = []
+
+        def run() -> None:
+            try:
+                result.append(fn())
+            except BaseException as exc:  # noqa: BLE001 - re-raised in caller
+                error.append(exc)
+
+        worker = threading.Thread(
+            target=run, name=f"docich-adapter-{step_name}", daemon=True
+        )
+        worker.start()
+        worker.join(remaining)
+        if worker.is_alive():
+            raise DeadlineExceededError(f"adapter {step_name} がtimeoutしました")
+        if error:
+            raise error[0]
+        return result[0] if result else None
+
+    def _probe_alive(self, adapter: CoordinatorAdapter, deadline: float) -> bool | None:
+        """Probe liveness; None means the probe itself failed (unknown).
+
+        An unknown probe must not be treated as dead: the caller keeps the
+        runtime tracked and fails closed instead of clearing it.
+        """
+        try:
+            result = self._call_adapter(
+                lambda: adapter.alive(deadline), deadline, self.step_timeouts.probe_s, "alive"
+            )
+        except Exception:
+            return None
+        return bool(result)
+
+    def _make_adapter(self, spec: RuntimeSpec, deadline: float) -> CoordinatorAdapter:
+        adapter = self._call_adapter(
+            lambda: self.adapter_factory(spec), deadline, self.step_timeouts.start_s, "factory"
+        )
+        if not isinstance(adapter, CoordinatorAdapter):
+            raise GameSwitchError("adapter factory が CoordinatorAdapter を返していません")
         if not isinstance(adapter.name, str) or not adapter.name:
             raise GameSwitchError("adapter が name を返していません")
         return adapter
@@ -1589,7 +1697,7 @@ class GameSwitchCoordinator:
         old_active = state.get("active")
         spec = self._candidate_spec(acceptance, target)
         try:
-            adapter = self._make_adapter(spec)
+            adapter = self._make_adapter(spec, deadline)
         except Exception as exc:
             return self._rollback_locked(
                 tx,
@@ -1607,14 +1715,19 @@ class GameSwitchCoordinator:
             crash_hook=self.crash_hook,
         )
         try:
-            adapter.preflight()
+            self._call_adapter(
+                lambda: adapter.preflight(deadline),
+                deadline,
+                self.step_timeouts.preflight_s,
+                "preflight",
+            )
         except Exception as exc:
             return self._rollback_locked(
                 tx,
                 acceptance,
                 deadline,
                 target=target,
-                error_code=ERROR_PREPARE_FAILED,
+                error_code=_failure_code(exc, ERROR_PREPARE_FAILED),
                 detail=_safe_detail(exc),
             )
         self._check_deadline(deadline)
@@ -1622,7 +1735,7 @@ class GameSwitchCoordinator:
         if old_active is not None:
             old_spec = RuntimeSpec.from_runtime(self.store.state_dir, old_active)
             try:
-                old_adapter = self._make_adapter(old_spec)
+                old_adapter = self._make_adapter(old_spec, deadline)
             except Exception as exc:
                 return self._rollback_locked(
                     tx,
@@ -1638,15 +1751,25 @@ class GameSwitchCoordinator:
                 crash_hook=self.crash_hook,
             )
             try:
-                old_adapter.stop_agent()
-                old_adapter.cleanup_runtime()
+                self._call_adapter(
+                    lambda: old_adapter.stop_agent(deadline),
+                    deadline,
+                    self.step_timeouts.stop_agent_s,
+                    "stop_agent",
+                )
+                self._call_adapter(
+                    lambda: old_adapter.cleanup_runtime(deadline),
+                    deadline,
+                    self.step_timeouts.cleanup_s,
+                    "cleanup",
+                )
             except Exception as exc:
                 return self._rollback_locked(
                     tx,
                     acceptance,
                     deadline,
                     target=target,
-                    error_code=ERROR_QUIESCE_FAILED,
+                    error_code=_failure_code(exc, ERROR_QUIESCE_FAILED),
                     detail=_safe_detail(exc),
                 )
             if not self._wait_stopped(old_adapter, deadline):
@@ -1667,21 +1790,31 @@ class GameSwitchCoordinator:
             crash_hook=self.crash_hook,
         )
         try:
-            adapter.materialize_runtime()
+            self._call_adapter(
+                lambda: adapter.materialize_runtime(deadline),
+                deadline,
+                self.step_timeouts.start_s,
+                "materialize",
+            )
         except Exception as exc:
             return self._rollback_locked(
                 tx,
                 acceptance,
                 deadline,
                 target=target,
-                error_code=ERROR_START_FAILED,
+                error_code=_failure_code(exc, ERROR_START_FAILED),
                 detail=_safe_detail(exc),
             )
         self._check_deadline(deadline)
 
         tx.transition({"starting"}, "probing", crash_hook=self.crash_hook)
         try:
-            adapter.readiness(deadline)
+            self._call_adapter(
+                lambda: adapter.readiness(deadline),
+                deadline,
+                max(deadline - time.monotonic(), 0.0),
+                "readiness",
+            )
         except Exception as exc:
             return self._rollback_locked(
                 tx,
@@ -1695,13 +1828,19 @@ class GameSwitchCoordinator:
 
         if adapter.agent_enabled:
             try:
-                adapter.start_agent()
+                self._call_adapter(
+                    lambda: adapter.start_agent(deadline),
+                    deadline,
+                    self.step_timeouts.agent_start_s,
+                    "start_agent",
+                )
             except Exception as exc:
                 return self._rollback_locked(
                     tx,
                     acceptance,
                     deadline,
-                    error_code=ERROR_AGENT_START_FAILED,
+                    target=target,
+                    error_code=_failure_code(exc, ERROR_AGENT_START_FAILED),
                     detail=_safe_detail(exc),
                 )
         self._check_deadline(deadline)
@@ -1738,7 +1877,7 @@ class GameSwitchCoordinator:
         )
         receipt = tx.finish_request(acceptance.request_id, "succeeded", last_result)
         warnings: list[str] = []
-        cleanup_pending = self._finalize_locked(tx, warnings=warnings)
+        cleanup_pending = self._finalize_locked(tx, deadline, warnings=warnings)
         return _result_from_receipt(receipt, warnings=tuple(warnings), cleanup_pending=cleanup_pending)
 
     def _candidate_spec(self, acceptance: RequestAcceptance, target: str) -> RuntimeSpec:
@@ -1759,12 +1898,14 @@ class GameSwitchCoordinator:
         )
 
     def _wait_stopped(self, adapter: CoordinatorAdapter, deadline: float) -> bool:
+        """Confirm the runtime is gone.  An unknown probe (exception) is never
+        treated as stopped, so a hang or probe failure fails the wait."""
         limit = min(deadline, time.monotonic() + self.quiesce_verify_timeout_s)
         while time.monotonic() < limit:
-            if not adapter.alive():
+            if self._probe_alive(adapter, deadline) is False:
                 return True
             time.sleep(self.poll_interval_s)
-        return not adapter.alive()
+        return self._probe_alive(adapter, deadline) is False
 
     # --- stop ---------------------------------------------------------------
 
@@ -1781,33 +1922,46 @@ class GameSwitchCoordinator:
         cleanup_pending = False
         if active is not None:
             try:
-                adapter = self._make_adapter(RuntimeSpec.from_runtime(self.store.state_dir, active))
+                adapter = self._make_adapter(RuntimeSpec.from_runtime(self.store.state_dir, active), deadline)
             except Exception as exc:
                 return self._fail_locked(
                     tx,
                     acceptance,
+                    deadline,
                     error_code=ERROR_QUIESCE_FAILED,
                     detail=f"old runtime adapter: {_safe_detail(exc)}",
                     keep_active=True,
                 )
             try:
-                adapter.stop_agent()
+                self._call_adapter(
+                    lambda: adapter.stop_agent(deadline),
+                    deadline,
+                    self.step_timeouts.stop_agent_s,
+                    "stop_agent",
+                )
             except Exception as exc:
                 return self._fail_locked(
                     tx,
                     acceptance,
-                    error_code=ERROR_QUIESCE_FAILED,
+                    deadline,
+                    error_code=_failure_code(exc, ERROR_QUIESCE_FAILED),
                     detail=_safe_detail(exc),
                     keep_active=True,
                 )
             tx.transition({"quiescing"}, "stopping", crash_hook=self.crash_hook)
             try:
-                adapter.cleanup_runtime()
+                self._call_adapter(
+                    lambda: adapter.cleanup_runtime(deadline),
+                    deadline,
+                    self.step_timeouts.cleanup_s,
+                    "cleanup",
+                )
             except Exception as exc:
                 return self._fail_locked(
                     tx,
                     acceptance,
-                    error_code=ERROR_QUIESCE_FAILED,
+                    deadline,
+                    error_code=_failure_code(exc, ERROR_QUIESCE_FAILED),
                     detail=_safe_detail(exc),
                     keep_active=True,
                 )
@@ -1815,6 +1969,7 @@ class GameSwitchCoordinator:
                 return self._fail_locked(
                     tx,
                     acceptance,
+                    deadline,
                     error_code=ERROR_QUIESCE_FAILED,
                     detail="旧runtimeの停止を確認できませんでした",
                     keep_active=True,
@@ -1844,7 +1999,7 @@ class GameSwitchCoordinator:
             crash_hook=self.crash_hook,
         )
         receipt = tx.finish_request(acceptance.request_id, "succeeded", last_result)
-        cleanup_pending = self._finalize_locked(tx, warnings=warnings)
+        cleanup_pending = self._finalize_locked(tx, deadline, warnings=warnings)
         return _result_from_receipt(receipt, warnings=tuple(warnings), cleanup_pending=cleanup_pending)
 
     # --- rollback / failure -------------------------------------------------
@@ -1873,8 +2028,22 @@ class GameSwitchCoordinator:
         candidate = state.get("candidate")
         if candidate is not None:
             try:
-                adapter = self._make_adapter(RuntimeSpec.from_runtime(self.store.state_dir, candidate))
-                adapter.cleanup_runtime()
+                adapter = self._make_adapter(
+                    RuntimeSpec.from_runtime(self.store.state_dir, candidate), deadline
+                )
+                # Never leave a candidate agent running after rollback.
+                self._call_adapter(
+                    lambda: adapter.stop_agent(deadline),
+                    deadline,
+                    self.step_timeouts.stop_agent_s,
+                    "stop_agent",
+                )
+                self._call_adapter(
+                    lambda: adapter.cleanup_runtime(deadline),
+                    deadline,
+                    self.step_timeouts.cleanup_s,
+                    "cleanup",
+                )
             except Exception as exc:
                 cleanup_pending = True
                 warnings.append(f"candidate cleanup失敗: {_safe_detail(exc)}")
@@ -1904,6 +2073,7 @@ class GameSwitchCoordinator:
             return self._fail_locked(
                 tx,
                 acceptance,
+                deadline,
                 error_code=error_code,
                 detail=detail,
                 warnings=warnings,
@@ -1925,6 +2095,7 @@ class GameSwitchCoordinator:
             return self._fail_locked(
                 tx,
                 acceptance,
+                deadline,
                 error_code=ERROR_ROLLBACK_FAILED,
                 detail=f"rollback失敗 (原因: {error_code}: {detail})",
                 warnings=warnings,
@@ -1952,19 +2123,36 @@ class GameSwitchCoordinator:
     ) -> Mapping[str, object] | None:
         """Restore the previous runtime.  Returns the terminal receipt when
         the restore commits, or None when the restore failed."""
+        # Issue a fresh lease up front and bind the adapter to it, so an
+        # agent started by the restore carries the lease that canonical
+        # active will publish (no lease mismatch on rollback).
+        previous_spec = RuntimeSpec.from_runtime(self.store.state_dir, previous)
+        new_lease = str(uuid.uuid4())
+        previous_spec = replace(previous_spec, lease_id=new_lease)
         try:
-            previous_adapter = self._make_adapter(
-                RuntimeSpec.from_runtime(self.store.state_dir, previous)
-            )
+            previous_adapter = self._make_adapter(previous_spec, deadline)
         except Exception as exc:
             warnings.append(f"previous adapter生成失敗: {_safe_detail(exc)}")
             return None
-        if previous_adapter.alive():
-            new_lease = str(uuid.uuid4())
+        previous_alive = self._probe_alive(previous_adapter, deadline)
+        if previous_alive is None:
+            warnings.append("previous runtimeの生存確認ができません (probe失敗)")
+            return None
+        if previous_alive:
             if previous_adapter.agent_enabled:
                 try:
-                    previous_adapter.stop_agent()
-                    previous_adapter.start_agent()
+                    self._call_adapter(
+                        lambda: previous_adapter.stop_agent(deadline),
+                        deadline,
+                        self.step_timeouts.stop_agent_s,
+                        "stop_agent",
+                    )
+                    self._call_adapter(
+                        lambda: previous_adapter.start_agent(deadline),
+                        deadline,
+                        self.step_timeouts.agent_start_s,
+                        "start_agent",
+                    )
                 except Exception as exc:
                     warnings.append(f"agent再起動失敗: {_safe_detail(exc)}")
             restored = dict(previous)
@@ -1997,7 +2185,7 @@ class GameSwitchCoordinator:
             receipt_done = (
                 tx.finish_request(request_id, "rolled_back", last_result) if finish_receipt else last_result
             )
-            self._finalize_locked(tx, warnings=warnings)
+            self._finalize_locked(tx, deadline, warnings=warnings)
             return receipt_done
 
         # Replace mode: the previous game was stopped, so restore it as a
@@ -2030,19 +2218,45 @@ class GameSwitchCoordinator:
             crash_hook=self.crash_hook,
         )
         try:
-            adapter = self._make_adapter(rollback_spec)
+            adapter = self._make_adapter(rollback_spec, deadline)
         except Exception as exc:
             warnings.append(f"rollback adapter生成失敗: {_safe_detail(exc)}")
             return None
         try:
-            adapter.materialize_runtime()
+            self._call_adapter(
+                lambda: adapter.materialize_runtime(deadline),
+                deadline,
+                self.step_timeouts.start_s,
+                "materialize",
+            )
             self._check_deadline(deadline)
-            adapter.readiness(deadline)
+            self._call_adapter(
+                lambda: adapter.readiness(deadline),
+                deadline,
+                max(deadline - time.monotonic(), 0.0),
+                "readiness",
+            )
             if adapter.agent_enabled:
-                adapter.start_agent()
+                self._call_adapter(
+                    lambda: adapter.start_agent(deadline),
+                    deadline,
+                    self.step_timeouts.agent_start_s,
+                    "start_agent",
+                )
         except Exception as exc:
             try:
-                adapter.cleanup_runtime()
+                self._call_adapter(
+                    lambda: adapter.stop_agent(deadline),
+                    deadline,
+                    self.step_timeouts.stop_agent_s,
+                    "stop_agent",
+                )
+                self._call_adapter(
+                    lambda: adapter.cleanup_runtime(deadline),
+                    deadline,
+                    self.step_timeouts.cleanup_s,
+                    "cleanup",
+                )
                 state, _migrated = self.store.canonical.load()
                 if state.get("candidate") is not None:
                     tx.transition(
@@ -2082,13 +2296,14 @@ class GameSwitchCoordinator:
         receipt_done = (
             tx.finish_request(request_id, "rolled_back", last_result) if finish_receipt else last_result
         )
-        self._finalize_locked(tx, warnings=warnings)
+        self._finalize_locked(tx, deadline, warnings=warnings)
         return receipt_done
 
     def _fail_locked(
         self,
         tx: GameSwitchTransaction,
         acceptance: RequestAcceptance,
+        deadline: float,
         *,
         error_code: str,
         detail: str,
@@ -2126,14 +2341,14 @@ class GameSwitchCoordinator:
             crash_hook=self.crash_hook,
         )
         receipt = tx.finish_request(acceptance.request_id, "failed", last_result)
-        cleanup_pending = self._finalize_locked(tx, warnings=warnings) or cleanup_pending
+        cleanup_pending = self._finalize_locked(tx, deadline, warnings=warnings) or cleanup_pending
         return _result_from_receipt(
             receipt,
             warnings=tuple(warnings),
             cleanup_pending=cleanup_pending,
         )
 
-    def _finalize_locked(self, tx: GameSwitchTransaction, warnings: list[str]) -> bool:
+    def _finalize_locked(self, tx: GameSwitchTransaction, deadline: float, warnings: list[str]) -> bool:
         """Post-terminal housekeeping: mirror the active game and clean
         retiring runtimes.  Failures are warnings, never rollback reasons."""
         state, _migrated = self.store.canonical.load()
@@ -2147,8 +2362,21 @@ class GameSwitchCoordinator:
         remaining: list[Mapping[str, object]] = []
         for runtime in retiring:
             try:
-                adapter = self._make_adapter(RuntimeSpec.from_runtime(self.store.state_dir, runtime))
-                adapter.cleanup_runtime()
+                adapter = self._make_adapter(
+                    RuntimeSpec.from_runtime(self.store.state_dir, runtime), deadline
+                )
+                self._call_adapter(
+                    lambda: adapter.stop_agent(deadline),
+                    deadline,
+                    self.step_timeouts.stop_agent_s,
+                    "stop_agent",
+                )
+                self._call_adapter(
+                    lambda: adapter.cleanup_runtime(deadline),
+                    deadline,
+                    self.step_timeouts.cleanup_s,
+                    "cleanup",
+                )
             except Exception as exc:
                 cleanup_pending = True
                 remaining.append(runtime)
@@ -2221,7 +2449,7 @@ class GameSwitchCoordinator:
             )
         if phase == "failed":
             state, _migrated = self.store.canonical.load()
-            cleanup_pending = self._cleanup_leftovers_locked(tx, state, warnings)
+            cleanup_pending = self._cleanup_leftovers_locked(tx, state, deadline, warnings)
             state, _migrated = self.store.canonical.load()
             previous = state.get("previous")
             active = state.get("active")
@@ -2278,12 +2506,17 @@ class GameSwitchCoordinator:
             active = state.get("active")
             if active is not None:
                 try:
-                    adapter = self._make_adapter(RuntimeSpec.from_runtime(self.store.state_dir, active))
-                    alive = adapter.alive()
+                    adapter = self._make_adapter(
+                        RuntimeSpec.from_runtime(self.store.state_dir, active), deadline
+                    )
                 except Exception as exc:
-                    alive = False
-                    warnings.append(f"active probe失敗: {_safe_detail(exc)}")
-                if not alive:
+                    adapter = None
+                    warnings.append(f"active probe失敗 (adapter生成): {_safe_detail(exc)}")
+                if adapter is not None:
+                    alive = self._probe_alive(adapter, deadline)
+                else:
+                    alive = None
+                if alive is False:
                     last_result = {
                         "request_id": "",
                         "operation": "recover",
@@ -2291,7 +2524,7 @@ class GameSwitchCoordinator:
                         "from_game": active["game"],
                         "to_game": None,
                         "generation": active["generation"],
-                        "error_code": "start_failed",
+                        "error_code": ERROR_START_FAILED,
                         "detail": "active runtimeが失われています",
                         "cleanup_pending": None,
                     }
@@ -2302,7 +2535,10 @@ class GameSwitchCoordinator:
                             "candidate": state.get("candidate"),
                             "previous": state.get("previous"),
                             "last_result": last_result,
-                            "last_error": {"error_code": "start_failed", "detail": "active runtimeが失われています"},
+                            "last_error": {
+                                "error_code": ERROR_START_FAILED,
+                                "detail": "active runtimeが失われています",
+                            },
                         },
                         crash_hook=self.crash_hook,
                     )
@@ -2314,13 +2550,31 @@ class GameSwitchCoordinator:
                         from_game=active["game"],
                         to_game=None,
                         generation=active["generation"],
-                        error_code="start_failed",
+                        error_code=ERROR_START_FAILED,
                         detail="active runtimeが失われています",
                         warnings=tuple(warnings),
                         cleanup_pending=False,
                         receipt=None,
                     )
-            cleanup_pending = self._finalize_locked(tx, warnings=warnings)
+                if alive is None:
+                    # Probe failed: we do NOT know whether the runtime is
+                    # alive.  Keep canonical untouched (active retained) and
+                    # fail closed instead of clearing it.
+                    return SwitchResult(
+                        request_id="",
+                        operation="recover",
+                        status="failed",
+                        target=None,
+                        from_game=active["game"],
+                        to_game=None,
+                        generation=active["generation"],
+                        error_code=ERROR_PROBE_FAILED,
+                        detail="active runtimeの生存確認ができません (probe失敗)",
+                        warnings=tuple(warnings),
+                        cleanup_pending=False,
+                        receipt=None,
+                    )
+            cleanup_pending = self._finalize_locked(tx, deadline, warnings=warnings)
             self._reconcile_dangling_receipt_locked(tx)
             return SwitchResult(
                 request_id="",
@@ -2341,19 +2595,38 @@ class GameSwitchCoordinator:
             active = state.get("active")
             if active is not None:
                 try:
-                    adapter = self._make_adapter(RuntimeSpec.from_runtime(self.store.state_dir, active))
+                    adapter = self._make_adapter(
+                        RuntimeSpec.from_runtime(self.store.state_dir, active), deadline
+                    )
                 except Exception as exc:
                     return self._recover_fail_locked(
                         tx, state, warnings, "adapter生成に失敗しました", _safe_detail(exc)
                     )
                 try:
-                    adapter.stop_agent()
-                    adapter.cleanup_runtime()
+                    self._call_adapter(
+                        lambda: adapter.stop_agent(deadline),
+                        deadline,
+                        self.step_timeouts.stop_agent_s,
+                        "stop_agent",
+                    )
+                    self._call_adapter(
+                        lambda: adapter.cleanup_runtime(deadline),
+                        deadline,
+                        self.step_timeouts.cleanup_s,
+                        "cleanup",
+                    )
                 except Exception as exc:
                     return self._recover_fail_locked(
                         tx, state, warnings, "stop再開に失敗しました", _safe_detail(exc)
                     )
-                self._wait_stopped(adapter, deadline)
+                if not self._wait_stopped(adapter, deadline):
+                    return self._recover_fail_locked(
+                        tx,
+                        state,
+                        warnings,
+                        "旧runtimeの停止を確認できません (runtimeを保持してfailedに留めます)",
+                        ERROR_QUIESCE_FAILED,
+                    )
             last_result = {
                 "request_id": str(state.get("request_id") or ""),
                 "operation": "stop",
@@ -2463,15 +2736,35 @@ class GameSwitchCoordinator:
         cleanup_pending: bool,
     ) -> SwitchResult:
         try:
-            adapter = self._make_adapter(RuntimeSpec.from_runtime(self.store.state_dir, active))
-            adapter.stop_agent()
-            adapter.cleanup_runtime()
+            adapter = self._make_adapter(
+                RuntimeSpec.from_runtime(self.store.state_dir, active), deadline
+            )
+            self._call_adapter(
+                lambda: adapter.stop_agent(deadline),
+                deadline,
+                self.step_timeouts.stop_agent_s,
+                "stop_agent",
+            )
+            self._call_adapter(
+                lambda: adapter.cleanup_runtime(deadline),
+                deadline,
+                self.step_timeouts.cleanup_s,
+                "cleanup",
+            )
         except Exception as exc:
             state, _migrated = self.store.canonical.load()
             return self._recover_fail_locked(
                 tx, state, warnings, "stop再開に失敗しました", _safe_detail(exc)
             )
-        self._wait_stopped(adapter, deadline)
+        if not self._wait_stopped(adapter, deadline):
+            state, _migrated = self.store.canonical.load()
+            return self._recover_fail_locked(
+                tx,
+                state,
+                warnings,
+                "旧runtimeの停止を確認できません (runtimeを保持してfailedに留めます)",
+                ERROR_QUIESCE_FAILED,
+            )
         last_result = {
             "request_id": "",
             "operation": "recover",
@@ -2565,14 +2858,28 @@ class GameSwitchCoordinator:
         self,
         tx: GameSwitchTransaction,
         state: Mapping[str, object],
+        deadline: float,
         warnings: list[str],
     ) -> bool:
         cleanup_pending = False
         candidate = state.get("candidate")
         if candidate is not None:
             try:
-                adapter = self._make_adapter(RuntimeSpec.from_runtime(self.store.state_dir, candidate))
-                adapter.cleanup_runtime()
+                adapter = self._make_adapter(
+                    RuntimeSpec.from_runtime(self.store.state_dir, candidate), deadline
+                )
+                self._call_adapter(
+                    lambda: adapter.stop_agent(deadline),
+                    deadline,
+                    self.step_timeouts.stop_agent_s,
+                    "stop_agent",
+                )
+                self._call_adapter(
+                    lambda: adapter.cleanup_runtime(deadline),
+                    deadline,
+                    self.step_timeouts.cleanup_s,
+                    "cleanup",
+                )
             except Exception as exc:
                 cleanup_pending = True
                 warnings.append(f"candidate cleanup失敗: {_safe_detail(exc)}")
@@ -2617,7 +2924,9 @@ class GameSwitchCoordinator:
         tx.finish_request(request_id, str(status), dict(last_result))
 
 
-def _failure_code(exc: BaseException) -> str:
-    if isinstance(exc, (ReadinessTimeoutError, DeadlineExceededError)):
+def _failure_code(exc: BaseException, default: str = ERROR_START_FAILED) -> str:
+    if isinstance(exc, ReadinessTimeoutError):
         return ERROR_READINESS_TIMEOUT
-    return ERROR_START_FAILED
+    if isinstance(exc, DeadlineExceededError):
+        return ERROR_TIMEOUT
+    return default
