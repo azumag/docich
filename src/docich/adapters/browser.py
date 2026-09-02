@@ -15,6 +15,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from subprocess import TimeoutExpired
 
 from .. import procs
 from ..actions import Action
@@ -27,7 +28,8 @@ BROWSER_CANDIDATES = ("chromium", "chromium-browser", "google-chrome", "google-c
 DEFAULT_WINDOW_PATTERN = "Chrom"
 DEVTOOLS_BASE_PORT = 9222
 DEVTOOLS_PORT_RANGE = 1000
-READY_POLL_S = 0.4  # cancel grace (0.5s) より短い I/O slice
+READY_POLL_S = 0.4
+READY_IO_TIMEOUT_S = 0.1  # coordinator cancel grace (0.5s) より十分短い I/O slice
 RUNTIME_OWNED_FLAGS = ("--user-data-dir", "--remote-debugging-port")
 
 
@@ -63,14 +65,21 @@ def _binary_exists(binary: str) -> bool:
     return procs.which(binary) is not None
 
 
+def _command_head(command, field: str) -> str:
+    if not isinstance(command, list) or not command:
+        raise AdapterError(f"{field} は空でないリストである必要があります")
+    head = str(command[0]).strip()
+    if not head:
+        raise AdapterError(f"{field} の先頭コマンドは空にできません")
+    return head
+
+
 def validate_browser_preflight(game) -> None:
     """Side-effect free validation of the [browser] definition (design v2 §4)."""
     raw = browser_raw(game)
     launch_command = raw.get("launch_command")
-    if launch_command:
-        if not isinstance(launch_command, list) or not launch_command:
-            raise AdapterError("[browser] launch_command は空でないリストである必要があります")
-        head = str(launch_command[0]).split()[0]
+    if launch_command is not None:
+        head = _command_head(launch_command, "[browser] launch_command")
         if not _binary_exists(head):
             raise AdapterError(f"[browser] launch_command の先頭コマンドが見つかりません: {head}")
     else:
@@ -85,7 +94,8 @@ def validate_browser_preflight(game) -> None:
         if not isinstance(extra_args, list):
             raise AdapterError("[browser] extra_args はリストである必要があります")
         for arg in extra_args:
-            if any(str(arg).startswith(flag) for flag in RUNTIME_OWNED_FLAGS):
+            text = str(arg)
+            if any(text == flag or text.startswith(f"{flag}=") for flag in RUNTIME_OWNED_FLAGS):
                 raise AdapterError(
                     f"[browser] extra_args に runtime 予約フラグは指定できません: {arg}"
                 )
@@ -102,10 +112,7 @@ def validate_browser_preflight(game) -> None:
         if probe_type == "http" and not probe.get("url"):
             raise AdapterError("[browser] readiness_probe.http に url が必要です")
         if probe_type == "argv":
-            command = probe.get("command")
-            if not isinstance(command, list) or not command:
-                raise AdapterError("[browser] readiness_probe.argv に command リストが必要です")
-            head = str(command[0]).split()[0]
+            head = _command_head(probe.get("command"), "[browser] readiness_probe.argv command")
             if not _binary_exists(head):
                 raise AdapterError(
                     f"[browser] readiness_probe.argv の先頭コマンドが見つかりません: {head}"
@@ -122,9 +129,8 @@ def browser_launch_command(
 ) -> list[str]:
     raw = browser_raw(game)
     launch_command = raw.get("launch_command")
-    if launch_command:
-        if not isinstance(launch_command, list) or not launch_command:
-            raise AdapterError("[browser] launch_command は空でないリストである必要があります")
+    if launch_command is not None:
+        _command_head(launch_command, "[browser] launch_command")
         return [str(c) for c in launch_command]
 
     if binary is None:
@@ -137,7 +143,8 @@ def browser_launch_command(
     if not isinstance(extra_args, list):
         raise AdapterError("[browser] extra_args はリストである必要があります")
     for arg in extra_args:
-        if any(str(arg).startswith(flag) for flag in RUNTIME_OWNED_FLAGS):
+        text = str(arg)
+        if any(text == flag or text.startswith(f"{flag}=") for flag in RUNTIME_OWNED_FLAGS):
             raise AdapterError(
                 f"[browser] extra_args に runtime 予約フラグは指定できません: {arg}"
             )
@@ -195,7 +202,7 @@ class BrowserAdapter(Adapter):
 
     def prepare(self) -> None:
         raw = self._browser_raw()
-        if not raw.get("launch_command"):
+        if raw.get("launch_command") is None:
             self._resolve_binary()
         self._profile_dir().mkdir(parents=True, exist_ok=True)
 
@@ -299,13 +306,24 @@ class BrowserCoordinatorAdapter:
             )
 
     def _uses_launch_command(self) -> bool:
-        return bool(browser_raw(self.game).get("launch_command"))
+        return browser_raw(self.game).get("launch_command") is not None
 
     def _agent_command(self) -> list[str]:
         return [
             _docich_bin(), "--config", str(self.g.config_path),
             "run", "agent", self.spec.game,
         ]
+
+    def _poll_wait(self, deadline: float, cancel, timeout_message: str) -> None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ReadinessTimeoutError(timeout_message)
+        wait_s = min(remaining, READY_POLL_S)
+        if cancel is not None:
+            if cancel.wait(wait_s):
+                raise ReadinessTimeoutError("adapter call はcancelされました")
+        else:
+            time.sleep(wait_s)
 
     # --- CoordinatorAdapter contract -------------------------------------
 
@@ -353,24 +371,20 @@ class BrowserCoordinatorAdapter:
 
     def _probe_expected_url(self, deadline: float, cancel) -> None:
         expected = str(browser_raw(self.game).get("url") or "")
+        timeout_message = "DevTools で期待URLのページを確認できません"
         while True:
             if cancel is not None and cancel.is_set():
                 raise ReadinessTimeoutError("adapter call はcancelされました")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise ReadinessTimeoutError("DevTools で期待URLのページを確認できません")
+                raise ReadinessTimeoutError(timeout_message)
             try:
-                pages = self._devtools_pages(min(remaining, READY_POLL_S))
+                pages = self._devtools_pages(min(remaining, READY_IO_TIMEOUT_S))
             except (urllib.error.URLError, OSError, ValueError):
                 pages = []
             if any(expected in str(page.get("url", "")) for page in pages):
                 return
-            wait_s = min(remaining, READY_POLL_S)
-            if cancel is not None:
-                if cancel.wait(wait_s):
-                    raise ReadinessTimeoutError("adapter call はcancelされました")
-            else:
-                time.sleep(wait_s)
+            self._poll_wait(deadline, cancel, timeout_message)
 
     def _probe_launch_command(self, deadline: float, cancel) -> None:
         probe = browser_raw(self.game).get("readiness_probe") or {"type": "process"}
@@ -381,57 +395,59 @@ class BrowserCoordinatorAdapter:
             return  # 既に pane 生存を確認済み
         if probe_type == "window":
             pattern = str(probe.get("window_pattern") or DEFAULT_WINDOW_PATTERN)
+            timeout_message = "期待するwindowが見つかりません"
             while True:
                 if cancel is not None and cancel.is_set():
                     raise ReadinessTimeoutError("adapter call はcancelされました")
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise ReadinessTimeoutError("期待するwindowが見つかりません")
-                if self.xkit.find_window(pattern, timeout=min(remaining, READY_POLL_S)) is not None:
+                    raise ReadinessTimeoutError(timeout_message)
+                try:
+                    window_id = self.xkit.find_window(
+                        pattern, timeout=min(remaining, READY_IO_TIMEOUT_S)
+                    )
+                except TimeoutExpired:
+                    window_id = None
+                if window_id is not None:
                     return
-                wait_s = min(remaining, READY_POLL_S)
-                if cancel is not None:
-                    if cancel.wait(wait_s):
-                        raise ReadinessTimeoutError("adapter call はcancelされました")
-                else:
-                    time.sleep(wait_s)
+                self._poll_wait(deadline, cancel, timeout_message)
         if probe_type == "http":
             target = str(probe.get("url") or "")
+            timeout_message = f"http probe が応答しません: {target}"
             while True:
                 if cancel is not None and cancel.is_set():
                     raise ReadinessTimeoutError("adapter call はcancelされました")
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise ReadinessTimeoutError(f"http probe が応答しません: {target}")
+                    raise ReadinessTimeoutError(timeout_message)
                 try:
-                    with urllib.request.urlopen(target, timeout=min(remaining, READY_POLL_S)) as response:
+                    with urllib.request.urlopen(
+                        target, timeout=min(remaining, READY_IO_TIMEOUT_S)
+                    ) as response:
                         if 200 <= response.status < 300:
                             return
                 except (urllib.error.URLError, OSError):
                     pass
-                wait_s = min(remaining, READY_POLL_S)
-                if cancel is not None:
-                    if cancel.wait(wait_s):
-                        raise ReadinessTimeoutError("adapter call はcancelされました")
-                else:
-                    time.sleep(wait_s)
+                self._poll_wait(deadline, cancel, timeout_message)
         if probe_type == "argv":
             argv = probe.get("command")
+            timeout_message = "argv probe が成功しません"
             while True:
                 if cancel is not None and cancel.is_set():
                     raise ReadinessTimeoutError("adapter call はcancelされました")
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise ReadinessTimeoutError("argv probe が成功しません")
-                result = procs.run([str(c) for c in argv], timeout=min(remaining, READY_POLL_S))
-                if result.returncode == 0:
+                    raise ReadinessTimeoutError(timeout_message)
+                try:
+                    result = procs.run(
+                        [str(c) for c in argv],
+                        timeout=min(remaining, READY_IO_TIMEOUT_S),
+                    )
+                except TimeoutExpired:
+                    result = None
+                if result is not None and result.returncode == 0:
                     return
-                wait_s = min(remaining, READY_POLL_S)
-                if cancel is not None:
-                    if cancel.wait(wait_s):
-                        raise ReadinessTimeoutError("adapter call はcancelされました")
-                else:
-                    time.sleep(wait_s)
+                self._poll_wait(deadline, cancel, timeout_message)
         raise AdapterError(f"[browser] readiness_probe.type が不正です: {probe_type}")
 
     def alive(self, deadline: float, cancel) -> bool:
