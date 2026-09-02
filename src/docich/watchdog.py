@@ -20,17 +20,20 @@ from .xkit import XKit
 def _freeze_targets(g: GlobalConfig, state: State) -> tuple[str | None, str, str]:
     """フリーズ検知の対象 (current game, game window, agent window) を返す。
 
-    canonical active があれば世代別 identity を使い、無ければ legacy
-    (固定 window + mirror) にフォールバックする。canonical が壊れている
-    場合は何も触れず legacy 側に任せる (fail-closed)。
+    canonical active があれば世代別 identity を使う。canonical がまだ存在しない
+    移行前状態だけ legacy (固定 window + mirror) にフォールバックする。
+    canonical が存在するが idle、または壊れている場合は mirror を正本扱いせず、
+    current=None を返してフリーズ remedy を fail-closed に抑止する。
     """
     # game_switch は watchdog を import するので、ここでは遅延 import して
     # 循環を避ける。
     from .game_switch import GameSwitchError, GameSwitchStore
 
     try:
-        canonical, _ = GameSwitchStore(g.state_dir).canonical.load()
+        canonical, needs_write = GameSwitchStore(g.state_dir).canonical.load()
     except GameSwitchError:
+        return None, "game", "agent"
+    if needs_write:
         return state.current_game(), "game", "agent"
     active = canonical.get("active")
     if isinstance(active, dict):
@@ -40,7 +43,7 @@ def _freeze_targets(g: GlobalConfig, state: State) -> tuple[str | None, str, str
             agent_window = active.get("agent_window") or "agent"
             if isinstance(game_window, str) and isinstance(agent_window, str):
                 return game, game_window, agent_window
-    return state.current_game(), "game", "agent"
+    return None, "game", "agent"
 
 
 class FreezeDetector:
@@ -128,8 +131,9 @@ def _check_freeze(
     静止しているのが正常であり、これをフリーズと誤検知してしまうため。
 
     runtime-aware 移行の互換層: canonical active があれば世代別 window
-    (game-gN/agent-gN) を確認する。canonical が無い/壊れている場合は旧来
-    の固定 window + 互換 mirror にフォールバックする。
+    (game-gN/agent-gN) を確認する。canonical がまだ存在しない移行前だけ
+    旧来の固定 window + 互換 mirror にフォールバックし、canonical が壊れて
+    いる場合は remedy を fail-closed に抑止する。
     """
     current, game_window, agent_window = _freeze_targets(g, state)
     if not (tmux.has_window(game_window) and current is not None and tmux.has_window(agent_window)):
