@@ -12,6 +12,8 @@ TMUX_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,127}$")
 TMUX_TARGET_PATTERN = re.compile(
     r"^[a-z0-9][a-z0-9_-]{0,127}(?::[a-z0-9][a-z0-9_-]{0,127})?$"
 )
+TMUX_WINDOW_ID_PATTERN = re.compile(r"^@[0-9]+$")
+TMUX_SESSION_ID_PATTERN = re.compile(r"^\$[0-9]+$")
 
 
 class NameValidationError(ValueError):
@@ -50,6 +52,30 @@ def validate_tmux_target(target: str) -> str:
     if not isinstance(target, str) or TMUX_TARGET_PATTERN.fullmatch(target) is None:
         raise NameValidationError("tmux target の形式が不正です")
     return target
+
+
+def validate_tmux_window_id(window_id: str) -> str:
+    if not isinstance(window_id, str) or TMUX_WINDOW_ID_PATTERN.fullmatch(window_id) is None:
+        raise NameValidationError("tmux window IDの形式が不正です")
+    return window_id
+
+
+def validate_tmux_session_id(session_id: str) -> str:
+    if not isinstance(session_id, str) or TMUX_SESSION_ID_PATTERN.fullmatch(session_id) is None:
+        raise NameValidationError("tmux session IDの形式が不正です")
+    return session_id
+
+
+def validate_tmux_window_ref(target: str) -> str:
+    if isinstance(target, str) and TMUX_WINDOW_ID_PATTERN.fullmatch(target) is not None:
+        return validate_tmux_window_id(target)
+    return validate_tmux_target(target)
+
+
+def validate_tmux_session_ref(session: str) -> str:
+    if isinstance(session, str) and TMUX_SESSION_ID_PATTERN.fullmatch(session) is not None:
+        return validate_tmux_session_id(session)
+    return validate_tmux_name(session)
 
 
 def ensure_contained(base: Path, candidate: Path) -> Path:
