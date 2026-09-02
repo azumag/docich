@@ -386,7 +386,7 @@ class TestFactory(CoordinatorAdapterTestBase):
     def test_factory_unknown_adapter_kind_fails_closed(self):
         game_path = self.repo_root / "config" / "games" / "nethack.toml"
         game_path.write_text(
-            '[game]\nname = "nethack"\nadapter = "browser"\n', encoding="utf-8"
+            '[game]\nname = "nethack"\nadapter = "unknown"\n', encoding="utf-8"
         )
         with self.assertRaises(AdapterError):
             make_coordinator_adapter(self.g, self.spec)
