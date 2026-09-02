@@ -706,6 +706,41 @@ class TestRuntimeTracking(CoordinatorTestBase):
         self.assertEqual(state["active"]["game"], "robots")
         self.assertIsNotNone(state["active"])
 
+    def test_recover_keeps_tracking_uncleanable_candidate(self):
+        state, _ = self.store.canonical.load()
+        state.update(
+            {
+                "phase": "failed",
+                "previous": _runtime_dict(1, "nethack"),
+                "candidate": _runtime_dict(2, "robots"),
+                "next_generation": 3,
+                "last_result": {
+                    "request_id": str(uuid.uuid4()),
+                    "operation": "switch",
+                    "status": "failed",
+                    "from_game": "nethack",
+                    "to_game": "robots",
+                    "generation": 2,
+                    "error_code": "start_failed",
+                },
+                "last_error": {"error_code": "start_failed", "detail": "boom"},
+            }
+        )
+        self.store.canonical.save(state)
+        self.behaviors["robots"]["cleanup_error"] = AdapterError("cleanup boom")
+
+        result = self.coordinator.recover()
+        self.assertEqual(result.status, "rolled_back")
+        state = self.canonical()
+        self.assertEqual(state["phase"], "ready")
+        self.assertEqual(state["active"]["game"], "nethack")
+        # The un-cleanable candidate must stay tracked even though the
+        # restore commit succeeded.
+        self.assertIsNone(state["candidate"])
+        pending = [r["game"] for r in state["retiring"]]
+        self.assertIn("robots", pending)
+        self.assertEqual(state["retiring"][0]["generation"], 2)
+
     def test_adapter_name_mismatch_fails_closed(self):
         state, _ = self.store.canonical.load()
         active = _runtime_dict(2, "robots")
@@ -902,6 +937,21 @@ class TestAdapterTimeouts(CoordinatorTestBase):
         self.assertFalse(adapter.runtime.materialized)
         self.assertFalse(adapter.runtime.alive)
         self.assertEqual(self.canonical()["candidate"], None)
+
+    def test_rollback_gets_fresh_budget_after_request_timeout(self):
+        hang = threading.Event()
+        self.behaviors["robots"]["hang_materialize"] = hang
+        coordinator = self._hanging_coordinator()
+        self.coordinator.start("nethack")
+        # The request deadline (0.2s) is spent by the hanging materialize;
+        # the rollback must still restore the stopped previous game on its
+        # own budget instead of failing immediately.
+        result = coordinator.switch("robots", timeout_s=0.2)
+        self.assertEqual(result.status, "rolled_back")
+        state = self.canonical()
+        self.assertEqual(state["phase"], "ready")
+        self.assertEqual(state["active"]["game"], "nethack")
+        self.assertEqual(state["active"]["generation"], 3)
 
 
 class TestMirror(CoordinatorTestBase):

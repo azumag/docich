@@ -967,6 +967,7 @@ AGENT_START_TIMEOUT_S = 60.0
 CLEANUP_TIMEOUT_S = 120.0
 PROBE_TIMEOUT_S = 5.0
 CANCEL_GRACE_S = 0.5
+ROLLBACK_TIMEOUT_S = 120.0
 
 ERROR_BUSY = "busy"
 ERROR_REQUEST_CONFLICT = "request_conflict"
@@ -1195,6 +1196,7 @@ class GameSwitchCoordinator:
         poll_interval_s: float = POLL_INTERVAL_S,
         step_timeouts: StepTimeouts | None = None,
         cancel_grace_s: float = CANCEL_GRACE_S,
+        rollback_timeout_s: float = ROLLBACK_TIMEOUT_S,
     ):
         self.store = store
         self.adapter_factory = adapter_factory
@@ -1204,6 +1206,7 @@ class GameSwitchCoordinator:
         self.poll_interval_s = poll_interval_s
         self.step_timeouts = step_timeouts or StepTimeouts()
         self.cancel_grace_s = cancel_grace_s
+        self.rollback_timeout_s = rollback_timeout_s
         self.mirror_writer = mirror_writer
         self.mirror_path = store.state_dir / "current_game"
 
@@ -2074,6 +2077,11 @@ class GameSwitchCoordinator:
         target = receipt.get("target") if target is None else target
         generation = int(receipt["generation"])
 
+        # Rollback runs on its own budget: the request-wide deadline is often
+        # already spent when a step times out, and restoring the previous
+        # game must not fail merely because the original request expired.
+        deadline = time.monotonic() + self.rollback_timeout_s
+
         tx.transition(IN_PROGRESS_PHASES, "rolling_back", crash_hook=self.crash_hook)
         state, _migrated = self.store.canonical.load()
         candidate = state.get("candidate")
@@ -2773,6 +2781,9 @@ class GameSwitchCoordinator:
         generation = last_result.get("generation")
         if not isinstance(generation, int):
             raise StateCorruptError("failed phaseの復旧に必要なgenerationがありません")
+        # The restore is a rollback-style recovery: give it its own budget so
+        # an expired request/recover deadline cannot block the restore.
+        deadline = time.monotonic() + self.rollback_timeout_s
         restored = self._restore_previous_locked(
             tx,
             request_id,
@@ -2947,6 +2958,18 @@ class GameSwitchCoordinator:
             except Exception as exc:
                 cleanup_pending = True
                 warnings.append(f"candidate cleanup失敗: {_safe_detail(exc)}")
+                # A later restore commit would overwrite candidate with None,
+                # losing track of this runtime.  Keep it durably tracked in
+                # retiring so recovery/finalize retries the cleanup.
+                current, _migrated = self.store.canonical.load()
+                tx.transition(
+                    {str(current["phase"])}, str(current["phase"]),
+                    updates={
+                        "candidate": None,
+                        "retiring": [candidate, *(current.get("retiring") or [])],
+                    },
+                    crash_hook=self.crash_hook,
+                )
             else:
                 state, _migrated = self.store.canonical.load()
                 if state.get("candidate") is not None:
