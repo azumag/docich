@@ -2,6 +2,7 @@
 
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import uuid
@@ -191,7 +192,7 @@ class TestReadiness(RetroArchCoordinatorTestBase):
         self._ready_window()
         replies = iter([None, None, "GET_STATUS OK"])
 
-        def fake_send(cmd, port):
+        def fake_send(cmd, **kwargs):
             return next(replies)
 
         with mock.patch("docich.adapters.retroarch.send_ra_cmd", side_effect=fake_send):
@@ -202,6 +203,32 @@ class TestReadiness(RetroArchCoordinatorTestBase):
         with mock.patch("docich.adapters.retroarch.send_ra_cmd", return_value="OK") as ra_send:
             self.adapter.readiness(time.monotonic() + 5, None)
             self.assertEqual(ra_send.call_args.kwargs["port"], retroarch.NETWORK_CMD_PORT + 1)
+
+    def test_readiness_udp_wait_is_bounded_by_remaining_time(self):
+        self._ready_window()
+        with mock.patch("docich.adapters.retroarch.send_ra_cmd", return_value=None) as ra_send:
+            with self.assertRaises(ReadinessTimeoutError):
+                self.adapter.readiness(time.monotonic() + 0.1, None)
+            # 最後の probe は残り時間に束縛された short wait で呼ばれる
+            self.assertLessEqual(
+                ra_send.call_args.kwargs["wait_reply_s"],
+                retroarch.RA_READY_POLL_S,
+            )
+
+    def test_network_probe_cancel_during_udp_wait_converges_within_grace(self):
+        cancel = threading.Event()
+        started = time.monotonic()
+
+        def slow_reply(cmd, **kwargs):
+            # UDP wait 中に cancel される状況を再現: cancel が set された後も
+            # socket wait は束縛されているため worker は grace 内に終わる。
+            cancel.set()
+            return None
+
+        with mock.patch("docich.adapters.retroarch.send_ra_cmd", side_effect=slow_reply):
+            with self.assertRaises(ReadinessTimeoutError):
+                self.adapter._probe_network_status(time.monotonic() + 5, cancel)
+        self.assertLess(time.monotonic() - started, 0.8, "cancel grace (0.5s) 内に収束すること")
 
 
 class TestAlive(RetroArchCoordinatorTestBase):
