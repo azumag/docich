@@ -538,6 +538,87 @@ class TestFailureRollback(CoordinatorTestBase):
         old = self.factory.adapter("nethack", 1)
         self.assertEqual(old.runtime.events.count("agent_start"), 2)
 
+    def test_candidate_stop_unconfirmed_is_pending(self):
+        """A cleanup that returns without raising is not enough: if the
+        candidate is still alive it must stay tracked (retiring)."""
+        self.behaviors["robots"]["readiness_error"] = game_switch.ReadinessTimeoutError("slow")
+        self.behaviors["robots"]["immortal"] = True
+        self.coordinator.start("nethack")
+        result = self.coordinator.switch("robots")
+        self.assertEqual(result.status, "rolled_back")
+        self.assertTrue(result.cleanup_pending)
+        state = self.canonical()
+        self.assertEqual(state["phase"], "ready")
+        self.assertEqual(state["active"]["game"], "nethack")
+        self.assertIsNone(state["candidate"])
+        pending = [r["game"] for r in state["retiring"]]
+        self.assertIn("robots", pending)
+        candidate = self.factory.adapter("robots", 2)
+        self.assertTrue(candidate.runtime.alive)
+
+    def test_retiring_unconfirmed_cleanup_stays_tracked(self):
+        state, _ = self.store.canonical.load()
+        active = _runtime_dict(2, "robots")
+        state.update(
+            {
+                "phase": "ready",
+                "active": active,
+                "retiring": [_runtime_dict(1, "nethack")],
+                "next_generation": 3,
+                "last_result": {
+                    "request_id": str(uuid.uuid4()),
+                    "operation": "switch",
+                    "status": "succeeded",
+                    "from_game": "nethack",
+                    "to_game": "robots",
+                    "generation": 2,
+                },
+            }
+        )
+        self.store.canonical.save(state)
+        active_adapter = self.factory(game_switch.RuntimeSpec.from_runtime(self.state_dir, active))
+        active_adapter.runtime.materialized = True
+        active_adapter.runtime.alive = True
+        # cleanup returns successfully but the runtime never dies: make the
+        # retiring runtime look alive to the factory first.
+        retiring = self.factory(
+            game_switch.RuntimeSpec.from_runtime(self.state_dir, state["retiring"][0])
+        )
+        retiring.runtime.materialized = True
+        retiring.runtime.alive = True
+        self.behaviors["nethack"]["immortal"] = True
+        self.behaviors["nethack"]["agent_enabled"] = False
+
+        result = self.coordinator.recover()
+        self.assertEqual(result.status, "succeeded")
+        self.assertTrue(result.cleanup_pending)
+        state = self.canonical()
+        self.assertEqual(state["retiring"][0]["game"], "nethack")
+
+    def test_rollback_republished_previous_requires_readiness(self):
+        """A living previous runtime is not necessarily ready: the rollback
+        must require readiness before re-publishing it as active."""
+        self.behaviors["robots"]["preflight_error"] = AdapterError("preflight boom")
+        self.behaviors["nethack"]["readiness_error"] = FailOn(
+            game_switch.ReadinessTimeoutError("not ready yet"), 2
+        )
+        self.coordinator.start("nethack")
+        result = self.coordinator.switch("robots")
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, game_switch.ERROR_ROLLBACK_FAILED)
+        state = self.canonical()
+        self.assertEqual(state["phase"], "failed")
+        self.assertEqual(state["previous"]["game"], "nethack")
+        self.assertIsNone(state["active"])
+
+        recovered = self.coordinator.recover()
+        self.assertEqual(recovered.status, "rolled_back")
+        state = self.canonical()
+        self.assertEqual(state["phase"], "ready")
+        self.assertEqual(state["active"]["game"], "nethack")
+        old = self.factory.adapter("nethack", 1)
+        self.assertEqual(old.runtime.events.count("readiness"), 2)
+
     def test_rollback_agent_restart_failure_fails_closed(self):
         self.behaviors["robots"]["preflight_error"] = AdapterError("preflight boom")
         self.behaviors["nethack"]["agent_start_error"] = FailOn(AdapterError("agent boom"), 2)
