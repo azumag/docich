@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Mapping
 
 from . import (
     ai_generate,
@@ -22,6 +23,8 @@ from . import (
 )
 from .actions import Action, ActionError, parse_actions
 from .adapters import AdapterError, make_adapter, make_coordinator_adapter
+from .adapters.cli_game import RUNTIME_GAME_SESSION_ENV
+from .adapters.retroarch import NETWORK_CMD_PORT, retroarch_network_port
 from .config import ConfigError, GlobalConfig, list_games, load_game, load_global
 from .game_switch import (
     ERROR_ALREADY_ACTIVE,
@@ -124,12 +127,15 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("doctor", help="依存コマンド・環境を点検する")
     sub.add_parser("games", help="config/games/ の一覧を表示する")
     sub.add_parser("up", help="基盤 (display/audio/stream) を起動する")
-    sub.add_parser("down", help="全コンポーネントを停止する")
 
     p_start = sub.add_parser("start", help="ゲームを起動する")
     p_start.add_argument("game", help="ゲーム名 (config/games/<name>.toml)")
     p_start.add_argument("--request-id", metavar="UUID", help="再送用の request_id")
     p_start.add_argument("--timeout", type=float, metavar="SEC", help="request 全体の deadline (秒)")
+
+    p_down = sub.add_parser("down", help="全コンポーネントを停止する")
+    p_down.add_argument("--request-id", metavar="UUID", help="再送用の request_id")
+    p_down.add_argument("--timeout", type=float, metavar="SEC", help="request 全体の deadline (秒)")
 
     p_stop = sub.add_parser("stop", help="現在のゲームを停止する")
     p_stop.add_argument("--request-id", metavar="UUID", help="再送用の request_id")
@@ -292,7 +298,7 @@ def _dispatch(args: argparse.Namespace) -> int:
     if command == "up":
         return cmd_up(g)
     if command == "down":
-        return cmd_down(g)
+        return cmd_down(g, request_id=args.request_id, timeout_s=args.timeout)
     if command == "start":
         return cmd_start(g, args.game, request_id=args.request_id, timeout_s=args.timeout)
     if command == "stop":
@@ -523,13 +529,19 @@ def cmd_up(g: GlobalConfig) -> int:
     return 0
 
 
-def cmd_down(g: GlobalConfig) -> int:
-    state = State(g)
-    if state.current_game() is not None:
-        cmd_stop(g)
+def cmd_down(g: GlobalConfig, *, request_id: str | None = None, timeout_s: float | None = None) -> int:
+    # Design v2: stop が成功 (idle no-op を含む) した場合だけ共有 session
+    # 停止へ進む。busy / rolled_back / failed では session を kill しない。
+    result = _coordinator(g).stop(
+        request_id=_checked_request_id(request_id),
+        timeout_s=_checked_timeout(timeout_s),
+    )
+    if result.status != "succeeded":
+        _print_switch_result("全コンポーネントを停止", result)
+        return _result_exit_code(result)
     tmux = Tmux()
     tmux.kill_session()
-    state.clear_current_game()
+    State(g).clear_current_game()
     print("docich: 停止しました")
     return 0
 
@@ -559,6 +571,27 @@ def _checked_timeout(timeout_s: float | None) -> float | None:
     if timeout_s <= 0:
         raise CliError("--timeout は正の秒数で指定してください")
     return float(timeout_s)
+
+
+def _read_active_runtime(g: GlobalConfig) -> Mapping[str, object] | None:
+    """canonical active runtime (設計の正本) を返す。壊れていれば None。
+
+    runtime-aware 移行の互換層: obs/send/ra-cmd が legacy の固定 identity
+    ではなく active runtime の世代別 identity を使うための読み取り専用。
+    P3 の fence/action lock までは action 自体の実行は legacy のまま。
+    """
+    store = GameSwitchStore(g.state_dir)
+    try:
+        state, _ = store.canonical.load()
+    except GameSwitchError:
+        return None
+    active = state.get("active")
+    if not isinstance(active, dict):
+        return None
+    game = active.get("game")
+    if not isinstance(game, str) or not game:
+        return None
+    return dict(active)
 
 
 def _read_active_game(g: GlobalConfig) -> str | None:
@@ -613,14 +646,16 @@ def cmd_start(g: GlobalConfig, name: str, *, request_id: str | None = None, time
     tmux = Tmux()
     if not tmux.has_window("display"):
         raise CliError("display window がありません。先に `docich up` を実行してください")
+    # request_id は一度だけ解決し、switch fallback でも再利用する。
+    resolved_request_id = _checked_request_id(request_id)
     result = _coordinator(g).start(
         name,
-        request_id=_checked_request_id(request_id),
+        request_id=resolved_request_id,
         timeout_s=_checked_timeout(timeout_s),
     )
     if result.status == "failed" and result.error_code == ERROR_ALREADY_ACTIVE:
         # 別 game が active の場合、設計どおり switch を要求する。
-        return cmd_switch(g, name, request_id=None, timeout_s=timeout_s)
+        return cmd_switch(g, name, request_id=resolved_request_id, timeout_s=timeout_s)
     _print_switch_result(f"ゲームを起動", result)
     return _result_exit_code(result)
 
@@ -735,6 +770,7 @@ def _resolve_game_name(state: State, name: str | None, *, dash_means_current: bo
 def cmd_obs(g: GlobalConfig, name: str | None) -> int:
     state = State(g)
     resolved = _resolve_game_name(state, name, dash_means_current=False)
+    _bind_active_cli_session(g, resolved)
     game = load_game(g, resolved)
     tmux = Tmux()
     xkit = XKit(g.display.name)
@@ -747,6 +783,7 @@ def cmd_obs(g: GlobalConfig, name: str | None) -> int:
 def cmd_send(g: GlobalConfig, game_arg: str, json_text: str) -> int:
     state = State(g)
     resolved = _resolve_game_name(state, game_arg, dash_means_current=True)
+    _bind_active_cli_session(g, resolved)
     game = load_game(g, resolved)
     tmux = Tmux()
     xkit = XKit(g.display.name)
@@ -762,14 +799,43 @@ def cmd_send(g: GlobalConfig, game_arg: str, json_text: str) -> int:
     return 0
 
 
+def _bind_active_cli_session(g: GlobalConfig, resolved: str) -> None:
+    """要求ゲームが canonical active と一致し、CLI adapter なら、legacy
+    adapter の観測/入力先を世代別 session に束縛する (互換層)。
+
+    RUNTIME_GAME_SESSION_ENV は legacy CliGameAdapter が参照する。
+    """
+    active = _read_active_runtime(g)
+    if active is None or active.get("game") != resolved:
+        return
+    if active.get("adapter") != "cli":
+        return
+    session = active.get("adapter_session")
+    if not isinstance(session, str) or not session:
+        return
+    os.environ[RUNTIME_GAME_SESSION_ENV] = session
+
+
 def cmd_ra_cmd(g: GlobalConfig, cmd_parts: list[str]) -> int:
     cmd_text = " ".join(cmd_parts)
-    reply = send_ra_cmd(cmd_text)
+    reply = send_ra_cmd(cmd_text, port=_read_ra_port(g))
     if reply is not None:
         print(reply)
     else:
         print("docich: 返信がありませんでした (タイムアウト)", file=sys.stderr)
     return 0
+
+
+def _read_ra_port(g: GlobalConfig) -> int:
+    """active が RetroArch runtime なら世代別 port、それ以外は fixed port。"""
+    active = _read_active_runtime(g)
+    if (
+        active is not None
+        and active.get("adapter") == "retroarch"
+        and isinstance(active.get("generation"), int)
+    ):
+        return retroarch_network_port(active["generation"])
+    return NETWORK_CMD_PORT
 
 
 # ---------------------------------------------------------------------------
