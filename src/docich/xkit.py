@@ -59,9 +59,11 @@ class XKit:
                 tmp_path.unlink(missing_ok=True)
         return out_path
 
-    def find_window(self, pattern: str) -> str | None:
+    def find_window(self, pattern: str, *, timeout: float | None = None) -> str | None:
         r = procs.run(
-            ["xdotool", "search", "--onlyvisible", "--name", pattern], env_extra=self._env()
+            ["xdotool", "search", "--onlyvisible", "--name", pattern],
+            env_extra=self._env(),
+            timeout=timeout,
         )
         if r.returncode != 0:
             return None
