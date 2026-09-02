@@ -966,6 +966,7 @@ START_TIMEOUT_S = 60.0
 AGENT_START_TIMEOUT_S = 60.0
 CLEANUP_TIMEOUT_S = 120.0
 PROBE_TIMEOUT_S = 5.0
+CANCEL_GRACE_S = 0.5
 
 ERROR_BUSY = "busy"
 ERROR_REQUEST_CONFLICT = "request_conflict"
@@ -1072,8 +1073,13 @@ class CoordinatorAdapter(Protocol):
     Every call receives the request-wide monotonic deadline and must respect
     it: raise :class:`ReadinessTimeoutError` (or return promptly) once the
     deadline passes.  The coordinator additionally bounds each call in a
-    worker thread, but a late completion after a timeout can race with
-    rollback, so self-bounding is part of the contract.
+    worker thread and sets ``cancel`` when the step times out.  An adapter
+    MUST stop its in-flight side effects once ``cancel`` is set: a late
+    completion after a timeout would otherwise race with the coordinator's
+    rollback and create a runtime that canonical no longer tracks.  A
+    non-cooperative adapter that keeps running after cancel is a contract
+    violation and its late side effects cannot be prevented by the
+    coordinator.
 
     ``materialize_runtime`` must be idempotent per runtime: a retry or
     recovery may call it again for an already-created runtime.
@@ -1084,26 +1090,26 @@ class CoordinatorAdapter(Protocol):
     name: str
     agent_enabled: bool
 
-    def preflight(self, deadline: float) -> None:
+    def preflight(self, deadline: float, cancel: threading.Event) -> None:
         """Validate the game definition and dependencies. Side-effect free."""
 
-    def materialize_runtime(self, deadline: float) -> None:
+    def materialize_runtime(self, deadline: float, cancel: threading.Event) -> None:
         """Create this runtime's sessions/windows and ownership tags."""
 
-    def readiness(self, deadline: float) -> None:
+    def readiness(self, deadline: float, cancel: threading.Event) -> None:
         """Raise :class:`ReadinessTimeoutError` unless ready by ``deadline``."""
 
-    def alive(self, deadline: float) -> bool:
+    def alive(self, deadline: float, cancel: threading.Event) -> bool:
         """True while this runtime's game process/session still exists."""
 
-    def cleanup_runtime(self, deadline: float) -> None:
+    def cleanup_runtime(self, deadline: float, cancel: threading.Event) -> None:
         """Stop this runtime's own game process/session. Missing targets are
         treated as success, ownership mismatches are errors."""
 
-    def start_agent(self, deadline: float) -> None:
+    def start_agent(self, deadline: float, cancel: threading.Event) -> None:
         """Start this runtime's agent window bound to its runtime identity."""
 
-    def stop_agent(self, deadline: float) -> None:
+    def stop_agent(self, deadline: float, cancel: threading.Event) -> None:
         """Stop this runtime's agent window. A missing target is success."""
 
 
@@ -1188,6 +1194,7 @@ class GameSwitchCoordinator:
         quiesce_verify_timeout_s: float = QUIESCE_VERIFY_TIMEOUT_S,
         poll_interval_s: float = POLL_INTERVAL_S,
         step_timeouts: StepTimeouts | None = None,
+        cancel_grace_s: float = CANCEL_GRACE_S,
     ):
         self.store = store
         self.adapter_factory = adapter_factory
@@ -1196,6 +1203,7 @@ class GameSwitchCoordinator:
         self.quiesce_verify_timeout_s = quiesce_verify_timeout_s
         self.poll_interval_s = poll_interval_s
         self.step_timeouts = step_timeouts or StepTimeouts()
+        self.cancel_grace_s = cancel_grace_s
         self.mirror_writer = mirror_writer
         self.mirror_path = store.state_dir / "current_game"
 
@@ -1360,6 +1368,28 @@ class GameSwitchCoordinator:
         target: str | None,
         payload: Mapping[str, object] | None,
     ) -> SwitchResult:
+        if operation == "restart":
+            # restart resolves its target inside the lock, so on lock
+            # contention the target is unknown unless the request was
+            # already accepted.  A fresh restart under contention is simply
+            # busy (P0's validate_request would otherwise reject target=None).
+            receipt = self.store.receipts.load(request_id)
+            if receipt is None or receipt.get("target") is None:
+                return SwitchResult(
+                    request_id=request_id,
+                    operation=operation,
+                    status="busy",
+                    target=None,
+                    from_game=None,
+                    to_game=None,
+                    generation=None,
+                    error_code=ERROR_BUSY,
+                    detail="別のゲーム切替が進行中です",
+                    warnings=(),
+                    cleanup_pending=False,
+                    receipt=None,
+                )
+            target = str(receipt["target"])
         try:
             classified = self.store.classify_request(request_id, operation, target, payload)
         except RequestConflictError as exc:
@@ -1622,7 +1652,7 @@ class GameSwitchCoordinator:
 
     def _call_adapter(
         self,
-        fn: Callable[[], object],
+        fn: Callable[[threading.Event], object],
         deadline: float,
         timeout_s: float,
         step_name: str,
@@ -1632,18 +1662,24 @@ class GameSwitchCoordinator:
         The call runs in a daemon worker so that a hung adapter cannot keep
         the exclusive lock forever: after ``timeout_s`` (bounded by the
         request deadline) the step fails with DeadlineExceededError and the
-        coordinator rolls back while the lock is released.  Adapters must
-        self-bound by the deadline; the worker is only a backstop.
+        coordinator rolls back while the lock is released.
+
+        On timeout the ``cancel`` event passed to the adapter is set and the
+        worker is given a short grace period to stop, so a cooperative
+        adapter cannot complete its side effects after the rollback.  A
+        worker still alive after the grace period is abandoned; its late
+        side effects are the adapter's contract violation.
         """
         remaining = min(deadline - time.monotonic(), timeout_s)
         if remaining <= 0:
             raise DeadlineExceededError(f"adapter {step_name} のdeadlineを超過しました")
+        cancel = threading.Event()
         result: list[object] = []
         error: list[BaseException] = []
 
         def run() -> None:
             try:
-                result.append(fn())
+                result.append(fn(cancel))
             except BaseException as exc:  # noqa: BLE001 - re-raised in caller
                 error.append(exc)
 
@@ -1652,7 +1688,16 @@ class GameSwitchCoordinator:
         )
         worker.start()
         worker.join(remaining)
+        timed_out = False
         if worker.is_alive():
+            timed_out = True
+            cancel.set()
+            worker.join(self.cancel_grace_s)
+        if worker.is_alive():
+            raise DeadlineExceededError(
+                f"adapter {step_name} がtimeoutし、cancelにも応答しません"
+            )
+        if timed_out:
             raise DeadlineExceededError(f"adapter {step_name} がtimeoutしました")
         if error:
             raise error[0]
@@ -1666,7 +1711,7 @@ class GameSwitchCoordinator:
         """
         try:
             result = self._call_adapter(
-                lambda: adapter.alive(deadline), deadline, self.step_timeouts.probe_s, "alive"
+                lambda cancel: adapter.alive(deadline, cancel), deadline, self.step_timeouts.probe_s, "alive"
             )
         except Exception:
             return None
@@ -1674,12 +1719,18 @@ class GameSwitchCoordinator:
 
     def _make_adapter(self, spec: RuntimeSpec, deadline: float) -> CoordinatorAdapter:
         adapter = self._call_adapter(
-            lambda: self.adapter_factory(spec), deadline, self.step_timeouts.start_s, "factory"
+            lambda cancel: self.adapter_factory(spec), deadline, self.step_timeouts.start_s, "factory"
         )
         if not isinstance(adapter, CoordinatorAdapter):
             raise GameSwitchError("adapter factory が CoordinatorAdapter を返していません")
         if not isinstance(adapter.name, str) or not adapter.name:
             raise GameSwitchError("adapter が name を返していません")
+        if spec.adapter and adapter.name != spec.adapter:
+            # A runtime recorded under one adapter kind must not be torn down
+            # by another: fail closed instead of mis-cleaning.
+            raise GameSwitchError(
+                f"adapter種別が一致しません (canonical={spec.adapter}, factory={adapter.name})"
+            )
         return adapter
 
     # --- start/switch/restart/rotate --------------------------------------
@@ -1716,7 +1767,7 @@ class GameSwitchCoordinator:
         )
         try:
             self._call_adapter(
-                lambda: adapter.preflight(deadline),
+                lambda cancel: adapter.preflight(deadline, cancel),
                 deadline,
                 self.step_timeouts.preflight_s,
                 "preflight",
@@ -1752,13 +1803,13 @@ class GameSwitchCoordinator:
             )
             try:
                 self._call_adapter(
-                    lambda: old_adapter.stop_agent(deadline),
+                    lambda cancel: old_adapter.stop_agent(deadline, cancel),
                     deadline,
                     self.step_timeouts.stop_agent_s,
                     "stop_agent",
                 )
                 self._call_adapter(
-                    lambda: old_adapter.cleanup_runtime(deadline),
+                    lambda cancel: old_adapter.cleanup_runtime(deadline, cancel),
                     deadline,
                     self.step_timeouts.cleanup_s,
                     "cleanup",
@@ -1791,7 +1842,7 @@ class GameSwitchCoordinator:
         )
         try:
             self._call_adapter(
-                lambda: adapter.materialize_runtime(deadline),
+                lambda cancel: adapter.materialize_runtime(deadline, cancel),
                 deadline,
                 self.step_timeouts.start_s,
                 "materialize",
@@ -1810,7 +1861,7 @@ class GameSwitchCoordinator:
         tx.transition({"starting"}, "probing", crash_hook=self.crash_hook)
         try:
             self._call_adapter(
-                lambda: adapter.readiness(deadline),
+                lambda cancel: adapter.readiness(deadline, cancel),
                 deadline,
                 max(deadline - time.monotonic(), 0.0),
                 "readiness",
@@ -1829,7 +1880,7 @@ class GameSwitchCoordinator:
         if adapter.agent_enabled:
             try:
                 self._call_adapter(
-                    lambda: adapter.start_agent(deadline),
+                    lambda cancel: adapter.start_agent(deadline, cancel),
                     deadline,
                     self.step_timeouts.agent_start_s,
                     "start_agent",
@@ -1934,7 +1985,7 @@ class GameSwitchCoordinator:
                 )
             try:
                 self._call_adapter(
-                    lambda: adapter.stop_agent(deadline),
+                    lambda cancel: adapter.stop_agent(deadline, cancel),
                     deadline,
                     self.step_timeouts.stop_agent_s,
                     "stop_agent",
@@ -1951,7 +2002,7 @@ class GameSwitchCoordinator:
             tx.transition({"quiescing"}, "stopping", crash_hook=self.crash_hook)
             try:
                 self._call_adapter(
-                    lambda: adapter.cleanup_runtime(deadline),
+                    lambda cancel: adapter.cleanup_runtime(deadline, cancel),
                     deadline,
                     self.step_timeouts.cleanup_s,
                     "cleanup",
@@ -2033,13 +2084,13 @@ class GameSwitchCoordinator:
                 )
                 # Never leave a candidate agent running after rollback.
                 self._call_adapter(
-                    lambda: adapter.stop_agent(deadline),
+                    lambda cancel: adapter.stop_agent(deadline, cancel),
                     deadline,
                     self.step_timeouts.stop_agent_s,
                     "stop_agent",
                 )
                 self._call_adapter(
-                    lambda: adapter.cleanup_runtime(deadline),
+                    lambda cancel: adapter.cleanup_runtime(deadline, cancel),
                     deadline,
                     self.step_timeouts.cleanup_s,
                     "cleanup",
@@ -2078,6 +2129,15 @@ class GameSwitchCoordinator:
                 detail=detail,
                 warnings=warnings,
                 cleanup_pending=cleanup_pending,
+            )
+        if state.get("previous") is None:
+            # Pre-quiesce failure: the rollback target still lives in active.
+            # Track it as previous so a failed restore leaves recovery with a
+            # durable reference to retry.
+            tx.transition(
+                {"rolling_back"}, "rolling_back",
+                updates={"active": None, "previous": previous},
+                crash_hook=self.crash_hook,
             )
 
         restored = self._restore_previous_locked(
@@ -2142,19 +2202,23 @@ class GameSwitchCoordinator:
             if previous_adapter.agent_enabled:
                 try:
                     self._call_adapter(
-                        lambda: previous_adapter.stop_agent(deadline),
+                        lambda cancel: previous_adapter.stop_agent(deadline, cancel),
                         deadline,
                         self.step_timeouts.stop_agent_s,
                         "stop_agent",
                     )
                     self._call_adapter(
-                        lambda: previous_adapter.start_agent(deadline),
+                        lambda cancel: previous_adapter.start_agent(deadline, cancel),
                         deadline,
                         self.step_timeouts.agent_start_s,
                         "start_agent",
                     )
                 except Exception as exc:
+                    # A restore is only complete when the agent is running
+                    # again: an agent-enabled rollback must not publish a
+                    # runtime whose agent is gone.
                     warnings.append(f"agent再起動失敗: {_safe_detail(exc)}")
+                    return None
             restored = dict(previous)
             restored["lease_id"] = new_lease
             last_result = {
@@ -2224,21 +2288,21 @@ class GameSwitchCoordinator:
             return None
         try:
             self._call_adapter(
-                lambda: adapter.materialize_runtime(deadline),
+                lambda cancel: adapter.materialize_runtime(deadline, cancel),
                 deadline,
                 self.step_timeouts.start_s,
                 "materialize",
             )
             self._check_deadline(deadline)
             self._call_adapter(
-                lambda: adapter.readiness(deadline),
+                lambda cancel: adapter.readiness(deadline, cancel),
                 deadline,
                 max(deadline - time.monotonic(), 0.0),
                 "readiness",
             )
             if adapter.agent_enabled:
                 self._call_adapter(
-                    lambda: adapter.start_agent(deadline),
+                    lambda cancel: adapter.start_agent(deadline, cancel),
                     deadline,
                     self.step_timeouts.agent_start_s,
                     "start_agent",
@@ -2246,13 +2310,13 @@ class GameSwitchCoordinator:
         except Exception as exc:
             try:
                 self._call_adapter(
-                    lambda: adapter.stop_agent(deadline),
+                    lambda cancel: adapter.stop_agent(deadline, cancel),
                     deadline,
                     self.step_timeouts.stop_agent_s,
                     "stop_agent",
                 )
                 self._call_adapter(
-                    lambda: adapter.cleanup_runtime(deadline),
+                    lambda cancel: adapter.cleanup_runtime(deadline, cancel),
                     deadline,
                     self.step_timeouts.cleanup_s,
                     "cleanup",
@@ -2366,13 +2430,13 @@ class GameSwitchCoordinator:
                     RuntimeSpec.from_runtime(self.store.state_dir, runtime), deadline
                 )
                 self._call_adapter(
-                    lambda: adapter.stop_agent(deadline),
+                    lambda cancel: adapter.stop_agent(deadline, cancel),
                     deadline,
                     self.step_timeouts.stop_agent_s,
                     "stop_agent",
                 )
                 self._call_adapter(
-                    lambda: adapter.cleanup_runtime(deadline),
+                    lambda cancel: adapter.cleanup_runtime(deadline, cancel),
                     deadline,
                     self.step_timeouts.cleanup_s,
                     "cleanup",
@@ -2604,13 +2668,13 @@ class GameSwitchCoordinator:
                     )
                 try:
                     self._call_adapter(
-                        lambda: adapter.stop_agent(deadline),
+                        lambda cancel: adapter.stop_agent(deadline, cancel),
                         deadline,
                         self.step_timeouts.stop_agent_s,
                         "stop_agent",
                     )
                     self._call_adapter(
-                        lambda: adapter.cleanup_runtime(deadline),
+                        lambda cancel: adapter.cleanup_runtime(deadline, cancel),
                         deadline,
                         self.step_timeouts.cleanup_s,
                         "cleanup",
@@ -2740,13 +2804,13 @@ class GameSwitchCoordinator:
                 RuntimeSpec.from_runtime(self.store.state_dir, active), deadline
             )
             self._call_adapter(
-                lambda: adapter.stop_agent(deadline),
+                lambda cancel: adapter.stop_agent(deadline, cancel),
                 deadline,
                 self.step_timeouts.stop_agent_s,
                 "stop_agent",
             )
             self._call_adapter(
-                lambda: adapter.cleanup_runtime(deadline),
+                lambda cancel: adapter.cleanup_runtime(deadline, cancel),
                 deadline,
                 self.step_timeouts.cleanup_s,
                 "cleanup",
@@ -2869,13 +2933,13 @@ class GameSwitchCoordinator:
                     RuntimeSpec.from_runtime(self.store.state_dir, candidate), deadline
                 )
                 self._call_adapter(
-                    lambda: adapter.stop_agent(deadline),
+                    lambda cancel: adapter.stop_agent(deadline, cancel),
                     deadline,
                     self.step_timeouts.stop_agent_s,
                     "stop_agent",
                 )
                 self._call_adapter(
-                    lambda: adapter.cleanup_runtime(deadline),
+                    lambda cancel: adapter.cleanup_runtime(deadline, cancel),
                     deadline,
                     self.step_timeouts.cleanup_s,
                     "cleanup",
