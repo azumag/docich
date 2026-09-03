@@ -105,24 +105,28 @@ _SECRET_KEY_VALUE = re.compile(
     r"private[_-]?key|client[_-]?secret)\b(?P<sep>\s*[:=]\s*)"
     r"(?P<value>\"[^\"]*\"|'[^']*'|\S+)"
 )
-_URL_WITH_SENSITIVE_PART = re.compile(
-    r"(?i)\b(?P<scheme>[a-z][a-z0-9+.\-]*://)(?:[^/\s?#@]*@)?(?P<host>[^/\s?#]*)(?P<path>[^?\s#]*)"
+_ARGV_EXPR = re.compile(
+    r"(?i)\b(?:argv|command|cmd|args)\s*[:=]\s*"
+    r"(?:\[[^\]\n]*\]|\([^)\n]*\)|\"[^\"]*\"|'[^']*'|\S+)"
 )
+_URL_WHOLE = re.compile(r"(?i)\b[a-z][a-z0-9+.\-]*://[^\s\"']+")
 _LONG_OPAQUE_TOKEN = re.compile(r"\b(?:[0-9a-f]{32,}|[0-9A-Za-z+/]{24,}={0,2})\b")
 
 
 def _sanitize_log_detail(detail: str | None) -> str | None:
     """Redact secrets from an event-log detail (design v2 §9).
 
-    Exception-derived details may carry URLs (userinfo/query), credential
-    key=value pairs, or opaque tokens.  Hosts, paths, game/window names,
-    generations, request ids and error codes survive; anything shaped like
-    a secret does not.
+    The log contract records no URLs, tokens, or argv: command expressions
+    and whole URLs are replaced outright, credential key=value pairs keep
+    only a redacted value, and leftover long opaque tokens are replaced.
+    Hosts are not preserved (a URL is a URL).  Game/window names,
+    generations, request ids and error codes survive.
     """
     if not detail:
         return None
     text = _safe_detail(detail)
-    text = _URL_WITH_SENSITIVE_PART.sub(lambda m: f"{m['scheme']}{m['host']}{m['path']}", text)
+    text = _ARGV_EXPR.sub("<redacted>", text)
+    text = _URL_WHOLE.sub("<redacted-url>", text)
     text = _SECRET_KEY_VALUE.sub(lambda m: f"{m['key']}{m['sep']}<redacted>", text)
     text = _LONG_OPAQUE_TOKEN.sub("<redacted>", text)
     return text
