@@ -23,7 +23,7 @@ from . import (
 )
 from .actions import Action, ActionError, parse_actions
 from .adapters import AdapterError, make_adapter, make_coordinator_adapter
-from .adapters.cli_game import RUNTIME_GAME_SESSION_ENV
+from .adapters.cli_game import GAME_SESSION, RUNTIME_GAME_SESSION_ENV
 from .adapters.retroarch import NETWORK_CMD_PORT, retroarch_network_port
 from .config import ConfigError, GlobalConfig, list_games, load_game, load_global
 from .game_switch import (
@@ -141,6 +141,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_stop = sub.add_parser("stop", help="現在のゲームを停止する")
     p_stop.add_argument("--request-id", metavar="UUID", help="再送用の request_id")
     p_stop.add_argument("--timeout", type=float, metavar="SEC", help="request 全体の deadline (秒)")
+
+    sub.add_parser(
+        "migrate-legacy",
+        help="移行用: coordinator 以前の旧 runtime (固定 window/session) を停止して互換 mirror を消去する",
+    )
 
     p_switch = sub.add_parser("switch", help="ゲームを切り替える (transactional switch)")
     p_switch.add_argument("game", help="切り替え先のゲーム名")
@@ -304,6 +309,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return cmd_start(g, args.game, request_id=args.request_id, timeout_s=args.timeout)
     if command == "stop":
         return cmd_stop(g, request_id=args.request_id, timeout_s=args.timeout)
+    if command == "migrate-legacy":
+        return cmd_migrate_legacy(g)
     if command == "switch":
         return cmd_switch(g, args.game, request_id=args.request_id, timeout_s=args.timeout)
     if command == "rotate":
@@ -533,6 +540,7 @@ def cmd_up(g: GlobalConfig) -> int:
 def cmd_down(g: GlobalConfig, *, request_id: str | None = None, timeout_s: float | None = None) -> int:
     # Design v2: stop が成功 (idle no-op を含む) した場合だけ共有 session
     # 停止へ進む。busy / rolled_back / failed では session を kill しない。
+    _require_no_legacy_runtime(g)
     result = _coordinator(g).stop(
         request_id=_checked_request_id(request_id),
         timeout_s=_checked_timeout(timeout_s),
@@ -555,6 +563,47 @@ def cmd_down(g: GlobalConfig, *, request_id: str | None = None, timeout_s: float
 def _coordinator(g: GlobalConfig) -> GameSwitchCoordinator:
     store = GameSwitchStore(g.state_dir)
     return GameSwitchCoordinator(store, lambda spec: make_coordinator_adapter(g, spec))
+
+
+def _legacy_footprint(g: GlobalConfig) -> list[str]:
+    """pre-coordinator runtime の痕跡 (Design v2 の移行対象) を列挙する。
+
+    固定 window `game` / `agent`、固定 session `docich-game`、互換 mirror
+    `current_game` のいずれかが残っていれば移行前の世界とみなす。共有の
+    `docich` session 自体 (display/audio/stream) は対象外。
+    """
+    found: list[str] = []
+    if State(g).current_game() is not None:
+        found.append("current_game")
+    tmux = Tmux()
+    for window in ("game", "agent"):
+        if tmux.has_window(window):
+            found.append(f"window:{window}")
+    if tmux.has_session_named(GAME_SESSION):
+        found.append(f"session:{GAME_SESSION}")
+    return found
+
+
+def _require_no_legacy_runtime(g: GlobalConfig) -> None:
+    """canonical 未作成かつ legacy 痕跡ありなら fail-closed に止める。
+
+    canonical が既に存在する世界では coordinator が唯一の正本であり、
+    legacy 痕跡は operator の責任範囲 (coordinator は所有外に触れない)。
+    """
+    footprint = _legacy_footprint(g)
+    if not footprint:
+        return
+    store = GameSwitchStore(g.state_dir)
+    try:
+        _, needs_write = store.canonical.load()
+    except GameSwitchError:
+        return  # corrupt canonical は coordinator 側の復旧フローが扱う
+    if not needs_write:
+        return
+    raise CliError(
+        f"旧 runtime の痕跡を検出しました ({', '.join(footprint)})。"
+        f"`docich migrate-legacy` で旧 runtime を停止してから再実行してください。"
+    )
 
 
 def _checked_request_id(request_id: str | None) -> str:
@@ -655,6 +704,7 @@ def cmd_start(g: GlobalConfig, name: str, *, request_id: str | None = None, time
     tmux = Tmux()
     if not tmux.has_window("display"):
         raise CliError("display window がありません。先に `docich up` を実行してください")
+    _require_no_legacy_runtime(g)
     # request_id は一度だけ解決し、switch fallback でも再利用する。
     resolved_request_id = _checked_request_id(request_id)
     result = _coordinator(g).start(
@@ -670,6 +720,7 @@ def cmd_start(g: GlobalConfig, name: str, *, request_id: str | None = None, time
 
 
 def cmd_stop(g: GlobalConfig, *, request_id: str | None = None, timeout_s: float | None = None) -> int:
+    _require_no_legacy_runtime(g)
     result = _coordinator(g).stop(
         request_id=_checked_request_id(request_id),
         timeout_s=_checked_timeout(timeout_s),
@@ -678,7 +729,47 @@ def cmd_stop(g: GlobalConfig, *, request_id: str | None = None, timeout_s: float
     return _result_exit_code(result)
 
 
+def cmd_migrate_legacy(g: GlobalConfig) -> int:
+    """One-time migration from the pre-coordinator runtime.
+
+    Stops the fixed windows/session (`game` / `agent` / `docich-game`),
+    best-effort legacy adapter cleanup for the mirrored game, clears the
+    compat mirror, and initializes an empty canonical state.  After this,
+    coordinator operations see a clean slate.  Safe no-op when no legacy
+    footprint remains.
+    """
+    tmux = Tmux()
+    stopped: list[str] = []
+    for window in ("agent", "game"):
+        if tmux.has_window(window):
+            tmux.kill_window(window)
+            stopped.append(f"window:{window}")
+    if tmux.has_session_named(GAME_SESSION):
+        tmux.kill_session_named(GAME_SESSION)
+        stopped.append(f"session:{GAME_SESSION}")
+
+    state = State(g)
+    mirrored = state.current_game()
+    if mirrored is not None:
+        try:
+            game = load_game(g, mirrored)
+            xkit = XKit(g.display.name)
+            adapter = make_adapter(g, game, state=state, tmux=tmux, xkit=xkit)
+            adapter.cleanup()
+        except Exception as exc:
+            print(f"docich: 警告: {mirrored} の cleanup に失敗しました: {exc}", file=sys.stderr)
+    state.clear_current_game()
+
+    GameSwitchStore(g.state_dir).initialize()
+    if stopped or mirrored is not None:
+        print(f"docich: 旧 runtime を移行しました ({', '.join(stopped) if stopped else 'mirror のみ'})")
+    else:
+        print("docich: 移行対象の旧 runtime はありませんでした")
+    return 0
+
+
 def cmd_switch(g: GlobalConfig, name: str, *, request_id: str | None = None, timeout_s: float | None = None) -> int:
+    _require_no_legacy_runtime(g)
     result = _coordinator(g).switch(
         name,
         request_id=_checked_request_id(request_id),
@@ -695,6 +786,7 @@ def cmd_rotate(g: GlobalConfig, dry_run: bool, *, request_id: str | None = None,
         target = next_rotation_game(g.rotation.games, _read_active_game(g))
         print(f"docich: rotate 切替先 = {target} (dry-run のため切り替えません)")
         return 0
+    _require_no_legacy_runtime(g)
     result = _coordinator(g).rotate(
         list(g.rotation.games),
         request_id=_checked_request_id(request_id),
