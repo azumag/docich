@@ -35,15 +35,28 @@ STATUS_SCHEMA_VERSION = 1
 STATUS_WINDOWS = ("display", "audio", "stream", "game", "agent", "watchdog")
 
 
+def _probe_panes(tmux: Tmux, target: str) -> str:
+    """Return pane liveness: alive (all panes live), dead (any pane dead),
+    or unreadable (probe failed).  Mirrors the adapter readiness contract
+    so status never reports a dead-pane runtime as alive."""
+    try:
+        states = tmux.pane_states_checked(target)
+    except Exception:
+        return "unreadable"
+    if not states:
+        return "unreadable"
+    return "dead" if any(getattr(pane, "dead", False) for pane in states) else "alive"
+
+
 def _check_window(tmux: Tmux, window: str, runtime: Mapping[str, object], role: str) -> dict:
-    """Probe one generation window: existence plus ownership verification."""
+    """Probe one generation window: existence, ownership, and pane liveness."""
     target = f"docich:{window}"
     try:
         exists = tmux.window_target_exists(target, strict=True)
     except Exception:
-        return {"name": window, "exists": None, "ownership": "unreadable"}
+        return {"name": window, "exists": None, "ownership": "unreadable", "panes": "unreadable"}
     if not exists:
-        return {"name": window, "exists": False, "ownership": "absent"}
+        return {"name": window, "exists": False, "ownership": "absent", "panes": "absent"}
     try:
         actual = tmux.read_window_ownership(target)
         matched = (
@@ -52,10 +65,15 @@ def _check_window(tmux: Tmux, window: str, runtime: Mapping[str, object], role: 
             and actual.role == role
         )
     except OwnershipMismatchError:
-        return {"name": window, "exists": True, "ownership": "mismatched"}
+        return {"name": window, "exists": True, "ownership": "mismatched", "panes": _probe_panes(tmux, target)}
     except Exception:
-        return {"name": window, "exists": True, "ownership": "unreadable"}
-    return {"name": window, "exists": True, "ownership": "matched" if matched else "mismatched"}
+        return {"name": window, "exists": True, "ownership": "unreadable", "panes": _probe_panes(tmux, target)}
+    return {
+        "name": window,
+        "exists": True,
+        "ownership": "matched" if matched else "mismatched",
+        "panes": _probe_panes(tmux, target),
+    }
 
 
 def _check_session(tmux: Tmux, session: str, runtime: Mapping[str, object]) -> dict:
@@ -63,9 +81,9 @@ def _check_session(tmux: Tmux, session: str, runtime: Mapping[str, object]) -> d
     try:
         exists = tmux.session_target_exists(session, strict=True)
     except Exception:
-        return {"name": session, "exists": None, "ownership": "unreadable"}
+        return {"name": session, "exists": None, "ownership": "unreadable", "panes": "unreadable"}
     if not exists:
-        return {"name": session, "exists": False, "ownership": "absent"}
+        return {"name": session, "exists": False, "ownership": "absent", "panes": "absent"}
     try:
         actual = tmux.read_session_ownership(session)
         matched = (
@@ -74,10 +92,15 @@ def _check_session(tmux: Tmux, session: str, runtime: Mapping[str, object]) -> d
             and actual.role == "adapter"
         )
     except OwnershipMismatchError:
-        return {"name": session, "exists": True, "ownership": "mismatched"}
+        return {"name": session, "exists": True, "ownership": "mismatched", "panes": _probe_panes(tmux, session)}
     except Exception:
-        return {"name": session, "exists": True, "ownership": "unreadable"}
-    return {"name": session, "exists": True, "ownership": "matched" if matched else "mismatched"}
+        return {"name": session, "exists": True, "ownership": "unreadable", "panes": _probe_panes(tmux, session)}
+    return {
+        "name": session,
+        "exists": True,
+        "ownership": "matched" if matched else "mismatched",
+        "panes": _probe_panes(tmux, session),
+    }
 
 
 def _check_runtime(tmux: Tmux, runtime: Mapping[str, object] | None) -> dict | None:
@@ -172,11 +195,14 @@ def collect_status(g: GlobalConfig, *, tmux: Tmux | None = None, xkit: XKit | No
             "generation": active.get("generation"),
             "lease_id": active.get("lease_id"),
         }
+    agent_window_exists = None
+    if actual["active"] is not None:
+        agent_window_exists = actual["active"]["agent_window"].get("exists")
     agent_fence = {
         "tuple": fence_tuple,
-        "agent_window_present": bool(
-            actual["active"] and actual["active"]["agent_window"].get("exists")
-        ),
+        # true/false/null: null keeps probe failure distinguishable from
+        # confirmed absence (fail-closed, never guessed).
+        "agent_window_present": agent_window_exists,
     }
 
     retiring = (loaded or {}).get("retiring") if loaded is not None else None

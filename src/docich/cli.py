@@ -906,8 +906,13 @@ def _format_actual_runtime(label: str, runtime: dict | None) -> list[str]:
             lines.append(f"      {key}: (対象外: {probe.get('name')})")
             continue
         exists = probe.get("exists")
-        exists_text = "起動中" if exists is True else ("不明" if exists is None else "停止中")
-        lines.append(f"      {key}[{probe.get('name')}]: {exists_text} (ownership={probe.get('ownership')})")
+        panes = probe.get("panes")
+        if panes == "dead":
+            exists_text = "停止中 (pane dead)"
+        else:
+            exists_text = "起動中" if exists is True else ("不明" if exists is None else "停止中")
+        panes_text = f", panes={panes}" if panes is not None else ""
+        lines.append(f"      {key}[{probe.get('name')}]: {exists_text} (ownership={probe.get('ownership')}{panes_text})")
     return lines
 
 
@@ -938,12 +943,14 @@ def _print_switch_status(data: dict) -> None:
     if fence_tuple is None:
         print("    agent_fence: (なし)")
     else:
+        present = fence.get("agent_window_present")
+        present_text = "起動中" if present is True else ("不明" if present is None else "停止中")
         print(
             f"    agent_fence: game={fence_tuple.get('game')} "
             f"runtime_id={fence_tuple.get('runtime_id')} "
             f"generation={fence_tuple.get('generation')} "
             f"lease_id={fence_tuple.get('lease_id')} "
-            f"(agent_window={'起動中' if fence.get('agent_window_present') else '停止中'})"
+            f"(agent_window={present_text})"
         )
     print(f"    cleanup_pending: {'はい' if data.get('cleanup_pending') else 'いいえ'}")
 
