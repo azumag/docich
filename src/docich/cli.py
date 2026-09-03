@@ -939,12 +939,34 @@ def _print_switch_status(data: dict) -> None:
         print(line)
     for line in _format_actual_runtime("candidate", actual.get("candidate")):
         print(line)
+    for line in _format_actual_runtime("previous", actual.get("previous")):
+        print(line)
+    retiring_actual = actual.get("retiring") or []
+    if retiring_actual:
+        for probed in retiring_actual:
+            for line in _format_actual_runtime("retiring", probed):
+                print(line)
+    else:
+        print("    retiring: (なし)")
     fence_tuple = fence.get("tuple")
     if fence_tuple is None:
         print("    agent_fence: (なし)")
     else:
         present = fence.get("agent_window_present")
-        present_text = "起動中" if present is True else ("不明" if present is None else "停止中")
+        panes = None
+        if isinstance(actual.get("active"), dict):
+            panes = actual["active"]["agent_window"].get("panes")
+        if present is True:
+            if panes == "dead":
+                present_text = "存在 (pane dead)"
+            elif panes == "unreadable":
+                present_text = "存在 (pane不明)"
+            else:
+                present_text = "存在 (起動中)"
+        elif present is None:
+            present_text = "不明"
+        else:
+            present_text = "不存在"
         print(
             f"    agent_fence: game={fence_tuple.get('game')} "
             f"runtime_id={fence_tuple.get('runtime_id')} "
