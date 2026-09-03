@@ -155,7 +155,8 @@ class TestEventSequence(EventLogTestBase):
     def test_secret_bearing_detail_is_redacted(self):
         self.factory.behaviors["robots"]["preflight_error"] = AdapterError(
             "probe failed for https://hooks.example.invalid/x?token=SECRET-TOKEN-123 "
-            "with stream_key=AKIA-SECRET-KEY-XYZ argv=['--key','hunter2hunter2hunter2hunter2AB']"
+            "with stream_key=AKIA-SECRET-KEY-XYZ argv=['--key','hunter2hunter2hunter2hunter2AB'] "
+            "headers Authorization: Bearer aaa.bbb.ccc and lone Bearer xyz123credential"
         )
         self.coordinator.start("nethack")
         result = self.coordinator.switch("robots")
@@ -168,8 +169,12 @@ class TestEventSequence(EventLogTestBase):
             "hunter2hunter2hunter2hunter2AB",
             "https://hooks.example.invalid/x",
             "argv",
+            "aaa.bbb.ccc",
+            "xyz123credential",
         ):
             self.assertNotIn(leaked, blob)
+        # Bearer auth values are redacted as a whole, not just the scheme word.
+        self.assertNotIn("Bearer aaa", blob)
         # Redacted forms and stable codes survive.
         self.assertIn("<redacted-url>", blob)
         self.assertIn("<redacted>", blob)
