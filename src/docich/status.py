@@ -39,7 +39,7 @@ def _check_window(tmux: Tmux, window: str, runtime: Mapping[str, object], role: 
     """Probe one generation window: existence plus ownership verification."""
     target = f"docich:{window}"
     try:
-        exists = tmux.window_target_exists(target)
+        exists = tmux.window_target_exists(target, strict=True)
     except Exception:
         return {"name": window, "exists": None, "ownership": "unreadable"}
     if not exists:
@@ -61,7 +61,7 @@ def _check_window(tmux: Tmux, window: str, runtime: Mapping[str, object], role: 
 def _check_session(tmux: Tmux, session: str, runtime: Mapping[str, object]) -> dict:
     """Probe one generation session (CLI adapters only)."""
     try:
-        exists = tmux.session_target_exists(session)
+        exists = tmux.session_target_exists(session, strict=True)
     except Exception:
         return {"name": session, "exists": None, "ownership": "unreadable"}
     if not exists:
