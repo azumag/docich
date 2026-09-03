@@ -511,8 +511,10 @@ class TestLegacyMigration(CliCoordinatorTestBase):
         tmux.has_session_named.side_effect = lambda name: name in sessions
         tmux.kill_window.side_effect = lambda name: windows.discard(name)
         tmux.kill_session_named.side_effect = lambda name: sessions.discard(name)
-        tmux.window_target_exists.side_effect = lambda target: target.split(":", 1)[-1] in windows
-        tmux.session_target_exists.side_effect = lambda name: name in sessions
+        tmux.window_target_exists.side_effect = (
+            lambda target, strict=False: target.split(":", 1)[-1] in windows
+        )
+        tmux.session_target_exists.side_effect = lambda name, strict=False: name in sessions
         return tmux
 
     def test_start_refuses_with_legacy_runtime_present(self):
@@ -561,6 +563,32 @@ class TestLegacyMigration(CliCoordinatorTestBase):
         with mock.patch("docich.cli.Tmux", return_value=tmux):
             with self.assertRaises(cli.CliError):
                 cli.cmd_migrate_legacy(self.g)
+        # mirror は保持され、canonical は作成されない (fail-closed)
+        self.assertEqual(cli.State(self.g).current_game(), "nethack")
+        self.assertFalse((self.g.state_dir / "game_switch.json").exists())
+
+    def test_migrate_legacy_refuses_on_connection_failure_not_absent(self):
+        cli.State(self.g).set_current_game("nethack")
+        tmux = self._legacy_tmux()
+        # 実 tmux と同様: strict 時は接続失敗を TmuxError、通常は不在扱い
+        real_tmux = __import__("docich.tmux", fromlist=["Tmux"]).Tmux()
+
+        def strict_exists(target, strict=False):
+            if strict:
+                raise __import__("docich.tmux", fromlist=["TmuxError"]).TmuxError(
+                    "failed to connect to server: Connection refused"
+                )
+            return False
+
+        tmux.window_target_exists.side_effect = strict_exists
+        tmux.session_target_exists.side_effect = lambda name, strict=False: False
+        with mock.patch("docich.cli.Tmux", return_value=tmux):
+            with self.assertRaises(cli.CliError):
+                cli.cmd_migrate_legacy(self.g)
+        # strict=True で呼ばれたこと、不在扱いされなかったことを確認
+        self.assertTrue(
+            any(call.kwargs.get("strict") is True for call in tmux.window_target_exists.call_args_list)
+        )
         # mirror は保持され、canonical は作成されない (fail-closed)
         self.assertEqual(cli.State(self.g).current_game(), "nethack")
         self.assertFalse((self.g.state_dir / "game_switch.json").exists())
