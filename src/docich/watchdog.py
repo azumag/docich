@@ -17,6 +17,34 @@ from .tmux import Tmux
 from .xkit import XKit
 
 
+def _active_tuple(g: GlobalConfig) -> tuple | None:
+    """canonical ready active の identity tuple を返す (freeze 判定用)。
+
+    tuple が前周期と維持されている場合だけフリーズ判定する (design v2 §8)。
+    canonical 未作成・非 ready・破損時は None (判定保留・カウンタ reset)。
+    """
+    from .game_switch import GameSwitchError, GameSwitchStore
+
+    try:
+        canonical, needs_write = GameSwitchStore(g.state_dir).canonical.load()
+    except GameSwitchError:
+        return None
+    if needs_write or canonical.get("phase") != "ready":
+        return None
+    active = canonical.get("active")
+    if not isinstance(active, dict):
+        return None
+    try:
+        return (
+            str(active["game"]),
+            str(active["runtime_id"]),
+            int(active["generation"]),
+            active.get("lease_id"),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _freeze_targets(g: GlobalConfig, state: State) -> tuple[str | None, str, str]:
     """フリーズ検知の対象 (current game, game window, agent window) を返す。
 
@@ -48,7 +76,6 @@ def _freeze_targets(g: GlobalConfig, state: State) -> tuple[str | None, str, str
 
 class FreezeDetector:
     """連続する同一スクリーンショットからゲームのフリーズを検知する。
-
     `feed()` に毎周期のスクリーンショット digest (例: sha256 hexdigest) を渡す。
 
     - digest が None (撮影失敗など)、または直前の digest と異なる場合は
@@ -66,6 +93,9 @@ class FreezeDetector:
         self._threshold = threshold
         self._last_digest: str | None = None
         self._count = 0
+        # フリーズ判定の対象になった canonical active tuple。維持されている
+        # 場合だけ判定し、変化したらカウンタをリセットする (design v2 §8)。
+        self.last_tuple: tuple | None = None
 
     def feed(self, digest: str | None) -> bool:
         if digest is None or digest != self._last_digest:
@@ -134,9 +164,18 @@ def _check_freeze(
     (game-gN/agent-gN) を確認する。canonical がまだ存在しない移行前だけ
     旧来の固定 window + 互換 mirror にフォールバックし、canonical が壊れて
     いる場合は remedy を fail-closed に抑止する。
+
+    active tuple が前周期と維持されている場合だけ判定する。tuple が無い・
+    変わった場合はカウンタをリセットして保留する (design v2 §8)。
     """
+    active_tuple = _active_tuple(g)
+    if active_tuple is None or active_tuple != detector.last_tuple:
+        detector.last_tuple = active_tuple
+        detector.feed(None)
+        return
     current, game_window, agent_window = _freeze_targets(g, state)
     if not (tmux.has_window(game_window) and current is not None and tmux.has_window(agent_window)):
+        detector.feed(None)
         return
 
     try:
@@ -157,8 +196,12 @@ def _check_freeze(
         f"(game={current}, 連続同一画面={g.watchdog.freeze_cycles}回)",
         flush=True,
     )
-    rc = _run_remedy(g, "switch", current)
-    print(f"[watchdog] remedy: switch {current} -> returncode={rc}", flush=True)
+    rc = _run_remedy(g, "restart")
+    if rc == 1:
+        # busy / in-progress / rolled_back は異常として連続 retry せず次周期へ。
+        print("[watchdog] remedy: busy のため次周期へ送ります", flush=True)
+        return
+    print(f"[watchdog] remedy: restart -> returncode={rc}", flush=True)
 
 
 def _check_windows(g: GlobalConfig, tmux: Tmux) -> None:
