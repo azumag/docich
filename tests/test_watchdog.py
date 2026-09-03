@@ -186,11 +186,55 @@ class TestCheckFreeze(WatchdogConfigTestBase):
             xkit.screenshot.side_effect = fake_screenshot
             detector = watchdog.FreezeDetector(g.watchdog.freeze_cycles)
 
-            with mock.patch("docich.watchdog._run_remedy", return_value=0) as remedy:
+            with mock.patch("docich.watchdog._run_remedy", return_value=0) as remedy, \
+                    mock.patch(
+                        "docich.watchdog._active_tuple",
+                        return_value=("nethack", "g1-a", 1, None),
+                    ):
+                watchdog._check_freeze(g, state, tmux, xkit, detector, frame_path)
+                remedy.assert_not_called()  # tuple 確立で判定保留
                 watchdog._check_freeze(g, state, tmux, xkit, detector, frame_path)
                 remedy.assert_not_called()  # 1回目: まだ閾値未到達
                 watchdog._check_freeze(g, state, tmux, xkit, detector, frame_path)
-            remedy.assert_called_once_with(g, "switch", "nethack")
+            remedy.assert_called_once_with(g, "restart")
+
+    def test_tuple_change_resets_and_holds_judgment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g = self._make_config(tmp)
+            state = State(g)
+            state.ensure()
+            state.set_current_game("nethack")
+            tmux = mock.MagicMock()
+            tmux.has_window.return_value = True
+            xkit = mock.MagicMock()
+            frame_path = Path(tmp) / "frame.png"
+            frame_path.write_bytes(b"same-frame")
+            xkit.screenshot.side_effect = lambda *a: frame_path
+            detector = watchdog.FreezeDetector(g.watchdog.freeze_cycles)
+
+            with mock.patch("docich.watchdog._run_remedy") as remedy, \
+                    mock.patch("docich.watchdog._active_tuple") as tuple_mock:
+                tuple_mock.return_value = ("nethack", "g1-a", 1, None)
+                watchdog._check_freeze(g, state, tmux, xkit, detector, frame_path)
+                tuple_mock.return_value = ("nethack", "g2-b", 2, None)  # 切替で tuple 変化
+                watchdog._check_freeze(g, state, tmux, xkit, detector, frame_path)
+                watchdog._check_freeze(g, state, tmux, xkit, detector, frame_path)
+            remedy.assert_not_called()  # tuple 変化で判定保留
+
+    def test_absent_tuple_resets_and_holds_judgment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g = self._make_config(tmp)
+            state = State(g)
+            state.ensure()
+            tmux = mock.MagicMock()
+            tmux.has_window.return_value = True
+            xkit = mock.MagicMock()
+            detector = watchdog.FreezeDetector(g.watchdog.freeze_cycles)
+            with mock.patch("docich.watchdog._run_remedy") as remedy, \
+                    mock.patch("docich.watchdog._active_tuple", return_value=None):
+                watchdog._check_freeze(g, state, tmux, xkit, detector, Path(tmp) / "f.png")
+            remedy.assert_not_called()
+            xkit.screenshot.assert_not_called()
 
     def test_screenshot_failure_feeds_none_and_does_not_raise(self):
         with tempfile.TemporaryDirectory() as tmp:

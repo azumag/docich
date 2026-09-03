@@ -98,6 +98,29 @@ def read_canonical(state_dir: Path) -> Mapping[str, object]:
     return state
 
 
+def shared_section(state_dir: Path, fn, *, timeout_s: float = 5.0):
+    """Run ``fn`` under a short shared game-switch lock (design v2 §6).
+
+    The coordinator holds the exclusive lock across transitions, so a short
+    shared section keeps a single observe/action from racing quiesce.  Waits
+    are bounded: on contention the caller gets GameSwitchBusyError instead
+    of blocking forever.
+    """
+    import time
+
+    from ..game_switch import GameSwitchStore, GameSwitchBusyError
+
+    deadline = time.monotonic() + timeout_s
+    while True:
+        try:
+            with GameSwitchStore(Path(state_dir)).lock(exclusive=False):
+                return fn()
+        except GameSwitchBusyError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
+
+
 def active_fence(state_dir: Path) -> Mapping[str, object] | None:
     """Return the canonical active runtime dict, or None when idle.
 
