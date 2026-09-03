@@ -38,6 +38,8 @@ class FakeTmux:
         self.sessions = {}
         self.windows = {}
         self.raise_on_probe = None
+        self.pane_dead = False
+        self.raise_on_panes = None
 
     def _expected(self, ownership):
         return (ownership.runtime_id, ownership.generation, ownership.role)
@@ -66,6 +68,13 @@ class FakeTmux:
             return TmuxOwnership(runtime_id=runtime_id, generation=generation, role=role)
         except (ValueError, TypeError) as exc:
             raise OwnershipMismatchError("session ownership tagが不正です") from exc
+
+    def pane_states_checked(self, target):
+        from docich.tmux import PaneState
+
+        if self.raise_on_panes:
+            raise self.raise_on_panes
+        return [PaneState(dead=self.pane_dead, pid=1234)]
 
     def read_window_ownership(self, target):
         from docich.tmux import OwnershipMismatchError, TmuxOwnership
@@ -220,6 +229,47 @@ class TestReadyStatus(StatusTestBase):
         self.assertEqual(data["actual"]["candidate"]["game"], "robots")
         self.assertEqual(data["actual"]["candidate"]["game_window"]["ownership"], "matched")
 
+    def test_pane_dead_is_reported_not_alive(self):
+        active = _runtime_dict(1, "nethack")
+        self._save_ready(active)
+        self._track(active)
+        self.tmux.pane_dead = True
+        data = self._collect()
+        self.assertEqual(data["actual"]["active"]["game_window"]["panes"], "dead")
+        self.assertEqual(data["actual"]["active"]["game_window"]["ownership"], "matched")
+
+    def test_pane_probe_error_is_unreadable(self):
+        from docich.tmux import TmuxError
+
+        active = _runtime_dict(1, "nethack")
+        self._save_ready(active)
+        self._track(active)
+        self.tmux.raise_on_panes = TmuxError("pane error")
+        data = self._collect()
+        self.assertEqual(data["actual"]["active"]["game_window"]["panes"], "unreadable")
+        self.assertEqual(data["actual"]["active"]["game_window"]["ownership"], "matched")
+
+    def test_agent_window_present_is_null_when_unreadable(self):
+        from docich.tmux import TmuxError
+
+        active = _runtime_dict(1, "nethack")
+        self._save_ready(active)
+        self.tmux.raise_on_probe = TmuxError("socket error")
+        data = self._collect()
+        self.assertIsNone(data["agent_fence"]["agent_window_present"])
+        self.assertEqual(data["actual"]["active"]["agent_window"]["ownership"], "unreadable")
+
+    def test_agent_window_present_true_false(self):
+        active = _runtime_dict(1, "nethack")
+        self._save_ready(active)
+        self._track(active)
+        data = self._collect()
+        self.assertTrue(data["agent_fence"]["agent_window_present"])
+        self.tmux.windows.clear()
+        self.tmux.sessions.clear()
+        data = self._collect()
+        self.assertFalse(data["agent_fence"]["agent_window_present"])
+
     def test_non_cli_session_is_not_applicable(self):
         active = _runtime_dict(1, "hanjuku-hero", adapter="retroarch")
         self._save_ready(active)
@@ -277,6 +327,32 @@ class TestStatusCli(StatusTestBase):
         self.assertIn("mirror[current_game]: nethack (一致)", text)
         self.assertIn("agent_fence:", text)
         self.assertIn("cleanup_pending:", text)
+
+    def test_human_shows_unknown_and_pane_dead(self):
+        from docich.tmux import TmuxError
+
+        active = _runtime_dict(1, "nethack")
+        self._save_ready(active)
+        self._track(active)
+        self.tmux.pane_dead = True
+        out = io.StringIO()
+        with mock.patch("docich.cli.Tmux", return_value=self.tmux), mock.patch(
+            "docich.cli.XKit", return_value=self.xkit
+        ):
+            with redirect_stdout(out):
+                rc = cli.cmd_status(self.g)
+        self.assertEqual(rc, 0)
+        self.assertIn("停止中 (pane dead)", out.getvalue())
+
+        self.tmux.raise_on_probe = TmuxError("socket error")
+        out = io.StringIO()
+        with mock.patch("docich.cli.Tmux", return_value=self.tmux), mock.patch(
+            "docich.cli.XKit", return_value=self.xkit
+        ):
+            with redirect_stdout(out):
+                rc = cli.cmd_status(self.g)
+        self.assertEqual(rc, 0)
+        self.assertIn("agent_window=不明", out.getvalue())
 
     def test_status_json_flag_parses(self):
         args = cli.build_parser().parse_args(["status", "--json"])
