@@ -770,9 +770,18 @@ def _resolve_game_name(g: GlobalConfig, state: State, name: str | None, *, dash_
         name = None
     if name:
         return name
-    current = _read_active_game(g)
-    if current is not None:
-        return current
+    store = GameSwitchStore(g.state_dir)
+    try:
+        canonical, needs_write = store.canonical.load()
+    except GameSwitchError as exc:
+        raise CliError(f"canonical state が読み込めません: {exc}") from exc
+    if not needs_write:
+        active = canonical.get("active")
+        if isinstance(active, dict):
+            game = active.get("game")
+            if isinstance(game, str) and game:
+                return game
+        raise CliError("現在実行中のゲームがありません。ゲーム名を指定してください")
     legacy = state.current_game()
     if not legacy:
         raise CliError("現在実行中のゲームがありません。ゲーム名を指定してください")
@@ -783,6 +792,7 @@ def cmd_obs(g: GlobalConfig, name: str | None) -> int:
     state = State(g)
     try:
         resolved = _resolve_game_name(g, state, name, dash_means_current=False)
+        _require_active_match(g, resolved)
         _bind_active_cli_session(g, resolved)
     except StateCorruptError as exc:
         raise CliError(f"canonical state が読み込めません: {exc}") from exc
@@ -799,6 +809,7 @@ def cmd_send(g: GlobalConfig, game_arg: str, json_text: str) -> int:
     state = State(g)
     try:
         resolved = _resolve_game_name(g, state, game_arg, dash_means_current=True)
+        _require_active_match(g, resolved)
         _bind_active_cli_session(g, resolved)
     except StateCorruptError as exc:
         raise CliError(f"canonical state が読み込めません: {exc}") from exc
@@ -815,6 +826,23 @@ def cmd_send(g: GlobalConfig, game_arg: str, json_text: str) -> int:
             adapter.act(action)
     print(f"docich: {len(actions)} 件のアクションを送信しました ({resolved})")
     return 0
+
+
+def _require_active_match(g: GlobalConfig, resolved: str) -> None:
+    """canonical が存在する場合は active 一致を必須にする (fail-closed)。
+
+    canonical 未作成時 (needs_write) だけ legacy 互換を許す。active 不在・
+    不一致は CliError。P3 の fence までは、一致時の実行自体は legacy のまま。
+    """
+    store = GameSwitchStore(g.state_dir)
+    _, needs_write = store.canonical.load()
+    if needs_write:
+        return
+    active = _read_active_runtime(g)
+    if active is None or active.get("game") != resolved:
+        current = active.get("game") if isinstance(active, dict) else None
+        hint = f" (現在のゲーム: {current})" if current else " (実行中のゲームはありません)"
+        raise CliError(f"{resolved} は現在起動していません{hint}。ゲーム名を確認してください")
 
 
 def _bind_active_cli_session(g: GlobalConfig, resolved: str) -> None:
@@ -845,6 +873,8 @@ def cmd_ra_cmd(g: GlobalConfig, cmd_parts: list[str]) -> int:
         port = _read_ra_port(g)
     except StateCorruptError as exc:
         raise CliError(f"canonical state が読み込めません: {exc}") from exc
+    if port is None:
+        raise CliError("送信対象の RetroArch runtime がありません (RetroArch ゲームを起動してください)")
     reply = send_ra_cmd(cmd_text, port=port)
     if reply is not None:
         print(reply)
@@ -853,16 +883,24 @@ def cmd_ra_cmd(g: GlobalConfig, cmd_parts: list[str]) -> int:
     return 0
 
 
-def _read_ra_port(g: GlobalConfig) -> int:
-    """active が RetroArch runtime なら世代別 port、それ以外は fixed port。"""
-    active = _read_active_runtime(g)
+def _read_ra_port(g: GlobalConfig) -> int | None:
+    """active が RetroArch runtime なら世代別 port、それ以外は None。
+
+    canonical が存在する状態では fixed port へフォールバックしない
+    (残存 legacy への誤送信を防ぐ)。canonical 未作成時だけ fixed port。
+    """
+    store = GameSwitchStore(g.state_dir)
+    canonical, needs_write = store.canonical.load()
+    if needs_write:
+        return NETWORK_CMD_PORT
+    active = canonical.get("active")
     if (
-        active is not None
+        isinstance(active, dict)
         and active.get("adapter") == "retroarch"
         and isinstance(active.get("generation"), int)
     ):
         return retroarch_network_port(active["generation"])
-    return NETWORK_CMD_PORT
+    return None
 
 
 # ---------------------------------------------------------------------------
