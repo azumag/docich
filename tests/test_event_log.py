@@ -5,6 +5,8 @@ import os
 import stat
 import sys
 import tempfile
+import threading
+import time
 import unittest
 import uuid
 from pathlib import Path
@@ -235,6 +237,79 @@ class TestEventSequence(EventLogTestBase):
         finally:
             os.chmod(self.log_path.parent, 0o700)
         self.assertEqual(result.status, "succeeded")
+
+    def test_concurrent_requests_keep_their_log_identity(self):
+        entered = threading.Event()
+        proceed = threading.Event()
+
+        class GatedFactory(FakeFactory):
+            def __call__(self, spec):
+                adapter = super().__call__(spec)
+                if getattr(adapter, "_gated", False):
+                    return adapter
+                adapter._gated = True
+                real_materialize = adapter.materialize_runtime
+
+                def gated(deadline, cancel):
+                    entered.set()
+                    while not proceed.is_set() and not (cancel is not None and cancel.is_set()):
+                        proceed.wait(0.05)
+                    return real_materialize(deadline, cancel)
+
+                adapter.materialize_runtime = gated
+                return adapter
+
+        hanging = GatedFactory({"nethack": {}})
+        coordinator_a = game_switch.GameSwitchCoordinator(
+            self.store,
+            hanging,
+            quiesce_verify_timeout_s=0.3,
+            poll_interval_s=0.01,
+            default_timeout_s=60,
+            step_timeouts=game_switch.StepTimeouts(
+                preflight_s=5.0,
+                stop_agent_s=5.0,
+                start_s=30.0,
+                agent_start_s=5.0,
+                cleanup_s=5.0,
+                probe_s=0.5,
+            ),
+        )
+        request_a = str(uuid.uuid4())
+        request_b = str(uuid.uuid4())
+        outcome: dict = {}
+        thread_a = threading.Thread(
+            target=lambda: outcome.__setitem__(
+                "a", coordinator_a.start("nethack", request_id=request_a)
+            )
+        )
+        thread_a.start()
+        self.assertTrue(entered.wait(10))
+        # Request B arrives on another thread while A holds the lock.
+        result_b = self.coordinator.start("nethack", request_id=request_b)
+        self.assertEqual(result_b.status, "busy")
+        proceed.set()
+        thread_a.join(30)
+        self.assertEqual(outcome["a"].status, "succeeded")
+
+        events = self.events()
+        by_request: dict[str, list[str]] = {}
+        for event in events:
+            by_request.setdefault(event["request_id"], []).append(event["event"])
+        # B's requested must not pollute A's lifecycle, including the events
+        # A emits after B was rejected.
+        for name in (
+            "accepted", "candidate_started", "probe_started", "ready",
+            "agent_staged", "committed",
+        ):
+            self.assertIn(name, by_request.get(request_a, []))
+        self.assertIn("requested", by_request.get(request_b, []))
+        for name in ("accepted", "committed", "ready"):
+            offenders = [
+                e for e in events
+                if e["event"] == name and e["request_id"] == request_b
+            ]
+            self.assertEqual(offenders, [])
 
 
 if __name__ == "__main__":

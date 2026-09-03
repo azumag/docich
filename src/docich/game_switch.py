@@ -15,6 +15,7 @@ must additionally respect the monotonic deadline passed to each call.
 from __future__ import annotations
 
 import copy
+import contextvars
 import datetime as dt
 import fcntl
 import hashlib
@@ -1035,6 +1036,17 @@ IN_PROGRESS_PHASES = frozenset(PHASES - {"idle", "ready", "failed", "recovery_re
 EVENT_LOG_FILE = "logs/game_switch.log"
 EVENT_SCHEMA_VERSION = 1
 
+# Per-request log context, isolated by execution context: concurrent requests
+# on one coordinator instance (threads, WebUI, …) must not overwrite each
+# other's event identity even though the file lock serializes transitions.
+_log_ctx_var: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "game_switch_log_ctx", default=None
+)
+
+
+def _log_ctx_get() -> dict:
+    return dict(_log_ctx_var.get() or {})
+
 
 class EventLog:
     """Append-only JSON Lines observability log (design v2 §9).
@@ -1331,22 +1343,25 @@ class GameSwitchCoordinator:
         self.event_log = event_log or EventLog(store.state_dir)
         self.mirror_writer = mirror_writer
         self.mirror_path = store.state_dir / "current_game"
-        self._log_ctx: dict = {}
 
     def _log_reset(self, request_id: str, operation: str, target: str | None) -> None:
-        self._log_ctx = {
-            "request_id": request_id,
-            "operation": operation,
-            "target": target,
-            "from_game": None,
-            "to_game": target,
-            "generation": None,
-            "runtime_id": None,
-            "t0": time.monotonic(),
-        }
+        _log_ctx_var.set(
+            {
+                "request_id": request_id,
+                "operation": operation,
+                "target": target,
+                "from_game": None,
+                "to_game": target,
+                "generation": None,
+                "runtime_id": None,
+                "t0": time.monotonic(),
+            }
+        )
 
     def _log_update(self, **kwargs) -> None:
-        self._log_ctx.update(kwargs)
+        ctx = _log_ctx_get()
+        ctx.update(kwargs)
+        _log_ctx_var.set(ctx)
 
     def _log(
         self,
@@ -1359,7 +1374,7 @@ class GameSwitchCoordinator:
         cleanup_pending: bool = False,
         **overrides,
     ) -> None:
-        ctx = dict(self._log_ctx)
+        ctx = _log_ctx_get()
         ctx.update(overrides)
         t0 = ctx.pop("t0", None) or time.monotonic()
         self.event_log.emit(
@@ -2787,8 +2802,8 @@ class GameSwitchCoordinator:
         warnings: list[str] = []
         request_id = state.get("request_id")
         self._log_update(
-            request_id=str(request_id or self._log_ctx.get("request_id") or ""),
-            operation=str(state.get("operation") or self._log_ctx.get("operation") or "recover"),
+            request_id=str(request_id or _log_ctx_get().get("request_id") or ""),
+            operation=str(state.get("operation") or _log_ctx_get().get("operation") or "recover"),
         )
         self._log("recovery_started", phase=str(phase))
         if phase == "idle":
