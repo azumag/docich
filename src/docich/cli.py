@@ -168,6 +168,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_status = sub.add_parser("status", help="各コンポーネントの状態を表示する")
     p_status.add_argument("--json", action="store_true", help="安定 schema の JSON で出力する (自動監視用)")
+    p_status.add_argument(
+        "--legacy", action="store_true",
+        help="移行対象の旧 runtime 痕跡だけを出力する (migration 用)",
+    )
 
     p_snap = sub.add_parser("snap", help="手動スクリーンショットを撮る")
     p_snap.add_argument("-o", "--output", metavar="PATH", help="出力先 (既定: run/screenshots/manual.png)")
@@ -329,6 +333,8 @@ def _dispatch(args: argparse.Namespace) -> int:
     if command == "rotate":
         return cmd_rotate(g, args.dry_run, request_id=args.request_id, timeout_s=args.timeout)
     if command == "status":
+        if args.legacy:
+            return cmd_status_legacy(g, json_output=args.json)
         return cmd_status(g, json_output=args.json)
     if command == "snap":
         return cmd_snap(g, args.output)
@@ -581,20 +587,12 @@ def _coordinator(g: GlobalConfig) -> GameSwitchCoordinator:
 def _legacy_footprint(g: GlobalConfig) -> list[str]:
     """pre-coordinator runtime の痕跡 (Design v2 の移行対象) を列挙する。
 
-    固定 window `game` / `agent`、固定 session `docich-game`、互換 mirror
-    `current_game` のいずれかが残っていれば移行前の世界とみなす。共有の
+    最終評価は `docich status --json legacy` が機械可読で行う。共有の
     `docich` session 自体 (display/audio/stream) は対象外。
     """
-    found: list[str] = []
-    if State(g).current_game() is not None:
-        found.append("current_game")
-    tmux = Tmux()
-    for window in ("game", "agent"):
-        if tmux.has_window(window):
-            found.append(f"window:{window}")
-    if tmux.has_session_named(GAME_SESSION):
-        found.append(f"session:{GAME_SESSION}")
-    return found
+    from .status import legacy_footprint
+
+    return legacy_footprint(g)
 
 
 def _require_no_legacy_runtime(g: GlobalConfig) -> None:
@@ -887,6 +885,27 @@ def cmd_status(g: GlobalConfig, *, json_output: bool = False) -> int:
 
     print("  switch:")
     _print_switch_status(data)
+    return 0
+
+
+def cmd_status_legacy(g: GlobalConfig, *, json_output: bool = False) -> int:
+    """Report pre-coordinator runtime traces for migration (P4).
+
+    Machine-readable via --json ({"schema_version", "footprint"}), human
+    readable otherwise.  Read-only: nothing is stopped or rewritten.
+    """
+    from .status import STATUS_SCHEMA_VERSION, legacy_footprint
+
+    footprint = legacy_footprint(g)
+    if json_output:
+        print(json.dumps({"schema_version": STATUS_SCHEMA_VERSION, "footprint": footprint}, ensure_ascii=False))
+        return 0
+    print("docich status --legacy")
+    if footprint:
+        for item in footprint:
+            print(f"  legacy: {item}")
+    else:
+        print("  legacy: (なし)")
     return 0
 
 
