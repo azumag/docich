@@ -6,7 +6,15 @@ import time
 from . import brains
 from ..adapters import make_adapter
 from ..config import GlobalConfig, load_game
-from .fence import AgentFence, FenceLost, active_fence, check_fence, read_canonical, resolve_fence
+from .fence import (
+    AgentFence,
+    FenceLost,
+    active_fence,
+    check_fence,
+    read_canonical,
+    resolve_fence,
+    shared_section,
+)
 
 
 def _check_loop_fence(fence: AgentFence, state_dir) -> None:
@@ -18,30 +26,50 @@ def _run_iteration(adapter, brain, interval_ms: int, *, fence=None, state_dir=No
 
     When a fence is bound, the canonical state is resolved first: a worker
     matching canonical active runs the cycle with the per-step fence checks
-    (before observe, after decide, before each non-wait action); a worker
-    matching only the not-yet-active candidate/previous awaits activation
-    without observing or acting; anything else raises terminal FenceLost.
-    FenceLost must not be swallowed by the caller's catch-log-continue
-    policy.  All other exceptions raised by observe()/decide()/act()
-    propagate to the caller (run_agent), which owns the catch-log-continue
-    policy so a single bad cycle never kills the loop.
+    (observe and each non-wait action execute under the shared game-switch
+    lock); a worker matching only the not-yet-active candidate/previous awaits
+    activation without observing or acting; anything else raises terminal
+    FenceLost.  Brain inference and wait actions stay outside the shared lock.
+    FenceLost must not be swallowed by the caller's catch-log-continue policy.
+    All other exceptions raised by observe()/decide()/act() propagate to the
+    caller (run_agent), which owns the catch-log-continue policy so a single bad
+    cycle never kills the loop.
     """
     if fence is not None:
         if resolve_fence(fence, read_canonical(state_dir)) != "run":
             time.sleep(max(interval_ms, 0) / 1000)
             return 0
-        _check_loop_fence(fence, state_dir)
-    obs = adapter.observe()
+
+        def _observe():
+            # Re-check only after the shared lock is held so a coordinator
+            # transition cannot begin between the fence check and observation.
+            _check_loop_fence(fence, state_dir)
+            return adapter.observe()
+
+        obs = shared_section(state_dir, _observe)
+    else:
+        obs = adapter.observe()
+
     acts = brain.decide(obs)
     if fence is not None:
         _check_loop_fence(fence, state_dir)
+
     for action in acts:
         if action.type == "wait":
             time.sleep(max(action.ms, 0) / 1000)
-        else:
-            if fence is not None:
-                _check_loop_fence(fence, state_dir)
+            continue
+
+        if fence is None:
             adapter.act(action)
+            continue
+
+        def _act(single=action):
+            # Same TOCTOU guard as observe: validate the lease only after
+            # acquiring the shared lock and keep it held through one action.
+            _check_loop_fence(fence, state_dir)
+            adapter.act(single)
+
+        shared_section(state_dir, _act)
     return len(acts)
 
 
