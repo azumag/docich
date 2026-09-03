@@ -452,25 +452,47 @@ class TestNeedsWriteReads(CliCoordinatorTestBase):
         with self.assertRaises(cli.CliError):
             cli.cmd_obs(self.g, None)
 
-    def test_send_clears_stale_session_binding_on_mismatch(self):
-        import os
-
+    def test_send_mismatched_game_is_rejected_when_canonical_exists(self):
         self._call(cli.cmd_start, "nethack")
         (self.root / "config" / "games" / "robots.toml").write_text(
             '[game]\nname = "robots"\nadapter = "cli"\n\n[cli]\ncommand = "robots"\n',
             encoding="utf-8",
         )
+        with mock.patch("docich.cli.make_adapter") as make_mock:
+            with self.assertRaises(cli.CliError):
+                cli.cmd_send(self.g, "robots", '{"type":"wait","ms":1}')
+            make_mock.assert_not_called()
+
+    def test_stale_session_binding_is_cleared_on_mismatch(self):
+        import os
+
+        self._call(cli.cmd_start, "nethack")
         real_env = dict(os.environ)
         os.environ["DOCICH_GAME_SESSION"] = "docich-game-g1"
         try:
-            with mock.patch("docich.cli.make_adapter") as make_mock:
-                make_mock.side_effect = AssertionError("should not be called")
-                with self.assertRaises(AssertionError):
-                    cli.cmd_send(self.g, "robots", '{"type":"wait","ms":1}')
+            cli._bind_active_cli_session(self.g, "something-else")
             self.assertNotIn("DOCICH_GAME_SESSION", os.environ)
         finally:
             os.environ.clear()
             os.environ.update(real_env)
+
+    def test_obs_with_stale_mirror_and_idle_canonical_is_rejected(self):
+        self._call(cli.cmd_start, "nethack")
+        self._call(cli.cmd_stop)
+        (self.g.state_dir / "current_game").write_text("nethack\n", encoding="utf-8")
+        with self.assertRaises(cli.CliError):
+            cli.cmd_obs(self.g, None)
+
+    def test_ra_cmd_without_retroarch_active_is_rejected(self):
+        self._call(cli.cmd_start, "nethack")
+        with self.assertRaises(cli.CliError):
+            cli.cmd_ra_cmd(self.g, ["GET_STATUS"])
+
+    def test_ra_cmd_without_canonical_uses_fixed_port(self):
+        with mock.patch("docich.cli.send_ra_cmd", return_value="OK") as ra_mock:
+            rc = cli.cmd_ra_cmd(self.g, ["GET_STATUS"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(ra_mock.call_args.kwargs["port"], 55355)
 
 
 class TestCmdRotate(CliCoordinatorTestBase):

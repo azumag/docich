@@ -1484,20 +1484,20 @@ class GameSwitchCoordinator:
                 receipt=None,
             )
         # A request_id that was already accepted fixes its operation and
-        # target: follow the recording (e.g. a start->switch fallback resend
-        # with the same target converges to the recorded switch result)
-        # instead of conflicting on the caller's view.  A resend whose
-        # target or payload differs from the recording still falls through
-        # and fails as request_conflict at acceptance.
+        # target.  The only caller-side alias the coordinator sanctions is
+        # the start->switch fallback resend under the SAME target and
+        # payload: it follows the recorded switch receipt.  Any other
+        # operation mismatch falls through and fails as request_conflict at
+        # acceptance, per the receipt contract.
         existing = self.store.receipts.load(request_id)
-        if existing is not None:
+        if existing is not None and operation == "start":
             recorded_operation = str(existing["operation"])
             recorded_target = existing.get("target")
-            if recorded_target == target and recorded_operation != operation:
+            if recorded_operation == "switch" and recorded_target == target:
                 if _request_payload_hash(
                     recorded_operation, recorded_target, payload or {}
                 ) == existing.get("payload_hash"):
-                    operation = recorded_operation
+                    operation = "switch"
         if operation == "start":
             active = state.get("active")
             if active is not None:
