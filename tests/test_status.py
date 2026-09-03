@@ -1,0 +1,292 @@
+"""P4 tests: switch-aware status (canonical/mirror/actual/fence split, --json)."""
+import io
+import json
+import sys
+import tempfile
+import unittest
+import uuid
+from contextlib import redirect_stdout
+from pathlib import Path
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from docich import cli, config  # noqa: E402
+from docich.game_switch import GameSwitchStore  # noqa: E402
+from docich.naming import runtime_names  # noqa: E402
+from docich.status import STATUS_SCHEMA_VERSION, collect_status  # noqa: E402
+from docich.tmux import OwnershipMismatchError, PaneState  # noqa: E402
+
+
+def _runtime_dict(generation, game, adapter="cli"):
+    names = runtime_names(generation)
+    return {
+        "game": game,
+        "adapter": adapter,
+        "generation": generation,
+        "runtime_id": f"g{generation}-abcdef",
+        "lease_id": str(uuid.uuid4()),
+        "game_window": names.game_window,
+        "agent_window": names.agent_window,
+        "adapter_session": names.adapter_session,
+        "started_at": "2026-09-03T00:00:00Z",
+    }
+
+
+class FakeTmux:
+    def __init__(self):
+        self.sessions = {}
+        self.windows = {}
+        self.raise_on_probe = None
+
+    def _expected(self, ownership):
+        return (ownership.runtime_id, ownership.generation, ownership.role)
+
+    def has_session(self):
+        return True
+
+    def has_window(self, name):
+        return f"docich:{name}" in self.windows or name in ("display", "stream")
+
+    def session_target_exists(self, session, strict=False):
+        if self.raise_on_probe:
+            raise self.raise_on_probe
+        return session in self.sessions
+
+    def window_target_exists(self, target, strict=False):
+        if self.raise_on_probe:
+            raise self.raise_on_probe
+        return target in self.windows
+
+    def read_session_ownership(self, session):
+        from docich.tmux import OwnershipMismatchError, TmuxOwnership
+
+        try:
+            runtime_id, generation, role = self.sessions[session]
+            return TmuxOwnership(runtime_id=runtime_id, generation=generation, role=role)
+        except (ValueError, TypeError) as exc:
+            raise OwnershipMismatchError("session ownership tagが不正です") from exc
+
+    def read_window_ownership(self, target):
+        from docich.tmux import OwnershipMismatchError, TmuxOwnership
+
+        try:
+            runtime_id, generation, role = self.windows[target]
+            return TmuxOwnership(runtime_id=runtime_id, generation=generation, role=role)
+        except (ValueError, TypeError) as exc:
+            raise OwnershipMismatchError("window ownership tagが不正です") from exc
+
+
+class FakeXkit:
+    def __init__(self, ready=True):
+        self.ready = ready
+
+    def display_ready(self):
+        return self.ready
+
+
+class StatusTestBase(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmpdir.name)
+        self.g = config.load_global(self.root)
+        self.tmux = FakeTmux()
+        self.xkit = FakeXkit()
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def _collect(self):
+        return collect_status(self.g, tmux=self.tmux, xkit=self.xkit)
+
+    def _save_ready(self, active, **extra):
+        store = GameSwitchStore(self.g.state_dir)
+        state, _ = store.canonical.load()
+        state.update(
+            {
+                "phase": "ready",
+                "active": active,
+                "next_generation": (active["generation"] + 1) if active else 1,
+                **extra,
+            }
+        )
+        return store.canonical.save(state)
+
+    def _track(self, runtime, role_game="game", role_agent="agent"):
+        self.tmux.windows[f"docich:{runtime['game_window']}"] = (
+            runtime["runtime_id"], runtime["generation"], role_game,
+        )
+        self.tmux.windows[f"docich:{runtime['agent_window']}"] = (
+            runtime["runtime_id"], runtime["generation"], role_agent,
+        )
+        self.tmux.sessions[runtime["adapter_session"]] = (
+            runtime["runtime_id"], runtime["generation"], "adapter",
+        )
+
+
+class TestIdleStatus(StatusTestBase):
+    def test_no_canonical_reports_absent_layers(self):
+        data = self._collect()
+        self.assertEqual(data["schema_version"], STATUS_SCHEMA_VERSION)
+        self.assertFalse(data["canonical"]["present"])
+        self.assertFalse(data["canonical"]["corrupt"])
+        self.assertIsNone(data["mirror"]["game"])
+        self.assertIsNone(data["mirror"]["matches_canonical"])
+        self.assertIsNone(data["actual"]["active"])
+        self.assertIsNone(data["actual"]["candidate"])
+        self.assertIsNone(data["agent_fence"]["tuple"])
+        self.assertFalse(data["agent_fence"]["agent_window_present"])
+        self.assertFalse(data["cleanup_pending"])
+
+
+class TestReadyStatus(StatusTestBase):
+    def test_matched_mirror_and_actual(self):
+        active = _runtime_dict(1, "nethack")
+        self._save_ready(active)
+        from docich.state import State
+
+        State(self.g).set_current_game("nethack")
+        self._track(active)
+        data = self._collect()
+        self.assertEqual(data["canonical"]["phase"], "ready")
+        self.assertTrue(data["mirror"]["matches_canonical"])
+        self.assertEqual(data["actual"]["active"]["game_window"]["ownership"], "matched")
+        self.assertEqual(data["actual"]["active"]["agent_window"]["ownership"], "matched")
+        self.assertEqual(data["actual"]["active"]["adapter_session"]["ownership"], "matched")
+        self.assertEqual(data["agent_fence"]["tuple"]["lease_id"], active["lease_id"])
+        self.assertTrue(data["agent_fence"]["agent_window_present"])
+        self.assertFalse(data["cleanup_pending"])
+
+    def test_mirror_mismatch_is_reported(self):
+        active = _runtime_dict(1, "nethack")
+        self._save_ready(active)
+        from docich.state import State
+
+        State(self.g).set_current_game("robots")
+        data = self._collect()
+        self.assertFalse(data["mirror"]["matches_canonical"])
+        self.assertEqual(data["mirror"]["game"], "robots")
+
+    def test_missing_actual_windows(self):
+        active = _runtime_dict(1, "nethack")
+        self._save_ready(active)
+        data = self._collect()
+        self.assertFalse(data["actual"]["active"]["game_window"]["exists"])
+        self.assertEqual(data["actual"]["active"]["game_window"]["ownership"], "absent")
+        self.assertFalse(data["agent_fence"]["agent_window_present"])
+
+    def test_ownership_mismatch_is_reported(self):
+        active = _runtime_dict(1, "nethack")
+        self._save_ready(active)
+        self.tmux.windows[f"docich:{active['game_window']}"] = ("g1-zzzzzz", 1, "game")
+        data = self._collect()
+        self.assertEqual(data["actual"]["active"]["game_window"]["ownership"], "mismatched")
+
+    def test_unreadable_probe_is_reported_not_guessed(self):
+        from docich.tmux import TmuxError
+
+        active = _runtime_dict(1, "nethack")
+        self._save_ready(active)
+        self.tmux.raise_on_probe = TmuxError("socket error")
+        data = self._collect()
+        self.assertIsNone(data["actual"]["active"]["game_window"]["exists"])
+        self.assertEqual(data["actual"]["active"]["game_window"]["ownership"], "unreadable")
+
+    def test_retiring_means_cleanup_pending(self):
+        active = _runtime_dict(2, "robots")
+        old = _runtime_dict(1, "nethack")
+        self._save_ready(active, retiring=[old])
+        data = self._collect()
+        self.assertTrue(data["cleanup_pending"])
+
+    def test_candidate_actual_is_reported(self):
+        active = _runtime_dict(1, "nethack")
+        candidate = _runtime_dict(2, "robots")
+        self._save_ready(active)
+        store = GameSwitchStore(self.g.state_dir)
+        state, _ = store.canonical.load()
+        state.update(
+            {
+                "phase": "probing",
+                "operation": "switch",
+                "request_id": str(uuid.uuid4()),
+                "candidate": candidate,
+                "next_generation": 3,
+            }
+        )
+        store.canonical.save(state)
+        self._track(candidate)
+        data = self._collect()
+        self.assertEqual(data["actual"]["candidate"]["game"], "robots")
+        self.assertEqual(data["actual"]["candidate"]["game_window"]["ownership"], "matched")
+
+    def test_non_cli_session_is_not_applicable(self):
+        active = _runtime_dict(1, "hanjuku-hero", adapter="retroarch")
+        self._save_ready(active)
+        data = self._collect()
+        self.assertFalse(data["actual"]["active"]["adapter_session"].get("applicable", True))
+
+
+class TestCorruptStatus(StatusTestBase):
+    def test_corrupt_canonical_is_reported_not_raised(self):
+        (self.g.state_dir).mkdir(parents=True, exist_ok=True)
+        (self.g.state_dir / "game_switch.json").write_text("{broken", encoding="utf-8")
+        data = self._collect()
+        self.assertTrue(data["canonical"]["present"])
+        self.assertTrue(data["canonical"]["corrupt"])
+        self.assertTrue(data["canonical"]["error"])
+        self.assertIsNone(data["actual"]["active"])
+
+
+class TestStatusCli(StatusTestBase):
+    def test_json_output_is_stable_schema(self):
+        active = _runtime_dict(1, "nethack")
+        self._save_ready(active)
+        out = io.StringIO()
+        with mock.patch("docich.cli.Tmux", return_value=self.tmux), mock.patch(
+            "docich.cli.XKit", return_value=self.xkit
+        ):
+            with redirect_stdout(out):
+                rc = cli.cmd_status(self.g, json_output=True)
+        self.assertEqual(rc, 0)
+        data = json.loads(out.getvalue())
+        self.assertEqual(data["schema_version"], STATUS_SCHEMA_VERSION)
+        for key in (
+            "session_alive", "windows", "display_ready", "canonical", "mirror",
+            "actual", "agent_fence", "cleanup_pending", "stream",
+        ):
+            self.assertIn(key, data)
+        self.assertEqual(data["canonical"]["phase"], "ready")
+
+    def test_human_output_shows_switch_section(self):
+        active = _runtime_dict(1, "nethack")
+        self._save_ready(active)
+        from docich.state import State
+
+        State(self.g).set_current_game("nethack")
+        out = io.StringIO()
+        with mock.patch("docich.cli.Tmux", return_value=self.tmux), mock.patch(
+            "docich.cli.XKit", return_value=self.xkit
+        ):
+            with redirect_stdout(out):
+                rc = cli.cmd_status(self.g)
+        self.assertEqual(rc, 0)
+        text = out.getvalue()
+        self.assertIn("switch:", text)
+        self.assertIn("canonical: phase=ready", text)
+        self.assertIn("mirror[current_game]: nethack (一致)", text)
+        self.assertIn("agent_fence:", text)
+        self.assertIn("cleanup_pending:", text)
+
+    def test_status_json_flag_parses(self):
+        args = cli.build_parser().parse_args(["status", "--json"])
+        self.assertEqual(args.command, "status")
+        self.assertTrue(args.json)
+
+    def test_status_without_flag_defaults_to_human(self):
+        args = cli.build_parser().parse_args(["status"])
+        self.assertFalse(args.json)
+
+
+if __name__ == "__main__":
+    unittest.main()

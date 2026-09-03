@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import json
 import os
 import shlex
 import subprocess
@@ -165,7 +166,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_rotate.add_argument("--request-id", metavar="UUID", help="再送用の request_id")
     p_rotate.add_argument("--timeout", type=float, metavar="SEC", help="request 全体の deadline (秒)")
 
-    sub.add_parser("status", help="各コンポーネントの状態を表示する")
+    p_status = sub.add_parser("status", help="各コンポーネントの状態を表示する")
+    p_status.add_argument("--json", action="store_true", help="安定 schema の JSON で出力する (自動監視用)")
 
     p_snap = sub.add_parser("snap", help="手動スクリーンショットを撮る")
     p_snap.add_argument("-o", "--output", metavar="PATH", help="出力先 (既定: run/screenshots/manual.png)")
@@ -327,7 +329,7 @@ def _dispatch(args: argparse.Namespace) -> int:
     if command == "rotate":
         return cmd_rotate(g, args.dry_run, request_id=args.request_id, timeout_s=args.timeout)
     if command == "status":
-        return cmd_status(g)
+        return cmd_status(g, json_output=args.json)
     if command == "snap":
         return cmd_snap(g, args.output)
     if command == "obs":
@@ -838,10 +840,17 @@ def cmd_rotate(g: GlobalConfig, dry_run: bool, *, request_id: str | None = None,
     return _result_exit_code(result)
 
 
-def cmd_status(g: GlobalConfig) -> int:
+def cmd_status(g: GlobalConfig, *, json_output: bool = False) -> int:
+    from .status import collect_status
+
     tmux = Tmux()
-    state = State(g)
     xkit = XKit(g.display.name)
+    data = collect_status(g, tmux=tmux, xkit=xkit)
+    if json_output:
+        print(json.dumps(data, ensure_ascii=False))
+        return 0
+
+    state = State(g)
 
     print("docich status")
     session_alive = tmux.has_session()
@@ -875,7 +884,68 @@ def cmd_status(g: GlobalConfig) -> int:
             print(f"  ffmpeg: {shlex.join(runtime.command)}")
         except StreamKeyError as exc:
             print(f"  ffmpeg: 構築できません ({exc})")
+
+    print("  switch:")
+    _print_switch_status(data)
     return 0
+
+
+def _format_actual_runtime(label: str, runtime: dict | None) -> list[str]:
+    lines = []
+    if runtime is None:
+        lines.append(f"    {label}: (なし)")
+        return lines
+    lines.append(
+        f"    {label}: {runtime.get('game')} "
+        f"(adapter={runtime.get('adapter')}, generation={runtime.get('generation')}, "
+        f"runtime_id={runtime.get('runtime_id')})"
+    )
+    for key in ("game_window", "agent_window", "adapter_session"):
+        probe = runtime.get(key) or {}
+        if "applicable" in probe and not probe["applicable"]:
+            lines.append(f"      {key}: (対象外: {probe.get('name')})")
+            continue
+        exists = probe.get("exists")
+        exists_text = "起動中" if exists is True else ("不明" if exists is None else "停止中")
+        lines.append(f"      {key}[{probe.get('name')}]: {exists_text} (ownership={probe.get('ownership')})")
+    return lines
+
+
+def _print_switch_status(data: dict) -> None:
+    canonical = data.get("canonical") or {}
+    mirror = data.get("mirror") or {}
+    actual = data.get("actual") or {}
+    fence = data.get("agent_fence") or {}
+    if canonical.get("corrupt"):
+        print(f"    canonical: 破損 ({canonical.get('error')})")
+    elif not canonical.get("present"):
+        print("    canonical: (なし)")
+    else:
+        print(f"    canonical: phase={canonical.get('phase')} operation={canonical.get('operation') or '-'}")
+        print(f"      next_generation={canonical.get('next_generation')}")
+        if canonical.get("last_result") is not None:
+            print(f"      last_result: {canonical.get('last_result')}")
+        if canonical.get("last_error") is not None:
+            print(f"      last_error: {canonical.get('last_error')}")
+    match = mirror.get("matches_canonical")
+    match_text = "(canonical 不在のため比較なし)" if match is None else ("一致" if match else "不一致")
+    print(f"    mirror[current_game]: {mirror.get('game') or '(なし)'} ({match_text})")
+    for line in _format_actual_runtime("active", actual.get("active")):
+        print(line)
+    for line in _format_actual_runtime("candidate", actual.get("candidate")):
+        print(line)
+    fence_tuple = fence.get("tuple")
+    if fence_tuple is None:
+        print("    agent_fence: (なし)")
+    else:
+        print(
+            f"    agent_fence: game={fence_tuple.get('game')} "
+            f"runtime_id={fence_tuple.get('runtime_id')} "
+            f"generation={fence_tuple.get('generation')} "
+            f"lease_id={fence_tuple.get('lease_id')} "
+            f"(agent_window={'起動中' if fence.get('agent_window_present') else '停止中'})"
+        )
+    print(f"    cleanup_pending: {'はい' if data.get('cleanup_pending') else 'いいえ'}")
 
 
 # ---------------------------------------------------------------------------
