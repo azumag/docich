@@ -100,7 +100,7 @@ def _safe_detail(exc: BaseException) -> str:
 
 
 _AUTH_HEADER_CREDENTIAL = re.compile(
-    r"(?i)\b(?P<header>authorization\s*:\s*)"
+    r"(?i)\b(?P<header>authorization\s*[:=]\s*)"
     r"(?:bearer|basic|digest|negotiate)\s+\S+"
 )
 _STANDALONE_AUTH_CREDENTIAL = re.compile(
