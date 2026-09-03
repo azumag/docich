@@ -4,12 +4,16 @@ from __future__ import annotations
 import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from ..actions import Action
 from ..config import GameConfig, GlobalConfig
 from ..state import State
 from ..tmux import Tmux
 from ..xkit import XKit
+
+if TYPE_CHECKING:  # avoid a hard import cycle at runtime
+    from ..agent.fence import AgentFence
 
 
 @dataclass
@@ -19,6 +23,9 @@ class AdapterContext:
     state: State
     tmux: Tmux
     xkit: XKit
+    # P3 activation fence (design v2 §6).  None means the legacy unfenced
+    # mode: no fence check is performed.
+    fence: "AgentFence | None" = None
 
 
 @dataclass
@@ -57,6 +64,20 @@ class Adapter(ABC):
 
     def __init__(self, ctx: AdapterContext):
         self.ctx = ctx
+
+    def _check_fence(self) -> None:
+        """Validate the activation fence against canonical active (P3).
+
+        No-op when the context carries no fence (legacy mode).  The
+        coordinator-owned paths always bind a fence; stale workers raise
+        FenceLost here as well as in the agent loop.
+        """
+        from ..agent.fence import active_fence, check_fence
+
+        fence = getattr(self.ctx, "fence", None)
+        if fence is None:
+            return
+        check_fence(fence, active_fence(self.ctx.g.state_dir))
 
     @abstractmethod
     def command(self) -> list[str]:

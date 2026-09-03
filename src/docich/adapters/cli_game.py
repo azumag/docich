@@ -129,6 +129,7 @@ class CliGameAdapter(Adapter):
         ]
 
     def observe(self) -> Observation:
+        self._check_fence()
         text = self.ctx.tmux.capture_pane(self._session())
         meta = {}
         if text == "":
@@ -144,6 +145,7 @@ class CliGameAdapter(Adapter):
         )
 
     def act(self, action: Action) -> None:
+        self._check_fence()
         session = self._session()
         if action.type == "text":
             self.ctx.tmux.send_keys(session, [action.text], literal=True)
@@ -246,12 +248,23 @@ class CliCoordinatorAdapter:
         ]
 
     def _agent_command(self) -> list[str]:
-        # Agent は世代別 window 内で run ループとして起動する。lease fence は P3
-        # で追加するが、P2では session identity を環境変数で固定する。
-        return [
+        # Agent は世代別 window 内で run ループとして起動し、runtime identity
+        # を束縛する (P3 lease fence)。lease 未発行の rare なspec では束縛なし。
+        cmd = [
             _docich_bin(), "--config", str(self.g.config_path),
             "run", "agent", self.spec.game,
         ]
+        if (
+            self.spec.runtime_id is not None
+            and self.spec.generation is not None
+            and self.spec.lease_id is not None
+        ):
+            cmd += [
+                "--runtime-id", str(self.spec.runtime_id),
+                "--generation", str(self.spec.generation),
+                "--lease-id", str(self.spec.lease_id),
+            ]
+        return cmd
 
     # --- CoordinatorAdapter contract -------------------------------------
 

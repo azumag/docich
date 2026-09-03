@@ -24,7 +24,7 @@ _COORDINATOR_REGISTRY = {
 }
 
 
-def make_adapter(g, game, *, state=None, tmux=None, xkit=None) -> Adapter:
+def make_adapter(g, game, *, state=None, tmux=None, xkit=None, fence=None) -> Adapter:
     spec = _REGISTRY.get(game.adapter)
     if spec is None:
         raise AdapterError(
@@ -53,7 +53,7 @@ def make_adapter(g, game, *, state=None, tmux=None, xkit=None) -> Adapter:
     if xkit is None:
         xkit = XKit(g.display.name)
 
-    ctx = AdapterContext(g=g, game=game, state=state, tmux=tmux, xkit=xkit)
+    ctx = AdapterContext(g=g, game=game, state=state, tmux=tmux, xkit=xkit, fence=fence)
     return adapter_cls(ctx)
 
 

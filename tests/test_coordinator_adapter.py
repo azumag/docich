@@ -370,6 +370,19 @@ class TestAgent(CoordinatorAdapterTestBase):
         adapter.tmux = self.tmux
         self.assertTrue(adapter.agent_enabled)
 
+    def test_start_agent_binds_fence_args(self):
+        self.adapter.start_agent(time.monotonic() + 5, None)
+        window_calls = [c for c in self.tmux.calls if c[0] == "create_window_owned"]
+        self.assertEqual(len(window_calls), 1)
+        _, name, cmd, _ownership = window_calls[0]
+        self.assertEqual(name, "agent-g1")
+        self.assertIn("--runtime-id", cmd)
+        self.assertIn("g1-abcdef", cmd)
+        self.assertIn("--generation", cmd)
+        self.assertIn("1", cmd)
+        self.assertIn("--lease-id", cmd)
+        self.assertIn(self.spec.lease_id, cmd)
+
 
 class TestFactory(CoordinatorAdapterTestBase):
     def test_factory_resolves_cli_game(self):

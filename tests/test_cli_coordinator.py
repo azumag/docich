@@ -623,6 +623,24 @@ class TestLegacyMigration(CliCoordinatorTestBase):
         self.assertEqual(self._canonical()["active"]["game"], "nethack")
 
 
+class TestRunAgentFenceArgs(CliCoordinatorTestBase):
+    def test_run_agent_accepts_fence_args(self):
+        args = cli.build_parser().parse_args(
+            ["run", "agent", "nethack",
+             "--runtime-id", "g1-abcdef",
+             "--generation", "1",
+             "--lease-id", "12345678-1234-5678-1234-567812345678"]
+        )
+        self.assertEqual(args.runtime_id, "g1-abcdef")
+        self.assertEqual(args.generation, 1)
+        self.assertEqual(args.lease_id, "12345678-1234-5678-1234-567812345678")
+
+    def test_run_agent_partial_fence_args_rejected(self):
+        args = cli.build_parser().parse_args(["run", "agent", "nethack", "--runtime-id", "g1-abcdef"])
+        with self.assertRaises(cli.CliError):
+            cli.cmd_run(self.g, args)
+
+
 class TestCmdRotate(CliCoordinatorTestBase):
     def _write_rotation(self, games):
         literal = ", ".join(f'"{name}"' for name in games)
