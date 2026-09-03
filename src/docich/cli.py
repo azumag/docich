@@ -26,8 +26,10 @@ from .adapters import AdapterError, make_adapter, make_coordinator_adapter
 from .adapters.cli_game import GAME_SESSION, RUNTIME_GAME_SESSION_ENV
 from .adapters.retroarch import NETWORK_CMD_PORT, retroarch_network_port
 from .config import ConfigError, GlobalConfig, list_games, load_game, load_global
+from .agent.fence import shared_section
 from .game_switch import (
     ERROR_ALREADY_ACTIVE,
+    GameSwitchBusyError,
     GameSwitchCoordinator,
     GameSwitchError,
     GameSwitchStore,
@@ -151,6 +153,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_switch.add_argument("game", help="切り替え先のゲーム名")
     p_switch.add_argument("--request-id", metavar="UUID", help="再送用の request_id")
     p_switch.add_argument("--timeout", type=float, metavar="SEC", help="request 全体の deadline (秒)")
+
+    p_restart = sub.add_parser("restart", help="現在のゲームを再起動する (watchdog 復旧用)")
+    p_restart.add_argument("--request-id", metavar="UUID", help="再送用の request_id")
+    p_restart.add_argument("--timeout", type=float, metavar="SEC", help="request 全体の deadline (秒)")
 
     p_rotate = sub.add_parser("rotate", help="[rotation] games を順に切り替える (時間割ローテーション)")
     p_rotate.add_argument(
@@ -316,6 +322,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return cmd_migrate_legacy(g)
     if command == "switch":
         return cmd_switch(g, args.game, request_id=args.request_id, timeout_s=args.timeout)
+    if command == "restart":
+        return cmd_restart(g, request_id=args.request_id, timeout_s=args.timeout)
     if command == "rotate":
         return cmd_rotate(g, args.dry_run, request_id=args.request_id, timeout_s=args.timeout)
     if command == "status":
@@ -802,6 +810,16 @@ def cmd_switch(g: GlobalConfig, name: str, *, request_id: str | None = None, tim
     return _result_exit_code(result)
 
 
+def cmd_restart(g: GlobalConfig, *, request_id: str | None = None, timeout_s: float | None = None) -> int:
+    _require_no_legacy_runtime(g)
+    result = _coordinator(g).restart(
+        request_id=_checked_request_id(request_id),
+        timeout_s=_checked_timeout(timeout_s),
+    )
+    _print_switch_result("ゲームを再起動", result)
+    return _result_exit_code(result)
+
+
 def cmd_rotate(g: GlobalConfig, dry_run: bool, *, request_id: str | None = None, timeout_s: float | None = None) -> int:
     if not g.rotation.games:
         raise CliError("[rotation] games を設定してください (config/docich.toml)")
@@ -903,19 +921,53 @@ def _resolve_game_name(g: GlobalConfig, state: State, name: str | None, *, dash_
     return legacy
 
 
+def _active_fence_or_none(g: GlobalConfig, resolved: str):
+    """canonical があれば ready な active 一致を必須にして fence を返す。
+
+    canonical 未作成時 (needs_write) だけ None を返し legacy 互換を許す。
+    active 不在・phase 非 ready・game 不一致は CliError (fail-closed)。
+    lock 内での再確認用。
+    """
+    from .agent.fence import AgentFence
+
+    store = GameSwitchStore(g.state_dir)
+    canonical, needs_write = store.canonical.load()
+    if needs_write:
+        return None
+    if canonical.get("phase") != "ready":
+        raise CliError("ゲーム切替の実行中のため観測・入力できません (phase が ready ではありません)")
+    active = canonical.get("active")
+    if not isinstance(active, dict) or active.get("game") != resolved:
+        current = active.get("game") if isinstance(active, dict) else None
+        hint = f" (現在のゲーム: {current})" if current else " (実行中のゲームはありません)"
+        raise CliError(f"{resolved} は現在起動していません{hint}。ゲーム名を確認してください")
+    return AgentFence(
+        game=str(active["game"]),
+        runtime_id=str(active["runtime_id"]),
+        generation=int(active["generation"]),
+        lease_id=active.get("lease_id"),
+    )
+
+
 def cmd_obs(g: GlobalConfig, name: str | None) -> int:
     state = State(g)
     try:
         resolved = _resolve_game_name(g, state, name, dash_means_current=False)
-        _require_active_match(g, resolved)
-        _bind_active_cli_session(g, resolved)
+        game = load_game(g, resolved)
+
+        def _do():
+            fence = _active_fence_or_none(g, resolved)
+            _bind_active_cli_session(g, resolved)
+            adapter = make_adapter(
+                g, game, state=state, tmux=Tmux(), xkit=XKit(g.display.name), fence=fence
+            )
+            return adapter.observe()
+
+        obs = shared_section(g.state_dir, _do)
     except StateCorruptError as exc:
         raise CliError(f"canonical state が読み込めません: {exc}") from exc
-    game = load_game(g, resolved)
-    tmux = Tmux()
-    xkit = XKit(g.display.name)
-    adapter = make_adapter(g, game, state=state, tmux=tmux, xkit=xkit)
-    obs = adapter.observe()
+    except GameSwitchBusyError as exc:
+        raise CliError(f"ゲーム切替が進行中のため観測できません: {exc}") from exc
     print(obs.to_json())
     return 0
 
@@ -924,40 +976,34 @@ def cmd_send(g: GlobalConfig, game_arg: str, json_text: str) -> int:
     state = State(g)
     try:
         resolved = _resolve_game_name(g, state, game_arg, dash_means_current=True)
-        _require_active_match(g, resolved)
-        _bind_active_cli_session(g, resolved)
+        game = load_game(g, resolved)
+        # wait-only の send でも対象ゲームの照合は必須 (lock 不要な読み取り)。
+        _active_fence_or_none(g, resolved)
     except StateCorruptError as exc:
         raise CliError(f"canonical state が読み込めません: {exc}") from exc
-    game = load_game(g, resolved)
-    tmux = Tmux()
-    xkit = XKit(g.display.name)
-    adapter = make_adapter(g, game, state=state, tmux=tmux, xkit=xkit)
-
     actions: list[Action] = parse_actions(json_text)
-    for action in actions:
-        if action.type == "wait":
-            time.sleep(max(action.ms, 0) / 1000)
-        else:
-            adapter.act(action)
+    try:
+        for action in actions:
+            if action.type == "wait":
+                # wait 中は shared lock を保持しない (design v2 §6)。
+                time.sleep(max(action.ms, 0) / 1000)
+                continue
+
+            def _do(single=action):
+                fence = _active_fence_or_none(g, resolved)
+                _bind_active_cli_session(g, resolved)
+                adapter = make_adapter(
+                    g, game, state=state, tmux=Tmux(), xkit=XKit(g.display.name), fence=fence
+                )
+                adapter.act(single)
+
+            shared_section(g.state_dir, _do)
+    except StateCorruptError as exc:
+        raise CliError(f"canonical state が読み込めません: {exc}") from exc
+    except GameSwitchBusyError as exc:
+        raise CliError(f"ゲーム切替が進行中のため入力できません: {exc}") from exc
     print(f"docich: {len(actions)} 件のアクションを送信しました ({resolved})")
     return 0
-
-
-def _require_active_match(g: GlobalConfig, resolved: str) -> None:
-    """canonical が存在する場合は active 一致を必須にする (fail-closed)。
-
-    canonical 未作成時 (needs_write) だけ legacy 互換を許す。active 不在・
-    不一致は CliError。P3 の fence までは、一致時の実行自体は legacy のまま。
-    """
-    store = GameSwitchStore(g.state_dir)
-    _, needs_write = store.canonical.load()
-    if needs_write:
-        return
-    active = _read_active_runtime(g)
-    if active is None or active.get("game") != resolved:
-        current = active.get("game") if isinstance(active, dict) else None
-        hint = f" (現在のゲーム: {current})" if current else " (実行中のゲームはありません)"
-        raise CliError(f"{resolved} は現在起動していません{hint}。ゲーム名を確認してください")
 
 
 def _bind_active_cli_session(g: GlobalConfig, resolved: str) -> None:
