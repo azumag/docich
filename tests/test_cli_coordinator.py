@@ -501,13 +501,16 @@ class TestNeedsWriteReads(CliCoordinatorTestBase):
 class TestLegacyMigration(CliCoordinatorTestBase):
     def _legacy_tmux(self, *, game_window=True, agent_window=True, game_session=True):
         tmux = mock.Mock()
-        existing = set()
+        windows = set()
         if game_window:
-            existing.add("game")
+            windows.add("game")
         if agent_window:
-            existing.add("agent")
-        tmux.has_window.side_effect = lambda name: name in existing or name == "display"
-        tmux.has_session_named.side_effect = lambda name: game_session and name == "docich-game"
+            windows.add("agent")
+        sessions = {"docich-game"} if game_session else set()
+        tmux.has_window.side_effect = lambda name: name in windows or name == "display"
+        tmux.has_session_named.side_effect = lambda name: name in sessions
+        tmux.kill_window.side_effect = lambda name: windows.discard(name)
+        tmux.kill_session_named.side_effect = lambda name: sessions.discard(name)
         return tmux
 
     def test_start_refuses_with_legacy_runtime_present(self):
@@ -532,6 +535,19 @@ class TestLegacyMigration(CliCoordinatorTestBase):
         with mock.patch("docich.cli.Tmux", return_value=tmux):
             with self.assertRaises(cli.CliError):
                 cli.cmd_switch(self.g, "nethack")
+
+    def test_migrate_legacy_refuses_when_kill_does_not_take_effect(self):
+        cli.State(self.g).set_current_game("nethack")
+        tmux = self._legacy_tmux()
+        # kill が記録だけされて実際は止めない tmux: target が残留する
+        tmux.kill_window.side_effect = None
+        tmux.kill_session_named.side_effect = None
+        with mock.patch("docich.cli.Tmux", return_value=tmux):
+            with self.assertRaises(cli.CliError):
+                cli.cmd_migrate_legacy(self.g)
+        # mirror は保持され、canonical は作成されない (fail-closed)
+        self.assertEqual(cli.State(self.g).current_game(), "nethack")
+        self.assertFalse((self.g.state_dir / "game_switch.json").exists())
 
     def test_migrate_legacy_stops_fixed_runtime_and_clears_mirror(self):
         cli.State(self.g).set_current_game("nethack")
