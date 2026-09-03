@@ -32,6 +32,35 @@ from .tmux import OwnershipMismatchError, Tmux
 from .xkit import XKit
 
 STATUS_SCHEMA_VERSION = 1
+LEGACY_WINDOWS = ("game", "agent")
+LEGACY_SESSION = "docich-game"
+
+
+def legacy_footprint(g: GlobalConfig, *, tmux: Tmux | None = None) -> list[str]:
+    """Enumerate pre-coordinator runtime traces (design v2 migration scope).
+
+    Fixed windows ``game``/``agent``, the fixed ``docich-game`` session, and
+    the ``current_game`` compat mirror each count as migration scope.  The
+    shared ``docich`` session itself (display/audio/stream) is excluded.
+    Read-only: probe failures are ignored here (fail-closed callers re-probe
+    with checked APIs before mutating anything).
+    """
+    tmux = tmux or Tmux()
+    found: list[str] = []
+    if State(g).current_game() is not None:
+        found.append("current_game")
+    for window in LEGACY_WINDOWS:
+        try:
+            if tmux.has_window(window):
+                found.append(f"window:{window}")
+        except Exception:
+            pass
+    try:
+        if tmux.has_session_named(LEGACY_SESSION):
+            found.append(f"session:{LEGACY_SESSION}")
+    except Exception:
+        pass
+    return found
 STATUS_WINDOWS = ("display", "audio", "stream", "game", "agent", "watchdog")
 
 
