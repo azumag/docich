@@ -108,6 +108,7 @@ class CliCoordinatorTestBase(unittest.TestCase):
     def _display_tmux(self):
         tmux = mock.Mock()
         tmux.has_window.side_effect = lambda name: name == "display"
+        tmux.has_session_named.return_value = False
         return mock.patch("docich.cli.Tmux", return_value=tmux)
 
     def _call(self, func, *args, **kwargs):
@@ -163,7 +164,8 @@ class TestCmdStart(CliCoordinatorTestBase):
             warnings=(), cleanup_pending=False, receipt=None,
         )
         with mock.patch("docich.cli._coordinator") as coordinator_mock, \
-                mock.patch("docich.cli.Tmux"):
+                mock.patch("docich.cli.Tmux"), \
+                mock.patch("docich.cli._require_no_legacy_runtime"):
             coordinator_mock.return_value.start.return_value = start_result
             coordinator_mock.return_value.switch.return_value = cli.SwitchResult(
                 request_id=request_id, operation="switch", status="succeeded",
@@ -233,7 +235,8 @@ class TestCmdDown(CliCoordinatorTestBase):
         )
         tmux = mock.Mock()
         with mock.patch("docich.cli._coordinator") as coordinator_mock, \
-                mock.patch("docich.cli.Tmux", return_value=tmux):
+                mock.patch("docich.cli.Tmux", return_value=tmux), \
+                mock.patch("docich.cli._require_no_legacy_runtime"):
             coordinator_mock.return_value.stop.return_value = busy
             rc = cli.cmd_down(self.g)
         self.assertEqual(rc, 1)
@@ -493,6 +496,71 @@ class TestNeedsWriteReads(CliCoordinatorTestBase):
             rc = cli.cmd_ra_cmd(self.g, ["GET_STATUS"])
         self.assertEqual(rc, 0)
         self.assertEqual(ra_mock.call_args.kwargs["port"], 55355)
+
+
+class TestLegacyMigration(CliCoordinatorTestBase):
+    def _legacy_tmux(self, *, game_window=True, agent_window=True, game_session=True):
+        tmux = mock.Mock()
+        existing = set()
+        if game_window:
+            existing.add("game")
+        if agent_window:
+            existing.add("agent")
+        tmux.has_window.side_effect = lambda name: name in existing or name == "display"
+        tmux.has_session_named.side_effect = lambda name: game_session and name == "docich-game"
+        return tmux
+
+    def test_start_refuses_with_legacy_runtime_present(self):
+        cli.State(self.g).set_current_game("nethack")
+        tmux = self._legacy_tmux()
+        with mock.patch("docich.cli.Tmux", return_value=tmux):
+            with self.assertRaises(cli.CliError) as ctx:
+                cli.cmd_start(self.g, "nethack")
+        self.assertIn("migrate-legacy", str(ctx.exception))
+        self.assertFalse((self.g.state_dir / "game_switch.json").exists())
+
+    def test_stop_refuses_with_legacy_runtime_present(self):
+        cli.State(self.g).set_current_game("nethack")
+        tmux = self._legacy_tmux()
+        with mock.patch("docich.cli.Tmux", return_value=tmux):
+            with self.assertRaises(cli.CliError):
+                cli.cmd_stop(self.g)
+
+    def test_switch_refuses_with_legacy_runtime_present(self):
+        cli.State(self.g).set_current_game("nethack")
+        tmux = self._legacy_tmux()
+        with mock.patch("docich.cli.Tmux", return_value=tmux):
+            with self.assertRaises(cli.CliError):
+                cli.cmd_switch(self.g, "nethack")
+
+    def test_migrate_legacy_stops_fixed_runtime_and_clears_mirror(self):
+        cli.State(self.g).set_current_game("nethack")
+        tmux = self._legacy_tmux()
+        with mock.patch("docich.cli.Tmux", return_value=tmux):
+            rc = cli.cmd_migrate_legacy(self.g)
+        self.assertEqual(rc, 0)
+        tmux.kill_window.assert_any_call("agent")
+        tmux.kill_window.assert_any_call("game")
+        tmux.kill_session_named.assert_any_call("docich-game")
+        self.assertIsNone(cli.State(self.g).current_game())
+        state, _ = GameSwitchStore(self.g.state_dir).canonical.load()
+        self.assertEqual(state["phase"], "idle")
+
+    def test_migrate_legacy_is_noop_without_legacy(self):
+        tmux = self._legacy_tmux(game_window=False, agent_window=False, game_session=False)
+        with mock.patch("docich.cli.Tmux", return_value=tmux):
+            rc = cli.cmd_migrate_legacy(self.g)
+        self.assertEqual(rc, 0)
+        tmux.kill_window.assert_not_called()
+        tmux.kill_session_named.assert_not_called()
+
+    def test_start_succeeds_after_migrate_legacy(self):
+        cli.State(self.g).set_current_game("nethack")
+        with mock.patch("docich.cli.Tmux", return_value=self._legacy_tmux()):
+            cli.cmd_migrate_legacy(self.g)
+        rc, _out, _err = self._call(cli.cmd_start, "nethack")
+        self.assertEqual(rc, 0)
+        self.assertEqual(self._canonical()["active"]["game"], "nethack")
 
 
 class TestCmdRotate(CliCoordinatorTestBase):

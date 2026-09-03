@@ -342,7 +342,8 @@ class TestCmdRotate(unittest.TestCase):
                 generation=2, error_code=None, detail=None,
                 warnings=(), cleanup_pending=False, receipt=None,
             )
-            with mock.patch("docich.cli._coordinator") as coordinator_mock:
+            with mock.patch("docich.cli._coordinator") as coordinator_mock, \
+                    mock.patch("docich.cli._require_no_legacy_runtime"):
                 coordinator_mock.return_value.rotate.return_value = result
                 rc = cli.cmd_rotate(g, dry_run=False)
             self.assertEqual(rc, 0)
@@ -364,7 +365,8 @@ class TestCmdRotate(unittest.TestCase):
                 generation=2, error_code=None, detail=None,
                 warnings=(), cleanup_pending=False, receipt=None,
             )
-            with mock.patch("docich.cli._coordinator") as coordinator_mock:
+            with mock.patch("docich.cli._coordinator") as coordinator_mock, \
+                    mock.patch("docich.cli._require_no_legacy_runtime"):
                 coordinator_mock.return_value.rotate.return_value = result
                 cli.cmd_rotate(g, dry_run=False)
             coordinator_mock.return_value.rotate.assert_called_once()
