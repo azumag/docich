@@ -152,6 +152,43 @@ class TestEventSequence(EventLogTestBase):
         for banned in ("argv", "token", "stream_key", "DOCICH_", "password"):
             self.assertNotIn(banned, blob)
 
+    def test_secret_bearing_detail_is_redacted(self):
+        self.factory.behaviors["robots"]["preflight_error"] = AdapterError(
+            "probe failed for https://hooks.example.invalid/x?token=SECRET-TOKEN-123 "
+            "with stream_key=AKIA-SECRET-KEY-XYZ argv=['--key','hunter2hunter2hunter2hunter2AB']"
+        )
+        self.coordinator.start("nethack")
+        result = self.coordinator.switch("robots")
+        self.assertEqual(result.status, "rolled_back")
+        blob = self.log_path.read_text(encoding="utf-8")
+        for leaked in (
+            "SECRET-TOKEN-123",
+            "AKIA-SECRET-KEY-XYZ",
+            "token=SECRET",
+            "hunter2hunter2hunter2hunter2AB",
+        ):
+            self.assertNotIn(leaked, blob)
+        # Redacted forms and safe context survive.
+        self.assertIn("token=<redacted>", blob)
+        self.assertIn("stream_key=<redacted>", blob)
+        self.assertIn("hooks.example.invalid", blob)
+        self.assertIn("prepare_failed", blob)
+        # The request itself still fails closed with the raw detail intact.
+        receipt = self.store.receipts.load(result.request_id)
+        self.assertEqual(receipt["status"], "rolled_back")
+
+    def test_sanitizer_keeps_safe_identifiers(self):
+        from docich.game_switch import _sanitize_log_detail
+
+        text = _sanitize_log_detail(
+            "game-g1 agent stopped (generation=2) request 12345678-1234-5678-1234-567812345678"
+        )
+        assert text is not None
+        for kept in ("game-g1", "generation=2", "12345678-1234-5678-1234-567812345678"):
+            self.assertIn(kept, text)
+        self.assertIsNone(_sanitize_log_detail(None))
+        self.assertIsNone(_sanitize_log_detail(""))
+
     def test_failed_switch_logs_rollback(self):
         self.factory.behaviors["robots"]["readiness_error"] = game_switch.ReadinessTimeoutError("slow")
         self.coordinator.start("nethack")
