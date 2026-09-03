@@ -166,12 +166,13 @@ class TestEventSequence(EventLogTestBase):
             "AKIA-SECRET-KEY-XYZ",
             "token=SECRET",
             "hunter2hunter2hunter2hunter2AB",
+            "https://hooks.example.invalid/x",
+            "argv",
         ):
             self.assertNotIn(leaked, blob)
-        # Redacted forms and safe context survive.
-        self.assertIn("token=<redacted>", blob)
-        self.assertIn("stream_key=<redacted>", blob)
-        self.assertIn("hooks.example.invalid", blob)
+        # Redacted forms and stable codes survive.
+        self.assertIn("<redacted-url>", blob)
+        self.assertIn("<redacted>", blob)
         self.assertIn("prepare_failed", blob)
         # The request itself still fails closed with the raw detail intact.
         receipt = self.store.receipts.load(result.request_id)
