@@ -278,6 +278,9 @@ def build_parser() -> argparse.ArgumentParser:
         "component", choices=["display", "audio", "stream", "game", "agent", "watchdog"]
     )
     p_run.add_argument("name", nargs="?", help="game/agent の場合のゲーム名")
+    p_run.add_argument("--runtime-id", metavar="ID", help="agent の runtime 束縛 (P3 fence)")
+    p_run.add_argument("--generation", type=int, metavar="N", help="agent の generation 束縛 (P3 fence)")
+    p_run.add_argument("--lease-id", metavar="UUID", help="agent の lease 束縛 (P3 fence)")
 
     return parser
 
@@ -353,7 +356,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             dry_run=getattr(args, "dry_run", False),
         )
     if command == "run":
-        return cmd_run(g, args.component, args.name)
+        return cmd_run(g, args)
     raise CliError(f"未知のコマンドです: {command}")
 
 
@@ -1020,7 +1023,14 @@ def _read_ra_port(g: GlobalConfig) -> int | None:
 # ---------------------------------------------------------------------------
 
 
-def cmd_run(g: GlobalConfig, component: str, name: str | None) -> int:
+def cmd_run(g: GlobalConfig, args) -> int:
+    component = args.component
+    name = args.name
+    runtime_kwargs = {
+        "runtime_id": getattr(args, "runtime_id", None),
+        "generation": getattr(args, "generation", None),
+        "lease_id": getattr(args, "lease_id", None),
+    }
     if component == "display":
         return _run_display(g)
     if component == "audio":
@@ -1034,7 +1044,13 @@ def cmd_run(g: GlobalConfig, component: str, name: str | None) -> int:
     if component == "agent":
         if not name:
             raise CliError("`docich run agent <name>` にはゲーム名が必要です")
-        return _run_agent(g, name)
+        if any(v is not None for v in runtime_kwargs.values()) and not all(
+            v is not None for v in runtime_kwargs.values()
+        ):
+            raise CliError(
+                "--runtime-id / --generation / --lease-id はすべて指定してください"
+            )
+        return _run_agent(g, name, **runtime_kwargs)
     if component == "watchdog":
         return _run_watchdog(g)
     raise CliError(f"未知のコンポーネントです: {component}")
@@ -1197,7 +1213,14 @@ def _run_game(g: GlobalConfig, name: str) -> int:
     return 0
 
 
-def _run_agent(g: GlobalConfig, name: str) -> int:
+def _run_agent(
+    g: GlobalConfig,
+    name: str,
+    *,
+    runtime_id: str | None = None,
+    generation: int | None = None,
+    lease_id: str | None = None,
+) -> int:
     load_game(g, name)  # 早期検証: ゲーム名が不正なら即エラーにする
 
     def fn() -> None:
@@ -1205,7 +1228,7 @@ def _run_agent(g: GlobalConfig, name: str) -> int:
         # run_callable_loop に捕捉され、ログ+backoff で待機し続ける。
         from .agent.loop import run_agent
 
-        run_agent(g, name)
+        run_agent(g, name, runtime_id=runtime_id, generation=generation, lease_id=lease_id)
 
     run_callable_loop("agent", g, fn)
     return 0

@@ -212,6 +212,7 @@ class BrowserAdapter(Adapter):
         )
 
     def observe(self) -> Observation:
+        self._check_fence()
         d = self.ctx.g.display
         out_path = self.ctx.state.screenshots_dir / "latest.png"
         result = self.ctx.xkit.screenshot(out_path, d.width, d.height)
@@ -236,6 +237,7 @@ class BrowserAdapter(Adapter):
         self.ctx.xkit.focus(window_id)
 
     def act(self, action: Action) -> None:
+        self._check_fence()
         if action.type == "key":
             self._focus()
             self.ctx.xkit.tap(action.keys, action.hold_ms)
@@ -309,10 +311,23 @@ class BrowserCoordinatorAdapter:
         return browser_raw(self.game).get("launch_command") is not None
 
     def _agent_command(self) -> list[str]:
-        return [
+        # Agent は世代別 window 内で run ループとして起動し、runtime identity
+        # を束縛する (P3 lease fence)。lease 未発行の rare なspec では束縛なし。
+        cmd = [
             _docich_bin(), "--config", str(self.g.config_path),
             "run", "agent", self.spec.game,
         ]
+        if (
+            self.spec.runtime_id is not None
+            and self.spec.generation is not None
+            and self.spec.lease_id is not None
+        ):
+            cmd += [
+                "--runtime-id", str(self.spec.runtime_id),
+                "--generation", str(self.spec.generation),
+                "--lease-id", str(self.spec.lease_id),
+            ]
+        return cmd
 
     def _poll_wait(self, deadline: float, cancel, timeout_message: str) -> None:
         remaining = deadline - time.monotonic()
