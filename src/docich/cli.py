@@ -51,7 +51,7 @@ from .stream import (
     resolve_runtime,
 )
 from .supervise import run_callable_loop, run_loop
-from .tmux import Tmux
+from .tmux import Tmux, TmuxError
 from .watchdog import next_rotation_game
 from .xkit import XKit
 
@@ -739,6 +739,7 @@ def cmd_migrate_legacy(g: GlobalConfig) -> int:
     footprint remains.
     """
     tmux = Tmux()
+    attempted = _legacy_footprint(g)
     for window in ("agent", "game"):
         if tmux.has_window(window):
             tmux.kill_window(window)
@@ -746,14 +747,22 @@ def cmd_migrate_legacy(g: GlobalConfig) -> int:
         tmux.kill_session_named(GAME_SESSION)
 
     # kill helper は失敗を黙って無視する。停止できたことを再確認するまで
-    # mirror 消去・canonical 初期化へ進まない (fail-closed)。
-    remaining = [
-        f"window:{window}"
-        for window in ("agent", "game")
-        if tmux.has_window(window)
-    ]
-    if tmux.has_session_named(GAME_SESSION):
-        remaining.append(f"session:{GAME_SESSION}")
+    # mirror 消去・canonical 初期化へ進まない (fail-closed)。再確認には
+    # checked existence API を使い、probe 自体の失敗は「不在」とせず
+    # TmuxError -> CliError で止める。
+    try:
+        remaining = [
+            f"window:{window}"
+            for window in ("agent", "game")
+            if tmux.window_target_exists(f"docich:{window}")
+        ]
+        if tmux.session_target_exists(GAME_SESSION):
+            remaining.append(f"session:{GAME_SESSION}")
+    except TmuxError as exc:
+        raise CliError(
+            f"旧 runtime の停止を確認できませんでした (tmux 確認エラー: {exc})。"
+            f"tmux の状態を確認してから `docich migrate-legacy` を再実行してください。"
+        ) from exc
     if remaining:
         raise CliError(
             f"旧 runtime の停止を確認できませんでした ({', '.join(remaining)})。"
@@ -762,7 +771,6 @@ def cmd_migrate_legacy(g: GlobalConfig) -> int:
 
     state = State(g)
     mirrored = state.current_game()
-    stopped = _legacy_footprint(g)
     if mirrored is not None:
         try:
             game = load_game(g, mirrored)
@@ -774,8 +782,8 @@ def cmd_migrate_legacy(g: GlobalConfig) -> int:
     state.clear_current_game()
 
     GameSwitchStore(g.state_dir).initialize()
-    if stopped or mirrored is not None:
-        print(f"docich: 旧 runtime を移行しました ({', '.join(stopped) if stopped else 'mirror のみ'})")
+    if attempted or mirrored is not None:
+        print(f"docich: 旧 runtime を移行しました ({', '.join(attempted) if attempted else 'mirror のみ'})")
     else:
         print("docich: 移行対象の旧 runtime はありませんでした")
     return 0

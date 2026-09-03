@@ -511,6 +511,8 @@ class TestLegacyMigration(CliCoordinatorTestBase):
         tmux.has_session_named.side_effect = lambda name: name in sessions
         tmux.kill_window.side_effect = lambda name: windows.discard(name)
         tmux.kill_session_named.side_effect = lambda name: sessions.discard(name)
+        tmux.window_target_exists.side_effect = lambda target: target.split(":", 1)[-1] in windows
+        tmux.session_target_exists.side_effect = lambda name: name in sessions
         return tmux
 
     def test_start_refuses_with_legacy_runtime_present(self):
@@ -542,6 +544,20 @@ class TestLegacyMigration(CliCoordinatorTestBase):
         # kill が記録だけされて実際は止めない tmux: target が残留する
         tmux.kill_window.side_effect = None
         tmux.kill_session_named.side_effect = None
+        with mock.patch("docich.cli.Tmux", return_value=tmux):
+            with self.assertRaises(cli.CliError):
+                cli.cmd_migrate_legacy(self.g)
+        # mirror は保持され、canonical は作成されない (fail-closed)
+        self.assertEqual(cli.State(self.g).current_game(), "nethack")
+        self.assertFalse((self.g.state_dir / "game_switch.json").exists())
+
+    def test_migrate_legacy_refuses_when_verification_itself_fails(self):
+        from docich.tmux import TmuxError
+
+        cli.State(self.g).set_current_game("nethack")
+        tmux = self._legacy_tmux()
+        # 停止後の存在確認そのものが tmux error になる: 不在とみなさない
+        tmux.window_target_exists.side_effect = TmuxError("socket error")
         with mock.patch("docich.cli.Tmux", return_value=tmux):
             with self.assertRaises(cli.CliError):
                 cli.cmd_migrate_legacy(self.g)
