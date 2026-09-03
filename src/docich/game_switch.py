@@ -20,6 +20,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import secrets
 import tempfile
 import threading
@@ -96,6 +97,35 @@ def _utc_now() -> str:
 
 def _safe_detail(exc: BaseException) -> str:
     return str(exc).replace("\n", " ")[:240]
+
+
+_SECRET_KEY_VALUE = re.compile(
+    r"(?i)\b(?P<key>token|api[_-]?key|password|passwd|pwd|secret|"
+    r"stream[_-]?key|auth|authorization|bearer|session[_-]?key|"
+    r"private[_-]?key|client[_-]?secret)\b(?P<sep>\s*[:=]\s*)"
+    r"(?P<value>\"[^\"]*\"|'[^']*'|\S+)"
+)
+_URL_WITH_SENSITIVE_PART = re.compile(
+    r"(?i)\b(?P<scheme>[a-z][a-z0-9+.\-]*://)(?:[^/\s?#@]*@)?(?P<host>[^/\s?#]*)(?P<path>[^?\s#]*)"
+)
+_LONG_OPAQUE_TOKEN = re.compile(r"\b(?:[0-9a-f]{32,}|[0-9A-Za-z+/]{24,}={0,2})\b")
+
+
+def _sanitize_log_detail(detail: str | None) -> str | None:
+    """Redact secrets from an event-log detail (design v2 §9).
+
+    Exception-derived details may carry URLs (userinfo/query), credential
+    key=value pairs, or opaque tokens.  Hosts, paths, game/window names,
+    generations, request ids and error codes survive; anything shaped like
+    a secret does not.
+    """
+    if not detail:
+        return None
+    text = _safe_detail(detail)
+    text = _URL_WITH_SENSITIVE_PART.sub(lambda m: f"{m['scheme']}{m['host']}{m['path']}", text)
+    text = _SECRET_KEY_VALUE.sub(lambda m: f"{m['key']}{m['sep']}<redacted>", text)
+    text = _LONG_OPAQUE_TOKEN.sub("<redacted>", text)
+    return text
 
 
 def _prepare_private_dir(path: Path) -> None:
@@ -1038,7 +1068,7 @@ class EventLog:
             "phase": phase,
             "result": result,
             "error_code": error_code,
-            "detail": _safe_detail(detail) if detail else None,
+            "detail": _sanitize_log_detail(detail) if detail else None,
             "cleanup_pending": bool(cleanup_pending),
         }
         try:
