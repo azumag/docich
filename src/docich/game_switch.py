@@ -99,6 +99,13 @@ def _safe_detail(exc: BaseException) -> str:
     return str(exc).replace("\n", " ")[:240]
 
 
+_AUTH_HEADER_CREDENTIAL = re.compile(
+    r"(?i)\b(?P<header>authorization\s*:\s*)"
+    r"(?:bearer|basic|digest|negotiate)\s+\S+"
+)
+_STANDALONE_AUTH_CREDENTIAL = re.compile(
+    r"(?i)(?<![\w\-])(?:bearer|basic|digest|negotiate)\s+\S+"
+)
 _SECRET_KEY_VALUE = re.compile(
     r"(?i)\b(?P<key>token|api[_-]?key|password|passwd|pwd|secret|"
     r"stream[_-]?key|auth|authorization|bearer|session[_-]?key|"
@@ -125,6 +132,8 @@ def _sanitize_log_detail(detail: str | None) -> str | None:
     if not detail:
         return None
     text = _safe_detail(detail)
+    text = _AUTH_HEADER_CREDENTIAL.sub(lambda m: f"{m['header']}<redacted>", text)
+    text = _STANDALONE_AUTH_CREDENTIAL.sub("<redacted>", text)
     text = _ARGV_EXPR.sub("<redacted>", text)
     text = _URL_WHOLE.sub("<redacted-url>", text)
     text = _SECRET_KEY_VALUE.sub(lambda m: f"{m['key']}{m['sep']}<redacted>", text)
