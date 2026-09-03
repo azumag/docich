@@ -156,7 +156,8 @@ class TestEventSequence(EventLogTestBase):
         self.factory.behaviors["robots"]["preflight_error"] = AdapterError(
             "probe failed for https://hooks.example.invalid/x?token=SECRET-TOKEN-123 "
             "with stream_key=AKIA-SECRET-KEY-XYZ argv=['--key','hunter2hunter2hunter2hunter2AB'] "
-            "headers Authorization: Bearer aaa.bbb.ccc and lone Bearer xyz123credential"
+            "headers Authorization: Bearer aaa.bbb.ccc and lone Bearer xyz123credential "
+            "equals Authorization=Bearer xy and basic authorization = Basic dXNlcjpwYXNz"
         )
         self.coordinator.start("nethack")
         result = self.coordinator.switch("robots")
@@ -171,6 +172,8 @@ class TestEventSequence(EventLogTestBase):
             "argv",
             "aaa.bbb.ccc",
             "xyz123credential",
+            "Bearer xy",
+            "Basic dXNlcjpwYXNz",
         ):
             self.assertNotIn(leaked, blob)
         # Bearer auth values are redacted as a whole, not just the scheme word.
