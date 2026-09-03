@@ -180,12 +180,21 @@ def collect_status(g: GlobalConfig, *, tmux: Tmux | None = None, xkit: XKit | No
         else None,
     }
 
-    actual = {"active": None, "candidate": None}
+    actual: dict = {"active": None, "candidate": None, "previous": None, "retiring": []}
     candidate = (loaded or {}).get("candidate") if loaded is not None else None
+    previous = (loaded or {}).get("previous") if loaded is not None else None
+    retiring = (loaded or {}).get("retiring") if loaded is not None else None
     if isinstance(active, dict):
         actual["active"] = _check_runtime(tmux, active)
     if isinstance(candidate, dict):
         actual["candidate"] = _check_runtime(tmux, candidate)
+    if isinstance(previous, dict):
+        actual["previous"] = _check_runtime(tmux, previous)
+    if isinstance(retiring, list):
+        actual["retiring"] = [
+            probed for r in retiring
+            if isinstance(r, dict) and (probed := _check_runtime(tmux, r)) is not None
+        ]
 
     fence_tuple = None
     if isinstance(active, dict):
@@ -196,7 +205,7 @@ def collect_status(g: GlobalConfig, *, tmux: Tmux | None = None, xkit: XKit | No
             "lease_id": active.get("lease_id"),
         }
     agent_window_exists = None
-    if actual["active"] is not None:
+    if isinstance(actual.get("active"), dict):
         agent_window_exists = actual["active"]["agent_window"].get("exists")
     agent_fence = {
         "tuple": fence_tuple,
@@ -205,7 +214,6 @@ def collect_status(g: GlobalConfig, *, tmux: Tmux | None = None, xkit: XKit | No
         "agent_window_present": agent_window_exists,
     }
 
-    retiring = (loaded or {}).get("retiring") if loaded is not None else None
     cleanup_pending = bool(isinstance(retiring, list) and len(retiring) > 0)
 
     stream: dict = {"mode": g.stream.mode}

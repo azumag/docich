@@ -270,6 +270,56 @@ class TestReadyStatus(StatusTestBase):
         data = self._collect()
         self.assertFalse(data["agent_fence"]["agent_window_present"])
 
+    def test_retiring_actual_reports_ownership_and_panes(self):
+        active = _runtime_dict(2, "robots")
+        old = _runtime_dict(1, "nethack")
+        self._save_ready(active, retiring=[old])
+        self._track(active)
+        self._track(old)
+        data = self._collect()
+        self.assertTrue(data["cleanup_pending"])
+        self.assertEqual(len(data["actual"]["retiring"]), 1)
+        probed = data["actual"]["retiring"][0]
+        self.assertEqual(probed["game"], "nethack")
+        self.assertEqual(probed["game_window"]["ownership"], "matched")
+        self.assertEqual(probed["game_window"]["panes"], "alive")
+
+    def test_previous_actual_is_reported(self):
+        active = _runtime_dict(1, "nethack")
+        previous = _runtime_dict(2, "robots")
+        store = GameSwitchStore(self.g.state_dir)
+        state, _ = store.canonical.load()
+        state.update(
+            {
+                "phase": "rolling_back",
+                "operation": "switch",
+                "request_id": str(uuid.uuid4()),
+                "active": None,
+                "previous": previous,
+                "next_generation": 3,
+            }
+        )
+        store.canonical.save(state)
+        self._track(previous)
+        data = self._collect()
+        self.assertIsNone(data["actual"]["active"])
+        self.assertEqual(data["actual"]["previous"]["game"], "robots")
+        self.assertEqual(data["actual"]["previous"]["game_window"]["ownership"], "matched")
+
+    def test_retiring_probe_error_stays_unreadable(self):
+        from docich.tmux import TmuxError
+
+        active = _runtime_dict(2, "robots")
+        old = _runtime_dict(1, "nethack")
+        self._save_ready(active, retiring=[old])
+        self.tmux.raise_on_probe = TmuxError("socket error")
+        data = self._collect()
+        self.assertTrue(data["cleanup_pending"])
+        probed = data["actual"]["retiring"][0]
+        self.assertIsNone(probed["game_window"]["exists"])
+        self.assertEqual(probed["game_window"]["ownership"], "unreadable")
+        self.assertEqual(probed["game_window"]["panes"], "unreadable")
+
     def test_non_cli_session_is_not_applicable(self):
         active = _runtime_dict(1, "hanjuku-hero", adapter="retroarch")
         self._save_ready(active)
@@ -353,6 +403,29 @@ class TestStatusCli(StatusTestBase):
                 rc = cli.cmd_status(self.g)
         self.assertEqual(rc, 0)
         self.assertIn("agent_window=不明", out.getvalue())
+
+    def test_human_shows_previous_retiring_and_presence(self):
+        active = _runtime_dict(2, "robots")
+        old = _runtime_dict(1, "nethack")
+        self._save_ready(active, retiring=[old])
+        from docich.state import State
+
+        State(self.g).set_current_game("robots")
+        self._track(active)
+        self._track(old)
+        self.tmux.pane_dead = True
+        out = io.StringIO()
+        with mock.patch("docich.cli.Tmux", return_value=self.tmux), mock.patch(
+            "docich.cli.XKit", return_value=self.xkit
+        ):
+            with redirect_stdout(out):
+                rc = cli.cmd_status(self.g)
+        self.assertEqual(rc, 0)
+        text = out.getvalue()
+        self.assertIn("previous: (なし)", text)
+        self.assertIn("retiring: nethack", text)
+        # present=true + pane dead は「存在 (pane dead)」で矛盾しない
+        self.assertIn("agent_window=存在 (pane dead)", text)
 
     def test_status_json_flag_parses(self):
         args = cli.build_parser().parse_args(["status", "--json"])
