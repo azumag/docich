@@ -15,11 +15,13 @@ must additionally respect the monotonic deadline passed to each call.
 from __future__ import annotations
 
 import copy
+import contextvars
 import datetime as dt
 import fcntl
 import hashlib
 import json
 import os
+import re
 import secrets
 import tempfile
 import threading
@@ -96,6 +98,48 @@ def _utc_now() -> str:
 
 def _safe_detail(exc: BaseException) -> str:
     return str(exc).replace("\n", " ")[:240]
+
+
+_AUTH_HEADER_CREDENTIAL = re.compile(
+    r"(?i)\b(?P<header>authorization\s*[:=]\s*)"
+    r"(?:bearer|basic|digest|negotiate)\s+\S+"
+)
+_STANDALONE_AUTH_CREDENTIAL = re.compile(
+    r"(?i)(?<![\w\-])(?:bearer|basic|digest|negotiate)\s+\S+"
+)
+_SECRET_KEY_VALUE = re.compile(
+    r"(?i)\b(?P<key>token|api[_-]?key|password|passwd|pwd|secret|"
+    r"stream[_-]?key|auth|authorization|bearer|session[_-]?key|"
+    r"private[_-]?key|client[_-]?secret)\b(?P<sep>\s*[:=]\s*)"
+    r"(?P<value>\"[^\"]*\"|'[^']*'|\S+)"
+)
+_ARGV_EXPR = re.compile(
+    r"(?i)\b(?:argv|command|cmd|args)\s*[:=]\s*"
+    r"(?:\[[^\]\n]*\]|\([^)\n]*\)|\"[^\"]*\"|'[^']*'|\S+)"
+)
+_URL_WHOLE = re.compile(r"(?i)\b[a-z][a-z0-9+.\-]*://[^\s\"']+")
+_LONG_OPAQUE_TOKEN = re.compile(r"\b(?:[0-9a-f]{32,}|[0-9A-Za-z+/]{24,}={0,2})\b")
+
+
+def _sanitize_log_detail(detail: str | None) -> str | None:
+    """Redact secrets from an event-log detail (design v2 §9).
+
+    The log contract records no URLs, tokens, or argv: command expressions
+    and whole URLs are replaced outright, credential key=value pairs keep
+    only a redacted value, and leftover long opaque tokens are replaced.
+    Hosts are not preserved (a URL is a URL).  Game/window names,
+    generations, request ids and error codes survive.
+    """
+    if not detail:
+        return None
+    text = _safe_detail(detail)
+    text = _AUTH_HEADER_CREDENTIAL.sub(lambda m: f"{m['header']}<redacted>", text)
+    text = _STANDALONE_AUTH_CREDENTIAL.sub("<redacted>", text)
+    text = _ARGV_EXPR.sub("<redacted>", text)
+    text = _URL_WHOLE.sub("<redacted-url>", text)
+    text = _SECRET_KEY_VALUE.sub(lambda m: f"{m['key']}{m['sep']}<redacted>", text)
+    text = _LONG_OPAQUE_TOKEN.sub("<redacted>", text)
+    return text
 
 
 def _prepare_private_dir(path: Path) -> None:
@@ -989,6 +1033,94 @@ ERROR_INTERNAL = "internal"
 
 IN_PROGRESS_PHASES = frozenset(PHASES - {"idle", "ready", "failed", "recovery_required"})
 
+EVENT_LOG_FILE = "logs/game_switch.log"
+EVENT_SCHEMA_VERSION = 1
+
+# Per-request log context, isolated by execution context: concurrent requests
+# on one coordinator instance (threads, WebUI, …) must not overwrite each
+# other's event identity even though the file lock serializes transitions.
+_log_ctx_var: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "game_switch_log_ctx", default=None
+)
+
+
+def _log_ctx_get() -> dict:
+    return dict(_log_ctx_var.get() or {})
+
+
+class EventLog:
+    """Append-only JSON Lines observability log (design v2 §9).
+
+    One line per coordinator event with the request identity, transition
+    context and outcome.  Best-effort: a failed write never breaks the
+    request it describes.  No secrets, tokens, URLs or subprocess argv are
+    ever recorded; details are truncated.
+    """
+
+    def __init__(self, state_dir: Path):
+        self.path = Path(state_dir) / EVENT_LOG_FILE
+
+    def emit(
+        self,
+        event: str,
+        *,
+        request_id: str = "",
+        operation: str = "",
+        from_game: str | None = None,
+        to_game: str | None = None,
+        target: str | None = None,
+        generation: int | None = None,
+        runtime_id: str | None = None,
+        phase: str = "",
+        result: str | None = None,
+        error_code: str | None = None,
+        detail: str | None = None,
+        cleanup_pending: bool = False,
+        duration_ms: int = 0,
+    ) -> None:
+        line = {
+            "schema_version": EVENT_SCHEMA_VERSION,
+            "timestamp": _utc_now(),
+            "duration_ms": int(duration_ms),
+            "event": event,
+            "request_id": request_id,
+            "operation": operation,
+            "from_game": from_game,
+            "to_game": to_game,
+            "target": target if target is not None else to_game,
+            "generation": generation,
+            "runtime_id": runtime_id,
+            "phase": phase,
+            "result": result,
+            "error_code": error_code,
+            "detail": _sanitize_log_detail(detail) if detail else None,
+            "cleanup_pending": bool(cleanup_pending),
+        }
+        try:
+            _prepare_private_dir(self.path.parent)
+            with self.path.open("a", encoding="utf-8") as stream:
+                os.chmod(self.path, 0o600)
+                stream.write(
+                    json.dumps(line, ensure_ascii=False, sort_keys=True) + "\n"
+                )
+                stream.flush()
+                os.fsync(stream.fileno())
+        except OSError:
+            pass
+
+    def read_all(self) -> list[dict[str, object]]:
+        """Return all recorded events (test/diagnostic helper)."""
+        if not self.path.is_file():
+            return []
+        events = []
+        for raw in self.path.read_text(encoding="utf-8").splitlines():
+            raw = raw.strip()
+            if raw:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    events.append(parsed)
+        return events
+
 
 @dataclass(frozen=True)
 class StepTimeouts:
@@ -1197,6 +1329,7 @@ class GameSwitchCoordinator:
         step_timeouts: StepTimeouts | None = None,
         cancel_grace_s: float = CANCEL_GRACE_S,
         rollback_timeout_s: float = ROLLBACK_TIMEOUT_S,
+        event_log: EventLog | None = None,
     ):
         self.store = store
         self.adapter_factory = adapter_factory
@@ -1207,8 +1340,59 @@ class GameSwitchCoordinator:
         self.step_timeouts = step_timeouts or StepTimeouts()
         self.cancel_grace_s = cancel_grace_s
         self.rollback_timeout_s = rollback_timeout_s
+        self.event_log = event_log or EventLog(store.state_dir)
         self.mirror_writer = mirror_writer
         self.mirror_path = store.state_dir / "current_game"
+
+    def _log_reset(self, request_id: str, operation: str, target: str | None) -> None:
+        _log_ctx_var.set(
+            {
+                "request_id": request_id,
+                "operation": operation,
+                "target": target,
+                "from_game": None,
+                "to_game": target,
+                "generation": None,
+                "runtime_id": None,
+                "t0": time.monotonic(),
+            }
+        )
+
+    def _log_update(self, **kwargs) -> None:
+        ctx = _log_ctx_get()
+        ctx.update(kwargs)
+        _log_ctx_var.set(ctx)
+
+    def _log(
+        self,
+        event: str,
+        *,
+        phase: str = "",
+        result: str | None = None,
+        error_code: str | None = None,
+        detail: str | None = None,
+        cleanup_pending: bool = False,
+        **overrides,
+    ) -> None:
+        ctx = _log_ctx_get()
+        ctx.update(overrides)
+        t0 = ctx.pop("t0", None) or time.monotonic()
+        self.event_log.emit(
+            event,
+            request_id=str(ctx.get("request_id") or ""),
+            operation=str(ctx.get("operation") or ""),
+            from_game=ctx.get("from_game"),
+            to_game=ctx.get("to_game"),
+            target=ctx.get("target"),
+            generation=ctx.get("generation"),
+            runtime_id=ctx.get("runtime_id"),
+            phase=phase,
+            result=result,
+            error_code=error_code,
+            detail=detail,
+            cleanup_pending=cleanup_pending,
+            duration_ms=int((time.monotonic() - t0) * 1000),
+        )
 
     # --- public API --------------------------------------------------------
 
@@ -1299,11 +1483,19 @@ class GameSwitchCoordinator:
         *,
         timeout_s: float | None = None,
     ) -> SwitchResult:
+        self._log_reset("", "recover", None)
         try:
             with self.store.transaction() as tx:
                 deadline = time.monotonic() + (timeout_s if timeout_s is not None else self.default_timeout_s)
-                return self._recover_locked(tx, deadline=deadline)
+                recovered = self._recover_locked(tx, deadline=deadline)
+                self._log(
+                    "recovery_finished", phase="",
+                    result=recovered.status, error_code=recovered.error_code,
+                    cleanup_pending=recovered.cleanup_pending,
+                )
+                return recovered
         except GameSwitchBusyError as exc:
+            self._log("rejected", phase="", result="busy", error_code=ERROR_BUSY)
             return SwitchResult(
                 request_id="",
                 operation="recover",
@@ -1349,6 +1541,8 @@ class GameSwitchCoordinator:
         deadline_at = (
             dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=timeout)
         ).isoformat().replace("+00:00", "Z")
+        self._log_reset(request_id, operation, target)
+        self._log("requested", phase="requested")
         try:
             with self.store.transaction() as tx:
                 return self._execute_locked(
@@ -1468,6 +1662,9 @@ class GameSwitchCoordinator:
         games: list[str] | None = None,
     ) -> SwitchResult:
         state = self.store.canonical.initialize()
+        active = state.get("active")
+        if isinstance(active, dict):
+            self._log_update(from_game=active.get("game"))
         if state["phase"] in {"failed", "recovery_required"}:
             return SwitchResult(
                 request_id=request_id,
@@ -1613,7 +1810,20 @@ class GameSwitchCoordinator:
         if acceptance.existing:
             # The previous driver is provably dead (we hold the lock).
             # Converge fail-closed through the recovery path.
-            return self._recover_locked(tx, deadline=deadline)
+            recovered = self._recover_locked(tx, deadline=deadline)
+            self._log(
+                "recovery_finished", phase="",
+                result=recovered.status, error_code=recovered.error_code,
+                cleanup_pending=recovered.cleanup_pending,
+            )
+            return recovered
+        self._log_update(
+            target=rotate_target if rotate_target is not None else target,
+            to_game=rotate_target if rotate_target is not None else target,
+            generation=acceptance.generation,
+            runtime_id=str(acceptance.receipt["runtime_id"]),
+        )
+        self._log("accepted", phase="validating")
         transition_target = rotate_target if rotate_target is not None else target
         return self._run_operation_locked(
             tx, acceptance, operation, transition_target, deadline, deadline_at
@@ -1796,6 +2006,7 @@ class GameSwitchCoordinator:
             {"validating"}, "preparing", updates={"deadline_at": deadline_at},
             crash_hook=self.crash_hook,
         )
+        self._log("validated", phase="preparing")
         try:
             self._call_adapter(
                 lambda cancel: adapter.preflight(deadline, cancel),
@@ -1812,6 +2023,7 @@ class GameSwitchCoordinator:
                 error_code=_failure_code(exc, ERROR_PREPARE_FAILED),
                 detail=_safe_detail(exc),
             )
+        self._log("prepared", phase="preparing")
         self._check_deadline(deadline)
 
         if old_active is not None:
@@ -1832,6 +2044,7 @@ class GameSwitchCoordinator:
                 updates={"active": None, "previous": old_active},
                 crash_hook=self.crash_hook,
             )
+            self._log("quiesce_started", phase="quiescing")
             try:
                 self._call_adapter(
                     lambda cancel: old_adapter.stop_agent(deadline, cancel),
@@ -1863,8 +2076,11 @@ class GameSwitchCoordinator:
                     error_code=ERROR_QUIESCE_FAILED,
                     detail="旧runtimeの停止を確認できませんでした",
                 )
+            self._log("quiesced", phase="quiescing")
         else:
             tx.transition({"preparing"}, "quiescing", crash_hook=self.crash_hook)
+            self._log("quiesce_started", phase="quiescing")
+            self._log("quiesced", phase="quiescing")
 
         candidate_rd = runtime_state_dict(spec, _utc_now())
         tx.transition(
@@ -1887,9 +2103,11 @@ class GameSwitchCoordinator:
                 error_code=_failure_code(exc, ERROR_START_FAILED),
                 detail=_safe_detail(exc),
             )
+        self._log("candidate_started", phase="starting")
         self._check_deadline(deadline)
 
         tx.transition({"starting"}, "probing", crash_hook=self.crash_hook)
+        self._log("probe_started", phase="probing")
         try:
             self._call_adapter(
                 lambda cancel: adapter.readiness(deadline, cancel),
@@ -1906,6 +2124,7 @@ class GameSwitchCoordinator:
                 error_code=_failure_code(exc),
                 detail=_safe_detail(exc),
             )
+        self._log("ready", phase="probing")
         self._check_deadline(deadline)
 
         if adapter.agent_enabled:
@@ -1925,6 +2144,7 @@ class GameSwitchCoordinator:
                     error_code=_failure_code(exc, ERROR_AGENT_START_FAILED),
                     detail=_safe_detail(exc),
                 )
+        self._log("agent_staged", phase="probing")
         self._check_deadline(deadline)
 
         state, _migrated = self.store.canonical.load()
@@ -1958,6 +2178,7 @@ class GameSwitchCoordinator:
             crash_hook=self.crash_hook,
         )
         receipt = tx.finish_request(acceptance.request_id, "succeeded", last_result)
+        self._log("committed", phase="ready", result="succeeded")
         warnings: list[str] = []
         cleanup_pending = self._finalize_locked(tx, deadline, warnings=warnings)
         return _result_from_receipt(receipt, warnings=tuple(warnings), cleanup_pending=cleanup_pending)
@@ -2023,6 +2244,7 @@ class GameSwitchCoordinator:
         state, _migrated = self.store.canonical.load()
         active = state.get("active")
         tx.transition({"validating"}, "quiescing", crash_hook=self.crash_hook)
+        self._log("quiesce_started", phase="quiescing")
         warnings: list[str] = []
         cleanup_pending = False
         if active is not None:
@@ -2079,6 +2301,7 @@ class GameSwitchCoordinator:
                     detail="旧runtimeの停止を確認できませんでした",
                     keep_active=True,
                 )
+            self._log("quiesced", phase="stopping")
         else:
             tx.transition({"quiescing"}, "stopping", crash_hook=self.crash_hook)
         last_result = {
@@ -2104,6 +2327,7 @@ class GameSwitchCoordinator:
             crash_hook=self.crash_hook,
         )
         receipt = tx.finish_request(acceptance.request_id, "succeeded", last_result)
+        self._log("committed", phase="idle", result="succeeded")
         cleanup_pending = self._finalize_locked(tx, deadline, warnings=warnings)
         return _result_from_receipt(receipt, warnings=tuple(warnings), cleanup_pending=cleanup_pending)
 
@@ -2134,6 +2358,7 @@ class GameSwitchCoordinator:
         deadline = time.monotonic() + self.rollback_timeout_s
 
         tx.transition(IN_PROGRESS_PHASES, "rolling_back", crash_hook=self.crash_hook)
+        self._log("rollback_started", phase="rolling_back", error_code=error_code, detail=detail)
         state, _migrated = self.store.canonical.load()
         candidate = state.get("candidate")
         if candidate is not None:
@@ -2204,6 +2429,11 @@ class GameSwitchCoordinator:
         )
         cleanup_pending = cleanup_pending or any(pending_out)
         if restored is None:
+            self._log(
+                "rollback_failed", phase="rolling_back",
+                result="failed", error_code=ERROR_ROLLBACK_FAILED,
+                cleanup_pending=cleanup_pending,
+            )
             return self._fail_locked(
                 tx,
                 acceptance,
@@ -2214,6 +2444,7 @@ class GameSwitchCoordinator:
                 cleanup_pending=cleanup_pending,
                 keep_previous=True,
             )
+        self._log("rollback_ready", phase="ready", result="rolled_back", cleanup_pending=cleanup_pending)
         return _result_from_receipt(
             restored,
             warnings=tuple(warnings),
@@ -2490,6 +2721,10 @@ class GameSwitchCoordinator:
             crash_hook=self.crash_hook,
         )
         receipt = tx.finish_request(acceptance.request_id, "failed", last_result)
+        self._log(
+            "failed", phase="failed", result="failed",
+            error_code=error_code, detail=detail, cleanup_pending=cleanup_pending,
+        )
         cleanup_pending = self._finalize_locked(tx, deadline, warnings=warnings) or cleanup_pending
         return _result_from_receipt(
             receipt,
@@ -2506,10 +2741,17 @@ class GameSwitchCoordinator:
             self._write_mirror(active["game"] if active else None)
         except Exception as exc:
             warnings.append(f"current_game mirror更新失敗: {_safe_detail(exc)}")
+        else:
+            self._log("mirror_updated", phase=str(state.get("phase")))
         cleanup_pending = False
         retiring = list(state.get("retiring") or [])
         remaining: list[Mapping[str, object]] = []
         for runtime in retiring:
+            self._log(
+                "cleanup_started", phase=str(state.get("phase")),
+                generation=runtime.get("generation"),
+                runtime_id=runtime.get("runtime_id"),
+            )
             try:
                 adapter = self._make_adapter(
                     RuntimeSpec.from_runtime(self.store.state_dir, runtime), deadline
@@ -2521,6 +2763,12 @@ class GameSwitchCoordinator:
                 cleanup_pending = True
                 remaining.append(runtime)
                 warnings.append("retiring runtimeの停止を確認できませんでした")
+            else:
+                self._log(
+                    "cleaned", phase=str(state.get("phase")),
+                    generation=runtime.get("generation"),
+                    runtime_id=runtime.get("runtime_id"),
+                )
         if len(remaining) != len(retiring):
             tx.transition(
                 {state["phase"]}, str(state["phase"]),
@@ -2552,6 +2800,12 @@ class GameSwitchCoordinator:
         state = self.store.canonical.initialize()
         phase = state["phase"]
         warnings: list[str] = []
+        request_id = state.get("request_id")
+        self._log_update(
+            request_id=str(request_id or _log_ctx_get().get("request_id") or ""),
+            operation=str(state.get("operation") or _log_ctx_get().get("operation") or "recover"),
+        )
+        self._log("recovery_started", phase=str(phase))
         if phase == "idle":
             try:
                 self._write_mirror(None)
