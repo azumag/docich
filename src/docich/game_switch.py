@@ -1371,6 +1371,19 @@ class GameSwitchCoordinator:
         target: str | None,
         payload: Mapping[str, object] | None,
     ) -> SwitchResult:
+        if operation == "start":
+            # start->switch fallback resend under lock contention: follow the
+            # recorded switch receipt (same target and payload) instead of
+            # conflicting on the caller's operation.
+            receipt = self.store.receipts.load(request_id)
+            if (
+                receipt is not None
+                and str(receipt["operation"]) == "switch"
+                and receipt.get("target") == target
+                and _request_payload_hash("switch", target, payload or {})
+                == receipt.get("payload_hash")
+            ):
+                operation = "switch"
         if operation == "restart":
             # restart resolves its target inside the lock, so on lock
             # contention the target is unknown unless the request was
@@ -1470,6 +1483,21 @@ class GameSwitchCoordinator:
                 cleanup_pending=False,
                 receipt=None,
             )
+        # A request_id that was already accepted fixes its operation and
+        # target.  The only caller-side alias the coordinator sanctions is
+        # the start->switch fallback resend under the SAME target and
+        # payload: it follows the recorded switch receipt.  Any other
+        # operation mismatch falls through and fails as request_conflict at
+        # acceptance, per the receipt contract.
+        existing = self.store.receipts.load(request_id)
+        if existing is not None and operation == "start":
+            recorded_operation = str(existing["operation"])
+            recorded_target = existing.get("target")
+            if recorded_operation == "switch" and recorded_target == target:
+                if _request_payload_hash(
+                    recorded_operation, recorded_target, payload or {}
+                ) == existing.get("payload_hash"):
+                    operation = "switch"
         if operation == "start":
             active = state.get("active")
             if active is not None:

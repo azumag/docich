@@ -1055,6 +1055,17 @@ class TestRequestContract(CoordinatorTestBase):
         self.assertEqual(result.status, "busy")
         self.assertEqual(result.error_code, game_switch.ERROR_BUSY)
 
+    def test_same_request_different_operation_is_conflict(self):
+        request_id = str(uuid.uuid4())
+        first = self.coordinator.start("nethack", request_id=request_id)
+        self.assertEqual(first.status, "succeeded")
+        second = self.coordinator.switch("nethack", request_id=request_id)
+        self.assertEqual(second.status, "request_conflict")
+        self.assertEqual(second.error_code, game_switch.ERROR_REQUEST_CONFLICT)
+        # The conflict must not mutate canonical or consume a generation.
+        self.assertEqual(self.canonical()["phase"], "ready")
+        self.assertEqual(self.canonical()["active"]["game"], "nethack")
+
 
 class TestAdapterTimeouts(CoordinatorTestBase):
     def _hanging_coordinator(self):
