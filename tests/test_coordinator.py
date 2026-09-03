@@ -1164,6 +1164,45 @@ class TestMirror(CoordinatorTestBase):
 
 
 class TestCrashBoundaries(CoordinatorTestBase):
+    def _crash_on_replace(self, n):
+        count = {"n": 0}
+
+        def hook(stage, _path):
+            if stage == "after_replace":
+                count["n"] += 1
+                if count["n"] == n:
+                    raise InjectedCrash(f"replace#{n}")
+
+        return hook
+
+    def test_rollback_persists_new_lease_before_agent_restart(self):
+        request_id = str(uuid.uuid4())
+        self.behaviors["robots"]["preflight_error"] = AdapterError("preflight boom")
+        self.coordinator.start("nethack")
+        old_lease = self.canonical()["active"]["lease_id"]
+        # rolling_back#1, active->previous move#2, persist new lease#3... verify: commit#5
+        self.coordinator.crash_hook = self._crash_on_replace(4)
+        with self.assertRaises(InjectedCrash):
+            self.coordinator.switch("robots", request_id=request_id)
+        self.coordinator.crash_hook = None
+        state = self.canonical()
+        self.assertEqual(state["phase"], "rolling_back")
+        self.assertIsNone(state["active"])
+        # The new lease is already persisted in previous: the new worker can
+        # await a canonical identity and the old lease is fenced out.
+        self.assertNotEqual(state["previous"]["lease_id"], old_lease)
+        persisted_lease = state["previous"]["lease_id"]
+
+        retried = self.coordinator.switch("robots", request_id=request_id)
+        self.assertEqual(retried.status, "rolled_back")
+        state = self.canonical()
+        self.assertEqual(state["phase"], "ready")
+        self.assertEqual(state["active"]["game"], "nethack")
+        # The retry re-leases again: the crashed attempt's persisted lease is
+        # fenced out and each restore attempt mints its own lease.
+        self.assertNotEqual(state["active"]["lease_id"], old_lease)
+        self.assertNotEqual(state["active"]["lease_id"], persisted_lease)
+
     def test_crash_during_accept_retry_converges_via_recovery(self):
         request_id = str(uuid.uuid4())
         payload = {"p": 1}

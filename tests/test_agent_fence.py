@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from docich.actions import Action  # noqa: E402
 from docich.adapters import base  # noqa: E402
 from docich.agent import loop  # noqa: E402
-from docich.agent.fence import AgentFence, FenceLost, active_fence, check_fence  # noqa: E402
+from docich.agent.fence import AgentFence, FenceLost, active_fence, check_fence, resolve_fence  # noqa: E402
 
 
 LEASE_1 = "11111111-1111-1111-1111-111111111111"
@@ -44,6 +44,92 @@ def _fence(generation: int = 1, game: str = "nethack", lease: str | None = None)
         generation=generation,
         lease_id=lease or str(uuid.uuid4()),
     )
+
+
+class TestResolveFence(unittest.TestCase):
+    def _state(self, *, active=None, candidate=None, previous=None):
+        return {
+            "schema_version": 2,
+            "revision": 1,
+            "phase": "probing",
+            "operation": "switch",
+            "request_id": "12345678-1234-5678-1234-567812345678",
+            "deadline_at": None,
+            "next_generation": 3,
+            "active": active,
+            "candidate": candidate,
+            "previous": previous,
+            "retiring": [],
+            "last_result": None,
+            "last_error": None,
+            "updated_at": "2026-09-03T00:00:00Z",
+        }
+
+    def test_matching_candidate_awaits_without_fence_lost(self):
+        candidate = _active(2, "robots", lease=LEASE_1)
+        fence = AgentFence(
+            game="robots", runtime_id="g2-abcdef", generation=2, lease_id=LEASE_1
+        )
+        self.assertEqual(
+            resolve_fence(fence, self._state(candidate=candidate)), "await"
+        )
+
+    def test_committed_candidate_runs(self):
+        active = _active(2, "robots", lease=LEASE_1)
+        fence = AgentFence(
+            game="robots", runtime_id="g2-abcdef", generation=2, lease_id=LEASE_1
+        )
+        self.assertEqual(resolve_fence(fence, self._state(active=active)), "run")
+
+    def test_vanished_candidate_is_terminal_fence_lost(self):
+        fence = AgentFence(
+            game="robots", runtime_id="g2-abcdef", generation=2, lease_id=LEASE_1
+        )
+        with self.assertRaises(FenceLost):
+            resolve_fence(fence, self._state())
+
+    def test_replaced_candidate_is_terminal_fence_lost(self):
+        fence = AgentFence(
+            game="robots", runtime_id="g2-abcdef", generation=2, lease_id=LEASE_1
+        )
+        other = _active(3, "robots", lease=LEASE_2)
+        with self.assertRaises(FenceLost):
+            resolve_fence(fence, self._state(candidate=other))
+
+    def test_rollback_previous_await_and_old_lease_lost(self):
+        previous = _active(1, "nethack", lease=LEASE_1)
+        new_fence = AgentFence(
+            game="nethack", runtime_id="g1-abcdef", generation=1, lease_id=LEASE_1
+        )
+        old_fence = AgentFence(
+            game="nethack", runtime_id="g1-abcdef", generation=1, lease_id=LEASE_2
+        )
+        state = self._state(previous=previous)
+        self.assertEqual(resolve_fence(new_fence, state), "await")
+        with self.assertRaises(FenceLost):
+            resolve_fence(old_fence, state)
+
+
+class TestLoopAwait(unittest.TestCase):
+    def test_awaiting_worker_does_not_observe_or_act(self):
+        adapter = FakeLoopAdapter([Action(type="text", text="x")])
+        brain = FakeLoopBrain(adapter.actions)
+        candidate = _active(2, "robots", lease=LEASE_1)
+        fence = AgentFence(
+            game="robots", runtime_id="g2-abcdef", generation=2, lease_id=LEASE_1
+        )
+        state = {
+            "active": None,
+            "candidate": candidate,
+            "previous": None,
+        }
+        with mock.patch("docich.agent.loop.read_canonical", return_value=state), \
+                mock.patch("docich.agent.loop.time.sleep") as sleep_mock:
+            n = loop._run_iteration(adapter, brain, 100, fence=fence, state_dir="/tmp/x")
+        self.assertEqual(n, 0)
+        self.assertEqual(adapter.observe_calls, 0)
+        self.assertEqual(adapter.acted, [])
+        sleep_mock.assert_called_once_with(0.1)
 
 
 class TestFenceCheck(unittest.TestCase):
@@ -158,6 +244,8 @@ class TestLoopFence(unittest.TestCase):
         fence = _fence(lease=LEASE_1)
         # pre-observe と post-decide は一致するが、action 前の3回目で不一致
         with mock.patch(
+            "docich.agent.loop.read_canonical", return_value={"active": active}
+        ), mock.patch(
             "docich.agent.loop.active_fence",
             side_effect=[active, active, _active(lease=LEASE_2)],
         ):
