@@ -6,7 +6,7 @@ import time
 from . import brains
 from ..adapters import make_adapter
 from ..config import GlobalConfig, load_game
-from .fence import AgentFence, FenceLost, active_fence, check_fence
+from .fence import AgentFence, FenceLost, active_fence, check_fence, read_canonical, resolve_fence
 
 
 def _check_loop_fence(fence: AgentFence, state_dir) -> None:
@@ -16,15 +16,20 @@ def _check_loop_fence(fence: AgentFence, state_dir) -> None:
 def _run_iteration(adapter, brain, interval_ms: int, *, fence=None, state_dir=None) -> int:
     """Run a single observe -> decide -> act cycle, returning the action count.
 
-    When a fence is bound, it is verified before observe, after the brain
-    decides, and before every non-wait action (design v2 §6).  A fence
-    mismatch raises FenceLost, which is terminal and must not be swallowed
-    by the caller's catch-log-continue policy.  All other exceptions raised
-    by observe()/decide()/act() propagate to the caller (run_agent), which
-    owns the catch-log-continue policy so a single bad cycle never kills
-    the loop.
+    When a fence is bound, the canonical state is resolved first: a worker
+    matching canonical active runs the cycle with the per-step fence checks
+    (before observe, after decide, before each non-wait action); a worker
+    matching only the not-yet-active candidate/previous awaits activation
+    without observing or acting; anything else raises terminal FenceLost.
+    FenceLost must not be swallowed by the caller's catch-log-continue
+    policy.  All other exceptions raised by observe()/decide()/act()
+    propagate to the caller (run_agent), which owns the catch-log-continue
+    policy so a single bad cycle never kills the loop.
     """
     if fence is not None:
+        if resolve_fence(fence, read_canonical(state_dir)) != "run":
+            time.sleep(max(interval_ms, 0) / 1000)
+            return 0
         _check_loop_fence(fence, state_dir)
     obs = adapter.observe()
     acts = brain.decide(obs)
