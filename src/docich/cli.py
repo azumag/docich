@@ -747,16 +747,15 @@ def cmd_migrate_legacy(g: GlobalConfig) -> int:
         tmux.kill_session_named(GAME_SESSION)
 
     # kill helper は失敗を黙って無視する。停止できたことを再確認するまで
-    # mirror 消去・canonical 初期化へ進まない (fail-closed)。再確認には
-    # checked existence API を使い、probe 自体の失敗は「不在」とせず
-    # TmuxError -> CliError で止める。
+    # mirror 消去・canonical 初期化へ進まない (fail-closed)。再確認は strict
+    # existence API (接続失敗を「不在」とせず TmuxError) で行う。
     try:
         remaining = [
             f"window:{window}"
             for window in ("agent", "game")
-            if tmux.window_target_exists(f"docich:{window}")
+            if tmux.window_target_exists(f"docich:{window}", strict=True)
         ]
-        if tmux.session_target_exists(GAME_SESSION):
+        if tmux.session_target_exists(GAME_SESSION, strict=True):
             remaining.append(f"session:{GAME_SESSION}")
     except TmuxError as exc:
         raise CliError(

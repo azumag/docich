@@ -262,6 +262,41 @@ class TestCheckedOperations(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.tmux.capture_pane_checked("docich;kill-server")
 
+    @mock.patch("docich.tmux.procs.run")
+    def test_window_exists_treats_connect_failure_as_absent_by_default(self, mock_run):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="",
+            stderr="failed to connect to server: Connection refused",
+        )
+        self.assertFalse(self.tmux.window_target_exists("docich:game"))
+
+    @mock.patch("docich.tmux.procs.run")
+    def test_window_exists_strict_fails_closed_on_connect_failure(self, mock_run):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="",
+            stderr="failed to connect to server: Connection refused",
+        )
+        with self.assertRaises(tmux_mod.TmuxError):
+            self.tmux.window_target_exists("docich:game", strict=True)
+
+    @mock.patch("docich.tmux.procs.run")
+    def test_session_exists_strict_fails_closed_on_connect_failure(self, mock_run):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="",
+            stderr="failed to connect to server: Connection refused",
+        )
+        with self.assertRaises(tmux_mod.TmuxError):
+            self.tmux.session_target_exists("docich-game", strict=True)
+
+    @mock.patch("docich.tmux.procs.run")
+    def test_session_exists_strict_reads_absent_sessions(self, mock_run):
+        mock_run.side_effect = [
+            subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="can't find session"),
+        ]
+        self.assertTrue(self.tmux.session_target_exists("docich-game", strict=True))
+        self.assertFalse(self.tmux.session_target_exists("docich-game", strict=True))
+
 
 if __name__ == "__main__":
     unittest.main()

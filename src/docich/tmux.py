@@ -24,6 +24,12 @@ from .naming import (
 SESSION = "docich"
 
 
+# strict existence で「不在」とみなす stderr マーカー。共有
+# _target_missing() の "failed to connect to server" は含めない: 接続
+# 失敗は存在確認そのものの失敗であり、不在の証明ではない。
+_STRICT_MISSING_MARKERS = ("not found", "can't find", "no server running")
+
+
 class TmuxError(RuntimeError):
     """A checked tmux operation failed."""
 
@@ -252,25 +258,41 @@ class Tmux:
         result = self._checked(args, "ownership確認")
         return result.stdout.strip()
 
-    def window_target_exists(self, target: str) -> bool:
+    def window_target_exists(self, target: str, *, strict: bool = False) -> bool:
+        """Return True when the window exists.
+
+        Non-strict mode treats "target missing" markers (including
+        "failed to connect to server") as absent.  Strict mode only treats
+        genuine-absence markers as absent and raises TmuxError otherwise, so
+        callers can distinguish "confirmed absent" from "the check itself
+        failed" (a connection failure is never proof of absence).
+        """
         validate_tmux_window_ref(target)
         result = self._run(["display-message", "-p", "-t", target, "#{window_id}"])
         if result.returncode == 0:
             return True
-        if self._target_missing(result.stderr):
+        detail = (result.stderr or "").replace("\n", " ").strip()
+        if strict:
+            if any(marker in detail.lower() for marker in _STRICT_MISSING_MARKERS):
+                return False
+        elif self._target_missing(result.stderr):
             return False
-        detail = (result.stderr or "").replace("\n", " ").strip()[:200]
-        raise TmuxError(f"tmux window存在確認に失敗しました: {detail or 'unknown error'}")
+        raise TmuxError(f"tmux window存在確認に失敗しました: {detail[:200] or 'unknown error'}")
 
-    def session_target_exists(self, session: str) -> bool:
+    def session_target_exists(self, session: str, *, strict: bool = False) -> bool:
+        """Return True when the session exists.  See window_target_exists for
+        the strict distinction."""
         validate_tmux_session_ref(session)
         result = self._run(["has-session", "-t", session])
         if result.returncode == 0:
             return True
-        if self._target_missing(result.stderr):
+        detail = (result.stderr or "").replace("\n", " ").strip()
+        if strict:
+            if any(marker in detail.lower() for marker in _STRICT_MISSING_MARKERS):
+                return False
+        elif self._target_missing(result.stderr):
             return False
-        detail = (result.stderr or "").replace("\n", " ").strip()[:200]
-        raise TmuxError(f"tmux session存在確認に失敗しました: {detail or 'unknown error'}")
+        raise TmuxError(f"tmux session存在確認に失敗しました: {detail[:200] or 'unknown error'}")
 
     @staticmethod
     def _target_missing(stderr: str | None) -> bool:
