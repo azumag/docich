@@ -1,3 +1,4 @@
+import hashlib
 import io
 import subprocess
 import sys
@@ -206,10 +207,93 @@ class TestCheckFreeze(WatchdogConfigTestBase):
             watchdog._check_freeze(g, state, tmux, xkit, detector, Path(tmp) / "frame.png")
 
 
+class TestFreezeTargets(unittest.TestCase):
+    """watchdog._freeze_targets: canonical active があれば世代別 window、
+    無ければ legacy (固定 window + mirror) にフォールバックする。"""
+
+    def _write_config(self, tmp: Path) -> Path:
+        toml_path = tmp / "docich.toml"
+        toml_path.write_text(
+            "[paths]\n"
+            f'state_dir = "{tmp / "run"}"\n'
+            f'games_dir = "{tmp / "games"}"\n'
+            f'roms_dir = "{tmp / "roms"}"\n',
+            encoding="utf-8",
+        )
+        return toml_path
+
+    def test_legacy_fallback_without_canonical(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            toml_path = self._write_config(tmp_path)
+            g = config.load_global(tmp_path, config_path=toml_path)
+            state = State(g)
+            state.set_current_game("nethack")
+            current, game_window, agent_window = watchdog._freeze_targets(g, state)
+            self.assertEqual((current, game_window, agent_window), ("nethack", "game", "agent"))
+
+    def test_generation_windows_when_canonical_active(self):
+        import uuid
+
+        from docich.game_switch import GameSwitchStore
+        from docich.naming import runtime_names
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            toml_path = self._write_config(tmp_path)
+            g = config.load_global(tmp_path, config_path=toml_path)
+            state = State(g)
+            names = runtime_names(2)
+            store = GameSwitchStore(g.state_dir)
+            canonical, _ = store.canonical.load()
+            canonical.update(
+                {
+                    "phase": "ready",
+                    "active": {
+                        "game": "robots",
+                        "adapter": "cli",
+                        "generation": 2,
+                        "runtime_id": "g2-abcdef",
+                        "lease_id": str(uuid.uuid4()),
+                        "game_window": names.game_window,
+                        "agent_window": names.agent_window,
+                        "adapter_session": names.adapter_session,
+                        "started_at": "2026-09-03T00:00:00Z",
+                    },
+                    "next_generation": 3,
+                }
+            )
+            store.canonical.save(canonical)
+            current, game_window, agent_window = watchdog._freeze_targets(g, state)
+            self.assertEqual((current, game_window, agent_window), ("robots", "game-g2", "agent-g2"))
+
+    def test_freeze_detection_triggers_on_generation_windows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            toml_path = self._write_config(tmp_path)
+            g = config.load_global(tmp_path, config_path=toml_path)
+            state = State(g)
+            tmux = mock.MagicMock()
+            # legacy "game"/"agent" は存在せず、世代別 window だけがある
+            tmux.has_window.side_effect = lambda name: name in ("game-g2", "agent-g2")
+            xkit = mock.MagicMock()
+            digest = hashlib.sha256(b"frame").hexdigest()
+            frame_path = tmp_path / "frame.png"
+            frame_path.write_bytes(b"frame")
+            xkit.screenshot.side_effect = lambda *a: frame_path
+            detector = mock.MagicMock()
+            detector.feed.return_value = False
+            from unittest.mock import patch as _patch
+
+            with _patch("docich.watchdog._freeze_targets", return_value=("robots", "game-g2", "agent-g2")):
+                watchdog._check_freeze(g, state, tmux, xkit, detector, frame_path)
+            self.assertTrue(detector.feed.called)
+
+
 class TestCmdRotate(unittest.TestCase):
     """cli.cmd_rotate: 切替先決定・dry-run・空 games のエラー処理。
-    dry-run は tmux に触れない。非 dry-run は cmd_switch をモックし、
-    実際の tmux/X には一切触れない。"""
+    dry-run は tmux に触れない。非 dry-run は coordinator の rotate 経由で
+    lock 内で target を決定する。実際の tmux/X には一切触れない。"""
 
     def _write_config(self, tmp: Path, games: list[str]) -> Path:
         games_literal = ", ".join(f'"{name}"' for name in games)
@@ -238,12 +322,12 @@ class TestCmdRotate(unittest.TestCase):
             tmp_path = Path(tmp)
             toml_path = self._write_config(tmp_path, ["nethack", "hanjuku-hero"])
             g = config.load_global(tmp_path, config_path=toml_path)
-            with mock.patch("docich.cli.cmd_switch") as switch_mock:
+            with mock.patch("docich.cli._coordinator") as coordinator_mock:
                 out = io.StringIO()
                 with redirect_stdout(out):
                     rc = cli.cmd_rotate(g, dry_run=True)
             self.assertEqual(rc, 0)
-            switch_mock.assert_not_called()
+            coordinator_mock.assert_not_called()
             self.assertIn("nethack", out.getvalue())  # current が無いので games[0]
 
     def test_rotate_switches_to_the_game_after_current(self):
@@ -252,10 +336,22 @@ class TestCmdRotate(unittest.TestCase):
             toml_path = self._write_config(tmp_path, ["nethack", "hanjuku-hero"])
             g = config.load_global(tmp_path, config_path=toml_path)
             State(g).set_current_game("nethack")
-            with mock.patch("docich.cli.cmd_switch", return_value=0) as switch_mock:
+            result = cli.SwitchResult(
+                request_id="r", operation="rotate", status="succeeded",
+                target=None, from_game="nethack", to_game="hanjuku-hero",
+                generation=2, error_code=None, detail=None,
+                warnings=(), cleanup_pending=False, receipt=None,
+            )
+            with mock.patch("docich.cli._coordinator") as coordinator_mock, \
+                    mock.patch("docich.cli._require_no_legacy_runtime"):
+                coordinator_mock.return_value.rotate.return_value = result
                 rc = cli.cmd_rotate(g, dry_run=False)
             self.assertEqual(rc, 0)
-            switch_mock.assert_called_once_with(g, "hanjuku-hero")
+            coordinator_mock.return_value.rotate.assert_called_once()
+            self.assertEqual(
+                coordinator_mock.return_value.rotate.call_args.args[0],
+                ["nethack", "hanjuku-hero"],
+            )
 
     def test_rotate_wraps_from_last_game_to_first(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -263,9 +359,17 @@ class TestCmdRotate(unittest.TestCase):
             toml_path = self._write_config(tmp_path, ["nethack", "hanjuku-hero"])
             g = config.load_global(tmp_path, config_path=toml_path)
             State(g).set_current_game("hanjuku-hero")
-            with mock.patch("docich.cli.cmd_switch", return_value=0) as switch_mock:
+            result = cli.SwitchResult(
+                request_id="r", operation="rotate", status="succeeded",
+                target=None, from_game="hanjuku-hero", to_game="nethack",
+                generation=2, error_code=None, detail=None,
+                warnings=(), cleanup_pending=False, receipt=None,
+            )
+            with mock.patch("docich.cli._coordinator") as coordinator_mock, \
+                    mock.patch("docich.cli._require_no_legacy_runtime"):
+                coordinator_mock.return_value.rotate.return_value = result
                 cli.cmd_rotate(g, dry_run=False)
-            switch_mock.assert_called_once_with(g, "nethack")
+            coordinator_mock.return_value.rotate.assert_called_once()
 
 
 if __name__ == "__main__":

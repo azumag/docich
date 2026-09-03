@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Mapping
 
 from . import (
     ai_generate,
@@ -21,8 +22,21 @@ from . import (
     tts,
 )
 from .actions import Action, ActionError, parse_actions
-from .adapters import AdapterError, make_adapter
+from .adapters import AdapterError, make_adapter, make_coordinator_adapter
+from .adapters.cli_game import GAME_SESSION, RUNTIME_GAME_SESSION_ENV
+from .adapters.retroarch import NETWORK_CMD_PORT, retroarch_network_port
 from .config import ConfigError, GlobalConfig, list_games, load_game, load_global
+from .game_switch import (
+    ERROR_ALREADY_ACTIVE,
+    GameSwitchCoordinator,
+    GameSwitchError,
+    GameSwitchStore,
+    StateCorruptError,
+    SwitchResult,
+    new_request_id,
+    validate_request_id,
+)
+from .naming import NameValidationError
 from .netcmd import send_ra_cmd
 from .state import State
 from .stream import (
@@ -37,7 +51,7 @@ from .stream import (
     resolve_runtime,
 )
 from .supervise import run_callable_loop, run_loop
-from .tmux import Tmux
+from .tmux import Tmux, TmuxError
 from .watchdog import next_rotation_game
 from .xkit import XKit
 
@@ -114,20 +128,36 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("doctor", help="依存コマンド・環境を点検する")
     sub.add_parser("games", help="config/games/ の一覧を表示する")
     sub.add_parser("up", help="基盤 (display/audio/stream) を起動する")
-    sub.add_parser("down", help="全コンポーネントを停止する")
 
     p_start = sub.add_parser("start", help="ゲームを起動する")
     p_start.add_argument("game", help="ゲーム名 (config/games/<name>.toml)")
+    p_start.add_argument("--request-id", metavar="UUID", help="再送用の request_id")
+    p_start.add_argument("--timeout", type=float, metavar="SEC", help="request 全体の deadline (秒)")
 
-    sub.add_parser("stop", help="現在のゲームを停止する")
+    p_down = sub.add_parser("down", help="全コンポーネントを停止する")
+    p_down.add_argument("--request-id", metavar="UUID", help="再送用の request_id")
+    p_down.add_argument("--timeout", type=float, metavar="SEC", help="request 全体の deadline (秒)")
 
-    p_switch = sub.add_parser("switch", help="ゲームを切り替える (stop + start)")
+    p_stop = sub.add_parser("stop", help="現在のゲームを停止する")
+    p_stop.add_argument("--request-id", metavar="UUID", help="再送用の request_id")
+    p_stop.add_argument("--timeout", type=float, metavar="SEC", help="request 全体の deadline (秒)")
+
+    sub.add_parser(
+        "migrate-legacy",
+        help="移行用: coordinator 以前の旧 runtime (固定 window/session) を停止して互換 mirror を消去する",
+    )
+
+    p_switch = sub.add_parser("switch", help="ゲームを切り替える (transactional switch)")
     p_switch.add_argument("game", help="切り替え先のゲーム名")
+    p_switch.add_argument("--request-id", metavar="UUID", help="再送用の request_id")
+    p_switch.add_argument("--timeout", type=float, metavar="SEC", help="request 全体の deadline (秒)")
 
     p_rotate = sub.add_parser("rotate", help="[rotation] games を順に切り替える (時間割ローテーション)")
     p_rotate.add_argument(
         "--dry-run", action="store_true", help="切り替えを実行せず、切替先のゲーム名を表示するだけにする"
     )
+    p_rotate.add_argument("--request-id", metavar="UUID", help="再送用の request_id")
+    p_rotate.add_argument("--timeout", type=float, metavar="SEC", help="request 全体の deadline (秒)")
 
     sub.add_parser("status", help="各コンポーネントの状態を表示する")
 
@@ -274,15 +304,17 @@ def _dispatch(args: argparse.Namespace) -> int:
     if command == "up":
         return cmd_up(g)
     if command == "down":
-        return cmd_down(g)
+        return cmd_down(g, request_id=args.request_id, timeout_s=args.timeout)
     if command == "start":
-        return cmd_start(g, args.game)
+        return cmd_start(g, args.game, request_id=args.request_id, timeout_s=args.timeout)
     if command == "stop":
-        return cmd_stop(g)
+        return cmd_stop(g, request_id=args.request_id, timeout_s=args.timeout)
+    if command == "migrate-legacy":
+        return cmd_migrate_legacy(g)
     if command == "switch":
-        return cmd_switch(g, args.game)
+        return cmd_switch(g, args.game, request_id=args.request_id, timeout_s=args.timeout)
     if command == "rotate":
-        return cmd_rotate(g, args.dry_run)
+        return cmd_rotate(g, args.dry_run, request_id=args.request_id, timeout_s=args.timeout)
     if command == "status":
         return cmd_status(g)
     if command == "snap":
@@ -505,89 +537,284 @@ def cmd_up(g: GlobalConfig) -> int:
     return 0
 
 
-def cmd_down(g: GlobalConfig) -> int:
-    state = State(g)
-    if state.current_game() is not None:
-        cmd_stop(g)
+def cmd_down(g: GlobalConfig, *, request_id: str | None = None, timeout_s: float | None = None) -> int:
+    # Design v2: stop が成功 (idle no-op を含む) した場合だけ共有 session
+    # 停止へ進む。busy / rolled_back / failed では session を kill しない。
+    _require_no_legacy_runtime(g)
+    result = _coordinator(g).stop(
+        request_id=_checked_request_id(request_id),
+        timeout_s=_checked_timeout(timeout_s),
+    )
+    if result.status != "succeeded":
+        _print_switch_result("全コンポーネントを停止", result)
+        return _result_exit_code(result)
     tmux = Tmux()
     tmux.kill_session()
-    state.clear_current_game()
+    State(g).clear_current_game()
     print("docich: 停止しました")
     return 0
 
 
-def cmd_start(g: GlobalConfig, name: str) -> int:
+# ---------------------------------------------------------------------------
+# start / stop / switch / rotate via the GameSwitchCoordinator (design v2 §8)
+# ---------------------------------------------------------------------------
+
+
+def _coordinator(g: GlobalConfig) -> GameSwitchCoordinator:
+    store = GameSwitchStore(g.state_dir)
+    return GameSwitchCoordinator(store, lambda spec: make_coordinator_adapter(g, spec))
+
+
+def _legacy_footprint(g: GlobalConfig) -> list[str]:
+    """pre-coordinator runtime の痕跡 (Design v2 の移行対象) を列挙する。
+
+    固定 window `game` / `agent`、固定 session `docich-game`、互換 mirror
+    `current_game` のいずれかが残っていれば移行前の世界とみなす。共有の
+    `docich` session 自体 (display/audio/stream) は対象外。
+    """
+    found: list[str] = []
+    if State(g).current_game() is not None:
+        found.append("current_game")
+    tmux = Tmux()
+    for window in ("game", "agent"):
+        if tmux.has_window(window):
+            found.append(f"window:{window}")
+    if tmux.has_session_named(GAME_SESSION):
+        found.append(f"session:{GAME_SESSION}")
+    return found
+
+
+def _require_no_legacy_runtime(g: GlobalConfig) -> None:
+    """canonical 未作成かつ legacy 痕跡ありなら fail-closed に止める。
+
+    canonical が既に存在する世界では coordinator が唯一の正本であり、
+    legacy 痕跡は operator の責任範囲 (coordinator は所有外に触れない)。
+    """
+    footprint = _legacy_footprint(g)
+    if not footprint:
+        return
+    store = GameSwitchStore(g.state_dir)
+    try:
+        _, needs_write = store.canonical.load()
+    except GameSwitchError:
+        return  # corrupt canonical は coordinator 側の復旧フローが扱う
+    if not needs_write:
+        return
+    raise CliError(
+        f"旧 runtime の痕跡を検出しました ({', '.join(footprint)})。"
+        f"`docich migrate-legacy` で旧 runtime を停止してから再実行してください。"
+    )
+
+
+def _checked_request_id(request_id: str | None) -> str:
+    if request_id is None:
+        return new_request_id()
+    try:
+        return validate_request_id(request_id)
+    except NameValidationError as exc:
+        raise CliError(f"--request-id が不正です: {exc}") from exc
+
+
+def _checked_timeout(timeout_s: float | None) -> float | None:
+    if timeout_s is None:
+        return None
+    if timeout_s <= 0:
+        raise CliError("--timeout は正の秒数で指定してください")
+    return float(timeout_s)
+
+
+def _read_active_runtime(g: GlobalConfig) -> Mapping[str, object] | None:
+    """canonical active runtime (設計の正本) を返す。
+
+    canonical がまだ作成されていない移行前だけ None を返し (legacy 互換)、
+    canonical が存在する場合は active (または None) を正とする。壊れている
+    場合は StateCorruptError を投げ、呼び出し側で CliError に変換する
+    (fail-closed)。P3 の fence/action lock までは action 実行自体は legacy。
+    """
+    store = GameSwitchStore(g.state_dir)
+    state, needs_write = store.canonical.load()
+    if needs_write:
+        return None
+    active = state.get("active")
+    if not isinstance(active, dict):
+        return None
+    game = active.get("game")
+    if not isinstance(game, str) or not game:
+        return None
+    return dict(active)
+
+
+def _read_active_game(g: GlobalConfig) -> str | None:
+    """canonical があれば active を正とし、未作成時だけ互換 mirror を読む。
+
+    canonical が存在して active=None (idle) の場合、stale mirror は使わない。
+    壊れている場合は CliError (fail-closed)。
+    """
+    store = GameSwitchStore(g.state_dir)
+    try:
+        state, needs_write = store.canonical.load()
+    except GameSwitchError as exc:
+        raise CliError(f"canonical state が読み込めません: {exc}") from exc
+    if needs_write:
+        return State(g).current_game()
+    active = state.get("active")
+    if isinstance(active, dict):
+        game = active.get("game")
+        if isinstance(game, str) and game:
+            return game
+    return None
+
+
+def _result_exit_code(result: SwitchResult) -> int:
+    if result.status == "succeeded":
+        return 0
+    if result.status in {"in_progress", "busy"}:
+        return 1
+    if result.status == "rolled_back":
+        return 1
+    return 2
+
+
+def _print_switch_result(verb: str, result: SwitchResult) -> None:
+    direction = ""
+    if result.from_game and result.to_game:
+        direction = f" ({result.from_game} -> {result.to_game})"
+    elif result.to_game:
+        direction = f" ({result.to_game})"
+    elif result.from_game:
+        direction = f" ({result.from_game})"
+    detail = f" [request_id={result.request_id}]"
+    if result.status == "succeeded":
+        print(f"docich: {verb}しました{direction} (generation={result.generation}){detail}")
+    elif result.status == "rolled_back":
+        print(f"docich: {verb}に失敗したため旧ゲームを復元しました{direction}{detail}", file=sys.stderr)
+    elif result.status == "in_progress":
+        print(f"docich: {verb}は既に進行中です{direction}{detail}", file=sys.stderr)
+    elif result.status == "busy":
+        print(f"docich: 別のゲーム切替が進行中のため{verb}できません{direction}{detail}", file=sys.stderr)
+    elif result.status == "request_conflict":
+        print(f"docich: 同じ request_id が異なる内容で使われています{detail}", file=sys.stderr)
+    else:
+        why = result.error_code or "unknown"
+        extra = f": {result.detail}" if result.detail else ""
+        print(f"docich: {verb}に失敗しました ({why}{extra}){detail}", file=sys.stderr)
+
+
+def cmd_start(g: GlobalConfig, name: str, *, request_id: str | None = None, timeout_s: float | None = None) -> int:
     tmux = Tmux()
     if not tmux.has_window("display"):
         raise CliError("display window がありません。先に `docich up` を実行してください")
-
-    game = load_game(g, name)
-    state = State(g)
-    xkit = XKit(g.display.name)
-    # import/構築の検証のみ (実際の起動は `docich run game <name>` 側で行う)
-    make_adapter(g, game, state=state, tmux=tmux, xkit=xkit)
-
-    if tmux.has_window("game"):
-        print("docich: game window は既に起動しています (先に `docich stop` してください)", file=sys.stderr)
-    else:
-        tmux.new_window("game", _run_argv(g, "game", game.name))
-        print(f"docich: game window を起動しました ({game.name})")
-
-    if game.agent.enabled:
-        if tmux.has_window("agent"):
-            print("docich: agent window は既に起動しています", file=sys.stderr)
-        else:
-            tmux.new_window("agent", _run_argv(g, "agent", game.name))
-            print(f"docich: agent window を起動しました ({game.name})")
-
-    state.set_current_game(game.name)
-    print(f"docich: 現在のゲーム = {game.name}")
-    return 0
+    _require_no_legacy_runtime(g)
+    # request_id は一度だけ解決し、switch fallback でも再利用する。
+    resolved_request_id = _checked_request_id(request_id)
+    result = _coordinator(g).start(
+        name,
+        request_id=resolved_request_id,
+        timeout_s=_checked_timeout(timeout_s),
+    )
+    if result.status == "failed" and result.error_code == ERROR_ALREADY_ACTIVE:
+        # 別 game が active の場合、設計どおり switch を要求する。
+        return cmd_switch(g, name, request_id=resolved_request_id, timeout_s=timeout_s)
+    _print_switch_result(f"ゲームを起動", result)
+    return _result_exit_code(result)
 
 
-def cmd_stop(g: GlobalConfig) -> int:
-    state = State(g)
+def cmd_stop(g: GlobalConfig, *, request_id: str | None = None, timeout_s: float | None = None) -> int:
+    _require_no_legacy_runtime(g)
+    result = _coordinator(g).stop(
+        request_id=_checked_request_id(request_id),
+        timeout_s=_checked_timeout(timeout_s),
+    )
+    _print_switch_result("ゲームを停止", result)
+    return _result_exit_code(result)
+
+
+def cmd_migrate_legacy(g: GlobalConfig) -> int:
+    """One-time migration from the pre-coordinator runtime.
+
+    Stops the fixed windows/session (`game` / `agent` / `docich-game`),
+    best-effort legacy adapter cleanup for the mirrored game, clears the
+    compat mirror, and initializes an empty canonical state.  After this,
+    coordinator operations see a clean slate.  Safe no-op when no legacy
+    footprint remains.
+    """
     tmux = Tmux()
-    current = state.current_game()
+    attempted = _legacy_footprint(g)
+    for window in ("agent", "game"):
+        if tmux.has_window(window):
+            tmux.kill_window(window)
+    if tmux.has_session_named(GAME_SESSION):
+        tmux.kill_session_named(GAME_SESSION)
 
-    tmux.kill_window("agent")
-    tmux.kill_window("game")
+    # kill helper は失敗を黙って無視する。停止できたことを再確認するまで
+    # mirror 消去・canonical 初期化へ進まない (fail-closed)。再確認は strict
+    # existence API (接続失敗を「不在」とせず TmuxError) で行う。
+    try:
+        remaining = [
+            f"window:{window}"
+            for window in ("agent", "game")
+            if tmux.window_target_exists(f"docich:{window}", strict=True)
+        ]
+        if tmux.session_target_exists(GAME_SESSION, strict=True):
+            remaining.append(f"session:{GAME_SESSION}")
+    except TmuxError as exc:
+        raise CliError(
+            f"旧 runtime の停止を確認できませんでした (tmux 確認エラー: {exc})。"
+            f"tmux の状態を確認してから `docich migrate-legacy` を再実行してください。"
+        ) from exc
+    if remaining:
+        raise CliError(
+            f"旧 runtime の停止を確認できませんでした ({', '.join(remaining)})。"
+            f"tmux の状態を確認してから `docich migrate-legacy` を再実行してください。"
+        )
 
-    if current is not None:
+    state = State(g)
+    mirrored = state.current_game()
+    if mirrored is not None:
         try:
-            game = load_game(g, current)
+            game = load_game(g, mirrored)
             xkit = XKit(g.display.name)
             adapter = make_adapter(g, game, state=state, tmux=tmux, xkit=xkit)
             adapter.cleanup()
         except Exception as exc:
-            # cleanup 失敗は警告ログのみで継続する (spec: 失敗はログのみ)
-            print(f"docich: 警告: {current} の cleanup に失敗しました: {exc}", file=sys.stderr)
-
+            print(f"docich: 警告: {mirrored} の cleanup に失敗しました: {exc}", file=sys.stderr)
     state.clear_current_game()
-    if current is not None:
-        print(f"docich: ゲームを停止しました ({current})")
+
+    GameSwitchStore(g.state_dir).initialize()
+    if attempted or mirrored is not None:
+        print(f"docich: 旧 runtime を移行しました ({', '.join(attempted) if attempted else 'mirror のみ'})")
     else:
-        print("docich: 実行中のゲームはありませんでした")
+        print("docich: 移行対象の旧 runtime はありませんでした")
     return 0
 
 
-def cmd_switch(g: GlobalConfig, name: str) -> int:
-    state = State(g)
-    if state.current_game() is not None:
-        cmd_stop(g)
-    return cmd_start(g, name)
+def cmd_switch(g: GlobalConfig, name: str, *, request_id: str | None = None, timeout_s: float | None = None) -> int:
+    _require_no_legacy_runtime(g)
+    result = _coordinator(g).switch(
+        name,
+        request_id=_checked_request_id(request_id),
+        timeout_s=_checked_timeout(timeout_s),
+    )
+    _print_switch_result("ゲームを切り替え", result)
+    return _result_exit_code(result)
 
 
-def cmd_rotate(g: GlobalConfig, dry_run: bool) -> int:
+def cmd_rotate(g: GlobalConfig, dry_run: bool, *, request_id: str | None = None, timeout_s: float | None = None) -> int:
     if not g.rotation.games:
         raise CliError("[rotation] games を設定してください (config/docich.toml)")
-    state = State(g)
-    target = next_rotation_game(g.rotation.games, state.current_game())
     if dry_run:
+        target = next_rotation_game(g.rotation.games, _read_active_game(g))
         print(f"docich: rotate 切替先 = {target} (dry-run のため切り替えません)")
         return 0
-    print(f"docich: rotate 切替先 = {target}")
-    return cmd_switch(g, target)
+    _require_no_legacy_runtime(g)
+    result = _coordinator(g).rotate(
+        list(g.rotation.games),
+        request_id=_checked_request_id(request_id),
+        timeout_s=_checked_timeout(timeout_s),
+    )
+    print(f"docich: rotate 切替先 = {result.to_game or '(なし)'}")
+    _print_switch_result("ゲームを切り替え", result)
+    return _result_exit_code(result)
 
 
 def cmd_status(g: GlobalConfig) -> int:
@@ -650,20 +877,37 @@ def cmd_snap(g: GlobalConfig, output: str | None) -> int:
     return 0
 
 
-def _resolve_game_name(state: State, name: str | None, *, dash_means_current: bool) -> str:
+def _resolve_game_name(g: GlobalConfig, state: State, name: str | None, *, dash_means_current: bool) -> str:
     if dash_means_current and name == "-":
         name = None
     if name:
         return name
-    current = state.current_game()
-    if not current:
+    store = GameSwitchStore(g.state_dir)
+    try:
+        canonical, needs_write = store.canonical.load()
+    except GameSwitchError as exc:
+        raise CliError(f"canonical state が読み込めません: {exc}") from exc
+    if not needs_write:
+        active = canonical.get("active")
+        if isinstance(active, dict):
+            game = active.get("game")
+            if isinstance(game, str) and game:
+                return game
         raise CliError("現在実行中のゲームがありません。ゲーム名を指定してください")
-    return current
+    legacy = state.current_game()
+    if not legacy:
+        raise CliError("現在実行中のゲームがありません。ゲーム名を指定してください")
+    return legacy
 
 
 def cmd_obs(g: GlobalConfig, name: str | None) -> int:
     state = State(g)
-    resolved = _resolve_game_name(state, name, dash_means_current=False)
+    try:
+        resolved = _resolve_game_name(g, state, name, dash_means_current=False)
+        _require_active_match(g, resolved)
+        _bind_active_cli_session(g, resolved)
+    except StateCorruptError as exc:
+        raise CliError(f"canonical state が読み込めません: {exc}") from exc
     game = load_game(g, resolved)
     tmux = Tmux()
     xkit = XKit(g.display.name)
@@ -675,7 +919,12 @@ def cmd_obs(g: GlobalConfig, name: str | None) -> int:
 
 def cmd_send(g: GlobalConfig, game_arg: str, json_text: str) -> int:
     state = State(g)
-    resolved = _resolve_game_name(state, game_arg, dash_means_current=True)
+    try:
+        resolved = _resolve_game_name(g, state, game_arg, dash_means_current=True)
+        _require_active_match(g, resolved)
+        _bind_active_cli_session(g, resolved)
+    except StateCorruptError as exc:
+        raise CliError(f"canonical state が読み込めません: {exc}") from exc
     game = load_game(g, resolved)
     tmux = Tmux()
     xkit = XKit(g.display.name)
@@ -691,14 +940,79 @@ def cmd_send(g: GlobalConfig, game_arg: str, json_text: str) -> int:
     return 0
 
 
+def _require_active_match(g: GlobalConfig, resolved: str) -> None:
+    """canonical が存在する場合は active 一致を必須にする (fail-closed)。
+
+    canonical 未作成時 (needs_write) だけ legacy 互換を許す。active 不在・
+    不一致は CliError。P3 の fence までは、一致時の実行自体は legacy のまま。
+    """
+    store = GameSwitchStore(g.state_dir)
+    _, needs_write = store.canonical.load()
+    if needs_write:
+        return
+    active = _read_active_runtime(g)
+    if active is None or active.get("game") != resolved:
+        current = active.get("game") if isinstance(active, dict) else None
+        hint = f" (現在のゲーム: {current})" if current else " (実行中のゲームはありません)"
+        raise CliError(f"{resolved} は現在起動していません{hint}。ゲーム名を確認してください")
+
+
+def _bind_active_cli_session(g: GlobalConfig, resolved: str) -> None:
+    """要求ゲームが canonical active と一致し、CLI adapter なら、legacy
+    adapter の観測/入力先を世代別 session に束縛する (互換層)。
+
+    RUNTIME_GAME_SESSION_ENV は legacy CliGameAdapter が参照する。
+    一致しない場合は継承済みの stale binding を消して fail-closed にする
+    (generation-scoped agent 等の subprocess から呼ばれた場合に旧 session
+    へ誤注入しない)。
+    """
+    active = _read_active_runtime(g)
+    if (
+        active is not None
+        and active.get("game") == resolved
+        and active.get("adapter") == "cli"
+    ):
+        session = active.get("adapter_session")
+        if isinstance(session, str) and session:
+            os.environ[RUNTIME_GAME_SESSION_ENV] = session
+            return
+    os.environ.pop(RUNTIME_GAME_SESSION_ENV, None)
+
+
 def cmd_ra_cmd(g: GlobalConfig, cmd_parts: list[str]) -> int:
     cmd_text = " ".join(cmd_parts)
-    reply = send_ra_cmd(cmd_text)
+    try:
+        port = _read_ra_port(g)
+    except StateCorruptError as exc:
+        raise CliError(f"canonical state が読み込めません: {exc}") from exc
+    if port is None:
+        raise CliError("送信対象の RetroArch runtime がありません (RetroArch ゲームを起動してください)")
+    reply = send_ra_cmd(cmd_text, port=port)
     if reply is not None:
         print(reply)
     else:
         print("docich: 返信がありませんでした (タイムアウト)", file=sys.stderr)
     return 0
+
+
+def _read_ra_port(g: GlobalConfig) -> int | None:
+    """active が RetroArch runtime なら世代別 port、それ以外は None。
+
+    canonical が存在する状態では fixed port へフォールバックしない
+    (残存 legacy への誤送信を防ぐ)。canonical 未作成時だけ fixed port。
+    """
+    store = GameSwitchStore(g.state_dir)
+    canonical, needs_write = store.canonical.load()
+    if needs_write:
+        return NETWORK_CMD_PORT
+    active = canonical.get("active")
+    if (
+        isinstance(active, dict)
+        and active.get("adapter") == "retroarch"
+        and isinstance(active.get("generation"), int)
+    ):
+        return retroarch_network_port(active["generation"])
+    return None
 
 
 # ---------------------------------------------------------------------------
