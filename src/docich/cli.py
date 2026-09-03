@@ -739,17 +739,30 @@ def cmd_migrate_legacy(g: GlobalConfig) -> int:
     footprint remains.
     """
     tmux = Tmux()
-    stopped: list[str] = []
     for window in ("agent", "game"):
         if tmux.has_window(window):
             tmux.kill_window(window)
-            stopped.append(f"window:{window}")
     if tmux.has_session_named(GAME_SESSION):
         tmux.kill_session_named(GAME_SESSION)
-        stopped.append(f"session:{GAME_SESSION}")
+
+    # kill helper は失敗を黙って無視する。停止できたことを再確認するまで
+    # mirror 消去・canonical 初期化へ進まない (fail-closed)。
+    remaining = [
+        f"window:{window}"
+        for window in ("agent", "game")
+        if tmux.has_window(window)
+    ]
+    if tmux.has_session_named(GAME_SESSION):
+        remaining.append(f"session:{GAME_SESSION}")
+    if remaining:
+        raise CliError(
+            f"旧 runtime の停止を確認できませんでした ({', '.join(remaining)})。"
+            f"tmux の状態を確認してから `docich migrate-legacy` を再実行してください。"
+        )
 
     state = State(g)
     mirrored = state.current_game()
+    stopped = _legacy_footprint(g)
     if mirrored is not None:
         try:
             game = load_game(g, mirrored)
