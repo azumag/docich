@@ -6,6 +6,10 @@ width = 1280
 height = 720
 color_depth = 24
 managed = false
+viewport_x = 0
+viewport_y = 90
+viewport_width = 960
+viewport_height = 540
 
 [audio]
 enabled = false

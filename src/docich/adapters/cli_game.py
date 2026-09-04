@@ -17,6 +17,7 @@ from ..actions import Action
 from ..game_switch import DeadlineExceededError, ReadinessTimeoutError, RuntimeSpec
 from ..naming import NameValidationError, validate_tmux_name
 from ..tmux import OwnershipMismatchError, SESSION, Tmux, TmuxOwnership
+from ..xkit import XKit
 from .base import Adapter, AdapterError, Observation
 
 GAME_SESSION = "docich-game"
@@ -56,21 +57,6 @@ def cli_font(game) -> str:
 
 def cli_font_size(game) -> int:
     return int(cli_raw(game).get("font_size", 18))
-
-
-def cli_fullscreen(game) -> bool:
-    return bool(cli_raw(game).get("fullscreen", False))
-
-
-def _xterm_view_args(game) -> list[str]:
-    args = [
-        "-fa", cli_font(game), "-fs", str(cli_font_size(game)),
-        "-bg", "black", "-fg", "grey90",
-        "-geometry", f"{cli_cols(game)}x{cli_rows(game)}+0+0",
-    ]
-    if cli_fullscreen(game):
-        args.append("-fullscreen")
-    return args
 
 
 def cli_game_session() -> str:
@@ -136,7 +122,9 @@ class CliGameAdapter(Adapter):
     def command(self) -> list[str]:
         # 映像化用の xterm。ゲーム本体は session 内で走り続ける (read-only attach)。
         return [
-            "xterm", *_xterm_view_args(self.ctx.game),
+            "xterm", "-fa", self._font(), "-fs", str(self._font_size()),
+            "-bg", "black", "-fg", "grey90",
+            "-geometry", f"{self._cols()}x{self._rows()}+0+0",
             "-T", f"docich-{self.ctx.game.name}",
             "-e", "tmux", "attach-session", "-r", "-t", self._session(),
         ]
@@ -253,7 +241,9 @@ class CliCoordinatorAdapter:
 
     def _xterm_command(self) -> list[str]:
         return [
-            self._xterm_bin(), *_xterm_view_args(self.game),
+            self._xterm_bin(), "-fa", cli_font(self.game), "-fs", str(cli_font_size(self.game)),
+            "-bg", "black", "-fg", "grey90",
+            "-geometry", f"{cli_cols(self.game)}x{cli_rows(self.game)}+0+0",
             "-T", f"docich-{self.game.name}",
             "-e", "tmux", "attach-session", "-r", "-t", self.spec.adapter_session,
         ]
@@ -334,6 +324,21 @@ class CliCoordinatorAdapter:
             raise ReadinessTimeoutError("paneがdeadです")
         # capture-pane 自体が成功すること (内容が空でも即失敗にしない)
         self.tmux.capture_pane_checked(self.spec.adapter_session)
+        d = self.g.display
+        if d.viewport_width > 0 and d.viewport_height > 0:
+            window_id = XKit(d.name).find_window(
+                f"docich-{self.game.name}",
+                timeout=max(0.1, deadline - time.monotonic()),
+            )
+            if window_id is None:
+                raise ReadinessTimeoutError("CLI game windowが見つかりません")
+            XKit(d.name).set_geometry(
+                window_id,
+                d.viewport_x,
+                d.viewport_y,
+                d.viewport_width,
+                d.viewport_height,
+            )
         self._check_active(deadline, cancel)
 
     def alive(self, deadline: float, cancel) -> bool:

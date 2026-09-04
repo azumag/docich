@@ -134,12 +134,6 @@ class TestCommand(CliAdapterTestBase):
         self.assertIn("14", cmd)
         self.assertIn("100x30+0+0", cmd)
 
-    def test_xterm_args_support_fullscreen(self):
-        ctx = self._make_ctx(cli_raw={"command": "nethack", "fullscreen": True})
-        adapter = cli_game.CliGameAdapter(ctx)
-        self.assertIn("-fullscreen", adapter.command())
-
-
 class TestObserve(CliAdapterTestBase):
     def test_observe_returns_capture_pane_text(self):
         tmux = FakeTmux(capture_return="--More--")

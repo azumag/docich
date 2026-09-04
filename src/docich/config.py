@@ -26,6 +26,11 @@ class DisplayConfig:
     color_depth: int = 24
     # false は既存のX displayへ接続する。docichは起動・停止しない。
     managed: bool = True
+    # 外部合成レイアウト内でゲームwindowだけを置く矩形。0は未指定。
+    viewport_x: int = 0
+    viewport_y: int = 0
+    viewport_width: int = 0
+    viewport_height: int = 0
 
     @property
     def name(self) -> str:
