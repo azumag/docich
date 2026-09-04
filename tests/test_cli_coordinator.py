@@ -280,6 +280,36 @@ class TestCmdRecover(CliCoordinatorTestBase):
         self.assertEqual(args.command, "recover")
         self.assertEqual(args.timeout, 30)
 
+    def test_recover_refuses_with_legacy_runtime_present(self):
+        cli.State(self.g).set_current_game("nethack")
+        with self.assertRaises(cli.CliError) as ctx:
+            self._call(cli.cmd_recover)
+        self.assertIn("migrate-legacy", str(ctx.exception))
+        # canonical を作らず mirror を保持する (fail-closed)。
+        self.assertFalse((self.g.state_dir / "game_switch.json").exists())
+        self.assertEqual(cli.State(self.g).current_game(), "nethack")
+
+    def test_recover_corrupt_canonical_is_cli_error_not_traceback(self):
+        (self.g.state_dir).mkdir(parents=True, exist_ok=True)
+        (self.g.state_dir / "game_switch.json").write_text("{broken", encoding="utf-8")
+        with self.assertRaises(cli.CliError) as ctx:
+            self._call(cli.cmd_recover)
+        self.assertIn("復旧できませんでした", str(ctx.exception))
+        # main() 経由でも traceback せず exit 2 になること。
+        toml_path = self.root / "docich.toml"
+        toml_path.write_text(
+            "[paths]\n"
+            f'state_dir = "{self.g.state_dir}"\n'
+            f'games_dir = "{self.root / "config" / "games"}"\n',
+            encoding="utf-8",
+        )
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = cli.main(["--config", str(toml_path), "recover"])
+        self.assertEqual(rc, 2)
+        self.assertIn("docich: エラー", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
+
 
 class TestCmdDown(CliCoordinatorTestBase):
     def test_down_does_not_kill_session_when_stop_is_busy(self):

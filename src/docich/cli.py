@@ -849,9 +849,13 @@ def cmd_restart(g: GlobalConfig, *, request_id: str | None = None, timeout_s: fl
 
 
 def cmd_recover(g: GlobalConfig, *, timeout_s: float | None = None) -> int:
-    result = _coordinator(g).recover(
-        timeout_s=_checked_timeout(timeout_s),
-    )
+    _require_no_legacy_runtime(g)
+    try:
+        result = _coordinator(g).recover(
+            timeout_s=_checked_timeout(timeout_s),
+        )
+    except GameSwitchError as exc:
+        raise CliError(f"復旧できませんでした: {exc}") from exc
     if result.status == "succeeded":
         print(f"docich: 復旧しました ({result.detail or 'recovery は不要でした'})")
     else:
