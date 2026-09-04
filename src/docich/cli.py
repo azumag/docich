@@ -159,6 +159,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_restart.add_argument("--request-id", metavar="UUID", help="再送用の request_id")
     p_restart.add_argument("--timeout", type=float, metavar="SEC", help="request 全体の deadline (秒)")
 
+    p_recover = sub.add_parser("recover", help="中断した切替を復旧する (crash/failed 後の再開)")
+    p_recover.add_argument("--timeout", type=float, metavar="SEC", help="request 全体の deadline (秒)")
+
     p_rotate = sub.add_parser("rotate", help="[rotation] games を順に切り替える (時間割ローテーション)")
     p_rotate.add_argument(
         "--dry-run", action="store_true", help="切り替えを実行せず、切替先のゲーム名を表示するだけにする"
@@ -330,6 +333,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return cmd_switch(g, args.game, request_id=args.request_id, timeout_s=args.timeout)
     if command == "restart":
         return cmd_restart(g, request_id=args.request_id, timeout_s=args.timeout)
+    if command == "recover":
+        return cmd_recover(g, timeout_s=args.timeout)
     if command == "rotate":
         return cmd_rotate(g, args.dry_run, request_id=args.request_id, timeout_s=args.timeout)
     if command == "status":
@@ -840,6 +845,21 @@ def cmd_restart(g: GlobalConfig, *, request_id: str | None = None, timeout_s: fl
         timeout_s=_checked_timeout(timeout_s),
     )
     _print_switch_result("ゲームを再起動", result)
+    return _result_exit_code(result)
+
+
+def cmd_recover(g: GlobalConfig, *, timeout_s: float | None = None) -> int:
+    _require_no_legacy_runtime(g)
+    try:
+        result = _coordinator(g).recover(
+            timeout_s=_checked_timeout(timeout_s),
+        )
+    except GameSwitchError as exc:
+        raise CliError(f"復旧できませんでした: {exc}") from exc
+    if result.status == "succeeded":
+        print(f"docich: 復旧しました ({result.detail or 'recovery は不要でした'})")
+    else:
+        _print_switch_result("復旧", result)
     return _result_exit_code(result)
 
 
