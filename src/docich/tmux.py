@@ -261,6 +261,10 @@ class Tmux:
     def window_target_exists(self, target: str, *, strict: bool = False) -> bool:
         """Return True when the window exists.
 
+        Lists the session windows and matches by name: `display-message`
+        succeeds even for nonexistent window names (falling back to another
+        window), so its return code alone cannot prove existence.
+
         Non-strict mode treats "target missing" markers (including
         "failed to connect to server") as absent.  Strict mode only treats
         genuine-absence markers as absent and raises TmuxError otherwise, so
@@ -268,16 +272,20 @@ class Tmux:
         failed" (a connection failure is never proof of absence).
         """
         validate_tmux_window_ref(target)
-        result = self._run(["display-message", "-p", "-t", target, "#{window_id}"])
-        if result.returncode == 0:
-            return True
-        detail = (result.stderr or "").replace("\n", " ").strip()
-        if strict:
-            if any(marker in detail.lower() for marker in _STRICT_MISSING_MARKERS):
+        if ":" in target:
+            session, _, name = target.partition(":")
+        else:
+            session, name = self.session, target
+        result = self._run(["list-windows", "-t", session, "-F", "#{window_name}"])
+        if result.returncode != 0:
+            detail = (result.stderr or "").replace("\n", " ").strip()
+            if strict:
+                if any(marker in detail.lower() for marker in _STRICT_MISSING_MARKERS):
+                    return False
+            elif self._target_missing(result.stderr):
                 return False
-        elif self._target_missing(result.stderr):
-            return False
-        raise TmuxError(f"tmux window存在確認に失敗しました: {detail[:200] or 'unknown error'}")
+            raise TmuxError(f"tmux window存在確認に失敗しました: {detail[:200] or 'unknown error'}")
+        return name in [line for line in result.stdout.splitlines() if line]
 
     def session_target_exists(self, session: str, *, strict: bool = False) -> bool:
         """Return True when the session exists.  See window_target_exists for
