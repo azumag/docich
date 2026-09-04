@@ -49,9 +49,12 @@
 | agent fence | agent window の identity | agent が「今どの generation の何に向いているか」の契約 (下記) |
 
 phase は次の 12 値:
-`idle` → `validating` → `preparing` → `quiescing` → `starting` → `probing` → `committing` →
-`ready` が正常系。失敗で `rolling_back` (receipt は `rolled_back`) または `failed`。
-commit 後の失敗は `recovery_required`。
+`idle` / `validating` / `preparing` / `quiescing` / `starting` / `probing` / `committing` /
+`ready` / `stopping` / `rolling_back` / `failed` / `recovery_required`。
+通常の起動・切替は `idle` → `validating` → `preparing` → `quiescing` → `starting` → `probing` →
+`committing` → `ready` と進む。停止処理では `stopping` を経由する。失敗時は `rolling_back`
+(receipt は `rolled_back`) または `failed`、commit 後に安全な収束が必要な場合は
+`recovery_required` になる。
 
 receipt は終端状態 3 値 (`succeeded` / `failed` / `rolled_back`) を持ち、request 単位で
 `run/game-switch/requests/` に残る。各成功起動は generation を進め、receipt に記録する。
@@ -68,7 +71,9 @@ receipt は終端状態 3 値 (`succeeded` / `failed` / `rolled_back`) を持ち
 
 ## 冪等性と request 契約
 
-- 全操作は `--request-id UUID` を取る。再送は同一 receipt を返す (at-least-once で安全)。
+- `start` / `stop` / `switch` / `restart` / `rotate` / `down` は `--request-id UUID` を取り、
+  同一 request の再送は同じ receipt を返す (at-least-once で安全)。`recover` は既存状態を
+  reconcile する復旧操作で、CLI の `--request-id` は取らない。
 - 同一 `request_id` の別 operation は原則 `request_conflict`。ただし
   `caller=start` / `recorded=switch` で同一 target・同一 payload の場合は sanctioned alias として
   許容する (start の誘導経路のため)。
@@ -99,8 +104,9 @@ coordinator 導入前の旧 runtime は「固定名の `game` / `agent` window +
 2. 以降は start / switch 等が canonical を作って coordinator 世界で動く。
 
 canonical が未作成の状態で legacy 痕跡 (mirror や確認不能な tmux 状態) があると、
-start / switch / restart / **recover** は `migrate-legacy` を指示して fail-closed する
-( recover が idle canonical を勝手に作って legacy を移行済みに見せかける経路を塞ぐため)。
+`down` / `start` / `stop` / `switch` / `restart` / `recover` / `rotate` (非 dry-run) は
+`migrate-legacy` を指示して fail-closed する
+(`recover` が idle canonical を勝手に作って legacy を移行済みに見せかける経路を塞ぐため)。
 canonical 作成後は legacy footprint は operator 管理扱いで許可される。
 
 ## recover (crash / 中断後の復旧)
