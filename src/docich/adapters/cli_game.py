@@ -58,6 +58,21 @@ def cli_font_size(game) -> int:
     return int(cli_raw(game).get("font_size", 18))
 
 
+def cli_fullscreen(game) -> bool:
+    return bool(cli_raw(game).get("fullscreen", False))
+
+
+def _xterm_view_args(game) -> list[str]:
+    args = [
+        "-fa", cli_font(game), "-fs", str(cli_font_size(game)),
+        "-bg", "black", "-fg", "grey90",
+        "-geometry", f"{cli_cols(game)}x{cli_rows(game)}+0+0",
+    ]
+    if cli_fullscreen(game):
+        args.append("-fullscreen")
+    return args
+
+
 def cli_game_session() -> str:
     """Return the CLI session bound to this process.
 
@@ -121,9 +136,7 @@ class CliGameAdapter(Adapter):
     def command(self) -> list[str]:
         # 映像化用の xterm。ゲーム本体は session 内で走り続ける (read-only attach)。
         return [
-            "xterm", "-fa", self._font(), "-fs", str(self._font_size()),
-            "-bg", "black", "-fg", "grey90",
-            "-geometry", f"{self._cols()}x{self._rows()}+0+0",
+            "xterm", *_xterm_view_args(self.ctx.game),
             "-T", f"docich-{self.ctx.game.name}",
             "-e", "tmux", "attach-session", "-r", "-t", self._session(),
         ]
@@ -240,9 +253,7 @@ class CliCoordinatorAdapter:
 
     def _xterm_command(self) -> list[str]:
         return [
-            self._xterm_bin(), "-fa", cli_font(self.game), "-fs", str(cli_font_size(self.game)),
-            "-bg", "black", "-fg", "grey90",
-            "-geometry", f"{cli_cols(self.game)}x{cli_rows(self.game)}+0+0",
+            self._xterm_bin(), *_xterm_view_args(self.game),
             "-T", f"docich-{self.game.name}",
             "-e", "tmux", "attach-session", "-r", "-t", self.spec.adapter_session,
         ]
