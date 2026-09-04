@@ -595,6 +595,83 @@ class TestLegacyMigration(CliCoordinatorTestBase):
         self.assertEqual(cli.State(self.g).current_game(), "nethack")
         self.assertFalse((self.g.state_dir / "game_switch.json").exists())
 
+    def test_migrate_legacy_keeps_healthy_post_migration_mirror(self):
+        from docich.game_switch import GameSwitchStore
+        from docich.naming import runtime_names
+
+        # canonical ready + active + matching mirror, no fixed targets:
+        # fully migrated healthy state.  migrate-legacy must not run
+        # adapter cleanup nor clear the mirror or active.
+        names = runtime_names(1)
+        store = GameSwitchStore(self.g.state_dir)
+        state, _ = store.canonical.load()
+        state.update(
+            {
+                "phase": "ready",
+                "active": {
+                    "game": "nethack",
+                    "adapter": "cli",
+                    "generation": 1,
+                    "runtime_id": "g1-abcdef",
+                    "lease_id": "12345678-1234-5678-1234-567812345678",
+                    "game_window": names.game_window,
+                    "agent_window": names.agent_window,
+                    "adapter_session": names.adapter_session,
+                    "started_at": "2026-09-03T00:00:00Z",
+                },
+                "next_generation": 2,
+            }
+        )
+        store.canonical.save(state)
+        cli.State(self.g).set_current_game("nethack")
+        tmux = self._legacy_tmux(game_window=False, agent_window=False, game_session=False)
+        with mock.patch("docich.cli.Tmux", return_value=tmux), mock.patch(
+            "docich.cli.make_adapter"
+        ) as make_mock:
+            rc = cli.cmd_migrate_legacy(self.g)
+        self.assertEqual(rc, 0)
+        make_mock.assert_not_called()
+        self.assertEqual(cli.State(self.g).current_game(), "nethack")
+        state, _ = store.canonical.load()
+        self.assertEqual(state["active"]["game"], "nethack")
+
+    def test_migrate_legacy_post_migration_still_cleans_fixed_targets(self):
+        from docich.game_switch import GameSwitchStore
+        from docich.naming import runtime_names
+
+        # canonical exists but fixed windows linger: kill them, keep mirror.
+        names = runtime_names(1)
+        store = GameSwitchStore(self.g.state_dir)
+        state, _ = store.canonical.load()
+        state.update(
+            {
+                "phase": "ready",
+                "active": {
+                    "game": "nethack",
+                    "adapter": "cli",
+                    "generation": 1,
+                    "runtime_id": "g1-abcdef",
+                    "lease_id": "12345678-1234-5678-1234-567812345678",
+                    "game_window": names.game_window,
+                    "agent_window": names.agent_window,
+                    "adapter_session": names.adapter_session,
+                    "started_at": "2026-09-03T00:00:00Z",
+                },
+                "next_generation": 2,
+            }
+        )
+        store.canonical.save(state)
+        cli.State(self.g).set_current_game("nethack")
+        tmux = self._legacy_tmux()
+        with mock.patch("docich.cli.Tmux", return_value=tmux), mock.patch(
+            "docich.cli.make_adapter"
+        ) as make_mock:
+            rc = cli.cmd_migrate_legacy(self.g)
+        self.assertEqual(rc, 0)
+        tmux.kill_window.assert_any_call("game")
+        make_mock.assert_not_called()
+        self.assertEqual(cli.State(self.g).current_game(), "nethack")
+
     def test_migrate_legacy_stops_fixed_runtime_and_clears_mirror(self):
         cli.State(self.g).set_current_game("nethack")
         tmux = self._legacy_tmux()

@@ -753,12 +753,24 @@ def cmd_stop(g: GlobalConfig, *, request_id: str | None = None, timeout_s: float
 def cmd_migrate_legacy(g: GlobalConfig) -> int:
     """One-time migration from the pre-coordinator runtime.
 
-    Stops the fixed windows/session (`game` / `agent` / `docich-game`),
-    best-effort legacy adapter cleanup for the mirrored game, clears the
-    compat mirror, and initializes an empty canonical state.  After this,
-    coordinator operations see a clean slate.  Safe no-op when no legacy
-    footprint remains.
+    Stops the fixed windows/session (`game` / `agent` / `docich-game`) and,
+    only before canonical exists, runs best-effort legacy adapter cleanup
+    for the mirrored game and clears the compat mirror.  After migration,
+    coordinator operations see a clean slate.  A healthy post-migration
+    compat mirror is never touched: `legacy_footprint()` no longer counts
+    it, and neither does this command.  Safe no-op when no legacy footprint
+    remains.
     """
+    store = GameSwitchStore(g.state_dir)
+    try:
+        _, needs_write = store.canonical.load()
+    except GameSwitchError:
+        # Corrupt canonical is handled by the coordinator recovery flow;
+        # migration must not rewrite state it cannot trust.
+        raise CliError(
+            "canonical state が壊れているため移行できません。"
+            "先に coordinator の復旧フローを確認してください。"
+        )
     tmux = Tmux()
     attempted = _legacy_footprint(g)["footprint"]
     for window in ("agent", "game"):
@@ -790,7 +802,7 @@ def cmd_migrate_legacy(g: GlobalConfig) -> int:
         )
 
     state = State(g)
-    mirrored = state.current_game()
+    mirrored = state.current_game() if needs_write else None
     if mirrored is not None:
         try:
             game = load_game(g, mirrored)
@@ -799,9 +811,10 @@ def cmd_migrate_legacy(g: GlobalConfig) -> int:
             adapter.cleanup()
         except Exception as exc:
             print(f"docich: 警告: {mirrored} の cleanup に失敗しました: {exc}", file=sys.stderr)
-    state.clear_current_game()
+        state.clear_current_game()
 
-    GameSwitchStore(g.state_dir).initialize()
+    if needs_write:
+        store.initialize()
     if attempted or mirrored is not None:
         print(f"docich: 旧 runtime を移行しました ({', '.join(attempted) if attempted else 'mirror のみ'})")
     else:
