@@ -196,6 +196,62 @@ def _default_caption_socket_path() -> str:
     return str(Path(runtime_dir) / "docich" / "ffmpeg-cc.sock")
 
 
+def _validate_display(display: DisplayConfig) -> None:
+    """Validate the optional presentation viewport before it reaches runtime.
+
+    An all-zero viewport means that the normal display-owned layout is in use.
+    Once any viewport dimension is configured, all four fields must describe a
+    positive rectangle contained by the configured display.  Keeping this
+    check at config load time makes both the CLI and coordinator fail closed,
+    instead of launching an incorrectly-sized viewer or a second X server.
+    """
+
+    if type(display.managed) is not bool:
+        raise ConfigError("display.managed は true または false である必要があります")
+
+    fields_to_check = (
+        "viewport_x",
+        "viewport_y",
+        "viewport_width",
+        "viewport_height",
+    )
+    values: dict[str, int] = {}
+    for field_name in fields_to_check:
+        value = getattr(display, field_name)
+        if type(value) is not int:
+            raise ConfigError(f"display.{field_name} は整数である必要があります")
+        if value < 0:
+            raise ConfigError(f"display.{field_name} は0以上である必要があります")
+        values[field_name] = value
+
+    x = values["viewport_x"]
+    y = values["viewport_y"]
+    width = values["viewport_width"]
+    height = values["viewport_height"]
+    if width == 0 and height == 0:
+        if x != 0 or y != 0:
+            raise ConfigError(
+                "display.viewport_x/y はviewport_width/heightと同時に指定してください"
+            )
+        return
+    if width == 0 or height == 0:
+        raise ConfigError(
+            "display.viewport_width と viewport_height は両方とも正の値が必要です"
+        )
+
+    # The base display dimensions are existing config fields, so retain their
+    # established behavior while turning malformed values into ConfigError
+    # rather than leaking a TypeError from the containment comparison.
+    if type(display.width) is not int or display.width <= 0:
+        raise ConfigError("display.width は正の整数である必要があります")
+    if type(display.height) is not int or display.height <= 0:
+        raise ConfigError("display.height は正の整数である必要があります")
+    if x + width > display.width or y + height > display.height:
+        raise ConfigError(
+            "display.viewport はdisplay.width/heightの内側に収まる必要があります"
+        )
+
+
 def load_global(repo_root: Path, config_path: Path | None = None) -> GlobalConfig:
     """探索順: config_path 引数 > $DOCICH_CONFIG > repo_root/config/docich.toml。
     ファイルが無ければ既定値で動く。
@@ -208,6 +264,7 @@ def load_global(repo_root: Path, config_path: Path | None = None) -> GlobalConfi
         data = _load_toml_file(path)
 
     display = DisplayConfig(**_filtered(DisplayConfig, data.get("display", {}), "display"))
+    _validate_display(display)
     audio = AudioConfig(**_filtered(AudioConfig, data.get("audio", {}), "audio"))
     stream = StreamConfig(**_filtered(StreamConfig, data.get("stream", {}), "stream"))
     captions = CaptionConfig(

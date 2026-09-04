@@ -23,6 +23,8 @@ from .base import Adapter, AdapterError, Observation
 
 GAME_SESSION = "docich-game"
 RUNTIME_GAME_SESSION_ENV = "DOCICH_GAME_SESSION"
+PRESENTATION_SEARCH_TIMEOUT_S = 0.25
+PRESENTATION_POLL_INTERVAL_S = 0.1
 
 
 # --- shared [cli] table helpers --------------------------------------------
@@ -341,12 +343,43 @@ class CliCoordinatorAdapter:
         self.tmux.capture_pane_checked(self.spec.adapter_session)
         d = self.g.display
         if d.viewport_width > 0 and d.viewport_height > 0:
-            window_id = XKit(d.name).find_window(
-                f"^docich-present-{self.spec.runtime_id}$",
-                timeout=max(0.1, deadline - time.monotonic()),
-            )
-            if window_id is None:
-                raise ReadinessTimeoutError("CLI game windowが見つかりません")
+            # The presenter is a child process inside the owned tmux game
+            # window.  Probe in short slices so a wrapper that exits early is
+            # noticed promptly instead of leaving xdotool blocked until the
+            # whole request deadline.  Recheck the pane on every slice; a
+            # live adapter session alone is not proof that its viewer exists.
+            presenter = XKit(d.name)
+            pattern = f"^docich-present-{self.spec.runtime_id}$"
+            while True:
+                self._check_active(deadline, cancel)
+                if not self.tmux.session_target_exists(self.spec.adapter_session):
+                    raise ReadinessTimeoutError("adapter sessionがありません")
+                self._verify_session_ownership()
+                states = self.tmux.pane_states_checked(self.spec.adapter_session)
+                if any(pane.dead for pane in states):
+                    raise ReadinessTimeoutError("paneがdeadです")
+
+                if not self.tmux.window_target_exists(game_target):
+                    raise ReadinessTimeoutError("game windowがありません")
+                self._verify_window_ownership(game_target, "game")
+                game_states = self.tmux.pane_states_checked(game_target)
+                if any(pane.dead for pane in game_states):
+                    raise ReadinessTimeoutError("game window paneがdeadです")
+
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ReadinessTimeoutError("CLI game windowの準備がタイムアウトしました")
+                window_id = presenter.find_window(
+                    pattern,
+                    timeout=min(PRESENTATION_SEARCH_TIMEOUT_S, remaining),
+                )
+                if window_id is not None:
+                    break
+                if cancel is not None and cancel.is_set():
+                    raise DeadlineExceededError("adapter call はcancelされました")
+                if time.monotonic() >= deadline:
+                    raise ReadinessTimeoutError("CLI game windowの準備がタイムアウトしました")
+                time.sleep(min(PRESENTATION_POLL_INTERVAL_S, deadline - time.monotonic()))
         self._check_active(deadline, cancel)
 
     def alive(self, deadline: float, cancel) -> bool:
