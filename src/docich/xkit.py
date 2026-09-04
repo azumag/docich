@@ -84,6 +84,19 @@ class XKit:
         if r2.returncode != 0:
             print(f"docich: ウィンドウのフォーカス取得に失敗しました (id={window_id})", file=sys.stderr)
 
+    def set_geometry(self, window_id: str, x: int, y: int, width: int, height: int) -> None:
+        """Move and resize one X11 window without changing the surrounding layout."""
+        procs.run(
+            ["xdotool", "windowmove", "--sync", window_id, str(x), str(y)],
+            env_extra=self._env(),
+            check=True,
+        )
+        procs.run(
+            ["xdotool", "windowsize", "--sync", window_id, str(width), str(height)],
+            env_extra=self._env(),
+            check=True,
+        )
+
     def keydown(self, keys: list[str]) -> None:
         procs.run(["xdotool", "keydown", "--delay", "0", *keys], env_extra=self._env())
 
