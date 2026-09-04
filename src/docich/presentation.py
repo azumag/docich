@@ -46,20 +46,39 @@ def main() -> int:
         children.append(process)
         return process
 
+    display_read_fd = None
     try:
         read_fd, write_fd = os.pipe()
+        display_read_fd = read_fd
         try:
             launch(['Xvfb', '-displayfd', str(write_fd), '-screen', '0',
                     '4096x2160x24', '-noreset', '-nolisten', 'tcp'], pass_fds=(write_fd,))
             os.close(write_fd)
             write_fd = -1
-            if not select.select([read_fd], [], [], 10)[0]:
-                raise RuntimeError('private display startup timed out')
-            number = os.read(read_fd, 32).decode().strip()
+            # Xvfb writes the display number and its trailing newline through
+            # this fd.  Keep the read end open until Xvfb exits: closing it
+            # after a short read can make a split displayfd write fail with
+            # EPIPE, even though the display itself is ready.
+            data = bytearray()
+            deadline = time.monotonic() + 10
+            while b'\n' not in data:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError('private display startup timed out')
+                if not select.select([read_fd], [], [], remaining)[0]:
+                    raise RuntimeError('private display startup timed out')
+                chunk = os.read(read_fd, 32)
+                if not chunk:
+                    break
+                data.extend(chunk)
+                if len(data) > 32:
+                    raise RuntimeError('private display startup failed')
+            if b'\n' not in data:
+                raise RuntimeError('private display startup failed')
+            number = data.split(b'\n', 1)[0].decode().strip()
             if not number.isdigit():
                 raise RuntimeError('private display startup failed')
         finally:
-            os.close(read_fd)
             if write_fd >= 0:
                 os.close(write_fd)
         source_env = dict(os.environ, DISPLAY=f':{number}')
@@ -110,6 +129,8 @@ def main() -> int:
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
+        if display_read_fd is not None:
+            os.close(display_read_fd)
 
 
 if __name__ == '__main__':
