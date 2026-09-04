@@ -1,5 +1,15 @@
 # セッション引き継ぎ (handoff)
 
+## 2026-09-05 — ゲームと共通配信基盤の分離を実装中（未完了）
+
+- ユーザー承認: ゲーム本体・描画・操作AI・改善・専用監視を共通通知/ステータス/音声/配信管理から分離する。試合完走と結果保存後に旧ゲームを停止し、CPU/メモリを解放する。元からある改善休止は解除しない。
+- 作業ブランチ: docich `/tmp/docich-robots` `codex/robots-game`、soviet_now `/tmp/soviet-game-lifecycle` `codex/game-lifecycle`。Luna(max)が終了待ちと共有表示を分担。main未マージ、本番切替はまだ実施していない。
+- 共通責務/終了待ち/資源解放規約をdocich commit `8f2a2ac` / `be13eab` とWiki `eef3ea2`に記録。Wiki公開済。文書化だけで実装完了とはしない。
+- 既存テスト基準: docich切替/セキュリティ38件、coordinator関連209件成功。Soren側は既存通知テストのfake DOM不足を `4d4d484596` で修正し、direct overlay/broadcast/proxy計32件成功。限定差分の独立レビュー指摘なし。
+- 重要: writer lock保持やcanonical非readyのまま試合終了を待つと、旧ゲームへの入力を止めてしまう。draining状態の入力許可と待機中lock解放、再取得時のrequest/generation照合、timeout/クラッシュ時の復帰を検証する。
+- 初回移行は現在Robotsの裏で動くdocich管理外Sorenが対象。独立共有表示の隔離検証後に外部Sorenを試合境界で停止する。Unity Quitのみや画面非表示のみでは構造分離完了としない。service全体再起動禁止。
+- 読取時点でdirect_stream PID559422/encoder PID559665存続、improve_daemon.paused存在。本番の独立表示・旧ゲーム資源解放・CPU/メモリ低減・復帰は未検証。
+
 > 生成日時: 2026-08-25 07:1x JST  /  作業ディレクトリ: /Users/azumag/work/docich
 > このファイルを読み込めば作業を再開できます。再開時: `/handoff load`
 > 直前セッション: v741 JUNK_CONSOLIDATION（序盤 T1–3 の隅/塊寄せ、hash f93dbf2edf97、soviet_now 8edcb8e34）を実装・テスト済み。ローカル自己対戦 A/B（v736 vs v741）第 2 バッチ 96 試合を分離起動中（主指標 40 手時点の駒数）。第 1 バッチ 12+12 は雑音圏でわずかに B 優勢。本番は v736、改善ループ dry-run。
