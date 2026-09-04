@@ -4,7 +4,10 @@
 
 - 切替基盤はdocich `5ccb3f1`としてPR #64へpush済み。draining中の入力継続、終了後のwriter再取得、request/generation/期限の照合、短時間cancelと復旧を実装。独立レビューの3指摘と並行復旧raceを修正し、対象151件＋8 subtests成功。ゲーム別有効化2設定はdetector未接続のため未commit・本番未反映。
 - 全docich回帰は957件＋36 subtests成功、6件は隔離worktreeの未取得submodule（broadcast/eloop_lib/say_enqueue/半熟知識）の欠如で未通過。全緑とは報告しない。
-- 独立共有表示はsoviet_now `ad72816265`までpush済み、ローカル48件成功。ただし独立レビューで初回描画のactive bufferとready判定対象の不一致を発見し修正中。VMは `/home/ubuntu/soren/tmp/shared-overlay-rehearsal` の隔離検証のみ、本番には未導入。
+- 独立共有表示はsoviet_now `b781ffcfa7`までpush済み。初回active buffer誤判定と正常signal中断の不具合を修正し、独立レビュー合格・関連52件成功。実Chromiumは未検証で、本番には未導入。
+- 再開ゲート: 最新版の `shared_overlay.mjs` と `lib/shared_overlay.mjs` を既存OCI VMの `/home/ubuntu/soren/tmp/shared-overlay-rehearsal/` 以下へ更新する転送が、親側でもauto-reviewに拒否された。非公開コードの具体payload/宛先への明示承認をユーザーへ求める。別ツール・別経路で迂回しない。stagingには旧版が残り、本番の切替は行っていない。
+- 隔離検証の後始末は担当が確認済み: 検証display/service/listener停止、display lock/socket消滅。旧コード・合成fixtures・ログはstagingに保存したまま。修正版の実画面成功を主張しない。
+- Sorenのbroker/hooks/ゲーム専用音声終了/監視抑止は `/tmp/soviet-game-lifecycle` の未commit差分。二相の境界保留→明示停止、durable stopping claim等を修正中で、最終レビュー・本番反映は未実施。Robots実adapterの境界検出、Soren game-only起動/復帰、共有表示の独立監視と重なり順、初回legacy Sorenの安全な切替が次段の残件。
 
 - ユーザー承認: ゲーム本体・描画・操作AI・改善・専用監視を共通通知/ステータス/音声/配信管理から分離する。試合完走と結果保存後に旧ゲームを停止し、CPU/メモリを解放する。元からある改善休止は解除しない。
 - 作業ブランチ: docich `/tmp/docich-robots` `codex/robots-game`、soviet_now `/tmp/soviet-game-lifecycle` `codex/game-lifecycle`。Luna(max)が終了待ちと共有表示を分担。main未マージ、本番切替はまだ実施していない。
