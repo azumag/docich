@@ -29,6 +29,23 @@ from typing import Any
 
 from . import speech
 from .config import GlobalConfig, effective_webui_token, is_loopback_bind
+from .runtime_backend import (
+    CAPABILITY_GET_STATUS,
+    CAPABILITY_LIST_WORKERS,
+    TOGGLEABLE_WORKERS,
+    RuntimeBackend,
+    SorenBackend,
+    _find_worker_pid,
+    _game_state_path,
+    _get_workers_status,
+    _is_worker_paused,
+    _pid_is_active,
+    _pid_matches_worker_process,
+    _process_is_zombie,
+    _read_game_status,
+    _set_worker_paused,
+    _worker_pause_marker_path,
+)
 
 # --- allowlist / validation --------------------------------------------------
 
@@ -127,7 +144,6 @@ AUDIO_QUEUE_PREVIEW_LEN = 120
 # 配信 (direct_stream worker) とチャット送信のオンオフは supervisor (start_all.sh)
 # の pause gate (`tmp/state/<worker>.paused` マーカー) を通じて行う。マーカーが
 # ある間 supervisor は当該 worker を起動・respawn しない。
-TOGGLEABLE_WORKERS = ("direct_stream", "chat_worker", "prediction_worker", "improve_daemon")
 STREAM_WORKER = "direct_stream"
 # フォールバック信号経路の総猶予。runner の正常終了チェーンは
 # stdin q (15秒) → SIGINT (15秒) の最大約30秒+起動分を要し得るため、
@@ -160,6 +176,18 @@ IMPROVE_JOB_KILL_WAIT_SEC = 3
 # start 後、supervisor の自動 respawn (poll 3秒 + backoff) を待つ時間。
 WORKER_START_WAIT_SEC = 30
 IMPROVE_JOB_COMMAND_RE = re.compile(r"[/ ]eloop_improve(_runtime\.[^ ]+)?\.sh(?:\s|$)")
+
+# --- RuntimeBackend rollback flag (issue #43) --------------------------------
+# GET /api/workers, /api/game_state は既定で RuntimeBackend (runtime_backend.py)
+# 経由になる。backend 抽出に問題があった場合、この環境変数を truthy にすると
+# 旧経路 (capability 判定を挟まず直接 _get_workers_status 等を呼ぶ、リファクタ前
+# と同じ挙動) に戻せる。API contract (JSON 形状) はどちらの経路でも同じ。
+LEGACY_RUNTIME_READS_ENV = "DOCICH_WEBUI_LEGACY_RUNTIME_READS"
+
+
+def _legacy_runtime_reads_enabled() -> bool:
+    return os.environ.get(LEGACY_RUNTIME_READS_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
 
 # --- helpers -----------------------------------------------------------------
 
@@ -1526,10 +1554,6 @@ def _regenerate_event_overlay(soren_root: Path) -> bool:
         return False
 
 
-def _game_state_path(soren_root: Path) -> Path:
-    return soren_root / "game_state.json"
-
-
 def _improve_state_path(soren_root: Path) -> Path:
     return soren_root / "tmp/state/improve_state.json"
 
@@ -1782,123 +1806,6 @@ def _prediction_status_snapshot(soren_root: Path) -> dict[str, Any]:
     return result
 
 
-def _get_workers_status(soren_root: Path) -> list[dict[str, Any]]:
-    workers = [
-        "radio_worker",
-        "chat_worker",
-        "improve_daemon",
-        "audio_worker",
-        "prediction_worker",
-        "youtube_worker",
-    ]
-    results: list[dict[str, Any]] = []
-    for w in workers:
-        pid = _find_worker_pid(soren_root, w)
-        if w == "improve_daemon" and pid is None:
-            try:
-                pf = soren_root / "tmp/state/improve_daemon.pid"
-                if pf.is_file():
-                    raw = pf.read_text(encoding="utf-8", errors="ignore").strip().splitlines()[0]
-                    cand = int(raw.strip())
-                    try:
-                        os.kill(cand, 0)
-                        pid = cand
-                    except ProcessLookupError:
-                        pid = None
-                    except PermissionError:
-                        pid = cand
-            except Exception:
-                pid = None
-        alive = pid is not None
-        if w in TOGGLEABLE_WORKERS:
-            paused = _is_worker_paused(soren_root, w)
-            if alive and not paused:
-                status = "ok"
-            elif paused:
-                status = "paused"
-            else:
-                status = "not_running"
-        else:
-            paused = False
-            status = "ok" if alive else "not_running"
-        results.append({"worker": w, "pid": pid, "alive": alive, "paused": bool(paused), "status": status})
-    try:
-        sdir = soren_root / "tmp/state"
-        if sdir.is_dir():
-            for p in sdir.glob("*.pid"):
-                name = p.stem
-                if any(r["worker"] == name for r in results):
-                    continue
-                pid = None
-                try:
-                    raw = p.read_text(encoding="utf-8", errors="ignore").strip().splitlines()[0]
-                    cand = int(raw.strip())
-                    try:
-                        os.kill(cand, 0)
-                        pid = cand
-                    except ProcessLookupError:
-                        pid = None
-                    except PermissionError:
-                        pid = cand
-                except Exception:
-                    pid = None
-                results.append({"worker": name, "pid": pid, "alive": pid is not None, "status": "ok" if pid is not None else "not_running"})
-    except Exception:
-        pass
-    return results
-
-
-def _find_worker_pid(soren_root: Path, worker: str) -> int | None:
-    # worker e.g. "radio_worker" -> pid file tmp/state/radio_worker.pid
-    pid_file = soren_root / "tmp/state" / f"{worker}.pid"
-    try:
-        raw = pid_file.read_text(encoding="utf-8", errors="ignore").strip().splitlines()[0]
-        pid = int(raw.strip())
-        # check alive
-        try:
-            os.kill(pid, 0)
-            return pid if _pid_is_active(pid) else None
-        except ProcessLookupError:
-            return None
-        except PermissionError:
-            return pid
-    except Exception:
-        return None
-
-
-def _worker_pause_marker_path(soren_root: Path, worker: str) -> Path:
-    if worker not in TOGGLEABLE_WORKERS:
-        raise ValueError(f"unsupported worker: {worker}")
-    return soren_root / "tmp/state" / f"{worker}.paused"
-
-
-def _pid_matches_worker_process(pid: int, worker: str) -> bool:
-    """Linux /proc で cmdline を確認し、誤って無関係プロセスを殺さないガード。
-
-    /proc が読めない環境 (macOS 等) は確認不能のため True (許可) を返す。
-    判定は start_all.sh の `_pattern_for_worker` と同じ形状 (basename 含む
-    スクリプトパス) を Python 正規表現に置き換えたもの。
-    """
-    patterns: dict[str, str] = {
-        "prediction_worker": r"[/ ]workers/prediction_worker\.sh(\s|$)",
-        "improve_daemon": r"[/ ]improve_daemon\.sh(\s|$)",
-    }
-    pat = patterns.get(worker)
-    if pat is None:
-        return False
-    try:
-        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
-    except OSError:
-        return True
-    except Exception:
-        return True
-    parts = [p.decode("utf-8", "ignore") for p in raw.split(b"\x00") if p]
-    if not parts:
-        return False
-    joined = " ".join(parts)
-    return re.search(pat, joined) is not None
-
-
 def _controlled_worker_pid(soren_root: Path, worker: str) -> int | None:
     """pidfile から稼働中の対象 worker pid を返す (cmdline ガード込み)。"""
     pid = _find_worker_pid(soren_root, worker)
@@ -1907,34 +1814,6 @@ def _controlled_worker_pid(soren_root: Path, worker: str) -> int | None:
     if not _pid_matches_worker_process(pid, worker):
         return None
     return pid
-
-
-def _process_is_zombie(pid: int) -> bool:
-    try:
-        raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="ignore")
-        # comm は括弧を含み得るため、末尾側の安定フィールドから状態を読む。
-        return raw.rsplit(")", 1)[1].split()[0].startswith("Z")
-    except OSError:
-        pass
-    try:
-        result = subprocess.run(
-            ["ps", "-o", "stat=", "-p", str(pid)],
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return result.stdout.strip().startswith("Z")
-
-
-def _pid_is_active(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return not _process_is_zombie(pid)
 
 
 def _pid_is_improve_job(pid: int) -> bool:
@@ -2130,35 +2009,6 @@ def _wait_for_worker_start(soren_root: Path, worker: str) -> dict[str, Any]:
             return {"pid": pid, "running": True}
         time.sleep(1.0)
     return {"pid": None, "running": False}
-
-
-def _is_worker_paused(soren_root: Path, worker: str) -> bool:
-    try:
-        return _worker_pause_marker_path(soren_root, worker).is_file()
-    except Exception:
-        return False
-
-
-def _set_worker_paused(soren_root: Path, worker: str, paused: bool) -> None:
-    marker = _worker_pause_marker_path(soren_root, worker)
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    if paused:
-        payload = json.dumps(
-            {"paused": True, "ts": int(time.time()), "source": "webui"},
-            ensure_ascii=False,
-        )
-        tmp = marker.with_name(marker.name + f".tmp{os.getpid()}")
-        tmp.write_text(payload + "\n", encoding="utf-8")
-        os.replace(tmp, marker)
-        try:
-            os.chmod(marker, 0o644)
-        except OSError:
-            pass
-    else:
-        try:
-            marker.unlink()
-        except FileNotFoundError:
-            pass
 
 
 # ---------------------------------------------------------------------------
@@ -4810,6 +4660,15 @@ class _Handler(BaseHTTPRequestHandler):
     read_only: bool
     start_time: float
 
+    def _runtime_backend(self) -> RuntimeBackend:
+        """read-only worker/status route が使う RuntimeBackend を返す (issue #43)。
+
+        現状 docich webui は soviet_now 専用ダッシュボードなので常に
+        `SorenBackend` を返すが、route 側は `RuntimeBackend` interface だけを
+        見るため、将来 soren 以外の game/runtime を追加しても route 変更は不要。
+        """
+        return SorenBackend(self.soren_root)
+
     def _set_cors(self):
         if self.g.webui.allow_cors:
             self.send_header("Access-Control-Allow-Origin", "*")
@@ -5551,22 +5410,31 @@ class _Handler(BaseHTTPRequestHandler):
         return 200
 
     def _handle_get_game_state(self) -> int:
-        path = _game_state_path(self.soren_root)
-        mtime = 0
-        try:
-            mtime = int(path.stat().st_mtime) if path.is_file() else 0
-        except Exception:
-            mtime = 0
-        data = _load_json_file(path)
-        exists = data is not None
-        if not exists:
-            data = None
-        state = ""
-        score = None
-        if isinstance(data, dict):
-            state = str(data.get("state", "") or "")
-            score = data.get("score")
-        self._send_json(200, {"exists": exists, "path": str(path), "mtime": mtime, "data": data, "state": state, "score": score})
+        # issue #43: RuntimeBackend.get_status() 経由 (Soren固有のpath/process名は
+        # runtime_backend.SorenBackend 側に移設済み)。ロールバック用の legacy flag
+        # のときだけ旧経路 (未配置チェックを挟まず直接読む、リファクタ前と同一の
+        # 挙動) を使う。
+        if _legacy_runtime_reads_enabled():
+            self._send_json(200, _read_game_status(self.soren_root))
+            return 200
+        backend = self._runtime_backend()
+        if not backend.capabilities().get(CAPABILITY_GET_STATUS):
+            self._send_json(
+                200,
+                {
+                    "exists": False,
+                    "path": None,
+                    "mtime": 0,
+                    "data": None,
+                    "state": "",
+                    "score": None,
+                    "unsupported": True,
+                    "capability": CAPABILITY_GET_STATUS,
+                    "reason": "soviet_now is not deployed at this soren_root",
+                },
+            )
+            return 200
+        self._send_json(200, backend.get_status())
         return 200
 
     def _handle_get_improve_state(self) -> int:
@@ -5604,8 +5472,28 @@ class _Handler(BaseHTTPRequestHandler):
         return 200
 
     def _handle_get_workers(self) -> int:
-        workers = _get_workers_status(self.soren_root)
-        self._send_json(200, {"workers": workers, "now": int(time.time())})
+        # issue #43: RuntimeBackend.list_workers() 経由 (Soren固有のworker名/pid
+        # ファイルpathは runtime_backend.SorenBackend 側に移設済み)。ロールバック
+        # 用の legacy flag のときだけ旧経路 (未配置チェックを挟まず直接読む、
+        # リファクタ前と同一の挙動) を使う。
+        if _legacy_runtime_reads_enabled():
+            workers = _get_workers_status(self.soren_root)
+            self._send_json(200, {"workers": workers, "now": int(time.time())})
+            return 200
+        backend = self._runtime_backend()
+        if not backend.capabilities().get(CAPABILITY_LIST_WORKERS):
+            self._send_json(
+                200,
+                {
+                    "workers": [],
+                    "now": int(time.time()),
+                    "unsupported": True,
+                    "capability": CAPABILITY_LIST_WORKERS,
+                    "reason": "soviet_now is not deployed at this soren_root",
+                },
+            )
+            return 200
+        self._send_json(200, {"workers": backend.list_workers(), "now": int(time.time())})
         return 200
 
     def _handle_get_predictions(self) -> int:
@@ -6822,10 +6710,12 @@ def run_webui(
         return 2
 
     # validate soren_root
+    # issue #43: soviet_now が未配置 (soren_root が無い/eloop_lib.sh が無い) でも
+    # WebUI 自体は起動する。worker/status は RuntimeBackend が capability
+    # unsupported を明示して返すので、ここで起動を止める必要はない。
     if not eff_soren_root.is_dir():
-        print(f"docich: エラー: soren_root が見つかりません: {eff_soren_root}", flush=True)
-        return 2
-    if not (eff_soren_root / "eloop_lib.sh").is_file():
+        print(f"docich: 警告: soren_root が見つかりません: {eff_soren_root} (soviet_now 未配置として起動します)", flush=True)
+    elif not (eff_soren_root / "eloop_lib.sh").is_file():
         print(f"docich: 警告: {eff_soren_root}/eloop_lib.sh が見つかりません (soren_rootの指定を確認してください)", flush=True)
     if eff_read_only:
         print(f"docich: webui read-only mode enabled")
