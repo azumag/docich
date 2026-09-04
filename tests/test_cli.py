@@ -273,6 +273,50 @@ class TestMainErrorHandling(IsolatedConfigTestBase):
         self.assertIn("docich up", err)
 
 
+class TestExternalDisplay(unittest.TestCase):
+    def test_up_attaches_without_starting_display_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = root / "live.toml"
+            cfg.write_text(
+                "[display]\nnumber=99\nmanaged=false\n"
+                "[audio]\nenabled=false\n"
+                "[stream]\nmode=\"null\"\n",
+                encoding="utf-8",
+            )
+            g = cli.load_global(root, config_path=cfg)
+            with (
+                mock.patch("docich.cli.Tmux") as tmux_class,
+                mock.patch("docich.cli.XKit") as xkit_class,
+            ):
+                xkit_class.return_value.display_ready.return_value = True
+                xkit_class.return_value.wait_display.return_value = True
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    rc = cli.cmd_up(g)
+            self.assertEqual(rc, 0)
+            tmux_class.return_value.new_window.assert_not_called()
+            self.assertIn("外部所有ディスプレイ :99 へ接続", output.getvalue())
+
+    def test_up_rejects_missing_external_display(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = root / "live.toml"
+            cfg.write_text(
+                "[display]\nnumber=99\nmanaged=false\n"
+                "[audio]\nenabled=false\n",
+                encoding="utf-8",
+            )
+            g = cli.load_global(root, config_path=cfg)
+            with (
+                mock.patch("docich.cli.Tmux"),
+                mock.patch("docich.cli.XKit") as xkit_class,
+            ):
+                xkit_class.return_value.display_ready.return_value = False
+                with self.assertRaises(cli.CliError):
+                    cli.cmd_up(g)
+
+
 class TestCaptionCli(IsolatedConfigTestBase):
     def test_status_requires_live_stream_socket_before_reporting_active(self):
         self._write_config(

@@ -518,7 +518,12 @@ def cmd_up(g: GlobalConfig) -> int:
     tmux = Tmux()
     tmux.ensure_session()
 
-    if not tmux.has_window("display"):
+    if not g.display.managed:
+        xkit = XKit(g.display.name)
+        if not xkit.display_ready():
+            raise CliError(f"外部所有ディスプレイ {g.display.name} が利用できません")
+        print(f"docich: 外部所有ディスプレイ {g.display.name} へ接続します")
+    elif not tmux.has_window("display"):
         tmux.new_window("display", _run_argv(g, "display"))
         print("docich: display window を起動しました")
     else:

@@ -24,6 +24,8 @@ class DisplayConfig:
     width: int = 1280
     height: int = 720
     color_depth: int = 24
+    # false は既存のX displayへ接続する。docichは起動・停止しない。
+    managed: bool = True
 
     @property
     def name(self) -> str:

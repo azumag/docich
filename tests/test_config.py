@@ -23,6 +23,7 @@ class TestLoadGlobalDefaults(unittest.TestCase):
             self.assertEqual(g.display.width, 1280)
             self.assertEqual(g.display.height, 720)
             self.assertEqual(g.display.color_depth, 24)
+            self.assertTrue(g.display.managed)
 
             self.assertTrue(g.audio.enabled)
             self.assertEqual(g.audio.sink_name, "docich_sink")
@@ -65,6 +66,7 @@ class TestLoadGlobalFromToml(unittest.TestCase):
 number = 42
 width = 640
 height = 480
+managed = false
 
 [audio]
 enabled = false
@@ -100,6 +102,7 @@ roms_dir = "custom_roms"
             self.assertEqual(g.display.name, ":42")
             self.assertEqual(g.display.width, 640)
             self.assertEqual(g.display.height, 480)
+            self.assertFalse(g.display.managed)
 
             self.assertFalse(g.audio.enabled)
             self.assertEqual(g.audio.sink_name, "custom_sink")
