@@ -2775,6 +2775,11 @@ class GameSwitchCoordinator:
                 updates={"retiring": remaining},
                 crash_hook=self.crash_hook,
             )
+        if remaining:
+            self._log(
+                "cleanup_pending", phase=str(state.get("phase")),
+                cleanup_pending=True,
+            )
         return cleanup_pending
 
     def _retry_retiring_locked(
@@ -2946,7 +2951,10 @@ class GameSwitchCoordinator:
                     adapter = None
                     warnings.append(f"active probe失敗 (adapter生成): {_safe_detail(exc)}")
                 if adapter is not None:
-                    alive = self._probe_alive(adapter, deadline)
+                    try:
+                        alive = self._probe_alive(adapter, deadline)
+                    except Exception:
+                        alive = None
                 else:
                     alive = None
                 if alive is False:
@@ -3008,7 +3016,10 @@ class GameSwitchCoordinator:
                 if alive is None:
                     # Probe failed: we do NOT know whether the runtime is
                     # alive.  Keep canonical untouched (active retained) and
-                    # fail closed instead of clearing it.
+                    # fail closed instead of clearing it.  Mirror repair is
+                    # independent of liveness: canonical is readable and the
+                    # active identity is fixed, so converge the mirror.
+                    self.repair_mirror(tx, warnings)
                     return SwitchResult(
                         request_id="",
                         operation="recover",
@@ -3024,13 +3035,11 @@ class GameSwitchCoordinator:
                         receipt=None,
                     )
             cleanup_pending = self._finalize_locked(tx, deadline, warnings=warnings)
-            # idle + retiring: recover() は finalize による cleanup 再試行に加え、
-            # 未処理の retiring を能動的に再試行する (P4 残件の解消)。
-            state, _migrated = self.store.canonical.load()
-            if state.get("phase") == "ready" and state.get("retiring"):
-                cleanup_pending = (
-                    self._retry_retiring_locked(tx, deadline, warnings) or cleanup_pending
-                )
+            # NOTE: no second _retry_retiring_locked() here on purpose.
+            # _finalize_locked already retried every retiring runtime in this
+            # pass; retrying again would attempt the same cleanups twice
+            # within one recover.  Branches that never reach finalize (idle
+            # with retiring) use _retry_retiring_locked() instead.
             self._reconcile_dangling_receipt_locked(tx)
             return SwitchResult(
                 request_id="",

@@ -584,24 +584,34 @@ def _coordinator(g: GlobalConfig) -> GameSwitchCoordinator:
     return GameSwitchCoordinator(store, lambda spec: make_coordinator_adapter(g, spec))
 
 
-def _legacy_footprint(g: GlobalConfig) -> list[str]:
+def _legacy_footprint(g: GlobalConfig) -> dict:
     """pre-coordinator runtime の痕跡 (Design v2 の移行対象) を列挙する。
 
-    最終評価は `docich status --json legacy` が機械可読で行う。共有の
-    `docich` session 自体 (display/audio/stream) は対象外。
+    ``{"footprint": [...], "unreadable": [...]}`` を返す。最終評価は
+    `docich status --legacy --json` が機械可読で行う。共有の `docich`
+    session 自体 (display/audio/stream) は対象外。
     """
     from .status import legacy_footprint
 
     return legacy_footprint(g)
 
 
-def _require_no_legacy_runtime(g: GlobalConfig) -> None:
+def _require_no_legacy_runtime(g: GlobalConfig, *, tmux: Tmux | None = None) -> None:
     """canonical 未作成かつ legacy 痕跡ありなら fail-closed に止める。
 
-    canonical が既に存在する世界では coordinator が唯一の正本であり、
-    legacy 痕跡は operator の責任範囲 (coordinator は所有外に触れない)。
+    tmux 確認不能 (unreadable) は必ずブロックする。canonical が既に存在
+    する世界では coordinator が唯一の正本であり、legacy 痕跡は operator
+    の責任範囲 (coordinator は所有外に触れない)。
     """
-    footprint = _legacy_footprint(g)
+    from .status import legacy_footprint
+
+    probe = legacy_footprint(g, tmux=tmux or Tmux())
+    if probe["unreadable"]:
+        raise CliError(
+            f"旧 runtime の有無を確認できませんでした ({', '.join(probe['unreadable'])})。"
+            f"tmux の状態を確認してから再実行してください。"
+        )
+    footprint = probe["footprint"]
     if not footprint:
         return
     store = GameSwitchStore(g.state_dir)
@@ -750,7 +760,7 @@ def cmd_migrate_legacy(g: GlobalConfig) -> int:
     footprint remains.
     """
     tmux = Tmux()
-    attempted = _legacy_footprint(g)
+    attempted = _legacy_footprint(g)["footprint"]
     for window in ("agent", "game"):
         if tmux.has_window(window):
             tmux.kill_window(window)
@@ -891,20 +901,29 @@ def cmd_status(g: GlobalConfig, *, json_output: bool = False) -> int:
 def cmd_status_legacy(g: GlobalConfig, *, json_output: bool = False) -> int:
     """Report pre-coordinator runtime traces for migration (P4).
 
-    Machine-readable via --json ({"schema_version", "footprint"}), human
-    readable otherwise.  Read-only: nothing is stopped or rewritten.
+    Machine-readable via --json ({"schema_version", "footprint",
+    "unreadable"}), human readable otherwise.  Read-only: nothing is
+    stopped or rewritten.
     """
     from .status import STATUS_SCHEMA_VERSION, legacy_footprint
 
-    footprint = legacy_footprint(g)
+    probe = legacy_footprint(g, tmux=Tmux())
     if json_output:
-        print(json.dumps({"schema_version": STATUS_SCHEMA_VERSION, "footprint": footprint}, ensure_ascii=False))
+        print(json.dumps(
+            {
+                "schema_version": STATUS_SCHEMA_VERSION,
+                "footprint": probe["footprint"],
+                "unreadable": probe["unreadable"],
+            },
+            ensure_ascii=False,
+        ))
         return 0
     print("docich status --legacy")
-    if footprint:
-        for item in footprint:
-            print(f"  legacy: {item}")
-    else:
+    for item in probe["footprint"]:
+        print(f"  legacy: {item}")
+    for item in probe["unreadable"]:
+        print(f"  legacy: {item} (確認不能)")
+    if not probe["footprint"] and not probe["unreadable"]:
         print("  legacy: (なし)")
     return 0
 

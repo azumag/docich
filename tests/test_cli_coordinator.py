@@ -109,6 +109,8 @@ class CliCoordinatorTestBase(unittest.TestCase):
         tmux = mock.Mock()
         tmux.has_window.side_effect = lambda name: name == "display"
         tmux.has_session_named.return_value = False
+        tmux.window_target_exists.return_value = False
+        tmux.session_target_exists.return_value = False
         return mock.patch("docich.cli.Tmux", return_value=tmux)
 
     def _call(self, func, *args, **kwargs):

@@ -562,6 +562,16 @@ class TestStatusCli(StatusTestBase):
 
 
 class TestMirrorRepair(StatusTestBase):
+    def _mark_alive_probe_error(self, coord):
+        import threading
+
+        orig = coord._probe_alive
+
+        def boom(adapter, deadline):
+            raise RuntimeError("probe exploded")
+
+        coord._probe_alive = boom
+
     def _mark_alive(self, coord, game, generation):
         state, _ = coord.store.canonical.load()
         for key in ("active", "candidate", "previous"):
@@ -647,6 +657,88 @@ class TestIdleRetiringRecover(StatusTestBase):
         self.assertEqual(result.status, "succeeded")
         self.assertTrue(result.cleanup_pending)
         self.assertEqual(len(self._canonical(store)["retiring"]), 1)
+
+
+def _boom_probe(coord):
+    def boom(adapter, deadline):
+        raise RuntimeError("probe exploded")
+
+    coord._probe_alive = boom
+
+
+class TestLegacyFootprintScope(StatusTestBase):
+    def _ready_with_mirror(self, game="nethack"):
+        active = _runtime_dict(1, game)
+        self._save_ready(active)
+        self._mirror(game)
+        return active
+
+    def test_post_migration_mirror_is_not_legacy(self):
+        self._ready_with_mirror("nethack")
+        from docich.status import legacy_footprint
+
+        probe = legacy_footprint(self.g, tmux=self.tmux)
+        self.assertNotIn("current_game", probe["footprint"])
+        self.assertEqual(probe["unreadable"], [])
+
+    def test_pre_migration_mirror_is_legacy(self):
+        self._mirror("nethack")
+        from docich.status import legacy_footprint
+
+        probe = legacy_footprint(self.g, tmux=self.tmux)
+        self.assertIn("current_game", probe["footprint"])
+
+    def test_connection_failure_is_unreadable_not_absent(self):
+        from docich.tmux import TmuxError
+
+        self.tmux.raise_on_probe = TmuxError("failed to connect to server: Connection refused")
+        from docich.status import legacy_footprint
+
+        probe = legacy_footprint(self.g, tmux=self.tmux)
+        self.assertEqual(probe["footprint"], [])
+        self.assertIn("window:game", probe["unreadable"])
+        self.assertIn("window:agent", probe["unreadable"])
+        self.assertIn("session:docich-game", probe["unreadable"])
+
+    def test_gate_blocks_on_unreadable(self):
+        from docich.tmux import TmuxError
+
+        (self.root / "config" / "games").mkdir(parents=True, exist_ok=True)
+        (self.root / "config" / "games" / "nethack.toml").write_text(
+            '[game]\nname = "nethack"\nadapter = "cli"\n\n[cli]\ncommand = "true"\n',
+            encoding="utf-8",
+        )
+        self.tmux.raise_on_probe = TmuxError("failed to connect to server: Connection refused")
+        with self.assertRaises(cli.CliError) as ctx:
+            cli._require_no_legacy_runtime(self.g, tmux=self.tmux)
+        self.assertIn("確認できませんでした", str(ctx.exception))
+
+    def test_probe_error_repairs_mirror_without_clearing_active(self):
+        active = _runtime_dict(1, "nethack")
+        self._save_ready(active)
+        self._mirror("robots")
+        from docich.game_switch import GameSwitchStore
+
+        store = GameSwitchStore(self.g.state_dir)
+        coord = _coordinator(store)
+        _boom_probe(coord)
+        result = coord.recover()
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "probe_failed")
+        # result stays failed, but the mirror converges to canonical.
+        self.assertEqual(self._mirror(), "nethack")
+
+    def test_legacy_json_reports_unreadable(self):
+        from docich.tmux import TmuxError
+
+        self.tmux.raise_on_probe = TmuxError("failed to connect to server: Connection refused")
+        out = io.StringIO()
+        with mock.patch("docich.cli.Tmux", return_value=self.tmux):
+            with redirect_stdout(out):
+                rc = cli.cmd_status_legacy(self.g, json_output=True)
+        self.assertEqual(rc, 0)
+        data = json.loads(out.getvalue())
+        self.assertIn("window:game", data["unreadable"])
 
 
 class TestLegacyCommand(StatusTestBase):
