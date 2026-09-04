@@ -365,7 +365,7 @@ class Tmux:
             raise OwnershipMismatchError(
                 f"session ownershipが一致しません (expected={expected}, actual={actual})"
             )
-        self._checked(["kill-session", "-t", session], "window停止")
+        self._checked(["kill-session", "-t", session], "session停止")
         return True
 
     def capture_pane(self, session: str) -> str:
