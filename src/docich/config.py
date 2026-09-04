@@ -135,6 +135,14 @@ class GameAgentConfig:
 
 
 @dataclass
+class GameLifecycleConfig:
+    # New games opt into the guarded switch path explicitly.  Legacy game
+    # definitions keep their existing immediate-quiesce behavior until their
+    # adapter implements request_round_boundary.
+    require_round_boundary: bool = False
+
+
+@dataclass
 class GameConfig:
     name: str
     title: str
@@ -142,6 +150,7 @@ class GameConfig:
     submodule: str = ""
     raw: dict = field(default_factory=dict)
     agent: GameAgentConfig = field(default_factory=GameAgentConfig)
+    lifecycle: GameLifecycleConfig = field(default_factory=GameLifecycleConfig)
     path: Path = field(default_factory=Path)
 
 
@@ -383,6 +392,14 @@ def _parse_game(name: str, path: Path, data: dict) -> GameConfig:
 
     agent_raw = data.get("agent", {})
     agent = GameAgentConfig(**_filtered(GameAgentConfig, agent_raw, "agent"))
+    lifecycle_raw = data.get("lifecycle", {})
+    lifecycle = GameLifecycleConfig(
+        **_filtered(GameLifecycleConfig, lifecycle_raw, "lifecycle")
+    )
+    if type(lifecycle.require_round_boundary) is not bool:
+        raise ConfigError(
+            f"[lifecycle].require_round_boundary はtrueまたはfalseである必要があります: {path}"
+        )
 
     return GameConfig(
         name=game_name,
@@ -391,6 +408,7 @@ def _parse_game(name: str, path: Path, data: dict) -> GameConfig:
         submodule=submodule,
         raw=data,
         agent=agent,
+        lifecycle=lifecycle,
         path=path,
     )
 

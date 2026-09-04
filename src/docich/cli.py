@@ -1111,8 +1111,11 @@ def _active_fence_or_none(g: GlobalConfig, resolved: str):
     canonical, needs_write = store.canonical.load()
     if needs_write:
         return None
-    if canonical.get("phase") != "ready":
-        raise CliError("ゲーム切替の実行中のため観測・入力できません (phase が ready ではありません)")
+    if canonical.get("phase") not in {"ready", "draining"}:
+        raise CliError(
+            "ゲーム切替の実行中のため観測・入力できません "
+            "(phase が ready または draining ではありません)"
+        )
     active = canonical.get("active")
     if not isinstance(active, dict) or active.get("game") != resolved:
         current = active.get("game") if isinstance(active, dict) else None
