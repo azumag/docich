@@ -61,7 +61,7 @@ class XKit:
 
     def find_window(self, pattern: str, *, timeout: float | None = None) -> str | None:
         r = procs.run(
-            ["xdotool", "search", "--onlyvisible", "--name", pattern],
+            ["xdotool", "search", "--sync", "--onlyvisible", "--name", pattern],
             env_extra=self._env(),
             timeout=timeout,
         )
