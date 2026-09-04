@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import tempfile
 import time
@@ -85,14 +86,25 @@ class XKit:
             print(f"docich: ウィンドウのフォーカス取得に失敗しました (id={window_id})", file=sys.stderr)
 
     def set_geometry(self, window_id: str, x: int, y: int, width: int, height: int) -> None:
-        """Move and resize one X11 window without changing the surrounding layout."""
+        """Move and resize one decorated X11 window to an exact outer rectangle."""
+        frame = procs.run(
+            ["xprop", "-id", window_id, "_NET_FRAME_EXTENTS"],
+            env_extra=self._env(),
+        )
+        left = right = top = bottom = 0
+        if frame.returncode == 0:
+            values = re.search(r"=\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+)", frame.stdout)
+            if values:
+                left, right, top, bottom = (int(value) for value in values.groups())
+        client_width = max(1, width - left - right)
+        client_height = max(1, height - top - bottom)
         procs.run(
             ["xdotool", "windowmove", "--sync", window_id, str(x), str(y)],
             env_extra=self._env(),
             check=True,
         )
         procs.run(
-            ["xdotool", "windowsize", "--sync", window_id, str(width), str(height)],
+            ["xdotool", "windowsize", "--sync", window_id, str(client_width), str(client_height)],
             env_extra=self._env(),
             check=True,
         )
