@@ -227,6 +227,60 @@ class TestCmdStop(CliCoordinatorTestBase):
         self.assertEqual(rc, 0)
 
 
+class TestCmdRecover(CliCoordinatorTestBase):
+    def test_recover_when_idle_is_noop_success(self):
+        rc, out, _err = self._call(cli.cmd_recover)
+        self.assertEqual(rc, 0)
+        self.assertIn("復旧しました", out)
+
+    def test_recover_restores_failed_previous(self):
+        self._call(cli.cmd_start, "nethack")
+        # failed + previous を直接作り、recover で復旧できること。
+        from docich.game_switch import GameSwitchStore
+
+        store = GameSwitchStore(self.g.state_dir)
+        state, _ = store.canonical.load()
+        previous = dict(state["active"])
+        state.update(
+            {
+                "phase": "failed",
+                "active": None,
+                "candidate": None,
+                "previous": previous,
+                "operation": None,
+                "request_id": None,
+                "deadline_at": None,
+                "last_result": {
+                    "request_id": "12345678-1234-5678-1234-567812345678",
+                    "operation": "switch",
+                    "status": "failed",
+                    "from_game": "nethack",
+                    "to_game": "dummy",
+                    "generation": 2,
+                    "error_code": "start_failed",
+                    "detail": "boom",
+                    "cleanup_pending": None,
+                },
+                "last_error": {"error_code": "start_failed", "detail": "boom"},
+            }
+        )
+        store.canonical.save(state)
+        rc, _out, _err = self._call(cli.cmd_recover)
+        self.assertEqual(rc, 1)
+        state = self._canonical()
+        self.assertEqual(state["phase"], "ready")
+        self.assertEqual(state["active"]["game"], "nethack")
+
+    def test_recover_bad_timeout_raises_cli_error(self):
+        with self.assertRaises(cli.CliError):
+            self._call(cli.cmd_recover, timeout_s=0)
+
+    def test_recover_flag_parses(self):
+        args = cli.build_parser().parse_args(["recover", "--timeout", "30"])
+        self.assertEqual(args.command, "recover")
+        self.assertEqual(args.timeout, 30)
+
+
 class TestCmdDown(CliCoordinatorTestBase):
     def test_down_does_not_kill_session_when_stop_is_busy(self):
         busy = cli.SwitchResult(
