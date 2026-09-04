@@ -179,7 +179,7 @@ games = []       # docich rotate が巡回する順序
 - `hanjuku-hero`: RetroArch + SFC core。ROMは自己吸い出し品のみ。
   LLM brain (`brains/hanjuku/`) 同梱、既定無効 ([`docs/hanjuku_brain.md`](docs/hanjuku_brain.md))。
 - `nethack`: tmux + xtermのCLI/TUI adapter。
-- `robots`: `bsdgames`の軽量ターン制ゲーム。CLI/TUI adapterの最小追加例。
+- `robots`: `bsdgames`の軽量ターン制ゲーム。CLI/TUI adapterで元の端末サイズを保ち、配信側だけをcontain表示する例。
 - `sorengame`: ローカルWebGL viewer。production controllerではない。
 
 ## Repository layout

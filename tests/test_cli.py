@@ -274,6 +274,19 @@ class TestMainErrorHandling(IsolatedConfigTestBase):
 
 
 class TestExternalDisplay(unittest.TestCase):
+    def test_run_display_is_noop_for_external_display(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = root / "live.toml"
+            cfg.write_text("[display]\nnumber=99\nmanaged=false\n", encoding="utf-8")
+            g = cli.load_global(root, config_path=cfg)
+            output = io.StringIO()
+            with mock.patch("docich.cli.run_loop") as run_loop, redirect_stdout(output):
+                rc = cli._run_display(g)
+            self.assertEqual(rc, 0)
+            run_loop.assert_not_called()
+            self.assertIn("Xvfb は起動しません", output.getvalue())
+
     def test_up_attaches_without_starting_display_window(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

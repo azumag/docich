@@ -1,3 +1,4 @@
+import subprocess
 from types import SimpleNamespace
 from unittest import TestCase, mock
 
@@ -23,6 +24,13 @@ class TestFindWindow(TestCase):
         argv = run.call_args.args[0]
         self.assertEqual(argv[:3], ["xdotool", "search", "--sync"])
         self.assertEqual(run.call_args.kwargs["timeout"], 0.25)
+
+    def test_timeout_slice_is_treated_as_not_found_yet(self):
+        with mock.patch(
+            "docich.xkit.procs.run",
+            side_effect=subprocess.TimeoutExpired(["xdotool"], 0.25),
+        ):
+            self.assertIsNone(XKit(":99").find_window("docich-present", timeout=0.25))
 
 
 if __name__ == "__main__":

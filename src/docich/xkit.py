@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -68,11 +69,18 @@ class XKit:
         if timeout is not None:
             args.append("--sync")
         args += ["--onlyvisible", "--name", pattern]
-        r = procs.run(
-            args,
-            env_extra=self._env(),
-            timeout=timeout,
-        )
+        try:
+            r = procs.run(
+                args,
+                env_extra=self._env(),
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            # ``--sync`` waits until a matching window appears.  The caller
+            # deliberately gives it a short slice and performs another
+            # liveness check afterwards, so a slice timeout is an ordinary
+            # "not found yet" result rather than an adapter failure.
+            return None
         if r.returncode != 0:
             return None
         lines = [line for line in r.stdout.splitlines() if line.strip()]

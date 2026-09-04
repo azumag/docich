@@ -215,6 +215,63 @@ roms_dir = "custom_roms"
             self.assertEqual(g.captions.socket_path, "/tmp/docich-test/cc.sock")
             self.assertEqual(g.stream.ffmpeg_bin, "/opt/docich/bin/ffmpeg")
 
+    def test_display_managed_must_be_strict_boolean(self):
+        for value in ("1", '"false"'):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "bad-display.toml"
+                path.write_text(f"[display]\nmanaged = {value}\n", encoding="utf-8")
+                with self.assertRaises(config.ConfigError):
+                    config.load_global(Path(tmp), config_path=path)
+
+    def test_display_viewport_all_zero_is_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "display.toml"
+            path.write_text(
+                "[display]\nviewport_x = 0\nviewport_y = 0\n"
+                "viewport_width = 0\nviewport_height = 0\n",
+                encoding="utf-8",
+            )
+            g = config.load_global(Path(tmp), config_path=path)
+            self.assertEqual(
+                (g.display.viewport_x, g.display.viewport_y,
+                 g.display.viewport_width, g.display.viewport_height),
+                (0, 0, 0, 0),
+            )
+
+    def test_display_viewport_requires_positive_complete_rectangle(self):
+        invalid = (
+            "viewport_x = -1\nviewport_y = 0\nviewport_width = 960\nviewport_height = 540\n",
+            "viewport_x = 0\nviewport_y = 0\nviewport_width = 960\nviewport_height = 0\n",
+            'viewport_x = 0\nviewport_y = 0\nviewport_width = "960"\nviewport_height = 540\n',
+            "viewport_x = 640\nviewport_y = 0\nviewport_width = 641\nviewport_height = 540\n",
+            "viewport_x = 0\nviewport_y = 360\nviewport_width = 960\nviewport_height = 361\n",
+        )
+        for display_text in invalid:
+            with self.subTest(display_text=display_text), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "bad-display.toml"
+                path.write_text(f"[display]\n{display_text}", encoding="utf-8")
+                with self.assertRaises(config.ConfigError):
+                    config.load_global(Path(tmp), config_path=path)
+
+    def test_display_viewport_must_not_set_only_origin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bad-display.toml"
+            path.write_text("[display]\nviewport_x = 10\n", encoding="utf-8")
+            with self.assertRaises(config.ConfigError):
+                config.load_global(Path(tmp), config_path=path)
+
+    def test_display_viewport_accepts_contained_rectangle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "display.toml"
+            path.write_text(
+                "[display]\nviewport_x = 0\nviewport_y = 90\n"
+                "viewport_width = 960\nviewport_height = 540\n",
+                encoding="utf-8",
+            )
+            g = config.load_global(Path(tmp), config_path=path)
+            self.assertEqual(g.display.viewport_width, 960)
+            self.assertEqual(g.display.viewport_height, 540)
+
 
 class TestLoadGame(unittest.TestCase):
     def _make_global(self, tmp: Path) -> config.GlobalConfig:

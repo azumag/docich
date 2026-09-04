@@ -50,6 +50,7 @@ class FakeTmux:
         self.calls = []
         self.capture = "game screen"
         self.pane_states = [PaneState(dead=False, pid=1234)]
+        self.pane_states_by_target = {}
         self.window_exists = None  # None = use self.windows
 
     def _expected(self, ownership):
@@ -119,7 +120,7 @@ class FakeTmux:
 
     def pane_states_checked(self, target):
         self.calls.append(("pane_states_checked", target))
-        return list(self.pane_states)
+        return list(self.pane_states_by_target.get(target, self.pane_states))
 
     def capture_pane_checked(self, target):
         self.calls.append(("capture_pane_checked", target))
@@ -293,6 +294,35 @@ class TestReadiness(CoordinatorAdapterTestBase):
         self.tmux.windows["docich:game-g1"] = ("g1-zzzzzz", 1, "game")
         with self.assertRaises(OwnershipMismatchError):
             self.adapter.readiness(self.deadline, None)
+
+    def test_readiness_checks_presenter_in_short_slices(self):
+        self._ready()
+        self.g.display.viewport_x = 0
+        self.g.display.viewport_y = 0
+        self.g.display.viewport_width = 960
+        self.g.display.viewport_height = 540
+        with mock.patch("docich.adapters.cli_game.XKit") as xkit_class:
+            xkit_class.return_value.find_window.side_effect = [None, "123"]
+            self.adapter.readiness(time.monotonic() + 2, None)
+
+        calls = xkit_class.return_value.find_window.call_args_list
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(call.kwargs["timeout"] <= 0.25 for call in calls))
+        game_pane_probes = [
+            call for call in self.tmux.calls
+            if call == ("pane_states_checked", "docich:game-g1")
+        ]
+        self.assertGreaterEqual(len(game_pane_probes), 2)
+
+    def test_readiness_fails_when_presenter_pane_dies_before_search(self):
+        self._ready()
+        self.g.display.viewport_width = 960
+        self.g.display.viewport_height = 540
+        self.tmux.pane_states_by_target["docich:game-g1"] = [PaneState(dead=True, pid=1234)]
+        with mock.patch("docich.adapters.cli_game.XKit") as xkit_class:
+            with self.assertRaises(ReadinessTimeoutError):
+                self.adapter.readiness(time.monotonic() + 2, None)
+        xkit_class.return_value.find_window.assert_not_called()
 
 
 class TestAlive(CoordinatorAdapterTestBase):

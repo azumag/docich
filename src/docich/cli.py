@@ -1282,6 +1282,13 @@ def cmd_run(g: GlobalConfig, args) -> int:
 def _run_display(g: GlobalConfig) -> int:
     d = g.display
 
+    # An external display (for example Soren's :99) is owned by its existing
+    # runtime.  Keep the internal ``run display`` entry point harmless even if
+    # it is invoked directly from an old tmux window or stale command.
+    if not d.managed:
+        print(f"docich: 外部所有ディスプレイ {d.name} のため Xvfb は起動しません", flush=True)
+        return 0
+
     def build():
         cmd = ["Xvfb", d.name, "-screen", "0", f"{d.width}x{d.height}x{d.color_depth}", "-nolisten", "tcp"]
         return cmd, {}
