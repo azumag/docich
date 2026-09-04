@@ -2775,7 +2775,35 @@ class GameSwitchCoordinator:
                 updates={"retiring": remaining},
                 crash_hook=self.crash_hook,
             )
+        if remaining:
+            self._log(
+                "cleanup_pending", phase=str(state.get("phase")),
+                cleanup_pending=True,
+            )
         return cleanup_pending
+
+    def _retry_retiring_locked(
+        self, tx: GameSwitchTransaction, deadline: float, warnings: list[str]
+    ) -> bool:
+        """Actively retry unprocessed retiring runtimes on recover().
+
+        The ready branch calls _finalize_locked first, which already covers
+        retiring cleanup there.  This helper is for branches that do not go
+        through finalize — notably idle-with-retiring, where no other path
+        would ever retry the cleanup.  Returns True when anything is still
+        pending.
+        """
+        state, _migrated = self.store.canonical.load()
+        if not state.get("retiring"):
+            return False
+        cleanup_pending = self._finalize_locked(tx, deadline, warnings=warnings)
+        state, _migrated = self.store.canonical.load()
+        if state.get("retiring"):
+            self._log(
+                "cleanup_pending", phase=str(state.get("phase")),
+                cleanup_pending=True,
+            )
+        return cleanup_pending or bool(state.get("retiring"))
 
     def _write_mirror(self, game: str | None) -> None:
         if self.mirror_writer is not None:
@@ -2788,6 +2816,22 @@ class GameSwitchCoordinator:
                 pass
         else:
             atomic_write_text(self.mirror_path, f"{game}\n")
+
+    def repair_mirror(self, tx: GameSwitchTransaction, warnings: list[str]) -> None:
+        """Repair the compat mirror from canonical active (design v2 §1).
+
+        The canonical JSON is the single source of truth; the mirror is
+        best-effort.  A mirror write failure is recorded as a warning only
+        and never rolls anything back.
+        """
+        state, _migrated = self.store.canonical.load()
+        active = state.get("active")
+        try:
+            self._write_mirror(active["game"] if active else None)
+        except Exception as exc:
+            warnings.append(f"current_game mirror更新失敗: {_safe_detail(exc)}")
+        else:
+            self._log("mirror_repaired", phase=str(state.get("phase")))
 
     # --- recovery -----------------------------------------------------------
 
@@ -2807,11 +2851,14 @@ class GameSwitchCoordinator:
         )
         self._log("recovery_started", phase=str(phase))
         if phase == "idle":
-            try:
-                self._write_mirror(None)
-            except Exception as exc:
-                warnings.append(f"mirror修復失敗: {_safe_detail(exc)}")
+            self.repair_mirror(tx, warnings)
             self._reconcile_dangling_receipt_locked(tx)
+            # idle + retiring: nothing else retries these cleanups, so do it
+            # here and report whether anything is still pending.
+            state, _migrated = self.store.canonical.load()
+            cleanup_pending = False
+            if state.get("retiring"):
+                cleanup_pending = self._retry_retiring_locked(tx, deadline, warnings)
             return SwitchResult(
                 request_id="",
                 operation="recover",
@@ -2823,7 +2870,7 @@ class GameSwitchCoordinator:
                 error_code=None,
                 detail="recovery は不要でした",
                 warnings=tuple(warnings),
-                cleanup_pending=False,
+                cleanup_pending=cleanup_pending,
                 receipt=None,
             )
         if phase == "recovery_required":
@@ -2876,10 +2923,7 @@ class GameSwitchCoordinator:
                 },
                 crash_hook=self.crash_hook,
             )
-            try:
-                self._write_mirror(None)
-            except Exception as exc:
-                warnings.append(f"mirror修復失敗: {_safe_detail(exc)}")
+            self.repair_mirror(tx, warnings)
             self._reconcile_dangling_receipt_locked(tx)
             return SwitchResult(
                 request_id="",
@@ -2907,7 +2951,10 @@ class GameSwitchCoordinator:
                     adapter = None
                     warnings.append(f"active probe失敗 (adapter生成): {_safe_detail(exc)}")
                 if adapter is not None:
-                    alive = self._probe_alive(adapter, deadline)
+                    try:
+                        alive = self._probe_alive(adapter, deadline)
+                    except Exception:
+                        alive = None
                 else:
                     alive = None
                 if alive is False:
@@ -2969,7 +3016,10 @@ class GameSwitchCoordinator:
                 if alive is None:
                     # Probe failed: we do NOT know whether the runtime is
                     # alive.  Keep canonical untouched (active retained) and
-                    # fail closed instead of clearing it.
+                    # fail closed instead of clearing it.  Mirror repair is
+                    # independent of liveness: canonical is readable and the
+                    # active identity is fixed, so converge the mirror.
+                    self.repair_mirror(tx, warnings)
                     return SwitchResult(
                         request_id="",
                         operation="recover",
@@ -2985,6 +3035,11 @@ class GameSwitchCoordinator:
                         receipt=None,
                     )
             cleanup_pending = self._finalize_locked(tx, deadline, warnings=warnings)
+            # NOTE: no second _retry_retiring_locked() here on purpose.
+            # _finalize_locked already retried every retiring runtime in this
+            # pass; retrying again would attempt the same cleanups twice
+            # within one recover.  Branches that never reach finalize (idle
+            # with retiring) use _retry_retiring_locked() instead.
             self._reconcile_dangling_receipt_locked(tx)
             return SwitchResult(
                 request_id="",
@@ -3062,10 +3117,7 @@ class GameSwitchCoordinator:
             request_id = state.get("request_id")
             if request_id is not None:
                 self._finish_recovering_receipt(tx, str(request_id), "succeeded", last_result)
-            try:
-                self._write_mirror(None)
-            except Exception as exc:
-                warnings.append(f"mirror修復失敗: {_safe_detail(exc)}")
+            self.repair_mirror(tx, warnings)
             return SwitchResult(
                 request_id=str(request_id or ""),
                 operation="recover",

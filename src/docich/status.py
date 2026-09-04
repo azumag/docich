@@ -32,6 +32,45 @@ from .tmux import OwnershipMismatchError, Tmux
 from .xkit import XKit
 
 STATUS_SCHEMA_VERSION = 1
+LEGACY_WINDOWS = ("game", "agent")
+LEGACY_SESSION = "docich-game"
+
+
+def legacy_footprint(g: GlobalConfig, *, tmux: Tmux | None = None) -> dict:
+    """Enumerate pre-coordinator runtime traces (design v2 migration scope).
+
+    Returns ``{"footprint": [...], "unreadable": [...]}``.  Fixed windows
+    ``game``/``agent`` and the fixed ``docich-game`` session are probed with
+    strict existence checks: confirmation failures land in ``unreadable``,
+    never silently in absence.  The shared ``docich`` session itself
+    (display/audio/stream) is excluded.
+
+    ``current_game`` counts as legacy only before canonical exists: after
+    migration it is a healthy compat mirror of the active game.  Read-only.
+    """
+    from .game_switch import GameSwitchError, GameSwitchStore
+
+    tmux = tmux or Tmux()
+    found: list[str] = []
+    unreadable: list[str] = []
+    try:
+        _, needs_write = GameSwitchStore(g.state_dir).canonical.load()
+    except GameSwitchError:
+        needs_write = False
+    if needs_write and State(g).current_game() is not None:
+        found.append("current_game")
+    for window in LEGACY_WINDOWS:
+        try:
+            if tmux.window_target_exists(f"docich:{window}", strict=True):
+                found.append(f"window:{window}")
+        except Exception:
+            unreadable.append(f"window:{window}")
+    try:
+        if tmux.session_target_exists(LEGACY_SESSION, strict=True):
+            found.append(f"session:{LEGACY_SESSION}")
+    except Exception:
+        unreadable.append(f"session:{LEGACY_SESSION}")
+    return {"footprint": found, "unreadable": unreadable}
 STATUS_WINDOWS = ("display", "audio", "stream", "game", "agent", "watchdog")
 
 

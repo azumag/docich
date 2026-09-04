@@ -94,6 +94,93 @@ class FakeXkit:
         return self.ready
 
 
+def _boom_mirror(_path, _game):
+    raise OSError("mirror boom")
+
+
+class _FakeRuntime:
+    def __init__(self):
+        self.materialized = False
+        self.alive = False
+        self.cleaned = False
+
+
+class _FakeStepAdapter:
+    name = "cli"
+    agent_enabled = False
+
+    def __init__(self, spec, behavior, runtime):
+        self.spec = spec
+        self.behavior = behavior
+        self.runtime = runtime
+
+    def preflight(self, deadline, cancel):
+        pass
+
+    def materialize_runtime(self, deadline, cancel):
+        self.runtime.materialized = True
+        self.runtime.alive = True
+
+    def readiness(self, deadline, cancel):
+        pass
+
+    def alive(self, deadline, cancel):
+        return bool(
+            self.runtime.materialized and self.runtime.alive and not self.runtime.cleaned
+        )
+
+    def cleanup_runtime(self, deadline, cancel):
+        if self.behavior.get("immortal"):
+            return
+        if self.runtime.alive:
+            self.runtime.alive = False
+            self.runtime.cleaned = True
+
+    def start_agent(self, deadline, cancel):
+        pass
+
+    def stop_agent(self, deadline, cancel):
+        pass
+
+    def _prime(self, *, alive=True):
+        self.runtime.materialized = True
+        self.runtime.alive = alive
+
+
+class _FakeStepFactory:
+    def __init__(self, behaviors):
+        self.behaviors = behaviors
+        self.adapters = {}
+
+    def __call__(self, spec):
+        key = (spec.game, spec.generation)
+        if key not in self.adapters:
+            self.adapters[key] = _FakeStepAdapter(spec, self.behaviors[spec.game], _FakeRuntime())
+        else:
+            self.adapters[key].spec = spec
+        return self.adapters[key]
+
+    def adapter(self, game, generation):
+        return self.adapters.get((game, generation))
+
+
+def _prime_runtime(store, factory, runtime):
+    from docich.game_switch import RuntimeSpec
+
+    factory(
+        RuntimeSpec.from_runtime(store.state_dir, runtime)
+    )._prime(alive=True)
+
+
+def _coordinator(store, behaviors=None, **kwargs):
+    from docich import game_switch
+
+    factory = _FakeStepFactory(behaviors or {"nethack": {}, "robots": {}})
+    kwargs.setdefault("quiesce_verify_timeout_s", 0.3)
+    kwargs.setdefault("poll_interval_s", 0.01)
+    return game_switch.GameSwitchCoordinator(store, factory, **kwargs)
+
+
 class StatusTestBase(unittest.TestCase):
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
@@ -107,6 +194,43 @@ class StatusTestBase(unittest.TestCase):
 
     def _collect(self):
         return collect_status(self.g, tmux=self.tmux, xkit=self.xkit)
+
+    def _mirror(self, value=None):
+        from docich.state import State
+
+        if value is None:
+            return State(self.g).current_game()
+        State(self.g).set_current_game(value)
+
+    def _save_idle_retiring(self):
+        from docich.game_switch import GameSwitchStore
+
+        store = GameSwitchStore(self.g.state_dir)
+        state, _ = store.canonical.load()
+        state.update(
+            {
+                "phase": "idle",
+                "active": None,
+                "candidate": None,
+                "previous": None,
+                "retiring": [_runtime_dict(1, "nethack")],
+                "next_generation": 2,
+                "last_result": {
+                    "request_id": str(uuid.uuid4()),
+                    "operation": "stop",
+                    "status": "succeeded",
+                    "from_game": "nethack",
+                    "to_game": None,
+                    "generation": 1,
+                },
+            }
+        )
+        store.canonical.save(state)
+        return store
+
+    def _canonical(self, store):
+        state, _ = store.canonical.load()
+        return state
 
     def _save_ready(self, active, **extra):
         store = GameSwitchStore(self.g.state_dir)
@@ -435,6 +559,204 @@ class TestStatusCli(StatusTestBase):
     def test_status_without_flag_defaults_to_human(self):
         args = cli.build_parser().parse_args(["status"])
         self.assertFalse(args.json)
+
+
+class TestMirrorRepair(StatusTestBase):
+    def _mark_alive_probe_error(self, coord):
+        import threading
+
+        orig = coord._probe_alive
+
+        def boom(adapter, deadline):
+            raise RuntimeError("probe exploded")
+
+        coord._probe_alive = boom
+
+    def _mark_alive(self, coord, game, generation):
+        state, _ = coord.store.canonical.load()
+        for key in ("active", "candidate", "previous"):
+            runtime = state.get(key)
+            if isinstance(runtime, dict) and runtime.get("game") == game and runtime.get("generation") == generation:
+                _prime_runtime(coord.store, coord.adapter_factory, runtime)
+        for runtime in state.get("retiring") or []:
+            if isinstance(runtime, dict) and runtime.get("game") == game and runtime.get("generation") == generation:
+                _prime_runtime(coord.store, coord.adapter_factory, runtime)
+
+    def test_recover_repairs_stale_mirror(self):
+        active = _runtime_dict(1, "nethack")
+        self._save_ready(active)
+        # stale mirror pointing elsewhere is repaired from canonical.
+        self._mirror("robots")
+        from docich.game_switch import GameSwitchStore
+
+        store = GameSwitchStore(self.g.state_dir)
+        coord = _coordinator(store)
+        self._mark_alive(coord, "nethack", 1)
+        result = coord.recover()
+        self.assertEqual(result.status, "succeeded")
+        self.assertEqual(self._mirror(), "nethack")
+
+    def test_recover_repairs_missing_mirror(self):
+        active = _runtime_dict(1, "nethack")
+        self._save_ready(active)
+        from docich.game_switch import GameSwitchStore
+
+        store = GameSwitchStore(self.g.state_dir)
+        coord = _coordinator(store)
+        self._mark_alive(coord, "nethack", 1)
+        result = coord.recover()
+        self.assertEqual(result.status, "succeeded")
+        self.assertEqual(self._mirror(), "nethack")
+
+    def test_recover_clears_mirror_when_idle(self):
+        self._mirror("nethack")
+        from docich.game_switch import GameSwitchStore
+
+        store = GameSwitchStore(self.g.state_dir)
+        coord = _coordinator(store)
+        result = coord.recover()
+        self.assertEqual(result.status, "succeeded")
+        self.assertIsNone(self._mirror())
+
+    def test_repair_mirror_failure_is_warning_only(self):
+        active = _runtime_dict(1, "nethack")
+        self._save_ready(active)
+        from docich.game_switch import GameSwitchStore
+
+        store = GameSwitchStore(self.g.state_dir)
+        coord = _coordinator(store, mirror_writer=_boom_mirror)
+        self._mark_alive(coord, "nethack", 1)
+        result = coord.recover()
+        self.assertEqual(result.status, "succeeded")
+        self.assertTrue(any("mirror" in w for w in result.warnings))
+
+
+class TestIdleRetiringRecover(StatusTestBase):
+    def test_idle_retiring_is_retried_on_recover(self):
+        from docich.game_switch import RuntimeSpec
+
+        store = self._save_idle_retiring()
+        coord = _coordinator(store, behaviors={"nethack": {}})
+        state, _ = store.canonical.load()
+        _prime_runtime(store, coord.adapter_factory, state["retiring"][0])
+        result = coord.recover()
+        self.assertEqual(result.status, "succeeded")
+        self.assertFalse(result.cleanup_pending)
+        self.assertEqual(self._canonical(store)["retiring"], [])
+
+    def test_idle_retiring_survives_failed_retry(self):
+        from docich.game_switch import RuntimeSpec
+
+        from docich.game_switch import RuntimeSpec
+
+        store = self._save_idle_retiring()
+        coord = _coordinator(store, behaviors={"nethack": {"immortal": True, "agent_enabled": False}})
+        state, _ = store.canonical.load()
+        _prime_runtime(store, coord.adapter_factory, state["retiring"][0])
+        result = coord.recover()
+        self.assertEqual(result.status, "succeeded")
+        self.assertTrue(result.cleanup_pending)
+        self.assertEqual(len(self._canonical(store)["retiring"]), 1)
+
+
+def _boom_probe(coord):
+    def boom(adapter, deadline):
+        raise RuntimeError("probe exploded")
+
+    coord._probe_alive = boom
+
+
+class TestLegacyFootprintScope(StatusTestBase):
+    def _ready_with_mirror(self, game="nethack"):
+        active = _runtime_dict(1, game)
+        self._save_ready(active)
+        self._mirror(game)
+        return active
+
+    def test_post_migration_mirror_is_not_legacy(self):
+        self._ready_with_mirror("nethack")
+        from docich.status import legacy_footprint
+
+        probe = legacy_footprint(self.g, tmux=self.tmux)
+        self.assertNotIn("current_game", probe["footprint"])
+        self.assertEqual(probe["unreadable"], [])
+
+    def test_pre_migration_mirror_is_legacy(self):
+        self._mirror("nethack")
+        from docich.status import legacy_footprint
+
+        probe = legacy_footprint(self.g, tmux=self.tmux)
+        self.assertIn("current_game", probe["footprint"])
+
+    def test_connection_failure_is_unreadable_not_absent(self):
+        from docich.tmux import TmuxError
+
+        self.tmux.raise_on_probe = TmuxError("failed to connect to server: Connection refused")
+        from docich.status import legacy_footprint
+
+        probe = legacy_footprint(self.g, tmux=self.tmux)
+        self.assertEqual(probe["footprint"], [])
+        self.assertIn("window:game", probe["unreadable"])
+        self.assertIn("window:agent", probe["unreadable"])
+        self.assertIn("session:docich-game", probe["unreadable"])
+
+    def test_gate_blocks_on_unreadable(self):
+        from docich.tmux import TmuxError
+
+        (self.root / "config" / "games").mkdir(parents=True, exist_ok=True)
+        (self.root / "config" / "games" / "nethack.toml").write_text(
+            '[game]\nname = "nethack"\nadapter = "cli"\n\n[cli]\ncommand = "true"\n',
+            encoding="utf-8",
+        )
+        self.tmux.raise_on_probe = TmuxError("failed to connect to server: Connection refused")
+        with self.assertRaises(cli.CliError) as ctx:
+            cli._require_no_legacy_runtime(self.g, tmux=self.tmux)
+        self.assertIn("確認できませんでした", str(ctx.exception))
+
+    def test_probe_error_repairs_mirror_without_clearing_active(self):
+        active = _runtime_dict(1, "nethack")
+        self._save_ready(active)
+        self._mirror("robots")
+        from docich.game_switch import GameSwitchStore
+
+        store = GameSwitchStore(self.g.state_dir)
+        coord = _coordinator(store)
+        _boom_probe(coord)
+        result = coord.recover()
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "probe_failed")
+        # result stays failed, but the mirror converges to canonical.
+        self.assertEqual(self._mirror(), "nethack")
+
+    def test_legacy_json_reports_unreadable(self):
+        from docich.tmux import TmuxError
+
+        self.tmux.raise_on_probe = TmuxError("failed to connect to server: Connection refused")
+        out = io.StringIO()
+        with mock.patch("docich.cli.Tmux", return_value=self.tmux):
+            with redirect_stdout(out):
+                rc = cli.cmd_status_legacy(self.g, json_output=True)
+        self.assertEqual(rc, 0)
+        data = json.loads(out.getvalue())
+        self.assertIn("window:game", data["unreadable"])
+
+
+class TestLegacyCommand(StatusTestBase):
+    def test_legacy_json_lists_footprint(self):
+        self._mirror("nethack")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = cli.cmd_status_legacy(self.g, json_output=True)
+        self.assertEqual(rc, 0)
+        data = json.loads(out.getvalue())
+        self.assertEqual(data["footprint"], ["current_game"])
+
+    def test_legacy_human_reports_none(self):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = cli.cmd_status_legacy(self.g)
+        self.assertEqual(rc, 0)
+        self.assertIn("(なし)", out.getvalue())
 
 
 if __name__ == "__main__":

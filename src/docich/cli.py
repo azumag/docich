@@ -168,6 +168,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_status = sub.add_parser("status", help="各コンポーネントの状態を表示する")
     p_status.add_argument("--json", action="store_true", help="安定 schema の JSON で出力する (自動監視用)")
+    p_status.add_argument(
+        "--legacy", action="store_true",
+        help="移行対象の旧 runtime 痕跡だけを出力する (migration 用)",
+    )
 
     p_snap = sub.add_parser("snap", help="手動スクリーンショットを撮る")
     p_snap.add_argument("-o", "--output", metavar="PATH", help="出力先 (既定: run/screenshots/manual.png)")
@@ -329,6 +333,8 @@ def _dispatch(args: argparse.Namespace) -> int:
     if command == "rotate":
         return cmd_rotate(g, args.dry_run, request_id=args.request_id, timeout_s=args.timeout)
     if command == "status":
+        if args.legacy:
+            return cmd_status_legacy(g, json_output=args.json)
         return cmd_status(g, json_output=args.json)
     if command == "snap":
         return cmd_snap(g, args.output)
@@ -578,32 +584,34 @@ def _coordinator(g: GlobalConfig) -> GameSwitchCoordinator:
     return GameSwitchCoordinator(store, lambda spec: make_coordinator_adapter(g, spec))
 
 
-def _legacy_footprint(g: GlobalConfig) -> list[str]:
+def _legacy_footprint(g: GlobalConfig) -> dict:
     """pre-coordinator runtime の痕跡 (Design v2 の移行対象) を列挙する。
 
-    固定 window `game` / `agent`、固定 session `docich-game`、互換 mirror
-    `current_game` のいずれかが残っていれば移行前の世界とみなす。共有の
-    `docich` session 自体 (display/audio/stream) は対象外。
+    ``{"footprint": [...], "unreadable": [...]}`` を返す。最終評価は
+    `docich status --legacy --json` が機械可読で行う。共有の `docich`
+    session 自体 (display/audio/stream) は対象外。
     """
-    found: list[str] = []
-    if State(g).current_game() is not None:
-        found.append("current_game")
-    tmux = Tmux()
-    for window in ("game", "agent"):
-        if tmux.has_window(window):
-            found.append(f"window:{window}")
-    if tmux.has_session_named(GAME_SESSION):
-        found.append(f"session:{GAME_SESSION}")
-    return found
+    from .status import legacy_footprint
+
+    return legacy_footprint(g)
 
 
-def _require_no_legacy_runtime(g: GlobalConfig) -> None:
+def _require_no_legacy_runtime(g: GlobalConfig, *, tmux: Tmux | None = None) -> None:
     """canonical 未作成かつ legacy 痕跡ありなら fail-closed に止める。
 
-    canonical が既に存在する世界では coordinator が唯一の正本であり、
-    legacy 痕跡は operator の責任範囲 (coordinator は所有外に触れない)。
+    tmux 確認不能 (unreadable) は必ずブロックする。canonical が既に存在
+    する世界では coordinator が唯一の正本であり、legacy 痕跡は operator
+    の責任範囲 (coordinator は所有外に触れない)。
     """
-    footprint = _legacy_footprint(g)
+    from .status import legacy_footprint
+
+    probe = legacy_footprint(g, tmux=tmux or Tmux())
+    if probe["unreadable"]:
+        raise CliError(
+            f"旧 runtime の有無を確認できませんでした ({', '.join(probe['unreadable'])})。"
+            f"tmux の状態を確認してから再実行してください。"
+        )
+    footprint = probe["footprint"]
     if not footprint:
         return
     store = GameSwitchStore(g.state_dir)
@@ -745,14 +753,26 @@ def cmd_stop(g: GlobalConfig, *, request_id: str | None = None, timeout_s: float
 def cmd_migrate_legacy(g: GlobalConfig) -> int:
     """One-time migration from the pre-coordinator runtime.
 
-    Stops the fixed windows/session (`game` / `agent` / `docich-game`),
-    best-effort legacy adapter cleanup for the mirrored game, clears the
-    compat mirror, and initializes an empty canonical state.  After this,
-    coordinator operations see a clean slate.  Safe no-op when no legacy
-    footprint remains.
+    Stops the fixed windows/session (`game` / `agent` / `docich-game`) and,
+    only before canonical exists, runs best-effort legacy adapter cleanup
+    for the mirrored game and clears the compat mirror.  After migration,
+    coordinator operations see a clean slate.  A healthy post-migration
+    compat mirror is never touched: `legacy_footprint()` no longer counts
+    it, and neither does this command.  Safe no-op when no legacy footprint
+    remains.
     """
+    store = GameSwitchStore(g.state_dir)
+    try:
+        _, needs_write = store.canonical.load()
+    except GameSwitchError:
+        # Corrupt canonical is handled by the coordinator recovery flow;
+        # migration must not rewrite state it cannot trust.
+        raise CliError(
+            "canonical state が壊れているため移行できません。"
+            "先に coordinator の復旧フローを確認してください。"
+        )
     tmux = Tmux()
-    attempted = _legacy_footprint(g)
+    attempted = _legacy_footprint(g)["footprint"]
     for window in ("agent", "game"):
         if tmux.has_window(window):
             tmux.kill_window(window)
@@ -782,7 +802,7 @@ def cmd_migrate_legacy(g: GlobalConfig) -> int:
         )
 
     state = State(g)
-    mirrored = state.current_game()
+    mirrored = state.current_game() if needs_write else None
     if mirrored is not None:
         try:
             game = load_game(g, mirrored)
@@ -791,9 +811,10 @@ def cmd_migrate_legacy(g: GlobalConfig) -> int:
             adapter.cleanup()
         except Exception as exc:
             print(f"docich: 警告: {mirrored} の cleanup に失敗しました: {exc}", file=sys.stderr)
-    state.clear_current_game()
+        state.clear_current_game()
 
-    GameSwitchStore(g.state_dir).initialize()
+    if needs_write:
+        store.initialize()
     if attempted or mirrored is not None:
         print(f"docich: 旧 runtime を移行しました ({', '.join(attempted) if attempted else 'mirror のみ'})")
     else:
@@ -887,6 +908,36 @@ def cmd_status(g: GlobalConfig, *, json_output: bool = False) -> int:
 
     print("  switch:")
     _print_switch_status(data)
+    return 0
+
+
+def cmd_status_legacy(g: GlobalConfig, *, json_output: bool = False) -> int:
+    """Report pre-coordinator runtime traces for migration (P4).
+
+    Machine-readable via --json ({"schema_version", "footprint",
+    "unreadable"}), human readable otherwise.  Read-only: nothing is
+    stopped or rewritten.
+    """
+    from .status import STATUS_SCHEMA_VERSION, legacy_footprint
+
+    probe = legacy_footprint(g, tmux=Tmux())
+    if json_output:
+        print(json.dumps(
+            {
+                "schema_version": STATUS_SCHEMA_VERSION,
+                "footprint": probe["footprint"],
+                "unreadable": probe["unreadable"],
+            },
+            ensure_ascii=False,
+        ))
+        return 0
+    print("docich status --legacy")
+    for item in probe["footprint"]:
+        print(f"  legacy: {item}")
+    for item in probe["unreadable"]:
+        print(f"  legacy: {item} (確認不能)")
+    if not probe["footprint"] and not probe["unreadable"]:
+        print("  legacy: (なし)")
     return 0
 
 
