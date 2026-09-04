@@ -74,6 +74,7 @@ APT_PACKAGES=(
   libretro-core-info # RetroArch のコア情報 (自動探索に必要)
   dbus               # dbus-run-session (retroarch 起動ラップに必須。architecture.md §9-1b)
   nethack-console    # CLI ゲームの例 (NetHack)
+  bsdgames           # 軽量ターン制CLIゲーム Robots
 )
 
 echo "==> apt-get update (パッケージ索引の更新のみ。インストール済みパッケージは変更しない)"

@@ -300,7 +300,10 @@ class CliCoordinatorAdapter:
         else:
             self._check_active(deadline, cancel)
             self.tmux.create_window_owned(
-                self.spec.game_window, self._xterm_command(), self._ownership("game")
+                self.spec.game_window,
+                self._xterm_command(),
+                self._ownership("game"),
+                env={"DISPLAY": self.g.display.name},
             )
         self._check_active(deadline, cancel)
 
