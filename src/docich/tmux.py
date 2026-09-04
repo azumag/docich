@@ -261,9 +261,11 @@ class Tmux:
     def window_target_exists(self, target: str, *, strict: bool = False) -> bool:
         """Return True when the window exists.
 
-        Lists the session windows and matches by name: `display-message`
-        succeeds even for nonexistent window names (falling back to another
-        window), so its return code alone cannot prove existence.
+        Name targets are checked by listing the selected session's windows:
+        `display-message` may fall back to another window for a nonexistent
+        name. Stable `@N` window IDs remain exact tmux targets and are probed
+        directly so this helper keeps accepting every ref allowed by
+        `validate_tmux_window_ref()`.
 
         Non-strict mode treats "target missing" markers (including
         "failed to connect to server") as absent.  Strict mode only treats
@@ -272,20 +274,25 @@ class Tmux:
         failed" (a connection failure is never proof of absence).
         """
         validate_tmux_window_ref(target)
-        if ":" in target:
-            session, _, name = target.partition(":")
+        if target.startswith("@"):
+            result = self._run(["display-message", "-p", "-t", target, "#{window_id}"])
+            if result.returncode == 0:
+                return result.stdout.strip() == target
         else:
-            session, name = self.session, target
-        result = self._run(["list-windows", "-t", session, "-F", "#{window_name}"])
-        if result.returncode != 0:
-            detail = (result.stderr or "").replace("\n", " ").strip()
-            if strict:
-                if any(marker in detail.lower() for marker in _STRICT_MISSING_MARKERS):
-                    return False
-            elif self._target_missing(result.stderr):
+            if ":" in target:
+                session, _, name = target.partition(":")
+            else:
+                session, name = self.session, target
+            result = self._run(["list-windows", "-t", session, "-F", "#{window_name}"])
+            if result.returncode == 0:
+                return name in [line for line in result.stdout.splitlines() if line]
+        detail = (result.stderr or "").replace("\n", " ").strip()
+        if strict:
+            if any(marker in detail.lower() for marker in _STRICT_MISSING_MARKERS):
                 return False
-            raise TmuxError(f"tmux window存在確認に失敗しました: {detail[:200] or 'unknown error'}")
-        return name in [line for line in result.stdout.splitlines() if line]
+        elif self._target_missing(result.stderr):
+            return False
+        raise TmuxError(f"tmux window存在確認に失敗しました: {detail[:200] or 'unknown error'}")
 
     def session_target_exists(self, session: str, *, strict: bool = False) -> bool:
         """Return True when the session exists.  See window_target_exists for
@@ -358,7 +365,7 @@ class Tmux:
             raise OwnershipMismatchError(
                 f"session ownershipが一致しません (expected={expected}, actual={actual})"
             )
-        self._checked(["kill-session", "-t", session], "session停止")
+        self._checked(["kill-session", "-t", session], "window停止")
         return True
 
     def capture_pane(self, session: str) -> str:
