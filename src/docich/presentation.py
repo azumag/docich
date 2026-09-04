@@ -39,6 +39,7 @@ def main() -> int:
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    signal.signal(signal.SIGHUP, stop)
 
     def launch(argv, **kwargs):
         process = subprocess.Popen(argv, start_new_session=True, **kwargs)
@@ -49,7 +50,7 @@ def main() -> int:
         read_fd, write_fd = os.pipe()
         try:
             launch(['Xvfb', '-displayfd', str(write_fd), '-screen', '0',
-                    '4096x2160x24', '-nolisten', 'tcp'], pass_fds=(write_fd,))
+                    '4096x2160x24', '-noreset', '-nolisten', 'tcp'], pass_fds=(write_fd,))
             os.close(write_fd)
             write_fd = -1
             if not select.select([read_fd], [], [], 10)[0]:
