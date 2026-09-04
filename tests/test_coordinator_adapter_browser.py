@@ -39,6 +39,7 @@ class FakeTmux:
     def __init__(self):
         self.windows = {}
         self.calls = []
+        self.created_env = []
         self.pane_states = [PaneState(dead=False, pid=1234)]
 
     def _expected(self, ownership):
@@ -50,6 +51,7 @@ class FakeTmux:
 
     def create_window_owned(self, name, cmd, ownership, env=None):
         self.calls.append(("create_window_owned", name, list(cmd), self._expected(ownership)))
+        self.created_env.append(("create_window_owned", name, dict(env or {})))
         target = f"docich:{name}"
         if target in self.windows:
             raise RuntimeError(f"duplicate window {target}")
@@ -229,6 +231,12 @@ class TestMaterialize(BrowserCoordinatorTestBase):
         self.assertIn(f"--user-data-dir={self.spec.runtime_dir / 'browser-profile'}", cmd)
         self.assertIn(f"--remote-debugging-port={browser.DEVTOOLS_BASE_PORT + 1}", cmd)
         self.assertIn("http://127.0.0.1:8080", cmd)
+        # 実機 smoke (2026-09-05) で発見: game window に DISPLAY が無いと chromium が
+        # "Missing X server or $DISPLAY" で即死し readiness がタイムアウトする。
+        self.assertEqual(
+            [e[2] for e in self.tmux.created_env if e[0] == "create_window_owned"],
+            [{"DISPLAY": ":98"}],
+        )
 
     def test_materialize_is_idempotent(self):
         self._ready_window()

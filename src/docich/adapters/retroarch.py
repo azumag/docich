@@ -385,6 +385,7 @@ class RetroArchCoordinatorAdapter:
             self.spec.game_window,
             retroarch_command(self.g, self.game, cfg_path),
             self._ownership("game"),
+            env={"DISPLAY": self.g.display.name},
         )
         self._check_active(deadline, cancel)
 
