@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import sys
 import time
 from pathlib import Path
 
@@ -240,13 +241,23 @@ class CliCoordinatorAdapter:
         return resolved
 
     def _xterm_command(self) -> list[str]:
-        return [
+        command = [
             self._xterm_bin(), "-fa", cli_font(self.game), "-fs", str(cli_font_size(self.game)),
             "-bg", "black", "-fg", "grey90",
             "-geometry", f"{cli_cols(self.game)}x{cli_rows(self.game)}+0+0",
             "-T", f"docich-{self.game.name}",
             "-e", "tmux", "attach-session", "-r", "-t", self.spec.adapter_session,
         ]
+        d = self.g.display
+        if d.viewport_width > 0 and d.viewport_height > 0:
+            return [
+                sys.executable, str(Path(__file__).resolve().parents[1] / 'presentation.py'),
+                '--display', d.name, '--title', f'docich-present-{self.spec.runtime_id}',
+                '--x', str(d.viewport_x), '--y', str(d.viewport_y),
+                '--width', str(d.viewport_width), '--height', str(d.viewport_height),
+                '--', *command,
+            ]
+        return command
 
     def _agent_command(self) -> list[str]:
         # Agent は世代別 window 内で run ループとして起動し、runtime identity
@@ -273,6 +284,10 @@ class CliCoordinatorAdapter:
         self._check_active(deadline, cancel)
         self._game_command()
         self._xterm_bin()
+        if self.g.display.viewport_width > 0:
+            for binary in ('Xvfb', 'ffplay', 'xdotool'):
+                if not procs.which(binary):
+                    raise AdapterError(f'{binary} が見つかりません')
         if self.agent_enabled and not Path(_docich_bin()).is_file():
             raise AdapterError(f"docich executable が見つかりません: {_docich_bin()}")
         self._check_active(deadline, cancel)
@@ -327,18 +342,11 @@ class CliCoordinatorAdapter:
         d = self.g.display
         if d.viewport_width > 0 and d.viewport_height > 0:
             window_id = XKit(d.name).find_window(
-                f"docich-{self.game.name}",
+                f"^docich-present-{self.spec.runtime_id}$",
                 timeout=max(0.1, deadline - time.monotonic()),
             )
             if window_id is None:
                 raise ReadinessTimeoutError("CLI game windowが見つかりません")
-            XKit(d.name).set_geometry(
-                window_id,
-                d.viewport_x,
-                d.viewport_y,
-                d.viewport_width,
-                d.viewport_height,
-            )
         self._check_active(deadline, cancel)
 
     def alive(self, deadline: float, cancel) -> bool:
