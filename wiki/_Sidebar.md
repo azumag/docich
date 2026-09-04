@@ -18,3 +18,4 @@
 
 **設計**
 - [[アーキテクチャ|Architecture]]
+- [[ゲーム切替機構|Game-Switch]]
