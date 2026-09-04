@@ -733,8 +733,10 @@ def _print_switch_result(verb: str, result: SwitchResult) -> None:
 
 def cmd_start(g: GlobalConfig, name: str, *, request_id: str | None = None, timeout_s: float | None = None) -> int:
     tmux = Tmux()
-    if not tmux.has_window("display"):
+    if g.display.managed and not tmux.has_window("display"):
         raise CliError("display window がありません。先に `docich up` を実行してください")
+    if not g.display.managed and not XKit(g.display.name).display_ready():
+        raise CliError(f"外部所有ディスプレイ {g.display.name} が利用できません")
     _require_no_legacy_runtime(g)
     # request_id は一度だけ解決し、switch fallback でも再利用する。
     resolved_request_id = _checked_request_id(request_id)
