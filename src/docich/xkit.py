@@ -61,8 +61,15 @@ class XKit:
         return out_path
 
     def find_window(self, pattern: str, *, timeout: float | None = None) -> str | None:
+        args = ["xdotool", "search"]
+        # --sync は対象が現れるまで待ち続けるため、deadline 付きの readiness
+        # probe でだけ使う。既存の focus 経路は timeout=None で即時 probe を
+        # 期待しており、ここで --sync すると window 不在時に無期限停止する。
+        if timeout is not None:
+            args.append("--sync")
+        args += ["--onlyvisible", "--name", pattern]
         r = procs.run(
-            ["xdotool", "search", "--sync", "--onlyvisible", "--name", pattern],
+            args,
             env_extra=self._env(),
             timeout=timeout,
         )
