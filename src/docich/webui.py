@@ -1,13 +1,18 @@
 """docich webui: Tailscale 経由のモデルチェーン / バックオフ管理 UI (stdlib only).
 
 Architecture: ThreadingHTTPServer + vanilla JS single-page.
-Security: Tailscale ACL が主防御。任意 token は二層目 (未設定なら無効)。
+Security: Tailscale ACL (loopback bind + tailscale serve) が主防御。任意 token は
+  二層目 (未設定なら無効)。非loopback bind + read_only=false (writable) + token
+  未設定という組み合わせは起動時 error にする (issue #41, fail closed)。token は
+  URL query では受理/生成しない (Authorization: Bearer / X-WebUI-Token ヘッダのみ、
+  timing-safe 比較)。
 State: soren_root = ELOOP_LIB_DIR 相当 (games/soviet_now or /home/ubuntu/soren)。
 """
 from __future__ import annotations
 
 import datetime
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -23,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from . import speech
-from .config import GlobalConfig
+from .config import GlobalConfig, effective_webui_token, is_loopback_bind
 
 # --- allowlist / validation --------------------------------------------------
 
@@ -629,11 +634,16 @@ def _validate_overlay_event(ev: dict[str, Any]) -> dict[str, Any]:
 
 
 def _effective_token(g: GlobalConfig) -> str:
-    env_name = g.webui.token_env.strip() or "DOCICH_WEBUI_TOKEN"
-    env_val = os.environ.get(env_name, "")
-    if env_val and env_val.strip():
-        return env_val.strip()
-    return (g.webui.token or "").strip()
+    return effective_webui_token(g.webui)
+
+
+def _tokens_match(supplied: str, expected: str) -> bool:
+    """timing-safe な token 比較 (issue #41)。非ASCII等で compare_digest が
+    TypeError を送出するケースでも 500 にせず単に不一致として扱う。"""
+    try:
+        return hmac.compare_digest(supplied, expected)
+    except TypeError:
+        return False
 
 
 def _backoff_dir(soren_root: Path) -> Path:
@@ -2424,6 +2434,20 @@ def _send_reload(soren_root: Path) -> list[dict[str, Any]]:
     return results
 
 
+_TOKEN_QUERY_RE = re.compile(r"([?&])token=[^&]*", re.IGNORECASE)
+
+
+def _redact_token_query(value: str) -> str:
+    """URL query の `token=...` を伏せる。
+
+    query token は受理/生成しないが (issue #41)、外部から `?token=...` を付けて
+    アクセスされた場合や将来の呼び出しミスに備え、ログへは残さない多層防御。
+    """
+    if not value or "token=" not in value.lower():
+        return value
+    return _TOKEN_QUERY_RE.sub(r"\1token=REDACTED", value)
+
+
 def _log_request(soren_root: Path, method: str, path: str, status: int, latency_ms: int, extra: str = "") -> None:
     try:
         log_file = soren_root / "tmp/debug/webui.log"
@@ -2431,10 +2455,10 @@ def _log_request(soren_root: Path, method: str, path: str, status: int, latency_
         rec = {
             "ts": int(time.time()),
             "method": method,
-            "path": path,
+            "path": _redact_token_query(path),
             "status": status,
             "latency_ms": latency_ms,
-            "extra": extra,
+            "extra": _redact_token_query(extra),
         }
         with log_file.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -2541,6 +2565,14 @@ input:checked+.slider:before{transform:translateX(20px)}
 </style>
 </head>
 <body>
+<div id="login-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100;align-items:center;justify-content:center">
+<div class="card" style="max-width:360px;width:90vw">
+<h3>ログイン</h3>
+<p class="desc">webui token を入力してください。</p>
+<div class="row"><input id="login-token-input" type="password" autocomplete="off" placeholder="token" style="flex:1"/></div>
+<div class="actions" style="margin-top:8px"><button class="btn primary" id="login-submit">ログイン</button></div>
+</div>
+</div>
 <header>
 <h1>docich webui</h1>
 <div class="sub">Soren モデルチェーン / バックオフ / ピーク帯</div>
@@ -2889,18 +2921,28 @@ function fmtTime(ts){
 function esc(s){
   return String(s==null?"":s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 }
+function showLogin(){
+  const el = $("#login-overlay");
+  if(el) el.style.display = "flex";
+}
+function hideLogin(){
+  const el = $("#login-overlay");
+  if(el) el.style.display = "none";
+}
 async function api(path, opts={}){
+  // token は URL query から読まない (issue #41)。sessionStorage のみを見る。
+  // ログインはトップページのフォームに token を入力する手順に統一する。
   const headers = opts.headers||{};
   if(!headers["Authorization"]){
-    let t = sessionStorage.getItem("webui_token");
-    if(!t){
-      const m = location.search.match(/[?&]token=([^&]+)/);
-      if(m){ t = decodeURIComponent(m[1]); sessionStorage.setItem("webui_token", t); }
-    }
+    const t = sessionStorage.getItem("webui_token");
     if(t) headers["Authorization"] = "Bearer " + t;
   }
   opts.headers = headers;
   const res = await fetch(path, opts);
+  if(res.status === 401){
+    sessionStorage.removeItem("webui_token");
+    showLogin();
+  }
   const text = await res.text();
   let data = null;
   try{ data = JSON.parse(text);}catch(e){ data = text; }
@@ -4565,6 +4607,18 @@ function updateAudioTextCount(){
   if(el && cnt) cnt.textContent=`${el.value.length}/1000`;
 }
 document.addEventListener("DOMContentLoaded",()=>{
+  // ログインフォーム: token 入力→sessionStorage 保存 (URL query token は廃止: issue #41)
+  const loginInput = $("#login-token-input");
+  const loginBtn = $("#login-submit");
+  const submitLogin = ()=>{
+    const val = (loginInput.value||"").trim();
+    if(!val) return;
+    sessionStorage.setItem("webui_token", val);
+    hideLogin();
+    location.reload();
+  };
+  if(loginBtn) loginBtn.onclick = submitLogin;
+  if(loginInput) loginInput.addEventListener("keydown", (e)=>{ if(e.key==="Enter") submitLogin(); });
   $$("#tabs button").forEach(btn=>btn.onclick=()=>{
     $$("#tabs button").forEach(b=>b.classList.remove("active"));
     btn.classList.add("active");
@@ -4767,22 +4821,15 @@ class _Handler(BaseHTTPRequestHandler):
         token = _effective_token(self.g)
         if not token:
             return True
-        # check header
+        # check header (timing-safe 比較。query token は受理しない: issue #41)
         auth = self.headers.get("Authorization", "")
         if auth.startswith("Bearer "):
             val = auth[len("Bearer ") :].strip()
-            if val == token:
+            if val and _tokens_match(val, token):
                 return True
         x = self.headers.get("X-WebUI-Token", "")
-        if x and x == token:
+        if x and _tokens_match(x, token):
             return True
-        # for GET allow query ?token=
-        if self.command == "GET":
-            qs = urllib.parse.urlparse(self.path).query
-            params = urllib.parse.parse_qs(qs)
-            qv = params.get("token", [""])[0]
-            if qv and qv == token:
-                return True
         return False
 
     def _send_json(self, code: int, obj: Any):
@@ -4818,11 +4865,11 @@ class _Handler(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(parsed.query)
         status = 200
         try:
-            if not self._check_auth():
-                status = 401
-                self._send_error_json(401, "unauthorized", "token required")
-                return
             if path == "/":
+                # トップページは静的な SPA シェル (機密情報を含まない) であり、
+                # token 入力フォームを表示する必要があるため認証不要で常に返す。
+                # query token は廃止済み (issue #41): ログイン手順はフォーム入力→
+                # sessionStorage 保存のみで、URL 経由の token 受け渡しは行わない。
                 body = INDEX_HTML.encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -4831,7 +4878,12 @@ class _Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(body)
                 status = 200
-            elif path == "/api/health":
+                return
+            if not self._check_auth():
+                status = 401
+                self._send_error_json(401, "unauthorized", "token required")
+                return
+            if path == "/api/health":
                 status = self._handle_health()
             elif path == "/api/config":
                 status = self._handle_get_config()
@@ -6731,21 +6783,43 @@ def run_webui(
     effective_port = port if port is not None else (g.webui.port or 8787)
     eff_soren_root = _resolve_soren_root(g, soren_root)
     eff_read_only = read_only if read_only is not None else bool(g.webui.read_only)
+    token = _effective_token(g)
+    # issue #41 (fail closed): 非loopback bind + read_only=false (writable) + token
+    # 未設定という危険な組み合わせかどうか。config.py の load_global は config ファイル
+    # 由来の値のみ検証するため、--bind / --read-only という CLI 上書き後の実効値を
+    # ここでも見て、CLI 上書きで config.py の検証をすり抜けられないようにする。
+    unsafe_combo = not is_loopback_bind(effective_bind) and not eff_read_only and not token
 
     if dry_run:
         print(f"docich webui dry-run")
         print(f"  bind: {effective_bind}:{effective_port}")
         print(f"  soren_root: {eff_soren_root}")
         print(f"  read_only: {eff_read_only}")
-        print(f"  token: {'set' if _effective_token(g) else '(none)'}")
+        print(f"  token: {'set' if token else '(none)'}")
         print(f"  allow_cors: {g.webui.allow_cors}")
         # validate soren_root
         if not (eff_soren_root / "eloop_lib.sh").is_file():
             print(f"  WARNING: {eff_soren_root}/eloop_lib.sh not found (soren_root may be wrong)")
         if not (eff_soren_root / ".env").is_file():
             print(f"  WARNING: {eff_soren_root}/.env not found (will be created on first save)")
+        if unsafe_combo:
+            print(
+                "  WARNING: non-loopback bind + writable + no token/auth."
+                " 実際の起動はこの組み合わせを error にして拒否します"
+                " (webui.token を設定するか --read-only を付けてください)"
+            )
         print("  endpoints: /, /api/health, /api/config, /api/backoffs, /api/stats, /api/reload, /api/game_state, /api/improve_state, /api/workers (GET/POST), /api/stream (GET/POST), /api/voice/endpoints (GET/POST), /api/chat (POST), /api/peak_status, /api/predictions, /api/predictions/action, /api/prompts")
         return 0
+
+    if unsafe_combo:
+        print(
+            "docich: エラー: 非loopback bind + 書き込み可 (read_only=false) + 認証なし"
+            " (token 未設定) の組み合わせでは起動できません。"
+            " webui.token (または token_env 環境変数) を設定するか、"
+            " --read-only を付けて起動してください。",
+            flush=True,
+        )
+        return 2
 
     # validate soren_root
     if not eff_soren_root.is_dir():
@@ -6756,11 +6830,11 @@ def run_webui(
     if eff_read_only:
         print(f"docich: webui read-only mode enabled")
 
-    # warn if binding to 0.0.0.0
+    # warn if binding to 0.0.0.0 (writable+認証なしは上のガードで既に弾いているので、
+    # ここに到達するのは read_only=true か token 設定済みのケース。到達性の注意喚起のみ)
     if effective_bind == "0.0.0.0":
         print(f"docich: 警告: 0.0.0.0 にバインドするとインターネットから到達可能です。Tailscale serve (127.0.0.1) を推奨します", flush=True)
 
-    token = _effective_token(g)
     if token:
         print(f"docich: webui token 認証が有効です (env {g.webui.token_env})")
     else:

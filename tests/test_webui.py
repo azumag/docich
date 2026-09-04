@@ -962,6 +962,65 @@ class TestHttpHandlers(unittest.TestCase):
         finally:
             self.g.webui.token = ""
 
+    def test_query_token_not_accepted_even_if_correct(self):
+        """issue #41: query token (?token=...) は正しい値でも受理しない。"""
+        self.g.webui.token = "supersecret123"
+        try:
+            status, data = self._request("GET", "/api/health?token=supersecret123")
+            self.assertEqual(status, 401, data)
+        finally:
+            self.g.webui.token = ""
+
+    def test_wrong_bearer_token_rejected(self):
+        self.g.webui.token = "supersecret123"
+        try:
+            status, data = self._request("GET", "/api/health", headers={"Authorization": "Bearer wrongtoken"})
+            self.assertEqual(status, 401, data)
+        finally:
+            self.g.webui.token = ""
+
+    def test_index_accessible_without_auth_even_when_token_set(self):
+        """トップページはログインフォームを出すため token 未提示でも 200 で返す。"""
+        self.g.webui.token = "supersecret123"
+        try:
+            self.client.request("GET", "/")
+            res = self.client.getresponse()
+            body = res.read().decode("utf-8")
+            self.assertEqual(res.status, 200)
+            self.assertIn("login-token-input", body)
+        finally:
+            self.g.webui.token = ""
+
+    def test_index_page_has_no_location_search_token_reading(self):
+        """issue #41: URL query から token を読んで sessionStorage へ入れる経路が無いこと。"""
+        self.client.request("GET", "/")
+        res = self.client.getresponse()
+        body = res.read().decode("utf-8")
+        self.assertNotIn("location.search", body)
+
+    def test_access_log_does_not_contain_token(self):
+        self.g.webui.token = "supersecret123"
+        try:
+            self._request("GET", "/api/health?token=supersecret123")
+            self._request("GET", "/api/health", headers={"Authorization": "Bearer supersecret123"})
+            self._request("GET", "/api/health", headers={"Authorization": "Bearer wrongtoken"})
+        finally:
+            self.g.webui.token = ""
+        log_file = self.soren / "tmp/debug/webui.log"
+        self.assertTrue(log_file.is_file())
+        content = log_file.read_text(encoding="utf-8")
+        self.assertNotIn("supersecret123", content)
+        self.assertNotIn("wrongtoken", content)
+
+    def test_unauthorized_error_body_does_not_contain_token(self):
+        self.g.webui.token = "supersecret123"
+        try:
+            status, data = self._request("GET", "/api/health?token=supersecret123")
+            self.assertEqual(status, 401)
+            self.assertNotIn("supersecret123", json.dumps(data))
+        finally:
+            self.g.webui.token = ""
+
 
 class TestWebUIConfig(unittest.TestCase):
     def test_defaults(self):
@@ -1063,3 +1122,107 @@ class TestVoiceEndpoints(unittest.TestCase):
         self.assertFalse(rows["http://down:1"]["probe"]["ok"])
         self.assertEqual(rows["http://down:1"]["status"], "backoff")
         self.assertTrue(rows["http://up:1"]["probe"]["ok"])
+
+
+class TestRunWebuiUnsafeConfigGuard(unittest.TestCase):
+    """issue #41: run_webui() の実効値 (CLI上書き後) に対する fail-closed ガード。
+
+    config.load_global() は config ファイル由来の値のみ検証するため、
+    --bind/--read-only という CLI 上書きが config.py の検証をすり抜けないことを
+    ここで別途確認する。
+    """
+
+    def _soren(self, repo_root: Path) -> Path:
+        soren = repo_root / "soren"
+        (soren / "tmp/state").mkdir(parents=True)
+        (soren / "eloop_lib.sh").write_text("# x\n")
+        return soren
+
+    def test_refuses_non_loopback_writable_without_token_via_cli_override(self):
+        """config は安全 (既定 bind=127.0.0.1) でも --bind 0.0.0.0 上書きは拒否する。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            soren = self._soren(repo_root)
+            g = _make_global(repo_root)
+            self.assertEqual(g.webui.bind, "127.0.0.1")
+            rc = webui.run_webui(g, bind="0.0.0.0", soren_root=str(soren))
+            self.assertEqual(rc, 2)
+
+    def test_refuses_non_loopback_writable_without_token_from_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            soren = self._soren(repo_root)
+            g = _make_global(repo_root)
+            g.webui.bind = "0.0.0.0"
+            rc = webui.run_webui(g, soren_root=str(soren))
+            self.assertEqual(rc, 2)
+
+    def test_allows_non_loopback_when_read_only_true(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            soren = self._soren(repo_root)
+            g = _make_global(repo_root)
+            g.webui.bind = "0.0.0.0"
+            # dry_run=True なので実際のソケット bind は発生しない。
+            rc = webui.run_webui(g, soren_root=str(soren), read_only=True, dry_run=True)
+            self.assertEqual(rc, 0)
+
+    def test_allows_non_loopback_when_token_set(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            soren = self._soren(repo_root)
+            g = _make_global(repo_root)
+            g.webui.bind = "0.0.0.0"
+            g.webui.token = "supersecret123"
+            rc = webui.run_webui(g, soren_root=str(soren), dry_run=True)
+            self.assertEqual(rc, 0)
+
+    def test_dry_run_warns_about_unsafe_combo_but_still_returns_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            soren = self._soren(repo_root)
+            g = _make_global(repo_root)
+            g.webui.bind = "0.0.0.0"
+            import io
+            from contextlib import redirect_stdout
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = webui.run_webui(g, soren_root=str(soren), dry_run=True)
+            self.assertEqual(rc, 0)
+            self.assertIn("WARNING", buf.getvalue())
+
+    def test_default_config_actually_starts_and_serves(self):
+        """既定設定 (bind=127.0.0.1, token="", read_only=false) で実際に起動できること。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            soren = self._soren(repo_root)
+            g = _make_global(repo_root)
+            self.assertEqual(g.webui.bind, "127.0.0.1")
+            self.assertFalse(g.webui.read_only)
+            self.assertEqual(g.webui.token, "")
+
+            class BoundHandler(webui._Handler):
+                pass
+
+            BoundHandler.g = g
+            BoundHandler.soren_root = soren
+            BoundHandler.read_only = False
+            BoundHandler.start_time = time.time()
+            server = webui.ThreadingHTTPServer(("127.0.0.1", 0), BoundHandler)
+            th = threading.Thread(target=server.serve_forever, daemon=True)
+            th.start()
+            try:
+                import http.client
+
+                port = server.server_address[1]
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                conn.request("GET", "/api/health")
+                res = conn.getresponse()
+                body = json.loads(res.read().decode("utf-8"))
+                self.assertEqual(res.status, 200)
+                self.assertTrue(body["ok"])
+                conn.close()
+            finally:
+                server.shutdown()
+                server.server_close()
