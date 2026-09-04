@@ -8,6 +8,7 @@
 - 再開ゲート: 最新版の `shared_overlay.mjs` と `lib/shared_overlay.mjs` を既存OCI VMの `/home/ubuntu/soren/tmp/shared-overlay-rehearsal/` 以下へ更新する転送が、親側でもauto-reviewに拒否された。非公開コードの具体payload/宛先への明示承認をユーザーへ求める。別ツール・別経路で迂回しない。stagingには旧版が残り、本番の切替は行っていない。
 - 隔離検証の後始末は担当が確認済み: 検証display/service/listener停止、display lock/socket消滅。旧コード・合成fixtures・ログはstagingに保存したまま。修正版の実画面成功を主張しない。
 - Sorenのbroker/hooks/ゲーム専用音声終了/監視抑止は `/tmp/soviet-game-lifecycle` の未commit差分。二相の境界保留→明示停止、durable stopping claim等を修正中で、最終レビュー・本番反映は未実施。Robots実adapterの境界検出、Soren game-only起動/復帰、共有表示の独立監視と重なり順、初回legacy Sorenの安全な切替が次段の残件。
+- Soren担当の区切り報告: atomic `claim-stop` を実装し、claim後はcancel/restoreを拒否、同一claimのfinishのみ期限後も許可。担当実行はPython8件・Node12件・shell回帰成功、構文/diff-check成功。変更は未commitで保持し、次回はこのsnapshotの独立レビューから行う。Playwright controller E2Eと実資源解放は未検証。
 
 - ユーザー承認: ゲーム本体・描画・操作AI・改善・専用監視を共通通知/ステータス/音声/配信管理から分離する。試合完走と結果保存後に旧ゲームを停止し、CPU/メモリを解放する。元からある改善休止は解除しない。
 - 作業ブランチ: docich `/tmp/docich-robots` `codex/robots-game`、soviet_now `/tmp/soviet-game-lifecycle` `codex/game-lifecycle`。Luna(max)が終了待ちと共有表示を分担。main未マージ、本番切替はまだ実施していない。
