@@ -179,6 +179,7 @@ games = []       # docich rotate が巡回する順序
 - `hanjuku-hero`: RetroArch + SFC core。ROMは自己吸い出し品のみ。
   LLM brain (`brains/hanjuku/`) 同梱、既定無効 ([`docs/hanjuku_brain.md`](docs/hanjuku_brain.md))。
 - `nethack`: tmux + xtermのCLI/TUI adapter。
+- `robots`: `bsdgames`の軽量ターン制ゲーム。CLI/TUI adapterの最小追加例。
 - `sorengame`: ローカルWebGL viewer。production controllerではない。
 
 ## Repository layout
@@ -225,7 +226,7 @@ GitHub wiki のページ原稿は `wiki/` ディレクトリでバージョン�
 - [`docs/architecture.md`](docs/architecture.md): adapter・runtime・ownershipの一次情報
 - [`docs/multi_repo_plan.md`](docs/multi_repo_plan.md): マルチリポジトリ構成 (submodule 化・共通部品化ロードマップ)
 - [`docs/hanjuku_brain.md`](docs/hanjuku_brain.md): 半熟英雄 brain (LLM バックエンド・知識注入・検証)
-- [`docs/games/hanjuku-hero.md`](docs/games/hanjuku-hero.md) / [`docs/games/nethack.md`](docs/games/nethack.md): ゲーム別セットアップ
+- [`docs/games/hanjuku-hero.md`](docs/games/hanjuku-hero.md) / [`docs/games/nethack.md`](docs/games/nethack.md) / [`docs/games/robots.md`](docs/games/robots.md): ゲーム別セットアップ
 - [`docs/games/sorengame.md`](docs/games/sorengame.md): Soren productionとの統合境界
 - [`docs/oracle_arm_setup_guide.md`](docs/oracle_arm_setup_guide.md): Oracle A1 setup
 - [`docs/soren_linux_migration_plan.md`](docs/soren_linux_migration_plan.md): Soren移行の完了状況と将来gate

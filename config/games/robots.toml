@@ -1,0 +1,16 @@
+[game]
+name = "robots"
+title = "Robots"
+adapter = "cli"
+
+[cli]
+command = "robots"
+cols = 80
+rows = 24
+font = "monospace"
+font_size = 18
+
+[agent]
+enabled = false        # 最初は手動操作で切り替え・観測・入力を検証する
+brain = "random"
+interval_ms = 1500

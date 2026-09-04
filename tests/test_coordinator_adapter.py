@@ -46,6 +46,7 @@ class FakeTmux:
     def __init__(self):
         self.sessions = {}
         self.windows = {}
+        self.window_envs = {}
         self.calls = []
         self.capture = "game screen"
         self.pane_states = [PaneState(dead=False, pid=1234)]
@@ -96,6 +97,7 @@ class FakeTmux:
         if target in self.windows:
             raise RuntimeError(f"duplicate window {target}")
         self.windows[target] = self._expected(ownership)
+        self.window_envs[target] = dict(env or {})
 
     def kill_session_owned(self, session, expected):
         self.calls.append(("kill_session_owned", session, self._expected(expected)))
@@ -208,6 +210,7 @@ class TestMaterialize(CoordinatorAdapterTestBase):
         self.assertIn("-t", cmd)
         self.assertIn("docich-game-g1", cmd)
         self.assertEqual(ownership, ("g1-abcdef", 1, "game"))
+        self.assertEqual(self.tmux.window_envs["docich:game-g1"], {"DISPLAY": self.g.display.name})
 
     def test_materialize_is_idempotent_and_verifies_ownership(self):
         self.tmux.sessions["docich-game-g1"] = ("g1-abcdef", 1, "adapter")
