@@ -300,6 +300,7 @@ class RetroArchCoordinatorAdapter:
         self.spec = spec
         self.tmux = Tmux()
         self.agent_enabled = game.agent.enabled
+        self.requires_round_boundary = game.lifecycle.require_round_boundary
 
     def _ownership(self, role: str) -> TmuxOwnership:
         return TmuxOwnership(

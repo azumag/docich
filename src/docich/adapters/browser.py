@@ -273,6 +273,7 @@ class BrowserCoordinatorAdapter:
         self.tmux = Tmux()
         self.xkit = xkit if xkit is not None else XKit(g.display.name)
         self.agent_enabled = game.agent.enabled
+        self.requires_round_boundary = game.lifecycle.require_round_boundary
 
     def _ownership(self, role: str) -> TmuxOwnership:
         return TmuxOwnership(
