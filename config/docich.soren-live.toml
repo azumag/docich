@@ -1,0 +1,35 @@
+# Soren本番のX displayへ、配信プロセスを止めずゲーム画面だけ載せる設定。
+# Xvfb・音声bus・FFmpegはsoren-runtime.serviceが所有し続ける。
+[display]
+number = 99
+width = 1280
+height = 720
+color_depth = 24
+managed = false
+viewport_x = 0
+viewport_y = 90
+viewport_width = 960
+viewport_height = 540
+
+[audio]
+enabled = false
+set_default = false
+
+[stream]
+mode = "null"
+
+[agent]
+default_interval_ms = 2000
+brain_timeout_s = 120
+
+[paths]
+state_dir = "run-soren-live"
+games_dir = "config/games"
+roms_dir = "games/roms"
+
+[watchdog]
+enabled = false
+recover_windows = false
+
+[rotation]
+games = []

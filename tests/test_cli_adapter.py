@@ -134,7 +134,6 @@ class TestCommand(CliAdapterTestBase):
         self.assertIn("14", cmd)
         self.assertIn("100x30+0+0", cmd)
 
-
 class TestObserve(CliAdapterTestBase):
     def test_observe_returns_capture_pane_text(self):
         tmux = FakeTmux(capture_return="--More--")
@@ -201,6 +200,24 @@ class TestCleanup(CliAdapterTestBase):
         adapter = cli_game.CliGameAdapter(ctx)
         adapter.cleanup()
         self.assertIn(("kill_session_named", "docich-game"), tmux.calls)
+
+
+class TestRobotsCatalog(unittest.TestCase):
+    def test_robots_uses_cli_adapter_and_bsdgames_command(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        g = config.load_global(repo_root)
+        game = config.load_game(g, "robots")
+        self.assertEqual(game.title, "Robots")
+        self.assertEqual(game.adapter, "cli")
+        self.assertEqual(game.raw["cli"]["command"], "robots")
+        self.assertTrue(game.agent.enabled)
+        self.assertEqual(game.agent.brain, "resolver")
+        self.assertEqual(game.agent.interval_ms, 800)
+
+    def test_setup_installs_bsdgames(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        setup = (repo_root / "scripts" / "setup_ubuntu_arm.sh").read_text(encoding="utf-8")
+        self.assertIn("  bsdgames", setup)
 
 
 if __name__ == "__main__":

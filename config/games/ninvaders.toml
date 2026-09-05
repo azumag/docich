@@ -1,0 +1,28 @@
+[game]
+name = "ninvaders"
+title = "Space Invaders"
+adapter = "cli"
+
+# ninvaders はタイトル起動・試合終了時に自動でタイトルへ戻る (同一プロセス継続)。
+# wrapper (/usr/local/bin/ninvaders_docich) が SPACE 開始を駆動し、最終スコアを
+# scorelog へ追記する。docich CLI adapter には wrapper 型ゲームの丸境界フックが
+# まだ無いため、切替は従来の immediate-quiesce 経路を使う。
+[lifecycle]
+require_round_boundary = false
+
+[cli]
+command = "/usr/local/bin/ninvaders_docich"
+cols = 80
+rows = 24
+font = "monospace"
+font_size = 18
+
+[agent]
+enabled = false  # wrapper が無人プレイする (bot は issue #15 の AI 方針で別途)
+
+# Twitch 配信カテゴリー・タイトル連動 (soviet_now update_stream_game.sh が読む)。
+# 原作 Space Invaders (4669) を採用 (照合済み)。
+[twitch]
+category_id = "4669"
+category_name = "Space Invaders"
+title_prefix = "[NInvaders]"

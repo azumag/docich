@@ -6,11 +6,11 @@ docich を導入済みの前提で、日々の操作をまとめる。導入が�
 
 ## ゲーム切替 (`docich switch`)
 
-`docich switch <game>` は内部的に `stop` (現在のゲームの `game`/`agent` window を kill) +
-`start <game>` (新しい window を作成) を行っているだけである。`display` / `audio` / `stream`
-の window はそのまま残るため、**配信ストリーム (ffmpeg プロセス) は切替中も途切れない**。
-ゲームは「ディスプレイ上に表示されるアプリケーションの入れ替え」として扱われる、という設計
-になっている (詳細: [[アーキテクチャ|Architecture]])。
+`docich switch <game>` は canonical 状態 (`run/game_switch.json`) を正本とするトランザクション
+として動く。旧ゲームの停止に失敗したら自動で旧ゲームを復元し (`rolled_back`)、切替中の事故は
+`docich recover` で収束できる。`display` / `audio` / `stream` の window はそのまま残るため、
+**配信ストリーム (ffmpeg プロセス) は切替中も途切れない**。機構の詳細は
+[[ゲーム切替機構|Game-Switch]] を参照。
 
 ```bash
 bin/docich switch hanjuku-hero

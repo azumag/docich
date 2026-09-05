@@ -3,6 +3,7 @@ number = 98          # DISPLAY=:98 (soren が :99 を使用中のため衝突回
 width = 1280
 height = 720
 color_depth = 24
+managed = true       # false なら既存displayへ接続し、Xvfbを所有しない
 
 [audio]
 enabled = true       # pulseaudio が無い環境では false (無音配信)

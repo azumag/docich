@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import json
 import os
 import shlex
 import subprocess
@@ -158,6 +159,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_restart.add_argument("--request-id", metavar="UUID", help="再送用の request_id")
     p_restart.add_argument("--timeout", type=float, metavar="SEC", help="request 全体の deadline (秒)")
 
+    p_recover = sub.add_parser("recover", help="中断した切替を復旧する (crash/failed 後の再開)")
+    p_recover.add_argument("--timeout", type=float, metavar="SEC", help="request 全体の deadline (秒)")
+
     p_rotate = sub.add_parser("rotate", help="[rotation] games を順に切り替える (時間割ローテーション)")
     p_rotate.add_argument(
         "--dry-run", action="store_true", help="切り替えを実行せず、切替先のゲーム名を表示するだけにする"
@@ -165,7 +169,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_rotate.add_argument("--request-id", metavar="UUID", help="再送用の request_id")
     p_rotate.add_argument("--timeout", type=float, metavar="SEC", help="request 全体の deadline (秒)")
 
-    sub.add_parser("status", help="各コンポーネントの状態を表示する")
+    p_status = sub.add_parser("status", help="各コンポーネントの状態を表示する")
+    p_status.add_argument("--json", action="store_true", help="安定 schema の JSON で出力する (自動監視用)")
+    p_status.add_argument(
+        "--legacy", action="store_true",
+        help="移行対象の旧 runtime 痕跡だけを出力する (migration 用)",
+    )
 
     p_snap = sub.add_parser("snap", help="手動スクリーンショットを撮る")
     p_snap.add_argument("-o", "--output", metavar="PATH", help="出力先 (既定: run/screenshots/manual.png)")
@@ -324,10 +333,14 @@ def _dispatch(args: argparse.Namespace) -> int:
         return cmd_switch(g, args.game, request_id=args.request_id, timeout_s=args.timeout)
     if command == "restart":
         return cmd_restart(g, request_id=args.request_id, timeout_s=args.timeout)
+    if command == "recover":
+        return cmd_recover(g, timeout_s=args.timeout)
     if command == "rotate":
         return cmd_rotate(g, args.dry_run, request_id=args.request_id, timeout_s=args.timeout)
     if command == "status":
-        return cmd_status(g)
+        if args.legacy:
+            return cmd_status_legacy(g, json_output=args.json)
+        return cmd_status(g, json_output=args.json)
     if command == "snap":
         return cmd_snap(g, args.output)
     if command == "obs":
@@ -505,7 +518,12 @@ def cmd_up(g: GlobalConfig) -> int:
     tmux = Tmux()
     tmux.ensure_session()
 
-    if not tmux.has_window("display"):
+    if not g.display.managed:
+        xkit = XKit(g.display.name)
+        if not xkit.display_ready():
+            raise CliError(f"外部所有ディスプレイ {g.display.name} が利用できません")
+        print(f"docich: 外部所有ディスプレイ {g.display.name} へ接続します")
+    elif not tmux.has_window("display"):
         tmux.new_window("display", _run_argv(g, "display"))
         print("docich: display window を起動しました")
     else:
@@ -576,32 +594,34 @@ def _coordinator(g: GlobalConfig) -> GameSwitchCoordinator:
     return GameSwitchCoordinator(store, lambda spec: make_coordinator_adapter(g, spec))
 
 
-def _legacy_footprint(g: GlobalConfig) -> list[str]:
+def _legacy_footprint(g: GlobalConfig) -> dict:
     """pre-coordinator runtime の痕跡 (Design v2 の移行対象) を列挙する。
 
-    固定 window `game` / `agent`、固定 session `docich-game`、互換 mirror
-    `current_game` のいずれかが残っていれば移行前の世界とみなす。共有の
-    `docich` session 自体 (display/audio/stream) は対象外。
+    ``{"footprint": [...], "unreadable": [...]}`` を返す。最終評価は
+    `docich status --legacy --json` が機械可読で行う。共有の `docich`
+    session 自体 (display/audio/stream) は対象外。
     """
-    found: list[str] = []
-    if State(g).current_game() is not None:
-        found.append("current_game")
-    tmux = Tmux()
-    for window in ("game", "agent"):
-        if tmux.has_window(window):
-            found.append(f"window:{window}")
-    if tmux.has_session_named(GAME_SESSION):
-        found.append(f"session:{GAME_SESSION}")
-    return found
+    from .status import legacy_footprint
+
+    return legacy_footprint(g)
 
 
-def _require_no_legacy_runtime(g: GlobalConfig) -> None:
+def _require_no_legacy_runtime(g: GlobalConfig, *, tmux: Tmux | None = None) -> None:
     """canonical 未作成かつ legacy 痕跡ありなら fail-closed に止める。
 
-    canonical が既に存在する世界では coordinator が唯一の正本であり、
-    legacy 痕跡は operator の責任範囲 (coordinator は所有外に触れない)。
+    tmux 確認不能 (unreadable) は必ずブロックする。canonical が既に存在
+    する世界では coordinator が唯一の正本であり、legacy 痕跡は operator
+    の責任範囲 (coordinator は所有外に触れない)。
     """
-    footprint = _legacy_footprint(g)
+    from .status import legacy_footprint
+
+    probe = legacy_footprint(g, tmux=tmux or Tmux())
+    if probe["unreadable"]:
+        raise CliError(
+            f"旧 runtime の有無を確認できませんでした ({', '.join(probe['unreadable'])})。"
+            f"tmux の状態を確認してから再実行してください。"
+        )
+    footprint = probe["footprint"]
     if not footprint:
         return
     store = GameSwitchStore(g.state_dir)
@@ -713,8 +733,10 @@ def _print_switch_result(verb: str, result: SwitchResult) -> None:
 
 def cmd_start(g: GlobalConfig, name: str, *, request_id: str | None = None, timeout_s: float | None = None) -> int:
     tmux = Tmux()
-    if not tmux.has_window("display"):
+    if g.display.managed and not tmux.has_window("display"):
         raise CliError("display window がありません。先に `docich up` を実行してください")
+    if not g.display.managed and not XKit(g.display.name).display_ready():
+        raise CliError(f"外部所有ディスプレイ {g.display.name} が利用できません")
     _require_no_legacy_runtime(g)
     # request_id は一度だけ解決し、switch fallback でも再利用する。
     resolved_request_id = _checked_request_id(request_id)
@@ -743,14 +765,26 @@ def cmd_stop(g: GlobalConfig, *, request_id: str | None = None, timeout_s: float
 def cmd_migrate_legacy(g: GlobalConfig) -> int:
     """One-time migration from the pre-coordinator runtime.
 
-    Stops the fixed windows/session (`game` / `agent` / `docich-game`),
-    best-effort legacy adapter cleanup for the mirrored game, clears the
-    compat mirror, and initializes an empty canonical state.  After this,
-    coordinator operations see a clean slate.  Safe no-op when no legacy
-    footprint remains.
+    Stops the fixed windows/session (`game` / `agent` / `docich-game`) and,
+    only before canonical exists, runs best-effort legacy adapter cleanup
+    for the mirrored game and clears the compat mirror.  After migration,
+    coordinator operations see a clean slate.  A healthy post-migration
+    compat mirror is never touched: `legacy_footprint()` no longer counts
+    it, and neither does this command.  Safe no-op when no legacy footprint
+    remains.
     """
+    store = GameSwitchStore(g.state_dir)
+    try:
+        _, needs_write = store.canonical.load()
+    except GameSwitchError:
+        # Corrupt canonical is handled by the coordinator recovery flow;
+        # migration must not rewrite state it cannot trust.
+        raise CliError(
+            "canonical state が壊れているため移行できません。"
+            "先に coordinator の復旧フローを確認してください。"
+        )
     tmux = Tmux()
-    attempted = _legacy_footprint(g)
+    attempted = _legacy_footprint(g)["footprint"]
     for window in ("agent", "game"):
         if tmux.has_window(window):
             tmux.kill_window(window)
@@ -780,7 +814,7 @@ def cmd_migrate_legacy(g: GlobalConfig) -> int:
         )
 
     state = State(g)
-    mirrored = state.current_game()
+    mirrored = state.current_game() if needs_write else None
     if mirrored is not None:
         try:
             game = load_game(g, mirrored)
@@ -789,9 +823,10 @@ def cmd_migrate_legacy(g: GlobalConfig) -> int:
             adapter.cleanup()
         except Exception as exc:
             print(f"docich: 警告: {mirrored} の cleanup に失敗しました: {exc}", file=sys.stderr)
-    state.clear_current_game()
+        state.clear_current_game()
 
-    GameSwitchStore(g.state_dir).initialize()
+    if needs_write:
+        store.initialize()
     if attempted or mirrored is not None:
         print(f"docich: 旧 runtime を移行しました ({', '.join(attempted) if attempted else 'mirror のみ'})")
     else:
@@ -820,6 +855,21 @@ def cmd_restart(g: GlobalConfig, *, request_id: str | None = None, timeout_s: fl
     return _result_exit_code(result)
 
 
+def cmd_recover(g: GlobalConfig, *, timeout_s: float | None = None) -> int:
+    _require_no_legacy_runtime(g)
+    try:
+        result = _coordinator(g).recover(
+            timeout_s=_checked_timeout(timeout_s),
+        )
+    except GameSwitchError as exc:
+        raise CliError(f"復旧できませんでした: {exc}") from exc
+    if result.status == "succeeded":
+        print(f"docich: 復旧しました ({result.detail or 'recovery は不要でした'})")
+    else:
+        _print_switch_result("復旧", result)
+    return _result_exit_code(result)
+
+
 def cmd_rotate(g: GlobalConfig, dry_run: bool, *, request_id: str | None = None, timeout_s: float | None = None) -> int:
     if not g.rotation.games:
         raise CliError("[rotation] games を設定してください (config/docich.toml)")
@@ -838,10 +888,17 @@ def cmd_rotate(g: GlobalConfig, dry_run: bool, *, request_id: str | None = None,
     return _result_exit_code(result)
 
 
-def cmd_status(g: GlobalConfig) -> int:
+def cmd_status(g: GlobalConfig, *, json_output: bool = False) -> int:
+    from .status import collect_status
+
     tmux = Tmux()
-    state = State(g)
     xkit = XKit(g.display.name)
+    data = collect_status(g, tmux=tmux, xkit=xkit)
+    if json_output:
+        print(json.dumps(data, ensure_ascii=False))
+        return 0
+
+    state = State(g)
 
     print("docich status")
     session_alive = tmux.has_session()
@@ -875,7 +932,127 @@ def cmd_status(g: GlobalConfig) -> int:
             print(f"  ffmpeg: {shlex.join(runtime.command)}")
         except StreamKeyError as exc:
             print(f"  ffmpeg: 構築できません ({exc})")
+
+    print("  switch:")
+    _print_switch_status(data)
     return 0
+
+
+def cmd_status_legacy(g: GlobalConfig, *, json_output: bool = False) -> int:
+    """Report pre-coordinator runtime traces for migration (P4).
+
+    Machine-readable via --json ({"schema_version", "footprint",
+    "unreadable"}), human readable otherwise.  Read-only: nothing is
+    stopped or rewritten.
+    """
+    from .status import STATUS_SCHEMA_VERSION, legacy_footprint
+
+    probe = legacy_footprint(g, tmux=Tmux())
+    if json_output:
+        print(json.dumps(
+            {
+                "schema_version": STATUS_SCHEMA_VERSION,
+                "footprint": probe["footprint"],
+                "unreadable": probe["unreadable"],
+            },
+            ensure_ascii=False,
+        ))
+        return 0
+    print("docich status --legacy")
+    for item in probe["footprint"]:
+        print(f"  legacy: {item}")
+    for item in probe["unreadable"]:
+        print(f"  legacy: {item} (確認不能)")
+    if not probe["footprint"] and not probe["unreadable"]:
+        print("  legacy: (なし)")
+    return 0
+
+
+def _format_actual_runtime(label: str, runtime: dict | None) -> list[str]:
+    lines = []
+    if runtime is None:
+        lines.append(f"    {label}: (なし)")
+        return lines
+    lines.append(
+        f"    {label}: {runtime.get('game')} "
+        f"(adapter={runtime.get('adapter')}, generation={runtime.get('generation')}, "
+        f"runtime_id={runtime.get('runtime_id')})"
+    )
+    for key in ("game_window", "agent_window", "adapter_session"):
+        probe = runtime.get(key) or {}
+        if "applicable" in probe and not probe["applicable"]:
+            lines.append(f"      {key}: (対象外: {probe.get('name')})")
+            continue
+        exists = probe.get("exists")
+        panes = probe.get("panes")
+        if panes == "dead":
+            exists_text = "停止中 (pane dead)"
+        else:
+            exists_text = "起動中" if exists is True else ("不明" if exists is None else "停止中")
+        panes_text = f", panes={panes}" if panes is not None else ""
+        lines.append(f"      {key}[{probe.get('name')}]: {exists_text} (ownership={probe.get('ownership')}{panes_text})")
+    return lines
+
+
+def _print_switch_status(data: dict) -> None:
+    canonical = data.get("canonical") or {}
+    mirror = data.get("mirror") or {}
+    actual = data.get("actual") or {}
+    fence = data.get("agent_fence") or {}
+    if canonical.get("corrupt"):
+        print(f"    canonical: 破損 ({canonical.get('error')})")
+    elif not canonical.get("present"):
+        print("    canonical: (なし)")
+    else:
+        print(f"    canonical: phase={canonical.get('phase')} operation={canonical.get('operation') or '-'}")
+        print(f"      next_generation={canonical.get('next_generation')}")
+        if canonical.get("last_result") is not None:
+            print(f"      last_result: {canonical.get('last_result')}")
+        if canonical.get("last_error") is not None:
+            print(f"      last_error: {canonical.get('last_error')}")
+    match = mirror.get("matches_canonical")
+    match_text = "(canonical 不在のため比較なし)" if match is None else ("一致" if match else "不一致")
+    print(f"    mirror[current_game]: {mirror.get('game') or '(なし)'} ({match_text})")
+    for line in _format_actual_runtime("active", actual.get("active")):
+        print(line)
+    for line in _format_actual_runtime("candidate", actual.get("candidate")):
+        print(line)
+    for line in _format_actual_runtime("previous", actual.get("previous")):
+        print(line)
+    retiring_actual = actual.get("retiring") or []
+    if retiring_actual:
+        for probed in retiring_actual:
+            for line in _format_actual_runtime("retiring", probed):
+                print(line)
+    else:
+        print("    retiring: (なし)")
+    fence_tuple = fence.get("tuple")
+    if fence_tuple is None:
+        print("    agent_fence: (なし)")
+    else:
+        present = fence.get("agent_window_present")
+        panes = None
+        if isinstance(actual.get("active"), dict):
+            panes = actual["active"]["agent_window"].get("panes")
+        if present is True:
+            if panes == "dead":
+                present_text = "存在 (pane dead)"
+            elif panes == "unreadable":
+                present_text = "存在 (pane不明)"
+            else:
+                present_text = "存在 (起動中)"
+        elif present is None:
+            present_text = "不明"
+        else:
+            present_text = "不存在"
+        print(
+            f"    agent_fence: game={fence_tuple.get('game')} "
+            f"runtime_id={fence_tuple.get('runtime_id')} "
+            f"generation={fence_tuple.get('generation')} "
+            f"lease_id={fence_tuple.get('lease_id')} "
+            f"(agent_window={present_text})"
+        )
+    print(f"    cleanup_pending: {'はい' if data.get('cleanup_pending') else 'いいえ'}")
 
 
 # ---------------------------------------------------------------------------
@@ -934,8 +1111,11 @@ def _active_fence_or_none(g: GlobalConfig, resolved: str):
     canonical, needs_write = store.canonical.load()
     if needs_write:
         return None
-    if canonical.get("phase") != "ready":
-        raise CliError("ゲーム切替の実行中のため観測・入力できません (phase が ready ではありません)")
+    if canonical.get("phase") not in {"ready", "draining"}:
+        raise CliError(
+            "ゲーム切替の実行中のため観測・入力できません "
+            "(phase が ready または draining ではありません)"
+        )
     active = canonical.get("active")
     if not isinstance(active, dict) or active.get("game") != resolved:
         current = active.get("game") if isinstance(active, dict) else None
@@ -1104,6 +1284,13 @@ def cmd_run(g: GlobalConfig, args) -> int:
 
 def _run_display(g: GlobalConfig) -> int:
     d = g.display
+
+    # An external display (for example Soren's :99) is owned by its existing
+    # runtime.  Keep the internal ``run display`` entry point harmless even if
+    # it is invoked directly from an old tmux window or stale command.
+    if not d.managed:
+        print(f"docich: 外部所有ディスプレイ {d.name} のため Xvfb は起動しません", flush=True)
+        return 0
 
     def build():
         cmd = ["Xvfb", d.name, "-screen", "0", f"{d.width}x{d.height}x{d.color_depth}", "-nolisten", "tcp"]
