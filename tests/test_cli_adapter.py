@@ -210,7 +210,9 @@ class TestRobotsCatalog(unittest.TestCase):
         self.assertEqual(game.title, "Robots")
         self.assertEqual(game.adapter, "cli")
         self.assertEqual(game.raw["cli"]["command"], "robots")
-        self.assertFalse(game.agent.enabled)
+        self.assertTrue(game.agent.enabled)
+        self.assertEqual(game.agent.brain, "resolver")
+        self.assertEqual(game.agent.interval_ms, 800)
 
     def test_setup_installs_bsdgames(self):
         repo_root = Path(__file__).resolve().parents[1]
