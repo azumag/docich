@@ -19,3 +19,10 @@ font_size = 18
 enabled = true         # 2026-09-05: resolver脳へ切替（決定論プレイ・トークンゼロ・戦略JSONホットリロード）
 brain = "resolver"
 interval_ms = 800
+
+# Twitch 配信カテゴリー・タイトル連動 (soviet_now update_stream_game.sh が読む)。
+# BSD Robots に完全一致の IGDB 項目は無く、最も近い Robots (11585) で代替 (照合済み)。
+[twitch]
+category_id = "11585"
+category_name = "Robots"
+title_prefix = "[Robots]"
