@@ -231,6 +231,42 @@ class ResolverBrainTest(unittest.TestCase):
             resolver_policy("unknown_game")
 
 
+class GnurobotsResolverTest(unittest.TestCase):
+    def test_render_substitutes_all_weights(self):
+        from docich.resolver.gnurobots import render
+
+        text = render(None)
+        self.assertNotIn("@", text)
+        self.assertIn("(define food-threshold 400)", text)
+        self.assertIn("(define move-budget 12)", text)
+        custom = render({"food_urgency": 250.4, "wander_turn_one_in": 9.0})
+        self.assertIn("(define food-threshold 250)", custom)
+        self.assertIn("(define wander-turn-one-in 9)", custom)
+        self.assertIn("(define move-budget 12)", custom)
+
+    def test_parse_statistics(self):
+        from docich.resolver.gnurobots import parse_statistics
+
+        stats = parse_statistics(
+            "-----------------------STATISTICS-----------------------\n"
+            "Shields: 100\nEnergy: 512\nScore: 640\n"
+        )
+        self.assertEqual(stats, {"score": 640, "energy": 512, "shields": 100})
+        self.assertIsNone(parse_statistics("no stats here")["score"])
+
+    def test_read_strategy_for_game_uses_game_defaults(self):
+        import tempfile
+
+        from docich.resolver.improve import read_strategy_for_game
+
+        with tempfile.TemporaryDirectory() as td:
+            st = read_strategy_for_game("gnurobots", Path(td) / "missing.json")
+            self.assertEqual(st["food_urgency"], 400.0)
+            self.assertNotIn("w_collision", st)  # robots既定は混入しない
+            st2 = read_strategy_for_game("robots", Path(td) / "missing.json")
+            self.assertIn("w_collision", st2)
+
+
 class PerturbTest(unittest.TestCase):
     def test_perturb_changes_one_numeric_weight(self):
         from docich.resolver.improve import perturb
