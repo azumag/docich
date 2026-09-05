@@ -19,6 +19,7 @@ import contextvars
 import datetime as dt
 import fcntl
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -55,6 +56,7 @@ PHASES = frozenset(
         "idle",
         "validating",
         "preparing",
+        "draining",
         "quiescing",
         "starting",
         "probing",
@@ -94,6 +96,20 @@ class InvalidTransitionError(GameSwitchError):
 
 def _utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _wall_deadline_expired(value: object) -> bool:
+    """Return true for an invalid or elapsed canonical wall-clock deadline."""
+
+    if not isinstance(value, str) or not value:
+        return True
+    try:
+        deadline = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=dt.timezone.utc)
+    return dt.datetime.now(dt.timezone.utc) >= deadline
 
 
 def _safe_detail(exc: BaseException) -> str:
@@ -377,6 +393,12 @@ def validate_state(state: Mapping[str, object]) -> None:
         raise StateCorruptError("ready phaseはactiveだけを保持する必要があります")
     if phase in {"validating", "stopping"} and candidate is not None:
         raise StateCorruptError(f"{phase} phaseはcandidateを保持できません")
+    if phase == "draining" and (
+        active is None or candidate is not None or previous is not None
+    ):
+        raise StateCorruptError(
+            "draining phaseは旧activeだけを保持する必要があります"
+        )
     runtime_generations: list[int] = []
     for runtime in [active, candidate, previous, *retiring]:
         if isinstance(runtime, dict):
@@ -670,7 +692,11 @@ class RequestAcceptance:
 
 
 class GameSwitchTransaction:
-    """Exclusive-lock scope that P1 keeps for the whole transition."""
+    """Exclusive-lock scope for a transition.
+
+    Boundary waits temporarily release this writer lock so the active game's
+    input/observation path can continue; every canonical write reacquires it.
+    """
 
     def __init__(self, store: "GameSwitchStore", lock: GameSwitchLock):
         self.store = store
@@ -717,6 +743,38 @@ class GameSwitchTransaction:
             updates=updates,
             crash_hook=crash_hook,
         )
+
+    def release_for_wait(self) -> None:
+        """Release the writer lock while the active game keeps running.
+
+        Round-boundary adapters must be able to observe and control the
+        active game while a switch is waiting.  In particular, the agent's
+        shared lock must not be blocked by the switch writer.  The caller
+        must reacquire this transaction before writing canonical state again.
+        """
+
+        self.store._require_exclusive_lock(self.lock)
+        self.lock.release()
+
+    def reacquire_for_wait(
+        self, *, deadline: float, poll_interval_s: float | None = None
+    ) -> None:
+        """Reacquire the writer lock with a bounded wait.
+
+        If the deadline expires while another writer is completing, the
+        caller receives :class:`DeadlineExceededError` and canonical state is
+        intentionally left in ``draining`` for recovery; no unguarded write
+        is attempted without the lock.
+        """
+
+        interval = poll_interval_s if poll_interval_s is not None else 0.1
+        while time.monotonic() < deadline:
+            try:
+                self.lock.acquire(exclusive=True, blocking=False)
+                return
+            except GameSwitchBusyError:
+                time.sleep(min(interval, max(deadline - time.monotonic(), 0.0)))
+        raise DeadlineExceededError("draining後のwriter lock再取得がdeadlineを超過しました")
 
 
 class GameSwitchStore:
@@ -1005,6 +1063,8 @@ DEFAULT_REQUEST_TIMEOUT_S = 600.0
 QUIESCE_VERIFY_TIMEOUT_S = 60.0
 POLL_INTERVAL_S = 0.1
 PREFLIGHT_TIMEOUT_S = 60.0
+ROUND_BOUNDARY_TIMEOUT_S = 7200.0
+ROUND_REACQUIRE_TIMEOUT_S = 10.0
 STOP_AGENT_TIMEOUT_S = 60.0
 START_TIMEOUT_S = 60.0
 AGENT_START_TIMEOUT_S = 60.0
@@ -1021,6 +1081,7 @@ ERROR_NO_ACTIVE_GAME = "no_active_game"
 ERROR_INVALID_ROTATION = "invalid_rotation"
 ERROR_PREPARE_FAILED = "prepare_failed"
 ERROR_QUIESCE_FAILED = "quiesce_failed"
+ERROR_ROUND_BOUNDARY_UNSUPPORTED = "round_boundary_unsupported"
 ERROR_START_FAILED = "start_failed"
 ERROR_READINESS_TIMEOUT = "readiness_timeout"
 ERROR_AGENT_START_FAILED = "agent_start_failed"
@@ -1129,6 +1190,8 @@ class StepTimeouts:
     game-switch lock forever (design v2 §5: individual limits per step)."""
 
     preflight_s: float = PREFLIGHT_TIMEOUT_S
+    round_boundary_s: float = ROUND_BOUNDARY_TIMEOUT_S
+    round_cancel_s: float = 5.0
     stop_agent_s: float = STOP_AGENT_TIMEOUT_S
     start_s: float = START_TIMEOUT_S
     agent_start_s: float = AGENT_START_TIMEOUT_S
@@ -1142,6 +1205,25 @@ class ReadinessTimeoutError(GameSwitchError):
 
 class DeadlineExceededError(GameSwitchError):
     """The request-wide deadline passed before a step could complete."""
+
+
+class RoundBoundaryUnsupportedError(GameSwitchError):
+    """The configured game requires a boundary, but its adapter has none."""
+
+    def __init__(self, detail: str, *, request_started: bool = False):
+        super().__init__(detail)
+        # A missing capability is safe to roll back immediately.  Once an
+        # adapter call was attempted, its durable request must be cancelled
+        # before canonical state can leave ``draining``.
+        self.request_started = request_started
+
+
+class RoundBoundaryError(GameSwitchError):
+    """The adapter rejected or failed to acknowledge a game boundary."""
+
+
+class RoundBoundaryStateChangedError(GameSwitchError):
+    """Canonical active/request identity changed while waiting for a boundary."""
 
 
 @dataclass(frozen=True)
@@ -1246,6 +1328,34 @@ class CoordinatorAdapter(Protocol):
         """Stop this runtime's agent window. A missing target is success."""
 
 
+class RoundBoundaryAdapter(Protocol):
+    """Optional game-specific boundary capability.
+
+    The method must return only after the current one-game unit has reached a
+    safe terminal boundary.  It must not stop the runtime or start the next
+    game.  ``requires_round_boundary`` is a game-definition policy flag; a
+    missing method is tolerated for legacy games when it is false, but is a
+    fail-closed unsupported result when it is true.
+    """
+
+    requires_round_boundary: bool
+
+    def request_round_boundary(
+        self, request_id: str, deadline: float, cancel: threading.Event
+    ) -> object:
+        """Wait for this durable request's game boundary while input remains possible.
+
+        Coordinators may continue accepting the legacy ``(deadline, cancel)``
+        shape for optional adapters, but new implementations should bind the
+        request id to their broker/lease before waiting.
+        """
+
+    def cancel_round_boundary(
+        self, request_id: str, deadline: float, cancel: threading.Event
+    ) -> object:
+        """Cancel a durable boundary request without stopping the runtime."""
+
+
 AdapterFactory = Callable[[RuntimeSpec], CoordinatorAdapter]
 MirrorWriter = Callable[[Path, str | None], None]
 
@@ -1329,6 +1439,7 @@ class GameSwitchCoordinator:
         step_timeouts: StepTimeouts | None = None,
         cancel_grace_s: float = CANCEL_GRACE_S,
         rollback_timeout_s: float = ROLLBACK_TIMEOUT_S,
+        round_reacquire_timeout_s: float = ROUND_REACQUIRE_TIMEOUT_S,
         event_log: EventLog | None = None,
     ):
         self.store = store
@@ -1340,6 +1451,7 @@ class GameSwitchCoordinator:
         self.step_timeouts = step_timeouts or StepTimeouts()
         self.cancel_grace_s = cancel_grace_s
         self.rollback_timeout_s = rollback_timeout_s
+        self.round_reacquire_timeout_s = round_reacquire_timeout_s
         self.event_log = event_log or EventLog(store.state_dir)
         self.mirror_writer = mirror_writer
         self.mirror_path = store.state_dir / "current_game"
@@ -1680,6 +1792,15 @@ class GameSwitchCoordinator:
                 cleanup_pending=False,
                 receipt=None,
             )
+        if state["phase"] == "draining":
+            # The driver which owns the drain may have released the writer
+            # lock while the active game is still accepting input.  A retry
+            # must observe that durable in-progress receipt, never enter the
+            # generic recovery path and stop the active runtime underneath
+            # the boundary wait.
+            return self._handle_draining_request_locked(
+                state, request_id, operation, target, payload
+            )
         # A request_id that was already accepted fixes its operation and
         # target.  The only caller-side alias the coordinator sanctions is
         # the start->switch fallback resend under the SAME target and
@@ -1829,6 +1950,97 @@ class GameSwitchCoordinator:
             tx, acceptance, operation, transition_target, deadline, deadline_at
         )
 
+    def _handle_draining_request_locked(
+        self,
+        state: Mapping[str, object],
+        request_id: str,
+        operation: str,
+        target: str | None,
+        payload: Mapping[str, object] | None,
+    ) -> SwitchResult:
+        """Classify requests while an active runtime is awaiting a boundary.
+
+        ``_accept_request_locked`` intentionally rejects a second canonical
+        request.  This specialized read-only path additionally handles the
+        same-request retry without calling ``recover()``; recovery during a
+        live drain must not tear down the game or its input fence.
+        """
+
+        existing = self.store.receipts.load(request_id)
+        canonical_request_id = state.get("request_id")
+        if existing is None:
+            if canonical_request_id == request_id:
+                raise StateCorruptError(
+                    "draining canonical requestに対応するreceiptがありません"
+                )
+            return SwitchResult(
+                request_id=request_id,
+                operation=operation,
+                status="busy",
+                target=target,
+                from_game=state.get("active")["game"] if state.get("active") else None,
+                to_game=target,
+                generation=state.get("active")["generation"] if state.get("active") else None,
+                error_code=ERROR_BUSY,
+                detail="別のゲームが試合終了境界を待っています",
+                warnings=(),
+                cleanup_pending=False,
+                receipt=None,
+            )
+
+        recorded_operation = str(existing.get("operation"))
+        recorded_target = existing.get("target")
+        compare_operation = operation
+        if operation == "restart" and recorded_operation == "restart":
+            # restart's public API deliberately resolves its target only after
+            # accepting the request.  During draining the receipt is the
+            # authoritative target, so compare against its recorded operation.
+            compare_operation = recorded_operation
+            target = recorded_target
+        elif operation == "start" and recorded_operation == "switch":
+            # Preserve the existing start->switch resend alias used by the
+            # non-draining path.
+            compare_operation = recorded_operation
+
+        expected_hash = _request_payload_hash(
+            recorded_operation, recorded_target, payload or {}
+        )
+        if (
+            compare_operation != recorded_operation
+            or target != recorded_target
+            or existing.get("payload_hash") != expected_hash
+        ):
+            return SwitchResult(
+                request_id=request_id,
+                operation=operation,
+                status="request_conflict",
+                target=target,
+                from_game=None,
+                to_game=None,
+                generation=None,
+                error_code=ERROR_REQUEST_CONFLICT,
+                detail="同じrequest_idが異なるoperation/target/payloadで使用されています",
+                warnings=(),
+                cleanup_pending=False,
+                receipt=None,
+            )
+        if existing.get("status") in TERMINAL_RECEIPT_STATUSES:
+            return _result_from_receipt(existing)
+        return SwitchResult(
+            request_id=request_id,
+            operation=recorded_operation,
+            status="in_progress",
+            target=recorded_target,
+            from_game=state.get("active")["game"] if state.get("active") else None,
+            to_game=recorded_target,
+            generation=existing.get("generation"),
+            error_code=None,
+            detail="試合終了境界を待っています",
+            warnings=(),
+            cleanup_pending=False,
+            receipt=copy.deepcopy(dict(existing)),
+        )
+
     def _reconcile_stale_receipt(
         self,
         tx: GameSwitchTransaction,
@@ -1976,6 +2188,389 @@ class GameSwitchCoordinator:
 
     # --- start/switch/restart/rotate --------------------------------------
 
+    def _round_boundary_required(self, adapter: CoordinatorAdapter) -> bool:
+        """Read the optional game policy without changing P1 compatibility."""
+
+        value = getattr(adapter, "requires_round_boundary", False)
+        if type(value) is not bool:
+            raise GameSwitchError("adapter.requires_round_boundary はboolである必要があります")
+        return value
+
+    def _boundary_timeout_override(self, adapter: CoordinatorAdapter) -> float | None:
+        """Per-game boundary wait declared in [lifecycle] (None = default).
+
+        A boundary-requiring game whose matches outlast the request-wide
+        deadline declares boundary_timeout_s; the coordinator then extends
+        only the boundary wait (never the other steps).
+        """
+
+        value = getattr(adapter, "round_boundary_timeout_s", None)
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise GameSwitchError("adapter.round_boundary_timeout_s は秒数 (数値) が必要です")
+        value = float(value)
+        if not value > 0:
+            raise GameSwitchError("adapter.round_boundary_timeout_s は正の秒数が必要です")
+        return value
+
+    @staticmethod
+    def _invoke_round_boundary_method(
+        method: Callable[..., object],
+        request_id: str,
+        deadline: float,
+        cancel: threading.Event,
+    ) -> object:
+        """Invoke either the request-id aware or legacy boundary signature.
+
+        The durable request id is part of the new boundary contract.  A small
+        signature probe keeps older optional adapters source-compatible while
+        avoiding a ``TypeError`` retry that could submit the same request
+        twice after an adapter's own body failed with ``TypeError``.
+        """
+
+        candidates = (
+            ((request_id, deadline, cancel), {}),
+            ((deadline, cancel), {}),
+            ((), {"request_id": request_id, "deadline": deadline, "cancel": cancel}),
+            ((deadline, cancel), {"request_id": request_id}),
+            ((request_id,), {"deadline": deadline, "cancel": cancel}),
+        )
+        try:
+            signature = inspect.signature(method)
+        except (TypeError, ValueError):
+            # Native/builtin callables may not expose a signature.  The new
+            # contract is the only safe default for such an adapter.
+            return method(request_id, deadline, cancel)
+        for args, kwargs in candidates:
+            try:
+                signature.bind(*args, **kwargs)
+            except TypeError:
+                continue
+            return method(*args, **kwargs)
+        # Produce the callable's own useful argument error when no supported
+        # contract shape matches rather than silently dropping the request id.
+        return method(request_id, deadline, cancel)
+
+    def _await_round_boundary_locked(
+        self,
+        tx: GameSwitchTransaction,
+        adapter: CoordinatorAdapter,
+        old_active: Mapping[str, object],
+        acceptance: RequestAcceptance,
+        deadline: float,
+    ) -> float:
+        """Wait for a game boundary with the writer lock released.
+
+        Canonical ``draining`` state remains active/observable while the
+        adapter waits.  Once the call returns, this method reacquires the
+        writer and verifies every identity field before the caller is allowed
+        to stop the old runtime.
+
+        Returns the effective deadline for the rest of the transaction: the
+        request deadline, unless the game declares ``boundary_timeout_s``,
+        in which case only the boundary wait is extended (canonical
+        ``deadline_at`` is extended with it, before the lock is released, so
+        a concurrent recovery honors the same window).
+        """
+
+        method = getattr(adapter, "request_round_boundary", None)
+        required = self._round_boundary_required(adapter)
+        if method is None:
+            if required:
+                raise RoundBoundaryUnsupportedError(
+                    "このゲームは試合終了境界を要求しますがadapterが未対応です"
+                )
+            self._log("round_boundary_skipped", phase="draining")
+            return deadline
+        if not callable(method):
+            raise RoundBoundaryUnsupportedError(
+                "adapter.request_round_boundary がcallableではありません"
+            )
+
+        override_s = self._boundary_timeout_override(adapter)
+        wait_deadline = deadline
+        if override_s is not None:
+            extended = time.monotonic() + override_s
+            if extended > wait_deadline:
+                wait_deadline = extended
+                extended_at = (
+                    dt.datetime.now(dt.timezone.utc)
+                    + dt.timedelta(seconds=override_s)
+                ).isoformat().replace("+00:00", "Z")
+                tx.transition(
+                    {"draining"},
+                    "draining",
+                    updates={"deadline_at": extended_at},
+                    crash_hook=self.crash_hook,
+                )
+                self._log(
+                    "round_boundary_extended",
+                    phase="draining",
+                    detail=f"boundary_timeout_s={override_s}",
+                )
+
+        self._log("round_boundary_waiting", phase="draining")
+        tx.release_for_wait()
+        call_error: BaseException | None = None
+        result: object = None
+        # Reacquisition is a separate, strictly bounded safety window.  Do
+        # not use ``max(request_deadline, grace)``: a long request deadline
+        # would otherwise allow a stale driver to hold this transaction for
+        # the entire request lifetime after the unlocked wait.
+        try:
+            try:
+                result = self._call_adapter(
+                    lambda cancel: self._invoke_round_boundary_method(
+                        method, acceptance.request_id, wait_deadline, cancel
+                    ),
+                    wait_deadline,
+                    override_s
+                    if override_s is not None
+                    else self.step_timeouts.round_boundary_s,
+                    "round_boundary",
+                )
+            except BaseException as exc:  # reacquire before propagating
+                call_error = exc
+        finally:
+            # A short emergency grace is deliberately independent of the
+            # request deadline: canonical state must not be mutated without
+            # reacquiring the writer after the unlocked adapter call.
+            reacquire_deadline = time.monotonic() + max(self.round_reacquire_timeout_s, 0.1)
+            tx.reacquire_for_wait(deadline=reacquire_deadline, poll_interval_s=self.poll_interval_s)
+        if isinstance(call_error, RoundBoundaryUnsupportedError):
+            # The adapter was callable, so an unsupported result raised from
+            # its body follows the same cancel-before-ready rule as timeout
+            # and rejection.  Missing/non-callable capability above remains
+            # the only unsupported-before-request fast path.
+            call_error.request_started = True
+        if call_error is not None:
+            raise call_error
+        if result is False:
+            raise RoundBoundaryError("adapterが試合終了境界をacknowledgeしませんでした")
+
+        current, _migrated = self.store.canonical.load()
+        if (
+            current.get("phase") != "draining"
+            or current.get("request_id") != acceptance.request_id
+            or current.get("active") != dict(old_active)
+            or current.get("candidate") is not None
+            or current.get("previous") is not None
+            or _wall_deadline_expired(current.get("deadline_at"))
+        ):
+            raise RoundBoundaryStateChangedError(
+                "draining中にcanonicalのrequest/active identityが変化しました"
+            )
+        self._log("round_boundary_reached", phase="draining")
+        return wait_deadline
+
+    def _cancel_round_boundary_locked(
+        self,
+        tx: GameSwitchTransaction,
+        adapter: CoordinatorAdapter | None,
+        request_id: str,
+    ) -> tuple[bool, str | None]:
+        """Cancel an attempted boundary request before clearing ``draining``.
+
+        Cancellation gets its own short deadline because the original switch
+        deadline is normally the reason this path was entered.  Returning
+        ``False`` keeps canonical state durable and recoverable instead of
+        claiming that a stale boundary driver has gone away.
+        """
+
+        method = getattr(adapter, "cancel_round_boundary", None) if adapter else None
+        if not callable(method):
+            return False, "adapter.cancel_round_boundary がcallableではありません"
+        before, _ = self.store.canonical.load()
+        identity_keys = ("phase", "request_id", "active", "candidate", "previous")
+        identity = {key: copy.deepcopy(before.get(key)) for key in identity_keys}
+        if identity["phase"] != "draining" or identity["request_id"] != request_id:
+            raise RoundBoundaryStateChangedError("cancel開始時にdraining identityが変化しました")
+        timeout = max(self.step_timeouts.round_cancel_s, 0.1)
+        cancel_deadline = time.monotonic() + timeout
+        call_error: BaseException | None = None
+        result: object = None
+        tx.release_for_wait()
+        try:
+            result = self._call_adapter(
+                lambda cancel: self._invoke_round_boundary_method(
+                    method, request_id, cancel_deadline, cancel
+                ),
+                cancel_deadline,
+                timeout,
+                "cancel_round_boundary",
+            )
+        except BaseException as exc:  # noqa: BLE001 - fail closed below
+            call_error = exc
+        finally:
+            tx.reacquire_for_wait(
+                deadline=time.monotonic() + max(self.round_reacquire_timeout_s, 0.1),
+                poll_interval_s=self.poll_interval_s,
+            )
+        current, _ = self.store.canonical.load()
+        if any(current.get(key) != identity[key] for key in identity_keys):
+            raise RoundBoundaryStateChangedError("cancel待機中にdraining identityが変化しました")
+        if call_error is not None:
+            return False, _safe_detail(call_error)
+        if result is False:
+            return False, "adapterがcancel_round_boundaryをacknowledgeしませんでした"
+        return True, None
+
+    def _round_boundary_failure_locked(
+        self,
+        tx: GameSwitchTransaction,
+        acceptance: RequestAcceptance,
+        target: str,
+        old_active: Mapping[str, object],
+        old_adapter: CoordinatorAdapter | None = None,
+        *,
+        error_code: str,
+        detail: str,
+        cancel_boundary: bool = True,
+    ) -> SwitchResult:
+        """Abort a boundary wait while retaining the old active runtime.
+
+        Once a callable boundary adapter was attempted, its exact request must
+        be cancelled before the canonical phase can return to ``ready``.  A
+        missing capability is the sole pre-request exception and can roll back
+        immediately; failed cancellation leaves ``draining`` durable for
+        explicit recovery.
+        """
+
+        state, _migrated = self.store.canonical.load()
+        if (
+            state.get("phase") != "draining"
+            or state.get("request_id") != acceptance.request_id
+            or state.get("active") != dict(old_active)
+        ):
+            raise RoundBoundaryStateChangedError(
+                "round boundary失敗時にcanonical identityが変化しています"
+            )
+
+        if cancel_boundary:
+            try:
+                cancel_ok, cancel_detail = self._cancel_round_boundary_locked(
+                    tx, old_adapter, acceptance.request_id
+                )
+            except (RoundBoundaryStateChangedError, DeadlineExceededError) as exc:
+                return self._round_boundary_stale_result(
+                    acceptance, target, f"boundary cancel後の再検証に失敗しました: {_safe_detail(exc)}"
+                )
+            if not cancel_ok:
+                recovery_detail = (
+                    f"{detail}; boundary requestのcancelに失敗しました"
+                    + (f": {cancel_detail}" if cancel_detail else "")
+                )
+                recovery_result = {
+                    "request_id": acceptance.request_id,
+                    "operation": str(acceptance.receipt["operation"]),
+                    "status": "failed",
+                    "from_game": old_active["game"],
+                    "to_game": target,
+                    "generation": acceptance.generation,
+                    "error_code": ERROR_RECOVERY_REQUIRED,
+                    "detail": recovery_detail,
+                }
+                # Keep request_id/operation/active and the in-progress receipt
+                # intact.  A later explicit recover() can retry the same
+                # identity-bound cancellation; no stale boundary result may
+                # turn this into a new switch.
+                tx.transition(
+                    {"draining"},
+                    "draining",
+                    updates={
+                        "last_result": recovery_result,
+                        "last_error": {
+                            "error_code": ERROR_RECOVERY_REQUIRED,
+                            "detail": recovery_detail,
+                        },
+                    },
+                    crash_hook=self.crash_hook,
+                )
+                self._log(
+                    "round_boundary_recovery_required",
+                    phase="draining",
+                    result="failed",
+                    error_code=ERROR_RECOVERY_REQUIRED,
+                    detail=recovery_detail,
+                )
+                return SwitchResult(
+                    request_id=acceptance.request_id,
+                    operation=str(acceptance.receipt["operation"]),
+                    status="failed",
+                    target=target,
+                    from_game=old_active["game"],
+                    to_game=target,
+                    generation=acceptance.generation,
+                    error_code=ERROR_RECOVERY_REQUIRED,
+                    detail=recovery_detail,
+                    warnings=(),
+                    cleanup_pending=False,
+                    receipt=copy.deepcopy(dict(acceptance.receipt)),
+                )
+        last_result = {
+            "request_id": acceptance.request_id,
+            "operation": str(acceptance.receipt["operation"]),
+            "status": "failed",
+            "from_game": old_active["game"],
+            "to_game": target,
+            "generation": acceptance.generation,
+            "error_code": error_code,
+            "detail": detail,
+        }
+        tx.transition(
+            {"draining"},
+            "ready",
+            updates={
+                "active": dict(old_active),
+                "candidate": None,
+                "previous": None,
+                "operation": None,
+                "request_id": None,
+                "deadline_at": None,
+                "last_result": last_result,
+                "last_error": {"error_code": error_code, "detail": detail},
+            },
+            crash_hook=self.crash_hook,
+        )
+        receipt = tx.finish_request(acceptance.request_id, "failed", last_result)
+        self._log(
+            "round_boundary_failed",
+            phase="ready",
+            result="failed",
+            error_code=error_code,
+            detail=detail,
+        )
+        return _result_from_receipt(receipt)
+
+    def _round_boundary_stale_result(
+        self,
+        acceptance: RequestAcceptance,
+        target: str,
+        detail: str,
+    ) -> SwitchResult:
+        """Report a driver that cannot safely finish a durable drain.
+
+        This path deliberately does not touch canonical state or the receipt:
+        the old runtime remains tracked and a later explicit recovery can
+        cancel the request after verifying the boundary worker is gone.
+        """
+
+        return SwitchResult(
+            request_id=acceptance.request_id,
+            operation=str(acceptance.receipt["operation"]),
+            status="failed",
+            target=target,
+            from_game=None,
+            to_game=target,
+            generation=acceptance.generation,
+            error_code=ERROR_RECOVERY_REQUIRED,
+            detail=detail,
+            warnings=(),
+            cleanup_pending=False,
+            receipt=copy.deepcopy(dict(acceptance.receipt)),
+        )
+
     def _switch_locked(
         self,
         tx: GameSwitchTransaction,
@@ -2039,11 +2634,94 @@ class GameSwitchCoordinator:
                     error_code=ERROR_PREPARE_FAILED,
                     detail=f"old runtime adapter: {_safe_detail(exc)}",
                 )
-            tx.transition(
-                {"preparing"}, "quiescing",
-                updates={"active": None, "previous": old_active},
-                crash_hook=self.crash_hook,
-            )
+            boundary_method = getattr(old_adapter, "request_round_boundary", None)
+            boundary_required = self._round_boundary_required(old_adapter)
+            if callable(boundary_method) or boundary_required:
+                tx.transition(
+                    {"preparing"}, "draining",
+                    crash_hook=self.crash_hook,
+                )
+                self._log("drain_started", phase="draining")
+                try:
+                    deadline = self._await_round_boundary_locked(
+                        tx, old_adapter, old_active, acceptance, deadline
+                    )
+                except RoundBoundaryStateChangedError:
+                    # A concurrent recovery may have terminally cancelled an
+                    # expired drain after the writer was released.  It owns
+                    # the resulting canonical/receipt state; never stop the
+                    # runtime from this stale driver.
+                    receipt = self.store.receipts.load(acceptance.request_id)
+                    if receipt is not None and receipt.get("status") in TERMINAL_RECEIPT_STATUSES:
+                        return _result_from_receipt(receipt)
+                    return self._round_boundary_stale_result(
+                        acceptance, target, "draining中にcanonical identityが変化しました"
+                    )
+                except RoundBoundaryUnsupportedError as exc:
+                    return self._round_boundary_failure_locked(
+                        tx,
+                        acceptance,
+                        target,
+                        old_active,
+                        old_adapter,
+                        error_code=ERROR_ROUND_BOUNDARY_UNSUPPORTED,
+                        detail=_safe_detail(exc),
+                        cancel_boundary=bool(getattr(exc, "request_started", False)),
+                    )
+                except ReadinessTimeoutError as exc:
+                    return self._round_boundary_failure_locked(
+                        tx,
+                        acceptance,
+                        target,
+                        old_active,
+                        old_adapter,
+                        error_code=ERROR_TIMEOUT,
+                        detail=_safe_detail(exc),
+                    )
+                except DeadlineExceededError as exc:
+                    if tx.lock._file is None:
+                        # We could not regain the writer after the unlocked
+                        # adapter call.  Leave durable draining state
+                        # untouched; recover() must explicitly cancel it
+                        # before any stop.
+                        return self._round_boundary_stale_result(
+                            acceptance,
+                            target,
+                            f"draining後のlock再取得に失敗しました: {_safe_detail(exc)}",
+                        )
+                    return self._round_boundary_failure_locked(
+                        tx,
+                        acceptance,
+                        target,
+                        old_active,
+                        old_adapter,
+                        error_code=ERROR_TIMEOUT,
+                        detail=_safe_detail(exc),
+                    )
+                except Exception as exc:
+                    return self._round_boundary_failure_locked(
+                        tx,
+                        acceptance,
+                        target,
+                        old_active,
+                        old_adapter,
+                        error_code=ERROR_QUIESCE_FAILED,
+                        detail=_safe_detail(exc),
+                    )
+                tx.transition(
+                    {"draining"}, "quiescing",
+                    updates={"active": None, "previous": old_active},
+                    crash_hook=self.crash_hook,
+                )
+            else:
+                # Legacy adapters without an explicit boundary capability
+                # retain the pre-existing immediate-quiesce semantics.  New
+                # game definitions opt into the guarded branch above.
+                tx.transition(
+                    {"preparing"}, "quiescing",
+                    updates={"active": None, "previous": old_active},
+                    crash_hook=self.crash_hook,
+                )
             self._log("quiesce_started", phase="quiescing")
             try:
                 self._call_adapter(
@@ -2835,6 +3513,114 @@ class GameSwitchCoordinator:
 
     # --- recovery -----------------------------------------------------------
 
+    def _recover_draining_locked(
+        self,
+        tx: GameSwitchTransaction,
+        state: Mapping[str, object],
+        deadline: float,
+    ) -> SwitchResult:
+        """Recover a crashed boundary driver without stopping the game.
+
+        While the durable deadline is still live, recovery is read-only: the
+        current game must keep accepting input and the original driver may
+        still be waiting.  Once it has expired, explicitly cancel the drain
+        and finish its receipt while retaining the same active runtime.  A
+        stale adapter returning later will fail its identity check and cannot
+        proceed to ``stop_agent``.
+        """
+
+        request_id = state.get("request_id")
+        active = state.get("active")
+        if not isinstance(request_id, str) or not isinstance(active, dict):
+            raise StateCorruptError("draining stateにrequest_idまたはactiveがありません")
+        receipt = self.store.receipts.load(request_id)
+        if receipt is None:
+            raise StateCorruptError("draining requestに対応するreceiptがありません")
+        if not _wall_deadline_expired(state.get("deadline_at")):
+            return SwitchResult(
+                request_id=request_id,
+                operation=str(state.get("operation") or receipt.get("operation") or "switch"),
+                status="busy",
+                target=receipt.get("target"),
+                from_game=active.get("game"),
+                to_game=receipt.get("target"),
+                generation=receipt.get("generation"),
+                error_code=ERROR_BUSY,
+                detail="試合終了境界の待機中です。deadline後に明示recoverしてください",
+                warnings=(),
+                cleanup_pending=False,
+                receipt=copy.deepcopy(dict(receipt)),
+            )
+
+        # Expiry alone is not enough to clear canonical state: an external
+        # broker or a stale controller may still deliver a delayed boundary
+        # acknowledgement.  Require the runtime-bound adapter to cancel the
+        # exact request before making the old game stable again.
+        try:
+            adapter = self._make_adapter(
+                RuntimeSpec.from_runtime(self.store.state_dir, active), deadline
+            )
+            cancel_ok, cancel_detail = self._cancel_round_boundary_locked(
+                tx, adapter, request_id
+            )
+            if not cancel_ok:
+                raise RoundBoundaryError(
+                    cancel_detail or "adapterが期限切れdrainingのcancelをacknowledgeしませんでした"
+                )
+        except Exception as exc:
+            return SwitchResult(
+                request_id=request_id,
+                operation=str(state.get("operation") or receipt.get("operation") or "switch"),
+                status="failed",
+                target=receipt.get("target"),
+                from_game=active.get("game"),
+                to_game=receipt.get("target"),
+                generation=receipt.get("generation"),
+                error_code=ERROR_RECOVERY_REQUIRED,
+                detail=f"期限切れdrainingを安全に解除できません: {_safe_detail(exc)}",
+                warnings=(),
+                cleanup_pending=False,
+                receipt=copy.deepcopy(dict(receipt)),
+            )
+
+        last_result = {
+            "request_id": request_id,
+            "operation": str(receipt.get("operation") or state.get("operation") or "switch"),
+            "status": "failed",
+            "from_game": active.get("game"),
+            "to_game": receipt.get("target"),
+            "generation": receipt.get("generation"),
+            "error_code": ERROR_TIMEOUT,
+            "detail": "試合終了境界のdeadlineが経過したため待機を取り消しました",
+        }
+        tx.transition(
+            {"draining"},
+            "ready",
+            updates={
+                "active": copy.deepcopy(active),
+                "candidate": None,
+                "previous": None,
+                "operation": None,
+                "request_id": None,
+                "deadline_at": None,
+                "last_result": last_result,
+                "last_error": {
+                    "error_code": ERROR_TIMEOUT,
+                    "detail": last_result["detail"],
+                },
+            },
+            crash_hook=self.crash_hook,
+        )
+        saved = tx.finish_request(request_id, "failed", last_result)
+        self._log(
+            "drain_recovered_timeout",
+            phase="ready",
+            result="failed",
+            error_code=ERROR_TIMEOUT,
+            detail=last_result["detail"],
+        )
+        return _result_from_receipt(saved)
+
     def _recover_locked(
         self,
         tx: GameSwitchTransaction,
@@ -2850,6 +3636,8 @@ class GameSwitchCoordinator:
             operation=str(state.get("operation") or _log_ctx_get().get("operation") or "recover"),
         )
         self._log("recovery_started", phase=str(phase))
+        if phase == "draining":
+            return self._recover_draining_locked(tx, state, deadline)
         if phase == "idle":
             self.repair_mirror(tx, warnings)
             self._reconcile_dangling_receipt_locked(tx)

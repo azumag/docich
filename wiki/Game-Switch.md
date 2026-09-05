@@ -95,6 +95,18 @@ state_dir 下 `logs/game_switch.log` に JSON 行で追記する (phase 遷移�
 `detail` は書き込み時にマスクされ (URL 全体・argv/command・Authorization 等の認証情報・
 `key=value` 形式・長いトークン)、機密がログへ流れない。receipt の canonical 表現は生のまま。
 
+## ラウンド境界のタイムアウト契約
+
+- request 全体の deadline (`switch --timeout` / 既定 600s) が全ステップの上限。
+  境界待ちの既定上限 (`ROUND_BOUNDARY_TIMEOUT_S`) もその内側でしか効かない。
+- 試合が既定 deadline を超えるゲームは `[lifecycle] boundary_timeout_s` (秒) で
+  宣言する。coordinator は**境界待ちだけ**を延長し (canonical `deadline_at` も
+  同値へ延長・`round_boundary_extended` を記録)、他ステップは request deadline
+  のまま。宣言なしの長時間試合は request deadline で fail-closed になる。
+- draining 中の試合終了プロンプトは境界 waiter が所有する。resolver brain は
+  draining 中の自動再開 (`Another game?` への `y`) を抑止し、プロンプトを waiter
+  に残す。試合中のプレイ継続は止めない (止めると境界自体が来なくなる)。
+
 ## legacy からの移行
 
 coordinator 導入前の旧 runtime は「固定名の `game` / `agent` window + `docich-game` session +
@@ -129,3 +141,25 @@ watchdog からの自動復旧は `docich restart` (こちらはゲームの再�
   `cli` (nethack) は実機検証済み。
 - VM (Oracle ARM) への反映は 2026-09-04 済み。`doctor` / `status --json` が正常動作することを
   実機確認している (詳細: `handoff.md`)。
+
+## 配信カテゴリー・タイトルの連動
+
+切替先ゲームに応じて Twitch の配信カテゴリー (`game_id`) と配信タイトルを切り替える。
+Twitch のカテゴリーは IGDB が正本のため、ゲーム追加のたびに IGDB 照合を初期設定として行う。
+
+- ゲーム定義側: `config/games/<id>.toml` の `[twitch]` テーブル
+  (`category_id` / `category_name` / `title_prefix`)。`[twitch]` 無しのゲーム追加は不可
+  (`tests/test_twitch_game_config.py` が検出する)。
+- 更新スクリプト: `games/soviet_now/update_stream_game.sh --game <id>`
+  (タイトルは `[prefix] day<N> <activity> <strategy>`。activity 既定は handoff 由来の
+  `prompts/ops_brief.md` 1件目、strategy は `--strategy` で戦略の進捗を乗せる)。
+- IGDB 照合: `--resolve "<問合せ>"` で候補列挙 → toml へ記録 → `--verify` で一致確認。
+  対応表と手順の正本は `games/soviet_now/docs/twitch_game_sync.md`。
+- 自動フックは切替整備が一段落するまで未接続 (切替時は手動実行)。
+  接続先は切替成功の直後 (`switch` 成功 / broker finish 確定)。更新の失敗でゲームを
+  巻き戻さないこと。`robots.toml` 着地時は `category_id="11585"` /
+  `category_name="Robots"` / `title_prefix="[Robots]"` を入れること。
+
+# 表示の共通規則
+
+ゲーム切替では[ゲーム映像の表示ルール](Game-Presentation)を必ず適用します。元のゲーム描画サイズを維持し、配信映像だけを縦横比維持・黒帯付きで960×540へ収めます。ステータス枠・通知枠の位置と大きさは変更しません。

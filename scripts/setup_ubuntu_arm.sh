@@ -74,6 +74,12 @@ APT_PACKAGES=(
   libretro-core-info # RetroArch のコア情報 (自動探索に必要)
   dbus               # dbus-run-session (retroarch 起動ラップに必須。architecture.md §9-1b)
   nethack-console    # CLI ゲームの例 (NetHack)
+  bsdgames           # 軽量ターン制CLIゲーム Robots
+  nsnake             # CLI ゲーム Snake (issue #15)
+  ninvaders          # CLI ゲーム Space Invaders 系 (issue #15)
+  pacman4console     # CLI ゲーム Pac-Man 系 (issue #15。最小 29x32 の pane が必要)
+  moon-buggy         # CLI ゲーム Moon Buggy (issue #15)
+  bastet             # CLI ゲーム Tetris 系 (issue #15)
 )
 
 echo "==> apt-get update (パッケージ索引の更新のみ。インストール済みパッケージは変更しない)"

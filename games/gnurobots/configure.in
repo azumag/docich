@@ -1,0 +1,118 @@
+dnl configure.in for GNU Robots
+dnl Copyright (C) 1998 Jim Hall, jhall1@isd.net
+
+dnl  This program is free software; you can redistribute it and/or modify
+dnl  it under the terms of the GNU General Public License as published by
+dnl  the Free Software Foundation; either version 2 of the License, or
+dnl  (at your option) any later version.
+dnl
+dnl  This program is distributed in the hope that it will be useful,
+dnl  but WITHOUT ANY WARRANTY; without even the implied warranty of
+dnl  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+dnl  GNU General Public License for more details.
+dnl
+dnl  You should have received a copy of the GNU General Public License
+dnl  along with this program; if not, write to the Free Software
+dnl  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+
+dnl thanks to david.madore@ens.fr
+dnl thanks to Steinar Hamre <steinarh@stud.fim.ntnu.no>
+
+
+dnl Process this file with autoconf to produce a configure script.
+AC_INIT(include/api.h)
+
+
+dnl Checks for programs.
+AC_PROG_CC
+
+
+dnl Locate X Windows
+dnl We need AC_PATH_XTRA to also locate extra libaries X depends on.
+dnl It will ``export'' X_CFLAGS, X_PRE_LIBS, X_EXTRA_LIBS and X_LIBS,
+dnl but for some reason we need to add -lX11 ourselves.
+AC_PATH_XTRA
+
+if test "$have_x" = yes; then
+  x_libs="-lX11"
+else
+  AC_MSG_ERROR(can't find X windows)
+fi
+
+
+dnl Checks for more X11 libraries, these go to X_LIBS.
+AC_CHECK_LIB(Xpm, XpmCreatePixmapFromData,
+  x_libs="-lXpm $x_libs",
+  AC_MSG_ERROR(can't find libXpm),
+  $X_LIBS $x_libs $X_PRE_LIBS $X_EXTRA_LIBS)
+
+
+dnl finished with X, so we update X_LIBS.
+X_LIBS="$X_LIBS $x_libs"
+
+
+dnl Check for curses, add to CURSES_LIBS, and CURSES_CFLAGS.
+dnl At this time, only ncurses is supported.
+dnl We should check for SYSV curses too.
+AC_CHECK_HEADERS(ncurses.h)
+
+
+dnl allow user to specify directory where to find ncurses
+if test -n "$with_ncurses"
+then
+  ncurses_cflags="-I$with_ncurses/include"
+  ncurses_libs="-I$with_ncurses/lib"
+fi
+
+AC_CHECK_LIB(ncurses, initscr,
+  CURSES_LIBS="$ncurses_libs -lncurses"
+  CURSES_CFLAGS="$ncurses_cflags",
+  AC_MSG_ERROR(can't find ncurses))
+
+AC_SUBST(CURSES_LIBS)
+AC_SUBST(CURSES_CFLAGS)
+
+
+dnl Check for math library
+AC_CHECK_LIB(m, pow)
+
+
+dnl Check for guile, goes to LIBS.
+dnl allow user to specify directory where to find guile
+if test -n "$with_guile"
+then
+  guile_cflags="-I$with_guile/include"
+  guile_libs="-L$with_guile/lib -lguile"
+  dnl We should do something to set RPATH if needed.
+  dnl We should find additional libraries. e.g. readline
+else
+  dnl guile-config is nice :)
+  guile_cflags=`guile-config compile`
+  guile_libs=`guile-config link`
+fi
+      
+AC_CHECK_LIB(guile, gh_new_procedure,
+  LIBS="$LIBS $guile_libs"
+  CFLAGS="$CFLAGS $guile_cflags",
+  AC_MSG_ERROR(can't find guile. This software REQUIRES guile.),
+  $guile_libs)
+
+
+dnl Some sytems need -ldl for dynamic library support.
+dnl AC_CHECK_LIB(dl, dlopen)
+
+
+dnl Checks for header files.
+AC_HEADER_STDC
+AC_CHECK_HEADERS(unistd.h)
+
+
+dnl Checks for typedefs, structures, and compiler characteristics.
+AC_C_CONST
+
+
+dnl Checks for library functions.
+
+
+dnl Done.
+AC_OUTPUT(lib/Makefile src/Makefile Makefile)

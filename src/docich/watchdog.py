@@ -213,7 +213,7 @@ def _check_windows(g: GlobalConfig, tmux: Tmux) -> None:
     触れない)。watchdog 自身の window はここでは扱わない。
     """
     missing = []
-    if not tmux.has_window("display"):
+    if g.display.managed and not tmux.has_window("display"):
         missing.append("display")
     if g.audio.enabled and not tmux.has_window("audio"):
         missing.append("audio")

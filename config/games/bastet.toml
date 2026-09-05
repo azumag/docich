@@ -1,0 +1,29 @@
+[game]
+name = "bastet"
+title = "Bastet (Tetris)"
+adapter = "cli"
+
+# bastet はメニュー起動・試合終了時にダイアログ ("Try again!") → ハイスコア表 →
+# メニューを経由する (同一プロセス継続・各画面は Enter で進む)。wrapper
+# (/usr/local/bin/bastet_docich) が Enter を駆動し、最終スコアを scorelog へ
+# 追記する。docich CLI adapter には wrapper 型ゲームの丸境界フックがまだ無い
+# ため、切替は従来の immediate-quiesce 経路を使う。
+[lifecycle]
+require_round_boundary = false
+
+[cli]
+command = "/usr/local/bin/bastet_docich"
+cols = 80
+rows = 24
+font = "monospace"
+font_size = 18
+
+[agent]
+enabled = false  # wrapper が無人プレイする (bot は issue #15 の AI 方針で別途)
+
+# Twitch 配信カテゴリー・タイトル連動 (soviet_now update_stream_game.sh が読む)。
+# IGDB に Bastet 項目は無いため Tetris 系として Tetris (128844908) で代替 (照合済み)。
+[twitch]
+category_id = "128844908"
+category_name = "Tetris"
+title_prefix = "[Bastet]"
