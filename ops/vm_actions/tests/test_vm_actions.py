@@ -39,6 +39,14 @@ class AuthorizeTests(unittest.TestCase):
         p=self.run_auth(); self.assertEqual(p.returncode,0,p.stderr)
         data=json.loads(p.stdout); self.assertEqual(data['ref'],'feature/test')
 
+    def test_docich_owner_context_allowed(self):
+        p=self.run_auth(
+            GITHUB_REPOSITORY='azumag/docich',
+            GITHUB_REPOSITORY_ID='1327276249',
+            GITHUB_WORKFLOW_REF='azumag/docich/.github/workflows/vm-operations.yml@refs/heads/main',
+        )
+        self.assertEqual(p.returncode,0,p.stderr)
+
     def test_non_owner_actor_denied(self):
         p=self.run_auth(GITHUB_ACTOR='collab',GITHUB_ACTOR_ID='42')
         self.assertNotEqual(p.returncode,0)
@@ -108,9 +116,15 @@ class GatewayTests(unittest.TestCase):
         self.state=self.base/'state'; self.state.mkdir()
         self.prod=self.base/'soren'; self.prod.mkdir()
         self.doc=self.base/'docich'; self.doc.mkdir()
+        subprocess.run(['git','init','-q',self.doc],check=True)
+        subprocess.run(['git','-C',self.doc,'config','user.email','t@example.com'],check=True)
+        subprocess.run(['git','-C',self.doc,'config','user.name','T'],check=True)
+        (self.doc/'app.py').write_text('v1\n')
+        subprocess.run(['git','-C',self.doc,'add','app.py'],check=True)
+        subprocess.run(['git','-C',self.doc,'commit','-qm','v1'],check=True)
         self.config=self.base/'config.json'
         self.config.write_text(json.dumps({'state':str(self.state),'repos':{
-            'soviet_now':{'production':str(self.prod)}, 'docich':{'production':str(self.doc)}
+            'soviet_now':{'production':str(self.prod),'mode':'overlay'}, 'docich':{'production':str(self.doc),'mode':'git'}
         }}))
     def call(self, cmd, payload=b''):
         env=os.environ.copy(); env['SSH_ORIGINAL_COMMAND']=cmd; env['VMOPS_TESTING']='1'
@@ -118,6 +132,41 @@ class GatewayTests(unittest.TestCase):
     def upload(self,sha='a'*40,files=None):
         files=files or {'app.py':'v1\n'}
         return self.call(f'upload soviet_now preview {sha}',make_tar(files))
+
+    def make_docich_bundle(self, text='v2\n'):
+        candidate=self.base/'candidate'
+        subprocess.run(['git','clone','-q',self.doc,candidate],check=True)
+        subprocess.run(['git','-C',candidate,'config','user.email','t@example.com'],check=True)
+        subprocess.run(['git','-C',candidate,'config','user.name','T'],check=True)
+        (candidate/'app.py').write_text(text)
+        subprocess.run(['git','-C',candidate,'add','app.py'],check=True)
+        subprocess.run(['git','-C',candidate,'commit','-qm','candidate'],check=True)
+        sha=subprocess.check_output(['git','-C',candidate,'rev-parse','HEAD'],text=True).strip()
+        bundle=self.base/'candidate.bundle'
+        subprocess.run(['git','-C',candidate,'bundle','create',bundle,'HEAD'],check=True)
+        return sha,bundle.read_bytes()
+
+    def test_docich_production_uses_git_bundle_and_preserves_git_head(self):
+        sha,bundle=self.make_docich_bundle()
+        p=self.call(f'upload docich production {sha}',bundle)
+        self.assertEqual(p.returncode,0,p.stderr.decode())
+        p=self.call(f'bootstrap docich production {sha}')
+        self.assertEqual(p.returncode,0,p.stderr.decode())
+        p=self.call(f'deploy docich production {sha}')
+        self.assertEqual(p.returncode,0,p.stderr.decode())
+        head=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
+        self.assertEqual(head,sha)
+        self.assertEqual((self.doc/'app.py').read_text(),'v2\n')
+        status=subprocess.check_output(['git','-C',self.doc,'status','--porcelain','--untracked-files=no','--ignore-submodules=all'],text=True)
+        self.assertEqual(status,'')
+
+    def test_docich_git_deploy_refuses_tracked_drift(self):
+        sha,bundle=self.make_docich_bundle()
+        self.assertEqual(self.call(f'upload docich production {sha}',bundle).returncode,0)
+        (self.doc/'app.py').write_text('manual-hotfix\n')
+        p=self.call(f'deploy docich production {sha}')
+        self.assertNotEqual(p.returncode,0)
+        self.assertEqual((self.doc/'app.py').read_text(),'manual-hotfix\n')
 
     def test_upload_rejects_symlink(self):
         p=self.call('upload soviet_now preview '+'a'*40,make_tar({'app.py':'x'},('bad','/etc/passwd')))
@@ -136,7 +185,8 @@ class GatewayTests(unittest.TestCase):
         sha1='a'*40; sha2='b'*40
         (self.prod/'app.py').write_text('old\n')
         self.assertEqual(self.upload(sha1,{'app.py':'v1\n'}).returncode,0)
-        self.assertNotEqual(self.call(f'deploy soviet_now production {sha1}').returncode,0)
+        p=self.call(f'deploy soviet_now production {sha1}')
+        self.assertNotEqual(p.returncode,0)
         self.assertEqual(self.call(f'bootstrap soviet_now production {sha1}').returncode,0)
         self.assertEqual(self.call(f'deploy soviet_now production {sha1}').returncode,0)
         self.assertEqual((self.prod/'app.py').read_text(),'v1\n')
@@ -175,5 +225,6 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertIn('ClearAllForwardings=yes',text)
         self.assertIn('VM_SSH_KNOWN_HOSTS',text)
         self.assertNotIn('ssh-keyscan',text)
+        self.assertIn('bundle create',text)
 
 if __name__=='__main__': unittest.main()
