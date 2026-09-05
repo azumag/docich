@@ -1,0 +1,22 @@
+name: VM operations CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  security-regressions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          submodules: false
+      - run: python3 -m unittest discover -s ops/vm_actions/tests -v
+      - run: python3 -m py_compile ops/vm_actions/authorize.py ops/vm_actions/build_archive.py ops/vm_actions/gateway.py
+      - run: bash -n ops/vm_actions/install_vm_gateway.sh
