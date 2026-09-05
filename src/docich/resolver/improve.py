@@ -71,11 +71,11 @@ def _run_match_gnurobots(script_text: str, *, interval_s: float = 0.25, max_s: f
     import shlex
     import subprocess
 
-    from . import robots as _robots_pkg  # reuse nothing; local helper below
-
     fd, script_path = tempfile.mkstemp(suffix=".scm", prefix="grb-resolver-")
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(script_text)
+    fd2, log_path = tempfile.mkstemp(suffix=".log", prefix="grb-run-")
+    os.close(fd2)
     session = f"evalr-{os.getpid()}-{int(time.time() * 1000) % 1000000}"
 
     def _tmux(args: list[str]) -> subprocess.CompletedProcess:
@@ -83,24 +83,46 @@ def _run_match_gnurobots(script_text: str, *, interval_s: float = 0.25, max_s: f
 
     try:
         _tmux(["kill-session", "-t", session])
+        # The game prints STATISTICS to stdout at exit.  Redirect it into a
+        # log file: when the game process is the session command, its exit
+        # closes the whole session, so a tmux capture of the final screen
+        # taken after the fact comes back empty.  The trailing sleep keeps
+        # the pane alive a moment so the last screen is still snapshotted.
         created = _tmux(
             [
                 "new-session", "-d", "-x", "80", "-y", "24", "-s", session,
-                f"{GNUROBOTS_BIN} -f {GNUROBOTS_MAP} {shlex.quote(script_path)}",
+                "sh",
+                "-c",
+                f"{GNUROBOTS_BIN} -f {GNUROBOTS_MAP} {shlex.quote(script_path)} "
+                f"> {shlex.quote(log_path)} 2>&1; echo EXIT:$?; sleep 2",
             ]
         )
         if created.returncode != 0:
             raise RuntimeError(f"評価用セッションの起動に失敗しました: {created.stderr.strip()}")
         start = time.monotonic()
         dead = False
+        last_text = ""
         while time.monotonic() - start < max_s:
             time.sleep(interval_s)
             listed = _tmux(["list-panes", "-t", session, "-F", "#{pane_dead}"])
-            dead = bool(listed.stdout) and "1" in listed.stdout.split()
+            if listed.returncode != 0 or not listed.stdout.strip():
+                # the game IS the session command: its exit closes the session
+                dead = True
+                break
+            dead = "1" in listed.stdout.split()
+            text = _tmux(["capture-pane", "-p", "-t", session]).stdout
+            if text:
+                last_text = text
             if dead:
                 break
-        text = _tmux(["capture-pane", "-p", "-t", session]).stdout
-        stats = gnurobots_resolver.parse_statistics(text)
+        try:
+            with open(log_path, encoding="utf-8", errors="replace") as fh:
+                stats = gnurobots_resolver.parse_statistics(fh.read())
+        except OSError:
+            stats = {"score": None, "energy": None, "shields": None}
+        if stats["score"] is None:
+            # Fallback: the last live screen may still show the status line.
+            stats = gnurobots_resolver.parse_statistics(last_text)
         return {
             "score": stats["score"],
             "energy": stats["energy"],
@@ -110,10 +132,11 @@ def _run_match_gnurobots(script_text: str, *, interval_s: float = 0.25, max_s: f
         }
     finally:
         _tmux(["kill-session", "-t", session])
-        try:
-            os.unlink(script_path)
-        except OSError:
-            pass
+        for junk in (script_path, log_path):
+            try:
+                os.unlink(junk)
+            except OSError:
+                pass
 
 
 def evaluate_gnurobots(
@@ -237,11 +260,14 @@ def improve_once(
     promoted = best_strategy is not base
     if promoted:
         _promote(g, game_name, s_file, base, best_strategy)
+    from . import scorelog
+
     summary = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "game": game_name,
         "baseline": base_ev["mean_score"],
         "best": best_score,
+        "best_strategy_key": scorelog.strategy_key(best_strategy),
         "promoted": promoted,
         "trials": trials,
     }
