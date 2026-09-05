@@ -224,9 +224,9 @@ def deploy_overlay(cfg,repo,sha):
     write_json(backup/'state.json',state)
     try:
         copy_release_to_prod(release,root,new,old); verify_prod(root,new)
+        write_json(state_path,{'mode':'overlay','sha':sha,'files':new,'previous_backup':backup_id})
     except Exception:
         restore_backup(root,backup,old,new); verify_prod(root,old); raise
-    write_json(state_path,{'mode':'overlay','sha':sha,'files':new,'previous_backup':backup_id})
     return {'status':'deployed','sha':sha,'files':len(new)}
 
 def deploy_git(cfg,repo,sha):
@@ -244,11 +244,11 @@ def deploy_git(cfg,repo,sha):
         subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','reset','--hard',sha],
                        stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
         if git(root,'rev-parse','HEAD')!=sha or not git_clean(root): raise ValueError('git deployment verification failed')
+        write_json(state_path,{'mode':'git','sha':sha,'previous_head':old})
     except Exception:
         subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','reset','--hard',old],
                        stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False,timeout=120)
         raise
-    write_json(state_path,{'mode':'git','sha':sha,'previous_head':old})
     return {'status':'deployed','sha':sha}
 
 def deploy_prod(cfg,repo,sha):
