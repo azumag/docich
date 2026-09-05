@@ -65,7 +65,7 @@ sudo tailscale serve --bg --https=443 http://127.0.0.1:8787
 
 ```toml
 [webui]
-bind = "127.0.0.1"        # Tailscale serve で公開する想定 (0.0.0.0 は警告付き)
+bind = "127.0.0.1"        # Tailscale serve で公開する想定 (非loopback+writable+token未設定は起動時error)
 port = 8787
 soren_root = ""           # 空なら games/soviet_now を自動検出
 token = ""                # 空なら Tailscale ACL のみ (設定時 8文字以上)
@@ -77,9 +77,18 @@ read_only = false         # true で閲覧専用
 ## 認証・セキュリティ
 
 - 主防御は **Tailscale ACL** (tailnet 外からは到達不能)。`serve` は HTTPS + 自動証明書。
-- 任意の二層目として Bearer token (設定 or `token_env` 環境変数)。SPA は URL の
-  `?token=` または sessionStorage から `Authorization: Bearer` を付与する。
-- ログ (`tmp/debug/webui.log`) にはクエリを除いたパスのみ記録される (token 非漏洩)。
+- 任意の二層目として Bearer token (設定 or `token_env` 環境変数)。SPA はトップページの
+  ログインフォームに入力した token を sessionStorage へ保存し、`Authorization: Bearer`
+  ヘッダで付与する。URL query (`?token=`) は受理/生成しない (history/referrer への
+  漏洩を避けるため。issue #41)。
+- **fail closed (issue #41)**: bind が loopback (127.0.0.1 等) 以外、かつ
+  `read_only=false` (writable)、かつ token 未設定 (config値・`token_env` 環境変数の
+  どちらも空) という組み合わせは `docich webui` 起動時に error で拒否する
+  (`--bind`/`--read-only` の CLI 上書き後の実効値も検証対象)。既定設定
+  (`bind=127.0.0.1`) はこの条件に該当しないため通常運用には影響しない。
+- token 比較は `hmac.compare_digest` による timing-safe 比較。
+- ログ (`tmp/debug/webui.log`) にはクエリを除いたパスのみ記録される。万一 `?token=`
+  付きでアクセスされても値は `REDACTED` に伏せてから記録する (token 非漏洩)。
 - 書き込み対象はホワイトリスト (`WEBUI_ALLOWLIST`) のみ。シークレットキー
   (API_KEY / TOKEN / SECRET / STREAM_KEY / PASSWORD) は書けない。
 - **`.env` は worker が bash で source する (`set -a; . ./.env`)**。このため全キーを

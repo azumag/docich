@@ -109,6 +109,42 @@ class WebUIConfig:
     read_only: bool = False
 
 
+# loopback とみなす bind 値 (これ以外は「外部到達しうる」扱い)。
+_LOOPBACK_BINDS = {"127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"}
+
+
+def is_loopback_bind(bind: str) -> bool:
+    """bind がループバック (自ホストからのみ到達可能) かどうか。
+
+    issue #41: 非loopback bind は「外部到達しうる」危険な構成とみなし、
+    writable かつ token 未設定なら起動時 error にする (webui.py 側で使用)。
+    """
+    b = (bind or "").strip().lower()
+    if not b:
+        return False
+    if b in _LOOPBACK_BINDS:
+        return True
+    # 127.0.0.0/8 は丸ごと loopback 扱い
+    if b.startswith("127."):
+        parts = b.split(".")
+        if len(parts) == 4 and all(p.isdigit() for p in parts):
+            return True
+    return False
+
+
+def effective_webui_token(webui: "WebUIConfig") -> str:
+    """token_env 環境変数を優先し、なければ webui.token を返す (空なら認証無効)。
+
+    webui.py の `_effective_token` と同じロジック。config.py 側の起動時検証
+    (非loopback+writable+認証なし禁止) でも同じ実効値を使うためにここへ集約する。
+    """
+    env_name = (webui.token_env or "").strip() or "DOCICH_WEBUI_TOKEN"
+    env_val = os.environ.get(env_name, "")
+    if env_val and env_val.strip():
+        return env_val.strip()
+    return (webui.token or "").strip()
+
+
 @dataclass
 class GlobalConfig:
     repo_root: Path
@@ -352,13 +388,28 @@ def load_global(repo_root: Path, config_path: Path | None = None) -> GlobalConfi
     # webui validation
     if not isinstance(webui.bind, str) or not webui.bind.strip():
         raise ConfigError("webui.bind は空でない文字列である必要があります")
-    # bind は IP リテラルか hostname を許容するが、危険な 0.0.0.0 は警告付きで許可する
+    # bind は IP リテラルか hostname を許容する。127.0.0.1 等の loopback 以外は
+    # 「外部到達しうる」危険な構成とみなし、下の non-loopback+writable+認証なしチェックで弾く。
     if webui.port < 1024 or webui.port > 65535:
         raise ConfigError(f"webui.port は1024-65535である必要があります (現在値: {webui.port!r})")
     if webui.token and len(webui.token.strip()) < 8:
         raise ConfigError("webui.token は8文字以上である必要があります (空なら無効)")
     if not isinstance(webui.token_env, str) or not webui.token_env.strip():
         raise ConfigError("webui.token_env は空でない文字列である必要があります")
+    # issue #41 (fail closed): 非loopback bind + read_only=false (writable) + token
+    # 未設定 (config値・token_env環境変数のどちらも空) の組み合わせは起動時 error にする。
+    # 既定値 (bind=127.0.0.1) はこの条件に該当しないため、既定設定での起動には影響しない。
+    if (
+        not is_loopback_bind(webui.bind)
+        and not webui.read_only
+        and not effective_webui_token(webui)
+    ):
+        raise ConfigError(
+            f"webui.bind が loopback 以外 ({webui.bind!r}) かつ webui.read_only=false"
+            " (writable) かつ token 未設定です。非loopback+writable+認証なしでの起動は"
+            "禁止されています。webui.token (または token_env 環境変数) を設定するか、"
+            " webui.read_only=true にしてください。"
+        )
 
     paths_raw = data.get("paths", {})
     if not isinstance(paths_raw, dict):
