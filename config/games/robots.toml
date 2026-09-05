@@ -3,6 +3,11 @@ name = "robots"
 title = "Robots"
 adapter = "cli"
 
+[lifecycle]
+# Switching away waits for the current Robots one-game boundary.  The
+# coordinator fails closed if the runtime adapter does not implement it.
+require_round_boundary = true
+
 [cli]
 command = "robots"
 cols = 80
@@ -10,10 +15,7 @@ rows = 24
 font = "monospace"
 font_size = 18
 
-[lifecycle]
-require_round_boundary = true
-
 [agent]
-enabled = false        # 最初は手動操作で切り替え・観測・入力を検証する
-brain = "random"
-interval_ms = 1500
+enabled = true         # 2026-09-05: resolver脳へ切替（決定論プレイ・トークンゼロ・戦略JSONホットリロード）
+brain = "resolver"
+interval_ms = 800
