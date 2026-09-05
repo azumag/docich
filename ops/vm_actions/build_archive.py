@@ -35,7 +35,7 @@ def main():
     head=git(repo,'rev-parse','HEAD').decode().strip()
     if head!=sha or len(sha)!=40 or any(c not in '0123456789abcdef' for c in sha):
         raise SystemExit('checkout SHA mismatch')
-    entries=git(repo,'ls-tree','-rz','--full-tree',sha).split(b'\0')
+    entries=git(repo,'ls-tree','-rz','-r','--full-tree',sha).split(b'\0')
     total=count=0
     fd=os.open(out,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
     with os.fdopen(fd,'wb') as raw, tarfile.open(fileobj=raw,mode='w') as tf:
