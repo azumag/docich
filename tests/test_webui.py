@@ -567,6 +567,11 @@ class TestRunWebuiDryRun(unittest.TestCase):
 class TestHttpHandlers(unittest.TestCase):
     """実サーバー (ThreadingHTTPServer) を起動して API を叩く。"""
 
+    # issue #42: /api/workers (POST), /api/stream (POST), /api/config (PUT) は
+    # dangerous action として confirm:true を要求する。_request() は明示指定が
+    # 無ければ自動で付与し、既存の大量の呼び出し箇所を書き換えずに済むようにする。
+    _CONFIRM_PATHS = {("POST", "/api/workers"), ("POST", "/api/stream"), ("PUT", "/api/config")}
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.repo_root = Path(self.tmp.name)
@@ -588,16 +593,31 @@ class TestHttpHandlers(unittest.TestCase):
         import http.client
 
         self.client = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        # issue #42: mutation には CSRF token が必要。setUp 時点 (token 未設定) に
+        # 一度取得しておけば、CSRF secret は bearer token と無関係なので後段で
+        # self.g.webui.token を変更するテストでも有効なまま使える。
+        self.csrf_token = self._fetch_csrf()
 
     def tearDown(self):
         self.client.close()
         self.server.shutdown()
         self.tmp.cleanup()
 
+    def _fetch_csrf(self):
+        self.client.request("GET", "/api/csrf")
+        res = self.client.getresponse()
+        data = json.loads(res.read().decode("utf-8"))
+        return data["csrf_token"]
+
     def _request(self, method, path, body=None, headers=None):
         import json as _json
 
         hdrs = dict(headers or {})
+        if method in ("POST", "PUT", "DELETE"):
+            hdrs.setdefault("X-CSRF-Token", self.csrf_token)
+        if isinstance(body, dict) and (method, path) in self._CONFIRM_PATHS and "confirm" not in body:
+            body = dict(body)
+            body["confirm"] = True
         if body is not None and not isinstance(body, bytes):
             body = _json.dumps(body).encode("utf-8")
             hdrs.setdefault("Content-Type", "application/json")
@@ -643,12 +663,12 @@ class TestHttpHandlers(unittest.TestCase):
         self.assertEqual(data["error"], "not_allowed")
 
     def test_put_config_invalid_json(self):
-        self.client.request("PUT", "/api/config", body=b"{invalid", headers={"Content-Type": "application/json"})
+        self.client.request("PUT", "/api/config", body=b"{invalid", headers={"Content-Type": "application/json", "X-CSRF-Token": self.csrf_token})
         res = self.client.getresponse()
         self.assertEqual(res.status, 400)
 
     def test_put_config_bad_content_length(self):
-        self.client.request("PUT", "/api/config", body=b"{}", headers={"Content-Length": "abc"})
+        self.client.request("PUT", "/api/config", body=b"{}", headers={"Content-Length": "abc", "X-CSRF-Token": self.csrf_token})
         res = self.client.getresponse()
         self.assertEqual(res.status, 400)
         res.read()
@@ -1020,6 +1040,250 @@ class TestHttpHandlers(unittest.TestCase):
             self.assertNotIn("supersecret123", json.dumps(data))
         finally:
             self.g.webui.token = ""
+
+
+class TestMutationGuard(TestHttpHandlers):
+    """issue #42: Host/Origin allowlist・CSRF token・Content-Type・read-only identity・
+    dangerous action の再確認・CORS wildcard+credentials 不可・authorization audit event。"""
+
+    def test_cross_origin_origin_header_rejected(self):
+        status, data = self._request(
+            "PUT", "/api/config", {"values": {"AI_AGENT_BACKOFF_SEC": "900"}}, headers={"Origin": "http://evil.example"}
+        )
+        self.assertEqual(status, 403, data)
+        self.assertEqual(data["error"], "invalid_origin")
+
+    def test_same_origin_loopback_origin_accepted(self):
+        status, data = self._request(
+            "PUT",
+            "/api/config",
+            {"values": {"AI_AGENT_BACKOFF_SEC": "900"}},
+            headers={"Origin": f"http://127.0.0.1:{self.port}"},
+        )
+        self.assertEqual(status, 200, data)
+
+    def test_invalid_host_header_rejected(self):
+        status, data = self._request(
+            "PUT", "/api/config", {"values": {"AI_AGENT_BACKOFF_SEC": "900"}}, headers={"Host": "evil.example"}
+        )
+        self.assertEqual(status, 400, data)
+        self.assertEqual(data["error"], "invalid_host")
+
+    def test_missing_csrf_token_rejected(self):
+        import json as _json
+
+        body = _json.dumps({"values": {"AI_AGENT_BACKOFF_SEC": "900"}, "confirm": True}).encode("utf-8")
+        self.client.request("PUT", "/api/config", body=body, headers={"Content-Type": "application/json"})
+        res = self.client.getresponse()
+        data = json.loads(res.read().decode("utf-8"))
+        self.assertEqual(res.status, 403, data)
+        self.assertEqual(data["error"], "csrf_missing")
+
+    def test_invalid_csrf_token_rejected(self):
+        status, data = self._request(
+            "PUT",
+            "/api/config",
+            {"values": {"AI_AGENT_BACKOFF_SEC": "900"}},
+            headers={"X-CSRF-Token": "garbage.notavalidmac"},
+        )
+        self.assertEqual(status, 403, data)
+        self.assertEqual(data["error"], "csrf_invalid")
+
+    def test_expired_csrf_token_rejected(self):
+        secret = webui._Handler.csrf_secret
+        self.assertTrue(secret)
+        expired = webui._make_csrf_token(secret, ttl=-10)
+        status, data = self._request(
+            "PUT",
+            "/api/config",
+            {"values": {"AI_AGENT_BACKOFF_SEC": "900"}},
+            headers={"X-CSRF-Token": expired},
+        )
+        self.assertEqual(status, 403, data)
+        self.assertEqual(data["error"], "csrf_expired")
+
+    def test_content_type_required_for_json_mutation(self):
+        import json as _json
+
+        body = _json.dumps({"values": {"AI_AGENT_BACKOFF_SEC": "900"}, "confirm": True}).encode("utf-8")
+        self.client.request(
+            "PUT",
+            "/api/config",
+            body=body,
+            headers={"Content-Type": "application/x-www-form-urlencoded", "X-CSRF-Token": self.csrf_token},
+        )
+        res = self.client.getresponse()
+        data = json.loads(res.read().decode("utf-8"))
+        self.assertEqual(res.status, 415, data)
+        self.assertEqual(data["error"], "invalid_content_type")
+
+    def test_cross_origin_form_style_request_rejected(self):
+        """HTML <form> は Origin を送りかつ Content-Type を application/json にできない。
+        Origin 不一致か Content-Type 拒否のいずれかで弾かれることを確認する
+        (issue #42 の cross-origin form CSRF 対策)。"""
+        import json as _json
+
+        body = _json.dumps({"worker": "prediction_worker", "action": "stop", "confirm": True}).encode("utf-8")
+        self.client.request(
+            "POST",
+            "/api/workers",
+            body=body,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Origin": "http://evil.example",
+            },
+        )
+        res = self.client.getresponse()
+        data = json.loads(res.read().decode("utf-8"))
+        self.assertIn(res.status, (403, 415))
+        self.assertFalse((self.soren / "tmp/state/prediction_worker.paused").exists())
+
+    def test_read_only_identity_rejects_all_mutations(self):
+        self.g.webui.read_only_token = "viewersecret1"
+        headers = {"Authorization": "Bearer viewersecret1"}
+        try:
+            status, data = self._request(
+                "PUT", "/api/config", {"values": {"AI_AGENT_BACKOFF_SEC": "900"}}, headers=dict(headers)
+            )
+            self.assertEqual(status, 403, data)
+            self.assertEqual(data["error"], "read_only")
+            status, data = self._request(
+                "POST", "/api/workers", {"worker": "prediction_worker", "action": "stop"}, headers=dict(headers)
+            )
+            self.assertEqual(status, 403, data)
+            status, data = self._request("DELETE", "/api/backoffs/x", headers=dict(headers))
+            self.assertEqual(status, 403, data)
+            self.assertFalse((self.soren / "tmp/state/prediction_worker.paused").exists())
+            # GET (read) は viewer token でも成功する
+            status, data = self._request("GET", "/api/health", headers=dict(headers))
+            self.assertEqual(status, 200, data)
+        finally:
+            self.g.webui.read_only_token = ""
+
+    def test_operator_token_unaffected_when_read_only_token_also_configured(self):
+        self.g.webui.token = "operatorsecret1"
+        self.g.webui.read_only_token = "viewersecret1"
+        try:
+            status, data = self._request(
+                "PUT",
+                "/api/config",
+                {"values": {"AI_AGENT_BACKOFF_SEC": "900"}},
+                headers={"Authorization": "Bearer operatorsecret1"},
+            )
+            self.assertEqual(status, 200, data)
+        finally:
+            self.g.webui.token = ""
+            self.g.webui.read_only_token = ""
+
+    def test_dangerous_actions_require_confirmation(self):
+        import json as _json
+
+        for method, path, payload in (
+            ("POST", "/api/workers", {"worker": "prediction_worker", "action": "stop"}),
+            ("POST", "/api/stream", {"action": "stop"}),
+            ("PUT", "/api/config", {"values": {"AI_AGENT_BACKOFF_SEC": "900"}}),
+        ):
+            body = _json.dumps(payload).encode("utf-8")
+            self.client.request(
+                method,
+                path,
+                body=body,
+                headers={"Content-Type": "application/json", "X-CSRF-Token": self.csrf_token},
+            )
+            res = self.client.getresponse()
+            data = json.loads(res.read().decode("utf-8"))
+            self.assertEqual(res.status, 428, (method, path, data))
+            self.assertEqual(data["error"], "confirmation_required")
+        self.assertFalse((self.soren / "tmp/state/prediction_worker.paused").exists())
+        self.assertFalse((self.soren / "tmp/state/direct_stream.paused").exists())
+
+    def test_confirm_header_alternative_to_body_field(self):
+        status, data = self._request(
+            "POST",
+            "/api/workers",
+            {"worker": "prediction_worker", "action": "stop", "confirm": False},
+            headers={"X-Docich-Confirm": "1"},
+        )
+        self.assertEqual(status, 200, data)
+
+    def test_cors_reflects_allowed_origin_not_wildcard(self):
+        self.g.webui.allow_cors = True
+        try:
+            origin = f"http://127.0.0.1:{self.port}"
+            self.client.request("GET", "/api/health", headers={"Origin": origin})
+            res = self.client.getresponse()
+            res.read()
+            self.assertEqual(res.getheader("Access-Control-Allow-Origin"), origin)
+            self.assertIsNone(res.getheader("Access-Control-Allow-Credentials"))
+        finally:
+            self.g.webui.allow_cors = False
+
+    def test_cors_omits_header_for_disallowed_origin(self):
+        self.g.webui.allow_cors = True
+        try:
+            self.client.request("GET", "/api/health", headers={"Origin": "http://evil.example"})
+            res = self.client.getresponse()
+            res.read()
+            self.assertIsNone(res.getheader("Access-Control-Allow-Origin"))
+            self.assertNotEqual(res.getheader("Access-Control-Allow-Origin"), "*")
+        finally:
+            self.g.webui.allow_cors = False
+
+    def test_reverse_proxy_style_headers_do_not_bypass_missing_auth(self):
+        """実 Tailscale は使えないため、X-Forwarded-* / Host ヘッダを模した経路で代替する
+        (issue #42 受入条件: reverse proxy/Tailscale 等の実経路で未認証access拒否)。
+        実 Tailscale serve での挙動そのものは未確認。"""
+        self.g.webui.token = "supersecret123"
+        try:
+            status, data = self._request(
+                "PUT",
+                "/api/config",
+                {"values": {"AI_AGENT_BACKOFF_SEC": "900"}},
+                headers={
+                    "X-Forwarded-Host": "myhost.mytailnet.ts.net",
+                    "X-Forwarded-Proto": "https",
+                    "X-Forwarded-For": "100.64.0.5",
+                },
+            )
+            self.assertEqual(status, 401, data)
+        finally:
+            self.g.webui.token = ""
+
+    def test_forwarded_host_header_does_not_satisfy_host_allowlist(self):
+        """X-Forwarded-Host は信頼しない: 実際の Host が不正なら、たとえ
+        X-Forwarded-Host が正しいホスト名を装っていても invalid_host で拒否する
+        (loopback 直結の攻撃者が任意の X-Forwarded-* を偽装できるため)。"""
+        status, data = self._request(
+            "PUT",
+            "/api/config",
+            {"values": {"AI_AGENT_BACKOFF_SEC": "900"}},
+            headers={"Host": "evil.example", "X-Forwarded-Host": "127.0.0.1"},
+        )
+        self.assertEqual(status, 400, data)
+        self.assertEqual(data["error"], "invalid_host")
+
+    def test_authz_audit_event_logged_without_secret_or_body(self):
+        self.g.webui.token = "supersecret123"
+        try:
+            self._request("PUT", "/api/config", {"values": {"AI_AGENT_BACKOFF_SEC": "900"}}, headers={"Origin": "http://evil.example"})
+            self._request(
+                "PUT",
+                "/api/config",
+                {"values": {"AI_AGENT_BACKOFF_SEC": "900"}},
+                headers={"Authorization": "Bearer supersecret123"},
+            )
+        finally:
+            self.g.webui.token = ""
+        log_file = self.soren / "tmp/debug/webui.log"
+        lines = [json.loads(ln) for ln in log_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        authz = [r for r in lines if r.get("event") == "authz"]
+        self.assertTrue(authz)
+        self.assertTrue(any(r["decision"] == "deny" and r["reason"] == "invalid_origin" for r in authz))
+        self.assertTrue(any(r["decision"] == "allow" and r["identity"] == "operator" for r in authz))
+        raw = log_file.read_text(encoding="utf-8")
+        self.assertNotIn("supersecret123", raw)
+        self.assertNotIn("AI_AGENT_BACKOFF_SEC", raw)
+        self.assertNotIn("900", raw)
 
 
 class TestWebUIConfig(unittest.TestCase):
