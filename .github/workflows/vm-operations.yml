@@ -1,0 +1,203 @@
+name: VM operations
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Operation to run
+        required: true
+        default: status
+        type: choice
+        options: [status, deploy, exec, bootstrap]
+      target:
+        description: VM target
+        required: true
+        default: preview
+        type: choice
+        options: [preview, production]
+      ref:
+        description: Branch or full commit SHA (production deploy is main only)
+        required: false
+        default: main
+        type: string
+      command:
+        description: Command sent on stdin for exec (production output is kept on the VM)
+        required: false
+        type: string
+      confirm:
+        description: Type production for production exec/bootstrap
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vm-operations-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  operate:
+    if: ${{ github.actor_id == 9018513 && github.triggering_actor == 'azumag' && github.ref == 'refs/heads/main' && github.ref_protected == true }}
+    environment: vm-operations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout trusted control plane from current main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: main
+          path: control
+          persist-credentials: false
+          submodules: false
+
+      - name: Authorize owner operation
+        id: auth
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          GITHUB_REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_ACTOR_ID: ${{ github.actor_id }}
+          GITHUB_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_SHA: ${{ github.sha }}
+          INPUT_OPERATION: ${{ inputs.operation }}
+          INPUT_TARGET: ${{ inputs.target }}
+          INPUT_REF: ${{ inputs.ref }}
+          INPUT_CONFIRM: ${{ inputs.confirm }}
+        run: python3 control/ops/vm_actions/authorize.py >/dev/null
+
+      - name: Checkout requested code without submodules
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ steps.auth.outputs.ref }}
+          path: candidate
+          persist-credentials: false
+          submodules: false
+
+      - name: Resolve immutable candidate SHA
+        id: candidate
+        shell: bash
+        env:
+          OPERATION: ${{ steps.auth.outputs.operation }}
+          TARGET: ${{ steps.auth.outputs.target }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          sha="$(git -C candidate rev-parse HEAD)"
+          control_sha="$(git -C control rev-parse HEAD)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          if [[ "$EVENT_NAME" == push && "$sha" != "$EVENT_SHA" ]]; then
+            echo "candidate does not match push SHA" >&2
+            exit 1
+          fi
+          if [[ "$OPERATION" == deploy && "$TARGET" == production && "$sha" != "$control_sha" ]]; then
+            echo "stale production deployment refused; current main has advanced" >&2
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Build inert deployment archive
+        if: ${{ steps.auth.outputs.operation == 'deploy' || steps.auth.outputs.operation == 'bootstrap' }}
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: python3 control/ops/vm_actions/build_archive.py candidate "$SHA" "$RUNNER_TEMP/vm-payload.tar" "$REPO_NAME"
+
+      - name: Configure pinned SSH client
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          VM_SSH_PORT: ${{ secrets.VM_SSH_PORT }}
+          VM_SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          VM_SSH_KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$VM_SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]
+          [[ "$VM_SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          port="${VM_SSH_PORT:-22}"
+          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+          install -m 700 -d "$RUNNER_TEMP/vm-ssh"
+          printf '%s\n' "$VM_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/vm-ssh/key"
+          printf '%s\n' "$VM_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/vm-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/vm-ssh/key" "$RUNNER_TEMP/vm-ssh/known_hosts"
+          printf 'port=%s\n' "$port" >> "$GITHUB_ENV"
+
+      - name: Upload candidate to VM staging
+        if: ${{ steps.auth.outputs.operation == 'deploy' || steps.auth.outputs.operation == 'bootstrap' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          TARGET: ${{ steps.auth.outputs.target }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=20)
+          ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "upload $REPO_NAME $TARGET $SHA" < "$RUNNER_TEMP/vm-payload.tar"
+
+      - name: Deploy staged code
+        if: ${{ steps.auth.outputs.operation == 'deploy' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          TARGET: ${{ steps.auth.outputs.target }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=20)
+          ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "deploy $REPO_NAME $TARGET $SHA"
+
+      - name: Adopt reviewed production baseline
+        if: ${{ steps.auth.outputs.operation == 'bootstrap' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=20)
+          ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "bootstrap $REPO_NAME production $SHA"
+
+      - name: Query VM deployment state
+        if: ${{ steps.auth.outputs.operation == 'status' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          TARGET: ${{ steps.auth.outputs.target }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=20)
+          ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status $REPO_NAME $TARGET $SHA"
+
+      - name: Execute owner command on VM
+        if: ${{ steps.auth.outputs.operation == 'exec' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          TARGET: ${{ steps.auth.outputs.target }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+          VM_COMMAND: ${{ inputs.command }}
+        run: |
+          set -euo pipefail
+          [[ -n "$VM_COMMAND" ]]
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=20)
+          printf '%s' "$VM_COMMAND" | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec $REPO_NAME $TARGET $SHA"
