@@ -6,6 +6,7 @@ delegates to an external process (stateless, spawned fresh every cycle);
 """
 from __future__ import annotations
 
+import json
 import random
 import shlex
 import subprocess
@@ -89,10 +90,58 @@ class RandomBrain:
         return [Action(type="wait", ms=500)]
 
 
+class ResolverBrain:
+    """Deterministic in-process resolver (token-free).
+
+    Parses the observation text and computes the next keys locally
+    (docich.resolver); no LLM call and no subprocess per move.  Strategy
+    weights hot-reload from ``<state_dir>/resolver/<game>_strategy.json`` on
+    mtime change, so docich.resolver.improve can promote new parameters
+    without restarting the agent loop.
+    """
+
+    def __init__(self, g: GlobalConfig, game: GameConfig):
+        # Imported lazily: docich.resolver imports docich.adapters, and the
+        # agent package must stay importable from the adapter layer without
+        # an import cycle.
+        from ..resolver import resolver_policy, strategy_path
+
+        self.g = g
+        self.game = game
+        self.policy = resolver_policy(game.name)
+        self.strategy_file = strategy_path(g.state_dir, game.name)
+        self._strategy: dict = {}
+        self._strategy_mtime: int | None = -1
+
+    def _load_strategy(self) -> dict:
+        try:
+            mtime = self.strategy_file.stat().st_mtime_ns
+        except OSError:
+            mtime = None
+        if mtime != self._strategy_mtime:
+            data: dict = {}
+            if mtime is not None:
+                try:
+                    loaded = json.loads(self.strategy_file.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        data = loaded
+                except (OSError, ValueError):
+                    data = {}
+            self._strategy = data
+            self._strategy_mtime = mtime
+        return self._strategy
+
+    def decide(self, obs: Observation) -> list[Action]:
+        keys = self.policy(obs.text or "", self._load_strategy())
+        return [Action(type="text", text=key) for key in keys]
+
+
 def build_brain(g: GlobalConfig, game: GameConfig):
     kind = game.agent.brain
     if kind == "command":
         return CommandBrain(g, game)
     if kind == "random":
         return RandomBrain(g, game)
-    raise AdapterError(f"未知の brain です: {kind!r} (使用可能: command, random)")
+    if kind == "resolver":
+        return ResolverBrain(g, game)
+    raise AdapterError(f"未知の brain です: {kind!r} (使用可能: command, random, resolver)")
