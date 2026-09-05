@@ -18,7 +18,10 @@ font = "monospace"
 font_size = 18
 
 [agent]
-enabled = false  # wrapper が menu/retry を駆動し無人プレイする (bot は issue #15 の AI 方針で別途)
+enabled = true  # brains/nsnake/brain.py (BFS採餌bot) がプレイを担当。menu/retry遷移はwrapperが所有し、botは遷移画面で沈黙する
+brain = "command"
+command = "brains/nsnake/brain.py"
+interval_ms = 700
 
 # Twitch 配信カテゴリー・タイトル連動 (soviet_now update_stream_game.sh が読む)。
 # "Snake" 名義の IGDB 項目は複数版があり、検索先頭の 458463 を採用 (照合済み)。
