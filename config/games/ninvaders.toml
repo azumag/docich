@@ -18,7 +18,10 @@ font = "monospace"
 font_size = 18
 
 [agent]
-enabled = false  # wrapper が無人プレイする (bot は issue #15 の AI 方針で別途)
+enabled = true  # brains/ninvaders/brain.py (掃引+回避bot) がプレイを担当。menu/retry遷移はwrapperが所有し、botは遷移画面で沈黙する
+brain = "command"
+command = "brains/ninvaders/brain.py"
+interval_ms = 500
 
 # Twitch 配信カテゴリー・タイトル連動 (soviet_now update_stream_game.sh が読む)。
 # 原作 Space Invaders (4669) を採用 (照合済み)。

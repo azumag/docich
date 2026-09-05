@@ -248,6 +248,17 @@ def _bot_presets() -> dict:
                 "score_res": [r"Score\s+([0-9]+)"],
             },
         },
+        "ninvaders": {
+            "command": lambda game: _resolve_binary(game),
+            "bot_cmd": [exe, "brains/ninvaders/brain.py"],
+            "run_kwargs": {
+                "boot_sleep_s": 2.0,
+                "start_keys": ["Space"],
+                "retry_keys": ["Space"],
+                "game_over_res": [r"Game Over"],
+                "score_res": [r"Score:\s*([0-9]+)"],
+            },
+        },
     }
 
 
