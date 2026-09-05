@@ -4,9 +4,9 @@
 
 - 切替基盤はdocich `5ccb3f1`としてPR #64へpush済み。draining中の入力継続、終了後のwriter再取得、request/generation/期限の照合、短時間cancelと復旧を実装。独立レビューの3指摘と並行復旧raceを修正し、対象151件＋8 subtests成功。ゲーム別有効化2設定はdetector未接続のため未commit・本番未反映。
 - 全docich回帰は957件＋36 subtests成功、6件は隔離worktreeの未取得submodule（broadcast/eloop_lib/say_enqueue/半熟知識）の欠如で未通過。全緑とは報告しない。
-- 独立共有表示はsoviet_now `b781ffcfa7`までpush済み。初回active buffer誤判定と正常signal中断の不具合を修正し、独立レビュー合格・関連52件成功。実Chromiumは未検証で、本番には未導入。
-- 再開ゲート: 最新版の `shared_overlay.mjs` と `lib/shared_overlay.mjs` を既存OCI VMの `/home/ubuntu/soren/tmp/shared-overlay-rehearsal/` 以下へ更新する転送が、親側でもauto-reviewに拒否された。非公開コードの具体payload/宛先への明示承認をユーザーへ求める。別ツール・別経路で迂回しない。stagingには旧版が残り、本番の切替は行っていない。
-- 隔離検証の後始末は担当が確認済み: 検証display/service/listener停止、display lock/socket消滅。旧コード・合成fixtures・ログはstagingに保存したまま。修正版の実画面成功を主張しない。
+- 独立共有表示はsoviet_now `6395204d55`までpush済み。初回buffer/signal修正に加え、実X11で発見したChrome toolbarによる外枠1288×805・下端切れをCDP fullscreenとvisible-window契約で修正。独立レビュー合格、関連57件成功。本番には未導入。
+- ユーザーの具体承認後、`shared_overlay.mjs` と `lib/shared_overlay.mjs` をOCI VMの `/home/ubuntu/soren/tmp/shared-overlay-rehearsal/` へ更新し、commit `6395204d55` とSHA256一致を確認。これは隔離stagingのみで、本番の切替は行っていない。
+- 隔離実機証拠: healthのok/ready/browserReady/windowReady/layoutReady/overlayReadyが全true、inner/outer 1280×720、screen (0,0)、stage 1280×720、frames=3。xwininfoと `/tmp/shared-overlay-639.png` を親も目視し、toolbarなし、上/下90px・右320px・中央960×540を確認。終了後Node/Chromium/xfwm/Xvfb、port18082、X98 socket/lockの消滅を確認。direct_stream PID559422 / encoder PID559665と既存improve_daemon.pausedは維持。
 - Sorenのbroker/hooks/ゲーム専用音声終了/監視抑止は `/tmp/soviet-game-lifecycle` の未commit差分。二相の境界保留→明示停止、durable stopping claim等を修正中で、最終レビュー・本番反映は未実施。Robots実adapterの境界検出、Soren game-only起動/復帰、共有表示の独立監視と重なり順、初回legacy Sorenの安全な切替が次段の残件。
 - Soren担当の区切り報告: atomic `claim-stop` を実装し、claim後はcancel/restoreを拒否、同一claimのfinishのみ期限後も許可。担当実行はPython8件・Node12件・shell回帰成功、構文/diff-check成功。変更は未commitで保持し、次回はこのsnapshotの独立レビューから行う。Playwright controller E2Eと実資源解放は未検証。
 
