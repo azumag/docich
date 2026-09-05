@@ -240,6 +240,7 @@ class CliCoordinatorAdapter:
         self.tmux = Tmux(self.spec.adapter_session)
         self.agent_enabled = game.agent.enabled
         self.requires_round_boundary = game.lifecycle.require_round_boundary
+        self.round_boundary_timeout_s = game.lifecycle.boundary_timeout_s
         if not self.requires_round_boundary:
             # policy flagがfalseのCLIゲーム (nethack等) は境界待ちを要求しない。
             # coordinatorはcallableな request_round_boundary の存在だけでも

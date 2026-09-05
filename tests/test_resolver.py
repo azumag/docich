@@ -194,6 +194,40 @@ class ResolverBrainTest(unittest.TestCase):
         brain = brains.build_brain(self.g, self.game)
         self.assertIsInstance(brain, brains.ResolverBrain)
 
+    def test_brain_holds_restart_while_draining(self):
+        import json
+
+        brain = brains.build_brain(self.g, self.game)
+        s_file = strategy_path(self.g.state_dir, "robots")
+        s_file.parent.mkdir(parents=True, exist_ok=True)
+        (Path(self.g.state_dir) / "game_switch.json").write_text(
+            json.dumps({"phase": "draining"}), encoding="utf-8"
+        )
+
+        class Obs:
+            adapter = "cli"
+            text = _pane(["      @      "], extra="Another game? (y or n)")
+
+        # The game-over prompt belongs to the boundary waiter while
+        # draining: the brain must not consume it with 'y'.
+        self.assertEqual(brain.decide(Obs()), [])
+
+    def test_brain_restarts_when_not_draining(self):
+        import json
+
+        brain = brains.build_brain(self.g, self.game)
+
+        class Obs:
+            adapter = "cli"
+            text = _pane(["      @      "], extra="Another game? (y or n)")
+
+        # No coordinator state (or a settled phase): restart as usual.
+        self.assertEqual([a.text for a in brain.decide(Obs())], ["y"])
+        state_file = Path(self.g.state_dir) / "game_switch.json"
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(json.dumps({"phase": "ready"}), encoding="utf-8")
+        self.assertEqual([a.text for a in brain.decide(Obs())], ["y"])
+
     def test_brain_reads_strategy_file_and_hot_reloads(self):
         brain = brains.build_brain(self.g, self.game)
         s_file = strategy_path(self.g.state_dir, "robots")

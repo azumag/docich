@@ -2196,6 +2196,24 @@ class GameSwitchCoordinator:
             raise GameSwitchError("adapter.requires_round_boundary はboolである必要があります")
         return value
 
+    def _boundary_timeout_override(self, adapter: CoordinatorAdapter) -> float | None:
+        """Per-game boundary wait declared in [lifecycle] (None = default).
+
+        A boundary-requiring game whose matches outlast the request-wide
+        deadline declares boundary_timeout_s; the coordinator then extends
+        only the boundary wait (never the other steps).
+        """
+
+        value = getattr(adapter, "round_boundary_timeout_s", None)
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise GameSwitchError("adapter.round_boundary_timeout_s は秒数 (数値) が必要です")
+        value = float(value)
+        if not value > 0:
+            raise GameSwitchError("adapter.round_boundary_timeout_s は正の秒数が必要です")
+        return value
+
     @staticmethod
     def _invoke_round_boundary_method(
         method: Callable[..., object],
@@ -2241,13 +2259,19 @@ class GameSwitchCoordinator:
         old_active: Mapping[str, object],
         acceptance: RequestAcceptance,
         deadline: float,
-    ) -> None:
+    ) -> float:
         """Wait for a game boundary with the writer lock released.
 
         Canonical ``draining`` state remains active/observable while the
         adapter waits.  Once the call returns, this method reacquires the
         writer and verifies every identity field before the caller is allowed
         to stop the old runtime.
+
+        Returns the effective deadline for the rest of the transaction: the
+        request deadline, unless the game declares ``boundary_timeout_s``,
+        in which case only the boundary wait is extended (canonical
+        ``deadline_at`` is extended with it, before the lock is released, so
+        a concurrent recovery honors the same window).
         """
 
         method = getattr(adapter, "request_round_boundary", None)
@@ -2258,11 +2282,33 @@ class GameSwitchCoordinator:
                     "このゲームは試合終了境界を要求しますがadapterが未対応です"
                 )
             self._log("round_boundary_skipped", phase="draining")
-            return
+            return deadline
         if not callable(method):
             raise RoundBoundaryUnsupportedError(
                 "adapter.request_round_boundary がcallableではありません"
             )
+
+        override_s = self._boundary_timeout_override(adapter)
+        wait_deadline = deadline
+        if override_s is not None:
+            extended = time.monotonic() + override_s
+            if extended > wait_deadline:
+                wait_deadline = extended
+                extended_at = (
+                    dt.datetime.now(dt.timezone.utc)
+                    + dt.timedelta(seconds=override_s)
+                ).isoformat().replace("+00:00", "Z")
+                tx.transition(
+                    {"draining"},
+                    "draining",
+                    updates={"deadline_at": extended_at},
+                    crash_hook=self.crash_hook,
+                )
+                self._log(
+                    "round_boundary_extended",
+                    phase="draining",
+                    detail=f"boundary_timeout_s={override_s}",
+                )
 
         self._log("round_boundary_waiting", phase="draining")
         tx.release_for_wait()
@@ -2276,10 +2322,12 @@ class GameSwitchCoordinator:
             try:
                 result = self._call_adapter(
                     lambda cancel: self._invoke_round_boundary_method(
-                        method, acceptance.request_id, deadline, cancel
+                        method, acceptance.request_id, wait_deadline, cancel
                     ),
-                    deadline,
-                    self.step_timeouts.round_boundary_s,
+                    wait_deadline,
+                    override_s
+                    if override_s is not None
+                    else self.step_timeouts.round_boundary_s,
                     "round_boundary",
                 )
             except BaseException as exc:  # reacquire before propagating
@@ -2314,6 +2362,7 @@ class GameSwitchCoordinator:
                 "draining中にcanonicalのrequest/active identityが変化しました"
             )
         self._log("round_boundary_reached", phase="draining")
+        return wait_deadline
 
     def _cancel_round_boundary_locked(
         self,
@@ -2594,7 +2643,7 @@ class GameSwitchCoordinator:
                 )
                 self._log("drain_started", phase="draining")
                 try:
-                    self._await_round_boundary_locked(
+                    deadline = self._await_round_boundary_locked(
                         tx, old_adapter, old_active, acceptance, deadline
                     )
                 except RoundBoundaryStateChangedError:

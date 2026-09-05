@@ -29,10 +29,11 @@ class BoundaryAdapter:
     name = "cli"
     agent_enabled = False
 
-    def __init__(self, spec, *, required=True, method=True):
+    def __init__(self, spec, *, required=True, method=True, boundary_timeout_s=None):
         self.spec = spec
         self.runtime = BoundaryRuntime(spec)
         self.requires_round_boundary = required
+        self.round_boundary_timeout_s = boundary_timeout_s
         self.method_enabled = method
         self.boundary_request_ids: list[str] = []
         self.cancel_request_ids: list[str] = []
@@ -80,21 +81,25 @@ class BoundaryAdapter:
 
 
 class BoundaryFactory:
-    def __init__(self, *, required=True, method=True):
+    def __init__(self, *, required=True, method=True, boundary_timeout_s=None):
         self.required = required
         self.method = method
+        self.boundary_timeout_s = boundary_timeout_s
         self.adapters: dict[tuple[str, int], BoundaryAdapter] = {}
 
     def __call__(self, spec):
         key = (spec.game, spec.generation)
         if key not in self.adapters:
             self.adapters[key] = BoundaryAdapter(
-                spec, required=self.required, method=self.method
+                spec,
+                required=self.required,
+                method=self.method,
+                boundary_timeout_s=self.boundary_timeout_s,
             )
         return self.adapters[key]
 
 
-def _coordinator(factory, state_dir):
+def _coordinator(factory, state_dir, *, round_boundary_s=0.2):
     store = game_switch.GameSwitchStore(state_dir)
     coordinator = game_switch.GameSwitchCoordinator(
         store,
@@ -105,7 +110,7 @@ def _coordinator(factory, state_dir):
         round_reacquire_timeout_s=0.5,
         step_timeouts=game_switch.StepTimeouts(
             preflight_s=0.5,
-            round_boundary_s=0.2,
+            round_boundary_s=round_boundary_s,
             stop_agent_s=0.5,
             start_s=0.5,
             agent_start_s=0.5,
@@ -165,6 +170,76 @@ def test_boundary_wait_releases_writer_and_orders_stop_after_ack():
         assert old.boundary_request_ids == [request_id]
         assert old.runtime.events.index("boundary") < old.runtime.events.index("stop_agent")
         assert old.runtime.events.index("stop_agent") < old.runtime.events.index("cleanup")
+
+
+def test_boundary_timeout_override_extends_request_deadline():
+    """A game-declared boundary_timeout_s outlasts the request deadline.
+
+    Timeout contract: the request-wide deadline bounds every step by
+    default, so a 2h boundary wait could never take effect.  With the
+    override, only the boundary wait is extended (canonical deadline_at
+    included); a boundary ack arriving after the request deadline still
+    commits the switch.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp) / "run"
+        factory = BoundaryFactory(boundary_timeout_s=3.0)
+        store, coordinator = _coordinator(factory, state_dir)
+        assert coordinator.start("nethack").status == "succeeded"
+        old = factory.adapters[("nethack", 1)]
+        request_id = str(uuid.uuid4())
+        result_box = []
+
+        worker = threading.Thread(
+            target=lambda: result_box.append(
+                coordinator.switch("robots", request_id=request_id, timeout_s=0.6)
+            )
+        )
+        started = time.monotonic()
+        worker.start()
+        _wait_for_phase(store, "draining")
+        assert old.boundary_entered.wait(1.0)
+        # The canonical deadline was extended beyond the 0.6s request: the
+        # waiter would otherwise already have been cancelled.
+        import datetime as _dt
+
+        state, _ = store.canonical.load()
+        extended = _dt.datetime.fromisoformat(
+            state["deadline_at"].replace("Z", "+00:00")
+        )
+        request_deadline = _dt.datetime.fromtimestamp(
+            started + 0.6, tz=_dt.timezone.utc
+        )
+        assert extended > request_deadline + _dt.timedelta(seconds=1.0)
+
+        # Ack arrives after the original request deadline: still commits.
+        time.sleep(0.8)
+        old.boundary_release.set()
+        worker.join(5.0)
+        assert not worker.is_alive()
+        assert result_box[0].status == "succeeded"
+        assert time.monotonic() - started > 0.6
+
+
+def test_boundary_without_override_times_out_at_request_deadline():
+    """Without the override the request deadline still caps the wait."""
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp) / "run"
+        factory = BoundaryFactory()
+        store, coordinator = _coordinator(factory, state_dir, round_boundary_s=5.0)
+        assert coordinator.start("nethack").status == "succeeded"
+        old = factory.adapters[("nethack", 1)]
+        started = time.monotonic()
+        result = coordinator.switch("robots", timeout_s=0.6)
+        elapsed = time.monotonic() - started
+        assert result.status == "failed"
+        assert result.error_code == game_switch.ERROR_TIMEOUT
+        # The 5s step timeout did not rule: the 0.6s request deadline did.
+        assert elapsed < 3.0
+        state, _ = store.canonical.load()
+        assert state["phase"] == "ready"
+        assert state["active"]["game"] == "nethack"
+        assert old.runtime.alive
 
 
 def test_boundary_timeout_retains_old_active_without_cleanup():

@@ -132,8 +132,53 @@ class ResolverBrain:
         return self._strategy
 
     def decide(self, obs: Observation) -> list[Action]:
-        keys = self.policy(obs.text or "", self._load_strategy())
+        text = obs.text or ""
+        keys = self.policy(text, self._load_strategy())
+        if keys and keys[0] == "y" and self._draining():
+            # The game-over prompt belongs to the round-boundary waiter while
+            # the canonical phase is draining: answering it here would consume
+            # the prompt before the waiter can ack (and record the score),
+            # and the match would restart outside the guarded handover.
+            # Mid-match play continues normally; only the restart is held.
+            return []
+        if keys and keys[0] == "y":
+            # The restart key is the one moment the final match score is
+            # visible in the pane; record it for the score-history panel.
+            self._record_match_score(text)
         return [Action(type="text", text=key) for key in keys]
+
+    def _draining(self) -> bool:
+        """True while a game switch is waiting for this match to end.
+
+        Read straight from the canonical JSON (never through the coordinator
+        lock: the brain must stay lock-free).  Missing file = no coordinator
+        activity = safe to restart as usual.
+        """
+        try:
+            from pathlib import Path
+
+            data = json.loads(
+                (Path(self.g.state_dir) / "game_switch.json").read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):
+            return False
+        return isinstance(data, dict) and data.get("phase") == "draining"
+
+
+    def _record_match_score(self, text: str) -> None:
+        """Append the live match score to the per-game history (best effort)."""
+        try:
+            if self.game.name != "robots":
+                return
+            from .resolver import scorelog
+            from .resolver.robots import score_from_text
+
+            score = score_from_text(text)
+            if isinstance(score, int):
+                scorelog.record(self.g.state_dir, self.game.name, score, source="agent")
+        except Exception:
+            pass
+
 
 
 def build_brain(g: GlobalConfig, game: GameConfig):

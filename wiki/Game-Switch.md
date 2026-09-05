@@ -95,6 +95,18 @@ state_dir 下 `logs/game_switch.log` に JSON 行で追記する (phase 遷移�
 `detail` は書き込み時にマスクされ (URL 全体・argv/command・Authorization 等の認証情報・
 `key=value` 形式・長いトークン)、機密がログへ流れない。receipt の canonical 表現は生のまま。
 
+## ラウンド境界のタイムアウト契約
+
+- request 全体の deadline (`switch --timeout` / 既定 600s) が全ステップの上限。
+  境界待ちの既定上限 (`ROUND_BOUNDARY_TIMEOUT_S`) もその内側でしか効かない。
+- 試合が既定 deadline を超えるゲームは `[lifecycle] boundary_timeout_s` (秒) で
+  宣言する。coordinator は**境界待ちだけ**を延長し (canonical `deadline_at` も
+  同値へ延長・`round_boundary_extended` を記録)、他ステップは request deadline
+  のまま。宣言なしの長時間試合は request deadline で fail-closed になる。
+- draining 中の試合終了プロンプトは境界 waiter が所有する。resolver brain は
+  draining 中の自動再開 (`Another game?` への `y`) を抑止し、プロンプトを waiter
+  に残す。試合中のプレイ継続は止めない (止めると境界自体が来なくなる)。
+
 ## legacy からの移行
 
 coordinator 導入前の旧 runtime は「固定名の `game` / `agent` window + `docich-game` session +
