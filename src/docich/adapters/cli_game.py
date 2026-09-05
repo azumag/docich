@@ -7,7 +7,9 @@ tmux ownership options (design v2 §3, §4).
 """
 from __future__ import annotations
 
+import datetime as dt
 import os
+import re
 import shlex
 import sys
 import time
@@ -15,7 +17,12 @@ from pathlib import Path
 
 from .. import procs
 from ..actions import Action
-from ..game_switch import DeadlineExceededError, ReadinessTimeoutError, RuntimeSpec
+from ..game_switch import (
+    DeadlineExceededError,
+    ReadinessTimeoutError,
+    RuntimeSpec,
+    atomic_write_json,
+)
 from ..naming import NameValidationError, validate_tmux_name
 from ..tmux import OwnershipMismatchError, SESSION, Tmux, TmuxOwnership
 from ..xkit import XKit
@@ -25,6 +32,18 @@ GAME_SESSION = "docich-game"
 RUNTIME_GAME_SESSION_ENV = "DOCICH_GAME_SESSION"
 PRESENTATION_SEARCH_TIMEOUT_S = 0.25
 PRESENTATION_POLL_INTERVAL_S = 0.1
+
+# --- round boundary (design v2 §5) ------------------------------------------
+# CLIゲーム (robots) の1試合終了は "Another game?" プロンプトの表示のみで
+# 判定する (大文字小文字を無視した部分一致)。"Really quit?" は誰かが q を
+# 押して停止確認に入っただけの状態であり境界ではない。プロンプトへ答える
+# 入力は送らず、観測のみで待ち続け、deadline超過ならfail-closedでtimeout
+# にする。
+ROUND_BOUNDARY_POLL_INTERVAL_S = 0.5
+ROUND_BOUNDARY_PROMPT = "another game?"
+ROUND_BOUNDARY_SCORE_RE = re.compile(r"score:\s*([0-9,]+)", re.IGNORECASE)
+ROUND_BOUNDARY_TAIL_LINES = 15
+ROUND_BOUNDARY_RESULT_FILENAME = "round_boundary_result.json"
 
 
 # --- shared [cli] table helpers --------------------------------------------
@@ -82,6 +101,38 @@ def _docich_bin() -> str:
     # cli.py の _docich_bin() と同じ repo root を指す。cli_game.py は
     # src/docich/adapters/ 配下なので cli.py より1階層深い。
     return str(Path(__file__).resolve().parents[3] / "bin" / "docich")
+
+
+def _round_end_prompt_line(text: str) -> str | None:
+    """Return the round-end prompt line if the captured pane shows one.
+
+    robots の1試合終了 ("Another game?" プロンプト) のみを境界とする。
+    大文字小文字は無視する。見つからなければ None ("Really quit?" も
+    境界ではないので None を返す)。
+    """
+
+    for line in text.splitlines():
+        if ROUND_BOUNDARY_PROMPT in line.lower():
+            return line.strip()
+    return None
+
+
+def _max_score_value(text: str) -> int | None:
+    """Parse the largest ``Score:`` value in the captured pane text.
+
+    robots は左上に実行中スコアを常時表示し、試合終了時に最終スコアを出す
+    ため、最大値を最終スコアとして扱う。カンマは桁区切りとして除く。
+    """
+
+    best: int | None = None
+    for line in text.splitlines():
+        match = ROUND_BOUNDARY_SCORE_RE.search(line)
+        if match is None:
+            continue
+        value = int(match.group(1).replace(",", ""))
+        if best is None or value > best:
+            best = value
+    return best
 
 
 class CliGameAdapter(Adapter):
@@ -186,6 +237,14 @@ class CliCoordinatorAdapter:
         self.tmux = Tmux()
         self.agent_enabled = game.agent.enabled
         self.requires_round_boundary = game.lifecycle.require_round_boundary
+        if not self.requires_round_boundary:
+            # policy flagがfalseのCLIゲーム (nethack等) は境界待ちを要求しない。
+            # coordinatorはcallableな request_round_boundary の存在だけでも
+            # drainingへ入るため、capabilityごと非公開にして従来どおり即時
+            # quiesceで切替えられるようにする (test_round_boundary.py の
+            # request_round_boundary = None と同じ「未対応」表現)。
+            self.request_round_boundary = None
+            self.cancel_round_boundary = None
 
     def _ownership(self, role: str) -> TmuxOwnership:
         return TmuxOwnership(
@@ -426,3 +485,94 @@ class CliCoordinatorAdapter:
         if self.tmux.window_target_exists(target):
             self._check_active(deadline, cancel)
             self.tmux.kill_window_owned(target, self._ownership("agent"))
+
+    # --- CoordinatorAdapter contract: round boundary (design v2 §5) -------
+
+    def _round_boundary_result_path(self) -> Path:
+        return self.spec.runtime_dir / ROUND_BOUNDARY_RESULT_FILENAME
+
+    def _write_round_boundary_result(
+        self,
+        request_id: str,
+        prompt_line: str,
+        score: int | None,
+        text: str,
+    ) -> None:
+        """Persist the boundary result atomically, before the ack (fail closed).
+
+        request_id はackする境界要求のものだけを記録する (pending状態の
+        ファイルは作らない)。書き込みに失敗した場合はackせず AdapterError
+        にして、coordinator へ runtime の維持を委ねる。
+        """
+
+        payload = {
+            "schema": 1,
+            "request_id": request_id,
+            "game": self.spec.game,
+            "generation": self.spec.generation,
+            "prompt": prompt_line,
+            "score": score,
+            "captured_pane_tail": text.splitlines()[-ROUND_BOUNDARY_TAIL_LINES:],
+            "detected_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+        path = self._round_boundary_result_path()
+        try:
+            atomic_write_json(path, payload)
+        except OSError as exc:
+            raise AdapterError(f"round boundary結果を書き込めませんでした: {path}") from exc
+
+    def request_round_boundary(self, request_id: str, deadline: float, cancel) -> None:
+        """Wait for the current one-game boundary ("Another game?" prompt).
+
+        待機中は観測のみ: 入力を送らず、session/window も停止しない。
+        操作AIは境界待機と独立にプレイを続けてよい (fenceは共有ロックで
+        保護するため、ここでは一切ロックへ触れない)。
+
+        判定は pane capture のみで行う。"Really quit?" は境界ではないため、
+        それしか表示されていない間は待ち続け、deadline超過でfail-closedに
+        なる (この経路で session を停止することはない)。
+
+        境界を検出したらスコアを pane から解析し (実行中スコアと最終スコア
+        が併存するため最大値)、結果JSONを runtime dir へ原子的に書いてから
+        ackする。スコア行が無い場合も prompt が境界の根拠なので score=null
+        でackする。書き込みに失敗した場合はackしない。
+
+        deadline超過は ReadinessTimeoutError、cancelは DeadlineExceededError
+        (readiness() と同じidiom) を上げる。
+        """
+
+        while True:
+            # deadline超過は _check_active の DeadlineExceededError ではなく
+            # 境界固有のtimeoutへ正規化する。sleepがdeadlineぴったりで終わり
+            # 得るため、cancel以外のdeadline判定を先に行う。
+            if time.monotonic() >= deadline:
+                raise ReadinessTimeoutError("CLI gameの試合終了境界を確認できませんでした (timeout)")
+            self._check_active(deadline, cancel)
+            if not self.tmux.session_target_exists(self.spec.adapter_session):
+                raise ReadinessTimeoutError("adapter sessionがありません")
+            self._verify_session_ownership()
+            states = self.tmux.pane_states_checked(self.spec.adapter_session)
+            if any(pane.dead for pane in states):
+                raise ReadinessTimeoutError("paneがdeadです")
+            text = self.tmux.capture_pane_checked(self.spec.adapter_session)
+            prompt_line = _round_end_prompt_line(text)
+            if prompt_line is not None:
+                # スコア保存をackより先に行う (fail closed)。
+                self._write_round_boundary_result(
+                    request_id, prompt_line, _max_score_value(text), text
+                )
+                return
+            time.sleep(min(ROUND_BOUNDARY_POLL_INTERVAL_S, deadline - time.monotonic()))
+
+    def cancel_round_boundary(self, request_id: str, deadline: float, cancel) -> bool:
+        """Cancel a pending boundary request without side effects (quick ack).
+
+        待機は観測のみなので取り消す資源は無い。session があれば ownership
+        を照合し、無ければ cleanup と同様に不在を成功として扱い即ackする。
+        request_id は状態を保持しない本実装では参照しない (契約上の引数)。
+        """
+
+        self._check_active(deadline, cancel)
+        if self.tmux.session_target_exists(self.spec.adapter_session):
+            self._verify_session_ownership()
+        return True
