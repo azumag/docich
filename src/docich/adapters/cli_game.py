@@ -234,7 +234,10 @@ class CliCoordinatorAdapter:
         self.g = g
         self.game = game
         self.spec = spec
-        self.tmux = Tmux()
+        # Bind to this runtime's own generation session: the Tmux() default
+        # ("docich") only reaches docich-game-gN via tmux prefix matching,
+        # which breaks the moment any other docich-* session exists.
+        self.tmux = Tmux(self.spec.adapter_session)
         self.agent_enabled = game.agent.enabled
         self.requires_round_boundary = game.lifecycle.require_round_boundary
         if not self.requires_round_boundary:

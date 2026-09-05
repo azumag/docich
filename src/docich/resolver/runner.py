@@ -54,7 +54,7 @@ def run_match(
 
     ``decide(text) -> list[str]`` returns the keys to send for a pane capture.
     """
-    session = f"docich-eval-{os.getpid()}-{int(time.time() * 1000) % 1000000}"
+    session = f"evalr-{os.getpid()}-{int(time.time() * 1000) % 1000000}"
     _tmux(["kill-session", "-t", session])
     created = _tmux(
         ["new-session", "-d", "-x", str(cols), "-y", str(rows), "-s", session, shlex.join(command)]
