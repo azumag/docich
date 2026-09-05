@@ -7,6 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 BUILD = ROOT / 'ops/vm_actions/build_archive.py'
+WF = ROOT / '.github/workflows/vm-operations.yml'
 
 
 class BuildArchiveNestedTests(unittest.TestCase):
@@ -32,6 +33,12 @@ class BuildArchiveNestedTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         with tarfile.open(out) as archive:
             self.assertIn('src/nested.py', archive.getnames())
+
+    def test_candidate_checkout_fetches_full_history_for_git_bundle(self):
+        text = WF.read_text()
+        marker = '- name: Checkout requested code without submodules'
+        block = text.split(marker, 1)[1].split('\n      - name:', 1)[0]
+        self.assertIn('fetch-depth: 0', block)
 
 
 if __name__ == '__main__':
