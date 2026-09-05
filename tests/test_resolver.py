@@ -132,6 +132,21 @@ class PolicyTest(unittest.TestCase):
         key = self.decide(_pane(rows), {"w_lure": 1000.0})[0]
         self.assertIn(key, (robots.WAIT_KEY, "h", "l"))
 
+    def test_endgame_approach_walks_to_kill_spot(self):
+        # one robot, junk on its pursuit line: with distance terms disabled a
+        # huge w_approach must walk the player toward the beyond-junk cell
+        rows = ["                     ", "     @     *    +    ", "                     "]
+        key = self.decide(
+            _pane(rows), {"w_dist": 0.0, "w_lure": 0.0, "w_approach": 100.0}
+        )[0]
+        self.assertEqual(key, "l")
+
+    def test_endgame_wait_commits_on_kill_spot(self):
+        # player already on the kill spot (robot 3 away, junk between):
+        # waiting must win so the robot steps onto the junk next turn
+        rows = ["                  ", "                 @* +", "                  "]
+        self.assertEqual(self.decide(_pane(rows), None)[0], robots.WAIT_KEY)
+
     def test_junk_adjacency_bias(self):
         # a huge w_junk must make the chosen cell junk-adjacent (lure stance)
         rows = [

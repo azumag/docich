@@ -53,6 +53,8 @@ DEFAULT_STRATEGY: dict[str, "float | bool"] = {
     "w_wait": 0.5,        # tie-break bonus for waiting (robots collide on their own)
     "w_junk": 2.0,        # score per junk cell adjacent to the landing cell (lure)
     "w_lure": 15.0,       # score when a robot's 3-step pursuit path crosses junk
+    "w_approach": 4.0,    # score per cell closed toward the endgame kill spot
+    "w_endgame": 12.0,    # commit bonus for standing on the kill spot (<=2 robots)
     "teleport_when_trapped": True,
 }
 
@@ -190,6 +192,33 @@ def _simulate(robots: list[Cell], junk: set[Cell], target: Cell) -> tuple[list[C
     return survivors, killed, hits
 
 
+def _lure_cell(board: Board) -> Cell | None:
+    """The endgame kill spot: the cell just beyond a junk heap on a robot's
+    pursuit ray.
+
+    Standing there and waiting makes the approaching robot step onto the
+    junk (its next step toward us is the junk cell itself).  With one or two
+    robots left this is the only reliable way to finish a level: parallel
+    pursuers never collide with each other, so the level cannot clear by
+    dodging alone.
+    """
+    junk = set(board.junk)
+    robots = set(board.robots)
+    best: Cell | None = None
+    best_d: int | None = None
+    for r in board.robots:
+        for j in board.junk:
+            c = (j[0] + _sign(j[0] - r[0]), j[1] + _sign(j[1] - r[1]))
+            if not (0 <= c[0] < board.width and 0 <= c[1] < board.height):
+                continue
+            if c in junk or c in robots:
+                continue
+            d = _manhattan(board.player, c)
+            if best_d is None or d < best_d:
+                best, best_d = c, d
+    return best
+
+
 def _lure_bonus(robots: list[Cell], junk: set[Cell], target: Cell, w_lure: float, horizon: int = 3) -> float:
     """Reward positions whose pursuit path leads robots onto junk.
 
@@ -218,6 +247,8 @@ def _choose_move(board: Board, st: dict) -> str | None:
     robot_set = set(board.robots)
     player = board.player
     radius = int(st["danger_radius"])
+    lure = _lure_cell(board) if len(board.robots) <= 2 else None
+    lure_d0 = _manhattan(player, lure) if lure is not None else 0
     candidates: list[tuple[str, Cell]] = [(WAIT_KEY, player)]
     for key, (dx, dy) in DIRECTIONS.items():
         candidates.append((key, (player[0] + dx, player[1] + dy)))
@@ -254,6 +285,11 @@ def _choose_move(board: Board, st: dict) -> str | None:
         )
         score += st["w_junk"] * jadj
         score += _lure_bonus(board.robots, junk, target, st["w_lure"])
+        if lure is not None:
+            lure_d = _manhattan(target, lure)
+            score += st["w_approach"] * (lure_d0 - lure_d)
+            if lure_d == 0:
+                score += st["w_endgame"]
         clear = min(
             target[0], board.width - 1 - target[0], target[1], board.height - 1 - target[1]
         )
