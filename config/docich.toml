@@ -52,7 +52,7 @@ games = []            # `docich rotate` が巡回するゲーム名の順序 (�
 # --- Web UI (モデルチェーン / バックオフ管理) ---
 
 [webui]
-bind = "127.0.0.1"         # Tailscale serve 経由で公開する想定。0.0.0.0 は警告付きで許可
+bind = "127.0.0.1"         # Tailscale serve 経由で公開する想定。非loopback+writable+token未設定は起動時error
 port = 8787
 soren_root = ""            # 空なら games/soviet_now (未導入ゲームなら "$DOCICH_SOREN_ROOT" または ELOOP_LIB_DIR 相当を指定)
 token = ""                 # 空なら Tailscale ACL のみ。設定時は 8 文字以上

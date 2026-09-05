@@ -441,5 +441,96 @@ games = ["nethack", "hanjuku-hero"]
                 config.load_global(repo_root, config_path=toml_path)
 
 
+class TestWebUIUnsafeConfigMatrix(unittest.TestCase):
+    """issue #41: 非loopback+writable+認証なしの起動時 error と、安全な組み合わせの
+    non-regression をマトリクスで確認する。"""
+
+    def _toml(self, tmp: Path, body: str) -> Path:
+        repo_root = Path(tmp)
+        toml_path = repo_root / "webui.toml"
+        toml_path.write_text(body, encoding="utf-8")
+        return toml_path
+
+    def test_default_config_is_safe_loopback_writable_no_token(self):
+        """既定設定 (bind=127.0.0.1, token="", read_only=false) は今までどおり起動できる。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            g = config.load_global(Path(tmp))
+            self.assertEqual(g.webui.bind, "127.0.0.1")
+            self.assertFalse(g.webui.read_only)
+            self.assertEqual(g.webui.token, "")
+
+    def test_non_loopback_writable_without_token_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            toml_path = self._toml(tmp, "[webui]\nbind = \"0.0.0.0\"\n")
+            with self.assertRaises(config.ConfigError) as ctx:
+                config.load_global(Path(tmp), config_path=toml_path)
+            self.assertIn("非loopback", str(ctx.exception))
+
+    def test_non_loopback_writable_without_token_raises_for_hostname_bind(self):
+        # bind は 0.0.0.0 に限らず、loopback 以外の任意のホスト/IPで同じ扱いにする。
+        with tempfile.TemporaryDirectory() as tmp:
+            toml_path = self._toml(tmp, "[webui]\nbind = \"10.0.0.5\"\n")
+            with self.assertRaises(config.ConfigError):
+                config.load_global(Path(tmp), config_path=toml_path)
+
+    def test_non_loopback_read_only_without_token_is_allowed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            toml_path = self._toml(tmp, "[webui]\nbind = \"0.0.0.0\"\nread_only = true\n")
+            g = config.load_global(Path(tmp), config_path=toml_path)
+            self.assertEqual(g.webui.bind, "0.0.0.0")
+            self.assertTrue(g.webui.read_only)
+
+    def test_non_loopback_writable_with_config_token_is_allowed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            toml_path = self._toml(
+                tmp, "[webui]\nbind = \"0.0.0.0\"\ntoken = \"supersecret123\"\n"
+            )
+            g = config.load_global(Path(tmp), config_path=toml_path)
+            self.assertEqual(g.webui.bind, "0.0.0.0")
+            self.assertEqual(g.webui.token, "supersecret123")
+
+    def test_non_loopback_writable_with_env_token_is_allowed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            toml_path = self._toml(tmp, "[webui]\nbind = \"0.0.0.0\"\n")
+            old = os.environ.get("DOCICH_WEBUI_TOKEN")
+            os.environ["DOCICH_WEBUI_TOKEN"] = "supersecret123"
+            try:
+                g = config.load_global(Path(tmp), config_path=toml_path)
+            finally:
+                if old is None:
+                    os.environ.pop("DOCICH_WEBUI_TOKEN", None)
+                else:
+                    os.environ["DOCICH_WEBUI_TOKEN"] = old
+            self.assertEqual(g.webui.bind, "0.0.0.0")
+
+    def test_localhost_and_ipv6_loopback_are_treated_as_loopback(self):
+        for bind in ("localhost", "::1"):
+            with tempfile.TemporaryDirectory() as tmp:
+                toml_path = self._toml(tmp, "[webui]\nbind = \"" + bind + "\"\n")
+                g = config.load_global(Path(tmp), config_path=toml_path)
+                self.assertEqual(g.webui.bind, bind)
+
+    def test_is_loopback_bind_helper(self):
+        self.assertTrue(config.is_loopback_bind("127.0.0.1"))
+        self.assertTrue(config.is_loopback_bind("127.5.6.7"))
+        self.assertTrue(config.is_loopback_bind("localhost"))
+        self.assertTrue(config.is_loopback_bind("::1"))
+        self.assertFalse(config.is_loopback_bind("0.0.0.0"))
+        self.assertFalse(config.is_loopback_bind("10.0.0.1"))
+        self.assertFalse(config.is_loopback_bind(""))
+
+    def test_effective_webui_token_prefers_env_over_config(self):
+        webui_cfg = config.WebUIConfig(token="fromconfig1", token_env="DOCICH_WEBUI_TOKEN")
+        old = os.environ.get("DOCICH_WEBUI_TOKEN")
+        os.environ["DOCICH_WEBUI_TOKEN"] = "fromenv123"
+        try:
+            self.assertEqual(config.effective_webui_token(webui_cfg), "fromenv123")
+        finally:
+            if old is None:
+                os.environ.pop("DOCICH_WEBUI_TOKEN", None)
+            else:
+                os.environ["DOCICH_WEBUI_TOKEN"] = old
+
+
 if __name__ == "__main__":
     unittest.main()

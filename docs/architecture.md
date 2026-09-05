@@ -372,7 +372,7 @@ recover_windows = true # display/audio/stream window 消失時に冪等な up �
 games = []            # `docich rotate` が巡回する順序 (例: ["nethack", "hanjuku-hero"])
 
 [webui]
-bind = "127.0.0.1"    # Tailscale serve で公開する想定 (0.0.0.0 は警告付き)
+bind = "127.0.0.1"    # Tailscale serve で公開する想定 (非loopback+writable+token未設定は起動時error)
 port = 8787
 soren_root = ""       # 空なら games/soviet_now を自動検出
 token = ""            # 空なら Tailscale ACL のみ (設定時 8文字以上)
