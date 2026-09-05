@@ -6,6 +6,15 @@ Security: Tailscale ACL (loopback bind + tailscale serve) が主防御。任意 
   未設定という組み合わせは起動時 error にする (issue #41, fail closed)。token は
   URL query では受理/生成しない (Authorization: Bearer / X-WebUI-Token ヘッダのみ、
   timing-safe 比較)。
+Mutation defense (issue #42): PUT/POST/DELETE には Host/Origin allowlist・
+  CSRF token (Authorization と別の HMAC 署名 token、Origin 非送信のフォームでは
+  取得不能)・Content-Type (application/json 必須。HTML form は送れない) の3層を
+  課す。read_only_token で認証した caller は "viewer" identity として全 mutation
+  を拒否 (server 全体の webui.read_only とは独立)。/api/workers, /api/stream,
+  /api/config の PUT/POST は追加で confirm:true (または X-Docich-Confirm ヘッダ)
+  を要求する (dangerous action の再確認)。token 未設定 (既定の loopback 開発) でも
+  Host/Origin/CSRF/Content-Type チェック自体は有効なままで、CSRF token の発行
+  (`GET /api/csrf`) は token 有無に関わらず _check_auth() と同じ経路で行う。
 State: soren_root = ELOOP_LIB_DIR 相当 (games/soviet_now or /home/ubuntu/soren)。
 """
 from __future__ import annotations
@@ -16,6 +25,7 @@ import hmac
 import json
 import os
 import re
+import secrets
 import signal
 import subprocess
 import sys
@@ -28,7 +38,13 @@ from pathlib import Path
 from typing import Any
 
 from . import speech
-from .config import GlobalConfig, effective_webui_token, is_loopback_bind
+from .config import (
+    GlobalConfig,
+    _parse_origin_str,
+    effective_read_only_token,
+    effective_webui_token,
+    is_loopback_bind,
+)
 from .runtime_backend import (
     CAPABILITY_GET_STATUS,
     CAPABILITY_LIST_WORKERS,
@@ -665,6 +681,10 @@ def _effective_token(g: GlobalConfig) -> str:
     return effective_webui_token(g.webui)
 
 
+def _effective_read_only_token(g: GlobalConfig) -> str:
+    return effective_read_only_token(g.webui)
+
+
 def _tokens_match(supplied: str, expected: str) -> bool:
     """timing-safe な token 比較 (issue #41)。非ASCII等で compare_digest が
     TypeError を送出するケースでも 500 にせず単に不一致として扱う。"""
@@ -672,6 +692,70 @@ def _tokens_match(supplied: str, expected: str) -> bool:
         return hmac.compare_digest(supplied, expected)
     except TypeError:
         return False
+
+
+# --- issue #42: mutation 防御 (Host/Origin allowlist, CSRF, confirm) --------
+
+# CSRF token の有効期間。ブラウザは webui を開いている間 sessionStorage の bearer
+# token を保持し続けるが、CSRF token は API 経由で都度取得し直せるため短めでよい。
+CSRF_TTL_SEC = 4 * 3600  # 4時間
+
+# process/stream/config の dangerous action (issue #42): 再確認 (confirm) を要求する
+# (method, path) の組。フロントエンドは既存の window.confirm() ダイアログ
+# (streamAction/workerControl) または「保存」操作自体を再確認とみなし、
+# confirm:true を body に含める。
+CONFIRM_REQUIRED_PATHS = {("POST", "/api/workers"), ("POST", "/api/stream"), ("PUT", "/api/config")}
+
+
+def _make_csrf_token(secret: bytes, ttl: int = CSRF_TTL_SEC, now: int | None = None) -> str:
+    """`<exp>.<hmac>` 形式の CSRF token を生成する (server 側で状態を持たない)。
+
+    署名は起動ごとに生成する乱数 secret (`_Handler.csrf_secret`) による HMAC-SHA256。
+    exp はブラウザに見える平文だが改竄しても hmac 検証で弾かれるだけなので問題ない。
+    """
+    now = int(time.time()) if now is None else int(now)
+    exp = now + int(ttl)
+    mac = hmac.new(secret, str(exp).encode("ascii"), hashlib.sha256).hexdigest()
+    return f"{exp}.{mac}"
+
+
+def _verify_csrf_token(secret: bytes, token: str) -> tuple[bool, str]:
+    """CSRF token を検証する。戻り値は (ok, reason)。reason は不一致時のみ意味を持つ
+    ("csrf_missing" / "csrf_invalid" / "csrf_expired")。"""
+    token = (token or "").strip()
+    if not token:
+        return False, "csrf_missing"
+    exp_s, sep, mac = token.partition(".")
+    if not sep or not exp_s or not mac:
+        return False, "csrf_invalid"
+    try:
+        exp = int(exp_s)
+    except ValueError:
+        return False, "csrf_invalid"
+    expected = hmac.new(secret, exp_s.encode("ascii"), hashlib.sha256).hexdigest()
+    try:
+        if not hmac.compare_digest(mac, expected):
+            return False, "csrf_invalid"
+    except TypeError:
+        return False, "csrf_invalid"
+    if exp < int(time.time()):
+        return False, "csrf_expired"
+    return True, ""
+
+
+def _is_confirmed(data: Any, headers: Any) -> bool:
+    """dangerous action の再確認フラグ (`confirm:true` in body、または
+    `X-Docich-Confirm: 1` ヘッダ) が付与されているか。"""
+    if isinstance(data, dict):
+        v = data.get("confirm")
+        if v is True:
+            return True
+        if isinstance(v, str) and v.strip().lower() in ("1", "true", "yes"):
+            return True
+        if v == 1:
+            return True
+    h = str(headers.get("X-Docich-Confirm", "") or "").strip().lower()
+    return h in ("1", "true", "yes")
 
 
 def _backoff_dir(soren_root: Path) -> Path:
@@ -2298,22 +2382,51 @@ def _redact_token_query(value: str) -> str:
     return _TOKEN_QUERY_RE.sub(r"\1token=REDACTED", value)
 
 
-def _log_request(soren_root: Path, method: str, path: str, status: int, latency_ms: int, extra: str = "") -> None:
+def _append_webui_log(soren_root: Path, rec: dict[str, Any]) -> None:
+    """webui.log (JSON lines) へ1レコード追記する。secret/body は呼び出し元が
+    含めないこと (呼び出し元でその保証をする。ここでは best-effort の書き込みのみ)。"""
     try:
         log_file = soren_root / "tmp/debug/webui.log"
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        rec = {
+        with log_file.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def _log_request(soren_root: Path, method: str, path: str, status: int, latency_ms: int, extra: str = "") -> None:
+    _append_webui_log(
+        soren_root,
+        {
             "ts": int(time.time()),
+            "event": "access",
             "method": method,
             "path": _redact_token_query(path),
             "status": status,
             "latency_ms": latency_ms,
             "extra": _redact_token_query(extra),
-        }
-        with log_file.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
+        },
+    )
+
+
+def _log_authz_event(soren_root: Path, method: str, path: str, identity: str, decision: str, reason: str = "") -> None:
+    """issue #42: secret/body を含めない authorization audit event。
+
+    identity は "operator" / "viewer" / "unauthenticated" のみ (token 値は含めない)。
+    reason はエラーコード相当の短い定数文字列のみ (invalid_host 等)。body は一切渡さない。
+    """
+    _append_webui_log(
+        soren_root,
+        {
+            "ts": int(time.time()),
+            "event": "authz",
+            "method": method,
+            "path": _redact_token_query(path),
+            "identity": identity,
+            "decision": decision,
+            "reason": reason,
+        },
+    )
 
 
 # --- HTTP handler --------------------------------------------------------
@@ -2779,6 +2892,20 @@ function hideLogin(){
   const el = $("#login-overlay");
   if(el) el.style.display = "none";
 }
+let CSRF_TOKEN = null;
+async function fetchCsrfToken(force){
+  if(CSRF_TOKEN && !force) return CSRF_TOKEN;
+  const headers = {};
+  const t = sessionStorage.getItem("webui_token");
+  if(t) headers["Authorization"] = "Bearer " + t;
+  try{
+    const res = await fetch("/api/csrf", {headers});
+    if(!res.ok) return null;
+    const data = await res.json();
+    CSRF_TOKEN = data.csrf_token;
+    return CSRF_TOKEN;
+  }catch(e){ return null; }
+}
 async function api(path, opts={}){
   // token は URL query から読まない (issue #41)。sessionStorage のみを見る。
   // ログインはトップページのフォームに token を入力する手順に統一する。
@@ -2787,11 +2914,31 @@ async function api(path, opts={}){
     const t = sessionStorage.getItem("webui_token");
     if(t) headers["Authorization"] = "Bearer " + t;
   }
+  // issue #42: GET 以外は CSRF token (X-CSRF-Token) を付与する。
+  const method = (opts.method||"GET").toUpperCase();
+  if(method!=="GET" && method!=="HEAD" && !headers["X-CSRF-Token"]){
+    const tok = await fetchCsrfToken(false);
+    if(tok) headers["X-CSRF-Token"] = tok;
+  }
   opts.headers = headers;
-  const res = await fetch(path, opts);
+  let res = await fetch(path, opts);
   if(res.status === 401){
     sessionStorage.removeItem("webui_token");
     showLogin();
+  }
+  if(res.status === 403 && method!=="GET" && method!=="HEAD" && !opts._csrfRetried){
+    // CSRF token が期限切れ/不正だった可能性 → 1回だけ再取得してリトライ
+    let errCode = "";
+    try{ errCode = (await res.clone().json()).error || ""; }catch(e){}
+    if(/^csrf_/.test(errCode)){
+      const tok = await fetchCsrfToken(true);
+      if(tok){
+        headers["X-CSRF-Token"] = tok;
+        opts.headers = headers;
+        opts._csrfRetried = true;
+        res = await fetch(path, opts);
+      }
+    }
   }
   const text = await res.text();
   let data = null;
@@ -3405,7 +3552,7 @@ async function saveChains(){
     payload[k]=val;
   }
   try{
-    const res=await api("/api/config",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({values:payload,expected_mtime:ENV_MTIME})});
+    const res=await api("/api/config",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({values:payload,expected_mtime:ENV_MTIME,confirm:true})});
     ENV_MTIME=res.env_mtime||ENV_MTIME;
     $("#env-mtime").textContent=`mtime=${ENV_MTIME} ${fmtTime(ENV_MTIME)}`;
     toast("保存しました。10秒以内に hot-reload されます");
@@ -3429,7 +3576,7 @@ async function saveBackoff(){
   if(parseInt(payload["AI_AGENT_BACKOFF_SEC"],10)<60){ toast("AI_AGENT_BACKOFF_SEC は60以上"); return; }
   if(parseInt(payload["AI_BACKOFF_FAILURE_SEC"],10)<30){ toast("AI_BACKOFF_FAILURE_SEC は30以上"); return; }
   try{
-    const res=await api("/api/config",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({values:payload,expected_mtime:ENV_MTIME})});
+    const res=await api("/api/config",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({values:payload,expected_mtime:ENV_MTIME,confirm:true})});
     ENV_MTIME=res.env_mtime||ENV_MTIME;
     $("#env-mtime").textContent=`mtime=${ENV_MTIME} ${fmtTime(ENV_MTIME)}`;
     toast("保存しました");
@@ -3460,7 +3607,7 @@ async function savePeak(){
   for(const ag of peakState.prefItems){ if(!AGENT_RE.test(ag)){ toast("PREFERENCE 不正: "+ag); return; } }
   if(payload["PEAK_HOURS_TZ"] && !/^[A-Za-z0-9_+.\/:-]{1,64}$/.test(payload["PEAK_HOURS_TZ"])){ toast("TZ 不正"); return; }
   try{
-    const res=await api("/api/config",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({values:payload,expected_mtime:ENV_MTIME})});
+    const res=await api("/api/config",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({values:payload,expected_mtime:ENV_MTIME,confirm:true})});
     ENV_MTIME=res.env_mtime||ENV_MTIME;
     $("#env-mtime").textContent=`mtime=${ENV_MTIME} ${fmtTime(ENV_MTIME)}`;
     toast("保存しました");
@@ -3867,7 +4014,7 @@ async function streamAction(action){
   if(!confirm(confirmMsg)) return;
   const msg=$("#stream-msg"); if(msg) msg.textContent="処理中...";
   try{
-    const res=await api("/api/stream",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action})});
+    const res=await api("/api/stream",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action,confirm:true})});
     if(msg) msg.textContent=res.hint||((res.ok?"完了":"終了状態: ")+res.state);
     toast(`配信 ${action}: ${res.state}`);
     await loadStream();
@@ -3939,7 +4086,7 @@ async function workerControl(worker,action){
   if(!confirm(confirmMsg)) return;
   const msg=$("#wc-msg"); if(msg) msg.textContent="処理中...";
   try{
-    const res=await api("/api/workers",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({worker,action})});
+    const res=await api("/api/workers",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({worker,action,confirm:true})});
     if(msg){
       if(action==="start"&&!res.ok&&res.hint) msg.textContent=res.hint;
       else if(res.job_continues_in_background) msg.textContent="停止できません。改善ジョブがまだ稼働しています。";
@@ -3980,7 +4127,7 @@ async function saveStreamSettings(){
   }
   const msg=$("#stream-settings-msg"); if(msg) msg.textContent="保存中...";
   try{
-    const res=await api("/api/config",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({values:payload,expected_mtime:ENV_MTIME})});
+    const res=await api("/api/config",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({values:payload,expected_mtime:ENV_MTIME,confirm:true})});
     ENV_MTIME=res.env_mtime||ENV_MTIME;
     $("#env-mtime").textContent=`mtime=${ENV_MTIME} ${fmtTime(ENV_MTIME)}`;
     if(msg) msg.textContent="保存しました。配信の再起動 (stop → start) 後に反映されます。";
@@ -4659,6 +4806,10 @@ class _Handler(BaseHTTPRequestHandler):
     soren_root: Path
     read_only: bool
     start_time: float
+    # issue #42: CSRF token 署名用の乱数 secret。run_webui() が BoundHandler ごとに
+    # 起動時生成する (プロセス再起動で失効)。テストで直接 _Handler を使う場合は
+    # _csrf_secret() が遅延生成してクラス属性へキャッシュする。
+    csrf_secret: bytes | None = None
 
     def _runtime_backend(self) -> RuntimeBackend:
         """read-only worker/status route が使う RuntimeBackend を返す (issue #43)。
@@ -4670,26 +4821,164 @@ class _Handler(BaseHTTPRequestHandler):
         return SorenBackend(self.soren_root)
 
     def _set_cors(self):
-        if self.g.webui.allow_cors:
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Methods", "GET,PUT,DELETE,POST,OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-WebUI-Token")
-            self.send_header("Access-Control-Max-Age", "86400")
+        # issue #42: wildcard (*) と credentials を両立させない。Authorization
+        # ヘッダは fetch の `credentials` モードに関係なく常に送られるため
+        # ACAO:* でも読み取り自体は可能だが、allowlist 外の Origin には一切
+        # CORS ヘッダを返さないことで「任意オリジンから読めてしまう」経路を塞ぐ。
+        # Access-Control-Allow-Credentials は使わない (cookie 認証をしていないため
+        # 不要。ACAO を specific origin にした上で追加すると危険なので送らない)。
+        if not self.g.webui.allow_cors:
+            return
+        origin = self.headers.get("Origin", "")
+        if origin and self._is_allowed_origin(origin):
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+        self.send_header("Access-Control-Allow-Methods", "GET,PUT,DELETE,POST,OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-WebUI-Token, X-CSRF-Token, X-Docich-Confirm")
+        self.send_header("Access-Control-Max-Age", "86400")
 
-    def _check_auth(self) -> bool:
-        token = _effective_token(self.g)
-        if not token:
-            return True
-        # check header (timing-safe 比較。query token は受理しない: issue #41)
+    def _supplied_token(self) -> str:
         auth = self.headers.get("Authorization", "")
         if auth.startswith("Bearer "):
             val = auth[len("Bearer ") :].strip()
-            if val and _tokens_match(val, token):
-                return True
+            if val:
+                return val
         x = self.headers.get("X-WebUI-Token", "")
-        if x and _tokens_match(x, token):
+        return x.strip() if x else ""
+
+    def _check_auth(self) -> bool:
+        op_token = _effective_token(self.g)
+        ro_token = _effective_read_only_token(self.g)
+        if not op_token and not ro_token:
+            return True
+        supplied = self._supplied_token()
+        if not supplied:
+            return False
+        # check header (timing-safe 比較。query token は受理しない: issue #41)
+        if op_token and _tokens_match(supplied, op_token):
+            return True
+        if ro_token and _tokens_match(supplied, ro_token):
             return True
         return False
+
+    def _identity(self) -> str:
+        """_check_auth() が True である前提で呼ぶ。"operator" (読み書き可) または
+        "viewer" (issue #42: read_only_token で認証。全 mutation 拒否)。
+        両 token とも未設定 (既定) の場合は従来どおり "operator" として扱う。"""
+        op_token = _effective_token(self.g)
+        ro_token = _effective_read_only_token(self.g)
+        supplied = self._supplied_token()
+        if ro_token and supplied and not (op_token and _tokens_match(supplied, op_token)):
+            if _tokens_match(supplied, ro_token):
+                return "viewer"
+        return "operator"
+
+    # --- issue #42: Host/Origin allowlist ---------------------------------
+
+    def _listening_port(self) -> int:
+        try:
+            return int(self.server.server_address[1])
+        except Exception:
+            return int(self.g.webui.port or 8787)
+
+    def _host_allowlist(self) -> set[str]:
+        port = self._listening_port()
+        hosts = {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}
+        bind = (self.g.webui.bind or "").strip()
+        if bind and bind not in ("0.0.0.0", "::"):
+            hosts.add(f"{bind}:{port}")
+        for origin in self.g.webui.allowed_origins or []:
+            parsed = _parse_origin_str(origin)
+            if parsed:
+                hosts.add(parsed[1])
+        return hosts
+
+    def _origin_allowlist(self) -> set[str]:
+        port = self._listening_port()
+        origins = {f"http://127.0.0.1:{port}", f"http://localhost:{port}", f"http://[::1]:{port}"}
+        bind = (self.g.webui.bind or "").strip()
+        if bind and bind not in ("0.0.0.0", "::"):
+            origins.add(f"http://{bind}:{port}")
+        for origin in self.g.webui.allowed_origins or []:
+            parsed = _parse_origin_str(origin)
+            if parsed:
+                origins.add(f"{parsed[0]}://{parsed[1]}")
+        return origins
+
+    def _is_allowed_origin(self, origin: str) -> bool:
+        return origin.strip().lower().rstrip("/") in {o.lower() for o in self._origin_allowlist()}
+
+    def _check_host_allowed(self) -> bool:
+        host = (self.headers.get("Host") or "").strip().lower()
+        if not host:
+            return False
+        return host in {h.lower() for h in self._host_allowlist()}
+
+    def _check_content_type_ok(self) -> bool:
+        """mutation の Content-Type を検証する (issue #42)。HTML <form> は
+        application/json を送れない (x-www-form-urlencoded/multipart/text-plain
+        しか送れない) ため、これを要求するだけで classic な form-based CSRF を防げる。
+        Content-Length が不正/未指定な場合はここでは判定せず _read_body() に委ねる。"""
+        raw_len = self.headers.get("Content-Length", "0") or "0"
+        try:
+            length = int(raw_len)
+        except ValueError:
+            return True
+        if length <= 0:
+            return True
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        return ctype == "application/json"
+
+    def _guard_mutation(self) -> int:
+        """PUT/POST/DELETE 共通の防御ゲート (issue #42): Host allowlist → Origin
+        allowlist (存在する場合のみ) → Content-Type → 認証 → CSRF token → read-only
+        (server 全体 or viewer identity) の順に検証する。拒否時は応答送信済みで
+        その status code を返す。通過なら 0。全ての拒否/許可を secret/body を含めない
+        authorization audit event として記録する。"""
+        method = self.command
+        path = urllib.parse.urlparse(self.path).path
+        if not self._check_host_allowed():
+            self._send_error_json(400, "invalid_host", "許可されていない Host ヘッダです")
+            _log_authz_event(self.soren_root, method, path, "unauthenticated", "deny", "invalid_host")
+            return 400
+        origin = self.headers.get("Origin", "")
+        if origin and not self._is_allowed_origin(origin):
+            self._send_error_json(403, "invalid_origin", "許可されていない Origin です")
+            _log_authz_event(self.soren_root, method, path, "unauthenticated", "deny", "invalid_origin")
+            return 403
+        if not self._check_content_type_ok():
+            self._send_error_json(415, "invalid_content_type", "Content-Type は application/json である必要があります")
+            _log_authz_event(self.soren_root, method, path, "unauthenticated", "deny", "invalid_content_type")
+            return 415
+        if not self._check_auth():
+            self._send_error_json(401, "unauthorized")
+            _log_authz_event(self.soren_root, method, path, "unauthenticated", "deny", "unauthorized")
+            return 401
+        ok, reason = self._verify_csrf_token(self.headers.get("X-CSRF-Token", ""))
+        if not ok:
+            self._send_error_json(403, reason, "CSRF token が必要、または不正/期限切れです (GET /api/csrf で再取得してください)")
+            _log_authz_event(self.soren_root, method, path, self._identity(), "deny", reason)
+            return 403
+        identity = self._identity()
+        if self.read_only or identity == "viewer":
+            self._send_error_json(403, "read_only", "read-only mode" if self.read_only else "read-only identity (viewer token)")
+            _log_authz_event(self.soren_root, method, path, identity, "deny", "read_only")
+            return 403
+        _log_authz_event(self.soren_root, method, path, identity, "allow")
+        return 0
+
+    def _csrf_secret(self) -> bytes:
+        secret = type(self).csrf_secret
+        if not secret:
+            secret = secrets.token_bytes(32)
+            type(self).csrf_secret = secret
+        return secret
+
+    def _make_csrf_token(self) -> str:
+        return _make_csrf_token(self._csrf_secret())
+
+    def _verify_csrf_token(self, token: str) -> tuple[bool, str]:
+        return _verify_csrf_token(self._csrf_secret(), token)
 
     def _send_json(self, code: int, obj: Any):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -4744,6 +5033,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/health":
                 status = self._handle_health()
+            elif path == "/api/csrf":
+                status = self._handle_get_csrf()
             elif path == "/api/config":
                 status = self._handle_get_config()
             elif path == "/api/backoffs":
@@ -4802,13 +5093,9 @@ class _Handler(BaseHTTPRequestHandler):
         status = 200
         parsed = urllib.parse.urlparse(self.path)
         try:
-            if not self._check_auth():
-                status = 401
-                self._send_error_json(401, "unauthorized")
-                return
-            if self.read_only:
-                status = 403
-                self._send_error_json(403, "read_only", "read-only mode")
+            guard = self._guard_mutation()
+            if guard:
+                status = guard
                 return
             if parsed.path == "/api/config":
                 status = self._handle_put_config()
@@ -4833,13 +5120,9 @@ class _Handler(BaseHTTPRequestHandler):
         status = 200
         parsed = urllib.parse.urlparse(self.path)
         try:
-            if not self._check_auth():
-                status = 401
-                self._send_error_json(401, "unauthorized")
-                return
-            if self.read_only:
-                status = 403
-                self._send_error_json(403, "read_only")
+            guard = self._guard_mutation()
+            if guard:
+                status = guard
                 return
             if parsed.path.startswith("/api/backoffs/"):
                 # /api/backoffs/<sanitized>
@@ -4879,13 +5162,9 @@ class _Handler(BaseHTTPRequestHandler):
         status = 200
         parsed = urllib.parse.urlparse(self.path)
         try:
-            if not self._check_auth():
-                status = 401
-                self._send_error_json(401, "unauthorized")
-                return
-            if self.read_only:
-                status = 403
-                self._send_error_json(403, "read_only")
+            guard = self._guard_mutation()
+            if guard:
+                status = guard
                 return
             if parsed.path == "/api/backoffs/clear":
                 status = self._handle_clear_all_backoffs()
@@ -4919,6 +5198,16 @@ class _Handler(BaseHTTPRequestHandler):
             _log_request(self.soren_root, "POST", parsed.path, status, latency)
 
     # ---- handlers ----
+
+    def _handle_get_csrf(self) -> int:
+        """issue #42: mutation 用 CSRF token を発行する (認証は _check_auth と同じ)。
+        ブラウザからの直接 (form) 送信では取得不能なうえ Origin allowlist 外の
+        cross-origin fetch はレスポンス本文を読めない (allow_cors=false が既定) ため、
+        token 値そのものは漏れない。"""
+        token = self._make_csrf_token()
+        exp = int(token.split(".", 1)[0])
+        self._send_json(200, {"csrf_token": token, "expires_at": exp})
+        return 200
 
     def _handle_health(self) -> int:
         dotenv_mtime = _dotenv_mtime(self.soren_root)
@@ -5015,6 +5304,10 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send_error_json(400, "invalid_json", str(exc))
             return 400
+        # issue #42: config 変更は dangerous action として再確認 (confirm:true) を要求する。
+        if not _is_confirmed(data, self.headers):
+            self._send_error_json(428, "confirmation_required", "設定変更には confirm:true が必要です")
+            return 428
         # support both {"values": {...}, "expected_mtime": N} and direct dict
         values = None
         expected_mtime = data.get("expected_mtime") if isinstance(data, dict) else None
@@ -5641,6 +5934,10 @@ class _Handler(BaseHTTPRequestHandler):
         if not isinstance(data, dict):
             self._send_error_json(400, "validation_error", "body must be object")
             return 400
+        # issue #42: 配信の停止/開始は dangerous action として再確認 (confirm:true) を要求する。
+        if not _is_confirmed(data, self.headers):
+            self._send_error_json(428, "confirmation_required", "配信操作には confirm:true が必要です")
+            return 428
         action = str(data.get("action", "")).strip().lower()
         if action not in ("start", "stop"):
             self._send_error_json(400, "invalid_action", "action must be start or stop")
@@ -5721,6 +6018,10 @@ class _Handler(BaseHTTPRequestHandler):
         if not isinstance(data, dict):
             self._send_error_json(400, "validation_error", "body must be object")
             return 400
+        # issue #42: worker (process) 制御は dangerous action として再確認 (confirm:true) を要求する。
+        if not _is_confirmed(data, self.headers):
+            self._send_error_json(428, "confirmation_required", "worker操作には confirm:true が必要です")
+            return 428
         worker = str(data.get("worker", "")).strip().lower()
         if worker not in WORKER_CONTROL_TARGETS:
             self._send_error_json(400, "invalid_worker", "worker must be prediction_worker or improve_daemon")
@@ -6696,7 +6997,7 @@ def run_webui(
                 " 実際の起動はこの組み合わせを error にして拒否します"
                 " (webui.token を設定するか --read-only を付けてください)"
             )
-        print("  endpoints: /, /api/health, /api/config, /api/backoffs, /api/stats, /api/reload, /api/game_state, /api/improve_state, /api/workers (GET/POST), /api/stream (GET/POST), /api/voice/endpoints (GET/POST), /api/chat (POST), /api/peak_status, /api/predictions, /api/predictions/action, /api/prompts")
+        print("  endpoints: /, /api/health, /api/csrf, /api/config, /api/backoffs, /api/stats, /api/reload, /api/game_state, /api/improve_state, /api/workers (GET/POST), /api/stream (GET/POST), /api/voice/endpoints (GET/POST), /api/chat (POST), /api/peak_status, /api/predictions, /api/predictions/action, /api/prompts")
         return 0
 
     if unsafe_combo:
@@ -6738,6 +7039,8 @@ def run_webui(
     BoundHandler.soren_root = eff_soren_root
     BoundHandler.read_only = eff_read_only
     BoundHandler.start_time = time.time()
+    # issue #42: CSRF secret はプロセス起動ごとに新規生成する (再起動で全 CSRF token 失効)。
+    BoundHandler.csrf_secret = secrets.token_bytes(32)
 
     server = ThreadingHTTPServer((effective_bind, effective_port), BoundHandler)
     # allow address reuse
