@@ -273,6 +273,7 @@ class BrowserCoordinatorAdapter:
         self.tmux = Tmux()
         self.xkit = xkit if xkit is not None else XKit(g.display.name)
         self.agent_enabled = game.agent.enabled
+        self.requires_round_boundary = game.lifecycle.require_round_boundary
 
     def _ownership(self, role: str) -> TmuxOwnership:
         return TmuxOwnership(
@@ -361,7 +362,12 @@ class BrowserCoordinatorAdapter:
         self._check_active(deadline, cancel)
         debug_port = None if self._uses_launch_command() else self._debug_port()
         command = browser_launch_command(self.g, self.game, self._profile_dir(), debug_port=debug_port)
-        self.tmux.create_window_owned(self.spec.game_window, command, self._ownership("game"))
+        self.tmux.create_window_owned(
+            self.spec.game_window,
+            command,
+            self._ownership("game"),
+            env={"DISPLAY": self.g.display.name},
+        )
         self._check_active(deadline, cancel)
 
     def readiness(self, deadline: float, cancel) -> None:
