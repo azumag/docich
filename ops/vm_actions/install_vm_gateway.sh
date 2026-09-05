@@ -21,6 +21,12 @@ home_dir=$(getent passwd "$ssh_user" | cut -d: -f6)
 group_name=$(id -gn "$ssh_user")
 [[ -n "$home_dir" && -d "$home_dir" ]]
 [[ -d /home/ubuntu/soren && -d /home/ubuntu/docich ]]
+command -v git >/dev/null 2>&1 || { echo "git is required" >&2; exit 1; }
+command -v bwrap >/dev/null 2>&1 || { echo "bubblewrap is required for isolated preview exec" >&2; exit 1; }
+[[ "$(git -C /home/ubuntu/docich rev-parse --is-inside-work-tree 2>/dev/null)" == true ]] || {
+  echo "/home/ubuntu/docich must remain a git worktree" >&2
+  exit 1
+}
 
 read -r key_type key_body _ < "$pubkey_file"
 [[ "$key_type" == ssh-ed25519 && "$key_body" =~ ^[A-Za-z0-9+/=]+$ ]]
@@ -31,8 +37,8 @@ cat > /etc/azumag-vm-ops.json <<'JSON'
 {
   "state": "/home/ubuntu/.local/state/github-vm-ops",
   "repos": {
-    "soviet_now": {"production": "/home/ubuntu/soren"},
-    "docich": {"production": "/home/ubuntu/docich"}
+    "soviet_now": {"production": "/home/ubuntu/soren", "mode": "overlay"},
+    "docich": {"production": "/home/ubuntu/docich", "mode": "git"}
   }
 }
 JSON
