@@ -129,3 +129,21 @@ watchdog からの自動復旧は `docich restart` (こちらはゲームの再�
   `cli` (nethack) は実機検証済み。
 - VM (Oracle ARM) への反映は 2026-09-04 済み。`doctor` / `status --json` が正常動作することを
   実機確認している (詳細: `handoff.md`)。
+
+## 配信カテゴリー・タイトルの連動
+
+切替先ゲームに応じて Twitch の配信カテゴリー (`game_id`) と配信タイトルを切り替える。
+Twitch のカテゴリーは IGDB が正本のため、ゲーム追加のたびに IGDB 照合を初期設定として行う。
+
+- ゲーム定義側: `config/games/<id>.toml` の `[twitch]` テーブル
+  (`category_id` / `category_name` / `title_prefix`)。`[twitch]` 無しのゲーム追加は不可
+  (`tests/test_twitch_game_config.py` が検出する)。
+- 更新スクリプト: `games/soviet_now/update_stream_game.sh --game <id>`
+  (タイトルは `[prefix] day<N> <activity> <strategy>`。activity 既定は handoff 由来の
+  `prompts/ops_brief.md` 1件目、strategy は `--strategy` で戦略の進捗を乗せる)。
+- IGDB 照合: `--resolve "<問合せ>"` で候補列挙 → toml へ記録 → `--verify` で一致確認。
+  対応表と手順の正本は `games/soviet_now/docs/twitch_game_sync.md`。
+- 自動フックは切替整備が一段落するまで未接続 (切替時は手動実行)。
+  接続先は切替成功の直後 (`switch` 成功 / broker finish 確定)。更新の失敗でゲームを
+  巻き戻さないこと。`robots.toml` 着地時は `category_id="11585"` /
+  `category_name="Robots"` / `title_prefix="[Robots]"` を入れること。
