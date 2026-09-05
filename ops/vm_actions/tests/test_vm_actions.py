@@ -2,6 +2,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -89,7 +90,7 @@ class BuildArchiveTests(unittest.TestCase):
 
     def test_runtime_and_control_paths_are_excluded(self):
         repo,sha=self.make_repo(); out=repo/'out.tar'
-        p=subprocess.run([str(BUILD),str(repo),sha,str(out),'soviet_now'],text=True,capture_output=True)
+        p=subprocess.run([sys.executable,str(BUILD),str(repo),sha,str(out),'soviet_now'],text=True,capture_output=True)
         self.assertEqual(p.returncode,0,p.stderr)
         with tarfile.open(out) as tf: names=set(tf.getnames())
         self.assertIn('app.py',names)
@@ -98,7 +99,7 @@ class BuildArchiveTests(unittest.TestCase):
 
     def test_sha_must_equal_checked_out_head(self):
         repo,sha=self.make_repo(); out=repo/'out.tar'
-        p=subprocess.run([str(BUILD),str(repo),'a'*40,str(out),'soviet_now'],text=True,capture_output=True)
+        p=subprocess.run([sys.executable,str(BUILD),str(repo),'a'*40,str(out),'soviet_now'],text=True,capture_output=True)
         self.assertNotEqual(p.returncode,0)
 
 def make_tar(files, symlink=None):
