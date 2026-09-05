@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -564,6 +566,36 @@ class TestRunWebuiDryRun(unittest.TestCase):
             self.assertEqual(rc, 0)
 
 
+class TestRunWebuiStartsWithoutSorenRoot(unittest.TestCase):
+    """issue #43 受入条件1: soviet_now未配置でもWebUIが起動すること。
+
+    実ソケットは張るが listen ループには入らせず (serve_forever を no-op 化)、
+    `run_webui` が soren_root 不在を理由に起動前 return しないことだけを確認する。
+    """
+
+    def test_run_webui_starts_when_soren_root_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            g = _make_global(repo_root)
+            missing = repo_root / "no_such_soren_root"
+            self.assertFalse(missing.exists())
+            orig_cls = webui.ThreadingHTTPServer
+
+            class _NoServeServer(orig_cls):
+                def serve_forever(self, poll_interval=0.5):
+                    return
+
+                def shutdown(self):
+                    return
+
+            out = io.StringIO()
+            with mock.patch.object(webui, "ThreadingHTTPServer", _NoServeServer):
+                with contextlib.redirect_stdout(out):
+                    rc = webui.run_webui(g, bind="127.0.0.1", port=0, soren_root=str(missing))
+            self.assertEqual(rc, 0)
+            self.assertIn("soviet_now 未配置として起動します", out.getvalue())
+
+
 class TestHttpHandlers(unittest.TestCase):
     """実サーバー (ThreadingHTTPServer) を起動して API を叩く。"""
 
@@ -912,6 +944,94 @@ class TestHttpHandlers(unittest.TestCase):
     def test_pid_matches_worker_process_unknown_worker(self):
         # 未知 worker は常に不許可 (誤殺防止のフォールトクローズ)
         self.assertFalse(webui._pid_matches_worker_process(12345, "unknown_worker"))
+
+    # --- issue #43: RuntimeBackend 抽出 (read-only worker/status) ------------
+
+    def test_workers_reports_unsupported_when_soviet_now_missing(self):
+        """soviet_now 未配置 (eloop_lib.sh が無い) でも 200 で明示 unsupported を返す。"""
+        eloop = self.soren / "eloop_lib.sh"
+        eloop.unlink()
+        try:
+            status, data = self._request("GET", "/api/workers")
+        finally:
+            eloop.write_text("# x\n")
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["workers"], [])
+        self.assertTrue(data["unsupported"])
+        self.assertEqual(data["capability"], "list_workers")
+        self.assertIn("now", data)
+
+    def test_game_state_reports_unsupported_when_soviet_now_missing(self):
+        eloop = self.soren / "eloop_lib.sh"
+        eloop.unlink()
+        try:
+            status, data = self._request("GET", "/api/game_state")
+        finally:
+            eloop.write_text("# x\n")
+        self.assertEqual(status, 200, data)
+        self.assertFalse(data["exists"])
+        self.assertIsNone(data["data"])
+        self.assertTrue(data["unsupported"])
+        self.assertEqual(data["capability"], "get_status")
+
+    def test_workers_snapshot_matches_legacy_read_path(self):
+        """RuntimeBackend 経由 (既定) と legacy flag 経由の JSON が同値であること。
+
+        受入条件「既存worker/status HTTP snapshotが同値です」の検証: リファクタ前
+        と同一の実装 (_get_workers_status, legacy flag 経由) と、RuntimeBackend
+        経由 (既定) の出力を同じ soren_root fixture から取得して比較する。
+        """
+        status_a, data_a = self._request("GET", "/api/workers")
+        self.assertEqual(status_a, 200)
+        os.environ[webui.LEGACY_RUNTIME_READS_ENV] = "1"
+        try:
+            status_b, data_b = self._request("GET", "/api/workers")
+        finally:
+            os.environ.pop(webui.LEGACY_RUNTIME_READS_ENV, None)
+        self.assertEqual(status_b, 200)
+        self.assertEqual(data_a, data_b)
+
+    def test_game_state_snapshot_matches_legacy_read_path(self):
+        (self.soren / "game_state.json").write_text(
+            json.dumps({"state": "revolution", "score": 3}), encoding="utf-8"
+        )
+        status_a, data_a = self._request("GET", "/api/game_state")
+        self.assertEqual(status_a, 200)
+        self.assertTrue(data_a["exists"])
+        os.environ[webui.LEGACY_RUNTIME_READS_ENV] = "1"
+        try:
+            status_b, data_b = self._request("GET", "/api/game_state")
+        finally:
+            os.environ.pop(webui.LEGACY_RUNTIME_READS_ENV, None)
+        self.assertEqual(status_b, 200)
+        self.assertEqual(data_a, data_b)
+
+    def test_workers_legacy_flag_bypasses_unsupported_gate(self):
+        """rollback: legacy flag はリファクタ前と同じ経路 (未配置チェック無し) に戻す。"""
+        eloop = self.soren / "eloop_lib.sh"
+        eloop.unlink()
+        os.environ[webui.LEGACY_RUNTIME_READS_ENV] = "1"
+        try:
+            status, data = self._request("GET", "/api/workers")
+        finally:
+            os.environ.pop(webui.LEGACY_RUNTIME_READS_ENV, None)
+            eloop.write_text("# x\n")
+        self.assertEqual(status, 200, data)
+        self.assertNotIn("unsupported", data)
+        self.assertEqual(len(data["workers"]), 6)
+
+    def test_game_state_legacy_flag_bypasses_unsupported_gate(self):
+        eloop = self.soren / "eloop_lib.sh"
+        eloop.unlink()
+        os.environ[webui.LEGACY_RUNTIME_READS_ENV] = "1"
+        try:
+            status, data = self._request("GET", "/api/game_state")
+        finally:
+            os.environ.pop(webui.LEGACY_RUNTIME_READS_ENV, None)
+            eloop.write_text("# x\n")
+        self.assertEqual(status, 200, data)
+        self.assertNotIn("unsupported", data)
+        self.assertFalse(data["exists"])
 
 
     def test_audio_enqueue_and_list(self):
