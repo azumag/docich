@@ -10,6 +10,9 @@ rows = 24
 font = "monospace"
 font_size = 18
 
+[lifecycle]
+require_round_boundary = true
+
 [agent]
 enabled = false        # 最初は手動操作で切り替え・観測・入力を検証する
 brain = "random"
