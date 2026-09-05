@@ -100,6 +100,17 @@ class WebUIConfig:
     token_env: str = "DOCICH_WEBUI_TOKEN"
     allow_cors: bool = False
     read_only: bool = False
+    # issue #42: operator token とは別の read-only (viewer) capability 用 token。
+    # 設定すると、この token で認証した caller は全 mutation (PUT/POST/DELETE) を
+    # 拒否される (server 全体の read_only=false でも、である)。空なら無効
+    # (認証できた caller は従来どおり全員 operator 扱い、既定は不変)。
+    read_only_token: str = ""
+    read_only_token_env: str = "DOCICH_WEBUI_READONLY_TOKEN"
+    # issue #42: mutation の Origin/Host allowlist に追加する信頼済み Origin
+    # (例: "https://myhost.mytailnet.ts.net" — Tailscale serve や reverse proxy 経由
+    # で外部ホスト名からアクセスする場合に明示的に列挙する)。既定は空 (loopback
+    # 開発の Origin/Host のみ許可)。scheme://host[:port] 形式で path を含めないこと。
+    allowed_origins: list = field(default_factory=list)
 
 
 # loopback とみなす bind 値 (これ以外は「外部到達しうる」扱い)。
@@ -136,6 +147,34 @@ def effective_webui_token(webui: "WebUIConfig") -> str:
     if env_val and env_val.strip():
         return env_val.strip()
     return (webui.token or "").strip()
+
+
+def effective_read_only_token(webui: "WebUIConfig") -> str:
+    """read_only_token_env 環境変数を優先し、なければ webui.read_only_token を返す。
+
+    issue #42: operator token とは別の viewer (read-only) capability 用 token。
+    空なら read-only capability は無効 (認証できた caller は従来どおり operator 扱い)。
+    """
+    env_name = (webui.read_only_token_env or "").strip() or "DOCICH_WEBUI_READONLY_TOKEN"
+    env_val = os.environ.get(env_name, "")
+    if env_val and env_val.strip():
+        return env_val.strip()
+    return (webui.read_only_token or "").strip()
+
+
+def _parse_origin_str(value: str) -> tuple[str, str] | None:
+    """"scheme://host[:port]" を (scheme, host[:port]) に分解する。不正なら None。
+
+    issue #42: webui.allowed_origins の各要素・リクエストの Origin ヘッダ双方の
+    検証で使う (path/query/fragment を含む値は許容しない = allowlist の誤用防止)。
+    """
+    v = (value or "").strip()
+    if not v:
+        return None
+    m = re.fullmatch(r"(https?)://([A-Za-z0-9_.-]+(?::[0-9]{1,5})?)", v, re.IGNORECASE)
+    if not m:
+        return None
+    return m.group(1).lower(), m.group(2).lower()
 
 
 @dataclass
@@ -303,6 +342,28 @@ def load_global(repo_root: Path, config_path: Path | None = None) -> GlobalConfi
         raise ConfigError("webui.token は8文字以上である必要があります (空なら無効)")
     if not isinstance(webui.token_env, str) or not webui.token_env.strip():
         raise ConfigError("webui.token_env は空でない文字列である必要があります")
+    if webui.read_only_token and len(webui.read_only_token.strip()) < 8:
+        raise ConfigError("webui.read_only_token は8文字以上である必要があります (空なら無効)")
+    if not isinstance(webui.read_only_token_env, str) or not webui.read_only_token_env.strip():
+        raise ConfigError("webui.read_only_token_env は空でない文字列である必要があります")
+    if (
+        webui.read_only_token
+        and effective_webui_token(webui)
+        and webui.read_only_token.strip() == effective_webui_token(webui)
+    ):
+        raise ConfigError(
+            "webui.read_only_token は webui.token (operator token) と異なる値である必要があります"
+        )
+    if not isinstance(webui.allowed_origins, list) or not all(
+        isinstance(x, str) for x in webui.allowed_origins
+    ):
+        raise ConfigError("webui.allowed_origins は文字列のリストである必要があります")
+    for origin in webui.allowed_origins:
+        if _parse_origin_str(origin) is None:
+            raise ConfigError(
+                f"webui.allowed_origins の値が不正です: {origin!r}"
+                " (\"http(s)://host[:port]\" 形式で path を含めないこと)"
+            )
     # issue #41 (fail closed): 非loopback bind + read_only=false (writable) + token
     # 未設定 (config値・token_env環境変数のどちらも空) の組み合わせは起動時 error にする。
     # 既定値 (bind=127.0.0.1) はこの条件に該当しないため、既定設定での起動には影響しない。
