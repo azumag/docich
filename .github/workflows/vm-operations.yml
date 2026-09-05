@@ -78,6 +78,7 @@ jobs:
         with:
           ref: ${{ steps.auth.outputs.ref }}
           path: candidate
+          fetch-depth: 0
           persist-credentials: false
           submodules: false
 
