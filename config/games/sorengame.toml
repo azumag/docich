@@ -13,3 +13,10 @@ binary = "auto"
 
 [agent]
 enabled = false  # viewer専用。現在の本番運転はsoviet_nowが所有する
+
+# Twitch 配信カテゴリー・タイトル連動 (soviet_now update_stream_game.sh が読む)。
+# category は IGDB 照合済み。運用ルールは games/soviet_now/docs/twitch_game_sync.md。
+[twitch]
+category_id = "1530787860"
+category_name = "Soren Game"
+title_prefix = "[Soren]"
