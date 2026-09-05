@@ -23,6 +23,7 @@
 
 
 #include <stdio.h>
+#include <time.h>
 #include <unistd.h>		/* for getopt */
 
 #include <getopt.h>		/* for GNU getopt_long */
@@ -255,7 +256,14 @@ main_prog (int argc, char *argv[])
 
   for (j = 0; j < nrows; j++)
     {
+      int i;
       map[j] = malloc (ncols * sizeof (int));
+      /* blank filler: maps smaller than MAP_YSIZE/MAP_XSIZE used to draw
+         uninitialized memory below their real rows */
+      for (i = 0; i < ncols; i++)
+        {
+          map[j][i] = SPACE;
+        }
     }
 
   printf ("Map file: %s\n", map_file);
@@ -269,6 +277,28 @@ main_prog (int argc, char *argv[])
   robot_y = 1;
   robot_dir = 1;
   map[robot_y][robot_x] = ROBOT;
+
+  /* Trim the drawn map to the rows that actually contain something, so
+     maps smaller than the fixed MAP_YSIZE do not render blank/garbage
+     filler rows (and the status line sits right under the real map). */
+
+  {
+    int y, x;
+    int last = 0;
+
+    for (y = 0; y < nrows; y++)
+      {
+        for (x = 0; x < ncols; x++)
+          {
+            if (map[y][x] != SPACE && map[y][x] != '\0')
+              {
+                last = y;
+              }
+          }
+      }
+
+    nrows = last + 1;
+  }
 
   /* draw the map */
 
@@ -326,6 +356,27 @@ exit_nicely (void)
     {
       printf ("** Robot ran out of energy.\n");
     }
+
+  /* Append the final score to the score log (the docich score-stats panel
+     reads it).  Best effort: any failure is silently ignored. */
+
+  {
+    const char *log_path = getenv ("GNUROBOTS_SCORELOG");
+
+    if (log_path != NULL && log_path[0] != '\0')
+      {
+        FILE *log = fopen (log_path, "a");
+
+        if (log != NULL)
+          {
+            fprintf (log,
+                     "{\"ts\":\"%ld\",\"game\":\"gnurobots\",\"score\":%ld,"
+                     "\"source\":\"wrapper\"}\n",
+                     (long) time (NULL), robot_score);
+            fclose (log);
+          }
+      }
+  }
 
   /* Quit program */
 

@@ -140,6 +140,26 @@ class GameLifecycleConfig:
     # definitions keep their existing immediate-quiesce behavior until their
     # adapter implements request_round_boundary.
     require_round_boundary: bool = False
+    # Optional per-game round-boundary wait (seconds).  Timeout contract:
+    # the request-wide deadline (switch --timeout / DEFAULT_REQUEST_TIMEOUT_S)
+    # bounds every step by default, so a boundary wait longer than the
+    # request deadline can never take effect.  A boundary-requiring game
+    # whose matches outlast that default declares it here; the coordinator
+    # then extends ONLY the boundary wait (canonical deadline_at included)
+    # while every other step keeps the request deadline.  None = no
+    # extension.
+    boundary_timeout_s: float | None = None
+
+    def __post_init__(self):
+        if self.boundary_timeout_s is None:
+            return
+        value = self.boundary_timeout_s
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ConfigError("lifecycle.boundary_timeout_s は秒数 (数値) が必要です")
+        value = float(value)
+        if not value > 0:
+            raise ConfigError("lifecycle.boundary_timeout_s は正の秒数が必要です")
+        self.boundary_timeout_s = value
 
 
 @dataclass

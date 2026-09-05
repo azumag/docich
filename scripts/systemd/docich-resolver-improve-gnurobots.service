@@ -1,0 +1,16 @@
+[Unit]
+Description=docich resolver improve (GNU Robots 戦略改善・トークン不要)
+After=default.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=__DOCICH_ROOT__
+Environment=PYTHONPATH=__DOCICH_ROOT__/src
+ExecStart=/usr/bin/python3 -m docich.resolver.improve gnurobots --config __DOCICH_ROOT__/config/docich.soren-live.toml --daemon --cycle-min 180 --matches 2 --candidates 3
+KillSignal=SIGINT
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target
