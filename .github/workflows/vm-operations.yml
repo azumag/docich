@@ -104,12 +104,22 @@ jobs:
           fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
-      - name: Build inert deployment archive
+      - name: Build inert deployment payload
         if: ${{ steps.auth.outputs.operation == 'deploy' || steps.auth.outputs.operation == 'bootstrap' }}
+        shell: bash
         env:
           REPO_NAME: ${{ github.event.repository.name }}
+          TARGET: ${{ steps.auth.outputs.target }}
           SHA: ${{ steps.candidate.outputs.sha }}
-        run: python3 control/ops/vm_actions/build_archive.py candidate "$SHA" "$RUNNER_TEMP/vm-payload.tar" "$REPO_NAME"
+        run: |
+          set -euo pipefail
+          if [[ "$REPO_NAME" == docich && "$TARGET" == production ]]; then
+            git -C candidate bundle create "$RUNNER_TEMP/vm-payload" HEAD
+            git bundle list-heads "$RUNNER_TEMP/vm-payload" | awk -v sha="$SHA" '$1 == sha && $2 == "HEAD" { ok=1 } END { exit !ok }'
+            git -C candidate bundle verify "$RUNNER_TEMP/vm-payload" >/dev/null
+          else
+            python3 control/ops/vm_actions/build_archive.py candidate "$SHA" "$RUNNER_TEMP/vm-payload" "$REPO_NAME"
+          fi
 
       - name: Configure pinned SSH client
         shell: bash
@@ -143,7 +153,7 @@ jobs:
         run: |
           set -euo pipefail
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=20)
-          ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "upload $REPO_NAME $TARGET $SHA" < "$RUNNER_TEMP/vm-payload.tar"
+          ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "upload $REPO_NAME $TARGET $SHA" < "$RUNNER_TEMP/vm-payload"
 
       - name: Deploy staged code
         if: ${{ steps.auth.outputs.operation == 'deploy' }}
