@@ -7,6 +7,15 @@ A candidate is promoted only when its mean score beats the current strategy by
 ``<state_dir>/resolver/history/`` and the loop appends every cycle to
 ``<state_dir>/resolver/improve_log.jsonl``.
 
+Per-game evaluation:
+- ``robots`` (BSD robots): the deterministic pane-parsing policy drives the
+  match, keys are chosen every iteration.
+- ``gnurobots``: the game self-plays a rendered Scheme program
+  (docich.resolver.gnurobots.render); a match is the program running to its
+  end and the STATISTICS block is the result.  A promotion re-renders the
+  live ``/usr/local/share/gnurobots/resolver.scm`` so the match-loop wrapper
+  picks it up at the next match start.
+
 Switch-aware: when a game-switch canonical is present the loop only improves
 while that game is the active runtime, and otherwise sleeps (a finished
 game's improvement loop must not keep running for another game).
@@ -18,15 +27,24 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 from ..adapters.cli_game import cli_cols, cli_command_list, cli_rows
 from ..config import load_game, load_global
-from . import read_strategy, resolver_policy, strategy_path
+from . import resolver_policy, strategy_path
+from . import gnurobots as gnurobots_resolver
 from .runner import resolve_command, run_match
+
+GNUROBOTS_BIN = os.environ.get("GNUROBOTS_BIN", "/usr/local/bin/gnurobots")
+GNUROBOTS_MAP = os.environ.get("GNUROBOTS_MAP", "/usr/local/share/gnurobots/maps/small.map")
+GNUROBOTS_RESOLVER = os.environ.get(
+    "GNUROBOTS_RESOLVER", "/usr/local/share/gnurobots/resolver.scm"
+)
 
 
 def perturb(strategy: dict, rng: random.Random) -> dict:
@@ -42,6 +60,103 @@ def perturb(strategy: dict, rng: random.Random) -> dict:
     key = rng.choice(keys)
     out[key] = round(max(0.05, float(strategy[key]) * rng.uniform(0.6, 1.6)), 4)
     return out
+
+
+def _run_match_gnurobots(script_text: str, *, interval_s: float = 0.25, max_s: float = 300.0) -> dict:
+    """Play one gnurobots match: the rendered script runs to its end.
+
+    The game process exits when the program finishes or the robot dies; the
+    STATISTICS block in the final pane capture is the result.
+    """
+    import shlex
+    import subprocess
+
+    from . import robots as _robots_pkg  # reuse nothing; local helper below
+
+    fd, script_path = tempfile.mkstemp(suffix=".scm", prefix="grb-resolver-")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(script_text)
+    session = f"evalr-{os.getpid()}-{int(time.time() * 1000) % 1000000}"
+
+    def _tmux(args: list[str]) -> subprocess.CompletedProcess:
+        return subprocess.run(["tmux", *args], capture_output=True, text=True)
+
+    try:
+        _tmux(["kill-session", "-t", session])
+        created = _tmux(
+            [
+                "new-session", "-d", "-x", "80", "-y", "24", "-s", session,
+                f"{GNUROBOTS_BIN} -f {GNUROBOTS_MAP} {shlex.quote(script_path)}",
+            ]
+        )
+        if created.returncode != 0:
+            raise RuntimeError(f"評価用セッションの起動に失敗しました: {created.stderr.strip()}")
+        start = time.monotonic()
+        dead = False
+        while time.monotonic() - start < max_s:
+            time.sleep(interval_s)
+            listed = _tmux(["list-panes", "-t", session, "-F", "#{pane_dead}"])
+            dead = bool(listed.stdout) and "1" in listed.stdout.split()
+            if dead:
+                break
+        text = _tmux(["capture-pane", "-p", "-t", session]).stdout
+        stats = gnurobots_resolver.parse_statistics(text)
+        return {
+            "score": stats["score"],
+            "energy": stats["energy"],
+            "shields": stats["shields"],
+            "timed_out": not dead,
+            "seconds": round(time.monotonic() - start, 1),
+        }
+    finally:
+        _tmux(["kill-session", "-t", session])
+        try:
+            os.unlink(script_path)
+        except OSError:
+            pass
+
+
+def evaluate_gnurobots(
+    strategy: dict,
+    matches: int,
+    *,
+    interval_ms: int = 250,
+    max_s: float = 300.0,
+) -> dict:
+    script = gnurobots_resolver.render(strategy)
+    results = []
+    for _ in range(matches):
+        try:
+            results.append(_run_match_gnurobots(script, interval_s=interval_ms / 1000, max_s=max_s))
+        except Exception as exc:  # 一試合の失敗でサイクルを落とさない
+            results.append({"score": None, "turns": None, "error": str(exc)})
+    scores = [r["score"] for r in results if isinstance(r.get("score"), int)]
+    mean = sum(scores) / len(scores) if scores else 0.0
+    return {"matches": results, "mean_score": mean, "played": len(scores)}
+
+
+def _game_defaults(game_name: str) -> dict:
+    if game_name == "gnurobots":
+        return dict(gnurobots_resolver.DEFAULT_STRATEGY)
+    return _robots_defaults()
+
+
+def _robots_defaults() -> dict:
+    from .robots import DEFAULT_STRATEGY as ROBOTS_DEFAULTS
+
+    return dict(ROBOTS_DEFAULTS)
+
+
+def read_strategy_for_game(game_name: str, path: Path) -> dict:
+    """Current strategy merged over the game's own defaults."""
+    st = _game_defaults(game_name)
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return st
+    if isinstance(data, dict):
+        st.update({k: v for k, v in data.items() if k in st})
+    return st
 
 
 def evaluate(
@@ -86,10 +201,13 @@ def improve_once(
     seed=None,
 ) -> dict:
     rng = random.Random(seed)
-    policy = resolver_policy(game_name)
     s_file = strategy_path(g.state_dir, game_name)
-    base = read_strategy(s_file)
-    base_ev = evaluate(policy, base, g, game_name, matches)
+    base = read_strategy_for_game(game_name, s_file)
+    if game_name == "gnurobots":
+        base_ev = evaluate_gnurobots(base, matches)
+    else:
+        policy = resolver_policy(game_name)
+        base_ev = evaluate(policy, base, g, game_name, matches)
     trials = [
         {
             "kind": "baseline",
@@ -101,7 +219,10 @@ def improve_once(
     best_score, best_strategy = base_ev["mean_score"], base
     for _ in range(candidates):
         cand = perturb(base, rng)
-        ev = evaluate(policy, cand, g, game_name, matches)
+        if game_name == "gnurobots":
+            ev = evaluate_gnurobots(cand, matches)
+        else:
+            ev = evaluate(policy, cand, g, game_name, matches)
         trials.append(
             {
                 "kind": "candidate",
@@ -115,7 +236,7 @@ def improve_once(
             best_score, best_strategy = ev["mean_score"], cand
     promoted = best_strategy is not base
     if promoted:
-        _promote(s_file, base, best_strategy)
+        _promote(g, game_name, s_file, base, best_strategy)
     summary = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "game": game_name,
@@ -128,7 +249,7 @@ def improve_once(
     return summary
 
 
-def _promote(s_file: Path, old: dict, new: dict) -> None:
+def _promote(g, game_name: str, s_file: Path, old: dict, new: dict) -> None:
     s_file.parent.mkdir(parents=True, exist_ok=True)
     history = s_file.parent / "history"
     history.mkdir(exist_ok=True)
@@ -140,6 +261,10 @@ def _promote(s_file: Path, old: dict, new: dict) -> None:
     s_file.write_text(
         json.dumps(new, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    if game_name == "gnurobots":
+        # Live hot-swap: the match-loop wrapper re-reads the script at the
+        # next match start.
+        Path(GNUROBOTS_RESOLVER).write_text(gnurobots_resolver.render(new), encoding="utf-8")
 
 
 def _append_log(state_dir, game_name: str, summary: dict) -> None:
