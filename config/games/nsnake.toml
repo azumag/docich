@@ -1,0 +1,28 @@
+[game]
+name = "nsnake"
+title = "Snake"
+adapter = "cli"
+
+# nsnake はメインメニュー起動・試合終了時に Game Over/Retry ダイアログを出す
+# (同一プロセス継続)。wrapper (/usr/local/bin/nsnake_docich) が両遷移を駆動し、
+# 最終スコアを scorelog へ追記する。docich CLI adapter には wrapper 型ゲームの
+# 丸境界フックがまだ無いため、切替は従来の immediate-quiesce 経路を使う。
+[lifecycle]
+require_round_boundary = false
+
+[cli]
+command = "/usr/local/bin/nsnake_docich"
+cols = 80
+rows = 24
+font = "monospace"
+font_size = 18
+
+[agent]
+enabled = false  # wrapper が menu/retry を駆動し無人プレイする (bot は issue #15 の AI 方針で別途)
+
+# Twitch 配信カテゴリー・タイトル連動 (soviet_now update_stream_game.sh が読む)。
+# "Snake" 名義の IGDB 項目は複数版があり、検索先頭の 458463 を採用 (照合済み)。
+[twitch]
+category_id = "458463"
+category_name = "Snake"
+title_prefix = "[Snake]"

@@ -109,6 +109,8 @@ class CliCoordinatorTestBase(unittest.TestCase):
         tmux = mock.Mock()
         tmux.has_window.side_effect = lambda name: name == "display"
         tmux.has_session_named.return_value = False
+        tmux.window_target_exists.return_value = False
+        tmux.session_target_exists.return_value = False
         return mock.patch("docich.cli.Tmux", return_value=tmux)
 
     def _call(self, func, *args, **kwargs):
@@ -223,6 +225,90 @@ class TestCmdStop(CliCoordinatorTestBase):
     def test_stop_when_idle_is_noop(self):
         rc, _out, _err = self._call(cli.cmd_stop)
         self.assertEqual(rc, 0)
+
+
+class TestCmdRecover(CliCoordinatorTestBase):
+    def test_recover_when_idle_is_noop_success(self):
+        rc, out, _err = self._call(cli.cmd_recover)
+        self.assertEqual(rc, 0)
+        self.assertIn("復旧しました", out)
+
+    def test_recover_restores_failed_previous(self):
+        self._call(cli.cmd_start, "nethack")
+        # failed + previous を直接作り、recover で復旧できること。
+        from docich.game_switch import GameSwitchStore
+
+        store = GameSwitchStore(self.g.state_dir)
+        state, _ = store.canonical.load()
+        previous = dict(state["active"])
+        state.update(
+            {
+                "phase": "failed",
+                "active": None,
+                "candidate": None,
+                "previous": previous,
+                "operation": None,
+                "request_id": None,
+                "deadline_at": None,
+                "last_result": {
+                    "request_id": "12345678-1234-5678-1234-567812345678",
+                    "operation": "switch",
+                    "status": "failed",
+                    "from_game": "nethack",
+                    "to_game": "dummy",
+                    "generation": 2,
+                    "error_code": "start_failed",
+                    "detail": "boom",
+                    "cleanup_pending": None,
+                },
+                "last_error": {"error_code": "start_failed", "detail": "boom"},
+            }
+        )
+        store.canonical.save(state)
+        rc, _out, _err = self._call(cli.cmd_recover)
+        self.assertEqual(rc, 1)
+        state = self._canonical()
+        self.assertEqual(state["phase"], "ready")
+        self.assertEqual(state["active"]["game"], "nethack")
+
+    def test_recover_bad_timeout_raises_cli_error(self):
+        with self.assertRaises(cli.CliError):
+            self._call(cli.cmd_recover, timeout_s=0)
+
+    def test_recover_flag_parses(self):
+        args = cli.build_parser().parse_args(["recover", "--timeout", "30"])
+        self.assertEqual(args.command, "recover")
+        self.assertEqual(args.timeout, 30)
+
+    def test_recover_refuses_with_legacy_runtime_present(self):
+        cli.State(self.g).set_current_game("nethack")
+        with self.assertRaises(cli.CliError) as ctx:
+            self._call(cli.cmd_recover)
+        self.assertIn("migrate-legacy", str(ctx.exception))
+        # canonical を作らず mirror を保持する (fail-closed)。
+        self.assertFalse((self.g.state_dir / "game_switch.json").exists())
+        self.assertEqual(cli.State(self.g).current_game(), "nethack")
+
+    def test_recover_corrupt_canonical_is_cli_error_not_traceback(self):
+        (self.g.state_dir).mkdir(parents=True, exist_ok=True)
+        (self.g.state_dir / "game_switch.json").write_text("{broken", encoding="utf-8")
+        with self.assertRaises(cli.CliError) as ctx:
+            self._call(cli.cmd_recover)
+        self.assertIn("復旧できませんでした", str(ctx.exception))
+        # main() 経由でも traceback せず exit 2 になること。
+        toml_path = self.root / "docich.toml"
+        toml_path.write_text(
+            "[paths]\n"
+            f'state_dir = "{self.g.state_dir}"\n'
+            f'games_dir = "{self.root / "config" / "games"}"\n',
+            encoding="utf-8",
+        )
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = cli.main(["--config", str(toml_path), "recover"])
+        self.assertEqual(rc, 2)
+        self.assertIn("docich: エラー", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
 
 
 class TestCmdDown(CliCoordinatorTestBase):
@@ -592,6 +678,83 @@ class TestLegacyMigration(CliCoordinatorTestBase):
         # mirror は保持され、canonical は作成されない (fail-closed)
         self.assertEqual(cli.State(self.g).current_game(), "nethack")
         self.assertFalse((self.g.state_dir / "game_switch.json").exists())
+
+    def test_migrate_legacy_keeps_healthy_post_migration_mirror(self):
+        from docich.game_switch import GameSwitchStore
+        from docich.naming import runtime_names
+
+        # canonical ready + active + matching mirror, no fixed targets:
+        # fully migrated healthy state.  migrate-legacy must not run
+        # adapter cleanup nor clear the mirror or active.
+        names = runtime_names(1)
+        store = GameSwitchStore(self.g.state_dir)
+        state, _ = store.canonical.load()
+        state.update(
+            {
+                "phase": "ready",
+                "active": {
+                    "game": "nethack",
+                    "adapter": "cli",
+                    "generation": 1,
+                    "runtime_id": "g1-abcdef",
+                    "lease_id": "12345678-1234-5678-1234-567812345678",
+                    "game_window": names.game_window,
+                    "agent_window": names.agent_window,
+                    "adapter_session": names.adapter_session,
+                    "started_at": "2026-09-03T00:00:00Z",
+                },
+                "next_generation": 2,
+            }
+        )
+        store.canonical.save(state)
+        cli.State(self.g).set_current_game("nethack")
+        tmux = self._legacy_tmux(game_window=False, agent_window=False, game_session=False)
+        with mock.patch("docich.cli.Tmux", return_value=tmux), mock.patch(
+            "docich.cli.make_adapter"
+        ) as make_mock:
+            rc = cli.cmd_migrate_legacy(self.g)
+        self.assertEqual(rc, 0)
+        make_mock.assert_not_called()
+        self.assertEqual(cli.State(self.g).current_game(), "nethack")
+        state, _ = store.canonical.load()
+        self.assertEqual(state["active"]["game"], "nethack")
+
+    def test_migrate_legacy_post_migration_still_cleans_fixed_targets(self):
+        from docich.game_switch import GameSwitchStore
+        from docich.naming import runtime_names
+
+        # canonical exists but fixed windows linger: kill them, keep mirror.
+        names = runtime_names(1)
+        store = GameSwitchStore(self.g.state_dir)
+        state, _ = store.canonical.load()
+        state.update(
+            {
+                "phase": "ready",
+                "active": {
+                    "game": "nethack",
+                    "adapter": "cli",
+                    "generation": 1,
+                    "runtime_id": "g1-abcdef",
+                    "lease_id": "12345678-1234-5678-1234-567812345678",
+                    "game_window": names.game_window,
+                    "agent_window": names.agent_window,
+                    "adapter_session": names.adapter_session,
+                    "started_at": "2026-09-03T00:00:00Z",
+                },
+                "next_generation": 2,
+            }
+        )
+        store.canonical.save(state)
+        cli.State(self.g).set_current_game("nethack")
+        tmux = self._legacy_tmux()
+        with mock.patch("docich.cli.Tmux", return_value=tmux), mock.patch(
+            "docich.cli.make_adapter"
+        ) as make_mock:
+            rc = cli.cmd_migrate_legacy(self.g)
+        self.assertEqual(rc, 0)
+        tmux.kill_window.assert_any_call("game")
+        make_mock.assert_not_called()
+        self.assertEqual(cli.State(self.g).current_game(), "nethack")
 
     def test_migrate_legacy_stops_fixed_runtime_and_clears_mirror(self):
         cli.State(self.g).set_current_game("nethack")
