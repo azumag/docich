@@ -14,3 +14,10 @@ font_size = 18
 enabled = false        # random brain の配線テストは CLI から明示実行
 brain = "random"
 interval_ms = 1500
+
+# Twitch 配信カテゴリー・タイトル連動 (soviet_now update_stream_game.sh が読む)。
+# category は IGDB 照合済み。運用ルールは games/soviet_now/docs/twitch_game_sync.md。
+[twitch]
+category_id = "130"
+category_name = "NetHack"
+title_prefix = "[NetHack]"
