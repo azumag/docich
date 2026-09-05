@@ -14,3 +14,11 @@ enabled = false                        # 有効化はユーザー判断 (認証�
 brain = "command"
 command = ["python3", "brains/hanjuku/brain.py"]
 interval_ms = 7000                     # LLM レイテンシ (3〜6秒) を織り込んだ周期
+
+# Twitch 配信カテゴリー・タイトル連動 (soviet_now update_stream_game.sh が読む)。
+# category は IGDB 照合済み (SFC初代の副題付き項目を採用)。
+# 運用ルールは games/soviet_now/docs/twitch_game_sync.md。
+[twitch]
+category_id = "21236"
+category_name = "Hanjuku Hero: Aa Sekai yo Hanjuku Nare...!!"
+title_prefix = "[半熟英雄]"

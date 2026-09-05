@@ -518,7 +518,12 @@ def cmd_up(g: GlobalConfig) -> int:
     tmux = Tmux()
     tmux.ensure_session()
 
-    if not tmux.has_window("display"):
+    if not g.display.managed:
+        xkit = XKit(g.display.name)
+        if not xkit.display_ready():
+            raise CliError(f"外部所有ディスプレイ {g.display.name} が利用できません")
+        print(f"docich: 外部所有ディスプレイ {g.display.name} へ接続します")
+    elif not tmux.has_window("display"):
         tmux.new_window("display", _run_argv(g, "display"))
         print("docich: display window を起動しました")
     else:
@@ -728,8 +733,10 @@ def _print_switch_result(verb: str, result: SwitchResult) -> None:
 
 def cmd_start(g: GlobalConfig, name: str, *, request_id: str | None = None, timeout_s: float | None = None) -> int:
     tmux = Tmux()
-    if not tmux.has_window("display"):
+    if g.display.managed and not tmux.has_window("display"):
         raise CliError("display window がありません。先に `docich up` を実行してください")
+    if not g.display.managed and not XKit(g.display.name).display_ready():
+        raise CliError(f"外部所有ディスプレイ {g.display.name} が利用できません")
     _require_no_legacy_runtime(g)
     # request_id は一度だけ解決し、switch fallback でも再利用する。
     resolved_request_id = _checked_request_id(request_id)
@@ -1104,8 +1111,11 @@ def _active_fence_or_none(g: GlobalConfig, resolved: str):
     canonical, needs_write = store.canonical.load()
     if needs_write:
         return None
-    if canonical.get("phase") != "ready":
-        raise CliError("ゲーム切替の実行中のため観測・入力できません (phase が ready ではありません)")
+    if canonical.get("phase") not in {"ready", "draining"}:
+        raise CliError(
+            "ゲーム切替の実行中のため観測・入力できません "
+            "(phase が ready または draining ではありません)"
+        )
     active = canonical.get("active")
     if not isinstance(active, dict) or active.get("game") != resolved:
         current = active.get("game") if isinstance(active, dict) else None
@@ -1274,6 +1284,13 @@ def cmd_run(g: GlobalConfig, args) -> int:
 
 def _run_display(g: GlobalConfig) -> int:
     d = g.display
+
+    # An external display (for example Soren's :99) is owned by its existing
+    # runtime.  Keep the internal ``run display`` entry point harmless even if
+    # it is invoked directly from an old tmux window or stale command.
+    if not d.managed:
+        print(f"docich: 外部所有ディスプレイ {d.name} のため Xvfb は起動しません", flush=True)
+        return 0
 
     def build():
         cmd = ["Xvfb", d.name, "-screen", "0", f"{d.width}x{d.height}x{d.color_depth}", "-nolisten", "tcp"]

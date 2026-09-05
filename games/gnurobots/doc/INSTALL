@@ -1,0 +1,36 @@
+INSTALLING GNU ROBOTS:
+_____________________________________________________________________
+
+(0) To build GNU Robots, you *first* need to have already compiled and
+    installed the GNU Guile library.  GNU Robots was built using Guile
+    1.3.
+
+    Guile 1.2 will also work, but you will need to provide your own
+    scm_random() function.  See src/random.c
+
+
+(1) Type:
+
+    ./configure
+
+    To specify an unusual location for GNU Guile, you can use the
+    `--with-guile=' option, like this:
+
+    ./configure --with-guile=/home/jhall
+
+    To specify an unusual location for curses, you can use the
+    `--with-curses=' option, like this:
+
+    ./configure --with-curses=/hub/local
+
+
+(2) Look at the generated `Makefile', and check that everything is
+    okay.  Then type:
+
+    make
+
+    This will create these programs in the src/ directory:
+
+      robots          - a curses-based version of the game
+      xrobots         - an X Windows version of the game
+      robots_logfile  - a version that generates a log file
