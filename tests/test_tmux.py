@@ -232,7 +232,7 @@ class TestCheckedOperations(unittest.TestCase):
     @mock.patch("docich.tmux.procs.run")
     def test_owned_kill_refuses_mismatched_tags(self, mock_run):
         mock_run.side_effect = [
-            _ok("@1\n"),
+            _ok("game-g1\n"),
             _ok("g2-abcdef\n"),
             _ok("2\n"),
             _ok("game\n"),
@@ -241,6 +241,16 @@ class TestCheckedOperations(unittest.TestCase):
             self.tmux.kill_window_owned("docich:game-g1", self.owner)
         calls = [call.args[0] for call in mock_run.call_args_list]
         self.assertFalse(any("kill-window" in call for call in calls))
+
+    @mock.patch("docich.tmux.procs.run")
+    def test_window_exists_lists_and_matches_by_name(self, mock_run):
+        # display-message succeeds even for nonexistent names on real tmux,
+        # so existence must come from list-windows name matching.
+        mock_run.return_value = _ok("display\n")
+        self.assertTrue(self.tmux.window_target_exists("docich:display"))
+        self.assertFalse(self.tmux.window_target_exists("docich:game-g9"))
+        calls = [call.args[0] for call in mock_run.call_args_list]
+        self.assertTrue(all("list-windows" in call for call in calls))
 
     @mock.patch("docich.tmux.procs.run")
     def test_owned_kill_treats_missing_target_as_success(self, mock_run):

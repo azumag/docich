@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -60,11 +62,25 @@ class XKit:
         return out_path
 
     def find_window(self, pattern: str, *, timeout: float | None = None) -> str | None:
-        r = procs.run(
-            ["xdotool", "search", "--onlyvisible", "--name", pattern],
-            env_extra=self._env(),
-            timeout=timeout,
-        )
+        args = ["xdotool", "search"]
+        # --sync は対象が現れるまで待ち続けるため、deadline 付きの readiness
+        # probe でだけ使う。既存の focus 経路は timeout=None で即時 probe を
+        # 期待しており、ここで --sync すると window 不在時に無期限停止する。
+        if timeout is not None:
+            args.append("--sync")
+        args += ["--onlyvisible", "--name", pattern]
+        try:
+            r = procs.run(
+                args,
+                env_extra=self._env(),
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            # ``--sync`` waits until a matching window appears.  The caller
+            # deliberately gives it a short slice and performs another
+            # liveness check afterwards, so a slice timeout is an ordinary
+            # "not found yet" result rather than an adapter failure.
+            return None
         if r.returncode != 0:
             return None
         lines = [line for line in r.stdout.splitlines() if line.strip()]
@@ -83,6 +99,30 @@ class XKit:
         )
         if r2.returncode != 0:
             print(f"docich: ウィンドウのフォーカス取得に失敗しました (id={window_id})", file=sys.stderr)
+
+    def set_geometry(self, window_id: str, x: int, y: int, width: int, height: int) -> None:
+        """Move and resize one decorated X11 window to an exact outer rectangle."""
+        frame = procs.run(
+            ["xprop", "-id", window_id, "_NET_FRAME_EXTENTS"],
+            env_extra=self._env(),
+        )
+        left = right = top = bottom = 0
+        if frame.returncode == 0:
+            values = re.search(r"=\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+)", frame.stdout)
+            if values:
+                left, right, top, bottom = (int(value) for value in values.groups())
+        client_width = max(1, width - left - right)
+        client_height = max(1, height - top - bottom)
+        procs.run(
+            ["xdotool", "windowmove", "--sync", window_id, str(x), str(y)],
+            env_extra=self._env(),
+            check=True,
+        )
+        procs.run(
+            ["xdotool", "windowsize", "--sync", window_id, str(client_width), str(client_height)],
+            env_extra=self._env(),
+            check=True,
+        )
 
     def keydown(self, keys: list[str]) -> None:
         procs.run(["xdotool", "keydown", "--delay", "0", *keys], env_extra=self._env())

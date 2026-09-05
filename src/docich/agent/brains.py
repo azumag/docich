@@ -6,6 +6,7 @@ delegates to an external process (stateless, spawned fresh every cycle);
 """
 from __future__ import annotations
 
+import json
 import random
 import shlex
 import subprocess
@@ -89,10 +90,103 @@ class RandomBrain:
         return [Action(type="wait", ms=500)]
 
 
+class ResolverBrain:
+    """Deterministic in-process resolver (token-free).
+
+    Parses the observation text and computes the next keys locally
+    (docich.resolver); no LLM call and no subprocess per move.  Strategy
+    weights hot-reload from ``<state_dir>/resolver/<game>_strategy.json`` on
+    mtime change, so docich.resolver.improve can promote new parameters
+    without restarting the agent loop.
+    """
+
+    def __init__(self, g: GlobalConfig, game: GameConfig):
+        # Imported lazily: docich.resolver imports docich.adapters, and the
+        # agent package must stay importable from the adapter layer without
+        # an import cycle.
+        from ..resolver import resolver_policy, strategy_path
+
+        self.g = g
+        self.game = game
+        self.policy = resolver_policy(game.name)
+        self.strategy_file = strategy_path(g.state_dir, game.name)
+        self._strategy: dict = {}
+        self._strategy_mtime: int | None = -1
+
+    def _load_strategy(self) -> dict:
+        try:
+            mtime = self.strategy_file.stat().st_mtime_ns
+        except OSError:
+            mtime = None
+        if mtime != self._strategy_mtime:
+            data: dict = {}
+            if mtime is not None:
+                try:
+                    loaded = json.loads(self.strategy_file.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        data = loaded
+                except (OSError, ValueError):
+                    data = {}
+            self._strategy = data
+            self._strategy_mtime = mtime
+        return self._strategy
+
+    def decide(self, obs: Observation) -> list[Action]:
+        text = obs.text or ""
+        keys = self.policy(text, self._load_strategy())
+        if keys and keys[0] == "y" and self._draining():
+            # The game-over prompt belongs to the round-boundary waiter while
+            # the canonical phase is draining: answering it here would consume
+            # the prompt before the waiter can ack (and record the score),
+            # and the match would restart outside the guarded handover.
+            # Mid-match play continues normally; only the restart is held.
+            return []
+        if keys and keys[0] == "y":
+            # The restart key is the one moment the final match score is
+            # visible in the pane; record it for the score-history panel.
+            self._record_match_score(text)
+        return [Action(type="text", text=key) for key in keys]
+
+    def _draining(self) -> bool:
+        """True while a game switch is waiting for this match to end.
+
+        Read straight from the canonical JSON (never through the coordinator
+        lock: the brain must stay lock-free).  Missing file = no coordinator
+        activity = safe to restart as usual.
+        """
+        try:
+            from pathlib import Path
+
+            data = json.loads(
+                (Path(self.g.state_dir) / "game_switch.json").read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):
+            return False
+        return isinstance(data, dict) and data.get("phase") == "draining"
+
+
+    def _record_match_score(self, text: str) -> None:
+        """Append the live match score to the per-game history (best effort)."""
+        try:
+            if self.game.name != "robots":
+                return
+            from .resolver import scorelog
+            from .resolver.robots import score_from_text
+
+            score = score_from_text(text)
+            if isinstance(score, int):
+                scorelog.record(self.g.state_dir, self.game.name, score, source="agent")
+        except Exception:
+            pass
+
+
+
 def build_brain(g: GlobalConfig, game: GameConfig):
     kind = game.agent.brain
     if kind == "command":
         return CommandBrain(g, game)
     if kind == "random":
         return RandomBrain(g, game)
-    raise AdapterError(f"未知の brain です: {kind!r} (使用可能: command, random)")
+    if kind == "resolver":
+        return ResolverBrain(g, game)
+    raise AdapterError(f"未知の brain です: {kind!r} (使用可能: command, random, resolver)")
