@@ -2,79 +2,90 @@
 
 ## 目的
 
-`docich` が所有するゲーム切替基盤の上で、1日1回、既定20:00 JSTから60分間だけCLIゲームを自動プレイし、終了時に開始前のゲームへ安全に戻す「メリケンAIのレトロゲームコーナー」を提供する。
+`docich` が所有するゲーム切替基盤を使い、1日1回、20:00 JSTから60分間だけCLIゲームをSoren本番画面へ重ね、終了時に安全にSorenへ戻す「メリケンAIのレトロゲームコーナー」を提供する。
 
-## 境界
+## 本番境界
 
-- スケジュール・ゲーム切替・復元は `docich` が所有する。
-- `soviet_now` にVM制御・systemd timer・SSH・deployment責務を追加しない。
+- VM・deployment・systemd・ゲーム切替は `docich` が所有する。
+- `soviet_now` に新しいVM制御・timer・SSH責務を追加しない。
+- Soren本番の `soren-runtime.service` は従来どおりXvfb `:99`、`soren_null`、FFmpeg、workerを所有し続ける。
+- 既存 `config/docich.soren-live.toml` を使い、`display.managed=false` / `stream.mode="null"` / `audio.enabled=false` のまま、960x540 viewportへdocichゲームwindowだけを載せる。
+- Soren本体は背景で動き続ける。docich live canonicalがidleから始まる通常ケースでは、終了時にRobotsをstopすると背景のSorenが自然に再露出する。
 - 既存 `GameSwitchCoordinator` を唯一のゲーム切替経路として使う。
-- 初版の対象ゲームは `robots` のみ。現在、長時間放置に耐える専用resolverが実装済みなのが `robots` だけだからである。
-- 将来は `[retro_corner].games` にresolver対応済みCLIゲームを追加するだけで日替わり対象を増やせるようにする。
-- 初版は毎手LLMを呼ばない。Robotsのtoken-free resolverを使い、番組名・状態・ログ上でメリケンAIコーナーとして扱う。LLM人格付きbrainは別機能として追加可能な境界を残す。
+
+## 初版ゲーム
+
+初版は `robots` のみ。長時間無人運転を前提にしたtoken-free resolverが既に実装済みだからである。毎手LLMは呼ばない。
+
+将来はresolver等で安全な無人運転が確認されたCLIゲームを `[retro_corner].games` に追加する。ゲーム選択はローカル日付に対して決定的に行う。
+
+```text
+index = date.toordinal() % len(games)
+```
 
 ## 設定
 
-`config/docich.toml` に次を追加する。
+通常の `config/docich.toml` では自動枠を無効にする。
 
 ```toml
 [retro_corner]
-enabled = true
+enabled = false
 start_hour = 20
 duration_minutes = 60
 timezone = "Asia/Tokyo"
 games = ["robots"]
 ```
 
+本番の `config/docich.soren-live.toml` だけ `enabled = true` にする。
+
 制約:
 
-- `enabled` はbool。
-- `start_hour` は0–23の整数。
-- `duration_minutes` は1–720の整数。
-- `timezone` は `zoneinfo.ZoneInfo` で解決可能なIANA timezone。
-- `games` は空でない安全なゲーム名リスト。
-- 各対象ゲームは `adapter="cli"` かつ `agent.enabled=true` でなければならない。
-- 初版の実運用設定は `robots` のみ。
+- `enabled`: bool
+- `start_hour`: 0–23の整数
+- `duration_minutes`: 1–720の整数
+- `timezone`: `zoneinfo.ZoneInfo` で解決可能なIANA timezone
+- `games`: 空でない安全なゲーム名リスト
+- 各対象ゲーム: `adapter="cli"` かつ `agent.enabled=true`
+
+`retro_corner.py` がこの専用tableを検証する。既存 `GlobalConfig` に番組固有設定を混ぜない。
 
 ## CLI
 
-新規コマンド:
-
 ```text
-docich retro-corner tick
-docich retro-corner start
-docich retro-corner stop
-docich retro-corner status [--json]
+docich --config config/docich.soren-live.toml retro-corner tick
+docich --config config/docich.soren-live.toml retro-corner start
+docich --config config/docich.soren-live.toml retro-corner stop
+docich --config config/docich.soren-live.toml retro-corner status [--json]
 ```
 
-- `tick`: systemd timer用。設定timezoneの現在時刻が `start_hour` で、当日未実行なら `start` 相当の1時間枠を同期実行する。条件外なら成功扱いで何もしない。
-- `start`: 手動開始。既にactiveならfail-closed。開始前ゲームを保存し、対象CLIゲームへtransactional switchし、`duration_minutes` 待機した後に安全な復元を行う。
-- `stop`: active枠を終了。現在ゲームがコーナー対象のままなら開始前ゲームへ復元する。途中でoperatorが別ゲームへ切り替えていた場合はその手動操作を上書きせず `interrupted` として完了する。
-- `status`: 状態ファイルを読み、人間向けまたはJSONで出力する。
+`python -m docich` の入口が `retro-corner` だけ専用moduleへrouteし、既存巨大CLIの変更範囲を増やさない。
 
-## ゲーム選択
+- `tick`: systemd用。設定timezoneの現在hourが `start_hour` で、当日未実行なら開始する。時刻外は完全no-op。
+- `start`: 手動開始。対象ゲーム検証→必要時だけ既存 `docich up` 契約でlive runtime準備→transactional start/switch→duration待機→復元。
+- `stop`: active枠を早期終了。operatorが別ゲームへ切替済みなら上書きせず `interrupted`。
+- `status`: private stateを表示するだけでruntimeへ触らない。
 
-`games` の選択はローカル日付に対して決定的に行う。
+## runtime準備
 
-```text
-index = date.toordinal() % len(games)
-```
+毎時timerが時刻外にもtmuxへ触らないことを必須とする。`docich up` 相当は以下の場合だけ実行する。
 
-同じ日には必ず同じ対象を選び、再起動や再試行でゲームが変わらない。
+1. 実際にコーナーを開始する直前。
+2. 期限切れactive stateを復旧する直前。
+3. active枠を手動stopする直前。
 
-## 状態
+`docich.soren-live.toml` では `up` は共有tmuxの準備と外部`:99`の到達確認だけを行い、Xvfb・audio・FFmpegを起動/停止しない。
+
+## 状態と排他
 
 `<state_dir>/retro_corner.json` を0600でatomic writeする。
-
-最低限のschema:
 
 ```json
 {
   "schema_version": 1,
   "status": "idle|active|completed|interrupted|failed",
-  "date": "YYYY-MM-DD",
+  "date": "YYYY-MM-DD|null",
   "game": "robots|null",
-  "previous_game": "sorengame|null",
+  "previous_game": "string|null",
   "started_at": "ISO8601|null",
   "ends_at": "ISO8601|null",
   "completed_at": "ISO8601|null",
@@ -82,57 +93,50 @@ index = date.toordinal() % len(games)
 }
 ```
 
-`<state_dir>/locks/retro-corner.lock` のflockで `tick/start/stop` を直列化する。
+`<state_dir>/locks/retro-corner.lock` を0600で使う。ただし60分のsleep中はlockを保持しない。これによりoperatorの `stop` や別ゲームへの手動切替を妨げない。
 
-## 開始フロー
+## 開始
 
-1. 設定と対象ゲームを検証。
-2. stale active stateがあり `ends_at` を過ぎていたら、まず安全な復元を試みる。
-3. canonical game switch stateから現在active gameを読む。idleなら `previous_game=null`。
-4. `retro_corner.json` にactive intentを記録。
-5. 既に対象ゲームならswitchしない。それ以外は `GameSwitchCoordinator.switch(target)` または idleなら `start(target)`。
-6. `ends_at` まで待つ。
-7. 終了フローを実行。
+1. stale activeが期限切れなら安全復旧する。
+2. 同日terminal stateならscheduled tickはno-op。
+3. 対象ゲーム定義を検証する。
+4. 必要なlive runtimeを準備する。
+5. canonical active gameを読む。live本番の通常状態はidleなので `previous_game=null`。
+6. active intentをatomic保存する。
+7. idleなら `coordinator.start(target)`、別docich gameがactiveなら `coordinator.switch(target)`。
+8. `ends_at` までsleepする。この間corner lockは解放する。
+9. 再lockして終了処理する。
 
-開始切替が失敗した場合は `failed` を記録し、開始前ゲームを無理に変更しない。
+## 終了・復元
 
-## 終了・復元フロー
+- 現在activeがcorner targetなら:
+  - `previous_game` がある: transactional switchで復元。
+  - `previous_game` がnull: transactional stopでdocich live canonicalをidleへ戻し、背景Sorenを再露出。
+- 現在activeがtargetと異なる: operatorの手動操作を優先し `interrupted`。自動復元しない。
+- 復元失敗: `failed` + sanitized error。別ゲームへ強制切替しない。
 
-1. canonical active gameを読む。
-2. active gameがコーナー対象と一致する場合:
-   - `previous_game` がある: transactional switchで復元。
-   - `previous_game` がない: transactional stopでidleへ戻す。
-3. active gameがコーナー対象と異なる場合: operatorの手動切替とみなし、復元せず `interrupted`。
-4. 成功時 `completed` を記録。
-5. 復元失敗時 `failed` + sanitized errorを記録し、別ゲームへの強制切替はしない。
+## crash recovery
+
+長時間oneshotが落ちてもstateは残す。毎時tickは時刻外でも期限切れactive stateだけを検査し、必要ならruntimeを準備して安全復旧する。未期限のactive stateには触れない。
 
 ## systemd
 
-新規user unit:
+- `docich-retro-corner.service`: `Type=oneshot`, live configを明示して `retro-corner tick`。`TimeoutStartSec=15h`。
+- `docich-retro-corner.timer`: `OnCalendar=hourly`, `Persistent=false`。
 
-- `docich-retro-corner.service`: `Type=oneshot`, `ExecStart=__DOCICH_ROOT__/bin/docich retro-corner tick`
-- `docich-retro-corner.timer`: 毎時起動。時刻判定はPython側が設定timezoneで行うため、VMのsystem timezoneに依存しない。`Persistent=false`。
-
-既存systemd READMEにcopy/install/enable手順を追記する。timerはrepoへのmergeだけでは自動enableせず、VMで一度 `systemctl --user enable --now docich-retro-corner.timer` を実行する。
-
-## 失敗時の扱い
-
-- 多重起動: lock + active stateで拒否。
-- 手動ゲーム切替: operator操作を優先し、終了時に上書きしない。
-- process crash: stateを残す。次回tick/startで期限切れactive stateを検出して安全復元を試みる。
-- game switch failure:既存coordinatorのfail-closed/rollback契約をそのまま使う。
-- state書込: `atomic_write_json` を使い0600を維持する。
+毎時起動はVM timezone依存を避けるためで、時刻判定はPython側が `Asia/Tokyo` で行う。時刻外tickはruntime準備を行わない。
 
 ## テスト
 
-- config validation: timezone/hour/duration/games型・範囲。
+- config validationとdefault/live profileのenable境界。
 - deterministic game selection。
-- startでprevious game保存→robots切替。
-- duration後にprevious game復元。
-- idleから開始した場合は終了時idleへ戻る。
-- operatorが途中で別ゲームへ切替済みなら上書きせずinterrupted。
-- 同日tickは1回だけ。
-- 時刻外tickはno-op。
-- stale active stateの復元。
-- systemd unitが `retro-corner tick` を呼ぶ。
-- `robots` がCLI + enabled agent条件を満たすこと。
+- previous game保存→Robots→復元。
+- live通常形のidle→Robots→idle。
+- 60分待機中の手動stop。
+- operator別ゲーム切替を上書きしない。
+- 同日scheduled tickは1回だけ。
+- 時刻外tickはruntime準備を呼ばない。
+- stale activeの復旧。
+- state 0600。
+- `docich --config ... retro-corner status --json` routing。
+- systemdがlive configを明示し、hourly/Persistent=falseであること。
