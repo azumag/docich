@@ -2,7 +2,9 @@
 """Owner-exec only: apply seven reviewed policy files, never runtime code."""
 from __future__ import annotations
 import hashlib
+import fcntl
 import json
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import re
@@ -17,6 +19,9 @@ ALLOWLIST = {'data/user_review.md', 'prompts/game_theory.md',
              'prompts/improve_strategy.md', 'prompts/analyze_strategy.md',
              'prompts/implement_strategy.md', 'prompts/review_strategy.md',
              'tests/test_founding_policy_contract.py'}
+SPAWN_GUARD = 'tmp/state/.improve_spawn.lock'
+SPAWN_HELPER_SHA256 = '235f69b2768024a78b4aceba24daa8aef028968db6b02527bfeb88a941a83d55'
+SPAWN_WRAPPER_SHA256 = '1b27ccc2df5379a57296d6ec7483f608d1a3c2c6c0fa243e59dabed6d68718ab'
 
 
 def digest(raw):
@@ -62,6 +67,91 @@ def atomic_write(path, raw, mode):
     finally:
         if os.path.exists(name):
             os.unlink(name)
+
+
+def require_runtime_protocol(root):
+    # Fail closed on an old/missing disk protocol. Deployment must also keep
+    # scheduling paused until BOTH running shell spawners reload this version.
+    try:
+        helper, _ = read(safe_path(root, 'strategy/spawn_guard.py'))
+        raw, _ = read(safe_path(root, 'strategy/improve.sh'))
+        text = raw.decode('utf-8') if raw is not None else ''
+        start = text.index('#=== spawn 排他 mutex')
+        end = text.index('#=== ピーク時間帯', start)
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise ValueError('reviewed spawn lease protocol is not deployed') from exc
+    if digest(helper) != SPAWN_HELPER_SHA256 or digest(text[start:end].encode()) != SPAWN_WRAPPER_SHA256:
+        raise ValueError('reviewed spawn lease protocol is not deployed')
+
+
+def require_idle(root):
+    state_path = safe_path(root, 'tmp/state/improve_state.json')
+    raw, _ = read(state_path)
+    if raw is None:
+        raise ValueError('improve state is missing')
+    state = json.loads(raw)
+    if state.get('status') != 'idle' or safe_path(root, 'tmp/improve.lock').exists():
+        raise ValueError('improvement is not idle')
+
+
+@contextmanager
+def policy_spawn_lease(root):
+    # Permanent inode, shared with strategy/spawn_guard.py kernel-lease-v1.
+    # Never unlink it: mtime/PID recycling cannot expire a live kernel lock.
+    path = safe_path(root, SPAWN_GUARD + '.lease')
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+            raise ValueError('invalid spawn lease file')
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise ValueError('improvement spawn is in progress') from exc
+        current = path.stat()
+        if (current.st_dev, current.st_ino) != (st.st_dev, st.st_ino):
+            raise ValueError('spawn lease inode changed')
+        yield
+    finally:
+        os.close(fd)
+
+
+@contextmanager
+def improvement_quiescence(root):
+    with policy_spawn_lease(root):
+        with _directory_quiescence(root):
+            yield
+
+
+@contextmanager
+def _directory_quiescence(root):
+    # Reuse the runtime's atomic spawn mutex. A trigger that already owns it
+    # wins and makes this installer fail closed; later triggers cannot start
+    # until the complete policy transaction has finished. Never steal it.
+    guard = safe_path(root, SPAWN_GUARD)
+    try:
+        guard.mkdir(mode=0o700)
+    except FileExistsError as exc:
+        raise ValueError('improvement spawn is in progress') from exc
+    guard_identity = (guard.stat().st_dev, guard.stat().st_ino)
+    owner = guard / 'owner'
+    owner_written = False
+    try:
+        owner.write_text(str(os.getpid()))
+        owner_written = True
+        require_idle(root)
+        yield
+    finally:
+        try:
+            current = guard.stat()
+            same_guard = (current.st_dev, current.st_ino) == guard_identity
+            owned = owner_written and owner.is_file() and owner.read_text().strip() == str(os.getpid())
+            empty_failed_guard = not owner_written and not owner.exists()
+            if same_guard and (owned or empty_failed_guard):
+                owner.unlink(missing_ok=True)
+                guard.rmdir()
+        except FileNotFoundError:
+            pass
 
 
 def apply(root, specs, payload):
@@ -120,15 +210,18 @@ def main():
     doc = json.loads(Path(__file__).with_name('founding_policy_20260907.json').read_text())
     if set(doc['files']) != ALLOWLIST or not re.fullmatch('[0-9a-f]{40}', doc['source_sha']):
         raise ValueError('invalid pinned policy manifest')
-    state = json.loads((ROOT / 'tmp/state/improve_state.json').read_text())
-    if state.get('status') != 'idle' or (ROOT / 'tmp/improve.lock').exists():
-        raise ValueError('improvement is not idle')
+    # Fail early if an improve job is already active, then re-check under the
+    # runtime's spawn mutex immediately before touching live policy.
+    require_idle(ROOT)
+    require_runtime_protocol(ROOT)
     prefix = ['git', '-C', str(SOURCE), '-c', 'core.hooksPath=/dev/null']
     subprocess.run(prefix + ['fetch', '--no-tags', 'https://github.com/azumag/soviet_now.git', doc['source_sha']],
                    check=True, timeout=120, stdout=subprocess.DEVNULL)
     payload = {rel: subprocess.check_output(prefix + ['show', doc['source_sha'] + ':' + rel], timeout=30)
                for rel in ALLOWLIST}
-    print(apply(ROOT, doc['files'], payload))
+    with improvement_quiescence(ROOT):
+        require_runtime_protocol(ROOT)
+        print(apply(ROOT, doc['files'], payload))
 
 
 if __name__ == '__main__':
