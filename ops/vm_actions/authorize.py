@@ -3,10 +3,8 @@ import json, os, re, sys
 
 OWNER='azumag'
 OWNER_ID='9018513'
-REPOS={
-    'azumag/soviet_now':'1155505884',
-    'azumag/docich':'1327276249',
-}
+REPOSITORY='azumag/docich'
+REPOSITORY_ID='1327276249'
 WORKFLOW='.github/workflows/vm-operations.yml'
 OPS={'deploy','exec','status','bootstrap'}
 TARGETS={'preview','production'}
@@ -19,10 +17,9 @@ def fail(msg):
 def main():
     env=os.environ
     repo=env.get('GITHUB_REPOSITORY','')
-    expected_id=REPOS.get(repo)
     checks=[
-        expected_id is not None,
-        env.get('GITHUB_REPOSITORY_ID')==expected_id,
+        repo==REPOSITORY,
+        env.get('GITHUB_REPOSITORY_ID')==REPOSITORY_ID,
         env.get('GITHUB_REPOSITORY_OWNER')==OWNER,
         env.get('GITHUB_REPOSITORY_OWNER_ID')==OWNER_ID,
         env.get('GITHUB_ACTOR')==OWNER,
