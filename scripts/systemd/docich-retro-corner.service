@@ -1,0 +1,9 @@
+[Unit]
+Description=docich メリケンAI レトロゲームコーナー日次判定
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=__DOCICH_ROOT__
+ExecStart=__DOCICH_ROOT__/bin/docich retro-corner tick
+TimeoutStartSec=15h
