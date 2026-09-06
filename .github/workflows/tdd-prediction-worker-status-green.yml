@@ -1,0 +1,42 @@
+name: TDD prediction worker status green
+
+on:
+  push:
+    branches:
+      - codex/prediction-worker-status-reasons
+
+permissions:
+  contents: write
+
+jobs:
+  green:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: codex/prediction-worker-status-reasons
+          fetch-depth: 0
+          submodules: recursive
+      - name: Install test dependencies
+        run: python3 -m pip install -r requirements-test.txt
+      - name: Apply minimal implementation
+        run: python3 .github/tdd/apply_prediction_worker_status.py
+      - name: Verify focused tests are green
+        run: python3 -m unittest tests.test_webui.TestPredictionWorkerDisplay
+      - name: Run WebUI regression suite
+        run: python3 -m pytest -q tests/test_webui.py
+      - name: Compile and diff check
+        run: |
+          python3 -m compileall -q src tests
+          git diff --check
+      - name: Commit implementation
+        run: |
+          set -euo pipefail
+          rm -f .github/tdd/apply_prediction_worker_status.py
+          rm -f .github/workflows/tdd-prediction-worker-status-green.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/docich/webui.py .github/tdd/apply_prediction_worker_status.py .github/workflows/tdd-prediction-worker-status-green.yml
+          git commit -m "feat: clarify prediction worker wait states"
+          git push origin HEAD:codex/prediction-worker-status-reasons
