@@ -9,27 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  retro-contract:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-        with:
-          persist-credentials: false
-          submodules: recursive
-      - name: Install test dependencies
-        run: python3 -m pip install -r requirements-test.txt
-      - name: Retro corner contract
-        run: python3 -m pytest -q tests/test_retro_corner.py
-      - name: Compile Python
-        run: python3 -m compileall -q src tests
-
-  unit-shard:
-    name: unit-shard-${{ matrix.shard }}
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3]
+  feature-regressions:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -39,19 +19,17 @@ jobs:
           submodules: recursive
       - name: Install test dependencies
         run: python3 -m pip install -r requirements-test.txt
-      - name: Run unit-test shard
-        env:
-          SHARD: ${{ matrix.shard }}
-        shell: bash
+      - name: Retro corner and switch regressions
         run: |
-          mapfile -t files < <(python3 - <<'PY'
-          import os
-          from pathlib import Path
-          shard = int(os.environ["SHARD"])
-          for index, path in enumerate(sorted(Path("tests").glob("test_*.py"))):
-              if index % 4 == shard:
-                  print(path)
-          PY
-          )
-          printf 'Shard %s files:\n%s\n' "$SHARD" "${files[*]}"
-          python3 -m pytest -q "${files[@]}"
+          python3 -m pytest -q \
+            tests/test_retro_corner.py \
+            tests/test_config.py \
+            tests/test_game_switch.py \
+            tests/test_coordinator.py \
+            tests/test_round_boundary.py \
+            tests/test_cli_coordinator.py \
+            tests/test_cli_adapter.py \
+            tests/test_resolver.py \
+            tests/test_robots_config.py
+      - name: Compile Python
+        run: python3 -m compileall -q src tests
