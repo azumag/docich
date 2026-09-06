@@ -94,6 +94,7 @@ brain = "resolver"
             now=lambda: self.now_value,
             sleep=sleep or (lambda seconds: None),
             active_game_reader=lambda: current[0],
+            ensure_runtime=lambda: None,
         )
         return mgr, coordinator
 
@@ -144,6 +145,7 @@ class TestRetroCornerConfig(RetroCornerTestBase):
             now=lambda: self.now_value,
             sleep=lambda seconds: None,
             active_game_reader=lambda: "sorengame",
+            ensure_runtime=lambda: None,
         )
         with self.assertRaises(RetroCornerError):
             mgr.start()
@@ -227,6 +229,39 @@ class TestRetroCornerLifecycle(RetroCornerTestBase):
         self.assertEqual(result.status, "noop")
         self.assertEqual(coordinator.calls, [])
 
+    def test_outside_window_does_not_prepare_runtime(self):
+        self.now_value = datetime(2026, 9, 6, 19, 0, tzinfo=ZoneInfo("Asia/Tokyo"))
+        current = ["sorengame"]
+        prepared = []
+        coordinator = FakeCoordinator(current)
+        mgr = RetroCornerManager(
+            self.g,
+            config=self.cfg,
+            coordinator=coordinator,
+            now=lambda: self.now_value,
+            sleep=lambda seconds: None,
+            active_game_reader=lambda: current[0],
+            ensure_runtime=lambda: prepared.append(True),
+        )
+        self.assertEqual(mgr.tick().status, "noop")
+        self.assertEqual(prepared, [])
+
+    def test_start_prepares_runtime_once(self):
+        current = [None]
+        prepared = []
+        coordinator = FakeCoordinator(current)
+        mgr = RetroCornerManager(
+            self.g,
+            config=self.cfg,
+            coordinator=coordinator,
+            now=lambda: self.now_value,
+            sleep=lambda seconds: None,
+            active_game_reader=lambda: current[0],
+            ensure_runtime=lambda: prepared.append(True),
+        )
+        self.assertEqual(mgr.start().status, "completed")
+        self.assertEqual(prepared, [True])
+
     def test_tick_runs_only_once_per_local_date(self):
         current = ["sorengame"]
         mgr, coordinator = self.manager(current)
@@ -297,10 +332,7 @@ class TestSystemdTemplates(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         service = (root / "scripts/systemd/docich-retro-corner.service").read_text(encoding="utf-8")
         timer = (root / "scripts/systemd/docich-retro-corner.timer").read_text(encoding="utf-8")
-        self.assertIn(
-            "ExecStartPre=__DOCICH_ROOT__/bin/docich --config __DOCICH_ROOT__/config/docich.soren-live.toml up",
-            service,
-        )
+        self.assertNotIn("ExecStartPre=", service)
         self.assertIn(
             "ExecStart=__DOCICH_ROOT__/bin/docich --config __DOCICH_ROOT__/config/docich.soren-live.toml retro-corner tick",
             service,
