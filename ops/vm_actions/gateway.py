@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import configparser, fcntl, hashlib, json, os, re, shutil, subprocess, sys, tempfile, uuid
-from pathlib import Path
+import configparser, fcntl, hashlib, json, os, re, shutil, stat, subprocess, sys, tempfile, uuid
+from pathlib import Path, PurePosixPath
 
 SHA_RE=re.compile(r'[0-9a-f]{40}\Z')
 MAX_PAYLOAD=128*1024*1024
@@ -28,13 +28,16 @@ def git(root:Path,*args:str, capture=True):
     subprocess.run(command,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
     return ''
 
-def submodule_gitlink(root:Path,path:str):
-    line=git(root,'ls-tree','HEAD','--',path)
+def submodule_gitlink_at(root:Path,commit:str,path:str):
+    line=git(root,'ls-tree',commit,'--',path)
     if not line: return None
     fields=line.split()
     if len(fields)<3 or fields[0]!='160000' or fields[1]!='commit' or not SHA_RE.fullmatch(fields[2]):
         raise ValueError('owned submodule path is not a gitlink')
     return fields[2]
+
+def submodule_gitlink(root:Path,path:str):
+    return submodule_gitlink_at(root,'HEAD',path)
 
 def submodule_url(root:Path,path:str):
     modules=root/'.gitmodules'
@@ -94,6 +97,16 @@ def load_config(path:Path):
     if not root.is_absolute() or not root.is_dir() or value.get('mode')!='git':
         raise ValueError('invalid production root/mode')
     if git(root,'rev-parse','--is-inside-work-tree')!='true': raise ValueError('git production root required')
+    projections=value.get('projections', {})
+    if not isinstance(projections, dict): raise ValueError('projections must be an object')
+    for sub_path,destination in projections.items():
+        if sub_path not in OWNED_SUBMODULES or not isinstance(destination, str):
+            raise ValueError('invalid projection mapping')
+        dest=Path(destination)
+        if not dest.is_absolute() or not dest.is_dir() or dest.is_symlink():
+            raise ValueError('projection destination must be an existing absolute directory')
+        if dest.resolve()==root.resolve() or root.resolve() in dest.resolve().parents or dest.resolve() in root.resolve().parents:
+            raise ValueError('projection destination must be disjoint from docich worktree')
     return cfg
 
 def parse_command(cfg):
@@ -123,6 +136,112 @@ def atomic_write(path:Path,data:bytes,mode=0o600):
 
 def write_json(path,obj): atomic_write(path,(json.dumps(obj,sort_keys=True)+'\n').encode())
 def read_json(path): return json.loads(path.read_text()) if path.exists() else None
+
+
+def _safe_projection_path(root:Path, rel:str)->Path:
+    p=PurePosixPath(rel)
+    if p.is_absolute() or not p.parts or any(part in {'','.','..'} for part in p.parts):
+        raise ValueError('unsafe projection path')
+    current=root
+    if root.is_symlink(): raise ValueError('projection root is a symlink')
+    for part in p.parts:
+        current=current/part
+        if current.exists() and current.is_symlink(): raise ValueError('symlink in projection path')
+    return current
+
+
+def _tree_entry(root:Path, commit:str, rel:str):
+    raw=subprocess.check_output(
+        ['git','-C',str(root),'-c','core.hooksPath=/dev/null','ls-tree','-z',commit,'--',rel],
+        stderr=subprocess.DEVNULL,
+    )
+    if not raw: return None
+    entries=[item for item in raw.split(b'\0') if item]
+    if len(entries)!=1: raise ValueError('ambiguous projection tree entry')
+    meta,raw_path=entries[0].split(b'\t',1)
+    mode,kind,obj=meta.decode('ascii').split()
+    path=raw_path.decode('utf-8','strict')
+    if path!=rel or kind!='blob' or mode not in {'100644','100755'}:
+        raise ValueError('projection supports regular tracked files only')
+    return {'mode':0o755 if mode=='100755' else 0o644,'object':obj}
+
+
+def _blob_bytes(root:Path, obj:str)->bytes:
+    data=subprocess.check_output(
+        ['git','-C',str(root),'-c','core.hooksPath=/dev/null','cat-file','blob',obj],
+        stderr=subprocess.DEVNULL,
+    )
+    if len(data)>32*1024*1024: raise ValueError('projection file too large')
+    return data
+
+
+def _live_meta(path:Path):
+    if not path.exists(): return None
+    if path.is_symlink() or not path.is_file(): raise ValueError('projection path is not a regular file')
+    data=path.read_bytes()
+    return {'sha256':hashlib.sha256(data).hexdigest(),'mode':stat.S_IMODE(path.stat().st_mode)}
+
+
+def _expected_meta(root:Path, entry):
+    if entry is None: return None
+    data=_blob_bytes(root,entry['object'])
+    return {'sha256':hashlib.sha256(data).hexdigest(),'mode':entry['mode']}
+
+
+def _changed_paths(root:Path, old_sha:str, new_sha:str)->list[str]:
+    raw=subprocess.check_output(
+        ['git','-C',str(root),'-c','core.hooksPath=/dev/null','diff','--name-only','-z','--no-renames',old_sha,new_sha,'--'],
+        stderr=subprocess.DEVNULL,
+    )
+    return [item.decode('utf-8','strict') for item in raw.split(b'\0') if item]
+
+
+def _plan_projection(subrepo:Path, destination:Path, old_sha:str, new_sha:str):
+    changes=[]
+    for rel in _changed_paths(subrepo,old_sha,new_sha):
+        live=_safe_projection_path(destination,rel)
+        old_entry=_tree_entry(subrepo,old_sha,rel)
+        new_entry=_tree_entry(subrepo,new_sha,rel)
+        old_meta=_expected_meta(subrepo,old_entry)
+        if _live_meta(live)!=old_meta:
+            raise ValueError(f'projection drift detected: {rel}')
+        old_data=_blob_bytes(subrepo,old_entry['object']) if old_entry else None
+        new_data=_blob_bytes(subrepo,new_entry['object']) if new_entry else None
+        changes.append({'path':live,'old_data':old_data,'old_mode':old_entry['mode'] if old_entry else None,
+                        'new_data':new_data,'new_mode':new_entry['mode'] if new_entry else None})
+    return changes
+
+
+def _apply_projection(changes):
+    for change in changes:
+        path=change['path']
+        if change['new_data'] is None:
+            if path.exists(): path.unlink()
+        else:
+            atomic_write(path,change['new_data'],change['new_mode'])
+
+
+def _rollback_projection(changes):
+    for change in reversed(changes):
+        path=change['path']
+        if change['old_data'] is None:
+            if path.exists(): path.unlink()
+        else:
+            atomic_write(path,change['old_data'],change['old_mode'])
+
+
+def _plan_projections(cfg,repo,root:Path,old_parent:str,new_parent:str):
+    plans=[]
+    mappings=cfg['repos'][repo].get('projections', {})
+    for sub_path,destination in mappings.items():
+        old_sub=submodule_gitlink_at(root,old_parent,sub_path)
+        new_sub=submodule_gitlink_at(root,new_parent,sub_path)
+        if old_sub==new_sub: continue
+        if old_sub is None or new_sub is None: raise ValueError('projected submodule must exist in both parent commits')
+        subrepo=root/sub_path
+        if git(subrepo,'rev-parse','HEAD')!=new_sub: raise ValueError('projected submodule is not at new gitlink')
+        plans.append(_plan_projection(subrepo,Path(destination),old_sub,new_sub))
+    return plans
 
 
 def read_payload():
@@ -201,6 +320,8 @@ def deploy_git(cfg,repo,sha):
     if not SHA_RE.fullmatch(old or '') or git(root,'rev-parse','HEAD')!=old or not git_clean(root):
         raise ValueError('tracked VM drift detected')
     if not bundle.is_file(): raise ValueError('bundle missing')
+    projection_plans=[]
+    applied=[]
     try:
         subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','fetch','--no-tags','--force',str(bundle),'HEAD'],
                        stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
@@ -208,9 +329,15 @@ def deploy_git(cfg,repo,sha):
         subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','reset','--hard',sha],
                        stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
         sync_owned_submodules(root)
+        projection_plans=_plan_projections(cfg,repo,root,old,sha)
+        for changes in projection_plans:
+            applied.append(changes)
+            _apply_projection(changes)
         if git(root,'rev-parse','HEAD')!=sha or not git_clean(root): raise ValueError('git deployment verification failed')
         write_json(state_path,{'mode':'git','sha':sha,'previous_head':old})
     except Exception:
+        for changes in reversed(applied):
+            _rollback_projection(changes)
         subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','reset','--hard',old],
                        stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
         sync_owned_submodules(root)

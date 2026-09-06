@@ -162,10 +162,12 @@ class GatewayTests(unittest.TestCase):
         self.assertIn('SUPERSECRET',logs[-1].read_text())
 
 class WorkflowPolicyTests(unittest.TestCase):
-    def test_installer_has_no_soviet_now_or_soren_production(self):
+    def test_installer_projects_docich_owned_soviet_submodule_only(self):
         text=(ROOT/'ops/vm_actions/install_vm_gateway.sh').read_text()
-        self.assertNotIn('soviet_now',text)
-        self.assertNotIn('/home/ubuntu/soren',text)
+        self.assertIn('\"projections\"', text)
+        self.assertIn('games/soviet_now', text)
+        self.assertIn('/home/ubuntu/soren', text)
+        self.assertNotIn('\"soviet_now\": {\"production\"', text)
 
     def test_owner_and_environment_gates_present(self):
         text=WF.read_text()
