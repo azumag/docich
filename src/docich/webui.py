@@ -95,6 +95,7 @@ WEBUI_ALLOWLIST = {
     "SOREN_DIRECT_STREAM_AUDIO_KBPS",
     "SOREN_DIRECT_STREAM_AUDIO_DELAY_MS",
     "DOCICH_CC_ENABLED",
+    "TWITCH_ADS_ENABLED",
 }
 
 # hard defaults from core/config.sh
@@ -124,6 +125,7 @@ DEFAULTS: dict[str, str] = {
     "SOREN_DIRECT_STREAM_AUDIO_KBPS": "160",
     "SOREN_DIRECT_STREAM_AUDIO_DELAY_MS": "0",
     "DOCICH_CC_ENABLED": "0",
+    "TWITCH_ADS_ENABLED": "1",
 }
 
 AGENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
@@ -600,7 +602,7 @@ def _validate_value(key: str, value: str) -> None:
             if not _is_valid_peak_time(a.strip()) or not _is_valid_peak_time(b.strip()):
                 raise ValueError(f"{key} の時刻 {part!r} が不正です (HH/HHMM/HH:MM)")
         return
-    if key in ("PEAK_HOURS_AGENT_SWAP_ENABLED", "PEAK_HOURS_QUEUE_GATE_ENABLED", "IMPROVE_PEAK_CHAIN_ENABLED", "IMPROVE_PEAK_HOUR_DEFER_ENABLED"):
+    if key in ("PEAK_HOURS_AGENT_SWAP_ENABLED", "PEAK_HOURS_QUEUE_GATE_ENABLED", "IMPROVE_PEAK_CHAIN_ENABLED", "IMPROVE_PEAK_HOUR_DEFER_ENABLED", "TWITCH_ADS_ENABLED"):
         # ランタイム (core/helpers.sh) は "1" のみ有効と判定する
         if value.strip() not in ("0", "1"):
             raise ValueError(f"{key} は 0 または 1 である必要があります")
@@ -2711,6 +2713,10 @@ input:checked+.slider:before{transform:translateX(20px)}
 </section>
 <!-- AUDIO -->
 <section id="tab-audio" style="display:none">
+<div class="card"><h2>Twitch 自動広告スヌーズ</h2><p class="desc">読み上げ中に予定広告が近づいた場合、自動でスヌーズします。OFFにすると次回の広告チェックから停止します。</p>
+<div class="row"><div><label>自動広告スヌーズ</label><select id="twitch-ads-enabled"><option value="1">ON</option><option value="0">OFF</option></select></div><div style="align-self:end"><button class="btn primary" id="twitch-ads-save">保存</button></div></div>
+<div class="help">現在の実効値: <span id="twitch-ads-effective" class="mono">-</span> <span id="twitch-ads-source" class="badge">-</span></div>
+</div>
 <div class="card"><h2>Audio キュー (audio-worker)</h2><p class="desc"><code>tmp/.comment_queue/</code> にテキストを積むと <code>audio_worker</code> が <code>say_enqueue.sh</code> で再生する。手動enqueueは <code>lib/outbound_queue.sh:enqueue_audio_text</code> と同等（120秒 dedup）。</p>
 <div class="kv"><dt>queue_dir</dt><dd id="audio-queue-dir" class="mono">-</dd><dt>dedup_dir</dt><dd id="audio-dedup-dir" class="mono">-</dd><dt>dedup_count</dt><dd id="audio-dedup-count" class="mono">-</dd><dt>worker</dt><dd id="audio-worker-status" class="mono">-</dd></div>
 <div class="actions"><button class="btn" id="audio-queue-refresh">更新</button><button class="btn danger" id="audio-queue-clear">キュー全クリア</button></div>
@@ -3040,6 +3046,7 @@ async function loadConfig(){
   renderBackoff(entries);
   renderPeak(entries);
   renderStreamSettings(entries);
+  renderTwitchAds(entries);
   // health badge
   const hb = $("#health-badge");
   hb.textContent = READ_ONLY?"read-only":"read-write";
@@ -3047,6 +3054,27 @@ async function loadConfig(){
   applyReadOnly();
   // also update peak now via peak_status
   try{ const ps=await api("/api/peak_status"); $("#peak-now").textContent=ps.is_peak_now?"ピーク中":"オフピーク"; $("#peak-now-str").textContent=ps.now_str||"-"; $("#peak-now-windows").textContent=ps.windows||"(なし)"; }catch(e){}
+}
+function renderTwitchAds(entries){
+  const e=entries["TWITCH_ADS_ENABLED"]||{value:"",effective:"1",in_env:false};
+  const effective=e.effective==="0"?"0":"1";
+  const select=document.getElementById("twitch-ads-enabled");
+  if(select) select.value=effective;
+  const eff=document.getElementById("twitch-ads-effective");
+  if(eff) eff.textContent=effective==="1"?"ON":"OFF";
+  const source=document.getElementById("twitch-ads-source");
+  if(source){ source.textContent=e.in_env?".env":"既定値"; source.className=e.in_env?"badge ok":"badge"; }
+}
+async function saveTwitchAds(){
+  if(READ_ONLY){ toast("read-only モードのため保存できません"); return; }
+  const select=document.getElementById("twitch-ads-enabled");
+  const value=select&&select.value==="0"?"0":"1";
+  try{
+    const res=await api("/api/config",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({values:{TWITCH_ADS_ENABLED:value},expected_mtime:ENV_MTIME,confirm:true})});
+    ENV_MTIME=res.env_mtime||ENV_MTIME;
+    toast(`自動広告スヌーズを${value==="1"?"ON":"OFF"}にしました`);
+    await loadConfig();
+  }catch(e){ toast(String(e),5000); }
 }
 function applyReadOnly(){
   $$("main button").forEach(b=>{ b.disabled = READ_ONLY && b.id !== "backoff-refresh" && b.id !== "stats-refresh" && b.id !== "health-refresh" && b.id !== "chains-reload" && b.id !== "backoff-reload" && b.id !== "peak-reload" && b.id !== "prediction-refresh" && b.id !== "stream-refresh" && b.id !== "stream-settings-reload"; });
@@ -4759,6 +4787,8 @@ document.addEventListener("DOMContentLoaded",()=>{
   const pRegion=document.getElementById("preview-region");
   if(pRegion) pRegion.onchange=()=>loadPreview();
   // audio handlers
+  const adsSave=document.getElementById("twitch-ads-save");
+  if(adsSave) adsSave.onclick=()=>saveTwitchAds();
   const aRefresh=document.getElementById("audio-queue-refresh");
   if(aRefresh) aRefresh.onclick=()=>loadAudioQueue();
   const aClear=document.getElementById("audio-queue-clear");
