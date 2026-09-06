@@ -1,4 +1,5 @@
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -186,6 +187,19 @@ class TestRetroCornerLifecycle(RetroCornerTestBase):
         self.assertEqual(coordinator.calls, [("switch", "robots")])
         self.assertEqual(current[0], "nethack")
 
+    def test_manual_stop_can_end_corner_during_wait(self):
+        current = ["sorengame"]
+        holder = {}
+
+        def early_stop(_seconds):
+            holder["stop"] = mgr.stop()
+
+        mgr, coordinator = self.manager(current, sleep=early_stop)
+        result = mgr.start()
+        self.assertEqual(holder["stop"].status, "completed")
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(coordinator.calls, [("switch", "robots"), ("switch", "sorengame")])
+
     def test_tick_outside_start_hour_is_noop(self):
         self.now_value = datetime(2026, 9, 6, 19, 0, tzinfo=ZoneInfo("Asia/Tokyo"))
         current = ["sorengame"]
@@ -206,6 +220,29 @@ class TestRetroCornerLifecycle(RetroCornerTestBase):
             [("switch", "robots"), ("switch", "sorengame")],
         )
 
+    def test_expired_active_state_is_reconciled_on_next_tick(self):
+        current = ["robots"]
+        mgr, coordinator = self.manager(current)
+        mgr._write_state(
+            {
+                "schema_version": 1,
+                "status": "active",
+                "date": "2026-09-05",
+                "game": "robots",
+                "previous_game": "sorengame",
+                "started_at": "2026-09-05T20:00:00+09:00",
+                "ends_at": "2026-09-05T21:00:00+09:00",
+                "completed_at": None,
+                "last_error": None,
+            }
+        )
+        self.now_value = datetime(2026, 9, 6, 19, 0, tzinfo=ZoneInfo("Asia/Tokyo"))
+        result = mgr.tick()
+        self.assertEqual(result.status, "noop")
+        self.assertEqual(current[0], "sorengame")
+        self.assertEqual(coordinator.calls, [("switch", "sorengame")])
+        self.assertEqual(mgr.status()["status"], "completed")
+
     def test_status_state_is_private_json(self):
         current = ["sorengame"]
         mgr, _ = self.manager(current)
@@ -217,12 +254,32 @@ class TestRetroCornerLifecycle(RetroCornerTestBase):
         self.assertEqual(state_file.stat().st_mode & 0o777, 0o600)
 
 
+class TestUserFacingCommand(unittest.TestCase):
+    def test_docich_routes_retro_corner_status(self):
+        repo = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cfg = tmp_path / "docich.toml"
+            cfg.write_text(
+                f'[paths]\nstate_dir = "{tmp_path / "run"}"\n[retro_corner]\ngames = ["robots"]\n',
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [str(repo / "bin/docich"), "--config", str(cfg), "retro-corner", "status", "--json"],
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["status"], "idle")
+
+
 class TestSystemdTemplates(unittest.TestCase):
     def test_service_and_timer_contract(self):
         root = Path(__file__).resolve().parents[1]
         service = (root / "scripts/systemd/docich-retro-corner.service").read_text(encoding="utf-8")
         timer = (root / "scripts/systemd/docich-retro-corner.timer").read_text(encoding="utf-8")
-        self.assertIn("ExecStart=__DOCICH_ROOT__/bin/docich-retro-corner tick", service)
+        self.assertIn("ExecStart=__DOCICH_ROOT__/bin/docich retro-corner tick", service)
+        self.assertIn("TimeoutStartSec=15h", service)
         self.assertIn("OnCalendar=hourly", timer)
         self.assertIn("Persistent=false", timer)
 
