@@ -1,0 +1,40 @@
+{
+  "source_sha": "abe6f7fb954c55cb45aa718ce9eb2478d7a0d0e3",
+  "files": {
+    "prompts/game_theory.md": {
+      "old": "9278cb1d09f04381d200e55b7a52b8335510e535a469f32d06d5c1fe8b92ad19",
+      "new": "2ca5618f593206e0218a2aa3777f3fff2dbd4ffa4a85e5e0a514f5bc84f31edf",
+      "mode": 420
+    },
+    "data/user_review.md": {
+      "old": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "new": "4901781602188cfbe66e3a5bb9ca25e7013dcd97e880ccab483c699da55e24cb",
+      "mode": 420
+    },
+    "prompts/improve_strategy.md": {
+      "old": "64ac5915e1b77b2e1f0cd6e1f6fc3460b4bf0cb2007700774b30ff2aa5c97cf3",
+      "new": "89a4b39fdfbbbc7d2bf508e56dd3a501b638e7c306e3932802e9598ff4668ffc",
+      "mode": 493
+    },
+    "prompts/analyze_strategy.md": {
+      "old": "3ba6b603564407f994118d86638f2f9ad195c3f53d52b1b7d22b47ee04db1264",
+      "new": "f953a12f113825cf2739cd2f9349fdcbdc9e965318eadae12e4f6f344bd83868",
+      "mode": 436
+    },
+    "prompts/implement_strategy.md": {
+      "old": "a20f70ba2d4b68acb1ad3c41f85f5b04696a6e2bf9b7889573ddc5b3a72ac4c6",
+      "new": "e71aac9bfa87220b27c9c84e09989ae5d402586a9d389e08419a1e87717b351c",
+      "mode": 436
+    },
+    "prompts/review_strategy.md": {
+      "old": "15b78c7a3b534e22441ece4a0a426de511d7e1bdb32b9a1ebddf22afe3cabb88",
+      "new": "31d11acc2cb6fd0649107c49f8f087253a094cd1e68d53d0f391be9436a612e2",
+      "mode": 420
+    },
+    "tests/test_founding_policy_contract.py": {
+      "old": null,
+      "new": "f79e67373630bc645cea5c460713d2e8536df9f69b6246dfdad22fff3e1a3319",
+      "mode": 420
+    }
+  }
+}
