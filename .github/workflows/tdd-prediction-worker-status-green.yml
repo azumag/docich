@@ -17,7 +17,6 @@ jobs:
         with:
           ref: codex/prediction-worker-status-reasons
           fetch-depth: 0
-          submodules: recursive
       - name: Install test dependencies
         run: python3 -m pip install -r requirements-test.txt
       - name: Apply minimal implementation
