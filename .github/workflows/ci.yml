@@ -9,9 +9,9 @@ permissions:
   contents: read
 
 jobs:
-  unit-tests:
+  retro-contract:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
@@ -19,19 +19,35 @@ jobs:
           submodules: recursive
       - name: Retro corner contract
         run: python3 -m unittest tests.test_retro_corner -v
-      - name: Full unit suite
-        shell: bash
-        run: |
-          set -o pipefail
-          if python3 -m unittest discover -s tests -v 2>&1 | tee full-tests.log; then
-            exit 0
-          fi
-          {
-            echo '### Full unit suite failure tail'
-            echo '```text'
-            tail -n 160 full-tests.log
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-          exit 1
       - name: Compile Python
         run: python3 -m compileall -q src tests
+
+  unit-shard:
+    name: unit-shard-${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - name: Run unit-test shard
+        env:
+          SHARD: ${{ matrix.shard }}
+        shell: bash
+        run: |
+          mapfile -t modules < <(python3 - <<'PY'
+          import os
+          from pathlib import Path
+          shard = int(os.environ["SHARD"])
+          for index, path in enumerate(sorted(Path("tests").glob("test_*.py"))):
+              if index % 4 == shard:
+                  print(".".join(path.with_suffix("").parts))
+          PY
+          )
+          printf 'Shard %s modules:\n%s\n' "$SHARD" "${modules[*]}"
+          python3 -m unittest -v "${modules[@]}"
