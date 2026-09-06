@@ -2,96 +2,13 @@ name: TDD prediction worker status red
 
 on:
   push:
-    branches: [codex/prediction-worker-status-reasons]
-
-permissions:
-  contents: write
+    branches:
+      - codex/prediction-worker-status-reasons
 
 jobs:
   red:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-        with:
-          ref: codex/prediction-worker-status-reasons
-          fetch-depth: 0
-      - name: Append prediction worker display tests
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('tests/test_webui.py')
-          text = path.read_text(encoding='utf-8')
-          marker = 'class TestPredictionWorkerDisplay(unittest.TestCase):'
-          if marker not in text:
-              text += r'''
-
-
-class TestPredictionWorkerDisplay(unittest.TestCase):
-    def _display(self, row, prediction):
-        html = webui.INDEX_HTML
-        start_marker = "// prediction-worker-display:start"
-        end_marker = "// prediction-worker-display:end"
-        self.assertIn(start_marker, html)
-        self.assertIn(end_marker, html)
-        source = html.split(start_marker, 1)[1].split(end_marker, 1)[0]
-        script = source + "\nconst out=predictionWorkerDisplay(" + json.dumps(row, ensure_ascii=False) + "," + json.dumps(prediction, ensure_ascii=False) + "); process.stdout.write(JSON.stringify(out));"
-        completed = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=5, check=False)
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        return json.loads(completed.stdout)
-
-    def test_paused_state_has_priority(self):
-        state = self._display({"alive": False, "paused": True}, {"enabled": False})
-        self.assertEqual(state["text"], "停止中 (paused)")
-
-    def test_feature_off_is_explicit(self):
-        state = self._display({"alive": True, "paused": False}, {"enabled": False, "configured": True})
-        self.assertEqual(state["text"], "稼働中・機能OFF")
-
-    def test_missing_configuration_is_explicit(self):
-        state = self._display({"alive": True, "paused": False}, {"enabled": True, "configured": False, "error": "missing_token"})
-        self.assertEqual(state["text"], "稼働中・設定不備")
-
-    def test_auth_failure_is_explicit(self):
-        state = self._display({"alive": True, "paused": False}, {"enabled": True, "configured": True, "error": "Unauthorized", "retry": {"create": {"active": True, "http_code": "401", "remaining": 900}}})
-        self.assertEqual(state["text"], "稼働中・認証不良")
-
-    def test_create_retry_shows_remaining_time(self):
-        state = self._display({"alive": True, "paused": False}, {"enabled": True, "configured": True, "retry": {"create": {"active": True, "http_code": "429", "remaining": 125}}, "remote": [], "local": None, "accumulated": {"count": 4}})
-        self.assertEqual(state["text"], "稼働中・create retry中")
-        self.assertIn("2分5秒", state["detail"])
-
-    def test_active_prediction_is_explicit(self):
-        state = self._display({"alive": True, "paused": False}, {"enabled": True, "configured": True, "retry": {"create": None}, "remote": [{"status": "ACTIVE"}], "local": None, "accumulated": {"count": 2}})
-        self.assertEqual(state["text"], "稼働中・予想実施中")
-
-    def test_mid_cycle_without_prediction_waits_for_next_cycle(self):
-        state = self._display({"alive": True, "paused": False}, {"enabled": True, "configured": True, "retry": {"create": None}, "remote": [], "local": None, "accumulated": {"count": 4}})
-        self.assertEqual(state["text"], "稼働中・次サイクル待ち")
-        self.assertIn("蓄積 4ゲーム", state["detail"])
-
-    def test_cycle_start_without_prediction_waits_for_create_tick(self):
-        state = self._display({"alive": True, "paused": False}, {"enabled": True, "configured": True, "retry": {"create": None}, "remote": [], "local": None, "accumulated": {"count": 0}})
-        self.assertEqual(state["text"], "稼働中・予想開始待ち")
-'''
-              path.write_text(text, encoding='utf-8')
-          PY
-      - name: Verify tests fail before implementation
-        id: red_test
-        continue-on-error: true
-        run: python3 -m unittest tests.test_webui.TestPredictionWorkerDisplay
-      - name: Assert red state
-        shell: bash
-        run: |
-          test "${{ steps.red_test.outcome }}" = "failure"
-      - name: Commit red tests
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -f .github/workflows/tdd-prediction-worker-status-red.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add tests/test_webui.py .github/workflows/tdd-prediction-worker-status-red.yml
-          git commit -m "test: define prediction worker status reasons"
-          git push origin HEAD:codex/prediction-worker-status-reasons
+      - name: Runner probe
+        run: echo runner-ok
