@@ -20,6 +20,11 @@ font_size = 18
 [agent]
 enabled = false  # wrapper が無人プレイする (bot は issue #15 の AI 方針で別途)
 
+# wrapper自身が無人プレイを完結できるため、operatorの手動retro-cornerテストでは
+# per-move agentなしでも選択可能。通常20:00の日次対象リストには自動追加しない。
+[retro_corner]
+unattended = true
+
 # Twitch 配信カテゴリー・タイトル連動 (soviet_now update_stream_game.sh が読む)。
 # 原作 Space Invaders (4669) を採用 (照合済み)。
 [twitch]
