@@ -136,6 +136,7 @@ class RetroCornerManager:
         now: Callable[[], dt.datetime] | None = None,
         sleep: Callable[[float], None] = time.sleep,
         active_game_reader: Callable[[], str | None] | None = None,
+        ensure_runtime: Callable[[], None] | None = None,
     ):
         self.g = g
         self.config = config or load_retro_corner_config(g)
@@ -147,8 +148,21 @@ class RetroCornerManager:
         self._now = now or (lambda: dt.datetime.now(self.tz))
         self._sleep = sleep
         self._active_game_reader = active_game_reader or self._canonical_active_game
+        self._ensure_runtime = ensure_runtime or self._default_ensure_runtime
         self.state_path = Path(g.state_dir) / STATE_FILE
         self.lock_path = Path(g.state_dir) / LOCK_FILE
+
+    def _default_ensure_runtime(self) -> None:
+        # Import lazily so ``python -m docich retro-corner`` can route here
+        # before the large legacy CLI module is imported. cmd_up is the single
+        # existing contract for creating the shared tmux session and validating
+        # an external display; with docich.soren-live.toml it does NOT own Xvfb,
+        # audio, or FFmpeg.
+        from .cli import cmd_up
+
+        rc = cmd_up(self.g)
+        if rc != 0:
+            raise RetroCornerError(f"docich up が失敗しました (rc={rc})")
 
     def _local_now(self) -> dt.datetime:
         value = self._now()
@@ -319,19 +333,27 @@ class RetroCornerManager:
             return
         ends_at = self._parse_ends_at(state)
         if ends_at is None or now >= ends_at:
+            self._ensure_runtime()
             self._finish_locked(state, now)
 
-    def _begin_locked(self, now: dt.datetime, *, scheduled: bool) -> tuple[dict[str, object] | None, CornerResult | None]:
+    def _begin_locked(
+        self, now: dt.datetime, *, scheduled: bool
+    ) -> tuple[dict[str, object] | None, CornerResult | None]:
         self._reconcile_stale_locked(now)
         existing = self._read_state()
         if existing.get("status") == "active":
             if scheduled:
                 return None, CornerResult("noop", detail="already-active")
             raise RetroCornerError("retro cornerは既にactiveです")
-        if scheduled and existing.get("date") == now.date().isoformat() and existing.get("status") in TERMINAL_STATUSES:
+        if (
+            scheduled
+            and existing.get("date") == now.date().isoformat()
+            and existing.get("status") in TERMINAL_STATUSES
+        ):
             return None, CornerResult("noop", detail="already-ran-today")
 
         self._validate_games()
+        self._ensure_runtime()
         previous = self._active_game_reader()
         target = select_game(self.config.games, now.date())
         ends_at = now + dt.timedelta(minutes=self.config.duration_minutes)
@@ -386,6 +408,7 @@ class RetroCornerManager:
             state = self._read_state()
             if state.get("status") != "active":
                 return CornerResult("noop", detail="not-active")
+            self._ensure_runtime()
             return self._finish_locked(state, self._local_now())
 
     def tick(self) -> CornerResult:
@@ -403,8 +426,7 @@ class RetroCornerManager:
 
     def status(self) -> dict[str, object]:
         with self._locked():
-            state = self._read_state()
-        return state
+            return self._read_state()
 
 
 def _build_parser() -> argparse.ArgumentParser:
