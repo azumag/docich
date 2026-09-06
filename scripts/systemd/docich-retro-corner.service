@@ -5,5 +5,8 @@ After=network.target
 [Service]
 Type=oneshot
 WorkingDirectory=__DOCICH_ROOT__
-ExecStart=__DOCICH_ROOT__/bin/docich retro-corner tick
+# 外部所有のSoren :99へ接続するため、まずdocichの共有tmux/sessionだけ準備する。
+# Xvfb・音声bus・FFmpegは起動/停止しない (docich.soren-live.toml の契約)。
+ExecStartPre=__DOCICH_ROOT__/bin/docich --config __DOCICH_ROOT__/config/docich.soren-live.toml up
+ExecStart=__DOCICH_ROOT__/bin/docich --config __DOCICH_ROOT__/config/docich.soren-live.toml retro-corner tick
 TimeoutStartSec=15h
