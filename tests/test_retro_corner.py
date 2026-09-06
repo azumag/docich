@@ -149,6 +149,25 @@ class TestRetroCornerConfig(RetroCornerTestBase):
             mgr.start()
 
 
+class TestProductionProfile(unittest.TestCase):
+    def test_only_soren_live_profile_enables_daily_corner(self):
+        root = Path(__file__).resolve().parents[1]
+        default_g = config.load_global(root, root / "config/docich.toml")
+        live_g = config.load_global(root, root / "config/docich.soren-live.toml")
+        default_cfg = load_retro_corner_config(default_g)
+        live_cfg = load_retro_corner_config(live_g)
+        self.assertFalse(default_cfg.enabled)
+        self.assertTrue(live_cfg.enabled)
+        self.assertEqual(live_g.display.number, 99)
+        self.assertFalse(live_g.display.managed)
+        self.assertEqual(
+            (live_g.display.viewport_x, live_g.display.viewport_y,
+             live_g.display.viewport_width, live_g.display.viewport_height),
+            (0, 90, 960, 540),
+        )
+        self.assertEqual(live_cfg.games, ["robots"])
+
+
 class TestRetroCornerSelection(unittest.TestCase):
     def test_selection_is_deterministic_per_local_date(self):
         games = ["robots", "ninvaders", "nsnake"]
@@ -278,7 +297,14 @@ class TestSystemdTemplates(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         service = (root / "scripts/systemd/docich-retro-corner.service").read_text(encoding="utf-8")
         timer = (root / "scripts/systemd/docich-retro-corner.timer").read_text(encoding="utf-8")
-        self.assertIn("ExecStart=__DOCICH_ROOT__/bin/docich retro-corner tick", service)
+        self.assertIn(
+            "ExecStartPre=__DOCICH_ROOT__/bin/docich --config __DOCICH_ROOT__/config/docich.soren-live.toml up",
+            service,
+        )
+        self.assertIn(
+            "ExecStart=__DOCICH_ROOT__/bin/docich --config __DOCICH_ROOT__/config/docich.soren-live.toml retro-corner tick",
+            service,
+        )
         self.assertIn("TimeoutStartSec=15h", service)
         self.assertIn("OnCalendar=hourly", timer)
         self.assertIn("Persistent=false", timer)
