@@ -24,7 +24,7 @@ from ..game_switch import (
     atomic_write_json,
 )
 from ..naming import NameValidationError, validate_tmux_name
-from ..tmux import OwnershipMismatchError, SESSION, Tmux, TmuxOwnership
+from ..tmux import OwnershipMismatchError, Tmux, TmuxOwnership
 from ..xkit import XKit
 from .base import Adapter, AdapterError, Observation
 
@@ -264,10 +264,10 @@ class CliCoordinatorAdapter:
             raise DeadlineExceededError("adapter call のdeadlineを超過しました")
 
     def _game_window_target(self) -> str:
-        return f"{SESSION}:{self.spec.game_window}"
+        return f"{self.spec.adapter_session}:{self.spec.game_window}"
 
     def _agent_window_target(self) -> str:
-        return f"{SESSION}:{self.spec.agent_window}"
+        return f"{self.spec.adapter_session}:{self.spec.agent_window}"
 
     def _verify_session_ownership(self) -> None:
         expected = self._ownership("adapter")
@@ -459,7 +459,7 @@ class CliCoordinatorAdapter:
             (self.spec.game_window, "game"),
         ):
             self._check_active(deadline, cancel)
-            target = f"{SESSION}:{name}"
+            target = f"{self.spec.adapter_session}:{name}"
             if self.tmux.window_target_exists(target):
                 self._check_active(deadline, cancel)
                 self.tmux.kill_window_owned(target, self._ownership(role))

@@ -39,7 +39,7 @@ class FakeTmux:
         self.sessions[session] = self._expected(ownership)
 
     def create_window_owned(self, name, cmd, ownership, env=None):
-        target = f"docich:{name}"
+        target = f"docich-game-g{ownership.generation}:{name}"
         if target in self.windows:
             raise RuntimeError(f"duplicate window {target}")
         self.windows[target] = self._expected(ownership)
