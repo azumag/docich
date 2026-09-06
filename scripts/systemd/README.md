@@ -52,8 +52,12 @@ systemctl --user enable --now docich-retro-corner.timer
 
 本番では `config/docich.soren-live.toml` を必ず使う。このprofileは
 `display=:99`, `managed=false`, `stream.mode="null"`, `audio.enabled=false` で、
-**SorenのXvfb・音声bus・FFmpegを所有しない**。serviceの `ExecStartPre` は
-`docich ... up` を実行するが、行うのは共有tmuxの準備と外部displayの到達確認だけである。
+**SorenのXvfb・音声bus・FFmpegを所有しない**。
+
+毎時service自体は `retro-corner tick` だけを実行し、時刻外は完全no-opである。
+実際の開始時、または期限切れactive stateの復旧が必要な時だけ `retro_corner.py` が
+既存の `docich up` 契約を呼び、共有tmuxの準備と外部displayの到達確認を行う。
+したがって毎時の健康なtickがtmux/window状態を変更することはない。
 
 毎時timerを使う理由は、VMのsystem timezoneへ依存しないためである。Python側が
 `[retro_corner].timezone` (本番は `Asia/Tokyo`) へ変換し、`start_hour` (本番20時)
