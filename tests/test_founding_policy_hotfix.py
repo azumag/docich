@@ -70,4 +70,21 @@ class PolicyHotfixTests(unittest.TestCase):
             self.assertEqual((r/"prompts/a.md").read_bytes(),b"old a")
             self.assertFalse((r/"prompts/b.md").exists())
 
+    def test_quiescence_holds_runtime_spawn_guard_and_rechecks_idle(self):
+        m=load()
+        with tempfile.TemporaryDirectory() as d:
+            r=Path(d); (r/"tmp/state").mkdir(parents=True)
+            (r/"tmp/state/improve_state.json").write_text('{"status":"idle"}')
+            with m.improvement_quiescence(r):
+                self.assertTrue((r/"tmp/state/.improve_spawn.lock").is_dir())
+                with self.assertRaisesRegex(ValueError, "spawn is in progress"):
+                    with m.improvement_quiescence(r): pass
+            self.assertFalse((r/"tmp/state/.improve_spawn.lock").exists())
+            (r/"tmp/improve.lock").touch()
+            with self.assertRaisesRegex(ValueError, "not idle"):
+                with m.improvement_quiescence(r): pass
+            self.assertFalse((r/"tmp/state/.improve_spawn.lock").exists())
+        self.assertIn("with improvement_quiescence(ROOT):", SCRIPT.read_text())
+
+
 if __name__ == "__main__": unittest.main()
