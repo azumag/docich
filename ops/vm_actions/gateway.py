@@ -253,18 +253,19 @@ def read_payload():
 def upload_bundle(cfg,repo,sha,data:bytes):
     root=Path(cfg['repos'][repo]['production'])
     dest=bundle_file(cfg,repo,sha)
-    if dest.exists():
-        if hashlib.sha256(dest.read_bytes()).digest()!=hashlib.sha256(data).digest():
-            raise ValueError('bundle SHA collision')
-        return {'status':'uploaded','sha':sha,'kind':'bundle'}
-    atomic_write(dest,data,0o600)
+    dest.parent.mkdir(parents=True,exist_ok=True)
+    fd,tmp_name=tempfile.mkstemp(prefix='.incoming-bundle-',dir=dest.parent)
+    tmp=Path(tmp_name)
     try:
-        heads=subprocess.check_output(['git','bundle','list-heads',str(dest)],stderr=subprocess.DEVNULL,text=True,timeout=30)
+        with os.fdopen(fd,'wb') as f:
+            f.write(data); f.flush(); os.fchmod(f.fileno(),0o600); os.fsync(f.fileno())
+        heads=subprocess.check_output(['git','bundle','list-heads',str(tmp)],stderr=subprocess.DEVNULL,text=True,timeout=30)
         advertised={line.split()[0] for line in heads.splitlines() if line.split()}
         if sha not in advertised: raise ValueError('bundle does not advertise requested SHA')
-        subprocess.run(['git','-C',str(root),'bundle','verify',str(dest)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=60)
-    except Exception:
-        dest.unlink(missing_ok=True); raise
+        subprocess.run(['git','-C',str(root),'bundle','verify',str(tmp)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=60)
+        os.replace(tmp,dest)
+    finally:
+        if tmp.exists(): tmp.unlink()
     return {'status':'uploaded','sha':sha,'kind':'bundle'}
 
 def upload(cfg,repo,target,sha):
