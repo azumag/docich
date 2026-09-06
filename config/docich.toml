@@ -58,4 +58,5 @@ soren_root = ""            # 空なら games/soviet_now (未導入ゲームな�
 token = ""                 # 空なら Tailscale ACL のみ。設定時は 8 文字以上
 token_env = "DOCICH_WEBUI_TOKEN"   # token の上書き環境変数名
 allow_cors = false         # 別オリジンからの API 呼び出しを許可 (開発用)
+allowed_origins = ["https://<hostname>.<tailnet>.ts.net"]  # Tailscale serve 経由の mutation 許可 (#42)
 read_only = false          # true だと閲覧専用 (設定変更・backoff 操作・reload 不可)

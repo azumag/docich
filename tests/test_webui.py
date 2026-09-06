@@ -679,6 +679,37 @@ class TestHttpHandlers(unittest.TestCase):
         self.assertEqual(entry["value"], "900")
         self.assertTrue(entry["in_env"])
 
+    def test_twitch_ads_toggle_roundtrip(self):
+        status, data = self._request("GET", "/api/config")
+        self.assertEqual(status, 200)
+        entry = next(e for e in data["entries"] if e["key"] == "TWITCH_ADS_ENABLED")
+        self.assertEqual(entry["effective"], "1")
+        mtime = data["env_mtime"]
+        status, data = self._request(
+            "PUT", "/api/config",
+            {"values": {"TWITCH_ADS_ENABLED": "0"}, "expected_mtime": mtime},
+        )
+        self.assertEqual(status, 200, data)
+        status, data = self._request("GET", "/api/config")
+        entry = next(e for e in data["entries"] if e["key"] == "TWITCH_ADS_ENABLED")
+        self.assertEqual(entry["value"], "0")
+        self.assertEqual(entry["effective"], "0")
+
+    def test_twitch_ads_toggle_rejects_non_boolean(self):
+        status, data = self._request(
+            "PUT", "/api/config", {"values": {"TWITCH_ADS_ENABLED": "yes"}}
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(data["error"], "validation_error")
+
+    def test_index_contains_twitch_ads_toggle(self):
+        self.client.request("GET", "/")
+        res = self.client.getresponse()
+        body = res.read().decode("utf-8")
+        self.assertEqual(res.status, 200)
+        self.assertIn('id="twitch-ads-enabled"', body)
+        self.assertIn('id="twitch-ads-save"', body)
+
     def test_put_config_conflict(self):
         status, data = self._request("PUT", "/api/config", {"values": {"AI_AGENT_BACKOFF_SEC": "900"}, "expected_mtime": 12345})
         self.assertEqual(status, 409)
