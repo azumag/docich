@@ -17,8 +17,10 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+      - name: Install test dependencies
+        run: python3 -m pip install -r requirements-test.txt
       - name: Retro corner contract
-        run: python3 -m unittest tests.test_retro_corner -v
+        run: python3 -m pytest -q tests/test_retro_corner.py
       - name: Compile Python
         run: python3 -m compileall -q src tests
 
@@ -35,19 +37,21 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+      - name: Install test dependencies
+        run: python3 -m pip install -r requirements-test.txt
       - name: Run unit-test shard
         env:
           SHARD: ${{ matrix.shard }}
         shell: bash
         run: |
-          mapfile -t modules < <(python3 - <<'PY'
+          mapfile -t files < <(python3 - <<'PY'
           import os
           from pathlib import Path
           shard = int(os.environ["SHARD"])
           for index, path in enumerate(sorted(Path("tests").glob("test_*.py"))):
               if index % 4 == shard:
-                  print(".".join(path.with_suffix("").parts))
+                  print(path)
           PY
           )
-          printf 'Shard %s modules:\n%s\n' "$SHARD" "${modules[*]}"
-          python3 -m unittest -v "${modules[@]}"
+          printf 'Shard %s files:\n%s\n' "$SHARD" "${files[*]}"
+          python3 -m pytest -q "${files[@]}"
