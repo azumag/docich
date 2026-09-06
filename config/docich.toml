@@ -49,6 +49,15 @@ recover_windows = true # display/audio/stream window 消失時に `up` 相当で
 [rotation]
 games = []            # `docich rotate` が巡回するゲーム名の順序 (例: ["nethack", "hanjuku-hero"])。空だとエラー
 
+# --- メリケンAI レトロゲームコーナー ---
+# 通常profileでは無効。本番は config/docich.soren-live.toml で明示的に有効化する。
+[retro_corner]
+enabled = false
+start_hour = 20
+duration_minutes = 60
+timezone = "Asia/Tokyo"
+games = ["robots"]
+
 # --- Web UI (モデルチェーン / バックオフ管理) ---
 
 [webui]

@@ -33,3 +33,12 @@ recover_windows = false
 
 [rotation]
 games = []
+
+# Soren本番は背景で稼働させたまま、20:00 JSTから1時間だけRobotsを前面へ載せる。
+# docich側canonicalがidleなら、終了時はstopして背景のSorenへ自然に戻る。
+[retro_corner]
+enabled = true
+start_hour = 20
+duration_minutes = 60
+timezone = "Asia/Tokyo"
+games = ["robots"]

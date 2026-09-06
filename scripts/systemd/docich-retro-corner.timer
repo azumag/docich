@@ -1,0 +1,10 @@
+[Unit]
+Description=docich メリケンAI レトロゲームコーナーを毎時判定
+
+[Timer]
+OnCalendar=hourly
+Persistent=false
+Unit=docich-retro-corner.service
+
+[Install]
+WantedBy=timers.target
