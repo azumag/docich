@@ -3,6 +3,7 @@
 from __future__ import annotations
 import hashlib
 import json
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import re
@@ -17,6 +18,7 @@ ALLOWLIST = {'data/user_review.md', 'prompts/game_theory.md',
              'prompts/improve_strategy.md', 'prompts/analyze_strategy.md',
              'prompts/implement_strategy.md', 'prompts/review_strategy.md',
              'tests/test_founding_policy_contract.py'}
+SPAWN_GUARD = 'tmp/state/.improve_spawn.lock'
 
 
 def digest(raw):
@@ -62,6 +64,47 @@ def atomic_write(path, raw, mode):
     finally:
         if os.path.exists(name):
             os.unlink(name)
+
+
+def require_idle(root):
+    state_path = safe_path(root, 'tmp/state/improve_state.json')
+    raw, _ = read(state_path)
+    if raw is None:
+        raise ValueError('improve state is missing')
+    state = json.loads(raw)
+    if state.get('status') != 'idle' or safe_path(root, 'tmp/improve.lock').exists():
+        raise ValueError('improvement is not idle')
+
+
+@contextmanager
+def improvement_quiescence(root):
+    # Reuse the runtime's atomic spawn mutex. A trigger that already owns it
+    # wins and makes this installer fail closed; later triggers cannot start
+    # until the complete policy transaction has finished. Never steal it.
+    guard = safe_path(root, SPAWN_GUARD)
+    try:
+        guard.mkdir(mode=0o700)
+    except FileExistsError as exc:
+        raise ValueError('improvement spawn is in progress') from exc
+    guard_identity = (guard.stat().st_dev, guard.stat().st_ino)
+    owner = guard / 'owner'
+    owner_written = False
+    try:
+        owner.write_text(str(os.getpid()))
+        owner_written = True
+        require_idle(root)
+        yield
+    finally:
+        try:
+            current = guard.stat()
+            same_guard = (current.st_dev, current.st_ino) == guard_identity
+            owned = owner_written and owner.is_file() and owner.read_text().strip() == str(os.getpid())
+            empty_failed_guard = not owner_written and not owner.exists()
+            if same_guard and (owned or empty_failed_guard):
+                owner.unlink(missing_ok=True)
+                guard.rmdir()
+        except FileNotFoundError:
+            pass
 
 
 def apply(root, specs, payload):
@@ -120,15 +163,16 @@ def main():
     doc = json.loads(Path(__file__).with_name('founding_policy_20260907.json').read_text())
     if set(doc['files']) != ALLOWLIST or not re.fullmatch('[0-9a-f]{40}', doc['source_sha']):
         raise ValueError('invalid pinned policy manifest')
-    state = json.loads((ROOT / 'tmp/state/improve_state.json').read_text())
-    if state.get('status') != 'idle' or (ROOT / 'tmp/improve.lock').exists():
-        raise ValueError('improvement is not idle')
+    # Fail early if an improve job is already active, then re-check under the
+    # runtime's spawn mutex immediately before touching live policy.
+    require_idle(ROOT)
     prefix = ['git', '-C', str(SOURCE), '-c', 'core.hooksPath=/dev/null']
     subprocess.run(prefix + ['fetch', '--no-tags', 'https://github.com/azumag/soviet_now.git', doc['source_sha']],
                    check=True, timeout=120, stdout=subprocess.DEVNULL)
     payload = {rel: subprocess.check_output(prefix + ['show', doc['source_sha'] + ':' + rel], timeout=30)
                for rel in ALLOWLIST}
-    print(apply(ROOT, doc['files'], payload))
+    with improvement_quiescence(ROOT):
+        print(apply(ROOT, doc['files'], payload))
 
 
 if __name__ == '__main__':
