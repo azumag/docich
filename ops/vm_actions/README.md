@@ -37,7 +37,9 @@ main の本番反映、branch/commit の preview 反映、状態確認、owner c
 
 1. docich の main protection/ruleset を設定します。
 2. docich に Environment `vm-operations` を作り、deployment branch を main のみに限定します。
-3. VM に `git` と `bubblewrap` があることを確認します。
+3. VM に `git` と `bubblewrap`（`/usr/bin/bwrap`）があることを確認します。Ubuntu 24.04 では
+   `apparmor_parser` も必要です（installer が preview 用の限定 AppArmor profile を読み込むため。
+   詳細は「Operational notes」の unprivileged userns 節）。
 4. Actions 専用 ed25519 鍵を作ります。
 
 ```bash
@@ -68,6 +70,44 @@ sudo bash ops/vm_actions/install_vm_gateway.sh ~/.ssh/github-vm-ops.pub ubuntu
 - **preview command**: 同じrefで `exec / preview`。本番filesystem/networkから隔離されます。
 - **production command**: `exec / production / ref=main / confirm=production`。stdout/stderr本文はVM private logだけに保存します。
 - **status**: `status / production` または `status / preview`。
+
+## Operational notes
+
+### Ubuntu 24.04 の unprivileged user namespace 制限（preview sandbox）
+
+Ubuntu 24.04 は AppArmor の `apparmor_restrict_unprivileged_userns` により unprivileged user
+namespace を既定で制限します。この状態で素の `bwrap --unshare-all` を使うと、preview の
+`exec` が `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` で失敗します。
+
+対処（installer が実施済み・host 全体設定は変更しない）:
+
+- host-wide の `apparmor_restrict_unprivileged_userns` は `1`（制限）のまま維持します。
+- network 隔離を弱める `--share-net` は使いません。gateway は `--unshare-all` を維持します。
+- installer が `/usr/bin/bwrap` を `/usr/local/bin/bwrap` に **root 所有・operator group 限定
+  （mode 0750）** で複製し、その実体にだけ `userns` を許す AppArmor profile
+  `/etc/apparmor.d/usr.local.bin.bwrap` を読み込みます。
+- gateway は固定 PATH（`/usr/local/bin:/usr/bin:/bin`）先頭の `/usr/local/bin/bwrap` を先に解決
+  するため、profile が付いた複製だけが使われます。一般ユーザーからは 0750 で実行できません。
+- `apparmor_parser` が無い環境で userns 制限が有効な場合、installer は fail-closed で停止します。
+
+検証: `aa-status | grep bwrap` に `/usr/local/bin/bwrap` が出ること、`stat -c '%U:%G %a'
+/usr/local/bin/bwrap` が `root:<operator-group> 750` であること、preview の
+`exec / preview` が正常終了すること。
+
+### 同一 commit の Git bundle 再 upload（idempotent）
+
+同じ commit SHA を production と preview の両方で使うと、GitHub Actions が生成し直した
+bundle のバイト列が一致しないことがあります。旧 gateway はこれを弾いていました。
+
+現在の `upload` は次の順で処理し、同じ SHA の再 upload は **idempotent** です:
+
+1. incoming bundle を state 配下の temp file へ書く。
+2. `git bundle list-heads` で要求 SHA が advertise されていることを確認する。
+3. `git bundle verify` で bundle 自体の整合を確認する。
+4. 検証が通ったときだけ、既存 bundle を atomic replace する。
+
+このため、壊れた既存 bundle も有効な再 upload で自己回復します。検証に失敗した incoming は
+temp file ごと破棄し、既存 bundle は触りません。
 
 ## Current migration note
 
