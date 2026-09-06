@@ -70,4 +70,77 @@ class PolicyHotfixTests(unittest.TestCase):
             self.assertEqual((r/"prompts/a.md").read_bytes(),b"old a")
             self.assertFalse((r/"prompts/b.md").exists())
 
+    def test_quiescence_holds_runtime_spawn_guard_and_rechecks_idle(self):
+        m=load()
+        with tempfile.TemporaryDirectory() as d:
+            r=Path(d); (r/"tmp/state").mkdir(parents=True)
+            (r/"tmp/state/improve_state.json").write_text('{"status":"idle"}')
+            with m.improvement_quiescence(r):
+                self.assertTrue((r/"tmp/state/.improve_spawn.lock").is_dir())
+                with self.assertRaisesRegex(ValueError, "spawn is in progress"):
+                    with m.improvement_quiescence(r): pass
+            self.assertFalse((r/"tmp/state/.improve_spawn.lock").exists())
+            (r/"tmp/improve.lock").touch()
+            with self.assertRaisesRegex(ValueError, "not idle"):
+                with m.improvement_quiescence(r): pass
+            self.assertFalse((r/"tmp/state/.improve_spawn.lock").exists())
+        self.assertIn("with improvement_quiescence(ROOT):", SCRIPT.read_text())
+
+
+    def test_policy_holds_kernel_lease_even_when_guard_is_old(self):
+        import subprocess, sys, os, time
+        m=load()
+        with tempfile.TemporaryDirectory() as d:
+            r=Path(d).resolve(); (r/"tmp/state").mkdir(parents=True)
+            (r/"tmp/state/improve_state.json").write_text('{"status":"idle"}')
+            with m.improvement_quiescence(r):
+                guard=r/m.SPAWN_GUARD
+                os.utime(guard,(time.time()-100,time.time()-100))
+                probe='import fcntl,sys; f=open(sys.argv[1],"a+"); fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)'
+                p=subprocess.run([sys.executable,'-c',probe,str(guard)+'.lease'],capture_output=True,timeout=5)
+                self.assertNotEqual(p.returncode,0,'live policy transaction must keep kernel lease')
+            self.assertEqual(subprocess.run([sys.executable,'-c',probe,str(guard)+'.lease'],capture_output=True,timeout=5).returncode,0)
+
+    def test_transaction_exception_releases_guard_and_lease(self):
+        m=load()
+        with tempfile.TemporaryDirectory() as d:
+            r=Path(d).resolve(); (r/"tmp/state").mkdir(parents=True)
+            (r/"tmp/state/improve_state.json").write_text('{"status":"idle"}')
+            with self.assertRaisesRegex(RuntimeError,"injected"):
+                with m.improvement_quiescence(r): raise RuntimeError("injected")
+            with m.improvement_quiescence(r): pass
+            self.assertTrue((r/(m.SPAWN_GUARD+'.lease')).is_file())
+
+    def test_replaced_guard_is_not_deleted_on_exit(self):
+        import os
+        m=load()
+        with tempfile.TemporaryDirectory() as d:
+            r=Path(d).resolve(); (r/"tmp/state").mkdir(parents=True)
+            (r/"tmp/state/improve_state.json").write_text('{"status":"idle"}')
+            with m.improvement_quiescence(r):
+                g=r/m.SPAWN_GUARD; g.rename(g.with_name('saved-old'))
+                g.mkdir(); (g/'owner').write_text(str(os.getpid()))
+            self.assertTrue(g.is_dir(),"inode replacement is not our guard")
+
+    def test_runtime_protocol_missing_or_different_refuses(self):
+        m=load()
+        self.assertTrue(hasattr(m,'require_runtime_protocol'))
+        with tempfile.TemporaryDirectory() as d:
+            r=Path(d).resolve()
+            with self.assertRaises(ValueError):m.require_runtime_protocol(r)
+            (r/'strategy').mkdir(); (r/'strategy/improve.sh').write_text('old runtime')
+            (r/'strategy/spawn_guard.py').write_text('unreviewed helper')
+            with self.assertRaises(ValueError):m.require_runtime_protocol(r)
+
+    def test_lease_symlink_is_rejected(self):
+        m=load()
+        with tempfile.TemporaryDirectory() as d:
+            r=Path(d).resolve(); (r/"tmp/state").mkdir(parents=True)
+            (r/"tmp/state/improve_state.json").write_text('{"status":"idle"}')
+            target=r/'other'; target.write_text('keep')
+            (r/(m.SPAWN_GUARD+'.lease')).symlink_to(target)
+            with self.assertRaises(ValueError):
+                with m.improvement_quiescence(r):pass
+            self.assertEqual(target.read_text(),'keep')
+
 if __name__ == "__main__": unittest.main()
