@@ -365,6 +365,40 @@ class TestEndpointChain(SpeechBase):
             posts,
         )
 
+    def test_active_ready_endpoint_is_tried_first(self):
+        cfg = self._cfg(["http://a:50021", "http://b:50021"])
+        plan = [
+            {"url": "http://a:50021", "status": "ready", "position": 1},
+            {"url": "http://b:50021", "status": "ready", "position": 2},
+        ]
+        calls = []
+        with mock.patch.dict(os.environ, {"VOICEVOX_ACTIVE_URL": "http://b:50021"}), \
+             mock.patch.object(speech, "plan_endpoints", return_value=plan), \
+             mock.patch.object(speech, "probe_endpoint", side_effect=lambda url, _cfg: calls.append(url)), \
+             mock.patch.object(speech, "_synthesize_chunks_at_url"), \
+             mock.patch.object(speech, "record_success"), \
+             mock.patch.object(speech, "_chain_log"):
+            served = speech.synthesize_chunks(["hello"], self.root / "active.wav", cfg)
+        self.assertEqual(served, "http://b:50021")
+        self.assertEqual(calls, ["http://b:50021"])
+
+    def test_active_backoff_endpoint_does_not_jump_a_ready_endpoint(self):
+        cfg = self._cfg(["http://a:50021", "http://b:50021"])
+        plan = [
+            {"url": "http://a:50021", "status": "ready", "position": 1},
+            {"url": "http://b:50021", "status": "backoff", "position": 2},
+        ]
+        calls = []
+        with mock.patch.dict(os.environ, {"VOICEVOX_ACTIVE_URL": "http://b:50021"}), \
+             mock.patch.object(speech, "plan_endpoints", return_value=plan), \
+             mock.patch.object(speech, "probe_endpoint", side_effect=lambda url, _cfg: calls.append(url)), \
+             mock.patch.object(speech, "_synthesize_chunks_at_url"), \
+             mock.patch.object(speech, "record_success"), \
+             mock.patch.object(speech, "_chain_log"):
+            served = speech.synthesize_chunks(["hello"], self.root / "active-backoff.wav", cfg)
+        self.assertEqual(served, "http://a:50021")
+        self.assertEqual(calls, ["http://a:50021"])
+
     def test_synthesize_falls_through_and_records_state(self):
         cfg = self._cfg(["http://down:50021", "http://ok:50021"])
         get_p, post_p, gets, posts = self._chain_http(down={"http://down"})
