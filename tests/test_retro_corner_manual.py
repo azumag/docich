@@ -6,7 +6,8 @@ from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from docich import config
-from docich.retro_corner import RetroCornerConfig, RetroCornerManager
+from docich.retro_corner import RetroCornerConfig
+from docich.retro_corner_manual import ManualRetroCornerManager
 
 
 class FakeCoordinator:
@@ -44,14 +45,15 @@ class ManualRetroCornerTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_manual_start_can_override_game_and_duration_for_unattended_cli(self):
+    def test_manual_runner_can_use_unattended_cli_and_custom_duration(self):
         current = ["sorengame"]
         coordinator = FakeCoordinator(current)
         slept = []
         now = datetime(2026, 9, 6, 17, 32, tzinfo=ZoneInfo("Asia/Tokyo"))
-        mgr = RetroCornerManager(
+        mgr = ManualRetroCornerManager(
             self.g,
-            config=RetroCornerConfig(enabled=True, games=["robots"]),
+            game="ninvaders",
+            duration_minutes=5,
             coordinator=coordinator,
             now=lambda: now,
             sleep=lambda seconds: slept.append(seconds),
@@ -59,16 +61,18 @@ class ManualRetroCornerTests(unittest.TestCase):
             ensure_runtime=lambda: None,
         )
 
-        result = mgr.start(game="ninvaders", duration_minutes=5)
+        result = mgr.start()
 
         self.assertEqual(result.status, "completed")
         self.assertEqual(coordinator.calls, [("switch", "ninvaders"), ("switch", "sorengame")])
         self.assertEqual(slept, [300.0])
         self.assertEqual(current[0], "sorengame")
+        self.assertFalse((self.g.state_dir / "retro_corner.json").exists())
+        self.assertTrue((self.g.state_dir / "retro_corner_manual.json").exists())
 
-    def test_scheduled_config_stays_robots_after_manual_override(self):
-        cfg = RetroCornerConfig(enabled=True, games=["robots"])
-        self.assertEqual(cfg.games, ["robots"])
+    def test_manual_runner_does_not_mutate_daily_schedule_config(self):
+        daily = RetroCornerConfig(enabled=True, games=["robots"])
+        self.assertEqual(daily.games, ["robots"])
 
 
 if __name__ == "__main__":
