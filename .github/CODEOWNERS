@@ -1,0 +1,4 @@
+/.github/workflows/vm-operations.yml @azumag
+/.github/workflows/vm-operations-ci.yml @azumag
+/.github/CODEOWNERS @azumag
+/ops/vm_actions/ @azumag
