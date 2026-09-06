@@ -20,7 +20,7 @@ jobs:
       - name: Install test dependencies
         run: python3 -m pip install -r requirements-test.txt
       - name: Retro corner contract
-        run: python3 -m pytest -q tests/test_retro_corner.py tests/test_config.py tests/test_robots_config.py
+        run: python3 -m pytest -q tests/test_retro_corner.py tests/test_retro_corner_manual.py tests/test_config.py tests/test_robots_config.py
       - name: Transactional switch contract
         run: python3 -m pytest -q tests/test_game_switch.py tests/test_coordinator.py
       - name: Round-boundary contract
