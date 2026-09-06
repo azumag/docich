@@ -50,10 +50,9 @@ recover_windows = true # display/audio/stream window 消失時に `up` 相当で
 games = []            # `docich rotate` が巡回するゲーム名の順序 (例: ["nethack", "hanjuku-hero"])。空だとエラー
 
 # --- メリケンAI レトロゲームコーナー ---
-# 毎時timerからtickし、Asia/Tokyoの20時だけ1日1回起動する。
-# 初版は長時間無人運転に耐えるresolver実装済みのRobotsのみ。
+# 通常profileでは無効。本番は config/docich.soren-live.toml で明示的に有効化する。
 [retro_corner]
-enabled = true
+enabled = false
 start_hour = 20
 duration_minutes = 60
 timezone = "Asia/Tokyo"
