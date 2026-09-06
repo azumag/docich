@@ -22,7 +22,7 @@ group_name=$(id -gn "$ssh_user")
 [[ -n "$home_dir" && -d "$home_dir" ]]
 [[ -d /home/ubuntu/docich && -d /home/ubuntu/soren ]]
 command -v git >/dev/null 2>&1 || { echo "git is required" >&2; exit 1; }
-command -v bwrap >/dev/null 2>&1 || { echo "bubblewrap is required for isolated preview exec" >&2; exit 1; }
+[[ -x /usr/bin/bwrap ]] || { echo "bubblewrap is required at /usr/bin/bwrap for isolated preview exec" >&2; exit 1; }
 [[ "$(git -C /home/ubuntu/docich rev-parse --is-inside-work-tree 2>/dev/null)" == true ]] || {
   echo "/home/ubuntu/docich must remain a git worktree" >&2
   exit 1
@@ -33,6 +33,30 @@ read -r key_type key_body _ < "$pubkey_file"
 
 install -d -o root -g root -m 0755 /usr/local/libexec/azumag-vm-ops
 install -o root -g root -m 0755 "$gateway_source" /usr/local/libexec/azumag-vm-ops/gateway.py
+
+# Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor by default.
+# Keep the host-wide restriction enabled and allow userns only for the operator-only
+# bwrap copy that the gateway resolves first via /usr/local/bin in its fixed PATH.
+install -o root -g "$group_name" -m 0750 /usr/bin/bwrap /usr/local/bin/bwrap
+apparmor_profile=/etc/apparmor.d/usr.local.bin.bwrap
+cat > "$apparmor_profile" <<'PROFILE'
+abi <abi/4.0>,
+include <tunables/global>
+
+/usr/local/bin/bwrap flags=(unconfined) {
+  userns,
+  include if exists <local/usr.local.bin.bwrap>
+}
+PROFILE
+chown root:root "$apparmor_profile"
+chmod 0644 "$apparmor_profile"
+if command -v apparmor_parser >/dev/null 2>&1; then
+  apparmor_parser -r "$apparmor_profile"
+elif [[ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]] && [[ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" == 1 ]]; then
+  echo "AppArmor userns restriction is active but apparmor_parser is unavailable" >&2
+  exit 1
+fi
+
 cat > /etc/azumag-vm-ops.json <<'JSON'
 {
   "state": "/home/ubuntu/.local/state/github-vm-ops",
