@@ -25,14 +25,9 @@ def _positive_decimal(value: Any) -> Decimal | None:
 
 
 def _amount_step(raw: Any) -> Decimal | None:
-    value = _positive_decimal(raw)
-    if value is None:
-        return None
-    if value < 1:
-        return value
-    if value == value.to_integral_value() and value <= 18:
-        return Decimal("1").scaleb(-int(value))
-    return None
+    # CCXT bitbank uses TICK_SIZE precision mode: precision.amount is the
+    # actual quantity increment (1 means whole units, not one decimal place).
+    return _positive_decimal(raw)
 
 
 def _nested(mapping: Any, *keys: str) -> Any:

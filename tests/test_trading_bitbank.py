@@ -43,6 +43,18 @@ class TestBitbankPublicGateway(unittest.TestCase):
         self.assertEqual(markets["BTC/JPY"].amount_step, Decimal("0.0001"))
         self.assertEqual(exchange.calls, 1)
 
+    def test_integer_amount_precision_is_a_tick_size_not_decimal_digits(self):
+        exchange = FakeExchange({
+            "WHOLE/JPY": {
+                "symbol": "WHOLE/JPY", "base": "WHOLE", "quote": "JPY",
+                "spot": True, "active": True, "precision": {"amount": 1},
+                "limits": {"amount": {"min": 1}, "cost": {"min": None}},
+                "info": {"is_enabled": True, "stop_order": False, "stop_buy_order": False},
+            }
+        })
+        markets = BitbankPublicGateway(exchange=exchange).discover_markets()
+        self.assertEqual(markets["WHOLE/JPY"].amount_step, Decimal("1"))
+
     def test_rejects_inactive_nonspot_and_malformed_markets(self):
         exchange = FakeExchange({
             "OFF/JPY": {"symbol": "OFF/JPY", "base": "OFF", "quote": "JPY", "spot": True, "active": False},
