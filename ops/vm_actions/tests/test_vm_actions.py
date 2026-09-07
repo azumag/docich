@@ -63,6 +63,11 @@ class AuthorizeTests(unittest.TestCase):
         p=self.run_auth(INPUT_OPERATION='exec',INPUT_TARGET='production',INPUT_REF='main',INPUT_CONFIRM='production')
         self.assertEqual(p.returncode,0,p.stderr)
 
+    def test_all_vm_ssh_calls_enable_encrypted_keepalives(self):
+        workflow = WF.read_text(encoding="utf-8")
+        self.assertEqual(workflow.count("ServerAliveInterval=30"), 5)
+        self.assertEqual(workflow.count("ServerAliveCountMax=3"), 5)
+
     def test_push_is_fixed_to_production_deploy(self):
         p=self.run_auth(GITHUB_EVENT_NAME='push',INPUT_OPERATION='',INPUT_TARGET='',INPUT_REF='')
         self.assertEqual(p.returncode,0,p.stderr)
