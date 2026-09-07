@@ -93,6 +93,32 @@ class TestTradingCli(unittest.TestCase):
             self.assertIn("invalid", err.lower())
             self.assertNotIn("Traceback", err)
 
+    def test_negative_capital_is_stable_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = self.snapshot()
+            data["capital_reference"] = "-1"
+            snapshot = Path(tmp) / "snapshot.json"
+            snapshot.write_text(json.dumps(data), encoding="utf-8")
+            rc, out, err = self.run_cli([
+                "trading", "--state-dir", str(Path(tmp) / "state"), "paper-cycle", "--snapshot", str(snapshot)
+            ])
+            self.assertEqual(rc, 2)
+            self.assertIn("capital", err.lower())
+            self.assertNotIn("Traceback", err)
+
+    def test_duplicate_opportunity_ids_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = self.snapshot()
+            data["opportunities"].append(dict(data["opportunities"][0]))
+            snapshot = Path(tmp) / "snapshot.json"
+            snapshot.write_text(json.dumps(data), encoding="utf-8")
+            rc, out, err = self.run_cli([
+                "trading", "--state-dir", str(Path(tmp) / "state"), "paper-cycle", "--snapshot", str(snapshot)
+            ])
+            self.assertEqual(rc, 2)
+            self.assertIn("duplicate", err.lower())
+            self.assertNotIn("Traceback", err)
+
     def test_live_mode_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             snapshot = Path(tmp) / "snapshot.json"

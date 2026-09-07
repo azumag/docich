@@ -175,15 +175,32 @@ def _load_snapshot(path: Path) -> dict[str, Any]:
         deployed_reference = as_decimal(data["deployed_reference"], "deployed_reference")
     except TradingValidationError as exc:
         raise TradingCliError("snapshot contains an invalid numeric value") from exc
+    if capital_reference < 0 or deployed_reference < 0:
+        raise TradingCliError("snapshot capital values must be non-negative")
+
+    quote_to_reference = _decimal_mapping(data["quote_to_reference"], "quote_to_reference")
+    if any(value <= 0 for value in quote_to_reference.values()):
+        raise TradingCliError("snapshot quote_to_reference values must be positive")
+    available_quote = _decimal_mapping(data["available_quote"], "available_quote")
+    if any(value < 0 for value in available_quote.values()):
+        raise TradingCliError("snapshot available_quote values must be non-negative")
+    prices = _decimal_mapping(data["prices"], "prices")
+    if any(value <= 0 for value in prices.values()):
+        raise TradingCliError("snapshot prices must be positive")
+    opportunities = [_opportunity_from_snapshot(raw) for raw in opportunities_raw]
+    opportunity_ids = [item.opportunity_id for item in opportunities]
+    if len(opportunity_ids) != len(set(opportunity_ids)):
+        raise TradingCliError("snapshot contains duplicate opportunity_id values")
+
     return {
         "as_of": as_of,
         "capital_reference": capital_reference,
         "deployed_reference": deployed_reference,
-        "quote_to_reference": _decimal_mapping(data["quote_to_reference"], "quote_to_reference"),
-        "available_quote": _decimal_mapping(data["available_quote"], "available_quote"),
+        "quote_to_reference": quote_to_reference,
+        "available_quote": available_quote,
         "markets": {symbol: _market_from_snapshot(symbol, raw) for symbol, raw in markets_raw.items()},
-        "prices": _decimal_mapping(data["prices"], "prices"),
-        "opportunities": [_opportunity_from_snapshot(raw) for raw in opportunities_raw],
+        "prices": prices,
+        "opportunities": opportunities,
     }
 
 
