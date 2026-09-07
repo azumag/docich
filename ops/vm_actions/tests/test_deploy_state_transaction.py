@@ -167,6 +167,11 @@ class DeployStateTransactionTests(unittest.TestCase):
             gw.deploy_git(self.cfg, 'docich', new_parent)
         self.assertEqual((live / 'game.txt').read_text(), 'v2\n')
         self.assertEqual((live / 'runtime.txt').read_text(), 'runtime-live-mutated\n')
+        self.assertFalse(gw.read_json(gw.current_file(self.cfg,'docich')).get('managed_projection_files',{}).get('games/soviet_now'))
+        (live / 'game.txt').write_text('runtime-updated\n')
+        with mock.patch.object(gw, 'OWNED_SUBMODULES', {'games/soviet_now': str(subremote)}):
+            gw.deploy_git(self.cfg, 'docich', new_parent)
+        self.assertEqual((live / 'game.txt').read_text(), 'runtime-updated\n')
 
 
     def test_projection_partial_write_failure_rolls_back_prior_files(self):
