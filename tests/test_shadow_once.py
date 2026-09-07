@@ -46,6 +46,8 @@ class ShadowOnceTests(unittest.TestCase):
   self.assertIn('MODEL_IMPROVE_LIST=opencode-go:muse-spark-1.3-contributor,opencode-go:muse-spark-1.2-contributor,opencode-go:deepseek-v4-flash',s)
   self.assertIn('readonly MODEL_IMPROVE_LIST',s)
   self.assertIn('readonly IMPROVE_PEAK_CHAIN_ENABLED',s)
+  self.assertIn('"external_directory":"deny"',s)
+  self.assertIn('readonly IMPROVE_OPENCODE_PERMISSION',s)
   self.assertLess(s.index('!= shadow'),s.index('source "$1"'))
   self.assertNotIn('_start_improvement_job',s)
   self.assertNotIn('soren91_start',s)
