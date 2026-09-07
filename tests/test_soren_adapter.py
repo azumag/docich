@@ -76,6 +76,19 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
                 adapter.materialize_runtime(time.monotonic() + 30, None)
             self.assertEqual(calls[1], [str(adapter.control), "fresh-start", "req-3"])
 
+    def test_materialize_recovers_matching_stopped_resource_when_ack_was_lost(self):
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            identity = {"request_id": "req-4", "game": "sorengame", "generation": 7}
+            outputs = [{"request": identity, "ack": None, "resource": {**identity, "status": "stopped"}}, {"status": "starting"}]
+            calls = []
+            def fake_run(argv, **kwargs):
+                calls.append(argv)
+                return SimpleNamespace(returncode=0, stdout=json.dumps(outputs.pop(0)), stderr="")
+            with patch("docich.adapters.soren.subprocess.run", side_effect=fake_run):
+                adapter.materialize_runtime(time.monotonic() + 30, None)
+            self.assertEqual(calls[1], [str(adapter.control), "fresh-start", "req-4"])
+
 
 if __name__ == "__main__":
     unittest.main()
