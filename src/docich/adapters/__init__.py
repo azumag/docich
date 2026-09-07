@@ -21,6 +21,7 @@ _COORDINATOR_REGISTRY = {
     "cli": "docich.adapters.cli_game:CliCoordinatorAdapter",
     "retroarch": "docich.adapters.retroarch:RetroArchCoordinatorAdapter",
     "browser": "docich.adapters.browser:BrowserCoordinatorAdapter",
+    "soren": "docich.adapters.soren:SorenCoordinatorAdapter",
 }
 
 
