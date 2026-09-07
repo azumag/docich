@@ -15,10 +15,10 @@ def load():
 class AnalysisDeployTests(unittest.TestCase):
     def test_exact_source_targets_and_preserved_prompt_mode(self):
         m=load();d=m.manifest()
-        self.assertEqual(d['source_sha'],'99d4bbf334dad3546515bd673d286bd115790961')
+        self.assertEqual(d['source_sha'],'57a27788c9db3c613289f98f97281de170aae305')
         self.assertEqual(list(d['files']),['strategy/analysis_contract.py','prompts/analyze_strategy.md','eloop_improve.sh'])
         self.assertEqual(d['files']['prompts/analyze_strategy.md']['mode'],0o664)
-        self.assertEqual(d['files']['prompts/analyze_strategy.md']['new'],'7fc018853e39016adf2149a5f31843d97dba7b2976d9aaf12b70dc639a9f3b4e')
+        self.assertEqual(d['files']['prompts/analyze_strategy.md']['new'],'89cafb063910c0c2ee41d0cbfac83ec5f857cbcc6389a3314ec13487251d7751')
         self.assertIsNone(d['files']['strategy/analysis_contract.py']['old'])
         self.assertEqual(d['files']['eloop_improve.sh']['old'],'727129563b29f45e9a152628e35838ca05588f80edf81cbb8f5f18ed091499d6')
 
