@@ -13,7 +13,7 @@ ROOT=Path('/home/ubuntu/soren')
 SOURCE=Path('/home/ubuntu/docich/games/soviet_now')
 SOURCE_SHA='9df8a0fbe8089bf6f7082aea8d3fd3b367807707'
 PATHS=('strategy/analysis_contract.py','prompts/analyze_strategy.md','eloop_improve.sh','strategy/sandbox.sh')
-MODES=dict(zip(PATHS,(0o644,0o664,0o755,0o644)))
+MODES=dict(zip(PATHS,(0o644,0o664,0o755,0o755)))
 PAUSE_OWNER='tmp/state/step5-founding-20260906T201809Z'
 
 def manifest():
