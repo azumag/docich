@@ -131,6 +131,9 @@ def atomic_write(path:Path,data:bytes,mode=0o600):
         with os.fdopen(fd,'wb') as f:
             f.write(data); f.flush(); os.fchmod(f.fileno(),mode); os.fsync(f.fileno())
         os.replace(tmp,path)
+        directory_fd=os.open(path.parent,os.O_RDONLY | getattr(os,'O_DIRECTORY',0))
+        try: os.fsync(directory_fd)
+        finally: os.close(directory_fd)
     finally:
         if os.path.exists(tmp): os.unlink(tmp)
 
@@ -212,8 +215,62 @@ def _plan_projection(subrepo:Path, destination:Path, old_sha:str, new_sha:str):
     return changes
 
 
+def _plan_repaired_projection(subrepo, destination, old_sha, new_sha, pending):
+    """Plan main against recorded live patches; no writes and no silent overwrite."""
+    by_path = {}
+    remaining = []
+    for repair in pending:
+        if repair.get('status') != 'active':
+            raise ValueError('incomplete pending repair; operator recovery required')
+        keep = {}
+        for rel, meta in repair['files'].items():
+            if rel in by_path:
+                raise ValueError('pending repair overlap')
+            by_path[rel] = meta
+            if _live_meta(_safe_projection_path(destination, rel)) != meta['after']:
+                raise ValueError(f'pending repair drift: {rel}')
+            old_meta = _expected_meta(subrepo, _tree_entry(subrepo, old_sha, rel))
+            if old_meta != meta['before']:
+                raise ValueError(f'pending repair baseline drift: {rel}')
+            new_meta = _expected_meta(subrepo, _tree_entry(subrepo, new_sha, rel))
+            if new_meta == meta['after']:
+                continue  # identical bytes AND mode: adopt without rewriting live
+            if new_meta != meta['before']:
+                raise ValueError(f'pending repair conflict: {rel}')
+            keep[rel] = meta
+        if keep:
+            remaining.append({**repair, 'files': keep})
+    changes = []
+    for rel in _changed_paths(subrepo, old_sha, new_sha):
+        if rel in by_path:
+            continue
+        live = _safe_projection_path(destination, rel)
+        before = _tree_entry(subrepo, old_sha, rel)
+        after = _tree_entry(subrepo, new_sha, rel)
+        if _live_meta(live) != _expected_meta(subrepo, before):
+            raise ValueError(f'projection drift detected: {rel}')
+        changes.append({'path': live,
+                        'old_data': _blob_bytes(subrepo, before['object']) if before else None,
+                        'old_mode': before['mode'] if before else None,
+                        'new_data': _blob_bytes(subrepo, after['object']) if after else None,
+                        'new_mode': after['mode'] if after else None})
+    return changes, remaining
+
+
+def _change_meta(change, prefix):
+    data=change[prefix+'_data']
+    return None if data is None else {'sha256':hashlib.sha256(data).hexdigest(),'mode':change[prefix+'_mode']}
+
+
+def _assert_projection_current(changes, prefix):
+    for change in changes:
+        if _live_meta(change['path'])!=_change_meta(change,prefix):
+            raise ValueError('concurrent projection drift')
+
+
 def _apply_projection(changes):
     for change in changes:
+        _assert_projection_current([change],'old')
         path=change['path']
         if change['new_data'] is None:
             if path.exists(): path.unlink()
@@ -222,26 +279,80 @@ def _apply_projection(changes):
 
 
 def _rollback_projection(changes):
+    drift=False
     for change in reversed(changes):
         path=change['path']
+        current=_live_meta(path)
+        if current==_change_meta(change,'old'): continue
+        if current!=_change_meta(change,'new'):
+            drift=True
+            continue  # never erase an unknown writer's data during rollback
         if change['old_data'] is None:
             if path.exists(): path.unlink()
         else:
             atomic_write(path,change['old_data'],change['old_mode'])
+    if drift: raise ValueError('concurrent drift preserved; operator recovery required')
 
 
-def _plan_projections(cfg,repo,root:Path,old_parent:str,new_parent:str):
+def _verify_pending_live(cfg,repo,pending):
+    mappings=cfg['repos'][repo].get('projections',{})
+    for repair in pending:
+        destination=Path(mappings[repair['projection']])
+        for rel,meta in repair['files'].items():
+            if _live_meta(_safe_projection_path(destination,rel))!=meta['after']:
+                raise ValueError('pending repair drift before state commit')
+
+
+def _verify_managed_projections(cfg,repo,state):
+    mappings=cfg['repos'][repo].get('projections',{})
+    pending={(r['projection'],p) for r in state.get('pending_repairs',[]) for p in r['files']}
+    for projection,files in state.get('managed_projection_files',{}).items():
+        if projection not in mappings: raise ValueError('managed projection missing')
+        for rel,meta in files.items():
+            if (projection,rel) in pending: continue
+            if _live_meta(_safe_projection_path(Path(mappings[projection]),rel))!=meta:
+                raise ValueError('managed projection drift')
+
+
+def _verify_pending_health(cfg,pending):
+    for policy_id in {r.get('policy_id') for r in pending}:
+        configured=cfg.get('repair_policies',{}).get(policy_id)
+        if not configured: raise ValueError('pending repair policy missing')
+        path=Path(configured);config_ok(path)
+        policy=read_json(path)
+        relevant=[r for r in pending if r.get('policy_id')==policy_id]
+        if policy.get('repair_kind')!=policy_id or any(r['projection']!=policy.get('projection') for r in relevant):
+            raise ValueError('pending repair policy mismatch')
+        command=policy.get('health_command')
+        if not isinstance(command,list) or not command or not all(isinstance(v,str) and v and '\0' not in v for v in command) or not Path(command[0]).is_absolute():
+            raise ValueError('invalid repair health command')
+        config_ok(Path(command[0]).resolve())
+        projection=policy.get('projection')
+        live=Path(cfg['repos']['docich']['projections'][projection])
+        result=subprocess.run(command,cwd=live,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
+                              env={'PATH':'/usr/local/bin:/usr/bin:/bin','LANG':'C.UTF-8'},timeout=min(60,int(policy.get('health_timeout',30))))
+        if result.returncode: raise ValueError('pending repair health failed')
+
+
+def _plan_projections(cfg,repo,root:Path,old_parent:str,new_parent:str, pending=None):
     plans=[]
+    remaining=[]
+    pending=pending or []
     mappings=cfg['repos'][repo].get('projections', {})
+    if any(r.get('projection') not in mappings for r in pending):
+        raise ValueError('pending repair projection missing')
     for sub_path,destination in mappings.items():
         old_sub=submodule_gitlink_at(root,old_parent,sub_path)
         new_sub=submodule_gitlink_at(root,new_parent,sub_path)
-        if old_sub==new_sub: continue
+        repairs=[r for r in pending if r['projection']==sub_path]
+        if old_sub==new_sub and not repairs: continue
         if old_sub is None or new_sub is None: raise ValueError('projected submodule must exist in both parent commits')
         subrepo=root/sub_path
         if git(subrepo,'rev-parse','HEAD')!=new_sub: raise ValueError('projected submodule is not at new gitlink')
-        plans.append(_plan_projection(subrepo,Path(destination),old_sub,new_sub))
-    return plans
+        changes,keep=_plan_repaired_projection(subrepo,Path(destination),old_sub,new_sub,repairs)
+        plans.append(changes)
+        remaining.extend(keep)
+    return plans, remaining
 
 
 def read_payload():
@@ -317,31 +428,61 @@ def deploy_git(cfg,repo,sha):
     root=Path(cfg['repos'][repo]['production']); state_path=current_file(cfg,repo); state=read_json(state_path)
     bundle=bundle_file(cfg,repo,sha)
     if state is None or state.get('mode')!='git': raise ValueError('bootstrap required')
+    if state.get('deployment_intent'): raise ValueError('deployment recovery required')
+    _verify_managed_projections(cfg,repo,state)
     old=state.get('sha')
     if not SHA_RE.fullmatch(old or '') or git(root,'rev-parse','HEAD')!=old or not git_clean(root):
         raise ValueError('tracked VM drift detected')
     if not bundle.is_file(): raise ValueError('bundle missing')
     projection_plans=[]
     applied=[]
+    intent_written=False
     try:
         subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','fetch','--no-tags','--force',str(bundle),'HEAD'],
                        stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
         if git(root,'cat-file','-t',sha)!='commit': raise ValueError('requested object is not commit')
+        write_json(state_path,{**state,'deployment_intent':{'from':old,'to':sha}})
+        intent_written=True
         subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','reset','--hard',sha],
                        stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
         sync_owned_submodules(root)
-        projection_plans=_plan_projections(cfg,repo,root,old,sha)
+        projection_plans,remaining=_plan_projections(cfg,repo,root,old,sha,state.get("pending_repairs", []))
         for changes in projection_plans:
             applied.append(changes)
             _apply_projection(changes)
         if git(root,'rev-parse','HEAD')!=sha or not git_clean(root): raise ValueError('git deployment verification failed')
-        write_json(state_path,{'mode':'git','sha':sha,'previous_head':old})
-    except Exception:
+        _verify_pending_health(cfg,state.get('pending_repairs',[]))
+        for changes in applied: _assert_projection_current(changes,'new')
+        _verify_pending_live(cfg,repo,state.get('pending_repairs',[]))
+        managed=json.loads(json.dumps(state.get('managed_projection_files',{})))
+        for projection,destination in cfg['repos'][repo].get('projections',{}).items():
+            entries=managed.setdefault(projection,{})
+            for changes in applied:
+                for change in changes:
+                    if Path(destination) in change['path'].parents:
+                        entries[str(change['path'].relative_to(destination))]=_change_meta(change,'new')
+            for repair in state.get('pending_repairs',[]):
+                if repair['projection']==projection:
+                    entries.update({rel:meta['after'] for rel,meta in repair['files'].items()})
+        final_state={**state,'mode':'git','sha':sha,'previous_head':old,'pending_repairs':remaining,'managed_projection_files':managed}
+        write_json(state_path,final_state)
+        _verify_managed_projections(cfg,repo,final_state)
+        _verify_pending_live(cfg,repo,remaining)
+    except Exception as failure:
+        rollback_errors=[]
         for changes in reversed(applied):
-            _rollback_projection(changes)
-        subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','reset','--hard',old],
-                       stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
-        sync_owned_submodules(root)
+            try: _rollback_projection(changes)
+            except Exception as error: rollback_errors.append(error)
+        try:
+            subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','reset','--hard',old],
+                           stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
+            sync_owned_submodules(root)
+        except Exception as error: rollback_errors.append(error)
+        if rollback_errors:
+            # A finalized state may already exist if post-commit verification failed.
+            write_json(state_path,{**state,'deployment_intent':{'from':old,'to':sha,'recovery_required':True}})
+            raise ValueError('rollback incomplete; unknown drift preserved; recovery required') from failure
+        if intent_written: write_json(state_path,state)
         raise
     return {'status':'deployed','sha':sha}
 
@@ -393,7 +534,16 @@ def status_result(cfg,repo,target,sha):
     if cur is None: return {'status':'bootstrap_required','sha':None}
     root=Path(cfg['repos'][repo]['production']); head=git(root,'rev-parse','HEAD')
     clean=git_clean(root); expected=cur.get('sha')
-    return {'status':'configured' if clean and head==expected else 'drift','sha':head}
+    health_status='configured' if clean and head==expected else 'drift'
+    if cur.get('deployment_intent') or any(r.get('status')!='active' for r in cur.get('pending_repairs',[])):
+        health_status='recovery_required'
+    elif health_status=='configured':
+        try:
+            _verify_pending_live(cfg,repo,cur.get('pending_repairs',[]))
+            _verify_managed_projections(cfg,repo,cur)
+        except Exception: health_status='drift'
+    return {'status':health_status,'sha':head,
+            'pending_repairs':[{k:r.get(k) for k in ('id','status','candidate_sha','pr_url')} for r in cur.get('pending_repairs',[])]}
 
 def main():
     if len(sys.argv)!=2: die()
