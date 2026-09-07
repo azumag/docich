@@ -1,5 +1,25 @@
 # セッション引き継ぎ (handoff)
 
+## 2026-09-08 03:05 JST — 固定入力shadow改善サイクルの実モデル検証完了
+
+- **固定入力**: 完了済み履歴3件（score 2781 / 1377 / 2332、合計319 turns）をpath・SHA256・score付きmanifestへ固定。総予算780秒、分析540秒、game 45として同一manifestを使用した。
+- **事前拒否と修正**: 最初の`check`は内容hashではなく権限modeの契約不一致でfail closed。Git/mainとVMがともに0644だった`prompts/analyze_strategy.md`と`strategy/sandbox.sh`へ契約を整合し、docich PR #119をAstra承認・CI成功後にmainへマージ、自動VM反映した。gateやhash検査は緩和していない。
+- **実行経路**: owner専用`VM operations / exec / production / ref=main`（run 34149717012）から1回だけ実行。固定OpenCode chain、`external_directory=deny`、shadow、既存operator pauseを維持し、通常改善daemon・タイマー・自動再試行・本番適用は起動していない。
+- **結果**: operator receiptは`finished`、launcher rc 0、worker phase `done`、`invariants_preserved=true`、unit result success・MainPID 0。analysis-checkは`decision=implement`、isolated runnerは`gate=pass`（6/6 fixtures contract-valid）、outcomeは`isolated_runner_shadow`。本番戦略は変更していない。
+- **終了確認**: improve stateはidle/pid0へ復帰し、shadow unit/cgroupと改善workerの残存なし。元のoperator pause所有者を維持。`soren-runtime.service` MainPID 3518891、direct stream PID 2183327、FFmpeg PID 2188217を前後で維持した。
+- **関連する切替・音声修正**: Soren #211 / docich #116でwatchdogのTERM応答と通常ゲーム切替を修正し、Soren→Robots→Sorenの往復で旧ゲーム・評価ジョブ・BGMの停止、共通配信PID維持、単一起動を実測。Soren #206 / docich #118でAV同期指定をmainとVMへ同期済み。
+
+## 2026-09-08 02:40 JST — 通常ゲーム切替の往復と資源解放を本番実測
+
+- Soren→Robots（generation 50）とRobots→Soren（generation 51）が正常終了。切替ごとに旧ゲームの描画・操作AI・watchdog・予想worker・評価ジョブ・ゲームBGMを停止し、新ゲーム側だけを1組起動した。現在はSorenが稼働中。
+- 共通`/home/ubuntu/docich`サービスMainPID 3518891と配信encoderを往復中も維持。元からあるoperator pause `tmp/state/step5-founding-20260906T201809Z` は解除していない。
+- watchdogの60秒foreground sleepによるTERM遅延をSoren PR #211で修正し、docich PR #116でmain/VMへ反映。失敗理由は固定分類だけを返し、生の子process出力をcanonical状態へ入れないdocich PR #117も反映済み。
+
+## 2026-09-08 02:50 JST — 配信AV同期指定をmainとVMへ配備
+
+- Soren PR #206 / docich PR #118をマージし、Pulse入力へ`-isync 0`を指定する変更をmainとVMへ同期。自動deployのdrift拒否時はVM先行の同一内容を旧baselineへ一時整合して通常deployを通し、最終的にVMとmainのhash一致を確認した。
+- 実encoder PID 2188217の引数に`-isync 0`、`adelay=150:all=1,aresample=async=1:first_pts=0`を確認。ユーザーは修正前の調整後に「なおった」と確認済みだが、このmain同期後に新たな知覚同期テストは行っていない。
+
 ## 2026-09-07 23:xx JST — 通常ゲーム切替をSoren lifecycleへ接続し、Robotsへ完全切替
 
 - docich PR #112 (`codex/restore-soren-lifecycle`) に固定argvのSoren coordinator adapterを追加。request ID・generation・相対deadlineをbrokerへ渡し、試合境界→game-only stop→stopped確認→明示fresh-startを通常切替へ接続した。shell文字列やモデル出力をVM操作へ使わない。
