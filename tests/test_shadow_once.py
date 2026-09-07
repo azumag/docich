@@ -8,6 +8,7 @@ import subprocess
 from unittest.mock import patch
 
 SCRIPT=Path(__file__).resolve().parents[1]/'ops/shadow_once/run.py'
+CONTRACT=Path(__file__).resolve().parents[1]/'ops/hotfixes/analysis_contract_20260907.json'
 def load():
  s=importlib.util.spec_from_file_location('shadow_once',SCRIPT);m=importlib.util.module_from_spec(s);s.loader.exec_module(m);return m
 
@@ -108,6 +109,10 @@ class StateOwnershipTests(unittest.TestCase):
     m.finish_state(root,{'worker_pid':'321','unit':{'MainPID':'321','ActiveState':'active'}},None)
    self.assertEqual(p.read_text(),raw)
 class PreflightTests(unittest.TestCase):
+ def test_contract_modes_match_deployed_repository_modes(self):
+  files=json.loads(CONTRACT.read_text())['files']
+  self.assertEqual(files['prompts/analyze_strategy.md']['mode'],0o644)
+  self.assertEqual(files['strategy/sandbox.sh']['mode'],0o644)
  def fixture(self,root):
   m=load();d=ShadowOnceTests().manifest()
   (root/'tmp/state').mkdir(parents=True);(root/'game_history').mkdir()
