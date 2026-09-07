@@ -31,7 +31,7 @@ PROTECTED=('strategy.py','strategy_helpers','core','strategy','prompts','.env','
 def validate_manifest(doc):
     if not isinstance(doc,dict) or set(doc)!= {'version','budget_seconds','analysis_seconds','game_num','turns','inputs'}:
         raise ValueError('manifest_schema')
-    for key,lo,hi in [('version',1,1),('budget_seconds',1,600),('analysis_seconds',1,600),('game_num',0,10**9),('turns',0,10**9)]:
+    for key,lo,hi in [('version',1,1),('budget_seconds',1,840),('analysis_seconds',1,840),('game_num',0,10**9),('turns',0,10**9)]:
         if type(doc[key]) is not int or not lo<=doc[key]<=hi:raise ValueError('manifest_range')
     if doc['analysis_seconds']>doc['budget_seconds']:raise ValueError('analysis_budget')
     if not isinstance(doc['inputs'],list) or not 1<=len(doc['inputs'])<=64:raise ValueError('input_count')
