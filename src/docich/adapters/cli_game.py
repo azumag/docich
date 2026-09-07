@@ -8,6 +8,7 @@ tmux ownership options (design v2 §3, §4).
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 import re
 import shlex
@@ -26,6 +27,7 @@ from ..game_switch import (
 from ..naming import NameValidationError, validate_tmux_name
 from ..tmux import OwnershipMismatchError, Tmux, TmuxOwnership
 from ..xkit import XKit
+from ..resolver.lease import activity_lock
 from .base import Adapter, AdapterError, Observation
 
 GAME_SESSION = "docich-game"
@@ -454,6 +456,28 @@ class CliCoordinatorAdapter:
         return True
 
     def cleanup_runtime(self, deadline: float, cancel) -> None:
+        marker = Path(self.g.state_dir) / "resolver" / "active" / f"{self.game.name}.json"
+        while marker.exists():
+            self._check_active(deadline, cancel)
+            with activity_lock(Path(self.g.state_dir),self.game.name):
+                if not marker.exists(): break
+                try:
+                    data=json.loads(marker.read_text(encoding="utf-8"));pid=int(data["pid"])
+                except (OSError,ValueError,KeyError,TypeError) as exc:
+                    raise AdapterError("resolver改善の所有情報が不正です") from exc
+                if data.get("game") != self.game.name or data.get("generation") != self.spec.generation or data.get("lease_id") != self.spec.lease_id:
+                    raise AdapterError("resolver改善の所有情報がruntimeと一致しません")
+                cmdline=Path(f"/proc/{pid}/cmdline");sessions=data.get("sessions",[])
+                if not isinstance(sessions,list) or any(not isinstance(s,str) or not s.startswith(f"evalr-{pid}-") for s in sessions):
+                    raise AdapterError("resolver改善sessionの所有情報が不正です")
+                for session in sessions:
+                    if self.tmux.session_target_exists(session,strict=True) and not cmdline.exists():
+                        raise AdapterError("resolver改善daemon消滅後も評価sessionが残っています")
+                if not cmdline.exists(): marker.unlink();break
+                raw=cmdline.read_bytes().replace(b"\0",b" ").decode("utf-8",errors="replace")
+                if "docich.resolver.improve" not in raw or self.game.name not in raw:
+                    raise AdapterError("resolver改善PIDの所有権を確認できません")
+            time.sleep(min(0.1,max(0.0,deadline-time.monotonic())))
         for name, role in (
             (self.spec.agent_window, "agent"),
             (self.spec.game_window, "game"),

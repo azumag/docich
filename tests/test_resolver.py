@@ -1,7 +1,11 @@
 import sys
+import json
+import subprocess
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -335,6 +339,115 @@ class PerturbTest(unittest.TestCase):
         rng = __import__("random").Random(1)
         base = dict(robots.DEFAULT_STRATEGY)
         self.assertEqual(base["teleport_when_trapped"], perturb(base, rng)["teleport_when_trapped"])
+
+
+class ImprovementLifecycleFenceTest(unittest.TestCase):
+    def test_only_one_restart_claims_stale_marker(self):
+        from docich.resolver import improve
+        from docich.resolver.runner import EvaluationCleanupError
+
+        with tempfile.TemporaryDirectory() as td:
+            marker=Path(td)/"resolver"/"active"/"robots.json";marker.parent.mkdir(parents=True)
+            marker.write_text(json.dumps({"pid":999999,"game":"robots","generation":1,"lease_id":"old","sessions":[]}))
+            code=("import os,sys,time;from pathlib import Path;"
+                  "from docich.resolver.improve import _claim_activity_marker;"
+                  "p=Path(sys.argv[1]);_claim_activity_marker(p,{'pid':os.getpid(),'game':'robots','generation':2,'lease_id':'winner','sessions':[]});time.sleep(10)")
+            child=subprocess.Popen([sys.executable,"-c",code,str(marker)],env={**__import__("os").environ,"PYTHONPATH":str(Path(__file__).resolve().parents[1]/"src")})
+            try:
+                for _ in range(100):
+                    if json.loads(marker.read_text()).get("lease_id")=="winner": break
+                    time.sleep(0.02)
+                with self.assertRaises(EvaluationCleanupError):
+                    improve._claim_activity_marker(marker,{"pid":__import__("os").getpid(),"game":"robots","generation":2,"lease_id":"loser","sessions":[]})
+                self.assertEqual(json.loads(marker.read_text())["lease_id"],"winner")
+            finally:
+                child.terminate();child.wait(timeout=5)
+
+    def test_restart_does_not_overwrite_orphaned_session_marker(self):
+        from docich.resolver import improve
+        from docich.resolver.runner import EvaluationCleanupError
+
+        with tempfile.TemporaryDirectory() as td:
+            marker=Path(td)/"resolver"/"active"/"robots.json"
+            marker.parent.mkdir(parents=True)
+            previous={"pid":999999,"game":"robots","generation":1,"lease_id":"old","sessions":["evalr-999999-1"]}
+            marker.write_text(__import__("json").dumps(previous))
+            running=SimpleNamespace(returncode=0,stderr="",stdout="")
+            with mock.patch.object(improve.subprocess,"run",return_value=running):
+                with self.assertRaises(EvaluationCleanupError):
+                    improve._claim_activity_marker(marker,{"pid":1,"game":"robots","generation":2,"lease_id":"new","sessions":[]})
+            self.assertEqual(__import__("json").loads(marker.read_text()),previous)
+
+    def test_runner_persists_session_intent_before_spawn(self):
+        from docich.resolver import runner
+
+        completed=SimpleNamespace(returncode=0,stderr="",stdout="")
+        with mock.patch.object(runner,"_tmux",return_value=completed) as tmux:
+            with self.assertRaisesRegex(OSError,"marker"):
+                runner.run_match(["game"],80,24,lambda _text:[],session_hook=lambda *_: (_ for _ in ()).throw(OSError("marker")))
+        self.assertFalse(any(call.args[0][0]=="new-session" for call in tmux.call_args_list))
+
+    def test_tmux_observation_error_is_not_absence(self):
+        from docich.resolver import runner
+
+        with self.assertRaises(runner.EvaluationCleanupError):
+            runner._session_absent(SimpleNamespace(returncode=1,stderr="failed to connect to server"))
+
+    def test_daemon_retains_marker_after_cleanup_failure(self):
+        from docich.resolver import improve
+        from docich.resolver.runner import EvaluationCleanupError
+
+        with tempfile.TemporaryDirectory() as td:
+            g=SimpleNamespace(state_dir=Path(td))
+            with mock.patch.object(improve,"active_runtime_identity",return_value=("robots",1,"lease")), \
+                 mock.patch.object(improve,"improve_once",side_effect=EvaluationCleanupError("session remains")):
+                improve.run_daemon(g,"robots",cycle_s=60,matches=1,candidates=1,margin_pct=1)
+            marker=Path(td)/"resolver"/"active"/"robots.json"
+            self.assertTrue(marker.exists())
+            self.assertIn("cleanup_error",marker.read_text())
+
+    def test_draining_runtime_is_not_active(self):
+        from docich.resolver import improve
+
+        store=SimpleNamespace(canonical=SimpleNamespace(load=lambda: ({"phase":"draining","active":{"game":"robots","generation":4,"lease_id":"lease"}},False)))
+        with mock.patch("docich.game_switch.GameSwitchStore",return_value=store):
+            self.assertIsNone(improve.active_runtime_identity(SimpleNamespace(state_dir="unused")))
+
+    def test_ready_runtime_identity_includes_generation_and_lease(self):
+        from docich.resolver import improve
+
+        store=SimpleNamespace(canonical=SimpleNamespace(load=lambda: ({"phase":"ready","active":{"game":"robots","generation":4,"lease_id":"lease"}},False)))
+        with mock.patch("docich.game_switch.GameSwitchStore",return_value=store):
+            self.assertEqual(improve.active_runtime_identity(SimpleNamespace(state_dir="unused")),("robots",4,"lease"))
+
+    def test_improve_once_refuses_stale_runtime_before_evaluation(self):
+        from docich.resolver import improve
+
+        g=SimpleNamespace(state_dir=Path(tempfile.mkdtemp()))
+        with mock.patch.object(improve,"active_runtime_identity",return_value=("robots",5,"new")), \
+             mock.patch.object(improve,"evaluate") as evaluate:
+            with self.assertRaises(improve.ImprovementLeaseLost):
+                improve.improve_once(g,"robots",expected_identity=("robots",4,"old"))
+        evaluate.assert_not_called()
+
+    def test_runner_kills_evaluation_session_when_lease_is_lost(self):
+        from docich.resolver import improve, runner
+
+        def command(args):
+            return SimpleNamespace(returncode=1 if args[0]=="has-session" else 0,stderr="can't find session" if args[0]=="has-session" else "",stdout="")
+        with mock.patch.object(runner,"_tmux",side_effect=command) as tmux:
+            with self.assertRaises(improve.ImprovementLeaseLost):
+                runner.run_match(["game"],80,24,lambda _text:[],interval_s=0,guard=lambda: (_ for _ in ()).throw(improve.ImprovementLeaseLost("changed")))
+        kills=[call for call in tmux.call_args_list if call.args[0][:2]==["kill-session","-t"]]
+        self.assertEqual(len(kills),2)
+
+    def test_runner_reports_evaluation_session_cleanup_failure(self):
+        from docich.resolver import runner
+
+        completed=SimpleNamespace(returncode=0,stderr="",stdout="")
+        with mock.patch.object(runner,"_tmux",return_value=completed):
+            with self.assertRaisesRegex(RuntimeError,"停止に失敗"):
+                runner.run_match(["game"],80,24,lambda _text:[],interval_s=0,guard=lambda: (_ for _ in ()).throw(RuntimeError("stop")))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 """P2 tests: runtime-aware CLI adapter (CliCoordinatorAdapter) and factory."""
 
 import sys
+import json
 import tempfile
 import threading
 import time
@@ -65,8 +66,12 @@ class FakeTmux:
     def _ownership(value):
         return TmuxOwnership(runtime_id=value[0], generation=value[1], role=value[2])
 
-    def session_target_exists(self, session):
+    def session_target_exists(self, session,strict=False):
         self.calls.append(("session_target_exists", session))
+        return session in self.sessions
+
+    def has_session_named(self, session):
+        self.calls.append(("has_session_named",session))
         return session in self.sessions
 
     def window_target_exists(self, target):
@@ -349,6 +354,17 @@ class TestAlive(CoordinatorAdapterTestBase):
 
 
 class TestCleanup(CoordinatorAdapterTestBase):
+    def test_cleanup_rejects_orphaned_evaluation_session(self):
+        marker=Path(self.g.state_dir)/"resolver"/"active"/"nethack.json"
+        marker.parent.mkdir(parents=True,exist_ok=True)
+        pid=999999
+        session=f"evalr-{pid}-123"
+        marker.write_text(json.dumps({"pid":pid,"game":"nethack","generation":self.spec.generation,"lease_id":self.spec.lease_id,"sessions":[session]}))
+        self.tmux.sessions[session]=("evaluation",1,"adapter")
+        with self.assertRaisesRegex(AdapterError,"sessionが残っています"):
+            self.adapter.cleanup_runtime(self.deadline,None)
+        self.assertTrue(marker.exists())
+
     def test_cleanup_targets_generation_adapter_session_windows(self):
         self.tmux.sessions["docich-game-g1"] = ("g1-abcdef", 1, "adapter")
         self.tmux.windows["docich-game-g1:game-g1"] = ("g1-abcdef", 1, "game")
