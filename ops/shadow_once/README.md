@@ -26,10 +26,14 @@ kernel leaseとspawn directory lockを終了まで保持します。uuid付きsy
 
 正常/失敗時ともunitの終了とcgroup空を確認します。元の戦略/helpers/config、.env stat、配信PID/active、pauseを照合し、不一致は成功にしません。終了したworkerが書いた自分のPIDのprogressだけをidleへ戻し、他者のPIDは変更しません。未知差分や他者の状態をrollbackしません。外部からoperator自体をSIGKILLした場合はfinally処理を保証できないため、unitの期限で停止した後にreceipt・stateを手動確認し、再実行前に解消してください。pauseは解除しません。
 
-`finished`やlauncher_rc=0は候補採用を意味しません。analysis_hold/reject、shadow拒否、利用制限、timeout等は既存状態から分類し、それ以外はunclassified_no_applyです。候補生成・隔離検証の証明は当該workerのanalysis-checkとisolated_runner receiptを別途照合します。本番戦略はshadowで変更しません。
+`finished`やlauncher_rc=0は候補採用を意味しません。終了理由はworkerが出す `failed_no_apply:<固定コード>` の完全一致だけで分類し、自由文・未知コード・文字列以外は `unclassified_no_apply` にします。生のdetailはoperator receiptへコピーしません。systemdの `Result=timeout` はworkerのdetailより優先します。
+
+`stage_deadline_exhausted`（分析ステージの期限）と `job_deadline_exhausted`（ジョブ全体の期限）を区別します。入力証拠不正 `analysis_evidence_invalid`、分析失敗 `analysis_failed`、モデル無応答 `model_no_response`、検証失敗 `validation_failed`、予算設定不正 `invalid_budget`、キュー利用不可 `queue_unavailable`、期限/guard異常 `deadline_or_guard_failure` も保持します。既存のanalysis hold/reject、shadow拒否、利用制限、汎用 `deadline_exhausted` は引き続き識別します。不正なdetailでも、終了・所有権を検証した自分のprogressだけをidleへ戻します。
+
+これらは停止理由であり、候補の改善効果や採用を証明しません。候補生成・隔離検証の証明は当該workerのanalysis-checkとisolated_runner receiptを別途照合します。本番戦略はshadowで変更しません。
 
 ## 検証範囲
 
-ローカルでmanifest/前提の拒否、shadow固定、終了時の所有権、timeout/子process残存判定をテストします。VM上では合成ファイルだけを使い、実際のservice_command/superviseでread-only・固定入力・PID記録・正常終了・2秒timeout・setsidしたsleep子process回収を確認しました。systemdによるシェル変数の先行展開で一度exit81になった負例も再現し、`--expand-environment=no`で修正しました。実モデルを使った1サイクルはまだ実行していません。
+ローカルでmanifest/前提の拒否、shadow固定、終了時の所有権、timeout/子process残存判定をテストします。VM上では合成ファイルだけを使い、実際のservice_command/superviseでread-only・固定入力・PID記録・正常終了・2秒timeout・setsidしたsleep子process回収を確認しました。systemdによるシェル変数の先行展開で一度exit81になった負例も再現し、`--expand-environment=no`で修正しました。実モデルを使った過去の1サイクル検証は `handoff.md` の2026-09-08 03:05 JST記録を参照してください。終了理由の分類回帰テストは一時ファイルだけを使用し、モデルやVMを呼び出しません。
 
 再実行可能な無害なVM検証: `python3 ops/shadow_once/probe_systemd.py`。合成rootだけを使い、実行unit内でBubblewrapの起動も検証します。既存の配信・モデル・資格情報には触れません。結果のfixtureディレクトリを保持します。
