@@ -17,6 +17,7 @@ class AnalysisDeployTests(unittest.TestCase):
         m=load();d=m.manifest()
         self.assertEqual(d['source_sha'],'9df8a0fbe8089bf6f7082aea8d3fd3b367807707')
         self.assertEqual(list(d['files']),['strategy/analysis_contract.py','prompts/analyze_strategy.md','eloop_improve.sh','strategy/sandbox.sh'])
+        self.assertEqual(d['files']['strategy/sandbox.sh']['mode'], 0o644)
         self.assertEqual(d['files']['prompts/analyze_strategy.md']['mode'],0o664)
         self.assertEqual(d['files']['prompts/analyze_strategy.md']['new'],'89cafb063910c0c2ee41d0cbfac83ec5f857cbcc6389a3314ec13487251d7751')
         self.assertIsNone(d['files']['strategy/analysis_contract.py']['old'])
