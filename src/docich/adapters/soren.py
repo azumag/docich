@@ -33,6 +33,7 @@ class SorenCoordinatorAdapter:
         self.control = self.root / "game_lifecycle_control.sh"
         self._request_id: str | None = None
         self._fresh_started_at: float | None = None
+        self._last_command_output = ""
 
     def _check(self, deadline: float, cancel) -> None:
         if cancel is not None and cancel.is_set():
@@ -54,12 +55,26 @@ class SorenCoordinatorAdapter:
             result = subprocess.run(argv, cwd=self.root, text=True, capture_output=True, timeout=timeout, check=False)
         except subprocess.TimeoutExpired as exc:
             raise ReadinessTimeoutError("Soren lifecycle command がtimeoutしました") from exc
+        self._last_command_output = "\n".join((result.stdout or "", result.stderr or ""))[:8192]
         payload = {}
         try:
             payload = json.loads((result.stdout.strip().splitlines() or ["{}"]) [-1])
         except (ValueError, TypeError):
             pass
         return result.returncode, payload if isinstance(payload, dict) else {}
+
+    @staticmethod
+    def _classify_stop_failure(output: str) -> str:
+        known = (
+            ("改善プロセスの停止確認に失敗", "improve_stop_failed"),
+            ("予想ワーカーの停止確認に失敗", "prediction_stop_failed"),
+            ("停止要求の期限切れ", "deadline_expired"),
+            ("共有表示未準備/legacy bridge", "overlay_unsupported"),
+        )
+        for marker, reason in known:
+            if marker in output:
+                return reason
+        return "unknown_stop_failure"
 
     def _broker(self, command: str, request_id: str | None, deadline: float, cancel, *extra: str):
         argv = ["python3", str(self.broker), "--root", str(self.root), command]
@@ -135,7 +150,8 @@ class SorenCoordinatorAdapter:
             timeout_cap_s=90.0,
         )
         if rc != 0:
-            raise AdapterError(f"Soren game-only stopに失敗しました (rc={rc})")
+            reason = self._classify_stop_failure(self._last_command_output)
+            raise AdapterError(f"Soren game-only stopに失敗しました rc={rc} reason={reason}")
         self._wait_status(request_id, {"stopped"}, deadline, cancel)
 
     def materialize_runtime(self, deadline: float, cancel) -> None:

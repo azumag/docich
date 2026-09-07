@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from docich.adapters.base import AdapterError
 from docich.adapters.soren import SorenCoordinatorAdapter
 from docich.game_switch import RuntimeSpec
 
@@ -61,6 +62,25 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
                 adapter.cleanup_runtime(time.monotonic() + 30, None)
             self.assertEqual(calls[0][0], [str(adapter.control), "stop-after-boundary", "req-2"])
             self.assertGreater(calls[0][1]["timeout"], 15.0)
+
+    def test_cleanup_classifies_fixed_stop_failures_without_exposing_raw_output(self):
+        cases = {
+            "改善プロセスの停止確認に失敗。request=req-2": "improve_stop_failed",
+            "予想ワーカーの停止確認に失敗。request=req-2": "prediction_stop_failed",
+            "停止要求の期限切れ。旧ゲームを継続": "deadline_expired",
+            "共有表示未準備/legacy bridge のため handover をキャンセル": "overlay_unsupported",
+            "attacker supplied unexpected output secret=do-not-copy": "unknown_stop_failure",
+        }
+        for output, expected in cases.items():
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as temp:
+                adapter = self.make_adapter(Path(temp))
+                adapter._request_id = "req-2"
+                result = SimpleNamespace(returncode=1, stdout=output, stderr="raw-secret")
+                with patch("docich.adapters.soren.subprocess.run", return_value=result):
+                    with self.assertRaisesRegex(AdapterError, rf"rc=1 reason={expected}$") as caught:
+                        adapter.cleanup_runtime(time.monotonic() + 30, None)
+                self.assertNotIn("do-not-copy", str(caught.exception))
+                self.assertNotIn("raw-secret", str(caught.exception))
 
     def test_cancel_uses_fixed_control_so_partial_pause_is_restored(self):
         with tempfile.TemporaryDirectory() as temp:
