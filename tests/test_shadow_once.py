@@ -28,6 +28,11 @@ class ShadowOnceTests(unittest.TestCase):
   self.assertTrue(any(x.startswith('--property=ReadOnlyPaths=') and '/home/ubuntu/soren/strategy.py' in x for x in cmd))
   self.assertNotIn('soren-runtime.service',cmd)
   self.assertIn('--expand-environment=no',cmd)
+ def test_unit_uses_direct_opencode_binary_without_snap_privilege_helper(self):
+  cmd=load().service_command('soren-shadow-once-abc',Path('/tmp/owned'),self.manifest())
+  self.assertIn('--setenv=PATH=/snap/opencode/current/bin:/usr/local/bin:/usr/bin:/bin',cmd)
+  self.assertIn('--setenv=OPENCODE_DISABLE_AUTOUPDATE=1',cmd)
+  self.assertIn('--property=NoNewPrivileges=yes',cmd)
  def test_bootstrap_checks_mode_and_never_calls_normal_spawner(self):
   s=load().BOOTSTRAP
   self.assertIn('readonly SOREN_ISOLATED_RUNNER_MODE',s)
@@ -124,5 +129,3 @@ class PreflightTests(unittest.TestCase):
     with self.assertRaisesRegex(ValueError,'not_idle'):m.preflight(root,d)
     run.assert_not_called()
 if __name__=='__main__':unittest.main()
-
-

@@ -101,7 +101,10 @@ def service_command(unit,run,doc):
         properties.append('BindReadOnlyPaths='+str(run/row['path'])+':'+str(ROOT/row['path']))
     cmd=['sudo','-n','systemd-run','--quiet','--wait','--expand-environment=no','--unit='+unit,'--working-directory='+str(ROOT)]
     cmd+=['--property='+p for p in properties]
-    cmd+=['--setenv=HOME=/home/ubuntu','--setenv=PATH=/snap/bin:/usr/local/bin:/usr/bin:/bin','--setenv=SOREN_SCRIPT_ROOT='+str(ROOT),
+    cmd+=['--setenv=HOME=/home/ubuntu',
+          '--setenv=PATH=/snap/opencode/current/bin:/usr/local/bin:/usr/bin:/bin',
+          '--setenv=OPENCODE_DISABLE_AUTOUPDATE=1',
+          '--setenv=SOREN_SCRIPT_ROOT='+str(ROOT),
           '--setenv=SOREN_IMPROVE_JOB_BUDGET_SEC='+str(doc['budget_seconds']),
           '--setenv=SOREN_IMPROVE_ANALYSIS_BUDGET_SEC='+str(doc['analysis_seconds']),
           '/bin/bash','-c',BOOTSTRAP,'shadow-once',str(run/'worker.sh'),
