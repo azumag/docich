@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Owner-only fixed three-file deployment, paused, locked, backed up."""
+"""Owner-only fixed deployment, paused, locked, backed up."""
 from __future__ import annotations
 import importlib.util
 import json
@@ -11,9 +11,9 @@ spec=importlib.util.spec_from_file_location('policy_installer',Path(__file__).wi
 policy=importlib.util.module_from_spec(spec);spec.loader.exec_module(policy)
 ROOT=Path('/home/ubuntu/soren')
 SOURCE=Path('/home/ubuntu/docich/games/soviet_now')
-SOURCE_SHA='b48df65676cd9800066f7359ca4747db8f08afc9'
-PATHS=('strategy/analysis_contract.py','prompts/analyze_strategy.md','eloop_improve.sh')
-MODES=dict(zip(PATHS,(0o644,0o664,0o755)))
+SOURCE_SHA='8ba454fce60ca23637a54471b5391b6d732355a8'
+PATHS=('strategy/analysis_contract.py','prompts/analyze_strategy.md','eloop_improve.sh','strategy/sandbox.sh')
+MODES=dict(zip(PATHS,(0o644,0o664,0o755,0o755)))
 PAUSE_OWNER='tmp/state/step5-founding-20260906T201809Z'
 
 def manifest():

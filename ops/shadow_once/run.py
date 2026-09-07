@@ -23,6 +23,15 @@ if [[ "${SOREN_ISOLATED_RUNNER_MODE:-shadow}" != shadow ]]; then exit 81; fi
 SOREN_ISOLATED_RUNNER_MODE=shadow
 readonly SOREN_ISOLATED_RUNNER_MODE
 export SOREN_ISOLATED_RUNNER_MODE
+MODEL_IMPROVE_LIST=opencode-go:muse-spark-1.3-contributor,opencode-go:muse-spark-1.2-contributor,opencode-go:deepseek-v4-flash
+readonly MODEL_IMPROVE_LIST
+export MODEL_IMPROVE_LIST
+IMPROVE_PEAK_CHAIN_ENABLED=0
+readonly IMPROVE_PEAK_CHAIN_ENABLED
+export IMPROVE_PEAK_CHAIN_ENABLED
+IMPROVE_OPENCODE_PERMISSION='{"*":"deny","read":"allow","glob":"allow","grep":"allow","list":"allow","edit":"allow","write":"allow","external_directory":"deny"}'
+readonly IMPROVE_OPENCODE_PERMISSION
+export IMPROVE_OPENCODE_PERMISSION
 source "$1" "${@:2}"
 '''
 PROTECTED=('strategy.py','strategy_helpers','core','strategy','prompts','.env','eloop_lib.sh','tmp/state/improve_daemon.paused')
@@ -31,7 +40,7 @@ PROTECTED=('strategy.py','strategy_helpers','core','strategy','prompts','.env','
 def validate_manifest(doc):
     if not isinstance(doc,dict) or set(doc)!= {'version','budget_seconds','analysis_seconds','game_num','turns','inputs'}:
         raise ValueError('manifest_schema')
-    for key,lo,hi in [('version',1,1),('budget_seconds',1,600),('analysis_seconds',1,600),('game_num',0,10**9),('turns',0,10**9)]:
+    for key,lo,hi in [('version',1,1),('budget_seconds',1,840),('analysis_seconds',1,840),('game_num',0,10**9),('turns',0,10**9)]:
         if type(doc[key]) is not int or not lo<=doc[key]<=hi:raise ValueError('manifest_range')
     if doc['analysis_seconds']>doc['budget_seconds']:raise ValueError('analysis_budget')
     if not isinstance(doc['inputs'],list) or not 1<=len(doc['inputs'])<=64:raise ValueError('input_count')
@@ -96,12 +105,19 @@ def service_command(unit,run,doc):
                 'NoNewPrivileges=yes','ProtectControlGroups=yes','RestrictSUIDSGID=yes',
                 'StandardOutput=null','StandardError=null','UMask=0077',
                 'ReadOnlyPaths='+' '.join(str(ROOT/p) for p in PROTECTED)+' '+str(run),
-                'ReadWritePaths='+str(run/'worker.pid')]
+                'ReadWritePaths='+str(run/'worker.pid')+' '+str(run/'runtime')]
     for row in doc['inputs']:
         properties.append('BindReadOnlyPaths='+str(run/row['path'])+':'+str(ROOT/row['path']))
     cmd=['sudo','-n','systemd-run','--quiet','--wait','--expand-environment=no','--unit='+unit,'--working-directory='+str(ROOT)]
     cmd+=['--property='+p for p in properties]
-    cmd+=['--setenv=HOME=/home/ubuntu','--setenv=PATH=/snap/bin:/usr/local/bin:/usr/bin:/bin','--setenv=SOREN_SCRIPT_ROOT='+str(ROOT),
+    cmd+=['--setenv=HOME=/home/ubuntu',
+          '--setenv=PATH=/snap/opencode/current/bin:/usr/local/bin:/usr/bin:/bin',
+          '--setenv=OPENCODE_BIN=/snap/opencode/current/bin/opencode',
+          '--setenv=OPENCODE_DISABLE_AUTOUPDATE=1',
+          '--setenv=AI_BACKOFF_DIR='+str(run/'runtime/ai_backoff'),
+          '--setenv=AI_FAIL_STREAK_DIR='+str(run/'runtime/ai_fail_streak'),
+          '--setenv=AI_STATS_DIR='+str(run/'runtime/ai_stats'),
+          '--setenv=SOREN_SCRIPT_ROOT='+str(ROOT),
           '--setenv=SOREN_IMPROVE_JOB_BUDGET_SEC='+str(doc['budget_seconds']),
           '--setenv=SOREN_IMPROVE_ANALYSIS_BUDGET_SEC='+str(doc['analysis_seconds']),
           '/bin/bash','-c',BOOTSTRAP,'shadow-once',str(run/'worker.sh'),
@@ -185,6 +201,7 @@ def main():
         def save():policy.atomic_write(record_path,json.dumps(record,sort_keys=True).encode(),0o600)
         save()
         (run/'worker.pid').write_text('')
+        (run/'runtime').mkdir(mode=0o700)
         for row in doc['inputs']:
             raw=safe(ROOT,row['path']).read_bytes()
             if hashlib.sha256(raw).hexdigest()!=row['sha256']:raise ValueError('input_changed')
