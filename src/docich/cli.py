@@ -41,6 +41,7 @@ from .game_switch import (
 )
 from .naming import NameValidationError
 from .netcmd import send_ra_cmd
+from .trading import cli as trading_cli
 from .state import State
 from .stream import (
     CaptionSocketDirectoryError,
@@ -77,6 +78,7 @@ USER_ERRORS = (
     StreamKeyError,
     captions.CaptionError,
     CliError,
+    trading_cli.TradingCliError,
     tts.TtsError,
 )
 
@@ -281,6 +283,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_ai_guard.set_defaults(func=lambda args: model_output_guard.main())
 
+    p_trading = sub.add_parser(
+        "trading", help="暗号資産の paper trading 基盤を操作する"
+    )
+    trading_cli.configure_parser(p_trading)
+
     p_webui = sub.add_parser("webui", help="モデルチェーン / バックオフ管理 Web UI を起動する (Tailscale経由)")
     p_webui.add_argument("--bind", metavar="ADDR", help="バインドアドレス (既定 127.0.0.1)")
     p_webui.add_argument("--port", type=int, metavar="PORT", help="ポート (既定 8787)")
@@ -365,6 +372,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return overlay.cli_overlay(args)
     if command == "ai-guard":
         return model_output_guard.main()
+    if command == "trading":
+        return trading_cli.run_args(args, repo_root=_repo_root())
     if command == "webui":
         from .webui import run_webui
 

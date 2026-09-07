@@ -136,10 +136,37 @@ soviet_now側の全on-air出力guardが適用されています。
 | `docich ra-cmd <CMD>` | RetroArch UDP command |
 | `docich webui [--dry-run]` | モデルチェーン/バックオフ管理 Web UI (Tailscale経由) |
 | `docich caption plan/send ...` | 字幕計画とFFmpeg IPC |
+| `docich trading status/discover/paper-cycle` | 暗号資産 paper trading 基盤（live注文なし） |
 | `docich run <component>` | tmux内の監督ループ用内部command |
 
 設定探索順は `--config`、`$DOCICH_CONFIG`、
 `config/docich.toml` です。
+
+### 暗号資産 paper trading（初期基盤）
+
+`trading` は通常ゲームの lifecycle とは独立した paper-only の取引基盤です。
+現段階では API key・private endpoint・実注文・レバレッジを扱わず、
+実取引へ切り替えるオプションもありません。状態は既定で `run/trading/` に保存します。
+
+bitbank の公開 market metadata を CCXT 経由で確認する場合だけ optional dependency を追加します。
+
+```bash
+python3 -m pip install -r requirements-trading.txt
+bin/docich trading discover
+bin/docich trading status
+```
+
+`paper-cycle` は allowlist された snapshot JSON だけを入力にし、複数ペアの候補を
+共通の資金枠（初期既定: 1機会30%、全体30%）で比較して synthetic fill を台帳へ記録します。
+同じ `opportunity_id` の再実行は二重約定になりません。JPY建て以外は
+`quote_to_reference` と、そのquote assetの利用可能残高を明示できる場合だけ配分します。
+
+```bash
+bin/docich trading paper-cycle --snapshot /path/to/paper-snapshot.json
+```
+
+常駐worker、リアルタイム戦略、配信通知、実発注は後続sliceで追加します。
+実発注を有効化する前には、別途の設計レビューと明示承認が必要です。
 
 ## 設定
 
