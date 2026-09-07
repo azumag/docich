@@ -172,9 +172,15 @@ def finish_state(root,record,policy):
     # Keep model-produced text out of the operator receipt. Runtime retains its
     # detailed diagnostics; this record does not infer candidate acceptance.
     detail=state.get('detail','')
-    reasons=('analysis_hold','analysis_contract_invalid','isolated_runner_shadow',
-             'isolated_runner_unavailable','rate_limited','deadline_exhausted')
-    record['outcome']=next((r for r in reasons if r in detail),'unclassified_no_apply')
+    reasons=('analysis_hold','analysis_contract_invalid','analysis_evidence_invalid',
+             'analysis_failed','model_no_response','validation_failed',
+             'isolated_runner_shadow','isolated_runner_unavailable','rate_limited',
+             'job_deadline_exhausted','stage_deadline_exhausted','deadline_exhausted',
+             'deadline_or_guard_failure','invalid_budget','queue_unavailable')
+    # Only accept the worker's complete machine code, not words in free text.
+    # Malformed details must not prevent cleanup of the verified stopped owner.
+    reason=detail.removeprefix('failed_no_apply:') if isinstance(detail,str) and detail.startswith('failed_no_apply:') else ''
+    record['outcome']=reason if reason in reasons else 'unclassified_no_apply'
     if record['unit'].get('Result')=='timeout':record['outcome']='timeout'
     state.update(status='idle',pid=0,pid_birth_epoch=0,phase='failed_no_apply',
                  detail='shadow_once:'+record['outcome'])

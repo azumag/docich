@@ -9,6 +9,13 @@
 - **終了確認**: improve stateはidle/pid0へ復帰し、shadow unit/cgroupと改善workerの残存なし。元のoperator pause所有者を維持。`soren-runtime.service` MainPID 3518891、direct stream PID 2183327、FFmpeg PID 2188217を前後で維持した。
 - **関連する切替・音声修正**: Soren #211 / docich #116でwatchdogのTERM応答と通常ゲーム切替を修正し、Soren→Robots→Sorenの往復で旧ゲーム・評価ジョブ・BGMの停止、共通配信PID維持、単一起動を実測。Soren #206 / docich #118でAV同期指定をmainとVMへ同期済み。
 
+### 2026-09-08 — shadow単発の終了理由分類を厳密化（コード検証）
+
+- 調査基準はdocich `76a4c1b5` / Soren `c23e5d03`。単発operatorがsubstring照合を行い、`job_deadline_exhausted` と `stage_deadline_exhausted` を汎用deadlineへ潰し、入力証拠不正・分析失敗・モデル無応答などを未分類にする問題を再現した。detailがnull/数値だと終了済みworkerのstate清掃がTypeErrorで止まる。
+- `failed_no_apply:<固定コード>` の完全一致と型検査へ限定し、既知のhost理由を保持する。未知値は未分類、systemd timeoutを優先、生detailはreceiptへ出さない。所有権・cgroup検査、pause、固定モデル、予算、shadow、read-only mount、VM gatewayは変更しない。
+- 変更前の新規テストは16 failures / 3 errorsを再現し、修正後のshadow対象23 testsは成功。広域回帰、独立レビュー、最新HEADのCI・マージ・自動反映結果は対応PRへ記録する。
+- owner-only Actionsのproduction status run `34152174111` は成功、pending repairsなし。実機ログの追加取得は安全性確認で拒否されたため迂回していない。今回は実モデル再実行、pause解除、配信/worker再起動、戦略変更、作業中バナー/音声操作を行っていない。外部映像・音声・ゲーム品質の新しい実測は未実施。
+
 ## 2026-09-08 02:40 JST — 通常ゲーム切替の往復と資源解放を本番実測
 
 - Soren→Robots（generation 50）とRobots→Soren（generation 51）が正常終了。切替ごとに旧ゲームの描画・操作AI・watchdog・予想worker・評価ジョブ・ゲームBGMを停止し、新ゲーム側だけを1組起動した。現在はSorenが稼働中。

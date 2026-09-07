@@ -145,4 +145,49 @@ class PreflightTests(unittest.TestCase):
    with patch.object(m.subprocess,'run') as run:
     with self.assertRaisesRegex(ValueError,'not_idle'):m.preflight(root,d)
     run.assert_not_called()
+class OutcomeClassificationTests(unittest.TestCase):
+ def finish(self, detail, result='success'):
+  m=load()
+  with tempfile.TemporaryDirectory() as tmp:
+   root=Path(tmp).resolve();p=root/'tmp/state/improve_state.json';p.parent.mkdir(parents=True)
+   p.write_text(json.dumps({'status':'running','pid':321,'phase':'done','detail':detail}))
+   policy=SimpleNamespace(atomic_write=lambda path,raw,mode:path.write_bytes(raw))
+   record={'worker_pid':'321','unit':{'MainPID':'0','ActiveState':'inactive','ControlGroup':'','Result':result}}
+   m.finish_state(root,record,policy)
+   state=json.loads(p.read_text())
+   self.assertEqual((state['status'],state['pid']),('idle',0))
+   self.assertEqual(state['detail'],'shadow_once:'+record['outcome'])
+   return record
+ def test_job_and_analysis_deadlines_remain_distinct(self):
+  for reason in ('job_deadline_exhausted','stage_deadline_exhausted'):
+   with self.subTest(reason=reason):
+    self.assertEqual(self.finish('failed_no_apply:'+reason)['outcome'],reason)
+ def test_host_failure_codes_are_not_lost(self):
+  for reason in ('analysis_evidence_invalid','analysis_failed','model_no_response',
+                 'validation_failed','invalid_budget','queue_unavailable','deadline_or_guard_failure'):
+   with self.subTest(reason=reason):
+    self.assertEqual(self.finish('failed_no_apply:'+reason)['outcome'],reason)
+ def test_existing_terminal_codes_are_preserved(self):
+  for reason in ('analysis_hold','analysis_contract_invalid','isolated_runner_shadow',
+                 'isolated_runner_unavailable','rate_limited','deadline_exhausted'):
+   with self.subTest(reason=reason):
+    self.assertEqual(self.finish('failed_no_apply:'+reason)['outcome'],reason)
+ def test_free_text_and_unknown_codes_are_not_trusted(self):
+  for detail in ('analysis_hold','model said rate_limited',
+                 'failed_no_apply:analysis_hold extra text',
+                 'failed_no_apply:not_rate_limited','failed_no_apply:unknown_reason',
+                 'failed_no_apply:isolated_runner_shadow\nprivate text'):
+   with self.subTest(detail=detail):
+    record=self.finish(detail)
+    self.assertEqual(record['outcome'],'unclassified_no_apply')
+    self.assertNotIn(detail,json.dumps(record))
+ def test_malformed_detail_does_not_prevent_owned_state_cleanup(self):
+  for detail in (None,1,[],{},['rate_limited'],{'analysis_hold':True}):
+   with self.subTest(detail=detail):
+    self.assertEqual(self.finish(detail)['outcome'],'unclassified_no_apply')
+ def test_systemd_timeout_takes_precedence_over_worker_detail(self):
+  for detail in ('failed_no_apply:analysis_hold','failed_no_apply:job_deadline_exhausted',None):
+   with self.subTest(detail=detail):
+    self.assertEqual(self.finish(detail,result='timeout')['outcome'],'timeout')
+
 if __name__=='__main__':unittest.main()
