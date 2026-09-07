@@ -43,7 +43,7 @@ class ShadowOnceTests(unittest.TestCase):
  def test_bootstrap_checks_mode_and_never_calls_normal_spawner(self):
   s=load().BOOTSTRAP
   self.assertIn('readonly SOREN_ISOLATED_RUNNER_MODE',s)
-  self.assertIn('MODEL_IMPROVE_LIST=opencode-go:deepseek-v4-flash',s)
+  self.assertIn('MODEL_IMPROVE_LIST=opencode-go:muse-spark-1.3-contributor,opencode-go:muse-spark-1.2-contributor,opencode-go:deepseek-v4-flash',s)
   self.assertIn('readonly MODEL_IMPROVE_LIST',s)
   self.assertIn('readonly IMPROVE_PEAK_CHAIN_ENABLED',s)
   self.assertLess(s.index('!= shadow'),s.index('source "$1"'))

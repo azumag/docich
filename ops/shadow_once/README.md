@@ -16,7 +16,7 @@ python3 ops/shadow_once/run.py check /home/ubuntu/soren/tmp/state/shadow-once-in
 python3 ops/shadow_once/run.py run /home/ubuntu/soren/tmp/state/shadow-once-input-<識別子>.json
 ```
 
-`check` は静的な前提のみ確認し、モデルを呼びません。実効shadowの確認はサービス内で設定を読み込んだ後、worker開始前に行います。enforceなら拒否し、shadowをreadonly/exportしてからworker snapshotをsourceします。固定検証では、レート制限済み候補で解析枠を失わないよう、既存OpenCode経路の `opencode-go:deepseek-v4-flash` 一つへ改善候補を固定し、ピーク時の差し替えも無効化します。worker自身も既存設定を読みますがreadonlyな値は上書きできません。設定読込失敗時は起動拒否です。
+`check` は静的な前提のみ確認し、モデルを呼びません。実効shadowの確認はサービス内で設定を読み込んだ後、worker開始前に行います。enforceなら拒否し、shadowをreadonly/exportしてからworker snapshotをsourceします。固定検証では、レート制限済み無料候補と遅いOmenで解析枠を失わないよう、既存OpenCode経路の contributor 2候補、`deepseek-v4-flash` の順へ改善候補を固定し、ピーク時の差し替えも無効化します。worker自身も既存設定を読みますがreadonlyな値は上書きできません。設定読込失敗時は起動拒否です。
 
 ## 実行境界と終了確認
 
