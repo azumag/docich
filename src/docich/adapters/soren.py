@@ -40,9 +40,16 @@ class SorenCoordinatorAdapter:
         if time.monotonic() >= deadline:
             raise DeadlineExceededError("Soren lifecycle call のdeadlineを超過しました")
 
-    def _run(self, argv: list[str], deadline: float, cancel) -> tuple[int, dict]:
+    def _run(
+        self,
+        argv: list[str],
+        deadline: float,
+        cancel,
+        *,
+        timeout_cap_s: float = 15.0,
+    ) -> tuple[int, dict]:
         self._check(deadline, cancel)
-        timeout = max(0.1, min(15.0, deadline - time.monotonic()))
+        timeout = max(0.1, min(timeout_cap_s, deadline - time.monotonic()))
         try:
             result = subprocess.run(argv, cwd=self.root, text=True, capture_output=True, timeout=timeout, check=False)
         except subprocess.TimeoutExpired as exc:
@@ -104,7 +111,9 @@ class SorenCoordinatorAdapter:
         self._wait_status(request_id, {"boundary"}, deadline, cancel)
 
     def cancel_round_boundary(self, request_id: str, deadline: float, cancel) -> bool:
-        rc, payload = self._broker("cancel", request_id, deadline, cancel)
+        rc, payload = self._run(
+            [str(self.control), "cancel", request_id], deadline, cancel
+        )
         return rc == 0 and self._ack(payload).get("status") == "cancelled"
 
     def cleanup_runtime(self, deadline: float, cancel) -> None:
@@ -114,7 +123,17 @@ class SorenCoordinatorAdapter:
             request_id = str(ack.get("request_id") or "")
         if not request_id:
             raise AdapterError("Soren lifecycle stop requestがありません")
-        rc, _payload = self._run([str(self.control), "stop-after-boundary", request_id], deadline, cancel)
+        # The fixed stop path may spend up to 30 seconds draining the
+        # watchdog after stopping the other game workers.  A 15 second
+        # subprocess cap killed the controller halfway through, leaving the
+        # bridge/BGM alive.  Keep this bounded, but above the full game-only
+        # teardown contract.
+        rc, _payload = self._run(
+            [str(self.control), "stop-after-boundary", request_id],
+            deadline,
+            cancel,
+            timeout_cap_s=90.0,
+        )
         if rc != 0:
             raise AdapterError(f"Soren game-only stopに失敗しました (rc={rc})")
         self._wait_status(request_id, {"stopped"}, deadline, cancel)

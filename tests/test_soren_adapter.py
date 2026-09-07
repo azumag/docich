@@ -55,11 +55,29 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
             ]
             calls = []
             def fake_run(argv, **kwargs):
-                calls.append(argv)
+                calls.append((argv, kwargs))
                 return SimpleNamespace(returncode=0, stdout=json.dumps(outputs.pop(0)), stderr="")
             with patch("docich.adapters.soren.subprocess.run", side_effect=fake_run):
                 adapter.cleanup_runtime(time.monotonic() + 30, None)
-            self.assertEqual(calls[0], [str(adapter.control), "stop-after-boundary", "req-2"])
+            self.assertEqual(calls[0][0], [str(adapter.control), "stop-after-boundary", "req-2"])
+            self.assertGreater(calls[0][1]["timeout"], 15.0)
+
+    def test_cancel_uses_fixed_control_so_partial_pause_is_restored(self):
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            calls = []
+
+            def fake_run(argv, **kwargs):
+                calls.append(argv)
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=json.dumps({"ack": {"request_id": "req-c", "status": "cancelled"}}),
+                    stderr="",
+                )
+
+            with patch("docich.adapters.soren.subprocess.run", side_effect=fake_run):
+                self.assertTrue(adapter.cancel_round_boundary("req-c", time.monotonic() + 30, None))
+            self.assertEqual(calls[0], [str(adapter.control), "cancel", "req-c"])
 
     def test_materialize_fresh_starts_only_matching_stopped_request(self):
         with tempfile.TemporaryDirectory() as temp:
