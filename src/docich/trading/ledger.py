@@ -138,6 +138,16 @@ class PaperLedger:
         ).fetchall()
         return [self._row_to_fill(row) for row in rows]
 
+    def deployed_reference(self) -> Decimal:
+        total = Decimal("0")
+        rows = self._conn.execute(
+            "SELECT side, reference_notional FROM paper_fills ORDER BY filled_at, rowid"
+        ).fetchall()
+        for side, value_text in rows:
+            value = Decimal(value_text)
+            total += value if side == "buy" else -value
+        return max(Decimal("0"), total)
+
     def positions(self) -> dict[str, Decimal]:
         positions: dict[str, Decimal] = {}
         rows = self._conn.execute(
