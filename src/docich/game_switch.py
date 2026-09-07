@@ -4076,13 +4076,20 @@ class GameSwitchCoordinator:
         detail: str,
         error_code: str,
     ) -> SwitchResult:
+        # A failed recovery is retryable.  Preserve the operation identity
+        # from the failure being recovered; replacing it with an anonymous
+        # ``recover`` result loses the generation/request needed by the next
+        # recovery attempt and turns a transient readiness failure into
+        # permanent canonical corruption.
+        prior = state.get("last_result")
+        prior = prior if isinstance(prior, Mapping) else {}
         last_result = {
-            "request_id": str(state.get("request_id") or ""),
-            "operation": "recover",
+            "request_id": str(state.get("request_id") or prior.get("request_id") or ""),
+            "operation": str(prior.get("operation") or "recover"),
             "status": "failed",
-            "from_game": None,
-            "to_game": None,
-            "generation": None,
+            "from_game": prior.get("from_game"),
+            "to_game": prior.get("to_game"),
+            "generation": prior.get("generation"),
             "error_code": error_code,
             "detail": detail,
             "cleanup_pending": None,
