@@ -107,6 +107,25 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
                 adapter.materialize_runtime(time.monotonic() + 30, None)
             self.assertEqual(calls[1], [str(adapter.control), "fresh-start", "req-4"])
 
+    def test_materialize_clears_matching_cancelled_request_for_rollback(self):
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            identity = {"request_id": "req-5", "game": "sorengame", "generation": 7}
+            outputs = [
+                {"request": identity, "ack": {**identity, "status": "cancelled"},
+                 "resource": {**identity, "status": "cancelled", "quit_called": False}},
+                {"status": "starting"},
+            ]
+            calls = []
+
+            def fake_run(argv, **kwargs):
+                calls.append(argv)
+                return SimpleNamespace(returncode=0, stdout=json.dumps(outputs.pop(0)), stderr="")
+
+            with patch("docich.adapters.soren.subprocess.run", side_effect=fake_run):
+                adapter.materialize_runtime(time.monotonic() + 30, None)
+            self.assertEqual(calls[1], [str(adapter.control), "fresh-start", "req-5"])
+
 
 if __name__ == "__main__":
     unittest.main()
