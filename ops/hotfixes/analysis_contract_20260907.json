@@ -1,5 +1,5 @@
 {
-  "source_sha": "57a27788c9db3c613289f98f97281de170aae305",
+  "source_sha": "9df8a0fbe8089bf6f7082aea8d3fd3b367807707",
   "files": {
     "strategy/analysis_contract.py": {
       "old": null,
@@ -15,6 +15,11 @@
       "old": "727129563b29f45e9a152628e35838ca05588f80edf81cbb8f5f18ed091499d6",
       "new": "ab995c1a916ea6af26cf120d85c27d8af8184eb6aac8d57b47ddde935dd07887",
       "mode": 493
+    },
+    "strategy/sandbox.sh": {
+      "old": "fb930da3da51fd4fa857f8e4ee886dfb0b953eb3414377f407521c542d76cb28",
+      "new": "e113deecb11f3eb1842b9140f51b7f02b25e480b7f99c2e47a9cfef80230c11a",
+      "mode": 420
     }
   }
 }
