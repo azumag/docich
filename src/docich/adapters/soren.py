@@ -219,7 +219,12 @@ class SorenCoordinatorAdapter:
 
     def alive(self, deadline: float, cancel) -> bool:
         payload = self._status(deadline, cancel)
-        return self._ack(payload).get("status") != "stopped"
+        # Both states require an explicit materialize step before canonical can
+        # publish the runtime again.  ``cancelled`` may already have live
+        # processes, but its broker state must still be archived; reporting it
+        # as ready-alive makes rollback skip materialization and readiness can
+        # never accept the non-empty lifecycle request.
+        return self._ack(payload).get("status") not in {"stopped", "cancelled"}
 
     def start_agent(self, deadline: float, cancel) -> None:
         self._check(deadline, cancel)
