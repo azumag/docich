@@ -16,9 +16,11 @@ class ShadowOnceTests(unittest.TestCase):
   return {'version':1,'budget_seconds':60,'analysis_seconds':30,'game_num':13,'turns':20,'inputs':[{'path':'game_history/a.jsonl','sha256':'a'*64,'score':100}]}
  def test_manifest_accepts_fixed_inputs(self):
   self.assertEqual(load().validate_manifest(self.manifest())['budget_seconds'],60)
+  d=self.manifest();d.update(budget_seconds=840,analysis_seconds=420)
+  self.assertEqual(load().validate_manifest(d)['analysis_seconds'],420)
  def test_manifest_rejects_commands_traversal_duplicates_and_bad_budgets(self):
   m=load()
-  for mutate in (lambda d:d.update(command='bash'),lambda d:d['inputs'][0].update(path='../.env'),lambda d:d['inputs'].append(d['inputs'][0]),lambda d:d.update(budget_seconds=601),lambda d:d.update(analysis_seconds=61),lambda d:d.update(budget_seconds=True)):
+  for mutate in (lambda d:d.update(command='bash'),lambda d:d['inputs'][0].update(path='../.env'),lambda d:d['inputs'].append(d['inputs'][0]),lambda d:d.update(budget_seconds=841),lambda d:d.update(analysis_seconds=61),lambda d:d.update(budget_seconds=True)):
    d=self.manifest();mutate(d)
    with self.subTest(d=d),self.assertRaises(ValueError):m.validate_manifest(d)
  def test_unit_enforces_lifecycle_and_immutable_paths(self):
@@ -28,9 +30,24 @@ class ShadowOnceTests(unittest.TestCase):
   self.assertTrue(any(x.startswith('--property=ReadOnlyPaths=') and '/home/ubuntu/soren/strategy.py' in x for x in cmd))
   self.assertNotIn('soren-runtime.service',cmd)
   self.assertIn('--expand-environment=no',cmd)
+ def test_unit_uses_direct_opencode_binary_without_snap_privilege_helper(self):
+  cmd=load().service_command('soren-shadow-once-abc',Path('/tmp/owned'),self.manifest())
+  self.assertIn('--setenv=PATH=/snap/opencode/current/bin:/usr/local/bin:/usr/bin:/bin',cmd)
+  self.assertIn('--setenv=OPENCODE_BIN=/snap/opencode/current/bin/opencode',cmd)
+  self.assertIn('--setenv=OPENCODE_DISABLE_AUTOUPDATE=1',cmd)
+  self.assertIn('--setenv=AI_BACKOFF_DIR=/tmp/owned/runtime/ai_backoff',cmd)
+  self.assertIn('--setenv=AI_FAIL_STREAK_DIR=/tmp/owned/runtime/ai_fail_streak',cmd)
+  self.assertIn('--setenv=AI_STATS_DIR=/tmp/owned/runtime/ai_stats',cmd)
+  self.assertIn('--property=ReadWritePaths=/tmp/owned/worker.pid /tmp/owned/runtime',cmd)
+  self.assertIn('--property=NoNewPrivileges=yes',cmd)
  def test_bootstrap_checks_mode_and_never_calls_normal_spawner(self):
   s=load().BOOTSTRAP
   self.assertIn('readonly SOREN_ISOLATED_RUNNER_MODE',s)
+  self.assertIn('MODEL_IMPROVE_LIST=opencode-go:muse-spark-1.3-contributor,opencode-go:muse-spark-1.2-contributor,opencode-go:deepseek-v4-flash',s)
+  self.assertIn('readonly MODEL_IMPROVE_LIST',s)
+  self.assertIn('readonly IMPROVE_PEAK_CHAIN_ENABLED',s)
+  self.assertIn('"external_directory":"deny"',s)
+  self.assertIn('readonly IMPROVE_OPENCODE_PERMISSION',s)
   self.assertLess(s.index('!= shadow'),s.index('source "$1"'))
   self.assertNotIn('_start_improvement_job',s)
   self.assertNotIn('soren91_start',s)
@@ -124,5 +141,3 @@ class PreflightTests(unittest.TestCase):
     with self.assertRaisesRegex(ValueError,'not_idle'):m.preflight(root,d)
     run.assert_not_called()
 if __name__=='__main__':unittest.main()
-
-
