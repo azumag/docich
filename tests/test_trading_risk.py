@@ -167,7 +167,7 @@ class TestCapitalAllocator(unittest.TestCase):
             prices={"BTC/JPY": D("10000000")},
             quote_to_reference={"JPY": D("1")},
             available_quote={"JPY": D("100000")},
-            capital_reference=D("100000")},
+            capital_reference=D("100000"),
             deployed_reference=D("0"),
             policy=CapitalPolicy(),
             now=NOW,
