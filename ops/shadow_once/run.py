@@ -23,7 +23,7 @@ if [[ "${SOREN_ISOLATED_RUNNER_MODE:-shadow}" != shadow ]]; then exit 81; fi
 SOREN_ISOLATED_RUNNER_MODE=shadow
 readonly SOREN_ISOLATED_RUNNER_MODE
 export SOREN_ISOLATED_RUNNER_MODE
-MODEL_IMPROVE_LIST=opencode-go:deepseek-v4-flash
+MODEL_IMPROVE_LIST=opencode-go:muse-spark-1.3-contributor,opencode-go:muse-spark-1.2-contributor,opencode-go:deepseek-v4-flash
 readonly MODEL_IMPROVE_LIST
 export MODEL_IMPROVE_LIST
 IMPROVE_PEAK_CHAIN_ENABLED=0
