@@ -141,6 +141,47 @@ def write_json(path,obj): atomic_write(path,(json.dumps(obj,sort_keys=True)+'\n'
 def read_json(path): return json.loads(path.read_text()) if path.exists() else None
 
 
+def _filesystem_status(path:Path):
+    info=os.statvfs(path)
+    block_size=info.f_frsize or info.f_bsize
+    total=info.f_blocks*block_size
+    used=(info.f_blocks-info.f_bfree)*block_size
+    available=info.f_bavail*block_size
+    denominator=used+available
+    used_percent=0 if denominator<=0 else (used*100+denominator-1)//denominator
+    return {'total_bytes':total,'available_bytes':available,'used_percent':used_percent}
+
+
+def _prune_preview_releases(cfg,repo,protected_sha,keep=2):
+    if not SHA_RE.fullmatch(protected_sha) or keep < 1:
+        raise ValueError('invalid preview retention request')
+    root=state_root(cfg)/'releases'/repo
+    if not root.is_dir(): return []
+    candidates=[]
+    for path in root.iterdir():
+        try: st=path.lstat()
+        except FileNotFoundError: continue
+        if path.is_symlink() or not stat.S_ISDIR(st.st_mode) or not SHA_RE.fullmatch(path.name):
+            continue
+        candidates.append((st.st_mtime_ns,path.name,path))
+    candidates.sort(reverse=True)
+    retained=[]
+    if any(name==protected_sha for _,name,_ in candidates): retained.append(protected_sha)
+    for _,name,_ in candidates:
+        if len(retained)>=keep: break
+        if name not in retained: retained.append(name)
+    removed=[]
+    for _,name,path in candidates:
+        if name in retained: continue
+        try:
+            if git(path,'rev-parse','HEAD')!=name or not git_clean(path): continue
+        except (ValueError,subprocess.CalledProcessError,FileNotFoundError):
+            continue
+        shutil.rmtree(path)
+        removed.append(name)
+    return removed
+
+
 def _safe_projection_path(root:Path, rel:str)->Path:
     p=PurePosixPath(rel)
     if p.is_absolute() or not p.parts or any(part in {'','.','..'} for part in p.parts):
@@ -405,7 +446,8 @@ def deploy_preview(cfg,repo,sha):
     if dest.exists():
         if git(dest,'rev-parse','HEAD')!=sha or not git_clean(dest):
             raise ValueError('preview drift detected')
-        return {'status':'staged','sha':sha}
+        removed=_prune_preview_releases(cfg,repo,sha)
+        return {'status':'staged','sha':sha,'pruned_releases':removed}
     dest.parent.mkdir(parents=True,exist_ok=True)
     temp=Path(tempfile.mkdtemp(prefix='.incoming-preview-',dir=dest.parent))
     checkout=temp/'repo'
@@ -422,7 +464,8 @@ def deploy_preview(cfg,repo,sha):
         os.rename(checkout,dest)
     finally:
         if temp.exists(): shutil.rmtree(temp,ignore_errors=True)
-    return {'status':'staged','sha':sha}
+    removed=_prune_preview_releases(cfg,repo,sha)
+    return {'status':'staged','sha':sha,'pruned_releases':removed}
 
 def deploy_git(cfg,repo,sha):
     root=Path(cfg['repos'][repo]['production']); state_path=current_file(cfg,repo); state=read_json(state_path)
@@ -549,7 +592,7 @@ def status_result(cfg,repo,target,sha):
             _verify_pending_live(cfg,repo,cur.get('pending_repairs',[]))
             _verify_managed_projections(cfg,repo,cur)
         except Exception: health_status='drift'
-    return {'status':health_status,'sha':head,
+    return {'status':health_status,'sha':head,'storage':_filesystem_status(root),
             'pending_repairs':[{k:r.get(k) for k in ('id','status','candidate_sha','pr_url')} for r in cur.get('pending_repairs',[])]}
 
 def main():
