@@ -33,6 +33,7 @@ read -r key_type key_body _ < "$pubkey_file"
 
 install -d -o root -g root -m 0755 /usr/local/libexec/azumag-vm-ops
 install -o root -g root -m 0755 "$gateway_source" /usr/local/libexec/azumag-vm-ops/gateway.py
+install -o root -g root -m 0755 "$source_dir/stage_repair.py" /usr/local/libexec/azumag-vm-ops/stage_repair.py
 
 # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor by default.
 # Keep the host-wide restriction enabled and allow userns only for the operator-only
@@ -57,14 +58,29 @@ elif [[ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]] && [[ "$(ca
   exit 1
 fi
 
-cat > /etc/azumag-vm-ops.json <<'JSON'
+# Existing root-owned registrations and runtime paths are operator state.
+# Reinstallation upgrades executable code, never resets this configuration.
+if [[ -e /etc/azumag-vm-ops.json ]]; then
+  /usr/bin/python3 - /etc/azumag-vm-ops.json <<'PYCONFIG'
+import json, os, stat, sys
+from pathlib import Path
+p=Path(sys.argv[1]);st=p.lstat()
+if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o022:
+    raise SystemExit('existing VM configuration is not trusted')
+json.loads(p.read_text())
+PYCONFIG
+else
+  cat > /etc/azumag-vm-ops.json <<'JSON'
 {
   "state": "/home/ubuntu/.local/state/github-vm-ops",
   "repos": {
     "docich": {"production": "/home/ubuntu/docich", "mode": "git", "projections": {"games/soviet_now": "/home/ubuntu/soren"}}
-  }
+  },
+  "repair_policies": {}
 }
 JSON
+fi
+
 chown root:root /etc/azumag-vm-ops.json
 chmod 0644 /etc/azumag-vm-ops.json
 

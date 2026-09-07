@@ -212,6 +212,23 @@ class ResolverBrainTest(unittest.TestCase):
         # draining: the brain must not consume it with 'y'.
         self.assertEqual(brain.decide(Obs()), [])
 
+    def test_brain_allows_y_movement_while_draining(self):
+        import json
+
+        brain = brains.build_brain(self.g, self.game)
+        brain.policy = lambda text, strategy: ["y"]
+        state_file = Path(self.g.state_dir) / "game_switch.json"
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(json.dumps({"phase": "draining"}), encoding="utf-8")
+
+        class Obs:
+            adapter = "cli"
+            text = _pane(["  @       +  "])
+
+        # BSD robots uses y for a normal up-left move too.  Only a y produced
+        # for the actual end-of-match prompt may be held during draining.
+        self.assertEqual([a.text for a in brain.decide(Obs())], ["y"])
+
     def test_brain_restarts_when_not_draining(self):
         import json
 
