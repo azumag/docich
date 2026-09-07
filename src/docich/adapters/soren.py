@@ -122,8 +122,16 @@ class SorenCoordinatorAdapter:
     def materialize_runtime(self, deadline: float, cancel) -> None:
         payload = self._status(deadline, cancel)
         ack = self._ack(payload)
-        if ack.get("status") == "stopped":
-            request_id = str(ack.get("request_id") or "")
+        request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+        resource = payload.get("resource") if isinstance(payload.get("resource"), dict) else {}
+        stopped = ack.get("status") == "stopped" or (
+            not ack and resource.get("status") == "stopped"
+            and request.get("request_id") == resource.get("request_id")
+            and request.get("game") == resource.get("game")
+            and request.get("generation") == resource.get("generation")
+        )
+        if stopped:
+            request_id = str(ack.get("request_id") or request.get("request_id") or "")
             if not request_id:
                 raise AdapterError("停止済みSoren request identityがありません")
             self._fresh_started_at = time.time()
