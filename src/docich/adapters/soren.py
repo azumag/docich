@@ -153,7 +153,13 @@ class SorenCoordinatorAdapter:
             request_id = str(ack.get("request_id") or request.get("request_id") or "")
             if not request_id:
                 raise AdapterError("停止済みSoren request identityがありません")
-            self._fresh_started_at = time.time()
+            # An irreversible stopped runtime must prove that its game workers
+            # were born after this fresh start.  A cancelled rollback restores
+            # the already-running previous runtime, so applying that timestamp
+            # fence would reject the healthy processes that cancellation just
+            # recovered.
+            if ack.get("status") == "stopped" or not ack:
+                self._fresh_started_at = time.time()
             rc, _ = self._run([str(self.control), "fresh-start", request_id], deadline, cancel)
             if rc != 0:
                 raise AdapterError(f"Soren fresh start準備に失敗しました (rc={rc})")

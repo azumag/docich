@@ -125,6 +125,7 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
             with patch("docich.adapters.soren.subprocess.run", side_effect=fake_run):
                 adapter.materialize_runtime(time.monotonic() + 30, None)
             self.assertEqual(calls[1], [str(adapter.control), "fresh-start", "req-5"])
+            self.assertIsNone(adapter._fresh_started_at)
 
 
 if __name__ == "__main__":
