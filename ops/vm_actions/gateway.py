@@ -288,7 +288,15 @@ def _plan_repaired_projection(subrepo, destination, old_sha, new_sha, pending):
         live = _safe_projection_path(destination, rel)
         before = _tree_entry(subrepo, old_sha, rel)
         after = _tree_entry(subrepo, new_sha, rel)
-        if _live_meta(live) != _expected_meta(subrepo, before):
+        live_meta = _live_meta(live)
+        before_meta = _expected_meta(subrepo, before)
+        after_meta = _expected_meta(subrepo, after)
+        if live_meta == after_meta:
+            # A reviewed target may already have been projected by an owner-only
+            # bounded repair. Exact bytes + mode are safe to adopt without a
+            # rewrite; any third state remains fail-closed below.
+            continue
+        if live_meta != before_meta:
             raise ValueError(f'projection drift detected: {rel}')
         changes.append({'path': live,
                         'old_data': _blob_bytes(subrepo, before['object']) if before else None,
