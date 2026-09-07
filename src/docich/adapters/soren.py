@@ -144,7 +144,7 @@ class SorenCoordinatorAdapter:
             self._check(deadline, cancel)
             payload = self._status(deadline, cancel)
             if not self._ack(payload):
-                if self._live_pid("soren_loop.pid", "soren_loop.sh") and self._live_pid("soviet_watchdog.pid", "soviet_watchdog.sh"):
+                if self._live_process("soren_loop.sh") and self._live_process("soviet_watchdog.sh"):
                     try:
                         with urllib.request.urlopen("http://127.0.0.1:8080/", timeout=1.0) as response:
                             if 200 <= response.status < 400:
@@ -153,7 +153,31 @@ class SorenCoordinatorAdapter:
                         pass
             time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
 
+    def _live_process(self, expected: str) -> bool:
+        matches: list[float] = []
+        proc_root = Path("/proc")
+        try:
+            uptime = float((proc_root / "uptime").read_text().split()[0])
+            hz = int(subprocess.check_output(["getconf", "CLK_TCK"], text=True).strip())
+        except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+            return False
+        for entry in proc_root.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                stat = (entry / "stat").read_text()
+                cmdline = (entry / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+                ticks = int(stat.rsplit(") ", 1)[1].split()[19])
+            except (OSError, ValueError, IndexError):
+                continue
+            words = cmdline.split()
+            if not any(word == expected or word.endswith("/" + expected) for word in words):
+                continue
+            matches.append(time.time() - uptime + ticks / hz)
+        return len(matches) == 1 and (self._fresh_started_at is None or matches[0] + 1 >= self._fresh_started_at)
+
     def _live_pid(self, filename: str, expected: str) -> bool:
+        """Compatibility helper retained for callers with a trustworthy pidfile."""
         try:
             pid = int((self.root / "tmp/state" / filename).read_text().strip())
             stat = (Path("/proc") / str(pid) / "stat").read_text()
