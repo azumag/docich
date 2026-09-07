@@ -58,6 +58,12 @@ def _bitbank_info_allows_orders(info: Any) -> bool:
     for key in ("is_enabled", "isEnabled", "enable_order", "enableOrder", "order_enabled", "orderEnabled"):
         if key in info and _flag_is_false(info.get(key)):
             return False
+    # CCXT currently maps bitbank's is_enabled to active, but an enabled pair
+    # can still be under an exchange-side order stop.  This first slice only
+    # allocates buys, so a global or buy-side stop must fail closed.
+    for key in ("stop_order", "stopOrder", "stop_order_and_cancel", "stopOrderAndCancel", "stop_buy_order", "stopBuyOrder"):
+        if info.get(key) is True or info.get(key) == 1:
+            return False
     return True
 
 

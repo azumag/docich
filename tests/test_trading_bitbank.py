@@ -69,6 +69,27 @@ class TestBitbankPublicGateway(unittest.TestCase):
         markets = BitbankPublicGateway(exchange=exchange).discover_markets()
         self.assertEqual(set(markets), {"C/JPY"})
 
+    def test_rejects_bitbank_markets_with_global_or_buy_order_stop(self):
+        exchange = FakeExchange({
+            "STOP/JPY": {
+                "symbol": "STOP/JPY", "base": "STOP", "quote": "JPY",
+                "spot": True, "active": True,
+                "info": {"is_enabled": True, "stop_order": True, "stop_buy_order": True},
+            },
+            "BUYOFF/JPY": {
+                "symbol": "BUYOFF/JPY", "base": "BUYOFF", "quote": "JPY",
+                "spot": True, "active": True,
+                "info": {"is_enabled": True, "stop_order": False, "stop_buy_order": True},
+            },
+            "OK/JPY": {
+                "symbol": "OK/JPY", "base": "OK", "quote": "JPY",
+                "spot": True, "active": True,
+                "info": {"is_enabled": True, "stop_order": False, "stop_buy_order": False},
+            },
+        })
+        markets = BitbankPublicGateway(exchange=exchange).discover_markets()
+        self.assertEqual(set(markets), {"OK/JPY"})
+
     def test_ccxt_is_optional_and_missing_dependency_has_stable_error(self):
         with patch("docich.trading.exchanges.bitbank_ccxt.importlib.import_module", side_effect=ModuleNotFoundError):
             with self.assertRaisesRegex(CCXTUnavailableError, "requirements-trading"):
