@@ -31,6 +31,7 @@ class ShadowOnceTests(unittest.TestCase):
  def test_unit_uses_direct_opencode_binary_without_snap_privilege_helper(self):
   cmd=load().service_command('soren-shadow-once-abc',Path('/tmp/owned'),self.manifest())
   self.assertIn('--setenv=PATH=/snap/opencode/current/bin:/usr/local/bin:/usr/bin:/bin',cmd)
+  self.assertIn('--setenv=OPENCODE_BIN=/snap/opencode/current/bin/opencode',cmd)
   self.assertIn('--setenv=OPENCODE_DISABLE_AUTOUPDATE=1',cmd)
   self.assertIn('--property=NoNewPrivileges=yes',cmd)
  def test_bootstrap_checks_mode_and_never_calls_normal_spawner(self):
