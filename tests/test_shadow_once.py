@@ -16,9 +16,11 @@ class ShadowOnceTests(unittest.TestCase):
   return {'version':1,'budget_seconds':60,'analysis_seconds':30,'game_num':13,'turns':20,'inputs':[{'path':'game_history/a.jsonl','sha256':'a'*64,'score':100}]}
  def test_manifest_accepts_fixed_inputs(self):
   self.assertEqual(load().validate_manifest(self.manifest())['budget_seconds'],60)
+  d=self.manifest();d.update(budget_seconds=840,analysis_seconds=420)
+  self.assertEqual(load().validate_manifest(d)['analysis_seconds'],420)
  def test_manifest_rejects_commands_traversal_duplicates_and_bad_budgets(self):
   m=load()
-  for mutate in (lambda d:d.update(command='bash'),lambda d:d['inputs'][0].update(path='../.env'),lambda d:d['inputs'].append(d['inputs'][0]),lambda d:d.update(budget_seconds=601),lambda d:d.update(analysis_seconds=61),lambda d:d.update(budget_seconds=True)):
+  for mutate in (lambda d:d.update(command='bash'),lambda d:d['inputs'][0].update(path='../.env'),lambda d:d['inputs'].append(d['inputs'][0]),lambda d:d.update(budget_seconds=841),lambda d:d.update(analysis_seconds=61),lambda d:d.update(budget_seconds=True)):
    d=self.manifest();mutate(d)
    with self.subTest(d=d),self.assertRaises(ValueError):m.validate_manifest(d)
  def test_unit_enforces_lifecycle_and_immutable_paths(self):

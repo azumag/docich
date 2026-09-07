@@ -1,12 +1,12 @@
 # 手動のshadow単発実行
 
-`run.py` は既存pauseを保持したまま、入力を固定して改善workerを1件だけ起動するowner用CLIです。タイマー・自動再試行・配信サービス再起動・通常のspawner呼び出しはありません。最大600秒で、既存gatewayの900秒制限内に終了確認を収めます。モデル/provider/恒久予算/.envは変更しません。
+`run.py` は既存pauseを保持したまま、入力を固定して改善workerを1件だけ起動するowner用CLIです。タイマー・自動再試行・配信サービス再起動・通常のspawner呼び出しはありません。最大840秒で、既存gatewayの900秒制限内に終了確認を収めます。モデル/provider/恒久予算/.envは変更しません。
 
 ## 起動前提
 
 - Linux systemd（`systemd-run --expand-environment=no`対応、VMは実測済み）、system managerへの既存の非対話sudo権限が必要。権限不足を別経路へ迂回しません。
 - 分析gateの固定manifestにある3ファイルのSHA/mode一致、review済みspawn lease protocol、idle/pid0、旧worker不存在、`tmp/state/step5-founding-20260906T201809Z` 所有のpauseが必要です。違えば停止します。
-- manifestの配置先は `/home/ubuntu/soren/tmp/state/shadow-once-input-<識別子>.json` のみ。JSONはversion=1、budget_seconds（1〜600）、analysis_seconds（総予算以下）、game_num、turns、inputsの固定schemaです。inputsは1〜64件のpath（game_history内の単純なjsonl名）、sha256、scoreです。実際の選択バッチから作成・照合し、架空の値や過去runの状態を現在の証明にしません。CLIはscoreの意味的正しさまでは証明しません。
+- manifestの配置先は `/home/ubuntu/soren/tmp/state/shadow-once-input-<識別子>.json` のみ。JSONはversion=1、budget_seconds（1〜840）、analysis_seconds（総予算以下）、game_num、turns、inputsの固定schemaです。inputsは1〜64件のpath（game_history内の単純なjsonl名）、sha256、scoreです。実際の選択バッチから作成・照合し、架空の値や過去runの状態を現在の証明にしません。CLIはscoreの意味的正しさまでは証明しません。
 - コマンド、モデル名、環境変数、権限変更、任意出力pathをmanifestに指定できません。
 
 owner専用 `VM operations / exec / production / ref=main` のcommandとして使用します（作業ディレクトリはdocich）。
