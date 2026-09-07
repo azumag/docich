@@ -1,3 +1,4 @@
+import os
 import importlib.util
 import json
 import subprocess
@@ -16,6 +17,7 @@ spec.loader.exec_module(gw)
 
 class DeployStateTransactionTests(unittest.TestCase):
     def setUp(self):
+        self.addCleanup(os.umask,os.umask(0o022))
         self.base = Path(tempfile.mkdtemp(prefix='vmops-state-txn-'))
         self.state = self.base / 'state'
         self.state.mkdir()
@@ -196,6 +198,126 @@ class DeployStateTransactionTests(unittest.TestCase):
         self.assertEqual((live / 'game.txt').read_text(), 'manual-hotfix\n')
         self.assertEqual(subprocess.check_output(['git', '-C', self.docich, 'rev-parse', 'HEAD'], text=True).strip(), old_parent)
 
+
+    def _record_pending(self, live, subremote, old_parent, text='v2\n'):
+        patcher=mock.patch.dict('os.environ',{'VMOPS_TESTING':'1'})
+        patcher.start();self.addCleanup(patcher.stop)
+        old_sub=gw.submodule_gitlink_at(self.docich,old_parent,'games/soviet_now')
+        before=gw._expected_meta(subremote,gw._tree_entry(subremote,old_sub,'game.txt'))
+        (live/'game.txt').write_text(text)
+        after=gw._live_meta(live/'game.txt')
+        path=gw.current_file(self.cfg,'docich')
+        state=gw.read_json(path)
+        policy=self.base/'repair-policy.json'
+        gw.write_json(policy,{'repair_kind':'test','projection':'games/soviet_now','health_command':['/usr/bin/true']})
+        self.cfg['repair_policies']={'test':str(policy)}
+        state['pending_repairs']=[{'policy_id':'test','id':'a'*32,'projection':'games/soviet_now','status':'active',
+                                   'files':{'game.txt':{'before':before,'after':after}}}]
+        gw.write_json(path,state)
+
+    def test_deploy_adopts_repair_without_rewriting_live(self):
+        live,subremote,old,new=self._projection_case()
+        self._record_pending(live,subremote,old)
+        inode=(live/'game.txt').stat().st_ino
+        with mock.patch.object(gw,'OWNED_SUBMODULES',{'games/soviet_now':str(subremote)}):
+            gw.deploy_git(self.cfg,'docich',new)
+        self.assertEqual((live/'game.txt').stat().st_ino,inode)
+        self.assertEqual(gw.read_json(gw.current_file(self.cfg,'docich'))['pending_repairs'],[])
+
+    def test_deploy_conflict_preserves_repair_and_parent_state(self):
+        live,subremote,old,new=self._projection_case()
+        self._record_pending(live,subremote,old,'alternative-fix\n')
+        before=gw.read_json(gw.current_file(self.cfg,'docich'))
+        with mock.patch.object(gw,'OWNED_SUBMODULES',{'games/soviet_now':str(subremote)}):
+            with self.assertRaisesRegex(ValueError,'pending repair conflict'):
+                gw.deploy_git(self.cfg,'docich',new)
+        self.assertEqual((live/'game.txt').read_text(),'alternative-fix\n')
+        self.assertEqual(gw.git(self.docich,'rev-parse','HEAD'),old)
+        self.assertEqual(gw.read_json(gw.current_file(self.cfg,'docich')),before)
+
+    def test_failed_state_write_keeps_pending_fix_and_rolls_back_other_files(self):
+        live,subremote,old,new=self._projection_case(change_second=True)
+        self._record_pending(live,subremote,old)
+        before=gw.read_json(gw.current_file(self.cfg,'docich'))
+        with mock.patch.object(gw,'OWNED_SUBMODULES',{'games/soviet_now':str(subremote)}), mock.patch.object(gw,'write_json',side_effect=OSError('disk full')):
+            with self.assertRaises(OSError):gw.deploy_git(self.cfg,'docich',new)
+        self.assertEqual((live/'game.txt').read_text(),'v2\n')
+        self.assertEqual((live/'second.txt').read_text(),'second-v1\n')
+        self.assertEqual(gw.read_json(gw.current_file(self.cfg,'docich')),before)
+
+    def test_pending_drift_during_other_write_is_not_formalized(self):
+        live,subremote,old,new=self._projection_case(change_second=True)
+        self._record_pending(live,subremote,old)
+        real_apply=gw._apply_projection
+        def racing(changes):
+            real_apply(changes)
+            (live/'game.txt').write_text('manual-during-deploy\n')
+        with mock.patch.object(gw,'OWNED_SUBMODULES',{'games/soviet_now':str(subremote)}), mock.patch.object(gw,'_apply_projection',side_effect=racing):
+            with self.assertRaisesRegex(ValueError,'pending repair drift'):
+                gw.deploy_git(self.cfg,'docich',new)
+        self.assertEqual((live/'game.txt').read_text(),'manual-during-deploy\n')
+        self.assertEqual((live/'second.txt').read_text(),'second-v1\n')
+        self.assertEqual(gw.read_json(gw.current_file(self.cfg,'docich'))['sha'],old)
+
+    def test_post_deploy_health_failure_preserves_repair(self):
+        live,subremote,old,new=self._projection_case(change_second=True)
+        self._record_pending(live,subremote,old)
+        gw.write_json(self.base/'repair-policy.json',{'repair_kind':'test','projection':'games/soviet_now','health_command':['/usr/bin/false']})
+        with mock.patch.object(gw,'OWNED_SUBMODULES',{'games/soviet_now':str(subremote)}):
+            with self.assertRaisesRegex(ValueError,'health failed'):
+                gw.deploy_git(self.cfg,'docich',new)
+        self.assertEqual((live/'game.txt').read_text(),'v2\n')
+        self.assertEqual((live/'second.txt').read_text(),'second-v1\n')
+        self.assertEqual(gw.read_json(gw.current_file(self.cfg,'docich'))['sha'],old)
+
+    def test_rollback_preserves_unknown_file_but_restores_parent_and_known_files(self):
+        live,subremote,old,new=self._projection_case(change_second=True)
+        real_apply=gw._apply_projection
+        def race(changes):
+            real_apply(changes)
+            (live/'game.txt').write_text('manual\n')
+            raise OSError('later failure')
+        with mock.patch.object(gw,'OWNED_SUBMODULES',{'games/soviet_now':str(subremote)}),mock.patch.object(gw,'_apply_projection',side_effect=race):
+            with self.assertRaisesRegex(ValueError,'recovery required'):gw.deploy_git(self.cfg,'docich',new)
+        self.assertEqual((live/'game.txt').read_text(),'manual\n')
+        self.assertEqual((live/'second.txt').read_text(),'second-v1\n')
+        self.assertEqual(gw.git(self.docich,'rev-parse','HEAD'),old)
+        self.assertEqual(gw.read_json(gw.current_file(self.cfg,'docich'))['sha'],old)
+
+    def test_status_reports_pending_drift_and_incomplete_intent(self):
+        live,subremote,old,new=self._projection_case()
+        self._record_pending(live,subremote,old)
+        with mock.patch.object(gw,'OWNED_SUBMODULES',{'games/soviet_now':str(subremote)}):
+            self.assertEqual(gw.status_result(self.cfg,'docich','production',old)['status'],'configured')
+            (live/'game.txt').write_text('manual\n')
+            self.assertEqual(gw.status_result(self.cfg,'docich','production',old)['status'],'drift')
+            path=gw.current_file(self.cfg,'docich');state=gw.read_json(path);state['pending_repairs'][0]['status']='applying';gw.write_json(path,state)
+            self.assertEqual(gw.status_result(self.cfg,'docich','production',old)['status'],'recovery_required')
+
+    def test_unknown_rollback_persists_recovery_and_blocks_next_deploy(self):
+        live,subremote,old,new=self._projection_case(change_second=True)
+        real_apply=gw._apply_projection
+        def race(changes):
+            real_apply(changes);(live/'game.txt').write_text('manual\n');raise OSError('failure')
+        with mock.patch.object(gw,'OWNED_SUBMODULES',{'games/soviet_now':str(subremote)}):
+            with mock.patch.object(gw,'_apply_projection',side_effect=race),self.assertRaises(ValueError):
+                gw.deploy_git(self.cfg,'docich',new)
+            self.assertEqual(gw.status_result(self.cfg,'docich','production',old)['status'],'recovery_required')
+            with self.assertRaisesRegex(ValueError,'recovery required'):gw.deploy_git(self.cfg,'docich',new)
+
+    def test_adopted_file_remains_monitored_after_state_commit(self):
+        live,subremote,old,new=self._projection_case()
+        self._record_pending(live,subremote,old)
+        real_write=gw.write_json
+        def racing_write(path,value):
+            real_write(path,value)
+            if value.get('sha')==new and 'deployment_intent' not in value:
+                (live/'game.txt').write_text('manual-at-commit\n')
+        with mock.patch.object(gw,'OWNED_SUBMODULES',{'games/soviet_now':str(subremote)}):
+            with mock.patch.object(gw,'write_json',side_effect=racing_write),self.assertRaises(ValueError):
+                gw.deploy_git(self.cfg,'docich',new)
+            self.assertNotEqual(gw.status_result(self.cfg,'docich','production',old)['status'],'configured')
+            with self.assertRaises(ValueError):gw.deploy_git(self.cfg,'docich',new)
 
 if __name__ == '__main__':
     unittest.main()
