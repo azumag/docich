@@ -195,6 +195,25 @@ class DeployStateTransactionTests(unittest.TestCase):
         self.assertEqual((live / 'second.txt').read_text(), 'second-v1\n')
         self.assertEqual(subprocess.check_output(['git', '-C', self.docich, 'rev-parse', 'HEAD'], text=True).strip(), old_parent)
 
+    def test_projection_adopts_exact_target_postimage_without_rewriting(self):
+        live, subremote, _old_parent, new_parent = self._projection_case(live_text='v2\n')
+        inode = (live / 'game.txt').stat().st_ino
+        with mock.patch.object(gw, 'OWNED_SUBMODULES', {'games/soviet_now': str(subremote)}):
+            gw.deploy_git(self.cfg, 'docich', new_parent)
+        self.assertEqual((live / 'game.txt').read_text(), 'v2\n')
+        self.assertEqual((live / 'game.txt').stat().st_ino, inode)
+        self.assertEqual(gw.read_json(gw.current_file(self.cfg, 'docich'))['sha'], new_parent)
+
+    def test_projection_mixes_adopted_postimage_and_old_preimage_safely(self):
+        live, subremote, _old_parent, new_parent = self._projection_case(change_second=True)
+        (live / 'game.txt').write_text('v2\n')
+        game_inode = (live / 'game.txt').stat().st_ino
+        with mock.patch.object(gw, 'OWNED_SUBMODULES', {'games/soviet_now': str(subremote)}):
+            gw.deploy_git(self.cfg, 'docich', new_parent)
+        self.assertEqual((live / 'game.txt').stat().st_ino, game_inode)
+        self.assertEqual((live / 'second.txt').read_text(), 'second-v2\n')
+        self.assertEqual(gw.read_json(gw.current_file(self.cfg, 'docich'))['sha'], new_parent)
+
     def test_projection_refuses_live_drift_on_changed_path(self):
         live, subremote, old_parent, new_parent = self._projection_case(live_text='manual-hotfix\n')
         with mock.patch.object(gw, 'OWNED_SUBMODULES', {'games/soviet_now': str(subremote)}):
