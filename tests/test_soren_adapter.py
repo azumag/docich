@@ -79,6 +79,17 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
                 self.assertTrue(adapter.cancel_round_boundary("req-c", time.monotonic() + 30, None))
             self.assertEqual(calls[0], [str(adapter.control), "cancel", "req-c"])
 
+    def test_cancelled_runtime_requires_materialize_before_ready(self):
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            result = SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({"ack": {"request_id": "req-c", "status": "cancelled"}}),
+                stderr="",
+            )
+            with patch("docich.adapters.soren.subprocess.run", return_value=result):
+                self.assertFalse(adapter.alive(time.monotonic() + 30, None))
+
     def test_materialize_fresh_starts_only_matching_stopped_request(self):
         with tempfile.TemporaryDirectory() as temp:
             adapter = self.make_adapter(Path(temp))
