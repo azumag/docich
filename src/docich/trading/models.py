@@ -100,6 +100,22 @@ class AllocationDecision:
 
 
 @dataclass(frozen=True)
+class PaperFill:
+    fill_id: str
+    opportunity_id: str
+    strategy_id: str
+    symbol: str
+    side: str
+    quote: str
+    amount: Decimal
+    price: Decimal
+    quote_notional: Decimal
+    reference_notional: Decimal
+    reason_code: str
+    filled_at: float
+
+
+@dataclass(frozen=True)
 class SkipDecision:
     opportunity_id: str
     symbol: str
