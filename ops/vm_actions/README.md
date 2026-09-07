@@ -66,10 +66,18 @@ sudo bash ops/vm_actions/install_vm_gateway.sh ~/.ssh/github-vm-ops.pub ubuntu
 
 - **docich main merge → production**: main push で最新mainを本番へ反映します。
 - **soviet_now更新を本番へ出す**: soviet_now側変更をmainへ入れた後、docichで `games/soviet_now` gitlinkをそのcommitへ更新してPR → docich mainへマージします。docich gatewayがgitlink差分だけをlive Sorenへ安全に投影します。
-- **branch/commitをVM test areaへ**: `deploy / preview / ref=<branch-or-sha>`。
+- **branch/commitをVM test areaへ**: `deploy / preview / ref=<branch-or-sha>`。成功時は展開済みpreviewを現在要求されたSHAを含む最大2世代へGCします（bundleは保持、dirty/drift releaseは削除しません）。
 - **preview command**: 同じrefで `exec / preview`。本番filesystem/networkから隔離されます。
 - **production command**: `exec / production / ref=main / confirm=production`。stdout/stderr本文はVM private logだけに保存します。
-- **status**: `status / production` または `status / preview`。
+- **status**: `status / production` または `status / preview`。production status は総容量・利用可能bytes・使用率だけを返し、pathやログ本文は返しません。
+
+## Preview release retention and storage alert
+
+preview deploy の成功後、gateway は `state/releases/docich` の展開済みreleaseを世代GCします。現在要求されたSHAを必ず保護し、それを含めて最大2世代を残します。古いreleaseでもHEAD不一致、tracked drift、symlink等がある場合は証拠保全を優先して削除しません。`state/bundles/docich/*.bundle` はGC対象外なので、削除済みpreviewも再deployできます。gatewayは全operationを同じflockで直列化するため、preview execのコピー元を実行中に消しません。
+
+`.github/workflows/vm-storage-monitor.yml` は毎時17分にproduction `status` だけをforced-command gateway経由で読み、80%でWARN、90%でCRITICALのGitHub Issueを1件だけ作ります。同一severityのopen Issueがあれば重複投稿せず、severity変化時は旧Issueを閉じて新しいseverityを作成し、80%未満へ戻るとopen alertを閉じます。通知には使用率・空き容量・総容量・workflow URLだけを載せ、VMログ、filesystem path、資格情報、command outputは載せません。手動確認は workflow_dispatch でも実行できます。
+
+インストール済みgatewayは `/usr/local/libexec/azumag-vm-ops/gateway.py` を実行するため、gateway sourceを更新したmainをproductionへdeployしただけでは実行ファイルは切り替わりません。既存のowner-only運用経路でroot-owned installed copyを明示更新し、repo sourceとの一致とproduction statusの新フィールドを確認してから反映済みと扱います。
 
 ## Operational notes
 
