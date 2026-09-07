@@ -33,6 +33,10 @@ class ShadowOnceTests(unittest.TestCase):
   self.assertIn('--setenv=PATH=/snap/opencode/current/bin:/usr/local/bin:/usr/bin:/bin',cmd)
   self.assertIn('--setenv=OPENCODE_BIN=/snap/opencode/current/bin/opencode',cmd)
   self.assertIn('--setenv=OPENCODE_DISABLE_AUTOUPDATE=1',cmd)
+  self.assertIn('--setenv=AI_BACKOFF_DIR=/tmp/owned/runtime/ai_backoff',cmd)
+  self.assertIn('--setenv=AI_FAIL_STREAK_DIR=/tmp/owned/runtime/ai_fail_streak',cmd)
+  self.assertIn('--setenv=AI_STATS_DIR=/tmp/owned/runtime/ai_stats',cmd)
+  self.assertIn('--property=ReadWritePaths=/tmp/owned/worker.pid /tmp/owned/runtime',cmd)
   self.assertIn('--property=NoNewPrivileges=yes',cmd)
  def test_bootstrap_checks_mode_and_never_calls_normal_spawner(self):
   s=load().BOOTSTRAP
