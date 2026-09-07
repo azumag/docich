@@ -134,14 +134,21 @@ class ResolverBrain:
     def decide(self, obs: Observation) -> list[Action]:
         text = obs.text or ""
         keys = self.policy(text, self._load_strategy())
-        if keys and keys[0] == "y" and self._draining():
+        # In BSD robots, ``y`` is both the normal up-left movement key and the
+        # affirmative answer at the end-of-match prompt.  Bind the draining
+        # hold to the prompt itself; key value alone would freeze a live match
+        # whenever the resolver's safest movement happened to be up-left.
+        from ..resolver import robots
+
+        is_restart = self.game.name == "robots" and robots.game_over(text)
+        if keys and keys[0] == "y" and is_restart and self._draining():
             # The game-over prompt belongs to the round-boundary waiter while
             # the canonical phase is draining: answering it here would consume
             # the prompt before the waiter can ack (and record the score),
             # and the match would restart outside the guarded handover.
             # Mid-match play continues normally; only the restart is held.
             return []
-        if keys and keys[0] == "y":
+        if keys and keys[0] == "y" and is_restart:
             # The restart key is the one moment the final match score is
             # visible in the pane; record it for the score-history panel.
             self._record_match_score(text)
