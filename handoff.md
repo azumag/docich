@@ -9,6 +9,14 @@
 - **終了確認**: improve stateはidle/pid0へ復帰し、shadow unit/cgroupと改善workerの残存なし。元のoperator pause所有者を維持。`soren-runtime.service` MainPID 3518891、direct stream PID 2183327、FFmpeg PID 2188217を前後で維持した。
 - **関連する切替・音声修正**: Soren #211 / docich #116でwatchdogのTERM応答と通常ゲーム切替を修正し、Soren→Robots→Sorenの往復で旧ゲーム・評価ジョブ・BGMの停止、共通配信PID維持、単一起動を実測。Soren #206 / docich #118でAV同期指定をmainとVMへ同期済み。
 
+### 2026-09-08 04:xx JST — VMストレージ圧迫を実測し、緊急清掃＋恒久対策を実装
+
+- 実機のroot filesystemは45G中38G使用、空き6.8G、使用率85%まで上昇。主因はowner-only VM control planeの展開済みpreview release 4世代=4.2G、`/tmp` 2.9G（うち未参照の一時`.so`約2.28G）、systemd journal約918M、apt cache約844M。Soren側では`tmp` 1.5G（Chromium profile 601M等）とstrategy archive 786Mも確認した。
+- 安全な緊急清掃として、参照中release/現在map中`.so`/稼働Chromium profile/戦略履歴/VOICEVOX/Playwright本体は保持し、古いclean preview 3世代、未参照一時`.so` 484件、apt/pip cache、古いAivis installer断片、古いTTS temp、archived journalを削除。直後は31G使用・空き15G・69%。`soren-runtime`、supervisor、game loop、radio/chat/audio、direct stream、ffmpegを再実測しhealth mask 0。
+- 恒久対策はdocich gatewayでpreview deploy成功後に現在要求SHAを含む最大2世代だけ保持し、bundleは残す。dirty/drift/symlink releaseは削除せずfail-closedで証拠保全する。production `status`にはtotal/available bytesとdf互換のused percentだけを追加し、pathやログ本文は返さない。
+- `.github/workflows/vm-storage-monitor.yml`を追加し、毎時17分にproduction `status`だけを読む。80%以上でWARN、90%以上でCRITICALの専用GitHub Issueを1件だけ開き、同severityは重複抑止、severity変化時は切替、80%未満へ回復時は自動closeする。VM shell `exec`は使わない。
+- TDD: 新規contractは実装前に4 errors（GC/status/workflow未実装）を確認。実装後はstorage/retention 5 tests、VM actions全51 tests、self-repair 31 tests成功。Python compile、installer bash構文、workflow YAML parse、`git diff --check`も成功。mainマージ、installed gateway更新、schedule/manual smokeはPR/CI後に実測して完了判定する。
+
 ### 2026-09-08 — shadow単発の終了理由分類を厳密化（コード検証）
 
 - 調査基準はdocich `76a4c1b5` / Soren `c23e5d03`。単発operatorがsubstring照合を行い、`job_deadline_exhausted` と `stage_deadline_exhausted` を汎用deadlineへ潰し、入力証拠不正・分析失敗・モデル無応答などを未分類にする問題を再現した。detailがnull/数値だと終了済みworkerのstate清掃がTypeErrorで止まる。

@@ -1,0 +1,129 @@
+name: VM storage monitor
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: vm-storage-monitor-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    if: >-
+      ${{ github.ref == 'refs/heads/main' && github.ref_protected == true &&
+          (github.event_name == 'schedule' ||
+           (github.actor_id == 9018513 && github.triggering_actor == 'azumag')) }}
+    environment: vm-operations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      WARN_PERCENT: '80'
+      CRITICAL_PERCENT: '90'
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout trusted control plane
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: main
+          persist-credentials: false
+          submodules: false
+
+      - name: Configure pinned SSH client
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          VM_SSH_PORT: ${{ secrets.VM_SSH_PORT }}
+          VM_SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          VM_SSH_KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$VM_SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]
+          [[ "$VM_SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          port="${VM_SSH_PORT:-22}"
+          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+          install -m 700 -d "$RUNNER_TEMP/vm-ssh"
+          printf '%s\n' "$VM_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/vm-ssh/key"
+          printf '%s\n' "$VM_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/vm-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/vm-ssh/key" "$RUNNER_TEMP/vm-ssh/known_hosts"
+          printf 'port=%s\n' "$port" >> "$GITHUB_ENV"
+
+      - name: Read production storage status
+        id: storage
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          status_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $sha")"
+          printf '%s\n' "$status_json" > "$RUNNER_TEMP/storage-status.json"
+          python3 - "$RUNNER_TEMP/storage-status.json" "$WARN_PERCENT" "$CRITICAL_PERCENT" >> "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          data=json.load(open(sys.argv[1],encoding='utf-8'))
+          storage=data.get('storage') or {}
+          used=int(storage['used_percent']); available=int(storage['available_bytes']); total=int(storage['total_bytes'])
+          warn=int(sys.argv[2]); critical=int(sys.argv[3])
+          severity='critical' if used >= critical else 'warn' if used >= warn else 'ok'
+          print(f'used_percent={used}')
+          print(f'available_bytes={available}')
+          print(f'total_bytes={total}')
+          print(f'severity={severity}')
+          PY
+
+      - name: Update deduplicated GitHub alert
+        env:
+          SEVERITY: ${{ steps.storage.outputs.severity }}
+          USED_PERCENT: ${{ steps.storage.outputs.used_percent }}
+          AVAILABLE_BYTES: ${{ steps.storage.outputs.available_bytes }}
+          TOTAL_BYTES: ${{ steps.storage.outputs.total_bytes }}
+        run: |
+          set -euo pipefail
+          prefix='[VM storage]'
+          mapfile -t alerts < <(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title --jq '.[] | select(.title == "[VM storage] WARN disk usage alert" or .title == "[VM storage] CRITICAL disk usage alert") | "\(.number)\t\(.title)"')
+          if [[ "$SEVERITY" == ok ]]; then
+            for entry in "${alerts[@]}"; do
+              number="${entry%%$'\t'*}"
+              gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Disk usage recovered below ${WARN_PERCENT}% (current: ${USED_PERCENT}%)."
+            done
+            echo "Disk usage ${USED_PERCENT}%: no alert."
+            exit 0
+          fi
+          upper="$(printf '%s' "$SEVERITY" | tr '[:lower:]' '[:upper:]')"
+          title="${prefix} ${upper} disk usage alert"
+          for entry in "${alerts[@]}"; do
+            number="${entry%%$'\t'*}"; existing="${entry#*$'\t'}"
+            [[ "$existing" == "$title" ]] && { echo "Existing alert #${number} remains open; suppressing duplicate."; exit 0; }
+          done
+          for entry in "${alerts[@]}"; do
+            number="${entry%%$'\t'*}"
+            gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Storage severity changed to ${upper} at ${USED_PERCENT}% usage."
+          done
+          available="$(numfmt --to=iec-i --suffix=B "$AVAILABLE_BYTES")"
+          total="$(numfmt --to=iec-i --suffix=B "$TOTAL_BYTES")"
+          body="$(cat <<EOF
+          VM storage pressure detected by the owner-only docich monitor.
+
+          - Severity: ${upper}
+          - Used: ${USED_PERCENT}%
+          - Available: ${available}
+          - Total: ${total}
+          - Warning threshold: ${WARN_PERCENT}%
+          - Critical threshold: ${CRITICAL_PERCENT}%
+          - Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          The monitor reports capacity only; it does not include VM logs, paths, credentials, or command output.
+          EOF
+          )"
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          if [[ "$SEVERITY" == critical ]]; then
+            echo "::error::VM storage pressure is critical (${USED_PERCENT}%)."
+          else
+            echo "::warning::VM storage pressure is high (${USED_PERCENT}%)."
+          fi
