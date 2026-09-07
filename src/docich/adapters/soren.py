@@ -143,13 +143,13 @@ class SorenCoordinatorAdapter:
         ack = self._ack(payload)
         request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
         resource = payload.get("resource") if isinstance(payload.get("resource"), dict) else {}
-        stopped = ack.get("status") == "stopped" or (
+        resumable = ack.get("status") in {"stopped", "cancelled"} or (
             not ack and resource.get("status") == "stopped"
             and request.get("request_id") == resource.get("request_id")
             and request.get("game") == resource.get("game")
             and request.get("generation") == resource.get("generation")
         )
-        if stopped:
+        if resumable:
             request_id = str(ack.get("request_id") or request.get("request_id") or "")
             if not request_id:
                 raise AdapterError("停止済みSoren request identityがありません")
