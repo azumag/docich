@@ -29,6 +29,9 @@ export MODEL_IMPROVE_LIST
 IMPROVE_PEAK_CHAIN_ENABLED=0
 readonly IMPROVE_PEAK_CHAIN_ENABLED
 export IMPROVE_PEAK_CHAIN_ENABLED
+IMPROVE_OPENCODE_PERMISSION='{"*":"deny","read":"allow","glob":"allow","grep":"allow","list":"allow","edit":"allow","write":"allow","external_directory":"deny"}'
+readonly IMPROVE_OPENCODE_PERMISSION
+export IMPROVE_OPENCODE_PERMISSION
 source "$1" "${@:2}"
 '''
 PROTECTED=('strategy.py','strategy_helpers','core','strategy','prompts','.env','eloop_lib.sh','tmp/state/improve_daemon.paused')
