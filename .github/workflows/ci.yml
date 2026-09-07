@@ -19,6 +19,8 @@ jobs:
           submodules: recursive
       - name: Install test dependencies
         run: python3 -m pip install -r requirements-test.txt
+      - name: Crypto trading allocation contract
+        run: python3 -m pytest -q tests/test_trading_risk.py
       - name: Retro corner contract
         run: python3 -m pytest -q tests/test_retro_corner.py tests/test_retro_corner_manual.py tests/test_config.py tests/test_robots_config.py
       - name: Transactional switch contract
