@@ -23,6 +23,12 @@ if [[ "${SOREN_ISOLATED_RUNNER_MODE:-shadow}" != shadow ]]; then exit 81; fi
 SOREN_ISOLATED_RUNNER_MODE=shadow
 readonly SOREN_ISOLATED_RUNNER_MODE
 export SOREN_ISOLATED_RUNNER_MODE
+MODEL_IMPROVE_LIST=opencode-go:deepseek-v4-flash
+readonly MODEL_IMPROVE_LIST
+export MODEL_IMPROVE_LIST
+IMPROVE_PEAK_CHAIN_ENABLED=0
+readonly IMPROVE_PEAK_CHAIN_ENABLED
+export IMPROVE_PEAK_CHAIN_ENABLED
 source "$1" "${@:2}"
 '''
 PROTECTED=('strategy.py','strategy_helpers','core','strategy','prompts','.env','eloop_lib.sh','tmp/state/improve_daemon.paused')
