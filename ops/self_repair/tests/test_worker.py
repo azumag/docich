@@ -149,4 +149,3 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[0][0],'/usr/local/bin/bwrap')
 
 if __name__ == '__main__': unittest.main()
-
