@@ -1,5 +1,15 @@
 # セッション引き継ぎ (handoff)
 
+## 2026-09-07 23:xx JST — 通常ゲーム切替をSoren lifecycleへ接続し、Robotsへ完全切替
+
+- docich PR #112 (`codex/restore-soren-lifecycle`) に固定argvのSoren coordinator adapterを追加。request ID・generation・相対deadlineをbrokerへ渡し、試合境界→game-only stop→stopped確認→明示fresh-startを通常切替へ接続した。shell文字列やモデル出力をVM操作へ使わない。
+- Soren PR #208 (`codex/restore-game-lifecycle`) に現行mainから欠落していたlifecycle brokerを復元し、loop・操作AI・bridge/Chromium・予想worker・改善job・game watchdogの停止所有権を実装。既存operator pauseは解除しない。
+- 実E2EとAstraレビューで検出した問題を修正: Robotsの移動キー`y`を終了回答と誤認する停止、watchdog最大30秒に対するdocichの15秒打切り、cancel途中回復でbroker状態/所有markerが残る問題、dead watchdogの古いPID、期限切れ後の取消不能、fresh-start途中中断、旧世代fresh-start再送による新世代削除。失敗回復identityも再試行可能なまま保持する。
+- VMでSoren generation 42の試合をscore 1006まで自然完走後、同一request `2d67ba82-a47a-4b01-aee7-82c3a230ecd7` のstopped receiptを確認。loop・strategy runner・bridge/Chromium・watchdog・prediction・ゲームBGMは全て不在、`soren-runtime.service` MainPID `3518891` と配信encoder PID `2188217` は維持、`tmp/state/improve_daemon.paused` のoperator値も保持した。
+- 失敗トランザクションの停止receiptを根拠にcanonicalをロック下でidleへ整合後、Robotsを通常起動。現在はgeneration 44 ready、resolver入力が継続し盤面score 90を実測。Sorenゲーム専用プロセスは不在。
+- VM先行の`bgm_worker.sh`をSoren PRへ同期し、readyの非Sorenゲームだけで代替BGMを流すよう修正。Soren本編のbridge BGMとの二重再生を解消。Robots中は代替BGM 1本、Soren中はbridge BGM 1本を実測。
+- 検証: docich対象52件＋coordinator系114件、Soren shell lifecycle＋Python19件がpass。docich全1229件はsandboxのsocket bind拒否とworktreeの未展開submodule由来で失敗し、変更対象の失敗ではない。Astra最終レビューは追加のマージ阻害事項なし。PR CI最終確認待ち。
+
 ## 2026-09-05 — ゲームと共通配信基盤の分離を実装中（未完了）
 
 - 切替基盤はdocich `5ccb3f1`としてPR #64へpush済み。draining中の入力継続、終了後のwriter再取得、request/generation/期限の照合、短時間cancelと復旧を実装。独立レビューの3指摘と並行復旧raceを修正し、対象151件＋8 subtests成功。ゲーム別有効化2設定はdetector未接続のため未commit・本番未反映。
