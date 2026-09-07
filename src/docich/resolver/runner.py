@@ -23,6 +23,19 @@ from . import read_strategy, resolver_policy, strategy_path
 from . import robots as _robots
 
 
+class EvaluationCleanupError(RuntimeError):
+    pass
+
+
+def _session_absent(result) -> bool:
+    if result.returncode == 0:
+        return False
+    detail=(result.stderr or "").lower()
+    if any(marker in detail for marker in ("not found","can't find","no server running")):
+        return True
+    raise EvaluationCleanupError(f"評価用セッションの存在確認に失敗しました: {detail[:200] or 'unknown error'}")
+
+
 def _tmux(args: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(["tmux", *args], capture_output=True, text=True)
 
@@ -49,6 +62,8 @@ def run_match(
     *,
     interval_s: float = 0.06,
     max_turns: int = 4000,
+    guard=None,
+    session_hook=None,
 ) -> dict:
     """Play one match to its death and report score/turns.
 
@@ -56,17 +71,21 @@ def run_match(
     """
     session = f"evalr-{os.getpid()}-{int(time.time() * 1000) % 1000000}"
     _tmux(["kill-session", "-t", session])
-    created = _tmux(
-        ["new-session", "-d", "-x", str(cols), "-y", str(rows), "-s", session, shlex.join(command)]
-    )
-    if created.returncode != 0:
-        raise RuntimeError(f"評価用セッションの起動に失敗しました: {created.stderr.strip()}")
+    if session_hook is not None:
+        session_hook("add",session)
     turns = 0
     score = None
     cause = None
     noparse = 0
     try:
+        created = _tmux(
+            ["new-session", "-d", "-x", str(cols), "-y", str(rows), "-s", session, shlex.join(command)]
+        )
+        if created.returncode != 0:
+            raise RuntimeError(f"評価用セッションの起動に失敗しました: {created.stderr.strip()}")
         while turns < max_turns:
+            if guard is not None:
+                guard()
             time.sleep(interval_s)
             captured = _tmux(["capture-pane", "-p", "-t", session])
             if captured.returncode != 0:
@@ -100,6 +119,10 @@ def run_match(
             score = _robots.score_from_text(_tmux(["capture-pane", "-p", "-t", session]).stdout)
     finally:
         _tmux(["kill-session", "-t", session])
+        if not _session_absent(_tmux(["has-session", "-t", session])):
+            raise EvaluationCleanupError(f"評価用セッションの停止に失敗しました: {session}")
+        if session_hook is not None:
+            session_hook("remove",session)
     return {"score": score, "turns": turns, "maxed": turns >= max_turns, "cause": cause}
 
 
