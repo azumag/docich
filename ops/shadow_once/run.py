@@ -96,7 +96,7 @@ def service_command(unit,run,doc):
                 'NoNewPrivileges=yes','ProtectControlGroups=yes','RestrictSUIDSGID=yes',
                 'StandardOutput=null','StandardError=null','UMask=0077',
                 'ReadOnlyPaths='+' '.join(str(ROOT/p) for p in PROTECTED)+' '+str(run),
-                'ReadWritePaths='+str(run/'worker.pid')]
+                'ReadWritePaths='+str(run/'worker.pid')+' '+str(run/'runtime')]
     for row in doc['inputs']:
         properties.append('BindReadOnlyPaths='+str(run/row['path'])+':'+str(ROOT/row['path']))
     cmd=['sudo','-n','systemd-run','--quiet','--wait','--expand-environment=no','--unit='+unit,'--working-directory='+str(ROOT)]
@@ -105,6 +105,9 @@ def service_command(unit,run,doc):
           '--setenv=PATH=/snap/opencode/current/bin:/usr/local/bin:/usr/bin:/bin',
           '--setenv=OPENCODE_BIN=/snap/opencode/current/bin/opencode',
           '--setenv=OPENCODE_DISABLE_AUTOUPDATE=1',
+          '--setenv=AI_BACKOFF_DIR='+str(run/'runtime/ai_backoff'),
+          '--setenv=AI_FAIL_STREAK_DIR='+str(run/'runtime/ai_fail_streak'),
+          '--setenv=AI_STATS_DIR='+str(run/'runtime/ai_stats'),
           '--setenv=SOREN_SCRIPT_ROOT='+str(ROOT),
           '--setenv=SOREN_IMPROVE_JOB_BUDGET_SEC='+str(doc['budget_seconds']),
           '--setenv=SOREN_IMPROVE_ANALYSIS_BUDGET_SEC='+str(doc['analysis_seconds']),
@@ -189,6 +192,7 @@ def main():
         def save():policy.atomic_write(record_path,json.dumps(record,sort_keys=True).encode(),0o600)
         save()
         (run/'worker.pid').write_text('')
+        (run/'runtime').mkdir(mode=0o700)
         for row in doc['inputs']:
             raw=safe(ROOT,row['path']).read_bytes()
             if hashlib.sha256(raw).hexdigest()!=row['sha256']:raise ValueError('input_changed')
