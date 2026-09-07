@@ -455,15 +455,22 @@ def deploy_git(cfg,repo,sha):
         for changes in applied: _assert_projection_current(changes,'new')
         _verify_pending_live(cfg,repo,state.get('pending_repairs',[]))
         managed=json.loads(json.dumps(state.get('managed_projection_files',{})))
-        remaining_ids={repair['id'] for repair in remaining}
+        remaining_paths={(repair['projection'],rel) for repair in remaining for rel in repair['files']}
         for projection,destination in cfg['repos'][repo].get('projections',{}).items():
             entries=managed.setdefault(projection,{})
+            for changes in applied:
+                for change in changes:
+                    if Path(destination) in change['path'].parents:
+                        rel=str(change['path'].relative_to(destination))
+                        if rel in entries:
+                            entries[rel]=_change_meta(change,'new')
             for repair in state.get('pending_repairs',[]):
                 # Only a reviewed repair adopted by this main deployment needs
                 # persistent drift monitoring. Normal projection files may be
                 # updated by the live game/improvement runtime between deploys.
-                if repair['projection']==projection and repair['id'] not in remaining_ids:
-                    entries.update({rel:meta['after'] for rel,meta in repair['files'].items()})
+                if repair['projection']==projection:
+                    entries.update({rel:meta['after'] for rel,meta in repair['files'].items()
+                                    if (projection,rel) not in remaining_paths})
         final_state={**state,'mode':'git','sha':sha,'previous_head':old,'pending_repairs':remaining,'managed_projection_files':managed}
         write_json(state_path,final_state)
         _verify_managed_projections(cfg,repo,final_state)

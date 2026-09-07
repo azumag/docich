@@ -229,6 +229,47 @@ class DeployStateTransactionTests(unittest.TestCase):
         self.assertEqual((live/'game.txt').stat().st_ino,inode)
         self.assertEqual(gw.read_json(gw.current_file(self.cfg,'docich'))['pending_repairs'],[])
 
+    def test_partial_repair_adoption_manages_only_adopted_path(self):
+        live,subremote,old,new=self._projection_case()
+        self._record_pending(live,subremote,old)
+        state_path=gw.current_file(self.cfg,'docich')
+        state=gw.read_json(state_path)
+        before=gw._expected_meta(subremote,gw._tree_entry(subremote,gw.submodule_gitlink_at(self.docich,old,'games/soviet_now'),'second.txt'))
+        (live/'second.txt').write_text('second-repaired\n')
+        state['pending_repairs'][0]['files']['second.txt']={'before':before,'after':gw._live_meta(live/'second.txt')}
+        gw.write_json(state_path,state)
+        with mock.patch.object(gw,'OWNED_SUBMODULES',{'games/soviet_now':str(subremote)}):
+            gw.deploy_git(self.cfg,'docich',new)
+        state=gw.read_json(state_path)
+        self.assertEqual(set(state['pending_repairs'][0]['files']),{'second.txt'})
+        self.assertIn('game.txt',state['managed_projection_files']['games/soviet_now'])
+        self.assertNotIn('second.txt',state['managed_projection_files']['games/soviet_now'])
+        (live/'game.txt').write_text('drift-after-adoption\n')
+        self.assertEqual(gw.status_result(self.cfg,'docich','production',new)['status'],'drift')
+
+    def test_later_main_updates_managed_repair_metadata(self):
+        live,subremote,old,new=self._projection_case()
+        self._record_pending(live,subremote,old)
+        with mock.patch.object(gw,'OWNED_SUBMODULES',{'games/soviet_now':str(subremote)}):
+            gw.deploy_git(self.cfg,'docich',new)
+        (subremote/'game.txt').write_text('v3\n')
+        subprocess.run(['git','-C',subremote,'commit','-qam','v3'],check=True)
+        sub_v3=gw.git(subremote,'rev-parse','HEAD')
+        candidate=self.base/'candidate-v3'
+        subprocess.run(['git','clone','-q',self.docich,candidate],check=True)
+        subprocess.run(['git','-C',candidate,'config','user.email','t@example.com'],check=True)
+        subprocess.run(['git','-C',candidate,'config','user.name','T'],check=True)
+        subprocess.run(['git','-C',candidate,'update-index','--cacheinfo',f'160000,{sub_v3},games/soviet_now'],check=True)
+        subprocess.run(['git','-C',candidate,'commit','-qm','parent-v3'],check=True)
+        parent_v3=gw.git(candidate,'rev-parse','HEAD')
+        bundle=gw.bundle_file(self.cfg,'docich',parent_v3)
+        subprocess.run(['git','-C',candidate,'bundle','create',bundle,'HEAD'],check=True)
+        with mock.patch.object(gw,'OWNED_SUBMODULES',{'games/soviet_now':str(subremote)}):
+            gw.deploy_git(self.cfg,'docich',parent_v3)
+        self.assertEqual((live/'game.txt').read_text(),'v3\n')
+        managed=gw.read_json(gw.current_file(self.cfg,'docich'))['managed_projection_files']['games/soviet_now']['game.txt']
+        self.assertEqual(managed,gw._live_meta(live/'game.txt'))
+
     def test_deploy_conflict_preserves_repair_and_parent_state(self):
         live,subremote,old,new=self._projection_case()
         self._record_pending(live,subremote,old,'alternative-fix\n')
