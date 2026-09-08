@@ -44,11 +44,21 @@ class TestSorenOutputAdapter(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             g = config.load_global(Path(tmp))
             payload = {"ts": 100, "category": "worker", "title": "PAPER", "body": "x", "level": "info"}
-            with mock.patch("docich.trading.soren_output.append_event", return_value=False) as append:
+            with mock.patch("docich.trading.soren_output.append_event", return_value=False) as append, \
+                 mock.patch("docich.trading.soren_output.regenerate_overlay", return_value=True, create=True) as regenerate:
                 soren_output.send_overlay(g, payload)
-            append.assert_called_once_with(
-                soren_output.resolve_soren_root(g), payload, strict=True, regenerate=True
-            )
+            root = soren_output.resolve_soren_root(g)
+            append.assert_called_once_with(root, payload, strict=True, regenerate=False)
+            regenerate.assert_called_once_with(root)
+
+    def test_overlay_regeneration_failure_is_not_acknowledged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g = config.load_global(Path(tmp))
+            payload = {"ts": 100, "category": "worker", "title": "PAPER", "body": "x", "level": "info"}
+            with mock.patch("docich.trading.soren_output.append_event", return_value=True), \
+                 mock.patch("docich.trading.soren_output.regenerate_overlay", return_value=False, create=True):
+                with self.assertRaises(soren_output.SorenOutputError):
+                    soren_output.send_overlay(g, payload)
 
     def test_speech_reuses_existing_soren_audio_queue(self):
         with tempfile.TemporaryDirectory() as tmp:
