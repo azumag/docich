@@ -90,6 +90,23 @@ class PresyncedSubmoduleReconcileTests(unittest.TestCase):
             "",
         )
 
+    def test_accepts_clean_ancestor_with_identical_tree_to_reviewed_target(self):
+        sub = self.root / "games/soviet_now"
+        # Model GitHub's merge commit: a descendant commit whose complete
+        # tracked tree is identical to the already pre-synced PR head.
+        self._git(sub, "checkout", "--quiet", "-B", "reviewed-merge", self.new_sub)
+        self._git(sub, "commit", "--allow-empty", "-m", "reviewed merge")
+        reviewed_merge = self._git(sub, "rev-parse", "HEAD")
+        self.assertNotEqual(reviewed_merge, self.new_sub)
+        self.assertEqual(
+            self._git(sub, "rev-parse", f"{reviewed_merge}^{{tree}}"),
+            self._git(sub, "rev-parse", f"{self.new_sub}^{{tree}}"),
+        )
+        self._git(sub, "checkout", "--detach", "--quiet", self.new_sub)
+
+        reconcile(self.root, self.old_parent, self.old_sub, reviewed_merge, "games/soviet_now")
+        self.assertEqual(self._git(sub, "rev-parse", "HEAD"), self.old_sub)
+
     def test_refuses_unknown_submodule_head_without_mutating_it(self):
         sub = self.root / "games/soviet_now"
         (sub / "worker.sh").write_text("third\n", encoding="utf-8")
