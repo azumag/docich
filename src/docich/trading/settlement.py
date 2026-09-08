@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+import hashlib
+import json
 import math
 from typing import Mapping
 
@@ -65,6 +67,54 @@ class MultiLegSettlement:
     failure_reason: str | None
     residuals: Mapping[str, Decimal]
     legs: tuple[SettlementLeg, ...]
+
+
+def settlement_observation_id(
+    route: ArbitrageRoute,
+    settlement: MultiLegSettlement,
+    depth_books: Mapping[str, DepthBook],
+    circuit_statuses: Mapping[str, CircuitBreakStatus],
+    markets: Mapping[str, MarketInfo],
+) -> str:
+    """Return deterministic identity for one constrained paper observation."""
+    symbols = sorted({leg.symbol for leg in route.legs})
+    payload = {
+        "model_version": SETTLEMENT_MODEL_VERSION,
+        "route_id": route.route_id,
+        "start_asset": settlement.start_asset,
+        "start_amount": str(settlement.start_amount),
+        "books": {
+            symbol: {
+                "as_of": depth_books[symbol].as_of,
+                "bids": [[str(level.price), str(level.amount)] for level in depth_books[symbol].bids],
+                "asks": [[str(level.price), str(level.amount)] for level in depth_books[symbol].asks],
+            }
+            for symbol in symbols if symbol in depth_books
+        },
+        "circuit": {
+            symbol: {
+                "mode": circuit_statuses[symbol].mode,
+                "fee_type": circuit_statuses[symbol].fee_type,
+                "as_of": circuit_statuses[symbol].as_of,
+            }
+            for symbol in symbols if symbol in circuit_statuses
+        },
+        "markets": {
+            symbol: {
+                "base": markets[symbol].base,
+                "quote": markets[symbol].quote,
+                "amount_step": None if markets[symbol].amount_step is None else str(markets[symbol].amount_step),
+                "min_amount": None if markets[symbol].min_amount is None else str(markets[symbol].min_amount),
+                "min_cost": None if markets[symbol].min_cost is None else str(markets[symbol].min_cost),
+                "fee_base": None if markets[symbol].taker_fee_rate_base is None else str(markets[symbol].taker_fee_rate_base),
+                "fee_quote": None if markets[symbol].taker_fee_rate_quote is None else str(markets[symbol].taker_fee_rate_quote),
+                "market_order_enabled": bool(markets[symbol].market_order_enabled),
+            }
+            for symbol in symbols if symbol in markets
+        },
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return SETTLEMENT_MODEL_VERSION + ":" + hashlib.sha256(raw).hexdigest()[:32]
 
 
 def _rotated_legs(route: ArbitrageRoute, start_asset: str) -> tuple[ArbitrageLeg, ...]:

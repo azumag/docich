@@ -1,7 +1,6 @@
 """CLI for the paper-only docich crypto trading foundation."""
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import time
@@ -20,7 +19,7 @@ from .relative_value import scan_relative_value_opportunities
 from .risk import CapitalPolicy, allocate_opportunities
 from .strategies import scan_opportunities, select_diversified_opportunities
 from .status import build_public_status, write_public_status
-from .settlement import SETTLEMENT_MODEL_VERSION, MultiLegSettlement, simulate_multileg_settlement
+from .settlement import MultiLegSettlement, settlement_observation_id, simulate_multileg_settlement
 
 
 class TradingCliError(RuntimeError):
@@ -391,47 +390,6 @@ def _settlement_payload(result: MultiLegSettlement) -> dict[str, Any]:
     }
 
 
-def _settlement_observation_id(route, settlement: MultiLegSettlement, depth_books, circuit_statuses, markets) -> str:
-    symbols = sorted({leg.symbol for leg in route.legs})
-    payload = {
-        "model_version": SETTLEMENT_MODEL_VERSION,
-        "route_id": route.route_id,
-        "start_asset": settlement.start_asset,
-        "start_amount": str(settlement.start_amount),
-        "books": {
-            symbol: {
-                "as_of": depth_books[symbol].as_of,
-                "bids": [[str(level.price), str(level.amount)] for level in depth_books[symbol].bids],
-                "asks": [[str(level.price), str(level.amount)] for level in depth_books[symbol].asks],
-            }
-            for symbol in symbols if symbol in depth_books
-        },
-        "circuit": {
-            symbol: {
-                "mode": circuit_statuses[symbol].mode,
-                "fee_type": circuit_statuses[symbol].fee_type,
-                "as_of": circuit_statuses[symbol].as_of,
-            }
-            for symbol in symbols if symbol in circuit_statuses
-        },
-        "markets": {
-            symbol: {
-                "base": markets[symbol].base,
-                "quote": markets[symbol].quote,
-                "amount_step": None if markets[symbol].amount_step is None else str(markets[symbol].amount_step),
-                "min_amount": None if markets[symbol].min_amount is None else str(markets[symbol].min_amount),
-                "min_cost": None if markets[symbol].min_cost is None else str(markets[symbol].min_cost),
-                "fee_base": None if markets[symbol].taker_fee_rate_base is None else str(markets[symbol].taker_fee_rate_base),
-                "fee_quote": None if markets[symbol].taker_fee_rate_quote is None else str(markets[symbol].taker_fee_rate_quote),
-                "market_order_enabled": bool(markets[symbol].market_order_enabled),
-            }
-            for symbol in symbols if symbol in markets
-        },
-    }
-    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
-    return SETTLEMENT_MODEL_VERSION + ":" + hashlib.sha256(raw).hexdigest()[:32]
-
-
 def _recorded_settlement_payload(item) -> dict[str, Any]:
     return {
         "settlement_id": item.settlement_id,
@@ -700,7 +658,7 @@ def run_args(args, *, repo_root: Path) -> int:
                         for amount in probe_amounts
                     ]
                     for result in settlement_results:
-                        settlement_id = _settlement_observation_id(
+                        settlement_id = settlement_observation_id(
                             route, result, depth_books, circuit_statuses, markets
                         )
                         payload = _settlement_payload(result)
