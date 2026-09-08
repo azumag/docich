@@ -5,6 +5,7 @@ from pathlib import Path
 import stat
 import sys
 import tempfile
+import threading
 import unittest
 from time import time
 
@@ -153,6 +154,47 @@ class TestNotificationDelivery(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(state_path.stat().st_mode), 0o600)
             self.assertEqual(stat.S_IMODE(state_path.parent.stat().st_mode), 0o700)
 
+
+
+    def test_concurrent_delivery_is_exclusive_across_state_read_and_ack(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            g = global_config(root, speech=False)
+            source = g.state_dir / "trading" / "events.jsonl"
+            deliver_pending_notifications(g, overlay_sender=Sender().overlay, speech_sender=Sender().speech, now=1000.0)
+            append_public_event(source, event("fill:concurrent"))
+            entered = threading.Event()
+            release = threading.Event()
+            calls = []
+            errors = []
+
+            def blocking_overlay(_g, payload):
+                calls.append(payload)
+                entered.set()
+                release.wait(2.0)
+
+            def first_delivery():
+                try:
+                    deliver_pending_notifications(
+                        g, overlay_sender=blocking_overlay, speech_sender=Sender().speech, now=1001.0
+                    )
+                except Exception as exc:
+                    errors.append(exc)
+
+            thread = threading.Thread(target=first_delivery)
+            thread.start()
+            self.assertTrue(entered.wait(1.0))
+            second_overlay = Sender()
+            with self.assertRaises(NotificationError):
+                deliver_pending_notifications(
+                    g, overlay_sender=second_overlay.overlay, speech_sender=Sender().speech, now=1001.5
+                )
+            self.assertEqual(second_overlay.calls, [])
+            release.set()
+            thread.join(2.0)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(len(calls), 1)
 
     def test_delayed_overlay_delivery_uses_delivery_time_for_visibility(self):
         with tempfile.TemporaryDirectory() as tmp:

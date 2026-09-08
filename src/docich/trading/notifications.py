@@ -1,13 +1,16 @@
 """Durable, replay-safe delivery of paper trading events to viewer outputs."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 import json
 import math
 import os
+import shutil
 from pathlib import Path
 import tempfile
-from typing import Callable, Mapping
+import time
+from typing import Callable, Iterator, Mapping
 
 from ..config import GlobalConfig
 from .events import PublicEventError, read_public_events
@@ -17,6 +20,43 @@ from .soren_output import enqueue_speech, send_overlay
 
 class NotificationError(RuntimeError):
     """Raised when source/delivery state is corrupt or cannot be persisted."""
+
+
+DELIVERY_LOCK_STALE_SECONDS = 120
+
+
+@contextmanager
+def _delivery_lock(state_dir: Path) -> Iterator[None]:
+    base = Path(state_dir)
+    base.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        os.chmod(base, 0o700)
+    except OSError:
+        pass
+    lock = base / ".notification_delivery.lock"
+    try:
+        lock.mkdir(mode=0o700)
+    except FileExistsError:
+        try:
+            age = time.time() - lock.stat().st_mtime
+        except OSError as exc:
+            raise NotificationError("notification delivery lock is unreadable") from exc
+        if age <= DELIVERY_LOCK_STALE_SECONDS:
+            raise NotificationError("notification delivery already in progress")
+        shutil.rmtree(lock, ignore_errors=True)
+        try:
+            lock.mkdir(mode=0o700)
+        except FileExistsError as exc:
+            raise NotificationError("notification delivery lock could not be acquired") from exc
+    try:
+        yield
+    finally:
+        try:
+            lock.rmdir()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            shutil.rmtree(lock, ignore_errors=True)
 
 
 @dataclass(frozen=True)
@@ -135,7 +175,7 @@ def _bounded(ids: list[str], source_ids: list[str]) -> list[str]:
     return [event_id for event_id in source_ids if event_id in present]
 
 
-def deliver_pending_notifications(
+def _deliver_pending_notifications_unlocked(
     g: GlobalConfig,
     *,
     overlay_sender: Callable[[GlobalConfig, dict[str, object]], None] | None = None,
@@ -232,3 +272,24 @@ def deliver_pending_notifications(
         True, False, presentation.mode, len(events), overlay_sent, speech_sent,
         overlay_pending, speech_pending, tuple(dict.fromkeys(errors)),
     )
+
+def deliver_pending_notifications(
+    g: GlobalConfig,
+    *,
+    overlay_sender: Callable[[GlobalConfig, dict[str, object]], None] | None = None,
+    speech_sender: Callable[[GlobalConfig, str], None] | None = None,
+    now: float,
+    state_dir: Path | None = None,
+) -> NotificationDeliveryResult:
+    """Serialize one complete source-read -> output -> ACK transaction."""
+    if not g.trading.notifications_enabled:
+        return _deliver_pending_notifications_unlocked(
+            g, overlay_sender=overlay_sender, speech_sender=speech_sender,
+            now=now, state_dir=state_dir,
+        )
+    base = _trading_state_dir(g, state_dir)
+    with _delivery_lock(base):
+        return _deliver_pending_notifications_unlocked(
+            g, overlay_sender=overlay_sender, speech_sender=speech_sender,
+            now=now, state_dir=state_dir,
+        )
