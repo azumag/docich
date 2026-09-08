@@ -220,5 +220,39 @@ class TestBitbankPublicGateway(unittest.TestCase):
             self.assertFalse(hasattr(gateway, method), method)
 
 
+class TestBitbankSettlementMetadata(unittest.TestCase):
+    def test_unit_amount_is_authoritative_and_market_order_stop_is_preserved(self):
+        exchange = FakeExchange({
+            "BTC/JPY": {
+                "symbol": "BTC/JPY", "base": "BTC", "quote": "JPY",
+                "spot": True, "active": True, "precision": {"amount": 0.0001},
+                "limits": {"amount": {"min": 0.0001}, "cost": {"min": None}},
+                "info": {
+                    "is_enabled": True, "stop_order": False, "stop_buy_order": False, "stop_sell_order": False,
+                    "stop_market_order": True, "unit_amount": "0.001",
+                    "taker_fee_rate_base": "0", "taker_fee_rate_quote": "0.001",
+                },
+            }
+        })
+        market = BitbankPublicGateway(exchange=exchange).discover_markets()["BTC/JPY"]
+        self.assertEqual(market.min_amount, Decimal("0.001"))
+        self.assertEqual(market.amount_step, Decimal("0.0001"))
+        self.assertFalse(market.market_order_enabled)
+
+    def test_fetches_public_circuit_break_status(self):
+        class CircuitExchange(FakeExchange):
+            def publicGetPairCircuitBreakInfo(self, params):
+                self.last_circuit_params = params
+                return {"success": 1, "data": {
+                    "mode": "NONE", "fee_type": "NORMAL", "timestamp": 1_800_000_000_000,
+                }}
+        exchange = CircuitExchange({})
+        statuses = BitbankPublicGateway(exchange=exchange).fetch_circuit_break_statuses(["BTC/JPY"])
+        self.assertEqual(statuses["BTC/JPY"].mode, "NONE")
+        self.assertEqual(statuses["BTC/JPY"].fee_type, "NORMAL")
+        self.assertEqual(statuses["BTC/JPY"].as_of, 1_800_000_000.0)
+        self.assertEqual(exchange.last_circuit_params, {"pair": "btc_jpy"})
+
+
 if __name__ == "__main__":
     unittest.main()

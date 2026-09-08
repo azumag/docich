@@ -107,6 +107,9 @@ def allocate_opportunities(
         if not market.spot or not market.active:
             skipped.append(_skip(opportunity, "market_inactive"))
             continue
+        if not market.market_order_enabled:
+            skipped.append(_skip(opportunity, "market_order_disabled"))
+            continue
         if opportunity.side != "buy":
             skipped.append(_skip(opportunity, "unsupported_side"))
             continue
