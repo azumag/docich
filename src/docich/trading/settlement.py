@@ -12,6 +12,7 @@ from .models import MarketInfo, TradingValidationError, as_decimal
 
 D = Decimal
 ZERO = D("0")
+SETTLEMENT_MODEL_VERSION = "multileg-v1"
 _ALLOWED_CIRCUIT_MODES = {"NONE", "CIRCUIT_BREAK", "FULL_RANGE_CIRCUIT_BREAK", "RESUMPTION", "LISTING"}
 
 
