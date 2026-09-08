@@ -19,5 +19,20 @@ jobs:
           submodules: false
       - run: python3 -m unittest discover -s ops/vm_actions/tests -v
       - run: python3 -m unittest discover -s ops/self_repair/tests -v
-      - run: python3 -m py_compile ops/vm_actions/authorize.py ops/vm_actions/gateway.py ops/vm_actions/stage_repair.py ops/self_repair/worker.py
+      - run: python3 -m py_compile ops/vm_actions/authorize.py ops/vm_actions/gateway.py ops/vm_actions/stage_repair.py ops/vm_actions/collect_diagnostics.py ops/vm_actions/runtime_registry.py ops/self_repair/worker.py
+      - name: Fetch soviet_now entrypoint for registry drift check
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/soren-entry"
+          for attempt in 1 2 3; do
+            if curl -fsSL --max-time 60 https://raw.githubusercontent.com/azumag/soviet_now/main/start_all.sh -o "$RUNNER_TEMP/soren-entry/start_all.sh"; then
+              break
+            elif [ "$attempt" = 3 ]; then
+              echo "soviet_now entrypoint unreachable; registry drift tests will skip" >&2
+            else
+              sleep 5
+            fi
+          done
+          echo "SOVIET_START_ALL=$RUNNER_TEMP/soren-entry/start_all.sh" >> "$GITHUB_ENV"
+      - run: SOVIET_START_ALL="$SOVIET_START_ALL" python3 -m unittest ops.vm_actions.tests.test_runtime_registry -v
       - run: bash -n ops/vm_actions/install_vm_gateway.sh

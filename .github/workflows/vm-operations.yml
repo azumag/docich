@@ -10,7 +10,7 @@ on:
         required: true
         default: status
         type: choice
-        options: [status, deploy, exec, bootstrap]
+        options: [status, deploy, exec, bootstrap, diagnostics]
       target:
         description: VM target
         required: true
@@ -280,6 +280,18 @@ jobs:
           set -euo pipefail
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
           ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich $TARGET $SHA"
+
+      - name: Query read-only runtime diagnostics
+        if: ${{ steps.auth.outputs.operation == 'diagnostics' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "diagnostics docich production $SHA"
 
       - name: Execute owner command on VM
         if: ${{ steps.auth.outputs.operation == 'exec' }}
