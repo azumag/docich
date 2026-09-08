@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -78,6 +80,10 @@ class PresyncedSubmoduleReconcileTests(unittest.TestCase):
     def _git(path: Path, *args: str) -> str:
         return subprocess.check_output(["git", "-C", str(path), *args], text=True).strip()
 
+    @staticmethod
+    def _mode(path: Path) -> int:
+        return stat.S_IMODE(path.stat().st_mode)
+
     def assert_reason(self, expected: int, fn) -> None:
         with self.assertRaises(ReconcileError) as ctx:
             fn()
@@ -108,30 +114,32 @@ class PresyncedSubmoduleReconcileTests(unittest.TestCase):
     def test_exact_reviewed_new_live_projection_is_normalized_to_old(self):
         path = self.live / "worker.sh"
         path.write_text("new\n", encoding="utf-8")
-        reconcile(
-            self.root,
-            self.old_parent,
-            self.old_sub,
-            self.new_sub,
-            "games/soviet_now",
-            self.live,
-        )
+        reconcile(self.root, self.old_parent, self.old_sub, self.new_sub, "games/soviet_now", self.live)
         self.assertEqual(path.read_text(encoding="utf-8"), "old\n")
-        self.assertEqual(self._git(self.root / "games/soviet_now", "rev-parse", "HEAD"), self.old_sub)
+        self.assertEqual(self._mode(path), 0o644)
+
+    def test_reviewed_new_content_with_mode_drift_is_normalized(self):
+        path = self.live / "worker.sh"
+        path.write_text("new\n", encoding="utf-8")
+        os.chmod(path, 0o600)
+        reconcile(self.root, self.old_parent, self.old_sub, self.new_sub, "games/soviet_now", self.live)
+        self.assertEqual(path.read_text(encoding="utf-8"), "old\n")
+        self.assertEqual(self._mode(path), 0o644)
+
+    def test_recorded_old_content_with_mode_drift_is_repaired(self):
+        path = self.live / "worker.sh"
+        path.write_text("old\n", encoding="utf-8")
+        os.chmod(path, 0o600)
+        reconcile(self.root, self.old_parent, self.old_sub, self.new_sub, "games/soviet_now", self.live)
+        self.assertEqual(path.read_text(encoding="utf-8"), "old\n")
+        self.assertEqual(self._mode(path), 0o644)
 
     def test_unknown_live_projection_is_refused_without_overwrite(self):
         path = self.live / "worker.sh"
         path.write_text("operator drift\n", encoding="utf-8")
         self.assert_reason(
             REASON_PROJECTION_UNKNOWN_STATE,
-            lambda: reconcile(
-                self.root,
-                self.old_parent,
-                self.old_sub,
-                self.new_sub,
-                "games/soviet_now",
-                self.live,
-            ),
+            lambda: reconcile(self.root, self.old_parent, self.old_sub, self.new_sub, "games/soviet_now", self.live),
         )
         self.assertEqual(path.read_text(encoding="utf-8"), "operator drift\n")
 
