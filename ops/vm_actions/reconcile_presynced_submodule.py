@@ -64,6 +64,25 @@ def _git_run(root: Path, *args: str) -> None:
         raise ReconcileError(REASON_MUTATION_FAILED, "git mutation failed") from exc
 
 
+def _is_ancestor(root: Path, ancestor: str, descendant: str) -> bool:
+    try:
+        subprocess.run(
+            ["git", "-C", str(root), "-c", "core.hooksPath=/dev/null", "merge-base", "--is-ancestor", ancestor, descendant],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+            timeout=30,
+        )
+        return True
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode == 1:
+            return False
+        raise ReconcileError(REASON_GIT_VERIFICATION_FAILED, "git ancestry verification failed") from exc
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        raise ReconcileError(REASON_GIT_VERIFICATION_FAILED, "git ancestry verification failed") from exc
+
+
 def _gitlink_at(root: Path, commit: str, path: str) -> str:
     line = _git(root, "ls-tree", commit, "--", path)
     fields = line.split()
@@ -92,8 +111,19 @@ def reconcile(root: Path, old_parent: str, old_sub: str, new_sub: str, sub_path:
     sub = root / sub_path
     if not sub.is_dir():
         raise ReconcileError(REASON_SUBMODULE_MISSING, "owned submodule checkout is missing")
-    if _git(sub, "rev-parse", "HEAD", reason=REASON_SUBMODULE_HEAD_MISMATCH) != new_sub:
-        raise ReconcileError(REASON_SUBMODULE_HEAD_MISMATCH, "owned submodule is not at reviewed target")
+
+    current_sub = _git(sub, "rev-parse", "HEAD", reason=REASON_SUBMODULE_HEAD_MISMATCH)
+    if current_sub != new_sub:
+        # GitHub's reviewed merge commit can have the exact same tree as its
+        # PR head while using a different commit SHA. A pre-sync may therefore
+        # leave the clean PR head checked out. Accept that one bounded case
+        # only when the current commit is an ancestor of the reviewed target
+        # and every tracked path/mode is identical via the Git tree object.
+        current_tree = _git(sub, "rev-parse", f"{current_sub}^{{tree}}", reason=REASON_SUBMODULE_HEAD_MISMATCH)
+        reviewed_tree = _git(sub, "rev-parse", f"{new_sub}^{{tree}}", reason=REASON_NEW_OBJECT_MISSING)
+        if current_tree != reviewed_tree or not _is_ancestor(sub, current_sub, new_sub):
+            raise ReconcileError(REASON_SUBMODULE_HEAD_MISMATCH, "owned submodule is not at reviewed target")
+
     if _git(sub, "status", "--porcelain", "--untracked-files=no", reason=REASON_SUBMODULE_DRIFT):
         raise ReconcileError(REASON_SUBMODULE_DRIFT, "owned submodule has tracked drift")
 
@@ -101,17 +131,8 @@ def reconcile(root: Path, old_parent: str, old_sub: str, new_sub: str, sub_path:
     # permitted in this recovery path.
     _git(sub, "cat-file", "-e", f"{old_sub}^{{commit}}", reason=REASON_OLD_OBJECT_MISSING)
     _git(sub, "cat-file", "-e", f"{new_sub}^{{commit}}", reason=REASON_NEW_OBJECT_MISSING)
-    try:
-        subprocess.run(
-            ["git", "-C", str(sub), "-c", "core.hooksPath=/dev/null", "merge-base", "--is-ancestor", old_sub, new_sub],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=True,
-            timeout=30,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        raise ReconcileError(REASON_NOT_DESCENDANT, "reviewed target is not a descendant of the recorded gitlink") from exc
+    if not _is_ancestor(sub, old_sub, new_sub):
+        raise ReconcileError(REASON_NOT_DESCENDANT, "reviewed target is not a descendant of the recorded gitlink")
 
     _git_run(sub, "checkout", "--detach", "--quiet", old_sub)
 
