@@ -47,13 +47,12 @@ REASON_PROJECTION_MUTATION_FAILED = 64
 REASON_PROJECTION_POSTVERIFY_FAILED = 65
 
 # Production exec intentionally withholds command output. For a small reviewed
-# projection change we can still expose a non-secret state vector through the
-# process exit status: each changed path is 0=recorded-old content,
-# 1=reviewed-new content, 2=other/missing. Git diff order is deterministic and
-# can be reconstructed from the reviewed old/new commits. Four ternary digits
-# fit below 255 with this reserved base. Larger changes retain generic code 63.
-REASON_PROJECTION_STATE_VECTOR_BASE = 128
-PROJECTION_STATE_VECTOR_MAX_PATHS = 4
+# projection diff, encode only which reviewed changed paths are in an unknown
+# content state. Bit N corresponds to path N in deterministic git-diff order.
+# Codes 71..85 stay below the conventional shell signal range and expose no
+# live bytes, hashes, modes, or private paths. Wider diffs retain generic 63.
+REASON_PROJECTION_UNKNOWN_MASK_BASE = 70
+PROJECTION_UNKNOWN_MASK_MAX_PATHS = 4
 
 
 class ReconcileError(RuntimeError):
@@ -193,16 +192,14 @@ def _projection_content_state(actual, old_expected, new_expected) -> int:
 
 
 def _projection_unknown_reason(states: list[int]) -> int:
-    # Preserve the historical single-path code and avoid wrapping exit status
-    # for wider diffs. This diagnostic never changes whether the operation is
-    # accepted; it only makes an already-failing small diff distinguishable.
-    if len(states) < 2 or len(states) > PROJECTION_STATE_VECTOR_MAX_PATHS:
+    # Preserve the historical single-path code and keep wider diffs generic.
+    # This never changes acceptance; it only identifies unknown reviewed paths.
+    if len(states) < 2 or len(states) > PROJECTION_UNKNOWN_MASK_MAX_PATHS:
         return REASON_PROJECTION_UNKNOWN_STATE
-    value = sum(state * (3**index) for index, state in enumerate(states))
-    code = REASON_PROJECTION_STATE_VECTOR_BASE + value
-    if code > 255:
+    mask = sum(1 << index for index, state in enumerate(states) if state == 2)
+    if mask == 0:
         return REASON_PROJECTION_UNKNOWN_STATE
-    return code
+    return REASON_PROJECTION_UNKNOWN_MASK_BASE + mask
 
 
 def _atomic_projection_write(path: Path, data: bytes, mode: int) -> None:
