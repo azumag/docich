@@ -142,6 +142,40 @@ class TestTradingCli(unittest.TestCase):
             self.assertIn("unknown", err.lower())
             self.assertNotIn("must-not-be-read", err)
 
+
+    def test_discover_exposes_separate_base_and_quote_taker_fees(self):
+        class FeeGateway:
+            def discover_markets(self):
+                from docich.trading.models import MarketInfo
+                from decimal import Decimal
+                return {
+                    "BTC/JPY": MarketInfo(
+                        "BTC/JPY", "BTC", "JPY", True, True,
+                        taker_fee_rate_base=Decimal("0.002"),
+                        taker_fee_rate_quote=Decimal("0.001"),
+                    )
+                }
+        with patch("docich.trading.cli.BitbankPublicGateway", return_value=FeeGateway()):
+            rc, out, err = self.run_cli(["trading", "discover"])
+        self.assertEqual(rc, 0, err)
+        market = json.loads(out)["markets"][0]
+        self.assertEqual(market["taker_fee_rate_base"], "0.002")
+        self.assertEqual(market["taker_fee_rate_quote"], "0.001")
+        self.assertEqual(market["taker_fee_rate"], "0.001")
+
+    def test_paper_snapshot_accepts_separate_fee_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = self.snapshot()
+            data["markets"]["BTC/JPY"]["taker_fee_rate_base"] = "0"
+            data["markets"]["BTC/JPY"]["taker_fee_rate_quote"] = "0.001"
+            snapshot = Path(tmp) / "snapshot.json"
+            snapshot.write_text(json.dumps(data), encoding="utf-8")
+            rc, out, err = self.run_cli([
+                "trading", "--state-dir", str(Path(tmp) / "state"),
+                "paper-cycle", "--snapshot", str(snapshot),
+            ])
+        self.assertEqual(rc, 0, err)
+
     def test_discover_missing_optional_ccxt_is_stable_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             with patch(

@@ -177,14 +177,23 @@ bin/docich trading strategy-cycle --snapshot /path/to/strategy-snapshot.json
 ```
 
 `arbitrage-scan` は有効な市場metadataから実在する3市場・3資産の閉路だけを探し、
-公開best bid/askと各市場のtaker手数料を3レッグすべてに適用してnet edgeを計算します。
-best level数量から開始資産ベースの `max_start_amount` も出しますが、深い板のスリッページはまだ評価しません。
-現在は診断専用で、候補が見つかってもpaper台帳へのfillや実注文は行いません。
-三角形を構成できる市場がなければorder book API自体を呼びません。
+公開best bid/askとbitbankのbase/quote別taker手数料を3レッグすべてに適用してnet edgeを計算します。
+best level数量から開始資産ベースの `max_start_amount` も出します。現在は診断専用で、
+候補が見つかってもpaper台帳へのfillや実注文は行いません。三角形を構成できる市場がなければ
+order book API自体を呼びません。
+
+`arbitrage-depth-scan` は公開板を複数段取り込み、指定した開始資産量ごとに3レッグを順番に
+板へ通した場合の `complete`、最終受取量、実効net edge、各レッグの使用level数を計算します。
+板容量が足りなければ流動性を発明せず `complete=false` で停止します。既定probeは
+JPY 1,000 / 3,000 / 10,000です。
 
 ```bash
 bin/docich trading arbitrage-scan --min-edge-bps 10
+bin/docich trading arbitrage-depth-scan --min-edge-bps 10 --probe-asset JPY --probe-amounts 1000,3000,10000
 ```
+
+現段階のdepth診断でも、3レッグ間のレイテンシ・価格変動・注文キュー・最小注文単位/数量丸め・
+circuit breaker中の実発注可否までは再現しません。したがって実効edgeも実行保証ではありません。
 
 常駐worker、裁定の複数レッグpaper約定、配信通知、実発注は後続sliceで追加します。
 実発注を有効化する前には、別途の設計レビューと明示承認が必要です。

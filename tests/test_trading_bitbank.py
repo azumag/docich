@@ -13,6 +13,7 @@ from docich.trading.exchanges.bitbank_ccxt import (  # noqa: E402
     CCXTUnavailableError,
 )
 from docich.trading.arbitrage import ArbitrageDataError  # noqa: E402
+from docich.trading.depth import DepthBook  # noqa: E402
 
 
 class FakeExchange:
@@ -108,14 +109,63 @@ class TestBitbankPublicGateway(unittest.TestCase):
         exchange = FakeExchange({
             "BTC/JPY": {
                 "symbol": "BTC/JPY", "base": "BTC", "quote": "JPY",
-                "spot": True, "active": True, "taker": 0.001,
+                "spot": True, "active": True, "taker": 0.009,
                 "precision": {"amount": 0.0001},
                 "limits": {"amount": {"min": 0.0001}, "cost": {"min": 1}},
-                "info": {"is_enabled": True, "stop_order": False, "stop_buy_order": False},
+                "info": {
+                    "is_enabled": True, "stop_order": False, "stop_buy_order": False,
+                    "taker_fee_rate_base": "0.002", "taker_fee_rate_quote": "0.001",
+                },
             }
         })
         markets = BitbankPublicGateway(exchange=exchange).discover_markets()
+        self.assertEqual(markets["BTC/JPY"].taker_fee_rate_base, Decimal("0.002"))
+        self.assertEqual(markets["BTC/JPY"].taker_fee_rate_quote, Decimal("0.001"))
         self.assertEqual(markets["BTC/JPY"].taker_fee_rate, Decimal("0.001"))
+
+
+    def test_fetch_depth_books_preserves_multiple_public_levels(self):
+        class BookExchange(FakeExchange):
+            def fetch_order_book(self, symbol, limit=20):
+                self.last_book_call = (symbol, limit)
+                return {
+                    "symbol": symbol, "timestamp": 1_800_000_000_000,
+                    "bids": [[99, 2], [98, 3]],
+                    "asks": [[100, 4], [101, 5]],
+                }
+        exchange = BookExchange({})
+        books = BitbankPublicGateway(exchange=exchange).fetch_depth_books(["BTC/JPY"], now=1_800_000_001.0, limit=20)
+        book = books["BTC/JPY"]
+        self.assertIsInstance(book, DepthBook)
+        self.assertEqual([level.price for level in book.bids], [Decimal("99"), Decimal("98")])
+        self.assertEqual([level.amount for level in book.asks], [Decimal("4"), Decimal("5")])
+        self.assertEqual(exchange.last_book_call, ("BTC/JPY", 20))
+
+
+    def test_fetch_depth_books_enforces_local_level_limit_when_exchange_ignores_it(self):
+        class BookExchange(FakeExchange):
+            def fetch_order_book(self, symbol, limit=2):
+                return {
+                    "symbol": symbol, "timestamp": 1_800_000_000_000,
+                    "bids": [[99, 1], [98, 1], [97, 1]],
+                    "asks": [[100, 1], [101, 1], [102, 1]],
+                }
+        book = BitbankPublicGateway(exchange=BookExchange({})).fetch_depth_books(
+            ["BTC/JPY"], now=1_800_000_001.0, limit=2
+        )["BTC/JPY"]
+        self.assertEqual(len(book.bids), 2)
+        self.assertEqual(len(book.asks), 2)
+
+    def test_fetch_depth_books_rejects_unsorted_or_zero_levels(self):
+        class BookExchange(FakeExchange):
+            def fetch_order_book(self, symbol, limit=20):
+                return {
+                    "symbol": symbol, "timestamp": 1_800_000_000_000,
+                    "bids": [[98, 2], [99, 3]],
+                    "asks": [[100, 0], [101, 5]],
+                }
+        with self.assertRaises(ArbitrageDataError):
+            BitbankPublicGateway(exchange=BookExchange({})).fetch_depth_books(["BTC/JPY"], now=1_800_000_001.0)
 
     def test_fetch_top_books_normalizes_public_best_prices(self):
         class BookExchange(FakeExchange):
@@ -144,6 +194,20 @@ class TestBitbankPublicGateway(unittest.TestCase):
                 return {"symbol": symbol, "timestamp": None, "bids": [[99, 1]], "asks": [[100, 1]]}
         with self.assertRaises(ArbitrageDataError):
             BitbankPublicGateway(exchange=BookExchange({})).fetch_top_books(["BTC/JPY"], now=1_800_000_001.0)
+
+
+    def test_rejects_bitbank_market_when_sell_orders_are_stopped(self):
+        exchange = FakeExchange({
+            "SELLSTOP/JPY": {
+                "symbol": "SELLSTOP/JPY", "base": "SELLSTOP", "quote": "JPY",
+                "spot": True, "active": True,
+                "info": {
+                    "is_enabled": True, "stop_order": False,
+                    "stop_buy_order": False, "stop_sell_order": True,
+                },
+            }
+        })
+        self.assertEqual(BitbankPublicGateway(exchange=exchange).discover_markets(), {})
 
     def test_ccxt_is_optional_and_missing_dependency_has_stable_error(self):
         with patch("docich.trading.exchanges.bitbank_ccxt.importlib.import_module", side_effect=ModuleNotFoundError):

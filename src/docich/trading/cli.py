@@ -8,7 +8,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping
 
-from .arbitrage import ArbitrageDataError, find_triangle_symbols, scan_triangular_arbitrage
+from .arbitrage import ArbitrageDataError, TopOfBook, find_triangle_symbols, scan_triangular_arbitrage
+from .depth import DepthRouteSimulation, simulate_route_depth
 from .exchanges.bitbank_ccxt import BitbankPublicGateway, CCXTUnavailableError
 from .ledger import PaperLedger
 from .market_data import MarketFrame, MarketFrameError
@@ -28,7 +29,7 @@ _SNAPSHOT_KEYS = {
     "mode", "as_of", "capital_reference", "deployed_reference",
     "quote_to_reference", "available_quote", "markets", "prices", "opportunities",
 }
-_MARKET_KEYS = {"base", "quote", "spot", "active", "amount_step", "min_amount", "min_cost", "taker_fee_rate"}
+_MARKET_KEYS = {"base", "quote", "spot", "active", "amount_step", "min_amount", "min_cost", "taker_fee_rate", "taker_fee_rate_base", "taker_fee_rate_quote"}
 _OPPORTUNITY_KEYS = {
     "opportunity_id", "strategy_id", "symbol", "side", "score", "expected_edge_bps",
     "max_notional_fraction", "expires_at", "reason_code",
@@ -70,6 +71,11 @@ def configure_parser(parser) -> None:
     arbitrage = sub.add_parser("arbitrage-scan", help="公開板からfee-aware三角裁定候補を診断する")
     arbitrage.add_argument("--min-edge-bps", default="10", metavar="BPS", help="最低net edge (既定10bps)")
     arbitrage.add_argument("--book-limit", type=int, default=5, metavar="N", help="板取得depth (既定5)")
+    depth = sub.add_parser("arbitrage-depth-scan", help="公開板depthで三角裁定候補のサイズ別slippageを診断する")
+    depth.add_argument("--min-edge-bps", default="10", metavar="BPS", help="top-of-book最低net edge (既定10bps)")
+    depth.add_argument("--book-limit", type=int, default=20, metavar="N", help="板取得depth (既定20)")
+    depth.add_argument("--probe-asset", default="JPY", metavar="ASSET", help="probe開始資産 (既定JPY)")
+    depth.add_argument("--probe-amounts", default="1000,3000,10000", metavar="CSV", help="開始資産単位のprobe量")
 
 
 def _state_dir(args, repo_root: Path) -> Path:
@@ -145,6 +151,8 @@ def _market_from_snapshot(symbol: str, raw: Any) -> MarketInfo:
             min_amount=None if raw.get("min_amount") is None else as_decimal(raw["min_amount"], "min_amount"),
             min_cost=None if raw.get("min_cost") is None else as_decimal(raw["min_cost"], "min_cost"),
             taker_fee_rate=None if raw.get("taker_fee_rate") is None else as_decimal(raw["taker_fee_rate"], "taker_fee_rate"),
+            taker_fee_rate_base=None if raw.get("taker_fee_rate_base") is None else as_decimal(raw["taker_fee_rate_base"], "taker_fee_rate_base"),
+            taker_fee_rate_quote=None if raw.get("taker_fee_rate_quote") is None else as_decimal(raw["taker_fee_rate_quote"], "taker_fee_rate_quote"),
         )
     except (TradingValidationError, KeyError) as exc:
         raise TradingCliError(f"market {symbol} is invalid") from exc
@@ -304,6 +312,44 @@ def _frame_payload(frame: MarketFrame) -> dict[str, Any]:
     }
 
 
+
+def _parse_probe_amounts(raw: str) -> tuple[Decimal, ...]:
+    parts = [part.strip() for part in str(raw).split(",") if part.strip()]
+    if not parts:
+        raise TradingCliError("probe amounts must not be empty")
+    try:
+        amounts = tuple(as_decimal(part, "probe amount") for part in parts)
+    except TradingValidationError as exc:
+        raise TradingCliError("probe amounts contain an invalid value") from exc
+    if any(amount <= 0 for amount in amounts):
+        raise TradingCliError("probe amounts must be positive")
+    return amounts
+
+
+def _depth_simulation_payload(simulation: DepthRouteSimulation) -> dict[str, Any]:
+    return {
+        "start_asset": simulation.start_asset,
+        "start_amount": str(simulation.start_amount),
+        "complete": simulation.complete,
+        "final_amount": None if simulation.final_amount is None else str(simulation.final_amount),
+        "net_edge_bps": None if simulation.net_edge_bps is None else str(simulation.net_edge_bps),
+        "failed_leg_symbol": simulation.failed_leg_symbol,
+        "legs": [{
+            "symbol": leg.symbol,
+            "from_asset": leg.from_asset,
+            "to_asset": leg.to_asset,
+            "side": leg.side,
+            "input_amount": str(leg.input_amount),
+            "filled_input": str(leg.filled_input),
+            "output_amount": str(leg.output_amount),
+            "traded_base_amount": str(leg.traded_base_amount),
+            "fee_paid_base": str(leg.fee_paid_base),
+            "fee_paid_quote": str(leg.fee_paid_quote),
+            "levels_used": leg.levels_used,
+            "complete": leg.complete,
+        } for leg in simulation.legs],
+    }
+
 def _market_payload(market: MarketInfo) -> dict[str, Any]:
     return {
         "symbol": market.symbol,
@@ -315,6 +361,8 @@ def _market_payload(market: MarketInfo) -> dict[str, Any]:
         "min_amount": None if market.min_amount is None else str(market.min_amount),
         "min_cost": None if market.min_cost is None else str(market.min_cost),
         "taker_fee_rate": None if market.taker_fee_rate is None else str(market.taker_fee_rate),
+        "taker_fee_rate_base": None if market.taker_fee_rate_base is None else str(market.taker_fee_rate_base),
+        "taker_fee_rate_quote": None if market.taker_fee_rate_quote is None else str(market.taker_fee_rate_quote),
     }
 
 
@@ -458,7 +506,10 @@ def run_args(args, *, repo_root: Path) -> int:
                 "max_start_amount": str(route.max_start_amount),
                 "legs": [{
                     "symbol": leg.symbol, "from_asset": leg.from_asset, "to_asset": leg.to_asset,
-                    "side": leg.side, "price": str(leg.price), "fee_rate": str(leg.fee_rate),
+                    "side": leg.side, "price": str(leg.price),
+                    "fee_rate": str(leg.fee_rate_quote),
+                    "fee_rate_base": str(leg.fee_rate_base),
+                    "fee_rate_quote": str(leg.fee_rate_quote),
                 } for leg in route.legs],
             })
         _json_print({
@@ -466,6 +517,71 @@ def run_args(args, *, repo_root: Path) -> int:
             "triangle_market_count": len(triangle_symbols),
             "book_market_count": len(books),
             "candidate_count": len(candidates),
+            "candidates": candidates,
+        })
+        return 0
+    if command == "arbitrage-depth-scan":
+        probe_asset = str(args.probe_asset).strip().upper()
+        if not probe_asset:
+            raise TradingCliError("probe asset must not be empty")
+        probe_amounts = _parse_probe_amounts(args.probe_amounts)
+        try:
+            min_edge = as_decimal(args.min_edge_bps, "min_edge_bps")
+            gateway = BitbankPublicGateway()
+            markets = gateway.discover_markets()
+            triangle_symbols = find_triangle_symbols(markets)
+            now = time.time()
+            depth_books = (
+                gateway.fetch_depth_books(triangle_symbols, now=now, limit=args.book_limit)
+                if triangle_symbols else {}
+            )
+            top_books = {
+                symbol: TopOfBook(
+                    symbol, book.bids[0].price, book.asks[0].price, book.as_of,
+                    bid_amount=book.bids[0].amount, ask_amount=book.asks[0].amount,
+                )
+                for symbol, book in depth_books.items()
+            }
+            routes = scan_triangular_arbitrage(markets, top_books, now=now, min_net_edge_bps=min_edge)
+        except (CCXTUnavailableError, ArbitrageDataError, TradingValidationError) as exc:
+            raise TradingCliError(str(exc)) from exc
+        candidates = []
+        for route in routes:
+            route_assets = {leg.from_asset for leg in route.legs}
+            simulations = []
+            probe_skip_reason = None
+            if probe_asset in route_assets:
+                simulations = [
+                    _depth_simulation_payload(
+                        simulate_route_depth(route, depth_books, start_amount=amount, start_asset=probe_asset)
+                    )
+                    for amount in probe_amounts
+                ]
+            else:
+                probe_skip_reason = "probe_asset_not_in_route"
+            candidates.append({
+                "route_id": route.route_id,
+                "top_start_asset": route.start_asset,
+                "top_net_edge_bps": str(route.net_edge_bps),
+                "top_max_start_amount": str(route.max_start_amount),
+                "probe_asset": probe_asset,
+                "probe_skip_reason": probe_skip_reason,
+                "depth_simulations": simulations,
+                "legs": [{
+                    "symbol": leg.symbol, "from_asset": leg.from_asset, "to_asset": leg.to_asset,
+                    "side": leg.side, "price": str(leg.price),
+                    "fee_rate": str(leg.fee_rate_quote),
+                    "fee_rate_base": str(leg.fee_rate_base),
+                    "fee_rate_quote": str(leg.fee_rate_quote),
+                } for leg in route.legs],
+            })
+        _json_print({
+            "mode": "paper", "exchange": "bitbank", "as_of": now,
+            "triangle_market_count": len(triangle_symbols),
+            "depth_market_count": len(depth_books),
+            "candidate_count": len(candidates),
+            "probe_asset": probe_asset,
+            "probe_amounts": [str(amount) for amount in probe_amounts],
             "candidates": candidates,
         })
         return 0
