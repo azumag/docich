@@ -1126,6 +1126,19 @@ def _comment_audio_claim_enqueue_key(soren_root: Path, text: str) -> bool:
             return False
 
 
+def _comment_audio_release_enqueue_key(soren_root: Path, text: str) -> None:
+    """Release this text's dedup claim after a failed queue write."""
+    key = _comment_audio_hash(text)
+    if not key:
+        return
+    marker = _comment_audio_dedup_dir(soren_root) / key
+    try:
+        import shutil
+        shutil.rmtree(marker, ignore_errors=True)
+    except Exception:
+        pass
+
+
 def _validate_audio_text(text: str) -> str:
     if not isinstance(text, str):
         raise ValueError("text は文字列である必要があります")
@@ -1170,7 +1183,11 @@ def _enqueue_audio_text(soren_root: Path, text: str, source: str = "webui_manual
     if not _comment_audio_claim_enqueue_key(soren_root, cleaned):
         return {"ok": True, "dedup": True, "filename": None}
     queue_dir = _comment_queue_dir(soren_root)
-    queue_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        queue_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        _comment_audio_release_enqueue_key(soren_root, cleaned)
+        raise
     ts = time.time_ns()
     filename = f"comment_announce_{ts}_{src}.txt"
     dest = queue_dir / filename
@@ -1192,6 +1209,9 @@ def _enqueue_audio_text(soren_root: Path, text: str, source: str = "webui_manual
             except Exception:
                 pass
         return {"ok": True, "dedup": False, "filename": filename, "path": str(dest)}
+    except Exception:
+        _comment_audio_release_enqueue_key(soren_root, cleaned)
+        raise
     finally:
         if tmp_fd is not None:
             try:

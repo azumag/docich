@@ -3,13 +3,12 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+import fcntl
 import json
 import math
 import os
-import shutil
 from pathlib import Path
 import tempfile
-import time
 from typing import Callable, Iterator, Mapping
 
 from ..config import GlobalConfig
@@ -22,41 +21,38 @@ class NotificationError(RuntimeError):
     """Raised when source/delivery state is corrupt or cannot be persisted."""
 
 
-DELIVERY_LOCK_STALE_SECONDS = 120
-
-
 @contextmanager
 def _delivery_lock(state_dir: Path) -> Iterator[None]:
+    """Non-stealable process lock for the full source->output->ACK transaction."""
     base = Path(state_dir)
     base.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
         os.chmod(base, 0o700)
     except OSError:
         pass
-    lock = base / ".notification_delivery.lock"
+    lock_path = base / ".notification_delivery.lock"
     try:
-        lock.mkdir(mode=0o700)
-    except FileExistsError:
-        try:
-            age = time.time() - lock.stat().st_mtime
-        except OSError as exc:
-            raise NotificationError("notification delivery lock is unreadable") from exc
-        if age <= DELIVERY_LOCK_STALE_SECONDS:
-            raise NotificationError("notification delivery already in progress")
-        shutil.rmtree(lock, ignore_errors=True)
-        try:
-            lock.mkdir(mode=0o700)
-        except FileExistsError as exc:
-            raise NotificationError("notification delivery lock could not be acquired") from exc
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as exc:
+        raise NotificationError("notification delivery lock could not be opened") from exc
     try:
-        yield
-    finally:
         try:
-            lock.rmdir()
-        except FileNotFoundError:
-            pass
+            os.fchmod(fd, 0o600)
         except OSError:
-            shutil.rmtree(lock, ignore_errors=True)
+            pass
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError) as exc:
+            raise NotificationError("notification delivery already in progress") from exc
+        try:
+            yield
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+    finally:
+        os.close(fd)
 
 
 @dataclass(frozen=True)
