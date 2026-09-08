@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+import math
 from typing import Any, Sequence
 
 from .models import TradingValidationError, as_decimal
@@ -68,6 +69,8 @@ def frame_from_ohlcv(
             if not isinstance(row, Sequence) or len(row) < 6:
                 raise MarketFrameError(f"{symbol} history row is malformed")
             timestamp = float(row[0]) / 1000.0
+            if not math.isfinite(timestamp):
+                raise MarketFrameError(f"{symbol} history contains invalid timestamp")
             close = as_decimal(row[4], f"{symbol}.close")
             volume = as_decimal(row[5], f"{symbol}.volume")
             if close <= 0 or volume < 0:
