@@ -136,7 +136,7 @@ soviet_now側の全on-air出力guardが適用されています。
 | `docich ra-cmd <CMD>` | RetroArch UDP command |
 | `docich webui [--dry-run]` | モデルチェーン/バックオフ管理 Web UI (Tailscale経由) |
 | `docich caption plan/send ...` | 字幕計画とFFmpeg IPC |
-| `docich trading status/discover/paper-cycle` | 暗号資産 paper trading 基盤（live注文なし） |
+| `docich trading status/discover/history/paper-cycle/strategy-cycle` | 暗号資産 paper trading 基盤（live注文なし） |
 | `docich run <component>` | tmux内の監督ループ用内部command |
 
 設定探索順は `--config`、`$DOCICH_CONFIG`、
@@ -153,6 +153,7 @@ bitbank の公開 market metadata を CCXT 経由で確認する場合だけ opt
 ```bash
 python3 -m pip install -r requirements-trading.txt
 bin/docich trading discover
+bin/docich trading history --symbols BTC/JPY,ETH/JPY --timeframe 5m --limit 24
 bin/docich trading status
 ```
 
@@ -165,7 +166,36 @@ bin/docich trading status
 bin/docich trading paper-cycle --snapshot /path/to/paper-snapshot.json
 ```
 
-常駐worker、リアルタイム戦略、配信通知、実発注は後続sliceで追加します。
+`history` は公開OHLCVだけを取得し、価格系列を strategy 用の正規化frameとして出力します。
+`strategy-cycle` はその形式の履歴snapshotから、momentum-v1 / mean-reversion-v1 /
+relative-value-v1 で候補を生成します。relative-value は同一quote群の市場全体に対する
+出遅れと直近の安定化を検出し、同一symbol重複と高い正相関候補を除外してから既存30% allocatorへ渡します。
+候補数・採用数・strategy IDは `status.json` の `signal_summary` に公開用情報として残ります。
+
+```bash
+bin/docich trading strategy-cycle --snapshot /path/to/strategy-snapshot.json
+```
+
+`arbitrage-scan` は有効な市場metadataから実在する3市場・3資産の閉路だけを探し、
+公開best bid/askとbitbankのbase/quote別taker手数料を3レッグすべてに適用してnet edgeを計算します。
+best level数量から開始資産ベースの `max_start_amount` も出します。現在は診断専用で、
+候補が見つかってもpaper台帳へのfillや実注文は行いません。三角形を構成できる市場がなければ
+order book API自体を呼びません。
+
+`arbitrage-depth-scan` は公開板を複数段取り込み、指定した開始資産量ごとに3レッグを順番に
+板へ通した場合の `complete`、最終受取量、実効net edge、各レッグの使用level数を計算します。
+板容量が足りなければ流動性を発明せず `complete=false` で停止します。既定probeは
+JPY 1,000 / 3,000 / 10,000です。
+
+```bash
+bin/docich trading arbitrage-scan --min-edge-bps 10
+bin/docich trading arbitrage-depth-scan --min-edge-bps 10 --probe-asset JPY --probe-amounts 1000,3000,10000
+```
+
+現段階のdepth診断でも、3レッグ間のレイテンシ・価格変動・注文キュー・最小注文単位/数量丸め・
+circuit breaker中の実発注可否までは再現しません。したがって実効edgeも実行保証ではありません。
+
+常駐worker、裁定の複数レッグpaper約定、配信通知、実発注は後続sliceで追加します。
 実発注を有効化する前には、別途の設計レビューと明示承認が必要です。
 
 ## 設定
