@@ -8,12 +8,14 @@ import unittest
 from pathlib import Path
 
 from ops.vm_actions.reconcile_presynced_submodule import (
+    REASON_PROJECTION_STATE_VECTOR_BASE,
     REASON_PROJECTION_UNKNOWN_STATE,
     REASON_ROOT_DRIFT,
     REASON_SUBMODULE_DRIFT,
     REASON_SUBMODULE_HEAD_MISMATCH,
     REASON_UNAPPROVED_SUBMODULE,
     ReconcileError,
+    _projection_unknown_reason,
     reconcile,
 )
 
@@ -142,6 +144,16 @@ class PresyncedSubmoduleReconcileTests(unittest.TestCase):
             lambda: reconcile(self.root, self.old_parent, self.old_sub, self.new_sub, "games/soviet_now", self.live),
         )
         self.assertEqual(path.read_text(encoding="utf-8"), "operator drift\n")
+
+    def test_projection_state_vector_encodes_small_multi_path_unknowns(self):
+        self.assertEqual(
+            _projection_unknown_reason([0, 1, 2, 1]),
+            REASON_PROJECTION_STATE_VECTOR_BASE + (0 + 3 + 18 + 27),
+        )
+
+    def test_projection_state_vector_preserves_generic_code_outside_bound(self):
+        self.assertEqual(_projection_unknown_reason([2]), REASON_PROJECTION_UNKNOWN_STATE)
+        self.assertEqual(_projection_unknown_reason([2, 2, 2, 2, 2]), REASON_PROJECTION_UNKNOWN_STATE)
 
     def test_refuses_unknown_submodule_head_without_mutating_it(self):
         sub = self.root / "games/soviet_now"
