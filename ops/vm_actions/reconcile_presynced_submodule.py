@@ -4,10 +4,11 @@
 The recovery is intentionally bounded. It first proves the docich root and
 owned Soren checkout can be returned to the recorded old deployment. When run
 from the production workflow it then checks every live projection path changed
-by old_sub..new_sub. Each live path must be exactly the recorded old or the
-reviewed-new bytes *and* mode. Reviewed-new paths are atomically restored to
-old so the normal root-owned gateway can perform the canonical old->new
-transaction. Any third state remains fail-closed.
+by old_sub..new_sub. Each live path must have exactly the recorded old or the
+reviewed-new content; regular-file mode drift is normalized back to the Git
+mode. Reviewed-new paths are atomically restored to old so the normal root-owned
+gateway can perform the canonical old->new transaction. Any third content state
+remains fail-closed.
 """
 from __future__ import annotations
 
@@ -168,6 +169,12 @@ def _projection_same(actual, expected) -> bool:
     return actual["sha256"] == expected["sha256"] and actual["mode"] == expected["mode"]
 
 
+def _projection_content_same(actual, expected) -> bool:
+    if actual is None or expected is None:
+        return actual is None and expected is None
+    return actual["sha256"] == expected["sha256"]
+
+
 def _atomic_projection_write(path: Path, data: bytes, mode: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=".vmops-reconcile-", dir=path.parent)
@@ -206,17 +213,19 @@ def _normalize_projection(repo: Path, old_sub: str, new_sub: str, destination: P
         live_meta = _projection_live(path)
         if _projection_same(live_meta, old_meta):
             continue
-        if not _projection_same(live_meta, new_meta):
-            raise ReconcileError(REASON_PROJECTION_UNKNOWN_STATE, "live projection is neither recorded old nor reviewed new")
-        plans.append((path, old_meta, new_meta))
+        if not (_projection_content_same(live_meta, old_meta) or _projection_content_same(live_meta, new_meta)):
+            raise ReconcileError(REASON_PROJECTION_UNKNOWN_STATE, "live projection content is neither recorded old nor reviewed new")
+        # Preserve the exact original regular-file state for rollback. This
+        # includes a non-canonical mode; content itself is still reviewed.
+        plans.append((path, old_meta, live_meta))
 
     applied = []
     try:
-        for path, old_meta, new_meta in plans:
-            if not _projection_same(_projection_live(path), new_meta):
+        for path, old_meta, original_live in plans:
+            if not _projection_same(_projection_live(path), original_live):
                 raise ReconcileError(REASON_PROJECTION_UNKNOWN_STATE, "concurrent projection drift")
             _set_projection(path, old_meta)
-            applied.append((path, old_meta, new_meta))
+            applied.append((path, old_meta, original_live))
         for rel in changed:
             path = _safe_projection_path(destination, rel)
             old_meta = _projection_expected(repo, _projection_entry(repo, old_sub, rel))
@@ -224,11 +233,11 @@ def _normalize_projection(repo: Path, old_sub: str, new_sub: str, destination: P
                 raise ReconcileError(REASON_PROJECTION_POSTVERIFY_FAILED, "old projection verification failed")
     except Exception as exc:
         rollback_failed = False
-        for path, old_meta, new_meta in reversed(applied):
+        for path, old_meta, original_live in reversed(applied):
             try:
                 if _projection_same(_projection_live(path), old_meta):
-                    _set_projection(path, new_meta)
-                elif not _projection_same(_projection_live(path), new_meta):
+                    _set_projection(path, original_live)
+                elif not _projection_same(_projection_live(path), original_live):
                     rollback_failed = True
             except Exception:
                 rollback_failed = True
