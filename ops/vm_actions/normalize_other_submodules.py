@@ -5,12 +5,15 @@ Only a clean checkout away from its recorded gitlink is moved to that exact
 reviewed object. Tracked drift stays fail-closed with a numeric exit code.
 Afterwards, read-only managed candidates (Soren live paths projected by an
 earlier deploy but outside the current diff) are compared against blobs at
-the recorded old gitlink; any drift reports a 10x code without writing.
+the recorded old gitlink; reviewed-content mode drift is canonicalized to
+the Git mode through preflighted writes with rollback, while any other
+drift reports a 10x code without writing.
 The whole file is piped via production exec stdin (gateway cap 16384 bytes).
 """
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import stat
 import subprocess
@@ -76,9 +79,15 @@ def _git_bytes(root: Path, *args: str) -> bytes:
         raise NormalizeError(REASON_GIT_VERIFICATION_FAILED, "git verification failed") from exc
 
 
-def _candidate_state(soviet: Path, old_sub: str, destination: Path, rel: str) -> int:
-    # 0 = full old match, 1 = old content with drifted mode, 2 = otherwise.
-    # Reports ordinals only; live bytes, hashes, modes, and paths stay local.
+def _read_live(path: Path):
+    if path.is_symlink() or not path.is_file():
+        return None
+    data = path.read_bytes()
+    return {"sha": hashlib.sha256(data).hexdigest(), "mode": stat.S_IMODE(path.stat().st_mode)}
+
+
+def _candidate_metas(soviet: Path, old_sub: str, destination: Path, rel: str):
+    # (path, live, expected) with metas as {"sha", "mode"} dicts or None.
     raw = _git_bytes(soviet, "ls-tree", "-z", old_sub, "--", rel)
     entries = [item for item in raw.split(b"\0") if item]
     expected = None
@@ -87,18 +96,18 @@ def _candidate_state(soviet: Path, old_sub: str, destination: Path, rel: str) ->
         mode, kind, obj = meta.decode("ascii").split()
         if raw_path.decode("utf-8", "strict") == rel and kind == "blob" and mode in {"100644", "100755"}:
             data = _git_bytes(soviet, "cat-file", "blob", obj)
-            expected = (hashlib.sha256(data).hexdigest(), 0o755 if mode == "100755" else 0o644)
-    path = destination / rel
-    if path.is_symlink() or not path.is_file():
-        live = None
-    else:
-        data = path.read_bytes()
-        live = (hashlib.sha256(data).hexdigest(), stat.S_IMODE(path.stat().st_mode))
+            expected = {"sha": hashlib.sha256(data).hexdigest(), "mode": 0o755 if mode == "100755" else 0o644}
+    return destination / rel, _read_live(destination / rel), expected
+
+
+def _classify_state(live, expected) -> int:
+    # 0 = full old match, 1 = old content with drifted mode, 2 = otherwise.
+    # Reports ordinals only; live bytes, hashes, modes, and paths stay local.
     if live is None or expected is None:
         return 0 if live is None and expected is None else 2
-    if live[0] != expected[0]:
+    if live["sha"] != expected["sha"]:
         return 2
-    return 0 if live[1] == expected[1] else 1
+    return 0 if live["mode"] == expected["mode"] else 1
 
 
 def normalize(root: Path, old_parent: str, soviet_live: Path = SOVIET_LIVE) -> None:
@@ -135,12 +144,44 @@ def normalize(root: Path, old_parent: str, soviet_live: Path = SOVIET_LIVE) -> N
             raise NormalizeError(REASON_POSTVERIFY_FAILED, "other submodule postverify failed")
     old_sub = _gitlink_at(root, old_parent, SOVIET_SUBMODULE, "soviet")
     soviet = root / SOVIET_SUBMODULE
-    states = [_candidate_state(soviet, old_sub, soviet_live, rel) for rel in MANAGED_CANDIDATES]
-    if any(states):
+    records = []
+    for rel in MANAGED_CANDIDATES:
+        path, live, expected = _candidate_metas(soviet, old_sub, soviet_live, rel)
+        records.append((path, live, expected, _classify_state(live, expected)))
+    states = [state for _, _, _, state in records]
+    if any(state == 2 for state in states):
         raise NormalizeError(
             REASON_CANDIDATE_BASE + states[0] + 3 * states[1],
             "managed candidate drift outside current diff",
         )
+    applied = []
+    try:
+        for path, live, expected, state in records:
+            if state != 1:
+                continue
+            if _read_live(path) != live:
+                raise NormalizeError(REASON_POSTVERIFY_FAILED, "managed candidate concurrent drift")
+            os.chmod(path, expected["mode"])
+            applied.append((path, live, expected["mode"]))
+        for path, _, expected, _ in records:
+            if _classify_state(_read_live(path), expected) != 0:
+                raise NormalizeError(REASON_POSTVERIFY_FAILED, "managed candidate postverify failed")
+    except Exception as exc:
+        failed = False
+        for path, live, want in reversed(applied):
+            try:
+                current = _read_live(path)
+                if current is not None and current["sha"] == live["sha"] and current["mode"] == want:
+                    os.chmod(path, live["mode"])
+                elif current is None or current["sha"] != live["sha"] or current["mode"] != live["mode"]:
+                    failed = True
+            except OSError:
+                failed = True
+        if failed:
+            raise NormalizeError(REASON_MUTATION_FAILED, "managed candidate rollback incomplete") from exc
+        if isinstance(exc, NormalizeError):
+            raise
+        raise NormalizeError(REASON_MUTATION_FAILED, "managed candidate repair failed") from exc
 
 
 def main(argv: list[str]) -> int:
