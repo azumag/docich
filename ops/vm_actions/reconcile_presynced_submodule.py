@@ -47,6 +47,9 @@ PROJECTION_UNKNOWN_MASK_MAX_PATHS = 4
 # Exactly one unknown path: 90 + bit*3 + class. Class 0 = live absent, 1 =
 # live present with unreviewed length, 2 = live present with a reviewed
 # length but unreviewed bytes. Codes 90..101. Acceptance never changes.
+# Only pruned repo-only paths (never executed on the host) heal to recorded
+# old bytes. Edits, runtime paths, and anything else unknown stay fail-closed.
+REPO_ONLY_PREFIXES = (".github/",)
 REASON_PROJECTION_UNKNOWN_CLASS_BASE = 90
 PROJECTION_UNKNOWN_CLASS_PER_PATH = 3
 PROJECTION_UNKNOWN_CLASS_ABSENT = 0
@@ -182,36 +185,23 @@ def _projection_content_state(actual, old_expected, new_expected) -> int:
     return 1 if live == _content_sha(new_expected) else 2
 
 
-def _projection_unknown_reason(states: list[int]) -> int:
-    # Historical mask/generic mapping; acceptance never changes.
+def _projection_unknown_reason(states: list[int], unknowns=None) -> int:
+    # Mask/generic mapping; a lone unknown with its record refines to its
+    # presence/length class. Acceptance never changes.
     if len(states) < 2 or len(states) > PROJECTION_UNKNOWN_MASK_MAX_PATHS:
         return REASON_PROJECTION_UNKNOWN_STATE
     mask = sum(1 << index for index, state in enumerate(states) if state == 2)
-    if mask == 0:
-        return REASON_PROJECTION_UNKNOWN_STATE
-    return REASON_PROJECTION_UNKNOWN_MASK_BASE + mask
-
-
-def _projection_unknown_class(bit: int, live, old_expected, new_expected) -> int:
-    # Presence/length only; recorded blob lengths are public, and the class
-    # reveals no live bytes, hashes, modes, or paths.
+    if mask == 0 or unknowns is None or mask & (mask - 1) or not unknowns:
+        if mask == 0:
+            return REASON_PROJECTION_UNKNOWN_STATE
+        return REASON_PROJECTION_UNKNOWN_MASK_BASE + mask
+    bit, live, old_expected, new_expected = unknowns[0]
     if live is None:
         klass = PROJECTION_UNKNOWN_CLASS_ABSENT
     else:
         known_lens = {len(e["data"]) for e in (old_expected, new_expected) if e is not None}
         klass = PROJECTION_UNKNOWN_CLASS_SAME_LENGTH if len(live["data"]) in known_lens else PROJECTION_UNKNOWN_CLASS_RESIZED
     return REASON_PROJECTION_UNKNOWN_CLASS_BASE + bit * PROJECTION_UNKNOWN_CLASS_PER_PATH + klass
-
-
-def _select_projection_unknown_reason(states: list[int], unknowns: list[tuple]) -> int:
-    # Single unknown refines to its class; anything else keeps mask/generic.
-    if len(states) < 2 or len(states) > PROJECTION_UNKNOWN_MASK_MAX_PATHS or len(unknowns) != 1:
-        return _projection_unknown_reason(states)
-    mask = sum(1 << index for index, state in enumerate(states) if state == 2)
-    if mask == 0 or mask & (mask - 1):
-        return _projection_unknown_reason(states)
-    bit, live, old_expected, new_expected = unknowns[0]
-    return _projection_unknown_class(bit, live, old_expected, new_expected)
 
 
 def _atomic_projection_write(path: Path, data: bytes, mode: int) -> None:
@@ -255,6 +245,13 @@ def _normalize_projection(repo: Path, old_sub: str, new_sub: str, destination: P
         live_meta = _projection_live(path)
         verifies.append((path, old_meta))
         state = _projection_content_state(live_meta, old_meta, new_meta)
+        if state == 2 and live_meta is None and old_meta is not None and rel.startswith(REPO_ONLY_PREFIXES):
+            # Pruned repo-only file: restore recorded old through the same
+            # preflighted atomic write + rollback as reviewed writes. Coded
+            # as not-refused; verifies/postverify still enforce old content.
+            plans.append((path, old_meta, None))
+            states.append(0)
+            continue
         states.append(state)
         if state == 2:
             unknowns.append((index, live_meta, old_meta, new_meta))
@@ -266,7 +263,7 @@ def _normalize_projection(repo: Path, old_sub: str, new_sub: str, destination: P
 
     if 2 in states:
         raise ReconcileError(
-            _select_projection_unknown_reason(states, unknowns),
+            _projection_unknown_reason(states, unknowns),
             "live projection content is neither recorded old nor reviewed new",
         )
 
