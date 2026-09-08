@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from ops.vm_actions.reconcile_presynced_submodule import (
+    REASON_PROJECTION_UNKNOWN_STATE,
     REASON_ROOT_DRIFT,
     REASON_SUBMODULE_DRIFT,
     REASON_SUBMODULE_HEAD_MISMATCH,
@@ -21,6 +22,7 @@ class PresyncedSubmoduleReconcileTests(unittest.TestCase):
         base = Path(self.tmp.name)
         self.sub_remote = base / "soren"
         self.root = base / "docich"
+        self.live = base / "live"
         self._init_repo(self.sub_remote)
 
         (self.sub_remote / "worker.sh").write_text("old\n", encoding="utf-8")
@@ -60,6 +62,7 @@ class PresyncedSubmoduleReconcileTests(unittest.TestCase):
         self._git(sub, "config", "user.email", "tests@example.invalid")
         self._git(sub, "config", "user.name", "vmops tests")
         self._git(sub, "checkout", "--detach", "--quiet", self.new_sub)
+        self.live.mkdir()
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -101,6 +104,36 @@ class PresyncedSubmoduleReconcileTests(unittest.TestCase):
         self._git(sub, "checkout", "--detach", "--quiet", self.new_sub)
         reconcile(self.root, self.old_parent, self.old_sub, reviewed_merge, "games/soviet_now")
         self.assertEqual(self._git(sub, "rev-parse", "HEAD"), self.old_sub)
+
+    def test_exact_reviewed_new_live_projection_is_normalized_to_old(self):
+        path = self.live / "worker.sh"
+        path.write_text("new\n", encoding="utf-8")
+        reconcile(
+            self.root,
+            self.old_parent,
+            self.old_sub,
+            self.new_sub,
+            "games/soviet_now",
+            self.live,
+        )
+        self.assertEqual(path.read_text(encoding="utf-8"), "old\n")
+        self.assertEqual(self._git(self.root / "games/soviet_now", "rev-parse", "HEAD"), self.old_sub)
+
+    def test_unknown_live_projection_is_refused_without_overwrite(self):
+        path = self.live / "worker.sh"
+        path.write_text("operator drift\n", encoding="utf-8")
+        self.assert_reason(
+            REASON_PROJECTION_UNKNOWN_STATE,
+            lambda: reconcile(
+                self.root,
+                self.old_parent,
+                self.old_sub,
+                self.new_sub,
+                "games/soviet_now",
+                self.live,
+            ),
+        )
+        self.assertEqual(path.read_text(encoding="utf-8"), "operator drift\n")
 
     def test_refuses_unknown_submodule_head_without_mutating_it(self):
         sub = self.root / "games/soviet_now"
