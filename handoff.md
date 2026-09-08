@@ -1,3 +1,21 @@
+## 2026-09-09 — PAPER通知基盤を本番配備、模擬売買の自動実行は無効を維持
+
+- ユーザーがマージと本番配備を承認。Soren PR #242をコードmain `7fa8dbbed0409eced79703400bb73e0923c52004`、docich PR #156をコードmain `9560f5962938b8540464ade8293b3bb4bba2d792` へマージ。生成運用メモはSoren PR #244で最終main `e7fe9c830b12ecdbfdd30c51f113b0fa97418778` に同期。docich最終mainは本節を含む参照同期PRのmergeCommitとして最終報告に記録する。
+- Soren VM `/home/ubuntu/soren` のoverlay_notify.sh・tests/test_overlay_notify_lock.pyの2件、docich VM `/home/ubuntu/docich` の変更26ファイルを旧SHA確認・backup後に配備し、コードmainとの全対象SHA-256一致。docichの実gitlinkはSorenコードmainと一致。README/全Sorenファイルの一致は主張せず、後続のops brief配備も別途照合する。
+- backup: Soren `tmp/deploy-backups/crypto-notifications-20260909`、docich `.codex_deploy/crypto-notifications-20260909`。復旧のため保持。機密情報・実行時stateをGitへ追加していない。
+- Web UI旧PID1780512（子なし）を終了し、同じ引数・環境をメモリ内で引き継ぎ新PID2438030/start_ticks242963298へ起動。health200、旧PID不在を確認。配信2188217/start_ticks231190749、共通runtime3518891、共通overlay657382、resolver3466823/3466825は維持。Sorenスクリプトは呼出時に新コードを読み、worker/配信再起動なし。
+- 検証: 最終コードの全docich1509 passed / 3 skipped / 107 subtests、通知契約176件+2 subtests。VM native5件、VM通知/共有ロック/音声44件+2 subtests成功。配備コードによるVM隔離実配送もbootstrap0/0→new1/1→retry0/0、PAPER・配送時刻・HTML生成を確認。本番キューに取引通知は投入していない。実際の読み上げ再生と実取引は検証対象外。
+- 最新コードHEADのCIは両repo成功。docich macOSの1回目はPyPI DNS障害でテスト開始前に失敗し、同一HEAD再実行が成功。主担当がレビュー・実装・検証、サブエージェント/外部エージェント不使用。
+- 本番通常設定・soren-live設定ともpaper_worker_enabled / notifications_enabled / notification_speech_enabledはfalseを維持。実CLI notify-onceもenabled=false、配送0件。今回の反映で取引監視や実況を自動開始していない。次機能はpaper exit戦略であり、live/private APIの許可はない。
+
+## 2026-09-09 — レイド元の自己紹介と最近の配信を事前取得
+
+- 並行mainにあるSorenの既存運用メモを維持。今回の変更対象外で、本タスクではレイド経路の実測は行っていない。
+
+## 2026-09-09 — チャネルポイント予想の試合数を改善・A/Bから分離
+
+- 並行mainにあるSorenの既存運用メモを維持。今回の変更対象外で、本タスクでは予想経路の実測は行っていない。
+
 ## 2026-09-09 — PAPER通知の共有ロック修正を隔離環境で検証
 
 - ユーザーが案Aを承認。Soren `overlay_notify.sh` とdocich共通queueが `<events filename>.lock` を同じfcntl.flockで排他。待機上限5秒、mtime stealingなし、owner死亡時はOS解放。Web UI単一削除もread-modify-write全体を保護し、競合HTTP409を維持。
