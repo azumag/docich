@@ -1049,51 +1049,62 @@ def _validate_audio_delivery_key(delivery_key: str) -> str:
     return value
 
 
-def _comment_audio_cleanup_delivery_markers(soren_root: Path, keep: int = 2048) -> None:
-    dedup_dir = _comment_audio_delivery_dir(soren_root)
-    try:
-        markers = [item for item in dedup_dir.iterdir() if item.is_dir()]
-        markers.sort(key=lambda item: item.stat().st_mtime, reverse=True)
-        for marker in markers[keep:]:
+def _enqueue_audio_delivery(soren_root: Path, text: str, delivery: str) -> dict[str, Any]:
+    """Publish once by atomically moving a prepared payload into the queue.
+
+    A complete receipt directory is installed before publication. Its payload
+    exists while prepared; absence means the atomic queue rename committed,
+    even if audio-worker has already consumed the queue file. Never expire
+    receipts: text TTL and bounded marker eviction cannot deduplicate events.
+    This guarantees process-crash recovery on one local filesystem, not
+    exactly-once playback or recovery from filesystem/power loss.
+    """
+    import fcntl
+    import shutil
+
+    queue = _comment_queue_dir(soren_root)
+    receipts = _comment_audio_delivery_dir(soren_root)
+    receipts.mkdir(parents=True, exist_ok=True)
+    key = hashlib.sha256(delivery.encode("utf-8")).hexdigest()
+    marker = receipts / key
+    # The lock inode is permanent; the kernel releases it when a process dies.
+    with (receipts / ".publish.lock").open("a") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        if not marker.exists():
+            stage = Path(tempfile.mkdtemp(prefix=".prepared.", dir=receipts))
             try:
-                import shutil
-                shutil.rmtree(marker, ignore_errors=True)
-            except Exception:
-                pass
-    except Exception:
-        pass
-
-
-def _comment_audio_claim_delivery_key(soren_root: Path, delivery_key: str) -> bool:
-    value = _validate_audio_delivery_key(delivery_key)
-    if not value:
-        return True
-    dedup_dir = _comment_audio_delivery_dir(soren_root)
-    dedup_dir.mkdir(parents=True, exist_ok=True)
-    key = hashlib.sha256(value.encode("utf-8")).hexdigest()
-    marker = dedup_dir / key
-    try:
-        marker.mkdir(parents=False, exist_ok=False)
-    except FileExistsError:
-        return False
-    try:
-        (marker / "event_id").write_text(value + "\n", encoding="utf-8")
-    except Exception:
-        pass
-    _comment_audio_cleanup_delivery_markers(soren_root)
-    return True
-
-
-def _comment_audio_release_delivery_key(soren_root: Path, delivery_key: str) -> None:
-    value = _validate_audio_delivery_key(delivery_key)
-    if not value:
-        return
-    marker = _comment_audio_delivery_dir(soren_root) / hashlib.sha256(value.encode("utf-8")).hexdigest()
-    try:
-        import shutil
-        shutil.rmtree(marker, ignore_errors=True)
-    except Exception:
-        pass
+                filename = f"comment_announce_{time.time_ns()}_{key}_crypto_paper.txt"
+                for name, content in (("receipt.json", json.dumps({
+                    "version": 1, "event_id": delivery, "filename": filename,
+                })), ("payload", text + "\n")):
+                    with (stage / name).open("w", encoding="utf-8") as handle:
+                        handle.write(content)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                (stage / "payload").chmod(0o644)
+                os.replace(stage, marker)
+            finally:
+                if stage.exists():
+                    shutil.rmtree(stage)
+        # Legacy marker-only reservations have no evidence of publication.
+        # Fail rather than silently ACK or risk replaying an old announcement.
+        try:
+            record = json.loads((marker / "receipt.json").read_text(encoding="utf-8"))
+            filename = record["filename"]
+            if (record.get("version") != 1 or record.get("event_id") != delivery
+                    or not isinstance(filename, str)
+                    or re.fullmatch(rf"comment_announce_[0-9]+_{key}_crypto_paper\.txt", filename) is None):
+                raise ValueError("invalid receipt")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise RuntimeError("audio delivery receipt is ambiguous; manual reconciliation required") from exc
+        payload = marker / "payload"
+        if not payload.exists():
+            return {"ok": True, "dedup": True, "filename": None}
+        dest = queue / filename
+        # This rename is both publication and the durable committed state.
+        # Do not recreate/remove the receipt on any exception after this point.
+        os.replace(payload, dest)
+        return {"ok": True, "dedup": False, "filename": filename, "path": str(dest)}
 
 
 def _comment_audio_cleanup_dedup_markers(soren_root: Path, ttl: int) -> None:
@@ -1251,19 +1262,17 @@ def _enqueue_audio_text(
     spk = _validate_audio_speaker(speaker)
     delivery = _validate_audio_delivery_key(delivery_key)
     if delivery:
-        claimed = _comment_audio_claim_delivery_key(soren_root, delivery)
-    else:
-        claimed = _comment_audio_claim_enqueue_key(soren_root, cleaned)
+        if src != "crypto_paper" or spk:
+            raise ValueError("delivery_key is reserved for crypto_paper without speaker override")
+        return _enqueue_audio_delivery(soren_root, cleaned, delivery)
+    claimed = _comment_audio_claim_enqueue_key(soren_root, cleaned)
     if not claimed:
         return {"ok": True, "dedup": True, "filename": None}
     queue_dir = _comment_queue_dir(soren_root)
     try:
         queue_dir.mkdir(parents=True, exist_ok=True)
     except Exception:
-        if delivery:
-            _comment_audio_release_delivery_key(soren_root, delivery)
-        else:
-            _comment_audio_release_enqueue_key(soren_root, cleaned)
+        _comment_audio_release_enqueue_key(soren_root, cleaned)
         raise
     ts = time.time_ns()
     filename = f"comment_announce_{ts}_{src}.txt"
@@ -1287,10 +1296,7 @@ def _enqueue_audio_text(
                 pass
         return {"ok": True, "dedup": False, "filename": filename, "path": str(dest)}
     except Exception:
-        if delivery:
-            _comment_audio_release_delivery_key(soren_root, delivery)
-        else:
-            _comment_audio_release_enqueue_key(soren_root, cleaned)
+        _comment_audio_release_enqueue_key(soren_root, cleaned)
         raise
     finally:
         if tmp_fd is not None:
