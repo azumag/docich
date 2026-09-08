@@ -48,6 +48,11 @@ class ArbitrageLeg:
     fee_rate: Decimal
     multiplier: Decimal
     max_input: Decimal
+    fee_rate_base: Decimal = D("0")
+
+    @property
+    def fee_rate_quote(self) -> Decimal:
+        return self.fee_rate
 
 @dataclass(frozen=True)
 class ArbitrageRoute:
@@ -85,15 +90,30 @@ def find_triangle_symbols(markets: Mapping[str, MarketInfo]) -> tuple[str, ...]:
     return tuple(sorted(symbols))
 
 def _leg(market: MarketInfo, book: TopOfBook, from_asset: str) -> ArbitrageLeg | None:
-    fee = market.taker_fee_rate
-    if fee is None:
+    quote_fee = market.taker_fee_rate_quote
+    base_fee = market.taker_fee_rate_base
+    if quote_fee is None or base_fee is None:
         return None
-    fee = as_decimal(fee, "taker_fee_rate")
-    keep = D("1") - fee
+    quote_fee = as_decimal(quote_fee, "taker_fee_rate_quote")
+    base_fee = as_decimal(base_fee, "taker_fee_rate_base")
     if from_asset == market.base:
-        return ArbitrageLeg(market.symbol, market.base, market.quote, "sell", book.bid, fee, book.bid * keep, book.bid_amount)
+        input_factor = D("1") + base_fee
+        output_factor = D("1") - quote_fee
+        multiplier = book.bid * output_factor / input_factor
+        max_input = book.bid_amount * input_factor
+        return ArbitrageLeg(
+            market.symbol, market.base, market.quote, "sell", book.bid, quote_fee,
+            multiplier, max_input, fee_rate_base=base_fee,
+        )
     if from_asset == market.quote:
-        return ArbitrageLeg(market.symbol, market.quote, market.base, "buy", book.ask, fee, keep / book.ask, book.ask_amount * book.ask)
+        input_factor = D("1") + quote_fee
+        output_factor = D("1") - base_fee
+        multiplier = output_factor / (book.ask * input_factor)
+        max_input = book.ask_amount * book.ask * input_factor
+        return ArbitrageLeg(
+            market.symbol, market.quote, market.base, "buy", book.ask, quote_fee,
+            multiplier, max_input, fee_rate_base=base_fee,
+        )
     return None
 
 def _canonical_cycle(legs: tuple[ArbitrageLeg, ...]) -> str:
@@ -113,7 +133,7 @@ def scan_triangular_arbitrage(
     usable: dict[str, tuple[MarketInfo, TopOfBook]] = {}
     for symbol, market in markets.items():
         book = books.get(symbol)
-        if book is None or market.taker_fee_rate is None:
+        if book is None or market.taker_fee_rate_quote is None or market.taker_fee_rate_base is None:
             continue
         age = float(now) - float(book.as_of)
         if age < -1 or age > max_book_age_seconds:
