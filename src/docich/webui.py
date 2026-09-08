@@ -1034,6 +1034,68 @@ def _comment_audio_hash(text: str) -> str:
     return hashlib.md5(text.encode("utf-8")).hexdigest()
 
 
+def _comment_audio_delivery_dir(soren_root: Path) -> Path:
+    return _comment_queue_dir(soren_root) / "audio_delivery_dedup"
+
+
+def _validate_audio_delivery_key(delivery_key: str) -> str:
+    if not delivery_key:
+        return ""
+    value = str(delivery_key).strip()
+    if not value or len(value) > 256:
+        raise ValueError("delivery_key は1-256文字である必要があります")
+    if any(ord(ch) < 32 for ch in value):
+        raise ValueError("delivery_key に制御文字は使用できません")
+    return value
+
+
+def _comment_audio_cleanup_delivery_markers(soren_root: Path, keep: int = 2048) -> None:
+    dedup_dir = _comment_audio_delivery_dir(soren_root)
+    try:
+        markers = [item for item in dedup_dir.iterdir() if item.is_dir()]
+        markers.sort(key=lambda item: item.stat().st_mtime, reverse=True)
+        for marker in markers[keep:]:
+            try:
+                import shutil
+                shutil.rmtree(marker, ignore_errors=True)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _comment_audio_claim_delivery_key(soren_root: Path, delivery_key: str) -> bool:
+    value = _validate_audio_delivery_key(delivery_key)
+    if not value:
+        return True
+    dedup_dir = _comment_audio_delivery_dir(soren_root)
+    dedup_dir.mkdir(parents=True, exist_ok=True)
+    key = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    marker = dedup_dir / key
+    try:
+        marker.mkdir(parents=False, exist_ok=False)
+    except FileExistsError:
+        return False
+    try:
+        (marker / "event_id").write_text(value + "\n", encoding="utf-8")
+    except Exception:
+        pass
+    _comment_audio_cleanup_delivery_markers(soren_root)
+    return True
+
+
+def _comment_audio_release_delivery_key(soren_root: Path, delivery_key: str) -> None:
+    value = _validate_audio_delivery_key(delivery_key)
+    if not value:
+        return
+    marker = _comment_audio_delivery_dir(soren_root) / hashlib.sha256(value.encode("utf-8")).hexdigest()
+    try:
+        import shutil
+        shutil.rmtree(marker, ignore_errors=True)
+    except Exception:
+        pass
+
+
 def _comment_audio_cleanup_dedup_markers(soren_root: Path, ttl: int) -> None:
     if ttl <= 0:
         return
@@ -1176,17 +1238,32 @@ def _validate_audio_speaker(speaker: str) -> str:
     return s
 
 
-def _enqueue_audio_text(soren_root: Path, text: str, source: str = "webui_manual", speaker: str = "") -> dict[str, Any]:
+def _enqueue_audio_text(
+    soren_root: Path,
+    text: str,
+    source: str = "webui_manual",
+    speaker: str = "",
+    *,
+    delivery_key: str = "",
+) -> dict[str, Any]:
     cleaned = _validate_audio_text(text)
     src = _validate_audio_source(source)
     spk = _validate_audio_speaker(speaker)
-    if not _comment_audio_claim_enqueue_key(soren_root, cleaned):
+    delivery = _validate_audio_delivery_key(delivery_key)
+    if delivery:
+        claimed = _comment_audio_claim_delivery_key(soren_root, delivery)
+    else:
+        claimed = _comment_audio_claim_enqueue_key(soren_root, cleaned)
+    if not claimed:
         return {"ok": True, "dedup": True, "filename": None}
     queue_dir = _comment_queue_dir(soren_root)
     try:
         queue_dir.mkdir(parents=True, exist_ok=True)
     except Exception:
-        _comment_audio_release_enqueue_key(soren_root, cleaned)
+        if delivery:
+            _comment_audio_release_delivery_key(soren_root, delivery)
+        else:
+            _comment_audio_release_enqueue_key(soren_root, cleaned)
         raise
     ts = time.time_ns()
     filename = f"comment_announce_{ts}_{src}.txt"
@@ -1210,7 +1287,10 @@ def _enqueue_audio_text(soren_root: Path, text: str, source: str = "webui_manual
                 pass
         return {"ok": True, "dedup": False, "filename": filename, "path": str(dest)}
     except Exception:
-        _comment_audio_release_enqueue_key(soren_root, cleaned)
+        if delivery:
+            _comment_audio_release_delivery_key(soren_root, delivery)
+        else:
+            _comment_audio_release_enqueue_key(soren_root, cleaned)
         raise
     finally:
         if tmp_fd is not None:
@@ -6199,23 +6279,21 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_error_json(400, "validation_error", str(exc))
             return 400
         keep, _ = _get_overlay_keep_visible(self.soren_root)
-        # load existing, append, trim to keep
-        events = _load_overlay_events(self.soren_root)
-        events.append(ev)
-        if len(events) > keep:
-            events = events[-keep:]
-        # write
-        p = _overlay_events_path(self.soren_root)
-        content = "\n".join(json.dumps(e, ensure_ascii=False) for e in events) + ("\n" if events else "")
         try:
-            _atomic_overlay_write(self.soren_root, p, content, 0o644)
-        except FileExistsError as exc:
-            self._send_error_json(409, "concurrent_edit", str(exc))
-            return 409
+            shared_overlay_queue.append_event(
+                self.soren_root, ev, keep=keep, strict=False, regenerate=False
+            )
+        except shared_overlay_queue.OverlayQueueError as exc:
+            if "another overlay edit in progress" in str(exc):
+                self._send_error_json(409, "concurrent_edit", str(exc))
+                return 409
+            self._send_error_json(500, "write_failed", str(exc))
+            return 500
         except Exception as exc:
             self._send_error_json(500, "write_failed", str(exc))
             return 500
         _regenerate_event_overlay(self.soren_root)
+        events = _load_overlay_events(self.soren_root)
         self._send_json(200, {"ok": True, "event": ev, "count": len(events)})
         return 200
 

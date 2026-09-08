@@ -454,6 +454,36 @@ class TestBackoffDir(unittest.TestCase):
             self.assertEqual(webui._stats_dir(root), root / "tmp/state/ai_stats")
 
 
+class TestOverlayEventMutationLock(unittest.TestCase):
+    def test_post_overlay_event_uses_shared_atomic_append(self):
+        class FakeHandler:
+            soren_root = Path("/tmp/fake-soren")
+            def __init__(self):
+                self.sent = []
+            def _read_body(self):
+                return json.dumps({
+                    "category": "worker", "title": "manual", "body": "x", "level": "info"
+                }).encode("utf-8"), None
+            def _send_error_json(self, *args):
+                self.sent.append(("error", args))
+            def _send_json(self, status, payload):
+                self.sent.append((status, payload))
+
+        fake = FakeHandler()
+        event = {"ts": 123, "category": "worker", "title": "manual", "body": "x", "level": "info"}
+        with mock.patch("docich.webui.shared_overlay_queue.append_event", return_value=True) as append, \
+             mock.patch("docich.webui._load_overlay_events", return_value=[event]), \
+             mock.patch("docich.webui._regenerate_event_overlay", return_value=True):
+            rc = webui._Handler._handle_post_overlay_event(fake)
+        self.assertEqual(rc, 200)
+        append.assert_called_once()
+        args, kwargs = append.call_args
+        self.assertEqual(args[0], fake.soren_root)
+        self.assertEqual(args[1]["title"], "manual")
+        self.assertFalse(kwargs["strict"])
+        self.assertFalse(kwargs["regenerate"])
+
+
 class TestAudioQueue(unittest.TestCase):
     def test_comment_queue_dir_default(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -489,6 +519,38 @@ class TestAudioQueue(unittest.TestCase):
             retried = webui._enqueue_audio_text(root, "再試行する通知", "webui_test")
             self.assertFalse(retried["dedup"])
             self.assertIsNotNone(retried["filename"])
+
+    def test_audio_delivery_key_is_durable_and_event_scoped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.dict(os.environ, {"COMMENT_AUDIO_DEDUP_TTL_SEC": "0"}):
+                first = webui._enqueue_audio_text(
+                    root, "同じペーパー通知", "crypto_paper", delivery_key="fill:event-a"
+                )
+                self.assertFalse(first["dedup"])
+                if first.get("path"):
+                    Path(first["path"]).unlink(missing_ok=True)
+                replay = webui._enqueue_audio_text(
+                    root, "同じペーパー通知", "crypto_paper", delivery_key="fill:event-a"
+                )
+                other = webui._enqueue_audio_text(
+                    root, "同じペーパー通知", "crypto_paper", delivery_key="fill:event-b"
+                )
+            self.assertTrue(replay["dedup"])
+            self.assertFalse(other["dedup"])
+
+    def test_audio_delivery_key_claim_is_released_on_enqueue_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch("docich.webui.os.replace", side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    webui._enqueue_audio_text(
+                        root, "再試行するペーパー通知", "crypto_paper", delivery_key="fill:retry"
+                    )
+            retried = webui._enqueue_audio_text(
+                root, "再試行するペーパー通知", "crypto_paper", delivery_key="fill:retry"
+            )
+            self.assertFalse(retried["dedup"])
 
     def test_enqueue_audio_text_dedup(self):
         with tempfile.TemporaryDirectory() as tmp:

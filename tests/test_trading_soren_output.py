@@ -60,13 +60,14 @@ class TestSorenOutputAdapter(unittest.TestCase):
                 with self.assertRaises(soren_output.SorenOutputError):
                     soren_output.send_overlay(g, payload)
 
-    def test_speech_reuses_existing_soren_audio_queue(self):
+    def test_speech_reuses_existing_soren_audio_queue_with_event_id(self):
         with tempfile.TemporaryDirectory() as tmp:
             g = config.load_global(Path(tmp))
             with mock.patch("docich.webui._enqueue_audio_text", return_value={"ok": True, "dedup": True}) as enqueue:
-                soren_output.enqueue_speech(g, "ペーパー速報")
+                soren_output.enqueue_speech(g, "ペーパー速報", event_id="fill:event-a")
             enqueue.assert_called_once_with(
-                soren_output.resolve_soren_root(g), "ペーパー速報", "crypto_paper"
+                soren_output.resolve_soren_root(g), "ペーパー速報", "crypto_paper",
+                delivery_key="fill:event-a",
             )
 
 
