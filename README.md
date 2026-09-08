@@ -187,15 +187,22 @@ order book API自体を呼びません。
 板容量が足りなければ流動性を発明せず `complete=false` で停止します。既定probeは
 JPY 1,000 / 3,000 / 10,000です。
 
+同じ候補に対して `settlements` も出力し、bitbankの公開metadata/statusに基づいて、
+`unit_amount`（最小注文数量）、数量step、market-order停止、circuit-break mode、fee typeを適用します。
+注文数量は常に下方向へ丸め、各レッグで発生した未使用資産はdustとして `residuals` に残します。
+3レッグ開始前に全市場のcircuit statusを公開APIから直近に取得し、`mode=NONE` / `fee_type=NORMAL`
+であることを確認します。stale判定にはbitbankのstatus更新timestampではなく、docichがAPI応答を取得した
+ローカル時刻を使います。条件を満たさなければpaper settlement自体を開始しません。
+
 ```bash
 bin/docich trading arbitrage-scan --min-edge-bps 10
 bin/docich trading arbitrage-depth-scan --min-edge-bps 10 --probe-asset JPY --probe-amounts 1000,3000,10000
 ```
 
-現段階のdepth診断でも、3レッグ間のレイテンシ・価格変動・注文キュー・最小注文単位/数量丸め・
-circuit breaker中の実発注可否までは再現しません。したがって実効edgeも実行保証ではありません。
+現段階でも、3レッグ間の実レイテンシ・途中の価格変動・注文キュー・`market_max_amount`・
+private残高・複数注文の原子的約定までは再現しません。したがってsettlementの実効edgeも実行保証ではありません。
 
-常駐worker、裁定の複数レッグpaper約定、配信通知、実発注は後続sliceで追加します。
+常駐worker、multi-leg settlementの永続台帳、配信通知、実発注は後続sliceで追加します。
 実発注を有効化する前には、別途の設計レビューと明示承認が必要です。
 
 ## 設定

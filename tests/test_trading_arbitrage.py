@@ -24,6 +24,20 @@ class TestTriangleDiscovery(unittest.TestCase):
         markets={"BTC/JPY":market("BTC/JPY","BTC","JPY"),"ETH/JPY":market("ETH/JPY","ETH","JPY"),"SOL/JPY":market("SOL/JPY","SOL","JPY")}
         self.assertEqual(find_triangle_symbols(markets),())
 
+    def test_market_order_disabled_market_is_not_a_triangle_leg(self):
+        markets={
+            "BTC/JPY": MarketInfo("BTC/JPY","BTC","JPY",True,True,taker_fee_rate=D("0.001"),market_order_enabled=False),
+            "ETH/BTC": market("ETH/BTC","ETH","BTC"),
+            "ETH/JPY": market("ETH/JPY","ETH","JPY"),
+        }
+        self.assertEqual(find_triangle_symbols(markets),())
+        books={
+            "BTC/JPY": book("BTC/JPY",99,100),
+            "ETH/BTC": book("ETH/BTC",0.049,0.05),
+            "ETH/JPY": book("ETH/JPY",5.2,5.3),
+        }
+        self.assertEqual(scan_triangular_arbitrage(markets,books,now=NOW),())
+
     def test_finds_real_three_market_cycle(self):
         markets={"BTC/JPY":market("BTC/JPY","BTC","JPY"),"ETH/BTC":market("ETH/BTC","ETH","BTC"),"ETH/JPY":market("ETH/JPY","ETH","JPY")}
         self.assertEqual(set(find_triangle_symbols(markets)),{"BTC/JPY","ETH/BTC","ETH/JPY"})
