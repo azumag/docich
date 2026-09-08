@@ -5,7 +5,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ops.vm_actions.reconcile_presynced_submodule import ReconcileError, reconcile
+from ops.vm_actions.reconcile_presynced_submodule import (
+    REASON_ROOT_DRIFT,
+    REASON_SUBMODULE_DRIFT,
+    REASON_SUBMODULE_HEAD_MISMATCH,
+    REASON_UNAPPROVED_SUBMODULE,
+    ReconcileError,
+    reconcile,
+)
 
 
 class PresyncedSubmoduleReconcileTests(unittest.TestCase):
@@ -68,6 +75,11 @@ class PresyncedSubmoduleReconcileTests(unittest.TestCase):
     def _git(path: Path, *args: str) -> str:
         return subprocess.check_output(["git", "-C", str(path), *args], text=True).strip()
 
+    def assert_reason(self, expected: int, fn) -> None:
+        with self.assertRaises(ReconcileError) as ctx:
+            fn()
+        self.assertEqual(ctx.exception.code, expected)
+
     def test_reconcile_restores_recorded_gitlink_without_touching_root(self):
         reconcile(self.root, self.old_parent, self.old_sub, self.new_sub, "games/soviet_now")
         sub = self.root / "games/soviet_now"
@@ -83,26 +95,34 @@ class PresyncedSubmoduleReconcileTests(unittest.TestCase):
         (sub / "worker.sh").write_text("third\n", encoding="utf-8")
         self._git(sub, "commit", "-am", "third")
         third = self._git(sub, "rev-parse", "HEAD")
-        with self.assertRaises(ReconcileError):
-            reconcile(self.root, self.old_parent, self.old_sub, self.new_sub, "games/soviet_now")
+        self.assert_reason(
+            REASON_SUBMODULE_HEAD_MISMATCH,
+            lambda: reconcile(self.root, self.old_parent, self.old_sub, self.new_sub, "games/soviet_now"),
+        )
         self.assertEqual(self._git(sub, "rev-parse", "HEAD"), third)
 
     def test_refuses_tracked_submodule_drift(self):
         sub = self.root / "games/soviet_now"
         (sub / "worker.sh").write_text("dirty\n", encoding="utf-8")
-        with self.assertRaises(ReconcileError):
-            reconcile(self.root, self.old_parent, self.old_sub, self.new_sub, "games/soviet_now")
+        self.assert_reason(
+            REASON_SUBMODULE_DRIFT,
+            lambda: reconcile(self.root, self.old_parent, self.old_sub, self.new_sub, "games/soviet_now"),
+        )
         self.assertEqual(self._git(sub, "rev-parse", "HEAD"), self.new_sub)
 
     def test_refuses_tracked_root_drift(self):
         (self.root / "README.md").write_text("dirty root\n", encoding="utf-8")
-        with self.assertRaises(ReconcileError):
-            reconcile(self.root, self.old_parent, self.old_sub, self.new_sub, "games/soviet_now")
+        self.assert_reason(
+            REASON_ROOT_DRIFT,
+            lambda: reconcile(self.root, self.old_parent, self.old_sub, self.new_sub, "games/soviet_now"),
+        )
         self.assertEqual(self._git(self.root / "games/soviet_now", "rev-parse", "HEAD"), self.new_sub)
 
     def test_refuses_unapproved_submodule_path(self):
-        with self.assertRaises(ReconcileError):
-            reconcile(self.root, self.old_parent, self.old_sub, self.new_sub, "games/other")
+        self.assert_reason(
+            REASON_UNAPPROVED_SUBMODULE,
+            lambda: reconcile(self.root, self.old_parent, self.old_sub, self.new_sub, "games/other"),
+        )
         self.assertEqual(self._git(self.root / "games/soviet_now", "rev-parse", "HEAD"), self.new_sub)
 
 
