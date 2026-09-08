@@ -7,7 +7,9 @@
 - 検証: 修正前の回帰失敗を再現。AB gate 38件、interleave 20件、serialization shell、spawn/retry/shadow Python40件成功。主担当自己レビュー（サブエージェント禁止）、PR最新HEADのspawn-lease CI成功後にmain統合。
 - VM: 旧SHAがbaseと一致することを確認して `tmp/deploy-backups/ab-serialization-232` へbackup。`strategy/ab_gate.sh`、`strategy/improve.sh`、`tests/test_ab_gate.sh`、`tests/test_ab_improve_serialization.sh` の4ファイルを反映しmainとのSHA-256一致。VMでもAB gate38件・serialization成功。設定・pause・戦略は変更せず、再起動なし（loopは毎試合、daemonは毎pollでsource）。
 - 19:31 JST実測: AB53試合、A蓄積47/48、lockなし、改善idle/candidate_ready。AB guardはblocking。共通3518891・encoder2188217・loop119293・daemon3460765維持。48試合後の実daemon保留および本番AB採否後の再開は、この時点では未観測。採否を強制しない。
-- 運用メモはPR #233でSoren main `c27a26e629d2a18e8be0f1c640028991fb62a74c` へ統合。上記4ファイルと生成 `prompts/ops_brief.md` の計5ファイルでmain/VM SHA一致。親docich参照をこの最終mainへ更新する。VMバックアップは復旧用に保持し、一時stageは終了時削除する。
+- 運用メモはPR #233で統合。追加PR #234でABの予約作成後は改善バッチを固定し、次の48件による上書きを防止（後続試合のrolling/current-run/AB/実履歴記録は継続）。予約保持・記録継続・再開テストと最新HEADのCI成功。Soren最終main `e2206352b83a084b994206898db97c081331b20b`。
+- **48試合境界の本番実測**: AB56試合へ進行、`improve.lock` count48・参照履歴欠落0、改善idle/pid0を複数pollにわたり維持。AB中の起動保留を実境界で確認。共通/encoder/loop/daemonの上記PIDも維持。採否後の本番再開はまだ未観測で、A維持/B採用の処理分岐は回帰テストで確認した。
+- 配備範囲はコード2件・テスト3件・生成ops_briefの**計6ファイル**。すべて最終main/VM SHA一致。親docich PR #146で最終参照と本引き継ぎを統合する。VMバックアップは `tmp/deploy-backups/ab-serialization-232` に復旧用として保持。一時配備stageは削除済み。
 
 ## 2026-09-08 — 新しい改善候補の実戦AB比較を継続
 
