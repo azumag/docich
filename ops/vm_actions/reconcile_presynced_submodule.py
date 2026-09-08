@@ -46,6 +46,15 @@ REASON_PROJECTION_UNKNOWN_STATE = 63
 REASON_PROJECTION_MUTATION_FAILED = 64
 REASON_PROJECTION_POSTVERIFY_FAILED = 65
 
+# Production exec intentionally withholds command output. For a small reviewed
+# projection change we can still expose a non-secret state vector through the
+# process exit status: each changed path is 0=recorded-old content,
+# 1=reviewed-new content, 2=other/missing. Git diff order is deterministic and
+# can be reconstructed from the reviewed old/new commits. Four ternary digits
+# fit below 255 with this reserved base. Larger changes retain generic code 63.
+REASON_PROJECTION_STATE_VECTOR_BASE = 128
+PROJECTION_STATE_VECTOR_MAX_PATHS = 4
+
 
 class ReconcileError(RuntimeError):
     def __init__(self, code: int, message: str):
@@ -175,6 +184,27 @@ def _projection_content_same(actual, expected) -> bool:
     return actual["sha256"] == expected["sha256"]
 
 
+def _projection_content_state(actual, old_expected, new_expected) -> int:
+    if _projection_content_same(actual, old_expected):
+        return 0
+    if _projection_content_same(actual, new_expected):
+        return 1
+    return 2
+
+
+def _projection_unknown_reason(states: list[int]) -> int:
+    # Preserve the historical single-path code and avoid wrapping exit status
+    # for wider diffs. This diagnostic never changes whether the operation is
+    # accepted; it only makes an already-failing small diff distinguishable.
+    if len(states) < 2 or len(states) > PROJECTION_STATE_VECTOR_MAX_PATHS:
+        return REASON_PROJECTION_UNKNOWN_STATE
+    value = sum(state * (3**index) for index, state in enumerate(states))
+    code = REASON_PROJECTION_STATE_VECTOR_BASE + value
+    if code > 255:
+        return REASON_PROJECTION_UNKNOWN_STATE
+    return code
+
+
 def _atomic_projection_write(path: Path, data: bytes, mode: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=".vmops-reconcile-", dir=path.parent)
@@ -205,19 +235,28 @@ def _set_projection(path: Path, target) -> None:
 
 def _normalize_projection(repo: Path, old_sub: str, new_sub: str, destination: Path) -> None:
     plans = []
+    states = []
     changed = _changed_paths(repo, old_sub, new_sub)
     for rel in changed:
         path = _safe_projection_path(destination, rel)
         old_meta = _projection_expected(repo, _projection_entry(repo, old_sub, rel))
         new_meta = _projection_expected(repo, _projection_entry(repo, new_sub, rel))
         live_meta = _projection_live(path)
+        state = _projection_content_state(live_meta, old_meta, new_meta)
+        states.append(state)
+        if state == 2:
+            continue
         if _projection_same(live_meta, old_meta):
             continue
-        if not (_projection_content_same(live_meta, old_meta) or _projection_content_same(live_meta, new_meta)):
-            raise ReconcileError(REASON_PROJECTION_UNKNOWN_STATE, "live projection content is neither recorded old nor reviewed new")
         # Preserve the exact original regular-file state for rollback. This
         # includes a non-canonical mode; content itself is still reviewed.
         plans.append((path, old_meta, live_meta))
+
+    if 2 in states:
+        raise ReconcileError(
+            _projection_unknown_reason(states),
+            "live projection content is neither recorded old nor reviewed new",
+        )
 
     applied = []
     try:
