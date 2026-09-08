@@ -167,15 +167,26 @@ bin/docich trading paper-cycle --snapshot /path/to/paper-snapshot.json
 ```
 
 `history` は公開OHLCVだけを取得し、価格系列を strategy 用の正規化frameとして出力します。
-`strategy-cycle` はその形式の履歴snapshotから、現在は momentum-v1 と mean-reversion-v1 の
-2戦略で候補を生成し、同一symbol重複と高相関候補を除外してから既存30% allocatorへ渡します。
+`strategy-cycle` はその形式の履歴snapshotから、momentum-v1 / mean-reversion-v1 /
+relative-value-v1 で候補を生成します。relative-value は同一quote群の市場全体に対する
+出遅れと直近の安定化を検出し、同一symbol重複と高い正相関候補を除外してから既存30% allocatorへ渡します。
 候補数・採用数・strategy IDは `status.json` の `signal_summary` に公開用情報として残ります。
 
 ```bash
 bin/docich trading strategy-cycle --snapshot /path/to/strategy-snapshot.json
 ```
 
-常駐worker、より高度な裁定/歪み戦略、配信通知、実発注は後続sliceで追加します。
+`arbitrage-scan` は有効な市場metadataから実在する3市場・3資産の閉路だけを探し、
+公開best bid/askと各市場のtaker手数料を3レッグすべてに適用してnet edgeを計算します。
+best level数量から開始資産ベースの `max_start_amount` も出しますが、深い板のスリッページはまだ評価しません。
+現在は診断専用で、候補が見つかってもpaper台帳へのfillや実注文は行いません。
+三角形を構成できる市場がなければorder book API自体を呼びません。
+
+```bash
+bin/docich trading arbitrage-scan --min-edge-bps 10
+```
+
+常駐worker、裁定の複数レッグpaper約定、配信通知、実発注は後続sliceで追加します。
 実発注を有効化する前には、別途の設計レビューと明示承認が必要です。
 
 ## 設定

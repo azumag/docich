@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from docich.cli import main  # noqa: E402
 from docich.trading.market_data import MarketFrame  # noqa: E402
 from docich.trading.models import MarketInfo  # noqa: E402
+from docich.trading.arbitrage import TopOfBook  # noqa: E402
 
 
 NOW = 1_800_000_000.0
@@ -131,6 +132,70 @@ class TestTradingStrategyCli(unittest.TestCase):
             self.assertEqual(payload["signal_summary"]["selected_count"], 1)
             self.assertIn("correlated_exposure", payload["skipped_reason_codes"])
             self.assertEqual(len(payload["recent_fills"]), 1)
+
+
+    def test_strategy_cycle_adds_relative_value_candidate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = self.strategy_snapshot()
+            data["frames"]["BTC/JPY"] = frame_payload([100,100,100,101,101,101,102])
+            for symbol, base, closes in [
+                ("ETH/JPY", "ETH", [100,100,100,101,101,101,102]),
+                ("SOL/JPY", "SOL", [100,98,96,95,94,94,95]),
+            ]:
+                data["markets"][symbol] = {
+                    "base": base, "quote": "JPY", "spot": True, "active": True,
+                    "amount_step": "0.001", "min_amount": "0.001", "min_cost": "1",
+                }
+                data["frames"][symbol] = frame_payload(closes)
+            snapshot = Path(tmp) / "strategy.json"
+            snapshot.write_text(json.dumps(data), encoding="utf-8")
+            rc, out, err = self.run_cli(["trading", "--state-dir", str(Path(tmp)/"state"), "strategy-cycle", "--snapshot", str(snapshot)])
+            self.assertEqual(rc, 0, err)
+            payload = json.loads(out)
+            self.assertIn("relative-value-v1", payload["signal_summary"]["strategy_ids"])
+            self.assertIn("relative_value_lag", payload["signal_summary"]["candidate_reason_codes"])
+            self.assertEqual(payload["recent_fills"][0]["strategy_id"], "relative-value-v1")
+
+    def test_arbitrage_scan_skips_order_books_when_market_graph_has_no_triangle(self):
+        class StarGateway:
+            def discover_markets(self):
+                return {
+                    "BTC/JPY": MarketInfo("BTC/JPY","BTC","JPY",True,True,taker_fee_rate=Decimal("0.001")),
+                    "ETH/JPY": MarketInfo("ETH/JPY","ETH","JPY",True,True,taker_fee_rate=Decimal("0.001")),
+                    "SOL/JPY": MarketInfo("SOL/JPY","SOL","JPY",True,True,taker_fee_rate=Decimal("0.001")),
+                }
+            def fetch_top_books(self, *args, **kwargs):
+                raise AssertionError("no order book call expected without a triangle")
+        with patch("docich.trading.cli.BitbankPublicGateway", return_value=StarGateway()):
+            rc, out, err = self.run_cli(["trading", "arbitrage-scan"])
+        self.assertEqual(rc, 0, err)
+        payload = json.loads(out)
+        self.assertEqual(payload["candidate_count"], 0)
+        self.assertEqual(payload["book_market_count"], 0)
+
+    def test_arbitrage_scan_reports_fee_aware_public_candidate_without_filling(self):
+        class TriangleGateway:
+            def discover_markets(self):
+                return {
+                    "BTC/JPY": MarketInfo("BTC/JPY","BTC","JPY",True,True,taker_fee_rate=Decimal("0.001")),
+                    "ETH/BTC": MarketInfo("ETH/BTC","ETH","BTC",True,True,taker_fee_rate=Decimal("0.001")),
+                    "ETH/JPY": MarketInfo("ETH/JPY","ETH","JPY",True,True,taker_fee_rate=Decimal("0.001")),
+                }
+            def fetch_top_books(self, symbols, *, now, limit=5):
+                return {
+                    "BTC/JPY": TopOfBook("BTC/JPY",Decimal("99"),Decimal("100"),now),
+                    "ETH/BTC": TopOfBook("ETH/BTC",Decimal("0.049"),Decimal("0.05"),now),
+                    "ETH/JPY": TopOfBook("ETH/JPY",Decimal("5.2"),Decimal("5.3"),now),
+                }
+        with patch("docich.trading.cli.BitbankPublicGateway", return_value=TriangleGateway()):
+            rc, out, err = self.run_cli(["trading", "arbitrage-scan", "--min-edge-bps", "20"])
+        self.assertEqual(rc, 0, err)
+        payload = json.loads(out)
+        self.assertGreaterEqual(payload["candidate_count"], 1)
+        self.assertEqual(payload["book_market_count"], 3)
+        self.assertGreater(Decimal(payload["candidates"][0]["max_start_amount"]), Decimal("0"))
+        self.assertFalse(payload.get("fills"))
+        self.assertNotIn("api_key", json.dumps(payload).lower())
 
 
 if __name__ == "__main__":

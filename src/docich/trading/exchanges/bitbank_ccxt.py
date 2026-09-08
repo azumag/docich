@@ -5,12 +5,25 @@ from decimal import Decimal, InvalidOperation
 import importlib
 from typing import Any, Mapping
 
+from ..arbitrage import ArbitrageDataError, TopOfBook
 from ..market_data import MarketFrame, MarketFrameError, frame_from_ohlcv
-from ..models import MarketInfo
+from ..models import MarketInfo, TradingValidationError
 
 
 class CCXTUnavailableError(RuntimeError):
     """Raised when the optional trading dependency is not installed."""
+
+
+def _nonnegative_decimal(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        result = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    if not result.is_finite() or result < 0:
+        return None
+    return result
 
 
 def _positive_decimal(value: Any) -> Decimal | None:
@@ -106,6 +119,11 @@ class BitbankPublicGateway:
                 amount_step=_amount_step(_nested(raw_market, "precision", "amount")),
                 min_amount=_positive_decimal(_nested(raw_market, "limits", "amount", "min")),
                 min_cost=_positive_decimal(_nested(raw_market, "limits", "cost", "min")),
+                taker_fee_rate=(
+                    _nonnegative_decimal(raw_market.get("taker"))
+                    if _nonnegative_decimal(raw_market.get("taker")) is not None
+                    else _nonnegative_decimal(_nested(raw_market, "info", "taker_fee_rate_quote"))
+                ),
             )
             discovered[symbol] = market
         return discovered
@@ -127,3 +145,37 @@ class BitbankPublicGateway:
                 str(symbol), rows, timeframe=timeframe, now=now, min_bars=limit
             )
         return frames
+
+    def fetch_top_books(
+        self,
+        symbols,
+        *,
+        now: float,
+        limit: int = 5,
+    ) -> dict[str, TopOfBook]:
+        if limit < 1:
+            raise ArbitrageDataError("order-book limit must be positive")
+        books: dict[str, TopOfBook] = {}
+        for symbol in symbols:
+            raw = self._exchange.fetch_order_book(str(symbol), limit=limit)
+            if not isinstance(raw, Mapping):
+                raise ArbitrageDataError(f"{symbol} order book is malformed")
+            timestamp = raw.get("timestamp")
+            if timestamp is None:
+                raise ArbitrageDataError(f"{symbol} order book has no exchange timestamp")
+            bids = raw.get("bids")
+            asks = raw.get("asks")
+            if not isinstance(bids, list) or not bids or not isinstance(asks, list) or not asks:
+                raise ArbitrageDataError(f"{symbol} order book has no best bid/ask")
+            try:
+                bid = bids[0][0]
+                bid_amount = bids[0][1]
+                ask = asks[0][0]
+                ask_amount = asks[0][1]
+                as_of = float(timestamp) / 1000.0
+                books[str(symbol)] = TopOfBook(
+                    str(symbol), bid, ask, as_of, bid_amount=bid_amount, ask_amount=ask_amount
+                )
+            except (TypeError, ValueError, IndexError, TradingValidationError) as exc:
+                raise ArbitrageDataError(f"{symbol} order book best prices are malformed") from exc
+        return books
