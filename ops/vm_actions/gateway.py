@@ -5,8 +5,16 @@ from pathlib import Path, PurePosixPath
 
 SHA_RE=re.compile(r'[0-9a-f]{40}\Z')
 MAX_PAYLOAD=128*1024*1024
-OPS={'upload','deploy','bootstrap','status','exec'}
+OPS={'upload','deploy','bootstrap','status','exec','diagnostics'}
 TARGETS={'preview','production'}
+DIAGNOSTICS_FILES=('ops/vm_actions/collect_diagnostics.py','ops/vm_actions/runtime_registry.py','src/docich/runtime_backend.py')
+DIAGNOSTICS_TIMEOUT=60
+DIAGNOSTICS_STDOUT_MAX=65536
+DIAGNOSTICS_JSON_MAX=49152
+DIAGNOSTICS_STR_MAX=500
+DIAGNOSTICS_LIST_MAX=100
+DIAGNOSTICS_KEY_MAX=128
+DIAGNOSTICS_REDACT_KEYS=('API_KEY','TOKEN','SECRET','STREAM_KEY','PASSWORD','AUTHORIZATION','COOKIE','PRIVATE_KEY')
 OWNED_SUBMODULES={
     'games/soviet_now':'https://github.com/azumag/soviet_now.git',
     'games/hanjuku-sfc-speedrun':'https://github.com/azumag/hanjuku-sfc-speedrun.git',
@@ -581,6 +589,60 @@ def execute(cfg,repo,target,sha):
                          env={'PATH':'/usr/local/bin:/usr/bin:/bin','HOME':str(cwd.parent),'LANG':'C.UTF-8'},timeout=900)
     return {'status':'executed','sha':sha,'exit_code':p.returncode,'output':'withheld','operation_id':opid}
 
+def _sanitize_diagnostics(value, depth=0):
+    if depth>8: raise ValueError('diagnostics output too deep')
+    if value is None or isinstance(value,(bool,int,float)): return value
+    if isinstance(value,str):
+        if len(value)>DIAGNOSTICS_STR_MAX: value=value[:DIAGNOSTICS_STR_MAX]
+        return value
+    if isinstance(value,list):
+        if len(value)>DIAGNOSTICS_LIST_MAX: value=value[:DIAGNOSTICS_LIST_MAX]
+        return [_sanitize_diagnostics(item,depth+1) for item in value]
+    if isinstance(value,dict):
+        clean={}
+        for key,item in value.items():
+            if not isinstance(key,str) or len(key)>DIAGNOSTICS_KEY_MAX: continue
+            upper=key.upper()
+            if any(mark in upper for mark in DIAGNOSTICS_REDACT_KEYS):
+                clean[key]='***'
+            else:
+                clean[key]=_sanitize_diagnostics(item,depth+1)
+        return clean
+    raise ValueError('diagnostics output has unsupported type')
+
+def diagnostics_result(cfg,repo,target,sha):
+    if target!='production': raise ValueError('diagnostics is production-only')
+    root=Path(cfg['repos'][repo]['production'])
+    collector=root/'ops/vm_actions/collect_diagnostics.py'
+    if not collector.is_file(): raise ValueError('diagnostics collector missing')
+    try:
+        drift=subprocess.check_output(['git','-C',str(root),'-c','core.hooksPath=/dev/null',
+            'status','--porcelain','--untracked-files=no','--',*DIAGNOSTICS_FILES],
+            stderr=subprocess.DEVNULL,text=True,timeout=30).strip()
+    except (subprocess.CalledProcessError,FileNotFoundError,subprocess.TimeoutExpired):
+        raise ValueError('diagnostics collector verification failed')
+    if drift: raise ValueError('diagnostics collector drift')
+    mappings=cfg['repos'][repo].get('projections',{})
+    destination=mappings.get('games/soviet_now')
+    if not destination: raise ValueError('diagnostics projection missing')
+    env={'PATH':'/usr/local/bin:/usr/bin:/bin','LANG':'C.UTF-8','HOME':'/tmp',
+         'PYTHONPATH':str(root/'src')}
+    try:
+        p=subprocess.run([sys.executable,str(collector),destination],input=b'',
+            capture_output=True,env=env,cwd='/tmp',timeout=DIAGNOSTICS_TIMEOUT)
+    except (OSError,subprocess.TimeoutExpired):
+        raise ValueError('diagnostics collector failed')
+    raw=(p.stdout or b'')[:DIAGNOSTICS_STDOUT_MAX]
+    if p.returncode!=0 or not raw: raise ValueError('diagnostics collector failed')
+    try: data=json.loads(raw.decode('utf-8'))
+    except (ValueError,UnicodeError): raise ValueError('diagnostics output invalid')
+    if not isinstance(data,dict) or data.get('status') not in {'ok','warn','critical'}:
+        raise ValueError('diagnostics output invalid')
+    clean=_sanitize_diagnostics(data)
+    if len(json.dumps(clean,separators=(',',':')).encode())>DIAGNOSTICS_JSON_MAX:
+        raise ValueError('diagnostics output too large')
+    return {'status':'diagnosed','sha':sha,'diagnostics':clean}
+
 def status_result(cfg,repo,target,sha):
     if target=='preview':
         release=release_dir(cfg,repo,sha)
@@ -614,6 +676,7 @@ def main():
         elif op=='deploy':
             result=deploy_preview(cfg,repo,sha) if target=='preview' else deploy_prod(cfg,repo,sha)
         elif op=='exec': result=execute(cfg,repo,target,sha)
+        elif op=='diagnostics': result=diagnostics_result(cfg,repo,target,sha)
         else: result=status_result(cfg,repo,target,sha)
     print(json.dumps(result,separators=(',',':')))
     if result.get('exit_code',0): raise SystemExit(result['exit_code'])
