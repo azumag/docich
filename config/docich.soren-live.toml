@@ -32,20 +32,30 @@ enabled = false
 recover_windows = false
 
 [trading]
-paper_worker_enabled = false
+paper_worker_enabled = true
 interval_s = 60
 paper_capital_jpy = 10000
-notifications_enabled = false
-notification_speech_enabled = false
+notifications_enabled = true
+notification_speech_enabled = true
 
 [rotation]
 games = []
 
-# Soren本番は背景で稼働させたまま、20:00 JSTから1時間だけRobotsを前面へ載せる。
+# 20:00 JST以降の改善/予想終了境界を待ち、実際の切替完了から1時間Robotsを載せる。
 # docich側canonicalがidleなら、終了時はstopして背景のSorenへ自然に戻る。
 [retro_corner]
 enabled = true
+require_program_boundary = true
 start_hour = 20
 duration_minutes = 60
 timezone = "Asia/Tokyo"
 games = ["robots"]
+
+[paper_corner]
+enabled = true
+start_hour = 22
+duration_minutes = 30
+timezone = "Asia/Tokyo"
+
+[webui]
+soren_root = "/home/ubuntu/soren"

@@ -14,6 +14,13 @@ def _retro_corner_argv(argv: list[str]) -> list[str] | None:
     return None
 
 
+paper_args = [arg.replace("paper-corner", "retro-corner") if arg == "paper-corner" else arg for arg in sys.argv[1:]]
+if "paper-corner" in sys.argv[1:]:
+    paper_argv = _retro_corner_argv(paper_args)
+    if paper_argv is not None:
+        from .paper_corner import main as paper_main
+        sys.exit(paper_main(paper_argv))
+
 retro_argv = _retro_corner_argv(sys.argv[1:])
 if retro_argv is not None:
     from .retro_corner import main as retro_corner_main

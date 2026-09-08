@@ -1,0 +1,8 @@
+[Unit]
+Description=docich PAPER daily program check
+[Timer]
+OnCalendar=*-*-* *:*:00
+Persistent=false
+Unit=docich-paper-corner.service
+[Install]
+WantedBy=timers.target

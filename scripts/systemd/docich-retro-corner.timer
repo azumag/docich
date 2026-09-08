@@ -2,7 +2,7 @@
 Description=docich メリケンAI レトロゲームコーナーを毎時判定
 
 [Timer]
-OnCalendar=hourly
+OnCalendar=*-*-* *:*:00
 Persistent=false
 Unit=docich-retro-corner.service
 
