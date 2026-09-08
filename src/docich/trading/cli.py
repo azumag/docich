@@ -1,6 +1,7 @@
 """CLI for the paper-only docich crypto trading foundation."""
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import time
@@ -19,7 +20,7 @@ from .relative_value import scan_relative_value_opportunities
 from .risk import CapitalPolicy, allocate_opportunities
 from .strategies import scan_opportunities, select_diversified_opportunities
 from .status import build_public_status, write_public_status
-from .settlement import MultiLegSettlement, simulate_multileg_settlement
+from .settlement import SETTLEMENT_MODEL_VERSION, MultiLegSettlement, simulate_multileg_settlement
 
 
 class TradingCliError(RuntimeError):
@@ -77,6 +78,9 @@ def configure_parser(parser) -> None:
     depth.add_argument("--book-limit", type=int, default=20, metavar="N", help="板取得depth (既定20)")
     depth.add_argument("--probe-asset", default="JPY", metavar="ASSET", help="probe開始資産 (既定JPY)")
     depth.add_argument("--probe-amounts", default="1000,3000,10000", metavar="CSV", help="開始資産単位のprobe量")
+    depth.add_argument("--record", action="store_true", help="constraint-aware settlementをpaper台帳へ保存する")
+    settlement_history = sub.add_parser("settlement-history", help="保存済みmulti-leg paper settlementを表示する")
+    settlement_history.add_argument("--limit", type=int, default=20, metavar="N", help="表示件数 (既定20)")
 
 
 def _state_dir(args, repo_root: Path) -> Path:
@@ -378,6 +382,74 @@ def _settlement_payload(result: MultiLegSettlement) -> dict[str, Any]:
     }
 
 
+def _settlement_observation_id(route, settlement: MultiLegSettlement, depth_books, circuit_statuses, markets) -> str:
+    symbols = sorted({leg.symbol for leg in route.legs})
+    payload = {
+        "model_version": SETTLEMENT_MODEL_VERSION,
+        "route_id": route.route_id,
+        "start_asset": settlement.start_asset,
+        "start_amount": str(settlement.start_amount),
+        "books": {
+            symbol: {
+                "as_of": depth_books[symbol].as_of,
+                "bids": [[str(level.price), str(level.amount)] for level in depth_books[symbol].bids],
+                "asks": [[str(level.price), str(level.amount)] for level in depth_books[symbol].asks],
+            }
+            for symbol in symbols if symbol in depth_books
+        },
+        "circuit": {
+            symbol: {
+                "mode": circuit_statuses[symbol].mode,
+                "fee_type": circuit_statuses[symbol].fee_type,
+                "as_of": circuit_statuses[symbol].as_of,
+            }
+            for symbol in symbols if symbol in circuit_statuses
+        },
+        "markets": {
+            symbol: {
+                "base": markets[symbol].base,
+                "quote": markets[symbol].quote,
+                "amount_step": None if markets[symbol].amount_step is None else str(markets[symbol].amount_step),
+                "min_amount": None if markets[symbol].min_amount is None else str(markets[symbol].min_amount),
+                "min_cost": None if markets[symbol].min_cost is None else str(markets[symbol].min_cost),
+                "fee_base": None if markets[symbol].taker_fee_rate_base is None else str(markets[symbol].taker_fee_rate_base),
+                "fee_quote": None if markets[symbol].taker_fee_rate_quote is None else str(markets[symbol].taker_fee_rate_quote),
+                "market_order_enabled": bool(markets[symbol].market_order_enabled),
+            }
+            for symbol in symbols if symbol in markets
+        },
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return SETTLEMENT_MODEL_VERSION + ":" + hashlib.sha256(raw).hexdigest()[:32]
+
+
+def _recorded_settlement_payload(item) -> dict[str, Any]:
+    return {
+        "settlement_id": item.settlement_id,
+        "route_id": item.route_id,
+        "start_asset": item.start_asset,
+        "start_amount": str(item.start_amount),
+        "complete": item.complete,
+        "final_amount": None if item.final_amount is None else str(item.final_amount),
+        "net_edge_bps": None if item.net_edge_bps is None else str(item.net_edge_bps),
+        "failed_leg_symbol": item.failed_leg_symbol,
+        "failure_reason": item.failure_reason,
+        "observed_at": item.observed_at,
+        "residuals": {asset: str(value) for asset, value in sorted(item.residuals.items())},
+        "legs": [{
+            "symbol": leg.symbol, "side": leg.side,
+            "input_amount": str(leg.input_amount),
+            "order_base_amount": str(leg.order_base_amount),
+            "consumed_input": str(leg.consumed_input),
+            "residual_input": str(leg.residual_input),
+            "output_amount": str(leg.output_amount),
+            "levels_used": leg.levels_used,
+            "fee_paid_base": str(leg.fee_paid_base),
+            "fee_paid_quote": str(leg.fee_paid_quote),
+        } for leg in item.legs],
+    }
+
+
 def _market_payload(market: MarketInfo) -> dict[str, Any]:
     return {
         "symbol": market.symbol,
@@ -402,6 +474,23 @@ def run_args(args, *, repo_root: Path) -> int:
         status_path = state_dir / "status.json"
         _json_print(_absent_status() if not status_path.is_file() else _safe_existing_status(status_path))
         return 0
+    if command == "settlement-history":
+        if args.limit <= 0:
+            raise TradingCliError("settlement history limit must be positive")
+        db_path = state_dir / "paper.sqlite3"
+        if not db_path.is_file():
+            _json_print({"mode": "paper", "count": 0, "settlements": []})
+            return 0
+        ledger = PaperLedger(db_path)
+        try:
+            items = ledger.recent_multileg_settlements(limit=args.limit)
+            _json_print({
+                "mode": "paper", "count": len(items),
+                "settlements": [_recorded_settlement_payload(item) for item in items],
+            })
+            return 0
+        finally:
+            ledger.close()
     if command == "discover":
         try:
             markets = BitbankPublicGateway().discover_markets()
@@ -580,45 +669,65 @@ def run_args(args, *, repo_root: Path) -> int:
         except (CCXTUnavailableError, ArbitrageDataError, TradingValidationError) as exc:
             raise TradingCliError(str(exc)) from exc
         candidates = []
-        for route in routes:
-            route_assets = {leg.from_asset for leg in route.legs}
-            simulations = []
-            probe_skip_reason = None
-            settlements = []
-            if probe_asset in route_assets:
-                simulations = [
-                    _depth_simulation_payload(
-                        simulate_route_depth(route, depth_books, start_amount=amount, start_asset=probe_asset)
-                    )
-                    for amount in probe_amounts
-                ]
-                settlements = [
-                    _settlement_payload(simulate_multileg_settlement(
-                        route, depth_books, markets, circuit_statuses,
-                        start_amount=amount, start_asset=probe_asset, now=now,
-                    ))
-                    for amount in probe_amounts
-                ]
-            else:
-                probe_skip_reason = "probe_asset_not_in_route"
-            candidates.append({
-                "route_id": route.route_id,
-                "top_start_asset": route.start_asset,
-                "top_net_edge_bps": str(route.net_edge_bps),
-                "top_max_start_amount": str(route.max_start_amount),
-                "probe_asset": probe_asset,
-                "probe_skip_reason": probe_skip_reason,
-                "depth_simulations": simulations,
-                "settlements": settlements,
-                "circuit_modes": {symbol: status.mode for symbol, status in sorted(circuit_statuses.items())},
-                "legs": [{
-                    "symbol": leg.symbol, "from_asset": leg.from_asset, "to_asset": leg.to_asset,
-                    "side": leg.side, "price": str(leg.price),
-                    "fee_rate": str(leg.fee_rate_quote),
-                    "fee_rate_base": str(leg.fee_rate_base),
-                    "fee_rate_quote": str(leg.fee_rate_quote),
-                } for leg in route.legs],
-            })
+        record_ledger = None
+        try:
+            for route in routes:
+                route_assets = {leg.from_asset for leg in route.legs}
+                simulations = []
+                probe_skip_reason = None
+                settlements = []
+                if probe_asset in route_assets:
+                    simulations = [
+                        _depth_simulation_payload(
+                            simulate_route_depth(route, depth_books, start_amount=amount, start_asset=probe_asset)
+                        )
+                        for amount in probe_amounts
+                    ]
+                    settlement_results = [
+                        simulate_multileg_settlement(
+                            route, depth_books, markets, circuit_statuses,
+                            start_amount=amount, start_asset=probe_asset, now=now,
+                        )
+                        for amount in probe_amounts
+                    ]
+                    for result in settlement_results:
+                        settlement_id = _settlement_observation_id(
+                            route, result, depth_books, circuit_statuses, markets
+                        )
+                        payload = _settlement_payload(result)
+                        payload["settlement_id"] = settlement_id
+                        if args.record and record_ledger is None:
+                            state_dir.mkdir(parents=True, exist_ok=True)
+                            record_ledger = PaperLedger(state_dir / "paper.sqlite3")
+                        payload["recorded"] = bool(record_ledger is not None)
+                        if record_ledger is not None:
+                            record_ledger.record_multileg_settlement(
+                                settlement_id, result, observed_at=now
+                            )
+                        settlements.append(payload)
+                else:
+                    probe_skip_reason = "probe_asset_not_in_route"
+                candidates.append({
+                    "route_id": route.route_id,
+                    "top_start_asset": route.start_asset,
+                    "top_net_edge_bps": str(route.net_edge_bps),
+                    "top_max_start_amount": str(route.max_start_amount),
+                    "probe_asset": probe_asset,
+                    "probe_skip_reason": probe_skip_reason,
+                    "depth_simulations": simulations,
+                    "settlements": settlements,
+                    "circuit_modes": {symbol: status.mode for symbol, status in sorted(circuit_statuses.items())},
+                    "legs": [{
+                        "symbol": leg.symbol, "from_asset": leg.from_asset, "to_asset": leg.to_asset,
+                        "side": leg.side, "price": str(leg.price),
+                        "fee_rate": str(leg.fee_rate_quote),
+                        "fee_rate_base": str(leg.fee_rate_base),
+                        "fee_rate_quote": str(leg.fee_rate_quote),
+                    } for leg in route.legs],
+                })
+        finally:
+            if record_ledger is not None:
+                record_ledger.close()
         _json_print({
             "mode": "paper", "exchange": "bitbank", "as_of": now,
             "triangle_market_count": len(triangle_symbols),

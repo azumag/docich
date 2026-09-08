@@ -136,7 +136,7 @@ soviet_now側の全on-air出力guardが適用されています。
 | `docich ra-cmd <CMD>` | RetroArch UDP command |
 | `docich webui [--dry-run]` | モデルチェーン/バックオフ管理 Web UI (Tailscale経由) |
 | `docich caption plan/send ...` | 字幕計画とFFmpeg IPC |
-| `docich trading status/discover/history/paper-cycle/strategy-cycle` | 暗号資産 paper trading 基盤（live注文なし） |
+| `docich trading status/discover/history/paper-cycle/strategy-cycle/settlement-history` | 暗号資産 paper trading 基盤（live注文なし） |
 | `docich run <component>` | tmux内の監督ループ用内部command |
 
 設定探索順は `--config`、`$DOCICH_CONFIG`、
@@ -194,15 +194,22 @@ JPY 1,000 / 3,000 / 10,000です。
 であることを確認します。stale判定にはbitbankのstatus更新timestampではなく、docichがAPI応答を取得した
 ローカル時刻を使います。条件を満たさなければpaper settlement自体を開始しません。
 
+通常のdepth scanは非永続です。`--record`を付けた場合だけsettlement本体・各leg・dustを
+`run/trading/paper.sqlite3`へ保存します。同じ板・circuit状態・市場制約・probe量から作られた
+settlementは決定論的IDで重複記録しません。候補0件の場合は`--record`指定でもDBを新規作成しません。
+保存済み履歴は `settlement-history` で確認できます。
+
 ```bash
 bin/docich trading arbitrage-scan --min-edge-bps 10
 bin/docich trading arbitrage-depth-scan --min-edge-bps 10 --probe-asset JPY --probe-amounts 1000,3000,10000
+bin/docich trading arbitrage-depth-scan --min-edge-bps 10 --probe-amounts 1000 --record
+bin/docich trading settlement-history --limit 20
 ```
 
 現段階でも、3レッグ間の実レイテンシ・途中の価格変動・注文キュー・`market_max_amount`・
 private残高・複数注文の原子的約定までは再現しません。したがってsettlementの実効edgeも実行保証ではありません。
 
-常駐worker、multi-leg settlementの永続台帳、配信通知、実発注は後続sliceで追加します。
+常駐worker、配信通知、実発注は後続sliceで追加します。
 実発注を有効化する前には、別途の設計レビューと明示承認が必要です。
 
 ## 設定
