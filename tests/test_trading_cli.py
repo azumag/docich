@@ -163,6 +163,21 @@ class TestTradingCli(unittest.TestCase):
         self.assertEqual(market["taker_fee_rate_quote"], "0.001")
         self.assertEqual(market["taker_fee_rate"], "0.001")
 
+    def test_paper_snapshot_preserves_market_order_disabled_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = self.snapshot()
+            data["markets"]["BTC/JPY"]["market_order_enabled"] = False
+            snapshot = Path(tmp) / "snapshot.json"
+            snapshot.write_text(json.dumps(data), encoding="utf-8")
+            rc, out, err = self.run_cli([
+                "trading", "--state-dir", str(Path(tmp) / "state"),
+                "paper-cycle", "--snapshot", str(snapshot),
+            ])
+        self.assertEqual(rc, 0, err)
+        payload = json.loads(out)
+        self.assertEqual(payload["recent_fills"], [])
+        self.assertIn("market_order_disabled", payload["skipped_reason_codes"])
+
     def test_paper_snapshot_accepts_separate_fee_fields(self):
         with tempfile.TemporaryDirectory() as tmp:
             data = self.snapshot()

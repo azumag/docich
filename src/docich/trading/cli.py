@@ -19,6 +19,7 @@ from .relative_value import scan_relative_value_opportunities
 from .risk import CapitalPolicy, allocate_opportunities
 from .strategies import scan_opportunities, select_diversified_opportunities
 from .status import build_public_status, write_public_status
+from .settlement import MultiLegSettlement, simulate_multileg_settlement
 
 
 class TradingCliError(RuntimeError):
@@ -29,7 +30,7 @@ _SNAPSHOT_KEYS = {
     "mode", "as_of", "capital_reference", "deployed_reference",
     "quote_to_reference", "available_quote", "markets", "prices", "opportunities",
 }
-_MARKET_KEYS = {"base", "quote", "spot", "active", "amount_step", "min_amount", "min_cost", "taker_fee_rate", "taker_fee_rate_base", "taker_fee_rate_quote"}
+_MARKET_KEYS = {"base", "quote", "spot", "active", "amount_step", "min_amount", "min_cost", "taker_fee_rate", "taker_fee_rate_base", "taker_fee_rate_quote", "market_order_enabled"}
 _OPPORTUNITY_KEYS = {
     "opportunity_id", "strategy_id", "symbol", "side", "score", "expected_edge_bps",
     "max_notional_fraction", "expires_at", "reason_code",
@@ -153,6 +154,7 @@ def _market_from_snapshot(symbol: str, raw: Any) -> MarketInfo:
             taker_fee_rate=None if raw.get("taker_fee_rate") is None else as_decimal(raw["taker_fee_rate"], "taker_fee_rate"),
             taker_fee_rate_base=None if raw.get("taker_fee_rate_base") is None else as_decimal(raw["taker_fee_rate_base"], "taker_fee_rate_base"),
             taker_fee_rate_quote=None if raw.get("taker_fee_rate_quote") is None else as_decimal(raw["taker_fee_rate_quote"], "taker_fee_rate_quote"),
+            market_order_enabled=raw.get("market_order_enabled", True) is True,
         )
     except (TradingValidationError, KeyError) as exc:
         raise TradingCliError(f"market {symbol} is invalid") from exc
@@ -350,6 +352,32 @@ def _depth_simulation_payload(simulation: DepthRouteSimulation) -> dict[str, Any
         } for leg in simulation.legs],
     }
 
+def _settlement_payload(result: MultiLegSettlement) -> dict[str, Any]:
+    return {
+        "route_id": result.route_id,
+        "start_asset": result.start_asset,
+        "start_amount": str(result.start_amount),
+        "complete": result.complete,
+        "final_amount": None if result.final_amount is None else str(result.final_amount),
+        "net_edge_bps": None if result.net_edge_bps is None else str(result.net_edge_bps),
+        "failed_leg_symbol": result.failed_leg_symbol,
+        "failure_reason": result.failure_reason,
+        "residuals": {asset: str(value) for asset, value in sorted(result.residuals.items())},
+        "legs": [{
+            "symbol": leg.symbol,
+            "side": leg.side,
+            "input_amount": str(leg.input_amount),
+            "order_base_amount": str(leg.order_base_amount),
+            "consumed_input": str(leg.consumed_input),
+            "residual_input": str(leg.residual_input),
+            "output_amount": str(leg.output_amount),
+            "levels_used": leg.levels_used,
+            "fee_paid_base": str(leg.fee_paid_base),
+            "fee_paid_quote": str(leg.fee_paid_quote),
+        } for leg in result.legs],
+    }
+
+
 def _market_payload(market: MarketInfo) -> dict[str, Any]:
     return {
         "symbol": market.symbol,
@@ -363,6 +391,7 @@ def _market_payload(market: MarketInfo) -> dict[str, Any]:
         "taker_fee_rate": None if market.taker_fee_rate is None else str(market.taker_fee_rate),
         "taker_fee_rate_base": None if market.taker_fee_rate_base is None else str(market.taker_fee_rate_base),
         "taker_fee_rate_quote": None if market.taker_fee_rate_quote is None else str(market.taker_fee_rate_quote),
+        "market_order_enabled": bool(market.market_order_enabled),
     }
 
 
@@ -530,11 +559,16 @@ def run_args(args, *, repo_root: Path) -> int:
             gateway = BitbankPublicGateway()
             markets = gateway.discover_markets()
             triangle_symbols = find_triangle_symbols(markets)
-            now = time.time()
-            depth_books = (
-                gateway.fetch_depth_books(triangle_symbols, now=now, limit=args.book_limit)
+            fetch_started_at = time.time()
+            circuit_statuses = (
+                gateway.fetch_circuit_break_statuses(triangle_symbols)
                 if triangle_symbols else {}
             )
+            depth_books = (
+                gateway.fetch_depth_books(triangle_symbols, now=fetch_started_at, limit=args.book_limit)
+                if triangle_symbols else {}
+            )
+            now = time.time()
             top_books = {
                 symbol: TopOfBook(
                     symbol, book.bids[0].price, book.asks[0].price, book.as_of,
@@ -550,11 +584,19 @@ def run_args(args, *, repo_root: Path) -> int:
             route_assets = {leg.from_asset for leg in route.legs}
             simulations = []
             probe_skip_reason = None
+            settlements = []
             if probe_asset in route_assets:
                 simulations = [
                     _depth_simulation_payload(
                         simulate_route_depth(route, depth_books, start_amount=amount, start_asset=probe_asset)
                     )
+                    for amount in probe_amounts
+                ]
+                settlements = [
+                    _settlement_payload(simulate_multileg_settlement(
+                        route, depth_books, markets, circuit_statuses,
+                        start_amount=amount, start_asset=probe_asset, now=now,
+                    ))
                     for amount in probe_amounts
                 ]
             else:
@@ -567,6 +609,8 @@ def run_args(args, *, repo_root: Path) -> int:
                 "probe_asset": probe_asset,
                 "probe_skip_reason": probe_skip_reason,
                 "depth_simulations": simulations,
+                "settlements": settlements,
+                "circuit_modes": {symbol: status.mode for symbol, status in sorted(circuit_statuses.items())},
                 "legs": [{
                     "symbol": leg.symbol, "from_asset": leg.from_asset, "to_asset": leg.to_asset,
                     "side": leg.side, "price": str(leg.price),

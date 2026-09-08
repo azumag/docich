@@ -41,6 +41,7 @@ class MarketInfo:
     taker_fee_rate: Decimal | None = None
     taker_fee_rate_base: Decimal | None = None
     taker_fee_rate_quote: Decimal | None = None
+    market_order_enabled: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "symbol", _nonempty(self.symbol, "symbol"))

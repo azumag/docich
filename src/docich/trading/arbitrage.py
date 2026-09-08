@@ -69,7 +69,7 @@ def _triangle_sets(markets: Mapping[str, MarketInfo]) -> list[tuple[str, str, st
     pair_to_symbol: dict[frozenset[str], str] = {}
     assets: set[str] = set()
     for symbol, market in markets.items():
-        if not market.active or not market.spot or market.base == market.quote:
+        if not market.active or not market.spot or not market.market_order_enabled or market.base == market.quote:
             continue
         pair_to_symbol[_pair_key(market.base, market.quote)] = symbol
         assets.update((market.base, market.quote))
@@ -133,7 +133,7 @@ def scan_triangular_arbitrage(
     usable: dict[str, tuple[MarketInfo, TopOfBook]] = {}
     for symbol, market in markets.items():
         book = books.get(symbol)
-        if book is None or market.taker_fee_rate_quote is None or market.taker_fee_rate_base is None:
+        if book is None or not market.market_order_enabled or market.taker_fee_rate_quote is None or market.taker_fee_rate_base is None:
             continue
         age = float(now) - float(book.as_of)
         if age < -1 or age > max_book_age_seconds:
