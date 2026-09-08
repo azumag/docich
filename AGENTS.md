@@ -111,3 +111,38 @@ worker（radio/chat/improve_daemon）は起動時に `core/config.sh` の `VAR="
 ## 完了報告
 
 不具合・退行・安全性・CI破壊を必須指摘、任意の設計・可読性改善を別項目として扱う。実行テスト、最新HEADの必須CI、レビュー、マージ、VM反映、実測による復旧を区別し、未確認を成功扱いしない。
+
+## 9. Production deployment contract（docich control plane）
+
+正規フローは `branch → PR → review/tests/CI → protected main → GitHub Actions → owner-only VM gateway → production VM`。production VM を通常の開発 checkout として扱わない。
+
+以下を禁止する。
+
+- production VM 上の tracked file の直接編集。
+- ad-hoc な `git pull` / `reset` / `checkout` や手動コピーを正式 deployment として使う。
+- PR / protected main を迂回する通常変更。
+- unknown drift の無条件上書き。drift は fail-closed とし、原因診断から修復する。
+- secret・token・Authorization header・prompt 本文・生成本文・環境変数の Actions 出力。
+
+production deployment は owner-only control plane（`ops/vm_actions/` + `.github/workflows/vm-operations.yml`）を維持する。soviet_now の開発・merge は soviet_now 側で行い、VM 反映は docich 経路を正本とする。
+
+## 10. Runtime diagnostics contract
+
+通常の運用診断の正規経路は、owner-only VM gateway の read-only `diagnostics` operation とする。Desktop Commander / 対話 SSH は補助手段。
+
+- diagnostics は arbitrary exec の stdout 公開ではない。固定 collector の sanitized structured output のみ許可する。
+- 診断は production を変更しない。restart / kill / cleanup / lock 削除を診断と同時に行わない。
+- 詳細仕様・severity 基準・実行方法は `docs/operations/runtime-diagnostics.md` を正本とする。
+
+## 11. Runtime 変更 checklist
+
+worker / queue / model / provider / fallback / runtime component を変更したら、PR で以下を確認する。詳細は `docs/operations/runtime-diagnostics.md` の checklist を使う。
+
+- [ ] runtime registry / manifest
+- [ ] worker health 契約
+- [ ] queue registry
+- [ ] structured telemetry
+- [ ] diagnostics coverage
+- [ ] regression tests
+- [ ] secret-redaction
+- [ ] deploy 影響

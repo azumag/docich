@@ -6,7 +6,7 @@ OWNER_ID='9018513'
 REPOSITORY='azumag/docich'
 REPOSITORY_ID='1327276249'
 WORKFLOW='.github/workflows/vm-operations.yml'
-OPS={'deploy','exec','status','bootstrap'}
+OPS={'deploy','exec','status','bootstrap','diagnostics'}
 TARGETS={'preview','production'}
 REF_RE=re.compile(r'[A-Za-z0-9][A-Za-z0-9_./-]{0,199}\Z')
 SHA_RE=re.compile(r'[0-9a-f]{40}\Z')
@@ -43,8 +43,11 @@ def main():
         if not REF_RE.fullmatch(ref) or '..' in ref or '//' in ref or ref.startswith('refs/') or ref.endswith(('/', '.lock')):
             fail('invalid ref')
         if op=='bootstrap' and target!='production': fail('bootstrap is production-only')
+        if op=='diagnostics' and target!='production': fail('diagnostics is production-only')
         if target=='production' and op in {'exec','bootstrap'} and confirm!='production':
             fail('production confirmation required')
+        # diagnostics is read-only with sanitized bounded output, so it needs
+        # owner-only gating (above) but no separate confirmation.
         if op=='deploy' and target=='production' and ref!='main': fail('production deploy must use main')
         result={'operation':op,'target':target,'ref':ref,'confirm':confirm}
     else:
