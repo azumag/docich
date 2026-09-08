@@ -211,6 +211,16 @@ class PresyncedSubmoduleReconcileTests(unittest.TestCase):
         self.assertLess(highest, 128)
         self.assertGreaterEqual(REASON_PROJECTION_UNKNOWN_CLASS_BASE, 86)
 
+    def test_helper_fits_production_exec_stdin_budget(self):
+        # The workflow pipes this whole file to the production exec stdin,
+        # which the gateway caps at 16384 bytes; growing past it rejects the
+        # run before any diagnostic executes. Fail here in CI instead, with
+        # room kept for the heredoc wrapper line. NUL bytes are rejected too.
+        helper = Path(__file__).resolve().parent.parent / "reconcile_presynced_submodule.py"
+        script = helper.read_bytes()
+        self.assertNotIn(b"\0", script)
+        self.assertLessEqual(len(script) + 256, 16384)
+
     def test_select_unknown_reason_keeps_mask_and_generic_codes(self):
         resized = (0, {"data": b"drift\n"}, {"data": b"old\n"}, {"data": b"new\n"})
         absent = (1, None, {"data": b"old\n"}, {"data": b"new\n"})
