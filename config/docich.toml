@@ -50,6 +50,8 @@ recover_windows = true # display/audio/stream window 消失時に `up` 相当で
 paper_worker_enabled = false
 interval_s = 60
 paper_capital_jpy = 10000
+notifications_enabled = false
+notification_speech_enabled = false
 
 [rotation]
 games = []            # `docich rotate` が巡回するゲーム名の順序 (例: ["nethack", "hanjuku-hero"])。空だとエラー

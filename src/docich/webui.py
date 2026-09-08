@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from . import speech
+from . import overlay_queue as shared_overlay_queue
 from .config import (
     GlobalConfig,
     _parse_origin_str,
@@ -652,32 +653,7 @@ def _sanitize_overlay_text(s: str, limit: int) -> str:
 
 
 def _validate_overlay_event(ev: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(ev, dict):
-        raise ValueError("eventはオブジェクトである必要があります")
-    cat = str(ev.get("category", "")).strip()
-    if cat not in OVERLAY_CATEGORIES:
-        raise ValueError(f"categoryは {sorted(OVERLAY_CATEGORIES)} のいずれかである必要があります")
-    title = _sanitize_overlay_text(str(ev.get("title", "")), OVERLAY_TITLE_LIMIT)
-    if not title:
-        raise ValueError("titleは必須です")
-    if "\n" in title or "\r" in title:
-        raise ValueError("titleに改行は使用できません")
-    body = _sanitize_overlay_text(str(ev.get("body", "")), OVERLAY_BODY_LIMIT)
-    level = str(ev.get("level", "info")).strip() or "info"
-    if level not in ("info", "warn", "error"):
-        level = "info"
-    ts = ev.get("ts")
-    try:
-        ts_int = int(ts) if ts is not None else int(time.time())
-    except Exception:
-        ts_int = int(time.time())
-    now = int(time.time())
-    # allow ts within 7 days past to 60s future
-    if ts_int > now + 60 or ts_int < now - 7 * 86400:
-        # clamp to now if out of range
-        ts_int = now
-    return {"ts": ts_int, "category": cat, "title": title, "body": body, "level": level}
-
+    return shared_overlay_queue.validate_event(ev)
 
 def _effective_token(g: GlobalConfig) -> str:
     return effective_webui_token(g.webui)
@@ -990,44 +966,19 @@ def _get_peak_status(soren_root: Path) -> dict[str, Any]:
 
 
 def _overlay_events_path(soren_root: Path) -> Path:
-    raw = os.environ.get("EVENT_OVERLAY_EVENTS_FILE", "")
-    if raw:
-        p = Path(raw)
-        return p if p.is_absolute() else (soren_root / p)
-    return soren_root / "tmp/state/overlay_events.jsonl"
-
+    return shared_overlay_queue.overlay_events_path(soren_root)
 
 def _overlay_html_path(soren_root: Path) -> Path:
-    raw = os.environ.get("EVENT_OVERLAY_HTML_FILE", "")
-    if raw:
-        p = Path(raw)
-        return p if p.is_absolute() else (soren_root / p)
-    return soren_root / "tmp/state/event_overlay.html"
-
+    return shared_overlay_queue.overlay_html_path(soren_root)
 
 def _work_indicator_path(soren_root: Path) -> Path:
-    raw = os.environ.get("CODEX_WORK_OVERLAY_STATE_FILE", "")
-    if raw:
-        p = Path(raw)
-        return p if p.is_absolute() else (soren_root / p)
-    return soren_root / "tmp/state/codex_work_indicator.json"
-
+    return shared_overlay_queue.work_indicator_path(soren_root)
 
 def _comment_gen_state_path(soren_root: Path) -> Path:
-    raw = os.environ.get("COMMENT_GEN_STATE_FILE", "")
-    if raw:
-        p = Path(raw)
-        return p if p.is_absolute() else (soren_root / p)
-    return soren_root / "tmp/state/.comment_gen_state"
-
+    return shared_overlay_queue.comment_gen_state_path(soren_root)
 
 def _radio_state_path(soren_root: Path) -> Path:
-    raw = os.environ.get("RADIO_STATE_FILE", "")
-    if raw:
-        p = Path(raw)
-        return p if p.is_absolute() else (soren_root / p)
-    return soren_root / "tmp/state/.radio_state"
-
+    return shared_overlay_queue.radio_state_path(soren_root)
 
 def _wildcard_status_path(soren_root: Path) -> Path:
     raw = os.environ.get("WILDCARD_PARALLEL_STATUS_FILE", "")
@@ -1081,6 +1032,79 @@ def _comment_audio_dedup_dir(soren_root: Path) -> Path:
 
 def _comment_audio_hash(text: str) -> str:
     return hashlib.md5(text.encode("utf-8")).hexdigest()
+
+
+def _comment_audio_delivery_dir(soren_root: Path) -> Path:
+    return _comment_queue_dir(soren_root) / "audio_delivery_dedup"
+
+
+def _validate_audio_delivery_key(delivery_key: str) -> str:
+    if not delivery_key:
+        return ""
+    value = str(delivery_key).strip()
+    if not value or len(value) > 256:
+        raise ValueError("delivery_key は1-256文字である必要があります")
+    if any(ord(ch) < 32 for ch in value):
+        raise ValueError("delivery_key に制御文字は使用できません")
+    return value
+
+
+def _enqueue_audio_delivery(soren_root: Path, text: str, delivery: str) -> dict[str, Any]:
+    """Publish once by atomically moving a prepared payload into the queue.
+
+    A complete receipt directory is installed before publication. Its payload
+    exists while prepared; absence means the atomic queue rename committed,
+    even if audio-worker has already consumed the queue file. Never expire
+    receipts: text TTL and bounded marker eviction cannot deduplicate events.
+    This guarantees process-crash recovery on one local filesystem, not
+    exactly-once playback or recovery from filesystem/power loss.
+    """
+    import fcntl
+    import shutil
+
+    queue = _comment_queue_dir(soren_root)
+    receipts = _comment_audio_delivery_dir(soren_root)
+    receipts.mkdir(parents=True, exist_ok=True)
+    key = hashlib.sha256(delivery.encode("utf-8")).hexdigest()
+    marker = receipts / key
+    # The lock inode is permanent; the kernel releases it when a process dies.
+    with (receipts / ".publish.lock").open("a") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        if not marker.exists():
+            stage = Path(tempfile.mkdtemp(prefix=".prepared.", dir=receipts))
+            try:
+                filename = f"comment_announce_{time.time_ns()}_{key}_crypto_paper.txt"
+                for name, content in (("receipt.json", json.dumps({
+                    "version": 1, "event_id": delivery, "filename": filename,
+                })), ("payload", text + "\n")):
+                    with (stage / name).open("w", encoding="utf-8") as handle:
+                        handle.write(content)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                (stage / "payload").chmod(0o644)
+                os.replace(stage, marker)
+            finally:
+                if stage.exists():
+                    shutil.rmtree(stage)
+        # Legacy marker-only reservations have no evidence of publication.
+        # Fail rather than silently ACK or risk replaying an old announcement.
+        try:
+            record = json.loads((marker / "receipt.json").read_text(encoding="utf-8"))
+            filename = record["filename"]
+            if (record.get("version") != 1 or record.get("event_id") != delivery
+                    or not isinstance(filename, str)
+                    or re.fullmatch(rf"comment_announce_[0-9]+_{key}_crypto_paper\.txt", filename) is None):
+                raise ValueError("invalid receipt")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise RuntimeError("audio delivery receipt is ambiguous; manual reconciliation required") from exc
+        payload = marker / "payload"
+        if not payload.exists():
+            return {"ok": True, "dedup": True, "filename": None}
+        dest = queue / filename
+        # This rename is both publication and the durable committed state.
+        # Do not recreate/remove the receipt on any exception after this point.
+        os.replace(payload, dest)
+        return {"ok": True, "dedup": False, "filename": filename, "path": str(dest)}
 
 
 def _comment_audio_cleanup_dedup_markers(soren_root: Path, ttl: int) -> None:
@@ -1175,6 +1199,19 @@ def _comment_audio_claim_enqueue_key(soren_root: Path, text: str) -> bool:
             return False
 
 
+def _comment_audio_release_enqueue_key(soren_root: Path, text: str) -> None:
+    """Release this text's dedup claim after a failed queue write."""
+    key = _comment_audio_hash(text)
+    if not key:
+        return
+    marker = _comment_audio_dedup_dir(soren_root) / key
+    try:
+        import shutil
+        shutil.rmtree(marker, ignore_errors=True)
+    except Exception:
+        pass
+
+
 def _validate_audio_text(text: str) -> str:
     if not isinstance(text, str):
         raise ValueError("text は文字列である必要があります")
@@ -1212,14 +1249,31 @@ def _validate_audio_speaker(speaker: str) -> str:
     return s
 
 
-def _enqueue_audio_text(soren_root: Path, text: str, source: str = "webui_manual", speaker: str = "") -> dict[str, Any]:
+def _enqueue_audio_text(
+    soren_root: Path,
+    text: str,
+    source: str = "webui_manual",
+    speaker: str = "",
+    *,
+    delivery_key: str = "",
+) -> dict[str, Any]:
     cleaned = _validate_audio_text(text)
     src = _validate_audio_source(source)
     spk = _validate_audio_speaker(speaker)
-    if not _comment_audio_claim_enqueue_key(soren_root, cleaned):
+    delivery = _validate_audio_delivery_key(delivery_key)
+    if delivery:
+        if src != "crypto_paper" or spk:
+            raise ValueError("delivery_key is reserved for crypto_paper without speaker override")
+        return _enqueue_audio_delivery(soren_root, cleaned, delivery)
+    claimed = _comment_audio_claim_enqueue_key(soren_root, cleaned)
+    if not claimed:
         return {"ok": True, "dedup": True, "filename": None}
     queue_dir = _comment_queue_dir(soren_root)
-    queue_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        queue_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        _comment_audio_release_enqueue_key(soren_root, cleaned)
+        raise
     ts = time.time_ns()
     filename = f"comment_announce_{ts}_{src}.txt"
     dest = queue_dir / filename
@@ -1241,6 +1295,9 @@ def _enqueue_audio_text(soren_root: Path, text: str, source: str = "webui_manual
             except Exception:
                 pass
         return {"ok": True, "dedup": False, "filename": filename, "path": str(dest)}
+    except Exception:
+        _comment_audio_release_enqueue_key(soren_root, cleaned)
+        raise
     finally:
         if tmp_fd is not None:
             try:
@@ -1382,27 +1439,7 @@ def _load_work_indicator(soren_root: Path) -> dict[str, Any] | None:
 
 
 def _load_overlay_events(soren_root: Path, keep: int | None = None) -> list[dict[str, Any]]:
-    p = _overlay_events_path(soren_root)
-    try:
-        lines = p.read_text(encoding="utf-8", errors="ignore").splitlines()
-    except FileNotFoundError:
-        return []
-    except Exception:
-        return []
-    events: list[dict[str, Any]] = []
-    for line in lines[-keep:] if keep else lines:
-        if not line.strip():
-            continue
-        try:
-            item = json.loads(line)
-        except Exception:
-            continue
-        if isinstance(item, dict):
-            events.append(item)
-    if keep:
-        return events[-keep:]
-    return events
-
+    return shared_overlay_queue.load_events(soren_root, keep=keep, strict=False)
 
 def _load_top_override(soren_root: Path) -> dict[str, Any] | None:
     p = _top_override_path(soren_root)
@@ -1419,27 +1456,7 @@ def _load_top_override(soren_root: Path) -> dict[str, Any] | None:
 
 
 def _get_overlay_keep_visible(soren_root: Path) -> tuple[int, int]:
-    keep = 180
-    visible = 18
-    try:
-        keep = int(os.environ.get("EVENT_OVERLAY_KEEP_EVENTS", "180") or "180")
-    except Exception:
-        keep = 180
-    try:
-        visible = int(os.environ.get("EVENT_OVERLAY_VISIBLE_SEC", "18") or "18")
-    except Exception:
-        visible = 18
-    # dotenv may have different values; check .env as well
-    try:
-        dotenv = _read_dotenv_dict(soren_root)
-        if "EVENT_OVERLAY_KEEP_EVENTS" in dotenv and dotenv["EVENT_OVERLAY_KEEP_EVENTS"].strip().isdigit():
-            keep = int(dotenv["EVENT_OVERLAY_KEEP_EVENTS"].strip())
-        if "EVENT_OVERLAY_VISIBLE_SEC" in dotenv and dotenv["EVENT_OVERLAY_VISIBLE_SEC"].strip().isdigit():
-            visible = int(dotenv["EVENT_OVERLAY_VISIBLE_SEC"].strip())
-    except Exception:
-        pass
-    return max(1, keep), max(1, visible)
-
+    return shared_overlay_queue.get_keep_visible(soren_root)
 
 def _get_gen_indicators(soren_root: Path, now: int | None = None) -> list[dict[str, Any]]:
     if now is None:
@@ -1561,84 +1578,14 @@ def _get_wildcard_status(soren_root: Path) -> dict[str, Any] | None:
 
 
 def _atomic_overlay_write(soren_root: Path, rel_path: Path, data: str, mode: int = 0o644) -> None:
-    # rel_path is absolute path already; use its parent
-    parent = rel_path.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    lock_dir = soren_root / "tmp/state/.webui_overlay.lock"
     try:
-        lock_dir.mkdir(parents=True, exist_ok=False)
-    except FileExistsError:
-        try:
-            age = time.time() - lock_dir.stat().st_mtime
-            if age > 10:
-                import shutil
-                shutil.rmtree(lock_dir, ignore_errors=True)
-                lock_dir.mkdir(parents=True, exist_ok=False)
-            else:
-                raise FileExistsError(f"another overlay edit in progress (age {int(age)}s)")
-        except FileExistsError:
-            raise
-    try:
-        fd, tmp = tempfile.mkstemp(dir=str(parent), prefix=".overlay.")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(data)
-                fh.flush()
-                os.fsync(fh.fileno())
-            Path(tmp).chmod(mode)
-            os.replace(tmp, str(rel_path))
-        finally:
-            try:
-                if Path(tmp).exists():
-                    Path(tmp).unlink()
-            except Exception:
-                pass
-    finally:
-        try:
-            lock_dir.rmdir()
-        except Exception:
-            try:
-                import shutil
-                shutil.rmtree(lock_dir, ignore_errors=True)
-            except Exception:
-                pass
-
+        shared_overlay_queue.atomic_write(soren_root, rel_path, data, mode)
+    except shared_overlay_queue.OverlayQueueBusyError as exc:
+        # Existing bulk/clear/banner handlers return HTTP 409 for this class.
+        raise FileExistsError(str(exc)) from exc
 
 def _regenerate_event_overlay(soren_root: Path) -> bool:
-    # Best-effort regeneration via generate_event_overlay.py
-    try:
-        gen_py = soren_root / "generate_event_overlay.py"
-        if not gen_py.is_file():
-            # try repo root
-            cand = Path(__file__).resolve().parents[2] / "games/soviet_now/generate_event_overlay.py"
-            if cand.is_file():
-                gen_py = cand
-            else:
-                return False
-        events = _overlay_events_path(soren_root)
-        html = _overlay_html_path(soren_root)
-        work = _work_indicator_path(soren_root)
-        keep, visible = _get_overlay_keep_visible(soren_root)
-        env = os.environ.copy()
-        env["EVENT_OVERLAY_STATE_BASE"] = str(soren_root)
-        # ensure COMMENT_GEN_STATE and RADIO_STATE are set for generator
-        if "EVENT_OVERLAY_COMMENT_GEN_STATE" not in env:
-            env["EVENT_OVERLAY_COMMENT_GEN_STATE"] = str(_comment_gen_state_path(soren_root))
-        if "EVENT_OVERLAY_RADIO_STATE" not in env:
-            env["EVENT_OVERLAY_RADIO_STATE"] = str(_radio_state_path(soren_root))
-        # run generator
-        subprocess.run(
-            ["python3", str(gen_py), str(events), str(html), str(keep), str(visible), str(work)],
-            cwd=str(soren_root),
-            env=env,
-            timeout=5,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return True
-    except Exception:
-        return False
-
+    return shared_overlay_queue.regenerate_overlay(soren_root)
 
 def _improve_state_path(soren_root: Path) -> Path:
     return soren_root / "tmp/state/improve_state.json"
@@ -6342,23 +6289,21 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_error_json(400, "validation_error", str(exc))
             return 400
         keep, _ = _get_overlay_keep_visible(self.soren_root)
-        # load existing, append, trim to keep
-        events = _load_overlay_events(self.soren_root)
-        events.append(ev)
-        if len(events) > keep:
-            events = events[-keep:]
-        # write
-        p = _overlay_events_path(self.soren_root)
-        content = "\n".join(json.dumps(e, ensure_ascii=False) for e in events) + ("\n" if events else "")
         try:
-            _atomic_overlay_write(self.soren_root, p, content, 0o644)
-        except FileExistsError as exc:
-            self._send_error_json(409, "concurrent_edit", str(exc))
-            return 409
+            shared_overlay_queue.append_event(
+                self.soren_root, ev, keep=keep, strict=False, regenerate=False
+            )
+        except shared_overlay_queue.OverlayQueueError as exc:
+            if "another overlay edit in progress" in str(exc):
+                self._send_error_json(409, "concurrent_edit", str(exc))
+                return 409
+            self._send_error_json(500, "write_failed", str(exc))
+            return 500
         except Exception as exc:
             self._send_error_json(500, "write_failed", str(exc))
             return 500
         _regenerate_event_overlay(self.soren_root)
+        events = _load_overlay_events(self.soren_root)
         self._send_json(200, {"ok": True, "event": ev, "count": len(events)})
         return 200
 
@@ -6434,23 +6379,19 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception:
             self._send_error_json(400, "invalid_index", "index must be integer")
             return 400
-        events = _load_overlay_events(self.soren_root)
-        if idx < 0 or idx >= len(events):
+        try:
+            count = shared_overlay_queue.delete_event(self.soren_root, idx)
+        except IndexError:
             self._send_error_json(404, "not_found", f"index {idx} out of range")
             return 404
-        events.pop(idx)
-        p = _overlay_events_path(self.soren_root)
-        content = "\n".join(json.dumps(e, ensure_ascii=False) for e in events) + ("\n" if events else "")
-        try:
-            _atomic_overlay_write(self.soren_root, p, content, 0o644)
-        except FileExistsError as exc:
+        except shared_overlay_queue.OverlayQueueBusyError as exc:
             self._send_error_json(409, "concurrent_edit", str(exc))
             return 409
         except Exception as exc:
             self._send_error_json(500, "write_failed", str(exc))
             return 500
         _regenerate_event_overlay(self.soren_root)
-        self._send_json(200, {"ok": True, "deleted": idx, "count": len(events)})
+        self._send_json(200, {"ok": True, "deleted": idx, "count": count})
         return 200
 
     def _handle_get_work_banner(self) -> int:
