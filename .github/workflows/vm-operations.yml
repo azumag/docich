@@ -25,10 +25,12 @@ on:
       command:
         description: Command sent on stdin for exec (production output is kept on the VM)
         required: false
+        default: ''
         type: string
       confirm:
         description: Type production for production exec/bootstrap
         required: false
+        default: ''
         type: string
 
 permissions:
@@ -150,6 +152,8 @@ jobs:
           ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "upload docich $TARGET $SHA" < "$RUNNER_TEMP/vm-payload"
 
       - name: Deploy staged code
+        id: deploy_initial
+        continue-on-error: true
         if: ${{ steps.auth.outputs.operation == 'deploy' }}
         shell: bash
         env:
@@ -161,6 +165,63 @@ jobs:
           set -euo pipefail
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
           ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "deploy docich $TARGET $SHA"
+
+      - name: Reconcile reviewed pre-synced Soren checkout
+        id: reconcile_presynced
+        if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && steps.deploy_initial.outcome == 'failure' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+
+          status_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $SHA")"
+          read -r vm_status old_root pending_count < <(
+            python3 - "$status_json" <<'PY'
+          import json, sys
+          data = json.loads(sys.argv[1])
+          print(data.get("status", ""), data.get("sha", ""), len(data.get("pending_repairs") or []))
+          PY
+          )
+          [[ "$vm_status" == drift ]]
+          [[ "$pending_count" == 0 ]]
+          [[ "$old_root" =~ ^[0-9a-f]{40}$ ]]
+          git -C candidate cat-file -e "$old_root^{commit}"
+          git -C candidate merge-base --is-ancestor "$old_root" "$SHA"
+
+          old_sub="$(git -C candidate ls-tree "$old_root" -- games/soviet_now | awk '$1 == "160000" && $2 == "commit" {print $3}')"
+          new_sub="$(git -C candidate ls-tree "$SHA" -- games/soviet_now | awk '$1 == "160000" && $2 == "commit" {print $3}')"
+          [[ "$old_sub" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$new_sub" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$old_sub" != "$new_sub" ]]
+
+          {
+            printf "python3 - '%s' '%s' '%s' '%s' '%s' <<'PY'\n" \
+              /home/ubuntu/docich "$old_root" "$old_sub" "$new_sub" games/soviet_now
+            cat control/ops/vm_actions/reconcile_presynced_submodule.py
+            printf '\nPY\n'
+          } | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
+      - name: Retry production deploy after exact reconcile
+        id: deploy_retry
+        if: ${{ steps.reconcile_presynced.outcome == 'success' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "deploy docich production $SHA"
+
+      - name: Fail unresolved deployment
+        if: ${{ always() && steps.auth.outputs.operation == 'deploy' && steps.deploy_initial.outcome == 'failure' && steps.deploy_retry.outcome != 'success' }}
+        shell: bash
+        run: exit 1
 
       - name: Adopt reviewed production baseline
         if: ${{ steps.auth.outputs.operation == 'bootstrap' }}
