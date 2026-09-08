@@ -21,6 +21,25 @@ class TestSorenOutputAdapter(unittest.TestCase):
             g = config.load_global(root, config_path=cfg)
             self.assertEqual(soren_output.resolve_soren_root(g), (root / "runtime/soren").resolve())
 
+
+    def test_existing_sorengame_runtime_root_wins_over_reference_submodule(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = root / "runtime-soren"
+            runtime.mkdir()
+            games = root / "config" / "games"
+            games.mkdir(parents=True)
+            (games / "sorengame.toml").write_text(
+                "[game]\nname = \"sorengame\"\ntitle = \"Soren\"\nadapter = \"soren\"\n"
+                f"[soren]\nroot = \"{runtime}\"\n",
+                encoding="utf-8",
+            )
+            reference = root / "games" / "soviet_now"
+            reference.mkdir(parents=True)
+            (reference / "eloop_lib.sh").write_text("# ref\n", encoding="utf-8")
+            g = config.load_global(root)
+            self.assertEqual(soren_output.resolve_soren_root(g), runtime.resolve())
+
     def test_overlay_uses_shared_strict_queue_and_regeneration(self):
         with tempfile.TemporaryDirectory() as tmp:
             g = config.load_global(Path(tmp))

@@ -12,6 +12,8 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich.cli import main  # noqa: E402
+from docich import config  # noqa: E402
+from docich.trading import cli as trading_cli  # noqa: E402
 from docich.trading.exchanges.bitbank_ccxt import CCXTUnavailableError  # noqa: E402
 
 
@@ -222,6 +224,43 @@ class TestTradingCli(unittest.TestCase):
         rc, out, err = self.run_cli(["games"])
         self.assertEqual(rc, 0, err)
 
+
+
+    def test_default_trading_state_dir_follows_global_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = root / "docich.toml"
+            cfg.write_text('[paths]\nstate_dir = "custom-run"\n', encoding="utf-8")
+            g = config.load_global(root, config_path=cfg)
+            args = type("Args", (), {"state_dir": None})()
+            self.assertEqual(
+                trading_cli._state_dir(args, root, g), root / "custom-run" / "trading"
+            )
+
+    def test_presentation_cli_defaults_compact_and_can_switch_detailed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "state"
+            rc, out, err = self.run_cli(["trading", "--state-dir", str(state), "presentation", "status"])
+            self.assertEqual(rc, 0, err)
+            self.assertEqual(json.loads(out)["mode"], "compact")
+            rc, out, err = self.run_cli(["trading", "--state-dir", str(state), "presentation", "detailed"])
+            self.assertEqual(rc, 0, err)
+            self.assertEqual(json.loads(out)["mode"], "detailed")
+            rc, out, err = self.run_cli(["trading", "--state-dir", str(state), "presentation", "status"])
+            self.assertEqual(json.loads(out)["mode"], "detailed")
+
+    def test_notify_once_does_not_construct_market_gateway(self):
+        with patch("docich.trading.cli.BitbankPublicGateway") as gateway,              patch("docich.trading.cli.deliver_pending_notifications") as deliver:
+            deliver.return_value = type("R", (), {
+                "enabled": False, "bootstrapped": False, "presentation_mode": "compact",
+                "source_count": 0, "overlay_sent": 0, "speech_sent": 0,
+                "overlay_pending": 0, "speech_pending": 0, "error_codes": (),
+            })()
+            rc, out, err = self.run_cli(["trading", "notify-once"])
+        self.assertEqual(rc, 0, err)
+        gateway.assert_not_called()
+        deliver.assert_called_once()
+        self.assertFalse(json.loads(out)["enabled"])
 
 if __name__ == "__main__":
     unittest.main()

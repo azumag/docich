@@ -8,13 +8,16 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping
 
+from ..config import GlobalConfig
 from .arbitrage import ArbitrageDataError, TopOfBook, find_triangle_symbols, scan_triangular_arbitrage
 from .depth import DepthRouteSimulation, simulate_route_depth
 from .exchanges.bitbank_ccxt import BitbankPublicGateway, CCXTUnavailableError
 from .ledger import PaperLedger
 from .market_data import MarketFrame, MarketFrameError
 from .models import MarketInfo, Opportunity, TradingValidationError, as_decimal
+from .notifications import NotificationError, deliver_pending_notifications
 from .paper import PaperBroker
+from .presentation import PresentationError, read_presentation, write_presentation
 from .relative_value import scan_relative_value_opportunities
 from .risk import CapitalPolicy, allocate_opportunities
 from .strategies import scan_opportunities, select_diversified_opportunities
@@ -84,11 +87,20 @@ def configure_parser(parser) -> None:
     depth.add_argument("--record", action="store_true", help="constraint-aware settlementをpaper台帳へ保存する")
     settlement_history = sub.add_parser("settlement-history", help="保存済みmulti-leg paper settlementを表示する")
     settlement_history.add_argument("--limit", type=int, default=20, metavar="N", help="表示件数 (既定20)")
+    presentation = sub.add_parser("presentation", help="取引通知のcompact/detailed表示モードを操作する")
+    presentation.add_argument("presentation_action", choices=("status", "compact", "detailed"))
+    sub.add_parser("notify-once", help="保存済みpaper eventの未配送通知だけを1回処理する")
 
 
-def _state_dir(args, repo_root: Path) -> Path:
+def _state_dir(
+    args, repo_root: Path, global_config: GlobalConfig | None = None
+) -> Path:
     raw = getattr(args, "state_dir", None)
-    return Path(raw).expanduser() if raw else repo_root / "run" / "trading"
+    if raw:
+        return Path(raw).expanduser()
+    if global_config is not None:
+        return global_config.state_dir / "trading"
+    return repo_root / "run" / "trading"
 
 
 def _json_print(payload: Mapping[str, Any]) -> None:
@@ -434,9 +446,41 @@ def _market_payload(market: MarketInfo) -> dict[str, Any]:
     }
 
 
-def run_args(args, *, repo_root: Path) -> int:
+def run_args(args, *, repo_root: Path, global_config: GlobalConfig | None = None) -> int:
     command = args.trading_command
-    state_dir = _state_dir(args, repo_root)
+    state_dir = _state_dir(args, repo_root, global_config)
+    if command == "presentation":
+        path = state_dir / "presentation.json"
+        try:
+            if args.presentation_action == "status":
+                state = read_presentation(path)
+            else:
+                state = write_presentation(path, args.presentation_action, now=time.time())
+        except PresentationError as exc:
+            raise TradingCliError(str(exc)) from exc
+        _json_print({"mode": state.mode, "updated_at": state.updated_at})
+        return 0
+    if command == "notify-once":
+        if global_config is None:
+            raise TradingCliError("notify-once requires resolved docich global config")
+        try:
+            result = deliver_pending_notifications(
+                global_config, now=time.time(), state_dir=state_dir
+            )
+        except NotificationError as exc:
+            raise TradingCliError(str(exc)) from exc
+        _json_print({
+            "enabled": result.enabled,
+            "bootstrapped": result.bootstrapped,
+            "presentation_mode": result.presentation_mode,
+            "source_count": result.source_count,
+            "overlay_sent": result.overlay_sent,
+            "speech_sent": result.speech_sent,
+            "overlay_pending": result.overlay_pending,
+            "speech_pending": result.speech_pending,
+            "error_codes": list(result.error_codes),
+        })
+        return 0
     if command == "status":
         status_path = state_dir / "status.json"
         _json_print(_absent_status() if not status_path.is_file() else _safe_existing_status(status_path))
