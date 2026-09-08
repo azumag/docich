@@ -373,7 +373,7 @@ def _dispatch(args: argparse.Namespace) -> int:
     if command == "ai-guard":
         return model_output_guard.main()
     if command == "trading":
-        return trading_cli.run_args(args, repo_root=_repo_root())
+        return trading_cli.run_args(args, repo_root=_repo_root(), global_config=g)
     if command == "webui":
         from .webui import run_webui
 

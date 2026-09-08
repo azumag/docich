@@ -12,6 +12,7 @@ from .events import append_public_event, build_fill_event, build_settlement_even
 from .exchanges.bitbank_ccxt import BitbankPublicGateway
 from .ledger import PaperLedger
 from .market_data import MarketFrame
+from .notifications import deliver_pending_notifications
 from .paper import PaperBroker
 from .relative_value import scan_relative_value_opportunities
 from .risk import CapitalPolicy, allocate_opportunities
@@ -319,6 +320,12 @@ def run_paper_worker(
                 last_success_at=last_success_at,
             )
             last_success_at = result.last_success_at
+            if g.trading.notifications_enabled:
+                try:
+                    deliver_pending_notifications(g, now=started_at)
+                except Exception:
+                    # Viewer-output failures are isolated from market-data/trading cycles.
+                    print("[trading] notification delivery error", flush=True)
         except Exception as exc:
             # Internal logs may contain public-endpoint exception text; public JSON never does.
             print(f"[trading] paper worker cycle error: {exc}", flush=True)

@@ -136,7 +136,7 @@ soviet_now側の全on-air出力guardが適用されています。
 | `docich ra-cmd <CMD>` | RetroArch UDP command |
 | `docich webui [--dry-run]` | モデルチェーン/バックオフ管理 Web UI (Tailscale経由) |
 | `docich caption plan/send ...` | 字幕計画とFFmpeg IPC |
-| `docich trading status/discover/history/paper-cycle/strategy-cycle/settlement-history` | 暗号資産 paper trading 基盤（live注文なし） |
+| `docich trading status/discover/history/paper-cycle/strategy-cycle/settlement-history/presentation/notify-once` | 暗号資産 paper trading・通知基盤（live注文なし） |
 | `docich run <component>` | tmux内の監督ループ用内部command |
 
 設定探索順は `--config`、`$DOCICH_CONFIG`、
@@ -229,8 +229,29 @@ workerは5分足24本を使って既存momentum / mean-reversion / relative-valu
 - `run/logs/trading.log`: supervisor/internal warning log
 
 `events.jsonl` は新規eventがある場合だけ作成し、同一fill/settlementの再実行では重複追加しません。
-ここまでは配信側が読むための公開安全なevent生成までで、VOICEVOX/overlayへの実況接続と実発注は後続sliceです。
-実発注を有効化する前には、別途の設計レビューと明示承認が必要です。
+
+取引通知はworkerとは別ゲートです。`notifications_enabled=true` のときだけ新しいpaper eventを
+既存Soren event overlayへ配送し、`notification_speech_enabled=true` の場合だけ同じ通知文を既存comment audio queueへ
+enqueueします。両方とも既定falseなので、workerを有効化しただけでは画面通知や音声は発生しません。
+通知文はLLMを使わずevent/statusのallowlist値だけから決定的に作り、必ず `PAPER` / 「ペーパー」と明示します。
+
+初めて通知を有効化した際は現在の `events.jsonl` 末尾までを配送済みとしてbootstrapし、過去の約定を一括再生しません。
+以後は `run/trading/notification_delivery.json` でoverlayとspeechを独立ACKし、片方が失敗しても成功済みのもう片方を
+再送しません。speech無効中のeventもspeech配送済み扱いにするため、後から音声を有効化しても過去分を読み上げません。
+
+表示モードは取引ロジックと独立しています。既定`compact`は通常ゲーム中の短報向け、`detailed`はBitcoinコーナー等で
+判断理由・現在のpaper投入状況を詳しく説明する用途です。モード変更はstrategy / 30% allocator / settlement結果へ影響しません。
+
+```bash
+bin/docich trading presentation status
+bin/docich trading presentation compact
+bin/docich trading presentation detailed
+bin/docich trading notify-once
+```
+
+`notify-once` は保存済みeventの未配送分だけを処理し、bitbank market APIをpollしません。overlay/audio障害はmarket cycleから
+分離されているため、通知先が落ちてもpaper workerの相場監視・paper台帳更新は継続します。実発注を有効化する前には、
+exit戦略を含む別途の設計レビューと明示承認が必要です。
 
 ## 設定
 
@@ -261,6 +282,8 @@ enabled = false  # true で up が watchdog window (フリーズ検知+window復
 paper_worker_enabled = false  # 明示有効化するまで公開API pollingを開始しない
 interval_s = 60               # 10秒以上
 paper_capital_jpy = 10000     # synthetic paper capital。既存30% allocatorを適用
+notifications_enabled = false          # PAPER overlay通知も別途opt-in
+notification_speech_enabled = false # Soren共通audio queueへの読み上げも別途opt-in
 
 [rotation]
 games = []       # docich rotate が巡回する順序

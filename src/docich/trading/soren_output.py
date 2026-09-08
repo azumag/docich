@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..config import GlobalConfig
+from ..config import ConfigError, GlobalConfig, load_game
 from ..overlay_queue import append_event
 
 
@@ -18,6 +18,19 @@ def resolve_soren_root(g: GlobalConfig) -> Path:
         if not candidate.is_absolute():
             candidate = g.repo_root / candidate
         return candidate.resolve()
+    try:
+        game = load_game(g, "sorengame")
+        soren_raw = game.raw.get("soren", {}) if isinstance(game.raw, dict) else {}
+        runtime_raw = soren_raw.get("root", "") if isinstance(soren_raw, dict) else ""
+        if isinstance(runtime_raw, str) and runtime_raw.strip():
+            runtime = Path(runtime_raw.strip()).expanduser()
+            if not runtime.is_absolute():
+                runtime = g.repo_root / runtime
+            runtime = runtime.resolve()
+            if runtime.is_dir():
+                return runtime
+    except ConfigError:
+        pass
     candidate = g.repo_root / "games" / "soviet_now"
     if (candidate / "eloop_lib.sh").is_file():
         return candidate.resolve()

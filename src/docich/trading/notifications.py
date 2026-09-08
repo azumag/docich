@@ -39,20 +39,24 @@ class _DeliveryState:
     updated_at: float
 
 
-def _state_path(g: GlobalConfig) -> Path:
-    return g.state_dir / "trading" / "notification_delivery.json"
+def _trading_state_dir(g: GlobalConfig, override: Path | None = None) -> Path:
+    return Path(override) if override is not None else g.state_dir / "trading"
 
 
-def _presentation_path(g: GlobalConfig) -> Path:
-    return g.state_dir / "trading" / "presentation.json"
+def _state_path(g: GlobalConfig, state_dir: Path | None = None) -> Path:
+    return _trading_state_dir(g, state_dir) / "notification_delivery.json"
 
 
-def _source_path(g: GlobalConfig) -> Path:
-    return g.state_dir / "trading" / "events.jsonl"
+def _presentation_path(g: GlobalConfig, state_dir: Path | None = None) -> Path:
+    return _trading_state_dir(g, state_dir) / "presentation.json"
 
 
-def _safe_status(g: GlobalConfig) -> dict[str, object] | None:
-    path = g.state_dir / "trading" / "status.json"
+def _source_path(g: GlobalConfig, state_dir: Path | None = None) -> Path:
+    return _trading_state_dir(g, state_dir) / "events.jsonl"
+
+
+def _safe_status(g: GlobalConfig, state_dir: Path | None = None) -> dict[str, object] | None:
+    path = _trading_state_dir(g, state_dir) / "status.json"
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
@@ -137,20 +141,21 @@ def deliver_pending_notifications(
     overlay_sender: Callable[[GlobalConfig, dict[str, object]], None] | None = None,
     speech_sender: Callable[[GlobalConfig, str], None] | None = None,
     now: float,
+    state_dir: Path | None = None,
 ) -> NotificationDeliveryResult:
     """Deliver new durable PAPER events without generating any trading activity."""
     if not g.trading.notifications_enabled:
         return NotificationDeliveryResult(False, False, "compact", 0, 0, 0, 0, 0, ())
     try:
-        presentation = read_presentation(_presentation_path(g))
-        events = read_public_events(_source_path(g))
+        presentation = read_presentation(_presentation_path(g, state_dir))
+        events = read_public_events(_source_path(g, state_dir))
     except (PresentationError, PublicEventError, OSError) as exc:
         raise NotificationError("notification source state is unsafe") from exc
     timestamp = float(now)
     if not math.isfinite(timestamp):
         raise NotificationError("notification time is invalid")
     source_ids = _event_ids(events)
-    state_path = _state_path(g)
+    state_path = _state_path(g, state_dir)
     state = _load_state(state_path)
     if state is None:
         state = _DeliveryState(list(source_ids), list(source_ids), timestamp)
@@ -161,7 +166,7 @@ def deliver_pending_notifications(
 
     state.overlay_ids = _bounded(state.overlay_ids, source_ids)
     state.speech_ids = _bounded(state.speech_ids, source_ids)
-    status = _safe_status(g)
+    status = _safe_status(g, state_dir)
     render_cache: dict[str, object] = {}
     overlay_fn = overlay_sender or send_overlay
     speech_fn = speech_sender or enqueue_speech
