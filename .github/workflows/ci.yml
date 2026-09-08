@@ -34,7 +34,7 @@ jobs:
           tests/test_trading_presentation.py tests/test_trading_notifications.py
           tests/test_trading_soren_output.py tests/test_overlay_queue.py tests/test_audio_delivery.py tests/test_overlay_interop.py
       - name: Retro corner contract
-        run: python3 -m pytest -q tests/test_retro_corner.py tests/test_retro_corner_manual.py tests/test_config.py tests/test_robots_config.py
+        run: python3 -m pytest -q tests/test_retro_corner.py tests/test_retro_corner_manual.py tests/test_corner_boundary.py tests/test_paper_corner.py tests/test_config.py tests/test_robots_config.py
       - name: Transactional switch contract
         run: >-
           python3 -m pytest -q

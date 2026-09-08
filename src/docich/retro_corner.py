@@ -38,6 +38,7 @@ class RetroCornerError(RuntimeError):
 @dataclass(frozen=True)
 class RetroCornerConfig:
     enabled: bool = False
+    require_program_boundary: bool = False
     start_hour: int = 20
     duration_minutes: int = 60
     timezone: str = "Asia/Tokyo"
@@ -82,11 +83,14 @@ def load_retro_corner_config(g: GlobalConfig) -> RetroCornerConfig:
 
     cfg = RetroCornerConfig(
         enabled=raw.get("enabled", False),
+        require_program_boundary=raw.get("require_program_boundary", False),
         start_hour=raw.get("start_hour", 20),
         duration_minutes=raw.get("duration_minutes", 60),
         timezone=raw.get("timezone", "Asia/Tokyo"),
         games=raw.get("games", ["robots"]),
     )
+    if type(cfg.require_program_boundary) is not bool:
+        raise RetroCornerError("require_program_boundary must be boolean")
     if type(cfg.enabled) is not bool:
         raise RetroCornerError("retro_corner.enabled はtrue/falseである必要があります")
     if type(cfg.start_hour) is not int or not 0 <= cfg.start_hour <= 23:
@@ -113,6 +117,7 @@ def load_retro_corner_config(g: GlobalConfig) -> RetroCornerConfig:
         raise RetroCornerError("retro_corner.games に重複があります")
     return RetroCornerConfig(
         enabled=cfg.enabled,
+        require_program_boundary=cfg.require_program_boundary,
         start_hour=cfg.start_hour,
         duration_minutes=cfg.duration_minutes,
         timezone=cfg.timezone,
@@ -223,7 +228,7 @@ class RetroCornerManager:
             raise RetroCornerError(f"retro corner stateを読み込めません: {_safe_detail(exc)}") from exc
         if not isinstance(state, dict) or state.get("schema_version") != STATE_SCHEMA_VERSION:
             raise RetroCornerError("retro corner state schemaが不正です")
-        if state.get("status") not in {"idle", "active", "completed", "interrupted", "failed"}:
+        if state.get("status") not in {"idle", "waiting", "starting", "active", "completed", "interrupted", "failed"}:
             raise RetroCornerError("retro corner state statusが不正です")
         return state
 
@@ -359,7 +364,7 @@ class RetroCornerManager:
         ends_at = now + dt.timedelta(minutes=self.config.duration_minutes)
         state = {
             "schema_version": STATE_SCHEMA_VERSION,
-            "status": "active",
+            "status": "starting",
             "date": now.date().isoformat(),
             "game": target,
             "previous_game": previous,
@@ -371,6 +376,10 @@ class RetroCornerManager:
         self._write_state(state)
         try:
             self._transition_to(previous, target)
+            started = self._local_now()
+            state.update(status="active", started_at=started.isoformat(),
+                         ends_at=(started + dt.timedelta(minutes=self.config.duration_minutes)).isoformat())
+            self._write_state(state)
         except Exception as exc:
             state.update(
                 status="failed",
@@ -412,6 +421,52 @@ class RetroCornerManager:
             return self._finish_locked(state, self._local_now())
 
     def tick(self) -> CornerResult:
+        if self.config.require_program_boundary:
+            return self._boundary_tick()
+        return self._legacy_tick()
+
+    def _boundary_tick(self) -> CornerResult:
+        from .corner_boundary import program_lock, wait_for_boundary
+        now = self._local_now()
+        if not self.config.enabled:
+            return CornerResult("noop", detail="disabled")
+        with program_lock(self.g, self.state_path) as root:
+            with self._locked():
+                state = self._read_state()
+                if state.get("status") == "starting":
+                    current = self._active_game_reader()
+                    if current not in (state.get("previous_game"), state.get("game")):
+                        state.update(status="interrupted", completed_at=self._local_now().isoformat())
+                        self._write_state(state)
+                        return self._state_result(state)
+                    self._transition_to(current, state["game"])
+                    started = self._local_now()
+                    state.update(status="active", started_at=started.isoformat(),
+                                 ends_at=(started + dt.timedelta(minutes=self.config.duration_minutes)).isoformat())
+                    self._write_state(state)
+                if state.get("status") == "active":
+                    active = state
+                else:
+                    active = None
+                    if state.get("status") != "waiting":
+                        if now.hour < self.config.start_hour:
+                            return CornerResult("noop", detail="outside-window")
+                        if state.get("date") == now.date().isoformat() and state.get("status") in TERMINAL_STATUSES:
+                            return CornerResult("noop", detail="already-ran-today")
+                        state = self._default_state()
+                        state.update(status="waiting", date=now.date().isoformat(), requested_at=now.timestamp())
+                        self._write_state(state)
+            if active is not None:
+                return self._wait_and_finish(active)
+            wait_for_boundary(root, state["requested_at"], sleep=self._sleep)
+            with self._locked():
+                active, result = self._begin_locked(self._local_now(), scheduled=True)
+                if active is not None:
+                    active["date"] = state["date"]
+                    self._write_state(active)
+            return result if result is not None else self._wait_and_finish(active)
+
+    def _legacy_tick(self) -> CornerResult:
         now = self._local_now()
         if not self.config.enabled or now.hour != self.config.start_hour:
             with self._locked():
