@@ -54,6 +54,20 @@ REASON_PROJECTION_POSTVERIFY_FAILED = 65
 REASON_PROJECTION_UNKNOWN_MASK_BASE = 70
 PROJECTION_UNKNOWN_MASK_MAX_PATHS = 4
 
+# When exactly one reviewed changed path is in an unknown content state,
+# classify only its presence/length class: 0 means the live path is absent
+# (a pruned runtime projection), 1 means live bytes are present with a length
+# matching neither recorded side (an edit or replacement), and 2 means live
+# bytes are present with a recorded-side length but unreviewed content (a
+# same-length edit). Codes 90..101 stay below the conventional shell signal
+# range and expose no live bytes, hashes, modes, or private paths. Multiple
+# unknowns keep the 70+mask code; wider diffs retain generic 63.
+REASON_PROJECTION_UNKNOWN_CLASS_BASE = 90
+PROJECTION_UNKNOWN_CLASS_PER_PATH = 3
+PROJECTION_UNKNOWN_CLASS_ABSENT = 0
+PROJECTION_UNKNOWN_CLASS_RESIZED = 1
+PROJECTION_UNKNOWN_CLASS_SAME_LENGTH = 2
+
 
 class ReconcileError(RuntimeError):
     def __init__(self, code: int, message: str):
@@ -202,6 +216,42 @@ def _projection_unknown_reason(states: list[int]) -> int:
     return REASON_PROJECTION_UNKNOWN_MASK_BASE + mask
 
 
+def _projection_unknown_class(bit: int, live, old_expected, new_expected) -> int:
+    # Classify one unknown path by presence/length only. Lengths of the
+    # recorded Git blobs are public; the returned class reveals no live bytes,
+    # hashes, modes, or paths.
+    if live is None:
+        klass = PROJECTION_UNKNOWN_CLASS_ABSENT
+    else:
+        known_lens = {
+            len(expected["data"])
+            for expected in (old_expected, new_expected)
+            if expected is not None
+        }
+        if len(live["data"]) in known_lens:
+            klass = PROJECTION_UNKNOWN_CLASS_SAME_LENGTH
+        else:
+            klass = PROJECTION_UNKNOWN_CLASS_RESIZED
+    return REASON_PROJECTION_UNKNOWN_CLASS_BASE + bit * PROJECTION_UNKNOWN_CLASS_PER_PATH + klass
+
+
+def _select_projection_unknown_reason(states: list[int], unknowns: list[tuple]) -> int:
+    # Refine a single unknown path to its presence/length class. Multiple
+    # unknowns, single-path diffs, and wider diffs keep the mask/generic code.
+    # This never changes acceptance; it only identifies the unknown state.
+    if (
+        len(states) < 2
+        or len(states) > PROJECTION_UNKNOWN_MASK_MAX_PATHS
+        or len(unknowns) != 1
+    ):
+        return _projection_unknown_reason(states)
+    mask = sum(1 << index for index, state in enumerate(states) if state == 2)
+    if mask == 0 or mask & (mask - 1):
+        return _projection_unknown_reason(states)
+    bit, live, old_expected, new_expected = unknowns[0]
+    return _projection_unknown_class(bit, live, old_expected, new_expected)
+
+
 def _atomic_projection_write(path: Path, data: bytes, mode: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=".vmops-reconcile-", dir=path.parent)
@@ -233,8 +283,9 @@ def _set_projection(path: Path, target) -> None:
 def _normalize_projection(repo: Path, old_sub: str, new_sub: str, destination: Path) -> None:
     plans = []
     states = []
+    unknowns = []
     changed = _changed_paths(repo, old_sub, new_sub)
-    for rel in changed:
+    for index, rel in enumerate(changed):
         path = _safe_projection_path(destination, rel)
         old_meta = _projection_expected(repo, _projection_entry(repo, old_sub, rel))
         new_meta = _projection_expected(repo, _projection_entry(repo, new_sub, rel))
@@ -242,6 +293,7 @@ def _normalize_projection(repo: Path, old_sub: str, new_sub: str, destination: P
         state = _projection_content_state(live_meta, old_meta, new_meta)
         states.append(state)
         if state == 2:
+            unknowns.append((index, live_meta, old_meta, new_meta))
             continue
         if _projection_same(live_meta, old_meta):
             continue
@@ -251,7 +303,7 @@ def _normalize_projection(repo: Path, old_sub: str, new_sub: str, destination: P
 
     if 2 in states:
         raise ReconcileError(
-            _projection_unknown_reason(states),
+            _select_projection_unknown_reason(states, unknowns),
             "live projection content is neither recorded old nor reviewed new",
         )
 
