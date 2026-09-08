@@ -252,6 +252,22 @@ class TestPaperWorkerArbitrageAndLoop(unittest.TestCase):
             self.assertNotIn("boom-public", json.dumps(status))
 
 
+
+    def test_notification_timestamp_is_sampled_after_market_cycle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g = _global(Path(tmp))
+            g.trading.notifications_enabled = True
+            observed = []
+            result = type("Cycle", (), {"last_success_at": NOW})()
+            times = iter([NOW, NOW + 30])
+            with mock.patch("docich.trading.worker.run_worker_cycle", return_value=result), \
+                 mock.patch("docich.trading.worker.deliver_pending_notifications", side_effect=lambda *a, **k: observed.append(k["now"])):
+                run_paper_worker(
+                    g, gateway_factory=lambda: object(), sleep_fn=lambda _seconds: None,
+                    now_fn=lambda: next(times), max_cycles=1,
+                )
+            self.assertEqual(observed, [NOW + 30])
+
     def test_notification_failure_does_not_stop_market_cycles(self):
         with tempfile.TemporaryDirectory() as tmp:
             g = _global(Path(tmp))
@@ -259,7 +275,7 @@ class TestPaperWorkerArbitrageAndLoop(unittest.TestCase):
             cycle_calls = []
             notification_calls = []
             result = type("Cycle", (), {"last_success_at": NOW})()
-            times = iter([NOW, NOW + 1, NOW + 60])
+            times = iter([NOW, NOW + 1, NOW + 2, NOW + 60, NOW + 61])
             with mock.patch("docich.trading.worker.run_worker_cycle", side_effect=lambda *a, **k: cycle_calls.append(k["cycle_index"]) or result),                  mock.patch("docich.trading.worker.deliver_pending_notifications", side_effect=lambda *a, **k: notification_calls.append(1) or (_ for _ in ()).throw(RuntimeError("sink"))):
                 run_paper_worker(
                     g, gateway_factory=lambda: object(), sleep_fn=lambda _seconds: None,

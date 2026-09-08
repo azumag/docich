@@ -322,7 +322,8 @@ def run_paper_worker(
             last_success_at = result.last_success_at
             if g.trading.notifications_enabled:
                 try:
-                    deliver_pending_notifications(g, now=started_at)
+                    notification_at = float(now_fn())
+                    deliver_pending_notifications(g, now=notification_at)
                 except Exception:
                     # Viewer-output failures are isolated from market-data/trading cycles.
                     print("[trading] notification delivery error", flush=True)
