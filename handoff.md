@@ -3,7 +3,7 @@
 - ユーザーが案Aを承認。Soren `overlay_notify.sh` とdocich共通queueが `<events filename>.lock` を同じfcntl.flockで排他。待機上限5秒、mtime stealingなし、owner死亡時はOS解放。Web UI単一削除もread-modify-write全体を保護し、競合HTTP409を維持。
 - REDでnative24件中2件欠落、既存ロック無視、Web UI削除による並行追加消失、409→500を再現。修正後native24件・混在36件保持、相対/絶対/親aliasパス、owner死亡、live old-mtime、timeoutで書込なしを隔離rootで検証。Soren native関連6件・既存overlay JS33件成功。docich queue/audio相互運用22件、Web UI/queue合同224件成功。最終full1509 passed / 3 skipped / 107 subtests（最新main追従後）、compileall/diff check成功。実配送smoke bootstrap0/0→新event1/1→retry0/0、PAPER・配送時刻・HTML生成・credential test marker0。
 - 旧 `.webui_overlay.lock` の稼働中writerとは混在不可。将来の導入時は両repo対応版と旧Web UIプロセスの終了確認が必要。今回paper worker/notifications/speechの本番有効化なし。mainマージ・VM配備なし。バナーのみ操作し、ops briefはdocich handoffから生成検証済み。並行mainのレイド紹介メモを保持するため追跡生成物は最新mainを維持し、VM配布なし。
-- Soren Draft PR https://github.com/azumag/soviet_now/pull/242 、HEAD `2b622058b392da8a6c65aacf2bab1c1b76baea08`、Linux/macOS native CI成功。docichのgitlinkも同SHA。mainはマージせず、将来docichを進める前にこの依存PRを統合する必要がある。
+- Soren Draft PR https://github.com/azumag/soviet_now/pull/242 、HEAD `1ef20192d3c8ec88ef5c5da860cace90d5301812`（並行mainのステータス表示修正も包含）。初回HEADのLinux/macOS native CI成功、追従後HEADは再確認中。docichのgitlinkも同SHA。mainはマージせず、将来docichを進める前にこの依存PRを統合する必要がある。
 - 主担当が実装/テスト/自己レビュー、サブエージェント・外部Codexレビューなし。docich Draft PR/最新CI結果はPR本文に記録する。今回作成したSoren一時worktreeはPR/CI確認後に削除し、既存docich専用worktreeは継続用に保持する。
 
 ## 2026-09-09 — PAPER通知の音声クラッシュ復旧をローカル検証、共有overlayロックは承認待ち
