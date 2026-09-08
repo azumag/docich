@@ -19,8 +19,10 @@ from ops.vm_actions.reconcile_presynced_submodule import (
     ReconcileError,
     _normalize_projection,
     _projection_unknown_reason,
+    _reviewed_lineage,
     reconcile,
 )
+from ops.vm_actions import reconcile_presynced_submodule as presync_helper
 
 
 class PresyncedSubmoduleReconcileTests(unittest.TestCase):
@@ -371,6 +373,83 @@ class PresyncedSubmoduleReconcileTests(unittest.TestCase):
             REASON_UNAPPROVED_SUBMODULE,
             lambda: reconcile(self.root, self.old_parent, self.old_sub, self.new_sub, "games/other"),
         )
+
+    def _mid_chain(self, rel="worker.sh", mid_body="intermediate\n", new_body="new\n", add=False):
+        self._git(self.sub_remote, "checkout", "--detach", "--quiet", self.old_sub)
+        target = self.sub_remote / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(mid_body, encoding="utf-8")
+        if add:
+            self._git(self.sub_remote, "add", rel)
+            self._git(self.sub_remote, "commit", "-m", "mid add")
+        else:
+            self._git(self.sub_remote, "commit", "-am", "mid")
+        target.write_text(new_body, encoding="utf-8")
+        self._git(self.sub_remote, "commit", "-am", "new2")
+        return self.old_sub, self._git(self.sub_remote, "rev-parse", "HEAD")
+
+    def _with_lineage(self, enabled):
+        prev = presync_helper._LINEAGE
+        presync_helper._LINEAGE = enabled
+        self.addCleanup(setattr, presync_helper, "_LINEAGE", prev)
+
+    def test_lineage_off_refuses_reviewed_intermediate_without_write(self):
+        old, new2 = self._mid_chain()
+        path = self.live / "worker.sh"
+        path.write_text("intermediate\n", encoding="utf-8")
+        self._with_lineage(False)
+        self.assert_reason(
+            REASON_PROJECTION_UNKNOWN_STATE,
+            lambda: _normalize_projection(self.sub_remote, old, new2, self.live),
+        )
+        self.assertEqual(path.read_text(encoding="utf-8"), "intermediate\n")
+
+    def test_lineage_on_converges_reviewed_intermediate_to_old(self):
+        old, new2 = self._mid_chain()
+        path = self.live / "worker.sh"
+        path.write_text("intermediate\n", encoding="utf-8")
+        self._with_lineage(True)
+        _normalize_projection(self.sub_remote, old, new2, self.live)
+        self.assertEqual(path.read_text(encoding="utf-8"), "old\n")
+        self.assertEqual(self._mode(path), 0o644)
+
+    def test_lineage_on_purges_reviewed_intermediate_for_added_path(self):
+        old, new2 = self._mid_chain(rel="added.sh", mid_body="mid added\n", new_body="new added\n", add=True)
+        path = self.live / "added.sh"
+        path.write_text("mid added\n", encoding="utf-8")
+        self._with_lineage(True)
+        _normalize_projection(self.sub_remote, old, new2, self.live)
+        self.assertFalse(path.exists())
+
+    def test_lineage_on_still_refuses_unreviewed_bytes_without_write(self):
+        old, new2 = self._mid_chain()
+        path = self.live / "worker.sh"
+        path.write_text("operator drift\n", encoding="utf-8")
+        self._with_lineage(True)
+        self.assert_reason(
+            REASON_PROJECTION_UNKNOWN_STATE,
+            lambda: _normalize_projection(self.sub_remote, old, new2, self.live),
+        )
+        self.assertEqual(path.read_text(encoding="utf-8"), "operator drift\n")
+
+    def test_reviewed_lineage_refuses_beyond_history_cap(self):
+        orig = presync_helper._git
+
+        def fake_git(root, *args, reason=61, raw=False):
+            if args[:1] == ("rev-list",):
+                return "c\n" * 65
+            return orig(root, *args, reason=reason, raw=raw)
+
+        presync_helper._git = fake_git
+        try:
+            self.assertFalse(_reviewed_lineage(self.sub_remote, "worker.sh", self.old_sub, self.new_sub, "0" * 64))
+        finally:
+            presync_helper._git = orig
+
+    def test_main_rejects_unknown_seventh_arg(self):
+        with self.assertRaises(ReconcileError) as ctx:
+            presync_helper.main(["reconcile", "/x", "0" * 40, "0" * 40, "0" * 40, "games/soviet_now", "bogus"])
+        self.assertEqual(ctx.exception.code, presync_helper.REASON_INVALID_SHA)
 
 
 if __name__ == "__main__":
