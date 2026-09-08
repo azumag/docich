@@ -40,6 +40,10 @@ class TestLoadGlobalDefaults(unittest.TestCase):
             self.assertEqual(g.agent.default_interval_ms, 2000)
             self.assertEqual(g.agent.brain_timeout_s, 120)
 
+            self.assertFalse(g.trading.paper_worker_enabled)
+            self.assertEqual(g.trading.interval_s, 60)
+            self.assertEqual(g.trading.paper_capital_jpy, 10000)
+
             self.assertEqual(g.state_dir, repo_root / "run")
             self.assertEqual(g.games_dir, repo_root / "config" / "games")
             self.assertEqual(g.roms_dir, repo_root / "games" / "roms")
@@ -162,6 +166,20 @@ roms_dir = "custom_roms"
                     os.environ.pop("DOCICH_CONFIG", None)
                 else:
                     os.environ["DOCICH_CONFIG"] = old
+
+
+    def test_trading_worker_config_validation(self):
+        invalid = (
+            "paper_worker_enabled = 1\n",
+            "interval_s = 9\n",
+            "paper_capital_jpy = 999\n",
+        )
+        for body in invalid:
+            with self.subTest(body=body), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "bad-trading.toml"
+                path.write_text("[trading]\n" + body, encoding="utf-8")
+                with self.assertRaises(config.ConfigError):
+                    config.load_global(Path(tmp), config_path=path)
 
     def test_invalid_stream_mode_raises_config_error(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -219,6 +219,8 @@ def _check_windows(g: GlobalConfig, tmux: Tmux) -> None:
         missing.append("audio")
     if g.stream.mode != "null" and not tmux.has_window("stream"):
         missing.append("stream")
+    if g.trading.paper_worker_enabled and not tmux.has_window("trading"):
+        missing.append("trading")
     if not missing:
         return
 
