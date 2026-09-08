@@ -3,12 +3,14 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 import importlib
+import time
 from typing import Any, Mapping
 
 from ..arbitrage import ArbitrageDataError, TopOfBook
 from ..depth import DepthBook, DepthLevel
 from ..market_data import MarketFrame, MarketFrameError, frame_from_ohlcv
 from ..models import MarketInfo, TradingValidationError
+from ..settlement import CircuitBreakStatus
 
 
 class CCXTUnavailableError(RuntimeError):
@@ -121,7 +123,10 @@ class BitbankPublicGateway:
                 spot=True,
                 active=True,
                 amount_step=_amount_step(_nested(raw_market, "precision", "amount")),
-                min_amount=_positive_decimal(_nested(raw_market, "limits", "amount", "min")),
+                min_amount=(
+                    _positive_decimal(_nested(raw_market, "info", "unit_amount"))
+                    or _positive_decimal(_nested(raw_market, "limits", "amount", "min"))
+                ),
                 min_cost=_positive_decimal(_nested(raw_market, "limits", "cost", "min")),
                 taker_fee_rate=(
                     _nonnegative_decimal(_nested(raw_market, "info", "taker_fee_rate_quote"))
@@ -134,9 +139,48 @@ class BitbankPublicGateway:
                     if _nonnegative_decimal(_nested(raw_market, "info", "taker_fee_rate_quote")) is not None
                     else _nonnegative_decimal(raw_market.get("taker"))
                 ),
+                market_order_enabled=not (
+                    _nested(raw_market, "info", "stop_market_order") is True
+                    or _nested(raw_market, "info", "stop_market_order") == 1
+                ),
             )
             discovered[symbol] = market
         return discovered
+
+    def fetch_circuit_break_statuses(self, symbols, *, fetched_at: float | None = None) -> dict[str, CircuitBreakStatus]:
+        endpoint = getattr(self._exchange, "publicGetPairCircuitBreakInfo", None)
+        if not callable(endpoint):
+            endpoint = getattr(self._exchange, "public_get_pair_circuit_break_info", None)
+        if not callable(endpoint):
+            raise ArbitrageDataError("bitbank circuit-break public endpoint is unavailable")
+        statuses: dict[str, CircuitBreakStatus] = {}
+        for symbol in symbols:
+            pair_id = str(symbol).lower().replace("/", "_")
+            market_fn = getattr(self._exchange, "market", None)
+            if callable(market_fn):
+                try:
+                    market = market_fn(str(symbol))
+                    if isinstance(market, Mapping) and market.get("id"):
+                        pair_id = str(market["id"])
+                except Exception:
+                    pass
+            raw = endpoint({"pair": pair_id})
+            if not isinstance(raw, Mapping) or raw.get("success") != 1 or not isinstance(raw.get("data"), Mapping):
+                raise ArbitrageDataError(f"{symbol} circuit-break response is malformed")
+            data = raw["data"]
+            timestamp = data.get("timestamp")
+            mode = data.get("mode")
+            if timestamp is None or mode is None:
+                raise ArbitrageDataError(f"{symbol} circuit-break response is incomplete")
+            try:
+                observed_at = time.time() if fetched_at is None else float(fetched_at)
+                statuses[str(symbol)] = CircuitBreakStatus(
+                    str(symbol), str(mode), None if data.get("fee_type") is None else str(data.get("fee_type")),
+                    float(timestamp) / 1000.0, fetched_at=observed_at,
+                )
+            except (TypeError, ValueError, TradingValidationError) as exc:
+                raise ArbitrageDataError(f"{symbol} circuit-break response is invalid") from exc
+        return statuses
 
     def fetch_market_frames(
         self,

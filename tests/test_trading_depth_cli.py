@@ -15,13 +15,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from docich.cli import main  # noqa: E402
 from docich.trading.depth import DepthBook, DepthLevel  # noqa: E402
 from docich.trading.models import MarketInfo  # noqa: E402
+from docich.trading.settlement import CircuitBreakStatus  # noqa: E402
 
 D = Decimal
 NOW = 1_800_000_000.0
 
 
 def market(symbol, base, quote):
-    return MarketInfo(symbol, base, quote, True, True, taker_fee_rate=D("0.001"))
+    return MarketInfo(symbol, base, quote, True, True, amount_step=D("0.0001"), min_amount=D("0.0001"), taker_fee_rate=D("0.001"))
 
 
 def level(price, amount):
@@ -75,8 +76,11 @@ class TestTradingDepthCli(unittest.TestCase):
             def fetch_depth_books(self, symbols, *, now, limit=20):
                 self.last_symbols = tuple(symbols)
                 return triangle_depth(now)
+            def fetch_circuit_break_statuses(self, symbols):
+                return {symbol: CircuitBreakStatus(symbol, "NONE", "NORMAL", NOW) for symbol in symbols}
         with tempfile.TemporaryDirectory() as tmp:
-            with patch("docich.trading.cli.BitbankPublicGateway", return_value=TriangleGateway()):
+            with patch("docich.trading.cli.time.time", return_value=NOW), \
+                 patch("docich.trading.cli.BitbankPublicGateway", return_value=TriangleGateway()):
                 rc, out, err = self.run_cli([
                     "trading", "--state-dir", str(Path(tmp) / "state"),
                     "arbitrage-depth-scan", "--min-edge-bps", "20",
@@ -88,6 +92,11 @@ class TestTradingDepthCli(unittest.TestCase):
             candidate = payload["candidates"][0]
             probes = candidate["depth_simulations"]
             self.assertEqual([p["start_amount"] for p in probes], ["1000", "3000", "10000"])
+            settlements = candidate["settlements"]
+            self.assertEqual([p["start_amount"] for p in settlements], ["1000", "3000", "10000"])
+            self.assertTrue(settlements[0]["complete"])
+            self.assertIn("order_base_amount", settlements[0]["legs"][0])
+            self.assertEqual(settlements[0]["failure_reason"], None)
             self.assertTrue(probes[0]["complete"])
             self.assertGreater(D(probes[0]["net_edge_bps"]), D("0"))
             self.assertLess(D(probes[-1]["net_edge_bps"]), D(probes[0]["net_edge_bps"]))
@@ -99,6 +108,51 @@ class TestTradingDepthCli(unittest.TestCase):
             self.assertNotIn("fee_paid", first_leg)
             self.assertFalse(payload.get("fills"))
             self.assertFalse((Path(tmp) / "state" / "paper.sqlite3").exists())
+
+    def test_settlement_uses_time_after_public_fetches_for_status_freshness(self):
+        class TriangleGateway:
+            def discover_markets(self):
+                return triangle_markets()
+            def fetch_depth_books(self, symbols, *, now, limit=20):
+                return triangle_depth(now)
+            def fetch_circuit_break_statuses(self, symbols):
+                return {
+                    symbol: CircuitBreakStatus(symbol, "NONE", "NORMAL", NOW - 600, fetched_at=NOW + 1.5)
+                    for symbol in symbols
+                }
+        with patch("docich.trading.cli.time.time", side_effect=[NOW, NOW + 2]), \
+             patch("docich.trading.cli.BitbankPublicGateway", return_value=TriangleGateway()):
+            rc, out, err = self.run_cli([
+                "trading", "arbitrage-depth-scan", "--min-edge-bps", "20",
+                "--probe-asset", "JPY", "--probe-amounts", "1000",
+            ])
+        self.assertEqual(rc, 0, err)
+        settlement = json.loads(out)["candidates"][0]["settlements"][0]
+        self.assertTrue(settlement["complete"])
+
+    def test_circuit_break_blocks_constraint_settlement(self):
+        class TriangleGateway:
+            def discover_markets(self):
+                return triangle_markets()
+            def fetch_depth_books(self, symbols, *, now, limit=20):
+                return triangle_depth(now)
+            def fetch_circuit_break_statuses(self, symbols):
+                result = {symbol: CircuitBreakStatus(symbol, "NONE", "NORMAL", NOW) for symbol in symbols}
+                result["ETH/BTC"] = CircuitBreakStatus("ETH/BTC", "CIRCUIT_BREAK", "NORMAL", NOW)
+                return result
+        with patch("docich.trading.cli.time.time", return_value=NOW), \
+             patch("docich.trading.cli.BitbankPublicGateway", return_value=TriangleGateway()):
+            rc, out, err = self.run_cli([
+                "trading", "arbitrage-depth-scan", "--min-edge-bps", "20",
+                "--probe-asset", "JPY", "--probe-amounts", "1000",
+            ])
+        self.assertEqual(rc, 0, err)
+        payload = json.loads(out)
+        self.assertGreaterEqual(payload["candidate_count"], 1)
+        settlement = payload["candidates"][0]["settlements"][0]
+        self.assertFalse(settlement["complete"])
+        self.assertEqual(settlement["failed_leg_symbol"], "ETH/BTC")
+        self.assertEqual(settlement["failure_reason"], "circuit_break:CIRCUIT_BREAK")
 
     def test_invalid_probe_amount_fails_closed(self):
         with patch("docich.trading.cli.BitbankPublicGateway"):

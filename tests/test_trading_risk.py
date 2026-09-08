@@ -23,6 +23,7 @@ def market(
     amount_step: str = "0.0001",
     min_amount: str = "0.0001",
     min_cost: str = "1",
+    market_order_enabled: bool = True,
 ) -> MarketInfo:
     return MarketInfo(
         symbol=symbol,
@@ -33,6 +34,7 @@ def market(
         amount_step=D(amount_step),
         min_amount=D(min_amount),
         min_cost=D(min_cost),
+        market_order_enabled=market_order_enabled,
     )
 
 
@@ -189,6 +191,18 @@ class TestCapitalAllocator(unittest.TestCase):
         )
         self.assertEqual(len(result.decisions), 1)
         self.assertLessEqual(result.decisions[0].reference_notional, D("5000"))
+
+    def test_market_order_disabled_is_skipped(self):
+        result = allocate_opportunities(
+            [opportunity("disabled")],
+            markets={"BTC/JPY": market(market_order_enabled=False)},
+            prices={"BTC/JPY": D("1000000")},
+            quote_to_reference={"JPY": D("1")},
+            available_quote={"JPY": D("100000")},
+            capital_reference=D("100000"), deployed_reference=D("0"), policy=CapitalPolicy(), now=NOW,
+        )
+        self.assertFalse(result.decisions)
+        self.assertEqual(result.skipped[0].reason_code, "market_order_disabled")
 
     def test_sell_is_skipped_until_inventory_aware_exit_path_exists(self):
         result = allocate_opportunities(
