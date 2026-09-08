@@ -127,3 +127,16 @@ class TestOverlayQueue(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestNativeDeadlineInterop(unittest.TestCase):
+    def test_paper_append_preserves_native_deadline_event(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            path=root/'tmp/state/overlay_events.jsonl'
+            path.parent.mkdir(parents=True)
+            native={**event(ts=int(time.time()),title='期限通知'),'category':'deadline','level':'warn'}
+            path.write_text(json.dumps(native)+'\n')
+            append_event(root,event(ts=int(time.time())),regenerate=False)
+            rows=load_events(root,strict=True)
+            self.assertEqual(len(rows),2)
+            self.assertEqual(rows[0]['category'],'deadline')
