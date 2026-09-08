@@ -24,6 +24,8 @@ jobs:
           python3 -m pytest -q
           tests/test_trading_risk.py tests/test_trading_paper.py
           tests/test_trading_bitbank.py tests/test_trading_cli.py
+          tests/test_trading_market_data.py tests/test_trading_strategies.py
+          tests/test_trading_strategy_cli.py
       - name: Retro corner contract
         run: python3 -m pytest -q tests/test_retro_corner.py tests/test_retro_corner_manual.py tests/test_config.py tests/test_robots_config.py
       - name: Transactional switch contract

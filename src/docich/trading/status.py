@@ -11,6 +11,12 @@ from typing import Iterable, Mapping, Sequence
 from .models import PaperFill, as_decimal
 
 
+_SIGNAL_SUMMARY_KEYS = {
+    "candidate_count", "selected_count", "rejected_count",
+    "strategy_ids", "candidate_reason_codes",
+}
+
+
 def _decimal_text(value: Decimal | str | int | float) -> str:
     return str(as_decimal(value, "status decimal"))
 
@@ -42,6 +48,7 @@ def build_public_status(
     open_positions: Mapping[str, Decimal],
     recent_fills: Sequence[PaperFill],
     skipped_reason_codes: Sequence[str],
+    signal_summary: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     symbols = sorted({str(symbol).strip() for symbol in eligible_symbols if str(symbol).strip()})
     positions = {
@@ -61,6 +68,11 @@ def build_public_status(
         "open_positions": positions,
         "recent_fills": [_fill_payload(fill) for fill in recent_fills],
         "skipped_reason_codes": [str(code) for code in skipped_reason_codes],
+        "signal_summary": {
+            key: signal_summary[key]
+            for key in _SIGNAL_SUMMARY_KEYS
+            if signal_summary is not None and key in signal_summary
+        },
     }
 
 
