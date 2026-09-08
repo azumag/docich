@@ -180,7 +180,9 @@ def deliver_pending_notifications(
         event_id = str(item["event_id"])
         if event_id not in render_cache:
             try:
-                render_cache[event_id] = render_notification(item, mode=presentation.mode, status=status)
+                render_cache[event_id] = render_notification(
+                    item, mode=presentation.mode, status=status, display_at=timestamp
+                )
             except PresentationError as exc:
                 raise NotificationError("notification event could not be rendered") from exc
         return render_cache[event_id]

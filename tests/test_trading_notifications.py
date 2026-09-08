@@ -6,6 +6,7 @@ import stat
 import sys
 import tempfile
 import unittest
+from time import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -152,6 +153,18 @@ class TestNotificationDelivery(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(state_path.stat().st_mode), 0o600)
             self.assertEqual(stat.S_IMODE(state_path.parent.stat().st_mode), 0o700)
 
+
+    def test_delayed_overlay_delivery_uses_delivery_time_for_visibility(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            g = global_config(root, speech=False)
+            source = g.state_dir / "trading" / "events.jsonl"
+            overlay, speech = Sender(), Sender()
+            base = time()
+            deliver_pending_notifications(g, overlay_sender=overlay.overlay, speech_sender=speech.speech, now=base)
+            append_public_event(source, event("fill:late", occurred_at=base - 100.0))
+            deliver_pending_notifications(g, overlay_sender=overlay.overlay, speech_sender=speech.speech, now=base + 1.0)
+            self.assertEqual(overlay.calls[0]["ts"], int(base + 1.0))
 
 if __name__ == "__main__":
     unittest.main()
