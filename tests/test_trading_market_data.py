@@ -64,6 +64,18 @@ class TestBitbankMarketFrames(unittest.TestCase):
                 ["BTC/JPY"], timeframe="5m", limit=6, now=1_800_000_000.0
             )
 
+    def test_rejects_nonfinite_history_timestamp(self):
+        rows = [
+            [1_800_000_000_000 + i * 300_000, 1, 1, 1, 1, 1]
+            for i in range(6)
+        ]
+        rows[-1][0] = "nan"
+        exchange = FakeExchange({"BTC/JPY": rows})
+        with self.assertRaisesRegex(MarketFrameError, "invalid timestamp"):
+            BitbankPublicGateway(exchange=exchange).fetch_market_frames(
+                ["BTC/JPY"], timeframe="5m", limit=6, now=1_800_001_600.0
+            )
+
     def test_rejects_too_small_history_limit_with_domain_error(self):
         exchange = FakeExchange({"BTC/JPY": []})
         with self.assertRaises(MarketFrameError):
