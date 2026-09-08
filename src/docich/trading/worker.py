@@ -3,16 +3,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+import time
 from typing import Any
 
 from ..config import GlobalConfig
-from .events import append_public_event, build_fill_event
+from .arbitrage import TopOfBook, find_triangle_symbols, scan_triangular_arbitrage
+from .events import append_public_event, build_fill_event, build_settlement_event
+from .exchanges.bitbank_ccxt import BitbankPublicGateway
 from .ledger import PaperLedger
 from .market_data import MarketFrame
 from .paper import PaperBroker
 from .relative_value import scan_relative_value_opportunities
 from .risk import CapitalPolicy, allocate_opportunities
 from .status import build_public_status, write_public_status
+from .settlement import settlement_observation_id, simulate_multileg_settlement
 from .strategies import scan_opportunities, select_diversified_opportunities
 
 D = Decimal
@@ -88,6 +92,75 @@ def _status_payload(
     )
 
 
+def _run_arbitrage_phase(
+    *,
+    gateway: Any,
+    markets,
+    ledger: PaperLedger,
+    event_path,
+    now: float,
+) -> tuple[int, int, list[str]]:
+    """Scan and persist complete public-data multi-leg observations."""
+    triangle_symbols = find_triangle_symbols(markets)
+    if not triangle_symbols:
+        return 0, 0, []
+
+    pending = []
+    try:
+        circuit_statuses = gateway.fetch_circuit_break_statuses(triangle_symbols)
+        depth_books = gateway.fetch_depth_books(triangle_symbols, now=now, limit=BOOK_LIMIT)
+        expected = set(triangle_symbols)
+        if set(circuit_statuses) != expected or set(depth_books) != expected:
+            raise ValueError("arbitrage public data set is incomplete")
+        observed_at = max(
+            [float(now)]
+            + [float(status.fetched_at) for status in circuit_statuses.values()]
+        )
+        top_books = {
+            symbol: TopOfBook(
+                symbol,
+                book.bids[0].price,
+                book.asks[0].price,
+                book.as_of,
+                bid_amount=book.bids[0].amount,
+                ask_amount=book.asks[0].amount,
+            )
+            for symbol, book in depth_books.items()
+        }
+        routes = scan_triangular_arbitrage(
+            markets, top_books, now=observed_at, min_net_edge_bps=ARB_MIN_EDGE_BPS
+        )
+        jpy_routes = [
+            route for route in routes
+            if "JPY" in {leg.from_asset for leg in route.legs}
+        ]
+        for route in jpy_routes:
+            for amount in ARB_PROBE_JPY:
+                result = simulate_multileg_settlement(
+                    route, depth_books, markets, circuit_statuses,
+                    start_amount=amount, start_asset="JPY", now=observed_at,
+                )
+                pending.append((
+                    settlement_observation_id(
+                        route, result, depth_books, circuit_statuses, markets
+                    ),
+                    result,
+                    observed_at,
+                ))
+    except Exception:
+        # Never persist a partial arbitrage observation set from a failed fetch/scan.
+        return 0, 0, ["arbitrage_data_error"]
+
+    new_count = 0
+    for settlement_id, result, observed_at in pending:
+        recorded = ledger.record_multileg_settlement(
+            settlement_id, result, observed_at=observed_at
+        )
+        if append_public_event(event_path, build_settlement_event(recorded)):
+            new_count += 1
+    return len({item[1].route_id for item in pending}), new_count, []
+
+
 def run_worker_cycle(
     g: GlobalConfig,
     *,
@@ -159,6 +232,10 @@ def run_worker_cycle(
         errors: list[str] = []
         if frame_error_count:
             errors.append("frame_fetch_error")
+        arbitrage_candidate_count, new_settlement_count, arbitrage_errors = _run_arbitrage_phase(
+            gateway=gateway, markets=markets, ledger=ledger, event_path=event_path, now=now
+        )
+        errors.extend(arbitrage_errors)
         rejected_codes = [item.reason_code for item in selection.rejected]
         skipped_codes = rejected_codes + [item.reason_code for item in allocation.skipped]
         success_at = last_success_at if errors else float(now)
@@ -177,7 +254,9 @@ def run_worker_cycle(
             candidate_reason_codes=[item.reason_code for item in candidates],
             skipped_reason_codes=skipped_codes,
             frame_error_count=frame_error_count,
+            arbitrage_candidate_count=arbitrage_candidate_count,
             new_fill_count=new_fill_count,
+            new_settlement_count=new_settlement_count,
             error_codes=errors,
             last_success_at=success_at,
         )
@@ -188,11 +267,64 @@ def run_worker_cycle(
             frame_error_count=frame_error_count,
             candidate_count=len(candidates),
             selected_count=len(selection.selected),
-            arbitrage_candidate_count=0,
+            arbitrage_candidate_count=arbitrage_candidate_count,
             new_fill_count=new_fill_count,
-            new_settlement_count=0,
+            new_settlement_count=new_settlement_count,
             error_codes=tuple(errors),
             last_success_at=success_at,
         )
     finally:
         ledger.close()
+
+def _write_cycle_failure_status(
+    g: GlobalConfig, *, cycle_index: int, now: float, last_success_at: float | None
+) -> None:
+    state_dir = g.state_dir / "trading"
+    ledger = PaperLedger(state_dir / "paper.sqlite3")
+    try:
+        payload = _status_payload(
+            g, ledger, worker_state="paper_worker_degraded", cycle_index=cycle_index,
+            now=now, eligible_symbols=(), error_codes=("worker_cycle_error",),
+            last_success_at=last_success_at,
+        )
+        write_public_status(state_dir / "status.json", payload)
+    finally:
+        ledger.close()
+
+
+def run_paper_worker(
+    g: GlobalConfig,
+    *,
+    gateway_factory=BitbankPublicGateway,
+    sleep_fn=time.sleep,
+    now_fn=time.time,
+    max_cycles: int | None = None,
+) -> None:
+    """Run paper cycles forever; `max_cycles` is only for deterministic tests."""
+    if max_cycles is not None and (type(max_cycles) is not int or max_cycles <= 0):
+        raise ValueError("max_cycles must be a positive integer or None")
+    cycle_index = 0
+    last_success_at: float | None = None
+    gateway = None
+    while True:
+        cycle_index += 1
+        started_at = float(now_fn())
+        try:
+            if gateway is None:
+                gateway = gateway_factory()
+            result = run_worker_cycle(
+                g, gateway=gateway, cycle_index=cycle_index, now=started_at,
+                last_success_at=last_success_at,
+            )
+            last_success_at = result.last_success_at
+        except Exception as exc:
+            # Internal logs may contain public-endpoint exception text; public JSON never does.
+            print(f"[trading] paper worker cycle error: {exc}", flush=True)
+            gateway = None
+            _write_cycle_failure_status(
+                g, cycle_index=cycle_index, now=started_at, last_success_at=last_success_at
+            )
+        if max_cycles is not None and cycle_index >= max_cycles:
+            return
+        ended_at = float(now_fn())
+        sleep_fn(max(0.0, float(g.trading.interval_s) - max(0.0, ended_at - started_at)))
