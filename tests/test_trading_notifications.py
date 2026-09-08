@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import stat
 import sys
@@ -184,6 +185,9 @@ class TestNotificationDelivery(unittest.TestCase):
             thread = threading.Thread(target=first_delivery)
             thread.start()
             self.assertTrue(entered.wait(1.0))
+            # A live owner must not be stolen just because its lock mtime looks old.
+            lock = g.state_dir / "trading" / ".notification_delivery.lock"
+            os.utime(lock, (1, 1))
             second_overlay = Sender()
             with self.assertRaises(NotificationError):
                 deliver_pending_notifications(

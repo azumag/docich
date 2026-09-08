@@ -478,6 +478,18 @@ class TestAudioQueue(unittest.TestCase):
             self.assertTrue(f.is_file())
             self.assertEqual(f.read_text(encoding="utf-8").strip(), "お待たせしております。")
 
+
+    def test_enqueue_failure_releases_dedup_claim_for_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tmp/state").mkdir(parents=True)
+            with mock.patch("docich.webui.os.replace", side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    webui._enqueue_audio_text(root, "再試行する通知", "webui_test")
+            retried = webui._enqueue_audio_text(root, "再試行する通知", "webui_test")
+            self.assertFalse(retried["dedup"])
+            self.assertIsNotNone(retried["filename"])
+
     def test_enqueue_audio_text_dedup(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
