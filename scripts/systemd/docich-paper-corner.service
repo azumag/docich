@@ -1,0 +1,9 @@
+[Unit]
+Description=docich PAPER daily program
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=__DOCICH_ROOT__
+ExecStart=__DOCICH_ROOT__/bin/docich --config __DOCICH_ROOT__/config/docich.soren-live.toml paper-corner tick
+TimeoutStartSec=infinity

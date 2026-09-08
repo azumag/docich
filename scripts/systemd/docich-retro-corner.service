@@ -8,4 +8,4 @@ WorkingDirectory=__DOCICH_ROOT__
 # 時刻外tickは完全no-op。live runtime準備は開始/期限切れ復旧が必要な時だけ
 # retro_corner.py が既存 `docich up` 契約を通して実行する。
 ExecStart=__DOCICH_ROOT__/bin/docich --config __DOCICH_ROOT__/config/docich.soren-live.toml retro-corner tick
-TimeoutStartSec=15h
+TimeoutStartSec=infinity
