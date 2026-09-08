@@ -1,4 +1,11 @@
-## 2026-09-09 — PAPER通知基盤を本番配備、模擬売買の自動実行は無効を維持
+## 2026-09-09 — PAPERコーナーは22時予定、改善・予想の区切りで開始
+
+- ユーザー承認: 本番PAPER worker・通知・読み上げを有効化。毎日22:00 JST予定、実開始から30分。既存20時レトロ枠も改善サイクル完了または予想確定の境界を待ち、実際のゲーム切替完了から60分を確保。実取引/private API/鍵利用は未承認で実装しない。
+- docich共通program lockで直列化。待機と実開始/終了時刻を永続化し、クラッシュ中の他枠を追い越さない。PAPERは開始/5分ごと/終了の模擬集計を既存overlay/audioへ配送し、終了時compactへ戻す。単なる時刻到達や試合終了を開始境界としない。
+- ローカル検証: 全体1516 passed / 3 skipped / 107 subtests。追加した境界・PAPER・レトロ関連27 passed / 3 subtests。Soren境界公開3 tests、shell構文成功。主担当自己レビュー、サブエージェント不使用。
+- この記録時点では本番有効化・定時運用の実測は未完了。以後の配備・CI・VM照合結果を同節へ追記する。
+
+### 2026-09-09 — PAPER通知基盤の配備時点の検証記録
 
 - ユーザーがマージと本番配備を承認。Soren PR #242をコードmain `7fa8dbbed0409eced79703400bb73e0923c52004`、docich PR #156をコードmain `9560f5962938b8540464ade8293b3bb4bba2d792` へマージ。生成運用メモはSoren PR #244で最終main `e7fe9c830b12ecdbfdd30c51f113b0fa97418778` に同期。docich最終mainは本節を含む参照同期PRのmergeCommitとして最終報告に記録する。
 - Soren VM `/home/ubuntu/soren` のoverlay_notify.sh・tests/test_overlay_notify_lock.pyの2件、docich VM `/home/ubuntu/docich` の変更26ファイルを旧SHA確認・backup後に配備し、コードmainとの全対象SHA-256一致。docichの実gitlinkはSorenコードmainと一致。README/全Sorenファイルの一致は主張せず、後続のops brief配備も別途照合する。

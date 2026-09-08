@@ -54,30 +54,31 @@ systemctl --user enable --now docich-retro-corner.timer
 `display=:99`, `managed=false`, `stream.mode="null"`, `audio.enabled=false` で、
 **SorenのXvfb・音声bus・FFmpegを所有しない**。
 
-毎時service自体は `retro-corner tick` だけを実行し、時刻外は完全no-opである。
-実際の開始時、または期限切れactive stateの復旧が必要な時だけ `retro_corner.py` が
-既存の `docich up` 契約を呼び、共有tmuxの準備と外部displayの到達確認を行う。
-したがって毎時の健康なtickがtmux/window状態を変更することはない。
+毎分のtimerで開始予定を確認します。レトロ枠は毎日20:00予定・実開始60分、
+PAPER枠は毎日22:00予定・実開始30分です。いずれも予定時刻を過ぎたら待機状態を保存し、
+その後の改善サイクル完了または予想のAPI確定成功を待ちます。単なる試合終了や
+改善stateの消失を境界とみなしません。候補がA/B比較待ちなら、その採否完了が改善境界です。
 
-毎時timerを使う理由は、VMのsystem timezoneへ依存しないためである。Python側が
-`[retro_corner].timezone` (本番は `Asia/Tokyo`) へ変換し、`start_hour` (本番20時)
-に一致した場合だけ起動する。同じローカル日付で `completed/interrupted/failed` が
-記録済みなら再実行しない。
+両枠はSoren rootの共通lockで直列化します。開始が遅れても短縮せず、レトロ枠は
+ゲーム切替完了後、PAPER枠は詳細表示へ切替後から規定時間を数えます。境界が来なければ
+待機を継続し、暗黙のタイムアウト開始は行いません。待機中・実行中の再起動にも状態を保存し、
+他枠が未復旧のactive状態なら開始を拒否します。PAPER枠は5分ごとの模擬集計を伝え、
+終了後compactへ戻ります。通常ゲーム中も公開データのPAPER workerは継続します。
 
-開始時、docichのlive canonical stateがidleなら `Robots` を `:99` の960x540 viewportへ
-載せる。Soren本体は背景で動き続ける。60分後にdocich側をstopし、Soren画面を再び露出する。
-途中でoperatorが別ゲームへ手動切替した場合は、その操作を上書きせず `interrupted` とする。
+本番導入では `.venv-trading` に `requirements-trading.txt` をインストールし、
+`docich-paper-runtime.service`、`docich-paper-corner.service/timer` と
+更新した `docich-retro-corner.service/timer` を同じ方法で配置します。
+`docich-paper-runtime.service` と両timerをenableします。過去通知を避けるため、
+workerの初回起動より先にlive profileの `trading notify-once` を実行します。
+実注文・private API・鍵は使用しません。資金は模擬1万円、投入上限30%です。
 
-状態確認と手動終了:
+状態確認:
 
 ```sh
 bin/docich --config config/docich.soren-live.toml retro-corner status --json
-bin/docich --config config/docich.soren-live.toml retro-corner stop
-journalctl --user -u docich-retro-corner.service -f
+bin/docich --config config/docich.soren-live.toml paper-corner status
+bin/docich --config config/docich.soren-live.toml trading status
 ```
-
-serviceがクラッシュしても `<state_dir>/retro_corner.json` が残る。次の毎時tickで
-`ends_at` を過ぎたactive stateを検出した場合だけ安全な復元を行う。
 
 ## Web UI (docich-webui.service) の導入
 

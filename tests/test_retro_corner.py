@@ -337,10 +337,54 @@ class TestSystemdTemplates(unittest.TestCase):
             "ExecStart=__DOCICH_ROOT__/bin/docich --config __DOCICH_ROOT__/config/docich.soren-live.toml retro-corner tick",
             service,
         )
-        self.assertIn("TimeoutStartSec=15h", service)
-        self.assertIn("OnCalendar=hourly", timer)
+        self.assertIn("TimeoutStartSec=infinity", service)
+        self.assertIn("OnCalendar=*-*-* *:*:00", timer)
         self.assertIn("Persistent=false", timer)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestActualDuration(RetroCornerTestBase):
+    def test_transition_delay_does_not_shorten_corner(self):
+        from datetime import timedelta
+        current = [None]
+        sleeps = []
+        mgr, coordinator = self.manager(current, sleep=sleeps.append)
+        original = coordinator.start
+        def delayed(game):
+            self.now_value += timedelta(minutes=25)
+            return original(game)
+        coordinator.start = delayed
+        mgr.tick()
+        self.assertEqual(sleeps, [3600])
+
+class TestProgramBoundary(RetroCornerTestBase):
+    def test_waits_for_new_cycle_and_keeps_full_duration(self):
+        from dataclasses import replace
+        from datetime import timedelta
+        from docich.trading.soren_output import resolve_soren_root
+        self.cfg = replace(self.cfg, require_program_boundary=True)
+        sleeps=[]
+        def sleep(seconds):
+            sleeps.append(seconds)
+            self.now_value += timedelta(seconds=seconds)
+            if seconds == 5:
+                root=resolve_soren_root(self.g)/'tmp/state'
+                (root/'corner_boundary_prediction.json').write_text(json.dumps({'completed_at':self.now_value.timestamp()}))
+        mgr,_=self.manager([None],sleep)
+        mgr.tick()
+        self.assertEqual(sleeps,[5,3600])
+        self.assertEqual(mgr.status()['status'],'completed')
+
+    def test_restart_during_transition_keeps_original_return_target(self):
+        from dataclasses import replace
+        self.cfg = replace(self.cfg, require_program_boundary=True)
+        current=['robots']
+        mgr, coordinator=self.manager(current)
+        state=mgr._default_state()
+        state.update(status='starting',date='2026-09-06',game='robots',previous_game=None)
+        mgr._write_state(state)
+        mgr.tick()
+        self.assertIn(('stop',None),coordinator.calls)
+        self.assertEqual(mgr.status()['status'],'completed')
