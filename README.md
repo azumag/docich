@@ -209,7 +209,27 @@ bin/docich trading settlement-history --limit 20
 現段階でも、3レッグ間の実レイテンシ・途中の価格変動・注文キュー・`market_max_amount`・
 private残高・複数注文の原子的約定までは再現しません。したがってsettlementの実効edgeも実行保証ではありません。
 
-常駐worker、配信通知、実発注は後続sliceで追加します。
+常駐paper workerは `[trading].paper_worker_enabled=true` のときだけ `docich up` から独立した
+`trading` tmux windowとして起動します。ゲーム/agentの子ではないため `switch` / `rotate` では止まらず、
+`docich down` で共有sessionと一緒に停止します。watchdogのwindow復旧を有効にしている場合は、
+有効なtrading windowの消失も既存の `up` remedyで復旧します。既定値は `false` なので、
+コードをdeployしただけで公開API pollingが始まることはありません。
+
+workerは5分足24本を使って既存momentum / mean-reversion / relative-value戦略を周期評価し、
+実在する三角経路がある場合だけ公開circuit/depthを追加取得してmulti-leg settlementを評価します。
+1市場のOHLCV失敗はその市場だけを除外し、stale/不完全な公開データを再利用してpaper fillを作りません。
+現在の単一銘柄戦略はbuy-onlyのままなので、既存の全体30%投入上限へ達すると新規buyは止まり、
+監視と裁定paper観測だけが継続します。exit戦略は別sliceです。
+
+状態と証跡は次に分離されています。
+
+- `run/trading/paper.sqlite3`: private paper ledger (0600)
+- `run/trading/status.json`: allowlist済みcurrent status / `worker_summary` (0600)
+- `run/trading/events.jsonl`: `paper_fill` / `multileg_settlement` の公開用event journal (最大500件、0600)
+- `run/logs/trading.log`: supervisor/internal warning log
+
+`events.jsonl` は新規eventがある場合だけ作成し、同一fill/settlementの再実行では重複追加しません。
+ここまでは配信側が読むための公開安全なevent生成までで、VOICEVOX/overlayへの実況接続と実発注は後続sliceです。
 実発注を有効化する前には、別途の設計レビューと明示承認が必要です。
 
 ## 設定
@@ -237,6 +257,11 @@ socket_path = ""
 [watchdog]
 enabled = false  # true で up が watchdog window (フリーズ検知+window復旧) も起動
 
+[trading]
+paper_worker_enabled = false  # 明示有効化するまで公開API pollingを開始しない
+interval_s = 60               # 10秒以上
+paper_capital_jpy = 10000     # synthetic paper capital。既存30% allocatorを適用
+
 [rotation]
 games = []       # docich rotate が巡回する順序
 ```
@@ -257,7 +282,7 @@ games = []       # docich rotate が巡回する順序
 
 ```text
 bin/docich                    CLI launcher
-src/docich/                   config, adapters, agent, stream, captions, watchdog
+src/docich/                   config, adapters, agent, stream, captions, watchdog, trading worker
 brains/hanjuku/               半熟英雄 LLM brain (claude-cli / api / fake)
 config/docich.toml            global safe defaults
 config/games/*.toml           per-game definitions
