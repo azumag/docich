@@ -297,7 +297,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_run = sub.add_parser("run", help="(内部用) tmux window 内で監督ループを実行する")
     p_run.add_argument(
-        "component", choices=["display", "audio", "stream", "game", "agent", "watchdog"]
+        "component", choices=["display", "audio", "stream", "game", "agent", "watchdog", "trading"]
     )
     p_run.add_argument("name", nargs="?", help="game/agent の場合のゲーム名")
     p_run.add_argument("--runtime-id", metavar="ID", help="agent の runtime 束縛 (P3 fence)")
@@ -565,6 +565,13 @@ def cmd_up(g: GlobalConfig) -> int:
         else:
             print("docich: watchdog window は既に起動しています")
     # watchdog.enabled が false の場合は既定無効の付加機能なので何も表示しない
+
+    if g.trading.paper_worker_enabled:
+        if not tmux.has_window("trading"):
+            tmux.new_window("trading", _run_argv(g, "trading"))
+            print("docich: trading paper worker window を起動しました")
+        else:
+            print("docich: trading paper worker window は既に起動しています")
     # (audio/stream と異なり、無効メッセージを毎回出すほどの情報価値がない)。
 
     xkit = XKit(g.display.name)
@@ -1288,6 +1295,8 @@ def cmd_run(g: GlobalConfig, args) -> int:
         return _run_agent(g, name, **runtime_kwargs)
     if component == "watchdog":
         return _run_watchdog(g)
+    if component == "trading":
+        return _run_trading(g)
     raise CliError(f"未知のコンポーネントです: {component}")
 
 
@@ -1483,4 +1492,15 @@ def _run_watchdog(g: GlobalConfig) -> int:
         run_watchdog(g)
 
     run_callable_loop("watchdog", g, fn)
+    return 0
+
+
+def _run_trading(g: GlobalConfig) -> int:
+    def fn() -> None:
+        # Lazy import keeps the optional CCXT dependency out of normal docich startup.
+        from .trading.worker import run_paper_worker
+
+        run_paper_worker(g)
+
+    run_callable_loop("trading", g, fn)
     return 0
