@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from . import speech
+from . import overlay_queue as shared_overlay_queue
 from .config import (
     GlobalConfig,
     _parse_origin_str,
@@ -652,32 +653,7 @@ def _sanitize_overlay_text(s: str, limit: int) -> str:
 
 
 def _validate_overlay_event(ev: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(ev, dict):
-        raise ValueError("eventはオブジェクトである必要があります")
-    cat = str(ev.get("category", "")).strip()
-    if cat not in OVERLAY_CATEGORIES:
-        raise ValueError(f"categoryは {sorted(OVERLAY_CATEGORIES)} のいずれかである必要があります")
-    title = _sanitize_overlay_text(str(ev.get("title", "")), OVERLAY_TITLE_LIMIT)
-    if not title:
-        raise ValueError("titleは必須です")
-    if "\n" in title or "\r" in title:
-        raise ValueError("titleに改行は使用できません")
-    body = _sanitize_overlay_text(str(ev.get("body", "")), OVERLAY_BODY_LIMIT)
-    level = str(ev.get("level", "info")).strip() or "info"
-    if level not in ("info", "warn", "error"):
-        level = "info"
-    ts = ev.get("ts")
-    try:
-        ts_int = int(ts) if ts is not None else int(time.time())
-    except Exception:
-        ts_int = int(time.time())
-    now = int(time.time())
-    # allow ts within 7 days past to 60s future
-    if ts_int > now + 60 or ts_int < now - 7 * 86400:
-        # clamp to now if out of range
-        ts_int = now
-    return {"ts": ts_int, "category": cat, "title": title, "body": body, "level": level}
-
+    return shared_overlay_queue.validate_event(ev)
 
 def _effective_token(g: GlobalConfig) -> str:
     return effective_webui_token(g.webui)
@@ -990,44 +966,19 @@ def _get_peak_status(soren_root: Path) -> dict[str, Any]:
 
 
 def _overlay_events_path(soren_root: Path) -> Path:
-    raw = os.environ.get("EVENT_OVERLAY_EVENTS_FILE", "")
-    if raw:
-        p = Path(raw)
-        return p if p.is_absolute() else (soren_root / p)
-    return soren_root / "tmp/state/overlay_events.jsonl"
-
+    return shared_overlay_queue.overlay_events_path(soren_root)
 
 def _overlay_html_path(soren_root: Path) -> Path:
-    raw = os.environ.get("EVENT_OVERLAY_HTML_FILE", "")
-    if raw:
-        p = Path(raw)
-        return p if p.is_absolute() else (soren_root / p)
-    return soren_root / "tmp/state/event_overlay.html"
-
+    return shared_overlay_queue.overlay_html_path(soren_root)
 
 def _work_indicator_path(soren_root: Path) -> Path:
-    raw = os.environ.get("CODEX_WORK_OVERLAY_STATE_FILE", "")
-    if raw:
-        p = Path(raw)
-        return p if p.is_absolute() else (soren_root / p)
-    return soren_root / "tmp/state/codex_work_indicator.json"
-
+    return shared_overlay_queue.work_indicator_path(soren_root)
 
 def _comment_gen_state_path(soren_root: Path) -> Path:
-    raw = os.environ.get("COMMENT_GEN_STATE_FILE", "")
-    if raw:
-        p = Path(raw)
-        return p if p.is_absolute() else (soren_root / p)
-    return soren_root / "tmp/state/.comment_gen_state"
-
+    return shared_overlay_queue.comment_gen_state_path(soren_root)
 
 def _radio_state_path(soren_root: Path) -> Path:
-    raw = os.environ.get("RADIO_STATE_FILE", "")
-    if raw:
-        p = Path(raw)
-        return p if p.is_absolute() else (soren_root / p)
-    return soren_root / "tmp/state/.radio_state"
-
+    return shared_overlay_queue.radio_state_path(soren_root)
 
 def _wildcard_status_path(soren_root: Path) -> Path:
     raw = os.environ.get("WILDCARD_PARALLEL_STATUS_FILE", "")
@@ -1382,27 +1333,7 @@ def _load_work_indicator(soren_root: Path) -> dict[str, Any] | None:
 
 
 def _load_overlay_events(soren_root: Path, keep: int | None = None) -> list[dict[str, Any]]:
-    p = _overlay_events_path(soren_root)
-    try:
-        lines = p.read_text(encoding="utf-8", errors="ignore").splitlines()
-    except FileNotFoundError:
-        return []
-    except Exception:
-        return []
-    events: list[dict[str, Any]] = []
-    for line in lines[-keep:] if keep else lines:
-        if not line.strip():
-            continue
-        try:
-            item = json.loads(line)
-        except Exception:
-            continue
-        if isinstance(item, dict):
-            events.append(item)
-    if keep:
-        return events[-keep:]
-    return events
-
+    return shared_overlay_queue.load_events(soren_root, keep=keep, strict=False)
 
 def _load_top_override(soren_root: Path) -> dict[str, Any] | None:
     p = _top_override_path(soren_root)
@@ -1419,27 +1350,7 @@ def _load_top_override(soren_root: Path) -> dict[str, Any] | None:
 
 
 def _get_overlay_keep_visible(soren_root: Path) -> tuple[int, int]:
-    keep = 180
-    visible = 18
-    try:
-        keep = int(os.environ.get("EVENT_OVERLAY_KEEP_EVENTS", "180") or "180")
-    except Exception:
-        keep = 180
-    try:
-        visible = int(os.environ.get("EVENT_OVERLAY_VISIBLE_SEC", "18") or "18")
-    except Exception:
-        visible = 18
-    # dotenv may have different values; check .env as well
-    try:
-        dotenv = _read_dotenv_dict(soren_root)
-        if "EVENT_OVERLAY_KEEP_EVENTS" in dotenv and dotenv["EVENT_OVERLAY_KEEP_EVENTS"].strip().isdigit():
-            keep = int(dotenv["EVENT_OVERLAY_KEEP_EVENTS"].strip())
-        if "EVENT_OVERLAY_VISIBLE_SEC" in dotenv and dotenv["EVENT_OVERLAY_VISIBLE_SEC"].strip().isdigit():
-            visible = int(dotenv["EVENT_OVERLAY_VISIBLE_SEC"].strip())
-    except Exception:
-        pass
-    return max(1, keep), max(1, visible)
-
+    return shared_overlay_queue.get_keep_visible(soren_root)
 
 def _get_gen_indicators(soren_root: Path, now: int | None = None) -> list[dict[str, Any]]:
     if now is None:
@@ -1561,84 +1472,10 @@ def _get_wildcard_status(soren_root: Path) -> dict[str, Any] | None:
 
 
 def _atomic_overlay_write(soren_root: Path, rel_path: Path, data: str, mode: int = 0o644) -> None:
-    # rel_path is absolute path already; use its parent
-    parent = rel_path.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    lock_dir = soren_root / "tmp/state/.webui_overlay.lock"
-    try:
-        lock_dir.mkdir(parents=True, exist_ok=False)
-    except FileExistsError:
-        try:
-            age = time.time() - lock_dir.stat().st_mtime
-            if age > 10:
-                import shutil
-                shutil.rmtree(lock_dir, ignore_errors=True)
-                lock_dir.mkdir(parents=True, exist_ok=False)
-            else:
-                raise FileExistsError(f"another overlay edit in progress (age {int(age)}s)")
-        except FileExistsError:
-            raise
-    try:
-        fd, tmp = tempfile.mkstemp(dir=str(parent), prefix=".overlay.")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(data)
-                fh.flush()
-                os.fsync(fh.fileno())
-            Path(tmp).chmod(mode)
-            os.replace(tmp, str(rel_path))
-        finally:
-            try:
-                if Path(tmp).exists():
-                    Path(tmp).unlink()
-            except Exception:
-                pass
-    finally:
-        try:
-            lock_dir.rmdir()
-        except Exception:
-            try:
-                import shutil
-                shutil.rmtree(lock_dir, ignore_errors=True)
-            except Exception:
-                pass
-
+    shared_overlay_queue.atomic_write(soren_root, rel_path, data, mode)
 
 def _regenerate_event_overlay(soren_root: Path) -> bool:
-    # Best-effort regeneration via generate_event_overlay.py
-    try:
-        gen_py = soren_root / "generate_event_overlay.py"
-        if not gen_py.is_file():
-            # try repo root
-            cand = Path(__file__).resolve().parents[2] / "games/soviet_now/generate_event_overlay.py"
-            if cand.is_file():
-                gen_py = cand
-            else:
-                return False
-        events = _overlay_events_path(soren_root)
-        html = _overlay_html_path(soren_root)
-        work = _work_indicator_path(soren_root)
-        keep, visible = _get_overlay_keep_visible(soren_root)
-        env = os.environ.copy()
-        env["EVENT_OVERLAY_STATE_BASE"] = str(soren_root)
-        # ensure COMMENT_GEN_STATE and RADIO_STATE are set for generator
-        if "EVENT_OVERLAY_COMMENT_GEN_STATE" not in env:
-            env["EVENT_OVERLAY_COMMENT_GEN_STATE"] = str(_comment_gen_state_path(soren_root))
-        if "EVENT_OVERLAY_RADIO_STATE" not in env:
-            env["EVENT_OVERLAY_RADIO_STATE"] = str(_radio_state_path(soren_root))
-        # run generator
-        subprocess.run(
-            ["python3", str(gen_py), str(events), str(html), str(keep), str(visible), str(work)],
-            cwd=str(soren_root),
-            env=env,
-            timeout=5,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return True
-    except Exception:
-        return False
-
+    return shared_overlay_queue.regenerate_overlay(soren_root)
 
 def _improve_state_path(soren_root: Path) -> Path:
     return soren_root / "tmp/state/improve_state.json"
