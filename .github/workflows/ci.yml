@@ -29,6 +29,7 @@ jobs:
           tests/test_trading_arbitrage.py tests/test_trading_depth.py
           tests/test_trading_depth_cli.py tests/test_trading_fee_model.py
           tests/test_trading_multileg_settlement.py
+          tests/test_trading_settlement_ledger.py tests/test_trading_settlement_history_cli.py
       - name: Retro corner contract
         run: python3 -m pytest -q tests/test_retro_corner.py tests/test_retro_corner_manual.py tests/test_config.py tests/test_robots_config.py
       - name: Transactional switch contract
