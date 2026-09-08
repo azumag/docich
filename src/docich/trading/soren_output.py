@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..config import ConfigError, GlobalConfig, load_game
-from ..overlay_queue import append_event
+from ..overlay_queue import append_event, regenerate_overlay
 
 
 class SorenOutputError(RuntimeError):
@@ -41,8 +41,15 @@ def resolve_soren_root(g: GlobalConfig) -> Path:
 
 
 def send_overlay(g: GlobalConfig, payload: dict[str, object]) -> None:
+    root = resolve_soren_root(g)
     try:
-        append_event(resolve_soren_root(g), payload, strict=True, regenerate=True)
+        # Keep queue mutation and HTML regeneration separately observable. If a
+        # process dies after the queue write, exact-event dedupe makes retry safe.
+        append_event(root, payload, strict=True, regenerate=False)
+        if not regenerate_overlay(root):
+            raise SorenOutputError("Soren overlay regeneration failed")
+    except SorenOutputError:
+        raise
     except Exception as exc:
         raise SorenOutputError("Soren overlay queue delivery failed") from exc
 
