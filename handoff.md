@@ -1,3 +1,20 @@
+## 2026-09-09 — PAPER通知の共有ロック修正を隔離環境で検証
+
+- ユーザーが案Aを承認。Soren `overlay_notify.sh` とdocich共通queueが `<events filename>.lock` を同じfcntl.flockで排他。待機上限5秒、mtime stealingなし、owner死亡時はOS解放。Web UI単一削除もread-modify-write全体を保護し、競合HTTP409を維持。
+- REDでnative24件中2件欠落、既存ロック無視、Web UI削除による並行追加消失、409→500を再現。修正後native24件・混在36件保持、相対/絶対/親aliasパス、owner死亡、live old-mtime、timeoutで書込なしを隔離rootで検証。Soren native関連6件・既存overlay JS33件成功。docich queue/audio相互運用22件、Web UI/queue合同224件成功。最終full1509 passed / 3 skipped / 107 subtests（最新main追従後）、compileall/diff check成功。実配送smoke bootstrap0/0→新event1/1→retry0/0、PAPER・配送時刻・HTML生成・credential test marker0。
+- 旧 `.webui_overlay.lock` の稼働中writerとは混在不可。将来の導入時は両repo対応版と旧Web UIプロセスの終了確認が必要。今回paper worker/notifications/speechの本番有効化なし。mainマージ・VM配備なし。バナーのみ操作し、ops briefはdocich handoffから生成検証済み。並行mainのレイド紹介メモを保持するため追跡生成物は最新mainを維持し、VM配布なし。
+- Soren Draft PR https://github.com/azumag/soviet_now/pull/242 、HEAD `1ef20192d3c8ec88ef5c5da860cace90d5301812`（並行mainのステータス表示修正も包含）。最新HEADのLinux/macOS native CI成功。docichのgitlinkも同SHA。mainはマージせず、将来docichを進める前にこの依存PRを統合する必要がある。
+- 主担当が実装/テスト/自己レビュー、サブエージェント・外部Codexレビューなし。docich Draft PR https://github.com/azumag/docich/pull/156 、検証コードSHA `ee3fdf2418f1eb88197d905f16740cdc9dd81f5a` のfeature-regressions / security-regressions / spawn-lease-interoperability / macOS overlay-queue-interoperabilityの4件CI成功。両PRはDraft・競合なし。今回作成したSoren一時worktreeは削除/prune済み、既存docich専用worktreeは継続用に保持。main/VMは未変更。最終文書commitのCIはPR本文で確認する。
+
+## 2026-09-09 — PAPER通知の音声クラッシュ復旧をローカル検証、共有overlayロックは承認待ち
+
+- 専用worktree `/Users/azumag/work/.scratchpad/docich-crypto-multileg-20260908`、branch `codex/crypto-notifications-20260908`、開始HEAD `37a3e224254e38974ad617d62aa7c04e44d8e419`。fetch後origin/main `c66ac9dd6289404510aa9cf3b48f9133aefd6d6a`。remote branch/PRなしを確認。
+- P2-1: prepared receiptの設置後、payloadをqueueへatomic renameし、payload不在をpublish済み証跡として保持。1000秒後再試行、publish前/後の実プロセス終了、consumer消費後ACK前、8プロセス同時配送、異なるeventの同時刻を検証。Web UIのtext TTLは維持。旧markerだけの曖昧な状態は成功ACKせず要照合エラー。power loss/実際の音声再生までのexactly-onceは保証しない。
+- RED: prepared後クラッシュはdedup=trueとなり欠落。同時刻の別eventは上書き。修正後audio process 6件pass、通知/Web UI合同245件+2 subtests pass（追加の同時刻テスト前）、trading/overlay162件+2 subtests pass。最終full1501 passed / 3 skipped / 107 subtests、compileall/diff check成功。
+- 一時Soren rootの実配送: bootstrap overlay/audio=0/0、新event=1/1、retry=0/0。PAPER表記、配送時刻ts、HTML生成、credential test marker 0を確認。一時rootは削除。市場API/実注文/credential操作なし。
+- P2-2は未修正。Soren native writerとdocich共通fcntl.flock案をユーザーへ承認質問済み、回答未取得。VMで `/usr/bin/flock` とPython3.12.3/fcntlの利用可のみ実測。Sorenコード変更・mainマージ・VM配備・production opt-inなし。外部Codex/独立レビューはユーザーのエージェント禁止により実施せず主担当が自己レビュー。
+- Draft PRは両P2対応後という依頼に従い未作成。次は案A承認後にSoren専用worktreeでnative writerとdocichの共有ロックをTDDし、cross-writer実測・両repo検証後にDraft PR。現worktreeは継続に必要なため保持。ops briefは生成検証のみで、VM配布は今回の配備禁止に従い未実施。
+
 # セッション引き継ぎ (handoff)
 
 ## 2026-09-08 — AB比較中の改善起動を保留し、採否後の予約と履歴を保護

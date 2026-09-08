@@ -115,6 +115,11 @@ def _load_existing(path: Path) -> list[dict[str, object]]:
     return records
 
 
+
+def read_public_events(path: Path) -> list[dict[str, object]]:
+    """Read and strictly validate the bounded public trading event journal."""
+    return _load_existing(Path(path))
+
 def append_public_event(
     path: Path,
     event: Mapping[str, object],
