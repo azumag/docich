@@ -65,7 +65,7 @@ PAPER枠は毎日22:00予定・実開始30分です。いずれも予定時刻�
 他枠が未復旧のactive状態なら開始を拒否します。PAPER枠は5分ごとの模擬集計を伝え、
 終了後compactへ戻ります。通常ゲーム中も公開データのPAPER workerは継続します。
 
-本番導入では `.venv-trading` に `.[trading]` をインストールし、
+本番導入では `.venv-trading` に `requirements-trading.txt` をインストールし、
 `docich-paper-runtime.service`、`docich-paper-corner.service/timer` と
 更新した `docich-retro-corner.service/timer` を同じ方法で配置します。
 `docich-paper-runtime.service` と両timerをenableします。過去通知を避けるため、
