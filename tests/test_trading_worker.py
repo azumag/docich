@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import replace
 import tempfile
 import unittest
 from decimal import Decimal
@@ -150,8 +151,12 @@ class TestPaperWorkerCycle(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             g = _global(Path(tmp))
             gateway = FakeStrategyGateway()
-            first = run_worker_cycle(g, gateway=gateway, cycle_index=1, now=NOW)
-            second = run_worker_cycle(g, gateway=gateway, cycle_index=2, now=NOW)
+            first = run_worker_cycle(
+                g, gateway=gateway, cycle_index=1, now=NOW, observation_now_fn=lambda: NOW
+            )
+            second = run_worker_cycle(
+                g, gateway=gateway, cycle_index=2, now=NOW, observation_now_fn=lambda: NOW
+            )
             self.assertGreaterEqual(first.new_fill_count, 1)
             self.assertEqual(second.new_fill_count, 0)
             rows = [
@@ -179,8 +184,12 @@ class TestPaperWorkerArbitrageAndLoop(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             g = _global(Path(tmp))
             gateway = FakeTriangleGateway()
-            first = run_worker_cycle(g, gateway=gateway, cycle_index=1, now=NOW)
-            second = run_worker_cycle(g, gateway=gateway, cycle_index=2, now=NOW)
+            first = run_worker_cycle(
+                g, gateway=gateway, cycle_index=1, now=NOW, observation_now_fn=lambda: NOW
+            )
+            second = run_worker_cycle(
+                g, gateway=gateway, cycle_index=2, now=NOW, observation_now_fn=lambda: NOW
+            )
             self.assertGreaterEqual(first.arbitrage_candidate_count, 1)
             self.assertGreaterEqual(first.new_settlement_count, 1)
             self.assertEqual(second.new_settlement_count, 0)
@@ -193,10 +202,28 @@ class TestPaperWorkerArbitrageAndLoop(unittest.TestCase):
             events = [json.loads(line) for line in (g.state_dir / "trading" / "events.jsonl").read_text(encoding="utf-8").splitlines()]
             self.assertEqual(len([e for e in events if e["event_type"] == "multileg_settlement"]), first.new_settlement_count)
 
+    def test_arbitrage_freshness_uses_time_after_depth_fetch(self):
+        class DelayedDepthGateway(FakeTriangleGateway):
+            def fetch_depth_books(self, symbols, *, now, limit=20):
+                books = super().fetch_depth_books(symbols, now=now, limit=limit)
+                return {symbol: replace(book, as_of=NOW + 1.5) for symbol, book in books.items()}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            g = _global(Path(tmp))
+            result = run_worker_cycle(
+                g, gateway=DelayedDepthGateway(), cycle_index=1, now=NOW,
+                observation_now_fn=lambda: NOW + 2,
+            )
+            self.assertGreaterEqual(result.arbitrage_candidate_count, 1)
+            self.assertNotIn("arbitrage_data_error", result.error_codes)
+
     def test_arbitrage_fetch_failure_is_degraded_without_partial_settlement(self):
         with tempfile.TemporaryDirectory() as tmp:
             g = _global(Path(tmp))
-            result = run_worker_cycle(g, gateway=FakeTriangleGateway(fail_depth=True), cycle_index=1, now=NOW)
+            result = run_worker_cycle(
+                g, gateway=FakeTriangleGateway(fail_depth=True), cycle_index=1, now=NOW,
+                observation_now_fn=lambda: NOW,
+            )
             self.assertIn("arbitrage_data_error", result.error_codes)
             self.assertEqual(result.new_settlement_count, 0)
             ledger = PaperLedger(g.state_dir / "trading" / "paper.sqlite3")

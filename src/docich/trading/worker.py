@@ -99,6 +99,7 @@ def _run_arbitrage_phase(
     ledger: PaperLedger,
     event_path,
     now: float,
+    observation_now_fn=time.time,
 ) -> tuple[int, int, list[str]]:
     """Scan and persist complete public-data multi-leg observations."""
     triangle_symbols = find_triangle_symbols(markets)
@@ -112,10 +113,9 @@ def _run_arbitrage_phase(
         expected = set(triangle_symbols)
         if set(circuit_statuses) != expected or set(depth_books) != expected:
             raise ValueError("arbitrage public data set is incomplete")
-        observed_at = max(
-            [float(now)]
-            + [float(status.fetched_at) for status in circuit_statuses.values()]
-        )
+        # Freshness must use a local clock sampled *after* all public fetches.
+        # Exchange timestamps may legitimately advance while the requests are in flight.
+        observed_at = float(observation_now_fn())
         top_books = {
             symbol: TopOfBook(
                 symbol,
@@ -168,6 +168,7 @@ def run_worker_cycle(
     cycle_index: int,
     now: float,
     last_success_at: float | None = None,
+    observation_now_fn=time.time,
 ) -> WorkerCycleResult:
     """Run one public-data strategy cycle and persist only paper evidence."""
     state_dir = g.state_dir / "trading"
@@ -233,7 +234,8 @@ def run_worker_cycle(
         if frame_error_count:
             errors.append("frame_fetch_error")
         arbitrage_candidate_count, new_settlement_count, arbitrage_errors = _run_arbitrage_phase(
-            gateway=gateway, markets=markets, ledger=ledger, event_path=event_path, now=now
+            gateway=gateway, markets=markets, ledger=ledger, event_path=event_path, now=now,
+            observation_now_fn=observation_now_fn,
         )
         errors.extend(arbitrage_errors)
         rejected_codes = [item.reason_code for item in selection.rejected]
