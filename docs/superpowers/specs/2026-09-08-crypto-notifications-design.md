@@ -99,3 +99,31 @@ Expose a safe notification result from `notify-once` and add `notification_summa
 TDD must cover strict config validation; compact/detailed deterministic wording; PAPER labeling; presentation state persistence and corrupt-state failure; first-enable bootstrap without replay; per-destination ACK/retry; speech-disabled historical suppression; bounded delivery state; exact overlay duplicate suppression; overlay/audio failure isolation from trading cycle; `notify-once`; Web UI overlay compatibility; safe status sanitization; file permissions; and absence of live/private exchange methods.
 
 Run focused trading/output tests, the existing Web UI tests, full docich regression, compile/diff checks, credential-free local notification smoke, and GitHub CI before review completion.
+
+
+## 2026-09-09: process-crash-safe speech publication
+
+For `crypto_paper` with an event delivery key, the sink serializes publication with
+`audio_delivery_dedup/.publish.lock` (Python `fcntl.flock`; permanent lock inode,
+released by the kernel on process exit). Ordinary Web UI text-TTL dedup is unchanged.
+
+1. Write and fsync receipt metadata plus the audio payload in a private staging directory.
+2. Atomically rename the complete directory to the SHA-256 event-ID receipt path.
+3. Atomically rename its payload into the existing comment queue. This single rename
+   is both publication and commit: payload present means prepared, payload absent
+   in a valid receipt means published, even after the consumer removes the queue file.
+4. Retain receipts without TTL/2048-entry eviction. Queue filenames include the event
+   hash so distinct events cannot overwrite each other when clock values repeat.
+
+This covers producer process crashes on a local filesystem, not exactly-once audible
+playback or power/filesystem loss. Receipts must not be manually pruned while old
+journal events can be retried. A legacy marker without publication evidence raises
+an error and is not ACKed; migration requires reconciliation, not guessing whether
+an old audio file was consumed. This unshipped branch has no production migration.
+
+Remaining P2: native `overlay_notify.sh` does not yet participate in the overlay lock.
+Cross-repository implementation remains pending explicit approval. Proposed protocol:
+Python `fcntl.flock` in both the native script's existing Python writer and docich,
+with a permanent lock file derived from the resolved events-file path. No mtime
+stealing or PID-reuse heuristics; verify concurrent writers, process death, custom
+paths, and macOS/Linux. Do not enable notifications with the old native writer.

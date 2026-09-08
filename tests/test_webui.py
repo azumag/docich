@@ -552,6 +552,42 @@ class TestAudioQueue(unittest.TestCase):
             )
             self.assertFalse(retried["dedup"])
 
+    def test_audio_delivery_recovers_after_prepared_crash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real_replace = os.replace
+            def crash_before_publish(src, dst):
+                if Path(dst).name.startswith("comment_announce_"):
+                    raise SystemExit("process died before publish")
+                return real_replace(src, dst)
+            with mock.patch("docich.webui.os.replace", side_effect=crash_before_publish):
+                with self.assertRaises(SystemExit):
+                    webui._enqueue_audio_text(root, "PAPER 模擬通知", "crypto_paper", delivery_key="crash:prepared")
+            queue = root / "tmp/.comment_queue"
+            self.assertEqual(list(queue.glob("comment_announce_*.txt")), [])
+            with mock.patch("docich.webui.time.time", return_value=time.time() + 1000):
+                result = webui._enqueue_audio_text(root, "PAPER 模擬通知", "crypto_paper", delivery_key="crash:prepared")
+            self.assertFalse(result["dedup"])
+            self.assertEqual(len(list(queue.glob("comment_announce_*.txt"))), 1)
+
+    def test_audio_delivery_publish_crash_remains_dedup_after_consumption(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real_replace = os.replace
+            def crash_after_publish(src, dst):
+                result = real_replace(src, dst)
+                if Path(dst).name.startswith("comment_announce_"):
+                    Path(dst).unlink()  # consumer can finish before producer ACK
+                    raise SystemExit("process died after publish")
+                return result
+            with mock.patch("docich.webui.os.replace", side_effect=crash_after_publish):
+                with self.assertRaises(SystemExit):
+                    webui._enqueue_audio_text(root, "PAPER 模擬通知", "crypto_paper", delivery_key="crash:published")
+            with mock.patch("docich.webui.time.time", return_value=time.time() + 1000):
+                result = webui._enqueue_audio_text(root, "PAPER 模擬通知", "crypto_paper", delivery_key="crash:published")
+            self.assertTrue(result["dedup"])
+            self.assertEqual(list((root / "tmp/.comment_queue").glob("comment_announce_*.txt")), [])
+
     def test_enqueue_audio_text_dedup(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

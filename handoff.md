@@ -1,3 +1,12 @@
+## 2026-09-09 — PAPER通知の音声クラッシュ復旧をローカル検証、共有overlayロックは承認待ち
+
+- 専用worktree `/Users/azumag/work/.scratchpad/docich-crypto-multileg-20260908`、branch `codex/crypto-notifications-20260908`、開始HEAD `37a3e224254e38974ad617d62aa7c04e44d8e419`。fetch後origin/main `c66ac9dd6289404510aa9cf3b48f9133aefd6d6a`。remote branch/PRなしを確認。
+- P2-1: prepared receiptの設置後、payloadをqueueへatomic renameし、payload不在をpublish済み証跡として保持。1000秒後再試行、publish前/後の実プロセス終了、consumer消費後ACK前、8プロセス同時配送、異なるeventの同時刻を検証。Web UIのtext TTLは維持。旧markerだけの曖昧な状態は成功ACKせず要照合エラー。power loss/実際の音声再生までのexactly-onceは保証しない。
+- RED: prepared後クラッシュはdedup=trueとなり欠落。同時刻の別eventは上書き。修正後audio process 6件pass、通知/Web UI合同245件+2 subtests pass（追加の同時刻テスト前）、trading/overlay162件+2 subtests pass。最終full1501 passed / 3 skipped / 107 subtests、compileall/diff check成功。
+- 一時Soren rootの実配送: bootstrap overlay/audio=0/0、新event=1/1、retry=0/0。PAPER表記、配送時刻ts、HTML生成、credential test marker 0を確認。一時rootは削除。市場API/実注文/credential操作なし。
+- P2-2は未修正。Soren native writerとdocich共通fcntl.flock案をユーザーへ承認質問済み、回答未取得。VMで `/usr/bin/flock` とPython3.12.3/fcntlの利用可のみ実測。Sorenコード変更・mainマージ・VM配備・production opt-inなし。外部Codex/独立レビューはユーザーのエージェント禁止により実施せず主担当が自己レビュー。
+- Draft PRは両P2対応後という依頼に従い未作成。次は案A承認後にSoren専用worktreeでnative writerとdocichの共有ロックをTDDし、cross-writer実測・両repo検証後にDraft PR。現worktreeは継続に必要なため保持。ops briefは生成検証のみで、VM配布は今回の配備禁止に従い未実施。
+
 # セッション引き継ぎ (handoff)
 
 ## 2026-09-08 — AB比較中の改善起動を保留し、採否後の予約と履歴を保護
