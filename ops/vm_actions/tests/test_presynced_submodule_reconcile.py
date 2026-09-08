@@ -18,9 +18,7 @@ from ops.vm_actions.reconcile_presynced_submodule import (
     REASON_UNAPPROVED_SUBMODULE,
     ReconcileError,
     _normalize_projection,
-    _projection_unknown_class,
     _projection_unknown_reason,
-    _select_projection_unknown_reason,
     reconcile,
 )
 
@@ -190,20 +188,16 @@ class PresyncedSubmoduleReconcileTests(unittest.TestCase):
         old = {"data": b"old\n"}
         new = {"data": b"new\n"}
         self.assertEqual(
-            _projection_unknown_class(0, None, old, new),
-            REASON_PROJECTION_UNKNOWN_CLASS_BASE + 0,
+            _projection_unknown_reason([0, 2], [(1, None, old, new)]),
+            REASON_PROJECTION_UNKNOWN_CLASS_BASE + PROJECTION_UNKNOWN_CLASS_PER_PATH + 0,
         )
         self.assertEqual(
-            _projection_unknown_class(0, {"data": b"operator drift\n"}, old, new),
+            _projection_unknown_reason([2, 0], [(0, {"data": b"operator drift\n"}, old, new)]),
             REASON_PROJECTION_UNKNOWN_CLASS_BASE + 1,
         )
         self.assertEqual(
-            _projection_unknown_class(0, {"data": b"xxx\n"}, old, new),
+            _projection_unknown_reason([2, 0], [(0, {"data": b"xxx\n"}, old, new)]),
             REASON_PROJECTION_UNKNOWN_CLASS_BASE + 2,
-        )
-        self.assertEqual(
-            _projection_unknown_class(1, None, old, new),
-            REASON_PROJECTION_UNKNOWN_CLASS_BASE + PROJECTION_UNKNOWN_CLASS_PER_PATH,
         )
 
     def test_projection_unknown_class_codes_stay_below_signal_range(self):
@@ -221,21 +215,26 @@ class PresyncedSubmoduleReconcileTests(unittest.TestCase):
         self.assertNotIn(b"\0", script)
         self.assertLessEqual(len(script) + 256, 16384)
 
-    def test_select_unknown_reason_keeps_mask_and_generic_codes(self):
+    def test_unknown_reason_keeps_mask_and_generic_codes(self):
         resized = (0, {"data": b"drift\n"}, {"data": b"old\n"}, {"data": b"new\n"})
         absent = (1, None, {"data": b"old\n"}, {"data": b"new\n"})
         self.assertEqual(
-            _select_projection_unknown_reason([2, 2], [resized, absent]),
+            _projection_unknown_reason([2, 2], [resized, absent]),
             REASON_PROJECTION_UNKNOWN_MASK_BASE + 0b11,
         )
         self.assertEqual(
-            _select_projection_unknown_reason([2], [resized]),
+            _projection_unknown_reason([2], [resized]),
             REASON_PROJECTION_UNKNOWN_STATE,
         )
         five = [0, 0, 0, 0, 2]
         self.assertEqual(
-            _select_projection_unknown_reason(five, [(4, None, {"data": b"o"}, {"data": b"n"})]),
+            _projection_unknown_reason(five, [(4, None, {"data": b"o"}, {"data": b"n"})]),
             REASON_PROJECTION_UNKNOWN_STATE,
+        )
+        # A single-bit mask without records keeps the historical mask code.
+        self.assertEqual(
+            _projection_unknown_reason([0, 2]),
+            REASON_PROJECTION_UNKNOWN_MASK_BASE + 0b10,
         )
 
     def test_single_unknown_absent_path_reports_absence_without_write(self):
@@ -283,6 +282,63 @@ class PresyncedSubmoduleReconcileTests(unittest.TestCase):
         )
         self.assertEqual(second.read_text(encoding="utf-8"), "xxx second\n")
         self.assertEqual(worker.read_text(encoding="utf-8"), "newer worker\n")
+
+    def _two_path_repo_with_workflow(self):
+        self._git(self.sub_remote, "checkout", "--detach", "--quiet", self.old_sub)
+        ci = self.sub_remote / ".github/workflows/ci.yml"
+        ci.parent.mkdir(parents=True, exist_ok=True)
+        ci.write_text("old workflow\n", encoding="utf-8")
+        self._git(self.sub_remote, "add", ".github/workflows/ci.yml")
+        self._git(self.sub_remote, "commit", "-m", "old workflow projection")
+        old_two = self._git(self.sub_remote, "rev-parse", "HEAD")
+        ci.write_text("new workflow body\n", encoding="utf-8")
+        (self.sub_remote / "worker.sh").write_text("newer worker\n", encoding="utf-8")
+        self._git(self.sub_remote, "commit", "-am", "new workflow projection")
+        new_two = self._git(self.sub_remote, "rev-parse", "HEAD")
+        return old_two, new_two
+
+    def test_pruned_repo_only_path_is_healed_to_old(self):
+        old_two, new_two = self._two_path_repo_with_workflow()
+        worker = self.live / "worker.sh"
+        worker.write_text("newer worker\n", encoding="utf-8")
+
+        # ci.yml is pruned from live; the reviewed worker is normalized too.
+        _normalize_projection(self.sub_remote, old_two, new_two, self.live)
+
+        restored = self.live / ".github/workflows/ci.yml"
+        self.assertEqual(restored.read_text(encoding="utf-8"), "old workflow\n")
+        self.assertEqual(self._mode(restored), 0o644)
+        self.assertEqual(worker.read_text(encoding="utf-8"), "old\n")
+
+    def test_edited_repo_only_path_stays_fail_closed_without_write(self):
+        old_two, new_two = self._two_path_repo_with_workflow()
+        ci = self.live / ".github/workflows/ci.yml"
+        ci.parent.mkdir(parents=True, exist_ok=True)
+        ci.write_text("operator edit\n", encoding="utf-8")
+        worker = self.live / "worker.sh"
+        worker.write_text("newer worker\n", encoding="utf-8")
+
+        # Only absence heals; an edited repo-only file still refuses (bit 0).
+        self.assert_reason(
+            REASON_PROJECTION_UNKNOWN_CLASS_BASE + 1,
+            lambda: _normalize_projection(self.sub_remote, old_two, new_two, self.live),
+        )
+        self.assertEqual(ci.read_text(encoding="utf-8"), "operator edit\n")
+        self.assertEqual(worker.read_text(encoding="utf-8"), "newer worker\n")
+
+    def test_healed_prune_does_not_mask_a_second_unknown(self):
+        old_two, new_two = self._two_path_repo_with_workflow()
+        worker = self.live / "worker.sh"
+        worker.write_text("operator drift\n", encoding="utf-8")
+
+        # ci.yml is healable, but worker.sh (bit 1, resized) refuses first;
+        # preflight writes nothing, and the code names only the live unknown.
+        self.assert_reason(
+            REASON_PROJECTION_UNKNOWN_CLASS_BASE + PROJECTION_UNKNOWN_CLASS_PER_PATH + 1,
+            lambda: _normalize_projection(self.sub_remote, old_two, new_two, self.live),
+        )
+        self.assertFalse((self.live / ".github/workflows/ci.yml").exists())
+        self.assertEqual(worker.read_text(encoding="utf-8"), "operator drift\n")
 
     def test_refuses_unknown_submodule_head_without_mutating_it(self):
         sub = self.root / "games/soviet_now"
