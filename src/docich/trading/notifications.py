@@ -205,7 +205,12 @@ def _deliver_pending_notifications_unlocked(
     status = _safe_status(g, state_dir)
     render_cache: dict[str, object] = {}
     overlay_fn = overlay_sender or send_overlay
-    speech_fn = speech_sender or enqueue_speech
+    if speech_sender is None:
+        def speech_fn(config: GlobalConfig, text: str, event_id: str) -> None:
+            enqueue_speech(config, text, event_id=event_id)
+    else:
+        def speech_fn(config: GlobalConfig, text: str, event_id: str) -> None:
+            speech_sender(config, text)
     overlay_sent = 0
     speech_sent = 0
     errors: list[str] = []
@@ -247,7 +252,7 @@ def _deliver_pending_notifications_unlocked(
             event_id = str(item["event_id"])
             if event_id not in state.speech_ids and not speech_blocked:
                 try:
-                    speech_fn(g, rendered(item).speech_text)
+                    speech_fn(g, rendered(item).speech_text, event_id)
                 except Exception:
                     errors.append("speech_delivery_error")
                     speech_blocked = True

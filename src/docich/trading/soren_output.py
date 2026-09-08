@@ -54,13 +54,15 @@ def send_overlay(g: GlobalConfig, payload: dict[str, object]) -> None:
         raise SorenOutputError("Soren overlay queue delivery failed") from exc
 
 
-def enqueue_speech(g: GlobalConfig, text: str) -> None:
+def enqueue_speech(g: GlobalConfig, text: str, *, event_id: str = "") -> None:
     # Reuse the same production Soren comment-audio queue used by Web UI.  The
-    # import stays lazy so disabled notifications do not load the large Web UI
-    # module or touch Soren runtime paths.
+    # paper event id is a durable sink-side dedupe key so a crash after enqueue
+    # but before notification ACK cannot cause a later replay.
     try:
         from .. import webui
-        result = webui._enqueue_audio_text(resolve_soren_root(g), text, "crypto_paper")
+        result = webui._enqueue_audio_text(
+            resolve_soren_root(g), text, "crypto_paper", delivery_key=event_id
+        )
     except Exception as exc:
         raise SorenOutputError("Soren audio queue delivery failed") from exc
     if not isinstance(result, dict) or result.get("ok") is not True:
