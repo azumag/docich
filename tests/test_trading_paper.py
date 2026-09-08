@@ -102,6 +102,24 @@ class TestPublicTradingStatus(unittest.TestCase):
         self.assertNotIn("api_key", blob.lower())
         self.assertNotIn("must-not-leak", blob)
 
+    def test_worker_summary_is_allowlisted(self):
+        payload = build_public_status(
+            worker_state="paper_worker_idle", last_cycle_at=123.0,
+            eligible_symbols=["BTC/JPY"], capital_reference=D("10000"),
+            deployed_reference=D("0"), open_positions={}, recent_fills=[],
+            skipped_reason_codes=[],
+            worker_summary={
+                "cycle_index": 2, "last_success_at": 123.0,
+                "frame_error_count": 1, "error_codes": ["frame_fetch_error"],
+                "api_key": "must-not-leak",
+            },
+        )
+        self.assertEqual(payload["worker_summary"]["cycle_index"], 2)
+        self.assertEqual(payload["worker_summary"]["frame_error_count"], 1)
+        blob = json.dumps(payload, sort_keys=True)
+        self.assertNotIn("api_key", blob.lower())
+        self.assertNotIn("must-not-leak", blob)
+
     def test_status_file_is_atomic_private_json(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "run" / "trading" / "status.json"

@@ -39,9 +39,13 @@ _OPPORTUNITY_KEYS = {
 _PUBLIC_STATUS_KEYS = {
     "schema_version", "mode", "worker_state", "last_cycle_at", "market_count",
     "eligible_symbols", "capital_reference", "deployed_reference", "open_positions",
-    "recent_fills", "skipped_reason_codes", "signal_summary",
+    "recent_fills", "skipped_reason_codes", "signal_summary", "worker_summary",
 }
 _SIGNAL_SUMMARY_KEYS = {"candidate_count", "selected_count", "rejected_count", "strategy_ids", "candidate_reason_codes"}
+_WORKER_SUMMARY_KEYS = {
+    "cycle_index", "last_success_at", "next_cycle_at", "frame_error_count",
+    "arbitrage_candidate_count", "new_fill_count", "new_settlement_count", "error_codes",
+}
 _FRAME_KEYS = {"timeframe_seconds", "timestamps", "closes", "volumes"}
 _STRATEGY_SNAPSHOT_KEYS = {
     "mode", "as_of", "capital_reference", "deployed_reference",
@@ -124,6 +128,11 @@ def _safe_existing_status(path: Path) -> dict[str, Any]:
     safe["signal_summary"] = (
         {key: summary.get(key) for key in _SIGNAL_SUMMARY_KEYS}
         if isinstance(summary, dict) else {}
+    )
+    worker_summary = data.get("worker_summary", {})
+    safe["worker_summary"] = (
+        {key: worker_summary[key] for key in _WORKER_SUMMARY_KEYS if key in worker_summary}
+        if isinstance(worker_summary, dict) else {}
     )
     return safe
 
