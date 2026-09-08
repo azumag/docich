@@ -298,3 +298,15 @@ Run current app-bundled Codex review against latest main. Reproduce each actiona
 - [ ] **Step 8: Commit docs/CI, push Draft PR, confirm GitHub CI**
 
 Create a Draft PR directly to `main` if parent PR #150 is merged; otherwise stack it on #150. Confirm mergeability, unresolved review threads, and latest-head CI/VM operations CI.
+
+
+### 2026-09-09 continuation
+
+User approved shared native/docich flock implementation and Draft PRs. The user's
+no-agent instruction supersedes the external-review step above: primary agent
+performs review directly. Audio producer process-crash recovery was implemented
+and verified first. Shared-lock RED tests reproduced missing native events,
+ignoring held locks, Web UI delete overwriting a native append, and lost 409
+semantics. Changes address all four; local cross-writer, custom-path, owner-death,
+full regression, and latest-head CI are the completion gates. No main merge or VM
+deployment; production paper worker/notifications/speech stay disabled.

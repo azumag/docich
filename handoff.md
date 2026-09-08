@@ -1,3 +1,10 @@
+## 2026-09-09 — PAPER通知の共有ロック修正を隔離環境で検証
+
+- ユーザーが案Aを承認。Soren `overlay_notify.sh` とdocich共通queueが `<events filename>.lock` を同じfcntl.flockで排他。待機上限5秒、mtime stealingなし、owner死亡時はOS解放。Web UI単一削除もread-modify-write全体を保護し、競合HTTP409を維持。
+- REDでnative24件中2件欠落、既存ロック無視、Web UI削除による並行追加消失、409→500を再現。修正後native24件・混在36件保持、相対/絶対/親aliasパス、owner死亡、live old-mtime、timeoutで書込なしを隔離rootで検証。Soren native関連6件・既存overlay JS33件成功。docich queue/audio相互運用22件、Web UI/queue合同224件成功。最新full/CIは下記へ追記予定。
+- 旧 `.webui_overlay.lock` の稼働中writerとは混在不可。将来の導入時は両repo対応版と旧Web UIプロセスの終了確認が必要。今回paper worker/notifications/speechの本番有効化なし。mainマージ・VM配備なし。バナーのみ操作し、ops briefはdocich handoffから生成検証済み。並行mainのレイド紹介メモを保持するため追跡生成物は最新mainを維持し、VM配布なし。
+- 主担当が実装/テスト/自己レビュー、サブエージェント・外部Codexレビューなし。Draft PR完成後に今回作成したSoren一時worktreeを削除予定。既存docich専用worktreeは継続用に保持。
+
 ## 2026-09-09 — PAPER通知の音声クラッシュ復旧をローカル検証、共有overlayロックは承認待ち
 
 - 専用worktree `/Users/azumag/work/.scratchpad/docich-crypto-multileg-20260908`、branch `codex/crypto-notifications-20260908`、開始HEAD `37a3e224254e38974ad617d62aa7c04e44d8e419`。fetch後origin/main `c66ac9dd6289404510aa9cf3b48f9133aefd6d6a`。remote branch/PRなしを確認。

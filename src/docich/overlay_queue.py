@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import fcntl
 import json
 import os
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import tempfile
 import time
@@ -15,12 +15,16 @@ from typing import Any, Iterator, Mapping
 OVERLAY_CATEGORIES = {"game", "worker", "chat", "radio", "prediction", "rollback", "system"}
 OVERLAY_TITLE_LIMIT = 120
 OVERLAY_BODY_LIMIT = 500
-LOCK_STALE_SECONDS = 10
+LOCK_TIMEOUT_SECONDS = 5.0
 SOURCE_ID_RE = re.compile(r"[A-Za-z0-9._:/-]{1,200}")
 
 
 class OverlayQueueError(ValueError):
     """Raised when the shared overlay queue cannot be safely read or changed."""
+
+
+class OverlayQueueBusyError(OverlayQueueError):
+    """The shared writer lock remained busy until its bounded deadline."""
 
 
 def _sanitize_text(value: str, limit: int) -> str:
@@ -165,30 +169,25 @@ def load_events(soren_root: Path, *, keep: int | None = None, strict: bool = Fal
 
 @contextmanager
 def _overlay_lock(soren_root: Path) -> Iterator[None]:
-    root = Path(soren_root)
-    lock = root / "tmp/state/.webui_overlay.lock"
-    lock.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        lock.mkdir(parents=False, exist_ok=False)
-    except FileExistsError:
+    """Share the native Soren writer's permanent, kernel-owned flock inode."""
+    events = overlay_events_path(Path(soren_root))
+    events.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = events.parent.resolve() / (events.name + ".lock")
+    # Never unlink or steal by mtime: the OS releases this lock on process exit.
+    with lock_path.open("a") as lock:
+        deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
+        while True:
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError as exc:
+                if time.monotonic() >= deadline:
+                    raise OverlayQueueBusyError("another overlay edit in progress") from exc
+                time.sleep(0.01)
         try:
-            age = time.time() - lock.stat().st_mtime
-        except OSError as exc:
-            raise OverlayQueueError("overlay lockを確認できません") from exc
-        if age <= LOCK_STALE_SECONDS:
-            raise OverlayQueueError(f"another overlay edit in progress (age {int(age)}s)")
-        shutil.rmtree(lock, ignore_errors=True)
-        try:
-            lock.mkdir(parents=False, exist_ok=False)
-        except FileExistsError as exc:
-            raise OverlayQueueError("overlay lockを取得できません") from exc
-    try:
-        yield
-    finally:
-        try:
-            lock.rmdir()
-        except Exception:
-            shutil.rmtree(lock, ignore_errors=True)
+            yield
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
 def _atomic_write_unlocked(path: Path, data: str, mode: int) -> None:
@@ -209,6 +208,19 @@ def _atomic_write_unlocked(path: Path, data: str, mode: int) -> None:
 def atomic_write(soren_root: Path, path: Path, data: str, mode: int = 0o644) -> None:
     with _overlay_lock(Path(soren_root)):
         _atomic_write_unlocked(Path(path), data, mode)
+
+
+def delete_event(soren_root: Path, index: int) -> int:
+    """Delete a Web UI row without overwriting a concurrent native append."""
+    root = Path(soren_root)
+    with _overlay_lock(root):
+        events = load_events(root)
+        if index < 0 or index >= len(events):
+            raise IndexError(index)
+        events.pop(index)
+        content = "\n".join(json.dumps(item, ensure_ascii=False) for item in events)
+        _atomic_write_unlocked(overlay_events_path(root), content + ("\n" if events else ""), 0o644)
+        return len(events)
 
 
 def regenerate_overlay(soren_root: Path) -> bool:

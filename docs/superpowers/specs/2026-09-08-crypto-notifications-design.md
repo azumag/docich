@@ -121,9 +121,23 @@ journal events can be retried. A legacy marker without publication evidence rais
 an error and is not ACKed; migration requires reconciliation, not guessing whether
 an old audio file was consumed. This unshipped branch has no production migration.
 
-Remaining P2: native `overlay_notify.sh` does not yet participate in the overlay lock.
-Cross-repository implementation remains pending explicit approval. Proposed protocol:
-Python `fcntl.flock` in both the native script's existing Python writer and docich,
-with a permanent lock file derived from the resolved events-file path. No mtime
-stealing or PID-reuse heuristics; verify concurrent writers, process death, custom
-paths, and macOS/Linux. Do not enable notifications with the old native writer.
+## 2026-09-09: approved shared overlay lock
+
+The user approved cross-repository implementation, tests, and Draft PRs; no merge,
+VM deployment, or production opt-in is authorized in this task. Both native Soren
+and docich use Python `fcntl.flock` on `<events filename>.lock` inside the resolved
+parent directory. Relative/absolute paths and aliases of the parent directory
+share the same inode. The events file is a regular local file; never unlink its
+lock inode. Locks wait at most five seconds and are released by the kernel when
+the owner exits. An old mtime never authorizes stealing a live lock.
+
+Native read/append/trim/replace and docich append/delete read-modify-write are
+inside this lock. Explicit Web UI bulk replace/clear also acquire it; intentional
+replacement semantics are unchanged. Busy Web UI operations retain HTTP 409.
+Generator environment forwarding, native explore opt-out, trimming, and OBS calls
+are preserved. HTML generation stays outside the queue critical section.
+
+Rollout requires both updated writers and retirement of old Web UI processes
+before notifications are enabled. Legacy `.webui_overlay.lock` users do not
+participate; no claim of compatibility with simultaneously running old writers.
+Tests exercise macOS locally and Linux/macOS in CI, without contacting real OBS.
