@@ -167,13 +167,39 @@ class NormalizeOtherSubmodulesTests(unittest.TestCase):
         self.assertFalse((self.live / "deploy/title-day/soren-title-day.service").exists())
         self.assertEqual((self.live / "deploy/title-day/soren-title-day.timer").read_bytes(), before)
 
-    def test_mode_drifted_candidate_reports_ordinal_without_writing(self):
+    def test_mode_drifted_candidate_is_canonicalized(self):
         import os
+        import stat
 
         timer = self.live / "deploy/title-day/soren-title-day.timer"
         os.chmod(timer, 0o600)
-        self.assert_reason(103, lambda: normalize(self.root, self.old_parent, self.live))
+        normalize(self.root, self.old_parent, self.live)
         self.assertEqual(timer.read_text(encoding="utf-8"), "old timer\n")
+        self.assertEqual(stat.S_IMODE(timer.stat().st_mode), 0o644)
+
+    def test_mixed_mode_and_content_drift_refuses_before_any_write(self):
+        import os
+        import stat
+
+        service = self.live / "deploy/title-day/soren-title-day.service"
+        timer = self.live / "deploy/title-day/soren-title-day.timer"
+        os.chmod(service, 0o600)
+        timer.write_text("drift\n", encoding="utf-8")
+        # state [1, 2]: the mode repair must not run before the refusal.
+        self.assert_reason(107, lambda: normalize(self.root, self.old_parent, self.live))
+        self.assertEqual(stat.S_IMODE(service.stat().st_mode), 0o600)
+        self.assertEqual(timer.read_text(encoding="utf-8"), "drift\n")
+
+    def test_hanjuku_heal_and_mode_repair_compose(self):
+        import os
+        import stat
+
+        self._git(self._sub(), "checkout", "--detach", "--quiet", self.h2)
+        timer = self.live / "deploy/title-day/soren-title-day.timer"
+        os.chmod(timer, 0o600)
+        normalize(self.root, self.old_parent, self.live)
+        self.assertEqual(self._git(self._sub(), "rev-parse", "HEAD"), self.h1)
+        self.assertEqual(stat.S_IMODE(timer.stat().st_mode), 0o644)
 
     def test_edited_candidates_report_pair_code_without_writing(self):
         (self.live / "deploy/title-day/soren-title-day.service").write_text("drift\n", encoding="utf-8")
