@@ -12,7 +12,7 @@ import tempfile
 import time
 from typing import Any, Iterator, Mapping
 
-OVERLAY_CATEGORIES = {"game", "worker", "chat", "radio", "prediction", "rollback", "system"}
+OVERLAY_CATEGORIES = {"game", "worker", "chat", "radio", "prediction", "rollback", "system", "deadline"}
 OVERLAY_TITLE_LIMIT = 120
 OVERLAY_BODY_LIMIT = 500
 LOCK_TIMEOUT_SECONDS = 5.0

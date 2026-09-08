@@ -3,7 +3,9 @@
 - ユーザー承認: 本番PAPER worker・通知・読み上げを有効化。毎日22:00 JST予定、実開始から30分。既存20時レトロ枠も改善サイクル完了または予想確定の境界を待ち、実際のゲーム切替完了から60分を確保。実取引/private API/鍵利用は未承認で実装しない。
 - docich共通program lockで直列化。待機と実開始/終了時刻を永続化し、クラッシュ中の他枠を追い越さない。PAPERは開始/5分ごと/終了の模擬集計を既存overlay/audioへ配送し、終了時compactへ戻す。単なる時刻到達や試合終了を開始境界としない。
 - ローカル検証: 全体1516 passed / 3 skipped / 107 subtests。追加した境界・PAPER・レトロ関連27 passed / 3 subtests。Soren境界公開3 tests、shell構文成功。主担当自己レビュー、サブエージェント不使用。
-- この記録時点では本番有効化・定時運用の実測は未完了。以後の配備・CI・VM照合結果を同節へ追記する。
+- Soren PR245 main `c874e2fff57973effaf0f4a4fe93f4e73d093421`、docich PR159 main `7c0d8ffedb59eabc4c14ce71c613640e1a76f334` へCI成功後統合。VM配備22ファイルをSHA一致、user units5件を生成一致確認。backupはdocich `.codex_deploy/paper-corner-20260909`（units含む）。公開データ用 `.venv-trading` は常設しccxt4.5.78を導入。
+- 本番profileのみ3 opt-inをtrue。過去通知bootstrap0件、trading tmux PID2860244で44市場/frame error0、2 cycles/模擬約定2件、投入2999.9990692円/資金1万円を確認。両timer有効、時刻外tickで開始なし。VM対象28 tests成功。配信2188217・共通3518891・overlay657382・resolver3466823/3466825維持、Web UI health200。
+- 本番で音声ACK2件に対しoverlay ACK0件を検出。既存Soren deadlineカテゴリがdocich allowlistにないことを再現し、混在保持の回帰テストを追加して互換性修正中。成功済み音声は再送しない。定時枠の自然開始・30分実運用は今夜22時以降の境界待ちで未観測（遅延/復旧/時間契約はテスト済み）。
 
 ### 2026-09-09 — PAPER通知基盤の配備時点の検証記録
 
