@@ -95,6 +95,9 @@ class TradingConfig:
     paper_worker_enabled: bool = False
     interval_s: int = 60
     paper_capital_jpy: int = 10000
+    # Viewer delivery is independently opt-in; paper polling never implies narration.
+    notifications_enabled: bool = False
+    notification_speech_enabled: bool = False
 
 
 @dataclass
@@ -427,8 +430,12 @@ def load_global(repo_root: Path, config_path: Path | None = None) -> GlobalConfi
         raise ConfigError(
             f"watchdog.freeze_cycles は2以上である必要があります (現在値: {watchdog.freeze_cycles!r})"
         )
-    if not isinstance(trading.paper_worker_enabled, bool):
+    if type(trading.paper_worker_enabled) is not bool:
         raise ConfigError("trading.paper_worker_enabled は true または false である必要があります")
+    if type(trading.notifications_enabled) is not bool:
+        raise ConfigError("trading.notifications_enabled は true または false である必要があります")
+    if type(trading.notification_speech_enabled) is not bool:
+        raise ConfigError("trading.notification_speech_enabled は true または false である必要があります")
     if type(trading.interval_s) is not int or trading.interval_s < 10:
         raise ConfigError(
             f"trading.interval_s は10以上の整数である必要があります (現在値: {trading.interval_s!r})"

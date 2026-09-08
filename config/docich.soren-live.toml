@@ -35,6 +35,8 @@ recover_windows = false
 paper_worker_enabled = false
 interval_s = 60
 paper_capital_jpy = 10000
+notifications_enabled = false
+notification_speech_enabled = false
 
 [rotation]
 games = []
