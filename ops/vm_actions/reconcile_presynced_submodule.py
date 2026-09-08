@@ -113,7 +113,7 @@ def reconcile(root: Path, old_parent: str, old_sub: str, new_sub: str, sub_path:
         raise ReconcileError(REASON_SUBMODULE_MISSING, "owned submodule checkout is missing")
 
     current_sub = _git(sub, "rev-parse", "HEAD", reason=REASON_SUBMODULE_HEAD_MISMATCH)
-    if current_sub != new_sub:
+    if current_sub not in {old_sub, new_sub}:
         # GitHub's reviewed merge commit can have the exact same tree as its
         # PR head while using a different commit SHA. A pre-sync may therefore
         # leave the clean PR head checked out. Accept that one bounded case
@@ -122,7 +122,7 @@ def reconcile(root: Path, old_parent: str, old_sub: str, new_sub: str, sub_path:
         current_tree = _git(sub, "rev-parse", f"{current_sub}^{{tree}}", reason=REASON_SUBMODULE_HEAD_MISMATCH)
         reviewed_tree = _git(sub, "rev-parse", f"{new_sub}^{{tree}}", reason=REASON_NEW_OBJECT_MISSING)
         if current_tree != reviewed_tree or not _is_ancestor(sub, current_sub, new_sub):
-            raise ReconcileError(REASON_SUBMODULE_HEAD_MISMATCH, "owned submodule is not at reviewed target")
+            raise ReconcileError(REASON_SUBMODULE_HEAD_MISMATCH, "owned submodule is not at an accepted reconcile state")
 
     if _git(sub, "status", "--porcelain", "--untracked-files=no", reason=REASON_SUBMODULE_DRIFT):
         raise ReconcileError(REASON_SUBMODULE_DRIFT, "owned submodule has tracked drift")
@@ -134,7 +134,11 @@ def reconcile(root: Path, old_parent: str, old_sub: str, new_sub: str, sub_path:
     if not _is_ancestor(sub, old_sub, new_sub):
         raise ReconcileError(REASON_NOT_DESCENDANT, "reviewed target is not a descendant of the recorded gitlink")
 
-    _git_run(sub, "checkout", "--detach", "--quiet", old_sub)
+    # If the checkout is already at the recorded old gitlink, normalization
+    # is already complete. Treat this as success and let the normal gateway
+    # retry identify (and, if safe, adopt) any projection-only pre-sync.
+    if current_sub != old_sub:
+        _git_run(sub, "checkout", "--detach", "--quiet", old_sub)
 
     if _git(sub, "rev-parse", "HEAD", reason=REASON_POSTVERIFY_FAILED) != old_sub:
         raise ReconcileError(REASON_POSTVERIFY_FAILED, "submodule normalization verification failed")
