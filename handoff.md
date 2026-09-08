@@ -1,5 +1,22 @@
 # セッション引き継ぎ (handoff)
 
+## 2026-09-08 — AB比較中の改善起動を保留し、採否後の予約と履歴を保護
+
+- 原因: AB中もAの試合が48試合蓄積へ加算される一方、改善起動にAB待機条件がなかった。次候補が生成されると、前のAB終了処理が削除し得た。
+- Soren PR #232、main `d6fb91bc150604ec47f563a147b8653d634b72ed`。AB状態/待機候補で改善入口とmutex取得後を保留し、AB開始も同じmutexへ統一。競合時は候補を保持。A維持時は蓄積・予約を保持し、B採用時は旧Aの蓄積/lock/retry metadataを履歴へ退避。終了状態は最後に移し、後続候補は削除しない。
+- 検証: 修正前の回帰失敗を再現。AB gate 38件、interleave 20件、serialization shell、spawn/retry/shadow Python40件成功。主担当自己レビュー（サブエージェント禁止）、PR最新HEADのspawn-lease CI成功後にmain統合。
+- VM: 旧SHAがbaseと一致することを確認して `tmp/deploy-backups/ab-serialization-232` へbackup。`strategy/ab_gate.sh`、`strategy/improve.sh`、`tests/test_ab_gate.sh`、`tests/test_ab_improve_serialization.sh` の4ファイルを反映しmainとのSHA-256一致。VMでもAB gate38件・serialization成功。設定・pause・戦略は変更せず、再起動なし（loopは毎試合、daemonは毎pollでsource）。
+- 19:31 JST実測: AB53試合、A蓄積47/48、lockなし、改善idle/candidate_ready。AB guardはblocking。共通3518891・encoder2188217・loop119293・daemon3460765維持。48試合後の実daemon保留および本番AB採否後の再開は、この時点では未観測。採否を強制しない。
+- 運用メモはPR #233でSoren main `c27a26e629d2a18e8be0f1c640028991fb62a74c` へ統合。上記4ファイルと生成 `prompts/ops_brief.md` の計5ファイルでmain/VM SHA一致。親docich参照をこの最終mainへ更新する。VMバックアップは復旧用に保持し、一時stageは終了時削除する。
+
+## 2026-09-08 — 新しい改善候補の実戦AB比較を継続
+
+- 19:31 JST時点でA `3a9bd96b76a0` / B `015aa63973ac` のABBAが53試合完了。採否未確定。今回の競合修正で候補・AB比較を置換せず、自然な試合境界で継続している。
+
+## 2026-09-08 — 単純戦略のローカル予備比較を完了
+
+- 併合優先・Nextnext・NをN+1へ積む単純戦略をローカルWebGLで比較。既存3a9bは1701/2917点（平均2309）、単純は1805/1655点（平均1730）。各2試合・出現順未固定なので優劣未確定。両者type14到達、建国0。4試合全完走・hash一致、実験用ブラウザ/プロファイル清掃済み。本番戦略は変更していない。実験コードと証拠は本タスクの作業場所に保持し、競合修正PRには含めない。
+
 ## 2026-09-08 03:05 JST — 固定入力shadow改善サイクルの実モデル検証完了
 
 - **固定入力**: 完了済み履歴3件（score 2781 / 1377 / 2332、合計319 turns）をpath・SHA256・score付きmanifestへ固定。総予算780秒、分析540秒、game 45として同一manifestを使用した。
