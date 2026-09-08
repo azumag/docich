@@ -1496,6 +1496,10 @@ def _run_watchdog(g: GlobalConfig) -> int:
 
 
 def _run_trading(g: GlobalConfig) -> int:
+    if not g.trading.paper_worker_enabled:
+        print("docich: trading paper worker は設定で無効です", flush=True)
+        return 0
+
     def fn() -> None:
         # Lazy import keeps the optional CCXT dependency out of normal docich startup.
         from .trading.worker import run_paper_worker

@@ -24,9 +24,19 @@ class TestTradingWorkerLifecycle(unittest.TestCase):
                 self.assertEqual(cli.cmd_run(g, args), 0)
             run_trading.assert_called_once_with(g)
 
-    def test_run_trading_uses_callable_supervisor(self):
+    def test_run_trading_is_noop_when_worker_disabled(self):
         with tempfile.TemporaryDirectory() as tmp:
             g = config.load_global(Path(tmp))
+            with mock.patch("docich.cli.run_callable_loop") as loop:
+                self.assertEqual(cli._run_trading(g), 0)
+            loop.assert_not_called()
+
+    def test_run_trading_uses_callable_supervisor_when_enabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = root / "docich.toml"
+            cfg.write_text("[trading]\npaper_worker_enabled=true\n", encoding="utf-8")
+            g = config.load_global(root, config_path=cfg)
             with mock.patch("docich.cli.run_callable_loop") as loop:
                 self.assertEqual(cli._run_trading(g), 0)
             self.assertEqual(loop.call_args.args[0], "trading")
