@@ -205,9 +205,42 @@ jobs:
             printf '\nPY\n'
           } | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
+      - name: Normalize other owned submodule checkouts
+        id: normalize_other
+        if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && steps.deploy_initial.outcome == 'failure' && steps.reconcile_presynced.outcome == 'success' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+
+          status_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $SHA")"
+          read -r vm_status old_root pending_count < <(
+            python3 - "$status_json" <<'PY'
+          import json, sys
+          data = json.loads(sys.argv[1])
+          print(data.get("status", ""), data.get("sha", ""), len(data.get("pending_repairs") or []))
+          PY
+          )
+          [[ "$vm_status" == drift ]]
+          [[ "$pending_count" == 0 ]]
+          [[ "$old_root" =~ ^[0-9a-f]{40}$ ]]
+          git -C candidate cat-file -e "$old_root^{commit}"
+          git -C candidate merge-base --is-ancestor "$old_root" "$SHA"
+
+          {
+            printf "python3 - '%s' '%s' <<'PY'\n" \
+              /home/ubuntu/docich "$old_root"
+            cat control/ops/vm_actions/normalize_other_submodules.py
+            printf '\nPY\n'
+          } | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
       - name: Retry production deploy after exact reconcile
         id: deploy_retry
-        if: ${{ steps.reconcile_presynced.outcome == 'success' }}
+        if: ${{ steps.reconcile_presynced.outcome == 'success' && steps.normalize_other.outcome == 'success' }}
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
