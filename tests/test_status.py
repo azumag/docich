@@ -195,6 +195,11 @@ class StatusTestBase(unittest.TestCase):
     def _collect(self):
         return collect_status(self.g, tmux=self.tmux, xkit=self.xkit)
 
+    def test_windows_include_trading_component(self):
+        result = self._collect()
+        self.assertIn("trading", result["windows"])
+        self.assertFalse(result["windows"]["trading"])
+
     def _mirror(self, value=None):
         from docich.state import State
 

@@ -139,6 +139,18 @@ class TestCheckWindows(WatchdogConfigTestBase):
                 watchdog._check_windows(g, tmux)
             remedy.assert_not_called()
 
+    def test_missing_enabled_trading_window_triggers_up_remedy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g = self._make_config(
+                tmp,
+                extra="\n[trading]\npaper_worker_enabled = true\n",
+            )
+            tmux = mock.MagicMock()
+            tmux.has_window.side_effect = lambda name: name != "trading"
+            with mock.patch("docich.watchdog._run_remedy", return_value=0) as remedy:
+                watchdog._check_windows(g, tmux)
+            remedy.assert_called_once_with(g, "up")
+
 
 class TestCheckFreeze(WatchdogConfigTestBase):
     def test_skips_when_agent_window_not_running(self):

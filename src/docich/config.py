@@ -90,6 +90,14 @@ class WatchdogConfig:
 
 
 @dataclass
+class TradingConfig:
+    # Public-data, paper-only worker. Deploying code does not enable polling.
+    paper_worker_enabled: bool = False
+    interval_s: int = 60
+    paper_capital_jpy: int = 10000
+
+
+@dataclass
 class RotationConfig:
     # `docich rotate` が巡回するゲーム名の順序 (例: ["nethack", "hanjuku-hero"])。
     # 空のままだと `docich rotate` は ConfigError ではなく CliError で止まる (cli.py)。
@@ -194,6 +202,7 @@ class GlobalConfig:
     captions: CaptionConfig
     agent: AgentDefaults
     watchdog: WatchdogConfig
+    trading: TradingConfig
     rotation: RotationConfig
     webui: WebUIConfig
     state_dir: Path
@@ -378,6 +387,9 @@ def load_global(repo_root: Path, config_path: Path | None = None) -> GlobalConfi
     watchdog = WatchdogConfig(
         **_filtered(WatchdogConfig, data.get("watchdog", {}), "watchdog")
     )
+    trading = TradingConfig(
+        **_filtered(TradingConfig, data.get("trading", {}), "trading")
+    )
     rotation = RotationConfig(
         **_filtered(RotationConfig, data.get("rotation", {}), "rotation")
     )
@@ -414,6 +426,17 @@ def load_global(repo_root: Path, config_path: Path | None = None) -> GlobalConfi
     if watchdog.freeze_cycles < 2:
         raise ConfigError(
             f"watchdog.freeze_cycles は2以上である必要があります (現在値: {watchdog.freeze_cycles!r})"
+        )
+    if not isinstance(trading.paper_worker_enabled, bool):
+        raise ConfigError("trading.paper_worker_enabled は true または false である必要があります")
+    if type(trading.interval_s) is not int or trading.interval_s < 10:
+        raise ConfigError(
+            f"trading.interval_s は10以上の整数である必要があります (現在値: {trading.interval_s!r})"
+        )
+    if type(trading.paper_capital_jpy) is not int or trading.paper_capital_jpy < 1000:
+        raise ConfigError(
+            "trading.paper_capital_jpy は1000以上の整数である必要があります "
+            f"(現在値: {trading.paper_capital_jpy!r})"
         )
     if not isinstance(rotation.games, list) or not all(
         isinstance(x, str) for x in rotation.games
@@ -488,6 +511,7 @@ def load_global(repo_root: Path, config_path: Path | None = None) -> GlobalConfi
         captions=captions,
         agent=agent,
         watchdog=watchdog,
+        trading=trading,
         rotation=rotation,
         webui=webui,
         state_dir=state_dir,
