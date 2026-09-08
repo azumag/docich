@@ -136,7 +136,7 @@ soviet_now側の全on-air出力guardが適用されています。
 | `docich ra-cmd <CMD>` | RetroArch UDP command |
 | `docich webui [--dry-run]` | モデルチェーン/バックオフ管理 Web UI (Tailscale経由) |
 | `docich caption plan/send ...` | 字幕計画とFFmpeg IPC |
-| `docich trading status/discover/paper-cycle` | 暗号資産 paper trading 基盤（live注文なし） |
+| `docich trading status/discover/history/paper-cycle/strategy-cycle` | 暗号資産 paper trading 基盤（live注文なし） |
 | `docich run <component>` | tmux内の監督ループ用内部command |
 
 設定探索順は `--config`、`$DOCICH_CONFIG`、
@@ -153,6 +153,7 @@ bitbank の公開 market metadata を CCXT 経由で確認する場合だけ opt
 ```bash
 python3 -m pip install -r requirements-trading.txt
 bin/docich trading discover
+bin/docich trading history --symbols BTC/JPY,ETH/JPY --timeframe 5m --limit 24
 bin/docich trading status
 ```
 
@@ -165,7 +166,16 @@ bin/docich trading status
 bin/docich trading paper-cycle --snapshot /path/to/paper-snapshot.json
 ```
 
-常駐worker、リアルタイム戦略、配信通知、実発注は後続sliceで追加します。
+`history` は公開OHLCVだけを取得し、価格系列を strategy 用の正規化frameとして出力します。
+`strategy-cycle` はその形式の履歴snapshotから、現在は momentum-v1 と mean-reversion-v1 の
+2戦略で候補を生成し、同一symbol重複と高相関候補を除外してから既存30% allocatorへ渡します。
+候補数・採用数・strategy IDは `status.json` の `signal_summary` に公開用情報として残ります。
+
+```bash
+bin/docich trading strategy-cycle --snapshot /path/to/strategy-snapshot.json
+```
+
+常駐worker、より高度な裁定/歪み戦略、配信通知、実発注は後続sliceで追加します。
 実発注を有効化する前には、別途の設計レビューと明示承認が必要です。
 
 ## 設定

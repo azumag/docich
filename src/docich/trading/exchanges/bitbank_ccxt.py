@@ -5,6 +5,7 @@ from decimal import Decimal, InvalidOperation
 import importlib
 from typing import Any, Mapping
 
+from ..market_data import MarketFrame, MarketFrameError, frame_from_ohlcv
 from ..models import MarketInfo
 
 
@@ -108,3 +109,21 @@ class BitbankPublicGateway:
             )
             discovered[symbol] = market
         return discovered
+
+    def fetch_market_frames(
+        self,
+        symbols,
+        *,
+        timeframe: str = "5m",
+        limit: int = 24,
+        now: float,
+    ) -> dict[str, MarketFrame]:
+        if limit < 2:
+            raise MarketFrameError("limit must be at least 2")
+        frames: dict[str, MarketFrame] = {}
+        for symbol in symbols:
+            rows = self._exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+            frames[str(symbol)] = frame_from_ohlcv(
+                str(symbol), rows, timeframe=timeframe, now=now, min_bars=limit
+            )
+        return frames
