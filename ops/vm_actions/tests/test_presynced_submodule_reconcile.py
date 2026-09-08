@@ -8,6 +8,8 @@ import unittest
 from pathlib import Path
 
 from ops.vm_actions.reconcile_presynced_submodule import (
+    PROJECTION_UNKNOWN_CLASS_PER_PATH,
+    REASON_PROJECTION_UNKNOWN_CLASS_BASE,
     REASON_PROJECTION_UNKNOWN_MASK_BASE,
     REASON_PROJECTION_UNKNOWN_STATE,
     REASON_ROOT_DRIFT,
@@ -16,7 +18,9 @@ from ops.vm_actions.reconcile_presynced_submodule import (
     REASON_UNAPPROVED_SUBMODULE,
     ReconcileError,
     _normalize_projection,
+    _projection_unknown_class,
     _projection_unknown_reason,
+    _select_projection_unknown_reason,
     reconcile,
 )
 
@@ -157,7 +161,7 @@ class PresyncedSubmoduleReconcileTests(unittest.TestCase):
         self.assertEqual(_projection_unknown_reason([2, 2, 2, 2, 2]), REASON_PROJECTION_UNKNOWN_STATE)
         self.assertEqual(_projection_unknown_reason([0, 1]), REASON_PROJECTION_UNKNOWN_STATE)
 
-    def test_multi_path_unknown_mask_is_computed_before_any_projection_write(self):
+    def test_single_unknown_resized_path_class_is_computed_before_any_projection_write(self):
         self._git(self.sub_remote, "checkout", "--detach", "--quiet", self.old_sub)
         (self.sub_remote / "second.sh").write_text("old second\n", encoding="utf-8")
         self._git(self.sub_remote, "add", "second.sh")
@@ -173,11 +177,101 @@ class PresyncedSubmoduleReconcileTests(unittest.TestCase):
         second.write_text("operator drift\n", encoding="utf-8")
         worker.write_text("newer worker\n", encoding="utf-8")
 
+        # "operator drift" has a length matching neither recorded side, so the
+        # single unknown path 0 refines to the resized class (90 + 0*3 + 1).
         self.assert_reason(
-            REASON_PROJECTION_UNKNOWN_MASK_BASE + 0b01,
+            REASON_PROJECTION_UNKNOWN_CLASS_BASE + 1,
             lambda: _normalize_projection(self.sub_remote, old_two, new_two, self.live),
         )
         self.assertEqual(second.read_text(encoding="utf-8"), "operator drift\n")
+        self.assertEqual(worker.read_text(encoding="utf-8"), "newer worker\n")
+
+    def test_projection_unknown_class_encodes_presence_and_length(self):
+        old = {"data": b"old\n"}
+        new = {"data": b"new\n"}
+        self.assertEqual(
+            _projection_unknown_class(0, None, old, new),
+            REASON_PROJECTION_UNKNOWN_CLASS_BASE + 0,
+        )
+        self.assertEqual(
+            _projection_unknown_class(0, {"data": b"operator drift\n"}, old, new),
+            REASON_PROJECTION_UNKNOWN_CLASS_BASE + 1,
+        )
+        self.assertEqual(
+            _projection_unknown_class(0, {"data": b"xxx\n"}, old, new),
+            REASON_PROJECTION_UNKNOWN_CLASS_BASE + 2,
+        )
+        self.assertEqual(
+            _projection_unknown_class(1, None, old, new),
+            REASON_PROJECTION_UNKNOWN_CLASS_BASE + PROJECTION_UNKNOWN_CLASS_PER_PATH,
+        )
+
+    def test_projection_unknown_class_codes_stay_below_signal_range(self):
+        highest = REASON_PROJECTION_UNKNOWN_CLASS_BASE + 3 * PROJECTION_UNKNOWN_CLASS_PER_PATH + 2
+        self.assertLess(highest, 128)
+        self.assertGreaterEqual(REASON_PROJECTION_UNKNOWN_CLASS_BASE, 86)
+
+    def test_select_unknown_reason_keeps_mask_and_generic_codes(self):
+        resized = (0, {"data": b"drift\n"}, {"data": b"old\n"}, {"data": b"new\n"})
+        absent = (1, None, {"data": b"old\n"}, {"data": b"new\n"})
+        self.assertEqual(
+            _select_projection_unknown_reason([2, 2], [resized, absent]),
+            REASON_PROJECTION_UNKNOWN_MASK_BASE + 0b11,
+        )
+        self.assertEqual(
+            _select_projection_unknown_reason([2], [resized]),
+            REASON_PROJECTION_UNKNOWN_STATE,
+        )
+        five = [0, 0, 0, 0, 2]
+        self.assertEqual(
+            _select_projection_unknown_reason(five, [(4, None, {"data": b"o"}, {"data": b"n"})]),
+            REASON_PROJECTION_UNKNOWN_STATE,
+        )
+
+    def test_single_unknown_absent_path_reports_absence_without_write(self):
+        self._git(self.sub_remote, "checkout", "--detach", "--quiet", self.old_sub)
+        (self.sub_remote / "second.sh").write_text("old second\n", encoding="utf-8")
+        self._git(self.sub_remote, "add", "second.sh")
+        self._git(self.sub_remote, "commit", "-m", "old two-path projection")
+        old_two = self._git(self.sub_remote, "rev-parse", "HEAD")
+        (self.sub_remote / "second.sh").write_text("new second\n", encoding="utf-8")
+        (self.sub_remote / "worker.sh").write_text("newer worker\n", encoding="utf-8")
+        self._git(self.sub_remote, "commit", "-am", "new two-path projection")
+        new_two = self._git(self.sub_remote, "rev-parse", "HEAD")
+
+        worker = self.live / "worker.sh"
+        worker.write_text("newer worker\n", encoding="utf-8")
+
+        # second.sh is absent from live while both recorded sides exist.
+        self.assert_reason(
+            REASON_PROJECTION_UNKNOWN_CLASS_BASE + 0,
+            lambda: _normalize_projection(self.sub_remote, old_two, new_two, self.live),
+        )
+        self.assertFalse((self.live / "second.sh").exists())
+        self.assertEqual(worker.read_text(encoding="utf-8"), "newer worker\n")
+
+    def test_single_unknown_same_length_edit_reports_same_length_without_write(self):
+        self._git(self.sub_remote, "checkout", "--detach", "--quiet", self.old_sub)
+        (self.sub_remote / "second.sh").write_text("old second\n", encoding="utf-8")
+        self._git(self.sub_remote, "add", "second.sh")
+        self._git(self.sub_remote, "commit", "-m", "old two-path projection")
+        old_two = self._git(self.sub_remote, "rev-parse", "HEAD")
+        (self.sub_remote / "second.sh").write_text("new second\n", encoding="utf-8")
+        (self.sub_remote / "worker.sh").write_text("newer worker\n", encoding="utf-8")
+        self._git(self.sub_remote, "commit", "-am", "new two-path projection")
+        new_two = self._git(self.sub_remote, "rev-parse", "HEAD")
+
+        second = self.live / "second.sh"
+        worker = self.live / "worker.sh"
+        second.write_text("xxx second\n", encoding="utf-8")
+        worker.write_text("newer worker\n", encoding="utf-8")
+
+        # Same 11-byte length as both recorded sides but unreviewed content.
+        self.assert_reason(
+            REASON_PROJECTION_UNKNOWN_CLASS_BASE + 2,
+            lambda: _normalize_projection(self.sub_remote, old_two, new_two, self.live),
+        )
+        self.assertEqual(second.read_text(encoding="utf-8"), "xxx second\n")
         self.assertEqual(worker.read_text(encoding="utf-8"), "newer worker\n")
 
     def test_refuses_unknown_submodule_head_without_mutating_it(self):
