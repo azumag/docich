@@ -5,7 +5,7 @@
 - ローカル検証: 全体1516 passed / 3 skipped / 107 subtests。追加した境界・PAPER・レトロ関連27 passed / 3 subtests。Soren境界公開3 tests、shell構文成功。主担当自己レビュー、サブエージェント不使用。
 - Soren PR245 main `c874e2fff57973effaf0f4a4fe93f4e73d093421`、docich PR159 main `7c0d8ffedb59eabc4c14ce71c613640e1a76f334` へCI成功後統合。VM配備22ファイルをSHA一致、user units5件を生成一致確認。backupはdocich `.codex_deploy/paper-corner-20260909`（units含む）。公開データ用 `.venv-trading` は常設しccxt4.5.78を導入。
 - 本番profileのみ3 opt-inをtrue。過去通知bootstrap0件、trading tmux PID2860244で44市場/frame error0、2 cycles/模擬約定2件、投入2999.9990692円/資金1万円を確認。両timer有効、時刻外tickで開始なし。VM対象28 tests成功。配信2188217・共通3518891・overlay657382・resolver3466823/3466825維持、Web UI health200。
-- 本番で音声ACK2件に対しoverlay ACK0件を検出。既存Soren deadlineカテゴリがdocich allowlistにないことを再現し、混在保持の回帰テストを追加して互換性修正中。成功済み音声は再送しない。定時枠の自然開始・30分実運用は今夜22時以降の境界待ちで未観測（遅延/復旧/時間契約はテスト済み）。
+- 本番で音声ACK2件に対しoverlay ACK0件を検出。既存Soren deadlineカテゴリがdocich allowlistにないことを再現。混在保持テストを追加し、PR160 main `d5a6c3723dcc9d4e1df21733fc5e268f5ea3d266` へCI4件成功後統合・VM3ファイル一致。画面のみ2件を再配送し音声再送0、最終overlay/speech ACKは2/2。生成HTMLにPAPER表示も確認。旧PAPER2860244は終了（Z状態を経てwindow消滅）、PAPER専用windowだけを新PID2967461へ起動。新worker2 cycles/公開44市場/errors0、投入30%以内を維持。Soren境界テストもVM3件成功。定時枠の自然開始・30分実運用は今夜22時以降の境界待ちで未観測（遅延/復旧/時間契約はテスト済み）。
 
 ### 2026-09-09 — PAPER通知基盤の配備時点の検証記録
 
