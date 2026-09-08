@@ -1,15 +1,5 @@
 #!/usr/bin/env python3
-"""Normalize one reviewed pre-synced Soren state before a production deploy.
-
-The recovery is intentionally bounded. It first proves the docich root and
-owned Soren checkout can be returned to the recorded old deployment. When run
-from the production workflow it then checks every live projection path changed
-by old_sub..new_sub. Each live path must have exactly the recorded old or the
-reviewed-new content; regular-file mode drift is normalized back to the Git
-mode. Reviewed-new paths are atomically restored to old so the normal root-owned
-gateway can perform the canonical old->new transaction. Any third content state
-remains fail-closed.
-"""
+"""Bounded reconcile of one reviewed pre-synced Soren state before production deploy."""
 from __future__ import annotations
 
 import hashlib
@@ -25,6 +15,9 @@ SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 ALLOWED_SUBMODULES = {"games/soviet_now"}
 LIVE_PROJECTION = Path("/home/ubuntu/soren")
 
+# Refusal reasons are numeric only: exec output is withheld, so the exit code
+# is the whole signal. Codes stay below the shell signal range (>=128) and
+# expose no live bytes, hashes, modes, or private paths.
 REASON_INVALID_ROOT = 40
 REASON_UNAPPROVED_SUBMODULE = 41
 REASON_INVALID_SHA = 42
@@ -46,22 +39,14 @@ REASON_PROJECTION_UNKNOWN_STATE = 63
 REASON_PROJECTION_MUTATION_FAILED = 64
 REASON_PROJECTION_POSTVERIFY_FAILED = 65
 
-# Production exec intentionally withholds command output. For a small reviewed
-# projection diff, encode only which reviewed changed paths are in an unknown
-# content state. Bit N corresponds to path N in deterministic git-diff order.
-# Codes 71..85 stay below the conventional shell signal range and expose no
-# live bytes, hashes, modes, or private paths. Wider diffs retain generic 63.
+# Small diffs (2-4 paths): bit N of the mask = path N in git-diff order is
+# unknown. Codes 71..85. Anything else unknown-related keeps generic 63.
 REASON_PROJECTION_UNKNOWN_MASK_BASE = 70
 PROJECTION_UNKNOWN_MASK_MAX_PATHS = 4
 
-# When exactly one reviewed changed path is in an unknown content state,
-# classify only its presence/length class: 0 means the live path is absent
-# (a pruned runtime projection), 1 means live bytes are present with a length
-# matching neither recorded side (an edit or replacement), and 2 means live
-# bytes are present with a recorded-side length but unreviewed content (a
-# same-length edit). Codes 90..101 stay below the conventional shell signal
-# range and expose no live bytes, hashes, modes, or private paths. Multiple
-# unknowns keep the 70+mask code; wider diffs retain generic 63.
+# Exactly one unknown path: 90 + bit*3 + class. Class 0 = live absent, 1 =
+# live present with unreviewed length, 2 = live present with a reviewed
+# length but unreviewed bytes. Codes 90..101. Acceptance never changes.
 REASON_PROJECTION_UNKNOWN_CLASS_BASE = 90
 PROJECTION_UNKNOWN_CLASS_PER_PATH = 3
 PROJECTION_UNKNOWN_CLASS_ABSENT = 0
@@ -75,31 +60,26 @@ class ReconcileError(RuntimeError):
         self.code = code
 
 
-def _git(root: Path, *args: str, reason: int = REASON_GIT_VERIFICATION_FAILED) -> str:
-    try:
-        return subprocess.check_output(
-            ["git", "-C", str(root), "-c", "core.hooksPath=/dev/null", *args],
-            stderr=subprocess.DEVNULL,
-            text=True,
-        ).strip()
-    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-        raise ReconcileError(reason, "git verification failed") from exc
+def _git_base(root: Path) -> list:
+    return ["git", "-C", str(root), "-c", "core.hooksPath=/dev/null"]
 
 
-def _git_bytes(root: Path, *args: str, reason: int = REASON_GIT_VERIFICATION_FAILED) -> bytes:
+def _git(root: Path, *args: str, reason: int = REASON_GIT_VERIFICATION_FAILED, raw: bool = False):
     try:
-        return subprocess.check_output(
-            ["git", "-C", str(root), "-c", "core.hooksPath=/dev/null", *args],
+        out = subprocess.check_output(
+            _git_base(root) + list(args),
             stderr=subprocess.DEVNULL,
+            text=not raw,
         )
     except (subprocess.CalledProcessError, FileNotFoundError) as exc:
         raise ReconcileError(reason, "git verification failed") from exc
+    return out if raw else out.strip()
 
 
 def _git_run(root: Path, *args: str) -> None:
     try:
         subprocess.run(
-            ["git", "-C", str(root), "-c", "core.hooksPath=/dev/null", *args],
+            _git_base(root) + list(args),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -113,16 +93,16 @@ def _git_run(root: Path, *args: str) -> None:
 def _is_ancestor(root: Path, ancestor: str, descendant: str) -> bool:
     try:
         result = subprocess.run(
-            ["git", "-C", str(root), "-c", "core.hooksPath=/dev/null", "merge-base", "--is-ancestor", ancestor, descendant],
+            _git_base(root) + ["merge-base", "--is-ancestor", ancestor, descendant],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=30,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        raise ReconcileError(REASON_GIT_VERIFICATION_FAILED, "git ancestry verification failed") from exc
+        raise ReconcileError(REASON_GIT_VERIFICATION_FAILED, "git ancestry failed") from exc
     if result.returncode not in {0, 1}:
-        raise ReconcileError(REASON_GIT_VERIFICATION_FAILED, "git ancestry verification failed")
+        raise ReconcileError(REASON_GIT_VERIFICATION_FAILED, "git ancestry failed")
     return result.returncode == 0
 
 
@@ -130,17 +110,17 @@ def _gitlink_at(root: Path, commit: str, path: str) -> str:
     line = _git(root, "ls-tree", commit, "--", path)
     fields = line.split()
     if len(fields) < 3 or fields[0] != "160000" or fields[1] != "commit" or not SHA_RE.fullmatch(fields[2]):
-        raise ReconcileError(REASON_OLD_GITLINK_MISMATCH, "expected owned submodule gitlink is missing")
+        raise ReconcileError(REASON_OLD_GITLINK_MISMATCH, "expected gitlink missing")
     return fields[2]
 
 
 def _changed_paths(repo: Path, old: str, new: str) -> list[str]:
-    raw = _git_bytes(repo, "diff", "--name-only", "-z", "--no-renames", old, new, "--")
+    raw = _git(repo, "diff", "--name-only", "-z", "--no-renames", old, new, "--", raw=True)
     return [item.decode("utf-8", "strict") for item in raw.split(b"\0") if item]
 
 
 def _projection_entry(repo: Path, commit: str, rel: str):
-    raw = _git_bytes(repo, "ls-tree", "-z", commit, "--", rel)
+    raw = _git(repo, "ls-tree", "-z", commit, "--", rel, raw=True)
     if not raw:
         return None
     entries = [item for item in raw.split(b"\0") if item]
@@ -156,7 +136,7 @@ def _projection_entry(repo: Path, commit: str, rel: str):
 def _projection_expected(repo: Path, entry):
     if entry is None:
         return None
-    data = _git_bytes(repo, "cat-file", "blob", entry["object"])
+    data = _git(repo, "cat-file", "blob", entry["object"], raw=True)
     if len(data) > 32 * 1024 * 1024:
         raise ReconcileError(REASON_PROJECTION_UNSUPPORTED, "projection file too large")
     return {"sha256": hashlib.sha256(data).hexdigest(), "mode": entry["mode"], "data": data}
@@ -191,23 +171,19 @@ def _projection_same(actual, expected) -> bool:
     return actual["sha256"] == expected["sha256"] and actual["mode"] == expected["mode"]
 
 
-def _projection_content_same(actual, expected) -> bool:
-    if actual is None or expected is None:
-        return actual is None and expected is None
-    return actual["sha256"] == expected["sha256"]
+def _content_sha(meta):
+    return meta["sha256"] if meta is not None else None
 
 
 def _projection_content_state(actual, old_expected, new_expected) -> int:
-    if _projection_content_same(actual, old_expected):
+    live = _content_sha(actual)
+    if live == _content_sha(old_expected):
         return 0
-    if _projection_content_same(actual, new_expected):
-        return 1
-    return 2
+    return 1 if live == _content_sha(new_expected) else 2
 
 
 def _projection_unknown_reason(states: list[int]) -> int:
-    # Preserve the historical single-path code and keep wider diffs generic.
-    # This never changes acceptance; it only identifies unknown reviewed paths.
+    # Historical mask/generic mapping; acceptance never changes.
     if len(states) < 2 or len(states) > PROJECTION_UNKNOWN_MASK_MAX_PATHS:
         return REASON_PROJECTION_UNKNOWN_STATE
     mask = sum(1 << index for index, state in enumerate(states) if state == 2)
@@ -217,33 +193,19 @@ def _projection_unknown_reason(states: list[int]) -> int:
 
 
 def _projection_unknown_class(bit: int, live, old_expected, new_expected) -> int:
-    # Classify one unknown path by presence/length only. Lengths of the
-    # recorded Git blobs are public; the returned class reveals no live bytes,
-    # hashes, modes, or paths.
+    # Presence/length only; recorded blob lengths are public, and the class
+    # reveals no live bytes, hashes, modes, or paths.
     if live is None:
         klass = PROJECTION_UNKNOWN_CLASS_ABSENT
     else:
-        known_lens = {
-            len(expected["data"])
-            for expected in (old_expected, new_expected)
-            if expected is not None
-        }
-        if len(live["data"]) in known_lens:
-            klass = PROJECTION_UNKNOWN_CLASS_SAME_LENGTH
-        else:
-            klass = PROJECTION_UNKNOWN_CLASS_RESIZED
+        known_lens = {len(e["data"]) for e in (old_expected, new_expected) if e is not None}
+        klass = PROJECTION_UNKNOWN_CLASS_SAME_LENGTH if len(live["data"]) in known_lens else PROJECTION_UNKNOWN_CLASS_RESIZED
     return REASON_PROJECTION_UNKNOWN_CLASS_BASE + bit * PROJECTION_UNKNOWN_CLASS_PER_PATH + klass
 
 
 def _select_projection_unknown_reason(states: list[int], unknowns: list[tuple]) -> int:
-    # Refine a single unknown path to its presence/length class. Multiple
-    # unknowns, single-path diffs, and wider diffs keep the mask/generic code.
-    # This never changes acceptance; it only identifies the unknown state.
-    if (
-        len(states) < 2
-        or len(states) > PROJECTION_UNKNOWN_MASK_MAX_PATHS
-        or len(unknowns) != 1
-    ):
+    # Single unknown refines to its class; anything else keeps mask/generic.
+    if len(states) < 2 or len(states) > PROJECTION_UNKNOWN_MASK_MAX_PATHS or len(unknowns) != 1:
         return _projection_unknown_reason(states)
     mask = sum(1 << index for index, state in enumerate(states) if state == 2)
     if mask == 0 or mask & (mask - 1):
@@ -282,6 +244,7 @@ def _set_projection(path: Path, target) -> None:
 
 def _normalize_projection(repo: Path, old_sub: str, new_sub: str, destination: Path) -> None:
     plans = []
+    verifies = []
     states = []
     unknowns = []
     changed = _changed_paths(repo, old_sub, new_sub)
@@ -290,6 +253,7 @@ def _normalize_projection(repo: Path, old_sub: str, new_sub: str, destination: P
         old_meta = _projection_expected(repo, _projection_entry(repo, old_sub, rel))
         new_meta = _projection_expected(repo, _projection_entry(repo, new_sub, rel))
         live_meta = _projection_live(path)
+        verifies.append((path, old_meta))
         state = _projection_content_state(live_meta, old_meta, new_meta)
         states.append(state)
         if state == 2:
@@ -297,8 +261,7 @@ def _normalize_projection(repo: Path, old_sub: str, new_sub: str, destination: P
             continue
         if _projection_same(live_meta, old_meta):
             continue
-        # Preserve the exact original regular-file state for rollback. This
-        # includes a non-canonical mode; content itself is still reviewed.
+        # Keep the exact live bytes+mode for rollback of reviewed writes.
         plans.append((path, old_meta, live_meta))
 
     if 2 in states:
@@ -314,11 +277,9 @@ def _normalize_projection(repo: Path, old_sub: str, new_sub: str, destination: P
                 raise ReconcileError(REASON_PROJECTION_UNKNOWN_STATE, "concurrent projection drift")
             _set_projection(path, old_meta)
             applied.append((path, old_meta, original_live))
-        for rel in changed:
-            path = _safe_projection_path(destination, rel)
-            old_meta = _projection_expected(repo, _projection_entry(repo, old_sub, rel))
+        for path, old_meta in verifies:
             if not _projection_same(_projection_live(path), old_meta):
-                raise ReconcileError(REASON_PROJECTION_POSTVERIFY_FAILED, "old projection verification failed")
+                raise ReconcileError(REASON_PROJECTION_POSTVERIFY_FAILED, "old projection postverify failed")
     except Exception as exc:
         rollback_failed = False
         for path, old_meta, original_live in reversed(applied):
@@ -347,7 +308,7 @@ def reconcile(
     if not root.is_absolute() or not root.is_dir():
         raise ReconcileError(REASON_INVALID_ROOT, "invalid production root")
     if sub_path not in ALLOWED_SUBMODULES:
-        raise ReconcileError(REASON_UNAPPROVED_SUBMODULE, "submodule is not eligible for automatic reconcile")
+        raise ReconcileError(REASON_UNAPPROVED_SUBMODULE, "submodule not eligible for reconcile")
     if not all(SHA_RE.fullmatch(value) for value in (old_parent, old_sub, new_sub)):
         raise ReconcileError(REASON_INVALID_SHA, "invalid reconcile SHA")
     if old_sub == new_sub:
@@ -356,36 +317,36 @@ def reconcile(
     if _git(root, "rev-parse", "HEAD", reason=REASON_ROOT_MOVED) != old_parent:
         raise ReconcileError(REASON_ROOT_MOVED, "production root moved")
     if _git(root, "status", "--porcelain", "--untracked-files=no", "--ignore-submodules=all", reason=REASON_ROOT_DRIFT):
-        raise ReconcileError(REASON_ROOT_DRIFT, "tracked production root drift detected")
+        raise ReconcileError(REASON_ROOT_DRIFT, "tracked production root drift")
     if _gitlink_at(root, old_parent, sub_path) != old_sub:
-        raise ReconcileError(REASON_OLD_GITLINK_MISMATCH, "old gitlink no longer matches")
+        raise ReconcileError(REASON_OLD_GITLINK_MISMATCH, "old gitlink mismatch")
 
     sub = root / sub_path
     if not sub.is_dir():
-        raise ReconcileError(REASON_SUBMODULE_MISSING, "owned submodule checkout is missing")
+        raise ReconcileError(REASON_SUBMODULE_MISSING, "submodule checkout missing")
 
     current_sub = _git(sub, "rev-parse", "HEAD", reason=REASON_SUBMODULE_HEAD_MISMATCH)
     if current_sub not in {old_sub, new_sub}:
         current_tree = _git(sub, "rev-parse", f"{current_sub}^{{tree}}", reason=REASON_SUBMODULE_HEAD_MISMATCH)
         reviewed_tree = _git(sub, "rev-parse", f"{new_sub}^{{tree}}", reason=REASON_NEW_OBJECT_MISSING)
         if current_tree != reviewed_tree or not _is_ancestor(sub, current_sub, new_sub):
-            raise ReconcileError(REASON_SUBMODULE_HEAD_MISMATCH, "owned submodule is not at an accepted reconcile state")
+            raise ReconcileError(REASON_SUBMODULE_HEAD_MISMATCH, "submodule not at accepted state")
 
     if _git(sub, "status", "--porcelain", "--untracked-files=no", reason=REASON_SUBMODULE_DRIFT):
-        raise ReconcileError(REASON_SUBMODULE_DRIFT, "owned submodule has tracked drift")
+        raise ReconcileError(REASON_SUBMODULE_DRIFT, "submodule tracked drift")
 
     _git(sub, "cat-file", "-e", f"{old_sub}^{{commit}}", reason=REASON_OLD_OBJECT_MISSING)
     _git(sub, "cat-file", "-e", f"{new_sub}^{{commit}}", reason=REASON_NEW_OBJECT_MISSING)
     if not _is_ancestor(sub, old_sub, new_sub):
-        raise ReconcileError(REASON_NOT_DESCENDANT, "reviewed target is not a descendant of the recorded gitlink")
+        raise ReconcileError(REASON_NOT_DESCENDANT, "target not descendant of old")
 
     if current_sub != old_sub:
         _git_run(sub, "checkout", "--detach", "--quiet", old_sub)
 
     if _git(sub, "rev-parse", "HEAD", reason=REASON_POSTVERIFY_FAILED) != old_sub:
-        raise ReconcileError(REASON_POSTVERIFY_FAILED, "submodule normalization verification failed")
+        raise ReconcileError(REASON_POSTVERIFY_FAILED, "submodule postverify failed")
     if _git(sub, "status", "--porcelain", "--untracked-files=no", reason=REASON_POSTVERIFY_FAILED):
-        raise ReconcileError(REASON_POSTVERIFY_FAILED, "submodule normalization verification failed")
+        raise ReconcileError(REASON_POSTVERIFY_FAILED, "submodule postverify failed")
 
     if projection_destination is not None:
         _normalize_projection(sub, old_sub, new_sub, projection_destination)
