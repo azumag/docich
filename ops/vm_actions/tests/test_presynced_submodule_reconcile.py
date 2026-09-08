@@ -49,7 +49,10 @@ class PresyncedSubmoduleReconcileTests(unittest.TestCase):
             ["git", "clone", "--quiet", str(self.sub_remote), str(self.root / "games/soviet_now")],
             check=True,
         )
-        self._git(self.root / "games/soviet_now", "checkout", "--detach", "--quiet", self.new_sub)
+        sub = self.root / "games/soviet_now"
+        self._git(sub, "config", "user.email", "tests@example.invalid")
+        self._git(sub, "config", "user.name", "vmops tests")
+        self._git(sub, "checkout", "--detach", "--quiet", self.new_sub)
 
     def tearDown(self):
         self.tmp.cleanup()
