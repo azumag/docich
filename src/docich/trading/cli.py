@@ -3,15 +3,21 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping
 
+from .arbitrage import ArbitrageDataError, TopOfBook, find_triangle_symbols, scan_triangular_arbitrage
+from .depth import DepthRouteSimulation, simulate_route_depth
 from .exchanges.bitbank_ccxt import BitbankPublicGateway, CCXTUnavailableError
 from .ledger import PaperLedger
+from .market_data import MarketFrame, MarketFrameError
 from .models import MarketInfo, Opportunity, TradingValidationError, as_decimal
 from .paper import PaperBroker
+from .relative_value import scan_relative_value_opportunities
 from .risk import CapitalPolicy, allocate_opportunities
+from .strategies import scan_opportunities, select_diversified_opportunities
 from .status import build_public_status, write_public_status
 
 
@@ -23,7 +29,7 @@ _SNAPSHOT_KEYS = {
     "mode", "as_of", "capital_reference", "deployed_reference",
     "quote_to_reference", "available_quote", "markets", "prices", "opportunities",
 }
-_MARKET_KEYS = {"base", "quote", "spot", "active", "amount_step", "min_amount", "min_cost"}
+_MARKET_KEYS = {"base", "quote", "spot", "active", "amount_step", "min_amount", "min_cost", "taker_fee_rate", "taker_fee_rate_base", "taker_fee_rate_quote"}
 _OPPORTUNITY_KEYS = {
     "opportunity_id", "strategy_id", "symbol", "side", "score", "expected_edge_bps",
     "max_notional_fraction", "expires_at", "reason_code",
@@ -31,8 +37,15 @@ _OPPORTUNITY_KEYS = {
 _PUBLIC_STATUS_KEYS = {
     "schema_version", "mode", "worker_state", "last_cycle_at", "market_count",
     "eligible_symbols", "capital_reference", "deployed_reference", "open_positions",
-    "recent_fills", "skipped_reason_codes",
+    "recent_fills", "skipped_reason_codes", "signal_summary",
 }
+_SIGNAL_SUMMARY_KEYS = {"candidate_count", "selected_count", "rejected_count", "strategy_ids", "candidate_reason_codes"}
+_FRAME_KEYS = {"timeframe_seconds", "timestamps", "closes", "volumes"}
+_STRATEGY_SNAPSHOT_KEYS = {
+    "mode", "as_of", "capital_reference", "deployed_reference",
+    "quote_to_reference", "available_quote", "markets", "frames",
+}
+
 _FILL_KEYS = {
     "fill_id", "opportunity_id", "strategy_id", "symbol", "side", "quote", "amount",
     "price", "quote_notional", "reference_notional", "reason_code", "filled_at",
@@ -47,8 +60,22 @@ def configure_parser(parser) -> None:
     sub = parser.add_subparsers(dest="trading_command", required=True)
     sub.add_parser("status", help="paper trading public status を表示する")
     sub.add_parser("discover", help="bitbank の公開 market metadata を列挙する")
+    history = sub.add_parser("history", help="bitbank の公開 OHLCV を正規化して出力する")
+    history.add_argument("--symbols", metavar="CSV", help="対象symbolのカンマ区切り (省略時は全eligible market)")
+    history.add_argument("--timeframe", default="5m", metavar="TF", help="CCXT timeframe (既定5m)")
+    history.add_argument("--limit", type=int, default=24, metavar="N", help="取得bar数 (既定24)")
     paper = sub.add_parser("paper-cycle", help="安全な snapshot から paper cycle を1回実行する")
     paper.add_argument("--snapshot", required=True, metavar="JSON", help="paper snapshot JSON")
+    strategy = sub.add_parser("strategy-cycle", help="履歴snapshotから戦略生成→分散→paper cycleを実行する")
+    strategy.add_argument("--snapshot", required=True, metavar="JSON", help="strategy snapshot JSON")
+    arbitrage = sub.add_parser("arbitrage-scan", help="公開板からfee-aware三角裁定候補を診断する")
+    arbitrage.add_argument("--min-edge-bps", default="10", metavar="BPS", help="最低net edge (既定10bps)")
+    arbitrage.add_argument("--book-limit", type=int, default=5, metavar="N", help="板取得depth (既定5)")
+    depth = sub.add_parser("arbitrage-depth-scan", help="公開板depthで三角裁定候補のサイズ別slippageを診断する")
+    depth.add_argument("--min-edge-bps", default="10", metavar="BPS", help="top-of-book最低net edge (既定10bps)")
+    depth.add_argument("--book-limit", type=int, default=20, metavar="N", help="板取得depth (既定20)")
+    depth.add_argument("--probe-asset", default="JPY", metavar="ASSET", help="probe開始資産 (既定JPY)")
+    depth.add_argument("--probe-amounts", default="1000,3000,10000", metavar="CSV", help="開始資産単位のprobe量")
 
 
 def _state_dir(args, repo_root: Path) -> Path:
@@ -88,6 +115,11 @@ def _safe_existing_status(path: Path) -> dict[str, Any]:
         {key: fill.get(key) for key in _FILL_KEYS}
         for fill in fills if isinstance(fill, dict)
     ]
+    summary = data.get("signal_summary", {})
+    safe["signal_summary"] = (
+        {key: summary.get(key) for key in _SIGNAL_SUMMARY_KEYS}
+        if isinstance(summary, dict) else {}
+    )
     return safe
 
 
@@ -118,6 +150,9 @@ def _market_from_snapshot(symbol: str, raw: Any) -> MarketInfo:
             amount_step=None if raw.get("amount_step") is None else as_decimal(raw["amount_step"], "amount_step"),
             min_amount=None if raw.get("min_amount") is None else as_decimal(raw["min_amount"], "min_amount"),
             min_cost=None if raw.get("min_cost") is None else as_decimal(raw["min_cost"], "min_cost"),
+            taker_fee_rate=None if raw.get("taker_fee_rate") is None else as_decimal(raw["taker_fee_rate"], "taker_fee_rate"),
+            taker_fee_rate_base=None if raw.get("taker_fee_rate_base") is None else as_decimal(raw["taker_fee_rate_base"], "taker_fee_rate_base"),
+            taker_fee_rate_quote=None if raw.get("taker_fee_rate_quote") is None else as_decimal(raw["taker_fee_rate_quote"], "taker_fee_rate_quote"),
         )
     except (TradingValidationError, KeyError) as exc:
         raise TradingCliError(f"market {symbol} is invalid") from exc
@@ -204,6 +239,117 @@ def _load_snapshot(path: Path) -> dict[str, Any]:
     }
 
 
+def _frame_from_snapshot(symbol: str, raw: Any, *, as_of: float) -> MarketFrame:
+    if not isinstance(raw, dict):
+        raise TradingCliError(f"frame {symbol} must be an object")
+    _unknown_keys(raw, _FRAME_KEYS, f"frame {symbol}")
+    missing = sorted(_FRAME_KEYS - set(raw))
+    if missing:
+        raise TradingCliError(f"frame {symbol} is missing fields: {', '.join(missing)}")
+    timestamps, closes, volumes = raw["timestamps"], raw["closes"], raw["volumes"]
+    if not isinstance(timestamps, list) or not isinstance(closes, list) or not isinstance(volumes, list):
+        raise TradingCliError(f"frame {symbol} arrays have invalid types")
+    if len(timestamps) < 3 or len(timestamps) != len(closes) or len(closes) != len(volumes):
+        raise TradingCliError(f"frame {symbol} arrays have invalid lengths")
+    try:
+        tf = int(raw["timeframe_seconds"])
+        ts = tuple(float(value) for value in timestamps)
+        close_values = tuple(as_decimal(value, f"frame[{symbol}].close") for value in closes)
+        volume_values = tuple(as_decimal(value, f"frame[{symbol}].volume") for value in volumes)
+    except (TypeError, ValueError, TradingValidationError) as exc:
+        raise TradingCliError(f"frame {symbol} contains invalid values") from exc
+    if tf <= 0 or any(not math.isfinite(value) for value in ts):
+        raise TradingCliError(f"frame {symbol} contains invalid timing")
+    if any(current <= previous for previous, current in zip(ts, ts[1:])):
+        raise TradingCliError(f"frame {symbol} timestamps are non-monotonic")
+    if any(value <= 0 for value in close_values) or any(value < 0 for value in volume_values):
+        raise TradingCliError(f"frame {symbol} contains invalid price/volume")
+    if ts[-1] > as_of + 1 or as_of - ts[-1] > tf * 2:
+        raise TradingCliError(f"frame {symbol} is stale or from the future")
+    return MarketFrame(symbol, tf, ts, close_values, volume_values)
+
+
+def _load_strategy_snapshot(path: Path) -> dict[str, Any]:
+    data = _load_json_object(path)
+    _unknown_keys(data, _STRATEGY_SNAPSHOT_KEYS, "strategy snapshot")
+    if data.get("mode") != "paper":
+        raise TradingCliError("only paper mode is supported; live trading is unavailable")
+    missing = sorted(_STRATEGY_SNAPSHOT_KEYS - set(data))
+    if missing:
+        raise TradingCliError(f"strategy snapshot is missing fields: {', '.join(missing)}")
+    try:
+        as_of = float(data["as_of"])
+        capital = as_decimal(data["capital_reference"], "capital_reference")
+        deployed = as_decimal(data["deployed_reference"], "deployed_reference")
+    except (TypeError, ValueError, TradingValidationError) as exc:
+        raise TradingCliError("strategy snapshot contains invalid numeric values") from exc
+    if not math.isfinite(as_of) or capital < 0 or deployed < 0:
+        raise TradingCliError("strategy snapshot timing/capital is invalid")
+    markets_raw, frames_raw = data["markets"], data["frames"]
+    if not isinstance(markets_raw, dict) or not isinstance(frames_raw, dict):
+        raise TradingCliError("strategy snapshot markets/frames must be objects")
+    markets = {symbol: _market_from_snapshot(symbol, raw) for symbol, raw in markets_raw.items()}
+    frames = {symbol: _frame_from_snapshot(symbol, raw, as_of=as_of) for symbol, raw in frames_raw.items()}
+    if set(frames) - set(markets):
+        raise TradingCliError("strategy snapshot contains frames for unknown markets")
+    quote_rates = _decimal_mapping(data["quote_to_reference"], "quote_to_reference")
+    available = _decimal_mapping(data["available_quote"], "available_quote")
+    if any(value <= 0 for value in quote_rates.values()) or any(value < 0 for value in available.values()):
+        raise TradingCliError("strategy snapshot quote values are invalid")
+    return {
+        "as_of": as_of, "capital_reference": capital, "deployed_reference": deployed,
+        "quote_to_reference": quote_rates, "available_quote": available,
+        "markets": markets, "frames": frames,
+    }
+
+
+def _frame_payload(frame: MarketFrame) -> dict[str, Any]:
+    return {
+        "timeframe_seconds": frame.timeframe_seconds,
+        "timestamps": [float(value) for value in frame.timestamps],
+        "closes": [str(value) for value in frame.closes],
+        "volumes": [str(value) for value in frame.volumes],
+    }
+
+
+
+def _parse_probe_amounts(raw: str) -> tuple[Decimal, ...]:
+    parts = [part.strip() for part in str(raw).split(",") if part.strip()]
+    if not parts:
+        raise TradingCliError("probe amounts must not be empty")
+    try:
+        amounts = tuple(as_decimal(part, "probe amount") for part in parts)
+    except TradingValidationError as exc:
+        raise TradingCliError("probe amounts contain an invalid value") from exc
+    if any(amount <= 0 for amount in amounts):
+        raise TradingCliError("probe amounts must be positive")
+    return amounts
+
+
+def _depth_simulation_payload(simulation: DepthRouteSimulation) -> dict[str, Any]:
+    return {
+        "start_asset": simulation.start_asset,
+        "start_amount": str(simulation.start_amount),
+        "complete": simulation.complete,
+        "final_amount": None if simulation.final_amount is None else str(simulation.final_amount),
+        "net_edge_bps": None if simulation.net_edge_bps is None else str(simulation.net_edge_bps),
+        "failed_leg_symbol": simulation.failed_leg_symbol,
+        "legs": [{
+            "symbol": leg.symbol,
+            "from_asset": leg.from_asset,
+            "to_asset": leg.to_asset,
+            "side": leg.side,
+            "input_amount": str(leg.input_amount),
+            "filled_input": str(leg.filled_input),
+            "output_amount": str(leg.output_amount),
+            "traded_base_amount": str(leg.traded_base_amount),
+            "fee_paid_base": str(leg.fee_paid_base),
+            "fee_paid_quote": str(leg.fee_paid_quote),
+            "levels_used": leg.levels_used,
+            "complete": leg.complete,
+        } for leg in simulation.legs],
+    }
+
 def _market_payload(market: MarketInfo) -> dict[str, Any]:
     return {
         "symbol": market.symbol,
@@ -214,6 +360,9 @@ def _market_payload(market: MarketInfo) -> dict[str, Any]:
         "amount_step": None if market.amount_step is None else str(market.amount_step),
         "min_amount": None if market.min_amount is None else str(market.min_amount),
         "min_cost": None if market.min_cost is None else str(market.min_cost),
+        "taker_fee_rate": None if market.taker_fee_rate is None else str(market.taker_fee_rate),
+        "taker_fee_rate_base": None if market.taker_fee_rate_base is None else str(market.taker_fee_rate_base),
+        "taker_fee_rate_quote": None if market.taker_fee_rate_quote is None else str(market.taker_fee_rate_quote),
     }
 
 
@@ -236,6 +385,25 @@ def run_args(args, *, repo_root: Path) -> int:
             "markets": [_market_payload(markets[symbol]) for symbol in sorted(markets)],
         }
         _json_print(payload)
+        return 0
+    if command == "history":
+        try:
+            gateway = BitbankPublicGateway()
+            markets = gateway.discover_markets()
+            requested = [part.strip() for part in (args.symbols or "").split(",") if part.strip()]
+            symbols = requested or sorted(markets)
+            unknown = sorted(set(symbols) - set(markets))
+            if unknown:
+                raise TradingCliError(f"history requested unknown/ineligible markets: {', '.join(unknown)}")
+            now = time.time()
+            frames = gateway.fetch_market_frames(symbols, timeframe=args.timeframe, limit=args.limit, now=now)
+        except (CCXTUnavailableError, MarketFrameError) as exc:
+            raise TradingCliError(str(exc)) from exc
+        _json_print({
+            "mode": "paper", "exchange": "bitbank", "as_of": now,
+            "market_count": len(frames),
+            "frames": {symbol: _frame_payload(frames[symbol]) for symbol in sorted(frames)},
+        })
         return 0
     if command == "paper-cycle":
         snapshot = _load_snapshot(Path(args.snapshot))
@@ -274,4 +442,147 @@ def run_args(args, *, repo_root: Path) -> int:
             return 0
         finally:
             ledger.close()
+    if command == "strategy-cycle":
+        snapshot = _load_strategy_snapshot(Path(args.snapshot))
+        candidates = tuple(scan_opportunities(snapshot["frames"], now=snapshot["as_of"])) + tuple(
+            scan_relative_value_opportunities(snapshot["frames"], snapshot["markets"], now=snapshot["as_of"])
+        )
+        selection = select_diversified_opportunities(candidates, snapshot["frames"])
+        prices = {symbol: frame.last_price for symbol, frame in snapshot["frames"].items()}
+        state_dir.mkdir(parents=True, exist_ok=True)
+        ledger = PaperLedger(state_dir / "paper.sqlite3")
+        try:
+            deployed_before = snapshot["deployed_reference"] + ledger.deployed_reference()
+            allocation = allocate_opportunities(
+                selection.selected, markets=snapshot["markets"], prices=prices,
+                quote_to_reference=snapshot["quote_to_reference"], available_quote=snapshot["available_quote"],
+                capital_reference=snapshot["capital_reference"], deployed_reference=deployed_before,
+                policy=CapitalPolicy(), now=snapshot["as_of"],
+            )
+            broker = PaperBroker(ledger)
+            for decision in allocation.decisions:
+                broker.fill(decision, timestamp=snapshot["as_of"])
+            rejected_codes = [item.reason_code for item in selection.rejected]
+            skipped_codes = rejected_codes + [item.reason_code for item in allocation.skipped]
+            summary = {
+                "candidate_count": len(candidates),
+                "selected_count": len(selection.selected),
+                "rejected_count": len(selection.rejected),
+                "strategy_ids": sorted({item.strategy_id for item in candidates}),
+                "candidate_reason_codes": sorted({item.reason_code for item in candidates}),
+            }
+            payload = build_public_status(
+                worker_state="strategy_cycle_complete", last_cycle_at=snapshot["as_of"],
+                eligible_symbols=snapshot["markets"].keys(), capital_reference=snapshot["capital_reference"],
+                deployed_reference=snapshot["deployed_reference"] + ledger.deployed_reference(),
+                open_positions=ledger.positions(), recent_fills=ledger.recent_fills(limit=20),
+                skipped_reason_codes=skipped_codes, signal_summary=summary,
+            )
+            write_public_status(state_dir / "status.json", payload)
+            _json_print(payload)
+            return 0
+        finally:
+            ledger.close()
+    if command == "arbitrage-scan":
+        try:
+            gateway = BitbankPublicGateway()
+            markets = gateway.discover_markets()
+            triangle_symbols = find_triangle_symbols(markets)
+            now = time.time()
+            books = (
+                gateway.fetch_top_books(triangle_symbols, now=now, limit=args.book_limit)
+                if triangle_symbols else {}
+            )
+            min_edge = as_decimal(args.min_edge_bps, "min_edge_bps")
+            routes = scan_triangular_arbitrage(markets, books, now=now, min_net_edge_bps=min_edge)
+        except (CCXTUnavailableError, ArbitrageDataError, TradingValidationError) as exc:
+            raise TradingCliError(str(exc)) from exc
+        candidates = []
+        for route in routes:
+            candidates.append({
+                "route_id": route.route_id,
+                "start_asset": route.start_asset,
+                "net_edge_bps": str(route.net_edge_bps),
+                "max_start_amount": str(route.max_start_amount),
+                "legs": [{
+                    "symbol": leg.symbol, "from_asset": leg.from_asset, "to_asset": leg.to_asset,
+                    "side": leg.side, "price": str(leg.price),
+                    "fee_rate": str(leg.fee_rate_quote),
+                    "fee_rate_base": str(leg.fee_rate_base),
+                    "fee_rate_quote": str(leg.fee_rate_quote),
+                } for leg in route.legs],
+            })
+        _json_print({
+            "mode": "paper", "exchange": "bitbank", "as_of": now,
+            "triangle_market_count": len(triangle_symbols),
+            "book_market_count": len(books),
+            "candidate_count": len(candidates),
+            "candidates": candidates,
+        })
+        return 0
+    if command == "arbitrage-depth-scan":
+        probe_asset = str(args.probe_asset).strip().upper()
+        if not probe_asset:
+            raise TradingCliError("probe asset must not be empty")
+        probe_amounts = _parse_probe_amounts(args.probe_amounts)
+        try:
+            min_edge = as_decimal(args.min_edge_bps, "min_edge_bps")
+            gateway = BitbankPublicGateway()
+            markets = gateway.discover_markets()
+            triangle_symbols = find_triangle_symbols(markets)
+            now = time.time()
+            depth_books = (
+                gateway.fetch_depth_books(triangle_symbols, now=now, limit=args.book_limit)
+                if triangle_symbols else {}
+            )
+            top_books = {
+                symbol: TopOfBook(
+                    symbol, book.bids[0].price, book.asks[0].price, book.as_of,
+                    bid_amount=book.bids[0].amount, ask_amount=book.asks[0].amount,
+                )
+                for symbol, book in depth_books.items()
+            }
+            routes = scan_triangular_arbitrage(markets, top_books, now=now, min_net_edge_bps=min_edge)
+        except (CCXTUnavailableError, ArbitrageDataError, TradingValidationError) as exc:
+            raise TradingCliError(str(exc)) from exc
+        candidates = []
+        for route in routes:
+            route_assets = {leg.from_asset for leg in route.legs}
+            simulations = []
+            probe_skip_reason = None
+            if probe_asset in route_assets:
+                simulations = [
+                    _depth_simulation_payload(
+                        simulate_route_depth(route, depth_books, start_amount=amount, start_asset=probe_asset)
+                    )
+                    for amount in probe_amounts
+                ]
+            else:
+                probe_skip_reason = "probe_asset_not_in_route"
+            candidates.append({
+                "route_id": route.route_id,
+                "top_start_asset": route.start_asset,
+                "top_net_edge_bps": str(route.net_edge_bps),
+                "top_max_start_amount": str(route.max_start_amount),
+                "probe_asset": probe_asset,
+                "probe_skip_reason": probe_skip_reason,
+                "depth_simulations": simulations,
+                "legs": [{
+                    "symbol": leg.symbol, "from_asset": leg.from_asset, "to_asset": leg.to_asset,
+                    "side": leg.side, "price": str(leg.price),
+                    "fee_rate": str(leg.fee_rate_quote),
+                    "fee_rate_base": str(leg.fee_rate_base),
+                    "fee_rate_quote": str(leg.fee_rate_quote),
+                } for leg in route.legs],
+            })
+        _json_print({
+            "mode": "paper", "exchange": "bitbank", "as_of": now,
+            "triangle_market_count": len(triangle_symbols),
+            "depth_market_count": len(depth_books),
+            "candidate_count": len(candidates),
+            "probe_asset": probe_asset,
+            "probe_amounts": [str(amount) for amount in probe_amounts],
+            "candidates": candidates,
+        })
+        return 0
     raise TradingCliError(f"unknown trading command: {command}")

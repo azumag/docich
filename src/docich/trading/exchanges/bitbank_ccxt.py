@@ -5,11 +5,26 @@ from decimal import Decimal, InvalidOperation
 import importlib
 from typing import Any, Mapping
 
-from ..models import MarketInfo
+from ..arbitrage import ArbitrageDataError, TopOfBook
+from ..depth import DepthBook, DepthLevel
+from ..market_data import MarketFrame, MarketFrameError, frame_from_ohlcv
+from ..models import MarketInfo, TradingValidationError
 
 
 class CCXTUnavailableError(RuntimeError):
     """Raised when the optional trading dependency is not installed."""
+
+
+def _nonnegative_decimal(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        result = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    if not result.is_finite() or result < 0:
+        return None
+    return result
 
 
 def _positive_decimal(value: Any) -> Decimal | None:
@@ -54,9 +69,12 @@ def _bitbank_info_allows_orders(info: Any) -> bool:
         if key in info and _flag_is_false(info.get(key)):
             return False
     # CCXT currently maps bitbank's is_enabled to active, but an enabled pair
-    # can still be under an exchange-side order stop.  This first slice only
-    # allocates buys, so a global or buy-side stop must fail closed.
-    for key in ("stop_order", "stopOrder", "stop_order_and_cancel", "stopOrderAndCancel", "stop_buy_order", "stopBuyOrder"):
+    # can still be under an exchange-side order stop.  Trading diagnostics and
+    # eventual exits need both directions, so either side being stopped fails closed.
+    for key in (
+        "stop_order", "stopOrder", "stop_order_and_cancel", "stopOrderAndCancel",
+        "stop_buy_order", "stopBuyOrder", "stop_sell_order", "stopSellOrder",
+    ):
         if info.get(key) is True or info.get(key) == 1:
             return False
     return True
@@ -105,6 +123,99 @@ class BitbankPublicGateway:
                 amount_step=_amount_step(_nested(raw_market, "precision", "amount")),
                 min_amount=_positive_decimal(_nested(raw_market, "limits", "amount", "min")),
                 min_cost=_positive_decimal(_nested(raw_market, "limits", "cost", "min")),
+                taker_fee_rate=(
+                    _nonnegative_decimal(_nested(raw_market, "info", "taker_fee_rate_quote"))
+                    if _nonnegative_decimal(_nested(raw_market, "info", "taker_fee_rate_quote")) is not None
+                    else _nonnegative_decimal(raw_market.get("taker"))
+                ),
+                taker_fee_rate_base=_nonnegative_decimal(_nested(raw_market, "info", "taker_fee_rate_base")),
+                taker_fee_rate_quote=(
+                    _nonnegative_decimal(_nested(raw_market, "info", "taker_fee_rate_quote"))
+                    if _nonnegative_decimal(_nested(raw_market, "info", "taker_fee_rate_quote")) is not None
+                    else _nonnegative_decimal(raw_market.get("taker"))
+                ),
             )
             discovered[symbol] = market
         return discovered
+
+    def fetch_market_frames(
+        self,
+        symbols,
+        *,
+        timeframe: str = "5m",
+        limit: int = 24,
+        now: float,
+    ) -> dict[str, MarketFrame]:
+        if limit < 2:
+            raise MarketFrameError("limit must be at least 2")
+        frames: dict[str, MarketFrame] = {}
+        for symbol in symbols:
+            rows = self._exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+            frames[str(symbol)] = frame_from_ohlcv(
+                str(symbol), rows, timeframe=timeframe, now=now, min_bars=limit
+            )
+        return frames
+
+    def fetch_depth_books(
+        self,
+        symbols,
+        *,
+        now: float,
+        limit: int = 20,
+    ) -> dict[str, DepthBook]:
+        if limit < 1:
+            raise ArbitrageDataError("order-book limit must be positive")
+        books: dict[str, DepthBook] = {}
+        for symbol in symbols:
+            raw = self._exchange.fetch_order_book(str(symbol), limit=limit)
+            if not isinstance(raw, Mapping):
+                raise ArbitrageDataError(f"{symbol} order book is malformed")
+            timestamp = raw.get("timestamp")
+            bids = raw.get("bids")
+            asks = raw.get("asks")
+            if timestamp is None:
+                raise ArbitrageDataError(f"{symbol} order book has no exchange timestamp")
+            if not isinstance(bids, list) or not bids or not isinstance(asks, list) or not asks:
+                raise ArbitrageDataError(f"{symbol} order book has no depth")
+            try:
+                bid_levels = tuple(DepthLevel(level[0], level[1]) for level in bids[:limit])
+                ask_levels = tuple(DepthLevel(level[0], level[1]) for level in asks[:limit])
+                as_of = float(timestamp) / 1000.0
+                books[str(symbol)] = DepthBook(str(symbol), bid_levels, ask_levels, as_of)
+            except (TypeError, ValueError, IndexError, TradingValidationError) as exc:
+                raise ArbitrageDataError(f"{symbol} order book depth is malformed") from exc
+        return books
+
+    def fetch_top_books(
+        self,
+        symbols,
+        *,
+        now: float,
+        limit: int = 5,
+    ) -> dict[str, TopOfBook]:
+        if limit < 1:
+            raise ArbitrageDataError("order-book limit must be positive")
+        books: dict[str, TopOfBook] = {}
+        for symbol in symbols:
+            raw = self._exchange.fetch_order_book(str(symbol), limit=limit)
+            if not isinstance(raw, Mapping):
+                raise ArbitrageDataError(f"{symbol} order book is malformed")
+            timestamp = raw.get("timestamp")
+            if timestamp is None:
+                raise ArbitrageDataError(f"{symbol} order book has no exchange timestamp")
+            bids = raw.get("bids")
+            asks = raw.get("asks")
+            if not isinstance(bids, list) or not bids or not isinstance(asks, list) or not asks:
+                raise ArbitrageDataError(f"{symbol} order book has no best bid/ask")
+            try:
+                bid = bids[0][0]
+                bid_amount = bids[0][1]
+                ask = asks[0][0]
+                ask_amount = asks[0][1]
+                as_of = float(timestamp) / 1000.0
+                books[str(symbol)] = TopOfBook(
+                    str(symbol), bid, ask, as_of, bid_amount=bid_amount, ask_amount=ask_amount
+                )
+            except (TypeError, ValueError, IndexError, TradingValidationError) as exc:
+                raise ArbitrageDataError(f"{symbol} order book best prices are malformed") from exc
+        return books

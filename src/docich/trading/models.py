@@ -38,6 +38,9 @@ class MarketInfo:
     amount_step: Decimal | None = None
     min_amount: Decimal | None = None
     min_cost: Decimal | None = None
+    taker_fee_rate: Decimal | None = None
+    taker_fee_rate_base: Decimal | None = None
+    taker_fee_rate_quote: Decimal | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "symbol", _nonempty(self.symbol, "symbol"))
@@ -51,6 +54,22 @@ class MarketInfo:
             if value <= 0:
                 raise TradingValidationError(f"{field_name} must be positive")
             object.__setattr__(self, field_name, value)
+        legacy_raw = self.taker_fee_rate
+        quote_raw = self.taker_fee_rate_quote
+        for field_name in ("taker_fee_rate", "taker_fee_rate_base", "taker_fee_rate_quote"):
+            raw = getattr(self, field_name)
+            if raw is None:
+                continue
+            fee = as_decimal(raw, field_name)
+            if fee < 0 or fee >= 1:
+                raise TradingValidationError(f"{field_name} must be in [0, 1)")
+            object.__setattr__(self, field_name, fee)
+        if self.taker_fee_rate_quote is None and self.taker_fee_rate is not None:
+            object.__setattr__(self, "taker_fee_rate_quote", self.taker_fee_rate)
+        if self.taker_fee_rate_base is None and legacy_raw is not None and quote_raw is None:
+            object.__setattr__(self, "taker_fee_rate_base", Decimal("0"))
+        if self.taker_fee_rate is None and self.taker_fee_rate_quote is not None:
+            object.__setattr__(self, "taker_fee_rate", self.taker_fee_rate_quote)
 
 
 @dataclass(frozen=True)

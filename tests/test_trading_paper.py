@@ -90,6 +90,18 @@ class TestPublicTradingStatus(unittest.TestCase):
         for banned in ("api_key", "secret", "authorization", "password", "private_payload"):
             self.assertNotIn(banned, blob.lower())
 
+    def test_signal_summary_is_allowlisted(self):
+        payload = build_public_status(
+            worker_state="idle", last_cycle_at=123.0, eligible_symbols=["BTC/JPY"],
+            capital_reference=D("100000"), deployed_reference=D("0"), open_positions={},
+            recent_fills=[], skipped_reason_codes=[],
+            signal_summary={"candidate_count": 1, "strategy_ids": ["momentum-v1"], "api_key": "must-not-leak"},
+        )
+        blob = json.dumps(payload, sort_keys=True)
+        self.assertEqual(payload["signal_summary"]["candidate_count"], 1)
+        self.assertNotIn("api_key", blob.lower())
+        self.assertNotIn("must-not-leak", blob)
+
     def test_status_file_is_atomic_private_json(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "run" / "trading" / "status.json"
