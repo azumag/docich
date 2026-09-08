@@ -53,6 +53,23 @@ class TestTradingCli(unittest.TestCase):
             self.assertEqual(payload["mode"], "paper")
             self.assertEqual(payload["worker_state"], "absent")
 
+    def test_status_sanitizes_worker_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp)
+            (state / "status.json").write_text(json.dumps({
+                "schema_version": 1, "mode": "paper", "worker_state": "paper_worker_idle",
+                "last_cycle_at": 123.0, "market_count": 1, "eligible_symbols": ["BTC/JPY"],
+                "capital_reference": "10000", "deployed_reference": "0",
+                "open_positions": {}, "recent_fills": [], "skipped_reason_codes": [],
+                "signal_summary": {},
+                "worker_summary": {"cycle_index": 3, "new_fill_count": 1, "api_key": "must-not-leak"},
+            }), encoding="utf-8")
+            rc, out, err = self.run_cli(["trading", "--state-dir", str(state), "status"])
+        self.assertEqual(rc, 0, err)
+        payload = json.loads(out)
+        self.assertEqual(payload["worker_summary"], {"cycle_index": 3, "new_fill_count": 1})
+        self.assertNotIn("must-not-leak", out)
+
     def test_paper_cycle_writes_fill_and_status(self):
         with tempfile.TemporaryDirectory() as tmp:
             snapshot = Path(tmp) / "snapshot.json"

@@ -16,6 +16,12 @@ _SIGNAL_SUMMARY_KEYS = {
     "strategy_ids", "candidate_reason_codes",
 }
 
+_WORKER_SUMMARY_KEYS = {
+    "cycle_index", "last_success_at", "next_cycle_at", "frame_error_count",
+    "arbitrage_candidate_count", "new_fill_count", "new_settlement_count",
+    "error_codes",
+}
+
 
 def _decimal_text(value: Decimal | str | int | float) -> str:
     return str(as_decimal(value, "status decimal"))
@@ -49,6 +55,7 @@ def build_public_status(
     recent_fills: Sequence[PaperFill],
     skipped_reason_codes: Sequence[str],
     signal_summary: Mapping[str, object] | None = None,
+    worker_summary: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     symbols = sorted({str(symbol).strip() for symbol in eligible_symbols if str(symbol).strip()})
     positions = {
@@ -72,6 +79,11 @@ def build_public_status(
             key: signal_summary[key]
             for key in _SIGNAL_SUMMARY_KEYS
             if signal_summary is not None and key in signal_summary
+        },
+        "worker_summary": {
+            key: worker_summary[key]
+            for key in _WORKER_SUMMARY_KEYS
+            if worker_summary is not None and key in worker_summary
         },
     }
 

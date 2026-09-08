@@ -71,7 +71,7 @@ def legacy_footprint(g: GlobalConfig, *, tmux: Tmux | None = None) -> dict:
     except Exception:
         unreadable.append(f"session:{LEGACY_SESSION}")
     return {"footprint": found, "unreadable": unreadable}
-STATUS_WINDOWS = ("display", "audio", "stream", "game", "agent", "watchdog")
+STATUS_WINDOWS = ("display", "audio", "stream", "game", "agent", "watchdog", "trading")
 
 
 def _probe_panes(tmux: Tmux, target: str) -> str:
