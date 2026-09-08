@@ -16,6 +16,7 @@ OVERLAY_CATEGORIES = {"game", "worker", "chat", "radio", "prediction", "rollback
 OVERLAY_TITLE_LIMIT = 120
 OVERLAY_BODY_LIMIT = 500
 LOCK_STALE_SECONDS = 10
+SOURCE_ID_RE = re.compile(r"[A-Za-z0-9._:/-]{1,200}")
 
 
 class OverlayQueueError(ValueError):
@@ -56,7 +57,13 @@ def validate_event(event: Mapping[str, Any], *, now: int | None = None) -> dict[
         ts = current
     if ts > current + 60 or ts < current - 7 * 86400:
         ts = current
-    return {"ts": ts, "category": category, "title": title, "body": body, "level": level}
+    result = {"ts": ts, "category": category, "title": title, "body": body, "level": level}
+    if "source_id" in event:
+        source_id = str(event.get("source_id") or "").strip()
+        if SOURCE_ID_RE.fullmatch(source_id) is None:
+            raise OverlayQueueError("source_idが不正です")
+        result["source_id"] = source_id
+    return result
 
 
 def _env_path(root: Path, name: str, default: str) -> Path:
@@ -80,11 +87,13 @@ def work_indicator_path(soren_root: Path) -> Path:
 
 
 def comment_gen_state_path(soren_root: Path) -> Path:
-    return _env_path(Path(soren_root), "EVENT_OVERLAY_COMMENT_GEN_STATE", "tmp/state/.comment_gen_state")
+    # Preserve the legacy worker-state override used by Web UI. The overlay
+    # generator receives this resolved path through EVENT_OVERLAY_* below.
+    return _env_path(Path(soren_root), "COMMENT_GEN_STATE_FILE", "tmp/state/.comment_gen_state")
 
 
 def radio_state_path(soren_root: Path) -> Path:
-    return _env_path(Path(soren_root), "EVENT_OVERLAY_RADIO_STATE", "tmp/state/.radio_state")
+    return _env_path(Path(soren_root), "RADIO_STATE_FILE", "tmp/state/.radio_state")
 
 
 def _read_dotenv(root: Path) -> dict[str, str]:
@@ -217,13 +226,13 @@ def regenerate_overlay(soren_root: Path) -> bool:
         env["EVENT_OVERLAY_STATE_BASE"] = str(root)
         env.setdefault("EVENT_OVERLAY_COMMENT_GEN_STATE", str(comment_gen_state_path(root)))
         env.setdefault("EVENT_OVERLAY_RADIO_STATE", str(radio_state_path(root)))
-        subprocess.run(
+        result = subprocess.run(
             ["python3", str(generator), str(overlay_events_path(root)), str(overlay_html_path(root)),
              str(keep), str(visible), str(work_indicator_path(root))],
             cwd=str(root), env=env, timeout=5,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-        return True
+        return result.returncode == 0
     except Exception:
         return False
 
@@ -250,7 +259,16 @@ def append_event(
             except OverlayQueueError:
                 if strict:
                     raise
-        if normalized in normalized_existing:
+        source_id = normalized.get("source_id")
+        if source_id is not None:
+            matched = [item for item in normalized_existing if item.get("source_id") == source_id]
+            if matched and matched[-1] == normalized:
+                return False
+            if matched:
+                normalized_existing = [
+                    item for item in normalized_existing if item.get("source_id") != source_id
+                ]
+        elif normalized in normalized_existing:
             return False
         records = (normalized_existing + [normalized])[-keep_count:]
         content = "\n".join(json.dumps(item, ensure_ascii=False) for item in records)

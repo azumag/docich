@@ -142,7 +142,9 @@ def _status_context(status: Mapping[str, object] | None) -> str:
     return f"現在のペーパー投入額は{deployed}円、設定ペーパー資金は{capital}円です。"
 
 
-def _fill(event: Mapping[str, object], mode: str, status: Mapping[str, object] | None) -> RenderedNotification:
+def _fill(
+    event: Mapping[str, object], mode: str, status: Mapping[str, object] | None, *, display_at: float
+) -> RenderedNotification:
     symbol = _safe_code(event.get("symbol"))
     side = "買い" if str(event.get("side")) == "buy" else "売り"
     notional = _money(event.get("reference_notional"))
@@ -155,12 +157,19 @@ def _fill(event: Mapping[str, object], mode: str, status: Mapping[str, object] |
         reason = _REASON_TEXT.get(reason_code, f"理由コード {reason_code}")
         body += f" / {reason}"
         speech += f" 判断理由は、{reason}。{_status_context(status)}"
-    overlay = validate_event({"ts": int(float(event.get("occurred_at"))), "category": "worker",
-                              "title": title, "body": body[:500], "level": "info"})
+    overlay = validate_event(
+        {
+            "ts": int(display_at), "category": "worker", "title": title, "body": body[:500],
+            "level": "info", "source_id": str(event.get("event_id") or ""),
+        },
+        now=int(display_at),
+    )
     return RenderedNotification(overlay, speech[:1000])
 
 
-def _settlement(event: Mapping[str, object], mode: str, status: Mapping[str, object] | None) -> RenderedNotification:
+def _settlement(
+    event: Mapping[str, object], mode: str, status: Mapping[str, object] | None, *, display_at: float
+) -> RenderedNotification:
     route = str(event.get("route_id") or "unknown").replace("\n", " ").strip()[:220]
     start_asset = _safe_code(event.get("start_asset"))
     start_amount = _money(event.get("start_amount"))
@@ -179,13 +188,19 @@ def _settlement(event: Mapping[str, object], mode: str, status: Mapping[str, obj
         level = "warn"
     if mode == "detailed":
         speech += _status_context(status)
-    overlay = validate_event({"ts": int(float(event.get("occurred_at"))), "category": "worker",
-                              "title": title, "body": body[:500], "level": level})
+    overlay = validate_event(
+        {
+            "ts": int(display_at), "category": "worker", "title": title, "body": body[:500],
+            "level": level, "source_id": str(event.get("event_id") or ""),
+        },
+        now=int(display_at),
+    )
     return RenderedNotification(overlay, speech[:1000])
 
 
 def render_notification(
-    event: Mapping[str, object], *, mode: str, status: Mapping[str, object] | None = None
+    event: Mapping[str, object], *, mode: str, status: Mapping[str, object] | None = None,
+    display_at: float | None = None,
 ) -> RenderedNotification:
     selected = _validate_mode(mode)
     if not isinstance(event, Mapping):
@@ -197,8 +212,11 @@ def render_notification(
         raise PresentationError("event occurred_at is invalid") from exc
     if not math.isfinite(occurred_at):
         raise PresentationError("event occurred_at is invalid")
+    shown_at = occurred_at if display_at is None else float(display_at)
+    if not math.isfinite(shown_at):
+        raise PresentationError("notification display_at is invalid")
     if event_type == "paper_fill":
-        return _fill(event, selected, status)
+        return _fill(event, selected, status, display_at=shown_at)
     if event_type == "multileg_settlement":
-        return _settlement(event, selected, status)
+        return _settlement(event, selected, status, display_at=shown_at)
     raise PresentationError("unsupported notification event type")

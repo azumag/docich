@@ -5,15 +5,20 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich.overlay_queue import (  # noqa: E402
     OverlayQueueError,
     append_event,
+    comment_gen_state_path,
     load_events,
     overlay_events_path,
+    radio_state_path,
+    regenerate_overlay,
     validate_event,
 )
 
@@ -46,6 +51,20 @@ class TestOverlayQueue(unittest.TestCase):
             rows = load_events(root, strict=True)
             self.assertEqual([row["title"] for row in rows], ["PAPER 2", "PAPER 3"])
 
+
+    def test_source_id_retry_refreshes_timestamp_without_duplicate_row(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "soren"
+            base = int(time.time())
+            first = dict(event(ts=base, title="PAPER retry"), source_id="fill:paper:BTC/JPY:1")
+            retry = dict(first, ts=base + 1)
+            self.assertTrue(append_event(root, first, keep=5, strict=True, regenerate=False))
+            self.assertTrue(append_event(root, retry, keep=5, strict=True, regenerate=False))
+            rows = load_events(root, strict=True)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["source_id"], "fill:paper:BTC/JPY:1")
+            self.assertEqual(rows[0]["ts"], base + 1)
+
     def test_strict_append_refuses_corrupt_existing_queue(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "soren"
@@ -77,6 +96,34 @@ class TestOverlayQueue(unittest.TestCase):
                 else:
                     os.environ["EVENT_OVERLAY_EVENTS_FILE"] = old
 
+
+    def test_legacy_generation_state_environment_paths_are_preserved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "soren"
+            old_comment = os.environ.get("COMMENT_GEN_STATE_FILE")
+            old_radio = os.environ.get("RADIO_STATE_FILE")
+            os.environ["COMMENT_GEN_STATE_FILE"] = "tmp/custom-comment-state"
+            os.environ["RADIO_STATE_FILE"] = "tmp/custom-radio-state"
+            try:
+                self.assertEqual(comment_gen_state_path(root), root / "tmp/custom-comment-state")
+                self.assertEqual(radio_state_path(root), root / "tmp/custom-radio-state")
+            finally:
+                if old_comment is None:
+                    os.environ.pop("COMMENT_GEN_STATE_FILE", None)
+                else:
+                    os.environ["COMMENT_GEN_STATE_FILE"] = old_comment
+                if old_radio is None:
+                    os.environ.pop("RADIO_STATE_FILE", None)
+                else:
+                    os.environ["RADIO_STATE_FILE"] = old_radio
+
+    def test_regenerate_reports_nonzero_generator_exit_as_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "soren"
+            root.mkdir()
+            (root / "generate_event_overlay.py").write_text("# stub\n", encoding="utf-8")
+            with mock.patch("docich.overlay_queue.subprocess.run", return_value=mock.Mock(returncode=1)):
+                self.assertFalse(regenerate_overlay(root))
 
 if __name__ == "__main__":
     unittest.main()

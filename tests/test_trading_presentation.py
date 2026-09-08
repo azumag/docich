@@ -104,6 +104,12 @@ class TestPresentationState(unittest.TestCase):
 
 
 class TestNotificationRendering(unittest.TestCase):
+
+    def test_overlay_carries_stable_source_event_id(self):
+        rendered = render_notification(fill_event(), mode="compact", status=safe_status(), display_at=1_800_000_010.0)
+        self.assertEqual(rendered.overlay_event["source_id"], "fill:paper:opp-1")
+        self.assertEqual(rendered.overlay_event["ts"], 1_800_000_010)
+
     def test_compact_fill_is_paper_labeled_without_detailed_reason(self):
         rendered = render_notification(fill_event(), mode="compact", status=safe_status())
         self.assertIn("PAPER", rendered.overlay_event["title"])
