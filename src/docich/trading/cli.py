@@ -8,11 +8,13 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping
 
+from .arbitrage import ArbitrageDataError, find_triangle_symbols, scan_triangular_arbitrage
 from .exchanges.bitbank_ccxt import BitbankPublicGateway, CCXTUnavailableError
 from .ledger import PaperLedger
 from .market_data import MarketFrame, MarketFrameError
 from .models import MarketInfo, Opportunity, TradingValidationError, as_decimal
 from .paper import PaperBroker
+from .relative_value import scan_relative_value_opportunities
 from .risk import CapitalPolicy, allocate_opportunities
 from .strategies import scan_opportunities, select_diversified_opportunities
 from .status import build_public_status, write_public_status
@@ -26,7 +28,7 @@ _SNAPSHOT_KEYS = {
     "mode", "as_of", "capital_reference", "deployed_reference",
     "quote_to_reference", "available_quote", "markets", "prices", "opportunities",
 }
-_MARKET_KEYS = {"base", "quote", "spot", "active", "amount_step", "min_amount", "min_cost"}
+_MARKET_KEYS = {"base", "quote", "spot", "active", "amount_step", "min_amount", "min_cost", "taker_fee_rate"}
 _OPPORTUNITY_KEYS = {
     "opportunity_id", "strategy_id", "symbol", "side", "score", "expected_edge_bps",
     "max_notional_fraction", "expires_at", "reason_code",
@@ -65,6 +67,9 @@ def configure_parser(parser) -> None:
     paper.add_argument("--snapshot", required=True, metavar="JSON", help="paper snapshot JSON")
     strategy = sub.add_parser("strategy-cycle", help="履歴snapshotから戦略生成→分散→paper cycleを実行する")
     strategy.add_argument("--snapshot", required=True, metavar="JSON", help="strategy snapshot JSON")
+    arbitrage = sub.add_parser("arbitrage-scan", help="公開板からfee-aware三角裁定候補を診断する")
+    arbitrage.add_argument("--min-edge-bps", default="10", metavar="BPS", help="最低net edge (既定10bps)")
+    arbitrage.add_argument("--book-limit", type=int, default=5, metavar="N", help="板取得depth (既定5)")
 
 
 def _state_dir(args, repo_root: Path) -> Path:
@@ -139,6 +144,7 @@ def _market_from_snapshot(symbol: str, raw: Any) -> MarketInfo:
             amount_step=None if raw.get("amount_step") is None else as_decimal(raw["amount_step"], "amount_step"),
             min_amount=None if raw.get("min_amount") is None else as_decimal(raw["min_amount"], "min_amount"),
             min_cost=None if raw.get("min_cost") is None else as_decimal(raw["min_cost"], "min_cost"),
+            taker_fee_rate=None if raw.get("taker_fee_rate") is None else as_decimal(raw["taker_fee_rate"], "taker_fee_rate"),
         )
     except (TradingValidationError, KeyError) as exc:
         raise TradingCliError(f"market {symbol} is invalid") from exc
@@ -308,6 +314,7 @@ def _market_payload(market: MarketInfo) -> dict[str, Any]:
         "amount_step": None if market.amount_step is None else str(market.amount_step),
         "min_amount": None if market.min_amount is None else str(market.min_amount),
         "min_cost": None if market.min_cost is None else str(market.min_cost),
+        "taker_fee_rate": None if market.taker_fee_rate is None else str(market.taker_fee_rate),
     }
 
 
@@ -389,7 +396,9 @@ def run_args(args, *, repo_root: Path) -> int:
             ledger.close()
     if command == "strategy-cycle":
         snapshot = _load_strategy_snapshot(Path(args.snapshot))
-        candidates = scan_opportunities(snapshot["frames"], now=snapshot["as_of"])
+        candidates = tuple(scan_opportunities(snapshot["frames"], now=snapshot["as_of"])) + tuple(
+            scan_relative_value_opportunities(snapshot["frames"], snapshot["markets"], now=snapshot["as_of"])
+        )
         selection = select_diversified_opportunities(candidates, snapshot["frames"])
         prices = {symbol: frame.last_price for symbol, frame in snapshot["frames"].items()}
         state_dir.mkdir(parents=True, exist_ok=True)
@@ -426,4 +435,38 @@ def run_args(args, *, repo_root: Path) -> int:
             return 0
         finally:
             ledger.close()
+    if command == "arbitrage-scan":
+        try:
+            gateway = BitbankPublicGateway()
+            markets = gateway.discover_markets()
+            triangle_symbols = find_triangle_symbols(markets)
+            now = time.time()
+            books = (
+                gateway.fetch_top_books(triangle_symbols, now=now, limit=args.book_limit)
+                if triangle_symbols else {}
+            )
+            min_edge = as_decimal(args.min_edge_bps, "min_edge_bps")
+            routes = scan_triangular_arbitrage(markets, books, now=now, min_net_edge_bps=min_edge)
+        except (CCXTUnavailableError, ArbitrageDataError, TradingValidationError) as exc:
+            raise TradingCliError(str(exc)) from exc
+        candidates = []
+        for route in routes:
+            candidates.append({
+                "route_id": route.route_id,
+                "start_asset": route.start_asset,
+                "net_edge_bps": str(route.net_edge_bps),
+                "max_start_amount": str(route.max_start_amount),
+                "legs": [{
+                    "symbol": leg.symbol, "from_asset": leg.from_asset, "to_asset": leg.to_asset,
+                    "side": leg.side, "price": str(leg.price), "fee_rate": str(leg.fee_rate),
+                } for leg in route.legs],
+            })
+        _json_print({
+            "mode": "paper", "exchange": "bitbank", "as_of": now,
+            "triangle_market_count": len(triangle_symbols),
+            "book_market_count": len(books),
+            "candidate_count": len(candidates),
+            "candidates": candidates,
+        })
+        return 0
     raise TradingCliError(f"unknown trading command: {command}")

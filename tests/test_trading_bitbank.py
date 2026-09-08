@@ -12,6 +12,7 @@ from docich.trading.exchanges.bitbank_ccxt import (  # noqa: E402
     BitbankPublicGateway,
     CCXTUnavailableError,
 )
+from docich.trading.arbitrage import ArbitrageDataError  # noqa: E402
 
 
 class FakeExchange:
@@ -101,6 +102,48 @@ class TestBitbankPublicGateway(unittest.TestCase):
         })
         markets = BitbankPublicGateway(exchange=exchange).discover_markets()
         self.assertEqual(set(markets), {"OK/JPY"})
+
+
+    def test_discovers_taker_fee_rate_for_fee_aware_arbitrage(self):
+        exchange = FakeExchange({
+            "BTC/JPY": {
+                "symbol": "BTC/JPY", "base": "BTC", "quote": "JPY",
+                "spot": True, "active": True, "taker": 0.001,
+                "precision": {"amount": 0.0001},
+                "limits": {"amount": {"min": 0.0001}, "cost": {"min": 1}},
+                "info": {"is_enabled": True, "stop_order": False, "stop_buy_order": False},
+            }
+        })
+        markets = BitbankPublicGateway(exchange=exchange).discover_markets()
+        self.assertEqual(markets["BTC/JPY"].taker_fee_rate, Decimal("0.001"))
+
+    def test_fetch_top_books_normalizes_public_best_prices(self):
+        class BookExchange(FakeExchange):
+            def fetch_order_book(self, symbol, limit=5):
+                self.last_book_call = (symbol, limit)
+                return {"symbol": symbol, "timestamp": 1_800_000_000_000, "bids": [[99, 2]], "asks": [[100, 3]]}
+        exchange = BookExchange({})
+        books = BitbankPublicGateway(exchange=exchange).fetch_top_books(["BTC/JPY"], now=1_800_000_001.0, limit=5)
+        self.assertEqual(books["BTC/JPY"].bid, Decimal("99"))
+        self.assertEqual(books["BTC/JPY"].ask, Decimal("100"))
+        self.assertEqual(books["BTC/JPY"].bid_amount, Decimal("2"))
+        self.assertEqual(books["BTC/JPY"].ask_amount, Decimal("3"))
+        self.assertEqual(exchange.last_book_call, ("BTC/JPY", 5))
+
+
+    def test_fetch_top_books_rejects_zero_best_level_amount(self):
+        class BookExchange(FakeExchange):
+            def fetch_order_book(self, symbol, limit=5):
+                return {"symbol": symbol, "timestamp": 1_800_000_000_000, "bids": [[99, 0]], "asks": [[100, 1]]}
+        with self.assertRaises(ArbitrageDataError):
+            BitbankPublicGateway(exchange=BookExchange({})).fetch_top_books(["BTC/JPY"], now=1_800_000_001.0)
+
+    def test_fetch_top_books_rejects_missing_exchange_timestamp(self):
+        class BookExchange(FakeExchange):
+            def fetch_order_book(self, symbol, limit=5):
+                return {"symbol": symbol, "timestamp": None, "bids": [[99, 1]], "asks": [[100, 1]]}
+        with self.assertRaises(ArbitrageDataError):
+            BitbankPublicGateway(exchange=BookExchange({})).fetch_top_books(["BTC/JPY"], now=1_800_000_001.0)
 
     def test_ccxt_is_optional_and_missing_dependency_has_stable_error(self):
         with patch("docich.trading.exchanges.bitbank_ccxt.importlib.import_module", side_effect=ModuleNotFoundError):
