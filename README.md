@@ -249,6 +249,16 @@ bin/docich trading presentation detailed
 bin/docich trading notify-once
 ```
 
+音声のイベントID配送は、準備済みpayloadをqueueへ原子的に移動して確定します。プロセスが中断しても
+未投入なら再試行し、投入済みならqueueから消費された後も再投入しません。配送receiptは期限で削除しません。
+従来のWeb UI手動音声はtext TTLによる重複抑止を維持します。
+
+共有overlayは `EVENT_OVERLAY_EVENTS_FILE` に `.lock` を付けたファイルで、native Soren writerと
+docichの読み取り・追加・削除・置換を排他制御します。Linux/macOSの `fcntl.flock` を使い、
+5秒で取得できなければ明示的に失敗します。ロックファイルは削除せず、古いmtimeでも奪いません。
+導入時にはSorenとdocich両方を対応版へ更新し、旧Web UIプロセスの書き込みが終わってから
+通知を有効にしてください。旧 `.webui_overlay.lock` を使う稼働中プロセスとの混在は未対応です。
+
 `notify-once` は保存済みeventの未配送分だけを処理し、bitbank market APIをpollしません。overlay/audio障害はmarket cycleから
 分離されているため、通知先が落ちてもpaper workerの相場監視・paper台帳更新は継続します。実発注を有効化する前には、
 exit戦略を含む別途の設計レビューと明示承認が必要です。

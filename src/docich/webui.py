@@ -1578,7 +1578,11 @@ def _get_wildcard_status(soren_root: Path) -> dict[str, Any] | None:
 
 
 def _atomic_overlay_write(soren_root: Path, rel_path: Path, data: str, mode: int = 0o644) -> None:
-    shared_overlay_queue.atomic_write(soren_root, rel_path, data, mode)
+    try:
+        shared_overlay_queue.atomic_write(soren_root, rel_path, data, mode)
+    except shared_overlay_queue.OverlayQueueBusyError as exc:
+        # Existing bulk/clear/banner handlers return HTTP 409 for this class.
+        raise FileExistsError(str(exc)) from exc
 
 def _regenerate_event_overlay(soren_root: Path) -> bool:
     return shared_overlay_queue.regenerate_overlay(soren_root)
@@ -6375,23 +6379,19 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception:
             self._send_error_json(400, "invalid_index", "index must be integer")
             return 400
-        events = _load_overlay_events(self.soren_root)
-        if idx < 0 or idx >= len(events):
+        try:
+            count = shared_overlay_queue.delete_event(self.soren_root, idx)
+        except IndexError:
             self._send_error_json(404, "not_found", f"index {idx} out of range")
             return 404
-        events.pop(idx)
-        p = _overlay_events_path(self.soren_root)
-        content = "\n".join(json.dumps(e, ensure_ascii=False) for e in events) + ("\n" if events else "")
-        try:
-            _atomic_overlay_write(self.soren_root, p, content, 0o644)
-        except FileExistsError as exc:
+        except shared_overlay_queue.OverlayQueueBusyError as exc:
             self._send_error_json(409, "concurrent_edit", str(exc))
             return 409
         except Exception as exc:
             self._send_error_json(500, "write_failed", str(exc))
             return 500
         _regenerate_event_overlay(self.soren_root)
-        self._send_json(200, {"ok": True, "deleted": idx, "count": len(events)})
+        self._send_json(200, {"ok": True, "deleted": idx, "count": count})
         return 200
 
     def _handle_get_work_banner(self) -> int:
