@@ -8,12 +8,15 @@ import unittest
 from pathlib import Path
 
 from ops.vm_actions.reconcile_presynced_submodule import (
+    REASON_PROJECTION_UNKNOWN_MASK_BASE,
     REASON_PROJECTION_UNKNOWN_STATE,
     REASON_ROOT_DRIFT,
     REASON_SUBMODULE_DRIFT,
     REASON_SUBMODULE_HEAD_MISMATCH,
     REASON_UNAPPROVED_SUBMODULE,
     ReconcileError,
+    _normalize_projection,
+    _projection_unknown_reason,
     reconcile,
 )
 
@@ -142,6 +145,40 @@ class PresyncedSubmoduleReconcileTests(unittest.TestCase):
             lambda: reconcile(self.root, self.old_parent, self.old_sub, self.new_sub, "games/soviet_now", self.live),
         )
         self.assertEqual(path.read_text(encoding="utf-8"), "operator drift\n")
+
+    def test_projection_unknown_mask_encodes_small_multi_path_unknowns(self):
+        self.assertEqual(
+            _projection_unknown_reason([0, 1, 2, 2]),
+            REASON_PROJECTION_UNKNOWN_MASK_BASE + 0b1100,
+        )
+
+    def test_projection_unknown_mask_preserves_generic_code_outside_bound(self):
+        self.assertEqual(_projection_unknown_reason([2]), REASON_PROJECTION_UNKNOWN_STATE)
+        self.assertEqual(_projection_unknown_reason([2, 2, 2, 2, 2]), REASON_PROJECTION_UNKNOWN_STATE)
+        self.assertEqual(_projection_unknown_reason([0, 1]), REASON_PROJECTION_UNKNOWN_STATE)
+
+    def test_multi_path_unknown_mask_is_computed_before_any_projection_write(self):
+        self._git(self.sub_remote, "checkout", "--detach", "--quiet", self.old_sub)
+        (self.sub_remote / "second.sh").write_text("old second\n", encoding="utf-8")
+        self._git(self.sub_remote, "add", "second.sh")
+        self._git(self.sub_remote, "commit", "-m", "old two-path projection")
+        old_two = self._git(self.sub_remote, "rev-parse", "HEAD")
+        (self.sub_remote / "second.sh").write_text("new second\n", encoding="utf-8")
+        (self.sub_remote / "worker.sh").write_text("newer worker\n", encoding="utf-8")
+        self._git(self.sub_remote, "commit", "-am", "new two-path projection")
+        new_two = self._git(self.sub_remote, "rev-parse", "HEAD")
+
+        second = self.live / "second.sh"
+        worker = self.live / "worker.sh"
+        second.write_text("operator drift\n", encoding="utf-8")
+        worker.write_text("newer worker\n", encoding="utf-8")
+
+        self.assert_reason(
+            REASON_PROJECTION_UNKNOWN_MASK_BASE + 0b01,
+            lambda: _normalize_projection(self.sub_remote, old_two, new_two, self.live),
+        )
+        self.assertEqual(second.read_text(encoding="utf-8"), "operator drift\n")
+        self.assertEqual(worker.read_text(encoding="utf-8"), "newer worker\n")
 
     def test_refuses_unknown_submodule_head_without_mutating_it(self):
         sub = self.root / "games/soviet_now"
