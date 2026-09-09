@@ -1,3 +1,10 @@
+## 2026-09-09 22:5x JST — PR #188 本番配備完了、初回枠は9/10 19:00
+
+- **統合・配備**: CI 4件＋両ワークフロー緑。`b349931` へマージ後、VM operations workflow (deploy/production) で配備成功。VM HEAD `b349931`、対象8ファイル全SHA一致 (retro/corner_boundary/corner_improve/game_switch/paper/soren_output/live toml/gnurobots toml)。
+- **稼働確認**: encoder ffmpeg `138644`・direct_stream・両コーナーtick (20:00起動) 維持。VMにpytestが無いため配備先テストは未実施の代わり、py_compile全緑＋live `retro-corner status` (active robots〜21:18)＋`improve-once --help` を実測。
+- **gnurobots連続改善daemon停止**: PID `3466825` (PPID1、marker/eval無しidle確認) をTERM→停止確認。robots daemon `3466823` は維持。以後は終了時LLM改善jobのみ。
+- **残件**: 9/10 19:00初回枠の実測確認 (切替・投稿・終了・改善job・戦略反映)。タイマーは両方enabled。
+
 ## 2026-09-09 22:3x JST — 19時gnurobots枠の新設を実装 (PR #188、CI確認中)
 
 - **決定**: 19:00–19:30はgnurobots単独 (robotsはテスト用のため回転から除外)。境界待ちは共通化＋待ち行列 (FIFO厳格、日跨ぎexpired)。開始時にチャット投稿 (intro＋戦略比較)。改善はデーモン常駐をやめ、コーナー終了時にLLM委任で1回実行 (sorengameと同一dispatch)。
