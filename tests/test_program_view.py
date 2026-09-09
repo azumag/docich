@@ -256,3 +256,14 @@ class TestDashboardWindowResolution(unittest.TestCase):
             adapter.tmux.list_windows = lambda: ["python3", "extra", "game-g9"]
             with self.assertRaises(Exception):
                 adapter._dashboard_window_target()
+
+
+class TestWatchLoopFraming(unittest.TestCase):
+    def test_frame_has_no_trailing_newline_scroll(self):
+        # The watch loop must not emit a trailing newline: the frame fills
+        # exactly ROWS rows, and one more newline scrolls the header (with
+        # the readiness marker) off the visible pane.
+        import inspect
+        from docich.trading import dashboard
+        source = inspect.getsource(dashboard.watch_loop)
+        self.assertIn('end=""', source)

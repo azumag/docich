@@ -332,7 +332,11 @@ def watch_loop(*, trading_dir: Path, corner_path: Path | None = None,
         now = float(now_fn())
         snapshot, closes = load_snapshot(trading_dir)
         remaining = None if ends_at is None else max(0.0, ends_at - now)
-        print("\033[2J\033[H" + render_dashboard(snapshot, closes, now=now, remaining_s=remaining), flush=True)
+        # No trailing newline: the frame fills exactly ROWS rows, and an
+        # extra newline would scroll the header off the visible pane
+        # (capture-pane and readiness both read the viewport, not scrollback).
+        print("\033[2J\033[H" + render_dashboard(snapshot, closes, now=now, remaining_s=remaining),
+              end="", flush=True)
         time.sleep(interval)
 
 
