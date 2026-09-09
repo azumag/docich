@@ -214,17 +214,22 @@ def _render(snapshot: Mapping, closes: Mapping, *, now: float, remaining_s: floa
     return "\n".join(lines[:ROWS])
 
 
-def load_snapshot(state_dir: Path) -> tuple[dict, dict[str, list[float]]]:
-    """Read status.json + cached closes. Malformed files yield empty inputs."""
+def load_snapshot(trading_dir: Path) -> tuple[dict, dict[str, list[float]]]:
+    """Read status.json + cached closes from the trading state directory.
+
+    ``trading_dir`` is the trading directory itself (``<state>/trading``),
+    matching the trading CLI ``--state-dir`` convention. Malformed files
+    yield empty inputs.
+    """
     try:
-        snapshot = json.loads((Path(state_dir) / "trading" / "status.json").read_text(encoding="utf-8"))
+        snapshot = json.loads((Path(trading_dir) / "status.json").read_text(encoding="utf-8"))
         if not isinstance(snapshot, dict):
             snapshot = {}
     except (OSError, ValueError):
         snapshot = {}
     closes: dict[str, list[float]] = {}
     try:
-        cache = json.loads((Path(state_dir) / "trading" / "market_cache.json").read_text(encoding="utf-8"))
+        cache = json.loads((Path(trading_dir) / "market_cache.json").read_text(encoding="utf-8"))
         symbols = cache.get("symbols") if isinstance(cache, dict) else None
         if isinstance(symbols, dict):
             for symbol, entry in symbols.items():
@@ -245,7 +250,8 @@ def load_snapshot(state_dir: Path) -> tuple[dict, dict[str, list[float]]]:
     return snapshot, closes
 
 
-def watch_loop(*, state_dir: Path, interval_s: float = 2.0, now_fn=time.time) -> None:
+def watch_loop(*, trading_dir: Path, corner_path: Path | None = None,
+               interval_s: float = 2.0, now_fn=time.time) -> None:
     """Render forever for the program-view xterm. Stdout only, read-only inputs."""
     try:
         interval = float(interval_s)
@@ -254,8 +260,12 @@ def watch_loop(*, state_dir: Path, interval_s: float = 2.0, now_fn=time.time) ->
     if not math.isfinite(interval):
         interval = 2.0
     interval = min(30.0, max(0.5, interval))
+    if corner_path is None:
+        corner_path = Path(trading_dir).parent / "paper_corner.json"
+    else:
+        corner_path = Path(corner_path)
     try:
-        corner = json.loads((Path(state_dir) / "paper_corner.json").read_text(encoding="utf-8"))
+        corner = json.loads(corner_path.read_text(encoding="utf-8"))
         if isinstance(corner, dict):
             raw_ends = corner.get("ends_at")
             ends_at = float(raw_ends) if raw_ends is not None else None
@@ -263,7 +273,7 @@ def watch_loop(*, state_dir: Path, interval_s: float = 2.0, now_fn=time.time) ->
         ends_at = None
     while True:
         now = float(now_fn())
-        snapshot, closes = load_snapshot(state_dir)
+        snapshot, closes = load_snapshot(trading_dir)
         remaining = None if ends_at is None else max(0.0, ends_at - now)
         print("\033[2J\033[H" + render_dashboard(snapshot, closes, now=now, remaining_s=remaining), flush=True)
         time.sleep(interval)
@@ -271,16 +281,17 @@ def watch_loop(*, state_dir: Path, interval_s: float = 2.0, now_fn=time.time) ->
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="docich trading dashboard-watch")
-    parser.add_argument("--state-dir", required=True)
+    parser.add_argument("--state-dir", required=True,
+                        help="trading state directory (<state>/trading)")
     parser.add_argument("--interval", type=float, default=2.0)
     parser.add_argument("--once", action="store_true", help="render a single frame and exit")
     args = parser.parse_args(argv)
-    state_dir = Path(args.state_dir)
+    trading_dir = Path(args.state_dir)
     if args.once:
-        snapshot, closes = load_snapshot(state_dir)
+        snapshot, closes = load_snapshot(trading_dir)
         print(render_dashboard(snapshot, closes, now=time.time(), remaining_s=None))
         return 0
-    watch_loop(state_dir=state_dir, interval_s=args.interval)
+    watch_loop(trading_dir=trading_dir, interval_s=args.interval)
     return 0
 
 
