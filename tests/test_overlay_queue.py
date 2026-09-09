@@ -43,11 +43,12 @@ class TestOverlayQueue(unittest.TestCase):
     def test_append_is_bounded_and_exact_dedup(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "soren"
-            first = event(ts=100, title="PAPER 1")
+            base = int(time.time())
+            first = event(ts=base, title="PAPER 1")
             self.assertTrue(append_event(root, first, keep=2, strict=True, regenerate=False))
             self.assertFalse(append_event(root, first, keep=2, strict=True, regenerate=False))
-            self.assertTrue(append_event(root, event(ts=101, title="PAPER 2"), keep=2, strict=True, regenerate=False))
-            self.assertTrue(append_event(root, event(ts=102, title="PAPER 3"), keep=2, strict=True, regenerate=False))
+            self.assertTrue(append_event(root, event(ts=base + 1, title="PAPER 2"), keep=2, strict=True, regenerate=False))
+            self.assertTrue(append_event(root, event(ts=base + 2, title="PAPER 3"), keep=2, strict=True, regenerate=False))
             rows = load_events(root, strict=True)
             self.assertEqual([row["title"] for row in rows], ["PAPER 2", "PAPER 3"])
 
