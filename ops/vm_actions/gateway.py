@@ -497,8 +497,20 @@ def deploy_git(cfg,repo,sha):
     applied=[]
     intent_written=False
     try:
-        subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','fetch','--no-tags','--force',str(bundle),'HEAD'],
+        # The parent fetch must succeed and must not recurse. git's default
+        # on-demand recursion resolves every gitlink reachable in the incoming
+        # history against the submodule remote; one gitlink whose commit was
+        # garbage collected upstream (a merged-and-deleted PR branch) makes the
+        # remote answer "upload-pack: not our ref" and fails the whole fetch,
+        # aborting every deploy before the baseline can move (2026-09-10 outage).
+        subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','fetch','--no-recurse-submodules','--no-tags','--force',str(bundle),'HEAD'],
                        stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
+        # Best effort: pre-populate submodule objects that the bundle can supply, so
+        # sync_owned_submodules() does not have to reach the network. Unreachable
+        # gitlinks must not fail the deploy here; the owned submodule checkout is
+        # verified for real by sync_owned_submodules()/owned_submodules_match().
+        subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','fetch','--recurse-submodules=on-demand','--no-tags','--force',str(bundle),'HEAD'],
+                       stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False,timeout=120)
         if git(root,'cat-file','-t',sha)!='commit': raise ValueError('requested object is not commit')
         write_json(state_path,{**state,'deployment_intent':{'from':old,'to':sha}})
         intent_written=True
