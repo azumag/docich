@@ -479,7 +479,7 @@ def run_args(args, *, repo_root: Path, global_config: GlobalConfig | None = None
             snapshot, closes = load_snapshot(state_dir)
             print(render_dashboard(snapshot, closes, now=time.time(), remaining_s=None))
             return 0
-        watch_loop(state_dir=state_dir, interval_s=args.interval)
+        watch_loop(trading_dir=state_dir, interval_s=args.interval)
         return 0
     if command == "notify-once":
         if global_config is None:
