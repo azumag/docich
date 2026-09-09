@@ -243,6 +243,13 @@ class DiagnosticsWorkflowTests(unittest.TestCase):
         self.assertIn('"diagnostics docich production $SHA"', text)
         self.assertIn("steps.auth.outputs.operation == 'diagnostics'", text)
 
+    def test_workflow_explains_stale_installed_gateway_without_relaxing_exec_boundary(self):
+        text = WF.read_text(encoding="utf-8")
+        self.assertIn("diagnostics-gateway.err", text)
+        self.assertIn("Installed VM gateway does not accept diagnostics", text)
+        self.assertIn("trusted owner-only privileged install path", text)
+        self.assertNotIn("exec docich production $SHA\" 2>", text)
+
 
 if __name__ == "__main__":
     unittest.main()
