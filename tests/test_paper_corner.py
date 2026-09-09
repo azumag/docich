@@ -316,3 +316,93 @@ def test_failed_restore_retries_next_tick(tmp_path):
     assert mgr.tick() == 'failed'
     assert mgr.tick() == 'completed'
     assert coord.calls.count(('switch', 'sorengame')) == 2
+
+
+class FakeTmux:
+    def __init__(self, session='docich', windows=None, dead=None, fail=None):
+        from docich.tmux import PaneState
+        self.session = session
+        self.windows = dict(windows or {})
+        self.dead = set(dead or [])
+        self.fail = fail
+        self.calls = []
+        self.PaneState = PaneState
+
+    def _maybe_fail(self, what):
+        if self.fail == what or self.fail == 'all':
+            raise RuntimeError(f'fake tmux {what} failure')
+
+    def ensure_session(self):
+        self.calls.append(('ensure_session',))
+        self._maybe_fail('ensure_session')
+
+    def has_window(self, name):
+        self.calls.append(('has_window', name))
+        self._maybe_fail('has_window')
+        return name in self.windows
+
+    def pane_states_checked(self, target):
+        self.calls.append(('pane_states_checked', target))
+        self._maybe_fail('pane_states_checked')
+        name = target.split(':')[-1]
+        if name not in self.windows:
+            raise RuntimeError('no such window')
+        return [self.PaneState(dead=(name in self.dead), pid=1234)]
+
+    def kill_window(self, name):
+        self.calls.append(('kill_window', name))
+        self._maybe_fail('kill_window')
+        self.windows.pop(name, None)
+        self.dead.discard(name)
+
+    def new_window(self, name, cmd, env=None):
+        self.calls.append(('new_window', name, list(cmd)))
+        self._maybe_fail('new_window')
+        self.windows[name] = list(cmd)
+
+
+def test_ensure_trading_window_disabled_without_worker(tmp_path):
+    from docich.paper_corner import ensure_trading_window
+    g = setup(tmp_path)
+    g.trading.paper_worker_enabled = False
+    fake = FakeTmux()
+    assert ensure_trading_window(g, tmux=fake) == 'disabled'
+    assert fake.calls == []
+
+
+def test_ensure_trading_window_ok_when_live(tmp_path):
+    from docich.paper_corner import ensure_trading_window
+    g = setup(tmp_path)
+    fake = FakeTmux(windows={'trading': ['old']})
+    assert ensure_trading_window(g, tmux=fake) == 'ok'
+    assert [c[0] for c in fake.calls] == ['ensure_session', 'has_window', 'pane_states_checked']
+
+
+def test_ensure_trading_window_creates_when_missing(tmp_path):
+    from docich.paper_corner import ensure_trading_window
+    g = setup(tmp_path)
+    fake = FakeTmux(windows={'bash': []})
+    assert ensure_trading_window(g, tmux=fake) == 'created'
+    created = [c for c in fake.calls if c[0] == 'new_window']
+    assert len(created) == 1 and created[0][1] == 'trading'
+    argv = created[0][2]
+    assert argv[0].endswith('/bin/docich')
+    assert argv[1:3] == ['--config', str(g.config_path)]
+    assert argv[3:] == ['run', 'trading']
+
+
+def test_ensure_trading_window_recreates_dead_pane(tmp_path):
+    from docich.paper_corner import ensure_trading_window
+    g = setup(tmp_path)
+    fake = FakeTmux(windows={'trading': ['stale']}, dead={'trading'})
+    assert ensure_trading_window(g, tmux=fake) == 'recreated'
+    assert ('kill_window', 'trading') in fake.calls
+    assert any(c[0] == 'new_window' and c[1] == 'trading' for c in fake.calls)
+
+
+def test_ensure_trading_window_never_raises(tmp_path):
+    from docich.paper_corner import ensure_trading_window
+    g = setup(tmp_path)
+    assert ensure_trading_window(g, tmux=FakeTmux(fail='all')).startswith('unavailable:')
+    assert ensure_trading_window(g, tmux=FakeTmux(windows={}), ).startswith(('created', 'unavailable'))
+    assert ensure_trading_window(object()) == 'disabled'

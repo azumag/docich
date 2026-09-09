@@ -4,6 +4,7 @@ import datetime as dt
 import fcntl
 import json
 import os
+import sys
 from pathlib import Path
 import time
 from zoneinfo import ZoneInfo
@@ -13,8 +14,42 @@ from .adapters.program import PAPER_VIEW_NAME, make_program_view_adapter
 from .config import load_global
 from .corner_boundary import CornerWaitExpired, program_lock, wait_for_boundary
 from .game_switch import GameSwitchStore, atomic_write_json
+from .tmux import Tmux
 from .trading.presentation import write_presentation
 from .trading.soren_output import send_overlay, enqueue_speech
+
+
+def ensure_trading_window(g, tmux=None) -> str:
+    """Recreate the shared trading window when missing or dead.
+
+    Safety net for Issue #219 (shared docich session/worker loss during
+    switches). Creates only; a live pane is never touched. Best-effort: any
+    failure returns a reason instead of raising, so the corner tick outcome
+    is unaffected. Gated on paper_worker_enabled, mirroring cmd_up.
+    Returns 'ok' | 'disabled' | 'created' | 'recreated' | 'unavailable:<why>'.
+    """
+    try:
+        trading = getattr(g, 'trading', None)
+        if not getattr(trading, 'paper_worker_enabled', False):
+            return 'disabled'
+        tm = tmux if tmux is not None else Tmux()
+        tm.ensure_session()
+        if tm.has_window('trading'):
+            try:
+                states = tm.pane_states_checked(f'{tm.session}:trading')
+            except Exception:
+                states = []
+            if states and not any(pane.dead for pane in states):
+                return 'ok'
+            tm.kill_window('trading')
+            action = 'recreated'
+        else:
+            action = 'created'
+        bin_path = str(Path(__file__).resolve().parents[2] / 'bin' / 'docich')
+        tm.new_window('trading', [bin_path, '--config', str(g.config_path), 'run', 'trading'])
+        return action
+    except Exception as exc:
+        return f'unavailable:{type(exc).__name__}'
 
 
 class PaperCornerError(RuntimeError):
@@ -309,6 +344,9 @@ def main(argv=None):
         print(manager.path.read_text() if manager.path.exists() else '{}')
     else:
         print(manager.tick())
+        guard = ensure_trading_window(manager.g)
+        if guard in ('created', 'recreated'):
+            print(f'trading window {guard}', file=sys.stderr)
     return 0
 
 
