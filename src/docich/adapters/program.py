@@ -67,17 +67,27 @@ class ProgramViewAdapter(CliCoordinatorAdapter):
     def stop_agent(self, deadline: float, cancel) -> None:
         return None
 
+    def _dashboard_window_target(self) -> str:
+        # The session birth window (index 0) runs dashboard-watch; the game
+        # window only shows the xterm viewer. Index 0 is stable: materialize
+        # appends the game window as index 1 and teardown removes the session.
+        return f"{self.spec.adapter_session}:0"
+
     def readiness(self, deadline: float, cancel) -> None:
         super().readiness(deadline, cancel)
-        try:
-            text = self.tmux.capture_pane_checked(self._game_window_target())
-        except Exception as exc:
-            from .base import AdapterError as _AdapterError
+        from .base import AdapterError as _AdapterError
+        from .cli_game import ReadinessTimeoutError
 
+        target = self._dashboard_window_target()
+        try:
+            if not self.tmux.window_target_exists(target):
+                raise ReadinessTimeoutError("program view の dashboard window がありません")
+            text = self.tmux.capture_pane_checked(target)
+        except ReadinessTimeoutError:
+            raise
+        except Exception as exc:
             raise _AdapterError(f"program view の pane を取得できません: {exc}") from exc
         if VIEW_READY_MARKER not in (text or ""):
-            from .cli_game import ReadinessTimeoutError
-
             raise ReadinessTimeoutError("program view にダッシュボードが表示されません")
 
 

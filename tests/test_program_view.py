@@ -81,7 +81,8 @@ class TestRenderDashboard(unittest.TestCase):
         self.assertNotIn("始値", frame)
         self.assertNotIn("高値", frame)
         self.assertNotIn("安値", frame)
-        self.assertIn("終値のみ", frame)
+        self.assertNotIn("ローソク", frame)
+        self.assertIn("終値", frame)
 
     def test_empty_snapshot_renders_waiting_screen(self):
         frame = render_dashboard({}, {}, now=NOW, remaining_s=None)
@@ -176,3 +177,51 @@ class TestProgramViewAdapter(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDashboardWindowTarget(unittest.TestCase):
+    def test_readiness_uses_session_birth_window(self):
+        from types import SimpleNamespace
+        from docich.adapters.program import make_program_view_adapter
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            g = SimpleNamespace(config_path=str(root / "docich.toml"),
+                                state_dir=root / "run")
+            import uuid
+            from docich.game_switch import RuntimeSpec
+            spec = RuntimeSpec(
+                game="paper-view", adapter="program", generation=9,
+                runtime_id="g9-x", lease_id=str(uuid.uuid4()),
+                runtime_dir=root / "run" / "runtimes" / "g9-x",
+                game_window="game-g9", agent_window="agent-g9",
+                adapter_session="docich-game-g9")
+            adapter = make_program_view_adapter(g, spec)
+            self.assertEqual(adapter._dashboard_window_target(), "docich-game-g9:0")
+            self.assertNotEqual(adapter._dashboard_window_target(),
+                                adapter._game_window_target())
+
+
+class TestBlockChart(unittest.TestCase):
+    def test_flat_stays_flat(self):
+        from docich.trading.dashboard import block_chart
+        rows = block_chart([100.0] * 24)
+        self.assertEqual(len(rows), 3)
+        self.assertTrue(all(set(row) == {"▅"} for row in rows))
+
+    def test_empty_is_missing(self):
+        from docich.trading.dashboard import block_chart
+        rows = block_chart([])
+        self.assertEqual(len(rows), 3)
+        self.assertTrue(all("―" in row for row in rows))
+
+    def test_rising_fills_top_last(self):
+        from docich.trading.dashboard import block_chart
+        rows = block_chart([float(i) for i in range(24)], width=24, height=3)
+        self.assertEqual(len(rows), 3)
+        for row in rows:
+            self.assertEqual(len(row), 24)
+        # Top row has blocks only at the high (right) end.
+        self.assertTrue(rows[0].startswith(" "))
+        self.assertTrue(rows[0].endswith("█"))
+        # Bottom row is full once values exceed the lowest band.
+        self.assertNotIn(" ", rows[2])
