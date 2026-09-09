@@ -12,3 +12,8 @@ games/roms/*
 /soren-harness/
 # 時事ニュース読み上げ調査のローカル資料（WAV・HANDOFF）。VM 反映対象外。
 /soren-voicevox-investigation/
+
+# handoff.md は VM 接続情報など内部運用記録を高密度に含むため公開リポジトリへ入れない。
+# public 化 (2026-09-10) の際に全履歴から除去済み。再混入防止のガード。
+# 引き継ぎ記録はリポジトリ外 (private gist 等) で管理する。
+/handoff.md
