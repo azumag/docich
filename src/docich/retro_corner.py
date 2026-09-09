@@ -24,10 +24,12 @@ from .adapters import make_coordinator_adapter
 from .config import ConfigError, GlobalConfig, load_game, load_global
 from .game_switch import GameSwitchCoordinator, GameSwitchStore, atomic_write_json
 from .naming import NameValidationError, validate_game_name
+from .trading.soren_output import enqueue_chat
 
 STATE_SCHEMA_VERSION = 1
 STATE_FILE = "retro_corner.json"
 LOCK_FILE = "locks/retro-corner.lock"
+TICK_GUARD_FILE = "locks/retro-corner-tick.lock"
 TERMINAL_STATUSES = {"completed", "interrupted", "failed"}
 
 
@@ -131,6 +133,57 @@ def select_game(games: list[str], local_date: dt.date) -> str:
     return games[local_date.toordinal() % len(games)]
 
 
+def corner_intro(g: GlobalConfig, game_name: str) -> str:
+    """開始時チャット投稿用のゲーム説明文。toml [corner] intro、無ければ定型文。"""
+    try:
+        game = load_game(g, game_name)
+    except Exception:
+        return f"{game_name}をお送りします。"
+    raw = game.raw.get("corner", {}) if isinstance(game.raw, dict) else {}
+    if isinstance(raw, dict) and isinstance(raw.get("intro"), str) and raw["intro"].strip():
+        return raw["intro"].strip()
+    return f"{game.title}をお送りします。"
+
+
+def describe_strategy_change(state_dir, game_name: str) -> str:
+    """今回戦略と前回戦略の差分サマリ。履歴が無ければ初回扱いの一文を返す。"""
+    from .resolver import strategy_path
+
+    current_path = strategy_path(state_dir, game_name)
+    try:
+        current = json.loads(Path(current_path).read_text(encoding="utf-8"))
+        if not isinstance(current, dict):
+            current = {}
+    except (OSError, ValueError):
+        current = {}
+    history_dir = Path(state_dir) / "resolver" / "history"
+    try:
+        snapshots = sorted(history_dir.glob("*.json"))
+    except OSError:
+        snapshots = []
+    previous = {}
+    if snapshots:
+        try:
+            data = json.loads(snapshots[-1].read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                previous = data
+        except (OSError, ValueError):
+            previous = {}
+    if not previous:
+        return "改善済みの最新戦略でお送りします。"
+    changes = []
+    for key in sorted(set(previous) | set(current)):
+        old, new = previous.get(key), current.get(key)
+        if old == new or not isinstance(old, (int, float)) or not isinstance(new, (int, float)):
+            continue
+        changes.append(f"{key} {old}→{new}")
+    if not changes:
+        return "前回と同じ戦略でお送りします。"
+    shown = "、".join(changes[:3])
+    extra = f"ほか{len(changes) - 3}件" if len(changes) > 3 else ""
+    return f"前回から戦略を調整しました（{shown}{extra}）。"
+
+
 class RetroCornerManager:
     def __init__(
         self,
@@ -142,6 +195,7 @@ class RetroCornerManager:
         sleep: Callable[[float], None] = time.sleep,
         active_game_reader: Callable[[], str | None] | None = None,
         ensure_runtime: Callable[[], None] | None = None,
+        chat: Callable[[str], None] | None = None,
     ):
         self.g = g
         self.config = config or load_retro_corner_config(g)
@@ -154,8 +208,10 @@ class RetroCornerManager:
         self._sleep = sleep
         self._active_game_reader = active_game_reader or self._canonical_active_game
         self._ensure_runtime = ensure_runtime or self._default_ensure_runtime
+        self._chat = chat or (lambda text: enqueue_chat(self.g, text, source="retro-corner"))
         self.state_path = Path(g.state_dir) / STATE_FILE
         self.lock_path = Path(g.state_dir) / LOCK_FILE
+        self.tick_guard_path = Path(g.state_dir) / TICK_GUARD_FILE
 
     def _default_ensure_runtime(self) -> None:
         # Import lazily so ``python -m docich retro-corner`` can route here
@@ -186,6 +242,48 @@ class RetroCornerManager:
         if not isinstance(active, dict) or not isinstance(active.get("game"), str):
             raise RetroCornerError("canonical active gameを解決できません")
         return active["game"]
+
+    @contextmanager
+    def _tick_guard(self) -> Iterator[bool]:
+        """同一コーナーの重複 tick を program 待ち行列に積まず弾く単一飛行 guard。"""
+        self.tick_guard_path.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.tick_guard_path.parent, 0o700)
+        handle = self.tick_guard_path.open("a+", encoding="utf-8")
+        try:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                yield False
+            else:
+                try:
+                    yield True
+                finally:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+    def _announce_start_locked(self, state: dict[str, object]) -> None:
+        """開始時チャット投稿 (ゲーム説明＋今回戦略の前回比較)。lock 保持中に呼ぶ。
+
+        投稿失敗はコーナー自体を失敗させない。結果は state に記録する。
+        """
+        if state.get("announced"):
+            return
+        game = state.get("game")
+        if not isinstance(game, str) or not game:
+            return
+        text = (
+            "レトロゲームコーナーです。本日は"
+            + corner_intro(self.g, game)
+            + describe_strategy_change(self.g.state_dir, game)
+        )
+        try:
+            self._chat(text)
+        except Exception as exc:
+            state["announce_error"] = _safe_detail(exc)
+            return
+        state["announced"] = True
+        state.pop("announce_error", None)
 
     @contextmanager
     def _locked(self) -> Iterator[None]:
@@ -381,6 +479,7 @@ class RetroCornerManager:
             started = self._local_now()
             state.update(status="active", started_at=started.isoformat(),
                          ends_at=(started + dt.timedelta(minutes=self.config.duration_minutes)).isoformat())
+            self._announce_start_locked(state)
             self._write_state(state)
         except Exception as exc:
             state.update(
@@ -423,50 +522,62 @@ class RetroCornerManager:
             return self._finish_locked(state, self._local_now())
 
     def tick(self) -> CornerResult:
-        if self.config.require_program_boundary:
-            return self._boundary_tick()
-        return self._legacy_tick()
+        with self._tick_guard() as single:
+            if not single:
+                return CornerResult("noop", detail="already-running")
+            if self.config.require_program_boundary:
+                return self._boundary_tick()
+            return self._legacy_tick()
 
     def _boundary_tick(self) -> CornerResult:
-        from .corner_boundary import program_lock, wait_for_boundary
+        from .corner_boundary import CornerWaitExpired, program_lock, wait_for_boundary
         now = self._local_now()
         if not self.config.enabled:
             return CornerResult("noop", detail="disabled")
-        with program_lock(self.g, self.state_path) as root:
-            with self._locked():
-                state = self._read_state()
-                if state.get("status") == "starting":
-                    current = self._active_game_reader()
-                    if current not in (state.get("previous_game"), state.get("game")):
-                        state.update(status="interrupted", completed_at=self._local_now().isoformat())
-                        self._write_state(state)
-                        return self._state_result(state)
-                    self._transition_to(current, state["game"])
-                    started = self._local_now()
-                    state.update(status="active", started_at=started.isoformat(),
-                                 ends_at=(started + dt.timedelta(minutes=self.config.duration_minutes)).isoformat())
+        end_of_day = now.replace(hour=23, minute=59, second=59, microsecond=0)
+        try:
+            with program_lock(self.g, self.state_path,
+                              wait_deadline_ts=end_of_day.timestamp()) as root:
+                return self._boundary_tick_locked(now, root, wait_for_boundary)
+        except CornerWaitExpired:
+            return CornerResult("expired", detail="program-wait-expired")
+
+    def _boundary_tick_locked(self, now, root, wait_for_boundary) -> CornerResult:
+        with self._locked():
+            state = self._read_state()
+            if state.get("status") == "starting":
+                current = self._active_game_reader()
+                if current not in (state.get("previous_game"), state.get("game")):
+                    state.update(status="interrupted", completed_at=self._local_now().isoformat())
                     self._write_state(state)
-                if state.get("status") == "active":
-                    active = state
-                else:
-                    active = None
-                    if state.get("status") != "waiting":
-                        if now.hour < self.config.start_hour:
-                            return CornerResult("noop", detail="outside-window")
-                        if state.get("date") == now.date().isoformat() and state.get("status") in TERMINAL_STATUSES:
-                            return CornerResult("noop", detail="already-ran-today")
-                        state = self._default_state()
-                        state.update(status="waiting", date=now.date().isoformat(), requested_at=now.timestamp())
-                        self._write_state(state)
+                    return self._state_result(state)
+                self._transition_to(current, state["game"])
+                started = self._local_now()
+                state.update(status="active", started_at=started.isoformat(),
+                             ends_at=(started + dt.timedelta(minutes=self.config.duration_minutes)).isoformat())
+                self._announce_start_locked(state)
+                self._write_state(state)
+            if state.get("status") == "active":
+                active = state
+            else:
+                active = None
+                if state.get("status") != "waiting":
+                    if now.hour < self.config.start_hour:
+                        return CornerResult("noop", detail="outside-window")
+                    if state.get("date") == now.date().isoformat() and state.get("status") in TERMINAL_STATUSES:
+                        return CornerResult("noop", detail="already-ran-today")
+                    state = self._default_state()
+                    state.update(status="waiting", date=now.date().isoformat(), requested_at=now.timestamp())
+                self._write_state(state)
+        if active is not None:
+            return self._wait_and_finish(active)
+        wait_for_boundary(root, state["requested_at"], sleep=self._sleep)
+        with self._locked():
+            active, result = self._begin_locked(self._local_now(), scheduled=True)
             if active is not None:
-                return self._wait_and_finish(active)
-            wait_for_boundary(root, state["requested_at"], sleep=self._sleep)
-            with self._locked():
-                active, result = self._begin_locked(self._local_now(), scheduled=True)
-                if active is not None:
-                    active["date"] = state["date"]
-                    self._write_state(active)
-            return result if result is not None else self._wait_and_finish(active)
+                active["date"] = state["date"]
+                self._write_state(active)
+        return result if result is not None else self._wait_and_finish(active)
 
     def _legacy_tick(self) -> CornerResult:
         now = self._local_now()
