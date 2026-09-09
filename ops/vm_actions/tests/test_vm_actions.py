@@ -18,6 +18,7 @@ class AuthorizeTests(unittest.TestCase):
             'GITHUB_REPOSITORY_ID':'1327276249',
             'GITHUB_REPOSITORY_OWNER':'azumag',
             'GITHUB_REPOSITORY_OWNER_ID':'9018513',
+            'GITHUB_REPOSITORY_PRIVATE':'true',
             'GITHUB_ACTOR':'azumag',
             'GITHUB_ACTOR_ID':'9018513',
             'GITHUB_TRIGGERING_ACTOR':'azumag',
@@ -61,6 +62,25 @@ class AuthorizeTests(unittest.TestCase):
         p=self.run_auth(INPUT_OPERATION='exec',INPUT_TARGET='production',INPUT_REF='main',INPUT_CONFIRM='')
         self.assertNotEqual(p.returncode,0)
         p=self.run_auth(INPUT_OPERATION='exec',INPUT_TARGET='production',INPUT_REF='main',INPUT_CONFIRM='production')
+        self.assertEqual(p.returncode,0,p.stderr)
+
+    def test_public_repository_disables_arbitrary_exec(self):
+        p=self.run_auth(
+            GITHUB_REPOSITORY_PRIVATE='false',
+            INPUT_OPERATION='exec',
+            INPUT_TARGET='preview',
+            INPUT_REF='main',
+        )
+        self.assertNotEqual(p.returncode,0)
+        self.assertIn('disabled when the repository is public',p.stderr)
+
+    def test_public_repository_keeps_read_only_status_available(self):
+        p=self.run_auth(
+            GITHUB_REPOSITORY_PRIVATE='false',
+            INPUT_OPERATION='status',
+            INPUT_TARGET='production',
+            INPUT_REF='main',
+        )
         self.assertEqual(p.returncode,0,p.stderr)
 
     def test_all_vm_ssh_calls_enable_encrypted_keepalives(self):
@@ -182,6 +202,7 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertIn("github.actor_id == 9018513",text)
         self.assertIn("github.triggering_actor == 'azumag'",text)
         self.assertIn("github.ref_protected == true",text)
+        self.assertIn("GITHUB_REPOSITORY_PRIVATE: ${{ github.event.repository.private }}",text)
         self.assertIn("persist-credentials: false",text)
         self.assertIn("submodules: false",text)
         self.assertNotIn('pull_request_target:',text)
