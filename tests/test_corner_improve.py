@@ -117,12 +117,19 @@ def test_promote_and_keep_paths(tmp_path, monkeypatch):
     (state_dir / 'resolver').mkdir(parents=True, exist_ok=True)
     (state_dir / 'resolver' / 'gnurobots_strategy.json').write_text(
         json.dumps(_weights()), encoding='utf-8')
+
+    def better_candidate(strat):
+        mean = 120.0 if strat.get(key) == 2.5 else 100.0
+        return {'mean_score': mean, 'played': 2}
+
     result = run_corner_improve(
         g, game='gnurobots', date_str='2026-09-10', agents='a',
-        evaluator=lambda strat: {'mean_score': 1000.0, 'played': 2},
+        evaluator=better_candidate,
         llm=llm,
     )
     assert result['status'] == 'promoted'
+    assert result['baseline_mean'] == 100.0
+    assert result['candidate_mean'] == 120.0
     strategy = json.loads((state_dir / 'resolver' / 'gnurobots_strategy.json').read_text())
     assert strategy[key] == 2.5
     assert list((state_dir / 'resolver' / 'history').glob('*.json'))
@@ -131,12 +138,20 @@ def test_promote_and_keep_paths(tmp_path, monkeypatch):
 
     state_dir2 = _setup_completed(tmp_path / 'run2p', [10, 20])
     g2 = _G(state_dir2)
+
+    def insufficient_candidate(strat):
+        mean = 105.0 if strat.get(key) == 2.5 else 100.0
+        return {'mean_score': mean, 'played': 2}
+
     result2 = run_corner_improve(
         g2, game='gnurobots', date_str='2026-09-10', agents='a',
-        evaluator=lambda strat: {'mean_score': 1.0, 'played': 2},
+        evaluator=insufficient_candidate,
         llm=llm,
     )
     assert result2['status'] == 'kept'
+    assert result2['corner_mean'] == 15.0
+    assert result2['baseline_mean'] == 100.0
+    assert result2['candidate_mean'] == 105.0
     assert not (state_dir2 / 'resolver' / 'gnurobots_strategy.json').exists()
 
 
