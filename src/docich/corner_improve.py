@@ -3,10 +3,10 @@
 Replaces the continuous daemon rhythm for corner games: during the corner
 only match logs accumulate; when the corner ends, one improvement job runs.
 The candidate comes from an LLM (sorengame-style delegation via
-docich.ai_generate), is evaluated with real headless matches, and is
-promoted only past the margin gate.  Promotion reuses
-docich.resolver.improve history/rendering, so the next corner announces the
-strategy diff automatically (see retro_corner.describe_strategy_change).
+docich.ai_generate), is evaluated against the current strategy with the same
+headless evaluator, and is promoted only past the margin gate.  Promotion
+reuses docich.resolver.improve history/rendering, so the next corner announces
+the strategy diff automatically (see retro_corner.describe_strategy_change).
 """
 from __future__ import annotations
 
@@ -264,22 +264,26 @@ def _run_corner_improve(
 
     evaluator = evaluator or (lambda strat: evaluate_gnurobots(strat, matches))
     try:
-        ev = evaluator(candidate)
+        baseline_ev = evaluator(current)
+        candidate_ev = evaluator(candidate)
     except Exception as exc:
         raise CornerImproveError(f"候補評価に失敗しました: {_safe_detail(exc)}") from exc
-    candidate_mean = float(ev.get("mean_score", 0.0) or 0.0)
-    played = int(ev.get("played", 0) or 0)
+    baseline_mean = float(baseline_ev.get("mean_score", 0.0) or 0.0)
+    baseline_played = int(baseline_ev.get("played", 0) or 0)
+    candidate_mean = float(candidate_ev.get("mean_score", 0.0) or 0.0)
+    candidate_played = int(candidate_ev.get("played", 0) or 0)
     summary = {
         "game": game, "date": date_str, "corner_n": stats["n"],
         "corner_mean": round(stats["mean"], 1), "corner_best": stats["best"],
-        "candidate_mean": round(candidate_mean, 1), "candidate_played": played,
+        "baseline_mean": round(baseline_mean, 1), "baseline_played": baseline_played,
+        "candidate_mean": round(candidate_mean, 1), "candidate_played": candidate_played,
         "matches": matches, "margin_pct": margin_pct,
     }
-    # 異ドメイン比較の明示化: candidate は headless 評価、baseline は本番実戦ログ。
-    # daemon の同ドメイン比較より緩いことを自覚し、baseline<=0 の不定時は
-    # 正スコア必須 (閾値0超) とする。matches=2 の誤検出余地は既知の弱み。
-    threshold = stats["mean"] * (1 + margin_pct / 100.0) if stats["mean"] > 0 else 0.0
-    if played > 0 and candidate_mean > threshold:
+    # Promotion gate は current/candidate を同じ headless evaluator で比較する。
+    # 実配信ログは候補生成の文脈・外部品質の観測値として保持するが、異なる
+    # 実行条件のスコアを直接 promotion threshold に混ぜない。
+    threshold = baseline_mean * (1 + margin_pct / 100.0) if baseline_mean > 0 else 0.0
+    if baseline_played > 0 and candidate_played > 0 and candidate_mean > threshold:
         s_file = strategy_path(g.state_dir, game)
         try:
             old_raw = json.loads(Path(s_file).read_text(encoding="utf-8"))
