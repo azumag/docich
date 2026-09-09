@@ -97,6 +97,15 @@ class TestTradingWorkerLifecycle(unittest.TestCase):
             )
             self.assertEqual(trading.stdout, "TRADING\n")
 
+            trading_equals_config = subprocess.run(
+                [str(launcher), "--config=live.toml", "run", "trading"],
+                check=True,
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            self.assertEqual(trading_equals_config.stdout, "TRADING\n")
+
             status = subprocess.run(
                 [str(launcher), "status", "--json"],
                 check=True,
@@ -105,6 +114,15 @@ class TestTradingWorkerLifecycle(unittest.TestCase):
                 env=env,
             )
             self.assertEqual(status.stdout, "SYSTEM\n")
+
+            unrelated_payload = subprocess.run(
+                [str(launcher), "say", "sorengame", "run", "trading"],
+                check=True,
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            self.assertEqual(unrelated_payload.stdout, "SYSTEM\n")
 
             trading_python.unlink()
             fallback = subprocess.run(
