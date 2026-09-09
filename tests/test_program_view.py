@@ -106,7 +106,7 @@ class TestLoadSnapshot(unittest.TestCase):
             trading = root / "trading"
             trading.mkdir()
             (trading / "status.json").write_text("{broken", encoding="utf-8")
-            snapshot, closes = load_snapshot(root)
+            snapshot, closes = load_snapshot(root / "trading")
             self.assertEqual((snapshot, closes), ({}, {}))
 
     def test_closes_use_stored_values_only(self):
@@ -119,7 +119,7 @@ class TestLoadSnapshot(unittest.TestCase):
                 "schema_version": 1,
                 "symbols": {"POL/JPY": {"closes": ["1.0", "2.0", "oops", -3]}},
             }), encoding="utf-8")
-            _snapshot_data, closes = load_snapshot(root)
+            _snapshot_data, closes = load_snapshot(root / "trading")
             self.assertEqual(closes, {"POL/JPY": [1.0, 2.0]})
 
 
