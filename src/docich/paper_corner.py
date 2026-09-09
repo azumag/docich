@@ -1,13 +1,15 @@
 """Daily PAPER program: confirmed boundary, actual start plus duration, durable replay."""
 import argparse
 import datetime as dt
+import fcntl
 import json
+import os
 from pathlib import Path
 import time
 from zoneinfo import ZoneInfo
 
 from .config import load_global
-from .corner_boundary import program_lock, wait_for_boundary
+from .corner_boundary import CornerWaitExpired, program_lock, wait_for_boundary
 from .game_switch import atomic_write_json
 from .trading.presentation import write_presentation
 from .trading.soren_output import send_overlay, enqueue_speech
@@ -29,6 +31,7 @@ class PaperCornerManager:
             raise ValueError('invalid paper corner duration')
         self.path = g.state_dir / 'paper_corner.json'
         self.presentation = g.state_dir / 'trading/presentation.json'
+        self.tick_guard_path = g.state_dir / 'locks' / 'paper-corner-tick.lock'
 
     def save(self, state):
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -76,8 +79,32 @@ class PaperCornerManager:
         if not all((self.g.trading.paper_worker_enabled, self.g.trading.notifications_enabled,
                     self.g.trading.notification_speech_enabled)):
             raise ValueError('paper corner requires enabled paper worker and outputs')
-        with program_lock(self.g, self.path) as root:
-            now = dt.datetime.fromtimestamp(self.clock(), self.tz)
+        self.tick_guard_path.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.tick_guard_path.parent, 0o700)
+        guard = self.tick_guard_path.open('a+', encoding='utf-8')
+        try:
+            try:
+                fcntl.flock(guard.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return 'already-running'
+            try:
+                return self._tick_guarded()
+            finally:
+                fcntl.flock(guard.fileno(), fcntl.LOCK_UN)
+        finally:
+            guard.close()
+
+    def _tick_guarded(self):
+        now = dt.datetime.fromtimestamp(self.clock(), self.tz)
+        end_of_day = now.replace(hour=23, minute=59, second=59, microsecond=0)
+        try:
+            with program_lock(self.g, self.path,
+                              wait_deadline_ts=end_of_day.timestamp()) as root:
+                return self._tick_locked(root, now)
+        except CornerWaitExpired:
+            return 'expired'
+
+    def _tick_locked(self, root, now):
             state = json.loads(self.path.read_text()) if self.path.exists() else {}
             if state.get('status') not in ('waiting', 'starting', 'active'):
                 if now.hour < self.hour or state.get('date') == now.date().isoformat():

@@ -475,6 +475,22 @@ class TestFailureRollback(CoordinatorTestBase):
         self.assertEqual(old.runtime.agent_lease, state["active"]["lease_id"])
         self.assertEqual(self.mirror_text(), "nethack")
 
+    def test_rollback_receipt_keeps_triggering_error(self):
+        # 2026-09-08 の retro corner 失敗 ("unknown"): rollback receipt が
+        # error_code/detail を捨てていたため原因がコーナーへ届かなかった。
+        self.behaviors["robots"]["preflight_error"] = AdapterError("preflight boom")
+        self.coordinator.start("nethack")
+        result = self.coordinator.switch("robots")
+        self.assertEqual(result.status, "rolled_back")
+        self.assertIsNotNone(result.error_code)
+        self.assertIsNotNone(result.detail)
+        receipt = self.store.receipts.load(result.request_id)
+        self.assertEqual(receipt["status"], "rolled_back")
+        self.assertIsNotNone(receipt["result"]["error_code"])
+        self.assertIsNotNone(receipt["result"]["detail"])
+        state = self.canonical()
+        self.assertIsNotNone((state.get("last_error") or {}).get("error_code"))
+
     def test_materialize_failure_restarts_previous_with_new_generation(self):
         self.behaviors["robots"]["materialize_error"] = AdapterError("start boom")
         self.coordinator.start("nethack")
@@ -645,6 +661,10 @@ class TestFailureRollback(CoordinatorTestBase):
         self.assertEqual(state["active"]["game"], "nethack")
         old = self.factory.adapter("nethack", 1)
         self.assertEqual(old.runtime.events.count("agent_start"), 2)
+        # recovery 経路でも起因エラーが receipt/last_error に残る (unknown 対策)。
+        self.assertIsNotNone(recovered.error_code)
+        self.assertIsNotNone(recovered.detail)
+        self.assertIsNotNone((state.get("last_error") or {}).get("error_code"))
 
     def test_rollback_failure_leaves_failed_then_recover_restores(self):
         self.behaviors["nethack"]["materialize_error"] = FailOn(AdapterError("rollback boom"), 2)

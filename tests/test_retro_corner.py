@@ -150,6 +150,64 @@ class TestRetroCornerConfig(RetroCornerTestBase):
         with self.assertRaises(RetroCornerError):
             mgr.start()
 
+    def test_self_play_game_without_agent_is_accepted(self):
+        (self.root / "config" / "games" / "gnurobots.toml").write_text(
+            """
+[game]
+name = "gnurobots"
+title = "GNU Robots"
+adapter = "cli"
+[agent]
+enabled = false
+[corner]
+self_play = true
+""",
+            encoding="utf-8",
+        )
+        path = self.root / "config" / "docich.toml"
+        path.write_text('[retro_corner]\nenabled = true\ngames = ["gnurobots"]\n', encoding="utf-8")
+        self.g = config.load_global(self.root)
+        cfg = load_retro_corner_config(self.g)
+        current = ["sorengame"]
+        mgr = RetroCornerManager(
+            self.g,
+            config=cfg,
+            coordinator=FakeCoordinator(current),
+            now=lambda: self.now_value,
+            sleep=lambda seconds: None,
+            active_game_reader=lambda: current[0],
+            ensure_runtime=lambda: None,
+        )
+        mgr._validate_games()
+
+    def test_agent_disabled_without_self_play_is_rejected(self):
+        (self.root / "config" / "games" / "gnurobots.toml").write_text(
+            """
+[game]
+name = "gnurobots"
+title = "GNU Robots"
+adapter = "cli"
+[agent]
+enabled = false
+""",
+            encoding="utf-8",
+        )
+        path = self.root / "config" / "docich.toml"
+        path.write_text('[retro_corner]\nenabled = true\ngames = ["gnurobots"]\n', encoding="utf-8")
+        self.g = config.load_global(self.root)
+        cfg = load_retro_corner_config(self.g)
+        mgr = RetroCornerManager(
+            self.g,
+            config=cfg,
+            coordinator=FakeCoordinator(["sorengame"]),
+            now=lambda: self.now_value,
+            sleep=lambda seconds: None,
+            active_game_reader=lambda: "sorengame",
+            ensure_runtime=lambda: None,
+        )
+        with self.assertRaises(RetroCornerError):
+            mgr._validate_games()
+
 
 class TestProductionProfile(unittest.TestCase):
     def test_only_soren_live_profile_enables_daily_corner(self):
@@ -167,7 +225,9 @@ class TestProductionProfile(unittest.TestCase):
              live_g.display.viewport_width, live_g.display.viewport_height),
             (0, 90, 960, 540),
         )
-        self.assertEqual(live_cfg.games, ["robots"])
+        self.assertEqual(live_cfg.start_hour, 19)
+        self.assertEqual(live_cfg.duration_minutes, 30)
+        self.assertEqual(live_cfg.games, ["gnurobots"])
 
 
 class TestRetroCornerSelection(unittest.TestCase):
@@ -388,3 +448,151 @@ class TestProgramBoundary(RetroCornerTestBase):
         mgr.tick()
         self.assertIn(('stop',None),coordinator.calls)
         self.assertEqual(mgr.status()['status'],'completed')
+
+
+class TestRetroCornerAnnounce(RetroCornerTestBase):
+    def _manager_with_chat(self, current, chat):
+        coordinator = FakeCoordinator(current)
+        mgr = RetroCornerManager(
+            self.g,
+            config=self.cfg,
+            coordinator=coordinator,
+            now=lambda: self.now_value,
+            sleep=lambda seconds: None,
+            active_game_reader=lambda: current[0],
+            ensure_runtime=lambda: None,
+            chat=chat,
+        )
+        return mgr, coordinator
+
+    def test_start_posts_intro_and_strategy(self):
+        chats = []
+        mgr, _ = self._manager_with_chat([None], chats.append)
+        self.assertEqual(mgr.start().status, "completed")
+        self.assertEqual(len(chats), 1)
+        self.assertIn("レトロゲームコーナー", chats[0])
+        self.assertIn("Robotsをお送りします", chats[0])
+        self.assertIn("最新戦略", chats[0])
+        self.assertTrue(mgr.status().get("announced"))
+
+    def test_announce_failure_does_not_fail_corner(self):
+        def boom(text):
+            raise RuntimeError("sink down")
+
+        mgr, _ = self._manager_with_chat([None], boom)
+        self.assertEqual(mgr.start().status, "completed")
+        state = mgr.status()
+        self.assertNotIn("announced", state)
+        self.assertIn("announce_error", state)
+
+    def test_second_announce_is_skipped(self):
+        chats = []
+        mgr, _ = self._manager_with_chat([None], chats.append)
+        mgr.start()
+        mgr._locked_announce_again = None
+        with mgr._locked():
+            state = mgr._read_state()
+            mgr._announce_start_locked(state)
+        self.assertEqual(len(chats), 1)
+
+
+class TestRetroCornerTickGuard(RetroCornerTestBase):
+    def test_duplicate_tick_is_noop(self):
+        import fcntl
+
+        mgr, coordinator = self.manager(["sorengame"])
+        mgr.tick_guard_path.parent.mkdir(parents=True, exist_ok=True)
+        held = mgr.tick_guard_path.open("a+")
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            result = mgr.tick()
+        finally:
+            fcntl.flock(held.fileno(), fcntl.LOCK_UN)
+            held.close()
+        self.assertEqual(result.status, "noop")
+        self.assertEqual(result.detail, "already-running")
+        self.assertEqual(coordinator.calls, [])
+
+    def test_expired_when_program_busy_past_deadline(self):
+        import fcntl
+        from dataclasses import replace
+        from docich.trading.soren_output import resolve_soren_root
+
+        self.cfg = replace(self.cfg, require_program_boundary=True)
+        root = resolve_soren_root(self.g) / 'tmp' / 'state'
+        root.mkdir(parents=True, exist_ok=True)
+        other = self.root / 'other_corner.json'
+        other.write_text(json.dumps({'status': 'active'}), encoding='utf-8')
+        (root / 'docich_program_active.json').write_text(
+            json.dumps({'owner_state': str(other)}), encoding='utf-8')
+        held = (root / 'docich_program.lock').open('a')
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            mgr, _ = self.manager(["sorengame"])
+            result = mgr.tick()
+        finally:
+            fcntl.flock(held.fileno(), fcntl.LOCK_UN)
+            held.close()
+        #  fixture 時刻 (2026-09-06) の当日末は実時刻より過去のため即時 expired。
+        self.assertEqual(result.status, "expired")
+
+
+class TestRetroCornerImproveSpawn(RetroCornerTestBase):
+    def _manager_with_spawn(self, current, spawned, agents):
+        from dataclasses import replace
+        cfg = replace(self.cfg, improve_agents=agents)
+        coordinator = FakeCoordinator(current)
+        mgr = RetroCornerManager(
+            self.g,
+            config=cfg,
+            coordinator=coordinator,
+            now=lambda: self.now_value,
+            sleep=lambda seconds: None,
+            active_game_reader=lambda: current[0],
+            ensure_runtime=lambda: None,
+            chat=lambda text: None,
+            spawn=lambda argv, log_path: spawned.append((argv, log_path)),
+        )
+        return mgr
+
+    def test_finish_spawns_improve_once(self):
+        spawned = []
+        mgr = self._manager_with_spawn([None], spawned, 'agent-a,agent-b')
+        self.assertEqual(mgr.start().status, 'completed')
+        self.assertEqual(len(spawned), 1)
+        argv, log_path = spawned[0]
+        self.assertIn('improve-once', argv)
+        self.assertIn('2026-09-06', argv)
+        state = mgr.status()
+        self.assertEqual(state.get('improve_job', {}).get('spawned'), True)
+
+    def test_no_spawn_without_agents(self):
+        spawned = []
+        mgr = self._manager_with_spawn([None], spawned, '')
+        self.assertEqual(mgr.start().status, 'completed')
+        self.assertEqual(spawned, [])
+
+
+class TestRetroCornerImproveSpawnEnv(RetroCornerTestBase):
+    def test_spawn_passes_real_ai_consent_to_child(self):
+        import subprocess
+
+        calls = []
+        real_popen = subprocess.Popen
+
+        def fake_popen(*args, **kwargs):
+            calls.append((args, kwargs))
+            return real_popen(['true'], stdout=subprocess.DEVNULL)
+
+        import subprocess as sp_module
+        mgr, _ = self.manager(["sorengame"])
+        old = sp_module.Popen
+        sp_module.Popen = fake_popen
+        try:
+            mgr._default_spawn_improve_proc(['echo', 'hi'], self.root / 'run' / 'x.log')
+        finally:
+            sp_module.Popen = old
+        assert len(calls) == 1
+        _, kwargs = calls[0]
+        assert kwargs['env']['DOCICH_ALLOW_REAL_AI'] == '1'
+        assert kwargs['start_new_session'] is True
