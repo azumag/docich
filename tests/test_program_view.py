@@ -196,9 +196,8 @@ class TestDashboardWindowTarget(unittest.TestCase):
                 game_window="game-g9", agent_window="agent-g9",
                 adapter_session="docich-game-g9")
             adapter = make_program_view_adapter(g, spec)
-            self.assertEqual(adapter._dashboard_window_target(), "docich-game-g9:0")
-            self.assertNotEqual(adapter._dashboard_window_target(),
-                                adapter._game_window_target())
+            with self.assertRaises(Exception):
+                adapter._dashboard_window_target()
 
 
 class TestBlockChart(unittest.TestCase):
@@ -225,3 +224,35 @@ class TestBlockChart(unittest.TestCase):
         self.assertTrue(rows[0].endswith("█"))
         # Bottom row is full once values exceed the lowest band.
         self.assertNotIn(" ", rows[2])
+
+
+class TestDashboardWindowResolution(unittest.TestCase):
+    def _adapter(self, tmp_path):
+        from types import SimpleNamespace
+        from docich.adapters.program import make_program_view_adapter
+        import uuid
+        from docich.game_switch import RuntimeSpec
+        root = Path(tmp_path)
+        g = SimpleNamespace(config_path=str(root / "docich.toml"),
+                            state_dir=root / "run")
+        spec = RuntimeSpec(
+            game="paper-view", adapter="program", generation=9,
+            runtime_id="g9-x", lease_id=str(uuid.uuid4()),
+            runtime_dir=root / "run" / "runtimes" / "g9-x",
+            game_window="game-g9", agent_window="agent-g9",
+            adapter_session="docich-game-g9")
+        return make_program_view_adapter(g, spec)
+
+    def test_picks_non_game_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            adapter = self._adapter(tmp)
+            adapter.tmux.list_windows = lambda: ["python3", "game-g9"]
+            self.assertEqual(adapter._dashboard_window_target(),
+                             "docich-game-g9:python3")
+
+    def test_ambiguous_windows_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            adapter = self._adapter(tmp)
+            adapter.tmux.list_windows = lambda: ["python3", "extra", "game-g9"]
+            with self.assertRaises(Exception):
+                adapter._dashboard_window_target()

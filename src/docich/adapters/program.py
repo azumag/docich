@@ -68,10 +68,23 @@ class ProgramViewAdapter(CliCoordinatorAdapter):
         return None
 
     def _dashboard_window_target(self) -> str:
-        # The session birth window (index 0) runs dashboard-watch; the game
-        # window only shows the xterm viewer. Index 0 is stable: materialize
-        # appends the game window as index 1 and teardown removes the session.
-        return f"{self.spec.adapter_session}:0"
+        # The session birth window runs dashboard-watch; the game window only
+        # shows the xterm viewer. Name-based helpers cannot address it by
+        # index, so resolve the one session window that is not the game
+        # window. Exactly one must exist (agent is disabled for views).
+        from .base import AdapterError as _AdapterError
+
+        try:
+            names = self.tmux.list_windows()
+        except Exception as exc:
+            raise _AdapterError(f"program view の window 一覧を取得できません: {exc}") from exc
+        candidates = [name for name in names if name != self.spec.game_window]
+        if len(candidates) != 1:
+            from .cli_game import ReadinessTimeoutError
+
+            raise ReadinessTimeoutError(
+                f"program view の dashboard window を特定できません: {candidates}")
+        return f"{self.spec.adapter_session}:{candidates[0]}"
 
     def readiness(self, deadline: float, cancel) -> None:
         super().readiness(deadline, cancel)
