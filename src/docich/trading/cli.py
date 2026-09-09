@@ -92,6 +92,9 @@ def configure_parser(parser) -> None:
     presentation = sub.add_parser("presentation", help="取引通知のcompact/detailed表示モードを操作する")
     presentation.add_argument("presentation_action", choices=("status", "compact", "detailed"))
     sub.add_parser("notify-once", help="保存済みpaper eventの未配送通知だけを1回処理する")
+    watch = sub.add_parser("dashboard-watch", help="PAPERコーナー用の読取専用ダッシュボードを描画し続ける")
+    watch.add_argument("--interval", type=float, default=2.0, metavar="SEC", help="再描画間隔 (既定2秒)")
+    watch.add_argument("--once", action="store_true", help="1フレーム描画して終了する")
 
 
 def _state_dir(
@@ -469,6 +472,14 @@ def run_args(args, *, repo_root: Path, global_config: GlobalConfig | None = None
         except PresentationError as exc:
             raise TradingCliError(str(exc)) from exc
         _json_print({"mode": state.mode, "updated_at": state.updated_at})
+        return 0
+    if command == "dashboard-watch":
+        from .dashboard import watch_loop, render_dashboard, load_snapshot
+        if args.once:
+            snapshot, closes = load_snapshot(state_dir)
+            print(render_dashboard(snapshot, closes, now=time.time(), remaining_s=None))
+            return 0
+        watch_loop(state_dir=state_dir, interval_s=args.interval)
         return 0
     if command == "notify-once":
         if global_config is None:
