@@ -60,6 +60,7 @@ jobs:
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+          GITHUB_REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
           GITHUB_REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
           GITHUB_ACTOR: ${{ github.actor }}
