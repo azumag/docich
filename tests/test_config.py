@@ -550,5 +550,140 @@ class TestWebUIUnsafeConfigMatrix(unittest.TestCase):
                 os.environ["DOCICH_WEBUI_TOKEN"] = old
 
 
+class TestWebUIAllowedOriginsEnv(unittest.TestCase):
+    """webui.allowed_origins の環境変数 (DOCICH_WEBUI_ALLOWED_ORIGINS) による追加。
+
+    private endpoint を config ファイルにコミットせず運用するための仕組み。
+    config のリストとの和集合になり、形式 validation は config 値と同じ基準
+    (不正なら ConfigError) で判定する。"""
+
+    ENV = "DOCICH_WEBUI_ALLOWED_ORIGINS"
+
+    def _toml(self, tmp: str, body: str) -> Path:
+        toml_path = Path(tmp) / "webui.toml"
+        toml_path.write_text(body, encoding="utf-8")
+        return toml_path
+
+    def _run_with_env(self, value):
+        old = os.environ.get(self.ENV)
+        if value is None:
+            os.environ.pop(self.ENV, None)
+        else:
+            os.environ[self.ENV] = value
+        return old
+
+    def _restore_env(self, old):
+        if old is None:
+            os.environ.pop(self.ENV, None)
+        else:
+            os.environ[self.ENV] = old
+
+    def test_env_origins_are_added_to_config_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            toml_path = self._toml(
+                tmp,
+                "[webui]\nallowed_origins = [\"https://a.example.net\"]\n",
+            )
+            old = self._run_with_env("https://b.example.net, https://c.example.net")
+            try:
+                g = config.load_global(Path(tmp), config_path=toml_path)
+            finally:
+                self._restore_env(old)
+            self.assertEqual(
+                g.webui.allowed_origins,
+                [
+                    "https://a.example.net",
+                    "https://b.example.net",
+                    "https://c.example.net",
+                ],
+            )
+
+    def test_env_only_without_config_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            toml_path = self._toml(tmp, "[webui]\n")
+            old = self._run_with_env("https://b.example.net")
+            try:
+                g = config.load_global(Path(tmp), config_path=toml_path)
+            finally:
+                self._restore_env(old)
+            self.assertEqual(g.webui.allowed_origins, ["https://b.example.net"])
+
+    def test_env_duplicates_are_removed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            toml_path = self._toml(
+                tmp,
+                "[webui]\nallowed_origins = [\"https://a.example.net\"]\n",
+            )
+            old = self._run_with_env("https://a.example.net https://a.example.net")
+            try:
+                g = config.load_global(Path(tmp), config_path=toml_path)
+            finally:
+                self._restore_env(old)
+            self.assertEqual(g.webui.allowed_origins, ["https://a.example.net"])
+
+    def test_invalid_env_origin_raises_config_error(self):
+        # config 値と同じく fail closed: 不正な形式は起動時 error にする。
+        with tempfile.TemporaryDirectory() as tmp:
+            toml_path = self._toml(tmp, "[webui]\n")
+            old = self._run_with_env("not-an-origin")
+            try:
+                with self.assertRaises(config.ConfigError) as ctx:
+                    config.load_global(Path(tmp), config_path=toml_path)
+            finally:
+                self._restore_env(old)
+            self.assertIn("allowed_origins", str(ctx.exception))
+
+    def test_invalid_config_origin_still_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            toml_path = self._toml(
+                tmp,
+                "[webui]\nallowed_origins = [\"https://evil.example.net/evil-path\"]\n",
+            )
+            old = self._run_with_env(None)
+            try:
+                with self.assertRaises(config.ConfigError):
+                    config.load_global(Path(tmp), config_path=toml_path)
+            finally:
+                self._restore_env(old)
+
+    def test_custom_env_name_from_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            toml_path = self._toml(
+                tmp,
+                "[webui]\nallowed_origins_env = \"DOCICH_CUSTOM_ORIGINS\"\n",
+            )
+            old_main = os.environ.get(self.ENV)
+            old_custom = os.environ.get("DOCICH_CUSTOM_ORIGINS")
+            os.environ.pop(self.ENV, None)
+            os.environ["DOCICH_CUSTOM_ORIGINS"] = "https://custom.example.net"
+            try:
+                g = config.load_global(Path(tmp), config_path=toml_path)
+            finally:
+                self._restore_env(old_main)
+                if old_custom is None:
+                    os.environ.pop("DOCICH_CUSTOM_ORIGINS", None)
+                else:
+                    os.environ["DOCICH_CUSTOM_ORIGINS"] = old_custom
+            self.assertEqual(g.webui.allowed_origins, ["https://custom.example.net"])
+
+    def test_helper_merges_without_load(self):
+        cfg = config.WebUIConfig(
+            allowed_origins=["https://a.example.net"],
+            allowed_origins_env="DOCICH_TEST_ORIGINS_MERGE",
+        )
+        old = os.environ.get("DOCICH_TEST_ORIGINS_MERGE")
+        os.environ["DOCICH_TEST_ORIGINS_MERGE"] = "https://b.example.net,,  "
+        try:
+            merged = config.effective_allowed_origins(cfg)
+        finally:
+            if old is None:
+                os.environ.pop("DOCICH_TEST_ORIGINS_MERGE", None)
+            else:
+                os.environ["DOCICH_TEST_ORIGINS_MERGE"] = old
+        self.assertEqual(
+            merged, ["https://a.example.net", "https://b.example.net"]
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

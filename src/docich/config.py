@@ -129,6 +129,10 @@ class WebUIConfig:
     # で外部ホスト名からアクセスする場合に明示的に列挙する)。既定は空 (loopback
     # 開発の Origin/Host のみ許可)。scheme://host[:port] 形式で path を含めないこと。
     allowed_origins: list = field(default_factory=list)
+    # allowed_origins に追加する Origin を読む環境変数名。private endpoint を
+    # config ファイルにコミットせず運用するために使う (public visibility 対応)。
+    # カンマ/空白区切りで複数指定できる。config のリストとの和集合になる。
+    allowed_origins_env: str = "DOCICH_WEBUI_ALLOWED_ORIGINS"
 
 
 # loopback とみなす bind 値 (これ以外は「外部到達しうる」扱い)。
@@ -178,6 +182,24 @@ def effective_read_only_token(webui: "WebUIConfig") -> str:
     if env_val and env_val.strip():
         return env_val.strip()
     return (webui.read_only_token or "").strip()
+
+
+def effective_allowed_origins(webui: "WebUIConfig") -> list:
+    """config の allowed_origins と allowed_origins_env 環境変数の和集合を返す。
+
+    環境変数はカンマ/空白区切りで複数指定できる (例: "https://a.ts.net, https://b.ts.net")。
+    順序は config のリスト優先・重複排除。空文字要素は無視する。
+    形式の正否は load_global の validation (config 値と同じ基準) で判定する。
+    """
+    merged = list(webui.allowed_origins or [])
+    env_name = (webui.allowed_origins_env or "").strip() or "DOCICH_WEBUI_ALLOWED_ORIGINS"
+    raw = os.environ.get(env_name, "")
+    if raw:
+        for part in re.split(r"[,\s]+", raw):
+            item = part.strip()
+            if item and item not in merged:
+                merged.append(item)
+    return merged
 
 
 def _parse_origin_str(value: str) -> tuple[str, str] | None:
@@ -397,6 +419,9 @@ def load_global(repo_root: Path, config_path: Path | None = None) -> GlobalConfi
         **_filtered(RotationConfig, data.get("rotation", {}), "rotation")
     )
     webui = WebUIConfig(**_filtered(WebUIConfig, data.get("webui", {}), "webui"))
+    # allowed_origins_env 環境変数の値を config のリストへ統合する (和集合)。
+    # 以降の validation は config 値と同じ基準で両方に適用される。
+    webui.allowed_origins = effective_allowed_origins(webui)
 
     stream.ffmpeg_bin = os.environ.get("DOCICH_FFMPEG_BIN", stream.ffmpeg_bin).strip()
     captions.enabled = _env_bool("DOCICH_CC_ENABLED", captions.enabled)
@@ -469,6 +494,8 @@ def load_global(repo_root: Path, config_path: Path | None = None) -> GlobalConfi
         raise ConfigError("webui.read_only_token は8文字以上である必要があります (空なら無効)")
     if not isinstance(webui.read_only_token_env, str) or not webui.read_only_token_env.strip():
         raise ConfigError("webui.read_only_token_env は空でない文字列である必要があります")
+    if not isinstance(webui.allowed_origins_env, str) or not webui.allowed_origins_env.strip():
+        raise ConfigError("webui.allowed_origins_env は空でない文字列である必要があります")
     if (
         webui.read_only_token
         and effective_webui_token(webui)

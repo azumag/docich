@@ -119,7 +119,7 @@ read_only = false         # true で閲覧専用
 
 - systemd --user `docich-webui.service` (`ExecStart` に `--soren-root /home/ubuntu/soren`)
 - `sudo tailscale serve --bg --https=443 http://127.0.0.1:8787`
-- 公開 URL: `https://<hostname>.<tailnet>.ts.net/`
+- 公開 URL: `https://<hostname>.<tailnet>.ts.net/` (実値は秘匿運用のため非公開。`webui.allowed_origins` には `DOCICH_WEBUI_ALLOWED_ORIGINS` 環境変数で指定する)
 - 検証実績: 設定の読み書き / worker reload / backoff 表示・クリア / 統計表示を実測確認済み
 
-詳細は `src/docich/webui.py` の docstring と `handoff.md` のセクション 23/24 を参照。
+詳細は `src/docich/webui.py` の docstring を参照。
