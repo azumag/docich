@@ -14,14 +14,19 @@ export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 # command on the caller's normal python3, and fail open to it in development
 # checkouts where the trading virtualenv is intentionally absent.
 args=("$@")
-for ((i = 0; i + 1 < ${#args[@]}; i++)); do
-    if [[ "${args[i]}" == "run" && "${args[i + 1]}" == "trading" ]]; then
-        trading_python="$ROOT/.venv-trading/bin/python3"
-        if [[ -x "$trading_python" ]]; then
-            exec "$trading_python" -m docich "$@"
-        fi
-        break
+command_index=0
+if (( ${#args[@]} >= 2 )) && [[ "${args[0]}" == "--config" ]]; then
+    command_index=2
+elif (( ${#args[@]} >= 1 )) && [[ "${args[0]}" == --config=* ]]; then
+    command_index=1
+fi
+if (( command_index + 1 < ${#args[@]} )) \
+    && [[ "${args[command_index]}" == "run" ]] \
+    && [[ "${args[command_index + 1]}" == "trading" ]]; then
+    trading_python="$ROOT/.venv-trading/bin/python3"
+    if [[ -x "$trading_python" ]]; then
+        exec "$trading_python" -m docich "$@"
     fi
-done
+fi
 
 exec python3 -m docich "$@"
