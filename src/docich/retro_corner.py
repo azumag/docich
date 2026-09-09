@@ -39,10 +39,10 @@ class RetroCornerError(RuntimeError):
 class RetroCornerConfig:
     enabled: bool = False
     require_program_boundary: bool = False
-    start_hour: int = 20
-    duration_minutes: int = 60
+    start_hour: int = 19
+    duration_minutes: int = 30
     timezone: str = "Asia/Tokyo"
-    games: list[str] = field(default_factory=lambda: ["robots"])
+    games: list[str] = field(default_factory=lambda: ["gnurobots"])
 
 
 @dataclass(frozen=True)
@@ -84,10 +84,10 @@ def load_retro_corner_config(g: GlobalConfig) -> RetroCornerConfig:
     cfg = RetroCornerConfig(
         enabled=raw.get("enabled", False),
         require_program_boundary=raw.get("require_program_boundary", False),
-        start_hour=raw.get("start_hour", 20),
-        duration_minutes=raw.get("duration_minutes", 60),
+        start_hour=raw.get("start_hour", 19),
+        duration_minutes=raw.get("duration_minutes", 30),
         timezone=raw.get("timezone", "Asia/Tokyo"),
-        games=raw.get("games", ["robots"]),
+        games=raw.get("games", ["gnurobots"]),
     )
     if type(cfg.require_program_boundary) is not bool:
         raise RetroCornerError("require_program_boundary must be boolean")
@@ -247,7 +247,9 @@ class RetroCornerManager:
                 ) from exc
             if game.adapter != "cli":
                 raise RetroCornerError(f"retro corner対象はCLIゲームに限定されます: {name}")
-            if game.agent.enabled is not True:
+            corner_raw = game.raw.get("corner", {}) if isinstance(game.raw, dict) else {}
+            self_play = isinstance(corner_raw, dict) and corner_raw.get("self_play") is True
+            if game.agent.enabled is not True and not self_play:
                 raise RetroCornerError(f"retro corner対象はagent.enabled=trueが必要です: {name}")
 
     @staticmethod

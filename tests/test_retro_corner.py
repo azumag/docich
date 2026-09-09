@@ -150,6 +150,64 @@ class TestRetroCornerConfig(RetroCornerTestBase):
         with self.assertRaises(RetroCornerError):
             mgr.start()
 
+    def test_self_play_game_without_agent_is_accepted(self):
+        (self.root / "config" / "games" / "gnurobots.toml").write_text(
+            """
+[game]
+name = "gnurobots"
+title = "GNU Robots"
+adapter = "cli"
+[agent]
+enabled = false
+[corner]
+self_play = true
+""",
+            encoding="utf-8",
+        )
+        path = self.root / "config" / "docich.toml"
+        path.write_text('[retro_corner]\nenabled = true\ngames = ["gnurobots"]\n', encoding="utf-8")
+        self.g = config.load_global(self.root)
+        cfg = load_retro_corner_config(self.g)
+        current = ["sorengame"]
+        mgr = RetroCornerManager(
+            self.g,
+            config=cfg,
+            coordinator=FakeCoordinator(current),
+            now=lambda: self.now_value,
+            sleep=lambda seconds: None,
+            active_game_reader=lambda: current[0],
+            ensure_runtime=lambda: None,
+        )
+        mgr._validate_games()
+
+    def test_agent_disabled_without_self_play_is_rejected(self):
+        (self.root / "config" / "games" / "gnurobots.toml").write_text(
+            """
+[game]
+name = "gnurobots"
+title = "GNU Robots"
+adapter = "cli"
+[agent]
+enabled = false
+""",
+            encoding="utf-8",
+        )
+        path = self.root / "config" / "docich.toml"
+        path.write_text('[retro_corner]\nenabled = true\ngames = ["gnurobots"]\n', encoding="utf-8")
+        self.g = config.load_global(self.root)
+        cfg = load_retro_corner_config(self.g)
+        mgr = RetroCornerManager(
+            self.g,
+            config=cfg,
+            coordinator=FakeCoordinator(["sorengame"]),
+            now=lambda: self.now_value,
+            sleep=lambda seconds: None,
+            active_game_reader=lambda: "sorengame",
+            ensure_runtime=lambda: None,
+        )
+        with self.assertRaises(RetroCornerError):
+            mgr._validate_games()
+
 
 class TestProductionProfile(unittest.TestCase):
     def test_only_soren_live_profile_enables_daily_corner(self):
@@ -167,7 +225,9 @@ class TestProductionProfile(unittest.TestCase):
              live_g.display.viewport_width, live_g.display.viewport_height),
             (0, 90, 960, 540),
         )
-        self.assertEqual(live_cfg.games, ["robots"])
+        self.assertEqual(live_cfg.start_hour, 19)
+        self.assertEqual(live_cfg.duration_minutes, 30)
+        self.assertEqual(live_cfg.games, ["gnurobots"])
 
 
 class TestRetroCornerSelection(unittest.TestCase):
