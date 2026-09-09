@@ -86,6 +86,30 @@ class PaperCornerManager:
         except (OSError, ValueError, TypeError, KeyError, ArithmeticError):
             return '現在の模擬売買集計は確認待ちです。'
 
+    def announce(self, state, key, text) -> None:
+        """Deliver a one-off corner announcement (overlay+speech, durable)."""
+        reports = state.setdefault('reports', {})
+        key = str(key)
+        if key not in reports:
+            reports[key] = {'text': str(text), 'overlay': False, 'speech': False}
+            self.save(state)
+        report = reports[key]
+        event_id = f'paper-corner:{state.get("date", "nodate")}:{key}'
+        if not report['overlay']:
+            self.overlay(self.g, {'ts': int(self.clock()), 'category': 'system', 'level': 'info',
+                                 'title': 'PAPER 暗号資産コーナー', 'body': report['text'], 'source_id': event_id})
+            report['overlay'] = True
+            self.save(state)
+        if not report['speech']:
+            self.speech(self.g, report['text'], event_id=event_id)
+            report['speech'] = True
+            self.save(state)
+
+    def opening_text(self) -> str:
+        return ('PAPER・暗号資産の模擬売買コーナーです。ゲーム画面を取引ダッシュボードに'
+                f'切り替えました。実際の開始から{self.minutes}分間、相場・BOTの判断・保有の順でお送りします。'
+                + self.summary())
+
     def deliver(self, state, slot, prefix):
         reports = state.setdefault('reports', {})
         key = str(slot)
@@ -245,8 +269,21 @@ class PaperCornerManager:
                 elif previous == PAPER_VIEW_NAME:
                     pass
                 else:
+                    # The match runs to its boundary first (repo rule: never
+                    # kill a match mid-game). Tell viewers the switch is
+                    # pending so the continuing game is not confusing.
+                    self.announce(state, 'switch-notice',
+                                  'まもなくPAPER・暗号資産の模擬売買コーナーのため、試合終了後に画面を切り替えます。')
                     self._require_success(
                         self.coordinator.switch(PAPER_VIEW_NAME), f'{previous}->program view switch')
+                # Post-commit stop verification: the displaced game must be
+                # gone from canonical. A mismatch fails (and retries) instead
+                # of silently showing the dashboard over a live game.
+                committed = self._active_game()
+                if committed is not None and committed != PAPER_VIEW_NAME:
+                    raise PaperCornerError(
+                        f"切替後に旧ゲームが残っています: {committed}")
+                self.announce(state, 'opening', self.opening_text())
                 write_presentation(self.presentation, 'detailed', now=self.clock())
                 started = self.clock()
                 state.update(status='active', started_at=started, ends_at=started + self.minutes * 60)

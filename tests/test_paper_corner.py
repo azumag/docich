@@ -74,10 +74,59 @@ def test_delayed_boundary_runs_full_duration_and_does_not_repeat(tmp_path):
     state=json.loads(mgr.path.read_text())
     assert state['started_at']==due+2100
     assert state['completed_at']-state['started_at']==1800
-    assert len(output)==len(voice)==7
+    assert len(output)==len(voice)==8
     assert all('PAPER' in p['body'] for p in output)
+    assert '切り替えました' in state['reports']['opening']['text']
     assert json.loads(mgr.presentation.read_text())['mode']=='compact'
     assert mgr.tick()=='not-due'
+
+
+def test_switch_notice_announced_when_displacing_game(tmp_path):
+    g=setup(tmp_path)
+    now=[datetime(2026,9,8,22,tzinfo=ZoneInfo('Asia/Tokyo')).timestamp()]
+    due=now[0]
+    coord=FakeCoordinator(active='sorengame')
+
+    def sleep(seconds):
+        if now[0] == due:
+            now[0]+=35*60
+            state=tmp_path/'soren/tmp/state'
+            state.mkdir(parents=True, exist_ok=True)
+            (state/'corner_boundary_prediction.json').write_text(json.dumps({'completed_at':now[0]}))
+        else:
+            now[0]+=seconds
+
+    mgr=manager(g,clock=lambda:now[0],sleep=sleep,
+                overlay=lambda g,p:None,speech=lambda g,t,**kw:None,
+                coordinator=coord)
+    seen={'n':0}
+
+    def _active():
+        seen['n']+=1
+        return 'sorengame' if seen['n'] == 1 else 'paper-view'
+
+    mgr._active_game=_active
+    assert mgr.tick() == 'completed'
+    state=json.loads(mgr.path.read_text())
+    assert '試合終了後に画面を切り替えます' in state['reports']['switch-notice']['text']
+    assert '切り替えました' in state['reports']['opening']['text']
+
+
+def test_commit_verification_fails_when_old_game_remains(tmp_path):
+    g=setup(tmp_path)
+    now=[datetime(2026,9,8,22,tzinfo=ZoneInfo('Asia/Tokyo')).timestamp()]
+    coord=FakeCoordinator(active='sorengame')
+    mgr=manager(g,clock=lambda:now[0],sleep=lambda s:now.__setitem__(0,now[0]+s),
+                overlay=lambda g,p:None,speech=lambda g,t,**kw:None,
+                coordinator=coord)
+    # Coordinator claims success but the old game is still canonical active.
+    mgr._active_game=lambda:'sorengame'
+    import pytest
+    from docich.paper_corner import PaperCornerError
+    mgr.save({'status':'starting','date':'2026-09-08','previous_game':'sorengame',
+              'requested_at':now[0]})
+    with pytest.raises(PaperCornerError):
+        mgr._tick_locked(None,datetime.fromtimestamp(now[0],tz=ZoneInfo('Asia/Tokyo')))
 
 
 def test_restart_retries_only_failed_sink_and_preserves_deadline(tmp_path):
