@@ -67,3 +67,33 @@ def enqueue_speech(g: GlobalConfig, text: str, *, event_id: str = "") -> None:
         raise SorenOutputError("Soren audio queue delivery failed") from exc
     if not isinstance(result, dict) or result.get("ok") is not True:
         raise SorenOutputError("Soren audio queue rejected notification")
+
+
+def enqueue_chat(g: GlobalConfig, text: str, *, source: str = "docich") -> None:
+    """Post one Twitch chat line via the Soren outbound chat queue.
+
+    Same-VM only: runs ``enqueue_chat_message`` from lib/outbound_queue.sh
+    with the Soren root as cwd so its relative queue/pause paths resolve.
+    Chat-paused or duplicate-suppressed posts are sink-side no-ops (rc=0).
+    """
+    import subprocess
+
+    if not text or not text.strip():
+        raise SorenOutputError("empty chat text")
+    root = resolve_soren_root(g)
+    try:
+        proc = subprocess.run(
+            ["bash", "-c", 'source lib/outbound_queue.sh && enqueue_chat_message "$0" "$1"',
+             text, source],
+            cwd=str(root),
+            text=True,
+            capture_output=True,
+            timeout=30.0,
+            check=False,
+        )
+    except Exception as exc:
+        raise SorenOutputError("Soren chat queue delivery failed") from exc
+    if proc.returncode != 0:
+        raise SorenOutputError(
+            f"Soren chat queue rejected notification: {(proc.stderr or '').strip()[:200]}"
+        )
