@@ -1,3 +1,11 @@
+## 2026-09-09 22:4x JST — soviet_now #253 対応完了 (soren_loop respawn gate)
+
+- **症状**: `failed_no_apply`＋retry/backoff待機中にimprove.lock残存→supervisorがsoren_loop respawn抑止→gameplay停止 (diagnostics実測)。
+- **修正**: soviet_now PR #254 (`eba18c18`へマージ)。`lib/supervisor_improve_gate.sh` 新設 — gameplayと競合するactive改善実行中のみrespawn抑止、待機中は許可。state破損等はfail-safe維持。回帰テスト9件＋CI workflow追加。
+- **配備**: docich gitlink更新 PR #196 (`265ea65`) をcontrol planeで本番配備。VM HEAD・対象3ファイルSHA一致。supervisor再起動 (main PID TERM) で新gate有効化、全worker復帰。
+- **実機確認** (owner-only diagnostics×3): 同一待機状態でsoren_loop alive=true、required_down空、duplicates/zombies/stale 0。statusはwarn (AI queue giveup由来、対象外)。generic rc=1/provider障害は#193の範囲で不干渉。
+- **残件**: 9/10 19:00レトロ枠初回実測。Issue #253はclose済み。
+
 ## 2026-09-09 22:5x JST — PR #188 本番配備完了、初回枠は9/10 19:00
 
 - **統合・配備**: CI 4件＋両ワークフロー緑。`b349931` へマージ後、VM operations workflow (deploy/production) で配備成功。VM HEAD `b349931`、対象8ファイル全SHA一致 (retro/corner_boundary/corner_improve/game_switch/paper/soren_output/live toml/gnurobots toml)。
