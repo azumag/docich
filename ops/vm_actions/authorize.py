@@ -17,7 +17,7 @@ def fail(msg):
 def main():
     env=os.environ
     repo=env.get('GITHUB_REPOSITORY','')
-    repo_private=env.get('GITHUB_REPOSITORY_PRIVATE','true').lower()
+    repo_private=env.get('GITHUB_REPOSITORY_PRIVATE','').lower()
     if repo_private not in {'true','false'}:
         fail('invalid repository visibility context')
     checks=[
