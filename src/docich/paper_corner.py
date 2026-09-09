@@ -46,7 +46,21 @@ class PaperCornerManager:
             if not capital.is_finite() or not deployed.is_finite():
                 raise ValueError('nonfinite money')
             positions = len(data['open_positions'])
-            stale = self.clock() - float(data['last_cycle_at']) > max(180, self.g.trading.interval_s * 3)
+            # Data age (not the worker heartbeat): a freshly started but
+            # failing cycle must not look fresh. Older files without snapshot
+            # fields fall back to the cycle timestamp.
+            import math
+            data_as_of = data.get('snapshot_generated_at')
+            if data_as_of is None:
+                worker_summary = data.get('worker_summary')
+                if isinstance(worker_summary, dict):
+                    data_as_of = worker_summary.get('last_success_at', data.get('last_cycle_at'))
+                else:
+                    data_as_of = data.get('last_cycle_at')
+            # Non-finite snapshot ages fail safe to stale, never fresh.
+            age_base = float(data_as_of)
+            stale = (not math.isfinite(age_base)
+                     or self.clock() - age_base > max(180, self.g.trading.interval_s * 3))
             text = f'模擬資金{capital:,.0f}円、投入額{deployed:,.0f}円、保有は{positions}銘柄です。'
             if stale:
                 text += '集計が古いため、最新状況は確認待ちです。'
