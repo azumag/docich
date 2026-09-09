@@ -207,6 +207,7 @@ class DiagnosticsAuthorizeTests(unittest.TestCase):
             "GITHUB_REPOSITORY_ID": "1327276249",
             "GITHUB_REPOSITORY_OWNER": "azumag",
             "GITHUB_REPOSITORY_OWNER_ID": "9018513",
+            "GITHUB_REPOSITORY_PRIVATE": "true",
             "GITHUB_ACTOR": "azumag",
             "GITHUB_ACTOR_ID": "9018513",
             "GITHUB_TRIGGERING_ACTOR": "azumag",

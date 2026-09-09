@@ -64,6 +64,11 @@ class AuthorizeTests(unittest.TestCase):
         p=self.run_auth(INPUT_OPERATION='exec',INPUT_TARGET='production',INPUT_REF='main',INPUT_CONFIRM='production')
         self.assertEqual(p.returncode,0,p.stderr)
 
+    def test_repository_visibility_context_is_required(self):
+        p=self.run_auth(GITHUB_REPOSITORY_PRIVATE='')
+        self.assertNotEqual(p.returncode,0)
+        self.assertIn('invalid repository visibility context',p.stderr)
+
     def test_public_repository_disables_arbitrary_exec(self):
         p=self.run_auth(
             GITHUB_REPOSITORY_PRIVATE='false',
