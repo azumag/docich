@@ -1,6 +1,7 @@
 """Coordinator adapter for the externally supervised Soren game runtime."""
 from __future__ import annotations
 
+import datetime as dt
 import json
 import subprocess
 import time
@@ -49,6 +50,9 @@ class SorenCoordinatorAdapter:
         *,
         timeout_cap_s: float = 15.0,
     ) -> tuple[int, dict]:
+        # Clear first so a timeout (which raises below without setting output)
+        # can never be misattributed to a previous command's stale text.
+        self._last_command_output = ""
         self._check(deadline, cancel)
         timeout = max(0.1, min(timeout_cap_s, deadline - time.monotonic()))
         try:
@@ -131,6 +135,37 @@ class SorenCoordinatorAdapter:
         )
         return rc == 0 and self._ack(payload).get("status") == "cancelled"
 
+    def _diagnostic_log_path(self) -> Path | None:
+        """State-dir log file for lifecycle controller output (failures only)."""
+        state_dir = getattr(self.g, "state_dir", None)
+        if state_dir is None:
+            return None
+        return Path(state_dir) / "logs" / "soren_adapter.log"
+
+    def _record_command_output(self, operation: str, request_id: str, rc: object) -> None:
+        """Append the last controller output for post-mortem diagnosis.
+
+        Best-effort only: logging must never break the adapter call. The
+        output is lifecycle controller text (game state, pids, fixed reason
+        markers); request identity is already public to the operator logs.
+        """
+        try:
+            path = self._diagnostic_log_path()
+            if path is None:
+                return
+            path.parent.mkdir(parents=True, exist_ok=True)
+            stamp = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+            output = (self._last_command_output or "")[-8192:]
+            entry = (
+                f"[{stamp}] operation={operation} request_id={request_id} "
+                f"game={self.spec.game} generation={self.spec.generation} rc={rc}\n"
+                f"{output}\n---\n"
+            )
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(entry)
+        except OSError:
+            pass
+
     def cleanup_runtime(self, deadline: float, cancel) -> None:
         request_id = self._request_id
         if not request_id:
@@ -143,14 +178,19 @@ class SorenCoordinatorAdapter:
         # subprocess cap killed the controller halfway through, leaving the
         # bridge/BGM alive.  Keep this bounded, but above the full game-only
         # teardown contract.
-        rc, _payload = self._run(
-            [str(self.control), "stop-after-boundary", request_id],
-            deadline,
-            cancel,
-            timeout_cap_s=90.0,
-        )
+        try:
+            rc, _payload = self._run(
+                [str(self.control), "stop-after-boundary", request_id],
+                deadline,
+                cancel,
+                timeout_cap_s=90.0,
+            )
+        except ReadinessTimeoutError:
+            self._record_command_output("stop-after-boundary", request_id, "timeout")
+            raise
         if rc != 0:
             reason = self._classify_stop_failure(self._last_command_output)
+            self._record_command_output("stop-after-boundary", request_id, rc)
             raise AdapterError(f"Soren game-only stopに失敗しました rc={rc} reason={reason}")
         self._wait_status(request_id, {"stopped"}, deadline, cancel)
 
