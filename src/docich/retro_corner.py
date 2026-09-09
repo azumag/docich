@@ -426,6 +426,11 @@ class RetroCornerManager:
         date_str = state.get("date")
         if not agents or not isinstance(date_str, str) or not date_str:
             return
+        try:
+            dt.date.fromisoformat(date_str)
+        except ValueError:
+            state["improve_job"] = {"spawned": False, "error": f"日付が不正です: {date_str}"}
+            return
         log_path = Path(self.g.state_dir) / "logs" / f"retro-corner-improve-{date_str}.log"
         argv = [
             sys.executable, "-m", "docich", "--config", str(self.g.config_path),
@@ -452,13 +457,24 @@ class RetroCornerManager:
             game = select_game(self.config.games, dt.date.fromisoformat(date_str))
         except ValueError as exc:
             raise RetroCornerError(f"日付が不正です: {date_str}") from exc
+        agents = self.config.improve_agents if agents is None else agents
+        matches = self.config.improve_matches if matches is None else matches
+        margin_pct = float(self.config.improve_margin_pct) if margin_pct is None else margin_pct
+        if type(matches) is not int or not 1 <= matches <= 10:
+            raise RetroCornerError("improve matches は1-10の整数である必要があります")
+        if (
+            isinstance(margin_pct, bool)
+            or not isinstance(margin_pct, (int, float))
+            or not 0 <= float(margin_pct) <= 100
+        ):
+            raise RetroCornerError("improve margin-pct は0-100の数値である必要があります")
         return run_corner_improve(
             self.g,
             game=game,
             date_str=date_str,
-            agents=self.config.improve_agents if agents is None else agents,
-            matches=self.config.improve_matches if matches is None else matches,
-            margin_pct=float(self.config.improve_margin_pct) if margin_pct is None else margin_pct,
+            agents=agents,
+            matches=matches,
+            margin_pct=float(margin_pct),
             dry_run=dry_run,
         )
 
@@ -741,7 +757,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0
-    except (ConfigError, RetroCornerError) as exc:
+    except (ConfigError, RetroCornerError, RuntimeError) as exc:
         print(f"docich: エラー: {exc}", file=sys.stderr)
         return 2
 

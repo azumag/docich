@@ -1393,8 +1393,9 @@ def _result_from_receipt(
         from_game=result.get("from_game"),
         to_game=result.get("to_game"),
         generation=receipt.get("generation"),
-        error_code=result.get("error_code"),
-        detail=result.get("detail"),
+        # recovery 経路は last_result dict を直接渡すため top-level にフォールバックする。
+        error_code=result.get("error_code", receipt.get("error_code")),
+        detail=result.get("detail", receipt.get("detail")),
         warnings=tuple(warnings),
         cleanup_pending=bool(cleanup_pending or result.get("cleanup_pending")),
         receipt=copy.deepcopy(dict(receipt)),

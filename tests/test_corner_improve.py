@@ -147,3 +147,40 @@ def test_bad_llm_output_raises(tmp_path):
         run_corner_improve(g, game='gnurobots', date_str='2026-09-10', agents='a',
                            llm=lambda prompt: 'not json',
                            evaluator=lambda strat: {'mean_score': 1.0, 'played': 2})
+
+
+def test_parse_candidate_boundaries():
+    keys = set(_weights())
+    key = sorted(keys)[0]
+    assert parse_candidate(f'{{"{key}": 0.001}}', keys) == {key: 0.001}
+    assert parse_candidate(f'{{"{key}": 1000000.0}}', keys) == {key: 1000000.0}
+    with pytest.raises(CornerImproveError):
+        parse_candidate(f'{{"{key}": true}}', keys)
+    with pytest.raises(CornerImproveError):
+        parse_candidate(f'{{"{key}": 0.0009}}', keys)
+    with pytest.raises(CornerImproveError):
+        parse_candidate(f'{{"{key}": NaN}}', keys)
+    with pytest.raises(CornerImproveError):
+        parse_candidate(f'{{"{key}": Infinity}}', keys)
+    try:
+        parse_candidate('{"k1":1,"k2":2,"k3":3,"k4":4,"k5":5,"k6":6}', keys)
+        raise AssertionError('must reject unknown keys')
+    except CornerImproveError as exc:
+        assert 'k6' not in str(exc)
+
+
+def test_already_running_is_skipped(tmp_path):
+    import fcntl
+
+    state_dir = _setup_completed(tmp_path, [10, 20])
+    lock = state_dir / 'locks' / 'corner-improve-gnurobots.lock'
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    held = lock.open('a+')
+    fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        result = run_corner_improve(_G(state_dir), game='gnurobots',
+                                    date_str='2026-09-10', agents='a')
+    finally:
+        fcntl.flock(held.fileno(), fcntl.LOCK_UN)
+        held.close()
+    assert result['status'] == 'skipped' and result['reason'] == 'already-running'
