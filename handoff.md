@@ -1,3 +1,9 @@
+## 2026-09-10 JST — PAPER P0-2 本番配備・実測完了 (PR #201)
+
+- **統合・配備**: CI 4件緑で `0c1f842` へマージ。control planeで本番配備、VM HEAD・対象7ファイルSHA一致・py_compile緑。
+- **worker入替**: trading windowを作り直し (venv PATH固定) → 新コード稼働を確認。実測: snapshot_seq進行中・coverage 44/44・44市場fresh・heartbeat有り・idle。
+- **残件**: 9/10 19:00レトロ枠初回実測 (gnurobots)。P0-3/P0-4/P1はIssue #198の計画どおり未着手。
+
 ## 2026-09-09 22:5x JST — trading worker 復旧 (PAPER P0-1 の後続対応)
 
 - **復旧**: `docich up` (live) でtrading window再作成→稼働。初回はsystem pythonでCCXT無しdegraded→`.venv-trading` PATHで作り直し正常化 (market_count 44・error無し・age 20秒・idle)。
