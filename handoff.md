@@ -1,9 +1,23 @@
-## 2026-09-10 JST — PAPER P0-3 本番配備・実測完了 (PR #204＋修正 #205)
+## 2026-09-10 04:xx JST — PAPER E2E最終再実行：quiesce成功・全フロー完走（ただしtrading session消失の新事象あり）
 
-- **統合・配備**: CI 4件緑 (feature失敗1件は無関係タイミングフレーク、rerunで緑) で `0295099` へマージ。control planeで本番配備、対象4ファイルSHA一致・py_compile緑。
-- **発煙でバグ検出**: 本番 `dashboard-watch --once` が空画面 → trading dir二重化 (`.../trading/trading/*.json`)。修正PR #205 → CI緑 → マージ (`4ac0023`) → 再配備・SHA一致。
-- **本番実測**: 実データ描画を確認 (資金10000・保有5銘柄・取得44/44・注目チャート・判断・約定)。
-- **残件**: 22時PAPER枠でのview切替・復帰の実機確認 (自然発火待ち)。P0-4/P1は未着手。
+- **成功**: 03:50 tick→waiting→starting→draining→境界でquiesce成功（gone-or-zombie修正の実機証明）→paper-view active（03:53:49、1分）→reports switch-notice/opening/0/end全てoverlay+speech true→自動復帰→completed 03:54:55。game_switch ready/sorengame g67 rev 387、err None。soren_adapter.logは03:33の569Bのまま（成功時無書込を確認）。
+- **新事象（要追跡）**: 復帰時 03:54:49–55 に `docich` tmuxセッションが消滅（bash＋trading）しtrading workerも死亡。tmux server自体も再起動（socket mtime 03:54:53）。成功パスで初発（前2回は無事）。kill-serverの痕跡なし、OOMなし。watchdogのbridge relaunch（ targeted kill+new）は無罪。killer未特定。
+- **復旧**: 正規経路（bin/docich＋venv）でdocichセッション＋trading windowを作り直し。status.json更新再開・90秒生存を確認。保護プロセス（ffmpeg 2279973・direct_stream 2279773・webui 2438030）は全て同一PID。direct_streamのPID変動に見えた一件はpgrep self-matchの誤検出。
+- 後始末完了（e2e config・paper json削除、境界復元、/tmp清掃、production tickはnot-due）。バナー消灯済み。
+
+## 2026-09-10 04:xx JST — P0 quiesce修正が完結（#257+#258+#216、全てマージ・配備済み）
+
+- **root cause（2段階で確定）**: ①境界トリガー改善jobがentry checkとdaemon killの間にspawn→late-child検査が即失敗（4/4 quiesce失敗、9/8と同系統）。#257で同一helperによるdrain化（最大3R、stuckは従来通り失敗）。②真犯人はKILL直後のreap前ゾンビを`kill -0`が生存と誤判定（VM再現10/10・idle時0/8）。#258でgone-or-zombie＋settle化（/proc無しはps仲裁、不確定は生存側fail-closed）。
+- **診断強化（#216）**: soren_adapter.log（失敗時のcontroller出力追記）が初証拠を記録（`TERM→KILL→停止を確認できません`）。overlayは寛容読み＋self-healing、overlay_notify.shはカテゴリgate（allowlist 8件はdocichと一致）。
+- **配備**: soviet_now #257(`5c9edec`)→#258(`38e2c4a`)、docich #216(`a05c554`)＋gitlink更新(#217, #218)→control plane配備。VM HEAD `50acc9d`、settle helper3ファイルSHA一致、/home/ubuntu/sorenとgitlink md5一致。
+- **Stage 2 E2E最終成功 (03:50-04:02)**: waiting→starting→draining→quiesce成功→paper-view active（switch-notice/opening/0/end全配送）→自動復帰→completed、GS ready/sorengame g67。soren_adapter.logは成功時無書込。後始末完了（paper_corner.json削除により今夜19:00/22:00枠は正常開始可能、境界stamp復元、encoder/direct_stream同一PID）。
+- **新フォローアップ**: Issue #219 — 復帰時に共有docichセッション＋trading worker消滅（03:54:49-55、killer未特定、9/8 21:19のtrading SIGHUPと同系統の疑い）。tradingは正規経路で復旧済み（44市場fresh・保護PID維持）。
+
+## 2026-09-10 JST — PAPER P0-3 本番配備・実測完了（PR #204/#205/#207/#208/#209/#210）
+
+- **統合・配備**: CI 4件緑で `0295099` へマージ・control plane配備。発煙で trading dir二重化を検出→#205で修正 (`4ac0023`)。
+- **本番Stage1と実機修正**: ①readinessがgame window paneを見て失敗→#207でdashboard実体window（session birth）へ。②`:0`インデックスは名前照合不可→#208でgame window以外の唯一windowとして解決。③単発確認が起動と競合→#209でポーリング化。④フレーム末尾改行でヘッダーがスクロールアウト（cap固定で実測確定）→#210で`end=""`化。全てマージ・配備済み（VM HEAD `50acc9d`、dashboard.py SHA一致）。
+- **実測**: Stage1 GREEN（materialize→readiness→marker→cleanup）、本番描画（資金・保有5銘柄・取得44/44・チャート）。P0-4/P1は未着手。
 
 ## 2026-09-10 JST — PAPER P0-2 本番配備・実測完了 (PR #201)
 
