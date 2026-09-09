@@ -158,6 +158,72 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
             self.assertEqual(calls[1], [str(adapter.control), "fresh-start", "req-5"])
             self.assertIsNone(adapter._fresh_started_at)
 
+    def make_stateful_adapter(self, root: Path) -> SorenCoordinatorAdapter:
+        adapter = self.make_adapter(root)
+        adapter.g = SimpleNamespace(state_dir=root / "state")
+        return adapter
+
+    def test_cleanup_failure_appends_diagnostic_log(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            adapter = self.make_stateful_adapter(root)
+            adapter._request_id = "req-9"
+            body = "改善プロセスの停止確認に失敗。request=req-9"
+            result = SimpleNamespace(returncode=1, stdout=body, stderr="")
+            with patch("docich.adapters.soren.subprocess.run", return_value=result):
+                with self.assertRaises(AdapterError):
+                    adapter.cleanup_runtime(time.monotonic() + 30, None)
+                with self.assertRaises(AdapterError):
+                    adapter.cleanup_runtime(time.monotonic() + 30, None)
+            log = root / "state" / "logs" / "soren_adapter.log"
+            text = log.read_text(encoding="utf-8")
+            self.assertEqual(text.count("operation=stop-after-boundary request_id=req-9"), 2)
+            self.assertIn("rc=1", text)
+            self.assertIn(body, text)
+            self.assertIn("generation=7", text)
+
+    def test_cleanup_timeout_records_timeout_entry_without_stale_output(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            adapter = self.make_stateful_adapter(root)
+            adapter._request_id = "req-10"
+            adapter._last_command_output = "STALE-MARKER"
+            with patch("docich.adapters.soren.subprocess.run",
+                       side_effect=subprocess.TimeoutExpired(cmd="x", timeout=1)):
+                from docich.game_switch import ReadinessTimeoutError
+                with self.assertRaises(ReadinessTimeoutError):
+                    adapter.cleanup_runtime(time.monotonic() + 30, None)
+            text = (root / "state" / "logs" / "soren_adapter.log").read_text(encoding="utf-8")
+            self.assertIn("rc=timeout", text)
+            self.assertNotIn("STALE-MARKER", text)
+
+    def test_diagnostic_log_never_breaks_cleanup(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            adapter = self.make_adapter(root)
+            blocker = root / "blocker"
+            blocker.write_text("file, not dir")
+            adapter.g = SimpleNamespace(state_dir=blocker)
+            adapter._request_id = "req-11"
+            result = SimpleNamespace(returncode=1, stdout="改善プロセスの停止確認に失敗", stderr="")
+            with patch("docich.adapters.soren.subprocess.run", return_value=result):
+                with self.assertRaisesRegex(AdapterError, "reason=improve_stop_failed"):
+                    adapter.cleanup_runtime(time.monotonic() + 30, None)
+
+    def test_diagnostic_log_bounds_output(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            adapter = self.make_stateful_adapter(root)
+            adapter._request_id = "req-12"
+            big = "x" * 20000
+            result = SimpleNamespace(returncode=1, stdout=big, stderr="")
+            with patch("docich.adapters.soren.subprocess.run", return_value=result):
+                with self.assertRaises(AdapterError):
+                    adapter.cleanup_runtime(time.monotonic() + 30, None)
+            text = (root / "state" / "logs" / "soren_adapter.log").read_text(encoding="utf-8")
+            self.assertLessEqual(len(text), 8192 + 512)
+
 
 if __name__ == "__main__":
     unittest.main()

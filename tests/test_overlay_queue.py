@@ -65,15 +65,32 @@ class TestOverlayQueue(unittest.TestCase):
             self.assertEqual(rows[0]["source_id"], "fill:paper:BTC/JPY:1")
             self.assertEqual(rows[0]["ts"], base + 1)
 
-    def test_strict_append_refuses_corrupt_existing_queue(self):
+    def test_strict_append_heals_corrupt_existing_queue(self):
+        # 2026-09-10 production incident: a category='improve' line written by
+        # another writer bricked every strict append. Appends now skip invalid
+        # pre-existing lines (self-healing rewrite) while the NEW payload
+        # stays strictly validated.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "soren"
             path = overlay_events_path(root)
             path.parent.mkdir(parents=True)
-            path.write_text("not-json\n", encoding="utf-8")
+            path.write_text(
+                "not-json\n" + json.dumps(event(title="OLD-VALID")) + "\n"
+                + json.dumps({**event(title="BAD-CAT"), "category": "improve"}) + "\n",
+                encoding="utf-8",
+            )
+            self.assertTrue(append_event(root, event(title="NEW"), strict=True, regenerate=False))
+            rows = load_events(root, strict=True)
+            self.assertEqual([row["title"] for row in rows], ["OLD-VALID", "NEW"])
+
+    def test_strict_append_still_rejects_invalid_new_payload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "soren"
+            bad = dict(event(title="BAD-NEW"))
+            bad["category"] = "improve"
             with self.assertRaises(OverlayQueueError):
-                append_event(root, event(), strict=True, regenerate=False)
-            self.assertEqual(path.read_text(encoding="utf-8"), "not-json\n")
+                append_event(root, bad, strict=True, regenerate=False)
+            self.assertFalse(overlay_events_path(root).exists())
 
     def test_non_strict_load_preserves_webui_skip_corrupt_behavior(self):
         with tempfile.TemporaryDirectory() as tmp:
