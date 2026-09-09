@@ -11,16 +11,46 @@ strategy diff automatically (see retro_corner.describe_strategy_change).
 from __future__ import annotations
 
 import datetime as dt
+import fcntl
 import json
 import os
 import re
+from contextlib import contextmanager
 from pathlib import Path
+from .resolver import strategy_path
+from .resolver.improve import (
+    _append_log,
+    _game_defaults,
+    _promote,
+    evaluate_gnurobots,
+    read_strategy_for_game,
+)
 
 JSON_FENCE_RE = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
 
 
 class CornerImproveError(RuntimeError):
     """User-facing failure in the end-of-corner improvement job."""
+
+
+@contextmanager
+def _singleflight(state_dir, game: str):
+    """改善ジョブの単一飛行。手動再実行と切り離しjobの二重 promote を防ぐ。"""
+    path = Path(state_dir) / "locks" / f"corner-improve-{game}.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+")
+    try:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+        else:
+            try:
+                yield True
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
 
 
 def _safe_detail(value: BaseException | str) -> str:
@@ -160,17 +190,31 @@ def run_corner_improve(
     evaluator=None,
 ) -> dict:
     """指定日次コーナー終了後の改善を1回実行する。結果サマリ dict を返す。"""
-    from .resolver import strategy_path
-    from .resolver.improve import (
-        _append_log,
-        _game_defaults,
-        _promote,
-        evaluate_gnurobots,
-        read_strategy_for_game,
-    )
 
     if game != "gnurobots":
         return {"status": "skipped", "reason": f"unsupported-game:{game}"}
+    with _singleflight(g.state_dir, game) as single:
+        if not single:
+            return {"status": "skipped", "reason": "already-running"}
+        return _run_corner_improve(
+            g, game=game, date_str=date_str, agents=agents,
+            matches=matches, margin_pct=margin_pct, dry_run=dry_run,
+            llm=llm, evaluator=evaluator,
+        )
+
+
+def _run_corner_improve(
+    g,
+    *,
+    game: str,
+    date_str: str,
+    agents: str,
+    matches: int = 2,
+    margin_pct: float = 10.0,
+    dry_run: bool = False,
+    llm=None,
+    evaluator=None,
+) -> dict:
     state_path = Path(g.state_dir) / "retro_corner.json"
     try:
         state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -231,7 +275,11 @@ def run_corner_improve(
         "candidate_mean": round(candidate_mean, 1), "candidate_played": played,
         "matches": matches, "margin_pct": margin_pct,
     }
-    if played > 0 and candidate_mean > stats["mean"] * (1 + margin_pct / 100.0):
+    # 異ドメイン比較の明示化: candidate は headless 評価、baseline は本番実戦ログ。
+    # daemon の同ドメイン比較より緩いことを自覚し、baseline<=0 の不定時は
+    # 正スコア必須 (閾値0超) とする。matches=2 の誤検出余地は既知の弱み。
+    threshold = stats["mean"] * (1 + margin_pct / 100.0) if stats["mean"] > 0 else 0.0
+    if played > 0 and candidate_mean > threshold:
         s_file = strategy_path(g.state_dir, game)
         try:
             old_raw = json.loads(Path(s_file).read_text(encoding="utf-8"))

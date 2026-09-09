@@ -661,6 +661,10 @@ class TestFailureRollback(CoordinatorTestBase):
         self.assertEqual(state["active"]["game"], "nethack")
         old = self.factory.adapter("nethack", 1)
         self.assertEqual(old.runtime.events.count("agent_start"), 2)
+        # recovery 経路でも起因エラーが receipt/last_error に残る (unknown 対策)。
+        self.assertIsNotNone(recovered.error_code)
+        self.assertIsNotNone(recovered.detail)
+        self.assertIsNotNone((state.get("last_error") or {}).get("error_code"))
 
     def test_rollback_failure_leaves_failed_then_recover_restores(self):
         self.behaviors["nethack"]["materialize_error"] = FailOn(AdapterError("rollback boom"), 2)
