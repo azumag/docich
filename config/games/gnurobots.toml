@@ -19,6 +19,11 @@ font_size = 18
 [agent]
 enabled = false  # ゲームが resolver script で自走するため per-move agent は不要
 
+# レトロコーナー用の自己完結宣言と開始時チャット投稿文。
+[corner]
+self_play = true
+intro = "GNU Robotsは敵ロボットから逃げながら自機を操る古典プログラミングゲームです。改善済み戦略が自動プレイし、ロボットを岩や残骸にぶつけて消していきます。"
+
 # Twitch 配信カテゴリー・タイトル連動 (soviet_now update_stream_game.sh が読む)。
 # IGDB に GNU Robots 項目は無い (2026-09-06 照合済み)。ボットプログラミング実況として
 # Software and Game Development (1469308723) で代替。

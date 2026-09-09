@@ -3104,6 +3104,8 @@ class GameSwitchCoordinator:
             warnings=warnings,
             finish_receipt=True,
             cleanup_pending_out=pending_out,
+            error_code=error_code,
+            detail=detail,
         )
         cleanup_pending = cleanup_pending or any(pending_out)
         if restored is None:
@@ -3142,6 +3144,8 @@ class GameSwitchCoordinator:
         warnings: list[str],
         finish_receipt: bool = True,
         cleanup_pending_out: list[bool] | None = None,
+        error_code: str | None = None,
+        detail: str | None = None,
     ) -> Mapping[str, object] | None:
         """Restore the previous runtime.  Returns the terminal receipt when
         the restore commits, or None when the restore failed."""
@@ -3218,8 +3222,8 @@ class GameSwitchCoordinator:
                 "to_game": target,
                 "generation": generation,
                 "restored_generation": int(previous["generation"]),
-                "error_code": None,
-                "detail": None,
+                "error_code": error_code,
+                "detail": detail,
             }
             tx.transition(
                 {"rolling_back", "failed"}, "ready",
@@ -3231,7 +3235,7 @@ class GameSwitchCoordinator:
                     "request_id": None,
                     "deadline_at": None,
                     "last_result": last_result,
-                    "last_error": None,
+                    "last_error": {"error_code": error_code, "detail": detail},
                 },
                 crash_hook=self.crash_hook,
             )
@@ -3332,8 +3336,8 @@ class GameSwitchCoordinator:
             "to_game": target,
             "generation": generation,
             "restored_generation": restore_generation,
-            "error_code": None,
-            "detail": None,
+            "error_code": error_code,
+            "detail": detail,
         }
         tx.transition(
             {"rolling_back", "failed"}, "ready",
@@ -3345,7 +3349,7 @@ class GameSwitchCoordinator:
                 "request_id": None,
                 "deadline_at": None,
                 "last_result": last_result,
-                "last_error": None,
+                "last_error": {"error_code": error_code, "detail": detail},
             },
             crash_hook=self.crash_hook,
         )
@@ -3974,6 +3978,8 @@ class GameSwitchCoordinator:
             warnings=warnings,
             finish_receipt=False,
             cleanup_pending_out=pending_out,
+            error_code=str(last_result.get("error_code") or "recovery"),
+            detail=str(last_result.get("detail") or "crash後にrecoveryで復旧しました"),
         )
         if restored is None:
             return self._recover_fail_locked(

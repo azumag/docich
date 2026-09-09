@@ -41,15 +41,15 @@ notification_speech_enabled = true
 [rotation]
 games = []
 
-# 20:00 JST以降の改善/予想終了境界を待ち、実際の切替完了から1時間Robotsを載せる。
+# 19:00 JSTに開始し、実際の切替完了から30分GNU Robotsを載せる。
 # docich側canonicalがidleなら、終了時はstopして背景のSorenへ自然に戻る。
 [retro_corner]
 enabled = true
 require_program_boundary = true
-start_hour = 20
-duration_minutes = 60
+start_hour = 19
+duration_minutes = 30
 timezone = "Asia/Tokyo"
-games = ["robots"]
+games = ["gnurobots"]
 
 [paper_corner]
 enabled = true
