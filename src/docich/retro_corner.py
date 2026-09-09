@@ -45,6 +45,9 @@ class RetroCornerConfig:
     duration_minutes: int = 30
     timezone: str = "Asia/Tokyo"
     games: list[str] = field(default_factory=lambda: ["gnurobots"])
+    improve_agents: str = ""
+    improve_matches: int = 2
+    improve_margin_pct: float = 10.0
 
 
 @dataclass(frozen=True)
@@ -90,6 +93,9 @@ def load_retro_corner_config(g: GlobalConfig) -> RetroCornerConfig:
         duration_minutes=raw.get("duration_minutes", 30),
         timezone=raw.get("timezone", "Asia/Tokyo"),
         games=raw.get("games", ["gnurobots"]),
+        improve_agents=raw.get("improve_agents", ""),
+        improve_matches=raw.get("improve_matches", 2),
+        improve_margin_pct=raw.get("improve_margin_pct", 10.0),
     )
     if type(cfg.require_program_boundary) is not bool:
         raise RetroCornerError("require_program_boundary must be boolean")
@@ -111,6 +117,16 @@ def load_retro_corner_config(g: GlobalConfig) -> RetroCornerConfig:
         or not all(isinstance(name, str) for name in cfg.games)
     ):
         raise RetroCornerError("retro_corner.games は空でないゲーム名リストである必要があります")
+    if not isinstance(cfg.improve_agents, str):
+        raise RetroCornerError("retro_corner.improve_agents は文字列である必要があります")
+    if type(cfg.improve_matches) is not int or not 1 <= cfg.improve_matches <= 10:
+        raise RetroCornerError("retro_corner.improve_matches は1-10の整数である必要があります")
+    if (
+        isinstance(cfg.improve_margin_pct, bool)
+        or not isinstance(cfg.improve_margin_pct, (int, float))
+        or not 0 <= float(cfg.improve_margin_pct) <= 100
+    ):
+        raise RetroCornerError("retro_corner.improve_margin_pct は0-100の数値である必要があります")
     try:
         games = [validate_game_name(name) for name in cfg.games]
     except NameValidationError as exc:
@@ -124,6 +140,9 @@ def load_retro_corner_config(g: GlobalConfig) -> RetroCornerConfig:
         duration_minutes=cfg.duration_minutes,
         timezone=cfg.timezone,
         games=games,
+        improve_agents=cfg.improve_agents,
+        improve_matches=cfg.improve_matches,
+        improve_margin_pct=float(cfg.improve_margin_pct),
     )
 
 
@@ -196,6 +215,7 @@ class RetroCornerManager:
         active_game_reader: Callable[[], str | None] | None = None,
         ensure_runtime: Callable[[], None] | None = None,
         chat: Callable[[str], None] | None = None,
+        spawn=None,
     ):
         self.g = g
         self.config = config or load_retro_corner_config(g)
@@ -209,6 +229,7 @@ class RetroCornerManager:
         self._active_game_reader = active_game_reader or self._canonical_active_game
         self._ensure_runtime = ensure_runtime or self._default_ensure_runtime
         self._chat = chat or (lambda text: enqueue_chat(self.g, text, source="retro-corner"))
+        self._spawn = spawn or self._default_spawn_improve_proc
         self.state_path = Path(g.state_dir) / STATE_FILE
         self.lock_path = Path(g.state_dir) / LOCK_FILE
         self.tick_guard_path = Path(g.state_dir) / TICK_GUARD_FILE
@@ -380,6 +401,67 @@ class RetroCornerManager:
             detail=detail if isinstance(detail, str) else None,
         )
 
+    def _default_spawn_improve_proc(self, argv: list[str], log_path: Path) -> None:
+        import subprocess
+
+        Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+        # 終了時改善の LLM 実実行は live 設定の improve_agents 非空が合意の記録。
+        # 子プロセスへ明示許可を引き継ぐ (tick の service 環境には無いため)。
+        env = dict(os.environ)
+        env["DOCICH_ALLOW_REAL_AI"] = "1"
+        with open(log_path, "ab") as log_fh:
+            subprocess.Popen(
+                argv,
+                stdin=subprocess.DEVNULL,
+                stdout=log_fh,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                cwd=str(_repo_root()),
+                env=env,
+            )
+
+    def _spawn_improve_once(self, state: dict[str, object]) -> None:
+        """終了時改善ジョブを切り離して起動する。失敗しても finish を壊さない。"""
+        agents = (self.config.improve_agents or "").strip()
+        date_str = state.get("date")
+        if not agents or not isinstance(date_str, str) or not date_str:
+            return
+        log_path = Path(self.g.state_dir) / "logs" / f"retro-corner-improve-{date_str}.log"
+        argv = [
+            sys.executable, "-m", "docich", "--config", str(self.g.config_path),
+            "retro-corner", "improve-once", "--date", date_str,
+        ]
+        try:
+            self._spawn(argv, log_path)
+            state["improve_job"] = {"spawned": True, "date": date_str, "log": str(log_path)}
+        except Exception as exc:
+            state["improve_job"] = {"spawned": False, "error": _safe_detail(exc)}
+
+    def improve_once(
+        self,
+        date_str: str,
+        *,
+        agents: str | None = None,
+        matches: int | None = None,
+        margin_pct: float | None = None,
+        dry_run: bool = False,
+    ) -> dict:
+        from .corner_improve import run_corner_improve
+
+        try:
+            game = select_game(self.config.games, dt.date.fromisoformat(date_str))
+        except ValueError as exc:
+            raise RetroCornerError(f"日付が不正です: {date_str}") from exc
+        return run_corner_improve(
+            self.g,
+            game=game,
+            date_str=date_str,
+            agents=self.config.improve_agents if agents is None else agents,
+            matches=self.config.improve_matches if matches is None else matches,
+            margin_pct=float(self.config.improve_margin_pct) if margin_pct is None else margin_pct,
+            dry_run=dry_run,
+        )
+
     def _finish_locked(self, state: dict[str, object], completed_at: dt.datetime) -> CornerResult:
         game = state.get("game")
         previous = state.get("previous_game")
@@ -407,6 +489,7 @@ class RetroCornerManager:
                 completed_at=completed_at.isoformat(),
                 last_error=None,
             )
+            self._spawn_improve_once(state)
             self._write_state(state)
             return self._state_result(state)
         except Exception as exc:
@@ -606,6 +689,12 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("stop")
     status = sub.add_parser("status")
     status.add_argument("--json", action="store_true")
+    once = sub.add_parser("improve-once")
+    once.add_argument("--date", required=True, help="対象コーナー日 (YYYY-MM-DD)")
+    once.add_argument("--agents", default=None, help="LLM委任先 (既定は設定値)")
+    once.add_argument("--matches", type=int, default=None)
+    once.add_argument("--margin-pct", type=float, default=None)
+    once.add_argument("--dry-run", action="store_true")
     return parser
 
 
@@ -625,6 +714,18 @@ def main(argv: list[str] | None = None) -> int:
                     f"status={state.get('status')} game={state.get('game')} "
                     f"previous={state.get('previous_game')} ends_at={state.get('ends_at')}"
                 )
+            return 0
+        if args.command == "improve-once":
+            from .corner_improve import CornerImproveError
+            try:
+                summary = manager.improve_once(
+                    args.date, agents=args.agents, matches=args.matches,
+                    margin_pct=args.margin_pct, dry_run=args.dry_run,
+                )
+            except CornerImproveError as exc:
+                print(f"docich: エラー: {exc}", file=sys.stderr)
+                return 2
+            print(json.dumps(summary, ensure_ascii=False, separators=(",", ":")))
             return 0
         result = getattr(manager, args.command)()
         print(

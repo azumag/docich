@@ -535,3 +535,64 @@ class TestRetroCornerTickGuard(RetroCornerTestBase):
             held.close()
         #  fixture 時刻 (2026-09-06) の当日末は実時刻より過去のため即時 expired。
         self.assertEqual(result.status, "expired")
+
+
+class TestRetroCornerImproveSpawn(RetroCornerTestBase):
+    def _manager_with_spawn(self, current, spawned, agents):
+        from dataclasses import replace
+        cfg = replace(self.cfg, improve_agents=agents)
+        coordinator = FakeCoordinator(current)
+        mgr = RetroCornerManager(
+            self.g,
+            config=cfg,
+            coordinator=coordinator,
+            now=lambda: self.now_value,
+            sleep=lambda seconds: None,
+            active_game_reader=lambda: current[0],
+            ensure_runtime=lambda: None,
+            chat=lambda text: None,
+            spawn=lambda argv, log_path: spawned.append((argv, log_path)),
+        )
+        return mgr
+
+    def test_finish_spawns_improve_once(self):
+        spawned = []
+        mgr = self._manager_with_spawn([None], spawned, 'agent-a,agent-b')
+        self.assertEqual(mgr.start().status, 'completed')
+        self.assertEqual(len(spawned), 1)
+        argv, log_path = spawned[0]
+        self.assertIn('improve-once', argv)
+        self.assertIn('2026-09-06', argv)
+        state = mgr.status()
+        self.assertEqual(state.get('improve_job', {}).get('spawned'), True)
+
+    def test_no_spawn_without_agents(self):
+        spawned = []
+        mgr = self._manager_with_spawn([None], spawned, '')
+        self.assertEqual(mgr.start().status, 'completed')
+        self.assertEqual(spawned, [])
+
+
+class TestRetroCornerImproveSpawnEnv(RetroCornerTestBase):
+    def test_spawn_passes_real_ai_consent_to_child(self):
+        import subprocess
+
+        calls = []
+        real_popen = subprocess.Popen
+
+        def fake_popen(*args, **kwargs):
+            calls.append((args, kwargs))
+            return real_popen(['true'], stdout=subprocess.DEVNULL)
+
+        import subprocess as sp_module
+        mgr, _ = self.manager(["sorengame"])
+        old = sp_module.Popen
+        sp_module.Popen = fake_popen
+        try:
+            mgr._default_spawn_improve_proc(['echo', 'hi'], self.root / 'run' / 'x.log')
+        finally:
+            sp_module.Popen = old
+        assert len(calls) == 1
+        _, kwargs = calls[0]
+        assert kwargs['env']['DOCICH_ALLOW_REAL_AI'] == '1'
+        assert kwargs['start_new_session'] is True
