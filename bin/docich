@@ -6,4 +6,22 @@ set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
 
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+
+# PAPER worker has optional market-data dependencies installed in its dedicated
+# virtualenv.  A recovery may invoke `docich up` from a shell whose PATH does
+# not contain that virtualenv; the tmux child must still start with the same
+# interpreter as the canonical paper-runtime service.  Keep every other
+# command on the caller's normal python3, and fail open to it in development
+# checkouts where the trading virtualenv is intentionally absent.
+args=("$@")
+for ((i = 0; i + 1 < ${#args[@]}; i++)); do
+    if [[ "${args[i]}" == "run" && "${args[i + 1]}" == "trading" ]]; then
+        trading_python="$ROOT/.venv-trading/bin/python3"
+        if [[ -x "$trading_python" ]]; then
+            exec "$trading_python" -m docich "$@"
+        fi
+        break
+    fi
+done
+
 exec python3 -m docich "$@"
