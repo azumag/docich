@@ -13,7 +13,7 @@ Observed sources (all read-only):
   - tmp/state/worker_duplicates.json (supervisor duplicate report)
   - tmp/state/.ai_generation_locks/<lane>/owner lock files
   - tmp/state/ai_stats/YYYYMMDD.jsonl structured telemetry
-  - tmp/state/improve_state.json, improve lock/monitor/retry files
+  - tmp/state/improve_state.json, improve lock/monitor/retry/gate markers
   - deployed git HEADs (docich + intended soviet_now gitlink)
 
 Never emitted: secrets, tokens, raw environment, prompt/generation bodies,
@@ -457,6 +457,27 @@ def _collect_improvement(soren, now):
     if status in ("running", "manual") and not pid_alive:
         stale = True
     duration = int(now - started) if running and started else 0
+
+    # Mirror the scheduler's stable file-backed gates without reading arbitrary
+    # payloads. These fixed enums make idle retries actionable while preserving
+    # the diagnostics contract: no policy evaluation, environment disclosure,
+    # or runtime mutation occurs here.
+    blocked_by = []
+    if not running:
+        if backing_off:
+            blocked_by.append("rate_limit_backoff")
+        if (state_dir / "peak_hour_defer").is_file():
+            blocked_by.append("peak_hour_defer")
+        # Soren's _improve_ab_pending intentionally treats mere presence as a
+        # blocker until AB bookkeeping removes the state, including malformed
+        # or aborted state.
+        if (state_dir / "ab_state.json").exists():
+            blocked_by.append("ab_pending")
+        if (state_dir / "improve_daemon.paused").is_file():
+            blocked_by.append("daemon_paused")
+        if (lock_present or retry_pending) and not blocked_by:
+            blocked_by.append("unknown")
+
     return {
         "running": bool(running),
         "status": _redact_text(status, 32),
@@ -473,6 +494,7 @@ def _collect_improvement(soren, now):
         "retry_pending": bool(retry_pending),
         "retry_age_sec": retry_age,
         "retry_bytes": retry_bytes,
+        "blocked_by": blocked_by,
         "monitor": {
             "checked_at": _parse_epoch(monitor.get("checked_at")),
             "status": _redact_text(str(monitor.get("status") or ""), 32),
