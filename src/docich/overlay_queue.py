@@ -263,14 +263,19 @@ def append_event(
     if keep_count <= 0:
         raise OverlayQueueError("keepは1以上である必要があります")
     with _overlay_lock(root):
-        existing = load_events(root, strict=strict)
+        # Pre-existing lines load leniently: one poisoned line from another
+        # writer must never brick all future appends (2026-09-10 production
+        # incident: a category='improve' line broke every strict append).
+        # Invalid existing lines are dropped by the rewrite below
+        # (self-healing). The NEW payload above stays strictly validated, so
+        # a bad writer still fails closed on its own data.
+        existing = load_events(root, strict=False)
         normalized_existing: list[dict[str, Any]] = []
         for item in existing:
             try:
                 normalized_existing.append(validate_event(item))
             except OverlayQueueError:
-                if strict:
-                    raise
+                continue
         source_id = normalized.get("source_id")
         if source_id is not None:
             matched = [item for item in normalized_existing if item.get("source_id") == source_id]
