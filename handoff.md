@@ -1,3 +1,12 @@
+## 2026-09-09 22:3x JST — 19時gnurobots枠の新設を実装 (PR #188、CI確認中)
+
+- **決定**: 19:00–19:30はgnurobots単独 (robotsはテスト用のため回転から除外)。境界待ちは共通化＋待ち行列 (FIFO厳格、日跨ぎexpired)。開始時にチャット投稿 (intro＋戦略比較)。改善はデーモン常駐をやめ、コーナー終了時にLLM委任で1回実行 (sorengameと同一dispatch)。
+- **P1究明 (9/8 20時枠の失敗)**: 20:00:18要求→境界待ち3分44秒→20:04:02到達→quiesceのstop-after-boundary rc=1 (改善プロセスの停止確認に失敗) →20:04:05 rollback。rollback自体はfail-closedの正常動作。コーナーがunknownになった主因はrollback receiptがerror_code/detailをNone固定で捨てていたこと (本PRで伝播化)。improve停止の分岐特定は不可 (control子プロセスのstderrはadapterが分類後に破棄しsoren_loop.logに残らない)。当時IMPROVE稼働中＋quiesce窓約3秒が状況証拠。
+- **実装**: ブランチ `codex/retro-19h-gnurobots` (`5f6b2de` 設定・検証・rollback伝播、`ddf8e8f` キュー・開始投稿、`dde768b` 終了時LLM改善)。対象155件＋11subtests緑。フル1531 passed、失敗10件はorigin/mainと同一の既存環境失敗 (submodule未取得由来)。PR #188作成。
+- **VM状態 (実測)**: docich `7e46aef` はmain `795f91f` とsubmodule差のみでtracked一致。本番9/9 20時枠は境界待ちの末20:18にsorengame→robotsへ切替成功・gen54 active (機構の自己回復を確認)。コーナー駆動はuserバス毎分timer＋単発tick (systemバスには無い)。
+- **他ゲーム**: issue #189 nsnake / #190 ninvaders / #191 pacman4console / #192 moon-buggy / #193 bastet を発行 (bot整備→E2E→候補入り)。
+- **未実施**: PR #188のCI・レビュー・main統合、control plane経由の配備、gnurobots連続改善daemonの停止、9/10 19:00初回枠の実測確認。
+
 ## 2026-09-09 — PAPERコーナーは22時予定、改善・予想の区切りで開始
 
 - ユーザー承認: 本番PAPER worker・通知・読み上げを有効化。毎日22:00 JST予定、実開始から30分。既存20時レトロ枠も改善サイクル完了または予想確定の境界を待ち、実際のゲーム切替完了から60分を確保。実取引/private API/鍵利用は未承認で実装しない。
