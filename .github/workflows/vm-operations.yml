@@ -291,7 +291,16 @@ jobs:
         run: |
           set -euo pipefail
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
-          ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "diagnostics docich production $SHA"
+          error_file="$RUNNER_TEMP/diagnostics-gateway.err"
+          if ! diagnostics_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "diagnostics docich production $SHA" 2>"$error_file")"; then
+            if grep -Fq 'VM operation rejected' "$error_file"; then
+              echo '::error::Installed VM gateway does not accept diagnostics. Activate the reviewed root-owned gateway through the trusted owner-only privileged install path, then rerun diagnostics.' >&2
+            else
+              cat "$error_file" >&2
+            fi
+            exit 1
+          fi
+          printf '%s\n' "$diagnostics_json"
 
       - name: Execute owner command on VM
         if: ${{ steps.auth.outputs.operation == 'exec' }}
