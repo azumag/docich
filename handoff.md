@@ -1,3 +1,11 @@
+## 2026-09-09 22:4x JST — PAPER P0-1 診断 (Issue #198へ根拠追記)
+
+- **症状**: 9/9 22:16開始のPAPER枠で7回連続「集計が古いため、最新状況は確認待ちです」。
+- **原因確定 (worker停止)**: trading workerが21:19:57にSIGHUPで死亡、以後不在。status.jsonは21:19:42のcycle 1114で凍結 (frame_error 0・直前成功のためAPI/書込障害ではない)。live `state_dir=run-soren-live`一致でprofile不一致でもない。
+- **時系列**: 21:18:49レトロ枠終了→switch robots→sorengame→21:19:52 boundary→quiesce (agent SIGHUPは想定内)→probe停滞 (soren_loop dead、#253と同一時間帯)→21:19:57 trading SIGHUP (想定外)→switch 50分停滞→22:09:19 supervisor再起動後のloop復帰でcommit→22:16 PAPER active化。
+- **未確定**: trading windowの殺害主体 (adapter teardownはownership付きで共有sessionに届かない実装。tmux server死亡の可能性もsocket mtime上書きで断定不可)。`[watchdog] enabled=false`＋runtime oneshotのため自動復旧なし。
+- **対応**: Issue #198へコメント投稿済み (`issuecomment-5602846820`)。コード変更・再起動なし。P0-2 (heartbeat gate・復旧経路) は設計判断が必要なため未着手。
+
 ## 2026-09-09 22:4x JST — soviet_now #253 対応完了 (soren_loop respawn gate)
 
 - **症状**: `failed_no_apply`＋retry/backoff待機中にimprove.lock残存→supervisorがsoren_loop respawn抑止→gameplay停止 (diagnostics実測)。
