@@ -116,9 +116,53 @@ def _fresh_count(snapshot: Mapping[str, object]) -> tuple[int, int]:
     return fresh, len(freshness)
 
 
-def _focus_symbol(snapshot: Mapping[str, object]) -> str | None:
-    """Deterministic focus: largest position, else first eligible symbol."""
+_REASON_JA = {
+    "momentum_breakout": "モメンタム上振れ",
+    "mean_reversion_discount": "平均乖離割安",
+    "relative_value_lag": "相対出遅れ",
+    "insufficient_depth": "板不足",
+    "below_min_amount": "最小数量未満",
+    "below_min_cost": "最小金額未満",
+    "market_constraints_missing": "市場制約不足",
+    "market_order_disabled": "成行停止",
+    "circuit_status_stale": "サーキット古い",
+    "depth_stale": "板古い",
+}
+
+
+def _reason_ja(code: str) -> str:
+    return _REASON_JA.get(code, code)
+
+
+def block_chart(values: list[float], *, width: int = 72, height: int = 3) -> list[str]:
+    """Multi-row block chart from stored closes only. Flat input stays flat."""
+    finite = [float(value) for value in values
+              if isinstance(value, (int, float)) and not isinstance(value, bool)
+              and math.isfinite(value)]
+    if not finite:
+        return [_MISSING * width] * height
+    low, high = min(finite), max(finite)
+    step = max(1, (len(finite) + width - 1) // width)
+    sampled = finite[::step][:width]
+    while len(sampled) < width:
+        sampled.append(sampled[-1])
+    if high <= low:
+        return ["▅" * width] * height
+    rows: list[str] = []
+    for row in range(height):
+        # Top row = highest band. One column per sampled close.
+        threshold = high - (high - low) * (row + 1) / height
+        rows.append("".join("█" if value >= threshold else " " for value in sampled)[:width])
+    return rows
+
+
+def _focus_symbol(snapshot: Mapping[str, object], closes: Mapping[str, list]) -> str | None:
+    """Deterministic focus: largest position with chart data, else first
+    position, else first eligible symbol."""
     positions = _positions(snapshot)
+    with_data = [symbol for symbol, _amount in positions if closes.get(symbol)]
+    if with_data:
+        return with_data[0]
     if positions:
         return positions[0][0]
     eligible = snapshot.get("eligible_symbols")
@@ -158,16 +202,27 @@ def _render(snapshot: Mapping, closes: Mapping, *, now: float, remaining_s: floa
     coverage_note = f" | 取得{fresh}/{total}" if total else " | 取得なし"
     lines.append(_fit(f"資金 {capital}円 投入 {deployed}円 保有 {len(positions)}銘柄{coverage_note}", COLS))
 
-    focus = _focus_symbol(snapshot)
+    focus = _focus_symbol(snapshot, closes)
+    divider = "─" * COLS
     if focus is None:
         lines.append(_fit("観測対象がありません（市場データ待ち）", COLS))
         lines.append(_fit("", COLS))
+        lines.append(_fit("", COLS))
+        lines.append(_fit("", COLS))
     else:
         series = [value for value in (closes.get(focus) or []) if isinstance(value, (int, float))]
-        first = f"{series[0]:,.4f}".rstrip("0").rstrip(".") if series else "?"
-        last = f"{series[-1]:,.4f}".rstrip("0").rstrip(".") if series else "?"
-        lines.append(_fit(f"注目 {focus} {first} → {last}（5分足{len(series)}本 約2時間・終値のみ）", COLS))
-        lines.append(_fit(sparkline([float(value) for value in series]), COLS))
+        if series:
+            first = f"{series[0]:,.4f}".rstrip("0").rstrip(".")
+            last = f"{series[-1]:,.4f}".rstrip("0").rstrip(".")
+            lines.append(_fit(f"注目 {focus} {first} → {last}（5分足{len(series)}本 約2時間・終値のみ）", COLS))
+            for row in block_chart([float(value) for value in series]):
+                lines.append(_fit(row, COLS))
+        else:
+            lines.append(_fit(f"注目 {focus}（終値チャート取得待ち・数値は保有のみ）", COLS))
+            lines.append(_fit("", COLS))
+            lines.append(_fit("", COLS))
+            lines.append(_fit("", COLS))
+    lines.append(_fit(divider, COLS))
 
     summary = snapshot.get("signal_summary")
     candidates = skipped = 0
@@ -180,18 +235,19 @@ def _render(snapshot: Mapping, closes: Mapping, *, now: float, remaining_s: floa
         codes = summary.get("candidate_reason_codes")
         if isinstance(codes, list):
             reasons = [str(code) for code in codes[:3]]
-    lines.append(_fit(f"BOT判断 候補{candidates}件" + (f" 主因:{','.join(reasons)}" if reasons else "（条件未達・見送り）"), COLS))
+    lines.append(_fit(f"BOT判断 候補{candidates}件" + (f" 主因:{','.join(_reason_ja(code) for code in reasons)}" if reasons else "（条件未達・見送り）"), COLS))
     skipped_codes: list[str] = []
     skipped_raw = snapshot.get("skipped_reason_codes")
     if isinstance(skipped_raw, list):
-        skipped_codes = [str(code) for code in skipped_raw[:3]]
+        skipped_codes = [_reason_ja(str(code)) for code in skipped_raw[:5]]
     if skipped_codes:
         lines.append(_fit(f"見送り {','.join(skipped_codes)}", COLS))
     else:
         lines.append(_fit("見送り理由なし（候補なし）", COLS))
+    lines.append(_fit(divider, COLS))
 
     lines.append(_fit("保有上位:", COLS))
-    for symbol, amount in positions[:3]:
+    for symbol, amount in positions[:5]:
         lines.append(_fit(f"  {symbol} {amount}", COLS))
     if not positions:
         lines.append(_fit("  なし", COLS))
@@ -204,6 +260,7 @@ def _render(snapshot: Mapping, closes: Mapping, *, now: float, remaining_s: floa
             f"{fill.get('amount', '?')}@{fill.get('price', '?')} {fill.get('quote', '')}", COLS))
     if not fills:
         lines.append(_fit("  なし（未取引は正常）", COLS))
+    lines.append(_fit(divider, COLS))
 
     worker_state = str(snapshot.get("worker_state", "unknown"))
     seq = snapshot.get("snapshot_seq", "?")
