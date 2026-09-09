@@ -81,7 +81,8 @@ class TestRenderDashboard(unittest.TestCase):
         self.assertNotIn("始値", frame)
         self.assertNotIn("高値", frame)
         self.assertNotIn("安値", frame)
-        self.assertIn("終値のみ", frame)
+        self.assertNotIn("ローソク", frame)
+        self.assertIn("終値", frame)
 
     def test_empty_snapshot_renders_waiting_screen(self):
         frame = render_dashboard({}, {}, now=NOW, remaining_s=None)
@@ -198,3 +199,29 @@ class TestDashboardWindowTarget(unittest.TestCase):
             self.assertEqual(adapter._dashboard_window_target(), "docich-game-g9:0")
             self.assertNotEqual(adapter._dashboard_window_target(),
                                 adapter._game_window_target())
+
+
+class TestBlockChart(unittest.TestCase):
+    def test_flat_stays_flat(self):
+        from docich.trading.dashboard import block_chart
+        rows = block_chart([100.0] * 24)
+        self.assertEqual(len(rows), 3)
+        self.assertTrue(all(set(row) == {"▅"} for row in rows))
+
+    def test_empty_is_missing(self):
+        from docich.trading.dashboard import block_chart
+        rows = block_chart([])
+        self.assertEqual(len(rows), 3)
+        self.assertTrue(all("―" in row for row in rows))
+
+    def test_rising_fills_top_last(self):
+        from docich.trading.dashboard import block_chart
+        rows = block_chart([float(i) for i in range(24)], width=24, height=3)
+        self.assertEqual(len(rows), 3)
+        for row in rows:
+            self.assertEqual(len(row), 24)
+        # Top row has blocks only at the high (right) end.
+        self.assertTrue(rows[0].startswith(" "))
+        self.assertTrue(rows[0].endswith("█"))
+        # Bottom row is full once values exceed the lowest band.
+        self.assertNotIn(" ", rows[2])
