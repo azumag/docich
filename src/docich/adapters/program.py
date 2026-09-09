@@ -9,9 +9,11 @@ adapter`` never resolves it from the games catalog.
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 from ..config import GameAgentConfig, GameConfig, GameLifecycleConfig
+from ..game_switch import DeadlineExceededError, ReadinessTimeoutError
 from .base import AdapterError
 from .cli_game import CliCoordinatorAdapter
 
@@ -88,20 +90,27 @@ class ProgramViewAdapter(CliCoordinatorAdapter):
 
     def readiness(self, deadline: float, cancel) -> None:
         super().readiness(deadline, cancel)
-        from .base import AdapterError as _AdapterError
-        from .cli_game import ReadinessTimeoutError
-
+        # The dashboard process starts with the session and needs a moment
+        # for interpreter startup: poll for the marker instead of checking
+        # once, mirroring the presenter poll above.
         target = self._dashboard_window_target()
-        try:
-            if not self.tmux.window_target_exists(target):
-                raise ReadinessTimeoutError("program view の dashboard window がありません")
-            text = self.tmux.capture_pane_checked(target)
-        except ReadinessTimeoutError:
-            raise
-        except Exception as exc:
-            raise _AdapterError(f"program view の pane を取得できません: {exc}") from exc
-        if VIEW_READY_MARKER not in (text or ""):
-            raise ReadinessTimeoutError("program view にダッシュボードが表示されません")
+        while True:
+            try:
+                if not self.tmux.window_target_exists(target):
+                    raise ReadinessTimeoutError("program view の dashboard window がありません")
+                text = self.tmux.capture_pane_checked(target)
+            except ReadinessTimeoutError:
+                raise
+            except Exception as exc:
+                raise AdapterError(f"program view の pane を取得できません: {exc}") from exc
+            if VIEW_READY_MARKER in (text or ""):
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ReadinessTimeoutError("program view にダッシュボードが表示されません")
+            if cancel is not None and cancel.is_set():
+                raise DeadlineExceededError("adapter call はcancelされました")
+            time.sleep(min(2.0, remaining))
 
 
 def make_program_view_adapter(g, spec):
