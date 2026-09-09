@@ -175,6 +175,27 @@ class CollectorContractTests(CollectorFixture):
         self.assertIn("custom_new_worker", data["workers"]["unregistered"])
         self.assertEqual(data["status"], "warn")
 
+    def test_infra_pid_file_is_recorded_not_unregistered(self):
+        self.write_required_alive()
+        (self.soren / "tmp" / "state" / "start_all.pid").write_text(f"{self.alive_pid()}\n")
+        proc = self.run_collector()
+        data = json.loads(proc.stdout)
+        self.assertNotIn("start_all", data["workers"]["unregistered"])
+        self.assertEqual(data["workers"]["details"]["start_all"]["infra"], True)
+        self.assertEqual(data["workers"]["details"]["start_all"]["alive"], True)
+
+    def test_lane_guard_dirs_are_not_lanes(self):
+        self.write_required_alive()
+        base = self.soren / "tmp" / "state" / ".ai_generation_locks"
+        (base / "radio.owner_guard.lock").mkdir(parents=True, exist_ok=True)
+        (base / "radio.owner_guard.d").mkdir(parents=True, exist_ok=True)
+        proc = self.run_collector()
+        data = json.loads(proc.stdout)
+        lanes = data["queues"]["lanes"]
+        self.assertIn("radio", lanes)
+        self.assertNotIn("radio.owner_guard.lock", lanes)
+        self.assertNotIn("radio.owner_guard.d", lanes)
+
     def test_paused_required_worker_is_warn_not_critical(self):
         self.write_required_alive(skip=("radio_worker",))
         self.write_pid("radio_worker", self.alive_pid())

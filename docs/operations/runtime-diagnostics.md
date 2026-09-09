@@ -64,6 +64,7 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   生死判定は `src/docich/runtime_backend.py` の helper を再利用する。
 - queue: `tmp/state/.ai_generation_locks/<lane>/owner`
  （token は出さず PID 生死・age のみ）。stale 閾値は 900s。
+  `*.owner_guard.lock` / `*.owner_guard.d` は mutex guard のため lane 扱いしない。
 - AI: `tmp/state/ai_stats/YYYYMMDD.jsonl`（当日＋前日按分、直近 900s）。
   `attempt` / `ok` は件数のみ。`recent_events` は fail/winner/all_failed/
   queue_giveup/giveup 系のみ直近 20 件。error は 200 字に丸め・redact。
@@ -102,6 +103,8 @@ gh workflow run "VM operations" --repo azumag/docich --ref main \
 ```
 
 結果 JSON は Actions ログに出る（sanitized・bounded のため安全）。
+GitHub 側の secret masking により、PID や commit SHA の一部が `***` 表示に
+なる場合がある（secret 断片との偶然一致。漏洩ではない）。
 定期監視を追加する場合は healthy → 通知なし、warning / critical → 結果を残す
 運用にし、noisy な schedule を増やさないこと。
 

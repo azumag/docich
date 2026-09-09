@@ -51,6 +51,13 @@ WORKERS = (
 # the historic lanes keep working.
 KNOWN_LANES = ("radio", "comment", "local")
 
+# Lock-directory name suffixes that are mutex guards, not lanes.
+LANE_GUARD_SUFFIXES = (".owner_guard.lock", ".owner_guard.d")
+
+# Pid files owned by the supervision infrastructure itself (not workers).
+# Never reported as unregistered; liveness is still recorded in details.
+KNOWN_INFRA_PIDFILES = ("tmp/state/start_all.pid",)
+
 # Diagnostics window for AI telemetry aggregation (seconds).
 DIAG_WINDOW_SEC = 900
 
