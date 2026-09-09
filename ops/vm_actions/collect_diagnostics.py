@@ -52,6 +52,8 @@ _REG = _load_registry()
 DIAG_WINDOW_SEC = _REG.DIAG_WINDOW_SEC
 DUPLICATES_FRESH_SEC = _REG.DUPLICATES_FRESH_SEC
 KNOWN_LANES = _REG.KNOWN_LANES
+LANE_GUARD_SUFFIXES = _REG.LANE_GUARD_SUFFIXES
+KNOWN_INFRA_PIDFILES = _REG.KNOWN_INFRA_PIDFILES
 MAX_COMPONENTS = _REG.MAX_COMPONENTS
 MAX_ERROR_PREVIEW_LEN = _REG.MAX_ERROR_PREVIEW_LEN
 MAX_JSON_BYTES = _REG.MAX_JSON_BYTES
@@ -186,20 +188,25 @@ def _collect_workers(soren, now):
                 if rel in known_rels:
                     continue
                 name = path.stem
-                if len(unregistered) >= MAX_UNREGISTERED:
-                    break
                 pid, stale = _parse_pid_file(path)
                 alive = pid is not None and _pid_is_active(pid)
-                unregistered.append(name)
-                details[name] = {
+                record = {
                     "required": False,
                     "pid": pid,
                     "alive": bool(alive),
                     "zombie": bool(pid is not None and _process_is_zombie(pid)),
                     "stale_pid_file": bool(stale),
                     "paused": (state_dir / f"{name}.paused").is_file(),
-                    "unregistered": True,
                 }
+                if rel in KNOWN_INFRA_PIDFILES:
+                    record["infra"] = True
+                    details[name] = record
+                    continue
+                if len(unregistered) >= MAX_UNREGISTERED:
+                    continue
+                record["unregistered"] = True
+                unregistered.append(name)
+                details[name] = record
         except OSError:
             pass
     return {
@@ -246,6 +253,8 @@ def _collect_queues(soren, now):
     except OSError:
         present = []
     for lane in sorted(set(list(KNOWN_LANES) + present)):
+        if any(lane.endswith(suffix) for suffix in LANE_GUARD_SUFFIXES):
+            continue
         lock_dir = base / lane
         owner_path = lock_dir / "owner"
         locked = lock_dir.is_dir()
