@@ -133,6 +133,7 @@ class TestPaperWorkerCycle(unittest.TestCase):
                 gateway=FakeStrategyGateway(one_bad_symbol=True),
                 cycle_index=1,
                 now=NOW,
+                observation_now_fn=lambda: NOW,
             )
             self.assertEqual(result.frame_error_count, 1)
             self.assertGreaterEqual(result.new_fill_count, 1)
@@ -176,7 +177,7 @@ class TestPaperWorkerCycle(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             g = _global(Path(tmp))
             gateway = FakeStrategyGateway()
-            run_worker_cycle(g, gateway=gateway, cycle_index=1, now=NOW)
+            run_worker_cycle(g, gateway=gateway, cycle_index=1, now=NOW, observation_now_fn=lambda: NOW)
             self.assertEqual(gateway.last_frame_args, ("5m", 24, NOW))
 
 
@@ -248,7 +249,7 @@ class TestPaperWorkerArbitrageAndLoop(unittest.TestCase):
             self.assertEqual(sleep_calls, [D("59")])
             status = json.loads((g.state_dir / "trading" / "status.json").read_text(encoding="utf-8"))
             self.assertEqual(status["worker_state"], "paper_worker_degraded")
-            self.assertIn("worker_cycle_error", status["worker_summary"]["error_codes"])
+            self.assertIn("market_discovery_error", status["worker_summary"]["error_codes"])
             self.assertNotIn("boom-public", json.dumps(status))
 
 
