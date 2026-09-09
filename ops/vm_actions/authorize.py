@@ -17,6 +17,9 @@ def fail(msg):
 def main():
     env=os.environ
     repo=env.get('GITHUB_REPOSITORY','')
+    repo_private=env.get('GITHUB_REPOSITORY_PRIVATE','true').lower()
+    if repo_private not in {'true','false'}:
+        fail('invalid repository visibility context')
     checks=[
         repo==REPOSITORY,
         env.get('GITHUB_REPOSITORY_ID')==REPOSITORY_ID,
@@ -42,6 +45,8 @@ def main():
         if op not in OPS or target not in TARGETS: fail('unsupported operation or target')
         if not REF_RE.fullmatch(ref) or '..' in ref or '//' in ref or ref.startswith('refs/') or ref.endswith(('/', '.lock')):
             fail('invalid ref')
+        if repo_private == 'false' and op == 'exec':
+            fail('arbitrary VM exec is disabled when the repository is public')
         if op=='bootstrap' and target!='production': fail('bootstrap is production-only')
         if op=='diagnostics' and target!='production': fail('diagnostics is production-only')
         if target=='production' and op in {'exec','bootstrap'} and confirm!='production':
