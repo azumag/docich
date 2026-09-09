@@ -8,15 +8,22 @@ from pathlib import Path
 import time
 from zoneinfo import ZoneInfo
 
+from .adapters import make_coordinator_adapter
+from .adapters.program import PAPER_VIEW_NAME, make_program_view_adapter
 from .config import load_global
 from .corner_boundary import CornerWaitExpired, program_lock, wait_for_boundary
-from .game_switch import atomic_write_json
+from .game_switch import GameSwitchStore, atomic_write_json
 from .trading.presentation import write_presentation
 from .trading.soren_output import send_overlay, enqueue_speech
 
 
+class PaperCornerError(RuntimeError):
+    """User-facing failure in the daily PAPER corner."""
+
+
 class PaperCornerManager:
-    def __init__(self, g, *, clock=time.time, sleep=time.sleep, overlay=send_overlay, speech=enqueue_speech):
+    def __init__(self, g, *, clock=time.time, sleep=time.sleep, overlay=send_overlay, speech=enqueue_speech,
+                 coordinator=None):
         self.g, self.clock, self.sleep = g, clock, sleep
         self.overlay, self.speech = overlay, speech
         import tomllib
@@ -32,6 +39,17 @@ class PaperCornerManager:
         self.path = g.state_dir / 'paper_corner.json'
         self.presentation = g.state_dir / 'trading/presentation.json'
         self.tick_guard_path = g.state_dir / 'locks' / 'paper-corner-tick.lock'
+        self.store = GameSwitchStore(g.state_dir)
+        if coordinator is None:
+            from .game_switch import GameSwitchCoordinator
+
+            def _factory(spec):
+                if spec.game == PAPER_VIEW_NAME:
+                    return make_program_view_adapter(g, spec)
+                return make_coordinator_adapter(g, spec)
+
+            coordinator = GameSwitchCoordinator(self.store, _factory)
+        self.coordinator = coordinator
 
     def save(self, state):
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -118,8 +136,92 @@ class PaperCornerManager:
         except CornerWaitExpired:
             return 'expired'
 
+    def _active_game(self) -> str | None:
+        from .game_switch import GameSwitchError
+
+        try:
+            state, _missing = self.store.canonical.load()
+        except (OSError, ValueError, GameSwitchError) as exc:
+            # Corrupt/unreadable canonical fails closed downstream; record
+            # the cause where the next save can see it instead of silencing.
+            self._active_game_error = str(exc)[:120]
+            return None
+        if state.get("phase") != "ready":
+            return None
+        active = state.get("active")
+        if not isinstance(active, dict) or not isinstance(active.get("game"), str):
+            return None
+        return active["game"]
+
+    @staticmethod
+    def _require_success(result, action: str) -> None:
+        if getattr(result, "status", None) != "succeeded":
+            detail = (
+                getattr(result, "detail", None)
+                or getattr(result, "error_code", None)
+                or "unknown"
+            )
+            raise PaperCornerError(f"{action} に失敗しました: {detail}")
+
+    def _restore_locked(self, state) -> str:
+        """Hand the display back. Never kills a game the view did not displace.
+
+        Returns the terminal result string ('completed' or 'failed').
+        """
+        previous = state.get('previous_game')
+        current = self._active_game()
+        if current is not None and current != PAPER_VIEW_NAME and current != previous:
+            # The operator moved on mid-corner; do not yank their game back.
+            write_presentation(self.presentation, 'compact', now=self.clock())
+            state.update(status='completed', completed_at=self.clock(),
+                         last_error=None,
+                         detail='operator switched during corner; restore skipped')
+            self.save(state)
+            return 'completed'
+        if previous is not None and current == previous:
+            # Already home (manual recovery or idempotent retry).
+            write_presentation(self.presentation, 'compact', now=self.clock())
+            state.update(status='completed', completed_at=self.clock(), last_error=None)
+            self.save(state)
+            return 'completed'
+        if previous is None and current is not None and current != PAPER_VIEW_NAME:
+            # No evidence the view ever started (legacy active state):
+            # never stop the user's live game.
+            write_presentation(self.presentation, 'compact', now=self.clock())
+            state.update(status='completed', completed_at=self.clock(), last_error=None,
+                         detail='no view session evidence; live game left running')
+            self.save(state)
+            return 'completed'
+        # Restoring: hand the display back to the previous game first,
+        # then fall back to compact notifications. A failed restore stays
+        # failed (never silently completed) so the next tick retries it.
+        state['status'] = 'restoring'
+        self.save(state)
+        try:
+            if previous is None:
+                self._require_success(self.coordinator.stop(), 'program view stop')
+            elif previous == PAPER_VIEW_NAME:
+                pass
+            else:
+                self._require_success(
+                    self.coordinator.switch(previous), f'program view->{previous} restore')
+        except PaperCornerError as exc:
+            state.update(status='failed', completed_at=self.clock(), last_error=str(exc)[:240])
+            self.save(state)
+            return 'failed'
+        # Restore compact even when completion output is temporarily unavailable.
+        write_presentation(self.presentation, 'compact', now=self.clock())
+        self.deliver(state, 'end', '規定時間を終え、通常の短報に戻ります。')
+        state.update(status='completed', completed_at=self.clock(), last_error=None)
+        self.save(state)
+        return 'completed'
+
     def _tick_locked(self, root, now):
             state = json.loads(self.path.read_text()) if self.path.exists() else {}
+            if state.get('status') in ('failed', 'restoring'):
+                # A failed restore (or a crash inside one) retries on the
+                # next tick instead of going quiet for the rest of the day.
+                return self._restore_locked(state)
             if state.get('status') not in ('waiting', 'starting', 'active'):
                 if now.hour < self.hour or state.get('date') == now.date().isoformat():
                     return 'not-due'
@@ -130,6 +232,21 @@ class PaperCornerManager:
                 state['status'] = 'starting'
                 self.save(state)
             if state['status'] == 'starting':
+                # M1: record the return target once. Re-entering starting
+                # after a crash must not overwrite it with the view itself.
+                if 'previous_game' not in state:
+                    previous = self._active_game()
+                    state['previous_game'] = previous
+                    self.save(state)
+                else:
+                    previous = state.get('previous_game')
+                if previous is None:
+                    self._require_success(self.coordinator.start(PAPER_VIEW_NAME), 'program view start')
+                elif previous == PAPER_VIEW_NAME:
+                    pass
+                else:
+                    self._require_success(
+                        self.coordinator.switch(PAPER_VIEW_NAME), f'{previous}->program view switch')
                 write_presentation(self.presentation, 'detailed', now=self.clock())
                 started = self.clock()
                 state.update(status='active', started_at=started, ends_at=started + self.minutes * 60)
@@ -142,12 +259,7 @@ class PaperCornerManager:
                 remaining = state['ends_at'] - self.clock()
                 if remaining > 0:
                     self.sleep(min(300 - ((self.clock() - state['started_at']) % 300), remaining))
-            # Restore compact even when completion output is temporarily unavailable.
-            write_presentation(self.presentation, 'compact', now=self.clock())
-            self.deliver(state, 'end', '規定時間を終え、通常の短報に戻ります。')
-            state.update(status='completed', completed_at=self.clock())
-            self.save(state)
-            return 'completed'
+            return self._restore_locked(state)
 
 
 def main(argv=None):
