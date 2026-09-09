@@ -1,5 +1,5 @@
 From b15f87b370b29ceed4d1cbb5b15529548078805d Mon Sep 17 00:00:00 2001
-From: azumag <tsubasa.azumagakito@gmail.com>
+From: azumag <azumag@users.noreply.github.com>
 Date: Mon, 24 Aug 2026 17:49:37 +0000
 Subject: [PATCH] fix(analyze_board): move reactive_pairs scan out of
  type_count loop
