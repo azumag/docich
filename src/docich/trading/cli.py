@@ -42,6 +42,8 @@ _PUBLIC_STATUS_KEYS = {
     "schema_version", "mode", "worker_state", "last_cycle_at", "market_count",
     "eligible_symbols", "capital_reference", "deployed_reference", "open_positions",
     "recent_fills", "skipped_reason_codes", "signal_summary", "worker_summary",
+    "heartbeat_at", "snapshot_seq", "snapshot_generated_at",
+    "market_freshness", "coverage",
 }
 _SIGNAL_SUMMARY_KEYS = {"candidate_count", "selected_count", "rejected_count", "strategy_ids", "candidate_reason_codes"}
 _WORKER_SUMMARY_KEYS = {
@@ -145,6 +147,14 @@ def _safe_existing_status(path: Path) -> dict[str, Any]:
         {key: worker_summary[key] for key in _WORKER_SUMMARY_KEYS if key in worker_summary}
         if isinstance(worker_summary, dict) else {}
     )
+    freshness = data.get("market_freshness", {})
+    safe["market_freshness"] = (
+        {str(symbol): dict(entry) for symbol, entry in freshness.items()
+         if isinstance(entry, dict)}
+        if isinstance(freshness, dict) else {}
+    )
+    coverage = data.get("coverage", {})
+    safe["coverage"] = dict(coverage) if isinstance(coverage, dict) else {}
     return safe
 
 

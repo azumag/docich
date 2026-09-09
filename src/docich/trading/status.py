@@ -56,6 +56,11 @@ def build_public_status(
     skipped_reason_codes: Sequence[str],
     signal_summary: Mapping[str, object] | None = None,
     worker_summary: Mapping[str, object] | None = None,
+    heartbeat_at: float | None = None,
+    snapshot_seq: int | None = None,
+    snapshot_generated_at: float | None = None,
+    market_freshness: Mapping[str, Mapping[str, object]] | None = None,
+    coverage: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     symbols = sorted({str(symbol).strip() for symbol in eligible_symbols if str(symbol).strip()})
     positions = {
@@ -85,6 +90,17 @@ def build_public_status(
             for key in _WORKER_SUMMARY_KEYS
             if worker_summary is not None and key in worker_summary
         },
+        "heartbeat_at": None if heartbeat_at is None else float(heartbeat_at),
+        "snapshot_seq": None if snapshot_seq is None else int(snapshot_seq),
+        "snapshot_generated_at": (
+            None if snapshot_generated_at is None else float(snapshot_generated_at)
+        ),
+        "market_freshness": {
+            str(symbol): dict(entry)
+            for symbol, entry in sorted((market_freshness or {}).items())
+            if isinstance(entry, Mapping)
+        },
+        "coverage": dict(coverage or {}),
     }
 
 

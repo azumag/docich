@@ -85,7 +85,7 @@ def _bitbank_info_allows_orders(info: Any) -> bool:
 class BitbankPublicGateway:
     """Expose only public market discovery; no private/order methods exist."""
 
-    def __init__(self, *, exchange: Any | None = None):
+    def __init__(self, *, exchange: Any | None = None, timeout_ms: int = 10000):
         if exchange is not None:
             self._exchange = exchange
             return
@@ -95,7 +95,9 @@ class BitbankPublicGateway:
             raise CCXTUnavailableError(
                 "CCXT is optional. Install requirements-trading.txt to enable bitbank discovery."
             ) from exc
-        self._exchange = ccxt.bitbank({"enableRateLimit": True})
+        # Per-request transport timeout (Issue #198 P0-2: 10s initial value).
+        # The worker additionally bounds the whole cycle with CYCLE_BUDGET_S.
+        self._exchange = ccxt.bitbank({"enableRateLimit": True, "timeout": int(timeout_ms)})
 
     def discover_markets(self) -> dict[str, MarketInfo]:
         raw_markets = self._exchange.load_markets()
