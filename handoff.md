@@ -1,3 +1,9 @@
+## 2026-09-09 22:5x JST — trading worker 復旧 (PAPER P0-1 の後続対応)
+
+- **復旧**: `docich up` (live) でtrading window再作成→稼働。初回はsystem pythonでCCXT無しdegraded→`.venv-trading` PATHで作り直し正常化 (market_count 44・error無し・age 20秒・idle)。
+- **教訓**: 復旧経路はvenv PATH固定が必須 (`bin/docich`→`python3` がPATH依存)。P0-2設計へ反映 (heartbeat gate・復旧経路・PATH固定)。
+- **未確定のまま**: 21:19:57のkill主体。Issue #198へ診断＋復旧をコメント済み。
+
 ## 2026-09-09 22:4x JST — PAPER P0-1 診断 (Issue #198へ根拠追記)
 
 - **症状**: 9/9 22:16開始のPAPER枠で7回連続「集計が古いため、最新状況は確認待ちです」。
