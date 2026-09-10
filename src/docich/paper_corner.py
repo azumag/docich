@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from .adapters import make_coordinator_adapter
 from .adapters.program import PAPER_VIEW_NAME, make_program_view_adapter
 from .config import load_global
-from .corner_boundary import CornerWaitExpired, program_lock, wait_for_boundary
+from .corner_boundary import CornerWaitExpired, program_slot
 from .game_switch import GameSwitchStore, atomic_write_json
 from .tmux import Tmux
 from .trading.presentation import write_presentation
@@ -188,9 +188,37 @@ class PaperCornerManager:
     def _tick_guarded(self):
         now = dt.datetime.fromtimestamp(self.clock(), self.tz)
         end_of_day = now.replace(hour=23, minute=59, second=59, microsecond=0)
+        deadline = end_of_day.timestamp()
+        # Record the boundary request outside the program slot so a corner
+        # waiting on its boundary never blocks a ready corner.
+        state = json.loads(self.path.read_text()) if self.path.exists() else {}
+        status = state.get('status')
+        requested_at = None
+        wait_boundary = False
+        if status == 'waiting':
+            requested_at = state.get('requested_at')
+            if isinstance(requested_at, bool) or not isinstance(requested_at, (int, float)):
+                requested_at = self.clock()
+                state['requested_at'] = requested_at
+                self.save(state)
+            wait_boundary = True
+        elif status not in ('starting', 'active', 'failed', 'restoring'):
+            if now.hour < self.hour or state.get('date') == now.date().isoformat():
+                return 'not-due'
+            requested_at = self.clock()
+            state = {'status': 'waiting', 'date': now.date().isoformat(), 'requested_at': requested_at}
+            self.save(state)
+            wait_boundary = True
         try:
-            with program_lock(self.g, self.path,
-                              wait_deadline_ts=end_of_day.timestamp()) as root:
+            with program_slot(
+                self.g,
+                self.path,
+                requested_at=requested_at if requested_at is not None else self.clock(),
+                wait_deadline_ts=deadline,
+                wait_boundary=wait_boundary,
+                sleep=self.sleep,
+                now=self.clock,
+            ) as root:
                 return self._tick_locked(root, now)
         except CornerWaitExpired:
             return 'expired'
@@ -287,7 +315,6 @@ class PaperCornerManager:
                 state = {'status': 'waiting', 'date': now.date().isoformat(), 'requested_at': self.clock()}
                 self.save(state)
             if state['status'] == 'waiting':
-                wait_for_boundary(root, state['requested_at'], sleep=self.sleep)
                 state['status'] = 'starting'
                 self.save(state)
             if state['status'] == 'starting':

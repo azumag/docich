@@ -629,19 +629,50 @@ class RetroCornerManager:
             return self._legacy_tick()
 
     def _boundary_tick(self) -> CornerResult:
-        from .corner_boundary import CornerWaitExpired, program_lock, wait_for_boundary
+        from .corner_boundary import CornerWaitExpired, program_slot
         now = self._local_now()
         if not self.config.enabled:
             return CornerResult("noop", detail="disabled")
         end_of_day = now.replace(hour=23, minute=59, second=59, microsecond=0)
+        deadline = end_of_day.timestamp()
+        # Phase 1: record/refresh the boundary request without owning the
+        # program slot, so a corner waiting on its boundary never blocks
+        # another corner that is already ready.
+        requested_at = None
+        wait_boundary = False
+        with self._locked():
+            state = self._read_state()
+            status = state.get("status")
+            if status not in ("active", "starting"):
+                if status != "waiting":
+                    if now.hour < self.config.start_hour:
+                        return CornerResult("noop", detail="outside-window")
+                    if state.get("date") == now.date().isoformat() and status in TERMINAL_STATUSES:
+                        return CornerResult("noop", detail="already-ran-today")
+                    state = self._default_state()
+                    state.update(status="waiting", date=now.date().isoformat(), requested_at=now.timestamp())
+                    self._write_state(state)
+                requested_at = state.get("requested_at")
+                if isinstance(requested_at, bool) or not isinstance(requested_at, (int, float)):
+                    requested_at = now.timestamp()
+                    state["requested_at"] = requested_at
+                    self._write_state(state)
+                wait_boundary = True
         try:
-            with program_lock(self.g, self.state_path,
-                              wait_deadline_ts=end_of_day.timestamp()) as root:
-                return self._boundary_tick_locked(now, root, wait_for_boundary)
+            with program_slot(
+                self.g,
+                self.state_path,
+                requested_at=requested_at if requested_at is not None else now.timestamp(),
+                wait_deadline_ts=deadline,
+                wait_boundary=wait_boundary,
+                sleep=self._sleep,
+                now=lambda: self._local_now().timestamp(),
+            ) as root:
+                return self._boundary_tick_locked(now, root)
         except CornerWaitExpired:
             return CornerResult("expired", detail="program-wait-expired")
 
-    def _boundary_tick_locked(self, now, root, wait_for_boundary) -> CornerResult:
+    def _boundary_tick_locked(self, now, root) -> CornerResult:
         with self._locked():
             state = self._read_state()
             if state.get("status") == "starting":
@@ -660,17 +691,8 @@ class RetroCornerManager:
                 active = state
             else:
                 active = None
-                if state.get("status") != "waiting":
-                    if now.hour < self.config.start_hour:
-                        return CornerResult("noop", detail="outside-window")
-                    if state.get("date") == now.date().isoformat() and state.get("status") in TERMINAL_STATUSES:
-                        return CornerResult("noop", detail="already-ran-today")
-                    state = self._default_state()
-                    state.update(status="waiting", date=now.date().isoformat(), requested_at=now.timestamp())
-                self._write_state(state)
         if active is not None:
             return self._wait_and_finish(active)
-        wait_for_boundary(root, state["requested_at"], sleep=self._sleep)
         with self._locked():
             active, result = self._begin_locked(self._local_now(), scheduled=True)
             if active is not None:

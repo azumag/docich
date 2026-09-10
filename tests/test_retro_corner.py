@@ -425,13 +425,16 @@ class TestProgramBoundary(RetroCornerTestBase):
         from datetime import timedelta
         from docich.trading.soren_output import resolve_soren_root
         self.cfg = replace(self.cfg, require_program_boundary=True)
+        root=resolve_soren_root(self.g)/'tmp/state'
+        root.mkdir(parents=True, exist_ok=True)
+        # An in-progress improvement cycle is what the boundary must confirm.
+        (root.parent/'improve.lock').write_text('')
         sleeps=[]
         def sleep(seconds):
             sleeps.append(seconds)
             self.now_value += timedelta(seconds=seconds)
             if seconds == 5:
-                root=resolve_soren_root(self.g)/'tmp/state'
-                (root/'corner_boundary_prediction.json').write_text(json.dumps({'completed_at':self.now_value.timestamp()}))
+                (root/'corner_boundary_improvement.json').write_text(json.dumps({'completed_at':self.now_value.timestamp()}))
         mgr,_=self.manager([None],sleep)
         mgr.tick()
         self.assertEqual(sleeps,[5,3600])
