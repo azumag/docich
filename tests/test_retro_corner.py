@@ -442,6 +442,22 @@ class TestProgramBoundary(RetroCornerTestBase):
         self.assertEqual(sleeps,[5,3600])
         self.assertEqual(mgr.status()['status'],'completed')
 
+    def test_stale_waiting_request_from_previous_day_is_not_fired(self):
+        from dataclasses import replace
+        from datetime import timedelta
+        self.cfg = replace(self.cfg, require_program_boundary=True)
+        current = ["sorengame"]
+        mgr, coordinator = self.manager(current)
+        state = mgr._default_state()
+        state.update(status="waiting", date="2026-09-05",
+                     requested_at=(self.now_value - timedelta(days=1)).timestamp())
+        mgr._write_state(state)
+        result = mgr.tick()
+        self.assertEqual(result.status, "expired")
+        self.assertEqual(result.detail, "stale-request")
+        self.assertEqual(coordinator.calls, [])
+        self.assertEqual(mgr.status()["status"], "idle")
+
     def test_restart_during_transition_keeps_original_return_target(self):
         from dataclasses import replace
         self.cfg = replace(self.cfg, require_program_boundary=True)

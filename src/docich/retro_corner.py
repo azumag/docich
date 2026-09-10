@@ -644,6 +644,11 @@ class RetroCornerManager:
             state = self._read_state()
             status = state.get("status")
             if status not in ("active", "starting"):
+                if status == "waiting" and state.get("date") != now.date().isoformat():
+                    # A previous day's request that never reached a boundary
+                    # (e.g. the tick was killed mid-wait). Never fire it late.
+                    self._write_state(self._default_state())
+                    return CornerResult("expired", detail="stale-request")
                 if status != "waiting":
                     if now.hour < self.config.start_hour:
                         return CornerResult("noop", detail="outside-window")

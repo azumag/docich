@@ -86,6 +86,18 @@ def test_delayed_boundary_runs_full_duration_and_does_not_repeat(tmp_path):
     assert mgr.tick()=='not-due'
 
 
+def test_stale_waiting_request_is_not_fired_late(tmp_path):
+    g=setup(tmp_path)
+    now=[datetime(2026,9,9,0,30,tzinfo=ZoneInfo('Asia/Tokyo')).timestamp()]
+    coord=FakeCoordinator(active='sorengame')
+    mgr=manager(g,clock=lambda:now[0],sleep=lambda s:None,
+                overlay=lambda g,p:None,speech=lambda g,t,**k:None,coordinator=coord)
+    mgr.save({'status':'waiting','date':'2026-09-08','requested_at':now[0]-86400})
+    assert mgr.tick()=='expired'
+    assert coord.calls==[]
+    assert json.loads(mgr.path.read_text())['status']=='idle'
+
+
 def test_switch_notice_announced_when_displacing_game(tmp_path):
     g=setup(tmp_path)
     now=[datetime(2026,9,8,22,tzinfo=ZoneInfo('Asia/Tokyo')).timestamp()]
