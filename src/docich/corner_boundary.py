@@ -24,7 +24,6 @@ class ProgramRegistryError(RuntimeError):
 
 
 PREDICTION_ACTIVE_STATUSES = frozenset({'ACTIVE', 'LOCKED'})
-IMPROVEMENT_STATE_FILE = 'improve_state.json'
 PREDICTION_STATE_FILE = 'current_prediction.json'
 PREDICTION_WORKER = 'prediction_worker'
 
@@ -60,30 +59,6 @@ def _worker_running(root, name):
     return _pid_is_alive(_read_pid_file(root / f'{name}.pid'))
 
 
-def _improvement_active(state_dir: Path) -> bool:
-    """True while an improvement cycle or interleaved A/B is in progress.
-
-    Conservative: any fixed gate a clean switch must not interrupt counts as
-    active. A missing/stale state means improvement is at rest and need not
-    hold the corner back.
-    """
-    if (state_dir / 'ab_state.json').exists():
-        return True
-    if (state_dir / 'ab_candidate' / 'meta.json').exists():
-        return True
-    if (state_dir / 'improve_retry_batch.json').exists():
-        return True
-    if (state_dir.parent / 'improve.lock').exists():
-        return True
-    try:
-        state = json.loads((state_dir / IMPROVEMENT_STATE_FILE).read_text())
-    except (OSError, ValueError):
-        return False
-    if not isinstance(state, dict) or str(state.get('status')) not in ('running', 'manual'):
-        return False
-    return _pid_is_alive(state.get('pid'))
-
-
 def _prediction_in_flight(state_dir: Path) -> bool:
     """True only while the prediction worker runs an ACTIVE/LOCKED prediction."""
     if not _worker_running(state_dir, PREDICTION_WORKER):
@@ -106,16 +81,16 @@ def _fresh_boundary(state_dir: Path, kind: str, requested_at: float, now: float)
 
 
 def boundary_ready(state_dir: Path, requested_at: float, *, now=None) -> bool:
-    """A confirmed boundary for every currently-active background activity.
+    """Confirmed prediction boundary while a prediction is actually in flight.
 
-    Improvement (cycle or A/B) is required while it is in progress; a
-    prediction boundary is additionally required only while the prediction
-    worker holds an in-flight prediction. A stopped prediction worker never
-    blocks the corner, and when nothing is active the corner may proceed.
+    Only an in-flight prediction holds the corner back (so the prediction is
+    not paused mid-count). Improvement cycles and interleaved A/B are not
+    gated: the match/round boundary that keeps a game from being cut is owned
+    by the game-switch coordinator, and A/B simply pauses and resumes. A
+    stopped or paused prediction worker never blocks, and when no prediction
+    is in flight the corner may proceed immediately.
     """
     now = time.time() if now is None else now
-    if _improvement_active(state_dir) and not _fresh_boundary(state_dir, 'improvement', requested_at, now):
-        return False
     if _prediction_in_flight(state_dir) and not _fresh_boundary(state_dir, 'prediction', requested_at, now):
         return False
     return True

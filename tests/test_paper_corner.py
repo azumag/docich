@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from pathlib import Path
@@ -65,12 +66,13 @@ def test_delayed_boundary_runs_full_duration_and_does_not_repeat(tmp_path):
     due=now[0]; output=[]; voice=[]
     state=tmp_path/'soren/tmp/state'
     state.mkdir(parents=True, exist_ok=True)
-    # An in-progress improvement cycle is what the boundary must confirm.
-    (state.parent/'improve.lock').write_text('')
+    # An in-flight prediction is what the boundary must confirm.
+    (state/'prediction_worker.pid').write_text(str(os.getpid()))
+    (state/'current_prediction.json').write_text(json.dumps({'status':'ACTIVE'}))
     def sleep(seconds):
         if now[0] == due:
             now[0]+=35*60
-            (state/'corner_boundary_improvement.json').write_text(json.dumps({'completed_at':now[0]}))
+            (state/'corner_boundary_prediction.json').write_text(json.dumps({'completed_at':now[0]}))
         else: now[0]+=seconds
     mgr=manager(g,clock=lambda:now[0],sleep=sleep,overlay=lambda g,p:output.append(p),speech=lambda g,t,**kw:voice.append(kw))
     assert mgr.tick() == 'completed'
