@@ -77,6 +77,62 @@ jobs:
           print(f'severity={severity}')
           PY
 
+      - name: Read sanitized runtime diagnostics
+        id: runtime
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          error_file="$RUNNER_TEMP/runtime-diagnostics.err"
+          if ! diagnostics_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "diagnostics docich production $sha" 2>"$error_file")"; then
+            echo 'severity=warn' >> "$GITHUB_OUTPUT"
+            echo 'summary=diagnostics_unavailable=1' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          printf '%s\n' "$diagnostics_json" > "$RUNNER_TEMP/runtime-diagnostics.json"
+          python3 - "$RUNNER_TEMP/runtime-diagnostics.json" >> "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          wrapper=json.load(open(sys.argv[1],encoding='utf-8'))
+          if wrapper.get('status') != 'diagnosed' or not isinstance(wrapper.get('diagnostics'), dict):
+              raise SystemExit('invalid diagnostics envelope')
+          data=wrapper['diagnostics']
+          severity=data.get('status')
+          if severity not in {'ok','warn','critical'}:
+              raise SystemExit('invalid diagnostics severity')
+          workers=data.get('workers') or {}
+          queues=data.get('queues') or {}
+          ai=data.get('ai') or {}
+          improvement=data.get('improvement') or {}
+          def nlist(name):
+              value=workers.get(name)
+              return len(value) if isinstance(value,list) else 0
+          def integer(mapping,name):
+              value=mapping.get(name,0)
+              return value if isinstance(value,int) and not isinstance(value,bool) and value >= 0 else 0
+          parts=[
+              f"required_down={nlist('required_down')}",
+              f"required_stale={nlist('required_stale')}",
+              f"paused={nlist('paused')}",
+              f"duplicates={nlist('duplicates')}",
+              f"zombies={nlist('zombies')}",
+              f"stale_pid_files={nlist('stale_pid_files')}",
+              f"unregistered={nlist('unregistered')}",
+              f"stale_locks={integer(queues,'stale_locks')}",
+              f"queue_giveups_15m={integer(queues,'queue_giveups_15m')}",
+              f"ai_failures_15m={integer(ai,'failures_15m')}",
+              f"ai_rate_limits_15m={integer(ai,'rate_limits_15m')}",
+              f"ai_fallbacks_15m={integer(ai,'fallbacks_15m')}",
+              f"ai_all_failed_15m={integer(ai,'all_failed_15m')}",
+              f"improvement_stale={int(improvement.get('stale') is True)}",
+              f"retry_pending={int(improvement.get('retry_pending') is True)}",
+          ]
+          print(f'severity={severity}')
+          print('summary='+','.join(parts))
+          PY
+
       - name: Update deduplicated GitHub alert
         env:
           SEVERITY: ${{ steps.storage.outputs.severity }}
@@ -126,4 +182,47 @@ jobs:
             echo "::error::VM storage pressure is critical (${USED_PERCENT}%)."
           else
             echo "::warning::VM storage pressure is high (${USED_PERCENT}%)."
+          fi
+
+      - name: Update deduplicated runtime health alert
+        env:
+          SEVERITY: ${{ steps.runtime.outputs.severity }}
+          SUMMARY: ${{ steps.runtime.outputs.summary }}
+        run: |
+          set -euo pipefail
+          prefix='[VM runtime]'
+          mapfile -t alerts < <(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title --jq '.[] | select(.title == "[VM runtime] WARN runtime health alert" or .title == "[VM runtime] CRITICAL runtime health alert") | "\(.number)\t\(.title)"')
+          if [[ "$SEVERITY" == ok ]]; then
+            for entry in "${alerts[@]}"; do
+              number="${entry%%$'\t'*}"
+              gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Runtime diagnostics recovered to OK."
+            done
+            echo "Runtime diagnostics OK: ${SUMMARY}"
+            exit 0
+          fi
+          upper="$(printf '%s' "$SEVERITY" | tr '[:lower:]' '[:upper:]')"
+          title="${prefix} ${upper} runtime health alert"
+          for entry in "${alerts[@]}"; do
+            number="${entry%%$'\t'*}"; existing="${entry#*$'\t'}"
+            [[ "$existing" == "$title" ]] && { echo "Existing runtime alert #${number} remains open; suppressing duplicate."; exit 0; }
+          done
+          for entry in "${alerts[@]}"; do
+            number="${entry%%$'\t'*}"
+            gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Runtime severity changed to ${upper}."
+          done
+          body="$(cat <<EOF
+          Runtime health degradation detected by the owner-only read-only diagnostics path.
+
+          - Severity: ${upper}
+          - Summary: ${SUMMARY}
+          - Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          The public alert contains counts and booleans only. It never publishes raw diagnostics, worker names, paths, logs, model names, prompts, credentials, or command output.
+          EOF
+          )"
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          if [[ "$SEVERITY" == critical ]]; then
+            echo "::error::VM runtime health is critical (${SUMMARY})."
+          else
+            echo "::warning::VM runtime health is degraded (${SUMMARY})."
           fi
