@@ -3,6 +3,7 @@ from contextlib import contextmanager
 import fcntl
 import json
 import math
+import os
 from pathlib import Path
 import time
 
@@ -22,15 +23,102 @@ class ProgramRegistryError(RuntimeError):
     """program registry / 他コーナー状態が壊れている (fail-closed で停止する)。"""
 
 
-def boundary_ready(state_dir: Path, requested_at: float) -> bool:
-    for kind in ('prediction', 'improvement'):
-        try:
-            stamp = json.loads((state_dir / f'corner_boundary_{kind}.json').read_text())['completed_at']
-            if type(stamp) in (int, float) and math.isfinite(stamp) and requested_at <= stamp <= time.time():
-                return True
-        except (OSError, ValueError, TypeError, KeyError):
-            pass
-    return False
+PREDICTION_ACTIVE_STATUSES = frozenset({'ACTIVE', 'LOCKED'})
+IMPROVEMENT_STATE_FILE = 'improve_state.json'
+PREDICTION_STATE_FILE = 'current_prediction.json'
+PREDICTION_WORKER = 'prediction_worker'
+
+
+def _pid_is_alive(pid):
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _read_pid_file(path):
+    try:
+        raw = path.read_text(encoding='utf-8')
+    except OSError:
+        return None
+    for token in raw.split():
+        if token.isdigit():
+            return int(token)
+    return None
+
+
+def _worker_running(root, name):
+    if (root / f'{name}.paused').is_file():
+        return False
+    return _pid_is_alive(_read_pid_file(root / f'{name}.pid'))
+
+
+def _improvement_active(state_dir: Path) -> bool:
+    """True while an improvement cycle or interleaved A/B is in progress.
+
+    Conservative: any fixed gate a clean switch must not interrupt counts as
+    active. A missing/stale state means improvement is at rest and need not
+    hold the corner back.
+    """
+    if (state_dir / 'ab_state.json').exists():
+        return True
+    if (state_dir / 'ab_candidate' / 'meta.json').exists():
+        return True
+    if (state_dir / 'improve_retry_batch.json').exists():
+        return True
+    if (state_dir.parent / 'improve.lock').exists():
+        return True
+    try:
+        state = json.loads((state_dir / IMPROVEMENT_STATE_FILE).read_text())
+    except (OSError, ValueError):
+        return False
+    if not isinstance(state, dict) or str(state.get('status')) not in ('running', 'manual'):
+        return False
+    return _pid_is_alive(state.get('pid'))
+
+
+def _prediction_in_flight(state_dir: Path) -> bool:
+    """True only while the prediction worker runs an ACTIVE/LOCKED prediction."""
+    if not _worker_running(state_dir, PREDICTION_WORKER):
+        return False
+    try:
+        state = json.loads((state_dir / PREDICTION_STATE_FILE).read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(state, dict) and state.get('status') in PREDICTION_ACTIVE_STATUSES
+
+
+def _fresh_boundary(state_dir: Path, kind: str, requested_at: float, now: float) -> bool:
+    try:
+        stamp = json.loads((state_dir / f'corner_boundary_{kind}.json').read_text())['completed_at']
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+    if type(stamp) not in (int, float) or not math.isfinite(stamp):
+        return False
+    return requested_at <= stamp <= now
+
+
+def boundary_ready(state_dir: Path, requested_at: float, *, now=None) -> bool:
+    """A confirmed boundary for every currently-active background activity.
+
+    Improvement (cycle or A/B) is required while it is in progress; a
+    prediction boundary is additionally required only while the prediction
+    worker holds an in-flight prediction. A stopped prediction worker never
+    blocks the corner, and when nothing is active the corner may proceed.
+    """
+    now = time.time() if now is None else now
+    if _improvement_active(state_dir) and not _fresh_boundary(state_dir, 'improvement', requested_at, now):
+        return False
+    if _prediction_in_flight(state_dir) and not _fresh_boundary(state_dir, 'prediction', requested_at, now):
+        return False
+    return True
 
 
 @contextmanager
@@ -125,7 +213,7 @@ def _earlier_waiter_exists(root, key, requested_at):
         if other == key:
             continue
         entry = _queue_read(root, other)
-        if entry.get('status') != 'waiting':
+        if entry.get('status') not in ('waiting', 'waiting_turn'):
             continue
         try:
             other_requested = float(entry.get('requested_at', 0) or 0)
@@ -137,7 +225,8 @@ def _earlier_waiter_exists(root, key, requested_at):
 
 
 @contextmanager
-def _program_slot(root, owner_state, wait_deadline_ts, *, sleep=time.sleep, poll_s=5.0):
+def _program_slot(root, owner_state, wait_deadline_ts, *, sleep=time.sleep, poll_s=5.0,
+                  requested_at=None, queue_status='waiting'):
     """キュー待ち付き program 占有。順番が来たら所有権を取って yield する。
 
     待ち行列はキー別ファイル (FIFO: 先に待ち始めた他コーナーを追い越さない)。
@@ -146,9 +235,10 @@ def _program_slot(root, owner_state, wait_deadline_ts, *, sleep=time.sleep, poll
     期限切れ時は CornerWaitExpired を送出する (実行しない)。
     """
     key = Path(owner_state).stem or Path(owner_state).name
-    requested_at = time.time()
+    if requested_at is None:
+        requested_at = time.time()
     root.mkdir(parents=True, exist_ok=True)
-    _queue_write(root, key, status='waiting', requested_at=requested_at,
+    _queue_write(root, key, status=queue_status, requested_at=requested_at,
                  wait_deadline_ts=wait_deadline_ts)
     lock_path = root / 'docich_program.lock'
     try:
@@ -181,12 +271,46 @@ def _program_slot(root, owner_state, wait_deadline_ts, *, sleep=time.sleep, poll
     except CornerWaitExpired:
         raise
     except BaseException as exc:
-        # waiting のまま落ちた中断は cancelled、registry 破損等は error と区別する。
-        if _queue_read(root, key).get('status') == 'waiting':
+        # 待機のまま落ちた中断は cancelled、registry 破損等は error と区別する。
+        if _queue_read(root, key).get('status') in ('waiting', 'waiting_turn', 'waiting_boundary'):
             _queue_write(root, key, status='error' if isinstance(exc, ProgramRegistryError) else 'cancelled')
         raise
 
 
-def wait_for_boundary(root, requested_at, *, sleep=time.sleep):
+@contextmanager
+def program_slot(g, owner_state, *, requested_at, wait_deadline_ts, wait_boundary=True,
+                 sleep=time.sleep, poll_s=5.0, now=time.time):
+    """境界待ちと program 所有を分離したコーナー枠。
+
+    境界待ちの間は program flock を保持しない (他コーナーの発火を塞がない)。
+    確定境界が満たされた後だけ枠を取り、発火〜終了の間 flock を保持する。
+    境界待ちも枠待ちも ``wait_deadline_ts`` を超えると CornerWaitExpired。
+    """
+    root = resolve_soren_root(g) / 'tmp/state'
+    root.mkdir(parents=True, exist_ok=True)
+    key = Path(owner_state).stem or Path(owner_state).name
+    _queue_write(root, key, status='waiting_boundary', requested_at=requested_at,
+                 wait_deadline_ts=wait_deadline_ts)
+    if wait_boundary:
+        try:
+            while not boundary_ready(root, requested_at, now=now()):
+                if now() >= wait_deadline_ts:
+                    _queue_write(root, key, status='expired')
+                    raise CornerWaitExpired(f'境界待ちが窓期限を過ぎました: {key}')
+                sleep(poll_s)
+        except CornerWaitExpired:
+            raise
+        except BaseException as exc:
+            _queue_write(root, key, status='error' if isinstance(exc, ProgramRegistryError) else 'cancelled')
+            raise
+    with _program_slot(root, owner_state, wait_deadline_ts, sleep=sleep, poll_s=poll_s,
+                       requested_at=requested_at, queue_status='waiting_turn') as slot_root:
+        yield slot_root
+
+
+def wait_for_boundary(root, requested_at, *, deadline_ts=None, sleep=time.sleep, poll_s=5):
+    """Confirmed cycle boundary with an optional hard deadline (fail closed)."""
     while not boundary_ready(root, requested_at):
-        sleep(5)
+        if deadline_ts is not None and time.time() >= deadline_ts:
+            raise CornerWaitExpired('境界待ちが期限を過ぎました')
+        sleep(poll_s)

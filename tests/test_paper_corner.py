@@ -63,11 +63,14 @@ def test_delayed_boundary_runs_full_duration_and_does_not_repeat(tmp_path):
     g=setup(tmp_path)
     now=[datetime(2026,9,8,22,tzinfo=ZoneInfo('Asia/Tokyo')).timestamp()]
     due=now[0]; output=[]; voice=[]
+    state=tmp_path/'soren/tmp/state'
+    state.mkdir(parents=True, exist_ok=True)
+    # An in-progress improvement cycle is what the boundary must confirm.
+    (state.parent/'improve.lock').write_text('')
     def sleep(seconds):
         if now[0] == due:
             now[0]+=35*60
-            state=tmp_path/'soren/tmp/state'
-            (state/'corner_boundary_prediction.json').write_text(json.dumps({'completed_at':now[0]}))
+            (state/'corner_boundary_improvement.json').write_text(json.dumps({'completed_at':now[0]}))
         else: now[0]+=seconds
     mgr=manager(g,clock=lambda:now[0],sleep=sleep,overlay=lambda g,p:output.append(p),speech=lambda g,t,**kw:voice.append(kw))
     assert mgr.tick() == 'completed'
