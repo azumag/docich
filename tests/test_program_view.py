@@ -154,18 +154,52 @@ class TestProgramViewAdapter(unittest.TestCase):
             self.assertIsNone(adapter.request_round_boundary)
             self.assertIsNone(adapter.cancel_round_boundary)
 
-    def test_view_command_is_dashboard_watch(self):
+    def test_text_dashboard_command_when_configured(self):
         from types import SimpleNamespace
         from docich.adapters.program import make_program_view_adapter
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            g = SimpleNamespace(config_path=str(root / "docich.toml"),
-                                state_dir=root / "run")
+            config = root / "docich.toml"
+            config.write_text('[paper_corner]\ndashboard = "text"\n', encoding="utf-8")
+            g = SimpleNamespace(config_path=str(config), state_dir=root / "run")
             adapter = make_program_view_adapter(g, self._spec(tmp))
             command = adapter._game_command()
             self.assertIn("dashboard-watch", command[-1])
             self.assertNotIn("paper-view", " ".join(command[:-1]))
             self.assertIn(str(root / "run" / "trading"), command)
+
+    def test_html_dashboard_is_default(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        from docich.adapters import program
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            g = SimpleNamespace(config_path=str(root / "missing.toml"), state_dir=root / "run")
+            with mock.patch.object(program, "_browser_bin", return_value="/usr/bin/chromium"):
+                adapter = program.make_program_view_adapter(g, self._spec(tmp))
+                command = adapter._game_command()
+            self.assertEqual(command[-5:], ["dashboard-server", "--host", "127.0.0.1", "--port", "8799"])
+            self.assertIn(str(root / "run" / "trading"), command)
+            self.assertEqual(adapter.dashboard_kind, "html")
+
+    def test_html_viewer_is_browser_contained(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        from docich.adapters import program
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            g = SimpleNamespace(
+                config_path=str(root / "missing.toml"), state_dir=root / "run",
+                display=SimpleNamespace(name=":99", viewport_width=960, viewport_height=540,
+                                        viewport_x=0, viewport_y=90))
+            with mock.patch.object(program, "_browser_bin", return_value="/usr/bin/chromium"):
+                adapter = program.make_program_view_adapter(g, self._spec(tmp))
+                viewer = adapter._xterm_command()
+            joined = " ".join(viewer)
+            self.assertIn("presentation.py", joined)
+            self.assertIn("--app=http://127.0.0.1:8799/", joined)
+            self.assertIn("--window-size=960,540", joined)
+            self.assertNotIn("xterm", joined)
 
     def test_view_config_is_synthetic(self):
         from docich.adapters.program import paper_view_game_config

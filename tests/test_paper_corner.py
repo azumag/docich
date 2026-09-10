@@ -79,8 +79,10 @@ def test_delayed_boundary_runs_full_duration_and_does_not_repeat(tmp_path):
     state=json.loads(mgr.path.read_text())
     assert state['started_at']==due+2100
     assert state['completed_at']-state['started_at']==1800
-    assert len(output)==len(voice)==8
-    assert all('PAPER' in p['body'] for p in output)
+    # opening + 4 narration segments + 6 x 5-minute deliveries + end
+    assert len(output)==len(voice)==12
+    assert all(f'script:{i}' in state['reports'] for i in range(1, 5))
+    assert all(p['body'] for p in output)
     assert '切り替えました' in state['reports']['opening']['text']
     assert json.loads(mgr.presentation.read_text())['mode']=='compact'
     assert mgr.tick()=='not-due'
@@ -289,6 +291,47 @@ def test_restore_skips_live_game_without_view_evidence(tmp_path):
     assert mgr._restore_locked(json.loads(mgr.path.read_text())) == 'completed'
     assert coord.calls == []
     assert json.loads(mgr.path.read_text())['status'] == 'completed'
+
+
+def test_improve_job_spawns_after_restore_when_configured(tmp_path):
+    g = setup(tmp_path)
+    cfg = tmp_path / 'config.toml'
+    cfg.write_text(cfg.read_text().replace(
+        '[paper_corner]\nenabled = true',
+        '[paper_corner]\nimprove_agents = "opencode:x"\nenabled = true'))
+    g = load_global(tmp_path, cfg)
+    now = [datetime(2026, 9, 8, 22, tzinfo=ZoneInfo('Asia/Tokyo')).timestamp()]
+    spawned = []
+    mgr = manager(g, clock=lambda: now[0], sleep=lambda s: None,
+                  overlay=lambda g, p: None, speech=lambda g, t, **kw: None,
+                  coordinator=FakeCoordinator(active='paper-view'),
+                  spawn=lambda argv, log: spawned.append((argv, log)))
+    mgr._active_game = lambda: 'paper-view'
+    mgr.save({'status': 'failed', 'date': '2026-09-08', 'previous_game': 'sorengame',
+              'started_at': now[0] - 3600, 'ends_at': now[0] - 1800})
+    assert mgr.tick() == 'completed'
+    assert len(spawned) == 1
+    argv, log_path = spawned[0]
+    assert 'paper-improve' in argv and '--date' in argv and '2026-09-08' in argv
+    assert str(log_path).endswith('paper-corner-improve-2026-09-08.log')
+    state = json.loads(mgr.path.read_text())
+    assert state['improve_job']['spawned'] is True
+
+
+def test_improve_job_not_spawned_when_unconfigured(tmp_path):
+    g = setup(tmp_path)
+    now = [datetime(2026, 9, 8, 22, tzinfo=ZoneInfo('Asia/Tokyo')).timestamp()]
+    spawned = []
+    mgr = manager(g, clock=lambda: now[0], sleep=lambda s: None,
+                  overlay=lambda g, p: None, speech=lambda g, t, **kw: None,
+                  coordinator=FakeCoordinator(active='paper-view'),
+                  spawn=lambda argv, log: spawned.append((argv, log)))
+    mgr._active_game = lambda: 'paper-view'
+    mgr.save({'status': 'failed', 'date': '2026-09-08', 'previous_game': 'sorengame',
+              'started_at': now[0] - 3600, 'ends_at': now[0] - 1800})
+    assert mgr.tick() == 'completed'
+    assert spawned == []
+    assert 'improve_job' not in json.loads(mgr.path.read_text())
 
 
 def test_restore_skips_operator_moved_on(tmp_path):

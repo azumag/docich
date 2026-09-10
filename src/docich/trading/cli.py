@@ -95,6 +95,13 @@ def configure_parser(parser) -> None:
     watch = sub.add_parser("dashboard-watch", help="PAPERコーナー用の読取専用ダッシュボードを描画し続ける")
     watch.add_argument("--interval", type=float, default=2.0, metavar="SEC", help="再描画間隔 (既定2秒)")
     watch.add_argument("--once", action="store_true", help="1フレーム描画して終了する")
+    server = sub.add_parser("dashboard-server", help="PAPERコーナー用の読取専用HTMLダッシュボードを配信する")
+    server.add_argument("--host", default="127.0.0.1")
+    server.add_argument("--port", type=int, default=8799)
+    improve = sub.add_parser("paper-improve", help="コーナー終了後に戦略パラメータ改善を1回実行する")
+    improve.add_argument("--date", default=None, metavar="YYYY-MM-DD", help="対象コーナー日 (記録用)")
+    improve.add_argument("--agents", default=None, metavar="CSV", help="LLM委任先 (既定は [paper_corner] improve_agents)")
+    improve.add_argument("--dry-run", action="store_true", help="AIを呼ばずプロンプトだけ確認する")
 
 
 def _state_dir(
@@ -106,6 +113,20 @@ def _state_dir(
     if global_config is not None:
         return global_config.state_dir / "trading"
     return repo_root / "run" / "trading"
+
+
+def _paper_corner_improve_agents(g: GlobalConfig) -> str:
+    """Read [paper_corner].improve_agents (raw; not part of GlobalConfig)."""
+    try:
+        import tomllib
+        data = tomllib.loads(Path(g.config_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    section = data.get("paper_corner") if isinstance(data, dict) else None
+    if not isinstance(section, dict):
+        return ""
+    value = section.get("improve_agents", "")
+    return value.strip() if isinstance(value, str) else ""
 
 
 def _json_print(payload: Mapping[str, Any]) -> None:
@@ -473,6 +494,19 @@ def run_args(args, *, repo_root: Path, global_config: GlobalConfig | None = None
             raise TradingCliError(str(exc)) from exc
         _json_print({"mode": state.mode, "updated_at": state.updated_at})
         return 0
+    if command == "paper-improve":
+        if global_config is None:
+            raise TradingCliError("paper-improve requires resolved docich global config")
+        from .paper_improve import run_paper_improve
+        agents = args.agents
+        if agents is None:
+            agents = _paper_corner_improve_agents(global_config)
+        summary = run_paper_improve(
+            global_config, trading_dir=state_dir, agents=agents or "",
+            dry_run=bool(args.dry_run),
+        )
+        _json_print(summary)
+        return 0
     if command == "dashboard-watch":
         from .dashboard import watch_loop, render_dashboard, load_snapshot
         if args.once:
@@ -480,6 +514,10 @@ def run_args(args, *, repo_root: Path, global_config: GlobalConfig | None = None
             print(render_dashboard(snapshot, closes, now=time.time(), remaining_s=None))
             return 0
         watch_loop(trading_dir=state_dir, interval_s=args.interval)
+        return 0
+    if command == "dashboard-server":
+        from .dashboard_server import serve
+        serve(trading_dir=state_dir, host=args.host, port=args.port)
         return 0
     if command == "notify-once":
         if global_config is None:
