@@ -202,14 +202,6 @@ jobs:
           fi
           upper="$(printf '%s' "$SEVERITY" | tr '[:lower:]' '[:upper:]')"
           title="${prefix} ${upper} runtime health alert"
-          for entry in "${alerts[@]}"; do
-            number="${entry%%$'\t'*}"; existing="${entry#*$'\t'}"
-            [[ "$existing" == "$title" ]] && { echo "Existing runtime alert #${number} remains open; suppressing duplicate."; exit 0; }
-          done
-          for entry in "${alerts[@]}"; do
-            number="${entry%%$'\t'*}"
-            gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Runtime severity changed to ${upper}."
-          done
           body="$(cat <<EOF
           Runtime health degradation detected by the owner-only read-only diagnostics path.
 
@@ -220,6 +212,18 @@ jobs:
           The public alert contains counts and booleans only. It never publishes raw diagnostics, worker names, paths, logs, model names, prompts, credentials, or command output.
           EOF
           )"
+          for entry in "${alerts[@]}"; do
+            number="${entry%%$'\t'*}"; existing="${entry#*$'\t'}"
+            if [[ "$existing" == "$title" ]]; then
+              gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+              echo "Existing runtime alert #${number} refreshed with the latest sanitized snapshot."
+              exit 0
+            fi
+          done
+          for entry in "${alerts[@]}"; do
+            number="${entry%%$'\t'*}"
+            gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Runtime severity changed to ${upper}."
+          done
           gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
           if [[ "$SEVERITY" == critical ]]; then
             echo "::error::VM runtime health is critical (${SUMMARY})."
