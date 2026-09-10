@@ -5,6 +5,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich.trading import dashboard_server
@@ -56,3 +58,8 @@ def test_server_serves_page_snapshot_and_is_read_only(tmp_path):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+def test_serve_rejects_non_loopback_bind(tmp_path):
+    with pytest.raises(ValueError, match="loopback"):
+        dashboard_server.serve(trading_dir=tmp_path, host="0.0.0.0", port=8799)
