@@ -15,6 +15,10 @@ Observed sources (all read-only):
   - tmp/state/ai_stats/YYYYMMDD.jsonl structured telemetry
   - tmp/state/improve_state.json, improve lock/monitor/retry/gate markers
   - deployed git HEADs (docich + intended soviet_now gitlink)
+  - docich program/corner state under the production state_dir
+    (game_switch.json, retro_corner.json, paper_corner.json,
+    trading/presentation.json): lifecycle statuses, timestamps and counters
+    only. Announcement/script bodies are never read out.
 
 Never emitted: secrets, tokens, raw environment, prompt/generation bodies,
 HTTP headers, file contents. Error previews are truncated and redacted.
@@ -24,6 +28,7 @@ Exit 0 with JSON on stdout on success; nonzero (no usable stdout) on crash,
 in which case the gateway refuses fail-closed.
 """
 import json
+import math
 import os
 import re
 import subprocess
@@ -533,6 +538,169 @@ def _collect_meta(soren, now):
     }
 
 
+# Corner/program state filenames under the docich production state_dir. These
+# are the only files read by _collect_programs; announcement/script bodies are
+# deliberately never surfaced (statuses, timestamps and counters only).
+CORNER_STATE_FILES = {
+    "game_switch": "game_switch.json",
+    "retro_corner": "retro_corner.json",
+    "paper_corner": "paper_corner.json",
+}
+
+
+def _program_state_dir():
+    """Return the docich state_dir that holds corner state (read-only).
+
+    Derives it from the same fixed config the corner systemd units use
+    (`config/docich.soren-live.toml`), constrained to the production checkout;
+    falls back to the known production directory name. Arbitrary paths from
+    config or arguments are never followed.
+    """
+    try:
+        import tomllib
+
+        raw = _read_text_capped(PROD_ROOT / "config" / "docich.soren-live.toml", 16384) or ""
+        rel = tomllib.loads(raw).get("paths", {}).get("state_dir")
+        if isinstance(rel, str) and rel:
+            candidate = (PROD_ROOT / rel).resolve()
+            root = PROD_ROOT.resolve()
+            if candidate == root or str(candidate).startswith(str(root) + os.sep):
+                return candidate
+    except (OSError, ValueError, ImportError):
+        pass
+    return PROD_ROOT / "run-soren-live"
+
+
+def _load_state_file(path):
+    """Return (present, readable, data) for a fixed corner state file."""
+    try:
+        if not path.is_file():
+            return False, False, None
+    except OSError:
+        return False, False, None
+    raw = _read_text_capped(path, 65536)
+    if raw is None or not raw.strip():
+        return True, False, None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return True, False, None
+    if not isinstance(data, dict):
+        return True, False, None
+    return True, True, data
+
+
+def _bounded_str(value, limit):
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        value = str(value)
+    return _redact_text(value, limit)
+
+
+def _bounded_int(value):
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _bounded_time(value):
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, str):
+        return _redact_text(value, 40)
+    return None
+
+
+def _collect_programs(state_dir):
+    """Sanitized corner/program lifecycle state from the docich state_dir.
+
+    Reports presence, statuses, timestamps and announcement counters. It never
+    emits announcement text, script bodies, request payloads, or file paths, and
+    never mutates any file.
+    """
+    state_dir = Path(state_dir)
+    payload = {
+        "state_dir_found": state_dir.is_dir(),
+        "game_switch": {"present": False, "readable": False},
+        "retro_corner": {"present": False, "readable": False},
+        "paper_corner": {"present": False, "readable": False},
+        "presentation": {"present": False, "readable": False},
+    }
+    if not state_dir.is_dir():
+        return payload
+
+    present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES["game_switch"])
+    entry = {"present": present, "readable": readable}
+    if readable:
+        active = data.get("active") if isinstance(data.get("active"), dict) else {}
+        last = data.get("last_result") if isinstance(data.get("last_result"), dict) else {}
+        entry.update(
+            {
+                "phase": _bounded_str(data.get("phase"), 32),
+                "operation": _bounded_str(data.get("operation"), 32),
+                "active_game": _bounded_str(active.get("game"), 64),
+                "active_generation": _bounded_int(active.get("generation")),
+                "next_generation": _bounded_int(data.get("next_generation")),
+                "revision": _bounded_int(data.get("revision")),
+                "last_status": _bounded_str(last.get("status"), 32),
+                "last_error_code": _bounded_str(last.get("error_code"), 64),
+                "last_to_game": _bounded_str(last.get("to_game"), 64),
+                "updated_at": _bounded_str(data.get("updated_at"), 40),
+            }
+        )
+    payload["game_switch"] = entry
+
+    for name in ("retro_corner", "paper_corner"):
+        present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES[name])
+        entry = {"present": present, "readable": readable}
+        if readable:
+            reports = data.get("reports")
+            announcements = None
+            if isinstance(reports, dict):
+                announcements = {
+                    "total": len(reports),
+                    "overlay": sum(
+                        1 for item in reports.values()
+                        if isinstance(item, dict) and item.get("overlay") is True
+                    ),
+                    "speech": sum(
+                        1 for item in reports.values()
+                        if isinstance(item, dict) and item.get("speech") is True
+                    ),
+                }
+            entry.update(
+                {
+                    "status": _bounded_str(data.get("status"), 32),
+                    "date": _bounded_str(data.get("date"), 16),
+                    "game": _bounded_str(data.get("game"), 64),
+                    "previous_game": _bounded_str(data.get("previous_game"), 64),
+                    "started_at": _bounded_time(data.get("started_at")),
+                    "ends_at": _bounded_time(data.get("ends_at")),
+                    "completed_at": _bounded_time(data.get("completed_at")),
+                    "last_error": _bounded_str(data.get("last_error"), 200),
+                    "announcements": announcements,
+                }
+            )
+        payload[name] = entry
+
+    present, readable, data = _load_state_file(state_dir / "trading" / "presentation.json")
+    entry = {"present": present, "readable": readable}
+    if readable:
+        entry.update(
+            {
+                "mode": _bounded_str(data.get("mode"), 16),
+                "updated_at": _bounded_time(data.get("updated_at")),
+            }
+        )
+    payload["presentation"] = entry
+    return payload
+
+
 def _severity(workers, queues, ai, improvement):
     if workers["required_down"] or workers["required_stale"]:
         return "critical"
@@ -575,6 +743,7 @@ def main(argv):
             "all_failed_15m": ai["all_failed"],
         },
         "improvement": improvement,
+        "corners": _collect_programs(_program_state_dir()),
     }
     text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     if len(text.encode("utf-8")) > MAX_JSON_BYTES:
