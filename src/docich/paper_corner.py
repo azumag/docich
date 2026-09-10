@@ -167,9 +167,15 @@ class PaperCornerManager:
     def tick(self):
         if not self.enabled:
             return 'disabled'
+        self._require_outputs()
+        return self._with_guard(self._tick_guarded)
+
+    def _require_outputs(self):
         if not all((self.g.trading.paper_worker_enabled, self.g.trading.notifications_enabled,
                     self.g.trading.notification_speech_enabled)):
             raise ValueError('paper corner requires enabled paper worker and outputs')
+
+    def _with_guard(self, fn):
         self.tick_guard_path.parent.mkdir(parents=True, exist_ok=True)
         os.chmod(self.tick_guard_path.parent, 0o700)
         guard = self.tick_guard_path.open('a+', encoding='utf-8')
@@ -179,11 +185,44 @@ class PaperCornerManager:
             except BlockingIOError:
                 return 'already-running'
             try:
-                return self._tick_guarded()
+                return fn()
             finally:
                 fcntl.flock(guard.fileno(), fcntl.LOCK_UN)
         finally:
             guard.close()
+
+    def start(self):
+        """Start the PAPER view immediately (operator/manual test).
+
+        Bypasses the schedule and the program boundary. The switch still goes
+        through the coordinator, so a running match is never cut mid-game.
+        """
+        self._require_outputs()
+        return self._with_guard(self._start_locked)
+
+    def _start_locked(self):
+        state = self._read_state()
+        if state.get('status') in ('starting', 'active'):
+            return 'already-active'
+        if state.get('status') in ('failed', 'restoring'):
+            return self._restore_locked(state)
+        state = {
+            'status': 'starting',
+            'date': dt.datetime.fromtimestamp(self.clock(), self.tz).date().isoformat(),
+            'previous_game': self._active_game(),
+            'requested_at': self.clock(),
+        }
+        self.save(state)
+        return self._run_locked(state)
+
+    def stop(self):
+        return self._with_guard(self._stop_locked)
+
+    def _stop_locked(self):
+        state = self._read_state()
+        if state.get('status') not in ('starting', 'active', 'failed', 'restoring'):
+            return 'not-active'
+        return self._restore_locked(state)
 
     def _tick_guarded(self):
         now = dt.datetime.fromtimestamp(self.clock(), self.tz)
@@ -308,62 +347,68 @@ class PaperCornerManager:
         self.save(state)
         return 'completed'
 
+    def _read_state(self):
+        return json.loads(self.path.read_text()) if self.path.exists() else {}
+
     def _tick_locked(self, root, now):
-            state = json.loads(self.path.read_text()) if self.path.exists() else {}
-            if state.get('status') in ('failed', 'restoring'):
-                # A failed restore (or a crash inside one) retries on the
-                # next tick instead of going quiet for the rest of the day.
-                return self._restore_locked(state)
-            if state.get('status') not in ('waiting', 'starting', 'active'):
-                if now.hour < self.hour or state.get('date') == now.date().isoformat():
-                    return 'not-due'
-                state = {'status': 'waiting', 'date': now.date().isoformat(), 'requested_at': self.clock()}
-                self.save(state)
-            if state['status'] == 'waiting':
-                state['status'] = 'starting'
-                self.save(state)
-            if state['status'] == 'starting':
-                # M1: record the return target once. Re-entering starting
-                # after a crash must not overwrite it with the view itself.
-                if 'previous_game' not in state:
-                    previous = self._active_game()
-                    state['previous_game'] = previous
-                    self.save(state)
-                else:
-                    previous = state.get('previous_game')
-                if previous is None:
-                    self._require_success(self.coordinator.start(PAPER_VIEW_NAME), 'program view start')
-                elif previous == PAPER_VIEW_NAME:
-                    pass
-                else:
-                    # The match runs to its boundary first (repo rule: never
-                    # kill a match mid-game). Tell viewers the switch is
-                    # pending so the continuing game is not confusing.
-                    self.announce(state, 'switch-notice',
-                                  'まもなくPAPER・暗号資産の模擬売買コーナーのため、試合終了後に画面を切り替えます。')
-                    self._require_success(
-                        self.coordinator.switch(PAPER_VIEW_NAME), f'{previous}->program view switch')
-                # Post-commit stop verification: the displaced game must be
-                # gone from canonical. A mismatch fails (and retries) instead
-                # of silently showing the dashboard over a live game.
-                committed = self._active_game()
-                if committed is not None and committed != PAPER_VIEW_NAME:
-                    raise PaperCornerError(
-                        f"切替後に旧ゲームが残っています: {committed}")
-                self.announce(state, 'opening', self.opening_text())
-                write_presentation(self.presentation, 'detailed', now=self.clock())
-                started = self.clock()
-                state.update(status='active', started_at=started, ends_at=started + self.minutes * 60)
-                self.save(state)
-            elif self.clock() < state['ends_at']:
-                write_presentation(self.presentation, 'detailed', now=self.clock())
-            while self.clock() < state['ends_at']:
-                slot = int((self.clock() - state['started_at']) // 300)
-                self.deliver(state, slot, f'実際の開始から{self.minutes}分間お送りします。' if slot == 0 else '')
-                remaining = state['ends_at'] - self.clock()
-                if remaining > 0:
-                    self.sleep(min(300 - ((self.clock() - state['started_at']) % 300), remaining))
+        state = self._read_state()
+        if state.get('status') in ('failed', 'restoring'):
+            # A failed restore (or a crash inside one) retries on the
+            # next tick instead of going quiet for the rest of the day.
             return self._restore_locked(state)
+        if state.get('status') not in ('waiting', 'starting', 'active'):
+            if now.hour < self.hour or state.get('date') == now.date().isoformat():
+                return 'not-due'
+            state = {'status': 'waiting', 'date': now.date().isoformat(), 'requested_at': self.clock()}
+            self.save(state)
+        if state['status'] == 'waiting':
+            state['status'] = 'starting'
+            self.save(state)
+        return self._run_locked(state)
+
+    def _run_locked(self, state):
+        if state['status'] == 'starting':
+            # M1: record the return target once. Re-entering starting
+            # after a crash must not overwrite it with the view itself.
+            if 'previous_game' not in state:
+                previous = self._active_game()
+                state['previous_game'] = previous
+                self.save(state)
+            else:
+                previous = state.get('previous_game')
+            if previous is None:
+                self._require_success(self.coordinator.start(PAPER_VIEW_NAME), 'program view start')
+            elif previous == PAPER_VIEW_NAME:
+                pass
+            else:
+                # The match runs to its boundary first (repo rule: never
+                # kill a match mid-game). Tell viewers the switch is
+                # pending so the continuing game is not confusing.
+                self.announce(state, 'switch-notice',
+                              'まもなくPAPER・暗号資産の模擬売買コーナーのため、試合終了後に画面を切り替えます。')
+                self._require_success(
+                    self.coordinator.switch(PAPER_VIEW_NAME), f'{previous}->program view switch')
+            # Post-commit stop verification: the displaced game must be
+            # gone from canonical. A mismatch fails (and retries) instead
+            # of silently showing the dashboard over a live game.
+            committed = self._active_game()
+            if committed is not None and committed != PAPER_VIEW_NAME:
+                raise PaperCornerError(
+                    f"切替後に旧ゲームが残っています: {committed}")
+            self.announce(state, 'opening', self.opening_text())
+            write_presentation(self.presentation, 'detailed', now=self.clock())
+            started = self.clock()
+            state.update(status='active', started_at=started, ends_at=started + self.minutes * 60)
+            self.save(state)
+        elif self.clock() < state['ends_at']:
+            write_presentation(self.presentation, 'detailed', now=self.clock())
+        while self.clock() < state['ends_at']:
+            slot = int((self.clock() - state['started_at']) // 300)
+            self.deliver(state, slot, f'実際の開始から{self.minutes}分間お送りします。' if slot == 0 else '')
+            remaining = state['ends_at'] - self.clock()
+            if remaining > 0:
+                self.sleep(min(300 - ((self.clock() - state['started_at']) % 300), remaining))
+        return self._restore_locked(state)
 
 
 def main(argv=None):
