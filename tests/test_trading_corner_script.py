@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import pytest  # noqa: E402
 
 from docich.trading.corner_script import (  # noqa: E402
+    MAX_SEGMENT_CHARS,
     SEGMENT_KEYS,
     CornerScriptError,
     build_facts,
@@ -98,14 +99,22 @@ def test_parse_script_accepts_fenced_and_rejects_bad():
     assert parse_script(good) == {
         "corner": "a", "strategy": "b", "result": "c", "improve": "d"
     }
+    # Surrounding prose must not lose the narration.
+    prose = '前置きです。\n{"corner":"a","strategy":"b","result":"c","improve":"d"}\n以上です。'
+    assert parse_script(prose)["corner"] == "a"
+    # Extra keys are ignored rather than rejected.
+    assert parse_script(
+        '{"corner":"a","strategy":"b","result":"c","improve":"d","extra":"x"}'
+    ) == {"corner": "a", "strategy": "b", "result": "c", "improve": "d"}
+    # Over-length values are truncated to the cap, not rejected.
+    truncated = parse_script(
+        '{"corner":"' + "あ" * 300 + '","strategy":"b","result":"c","improve":"d"}'
+    )
+    assert len(truncated["corner"]) == MAX_SEGMENT_CHARS
     with pytest.raises(CornerScriptError):
         parse_script('{"corner":"a"}')
     with pytest.raises(CornerScriptError):
-        parse_script('{"corner":"a","strategy":"b","result":"c","improve":"d","extra":"x"}')
-    with pytest.raises(CornerScriptError):
         parse_script('{"corner":"a","strategy":"","result":"c","improve":"d"}')
-    with pytest.raises(CornerScriptError):
-        parse_script('{"corner":"' + "あ" * 300 + '","strategy":"b","result":"c","improve":"d"}')
     with pytest.raises(CornerScriptError):
         parse_script("not json")
 

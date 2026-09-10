@@ -16,7 +16,7 @@ import re
 import time
 from typing import Mapping
 
-from .ai_text import AiTextError, generate_text
+from .ai_text import AiTextError, extract_json_object, generate_text
 from .corner_script import build_facts
 from .models import TradingValidationError
 from .strategy_store import (
@@ -115,21 +115,13 @@ def _coerce_decimal(value: object, name: str) -> Decimal:
 
 def parse_policy_candidate(text: str) -> dict:
     """Parse and range-validate a candidate policy. Malformed input raises."""
-    raw = str(text or "")
-    match = JSON_FENCE_RE.search(raw)
-    payload = match.group(1) if match else raw
-    try:
-        data = json.loads(payload)
-    except ValueError as exc:
-        raise PaperImproveError(f"候補がJSONではありません: {_safe_reason(exc)}") from exc
+    data = extract_json_object(text)
     if not isinstance(data, dict):
-        raise PaperImproveError("候補がJSONオブジェクトではありません")
+        raise PaperImproveError("候補のJSONオブジェクトを抽出できません")
     missing = sorted(set(POLICY_KEYS) - set(data))
     if missing:
         raise PaperImproveError(f"候補に必要なキーがありません: {', '.join(missing)}")
-    extra = sorted(set(data) - set(POLICY_KEYS))
-    if extra:
-        raise PaperImproveError(f"候補に未知のキーがあります: {', '.join(extra)}")
+    # Extra keys are ignored; the required five are still range-validated below.
 
     candidate = {
         "momentum_lookback": _coerce_lookback(data["momentum_lookback"], "momentum_lookback", 2),

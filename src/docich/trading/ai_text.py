@@ -10,7 +10,9 @@ returned to the caller and never logged here.
 """
 from __future__ import annotations
 
+import json
 import os
+import re
 from pathlib import Path
 
 from ..config import GlobalConfig
@@ -22,6 +24,48 @@ class AiTextError(RuntimeError):
 
 def _safe_detail(value: BaseException | str) -> str:
     return str(value).replace("\n", " ")[:240]
+
+
+def extract_json_object(text: str) -> dict | None:
+    """Best-effort extraction of one JSON object from model output.
+
+    Tolerates prose around the object and ```json fences, and scans the first
+    balanced ``{...}`` that parses. Returns ``None`` when no object is found.
+    """
+    raw = str(text or "")
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.S)
+    candidate = fenced.group(1) if fenced else raw
+    start = candidate.find("{")
+    while start != -1:
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(candidate)):
+            char = candidate[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        data = json.loads(candidate[start:index + 1])
+                    except ValueError:
+                        data = None
+                    if isinstance(data, dict):
+                        return data
+                    break
+        start = candidate.find("{", start + 1)
+    return None
 
 
 def generate_text(
