@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import http.server
+import ipaddress
 import json
 import socketserver
 import time
@@ -87,7 +88,17 @@ def make_handler(trading_dir: Path):
     return Handler
 
 
+def _require_loopback(host: str) -> None:
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError as exc:
+        raise ValueError("dashboard host must be a loopback IP address") from exc
+    if not address.is_loopback:
+        raise ValueError("dashboard host must be a loopback IP address")
+
+
 def serve(*, trading_dir: Path, host: str = "127.0.0.1", port: int = 8799) -> None:
+    _require_loopback(host)
     handler = make_handler(Path(trading_dir))
     with _ReusableServer((host, port), handler) as httpd:
         httpd.serve_forever()
