@@ -50,7 +50,11 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
                               "last_status": "succeeded", "last_error_code": null, ...},
               "retro_corner": {"present": true, "status": "active", "game": "gnurobots", ...},
               "paper_corner": {"present": false, "readable": false},
-              "presentation": {"present": true, "mode": "detailed", ...}}
+              "presentation": {"present": true, "mode": "detailed", ...},
+              "boundary": {"improvement": {"present": true, "completed_at": 0, "age_sec": 0},
+                           "prediction": {"present": false, "completed_at": null, "age_sec": -1}},
+              "ab": {"state_present": true, "pattern": "ABBA", "games_lines": 12,
+                     "games_tainted": 0, "games_age_sec": 42, "candidate_pending": true, ...}}
 }
 ```
 
@@ -85,6 +89,13 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   announce/台本本文は読まない・出さない。state_dir は固定 config
   (`config/docich.soren-live.toml`) の `paths.state_dir` から解決し、
   production checkout 内に制約する。
+- boundary: Soren `tmp/state/corner_boundary_improvement.json` /
+  `corner_boundary_prediction.json` の `completed_at` と age のみ。コーナーの
+  境界待ちの可否を判定できる。
+- A/B: Soren `tmp/state/ab_state.json`（pattern / started_at / 件数 / mtime）、
+  `ab_games.jsonl`（行数・tainted 数・最終 arm）、`ab_candidate/`（有無）。
+  hash・env 文字列・戦略本文は読まない・出さない。A/B 中は improvement
+  boundary が保留されるため、コーナー遅延の直接原因になる。
 - meta: デプロイ済み docich HEAD と soviet_now gitlink（検証用。secret ではない）。
 
 ## 出さないもの
