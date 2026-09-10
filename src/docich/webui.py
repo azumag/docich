@@ -3877,6 +3877,10 @@ function renderDashboard(gs,is,workers,peak,backoffs,stats){
       wtbody.appendChild(tr);
     }
   }
+  // 予想ワーカーが停止中は Predictions タブ (nav + 中身) を隠す。
+  // wlist が取れない/エントリが無いときは判定不能として隠さない (fail-open)。
+  const predW=wlist.find(w=>w.worker==="prediction_worker");
+  applyPredictionsTabVisibility(predW ? predW.status==="ok" : null);
   // peak
   $("#kpi-peak").textContent = peak.is_peak_now? "ピーク中":"オフピーク";
   $("#kpi-peak-sub").textContent = `${peak.windows||"-"} TZ:${peak.tz} now ${peak.now_str||"-"}`;
@@ -3939,6 +3943,24 @@ function drawSparkline(days){
   poly2.setAttribute("stroke-width","1.5");
   poly2.setAttribute("opacity","0.7");
   svg.appendChild(poly2);
+}
+// 予想ワーカー停止中は Predictions タブを非表示にする。running:
+//   true  -> 稼働中。タブ (nav ボタン + section) を表示。
+//   false -> 停止中 (paused / not_running)。nav ボタンと section を隠し、
+//            表示中なら Dashboard へ退避する。
+//   null  -> 判定不能 (workers 取得失敗等)。現状維持 (隠さない)。
+function applyPredictionsTabVisibility(running){
+  const btn=document.querySelector('#tabs button[data-tab="predictions"]');
+  const sec=document.getElementById("tab-predictions");
+  const hide=(running===false);
+  if(btn) btn.hidden=hide;
+  if(sec && hide){
+    if(sec.style.display!=="none"){
+      const dashBtn=document.querySelector('#tabs button[data-tab="dashboard"]');
+      if(dashBtn) dashBtn.click();
+      else sec.style.display="none";
+    }
+  }
 }
 let statusTimer=null;
 let overlayPreviewTimer=null;
