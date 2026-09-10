@@ -38,14 +38,16 @@ class RuntimeSummaryTests(unittest.TestCase):
                 "fallbacks_15m": 0,
                 "all_failed_15m": 8,
                 "recent_events": [
-                    {"event": "fail", "rc": "79", "error_preview": "429 slow down"},
-                    {"event": "fail", "rc": "1", "error_preview": "request timed out"},
-                    {"event": "fail", "rc": "1", "error_preview": "403 RestrictedModelsError"},
-                    {"event": "fail", "rc": "1", "error_preview": "503 service unavailable"},
-                    {"event": "fail", "rc": "1", "error_preview": "model not found"},
-                    {"event": "fail", "rc": "1", "error_preview": "validator rejected empty output"},
-                    {"event": "fail", "rc": "1", "error_preview": "opaque provider failure SECRET_VALUE"},
-                    {"event": "winner", "rc": "0", "error_preview": "must not count"},
+                    {"event": "fail", "component": "RADIO:news:prepass", "rc": "79", "error_preview": "429 slow down"},
+                    {"event": "fail", "component": "RADIO:main", "rc": "1", "error_preview": "request timed out"},
+                    {"event": "fail", "component": "COMMENT", "rc": "1", "error_preview": "403 RestrictedModelsError"},
+                    {"event": "fail", "component": "IMPROVE:candidate", "rc": "1", "error_preview": "503 service unavailable"},
+                    {"event": "fail", "component": "NEWS:brief", "rc": "1", "error_preview": "model not found"},
+                    {"event": "fail", "component": "private-dynamic-component", "rc": "1", "error_preview": "validator rejected empty output"},
+                    {"event": "fail", "component": "private-dynamic-component", "rc": "1", "error_preview": "opaque provider failure SECRET_VALUE"},
+                    {"event": "all_failed", "component": "RADIO:news:prepass", "rc": ""},
+                    {"event": "all_failed", "component": "COMMENT", "rc": ""},
+                    {"event": "winner", "component": "RADIO:main", "rc": "0", "error_preview": "must not count"},
                 ],
             },
             "improvement": {"stale": False, "retry_pending": False},
@@ -57,6 +59,15 @@ class RuntimeSummaryTests(unittest.TestCase):
         self.assertIn("ai_recent_fail_sampled=7", summary)
         for cause in self.mod.CAUSES:
             self.assertIn(f"ai_recent_fail_{cause}=1", summary)
+        self.assertIn("ai_recent_fail_component_radio_prepass=1", summary)
+        self.assertIn("ai_recent_fail_component_radio_main=2", summary)
+        self.assertIn("ai_recent_fail_component_comment=1", summary)
+        self.assertIn("ai_recent_fail_component_improvement=1", summary)
+        self.assertIn("ai_recent_fail_component_other=2", summary)
+        self.assertIn("ai_recent_all_failed_sampled=2", summary)
+        self.assertIn("ai_recent_all_failed_component_radio_prepass=1", summary)
+        self.assertIn("ai_recent_all_failed_component_comment=1", summary)
+        self.assertNotIn("private-dynamic-component", summary)
         self.assertNotIn("SECRET_VALUE", summary)
         self.assertNotIn("hidden-worker", summary)
 
@@ -69,17 +80,27 @@ class RuntimeSummaryTests(unittest.TestCase):
                 "recent_events": [
                     {
                         "event": "fail",
+                        "component": "RADIO:secret-program-name",
                         "provider": "private-provider",
                         "model": "private-model",
                         "rc": "1",
                         "error_preview": "500 internal server error",
-                    }
+                    },
+                    {
+                        "event": "all_failed",
+                        "component": "RADIO:secret-program-name",
+                        "provider": "private-provider",
+                        "model": "private-model",
+                    },
                 ]
             },
             "improvement": {},
         }
         _, summary = self.mod.summarize(data)
         self.assertIn("ai_recent_fail_provider_server=1", summary)
+        self.assertIn("ai_recent_fail_component_radio_main=1", summary)
+        self.assertIn("ai_recent_all_failed_component_radio_main=1", summary)
+        self.assertNotIn("secret-program-name", summary)
         self.assertNotIn("private-provider", summary)
         self.assertNotIn("private-model", summary)
         self.assertNotIn("internal server error", summary)
@@ -98,6 +119,7 @@ class RuntimeSummaryTests(unittest.TestCase):
         self.assertIn("stale_locks=0", summary)
         self.assertIn("ai_attempts_15m=0", summary)
         self.assertIn("ai_successes_15m=0", summary)
+        self.assertIn("ai_recent_all_failed_sampled=0", summary)
         self.assertIn("improvement_stale=0", summary)
         self.assertIn("retry_pending=0", summary)
 
