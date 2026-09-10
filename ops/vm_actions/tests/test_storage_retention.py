@@ -97,6 +97,16 @@ class StorageMonitorWorkflowTests(unittest.TestCase):
         self.assertIn("VM storage pressure", text)
         self.assertNotIn("exec docich production", text)
 
+    def test_hourly_monitor_collects_runtime_health_without_raw_diagnostics(self):
+        workflow = ROOT / ".github/workflows/vm-storage-monitor.yml"
+        text = workflow.read_text()
+        self.assertIn("diagnostics docich production", text)
+        self.assertIn("[VM runtime]", text)
+        self.assertIn("counts and booleans only", text)
+        self.assertIn('> "$RUNNER_TEMP/runtime-diagnostics.json"', text)
+        self.assertNotIn('echo "$diagnostics_json"', text)
+        self.assertNotIn("exec docich production", text)
+
 
 class ProductionStatusIntegrationTests(unittest.TestCase):
     def test_production_status_includes_sanitized_storage(self):
