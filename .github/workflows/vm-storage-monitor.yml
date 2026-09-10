@@ -172,7 +172,7 @@ jobs:
           - Summary: ${SUMMARY}
           - Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
 
-          The public alert contains counts, booleans, and fixed failure-category names only. It never publishes raw diagnostics, worker names, paths, logs, provider/model names, prompts, credentials, or command output.
+          The public alert contains counts and booleans only. Failure causes are represented only by fixed metric keys; raw diagnostics, worker names, paths, logs, provider/model names, prompts, credentials, and command output are never published.
           EOF
           )"
           for entry in "${alerts[@]}"; do
