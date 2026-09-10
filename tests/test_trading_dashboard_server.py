@@ -33,6 +33,9 @@ def test_server_serves_page_snapshot_and_is_read_only(tmp_path):
     try:
         html = urllib.request.urlopen(base + "/", timeout=5).read().decode("utf-8")
         assert "PAPER" in html and "dashboard.js" in html
+        # Chrome must not offer to translate the Japanese page (the tip would
+        # render over the streamed viewport).
+        assert 'name="google" content="notranslate"' in html
 
         snapshot = json.loads(urllib.request.urlopen(base + "/api/trading/dashboard", timeout=5).read())
         assert snapshot["schema_version"] == 1
