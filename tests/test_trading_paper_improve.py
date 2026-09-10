@@ -96,7 +96,6 @@ def test_no_agents_skips_without_write(tmp_path):
         _payload(mean_reversion_z=1.0),  # must be negative
         _payload(max_notional_fraction=2.0),  # outside (0, 1]
         _payload(momentum_threshold_bps=0),  # must be positive
-        _payload(unknown="x"),  # unknown key
     ],
 )
 def test_invalid_output_rejected_without_write(tmp_path, bad):
@@ -129,6 +128,12 @@ def test_parse_policy_candidate_accepts_fenced_json():
     candidate = parse_policy_candidate("```json\n" + _payload() + "\n```")
     assert candidate["momentum_lookback"] == 8
     assert candidate["momentum_threshold_bps"] == Decimal("250")
+
+
+def test_parse_policy_candidate_ignores_extra_keys():
+    candidate = parse_policy_candidate(_payload(unknown="x"))
+    assert candidate["momentum_lookback"] == 8
+    assert "unknown" not in candidate
 
 
 def test_parse_policy_candidate_rejects_bounds():

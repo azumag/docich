@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Mapping
 
 from ..config import GlobalConfig
-from .ai_text import generate_text
+from .ai_text import extract_json_object, generate_text
 from .dashboard_snapshot import build_dashboard_snapshot
 from .strategy_store import load_strategy_policy, policy_to_payload
 from .strategies import StrategyPolicy
@@ -106,21 +106,13 @@ def build_prompt(facts: Mapping[str, object]) -> str:
 
 def parse_script(text: str) -> dict:
     """Extract the four narration segments. Malformed output raises."""
-    raw = str(text or "")
-    match = JSON_FENCE_RE.search(raw)
-    payload = match.group(1) if match else raw
-    try:
-        data = json.loads(payload)
-    except ValueError as exc:
-        raise CornerScriptError(f"台本がJSONではありません: {_safe_reason(exc)}") from exc
+    data = extract_json_object(text)
     if not isinstance(data, dict):
-        raise CornerScriptError("台本がJSONオブジェクトではありません")
+        raise CornerScriptError("台本のJSONオブジェクトを抽出できません")
     missing = sorted(set(SEGMENT_KEYS) - set(data))
     if missing:
         raise CornerScriptError(f"台本に必要なキーがありません: {', '.join(missing)}")
-    extra = sorted(set(data) - set(SEGMENT_KEYS))
-    if extra:
-        raise CornerScriptError(f"台本に未知のキーがあります: {', '.join(extra)}")
+    # Extra keys are ignored: a model adding one must not lose the narration.
     segments: dict[str, str] = {}
     for key in SEGMENT_KEYS:
         value = data[key]
@@ -128,7 +120,7 @@ def parse_script(text: str) -> dict:
             raise CornerScriptError(f"台本の値が空です: {key}")
         cleaned = value.strip().replace("\n", " ")
         if len(cleaned) > MAX_SEGMENT_CHARS:
-            raise CornerScriptError(f"台本の値が長すぎます: {key}")
+            cleaned = cleaned[:MAX_SEGMENT_CHARS]
         segments[key] = cleaned
     return segments
 
