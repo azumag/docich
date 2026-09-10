@@ -61,6 +61,13 @@ enabled = true
 start_hour = 22
 duration_minutes = 30
 timezone = "Asia/Tokyo"
+# 開始ナレーションのAI委任先チェーン。非空にすると課金LLM実行の合意とみなす
+# (tick 内で DOCICH_ALLOW_REAL_AI=1 を付与して実実行する)。失敗時は
+# 決定論的フォールバック文面を読み上げるためコーナーは止まらない。
+script_agents = "opencode:muse-spark-1.3-contributor-free,opencode-go:muse-spark-1.3-contributor,amd:DeepSeek-V4-Flash,opencode-go:deepseek-v4.1-flash,opencode-go:deepseek-v4-flash"
+script_timeout_s = 180
+# 終了後の戦略パラメータ改善の委任先。非空で改善ジョブを切り離し起動する。
+improve_agents = "opencode-go:deepseek-v4.1-flash,amd:DeepSeek-V4-Flash,opencode-go:deepseek-v4-flash,opencode-go:muse-spark-1.3-contributor"
 
 [webui]
 soren_root = "/home/ubuntu/soren"

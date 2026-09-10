@@ -17,6 +17,8 @@ from docich.trading.ledger import PaperLedger  # noqa: E402
 from docich.trading.market_data import MarketFrame  # noqa: E402
 from docich.trading.models import MarketInfo  # noqa: E402
 from docich.trading.settlement import CircuitBreakStatus  # noqa: E402
+from docich.trading.strategies import StrategyPolicy  # noqa: E402
+from docich.trading.strategy_store import save_strategy_policy  # noqa: E402
 from docich.trading.worker import run_paper_worker, run_worker_cycle  # noqa: E402
 
 D = Decimal
@@ -179,6 +181,30 @@ class TestPaperWorkerCycle(unittest.TestCase):
             gateway = FakeStrategyGateway()
             run_worker_cycle(g, gateway=gateway, cycle_index=1, now=NOW, observation_now_fn=lambda: NOW)
             self.assertEqual(gateway.last_frame_args, ("5m", 24, NOW))
+
+    def test_cycle_uses_persisted_policy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            g = _global(Path(tmp))
+            trading_dir = g.state_dir / "trading"
+            gateway = FakeStrategyGateway()
+            # Default policy: 100 -> 104 (400bps) exceeds the 300bps momentum gate.
+            run_worker_cycle(g, gateway=gateway, cycle_index=1, now=NOW, observation_now_fn=lambda: NOW)
+            default_status = json.loads((trading_dir / "status.json").read_text(encoding="utf-8"))
+            self.assertIn(
+                "momentum_breakout",
+                default_status["signal_summary"]["candidate_reason_codes"],
+            )
+
+            # A persisted high threshold suppresses the same signal.
+            save_strategy_policy(
+                trading_dir, StrategyPolicy(momentum_threshold_bps=D("1000000"))
+            )
+            run_worker_cycle(g, gateway=gateway, cycle_index=2, now=NOW, observation_now_fn=lambda: NOW)
+            tuned_status = json.loads((trading_dir / "status.json").read_text(encoding="utf-8"))
+            self.assertNotIn(
+                "momentum_breakout",
+                tuned_status["signal_summary"]["candidate_reason_codes"],
+            )
 
 
 class TestPaperWorkerArbitrageAndLoop(unittest.TestCase):
