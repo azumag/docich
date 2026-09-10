@@ -26,6 +26,7 @@ from .risk import CapitalPolicy, allocate_opportunities
 from .status import build_public_status, write_public_status
 from .settlement import settlement_observation_id, simulate_multileg_settlement
 from .strategies import scan_opportunities, select_diversified_opportunities
+from .strategy_store import load_strategy_policy
 
 D = Decimal
 TIMEFRAME = "5m"
@@ -397,7 +398,11 @@ def run_worker_cycle(
                 ).payload()
         save_cache((state_dir / "market_cache.json"), market_cache)
 
-        candidates = tuple(scan_opportunities(frames, now=now)) + tuple(
+        # The improvement job may persist a tuned policy; load it once per
+        # cycle. Missing/corrupt file falls back to the built-in default,
+        # so behavior is unchanged until a policy is written.
+        policy = load_strategy_policy(state_dir)
+        candidates = tuple(scan_opportunities(frames, now=now, policy=policy)) + tuple(
             scan_relative_value_opportunities(frames, markets, now=now)
         )
         selection = select_diversified_opportunities(candidates, frames)
