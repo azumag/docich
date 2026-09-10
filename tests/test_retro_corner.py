@@ -96,6 +96,7 @@ brain = "resolver"
             sleep=sleep or (lambda seconds: None),
             active_game_reader=lambda: current[0],
             ensure_runtime=lambda: None,
+            speech=lambda text, event_id: None,
         )
         return mgr, coordinator
 
@@ -483,6 +484,7 @@ class TestRetroCornerAnnounce(RetroCornerTestBase):
             active_game_reader=lambda: current[0],
             ensure_runtime=lambda: None,
             chat=chat,
+            speech=lambda text, event_id: None,
         )
         return mgr, coordinator
 
@@ -495,6 +497,51 @@ class TestRetroCornerAnnounce(RetroCornerTestBase):
         self.assertIn("Robotsをお送りします", chats[0])
         self.assertIn("最新戦略", chats[0])
         self.assertTrue(mgr.status().get("announced"))
+
+    def test_start_enqueues_read_aloud_speech(self):
+        chats = []
+        speeches = []
+        current = [None]
+        coordinator = FakeCoordinator(current)
+        mgr = RetroCornerManager(
+            self.g,
+            config=self.cfg,
+            coordinator=coordinator,
+            now=lambda: self.now_value,
+            sleep=lambda seconds: None,
+            active_game_reader=lambda: current[0],
+            ensure_runtime=lambda: None,
+            chat=chats.append,
+            speech=lambda text, event_id: speeches.append((text, event_id)),
+        )
+        self.assertEqual(mgr.start().status, "completed")
+        self.assertEqual(len(chats), 1)
+        self.assertEqual(len(speeches), 1)
+        self.assertEqual(speeches[0][0], chats[0])
+        self.assertIn("retro-corner:", speeches[0][1])
+        self.assertTrue(mgr.status().get("announced_speech"))
+
+    def test_speech_failure_does_not_fail_corner(self):
+        def boom(text, event_id):
+            raise RuntimeError("audio sink down")
+
+        current = [None]
+        coordinator = FakeCoordinator(current)
+        mgr = RetroCornerManager(
+            self.g,
+            config=self.cfg,
+            coordinator=coordinator,
+            now=lambda: self.now_value,
+            sleep=lambda seconds: None,
+            active_game_reader=lambda: current[0],
+            ensure_runtime=lambda: None,
+            chat=lambda text: None,
+            speech=boom,
+        )
+        self.assertEqual(mgr.start().status, "completed")
+        state = mgr.status()
+        self.assertTrue(state.get("announced"))
+        self.assertIn("announce_speech_error", state)
 
     def test_announce_failure_does_not_fail_corner(self):
         def boom(text):

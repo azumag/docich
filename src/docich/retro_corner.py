@@ -24,7 +24,7 @@ from .adapters import make_coordinator_adapter
 from .config import ConfigError, GlobalConfig, load_game, load_global
 from .game_switch import GameSwitchCoordinator, GameSwitchStore, atomic_write_json
 from .naming import NameValidationError, validate_game_name
-from .trading.soren_output import enqueue_chat
+from .trading.soren_output import enqueue_chat, enqueue_speech
 
 STATE_SCHEMA_VERSION = 1
 STATE_FILE = "retro_corner.json"
@@ -215,6 +215,7 @@ class RetroCornerManager:
         active_game_reader: Callable[[], str | None] | None = None,
         ensure_runtime: Callable[[], None] | None = None,
         chat: Callable[[str], None] | None = None,
+        speech: Callable[[str, str], None] | None = None,
         spawn=None,
     ):
         self.g = g
@@ -229,6 +230,9 @@ class RetroCornerManager:
         self._active_game_reader = active_game_reader or self._canonical_active_game
         self._ensure_runtime = ensure_runtime or self._default_ensure_runtime
         self._chat = chat or (lambda text: enqueue_chat(self.g, text, source="retro-corner"))
+        self._speech = speech or (
+            lambda text, event_id: enqueue_speech(self.g, text, event_id=event_id)
+        )
         self._spawn = spawn or self._default_spawn_improve_proc
         self.state_path = Path(g.state_dir) / STATE_FILE
         self.lock_path = Path(g.state_dir) / LOCK_FILE
@@ -284,12 +288,11 @@ class RetroCornerManager:
             handle.close()
 
     def _announce_start_locked(self, state: dict[str, object]) -> None:
-        """開始時チャット投稿 (ゲーム説明＋今回戦略の前回比較)。lock 保持中に呼ぶ。
+        """開始時チャット投稿＋読み上げ (ゲーム説明＋今回戦略の前回比較)。
 
-        投稿失敗はコーナー自体を失敗させない。結果は state に記録する。
+        lock 保持中に呼ぶ。投稿/読み上げの失敗はコーナー自体を失敗させず、
+        それぞれ独立に state へ記録して次回再試行できるようにする。
         """
-        if state.get("announced"):
-            return
         game = state.get("game")
         if not isinstance(game, str) or not game:
             return
@@ -298,13 +301,21 @@ class RetroCornerManager:
             + corner_intro(self.g, game)
             + describe_strategy_change(self.g.state_dir, game)
         )
-        try:
-            self._chat(text)
-        except Exception as exc:
-            state["announce_error"] = _safe_detail(exc)
-            return
-        state["announced"] = True
-        state.pop("announce_error", None)
+        event_id = f"retro-corner:{state.get('date', 'nodate')}:start"
+        if not state.get("announced"):
+            try:
+                self._chat(text)
+                state["announced"] = True
+                state.pop("announce_error", None)
+            except Exception as exc:
+                state["announce_error"] = _safe_detail(exc)
+        if not state.get("announced_speech"):
+            try:
+                self._speech(text, event_id)
+                state["announced_speech"] = True
+                state.pop("announce_speech_error", None)
+            except Exception as exc:
+                state["announce_speech_error"] = _safe_detail(exc)
 
     @contextmanager
     def _locked(self) -> Iterator[None]:
