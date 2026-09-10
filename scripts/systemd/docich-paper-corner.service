@@ -6,4 +6,7 @@ After=network.target
 Type=oneshot
 WorkingDirectory=__DOCICH_ROOT__
 ExecStart=__DOCICH_ROOT__/bin/docich --config __DOCICH_ROOT__/config/docich.soren-live.toml paper-corner tick
-TimeoutStartSec=infinity
+# Live schedule is 22:00 for 30 minutes. The corner may legitimately wait
+# until the end-of-day boundary, so keep enough headroom for that path while
+# preventing an obsolete/pre-deploy oneshot from surviving deep into the next day.
+TimeoutStartSec=3h
