@@ -289,10 +289,12 @@ def test_boundary_failure_keeps_draining_until_cancel_ack(cancel_mode):
     with tempfile.TemporaryDirectory() as tmp:
         state_dir = Path(tmp) / "run"
         factory = FailingCancelFactory()
-        store, coordinator = _coordinator(factory, state_dir)
+        # Trigger the boundary-step timeout well before the request-wide
+        # deadline so this test always reaches the cancellation path it owns.
+        store, coordinator = _coordinator(factory, state_dir, round_boundary_s=0.1)
         assert coordinator.start("nethack").status == "succeeded"
         old = factory.adapters[("nethack", 1)]
-        result = coordinator.switch("robots", timeout_s=0.2)
+        result = coordinator.switch("robots", timeout_s=1.0)
         assert result.status == "failed"
         assert result.error_code == game_switch.ERROR_RECOVERY_REQUIRED
         state, _ = store.canonical.load()
