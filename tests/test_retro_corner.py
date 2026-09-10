@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -427,14 +428,15 @@ class TestProgramBoundary(RetroCornerTestBase):
         self.cfg = replace(self.cfg, require_program_boundary=True)
         root=resolve_soren_root(self.g)/'tmp/state'
         root.mkdir(parents=True, exist_ok=True)
-        # An in-progress improvement cycle is what the boundary must confirm.
-        (root.parent/'improve.lock').write_text('')
+        # An in-flight prediction is what the boundary must confirm.
+        (root/'prediction_worker.pid').write_text(str(os.getpid()))
+        (root/'current_prediction.json').write_text(json.dumps({'status':'ACTIVE'}))
         sleeps=[]
         def sleep(seconds):
             sleeps.append(seconds)
             self.now_value += timedelta(seconds=seconds)
             if seconds == 5:
-                (root/'corner_boundary_improvement.json').write_text(json.dumps({'completed_at':self.now_value.timestamp()}))
+                (root/'corner_boundary_prediction.json').write_text(json.dumps({'completed_at':self.now_value.timestamp()}))
         mgr,_=self.manager([None],sleep)
         mgr.tick()
         self.assertEqual(sleeps,[5,3600])

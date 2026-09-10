@@ -43,13 +43,14 @@ def test_boundary_free_when_nothing_active(tmp_path):
     assert boundary_ready(state, 100)
 
 
-def test_boundary_requires_improvement_completion_while_active(tmp_path):
+def test_boundary_does_not_gate_on_improvement(tmp_path):
+    # An active improvement/A-B state must not hold the corner back; only an
+    # in-flight prediction does.
     state = _state_dir(tmp_path)
     (state.parent / 'improve.lock').write_text('')
-    assert not boundary_ready(state, 100)
-    (state / 'corner_boundary_improvement.json').write_text(json.dumps({'completed_at': 99}))
-    assert not boundary_ready(state, 100)
-    (state / 'corner_boundary_improvement.json').write_text(json.dumps({'completed_at': time.time() - 1}))
+    (state / 'ab_state.json').write_text('{}')
+    (state / 'ab_candidate').mkdir()
+    (state / 'ab_candidate' / 'meta.json').write_text('{}')
     assert boundary_ready(state, 100)
 
 
@@ -100,14 +101,15 @@ def test_boundary_waiter_does_not_block_waiting_turn(tmp_path):
 def test_program_slot_waits_boundary_then_owns_slot(tmp_path):
     state = tmp_path / 'tmp' / 'state'
     state.mkdir(parents=True)
-    (state.parent / 'improve.lock').write_text('')
+    (state / 'prediction_worker.pid').write_text(str(os.getpid()))
+    (state / 'current_prediction.json').write_text(json.dumps({'status': 'ACTIVE'}))
     owner = tmp_path / 'retro_corner.json'
     _owner(owner, 'idle')
     slept = []
 
     def sleep(seconds):
         slept.append(seconds)
-        (state / 'corner_boundary_improvement.json').write_text(json.dumps({'completed_at': time.time()}))
+        (state / 'corner_boundary_prediction.json').write_text(json.dumps({'completed_at': time.time()}))
 
     with program_slot(_fake_g(tmp_path), owner, requested_at=time.time() - 10,
                       wait_deadline_ts=time.time() + 60, sleep=sleep, poll_s=0):
