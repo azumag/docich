@@ -19,6 +19,10 @@ Observed sources (all read-only):
     (game_switch.json, retro_corner.json, paper_corner.json,
     trading/presentation.json): lifecycle statuses, timestamps and counters
     only. Announcement/script bodies are never read out.
+  - Soren boundary/A-B wait markers the corners gate on
+    (tmp/state/corner_boundary_*.json, ab_state.json, ab_games.jsonl,
+    ab_candidate/): only presence, counts, enums and mtimes; strategy/hash
+    bodies and environment values are never read out.
 
 Never emitted: secrets, tokens, raw environment, prompt/generation bodies,
 HTTP headers, file contents. Error previews are truncated and redacted.
@@ -616,24 +620,86 @@ def _bounded_time(value):
     return None
 
 
-def _collect_programs(state_dir):
-    """Sanitized corner/program lifecycle state from the docich state_dir.
+def _finite_number(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value if math.isfinite(value) else None
 
-    Reports presence, statuses, timestamps and announcement counters. It never
-    emits announcement text, script bodies, request payloads, or file paths, and
-    never mutates any file.
+
+def _file_age_sec(path, now):
+    try:
+        return int(now - path.stat().st_mtime)
+    except OSError:
+        return -1
+
+
+def _collect_boundary(root, now):
+    """Freshness of the confirmed cycle boundaries the corners gate on.
+
+    The boundary is published in the Soren state dir (see
+    strategy/ab_gate.sh, strategy/improve.sh, twitch_predictions.sh). Only the
+    completion timestamp and its age are surfaced.
     """
-    state_dir = Path(state_dir)
-    payload = {
-        "state_dir_found": state_dir.is_dir(),
-        "game_switch": {"present": False, "readable": False},
-        "retro_corner": {"present": False, "readable": False},
-        "paper_corner": {"present": False, "readable": False},
-        "presentation": {"present": False, "readable": False},
-    }
-    if not state_dir.is_dir():
-        return payload
+    result = {}
+    for kind in ("improvement", "prediction"):
+        present, readable, data = _load_state_file(root / f"corner_boundary_{kind}.json")
+        completed = _finite_number(data.get("completed_at")) if readable else None
+        result[kind] = {
+            "present": present,
+            "readable": readable,
+            "completed_at": completed,
+            "age_sec": int(now - completed) if completed is not None else -1,
+        }
+    return result
 
+
+def _collect_ab(soren, now):
+    """Sanitized interleaved A/B presence, progress and freshness.
+
+    A/B state gates the improvement boundary, so a stalled A/B directly
+    delays the PAPER/retro corner. Only counts, enums and mtimes are exposed;
+    hashes, env strings and strategy bodies are not.
+    """
+    state_dir = soren / "tmp" / "state"
+    present, readable, data = _load_state_file(state_dir / "ab_state.json")
+    candidate_dir = state_dir / "ab_candidate"
+    entry = {
+        "state_present": present,
+        "pattern": _bounded_str(data.get("pattern"), 16) if readable else None,
+        "started_at": _bounded_str(data.get("started_at"), 32) if readable else None,
+        "state_age_sec": _file_age_sec(state_dir / "ab_state.json", now),
+        "games_recorded": _bounded_int(data.get("games_recorded")) if readable else None,
+        "game_num_start": _bounded_int(data.get("game_num_start")) if readable else None,
+        "games_lines": 0,
+        "games_tainted": 0,
+        "games_age_sec": _file_age_sec(state_dir / "ab_games.jsonl", now),
+        "last_arm": None,
+        "candidate_pending": (
+            (candidate_dir / "meta.json").is_file()
+            and (candidate_dir / "strategy.py").is_file()
+        ),
+    }
+    lines = tainted = 0
+    last_arm = None
+    for line in _iter_jsonl([state_dir / "ab_games.jsonl"], MAX_JSONL_SCAN_LINES, MAX_JSONL_SCAN_BYTES):
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        lines += 1
+        if row.get("tainted") is True:
+            tainted += 1
+        if isinstance(row.get("arm"), str):
+            last_arm = row["arm"]
+    entry["games_lines"] = lines
+    entry["games_tainted"] = tainted
+    entry["last_arm"] = _bounded_str(last_arm, 8)
+    return entry
+
+
+def _collect_corner_files(state_dir, payload):
     present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES["game_switch"])
     entry = {"present": present, "readable": readable}
     if readable:
@@ -679,6 +745,7 @@ def _collect_programs(state_dir):
                     "date": _bounded_str(data.get("date"), 16),
                     "game": _bounded_str(data.get("game"), 64),
                     "previous_game": _bounded_str(data.get("previous_game"), 64),
+                    "requested_at": _bounded_time(data.get("requested_at")),
                     "started_at": _bounded_time(data.get("started_at")),
                     "ends_at": _bounded_time(data.get("ends_at")),
                     "completed_at": _bounded_time(data.get("completed_at")),
@@ -698,6 +765,29 @@ def _collect_programs(state_dir):
             }
         )
     payload["presentation"] = entry
+
+
+def _collect_programs(state_dir, soren, now):
+    """Sanitized corner/program lifecycle plus boundary and A/B wait state.
+
+    Combines the docich state_dir corner files with the Soren boundary/A-B
+    markers the corners gate on. It never emits announcement text, script
+    bodies, request payloads, environment values or file paths, and never
+    mutates any file.
+    """
+    state_dir = Path(state_dir)
+    payload = {
+        "state_dir_found": state_dir.is_dir(),
+        "game_switch": {"present": False, "readable": False},
+        "retro_corner": {"present": False, "readable": False},
+        "paper_corner": {"present": False, "readable": False},
+        "presentation": {"present": False, "readable": False},
+    }
+    if state_dir.is_dir():
+        _collect_corner_files(state_dir, payload)
+    soren = Path(soren)
+    payload["boundary"] = _collect_boundary(soren / "tmp" / "state", now)
+    payload["ab"] = _collect_ab(soren, now)
     return payload
 
 
@@ -743,7 +833,7 @@ def main(argv):
             "all_failed_15m": ai["all_failed"],
         },
         "improvement": improvement,
-        "corners": _collect_programs(_program_state_dir()),
+        "corners": _collect_programs(_program_state_dir(), soren, now),
     }
     text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     if len(text.encode("utf-8")) > MAX_JSON_BYTES:

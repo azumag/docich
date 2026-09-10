@@ -412,7 +412,7 @@ class ProgramCornerStateTests(CollectorFixture):
             {"schema_version": 1, "mode": "detailed", "updated_at": 1789000000.0},
         )
 
-        result = module._collect_programs(directory)
+        result = module._collect_programs(directory, self.soren, self.now)
         self.assertEqual(result["state_dir_found"], True)
         game_switch = result["game_switch"]
         self.assertEqual(game_switch["present"], True)
@@ -440,17 +440,77 @@ class ProgramCornerStateTests(CollectorFixture):
 
     def test_corner_state_absent_is_not_present(self):
         module = load_collector()
-        result = module._collect_programs(self.soren / "nonexistent-state")
+        result = module._collect_programs(self.soren / "nonexistent-state", self.soren, self.now)
         self.assertEqual(result["state_dir_found"], False)
         self.assertEqual(result["game_switch"]["present"], False)
         self.assertEqual(result["paper_corner"]["present"], False)
+        self.assertIn("boundary", result)
+        self.assertIn("ab", result)
+
+    def test_boundary_freshness_is_reported(self):
+        module = load_collector()
+        root = self.soren / "tmp" / "state"
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "corner_boundary_improvement.json").write_text(
+            json.dumps({"completed_at": self.now - 300})
+        )
+        result = module._collect_programs(self.soren / "nonexistent-state", self.soren, self.now)
+        boundary = result["boundary"]
+        self.assertEqual(boundary["improvement"]["present"], True)
+        self.assertEqual(boundary["improvement"]["age_sec"], 300)
+        self.assertEqual(boundary["prediction"]["present"], False)
+        self.assertEqual(boundary["prediction"]["age_sec"], -1)
+
+    def test_ab_state_is_reported_without_hashes_or_env(self):
+        module = load_collector()
+        root = self.soren / "tmp" / "state"
+        (root / "ab_candidate").mkdir(parents=True, exist_ok=True)
+        (root / "ab_candidate" / "meta.json").write_text("{}")
+        (root / "ab_candidate" / "strategy.py").write_text("SECRET-STRATEGY-BODY\n")
+        (root / "ab_state.json").write_text(
+            json.dumps(
+                {
+                    "pattern": "ABBA",
+                    "started_at": "2026-09-10T18:02:00",
+                    "games_recorded": 12,
+                    "game_num_start": 50140,
+                    "a_hash": "a" * 40,
+                    "b_hash": "b" * 40,
+                    "a_env": "SECRET_ENV=A",
+                }
+            )
+        )
+        (root / "ab_games.jsonl").write_text(
+            "\n".join(
+                [
+                    json.dumps({"arm": "A", "tainted": False}),
+                    json.dumps({"arm": "B", "tainted": True}),
+                ]
+            )
+            + "\n"
+        )
+        result = module._collect_programs(self.soren / "nonexistent-state", self.soren, self.now)
+        ab = result["ab"]
+        self.assertEqual(ab["state_present"], True)
+        self.assertEqual(ab["pattern"], "ABBA")
+        self.assertEqual(ab["games_recorded"], 12)
+        self.assertEqual(ab["game_num_start"], 50140)
+        self.assertEqual(ab["games_lines"], 2)
+        self.assertEqual(ab["games_tainted"], 1)
+        self.assertEqual(ab["last_arm"], "B")
+        self.assertEqual(ab["candidate_pending"], True)
+        rendered = json.dumps(ab)
+        self.assertNotIn("SECRET-STRATEGY-BODY", rendered)
+        self.assertNotIn("SECRET_ENV", rendered)
+        self.assertNotIn("a" * 40, rendered)
+        self.assertNotIn("b" * 40, rendered)
 
     def test_corner_state_corrupt_is_not_fatal(self):
         module = load_collector()
         directory = self.state_dir()
         (directory / "game_switch.json").write_text("{not json")
         (directory / "paper_corner.json").write_text("[1,2,3]")
-        result = module._collect_programs(directory)
+        result = module._collect_programs(directory, self.soren, self.now)
         self.assertEqual(result["game_switch"]["present"], True)
         self.assertEqual(result["game_switch"]["readable"], False)
         self.assertEqual(result["paper_corner"]["present"], True)
@@ -464,7 +524,7 @@ class ProgramCornerStateTests(CollectorFixture):
             "paper_corner.json",
             {"status": "failed", "date": "2026-09-10", "last_error": "boom token=SUPERSECRET123"},
         )
-        result = module._collect_programs(directory)
+        result = module._collect_programs(directory, self.soren, self.now)
         rendered = json.dumps(result)
         self.assertNotIn("SUPERSECRET123", rendered)
         self.assertIn("[REDACTED]", rendered)
@@ -477,6 +537,9 @@ class ProgramCornerStateTests(CollectorFixture):
         self.assertIn("corners", data)
         self.assertIn("game_switch", data["corners"])
         self.assertIn("state_dir_found", data["corners"])
+        self.assertIn("boundary", data["corners"])
+        self.assertIn("ab", data["corners"])
+        self.assertIn("improvement", data["corners"]["boundary"])
 
 
 if __name__ == "__main__":
