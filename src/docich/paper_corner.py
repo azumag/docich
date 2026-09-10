@@ -196,6 +196,11 @@ class PaperCornerManager:
         requested_at = None
         wait_boundary = False
         if status == 'waiting':
+            if state.get('date') != now.date().isoformat():
+                # A previous day's request that never reached a boundary;
+                # never fire it late.
+                self.save({'status': 'idle', 'date': None})
+                return 'expired'
             requested_at = state.get('requested_at')
             if isinstance(requested_at, bool) or not isinstance(requested_at, (int, float)):
                 requested_at = self.clock()
