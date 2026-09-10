@@ -95,6 +95,9 @@ def configure_parser(parser) -> None:
     watch = sub.add_parser("dashboard-watch", help="PAPERコーナー用の読取専用ダッシュボードを描画し続ける")
     watch.add_argument("--interval", type=float, default=2.0, metavar="SEC", help="再描画間隔 (既定2秒)")
     watch.add_argument("--once", action="store_true", help="1フレーム描画して終了する")
+    server = sub.add_parser("dashboard-server", help="PAPERコーナー用の読取専用HTMLダッシュボードを配信する")
+    server.add_argument("--host", default="127.0.0.1")
+    server.add_argument("--port", type=int, default=8799)
     improve = sub.add_parser("paper-improve", help="コーナー終了後に戦略パラメータ改善を1回実行する")
     improve.add_argument("--date", default=None, metavar="YYYY-MM-DD", help="対象コーナー日 (記録用)")
     improve.add_argument("--agents", default=None, metavar="CSV", help="LLM委任先 (既定は [paper_corner] improve_agents)")
@@ -511,6 +514,10 @@ def run_args(args, *, repo_root: Path, global_config: GlobalConfig | None = None
             print(render_dashboard(snapshot, closes, now=time.time(), remaining_s=None))
             return 0
         watch_loop(trading_dir=state_dir, interval_s=args.interval)
+        return 0
+    if command == "dashboard-server":
+        from .dashboard_server import serve
+        serve(trading_dir=state_dir, host=args.host, port=args.port)
         return 0
     if command == "notify-once":
         if global_config is None:

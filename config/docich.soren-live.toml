@@ -61,6 +61,10 @@ enabled = true
 start_hour = 22
 duration_minutes = 30
 timezone = "Asia/Tokyo"
+# PAPER ビューの表示: "html" = read-only HTML/canvas ダッシュボード (既定)、
+# "text" = 従来の 80x24 テキスト。切り戻しはこの1行のみ。
+dashboard = "html"
+dashboard_port = 8799
 # 開始ナレーションのAI委任先チェーン。非空にすると課金LLM実行の合意とみなす
 # (tick 内で DOCICH_ALLOW_REAL_AI=1 を付与して実実行する)。失敗時は
 # 決定論的フォールバック文面を読み上げるためコーナーは止まらない。
