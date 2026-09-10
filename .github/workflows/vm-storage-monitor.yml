@@ -94,45 +94,7 @@ jobs:
             exit 0
           fi
           printf '%s\n' "$diagnostics_json" > "$RUNNER_TEMP/runtime-diagnostics.json"
-          python3 - "$RUNNER_TEMP/runtime-diagnostics.json" >> "$GITHUB_OUTPUT" <<'PY'
-          import json, sys
-          wrapper=json.load(open(sys.argv[1],encoding='utf-8'))
-          if wrapper.get('status') != 'diagnosed' or not isinstance(wrapper.get('diagnostics'), dict):
-              raise SystemExit('invalid diagnostics envelope')
-          data=wrapper['diagnostics']
-          severity=data.get('status')
-          if severity not in {'ok','warn','critical'}:
-              raise SystemExit('invalid diagnostics severity')
-          workers=data.get('workers') or {}
-          queues=data.get('queues') or {}
-          ai=data.get('ai') or {}
-          improvement=data.get('improvement') or {}
-          def nlist(name):
-              value=workers.get(name)
-              return len(value) if isinstance(value,list) else 0
-          def integer(mapping,name):
-              value=mapping.get(name,0)
-              return value if isinstance(value,int) and not isinstance(value,bool) and value >= 0 else 0
-          parts=[
-              f"required_down={nlist('required_down')}",
-              f"required_stale={nlist('required_stale')}",
-              f"paused={nlist('paused')}",
-              f"duplicates={nlist('duplicates')}",
-              f"zombies={nlist('zombies')}",
-              f"stale_pid_files={nlist('stale_pid_files')}",
-              f"unregistered={nlist('unregistered')}",
-              f"stale_locks={integer(queues,'stale_locks')}",
-              f"queue_giveups_15m={integer(queues,'queue_giveups_15m')}",
-              f"ai_failures_15m={integer(ai,'failures_15m')}",
-              f"ai_rate_limits_15m={integer(ai,'rate_limits_15m')}",
-              f"ai_fallbacks_15m={integer(ai,'fallbacks_15m')}",
-              f"ai_all_failed_15m={integer(ai,'all_failed_15m')}",
-              f"improvement_stale={int(improvement.get('stale') is True)}",
-              f"retry_pending={int(improvement.get('retry_pending') is True)}",
-          ]
-          print(f'severity={severity}')
-          print('summary='+','.join(parts))
-          PY
+          python3 ops/vm_actions/summarize_runtime.py "$RUNNER_TEMP/runtime-diagnostics.json" >> "$GITHUB_OUTPUT"
 
       - name: Update deduplicated GitHub alert
         env:
@@ -210,7 +172,7 @@ jobs:
           - Summary: ${SUMMARY}
           - Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
 
-          The public alert contains counts and booleans only. It never publishes raw diagnostics, worker names, paths, logs, model names, prompts, credentials, or command output.
+          The public alert contains counts and booleans only. Failure causes are represented only by fixed metric keys; raw diagnostics, worker names, paths, logs, provider/model names, prompts, credentials, and command output are never published.
           EOF
           )"
           for entry in "${alerts[@]}"; do
