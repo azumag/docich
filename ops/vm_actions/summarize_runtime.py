@@ -4,7 +4,7 @@
 The diagnostics payload is already bounded and redacted on the VM. This helper
 runs on the GitHub Actions runner and deliberately emits only counts, booleans,
 and fixed category names. It never emits provider/model identifiers, paths,
-prompt text, or error previews.
+prompt text, component labels, or error previews.
 """
 from collections import Counter
 import json
@@ -18,6 +18,14 @@ CAUSES = (
     "provider_server",
     "model_unavailable",
     "invalid_output",
+    "other",
+)
+
+COMPONENTS = (
+    "radio_prepass",
+    "radio_main",
+    "comment",
+    "improvement",
     "other",
 )
 
@@ -55,6 +63,22 @@ def _failure_cause(event):
     return "other"
 
 
+def _component_bucket(event):
+    """Collapse a private/dynamic component label into a small fixed enum."""
+    if not isinstance(event, dict):
+        return "other"
+    label = str(event.get("component") or "").lower()
+    if label.startswith(("radio", "news", "jiji", "celebration")):
+        if "prepass" in label:
+            return "radio_prepass"
+        return "radio_main"
+    if label.startswith("comment"):
+        return "comment"
+    if label.startswith(("improve", "improvement", "eloop")):
+        return "improvement"
+    return "other"
+
+
 def summarize(data):
     if not isinstance(data, dict):
         raise ValueError("diagnostics must be an object")
@@ -68,14 +92,20 @@ def summarize(data):
     improvement = data.get("improvement") or {}
 
     recent = ai.get("recent_events")
-    counts = Counter()
+    cause_counts = Counter()
+    fail_component_counts = Counter()
+    all_failed_component_counts = Counter()
     if isinstance(recent, list):
         for event in recent:
             cause = _failure_cause(event)
             if cause is not None:
-                counts[cause] += 1
+                cause_counts[cause] += 1
+                fail_component_counts[_component_bucket(event)] += 1
+            if isinstance(event, dict) and event.get("event") == "all_failed":
+                all_failed_component_counts[_component_bucket(event)] += 1
 
-    sampled = sum(counts.values())
+    sampled = sum(cause_counts.values())
+    sampled_all_failed = sum(all_failed_component_counts.values())
     parts = [
         f"required_down={_nlist(workers, 'required_down')}",
         f"required_stale={_nlist(workers, 'required_stale')}",
@@ -94,7 +124,13 @@ def summarize(data):
         f"ai_all_failed_15m={_integer(ai, 'all_failed_15m')}",
         f"ai_recent_fail_sampled={sampled}",
     ]
-    parts.extend(f"ai_recent_fail_{cause}={counts[cause]}" for cause in CAUSES)
+    parts.extend(f"ai_recent_fail_{cause}={cause_counts[cause]}" for cause in CAUSES)
+    parts.extend(f"ai_recent_fail_component_{component}={fail_component_counts[component]}" for component in COMPONENTS)
+    parts.append(f"ai_recent_all_failed_sampled={sampled_all_failed}")
+    parts.extend(
+        f"ai_recent_all_failed_component_{component}={all_failed_component_counts[component]}"
+        for component in COMPONENTS
+    )
     parts.extend(
         [
             f"improvement_stale={int(improvement.get('stale') is True)}",
