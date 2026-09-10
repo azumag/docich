@@ -87,7 +87,7 @@ class DiagnosticsGatewayTests(unittest.TestCase):
         self.assertEqual(data["status"], "diagnosed")
         diag = data["diagnostics"]
         self.assertIn(diag["status"], ("ok", "warn", "critical"))
-        for section in ("meta", "workers", "queues", "ai", "improvement"):
+        for section in ("meta", "workers", "queues", "ai", "improvement", "corners"):
             self.assertIn(section, diag)
         self.assertEqual(diag["workers"]["expected"] >= 10, True)
         self.assertEqual(self.snapshot(self.soren), before)

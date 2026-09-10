@@ -44,7 +44,13 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   "ai": {"attempts_15m": 0, "failures_15m": 0, "rate_limits_15m": 0,
          "fallbacks_15m": 0, "all_failed_15m": 0, "recent_events": [],
          "anomalous_components": {}},
-  "improvement": {"running": false, "stale": false, ...}
+  "improvement": {"running": false, "stale": false, ...},
+  "corners": {"state_dir_found": true,
+              "game_switch": {"present": true, "phase": "ready", "active_game": "sorengame",
+                              "last_status": "succeeded", "last_error_code": null, ...},
+              "retro_corner": {"present": true, "status": "active", "game": "gnurobots", ...},
+              "paper_corner": {"present": false, "readable": false},
+              "presentation": {"present": true, "mode": "detailed", ...}}
 }
 ```
 
@@ -55,6 +61,8 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
 - 単発の rate-limit だけで critical にしない。rate-limit は件数のみ報告する。
 - queue waiter 数は lock 形式から観測できないため報告しない（不明は不明と扱う）。
 - 診断は stale lock を削除しない。観測のみ。
+- `corners` はコーナー/番組のライフサイクル観測であり、現時点では severity を
+  変えない（時間監視の通知を増やさない）。失敗状態の警報化は別途判断する。
 
 ## 収集元（すべて read-only）
 
@@ -72,6 +80,11 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
 - improve: `improve_state.json`、`tmp/improve.lock`、
   `improve_monitor_status.json`、`rate_limit_backoff` と retry batch の存在のみ
   （内容は読まない）。running かつ更新停滞／PID 死亡なら stale。
+- corner: 本番 `state_dir` 配下の `game_switch.json` / `retro_corner.json` /
+  `paper_corner.json` / `trading/presentation.json`。status・時刻・announce 件数のみで、
+  announce/台本本文は読まない・出さない。state_dir は固定 config
+  (`config/docich.soren-live.toml`) の `paths.state_dir` から解決し、
+  production checkout 内に制約する。
 - meta: デプロイ済み docich HEAD と soviet_now gitlink（検証用。secret ではない）。
 
 ## 出さないもの

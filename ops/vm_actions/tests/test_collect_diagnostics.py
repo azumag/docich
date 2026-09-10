@@ -349,5 +349,135 @@ class CollectorContractTests(CollectorFixture):
         self.assertNotEqual(direct.returncode, 0)
 
 
+class ProgramCornerStateTests(CollectorFixture):
+    def state_dir(self):
+        directory = self.soren / "program-state"
+        (directory / "trading").mkdir(parents=True, exist_ok=True)
+        return directory
+
+    def write_state(self, directory, name, payload):
+        (directory / name).write_text(json.dumps(payload, ensure_ascii=False))
+
+    def test_corner_state_reports_lifecycle_without_bodies(self):
+        module = load_collector()
+        directory = self.state_dir()
+        self.write_state(
+            directory,
+            "game_switch.json",
+            {
+                "schema_version": 2,
+                "phase": "ready",
+                "operation": None,
+                "next_generation": 68,
+                "revision": 12,
+                "active": {"game": "sorengame", "generation": 67},
+                "last_result": {"status": "succeeded", "error_code": None, "to_game": "sorengame"},
+                "updated_at": "2026-09-10T10:00:00Z",
+            },
+        )
+        self.write_state(
+            directory,
+            "retro_corner.json",
+            {
+                "schema_version": 2,
+                "status": "active",
+                "date": "2026-09-10",
+                "game": "gnurobots",
+                "previous_game": "sorengame",
+                "started_at": "2026-09-10T19:00:30+09:00",
+                "ends_at": "2026-09-10T19:30:30+09:00",
+                "completed_at": None,
+                "last_error": None,
+            },
+        )
+        self.write_state(
+            directory,
+            "paper_corner.json",
+            {
+                "status": "active",
+                "date": "2026-09-10",
+                "previous_game": "sorengame",
+                "started_at": 1789000000.0,
+                "ends_at": 1789001800.0,
+                "last_error": None,
+                "reports": {
+                    "opening": {"text": "SECRET-BODY-TEXT", "overlay": True, "speech": True},
+                    "0": {"text": "SECRET-BODY-TEXT-2", "overlay": True, "speech": False},
+                },
+            },
+        )
+        self.write_state(
+            directory / "trading",
+            "presentation.json",
+            {"schema_version": 1, "mode": "detailed", "updated_at": 1789000000.0},
+        )
+
+        result = module._collect_programs(directory)
+        self.assertEqual(result["state_dir_found"], True)
+        game_switch = result["game_switch"]
+        self.assertEqual(game_switch["present"], True)
+        self.assertEqual(game_switch["phase"], "ready")
+        self.assertEqual(game_switch["active_game"], "sorengame")
+        self.assertEqual(game_switch["active_generation"], 67)
+        self.assertEqual(game_switch["last_status"], "succeeded")
+        self.assertIsNone(game_switch["last_error_code"])
+
+        retro = result["retro_corner"]
+        self.assertEqual(retro["present"], True)
+        self.assertEqual(retro["status"], "active")
+        self.assertEqual(retro["game"], "gnurobots")
+        self.assertEqual(retro["previous_game"], "sorengame")
+
+        paper = result["paper_corner"]
+        self.assertEqual(paper["present"], True)
+        self.assertEqual(paper["status"], "active")
+        self.assertEqual(paper["announcements"], {"total": 2, "overlay": 2, "speech": 1})
+        self.assertEqual(result["presentation"]["mode"], "detailed")
+
+        rendered = json.dumps(result, ensure_ascii=False)
+        self.assertNotIn("SECRET-BODY-TEXT", rendered)
+        self.assertNotIn("reports", rendered)
+
+    def test_corner_state_absent_is_not_present(self):
+        module = load_collector()
+        result = module._collect_programs(self.soren / "nonexistent-state")
+        self.assertEqual(result["state_dir_found"], False)
+        self.assertEqual(result["game_switch"]["present"], False)
+        self.assertEqual(result["paper_corner"]["present"], False)
+
+    def test_corner_state_corrupt_is_not_fatal(self):
+        module = load_collector()
+        directory = self.state_dir()
+        (directory / "game_switch.json").write_text("{not json")
+        (directory / "paper_corner.json").write_text("[1,2,3]")
+        result = module._collect_programs(directory)
+        self.assertEqual(result["game_switch"]["present"], True)
+        self.assertEqual(result["game_switch"]["readable"], False)
+        self.assertEqual(result["paper_corner"]["present"], True)
+        self.assertEqual(result["paper_corner"]["readable"], False)
+
+    def test_corner_error_is_redacted(self):
+        module = load_collector()
+        directory = self.state_dir()
+        self.write_state(
+            directory,
+            "paper_corner.json",
+            {"status": "failed", "date": "2026-09-10", "last_error": "boom token=SUPERSECRET123"},
+        )
+        result = module._collect_programs(directory)
+        rendered = json.dumps(result)
+        self.assertNotIn("SUPERSECRET123", rendered)
+        self.assertIn("[REDACTED]", rendered)
+
+    def test_full_output_includes_corners_section(self):
+        self.write_required_alive()
+        proc = self.run_collector()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        data = json.loads(proc.stdout)
+        self.assertIn("corners", data)
+        self.assertIn("game_switch", data["corners"])
+        self.assertIn("state_dir_found", data["corners"])
+
+
 if __name__ == "__main__":
     unittest.main()
