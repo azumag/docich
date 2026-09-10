@@ -1,0 +1,41 @@
+/* PAPER dashboard: fixed 960x540 program view (Issue #198). */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  width: 960px; height: 540px; overflow: hidden;
+  background: #0b1220; color: #e6edf7;
+  font-family: "Noto Sans JP", "Hiragino Sans", system-ui, sans-serif;
+}
+#app { width: 960px; height: 540px; display: grid; grid-template-rows: 48px 72px 1fr 104px; }
+
+#header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 14px; background: #101a2e; border-bottom: 1px solid #22335a;
+}
+#header .title { font-size: 20px; font-weight: 700; letter-spacing: .04em; }
+#header .meta { display: flex; gap: 12px; align-items: center; font-size: 14px; color: #9fb3d4; }
+.badge { background: #1d4ed8; color: #fff; border-radius: 4px; padding: 2px 8px; font-weight: 700; }
+
+#cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; padding: 10px 14px; }
+.card { background: #101a2e; border: 1px solid #22335a; border-radius: 8px; padding: 8px 10px; }
+.card .k { font-size: 12px; color: #8fa6c9; }
+.card .v { font-size: 22px; font-weight: 700; margin-top: 2px; }
+
+main { display: grid; grid-template-columns: 620px 1fr; gap: 10px; padding: 0 14px; min-height: 0; }
+#chartwrap { background: #0e1830; border: 1px solid #22335a; border-radius: 8px; padding: 6px 8px; display: flex; flex-direction: column; }
+#charthead { display: flex; justify-content: space-between; font-size: 13px; color: #b9c9e4; padding: 2px 2px 4px; }
+#charthead #range { color: #8fa6c9; }
+#chart { width: 612px; height: 252px; display: block; }
+#chartwrap .note { font-size: 11px; color: #6f86a8; padding-top: 2px; }
+
+#side { display: grid; grid-template-rows: 1fr 1fr 1fr; gap: 8px; min-height: 0; }
+.panel { background: #0e1830; border: 1px solid #22335a; border-radius: 8px; padding: 6px 9px; overflow: hidden; }
+.panel h3 { font-size: 12px; color: #8fa6c9; font-weight: 600; margin-bottom: 3px; }
+.panel div { font-size: 14px; line-height: 1.4; }
+
+footer { padding: 6px 14px 8px; display: flex; flex-direction: column; }
+#fillshead { font-size: 12px; color: #8fa6c9; }
+#fills { font-size: 13px; line-height: 1.5; flex: 1; }
+#disclaimer { font-size: 11px; color: #6f86a8; }
+.pos { color: #4ade80; }
+.neg { color: #f87171; }
+.muted { color: #8fa6c9; }
