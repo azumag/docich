@@ -200,6 +200,23 @@ class TestCapitalAllocator(unittest.TestCase):
         self.assertGreaterEqual(decision.quote_notional, D("1000"))
         self.assertLessEqual(decision.reference_notional, D("3000"))
 
+    def test_full_deployment_reports_cap_exhausted_not_below_min(self):
+        # A tiny remaining budget must report the real reason (cap exhausted),
+        # not below_min_amount.
+        result = allocate_opportunities(
+            [opportunity("one", fraction="0.08")],
+            markets={"BTC/JPY": market(amount_step="0.0001", min_amount="0.0001")},
+            prices={"BTC/JPY": D("10000000")},
+            quote_to_reference={"JPY": D("1")},
+            available_quote={"JPY": D("7000")},
+            capital_reference=D("10000"),
+            deployed_reference=D("2999.9999954"),
+            policy=CapitalPolicy(),
+            now=NOW,
+        )
+        self.assertFalse(result.decisions)
+        self.assertEqual(result.skipped[0].reason_code, "total_cap_exhausted")
+
     def test_min_cost_floor_bumps_amount_even_when_min_amount_is_met(self):
         # min_amount is satisfied, but the quote notional is below min_cost, so
         # the size must grow to meet the cost floor (within the hard cap).

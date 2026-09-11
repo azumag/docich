@@ -212,25 +212,31 @@ def allocate_opportunities(
             skipped.append(_skip(opportunity, "total_cap_exhausted"))
             continue
 
+        # Exchange minimums are hard execution constraints. When the
+        # fraction-sized order would fall below the minimum, size up to the
+        # minimum (rounded up to the step), as long as it still fits the hard
+        # per-opportunity cap and the remaining/funding limits. A minimum that
+        # cannot fit is attributed to the binding limit so the dashboard shows
+        # the real reason instead of always "below_min_amount".
+        min_amount_required = _market_min_amount(market, price)
+        min_reference_required = (
+            ZERO if min_amount_required is None else min_amount_required * price * quote_rate
+        )
+        if min_reference_required > 0:
+            if min_reference_required > hard_cap:
+                skipped.append(_skip(opportunity, "below_min_amount"))
+                continue
+            if min_reference_required > remaining_reference:
+                skipped.append(_skip(opportunity, "total_cap_exhausted"))
+                continue
+            if min_reference_required > funding_cap:
+                skipped.append(_skip(opportunity, "quote_unavailable"))
+                continue
         target_quote = target_reference / quote_rate
         raw_amount = target_quote / price
         amount = _round_down(raw_amount, market.amount_step)
-        # Exchange minimums are hard execution constraints. When the
-        # fraction-sized order falls below the minimum, size up to the minimum
-        # (rounded up to the step) provided it still fits the hard
-        # per-opportunity cap and the remaining/funding limits. Otherwise the
-        # order could never execute and is skipped as before.
-        min_amount_required = _market_min_amount(market, price)
         if min_amount_required is not None and amount < min_amount_required:
-            bumped = _round_up(min_amount_required, market.amount_step)
-            bumped_reference = bumped * price * quote_rate
-            if (
-                bumped > 0
-                and bumped_reference <= hard_cap
-                and bumped_reference <= remaining_reference
-                and bumped_reference <= funding_cap
-            ):
-                amount = bumped
+            amount = _round_up(min_amount_required, market.amount_step)
         if amount <= 0:
             skipped.append(_skip(opportunity, "below_min_amount"))
             continue
