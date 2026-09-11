@@ -15,6 +15,7 @@ from .paper_corner import PaperCornerError
 
 MIN_DURATION = 1
 MAX_DURATION = 60
+STARTUP_GRACE_SECONDS = 1.0
 
 
 def _repo_root() -> Path:
@@ -66,6 +67,9 @@ def launch(config_path: Path, duration_minutes: int) -> dict[str, object]:
                 start_new_session=True,
                 close_fds=True,
             )
+        time.sleep(STARTUP_GRACE_SECONDS)
+        if proc.poll() is not None:
+            raise PaperCornerError("PAPER manual runner exited during startup")
     except Exception:
         try:
             log_path.unlink()
