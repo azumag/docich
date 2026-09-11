@@ -15,6 +15,7 @@ DIAGNOSTICS_STR_MAX=500
 DIAGNOSTICS_LIST_MAX=100
 DIAGNOSTICS_KEY_MAX=128
 DIAGNOSTICS_REDACT_KEYS=('API_KEY','TOKEN','SECRET','STREAM_KEY','PASSWORD','AUTHORIZATION','COOKIE','PRIVATE_KEY')
+PROJECTION_REVIEW_PATH_MAX=25
 OWNED_SUBMODULES={
     'games/soviet_now':'https://github.com/azumag/soviet_now.git',
     'games/hanjuku-sfc-speedrun':'https://github.com/azumag/hanjuku-sfc-speedrun.git',
@@ -622,6 +623,58 @@ def _sanitize_diagnostics(value, depth=0):
         return clean
     raise ValueError('diagnostics output has unsupported type')
 
+def _projection_review(cfg,repo,root:Path,sha:str):
+    """Read-only (#279): for each projected submodule, list changed paths
+    (recorded old gitlink -> candidate sha's gitlink) whose live projected
+    file does not match the recorded old content -- exactly the condition
+    that makes deploy_git()/reconcile refuse. Reports path names and two
+    booleans only; never bytes, hashes, or diffs. Path names of a public
+    submodule are not secret. Never mutates anything; any failure here is
+    swallowed so a bug in this reporting path can never break the rest of
+    diagnostics."""
+    review={}
+    try:
+        cur=read_json(current_file(cfg,repo))
+        if cur is None or not SHA_RE.fullmatch(cur.get('sha') or ''): return review
+        mappings=cfg['repos'][repo].get('projections',{})
+        for sub_path,destination in mappings.items():
+            try:
+                old_sub=submodule_gitlink_at(root,cur['sha'],sub_path)
+                new_sub=submodule_gitlink_at(root,sha,sub_path)
+            except Exception:
+                continue
+            if not old_sub or not new_sub or old_sub==new_sub: continue
+            subrepo=root/sub_path
+            if not subrepo.is_dir(): continue
+            try:
+                changed=_changed_paths(subrepo,old_sub,new_sub)
+            except Exception:
+                continue
+            mismatched=[]
+            for rel in changed:
+                if len(mismatched)>=PROJECTION_REVIEW_PATH_MAX:
+                    mismatched.append({'path':'...truncated...','live_present':None,'matches_new':None})
+                    break
+                try:
+                    live=_safe_projection_path(Path(destination),rel)
+                    old_meta=_expected_meta(subrepo,_tree_entry(subrepo,old_sub,rel))
+                    new_meta=_expected_meta(subrepo,_tree_entry(subrepo,new_sub,rel))
+                    live_meta=_live_meta(live)
+                except Exception:
+                    mismatched.append({'path':rel,'live_present':None,'matches_new':None})
+                    continue
+                matches_old=(live_meta is None and old_meta is None) or (
+                    live_meta is not None and old_meta is not None and live_meta['sha256']==old_meta['sha256'])
+                if matches_old: continue
+                matches_new=(live_meta is None and new_meta is None) or (
+                    live_meta is not None and new_meta is not None and live_meta['sha256']==new_meta['sha256'])
+                mismatched.append({'path':rel,'live_present':live_meta is not None,'matches_new':matches_new})
+            if mismatched: review[sub_path]=mismatched
+    except Exception:
+        return {}
+    return review
+
+
 def diagnostics_result(cfg,repo,target,sha):
     if target!='production': raise ValueError('diagnostics is production-only')
     root=Path(cfg['repos'][repo]['production'])
@@ -651,6 +704,8 @@ def diagnostics_result(cfg,repo,target,sha):
     if not isinstance(data,dict) or data.get('status') not in {'ok','warn','critical'}:
         raise ValueError('diagnostics output invalid')
     clean=_sanitize_diagnostics(data)
+    review=_sanitize_diagnostics(_projection_review(cfg,repo,root,sha))
+    if review: clean={**clean,'projection_paths_needing_review':review}
     if len(json.dumps(clean,separators=(',',':')).encode())>DIAGNOSTICS_JSON_MAX:
         raise ValueError('diagnostics output too large')
     return {'status':'diagnosed','sha':sha,'diagnostics':clean}
