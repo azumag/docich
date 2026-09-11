@@ -33,17 +33,22 @@
     <section id="chartwrap">
       <div id="charthead">
         <span id="focus">注目: -</span>
+        <span id="livequote" class="livequote">現在値 -</span>
         <span id="range">-</span>
       </div>
       <canvas id="chart" width="540" height="334"></canvas>
-      <div id="chartnote" class="note">5分足の保存済み終値。損益はPAPER台帳と公開価格から計算。</div>
+      <div id="chartnote" class="note">5分足の保存済み終値。PAPER台帳と公開価格から損益計算。</div>
     </section>
 
     <aside id="side">
       <div class="panel" id="decision-panel"><h3>BOT判断</h3><div id="decision">-</div></div>
       <div id="detail-row">
         <div class="panel" id="skipped-panel"><h3>見送り理由</h3><div id="skipped">-</div></div>
-        <div class="panel" id="fills-panel"><h3>直近の模擬約定</h3><div id="fills">-</div></div>
+        <div class="panel" id="fills-panel">
+          <h3>市場歩み値 <span id="liveage" class="muted"></span></h3>
+          <div id="tape">-</div>
+          <div class="paper-fill"><span class="paper-tag">PAPER</span><span id="paperfill">模擬約定なし</span></div>
+        </div>
       </div>
       <div class="panel" id="holdings-panel">
         <h3>保有上位 <span id="holdingnote" class="muted"></span></h3>
