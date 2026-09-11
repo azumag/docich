@@ -1,0 +1,141 @@
+name: PAPER corner operator
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Fixed operation
+        required: true
+        default: start
+        type: choice
+        options: [start]
+      duration_minutes:
+        description: Bounded manual run duration (1-60 minutes)
+        required: true
+        default: '15'
+        type: string
+      confirm:
+        description: Type production
+        required: true
+        default: ''
+        type: string
+  issues:
+    types: [edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: paper-corner-operator-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  operate:
+    if: >-
+      github.actor_id == 9018513 &&
+      github.triggering_actor == 'azumag' &&
+      github.ref == 'refs/heads/main' &&
+      github.ref_protected == true &&
+      (github.event_name != 'issues' || github.event.issue.number == 293)
+    environment: vm-operations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout trusted operator from current main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: main
+          path: control
+          persist-credentials: false
+          submodules: false
+
+      - name: Authorize bounded PAPER operation
+        id: auth
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          GITHUB_REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_ACTOR_ID: ${{ github.actor_id }}
+          GITHUB_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
+          GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_ISSUE_NUMBER: ${{ github.event.issue.number }}
+          GITHUB_ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+          GITHUB_ISSUE_AUTHOR_ID: ${{ github.event.issue.user.id }}
+          GITHUB_ISSUE_BODY: ${{ github.event.issue.body }}
+          INPUT_OPERATION: ${{ inputs.operation }}
+          INPUT_DURATION_MINUTES: ${{ inputs.duration_minutes }}
+          INPUT_CONFIRM: ${{ inputs.confirm }}
+        run: python3 control/ops/vm_actions/authorize_paper_corner.py >/dev/null
+
+      - name: Resolve immutable current-main SHA
+        id: candidate
+        shell: bash
+        env:
+          EVENT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          sha="$(git -C control rev-parse HEAD)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$sha" == "$EVENT_SHA" ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Configure pinned SSH client
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          VM_SSH_PORT: ${{ secrets.VM_SSH_PORT }}
+          VM_SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          VM_SSH_KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$VM_SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]
+          [[ "$VM_SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          port="${VM_SSH_PORT:-22}"
+          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+          install -m 700 -d "$RUNNER_TEMP/vm-ssh"
+          printf '%s\n' "$VM_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/vm-ssh/key"
+          printf '%s\n' "$VM_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/vm-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/vm-ssh/key" "$RUNNER_TEMP/vm-ssh/known_hosts"
+          printf 'port=%s\n' "$port" >> "$GITHUB_ENV"
+
+      - name: Require production to equal current protected main
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          status_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $SHA")"
+          python3 - "$status_json" "$SHA" <<'PY'
+          import json, sys
+          data=json.loads(sys.argv[1])
+          expected=sys.argv[2]
+          if data.get('status')!='configured' or data.get('sha')!=expected:
+              raise SystemExit('production is not exactly current protected main')
+          PY
+
+      - name: Start bounded PAPER corner
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+          DURATION_MINUTES: ${{ steps.auth.outputs.duration_minutes }}
+        run: |
+          set -euo pipefail
+          [[ "$DURATION_MINUTES" =~ ^[0-9]+$ ]]
+          (( DURATION_MINUTES >= 1 && DURATION_MINUTES <= 60 ))
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          printf 'bash bin/docich-paper-corner-operator --config config/docich.soren-live.toml --duration-minutes %s\n' "$DURATION_MINUTES" |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
