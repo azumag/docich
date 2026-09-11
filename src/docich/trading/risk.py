@@ -60,7 +60,8 @@ def _round_down(amount: Decimal, step: Decimal | None) -> Decimal:
 def _round_up(amount: Decimal, step: Decimal | None) -> Decimal:
     if step is None or amount <= 0:
         return amount
-    return ((amount + step - 1) // step) * step
+    rounded = (amount // step) * step
+    return rounded if rounded >= amount else rounded + step
 
 
 def _market_min_amount(market: MarketInfo, price: Decimal) -> Decimal | None:
