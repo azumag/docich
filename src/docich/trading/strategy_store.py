@@ -3,8 +3,8 @@
 The worker rebuilds its default ``StrategyPolicy()`` on every process start.
 Persisting the effective policy here lets the end-of-corner improvement job
 adjust it and lets the next worker cycle observe the change without a code
-edit. The file is an allowlisted document: only the five public policy keys
-are serialized, never prompts, AI responses or credentials.
+edit. When a declarative PAPER strategy experiment exists, loading the policy
+also activates that experiment for the current worker cycle.
 """
 from __future__ import annotations
 
@@ -70,11 +70,7 @@ def _lookback(value: object, name: str, minimum: int) -> int:
 
 
 def policy_from_mapping(data: Mapping[str, object]) -> StrategyPolicy:
-    """Build a validated StrategyPolicy from a stored payload.
-
-    Raises ``StrategyStoreError`` on any missing key, wrong type or value
-    outside the domain ranges (mirrors ``StrategyPolicy`` validation).
-    """
+    """Build a validated StrategyPolicy from a stored payload."""
     if not isinstance(data, Mapping):
         raise StrategyStoreError("戦略ポリシーはJSONオブジェクトである必要があります")
     missing = [key for key in POLICY_KEYS if key not in data]
@@ -98,11 +94,27 @@ def policy_from_mapping(data: Mapping[str, object]) -> StrategyPolicy:
         raise StrategyStoreError(str(exc)) from exc
 
 
+def _activate_experiment(trading_dir) -> None:
+    """Refresh process-local experiment state on every policy load."""
+    try:
+        from .strategy_lab import load_strategy_experiment
+        from .strategy_runtime import set_active_experiment
+
+        set_active_experiment(load_strategy_experiment(trading_dir))
+    except Exception:
+        try:
+            from .strategy_runtime import set_active_experiment
+            set_active_experiment(None)
+        except Exception:
+            pass
+
+
 def load_strategy_policy(
     trading_dir, *, fallback: StrategyPolicy | None = None
 ) -> StrategyPolicy:
-    """Load the persisted policy. Missing/corrupt/invalid input never raises."""
+    """Load policy and activate any valid PAPER strategy experiment."""
     default = fallback if fallback is not None else StrategyPolicy()
+    _activate_experiment(trading_dir)
     try:
         raw = strategy_policy_path(trading_dir).read_text(encoding="utf-8")
         data = json.loads(raw)

@@ -21,21 +21,74 @@ _BASE_KEYS = {"schema_version", "event_id", "event_type", "occurred_at"}
 _TYPE_KEYS = {
     "paper_fill": {
         "symbol", "strategy_id", "side", "amount", "price",
-        "reference_notional", "reason_code",
+        "reference_notional", "reason_code", "reason_context",
     },
     "multileg_settlement": {
         "route_id", "start_asset", "start_amount", "complete", "final_amount",
         "net_edge_bps", "failed_leg_symbol", "failure_reason",
     },
 }
+_CONTEXT_KEYS = {
+    "kind", "experiment_id", "rule_id", "combine", "conditions",
+    "average_price", "last_price", "pnl_bps", "hold_minutes",
+}
+_CONDITION_KEYS = {"feature", "observed", "threshold", "op", "unit", "lookback"}
 
 
 def _text(value: Decimal | None) -> str | None:
     return None if value is None else str(value)
 
 
-def build_fill_event(fill: PaperFill) -> dict[str, object]:
-    return {
+def _validate_reason_context(value: object) -> dict[str, object] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise PublicEventError("reason_context must be an object")
+    unknown = set(value) - _CONTEXT_KEYS
+    if unknown:
+        raise PublicEventError("reason_context contains unknown fields")
+    result: dict[str, object] = {}
+    for key in ("kind", "experiment_id", "rule_id", "combine", "average_price",
+                "last_price", "pnl_bps", "hold_minutes"):
+        if key in value:
+            text = str(value.get(key) or "").replace("\n", " ").strip()[:160]
+            if text:
+                result[key] = text
+    raw_conditions = value.get("conditions")
+    if raw_conditions is not None:
+        if not isinstance(raw_conditions, list) or len(raw_conditions) > 4:
+            raise PublicEventError("reason_context conditions are invalid")
+        conditions: list[dict[str, object]] = []
+        for item in raw_conditions:
+            if not isinstance(item, Mapping) or set(item) - _CONDITION_KEYS:
+                raise PublicEventError("reason_context condition is invalid")
+            row: dict[str, object] = {}
+            for key in ("feature", "observed", "threshold", "op", "unit"):
+                if key in item:
+                    text = str(item.get(key) or "").replace("\n", " ").strip()[:80]
+                    if text:
+                        row[key] = text
+            if "lookback" in item:
+                raw = item.get("lookback")
+                if type(raw) is not int or not 2 <= raw <= 24:
+                    raise PublicEventError("reason_context lookback is invalid")
+                row["lookback"] = raw
+            if row:
+                conditions.append(row)
+        result["conditions"] = conditions
+    return result or None
+
+
+def build_fill_event(
+    fill: PaperFill, *, reason_context: Mapping[str, object] | None = None
+) -> dict[str, object]:
+    if reason_context is None:
+        try:
+            from .strategy_runtime import pop_reason_context
+            reason_context = pop_reason_context(fill.opportunity_id)
+        except Exception:
+            reason_context = None
+    event: dict[str, object] = {
         "schema_version": 1,
         "event_id": f"fill:{fill.fill_id}",
         "event_type": "paper_fill",
@@ -48,6 +101,10 @@ def build_fill_event(fill: PaperFill) -> dict[str, object]:
         "reference_notional": str(fill.reference_notional),
         "reason_code": fill.reason_code,
     }
+    context = _validate_reason_context(reason_context)
+    if context is not None:
+        event["reason_context"] = context
+    return event
 
 
 def build_settlement_event(item: RecordedMultiLegSettlement) -> dict[str, object]:
@@ -91,6 +148,12 @@ def _validated_event(event: Mapping[str, object]) -> dict[str, object]:
     result = dict(event)
     result["event_id"] = event_id
     result["occurred_at"] = occurred_at
+    if event_type == "paper_fill" and "reason_context" in result:
+        context = _validate_reason_context(result.get("reason_context"))
+        if context is None:
+            result.pop("reason_context", None)
+        else:
+            result["reason_context"] = context
     return result
 
 
@@ -115,10 +178,10 @@ def _load_existing(path: Path) -> list[dict[str, object]]:
     return records
 
 
-
 def read_public_events(path: Path) -> list[dict[str, object]]:
     """Read and strictly validate the bounded public trading event journal."""
     return _load_existing(Path(path))
+
 
 def append_public_event(
     path: Path,

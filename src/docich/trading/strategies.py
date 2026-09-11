@@ -9,6 +9,16 @@ from typing import Mapping, Sequence
 
 from .market_data import MarketFrame
 from .models import Opportunity, SkipDecision, TradingValidationError, as_decimal
+from .strategy_lab import (
+    built_in_reason_context,
+    scan_experiment_entries,
+    scan_experiment_exits,
+)
+from .strategy_runtime import (
+    get_active_experiment,
+    register_reason_context,
+    register_reason_contexts,
+)
 
 
 D = Decimal
@@ -56,6 +66,12 @@ def scan_opportunities(
     policy: StrategyPolicy | None = None,
 ) -> tuple[Opportunity, ...]:
     policy = policy or StrategyPolicy()
+    experiment = get_active_experiment()
+    if experiment is not None:
+        result = scan_experiment_entries(frames, experiment, now=now)
+        register_reason_contexts(result.reason_contexts)
+        return result.opportunities
+
     opportunities: list[Opportunity] = []
     for symbol in sorted(frames):
         frame = frames[symbol]
@@ -103,11 +119,24 @@ def scan_opportunities(
                             reason_code="mean_reversion_discount",
                         )
                     )
+    for opportunity in opportunities:
+        context = built_in_reason_context(
+            opportunity,
+            frames,
+            {},
+            now=now,
+            momentum_lookback=policy.momentum_lookback,
+            momentum_threshold_bps=policy.momentum_threshold_bps,
+            mean_reversion_lookback=policy.mean_reversion_lookback,
+            mean_reversion_z=policy.mean_reversion_z,
+            take_profit=EXIT_TAKE_PROFIT,
+            stop_loss=EXIT_STOP_LOSS,
+            max_hold_s=EXIT_MAX_HOLD_S,
+        )
+        register_reason_context(opportunity.opportunity_id, context)
     return tuple(sorted(opportunities, key=lambda item: (item.strategy_id, item.symbol, item.opportunity_id)))
 
 
-#: Inventory-release exits. Without a sell path the bot fills up to the total
-#: deployment cap and then stops trading forever (Issue #198 feedback).
 EXIT_TAKE_PROFIT = D("0.01")
 EXIT_STOP_LOSS = D("0.03")
 EXIT_MAX_HOLD_S = 6 * 3600
@@ -122,11 +151,13 @@ def scan_exit_opportunities(
     stop_loss: Decimal = EXIT_STOP_LOSS,
     max_hold_s: float = EXIT_MAX_HOLD_S,
 ) -> tuple[Opportunity, ...]:
-    """SELL opportunities that release inventory (take-profit/stop-loss/max hold).
+    """SELL opportunities that release inventory (take-profit/stop-loss/max hold)."""
+    experiment = get_active_experiment()
+    if experiment is not None:
+        result = scan_experiment_exits(frames, cost_basis, experiment, now=now)
+        register_reason_contexts(result.reason_contexts)
+        return result.opportunities
 
-    ``cost_basis`` maps a symbol to ``(amount, average_price, opened_at)`` from
-    the ledger. Exits are only signals; the allocator sizes and bounds them.
-    """
     take_profit = as_decimal(take_profit, "take_profit")
     stop_loss = as_decimal(stop_loss, "stop_loss")
     opportunities: list[Opportunity] = []
@@ -152,19 +183,32 @@ def scan_exit_opportunities(
         if reason is None:
             continue
         strategy_id = "exit-v1"
-        opportunities.append(
-            Opportunity(
-                opportunity_id=_opportunity_id(strategy_id, str(symbol), frame.as_of),
-                strategy_id=strategy_id,
-                symbol=str(symbol),
-                side="sell",
-                score=_score(min(1.0, abs(float(change)) / 0.05 + 0.1)),
-                expected_edge_bps=(change * D("10000")).copy_abs(),
-                max_notional_fraction=D("1"),
-                expires_at=float(now) + frame.timeframe_seconds * 2,
-                reason_code=reason,
-            )
+        opportunity = Opportunity(
+            opportunity_id=_opportunity_id(strategy_id, str(symbol), frame.as_of),
+            strategy_id=strategy_id,
+            symbol=str(symbol),
+            side="sell",
+            score=_score(min(1.0, abs(float(change)) / 0.05 + 0.1)),
+            expected_edge_bps=(change * D("10000")).copy_abs(),
+            max_notional_fraction=D("1"),
+            expires_at=float(now) + frame.timeframe_seconds * 2,
+            reason_code=reason,
         )
+        opportunities.append(opportunity)
+        context = built_in_reason_context(
+            opportunity,
+            frames,
+            cost_basis,
+            now=now,
+            momentum_lookback=StrategyPolicy().momentum_lookback,
+            momentum_threshold_bps=StrategyPolicy().momentum_threshold_bps,
+            mean_reversion_lookback=StrategyPolicy().mean_reversion_lookback,
+            mean_reversion_z=StrategyPolicy().mean_reversion_z,
+            take_profit=take_profit,
+            stop_loss=stop_loss,
+            max_hold_s=max_hold_s,
+        )
+        register_reason_context(opportunity.opportunity_id, context)
     return tuple(sorted(opportunities, key=lambda item: (item.symbol, item.opportunity_id)))
 
 
@@ -205,9 +249,16 @@ def select_diversified_opportunities(
     opportunities: Sequence[Opportunity],
     frames: Mapping[str, MarketFrame],
     *,
-    max_pair_correlation: Decimal = D("0.85"),
+    max_pair_correlation: Decimal | None = None,
 ) -> StrategySelectionResult:
-    threshold = as_decimal(max_pair_correlation, "max_pair_correlation")
+    experiment = get_active_experiment()
+    selected_threshold = (
+        experiment.max_pair_correlation
+        if max_pair_correlation is None and experiment is not None
+        else D("0.85") if max_pair_correlation is None
+        else max_pair_correlation
+    )
+    threshold = as_decimal(selected_threshold, "max_pair_correlation")
     if threshold < 0 or threshold > 1:
         raise TradingValidationError("max_pair_correlation must be between 0 and 1")
 
