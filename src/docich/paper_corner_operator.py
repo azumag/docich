@@ -10,8 +10,10 @@ import time
 import uuid
 from pathlib import Path
 
+from .adapters.program import PAPER_VIEW_NAME
 from .config import ConfigError, load_global
 from .paper_corner import PaperCornerError
+from .paper_corner_manual import ManualPaperCornerManager
 
 MIN_DURATION = 1
 MAX_DURATION = 60
@@ -29,10 +31,40 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _recover_stale_manual_state(g, duration_minutes: int) -> bool:
+    """Recover only a provably stale manual state before a new owner start.
+
+    A previous prepare failure can leave the manual state at ``starting`` even
+    though the canonical game-switch transaction rolled back to the recorded
+    previous game.  In that exact state it is safe to close the abandoned
+    manual session without stopping/restarting anything.  Any ambiguous state
+    remains fail-closed.
+    """
+    manager = ManualPaperCornerManager(g, duration_minutes=duration_minutes)
+    state = manager._read_state()
+    if state.get("status") not in ("starting", "active"):
+        return False
+    current = manager._active_game()
+    previous = state.get("previous_game")
+    if current == PAPER_VIEW_NAME:
+        raise PaperCornerError("manual PAPER corner is already active")
+    if current != previous:
+        raise PaperCornerError("stale manual PAPER state cannot be safely recovered")
+    state.update(
+        status="completed",
+        completed_at=time.time(),
+        last_error=None,
+        detail="stale manual start recovered before owner retry",
+    )
+    manager.save(state)
+    return True
+
+
 def launch(config_path: Path, duration_minutes: int) -> dict[str, object]:
     if type(duration_minutes) is not int or not MIN_DURATION <= duration_minutes <= MAX_DURATION:
         raise PaperCornerError(f"duration_minutes は{MIN_DURATION}-{MAX_DURATION}の整数である必要があります")
     g = load_global(_repo_root(), config_path)
+    recovered = _recover_stale_manual_state(g, duration_minutes)
     log_dir = Path(g.state_dir) / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(log_dir, 0o700)
@@ -80,6 +112,7 @@ def launch(config_path: Path, duration_minutes: int) -> dict[str, object]:
         "status": "started",
         "operation_id": operation_id,
         "duration_minutes": duration_minutes,
+        "recovered_stale_state": recovered,
         "pid": proc.pid,
     }
 
