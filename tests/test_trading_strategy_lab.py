@@ -91,6 +91,7 @@ def experiment_payload(experiment_id: str = "lab-a") -> dict:
 
 
 def _global(root: Path):
+    root.mkdir(parents=True, exist_ok=True)
     cfg = root / "docich.toml"
     cfg.write_text(
         '[paths]\nstate_dir = "run"\n[trading]\npaper_worker_enabled = true\n',
