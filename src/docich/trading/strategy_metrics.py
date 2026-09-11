@@ -21,21 +21,19 @@ def _experiment_rows(db_path: Path, spec: StrategyExperiment):
             """SELECT symbol, side, strategy_id, amount, price, filled_at
                  FROM paper_fills
                 WHERE filled_at >= ?
-                  AND (strategy_id LIKE ? OR strategy_id LIKE ?)
                 ORDER BY filled_at, rowid""",
-            (
-                float(spec.activated_at),
-                f"lab:{spec.experiment_id}:%",
-                f"lab-exit:{spec.experiment_id}:%",
-            ),
+            (float(spec.activated_at),),
         ).fetchall()
     except sqlite3.Error:
         return []
     finally:
         if conn is not None:
             conn.close()
+    prefixes = (f"lab:{spec.experiment_id}:", f"lab-exit:{spec.experiment_id}:")
     result = []
     for symbol, side, strategy_id, amount, price, filled_at in rows:
+        if not str(strategy_id).startswith(prefixes):
+            continue
         try:
             result.append((
                 str(symbol), str(side), str(strategy_id),
