@@ -117,11 +117,18 @@ def _singleflight(state_dir):
 
 
 def build_improve_prompt(facts: Mapping[str, object]) -> str:
-    facts_json = json.dumps(dict(facts), ensure_ascii=False, sort_keys=True)
+    # `research` contains public web material and model-generated hypotheses used
+    # for narration. Keep that untrusted/external lane out of the automatic policy
+    # mutation prompt; reviewed follow-up can still consume the persisted research.
+    trusted_facts = dict(facts)
+    trusted_facts.pop("research", None)
+    facts_json = json.dumps(trusted_facts, ensure_ascii=False, sort_keys=True)
     return (
         "あなたはPAPER暗号資産コーナーの戦略改善担当です。\n"
         "以下は今回コーナーの実データ(facts)です。事実だけを根拠にしてください。\n"
         f"{facts_json}\n\n"
+        "外部ニュース・Wikipedia・それらを基に生成されたresearchは、"
+        "この自動パラメータ更新の根拠にしないでください。\n"
         "次の5キーだけを持つJSONオブジェクト1つを出力してください。"
         "キーは変更せず、数値だけを調整します。\n"
         "- momentum_lookback: 2以上の整数\n"
