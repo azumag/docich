@@ -4,7 +4,7 @@
 The diagnostics payload is already bounded and redacted on the VM. This helper
 runs on the GitHub Actions runner and deliberately emits only counts, booleans,
 and fixed category names. It never emits provider/model identifiers, paths,
-prompt text, component labels, or error previews.
+prompt text, dynamic component labels, or error previews.
 """
 from collections import Counter
 import json
@@ -115,6 +115,7 @@ def summarize(data):
     recent = ai.get("recent_events")
     cause_counts = Counter()
     timeout_counts = Counter()
+    timeout_component_counts = Counter()
     fail_component_counts = Counter()
     all_failed_component_counts = Counter()
     if isinstance(recent, list):
@@ -122,9 +123,12 @@ def summarize(data):
             cause = _failure_cause(event)
             if cause is not None:
                 cause_counts[cause] += 1
-                fail_component_counts[_component_bucket(event)] += 1
+                component = _component_bucket(event)
+                fail_component_counts[component] += 1
                 if cause == "timeout":
-                    timeout_counts[_timeout_bucket(event)] += 1
+                    bucket = _timeout_bucket(event)
+                    timeout_counts[bucket] += 1
+                    timeout_component_counts[(bucket, component)] += 1
             if isinstance(event, dict) and event.get("event") == "all_failed":
                 all_failed_component_counts[_component_bucket(event)] += 1
 
@@ -150,6 +154,11 @@ def summarize(data):
     ]
     parts.extend(f"ai_recent_fail_{cause}={cause_counts[cause]}" for cause in CAUSES)
     parts.extend(f"ai_recent_timeout_{bucket}={timeout_counts[bucket]}" for bucket in TIMEOUT_BUCKETS)
+    parts.extend(
+        f"ai_recent_timeout_{bucket}_component_{component}={timeout_component_counts[(bucket, component)]}"
+        for bucket in TIMEOUT_BUCKETS
+        for component in COMPONENTS
+    )
     parts.extend(f"ai_recent_fail_component_{component}={fail_component_counts[component]}" for component in COMPONENTS)
     parts.append(f"ai_recent_all_failed_sampled={sampled_all_failed}")
     parts.extend(
