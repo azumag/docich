@@ -204,7 +204,7 @@ def _condition_reason(item: Mapping[str, object], *, reason_code: str = "") -> s
             return f"平均取得価格から{_plain_number(abs(pct))}%{direction}、損切り基準{_plain_number(abs(_pct_from_bps(item.get('threshold'))))}%以上"
         return f"平均取得価格から{_plain_number(abs(pct))}%{direction}、条件{threshold}"
     if feature == "hold_minutes":
-        return f"保有{_duration(observed)}、最大保有{_duration(item.get('threshold'))}を超過"
+        return f"保有{_duration(observed)}、最大保有{_duration(item.get('threshold'))}を超過したこと"
     if feature == "return_bps":
         pct = _pct_from_bps(observed)
         direction = "上昇" if pct >= 0 else "下落"
