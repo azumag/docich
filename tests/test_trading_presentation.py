@@ -110,46 +110,48 @@ class TestNotificationRendering(unittest.TestCase):
         self.assertEqual(rendered.overlay_event["source_id"], "fill:paper:opp-1")
         self.assertEqual(rendered.overlay_event["ts"], 1_800_000_010)
 
-    def test_compact_fill_is_paper_labeled_and_speech_is_concise(self):
+    def test_compact_buy_uses_reason_pair_side_format(self):
         rendered = render_notification(fill_event(), mode="compact", status=safe_status())
         self.assertIn("PAPER", rendered.overlay_event["title"])
-        self.assertIn("BTC/JPY", rendered.overlay_event["body"])
-        self.assertNotIn("模擬投入", rendered.overlay_event["body"])
-        self.assertEqual(rendered.speech_text, "BTC/JPYを買い。")
+        self.assertEqual(rendered.speech_text, "短期モメンタムの上振れを検出：BTC/JPYを買い。")
         self.assertNotIn("ペーパートレード速報", rendered.speech_text)
         self.assertNotIn("模擬投入額", rendered.speech_text)
-        self.assertNotIn("モメンタム", rendered.speech_text)
 
-    def test_sell_without_pnl_never_silently_omits_the_missing_fact(self):
+    def test_sell_without_pnl_uses_same_brief_and_visible_failure(self):
         event = fill_event()
         event["side"] = "sell"
+        event["reason_code"] = "take_profit"
         rendered = render_notification(event, mode="compact", status=safe_status())
+        self.assertEqual(rendered.speech_text, "利確条件を検出：BTC/JPYを売り、損益は確認できませんでした。")
         self.assertIn("実現損益 取得失敗", rendered.overlay_event["body"])
-        self.assertIn("確定した損益は確認できませんでした", rendered.speech_text)
-        self.assertNotIn("ペーパートレード速報", rendered.speech_text)
-        self.assertNotIn("模擬投入額", rendered.speech_text)
 
-    def test_detailed_fill_keeps_reason_without_repeating_capital_context(self):
-        rendered = render_notification(fill_event(), mode="detailed", status=safe_status())
-        self.assertIn("PAPER", rendered.overlay_event["title"])
-        self.assertIn("モメンタム", rendered.overlay_event["body"])
-        self.assertIn("判断理由は、短期モメンタムの上振れを検出。", rendered.speech_text)
-        self.assertNotIn("3,000", rendered.speech_text)
-        self.assertNotIn("10,000", rendered.speech_text)
-        self.assertNotIn("ペーパー投入額", rendered.speech_text)
-        self.assertNotIn("設定ペーパー資金", rendered.speech_text)
-        self.assertNotIn("ペーパートレード速報", rendered.speech_text)
-        self.assertNotIn("模擬投入額", rendered.speech_text)
+    def test_compact_and_detailed_buy_use_identical_short_format(self):
+        compact = render_notification(fill_event(), mode="compact", status=safe_status())
+        detailed = render_notification(fill_event(), mode="detailed", status=safe_status())
+        self.assertEqual(detailed.speech_text, compact.speech_text)
+        self.assertNotIn("判断理由は", detailed.speech_text)
+        self.assertNotIn("ペーパー投入額", detailed.speech_text)
 
-    def test_detailed_sell_reads_pnl_and_reason_without_capital_context(self):
+    def test_detailed_sell_is_one_sentence_with_short_pnl(self):
         event = fill_event()
         event["side"] = "sell"
+        event["reason_code"] = "take_profit"
         event["realized_pnl_reference"] = "125"
         rendered = render_notification(event, mode="detailed", status=safe_status())
-        self.assertIn("確定した損益はプラス125円", rendered.speech_text)
-        self.assertIn("判断理由は、短期モメンタムの上振れを検出。", rendered.speech_text)
-        self.assertNotIn("ペーパー投入額", rendered.speech_text)
-        self.assertNotIn("設定ペーパー資金", rendered.speech_text)
+        self.assertEqual(rendered.speech_text, "利確条件を検出：BTC/JPYを売り、損益プラス125円です。")
+        self.assertNotIn("この売却で確定した", rendered.speech_text)
+        self.assertNotIn("判断理由は", rendered.speech_text)
+
+    def test_sell_negative_and_zero_pnl_are_short(self):
+        event = fill_event()
+        event["side"] = "sell"
+        event["reason_code"] = "stop_loss"
+        event["realized_pnl_reference"] = "-80"
+        loss = render_notification(event, mode="compact", status=safe_status())
+        self.assertEqual(loss.speech_text, "損切り条件を検出：BTC/JPYを売り、損益マイナス80円です。")
+        event["realized_pnl_reference"] = "0"
+        zero = render_notification(event, mode="compact", status=safe_status())
+        self.assertEqual(zero.speech_text, "損切り条件を検出：BTC/JPYを売り、損益プラスマイナスゼロです。")
 
     def test_settlement_success_never_calls_edge_guaranteed_profit(self):
         rendered = render_notification(settlement_event(), mode="detailed", status=safe_status())
@@ -157,16 +159,12 @@ class TestNotificationRendering(unittest.TestCase):
         self.assertIn("50", rendered.overlay_event["body"])
         self.assertIn("模擬", rendered.speech_text)
         self.assertNotIn("確実", rendered.speech_text)
-        self.assertNotIn("ペーパー投入額", rendered.speech_text)
-        self.assertNotIn("設定ペーパー資金", rendered.speech_text)
         self.assertEqual(rendered.overlay_event["level"], "info")
 
     def test_failed_settlement_is_warning(self):
         rendered = render_notification(settlement_event(complete=False), mode="detailed", status=safe_status())
         self.assertEqual(rendered.overlay_event["level"], "warn")
         self.assertIn("板不足", rendered.speech_text)
-        self.assertNotIn("ペーパー投入額", rendered.speech_text)
-        self.assertNotIn("設定ペーパー資金", rendered.speech_text)
 
 
 if __name__ == "__main__":
