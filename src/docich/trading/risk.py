@@ -212,15 +212,17 @@ def allocate_opportunities(
             skipped.append(_skip(opportunity, "total_cap_exhausted"))
             continue
 
-        # Exchange minimums are hard execution constraints. When the
-        # fraction-sized order would fall below the minimum, size up to the
-        # minimum (rounded up to the step), as long as it still fits the hard
-        # per-opportunity cap and the remaining/funding limits. A minimum that
-        # cannot fit is attributed to the binding limit so the dashboard shows
-        # the real reason instead of always "below_min_amount".
+        # Exchange minimums are hard execution constraints. Validate the actual
+        # executable minimum after rounding it to the exchange lot step; using
+        # the unrounded amount can understate the required capital or funding.
         min_amount_required = _market_min_amount(market, price)
+        executable_min_amount = (
+            None if min_amount_required is None else _round_up(min_amount_required, market.amount_step)
+        )
         min_reference_required = (
-            ZERO if min_amount_required is None else min_amount_required * price * quote_rate
+            ZERO
+            if executable_min_amount is None
+            else executable_min_amount * price * quote_rate
         )
         if min_reference_required > 0:
             if min_reference_required > hard_cap:
@@ -235,8 +237,8 @@ def allocate_opportunities(
         target_quote = target_reference / quote_rate
         raw_amount = target_quote / price
         amount = _round_down(raw_amount, market.amount_step)
-        if min_amount_required is not None and amount < min_amount_required:
-            amount = _round_up(min_amount_required, market.amount_step)
+        if executable_min_amount is not None and amount < executable_min_amount:
+            amount = executable_min_amount
         if amount <= 0:
             skipped.append(_skip(opportunity, "below_min_amount"))
             continue
