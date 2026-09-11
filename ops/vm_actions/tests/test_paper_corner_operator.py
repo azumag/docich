@@ -120,6 +120,43 @@ class PaperCornerOperatorTests(unittest.TestCase):
                 operator._recover_stale_manual_state(object(), 15)
         manager.save.assert_not_called()
 
+    def test_prepare_failure_classifier_emits_only_fixed_categories(self):
+        base = Path(tempfile.mkdtemp(prefix='paper-op-diag-'))
+        fake_g = SimpleNamespace(state_dir=base)
+        cases = {
+            'chromium が見つかりません (PAPER HTML dashboard)': 'chromium_missing',
+            'Xvfb が見つかりません': 'xvfb_missing',
+            'ffplay が見つかりません': 'ffplay_missing',
+            'xdotool が見つかりません': 'xdotool_missing',
+            'PAPER HTML dashboard server が応答しません': 'dashboard_server_timeout',
+            'program view の dashboard window を特定できません': 'dashboard_window',
+            'session ownershipが一致しません': 'ownership_mismatch',
+            'preflight timeout': 'deadline',
+            'unexpected private path token=SUPERSECRET': 'other_prepare_failure',
+        }
+        for detail, expected in cases.items():
+            with self.subTest(expected=expected):
+                (base / 'game_switch.json').write_text(json.dumps({
+                    'last_result': {
+                        'error_code': 'prepare_failed',
+                        'to_game': PAPER_VIEW_NAME,
+                        'detail': detail,
+                    }
+                }), encoding='utf-8')
+                category = operator._classify_prepare_failure(fake_g)
+                self.assertEqual(category, expected)
+                self.assertIn(category, operator.DIAG_EXIT_CODES)
+                self.assertNotIn('SUPERSECRET', category)
+
+    def test_prepare_failure_classifier_rejects_unrelated_or_unreadable_state(self):
+        base = Path(tempfile.mkdtemp(prefix='paper-op-diag-'))
+        fake_g = SimpleNamespace(state_dir=base)
+        self.assertEqual(operator._classify_prepare_failure(fake_g), 'state_unreadable')
+        (base / 'game_switch.json').write_text(json.dumps({
+            'last_result': {'error_code': 'start_failed', 'to_game': PAPER_VIEW_NAME, 'detail': 'boom'}
+        }), encoding='utf-8')
+        self.assertEqual(operator._classify_prepare_failure(fake_g), 'not_prepare_failure')
+
     def test_launcher_uses_fixed_argv_private_log_and_detached_session(self):
         base = Path(tempfile.mkdtemp(prefix='paper-op-'))
         state = base / 'state'
@@ -182,10 +219,15 @@ class PaperCornerWorkflowPolicyTests(unittest.TestCase):
         self.assertIn('cd /home/ubuntu/docich', text)
         self.assertIn('/home/ubuntu/docich/bin/docich-paper-corner-operator', text)
         self.assertIn('/home/ubuntu/docich/config/docich.soren-live.toml', text)
+        self.assertIn('id: start', text)
+        self.assertIn('continue-on-error: true', text)
+        self.assertIn('--diagnose-only', text)
+        self.assertIn('PAPER start failed:', text)
         self.assertNotIn("printf 'bash bin/docich-paper-corner-operator", text)
         self.assertNotIn('pull_request_target:', text)
         self.assertNotIn('inputs.command', text)
         self.assertNotIn('event.comment.body', text)
+        self.assertNotIn('last_result.detail', text)
 
     def test_public_repo_generic_arbitrary_exec_stays_disabled(self):
         text = GENERIC_AUTH.read_text(encoding='utf-8')

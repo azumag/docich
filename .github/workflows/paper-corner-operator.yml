@@ -126,6 +126,8 @@ jobs:
           PY
 
       - name: Start bounded PAPER corner
+        id: start
+        continue-on-error: true
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -142,3 +144,55 @@ jobs:
           # explicitly so state_dir/tmux/coordinator state are the live ones.
           printf "cd /home/ubuntu/docich && exec bash /home/ubuntu/docich/bin/docich-paper-corner-operator --config /home/ubuntu/docich/config/docich.soren-live.toml --duration-minutes '%s'\n" "$DURATION_MINUTES" |
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
+      - name: Classify failed PAPER prepare
+        if: ${{ steps.start.outcome == 'failure' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          set +e
+          diag_json="$(printf 'cd /home/ubuntu/docich && exec bash /home/ubuntu/docich/bin/docich-paper-corner-operator --config /home/ubuntu/docich/config/docich.soren-live.toml --diagnose-only\n' |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA")"
+          transport_rc=$?
+          set -e
+          diag_rc="$(python3 - "$diag_json" "$SHA" <<'PY'
+          import json, sys
+          try:
+              data=json.loads(sys.argv[1])
+          except Exception:
+              raise SystemExit('diagnostic gateway response is not JSON')
+          if data.get('status') != 'executed' or data.get('sha') != sys.argv[2]:
+              raise SystemExit('diagnostic gateway response is invalid')
+          code=data.get('exit_code')
+          if isinstance(code, bool) or not isinstance(code, int):
+              raise SystemExit('diagnostic exit code is invalid')
+          print(code)
+          PY
+          )"
+          case "$diag_rc" in
+            41) reason=chromium_missing ;;
+            42) reason=xvfb_missing ;;
+            43) reason=ffplay_missing ;;
+            44) reason=xdotool_missing ;;
+            45) reason=dashboard_server_timeout ;;
+            46) reason=dashboard_window ;;
+            47) reason=ownership_mismatch ;;
+            48) reason=deadline ;;
+            49) reason=other_prepare_failure ;;
+            50) reason=not_prepare_failure ;;
+            51) reason=state_unreadable ;;
+            *) reason=diagnostic_unclassified ;;
+          esac
+          if [[ "$transport_rc" -ne "$diag_rc" ]]; then
+            reason=diagnostic_transport_mismatch
+          fi
+          echo "::error::PAPER start failed: ${reason} (diagnostic code ${diag_rc})"
+
+      - name: Fail unsuccessful PAPER start
+        if: ${{ steps.start.outcome == 'failure' }}
+        run: exit 1
