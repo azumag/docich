@@ -26,8 +26,10 @@ main { display: grid; grid-template-columns: 540px 1fr; gap: 8px; padding: 0 10p
   background: #0e1830; border: 1px solid #22335a; border-radius: 8px;
   padding: 6px 7px 4px; display: flex; flex-direction: column; min-height: 0;
 }
-#charthead { display: flex; justify-content: space-between; font-size: 12px; color: #b9c9e4; padding: 1px 2px 3px; }
-#charthead #range { color: #8fa6c9; }
+#charthead { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; column-gap: 9px; font-size: 12px; color: #b9c9e4; padding: 1px 2px 3px; }
+#charthead #focus { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+#charthead #range { color: #8fa6c9; white-space: nowrap; }
+.livequote { color: #67e8f9; font-weight: 750; white-space: nowrap; }
 #chart { width: 524px; height: 330px; display: block; flex: 1; min-height: 0; }
 #chartwrap .note { font-size: 10px; color: #6f86a8; padding: 2px 2px 0; }
 
@@ -37,8 +39,16 @@ main { display: grid; grid-template-columns: 540px 1fr; gap: 8px; padding: 0 10p
 .panel h3 { font-size: 11px; color: #8fa6c9; font-weight: 650; margin-bottom: 3px; white-space: nowrap; }
 .panel div { font-size: 12px; line-height: 1.35; }
 #decision { display: grid; grid-template-columns: auto 1fr; column-gap: 8px; }
-#skipped, #fills { font-size: 10.5px; line-height: 1.32; }
-#skipped .row, #fills .row { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#skipped { font-size: 10.5px; line-height: 1.32; }
+#skipped .row { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#tape { height: 76px; overflow: hidden; font: 650 10px/15px "SF Mono", Menlo, Consolas, monospace; }
+#tape .row { display: grid; grid-template-columns: 45px 18px 1fr auto; gap: 4px; white-space: nowrap; overflow: hidden; }
+#tape .price { text-align: right; overflow: hidden; text-overflow: ellipsis; }
+#tape .amount { color: #8fa6c9; text-align: right; overflow: hidden; text-overflow: ellipsis; }
+.paper-fill { display: flex; gap: 5px; align-items: center; min-width: 0; padding-top: 2px; border-top: 1px solid #22335a; color: #9fb3d4; font-size: 9.5px !important; white-space: nowrap; overflow: hidden; }
+.paper-tag { flex: 0 0 auto; color: #93c5fd; font-size: 8.5px; font-weight: 800; }
+#paperfill { overflow: hidden; text-overflow: ellipsis; }
+#liveage { margin-left: 4px; font-size: 9px; font-weight: 400; }
 #holdings { display: grid; grid-template-columns: 1fr 1fr; grid-auto-rows: minmax(18px, auto); column-gap: 12px; row-gap: 1px; }
 #holdings .holding { display: grid; grid-template-columns: 1fr auto; column-gap: 6px; min-width: 0; font-size: 11.5px; }
 #holdings .symbol { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

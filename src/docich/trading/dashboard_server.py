@@ -1,10 +1,10 @@
 """Read-only local HTTP server for the PAPER HTML/canvas dashboard (Issue #198).
 
-Serves the static dashboard page plus one allowlisted JSON endpoint built from
-the trading state directory. It binds to loopback only, serves GET/HEAD only
-(POST/others are refused), and never mutates trading state. The program view
-shows this page in a browser window sized to ``(0,90,960,540)`` on the stream
-display; the FFmpeg/x11grab path is unchanged.
+Serves the static dashboard page plus allowlisted JSON endpoints built from the
+trading state directory and bitbank public market data. It binds to loopback
+only, serves GET/HEAD only (POST/others are refused), and never mutates trading
+state. The program view shows this page in a browser window sized to
+``(0,90,960,540)`` on the stream display; the FFmpeg/x11grab path is unchanged.
 """
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ import socketserver
 import time
 from pathlib import Path
 
+from .dashboard_live import LiveMarketSampler
 from .dashboard_snapshot import build_dashboard_snapshot
 
 ASSETS = Path(__file__).resolve().parent / "dashboard_assets"
@@ -31,8 +32,9 @@ class _ReusableServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
 
 
-def make_handler(trading_dir: Path):
+def make_handler(trading_dir: Path, *, live_sampler=None):
     trading_dir = Path(trading_dir)
+    sampler = live_sampler if live_sampler is not None else LiveMarketSampler(trading_dir)
 
     class Handler(http.server.BaseHTTPRequestHandler):
         server_version = "docich-paper-dashboard/1"
@@ -50,6 +52,10 @@ def make_handler(trading_dir: Path):
             self.end_headers()
             if self.command != "HEAD":
                 self.wfile.write(body)
+
+        def _json(self, payload: object) -> None:
+            body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            self._send(200, body, _JSON)
 
         def _file(self, name: str, ctype: str) -> None:
             try:
@@ -71,8 +77,17 @@ def make_handler(trading_dir: Path):
                     payload = build_dashboard_snapshot(trading_dir, now=time.time())
                 except Exception:
                     payload = {"schema_version": 1, "error": "snapshot unavailable"}
-                body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-                return self._send(200, body, _JSON)
+                return self._json(payload)
+            if path == "/api/trading/live":
+                try:
+                    payload = sampler.snapshot(now=time.time())
+                except Exception:
+                    payload = {
+                        "schema_version": 1,
+                        "available": False,
+                        "error": "live refresh unavailable",
+                    }
+                return self._json(payload)
             return self._send(404, b"not found", _TEXT)
 
         def do_HEAD(self):  # noqa: N802

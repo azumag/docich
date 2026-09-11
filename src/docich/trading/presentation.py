@@ -144,17 +144,6 @@ def _safe_code(value: object, fallback: str = "unknown") -> str:
     return "".join(ch for ch in text if ch.isalnum() or ch in "._:-/")[:80] or fallback
 
 
-def _status_context(status: Mapping[str, object] | None) -> str:
-    if not isinstance(status, Mapping):
-        return ""
-    try:
-        deployed = _money(status.get("deployed_reference"))
-        capital = _money(status.get("capital_reference"))
-    except PresentationError:
-        return ""
-    return f"現在のペーパー投入額は{deployed}円、設定ペーパー資金は{capital}円です。"
-
-
 def _fill(
     event: Mapping[str, object], mode: str, status: Mapping[str, object] | None, *, display_at: float
 ) -> RenderedNotification:
@@ -185,7 +174,7 @@ def _fill(
     if mode == "detailed":
         reason = _REASON_TEXT.get(reason_code, f"理由コード {reason_code}")
         body += f" / {reason}"
-        speech += f" 判断理由は、{reason}。{_status_context(status)}"
+        speech += f" 判断理由は、{reason}。"
     overlay = validate_event(
         {
             "ts": int(display_at), "category": "worker", "title": title, "body": body[:500],
@@ -215,8 +204,6 @@ def _settlement(
         body = f"{route} / {start_amount} {start_asset} / 模擬不成立: {reason}"
         speech = f"ペーパー裁定観測。{start_amount}{start_asset}の模擬経路は成立しませんでした。理由は{reason}です。"
         level = "warn"
-    if mode == "detailed":
-        speech += _status_context(status)
     overlay = validate_event(
         {
             "ts": int(display_at), "category": "worker", "title": title, "body": body[:500],
