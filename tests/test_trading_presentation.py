@@ -110,13 +110,24 @@ class TestNotificationRendering(unittest.TestCase):
         self.assertEqual(rendered.overlay_event["source_id"], "fill:paper:opp-1")
         self.assertEqual(rendered.overlay_event["ts"], 1_800_000_010)
 
-    def test_compact_fill_is_paper_labeled_without_detailed_reason(self):
+    def test_compact_fill_is_paper_labeled_and_speech_is_concise(self):
         rendered = render_notification(fill_event(), mode="compact", status=safe_status())
         self.assertIn("PAPER", rendered.overlay_event["title"])
         self.assertIn("BTC/JPY", rendered.overlay_event["body"])
-        self.assertIn("3,000", rendered.overlay_event["body"])
-        self.assertIn("ペーパー", rendered.speech_text)
+        self.assertNotIn("模擬投入", rendered.overlay_event["body"])
+        self.assertEqual(rendered.speech_text, "BTC/JPYを買い。")
+        self.assertNotIn("ペーパートレード速報", rendered.speech_text)
+        self.assertNotIn("模擬投入額", rendered.speech_text)
         self.assertNotIn("モメンタム", rendered.speech_text)
+
+    def test_sell_without_pnl_never_silently_omits_the_missing_fact(self):
+        event = fill_event()
+        event["side"] = "sell"
+        rendered = render_notification(event, mode="compact", status=safe_status())
+        self.assertIn("実現損益 取得失敗", rendered.overlay_event["body"])
+        self.assertIn("確定した損益は確認できませんでした", rendered.speech_text)
+        self.assertNotIn("ペーパートレード速報", rendered.speech_text)
+        self.assertNotIn("模擬投入額", rendered.speech_text)
 
     def test_detailed_fill_uses_stable_reason_and_paper_capital_context(self):
         rendered = render_notification(fill_event(), mode="detailed", status=safe_status())
