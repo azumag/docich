@@ -13,6 +13,7 @@ from typing import Callable, Iterator, Mapping
 
 from ..config import GlobalConfig
 from .events import PublicEventError, read_public_events
+from .performance import realized_pnl_for_fill
 from .presentation import PresentationError, read_presentation, render_notification
 from .soren_output import enqueue_speech, send_overlay
 
@@ -137,8 +138,10 @@ def _load_state(path: Path) -> _DeliveryState | None:
 
 def _write_state(path: Path, state: _DeliveryState) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    try: os.chmod(path.parent, 0o700)
-    except OSError: pass
+    try:
+        os.chmod(path.parent, 0o700)
+    except OSError:
+        pass
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     tmp = Path(tmp_name)
     try:
@@ -152,11 +155,15 @@ def _write_state(path: Path, state: _DeliveryState) -> None:
             }, handle, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
             handle.write("\n"); handle.flush(); os.fsync(handle.fileno())
         os.replace(tmp, path)
-        try: os.chmod(path, 0o600)
-        except OSError: pass
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
     except Exception as exc:
-        try: os.close(fd)
-        except OSError: pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
         raise NotificationError("notification delivery state could not be written") from exc
     finally:
         tmp.unlink(missing_ok=True)
@@ -169,6 +176,20 @@ def _event_ids(events: list[dict[str, object]]) -> list[str]:
 def _bounded(ids: list[str], source_ids: list[str]) -> list[str]:
     present = set(ids)
     return [event_id for event_id in source_ids if event_id in present]
+
+
+def _render_event_with_local_facts(
+    item: Mapping[str, object], *, mode: str, status: Mapping[str, object] | None,
+    display_at: float, trading_dir: Path,
+):
+    enriched = dict(item)
+    if enriched.get("event_type") == "paper_fill" and enriched.get("side") == "sell":
+        event_id = str(enriched.get("event_id") or "")
+        fill_id = event_id.removeprefix("fill:")
+        pnl = realized_pnl_for_fill(trading_dir / "paper.sqlite3", fill_id)
+        if pnl is not None:
+            enriched["realized_pnl_reference"] = str(pnl)
+    return render_notification(enriched, mode=mode, status=status, display_at=display_at)
 
 
 def _deliver_pending_notifications_unlocked(
@@ -203,6 +224,7 @@ def _deliver_pending_notifications_unlocked(
     state.overlay_ids = _bounded(state.overlay_ids, source_ids)
     state.speech_ids = _bounded(state.speech_ids, source_ids)
     status = _safe_status(g, state_dir)
+    trading_dir = _trading_state_dir(g, state_dir)
     render_cache: dict[str, object] = {}
     overlay_fn = overlay_sender or send_overlay
     if speech_sender is None:
@@ -221,8 +243,9 @@ def _deliver_pending_notifications_unlocked(
         event_id = str(item["event_id"])
         if event_id not in render_cache:
             try:
-                render_cache[event_id] = render_notification(
-                    item, mode=presentation.mode, status=status, display_at=timestamp
+                render_cache[event_id] = _render_event_with_local_facts(
+                    item, mode=presentation.mode, status=status,
+                    display_at=timestamp, trading_dir=trading_dir,
                 )
             except PresentationError as exc:
                 raise NotificationError("notification event could not be rendered") from exc
@@ -273,6 +296,7 @@ def _deliver_pending_notifications_unlocked(
         True, False, presentation.mode, len(events), overlay_sent, speech_sent,
         overlay_pending, speech_pending, tuple(dict.fromkeys(errors)),
     )
+
 
 def deliver_pending_notifications(
     g: GlobalConfig,
