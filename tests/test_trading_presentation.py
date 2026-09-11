@@ -129,13 +129,27 @@ class TestNotificationRendering(unittest.TestCase):
         self.assertNotIn("ペーパートレード速報", rendered.speech_text)
         self.assertNotIn("模擬投入額", rendered.speech_text)
 
-    def test_detailed_fill_uses_stable_reason_and_paper_capital_context(self):
+    def test_detailed_fill_keeps_reason_without_repeating_capital_context(self):
         rendered = render_notification(fill_event(), mode="detailed", status=safe_status())
         self.assertIn("PAPER", rendered.overlay_event["title"])
         self.assertIn("モメンタム", rendered.overlay_event["body"])
-        self.assertIn("3,000", rendered.speech_text)
-        self.assertIn("10,000", rendered.speech_text)
-        self.assertIn("ペーパー", rendered.speech_text)
+        self.assertIn("判断理由は、短期モメンタムの上振れを検出。", rendered.speech_text)
+        self.assertNotIn("3,000", rendered.speech_text)
+        self.assertNotIn("10,000", rendered.speech_text)
+        self.assertNotIn("ペーパー投入額", rendered.speech_text)
+        self.assertNotIn("設定ペーパー資金", rendered.speech_text)
+        self.assertNotIn("ペーパートレード速報", rendered.speech_text)
+        self.assertNotIn("模擬投入額", rendered.speech_text)
+
+    def test_detailed_sell_reads_pnl_and_reason_without_capital_context(self):
+        event = fill_event()
+        event["side"] = "sell"
+        event["realized_pnl_reference"] = "125"
+        rendered = render_notification(event, mode="detailed", status=safe_status())
+        self.assertIn("確定した損益はプラス125円", rendered.speech_text)
+        self.assertIn("判断理由は、短期モメンタムの上振れを検出。", rendered.speech_text)
+        self.assertNotIn("ペーパー投入額", rendered.speech_text)
+        self.assertNotIn("設定ペーパー資金", rendered.speech_text)
 
     def test_settlement_success_never_calls_edge_guaranteed_profit(self):
         rendered = render_notification(settlement_event(), mode="detailed", status=safe_status())
@@ -143,12 +157,16 @@ class TestNotificationRendering(unittest.TestCase):
         self.assertIn("50", rendered.overlay_event["body"])
         self.assertIn("模擬", rendered.speech_text)
         self.assertNotIn("確実", rendered.speech_text)
+        self.assertNotIn("ペーパー投入額", rendered.speech_text)
+        self.assertNotIn("設定ペーパー資金", rendered.speech_text)
         self.assertEqual(rendered.overlay_event["level"], "info")
 
     def test_failed_settlement_is_warning(self):
         rendered = render_notification(settlement_event(complete=False), mode="detailed", status=safe_status())
         self.assertEqual(rendered.overlay_event["level"], "warn")
         self.assertIn("板不足", rendered.speech_text)
+        self.assertNotIn("ペーパー投入額", rendered.speech_text)
+        self.assertNotIn("設定ペーパー資金", rendered.speech_text)
 
 
 if __name__ == "__main__":
