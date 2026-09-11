@@ -103,10 +103,10 @@ def launch(config_path: Path, duration_minutes: int) -> dict[str, object]:
         if proc.poll() is not None:
             raise PaperCornerError("PAPER manual runner exited during startup")
     except Exception:
-        try:
-            log_path.unlink()
-        except OSError:
-            pass
+        # Preserve the private 0600 log when startup fails.  The owner-only VM
+        # gateway intentionally withholds production exec output, so deleting
+        # this file would also delete the only evidence needed for diagnosis.
+        # The path/content are never emitted to Actions by this operator.
         raise
     return {
         "status": "started",
