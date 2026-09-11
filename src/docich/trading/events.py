@@ -82,6 +82,12 @@ def _validate_reason_context(value: object) -> dict[str, object] | None:
 def build_fill_event(
     fill: PaperFill, *, reason_context: Mapping[str, object] | None = None
 ) -> dict[str, object]:
+    if reason_context is None:
+        try:
+            from .strategy_runtime import pop_reason_context
+            reason_context = pop_reason_context(fill.opportunity_id)
+        except Exception:
+            reason_context = None
     event: dict[str, object] = {
         "schema_version": 1,
         "event_id": f"fill:{fill.fill_id}",
