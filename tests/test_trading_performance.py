@@ -105,4 +105,4 @@ def test_sell_notification_reads_realized_pnl_from_paper_ledger(tmp_path):
         event, mode="compact", status=None, display_at=1100.0, trading_dir=tmp_path
     )
     assert "実現損益 +20円" in rendered.overlay_event["body"]
-    assert "確定した損益はプラス20円" in rendered.speech_text
+    assert rendered.speech_text == "利確条件を検出：BTC/JPYを売り、損益プラス20円です。"
