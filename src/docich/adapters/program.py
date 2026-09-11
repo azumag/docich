@@ -77,7 +77,17 @@ def _dashboard_port(g) -> int:
 
 
 def _browser_bin() -> str | None:
-    for name in ("chromium", "chromium-browser", "google-chrome", "google-chrome-stable"):
+    # Ubuntu ships Chromium as a snap on many hosts. The owner-only VM gateway
+    # intentionally runs with a narrow fixed PATH that excludes /snap/bin, so
+    # check that one reviewed system path explicitly rather than widening PATH
+    # or accepting a path from config/environment.
+    for name in (
+        "chromium",
+        "chromium-browser",
+        "google-chrome",
+        "google-chrome-stable",
+        "/snap/bin/chromium",
+    ):
         found = shutil.which(name)
         if found:
             return found
