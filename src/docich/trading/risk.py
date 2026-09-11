@@ -83,6 +83,7 @@ def allocate_opportunities(
     available_quote: Mapping[str, Decimal],
     capital_reference: Decimal,
     deployed_reference: Decimal,
+    available_base: Mapping[str, Decimal] | None = None,
     policy: CapitalPolicy | None = None,
     now: float | None = None,
 ) -> AllocationResult:
@@ -108,8 +109,20 @@ def allocate_opportunities(
             raise TradingValidationError("available quote balances must be non-negative")
         remaining_quote[str(asset)] = value
 
+    remaining_base: dict[str, Decimal] = {}
+    for symbol, raw in (available_base or {}).items():
+        value = as_decimal(raw, f"available_base[{symbol}]")
+        if value < 0:
+            raise TradingValidationError("available base balances must be non-negative")
+        remaining_base[str(symbol)] = value
+
     timestamp = time.time() if now is None else float(now)
-    ordered = sorted(opportunities, key=lambda item: (-item.score, item.opportunity_id))
+    # Sells first: releasing inventory lowers deployment and funds new buys, so
+    # a position that exits this cycle can be replaced in the same cycle.
+    ordered = sorted(
+        opportunities,
+        key=lambda item: (0 if item.side == "sell" else 1, -item.score, item.opportunity_id),
+    )
     decisions: list[AllocationDecision] = []
     skipped: list[SkipDecision] = []
 
@@ -127,9 +140,6 @@ def allocate_opportunities(
         if not market.market_order_enabled:
             skipped.append(_skip(opportunity, "market_order_disabled"))
             continue
-        if opportunity.side != "buy":
-            skipped.append(_skip(opportunity, "unsupported_side"))
-            continue
         price = _positive(prices, opportunity.symbol)
         if price is None:
             skipped.append(_skip(opportunity, "price_missing"))
@@ -137,6 +147,45 @@ def allocate_opportunities(
         quote_rate = _positive(quote_to_reference, market.quote)
         if quote_rate is None:
             skipped.append(_skip(opportunity, "quote_unvalued"))
+            continue
+
+        if opportunity.side == "sell":
+            held = remaining_base.get(opportunity.symbol, ZERO)
+            if held <= 0:
+                skipped.append(_skip(opportunity, "no_inventory"))
+                continue
+            amount = _round_down(held, market.amount_step)
+            if amount <= 0 or (market.min_amount is not None and amount < market.min_amount):
+                skipped.append(_skip(opportunity, "below_min_amount"))
+                continue
+            quote_notional = amount * price
+            if market.min_cost is not None and quote_notional < market.min_cost:
+                skipped.append(_skip(opportunity, "below_min_cost"))
+                continue
+            reference_notional = quote_notional * quote_rate
+            decisions.append(
+                AllocationDecision(
+                    opportunity_id=opportunity.opportunity_id,
+                    strategy_id=opportunity.strategy_id,
+                    symbol=opportunity.symbol,
+                    side=opportunity.side,
+                    quote=market.quote,
+                    amount=amount,
+                    price=price,
+                    quote_notional=quote_notional,
+                    reference_notional=reference_notional,
+                    reason_code=opportunity.reason_code,
+                )
+            )
+            remaining_base[opportunity.symbol] = held - amount
+            remaining_reference += reference_notional
+            remaining_quote[market.quote] = (
+                remaining_quote.get(market.quote, ZERO) + quote_notional
+            )
+            continue
+
+        if opportunity.side != "buy":
+            skipped.append(_skip(opportunity, "unsupported_side"))
             continue
         quote_balance = remaining_quote.get(market.quote, ZERO)
         if quote_balance <= 0:

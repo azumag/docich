@@ -211,6 +211,38 @@ class PaperLedger:
             positions[symbol] = positions.get(symbol, Decimal("0")) + signed
         return {symbol: amount for symbol, amount in positions.items() if amount != 0}
 
+    def position_cost_basis(self) -> dict[str, tuple[Decimal, Decimal, float]]:
+        """Net amount, average buy price and first open time per symbol.
+
+        Average-cost basis from the fill history; sells reduce the basis at the
+        running average price. Symbols without a remaining amount are omitted.
+        """
+        lots: dict[str, list] = {}
+        rows = self._conn.execute(
+            """SELECT symbol, side, amount, price, filled_at
+                 FROM paper_fills ORDER BY filled_at, rowid"""
+        ).fetchall()
+        for symbol, side, amount_text, price_text, filled_at in rows:
+            amount = Decimal(amount_text)
+            price = Decimal(price_text)
+            state = lots.setdefault(str(symbol), [Decimal("0"), Decimal("0"), float(filled_at)])
+            held, cost = state[0], state[1]
+            if side == "buy":
+                if held == 0:
+                    state[2] = float(filled_at)
+                state[0] = held + amount
+                state[1] = cost + amount * price
+            elif held > 0:
+                average = cost / held
+                sold = min(amount, held)
+                state[0] = held - sold
+                state[1] = cost - sold * average
+        result: dict[str, tuple[Decimal, Decimal, float]] = {}
+        for symbol, (held, cost, opened_at) in lots.items():
+            if held > 0:
+                result[symbol] = (held, cost / held, opened_at)
+        return result
+
     @staticmethod
     def _row_to_settlement_header(row: sqlite3.Row | tuple) -> tuple:
         return (

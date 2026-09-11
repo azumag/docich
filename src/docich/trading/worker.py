@@ -25,7 +25,7 @@ from .relative_value import scan_relative_value_opportunities
 from .risk import CapitalPolicy, allocate_opportunities
 from .status import build_public_status, write_public_status
 from .settlement import settlement_observation_id, simulate_multileg_settlement
-from .strategies import scan_opportunities, select_diversified_opportunities
+from .strategies import scan_exit_opportunities, scan_opportunities, select_diversified_opportunities
 from .strategy_store import load_strategy_policy
 
 D = Decimal
@@ -405,19 +405,26 @@ def run_worker_cycle(
         candidates = tuple(scan_opportunities(frames, now=now, policy=policy)) + tuple(
             scan_relative_value_opportunities(frames, markets, now=now)
         )
-        selection = select_diversified_opportunities(candidates, frames)
+        cost_basis = ledger.position_cost_basis()
+        exit_opportunities = scan_exit_opportunities(frames, cost_basis, now=now)
+        exit_symbols = {opportunity.symbol for opportunity in exit_opportunities}
+        entries = tuple(
+            opportunity for opportunity in candidates if opportunity.symbol not in exit_symbols
+        )
+        selection = select_diversified_opportunities(entries, frames)
         prices = {symbol: frame.last_price for symbol, frame in frames.items()}
         capital = D(str(g.trading.paper_capital_jpy))
         deployed_before = ledger.deployed_reference()
         available_jpy = max(D("0"), capital - deployed_before)
         allocation = allocate_opportunities(
-            selection.selected,
+            exit_opportunities + selection.selected,
             markets=markets,
             prices=prices,
             quote_to_reference={"JPY": D("1")},
             available_quote={"JPY": available_jpy},
             capital_reference=capital,
             deployed_reference=deployed_before,
+            available_base=ledger.positions(),
             policy=CapitalPolicy(),
             now=now,
         )

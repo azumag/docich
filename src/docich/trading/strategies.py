@@ -106,6 +106,68 @@ def scan_opportunities(
     return tuple(sorted(opportunities, key=lambda item: (item.strategy_id, item.symbol, item.opportunity_id)))
 
 
+#: Inventory-release exits. Without a sell path the bot fills up to the total
+#: deployment cap and then stops trading forever (Issue #198 feedback).
+EXIT_TAKE_PROFIT = D("0.01")
+EXIT_STOP_LOSS = D("0.03")
+EXIT_MAX_HOLD_S = 6 * 3600
+
+
+def scan_exit_opportunities(
+    frames: Mapping[str, MarketFrame],
+    cost_basis: Mapping[str, object],
+    *,
+    now: float,
+    take_profit: Decimal = EXIT_TAKE_PROFIT,
+    stop_loss: Decimal = EXIT_STOP_LOSS,
+    max_hold_s: float = EXIT_MAX_HOLD_S,
+) -> tuple[Opportunity, ...]:
+    """SELL opportunities that release inventory (take-profit/stop-loss/max hold).
+
+    ``cost_basis`` maps a symbol to ``(amount, average_price, opened_at)`` from
+    the ledger. Exits are only signals; the allocator sizes and bounds them.
+    """
+    take_profit = as_decimal(take_profit, "take_profit")
+    stop_loss = as_decimal(stop_loss, "stop_loss")
+    opportunities: list[Opportunity] = []
+    for symbol in sorted(cost_basis):
+        entry = cost_basis[symbol]
+        if not isinstance(entry, (tuple, list)) or len(entry) < 3:
+            continue
+        average = as_decimal(entry[1], "average_price")
+        if average <= 0:
+            continue
+        frame = frames.get(str(symbol))
+        if frame is None:
+            continue
+        price = frame.last_price
+        change = price / average - D("1")
+        reason: str | None = None
+        if change >= take_profit:
+            reason = "take_profit"
+        elif change <= -stop_loss:
+            reason = "stop_loss"
+        elif float(now) - float(entry[2]) >= float(max_hold_s):
+            reason = "max_hold"
+        if reason is None:
+            continue
+        strategy_id = "exit-v1"
+        opportunities.append(
+            Opportunity(
+                opportunity_id=_opportunity_id(strategy_id, str(symbol), frame.as_of),
+                strategy_id=strategy_id,
+                symbol=str(symbol),
+                side="sell",
+                score=_score(min(1.0, abs(float(change)) / 0.05 + 0.1)),
+                expected_edge_bps=(change * D("10000")).copy_abs(),
+                max_notional_fraction=D("1"),
+                expires_at=float(now) + frame.timeframe_seconds * 2,
+                reason_code=reason,
+            )
+        )
+    return tuple(sorted(opportunities, key=lambda item: (item.symbol, item.opportunity_id)))
+
+
 def _returns(frame: MarketFrame) -> list[float]:
     return [
         float(current / previous - D("1"))
