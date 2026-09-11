@@ -11,7 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich.trading.ledger import PaperLedger  # noqa: E402
-from docich.trading.models import AllocationDecision  # noqa: E402
+from docich.trading.models import AllocationDecision, SkipDecision  # noqa: E402
 from docich.trading.paper import PaperBroker  # noqa: E402
 from docich.trading.status import build_public_status, write_public_status  # noqa: E402
 
@@ -89,6 +89,19 @@ class TestPublicTradingStatus(unittest.TestCase):
         blob = json.dumps(payload, sort_keys=True)
         for banned in ("api_key", "secret", "authorization", "password", "private_payload"):
             self.assertNotIn(banned, blob.lower())
+
+    def test_status_preserves_safe_skip_symbol_side_reason(self):
+        skip = SkipDecision("opp-x", "XRP/JPY", "below_min_amount", side="buy")
+        payload = build_public_status(
+            worker_state="idle", last_cycle_at=123.0, eligible_symbols=["XRP/JPY"],
+            capital_reference=D("100000"), deployed_reference=D("0"), open_positions={},
+            recent_fills=[], skipped_reason_codes=[skip.reason_code],
+        )
+        self.assertEqual(payload["skipped_reason_codes"], ["below_min_amount"])
+        self.assertEqual(
+            payload["skipped_decisions"],
+            [{"symbol": "XRP/JPY", "side": "buy", "reason_code": "below_min_amount"}],
+        )
 
     def test_signal_summary_is_allowlisted(self):
         payload = build_public_status(

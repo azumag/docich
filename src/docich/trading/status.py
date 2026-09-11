@@ -21,6 +21,7 @@ _WORKER_SUMMARY_KEYS = {
     "arbitrage_candidate_count", "new_fill_count", "new_settlement_count",
     "error_codes",
 }
+_MAX_SKIP_DETAILS = 16
 
 
 def _decimal_text(value: Decimal | str | int | float) -> str:
@@ -44,6 +45,39 @@ def _fill_payload(fill: PaperFill) -> dict[str, object]:
     }
 
 
+def _skip_payloads(
+    items: Sequence[Mapping[str, object]], reason_codes: Sequence[object]
+) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    for item in items[:_MAX_SKIP_DETAILS]:
+        if not isinstance(item, Mapping):
+            continue
+        symbol = str(item.get("symbol") or "").strip()[:80]
+        side = str(item.get("side") or "").strip().lower()
+        reason = str(item.get("reason_code") or "").strip()[:80]
+        if not symbol or not reason:
+            continue
+        if side not in {"buy", "sell"}:
+            side = "unknown"
+        result.append({"symbol": symbol, "side": side, "reason_code": reason})
+    if result:
+        return result
+
+    # Existing worker code aggregates ``SkipDecision.reason_code`` values.
+    # SkipReason is a str subclass carrying the context, so this adds detail
+    # without changing the legacy reason-code list or worker call signature.
+    for code in reason_codes[:_MAX_SKIP_DETAILS]:
+        symbol = str(getattr(code, "symbol", "") or "").strip()[:80]
+        side = str(getattr(code, "side", "") or "").strip().lower()
+        reason = str(code or "").strip()[:80]
+        if not symbol or not reason:
+            continue
+        if side not in {"buy", "sell"}:
+            side = "unknown"
+        result.append({"symbol": symbol, "side": side, "reason_code": reason})
+    return result
+
+
 def build_public_status(
     *,
     worker_state: str,
@@ -54,6 +88,7 @@ def build_public_status(
     open_positions: Mapping[str, Decimal],
     recent_fills: Sequence[PaperFill],
     skipped_reason_codes: Sequence[str],
+    skipped_decisions: Sequence[Mapping[str, object]] = (),
     signal_summary: Mapping[str, object] | None = None,
     worker_summary: Mapping[str, object] | None = None,
     heartbeat_at: float | None = None,
@@ -80,6 +115,7 @@ def build_public_status(
         "open_positions": positions,
         "recent_fills": [_fill_payload(fill) for fill in recent_fills],
         "skipped_reason_codes": [str(code) for code in skipped_reason_codes],
+        "skipped_decisions": _skip_payloads(skipped_decisions, skipped_reason_codes),
         "signal_summary": {
             key: signal_summary[key]
             for key in _SIGNAL_SUMMARY_KEYS

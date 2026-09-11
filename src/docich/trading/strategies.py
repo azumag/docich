@@ -193,7 +193,12 @@ def _pearson(left: MarketFrame, right: MarketFrame) -> float | None:
 
 
 def _skip(opportunity: Opportunity, reason: str) -> SkipDecision:
-    return SkipDecision(opportunity.opportunity_id, opportunity.symbol, reason)
+    return SkipDecision(
+        opportunity.opportunity_id,
+        opportunity.symbol,
+        reason,
+        side=opportunity.side,
+    )
 
 
 def select_diversified_opportunities(

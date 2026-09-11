@@ -128,6 +128,15 @@ def _money(value) -> str:
     return text
 
 
+def _signed_money(value) -> tuple[str, str]:
+    amount = _decimal(value, "pnl")
+    if amount > 0:
+        return f"+{_money(amount)}", "プラス"
+    if amount < 0:
+        return f"-{_money(-amount)}", "マイナス"
+    return _money(amount), "プラスマイナスゼロ"
+
+
 def _safe_code(value: object, fallback: str = "unknown") -> str:
     text = str(value or fallback).strip()
     if not text:
@@ -150,13 +159,25 @@ def _fill(
     event: Mapping[str, object], mode: str, status: Mapping[str, object] | None, *, display_at: float
 ) -> RenderedNotification:
     symbol = _safe_code(event.get("symbol"))
-    side = "買い" if str(event.get("side")) == "buy" else "売り"
+    is_sell = str(event.get("side")) == "sell"
+    side = "売り" if is_sell else "買い"
     notional = _money(event.get("reference_notional"))
     strategy = _safe_code(event.get("strategy_id"))
     reason_code = _safe_code(event.get("reason_code"))
     title = "暗号資産 PAPER 約定"
     body = f"{symbol} {side} / 模擬投入 {notional}円 / {strategy}"
     speech = f"ペーパートレード速報。{symbol}を{side}。模擬投入額は約{notional}円です。"
+    if is_sell and event.get("realized_pnl_reference") is not None:
+        try:
+            pnl_text, spoken_sign = _signed_money(event.get("realized_pnl_reference"))
+        except PresentationError:
+            pass
+        else:
+            body += f" / 実現損益 {pnl_text}円"
+            if spoken_sign == "プラスマイナスゼロ":
+                speech += " この売却で確定した損益は、ほぼプラスマイナスゼロです。"
+            else:
+                speech += f" この売却で確定した損益は{spoken_sign}{_money(abs(_decimal(event.get('realized_pnl_reference'), 'pnl')))}円です。"
     if mode == "detailed":
         reason = _REASON_TEXT.get(reason_code, f"理由コード {reason_code}")
         body += f" / {reason}"

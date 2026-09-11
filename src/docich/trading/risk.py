@@ -39,6 +39,7 @@ def _skip(opportunity: Opportunity, reason_code: str) -> SkipDecision:
         opportunity_id=opportunity.opportunity_id,
         symbol=opportunity.symbol,
         reason_code=reason_code,
+        side=opportunity.side,
     )
 
 

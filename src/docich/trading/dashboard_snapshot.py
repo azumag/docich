@@ -1,30 +1,25 @@
 """Read-only JSON snapshot for the PAPER HTML/canvas dashboard (Issue #198).
 
 The snapshot is the only data the browser page reads. It is allowlisted:
-portfolio totals, open positions, the focus pair's stored closes, recent
-fills, decision/skip reason codes, freshness counts and staleness. It never
-contains credentials, raw API responses, arbitrary file contents or prompts,
-and it never makes a trading decision.
+portfolio totals, open positions, P/L summaries, the focus pair's stored
+closes, recent fills, decision/skip context, freshness counts and staleness.
+It never contains credentials, raw API responses, arbitrary file contents or
+prompts, and it never makes a trading decision.
 """
 from __future__ import annotations
 
 import math
 import time
 from pathlib import Path
+from typing import Mapping
 
-from .dashboard import (
-    HEADER_TITLE,
-    _fills,
-    _focus_symbol,
-    _fresh_count,
-    _positions,
-    _reason_ja,
-    load_snapshot,
-)
+from .dashboard import HEADER_TITLE, _focus_symbol, _fresh_count, _positions, _reason_ja, load_snapshot
+from .performance import build_performance, realized_pnl_for_fill
 
 DISCLAIMER = "PAPER / 模擬取引（bitbank公開データ・実取引なし）"
 MAX_POSITIONS = 8
 MAX_FILLS = 5
+MAX_SKIPS = 8
 
 
 def _finite(value: object) -> float | None:
@@ -40,15 +35,59 @@ def _reason_list(value: object, limit: int) -> list[str]:
     return [str(code) for code in value[:limit]]
 
 
+def _side_ja(value: object) -> str:
+    return {"buy": "買い", "sell": "売り"}.get(str(value).lower(), "取引")
+
+
+def _skip_details(snapshot: Mapping[str, object]) -> list[dict[str, str]]:
+    raw = snapshot.get("skipped_decisions")
+    result: list[dict[str, str]] = []
+    if isinstance(raw, list):
+        for item in raw[:MAX_SKIPS]:
+            if not isinstance(item, Mapping):
+                continue
+            code = str(item.get("reason_code") or "")
+            symbol = str(item.get("symbol") or "")
+            if not code:
+                continue
+            result.append(
+                {
+                    "symbol": symbol,
+                    "side": str(item.get("side") or "unknown"),
+                    "side_label": _side_ja(item.get("side")),
+                    "code": code,
+                    "label": _reason_ja(code),
+                }
+            )
+    if result:
+        return result
+    return [
+        {"symbol": "", "side": "unknown", "side_label": "取引", "code": code, "label": _reason_ja(code)}
+        for code in _reason_list(snapshot.get("skipped_reason_codes"), MAX_SKIPS)
+    ]
+
+
 def build_dashboard_snapshot(trading_dir: Path, *, now: float | None = None) -> dict[str, object]:
     """Build the read-only dashboard snapshot. Never raises on bad input."""
     moment = time.time() if now is None else float(now)
-    snapshot, closes = load_snapshot(Path(trading_dir))
+    target = Path(trading_dir)
+    snapshot, closes = load_snapshot(target)
 
-    positions = [
-        {"symbol": symbol, "amount": amount}
-        for symbol, amount in _positions(snapshot)[:MAX_POSITIONS]
-    ]
+    raw_positions = _positions(snapshot)
+    prices = {
+        str(symbol): values[-1]
+        for symbol, values in closes.items()
+        if isinstance(values, list) and values
+    }
+    performance = build_performance(
+        target / "paper.sqlite3",
+        capital_reference=snapshot.get("capital_reference", "0"),
+        positions={symbol: amount for symbol, amount in raw_positions},
+        prices=prices,
+        now=moment,
+    )
+    valued_positions = performance.get("positions")
+    positions = list(valued_positions)[:MAX_POSITIONS] if isinstance(valued_positions, list) else []
     fresh, total = _fresh_count(snapshot)
 
     focus = _focus_symbol(snapshot, closes)
@@ -67,12 +106,20 @@ def build_dashboard_snapshot(trading_dir: Path, *, now: float | None = None) -> 
     except (TypeError, ValueError):
         candidates = 0
     reasons = _reason_list(summary.get("candidate_reason_codes"), 4)
-    skipped = _reason_list(snapshot.get("skipped_reason_codes"), 6)
+    skipped = _skip_details(snapshot)
 
     fills: list[dict[str, object]] = []
-    for fill in _fills(snapshot)[:MAX_FILLS]:
+    raw_fills = snapshot.get("recent_fills")
+    if not isinstance(raw_fills, list):
+        raw_fills = []
+    for fill in raw_fills[:MAX_FILLS]:
+        if not isinstance(fill, Mapping):
+            continue
+        fill_id = str(fill.get("fill_id", ""))
+        realized = realized_pnl_for_fill(target / "paper.sqlite3", fill_id) if fill_id else None
         fills.append(
             {
+                "fill_id": fill_id,
                 "symbol": str(fill.get("symbol", "")),
                 "side": str(fill.get("side", "")),
                 "amount": str(fill.get("amount", "")),
@@ -80,6 +127,7 @@ def build_dashboard_snapshot(trading_dir: Path, *, now: float | None = None) -> 
                 "quote": str(fill.get("quote", "")),
                 "filled_at": _finite(fill.get("filled_at")),
                 "reason_code": str(fill.get("reason_code", "")),
+                "realized_pnl_jpy": None if realized is None else str(realized),
             }
         )
 
@@ -97,10 +145,13 @@ def build_dashboard_snapshot(trading_dir: Path, *, now: float | None = None) -> 
         "portfolio": {
             "capital_jpy": str(snapshot.get("capital_reference", "?")),
             "deployed_jpy": str(snapshot.get("deployed_reference", "?")),
+            "position_count": len(raw_positions),
+            "displayed_position_count": len(positions),
             "positions": positions,
             "fresh_markets": fresh,
             "total_markets": total,
         },
+        "performance": performance,
         "chart": {
             "symbol": focus,
             "closes": series,
@@ -112,7 +163,7 @@ def build_dashboard_snapshot(trading_dir: Path, *, now: float | None = None) -> 
         "decision": {
             "candidate_count": candidates,
             "reasons": [{"code": code, "label": _reason_ja(code)} for code in reasons],
-            "skipped": [{"code": code, "label": _reason_ja(code)} for code in skipped],
+            "skipped": skipped,
         },
         "fills": fills,
         "disclaimer": DISCLAIMER,

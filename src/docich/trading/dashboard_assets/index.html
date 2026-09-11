@@ -13,16 +13,19 @@
     <div class="title" id="title">PAPER 暗号資産コーナー</div>
     <div class="meta">
       <span class="badge">PAPER / 模擬</span>
+      <span id="funding">資金 - / 投入 -</span>
       <span id="clock">--:--:-- JST</span>
-      <span id="state">state: -</span>
+      <span id="state">状態:-</span>
       <span id="remaining"></span>
     </div>
   </header>
 
   <section id="cards">
-    <div class="card"><div class="k">仮想資金</div><div class="v" id="capital">-</div></div>
-    <div class="card"><div class="k">投入額</div><div class="v" id="deployed">-</div></div>
-    <div class="card"><div class="k">保有一式</div><div class="v" id="positions">-</div></div>
+    <div class="card"><div class="k">総資産</div><div class="v" id="equity">-</div></div>
+    <div class="card"><div class="k">累積損益</div><div class="v" id="totalpnl">-</div></div>
+    <div class="card"><div class="k">本日損益 <span class="tiny">確定分</span></div><div class="v" id="todaypnl">-</div></div>
+    <div class="card"><div class="k">含み損益</div><div class="v" id="unrealized">-</div></div>
+    <div class="card"><div class="k">保有</div><div class="v" id="positions">-</div></div>
     <div class="card"><div class="k">市場(新鮮)</div><div class="v" id="fresh">-</div></div>
   </section>
 
@@ -32,21 +35,24 @@
         <span id="focus">注目: -</span>
         <span id="range">-</span>
       </div>
-      <canvas id="chart" width="612" height="252"></canvas>
-      <div id="chartnote" class="note">5分足の保存済み終値のみ。形成中/欠測は描画しない。</div>
+      <canvas id="chart" width="540" height="334"></canvas>
+      <div id="chartnote" class="note">5分足の保存済み終値。損益はPAPER台帳と公開価格から計算。</div>
     </section>
+
     <aside id="side">
-      <div class="panel"><h3>BOT判断</h3><div id="decision">-</div></div>
-      <div class="panel"><h3>見送り理由</h3><div id="skipped">-</div></div>
-      <div class="panel"><h3>保有上位</h3><div id="holdings">-</div></div>
+      <div class="panel" id="decision-panel"><h3>BOT判断</h3><div id="decision">-</div></div>
+      <div id="detail-row">
+        <div class="panel" id="skipped-panel"><h3>見送り理由</h3><div id="skipped">-</div></div>
+        <div class="panel" id="fills-panel"><h3>直近の模擬約定</h3><div id="fills">-</div></div>
+      </div>
+      <div class="panel" id="holdings-panel">
+        <h3>保有上位 <span id="holdingnote" class="muted"></span></h3>
+        <div id="holdings">-</div>
+      </div>
     </aside>
   </main>
 
-  <footer>
-    <div id="fillshead">直近の模擬約定</div>
-    <div id="fills">-</div>
-    <div id="disclaimer"></div>
-  </footer>
+  <footer><div id="disclaimer"></div></footer>
 </div>
 <script src="/dashboard.js"></script>
 </body>
