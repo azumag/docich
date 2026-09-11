@@ -1,9 +1,9 @@
-"""End-of-corner StrategyPolicy improvement for the PAPER corner (Stage 4).
+"""End-of-corner PAPER strategy improvement.
 
-After the corner restores, one job asks an AI model to adjust only the numeric
-strategy parameters, validates the candidate against the same
-``StrategyPolicy`` domain rules, and persists it atomically. Failures are
-reported, never raised, and never write a partial/invalid policy.
+The preferred path lets the AI synthesize a validated declarative PAPER-only
+strategy experiment from allowlisted features. Legacy five-parameter policy
+output remains accepted for backward compatibility. No generated code is ever
+executed and no experiment is promoted to live trading automatically.
 """
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ import fcntl
 import json
 import os
 from pathlib import Path
-import re
 import tempfile
 import time
 from typing import Mapping
@@ -21,6 +20,17 @@ from typing import Mapping
 from .ai_text import AiTextError, extract_json_object, generate_text
 from .corner_script import build_facts
 from .models import TradingValidationError
+from .strategy_lab import (
+    StrategyExperiment,
+    StrategyLabError,
+    evaluate_experiment,
+    experiment_from_mapping,
+    experiment_to_payload,
+    load_strategy_experiment,
+    persist_evaluation,
+    save_pending_experiment,
+    save_strategy_experiment,
+)
 from .strategy_store import (
     POLICY_KEYS,
     load_strategy_policy,
@@ -33,16 +43,16 @@ from .strategies import StrategyPolicy
 IMPROVE_LABEL = "RADIO:paper-improve"
 DEFAULT_TIMEOUT = 600
 STATUS_FILENAME = "paper_improve_status.json"
-JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
+MIN_EXPERIMENT_CLOSED_SELLS = 8
+MIN_EXPERIMENT_AGE_S = 24 * 3600
 
 
 class PaperImproveError(RuntimeError):
-    """Raised when the improvement candidate or AI call is invalid."""
+    """Raised when an improvement candidate or AI call is invalid."""
 
 
 def _safe_reason(value: BaseException | str) -> str:
-    detail = str(value).replace("\n", " ")[:240]
-    return detail
+    return str(value).replace("\n", " ")[:240]
 
 
 def _write_improve_status(
@@ -56,7 +66,6 @@ def _write_improve_status(
     detail: str = "",
     changed: bool | None = None,
 ) -> Path:
-    """Atomically publish a small, non-sensitive progress document for overlays."""
     target = Path(trading_dir) / STATUS_FILENAME
     target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
@@ -98,7 +107,6 @@ def _write_improve_status(
 
 @contextmanager
 def _singleflight(state_dir):
-    """Single-flight lock so a manual retry and the detached job never race."""
     path = Path(state_dir) / "locks" / "paper-improve.lock"
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = path.open("a+")
@@ -119,17 +127,32 @@ def _singleflight(state_dir):
 def build_improve_prompt(facts: Mapping[str, object]) -> str:
     facts_json = json.dumps(dict(facts), ensure_ascii=False, sort_keys=True)
     return (
-        "あなたはPAPER暗号資産コーナーの戦略改善担当です。\n"
-        "以下は今回コーナーの実データ(facts)です。事実だけを根拠にしてください。\n"
-        f"{facts_json}\n\n"
-        "次の5キーだけを持つJSONオブジェクト1つを出力してください。"
-        "キーは変更せず、数値だけを調整します。\n"
-        "- momentum_lookback: 2以上の整数\n"
-        "- momentum_threshold_bps: 0より大きい数値\n"
-        "- mean_reversion_lookback: 3以上の整数\n"
-        "- mean_reversion_z: 0より小さい数値\n"
-        "- max_notional_fraction: 0より大きく1以下の数値\n"
-        "説明文・マークダウン・コードフェンスは書かないこと。"
+        "あなたはPAPER暗号資産BOTの戦略研究者です。実運用ではなくPAPERなので、"
+        "既存戦略の微調整に閉じず、仮説を大胆に試してください。ただし生成コードは使わず、"
+        "以下の宣言的な戦略実験JSONだけを作ります。事実はfactsだけを根拠にします。\n"
+        f"facts={facts_json}\n\n"
+        "research.improvement_hints があれば有力な仮説として検討しますが、ニュース単発で"
+        "因果を断定せず、取引結果と市場データに照らして反証可能なルールにしてください。\n"
+        "次の形のJSONオブジェクト1つだけを返してください。\n"
+        "{\"strategy_experiment\":{\n"
+        "  \"experiment_id\":\"短いASCII識別子\",\n"
+        "  \"name\":\"戦略名\",\n"
+        "  \"thesis\":\"何を狙い、何なら失敗とみなすか\",\n"
+        "  \"entry_rules\":[{\"rule_id\":\"entry-1\",\"combine\":\"all|any\","
+        "\"max_notional_fraction\":0.01〜0.30,\"conditions\":[...] }],\n"
+        "  \"exit_rules\":[{\"rule_id\":\"exit-1\",\"combine\":\"all|any\","
+        "\"conditions\":[...] }],\n"
+        "  \"max_pair_correlation\":0〜1\n"
+        "}}\n"
+        "condition は {\"feature\":...,\"lookback\":2〜24,\"op\":\">=|<=|>|<\","
+        "\"threshold\":数値}。entryで使えるfeatureは return_bps, zscore, rsi, "
+        "sma_gap_bps, volatility_bps, breakout_bps, drawdown_bps。exitではこれらに加えて "
+        "pnl_bps, hold_minutes が使えます。pnl_bps と hold_minutes にlookbackは不要です。\n"
+        "複数条件のAND/ORを積極的に使ってよいです。例えば『含み益がある AND モメンタム反転』、"
+        "『高ボラ OR 最大保有時間』のような退出も可能です。1つの指標だけに固定しないでください。\n"
+        "既存互換キー momentum_lookback, momentum_threshold_bps, mean_reversion_lookback, "
+        "mean_reversion_z, max_notional_fraction は旧形式として引き続き受理されますが、"
+        "原則はstrategy_experimentを返してください。説明文やMarkdownは不要です。"
     )
 
 
@@ -141,17 +164,12 @@ def _coerce_lookback(value: object, name: str, minimum: int) -> int:
             raise PaperImproveError(f"{name} は整数である必要があります")
         value = int(value)
     if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            raise PaperImproveError(f"{name} は整数である必要があります")
         try:
-            value = int(text)
-        except ValueError as exc:
+            value = int(value.strip())
+        except (TypeError, ValueError) as exc:
             raise PaperImproveError(f"{name} は整数である必要があります") from exc
-    if type(value) is not int:
-        raise PaperImproveError(f"{name} は整数である必要があります")
-    if value < minimum:
-        raise PaperImproveError(f"{name} は{minimum}以上である必要があります")
+    if type(value) is not int or value < minimum:
+        raise PaperImproveError(f"{name} は{minimum}以上の整数である必要があります")
     return value
 
 
@@ -168,33 +186,54 @@ def _coerce_decimal(value: object, name: str) -> Decimal:
 
 
 def parse_policy_candidate(text: str) -> dict:
-    """Parse and range-validate a candidate policy. Malformed input raises."""
+    """Backward-compatible parser for the old five-parameter response."""
     data = extract_json_object(text)
     if not isinstance(data, dict):
         raise PaperImproveError("候補のJSONオブジェクトを抽出できません")
     missing = sorted(set(POLICY_KEYS) - set(data))
     if missing:
         raise PaperImproveError(f"候補に必要なキーがありません: {', '.join(missing)}")
-    # Extra keys are ignored; the required five are still range-validated below.
-
     candidate = {
         "momentum_lookback": _coerce_lookback(data["momentum_lookback"], "momentum_lookback", 2),
-        "momentum_threshold_bps": _coerce_decimal(
-            data["momentum_threshold_bps"], "momentum_threshold_bps"
-        ),
-        "mean_reversion_lookback": _coerce_lookback(
-            data["mean_reversion_lookback"], "mean_reversion_lookback", 3
-        ),
+        "momentum_threshold_bps": _coerce_decimal(data["momentum_threshold_bps"], "momentum_threshold_bps"),
+        "mean_reversion_lookback": _coerce_lookback(data["mean_reversion_lookback"], "mean_reversion_lookback", 3),
         "mean_reversion_z": _coerce_decimal(data["mean_reversion_z"], "mean_reversion_z"),
-        "max_notional_fraction": _coerce_decimal(
-            data["max_notional_fraction"], "max_notional_fraction"
-        ),
+        "max_notional_fraction": _coerce_decimal(data["max_notional_fraction"], "max_notional_fraction"),
     }
     try:
         StrategyPolicy(**candidate)
     except TradingValidationError as exc:
         raise PaperImproveError(_safe_reason(exc)) from exc
     return candidate
+
+
+def parse_experiment_candidate(text: str) -> StrategyExperiment:
+    data = extract_json_object(text)
+    if not isinstance(data, Mapping):
+        raise PaperImproveError("戦略実験JSONを抽出できません")
+    raw = data.get("strategy_experiment")
+    if not isinstance(raw, Mapping):
+        raise PaperImproveError("strategy_experiment がありません")
+    try:
+        return experiment_from_mapping(raw, activated_at=0.0)
+    except (StrategyLabError, TradingValidationError, TypeError, ValueError) as exc:
+        raise PaperImproveError(_safe_reason(exc)) from exc
+
+
+def _should_rotate_experiment(
+    active: StrategyExperiment | None,
+    evaluation: Mapping[str, object] | None,
+    *,
+    now: float,
+) -> bool:
+    if active is None:
+        return True
+    try:
+        closed = int((evaluation or {}).get("closed_sells", 0) or 0)
+    except (TypeError, ValueError):
+        closed = 0
+    age = max(0.0, float(now) - float(active.activated_at))
+    return closed >= MIN_EXPERIMENT_CLOSED_SELLS or age >= MIN_EXPERIMENT_AGE_S
 
 
 def run_paper_improve(
@@ -207,7 +246,6 @@ def run_paper_improve(
     now=None,
     timeout: int = DEFAULT_TIMEOUT,
 ) -> dict:
-    """Run one improvement. Never raises: returns a status summary dict."""
     with _singleflight(g.state_dir) as single:
         if not single:
             return {"status": "skipped", "reason": "already-running"}
@@ -235,23 +273,26 @@ def _run_paper_improve(
         try:
             stamp = time.time() if now is None else float(now)
             _write_improve_status(
-                target,
-                status=status,
-                phase=phase,
-                progress=progress,
-                started_at=started_at,
-                updated_at=stamp,
-                detail=detail,
-                changed=changed,
+                target, status=status, phase=phase, progress=progress,
+                started_at=started_at, updated_at=stamp, detail=detail, changed=changed,
             )
         except Exception:
-            # Progress visibility must never make the trading improvement unsafe.
             pass
 
-    publish("running", "facts", 10, "今回データを集計中")
+    publish("running", "facts", 10, "今回データと戦略実験を集計中")
     try:
         current = load_strategy_policy(target)
         facts = build_facts(target, now=moment, policy=current)
+        active_experiment = load_strategy_experiment(target)
+        evaluation: dict[str, object] | None = None
+        if active_experiment is not None:
+            evaluation = evaluate_experiment(
+                target, active_experiment, capital_jpy=facts.get("capital_jpy", "0")
+            )
+            facts["active_strategy_experiment"] = experiment_to_payload(active_experiment)
+            facts["experiment_evaluation"] = evaluation
+            if not dry_run:
+                persist_evaluation(target, evaluation, active_experiment)
         prompt = build_improve_prompt(facts)
     except Exception as exc:
         reason = f"facts:{_safe_reason(exc)}"
@@ -264,6 +305,7 @@ def _run_paper_improve(
             "status": "dry-run",
             "prompt_chars": len(prompt),
             "policy": policy_to_payload(current),
+            "experiment": None if active_experiment is None else experiment_to_payload(active_experiment),
         }
 
     cleaned_agents = (agents or "").strip()
@@ -278,7 +320,7 @@ def _run_paper_improve(
                 prompt_text=prompt_text, timeout=timeout,
             )
 
-    publish("running", "generate", 35, "AIに改善候補を依頼中")
+    publish("running", "generate", 35, "AIに次の戦略実験を設計させています")
     try:
         raw_output = llm(prompt)
     except AiTextError:
@@ -289,35 +331,62 @@ def _run_paper_improve(
         publish("failed", "generate", 35, reason)
         return {"status": "failed", "reason": reason}
 
-    publish("running", "validate", 75, "改善候補を検証中")
+    publish("running", "validate", 75, "戦略実験を検証中")
+    experiment: StrategyExperiment | None = None
+    legacy_policy: StrategyPolicy | None = None
+    experiment_error: PaperImproveError | None = None
     try:
-        candidate = parse_policy_candidate(raw_output)
-        new_policy = StrategyPolicy(**candidate)
-    except (PaperImproveError, TradingValidationError) as exc:
-        reason = _safe_reason(exc)
-        publish("failed", "validate", 75, reason)
-        return {"status": "failed", "reason": reason}
-    except Exception as exc:
-        reason = type(exc).__name__
-        publish("failed", "validate", 75, reason)
-        return {"status": "failed", "reason": reason}
+        experiment = parse_experiment_candidate(raw_output)
+    except PaperImproveError as exc:
+        experiment_error = exc
+        try:
+            legacy_policy = StrategyPolicy(**parse_policy_candidate(raw_output))
+        except (PaperImproveError, TradingValidationError) as legacy_exc:
+            reason = _safe_reason(experiment_error or legacy_exc)
+            publish("failed", "validate", 75, reason)
+            return {"status": "failed", "reason": reason}
 
-    publish("running", "save", 90, "検証済み戦略を保存中")
+    publish("running", "save", 90, "検証済み戦略をPAPERへ反映中")
     try:
-        save_strategy_policy(target, new_policy)
+        if experiment is not None:
+            if _should_rotate_experiment(active_experiment, evaluation, now=moment):
+                save_strategy_experiment(target, experiment, activated_at=moment)
+                changed = active_experiment is None or experiment_to_payload(experiment) != experiment_to_payload(active_experiment)
+                detail = "新しいPAPER戦略実験を開始"
+                result = {
+                    "status": "improved",
+                    "kind": "strategy-experiment",
+                    "experiment": experiment_to_payload(experiment),
+                    "changed": changed,
+                    "activated": True,
+                }
+            else:
+                save_pending_experiment(target, experiment, proposed_at=moment)
+                changed = True
+                detail = "現行実験の評価中のため次候補を保存"
+                result = {
+                    "status": "improved",
+                    "kind": "strategy-experiment",
+                    "experiment": experiment_to_payload(experiment),
+                    "changed": True,
+                    "activated": False,
+                    "pending": True,
+                }
+        else:
+            assert legacy_policy is not None
+            save_strategy_policy(target, legacy_policy)
+            changed = legacy_policy != current
+            detail = "従来パラメータを更新" if changed else "候補は現行パラメータと同一"
+            result = {
+                "status": "improved",
+                "kind": "legacy-policy",
+                "policy": policy_to_payload(legacy_policy),
+                "changed": changed,
+            }
     except Exception as exc:
         reason = f"save:{_safe_reason(exc)}"
         publish("failed", "save", 90, reason)
         return {"status": "failed", "reason": reason}
 
-    changed = new_policy != current
-    publish(
-        "improved", "done", 100,
-        "戦略パラメータを更新" if changed else "候補は現行戦略と同一",
-        changed=changed,
-    )
-    return {
-        "status": "improved",
-        "policy": policy_to_payload(new_policy),
-        "changed": changed,
-    }
+    publish("improved", "done", 100, detail, changed=changed)
+    return result
