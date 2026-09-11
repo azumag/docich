@@ -12,7 +12,6 @@ SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 ALLOWED_SUBMODULES = {"games/soviet_now"}
 LIVE_PROJECTION = Path("/home/ubuntu/soren")
 
-# Numeric refusal reasons only; exec output is withheld. All codes <128.
 REASON_INVALID_ROOT = 40
 REASON_UNAPPROVED_SUBMODULE = 41
 REASON_INVALID_SHA = 42
@@ -34,16 +33,11 @@ REASON_PROJECTION_UNKNOWN_STATE = 63
 REASON_PROJECTION_MUTATION_FAILED = 64
 REASON_PROJECTION_POSTVERIFY_FAILED = 65
 
-# 71..85: mask of unknown paths in 2-4 path diffs. Else generic 63.
 REASON_PROJECTION_UNKNOWN_MASK_BASE = 70
 PROJECTION_UNKNOWN_MASK_MAX_PATHS = 4
 
-# 90+bit*3+class for one unknown: 0 absent, 1 unreviewed length, 2 same length.
-# Pruned .github/ files heal to old; other unknowns stay fail-closed.
 REPO_ONLY_PREFIXES = (".github/",)
-# Opt-in skew recovery (argv "lineage"); reviewed intermediates converge.
 _LINEAGE = False
-# Reviewed-commit attestation argv triples: exact byte+mode match only.
 _ATTESTED = []
 ATTEST_SHA_RE = re.compile(r"[a-f0-9]{64}\Z")
 ATTEST_PATH_RE = re.compile(r"[A-Za-z0-9._/-]+\Z")
@@ -164,7 +158,6 @@ def _projection_content_state(actual, old_expected, new_expected):
 
 
 def _projection_unknown_reason(states, unknowns=None):
-    # Mask/generic mapping; a lone unknown refines to its class.
     if len(states) < 2 or len(states) > PROJECTION_UNKNOWN_MASK_MAX_PATHS:
         return REASON_PROJECTION_UNKNOWN_STATE
     mask = sum(1 << index for index, state in enumerate(states) if state == 2)
@@ -202,7 +195,6 @@ def _atomic_projection_write(path, data, mode):
 
 
 def _reviewed_lineage(repo, rel, old_sub, new_sub, live_sha):
-    # True only if live bytes equal a reviewed blob of rel in old..new.
     try:
         commits = _git(repo, "rev-list", f"{old_sub}..{new_sub}", "--", rel).split()
     except ReconcileError:
