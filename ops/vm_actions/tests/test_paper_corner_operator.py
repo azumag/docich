@@ -181,14 +181,14 @@ class PaperCornerOperatorTests(unittest.TestCase):
         self.assertEqual(len(logs), 1)
         self.assertEqual(stat.S_IMODE(logs[0].stat().st_mode), 0o600)
 
-    def test_launcher_rejects_early_exit_but_keeps_private_log_and_out_of_range(self):
+    def test_launcher_rejects_early_exit_and_out_of_range(self):
         base = Path(tempfile.mkdtemp(prefix='paper-op-'))
         state = base / 'state'; repo = base / 'repo'
         state.mkdir(); repo.mkdir()
         config = repo / 'config.toml'; config.write_text('x')
         fake_g = SimpleNamespace(state_dir=state, repo_root=repo, config_path=config)
         proc = mock.Mock(pid=1234)
-        proc.poll.return_value = 2
+        proc.poll.return_value = 0
         with self.assertRaises(PaperCornerError):
             operator.launch(config, 0)
         with mock.patch.object(operator, 'load_global', return_value=fake_g), \
