@@ -62,6 +62,10 @@ def _payload(**overrides) -> str:
     return json.dumps(data)
 
 
+def _progress(trading_dir: Path) -> dict:
+    return json.loads((trading_dir / "paper_improve_status.json").read_text(encoding="utf-8"))
+
+
 def test_dry_run_does_not_call_ai_or_write(tmp_path):
     g = _global(tmp_path)
     trading_dir = _trading_dir(g)
@@ -74,6 +78,10 @@ def test_dry_run_does_not_call_ai_or_write(tmp_path):
     assert result["prompt_chars"] > 0
     assert calls == []
     assert not (trading_dir / "strategy_policy.json").exists()
+    status = _progress(trading_dir)
+    assert status["status"] == "dry-run"
+    assert status["phase"] == "done"
+    assert status["progress"] == 100
 
 
 def test_no_agents_skips_without_write(tmp_path):
@@ -85,6 +93,9 @@ def test_no_agents_skips_without_write(tmp_path):
     assert result["status"] == "skipped"
     assert result["reason"] == "no-agents"
     assert not (trading_dir / "strategy_policy.json").exists()
+    status = _progress(trading_dir)
+    assert status["status"] == "skipped"
+    assert status["detail"] == "no-agents"
 
 
 @pytest.mark.parametrize(
@@ -107,21 +118,41 @@ def test_invalid_output_rejected_without_write(tmp_path, bad):
     )
     assert result["status"] == "failed"
     assert not (trading_dir / "strategy_policy.json").exists()
+    status = _progress(trading_dir)
+    assert status["status"] == "failed"
+    assert status["phase"] == "validate"
+    assert status["progress"] == 75
 
 
-def test_valid_output_persists_policy(tmp_path):
+def test_valid_output_persists_policy_and_progress(tmp_path):
     g = _global(tmp_path)
     trading_dir = _trading_dir(g)
+    during_generate = {}
+
+    def llm(prompt):
+        during_generate.update(_progress(trading_dir))
+        return _payload()
+
     result = run_paper_improve(
         g, trading_dir=trading_dir, agents="opencode:x",
-        llm=lambda prompt: _payload(), now=NOW,
+        llm=llm, now=NOW,
     )
+    assert during_generate["status"] == "running"
+    assert during_generate["phase"] == "generate"
+    assert during_generate["progress"] == 35
     assert result["status"] == "improved"
     loaded = load_strategy_policy(trading_dir)
     assert loaded.momentum_lookback == 8
     assert loaded.mean_reversion_lookback == 12
     assert loaded.max_notional_fraction == Decimal("0.2")
     assert (trading_dir / "strategy_policy.json").stat().st_mode & 0o777 == 0o600
+    status = _progress(trading_dir)
+    assert status["source"] == "paper"
+    assert status["status"] == "improved"
+    assert status["phase"] == "done"
+    assert status["progress"] == 100
+    assert status["changed"] is True
+    assert (trading_dir / "paper_improve_status.json").stat().st_mode & 0o777 == 0o600
 
 
 def test_parse_policy_candidate_accepts_fenced_json():
