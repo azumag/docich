@@ -73,9 +73,10 @@ def build_performance(
     """Return bounded JPY P/L facts using average-cost accounting.
 
     ``cumulative_pnl_jpy`` includes realized + current unrealized P/L only
-    when every open position has a usable public price. ``today_realized`` is
-    exact for fills since JST midnight and is intentionally labelled as
-    realized-only; we do not invent a midnight mark-to-market baseline.
+    when every open position has both a usable public price and ledger cost
+    basis. ``today_realized`` is exact for fills since JST midnight and is
+    intentionally labelled as realized-only; we do not invent a midnight
+    mark-to-market baseline.
     """
     capital = _dec(capital_reference)
     day_start = _day_start_epoch(now)
@@ -103,6 +104,7 @@ def build_performance(
     position_rows: list[dict[str, object]] = []
     unrealized = ZERO
     priced = 0
+    valued = 0
     total_positions = 0
     for symbol, raw_amount in positions.items():
         amount = _dec(raw_amount)
@@ -121,6 +123,7 @@ def build_performance(
             priced += 1
             market_value = amount * price
             if average is not None:
+                valued += 1
                 position_pnl = amount * (price - average)
                 unrealized += position_pnl
         position_rows.append(
@@ -138,7 +141,7 @@ def build_performance(
         key=lambda item: _dec(item.get("market_value_jpy")) or ZERO,
         reverse=True,
     )
-    complete = total_positions == priced
+    complete = total_positions == valued
     cumulative = realized_total + unrealized if complete else None
     equity = None if capital is None or cumulative is None else capital + cumulative
     return {
@@ -146,6 +149,7 @@ def build_performance(
         "complete": bool(complete),
         "position_count": total_positions,
         "priced_positions": priced,
+        "valued_positions": valued,
         "realized_total_jpy": str(realized_total),
         "today_realized_pnl_jpy": str(realized_today),
         "unrealized_pnl_jpy": str(unrealized) if complete else None,
