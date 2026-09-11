@@ -11,8 +11,10 @@ from contextlib import contextmanager
 from decimal import Decimal, InvalidOperation
 import fcntl
 import json
+import os
 from pathlib import Path
 import re
+import tempfile
 import time
 from typing import Mapping
 
@@ -30,6 +32,7 @@ from .strategies import StrategyPolicy
 
 IMPROVE_LABEL = "RADIO:paper-improve"
 DEFAULT_TIMEOUT = 600
+STATUS_FILENAME = "paper_improve_status.json"
 JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
 
@@ -40,6 +43,57 @@ class PaperImproveError(RuntimeError):
 def _safe_reason(value: BaseException | str) -> str:
     detail = str(value).replace("\n", " ")[:240]
     return detail
+
+
+def _write_improve_status(
+    trading_dir,
+    *,
+    status: str,
+    phase: str,
+    progress: int,
+    started_at: float,
+    updated_at: float,
+    detail: str = "",
+    changed: bool | None = None,
+) -> Path:
+    """Atomically publish a small, non-sensitive progress document for overlays."""
+    target = Path(trading_dir) / STATUS_FILENAME
+    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        os.chmod(target.parent, 0o700)
+    except OSError:
+        pass
+    payload: dict[str, object] = {
+        "schema_version": 1,
+        "source": "paper",
+        "status": str(status)[:32],
+        "phase": str(phase)[:32],
+        "progress": max(0, min(100, int(progress))),
+        "detail": _safe_reason(detail) if detail else "",
+        "started_at": float(started_at),
+        "updated_at": float(updated_at),
+    }
+    if changed is not None:
+        payload["changed"] = bool(changed)
+    if status in {"improved", "failed", "skipped", "dry-run"}:
+        payload["completed_at"] = float(updated_at)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+    tmp = Path(tmp_name)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, target)
+        try:
+            os.chmod(target, 0o600)
+        except OSError:
+            pass
+    finally:
+        tmp.unlink(missing_ok=True)
+    return target
 
 
 @contextmanager
@@ -175,14 +229,37 @@ def _run_paper_improve(
 ) -> dict:
     target = Path(trading_dir)
     moment = time.time() if now is None else float(now)
+    started_at = moment
+
+    def publish(status: str, phase: str, progress: int, detail: str = "", changed=None) -> None:
+        try:
+            stamp = time.time() if now is None else float(now)
+            _write_improve_status(
+                target,
+                status=status,
+                phase=phase,
+                progress=progress,
+                started_at=started_at,
+                updated_at=stamp,
+                detail=detail,
+                changed=changed,
+            )
+        except Exception:
+            # Progress visibility must never make the trading improvement unsafe.
+            pass
+
+    publish("running", "facts", 10, "今回データを集計中")
     try:
         current = load_strategy_policy(target)
         facts = build_facts(target, now=moment, policy=current)
         prompt = build_improve_prompt(facts)
     except Exception as exc:
-        return {"status": "failed", "reason": f"facts:{_safe_reason(exc)}"}
+        reason = f"facts:{_safe_reason(exc)}"
+        publish("failed", "facts", 10, reason)
+        return {"status": "failed", "reason": reason}
 
     if dry_run:
+        publish("dry-run", "done", 100, "dry-run")
         return {
             "status": "dry-run",
             "prompt_chars": len(prompt),
@@ -191,6 +268,7 @@ def _run_paper_improve(
 
     cleaned_agents = (agents or "").strip()
     if not cleaned_agents:
+        publish("skipped", "done", 100, "no-agents")
         return {"status": "skipped", "reason": "no-agents"}
 
     if llm is None:
@@ -200,24 +278,46 @@ def _run_paper_improve(
                 prompt_text=prompt_text, timeout=timeout,
             )
 
+    publish("running", "generate", 35, "AIに改善候補を依頼中")
     try:
         raw_output = llm(prompt)
+    except AiTextError:
+        publish("failed", "generate", 35, "ai-error")
+        return {"status": "failed", "reason": "ai-error"}
+    except Exception as exc:
+        reason = type(exc).__name__
+        publish("failed", "generate", 35, reason)
+        return {"status": "failed", "reason": reason}
+
+    publish("running", "validate", 75, "改善候補を検証中")
+    try:
         candidate = parse_policy_candidate(raw_output)
         new_policy = StrategyPolicy(**candidate)
-    except AiTextError:
-        return {"status": "failed", "reason": "ai-error"}
     except (PaperImproveError, TradingValidationError) as exc:
-        return {"status": "failed", "reason": _safe_reason(exc)}
+        reason = _safe_reason(exc)
+        publish("failed", "validate", 75, reason)
+        return {"status": "failed", "reason": reason}
     except Exception as exc:
-        return {"status": "failed", "reason": type(exc).__name__}
+        reason = type(exc).__name__
+        publish("failed", "validate", 75, reason)
+        return {"status": "failed", "reason": reason}
 
+    publish("running", "save", 90, "検証済み戦略を保存中")
     try:
         save_strategy_policy(target, new_policy)
     except Exception as exc:
-        return {"status": "failed", "reason": f"save:{_safe_reason(exc)}"}
+        reason = f"save:{_safe_reason(exc)}"
+        publish("failed", "save", 90, reason)
+        return {"status": "failed", "reason": reason}
 
+    changed = new_policy != current
+    publish(
+        "improved", "done", 100,
+        "戦略パラメータを更新" if changed else "候補は現行戦略と同一",
+        changed=changed,
+    )
     return {
         "status": "improved",
         "policy": policy_to_payload(new_policy),
-        "changed": new_policy != current,
+        "changed": changed,
     }
