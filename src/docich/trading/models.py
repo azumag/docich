@@ -28,6 +28,24 @@ def _nonempty(value: str, name: str) -> str:
     return text
 
 
+class SkipReason(str):
+    """Backward-compatible reason string carrying public skip context.
+
+    Existing worker code aggregates ``reason_code`` values as strings.  The
+    metadata lets the public status preserve symbol/side without changing that
+    aggregation contract; JSON serialization still receives a plain string.
+    """
+
+    symbol: str
+    side: str
+
+    def __new__(cls, value: str, *, symbol: str, side: str):
+        obj = str.__new__(cls, value)
+        obj.symbol = str(symbol)
+        obj.side = str(side)
+        return obj
+
+
 @dataclass(frozen=True)
 class MarketInfo:
     symbol: str
@@ -140,6 +158,19 @@ class SkipDecision:
     opportunity_id: str
     symbol: str
     reason_code: str
+    side: str = "unknown"
+
+    def __post_init__(self) -> None:
+        opportunity_id = _nonempty(self.opportunity_id, "opportunity_id")
+        symbol = _nonempty(self.symbol, "symbol")
+        reason = _nonempty(self.reason_code, "reason_code")
+        side = str(self.side or "unknown").strip().lower()
+        if side not in {"buy", "sell", "unknown"}:
+            raise TradingValidationError("skip side must be buy, sell or unknown")
+        object.__setattr__(self, "opportunity_id", opportunity_id)
+        object.__setattr__(self, "symbol", symbol)
+        object.__setattr__(self, "side", side)
+        object.__setattr__(self, "reason_code", SkipReason(reason, symbol=symbol, side=side))
 
 
 @dataclass(frozen=True)
