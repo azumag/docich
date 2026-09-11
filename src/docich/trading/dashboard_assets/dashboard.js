@@ -14,21 +14,26 @@ function fmtNum(v) {
   const abs = Math.abs(v);
   return Number(v).toLocaleString("ja-JP", { maximumFractionDigits: abs >= 100 ? 0 : 6 });
 }
-function fmtMoney(v, signed = false) {
+function maybeNumber(v) {
+  if (v === null || v === undefined || v === "") return null;
   const n = Number(v);
-  if (!isFinite(n)) return "-";
+  return isFinite(n) ? n : null;
+}
+function fmtMoney(v, signed = false) {
+  const n = maybeNumber(v);
+  if (n === null) return "-";
   const sign = signed && n > 0 ? "+" : "";
   return `${sign}${n.toLocaleString("ja-JP", { maximumFractionDigits: 0 })}円`;
 }
 function pnlClass(v) {
-  const n = Number(v);
-  if (!isFinite(n) || n === 0) return "";
+  const n = maybeNumber(v);
+  if (n === null || n === 0) return "";
   return n > 0 ? "pos" : "neg";
 }
 function setPnl(id, value, fallback = "-") {
   const el = $(id);
-  const n = Number(value);
-  if (!isFinite(n)) {
+  const n = maybeNumber(value);
+  if (n === null) {
     el.textContent = fallback;
     el.className = "v muted";
     return;
@@ -110,10 +115,10 @@ function render(data) {
   const age = h.data_age_sec;
   $("remaining").textContent = (age === null || age === undefined) ? "" : `データ齢 ${age}s`;
   $("remaining").className = (age !== null && age > 180) ? "neg" : "";
-  $("funding").textContent = `資金 ${fmtMoney(Number(p.capital_jpy))} / 投入 ${fmtMoney(Number(p.deployed_jpy))}`;
+  $("funding").textContent = `資金 ${fmtMoney(p.capital_jpy)} / 投入 ${fmtMoney(p.deployed_jpy)}`;
 
   $("equity").textContent = perf.equity_jpy === null || perf.equity_jpy === undefined
-    ? "評価待ち" : fmtMoney(Number(perf.equity_jpy));
+    ? "評価待ち" : fmtMoney(perf.equity_jpy);
   $("equity").className = perf.equity_jpy === null || perf.equity_jpy === undefined ? "v muted" : "v";
   setPnl("totalpnl", perf.cumulative_pnl_jpy, "価格不足");
   setPnl("todaypnl", perf.today_realized_pnl_jpy, "-");
@@ -140,9 +145,9 @@ function render(data) {
   $("holdingnote").textContent = positionCount > shown ? `（${positionCount}銘柄中 上位${shown}）` : "";
   $("holdings").innerHTML = (p.positions || []).length
     ? (p.positions || []).map((x) => {
-        const value = x.market_value_jpy === null || x.market_value_jpy === undefined ? "評価待ち" : fmtMoney(Number(x.market_value_jpy));
-        const pnl = Number(x.unrealized_pnl_jpy);
-        const pnlText = isFinite(pnl) ? ` ${pnl > 0 ? "+" : ""}${fmtMoney(pnl)}` : "";
+        const value = x.market_value_jpy === null || x.market_value_jpy === undefined ? "評価待ち" : fmtMoney(x.market_value_jpy);
+        const pnl = maybeNumber(x.unrealized_pnl_jpy);
+        const pnlText = pnl === null ? "" : ` ${pnl > 0 ? "+" : ""}${fmtMoney(pnl)}`;
         return `<div class="holding"><span class="symbol">${x.symbol}</span><span class="holding-meta ${pnlClass(pnl)}">${value}${pnlText}</span></div>`;
       }).join("")
     : `<div class="muted">なし（未保有は正常）</div>`;
@@ -151,8 +156,8 @@ function render(data) {
   $("fills").innerHTML = fills.length
     ? fills.slice(0, 5).map((f) => {
         const side = String(f.side).toLowerCase() === "sell" ? "売" : "買";
-        const rp = Number(f.realized_pnl_jpy);
-        const pnl = String(f.side).toLowerCase() === "sell" && isFinite(rp)
+        const rp = maybeNumber(f.realized_pnl_jpy);
+        const pnl = String(f.side).toLowerCase() === "sell" && rp !== null
           ? ` <span class="${pnlClass(rp)}">損益${rp > 0 ? "+" : ""}${fmtMoney(rp)}</span>` : "";
         return `<div class="row">${f.symbol} ${side} ${f.amount}@${f.price}${pnl}</div>`;
       }).join("")
