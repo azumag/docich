@@ -14,6 +14,7 @@ from docich.trading.corner_script import (  # noqa: E402
     SEGMENT_KEYS,
     CornerScriptError,
     build_facts,
+    build_prompt,
     generate_corner_script,
     parse_script,
     render_fallback,
@@ -32,6 +33,7 @@ def _write_status(trading_dir: Path, **overrides) -> None:
         "eligible_symbols": ["btc_jpy", "eth_jpy"],
         "recent_fills": [
             {
+                "fill_id": "paper:x",
                 "symbol": "btc_jpy",
                 "side": "buy",
                 "amount": "0.001",
@@ -42,6 +44,9 @@ def _write_status(trading_dir: Path, **overrides) -> None:
             }
         ],
         "skipped_reason_codes": ["correlated_exposure"],
+        "skipped_decisions": [
+            {"symbol": "xrp_jpy", "side": "buy", "reason_code": "below_min_amount"}
+        ],
         "signal_summary": {
             "candidate_count": 2,
             "candidate_reason_codes": ["momentum_breakout"],
@@ -58,27 +63,40 @@ def _write_status(trading_dir: Path, **overrides) -> None:
     )
 
 
-def test_build_facts_uses_status_and_policy(tmp_path):
+def test_build_facts_uses_status_policy_and_skip_context(tmp_path):
     _write_status(tmp_path)
     policy = StrategyPolicy(momentum_lookback=9, momentum_threshold_bps=Decimal("111"))
     facts = build_facts(tmp_path, now=1010.0, policy=policy)
     assert facts["capital_jpy"] == "10000"
     assert facts["deployed_jpy"] == "3000"
-    assert facts["open_positions"] == [{"symbol": "btc_jpy", "amount": "0.001"}]
+    assert facts["position_count"] == 1
+    assert facts["open_positions_top"][0]["symbol"] == "btc_jpy"
     assert facts["candidate_count"] == 2
     assert facts["policy"]["momentum_lookback"] == 9
     assert facts["policy"]["momentum_threshold_bps"] == "111"
     assert facts["fresh_markets"] == 1
     assert facts["total_markets"] == 2
-    # Reason codes are surfaced as human labels, never raw response text.
     assert "モメンタム上振れ" in facts["candidate_reasons"]
+    assert facts["skipped_decisions"][0]["symbol"] == "xrp_jpy"
+    assert facts["skipped_decisions"][0]["side_label"] == "買い"
+    assert "performance" in facts
 
 
 def test_build_facts_survives_missing_files(tmp_path):
     facts = build_facts(tmp_path, now=5.0)
     assert facts["capital_jpy"] == "?"
-    assert facts["open_positions"] == []
+    assert facts["open_positions_top"] == []
     assert facts["policy"]["momentum_lookback"] == 6
+
+
+def test_prompt_requires_interpretation_and_pnl_commentary(tmp_path):
+    _write_status(tmp_path)
+    prompt = build_prompt(build_facts(tmp_path, now=1010.0))
+    assert "数字の読み上げ係ではありません" in prompt
+    assert "累積損益" in prompt
+    assert "本日の確定損益" in prompt
+    assert "軽いツッコミ" in prompt
+    assert "損失なら言い訳せず" in prompt
 
 
 def test_render_fallback_is_deterministic_and_grounded(tmp_path):
@@ -89,10 +107,10 @@ def test_render_fallback_is_deterministic_and_grounded(tmp_path):
     assert set(first) == set(SEGMENT_KEYS)
     assert "10000" in first["result"]
     assert "btc_jpy" in first["result"]
-    assert "correlated_exposure" in first["result"]
+    assert "xrp_jpy" in first["result"]
+    assert "本日の確定損益" in first["result"]
     assert "戦略" in first["strategy"]
     assert all(isinstance(value, str) and value for value in first.values())
-    # Narration must be substantial, not a one-liner (Issue #198 feedback).
     assert sum(len(value) for value in first.values()) >= 500
 
 
@@ -118,7 +136,6 @@ def test_build_facts_includes_latest_improvement(tmp_path):
     assert facts["improvement"]["status"] == "improved"
     assert facts["improvement"]["changed"] is True
     assert facts["improvement"]["policy"]["momentum_lookback"] == 5
-    # Focus and improvement are always present (may be empty/None).
     assert "focus" in facts
     assert "improvement" in facts
 
@@ -128,14 +145,11 @@ def test_parse_script_accepts_fenced_and_rejects_bad():
     assert parse_script(good) == {
         "corner": "a", "strategy": "b", "result": "c", "improve": "d"
     }
-    # Surrounding prose must not lose the narration.
     prose = '前置きです。\n{"corner":"a","strategy":"b","result":"c","improve":"d"}\n以上です。'
     assert parse_script(prose)["corner"] == "a"
-    # Extra keys are ignored rather than rejected.
     assert parse_script(
         '{"corner":"a","strategy":"b","result":"c","improve":"d","extra":"x"}'
     ) == {"corner": "a", "strategy": "b", "result": "c", "improve": "d"}
-    # Over-length values are truncated to the cap, not rejected.
     truncated = parse_script(
         '{"corner":"' + "あ" * (MAX_SEGMENT_CHARS + 50) + '","strategy":"b","result":"c","improve":"d"}'
     )
