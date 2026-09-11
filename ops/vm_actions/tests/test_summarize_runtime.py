@@ -39,7 +39,7 @@ class RuntimeSummaryTests(unittest.TestCase):
                 "all_failed_15m": 8,
                 "recent_events": [
                     {"event": "fail", "component": "RADIO:news:prepass", "rc": "79", "error_preview": "429 slow down"},
-                    {"event": "fail", "component": "RADIO:main", "rc": "1", "error_preview": "request timed out"},
+                    {"event": "fail", "component": "RADIO:main", "rc": "1", "error_preview": "request timeout after 20s"},
                     {"event": "fail", "component": "COMMENT", "rc": "1", "error_preview": "403 RestrictedModelsError"},
                     {"event": "fail", "component": "IMPROVE:candidate", "rc": "1", "error_preview": "503 service unavailable"},
                     {"event": "fail", "component": "NEWS:brief", "rc": "1", "error_preview": "model not found"},
@@ -59,6 +59,9 @@ class RuntimeSummaryTests(unittest.TestCase):
         self.assertIn("ai_recent_fail_sampled=7", summary)
         for cause in self.mod.CAUSES:
             self.assertIn(f"ai_recent_fail_{cause}=1", summary)
+        self.assertIn("ai_recent_timeout_exact_20s=1", summary)
+        self.assertIn("ai_recent_timeout_other_known=0", summary)
+        self.assertIn("ai_recent_timeout_unknown=0", summary)
         self.assertIn("ai_recent_fail_component_radio_prepass=1", summary)
         self.assertIn("ai_recent_fail_component_radio_main=2", summary)
         self.assertIn("ai_recent_fail_component_comment=1", summary)
@@ -70,6 +73,51 @@ class RuntimeSummaryTests(unittest.TestCase):
         self.assertNotIn("private-dynamic-component", summary)
         self.assertNotIn("SECRET_VALUE", summary)
         self.assertNotIn("hidden-worker", summary)
+
+    def test_timeout_duration_uses_fixed_public_buckets_only(self):
+        data = {
+            "status": "warn",
+            "workers": {},
+            "queues": {},
+            "ai": {
+                "recent_events": [
+                    {
+                        "event": "fail",
+                        "component": "RADIO:private-one",
+                        "provider": "private-provider-a",
+                        "model": "private-model-a",
+                        "rc": "124",
+                        "error_preview": "provider timeout after 20s private-provider-a",
+                    },
+                    {
+                        "event": "fail",
+                        "component": "RADIO:private-two",
+                        "provider": "private-provider-b",
+                        "model": "private-model-b",
+                        "rc": "124",
+                        "error_preview": "provider timed out after 45 seconds private-provider-b",
+                    },
+                    {
+                        "event": "fail",
+                        "component": "RADIO:private-three",
+                        "provider": "private-provider-c",
+                        "model": "private-model-c",
+                        "rc": "124",
+                        "error_preview": "provider timeout without duration private-provider-c",
+                    },
+                ]
+            },
+            "improvement": {},
+        }
+        _, summary = self.mod.summarize(data)
+        self.assertIn("ai_recent_fail_timeout=3", summary)
+        self.assertIn("ai_recent_timeout_exact_20s=1", summary)
+        self.assertIn("ai_recent_timeout_other_known=1", summary)
+        self.assertIn("ai_recent_timeout_unknown=1", summary)
+        self.assertNotIn("45 seconds", summary)
+        self.assertNotIn("private-provider", summary)
+        self.assertNotIn("private-model", summary)
+        self.assertNotIn("private-one", summary)
 
     def test_provider_and_model_identifiers_never_enter_summary(self):
         data = {
@@ -119,6 +167,9 @@ class RuntimeSummaryTests(unittest.TestCase):
         self.assertIn("stale_locks=0", summary)
         self.assertIn("ai_attempts_15m=0", summary)
         self.assertIn("ai_successes_15m=0", summary)
+        self.assertIn("ai_recent_timeout_exact_20s=0", summary)
+        self.assertIn("ai_recent_timeout_other_known=0", summary)
+        self.assertIn("ai_recent_timeout_unknown=0", summary)
         self.assertIn("ai_recent_all_failed_sampled=0", summary)
         self.assertIn("improvement_stale=0", summary)
         self.assertIn("retry_pending=0", summary)

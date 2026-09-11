@@ -29,6 +29,12 @@ COMPONENTS = (
     "other",
 )
 
+TIMEOUT_BUCKETS = (
+    "exact_20s",
+    "other_known",
+    "unknown",
+)
+
 
 def _integer(mapping, name):
     value = mapping.get(name, 0) if isinstance(mapping, dict) else 0
@@ -63,6 +69,21 @@ def _failure_cause(event):
     return "other"
 
 
+def _timeout_bucket(event):
+    """Classify timeout duration without publishing arbitrary numeric values."""
+    if not isinstance(event, dict) or event.get("event") != "fail":
+        return None
+    preview = str(event.get("error_preview") or "").lower()
+    match = re.search(r"(?:timeout|timed? out)\s+(?:after\s+)?(\d{1,4})\s*(?:s|sec(?:ond)?s?)\b", preview)
+    if not match:
+        return "unknown"
+    try:
+        seconds = int(match.group(1))
+    except (TypeError, ValueError):
+        return "unknown"
+    return "exact_20s" if seconds == 20 else "other_known"
+
+
 def _component_bucket(event):
     """Collapse a private/dynamic component label into a small fixed enum."""
     if not isinstance(event, dict):
@@ -93,6 +114,7 @@ def summarize(data):
 
     recent = ai.get("recent_events")
     cause_counts = Counter()
+    timeout_counts = Counter()
     fail_component_counts = Counter()
     all_failed_component_counts = Counter()
     if isinstance(recent, list):
@@ -101,6 +123,8 @@ def summarize(data):
             if cause is not None:
                 cause_counts[cause] += 1
                 fail_component_counts[_component_bucket(event)] += 1
+                if cause == "timeout":
+                    timeout_counts[_timeout_bucket(event)] += 1
             if isinstance(event, dict) and event.get("event") == "all_failed":
                 all_failed_component_counts[_component_bucket(event)] += 1
 
@@ -125,6 +149,7 @@ def summarize(data):
         f"ai_recent_fail_sampled={sampled}",
     ]
     parts.extend(f"ai_recent_fail_{cause}={cause_counts[cause]}" for cause in CAUSES)
+    parts.extend(f"ai_recent_timeout_{bucket}={timeout_counts[bucket]}" for bucket in TIMEOUT_BUCKETS)
     parts.extend(f"ai_recent_fail_component_{component}={fail_component_counts[component]}" for component in COMPONENTS)
     parts.append(f"ai_recent_all_failed_sampled={sampled_all_failed}")
     parts.extend(
