@@ -16,9 +16,37 @@ class FakeExchange:
         self.rows_by_symbol = rows_by_symbol
         self.calls = []
 
-    def fetch_ohlcv(self, symbol, timeframe="5m", limit=24):
+    def parse_timeframe(self, timeframe="5m"):
+        return 300
+
+    def fetch_ohlcv(self, symbol, timeframe="5m", since=None, limit=24):
         self.calls.append((symbol, timeframe, limit))
         return self.rows_by_symbol[symbol]
+
+
+class DateScopedExchange:
+    """Mimic ccxt-bitbank: one UTC date per call, chosen from ``since``."""
+
+    def __init__(self, rows):
+        self.rows = rows
+        self.calls = []
+
+    def parse_timeframe(self, timeframe="5m"):
+        return 300
+
+    def fetch_ohlcv(self, symbol, timeframe="5m", since=None, limit=24):
+        self.calls.append((symbol, int(since), limit))
+        start = int(since)
+        day = start // 86_400_000
+        out = []
+        for row in self.rows:
+            timestamp = int(row[0])
+            if timestamp // 86_400_000 != day or timestamp < start:
+                continue
+            out.append(row)
+            if len(out) >= limit:
+                break
+        return out
 
 
 class TestBitbankMarketFrames(unittest.TestCase):
@@ -82,6 +110,29 @@ class TestBitbankMarketFrames(unittest.TestCase):
             BitbankPublicGateway(exchange=exchange).fetch_market_frames(
                 ["BTC/JPY"], timeframe="5m", limit=1, now=1_800_000_000.0
             )
+
+    def test_merges_history_across_utc_date_boundary(self):
+        # A 2h window that starts on the previous UTC date (Issue #268): the
+        # single-date ccxt response alone is short, so the current date must be
+        # merged in to satisfy min_bars.
+        day_start_ms = (1_800_000_000 // 86_400) * 86_400 * 1000
+        now = day_start_ms / 1000.0 + 1_800  # 00:30 UTC
+        rows = []
+        timestamp = day_start_ms - 3 * 3_600_000
+        while timestamp <= day_start_ms + 1_800_000:
+            rows.append([timestamp, 1, 1, 1, 1, 1])
+            timestamp += 300_000
+        exchange = DateScopedExchange(rows)
+        frames = BitbankPublicGateway(exchange=exchange).fetch_market_frames(
+            ["BTC/JPY"], timeframe="5m", limit=24, now=now
+        )
+        frame = frames["BTC/JPY"]
+        self.assertEqual(len(frame.closes), 24)
+        self.assertAlmostEqual(frame.as_of, now)
+        # The previous and the current UTC date were both queried.
+        self.assertEqual([call[0] for call in exchange.calls], ["BTC/JPY", "BTC/JPY"])
+        day_starts = {call[1] // 86_400_000 for call in exchange.calls}
+        self.assertEqual(len(day_starts), 2)
 
 
 if __name__ == "__main__":
