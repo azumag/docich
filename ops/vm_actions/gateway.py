@@ -629,27 +629,41 @@ def _projection_review(cfg,repo,root:Path,sha:str):
     file does not match the recorded old content -- exactly the condition
     that makes deploy_git()/reconcile refuse. Reports path names and two
     booleans only; never bytes, hashes, or diffs. Path names of a public
-    submodule are not secret. Never mutates anything; any failure here is
-    swallowed so a bug in this reporting path can never break the rest of
-    diagnostics."""
+    submodule are not secret. Never mutates anything.
+
+    When nothing is reported for a submodule, '_notes' carries a short,
+    fixed-vocabulary reason (never raw exception text) so an empty result
+    is itself diagnosable through this same safe channel, rather than
+    silently indistinguishable from "nothing to see". Any unexpected
+    failure is swallowed at the top so a bug here can never break the
+    rest of diagnostics."""
     review={}
+    notes={}
     try:
         cur=read_json(current_file(cfg,repo))
-        if cur is None or not SHA_RE.fullmatch(cur.get('sha') or ''): return review
+        if cur is None or not SHA_RE.fullmatch(cur.get('sha') or ''):
+            return {'_notes':{'*':'no_current_state'}}
         mappings=cfg['repos'][repo].get('projections',{})
+        if not mappings:
+            return {'_notes':{'*':'no_projections_configured'}}
         for sub_path,destination in mappings.items():
             try:
                 old_sub=submodule_gitlink_at(root,cur['sha'],sub_path)
                 new_sub=submodule_gitlink_at(root,sha,sub_path)
             except Exception:
-                continue
-            if not old_sub or not new_sub or old_sub==new_sub: continue
+                notes[sub_path]='gitlink_lookup_failed'; continue
+            if not old_sub or not new_sub:
+                notes[sub_path]='gitlink_missing'; continue
+            if old_sub==new_sub: continue  # nothing to check; not notable
             subrepo=root/sub_path
-            if not subrepo.is_dir(): continue
+            if not subrepo.is_dir():
+                notes[sub_path]='checkout_missing'; continue
             try:
                 changed=_changed_paths(subrepo,old_sub,new_sub)
             except Exception:
-                continue
+                notes[sub_path]='diff_failed'; continue
+            if not changed:
+                notes[sub_path]='no_changed_paths'; continue
             mismatched=[]
             for rel in changed:
                 if len(mismatched)>=PROJECTION_REVIEW_PATH_MAX:
@@ -664,14 +678,18 @@ def _projection_review(cfg,repo,root:Path,sha:str):
                     mismatched.append({'path':rel,'live_present':None,'matches_new':None})
                     continue
                 matches_old=(live_meta is None and old_meta is None) or (
-                    live_meta is not None and old_meta is not None and live_meta['sha256']==old_meta['sha256'])
+                    live_meta is not None and old_meta is not None and live_meta['sha256']==old_meta['sha256']
+                    and live_meta['mode']==old_meta['mode'])
                 if matches_old: continue
                 matches_new=(live_meta is None and new_meta is None) or (
-                    live_meta is not None and new_meta is not None and live_meta['sha256']==new_meta['sha256'])
+                    live_meta is not None and new_meta is not None and live_meta['sha256']==new_meta['sha256']
+                    and live_meta['mode']==new_meta['mode'])
                 mismatched.append({'path':rel,'live_present':live_meta is not None,'matches_new':matches_new})
             if mismatched: review[sub_path]=mismatched
+            else: notes[sub_path]='no_mismatch_found'
+        if notes: review['_notes']=notes
     except Exception:
-        return {}
+        return {'_notes':{'*':'internal_error'}}
     return review
 
 
