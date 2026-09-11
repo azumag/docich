@@ -99,10 +99,10 @@ class ProjectionReviewTests(unittest.TestCase):
     def _git(path: Path, *args: str) -> str:
         return subprocess.check_output(["git", "-C", str(path), *args], text=True).strip()
 
-    def test_no_current_state_returns_empty(self):
+    def test_no_current_state_reports_a_note_not_silence(self):
         (self.state / "current" / "docich.json").unlink()
         review = self.gw._projection_review(self.cfg, "docich", self.root, self.new_parent)
-        self.assertEqual(review, {})
+        self.assertEqual(review, {"_notes": {"*": "no_current_state"}})
 
     def test_reports_only_mismatched_paths_by_name(self):
         # worker.sh live matches old (nothing to report); tests_notes.txt live
@@ -128,6 +128,31 @@ class ProjectionReviewTests(unittest.TestCase):
         self.assertEqual(entries[0]["path"], "tests_notes.txt")
         self.assertIs(entries[0]["live_present"], True)
         self.assertIs(entries[0]["matches_new"], True)
+
+    def test_mode_only_difference_is_reported_as_mismatched(self):
+        # Content byte-identical to old, but the executable bit differs --
+        # deploy_git()/_plan_projection compares the full {sha256, mode}
+        # tuple, so a mode-only drift must not be silently treated as a
+        # content match here either (this is the bug that produced an
+        # empty result in production despite a real REASON_PROJECTION_*
+        # refusal: #279 follow-up).
+        (self.live / "worker.sh").write_text("old\n", encoding="utf-8")
+        (self.live / "worker.sh").chmod(0o755)
+        (self.live / "tests_notes.txt").write_text("old-test\n", encoding="utf-8")
+        review = self.gw._projection_review(self.cfg, "docich", self.root, self.new_parent)
+        entries = review["games/soviet_now"]
+        paths = {e["path"] for e in entries}
+        self.assertIn("worker.sh", paths)
+
+    def test_fully_synced_reports_a_note_not_silence(self):
+        # Every changed path already matches old exactly (the ordinary
+        # state before any deploy attempt): nothing to report, but that
+        # must be visible as a note, not indistinguishable from a bug
+        # that silently found nothing.
+        (self.live / "worker.sh").write_text("old\n", encoding="utf-8")
+        (self.live / "tests_notes.txt").write_text("old-test\n", encoding="utf-8")
+        review = self.gw._projection_review(self.cfg, "docich", self.root, self.new_parent)
+        self.assertEqual(review, {"_notes": {"games/soviet_now": "no_mismatch_found"}})
 
     def test_no_advance_returns_empty(self):
         review = self.gw._projection_review(self.cfg, "docich", self.root, self.old_parent)
