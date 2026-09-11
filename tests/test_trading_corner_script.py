@@ -92,6 +92,35 @@ def test_render_fallback_is_deterministic_and_grounded(tmp_path):
     assert "correlated_exposure" in first["result"]
     assert "戦略" in first["strategy"]
     assert all(isinstance(value, str) and value for value in first.values())
+    # Narration must be substantial, not a one-liner (Issue #198 feedback).
+    assert sum(len(value) for value in first.values()) >= 500
+
+
+def test_build_facts_includes_latest_improvement(tmp_path):
+    _write_status(tmp_path)
+    logs = tmp_path.parent / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    (logs / "paper-corner-improve-2026-09-11.log").write_text(
+        json.dumps({
+            "changed": True,
+            "status": "improved",
+            "policy": {
+                "momentum_lookback": 5,
+                "momentum_threshold_bps": "150",
+                "mean_reversion_lookback": 10,
+                "mean_reversion_z": "-1.8",
+                "max_notional_fraction": "0.12",
+            },
+        }) + "\n",
+        encoding="utf-8",
+    )
+    facts = build_facts(tmp_path, now=1010.0)
+    assert facts["improvement"]["status"] == "improved"
+    assert facts["improvement"]["changed"] is True
+    assert facts["improvement"]["policy"]["momentum_lookback"] == 5
+    # Focus and improvement are always present (may be empty/None).
+    assert "focus" in facts
+    assert "improvement" in facts
 
 
 def test_parse_script_accepts_fenced_and_rejects_bad():
@@ -108,7 +137,7 @@ def test_parse_script_accepts_fenced_and_rejects_bad():
     ) == {"corner": "a", "strategy": "b", "result": "c", "improve": "d"}
     # Over-length values are truncated to the cap, not rejected.
     truncated = parse_script(
-        '{"corner":"' + "あ" * 300 + '","strategy":"b","result":"c","improve":"d"}'
+        '{"corner":"' + "あ" * (MAX_SEGMENT_CHARS + 50) + '","strategy":"b","result":"c","improve":"d"}'
     )
     assert len(truncated["corner"]) == MAX_SEGMENT_CHARS
     with pytest.raises(CornerScriptError):

@@ -22,7 +22,11 @@ from .strategies import StrategyPolicy
 
 
 SEGMENT_KEYS = ("corner", "strategy", "result", "improve")
-MAX_SEGMENT_CHARS = 240
+# Narration is read aloud at the start of the corner; each segment should be a
+# substantial multi-sentence passage (analysis, outlook, improvement), not a
+# one-liner.
+MAX_SEGMENT_CHARS = 600
+MIN_SEGMENT_CHARS = 300
 SCRIPT_LABEL = "RADIO:paper-script"
 JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
@@ -34,6 +38,58 @@ class CornerScriptError(RuntimeError):
 def _safe_reason(exc: BaseException) -> str:
     """Reason for state/logs: exception type only, never model output/stderr."""
     return type(exc).__name__
+
+
+_POLICY_FACT_KEYS = (
+    "momentum_lookback",
+    "momentum_threshold_bps",
+    "mean_reversion_lookback",
+    "mean_reversion_z",
+    "max_notional_fraction",
+)
+
+
+def _latest_improvement(logs_dir) -> dict:
+    """Latest end-of-corner improvement record (allowlisted policy only).
+
+    The improvement job appends one JSON line per run (status + whether the
+    policy changed + the resulting policy). Never raises: unreadable or
+    malformed input yields an empty fact.
+    """
+    try:
+        logs = sorted(
+            Path(logs_dir).glob("paper-corner-improve-*.log"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
+        return {}
+    if not logs:
+        return {}
+    try:
+        lines = [
+            line for line in logs[0].read_text(encoding="utf-8", errors="ignore").splitlines()
+            if line.strip()
+        ]
+    except OSError:
+        return {}
+    if not lines:
+        return {}
+    try:
+        data = json.loads(lines[-1])
+    except ValueError:
+        return {}
+    if not isinstance(data, Mapping):
+        return {}
+    record = {
+        "date": logs[0].stem.replace("paper-corner-improve-", ""),
+        "status": str(data.get("status", "")),
+        "changed": bool(data.get("changed")),
+    }
+    policy = data.get("policy") if isinstance(data.get("policy"), Mapping) else None
+    if policy is not None:
+        record["policy"] = {key: policy.get(key) for key in _POLICY_FACT_KEYS}
+    return record
 
 
 def build_facts(trading_dir, *, now=None, policy: StrategyPolicy | None = None) -> dict:
@@ -65,6 +121,25 @@ def build_facts(trading_dir, *, now=None, policy: StrategyPolicy | None = None) 
         for item in snap.get("fills", [])
         if isinstance(item, Mapping)
     ]
+    chart = snap.get("chart") if isinstance(snap.get("chart"), Mapping) else {}
+    focus = None
+    if chart.get("symbol"):
+        change_pct = None
+        try:
+            chart_first, chart_last = chart.get("first"), chart.get("last")
+            if chart_first is not None and chart_last is not None and float(chart_first) != 0.0:
+                change_pct = round(
+                    (float(chart_last) - float(chart_first)) / float(chart_first) * 100.0, 2
+                )
+        except (TypeError, ValueError):
+            change_pct = None
+        focus = {
+            "symbol": str(chart.get("symbol")),
+            "bars": chart.get("count"),
+            "first": chart.get("first"),
+            "last": chart.get("last"),
+            "change_pct": change_pct,
+        }
     return {
         "as_of": moment,
         "worker_state": str(snap["header"].get("worker_state", "unknown")),
@@ -84,6 +159,8 @@ def build_facts(trading_dir, *, now=None, policy: StrategyPolicy | None = None) 
         "recent_fills": fills,
         "fresh_markets": int(portfolio.get("fresh_markets", 0) or 0),
         "total_markets": int(portfolio.get("total_markets", 0) or 0),
+        "focus": focus,
+        "improvement": _latest_improvement(Path(target).parent / "logs"),
         "policy": policy_to_payload(effective),
     }
 
@@ -91,16 +168,23 @@ def build_facts(trading_dir, *, now=None, policy: StrategyPolicy | None = None) 
 def build_prompt(facts: Mapping[str, object]) -> str:
     facts_json = json.dumps(dict(facts), ensure_ascii=False, sort_keys=True)
     return (
-        "あなたはPAPER暗号資産コーナーのナレーション台本を作る補助です。\n"
-        "以下は実データ(facts)です。事実だけを使い、新しい数値を作らないでください。\n"
+        "あなたはPAPER暗号資産コーナーの、音声で読み上げるナレーション台本を書きます。\n"
+        "以下は実データ(facts)です。事実だけを使い、存在しない数値・銘柄・出来事・ニュースを"
+        "作らないでください。\n"
         f"{facts_json}\n\n"
-        "次の4キーだけを持つJSONオブジェクト1つを出力してください。"
-        "説明文・マークダウン・コードフェンスは書かないこと。\n"
-        "- corner: コーナーの説明（何のコーナーで、視聴者に何が見えるか）\n"
-        "- strategy: 現在の戦略パラメータの平易な日本語説明\n"
-        "- result: 直近の約定・保有・見送り理由・市場鮮度の結果と感想\n"
-        "- improve: 次に確認・改善する方向（前向きに。数値の捏造は禁止）\n"
-        "各値は160文字以内の日本語文字列とし、JSON以外は出力しないこと。"
+        "視聴者に語りかける、です・ます調の自然な話し言葉で書いてください。各項目は複数の文を"
+        "つなげた読み上げ本文にし、箇条書き・見出し・記号の羅列・マークダウン・コードフェンスは"
+        "使わないこと。\n"
+        "次の4キーだけを持つJSONオブジェクト1つを出力してください。\n"
+        "- corner: コーナーの紹介と今日の見どころ。何のコーナーか、画面のどこを・どの順番で"
+        "見ればよいか、この後どんな流れで進むか。\n"
+        "- strategy: 現在の戦略パラメータを平易に説明し、なぜその設定なのか狙いや設計意図を考察する。\n"
+        "- result: 直近の約定・保有・見送り理由・市場鮮度・注目銘柄の値動きを分析し、"
+        "良かった点と課題、相場の見立てを述べる。\n"
+        "- improve: BOTの改善（前回の改善で何が変わったか、次にどう改善するか）と、"
+        "これからの展開予想・注視ポイントを述べる。\n"
+        f"各値は日本語で{MIN_SEGMENT_CHARS}〜{MAX_SEGMENT_CHARS}文字程度の、文がつながる本文に"
+        "すること。短すぎる台本は不可。JSON以外は出力しないこと。"
     )
 
 
@@ -126,6 +210,11 @@ def parse_script(text: str) -> dict:
 
 
 def _policy_text(policy: Mapping[str, object]) -> str:
+    if not policy:
+        return (
+            "戦略は既定のパラメータで動いており、値動きの勢いと平均回帰を組み合わせて"
+            "売買の判断をします。"
+        )
     return (
         f"戦略は直近{policy.get('momentum_lookback')}本の上昇が"
         f"{policy.get('momentum_threshold_bps')}bpsを超えたら買い、"
@@ -140,38 +229,60 @@ def render_fallback(facts: Mapping[str, object]) -> dict:
     positions = facts.get("open_positions") or []
     fills = facts.get("recent_fills") or []
     skipped = facts.get("skipped_reasons") or []
+    focus = facts.get("focus") if isinstance(facts.get("focus"), Mapping) else {}
+    improvement = facts.get("improvement") if isinstance(facts.get("improvement"), Mapping) else {}
 
     corner = (
-        "PAPER・暗号資産の模擬売買コーナーです。実際のお金は使わず、"
-        "bitbankの公開データだけでBOTの判断と結果を確認します。"
+        "PAPER・暗号資産の模擬売買コーナーです。実際のお金は使わず、bitbankの公開データだけで、"
+        "BOTがどのように判断して、どんな結果になったのかを順番に確認していきます。"
+        "まず今の戦略、次に直近の売買結果、最後に次の改善方針とこれからの見どころをお伝えします。"
+        "画面のチャートと保有、そしてBOT判断の欄をあわせてご覧ください。"
     )
 
     result = (
-        f"模擬資金{facts.get('capital_jpy')}円、投入{facts.get('deployed_jpy')}円、"
+        f"まず結果です。模擬資金は{facts.get('capital_jpy')}円、投入は{facts.get('deployed_jpy')}円、"
         f"保有は{len(positions)}銘柄です。"
     )
     if fills:
         first = fills[0]
         result += (
-            f"直近の約定は{first.get('symbol')} {first.get('side')} "
-            f"{first.get('amount')}でした。"
+            f"直近の約定は{first.get('symbol')}の{first.get('side')}、数量{first.get('amount')}、"
+            f"価格{first.get('price')}でした。"
         )
     else:
-        result += "直近の約定はありません。"
+        result += "直近の約定はなく、BOTは様子見を選んでいます。"
     if skipped:
         result += "見送り理由は" + "、".join(str(code) for code in skipped[:3]) + "です。"
     result += (
-        f"市場鮮度は{facts.get('fresh_markets')}/{facts.get('total_markets')}です。"
+        f"市場鮮度は{facts.get('fresh_markets')}/{facts.get('total_markets')}で、"
+        "取得できている範囲のデータで判断しています。"
     )
+    if focus.get("symbol"):
+        result += (
+            f"注目している{focus.get('symbol')}は直近{focus.get('bars')}本で"
+            f"{focus.get('change_pct')}パーセント動いています。"
+        )
 
     improve = (
-        "次回は見送り理由と市場鮮度を確認し、戦略パラメータの妥当性を検証します。"
-        "数値は実データに基づく場合だけ見直します。"
+        "最後に改善とこれからの見どころです。コーナーが終わると、BOTは結果をふり返って"
+        "戦略パラメータを自動で見直します。"
+    )
+    if improvement:
+        improve += (
+            f"前回の改善は{improvement.get('status')}で、"
+            f"戦略を更新したかは"
+            + ("更新あり" if improvement.get("changed") else "変更なし")
+            + "でした。"
+        )
+    improve += (
+        "次は、見送り理由と市場鮮度を確認しながら、エントリー条件と1回あたりの投入額の"
+        "バランスを検証していきます。数値は実データに基づく場合だけ見直します。"
     )
 
     return {
         "corner": corner,
-        "strategy": _policy_text(dict(facts.get("policy") or {})),
+        "strategy": _policy_text(dict(facts.get("policy") or {}))
+        + " この設定は、値動きの勢いを捉えつつ、外れ値の影響を抑えて資金を守る狙いです。",
         "result": result,
         "improve": improve,
     }
