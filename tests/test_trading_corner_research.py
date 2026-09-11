@@ -120,7 +120,6 @@ def test_asset_and_angle_dedupe_rotate_between_corners(tmp_path):
     assert second["asset"]["symbol"] == "ETH/JPY", "recently discussed held asset should be avoided"
     _finalize(tmp_path, second, now=second_now)
 
-    # With one holding only, the symbol must repeat but the discussion angle should rotate.
     solo = tmp_path / "solo"
     _write_status(solo, {"BTC/JPY": "0.01"})
     day1 = prepare_research_context(solo, now=NOW, fetcher=_fetcher, chooser=_first)
@@ -135,16 +134,13 @@ def test_news_dedupe_prefers_unseen_headlines(tmp_path):
     first = prepare_research_context(tmp_path, now=NOW, fetcher=_fetcher, chooser=_first)
     first_titles = [x["title"] for x in first["news_items"]]
     _finalize(tmp_path, first, now=NOW)
-
-    # The same feed is allowed as a fallback when every item was already seen,
-    # but duplicate keys never appear twice in one corner.
     second = prepare_research_context(tmp_path, now=NOW + 86400, fetcher=_fetcher, chooser=_first)
     second_titles = [x["title"] for x in second["news_items"]]
     assert len(second_titles) == len(set(second_titles))
     assert first_titles
 
 
-def test_research_is_in_narration_and_end_improvement_facts(tmp_path):
+def test_research_narrates_raw_sources_but_improvement_gets_only_structured_hypotheses(tmp_path):
     _write_status(tmp_path)
     context = prepare_research_context(tmp_path, now=NOW, fetcher=_fetcher, chooser=_first)
     _finalize(tmp_path, context, now=NOW)
@@ -155,9 +151,14 @@ def test_research_is_in_narration_and_end_improvement_facts(tmp_path):
     narration_prompt = build_prompt(facts)
     assert "Google News RSS" in narration_prompt
     assert "improvement_hints" in narration_prompt
+
     improve_prompt = build_improve_prompt(facts)
+    assert "external_research_hypotheses" in improve_prompt
     assert "流動性変化を観測する" in improve_prompt
     assert "Exchange liquidity changes" in improve_prompt
+    assert "Bitcoin ETF flow shifts again" not in improve_prompt
+    assert '"research"' not in improve_prompt
+    assert "未検証の参考仮説" in improve_prompt
 
 
 def test_missing_or_corrupt_research_fails_closed(tmp_path):
