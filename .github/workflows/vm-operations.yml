@@ -187,7 +187,13 @@ jobs:
           print(data.get("status", ""), data.get("sha", ""), len(data.get("pending_repairs") or []))
           PY
           )
-          [[ "$vm_status" == drift ]]
+          # "drift": root advanced but the submodule was pre-synced ahead of it.
+          # "configured": deploy_git()'s own projection check refused a mismatched
+          # live file and rolled back cleanly, leaving the VM unchanged at the old
+          # baseline (#279). Both need the same reconcile; only recovery_required/
+          # bootstrap_required (an in-flight or absent deployment_intent) stay
+          # excluded, since those need owner attention rather than automation.
+          [[ "$vm_status" == drift || "$vm_status" == configured ]]
           [[ "$pending_count" == 0 ]]
           [[ "$old_root" =~ ^[0-9a-f]{40}$ ]]
           git -C candidate cat-file -e "$old_root^{commit}"
@@ -226,7 +232,10 @@ jobs:
           print(data.get("status", ""), data.get("sha", ""), len(data.get("pending_repairs") or []))
           PY
           )
-          [[ "$vm_status" == drift ]]
+          # Mirrors the reconcile step's precondition (#279): a preceding
+          # deploy_git() rollback leaves the VM at "configured" (old baseline),
+          # not "drift", and both cases are safe to normalize here.
+          [[ "$vm_status" == drift || "$vm_status" == configured ]]
           [[ "$pending_count" == 0 ]]
           [[ "$old_root" =~ ^[0-9a-f]{40}$ ]]
           git -C candidate cat-file -e "$old_root^{commit}"

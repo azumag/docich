@@ -19,6 +19,16 @@ class VmOperationsPresyncWorkflowTests(unittest.TestCase):
         self.assertIn("Retry production deploy after exact reconcile", workflow)
         self.assertIn("Fail unresolved deployment", workflow)
 
+    def test_reconcile_and_normalize_also_accept_configured_status(self):
+        # #279: deploy_git()'s own projection check can refuse a mismatched
+        # live file and roll back cleanly, leaving the VM at "configured"
+        # (old baseline) rather than "drift". Both steps must accept either
+        # status; only recovery_required/bootstrap_required stay excluded.
+        workflow = Path(".github/workflows/vm-operations.yml").read_text(encoding="utf-8")
+        occurrences = workflow.count('[[ "$vm_status" == drift || "$vm_status" == configured ]]')
+        self.assertEqual(occurrences, 2, "reconcile and normalize steps must both accept configured status")
+        self.assertNotIn('[[ "$vm_status" == drift ]]', workflow)
+
     def test_manual_deploy_does_not_auto_reconcile(self):
         workflow = Path(".github/workflows/vm-operations.yml").read_text(encoding="utf-8")
         reconcile_if = next(
