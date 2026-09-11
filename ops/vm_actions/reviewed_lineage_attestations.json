@@ -12,6 +12,61 @@
       "source_commit": "67a29beeadd8dd78af412b4a01586bd3fa27f060",
       "source_pr": 291,
       "reason": "Reviewed commit 'chore(overlay): sync live header-box strip from production VM' was dropped from main history by the #291 squash merge (67a29bee is not an ancestor of 839cfc). The live production overlay matches this reviewed blob exactly; without attestation the fail-closed lineage check refuses exit 63."
+    },
+    {
+      "projection": "games/soviet_now",
+      "old_sub": "839cfc545f34071545bbd8a9821d8c65a9f2726d",
+      "new_sub": "5b26552924d29fe4b07dddc1d79c9e752e62fdaf",
+      "path": "tools/ab_report.py",
+      "mode": "100755",
+      "sha256": "5f7f7053f3dc5d4cd059a8576af613ec7df4a697ea4311d398992b9e40a7c7b3",
+      "source_commit": "075fa8c4e561342b0b0e6b6ccf1d4a063c9de7c2",
+      "source_pr": 288,
+      "reason": "PR #288's first commit (075fa8c4e) was deployed live to production ahead of merge (VM-validated, md5-checked at deploy time), then amended by a follow-up commit (059e64c5c) addressing owner review before the whole PR was squash-merged as 71c2b3b98. 075fa8c4e is not an ancestor of 71c2b3b98's tree for this path, so rev-list cannot see it. The live production file matches this reviewed blob exactly; without attestation the fail-closed lineage check refuses exit 63."
+    },
+    {
+      "projection": "games/soviet_now",
+      "old_sub": "839cfc545f34071545bbd8a9821d8c65a9f2726d",
+      "new_sub": "5b26552924d29fe4b07dddc1d79c9e752e62fdaf",
+      "path": "tools/ab_decide.py",
+      "mode": "100755",
+      "sha256": "4b54da83597a85ddd52ae1c2f5bc5f24ff3d230f62e3950263cc8226f35df499",
+      "source_commit": "075fa8c4e561342b0b0e6b6ccf1d4a063c9de7c2",
+      "source_pr": 288,
+      "reason": "Same PR #288 pre-merge live deployment as tools/ab_report.py above; see that entry's reason."
+    },
+    {
+      "projection": "games/soviet_now",
+      "old_sub": "839cfc545f34071545bbd8a9821d8c65a9f2726d",
+      "new_sub": "5b26552924d29fe4b07dddc1d79c9e752e62fdaf",
+      "path": "tests/test_ab_decide.py",
+      "mode": "100644",
+      "sha256": "b19b5e30a7192f9b8a46174f03362d9c4191fabe47f8e57a1e81388f36e5a3c4",
+      "source_commit": "075fa8c4e561342b0b0e6b6ccf1d4a063c9de7c2",
+      "source_pr": 288,
+      "reason": "Same PR #288 pre-merge live deployment as tools/ab_report.py above; see that entry's reason."
+    },
+    {
+      "projection": "games/soviet_now",
+      "old_sub": "839cfc545f34071545bbd8a9821d8c65a9f2726d",
+      "new_sub": "5b26552924d29fe4b07dddc1d79c9e752e62fdaf",
+      "path": "tests/test_ab_report.py",
+      "mode": "100644",
+      "sha256": "859572383eabef35ca791df7b663d1eff94c9e56cbb9ab4c43e1db9225924ae2",
+      "source_commit": "075fa8c4e561342b0b0e6b6ccf1d4a063c9de7c2",
+      "source_pr": 288,
+      "reason": "Same PR #288 pre-merge live deployment as tools/ab_report.py above; see that entry's reason."
+    },
+    {
+      "projection": "games/soviet_now",
+      "old_sub": "839cfc545f34071545bbd8a9821d8c65a9f2726d",
+      "new_sub": "5b26552924d29fe4b07dddc1d79c9e752e62fdaf",
+      "path": "tests/test_status_dashboard_ab.py",
+      "mode": "100644",
+      "sha256": "f3975ae3c97553ce4e251a600b8b05108a64603ce2a305e41e8034692421bd0c",
+      "source_commit": "075fa8c4e561342b0b0e6b6ccf1d4a063c9de7c2",
+      "source_pr": 288,
+      "reason": "Same PR #288 pre-merge live deployment as tools/ab_report.py above; see that entry's reason."
     }
   ]
 }
