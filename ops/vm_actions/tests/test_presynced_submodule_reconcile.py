@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import stat
 import subprocess
@@ -431,6 +432,135 @@ class PresyncedSubmoduleReconcileTests(unittest.TestCase):
             lambda: _normalize_projection(self.sub_remote, old, new2, self.live),
         )
         self.assertEqual(path.read_text(encoding="utf-8"), "operator drift\n")
+
+    @staticmethod
+    def _sha256(text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    def _with_attested(self, entries):
+        prev = presync_helper._ATTESTED
+        presync_helper._ATTESTED = list(entries)
+        self.addCleanup(setattr, presync_helper, "_ATTESTED", prev)
+
+    def _unreachable_attested_chain(self):
+        # A reviewed-elsewhere blob (side commit) that old_sub..new_sub cannot
+        # reach, plus a separate reviewed new tip -- the squash-merge shape.
+        self._git(self.sub_remote, "checkout", "--detach", "--quiet", self.old_sub)
+        target = self.sub_remote / "worker.sh"
+        target.write_text("attested intermediate\n", encoding="utf-8")
+        self._git(self.sub_remote, "commit", "-am", "reviewed elsewhere")
+        reviewed = self._git(self.sub_remote, "rev-parse", "HEAD")
+        self._git(self.sub_remote, "checkout", "--detach", "--quiet", self.old_sub)
+        target.write_text("new\n", encoding="utf-8")
+        self._git(self.sub_remote, "commit", "-am", "new2")
+        return self.old_sub, self._git(self.sub_remote, "rev-parse", "HEAD"), reviewed
+
+    def test_unreachable_reviewed_intermediate_is_refused_without_attestation(self):
+        old, new2, _reviewed = self._unreachable_attested_chain()
+        path = self.live / "worker.sh"
+        path.write_text("attested intermediate\n", encoding="utf-8")
+        self._with_lineage(True)
+        self.assert_reason(
+            REASON_PROJECTION_UNKNOWN_STATE,
+            lambda: _normalize_projection(self.sub_remote, old, new2, self.live),
+        )
+        self.assertEqual(path.read_text(encoding="utf-8"), "attested intermediate\n")
+
+    def test_attestation_converges_unreachable_reviewed_intermediate(self):
+        old, new2, _reviewed = self._unreachable_attested_chain()
+        path = self.live / "worker.sh"
+        path.write_text("attested intermediate\n", encoding="utf-8")
+        self._with_lineage(True)
+        self._with_attested([("worker.sh", self._sha256("attested intermediate\n"), 0o644)])
+        _normalize_projection(self.sub_remote, old, new2, self.live)
+        self.assertEqual(path.read_text(encoding="utf-8"), "old\n")
+        self.assertEqual(self._mode(path), 0o644)
+
+    def test_attestation_still_refuses_wrong_bytes_without_write(self):
+        old, new2, _reviewed = self._unreachable_attested_chain()
+        path = self.live / "worker.sh"
+        path.write_text("operator drift\n", encoding="utf-8")
+        self._with_lineage(True)
+        self._with_attested([("worker.sh", self._sha256("attested intermediate\n"), 0o644)])
+        self.assert_reason(
+            REASON_PROJECTION_UNKNOWN_STATE,
+            lambda: _normalize_projection(self.sub_remote, old, new2, self.live),
+        )
+        self.assertEqual(path.read_text(encoding="utf-8"), "operator drift\n")
+
+    def test_attestation_still_refuses_mode_mismatch_without_write(self):
+        old, new2, _reviewed = self._unreachable_attested_chain()
+        path = self.live / "worker.sh"
+        path.write_text("attested intermediate\n", encoding="utf-8")
+        os.chmod(path, 0o600)
+        self._with_lineage(True)
+        self._with_attested([("worker.sh", self._sha256("attested intermediate\n"), 0o644)])
+        self.assert_reason(
+            REASON_PROJECTION_UNKNOWN_STATE,
+            lambda: _normalize_projection(self.sub_remote, old, new2, self.live),
+        )
+        self.assertEqual(self._mode(path), 0o600)
+
+    def test_attestation_other_path_does_not_cover_live(self):
+        old, new2, _reviewed = self._unreachable_attested_chain()
+        path = self.live / "worker.sh"
+        path.write_text("attested intermediate\n", encoding="utf-8")
+        self._with_lineage(True)
+        self._with_attested([("other.sh", self._sha256("attested intermediate\n"), 0o644)])
+        self.assert_reason(
+            REASON_PROJECTION_UNKNOWN_STATE,
+            lambda: _normalize_projection(self.sub_remote, old, new2, self.live),
+        )
+
+    def test_attestation_requires_lineage_opt_in(self):
+        old, new2, _reviewed = self._unreachable_attested_chain()
+        path = self.live / "worker.sh"
+        path.write_text("attested intermediate\n", encoding="utf-8")
+        self._with_lineage(False)
+        self._with_attested([("worker.sh", self._sha256("attested intermediate\n"), 0o644)])
+        self.assert_reason(
+            REASON_PROJECTION_UNKNOWN_STATE,
+            lambda: _normalize_projection(self.sub_remote, old, new2, self.live),
+        )
+        self.assertEqual(path.read_text(encoding="utf-8"), "attested intermediate\n")
+
+    def test_attestation_tokens_parse_valid_triples(self):
+        self.assertEqual(
+            presync_helper._attestations(["worker.sh", "a" * 64, "100644", "bin/x", "b" * 64, "100755"]),
+            [("worker.sh", "a" * 64, 0o644), ("bin/x", "b" * 64, 0o755)],
+        )
+
+    def test_attestation_tokens_reject_malformed_input(self):
+        too_many = [token for i in range(17) for token in ("w" + str(i), "a" * 64, "100644")]
+        bad = [
+            ["worker.sh", "a" * 64],
+            ["/abs", "a" * 64, "100644"],
+            ["../escape", "a" * 64, "100644"],
+            ["wo rker.sh", "a" * 64, "100644"],
+            ["worker.sh;rm", "a" * 64, "100644"],
+            ["worker.sh", "nothex", "100644"],
+            ["worker.sh", "a" * 64, "100777"],
+            too_many,
+        ]
+        for tokens in bad:
+            with self.assertRaises(ReconcileError) as ctx:
+                presync_helper._attestations(tokens)
+            self.assertEqual(ctx.exception.code, presync_helper.REASON_INVALID_SHA)
+
+    def test_main_rejects_incomplete_attestation_triple(self):
+        with self.assertRaises(ReconcileError) as ctx:
+            presync_helper.main(
+                ["reconcile", "/x", "0" * 40, "0" * 40, "0" * 40, "games/soviet_now", "lineage", "worker.sh"]
+            )
+        self.assertEqual(ctx.exception.code, presync_helper.REASON_INVALID_SHA)
+
+    def test_main_rejects_too_many_attestation_arguments(self):
+        too_many = [token for i in range(17) for token in ("w" + str(i), "a" * 64, "100644")]
+        with self.assertRaises(ReconcileError) as ctx:
+            presync_helper.main(
+                ["reconcile", "/x", "0" * 40, "0" * 40, "0" * 40, "games/soviet_now", "lineage", *too_many]
+            )
+        self.assertEqual(ctx.exception.code, presync_helper.REASON_INVALID_SHA)
 
     def test_reviewed_lineage_refuses_beyond_history_cap(self):
         orig = presync_helper._git

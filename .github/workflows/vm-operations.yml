@@ -212,8 +212,39 @@ jobs:
             # new_sub -- never a guess, never applied to bytes that don't
             # match real history. Anything else stays fail-closed exactly
             # as before.
-            printf "python3 - '%s' '%s' '%s' '%s' '%s' '%s' <<'PY'\n" \
+            #
+            # attestation (#279): a reviewed commit dropped from
+            # old_sub..new_sub by a squash merge can be attested in
+            # reviewed_lineage_attestations.json. Only the exact reviewed
+            # sha256+mode recorded for this old/new pair is passed, and the
+            # VM converges only on an exact live byte+mode match.
+            attest_raw="$(python3 - "$old_sub" "$new_sub" control/ops/vm_actions/reviewed_lineage_attestations.json <<'PY'
+          import json, re, sys
+          old_sub, new_sub, path = sys.argv[1], sys.argv[2], sys.argv[3]
+          try:
+              data = json.load(open(path, encoding="utf-8"))
+          except FileNotFoundError:
+              data = {}
+          tokens = []
+          for item in (data.get("attestations") or []):
+              if not isinstance(item, dict) or item.get("projection") != "games/soviet_now":
+                  continue
+              if item.get("old_sub") != old_sub or item.get("new_sub") != new_sub:
+                  continue
+              rel = item.get("path")
+              if not isinstance(rel, str) or not re.fullmatch(r"[A-Za-z0-9._/-]+", rel):
+                  raise SystemExit("invalid attested path")
+              tokens += [rel, str(item.get("sha256")), str(item.get("mode"))]
+          if tokens:
+              sys.stdout.write(" ".join(tokens))
+          PY
+          )"
+            attest_args=()
+            if [[ -n "$attest_raw" ]]; then read -r -a attest_args <<< "$attest_raw"; fi
+            printf "python3 - '%s' '%s' '%s' '%s' '%s' '%s'" \
               /home/ubuntu/docich "$old_root" "$old_sub" "$new_sub" games/soviet_now lineage
+            for token in "${attest_args[@]}"; do printf " '%s'" "$token"; done
+            printf " <<'PY'\n"
             cat control/ops/vm_actions/reconcile_presynced_submodule.py
             printf '\nPY\n'
           } | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"

@@ -39,10 +39,23 @@ class VmOperationsPresyncWorkflowTests(unittest.TestCase):
         # unchanged, only this call site's argv grew by one).
         workflow = Path(".github/workflows/vm-operations.yml").read_text(encoding="utf-8")
         self.assertIn(
-            "printf \"python3 - '%s' '%s' '%s' '%s' '%s' '%s' <<'PY'\\n\" \\\n"
+            "printf \"python3 - '%s' '%s' '%s' '%s' '%s' '%s'\" \\\n"
             "              /home/ubuntu/docich \"$old_root\" \"$old_sub\" \"$new_sub\" games/soviet_now lineage",
             workflow,
         )
+
+    def test_reconcile_attests_reviewed_commits_lost_to_squash(self):
+        # #279 follow-up: a reviewed branch commit dropped from
+        # old_sub..new_sub by a squash merge is attested in a reviewed
+        # control-plane file. The workflow passes only the blobs recorded for
+        # the current old/new pair, and only when an exact byte+mode match.
+        workflow = Path(".github/workflows/vm-operations.yml").read_text(encoding="utf-8")
+        self.assertIn("reviewed_lineage_attestations.json", workflow)
+        self.assertIn("control/ops/vm_actions/reviewed_lineage_attestations.json", workflow)
+        self.assertIn('item.get("old_sub") != old_sub or item.get("new_sub") != new_sub', workflow)
+        self.assertIn('re.fullmatch(r"[A-Za-z0-9._/-]+", rel)', workflow)
+        self.assertIn('read -r -a attest_args <<< "$attest_raw"', workflow)
+        self.assertIn('for token in "${attest_args[@]}"; do printf " \'%s\'" "$token"; done', workflow)
 
     def test_manual_deploy_does_not_auto_reconcile(self):
         workflow = Path(".github/workflows/vm-operations.yml").read_text(encoding="utf-8")
