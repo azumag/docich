@@ -137,8 +137,6 @@ def scan_opportunities(
     return tuple(sorted(opportunities, key=lambda item: (item.strategy_id, item.symbol, item.opportunity_id)))
 
 
-#: Inventory-release exits. Without a sell path the bot fills up to the total
-#: deployment cap and then stops trading forever (Issue #198 feedback).
 EXIT_TAKE_PROFIT = D("0.01")
 EXIT_STOP_LOSS = D("0.03")
 EXIT_MAX_HOLD_S = 6 * 3600
@@ -153,11 +151,7 @@ def scan_exit_opportunities(
     stop_loss: Decimal = EXIT_STOP_LOSS,
     max_hold_s: float = EXIT_MAX_HOLD_S,
 ) -> tuple[Opportunity, ...]:
-    """SELL opportunities that release inventory (take-profit/stop-loss/max hold).
-
-    ``cost_basis`` maps a symbol to ``(amount, average_price, opened_at)`` from
-    the ledger. Exits are only signals; the allocator sizes and bounds them.
-    """
+    """SELL opportunities that release inventory (take-profit/stop-loss/max hold)."""
     experiment = get_active_experiment()
     if experiment is not None:
         result = scan_experiment_exits(frames, cost_basis, experiment, now=now)
@@ -255,9 +249,16 @@ def select_diversified_opportunities(
     opportunities: Sequence[Opportunity],
     frames: Mapping[str, MarketFrame],
     *,
-    max_pair_correlation: Decimal = D("0.85"),
+    max_pair_correlation: Decimal | None = None,
 ) -> StrategySelectionResult:
-    threshold = as_decimal(max_pair_correlation, "max_pair_correlation")
+    experiment = get_active_experiment()
+    selected_threshold = (
+        experiment.max_pair_correlation
+        if max_pair_correlation is None and experiment is not None
+        else D("0.85") if max_pair_correlation is None
+        else max_pair_correlation
+    )
+    threshold = as_decimal(selected_threshold, "max_pair_correlation")
     if threshold < 0 or threshold > 1:
         raise TradingValidationError("max_pair_correlation must be between 0 and 1")
 
