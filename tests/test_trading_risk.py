@@ -299,6 +299,31 @@ class TestCapitalAllocator(unittest.TestCase):
         self.assertIn(("sell", "ETH/JPY"), kinds)
         self.assertIn(("buy", "BTC/JPY"), kinds)
 
+    def test_profitable_sell_cannot_expand_same_cycle_total_deployment_cap(self):
+        result = allocate_opportunities(
+            [
+                opportunity("buy-a", "BTC/JPY", score="0.9", fraction="1"),
+                opportunity("buy-b", "XRP/JPY", score="0.8", fraction="1"),
+                opportunity("exit", "ETH/JPY", side="sell", score="1"),
+            ],
+            markets={
+                "BTC/JPY": market("BTC/JPY", base="BTC", amount_step="1", min_amount="1"),
+                "XRP/JPY": market("XRP/JPY", base="XRP", amount_step="1", min_amount="1"),
+                "ETH/JPY": market("ETH/JPY", base="ETH", amount_step="1", min_amount="1"),
+            },
+            prices={"BTC/JPY": D("1000"), "XRP/JPY": D("1000"), "ETH/JPY": D("1000")},
+            quote_to_reference={"JPY": D("1")},
+            available_quote={"JPY": D("0")},
+            available_base={"ETH/JPY": D("40")},
+            capital_reference=D("100000"),
+            deployed_reference=D("30000"),
+            policy=CapitalPolicy(),
+            now=NOW,
+        )
+        buys = [d for d in result.decisions if d.side == "buy"]
+        self.assertEqual(sum(d.reference_notional for d in buys), D("30000"))
+        self.assertEqual([d.opportunity_id for d in buys], ["buy-a"])
+
 
 if __name__ == "__main__":
     unittest.main()
