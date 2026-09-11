@@ -83,6 +83,7 @@ def test_delayed_boundary_runs_full_duration_and_does_not_repeat(tmp_path):
     assert len(output)==len(voice)==12
     assert all(f'script:{i}' in state['reports'] for i in range(1, 5))
     assert all(p['body'] for p in output)
+    assert all(str(kw.get('event_id', '')).startswith('paper-corner:') for kw in voice)
     assert '切り替えました' in state['reports']['opening']['text']
     assert json.loads(mgr.presentation.read_text())['mode']=='compact'
     assert mgr.tick()=='not-due'

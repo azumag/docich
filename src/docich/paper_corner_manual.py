@@ -7,6 +7,7 @@ ad-hoc test never consumes the day's 22:00 slot. The normal
 from __future__ import annotations
 
 import argparse
+import uuid
 from pathlib import Path
 
 from .config import ConfigError, GlobalConfig, load_global
@@ -26,6 +27,10 @@ class ManualPaperCornerManager(PaperCornerManager):
         self.minutes = duration_minutes
         self.path = Path(g.state_dir) / MANUAL_STATE_FILE
         self.tick_guard_path = Path(g.state_dir) / MANUAL_LOCK_FILE
+        # Out-of-band runs must not consume the scheduled corner's once-per-day
+        # audio deliveries (never-expiring keys), and should read aloud on every
+        # test. Use a fresh per-run delivery scope.
+        self.delivery_scope = f'paper-corner-manual-{uuid.uuid4().hex[:12]}'
 
 
 def _repo_root() -> Path:

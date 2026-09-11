@@ -122,3 +122,40 @@ def test_manual_start_is_single_flight(tmp_path):
     finally:
         fcntl.flock(held.fileno(), fcntl.LOCK_UN)
         held.close()
+
+
+def test_manual_run_uses_its_own_delivery_scope(tmp_path):
+    from docich.adapters.program import PAPER_VIEW_NAME
+    g = setup(tmp_path)
+    now = [datetime(2026, 9, 11, 3, 0, tzinfo=ZoneInfo('Asia/Tokyo')).timestamp()]
+    coord = FakeCoordinator(active='sorengame')
+    voice = []
+    mgr = ManualPaperCornerManager(
+        g, duration_minutes=3, clock=lambda: now[0],
+        sleep=lambda s: now.__setitem__(0, now[0] + s),
+        overlay=lambda g, p: None, speech=lambda g, t, **k: voice.append(k),
+        coordinator=coord)
+    seen = {'n': 0}
+
+    def _active():
+        seen['n'] += 1
+        return 'sorengame' if seen['n'] == 1 else 'paper-view'
+
+    mgr._active_game = _active
+    assert mgr.start() == 'completed'
+    assert ('switch', PAPER_VIEW_NAME) in coord.calls
+    ids = [str(kw.get('event_id')) for kw in voice]
+    assert ids, 'manual narration must be spoken'
+    # A manual run must use its own namespace and must never consume the daily
+    # once-per-day delivery keys.
+    assert all(i.startswith('paper-corner-manual-') for i in ids)
+    assert not any(i.startswith('paper-corner:') for i in ids)
+
+
+def test_manual_runs_get_distinct_delivery_scopes(tmp_path):
+    g = setup(tmp_path)
+    now = [datetime(2026, 9, 11, 3, 0, tzinfo=ZoneInfo('Asia/Tokyo')).timestamp()]
+    first = _manager(g, now, FakeCoordinator(active='sorengame'))
+    second = _manager(g, list(now), FakeCoordinator(active='sorengame'))
+    assert first.delivery_scope.startswith('paper-corner-manual-')
+    assert first.delivery_scope != second.delivery_scope

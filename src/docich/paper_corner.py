@@ -88,6 +88,11 @@ class PaperCornerManager:
         self.trading_dir = g.state_dir / 'trading'
         self.presentation = g.state_dir / 'trading/presentation.json'
         self.tick_guard_path = g.state_dir / 'locks' / 'paper-corner-tick.lock'
+        # Delivery/dedupe namespace for announcements. The scheduled corner
+        # delivers each announcement once per day; out-of-band runners (manual
+        # tests) override this so they neither replay nor consume the daily
+        # corner's audio deliveries.
+        self.delivery_scope = 'paper-corner'
         self.store = GameSwitchStore(g.state_dir)
         if coordinator is None:
             from .game_switch import GameSwitchCoordinator
@@ -144,6 +149,10 @@ class PaperCornerManager:
         except (OSError, ValueError, TypeError, KeyError, ArithmeticError):
             return '現在の模擬売買集計は確認待ちです。'
 
+    def _event_id(self, state, key) -> str:
+        """Delivery/dedupe key for one announcement (never expires)."""
+        return f'{self.delivery_scope}:{state.get("date", "nodate")}:{key}'
+
     def announce(self, state, key, text) -> None:
         """Deliver a one-off corner announcement (overlay+speech, durable)."""
         reports = state.setdefault('reports', {})
@@ -152,7 +161,7 @@ class PaperCornerManager:
             reports[key] = {'text': str(text), 'overlay': False, 'speech': False}
             self.save(state)
         report = reports[key]
-        event_id = f'paper-corner:{state.get("date", "nodate")}:{key}'
+        event_id = self._event_id(state, key)
         if not report['overlay']:
             self.overlay(self.g, {'ts': int(self.clock()), 'category': 'system', 'level': 'info',
                                  'title': 'PAPER 暗号資産コーナー', 'body': report['text'], 'source_id': event_id})
@@ -176,7 +185,7 @@ class PaperCornerManager:
                             'overlay': False, 'speech': False}
             self.save(state)
         report = reports[key]
-        event_id = f'paper-corner:{state["date"]}:{key}'
+        event_id = self._event_id(state, key)
         if not report['overlay']:
             self.overlay(self.g, {'ts': int(self.clock()), 'category': 'system', 'level': 'info',
                                  'title': 'PAPER 暗号資産コーナー', 'body': report['text'], 'source_id': event_id})
