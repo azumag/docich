@@ -23,7 +23,6 @@ from .models import TradingValidationError
 from .strategy_lab import (
     StrategyExperiment,
     StrategyLabError,
-    evaluate_experiment,
     experiment_from_mapping,
     experiment_to_payload,
     load_strategy_experiment,
@@ -31,6 +30,7 @@ from .strategy_lab import (
     save_pending_experiment,
     save_strategy_experiment,
 )
+from .strategy_metrics import evaluate_strategy_experiment
 from .strategy_store import (
     POLICY_KEYS,
     load_strategy_policy,
@@ -43,8 +43,10 @@ from .strategies import StrategyPolicy
 IMPROVE_LABEL = "RADIO:paper-improve"
 DEFAULT_TIMEOUT = 600
 STATUS_FILENAME = "paper_improve_status.json"
-MIN_EXPERIMENT_CLOSED_SELLS = 8
-MIN_EXPERIMENT_AGE_S = 24 * 3600
+MIN_EXPERIMENT_CLOSED_SELLS = 20
+MIN_EXPERIMENT_AGE_S = 48 * 3600
+EARLY_STOP_CLOSED_SELLS = 8
+EARLY_STOP_PROFIT_FACTOR = Decimal("0.75")
 _ALLOWED_HINT_KINDS = {"parameter", "feature", "risk", "data"}
 _ALLOWED_CONFIDENCE = {"low", "medium", "high"}
 
@@ -127,12 +129,7 @@ def _singleflight(state_dir):
 
 
 def _research_hypotheses(facts: Mapping[str, object]) -> list[dict[str, str]]:
-    """Allowlist only finalized, structured hypotheses from the narration lane.
-
-    Raw headlines, URLs, article summaries and Wikipedia text stay out of the
-    automatic strategy prompt. These hints are explicitly untrusted hypotheses
-    that must be translated into testable market-data conditions before PAPER use.
-    """
+    """Allowlist only finalized, structured hypotheses from the narration lane."""
     research = facts.get("research")
     if not isinstance(research, Mapping) or research.get("status") != "finalized":
         return []
@@ -275,8 +272,26 @@ def _should_rotate_experiment(
         closed = int((evaluation or {}).get("closed_sells", 0) or 0)
     except (TypeError, ValueError):
         closed = 0
+    try:
+        realized = Decimal(str((evaluation or {}).get("realized_pnl_jpy", "0") or "0"))
+    except (InvalidOperation, TypeError, ValueError):
+        realized = Decimal("0")
+    try:
+        raw_pf = (evaluation or {}).get("profit_factor")
+        profit_factor = None if raw_pf is None else Decimal(str(raw_pf))
+    except (InvalidOperation, TypeError, ValueError):
+        profit_factor = None
     age = max(0.0, float(now) - float(active.activated_at))
-    return closed >= MIN_EXPERIMENT_CLOSED_SELLS or age >= MIN_EXPERIMENT_AGE_S
+    if closed >= MIN_EXPERIMENT_CLOSED_SELLS:
+        return True
+    if (
+        closed >= EARLY_STOP_CLOSED_SELLS
+        and realized < 0
+        and profit_factor is not None
+        and profit_factor < EARLY_STOP_PROFIT_FACTOR
+    ):
+        return True
+    return age >= MIN_EXPERIMENT_AGE_S
 
 
 def run_paper_improve(
@@ -329,7 +344,7 @@ def _run_paper_improve(
         active_experiment = load_strategy_experiment(target)
         evaluation: dict[str, object] | None = None
         if active_experiment is not None:
-            evaluation = evaluate_experiment(
+            evaluation = evaluate_strategy_experiment(
                 target, active_experiment, capital_jpy=facts.get("capital_jpy", "0")
             )
             facts["active_strategy_experiment"] = experiment_to_payload(active_experiment)
