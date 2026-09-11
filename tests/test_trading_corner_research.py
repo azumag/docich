@@ -144,7 +144,7 @@ def test_news_dedupe_prefers_unseen_headlines(tmp_path):
     assert first_titles
 
 
-def test_research_is_in_narration_and_end_improvement_facts(tmp_path):
+def test_research_is_narration_only_and_excluded_from_automatic_improvement(tmp_path):
     _write_status(tmp_path)
     context = prepare_research_context(tmp_path, now=NOW, fetcher=_fetcher, chooser=_first)
     _finalize(tmp_path, context, now=NOW)
@@ -156,8 +156,9 @@ def test_research_is_in_narration_and_end_improvement_facts(tmp_path):
     assert "Google News RSS" in narration_prompt
     assert "improvement_hints" in narration_prompt
     improve_prompt = build_improve_prompt(facts)
-    assert "流動性変化を観測する" in improve_prompt
-    assert "Exchange liquidity changes" in improve_prompt
+    assert "流動性変化を観測する" not in improve_prompt
+    assert "Exchange liquidity changes" not in improve_prompt
+    assert '"research"' not in improve_prompt
 
 
 def test_missing_or_corrupt_research_fails_closed(tmp_path):
