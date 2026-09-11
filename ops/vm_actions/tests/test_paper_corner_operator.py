@@ -16,6 +16,7 @@ GENERIC_AUTH = ROOT / 'ops/vm_actions/authorize.py'
 sys.path.insert(0, str(ROOT / 'src'))
 
 from docich import paper_corner_operator as operator
+from docich.adapters.program import PAPER_VIEW_NAME
 from docich.paper_corner import PaperCornerError
 
 
@@ -94,6 +95,31 @@ class PaperCornerAuthorizeTests(unittest.TestCase):
 
 
 class PaperCornerOperatorTests(unittest.TestCase):
+    def test_recover_stale_start_only_when_canonical_is_back_at_previous_game(self):
+        manager = mock.Mock()
+        manager._read_state.return_value = {'status': 'starting', 'previous_game': 'sorengame'}
+        manager._active_game.return_value = 'sorengame'
+        with mock.patch.object(operator, 'ManualPaperCornerManager', return_value=manager), \
+             mock.patch.object(operator.time, 'time', return_value=123.0):
+            self.assertTrue(operator._recover_stale_manual_state(object(), 15))
+        saved = manager.save.call_args.args[0]
+        self.assertEqual(saved['status'], 'completed')
+        self.assertEqual(saved['completed_at'], 123.0)
+        self.assertIn('stale manual start recovered', saved['detail'])
+
+    def test_recover_refuses_active_or_ambiguous_manual_state(self):
+        manager = mock.Mock()
+        manager._read_state.return_value = {'status': 'active', 'previous_game': 'sorengame'}
+        manager._active_game.return_value = PAPER_VIEW_NAME
+        with mock.patch.object(operator, 'ManualPaperCornerManager', return_value=manager):
+            with self.assertRaises(PaperCornerError):
+                operator._recover_stale_manual_state(object(), 15)
+        manager._active_game.return_value = 'other-game'
+        with mock.patch.object(operator, 'ManualPaperCornerManager', return_value=manager):
+            with self.assertRaises(PaperCornerError):
+                operator._recover_stale_manual_state(object(), 15)
+        manager.save.assert_not_called()
+
     def test_launcher_uses_fixed_argv_private_log_and_detached_session(self):
         base = Path(tempfile.mkdtemp(prefix='paper-op-'))
         state = base / 'state'
@@ -104,10 +130,12 @@ class PaperCornerOperatorTests(unittest.TestCase):
         proc = mock.Mock(pid=1234)
         proc.poll.return_value = None
         with mock.patch.object(operator, 'load_global', return_value=fake_g), \
+             mock.patch.object(operator, '_recover_stale_manual_state', return_value=False), \
              mock.patch.object(operator.subprocess, 'Popen', return_value=proc) as popen, \
              mock.patch.object(operator.time, 'sleep'):
             result = operator.launch(config, 15)
         self.assertEqual(result['duration_minutes'], 15)
+        self.assertFalse(result['recovered_stale_state'])
         argv = popen.call_args.args[0]
         self.assertEqual(argv[1:3], ['-m', 'docich.paper_corner_manual'])
         self.assertEqual(argv[-2:], ['--duration-minutes', '15'])
@@ -127,6 +155,7 @@ class PaperCornerOperatorTests(unittest.TestCase):
         with self.assertRaises(PaperCornerError):
             operator.launch(config, 0)
         with mock.patch.object(operator, 'load_global', return_value=fake_g), \
+             mock.patch.object(operator, '_recover_stale_manual_state', return_value=False), \
              mock.patch.object(operator.subprocess, 'Popen', return_value=proc), \
              mock.patch.object(operator.time, 'sleep'):
             with self.assertRaises(PaperCornerError):
