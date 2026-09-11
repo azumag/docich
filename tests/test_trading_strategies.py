@@ -11,6 +11,7 @@ from docich.trading.market_data import MarketFrame  # noqa: E402
 from docich.trading.models import Opportunity  # noqa: E402
 from docich.trading.strategies import (  # noqa: E402
     StrategyPolicy,
+    scan_exit_opportunities,
     scan_opportunities,
     select_diversified_opportunities,
 )
@@ -120,6 +121,38 @@ class TestDiversification(unittest.TestCase):
         )
         self.assertEqual([x.opportunity_id for x in result.selected], ["a", "b"])
         self.assertFalse(result.rejected)
+
+
+class TestExitScan(unittest.TestCase):
+    def test_take_profit_and_stop_loss_release_inventory(self):
+        frames = {
+            "WIN/JPY": frame("WIN/JPY", [100, 101, 102, 103, 104, 105, 106, 107, 108, 110]),
+            "LOSE/JPY": frame("LOSE/JPY", [100, 99, 98, 97, 96, 95, 94, 93, 92, 90]),
+        }
+        cost_basis = {
+            "WIN/JPY": (D("1"), D("100"), NOW - 60),
+            "LOSE/JPY": (D("1"), D("100"), NOW - 60),
+        }
+        exits = {item.symbol: item for item in scan_exit_opportunities(frames, cost_basis, now=NOW)}
+        self.assertEqual(exits["WIN/JPY"].side, "sell")
+        self.assertEqual(exits["WIN/JPY"].reason_code, "take_profit")
+        self.assertEqual(exits["LOSE/JPY"].reason_code, "stop_loss")
+
+    def test_flat_position_within_thresholds_is_held(self):
+        frames = {"FLAT/JPY": frame("FLAT/JPY", [100] * 10)}
+        cost_basis = {"FLAT/JPY": (D("1"), D("100"), NOW - 60)}
+        self.assertEqual(scan_exit_opportunities(frames, cost_basis, now=NOW), ())
+
+    def test_max_hold_forces_release_of_a_flat_position(self):
+        frames = {"OLD/JPY": frame("OLD/JPY", [100] * 10)}
+        cost_basis = {"OLD/JPY": (D("1"), D("100"), NOW - 7 * 3600)}
+        exits = scan_exit_opportunities(frames, cost_basis, now=NOW)
+        self.assertEqual(len(exits), 1)
+        self.assertEqual(exits[0].reason_code, "max_hold")
+
+    def test_missing_frame_is_skipped(self):
+        cost_basis = {"GONE/JPY": (D("1"), D("100"), NOW - 7 * 3600)}
+        self.assertEqual(scan_exit_opportunities({}, cost_basis, now=NOW), ())
 
 
 if __name__ == "__main__":

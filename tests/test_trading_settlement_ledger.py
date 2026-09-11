@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich.trading.ledger import PaperLedger  # noqa: E402
+from docich.trading.models import AllocationDecision  # noqa: E402
 from docich.trading.settlement import MultiLegSettlement, SettlementLeg  # noqa: E402
 
 D = Decimal
@@ -55,6 +56,24 @@ class TestMultiLegSettlementLedger(unittest.TestCase):
         self.assertEqual(saved.legs[0].order_base_amount, D("0.0082"))
         self.assertEqual(saved.residuals["JPY"], D("7.8"))
         self.assertEqual(stat.S_IMODE(self.db.stat().st_mode), 0o600)
+
+    def test_position_cost_basis_and_net_positions_from_fills(self):
+        def fill(oid, side, amount, price):
+            notional = D(amount) * D(price)
+            return AllocationDecision(
+                opportunity_id=oid, strategy_id="test-v1", symbol="BTC/JPY", side=side,
+                quote="JPY", amount=D(amount), price=D(price),
+                quote_notional=notional, reference_notional=notional, reason_code="test",
+            )
+
+        self.ledger.record_fill(fill("b1", "buy", "1", "100"), timestamp=1000.0)
+        self.ledger.record_fill(fill("b2", "buy", "1", "200"), timestamp=1001.0)
+        self.ledger.record_fill(fill("s1", "sell", "1", "300"), timestamp=1002.0)
+        amount, average, opened_at = self.ledger.position_cost_basis()["BTC/JPY"]
+        self.assertEqual(amount, D("1"))
+        self.assertEqual(average, D("150"))
+        self.assertEqual(opened_at, 1000.0)
+        self.assertEqual(self.ledger.positions()["BTC/JPY"], D("1"))
 
     def test_duplicate_settlement_id_is_idempotent(self):
         first = self.ledger.record_multileg_settlement("same", settlement(), observed_at=1000.0)

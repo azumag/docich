@@ -244,20 +244,60 @@ class TestCapitalAllocator(unittest.TestCase):
         self.assertFalse(result.decisions)
         self.assertEqual(result.skipped[0].reason_code, "market_order_disabled")
 
-    def test_sell_is_skipped_until_inventory_aware_exit_path_exists(self):
+    def test_sell_is_allocated_when_inventory_exists(self):
         result = allocate_opportunities(
             [opportunity("sell", side="sell")],
             markets={"BTC/JPY": market()},
             prices={"BTC/JPY": D("1000000")},
             quote_to_reference={"JPY": D("1")},
-            available_quote={"JPY": D("100000")},
+            available_quote={"JPY": D("0")},
+            available_base={"BTC/JPY": D("0.002")},
+            capital_reference=D("100000"),
+            deployed_reference=D("0"),
+            policy=CapitalPolicy(),
+            now=NOW,
+        )
+        self.assertEqual(len(result.decisions), 1)
+        decision = result.decisions[0]
+        self.assertEqual(decision.side, "sell")
+        self.assertEqual(decision.amount, D("0.002"))
+        self.assertEqual(decision.quote_notional, D("2000"))
+
+    def test_sell_without_inventory_is_skipped(self):
+        result = allocate_opportunities(
+            [opportunity("sell", side="sell")],
+            markets={"BTC/JPY": market()},
+            prices={"BTC/JPY": D("1000000")},
+            quote_to_reference={"JPY": D("1")},
+            available_quote={"JPY": D("0")},
+            available_base={},
             capital_reference=D("100000"),
             deployed_reference=D("0"),
             policy=CapitalPolicy(),
             now=NOW,
         )
         self.assertFalse(result.decisions)
-        self.assertEqual(result.skipped[0].reason_code, "unsupported_side")
+        self.assertEqual(result.skipped[0].reason_code, "no_inventory")
+
+    def test_sell_proceeds_fund_a_new_buy_in_the_same_pass(self):
+        result = allocate_opportunities(
+            [
+                opportunity("buy", fraction="1"),
+                opportunity("exit", symbol="ETH/JPY", side="sell", score="0.9"),
+            ],
+            markets={"BTC/JPY": market(), "ETH/JPY": market("ETH/JPY", base="ETH")},
+            prices={"BTC/JPY": D("1000000"), "ETH/JPY": D("1000")},
+            quote_to_reference={"JPY": D("1")},
+            available_quote={"JPY": D("0")},
+            available_base={"ETH/JPY": D("10")},
+            capital_reference=D("100000"),
+            deployed_reference=D("30000"),
+            policy=CapitalPolicy(),
+            now=NOW,
+        )
+        kinds = [(d.side, d.symbol) for d in result.decisions]
+        self.assertIn(("sell", "ETH/JPY"), kinds)
+        self.assertIn(("buy", "BTC/JPY"), kinds)
 
 
 if __name__ == "__main__":
