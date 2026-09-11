@@ -241,12 +241,14 @@ jobs:
           )"
             attest_args=()
             if [[ -n "$attest_raw" ]]; then read -r -a attest_args <<< "$attest_raw"; fi
-            printf "python3 - '%s' '%s' '%s' '%s' '%s' '%s'" \
-              /home/ubuntu/docich "$old_root" "$old_sub" "$new_sub" games/soviet_now lineage
+            # The helper is executed from the verified reviewed commit object
+            # already fetched onto the VM by the failed deploy. Piping the whole
+            # helper through exec stdin would add the attestation argv and
+            # exceed the gateway's 16384-byte stdin cap (#279).
+            printf "git -C /home/ubuntu/docich -c core.hooksPath=/dev/null show '%s:ops/vm_actions/reconcile_presynced_submodule.py' | python3 - '%s' '%s' '%s' '%s' '%s' lineage" \
+              "$SHA" /home/ubuntu/docich "$old_root" "$old_sub" "$new_sub" games/soviet_now
             for token in "${attest_args[@]}"; do printf " '%s'" "$token"; done
-            printf " <<'PY'\n"
-            cat control/ops/vm_actions/reconcile_presynced_submodule.py
-            printf '\nPY\n'
+            printf '\n'
           } | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Normalize other owned submodule checkouts
