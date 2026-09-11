@@ -161,7 +161,9 @@ class TestCapitalAllocator(unittest.TestCase):
         self.assertFalse(result.decisions)
         self.assertEqual(result.skipped[0].reason_code, "expired")
 
-    def test_minimum_order_is_not_rounded_up(self):
+    def test_minimum_order_beyond_hard_cap_is_still_skipped(self):
+        # When the exchange minimum itself exceeds the hard per-opportunity cap,
+        # the order cannot be executed within policy and is skipped.
         tiny = market(amount_step="0.001", min_amount="0.01", min_cost="1000")
         result = allocate_opportunities(
             [opportunity("tiny", fraction="0.01")],
@@ -176,6 +178,44 @@ class TestCapitalAllocator(unittest.TestCase):
         )
         self.assertFalse(result.decisions)
         self.assertIn(result.skipped[0].reason_code, {"below_min_amount", "below_min_cost"})
+
+    def test_minimum_order_is_bumped_within_hard_cap(self):
+        # A fraction-sized order below the exchange minimum is bumped up to the
+        # minimum (rounded up to the step) when it still fits the hard cap, so
+        # the bot can execute instead of always skipping.
+        result = allocate_opportunities(
+            [opportunity("bump", fraction="0.08")],
+            markets={"BTC/JPY": market(amount_step="1", min_amount="10", min_cost="1000")},
+            prices={"BTC/JPY": D("100")},
+            quote_to_reference={"JPY": D("1")},
+            available_quote={"JPY": D("10000")},
+            capital_reference=D("10000"),
+            deployed_reference=D("0"),
+            policy=CapitalPolicy(),
+            now=NOW,
+        )
+        self.assertEqual(len(result.decisions), 1)
+        decision = result.decisions[0]
+        self.assertEqual(decision.amount, D("10"))
+        self.assertGreaterEqual(decision.quote_notional, D("1000"))
+        self.assertLessEqual(decision.reference_notional, D("3000"))
+
+    def test_min_cost_floor_bumps_amount_even_when_min_amount_is_met(self):
+        # min_amount is satisfied, but the quote notional is below min_cost, so
+        # the size must grow to meet the cost floor (within the hard cap).
+        result = allocate_opportunities(
+            [opportunity("cost", fraction="0.05")],
+            markets={"BTC/JPY": market(amount_step="1", min_amount="1", min_cost="1000")},
+            prices={"BTC/JPY": D("100")},
+            quote_to_reference={"JPY": D("1")},
+            available_quote={"JPY": D("10000")},
+            capital_reference=D("10000"),
+            deployed_reference=D("0"),
+            policy=CapitalPolicy(),
+            now=NOW,
+        )
+        self.assertEqual(len(result.decisions), 1)
+        self.assertGreaterEqual(result.decisions[0].quote_notional, D("1000"))
 
     def test_existing_deployment_reduces_total_capacity(self):
         result = allocate_opportunities(

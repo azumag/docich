@@ -57,6 +57,23 @@ def _round_down(amount: Decimal, step: Decimal | None) -> Decimal:
     return (amount // step) * step
 
 
+def _round_up(amount: Decimal, step: Decimal | None) -> Decimal:
+    if step is None or amount <= 0:
+        return amount
+    return ((amount + step - 1) // step) * step
+
+
+def _market_min_amount(market: MarketInfo, price: Decimal) -> Decimal | None:
+    """Smallest base amount that satisfies the market's amount and cost floors."""
+    required: Decimal | None = None
+    if market.min_amount is not None and market.min_amount > 0:
+        required = market.min_amount
+    if market.min_cost is not None and market.min_cost > 0 and price > 0:
+        cost_amount = market.min_cost / price
+        required = cost_amount if required is None else max(required, cost_amount)
+    return required
+
+
 def allocate_opportunities(
     opportunities: Sequence[Opportunity],
     *,
@@ -134,6 +151,7 @@ def allocate_opportunities(
             opportunity.max_notional_fraction,
         )
         reference_cap = capital * opportunity_fraction
+        hard_cap = capital * policy.max_opportunity_fraction
         funding_cap = quote_balance * quote_rate
         target_reference = min(reference_cap, remaining_reference, funding_cap)
         if target_reference <= 0:
@@ -143,6 +161,22 @@ def allocate_opportunities(
         target_quote = target_reference / quote_rate
         raw_amount = target_quote / price
         amount = _round_down(raw_amount, market.amount_step)
+        # Exchange minimums are hard execution constraints. When the
+        # fraction-sized order falls below the minimum, size up to the minimum
+        # (rounded up to the step) provided it still fits the hard
+        # per-opportunity cap and the remaining/funding limits. Otherwise the
+        # order could never execute and is skipped as before.
+        min_amount_required = _market_min_amount(market, price)
+        if min_amount_required is not None and amount < min_amount_required:
+            bumped = _round_up(min_amount_required, market.amount_step)
+            bumped_reference = bumped * price * quote_rate
+            if (
+                bumped > 0
+                and bumped_reference <= hard_cap
+                and bumped_reference <= remaining_reference
+                and bumped_reference <= funding_cap
+            ):
+                amount = bumped
         if amount <= 0:
             skipped.append(_skip(opportunity, "below_min_amount"))
             continue
