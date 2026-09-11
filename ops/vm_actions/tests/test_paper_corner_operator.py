@@ -160,7 +160,9 @@ class PaperCornerOperatorTests(unittest.TestCase):
              mock.patch.object(operator.time, 'sleep'):
             with self.assertRaises(PaperCornerError):
                 operator.launch(config, 15)
-        self.assertFalse(list((state / 'logs').glob('paper-manual-*.log')))
+        logs = list((state / 'logs').glob('paper-manual-*.log'))
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(stat.S_IMODE(logs[0].stat().st_mode), 0o600)
 
 
 class PaperCornerWorkflowPolicyTests(unittest.TestCase):
