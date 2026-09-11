@@ -196,11 +196,47 @@ class BitbankPublicGateway:
             raise MarketFrameError("limit must be at least 2")
         frames: dict[str, MarketFrame] = {}
         for symbol in symbols:
-            rows = self._exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+            rows = self._fetch_recent_ohlcv(symbol, timeframe=timeframe, limit=limit, now=now)
             frames[str(symbol)] = frame_from_ohlcv(
                 str(symbol), rows, timeframe=timeframe, now=now, min_bars=limit
             )
         return frames
+
+    def _fetch_recent_ohlcv(self, symbol, *, timeframe: str, limit: int, now: float):
+        """Fetch ``limit`` recent bars, merging across the UTC date boundary.
+
+        ccxt's bitbank ``fetch_ohlcv`` serves a single UTC date (chosen from
+        ``since``), so right after 00:00 UTC (09:00 JST) the window start lands
+        on the previous date and only the previous day's tail is returned
+        (Issue #268: the worker saw fewer than ``limit`` bars and went
+        degraded). When that happens, also fetch the current UTC date and merge
+        the two single-date responses.
+        """
+        step_ms = int(self._exchange.parse_timeframe(timeframe)) * 1000
+        since_ms = int(float(now) * 1000) - step_ms * limit
+        rows = list(self._exchange.fetch_ohlcv(
+            symbol, timeframe=timeframe, since=since_ms, limit=limit))
+        if len(rows) < limit:
+            day_start_ms = (int(float(now)) // 86400) * 86400 * 1000
+            if day_start_ms > since_ms:
+                rows.extend(self._exchange.fetch_ohlcv(
+                    symbol, timeframe=timeframe, since=day_start_ms, limit=limit))
+                rows = self._merge_ohlcv(rows)
+                if len(rows) > limit:
+                    rows = rows[-limit:]
+        return rows
+
+    @staticmethod
+    def _merge_ohlcv(rows):
+        merged: dict[int, object] = {}
+        for row in rows:
+            if not isinstance(row, (list, tuple)) or len(row) < 6:
+                continue
+            try:
+                merged[int(row[0])] = row
+            except (TypeError, ValueError):
+                continue
+        return [merged[key] for key in sorted(merged)]
 
     def fetch_depth_books(
         self,
