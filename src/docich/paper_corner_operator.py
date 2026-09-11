@@ -75,13 +75,13 @@ def _classify_prepare_failure(g) -> str:
         return "ffplay_missing"
     if "xdotool" in lowered and ("見つかりません" in detail or "not found" in lowered):
         return "xdotool_missing"
-    if "dashboard server" in lowered or "dashboard server が応答しません" in lowered or "dashboard serverが応答しません" in lowered:
+    if "dashboard server" in lowered:
         return "dashboard_server_timeout"
-    if "dashboard window" in lowered or "dashboard window" in detail or "dashboard window" in lowered:
+    if "dashboard window" in lowered:
         return "dashboard_window"
     if "ownership" in lowered:
         return "ownership_mismatch"
-    if "deadline" in lowered or "timeout" in lowered or "タイムアウト" in detail or "deadline" in detail:
+    if "deadline" in lowered or "timeout" in lowered or "タイムアウト" in detail:
         return "deadline"
     return "other_prepare_failure"
 
@@ -148,22 +148,27 @@ def launch(config_path: Path, duration_minutes: int) -> dict[str, object]:
         "LANG": "C.UTF-8",
         "PYTHONPATH": str(Path(g.repo_root) / "src"),
     }
-    with os.fdopen(fd, "ab", closefd=True) as log:
-        proc = subprocess.Popen(
-            argv,
-            stdin=subprocess.DEVNULL,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            cwd=str(g.repo_root),
-            env=env,
-            start_new_session=True,
-            close_fds=True,
-        )
-    time.sleep(STARTUP_GRACE_SECONDS)
-    if proc.poll() is not None:
-        # Keep the 0600 VM-local log for owner diagnostics. It is never emitted
-        # through the production gateway or Actions logs.
-        raise PaperCornerError("PAPER manual runner exited during startup")
+    try:
+        with os.fdopen(fd, "ab", closefd=True) as log:
+            proc = subprocess.Popen(
+                argv,
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                cwd=str(g.repo_root),
+                env=env,
+                start_new_session=True,
+                close_fds=True,
+            )
+        time.sleep(STARTUP_GRACE_SECONDS)
+        if proc.poll() is not None:
+            raise PaperCornerError("PAPER manual runner exited during startup")
+    except Exception:
+        # Preserve the private 0600 log when startup fails.  The owner-only VM
+        # gateway intentionally withholds production exec output, so deleting
+        # this file would also delete the only evidence needed for diagnosis.
+        # The path/content are never emitted to Actions by this operator.
+        raise
     return {
         "status": "started",
         "operation_id": operation_id,
