@@ -29,6 +29,21 @@ class VmOperationsPresyncWorkflowTests(unittest.TestCase):
         self.assertEqual(occurrences, 2, "reconcile and normalize steps must both accept configured status")
         self.assertNotIn('[[ "$vm_status" == drift ]]', workflow)
 
+    def test_reconcile_invokes_helper_with_lineage_enabled(self):
+        # #279: a named path (overlays/direct_broadcast_overlay.html) was
+        # confirmed live-present but matching neither old nor new -- exactly
+        # the "reviewed intermediate" shape the bounded lineage opt-in
+        # exists for. The 6-arg invocation only converges bytes that are
+        # sha256-identical to a real reviewed commit in old_sub..new_sub;
+        # anything else still refuses (reconcile_presynced_submodule.py is
+        # unchanged, only this call site's argv grew by one).
+        workflow = Path(".github/workflows/vm-operations.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            "printf \"python3 - '%s' '%s' '%s' '%s' '%s' '%s' <<'PY'\\n\" \\\n"
+            "              /home/ubuntu/docich \"$old_root\" \"$old_sub\" \"$new_sub\" games/soviet_now lineage",
+            workflow,
+        )
+
     def test_manual_deploy_does_not_auto_reconcile(self):
         workflow = Path(".github/workflows/vm-operations.yml").read_text(encoding="utf-8")
         reconcile_if = next(
