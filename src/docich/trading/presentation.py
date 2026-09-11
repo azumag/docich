@@ -14,9 +14,12 @@ from ..overlay_queue import validate_event
 
 MODES = {"compact", "detailed"}
 _REASON_TEXT = {
-    "momentum_breakout": "短期モメンタムの上振れを検出",
-    "mean_reversion_discount": "平均からの下方乖離を検出",
-    "relative_value_lag": "同一建値グループ内の相対的な出遅れを検出",
+    "momentum_breakout": "短期モメンタムの上振れ",
+    "mean_reversion_discount": "平均からの下方乖離",
+    "relative_value_lag": "同一建値グループ内の相対的な出遅れ",
+    "take_profit": "利確条件",
+    "stop_loss": "損切り条件",
+    "max_hold": "保有期限",
 }
 _FAILURE_TEXT = {
     "insufficient_depth": "板不足",
@@ -124,8 +127,7 @@ def _money(value) -> str:
     amount = _decimal(value, "money")
     if amount == amount.to_integral_value():
         return f"{int(amount):,}"
-    text = f"{amount:,.4f}".rstrip("0").rstrip(".")
-    return text
+    return f"{amount:,.4f}".rstrip("0").rstrip(".")
 
 
 def _signed_money(value) -> tuple[str, str]:
@@ -144,37 +146,43 @@ def _safe_code(value: object, fallback: str = "unknown") -> str:
     return "".join(ch for ch in text if ch.isalnum() or ch in "._:-/")[:80] or fallback
 
 
+def _reason_text(code: str) -> str:
+    return _REASON_TEXT.get(code, f"取引条件 {code}" if code != "unknown" else "取引条件")
+
+
 def _fill(
     event: Mapping[str, object], mode: str, status: Mapping[str, object] | None, *, display_at: float
 ) -> RenderedNotification:
+    del mode, status
     symbol = _safe_code(event.get("symbol"))
     is_sell = str(event.get("side")) == "sell"
     side = "売り" if is_sell else "買い"
     strategy = _safe_code(event.get("strategy_id"))
     reason_code = _safe_code(event.get("reason_code"))
+    reason = _reason_text(reason_code)
     title = "暗号資産 PAPER 約定"
-    body = f"{symbol} {side} / {strategy}"
-    speech = f"{symbol}を{side}。"
+    brief = f"{reason}を検出：{symbol}を{side}"
+    body = f"{brief} / {strategy}"
+    speech = brief
     if is_sell:
         if event.get("realized_pnl_reference") is None:
             body += " / 実現損益 取得失敗"
-            speech += " この売却で確定した損益は確認できませんでした。"
+            speech += "、損益は確認できませんでした。"
         else:
             try:
                 pnl_text, spoken_sign = _signed_money(event.get("realized_pnl_reference"))
+                pnl_value = _decimal(event.get("realized_pnl_reference"), "pnl")
             except PresentationError:
                 body += " / 実現損益 取得失敗"
-                speech += " この売却で確定した損益は確認できませんでした。"
+                speech += "、損益は確認できませんでした。"
             else:
                 body += f" / 実現損益 {pnl_text}円"
-                if spoken_sign == "プラスマイナスゼロ":
-                    speech += " この売却で確定した損益は、ほぼプラスマイナスゼロです。"
+                if pnl_value == 0:
+                    speech += "、損益プラスマイナスゼロです。"
                 else:
-                    speech += f" この売却で確定した損益は{spoken_sign}{_money(abs(_decimal(event.get('realized_pnl_reference'), 'pnl')))}円です。"
-    if mode == "detailed":
-        reason = _REASON_TEXT.get(reason_code, f"理由コード {reason_code}")
-        body += f" / {reason}"
-        speech += f" 判断理由は、{reason}。"
+                    speech += f"、損益{spoken_sign}{_money(abs(pnl_value))}円です。"
+    else:
+        speech += "。"
     overlay = validate_event(
         {
             "ts": int(display_at), "category": "worker", "title": title, "body": body[:500],
@@ -188,6 +196,7 @@ def _fill(
 def _settlement(
     event: Mapping[str, object], mode: str, status: Mapping[str, object] | None, *, display_at: float
 ) -> RenderedNotification:
+    del mode, status
     route = str(event.get("route_id") or "unknown").replace("\n", " ").strip()[:220]
     start_asset = _safe_code(event.get("start_asset"))
     start_amount = _money(event.get("start_amount"))
