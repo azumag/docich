@@ -1,9 +1,9 @@
-"""Fact-grounded narration script for the PAPER corner (Issue #198, Stage 3).
+"""Fact-grounded narration script for the PAPER corner.
 
-The corner speaks four short segments at start. They may be written by an AI
-model, but only from the allowlisted facts built here; when AI is unavailable
-(or disabled) a deterministic fallback built from the same facts is spoken
-instead. This module never places trades and never logs raw model output.
+The corner speaks four substantial segments. Trading facts are augmented, when
+real AI narration is enabled, with bounded public crypto-news research and one
+actually-held asset spotlight. Research failures never fail the corner and raw
+model output is never persisted.
 """
 from __future__ import annotations
 
@@ -16,15 +16,17 @@ from typing import Mapping
 
 from ..config import GlobalConfig
 from .ai_text import extract_json_object, generate_text
+from .corner_research import (
+    finalize_research_result,
+    load_research_result,
+    prepare_research_context,
+)
 from .dashboard_snapshot import build_dashboard_snapshot
 from .strategy_store import load_strategy_policy, policy_to_payload
 from .strategies import StrategyPolicy
 
 
 SEGMENT_KEYS = ("corner", "strategy", "result", "improve")
-# Narration is read aloud at the start of the corner; each segment should be a
-# substantial multi-sentence passage (analysis, outlook, improvement), not a
-# one-liner.
 MAX_SEGMENT_CHARS = 600
 MIN_SEGMENT_CHARS = 300
 SCRIPT_LABEL = "RADIO:paper-script"
@@ -178,39 +180,53 @@ def build_facts(trading_dir, *, now=None, policy: StrategyPolicy | None = None) 
         "focus": focus,
         "improvement": _latest_improvement(Path(target).parent / "logs"),
         "policy": policy_to_payload(effective),
+        # Finalized research contains only bounded public/news analysis and
+        # structured improvement hints. A prepared same-corner record is also
+        # useful while the narration AI is running.
+        "research": load_research_result(target),
     }
 
 
 def build_prompt(facts: Mapping[str, object]) -> str:
     facts_json = json.dumps(dict(facts), ensure_ascii=False, sort_keys=True)
     return (
-        "あなたはPAPER暗号資産コーナーのラジオMCです。数字の読み上げ係ではありません。\n"
+        "あなたはPAPER暗号資産コーナーのラジオMC兼リサーチャーです。数字の読み上げ係ではありません。\n"
         "以下の実データ(facts)だけを根拠に、何が起きているか、戦略がうまく機能しているか、"
-        "次に何を見るべきかまで解釈して、番組として聞いて面白い台本を書いてください。"
-        "存在しない数値・銘柄・出来事・ニュースは絶対に作らないでください。\n"
+        "ニュースが何を意味しそうか、次に何を見るべきかまで自分の視点で噛み砕いてください。"
+        "存在しない数値・銘柄・ニュース・因果関係は絶対に作らないでください。\n"
         f"{facts_json}\n\n"
+        "【ニュースの扱い】\n"
+        "- research.news_items はGoogle News RSSから取得した見出し・媒体・時刻・RSS要約です。記事全文ではありません。"
+        "見出しだけで断定せず、複数項目の共通点や相違点を見て、事実とあなたの推測を言い分けてください。\n"
+        "- 重要そうな2〜3件を選び、『何が起きたか』→『市場やBOTにどう効き得るか』→『実際に何を観測すべきか』の順で分析します。"
+        "価格が動いた理由をニュースだけで決めつけないでください。\n"
+        "- research.asset があれば、そのsymbolは実際にPAPERで現在保有中です。指定されたangle_labelを中心に、"
+        "backgroundとasset.news_itemsを根拠に、その銘柄ならではの特徴、歴史、面白いエピソード、弱点などを視聴者向けに説明してください。\n"
+        "【改善への接続】\n"
+        "- ニュース分析からBOT改善に有用な仮説がある場合だけ improvement_hints に構造化してください。無理に案を作らないでください。\n"
+        "- kind は parameter / feature / risk / data のいずれか。featureは新機能、riskはリスク制御、dataは新しい観測データ、"
+        "parameterは既存パラメータ調整です。各案に根拠(evidence)と確信度(confidence: low/medium/high)を付けます。\n"
+        "- ニュース単発を根拠に自動売買ルールを直接追加する提案は禁止。検証方法・反証条件をrationaleに含めてください。\n"
         "【話し方】\n"
         "- です・ます調の自然な話し言葉。結論を先に言い、その後に理由や数字を添える。\n"
         "- factsを順番に復唱するだけは禁止。数字同士を比較し、意味を説明する。\n"
-        "- ラジオやコメント返しのように、軽いツッコミ、たとえ、意外性のある一言を適度に入れる。"
-        "ただし事実を曲げるギャグ、寒い決め台詞の連発、過剰な寸劇は禁止。\n"
-        "- 損失なら言い訳せず『今のところ負けています』『この条件は効いていません』と率直に言う。"
-        "利益でも一時的な含み益だけで『戦略成功』と断定しない。\n"
+        "- 軽いツッコミ、たとえ、意外性のある一言を適度に入れる。ただし事実を曲げるギャグは禁止。\n"
+        "- 損失なら言い訳せず率直に言う。利益でも一時的な含み益だけで戦略成功と断定しない。\n"
         "- 同じ文型・同じオチを各段落で繰り返さない。箇条書き、見出し、マークダウンは禁止。\n"
         "【損益の扱い】\n"
-        "- performance.cumulative_pnl_jpy がある場合、resultで累積損益（評価込み）を必ず具体的に言う。\n"
-        "- performance.today_realized_pnl_jpy は『本日の確定損益』として必ず触れる。"
-        "これは本日0時からの売却で確定した損益で、日中の含み変動を含まない。\n"
-        "- performance.unrealized_pnl_jpy がある場合、含み損益も使って、確定損益との違いを視聴者に分かるようにする。\n"
-        "- performance.complete=false の場合は、価格不足のため累積評価を断定しない。\n"
-        "次の4キーだけを持つJSONオブジェクト1つを出力してください。\n"
-        "- corner: 今日の見どころを短く提示。画面の損益、見送り、保有、約定のどこを見ると面白いか案内する。\n"
-        "- strategy: 現在の戦略パラメータの狙いを平易に説明し、現在の損益や見送り傾向と結び付けて考察する。\n"
-        "- result: 累積損益、本日確定損益、含み損益、直近約定、保有、銘柄ごとの見送り理由を横断して、"
-        "良かった点・悪かった点・いまの勝ち負けを率直に分析する。\n"
-        "- improve: 損益と実際の判断結果から、今の戦略が効いているかを評価し、次回改善で何を検証するかを述べる。\n"
-        f"各値は日本語で{MIN_SEGMENT_CHARS}〜{MAX_SEGMENT_CHARS}文字程度の、文がつながる本文に"
-        "すること。短すぎる台本は不可。JSON以外は出力しないこと。"
+        "- performance.cumulative_pnl_jpy がある場合、resultで累積損益（評価込み）を具体的に言う。\n"
+        "- performance.today_realized_pnl_jpy は本日の確定損益として触れる。\n"
+        "- performance.unrealized_pnl_jpy がある場合、含み損益も使う。complete=falseなら累積評価を断定しない。\n"
+        "次の7キーだけを持つJSONオブジェクト1つを出力してください。\n"
+        "- corner: 取得ニュースの独自分析を中心に、今日の相場で何を見るかを語る。ニュースが無ければ取引画面の見どころ。\n"
+        "- strategy: 現在の戦略パラメータの狙いを、損益・見送り傾向・ニュースから観測すべき点と結び付ける。\n"
+        "- result: 累積損益・直近約定・保有を分析し、research.assetがあれば保有銘柄の面白い解説を自然に織り込む。\n"
+        "- improve: 取引結果とニュース分析を分離して評価し、次回改善で何を検証するかを述べる。\n"
+        "- news_analysis: ニュースから得た考察だけを400〜1200文字で要約。事実と推測を区別する。\n"
+        "- asset_spotlight: 選択保有銘柄の解説だけを300〜1200文字。research.assetが無ければ空文字。\n"
+        "- improvement_hints: 改善価値がある時だけ最大4件の配列。各要素は kind,title,rationale,evidence,confidence。無ければ空配列。\n"
+        f"corner/strategy/result/improveの各値は日本語で{MIN_SEGMENT_CHARS}〜{MAX_SEGMENT_CHARS}文字程度の本文にすること。"
+        "JSON以外は出力しないこと。"
     )
 
 
@@ -267,19 +283,26 @@ def _pnl_text(facts: Mapping[str, object]) -> str:
 
 
 def render_fallback(facts: Mapping[str, object]) -> dict:
-    """Deterministic narration from the same facts (used when AI is unavailable)."""
+    """Deterministic narration from the same trading/research facts."""
     positions = facts.get("open_positions_top") or []
     fills = facts.get("recent_fills") or []
     skipped = facts.get("skipped_decisions") or []
     focus = facts.get("focus") if isinstance(facts.get("focus"), Mapping) else {}
     improvement = facts.get("improvement") if isinstance(facts.get("improvement"), Mapping) else {}
+    research = facts.get("research") if isinstance(facts.get("research"), Mapping) else {}
+    news = research.get("news_items") if isinstance(research.get("news_items"), list) else []
+    asset = research.get("asset") if isinstance(research.get("asset"), Mapping) else {}
 
     corner = (
         "PAPER・暗号資産の模擬売買コーナーです。今日は単に何を買ったかだけでなく、"
         "累積損益と本日の確定損益を先に見て、BOTの作戦が本当に働いているのかを確認します。"
-        "画面右側には、どの銘柄の買い・売りを、なぜ見送ったのかも出ています。"
-        "数字が多い画面ですが、要するに勝っているのか、待つべきなのか、そこを一緒に見ていきます。"
+        "画面右側には見送り理由と市場の歩み値も出ています。数字が多いですが、勝っているのか、"
+        "待つべきなのか、そこを一緒に見ていきます。"
     )
+    if news:
+        titles = [str(item.get("title", "")) for item in news[:2] if isinstance(item, Mapping)]
+        if titles:
+            corner += "公開ニュースでは「" + "」「".join(titles) + "」が見出しに出ています。見出しだけで因果を断定せず、相場の反応と突き合わせて見ます。"
 
     result = (
         f"まず成績です。{_pnl_text(facts)}模擬資金は{facts.get('capital_jpy')}円、"
@@ -292,7 +315,7 @@ def render_fallback(facts: Mapping[str, object]) -> dict:
             f"価格{first.get('price')}でした。"
         )
         if first.get("side") == "sell" and first.get("realized_pnl_jpy") is not None:
-            result += f"この売却で確定した損益は{first.get('realized_pnl_jpy')}円です。"
+            result += f"損益は{first.get('realized_pnl_jpy')}円です。"
     else:
         result += "直近の約定はなく、BOTは様子見を選んでいます。"
     if skipped:
@@ -302,14 +325,15 @@ def render_fallback(facts: Mapping[str, object]) -> dict:
         ]
         if examples:
             result += "見送りでは、" + "、".join(examples) + "でした。"
-    result += (
-        f"市場鮮度は{facts.get('fresh_markets')}/{facts.get('total_markets')}で、"
-        "取得できている範囲の公開データで判断しています。"
-    )
     if focus.get("symbol"):
         result += (
             f"注目している{focus.get('symbol')}は直近{focus.get('bars')}本で"
             f"{focus.get('change_pct')}パーセント動いています。"
+        )
+    if asset.get("symbol"):
+        result += (
+            f"保有中の{asset.get('symbol')}については、今回は{asset.get('angle_label')}という切り口で調べています。"
+            "AI分析が使えない場合でも、実際に保有している銘柄だけを対象にしています。"
         )
 
     improve = (
@@ -322,7 +346,7 @@ def render_fallback(facts: Mapping[str, object]) -> dict:
             f"前回の改善は{improvement.get('status')}で、戦略は"
             + ("更新されています。" if improvement.get("changed") else "変更なしでした。")
         )
-    improve += "数字が悪ければ素直に作戦を疑い、良くても再現性があるかを確認してから次へ進みます。"
+    improve += "ニュースは仮説の材料にとどめ、取引結果で裏付けが取れない案は採用しません。"
 
     return {
         "corner": corner,
@@ -343,12 +367,30 @@ def generate_corner_script(
     dry_run: bool = False,
     now=None,
 ) -> dict:
-    """Return the four segments, never raising to the corner caller."""
+    """Return four segments; optional public research never fails the caller."""
     target = Path(trading_dir)
     moment = time.time() if now is None else float(now)
+    cleaned_agents = (agents or "").strip()
+    real_ai = (
+        not dry_run
+        and bool(cleaned_agents)
+        and g is not None
+        and os.environ.get("DOCICH_ALLOW_REAL_AI") == "1"
+    )
+
+    research_context: dict = {}
+    if real_ai:
+        try:
+            research_context = prepare_research_context(target, now=moment)
+        except Exception:
+            # Network/public-research failures are commentary degradation only.
+            research_context = {}
+
     try:
         effective = policy if policy is not None else load_strategy_policy(target)
         facts = build_facts(target, now=moment, policy=effective)
+        if research_context:
+            facts["research"] = research_context
     except Exception as exc:
         return {
             "source": "fallback",
@@ -357,7 +399,6 @@ def generate_corner_script(
         }
     fallback = render_fallback(facts)
 
-    cleaned_agents = (agents or "").strip()
     if dry_run:
         return {"source": "fallback", "reason": "dry-run", "segments": fallback}
     if not cleaned_agents:
@@ -370,7 +411,21 @@ def generate_corner_script(
         raw = generate_text(
             g, label=SCRIPT_LABEL, agents=cleaned_agents, prompt_text=prompt, timeout=timeout
         )
+        model_data = extract_json_object(raw)
         segments = parse_script(raw)
     except Exception as exc:
         return {"source": "fallback", "reason": _safe_reason(exc), "segments": fallback}
-    return {"source": "ai", "reason": None, "segments": segments}
+
+    research_status = None
+    if research_context and isinstance(model_data, Mapping):
+        try:
+            finalized = finalize_research_result(target, research_context, model_data, now=moment)
+            research_status = finalized.get("status")
+        except Exception:
+            research_status = "finalize-failed"
+    return {
+        "source": "ai",
+        "reason": None,
+        "segments": segments,
+        "research_status": research_status,
+    }
