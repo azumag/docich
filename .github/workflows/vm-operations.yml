@@ -206,8 +206,14 @@ jobs:
           [[ "$old_sub" != "$new_sub" ]]
 
           {
-            printf "python3 - '%s' '%s' '%s' '%s' '%s' <<'PY'\n" \
-              /home/ubuntu/docich "$old_root" "$old_sub" "$new_sub" games/soviet_now
+            # lineage (#279): converge a changed path only when its live
+            # bytes are cryptographically identical (sha256) to some actual
+            # reviewed commit's blob for that exact path within old_sub..
+            # new_sub -- never a guess, never applied to bytes that don't
+            # match real history. Anything else stays fail-closed exactly
+            # as before.
+            printf "python3 - '%s' '%s' '%s' '%s' '%s' '%s' <<'PY'\n" \
+              /home/ubuntu/docich "$old_root" "$old_sub" "$new_sub" games/soviet_now lineage
             cat control/ops/vm_actions/reconcile_presynced_submodule.py
             printf '\nPY\n'
           } | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
