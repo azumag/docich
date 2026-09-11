@@ -20,6 +20,8 @@ _REASON_TEXT = {
     "take_profit": "利確条件",
     "stop_loss": "損切り条件",
     "max_hold": "保有期限",
+    "paper_lab_entry": "実験戦略の買い条件",
+    "paper_lab_exit": "実験戦略の売り条件",
 }
 _FAILURE_TEXT = {
     "insufficient_depth": "板不足",
@@ -146,7 +148,100 @@ def _safe_code(value: object, fallback: str = "unknown") -> str:
     return "".join(ch for ch in text if ch.isalnum() or ch in "._:-/")[:80] or fallback
 
 
-def _reason_text(code: str) -> str:
+def _plain_number(value: object, digits: int = 2) -> str:
+    number = _decimal(value, "reason")
+    quantum = Decimal("1").scaleb(-digits)
+    text = f"{number.quantize(quantum):f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _pct_from_bps(value: object) -> Decimal:
+    return _decimal(value, "bps") / Decimal("100")
+
+
+def _duration(minutes: object) -> str:
+    total = max(0, int(_decimal(minutes, "minutes")))
+    hours, mins = divmod(total, 60)
+    if hours and mins:
+        return f"{hours}時間{mins}分"
+    if hours:
+        return f"{hours}時間"
+    return f"{mins}分"
+
+
+def _threshold_phrase(item: Mapping[str, object]) -> str:
+    feature = str(item.get("feature") or "")
+    op = str(item.get("op") or "")
+    threshold = item.get("threshold")
+    if threshold is None:
+        return ""
+    op_ja = {">=": "以上", "<=": "以下", ">": "超", "<": "未満"}.get(op, op)
+    if feature.endswith("_bps") or feature == "pnl_bps":
+        value = _pct_from_bps(threshold)
+        return f"{_plain_number(abs(value))}%{op_ja}"
+    if feature == "hold_minutes":
+        return f"{_duration(threshold)}{op_ja}"
+    if feature == "rsi":
+        return f"RSI{_plain_number(threshold)}{op_ja}"
+    if feature == "zscore":
+        return f"Zスコア{_plain_number(threshold)}{op_ja}"
+    return f"{_plain_number(threshold)}{op_ja}"
+
+
+def _condition_reason(item: Mapping[str, object], *, reason_code: str = "") -> str:
+    feature = str(item.get("feature") or "")
+    observed = item.get("observed")
+    lookback = item.get("lookback")
+    if observed is None:
+        return ""
+    threshold = _threshold_phrase(item)
+    if feature == "pnl_bps":
+        pct = _pct_from_bps(observed)
+        direction = "上昇" if pct >= 0 else "下落"
+        if reason_code == "take_profit":
+            return f"平均取得価格から{_plain_number(abs(pct))}%{direction}、利確基準{threshold}"
+        if reason_code == "stop_loss":
+            return f"平均取得価格から{_plain_number(abs(pct))}%{direction}、損切り基準{_plain_number(abs(_pct_from_bps(item.get('threshold'))))}%以上"
+        return f"平均取得価格から{_plain_number(abs(pct))}%{direction}、条件{threshold}"
+    if feature == "hold_minutes":
+        return f"保有{_duration(observed)}、最大保有{_duration(item.get('threshold'))}を超過"
+    if feature == "return_bps":
+        pct = _pct_from_bps(observed)
+        direction = "上昇" if pct >= 0 else "下落"
+        return f"直近{lookback}本で{_plain_number(abs(pct))}%{direction}、基準{threshold}"
+    if feature == "zscore":
+        return f"直近{lookback}本のZスコア{_plain_number(observed)}、基準{threshold}"
+    if feature == "rsi":
+        return f"RSI{lookback}が{_plain_number(observed)}、基準{threshold}"
+    if feature == "sma_gap_bps":
+        pct = _pct_from_bps(observed)
+        side = "上" if pct >= 0 else "下"
+        return f"{lookback}本移動平均の{_plain_number(abs(pct))}%{side}、基準{threshold}"
+    if feature == "volatility_bps":
+        pct = _pct_from_bps(observed)
+        return f"直近{lookback}本のボラティリティ{_plain_number(abs(pct))}%、基準{threshold}"
+    if feature == "breakout_bps":
+        pct = _pct_from_bps(observed)
+        return f"直近{lookback}本高値を{_plain_number(pct)}%上抜け、基準{threshold}"
+    if feature == "drawdown_bps":
+        pct = _pct_from_bps(observed)
+        return f"直近{lookback}本高値から{_plain_number(abs(pct))}%下落、基準{threshold}"
+    return f"{feature}={_plain_number(observed)}、基準{threshold}"
+
+
+def _reason_text(code: str, context: object = None) -> str:
+    if isinstance(context, Mapping):
+        raw = context.get("conditions")
+        if isinstance(raw, list):
+            parts = [
+                _condition_reason(item, reason_code=code)
+                for item in raw[:2] if isinstance(item, Mapping)
+            ]
+            parts = [part for part in parts if part]
+            if parts:
+                joiner = " または " if str(context.get("combine")) == "any" else " かつ "
+                suffix = "など" if len(raw) > 2 else ""
+                return joiner.join(parts) + suffix
     return _REASON_TEXT.get(code, f"取引条件 {code}" if code != "unknown" else "取引条件")
 
 
@@ -159,7 +254,7 @@ def _fill(
     side = "売り" if is_sell else "買い"
     strategy = _safe_code(event.get("strategy_id"))
     reason_code = _safe_code(event.get("reason_code"))
-    reason = _reason_text(reason_code)
+    reason = _reason_text(reason_code, event.get("reason_context"))
     title = "暗号資産 PAPER 約定"
     brief = f"{reason}を検出：{symbol}を{side}"
     body = f"{brief} / {strategy}"
