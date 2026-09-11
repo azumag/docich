@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich.trading.ledger import PaperLedger  # noqa: E402
 from docich.trading.models import AllocationDecision  # noqa: E402
+from docich.trading.notifications import _render_event_with_local_facts  # noqa: E402
 from docich.trading.paper import PaperBroker  # noqa: E402
 from docich.trading.performance import build_performance, realized_pnl_for_fill  # noqa: E402
 
@@ -77,3 +78,31 @@ def test_performance_fails_closed_when_open_position_lacks_price(tmp_path):
     assert perf["cumulative_pnl_jpy"] is None
     assert perf["equity_jpy"] is None
     assert perf["today_realized_pnl_jpy"] == "0"
+
+
+def test_sell_notification_reads_realized_pnl_from_paper_ledger(tmp_path):
+    db = tmp_path / "paper.sqlite3"
+    ledger = PaperLedger(db)
+    broker = PaperBroker(ledger)
+    broker.fill(_decision("buy", "buy", "2", "100"), timestamp=1000.0)
+    sold = broker.fill(_decision("sell", "sell", "1", "120"), timestamp=1100.0)
+    ledger.close()
+
+    event = {
+        "schema_version": 1,
+        "event_id": f"fill:{sold.fill_id}",
+        "event_type": "paper_fill",
+        "occurred_at": 1100.0,
+        "symbol": "BTC/JPY",
+        "strategy_id": "exit-v1",
+        "side": "sell",
+        "amount": "1",
+        "price": "120",
+        "reference_notional": "120",
+        "reason_code": "take_profit",
+    }
+    rendered = _render_event_with_local_facts(
+        event, mode="compact", status=None, display_at=1100.0, trading_dir=tmp_path
+    )
+    assert "実現損益 +20円" in rendered.overlay_event["body"]
+    assert "確定した損益はプラス20円" in rendered.speech_text
