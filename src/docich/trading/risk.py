@@ -60,7 +60,8 @@ def _round_down(amount: Decimal, step: Decimal | None) -> Decimal:
 def _round_up(amount: Decimal, step: Decimal | None) -> Decimal:
     if step is None or amount <= 0:
         return amount
-    return ((amount + step - 1) // step) * step
+    rounded = (amount // step) * step
+    return rounded if rounded >= amount else rounded + step
 
 
 def _market_min_amount(market: MarketInfo, price: Decimal) -> Decimal | None:
@@ -87,12 +88,12 @@ def allocate_opportunities(
     policy: CapitalPolicy | None = None,
     now: float | None = None,
 ) -> AllocationResult:
-    """Allocate buy opportunities without exceeding capital or funding-asset limits.
+    """Allocate opportunities without exceeding capital or funding-asset limits.
 
-    The allocator never invents FX/crypto conversion routes.  A non-reference
+    The allocator never invents FX/crypto conversion routes. A non-reference
     quote asset must have both an explicit valuation rate and an available
-    balance.  Sell opportunities are intentionally rejected in this first
-    slice until inventory-aware exit handling is implemented.
+    balance. Inventory-aware sells are processed first so released capacity can
+    fund replacement buys in the same pass.
     """
     policy = policy or CapitalPolicy()
     capital = as_decimal(capital_reference, "capital_reference")
@@ -178,7 +179,11 @@ def allocate_opportunities(
                 )
             )
             remaining_base[opportunity.symbol] = held - amount
-            remaining_reference += reference_notional
+            # Sale proceeds restore funding cash, but same-cycle replacement buys
+            # must never exceed the configured total deployment ceiling. A
+            # profitable exit can be worth more than the capacity it originally
+            # occupied, so cap the released reference budget at total_limit.
+            remaining_reference = min(total_limit, remaining_reference + reference_notional)
             remaining_quote[market.quote] = (
                 remaining_quote.get(market.quote, ZERO) + quote_notional
             )
