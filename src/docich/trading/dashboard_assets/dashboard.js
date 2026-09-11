@@ -1,6 +1,6 @@
 "use strict";
 // PAPER dashboard client (Issue #198). Read-only: it only GETs
-// /api/trading/dashboard and draws. No posting, no trading.
+// allowlisted local dashboard endpoints and draws. No posting, no trading.
 const $ = (id) => document.getElementById(id);
 const PAD = { l: 58, r: 10, t: 10, b: 22 };
 
@@ -41,8 +41,27 @@ function setPnl(id, value, fallback = "-") {
   el.textContent = fmtMoney(n, true);
   el.className = `v ${pnlClass(n)}`.trim();
 }
+function esc(v) {
+  return String(v ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+function ageLabel(epoch) {
+  const n = maybeNumber(epoch);
+  if (n === null) return "";
+  const sec = Math.max(0, Math.floor(Date.now() / 1000 - n));
+  return sec < 60 ? `${sec}s前` : `${Math.floor(sec / 60)}m前`;
+}
 
-function drawChart(chart) {
+function liveForChart(chart, live) {
+  if (!live || live.available !== true || !chart || live.symbol !== chart.symbol) return null;
+  return maybeNumber(live.ticker && live.ticker.last);
+}
+
+function drawChart(chart, live) {
   const c = $("chart");
   const dpr = window.devicePixelRatio || 1;
   const W = 524, H = 330;
@@ -53,7 +72,10 @@ function drawChart(chart) {
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   g.clearRect(0, 0, W, H);
 
-  const series = (chart && Array.isArray(chart.closes)) ? chart.closes.filter((v) => isFinite(v)) : [];
+  const stored = (chart && Array.isArray(chart.closes)) ? chart.closes.filter((v) => isFinite(v)) : [];
+  const liveLast = liveForChart(chart, live);
+  const series = liveLast === null ? stored.slice() : [...stored, liveLast];
+  const hasLive = liveLast !== null;
   const plotW = W - PAD.l - PAD.r, plotH = H - PAD.t - PAD.b;
 
   g.strokeStyle = "#22335a"; g.lineWidth = 1;
@@ -95,13 +117,28 @@ function drawChart(chart) {
   g.strokeStyle = "#38bdf8"; g.lineWidth = 2; g.stroke();
 
   const lx = x(series.length - 1), ly = y(series[series.length - 1]);
-  g.beginPath(); g.arc(lx, ly, 3.5, 0, Math.PI * 2);
-  g.fillStyle = "#e6edf7"; g.fill();
-  g.textAlign = "left"; g.fillStyle = "#e6edf7";
-  g.fillText(fmtNum(series[series.length - 1]), Math.min(lx + 6, W - 70), ly - 10);
+  g.beginPath(); g.arc(lx, ly, hasLive ? 4.5 : 3.5, 0, Math.PI * 2);
+  g.fillStyle = hasLive ? "#67e8f9" : "#e6edf7"; g.fill();
+  g.textAlign = "left"; g.fillStyle = hasLive ? "#67e8f9" : "#e6edf7";
+  const latestLabel = hasLive ? `${fmtNum(series[series.length - 1])} LIVE` : fmtNum(series[series.length - 1]);
+  g.fillText(latestLabel, Math.min(lx + 6, W - 100), ly - 10);
 
   g.textAlign = "center"; g.fillStyle = "#7f96ba";
-  g.fillText(`${series.length}本`, PAD.l + plotW / 2, H - 8);
+  g.fillText(hasLive ? `${stored.length}本 + LIVE` : `${stored.length}本`, PAD.l + plotW / 2, H - 8);
+}
+
+function renderPaperFill(data) {
+  const fills = data && Array.isArray(data.fills) ? data.fills : [];
+  const f = fills[0];
+  if (!f) {
+    $("paperfill").textContent = "模擬約定なし";
+    return;
+  }
+  const side = String(f.side).toLowerCase() === "sell" ? "売" : "買";
+  const rp = maybeNumber(f.realized_pnl_jpy);
+  const pnl = String(f.side).toLowerCase() === "sell" && rp !== null
+    ? ` 損益${rp > 0 ? "+" : ""}${fmtMoney(rp)}` : "";
+  $("paperfill").textContent = `${f.symbol} ${side} ${f.amount}@${f.price}${pnl}`;
 }
 
 function render(data) {
@@ -127,16 +164,19 @@ function render(data) {
   $("fresh").textContent = `${p.fresh_markets ?? 0}/${p.total_markets ?? 0}`;
 
   $("focus").textContent = "注目: " + (ch.symbol || "（観測待ち）");
-  $("range").textContent = ch.count ? `5分足${ch.count}本 約${Math.round((ch.count * 5) / 60 * 10) / 10}時間` : "";
+  const liveLast = liveForChart(ch, render.liveData);
+  $("range").textContent = ch.count
+    ? `5分足${ch.count}本${liveLast === null ? "" : " + LIVE"}`
+    : (liveLast === null ? "" : "LIVE");
   $("decision").innerHTML = `<div>候補</div><div>${dec.candidate_count ?? 0}件</div>` +
     ((dec.reasons || []).length
-      ? (dec.reasons || []).slice(0, 2).map((r) => `<div class="muted">主因</div><div>${r.label}</div>`).join("")
+      ? (dec.reasons || []).slice(0, 2).map((r) => `<div class="muted">主因</div><div>${esc(r.label)}</div>`).join("")
       : `<div class="muted">判断</div><div>条件未達・様子見</div>`);
 
   $("skipped").innerHTML = (dec.skipped || []).length
     ? (dec.skipped || []).slice(0, 6).map((r) => {
         const who = r.symbol ? `${r.symbol} ${r.side_label || "取引"}` : "取引";
-        return `<div class="row"><span class="muted">${who}</span> ${r.label}</div>`;
+        return `<div class="row"><span class="muted">${esc(who)}</span> ${esc(r.label)}</div>`;
       }).join("")
     : `<div class="muted">見送り理由なし</div>`;
 
@@ -148,25 +188,54 @@ function render(data) {
         const value = x.market_value_jpy === null || x.market_value_jpy === undefined ? "評価待ち" : fmtMoney(x.market_value_jpy);
         const pnl = maybeNumber(x.unrealized_pnl_jpy);
         const pnlText = pnl === null ? "" : ` ${pnl > 0 ? "+" : ""}${fmtMoney(pnl)}`;
-        return `<div class="holding"><span class="symbol">${x.symbol}</span><span class="holding-meta ${pnlClass(pnl)}">${value}${pnlText}</span></div>`;
+        return `<div class="holding"><span class="symbol">${esc(x.symbol)}</span><span class="holding-meta ${pnlClass(pnl)}">${esc(value + pnlText)}</span></div>`;
       }).join("")
     : `<div class="muted">なし（未保有は正常）</div>`;
 
-  const fills = data.fills || [];
-  $("fills").innerHTML = fills.length
-    ? fills.slice(0, 5).map((f) => {
-        const side = String(f.side).toLowerCase() === "sell" ? "売" : "買";
-        const rp = maybeNumber(f.realized_pnl_jpy);
-        const pnl = String(f.side).toLowerCase() === "sell" && rp !== null
-          ? ` <span class="${pnlClass(rp)}">損益${rp > 0 ? "+" : ""}${fmtMoney(rp)}</span>` : "";
-        return `<div class="row">${f.symbol} ${side} ${f.amount}@${f.price}${pnl}</div>`;
-      }).join("")
-    : `<div class="muted">なし（未取引は正常）</div>`;
+  renderPaperFill(data);
   $("disclaimer").textContent = data.disclaimer || "";
-
-  drawChart(ch);
+  drawChart(ch, render.liveData);
 }
 render.lastData = null;
+render.liveData = null;
+
+function renderLive(data) {
+  if (!data || data.schema_version !== 1) return;
+  render.liveData = data;
+  const available = data.available === true;
+  const ticker = data.ticker || {};
+  const last = maybeNumber(ticker.last);
+  const bid = maybeNumber(ticker.bid);
+  const ask = maybeNumber(ticker.ask);
+  if (available && last !== null) {
+    $("livequote").textContent = `現在 ${fmtNum(last)}  B ${fmtNum(bid)}  A ${fmtNum(ask)}`;
+    $("livequote").className = "livequote";
+  } else {
+    $("livequote").textContent = "現在値 取得待ち";
+    $("livequote").className = "livequote muted";
+  }
+  $("liveage").textContent = data.stale ? "更新遅延" : ageLabel(data.fetched_at);
+  const trades = available && Array.isArray(data.trades) ? data.trades : [];
+  $("tape").innerHTML = trades.length
+    ? trades.slice(0, 5).map((t) => {
+        const side = String(t.side).toLowerCase();
+        const sideLabel = side === "buy" ? "買" : side === "sell" ? "売" : "-";
+        const klass = side === "buy" ? "pos" : side === "sell" ? "neg" : "muted";
+        return `<div class="row"><span>${esc(jst(t.timestamp))}</span><span class="${klass}">${sideLabel}</span>` +
+          `<span class="price">${esc(fmtNum(t.price))}</span><span class="amount">${esc(fmtNum(t.amount))}</span></div>`;
+      }).join("")
+    : `<div class="muted">市場約定を取得待ち</div>`;
+  $("chartnote").textContent = available
+    ? "5分足保存値 + bitbank公開現在値（表示専用・約2秒更新）。売買判断周期は変更しません。"
+    : "5分足の保存済み終値。PAPER台帳と公開価格から損益計算。";
+  if (render.lastData) {
+    const ch = render.lastData.chart || {};
+    $("range").textContent = ch.count
+      ? `5分足${ch.count}本${liveForChart(ch, data) === null ? "" : " + LIVE"}`
+      : (liveForChart(ch, data) === null ? "" : "LIVE");
+    drawChart(ch, data);
+  }
+}
 
 async function poll() {
   try {
@@ -175,6 +244,15 @@ async function poll() {
   } catch (e) { /* keep the last frame; the server is local and read-only */ }
 }
 
+async function pollLive() {
+  try {
+    const res = await fetch("/api/trading/live", { cache: "no-store" });
+    if (res.ok) renderLive(await res.json());
+  } catch (e) { /* preserve last live frame */ }
+}
+
 poll();
+pollLive();
 setInterval(poll, 2000);
+setInterval(pollLive, 1000);
 window.addEventListener("resize", () => render.lastData && render(render.lastData));
