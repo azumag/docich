@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "description": "Explicit reviewed-commit attestations for reconcile_presynced_submodule.py. Each entry records the exact reviewed blob (sha256 + git mode) for a projected path, scoped to one old_sub -> new_sub gitlink pair. The push-triggered reconcile passes only entries matching the current pair to the VM, and the VM converges a mismatched live file only when its bytes AND mode match the recorded blob exactly. An entry exists only because a squash merge dropped the reviewed commit from main history, so git rev-list old_sub..new_sub cannot see it. Additions here are reviewed through protected main like any other control-plane change.",
+  "attestations": [
+    {
+      "projection": "games/soviet_now",
+      "old_sub": "162846faa36c351010c041494a9e28f2fa202117",
+      "new_sub": "839cfc545f34071545bbd8a9821d8c65a9f2726d",
+      "path": "overlays/direct_broadcast_overlay.html",
+      "mode": "100644",
+      "sha256": "c1ec6a83b3213bf75fd895b8962857d6a2133f9708c009e1d6fab551f52b7780",
+      "source_commit": "67a29beeadd8dd78af412b4a01586bd3fa27f060",
+      "source_pr": 291,
+      "reason": "Reviewed commit 'chore(overlay): sync live header-box strip from production VM' was dropped from main history by the #291 squash merge (67a29bee is not an ancestor of 839cfc). The live production overlay matches this reviewed blob exactly; without attestation the fail-closed lineage check refuses exit 63."
+    }
+  ]
+}

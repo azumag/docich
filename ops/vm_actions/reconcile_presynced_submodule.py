@@ -43,6 +43,12 @@ PROJECTION_UNKNOWN_MASK_MAX_PATHS = 4
 REPO_ONLY_PREFIXES = (".github/",)
 # Opt-in skew recovery (argv "lineage"); reviewed intermediates converge.
 _LINEAGE = False
+# Reviewed-commit attestation argv triples: exact byte+mode match only.
+_ATTESTED = []
+ATTEST_SHA_RE = re.compile(r"[a-f0-9]{64}\Z")
+ATTEST_PATH_RE = re.compile(r"[A-Za-z0-9._/-]+\Z")
+ATTEST_MODES = {"100644": 0o644, "100755": 0o755}
+ATTEST_MAX = 16
 REASON_PROJECTION_UNKNOWN_CLASS_BASE = 90
 PROJECTION_UNKNOWN_CLASS_PER_PATH = 3
 PROJECTION_UNKNOWN_CLASS_ABSENT = 0
@@ -216,6 +222,24 @@ def _reviewed_lineage(repo, rel, old_sub, new_sub, live_sha):
     return False
 
 
+def _attestations(tokens):
+    if len(tokens) % 3 or len(tokens) // 3 > ATTEST_MAX:
+        raise ReconcileError(REASON_INVALID_SHA, "invalid attestation list")
+    attested = []
+    for index in range(0, len(tokens), 3):
+        path, digest, mode = tokens[index], tokens[index + 1], tokens[index + 2]
+        if not ATTEST_PATH_RE.fullmatch(path) or path.startswith("/") or ".." in path.split("/"):
+            raise ReconcileError(REASON_INVALID_SHA, "invalid attestation path")
+        if not ATTEST_SHA_RE.fullmatch(digest) or mode not in ATTEST_MODES:
+            raise ReconcileError(REASON_INVALID_SHA, "invalid attestation blob")
+        attested.append((path, digest, ATTEST_MODES[mode]))
+    return attested
+
+
+def _reviewed_attestation(rel, live):
+    return live is not None and any(p == rel and d == live["sha256"] and m == live["mode"] for p, d, m in _ATTESTED)
+
+
 def _set_projection(path, target):
     if target is None:
         if path.exists():
@@ -241,7 +265,9 @@ def _normalize_projection(repo, old_sub, new_sub, destination):
             plans.append((path, old_meta, None))
             states.append(0)
             continue
-        if state == 2 and _LINEAGE and live_meta is not None and _reviewed_lineage(repo, rel, old_sub, new_sub, live_meta["sha256"]):
+        if state == 2 and _LINEAGE and live_meta is not None and (
+                _reviewed_lineage(repo, rel, old_sub, new_sub, live_meta["sha256"])
+                or _reviewed_attestation(rel, live_meta)):
             plans.append((path, old_meta, live_meta))
             states.append(0)
             continue
@@ -332,11 +358,14 @@ def reconcile(root, old_parent, old_sub, new_sub, sub_path, projection_destinati
 
 
 def main(argv):
-    global _LINEAGE
-    if len(argv) not in (6, 7) or (len(argv) == 7 and argv[6] != "lineage"):
-        raise ReconcileError(REASON_INVALID_SHA, "usage: ROOT OLD_PARENT OLD_SUB NEW_SUB SUB_PATH [lineage]")
-    if len(argv) == 7:
-        _LINEAGE = True
+    global _LINEAGE, _ATTESTED
+    if len(argv) < 6 or len(argv) > 7 + ATTEST_MAX * 3:
+        raise ReconcileError(REASON_INVALID_SHA, "invalid reconcile arguments")
+    rest = argv[6:]
+    if rest and rest[0] != "lineage":
+        raise ReconcileError(REASON_INVALID_SHA, "invalid reconcile arguments")
+    _LINEAGE = bool(rest)
+    _ATTESTED = _attestations(rest[1:])
     reconcile(Path(argv[1]), argv[2], argv[3], argv[4], argv[5], LIVE_PROJECTION)
     return 0
 

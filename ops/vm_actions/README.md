@@ -29,7 +29,7 @@ main の本番反映、branch/commit の preview 反映、状態確認、owner c
 
 初回 `bootstrap` では現在 HEAD と tracked clean state（owned submoduleを含む）を baseline にします。その後の deploy は、現在 HEAD / tracked files / owned submodule が前回記録と一致するときだけ verified SHA へ進めます。
 
-親 commit の `games/soviet_now` gitlinkが変わった場合、docich gateway がその固定commitへ submodule を更新し、旧commit→新commitで差分になったregular tracked fileだけを `/home/ubuntu/soren` へ原子的に投影します。無関係なruntime fileや、source側で変更されていない `strategy.py` 等は触りません。source側で変更されたpathがlive側で旧commitまたは新commitのどちらにも一致しない場合はdriftとして拒否します。live側が新commitのbytes+modeと完全一致しているpathはowner-only bounded repair等で先行反映済みのreviewed postimageとして再書込みせず採用し、それ以外の第三状態はfail-closedを維持します。複数fileの途中失敗時は、それまでの投影とdocich親HEADを旧状態へ戻します。
+親 commit の `games/soviet_now` gitlinkが変わった場合、docich gateway がその固定commitへ submodule を更新し、旧commit→新commitで差分になったregular tracked fileだけを `/home/ubuntu/soren` へ原子的に投影します。無関係なruntime fileや、source側で変更されていない `strategy.py` 等は触りません。source側で変更されたpathがlive側で旧commitまたは新commitのどちらにも一致しない場合はdriftとして拒否します。live側が新commitのbytes+modeと完全一致しているpathはowner-only bounded repair等で先行反映済みのreviewed postimageとして再書込みせず採用し、それ以外の第三状態はfail-closedを維持します。ただし、reviewed commit が squash merge で main 履歴から落ち、旧gitlink→新gitlink の reachable history に現れない場合に限り、`ops/vm_actions/reviewed_lineage_attestations.json` へその old/new gitlink pair と同path blob の sha256+mode を明示登録できます。push-triggered reconcile は登録済みblobだけを渡し、liveのbytesとmodeが完全一致したときに限り旧baselineへ収束させます。未登録のbytesは一般許可しません。複数fileの途中失敗時は、それまでの投影とdocich親HEADを旧状態へ戻します。
 
 これにより `soviet_now` 自身はVM資格情報や配信運用を知る必要がなく、`soviet_now main` の更新だけでは本番は変わりません。docichのgitlink bumpをレビューしてmainへ入れた時だけlive Sorenへの投影対象になります。
 
