@@ -137,5 +137,8 @@ jobs:
           [[ "$DURATION_MINUTES" =~ ^[0-9]+$ ]]
           (( DURATION_MINUTES >= 1 && DURATION_MINUTES <= 60 ))
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
-          printf 'bash bin/docich-paper-corner-operator --config config/docich.soren-live.toml --duration-minutes %s\n' "$DURATION_MINUTES" |
+          # gateway exec intentionally starts in an inert release sandbox. This
+          # fixed reviewed operator must address the canonical production root
+          # explicitly so state_dir/tmux/coordinator state are the live ones.
+          printf "cd /home/ubuntu/docich && exec bash /home/ubuntu/docich/bin/docich-paper-corner-operator --config /home/ubuntu/docich/config/docich.soren-live.toml --duration-minutes '%s'\n" "$DURATION_MINUTES" |
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
