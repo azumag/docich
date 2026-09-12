@@ -61,7 +61,7 @@ def opportunity(
 
 
 class TestCapitalAllocator(unittest.TestCase):
-    def test_caps_single_opportunity_and_total_at_thirty_percent(self):
+    def test_default_keeps_single_opportunity_at_thirty_percent(self):
         result = allocate_opportunities(
             [opportunity("one")],
             markets={"BTC/JPY": market()},
@@ -76,6 +76,36 @@ class TestCapitalAllocator(unittest.TestCase):
         self.assertEqual(len(result.decisions), 1)
         self.assertLessEqual(result.decisions[0].reference_notional, D("30000"))
 
+    def test_default_total_deployment_can_use_full_virtual_capital(self):
+        symbols = ["BTC/JPY", "ETH/JPY", "XRP/JPY", "LTC/JPY"]
+        result = allocate_opportunities(
+            [
+                opportunity("btc", "BTC/JPY", score="1.0"),
+                opportunity("eth", "ETH/JPY", score="0.9"),
+                opportunity("xrp", "XRP/JPY", score="0.8"),
+                opportunity("ltc", "LTC/JPY", score="0.7"),
+            ],
+            markets={
+                symbol: market(
+                    symbol,
+                    base=symbol.split("/")[0],
+                    amount_step="1",
+                    min_amount="1",
+                )
+                for symbol in symbols
+            },
+            prices={symbol: D("1000") for symbol in symbols},
+            quote_to_reference={"JPY": D("1")},
+            available_quote={"JPY": D("100000")},
+            capital_reference=D("100000"),
+            deployed_reference=D("0"),
+            policy=CapitalPolicy(),
+            now=NOW,
+        )
+        self.assertEqual(CapitalPolicy().max_total_deployed_fraction, D("1"))
+        self.assertEqual(sum(d.reference_notional for d in result.decisions), D("100000"))
+        self.assertEqual(len(result.decisions), 4)
+
     def test_higher_score_gets_capacity_first(self):
         result = allocate_opportunities(
             [opportunity("low", score="0.2"), opportunity("high", score="0.9")],
@@ -85,7 +115,10 @@ class TestCapitalAllocator(unittest.TestCase):
             available_quote={"JPY": D("100000")},
             capital_reference=D("100000"),
             deployed_reference=D("0"),
-            policy=CapitalPolicy(max_opportunity_fraction=D("0.20")),
+            policy=CapitalPolicy(
+                max_opportunity_fraction=D("0.20"),
+                max_total_deployed_fraction=D("0.30"),
+            ),
             now=NOW,
         )
         self.assertEqual([d.opportunity_id for d in result.decisions], ["high", "low"])
@@ -162,8 +195,6 @@ class TestCapitalAllocator(unittest.TestCase):
         self.assertEqual(result.skipped[0].reason_code, "expired")
 
     def test_minimum_order_beyond_hard_cap_is_still_skipped(self):
-        # When the exchange minimum itself exceeds the hard per-opportunity cap,
-        # the order cannot be executed within policy and is skipped.
         tiny = market(amount_step="0.001", min_amount="0.01", min_cost="1000")
         result = allocate_opportunities(
             [opportunity("tiny", fraction="0.01")],
@@ -180,9 +211,6 @@ class TestCapitalAllocator(unittest.TestCase):
         self.assertIn(result.skipped[0].reason_code, {"below_min_amount", "below_min_cost"})
 
     def test_minimum_order_is_bumped_within_hard_cap(self):
-        # A fraction-sized order below the exchange minimum is bumped up to the
-        # minimum (rounded up to the step) when it still fits the hard cap, so
-        # the bot can execute instead of always skipping.
         result = allocate_opportunities(
             [opportunity("bump", fraction="0.08")],
             markets={"BTC/JPY": market(amount_step="1", min_amount="10", min_cost="1000")},
@@ -201,8 +229,6 @@ class TestCapitalAllocator(unittest.TestCase):
         self.assertLessEqual(decision.reference_notional, D("3000"))
 
     def test_full_deployment_reports_cap_exhausted_not_below_min(self):
-        # A tiny remaining budget must report the real reason (cap exhausted),
-        # not below_min_amount.
         result = allocate_opportunities(
             [opportunity("one", fraction="0.08")],
             markets={"BTC/JPY": market(amount_step="0.0001", min_amount="0.0001")},
@@ -211,15 +237,13 @@ class TestCapitalAllocator(unittest.TestCase):
             available_quote={"JPY": D("7000")},
             capital_reference=D("10000"),
             deployed_reference=D("2999.9999954"),
-            policy=CapitalPolicy(),
+            policy=CapitalPolicy(max_total_deployed_fraction=D("0.30")),
             now=NOW,
         )
         self.assertFalse(result.decisions)
         self.assertEqual(result.skipped[0].reason_code, "total_cap_exhausted")
 
     def test_min_cost_floor_bumps_amount_even_when_min_amount_is_met(self):
-        # min_amount is satisfied, but the quote notional is below min_cost, so
-        # the size must grow to meet the cost floor (within the hard cap).
         result = allocate_opportunities(
             [opportunity("cost", fraction="0.05")],
             markets={"BTC/JPY": market(amount_step="1", min_amount="1", min_cost="1000")},
@@ -234,7 +258,7 @@ class TestCapitalAllocator(unittest.TestCase):
         self.assertEqual(len(result.decisions), 1)
         self.assertGreaterEqual(result.decisions[0].quote_notional, D("1000"))
 
-    def test_existing_deployment_reduces_total_capacity(self):
+    def test_existing_deployment_reduces_configured_total_capacity(self):
         result = allocate_opportunities(
             [opportunity("one")],
             markets={"BTC/JPY": market()},
@@ -243,7 +267,7 @@ class TestCapitalAllocator(unittest.TestCase):
             available_quote={"JPY": D("100000")},
             capital_reference=D("100000"),
             deployed_reference=D("25000"),
-            policy=CapitalPolicy(),
+            policy=CapitalPolicy(max_total_deployed_fraction=D("0.30")),
             now=NOW,
         )
         self.assertEqual(len(result.decisions), 1)
@@ -316,7 +340,7 @@ class TestCapitalAllocator(unittest.TestCase):
         self.assertIn(("sell", "ETH/JPY"), kinds)
         self.assertIn(("buy", "BTC/JPY"), kinds)
 
-    def test_profitable_sell_cannot_expand_same_cycle_total_deployment_cap(self):
+    def test_profitable_sell_cannot_expand_configured_total_deployment_cap(self):
         result = allocate_opportunities(
             [
                 opportunity("buy-a", "BTC/JPY", score="0.9", fraction="1"),
@@ -334,7 +358,7 @@ class TestCapitalAllocator(unittest.TestCase):
             available_base={"ETH/JPY": D("40")},
             capital_reference=D("100000"),
             deployed_reference=D("30000"),
-            policy=CapitalPolicy(),
+            policy=CapitalPolicy(max_total_deployed_fraction=D("0.30")),
             now=NOW,
         )
         buys = [d for d in result.decisions if d.side == "buy"]
