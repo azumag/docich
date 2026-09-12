@@ -78,7 +78,13 @@ def main(argv: list[str] | None = None) -> int:
         retry_reason = None if args.dry_run else _read_validation_failure(
             state_dir / "paper_improve_status.json"
         )
-        if summary.get("status") == "failed" and retry_reason and cleaned_agents:
+        summary_reason = str(summary.get("reason") or "")[:240]
+        if (
+            summary.get("status") == "failed"
+            and retry_reason
+            and retry_reason == summary_reason
+            and cleaned_agents
+        ):
             def repair_llm(prompt_text):
                 return generate_text(
                     g,
