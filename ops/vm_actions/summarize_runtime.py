@@ -169,6 +169,7 @@ def summarize(data):
 
     recent = ai.get("recent_events")
     cause_counts = Counter()
+    rate_limit_backend_counts = Counter()
     timeout_counts = Counter()
     exact_20s_origin_counts = Counter()
     exact_20s_backend_counts = Counter()
@@ -182,6 +183,8 @@ def summarize(data):
                 cause_counts[cause] += 1
                 component = _component_bucket(event)
                 fail_component_counts[component] += 1
+                if cause == "rate_limit":
+                    rate_limit_backend_counts[_backend_family(event)] += 1
                 if cause == "timeout":
                     bucket = _timeout_bucket(event)
                     timeout_counts[bucket] += 1
@@ -213,6 +216,10 @@ def summarize(data):
         f"ai_recent_fail_sampled={sampled}",
     ]
     parts.extend(f"ai_recent_fail_{cause}={cause_counts[cause]}" for cause in CAUSES)
+    parts.extend(
+        f"ai_recent_rate_limit_backend_{family}={rate_limit_backend_counts[family]}"
+        for family in BACKEND_FAMILIES
+    )
     parts.extend(f"ai_recent_timeout_{bucket}={timeout_counts[bucket]}" for bucket in TIMEOUT_BUCKETS)
     parts.extend(
         f"ai_recent_timeout_exact_20s_origin_{origin}={exact_20s_origin_counts[origin]}"
