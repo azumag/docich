@@ -36,6 +36,23 @@ def event(event_id: str, *, occurred_at: float = 1_800_000_000.0) -> dict:
     }
 
 
+def settlement_event(event_id: str, *, occurred_at: float = 1_800_000_002.0) -> dict:
+    return {
+        "schema_version": 1,
+        "event_id": event_id,
+        "event_type": "multileg_settlement",
+        "occurred_at": occurred_at,
+        "route_id": "btc-jpy-route",
+        "start_asset": "JPY",
+        "start_amount": "3000",
+        "complete": True,
+        "final_amount": "3001",
+        "net_edge_bps": "3.3",
+        "failed_leg_symbol": None,
+        "failure_reason": None,
+    }
+
+
 def global_config(root: Path, *, speech: bool = True):
     cfg = root / "docich.toml"
     cfg.write_text(
@@ -80,7 +97,26 @@ class TestNotificationDelivery(unittest.TestCase):
             self.assertEqual(result.overlay_pending, 0)
             self.assertEqual(result.speech_pending, 0)
 
-    def test_destinations_ack_independently_and_retry_only_failed_output(self):
+    def test_fill_and_settlement_flashes_are_overlay_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            g = global_config(root)
+            source = g.state_dir / "trading" / "events.jsonl"
+            overlay, speech = Sender(), Sender()
+            deliver_pending_notifications(g, overlay_sender=overlay.overlay, speech_sender=speech.speech, now=1000.0)
+            append_public_event(source, event("fill:visual-only"))
+            append_public_event(source, settlement_event("settlement:visual-only"))
+            result = deliver_pending_notifications(
+                g, overlay_sender=overlay.overlay, speech_sender=speech.speech, now=1001.0
+            )
+            self.assertEqual(len(overlay.calls), 2)
+            self.assertEqual(speech.calls, [])
+            self.assertEqual(result.overlay_sent, 2)
+            self.assertEqual(result.speech_sent, 0)
+            self.assertEqual(result.overlay_pending, 0)
+            self.assertEqual(result.speech_pending, 0)
+
+    def test_overlay_only_trade_flash_retries_only_failed_overlay(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             g = global_config(root)
@@ -94,16 +130,17 @@ class TestNotificationDelivery(unittest.TestCase):
             )
             self.assertEqual(first.overlay_pending, 1)
             self.assertEqual(first.speech_pending, 0)
+            self.assertEqual(first.speech_sent, 0)
             self.assertIn("overlay_delivery_error", first.error_codes)
             self.assertEqual(len(overlay.calls), 1)
-            self.assertEqual(len(speech.calls), 1)
+            self.assertEqual(speech.calls, [])
             overlay.fail = False
             second = deliver_pending_notifications(
                 g, overlay_sender=overlay.overlay, speech_sender=speech.speech, now=1002.0
             )
             self.assertEqual(second.overlay_pending, 0)
             self.assertEqual(len(overlay.calls), 2)
-            self.assertEqual(len(speech.calls), 1)
+            self.assertEqual(speech.calls, [])
 
     def test_speech_disabled_suppresses_history_before_later_enable(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -154,8 +191,6 @@ class TestNotificationDelivery(unittest.TestCase):
             self.assertLessEqual(len(raw["speech_delivered_ids"]), 3)
             self.assertEqual(stat.S_IMODE(state_path.stat().st_mode), 0o600)
             self.assertEqual(stat.S_IMODE(state_path.parent.stat().st_mode), 0o700)
-
-
 
     def test_concurrent_delivery_is_exclusive_across_state_read_and_ack(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -211,6 +246,7 @@ class TestNotificationDelivery(unittest.TestCase):
             append_public_event(source, event("fill:late", occurred_at=base - 100.0))
             deliver_pending_notifications(g, overlay_sender=overlay.overlay, speech_sender=speech.speech, now=base + 1.0)
             self.assertEqual(overlay.calls[0]["ts"], int(base + 1.0))
+
 
 if __name__ == "__main__":
     unittest.main()
