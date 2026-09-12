@@ -67,7 +67,8 @@ def test_installer_guards_platform_firewall_daemon_and_gvisor_runtime():
     assert "fingerprint" in lowered
     assert "force_daemon_json" in lowered
     assert "${GVISOR_APT_SUITE} main" in text
-    assert '"docker-compose-plugin=${DOCKER_COMPOSE_PLUGIN_VERSION}" \\\n    runsc' in text
+    assert '"docker-compose-plugin=${DOCKER_COMPOSE_PLUGIN_VERSION}"' in text
+    assert "    runsc\n" in text
     assert 'grep -q "release-${GVISOR_RELEASE}"' in text
 
 
