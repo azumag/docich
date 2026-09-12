@@ -84,36 +84,34 @@ def build_context(store: LabStore, exp: dict, frames: dict, *, now: float) -> tu
     return context, prices
 
 
+def _valuation_inputs(gateway, symbols: list[str], *, now_fn) -> tuple[dict, dict, float]:
+    statuses = gateway.fetch_circuit_break_statuses(symbols, fetched_at=now_fn()) if symbols else {}
+    books = gateway.fetch_depth_books(symbols, now=now_fn(), limit=20) if symbols else {}
+    return statuses, books, float(now_fn())
+
+
 def run_cycle(trading_dir: Path, *, image: str, gateway, runner=None, now_fn=time.time) -> dict:
     directory = Path(trading_dir) / "free-strategies"
     with cycle_lock(directory):
         store = LabStore(directory / "lab.sqlite3")
         codes, completed = [], 0
         runner = runner or DockerSandbox(image, state_dir=directory)
+        runner_verified = False
         write_health(directory, now=now_fn(), status="running", codes=[])
         try:
-            # Preflight even without candidates so an unusable deployment is visible.
-            runner.preflight()
-            ids = store.active_ids()
+            ids = store.observed_ids()
             markets = gateway.discover_markets() if ids else {}
             for identity in ids:
                 exp = store.experiment(identity)
                 try:
                     now = float(now_fn())
                     if now >= exp["end_at"]:
-                        # The window closes without executing pending targets.  If
-                        # holdings remain, require a fresh depth/status observation
-                        # and record a final conservative liquidation valuation.
+                        # No candidate execution after the deadline. Existing
+                        # holdings still require a fresh terminal valuation.
                         position_symbols = sorted(exp["account"]["positions"])
-                        statuses = (
-                            gateway.fetch_circuit_break_statuses(position_symbols, fetched_at=now_fn())
-                            if position_symbols else {}
+                        statuses, books, observed_at = _valuation_inputs(
+                            gateway, position_symbols, now_fn=now_fn
                         )
-                        books = (
-                            gateway.fetch_depth_books(position_symbols, now=now_fn(), limit=20)
-                            if position_symbols else {}
-                        )
-                        observed_at = float(now_fn())
                         settle_observation(
                             store, identity, markets=markets, books=books,
                             statuses=statuses, now=observed_at,
@@ -121,21 +119,47 @@ def run_cycle(trading_dir: Path, *, image: str, gateway, runner=None, now_fn=tim
                         evaluate(store, identity, now=observed_at)
                         completed += 1
                         continue
+
+                    if exp["phase"] == "paused":
+                        # Paused PAPER strategies never run guest code or create
+                        # new fills, but their holdings remain marked to market.
+                        position_symbols = sorted(exp["account"]["positions"])
+                        statuses, books, observed_at = _valuation_inputs(
+                            gateway, position_symbols, now_fn=now_fn
+                        )
+                        settle_observation(
+                            store, identity, markets=markets, books=books,
+                            statuses=statuses, now=observed_at,
+                        )
+                        evaluate(store, identity, now=observed_at)
+                        completed += 1
+                        continue
+
                     artifact = store.artifact(exp["artifact"])
                     if artifact.payload["image"] != image:
                         raise StrategyError("runtime_image_mismatch")
                     symbols = artifact.payload["symbols"]
                     frames = gateway.fetch_market_frames(symbols, timeframe="5m", limit=144, now=now)
-                    # Settlement uses a newly fetched book AFTER the preceding decision.
-                    statuses = gateway.fetch_circuit_break_statuses(symbols, fetched_at=now_fn())
-                    books = gateway.fetch_depth_books(symbols, now=now_fn(), limit=20)
-                    observed_at = float(now_fn())
-                    exp = settle_observation(store, identity, markets=markets, books=books, statuses=statuses, now=observed_at)
+                    # Settlement/evaluation is host-owned and does not depend on
+                    # gVisor being available for the next decision.
+                    statuses, books, observed_at = _valuation_inputs(
+                        gateway, symbols, now_fn=now_fn
+                    )
+                    exp = settle_observation(
+                        store, identity, markets=markets, books=books,
+                        statuses=statuses, now=observed_at,
+                    )
                     evaluate(store, identity, now=observed_at)
                     if exp["phase"] not in {"research", "paper_validating"}:
+                        completed += 1
                         continue
                     context, prices = build_context(store, exp, frames, now=observed_at)
                     if exp["last_bar"] is None or context["data_cutoff"] > exp["last_bar"]:
+                        # Only candidate execution needs gVisor. A broken runner
+                        # cannot freeze host-owned valuation of existing PAPER risk.
+                        if not runner_verified:
+                            runner.preflight()
+                            runner_verified = True
                         decision = runner.run(artifact, context)
                         store.accept(identity, exp["revision"], bar=context["data_cutoff"],
                                      accepted_at=now_fn(), run_id=context["run_id"], decision=decision, prices=prices)
