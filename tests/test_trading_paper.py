@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import stat
 import sys
@@ -70,6 +71,22 @@ class TestPaperLedger(unittest.TestCase):
         self.broker.fill(decision("new"), timestamp=1001.0)
         fills = self.ledger.recent_fills(limit=2)
         self.assertEqual([fill.opportunity_id for fill in fills], ["new", "old"])
+
+    def test_default_cost_model_worsens_both_sides(self):
+        buy = self.broker.fill(decision("cost-buy"), timestamp=1000.0)
+        sell_decision = replace(
+            decision("cost-sell"), side="sell", reason_code="take_profit"
+        )
+        sell = self.broker.fill(sell_decision, timestamp=1001.0)
+        self.assertEqual(buy.price, D("1000000") * D("1.0005") * D("1.0012"))
+        self.assertEqual(sell.price, D("1000000") * D("0.9995") * D("0.9988"))
+        self.assertGreater(buy.price, D("1000000"))
+        self.assertLess(sell.price, D("1000000"))
+
+    def test_cost_model_can_be_disabled_for_accounting_fixtures(self):
+        broker = PaperBroker(self.ledger, taker_fee_rate="0", slippage_bps="0")
+        fill = broker.fill(decision("zero-cost"), timestamp=1000.0)
+        self.assertEqual(fill.price, D("1000000"))
 
 
 class TestPublicTradingStatus(unittest.TestCase):
