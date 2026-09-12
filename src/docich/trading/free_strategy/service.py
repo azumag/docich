@@ -110,7 +110,7 @@ def run_cycle(trading_dir: Path, *, image: str, gateway, runner=None, now_fn=tim
                     symbols = artifact.payload["symbols"]
                     frames = gateway.fetch_market_frames(symbols, timeframe="5m", limit=144, now=now)
                     # Settlement uses a newly fetched book AFTER the preceding decision.
-                    statuses = gateway.fetch_circuit_break_statuses(symbols, now=now_fn())
+                    statuses = gateway.fetch_circuit_break_statuses(symbols, fetched_at=now_fn())
                     books = gateway.fetch_depth_books(symbols, now=now_fn(), limit=20)
                     observed_at = float(now_fn())
                     exp = settle_observation(store, identity, markets=markets, books=books, statuses=statuses, now=observed_at)
