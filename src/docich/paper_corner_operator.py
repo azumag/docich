@@ -1,4 +1,4 @@
-"""Launch a bounded manual PAPER corner as a detached reviewed operation."""
+"""Owner-only fixed operations for the bounded PAPER corner/runtime."""
 from __future__ import annotations
 
 import argparse
@@ -14,6 +14,7 @@ from .adapters.program import PAPER_VIEW_NAME
 from .config import ConfigError, load_global
 from .paper_corner import PaperCornerError
 from .paper_corner_manual import ManualPaperCornerManager
+from .tmux import Tmux
 
 MIN_DURATION = 1
 MAX_DURATION = 60
@@ -47,6 +48,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", metavar="PATH", required=True)
     parser.add_argument("--duration-minutes", type=int)
     parser.add_argument("--diagnose-only", action="store_true")
+    parser.add_argument("--reload-worker", action="store_true")
     return parser
 
 
@@ -121,6 +123,40 @@ def _recover_stale_manual_state(g, duration_minutes: int) -> bool:
     return True
 
 
+def reload_worker(config_path: Path, *, tmux: Tmux | None = None, sleep=time.sleep) -> dict[str, object]:
+    """Restart only the PAPER trading worker so it imports the reviewed main.
+
+    The worker is paper-only and all balances/positions live in the persistent
+    SQLite ledger/state directory, not the process.  No game, stream, radio,
+    display, broker credential, or live-order path is touched here.
+    """
+    g = load_global(_repo_root(), config_path)
+    if not getattr(g.trading, "paper_worker_enabled", False):
+        raise PaperCornerError("PAPER trading worker is disabled")
+
+    tm = tmux if tmux is not None else Tmux()
+    tm.ensure_session()
+    existed = tm.has_window("trading")
+    if existed:
+        tm.kill_window("trading")
+
+    bin_path = str(Path(g.repo_root) / "bin" / "docich")
+    tm.new_window(
+        "trading",
+        [bin_path, "--config", str(g.config_path), "run", "trading"],
+    )
+    sleep(STARTUP_GRACE_SECONDS)
+    if not tm.has_window("trading"):
+        raise PaperCornerError("PAPER trading worker did not start")
+    try:
+        states = tm.pane_states_checked(f"{tm.session}:trading")
+    except Exception as exc:
+        raise PaperCornerError("PAPER trading worker state cannot be verified") from exc
+    if not states or any(getattr(pane, "dead", True) for pane in states):
+        raise PaperCornerError("PAPER trading worker exited during startup")
+    return {"status": "reloaded" if existed else "started", "worker": "trading"}
+
+
 def launch(config_path: Path, duration_minutes: int) -> dict[str, object]:
     if type(duration_minutes) is not int or not MIN_DURATION <= duration_minutes <= MAX_DURATION:
         raise PaperCornerError(f"duration_minutes は{MIN_DURATION}-{MAX_DURATION}の整数である必要があります")
@@ -182,11 +218,15 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         config_path = Path(args.config)
+        selected = int(bool(args.diagnose_only)) + int(bool(args.reload_worker)) + int(args.duration_minutes is not None)
+        if selected != 1:
+            raise PaperCornerError("exactly one PAPER operation is required")
         if args.diagnose_only:
             return _diagnose(config_path)
-        if args.duration_minutes is None:
-            raise PaperCornerError("duration_minutes が必要です")
-        result = launch(config_path, args.duration_minutes)
+        if args.reload_worker:
+            result = reload_worker(config_path)
+        else:
+            result = launch(config_path, args.duration_minutes)
     except (ConfigError, PaperCornerError, OSError, ValueError) as exc:
         print(f"docich: エラー: {exc}", file=sys.stderr)
         return 2
