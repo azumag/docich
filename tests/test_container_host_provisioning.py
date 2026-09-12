@@ -76,8 +76,9 @@ def test_installer_fails_closed_when_security_inspection_is_unavailable():
     text = _read(INSTALL)
     assert "iptables inspection is required" in text
     assert "socket-listener inspection is required" in text
+    assert "command -v iptables-save" in text
+    assert "command -v netstat" in text
     # Security checks must never interpret an absent inspection tool as zero rules/listeners.
-    assert "elif command -v iptables-save" in text
     assert "else\n    echo 0\n  fi" not in text
 
 
