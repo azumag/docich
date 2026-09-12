@@ -34,6 +34,22 @@ CREATE TABLE IF NOT EXISTS samples (
  experiment TEXT NOT NULL, bucket INTEGER NOT NULL, observed_at REAL NOT NULL,
  equity TEXT NOT NULL, PRIMARY KEY(experiment, bucket)
 );
+CREATE TABLE IF NOT EXISTS equity_observations (
+ experiment TEXT NOT NULL, observed_at REAL NOT NULL, equity TEXT NOT NULL,
+ PRIMARY KEY(experiment, observed_at)
+);
+CREATE TRIGGER IF NOT EXISTS samples_equity_observation_insert
+AFTER INSERT ON samples
+BEGIN
+ INSERT OR REPLACE INTO equity_observations(experiment,observed_at,equity)
+ VALUES (NEW.experiment,NEW.observed_at,NEW.equity);
+END;
+CREATE TRIGGER IF NOT EXISTS samples_equity_observation_update
+AFTER UPDATE OF observed_at,equity ON samples
+BEGIN
+ INSERT OR REPLACE INTO equity_observations(experiment,observed_at,equity)
+ VALUES (NEW.experiment,NEW.observed_at,NEW.equity);
+END;
 CREATE TABLE IF NOT EXISTS evaluations (
  experiment TEXT PRIMARY KEY, evaluated_at REAL NOT NULL, report BLOB NOT NULL
 );
@@ -49,6 +65,11 @@ class LabStore:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.executescript(SCHEMA)
+        # Existing WIP databases may predate the observation journal. Backfill
+        # their latest hourly samples; future in-bucket updates are preserved by
+        # the triggers above instead of being lost to the samples upsert.
+        self.db.execute("""INSERT OR IGNORE INTO equity_observations(experiment,observed_at,equity)
+            SELECT experiment,observed_at,equity FROM samples""")
         self.db.commit()
 
     def close(self):
