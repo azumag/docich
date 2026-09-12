@@ -54,6 +54,12 @@ check_pin "docker_ce_cli_version" "docker-ce-cli" "${DOCKER_CE_CLI_VERSION}"
 check_pin "containerd_io_version" "containerd.io" "${CONTAINERD_IO_VERSION}"
 check_pin "docker_buildx_version" "docker-buildx-plugin" "${DOCKER_BUILDX_PLUGIN_VERSION}"
 check_pin "docker_compose_version" "docker-compose-plugin" "${DOCKER_COMPOSE_PLUGIN_VERSION}"
+runsc_pkg="$(pkg_version runsc)"
+if [[ "${runsc_pkg}" == "missing" ]]; then
+  report "runsc_package_version" "missing" "drift"
+else
+  report "runsc_package_version" "${runsc_pkg}"
+fi
 
 # --- docker info capability checks ---
 if command -v docker >/dev/null 2>&1; then
@@ -125,7 +131,7 @@ if [[ -f "${DOCKER_SOURCES}" ]] && [[ "$(cat "${DOCKER_SOURCES}")" == "${docker_
 else
   report "docker_sources" "drift" "drift"
 fi
-gvisor_list_want="deb [arch=arm64 signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main"
+gvisor_list_want="deb [arch=arm64 signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases ${GVISOR_APT_SUITE} main"
 if [[ -f "${GVISOR_LIST}" ]] && [[ "$(cat "${GVISOR_LIST}")" == "${gvisor_list_want}" ]]; then
   report "gvisor_list" "canonical"
 else
@@ -133,19 +139,50 @@ else
 fi
 
 # --- firewall invariants: zero DOCKER rules, forwarding 0/0, no 2375/2376 listeners ---
-if ${PRIV} iptables -S 2>/dev/null | grep -q DOCKER; then
-  n="$(${PRIV} iptables -S 2>/dev/null | grep -c DOCKER || echo unknown)"
-  report "iptables_docker_rules" "${n}" "drift"
-else
-  report "iptables_docker_rules" "0"
+packet_filter=""
+packet_filter_ok=0
+if command -v iptables >/dev/null 2>&1; then
+  if packet_filter="$(${PRIV} iptables -S 2>/dev/null)"; then
+    packet_filter_ok=1
+  fi
+elif command -v iptables-save >/dev/null 2>&1; then
+  if packet_filter="$(${PRIV} iptables-save 2>/dev/null)"; then
+    packet_filter_ok=1
+  fi
 fi
+if [[ "${packet_filter_ok}" == "1" ]]; then
+  n="$(grep -c DOCKER <<<"${packet_filter}" || true)"
+  if [[ "${n}" == "0" ]]; then
+    report "iptables_docker_rules" "0"
+  else
+    report "iptables_docker_rules" "${n}" "drift"
+  fi
+else
+  report "iptables_docker_rules" "unavailable" "drift"
+fi
+
 v4="$(${PRIV} sysctl -n net.ipv4.ip_forward 2>/dev/null || echo unknown)"
 [[ "${v4}" == "0" ]] && report "ipv4_forwarding" "${v4}" || report "ipv4_forwarding" "${v4} (net.ipv4.ip_forward)" "drift"
 v6="$(${PRIV} sysctl -n net.ipv6.conf.all.forwarding 2>/dev/null || echo unknown)"
 [[ "${v6}" == "0" ]] && report "ipv6_forwarding" "${v6}" || report "ipv6_forwarding" "${v6} (net.ipv6.conf.all.forwarding)" "drift"
-if ss -ltn 2>/dev/null | grep -Eq ':(2375|2376)\b'; then
-  report "listen_2375" "present" "drift"
-  report "listen_2376" "present" "drift"
+
+listeners=""
+listener_check_ok=0
+if command -v ss >/dev/null 2>&1; then
+  if listeners="$(ss -ltn 2>/dev/null)"; then
+    listener_check_ok=1
+  fi
+elif command -v netstat >/dev/null 2>&1; then
+  if listeners="$(netstat -ltn 2>/dev/null)"; then
+    listener_check_ok=1
+  fi
+fi
+if [[ "${listener_check_ok}" != "1" ]]; then
+  report "listen_2375" "unavailable" "drift"
+  report "listen_2376" "unavailable" "drift"
+elif grep -Eq ':(2375|2376)\b' <<<"${listeners}"; then
+  grep -Eq ':2375\b' <<<"${listeners}" && report "listen_2375" "present" "drift" || report "listen_2375" "none"
+  grep -Eq ':2376\b' <<<"${listeners}" && report "listen_2376" "present" "drift" || report "listen_2376" "none"
 else
   report "listen_2375" "none"
   report "listen_2376" "none"
