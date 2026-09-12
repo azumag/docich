@@ -37,7 +37,7 @@
         <span id="range">-</span>
       </div>
       <canvas id="chart" width="540" height="334"></canvas>
-      <div id="chartnote" class="note">5分足の保存済み終値。PAPER台帳と公開価格から損益計算。</div>
+      <div id="chartnote" class="note">bitbank公開約定・現在値から10秒足ローソクを生成します。売買判断は従来の5分足です。</div>
     </section>
 
     <aside id="side">
@@ -64,6 +64,7 @@
   <footer><div id="disclaimer"></div></footer>
 </div>
 <script src="/dashboard.js"></script>
+<script src="/dashboard_candles.js"></script>
 <script>
 (() => {
   "use strict";

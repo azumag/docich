@@ -51,6 +51,8 @@ def test_server_serves_page_snapshot_live_feed_and_is_read_only(tmp_path):
     try:
         html = urllib.request.urlopen(base + "/", timeout=5).read().decode("utf-8")
         assert "PAPER" in html and "dashboard.js" in html
+        assert "dashboard_candles.js" in html
+        assert "10秒足ローソク" in html
         assert "市場歩み値" in html
         # Chrome must not offer to translate the Japanese page (the tip would
         # render over the streamed viewport).
@@ -74,6 +76,10 @@ def test_server_serves_page_snapshot_live_feed_and_is_read_only(tmp_path):
         assert "api/trading/live" in js
         assert "pollLive" in js
         assert "LIVE" in js
+        candles = urllib.request.urlopen(base + "/dashboard_candles.js", timeout=5).read().decode("utf-8")
+        assert "BUCKET_SECONDS = 10" in candles
+        assert "open" in candles and "high" in candles and "low" in candles and "close" in candles
+        assert "売買判断は従来の5分足" in candles
 
         for method in ("POST", "PUT", "DELETE"):
             for endpoint in ("/api/trading/dashboard", "/api/trading/live"):

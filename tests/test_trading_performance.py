@@ -35,10 +35,15 @@ def _decision(oid: str, side: str, amount: str, price: str) -> AllocationDecisio
     )
 
 
+def _zero_cost_broker(ledger: PaperLedger) -> PaperBroker:
+    """These tests isolate accounting math from the production execution-cost model."""
+    return PaperBroker(ledger, taker_fee_rate="0", slippage_bps="0")
+
+
 def test_performance_combines_realized_unrealized_and_today(tmp_path):
     db = tmp_path / "paper.sqlite3"
     ledger = PaperLedger(db)
-    broker = PaperBroker(ledger)
+    broker = _zero_cost_broker(ledger)
     now = dt.datetime(2026, 9, 11, 12, 0, tzinfo=JST).timestamp()
     yesterday = dt.datetime(2026, 9, 10, 18, 0, tzinfo=JST).timestamp()
     broker.fill(_decision("buy", "buy", "2", "100"), timestamp=yesterday)
@@ -64,7 +69,7 @@ def test_performance_combines_realized_unrealized_and_today(tmp_path):
 def test_performance_fails_closed_when_open_position_lacks_price(tmp_path):
     db = tmp_path / "paper.sqlite3"
     ledger = PaperLedger(db)
-    PaperBroker(ledger).fill(_decision("buy", "buy", "1", "100"), timestamp=1.0)
+    _zero_cost_broker(ledger).fill(_decision("buy", "buy", "1", "100"), timestamp=1.0)
     ledger.close()
 
     perf = build_performance(
@@ -83,7 +88,7 @@ def test_performance_fails_closed_when_open_position_lacks_price(tmp_path):
 def test_sell_notification_reads_realized_pnl_from_paper_ledger(tmp_path):
     db = tmp_path / "paper.sqlite3"
     ledger = PaperLedger(db)
-    broker = PaperBroker(ledger)
+    broker = _zero_cost_broker(ledger)
     broker.fill(_decision("buy", "buy", "2", "100"), timestamp=1000.0)
     sold = broker.fill(_decision("sell", "sell", "1", "120"), timestamp=1100.0)
     ledger.close()
