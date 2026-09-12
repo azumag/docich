@@ -13,7 +13,7 @@ import time
 from urllib.parse import urlsplit
 
 from .contract import Artifact, StrategyError, bounded_text, decode, encode
-from .store import LabStore
+from .store import LabStore, MAX_OBSERVED_EXPERIMENTS
 
 
 def build_prompt(*, symbols: list[str], prior: list[dict], brief: str) -> str:
@@ -79,7 +79,10 @@ def generate(trading_dir: Path, *, image: str, symbols: list[str], brief: str,
         with store.transaction():
             store.db.execute("CREATE TABLE IF NOT EXISTS generations (day INTEGER PRIMARY KEY, status TEXT NOT NULL)")
             day = int(now_fn() // 86400)
-            if len(store.active_ids()) >= 2:
+            # Paused experiments still consume depth/status monitoring budget.
+            # Reject before the provider call so a full observation queue does
+            # not spend generation tokens on an experiment that cannot start.
+            if len(store.observed_ids()) >= MAX_OBSERVED_EXPERIMENTS:
                 return {"status": "skipped", "reason": "experiment_capacity"}
             if store.db.execute("SELECT 1 FROM generations WHERE day=?", (day,)).fetchone():
                 return {"status": "skipped", "reason": "generation_daily_budget"}
