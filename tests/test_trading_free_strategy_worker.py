@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 import sys
 
 import pytest
@@ -9,7 +10,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich.trading.free_strategy.contract import StrategyError  # noqa: E402
-from docich.trading.free_strategy.worker import main, run_worker  # noqa: E402
+from docich.trading.free_strategy.worker import main, probe_host, run_worker  # noqa: E402
 
 IMAGE = "sha256:" + "a" * 64
 
@@ -111,3 +112,88 @@ def test_worker_cli_stays_disabled_without_explicit_enable(tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload == {"cycles": 0, "mode": "PAPER", "status": "disabled"}
     assert not (tmp_path / "trading").exists()
+
+
+def test_host_probe_reports_only_fixed_ready_capabilities(monkeypatch):
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            json.dumps({
+                "OSType": "linux",
+                "Runtimes": {"runc": {}, "runsc": {}},
+                "MemoryLimit": True,
+                "PidsLimit": True,
+                "CPUCfsQuota": True,
+            }).encode(),
+            b"private-daemon-marker",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = probe_host()
+    assert result == {
+        "mode": "PAPER",
+        "status": "ready",
+        "docker_available": True,
+        "linux_daemon": True,
+        "runsc_registered": True,
+        "memory_limit": True,
+        "pids_limit": True,
+        "cpu_quota": True,
+        "error_codes": [],
+    }
+    assert calls and calls[0][0][:3] == ["docker", "info", "--format"]
+    assert "private-daemon-marker" not in json.dumps(result)
+
+
+def test_host_probe_fails_closed_with_fixed_codes(monkeypatch):
+    def fake_run(argv, **kwargs):
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            json.dumps({
+                "OSType": "linux",
+                "Runtimes": {"runc": {}},
+                "MemoryLimit": True,
+                "PidsLimit": False,
+                "CPUCfsQuota": False,
+            }).encode(),
+            b"secret error details",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = probe_host()
+    assert result["status"] == "unavailable"
+    assert result["docker_available"] is True
+    assert result["runsc_registered"] is False
+    assert result["memory_limit"] is True
+    assert result["pids_limit"] is False
+    assert result["cpu_quota"] is False
+    assert result["error_codes"] == ["gvisor_required", "resource_limits_unavailable"]
+    assert "secret" not in json.dumps(result)
+
+
+def test_host_probe_does_not_create_state_and_cli_needs_no_trading_dir(tmp_path, monkeypatch, capsys):
+    def fake_run(argv, **kwargs):
+        return subprocess.CompletedProcess(
+            argv,
+            1,
+            b"",
+            b"daemon private diagnostic",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    before = list(tmp_path.iterdir())
+    result = probe_host(docker="missing-docker")
+    assert result["status"] == "unavailable"
+    assert result["error_codes"] == ["docker_unavailable"]
+    assert list(tmp_path.iterdir()) == before
+
+    code = main(["--check-host"])
+    assert code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "unavailable"
+    assert payload["error_codes"] == ["docker_unavailable"]
