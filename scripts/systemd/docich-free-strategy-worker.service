@@ -1,0 +1,19 @@
+[Unit]
+Description=docich isolated free-strategy PAPER worker
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=__DOCICH_ROOT__
+Environment=PATH=__DOCICH_ROOT__/.venv-trading/bin:/usr/local/bin:/usr/bin:/bin
+# Intentionally required (no leading '-'): installing/enabling this unit without
+# an explicit local PAPER configuration must fail before starting the worker.
+EnvironmentFile=%h/.config/docich/free-strategy-worker.env
+ExecStart=__DOCICH_ROOT__/bin/docich free-strategy-worker --trading-dir ${DOCICH_FREE_STRATEGY_TRADING_DIR} --image ${DOCICH_FREE_STRATEGY_IMAGE} --interval ${DOCICH_FREE_STRATEGY_INTERVAL} --enabled
+Restart=on-failure
+RestartSec=30
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target
