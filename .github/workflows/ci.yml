@@ -44,6 +44,8 @@ jobs:
           tests/test_trading_free_strategy_entrypoint.py tests/test_trading_free_strategy_capacity.py
           tests/test_trading_free_strategy_systemd.py
           tests/test_trading_soren_output.py tests/test_overlay_queue.py tests/test_audio_delivery.py tests/test_overlay_interop.py
+      - name: Container host provisioning contract
+        run: python3 -m pytest -q tests/test_container_host_provisioning.py
       - name: Retro corner contract
         run: python3 -m pytest -q tests/test_retro_corner.py tests/test_retro_corner_manual.py tests/test_corner_boundary.py tests/test_paper_corner.py tests/test_paper_corner_manual.py tests/test_paper_corner_chatter_schedule.py tests/test_config.py tests/test_robots_config.py
       - name: PAPER improve sidebar contract
