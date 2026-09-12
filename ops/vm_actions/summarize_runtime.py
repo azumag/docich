@@ -36,6 +36,12 @@ TIMEOUT_BUCKETS = (
     "unknown",
 )
 
+TIMEOUT_ORIGINS = (
+    "local_budget",
+    "upstream_or_cli",
+    "unknown",
+)
+
 
 def _integer(mapping, name):
     value = mapping.get(name, 0) if isinstance(mapping, dict) else 0
@@ -85,6 +91,25 @@ def _timeout_bucket(event):
     return "exact_20s" if seconds == 20 else "other_known"
 
 
+def _timeout_origin(event):
+    """Distinguish our local timeout budget from timeout text reported upstream.
+
+    Soren's local timeout wrappers store a canonical ``timeout after Ns`` error
+    preview. Provider/CLI failures retain their own bounded prefix/text instead.
+    Publish only this fixed origin enum so the production alert can tell whether
+    a 20-second signature came from our configured process budget without
+    exposing provider/model identifiers or the preview itself.
+    """
+    if not isinstance(event, dict) or event.get("event") != "fail":
+        return None
+    preview = str(event.get("error_preview") or "").strip().lower()
+    if re.match(r"^timeout\s+after\s+\d{1,4}\s*(?:s|sec(?:ond)?s?)\b", preview):
+        return "local_budget"
+    if preview and re.search(r"timed? out|timeout|deadline exceeded", preview):
+        return "upstream_or_cli"
+    return "unknown"
+
+
 def _component_bucket(event):
     """Collapse a private/dynamic component label into a small fixed enum."""
     if not isinstance(event, dict):
@@ -121,6 +146,7 @@ def summarize(data):
     recent = ai.get("recent_events")
     cause_counts = Counter()
     timeout_counts = Counter()
+    exact_20s_origin_counts = Counter()
     timeout_component_counts = Counter()
     fail_component_counts = Counter()
     all_failed_component_counts = Counter()
@@ -135,6 +161,8 @@ def summarize(data):
                     bucket = _timeout_bucket(event)
                     timeout_counts[bucket] += 1
                     timeout_component_counts[(bucket, component)] += 1
+                    if bucket == "exact_20s":
+                        exact_20s_origin_counts[_timeout_origin(event)] += 1
             if isinstance(event, dict) and event.get("event") == "all_failed":
                 all_failed_component_counts[_component_bucket(event)] += 1
 
@@ -160,6 +188,10 @@ def summarize(data):
     ]
     parts.extend(f"ai_recent_fail_{cause}={cause_counts[cause]}" for cause in CAUSES)
     parts.extend(f"ai_recent_timeout_{bucket}={timeout_counts[bucket]}" for bucket in TIMEOUT_BUCKETS)
+    parts.extend(
+        f"ai_recent_timeout_exact_20s_origin_{origin}={exact_20s_origin_counts[origin]}"
+        for origin in TIMEOUT_ORIGINS
+    )
     parts.extend(
         f"ai_recent_timeout_{bucket}_component_{component}={timeout_component_counts[(bucket, component)]}"
         for bucket in TIMEOUT_BUCKETS
