@@ -8,11 +8,10 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
 # PAPER/trading commands share optional market-data/runtime dependencies that
-# live in the dedicated trading virtualenv.  Keep the whole PAPER lifecycle on
-# one interpreter: the worker, PAPER corner, direct trading commands, and the
-# end-of-corner paper-improve child spawned through sys.executable.  Unrelated
-# commands stay on the caller's normal python3.  Development checkouts without
-# the trading virtualenv intentionally fall back to python3.
+# live in the dedicated trading virtualenv. Keep the whole PAPER lifecycle and
+# isolated free-strategy research entrypoints on one interpreter. Selecting the
+# interpreter never enables either worker. Unrelated commands stay on the
+# caller's normal python3, with a development fallback when the venv is absent.
 args=("$@")
 command_index=0
 if (( ${#args[@]} >= 2 )) && [[ "${args[0]}" == "--config" ]]; then
@@ -24,7 +23,10 @@ fi
 use_trading_python=0
 if (( command_index < ${#args[@]} )); then
     command="${args[command_index]}"
-    if [[ "$command" == "trading" || "$command" == "paper-corner" ]]; then
+    if [[ "$command" == "trading" \
+        || "$command" == "paper-corner" \
+        || "$command" == "free-strategy" \
+        || "$command" == "free-strategy-worker" ]]; then
         use_trading_python=1
     elif (( command_index + 1 < ${#args[@]} )) \
         && [[ "$command" == "run" ]] \

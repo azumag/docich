@@ -1,7 +1,7 @@
-# docich systemd --user ユニット (Phase 3)
+# docich systemd ユニット (Phase 3)
 
-tmux 常駐 (architecture.md §2) を systemd --user ユニットで包むためのテンプレート。
-このディレクトリのユニットファイルは **雛形**であり、`__DOCICH_ROOT__` を実際の
+tmux 常駐 (architecture.md §2) を主に systemd --user ユニットで包むためのテンプレート。
+このディレクトリの通常ユニットファイルは **雛形**であり、`__DOCICH_ROOT__` を実際の
 リポジトリ絶対パスに置換してから `~/.config/systemd/user/` に配置して使う。
 リポジトリ内のユニットファイル自体は編集しないこと (置換はコピー先で行う)。
 
@@ -13,6 +13,11 @@ tmux 常駐 (architecture.md §2) を systemd --user ユニットで包むため
 | `docich-retro-corner.service` | Soren本番 `:99` にメリケンAIレトロゲーム枠を載せる長時間oneshot |
 | `docich-retro-corner.timer` | 毎時 `retro-corner tick`。設定timezone/start_hourに一致した時だけ1日1回実行 |
 | `docich-webui.service` | `docich webui` を常駐させる simple ユニット (Tailscale serve で公開する場合のみ利用) |
+
+`docich-free-strategy-worker.service` だけはDocker socketを使うためsystem scopeのunitです。
+`User=ubuntu` と `SupplementaryGroups=docker` をunit内で指定し、ubuntuアカウントへdocker groupを
+恒久追加せず新workerプロセスにだけ権限を渡します。既存PAPERのuser unitやSoren runtimeは操作しません。
+導入とenableは `docs/operations/free-strategy-paper-worker.md` の手順に従ってください。
 
 ## 導入手順
 

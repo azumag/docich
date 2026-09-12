@@ -54,11 +54,64 @@
         <h3>保有上位 <span id="holdingnote" class="muted"></span></h3>
         <div id="holdings">-</div>
       </div>
+      <div class="panel" id="free-strategy-panel">
+        <h3>AI戦略研究 <span class="paper-tag">独立PAPER</span> <span id="free-strategy-health" class="muted">未起動</span></h3>
+        <div id="free-strategies">-</div>
+      </div>
     </aside>
   </main>
 
   <footer><div id="disclaimer"></div></footer>
 </div>
 <script src="/dashboard.js"></script>
+<script>
+(() => {
+  "use strict";
+  const target = document.getElementById("free-strategies");
+  const healthTarget = document.getElementById("free-strategy-health");
+  const escapeHtml = (value) => String(value ?? "")
+    .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;").replaceAll("'", "&#39;");
+  const phaseLabel = (phase) => ({
+    research: "研究開始", paper_validating: "PAPER検証中", paused: "停止中",
+    quarantined: "隔離", review_due: "評価待ち"
+  })[String(phase)] || String(phase || "待機");
+  const healthLabel = (status) => ({
+    running: "実行中", idle: "待機", degraded: "要確認", absent: "未起動", unavailable: "状態不明"
+  })[String(status)] || "状態不明";
+  const money = (value) => {
+    if (value === null || value === undefined || value === "") return "損益待ち";
+    const number = Number(value);
+    if (!Number.isFinite(number)) return "損益待ち";
+    const sign = number > 0 ? "+" : "";
+    return `${sign}${number.toLocaleString("ja-JP", {maximumFractionDigits: 0})}円`;
+  };
+  function renderResearch() {
+    if (!target || typeof render === "undefined" || !render.lastData) return;
+    const group = render.lastData.free_strategies || {};
+    const health = group.health || {};
+    if (healthTarget) {
+      const age = Number(health.age_sec);
+      const suffix = Number.isFinite(age) ? ` ${age < 60 ? age + "s" : Math.floor(age / 60) + "m"}前` : "";
+      healthTarget.textContent = healthLabel(health.status) + suffix;
+      healthTarget.className = health.status === "degraded" || health.status === "unavailable" ? "warn" : "muted";
+    }
+    const items = Array.isArray(group.experiments) ? group.experiments.slice(0, 2) : [];
+    if (!items.length) {
+      target.innerHTML = '<div class="muted">候補なし</div>';
+      return;
+    }
+    target.innerHTML = items.map((item) => {
+      const pnl = Number(item.net_pnl_jpy);
+      const cls = Number.isFinite(pnl) && pnl !== 0 ? (pnl > 0 ? "pos" : "neg") : "muted";
+      return `<div class="lab-row"><span class="lab-name">${escapeHtml(item.name || "候補")} ` +
+        `<span class="lab-phase">${escapeHtml(phaseLabel(item.phase))}</span></span>` +
+        `<span class="lab-meta ${cls}">${escapeHtml(money(item.net_pnl_jpy))}</span></div>`;
+    }).join("");
+  }
+  renderResearch();
+  setInterval(renderResearch, 2000);
+})();
+</script>
 </body>
 </html>
