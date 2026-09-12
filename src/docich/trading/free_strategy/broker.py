@@ -180,9 +180,21 @@ def settle_observation(store: LabStore, identity: str, *, markets: dict, books: 
         equity = cash + sum(liquidation_value(
             q, markets[s], books[s], slippage, participation
         ) for s, q in positions.items())
+        post_peak = max(peak, equity)
+        drawdown_hit = drawdown_hit or equity < post_peak * (1 - D(policy["stop_drawdown_fraction"]))
+        if drawdown_hit:
+            # A fill can itself cross the stop through spread/slippage/fees. Do
+            # not allow the next candidate decision to run before that loss is
+            # reflected in the host-owned risk state.
+            pending.clear()
         account = {"cash_jpy": decimal_text(cash), "positions": {s: decimal_text(q) for s, q in positions.items()},
-                   "peak_equity": decimal_text(max(peak, equity))}
-        store.db.execute("UPDATE experiments SET account=?,pending=?,revision=revision+1 WHERE id=?",
-                         (encode(account), encode(pending), identity))
+                   "peak_equity": decimal_text(post_peak)}
+        if drawdown_hit:
+            store.db.execute("""UPDATE experiments SET phase='paused',last_error='drawdown_limit',
+                account=?,pending=?,revision=revision+1 WHERE id=?""",
+                (encode(account), encode({}), identity))
+        else:
+            store.db.execute("UPDATE experiments SET account=?,pending=?,revision=revision+1 WHERE id=?",
+                             (encode(account), encode(pending), identity))
         _record_sample(store, identity, exp, now=now, equity=equity)
         return store.experiment(identity)
