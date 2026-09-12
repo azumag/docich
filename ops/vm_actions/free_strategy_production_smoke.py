@@ -9,6 +9,7 @@ that exact operational probe to review_due so it consumes no research slot.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 import re
 import sqlite3
@@ -18,7 +19,6 @@ import tempfile
 import time
 
 ROOT = Path("/home/ubuntu/docich")
-SOREN_ROOT = Path("/home/ubuntu/soren")
 SERVICE = "docich-free-strategy-worker.service"
 NAME = "__docich_ops_smoke__"
 FAMILY = "ops_smoke"
@@ -27,13 +27,14 @@ SYMBOL = "BTC/JPY"
 IMAGE_RE = re.compile(r"(?:[A-Za-z0-9._/:-]+@)?sha256:[0-9a-f]{64}\Z")
 POLL_SECONDS = 5.0
 DEADLINE_SECONDS = 420.0
+MAX_HEALTH_BYTES = 32 * 1024
 
 ERROR_EXIT_CODES = {
     "worker_not_active": 11,
     "worker_identity_unavailable": 12,
     "worker_identity_mismatch": 13,
     "worker_runtime_invalid": 14,
-    "worker_trading_dir_outside_root": 15,
+    "worker_trading_dir_untrusted": 15,
     "cli_unavailable": 16,
     "cli_failed": 17,
     "cli_experiment_capacity": 18,
@@ -73,17 +74,19 @@ def _fail(code: str) -> None:
     raise SystemExit(ERROR_EXIT_CODES.get(code, ERROR_EXIT_CODES["unexpected_failure"]))
 
 
-def _parse_worker_cmdline(
-    raw: bytes,
-    *,
-    root: Path = ROOT,
-    soren_root: Path = SOREN_ROOT,
-) -> tuple[Path, str]:
+def _parse_worker_cmdline(raw: bytes) -> tuple[Path, str, int]:
+    """Extract only the reviewed free-strategy worker's runtime arguments.
+
+    The trading path is not supplied by the workflow/user; it comes from the
+    MainPID owned by the dedicated systemd unit.  Path trust is established
+    separately from that worker's fresh PAPER health file rather than by
+    guessing one production checkout/projection pathname.
+    """
     try:
         argv = [item.decode("utf-8", "strict") for item in raw.split(b"\0") if item]
     except UnicodeError as exc:
         raise SmokeError("worker_runtime_invalid") from exc
-    if "free-strategy-worker" not in argv:
+    if "free-strategy-worker" not in argv or argv.count("--enabled") != 1:
         raise SmokeError("worker_identity_mismatch")
 
     def value(flag: str) -> str:
@@ -96,35 +99,58 @@ def _parse_worker_cmdline(
 
     trading_raw = value("--trading-dir")
     image = value("--image")
+    interval_raw = value("--interval")
     if not IMAGE_RE.fullmatch(image):
         raise SmokeError("worker_runtime_invalid")
     trading = Path(trading_raw)
     if not trading.is_absolute():
         raise SmokeError("worker_runtime_invalid")
-
-    # Production deploys Soren as a reviewed projection. The configured path
-    # may therefore be the docich-facing path while resolve() lands under the
-    # canonical Soren projection. Accept only those two exact trading roots;
-    # do not broaden this to arbitrary paths under /home/ubuntu.
-    docich_trading = root / "run-soren-live" / "trading"
-    soren_trading = soren_root / "trading"
-    if trading not in {docich_trading, soren_trading}:
-        raise SmokeError("worker_trading_dir_outside_root")
     try:
+        interval = int(interval_raw)
         resolved_trading = trading.resolve(strict=True)
-        resolved_allowed = {
-            candidate.resolve(strict=True)
-            for candidate in (docich_trading, soren_trading)
-            if candidate.exists()
-        }
-    except OSError as exc:
+    except (OSError, TypeError, ValueError) as exc:
         raise SmokeError("worker_runtime_invalid") from exc
-    if not resolved_allowed or resolved_trading not in resolved_allowed:
-        raise SmokeError("worker_trading_dir_outside_root")
-    return resolved_trading, image
+    if interval < 300 or not resolved_trading.is_dir():
+        raise SmokeError("worker_runtime_invalid")
+    return resolved_trading, image, interval
 
 
-def _worker_runtime() -> tuple[int, Path, str]:
+def _validate_worker_health(trading: Path, *, interval: int, now: float) -> None:
+    """Bind an arbitrary absolute path to the already-running PAPER worker.
+
+    The active worker writes this bounded health document inside its own
+    trading directory each cycle. Requiring a fresh, schema-valid PAPER health
+    file avoids broad filesystem allowlists while still supporting reviewed
+    release/symlink/projection layouts used by production.
+    """
+    path = trading / "free-strategies" / "health.json"
+    try:
+        stat = path.stat()
+        if not path.is_file() or stat.st_size <= 0 or stat.st_size > MAX_HEALTH_BYTES:
+            raise SmokeError("worker_trading_dir_untrusted")
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except SmokeError:
+        raise
+    except (OSError, UnicodeError, ValueError, TypeError) as exc:
+        raise SmokeError("worker_trading_dir_untrusted") from exc
+    heartbeat = data.get("heartbeat_at") if isinstance(data, dict) else None
+    if isinstance(heartbeat, bool) or not isinstance(heartbeat, (int, float)):
+        raise SmokeError("worker_trading_dir_untrusted")
+    heartbeat = float(heartbeat)
+    max_age = max(900.0, float(interval) * 3.0)
+    age = float(now) - heartbeat
+    if (
+        data.get("schema_version") != 1
+        or data.get("mode") != "PAPER"
+        or data.get("status") not in {"running", "idle", "degraded"}
+        or not math.isfinite(heartbeat)
+        or age < -60.0
+        or age > max_age
+    ):
+        raise SmokeError("worker_trading_dir_untrusted")
+
+
+def _worker_runtime(*, now: float | None = None) -> tuple[int, Path, str, int]:
     try:
         active = subprocess.run(
             ["systemctl", "is-active", "--quiet", SERVICE],
@@ -151,8 +177,9 @@ def _worker_runtime() -> tuple[int, Path, str]:
         raise
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         raise SmokeError("worker_identity_unavailable") from exc
-    trading, image = _parse_worker_cmdline(cmdline)
-    return pid, trading, image
+    trading, image, interval = _parse_worker_cmdline(cmdline)
+    _validate_worker_health(trading, interval=interval, now=time.time() if now is None else now)
+    return pid, trading, image, interval
 
 
 def _run_cli(*args: str) -> dict:
@@ -308,7 +335,8 @@ def _assert_no_existing_smoke(db_path: Path) -> None:
 
 
 def main() -> int:
-    worker_pid, trading_dir, image = _worker_runtime()
+    worker_pid, trading_dir, image, interval = _worker_runtime()
+    runtime_identity = (worker_pid, trading_dir, image, interval)
     db_path = trading_dir / "free-strategies" / "lab.sqlite3"
     _assert_no_existing_smoke(db_path)
 
@@ -348,8 +376,7 @@ def main() -> int:
 
             deadline = time.monotonic() + DEADLINE_SECONDS
             while True:
-                current_pid, current_trading, current_image = _worker_runtime()
-                if (current_pid, current_trading, current_image) != (worker_pid, trading_dir, image):
+                if _worker_runtime() != runtime_identity:
                     raise SmokeError("worker_restarted_during_smoke")
                 snap = _snapshot(db_path, identity, artifact)
                 if (
@@ -384,8 +411,7 @@ def main() -> int:
                     pass
             raise
 
-    current_pid, current_trading, current_image = _worker_runtime()
-    if (current_pid, current_trading, current_image) != (worker_pid, trading_dir, image):
+    if _worker_runtime() != runtime_identity:
         raise SmokeError("worker_restarted_during_smoke")
     return 0
 
