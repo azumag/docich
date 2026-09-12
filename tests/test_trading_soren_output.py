@@ -21,7 +21,6 @@ class TestSorenOutputAdapter(unittest.TestCase):
             g = config.load_global(root, config_path=cfg)
             self.assertEqual(soren_output.resolve_soren_root(g), (root / "runtime/soren").resolve())
 
-
     def test_existing_sorengame_runtime_root_wins_over_reference_submodule(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -69,6 +68,32 @@ class TestSorenOutputAdapter(unittest.TestCase):
                 soren_output.resolve_soren_root(g), "ペーパー速報", "crypto_paper",
                 delivery_key="fill:event-a",
             )
+
+    def test_paper_corner_intro_is_spoken_only_for_opening(self):
+        intro = "PAPER・暗号資産の模擬売買コーナーです。"
+        self.assertEqual(
+            soren_output._paper_corner_speech_text(intro + "開始します。", "paper-corner:2026-09-12:opening"),
+            intro + "開始します。",
+        )
+        script = soren_output._paper_corner_speech_text(
+            intro + "今日は損益を見ます。", "paper-corner:2026-09-12:script:1"
+        )
+        self.assertEqual(script, "今日は損益を見ます。")
+
+    def test_periodic_paper_corner_report_adds_varied_chatter_without_intro(self):
+        intro = "PAPER・暗号資産の模擬売買コーナーです。"
+        first = soren_output._paper_corner_speech_text(
+            intro + "模擬資金1万円です。", "paper-corner:2026-09-12:0"
+        )
+        later = soren_output._paper_corner_speech_text(
+            intro + "模擬資金1万円です。", "paper-corner:2026-09-12:2"
+        )
+        self.assertNotIn(intro, first)
+        self.assertNotIn(intro, later)
+        self.assertIn("模擬資金1万円です。", first)
+        self.assertIn("模擬資金1万円です。", later)
+        self.assertNotEqual(first, later)
+        self.assertIn("BTC/JPY", later)
 
 
 if __name__ == "__main__":
