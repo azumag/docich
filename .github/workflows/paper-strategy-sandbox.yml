@@ -24,6 +24,9 @@ jobs:
         run: python3 -m pytest -q tests/test_trading_free_strategy_sandbox.py
       - name: Install pinned gVisor on the ephemeral runner
         run: bash tests/helpers/install_gvisor_ci.sh
+      - name: Record non-secret cgroup capabilities
+        shell: bash
+        run: docker info --format 'cgroup={{.CgroupVersion}} driver={{.CgroupDriver}} memory={{.MemoryLimit}} pids={{.PidsLimit}} cpu_quota={{.CPUCfsQuota}}'
       - name: Build the fixed guest image
         shell: bash
         run: |
