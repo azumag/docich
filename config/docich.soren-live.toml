@@ -41,7 +41,7 @@ notification_speech_enabled = true
 [rotation]
 games = []
 
-# 19:00 JSTに開始し、実際の切替完了から30分GNU Robotsを載せる。
+# 19:00 JSTに開始し、実際の切替完了から30分NInvadersを載せる。
 # docich側canonicalがidleなら、終了時はstopして背景のSorenへ自然に戻る。
 [retro_corner]
 enabled = true
@@ -49,10 +49,10 @@ require_program_boundary = true
 start_hour = 19
 duration_minutes = 30
 timezone = "Asia/Tokyo"
-games = ["gnurobots"]
-# 終了時改善の LLM 委任先 (soren improve と同一チェーン)。空なら改善ジョブを起動しない。
-# 非空は課金 LLM 実行の合意とみなす (timeout 600s の単発 job を終了時に切り離し起動)。
-improve_agents = "opencode:muse-spark-1.3-contributor-free,opencode-go:muse-spark-1.3-contributor,opencode-go:omen-alpha,opencode-go:deepseek-v4-flash"
+games = ["ninvaders"]
+# NInvaders は現状 wrapper 自走で、GNU Robots 用の戦略重み改善には未対応。
+# 不要な終了時LLM改善ジョブを起動しない。
+improve_agents = ""
 improve_matches = 2
 improve_margin_pct = 10.0
 

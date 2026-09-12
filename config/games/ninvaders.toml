@@ -20,8 +20,13 @@ font_size = 18
 [agent]
 enabled = false  # wrapper が無人プレイする (bot は issue #15 の AI 方針で別途)
 
-# wrapper自身が無人プレイを完結できるため、operatorの手動retro-cornerテストでは
-# per-move agentなしでも選択可能。通常20:00の日次対象リストには自動追加しない。
+# 日次レトロコーナーでも wrapper 自身が無人プレイを完結できるため、
+# per-move agent なしで選択可能。
+[corner]
+self_play = true
+intro = "NInvadersは端末上で動くSpace Invaders系のレトロゲームです。自動プレイで侵略者を迎撃します。"
+
+# operatorの手動retro-cornerテストからも無人ゲームとして選択可能。
 [retro_corner]
 unattended = true
 
