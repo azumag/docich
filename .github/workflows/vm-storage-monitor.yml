@@ -91,10 +91,12 @@ jobs:
           if ! diagnostics_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "diagnostics docich production $sha" 2>"$error_file")"; then
             echo 'severity=warn' >> "$GITHUB_OUTPUT"
             echo 'summary=diagnostics_unavailable=1' >> "$GITHUB_OUTPUT"
+            echo 'worker_context=unavailable=1' >> "$GITHUB_OUTPUT"
             exit 0
           fi
           printf '%s\n' "$diagnostics_json" > "$RUNNER_TEMP/runtime-diagnostics.json"
           python3 ops/vm_actions/summarize_runtime.py "$RUNNER_TEMP/runtime-diagnostics.json" >> "$GITHUB_OUTPUT"
+          python3 ops/vm_actions/summarize_worker_state.py "$RUNNER_TEMP/runtime-diagnostics.json" >> "$GITHUB_OUTPUT"
 
       - name: Update deduplicated GitHub alert
         env:
@@ -151,6 +153,7 @@ jobs:
         env:
           SEVERITY: ${{ steps.runtime.outputs.severity }}
           SUMMARY: ${{ steps.runtime.outputs.summary }}
+          WORKER_CONTEXT: ${{ steps.runtime.outputs.worker_context }}
         run: |
           set -euo pipefail
           prefix='[VM runtime]'
@@ -160,7 +163,7 @@ jobs:
               number="${entry%%$'\t'*}"
               gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Runtime diagnostics recovered to OK."
             done
-            echo "Runtime diagnostics OK: ${SUMMARY}"
+            echo "Runtime diagnostics OK: ${SUMMARY}; worker_context=${WORKER_CONTEXT}"
             exit 0
           fi
           upper="$(printf '%s' "$SEVERITY" | tr '[:lower:]' '[:upper:]')"
@@ -170,9 +173,10 @@ jobs:
 
           - Severity: ${upper}
           - Summary: ${SUMMARY}
+          - Worker context: ${WORKER_CONTEXT}
           - Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
 
-          The public alert contains counts and booleans only. Failure causes are represented only by fixed metric keys; raw diagnostics, worker names, paths, logs, provider/model names, prompts, credentials, and command output are never published.
+          The public alert contains counts, booleans, and fixed worker-category keys only. Failure causes are represented only by fixed metric keys; raw diagnostics, worker names, paths, logs, provider/model names, prompts, credentials, and command output are never published.
           EOF
           )"
           for entry in "${alerts[@]}"; do
