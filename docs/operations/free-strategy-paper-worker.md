@@ -37,7 +37,7 @@ Docker daemonのFW設定を変更する場合は、bridge通信を使わない�
 
 ## 2. Docker / gVisorの単体probe
 
-Docker公式APTリポジトリからDocker Engineを導入し、gVisorは安定releaseのAPT版を導入します。
+レビュー済みのホスト provisioning は `docs/operations/container-host-provisioning.md` に定義し、`ops/container_host/install_container_host.sh` で導入・`ops/container_host/verify_container_host.sh` で検証する（末尾 `result=ok` を確認する）。
 VM上では既定の `systrap` を使い、KVM設定は追加しません。導入後、まず候補guestとは別の
 使い捨てprobeを1回だけ実行します。`runsc`登録、Linux daemon、memory/PID/CPU capabilityの
 いずれかが確認できなければ停止します。
