@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich.trading.dashboard_server import ASSETS  # noqa: E402
 from docich.trading.dashboard_snapshot import build_dashboard_snapshot  # noqa: E402
-from docich.trading.free_strategy.contract import Artifact  # noqa: E402
+from docich.trading.free_strategy.contract import Artifact, encode  # noqa: E402
 from docich.trading.free_strategy.evaluation import evaluate  # noqa: E402
 from docich.trading.free_strategy.store import LabStore  # noqa: E402
 
@@ -43,7 +43,14 @@ def test_dashboard_does_not_create_free_strategy_database_when_absent(tmp_path):
 
     snapshot = build_dashboard_snapshot(trading_dir, now=1100.0)
 
-    assert snapshot["free_strategies"] == {"mode": "PAPER", "experiments": []}
+    assert snapshot["free_strategies"] == {
+        "mode": "PAPER",
+        "experiments": [],
+        "health": {
+            "status": "absent", "heartbeat_at": None, "age_sec": None,
+            "completed_experiments": 0, "error_codes": [],
+        },
+    }
     assert snapshot["portfolio"]["capital_jpy"] == "10000"
     assert snapshot["portfolio"]["deployed_jpy"] == "0"
     assert not lab.exists()
@@ -100,11 +107,36 @@ def test_dashboard_exposes_only_allowlisted_free_strategy_summary_without_mergin
     assert "initial_state" not in item
 
 
+def test_dashboard_health_is_allowlisted_and_redacted(tmp_path):
+    trading_dir = tmp_path / "trading"
+    _write_existing_status(trading_dir)
+    directory = trading_dir / "free-strategies"
+    directory.mkdir(parents=True)
+    (directory / "health.json").write_bytes(encode({
+        "schema_version": 1,
+        "mode": "PAPER",
+        "status": "degraded",
+        "heartbeat_at": 1090.0,
+        "completed_experiments": 1,
+        "error_codes": ["public_data_unavailable"],
+    }))
+
+    snapshot = build_dashboard_snapshot(trading_dir, now=1100.0)
+    assert snapshot["free_strategies"]["health"] == {
+        "status": "degraded",
+        "heartbeat_at": 1090.0,
+        "age_sec": 10,
+        "completed_experiments": 1,
+        "error_codes": ["public_data_unavailable"],
+    }
+
+
 def test_dashboard_asset_has_separate_free_strategy_panel():
     html = (ASSETS / "index.html").read_text(encoding="utf-8")
     css = (ASSETS / "dashboard.css").read_text(encoding="utf-8")
     assert 'id="free-strategy-panel"' in html
     assert 'id="free-strategies"' in html
+    assert 'id="free-strategy-health"' in html
     assert "AI戦略研究" in html and "独立PAPER" in html
     assert "render.lastData.free_strategies" in html
     assert "#free-strategies" in css
