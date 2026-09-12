@@ -66,6 +66,11 @@ def public_summary(path: Path, *, now: float) -> dict:
             result = []
             for row in rows:
                 artifact = decode(row["artifact_payload"], limit=512 * 1024)
+                # Operational E2E probes are durable audit evidence, not viewer
+                # strategies. Keep them in the isolated lab DB while excluding
+                # them from the public dashboard/status projection.
+                if artifact.get("family") == "ops_smoke":
+                    continue
                 report = decode(row["report"]) if row["report"] else {}
                 observed = report.get("observation_at")
                 result.append({"id": row["id"], "version": row["artifact"][:12],
