@@ -67,9 +67,19 @@ def test_installer_guards_platform_firewall_daemon_and_gvisor_runtime():
     assert "fingerprint" in lowered
     assert "force_daemon_json" in lowered
     assert "${GVISOR_APT_SUITE} main" in text
-    assert '"docker-compose-plugin=${DOCKER_COMPOSE_PLUGIN_VERSION}"' in text
-    assert "    runsc\n" in text
+    assert "apt-get install --no-install-recommends -y runsc" in text
     assert 'grep -q "release-${GVISOR_RELEASE}"' in text
+
+
+def test_installer_preseeds_safe_daemon_before_runtime_packages():
+    text = _read(INSTALL)
+    seed = text.index("write_pinned_daemon_json")
+    runsc_install = text.index("apt-get install --no-install-recommends -y runsc")
+    docker_install = text.index('"docker-ce=${DOCKER_CE_VERSION}"')
+    assert seed < runsc_install < docker_install
+    assert "Docker packages may enable/start the daemon" in text
+    assert "gVisor package changed ${DOCKER_DAEMON_JSON}" in text
+    assert "package installation changed ${DOCKER_DAEMON_JSON}" in text
 
 
 def test_installer_fails_closed_when_security_inspection_is_unavailable():
@@ -78,6 +88,7 @@ def test_installer_fails_closed_when_security_inspection_is_unavailable():
     assert "socket-listener inspection is required" in text
     assert "command -v iptables-save" in text
     assert "command -v netstat" in text
+    assert "echo unknown" in text
     # Security checks must never interpret an absent inspection tool as zero rules/listeners.
     assert "else\n    echo 0\n  fi" not in text
 
@@ -126,6 +137,7 @@ def test_provisioning_doc_links_pins_scripts_and_worker_doc():
     assert "5:29.8.0-1~ubuntu.24.04~noble" in text
     assert "20260907" in text
     assert "runsc" in text and "apt" in text
+    assert "daemon.json" in text and "docker" in text
     assert "ops/container_host/install_container_host.sh" in text
     assert "ops/container_host/verify_container_host.sh" in text
     worker = _lower(WORKER_DOC)
