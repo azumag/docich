@@ -230,9 +230,14 @@ def decide(context):
         if child == 0:
             os.close(1)
             os.close(2)
-            time.sleep(30)
+            time.sleep(1)
             os._exit(0)
         children.append(child)
+    for child in children:
+        try:
+            os.waitpid(child, 0)
+        except ChildProcessError:
+            pass
     return {"schema_version":1,"target_positions":[],"state":{"limited":limited,"children":len(children)},"reason":"子プロセス上限"}
 ''')
     assert result["state"]["limited"] is True
