@@ -22,6 +22,9 @@ from .strategy_runtime import (
 
 
 D = Decimal
+MOMENTUM_MIN_THRESHOLD_BPS = D("100")
+MOMENTUM_VOLATILITY_MULTIPLIER = 1.5
+MOMENTUM_VOLATILITY_BARS = 12
 
 
 @dataclass(frozen=True)
@@ -59,6 +62,34 @@ def _score(value: float) -> Decimal:
     return D(str(min(1.0, max(0.0, value))))
 
 
+def _adaptive_momentum_threshold_bps(
+    closes: Sequence[Decimal], policy: StrategyPolicy
+) -> Decimal:
+    """Scale the built-in momentum gate to recent realized volatility.
+
+    ``momentum_threshold_bps`` remains the reviewed/tunable ceiling. Low-volatility
+    markets can use a lower gate, but never below 100 bps unless the persisted
+    policy itself is already stricter/lower. This avoids permanently starving BTC
+    while keeping volatile altcoins near the existing 300 bps default.
+    """
+    ceiling = policy.momentum_threshold_bps
+    floor = min(ceiling, MOMENTUM_MIN_THRESHOLD_BPS)
+    returns_bps = [
+        float((current / previous - D("1")) * D("10000"))
+        for previous, current in zip(closes, closes[1:])
+        if previous > 0
+    ]
+    sample = returns_bps[-MOMENTUM_VOLATILITY_BARS:]
+    if len(sample) < 3:
+        return ceiling
+    sigma = pstdev(sample)
+    if not math.isfinite(sigma) or sigma <= 0:
+        return floor
+    horizon_sigma = sigma * math.sqrt(float(policy.momentum_lookback))
+    adaptive = D(str(horizon_sigma * MOMENTUM_VOLATILITY_MULTIPLIER))
+    return min(ceiling, max(floor, adaptive))
+
+
 def scan_opportunities(
     frames: Mapping[str, MarketFrame],
     *,
@@ -81,7 +112,8 @@ def scan_opportunities(
         if len(closes) >= policy.momentum_lookback + 1:
             start = closes[-(policy.momentum_lookback + 1)]
             momentum_bps = (closes[-1] / start - D("1")) * D("10000")
-            if momentum_bps >= policy.momentum_threshold_bps:
+            momentum_threshold = _adaptive_momentum_threshold_bps(closes, policy)
+            if momentum_bps >= momentum_threshold:
                 strategy_id = "momentum-v1"
                 opportunities.append(
                     Opportunity(
@@ -89,7 +121,7 @@ def scan_opportunities(
                         strategy_id=strategy_id,
                         symbol=symbol,
                         side="buy",
-                        score=_score(float(momentum_bps / D("1000"))),
+                        score=_score(float(momentum_bps / (momentum_threshold * D("2")))),
                         expected_edge_bps=momentum_bps / D("2"),
                         max_notional_fraction=policy.max_notional_fraction,
                         expires_at=expires_at,
@@ -120,13 +152,18 @@ def scan_opportunities(
                         )
                     )
     for opportunity in opportunities:
+        momentum_threshold = policy.momentum_threshold_bps
+        if opportunity.reason_code == "momentum_breakout":
+            frame = frames.get(opportunity.symbol)
+            if frame is not None:
+                momentum_threshold = _adaptive_momentum_threshold_bps(frame.closes, policy)
         context = built_in_reason_context(
             opportunity,
             frames,
             {},
             now=now,
             momentum_lookback=policy.momentum_lookback,
-            momentum_threshold_bps=policy.momentum_threshold_bps,
+            momentum_threshold_bps=momentum_threshold,
             mean_reversion_lookback=policy.mean_reversion_lookback,
             mean_reversion_z=policy.mean_reversion_z,
             take_profit=EXIT_TAKE_PROFIT,
