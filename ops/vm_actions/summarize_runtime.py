@@ -176,6 +176,7 @@ def summarize(data):
     exact_20s_backend_counts = Counter()
     timeout_component_counts = Counter()
     fail_component_counts = Counter()
+    queue_giveup_component_counts = Counter()
     all_failed_component_counts = Counter()
     if isinstance(recent, list):
         for event in recent:
@@ -199,10 +200,13 @@ def summarize(data):
                     if bucket == "exact_20s":
                         exact_20s_origin_counts[_timeout_origin(event)] += 1
                         exact_20s_backend_counts[_backend_family(event)] += 1
+            if isinstance(event, dict) and event.get("event") == "queue_giveup":
+                queue_giveup_component_counts[_component_bucket(event)] += 1
             if isinstance(event, dict) and event.get("event") == "all_failed":
                 all_failed_component_counts[_component_bucket(event)] += 1
 
     sampled = sum(cause_counts.values())
+    sampled_queue_giveups = sum(queue_giveup_component_counts.values())
     sampled_all_failed = sum(all_failed_component_counts.values())
     parts = [
         f"required_down={_nlist(workers, 'required_down')}",
@@ -246,6 +250,11 @@ def summarize(data):
         for component in COMPONENTS
     )
     parts.extend(f"ai_recent_fail_component_{component}={fail_component_counts[component]}" for component in COMPONENTS)
+    parts.append(f"ai_recent_queue_giveup_sampled={sampled_queue_giveups}")
+    parts.extend(
+        f"ai_recent_queue_giveup_component_{component}={queue_giveup_component_counts[component]}"
+        for component in COMPONENTS
+    )
     parts.append(f"ai_recent_all_failed_sampled={sampled_all_failed}")
     parts.extend(
         f"ai_recent_all_failed_component_{component}={all_failed_component_counts[component]}"
