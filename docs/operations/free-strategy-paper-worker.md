@@ -14,6 +14,8 @@
 - 観測対象はpausedを含め最大2実験です。
 - ホスト側のquotaはこの新worker unitだけに適用します。初期値は `CPUQuota=100%`、
   `MemoryMax=1G`、`TasksMax=128` で、既存PAPER workerのunit・PID・cgroupは変更しません。
+- unitはsystem scopeの `User=ubuntu` / `SupplementaryGroups=docker` で実行します。
+  `ubuntu` 自身へdocker groupを恒久追加せず、このworkerプロセスだけにDocker socket権限を渡します。
 - workerは起動直後、実効cgroupの有限な `cpu.max` / `memory.max` / `pids.max` を確認します。
   いずれかが無い、`max`、または有限値でない場合はgateway・cycleの前に停止します。
 
@@ -95,15 +97,15 @@ DOCICH_FREE_STRATEGY_INTERVAL=300
 ## 5. unitをinstallする
 
 ```sh
-mkdir -p ~/.config/systemd/user
+sudo install -d -m 0755 /etc/systemd/system
 DOCICH_ROOT="$(pwd)"
 sed "s|__DOCICH_ROOT__|${DOCICH_ROOT}|g" \
   scripts/systemd/docich-free-strategy-worker.service \
-  > ~/.config/systemd/user/docich-free-strategy-worker.service
-systemctl --user daemon-reload
+  | sudo tee /etc/systemd/system/docich-free-strategy-worker.service >/dev/null
+sudo systemctl daemon-reload
 
 # これはenable/startではない。値が有限であることを確認してから次へ進む。
-systemctl --user show docich-free-strategy-worker.service \
+sudo systemctl show docich-free-strategy-worker.service \
   -p CPUQuotaPerSecUSec -p MemoryMax -p TasksMax -p FragmentPath
 ```
 
@@ -117,13 +119,13 @@ enableしません。起動後はworker自身の実効cgroup probeも再度こ�
 VM適合確認、image build、env確認が全部終わってからだけ実行します。
 
 ```sh
-systemctl --user enable --now docich-free-strategy-worker.service
+sudo systemctl enable --now docich-free-strategy-worker.service
 ```
 
 状態確認:
 
 ```sh
-systemctl --user status docich-free-strategy-worker.service
+sudo systemctl status docich-free-strategy-worker.service
 bin/docich free-strategy --trading-dir "$DOCICH_FREE_STRATEGY_TRADING_DIR" status
 cat "$DOCICH_FREE_STRATEGY_TRADING_DIR/free-strategies/health.json"
 ```
@@ -133,7 +135,7 @@ dashboardには「AI戦略研究 / 独立PAPER」として表示されます。
 ## 7. 停止
 
 ```sh
-systemctl --user disable --now docich-free-strategy-worker.service
+sudo systemctl disable --now docich-free-strategy-worker.service
 ```
 
 停止しても既存のPAPER workerやPAPER台帳を変更しません。
