@@ -51,6 +51,9 @@ BACKEND_FAMILIES = (
     "other",
 )
 
+ACTIVE_CORNER_STATUSES = frozenset({"starting", "active", "restoring"})
+ACTIVE_PAPER_IMPROVE_STATUSES = frozenset({"queued", "running"})
+
 
 def _integer(mapping, name):
     value = mapping.get(name, 0) if isinstance(mapping, dict) else 0
@@ -60,6 +63,25 @@ def _integer(mapping, name):
 def _nlist(mapping, name):
     value = mapping.get(name) if isinstance(mapping, dict) else None
     return len(value) if isinstance(value, list) else 0
+
+
+def _fixed_status_is(mapping, allowed):
+    """Return a boolean for an allowlisted lifecycle state without echoing it."""
+    if not isinstance(mapping, dict):
+        return False
+    value = mapping.get("status")
+    return isinstance(value, str) and value in allowed
+
+
+def _game_switch_busy(corners):
+    """Expose only whether the switch is outside its stable ready phase."""
+    if not isinstance(corners, dict):
+        return False
+    switch = corners.get("game_switch")
+    if not isinstance(switch, dict) or switch.get("readable") is not True:
+        return False
+    phase = switch.get("phase")
+    return isinstance(phase, str) and phase not in {"", "ready"}
 
 
 def _failure_cause(event):
@@ -166,6 +188,7 @@ def summarize(data):
     queues = data.get("queues") or {}
     ai = data.get("ai") or {}
     improvement = data.get("improvement") or {}
+    corners = data.get("corners") or {}
 
     recent = ai.get("recent_events")
     cause_counts = Counter()
@@ -208,6 +231,11 @@ def summarize(data):
     sampled = sum(cause_counts.values())
     sampled_queue_giveups = sum(queue_giveup_component_counts.values())
     sampled_all_failed = sum(all_failed_component_counts.values())
+    retro = corners.get("retro_corner") if isinstance(corners, dict) else None
+    paper = corners.get("paper_corner") if isinstance(corners, dict) else None
+    paper_manual = corners.get("paper_corner_manual") if isinstance(corners, dict) else None
+    paper_improve = corners.get("paper_improve") if isinstance(corners, dict) else None
+    ab = corners.get("ab") if isinstance(corners, dict) else None
     parts = [
         f"required_down={_nlist(workers, 'required_down')}",
         f"required_stale={_nlist(workers, 'required_stale')}",
@@ -264,6 +292,13 @@ def summarize(data):
         [
             f"improvement_stale={int(improvement.get('stale') is True)}",
             f"retry_pending={int(improvement.get('retry_pending') is True)}",
+            f"corner_game_switch_busy={int(_game_switch_busy(corners))}",
+            f"corner_retro_active={int(_fixed_status_is(retro, ACTIVE_CORNER_STATUSES))}",
+            f"corner_retro_waiting={int(_fixed_status_is(retro, frozenset({'waiting'})))}",
+            f"corner_paper_active={int(_fixed_status_is(paper, ACTIVE_CORNER_STATUSES))}",
+            f"corner_paper_manual_active={int(_fixed_status_is(paper_manual, ACTIVE_CORNER_STATUSES))}",
+            f"corner_paper_improve_running={int(_fixed_status_is(paper_improve, ACTIVE_PAPER_IMPROVE_STATUSES))}",
+            f"corner_ab_candidate_pending={int(isinstance(ab, dict) and ab.get('candidate_pending') is True)}",
         ]
     )
     return severity, ",".join(parts)
