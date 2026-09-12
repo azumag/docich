@@ -20,6 +20,9 @@ from .service import run_cycle, write_health
 
 DEFAULT_INTERVAL_S = 300
 MIN_INTERVAL_S = 300
+MAX_WORKER_CPU_QUOTA_RATIO = 1.0
+MAX_WORKER_MEMORY_BYTES = 1024 ** 3
+MAX_WORKER_PIDS = 128
 
 
 def probe_worker_cgroup_limits(
@@ -27,12 +30,14 @@ def probe_worker_cgroup_limits(
     proc_cgroup: Path = Path("/proc/self/cgroup"),
     cgroup_root: Path = Path("/sys/fs/cgroup"),
 ) -> dict:
-    """Require finite effective v2 limits for the worker process itself.
+    """Require the intended finite v2 ceilings for the worker process itself.
 
     Docker's capability flags only prove that the daemon can apply limits. The
-    systemd unit must also place this worker in a bounded cgroup. Keep this
-    probe fixed-output and fail closed when cgroup v2, a unified path, or any
-    required controller file is missing.
+    systemd unit must also place this worker in a bounded cgroup. A merely
+    finite but much larger quota is not sufficient: the effective leaf limits
+    must be no looser than the reviewed worker unit (1 CPU, 1 GiB, 128 PIDs).
+    Keep this probe fixed-output and fail closed when cgroup v2, a unified path,
+    or any required controller file is missing.
     """
     base = {
         "mode": "PAPER",
@@ -63,10 +68,19 @@ def probe_worker_cgroup_limits(
             and cpu[0] != "max"
             and int(cpu[0]) > 0
             and int(cpu[1]) > 0
+            and (int(cpu[0]) / int(cpu[1])) <= MAX_WORKER_CPU_QUOTA_RATIO
         )
-        memory_limit = len(memory) == 1 and memory[0] != "max" and int(memory[0]) > 0
-        pids_limit = len(pids) == 1 and pids[0] != "max" and int(pids[0]) > 0
-    except (OSError, UnicodeError, TypeError, ValueError):
+        memory_limit = (
+            len(memory) == 1
+            and memory[0] != "max"
+            and 0 < int(memory[0]) <= MAX_WORKER_MEMORY_BYTES
+        )
+        pids_limit = (
+            len(pids) == 1
+            and pids[0] != "max"
+            and 0 < int(pids[0]) <= MAX_WORKER_PIDS
+        )
+    except (OSError, UnicodeError, TypeError, ValueError, ZeroDivisionError):
         return {**base, "error_codes": ["resource_limits_unavailable"]}
 
     capabilities = {
