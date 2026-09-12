@@ -9,7 +9,8 @@
 - Ubuntu 24.04 arm64、Docker CE `5:29.8.0-1~ubuntu.24.04~noble` 一式、
   containerd.io `2.3.5-1~ubuntu.24.04~noble`、
   buildx `0.37.1-1~ubuntu.24.04~noble`、compose `5.5.1-1~ubuntu.24.04~noble`。
-- runsc `release-20260907.0`（既定platform `systrap`）。
+- gVisor APT suite `20260907`、runsc `release-20260907.0`（既定platform `systrap`）。
+  movingな `release` suiteは再現用には使いません。
 - `daemon.json` は `iptables=false` / `ip6tables=false` / `ip-forward=false` +
   `runsc` 登録のみ。
 - FW不変条件: DOCKER連動ルール0件、`net.ipv4.ip_forward=0`、
@@ -27,7 +28,9 @@ ops/container_host/verify_container_host.sh
 ```
 
 `--check` は検証のみ（変更なし）でベリファイアへ委譲します。
-`daemon.json` が既存でピンと意味的に異なる場合、インストーラは中断します。
+インストーラは `runsc` パッケージを日付固定gVisor APT suiteから導入し、
+`runsc --version` がピンと一致しなければ中断します。
+`daemon.json` が既存でピンと意味的に異なる場合も中断します。
 上書きする場合のみ `FORCE_DAEMON_JSON=1` を明示してください。
 
 ## 安全境界
@@ -40,3 +43,4 @@ ops/container_host/verify_container_host.sh
 - rootless モード設定
 
 導入前後でFW不変条件を自動で照合し、差分があれば中断します。
+packet-filterまたはsocket listenerを検査できない場合も、ゼロと推測せずfail-closedで中断します。
