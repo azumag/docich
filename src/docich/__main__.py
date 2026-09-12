@@ -14,6 +14,30 @@ def _retro_corner_argv(argv: list[str]) -> list[str] | None:
     return None
 
 
+def _direct_paper_argv(command: str, argv: list[str]) -> list[str] | None:
+    """Route isolated PAPER tools without teaching the legacy CLI about them.
+
+    These commands intentionally require their own explicit ``--trading-dir``
+    instead of inheriting the global config parser. That keeps deployment of
+    the code from enabling either worker and avoids any live-trading surface.
+    """
+    if argv and argv[0] == command:
+        return argv[1:]
+    return None
+
+
+free_strategy_argv = _direct_paper_argv("free-strategy", sys.argv[1:])
+if free_strategy_argv is not None:
+    from .trading.free_strategy.cli import main as free_strategy_main
+
+    sys.exit(free_strategy_main(free_strategy_argv))
+
+free_worker_argv = _direct_paper_argv("free-strategy-worker", sys.argv[1:])
+if free_worker_argv is not None:
+    from .trading.free_strategy.worker import main as free_worker_main
+
+    sys.exit(free_worker_main(free_worker_argv))
+
 paper_args = [arg.replace("paper-corner", "retro-corner") if arg == "paper-corner" else arg for arg in sys.argv[1:]]
 if "paper-corner" in sys.argv[1:]:
     paper_argv = _retro_corner_argv(paper_args)
