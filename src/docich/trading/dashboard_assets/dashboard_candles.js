@@ -77,9 +77,9 @@
   }
 
   function drawCandles(chart, live) {
-    if (!chart || !live || live.symbol !== chart.symbol) return false;
+    if (!chart || !live || live.available !== true || !live.symbol) return false;
     const candles = ingest(live);
-    if (!candles || candles.length < 2) return false;
+    if (!candles || candles.length < 1) return false;
 
     const canvas = document.getElementById("chart");
     const dpr = window.devicePixelRatio || 1;
@@ -151,11 +151,21 @@
     g.textAlign = "center";
     g.fillText(`${BUCKET_SECONDS}秒足 ${candles.length}本`, PAD2.l + plotW / 2, H - 8);
 
+    const preferred = String(live.preferred_symbol || chart.symbol || "");
+    const display = String(live.symbol || preferred);
+    const fallback = live.display_fallback === true && preferred && display !== preferred;
+    const focus = document.getElementById("focus");
+    if (focus) {
+      focus.textContent = fallback
+        ? `注目: ${display}（${preferred}無風のため一時切替）`
+        : `注目: ${display || "（観測待ち）"}`;
+    }
     const range = document.getElementById("range");
     if (range) range.textContent = `${BUCKET_SECONDS}秒足${candles.length}本`;
     const note = document.getElementById("chartnote");
-    if (note) note.textContent =
-      `bitbank公開約定・現在値から生成した${BUCKET_SECONDS}秒足ローソク（表示専用・約1秒更新）。売買判断は従来の5分足です。`;
+    if (note) note.textContent = fallback
+      ? `${preferred}の約定・価格変化が${Number(live.focus_inactive_sec || 0)}秒止まったため、活発なBTC/JPYへ一時切替中。元銘柄が動けば自動で戻ります。売買判断には影響しません。`
+      : `bitbank公開約定・現在値から生成した${BUCKET_SECONDS}秒足ローソク（表示専用・約2秒更新）。売買判断は従来の5分足です。`;
     return true;
   }
 
