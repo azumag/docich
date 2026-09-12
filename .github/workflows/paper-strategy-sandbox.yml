@@ -28,7 +28,8 @@ jobs:
         shell: bash
         run: |
           docker build --file containers/paper-strategy/Dockerfile --iidfile "$RUNNER_TEMP/docich-paper-sandbox-image" .
-          read -r sandbox_image < "$RUNNER_TEMP/docich-paper-sandbox-image"
+          sandbox_image="$(<"$RUNNER_TEMP/docich-paper-sandbox-image")"
+          test -n "$sandbox_image"
           printf 'DOCICH_TEST_SANDBOX_IMAGE=%s\n' "$sandbox_image" >> "$GITHUB_ENV"
       - name: Run real gVisor isolation and resource tests
         shell: bash
