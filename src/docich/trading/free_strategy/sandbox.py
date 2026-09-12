@@ -44,7 +44,16 @@ class DockerSandbox:
         return result.stdout
 
     def preflight(self) -> dict:
-        info = decode(self._command("info", "--format", '{{json .}}'), limit=MAX_INPUT)
+        # Ask Docker for only the reviewed capability fields. `{{json .}}` uses
+        # Docker CLI's JSON serialization names, which are not the same keys as
+        # the Go-template fields (`.MemoryLimit`, `.PidsLimit`, ...), causing a
+        # false fail-closed result even when those capabilities are enabled.
+        info_format = (
+            '{"OSType":{{json .OSType}},"Runtimes":{{json .Runtimes}},'
+            '"MemoryLimit":{{json .MemoryLimit}},"PidsLimit":{{json .PidsLimit}},'
+            '"CPUCfsQuota":{{json .CPUCfsQuota}}}'
+        )
+        info = decode(self._command("info", "--format", info_format), limit=MAX_INPUT)
         if not isinstance(info, dict) or info.get("OSType") != "linux" or "runsc" not in info.get("Runtimes", {}):
             raise SandboxError("gvisor_required")
         if not info.get("MemoryLimit") or not info.get("PidsLimit") or not info.get("CPUCfsQuota"):
