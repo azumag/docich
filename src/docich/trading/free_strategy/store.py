@@ -12,6 +12,8 @@ import uuid
 
 from .contract import Artifact, StrategyError, decode, encode, quantity
 
+MAX_OBSERVED_EXPERIMENTS = 2
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS artifacts (digest TEXT PRIMARY KEY, payload BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS experiments (
@@ -115,8 +117,12 @@ class LabStore:
                   "evaluator_version": 1, "execution_model": "next_observation_depth_v1"}
         identity = uuid.uuid4().hex
         with self.transaction():
-            count = self.db.execute("SELECT COUNT(*) FROM experiments WHERE phase IN ('research','paper_validating')").fetchone()[0]
-            if count >= 2:
+            # Paused experiments still consume public depth/status and therefore
+            # remain part of the bounded research observation budget. A pause
+            # must not silently create an extra API slot for another candidate.
+            count = self.db.execute("""SELECT COUNT(*) FROM experiments
+                WHERE phase IN ('research','paper_validating','paused')""").fetchone()[0]
+            if count >= MAX_OBSERVED_EXPERIMENTS:
                 raise StrategyError("experiment_capacity")
             # The design permits multiple independent experiments for one fixed
             # artifact, but not overlapping/revivable or quarantined copies.
@@ -145,16 +151,21 @@ class LabStore:
 
     def active_ids(self) -> list[str]:
         return [row[0] for row in self.db.execute(
-            "SELECT id FROM experiments WHERE phase IN ('research','paper_validating') ORDER BY created_at,id LIMIT 2")]
+            "SELECT id FROM experiments WHERE phase IN ('research','paper_validating') ORDER BY created_at,id LIMIT ?",
+            (MAX_OBSERVED_EXPERIMENTS,))]
 
     def observed_ids(self) -> list[str]:
         """Experiments needing market observation, including risk-stopped ones.
 
         Paused strategies never execute candidate code or accept new targets,
         but existing PAPER holdings must continue to receive fresh valuations.
+        Creation keeps this set bounded so API/depth monitoring cost cannot grow
+        without limit.
         """
         return [row[0] for row in self.db.execute(
-            "SELECT id FROM experiments WHERE phase IN ('research','paper_validating','paused') ORDER BY created_at,id")]
+            """SELECT id FROM experiments
+            WHERE phase IN ('research','paper_validating','paused')
+            ORDER BY created_at,id LIMIT ?""", (MAX_OBSERVED_EXPERIMENTS,))]
 
     def recent_fills(self, identity: str) -> list[dict]:
         return [decode(row[0]) for row in self.db.execute(
@@ -173,7 +184,7 @@ class LabStore:
             exp = self.experiment(identity)
             if exp["phase"] != "paused" or now >= exp["end_at"] or exp["last_error"] == "drawdown_limit":
                 raise StrategyError("resume_not_allowed")
-            if len(self.active_ids()) >= 2:
+            if len(self.active_ids()) >= MAX_OBSERVED_EXPERIMENTS:
                 raise StrategyError("experiment_capacity")
             self.db.execute("UPDATE experiments SET phase='paper_validating', revision=revision+1 WHERE id=?", (identity,))
 
