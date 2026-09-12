@@ -68,6 +68,36 @@ class RuntimeTimeoutComponentSummaryTests(unittest.TestCase):
         self.assertNotIn("private-model", summary)
         self.assertNotIn("45 seconds", summary)
 
+    def test_news_spam_check_timeout_is_not_counted_as_radio_main(self):
+        data = {
+            "status": "warn",
+            "workers": {},
+            "queues": {},
+            "ai": {
+                "recent_events": [
+                    {
+                        "event": "fail",
+                        "component": "NEWS:spam_check",
+                        "provider": "private-provider",
+                        "model": "private-model",
+                        "rc": "124",
+                        "error_preview": "provider timeout after 20s private-provider",
+                    }
+                ]
+            },
+            "improvement": {},
+        }
+
+        _, summary = self.mod.summarize(data)
+
+        self.assertIn("ai_recent_timeout_exact_20s=1", summary)
+        self.assertIn("ai_recent_timeout_exact_20s_component_news_spam_check=1", summary)
+        self.assertIn("ai_recent_timeout_exact_20s_component_radio_main=0", summary)
+        self.assertIn("ai_recent_fail_component_news_spam_check=1", summary)
+        self.assertNotIn("NEWS:spam_check", summary)
+        self.assertNotIn("private-provider", summary)
+        self.assertNotIn("private-model", summary)
+
     def test_missing_recent_events_emit_zero_for_every_fixed_cross_bucket(self):
         data = {
             "status": "ok",
