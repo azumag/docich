@@ -178,6 +178,14 @@ def _bounded(ids: list[str], source_ids: list[str]) -> list[str]:
     return [event_id for event_id in source_ids if event_id in present]
 
 
+_OVERLAY_ONLY_EVENT_TYPES = frozenset({"paper_fill", "multileg_settlement"})
+
+
+def _is_overlay_only_event(item: Mapping[str, object]) -> bool:
+    """Return whether this PAPER flash is intentionally visual-only."""
+    return str(item.get("event_type") or "") in _OVERLAY_ONLY_EVENT_TYPES
+
+
 def _render_event_with_local_facts(
     item: Mapping[str, object], *, mode: str, status: Mapping[str, object] | None,
     display_at: float, trading_dir: Path,
@@ -273,18 +281,30 @@ def _deliver_pending_notifications_unlocked(
     else:
         for item in events:
             event_id = str(item["event_id"])
-            if event_id not in state.speech_ids and not speech_blocked:
-                try:
-                    speech_fn(g, rendered(item).speech_text, event_id)
-                except Exception:
-                    errors.append("speech_delivery_error")
-                    speech_blocked = True
-                else:
-                    state.speech_ids.append(event_id)
-                    state.speech_ids = _bounded(state.speech_ids, source_ids)
-                    state.updated_at = timestamp
-                    _write_state(state_path, state)
-                    speech_sent += 1
+            if event_id in state.speech_ids:
+                continue
+            if _is_overlay_only_event(item):
+                # Trade flashes belong in the lower overlay only. Mark them as
+                # intentionally handled so enabling speech later never replays
+                # historical fills/settlements into the audio queue.
+                state.speech_ids.append(event_id)
+                state.speech_ids = _bounded(state.speech_ids, source_ids)
+                state.updated_at = timestamp
+                _write_state(state_path, state)
+                continue
+            if speech_blocked:
+                continue
+            try:
+                speech_fn(g, rendered(item).speech_text, event_id)
+            except Exception:
+                errors.append("speech_delivery_error")
+                speech_blocked = True
+            else:
+                state.speech_ids.append(event_id)
+                state.speech_ids = _bounded(state.speech_ids, source_ids)
+                state.updated_at = timestamp
+                _write_state(state_path, state)
+                speech_sent += 1
 
     state.overlay_ids = _bounded(state.overlay_ids, source_ids)
     state.speech_ids = _bounded(state.speech_ids, source_ids)
