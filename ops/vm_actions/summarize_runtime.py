@@ -42,6 +42,13 @@ TIMEOUT_ORIGINS = (
     "unknown",
 )
 
+BACKEND_FAMILIES = (
+    "local",
+    "codex",
+    "opencode",
+    "other",
+)
+
 
 def _integer(mapping, name):
     value = mapping.get(name, 0) if isinstance(mapping, dict) else 0
@@ -110,6 +117,20 @@ def _timeout_origin(event):
     return "unknown"
 
 
+def _backend_family(event):
+    """Collapse the private provider field to a fixed non-model backend family."""
+    if not isinstance(event, dict):
+        return "other"
+    provider = str(event.get("provider") or "").strip().lower()
+    if provider == "local":
+        return "local"
+    if provider == "codex":
+        return "codex"
+    if provider in {"opencode", "opencode-go"}:
+        return "opencode"
+    return "other"
+
+
 def _component_bucket(event):
     """Collapse a private/dynamic component label into a small fixed enum."""
     if not isinstance(event, dict):
@@ -147,6 +168,7 @@ def summarize(data):
     cause_counts = Counter()
     timeout_counts = Counter()
     exact_20s_origin_counts = Counter()
+    exact_20s_backend_counts = Counter()
     timeout_component_counts = Counter()
     fail_component_counts = Counter()
     all_failed_component_counts = Counter()
@@ -163,6 +185,7 @@ def summarize(data):
                     timeout_component_counts[(bucket, component)] += 1
                     if bucket == "exact_20s":
                         exact_20s_origin_counts[_timeout_origin(event)] += 1
+                        exact_20s_backend_counts[_backend_family(event)] += 1
             if isinstance(event, dict) and event.get("event") == "all_failed":
                 all_failed_component_counts[_component_bucket(event)] += 1
 
@@ -191,6 +214,10 @@ def summarize(data):
     parts.extend(
         f"ai_recent_timeout_exact_20s_origin_{origin}={exact_20s_origin_counts[origin]}"
         for origin in TIMEOUT_ORIGINS
+    )
+    parts.extend(
+        f"ai_recent_timeout_exact_20s_backend_{family}={exact_20s_backend_counts[family]}"
+        for family in BACKEND_FAMILIES
     )
     parts.extend(
         f"ai_recent_timeout_{bucket}_component_{component}={timeout_component_counts[(bucket, component)]}"
