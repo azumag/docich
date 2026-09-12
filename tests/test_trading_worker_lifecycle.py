@@ -67,7 +67,7 @@ class TestTradingWorkerLifecycle(unittest.TestCase):
             self.assertEqual(len(trading_calls), 1)
             self.assertEqual(trading_calls[0].args[1][-2:], ["run", "trading"])
 
-    def test_launcher_pins_trading_virtualenv_only_for_trading_worker(self):
+    def test_launcher_pins_trading_virtualenv_for_paper_runtime_paths(self):
         source_launcher = Path(__file__).resolve().parents[1] / "bin" / "docich"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -88,23 +88,21 @@ class TestTradingWorkerLifecycle(unittest.TestCase):
             system_python.chmod(0o755)
             env = dict(os.environ, PATH=f"{system_bin}:/usr/bin:/bin")
 
-            trading = subprocess.run(
+            commands = (
                 [str(launcher), "--config", "live.toml", "run", "trading"],
-                check=True,
-                text=True,
-                capture_output=True,
-                env=env,
-            )
-            self.assertEqual(trading.stdout, "TRADING\n")
-
-            trading_equals_config = subprocess.run(
                 [str(launcher), "--config=live.toml", "run", "trading"],
-                check=True,
-                text=True,
-                capture_output=True,
-                env=env,
+                [str(launcher), "--config", "live.toml", "trading", "paper-improve", "--dry-run"],
+                [str(launcher), "--config", "live.toml", "paper-corner", "status"],
             )
-            self.assertEqual(trading_equals_config.stdout, "TRADING\n")
+            for command in commands:
+                result = subprocess.run(
+                    command,
+                    check=True,
+                    text=True,
+                    capture_output=True,
+                    env=env,
+                )
+                self.assertEqual(result.stdout, "TRADING\n", command)
 
             status = subprocess.run(
                 [str(launcher), "status", "--json"],
@@ -126,7 +124,47 @@ class TestTradingWorkerLifecycle(unittest.TestCase):
 
             trading_python.unlink()
             fallback = subprocess.run(
-                [str(launcher), "--config", "live.toml", "run", "trading"],
+                [str(launcher), "--config", "live.toml", "paper-corner", "status"],
+                check=True,
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            self.assertEqual(fallback.stdout, "SYSTEM\n")
+
+    def test_manual_paper_operator_prefers_trading_virtualenv(self):
+        source_launcher = Path(__file__).resolve().parents[1] / "bin" / "docich-paper-corner-operator"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            launcher = root / "bin" / "docich-paper-corner-operator"
+            launcher.parent.mkdir(parents=True)
+            launcher.write_text(source_launcher.read_text(encoding="utf-8"), encoding="utf-8")
+            launcher.chmod(0o755)
+
+            trading_python = root / ".venv-trading" / "bin" / "python3"
+            trading_python.parent.mkdir(parents=True)
+            trading_python.write_text("#!/bin/sh\nprintf 'TRADING\\n'\n", encoding="utf-8")
+            trading_python.chmod(0o755)
+
+            system_bin = root / "system-bin"
+            system_bin.mkdir()
+            system_python = system_bin / "python3"
+            system_python.write_text("#!/bin/sh\nprintf 'SYSTEM\\n'\n", encoding="utf-8")
+            system_python.chmod(0o755)
+            env = dict(os.environ, PATH=f"{system_bin}:/usr/bin:/bin")
+
+            preferred = subprocess.run(
+                [str(launcher), "--config", "live.toml", "--duration-minutes", "1"],
+                check=True,
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            self.assertEqual(preferred.stdout, "TRADING\n")
+
+            trading_python.unlink()
+            fallback = subprocess.run(
+                [str(launcher), "--config", "live.toml", "--duration-minutes", "1"],
                 check=True,
                 text=True,
                 capture_output=True,
