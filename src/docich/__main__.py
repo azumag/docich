@@ -38,6 +38,13 @@ if free_worker_argv is not None:
 
     sys.exit(free_worker_main(free_worker_argv))
 
+from .paper_improve_retry import is_paper_improve_invocation
+
+if is_paper_improve_invocation(sys.argv[1:]):
+    from .paper_improve_retry import main as paper_improve_main
+
+    sys.exit(paper_improve_main(sys.argv[1:]))
+
 paper_args = [arg.replace("paper-corner", "retro-corner") if arg == "paper-corner" else arg for arg in sys.argv[1:]]
 if "paper-corner" in sys.argv[1:]:
     paper_argv = _retro_corner_argv(paper_args)
