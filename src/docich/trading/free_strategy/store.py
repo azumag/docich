@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS fills (
 );
 CREATE TABLE IF NOT EXISTS samples (
  experiment TEXT NOT NULL, bucket INTEGER NOT NULL, observed_at REAL NOT NULL,
- equity TEXT NOT NULL, PRIMARY KEY(experiment, bucket)
+ equity TEXT NOT NULL, PRIMARY KEY(experiment,bucket)
 );
 CREATE TABLE IF NOT EXISTS equity_observations (
  experiment TEXT NOT NULL, observed_at REAL NOT NULL, equity TEXT NOT NULL,
@@ -118,8 +118,15 @@ class LabStore:
             count = self.db.execute("SELECT COUNT(*) FROM experiments WHERE phase IN ('research','paper_validating')").fetchone()[0]
             if count >= 2:
                 raise StrategyError("experiment_capacity")
-            if self.db.execute("SELECT 1 FROM experiments WHERE artifact=?", (digest,)).fetchone():
-                raise StrategyError("artifact_already_tested")
+            # The design permits multiple independent experiments for one fixed
+            # artifact, but not overlapping/revivable or quarantined copies.
+            # A completed review can therefore be followed by a new experiment
+            # without reusing the prior experiment's evidence or account.
+            blocked = self.db.execute("""SELECT 1 FROM experiments WHERE artifact=?
+                AND phase IN ('research','paper_validating','paused','quarantined') LIMIT 1""",
+                (digest,)).fetchone()
+            if blocked:
+                raise StrategyError("artifact_experiment_active")
             account = {"cash_jpy": capital, "positions": {}, "peak_equity": capital}
             self.db.execute("""INSERT INTO experiments
                 (id,artifact,created_at,end_at,phase,policy,account,strategy_state,pending)
@@ -146,7 +153,9 @@ class LabStore:
 
     def pause(self, identity: str) -> None:
         with self.transaction():
-            self.experiment(identity)
+            exp = self.experiment(identity)
+            if exp["phase"] not in {"research", "paper_validating"}:
+                raise StrategyError("pause_not_allowed")
             self.db.execute("UPDATE experiments SET phase='paused', revision=revision+1, pending=? WHERE id=?",
                             (encode({}), identity))
 
