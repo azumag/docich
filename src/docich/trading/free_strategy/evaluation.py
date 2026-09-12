@@ -12,22 +12,28 @@ from .store import LabStore
 
 def evaluate(store: LabStore, identity: str, *, now: float) -> dict:
     exp = store.experiment(identity)
-    rows = store.db.execute("SELECT observed_at,equity FROM samples WHERE experiment=? ORDER BY bucket", (identity,)).fetchall()
+    samples = store.db.execute(
+        "SELECT observed_at,equity FROM samples WHERE experiment=? ORDER BY bucket", (identity,)
+    ).fetchall()
+    observations = store.db.execute(
+        "SELECT observed_at,equity FROM equity_observations WHERE experiment=? ORDER BY observed_at", (identity,)
+    ).fetchall()
     fills = store.db.execute("SELECT payload FROM fills WHERE experiment=? ORDER BY observed_at,id", (identity,)).fetchall()
     capital = Decimal(exp["policy"]["capital_jpy"])
     peak, drawdown = capital, Decimal(0)
-    for row in rows:
+    for row in observations:
         equity = Decimal(row["equity"])
         peak = max(peak, equity)
         drawdown = max(drawdown, (peak - equity) / peak)
-    last = Decimal(rows[-1]["equity"]) if rows else None
-    observation = rows[-1]["observed_at"] if rows else None
+    latest = observations[-1] if observations else (samples[-1] if samples else None)
+    last = Decimal(latest["equity"]) if latest is not None else None
+    observation = latest["observed_at"] if latest is not None else None
     expected = max(1, math.ceil((min(now, exp["end_at"]) - exp["created_at"]) / 3600))
-    coverage = min(1.0, len(rows) / expected)
+    coverage = min(1.0, len(samples) / expected)
     report = {
         "schema_version": 1, "artifact": exp["artifact"], "evaluated_at": now,
         "window_end": exp["end_at"], "observation_at": observation,
-        "sample_count": len(rows), "coverage_fraction": coverage, "fill_count": len(fills),
+        "sample_count": len(samples), "coverage_fraction": coverage, "fill_count": len(fills),
         "equity_jpy": None if last is None else decimal_text(last),
         "net_pnl_jpy": None if last is None else decimal_text(last - capital),
         "cash_benchmark_jpy": decimal_text(capital), "max_drawdown_fraction": decimal_text(drawdown),
