@@ -87,7 +87,7 @@ jobs:
           echo 'production did not converge to current protected main' >&2
           exit 1
 
-      - name: Classify fixed Soren improvement status
+      - name: Classify latest Soren improvement failure
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -101,52 +101,94 @@ jobs:
           cd /home/ubuntu/soren
           exec python3 - <<'INNER'
           import json, os, re
+
+          CODES = {
+              'apply_bundle_failed': 1,
+              'validation_failed': 2,
+              'model_no_response': 3,
+              'deadline_exhausted': 4,
+              'isolated_runner_unavailable': 5,
+              'analysis_evidence_invalid': 6,
+              'wall_timeout': 7,
+              'other': 8,
+          }
+
+          # Prefer the live state when it still preserves the terminal result.
           try:
               state = json.load(open('tmp/state/improve_state.json', encoding='utf-8'))
           except Exception:
-              raise SystemExit(60)
-          phase = str(state.get('phase') or '')
+              state = {}
           detail = str(state.get('detail') or '')
           match = re.fullmatch(r'failed_no_apply:([a-z0-9_]+)', detail.strip())
-          if phase != 'failed_no_apply' and not match:
+          if str(state.get('phase') or '') == 'failed_no_apply' or match:
+              code = match.group(1) if match else 'other'
+              code = code if code in CODES else 'other'
+              raise SystemExit(64 + CODES[code])
+
+          # The current state is ephemeral and can be overwritten by a later run.
+          # Recover only a fixed classification from a bounded tail; never print or
+          # transport raw log text. The last failed_no_apply marker identifies the
+          # most recent terminal failure and the preceding attached marker bounds
+          # the run used for classification.
+          path = 'tmp/debug/improve_ai.log'
+          try:
+              size = os.path.getsize(path)
+              with open(path, 'rb') as f:
+                  f.seek(max(0, size - 524288))
+                  text = f.read(524288).decode('utf-8', 'replace')
+          except Exception:
               raise SystemExit(60)
-          code = match.group(1) if match else ''
-          failure_index = {
-              'validation_failed': 1,
-              'model_no_response': 2,
-              'deadline_exhausted': 3,
-              'isolated_runner_unavailable': 4,
-              'analysis_evidence_invalid': 5,
-              'wall_timeout': 6,
-          }.get(code, 7)
-          retry = os.path.isfile('tmp/state/improve_retry_batch.json') and os.path.getsize('tmp/state/improve_retry_batch.json') > 0
-          backoff = os.path.isfile('tmp/state/rate_limit_backoff')
-          flags = (8 if retry else 0) | (16 if backoff else 0)
-          raise SystemExit(64 + failure_index + flags)
+          terminal = text.rfind('[IMPROVE] failed_no_apply:')
+          if terminal < 0:
+              raise SystemExit(60)
+          attached = text.rfind('[IMPROVE] attached pid=', 0, terminal)
+          segment = text[attached if attached >= 0 else max(0, terminal - 131072):terminal + 512]
+
+          if 'strategy/helper bundle の原子的反映に失敗' in segment:
+              code = 'apply_bundle_failed'
+          elif 'consecutive model failures' in segment or 'model_no_response' in segment:
+              code = 'model_no_response'
+          elif 'deadline_exhausted' in segment:
+              code = 'deadline_exhausted'
+          elif 'isolated_runner_unavailable' in segment or 'isolated runner' in segment.lower():
+              code = 'isolated_runner_unavailable'
+          elif 'analysis_evidence_invalid' in segment:
+              code = 'analysis_evidence_invalid'
+          elif 'wall timeout' in segment.lower() or 'wall_timeout' in segment:
+              code = 'wall_timeout'
+          elif 'validation' in segment.lower() or 'VALIDATE' in segment:
+              code = 'validation_failed'
+          else:
+              code = 'other'
+          raise SystemExit(80 + CODES[code])
           INNER
           PY
           rc=$?
           set -e
+
           if [[ "$rc" -eq 60 ]]; then
-            echo 'Soren improve: terminal_state=not_failed_no_apply'
+            echo 'Soren improve: last_failure=unavailable'
             exit 0
           fi
-          if (( rc < 65 || rc > 95 )); then
+          source=current_state
+          if (( rc >= 81 && rc <= 88 )); then
+            source=bounded_log_tail
+            index=$((rc - 80))
+          elif (( rc >= 65 && rc <= 72 )); then
+            index=$((rc - 64))
+          else
             echo "unexpected diagnostic transport code: $rc" >&2
             exit 1
           fi
-          bits=$((rc - 64))
-          failure_index=$((bits & 7))
-          retry_pending=$(((bits & 8) != 0 ? 1 : 0))
-          backing_off=$(((bits & 16) != 0 ? 1 : 0))
-          case "$failure_index" in
-            1) failure_code=validation_failed ;;
-            2) failure_code=model_no_response ;;
-            3) failure_code=deadline_exhausted ;;
-            4) failure_code=isolated_runner_unavailable ;;
-            5) failure_code=analysis_evidence_invalid ;;
-            6) failure_code=wall_timeout ;;
-            7) failure_code=other ;;
+          case "$index" in
+            1) failure_code=apply_bundle_failed ;;
+            2) failure_code=validation_failed ;;
+            3) failure_code=model_no_response ;;
+            4) failure_code=deadline_exhausted ;;
+            5) failure_code=isolated_runner_unavailable ;;
+            6) failure_code=analysis_evidence_invalid ;;
+            7) failure_code=wall_timeout ;;
+            8) failure_code=other ;;
             *) echo 'invalid failure index' >&2; exit 1 ;;
           esac
-          echo "Soren improve: failure_code=${failure_code} retry_pending=${retry_pending} backing_off=${backing_off}"
+          echo "Soren improve: failure_code=${failure_code} source=${source}"
