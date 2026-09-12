@@ -87,7 +87,7 @@ jobs:
           echo 'production did not converge to current protected main' >&2
           exit 1
 
-      - name: Read fixed Soren improvement status
+      - name: Classify fixed Soren improvement status
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -96,58 +96,57 @@ jobs:
         run: |
           set -euo pipefail
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
-          cat <<'PY' | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+          set +e
+          cat <<'PY' | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA" >/dev/null
           cd /home/ubuntu/soren
           exec python3 - <<'INNER'
-          import json, os, re, time
-          state_path = 'tmp/state/improve_state.json'
+          import json, os, re
           try:
-              with open(state_path, encoding='utf-8') as f:
-                  state = json.load(f)
+              state = json.load(open('tmp/state/improve_state.json', encoding='utf-8'))
           except Exception:
-              state = {}
-          status = str(state.get('status') or 'unknown')
+              raise SystemExit(60)
           phase = str(state.get('phase') or '')
           detail = str(state.get('detail') or '')
-          if phase.startswith('ai_retry'):
-              phase = 'ai_retry'
-          elif phase.startswith('validate_retry'):
-              phase = 'validate_retry'
-          elif phase not in {'', 'boot', 'summary_done', 'ai_prepare', 'review', 'apply', 'post_validate', 'git_commit', 'radio', 'done', 'failed_no_apply', 'candidate_ready', 'recovered', 'manual_wait'}:
-              phase = 'other'
-          failure = 'none'
           match = re.fullmatch(r'failed_no_apply:([a-z0-9_]+)', detail.strip())
-          if match:
-              code = match.group(1)
-              failure = code if code in {
-                  'validation_failed', 'model_no_response', 'deadline_exhausted',
-                  'isolated_runner_unavailable', 'analysis_evidence_invalid', 'wall_timeout',
-              } else 'other'
-          retry_path = 'tmp/state/improve_retry_batch.json'
-          backoff_path = 'tmp/state/rate_limit_backoff'
-          retry_pending = os.path.isfile(retry_path) and os.path.getsize(retry_path) > 0
-          backoff = os.path.isfile(backoff_path)
-          backoff_kind = 'none'
-          if backoff:
-              try:
-                  lines = open(backoff_path, encoding='utf-8').read().splitlines()
-                  kind = lines[2].strip() if len(lines) >= 3 else 'rate_limit'
-                  backoff_kind = kind if kind in {'no_apply', 'rate_limit'} else 'other'
-              except Exception:
-                  backoff_kind = 'other'
-          try:
-              updated_at = int(state.get('updated_at', 0) or 0)
-          except Exception:
-              updated_at = 0
-          payload = {
-              'status': status if status in {'idle', 'running', 'manual'} else 'other',
-              'phase': phase,
-              'failure_code': failure,
-              'retry_pending': retry_pending,
-              'backoff': backoff,
-              'backoff_kind': backoff_kind,
-              'age_sec': max(0, int(time.time()) - updated_at) if updated_at > 0 else None,
-          }
-          print(json.dumps(payload, sort_keys=True, separators=(',', ':')))
+          if phase != 'failed_no_apply' and not match:
+              raise SystemExit(60)
+          code = match.group(1) if match else ''
+          failure_index = {
+              'validation_failed': 1,
+              'model_no_response': 2,
+              'deadline_exhausted': 3,
+              'isolated_runner_unavailable': 4,
+              'analysis_evidence_invalid': 5,
+              'wall_timeout': 6,
+          }.get(code, 7)
+          retry = os.path.isfile('tmp/state/improve_retry_batch.json') and os.path.getsize('tmp/state/improve_retry_batch.json') > 0
+          backoff = os.path.isfile('tmp/state/rate_limit_backoff')
+          flags = (8 if retry else 0) | (16 if backoff else 0)
+          raise SystemExit(64 + failure_index + flags)
           INNER
           PY
+          rc=$?
+          set -e
+          if [[ "$rc" -eq 60 ]]; then
+            echo 'Soren improve: terminal_state=not_failed_no_apply'
+            exit 0
+          fi
+          if (( rc < 65 || rc > 95 )); then
+            echo "unexpected diagnostic transport code: $rc" >&2
+            exit 1
+          fi
+          bits=$((rc - 64))
+          failure_index=$((bits & 7))
+          retry_pending=$(((bits & 8) != 0 ? 1 : 0))
+          backing_off=$(((bits & 16) != 0 ? 1 : 0))
+          case "$failure_index" in
+            1) failure_code=validation_failed ;;
+            2) failure_code=model_no_response ;;
+            3) failure_code=deadline_exhausted ;;
+            4) failure_code=isolated_runner_unavailable ;;
+            5) failure_code=analysis_evidence_invalid ;;
+            6) failure_code=wall_timeout ;;
+            7) failure_code=other ;;
+            *) echo 'invalid failure index' >&2; exit 1 ;;
+          esac
+          echo "Soren improve: failure_code=${failure_code} retry_pending=${retry_pending} backing_off=${backing_off}"
