@@ -146,8 +146,7 @@ def test_service_finalizes_with_depth_status_and_never_runs_guest_after_deadline
 
     class Runner:
         def preflight(self):
-            calls.append("preflight")
-            return {"runtime": "test", "image": IMAGE, "abi": 1}
+            raise AssertionError("expired experiment must not require gVisor")
 
         def run(self, *args, **kwargs):
             raise AssertionError("expired experiment must never execute guest strategy")
@@ -156,7 +155,7 @@ def test_service_finalizes_with_depth_status_and_never_runs_guest_after_deadline
         trading_dir, image=IMAGE, gateway=Gateway(), runner=Runner(), now_fn=lambda: 1100.0,
     )
     assert result == {"mode": "PAPER", "status": "idle", "completed": 1, "error_codes": []}
-    assert "preflight" in calls and "markets" in calls
+    assert "markets" in calls
     assert any(isinstance(call, tuple) and call[0] == "status" for call in calls)
     assert any(isinstance(call, tuple) and call[0] == "depth" for call in calls)
 
@@ -187,7 +186,7 @@ def test_service_does_not_mark_review_due_when_terminal_market_data_is_unavailab
 
     class Runner:
         def preflight(self):
-            return {"runtime": "test", "image": IMAGE, "abi": 1}
+            raise AssertionError("expired experiment must not require gVisor")
 
     result = run_cycle(
         trading_dir, image=IMAGE, gateway=Gateway(), runner=Runner(), now_fn=lambda: 1100.0,
