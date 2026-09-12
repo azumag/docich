@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 import sys
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich.trading.depth import DepthBook, DepthLevel  # noqa: E402
@@ -13,7 +15,9 @@ from docich.trading.free_strategy.broker import settle_observation  # noqa: E402
 from docich.trading.free_strategy.contract import Artifact, StrategyError  # noqa: E402
 from docich.trading.free_strategy.evaluation import evaluate  # noqa: E402
 from docich.trading.free_strategy.generation import generate  # noqa: E402
+from docich.trading.free_strategy.service import build_context  # noqa: E402
 from docich.trading.free_strategy.store import LabStore  # noqa: E402
+from docich.trading.market_data import MarketFrame  # noqa: E402
 from docich.trading.models import MarketInfo  # noqa: E402
 from docich.trading.settlement import CircuitBreakStatus  # noqa: E402
 
@@ -40,11 +44,11 @@ def _experiment(tmp_path, *, now=1_000.0):
     return store, identity
 
 
-def _market(*, price=D("1000000")):
+def _market(*, price=D("1000000"), base_fee=D("0"), quote_fee=D("0")):
     market = MarketInfo(
         symbol="BTC/JPY", base="BTC", quote="JPY", spot=True, active=True,
         amount_step=D("0.0001"), min_amount=D("0.0001"), min_cost=D("1"),
-        taker_fee_rate_base=D("0"), taker_fee_rate_quote=D("0"),
+        taker_fee_rate_base=base_fee, taker_fee_rate_quote=quote_fee,
     )
     book = DepthBook(
         "BTC/JPY",
@@ -55,11 +59,23 @@ def _market(*, price=D("1000000")):
     return market, book
 
 
-def _observation(price: Decimal, *, book_at: float, fetched_at: float):
-    market, template = _market(price=price)
+def _observation(
+    price: Decimal, *, book_at: float, fetched_at: float,
+    base_fee=D("0"), quote_fee=D("0"),
+):
+    market, template = _market(price=price, base_fee=base_fee, quote_fee=quote_fee)
     book = DepthBook(template.symbol, template.bids, template.asks, as_of=book_at)
     status = CircuitBreakStatus("BTC/JPY", "NONE", "NORMAL", book_at, fetched_at=fetched_at)
     return {"BTC/JPY": market}, {"BTC/JPY": book}, {"BTC/JPY": status}
+
+
+def _target(quantity: str, *, step=1):
+    return {
+        "schema_version": 1,
+        "target_positions": [{"symbol": "BTC/JPY", "target_base_quantity": quantity}],
+        "state": {"step": step},
+        "reason": "paper target",
+    }
 
 
 def test_duplicate_run_id_returns_receipt_without_advancing_state_twice(tmp_path):
@@ -87,15 +103,9 @@ def test_duplicate_run_id_returns_receipt_without_advancing_state_twice(tmp_path
 def test_target_waits_for_post_decision_book_then_fills_once(tmp_path):
     store, identity = _experiment(tmp_path)
     try:
-        decision = {
-            "schema_version": 1,
-            "target_positions": [{"symbol": "BTC/JPY", "target_base_quantity": "0.001"}],
-            "state": {"step": 1},
-            "reason": "paper target",
-        }
         store.accept(
             identity, 0, bar=900.0, accepted_at=1_000.0, run_id="run-fill",
-            decision=decision, prices={"BTC/JPY": D("1000000")},
+            decision=_target("0.001"), prices={"BTC/JPY": D("1000000")},
         )
 
         markets, books, statuses = _observation(D("1000000"), book_at=1_000.0, fetched_at=1_001.0)
@@ -117,6 +127,76 @@ def test_target_waits_for_post_decision_book_then_fills_once(tmp_path):
             store, identity, markets=markets, books=books, statuses=statuses, now=1_002.0,
         )
         assert store.db.execute("SELECT COUNT(*) FROM fills").fetchone()[0] == 1
+    finally:
+        store.close()
+
+
+def test_fill_records_fees_and_account_is_net_of_costs(tmp_path):
+    store, identity = _experiment(tmp_path)
+    try:
+        store.accept(
+            identity, 0, bar=900.0, accepted_at=1_000.0, run_id="run-fee",
+            decision=_target("0.001"), prices={"BTC/JPY": D("1000000")},
+        )
+        markets, books, statuses = _observation(
+            D("1000000"), book_at=1_002.0, fetched_at=1_002.0,
+            base_fee=D("0.001"), quote_fee=D("0.002"),
+        )
+        exp = settle_observation(
+            store, identity, markets=markets, books=books, statuses=statuses, now=1_002.0,
+        )
+        fill = store.recent_fills(identity)[0]
+        fee_base = D(fill["fee_base"])
+        fee_jpy = D(fill["fee_jpy"])
+        amount = D(fill["amount"])
+        gross = amount * D(fill["price"])
+        assert fee_base > 0 and fee_jpy > 0
+        assert D(exp["account"]["positions"]["BTC/JPY"]) == amount - fee_base
+        assert D(exp["account"]["cash_jpy"]) == D("10000") - gross - fee_jpy
+    finally:
+        store.close()
+
+
+def test_drawdown_pauses_experiment_and_clears_pending_target(tmp_path):
+    store, identity = _experiment(tmp_path)
+    try:
+        store.accept(
+            identity, 0, bar=900.0, accepted_at=1_000.0, run_id="run-entry",
+            decision=_target("0.003"), prices={"BTC/JPY": D("1000000")},
+        )
+        markets, books, statuses = _observation(D("1000000"), book_at=1_002.0, fetched_at=1_002.0)
+        exp = settle_observation(
+            store, identity, markets=markets, books=books, statuses=statuses, now=1_002.0,
+        )
+        assert exp["account"]["positions"]
+
+        store.accept(
+            identity, exp["revision"], bar=1_200.0, accepted_at=1_201.0, run_id="run-rebalance",
+            decision=_target("0.003", step=2), prices={"BTC/JPY": D("1000000")},
+        )
+        assert store.experiment(identity)["pending"]
+
+        markets, books, statuses = _observation(D("100000"), book_at=1_202.0, fetched_at=1_202.0)
+        stopped = settle_observation(
+            store, identity, markets=markets, books=books, statuses=statuses, now=1_202.0,
+        )
+        assert stopped["phase"] == "paused"
+        assert stopped["last_error"] == "drawdown_limit"
+        assert stopped["pending"] == {}
+    finally:
+        store.close()
+
+
+def test_build_context_rejects_stale_completed_history(tmp_path):
+    store, identity = _experiment(tmp_path)
+    try:
+        exp = store.experiment(identity)
+        frame = MarketFrame(
+            symbol="BTC/JPY", timeframe_seconds=300,
+            timestamps=(0.0, 300.0), closes=(D("100"), D("101")), volumes=(D("1"), D("1")),
+        )
+        with pytest.raises(StrategyError, match="history_stale"):
+            build_context(store, exp, {"BTC/JPY": frame}, now=1_301.0)
     finally:
         store.close()
 
