@@ -228,7 +228,7 @@ class TestProductionProfile(unittest.TestCase):
         )
         self.assertEqual(live_cfg.start_hour, 19)
         self.assertEqual(live_cfg.duration_minutes, 30)
-        self.assertEqual(live_cfg.games, ["gnurobots"])
+        self.assertEqual(live_cfg.games, ["ninvaders"])
 
 
 class TestRetroCornerSelection(unittest.TestCase):
@@ -256,7 +256,6 @@ class TestRetroCornerLifecycle(RetroCornerTestBase):
         self.assertEqual(result.status, "completed")
         self.assertEqual(coordinator.calls, [("start", "robots"), ("stop", None)])
         self.assertIsNone(current[0])
-
     def test_manual_operator_switch_is_not_overwritten(self):
         current = ["sorengame"]
 
