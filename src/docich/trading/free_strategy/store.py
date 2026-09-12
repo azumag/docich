@@ -147,6 +147,15 @@ class LabStore:
         return [row[0] for row in self.db.execute(
             "SELECT id FROM experiments WHERE phase IN ('research','paper_validating') ORDER BY created_at,id LIMIT 2")]
 
+    def observed_ids(self) -> list[str]:
+        """Experiments needing market observation, including risk-stopped ones.
+
+        Paused strategies never execute candidate code or accept new targets,
+        but existing PAPER holdings must continue to receive fresh valuations.
+        """
+        return [row[0] for row in self.db.execute(
+            "SELECT id FROM experiments WHERE phase IN ('research','paper_validating','paused') ORDER BY created_at,id")]
+
     def recent_fills(self, identity: str) -> list[dict]:
         return [decode(row[0]) for row in self.db.execute(
             "SELECT payload FROM fills WHERE experiment=? ORDER BY observed_at DESC,id DESC LIMIT 20", (identity,))]
