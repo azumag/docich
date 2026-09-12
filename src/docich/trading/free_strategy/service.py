@@ -101,8 +101,25 @@ def run_cycle(trading_dir: Path, *, image: str, gateway, runner=None, now_fn=tim
                 try:
                     now = float(now_fn())
                     if now >= exp["end_at"]:
-                        settle_observation(store, identity, markets={}, books={}, statuses={}, now=now)
-                        evaluate(store, identity, now=now)
+                        # The window closes without executing pending targets.  If
+                        # holdings remain, require a fresh depth/status observation
+                        # and record a final conservative liquidation valuation.
+                        position_symbols = sorted(exp["account"]["positions"])
+                        statuses = (
+                            gateway.fetch_circuit_break_statuses(position_symbols, fetched_at=now_fn())
+                            if position_symbols else {}
+                        )
+                        books = (
+                            gateway.fetch_depth_books(position_symbols, now=now_fn(), limit=20)
+                            if position_symbols else {}
+                        )
+                        observed_at = float(now_fn())
+                        settle_observation(
+                            store, identity, markets=markets, books=books,
+                            statuses=statuses, now=observed_at,
+                        )
+                        evaluate(store, identity, now=observed_at)
+                        completed += 1
                         continue
                     artifact = store.artifact(exp["artifact"])
                     if artifact.payload["image"] != image:
