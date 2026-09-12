@@ -24,6 +24,7 @@ CAUSES = (
 COMPONENTS = (
     "radio_prepass",
     "radio_main",
+    "news_spam_check",
     "comment",
     "improvement",
     "other",
@@ -89,6 +90,11 @@ def _component_bucket(event):
     if not isinstance(event, dict):
         return "other"
     label = str(event.get("component") or "").lower()
+    # NEWS:spam_check is an intentionally short, fail-open auxiliary filter.
+    # Keep its expected 20s budget out of radio_main so the production monitor
+    # does not make that bounded filter look like a radio generation regression.
+    if label.startswith("news:spam_check"):
+        return "news_spam_check"
     if label.startswith(("radio", "news", "jiji", "celebration")):
         if "prepass" in label:
             return "radio_prepass"
