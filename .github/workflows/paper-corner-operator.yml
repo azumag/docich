@@ -8,9 +8,9 @@ on:
         required: true
         default: start
         type: choice
-        options: [start]
+        options: [start, reload-worker]
       duration_minutes:
-        description: Bounded manual run duration (1-60 minutes)
+        description: Bounded manual run duration (1-60 minutes; ignored by reload-worker)
         required: true
         default: '15'
         type: string
@@ -127,6 +127,7 @@ jobs:
 
       - name: Start bounded PAPER corner
         id: start
+        if: ${{ steps.auth.outputs.operation == 'start' }}
         continue-on-error: true
         shell: bash
         env:
@@ -143,6 +144,21 @@ jobs:
           # fixed reviewed operator must address the canonical production root
           # explicitly so state_dir/tmux/coordinator state are the live ones.
           printf "cd /home/ubuntu/docich && exec bash /home/ubuntu/docich/bin/docich-paper-corner-operator --config /home/ubuntu/docich/config/docich.soren-live.toml --duration-minutes '%s'\n" "$DURATION_MINUTES" |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
+      - name: Reload PAPER trading worker
+        id: reload_worker
+        if: ${{ steps.auth.outputs.operation == 'reload-worker' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          printf 'cd /home/ubuntu/docich && exec bash /home/ubuntu/docich/bin/docich-paper-corner-operator --config /home/ubuntu/docich/config/docich.soren-live.toml --reload-worker\n' |
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Classify failed PAPER prepare
@@ -196,3 +212,9 @@ jobs:
       - name: Fail unsuccessful PAPER start
         if: ${{ steps.start.outcome == 'failure' }}
         run: exit 1
+
+      - name: Fail unsuccessful PAPER worker reload
+        if: ${{ steps.reload_worker.outcome == 'failure' }}
+        run: |
+          echo '::error::PAPER worker reload failed'
+          exit 1
