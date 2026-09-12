@@ -6,10 +6,21 @@ collector. Dynamic worker names never enter stdout: registered workers are
 collapsed to the fixed categories in runtime_registry, and unregistered
 entries are reduced to liveness/stale/pause counts only.
 """
+import importlib.util
 import json
 import sys
+from pathlib import Path
 
-from runtime_registry import WORKERS
+
+def _load_registry():
+    path = Path(__file__).with_name("runtime_registry.py")
+    spec = importlib.util.spec_from_file_location("vm_runtime_registry", str(path))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+WORKERS = _load_registry().WORKERS
 
 WORKER_CATEGORIES = (
     "loop",
