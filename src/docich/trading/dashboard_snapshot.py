@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Mapping
 
 from .dashboard import HEADER_TITLE, _focus_symbol, _fresh_count, _positions, _reason_ja, load_snapshot
+from .free_strategy.contract import decode as free_strategy_decode
 from .free_strategy.evaluation import public_summary as free_strategy_public_summary
 from .performance import build_performance, realized_pnl_for_fill
 
@@ -38,6 +39,37 @@ def _reason_list(value: object, limit: int) -> list[str]:
 
 def _side_ja(value: object) -> str:
     return {"buy": "買い", "sell": "売り"}.get(str(value).lower(), "取引")
+
+
+def _free_strategy_health(path: Path, *, now: float) -> dict[str, object]:
+    """Read the fixed health schema without creating state or exposing details."""
+    if not path.is_file():
+        return {"status": "absent", "heartbeat_at": None, "age_sec": None,
+                "completed_experiments": 0, "error_codes": []}
+    try:
+        data = free_strategy_decode(path.read_bytes(), limit=4096)
+        if not isinstance(data, dict) or data.get("schema_version") != 1 or data.get("mode") != "PAPER":
+            raise ValueError("bad health schema")
+        status = str(data.get("status", ""))
+        if status not in {"running", "idle", "degraded"}:
+            raise ValueError("bad health status")
+        heartbeat = _finite(data.get("heartbeat_at"))
+        completed = data.get("completed_experiments", 0)
+        if type(completed) is not int or completed < 0:
+            raise ValueError("bad completed count")
+        raw_codes = data.get("error_codes", [])
+        if not isinstance(raw_codes, list) or not all(isinstance(code, str) for code in raw_codes):
+            raise ValueError("bad error codes")
+        return {
+            "status": status,
+            "heartbeat_at": heartbeat,
+            "age_sec": None if heartbeat is None else max(0, int(now - heartbeat)),
+            "completed_experiments": completed,
+            "error_codes": raw_codes[:8],
+        }
+    except (OSError, ValueError, TypeError):
+        return {"status": "unavailable", "heartbeat_at": None, "age_sec": None,
+                "completed_experiments": 0, "error_codes": ["lab_health_unavailable"]}
 
 
 def _skip_details(snapshot: Mapping[str, object]) -> list[dict[str, str]]:
@@ -133,8 +165,13 @@ def build_dashboard_snapshot(trading_dir: Path, *, now: float | None = None) -> 
         )
 
     data_as_of = _finite(snapshot.get("snapshot_generated_at"))
+    free_directory = target / "free-strategies"
     free_strategies = free_strategy_public_summary(
-        target / "free-strategies" / "lab.sqlite3",
+        free_directory / "lab.sqlite3",
+        now=moment,
+    )
+    free_strategies["health"] = _free_strategy_health(
+        free_directory / "health.json",
         now=moment,
     )
     return {
