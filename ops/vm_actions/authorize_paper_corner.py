@@ -36,19 +36,29 @@ def _validate_duration(value: object) -> int:
     return duration
 
 
-def _issue_payload(raw: str) -> tuple[int, str]:
+def _validate_nonce(value: object) -> str:
+    if not isinstance(value, str) or not NONCE_RE.fullmatch(value):
+        fail("invalid PAPER corner issue nonce")
+    return value
+
+
+def _issue_payload(raw: str) -> tuple[str, int | None, str]:
     try:
         data = json.loads(raw)
     except (TypeError, ValueError):
         fail("invalid PAPER corner issue command")
-    if not isinstance(data, dict) or set(data) != {"operation", "duration_minutes", "confirm", "nonce"}:
+    if not isinstance(data, dict) or data.get("confirm") != "production":
         fail("invalid PAPER corner issue command")
-    if data.get("operation") != "start" or data.get("confirm") != "production":
-        fail("invalid PAPER corner issue command")
-    nonce = data.get("nonce")
-    if not isinstance(nonce, str) or not NONCE_RE.fullmatch(nonce):
-        fail("invalid PAPER corner issue nonce")
-    return _validate_duration(data.get("duration_minutes")), nonce
+    operation = data.get("operation")
+    if operation == "start":
+        if set(data) != {"operation", "duration_minutes", "confirm", "nonce"}:
+            fail("invalid PAPER corner issue command")
+        return "start", _validate_duration(data.get("duration_minutes")), _validate_nonce(data.get("nonce"))
+    if operation == "status":
+        if set(data) != {"operation", "confirm", "nonce"}:
+            fail("invalid PAPER corner issue command")
+        return "status", None, _validate_nonce(data.get("nonce"))
+    fail("invalid PAPER corner issue command")
 
 
 def main() -> None:
@@ -78,9 +88,13 @@ def main() -> None:
     if event == "workflow_dispatch":
         if env.get("INPUT_CONFIRM") != "production":
             fail("production confirmation required")
-        if env.get("INPUT_OPERATION") != "start":
+        operation = env.get("INPUT_OPERATION", "")
+        if operation == "start":
+            duration = _validate_duration(env.get("INPUT_DURATION_MINUTES", ""))
+        elif operation == "status":
+            duration = None
+        else:
             fail("unsupported PAPER corner operation")
-        duration = _validate_duration(env.get("INPUT_DURATION_MINUTES", ""))
         nonce = "workflow-dispatch"
     elif event == "issues":
         if env.get("GITHUB_EVENT_ACTION") != "edited":
@@ -89,18 +103,27 @@ def main() -> None:
             fail("unexpected PAPER corner command issue")
         if env.get("GITHUB_ISSUE_AUTHOR") != OWNER or env.get("GITHUB_ISSUE_AUTHOR_ID") != OWNER_ID:
             fail("unexpected PAPER corner command issue owner")
-        duration, nonce = _issue_payload(env.get("GITHUB_ISSUE_BODY", ""))
+        operation, duration, nonce = _issue_payload(env.get("GITHUB_ISSUE_BODY", ""))
     else:
         fail("unsupported event")
 
-    result = {"operation": "start", "target": "production", "ref": "main", "duration_minutes": duration, "nonce": nonce}
+    result: dict[str, object] = {
+        "operation": operation,
+        "target": "production",
+        "ref": "main",
+        "nonce": nonce,
+    }
+    if duration is not None:
+        result["duration_minutes"] = duration
+
     output = env.get("GITHUB_OUTPUT")
     if output:
         with open(output, "a", encoding="utf-8") as out:
-            out.write("operation=start\n")
+            out.write(f"operation={operation}\n")
             out.write("target=production\n")
             out.write("ref=main\n")
-            out.write(f"duration_minutes={duration}\n")
+            if duration is not None:
+                out.write(f"duration_minutes={duration}\n")
     print(json.dumps(result, separators=(",", ":")))
 
 
