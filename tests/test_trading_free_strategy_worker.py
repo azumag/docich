@@ -201,7 +201,7 @@ def test_host_probe_does_not_create_state_and_cli_needs_no_trading_dir(tmp_path,
     assert payload["error_codes"] == ["docker_unavailable"]
 
 
-def test_worker_cgroup_probe_requires_finite_effective_v2_limits(tmp_path):
+def test_worker_cgroup_probe_requires_reviewed_effective_v2_ceilings(tmp_path):
     proc = tmp_path / "proc" / "self-cgroup"
     proc.parent.mkdir()
     proc.write_text("0::/user.slice/user-1001.slice/docich-free-strategy-worker.service\n")
@@ -210,15 +210,33 @@ def test_worker_cgroup_probe_requires_finite_effective_v2_limits(tmp_path):
         / "docich-free-strategy-worker.service"
     )
     group.mkdir(parents=True)
-    (group / "cpu.max").write_text("100000 100000\n")
-    (group / "memory.max").write_text("1073741824\n")
-    (group / "pids.max").write_text("128\n")
+    cpu = group / "cpu.max"
+    memory = group / "memory.max"
+    pids = group / "pids.max"
+    cpu.write_text("100000 100000\n")
+    memory.write_text("1073741824\n")
+    pids.write_text("128\n")
     assert probe_worker_cgroup_limits(proc_cgroup=proc, cgroup_root=tmp_path / "cgroup") == {
         "mode": "PAPER", "status": "ready", "cpu_quota": True,
         "memory_limit": True, "pids_limit": True, "error_codes": [],
     }
 
-    (group / "cpu.max").write_text("max 100000\n")
+    for path, oversized in (
+        (cpu, "200000 100000\n"),
+        (memory, "2147483648\n"),
+        (pids, "256\n"),
+    ):
+        cpu.write_text("100000 100000\n")
+        memory.write_text("1073741824\n")
+        pids.write_text("128\n")
+        path.write_text(oversized)
+        result = probe_worker_cgroup_limits(proc_cgroup=proc, cgroup_root=tmp_path / "cgroup")
+        assert result["status"] == "unavailable"
+        assert result["error_codes"] == ["resource_limits_unavailable"]
+
+    cpu.write_text("max 100000\n")
+    memory.write_text("1073741824\n")
+    pids.write_text("128\n")
     result = probe_worker_cgroup_limits(proc_cgroup=proc, cgroup_root=tmp_path / "cgroup")
     assert result["status"] == "unavailable"
     assert result["error_codes"] == ["resource_limits_unavailable"]
