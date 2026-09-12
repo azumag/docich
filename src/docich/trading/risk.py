@@ -18,13 +18,18 @@ from .models import (
 
 
 ZERO = Decimal("0")
-DEFAULT_FRACTION = Decimal("0.30")
+DEFAULT_OPPORTUNITY_FRACTION = Decimal("0.30")
+# PAPER is an evaluation environment: allow the virtual account to become fully
+# deployed so signal quality is not confounded by an arbitrary 30% portfolio
+# ceiling. Per-opportunity sizing, diversification, funding and drawdown gates
+# remain independent safety/quality controls.
+DEFAULT_TOTAL_DEPLOYED_FRACTION = Decimal("1")
 
 
 @dataclass(frozen=True)
 class CapitalPolicy:
-    max_opportunity_fraction: Decimal = DEFAULT_FRACTION
-    max_total_deployed_fraction: Decimal = DEFAULT_FRACTION
+    max_opportunity_fraction: Decimal = DEFAULT_OPPORTUNITY_FRACTION
+    max_total_deployed_fraction: Decimal = DEFAULT_TOTAL_DEPLOYED_FRACTION
 
     def __post_init__(self) -> None:
         for name in ("max_opportunity_fraction", "max_total_deployed_fraction"):
