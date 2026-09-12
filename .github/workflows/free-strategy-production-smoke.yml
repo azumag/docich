@@ -1,0 +1,114 @@
+name: Free strategy production smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ops/vm_actions/free_strategy_smoke_epoch
+
+permissions:
+  contents: read
+
+concurrency:
+  group: free-strategy-production-smoke-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    if: ${{ github.actor_id == 9018513 && github.triggering_actor == 'azumag' && github.ref == 'refs/heads/main' && github.ref_protected == true }}
+    environment: vm-operations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout reviewed main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          submodules: false
+
+      - name: Verify immutable reviewed commit
+        shell: bash
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "$SHA" ]]
+
+      - name: Configure pinned SSH client
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          VM_SSH_PORT: ${{ secrets.VM_SSH_PORT }}
+          VM_SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          VM_SSH_KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$VM_SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]
+          [[ "$VM_SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          port="${VM_SSH_PORT:-22}"
+          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+          install -m 700 -d "$RUNNER_TEMP/vm-ssh"
+          printf '%s\n' "$VM_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/vm-ssh/key"
+          printf '%s\n' "$VM_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/vm-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/vm-ssh/key" "$RUNNER_TEMP/vm-ssh/known_hosts"
+          printf 'port=%s\n' "$port" >> "$GITHUB_ENV"
+
+      - name: Wait for reviewed production deployment
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          ready=0
+          for _ in $(seq 1 120); do
+            status_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $SHA")"
+            if python3 - "$status_json" "$SHA" <<'PY'
+          import json, sys
+          data = json.loads(sys.argv[1])
+          expected = sys.argv[2]
+          ok = data.get("status") == "configured" and data.get("sha") == expected and not data.get("pending_repairs")
+          raise SystemExit(0 if ok else 1)
+          PY
+            then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          [[ "$ready" -eq 1 ]]
+
+      - name: Run bounded production PAPER smoke
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          printf '%s\n' 'python3 ops/vm_actions/free_strategy_production_smoke.py' |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
+      - name: Verify production remained non-critical
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          diagnostics_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "diagnostics docich production $SHA")"
+          python3 - "$diagnostics_json" <<'PY'
+          import json, sys
+          data = json.loads(sys.argv[1])
+          diagnostics = data.get("diagnostics") or {}
+          ok = data.get("status") == "diagnosed" and diagnostics.get("status") != "critical"
+          raise SystemExit(0 if ok else 1)
+          PY
