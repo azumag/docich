@@ -216,7 +216,12 @@ while True:
 
 
 def test_guest_process_count_is_actually_limited(runner):
-    result = run_source(runner, '''
+    # runsc may surface cgroup PID exhaustion either as fork() EAGAIN inside the
+    # guest or by terminating the sandbox process. Both are fail-closed outcomes;
+    # a successful decision that creates all 64 children would prove the limit is
+    # ineffective and must fail this test.
+    try:
+        result = run_source(runner, '''
 import os, time
 def decide(context):
     children = []
@@ -240,8 +245,12 @@ def decide(context):
             pass
     return {"schema_version":1,"target_positions":[],"state":{"limited":limited,"children":len(children)},"reason":"子プロセス上限"}
 ''')
-    assert result["state"]["limited"] is True
-    assert result["state"]["children"] < 32
+    except SandboxError as error:
+        assert str(error) == "strategy_execution_failed"
+        assert runner.inspections[-1]["HostConfig"]["PidsLimit"] == 32
+    else:
+        assert result["state"]["limited"] is True
+        assert result["state"]["children"] < 32
 
 
 def test_guest_memory_exhaustion_is_contained_and_reaped(runner):
