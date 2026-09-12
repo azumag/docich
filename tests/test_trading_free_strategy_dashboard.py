@@ -107,6 +107,35 @@ def test_dashboard_exposes_only_allowlisted_free_strategy_summary_without_mergin
     assert "initial_state" not in item
 
 
+def test_dashboard_hides_operational_smoke_experiments(tmp_path):
+    trading_dir = tmp_path / "trading"
+    _write_existing_status(trading_dir)
+    lab = trading_dir / "free-strategies" / "lab.sqlite3"
+    artifact = Artifact.create(
+        source="def decide(context): return {'schema_version':1,'target_positions':[],'state':{},'reason':'smoke'}",
+        image=IMAGE,
+        name="__docich_ops_smoke__",
+        family="ops_smoke",
+        thesis="bounded production E2E probe",
+        symbols=["BTC/JPY"],
+    )
+    store = LabStore(lab)
+    try:
+        store.register(artifact)
+        identity = store.create(artifact.digest, now=1000.0, capital="10000", days=1)
+        with store.transaction():
+            store.db.execute(
+                "INSERT INTO samples(experiment,bucket,observed_at,equity) VALUES (?,?,?,?)",
+                (identity, 0, 1050.0, "10000"),
+            )
+        evaluate(store, identity, now=1050.0)
+    finally:
+        store.close()
+
+    snapshot = build_dashboard_snapshot(trading_dir, now=1100.0)
+    assert snapshot["free_strategies"]["experiments"] == []
+
+
 def test_dashboard_health_is_allowlisted_and_redacted(tmp_path):
     trading_dir = tmp_path / "trading"
     _write_existing_status(trading_dir)
