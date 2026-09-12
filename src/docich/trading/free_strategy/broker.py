@@ -75,16 +75,16 @@ def settle_observation(store: LabStore, identity: str, *, markets: dict, books: 
         raise StrategyError("invalid_time")
     with store.transaction():
         exp = store.experiment(identity)
-        if exp["phase"] not in {"research", "paper_validating"}:
+        if exp["phase"] not in {"research", "paper_validating", "paused"}:
             return exp
         expired = now >= exp["end_at"]
+        paused = exp["phase"] == "paused"
         policy, account = exp["policy"], exp["account"]
         cash = D(account["cash_jpy"])
         positions = {symbol: D(amount) for symbol, amount in account["positions"].items()}
-        pending = {} if expired else dict(exp["pending"])
-        # Expiry never creates a new fill.  Only current holdings need a fresh
-        # conservative liquidation valuation before the final review snapshot.
-        symbols = set(positions) if expired else set(positions) | set(pending)
+        # A paused or expired experiment cannot create new synthetic fills.
+        pending = {} if expired or paused else dict(exp["pending"])
+        symbols = set(positions) if expired or paused else set(positions) | set(pending)
         slippage = D(policy["slippage_bps"]) / 10000
         participation = D(policy["book_participation"])
         for symbol in symbols:
@@ -100,11 +100,22 @@ def settle_observation(store: LabStore, identity: str, *, markets: dict, books: 
             account = {"cash_jpy": decimal_text(cash),
                        "positions": {s: decimal_text(q) for s, q in positions.items()},
                        "peak_equity": decimal_text(peak)}
-            # Keep an earlier diagnostic unless the terminal valuation itself
-            # demonstrates the configured drawdown stop.
             last_error = "drawdown_limit" if drawdown_hit else exp["last_error"]
             store.db.execute("""UPDATE experiments SET phase='review_due',account=?,pending=?,
                 last_error=?,revision=revision+1 WHERE id=?""",
+                (encode(account), encode({}), last_error, identity))
+            _record_sample(store, identity, exp, now=now, equity=equity_before)
+            return store.experiment(identity)
+
+        if paused:
+            # Manual/risk pauses stop decisions, not observation.  A later
+            # drawdown breach upgrades the stop reason and prevents resume.
+            account = {"cash_jpy": decimal_text(cash),
+                       "positions": {s: decimal_text(q) for s, q in positions.items()},
+                       "peak_equity": decimal_text(peak)}
+            last_error = "drawdown_limit" if drawdown_hit else exp["last_error"]
+            store.db.execute("""UPDATE experiments SET account=?,pending=?,last_error=?,
+                revision=revision+1 WHERE id=?""",
                 (encode(account), encode({}), last_error, identity))
             _record_sample(store, identity, exp, now=now, equity=equity_before)
             return store.experiment(identity)
