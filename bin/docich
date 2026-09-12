@@ -7,12 +7,12 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
 
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
-# PAPER worker has optional market-data dependencies installed in its dedicated
-# virtualenv.  A recovery may invoke `docich up` from a shell whose PATH does
-# not contain that virtualenv; the tmux child must still start with the same
-# interpreter as the canonical paper-runtime service.  Keep every other
-# command on the caller's normal python3, and fail open to it in development
-# checkouts where the trading virtualenv is intentionally absent.
+# PAPER/trading commands share optional market-data/runtime dependencies that
+# live in the dedicated trading virtualenv.  Keep the whole PAPER lifecycle on
+# one interpreter: the worker, PAPER corner, direct trading commands, and the
+# end-of-corner paper-improve child spawned through sys.executable.  Unrelated
+# commands stay on the caller's normal python3.  Development checkouts without
+# the trading virtualenv intentionally fall back to python3.
 args=("$@")
 command_index=0
 if (( ${#args[@]} >= 2 )) && [[ "${args[0]}" == "--config" ]]; then
@@ -20,9 +20,20 @@ if (( ${#args[@]} >= 2 )) && [[ "${args[0]}" == "--config" ]]; then
 elif (( ${#args[@]} >= 1 )) && [[ "${args[0]}" == --config=* ]]; then
     command_index=1
 fi
-if (( command_index + 1 < ${#args[@]} )) \
-    && [[ "${args[command_index]}" == "run" ]] \
-    && [[ "${args[command_index + 1]}" == "trading" ]]; then
+
+use_trading_python=0
+if (( command_index < ${#args[@]} )); then
+    command="${args[command_index]}"
+    if [[ "$command" == "trading" || "$command" == "paper-corner" ]]; then
+        use_trading_python=1
+    elif (( command_index + 1 < ${#args[@]} )) \
+        && [[ "$command" == "run" ]] \
+        && [[ "${args[command_index + 1]}" == "trading" ]]; then
+        use_trading_python=1
+    fi
+fi
+
+if (( use_trading_python )); then
     trading_python="$ROOT/.venv-trading/bin/python3"
     if [[ -x "$trading_python" ]]; then
         exec "$trading_python" -m docich "$@"

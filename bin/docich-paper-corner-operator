@@ -3,4 +3,9 @@
 set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
-exec python3 -m docich.paper_corner_operator "$@"
+
+python_bin="$ROOT/.venv-trading/bin/python3"
+if [[ ! -x "$python_bin" ]]; then
+    python_bin=python3
+fi
+exec "$python_bin" -m docich.paper_corner_operator "$@"
