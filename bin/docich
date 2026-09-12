@@ -7,12 +7,10 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
 
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
-# PAPER worker has optional market-data dependencies installed in its dedicated
-# virtualenv.  A recovery may invoke `docich up` from a shell whose PATH does
-# not contain that virtualenv; the tmux child must still start with the same
-# interpreter as the canonical paper-runtime service.  Keep every other
-# command on the caller's normal python3, and fail open to it in development
-# checkouts where the trading virtualenv is intentionally absent.
+# PAPER workers have optional market-data dependencies installed in the
+# dedicated trading virtualenv. Keep unrelated commands on the caller's normal
+# python3 and fail open to it in development checkouts where that venv is
+# intentionally absent. Selecting the interpreter never enables either worker.
 args=("$@")
 command_index=0
 if (( ${#args[@]} >= 2 )) && [[ "${args[0]}" == "--config" ]]; then
@@ -20,9 +18,19 @@ if (( ${#args[@]} >= 2 )) && [[ "${args[0]}" == "--config" ]]; then
 elif (( ${#args[@]} >= 1 )) && [[ "${args[0]}" == --config=* ]]; then
     command_index=1
 fi
+
+use_trading_python=false
 if (( command_index + 1 < ${#args[@]} )) \
     && [[ "${args[command_index]}" == "run" ]] \
     && [[ "${args[command_index + 1]}" == "trading" ]]; then
+    use_trading_python=true
+elif (( command_index < ${#args[@]} )) \
+    && { [[ "${args[command_index]}" == "free-strategy" ]] \
+      || [[ "${args[command_index]}" == "free-strategy-worker" ]]; }; then
+    use_trading_python=true
+fi
+
+if [[ "$use_trading_python" == true ]]; then
     trading_python="$ROOT/.venv-trading/bin/python3"
     if [[ -x "$trading_python" ]]; then
         exec "$trading_python" -m docich "$@"
