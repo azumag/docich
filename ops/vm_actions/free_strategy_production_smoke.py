@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 """One-shot production E2E probe for the isolated free-strategy PAPER worker.
 
-The probe deliberately does not have Docker access itself.  It registers one
-no-trade candidate in the real production lab, waits for the already-running
-systemd worker (the only process granted the docker supplementary group) to
-execute it through gVisor, verifies the durable receipt/state, then moves only
+The probe deliberately has no Docker access. It registers one no-trade
+candidate in the real production lab, waits for the already-running systemd
+worker to execute it through gVisor, verifies durable state, then moves only
 that exact operational probe to review_due so it consumes no research slot.
 """
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 import re
 import sqlite3
@@ -20,7 +18,6 @@ import tempfile
 import time
 
 ROOT = Path("/home/ubuntu/docich")
-ENV_FILE = Path("/home/ubuntu/.config/docich/free-strategy-worker.env")
 SERVICE = "docich-free-strategy-worker.service"
 NAME = "__docich_ops_smoke__"
 FAMILY = "ops_smoke"
@@ -30,51 +27,85 @@ IMAGE_RE = re.compile(r"(?:[A-Za-z0-9._/:-]+@)?sha256:[0-9a-f]{64}\Z")
 POLL_SECONDS = 5.0
 DEADLINE_SECONDS = 420.0
 
+ERROR_EXIT_CODES = {
+    "worker_not_active": 11,
+    "worker_identity_unavailable": 12,
+    "worker_identity_mismatch": 13,
+    "worker_runtime_invalid": 14,
+    "worker_trading_dir_outside_root": 15,
+    "cli_unavailable": 16,
+    "cli_failed": 17,
+    "cli_experiment_capacity": 18,
+    "cli_artifact_active": 19,
+    "cli_invalid_policy": 20,
+    "cli_internal_failed": 21,
+    "cli_output_invalid": 22,
+    "lab_state_invalid": 23,
+    "smoke_identity_missing": 24,
+    "lab_unavailable": 25,
+    "smoke_identity_mismatch": 26,
+    "smoke_cleanup_refused": 27,
+    "smoke_cleanup_failed": 28,
+    "previous_smoke_still_active": 29,
+    "registration_invalid": 30,
+    "worker_restarted_during_smoke": 31,
+    "worker_cycle_timeout": 32,
+    "final_evaluation_invalid": 33,
+    "smoke_finalize_invalid": 34,
+    "unexpected_failure": 35,
+}
+CLI_ERROR_MAP = {
+    "experiment_capacity": "cli_experiment_capacity",
+    "artifact_experiment_active": "cli_artifact_active",
+    "invalid_experiment_policy": "cli_invalid_policy",
+    "free_strategy_cli_failed": "cli_internal_failed",
+}
+
 
 class SmokeError(RuntimeError):
     pass
 
 
 def _fail(code: str) -> None:
-    print(f"free_strategy_smoke={code}", file=sys.stderr)
-    raise SystemExit(1)
+    # The gateway withholds production stdout/stderr. A bounded numeric exit
+    # code is the only signal intentionally allowed across that boundary.
+    raise SystemExit(ERROR_EXIT_CODES.get(code, ERROR_EXIT_CODES["unexpected_failure"]))
 
 
-def _read_worker_env(path: Path = ENV_FILE) -> tuple[Path, str]:
+def _parse_worker_cmdline(raw: bytes, *, root: Path = ROOT) -> tuple[Path, str]:
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        raise SmokeError("worker_env_unavailable") from exc
-    values: dict[str, str] = {}
-    for raw in lines:
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" not in line:
-            raise SmokeError("worker_env_invalid")
-        key, value = line.split("=", 1)
-        if key in {"DOCICH_FREE_STRATEGY_TRADING_DIR", "DOCICH_FREE_STRATEGY_IMAGE"}:
-            if key in values or not value or any(ch in value for ch in "\r\n\0"):
-                raise SmokeError("worker_env_invalid")
-            values[key] = value
-    trading = values.get("DOCICH_FREE_STRATEGY_TRADING_DIR")
-    image = values.get("DOCICH_FREE_STRATEGY_IMAGE")
-    if not trading or not image or not IMAGE_RE.fullmatch(image):
-        raise SmokeError("worker_env_invalid")
-    trading_path = Path(trading)
-    if not trading_path.is_absolute():
-        raise SmokeError("worker_env_invalid")
+        argv = [item.decode("utf-8", "strict") for item in raw.split(b"\0") if item]
+    except UnicodeError as exc:
+        raise SmokeError("worker_runtime_invalid") from exc
+    if "free-strategy-worker" not in argv:
+        raise SmokeError("worker_identity_mismatch")
+
+    def value(flag: str) -> str:
+        if argv.count(flag) != 1:
+            raise SmokeError("worker_runtime_invalid")
+        index = argv.index(flag)
+        if index + 1 >= len(argv) or not argv[index + 1]:
+            raise SmokeError("worker_runtime_invalid")
+        return argv[index + 1]
+
+    trading_raw = value("--trading-dir")
+    image = value("--image")
+    if not IMAGE_RE.fullmatch(image):
+        raise SmokeError("worker_runtime_invalid")
+    trading = Path(trading_raw)
+    if not trading.is_absolute():
+        raise SmokeError("worker_runtime_invalid")
     try:
-        resolved_root = ROOT.resolve(strict=True)
-        resolved_trading = trading_path.resolve(strict=True)
+        resolved_root = root.resolve(strict=True)
+        resolved_trading = trading.resolve(strict=True)
     except OSError as exc:
-        raise SmokeError("worker_env_unavailable") from exc
+        raise SmokeError("worker_runtime_invalid") from exc
     if resolved_trading == resolved_root or resolved_root not in resolved_trading.parents:
         raise SmokeError("worker_trading_dir_outside_root")
     return resolved_trading, image
 
 
-def _worker_pid() -> int:
+def _worker_runtime() -> tuple[int, Path, str]:
     try:
         active = subprocess.run(
             ["systemctl", "is-active", "--quiet", SERVICE],
@@ -86,22 +117,23 @@ def _worker_pid() -> int:
         )
         if active.returncode:
             raise SmokeError("worker_not_active")
-        raw = subprocess.check_output(
+        raw_pid = subprocess.check_output(
             ["systemctl", "show", SERVICE, "--property=MainPID", "--value"],
             stdin=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             text=True,
             timeout=10,
         ).strip()
-        pid = int(raw)
+        pid = int(raw_pid)
         if pid <= 1:
             raise ValueError
-        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ")
+        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except SmokeError:
+        raise
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         raise SmokeError("worker_identity_unavailable") from exc
-    if b"free-strategy-worker" not in cmdline:
-        raise SmokeError("worker_identity_mismatch")
-    return pid
+    trading, image = _parse_worker_cmdline(cmdline)
+    return pid, trading, image
 
 
 def _run_cli(*args: str) -> dict:
@@ -118,14 +150,15 @@ def _run_cli(*args: str) -> dict:
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise SmokeError("cli_unavailable") from exc
-    if proc.returncode:
-        raise SmokeError("cli_failed")
     try:
         data = json.loads(proc.stdout)
     except (TypeError, ValueError) as exc:
         raise SmokeError("cli_output_invalid") from exc
     if not isinstance(data, dict):
         raise SmokeError("cli_output_invalid")
+    if proc.returncode:
+        error = data.get("error")
+        raise SmokeError(CLI_ERROR_MAP.get(error, "cli_failed"))
     return data
 
 
@@ -168,6 +201,8 @@ def _snapshot(db_path: Path, identity: str, artifact: str) -> dict:
             fills = db.execute(
                 "SELECT COUNT(*) FROM fills WHERE experiment=?", (identity,)
             ).fetchone()[0]
+    except SmokeError:
+        raise
     except sqlite3.Error as exc:
         raise SmokeError("lab_unavailable") from exc
     if (
@@ -229,6 +264,8 @@ def _finalize(db_path: Path, identity: str, artifact: str, *, now: float) -> Non
                     (now - 1.0, b"{}", identity),
                 )
             db.commit()
+    except SmokeError:
+        raise
     except sqlite3.Error as exc:
         raise SmokeError("smoke_cleanup_failed") from exc
 
@@ -252,8 +289,7 @@ def _assert_no_existing_smoke(db_path: Path) -> None:
 
 
 def main() -> int:
-    trading_dir, image = _read_worker_env()
-    worker_pid = _worker_pid()
+    worker_pid, trading_dir, image = _worker_runtime()
     db_path = trading_dir / "free-strategies" / "lab.sqlite3"
     _assert_no_existing_smoke(db_path)
 
@@ -293,8 +329,8 @@ def main() -> int:
 
             deadline = time.monotonic() + DEADLINE_SECONDS
             while True:
-                current = _worker_pid()
-                if current != worker_pid:
+                current_pid, current_trading, current_image = _worker_runtime()
+                if (current_pid, current_trading, current_image) != (worker_pid, trading_dir, image):
                     raise SmokeError("worker_restarted_during_smoke")
                 snap = _snapshot(db_path, identity, artifact)
                 if (
@@ -314,8 +350,7 @@ def main() -> int:
             _finalize(db_path, identity, artifact, now=time.time())
             report = _run_cli(
                 "--trading-dir", str(trading_dir),
-                "evaluate",
-                "--experiment", identity,
+                "evaluate", identity,
             )
             if report.get("live_eligible") is not False or report.get("research_review_due") is not True:
                 raise SmokeError("final_evaluation_invalid")
@@ -330,9 +365,9 @@ def main() -> int:
                     pass
             raise
 
-    if _worker_pid() != worker_pid:
+    current_pid, current_trading, current_image = _worker_runtime()
+    if (current_pid, current_trading, current_image) != (worker_pid, trading_dir, image):
         raise SmokeError("worker_restarted_during_smoke")
-    print("free_strategy_smoke=passed")
     return 0
 
 
@@ -341,3 +376,5 @@ if __name__ == "__main__":
         raise SystemExit(main())
     except SmokeError as exc:
         _fail(str(exc))
+    except Exception:
+        _fail("unexpected_failure")
