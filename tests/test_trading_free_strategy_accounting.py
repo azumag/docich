@@ -15,7 +15,7 @@ from docich.trading.free_strategy.broker import settle_observation  # noqa: E402
 from docich.trading.free_strategy.contract import Artifact, StrategyError  # noqa: E402
 from docich.trading.free_strategy.evaluation import evaluate  # noqa: E402
 from docich.trading.free_strategy.generation import generate  # noqa: E402
-from docich.trading.free_strategy.service import build_context  # noqa: E402
+from docich.trading.free_strategy.service import build_context, run_cycle  # noqa: E402
 from docich.trading.free_strategy.store import LabStore  # noqa: E402
 from docich.trading.market_data import MarketFrame  # noqa: E402
 from docich.trading.models import MarketInfo  # noqa: E402
@@ -199,6 +199,67 @@ def test_build_context_rejects_stale_completed_history(tmp_path):
             build_context(store, exp, {"BTC/JPY": frame}, now=1_301.0)
     finally:
         store.close()
+
+
+def test_service_uses_gateway_fetched_at_contract(tmp_path):
+    trading_dir = tmp_path / "trading"
+    store = LabStore(trading_dir / "free-strategies" / "lab.sqlite3")
+    candidate = _artifact()
+    try:
+        store.register(candidate)
+        store.create(candidate.digest, now=1_000.0, capital="10000", days=1)
+    finally:
+        store.close()
+
+    market, template = _market()
+    frame = MarketFrame(
+        symbol="BTC/JPY", timeframe_seconds=300,
+        timestamps=(1_200.0, 1_500.0),
+        closes=(D("999000"), D("1000000")),
+        volumes=(D("1"), D("1")),
+    )
+
+    class Gateway:
+        circuit_fetched_at = None
+
+        def discover_markets(self):
+            return {"BTC/JPY": market}
+
+        def fetch_market_frames(self, symbols, *, timeframe, limit, now):
+            assert list(symbols) == ["BTC/JPY"]
+            assert timeframe == "5m" and limit == 144 and now == 2_000.0
+            return {"BTC/JPY": frame}
+
+        def fetch_circuit_break_statuses(self, symbols, *, fetched_at=None):
+            self.circuit_fetched_at = fetched_at
+            return {"BTC/JPY": CircuitBreakStatus(
+                "BTC/JPY", "NONE", "NORMAL", fetched_at, fetched_at=fetched_at,
+            )}
+
+        def fetch_depth_books(self, symbols, *, now, limit=20):
+            return {"BTC/JPY": DepthBook(
+                template.symbol, template.bids, template.asks, as_of=now,
+            )}
+
+    class Runner:
+        def preflight(self):
+            return {"runtime": "test", "image": IMAGE, "abi": 1}
+
+        def run(self, artifact, context):
+            assert artifact.digest == candidate.digest
+            return {
+                "schema_version": 1,
+                "target_positions": [],
+                "state": {"ran": True},
+                "reason": "wait",
+            }
+
+    gateway = Gateway()
+    result = run_cycle(
+        trading_dir, image=IMAGE, gateway=gateway, runner=Runner(), now_fn=lambda: 2_000.0,
+    )
+    assert result == {"mode": "PAPER", "status": "idle", "completed": 1, "error_codes": []}
+    assert gateway.circuit_fetched_at == 2_000.0
 
 
 def test_evaluation_never_grants_live_authority(tmp_path):
