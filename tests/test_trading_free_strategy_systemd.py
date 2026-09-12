@@ -16,6 +16,9 @@ def test_unit_requires_explicit_local_environment_and_enable_flag():
     assert "--trading-dir ${DOCICH_FREE_STRATEGY_TRADING_DIR}" in text
     assert "--interval ${DOCICH_FREE_STRATEGY_INTERVAL}" in text
     assert "NoNewPrivileges=yes" in text
+    assert "CPUQuota=100%" in text
+    assert "MemoryMax=1G" in text
+    assert "TasksMax=128" in text
     assert "WantedBy=default.target" in text
 
 

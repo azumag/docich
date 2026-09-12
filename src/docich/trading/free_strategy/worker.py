@@ -22,6 +22,66 @@ DEFAULT_INTERVAL_S = 300
 MIN_INTERVAL_S = 300
 
 
+def probe_worker_cgroup_limits(
+    *,
+    proc_cgroup: Path = Path("/proc/self/cgroup"),
+    cgroup_root: Path = Path("/sys/fs/cgroup"),
+) -> dict:
+    """Require finite effective v2 limits for the worker process itself.
+
+    Docker's capability flags only prove that the daemon can apply limits. The
+    systemd unit must also place this worker in a bounded cgroup. Keep this
+    probe fixed-output and fail closed when cgroup v2, a unified path, or any
+    required controller file is missing.
+    """
+    base = {
+        "mode": "PAPER",
+        "status": "unavailable",
+        "cpu_quota": False,
+        "memory_limit": False,
+        "pids_limit": False,
+    }
+    try:
+        unified = None
+        for line in proc_cgroup.read_text(encoding="ascii").splitlines():
+            fields = line.split(":", 2)
+            if len(fields) == 3 and fields[0] == "0":
+                unified = fields[2].strip()
+                break
+        if unified is None or not unified.startswith("/"):
+            return {**base, "error_codes": ["resource_limits_unavailable"]}
+        parts = [part for part in unified.split("/") if part]
+        if any(part in {".", ".."} for part in parts):
+            return {**base, "error_codes": ["resource_limits_unavailable"]}
+        group = cgroup_root.joinpath(*parts)
+
+        cpu = (group / "cpu.max").read_text(encoding="ascii").split()
+        memory = (group / "memory.max").read_text(encoding="ascii").split()
+        pids = (group / "pids.max").read_text(encoding="ascii").split()
+        cpu_quota = (
+            len(cpu) == 2
+            and cpu[0] != "max"
+            and int(cpu[0]) > 0
+            and int(cpu[1]) > 0
+        )
+        memory_limit = len(memory) == 1 and memory[0] != "max" and int(memory[0]) > 0
+        pids_limit = len(pids) == 1 and pids[0] != "max" and int(pids[0]) > 0
+    except (OSError, UnicodeError, TypeError, ValueError):
+        return {**base, "error_codes": ["resource_limits_unavailable"]}
+
+    capabilities = {
+        **base,
+        "cpu_quota": cpu_quota,
+        "memory_limit": memory_limit,
+        "pids_limit": pids_limit,
+    }
+    return {
+        **capabilities,
+        "status": "ready" if all((cpu_quota, memory_limit, pids_limit)) else "unavailable",
+        "error_codes": [] if all((cpu_quota, memory_limit, pids_limit)) else ["resource_limits_unavailable"],
+    }
+
+
 def probe_host(*, docker: str = "docker") -> dict:
     """Read Docker host capability flags without creating containers or state.
 
@@ -180,6 +240,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if result["status"] == "ready" else 2
         if not args.trading_dir:
             raise StrategyError("trading_dir_required")
+        if args.enabled and probe_worker_cgroup_limits()["status"] != "ready":
+            raise StrategyError("resource_limits_unavailable")
         result = run_worker(
             Path(args.trading_dir).expanduser(),
             image=args.image,

@@ -12,6 +12,10 @@
 - paused戦略は候補コードを実行せず、既存PAPER保有の時価評価だけ継続します。
 - dashboardはallowlistされた研究summaryだけを別枠表示し、既存PAPER資産へ合算しません。
 - 観測対象はpausedを含め最大2実験です。
+- ホスト側のquotaはこの新worker unitだけに適用します。初期値は `CPUQuota=100%`、
+  `MemoryMax=1G`、`TasksMax=128` で、既存PAPER workerのunit・PID・cgroupは変更しません。
+- workerは起動直後、実効cgroupの有限な `cpu.max` / `memory.max` / `pids.max` を確認します。
+  いずれかが無い、`max`、または有限値でない場合はgateway・cycleの前に停止します。
 
 ## 1. VM適合確認
 
@@ -22,9 +26,36 @@ workerをenableする前に、production VMで次を確認します。
 3. memory / PID / CPU quota controlが有効。
 4. production checkoutがcleanで、既存PAPER runtimeが正常。
 
+Dockerの導入時も、PAPER sandboxからポートを公開しません。`docker run` / `docker create`
+に `-p`、`--publish`、host networkを指定せず、既存FWへ手動ルールを追加しません。
+Docker daemonのFW設定を変更する場合は、bridge通信を使わないことを確認したうえで
+`iptables=false` / `ip6tables=false` / `ip-forward=false` を明示し、導入前後のFW差分を確認します。
+
 この確認が終わるまではunitをenableしません。
 
-## 2. guest imageをVM上でbuild
+## 2. Docker / gVisorの単体probe
+
+Docker公式APTリポジトリからDocker Engineを導入し、gVisorは安定releaseのAPT版を導入します。
+VM上では既定の `systrap` を使い、KVM設定は追加しません。導入後、まず候補guestとは別の
+使い捨てprobeを1回だけ実行します。`runsc`登録、Linux daemon、memory/PID/CPU capabilityの
+いずれかが確認できなければ停止します。
+
+```sh
+docker info --format \
+  '{"OSType":{{json .OSType}},"Runtimes":{{json .Runtimes}},"MemoryLimit":{{json .MemoryLimit}},"PidsLimit":{{json .PidsLimit}},"CPUCfsQuota":{{json .CPUCfsQuota}}}'
+runsc --version
+docker run --rm --runtime=runsc --network=none --read-only \
+  --cap-drop=ALL --security-opt=no-new-privileges:true \
+  --cpus=1 --memory=512m --memory-swap=512m --pids-limit=32 \
+  --entrypoint=/usr/local/bin/python \
+  'python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea' \
+  -c 'print("gvisor-probe-ok")'
+```
+
+probeは候補戦略・PAPER台帳・既存PAPER workerを読み書きしません。`docker info` の全出力を
+ログやhealthへ保存せず、判定は固定されたcapability/error codeだけにします。
+
+## 3. guest imageをVM上でbuild
 
 production VMでレビュー済みcheckoutからbuildし、`--iidfile` でimmutable image IDを取得します。
 
@@ -40,7 +71,7 @@ cat run/free-strategy-setup/image-id
 
 得られる値は `sha256:` + 64桁hexでなければ使用しません。tag名や `latest` は設定しません。
 
-## 3. local envを作る
+## 4. local envを作る
 
 `free-strategy-worker.env` はリポジトリへcommitしません。
 
@@ -61,7 +92,7 @@ DOCICH_FREE_STRATEGY_INTERVAL=300
 
 このファイルへAPI key、取引所key、wallet情報は入れません。
 
-## 4. unitをinstallする
+## 5. unitをinstallする
 
 ```sh
 mkdir -p ~/.config/systemd/user
@@ -70,11 +101,18 @@ sed "s|__DOCICH_ROOT__|${DOCICH_ROOT}|g" \
   scripts/systemd/docich-free-strategy-worker.service \
   > ~/.config/systemd/user/docich-free-strategy-worker.service
 systemctl --user daemon-reload
+
+# これはenable/startではない。値が有限であることを確認してから次へ進む。
+systemctl --user show docich-free-strategy-worker.service \
+  -p CPUQuotaPerSecUSec -p MemoryMax -p TasksMax -p FragmentPath
 ```
 
+期待値は `CPUQuotaPerSecUSec=1s`（100%）、`MemoryMax=1073741824`、
+`TasksMax=128` です。値が `infinity`、`max`、空、またはunitの実ファイルと異なる場合は
+enableしません。起動後はworker自身の実効cgroup probeも再度この条件を確認します。
 ここまでではworkerは起動しません。
 
-## 5. PAPER workerを明示起動する
+## 6. PAPER workerを明示起動する
 
 VM適合確認、image build、env確認が全部終わってからだけ実行します。
 
@@ -92,7 +130,7 @@ cat "$DOCICH_FREE_STRATEGY_TRADING_DIR/free-strategies/health.json"
 
 dashboardには「AI戦略研究 / 独立PAPER」として表示されます。
 
-## 6. 停止
+## 7. 停止
 
 ```sh
 systemctl --user disable --now docich-free-strategy-worker.service

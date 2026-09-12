@@ -14,6 +14,12 @@ ExecStart=__DOCICH_ROOT__/bin/docich free-strategy-worker --trading-dir ${DOCICH
 Restart=on-failure
 RestartSec=30
 NoNewPrivileges=yes
+# Host-side limits apply only to this new worker; the existing PAPER unit is
+# intentionally not changed.  The worker also verifies the effective cgroup
+# before it constructs a gateway or starts a PAPER cycle.
+CPUQuota=100%
+MemoryMax=1G
+TasksMax=128
 
 [Install]
 WantedBy=default.target
