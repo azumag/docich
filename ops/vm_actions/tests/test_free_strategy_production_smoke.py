@@ -82,48 +82,55 @@ class FreeStrategyProductionSmokeTests(unittest.TestCase):
             )
         return identity, artifact
 
-    def test_worker_cmdline_proves_runtime_and_confines_trading_dir(self):
-        raw = b"\0".join([
+    def _cmdline(self, trading: Path | None = None, *, enabled: bool = True, interval: str = "300") -> bytes:
+        values = [
             b"/tmp/python", b"-m", b"docich", b"free-strategy-worker",
-            b"--trading-dir", str(self.trading).encode(), b"--image", self.image.encode(),
-            b"--interval", b"300", b"--enabled", b"",
-        ])
-        trading, image = smoke._parse_worker_cmdline(raw, root=self.root)
-        self.assertEqual(trading, self.trading.resolve())
+            b"--trading-dir", str(trading or self.trading).encode(),
+            b"--image", self.image.encode(), b"--interval", interval.encode(),
+        ]
+        if enabled:
+            values.append(b"--enabled")
+        values.append(b"")
+        return b"\0".join(values)
+
+    def _write_health(self, directory: Path, *, heartbeat: float = 1000.0, mode: str = "PAPER") -> None:
+        lab = directory / "free-strategies"
+        lab.mkdir(parents=True, exist_ok=True)
+        (lab / "health.json").write_text(json.dumps({
+            "schema_version": 1,
+            "mode": mode,
+            "status": "idle",
+            "heartbeat_at": heartbeat,
+            "completed_experiments": 0,
+            "error_codes": [],
+        }), encoding="utf-8")
+
+    def test_worker_cmdline_uses_active_service_args_not_a_guessed_root(self):
+        outside = Path(self.tempdir.name) / "reviewed-runtime" / "trading"
+        outside.mkdir(parents=True)
+        trading, image, interval = smoke._parse_worker_cmdline(self._cmdline(outside))
+        self.assertEqual(trading, outside.resolve())
         self.assertEqual(image, self.image)
+        self.assertEqual(interval, 300)
 
-        outside = Path(self.tempdir.name) / "outside"
-        outside.mkdir()
-        bad = b"\0".join([
-            b"python", b"-m", b"docich", b"free-strategy-worker",
-            b"--trading-dir", str(outside).encode(), b"--image", self.image.encode(), b"",
-        ])
         with self.assertRaises(smoke.SmokeError):
-            smoke._parse_worker_cmdline(bad, root=self.root)
-
-    def test_worker_cmdline_accepts_only_reviewed_soren_projection(self):
-        base = Path(self.tempdir.name) / "projection-case"
-        root = base / "docich"
-        soren = base / "soren"
-        (soren / "trading").mkdir(parents=True)
-        root.mkdir(parents=True)
-        (root / "run-soren-live").symlink_to(soren, target_is_directory=True)
-        projected = root / "run-soren-live" / "trading"
-        raw = b"\0".join([
-            b"python", b"-m", b"docich", b"free-strategy-worker",
-            b"--trading-dir", str(projected).encode(), b"--image", self.image.encode(), b"",
-        ])
-        trading, _ = smoke._parse_worker_cmdline(raw, root=root, soren_root=soren)
-        self.assertEqual(trading, (soren / "trading").resolve())
-
-        sibling = soren / "other"
-        sibling.mkdir()
-        bad = b"\0".join([
-            b"python", b"-m", b"docich", b"free-strategy-worker",
-            b"--trading-dir", str(sibling).encode(), b"--image", self.image.encode(), b"",
-        ])
+            smoke._parse_worker_cmdline(self._cmdline(outside, enabled=False))
         with self.assertRaises(smoke.SmokeError):
-            smoke._parse_worker_cmdline(bad, root=root, soren_root=soren)
+            smoke._parse_worker_cmdline(self._cmdline(outside, interval="299"))
+
+    def test_worker_trading_dir_requires_fresh_paper_health_from_that_runtime(self):
+        outside = Path(self.tempdir.name) / "reviewed-runtime" / "trading"
+        outside.mkdir(parents=True)
+        self._write_health(outside, heartbeat=1000.0)
+        smoke._validate_worker_health(outside.resolve(), interval=300, now=1100.0)
+
+        self._write_health(outside, heartbeat=1.0)
+        with self.assertRaises(smoke.SmokeError):
+            smoke._validate_worker_health(outside.resolve(), interval=300, now=1100.0)
+
+        self._write_health(outside, heartbeat=1000.0, mode="LIVE")
+        with self.assertRaises(smoke.SmokeError):
+            smoke._validate_worker_health(outside.resolve(), interval=300, now=1100.0)
 
     def test_error_exit_codes_are_fixed_and_bounded(self):
         values = list(smoke.ERROR_EXIT_CODES.values())
