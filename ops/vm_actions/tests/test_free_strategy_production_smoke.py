@@ -101,6 +101,30 @@ class FreeStrategyProductionSmokeTests(unittest.TestCase):
         with self.assertRaises(smoke.SmokeError):
             smoke._parse_worker_cmdline(bad, root=self.root)
 
+    def test_worker_cmdline_accepts_only_reviewed_soren_projection(self):
+        base = Path(self.tempdir.name) / "projection-case"
+        root = base / "docich"
+        soren = base / "soren"
+        (soren / "trading").mkdir(parents=True)
+        root.mkdir(parents=True)
+        (root / "run-soren-live").symlink_to(soren, target_is_directory=True)
+        projected = root / "run-soren-live" / "trading"
+        raw = b"\0".join([
+            b"python", b"-m", b"docich", b"free-strategy-worker",
+            b"--trading-dir", str(projected).encode(), b"--image", self.image.encode(), b"",
+        ])
+        trading, _ = smoke._parse_worker_cmdline(raw, root=root, soren_root=soren)
+        self.assertEqual(trading, (soren / "trading").resolve())
+
+        sibling = soren / "other"
+        sibling.mkdir()
+        bad = b"\0".join([
+            b"python", b"-m", b"docich", b"free-strategy-worker",
+            b"--trading-dir", str(sibling).encode(), b"--image", self.image.encode(), b"",
+        ])
+        with self.assertRaises(smoke.SmokeError):
+            smoke._parse_worker_cmdline(bad, root=root, soren_root=soren)
+
     def test_error_exit_codes_are_fixed_and_bounded(self):
         values = list(smoke.ERROR_EXIT_CODES.values())
         self.assertEqual(len(values), len(set(values)))
