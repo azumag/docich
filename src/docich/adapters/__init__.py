@@ -22,6 +22,7 @@ _COORDINATOR_REGISTRY = {
     "retroarch": "docich.adapters.retroarch:RetroArchCoordinatorAdapter",
     "browser": "docich.adapters.browser:BrowserCoordinatorAdapter",
     "soren": "docich.adapters.soren:SorenCoordinatorAdapter",
+    "soren91": "docich.adapters.soren91:Soren91CoordinatorAdapter",
 }
 
 

@@ -1,0 +1,43 @@
+[game]
+name = "soren91"
+title = "Soren91 (Macリモートレンダラー)"
+adapter = "soren91"
+
+[agent]
+# Phase 2 の検証では false のまま表示切替だけを試せる。true にすると
+# coordinator が soren91/main.mjs (OCI bot) を agent window で起動する。
+enabled = false
+brain = "command"
+command = ""
+
+[lifecycle]
+# Soren本編との境界連携は Phase 3。それまでは即時 quiesce で切り替える。
+require_round_boundary = false
+
+[soren91]
+# Mac local agent (soren91_local_agent.mjs) の base URL を持つ環境変数名。
+# 値は http(s)://<mac-tailscale-ip>:<port>、host は 100.64.0.0/10 のみ許可。
+agent_base_url_env = "SOREN91_MACOS_AGENT_BASE_URL"
+# Bearer token を持つ環境変数名 (値そのものは書かない)。
+agent_token_env = "SOREN91_LOCAL_AGENT_TOKEN"
+# OCI 側 Tailscale IP を持つ環境変数名。viewer listener の bind と
+# Mac agent へ渡す caller URL の host になる (100.64.0.0/10 のみ許可)。
+oci_tailscale_ip_env = "SOREN91_OCI_TAILSCALE_IP"
+# Mac 側 CDP host (soren91_macos_cdp_host.mjs) の port。OCI bot が
+# SOREN91_REMOTE_CDP_URL=http://<mac-tailscale>:<cdp_port> で繋ぎに行く。
+cdp_port = 9322
+# SRT port。agent へ渡すのは srt://<oci-ip>:<port>?mode=caller、
+# viewer は同 port の ?mode=listener で bind する。passphrase 無し。
+srt_port = 19192
+ffplay_bin = "ffplay"
+# soviet_now 側の bot。agent.enabled=true のとき必須 (絶対パス)。
+# 例: bot_path = "/home/ubuntu/soren/soren91/main.mjs"
+bot_path = ""
+
+# Twitch 配信カテゴリー・タイトル連動 (soviet_now update_stream_game.sh が読む)。
+# Soren本編と同じ IGDB 項目 (Soren Game)。Phase 3 の本編連携までは
+# title_prefix でコーナーを区別する。
+[twitch]
+category_id = "1530787860"
+category_name = "Soren Game"
+title_prefix = "[Soren91]"
