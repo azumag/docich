@@ -176,7 +176,7 @@ jobs:
           - Worker context: ${WORKER_CONTEXT}
           - Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
 
-          The public alert contains counts, booleans, and fixed worker-category keys only. Failure causes are represented only by fixed metric keys; raw diagnostics, worker names, paths, logs, provider/model names, prompts, credentials, and command output are never published.
+          The public alert contains counts and booleans only; worker states additionally use fixed worker-category keys. Failure causes are represented only by fixed metric keys; raw diagnostics, worker names, paths, logs, provider/model names, prompts, credentials, and command output are never published.
           EOF
           )"
           for entry in "${alerts[@]}"; do
