@@ -58,6 +58,7 @@ tmux セッション "docich"
 - [[OCI Ampere A1 料金・容量判断|Oracle-A1-Cost-and-Capacity]] — 4/24の料金、トライアル終了時の扱い、2/12への縮小可否
 - [[Web UI (モデルチェーン/バックオフ管理)|WebUI]] — モデルチェーン/バックオフ/ピーク帯のブラウザ操作 (Tailscale 経由)
 - [[配信の明示終了|Stream-Ending]] — FFmpeg を kill せず正常終了させ Twitch 配信を即offする手順
+- [[コンテナ基盤プロビジョニング|Container-Host-Provisioning]] — 本番 VM の Docker Engine + gVisor runsc を IaC で再現可能にした記録
 - [[対応ゲーム|Games]] — 対応ゲーム一覧表とゲームの追加方法
 - [[半熟英雄 (SFC)|Game-Hanjuku-Hero]] — RetroArch アダプタでの半熟英雄の動かし方
 - [[NetHack|Game-NetHack]] — cli アダプタの標準例、テキスト観測
