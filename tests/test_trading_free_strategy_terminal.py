@@ -4,11 +4,13 @@ from decimal import Decimal
 from pathlib import Path
 import sys
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich.trading.depth import DepthBook, DepthLevel  # noqa: E402
 from docich.trading.free_strategy.broker import settle_observation  # noqa: E402
-from docich.trading.free_strategy.contract import Artifact, encode  # noqa: E402
+from docich.trading.free_strategy.contract import Artifact, StrategyError, encode  # noqa: E402
 from docich.trading.free_strategy.evaluation import evaluate  # noqa: E402
 from docich.trading.free_strategy.service import run_cycle  # noqa: E402
 from docich.trading.free_strategy.store import LabStore  # noqa: E402
@@ -88,6 +90,31 @@ def test_expiry_records_fresh_valuation_without_filling_pending_target(tmp_path)
         assert report["observation_at"] == 1100.0
         assert "valuation_stale" not in report["blockers"]
         assert report["live_eligible"] is False
+    finally:
+        store.close()
+
+
+def test_terminal_valuation_uses_same_bounded_book_participation_as_paper_execution(tmp_path):
+    store, identity = _expired_experiment(tmp_path / "lab.sqlite3")
+    try:
+        # Visible bid depth is 1 BTC, but the experiment is allowed to model
+        # only 1% participation per observation.  A 0.02 BTC position must not
+        # be valued as if the whole visible book were available to it.
+        with store.transaction():
+            store.db.execute(
+                "UPDATE experiments SET account=? WHERE id=?",
+                (encode({"cash_jpy": "0", "positions": {"BTC/JPY": "0.02"}, "peak_equity": "20000"}), identity),
+            )
+        market = _market()
+        book = _book("1000000", 1100.0)
+        status = CircuitBreakStatus("BTC/JPY", "NONE", "NORMAL", 1100.0, fetched_at=1100.0)
+        with pytest.raises(StrategyError, match="valuation_depth_insufficient"):
+            settle_observation(
+                store, identity,
+                markets={"BTC/JPY": market}, books={"BTC/JPY": book},
+                statuses={"BTC/JPY": status}, now=1100.0,
+            )
+        assert store.experiment(identity)["phase"] in {"research", "paper_validating"}
     finally:
         store.close()
 
