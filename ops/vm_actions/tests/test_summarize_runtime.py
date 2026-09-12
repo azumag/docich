@@ -153,13 +153,59 @@ class RuntimeSummaryTests(unittest.TestCase):
         self.assertNotIn("private-model", summary)
         self.assertNotIn("internal server error", summary)
 
-    def test_malformed_numeric_values_fail_closed_to_zero(self):
+    def test_corner_lifecycle_is_reduced_to_fixed_boolean_flags(self):
+        data = {
+            "status": "warn",
+            "workers": {},
+            "queues": {},
+            "ai": {},
+            "improvement": {},
+            "corners": {
+                "game_switch": {
+                    "readable": True,
+                    "phase": "switching",
+                    "active_game": "SECRET_GAME_NAME",
+                },
+                "retro_corner": {"status": "active", "game": "SECRET_RETRO_GAME"},
+                "paper_corner": {"status": "completed", "last_error": "SECRET_PAPER_ERROR"},
+                "paper_corner_manual": {"status": "restoring", "game": "SECRET_MANUAL_GAME"},
+                "paper_improve": {"status": "running", "detail": "SECRET_IMPROVE_DETAIL"},
+                "ab": {"candidate_pending": True, "pattern": "SECRET_PATTERN"},
+            },
+        }
+        _, summary = self.mod.summarize(data)
+        self.assertIn("corner_game_switch_busy=1", summary)
+        self.assertIn("corner_retro_active=1", summary)
+        self.assertIn("corner_retro_waiting=0", summary)
+        self.assertIn("corner_paper_active=0", summary)
+        self.assertIn("corner_paper_manual_active=1", summary)
+        self.assertIn("corner_paper_improve_running=1", summary)
+        self.assertIn("corner_ab_candidate_pending=1", summary)
+        for secret in (
+            "SECRET_GAME_NAME",
+            "SECRET_RETRO_GAME",
+            "SECRET_PAPER_ERROR",
+            "SECRET_MANUAL_GAME",
+            "SECRET_IMPROVE_DETAIL",
+            "SECRET_PATTERN",
+        ):
+            self.assertNotIn(secret, summary)
+
+    def test_malformed_numeric_and_corner_values_fail_closed_to_zero(self):
         data = {
             "status": "ok",
             "workers": {"required_down": "bad"},
             "queues": {"stale_locks": True},
             "ai": {"attempts_15m": -1, "successes": "3", "recent_events": "bad"},
             "improvement": {"stale": "true", "retry_pending": 1},
+            "corners": {
+                "game_switch": {"readable": "true", "phase": "switching"},
+                "retro_corner": {"status": 1},
+                "paper_corner": "active",
+                "paper_corner_manual": None,
+                "paper_improve": {"status": True},
+                "ab": {"candidate_pending": "true"},
+            },
         }
         severity, summary = self.mod.summarize(data)
         self.assertEqual(severity, "ok")
@@ -173,6 +219,13 @@ class RuntimeSummaryTests(unittest.TestCase):
         self.assertIn("ai_recent_all_failed_sampled=0", summary)
         self.assertIn("improvement_stale=0", summary)
         self.assertIn("retry_pending=0", summary)
+        self.assertIn("corner_game_switch_busy=0", summary)
+        self.assertIn("corner_retro_active=0", summary)
+        self.assertIn("corner_retro_waiting=0", summary)
+        self.assertIn("corner_paper_active=0", summary)
+        self.assertIn("corner_paper_manual_active=0", summary)
+        self.assertIn("corner_paper_improve_running=0", summary)
+        self.assertIn("corner_ab_candidate_pending=0", summary)
 
     def test_invalid_severity_is_rejected(self):
         with self.assertRaises(ValueError):
