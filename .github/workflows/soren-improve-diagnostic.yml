@@ -1,0 +1,153 @@
+name: Soren improve diagnostic
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/soren-improve-diagnostic.yml'
+      - 'games/soviet_now'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: soren-improve-diagnostic-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    if: ${{ github.repository_owner == 'azumag' && github.repository_owner_id == '9018513' && github.ref == 'refs/heads/main' && github.ref_protected == true }}
+    environment: vm-operations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - name: Checkout current protected main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: main
+          persist-credentials: false
+          submodules: false
+
+      - name: Require event SHA to equal current main
+        id: current
+        shell: bash
+        env:
+          EVENT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$sha" == "$EVENT_SHA" ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Configure pinned SSH client
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          VM_SSH_PORT: ${{ secrets.VM_SSH_PORT }}
+          VM_SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          VM_SSH_KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$VM_SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]
+          [[ "$VM_SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          port="${VM_SSH_PORT:-22}"
+          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+          install -m 700 -d "$RUNNER_TEMP/vm-ssh"
+          printf '%s\n' "$VM_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/vm-ssh/key"
+          printf '%s\n' "$VM_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/vm-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/vm-ssh/key" "$RUNNER_TEMP/vm-ssh/known_hosts"
+          printf 'port=%s\n' "$port" >> "$GITHUB_ENV"
+
+      - name: Wait for production to equal current main
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.current.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          for _ in $(seq 1 36); do
+            status_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $SHA" || true)"
+            if python3 - "$status_json" "$SHA" <<'PY'
+          import json, sys
+          try:
+              data = json.loads(sys.argv[1])
+          except Exception:
+              raise SystemExit(1)
+          raise SystemExit(0 if data.get('status') == 'configured' and data.get('sha') == sys.argv[2] else 1)
+          PY
+            then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo 'production did not converge to current protected main' >&2
+          exit 1
+
+      - name: Read fixed Soren improvement status
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.current.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          cat <<'PY' | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+          cd /home/ubuntu/soren
+          exec python3 - <<'INNER'
+          import json, os, re, time
+          state_path = 'tmp/state/improve_state.json'
+          try:
+              with open(state_path, encoding='utf-8') as f:
+                  state = json.load(f)
+          except Exception:
+              state = {}
+          status = str(state.get('status') or 'unknown')
+          phase = str(state.get('phase') or '')
+          detail = str(state.get('detail') or '')
+          if phase.startswith('ai_retry'):
+              phase = 'ai_retry'
+          elif phase.startswith('validate_retry'):
+              phase = 'validate_retry'
+          elif phase not in {'', 'boot', 'summary_done', 'ai_prepare', 'review', 'apply', 'post_validate', 'git_commit', 'radio', 'done', 'failed_no_apply', 'candidate_ready', 'recovered', 'manual_wait'}:
+              phase = 'other'
+          failure = 'none'
+          match = re.fullmatch(r'failed_no_apply:([a-z0-9_]+)', detail.strip())
+          if match:
+              code = match.group(1)
+              failure = code if code in {
+                  'validation_failed', 'model_no_response', 'deadline_exhausted',
+                  'isolated_runner_unavailable', 'analysis_evidence_invalid', 'wall_timeout',
+              } else 'other'
+          retry_path = 'tmp/state/improve_retry_batch.json'
+          backoff_path = 'tmp/state/rate_limit_backoff'
+          retry_pending = os.path.isfile(retry_path) and os.path.getsize(retry_path) > 0
+          backoff = os.path.isfile(backoff_path)
+          backoff_kind = 'none'
+          if backoff:
+              try:
+                  lines = open(backoff_path, encoding='utf-8').read().splitlines()
+                  kind = lines[2].strip() if len(lines) >= 3 else 'rate_limit'
+                  backoff_kind = kind if kind in {'no_apply', 'rate_limit'} else 'other'
+              except Exception:
+                  backoff_kind = 'other'
+          try:
+              updated_at = int(state.get('updated_at', 0) or 0)
+          except Exception:
+              updated_at = 0
+          payload = {
+              'status': status if status in {'idle', 'running', 'manual'} else 'other',
+              'phase': phase,
+              'failure_code': failure,
+              'retry_pending': retry_pending,
+              'backoff': backoff,
+              'backoff_kind': backoff_kind,
+              'age_sec': max(0, int(time.time()) - updated_at) if updated_at > 0 else None,
+          }
+          print(json.dumps(payload, sort_keys=True, separators=(',', ':')))
+          INNER
+          PY
