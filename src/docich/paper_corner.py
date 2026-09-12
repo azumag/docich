@@ -18,6 +18,14 @@ from .tmux import Tmux
 from .trading.presentation import write_presentation
 from .trading.soren_output import send_overlay, enqueue_speech
 
+# Spread narration across the whole 30-minute corner instead of front-loading
+# four long segments and then going quiet. 170s gives ten narration slots in a
+# 30-minute run (plus opening/end), while legacy active states keep their old
+# 5-minute replay cadence for safe crash recovery.
+NARRATION_INTERVAL_S = 170
+LEGACY_INTERVAL_S = 300
+SCRIPT_SLOTS = {1: 1, 4: 2, 7: 3, 10: 4}
+
 
 def ensure_trading_window(g, tmux=None) -> str:
     """Recreate the shared trading window when missing or dead.
@@ -76,7 +84,7 @@ class PaperCornerManager:
         if type(self.minutes) is not int or not 1 <= self.minutes <= 720:
             raise ValueError('invalid paper corner duration')
         # Optional AI narration/improvement delegation. Empty means fallback-only
-        # (start narration) or no improvement job (end of corner).
+        # narration or no improvement job (end of corner).
         self.script_agents = self._optional_agents(raw, 'script_agents')
         self.improve_agents = self._optional_agents(raw, 'improve_agents')
         script_timeout = raw.get('script_timeout_s', 180)
@@ -177,42 +185,23 @@ class PaperCornerManager:
                 f'切り替えました。実際の開始から{self.minutes}分間、相場・BOTの判断・保有の順でお送りします。'
                 + self.summary())
 
-    def deliver(self, state, slot, prefix):
-        reports = state.setdefault('reports', {})
-        key = str(slot)
-        if key not in reports:
-            reports[key] = {'text': 'PAPER・暗号資産の模擬売買コーナーです。' + prefix + self.summary(),
-                            'overlay': False, 'speech': False}
-            self.save(state)
-        report = reports[key]
-        event_id = self._event_id(state, key)
-        if not report['overlay']:
-            self.overlay(self.g, {'ts': int(self.clock()), 'category': 'system', 'level': 'info',
-                                 'title': 'PAPER 暗号資産コーナー', 'body': report['text'], 'source_id': event_id})
-            report['overlay'] = True
-            self.save(state)
-        if not report['speech']:
-            self.speech(self.g, report['text'], event_id=event_id)
-            report['speech'] = True
-            self.save(state)
+    def deliver(self, state, slot, text):
+        """Durably deliver one periodic/end message without repeating the intro."""
+        self.announce(state, str(slot), str(text))
 
     def _announce_script(self, state) -> None:
-        """Speak the 4 fact-grounded narration segments once per corner.
+        """Prepare four fact-grounded narration segments for later delivery.
 
-        AI is attempted only when script_agents is set and
-        DOCICH_ALLOW_REAL_AI=1; otherwise the deterministic fallback is spoken.
-        Durable per-key reports make a retry idempotent and skip regeneration.
+        Earlier versions spoke all four immediately at corner start, which made
+        the first few minutes dense and the rest of a 30-minute corner empty.
+        The cleaned segments are now stored in bounded state and distributed by
+        `_scheduled_narration`; raw model output is still never persisted.
         """
-        keys = [f'script:{index}' for index in range(1, 5)]
-        reports = state.get('reports') if isinstance(state.get('reports'), dict) else {}
-        if all(key in reports for key in keys):
+        existing = state.get('script_segments')
+        if isinstance(existing, dict) and existing:
             return
         from .trading.corner_script import SEGMENT_KEYS, generate_corner_script
 
-        # Non-empty script_agents is the explicit consent to run real AI (same
-        # convention as retro_corner improve_agents). The tick service does not
-        # carry DOCICH_ALLOW_REAL_AI, so grant it for this call only; the
-        # generator still falls back deterministically on any failure.
         previous_gate = os.environ.get('DOCICH_ALLOW_REAL_AI')
         if self.script_agents:
             os.environ['DOCICH_ALLOW_REAL_AI'] = '1'
@@ -231,16 +220,95 @@ class PaperCornerManager:
                 else:
                     os.environ['DOCICH_ALLOW_REAL_AI'] = previous_gate
         segments = result.get('segments') or {}
+        prepared = {}
+        for index, key in enumerate(SEGMENT_KEYS, start=1):
+            text = str(segments.get(key, '')).strip()
+            if text:
+                prepared[str(index)] = text[:600]
+        state['script_segments'] = prepared
         state['script_source'] = result.get('source')
         if result.get('reason'):
             state['script_reason'] = str(result.get('reason'))[:120]
         else:
             state.pop('script_reason', None)
-        for index, key in enumerate(SEGMENT_KEYS, start=1):
-            text = str(segments.get(key, '')).strip()
-            if not text:
-                continue
-            self.announce(state, f'script:{index}', text)
+        self.save(state)
+
+    @staticmethod
+    def _fmt_money(value) -> str:
+        try:
+            return f'{float(value):,.0f}円'
+        except (TypeError, ValueError, OverflowError):
+            return '確認待ち'
+
+    def _casual_text(self, slot: int) -> str:
+        """Fresh, factual filler between the four longer AI segments."""
+        try:
+            from .trading.corner_script import build_facts
+            facts = build_facts(self.trading_dir, now=self.clock())
+        except Exception:
+            return ('相場が静かな時間も、BOTにとっては立派な判断材料です。'
+                    '無理に売買回数を増やさず、次に条件がそろうまで値動きと見送り理由を眺めていきます。')
+
+        focus = facts.get('focus') if isinstance(facts.get('focus'), dict) else {}
+        perf = facts.get('performance') if isinstance(facts.get('performance'), dict) else {}
+        policy = facts.get('policy') if isinstance(facts.get('policy'), dict) else {}
+        fills = facts.get('recent_fills') if isinstance(facts.get('recent_fills'), list) else []
+        skipped = facts.get('skipped_decisions') if isinstance(facts.get('skipped_decisions'), list) else []
+        variant = int(slot) % 7
+
+        if variant == 0:
+            symbol = str(focus.get('symbol') or '注目銘柄')
+            change = focus.get('change_pct')
+            change_text = f'{float(change):+.2f}%' if isinstance(change, (int, float)) else '値動きを観測中'
+            return (f'BOT側ではいま{symbol}を注目していて、保存足ベースでは{change_text}です。'
+                    '画面のローソクは見やすさのため活発な銘柄へ一時退避することがありますが、売買判断そのものは別です。')
+        if variant == 1:
+            count = int(facts.get('candidate_count', 0) or 0)
+            reasons = [str(x) for x in (facts.get('candidate_reasons') or []) if str(x).strip()]
+            why = f'主な理由は「{reasons[0]}」です。' if reasons else 'まだ条件の決め手がありません。'
+            return (f'いま売買候補は{count}件です。{why}'
+                    '候補ゼロも故障ではなく、手数料やスリッページを払ってまで入る価値がないなら待つ、というのも戦略です。')
+        if variant == 2:
+            return (f'資金配分を見てみると、模擬資金は{self._fmt_money(facts.get("capital_jpy"))}、'
+                    f'投入は{self._fmt_money(facts.get("deployed_jpy"))}、保有は{int(facts.get("position_count", 0) or 0)}銘柄です。'
+                    '余力を残している時間は地味ですが、急な値動きに反応できる余白でもあります。')
+        if variant == 3:
+            cumulative = self._fmt_money(perf.get('cumulative_pnl_jpy'))
+            today = self._fmt_money(perf.get('today_realized_pnl_jpy'))
+            unrealized = self._fmt_money(perf.get('unrealized_pnl_jpy'))
+            return (f'損益も途中経過を確認します。累積は{cumulative}、今日の確定分は{today}、含みは{unrealized}です。'
+                    '短い区間の勝ち負けだけで作戦の良し悪しを決めず、コスト込みで積み上がるかを見ます。')
+        if variant == 4:
+            lookback = policy.get('momentum_lookback', '?')
+            threshold = policy.get('momentum_threshold_bps', '?')
+            z = policy.get('mean_reversion_z', '?')
+            return (f'作戦の中身にも少し触れると、勢いは直近{lookback}本を見て、基準上限は{threshold}bpsです。'
+                    f'平均回帰側はz={z}あたりを見ています。勢い側は相場の実現ボラで必要幅を調整するので、BTCのような低ボラ時間も拾いやすくしています。')
+        if variant == 5 and fills:
+            fill = fills[0] if isinstance(fills[0], dict) else {}
+            side = '買い' if str(fill.get('side')).lower() == 'buy' else '売り'
+            return (f'直近の模擬約定は{fill.get("symbol", "銘柄不明")}の{side}です。'
+                    '表示される約定価格にはPAPERでも手数料とスリッページを乗せているので、都合のいい理想価格だけで勝ったことにはしません。')
+        if variant == 6 and skipped:
+            item = skipped[0] if isinstance(skipped[0], dict) else {}
+            symbol = str(item.get('symbol') or '候補')
+            reason = str(item.get('reason') or '条件未達')
+            return (f'見送り側を見ると、{symbol}は「{reason}」で止まっています。'
+                    '売買した話だけでなく、なぜ見送ったかを眺めるとBOTの癖が分かるので、この時間もちゃんと観察対象です。')
+        return ('暗号資産はずっと派手に動くわけではありません。こういう無風の時間は、'
+                'ローソクの形、候補の増減、保有の偏りをのんびり見ながら、次の変化を待ちます。')
+
+    def _scheduled_narration(self, state, slot: int) -> None:
+        if slot <= 0:
+            return
+        script_index = SCRIPT_SLOTS.get(int(slot))
+        segments = state.get('script_segments') if isinstance(state.get('script_segments'), dict) else {}
+        if script_index is not None:
+            text = str(segments.get(str(script_index), '')).strip()
+            if text:
+                self.announce(state, f'script:{script_index}', text)
+                return
+        self.announce(state, f'chatter:{int(slot)}', self._casual_text(int(slot)))
 
     def _default_spawn_improve_proc(self, argv, log_path) -> None:
         import subprocess
@@ -521,9 +589,10 @@ class PaperCornerManager:
             try:
                 self._announce_script(state)
             except Exception as exc:
-                # Narration is an add-on; a sink/generation failure must not
-                # abort the switch that already committed.
+                # Narration is an add-on; generation failure must not abort the
+                # switch. An empty prepared set still enables fresh casual talk.
                 state['script_error'] = _safe_detail(exc)
+                state['script_segments'] = {}
                 self.save(state)
             write_presentation(self.presentation, 'detailed', now=self.clock())
             started = self.clock()
@@ -531,12 +600,23 @@ class PaperCornerManager:
             self.save(state)
         elif self.clock() < state['ends_at']:
             write_presentation(self.presentation, 'detailed', now=self.clock())
+
+        # States created by older code have no script_segments. Keep their old
+        # cadence for crash-safe replay; newly started corners use the denser,
+        # distributed narration schedule.
+        modern = 'script_segments' in state
+        interval = NARRATION_INTERVAL_S if modern else LEGACY_INTERVAL_S
         while self.clock() < state['ends_at']:
-            slot = int((self.clock() - state['started_at']) // 300)
-            self.deliver(state, slot, f'実際の開始から{self.minutes}分間お送りします。' if slot == 0 else '')
+            elapsed = max(0.0, self.clock() - state['started_at'])
+            slot = int(elapsed // interval)
+            if modern:
+                self._scheduled_narration(state, slot)
+            else:
+                self.deliver(state, slot, self._casual_text(slot))
             remaining = state['ends_at'] - self.clock()
             if remaining > 0:
-                self.sleep(min(300 - ((self.clock() - state['started_at']) % 300), remaining))
+                sleep_for = interval - (elapsed % interval)
+                self.sleep(min(sleep_for, remaining))
         return self._restore_locked(state)
 
 

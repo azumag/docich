@@ -33,6 +33,7 @@ jobs:
           tests/test_trading_events.py tests/test_trading_worker.py tests/test_trading_worker_lifecycle.py
           tests/test_trading_presentation.py tests/test_trading_notifications.py
           tests/test_trading_dashboard_snapshot.py tests/test_trading_dashboard_server.py
+          tests/test_trading_dashboard_activity_failover.py
           tests/test_program_view.py tests/test_program_view_browser_path.py
           tests/test_trading_strategy_store.py tests/test_trading_strategy_lab.py tests/test_trading_strategy_metrics.py tests/test_trading_corner_script.py
           tests/test_trading_corner_research.py tests/test_trading_paper_improve.py tests/test_paper_improve_retry.py
@@ -44,7 +45,7 @@ jobs:
           tests/test_trading_free_strategy_systemd.py
           tests/test_trading_soren_output.py tests/test_overlay_queue.py tests/test_audio_delivery.py tests/test_overlay_interop.py
       - name: Retro corner contract
-        run: python3 -m pytest -q tests/test_retro_corner.py tests/test_retro_corner_manual.py tests/test_corner_boundary.py tests/test_paper_corner.py tests/test_paper_corner_manual.py tests/test_config.py tests/test_robots_config.py
+        run: python3 -m pytest -q tests/test_retro_corner.py tests/test_retro_corner_manual.py tests/test_corner_boundary.py tests/test_paper_corner.py tests/test_paper_corner_manual.py tests/test_paper_corner_chatter_schedule.py tests/test_config.py tests/test_robots_config.py
       - name: PAPER improve sidebar contract
         run: node --test games/soviet_now/tests/test_paper_improve_sidebar.mjs
       - name: Transactional switch contract
