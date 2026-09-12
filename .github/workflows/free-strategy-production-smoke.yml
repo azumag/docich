@@ -92,10 +92,29 @@ jobs:
         run: |
           set -euo pipefail
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
-          printf '%s\n' 'python3 ops/vm_actions/free_strategy_production_smoke.py' |
-            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+          set +e
+          result="$(printf '%s\n' 'python3 ops/vm_actions/free_strategy_production_smoke.py' |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA")"
+          transport_rc=$?
+          set -e
+          python3 - "$result" "$transport_rc" "$SHA" "$RUNNER_TEMP/free-strategy-smoke-result.json" <<'PY'
+          import json, pathlib, sys
+          raw, transport, expected, destination = sys.argv[1:]
+          try:
+              data = json.loads(raw)
+          except Exception:
+              data = {}
+          safe = {
+              "transport_ok": transport == "0",
+              "status_ok": data.get("status") == "executed",
+              "sha_ok": data.get("sha") == expected,
+              "exit_code": data.get("exit_code") if type(data.get("exit_code")) is int else -1,
+          }
+          pathlib.Path(destination).write_text(json.dumps(safe, sort_keys=True), encoding="utf-8")
+          PY
 
       - name: Verify production remained non-critical
+        if: ${{ always() }}
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -110,5 +129,23 @@ jobs:
           data = json.loads(sys.argv[1])
           diagnostics = data.get("diagnostics") or {}
           ok = data.get("status") == "diagnosed" and diagnostics.get("status") != "critical"
+          raise SystemExit(0 if ok else 1)
+          PY
+
+      - name: Enforce smoke result
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/free-strategy-smoke-result.json" <<'PY'
+          import json, pathlib, sys
+          path = pathlib.Path(sys.argv[1])
+          if not path.is_file():
+              print("free_strategy_smoke_exit_code=-1")
+              raise SystemExit(1)
+          data = json.loads(path.read_text(encoding="utf-8"))
+          code = data.get("exit_code", -1)
+          print(f"free_strategy_smoke_exit_code={code}")
+          ok = data.get("transport_ok") is True and data.get("status_ok") is True and data.get("sha_ok") is True and code == 0
           raise SystemExit(0 if ok else 1)
           PY
