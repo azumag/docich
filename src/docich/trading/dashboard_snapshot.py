@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Mapping
 
 from .dashboard import HEADER_TITLE, _focus_symbol, _fresh_count, _positions, _reason_ja, load_snapshot
+from .free_strategy.evaluation import public_summary as free_strategy_public_summary
 from .performance import build_performance, realized_pnl_for_fill
 
 DISCLAIMER = "PAPER / 模擬取引（bitbank公開データ・実取引なし）"
@@ -132,6 +133,10 @@ def build_dashboard_snapshot(trading_dir: Path, *, now: float | None = None) -> 
         )
 
     data_as_of = _finite(snapshot.get("snapshot_generated_at"))
+    free_strategies = free_strategy_public_summary(
+        target / "free-strategies" / "lab.sqlite3",
+        now=moment,
+    )
     return {
         "schema_version": 1,
         "generated_at": moment,
@@ -166,5 +171,9 @@ def build_dashboard_snapshot(trading_dir: Path, *, now: float | None = None) -> 
             "skipped": skipped,
         },
         "fills": fills,
+        # Free-form strategies remain a separate PAPER research projection.
+        # Their balances, positions, fills and P/L are never merged into the
+        # existing portfolio/performance fields above.
+        "free_strategies": free_strategies,
         "disclaimer": DISCLAIMER,
     }
