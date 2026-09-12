@@ -39,6 +39,7 @@ jobs:
           tests/test_trading_free_strategy_accounting.py tests/test_trading_free_strategy_cli.py
           tests/test_trading_free_strategy_worker.py tests/test_trading_free_strategy_dashboard.py
           tests/test_trading_free_strategy_terminal.py tests/test_trading_free_strategy_state.py
+          tests/test_trading_free_strategy_paused.py
           tests/test_trading_soren_output.py tests/test_overlay_queue.py tests/test_audio_delivery.py tests/test_overlay_interop.py
       - name: Retro corner contract
         run: python3 -m pytest -q tests/test_retro_corner.py tests/test_retro_corner_manual.py tests/test_corner_boundary.py tests/test_paper_corner.py tests/test_paper_corner_manual.py tests/test_config.py tests/test_robots_config.py
