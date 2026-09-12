@@ -6,6 +6,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from docich.trading.dashboard_server import ASSETS  # noqa: E402
 from docich.trading.dashboard_snapshot import build_dashboard_snapshot  # noqa: E402
 from docich.trading.free_strategy.contract import Artifact  # noqa: E402
 from docich.trading.free_strategy.evaluation import evaluate  # noqa: E402
@@ -97,3 +98,13 @@ def test_dashboard_exposes_only_allowlisted_free_strategy_summary_without_mergin
     assert "source" not in item
     assert "parameters" not in item
     assert "initial_state" not in item
+
+
+def test_dashboard_asset_has_separate_free_strategy_panel():
+    html = (ASSETS / "index.html").read_text(encoding="utf-8")
+    css = (ASSETS / "dashboard.css").read_text(encoding="utf-8")
+    assert 'id="free-strategy-panel"' in html
+    assert 'id="free-strategies"' in html
+    assert "AI戦略研究" in html and "独立PAPER" in html
+    assert "render.lastData.free_strategies" in html
+    assert "#free-strategies" in css
