@@ -18,6 +18,7 @@ import tempfile
 import time
 
 ROOT = Path("/home/ubuntu/docich")
+SOREN_ROOT = Path("/home/ubuntu/soren")
 SERVICE = "docich-free-strategy-worker.service"
 NAME = "__docich_ops_smoke__"
 FAMILY = "ops_smoke"
@@ -72,7 +73,12 @@ def _fail(code: str) -> None:
     raise SystemExit(ERROR_EXIT_CODES.get(code, ERROR_EXIT_CODES["unexpected_failure"]))
 
 
-def _parse_worker_cmdline(raw: bytes, *, root: Path = ROOT) -> tuple[Path, str]:
+def _parse_worker_cmdline(
+    raw: bytes,
+    *,
+    root: Path = ROOT,
+    soren_root: Path = SOREN_ROOT,
+) -> tuple[Path, str]:
     try:
         argv = [item.decode("utf-8", "strict") for item in raw.split(b"\0") if item]
     except UnicodeError as exc:
@@ -95,12 +101,25 @@ def _parse_worker_cmdline(raw: bytes, *, root: Path = ROOT) -> tuple[Path, str]:
     trading = Path(trading_raw)
     if not trading.is_absolute():
         raise SmokeError("worker_runtime_invalid")
+
+    # Production deploys Soren as a reviewed projection. The configured path
+    # may therefore be the docich-facing path while resolve() lands under the
+    # canonical Soren projection. Accept only those two exact trading roots;
+    # do not broaden this to arbitrary paths under /home/ubuntu.
+    docich_trading = root / "run-soren-live" / "trading"
+    soren_trading = soren_root / "trading"
+    if trading not in {docich_trading, soren_trading}:
+        raise SmokeError("worker_trading_dir_outside_root")
     try:
-        resolved_root = root.resolve(strict=True)
         resolved_trading = trading.resolve(strict=True)
+        resolved_allowed = {
+            candidate.resolve(strict=True)
+            for candidate in (docich_trading, soren_trading)
+            if candidate.exists()
+        }
     except OSError as exc:
         raise SmokeError("worker_runtime_invalid") from exc
-    if resolved_trading == resolved_root or resolved_root not in resolved_trading.parents:
+    if not resolved_allowed or resolved_trading not in resolved_allowed:
         raise SmokeError("worker_trading_dir_outside_root")
     return resolved_trading, image
 
