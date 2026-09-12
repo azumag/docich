@@ -37,6 +37,26 @@ DIAG_EXIT_CODES = {
     "state_unreadable": 51,
 }
 
+# Read-only improvement status deliberately crosses the VM boundary only as a
+# fixed exit-code enum.  Raw state, paths, prompts, model output and private log
+# bodies remain on the VM.  Keep these codes separate from prepare diagnostics.
+IMPROVE_STATUS_EXIT_CODES = {
+    "manual_state_unreadable": 60,
+    "manual_not_completed": 61,
+    "improve_not_spawned": 62,
+    "improve_status_missing": 63,
+    "running_facts": 64,
+    "running_generate": 65,
+    "running_validate": 66,
+    "running_save": 67,
+    "improved": 68,
+    "failed": 69,
+    "skipped": 70,
+    "dry_run": 71,
+    "unknown": 72,
+    "stale_status": 73,
+}
+
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
@@ -46,7 +66,9 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="docich-paper-corner-operator")
     parser.add_argument("--config", metavar="PATH", required=True)
     parser.add_argument("--duration-minutes", type=int)
-    parser.add_argument("--diagnose-only", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--diagnose-only", action="store_true")
+    mode.add_argument("--improve-status-code", action="store_true")
     return parser
 
 
@@ -90,6 +112,71 @@ def _diagnose(config_path: Path) -> int:
     g = load_global(_repo_root(), config_path)
     category = _classify_prepare_failure(g)
     return DIAG_EXIT_CODES[category]
+
+
+def _json_dict(path: Path) -> dict | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _classify_improve_status(g) -> str:
+    """Return one fixed, non-sensitive category for the latest manual run."""
+    state_dir = Path(g.state_dir)
+    manual = _json_dict(state_dir / "paper_corner_manual.json")
+    if manual is None:
+        return "manual_state_unreadable"
+    if manual.get("status") != "completed":
+        return "manual_not_completed"
+
+    job = manual.get("improve_job")
+    if not isinstance(job, dict) or job.get("spawned") is not True:
+        return "improve_not_spawned"
+
+    improve = _json_dict(state_dir / "trading" / "paper_improve_status.json")
+    if improve is None:
+        return "improve_status_missing"
+
+    # Never mistake a previous run's status for this manual run.  The improve
+    # process is spawned only after restore completes, so its started_at must be
+    # contemporaneous with or later than the manual completion timestamp.
+    completed_at = manual.get("completed_at")
+    started_at = improve.get("started_at")
+    if (
+        isinstance(completed_at, (int, float))
+        and not isinstance(completed_at, bool)
+        and isinstance(started_at, (int, float))
+        and not isinstance(started_at, bool)
+        and float(started_at) < float(completed_at) - 5.0
+    ):
+        return "stale_status"
+
+    status = str(improve.get("status") or "")
+    phase = str(improve.get("phase") or "")
+    if status == "running":
+        return {
+            "facts": "running_facts",
+            "generate": "running_generate",
+            "validate": "running_validate",
+            "save": "running_save",
+        }.get(phase, "unknown")
+    if status == "improved":
+        return "improved"
+    if status == "failed":
+        return "failed"
+    if status == "skipped":
+        return "skipped"
+    if status == "dry-run":
+        return "dry_run"
+    return "unknown"
+
+
+def _improve_status_code(config_path: Path) -> int:
+    g = load_global(_repo_root(), config_path)
+    category = _classify_improve_status(g)
+    return IMPROVE_STATUS_EXIT_CODES[category]
 
 
 def _recover_stale_manual_state(g, duration_minutes: int) -> bool:
@@ -184,6 +271,8 @@ def main(argv: list[str] | None = None) -> int:
         config_path = Path(args.config)
         if args.diagnose_only:
             return _diagnose(config_path)
+        if args.improve_status_code:
+            return _improve_status_code(config_path)
         if args.duration_minutes is None:
             raise PaperCornerError("duration_minutes が必要です")
         result = launch(config_path, args.duration_minutes)
