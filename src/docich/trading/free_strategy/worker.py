@@ -1,15 +1,16 @@
 """Dedicated PAPER worker for isolated free-form strategies.
 
 The worker is deliberately separate from the existing PAPER worker: it has its
-own enable gate, state database, cadence and health file.  Disabling it must
-not construct a gateway, touch the filesystem, start gVisor or perform public
-API requests.  There is no live mode.
+own enable gate, state database, cadence and health file. Disabling it must not
+construct a gateway, touch the filesystem, start gVisor or perform public API
+requests. There is no live mode.
 """
 from __future__ import annotations
 
 import argparse
 import json
 from pathlib import Path
+import subprocess
 import time
 from typing import Callable
 
@@ -19,6 +20,69 @@ from .service import run_cycle, write_health
 
 DEFAULT_INTERVAL_S = 300
 MIN_INTERVAL_S = 300
+
+
+def probe_host(*, docker: str = "docker") -> dict:
+    """Read Docker host capability flags without creating containers or state.
+
+    Only fixed booleans/error codes leave this boundary. Docker stderr, paths,
+    versions and daemon configuration are deliberately not exposed.
+    """
+    info_format = (
+        '{"OSType":{{json .OSType}},"Runtimes":{{json .Runtimes}},'
+        '"MemoryLimit":{{json .MemoryLimit}},"PidsLimit":{{json .PidsLimit}},'
+        '"CPUCfsQuota":{{json .CPUCfsQuota}}}'
+    )
+    base = {
+        "mode": "PAPER",
+        "docker_available": False,
+        "linux_daemon": False,
+        "runsc_registered": False,
+        "memory_limit": False,
+        "pids_limit": False,
+        "cpu_quota": False,
+    }
+    try:
+        result = subprocess.run(
+            [docker, "info", "--format", info_format],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {**base, "status": "unavailable", "error_codes": ["docker_unavailable"]}
+    if result.returncode != 0 or len(result.stdout) > 64 * 1024:
+        return {**base, "status": "unavailable", "error_codes": ["docker_unavailable"]}
+    try:
+        info = json.loads(result.stdout)
+    except (ValueError, UnicodeError):
+        return {**base, "status": "unavailable", "error_codes": ["docker_info_invalid"]}
+    if not isinstance(info, dict):
+        return {**base, "status": "unavailable", "error_codes": ["docker_info_invalid"]}
+
+    runtimes = info.get("Runtimes")
+    capabilities = {
+        **base,
+        "docker_available": True,
+        "linux_daemon": info.get("OSType") == "linux",
+        "runsc_registered": isinstance(runtimes, dict) and "runsc" in runtimes,
+        "memory_limit": info.get("MemoryLimit") is True,
+        "pids_limit": info.get("PidsLimit") is True,
+        "cpu_quota": info.get("CPUCfsQuota") is True,
+    }
+    errors = []
+    if not capabilities["linux_daemon"]:
+        errors.append("linux_docker_required")
+    if not capabilities["runsc_registered"]:
+        errors.append("gvisor_required")
+    if not all(capabilities[key] for key in ("memory_limit", "pids_limit", "cpu_quota")):
+        errors.append("resource_limits_unavailable")
+    return {
+        **capabilities,
+        "status": "ready" if not errors else "unavailable",
+        "error_codes": errors,
+    }
 
 
 def run_worker(
@@ -96,16 +160,26 @@ def run_worker(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="docich-free-strategy-worker")
-    parser.add_argument("--trading-dir", required=True, metavar="PATH")
+    parser.add_argument("--trading-dir", metavar="PATH")
     parser.add_argument("--image", default="", metavar="SHA256")
     parser.add_argument("--enabled", action="store_true")
     parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_S, metavar="SEC")
+    parser.add_argument(
+        "--check-host", action="store_true",
+        help="read Docker/runsc/resource-control availability without creating state",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.check_host:
+            result = probe_host()
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+            return 0 if result["status"] == "ready" else 2
+        if not args.trading_dir:
+            raise StrategyError("trading_dir_required")
         result = run_worker(
             Path(args.trading_dir).expanduser(),
             image=args.image,
