@@ -9,11 +9,14 @@ from typing import Sequence
 def is_paper_improve_invocation(argv: Sequence[str]) -> bool:
     """Return true for the existing ``docich ... trading ... paper-improve`` route."""
     args = list(argv)
-    try:
-        trading_index = args.index("trading")
-    except ValueError:
+    command_index = 0
+    if len(args) >= 2 and args[0] == "--config":
+        command_index = 2
+    elif args and args[0].startswith("--config="):
+        command_index = 1
+    if command_index >= len(args) or args[command_index] != "trading":
         return False
-    tail = args[trading_index + 1 :]
+    tail = args[command_index + 1 :]
     if not tail:
         return False
     if tail[0] == "paper-improve":
