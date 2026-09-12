@@ -24,7 +24,6 @@ class FreeStrategyProductionSmokeTests(unittest.TestCase):
         self.root = Path(self.tempdir.name) / "docich"
         self.trading = self.root / "run-soren-live" / "trading"
         self.trading.mkdir(parents=True)
-        self.env_file = Path(self.tempdir.name) / "worker.env"
         self.image = "sha256:" + "a" * 64
         self.db = self.trading / "free-strategies" / "lab.sqlite3"
         self.db.parent.mkdir(parents=True)
@@ -83,31 +82,30 @@ class FreeStrategyProductionSmokeTests(unittest.TestCase):
             )
         return identity, artifact
 
-    def test_worker_env_is_strict_and_confined_to_docich_root(self):
-        old_root = smoke.ROOT
-        try:
-            smoke.ROOT = self.root
-            self.env_file.write_text(
-                f"DOCICH_FREE_STRATEGY_TRADING_DIR={self.trading}\n"
-                f"DOCICH_FREE_STRATEGY_IMAGE={self.image}\n"
-                "DOCICH_FREE_STRATEGY_INTERVAL=300\n",
-                encoding="utf-8",
-            )
-            trading, image = smoke._read_worker_env(self.env_file)
-            self.assertEqual(trading, self.trading.resolve())
-            self.assertEqual(image, self.image)
+    def test_worker_cmdline_proves_runtime_and_confines_trading_dir(self):
+        raw = b"\0".join([
+            b"/tmp/python", b"-m", b"docich", b"free-strategy-worker",
+            b"--trading-dir", str(self.trading).encode(), b"--image", self.image.encode(),
+            b"--interval", b"300", b"--enabled", b"",
+        ])
+        trading, image = smoke._parse_worker_cmdline(raw, root=self.root)
+        self.assertEqual(trading, self.trading.resolve())
+        self.assertEqual(image, self.image)
 
-            outside = Path(self.tempdir.name) / "outside"
-            outside.mkdir()
-            self.env_file.write_text(
-                f"DOCICH_FREE_STRATEGY_TRADING_DIR={outside}\n"
-                f"DOCICH_FREE_STRATEGY_IMAGE={self.image}\n",
-                encoding="utf-8",
-            )
-            with self.assertRaises(smoke.SmokeError):
-                smoke._read_worker_env(self.env_file)
-        finally:
-            smoke.ROOT = old_root
+        outside = Path(self.tempdir.name) / "outside"
+        outside.mkdir()
+        bad = b"\0".join([
+            b"python", b"-m", b"docich", b"free-strategy-worker",
+            b"--trading-dir", str(outside).encode(), b"--image", self.image.encode(), b"",
+        ])
+        with self.assertRaises(smoke.SmokeError):
+            smoke._parse_worker_cmdline(bad, root=self.root)
+
+    def test_error_exit_codes_are_fixed_and_bounded(self):
+        values = list(smoke.ERROR_EXIT_CODES.values())
+        self.assertEqual(len(values), len(set(values)))
+        self.assertTrue(all(10 <= value <= 125 for value in values))
+        self.assertEqual(smoke.CLI_ERROR_MAP["experiment_capacity"], "cli_experiment_capacity")
 
     def test_snapshot_proves_candidate_execution_without_fills(self):
         identity, artifact = self._insert()
