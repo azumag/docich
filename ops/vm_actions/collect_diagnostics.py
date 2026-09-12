@@ -17,8 +17,10 @@ Observed sources (all read-only):
   - deployed git HEADs (docich + intended soviet_now gitlink)
   - docich program/corner state under the production state_dir
     (game_switch.json, retro_corner.json, paper_corner.json,
-    trading/presentation.json): lifecycle statuses, timestamps and counters
-    only. Announcement/script bodies are never read out.
+    paper_corner_manual.json, trading/presentation.json,
+    trading/paper_improve_status.json): lifecycle statuses, timestamps and
+    counters only. Announcement/script bodies, prompts and log bodies are
+    never read out.
   - Soren boundary/A-B wait markers the corners gate on
     (tmp/state/corner_boundary_*.json, ab_state.json, ab_games.jsonl,
     ab_candidate/): only presence, counts, enums and mtimes; strategy/hash
@@ -549,6 +551,7 @@ CORNER_STATE_FILES = {
     "game_switch": "game_switch.json",
     "retro_corner": "retro_corner.json",
     "paper_corner": "paper_corner.json",
+    "paper_corner_manual": "paper_corner_manual.json",
 }
 
 
@@ -699,7 +702,74 @@ def _collect_ab(soren, now):
     return entry
 
 
-def _collect_corner_files(state_dir, payload):
+def _project_corner_state(data):
+    reports = data.get("reports")
+    announcements = None
+    if isinstance(reports, dict):
+        announcements = {
+            "total": len(reports),
+            "overlay": sum(
+                1 for item in reports.values()
+                if isinstance(item, dict) and item.get("overlay") is True
+            ),
+            "speech": sum(
+                1 for item in reports.values()
+                if isinstance(item, dict) and item.get("speech") is True
+            ),
+        }
+    improve = data.get("improve_job") if isinstance(data.get("improve_job"), dict) else None
+    improve_job = None
+    if improve is not None:
+        improve_job = {
+            "spawned": improve.get("spawned") if isinstance(improve.get("spawned"), bool) else None,
+            "date": _bounded_str(improve.get("date"), 16),
+            "error": _bounded_str(improve.get("error"), 160),
+        }
+    return {
+        "status": _bounded_str(data.get("status"), 32),
+        "date": _bounded_str(data.get("date"), 16),
+        "game": _bounded_str(data.get("game"), 64),
+        "previous_game": _bounded_str(data.get("previous_game"), 64),
+        "requested_at": _bounded_time(data.get("requested_at")),
+        "started_at": _bounded_time(data.get("started_at")),
+        "ends_at": _bounded_time(data.get("ends_at")),
+        "completed_at": _bounded_time(data.get("completed_at")),
+        "last_error": _bounded_str(data.get("last_error"), 200),
+        "announcements": announcements,
+        "improve_job": improve_job,
+    }
+
+
+def _collect_paper_improve_status(state_dir, now):
+    path = state_dir / "trading" / "paper_improve_status.json"
+    present, readable, data = _load_state_file(path)
+    entry = {
+        "present": present,
+        "readable": readable,
+        "age_sec": _file_age_sec(path, now),
+    }
+    if not readable:
+        return entry
+    progress = _bounded_int(data.get("progress"))
+    if progress is not None:
+        progress = max(0, min(100, progress))
+    changed = data.get("changed") if isinstance(data.get("changed"), bool) else None
+    entry.update(
+        {
+            "status": _bounded_str(data.get("status"), 32),
+            "phase": _bounded_str(data.get("phase"), 32),
+            "progress": progress,
+            "detail": _bounded_str(data.get("detail"), 160),
+            "started_at": _bounded_time(data.get("started_at")),
+            "updated_at": _bounded_time(data.get("updated_at")),
+            "completed_at": _bounded_time(data.get("completed_at")),
+            "changed": changed,
+        }
+    )
+    return entry
+
+
+def _collect_corner_files(state_dir, payload, now):
     present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES["game_switch"])
     entry = {"present": present, "readable": readable}
     if readable:
@@ -721,38 +791,11 @@ def _collect_corner_files(state_dir, payload):
         )
     payload["game_switch"] = entry
 
-    for name in ("retro_corner", "paper_corner"):
+    for name in ("retro_corner", "paper_corner", "paper_corner_manual"):
         present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES[name])
         entry = {"present": present, "readable": readable}
         if readable:
-            reports = data.get("reports")
-            announcements = None
-            if isinstance(reports, dict):
-                announcements = {
-                    "total": len(reports),
-                    "overlay": sum(
-                        1 for item in reports.values()
-                        if isinstance(item, dict) and item.get("overlay") is True
-                    ),
-                    "speech": sum(
-                        1 for item in reports.values()
-                        if isinstance(item, dict) and item.get("speech") is True
-                    ),
-                }
-            entry.update(
-                {
-                    "status": _bounded_str(data.get("status"), 32),
-                    "date": _bounded_str(data.get("date"), 16),
-                    "game": _bounded_str(data.get("game"), 64),
-                    "previous_game": _bounded_str(data.get("previous_game"), 64),
-                    "requested_at": _bounded_time(data.get("requested_at")),
-                    "started_at": _bounded_time(data.get("started_at")),
-                    "ends_at": _bounded_time(data.get("ends_at")),
-                    "completed_at": _bounded_time(data.get("completed_at")),
-                    "last_error": _bounded_str(data.get("last_error"), 200),
-                    "announcements": announcements,
-                }
-            )
+            entry.update(_project_corner_state(data))
         payload[name] = entry
 
     present, readable, data = _load_state_file(state_dir / "trading" / "presentation.json")
@@ -765,6 +808,7 @@ def _collect_corner_files(state_dir, payload):
             }
         )
     payload["presentation"] = entry
+    payload["paper_improve"] = _collect_paper_improve_status(state_dir, now)
 
 
 def _collect_programs(state_dir, soren, now):
@@ -781,10 +825,12 @@ def _collect_programs(state_dir, soren, now):
         "game_switch": {"present": False, "readable": False},
         "retro_corner": {"present": False, "readable": False},
         "paper_corner": {"present": False, "readable": False},
+        "paper_corner_manual": {"present": False, "readable": False},
         "presentation": {"present": False, "readable": False},
+        "paper_improve": {"present": False, "readable": False, "age_sec": -1},
     }
     if state_dir.is_dir():
-        _collect_corner_files(state_dir, payload)
+        _collect_corner_files(state_dir, payload, now)
     soren = Path(soren)
     payload["boundary"] = _collect_boundary(soren / "tmp" / "state", now)
     payload["ab"] = _collect_ab(soren, now)
