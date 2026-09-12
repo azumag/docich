@@ -278,6 +278,33 @@ def test_evaluation_never_grants_live_authority(tmp_path):
         store.close()
 
 
+def test_evaluation_keeps_intrabucket_drawdown_after_recovery(tmp_path):
+    store, identity = _experiment(tmp_path)
+    try:
+        with store.transaction():
+            store.db.execute(
+                "INSERT INTO samples(experiment,bucket,observed_at,equity) VALUES (?,?,?,?)",
+                (identity, 0, 1_100.0, "10000"),
+            )
+            for observed_at, equity in ((1_200.0, "9500"), (1_300.0, "10000")):
+                store.db.execute("""INSERT INTO samples(experiment,bucket,observed_at,equity) VALUES (?,?,?,?)
+                    ON CONFLICT(experiment,bucket) DO UPDATE SET observed_at=excluded.observed_at,equity=excluded.equity
+                    WHERE excluded.observed_at>samples.observed_at""",
+                    (identity, 0, observed_at, equity))
+        assert store.db.execute(
+            "SELECT COUNT(*) FROM samples WHERE experiment=?", (identity,)
+        ).fetchone()[0] == 1
+        assert store.db.execute(
+            "SELECT COUNT(*) FROM equity_observations WHERE experiment=?", (identity,)
+        ).fetchone()[0] == 3
+        report = evaluate(store, identity, now=1_300.0)
+        assert report["sample_count"] == 1
+        assert D(report["max_drawdown_fraction"]) == D("0.05")
+        assert report["equity_jpy"] == "10000"
+    finally:
+        store.close()
+
+
 def test_generation_daily_budget_allows_only_one_provider_request(tmp_path):
     calls = []
 
