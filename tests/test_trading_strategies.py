@@ -66,6 +66,27 @@ class TestStrategyScan(unittest.TestCase):
         self.assertEqual(momentum[0].reason_code, "momentum_breakout")
         self.assertLessEqual(momentum[0].max_notional_fraction, D("0.15"))
 
+    def test_low_volatility_btc_can_trigger_below_legacy_300bps_gate(self):
+        frames = {"BTC/JPY": frame_from_returns("BTC/JPY", ["0.002"] * 6)}
+        result = scan_opportunities(frames, now=NOW, policy=StrategyPolicy(momentum_threshold_bps=D("300")))
+        momentum = [item for item in result if item.strategy_id == "momentum-v1"]
+        self.assertEqual(len(momentum), 1)
+        self.assertEqual(momentum[0].symbol, "BTC/JPY")
+        self.assertGreater(momentum[0].score, D("0.5"))
+
+    def test_high_volatility_market_keeps_strict_momentum_gate(self):
+        returns = ["0.020", "-0.019", "0.018", "-0.017", "0.016", "-0.005"]
+        frames = {"ALT/JPY": frame_from_returns("ALT/JPY", returns)}
+        result = scan_opportunities(frames, now=NOW, policy=StrategyPolicy(momentum_threshold_bps=D("300")))
+        momentum = [item for item in result if item.strategy_id == "momentum-v1"]
+        self.assertEqual(momentum, [])
+
+    def test_persisted_lower_threshold_is_not_raised_by_adaptive_floor(self):
+        frames = {"BTC/JPY": frame_from_returns("BTC/JPY", ["0.001"] * 6)}
+        result = scan_opportunities(frames, now=NOW, policy=StrategyPolicy(momentum_threshold_bps=D("50")))
+        momentum = [item for item in result if item.strategy_id == "momentum-v1"]
+        self.assertEqual(len(momentum), 1)
+
     def test_mean_reversion_generates_buy_for_statistical_discount(self):
         frames = {"ETH/JPY": frame("ETH/JPY", [100, 101, 99, 100, 101, 100, 99, 100, 101, 90])}
         result = scan_opportunities(frames, now=NOW)
