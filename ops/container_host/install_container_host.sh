@@ -46,10 +46,22 @@ if [[ "${DOCKER_ARCH}" != "arm64" || "${DOCKER_SUITE}" != "noble" ]]; then
   echo "error: pins.env mismatch (DOCKER_ARCH/DOCKER_SUITE)" >&2
   exit 1
 fi
+if [[ ! "${GVISOR_APT_SUITE}" =~ ^[0-9]{8}$ ]]; then
+  echo "error: pins.env mismatch (GVISOR_APT_SUITE must be YYYYMMDD)" >&2
+  exit 1
+fi
 
 command -v python3 >/dev/null 2>&1 || { echo "error: python3 is required" >&2; exit 1; }
 command -v gpg >/dev/null 2>&1 || { echo "error: gpg is required" >&2; exit 1; }
 command -v systemctl >/dev/null 2>&1 || { echo "error: systemctl is required" >&2; exit 1; }
+if ! command -v iptables >/dev/null 2>&1 && ! command -v iptables-save >/dev/null 2>&1; then
+  echo "error: iptables inspection is required; refusing to assume zero Docker rules" >&2
+  exit 1
+fi
+if ! command -v ss >/dev/null 2>&1 && ! command -v netstat >/dev/null 2>&1; then
+  echo "error: socket-listener inspection is required; refusing to assume Docker API ports are closed" >&2
+  exit 1
+fi
 
 # --- Firewall baseline (captured BEFORE any change) ---
 # Expected hard invariants of the reviewed state: zero packet-filter rules
@@ -62,10 +74,8 @@ DOCKER_TCP_SECOND=$((DOCKER_TCP_FIRST + 1))
 iptables_docker_count() {
   if command -v iptables >/dev/null 2>&1; then
     iptables -S 2>/dev/null | grep -c DOCKER || true
-  elif command -v iptables-save >/dev/null 2>&1; then
-    iptables-save 2>/dev/null | grep -c DOCKER || true
   else
-    echo 0
+    iptables-save 2>/dev/null | grep -c DOCKER || true
   fi
 }
 
@@ -73,10 +83,8 @@ tcp_listen_count() {
   local port="$1"
   if command -v ss >/dev/null 2>&1; then
     ss -ltn 2>/dev/null | awk -v p=":${port}$" '$4 ~ p {c++} END {print c+0}'
-  elif command -v netstat >/dev/null 2>&1; then
-    netstat -ltn 2>/dev/null | awk -v p=":${port}$" '$4 ~ p {c++} END {print c+0}'
   else
-    echo 0
+    netstat -ltn 2>/dev/null | awk -v p=":${port}$" '$4 ~ p {c++} END {print c+0}'
   fi
 }
 
@@ -177,10 +185,13 @@ fi
 install -o root -g root -m 0644 "${gvisor_key_tmp}.dearmored" "${GVISOR_KEYRING}"
 rm -f "${gvisor_key_tmp}.dearmored"
 
-# --- gVisor APT source (exact pinned content) ---
+# --- gVisor APT source (date-specific suite, exact pinned content) ---
+# gVisor's documented `release` suite moves over time. The date-specific suite
+# selects the release family that contains GVISOR_RELEASE, while the post-install
+# binary check below pins the exact point release expected by this host contract.
 gvisor_list_tmp="$(mktemp)"
 cat >"${gvisor_list_tmp}" <<GVISORLIST
-deb [arch=arm64 signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main
+deb [arch=arm64 signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases ${GVISOR_APT_SUITE} main
 GVISORLIST
 if [[ -e "${GVISOR_LIST}" ]] && cmp -s "${gvisor_list_tmp}" "${GVISOR_LIST}"; then
   :
@@ -191,12 +202,18 @@ fi
 
 # --- Pinned packages ---
 apt-get update
+runsc_matches_pin=0
+if [[ -x "${RUNSC_BIN}" ]] && "${RUNSC_BIN}" --version 2>/dev/null | grep -q "release-${GVISOR_RELEASE}"; then
+  runsc_matches_pin=1
+fi
 if dpkg-query -W -f='${Version}\n' docker-ce 2>/dev/null | grep -qx "${DOCKER_CE_VERSION}" \
   && dpkg-query -W -f='${Version}\n' docker-ce-cli 2>/dev/null | grep -qx "${DOCKER_CE_CLI_VERSION}" \
   && dpkg-query -W -f='${Version}\n' docker-ce-rootless-extras 2>/dev/null | grep -qx "${DOCKER_CE_ROOTLESS_EXTRAS_VERSION}" \
   && dpkg-query -W -f='${Version}\n' containerd.io 2>/dev/null | grep -qx "${CONTAINERD_IO_VERSION}" \
   && dpkg-query -W -f='${Version}\n' docker-buildx-plugin 2>/dev/null | grep -qx "${DOCKER_BUILDX_PLUGIN_VERSION}" \
-  && dpkg-query -W -f='${Version}\n' docker-compose-plugin 2>/dev/null | grep -qx "${DOCKER_COMPOSE_PLUGIN_VERSION}"; then
+  && dpkg-query -W -f='${Version}\n' docker-compose-plugin 2>/dev/null | grep -qx "${DOCKER_COMPOSE_PLUGIN_VERSION}" \
+  && dpkg-query -W -f='${Status}\n' runsc 2>/dev/null | grep -qx 'install ok installed' \
+  && [[ "${runsc_matches_pin}" == "1" ]]; then
   echo "pinned packages already installed"
 else
   apt-get install --no-install-recommends -y \
@@ -205,8 +222,13 @@ else
     "docker-ce-rootless-extras=${DOCKER_CE_ROOTLESS_EXTRAS_VERSION}" \
     "containerd.io=${CONTAINERD_IO_VERSION}" \
     "docker-buildx-plugin=${DOCKER_BUILDX_PLUGIN_VERSION}" \
-    "docker-compose-plugin=${DOCKER_COMPOSE_PLUGIN_VERSION}"
+    "docker-compose-plugin=${DOCKER_COMPOSE_PLUGIN_VERSION}" \
+    runsc
   apt_changed=1
+fi
+if [[ ! -x "${RUNSC_BIN}" ]] || ! "${RUNSC_BIN}" --version 2>/dev/null | grep -q "release-${GVISOR_RELEASE}"; then
+  echo "error: installed runsc does not match release-${GVISOR_RELEASE}" >&2
+  exit 1
 fi
 
 # --- daemon.json (semantic compare; never silently discard operator config) ---
