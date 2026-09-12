@@ -47,9 +47,15 @@ def validate_market(symbol: str, market: MarketInfo | None, book: DepthBook | No
         raise StrategyError("market_status_unavailable")
 
 
-def liquidation_value(amount: Decimal, market: MarketInfo, book: DepthBook, slippage: Decimal) -> Decimal:
+def liquidation_value(
+    amount: Decimal,
+    market: MarketInfo,
+    book: DepthBook,
+    slippage: Decimal,
+    participation: Decimal = D(1),
+) -> Decimal:
     order = amount / (1 + market.taker_fee_rate_base)
-    filled, gross = _quote(order, book.bids, participation=D(1), price_factor=1 - slippage)
+    filled, gross = _quote(order, book.bids, participation=participation, price_factor=1 - slippage)
     if filled < order:
         raise StrategyError("valuation_depth_insufficient")
     return gross * (1 - market.taker_fee_rate_quote)
@@ -80,10 +86,12 @@ def settle_observation(store: LabStore, identity: str, *, markets: dict, books: 
         # conservative liquidation valuation before the final review snapshot.
         symbols = set(positions) if expired else set(positions) | set(pending)
         slippage = D(policy["slippage_bps"]) / 10000
+        participation = D(policy["book_participation"])
         for symbol in symbols:
             validate_market(symbol, markets.get(symbol), books.get(symbol), statuses.get(symbol), now=now)
-        value = sum(liquidation_value(amount, markets[symbol], books[symbol], slippage)
-                    for symbol, amount in positions.items())
+        value = sum(liquidation_value(
+            amount, markets[symbol], books[symbol], slippage, participation
+        ) for symbol, amount in positions.items())
         equity_before = cash + value
         peak = max(D(account["peak_equity"]), equity_before)
         drawdown_hit = equity_before < peak * (1 - D(policy["stop_drawdown_fraction"]))
@@ -122,16 +130,18 @@ def settle_observation(store: LabStore, identity: str, *, markets: dict, books: 
             # Each target is IOC on its first eligible observation, including rejection.
             del pending[symbol]
             if side == "buy":
-                deployed = sum(liquidation_value(q, markets[s], books[s], slippage) for s, q in positions.items())
+                deployed = sum(liquidation_value(
+                    q, markets[s], books[s], slippage, participation
+                ) for s, q in positions.items())
                 cap = min(D(policy["capital_jpy"]), cash + deployed) * D(policy["max_deployed_fraction"])
                 budget = max(D(0), min(cash, cap - deployed))
                 # Worst visible ask gives an upper bound on quote consumption.
                 desired = min(desired, budget / (levels[-1].price * factor * (1 + quote_fee)))
-            capacity = sum(level.amount for level in levels) * D(policy["book_participation"])
+            capacity = sum(level.amount for level in levels) * participation
             amount = _round(min(desired, capacity), market.amount_step)
             if amount <= 0 or amount < market.min_amount:
                 continue
-            filled, gross = _quote(amount, levels, participation=D(policy["book_participation"]), price_factor=factor)
+            filled, gross = _quote(amount, levels, participation=participation, price_factor=factor)
             if filled != amount or (market.min_cost is not None and gross < market.min_cost):
                 continue
             fee_base, fee_quote = amount * base_fee, gross * quote_fee
@@ -156,7 +166,9 @@ def settle_observation(store: LabStore, identity: str, *, markets: dict, books: 
                     "partial": held != D(target["quantity"])}
             store.db.execute("INSERT INTO fills VALUES (?,?,?,?)",
                              (target["run_id"] + ":" + symbol, identity, now, encode(fill)))
-        equity = cash + sum(liquidation_value(q, markets[s], books[s], slippage) for s, q in positions.items())
+        equity = cash + sum(liquidation_value(
+            q, markets[s], books[s], slippage, participation
+        ) for s, q in positions.items())
         account = {"cash_jpy": decimal_text(cash), "positions": {s: decimal_text(q) for s, q in positions.items()},
                    "peak_equity": decimal_text(max(peak, equity))}
         store.db.execute("UPDATE experiments SET account=?,pending=?,revision=revision+1 WHERE id=?",
