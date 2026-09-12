@@ -64,6 +64,7 @@ tmux セッション "docich"
 - [[NetHack|Game-NetHack]] — cli アダプタの標準例、テキスト観測
 - [[soren game|Game-Sorengame]] — browser アダプタ、本番 soren との関係
 - [[アーキテクチャ|Architecture]] — 設計ダイジェスト (基本方針・アダプタ契約・プロセスモデル・共存原則)
+- [[ゲームライフサイクル|Game-Lifecycle]] — 試合完走後にだけ旧ゲーム資源を止める game-only ハンドオーバー
 - [[トラブルシューティング|Troubleshooting]] — 症状から原因・対処を逆引き
 
 一次情報:

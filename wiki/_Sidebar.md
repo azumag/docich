@@ -19,4 +19,5 @@
 
 **設計**
 - [[アーキテクチャ|Architecture]]
+- [[ゲームライフサイクル|Game-Lifecycle]]
 - [[ゲーム切替機構|Game-Switch]]
