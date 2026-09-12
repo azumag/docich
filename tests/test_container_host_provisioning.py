@@ -45,6 +45,8 @@ def test_pins_contain_reviewed_versions_and_fingerprints():
         "CONTAINERD_IO_VERSION=2.3.5-1~ubuntu.24.04~noble",
         "DOCKER_BUILDX_PLUGIN_VERSION=0.37.1-1~ubuntu.24.04~noble",
         "DOCKER_COMPOSE_PLUGIN_VERSION=5.5.1-1~ubuntu.24.04~noble",
+        "GVISOR_RELEASE=20260907.0",
+        "GVISOR_APT_SUITE=20260907",
         "9DC858229FC7DD38854AE2D88D81803C0EBFCD88",
         "D3306A018370199E527AE7997EA0A9C3F273FCD8",
         "6F1DF85E3A71C24918E727D56FC6D554E32BD943",
@@ -52,17 +54,30 @@ def test_pins_contain_reviewed_versions_and_fingerprints():
         assert pinned in text
 
 
-def test_installer_guards_platform_and_firewall_and_daemon_json():
-    text = _lower(INSTALL)
-    assert "ubuntu" in text and "24.04" in text
-    assert "arm64" in text
-    assert "baseline" in text
-    assert "docker" in text
-    assert "ip_forward" in text
-    assert "2375" in text
-    assert "gpg --show-keys --with-colons" in _read(INSTALL)
-    assert "fingerprint" in text
-    assert "force_daemon_json" in text
+def test_installer_guards_platform_firewall_daemon_and_gvisor_runtime():
+    text = _read(INSTALL)
+    lowered = text.lower()
+    assert "ubuntu" in lowered and "24.04" in lowered
+    assert "arm64" in lowered
+    assert "baseline" in lowered
+    assert "docker" in lowered
+    assert "ip_forward" in lowered
+    assert "2375" in lowered
+    assert "gpg --show-keys --with-colons" in text
+    assert "fingerprint" in lowered
+    assert "force_daemon_json" in lowered
+    assert "${GVISOR_APT_SUITE} main" in text
+    assert '"docker-compose-plugin=${DOCKER_COMPOSE_PLUGIN_VERSION}" \\\n    runsc' in text
+    assert 'grep -q "release-${GVISOR_RELEASE}"' in text
+
+
+def test_installer_fails_closed_when_security_inspection_is_unavailable():
+    text = _read(INSTALL)
+    assert "iptables inspection is required" in text
+    assert "socket-listener inspection is required" in text
+    # Security checks must never interpret an absent inspection tool as zero rules/listeners.
+    assert "elif command -v iptables-save" in text
+    assert "else\n    echo 0\n  fi" not in text
 
 
 def test_installer_forbids_unsafe_operations():
@@ -83,7 +98,8 @@ def test_installer_forbids_unsafe_operations():
 
 
 def test_verifier_covers_reviewed_invariants_and_reports_result():
-    lowered = _lower(VERIFY)
+    text = _read(VERIFY)
+    lowered = text.lower()
     for expected in (
         "ip_forward",
         "runsc",
@@ -95,12 +111,19 @@ def test_verifier_covers_reviewed_invariants_and_reports_result():
         "result=",
     ):
         assert expected in lowered, expected
+    assert "runsc_package_version" in text
+    assert "${GVISOR_APT_SUITE} main" in text
+    assert 'report "iptables_docker_rules" "unavailable" "drift"' in text
+    assert 'report "listen_2375" "unavailable" "drift"' in text
+    assert 'report "listen_2376" "unavailable" "drift"' in text
 
 
 def test_provisioning_doc_links_pins_scripts_and_worker_doc():
     assert PROVISION_DOC.is_file()
     text = _lower(PROVISION_DOC)
     assert "5:29.8.0-1~ubuntu.24.04~noble" in text
+    assert "20260907" in text
+    assert "runsc" in text and "apt" in text
     assert "ops/container_host/install_container_host.sh" in text
     assert "ops/container_host/verify_container_host.sh" in text
     worker = _lower(WORKER_DOC)
