@@ -99,7 +99,8 @@ class LabStore:
                 raise StrategyError("experiment_capacity")
             if self.db.execute("SELECT 1 FROM experiments WHERE artifact=?", (digest,)).fetchone():
                 raise StrategyError("artifact_already_tested")
-            account = {"cash_jpy": capital, "positions": {}, "peak_equity": capital}
+            account = {"cash_jpy": capital, "positions": {}, "peak_equity": capital,
+                       "max_drawdown_fraction": "0"}
             self.db.execute("""INSERT INTO experiments
                 (id,artifact,created_at,end_at,phase,policy,account,strategy_state,pending)
                 VALUES (?,?,?,?,?,?,?,?,?)""", (identity, digest, now, now + days * 86400,
