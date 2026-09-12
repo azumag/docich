@@ -72,6 +72,8 @@ def make_handler(trading_dir: Path, *, live_sampler=None):
                 return self._file("dashboard.css", _CSS)
             if path == "/dashboard.js":
                 return self._file("dashboard.js", _JS)
+            if path == "/dashboard_candles.js":
+                return self._file("dashboard_candles.js", _JS)
             if path == "/api/trading/dashboard":
                 try:
                     payload = build_dashboard_snapshot(trading_dir, now=time.time())
