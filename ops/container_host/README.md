@@ -28,9 +28,10 @@ ops/container_host/verify_container_host.sh
 ```
 
 `--check` は検証のみ（変更なし）でベリファイアへ委譲します。
-インストーラは `runsc` パッケージを日付固定gVisor APT suiteから導入し、
+インストーラはDocker packageの自動起動より先にレビュー済み `daemon.json` を確定し、
+その後 `runsc`、Docker一式の順で導入します。`runsc` は日付固定gVisor APT suiteから導入し、
 `runsc --version` がピンと一致しなければ中断します。
-`daemon.json` が既存でピンと意味的に異なる場合も中断します。
+`daemon.json` が既存でピンと意味的に異なる場合も、package変更前に中断します。
 上書きする場合のみ `FORCE_DAEMON_JSON=1` を明示してください。
 
 ## 安全境界
