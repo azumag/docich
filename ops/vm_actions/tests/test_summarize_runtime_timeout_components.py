@@ -58,6 +58,9 @@ class RuntimeTimeoutComponentSummaryTests(unittest.TestCase):
         self.assertIn("ai_recent_timeout_exact_20s=1", summary)
         self.assertIn("ai_recent_timeout_other_known=1", summary)
         self.assertIn("ai_recent_timeout_unknown=1", summary)
+        self.assertIn("ai_recent_timeout_exact_20s_origin_local_budget=0", summary)
+        self.assertIn("ai_recent_timeout_exact_20s_origin_upstream_or_cli=1", summary)
+        self.assertIn("ai_recent_timeout_exact_20s_origin_unknown=0", summary)
         self.assertIn("ai_recent_timeout_exact_20s_component_radio_prepass=1", summary)
         self.assertIn("ai_recent_timeout_exact_20s_component_radio_main=0", summary)
         self.assertIn("ai_recent_timeout_other_known_component_radio_main=1", summary)
@@ -67,6 +70,38 @@ class RuntimeTimeoutComponentSummaryTests(unittest.TestCase):
         self.assertNotIn("private-provider", summary)
         self.assertNotIn("private-model", summary)
         self.assertNotIn("45 seconds", summary)
+
+    def test_canonical_local_timeout_preview_is_classified_without_leaking_preview(self):
+        data = {
+            "status": "warn",
+            "workers": {},
+            "queues": {},
+            "ai": {
+                "recent_events": [
+                    {
+                        "event": "fail",
+                        "component": "RADIO:secret-show:main",
+                        "provider": "private-provider",
+                        "model": "private-model",
+                        "rc": "1",
+                        "error_preview": "timeout after 20s",
+                    }
+                ]
+            },
+            "improvement": {},
+        }
+
+        _, summary = self.mod.summarize(data)
+
+        self.assertIn("ai_recent_timeout_exact_20s=1", summary)
+        self.assertIn("ai_recent_timeout_exact_20s_origin_local_budget=1", summary)
+        self.assertIn("ai_recent_timeout_exact_20s_origin_upstream_or_cli=0", summary)
+        self.assertIn("ai_recent_timeout_exact_20s_origin_unknown=0", summary)
+        self.assertIn("ai_recent_timeout_exact_20s_component_radio_main=1", summary)
+        self.assertNotIn("secret-show", summary)
+        self.assertNotIn("private-provider", summary)
+        self.assertNotIn("private-model", summary)
+        self.assertNotIn("timeout after 20s", summary)
 
     def test_news_spam_check_timeout_is_not_counted_as_radio_main(self):
         data = {
@@ -91,6 +126,7 @@ class RuntimeTimeoutComponentSummaryTests(unittest.TestCase):
         _, summary = self.mod.summarize(data)
 
         self.assertIn("ai_recent_timeout_exact_20s=1", summary)
+        self.assertIn("ai_recent_timeout_exact_20s_origin_upstream_or_cli=1", summary)
         self.assertIn("ai_recent_timeout_exact_20s_component_news_spam_check=1", summary)
         self.assertIn("ai_recent_timeout_exact_20s_component_radio_main=0", summary)
         self.assertIn("ai_recent_fail_component_news_spam_check=1", summary)
@@ -109,6 +145,8 @@ class RuntimeTimeoutComponentSummaryTests(unittest.TestCase):
 
         _, summary = self.mod.summarize(data)
 
+        for origin in self.mod.TIMEOUT_ORIGINS:
+            self.assertIn(f"ai_recent_timeout_exact_20s_origin_{origin}=0", summary)
         for bucket in self.mod.TIMEOUT_BUCKETS:
             for component in self.mod.COMPONENTS:
                 self.assertIn(f"ai_recent_timeout_{bucket}_component_{component}=0", summary)
