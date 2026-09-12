@@ -55,6 +55,14 @@ def liquidation_value(amount: Decimal, market: MarketInfo, book: DepthBook, slip
     return gross * (1 - market.taker_fee_rate_quote)
 
 
+def _record_sample(store: LabStore, identity: str, exp: dict, *, now: float, equity: Decimal) -> None:
+    policy = exp["policy"]
+    store.db.execute("""INSERT INTO samples VALUES (?,?,?,?) ON CONFLICT(experiment,bucket)
+        DO UPDATE SET observed_at=excluded.observed_at,equity=excluded.equity
+        WHERE excluded.observed_at>samples.observed_at""",
+        (identity, int((now - exp["created_at"]) // policy["sample_seconds"]), now, decimal_text(equity)))
+
+
 def settle_observation(store: LabStore, identity: str, *, markets: dict, books: dict,
                        statuses: dict, now: float) -> dict:
     if not math.isfinite(now):
@@ -63,15 +71,14 @@ def settle_observation(store: LabStore, identity: str, *, markets: dict, books: 
         exp = store.experiment(identity)
         if exp["phase"] not in {"research", "paper_validating"}:
             return exp
-        if now >= exp["end_at"]:
-            store.db.execute("UPDATE experiments SET phase='review_due',pending=?,revision=revision+1 WHERE id=?",
-                             (encode({}), identity))
-            return store.experiment(identity)
+        expired = now >= exp["end_at"]
         policy, account = exp["policy"], exp["account"]
         cash = D(account["cash_jpy"])
         positions = {symbol: D(amount) for symbol, amount in account["positions"].items()}
-        pending = dict(exp["pending"])
-        symbols = set(positions) | set(pending)
+        pending = {} if expired else dict(exp["pending"])
+        # Expiry never creates a new fill.  Only current holdings need a fresh
+        # conservative liquidation valuation before the final review snapshot.
+        symbols = set(positions) if expired else set(positions) | set(pending)
         slippage = D(policy["slippage_bps"]) / 10000
         for symbol in symbols:
             validate_market(symbol, markets.get(symbol), books.get(symbol), statuses.get(symbol), now=now)
@@ -79,7 +86,22 @@ def settle_observation(store: LabStore, identity: str, *, markets: dict, books: 
                     for symbol, amount in positions.items())
         equity_before = cash + value
         peak = max(D(account["peak_equity"]), equity_before)
-        if equity_before < peak * (1 - D(policy["stop_drawdown_fraction"])):
+        drawdown_hit = equity_before < peak * (1 - D(policy["stop_drawdown_fraction"]))
+
+        if expired:
+            account = {"cash_jpy": decimal_text(cash),
+                       "positions": {s: decimal_text(q) for s, q in positions.items()},
+                       "peak_equity": decimal_text(peak)}
+            # Keep an earlier diagnostic unless the terminal valuation itself
+            # demonstrates the configured drawdown stop.
+            last_error = "drawdown_limit" if drawdown_hit else exp["last_error"]
+            store.db.execute("""UPDATE experiments SET phase='review_due',account=?,pending=?,
+                last_error=?,revision=revision+1 WHERE id=?""",
+                (encode(account), encode({}), last_error, identity))
+            _record_sample(store, identity, exp, now=now, equity=equity_before)
+            return store.experiment(identity)
+
+        if drawdown_hit:
             store.db.execute("UPDATE experiments SET phase='paused',last_error='drawdown_limit',pending=?,revision=revision+1 WHERE id=?",
                              (encode({}), identity))
             pending.clear()
@@ -139,8 +161,5 @@ def settle_observation(store: LabStore, identity: str, *, markets: dict, books: 
                    "peak_equity": decimal_text(max(peak, equity))}
         store.db.execute("UPDATE experiments SET account=?,pending=?,revision=revision+1 WHERE id=?",
                          (encode(account), encode(pending), identity))
-        store.db.execute("""INSERT INTO samples VALUES (?,?,?,?) ON CONFLICT(experiment,bucket)
-            DO UPDATE SET observed_at=excluded.observed_at,equity=excluded.equity
-            WHERE excluded.observed_at>samples.observed_at""",
-            (identity, int((now - exp["created_at"]) // policy["sample_seconds"]), now, decimal_text(equity)))
+        _record_sample(store, identity, exp, now=now, equity=equity)
         return store.experiment(identity)
