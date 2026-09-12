@@ -34,10 +34,14 @@ def _paper_corner_speech_text(text: str, event_id: str) -> str:
     key = str(event_id or "")
     if not key.startswith("paper-corner:"):
         return body
-    suffix = key.rsplit(":", 1)[-1]
+    parts = key.split(":")
+    suffix = parts[-1]
     if suffix != "opening" and body.startswith(_PAPER_CORNER_INTRO):
         body = body[len(_PAPER_CORNER_INTRO):].lstrip()
-    if suffix.isdigit():
+    # Only the direct timed report ids are paper-corner:<date>:<slot>.
+    # Script ids are paper-corner:<date>:script:<n> and already contain
+    # substantial narration, so do not append the periodic chatter to them.
+    if len(parts) == 3 and suffix.isdigit():
         chatter = _PAPER_CORNER_CHATTER[int(suffix) % len(_PAPER_CORNER_CHATTER)]
         body = f"{body} {chatter}".strip()
     return body
