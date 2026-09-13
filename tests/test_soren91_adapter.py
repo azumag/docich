@@ -20,6 +20,7 @@ from docich.adapters.base import AdapterError  # noqa: E402
 from docich.adapters.soren91 import (  # noqa: E402
     Soren91CoordinatorAdapter,
     is_tailscale_ipv4,
+    parse_udp_listeners,
 )
 from docich.game_switch import ReadinessTimeoutError, RuntimeSpec  # noqa: E402
 from docich.tmux import PaneState, TmuxOwnership  # noqa: E402
@@ -176,18 +177,9 @@ class Soren91AdapterTestBase(unittest.TestCase):
 
     @contextmanager
     def _bound_listener(self, bound=True):
-        if bound:
-            fake_socket = mock.MagicMock()
-            fake_socket.__enter__.return_value = fake_socket
-            cm = mock.patch(
-                "docich.adapters.soren91.socket.create_connection", return_value=fake_socket
-            )
-        else:
-            cm = mock.patch(
-                "docich.adapters.soren91.socket.create_connection",
-                side_effect=OSError("refused"),
-            )
-        with cm:
+        with mock.patch(
+            "docich.adapters.soren91._udp_listener_bound", return_value=bool(bound)
+        ):
             yield
 
     @contextmanager
@@ -418,6 +410,57 @@ class TestLifecycle(Soren91AdapterTestBase):
             self.http_plan = [urllib.error.URLError("gone")]
             adapter.cleanup_runtime(time.monotonic() + 30, None)
         self.assertNotIn("docich-game-g3", self.tmux.sessions)
+
+    def test_cleanup_waits_for_udp_release(self):
+        adapter = self._adapter()
+        with self._bound_listener(True), self._http():
+            self.http_plan = [(200, {"ok": True, "running": True})]
+            adapter.materialize_runtime(time.monotonic() + 30, None)
+        with mock.patch(
+            "docich.adapters.soren91._udp_listener_bound", side_effect=[True, True, False]
+        ), self._http():
+            self.http_plan = [(202, {"ok": True, "stopping": True})]
+            adapter.cleanup_runtime(time.monotonic() + 30, None)
+        self.assertNotIn("docich-game-g3", self.tmux.sessions)
+
+    def test_cleanup_throws_when_udp_port_stays_bound(self):
+        adapter = self._adapter()
+        with self._bound_listener(True), self._http():
+            self.http_plan = [(200, {"ok": True, "running": True})]
+            adapter.materialize_runtime(time.monotonic() + 30, None)
+        with self._bound_listener(True), self._http():
+            self.http_plan = [(202, {"ok": True, "stopping": True})]
+            with self.assertRaises(AdapterError):
+                adapter.cleanup_runtime(time.monotonic() + 0.3, None)
+
+
+class TestUdpListenerParsing(Soren91AdapterTestBase):
+    def test_ss_bound_ipv4(self):
+        out = "UNCONN 0      0        100.90.0.2:19192      0.0.0.0:*          \n"
+        self.assertTrue(parse_udp_listeners(out, 19192))
+
+    def test_ss_unbound(self):
+        out = "UNCONN 0      0        100.90.0.2:19199      0.0.0.0:*          \n"
+        self.assertFalse(parse_udp_listeners(out, 19192))
+
+    def test_ss_empty(self):
+        self.assertFalse(parse_udp_listeners("", 19192))
+        self.assertFalse(parse_udp_listeners("Netid State Recv-Q Send-Q Local Address:Port\n", 19192))
+
+    def test_ss_bound_ipv6_and_udp_netid(self):
+        out = "udp    UNCONN  0       0       [::]:19192                 [::]:*              \n"
+        self.assertTrue(parse_udp_listeners(out, 19192))
+
+    def test_ss_port_prefix_does_not_match(self):
+        out = "UNCONN 0      0        100.90.0.2:191924     0.0.0.0:*          \n"
+        self.assertFalse(parse_udp_listeners(out, 19192))
+
+    def test_ss_ignores_tcp_rows(self):
+        out = (
+            "tcp    LISTEN  0       128     100.90.0.2:19192      0.0.0.0:*          \n"
+            "UNCONN 0       0       100.90.0.2:19199             0.0.0.0:*          \n"
+        )
+        self.assertFalse(parse_udp_listeners(out, 19192))
 
 
 class TestBotAgent(Soren91AdapterTestBase):

@@ -23,8 +23,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
-import socket
 import subprocess
 import sys
 import time
@@ -78,6 +78,88 @@ def soren91_raw(game) -> dict:
     if not isinstance(raw, dict):
         raise AdapterError("[soren91] はテーブルである必要があります")
     return raw
+
+
+def _local_field_port(field: str) -> str:
+    """Extract the port suffix from an ss Local Address:Port field."""
+    text = (field or "").strip()
+    if text.startswith("["):
+        end = text.find("]:")
+        if end == -1:
+            return ""
+        return text[end + 2 :].strip()
+    if ":" not in text:
+        return ""
+    return text.rsplit(":", 1)[1].strip()
+
+
+def parse_udp_listeners(ss_output: str, port: int) -> bool:
+    """True when `ss -H -uln` style output shows a UDP socket on ``port``.
+
+    Pure function over captured output so tests can feed samples without
+    spawning processes. The SRT viewer listener is UDP-only, so the old
+    TCP-connect probe could never observe it (always ECONNREFUSED).
+
+    Two row shapes are accepted: with a Netid column
+    (``udp UNCONN 0 0 <local> <peer>``) and without one, as printed by
+    this fleet's ss build (``UNCONN 0 0 <local> <peer>``). TCP rows are
+    ignored: a TCP socket on the same number is not our listener.
+    """
+    want = str(port)
+    for line in (ss_output or "").splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        first = parts[0].lower()
+        if first == "tcp":
+            continue
+        if first in ("udp", "udplite", "u_str"):
+            local = parts[4] if len(parts) > 4 else ""
+        elif first in ("unconn", "estab", "unknown", "state"):
+            local = parts[3] if len(parts) > 3 else ""
+        else:
+            continue
+        if _local_field_port(local) == want:
+            return True
+    return False
+
+
+def _lsof_udp_bound(port: int) -> bool:
+    """Fallback UDP check when `ss` is unavailable."""
+    try:
+        result = subprocess.run(
+            ["lsof", "-nP", f"-iUDP:{port}"],
+            text=True,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if result.returncode not in (0, 1):
+        return False
+    pattern = re.compile(rf":{port}(?!\d)")
+    lines = (result.stdout or "").splitlines()
+    return any(pattern.search(line) for line in lines[1:])
+
+
+def _udp_listener_bound(port: int) -> bool:
+    """True when a local UDP socket is bound on ``port`` (ss, else lsof)."""
+    try:
+        result = subprocess.run(
+            ["ss", "-H", "-uln"],
+            text=True,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except FileNotFoundError:
+        return _lsof_udp_bound(port)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if result.returncode != 0:
+        return False
+    return parse_udp_listeners(result.stdout or "", port)
 
 
 def _validated_port(value, *, key: str, default: int) -> int:
@@ -258,14 +340,10 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
 
     def _listener_bound(self) -> bool:
         try:
-            oci_ip = self._oci_ip()
+            self._oci_ip()
         except AdapterError:
             return False
-        try:
-            with socket.create_connection((oci_ip, self.srt_port), timeout=1.0):
-                return True
-        except OSError:
-            return False
+        return _udp_listener_bound(self.srt_port)
 
     def _wait_listener(self, deadline: float, cancel) -> None:
         while True:
