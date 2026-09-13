@@ -533,6 +533,39 @@ class TestBotAgent(Soren91AdapterTestBase):
         self.assertIn(target, self.tmux.windows)
         self.assertEqual(len(self.tmux.windows), 2)  # game + agent, no duplicate
 
+    def test_start_agent_removes_stale_bot_stop_flag(self):
+        game = self._enabled_game()
+        adapter = self._adapter(game)
+        stop = self.root / "tmp" / "stop"
+        stop.parent.mkdir(parents=True, exist_ok=True)
+        stop.write_text("", encoding="utf-8")
+        with mock.patch("docich.procs.which", return_value="/usr/bin/node"):
+            adapter.start_agent(time.monotonic() + 30, None)
+        self.assertFalse(stop.exists())
+        self.assertIn("docich-game-g3:agent-g3", self.tmux.windows)
+
+    def test_materialize_removes_stale_bot_stop_flag(self):
+        game = self._enabled_game()
+        adapter = self._adapter(game)
+        stop = self.root / "tmp" / "stop"
+        stop.parent.mkdir(parents=True, exist_ok=True)
+        stop.write_text("", encoding="utf-8")
+        with mock.patch("docich.procs.which", return_value="/usr/bin/node"):
+            with self._ffplay(), self._bound_listener(True), self._http():
+                self.http_plan = [
+                    (200, {"ok": True, "running": False}),
+                    (202, {"ok": True, "started": True}),
+                ]
+                adapter.materialize_runtime(time.monotonic() + 30, None)
+        self.assertFalse(stop.exists())
+
+    def test_clear_stale_bot_stop_survives_missing_cwd(self):
+        game = self._enabled_game()
+        adapter = self._adapter(game)
+        # No tmp dir at all: must not raise.
+        adapter._clear_stale_bot_stop()
+        self.assertFalse((self.root / "tmp" / "stop").exists())
+
     def test_materialize_skips_bot_when_disabled(self):
         adapter = self._adapter()
         with self._bound_listener(True), self._http():
@@ -726,6 +759,18 @@ class ManualSoren91CornerTests(unittest.TestCase):
         self.assertEqual(args.duration_minutes, 10)
         args = _parser().parse_args(["recover"])
         self.assertEqual(args.command, "recover")
+
+    def test_manual_announce_mentions_no_renderer_internals(self):
+        current = ["sorengame"]
+        coordinator = FakeCoordinator(current)
+        mgr, _slept = self._manager(coordinator, current)
+        posted = []
+        with mock.patch.object(mgr, "_chat", side_effect=lambda text: posted.append(text)):
+            mgr._announce_start_locked({"game": "soren91"})
+        self.assertEqual(len(posted), 1)
+        self.assertNotIn("レンダラー", posted[0])
+        self.assertNotIn("Mac", posted[0])
+        self.assertNotIn("mac", posted[0].lower())
 
 
 if __name__ == "__main__":

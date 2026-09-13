@@ -573,6 +573,23 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
                 raise AdapterError("SRT port が解放されませんでした")
             time.sleep(min(LISTENER_POLL_INTERVAL_S, max(0.0, deadline - time.monotonic())))
 
+    def _clear_stale_bot_stop(self) -> None:
+        """Remove a stale bot stop flag from the isolated bot cwd.
+
+        The bot treats ``<bot_cwd>/tmp/stop`` as a graceful-stop request
+        and exits immediately when it exists at startup. A previous run's
+        file left behind would make the next run's bot exit on boot, so it
+        is removed (best-effort) before every fresh bot launch.
+        """
+        try:
+            stop = Path(self._bot_cwd()) / "tmp" / "stop"
+        except AdapterError:
+            return
+        try:
+            stop.unlink(missing_ok=True)
+        except OSError:
+            pass
+
     def _launch_bot_window(self, deadline: float, cancel) -> None:
         """Create the owned agent window running the gameplay bot (idempotent)."""
         self._check_active(deadline, cancel)
@@ -581,6 +598,7 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
             self._verify_window_ownership(target, "agent")
             return
         self._check_active(deadline, cancel)
+        self._clear_stale_bot_stop()
         self.tmux.create_window_owned(
             self.spec.agent_window,
             self._agent_command(),

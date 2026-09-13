@@ -80,7 +80,7 @@ class ManualSoren91CornerManager(RetroCornerManager):
         game = state.get("game")
         if not isinstance(game, str) or not game:
             return
-        text = "Soren91コーナーです。Macレンダラーの映像をお送りします。"
+        text = "ソ連ゲーム91、メリケンAIのコーナーです。"
         try:
             self._chat(text)
         except Exception as exc:
