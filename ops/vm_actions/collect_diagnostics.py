@@ -93,6 +93,12 @@ LIFECYCLE_PAUSE_RECORDS = {
     "soren_loop": ("loop_pause.json", "loop_marker_created"),
     "soviet_watchdog": ("watchdog_pause.json", "improvement_marker_created"),
 }
+LIFECYCLE_DEADLINE_STATUSES = frozenset({
+    "boundary",
+    "stop_requested",
+    "stopping",
+    "resume_requested",
+})
 PAUSE_OWNERS = ("lifecycle_owned", "operator_owned", "unknown")
 UNREGISTERED_HEALTH = ("alive", "paused", "stale_only", "unknown")
 
@@ -126,7 +132,41 @@ def _read_json(path):
         return None
 
 
-def _pause_owner(state_dir, name):
+def _lifecycle_request_active(state_dir, request_id, now):
+    """Prove that a lifecycle-owned marker still belongs to an active handover.
+
+    Matching marker/record ownership alone is insufficient: a controller can
+    die after pausing workers and leave both behind.  Mirror the lifecycle
+    broker's fixed identity/status contract and fail closed when the request is
+    expired, terminal in a non-parked state, malformed, or mismatched.  No
+    identity, game name, deadline, or free-form value is returned to callers.
+    """
+    lifecycle = state_dir / "game_lifecycle"
+    request = _read_json(lifecycle / "request.json")
+    ack = _read_json(lifecycle / "ack.json")
+    if not isinstance(request, dict) or not isinstance(ack, dict):
+        return False
+    if request.get("schema") != 1 or ack.get("schema") != 1:
+        return False
+    if request.get("request_id") != request_id or ack.get("request_id") != request_id:
+        return False
+    for field in ("game", "generation", "deadline_epoch", "deadline_at"):
+        if field not in request or field not in ack or ack.get(field) != request.get(field):
+            return False
+    status = ack.get("status")
+    if status == "stopped":
+        # The broker intentionally parks a stopped bridge until fresh-start.
+        return True
+    if status not in LIFECYCLE_DEADLINE_STATUSES:
+        return False
+    try:
+        deadline = float(request.get("deadline_epoch"))
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(deadline) and deadline > float(now)
+
+
+def _pause_owner(state_dir, name, now):
     """Classify one existing pause marker without exposing marker contents."""
     marker = state_dir / f"{name}.paused"
     raw = _read_text_capped(marker, 512)
@@ -144,6 +184,7 @@ def _pause_owner(state_dir, name):
             isinstance(record, dict)
             and record.get("request_id") == request_id
             and record.get(owner_field) is True
+            and _lifecycle_request_active(state_dir, request_id, now)
         ):
             return "lifecycle_owned"
         return "unknown"
@@ -204,7 +245,7 @@ def _collect_workers(soren, now):
         rel = pid_rel or default_pid_relpath(name)
         pid, stale = _parse_pid_file(soren / rel)
         is_paused = (state_dir / f"{name}.paused").is_file()
-        pause_owner = _pause_owner(state_dir, name) if is_paused else None
+        pause_owner = _pause_owner(state_dir, name, now) if is_paused else None
         alive = pid is not None and _pid_is_active(pid)
         zombie = pid is not None and _process_is_zombie(pid)
         if alive:
