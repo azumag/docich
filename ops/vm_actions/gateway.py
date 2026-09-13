@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import configparser, fcntl, hashlib, json, os, re, shutil, stat, subprocess, sys, tempfile, uuid
+import configparser, fcntl, hashlib, json, os, re, shutil, stat, subprocess, sys, tempfile, time, uuid
 from pathlib import Path, PurePosixPath
 
 SHA_RE=re.compile(r'[0-9a-f]{40}\Z')
@@ -16,6 +16,9 @@ DIAGNOSTICS_LIST_MAX=100
 DIAGNOSTICS_KEY_MAX=128
 DIAGNOSTICS_REDACT_KEYS=('API_KEY','TOKEN','SECRET','STREAM_KEY','PASSWORD','AUTHORIZATION','COOKIE','PRIVATE_KEY')
 PROJECTION_REVIEW_PATH_MAX=25
+BUNDLE_DIAGNOSTICS_MAX_ENTRIES=4096
+BUNDLE_AGE_7D_SEC=7*24*60*60
+BUNDLE_AGE_30D_SEC=30*24*60*60
 OWNED_SUBMODULES={
     'games/soviet_now':'https://github.com/azumag/soviet_now.git',
     'games/hanjuku-sfc-speedrun':'https://github.com/azumag/hanjuku-sfc-speedrun.git',
@@ -161,6 +164,124 @@ def _filesystem_status(path:Path):
     return {'total_bytes':total,'available_bytes':available,'used_percent':used_percent}
 
 
+def _bundle_storage_review(cfg,repo,now=None,max_entries=BUNDLE_DIAGNOSTICS_MAX_ENTRIES):
+    """Return bounded, identity-free bundle storage metrics for #365.
+
+    This is evidence collection only. It never deletes bundles. Any unexpected
+    directory entry, malformed reference, stat/read failure, or scan bound is
+    reflected in the completion flags, so missing evidence is never treated as
+    proof that a bundle is unreferenced.
+    """
+    now=time.time() if now is None else float(now)
+    bundles={}
+    scan_complete=True
+    root=state_root(cfg)/'bundles'/repo
+    entries_seen=0
+    if root.exists():
+        try:
+            with os.scandir(root) as entries:
+                for entry in entries:
+                    entries_seen+=1
+                    if entries_seen>max_entries:
+                        scan_complete=False; break
+                    try: st=entry.stat(follow_symlinks=False)
+                    except FileNotFoundError: continue
+                    except OSError:
+                        scan_complete=False; continue
+                    name=entry.name
+                    if entry.is_symlink() or not stat.S_ISREG(st.st_mode) or not name.endswith('.bundle') or not SHA_RE.fullmatch(name[:-7]):
+                        scan_complete=False; continue
+                    bundles[name[:-7]]={'bytes':max(0,int(st.st_size)),'age':max(0,int(now-st.st_mtime))}
+        except OSError:
+            scan_complete=False
+    elif root.is_symlink():
+        scan_complete=False
+
+    reference_scan_complete=True
+    source_refs={'current':set(),'previous':set(),'preview':set(),'intent':set(),'pending_repair':set()}
+    def add_ref(source,value,required=False):
+        nonlocal reference_scan_complete
+        if value is None and not required: return
+        if not isinstance(value,str) or not SHA_RE.fullmatch(value):
+            reference_scan_complete=False; return
+        source_refs[source].add(value)
+
+    try:
+        current=read_json(current_file(cfg,repo))
+    except (OSError,ValueError,TypeError,json.JSONDecodeError):
+        current=None; reference_scan_complete=False
+    if not isinstance(current,dict):
+        reference_scan_complete=False
+    else:
+        add_ref('current',current.get('sha'),required=True)
+        add_ref('previous',current.get('previous_head'))
+        intent=current.get('deployment_intent')
+        if intent is not None:
+            if not isinstance(intent,dict):
+                reference_scan_complete=False
+            else:
+                add_ref('intent',intent.get('from'),required=True)
+                add_ref('intent',intent.get('to'),required=True)
+        repairs=current.get('pending_repairs',[])
+        if not isinstance(repairs,list):
+            reference_scan_complete=False
+        else:
+            for repair in repairs:
+                if not isinstance(repair,dict):
+                    reference_scan_complete=False; continue
+                add_ref('pending_repair',repair.get('candidate_sha'),required=True)
+
+    releases=state_root(cfg)/'releases'/repo
+    release_entries=0
+    if releases.exists():
+        try:
+            with os.scandir(releases) as entries:
+                for entry in entries:
+                    release_entries+=1
+                    if release_entries>max_entries:
+                        reference_scan_complete=False; break
+                    try: st=entry.stat(follow_symlinks=False)
+                    except FileNotFoundError: continue
+                    except OSError:
+                        reference_scan_complete=False; continue
+                    if entry.is_symlink() or not stat.S_ISDIR(st.st_mode) or not SHA_RE.fullmatch(entry.name):
+                        reference_scan_complete=False; continue
+                    source_refs['preview'].add(entry.name)
+        except OSError:
+            reference_scan_complete=False
+    elif releases.is_symlink():
+        reference_scan_complete=False
+
+    referenced=set().union(*source_refs.values())
+    bundle_count=len(bundles)
+    bundle_bytes=sum(item['bytes'] for item in bundles.values())
+    older_7d={sha for sha,item in bundles.items() if item['age']>=BUNDLE_AGE_7D_SEC}
+    older_30d={sha for sha,item in bundles.items() if item['age']>=BUNDLE_AGE_30D_SEC}
+    present_refs=referenced.intersection(bundles)
+    complete=scan_complete and reference_scan_complete
+    unreferenced=set(bundles)-referenced if complete else None
+    result={
+        'scan_complete':bool(scan_complete),
+        'reference_scan_complete':bool(reference_scan_complete),
+        'bundle_count':bundle_count,
+        'bundle_bytes':bundle_bytes,
+        'older_7d_count':len(older_7d),
+        'older_7d_bytes':sum(bundles[sha]['bytes'] for sha in older_7d),
+        'older_30d_count':len(older_30d),
+        'older_30d_bytes':sum(bundles[sha]['bytes'] for sha in older_30d),
+        'referenced_count':len(present_refs),
+        'referenced_bytes':sum(bundles[sha]['bytes'] for sha in present_refs),
+        'current_ref_count':len(source_refs['current'].intersection(bundles)),
+        'previous_ref_count':len(source_refs['previous'].intersection(bundles)),
+        'preview_ref_count':len(source_refs['preview'].intersection(bundles)),
+        'intent_ref_count':len(source_refs['intent'].intersection(bundles)),
+        'pending_repair_ref_count':len(source_refs['pending_repair'].intersection(bundles)),
+        'unreferenced_count':len(unreferenced) if unreferenced is not None else None,
+        'unreferenced_bytes':sum(bundles[sha]['bytes'] for sha in unreferenced) if unreferenced is not None else None,
+    }
+    return result
+
+
 def _prune_preview_releases(cfg,repo,protected_sha,keep=2):
     if not SHA_RE.fullmatch(protected_sha) or keep < 1:
         raise ValueError('invalid preview retention request')
@@ -284,7 +405,7 @@ def _plan_repaired_projection(subrepo, destination, old_sha, new_sha, pending):
                 raise ValueError(f'pending repair baseline drift: {rel}')
             new_meta = _expected_meta(subrepo, _tree_entry(subrepo, new_sha, rel))
             if new_meta == meta['after']:
-                continue  # identical bytes AND mode: adopt without rewriting live
+                continue
             if new_meta != meta['before']:
                 raise ValueError(f'pending repair conflict: {rel}')
             keep[rel] = meta
@@ -301,9 +422,6 @@ def _plan_repaired_projection(subrepo, destination, old_sha, new_sha, pending):
         before_meta = _expected_meta(subrepo, before)
         after_meta = _expected_meta(subrepo, after)
         if live_meta == after_meta:
-            # A reviewed target may already have been projected by an owner-only
-            # bounded repair. Exact bytes + mode are safe to adopt without a
-            # rewrite; any third state remains fail-closed below.
             continue
         if live_meta != before_meta:
             raise ValueError(f'projection drift detected: {rel}')
@@ -344,7 +462,7 @@ def _rollback_projection(changes):
         if current==_change_meta(change,'old'): continue
         if current!=_change_meta(change,'new'):
             drift=True
-            continue  # never erase an unknown writer's data during rollback
+            continue
         if change['old_data'] is None:
             if path.exists(): path.unlink()
         else:
@@ -498,18 +616,8 @@ def deploy_git(cfg,repo,sha):
     applied=[]
     intent_written=False
     try:
-        # The parent fetch must succeed and must not recurse. git's default
-        # on-demand recursion resolves every gitlink reachable in the incoming
-        # history against the submodule remote; one gitlink whose commit was
-        # garbage collected upstream (a merged-and-deleted PR branch) makes the
-        # remote answer "upload-pack: not our ref" and fails the whole fetch,
-        # aborting every deploy before the baseline can move (2026-09-10 outage).
         subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','fetch','--no-recurse-submodules','--no-tags','--force',str(bundle),'HEAD'],
                        stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
-        # Best effort: pre-populate submodule objects that the bundle can supply, so
-        # sync_owned_submodules() does not have to reach the network. Unreachable
-        # gitlinks must not fail the deploy here; the owned submodule checkout is
-        # verified for real by sync_owned_submodules()/owned_submodules_match().
         subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','fetch','--recurse-submodules=on-demand','--no-tags','--force',str(bundle),'HEAD'],
                        stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False,timeout=120)
         if git(root,'cat-file','-t',sha)!='commit': raise ValueError('requested object is not commit')
@@ -537,9 +645,6 @@ def deploy_git(cfg,repo,sha):
                         if rel in entries:
                             entries[rel]=_change_meta(change,'new')
             for repair in state.get('pending_repairs',[]):
-                # Only a reviewed repair adopted by this main deployment needs
-                # persistent drift monitoring. Normal projection files may be
-                # updated by the live game/improvement runtime between deploys.
                 if repair['projection']==projection:
                     entries.update({rel:meta['after'] for rel,meta in repair['files'].items()
                                     if (projection,rel) not in remaining_paths})
@@ -558,7 +663,6 @@ def deploy_git(cfg,repo,sha):
             sync_owned_submodules(root)
         except Exception as error: rollback_errors.append(error)
         if rollback_errors:
-            # A finalized state may already exist if post-commit verification failed.
             write_json(state_path,{**state,'deployment_intent':{'from':old,'to':sha,'recovery_required':True}})
             raise ValueError('rollback incomplete; unknown drift preserved; recovery required') from failure
         if intent_written: write_json(state_path,state)
@@ -654,7 +758,7 @@ def _projection_review(cfg,repo,root:Path,sha:str):
                 notes[sub_path]='gitlink_lookup_failed'; continue
             if not old_sub or not new_sub:
                 notes[sub_path]='gitlink_missing'; continue
-            if old_sub==new_sub: continue  # nothing to check; not notable
+            if old_sub==new_sub: continue
             subrepo=root/sub_path
             if not subrepo.is_dir():
                 notes[sub_path]='checkout_missing'; continue
@@ -723,7 +827,9 @@ def diagnostics_result(cfg,repo,target,sha):
         raise ValueError('diagnostics output invalid')
     clean=_sanitize_diagnostics(data)
     review=_sanitize_diagnostics(_projection_review(cfg,repo,root,sha))
+    bundle_storage=_sanitize_diagnostics(_bundle_storage_review(cfg,repo))
     if review: clean={**clean,'projection_paths_needing_review':review}
+    clean={**clean,'bundle_storage':bundle_storage}
     if len(json.dumps(clean,separators=(',',':')).encode())>DIAGNOSTICS_JSON_MAX:
         raise ValueError('diagnostics output too large')
     return {'status':'diagnosed','sha':sha,'diagnostics':clean}
