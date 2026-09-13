@@ -84,6 +84,18 @@ VALUE_REDACT_RES = (
     re.compile(r"(?i)\b(api[_-]?key|token|secret|password|stream[_-]?key)\s*[:=]\s*\S+"),
 )
 
+# Fixed lifecycle records that can prove ownership of a supervisor pause
+# marker.  The record/marker contracts are owned by soviet_now's
+# lib/game_lifecycle.sh.  Only the fixed ownership enum is ever emitted.
+LIFECYCLE_PAUSE_RECORDS = {
+    "improve_daemon": ("improvement_pause.json", "improvement_marker_created"),
+    "prediction_worker": ("prediction_pause.json", "improvement_marker_created"),
+    "soren_loop": ("loop_pause.json", "loop_marker_created"),
+    "soviet_watchdog": ("watchdog_pause.json", "improvement_marker_created"),
+}
+PAUSE_OWNERS = ("lifecycle_owned", "operator_owned", "unknown")
+UNREGISTERED_HEALTH = ("alive", "paused", "stale_only", "unknown")
+
 
 def _redact_text(text, limit=MAX_ERROR_PREVIEW_LEN):
     if not isinstance(text, str):
@@ -112,6 +124,40 @@ def _read_json(path):
         return data if isinstance(data, dict) else None
     except (OSError, ValueError):
         return None
+
+
+def _pause_owner(state_dir, name):
+    """Classify one existing pause marker without exposing marker contents."""
+    marker = state_dir / f"{name}.paused"
+    raw = _read_text_capped(marker, 512)
+    if raw is None:
+        return "unknown"
+    value = raw.strip()
+    if value.startswith("lifecycle:"):
+        request_id = value[len("lifecycle:"):].strip()
+        spec = LIFECYCLE_PAUSE_RECORDS.get(name)
+        if not request_id or spec is None:
+            return "unknown"
+        record_name, owner_field = spec
+        record = _read_json(state_dir / "game_lifecycle" / record_name)
+        if (
+            isinstance(record, dict)
+            and record.get("request_id") == request_id
+            and record.get(owner_field) is True
+        ):
+            return "lifecycle_owned"
+        return "unknown"
+    try:
+        marker_data = json.loads(value)
+    except (TypeError, ValueError):
+        marker_data = None
+    if (
+        isinstance(marker_data, dict)
+        and marker_data.get("paused") is True
+        and marker_data.get("source") == "webui"
+    ):
+        return "operator_owned"
+    return "unknown"
 
 
 def _parse_pid_file(path):
@@ -150,12 +196,15 @@ def _collect_workers(soren, now):
     zombies = []
     stale_pid_files = []
     unregistered = []
+    pause_ownership = {key: 0 for key in PAUSE_OWNERS}
+    unregistered_health = {key: 0 for key in UNREGISTERED_HEALTH}
     details = {}
     seen_pids = {}
     for name, is_required, _category, pid_rel, _kind in WORKERS:
         rel = pid_rel or default_pid_relpath(name)
         pid, stale = _parse_pid_file(soren / rel)
         is_paused = (state_dir / f"{name}.paused").is_file()
+        pause_owner = _pause_owner(state_dir, name) if is_paused else None
         alive = pid is not None and _pid_is_active(pid)
         zombie = pid is not None and _process_is_zombie(pid)
         if alive:
@@ -166,6 +215,7 @@ def _collect_workers(soren, now):
             stale_pid_files.append(name)
         if is_paused:
             paused.append(name)
+            pause_ownership[pause_owner] += 1
         elif not alive:
             stopped.append(name)
         if alive:
@@ -177,6 +227,7 @@ def _collect_workers(soren, now):
             "zombie": bool(zombie),
             "stale_pid_file": bool(stale),
             "paused": bool(is_paused),
+            "pause_owner": pause_owner,
         }
     dup_report = _read_json(state_dir / "worker_duplicates.json")
     if isinstance(dup_report, dict):
@@ -217,6 +268,16 @@ def _collect_workers(soren, now):
                     continue
                 record["unregistered"] = True
                 unregistered.append(name)
+                if record["alive"]:
+                    health = "alive"
+                elif record["paused"]:
+                    health = "paused"
+                elif record["stale_pid_file"]:
+                    health = "stale_only"
+                else:
+                    health = "unknown"
+                record["unregistered_health"] = health
+                unregistered_health[health] += 1
                 details[name] = record
         except OSError:
             pass
@@ -225,10 +286,12 @@ def _collect_workers(soren, now):
         "running": running,
         "stopped": sorted(stopped),
         "paused": sorted(paused),
+        "pause_ownership": pause_ownership,
         "duplicates": sorted(duplicates),
         "zombies": sorted(zombies),
         "stale_pid_files": sorted(stale_pid_files),
         "unregistered": sorted(unregistered),
+        "unregistered_health": unregistered_health,
         "required_down": sorted(n for n in stopped if n in required),
         "required_stale": sorted(n for n in stale_pid_files if n in required),
         "details": details,
@@ -837,12 +900,44 @@ def _collect_programs(state_dir, soren, now):
     return payload
 
 
+def _count_map_matches(items, counts, keys):
+    if not isinstance(items, list) or not isinstance(counts, dict):
+        return False
+    total = 0
+    for key in keys:
+        value = counts.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return False
+        total += value
+    return total == len(items)
+
+
+def _paused_workers_actionable(workers):
+    paused = workers.get("paused") if isinstance(workers, dict) else None
+    if not isinstance(paused, list) or not paused:
+        return bool(paused)
+    counts = workers.get("pause_ownership")
+    if not _count_map_matches(paused, counts, PAUSE_OWNERS):
+        return True
+    return counts.get("unknown", 0) > 0
+
+
+def _unregistered_workers_actionable(workers):
+    unregistered = workers.get("unregistered") if isinstance(workers, dict) else None
+    if not isinstance(unregistered, list) or not unregistered:
+        return bool(unregistered)
+    counts = workers.get("unregistered_health")
+    if not _count_map_matches(unregistered, counts, UNREGISTERED_HEALTH):
+        return True
+    return any(counts.get(key, 0) > 0 for key in ("alive", "paused", "unknown"))
+
+
 def _severity(workers, queues, ai, improvement):
     if workers["required_down"] or workers["required_stale"]:
         return "critical"
     if (
-        workers["paused"]
-        or workers["unregistered"]
+        _paused_workers_actionable(workers)
+        or _unregistered_workers_actionable(workers)
         or workers["duplicates"]
         or workers["zombies"]
         or queues["stale_locks"] > 0
