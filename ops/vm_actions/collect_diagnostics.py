@@ -102,7 +102,7 @@ VALUE_REDACT_RES = (
 LIFECYCLE_PAUSE_RECORDS = {
     "improve_daemon": ("improvement_pause.json", "improvement_marker_created"),
     "prediction_worker": ("prediction_pause.json", "improvement_marker_created"),
-    "soren_loop": ("loop_pause.json", "improvement_marker_created"),
+    "soren_loop": ("loop_pause.json", "loop_marker_created"),
     "soviet_watchdog": ("watchdog_pause.json", "improvement_marker_created"),
 }
 LIFECYCLE_DEADLINE_STATUSES = frozenset({
