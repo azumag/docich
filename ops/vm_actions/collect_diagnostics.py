@@ -15,6 +15,9 @@ Observed sources (all read-only):
   - tmp/state/ai_stats/YYYYMMDD.jsonl structured telemetry
   - tmp/state/improve_state.json, improve lock/monitor/retry/gate markers
   - deployed git HEADs (docich + intended soviet_now gitlink)
+  - fixed, known temporary shared-object filename families under /tmp plus
+    same-user /proc maps/fd references; only bounded counts/bytes/booleans are
+    emitted, never filenames, PIDs, mappings or file contents
   - docich program/corner state under the production state_dir
     (game_switch.json, retro_corner.json, paper_corner.json,
     paper_corner_manual.json, trading/presentation.json,
@@ -37,6 +40,7 @@ import json
 import math
 import os
 import re
+import stat
 import subprocess
 import sys
 import time
@@ -78,6 +82,14 @@ default_pid_relpath = _REG.default_pid_relpath
 required_workers = _REG.required_workers
 
 RATE_LIMIT_RC = "79"
+TMP_SO_ROOT = Path("/tmp")
+TMP_SO_PATTERNS = (
+    re.compile(r"^\..+-00000000\.so\Z"),
+    re.compile(r"^\.bun-[A-Za-z0-9._-]+\.so\Z"),
+)
+TMP_SO_STALE_SEC = 6 * 60 * 60
+TMP_SO_MAX_CANDIDATES = 4096
+TMP_SO_MAX_PROC_FDS = 50000
 
 VALUE_REDACT_RES = (
     re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/-]+=*"),
@@ -130,6 +142,178 @@ def _read_json(path):
         return data if isinstance(data, dict) else None
     except (OSError, ValueError):
         return None
+
+
+def _tmp_so_name_matches(name):
+    return any(pattern.fullmatch(name) for pattern in TMP_SO_PATTERNS)
+
+
+def _device_inode(st):
+    try:
+        return (os.major(st.st_dev), os.minor(st.st_dev), int(st.st_ino))
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
+def _collect_tmp_shared_objects(
+    now,
+    tmp_root=TMP_SO_ROOT,
+    proc_root=Path("/proc"),
+    euid=None,
+    max_candidates=TMP_SO_MAX_CANDIDATES,
+    max_proc_fds=TMP_SO_MAX_PROC_FDS,
+):
+    """Count known leaked temporary .so families without exposing identities.
+
+    This is evidence collection only, not a deletion eligibility decision. The
+    reference scan is intentionally scoped to processes owned by the same uid
+    as the collector. Any truncation/read failure is reflected by a false
+    completion flag so callers cannot interpret missing references as proof
+    that a file is safe to remove.
+    """
+    euid = os.geteuid() if euid is None else int(euid)
+    candidates = {}
+    candidate_entries = 0
+    foreign_owner_entries = 0
+    hardlink_entries = 0
+    scan_complete = True
+    try:
+        entries = os.scandir(tmp_root)
+    except OSError:
+        entries = None
+        scan_complete = False
+    if entries is not None:
+        try:
+            with entries:
+                for entry in entries:
+                    if not _tmp_so_name_matches(entry.name):
+                        continue
+                    try:
+                        st = entry.stat(follow_symlinks=False)
+                    except FileNotFoundError:
+                        continue
+                    except OSError:
+                        scan_complete = False
+                        continue
+                    if not stat.S_ISREG(st.st_mode):
+                        continue
+                    candidate_entries += 1
+                    if st.st_uid != euid:
+                        foreign_owner_entries += 1
+                        continue
+                    key = _device_inode(st)
+                    if key is None:
+                        scan_complete = False
+                        continue
+                    if key not in candidates and len(candidates) >= max_candidates:
+                        scan_complete = False
+                        break
+                    if st.st_nlink > 1:
+                        hardlink_entries += 1
+                    age = max(0, int(now - st.st_mtime))
+                    candidates.setdefault(key, {"size": max(0, int(st.st_size)), "age": age})
+        except OSError:
+            scan_complete = False
+
+    old_keys = {key for key, item in candidates.items() if item["age"] >= TMP_SO_STALE_SEC}
+    referenced = set()
+    reference_scan_complete = bool(scan_complete)
+    fd_entries_scanned = 0
+    try:
+        proc_entries = os.scandir(proc_root)
+    except OSError:
+        proc_entries = None
+        reference_scan_complete = False
+    if proc_entries is not None:
+        try:
+            with proc_entries:
+                for proc_entry in proc_entries:
+                    if not proc_entry.name.isdigit():
+                        continue
+                    try:
+                        pst = proc_entry.stat(follow_symlinks=False)
+                    except FileNotFoundError:
+                        continue
+                    except OSError:
+                        reference_scan_complete = False
+                        continue
+                    if pst.st_uid != euid:
+                        continue
+
+                    maps_path = Path(proc_entry.path) / "maps"
+                    try:
+                        with open(maps_path, "r", encoding="utf-8", errors="replace") as handle:
+                            for line in handle:
+                                fields = line.split(None, 5)
+                                if len(fields) < 5 or fields[4] == "0":
+                                    continue
+                                try:
+                                    major_hex, minor_hex = fields[3].split(":", 1)
+                                    key = (int(major_hex, 16), int(minor_hex, 16), int(fields[4]))
+                                except (TypeError, ValueError):
+                                    continue
+                                if key in candidates:
+                                    referenced.add(key)
+                    except FileNotFoundError:
+                        continue
+                    except OSError:
+                        reference_scan_complete = False
+
+                    fd_root = Path(proc_entry.path) / "fd"
+                    try:
+                        fd_entries = os.scandir(fd_root)
+                    except FileNotFoundError:
+                        continue
+                    except OSError:
+                        reference_scan_complete = False
+                        continue
+                    with fd_entries:
+                        for fd_entry in fd_entries:
+                            fd_entries_scanned += 1
+                            if fd_entries_scanned > max_proc_fds:
+                                reference_scan_complete = False
+                                break
+                            try:
+                                fst = fd_entry.stat(follow_symlinks=True)
+                            except FileNotFoundError:
+                                continue
+                            except OSError:
+                                reference_scan_complete = False
+                                continue
+                            key = _device_inode(fst)
+                            if key in candidates:
+                                referenced.add(key)
+                    if fd_entries_scanned > max_proc_fds:
+                        break
+        except OSError:
+            reference_scan_complete = False
+
+    candidate_bytes = sum(item["size"] for item in candidates.values())
+    old_candidate_bytes = sum(candidates[key]["size"] for key in old_keys)
+    referenced_bytes = sum(candidates[key]["size"] for key in referenced if key in candidates)
+    if reference_scan_complete:
+        old_unreferenced = old_keys - referenced
+        old_unreferenced_count = len(old_unreferenced)
+        old_unreferenced_bytes = sum(candidates[key]["size"] for key in old_unreferenced)
+    else:
+        old_unreferenced_count = None
+        old_unreferenced_bytes = None
+    return {
+        "scan_complete": bool(scan_complete),
+        "reference_scan_complete": bool(reference_scan_complete),
+        "stale_age_sec": TMP_SO_STALE_SEC,
+        "candidate_entries": candidate_entries,
+        "candidate_count": len(candidates),
+        "candidate_bytes": candidate_bytes,
+        "old_candidate_count": len(old_keys),
+        "old_candidate_bytes": old_candidate_bytes,
+        "referenced_count": len(referenced),
+        "referenced_bytes": referenced_bytes,
+        "old_unreferenced_count": old_unreferenced_count,
+        "old_unreferenced_bytes": old_unreferenced_bytes,
+        "foreign_owner_entries": foreign_owner_entries,
+        "hardlink_entries": hardlink_entries,
+    }
 
 
 def _lifecycle_request_active(state_dir, request_id, now):
@@ -1016,6 +1200,7 @@ def main(argv):
         },
         "improvement": improvement,
         "corners": _collect_programs(_program_state_dir(), soren, now),
+        "storage_artifacts": _collect_tmp_shared_objects(now),
     }
     text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     if len(text.encode("utf-8")) > MAX_JSON_BYTES:
