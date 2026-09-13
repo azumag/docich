@@ -36,6 +36,11 @@ audio_sink = "soren_null"
 # コーナー告知を読み上げる VOICEVOX 話者（メリケンAI = 14 めいめいひまり）。
 # 本番 .env の SOREN91_VOICEVOX_SPEAKER があればそれを優先し、無ければこの値。
 voicevox_speaker = 14
+# コーナー開始/復帰時に Twitch のカテゴリ・タイトルを切り替える
+# (soren_root の update_stream_game.sh を呼ぶ。失敗してもコーナーは継続)。
+twitch_game = "soren91"
+restore_twitch_game = "sorengame"
+soren_root = "/home/ubuntu/soren"
 # soviet_now 側の bot。agent.enabled=true のとき必須 (絶対パス)。
 # 例: bot_path = "/home/ubuntu/soren/soren91/main.mjs"
 bot_path = ""
