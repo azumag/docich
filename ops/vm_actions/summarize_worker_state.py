@@ -37,14 +37,15 @@ WORKER_CATEGORIES = (
 )
 
 # Exact unregistered pid-file stems that are already part of reviewed Soren
-# runtime contracts.  They are projected only to fixed public enums; arbitrary
-# names always collapse to "other" and are never printed.
+# runtime contracts. They are projected only to fixed public enums that do not
+# reproduce the private/raw pid-file stems; arbitrary names always collapse to
+# "other" and are never printed.
 UNREGISTERED_CATEGORY_BY_NAME = {
     "soren_loop.manual": "manual_loop",
-    "explore": "explore",
-    "explore_bridge": "explore_bridge",
+    "explore": "exploration",
+    "explore_bridge": "exploration_bridge",
 }
-UNREGISTERED_CATEGORIES = ("manual_loop", "explore", "explore_bridge", "other")
+UNREGISTERED_CATEGORIES = ("manual_loop", "exploration", "exploration_bridge", "other")
 
 CATEGORY_BY_NAME = {name: category for name, _required, category, _pid, _kind in WORKERS}
 
