@@ -41,6 +41,8 @@ voicevox_speaker = 14
 twitch_game = "soren91"
 restore_twitch_game = "sorengame"
 soren_root = "/home/ubuntu/soren"
+# update_stream_game.sh に渡す docich のゲーム定義ディレクトリ。
+games_dir = "/home/ubuntu/docich/config/games"
 # soviet_now 側の bot。agent.enabled=true のとき必須 (絶対パス)。
 # 例: bot_path = "/home/ubuntu/soren/soren91/main.mjs"
 bot_path = ""

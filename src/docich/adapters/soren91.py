@@ -223,6 +223,7 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
         self.twitch_game = str(raw.get("twitch_game", "soren91") or "").strip()
         self.restore_twitch_game = str(raw.get("restore_twitch_game", "sorengame") or "").strip()
         self.soren_root = str(raw.get("soren_root", "/home/ubuntu/soren") or "").strip()
+        self.games_dir = str(raw.get("games_dir", "/home/ubuntu/docich/config/games") or "").strip()
         self._twitch_synced = False
         bot_path = raw.get("bot_path", "")
         if bot_path is None:
@@ -543,8 +544,11 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
         if not script.is_file():
             return
         try:
+            cmd = ["bash", str(script), "--game", game]
+            if self.games_dir:
+                cmd += ["--games-dir", self.games_dir]
             proc = subprocess.run(
-                ["bash", str(script), "--game", game],
+                cmd,
                 cwd=str(root), capture_output=True, text=True, timeout=30.0, check=False,
             )
             if proc.returncode != 0:
