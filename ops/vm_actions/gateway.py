@@ -177,7 +177,9 @@ def _bundle_storage_review(cfg,repo,now=None,max_entries=BUNDLE_DIAGNOSTICS_MAX_
     scan_complete=True
     root=state_root(cfg)/'bundles'/repo
     entries_seen=0
-    if root.exists():
+    if root.is_symlink():
+        scan_complete=False
+    elif root.exists():
         try:
             with os.scandir(root) as entries:
                 for entry in entries:
@@ -194,8 +196,6 @@ def _bundle_storage_review(cfg,repo,now=None,max_entries=BUNDLE_DIAGNOSTICS_MAX_
                     bundles[name[:-7]]={'bytes':max(0,int(st.st_size)),'age':max(0,int(now-st.st_mtime))}
         except OSError:
             scan_complete=False
-    elif root.is_symlink():
-        scan_complete=False
 
     reference_scan_complete=True
     source_refs={'current':set(),'previous':set(),'preview':set(),'intent':set(),'pending_repair':set()}
@@ -233,7 +233,9 @@ def _bundle_storage_review(cfg,repo,now=None,max_entries=BUNDLE_DIAGNOSTICS_MAX_
 
     releases=state_root(cfg)/'releases'/repo
     release_entries=0
-    if releases.exists():
+    if releases.is_symlink():
+        reference_scan_complete=False
+    elif releases.exists():
         try:
             with os.scandir(releases) as entries:
                 for entry in entries:
@@ -249,8 +251,6 @@ def _bundle_storage_review(cfg,repo,now=None,max_entries=BUNDLE_DIAGNOSTICS_MAX_
                     source_refs['preview'].add(entry.name)
         except OSError:
             reference_scan_complete=False
-    elif releases.is_symlink():
-        reference_scan_complete=False
 
     referenced=set().union(*source_refs.values())
     bundle_count=len(bundles)
@@ -405,7 +405,7 @@ def _plan_repaired_projection(subrepo, destination, old_sha, new_sha, pending):
                 raise ValueError(f'pending repair baseline drift: {rel}')
             new_meta = _expected_meta(subrepo, _tree_entry(subrepo, new_sha, rel))
             if new_meta == meta['after']:
-                continue
+                continue  # identical bytes AND mode: adopt without rewriting live
             if new_meta != meta['before']:
                 raise ValueError(f'pending repair conflict: {rel}')
             keep[rel] = meta
@@ -422,6 +422,9 @@ def _plan_repaired_projection(subrepo, destination, old_sha, new_sha, pending):
         before_meta = _expected_meta(subrepo, before)
         after_meta = _expected_meta(subrepo, after)
         if live_meta == after_meta:
+            # A reviewed target may already have been projected by an owner-only
+            # bounded repair. Exact bytes + mode are safe to adopt without a
+            # rewrite; any third state remains fail-closed below.
             continue
         if live_meta != before_meta:
             raise ValueError(f'projection drift detected: {rel}')
@@ -462,7 +465,7 @@ def _rollback_projection(changes):
         if current==_change_meta(change,'old'): continue
         if current!=_change_meta(change,'new'):
             drift=True
-            continue
+            continue  # never erase an unknown writer's data during rollback
         if change['old_data'] is None:
             if path.exists(): path.unlink()
         else:
@@ -616,8 +619,18 @@ def deploy_git(cfg,repo,sha):
     applied=[]
     intent_written=False
     try:
+        # The parent fetch must succeed and must not recurse. git's default
+        # on-demand recursion resolves every gitlink reachable in the incoming
+        # history against the submodule remote; one gitlink whose commit was
+        # garbage collected upstream (a merged-and-deleted PR branch) makes the
+        # remote answer "upload-pack: not our ref" and fails the whole fetch,
+        # aborting every deploy before the baseline can move (2026-09-10 outage).
         subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','fetch','--no-recurse-submodules','--no-tags','--force',str(bundle),'HEAD'],
                        stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
+        # Best effort: pre-populate submodule objects that the bundle can supply, so
+        # sync_owned_submodules() does not have to reach the network. Unreachable
+        # gitlinks must not fail the deploy here; the owned submodule checkout is
+        # verified for real by sync_owned_submodules()/owned_submodules_match().
         subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','fetch','--recurse-submodules=on-demand','--no-tags','--force',str(bundle),'HEAD'],
                        stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False,timeout=120)
         if git(root,'cat-file','-t',sha)!='commit': raise ValueError('requested object is not commit')
@@ -645,6 +658,9 @@ def deploy_git(cfg,repo,sha):
                         if rel in entries:
                             entries[rel]=_change_meta(change,'new')
             for repair in state.get('pending_repairs',[]):
+                # Only a reviewed repair adopted by this main deployment needs
+                # persistent drift monitoring. Normal projection files may be
+                # updated by the live game/improvement runtime between deploys.
                 if repair['projection']==projection:
                     entries.update({rel:meta['after'] for rel,meta in repair['files'].items()
                                     if (projection,rel) not in remaining_paths})
@@ -663,6 +679,7 @@ def deploy_git(cfg,repo,sha):
             sync_owned_submodules(root)
         except Exception as error: rollback_errors.append(error)
         if rollback_errors:
+            # A finalized state may already exist if post-commit verification failed.
             write_json(state_path,{**state,'deployment_intent':{'from':old,'to':sha,'recovery_required':True}})
             raise ValueError('rollback incomplete; unknown drift preserved; recovery required') from failure
         if intent_written: write_json(state_path,state)
@@ -758,7 +775,7 @@ def _projection_review(cfg,repo,root:Path,sha:str):
                 notes[sub_path]='gitlink_lookup_failed'; continue
             if not old_sub or not new_sub:
                 notes[sub_path]='gitlink_missing'; continue
-            if old_sub==new_sub: continue
+            if old_sub==new_sub: continue  # nothing to check; not notable
             subrepo=root/sub_path
             if not subrepo.is_dir():
                 notes[sub_path]='checkout_missing'; continue
