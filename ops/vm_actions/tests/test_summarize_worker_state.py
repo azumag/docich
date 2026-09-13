@@ -89,8 +89,8 @@ class WorkerStateSummaryTests(unittest.TestCase):
         }
         summary = self.mod.summarize_worker_state(data)
         self.assertIn("unregistered_stale_category_manual_loop=1", summary)
-        self.assertIn("unregistered_alive_category_explore=1", summary)
-        self.assertIn("unregistered_alive_category_explore_bridge=1", summary)
+        self.assertIn("unregistered_alive_category_exploration=1", summary)
+        self.assertIn("unregistered_alive_category_exploration_bridge=1", summary)
         self.assertIn("unregistered_alive_category_other=0", summary)
         self.assertNotIn("soren_loop.manual", summary)
         self.assertNotIn("explore_bridge", summary)
