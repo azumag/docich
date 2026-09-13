@@ -218,6 +218,12 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
         if not isinstance(audio_sink, str) or "\x00" in audio_sink:
             raise AdapterError("[soren91].audio_sink は文字列である必要があります")
         self.audio_sink = audio_sink.strip()
+        # Twitch category/title sync on switch (update_stream_game.sh in the
+        # Soren root). Best-effort: a failure must not fail the corner.
+        self.twitch_game = str(raw.get("twitch_game", "soren91") or "").strip()
+        self.restore_twitch_game = str(raw.get("restore_twitch_game", "sorengame") or "").strip()
+        self.soren_root = str(raw.get("soren_root", "/home/ubuntu/soren") or "").strip()
+        self._twitch_synced = False
         bot_path = raw.get("bot_path", "")
         if bot_path is None:
             bot_path = ""
@@ -523,6 +529,33 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
         if result.returncode != 0 or "srt" not in output.lower():
             raise AdapterError(f"{self.ffplay_bin} にSRT対応がありません")
 
+    def _sync_twitch(self, game: str) -> None:
+        """Best-effort Twitch category/title switch for the corner.
+
+        update_stream_game.sh lives in the Soren root and reads the docich
+        game config's [twitch] table. Failures are logged but never fail the
+        corner (the on-air video must not depend on the Twitch API).
+        """
+        if not game or not self.soren_root:
+            return
+        root = Path(self.soren_root)
+        script = root / "update_stream_game.sh"
+        if not script.is_file():
+            return
+        try:
+            proc = subprocess.run(
+                ["bash", str(script), "--game", game],
+                cwd=str(root), capture_output=True, text=True, timeout=30.0, check=False,
+            )
+            if proc.returncode != 0:
+                print(
+                    f"[soren91] twitch category sync failed game={game} rc={proc.returncode}: "
+                    f"{(proc.stderr or '').strip()[:200]}",
+                    file=sys.stderr,
+                )
+        except Exception as exc:  # noqa: BLE001 - best-effort on the on-air path
+            print(f"[soren91] twitch category sync error game={game}: {exc}", file=sys.stderr)
+
     def materialize_runtime(self, deadline: float, cancel) -> None:
         # Viewer first (generation-owned tmux session + game window through
         # presentation.py), then tell the Mac renderer to dial in.  The POST
@@ -573,6 +606,9 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
                 running = False
             bound = self._listener_bound()
             if running and bound:
+                if not self._twitch_synced:
+                    self._sync_twitch(self.twitch_game)
+                    self._twitch_synced = True
                 return
             if cancel is not None and cancel.is_set():
                 raise DeadlineExceededError("adapter call はcancelされました")
@@ -612,6 +648,10 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
             if time.monotonic() >= grace_until or time.monotonic() >= deadline:
                 raise AdapterError("SRT port が解放されませんでした")
             time.sleep(min(LISTENER_POLL_INTERVAL_S, max(0.0, deadline - time.monotonic())))
+        # Restore the main game's Twitch category/title only if we switched it.
+        if self._twitch_synced:
+            self._sync_twitch(self.restore_twitch_game)
+            self._twitch_synced = False
 
     def _clear_stale_bot_stop(self) -> None:
         """Remove a stale bot stop flag from the isolated bot cwd.

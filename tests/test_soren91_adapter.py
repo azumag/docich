@@ -880,3 +880,41 @@ class ManualSoren91CornerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSoren91TwitchSync(Soren91AdapterTestBase):
+    def test_twitch_sync_runs_update_stream_game_for_the_game(self):
+        from docich.adapters import soren91 as mod
+
+        root = self.root / "soren"
+        root.mkdir()
+        (root / "update_stream_game.sh").write_text("#!/bin/bash\n", encoding="utf-8")
+        self.game.raw["soren91"]["soren_root"] = str(root)
+        calls = []
+
+        class Proc:
+            returncode = 0
+            stderr = ""
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return Proc()
+
+        adapter = self._adapter()
+        with mock.patch.object(mod.subprocess, "run", fake_run):
+            adapter._sync_twitch("soren91")
+        self.assertTrue(calls)
+        cmd = calls[0][0]
+        self.assertIn("--game", cmd)
+        self.assertIn("soren91", cmd)
+        self.assertEqual(calls[0][1].get("cwd"), str(root))
+
+    def test_twitch_sync_is_a_noop_without_the_script(self):
+        from docich.adapters import soren91 as mod
+
+        self.game.raw["soren91"]["soren_root"] = str(self.root / "missing")
+        calls = []
+        adapter = self._adapter()
+        with mock.patch.object(mod.subprocess, "run", lambda *a, **k: calls.append(a)):
+            adapter._sync_twitch("soren91")
+        self.assertEqual(calls, [])
