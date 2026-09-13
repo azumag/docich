@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from .config import ConfigError, GlobalConfig, load_game, load_global
@@ -68,9 +69,11 @@ class ManualSoren91CornerManager(RetroCornerManager):
         self.lock_path = Path(g.state_dir) / MANUAL_LOCK_FILE
         try:
             raw = (load_game(g, GAME_NAME).raw.get("soren91") or {})
-            self.voicevox_speaker = str(raw.get("voicevox_speaker", 46))
+            self.voicevox_speaker = os.environ.get("SOREN91_VOICEVOX_SPEAKER") or str(
+                raw.get("voicevox_speaker", 14)
+            )
         except Exception:
-            self.voicevox_speaker = "46"
+            self.voicevox_speaker = os.environ.get("SOREN91_VOICEVOX_SPEAKER", "14")
         # The Meriken voice for the corner announcement (chat posts alone are
         # read by the default host speaker; this enqueues the explicit voice).
         self._voice = voice or (

@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import sys
 import tomllib
 from dataclasses import dataclass, field
@@ -218,9 +219,11 @@ class Soren91CornerManager(RetroCornerManager):
         self.tick_guard_path = Path(g.state_dir) / TICK_GUARD_FILE
         try:
             raw = (load_game(g, GAME_NAME).raw.get("soren91") or {})
-            self.voicevox_speaker = str(raw.get("voicevox_speaker", 46))
+            self.voicevox_speaker = os.environ.get("SOREN91_VOICEVOX_SPEAKER") or str(
+                raw.get("voicevox_speaker", 14)
+            )
         except Exception:
-            self.voicevox_speaker = "46"
+            self.voicevox_speaker = os.environ.get("SOREN91_VOICEVOX_SPEAKER", "14")
         self._voice = voice or (
             lambda text: enqueue_audio_text(
                 self.g, text, context="soren91:announce", speaker=self.voicevox_speaker

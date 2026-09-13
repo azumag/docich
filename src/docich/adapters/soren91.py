@@ -382,6 +382,9 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
             # default standalone-browser path to the shared-browser path.
             "SOREN91_SHARED_BROWSER": "1",
             "SOREN91_REMOTE_CDP_URL": self.remote_cdp_url(),
+            # The Mac host owns the window geometry; never fullscreen/resize
+            # the remote window from the bot (breaks the capture calibration).
+            "SOREN91_FULLSCREEN_WINDOW": "0",
         }
 
     # --- Mac local-agent HTTP -------------------------------------------------
