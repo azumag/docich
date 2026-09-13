@@ -11,7 +11,9 @@ tmux 常駐 (architecture.md §2) を主に systemd --user ユニットで包む
 | `docich-rotate.service` | `docich rotate` を1回実行する oneshot ユニット (`[Install]` なし。timer 専用) |
 | `docich-rotate.timer` | `docich-rotate.service` を毎時起動する timer ([rotation] 利用時のみ) |
 | `docich-retro-corner.service` | Soren本番 `:99` にメリケンAIレトロゲーム枠を載せる長時間oneshot |
-| `docich-retro-corner.timer` | 毎時 `retro-corner tick`。設定timezone/start_hourに一致した時だけ1日1回実行 |
+| `docich-retro-corner.timer` | 毎分 `retro-corner tick`。設定timezone/start_hourに一致した時だけ1日1回実行 |
+| `docich-soren91-corner.service` | Soren本番 `:99` にSoren91定時コーナーを載せる長時間oneshot |
+| `docich-soren91-corner.timer` | 毎分 `soren91-corner tick`。設定timezone/start_hour(/weekdays)に一致した時だけ1日1回実行 |
 | `docich-webui.service` | `docich webui` を常駐させる simple ユニット (Tailscale serve で公開する場合のみ利用) |
 
 `docich-free-strategy-worker.service` だけはDocker socketを使うためsystem scopeのunitです。
@@ -31,7 +33,9 @@ for f in \
   docich-rotate.service \
   docich-rotate.timer \
   docich-retro-corner.service \
-  docich-retro-corner.timer
+  docich-retro-corner.timer \
+  docich-soren91-corner.service \
+  docich-soren91-corner.timer
 do
   sed "s|__DOCICH_ROOT__|${DOCICH_ROOT}|g" "scripts/systemd/${f}" \
     > ~/.config/systemd/user/"${f}"
@@ -48,6 +52,10 @@ systemctl --user enable --now docich-rotate.timer
 # メリケンAI レトロゲームコーナーを使う場合。
 # 本番設定は config/docich.soren-live.toml の [retro_corner] を読む。
 systemctl --user enable --now docich-retro-corner.timer
+
+# Soren91 定時コーナーを使う場合 (当面は無効のまま。検証時だけ一時的に有効化)。
+# 本番設定は config/docich.soren-live.toml の [soren91_corner] を読む。
+systemctl --user enable --now docich-soren91-corner.timer
 ```
 
 `docich-rotate.service` と `docich-retro-corner.service` は `[Install]` を持たないため
@@ -82,6 +90,7 @@ workerの初回起動より先にlive profileの `trading notify-once` を実行
 ```sh
 bin/docich --config config/docich.soren-live.toml retro-corner status --json
 bin/docich --config config/docich.soren-live.toml paper-corner status
+bin/docich --config config/docich.soren-live.toml soren91-corner status --json
 bin/docich --config config/docich.soren-live.toml trading status
 ```
 
@@ -147,6 +156,7 @@ interval_s` 秒続くと自動的に切り替えが走る**。判定は「agent 
 ## 停止・無効化
 
 ```sh
+systemctl --user disable --now docich-soren91-corner.timer # 有効化していた場合のみ
 systemctl --user disable --now docich-retro-corner.timer  # 有効化していた場合のみ
 systemctl --user disable --now docich-rotate.timer        # 有効化していた場合のみ
 systemctl --user disable --now docich.service

@@ -65,6 +65,16 @@ duration_minutes = 60
 timezone = "Asia/Tokyo"
 games = ["robots"]
 
+# --- Soren91 定時コーナー (Phase 3) ---
+# 通常profileでは無効。本番は config/docich.soren-live.toml で明示的に有効化する。
+# games は ["soren91"] 固定。weekdays を置くとその曜日のみ (0=Mon..6=Sun)、
+# 省略時は毎日。
+[soren91_corner]
+enabled = false
+start_hour = 21
+duration_minutes = 30
+timezone = "Asia/Tokyo"
+
 # --- Web UI (モデルチェーン / バックオフ管理) ---
 
 [webui]

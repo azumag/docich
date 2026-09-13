@@ -56,6 +56,7 @@ class TestTwitchGameConfig(unittest.TestCase):
         # IGDB 照合済みの対応表 (変更時は Twitch 実登録と再照合すること)。
         expected = {
             "sorengame": ("1530787860", "Soren Game"),
+            "soren91": ("1530787860", "Soren Game"),
             "nethack": ("130", "NetHack"),
             "hanjuku-hero": ("21236", "Hanjuku Hero: Aa Sekai yo Hanjuku Nare...!!"),
             # robots.toml は codex/robots-game 側で未commit。着地時に

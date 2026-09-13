@@ -2215,6 +2215,25 @@ class GameSwitchCoordinator:
             raise GameSwitchError("adapter.round_boundary_timeout_s は正の秒数が必要です")
         return value
 
+    def _materialize_timeout_s(self, adapter: CoordinatorAdapter) -> float:
+        """Step cap for materialize_runtime (default: step_timeouts.start_s).
+
+        Adapters whose runtime takes minutes to appear (e.g. soren91's Mac
+        cold boot: Chrome start + Unity load + bot navigation, ~2min) may
+        declare a numeric ``materialize_timeout_s``.  The cap never exceeds
+        the request-wide deadline: ``_call_adapter`` bounds every step by
+        ``min(deadline - now, timeout_s)``.
+        """
+        raw = getattr(adapter, "materialize_timeout_s", None)
+        if raw is None:
+            return self.step_timeouts.start_s
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            raise GameSwitchError("adapter.materialize_timeout_s は秒数 (数値) が必要です")
+        value = float(raw)
+        if not value > 0:
+            raise GameSwitchError("adapter.materialize_timeout_s は正の秒数が必要です")
+        return value
+
     @staticmethod
     def _invoke_round_boundary_method(
         method: Callable[..., object],
@@ -2770,7 +2789,7 @@ class GameSwitchCoordinator:
             self._call_adapter(
                 lambda cancel: adapter.materialize_runtime(deadline, cancel),
                 deadline,
-                self.step_timeouts.start_s,
+                self._materialize_timeout_s(adapter),
                 "materialize",
             )
         except Exception as exc:
@@ -3286,7 +3305,7 @@ class GameSwitchCoordinator:
             self._call_adapter(
                 lambda cancel: adapter.materialize_runtime(deadline, cancel),
                 deadline,
-                self.step_timeouts.start_s,
+                self._materialize_timeout_s(adapter),
                 "materialize",
             )
             self._check_deadline(deadline)

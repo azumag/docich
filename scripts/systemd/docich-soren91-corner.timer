@@ -1,0 +1,10 @@
+[Unit]
+Description=docich Soren91 定時コーナーを毎分判定
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+Persistent=false
+Unit=docich-soren91-corner.service
+
+[Install]
+WantedBy=timers.target
