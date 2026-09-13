@@ -58,8 +58,42 @@ class WorkerStateSummaryTests(unittest.TestCase):
         self.assertIn("unregistered_alive=1", summary)
         self.assertIn("unregistered_stale=1", summary)
         self.assertIn("unregistered_paused=1", summary)
+        self.assertIn("unregistered_alive_category_other=1", summary)
+        self.assertIn("unregistered_stale_category_other=1", summary)
+        self.assertIn("unregistered_paused_category_other=1", summary)
         self.assertNotIn("SECRET_DYNAMIC_ONE", summary)
         self.assertNotIn("SECRET_DYNAMIC_TWO", summary)
+
+    def test_known_auxiliaries_emit_fixed_categories_without_names(self):
+        data = {
+            "workers": {
+                "unregistered": ["soren_loop.manual", "explore", "explore_bridge"],
+                "details": {
+                    "soren_loop.manual": {
+                        "alive": False,
+                        "stale_pid_file": True,
+                        "paused": False,
+                    },
+                    "explore": {
+                        "alive": True,
+                        "stale_pid_file": False,
+                        "paused": False,
+                    },
+                    "explore_bridge": {
+                        "alive": True,
+                        "stale_pid_file": False,
+                        "paused": False,
+                    },
+                },
+            }
+        }
+        summary = self.mod.summarize_worker_state(data)
+        self.assertIn("unregistered_stale_category_manual_loop=1", summary)
+        self.assertIn("unregistered_alive_category_exploration=1", summary)
+        self.assertIn("unregistered_alive_category_exploration_bridge=1", summary)
+        self.assertIn("unregistered_alive_category_other=0", summary)
+        self.assertNotIn("soren_loop.manual", summary)
+        self.assertNotIn("explore_bridge", summary)
 
     def test_malformed_dynamic_values_fail_closed_to_zero(self):
         data = {
@@ -76,6 +110,7 @@ class WorkerStateSummaryTests(unittest.TestCase):
         self.assertIn("unregistered_alive=0", summary)
         self.assertIn("unregistered_stale=0", summary)
         self.assertIn("unregistered_paused=0", summary)
+        self.assertIn("unregistered_alive_category_other=0", summary)
         self.assertNotIn("SECRET_DYNAMIC", summary)
 
 

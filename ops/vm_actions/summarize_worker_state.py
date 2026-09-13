@@ -4,7 +4,8 @@
 This runs on the GitHub Actions runner after the owner-only VM diagnostics
 collector. Dynamic worker names never enter stdout: registered workers are
 collapsed to the fixed categories in runtime_registry, and unregistered
-entries are reduced to liveness/stale/pause counts only.
+entries are reduced to liveness/stale/pause counts plus a tiny allowlisted set
+of fixed auxiliary categories used for production diagnosis.
 """
 import importlib.util
 import json
@@ -34,6 +35,17 @@ WORKER_CATEGORIES = (
     "stream",
     "other",
 )
+
+# Exact unregistered pid-file stems that are already part of reviewed Soren
+# runtime contracts. They are projected only to fixed public enums that do not
+# reproduce the private/raw pid-file stems; arbitrary names always collapse to
+# "other" and are never printed.
+UNREGISTERED_CATEGORY_BY_NAME = {
+    "soren_loop.manual": "manual_loop",
+    "explore": "exploration",
+    "explore_bridge": "exploration_bridge",
+}
+UNREGISTERED_CATEGORIES = ("manual_loop", "exploration", "exploration_bridge", "other")
 
 CATEGORY_BY_NAME = {name: category for name, _required, category, _pid, _kind in WORKERS}
 
@@ -71,16 +83,24 @@ def summarize_worker_state(data):
     unregistered_alive = 0
     unregistered_stale = 0
     unregistered_paused = 0
+    unregistered_by_category = {
+        state: {category: 0 for category in UNREGISTERED_CATEGORIES}
+        for state in ("alive", "stale", "paused")
+    }
     for name in unregistered_names:
         if not isinstance(name, str):
             continue
         record = details.get(name)
+        category = UNREGISTERED_CATEGORY_BY_NAME.get(name, "other")
         if _flag(record, "alive"):
             unregistered_alive += 1
+            unregistered_by_category["alive"][category] += 1
         if _flag(record, "stale_pid_file"):
             unregistered_stale += 1
+            unregistered_by_category["stale"][category] += 1
         if _flag(record, "paused"):
             unregistered_paused += 1
+            unregistered_by_category["paused"][category] += 1
 
     pause_ownership = workers.get("pause_ownership")
     unregistered_health = workers.get("unregistered_health")
@@ -100,6 +120,11 @@ def summarize_worker_state(data):
             f"unregistered_unknown={_count(unregistered_health, 'unknown')}",
         ]
     )
+    for state in ("alive", "stale", "paused"):
+        parts.extend(
+            f"unregistered_{state}_category_{category}={unregistered_by_category[state][category]}"
+            for category in UNREGISTERED_CATEGORIES
+        )
     return ",".join(parts)
 
 
