@@ -118,14 +118,6 @@ jobs:
           fi
           upper="$(printf '%s' "$SEVERITY" | tr '[:lower:]' '[:upper:]')"
           title="${prefix} ${upper} disk usage alert"
-          for entry in "${alerts[@]}"; do
-            number="${entry%%$'\t'*}"; existing="${entry#*$'\t'}"
-            [[ "$existing" == "$title" ]] && { echo "Existing alert #${number} remains open; suppressing duplicate."; exit 0; }
-          done
-          for entry in "${alerts[@]}"; do
-            number="${entry%%$'\t'*}"
-            gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Storage severity changed to ${upper} at ${USED_PERCENT}% usage."
-          done
           available="$(numfmt --to=iec-i --suffix=B "$AVAILABLE_BYTES")"
           total="$(numfmt --to=iec-i --suffix=B "$TOTAL_BYTES")"
           body="$(cat <<EOF
@@ -142,6 +134,18 @@ jobs:
           The monitor reports capacity only; it does not include VM logs, paths, credentials, or command output.
           EOF
           )"
+          for entry in "${alerts[@]}"; do
+            number="${entry%%$'\t'*}"; existing="${entry#*$'\t'}"
+            if [[ "$existing" == "$title" ]]; then
+              gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+              echo "Existing storage alert #${number} refreshed with the latest sanitized snapshot."
+              exit 0
+            fi
+          done
+          for entry in "${alerts[@]}"; do
+            number="${entry%%$'\t'*}"
+            gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Storage severity changed to ${upper} at ${USED_PERCENT}% usage."
+          done
           gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
           if [[ "$SEVERITY" == critical ]]; then
             echo "::error::VM storage pressure is critical (${USED_PERCENT}%)."
