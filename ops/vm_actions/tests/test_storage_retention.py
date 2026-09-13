@@ -107,6 +107,18 @@ class StorageMonitorWorkflowTests(unittest.TestCase):
         self.assertNotIn('echo "$diagnostics_json"', text)
         self.assertNotIn("exec docich production", text)
 
+    def test_storage_alert_refreshes_existing_same_severity_snapshot(self):
+        workflow = ROOT / ".github/workflows/vm-storage-monitor.yml"
+        text = workflow.read_text()
+        storage_step = text.split("- name: Update deduplicated GitHub alert", 1)[1].split(
+            "- name: Update deduplicated runtime health alert", 1
+        )[0]
+        edit = 'gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body "$body"'
+        self.assertIn(edit, storage_step)
+        self.assertIn("latest sanitized snapshot", storage_step)
+        self.assertNotIn("suppressing duplicate", storage_step)
+        self.assertLess(storage_step.index('body="$(cat <<EOF'), storage_step.index(edit))
+
     def test_runtime_alert_refreshes_existing_same_severity_snapshot(self):
         workflow = ROOT / ".github/workflows/vm-storage-monitor.yml"
         text = workflow.read_text()
