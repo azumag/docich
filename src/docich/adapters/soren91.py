@@ -48,6 +48,7 @@ DEFAULT_OCI_TAILSCALE_IP_ENV = "SOREN91_OCI_TAILSCALE_IP"
 DEFAULT_SRT_PORT = 19192
 DEFAULT_CDP_PORT = 9322
 DEFAULT_FFPLAY_BIN = "ffplay"
+DEFAULT_VIEWER_WAIT_SEC = 120
 
 AGENT_HTTP_TIMEOUT_S = 5.0
 LISTENER_POLL_INTERVAL_S = 0.5
@@ -208,6 +209,22 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
         if not isinstance(bot_path, str) or "\x00" in bot_path:
             raise AdapterError("[soren91].bot_path は文字列である必要があります")
         self.bot_path = bot_path.strip()
+        bot_cwd = raw.get("bot_cwd", "")
+        if bot_cwd is None:
+            bot_cwd = ""
+        if not isinstance(bot_cwd, str) or "\x00" in bot_cwd:
+            raise AdapterError("[soren91].bot_cwd は文字列である必要があります")
+        self.bot_cwd = bot_cwd.strip()
+        viewer_wait_sec = raw.get("viewer_wait_sec", DEFAULT_VIEWER_WAIT_SEC)
+        if viewer_wait_sec is None or viewer_wait_sec == "":
+            viewer_wait_sec = DEFAULT_VIEWER_WAIT_SEC
+        if (
+            isinstance(viewer_wait_sec, bool)
+            or not isinstance(viewer_wait_sec, int)
+            or not 10 <= viewer_wait_sec <= 600
+        ):
+            raise AdapterError("[soren91].viewer_wait_sec は10-600の整数である必要があります")
+        self.viewer_wait_sec = viewer_wait_sec
 
     # --- resolved runtime values (env is read per call, never cached) -------
 
@@ -280,6 +297,10 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
                 "--display", d.name, "--title", f"docich-present-{self.spec.runtime_id}",
                 "--x", str(d.viewport_x), "--y", str(d.viewport_y),
                 "--width", str(d.viewport_width), "--height", str(d.viewport_height),
+                # The SRT listener shows no window until the Mac's first frame
+                # arrives (Chrome boot + game load take a minute or more), so
+                # the presenter gets a longer viewer budget than local games.
+                "--viewer-wait-sec", str(self.viewer_wait_sec),
                 "--", *inner,
             ]
         return inner
@@ -300,6 +321,20 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
         if not self.bot_path:
             raise AdapterError("[soren91].bot_path が設定されていません (agent enabled)")
         return [self._node_bin(), self.bot_path]
+
+    def _bot_cwd(self) -> str:
+        """Working directory for the bot.
+
+        The bot writes state (game_history/ etc.) relative to its cwd, so it
+        must never run with the docich repo (or production soren91 tree) as
+        cwd. Empty bot_cwd resolves to the bot file's own directory, which
+        gives isolation for free when bot_path points at a copied tree.
+        """
+        if self.bot_cwd:
+            return self.bot_cwd
+        if not self.bot_path:
+            raise AdapterError("[soren91].bot_path が設定されていません (agent enabled)")
+        return str(Path(self.bot_path).parent)
 
     def _agent_window_env(self) -> dict:
         return {"SOREN91_REMOTE_CDP_URL": self.remote_cdp_url()}
@@ -380,6 +415,9 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
                 raise AdapterError("[soren91].bot_path が設定されていません (agent enabled)")
             if not Path(self.bot_path).is_file():
                 raise AdapterError("soren91 bot が見つかりません")
+            bot_cwd = Path(self._bot_cwd())
+            if not bot_cwd.is_dir():
+                raise AdapterError("soren91 bot の作業ディレクトリが見つかりません")
             # The bot dials the Mac renderer over CDP; resolve now so a bad
             # base URL fails here, not mid-corner.
             self.remote_cdp_url()
@@ -404,23 +442,30 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
         # Viewer first (generation-owned tmux session + game window through
         # presentation.py), then tell the Mac renderer to dial in.  The POST
         # only happens after the listener port accepts, so the first caller
-        # packets are never lost to a missing listener.
+        # packets are never lost to a missing listener.  When the gameplay
+        # bot is enabled it is launched here as well: no stream exists until
+        # the bot navigates the Mac Chrome to the game page, so waiting for
+        # readiness before starting the bot would deadlock.  The
+        # coordinator's later start_agent call finds the window and returns.
         super().materialize_runtime(deadline, cancel)
         self._check_active(deadline, cancel)
         self._wait_listener(deadline, cancel)
         self._check_active(deadline, cancel)
         try:
-            if self._agent_running(deadline, cancel):
-                return
+            renderer_running = self._agent_running(deadline, cancel)
         except AdapterError:
             raise
-        _status, payload = self._agent_request(
-            "POST", "/v1/start", deadline, cancel, body={"srtUrl": self.caller_srt_url()}
-        )
-        if _status == 409:
-            return
-        if _status not in (200, 202) or payload.get("ok") is not True:
-            raise AdapterError("Mac agent の renderer 起動に失敗しました")
+        if not renderer_running:
+            _status, payload = self._agent_request(
+                "POST", "/v1/start", deadline, cancel, body={"srtUrl": self.caller_srt_url()}
+            )
+            if _status == 409:
+                pass
+            elif _status not in (200, 202) or payload.get("ok") is not True:
+                raise AdapterError("Mac agent の renderer 起動に失敗しました")
+        if self.agent_enabled:
+            self._check_active(deadline, cancel)
+            self._launch_bot_window(deadline, cancel)
 
     def readiness(self, deadline: float, cancel) -> None:
         # The contained presenter window must exist (super), the Mac renderer
@@ -457,9 +502,13 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
             return False
 
     def cleanup_runtime(self, deadline: float, cancel) -> None:
-        # Stop the remote renderer first (best-effort: it may already be
-        # gone), then tear down our own windows/session, then prove the SRT
-        # port is free for the next generation.
+        # Stop the gameplay bot first (it drives the remote renderer), then
+        # the remote renderer (best-effort: it may already be gone), then our
+        # own windows/session, then prove the SRT port is free.
+        try:
+            self.stop_agent(deadline, cancel)
+        except AdapterError:
+            self._check_active(deadline, cancel)
         try:
             self._agent_request("POST", "/v1/stop", deadline, cancel)
         except AdapterError:
@@ -474,9 +523,8 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
                 raise AdapterError("SRT port が解放されませんでした")
             time.sleep(min(LISTENER_POLL_INTERVAL_S, max(0.0, deadline - time.monotonic())))
 
-    def start_agent(self, deadline: float, cancel) -> None:
-        if not self.agent_enabled:
-            return
+    def _launch_bot_window(self, deadline: float, cancel) -> None:
+        """Create the owned agent window running the gameplay bot (idempotent)."""
         self._check_active(deadline, cancel)
         target = self._agent_window_target()
         if self.tmux.window_target_exists(target):
@@ -488,8 +536,18 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
             self._agent_command(),
             self._ownership("agent"),
             env=self._agent_window_env(),
+            cwd=self._bot_cwd(),
         )
         self._check_active(deadline, cancel)
+
+    def start_agent(self, deadline: float, cancel) -> None:
+        if not self.agent_enabled:
+            return
+        # The bot is normally launched during materialize_runtime (no stream
+        # exists before it navigates the Mac Chrome), so this is usually a
+        # no-op ownership check. It still launches the bot when reaching this
+        # stage directly (e.g. immediate-quiesce retries).
+        self._launch_bot_window(deadline, cancel)
 
     def stop_agent(self, deadline: float, cancel) -> None:
         self._check_active(deadline, cancel)

@@ -19,7 +19,17 @@ def contain_filter(width: int, height: int) -> str:
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1")
 
 
-def main() -> int:
+def _positive_int(value: str) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(f"must be a positive integer (got {value!r})")
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"must be a positive integer (got {value!r})")
+    return number
+
+
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument('--display', required=True)
     parser.add_argument('--title', required=True)
@@ -27,8 +37,19 @@ def main() -> int:
     parser.add_argument('--y', type=int, required=True)
     parser.add_argument('--width', type=int, required=True)
     parser.add_argument('--height', type=int, required=True)
+    # How long to wait for the native viewer window before giving up.
+    # SRT listeners (e.g. the Soren91 Mac remote renderer) show no window
+    # until the first frame arrives, which can take a minute or more, so
+    # callers on that path pass a longer budget. The default stays at 10s
+    # so local-render CLI/paper corners behave exactly as before.
+    parser.add_argument('--viewer-wait-sec', type=_positive_int, default=10)
     parser.add_argument('command', nargs=argparse.REMAINDER)
-    args = parser.parse_args()
+    return parser
+
+
+def main(argv=None) -> int:
+    parser = _parser()
+    args = parser.parse_args(argv)
     command = args.command[1:] if args.command[:1] == ['--'] else args.command
     if not command or min(args.width, args.height) <= 0:
         parser.error('command and positive presentation dimensions are required')
@@ -84,7 +105,7 @@ def main() -> int:
         source_env = dict(os.environ, DISPLAY=f':{number}')
         source_env.pop('TMUX', None)
         viewer = launch(command, env=source_env)
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + args.viewer_wait_sec
         window = ''
         while time.monotonic() < deadline and viewer.poll() is None:
             found = subprocess.run(

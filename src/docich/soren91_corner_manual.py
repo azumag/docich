@@ -103,6 +103,7 @@ def _parser() -> argparse.ArgumentParser:
     start = sub.add_parser("start")
     start.add_argument("--duration-minutes", type=int, default=5)
     sub.add_parser("stop")
+    sub.add_parser("recover")
     status = sub.add_parser("status")
     status.add_argument("--json", action="store_true")
     return parser
@@ -141,12 +142,34 @@ def main(argv: list[str] | None = None) -> int:
                     f"ends_at={state.get('ends_at')}"
                 )
             return 0
+        if args.command == "recover":
+            # Reset a stuck coordinator (e.g. phase=failed after a rolled-back
+            # test) so the next start is accepted. Same store/scope as the
+            # manual run; production state is untouched when --config points
+            # at an isolated rehearsal config.
+            result = manager.coordinator.recover()
+            print(_recover_json(result))
+            return 0
         result = manager.start() if args.command == "start" else manager.stop()
         print(_result_json(result))
         return 0
     except (ConfigError, RetroCornerError) as exc:
         print(f"docich: エラー: {exc}")
         return 2
+
+
+def _recover_json(result) -> str:
+    return json.dumps(
+        {
+            "status": result.status,
+            "operation": result.operation,
+            "error_code": result.error_code,
+            "detail": result.detail,
+            "cleanup_pending": result.cleanup_pending,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 if __name__ == "__main__":

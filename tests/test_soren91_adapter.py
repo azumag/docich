@@ -38,6 +38,7 @@ class FakeTmux:
         self.window_env = {}
         self.session_cmds = {}
         self.window_cmds = {}
+        self.window_cwd = {}
 
     @staticmethod
     def _expected(ownership):
@@ -53,11 +54,12 @@ class FakeTmux:
         self.sessions[session] = self._expected(ownership)
         self.session_cmds[session] = list(cmd)
 
-    def create_window_owned(self, name, cmd, ownership, env=None):
+    def create_window_owned(self, name, cmd, ownership, env=None, cwd=None):
         target = f"docich-game-g{ownership.generation}:{name}"
         self.windows[target] = self._expected(ownership)
         self.window_cmds[target] = list(cmd)
         self.window_env[target] = dict(env or {})
+        self.window_cwd[target] = cwd
 
     def read_session_ownership(self, session):
         runtime_id, generation, role = self.sessions[session]
@@ -464,14 +466,15 @@ class TestUdpListenerParsing(Soren91AdapterTestBase):
 
 
 class TestBotAgent(Soren91AdapterTestBase):
-    def _enabled_game(self):
+    def _enabled_game(self, extra_soren91=""):
         bot = self.root / "main.mjs"
         bot.write_text("// bot\n", encoding="utf-8")
         (self.root / "config" / "games" / "soren91.toml").write_text(
             '[game]\nname="soren91"\ntitle="Soren91"\nadapter="soren91"\n'
             '[agent]\nenabled=true\n'
             '[lifecycle]\nrequire_round_boundary=false\n'
-            f'[soren91]\ncdp_port=9322\nsrt_port=19192\nffplay_bin="ffplay"\nbot_path="{bot}"\n',
+            f'[soren91]\ncdp_port=9322\nsrt_port=19192\nffplay_bin="ffplay"\nbot_path="{bot}"\n'
+            f"{extra_soren91}",
             encoding="utf-8",
         )
         return config.load_game(self.g, "soren91")
@@ -497,6 +500,93 @@ class TestBotAgent(Soren91AdapterTestBase):
         )
         adapter.stop_agent(time.monotonic() + 30, None)
         self.assertNotIn(target, self.tmux.windows)
+
+    def test_materialize_starts_bot_and_start_agent_is_idempotent(self):
+        game = self._enabled_game()
+        adapter = self._adapter(game)
+        with mock.patch("docich.procs.which", return_value="/usr/bin/node"):
+            with self._ffplay(), self._bound_listener(True), self._http():
+                self.http_plan = [
+                    (200, {"ok": True, "running": False}),
+                    (202, {"ok": True, "started": True}),
+                ]
+                adapter.materialize_runtime(time.monotonic() + 30, None)
+        target = "docich-game-g3:agent-g3"
+        self.assertIn(target, self.tmux.windows)
+        self.assertEqual(
+            self.tmux.window_env[target]["SOREN91_REMOTE_CDP_URL"],
+            f"http://{MAC_IP}:9322",
+        )
+        self.assertEqual(self.tmux.window_cwd[target], str(self.root))
+        with mock.patch("docich.procs.which", return_value="/usr/bin/node"):
+            adapter.start_agent(time.monotonic() + 30, None)
+        self.assertIn(target, self.tmux.windows)
+        self.assertEqual(len(self.tmux.windows), 2)  # game + agent, no duplicate
+
+    def test_materialize_skips_bot_when_disabled(self):
+        adapter = self._adapter()
+        with self._bound_listener(True), self._http():
+            self.http_plan = [
+                (200, {"ok": True, "running": False}),
+                (202, {"ok": True, "started": True}),
+            ]
+            adapter.materialize_runtime(time.monotonic() + 30, None)
+        self.assertNotIn("docich-game-g3:agent-g3", self.tmux.windows)
+
+    def test_cleanup_stops_bot_window(self):
+        game = self._enabled_game()
+        adapter = self._adapter(game)
+        with mock.patch("docich.procs.which", return_value="/usr/bin/node"):
+            with self._bound_listener(True), self._http():
+                self.http_plan = [
+                    (200, {"ok": True, "running": False}),
+                    (202, {"ok": True, "started": True}),
+                ]
+                adapter.materialize_runtime(time.monotonic() + 30, None)
+        target = "docich-game-g3:agent-g3"
+        self.assertIn(target, self.tmux.windows)
+        with self._bound_listener(False), self._http():
+            self.http_plan = [(202, {"ok": True, "stopping": True})]
+            adapter.cleanup_runtime(time.monotonic() + 30, None)
+        self.assertNotIn(target, self.tmux.windows)
+
+    def test_bot_cwd_explicit_and_preflight_rejects_missing_dir(self):
+        iso = self.root / "iso"
+        iso.mkdir()
+        game = self._enabled_game(f'bot_cwd="{iso}"\n')
+        adapter = self._adapter(game)
+        self.assertEqual(adapter._bot_cwd(), str(iso))
+        with mock.patch("docich.procs.which", return_value="/usr/bin/node"):
+            with self._ffplay():
+                adapter.preflight(time.monotonic() + 30, None)
+        game = self._enabled_game(f'bot_cwd="{self.root / "nope"}"\n')
+        adapter = self._adapter(game)
+        with mock.patch("docich.procs.which", return_value="/usr/bin/node"):
+            with self._ffplay():
+                with self.assertRaisesRegex(AdapterError, "作業ディレクトリ"):
+                    adapter.preflight(time.monotonic() + 30, None)
+
+    def test_viewer_wait_sec_default_and_validation(self):
+        adapter = self._adapter()
+        self.assertEqual(adapter.viewer_wait_sec, 120)
+        self.g.display.viewport_x = 0
+        self.g.display.viewport_y = 90
+        self.g.display.viewport_width = 960
+        self.g.display.viewport_height = 540
+        cmd = adapter._xterm_command()
+        self.assertIn("--viewer-wait-sec", cmd)
+        self.assertEqual(cmd[cmd.index("--viewer-wait-sec") + 1], "120")
+        (self.root / "config" / "games" / "soren91.toml").write_text(
+            '[game]\nname="soren91"\ntitle="Soren91"\nadapter="soren91"\n'
+            '[agent]\nenabled=false\n'
+            '[lifecycle]\nrequire_round_boundary=false\n'
+            '[soren91]\ncdp_port=9322\nsrt_port=19192\nffplay_bin="ffplay"\nbot_path=""\n'
+            'viewer_wait_sec=5\n',
+            encoding="utf-8",
+        )
+        game = config.load_game(self.g, "soren91")
+        with self.assertRaisesRegex(AdapterError, "viewer_wait_sec"):
+            self._adapter(game)
 
 
 class FakeCoordinator:
@@ -584,6 +674,8 @@ class ManualSoren91CornerTests(unittest.TestCase):
         self.assertEqual(args.duration_minutes, 5)
         args = _parser().parse_args(["start", "--duration-minutes", "10"])
         self.assertEqual(args.duration_minutes, 10)
+        args = _parser().parse_args(["recover"])
+        self.assertEqual(args.command, "recover")
 
 
 if __name__ == "__main__":

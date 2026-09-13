@@ -120,6 +120,7 @@ class Tmux:
         cmd: list[str],
         ownership: TmuxOwnership,
         env: dict | None = None,
+        cwd: str | None = None,
     ) -> str:
         """Create, tag and verify a window, rolling back its stable ID on failure."""
 
@@ -128,6 +129,8 @@ class Tmux:
             "new-window", "-d", "-P", "-F", "#{window_id}",
             "-t", self.session, "-n", name,
         ]
+        if cwd:
+            args += ["-c", cwd]
         if env:
             for key, value in env.items():
                 args += ["-e", f"{key}={value}"]
