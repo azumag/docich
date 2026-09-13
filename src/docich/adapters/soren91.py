@@ -337,7 +337,13 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
         return str(Path(self.bot_path).parent)
 
     def _agent_window_env(self) -> dict:
-        return {"SOREN91_REMOTE_CDP_URL": self.remote_cdp_url()}
+        return {
+            # The bot must drive the Mac Chrome over remote CDP: the URL tells
+            # it where, and the shared-browser flag switches it from its
+            # default standalone-browser path to the shared-browser path.
+            "SOREN91_SHARED_BROWSER": "1",
+            "SOREN91_REMOTE_CDP_URL": self.remote_cdp_url(),
+        }
 
     # --- Mac local-agent HTTP -------------------------------------------------
 

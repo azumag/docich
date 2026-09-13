@@ -498,6 +498,7 @@ class TestBotAgent(Soren91AdapterTestBase):
             self.tmux.window_env[target]["SOREN91_REMOTE_CDP_URL"],
             f"http://{MAC_IP}:9322",
         )
+        self.assertEqual(self.tmux.window_env[target]["SOREN91_SHARED_BROWSER"], "1")
         adapter.stop_agent(time.monotonic() + 30, None)
         self.assertNotIn(target, self.tmux.windows)
 
