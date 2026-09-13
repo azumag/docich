@@ -53,6 +53,8 @@ DEFAULT_VIEWER_WAIT_SEC = 120
 AGENT_HTTP_TIMEOUT_S = 5.0
 LISTENER_POLL_INTERVAL_S = 0.5
 STATUS_POLL_INTERVAL_S = 0.5
+CDP_POLL_INTERVAL_S = 1.0
+CDP_WAIT_BUDGET_S = 45.0
 CLEANUP_PORT_GRACE_S = 5.0
 
 
@@ -396,6 +398,43 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
                 raise ReadinessTimeoutError("SRT listener がbindされませんでした")
             time.sleep(min(LISTENER_POLL_INTERVAL_S, max(0.0, deadline - time.monotonic())))
 
+    def _cdp_proxy_ready(self) -> bool:
+        """True when the Mac CDP proxy answers /json/version.
+
+        Plain urllib GET through the Tailscale-bound TCP proxy (it forwards
+        HTTP as well as WebSocket upgrades). No auth: the proxy itself is
+        peer-locked on the Mac side.
+        """
+        try:
+            _base, host = self._agent_base()
+        except AdapterError:
+            return False
+        url = f"http://{host}:{self.cdp_port}/json/version"
+        try:
+            with urllib.request.urlopen(url, timeout=AGENT_HTTP_TIMEOUT_S) as response:
+                return 200 <= response.status < 300
+        except (urllib.error.URLError, OSError, ValueError):
+            return False
+
+    def _wait_cdp_proxy(self, deadline: float, cancel) -> None:
+        """Wait until the Mac CDP proxy accepts connections.
+
+        The bot must never start before this point: an early remote-CDP
+        connect fails while Chrome is still booting, and the bot then falls
+        back to launching its own standalone browser instead of driving the
+        Mac renderer (no stream ever starts). Fail closed on timeout.
+        """
+        budget_until = min(deadline, time.monotonic() + CDP_WAIT_BUDGET_S)
+        while True:
+            if self._cdp_proxy_ready():
+                return
+            if cancel is not None and cancel.is_set():
+                raise DeadlineExceededError("adapter call はcancelされました")
+            now = time.monotonic()
+            if now >= budget_until or now >= deadline:
+                raise ReadinessTimeoutError("Mac CDP proxy が応答しませんでした")
+            time.sleep(min(CDP_POLL_INTERVAL_S, max(0.0, deadline - now)))
+
     # --- CoordinatorAdapter contract ------------------------------------------
 
     def preflight(self, deadline: float, cancel) -> None:
@@ -470,6 +509,11 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
             elif _status not in (200, 202) or payload.get("ok") is not True:
                 raise AdapterError("Mac agent の renderer 起動に失敗しました")
         if self.agent_enabled:
+            # The Mac proxy only answers once Chrome finished booting. The
+            # bot must wait for it: connecting early fails and the bot falls
+            # back to a standalone browser (no Mac stream ever starts).
+            self._check_active(deadline, cancel)
+            self._wait_cdp_proxy(deadline, cancel)
             self._check_active(deadline, cancel)
             self._launch_bot_window(deadline, cancel)
 

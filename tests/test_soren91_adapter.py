@@ -150,13 +150,22 @@ class Soren91AdapterTestBase(unittest.TestCase):
     @contextmanager
     def _http(self):
         def fake_urlopen(request, timeout=None):
-            body = request.data.decode("utf-8") if request.data else None
+            if isinstance(request, str):
+                url, method, body = request, "GET", None
+                auth, content_type = None, None
+            else:
+                url, method = request.full_url, request.get_method()
+                body = request.data.decode("utf-8") if request.data else None
+                auth, content_type = (
+                    request.get_header("Authorization"),
+                    request.get_header("Content-type"),
+                )
             self.http_calls.append(
                 {
-                    "url": request.full_url,
-                    "method": request.get_method(),
-                    "auth": request.get_header("Authorization"),
-                    "content_type": request.get_header("Content-type"),
+                    "url": url,
+                    "method": method,
+                    "auth": auth,
+                    "content_type": content_type,
                     "body": body,
                 }
             )
@@ -566,6 +575,46 @@ class TestBotAgent(Soren91AdapterTestBase):
             with self._ffplay():
                 with self.assertRaisesRegex(AdapterError, "作業ディレクトリ"):
                     adapter.preflight(time.monotonic() + 30, None)
+
+    def test_materialize_waits_for_cdp_proxy_before_bot(self):
+        game = self._enabled_game()
+        adapter = self._adapter(game)
+        with mock.patch("docich.procs.which", return_value="/usr/bin/node"):
+            with self._ffplay(), self._bound_listener(True), self._http():
+                self.http_plan = [
+                    (200, {"ok": True, "running": False}),
+                    (202, {"ok": True, "started": True}),
+                ]
+                adapter.materialize_runtime(time.monotonic() + 30, None)
+        urls = [c["url"] for c in self.http_calls]
+        self.assertTrue(urls[0].endswith("/v1/status"))
+        self.assertTrue(urls[1].endswith("/v1/start"))
+        cdp_calls = [u for u in urls if u.endswith("/json/version")]
+        self.assertTrue(cdp_calls)
+        self.assertIn(f"http://{MAC_IP}:9322/json/version", cdp_calls)
+        self.assertIn("docich-game-g3:agent-g3", self.tmux.windows)
+
+    def test_materialize_fails_closed_when_cdp_proxy_silent(self):
+        game = self._enabled_game()
+        adapter = self._adapter(game)
+        with mock.patch("docich.procs.which", return_value="/usr/bin/node"):
+            with self._ffplay(), self._bound_listener(True), self._http():
+                self.http_plan = [
+                    (200, {"ok": True, "running": False}),
+                    (202, {"ok": True, "started": True}),
+                ] + [urllib.error.URLError("refused")] * 10
+                with self.assertRaises(ReadinessTimeoutError):
+                    adapter.materialize_runtime(time.monotonic() + 2.5, None)
+        self.assertNotIn("docich-game-g3:agent-g3", self.tmux.windows)
+
+    def test_cdp_proxy_ready_probes_version_endpoint(self):
+        adapter = self._adapter()
+        with self._http():
+            self.assertTrue(adapter._cdp_proxy_ready())
+            self.assertTrue(self.http_calls[-1]["url"].endswith("/json/version"))
+        with self._http():
+            self.http_plan = [urllib.error.URLError("down")]
+            self.assertFalse(adapter._cdp_proxy_ready())
 
     def test_viewer_wait_sec_default_and_validation(self):
         adapter = self._adapter()
