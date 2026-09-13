@@ -189,6 +189,7 @@ def summarize(data):
     ai = data.get("ai") or {}
     improvement = data.get("improvement") or {}
     corners = data.get("corners") or {}
+    storage_artifacts = data.get("storage_artifacts") or {}
 
     recent = ai.get("recent_events")
     cause_counts = Counter()
@@ -236,6 +237,14 @@ def summarize(data):
     paper_manual = corners.get("paper_corner_manual") if isinstance(corners, dict) else None
     paper_improve = corners.get("paper_improve") if isinstance(corners, dict) else None
     ab = corners.get("ab") if isinstance(corners, dict) else None
+    old_unref_known = (
+        isinstance(storage_artifacts, dict)
+        and storage_artifacts.get("reference_scan_complete") is True
+        and isinstance(storage_artifacts.get("old_unreferenced_count"), int)
+        and not isinstance(storage_artifacts.get("old_unreferenced_count"), bool)
+        and isinstance(storage_artifacts.get("old_unreferenced_bytes"), int)
+        and not isinstance(storage_artifacts.get("old_unreferenced_bytes"), bool)
+    )
     parts = [
         f"required_down={_nlist(workers, 'required_down')}",
         f"required_stale={_nlist(workers, 'required_stale')}",
@@ -299,6 +308,19 @@ def summarize(data):
             f"corner_paper_manual_active={int(_fixed_status_is(paper_manual, ACTIVE_CORNER_STATUSES))}",
             f"corner_paper_improve_running={int(_fixed_status_is(paper_improve, ACTIVE_PAPER_IMPROVE_STATUSES))}",
             f"corner_ab_candidate_pending={int(isinstance(ab, dict) and ab.get('candidate_pending') is True)}",
+            f"tmp_so_scan_complete={int(isinstance(storage_artifacts, dict) and storage_artifacts.get('scan_complete') is True)}",
+            f"tmp_so_reference_scan_complete={int(isinstance(storage_artifacts, dict) and storage_artifacts.get('reference_scan_complete') is True)}",
+            f"tmp_so_candidate_count={_integer(storage_artifacts, 'candidate_count')}",
+            f"tmp_so_candidate_bytes={_integer(storage_artifacts, 'candidate_bytes')}",
+            f"tmp_so_old_candidate_count={_integer(storage_artifacts, 'old_candidate_count')}",
+            f"tmp_so_old_candidate_bytes={_integer(storage_artifacts, 'old_candidate_bytes')}",
+            f"tmp_so_referenced_count={_integer(storage_artifacts, 'referenced_count')}",
+            f"tmp_so_referenced_bytes={_integer(storage_artifacts, 'referenced_bytes')}",
+            f"tmp_so_old_unreferenced_known={int(old_unref_known)}",
+            f"tmp_so_old_unreferenced_count={_integer(storage_artifacts, 'old_unreferenced_count') if old_unref_known else 0}",
+            f"tmp_so_old_unreferenced_bytes={_integer(storage_artifacts, 'old_unreferenced_bytes') if old_unref_known else 0}",
+            f"tmp_so_foreign_owner_entries={_integer(storage_artifacts, 'foreign_owner_entries')}",
+            f"tmp_so_hardlink_entries={_integer(storage_artifacts, 'hardlink_entries')}",
         ]
     )
     return severity, ",".join(parts)
