@@ -141,6 +141,39 @@ class BundleStorageDiagnosticsTests(unittest.TestCase):
         self.assertFalse(result["scan_complete"])
         self.assertIsNone(result["unreferenced_count"])
 
+    def test_symlinked_bundle_root_fails_closed_without_following_it(self):
+        a = "a" * 40
+        target = self.base / "external-bundles"
+        target.mkdir()
+        (target / f"{a}.bundle").write_bytes(b"secret")
+        bundle_root = self.state / "bundles" / "docich"
+        bundle_root.parent.mkdir(parents=True)
+        bundle_root.symlink_to(target, target_is_directory=True)
+        self._write_current({"mode": "git", "sha": a, "previous_head": None, "pending_repairs": []})
+
+        result = self.gateway._bundle_storage_review(self.cfg, "docich", now=self.now)
+
+        self.assertFalse(result["scan_complete"])
+        self.assertEqual(result["bundle_count"], 0)
+        self.assertIsNone(result["unreferenced_count"])
+
+    def test_symlinked_release_root_fails_closed_without_following_it(self):
+        a = "a" * 40
+        self._bundle(a, 10)
+        self._write_current({"mode": "git", "sha": a, "previous_head": None, "pending_repairs": []})
+        target = self.base / "external-releases"
+        (target / a).mkdir(parents=True)
+        release_root = self.state / "releases" / "docich"
+        release_root.parent.mkdir(parents=True)
+        release_root.symlink_to(target, target_is_directory=True)
+
+        result = self.gateway._bundle_storage_review(self.cfg, "docich", now=self.now)
+
+        self.assertTrue(result["scan_complete"])
+        self.assertFalse(result["reference_scan_complete"])
+        self.assertEqual(result["preview_ref_count"], 0)
+        self.assertIsNone(result["unreferenced_count"])
+
 
 if __name__ == "__main__":
     unittest.main()
