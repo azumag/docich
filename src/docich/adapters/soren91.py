@@ -48,13 +48,20 @@ DEFAULT_OCI_TAILSCALE_IP_ENV = "SOREN91_OCI_TAILSCALE_IP"
 DEFAULT_SRT_PORT = 19192
 DEFAULT_CDP_PORT = 9322
 DEFAULT_FFPLAY_BIN = "ffplay"
-DEFAULT_VIEWER_WAIT_SEC = 120
+DEFAULT_VIEWER_WAIT_SEC = 240
 
 AGENT_HTTP_TIMEOUT_S = 5.0
 LISTENER_POLL_INTERVAL_S = 0.5
 STATUS_POLL_INTERVAL_S = 0.5
 CDP_POLL_INTERVAL_S = 1.0
-CDP_WAIT_BUDGET_S = 45.0
+CDP_WAIT_BUDGET_S = 180.0
+# Extra headroom inside the coordinator's materialize step for everything
+# around the CDP wait (listener wait, agent start, bot launch).  The
+# coordinator caps materialize_runtime at step_timeouts.start_s (60s) unless
+# the adapter declares materialize_timeout_s (see below): a cold boot
+# (Chrome start + Unity load + bot navigation, ~2min observed) never fits
+# in 60s, so the adapter carries its own budget.
+MATERIALIZE_MARGIN_S = 120.0
 CLEANUP_PORT_GRACE_S = 5.0
 
 
@@ -227,6 +234,16 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
         ):
             raise AdapterError("[soren91].viewer_wait_sec は10-600の整数である必要があります")
         self.viewer_wait_sec = viewer_wait_sec
+        cdp_wait_sec = raw.get("cdp_wait_sec", CDP_WAIT_BUDGET_S)
+        if cdp_wait_sec is None or cdp_wait_sec == "":
+            cdp_wait_sec = CDP_WAIT_BUDGET_S
+        if (
+            isinstance(cdp_wait_sec, bool)
+            or not isinstance(cdp_wait_sec, (int, float))
+            or not 10 <= cdp_wait_sec <= 600
+        ):
+            raise AdapterError("[soren91].cdp_wait_sec は10-600の秒数である必要があります")
+        self.cdp_wait_sec = float(cdp_wait_sec)
 
     # --- resolved runtime values (env is read per call, never cached) -------
 
@@ -276,6 +293,18 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
         """CDP URL the OCI bot uses to drive the Mac renderer."""
         _, host = self._agent_base()
         return f"http://{host}:{self.cdp_port}"
+
+    @property
+    def materialize_timeout_s(self) -> float:
+        """Coordinator step cap override for materialize_runtime.
+
+        Cold boot (Mac Chrome start + Unity load + bot navigation) takes
+        ~2min, far beyond the coordinator-wide start_s (60s).  The
+        coordinator still bounds this by the request-wide deadline, so a
+        hung adapter cannot hold the lock past the request budget
+        (default 600s: 180s CDP wait + 120s margin = 300s fits).
+        """
+        return self.cdp_wait_sec + MATERIALIZE_MARGIN_S
 
     # --- viewer / session commands -------------------------------------------
 
@@ -424,7 +453,7 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
         back to launching its own standalone browser instead of driving the
         Mac renderer (no stream ever starts). Fail closed on timeout.
         """
-        budget_until = min(deadline, time.monotonic() + CDP_WAIT_BUDGET_S)
+        budget_until = min(deadline, time.monotonic() + self.cdp_wait_sec)
         while True:
             if self._cdp_proxy_ready():
                 return

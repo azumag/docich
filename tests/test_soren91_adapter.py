@@ -651,14 +651,14 @@ class TestBotAgent(Soren91AdapterTestBase):
 
     def test_viewer_wait_sec_default_and_validation(self):
         adapter = self._adapter()
-        self.assertEqual(adapter.viewer_wait_sec, 120)
+        self.assertEqual(adapter.viewer_wait_sec, 240)
         self.g.display.viewport_x = 0
         self.g.display.viewport_y = 90
         self.g.display.viewport_width = 960
         self.g.display.viewport_height = 540
         cmd = adapter._xterm_command()
         self.assertIn("--viewer-wait-sec", cmd)
-        self.assertEqual(cmd[cmd.index("--viewer-wait-sec") + 1], "120")
+        self.assertEqual(cmd[cmd.index("--viewer-wait-sec") + 1], "240")
         (self.root / "config" / "games" / "soren91.toml").write_text(
             '[game]\nname="soren91"\ntitle="Soren91"\nadapter="soren91"\n'
             '[agent]\nenabled=false\n'
@@ -670,6 +670,78 @@ class TestBotAgent(Soren91AdapterTestBase):
         game = config.load_game(self.g, "soren91")
         with self.assertRaisesRegex(AdapterError, "viewer_wait_sec"):
             self._adapter(game)
+
+    def test_cdp_wait_sec_default_config_override_and_validation(self):
+        from docich.adapters.soren91 import CDP_WAIT_BUDGET_S, MATERIALIZE_MARGIN_S
+
+        adapter = self._adapter()
+        self.assertEqual(adapter.cdp_wait_sec, CDP_WAIT_BUDGET_S)
+        self.assertEqual(CDP_WAIT_BUDGET_S, 180.0)
+        # The coordinator step cap covers the cold boot (Chrome + Unity +
+        # bot navigation, ~2min observed) instead of the 60s start_s cap.
+        self.assertEqual(
+            adapter.materialize_timeout_s, CDP_WAIT_BUDGET_S + MATERIALIZE_MARGIN_S
+        )
+        self.assertLess(adapter.materialize_timeout_s, 600.0)
+        (self.root / "config" / "games" / "soren91.toml").write_text(
+            '[game]\nname="soren91"\ntitle="Soren91"\nadapter="soren91"\n'
+            '[agent]\nenabled=false\n'
+            '[lifecycle]\nrequire_round_boundary=false\n'
+            '[soren91]\ncdp_port=9322\nsrt_port=19192\nffplay_bin="ffplay"\nbot_path=""\n'
+            'cdp_wait_sec=200\n',
+            encoding="utf-8",
+        )
+        game = config.load_game(self.g, "soren91")
+        overridden = self._adapter(game)
+        self.assertEqual(overridden.cdp_wait_sec, 200.0)
+        self.assertEqual(overridden.materialize_timeout_s, 200.0 + MATERIALIZE_MARGIN_S)
+        (self.root / "config" / "games" / "soren91.toml").write_text(
+            '[game]\nname="soren91"\ntitle="Soren91"\nadapter="soren91"\n'
+            '[agent]\nenabled=false\n'
+            '[lifecycle]\nrequire_round_boundary=false\n'
+            '[soren91]\ncdp_port=9322\nsrt_port=19192\nffplay_bin="ffplay"\nbot_path=""\n'
+            'cdp_wait_sec=5\n',
+            encoding="utf-8",
+        )
+        game = config.load_game(self.g, "soren91")
+        with self.assertRaisesRegex(AdapterError, "cdp_wait_sec"):
+            self._adapter(game)
+
+    def test_wait_cdp_proxy_honors_configured_budget(self):
+        adapter = self._adapter()
+        calls = []
+
+        def fake_ready():
+            calls.append(time.monotonic())
+            return False
+
+        with mock.patch.object(adapter, "_cdp_proxy_ready", side_effect=fake_ready):
+            with mock.patch(
+                "docich.adapters.soren91.CDP_POLL_INTERVAL_S", 0.01
+            ):
+                start = time.monotonic()
+                with self.assertRaises(ReadinessTimeoutError):
+                    # Short deadline proves the wait is deadline-bounded.
+                    adapter._wait_cdp_proxy(start + 0.05, None)
+        self.assertTrue(calls)
+
+    def test_materialize_timeout_override_reaches_coordinator(self):
+        from docich.game_switch import GameSwitchCoordinator
+
+        coordinator = GameSwitchCoordinator.__new__(GameSwitchCoordinator)
+        from docich.game_switch import StepTimeouts
+
+        coordinator.step_timeouts = StepTimeouts()
+        adapter = self._adapter()
+        self.assertEqual(
+            coordinator._materialize_timeout_s(adapter),
+            adapter.materialize_timeout_s,
+        )
+        plain = object()
+        self.assertEqual(
+            coordinator._materialize_timeout_s(plain),
+            coordinator.step_timeouts.start_s,
+        )
 
 
 class FakeCoordinator:

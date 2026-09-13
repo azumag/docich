@@ -33,6 +33,11 @@ ffplay_bin = "ffplay"
 # soviet_now 側の bot。agent.enabled=true のとき必須 (絶対パス)。
 # 例: bot_path = "/home/ubuntu/soren/soren91/main.mjs"
 bot_path = ""
+# Mac コールドブート (Chrome 起動＋Unity ロード＋bot 遷移、約2分) に合わせた
+# 待ち予算。既定: viewer_wait_sec=240、cdp_wait_sec=180。
+# 必要なら上書き可 (どちらも 10-600 の整数)。
+# viewer_wait_sec = 240
+# cdp_wait_sec = 180
 
 # Twitch 配信カテゴリー・タイトル連動 (soviet_now update_stream_game.sh が読む)。
 # Soren本編と同じ IGDB 項目 (Soren Game)。Phase 3 の本編連携までは
