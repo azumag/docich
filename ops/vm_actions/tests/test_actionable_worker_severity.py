@@ -42,17 +42,63 @@ class ActionableWorkerSeverityTests(unittest.TestCase):
         queues, ai, improvement = self.quiet_runtime()
         return self.collector._severity(workers, queues, ai, improvement)
 
-    def test_matching_lifecycle_pause_is_non_actionable(self):
-        request_id = "11111111-1111-4111-8111-111111111111"
+    def write_lifecycle_pause(self, request_id, *, status="boundary", deadline=100, record=True):
         (self.state / "prediction_worker.paused").write_text(f"lifecycle:{request_id}\n")
         lifecycle = self.state / "game_lifecycle"
-        lifecycle.mkdir()
-        (lifecycle / "prediction_pause.json").write_text(
-            json.dumps({"request_id": request_id, "improvement_marker_created": True})
-        )
+        lifecycle.mkdir(exist_ok=True)
+        identity = {
+            "schema": 1,
+            "request_id": request_id,
+            "game": "fixture",
+            "generation": 1,
+            "deadline_epoch": deadline,
+            "deadline_at": "fixture-deadline",
+        }
+        (lifecycle / "request.json").write_text(json.dumps(identity))
+        (lifecycle / "ack.json").write_text(json.dumps({**identity, "status": status}))
+        if record:
+            (lifecycle / "prediction_pause.json").write_text(
+                json.dumps({"request_id": request_id, "improvement_marker_created": True})
+            )
+
+    def test_matching_active_lifecycle_pause_is_non_actionable(self):
+        request_id = "11111111-1111-4111-8111-111111111111"
+        self.write_lifecycle_pause(request_id, status="boundary", deadline=100)
         workers = self.collector._collect_workers(self.soren, 1)
         self.assertEqual(workers["pause_ownership"], {"lifecycle_owned": 1, "operator_owned": 0, "unknown": 0})
         self.assertEqual(self.severity(workers), "ok")
+
+    def test_stopped_lifecycle_pause_is_owned_while_waiting_fresh_start(self):
+        request_id = "22222222-2222-4222-8222-222222222222"
+        self.write_lifecycle_pause(request_id, status="stopped", deadline=1)
+        workers = self.collector._collect_workers(self.soren, 1000)
+        self.assertEqual(workers["pause_ownership"]["lifecycle_owned"], 1)
+        self.assertEqual(self.severity(workers), "ok")
+
+    def test_expired_lifecycle_pause_becomes_unknown_and_warns(self):
+        request_id = "33333333-3333-4333-8333-333333333333"
+        self.write_lifecycle_pause(request_id, status="stopping", deadline=10)
+        workers = self.collector._collect_workers(self.soren, 11)
+        self.assertEqual(workers["pause_ownership"]["unknown"], 1)
+        self.assertEqual(self.severity(workers), "warn")
+
+    def test_terminal_nonparked_lifecycle_pause_becomes_unknown_and_warns(self):
+        request_id = "44444444-4444-4444-8444-444444444444"
+        self.write_lifecycle_pause(request_id, status="cancelled", deadline=100)
+        workers = self.collector._collect_workers(self.soren, 1)
+        self.assertEqual(workers["pause_ownership"]["unknown"], 1)
+        self.assertEqual(self.severity(workers), "warn")
+
+    def test_mismatched_lifecycle_ack_identity_becomes_unknown_and_warns(self):
+        request_id = "55555555-5555-4555-8555-555555555555"
+        self.write_lifecycle_pause(request_id, status="boundary", deadline=100)
+        lifecycle = self.state / "game_lifecycle"
+        ack = json.loads((lifecycle / "ack.json").read_text())
+        ack["generation"] = 2
+        (lifecycle / "ack.json").write_text(json.dumps(ack))
+        workers = self.collector._collect_workers(self.soren, 1)
+        self.assertEqual(workers["pause_ownership"]["unknown"], 1)
+        self.assertEqual(self.severity(workers), "warn")
 
     def test_webui_operator_pause_is_non_actionable(self):
         (self.state / "prediction_worker.paused").write_text(
@@ -69,9 +115,8 @@ class ActionableWorkerSeverityTests(unittest.TestCase):
         self.assertEqual(self.severity(workers), "warn")
 
     def test_lifecycle_marker_without_matching_record_remains_warn(self):
-        (self.state / "prediction_worker.paused").write_text(
-            "lifecycle:11111111-1111-4111-8111-111111111111\n"
-        )
+        request_id = "66666666-6666-4666-8666-666666666666"
+        self.write_lifecycle_pause(request_id, status="boundary", deadline=100, record=False)
         workers = self.collector._collect_workers(self.soren, 1)
         self.assertEqual(workers["pause_ownership"]["unknown"], 1)
         self.assertEqual(self.severity(workers), "warn")
