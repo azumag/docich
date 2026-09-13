@@ -44,7 +44,7 @@ from .retro_corner import (
     RetroCornerManager,
     _safe_detail,
 )
-from .trading.soren_output import enqueue_chat
+from .trading.soren_output import enqueue_audio_text, enqueue_chat
 
 GAME_NAME = "soren91"
 
@@ -194,6 +194,7 @@ class Soren91CornerManager(RetroCornerManager):
         active_game_reader=None,
         ensure_runtime=None,
         chat: Callable[[str], None] | None = None,
+        voice: Callable[[str], None] | None = None,
         spawn=None,
     ):
         if chat is None:
@@ -215,6 +216,16 @@ class Soren91CornerManager(RetroCornerManager):
         self.state_path = Path(g.state_dir) / STATE_FILE
         self.lock_path = Path(g.state_dir) / LOCK_FILE
         self.tick_guard_path = Path(g.state_dir) / TICK_GUARD_FILE
+        try:
+            raw = (load_game(g, GAME_NAME).raw.get("soren91") or {})
+            self.voicevox_speaker = str(raw.get("voicevox_speaker", 46))
+        except Exception:
+            self.voicevox_speaker = "46"
+        self._voice = voice or (
+            lambda text: enqueue_audio_text(
+                self.g, text, context="soren91:announce", speaker=self.voicevox_speaker
+            )
+        )
 
     # --- lifecycle customizations -------------------------------------------
 
@@ -245,6 +256,11 @@ class Soren91CornerManager(RetroCornerManager):
         except Exception as exc:
             state["announce_error"] = _safe_detail(exc)
             return
+        # Speak the announcement in the Meriken voice (best-effort).
+        try:
+            self._voice(ANNOUNCE_TEXT)
+        except Exception as exc:
+            state["voice_error"] = _safe_detail(exc)
         state["announced"] = True
         state.pop("announce_error", None)
 

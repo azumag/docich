@@ -134,3 +134,36 @@ def enqueue_chat(g: GlobalConfig, text: str, *, source: str = "docich") -> None:
         raise SorenOutputError(
             f"Soren chat queue rejected notification: {(proc.stderr or '').strip()[:200]}"
         )
+
+
+def enqueue_audio_text(
+    g: GlobalConfig, text: str, *, context: str = "soren91", speaker: str = ""
+) -> None:
+    """Enqueue one TTS line into the Soren audio queue with an explicit speaker.
+
+    Used so the Soren91 (Meriken) corner speaks in the Meriken voice rather
+    than the default host speaker.  Same-VM only; paused/duplicate-suppressed
+    enqueues are sink-side no-ops (rc=0).
+    """
+    import subprocess
+
+    if not text or not text.strip():
+        raise SorenOutputError("empty audio text")
+    root = resolve_soren_root(g)
+    try:
+        proc = subprocess.run(
+            ["bash", "-c",
+             'source lib/outbound_queue.sh && enqueue_audio_text "$0" "$1" "$2"',
+             text, context, str(speaker)],
+            cwd=str(root),
+            text=True,
+            capture_output=True,
+            timeout=30.0,
+            check=False,
+        )
+    except Exception as exc:
+        raise SorenOutputError("Soren audio queue delivery failed") from exc
+    if proc.returncode != 0:
+        raise SorenOutputError(
+            f"Soren audio queue rejected notification: {(proc.stderr or '').strip()[:200]}"
+        )

@@ -19,6 +19,7 @@ from .retro_corner import (
     RetroCornerManager,
     load_retro_corner_config,
 )
+from .trading.soren_output import enqueue_audio_text
 
 MANUAL_STATE_FILE = "soren91_corner_manual.json"
 MANUAL_LOCK_FILE = "locks/soren91-corner-manual.lock"
@@ -39,6 +40,7 @@ class ManualSoren91CornerManager(RetroCornerManager):
         sleep=None,
         active_game_reader=None,
         ensure_runtime=None,
+        voice=None,
     ):
         if type(duration_minutes) is not int or not 1 <= duration_minutes <= 720:
             raise RetroCornerError("duration_minutes は1-720の整数である必要があります")
@@ -64,6 +66,18 @@ class ManualSoren91CornerManager(RetroCornerManager):
         super().__init__(g, **kwargs)
         self.state_path = Path(g.state_dir) / MANUAL_STATE_FILE
         self.lock_path = Path(g.state_dir) / MANUAL_LOCK_FILE
+        try:
+            raw = (load_game(g, GAME_NAME).raw.get("soren91") or {})
+            self.voicevox_speaker = str(raw.get("voicevox_speaker", 46))
+        except Exception:
+            self.voicevox_speaker = "46"
+        # The Meriken voice for the corner announcement (chat posts alone are
+        # read by the default host speaker; this enqueues the explicit voice).
+        self._voice = voice or (
+            lambda text: enqueue_audio_text(
+                self.g, text, context="soren91:announce", speaker=self.voicevox_speaker
+            )
+        )
 
     def _validate_games(self) -> None:
         for name in self.config.games:
@@ -81,13 +95,19 @@ class ManualSoren91CornerManager(RetroCornerManager):
         if not isinstance(game, str) or not game:
             return
         text = "ソ連ゲーム91、メリケンAIのコーナーです。"
+        from .retro_corner import _safe_detail
+
         try:
             self._chat(text)
         except Exception as exc:
-            from .retro_corner import _safe_detail
-
             state["announce_error"] = _safe_detail(exc)
             return
+        # Speak the announcement in the Meriken voice (best-effort: a chat
+        # post alone would use the default host speaker).
+        try:
+            self._voice(text)
+        except Exception as exc:
+            state["voice_error"] = _safe_detail(exc)
         state["announced"] = True
         state.pop("announce_error", None)
 

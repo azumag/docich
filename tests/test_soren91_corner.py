@@ -373,6 +373,24 @@ class TestSoren91CornerAnnounce(Soren91CornerTestBase):
             mgr._announce_start_locked(state)
         self.assertEqual(self.chats, [ANNOUNCE_TEXT])
 
+    def test_announce_is_also_spoken_in_the_meriken_voice(self):
+        voices = []
+        current = [None]
+        mgr, _ = self.manager(current, voice=voices.append)
+        self.assertEqual(mgr.start().status, "completed")
+        self.assertEqual(voices, [ANNOUNCE_TEXT])
+        self.assertTrue(mgr.status().get("announced"))
+
+    def test_voice_failure_does_not_fail_the_corner(self):
+        def boom(text):
+            raise RuntimeError("tts down")
+
+        current = [None]
+        mgr, _ = self.manager(current, voice=boom)
+        self.assertEqual(mgr.start().status, "completed")
+        self.assertTrue(mgr.status().get("announced"))
+        self.assertIn("voice_error", mgr.status())
+
     def test_default_chat_uses_soren91_delivery_source(self):
         import docich.soren91_corner as corner_module
 
