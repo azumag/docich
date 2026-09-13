@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import configparser, fcntl, hashlib, json, os, re, shutil, stat, subprocess, sys, tempfile, uuid
+import configparser, fcntl, hashlib, json, os, re, shutil, stat, subprocess, sys, tempfile, time, uuid
 from pathlib import Path, PurePosixPath
 
 SHA_RE=re.compile(r'[0-9a-f]{40}\Z')
@@ -16,6 +16,9 @@ DIAGNOSTICS_LIST_MAX=100
 DIAGNOSTICS_KEY_MAX=128
 DIAGNOSTICS_REDACT_KEYS=('API_KEY','TOKEN','SECRET','STREAM_KEY','PASSWORD','AUTHORIZATION','COOKIE','PRIVATE_KEY')
 PROJECTION_REVIEW_PATH_MAX=25
+BUNDLE_DIAGNOSTICS_MAX_ENTRIES=4096
+BUNDLE_AGE_7D_SEC=7*24*60*60
+BUNDLE_AGE_30D_SEC=30*24*60*60
 OWNED_SUBMODULES={
     'games/soviet_now':'https://github.com/azumag/soviet_now.git',
     'games/hanjuku-sfc-speedrun':'https://github.com/azumag/hanjuku-sfc-speedrun.git',
@@ -159,6 +162,124 @@ def _filesystem_status(path:Path):
     denominator=used+available
     used_percent=0 if denominator<=0 else (used*100+denominator-1)//denominator
     return {'total_bytes':total,'available_bytes':available,'used_percent':used_percent}
+
+
+def _bundle_storage_review(cfg,repo,now=None,max_entries=BUNDLE_DIAGNOSTICS_MAX_ENTRIES):
+    """Return bounded, identity-free bundle storage metrics for #365.
+
+    This is evidence collection only. It never deletes bundles. Any unexpected
+    directory entry, malformed reference, stat/read failure, or scan bound is
+    reflected in the completion flags, so missing evidence is never treated as
+    proof that a bundle is unreferenced.
+    """
+    now=time.time() if now is None else float(now)
+    bundles={}
+    scan_complete=True
+    root=state_root(cfg)/'bundles'/repo
+    entries_seen=0
+    if root.is_symlink():
+        scan_complete=False
+    elif root.exists():
+        try:
+            with os.scandir(root) as entries:
+                for entry in entries:
+                    entries_seen+=1
+                    if entries_seen>max_entries:
+                        scan_complete=False; break
+                    try: st=entry.stat(follow_symlinks=False)
+                    except FileNotFoundError: continue
+                    except OSError:
+                        scan_complete=False; continue
+                    name=entry.name
+                    if entry.is_symlink() or not stat.S_ISREG(st.st_mode) or not name.endswith('.bundle') or not SHA_RE.fullmatch(name[:-7]):
+                        scan_complete=False; continue
+                    bundles[name[:-7]]={'bytes':max(0,int(st.st_size)),'age':max(0,int(now-st.st_mtime))}
+        except OSError:
+            scan_complete=False
+
+    reference_scan_complete=True
+    source_refs={'current':set(),'previous':set(),'preview':set(),'intent':set(),'pending_repair':set()}
+    def add_ref(source,value,required=False):
+        nonlocal reference_scan_complete
+        if value is None and not required: return
+        if not isinstance(value,str) or not SHA_RE.fullmatch(value):
+            reference_scan_complete=False; return
+        source_refs[source].add(value)
+
+    try:
+        current=read_json(current_file(cfg,repo))
+    except (OSError,ValueError,TypeError,json.JSONDecodeError):
+        current=None; reference_scan_complete=False
+    if not isinstance(current,dict):
+        reference_scan_complete=False
+    else:
+        add_ref('current',current.get('sha'),required=True)
+        add_ref('previous',current.get('previous_head'))
+        intent=current.get('deployment_intent')
+        if intent is not None:
+            if not isinstance(intent,dict):
+                reference_scan_complete=False
+            else:
+                add_ref('intent',intent.get('from'),required=True)
+                add_ref('intent',intent.get('to'),required=True)
+        repairs=current.get('pending_repairs',[])
+        if not isinstance(repairs,list):
+            reference_scan_complete=False
+        else:
+            for repair in repairs:
+                if not isinstance(repair,dict):
+                    reference_scan_complete=False; continue
+                add_ref('pending_repair',repair.get('candidate_sha'),required=True)
+
+    releases=state_root(cfg)/'releases'/repo
+    release_entries=0
+    if releases.is_symlink():
+        reference_scan_complete=False
+    elif releases.exists():
+        try:
+            with os.scandir(releases) as entries:
+                for entry in entries:
+                    release_entries+=1
+                    if release_entries>max_entries:
+                        reference_scan_complete=False; break
+                    try: st=entry.stat(follow_symlinks=False)
+                    except FileNotFoundError: continue
+                    except OSError:
+                        reference_scan_complete=False; continue
+                    if entry.is_symlink() or not stat.S_ISDIR(st.st_mode) or not SHA_RE.fullmatch(entry.name):
+                        reference_scan_complete=False; continue
+                    source_refs['preview'].add(entry.name)
+        except OSError:
+            reference_scan_complete=False
+
+    referenced=set().union(*source_refs.values())
+    bundle_count=len(bundles)
+    bundle_bytes=sum(item['bytes'] for item in bundles.values())
+    older_7d={sha for sha,item in bundles.items() if item['age']>=BUNDLE_AGE_7D_SEC}
+    older_30d={sha for sha,item in bundles.items() if item['age']>=BUNDLE_AGE_30D_SEC}
+    present_refs=referenced.intersection(bundles)
+    complete=scan_complete and reference_scan_complete
+    unreferenced=set(bundles)-referenced if complete else None
+    result={
+        'scan_complete':bool(scan_complete),
+        'reference_scan_complete':bool(reference_scan_complete),
+        'bundle_count':bundle_count,
+        'bundle_bytes':bundle_bytes,
+        'older_7d_count':len(older_7d),
+        'older_7d_bytes':sum(bundles[sha]['bytes'] for sha in older_7d),
+        'older_30d_count':len(older_30d),
+        'older_30d_bytes':sum(bundles[sha]['bytes'] for sha in older_30d),
+        'referenced_count':len(present_refs),
+        'referenced_bytes':sum(bundles[sha]['bytes'] for sha in present_refs),
+        'current_ref_count':len(source_refs['current'].intersection(bundles)),
+        'previous_ref_count':len(source_refs['previous'].intersection(bundles)),
+        'preview_ref_count':len(source_refs['preview'].intersection(bundles)),
+        'intent_ref_count':len(source_refs['intent'].intersection(bundles)),
+        'pending_repair_ref_count':len(source_refs['pending_repair'].intersection(bundles)),
+        'unreferenced_count':len(unreferenced) if unreferenced is not None else None,
+        'unreferenced_bytes':sum(bundles[sha]['bytes'] for sha in unreferenced) if unreferenced is not None else None,
+    }
+    return result
 
 
 def _prune_preview_releases(cfg,repo,protected_sha,keep=2):
@@ -723,7 +844,9 @@ def diagnostics_result(cfg,repo,target,sha):
         raise ValueError('diagnostics output invalid')
     clean=_sanitize_diagnostics(data)
     review=_sanitize_diagnostics(_projection_review(cfg,repo,root,sha))
+    bundle_storage=_sanitize_diagnostics(_bundle_storage_review(cfg,repo))
     if review: clean={**clean,'projection_paths_needing_review':review}
+    clean={**clean,'bundle_storage':bundle_storage}
     if len(json.dumps(clean,separators=(',',':')).encode())>DIAGNOSTICS_JSON_MAX:
         raise ValueError('diagnostics output too large')
     return {'status':'diagnosed','sha':sha,'diagnostics':clean}

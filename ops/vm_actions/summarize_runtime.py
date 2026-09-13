@@ -190,6 +190,7 @@ def summarize(data):
     improvement = data.get("improvement") or {}
     corners = data.get("corners") or {}
     storage_artifacts = data.get("storage_artifacts") or {}
+    bundle_storage = data.get("bundle_storage") or {}
 
     recent = ai.get("recent_events")
     cause_counts = Counter()
@@ -244,6 +245,15 @@ def summarize(data):
         and not isinstance(storage_artifacts.get("old_unreferenced_count"), bool)
         and isinstance(storage_artifacts.get("old_unreferenced_bytes"), int)
         and not isinstance(storage_artifacts.get("old_unreferenced_bytes"), bool)
+    )
+    bundle_unref_known = (
+        isinstance(bundle_storage, dict)
+        and bundle_storage.get("scan_complete") is True
+        and bundle_storage.get("reference_scan_complete") is True
+        and isinstance(bundle_storage.get("unreferenced_count"), int)
+        and not isinstance(bundle_storage.get("unreferenced_count"), bool)
+        and isinstance(bundle_storage.get("unreferenced_bytes"), int)
+        and not isinstance(bundle_storage.get("unreferenced_bytes"), bool)
     )
     parts = [
         f"required_down={_nlist(workers, 'required_down')}",
@@ -321,6 +331,24 @@ def summarize(data):
             f"tmp_so_old_unreferenced_bytes={_integer(storage_artifacts, 'old_unreferenced_bytes') if old_unref_known else 0}",
             f"tmp_so_foreign_owner_entries={_integer(storage_artifacts, 'foreign_owner_entries')}",
             f"tmp_so_hardlink_entries={_integer(storage_artifacts, 'hardlink_entries')}",
+            f"bundle_scan_complete={int(isinstance(bundle_storage, dict) and bundle_storage.get('scan_complete') is True)}",
+            f"bundle_reference_scan_complete={int(isinstance(bundle_storage, dict) and bundle_storage.get('reference_scan_complete') is True)}",
+            f"bundle_count={_integer(bundle_storage, 'bundle_count')}",
+            f"bundle_bytes={_integer(bundle_storage, 'bundle_bytes')}",
+            f"bundle_older_7d_count={_integer(bundle_storage, 'older_7d_count')}",
+            f"bundle_older_7d_bytes={_integer(bundle_storage, 'older_7d_bytes')}",
+            f"bundle_older_30d_count={_integer(bundle_storage, 'older_30d_count')}",
+            f"bundle_older_30d_bytes={_integer(bundle_storage, 'older_30d_bytes')}",
+            f"bundle_referenced_count={_integer(bundle_storage, 'referenced_count')}",
+            f"bundle_referenced_bytes={_integer(bundle_storage, 'referenced_bytes')}",
+            f"bundle_current_ref_count={_integer(bundle_storage, 'current_ref_count')}",
+            f"bundle_previous_ref_count={_integer(bundle_storage, 'previous_ref_count')}",
+            f"bundle_preview_ref_count={_integer(bundle_storage, 'preview_ref_count')}",
+            f"bundle_intent_ref_count={_integer(bundle_storage, 'intent_ref_count')}",
+            f"bundle_pending_repair_ref_count={_integer(bundle_storage, 'pending_repair_ref_count')}",
+            f"bundle_unreferenced_known={int(bundle_unref_known)}",
+            f"bundle_unreferenced_count={_integer(bundle_storage, 'unreferenced_count') if bundle_unref_known else 0}",
+            f"bundle_unreferenced_bytes={_integer(bundle_storage, 'unreferenced_bytes') if bundle_unref_known else 0}",
         ]
     )
     return severity, ",".join(parts)
