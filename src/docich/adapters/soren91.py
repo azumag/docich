@@ -212,6 +212,12 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
         self.ffplay_bin = str(raw.get("ffplay_bin", DEFAULT_FFPLAY_BIN))
         if not self.ffplay_bin.strip() or "\x00" in self.ffplay_bin:
             raise AdapterError("[soren91].ffplay_bin は空でない実行ファイル名である必要があります")
+        audio_sink = raw.get("audio_sink", "soren_null")
+        if audio_sink is None:
+            audio_sink = ""
+        if not isinstance(audio_sink, str) or "\x00" in audio_sink:
+            raise AdapterError("[soren91].audio_sink は文字列である必要があります")
+        self.audio_sink = audio_sink.strip()
         bot_path = raw.get("bot_path", "")
         if bot_path is None:
             bot_path = ""
@@ -309,13 +315,14 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
     # --- viewer / session commands -------------------------------------------
 
     def _viewer_command_inner(self) -> list[str]:
+        # Audio is NOT dropped: the Mac stream carries the game audio, which
+        # the viewer plays into the broadcast sink (see --audio-sink below).
         return [
             self.ffplay_bin,
             "-loglevel", "warning",
             "-nostats",
             "-fflags", "nobuffer",
             "-flags", "low_delay",
-            "-an",
             "-i", self.listener_srt_url(),
         ]
 
@@ -332,6 +339,7 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
                 # arrives (Chrome boot + game load take a minute or more), so
                 # the presenter gets a longer viewer budget than local games.
                 "--viewer-wait-sec", str(self.viewer_wait_sec),
+                *(["--audio-sink", self.audio_sink] if self.audio_sink else []),
                 "--", *inner,
             ]
         return inner

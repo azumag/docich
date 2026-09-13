@@ -43,6 +43,10 @@ def _parser() -> argparse.ArgumentParser:
     # callers on that path pass a longer budget. The default stays at 10s
     # so local-render CLI/paper corners behave exactly as before.
     parser.add_argument('--viewer-wait-sec', type=_positive_int, default=10)
+    # Optional PulseAudio sink for the viewer's own audio. SRT viewers (the
+    # Soren91 Mac remote renderer) carry game audio that must reach the
+    # broadcast encoder, which listens on the shared `soren_null` sink.
+    parser.add_argument('--audio-sink', default=None)
     parser.add_argument('command', nargs=argparse.REMAINDER)
     return parser
 
@@ -104,6 +108,12 @@ def main(argv=None) -> int:
                 os.close(write_fd)
         source_env = dict(os.environ, DISPLAY=f':{number}')
         source_env.pop('TMUX', None)
+        # Route the viewer's audio to the requested PulseAudio sink (the
+        # broadcast encoder captures `<sink>.monitor`). Only the viewer gets
+        # this; the x11grab projection below stays video-only.
+        if args.audio_sink:
+            source_env['PULSE_SINK'] = str(args.audio_sink)
+            source_env.setdefault('SDL_AUDIODRIVER', 'pulseaudio')
         viewer = launch(command, env=source_env)
         deadline = time.monotonic() + args.viewer_wait_sec
         window = ''

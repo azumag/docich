@@ -274,6 +274,39 @@ class TestSrtAndViewer(Soren91AdapterTestBase):
         self.assertIn("docich-present-g3-abcdef12", cmd)
         self.assertIn(f"srt://{OCI_IP}:19192?mode=listener", cmd)
 
+    def test_viewer_plays_game_audio_into_the_broadcast_sink(self):
+        # Issue #303 feedback: the SRT viewer used to drop audio with `-an`,
+        # so the broadcast had no game sound. It must decode audio and play it
+        # into the shared sink the encoder captures (default soren_null).
+        self.g.display.viewport_x = 0
+        self.g.display.viewport_y = 90
+        self.g.display.viewport_width = 960
+        self.g.display.viewport_height = 540
+        cmd = self._adapter()._xterm_command()
+        self.assertNotIn("-an", cmd)
+        self.assertIn("--audio-sink", cmd)
+        self.assertEqual(cmd[cmd.index("--audio-sink") + 1], "soren_null")
+
+    def test_viewer_audio_sink_can_be_disabled(self):
+        games = self.root / "config" / "games"
+        (games / "soren91.toml").write_text(
+            '[game]\nname="soren91"\ntitle="Soren91"\nadapter="soren91"\n'
+            '[agent]\nenabled=false\n'
+            '[lifecycle]\nrequire_round_boundary=false\n'
+            '[soren91]\ncdp_port=9322\nsrt_port=19192\nffplay_bin="ffplay"\n'
+            'audio_sink=""\nbot_path=""\n',
+            encoding="utf-8",
+        )
+        self.g = config.load_global(self.root)
+        game = config.load_game(self.g, "soren91")
+        self.g.display.viewport_x = 0
+        self.g.display.viewport_y = 90
+        self.g.display.viewport_width = 960
+        self.g.display.viewport_height = 540
+        cmd = self._adapter(game)._xterm_command()
+        self.assertNotIn("--audio-sink", cmd)
+        self.assertNotIn("-an", cmd)
+
     def test_no_round_boundary_capability(self):
         adapter = self._adapter()
         self.assertFalse(adapter.requires_round_boundary)
