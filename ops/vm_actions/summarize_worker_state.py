@@ -42,6 +42,13 @@ def _flag(record, name):
     return isinstance(record, dict) and record.get(name) is True
 
 
+def _count(mapping, name):
+    if not isinstance(mapping, dict):
+        return 0
+    value = mapping.get(name)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
 def summarize_worker_state(data):
     workers = data.get("workers") if isinstance(data, dict) else None
     workers = workers if isinstance(workers, dict) else {}
@@ -75,14 +82,22 @@ def summarize_worker_state(data):
         if _flag(record, "paused"):
             unregistered_paused += 1
 
+    pause_ownership = workers.get("pause_ownership")
+    unregistered_health = workers.get("unregistered_health")
+
     parts = []
     parts.extend(f"paused_{category}={paused[category]}" for category in WORKER_CATEGORIES)
     parts.extend(f"stale_pid_{category}={stale[category]}" for category in WORKER_CATEGORIES)
     parts.extend(
         [
+            f"pause_owner_lifecycle={_count(pause_ownership, 'lifecycle_owned')}",
+            f"pause_owner_operator={_count(pause_ownership, 'operator_owned')}",
+            f"pause_owner_unknown={_count(pause_ownership, 'unknown')}",
             f"unregistered_alive={unregistered_alive}",
             f"unregistered_stale={unregistered_stale}",
             f"unregistered_paused={unregistered_paused}",
+            f"unregistered_stale_only={_count(unregistered_health, 'stale_only')}",
+            f"unregistered_unknown={_count(unregistered_health, 'unknown')}",
         ]
     )
     return ",".join(parts)
