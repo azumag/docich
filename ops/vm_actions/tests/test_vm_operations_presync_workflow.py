@@ -59,8 +59,11 @@ class VmOperationsPresyncWorkflowTests(unittest.TestCase):
 
     def test_parent_reconcile_runs_before_submodule_reconcile(self):
         workflow = Path(".github/workflows/vm-operations.yml").read_text(encoding="utf-8")
+        # Four substitutions are required: helper commit, root, old root, new root.
+        # Bash printf repeats a format string when extra values are supplied, so
+        # dropping the final %s generates a second bogus command with empty args.
         root_cmd = (
-            "show '%s:ops/vm_actions/reconcile_presynced_root.py' | python3 - '%s' '%s'"
+            "show '%s:ops/vm_actions/reconcile_presynced_root.py' | python3 - '%s' '%s' '%s'"
         )
         sub_cmd = (
             "show '%s:ops/vm_actions/reconcile_presynced_submodule.py' | python3 - '%s' '%s' '%s' '%s' '%s' lineage"
@@ -68,6 +71,10 @@ class VmOperationsPresyncWorkflowTests(unittest.TestCase):
         self.assertIn(root_cmd, workflow)
         self.assertIn(sub_cmd, workflow)
         self.assertLess(workflow.index(root_cmd), workflow.index(sub_cmd))
+        self.assertNotIn(
+            "show '%s:ops/vm_actions/reconcile_presynced_root.py' | python3 - '%s' '%s'\\n",
+            workflow,
+        )
 
     def test_reconcile_invokes_helper_with_lineage_enabled(self):
         # #279: a named path (overlays/direct_broadcast_overlay.html) was
