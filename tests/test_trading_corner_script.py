@@ -16,6 +16,7 @@ from docich.trading.corner_script import (  # noqa: E402
     build_facts,
     build_prompt,
     generate_corner_script,
+    merge_script_segments,
     parse_script,
     render_fallback,
 )
@@ -140,7 +141,7 @@ def test_build_facts_includes_latest_improvement(tmp_path):
     assert "improvement" in facts
 
 
-def test_parse_script_accepts_fenced_and_rejects_bad():
+def test_parse_script_accepts_fenced_and_partial_output():
     good = '```json\n{"corner":"a","strategy":"b","result":"c","improve":"d"}\n```'
     assert parse_script(good) == {
         "corner": "a", "strategy": "b", "result": "c", "improve": "d"
@@ -154,12 +155,25 @@ def test_parse_script_accepts_fenced_and_rejects_bad():
         '{"corner":"' + "あ" * (MAX_SEGMENT_CHARS + 50) + '","strategy":"b","result":"c","improve":"d"}'
     )
     assert len(truncated["corner"]) == MAX_SEGMENT_CHARS
-    with pytest.raises(CornerScriptError):
-        parse_script('{"corner":"a"}')
-    with pytest.raises(CornerScriptError):
-        parse_script('{"corner":"a","strategy":"","result":"c","improve":"d"}')
+    # Partial output keeps the usable segments instead of failing the script.
+    assert parse_script('{"corner":"a"}') == {"corner": "a"}
+    assert parse_script('{"corner":"a","strategy":"","result":"c"}') == {
+        "corner": "a", "result": "c"
+    }
     with pytest.raises(CornerScriptError):
         parse_script("not json")
+    with pytest.raises(CornerScriptError):
+        parse_script('{"news_analysis":"x","improvement_hints":[]}')
+
+
+def test_merge_script_segments_fills_missing_from_fallback():
+    fallback = {key: f"F:{key}" for key in SEGMENT_KEYS}
+    merged = merge_script_segments(fallback, {"chart": "A:chart", "strategy": "A:strategy"})
+    assert set(merged) == set(SEGMENT_KEYS)
+    assert merged["chart"] == "A:chart"
+    assert merged["strategy"] == "A:strategy"
+    assert merged["corner"] == "F:corner"
+    assert merged["improve"] == "F:improve"
 
 
 def test_generate_falls_back_when_ai_disabled(tmp_path, monkeypatch):
@@ -292,3 +306,30 @@ def test_generate_uses_injected_timeframe_facts_without_network(tmp_path):
     )
     assert result["source"] == "fallback"
     assert "日足" in result["segments"]["chart"]
+
+
+def test_generate_merges_partial_ai_with_fallback(tmp_path, monkeypatch):
+    from docich.trading import corner_script
+
+    _write_status(tmp_path)
+    monkeypatch.setenv("DOCICH_ALLOW_REAL_AI", "1")
+    monkeypatch.setattr(corner_script, "prepare_research_context", lambda *a, **k: {})
+    monkeypatch.setattr(
+        corner_script,
+        "generate_text",
+        lambda *a, **k: '{"corner":"AI corner","chart":"AI chart"}',
+    )
+    result = generate_corner_script(
+        object(),
+        trading_dir=tmp_path,
+        agents="opencode:x",
+        now=1010.0,
+        timeframe_facts=_TIMEFRAME_FACTS,
+    )
+    assert result["source"] == "ai-partial"
+    assert sorted(result["fallback_segments"]) == ["improve", "result", "strategy"]
+    assert result["segments"]["corner"] == "AI corner"
+    assert result["segments"]["chart"] == "AI chart"
+    # The missing segments keep the grounded deterministic text.
+    assert result["segments"]["strategy"]
+    assert set(result["segments"]) == set(SEGMENT_KEYS)

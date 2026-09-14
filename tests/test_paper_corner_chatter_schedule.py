@@ -78,3 +78,23 @@ def test_periodic_messages_never_repeat_opening_catchphrase(tmp_path):
     assert len(spoken) == 2
     assert all("PAPER・暗号資産の模擬売買コーナーです" not in text for text in spoken)
     assert "chatter:2" in state["reports"]
+
+
+def test_multi_timeframe_chart_is_spoken_at_slot_two(tmp_path):
+    mgr = _manager(tmp_path)
+    state = {
+        "date": "2026-09-12",
+        "reports": {},
+        "script_segments": {
+            "1": "相場の話です。",
+            "2": "戦略の話です。",
+            "3": "結果の話です。",
+            "4": "改善の話です。",
+            "5": "時間足チャートの話です。",
+        },
+    }
+    # SCRIPT_SLOTS speaks the chart walk at slot 2 (~5.7 minutes in), not 8.5.
+    mgr._scheduled_narration(state, 2)
+    assert state["reports"]["script:5"]["text"] == "時間足チャートの話です。"
+    mgr._scheduled_narration(state, 3)
+    assert "chatter:3" in state["reports"]

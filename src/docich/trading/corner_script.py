@@ -27,10 +27,6 @@ from .strategies import StrategyPolicy
 
 
 SEGMENT_KEYS = ("corner", "strategy", "result", "improve", "chart")
-# The multi-timeframe walk is an enhancement: a model that omits it still
-# produces a valid four-segment script, and the scheduled slot then falls back
-# to casual narration instead of failing the whole script.
-OPTIONAL_SEGMENT_KEYS = ("chart",)
 MAX_SEGMENT_CHARS = 600
 MIN_SEGMENT_CHARS = 300
 SCRIPT_LABEL = "RADIO:paper-script"
@@ -264,30 +260,43 @@ def build_prompt(facts: Mapping[str, object]) -> str:
 
 
 def parse_script(text: str) -> dict:
-    """Extract the narration segments. Malformed output raises.
+    """Extract whichever narration segments the model returned.
 
-    The ``chart`` segment is optional: without it the four core segments remain
-    a valid script, and the multi-timeframe slot falls back to casual talk.
+    Partial output is intentionally accepted: a missing or empty segment is
+    dropped here and filled from the deterministic fallback by
+    :func:`generate_corner_script`, so one bad key cannot silence the whole
+    AI narration. Only unparseable output or a response with no usable
+    segment raises.
     """
     data = extract_json_object(text)
     if not isinstance(data, dict):
         raise CornerScriptError("台本のJSONオブジェクトを抽出できません")
-    required = [key for key in SEGMENT_KEYS if key not in OPTIONAL_SEGMENT_KEYS]
-    missing = sorted(set(required) - set(data))
-    if missing:
-        raise CornerScriptError(f"台本に必要なキーがありません: {', '.join(missing)}")
     segments: dict[str, str] = {}
     for key in SEGMENT_KEYS:
         value = data.get(key)
         if not isinstance(value, str) or not value.strip():
-            if key in OPTIONAL_SEGMENT_KEYS:
-                continue
-            raise CornerScriptError(f"台本の値が空です: {key}")
+            continue
         cleaned = value.strip().replace("\n", " ")
         if len(cleaned) > MAX_SEGMENT_CHARS:
             cleaned = cleaned[:MAX_SEGMENT_CHARS]
         segments[key] = cleaned
+    if not segments:
+        raise CornerScriptError("台本に有効なセグメントがありません")
     return segments
+
+
+def merge_script_segments(fallback: Mapping[str, object], parsed: Mapping[str, object]) -> dict:
+    """Overlay parsed AI segments on the deterministic fallback.
+
+    Every key in :data:`SEGMENT_KEYS` is guaranteed present, so a partial AI
+    response still yields a complete, fact-grounded script.
+    """
+    merged = {key: str(fallback.get(key, "")) for key in SEGMENT_KEYS}
+    for key in SEGMENT_KEYS:
+        value = parsed.get(key)
+        if isinstance(value, str) and value.strip():
+            merged[key] = value
+    return merged
 
 
 def _policy_text(policy: Mapping[str, object]) -> str:
@@ -514,10 +523,14 @@ def generate_corner_script(
             g, label=SCRIPT_LABEL, agents=cleaned_agents, prompt_text=prompt, timeout=timeout
         )
         model_data = extract_json_object(raw)
-        segments = parse_script(raw)
+        parsed = parse_script(raw)
     except Exception as exc:
         return {"source": "fallback", "reason": _safe_reason(exc), "segments": fallback}
 
+    # A partial AI response keeps its good segments; only the missing ones use
+    # the deterministic fallback text. `source` records whether that happened.
+    missing = [key for key in SEGMENT_KEYS if key not in parsed]
+    segments = merge_script_segments(fallback, parsed)
     research_status = None
     if research_context and isinstance(model_data, Mapping):
         try:
@@ -526,8 +539,9 @@ def generate_corner_script(
         except Exception:
             research_status = "finalize-failed"
     return {
-        "source": "ai",
+        "source": "ai" if not missing else "ai-partial",
         "reason": None,
         "segments": segments,
+        "fallback_segments": missing,
         "research_status": research_status,
     }
