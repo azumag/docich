@@ -6,7 +6,7 @@ OWNER_ID='9018513'
 REPOSITORY='azumag/docich'
 REPOSITORY_ID='1327276249'
 WORKFLOW='.github/workflows/vm-operations.yml'
-OPS={'deploy','exec','status','bootstrap','diagnostics'}
+OPS={'deploy','exec','status','bootstrap','diagnostics','reclaim'}
 TARGETS={'preview','production'}
 REF_RE=re.compile(r'[A-Za-z0-9][A-Za-z0-9_./-]{0,199}\Z')
 SHA_RE=re.compile(r'[0-9a-f]{40}\Z')
@@ -49,7 +49,9 @@ def main():
             fail('arbitrary VM exec is disabled when the repository is public')
         if op=='bootstrap' and target!='production': fail('bootstrap is production-only')
         if op=='diagnostics' and target!='production': fail('diagnostics is production-only')
-        if target=='production' and op in {'exec','bootstrap'} and confirm!='production':
+        if op=='reclaim' and target!='production': fail('reclaim is production-only')
+        if op=='reclaim' and ref!='main': fail('reclaim must run from main')
+        if target=='production' and op in {'exec','bootstrap','reclaim'} and confirm!='production':
             fail('production confirmation required')
         # diagnostics is read-only with sanitized bounded output, so it needs
         # owner-only gating (above) but no separate confirmation.
