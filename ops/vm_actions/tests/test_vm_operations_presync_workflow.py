@@ -34,6 +34,25 @@ class VmOperationsPresyncWorkflowTests(unittest.TestCase):
         self.assertEqual(occurrences, 2, "reconcile and normalize steps must both accept configured status")
         self.assertNotIn('[[ "$vm_status" == drift ]]', workflow)
 
+    def test_reconcile_bootstraps_reviewed_candidate_object_before_show(self):
+        # deploy_git() validates git_clean(root) before its bundle fetch. A
+        # pre-existing tracked drift rejection therefore leaves the candidate
+        # commit absent from the production object DB. The fallback must fetch
+        # protected main without touching the worktree, verify the exact
+        # candidate object, and only then read the helper from that object.
+        workflow = Path(".github/workflows/vm-operations.yml").read_text(encoding="utf-8")
+        fetch = (
+            "fetch --no-recurse-submodules --no-tags --force "
+            "https://github.com/azumag/docich.git refs/heads/main"
+        )
+        verify = "cat-file -e '%s^{commit}'"
+        show = "show '%s:ops/vm_actions/reconcile_presynced_submodule.py'"
+        self.assertIn(fetch, workflow)
+        self.assertIn(verify, workflow)
+        self.assertIn(show, workflow)
+        self.assertLess(workflow.index(fetch), workflow.index(show))
+        self.assertLess(workflow.index(verify), workflow.index(show))
+
     def test_reconcile_invokes_helper_with_lineage_enabled(self):
         # #279: a named path (overlays/direct_broadcast_overlay.html) was
         # confirmed live-present but matching neither old nor new -- exactly
@@ -47,9 +66,9 @@ class VmOperationsPresyncWorkflowTests(unittest.TestCase):
             "              \"$SHA\" /home/ubuntu/docich \"$old_root\" \"$old_sub\" \"$new_sub\" games/soviet_now",
             workflow,
         )
-        # The helper must be read from the reviewed commit object on the VM,
-        # not piped through exec stdin: the attestation argv shares that
-        # 16384-byte budget and the helper alone nearly fills it.
+        # The helper must still be read from the exact reviewed candidate
+        # object on the VM. The small prefetch command only populates the Git
+        # object DB; it does not checkout/reset production tracked files.
         self.assertNotIn("cat control/ops/vm_actions/reconcile_presynced_submodule.py", workflow)
 
     def test_reconcile_attests_reviewed_commits_lost_to_squash(self):
