@@ -392,6 +392,10 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
             # The Mac host owns the window geometry; never fullscreen/resize
             # the remote window from the bot (breaks the capture calibration).
             "SOREN91_FULLSCREEN_WINDOW": "0",
+            # Improvement is externalised (2026-09-15): the daily job outside
+            # the VM reads the mirrored game logs and opens an improvement PR.
+            # The bot must NOT run its own (legacy gemini/claude CLI) improve.
+            "SOREN91_EXTERNAL_IMPROVE": "1",
         }
 
     # --- Mac local-agent HTTP -------------------------------------------------
