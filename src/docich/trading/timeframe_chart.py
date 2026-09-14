@@ -58,6 +58,13 @@ _TIMEFRAME_SECONDS = {"1d": 86400, "1h": 3600, "15m": 900, "1m": 60}
 FILL_TIMEFRAMES: tuple[str, ...] = ("1h", "15m")
 MAX_FILL_SYMBOLS = 2
 
+# Fetch the short, time-sensitive frames before the long daily history. The
+# daily chart costs one request per UTC day; if a transient public-API failure
+# lands at the end of that batch it must not drop the 1-minute chart from the
+# one-shot corner narration.
+_FETCH_PRIORITY = {"1m": 0, "15m": 1, "1h": 2, "1d": 3}
+_FETCH_RETRY_DELAY_S = 0.5
+
 
 class TimeframeDataError(RuntimeError):
     """Raised when public multi-timeframe data is unavailable or malformed."""
@@ -395,28 +402,36 @@ class TimeframeChartSampler:
         ttl = self.ttl.get(timeframe, 30.0)
         if isinstance(cached, dict) and moment - float(cached.get("_fetched_at") or 0) < ttl:
             return self._public(cached)
-        try:
-            if self._reader is None:
-                self._reader = self.reader_factory()
-            fresh = self._reader.fetch(symbol, timeframe, now=moment)
+        fresh: dict[str, object] | None = None
+        for attempt in range(2):
+            try:
+                if self._reader is None:
+                    self._reader = self.reader_factory()
+                fresh = self._reader.fetch(symbol, timeframe, now=moment)
+                break
+            except Exception:
+                fresh = None
+                if attempt == 0:
+                    # One bounded retry for transient public-API failures.
+                    time.sleep(_FETCH_RETRY_DELAY_S)
+        if fresh is not None:
             record = dict(fresh)
             record["_fetched_at"] = moment
             self._cache[key] = record
             return self._public(record)
-        except Exception:
-            if isinstance(cached, dict):
-                stale = dict(cached)
-                stale["stale"] = True
-                stale["reason"] = "refresh-unavailable"
-                return self._public(stale)
-            return {
-                "timeframe": timeframe,
-                "label": TIMEFRAME_LABELS.get(timeframe, timeframe),
-                "symbol": symbol,
-                "available": False,
-                "bars": [],
-                "reason": "fetch-unavailable",
-            }
+        if isinstance(cached, dict):
+            stale = dict(cached)
+            stale["stale"] = True
+            stale["reason"] = "refresh-unavailable"
+            return self._public(stale)
+        return {
+            "timeframe": timeframe,
+            "label": TIMEFRAME_LABELS.get(timeframe, timeframe),
+            "symbol": symbol,
+            "available": False,
+            "bars": [],
+            "reason": "fetch-unavailable",
+        }
 
     @staticmethod
     def _public(record: Mapping[str, object]) -> dict[str, object]:
@@ -430,8 +445,11 @@ class TimeframeChartSampler:
         timeframes: Sequence[str] = TIMEFRAMES,
     ) -> list[dict[str, object]]:
         moment = float(self.now_fn() if now is None else now)
+        requested = [str(timeframe) for timeframe in timeframes]
+        ordered = sorted(requested, key=lambda timeframe: _FETCH_PRIORITY.get(timeframe, 99))
         with self._lock:
-            return [self._view(str(symbol), str(timeframe), moment) for timeframe in timeframes]
+            fetched = {timeframe: self._view(str(symbol), timeframe, moment) for timeframe in ordered}
+        return [fetched[timeframe] for timeframe in requested]
 
     def snapshot(self, *, now: float | None = None) -> dict[str, object]:
         moment = float(self.now_fn() if now is None else now)

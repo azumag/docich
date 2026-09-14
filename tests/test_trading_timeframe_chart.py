@@ -223,6 +223,51 @@ def test_sampler_without_focus_market_is_unavailable(tmp_path):
     assert snapshot["available"] is False and snapshot["symbol"] is None
 
 
+def test_sampler_fetches_intraday_before_daily(tmp_path):
+    trading_dir = _trading_dir(tmp_path)
+    reader = CountingReader()
+    sampler = TimeframeChartSampler(trading_dir, reader_factory=lambda: reader)
+    sampler.snapshot(now=NOW)
+    order = [call[1] for call in reader.exchange.calls]
+    # 1m (2 days) and 15m (2 days) are fetched first; the daily chart is
+    # requested last (as hourly bars across 22 days).
+    assert order[:2] == ["1m", "1m"]
+    assert order[2:4] == ["15m", "15m"]
+    assert order[4:7] == ["1h", "1h", "1h"]
+    # The oldest (daily-history) request only appears after the intraday
+    # batches, so an intraday failure cannot be caused by the long daily batch.
+    since_values = [call[2] for call in reader.exchange.calls]
+    assert since_values.index(min(since_values)) >= 7
+    # The caller still receives the display order (daily first).
+    snapshot = sampler.snapshot(now=NOW)
+    assert [view["timeframe"] for view in snapshot["timeframes"]] == list(TIMEFRAMES)
+
+
+def test_sampler_retries_once_on_transient_failure(tmp_path, monkeypatch):
+    from docich.trading import timeframe_chart as tc
+
+    monkeypatch.setattr(tc, "_FETCH_RETRY_DELAY_S", 0.0)
+    trading_dir = _trading_dir(tmp_path)
+
+    class FlakyReader:
+        def __init__(self):
+            self.inner = CountingReader()
+            self.failures: set[tuple[str, str]] = set()
+
+        def fetch(self, symbol, timeframe, *, now, days=None, limit=None):
+            key = (symbol, timeframe)
+            if key not in self.failures:
+                self.failures.add(key)
+                raise RuntimeError("transient public-API failure")
+            return self.inner.fetch(symbol, timeframe, now=now, days=days, limit=limit)
+
+    flaky = FlakyReader()
+    sampler = TimeframeChartSampler(trading_dir, reader_factory=lambda: flaky)
+    snapshot = sampler.snapshot(now=NOW)
+    assert snapshot["available"] is True
+    assert all(view["available"] for view in snapshot["timeframes"])
+
+
 def test_narration_facts_include_focus_and_fill_context(tmp_path):
     trading_dir = _trading_dir(tmp_path)
     facts = build_narration_facts(
