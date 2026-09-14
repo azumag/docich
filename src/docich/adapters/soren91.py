@@ -652,8 +652,15 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
             if time.monotonic() >= grace_until or time.monotonic() >= deadline:
                 raise AdapterError("SRT port が解放されませんでした")
             time.sleep(min(LISTENER_POLL_INTERVAL_S, max(0.0, deadline - time.monotonic())))
-        # Restore the main game's Twitch category/title only if we switched it.
-        if self._twitch_synced:
+        # Always restore the main game's Twitch category/title when a soren91
+        # corner ends. The old `_twitch_synced` guard cannot work here: the
+        # coordinator drives materialize (start) and cleanup through different
+        # adapter instances, and the manual cross-process `stop` does too, so
+        # the in-memory flag set at start is gone by cleanup and the title was
+        # left at [Soren91] after every corner (observed in production). The
+        # restore is idempotent (a no-op when already [Soren]) and the main
+        # game is always `restore_twitch_game` after a soren91 corner.
+        if self.restore_twitch_game:
             self._sync_twitch(self.restore_twitch_game)
             self._twitch_synced = False
 
