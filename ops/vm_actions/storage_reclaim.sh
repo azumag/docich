@@ -120,9 +120,16 @@ rotate_opencode_db() {
   fi
   before="$(bytes_of "$db")"
   say "OPENCODE db path=$db before=${before}B retention_days=$opencode_retention_days"
-  if [[ "$opencode_force" != 1 ]] && pgrep -f 'opencode' >/dev/null 2>&1; then
-    say "SKIP opencode db rotate (opencode process active; retry later)"
-    return 0
+  if [[ "$apply" == 1 && "$opencode_force" != 1 ]]; then
+    # VACUUM needs an exclusive lock; wait briefly for a gap between runs.
+    local waited=0
+    while pgrep -f 'opencode' >/dev/null 2>&1; do
+      if (( waited >= 120 )); then
+        say "SKIP opencode db rotate (opencode still active after ${waited}s; retry later)"
+        return 0
+      fi
+      sleep 10; waited=$(( waited + 10 ))
+    done
   fi
   python3 - "$db" "$opencode_retention_days" "$apply" <<'PY' || return 1
 import sqlite3, sys, time
@@ -132,6 +139,7 @@ con = sqlite3.connect(db)
 con.isolation_level = None
 cur = con.cursor()
 try:
+    cur.execute("pragma busy_timeout=30000")
     old = cur.execute("select count(*) from session where time_created < ?", (cutoff,)).fetchone()[0]
 except sqlite3.Error as exc:
     print("OPENCODE error:", exc)
