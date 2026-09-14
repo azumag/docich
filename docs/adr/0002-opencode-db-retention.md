@@ -141,3 +141,41 @@ VACUUM;
 2. **保持期間**: 既定 3 日でよいか（#389 の初期案）。
 3. **対象 DB**: 既定 `~/.local/share/opencode/opencode.db` のみか、worker DB（`tmp/state/xdg_data/...`）も対象にするか。あるいは producer 側の XDG 不整合を別途修正して DB を一本化するか。
 4. **実行契機**: 手動 dispatch のみか、定期（週次等）を許容するか。
+
+## 10. 追記（実装前の追加調査 2026-09-15）— 既存 cleanup と XDG 不整合
+
+§1 の追加実測で、設計の前提が変わる事実が判明した。
+
+### 10.1 既存の opencode DB 初期化が producer 内に既にある
+`infra/cleanup.sh:cleanup_tmp_files`（`soren_loop.sh:1113` から定期実行）に既存の初期化がある:
+
+```
+local _oc="${TMP_STATE_DIR:-tmp/state}/xdg_data/opencode"
+if [ -f "$_oc/opencode.db" ] && ! pgrep -f 'opencode run' >/dev/null 2>&1; then
+    _ocsz=$(wc -c < "$_oc/opencode.db")
+    if [ "${_ocsz:-0}" -gt 209715200 ]; then   # 200MB
+        rm -f "$_oc/opencode.db" "$_oc/opencode.db-wal" "$_oc/opencode.db-shm"
+    fi
+fi
+```
+
+- 対象は **worker DB（`tmp/state/xdg_data/opencode`）のみ**。今回肥大している既定 DB（`~/.local/share/opencode`）は**対象外**。
+- 判定は `pgrep -f 'opencode run'` の**瞬間観測**で、#404 が指摘した concurrency gap と同じパターン。
+- 削除は `rm` で、transactional でも bounded retention でもない（全リセット）。
+
+### 10.2 既定 DB が肥大する根本原因
+- `lib/ai_generate.sh:_ai_call_opencode_unqueued` は `opencode run` を実行するが **`XDG_DATA_HOME`/`XDG_STATE_HOME` を設定しない**。
+- `broadcast/radio_engine.sh` の直接呼び出しは `XDG_DATA_HOME="$(_opencode_xdg_data_home)"` を設定するため worker DB を使う。
+- 呼び出し元が XDG を設定しない `_ai_call_opencode` 経路（例: ラジオ本体生成 `soren-lite`）は既定 DB に書く。これが 2.49 GB の主因。
+- 認証は `_opencode_sync_auth_to_xdg` が `~/.local/share/opencode/auth.json` を worker XDG へコピーする運用で、既定 DB を消しても支障はない。
+
+### 10.3 設計の修正（推奨）
+rotation を docich の独立 operation にするより、**既に producer 内にある定期 cleanup を安全化・拡張する**方が筋が良い。
+
+- producer gate（`flock -s`）を全 `opencode run` 実行点に追加する。
+- `cleanup_tmp_files` の opencode ブロックを、**排他 gate を取って drain → 単一トランザクションで保持期間超過セッションを削除 → VACUUM** に置き換える（`pgrep` + `rm` を廃止）。
+- 対象を **worker DB と既定 DB の両方**にする（まずは両方、XDG 一本化は別途）。
+- これにより docich control plane の新 operation は不要。実装は soviet_now に閉じる。
+
+この修正版を実装する（gate: flock、保持: 3日、対象: 両DB、実行: ループ内 cleanup から定期）。§5 の control-plane operation 案は、任意トリガ（owner が任意タイミングで回したい場合）用の将来オプションとして残す。
+
