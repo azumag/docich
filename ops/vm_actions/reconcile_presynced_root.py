@@ -119,14 +119,33 @@ def _expected(root: Path, entry):
 
 
 def _live(path: Path):
-    if not path.exists():
-        return None
-    if path.is_symlink() or not path.is_file():
-        raise ReconcileError(REASON_UNSUPPORTED_PATH, "unsupported live tracked entry")
-    data = path.read_bytes()
-    if len(data) > MAX_FILE_BYTES:
-        raise ReconcileError(REASON_UNSUPPORTED_PATH, "tracked file too large")
-    return {"sha256": hashlib.sha256(data).hexdigest(), "mode": stat.S_IMODE(path.stat().st_mode), "data": data}
+    # Open the live path without following symlinks, then enforce the byte bound
+    # from fstat *before* allocating/reading file contents.  The bounded read
+    # also protects against a regular file growing after fstat.
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise ReconcileError(REASON_UNSUPPORTED_PATH, "no-follow open unavailable")
+    fd = None
+    try:
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise ReconcileError(REASON_UNSUPPORTED_PATH, "unsupported live tracked entry") from exc
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ReconcileError(REASON_UNSUPPORTED_PATH, "unsupported live tracked entry")
+        if info.st_size > MAX_FILE_BYTES:
+            raise ReconcileError(REASON_UNSUPPORTED_PATH, "tracked file too large")
+        with os.fdopen(fd, "rb") as handle:
+            fd = None
+            data = handle.read(MAX_FILE_BYTES + 1)
+        if len(data) > MAX_FILE_BYTES:
+            raise ReconcileError(REASON_UNSUPPORTED_PATH, "tracked file too large")
+        return {"sha256": hashlib.sha256(data).hexdigest(), "mode": stat.S_IMODE(info.st_mode), "data": data}
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 
 def _same(a, b) -> bool:
