@@ -127,6 +127,17 @@ function drawChart(chart, live) {
   g.fillText(hasLive ? `${stored.length}本 + LIVE` : `${stored.length}本`, PAD.l + plotW / 2, H - 8);
 }
 
+function signalText(signal, compact) {
+  if (!signal || !Array.isArray(signal.conditions)) return "";
+  const names = { return_bps: "勢い", zscore: "z", pnl_bps: "損益", hold_minutes: "保有" };
+  return signal.conditions.slice(0, 2).map((c) => {
+    if (!c) return "";
+    const feature = compact ? (names[c.feature] || c.feature) : c.feature;
+    const look = !compact && Number.isFinite(Number(c.lookback)) ? ` ${c.lookback}本` : "";
+    return `${feature} ${c.observed}${c.unit || ""} ${c.op || ""} ${c.threshold}${c.unit || ""}${look}`;
+  }).filter(Boolean).join(compact ? " " : " / ");
+}
+
 function renderPaperFill(data) {
   const fills = data && Array.isArray(data.fills) ? data.fills : [];
   const f = fills[0];
@@ -138,7 +149,10 @@ function renderPaperFill(data) {
   const rp = maybeNumber(f.realized_pnl_jpy);
   const pnl = String(f.side).toLowerCase() === "sell" && rp !== null
     ? ` 損益${rp > 0 ? "+" : ""}${fmtMoney(rp)}` : "";
-  $("paperfill").textContent = `${f.symbol} ${side} ${f.amount}@${f.price}${pnl}`;
+  const reason = signalText(f.signal_context, true);
+  $("paperfill").textContent =
+    `${f.symbol} ${side} ${f.amount}@${f.price}${pnl}` + (reason ? ` 根拠:${reason}` : "");
+  $("paperfill").title = reason ? `発注根拠: ${signalText(f.signal_context)}` : "";
 }
 
 function render(data) {

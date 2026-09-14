@@ -11,7 +11,11 @@ from docich.trading.ledger import PaperLedger  # noqa: E402
 from docich.trading.models import AllocationDecision  # noqa: E402
 from docich.trading.notifications import _render_event_with_local_facts  # noqa: E402
 from docich.trading.paper import PaperBroker  # noqa: E402
-from docich.trading.performance import build_performance, realized_pnl_for_fill  # noqa: E402
+from docich.trading.performance import (  # noqa: E402
+    build_performance,
+    build_round_trips,
+    realized_pnl_for_fill,
+)
 
 D = Decimal
 JST = dt.timezone(dt.timedelta(hours=9))
@@ -111,3 +115,81 @@ def test_sell_notification_reads_realized_pnl_from_paper_ledger(tmp_path):
     )
     assert "実現損益 +20円" in rendered.overlay_event["body"]
     assert rendered.speech_text == "利確条件を検出：BTC/JPYを売り、損益プラス20円です。"
+
+
+def test_round_trips_pair_buys_sells_and_keep_entry_context(tmp_path):
+    db = tmp_path / "paper.sqlite3"
+    ledger = PaperLedger(db)
+    broker = _zero_cost_broker(ledger)
+    entry_context = {
+        "kind": "builtin_entry",
+        "conditions": [
+            {"feature": "return_bps", "observed": "320", "threshold": "150",
+             "op": ">=", "lookback": 6}
+        ],
+    }
+    exit_context = {
+        "kind": "builtin_exit",
+        "conditions": [
+            {"feature": "pnl_bps", "observed": "200", "threshold": "100", "op": ">="}
+        ],
+    }
+    broker.fill(
+        _decision("rt-buy", "buy", "2", "100"), timestamp=1_000.0, signal_context=entry_context
+    )
+    broker.fill(
+        _decision("rt-sell", "sell", "2", "120"), timestamp=1_600.0, signal_context=exit_context
+    )
+    ledger.close()
+
+    trips = build_round_trips(db)
+    assert len(trips) == 1
+    trip = trips[0]
+    assert trip["symbol"] == "BTC/JPY"
+    assert trip["realized_jpy"] == "40"
+    assert trip["entry_reason"] == "momentum_breakout"
+    assert trip["exit_reason"] == "take_profit"
+    assert trip["entry_signal"]["conditions"][0]["feature"] == "return_bps"
+    assert trip["exit_signal"]["conditions"][0]["feature"] == "pnl_bps"
+    assert float(trip["hold_sec"]) == 600.0
+
+
+def test_ledger_migrates_old_schema_and_persists_signal_context(tmp_path):
+    import sqlite3
+
+    db = tmp_path / "old.sqlite3"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """CREATE TABLE paper_fills (
+             fill_id TEXT PRIMARY KEY, opportunity_id TEXT NOT NULL UNIQUE,
+             strategy_id TEXT NOT NULL, symbol TEXT NOT NULL, side TEXT NOT NULL,
+             quote TEXT NOT NULL, amount TEXT NOT NULL, price TEXT NOT NULL,
+             quote_notional TEXT NOT NULL, reference_notional TEXT NOT NULL,
+             reason_code TEXT NOT NULL, filled_at REAL NOT NULL)"""
+    )
+    conn.commit()
+    conn.close()
+
+    ledger = PaperLedger(db)  # must add the signal_context column idempotently
+    broker = _zero_cost_broker(ledger)
+    fill = broker.fill(
+        _decision("mig-1", "buy", "1", "100"),
+        timestamp=1_000.0,
+        signal_context={"kind": "builtin_entry"},
+    )
+    assert fill.signal_context == {"kind": "builtin_entry"}
+    ledger.close()
+
+    reopened = PaperLedger(db)
+    stored = reopened.get_fill_for_opportunity("mig-1")
+    assert stored is not None and stored.signal_context == {"kind": "builtin_entry"}
+    reopened.close()
+
+
+def test_round_trips_ignore_unmatched_sells(tmp_path):
+    db = tmp_path / "paper.sqlite3"
+    ledger = PaperLedger(db)
+    broker = _zero_cost_broker(ledger)
+    broker.fill(_decision("orphan-sell", "sell", "1", "100"), timestamp=1_000.0)
+    ledger.close()
+    assert build_round_trips(db) == []

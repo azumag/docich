@@ -64,7 +64,7 @@
     return cell;
   }
 
-  function drawMini(canvas, view) {
+  function drawMini(canvas, view, fills) {
     const bars = Array.isArray(view.bars) ? view.bars : [];
     const closes = bars.map((bar) => finite(bar.c)).filter((value) => value !== null);
     const dpr = window.devicePixelRatio || 1;
@@ -134,6 +134,20 @@
     g.arc(lastX, lastY, 2.4, 0, Math.PI * 2);
     g.fillStyle = "#e6edf7";
     g.fill();
+
+    if (Array.isArray(fills) && fills.length) drawMarks(g, view, fills, x, y);
+  }
+
+  const SHORT_LABELS = {
+    "日足": "日足",
+    "1時間足": "1時間",
+    "15分足": "15分",
+    "1分足": "1分",
+    "5分足(戦略)": "5分戦略",
+  };
+
+  function shortLabel(label) {
+    return SHORT_LABELS[label] || label;
   }
 
   function renderStrip(data) {
@@ -146,17 +160,88 @@
       strip.textContent = data.available === true ? "" : "時間足チャート取得待ち";
       return;
     }
+    const symbolFills = focusFills().filter((f) => String(f.symbol) === String(data.symbol));
     for (const view of views) {
       if (!view || !view.timeframe) continue;
-      const cell = cellFor(strip, String(view.timeframe), String(view.label || view.timeframe));
+      const cell = cellFor(strip, String(view.timeframe), shortLabel(String(view.label || view.timeframe)));
       const available = view.available === true;
       cell.change.textContent = available ? `${view.trend || ""} ${fmtPct(view.range_change_pct)}` : "取得待ち";
       cell.change.className = `tf-change ${available ? trendClass(view.trend) : "muted"}`;
+      const latest = symbolFills[0];
+      const signal = latest ? signalText(latest.signal_context) : "";
       cell.root.title = available
         ? `${view.label}: ${view.bar_count || 0}本 ${view.bb_phrase || ""}` +
+          (signal ? ` / 直近約定の根拠: ${signal}` : "") +
           (view.stale ? "（更新遅延）" : "")
         : `${view.label}: 公開データを取得できませんでした`;
-      if (available) drawMini(cell.canvas, view);
+      if (available) drawMini(cell.canvas, view, symbolFills);
+    }
+    renderStrategyCell(strip, data.strategy, symbolFills);
+  }
+
+  function renderStrategyCell(strip, strategy, symbolFills) {
+    if (!strategy || !strategy.label) return;
+    const cell = cellFor(strip, String(strategy.timeframe || "5m"), shortLabel(String(strategy.label)));
+    const available = strategy.available === true;
+    cell.change.textContent = available ? fmtPct(strategy.momentum_pct) : "取得待ち";
+    cell.change.className = `tf-change ${available ? trendClass(strategy.trend) : "muted"}`;
+    const thresholds = strategy.thresholds || {};
+    const th = thresholds.momentum_threshold_bps ? `勢い閾値${thresholds.momentum_threshold_bps}bps` : "";
+    const z = thresholds.mean_reversion_z ? ` / z閾値${thresholds.mean_reversion_z}` : "";
+    const signal = symbolFills[0] ? signalText(symbolFills[0].signal_context) : "";
+    cell.root.title = available
+      ? `${strategy.label}: ${strategy.bar_count || 0}本 ${strategy.bb_phrase || ""} ${th}${z}` +
+        (signal ? ` / 直近約定の根拠: ${signal}` : "")
+      : `${strategy.label}: 5分足キャッシュを取得できませんでした`;
+    if (available) drawMini(cell.canvas, strategy, symbolFills);
+  }
+
+  function signalText(signal) {
+    if (!signal || !Array.isArray(signal.conditions)) return "";
+    const parts = [];
+    for (const c of signal.conditions.slice(0, 2)) {
+      if (!c) continue;
+      const look = Number.isFinite(Number(c.lookback)) ? ` ${c.lookback}本` : "";
+      parts.push(`${c.feature} ${c.observed}${c.unit || ""} ${c.op || ""} ${c.threshold}${c.unit || ""}${look}`);
+    }
+    return parts.join(" / ");
+  }
+
+  function focusFills() {
+    const lastData = window.render && window.render.lastData;
+    const fills = lastData && Array.isArray(lastData.fills) ? lastData.fills : [];
+    return fills.filter((f) => f && Number.isFinite(Number(f.filled_at)) && Number.isFinite(Number(f.price)));
+  }
+
+  function drawMarks(g, view, fills, x, y) {
+    const bars = Array.isArray(view.bars) ? view.bars : [];
+    if (!bars.length) return;
+    for (const fill of fills) {
+      const stamp = Number(fill.filled_at);
+      let index = -1;
+      for (let i = 0; i < bars.length; i++) {
+        if (Number(bars[i].t) <= stamp) index = i;
+        else break;
+      }
+      if (index < 0) continue;
+      const px = Number(fill.price);
+      if (!Number.isFinite(px)) continue;
+      const cx = x(index);
+      const cy = y(px);
+      const buy = String(fill.side).toLowerCase() === "buy";
+      g.beginPath();
+      if (buy) {
+        g.moveTo(cx, cy - 4);
+        g.lineTo(cx - 3.5, cy + 2);
+        g.lineTo(cx + 3.5, cy + 2);
+      } else {
+        g.moveTo(cx, cy + 4);
+        g.lineTo(cx - 3.5, cy - 2);
+        g.lineTo(cx + 3.5, cy - 2);
+      }
+      g.closePath();
+      g.fillStyle = buy ? "#34d399" : "#fb7185";
+      g.fill();
     }
   }
 

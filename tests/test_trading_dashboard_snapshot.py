@@ -105,3 +105,41 @@ def test_snapshot_survives_missing_and_malformed(tmp_path):
     assert snap["chart"]["symbol"] is None
     text = json.dumps(snap, ensure_ascii=False)
     assert len(text) < 24000
+
+
+def test_snapshot_exposes_allowlisted_fill_signal_context(tmp_path):
+    trading_dir = tmp_path / "trading"
+    _write(
+        trading_dir,
+        {
+            "worker_state": "running",
+            "capital_reference": "10000",
+            "eligible_symbols": ["btc_jpy"],
+            "recent_fills": [
+                {
+                    "fill_id": "paper:y",
+                    "symbol": "btc_jpy",
+                    "side": "buy",
+                    "amount": "0.001",
+                    "price": "100",
+                    "quote": "jpy",
+                    "filled_at": 990.0,
+                    "reason_code": "momentum_breakout",
+                    "signal_context": {
+                        "kind": "builtin_entry",
+                        "conditions": [
+                            {"feature": "return_bps", "observed": "320", "threshold": "150",
+                             "op": ">=", "lookback": 6}
+                        ],
+                        "secret": "must-not-leak",
+                    },
+                }
+            ],
+        },
+        {"symbols": {"btc_jpy": {"closes": [1, 2], "fetched_at": 1000.0}}},
+    )
+    snap = build_dashboard_snapshot(trading_dir, now=1010.0)
+    context = snap["fills"][0]["signal_context"]
+    assert context["kind"] == "builtin_entry"
+    assert context["conditions"][0]["feature"] == "return_bps"
+    assert "secret" not in context

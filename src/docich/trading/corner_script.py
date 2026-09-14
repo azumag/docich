@@ -22,12 +22,13 @@ from .corner_research import (
     prepare_research_context,
 )
 from .dashboard_snapshot import build_dashboard_snapshot
+from .performance import build_round_trips
 from .strategy_store import load_strategy_policy, policy_to_payload
 from .strategies import StrategyPolicy
 
 
-SEGMENT_KEYS = ("corner", "strategy", "result", "improve", "chart")
-MAX_SEGMENT_CHARS = 600
+SEGMENT_KEYS = ("corner", "news", "chart", "strategy", "result", "fills", "review", "improve")
+MAX_SEGMENT_CHARS = 700
 MIN_SEGMENT_CHARS = 300
 SCRIPT_LABEL = "RADIO:paper-script"
 JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
@@ -124,6 +125,8 @@ def build_facts(trading_dir, *, now=None, policy: StrategyPolicy | None = None,
             "price": str(item.get("price", "")),
             "quote": str(item.get("quote", "")),
             "realized_pnl_jpy": item.get("realized_pnl_jpy"),
+            "reason_code": str(item.get("reason_code", "")),
+            "signal": item.get("signal_context") if isinstance(item.get("signal_context"), Mapping) else None,
         }
         for item in snap.get("fills", [])
         if isinstance(item, Mapping)
@@ -192,6 +195,9 @@ def build_facts(trading_dir, *, now=None, policy: StrategyPolicy | None = None,
         "focus": focus,
         "improvement": _latest_improvement(Path(target).parent / "logs"),
         "policy": policy_to_payload(effective),
+        # Realized round trips (buy -> sell) with entry/exit context, for the
+        # review segment and the strategy-improvement pass.
+        "round_trips": build_round_trips(target / "paper.sqlite3", limit=6),
         # Finalized research contains only bounded public/news analysis and
         # structured improvement hints. A prepared same-corner record is also
         # useful while the narration AI is running.
@@ -214,10 +220,27 @@ def build_prompt(facts: Mapping[str, object]) -> str:
         "【ニュースの扱い】\n"
         "- research.news_items はGoogle News RSSから取得した見出し・媒体・時刻・RSS要約です。記事全文ではありません。"
         "見出しだけで断定せず、複数項目の共通点や相違点を見て、事実とあなたの推測を言い分けてください。\n"
-        "- 重要そうな2〜3件を選び、『何が起きたか』→『市場やBOTにどう効き得るか』→『実際に何を観測すべきか』の順で分析します。"
+        "- **1件で済ませず、重要そうなものを5〜6件選び**、それぞれ『何が起きたか』→『市場やBOTにどう効き得るか』→"
+        "『実際に何を観測すべきか』の順で、他の項目と関連づけながら具体的に掘り下げます。"
         "価格が動いた理由をニュースだけで決めつけないでください。\n"
         "- research.asset があれば、そのsymbolは実際にPAPERで現在保有中です。指定されたangle_labelを中心に、"
         "backgroundとasset.news_itemsを根拠に、その銘柄ならではの特徴、歴史、面白いエピソード、弱点などを視聴者向けに説明してください。\n"
+        "【約定の「なぜ」— 最重要】\n"
+        "- recent_fills[i].signal がその発注の理由です。signal.kind（builtin_entry / builtin_exit）、"
+        "signal.conditions の feature（return_bps / zscore / pnl_bps / hold_minutes）、observed（観測値）、"
+        "threshold（閾値）、op（比較）、lookback（本数）を使います。\n"
+        "- fills では直近の約定を1件ずつ、『どの指標が・どの観測値で・どの閾値を越えたから発注したか』を"
+        "数値で具体的に説明します。例: 『6本のリターンが+320bpsで閾値150bpsを上回ったので買った』。"
+        "signalが無い約定は『記録が無い』と正直に言い、根拠を捏造しない。\n"
+        "- そのうえで、その指標がチャートのどこに現れているか（facts.fill_timeframes の各足の位置・バンド・勢い）を"
+        "結び付け、『だからこの値段で入った』まで踏み込みます。表示は参考で判断は保存済み5分足と戦略、と必要なら一言。\n"
+        "【往復の振り返り】\n"
+        "- facts.round_trips は買い→売りで損益が確定した往復です。entry_reason/entry_signal（買った根拠）、"
+        "exit_reason/exit_signal（売った根拠）、realized_jpy、hold_sec を持ちます。\n"
+        "- review では往復を1件ずつ、**その判断が正しかったのか間違っていたのか**を、エントリーと出口の根拠・"
+        "保有時間・実現損益を並べて具体的に評価します。勝ちでも根拠が弱ければ『たまたま』と言い、"
+        "負けでも条件どおりなら『ルール通り』と区別します。次に同じ状況でどうするかまで述べます。\n"
+        "- ここで出た教訓は improve と improvement_hints に渡し、次回のパラメータ検証・反証条件につなげます。\n"
         "【改善への接続】\n"
         "- ニュース分析からBOT改善に有用な仮説がある場合だけ improvement_hints に構造化してください。無理に案を作らないでください。\n"
         "- kind は parameter / feature / risk / data のいずれか。featureは新機能、riskはリスク制御、dataは新しい観測データ、"
@@ -244,17 +267,19 @@ def build_prompt(facts: Mapping[str, object]) -> str:
         "- performance.cumulative_pnl_jpy がある場合、resultで累積損益（評価込み）を具体的に言う。\n"
         "- performance.today_realized_pnl_jpy は本日の確定損益として触れる。\n"
         "- performance.unrealized_pnl_jpy がある場合、含み損益も使う。complete=falseなら累積評価を断定しない。\n"
-        "次の8キーだけを持つJSONオブジェクト1つを出力してください。\n"
-        "- corner: 取得ニュースの独自分析を中心に、今日の相場で何を見るかを語る。ニュースが無ければ取引画面の見どころ。\n"
+        "次の11キーを持つJSONオブジェクト1つを出力してください。\n"
+        "- corner: 今日の相場の見取り図と、今日いちばん見るべき点を語るオープニング。\n"
+        "- news: research.news_items から5〜6件を個別に、事実→含意→観測点の順で詳しく解説する。\n"
+        "- chart: facts.timeframes の4つの時間足を1つずつ解説する。timeframesが空なら正直に言い、数値を作らない。\n"
         "- strategy: 現在の戦略パラメータの狙いを、損益・見送り傾向・ニュースから観測すべき点と結び付ける。\n"
         "- result: 累積損益・直近約定・保有を分析し、research.assetがあれば保有銘柄の面白い解説を自然に織り込む。\n"
-        "- improve: 取引結果とニュース分析を分離して評価し、次回改善で何を検証するかを述べる。\n"
-        "- chart: facts.timeframes の4つの時間足を1つずつ解説し、直近約定をどの時間足の位置で捉えたかを述べる。"
-        "timeframesが空なら取得できていないことを短く正直に言い、数値を作らない。\n"
+        "- fills: 直近約定を1件ずつ、signalの観測値と閾値で『なぜ発注したか』を数値つきで説明する。\n"
+        "- review: facts.round_trips の往復を1件ずつ、判断の良し悪しを根拠つきで評価し、次に活かす点を述べる。\n"
+        "- improve: 取引結果・往復レビュー・ニュース分析を分離して評価し、次回改善で何を検証するかを述べる。\n"
         "- news_analysis: ニュースから得た考察だけを400〜1200文字で要約。事実と推測を区別する。\n"
         "- asset_spotlight: 選択保有銘柄の解説だけを300〜1200文字。research.assetが無ければ空文字。\n"
         "- improvement_hints: 改善価値がある時だけ最大4件の配列。各要素は kind,title,rationale,evidence,confidence。無ければ空配列。\n"
-        f"corner/strategy/result/improve/chartの各値は日本語で{MIN_SEGMENT_CHARS}〜{MAX_SEGMENT_CHARS}文字程度の本文にすること。"
+        f"corner/news/chart/strategy/result/fills/review/improveの各値は日本語で{MIN_SEGMENT_CHARS}〜{MAX_SEGMENT_CHARS}文字程度の本文にすること。"
         "JSON以外は出力しないこと。"
     )
 
@@ -365,16 +390,110 @@ def _chart_text(facts: Mapping[str, object]) -> str:
     fills = [item for item in raw_fills if isinstance(item, Mapping)] if isinstance(raw_fills, list) else []
     if fills:
         first = fills[0]
-        view = None
         views = first.get("timeframes")
-        if isinstance(views, list) and views and isinstance(views[0], Mapping):
-            view = views[0]
+        view = views[0] if isinstance(views, list) and views and isinstance(views[0], Mapping) else None
         if view is not None:
             parts.append(
-                f"直近の{first.get('symbol')}の{first.get('side')}約定は{first.get('price')}で、"
-                f"{view.get('label')}では{view.get('trend')}基調・{view.get('bb_phrase')}でした。"
+                f"なお直近約定の{first.get('symbol')}は、{view.get('label')}で{view.get('trend')}基調、"
+                f"{view.get('bb_phrase')}です。発注の理由は約定の解説で扱います。"
             )
     parts.append("表示中のローソクは公開データの表示専用で、売買判断は保存済みの5分足と戦略パラメータで行っています。")
+    return "".join(parts)
+
+
+def _condition_text(signal: object) -> str:
+    if not isinstance(signal, Mapping):
+        return ""
+    raw = signal.get("conditions")
+    rows = raw if isinstance(raw, list) else []
+    parts: list[str] = []
+    for item in rows[:3]:
+        if not isinstance(item, Mapping):
+            continue
+        feature = str(item.get("feature") or "")
+        observed = str(item.get("observed") or "")
+        threshold = str(item.get("threshold") or "")
+        op = str(item.get("op") or "")
+        unit = str(item.get("unit") or "")
+        lookback = item.get("lookback")
+        look = f"{lookback}本" if isinstance(lookback, int) else ""
+        if feature and observed and threshold:
+            parts.append(f"{feature}が{observed}{unit}で閾値{threshold}{unit}を{op}（{look}）")
+    return "、".join(parts)
+
+
+def _news_text(facts: Mapping[str, object]) -> str:
+    research = facts.get("research") if isinstance(facts.get("research"), Mapping) else {}
+    raw = research.get("news_items") if isinstance(research.get("news_items"), list) else []
+    news = [item for item in raw if isinstance(item, Mapping) and str(item.get("title") or "").strip()]
+    if not news:
+        return (
+            "暗号資産ニュースのコーナーです。今回は見出しの取得が間に合わず、"
+            "個別のニュース解説はお休みします。取得できた次のコーナーでまとめて扱います。"
+        )
+    shown = news[:6]
+    parts = [f"暗号資産ニュースです。今回は{len(shown)}件を取り上げます。"]
+    for item in shown:
+        title = str(item.get("title") or "").strip()
+        source = str(item.get("source") or "").strip()
+        who = f"（{source}）" if source else ""
+        parts.append(
+            f"「{title}」{who}。見出しの段階なので、事実と推測を分けたうえで、"
+            "相場への含意は実際の値動きと突き合わせて確認します。"
+        )
+    return "".join(parts)
+
+
+def _fills_text(facts: Mapping[str, object]) -> str:
+    raw = facts.get("recent_fills")
+    fills = [item for item in raw if isinstance(item, Mapping)] if isinstance(raw, list) else []
+    if not fills:
+        return "約定の解説です。直近は約定がなく、条件がそろうまで見送っています。無理に売買しないのも作戦のうちです。"
+    parts = ["約定の解説です。直近の約定を1件ずつ、なぜ発注したのかまで掘り下げます。"]
+    for item in fills[:3]:
+        symbol = str(item.get("symbol") or "銘柄不明")
+        side = "買い" if str(item.get("side")) == "buy" else "売り"
+        reason = str(item.get("reason_code") or "")
+        condition = _condition_text(item.get("signal"))
+        if condition:
+            parts.append(f"{symbol}の{side}は、{condition}を満たしたため発注しています。")
+        else:
+            parts.append(
+                f"{symbol}の{side}約定は記録がありますが、発注根拠の詳細が残っていないため、"
+                "価格と理由コードだけをお伝えします。"
+            )
+    parts.append("表示中のチャートは参考で、実際の判断は保存済みの5分足と戦略パラメータで行っています。")
+    return "".join(parts)
+
+
+def _review_text(facts: Mapping[str, object]) -> str:
+    raw = facts.get("round_trips")
+    trips = [item for item in raw if isinstance(item, Mapping)] if isinstance(raw, list) else []
+    if not trips:
+        return (
+            "往復の振り返りです。買ってから売って損益が確定した取引はまだありません。"
+            "保有中の分は決済した時点で、判断の良し悪しをここで検証します。"
+        )
+    parts = ["往復の振り返りです。買ってから売って損益が確定した取引を1件ずつ、判断が正しかったのか見ます。"]
+    for item in trips[:3]:
+        symbol = str(item.get("symbol") or "銘柄不明")
+        entry_reason = str(item.get("entry_reason") or "不明")
+        exit_reason = str(item.get("exit_reason") or "不明")
+        entry = _condition_text(item.get("entry_signal"))
+        realized = item.get("realized_jpy")
+        hold = item.get("hold_sec")
+        hold_min = f"{float(hold) / 60:.0f}分" if isinstance(hold, (int, float)) else "保有時間不明"
+        try:
+            pnl = float(realized)
+        except (TypeError, ValueError):
+            pnl = None
+        verdict = "利益" if pnl is not None and pnl > 0 else "損失"
+        entry_text = f"（{entry}）" if entry else ""
+        parts.append(
+            f"{symbol}は{entry_reason}{entry_text}で入り、{exit_reason}で出口、{hold_min}保有で"
+            f"{realized}円の{verdict}です。根拠どおりの結果だったか、次に同じ形が来たらどうするかを"
+            "ここで切り分け、改善側の検証条件に渡します。"
+        )
     return "".join(parts)
 
 
@@ -391,14 +510,9 @@ def render_fallback(facts: Mapping[str, object]) -> dict:
 
     corner = (
         "PAPER・暗号資産の模擬売買コーナーです。今日は単に何を買ったかだけでなく、"
-        "累積損益と本日の確定損益を先に見て、BOTの作戦が本当に働いているのかを確認します。"
-        "画面右側には見送り理由と市場の歩み値も出ています。数字が多いですが、勝っているのか、"
-        "待つべきなのか、そこを一緒に見ていきます。"
+        "なぜその注文を出したのか、その判断が正しかったのかまで、時間をかけて見ていきます。"
+        "ニュース、時間足チャート、約定の根拠、往復の振り返り、改善の順でお送りします。"
     )
-    if news:
-        titles = [str(item.get("title", "")) for item in news[:2] if isinstance(item, Mapping)]
-        if titles:
-            corner += "公開ニュースでは「" + "」「".join(titles) + "」が見出しに出ています。見出しだけで因果を断定せず、相場の反応と突き合わせて見ます。"
 
     result = (
         f"まず成績です。{_pnl_text(facts)}模擬資金は{facts.get('capital_jpy')}円、"
@@ -446,11 +560,14 @@ def render_fallback(facts: Mapping[str, object]) -> dict:
 
     return {
         "corner": corner,
+        "news": _news_text(facts),
+        "chart": _chart_text(facts),
         "strategy": _policy_text(dict(facts.get("policy") or {}))
         + " 設定値そのものより、その結果として損益と見送りがどう動いたかを見るのが今回のポイントです。",
         "result": result,
+        "fills": _fills_text(facts),
+        "review": _review_text(facts),
         "improve": improve,
-        "chart": _chart_text(facts),
     }
 
 
