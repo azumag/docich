@@ -10,7 +10,7 @@ on:
         required: true
         default: status
         type: choice
-        options: [status, deploy, exec, bootstrap, diagnostics]
+        options: [status, deploy, exec, bootstrap, diagnostics, reclaim]
       target:
         description: VM target
         required: true
@@ -27,6 +27,11 @@ on:
         required: false
         default: ''
         type: string
+      apply:
+        description: Apply storage reclaim changes (false = dry-run/plan only)
+        required: false
+        default: false
+        type: boolean
       confirm:
         description: Type production for production exec/bootstrap
         required: false
@@ -391,3 +396,21 @@ jobs:
           [[ -n "$VM_COMMAND" ]]
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
           printf '%s' "$VM_COMMAND" | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich $TARGET $SHA"
+
+      - name: Run reviewed storage reclaim
+        if: ${{ steps.auth.outputs.operation == 'reclaim' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+          APPLY: ${{ inputs.apply }}
+        run: |
+          set -euo pipefail
+          # The helper is a fixed reviewed script from the trusted main checkout.
+          # No network input is interpolated; only the APPLY flag is passed.
+          apply_flag=0
+          if [[ "${APPLY:-false}" == "true" ]]; then apply_flag=1; fi
+          echo "storage reclaim apply=${apply_flag}"
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          { printf 'APPLY=%s\n' "$apply_flag"; cat control/ops/vm_actions/storage_reclaim.sh; } | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"

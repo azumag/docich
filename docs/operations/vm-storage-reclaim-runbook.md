@@ -3,7 +3,8 @@
 - 対象: `azumag/docich` 本番VM（`soren-prod-vnic`, Oracle Cloud aarch64, root `/dev/sda1` ext4 45 GiB）
 - 調査日: 2026-09-14（read-only 調査の結果に基づく）
 - 前提: 本 runbook は**手順書**であり、実行は operator の明示承認後に行う。記載のコマンドは実行前に対象を `du`/`ls` で必ず再確認する。
-- 実行経路（AGENTS.md「Production deployment contract」準拠）: production への変更は ad-hoc SSH ではなく owner-only control plane（`.github/workflows/vm-operations.yml` の `exec / production`、または reviewed script を main に置いて同経路で実行）を使う。通常の診断は read-only `diagnostics` / `status`（`.github/workflows/vm-storage-monitor.yml`）で取得する。`exec` の stdout/stderr は Actions log に出ず VM private log に残るため、削減量は前後の `status`（使用率・空き容量）で確認する。
+- 実行経路（AGENTS.md「Production deployment contract」準拠）: production への変更は ad-hoc SSH ではなく owner-only control plane を使う。本 runbook の Phase 1 は reviewed helper `ops/vm_actions/storage_reclaim.sh` として実装し、`.github/workflows/vm-operations.yml` の `operation=reclaim`（`target=production`, `ref=main`, `confirm=production`, `apply=false` で dry-run / `apply=true` で適用）から実行する。`exec` の任意コマンドは public repo では authorize により無効化されているため、固定 reviewed helper を main から送る本経路が正本。削減量は前後の read-only `status`（使用率・空き容量）で確認する。
+- 実行順: まず `apply=false`（dry-run）で DEL 対象と見込み bytes を確認し、対象が想定どおりであることを確認してから `apply=true` を実行する。VOICEVOX アーカイブは helper 既定では対象外で、`--include-voicevox-archive` 相当の明示指定時のみ削除する（再取得手段の確保が前提）。
 
 ## 0. 安全条件（厳守）
 
