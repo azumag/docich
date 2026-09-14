@@ -20,7 +20,7 @@ apply="${APPLY:-0}"
 root="/home/ubuntu/soren"
 min_age_days=21
 voicevox_root="/opt/voicevox"
-include_voicevox=0
+include_voicevox="${VOICEVOX_ARCHIVE:-0}"
 skip_system=0
 
 while [[ $# -gt 0 ]]; do
@@ -35,6 +35,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ "$apply" == 0 || "$apply" == 1 ]] || { echo "invalid APPLY" >&2; exit 2; }
+[[ "$include_voicevox" == 0 || "$include_voicevox" == 1 ]] || { echo "invalid VOICEVOX_ARCHIVE" >&2; exit 2; }
 [[ "$min_age_days" =~ ^[0-9]+$ ]] || { echo "invalid min-age-days" >&2; exit 2; }
 [[ -d "$root" ]] || { echo "root not found: $root" >&2; exit 2; }
 
