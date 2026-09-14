@@ -16,7 +16,7 @@ from typing import Mapping
 from .dashboard import HEADER_TITLE, _focus_symbol, _fresh_count, _positions, _reason_ja, load_snapshot
 from .free_strategy.contract import decode as free_strategy_decode
 from .free_strategy.evaluation import public_summary as free_strategy_public_summary
-from .performance import build_performance, realized_pnl_for_fill
+from .performance import build_performance, realized_pnl_for_fill, recent_orders
 from .status import signal_context_payload
 
 DISCLAIMER = "PAPER / 模擬取引（bitbank公開データ・実取引なし）"
@@ -210,6 +210,18 @@ def build_dashboard_snapshot(trading_dir: Path, *, now: float | None = None) -> 
             "skipped": skipped,
         },
         "fills": fills,
+        "orders": [
+            {
+                "symbol": order.get("symbol"),
+                "side": order.get("side"),
+                "amount": order.get("amount"),
+                "price": order.get("price"),
+                "quote_notional": order.get("quote_notional"),
+                "reason_code": order.get("reason_code"),
+                "created_at": order.get("created_at"),
+            }
+            for order in recent_orders(target / "paper.sqlite3", limit=6)
+        ],
         # Free-form strategies remain a separate PAPER research projection.
         # Their balances, positions, fills and P/L are never merged into the
         # existing portfolio/performance fields above.

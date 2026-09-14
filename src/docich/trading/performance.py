@@ -275,3 +275,52 @@ def build_round_trips(db_path: Path, *, limit: int = 8) -> list[dict[str, object
             lots[symbol][4] = None
     trips.sort(key=lambda item: float(item.get("closed_at") or 0.0), reverse=True)
     return trips[: int(limit)]
+
+
+def recent_orders(db_path: Path, *, limit: int = 6) -> list[dict[str, object]]:
+    """Read-only allowlist of the most recent paper orders.
+
+    PAPER executes immediately, so an order and its fill share an
+    opportunity, but they are distinct ledger records (decision vs execution).
+    """
+    target = Path(db_path)
+    if not target.is_file() or limit <= 0:
+        return []
+    try:
+        uri = f"file:{target.resolve()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+    except (OSError, sqlite3.Error):
+        return []
+    try:
+        raw = conn.execute(
+            """SELECT opportunity_id, strategy_id, symbol, side, quote, amount, price,
+                      quote_notional, reference_notional, reason_code, created_at
+                 FROM paper_orders ORDER BY created_at DESC, rowid DESC LIMIT ?""",
+            (int(limit),),
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+    orders: list[dict[str, object]] = []
+    for row in raw:
+        try:
+            created = float(row[10])
+        except (TypeError, ValueError):
+            continue
+        orders.append(
+            {
+                "opportunity_id": str(row[0]),
+                "strategy_id": str(row[1]),
+                "symbol": str(row[2]),
+                "side": str(row[3]),
+                "quote": str(row[4]),
+                "amount": str(row[5]),
+                "price": str(row[6]),
+                "quote_notional": str(row[7]),
+                "reference_notional": str(row[8]),
+                "reason_code": str(row[9]),
+                "created_at": created,
+            }
+        )
+    return orders

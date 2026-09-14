@@ -143,3 +143,41 @@ def test_snapshot_exposes_allowlisted_fill_signal_context(tmp_path):
     assert context["kind"] == "builtin_entry"
     assert context["conditions"][0]["feature"] == "return_bps"
     assert "secret" not in context
+
+
+def test_snapshot_includes_recent_orders(tmp_path):
+    from decimal import Decimal
+
+    from docich.trading.ledger import PaperLedger
+    from docich.trading.models import AllocationDecision
+    from docich.trading.paper import PaperBroker
+
+    trading_dir = tmp_path / "trading"
+    trading_dir.mkdir(parents=True)
+    (trading_dir / "status.json").write_text(
+        json.dumps({"worker_state": "running", "capital_reference": "1000",
+                    "eligible_symbols": ["BTC/JPY"]}),
+        encoding="utf-8",
+    )
+    (trading_dir / "market_cache.json").write_text(
+        json.dumps({"symbols": {"BTC/JPY": {"closes": [1, 2], "fetched_at": 1.0}}}),
+        encoding="utf-8",
+    )
+    ledger = PaperLedger(trading_dir / "paper.sqlite3")
+    broker = PaperBroker(ledger, taker_fee_rate="0", slippage_bps="0")
+    broker.fill(
+        AllocationDecision(
+            opportunity_id="o1", strategy_id="momentum-v1", symbol="BTC/JPY", side="buy",
+            quote="JPY", amount=Decimal("1"), price=Decimal("100"),
+            quote_notional=Decimal("100"), reference_notional=Decimal("100"),
+            reason_code="momentum_breakout",
+        ),
+        timestamp=1000.0,
+    )
+    ledger.close()
+
+    snap = build_dashboard_snapshot(trading_dir, now=1010.0)
+    assert snap["orders"], "recent orders must be exposed"
+    assert snap["orders"][0]["symbol"] == "BTC/JPY"
+    assert snap["orders"][0]["side"] == "buy"
+    assert snap["orders"][0]["reason_code"] == "momentum_breakout"
