@@ -125,10 +125,11 @@ class ControlPlaneWiringTests(unittest.TestCase):
         self.assertIn("arbitrary VM exec is disabled when the repository is public", (ROOT / "ops" / "vm_actions" / "authorize.py").read_text())
 
     def test_logrotate_config_sets_owner_for_group_writable_log_dir(self):
-        # /home/ubuntu/soren/logs is group-writable, so logrotate needs an
-        # explicit owner or it skips every file as insecure.
+        # /home/ubuntu/soren/logs is group-writable and holds both ubuntu- and
+        # root-owned logs, so logrotate must run with an explicit owner that can
+        # read every file and is not disabled by the insecure-permission check.
         text = HELPER.read_text()
-        self.assertIn("su ubuntu ubuntu", text)
+        self.assertIn("su root root", text)
         self.assertIn("copytruncate", text)
 
 
