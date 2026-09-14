@@ -26,7 +26,11 @@ from .strategy_store import load_strategy_policy, policy_to_payload
 from .strategies import StrategyPolicy
 
 
-SEGMENT_KEYS = ("corner", "strategy", "result", "improve")
+SEGMENT_KEYS = ("corner", "strategy", "result", "improve", "chart")
+# The multi-timeframe walk is an enhancement: a model that omits it still
+# produces a valid four-segment script, and the scheduled slot then falls back
+# to casual narration instead of failing the whole script.
+OPTIONAL_SEGMENT_KEYS = ("chart",)
 MAX_SEGMENT_CHARS = 600
 MIN_SEGMENT_CHARS = 300
 SCRIPT_LABEL = "RADIO:paper-script"
@@ -89,8 +93,15 @@ def _latest_improvement(logs_dir) -> dict:
     return record
 
 
-def build_facts(trading_dir, *, now=None, policy: StrategyPolicy | None = None) -> dict:
-    """Compact, allowlisted facts for narration and policy improvement."""
+def build_facts(trading_dir, *, now=None, policy: StrategyPolicy | None = None,
+                timeframes: Mapping[str, object] | None = None) -> dict:
+    """Compact, allowlisted facts for narration and policy improvement.
+
+    ``timeframes`` is the bounded multi-timeframe block from
+    :func:`docich.trading.timeframe_chart.build_narration_facts` (public
+    candlesticks only). It is optional, so callers that must not touch the
+    network still get the trading facts unchanged.
+    """
     target = Path(trading_dir)
     moment = time.time() if now is None else float(now)
     snap = build_dashboard_snapshot(target, now=moment)
@@ -150,6 +161,11 @@ def build_facts(trading_dir, *, now=None, policy: StrategyPolicy | None = None) 
             "last": chart.get("last"),
             "change_pct": change_pct,
         }
+    tf_block = timeframes if isinstance(timeframes, Mapping) else {}
+    tf_timeframes = tf_block.get("timeframes")
+    tf_timeframes = list(tf_timeframes) if isinstance(tf_timeframes, list) else []
+    tf_fills = tf_block.get("fill_timeframes")
+    tf_fills = list(tf_fills) if isinstance(tf_fills, list) else []
     return {
         "as_of": moment,
         "worker_state": str(snap["header"].get("worker_state", "unknown")),
@@ -184,6 +200,10 @@ def build_facts(trading_dir, *, now=None, policy: StrategyPolicy | None = None) 
         # structured improvement hints. A prepared same-corner record is also
         # useful while the narration AI is running.
         "research": load_research_result(target),
+        # Public multi-timeframe candlestick views (Issue #348). Empty when the
+        # public data could not be fetched; narration must then not imply it.
+        "timeframes": tf_timeframes,
+        "fill_timeframes": tf_fills,
     }
 
 
@@ -207,6 +227,17 @@ def build_prompt(facts: Mapping[str, object]) -> str:
         "- kind は parameter / feature / risk / data のいずれか。featureは新機能、riskはリスク制御、dataは新しい観測データ、"
         "parameterは既存パラメータ調整です。各案に根拠(evidence)と確信度(confidence: low/medium/high)を付けます。\n"
         "- ニュース単発を根拠に自動売買ルールを直接追加する提案は禁止。検証方法・反証条件をrationaleに含めてください。\n"
+        "【時間足チャートの解説】\n"
+        "- facts.timeframes は注目銘柄の日足・1時間足・15分足・1分足の公開ローソクです。各要素は bars(本数)、"
+        "last_close、range_change_pct(表示区間の変化率)、momentum_pct(直近数本の勢い)、sma、bb_upper/bb_lower"
+        "(ボリンジャーバンド)、bb_position(0が下限・1が上限)、trend、bb_phrase を持ちます。\n"
+        "- chart では4つの時間足を1つずつ、『事実』→『解釈』→『次に何を見るか』の順で解説します。"
+        "数値は facts にあるものだけを使い、無い足や空のtimeframesは正直に『取得できていない』と述べる。作らない。\n"
+        "- ボリンジャーバンドは終値が上限寄りか下限寄りか、モメンタムは勢いが強いか弱いかを、価格の丸暗記より先に噛み砕く。\n"
+        "- facts.fill_timeframes は直近の模擬約定銘柄の1時間足・15分足です。直近の約定を1つずつ、"
+        "どの時間足のどの位置（バンド位置・勢い）だったかを recent_fills と突き合わせて説明します。"
+        "売買判断の根拠を捏造してはいけません。\n"
+        "- 表示中のチャートは表示専用で、売買判断は保存済みの5分足と戦略パラメータで行っている点を必要なら一言添える。\n"
         "【話し方】\n"
         "- です・ます調の自然な話し言葉。結論を先に言い、その後に理由や数字を添える。\n"
         "- factsを順番に復唱するだけは禁止。数字同士を比較し、意味を説明する。\n"
@@ -217,31 +248,40 @@ def build_prompt(facts: Mapping[str, object]) -> str:
         "- performance.cumulative_pnl_jpy がある場合、resultで累積損益（評価込み）を具体的に言う。\n"
         "- performance.today_realized_pnl_jpy は本日の確定損益として触れる。\n"
         "- performance.unrealized_pnl_jpy がある場合、含み損益も使う。complete=falseなら累積評価を断定しない。\n"
-        "次の7キーだけを持つJSONオブジェクト1つを出力してください。\n"
+        "次の8キーだけを持つJSONオブジェクト1つを出力してください。\n"
         "- corner: 取得ニュースの独自分析を中心に、今日の相場で何を見るかを語る。ニュースが無ければ取引画面の見どころ。\n"
         "- strategy: 現在の戦略パラメータの狙いを、損益・見送り傾向・ニュースから観測すべき点と結び付ける。\n"
         "- result: 累積損益・直近約定・保有を分析し、research.assetがあれば保有銘柄の面白い解説を自然に織り込む。\n"
         "- improve: 取引結果とニュース分析を分離して評価し、次回改善で何を検証するかを述べる。\n"
+        "- chart: facts.timeframes の4つの時間足を1つずつ解説し、直近約定をどの時間足の位置で捉えたかを述べる。"
+        "timeframesが空なら取得できていないことを短く正直に言い、数値を作らない。\n"
         "- news_analysis: ニュースから得た考察だけを400〜1200文字で要約。事実と推測を区別する。\n"
         "- asset_spotlight: 選択保有銘柄の解説だけを300〜1200文字。research.assetが無ければ空文字。\n"
         "- improvement_hints: 改善価値がある時だけ最大4件の配列。各要素は kind,title,rationale,evidence,confidence。無ければ空配列。\n"
-        f"corner/strategy/result/improveの各値は日本語で{MIN_SEGMENT_CHARS}〜{MAX_SEGMENT_CHARS}文字程度の本文にすること。"
+        f"corner/strategy/result/improve/chartの各値は日本語で{MIN_SEGMENT_CHARS}〜{MAX_SEGMENT_CHARS}文字程度の本文にすること。"
         "JSON以外は出力しないこと。"
     )
 
 
 def parse_script(text: str) -> dict:
-    """Extract the four narration segments. Malformed output raises."""
+    """Extract the narration segments. Malformed output raises.
+
+    The ``chart`` segment is optional: without it the four core segments remain
+    a valid script, and the multi-timeframe slot falls back to casual talk.
+    """
     data = extract_json_object(text)
     if not isinstance(data, dict):
         raise CornerScriptError("台本のJSONオブジェクトを抽出できません")
-    missing = sorted(set(SEGMENT_KEYS) - set(data))
+    required = [key for key in SEGMENT_KEYS if key not in OPTIONAL_SEGMENT_KEYS]
+    missing = sorted(set(required) - set(data))
     if missing:
         raise CornerScriptError(f"台本に必要なキーがありません: {', '.join(missing)}")
     segments: dict[str, str] = {}
     for key in SEGMENT_KEYS:
-        value = data[key]
+        value = data.get(key)
         if not isinstance(value, str) or not value.strip():
+            if key in OPTIONAL_SEGMENT_KEYS:
+                continue
             raise CornerScriptError(f"台本の値が空です: {key}")
         cleaned = value.strip().replace("\n", " ")
         if len(cleaned) > MAX_SEGMENT_CHARS:
@@ -280,6 +320,53 @@ def _pnl_text(facts: Mapping[str, object]) -> str:
     if unrealized is not None:
         parts.append(f"現在の含み損益は{unrealized}円")
     return "、".join(parts) + "です。"
+
+
+def _fmt_pct(value) -> str:
+    try:
+        if value is None:
+            return "算出待ち"
+        return f"{float(value):+.2f}"
+    except (TypeError, ValueError, OverflowError):
+        return "算出待ち"
+
+
+def _chart_text(facts: Mapping[str, object]) -> str:
+    """Deterministic multi-timeframe walk from the public candlestick facts."""
+    raw = facts.get("timeframes")
+    timeframes = [item for item in raw if isinstance(item, Mapping)] if isinstance(raw, list) else []
+    if not timeframes:
+        return (
+            "時間足チャートの解説です。今回は公開ローソクの取得が間に合わず、"
+            "日足・1時間足・15分足・1分足の数字をお伝えできません。データが取れ次第、次のコーナーで扱います。"
+        )
+    parts = ["時間足チャートの解説です。注目銘柄を4つの時間足で見ていきます。"]
+    for view in timeframes[:4]:
+        label = str(view.get("label") or view.get("timeframe") or "")
+        trend = str(view.get("trend") or "不明")
+        change = _fmt_pct(view.get("range_change_pct"))
+        momentum = _fmt_pct(view.get("momentum_pct"))
+        phrase = str(view.get("bb_phrase") or "バンド位置は算出待ち")
+        bars = view.get("bars")
+        parts.append(
+            f"{label}は{bars}本で{trend}基調、表示区間の変化率は{change}パーセント、"
+            f"直近の勢いは{momentum}パーセント、{phrase}です。"
+        )
+    raw_fills = facts.get("fill_timeframes")
+    fills = [item for item in raw_fills if isinstance(item, Mapping)] if isinstance(raw_fills, list) else []
+    if fills:
+        first = fills[0]
+        view = None
+        views = first.get("timeframes")
+        if isinstance(views, list) and views and isinstance(views[0], Mapping):
+            view = views[0]
+        if view is not None:
+            parts.append(
+                f"直近の{first.get('symbol')}の{first.get('side')}約定は{first.get('price')}で、"
+                f"{view.get('label')}では{view.get('trend')}基調・{view.get('bb_phrase')}でした。"
+            )
+    parts.append("表示中のローソクは公開データの表示専用で、売買判断は保存済みの5分足と戦略パラメータで行っています。")
+    return "".join(parts)
 
 
 def render_fallback(facts: Mapping[str, object]) -> dict:
@@ -354,6 +441,7 @@ def render_fallback(facts: Mapping[str, object]) -> dict:
         + " 設定値そのものより、その結果として損益と見送りがどう動いたかを見るのが今回のポイントです。",
         "result": result,
         "improve": improve,
+        "chart": _chart_text(facts),
     }
 
 
@@ -366,8 +454,9 @@ def generate_corner_script(
     timeout: int = 180,
     dry_run: bool = False,
     now=None,
+    timeframe_facts: Mapping[str, object] | None = None,
 ) -> dict:
-    """Return four segments; optional public research never fails the caller."""
+    """Return the narration segments; optional public data never fails the caller."""
     target = Path(trading_dir)
     moment = time.time() if now is None else float(now)
     cleaned_agents = (agents or "").strip()
@@ -386,9 +475,22 @@ def generate_corner_script(
             # Network/public-research failures are commentary degradation only.
             research_context = {}
 
+    # Multi-timeframe public candles (Issue #348). Fetched once per corner for
+    # both the AI and the deterministic fallback; a failure is commentary
+    # degradation only. Gated on the real-AI contract so tests and offline
+    # calls never touch the network, and tests can inject a fixed block.
+    tf_context: Mapping[str, object] = timeframe_facts if isinstance(timeframe_facts, Mapping) else {}
+    if not tf_context and real_ai:
+        try:
+            from .timeframe_chart import build_narration_facts
+
+            tf_context = build_narration_facts(target, now=moment)
+        except Exception:
+            tf_context = {}
+
     try:
         effective = policy if policy is not None else load_strategy_policy(target)
-        facts = build_facts(target, now=moment, policy=effective)
+        facts = build_facts(target, now=moment, policy=effective, timeframes=tf_context)
         if research_context:
             facts["research"] = research_context
     except Exception as exc:

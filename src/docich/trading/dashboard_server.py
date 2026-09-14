@@ -18,6 +18,7 @@ from pathlib import Path
 
 from .dashboard_live import LiveMarketSampler
 from .dashboard_snapshot import build_dashboard_snapshot
+from .timeframe_chart import TimeframeChartSampler
 
 ASSETS = Path(__file__).resolve().parent / "dashboard_assets"
 _CSS = "text/css; charset=utf-8"
@@ -32,9 +33,12 @@ class _ReusableServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
 
 
-def make_handler(trading_dir: Path, *, live_sampler=None):
+def make_handler(trading_dir: Path, *, live_sampler=None, timeframe_sampler=None):
     trading_dir = Path(trading_dir)
     sampler = live_sampler if live_sampler is not None else LiveMarketSampler(trading_dir)
+    timeframes = (
+        timeframe_sampler if timeframe_sampler is not None else TimeframeChartSampler(trading_dir)
+    )
 
     class Handler(http.server.BaseHTTPRequestHandler):
         server_version = "docich-paper-dashboard/1"
@@ -74,6 +78,8 @@ def make_handler(trading_dir: Path, *, live_sampler=None):
                 return self._file("dashboard.js", _JS)
             if path == "/dashboard_candles.js":
                 return self._file("dashboard_candles.js", _JS)
+            if path == "/dashboard_timeframes.js":
+                return self._file("dashboard_timeframes.js", _JS)
             if path == "/api/trading/dashboard":
                 try:
                     payload = build_dashboard_snapshot(trading_dir, now=time.time())
@@ -88,6 +94,17 @@ def make_handler(trading_dir: Path, *, live_sampler=None):
                         "schema_version": 1,
                         "available": False,
                         "error": "live refresh unavailable",
+                    }
+                return self._json(payload)
+            if path == "/api/trading/timeframes":
+                try:
+                    payload = timeframes.snapshot(now=time.time())
+                except Exception:
+                    payload = {
+                        "schema_version": 1,
+                        "available": False,
+                        "timeframes": [],
+                        "error": "timeframe refresh unavailable",
                     }
                 return self._json(payload)
             return self._send(404, b"not found", _TEXT)

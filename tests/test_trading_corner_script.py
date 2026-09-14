@@ -179,3 +179,116 @@ def test_generate_dry_run_never_calls_ai(tmp_path):
     assert result["source"] == "fallback"
     assert result["reason"] == "dry-run"
     assert set(result["segments"]) == set(SEGMENT_KEYS)
+
+
+_TIMEFRAME_FACTS = {
+    "symbol": "btc_jpy",
+    "generated_at": 1010.0,
+    "timeframes": [
+        {
+            "timeframe": "1d",
+            "label": "日足",
+            "bars": 22,
+            "trend": "上昇",
+            "range_change_pct": 4.2,
+            "momentum_pct": 1.1,
+            "bb_upper": "110",
+            "bb_lower": "90",
+            "bb_position": 0.85,
+            "bb_phrase": "バンド上限寄り",
+            "high": "112",
+            "low": "88",
+            "last_close": "109",
+            "stale": False,
+        },
+        {
+            "timeframe": "1m",
+            "label": "1分足",
+            "bars": 60,
+            "trend": "下降",
+            "range_change_pct": -0.4,
+            "momentum_pct": -0.2,
+            "bb_upper": "110",
+            "bb_lower": "108",
+            "bb_position": 0.1,
+            "bb_phrase": "バンド下限寄り",
+            "high": "111",
+            "low": "107",
+            "last_close": "108.2",
+            "stale": False,
+        },
+    ],
+    "fill_timeframes": [
+        {
+            "symbol": "eth_jpy",
+            "side": "sell",
+            "price": "200",
+            "filled_at": 990.0,
+            "timeframes": [
+                {
+                    "timeframe": "1h",
+                    "label": "1時間足",
+                    "bars": 48,
+                    "trend": "上昇",
+                    "range_change_pct": 1.5,
+                    "momentum_pct": 0.6,
+                    "bb_upper": "210",
+                    "bb_lower": "190",
+                    "bb_position": 0.7,
+                    "bb_phrase": "バンド上限寄り",
+                    "stale": False,
+                }
+            ],
+        }
+    ],
+}
+
+
+def test_build_facts_and_prompt_include_multi_timeframe_walk(tmp_path):
+    _write_status(tmp_path)
+    facts = build_facts(tmp_path, now=1010.0, timeframes=_TIMEFRAME_FACTS)
+    assert facts["timeframes"][0]["label"] == "日足"
+    assert facts["fill_timeframes"][0]["symbol"] == "eth_jpy"
+    prompt = build_prompt(facts)
+    assert "時間足チャートの解説" in prompt
+    assert "次の8キー" in prompt
+    assert "- chart:" in prompt
+    assert "ボリンジャーバンド" in prompt
+
+
+def test_build_facts_without_timeframes_stays_empty(tmp_path):
+    _write_status(tmp_path)
+    facts = build_facts(tmp_path, now=1010.0)
+    assert facts["timeframes"] == []
+    assert facts["fill_timeframes"] == []
+
+
+def test_render_fallback_chart_is_grounded_or_honest(tmp_path):
+    _write_status(tmp_path)
+    grounded = render_fallback(build_facts(tmp_path, now=1010.0, timeframes=_TIMEFRAME_FACTS))
+    assert "日足" in grounded["chart"]
+    assert "1分足" in grounded["chart"]
+    assert "eth_jpy" in grounded["chart"]
+    honest = render_fallback(build_facts(tmp_path, now=1010.0))
+    assert "取得" in honest["chart"]
+    assert set(grounded) == set(SEGMENT_KEYS)
+
+
+def test_parse_script_treats_chart_segment_as_optional():
+    four = '{"corner":"a","strategy":"b","result":"c","improve":"d"}'
+    parsed = parse_script(four)
+    assert set(parsed) == {"corner", "strategy", "result", "improve"}
+    five = ('{"corner":"a","strategy":"b","result":"c","improve":"d",'
+            '"chart":"1分足は上昇です"}')
+    assert parse_script(five)["chart"] == "1分足は上昇です"
+    blank = ('{"corner":"a","strategy":"b","result":"c","improve":"d","chart":"  "}')
+    assert "chart" not in parse_script(blank)
+
+
+def test_generate_uses_injected_timeframe_facts_without_network(tmp_path):
+    _write_status(tmp_path)
+    result = generate_corner_script(
+        None, trading_dir=tmp_path, agents="", now=1010.0, timeframe_facts=_TIMEFRAME_FACTS
+    )
+    assert result["source"] == "fallback"
+    assert "日足" in result["segments"]["chart"]

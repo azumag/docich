@@ -21,10 +21,12 @@ from .trading.soren_output import send_overlay, enqueue_speech
 # Spread narration across the whole 30-minute corner instead of front-loading
 # four long segments and then going quiet. 170s gives ten narration slots in a
 # 30-minute run (plus opening/end), while legacy active states keep their old
-# 5-minute replay cadence for safe crash recovery.
+# 5-minute replay cadence for safe crash recovery. Segment index 5 is the
+# multi-timeframe chart walk (Issue #348) and is spoken early, right after the
+# market intro. Other slots stay casual talk.
 NARRATION_INTERVAL_S = 170
 LEGACY_INTERVAL_S = 300
-SCRIPT_SLOTS = {1: 1, 4: 2, 7: 3, 10: 4}
+SCRIPT_SLOTS = {1: 1, 3: 5, 5: 2, 7: 3, 9: 4}
 
 
 def ensure_trading_window(g, tmux=None) -> str:
