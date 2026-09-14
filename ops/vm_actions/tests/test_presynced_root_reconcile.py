@@ -6,7 +6,9 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+import ops.vm_actions.reconcile_presynced_root as reconcile_root
 from ops.vm_actions.reconcile_presynced_root import (
     REASON_STAGED_DRIFT,
     REASON_UNKNOWN_DRIFT,
@@ -103,6 +105,15 @@ class PresyncedRootReconcileTests(unittest.TestCase):
         path.write_text("bad\n", encoding="utf-8")  # same length as "new\n"
         self.assert_reason(REASON_UNKNOWN_DRIFT, lambda: reconcile(self.root, self.old, self.new))
         self.assertEqual(path.read_text(encoding="utf-8"), "bad\n")
+
+    def test_oversize_live_file_is_refused_before_content_read(self):
+        path = self.root / "app.py"
+        path.write_bytes(b"12345")
+        with (
+            mock.patch.object(reconcile_root, "MAX_FILE_BYTES", 4),
+            mock.patch("os.fdopen", side_effect=AssertionError("oversize content must not be read")),
+        ):
+            self.assert_reason(REASON_UNSUPPORTED_PATH, lambda: reconcile_root._live(path))
 
     def test_staged_change_is_refused_and_index_is_untouched(self):
         path = self.root / "app.py"
