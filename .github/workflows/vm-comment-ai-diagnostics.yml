@@ -6,6 +6,12 @@ on:
       - '.github/workflows/vm-comment-ai-diagnostics.yml'
       - 'ops/vm_actions/summarize_comment_winners.py'
       - 'ops/vm_actions/tests/test_summarize_comment_winners.py'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/vm-comment-ai-diagnostics.yml'
+      - 'ops/vm_actions/summarize_comment_winners.py'
+      - 'ops/vm_actions/tests/test_summarize_comment_winners.py'
   workflow_dispatch:
 
 permissions:
@@ -30,7 +36,7 @@ jobs:
 
   production:
     if: >-
-      ${{ github.event_name == 'workflow_dispatch' &&
+      ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'push') &&
           github.ref == 'refs/heads/main' && github.ref_protected == true &&
           github.actor_id == 9018513 && github.triggering_actor == 'azumag' }}
     environment: vm-operations
