@@ -4,7 +4,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich.config import load_global
-from docich.paper_corner import PaperCornerManager
+from docich.paper_corner import SCRIPT_SLOTS, PaperCornerManager
 
 
 class Coordinator:
@@ -44,8 +44,12 @@ def test_script_generation_prepares_but_does_not_frontload_speech(tmp_path, monk
             "source": "fixture",
             "segments": {
                 "corner": "相場の話です。",
+                "news": "ニュースの話です。",
+                "chart": "チャートの話です。",
                 "strategy": "戦略の話です。",
                 "result": "結果の話です。",
+                "fills": "約定の話です。",
+                "review": "往復の話です。",
                 "improve": "改善の話です。",
             },
         },
@@ -57,9 +61,13 @@ def test_script_generation_prepares_but_does_not_frontload_speech(tmp_path, monk
     assert speech == []
     assert state["script_segments"] == {
         "1": "相場の話です。",
-        "2": "戦略の話です。",
-        "3": "結果の話です。",
-        "4": "改善の話です。",
+        "2": "ニュースの話です。",
+        "3": "チャートの話です。",
+        "4": "戦略の話です。",
+        "5": "結果の話です。",
+        "6": "約定の話です。",
+        "7": "往復の話です。",
+        "8": "改善の話です。",
     }
 
     mgr._scheduled_narration(state, 1)
@@ -80,21 +88,19 @@ def test_periodic_messages_never_repeat_opening_catchphrase(tmp_path):
     assert "chatter:2" in state["reports"]
 
 
-def test_multi_timeframe_chart_is_spoken_at_slot_two(tmp_path):
+def test_all_eight_segments_are_scheduled_early(tmp_path):
     mgr = _manager(tmp_path)
     state = {
         "date": "2026-09-12",
         "reports": {},
-        "script_segments": {
-            "1": "相場の話です。",
-            "2": "戦略の話です。",
-            "3": "結果の話です。",
-            "4": "改善の話です。",
-            "5": "時間足チャートの話です。",
-        },
+        "script_segments": {str(index): f"文{index}です。" for index in range(1, 9)},
     }
-    # SCRIPT_SLOTS speaks the chart walk at slot 2 (~5.7 minutes in), not 8.5.
-    mgr._scheduled_narration(state, 2)
-    assert state["reports"]["script:5"]["text"] == "時間足チャートの話です。"
+    # Eight substantive segments fill the corner (slots 1-8); chart is slot 3,
+    # the "why" of each fill is slot 6 and the round-trip review is slot 7.
+    assert SCRIPT_SLOTS[3] == 3
+    assert SCRIPT_SLOTS[6] == 6
+    assert SCRIPT_SLOTS[7] == 7
     mgr._scheduled_narration(state, 3)
-    assert "chatter:3" in state["reports"]
+    assert state["reports"]["script:3"]["text"] == "文3です。"
+    mgr._scheduled_narration(state, 9)
+    assert "chatter:9" in state["reports"]

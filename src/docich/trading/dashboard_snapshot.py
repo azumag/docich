@@ -17,6 +17,7 @@ from .dashboard import HEADER_TITLE, _focus_symbol, _fresh_count, _positions, _r
 from .free_strategy.contract import decode as free_strategy_decode
 from .free_strategy.evaluation import public_summary as free_strategy_public_summary
 from .performance import build_performance, realized_pnl_for_fill
+from .status import signal_context_payload
 
 DISCLAIMER = "PAPER / 模擬取引（bitbank公開データ・実取引なし）"
 MAX_POSITIONS = 8
@@ -161,6 +162,7 @@ def build_dashboard_snapshot(trading_dir: Path, *, now: float | None = None) -> 
                 "filled_at": _finite(fill.get("filled_at")),
                 "reason_code": str(fill.get("reason_code", "")),
                 "realized_pnl_jpy": None if realized is None else str(realized),
+                "signal_context": signal_context_payload(fill.get("signal_context")),
             }
         )
 

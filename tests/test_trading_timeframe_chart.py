@@ -19,6 +19,7 @@ from docich.trading.timeframe_chart import (  # noqa: E402
     band_position,
     bollinger_bands,
     build_narration_facts,
+    build_strategy_view,
     build_timeframe_view,
     classify_trend,
     momentum_pct,
@@ -286,3 +287,21 @@ def test_narration_facts_empty_when_public_data_fails(tmp_path):
     reader = CountingReader(fail_timeframes=TIMEFRAMES)
     facts = build_narration_facts(trading_dir, reader_factory=lambda: reader, now=NOW)
     assert facts == {}
+
+
+def test_strategy_view_uses_cached_five_minute_closes(tmp_path):
+    trading_dir = _trading_dir(tmp_path)
+    view = build_strategy_view(trading_dir, now=NOW)
+    assert view["timeframe"] == "5m"
+    assert view["label"] == "5分足(戦略)"
+    assert view["available"] is True
+    assert view["bar_count"] == 2
+    assert view["symbol"] == "BTC/JPY"
+    assert "thresholds" in view
+
+
+def test_snapshot_includes_strategy_view(tmp_path):
+    trading_dir = _trading_dir(tmp_path)
+    sampler = TimeframeChartSampler(trading_dir, reader_factory=CountingReader)
+    snapshot = sampler.snapshot(now=NOW)
+    assert snapshot["strategy"]["label"] == "5分足(戦略)"

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from decimal import Decimal
+from typing import Mapping
 
 from .ledger import PaperLedger
 from .models import AllocationDecision, PaperFill, TradingValidationError, as_decimal
@@ -59,5 +60,13 @@ class PaperBroker:
             raise TradingValidationError("paper effective price must be positive")
         return replace(decision, price=effective)
 
-    def fill(self, decision: AllocationDecision, *, timestamp: float) -> PaperFill:
-        return self.ledger.record_fill(self._cost_adjusted(decision), timestamp=timestamp)
+    def fill(
+        self,
+        decision: AllocationDecision,
+        *,
+        timestamp: float,
+        signal_context: Mapping[str, object] | None = None,
+    ) -> PaperFill:
+        return self.ledger.record_fill(
+            self._cost_adjusted(decision), timestamp=timestamp, signal_context=signal_context
+        )

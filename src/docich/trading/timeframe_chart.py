@@ -30,6 +30,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .dashboard import _focus_symbol, load_snapshot
 from .exchanges.bitbank_ccxt import CCXTUnavailableError
+from .strategy_store import load_strategy_policy
 
 SCHEMA_VERSION = 1
 
@@ -57,6 +58,13 @@ _TIMEFRAME_SECONDS = {"1d": 86400, "1h": 3600, "15m": 900, "1m": 60}
 # fetching a full daily history for every position.
 FILL_TIMEFRAMES: tuple[str, ...] = ("1h", "15m")
 MAX_FILL_SYMBOLS = 2
+
+# The strategy's own timeframe. Rendered from the reviewed 5-minute closes in
+# the market cache so the screen shows the bars and thresholds the BOT actually
+# trades on (no OHLC is invented from close-only data).
+STRATEGY_TIMEFRAME = "5m"
+STRATEGY_LABEL = "5分足(戦略)"
+STRATEGY_BARS = 24
 
 # Fetch the short, time-sensitive frames before the long daily history. The
 # daily chart costs one request per UTC day; if a transient public-API failure
@@ -465,13 +473,78 @@ class TimeframeChartSampler:
             }
         timeframes = self.views(symbol, now=moment)
         available = any(view.get("available") is True for view in timeframes)
+        strategy = build_strategy_view(self.trading_dir, now=moment)
         return {
             "schema_version": SCHEMA_VERSION,
             "available": available,
             "symbol": symbol,
             "fetched_at": moment,
             "timeframes": timeframes,
+            "strategy": strategy,
         }
+
+
+def build_strategy_view(
+    trading_dir: Path,
+    *,
+    now: float,
+    policy: object | None = None,
+) -> dict[str, object]:
+    """The strategy's own 5-minute close series + its thresholds.
+
+    Read-only and close-only: it never invents OHLC for the strategy frame. The
+    screen uses it to show the bars and thresholds the BOT actually trades, next
+    to the multi-timeframe context.
+    """
+    snapshot, closes = load_snapshot(Path(trading_dir))
+    focus = _focus_symbol(snapshot, closes)
+    series: list[float] = []
+    if focus:
+        series = [
+            float(value)
+            for value in (closes.get(focus) or [])[-STRATEGY_BARS:]
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+        ]
+    base: dict[str, object] = {
+        "timeframe": STRATEGY_TIMEFRAME,
+        "label": STRATEGY_LABEL,
+        "symbol": focus,
+        "available": False,
+    }
+    if not focus or len(series) < 2:
+        return base
+    if policy is None:
+        try:
+            policy = load_strategy_policy(trading_dir)
+        except Exception:
+            policy = None
+    middle, upper, lower = bollinger_bands(series)
+    position = band_position(series[-1], lower, upper)
+    momentum = momentum_pct(series)
+    thresholds: dict[str, object] = {}
+    if policy is not None:
+        thresholds = {
+            "momentum_lookback": getattr(policy, "momentum_lookback", None),
+            "momentum_threshold_bps": str(getattr(policy, "momentum_threshold_bps", "")),
+            "mean_reversion_lookback": getattr(policy, "mean_reversion_lookback", None),
+            "mean_reversion_z": str(getattr(policy, "mean_reversion_z", "")),
+        }
+    return {
+        **base,
+        "available": True,
+        "bars": [{"c": _round(value, 8)} for value in series],
+        "bar_count": len(series),
+        "last_close": _round(series[-1], 8),
+        "sma": _round(middle, 8),
+        "bb_mid": _round(middle, 8),
+        "bb_upper": _round(upper, 8),
+        "bb_lower": _round(lower, 8),
+        "bb_position": _round(position, 4),
+        "bb_phrase": _trend_phrase(position),
+        "momentum_pct": _round(momentum, 4),
+        "trend": classify_trend(series[-1], middle, momentum),
+        "thresholds": thresholds,
+    }
 
 
 def _compact_timeframe(view: Mapping[str, object]) -> dict[str, object]:
