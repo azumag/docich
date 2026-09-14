@@ -6,6 +6,7 @@ import json
 import os
 import re
 import stat
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -40,6 +41,39 @@ def load_config(path: Path):
     if not isinstance(repos, dict):
         raise UnsafeRetentionState("invalid repo config")
     return cfg
+
+
+def _git(root: Path, *args: str):
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(root), "-c", "core.hooksPath=/dev/null", *args],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=30,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise UnsafeRetentionState("production git verification failed") from exc
+
+
+def _verify_production(cfg, repo: str, expected_sha: str):
+    value = cfg.get("repos", {}).get(repo)
+    if not isinstance(value, dict) or value.get("mode") != "git":
+        raise UnsafeRetentionState("invalid production config")
+    raw_root = value.get("production")
+    if not isinstance(raw_root, str):
+        raise UnsafeRetentionState("invalid production config")
+    root = Path(raw_root)
+    if not root.is_absolute() or root.is_symlink() or not root.is_dir():
+        raise UnsafeRetentionState("invalid production root")
+    if _git(root, "rev-parse", "--is-inside-work-tree") != "true":
+        raise UnsafeRetentionState("production is not a git worktree")
+    if _git(root, "rev-parse", "HEAD") != expected_sha:
+        raise UnsafeRetentionState("production head mismatch")
+    # Keep the check stricter than bundle reference accounting: tracked parent
+    # changes and dirty/mismatched submodules both refuse deletion. Untracked
+    # runtime files are intentionally ignored, matching the deploy baseline.
+    if _git(root, "status", "--porcelain", "--untracked-files=no"):
+        raise UnsafeRetentionState("production drift detected")
 
 
 def _scan_bundles(state: Path, repo: str, now: float, max_entries: int):
@@ -91,29 +125,28 @@ def _read_current_references(state: Path, repo: str):
         current = json.loads(path.read_text())
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
         raise UnsafeRetentionState("current state invalid") from exc
-    if not isinstance(current, dict):
+    if not isinstance(current, dict) or current.get("mode") != "git":
         raise UnsafeRetentionState("current state invalid")
 
-    refs = {_validate_sha(current.get("sha"), required=True)}
+    current_sha = _validate_sha(current.get("sha"), required=True)
+    refs = {current_sha}
     previous = _validate_sha(current.get("previous_head"))
     if previous:
         refs.add(previous)
 
-    intent = current.get("deployment_intent")
-    if intent is not None:
-        if not isinstance(intent, dict):
-            raise UnsafeRetentionState("deployment intent invalid")
-        refs.add(_validate_sha(intent.get("from"), required=True))
-        refs.add(_validate_sha(intent.get("to"), required=True))
+    # Recovery is deliberately not a GC opportunity even when both endpoints
+    # are known. Preserve evidence and let deploy recovery complete first.
+    if current.get("deployment_intent") is not None:
+        raise UnsafeRetentionState("deployment recovery active")
 
     repairs = current.get("pending_repairs", [])
     if not isinstance(repairs, list):
         raise UnsafeRetentionState("pending repairs invalid")
     for repair in repairs:
-        if not isinstance(repair, dict):
-            raise UnsafeRetentionState("pending repair invalid")
+        if not isinstance(repair, dict) or repair.get("status") != "active":
+            raise UnsafeRetentionState("pending repair recovery active")
         refs.add(_validate_sha(repair.get("candidate_sha"), required=True))
-    return refs
+    return refs, current_sha
 
 
 def _read_preview_references(state: Path, repo: str, max_entries: int):
@@ -186,7 +219,8 @@ def rotate_bundles(
 
     now = time.time() if now is None else float(now)
     bundle_root, bundles = _scan_bundles(state, repo, now, max_entries)
-    referenced = _read_current_references(state, repo)
+    referenced, current_sha = _read_current_references(state, repo)
+    _verify_production(cfg, repo, current_sha)
     referenced.update(_read_preview_references(state, repo, max_entries))
 
     unreferenced = [sha for sha in bundles if sha not in referenced]
