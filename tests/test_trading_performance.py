@@ -193,3 +193,17 @@ def test_round_trips_ignore_unmatched_sells(tmp_path):
     broker.fill(_decision("orphan-sell", "sell", "1", "100"), timestamp=1_000.0)
     ledger.close()
     assert build_round_trips(db) == []
+
+
+def test_recent_orders_returns_allowlisted_rows(tmp_path):
+    from docich.trading.performance import recent_orders
+
+    db = tmp_path / "paper.sqlite3"
+    ledger = PaperLedger(db)
+    broker = _zero_cost_broker(ledger)
+    broker.fill(_decision("ord-1", "buy", "1", "100"), timestamp=1_000.0)
+    ledger.close()
+    orders = recent_orders(db)
+    assert len(orders) == 1
+    assert orders[0]["symbol"] == "BTC/JPY"
+    assert orders[0]["reason_code"] == "momentum_breakout"
