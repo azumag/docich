@@ -261,9 +261,15 @@ jobs:
             # not guarantee that $SHA exists in the production object DB.
             # Populate objects from protected public main only; this fetch
             # does not checkout/reset or alter tracked worktree files. The
-            # helper is still read from the exact reviewed $SHA afterwards.
+            # helpers are still read from the exact reviewed $SHA afterwards.
             printf "git -C /home/ubuntu/docich -c core.hooksPath=/dev/null fetch --no-recurse-submodules --no-tags --force https://github.com/azumag/docich.git refs/heads/main >/dev/null 2>&1\n"
             printf "git -C /home/ubuntu/docich -c core.hooksPath=/dev/null cat-file -e '%s^{commit}'\n" "$SHA"
+            # First converge only parent files whose *current* bytes+mode are
+            # exactly present on reviewed old_root..SHA lineage. Unknown/staged
+            # parent drift remains fail-closed. This makes the existing Soren
+            # helper's root-clean precondition meaningful rather than bypassed.
+            printf "git -C /home/ubuntu/docich -c core.hooksPath=/dev/null show '%s:ops/vm_actions/reconcile_presynced_root.py' | python3 - '%s' '%s'\n" \
+              "$SHA" /home/ubuntu/docich "$old_root" "$SHA"
             printf "git -C /home/ubuntu/docich -c core.hooksPath=/dev/null show '%s:ops/vm_actions/reconcile_presynced_submodule.py' | python3 - '%s' '%s' '%s' '%s' '%s' lineage" \
               "$SHA" /home/ubuntu/docich "$old_root" "$old_sub" "$new_sub" games/soviet_now
             for token in "${attest_args[@]}"; do printf " '%s'" "$token"; done

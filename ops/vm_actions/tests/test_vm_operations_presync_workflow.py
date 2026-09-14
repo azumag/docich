@@ -20,6 +20,7 @@ class VmOperationsPresyncWorkflowTests(unittest.TestCase):
         self.assertIn("status docich production $SHA", workflow)
         self.assertIn("[[ \"$pending_count\" == 0 ]]", workflow)
         self.assertIn("merge-base --is-ancestor \"$old_root\" \"$SHA\"", workflow)
+        self.assertIn("reconcile_presynced_root.py", workflow)
         self.assertIn("reconcile_presynced_submodule.py", workflow)
         self.assertIn("Retry production deploy after exact reconcile", workflow)
         self.assertIn("Fail unresolved deployment", workflow)
@@ -39,19 +40,34 @@ class VmOperationsPresyncWorkflowTests(unittest.TestCase):
         # pre-existing tracked drift rejection therefore leaves the candidate
         # commit absent from the production object DB. The fallback must fetch
         # protected main without touching the worktree, verify the exact
-        # candidate object, and only then read the helper from that object.
+        # candidate object, and only then read helpers from that object.
         workflow = Path(".github/workflows/vm-operations.yml").read_text(encoding="utf-8")
         fetch = (
             "fetch --no-recurse-submodules --no-tags --force "
             "https://github.com/azumag/docich.git refs/heads/main"
         )
         verify = "cat-file -e '%s^{commit}'"
-        show = "show '%s:ops/vm_actions/reconcile_presynced_submodule.py'"
+        root_show = "show '%s:ops/vm_actions/reconcile_presynced_root.py'"
+        sub_show = "show '%s:ops/vm_actions/reconcile_presynced_submodule.py'"
         self.assertIn(fetch, workflow)
         self.assertIn(verify, workflow)
-        self.assertIn(show, workflow)
-        self.assertLess(workflow.index(fetch), workflow.index(show))
-        self.assertLess(workflow.index(verify), workflow.index(show))
+        self.assertIn(root_show, workflow)
+        self.assertIn(sub_show, workflow)
+        self.assertLess(workflow.index(fetch), workflow.index(root_show))
+        self.assertLess(workflow.index(verify), workflow.index(root_show))
+        self.assertLess(workflow.index(root_show), workflow.index(sub_show))
+
+    def test_parent_reconcile_runs_before_submodule_reconcile(self):
+        workflow = Path(".github/workflows/vm-operations.yml").read_text(encoding="utf-8")
+        root_cmd = (
+            "show '%s:ops/vm_actions/reconcile_presynced_root.py' | python3 - '%s' '%s'"
+        )
+        sub_cmd = (
+            "show '%s:ops/vm_actions/reconcile_presynced_submodule.py' | python3 - '%s' '%s' '%s' '%s' '%s' lineage"
+        )
+        self.assertIn(root_cmd, workflow)
+        self.assertIn(sub_cmd, workflow)
+        self.assertLess(workflow.index(root_cmd), workflow.index(sub_cmd))
 
     def test_reconcile_invokes_helper_with_lineage_enabled(self):
         # #279: a named path (overlays/direct_broadcast_overlay.html) was
@@ -66,10 +82,11 @@ class VmOperationsPresyncWorkflowTests(unittest.TestCase):
             "              \"$SHA\" /home/ubuntu/docich \"$old_root\" \"$old_sub\" \"$new_sub\" games/soviet_now",
             workflow,
         )
-        # The helper must still be read from the exact reviewed candidate
-        # object on the VM. The small prefetch command only populates the Git
-        # object DB; it does not checkout/reset production tracked files.
+        # Helpers must still be read from the exact reviewed candidate object
+        # on the VM. The small prefetch command only populates the Git object
+        # DB; it does not checkout/reset production tracked files.
         self.assertNotIn("cat control/ops/vm_actions/reconcile_presynced_submodule.py", workflow)
+        self.assertNotIn("cat control/ops/vm_actions/reconcile_presynced_root.py", workflow)
 
     def test_reconcile_attests_reviewed_commits_lost_to_squash(self):
         # #279 follow-up: a reviewed branch commit dropped from
