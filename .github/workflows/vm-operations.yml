@@ -228,7 +228,7 @@ jobs:
             # match real history. Anything else stays fail-closed exactly
             # as before.
             #
-            # attestation (#279): a reviewed commit dropped from
+            # attestation (#279): a reviewed branch commit dropped from
             # old_sub..new_sub by a squash merge can be attested in
             # reviewed_lineage_attestations.json. Only the exact reviewed
             # sha256+mode recorded for this old/new pair is passed, and the
@@ -256,10 +256,14 @@ jobs:
           )"
             attest_args=()
             if [[ -n "$attest_raw" ]]; then read -r -a attest_args <<< "$attest_raw"; fi
-            # The helper is executed from the verified reviewed commit object
-            # already fetched onto the VM by the failed deploy. Piping the whole
-            # helper through exec stdin would add the attestation argv and
-            # exceed the gateway's 16384-byte stdin cap (#279).
+            # deploy_git() checks tracked cleanliness before it fetches the
+            # uploaded bundle. A pre-existing drift rejection therefore does
+            # not guarantee that $SHA exists in the production object DB.
+            # Populate objects from protected public main only; this fetch
+            # does not checkout/reset or alter tracked worktree files. The
+            # helper is still read from the exact reviewed $SHA afterwards.
+            printf "git -C /home/ubuntu/docich -c core.hooksPath=/dev/null fetch --no-recurse-submodules --no-tags --force https://github.com/azumag/docich.git refs/heads/main >/dev/null 2>&1\n"
+            printf "git -C /home/ubuntu/docich -c core.hooksPath=/dev/null cat-file -e '%s^{commit}'\n" "$SHA"
             printf "git -C /home/ubuntu/docich -c core.hooksPath=/dev/null show '%s:ops/vm_actions/reconcile_presynced_submodule.py' | python3 - '%s' '%s' '%s' '%s' '%s' lineage" \
               "$SHA" /home/ubuntu/docich "$old_root" "$old_sub" "$new_sub" games/soviet_now
             for token in "${attest_args[@]}"; do printf " '%s'" "$token"; done
