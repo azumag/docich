@@ -124,6 +124,13 @@ class ControlPlaneWiringTests(unittest.TestCase):
         # Arbitrary exec must stay behind the public-repo guard in authorize.py.
         self.assertIn("arbitrary VM exec is disabled when the repository is public", (ROOT / "ops" / "vm_actions" / "authorize.py").read_text())
 
+    def test_logrotate_config_sets_owner_for_group_writable_log_dir(self):
+        # /home/ubuntu/soren/logs is group-writable, so logrotate needs an
+        # explicit owner or it skips every file as insecure.
+        text = HELPER.read_text()
+        self.assertIn("su ubuntu ubuntu", text)
+        self.assertIn("copytruncate", text)
+
 
 if __name__ == "__main__":
     unittest.main()
