@@ -1,0 +1,6 @@
+name = "docich-vm-monitor-watchdog"
+main = "worker.mjs"
+compatibility_date = "2026-09-14"
+
+[triggers]
+crons = ["5,20,35,50 * * * *"]
