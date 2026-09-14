@@ -16,6 +16,7 @@ from docich.retro_corner import RetroCornerError  # noqa: E402
 from docich.soren91_corner import (  # noqa: E402
     ANNOUNCE_TEXT,
     DELIVERY_SOURCE,
+    END_ANNOUNCE_TEXT,
     GAME_NAME,
     Soren91CornerConfig,
     Soren91CornerError,
@@ -134,15 +135,16 @@ enabled = false
 
 
 class TestSoren91CornerConfig(Soren91CornerTestBase):
-    def test_defaults_are_off(self):
+    def test_default_off_and_live_schedule(self):
         root = Path(__file__).resolve().parents[1]
         default_g = config.load_global(root, root / "config/docich.toml")
         live_g = config.load_global(root, root / "config/docich.soren-live.toml")
         default_cfg = load_soren91_corner_config(default_g)
         live_cfg = load_soren91_corner_config(live_g)
+        # 素の既定(config/docich.toml)は無効、live は 18:00/30分で有効。
         self.assertFalse(default_cfg.enabled)
-        self.assertFalse(live_cfg.enabled)
-        self.assertEqual(live_cfg.start_hour, 21)
+        self.assertTrue(live_cfg.enabled)
+        self.assertEqual(live_cfg.start_hour, 18)
         self.assertEqual(live_cfg.duration_minutes, 30)
         self.assertEqual(live_cfg.timezone, "Asia/Tokyo")
         self.assertEqual(live_cfg.games, ("soren91",))
@@ -347,11 +349,12 @@ class TestSoren91CornerAnnounce(Soren91CornerTestBase):
         current = [None]
         mgr, _ = self.manager(current)
         self.assertEqual(mgr.start().status, "completed")
-        self.assertEqual(self.chats, [ANNOUNCE_TEXT])
-        self.assertEqual(ANNOUNCE_TEXT, "ソ連ゲーム91、メリケンAIのコーナーです。")
+        self.assertEqual(self.chats, [ANNOUNCE_TEXT, END_ANNOUNCE_TEXT])
+        self.assertTrue(ANNOUNCE_TEXT.startswith("ソ連ゲーム91"))
         for banned in ("Mac", "レンダラー", "renderer", "CDP", "SRT", "bot"):
-            self.assertNotIn(banned, self.chats[0])
+            self.assertNotIn(banned, ANNOUNCE_TEXT)
         self.assertTrue(mgr.status().get("announced"))
+        self.assertTrue(mgr.status().get("end_announced"))
 
     def test_announce_failure_does_not_fail_corner(self):
         def boom(text):
@@ -371,14 +374,14 @@ class TestSoren91CornerAnnounce(Soren91CornerTestBase):
         with mgr._locked():
             state = mgr._read_state()
             mgr._announce_start_locked(state)
-        self.assertEqual(self.chats, [ANNOUNCE_TEXT])
+        self.assertEqual(self.chats, [ANNOUNCE_TEXT, END_ANNOUNCE_TEXT])
 
     def test_announce_is_also_spoken_in_the_meriken_voice(self):
         voices = []
         current = [None]
         mgr, _ = self.manager(current, voice=voices.append)
         self.assertEqual(mgr.start().status, "completed")
-        self.assertEqual(voices, [ANNOUNCE_TEXT])
+        self.assertEqual(voices, [ANNOUNCE_TEXT, END_ANNOUNCE_TEXT])
         self.assertTrue(mgr.status().get("announced"))
 
     def test_voice_failure_does_not_fail_the_corner(self):
