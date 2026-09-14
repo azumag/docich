@@ -203,7 +203,10 @@ jobs:
           new_sub="$(git -C candidate ls-tree "$SHA" -- games/soviet_now | awk '$1 == "160000" && $2 == "commit" {print $3}')"
           [[ "$old_sub" =~ ^[0-9a-f]{40}$ ]]
           [[ "$new_sub" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$old_sub" != "$new_sub" ]]
+          if [[ "$old_sub" == "$new_sub" ]]; then
+            echo "reconcile_reason=submodule_unchanged" >&2
+            exit 1
+          fi
 
           {
             # lineage (#279): converge a changed path only when its live
