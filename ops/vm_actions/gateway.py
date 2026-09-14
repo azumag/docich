@@ -24,6 +24,55 @@ OWNED_SUBMODULES={
     'games/hanjuku-sfc-speedrun':'https://github.com/azumag/hanjuku-sfc-speedrun.git',
 }
 
+_DEPLOY_REJECT_EXACT={
+    'bootstrap required':'bootstrap_required',
+    'deployment recovery required':'recovery_required',
+    'managed projection missing':'managed_projection_missing',
+    'managed projection drift':'managed_projection_drift',
+    'tracked VM drift detected':'tracked_vm_drift',
+    'bundle missing':'bundle_missing',
+    'requested object is not commit':'candidate_not_commit',
+    'owned submodule URL mismatch':'owned_submodule_url_mismatch',
+    'submodule deployment verification failed':'owned_submodule_verification_failed',
+    'git deployment verification failed':'deployment_verification_failed',
+    'incomplete pending repair; operator recovery required':'pending_repair_incomplete',
+    'pending repair overlap':'pending_repair_overlap',
+    'pending repair policy missing':'pending_repair_policy_missing',
+    'pending repair policy mismatch':'pending_repair_policy_mismatch',
+    'invalid repair health command':'pending_repair_health_command_invalid',
+    'pending repair health failed':'pending_repair_health_failed',
+    'pending repair projection missing':'pending_repair_projection_missing',
+    'pending repair drift before state commit':'pending_repair_live_drift',
+    'concurrent projection drift':'concurrent_projection_drift',
+    'rollback incomplete; unknown drift preserved; recovery required':'rollback_recovery_required',
+}
+_DEPLOY_REJECT_PREFIXES=(
+    ('projection drift detected:','projection_drift'),
+    ('pending repair drift:','pending_repair_drift'),
+    ('pending repair baseline drift:','pending_repair_baseline_drift'),
+    ('pending repair conflict:','pending_repair_conflict'),
+)
+
+def _deploy_reject_reason(error:Exception)->str:
+    """Map a deploy failure to a fixed, non-secret reason code.
+
+    Never return arbitrary exception text: subprocess errors may contain local
+    paths/argv, while projection errors may contain tracked file names. Unknown
+    failures deliberately collapse to one fixed code.
+    """
+    message=str(error)
+    reason=_DEPLOY_REJECT_EXACT.get(message)
+    if reason: return reason
+    for prefix,code in _DEPLOY_REJECT_PREFIXES:
+        if message.startswith(prefix): return code
+    return 'deploy_unknown'
+
+
+def _is_production_deploy_request()->bool:
+    parts=os.environ.get('SSH_ORIGINAL_COMMAND','').split()
+    return (len(parts)==4 and parts[0]=='deploy' and parts[1]=='docich' and
+            parts[2]=='production' and bool(SHA_RE.fullmatch(parts[3])))
+
 def die(msg='VM operation rejected'):
     print(msg,file=sys.stderr); raise SystemExit(1)
 
@@ -892,4 +941,7 @@ def main():
 if __name__=='__main__':
     try: main()
     except SystemExit: raise
-    except Exception: die()
+    except Exception as error:
+        if _is_production_deploy_request():
+            die(f'VM operation rejected; reason={_deploy_reject_reason(error)}')
+        die()
