@@ -151,6 +151,7 @@ if [[ "$skip_system" == 0 ]]; then
   logrotate_conf='/etc/logrotate.d/soren'
   read -r -d '' conf <<'CONF' || true
 /home/ubuntu/soren/logs/*.log {
+  su ubuntu ubuntu
   weekly
   rotate 4
   size 100M
