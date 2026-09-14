@@ -4,6 +4,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "ops/vm_actions/prune_bundles.py"
@@ -146,7 +147,7 @@ class BundleRetentionTests(unittest.TestCase):
             old[0][1].write_bytes(b"changed")
             return refs
 
-        with unittest.mock.patch.object(retention, "_read_preview_references", side_effect=mutate_after_reference_scan):
+        with mock.patch.object(retention, "_read_preview_references", side_effect=mutate_after_reference_scan):
             with self.assertRaises(retention.UnsafeRetentionState):
                 retention.rotate_bundles(self.cfg, now=self.now)
 
