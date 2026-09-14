@@ -10,7 +10,7 @@ on:
         required: true
         default: status
         type: choice
-        options: [status, deploy, exec, bootstrap, diagnostics, reclaim]
+        options: [status, deploy, exec, bootstrap, diagnostics, reclaim, rebaseline]
       target:
         description: VM target
         required: true
@@ -213,7 +213,12 @@ jobs:
           new_sub="$(git -C candidate ls-tree "$SHA" -- games/soviet_now | awk '$1 == "160000" && $2 == "commit" {print $3}')"
           [[ "$old_sub" =~ ^[0-9a-f]{40}$ ]]
           [[ "$new_sub" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$old_sub" != "$new_sub" ]]
+          # gitlink が不変の deploy reject は pre-synced reconcile の対象ではない。
+          # 固定理由で fail-closed にし、normalize/retry を誤誘導しない (#377)。
+          if [[ "$old_sub" == "$new_sub" ]]; then
+            echo 'reconcile inapplicable: submodule_unchanged' >&2
+            exit 1
+          fi
 
           {
             # lineage (#279): converge a changed path only when its live
@@ -422,3 +427,15 @@ jobs:
           echo "storage reclaim apply=${apply_flag} voicevox_archive=${voicevox_flag}"
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
           { printf 'APPLY=%s\nVOICEVOX_ARCHIVE=%s\n' "$apply_flag" "$voicevox_flag"; cat control/ops/vm_actions/storage_reclaim.sh; } | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
+      - name: Rebaseline production to the reviewed current HEAD
+        if: ${{ steps.auth.outputs.operation == 'rebaseline' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "rebaseline docich production $SHA"
