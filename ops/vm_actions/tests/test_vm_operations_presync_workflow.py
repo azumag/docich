@@ -5,6 +5,11 @@ from pathlib import Path
 
 
 class VmOperationsPresyncWorkflowTests(unittest.TestCase):
+    def test_reconcile_is_not_used_when_gitlink_unchanged(self):
+        workflow = Path(".github/workflows/vm-operations.yml").read_text(encoding="utf-8")
+        self.assertIn("reconcile inapplicable: submodule_unchanged", workflow)
+        self.assertIn('if [[ "$old_sub" == "$new_sub" ]]', workflow)
+
     def test_failed_push_deploy_has_bounded_reconcile_then_retry(self):
         workflow = Path(".github/workflows/vm-operations.yml").read_text(encoding="utf-8")
         self.assertIn("id: deploy_initial", workflow)
