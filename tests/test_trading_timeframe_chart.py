@@ -84,6 +84,15 @@ def test_build_view_rejects_short_future_and_bad_rows():
         build_timeframe_view("BTC/JPY", "2m", mixed, now=NOW)
 
 
+def test_build_view_flags_stale_history():
+    day_ms = int(NOW // 86400) * 86400 * 1000
+    rows = _rows("1h", count=24, start_ms=day_ms - 86_400_000)
+    view = build_timeframe_view("BTC/JPY", "1h", rows, now=NOW)
+    assert view["available"] is True
+    assert view["stale"] is True
+    assert view["age_sec"] > 7200
+
+
 class FakeExchange:
     def __init__(self, *, fail_timeframes=(), now: float = NOW):
         self.calls: list[tuple] = []

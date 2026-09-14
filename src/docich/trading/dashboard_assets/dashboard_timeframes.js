@@ -74,8 +74,6 @@
       canvas.width = W * dpr;
       canvas.height = H * dpr;
     }
-    canvas.style.width = `${W}px`;
-    canvas.style.height = `${H}px`;
     const g = canvas.getContext("2d");
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.clearRect(0, 0, W, H);

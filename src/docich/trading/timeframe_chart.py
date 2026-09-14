@@ -242,6 +242,7 @@ def build_timeframe_view(
     *,
     now: float,
     limit: int | None = None,
+    stale_after_intervals: int = 2,
 ) -> dict[str, object]:
     """Allowlisted, bounded view of one timeframe. Never raises on bad input."""
     label = TIMEFRAME_LABELS.get(str(timeframe))
@@ -272,6 +273,9 @@ def build_timeframe_view(
     middle, upper, lower = bollinger_bands(closes)
     position = band_position(closes[-1], lower, upper)
     momentum = momentum_pct(closes)
+    tf_seconds = _TIMEFRAME_SECONDS.get(timeframe, 0)
+    age_sec = max(0.0, float(now) - timestamps[-1])
+    stale = bool(tf_seconds) and age_sec > tf_seconds * max(1, int(stale_after_intervals))
     view: dict[str, object] = {
         **base,
         "available": True,
@@ -301,6 +305,8 @@ def build_timeframe_view(
         "bb_position": _round(position, 4),
         "bb_phrase": _trend_phrase(position),
         "trend": classify_trend(closes[-1], middle, momentum),
+        "age_sec": _round(age_sec, 3),
+        "stale": stale,
     }
     return view
 
@@ -383,7 +389,7 @@ class TimeframeChartSampler:
         snapshot, closes = load_snapshot(self.trading_dir)
         return _focus_symbol(snapshot, closes)
 
-    def _view(self, symbol: str, timeframe: str, moment: float, *, days: int | None = None) -> dict[str, object]:
+    def _view(self, symbol: str, timeframe: str, moment: float) -> dict[str, object]:
         key = (symbol, timeframe)
         cached = self._cache.get(key)
         ttl = self.ttl.get(timeframe, 30.0)
@@ -392,10 +398,9 @@ class TimeframeChartSampler:
         try:
             if self._reader is None:
                 self._reader = self.reader_factory()
-            fresh = self._reader.fetch(symbol, timeframe, now=moment, days=days)
+            fresh = self._reader.fetch(symbol, timeframe, now=moment)
             record = dict(fresh)
             record["_fetched_at"] = moment
-            record["stale"] = False
             self._cache[key] = record
             return self._public(record)
         except Exception:
@@ -487,7 +492,6 @@ def build_narration_facts(
     dict; narration then simply has no chart section.
     """
     moment = time.time() if now is None else float(now)
-    own_sampler = sampler is None
     active = sampler if sampler is not None else TimeframeChartSampler(
         Path(trading_dir), reader_factory=reader_factory, now_fn=lambda: moment
     )
