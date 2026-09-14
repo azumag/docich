@@ -33,6 +33,14 @@ main { display: grid; grid-template-columns: 540px 1fr; gap: 8px; padding: 0 10p
 #chart { width: 524px; height: 330px; display: block; flex: 1; min-height: 0; }
 #chartwrap .note { font-size: 10px; color: #6f86a8; padding: 2px 2px 0; }
 
+#tfstrip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; padding: 3px 2px 0; }
+#tfstrip.muted-note { display: block; font-size: 10px; color: #6f86a8; padding: 4px 2px 0; min-height: 34px; }
+.tf-cell { background: #0b1428; border: 1px solid #1c2c4c; border-radius: 5px; padding: 2px 4px; min-width: 0; overflow: hidden; }
+.tf-head { display: flex; justify-content: space-between; gap: 4px; font-size: 9.5px; line-height: 1.15; white-space: nowrap; }
+.tf-name { color: #9fb3d4; font-weight: 650; }
+.tf-change { font-variant-numeric: tabular-nums; }
+.tf-canvas { display: block; width: 122px; height: 30px; }
+
 #side { display: grid; grid-template-rows: 72px 122px 82px 1fr; gap: 6px; min-height: 0; }
 #detail-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; min-height: 0; }
 .panel { background: #0e1830; border: 1px solid #22335a; border-radius: 8px; padding: 6px 8px; overflow: hidden; min-height: 0; }
