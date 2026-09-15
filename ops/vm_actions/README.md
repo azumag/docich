@@ -33,6 +33,16 @@ main の本番反映、branch/commit の preview 反映、状態確認、owner c
 
 これにより `soviet_now` 自身はVM資格情報や配信運用を知る必要がなく、`soviet_now main` の更新だけでは本番は変わりません。docichのgitlink bumpをレビューしてmainへ入れた時だけlive Sorenへの投影対象になります。
 
+### Production checkout の Git remote / ad-hoc reset 禁止
+
+`/home/ubuntu/docich` は canonical control plane だけが更新する対象で、**fetchable な Git remote（`origin` 等）を持ちません**。deploy は uploaded bundle を `git fetch <bundle>`、pre-synced reconcile は production root から reviewed URL を明示 fetch するだけで、`git fetch origin` / `git reset --hard origin/main` のような ad-hoc な remote 同期は使いません。
+
+2026-09-15、production checkout が手動 `git reset --hard origin/main` で out-of-band に進み、recorded baseline と乖離して canonical deploy が `tracked_vm_drift` / baseline 不一致で失敗する事象がありました（Issue #412）。復旧は owner-only `rebaseline`（tracked-clean かつ HEAD が requested commit の ancestor のときだけ現在 HEAD を baseline に採用）→ canonical `deploy` のみを使います。
+
+- production checkout へ remote を追加して `git pull` / `git reset --hard origin/main` をしない。更新は docich main への merge → `VM operations` deploy のみ。
+- out-of-band な HEAD/baseline 移動は hourly `vm-storage-monitor` の `[VM deploy] production baseline alert` が検知する。`git_clean(root)==false` は `[VM deploy] tracked drift alert` が検知する。
+- 監査は `/home/ubuntu/docich` の `git reflog` を read-only で確認する。
+
 ## One-time setup
 
 1. docich の main protection/ruleset を設定します。
