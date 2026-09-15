@@ -605,6 +605,10 @@ class TestSystemdTemplates(unittest.TestCase):
         self.assertNotIn("[Install]", service)
         self.assertNotIn("ExecStartPre=", service)
         self.assertIn(
+            "EnvironmentFile=-/home/ubuntu/soren/soren91-macos-agent.env",
+            service,
+        )
+        self.assertIn(
             "ExecStart=__DOCICH_ROOT__/bin/docich --config "
             "__DOCICH_ROOT__/config/docich.soren-live.toml soren91-corner tick",
             service,

@@ -94,6 +94,49 @@ bin/docich --config config/docich.soren-live.toml soren91-corner status --json
 bin/docich --config config/docich.soren-live.toml trading status
 ```
 
+## Soren91 コーナー (macOS リモートレンダラー)
+
+Soren91 は macOS 側のローカルエージェントが動かすリモートレンダラーで、OCI 側は
+その SRT 映像を配信枠へ載せる。コーナーの開始には Mac エージェントの接続情報が
+必要で、次の env ファイルを VM に 0600 で置く (秘密情報を含むためリポジトリへ
+commit しない):
+
+`/home/ubuntu/soren/soren91-macos-agent.env`
+
+- `SOREN91_MACOS_AGENT_BASE_URL` … Mac エージェントの base URL (Tailscale IPv4 + port)
+- `SOREN91_OCI_TAILSCALE_IP` … OCI 側の Tailscale IPv4
+- `SOREN91_LOCAL_AGENT_TOKEN` … Mac エージェントの Bearer token
+
+`docich-soren91-corner.service` はこのファイルを `EnvironmentFile=` で読む。
+手動でコーナーを実行する場合 (検証時) も同じ env が必要:
+
+```sh
+cd /home/ubuntu/docich
+set -a; . /home/ubuntu/soren/soren91-macos-agent.env; set +a
+bin/docich-soren91-corner-manual --config config/docich.soren-live.toml \
+  start --duration-minutes 10
+bin/docich-soren91-corner-manual --config config/docich.soren-live.toml status
+bin/docich-soren91-corner-manual --config config/docich.soren-live.toml stop
+```
+
+env が無い場合、Soren91 アダプタの preflight が fail-closed になりコーナーは
+開始しない (BOT 無しの表示だけの枠が commit されることはない)。
+
+ゲームプレイBOT (`soren91/main.mjs`) をコーディネータに起動させる場合は、ゲーム
+設定 `config/games/soren91.toml` に次を設定する:
+
+```toml
+[agent]
+enabled = true
+
+[soren91]
+bot_path = "/home/ubuntu/soren/soren91/main.mjs"
+```
+
+この場合、切替は Mac 側 CDP プロキシ (`cdp_port`, 既定 9322) の応答を待ってから
+commit し、BOT は tmux 所有ウィンドウで起動してコーナー終了時に停止する。
+CDP プロキシが応答しない間は切替がロールバックする (fail-closed)。
+
 ## Web UI (docich-webui.service) の導入
 
 モデルチェーン / バックオフ管理 UI を systemd で常駐させる場合のみ導入する
