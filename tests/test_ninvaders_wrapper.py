@@ -78,7 +78,7 @@ exit 0
 
         assert proc.returncode == 0, proc.stderr
         lines = tmux_log.read_text(encoding="utf-8").splitlines()
-        assert any(line.endswith("Space") for line in lines), lines
+        assert "-t %9 Space" in lines, lines
         gameplay = [line for line in lines if (" Right " in f" {line} " or " Left " in f" {line} ")]
         assert gameplay, lines
         assert all("Space" in line for line in gameplay), gameplay
