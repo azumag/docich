@@ -19,5 +19,38 @@ class VmMonitorScheduleTests(unittest.TestCase):
         self.assertNotIn("exec docich production", text)
 
 
+class VmMonitorTrackedDriftAlertTests(unittest.TestCase):
+    def setUp(self):
+        self.text = WORKFLOW.read_text()
+
+    def test_monitor_alerts_on_tracked_drift_via_read_only_diagnostics(self):
+        self.assertIn("name: Assess tracked drift", self.text)
+        self.assertIn("tracked_drift", self.text)
+        self.assertIn("drift_detected", self.text)
+        self.assertIn("name: Update deduplicated tracked drift alert", self.text)
+        self.assertIn("steps.drift.outputs.available == '1'", self.text)
+        self.assertIn("'[VM deploy] tracked drift alert'", self.text)
+        # Deduplication reuses the existing open-issue mechanism.
+        self.assertIn("gh issue list --repo \"$GITHUB_REPOSITORY\" --state open", self.text)
+        self.assertIn("gh issue create --repo \"$GITHUB_REPOSITORY\" --title \"$title\"", self.text)
+        # Read-only: no production exec is added by the drift check.
+        self.assertNotIn("exec docich production", self.text)
+
+    def test_tracked_drift_context_uses_fixed_categories_only(self):
+        # The context emitted to the public alert is built from a fixed key
+        # tuple; no path/file/diff is read or printed.
+        for key in (
+            "parent_tracked_dirty",
+            "owned_submodule_head_mismatch",
+            "owned_submodule_tracked_dirty",
+            "owned_submodule_missing_or_invalid",
+            "scan_complete",
+            "unknown",
+        ):
+            self.assertIn(f"'{key}'", self.text)
+        self.assertNotIn("git status --porcelain", self.text)
+        self.assertNotIn(".path", self.text)
+
+
 if __name__ == "__main__":
     unittest.main()
