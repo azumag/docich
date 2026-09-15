@@ -48,7 +48,24 @@ jobs:
           persist-credentials: false
           submodules: false
 
+      - name: Ignore superseded workflow-run trigger
+        id: gate
+        env:
+          TRIGGER_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          current_sha="$(git rev-parse HEAD)"
+          rotate=1
+          reason=current_main
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_run" && -n "${TRIGGER_SHA:-}" && "$TRIGGER_SHA" != "$current_sha" ]]; then
+            rotate=0
+            reason=superseded_workflow_run
+          fi
+          printf 'rotate=%s\n' "$rotate" >> "$GITHUB_OUTPUT"
+          printf 'bundle-retention gate=%s\n' "$reason"
+
       - name: Configure pinned SSH client
+        if: steps.gate.outputs.rotate == '1'
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
           VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
@@ -68,6 +85,7 @@ jobs:
           printf 'port=%s\n' "$port" >> "$GITHUB_ENV"
 
       - name: Verify production is exactly current protected main
+        if: steps.gate.outputs.rotate == '1'
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
           VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
@@ -86,6 +104,7 @@ jobs:
           PY
 
       - name: Rotate unreferenced Git bundles under owner-only VM lock
+        if: steps.gate.outputs.rotate == '1'
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
           VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
@@ -97,6 +116,7 @@ jobs:
           ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $sha" <<< "$command"
 
       - name: Verify production remains configured
+        if: steps.gate.outputs.rotate == '1'
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
           VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
