@@ -1,0 +1,10 @@
+[Unit]
+Description=docich %i paper market program
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=__DOCICH_ROOT__
+ExecStart=__DOCICH_ROOT__/bin/docich-market-paper --config __DOCICH_ROOT__/config/docich.soren-live.toml --market %i corner
+TimeoutStartSec=infinity
+UMask=0077

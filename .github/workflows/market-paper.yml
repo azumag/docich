@@ -1,0 +1,35 @@
+name: Market paper contracts
+on:
+  pull_request:
+    paths:
+      - 'src/docich/trading/markets/**'
+      - 'src/docich/adapters/**'
+      - 'tests/test_market_paper.py'
+      - 'config/market-paper.toml'
+      - 'bin/docich-market-paper'
+      - 'scripts/systemd/docich-market-*'
+      - '.github/workflows/market-paper.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/docich/trading/markets/**'
+      - 'tests/test_market_paper.py'
+      - '.github/workflows/market-paper.yml'
+permissions:
+  contents: read
+jobs:
+  paper-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Offline paper execution contracts
+        env:
+          PYTHONPATH: src
+        run: python3 -W error::ResourceWarning -m unittest discover -s tests -p test_market_paper.py -v
+      - name: Compile and launcher syntax
+        run: |
+          python3 -m compileall -q src/docich/trading/markets
+          bash -n bin/docich-market-paper

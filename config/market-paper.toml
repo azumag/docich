@@ -1,0 +1,51 @@
+# Deployment is opt-in. This file never enables a real-money broker.
+# Install the owner-approved market data feed/calendar before enabling a show.
+[stocks]
+enabled = false
+mode = "paper"
+feed = "kabu" # kabu (GET board only) | file
+symbols = [] # e.g. ["7203"]; operator-owned watchlist, never changed by AI
+calendar_file = "jpx-calendar.json" # under <state_dir>/market-data/
+quote_file = "market-stocks-quotes.json"
+
+[stocks.limits]
+capital_jpy = "10000000"
+allocation = "0.30"
+position_fraction = "0.10"
+daily_loss_fraction = "0.02"
+lot = 100
+fee_bps = "1"
+slippage_bps = "2"
+quote_age_s = 15
+max_positions = 3
+max_spread_bps = "30"
+
+[fx]
+enabled = false
+mode = "paper"
+feed = "oanda" # oanda practice PRICING only | file
+symbols = ["USD_JPY", "EUR_JPY"]
+quote_file = "market-fx-quotes.json"
+
+[fx.limits]
+capital_jpy = "10000000"
+allocation = "0.30"
+position_fraction = "0.10"
+daily_loss_fraction = "0.02"
+lot = 1000
+fee_bps = "1"
+slippage_bps = "1"
+financing_bps_per_day = "2" # conservative estimate; NOT verified broker swaps
+quote_age_s = 15
+max_positions = 3
+max_spread_bps = "10"
+
+[ai]
+# Empty inherits [paper_corner].improve_agents from the selected docich profile.
+# Configure a Chinese-model route for the Chinese-AI show before deployment.
+agents = ""
+
+[news]
+# Operator-approved HTTPS RSS sources. Empty means no fabricated news and no
+# unguided AI improvement. Reuse the stream's approved news sources here.
+rss_urls = []

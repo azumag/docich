@@ -1,0 +1,16 @@
+[Unit]
+Description=docich %i resident paper market worker
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=__DOCICH_ROOT__
+EnvironmentFile=-%h/.config/docich/market-paper.env
+ExecStart=__DOCICH_ROOT__/bin/docich-market-paper --config __DOCICH_ROOT__/config/docich.soren-live.toml --market %i worker
+Restart=on-failure
+RestartSec=15
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
