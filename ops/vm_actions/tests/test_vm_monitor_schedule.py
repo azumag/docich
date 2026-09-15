@@ -49,7 +49,30 @@ class VmMonitorTrackedDriftAlertTests(unittest.TestCase):
         ):
             self.assertIn(f"'{key}'", self.text)
         self.assertNotIn("git status --porcelain", self.text)
-        self.assertNotIn(".path", self.text)
+        # The diagnostics envelope is written to a file for summarizers, never
+        # echoed to the log directly.
+        self.assertNotIn('echo "$diagnostics_json"', self.text)
+        self.assertNotIn("cat \"$RUNNER_TEMP/runtime-diagnostics.json\"", self.text)
+
+
+class VmMonitorBaselineAlertTests(unittest.TestCase):
+    def setUp(self):
+        self.text = WORKFLOW.read_text()
+
+    def test_monitor_alerts_when_production_baseline_is_not_configured(self):
+        self.assertIn("name: Assess production baseline", self.text)
+        self.assertIn("name: Update deduplicated production baseline alert", self.text)
+        self.assertIn("'[VM deploy] production baseline alert'", self.text)
+        self.assertIn("baseline_flagged", self.text)
+        self.assertIn("baseline_status", self.text)
+        self.assertIn("storage-status.json", self.text)
+        # Read-only: the baseline check never execs on production.
+        self.assertNotIn("exec docich production", self.text)
+
+    def test_baseline_alert_does_not_double_alert_tracked_drift(self):
+        # git_clean(root)==false is the tracked drift alert's shape; the
+        # baseline alert must skip it to avoid duplicate issues.
+        self.assertIn("status != 'configured' and drift_detected != 1", self.text)
 
 
 if __name__ == "__main__":

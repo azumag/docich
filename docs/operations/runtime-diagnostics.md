@@ -149,6 +149,13 @@ diagnostics の `tracked_drift.drift_detected=1`（= canonical deploy を塞ぐ
 固定カテゴリと counter だけで、path / filename / diff / bytes / raw exception を
 含めない。診断が取得できない・`tracked_drift` が無い場合はアラートを変更しない。
 
+同 monitor は production の `status` も見て、`configured` でない状態
+（out-of-band な HEAD/baseline 移動、`recovery_required`、`bootstrap_required`）を
+**`[VM deploy] production baseline alert`** として1件に dedup して通知する。
+tracked drift の形（`drift_detected=1`）は tracked drift alert が扱うため二重通知
+しない。`configured` へ戻ると自動 close する。本文は固定 status enum・counter・
+commit SHA のみで、path・diff・bytes・raw exception を含めない。
+
 ## Runtime 変更 checklist
 
 worker / queue / model / provider / fallback / runtime component を変えたら：
