@@ -37,11 +37,22 @@ def _read(url: str, headers=None) -> bytes:
         raise FeedUnavailable(f"market data unavailable ({type(exc).__name__})") from None
 
 
-def _iso(value: str) -> float:
-    parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if parsed.tzinfo is None:
-        raise ValueError("timezone missing")
-    return stamp(parsed.timestamp())
+def _iso(value: object) -> float:
+    """Parse an exchange timestamp without letting malformed feed data escape.
+
+    Broker payloads are untrusted external data.  A missing/non-string timestamp
+    must degrade to the normal feed-unavailable path rather than raising an
+    AttributeError that can escape the resident worker's bounded error handling.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise FeedUnavailable("invalid market-data timestamp")
+    try:
+        parsed = dt.datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            raise ValueError("timezone missing")
+        return stamp(parsed.timestamp())
+    except (ValueError, OverflowError, OSError):
+        raise FeedUnavailable("invalid market-data timestamp") from None
 
 
 def jpx_open(calendar_path: Path, now: float) -> bool:
