@@ -123,8 +123,10 @@ class DeployDanglingGitlinkTests(unittest.TestCase):
 
         strict = [l for l in lines if '--no-recurse-submodules' in l]
         recursive = [l for l in lines if '--recurse-submodules=on-demand' in l]
-        self.assertEqual(len(strict), 1, 'exactly one non-recursive parent fetch expected')
-        self.assertNotIn('check=False', strict[0], 'parent fetch must stay strict')
+        # deploy_git and rebaseline_git both perform an authoritative parent fetch.
+        self.assertGreaterEqual(len(strict), 2, 'deploy and rebaseline parent fetches expected')
+        for line in strict:
+            self.assertNotIn('check=False', line, 'authoritative parent fetch must stay strict')
 
         # A recursive prefetch may exist, but only as a non-fatal optimisation.
         source = GATEWAY.read_text()

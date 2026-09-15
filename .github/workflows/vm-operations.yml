@@ -10,7 +10,7 @@ on:
         required: true
         default: status
         type: choice
-        options: [status, deploy, exec, bootstrap, diagnostics]
+        options: [status, deploy, exec, bootstrap, diagnostics, reclaim, rebaseline]
       target:
         description: VM target
         required: true
@@ -27,6 +27,16 @@ on:
         required: false
         default: ''
         type: string
+      apply:
+        description: Apply storage reclaim changes (false = dry-run/plan only)
+        required: false
+        default: false
+        type: boolean
+      voicevox_archive:
+        description: Also reclaim the redundant VOICEVOX installer archive (/opt/voicevox/voicevox.7z.001, ~1.69GiB)
+        required: false
+        default: false
+        type: boolean
       confirm:
         description: Type production for production exec/bootstrap
         required: false
@@ -203,7 +213,12 @@ jobs:
           new_sub="$(git -C candidate ls-tree "$SHA" -- games/soviet_now | awk '$1 == "160000" && $2 == "commit" {print $3}')"
           [[ "$old_sub" =~ ^[0-9a-f]{40}$ ]]
           [[ "$new_sub" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$old_sub" != "$new_sub" ]]
+          # gitlink が不変の deploy reject は pre-synced reconcile の対象ではない。
+          # 固定理由で fail-closed にし、normalize/retry を誤誘導しない (#377)。
+          if [[ "$old_sub" == "$new_sub" ]]; then
+            echo 'reconcile inapplicable: submodule_unchanged' >&2
+            exit 1
+          fi
 
           {
             # lineage (#279): converge a changed path only when its live
@@ -213,7 +228,7 @@ jobs:
             # match real history. Anything else stays fail-closed exactly
             # as before.
             #
-            # attestation (#279): a reviewed commit dropped from
+            # attestation (#279): a reviewed branch commit dropped from
             # old_sub..new_sub by a squash merge can be attested in
             # reviewed_lineage_attestations.json. Only the exact reviewed
             # sha256+mode recorded for this old/new pair is passed, and the
@@ -241,10 +256,20 @@ jobs:
           )"
             attest_args=()
             if [[ -n "$attest_raw" ]]; then read -r -a attest_args <<< "$attest_raw"; fi
-            # The helper is executed from the verified reviewed commit object
-            # already fetched onto the VM by the failed deploy. Piping the whole
-            # helper through exec stdin would add the attestation argv and
-            # exceed the gateway's 16384-byte stdin cap (#279).
+            # deploy_git() checks tracked cleanliness before it fetches the
+            # uploaded bundle. A pre-existing drift rejection therefore does
+            # not guarantee that $SHA exists in the production object DB.
+            # Populate objects from protected public main only; this fetch
+            # does not checkout/reset or alter tracked worktree files. The
+            # helpers are still read from the exact reviewed $SHA afterwards.
+            printf "git -C /home/ubuntu/docich -c core.hooksPath=/dev/null fetch --no-recurse-submodules --no-tags --force https://github.com/azumag/docich.git refs/heads/main >/dev/null 2>&1\n"
+            printf "git -C /home/ubuntu/docich -c core.hooksPath=/dev/null cat-file -e '%s^{commit}'\n" "$SHA"
+            # First converge only parent files whose *current* bytes+mode are
+            # exactly present on reviewed old_root..SHA lineage. Unknown/staged
+            # parent drift remains fail-closed. This makes the existing Soren
+            # helper's root-clean precondition meaningful rather than bypassed.
+            printf "git -C /home/ubuntu/docich -c core.hooksPath=/dev/null show '%s:ops/vm_actions/reconcile_presynced_root.py' | python3 - '%s' '%s' '%s'\n" \
+              "$SHA" /home/ubuntu/docich "$old_root" "$SHA"
             printf "git -C /home/ubuntu/docich -c core.hooksPath=/dev/null show '%s:ops/vm_actions/reconcile_presynced_submodule.py' | python3 - '%s' '%s' '%s' '%s' '%s' lineage" \
               "$SHA" /home/ubuntu/docich "$old_root" "$old_sub" "$new_sub" games/soviet_now
             for token in "${attest_args[@]}"; do printf " '%s'" "$token"; done
@@ -391,3 +416,36 @@ jobs:
           [[ -n "$VM_COMMAND" ]]
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
           printf '%s' "$VM_COMMAND" | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich $TARGET $SHA"
+
+      - name: Run reviewed storage reclaim
+        if: ${{ steps.auth.outputs.operation == 'reclaim' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+          APPLY: ${{ inputs.apply }}
+          VOICEVOX_ARCHIVE: ${{ inputs.voicevox_archive }}
+        run: |
+          set -euo pipefail
+          # The helper is a fixed reviewed script from the trusted main checkout.
+          # No network input is interpolated; only the reviewed flags are passed.
+          apply_flag=0
+          if [[ "${APPLY:-false}" == "true" ]]; then apply_flag=1; fi
+          voicevox_flag=0
+          if [[ "${VOICEVOX_ARCHIVE:-false}" == "true" ]]; then voicevox_flag=1; fi
+          echo "storage reclaim apply=${apply_flag} voicevox_archive=${voicevox_flag}"
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          { printf 'APPLY=%s\nVOICEVOX_ARCHIVE=%s\n' "$apply_flag" "$voicevox_flag"; cat control/ops/vm_actions/storage_reclaim.sh; } | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
+      - name: Rebaseline production to the reviewed current HEAD
+        if: ${{ steps.auth.outputs.operation == 'rebaseline' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "rebaseline docich production $SHA"

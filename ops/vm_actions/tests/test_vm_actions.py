@@ -173,6 +173,56 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual((self.doc/'app.py').read_text(),'manual-hotfix\n')
 
 
+    def _write_baseline(self, sha):
+        (self.state/'current').mkdir(parents=True,exist_ok=True)
+        (self.state/'current'/'docich.json').write_text(json.dumps({'mode':'git','sha':sha,'previous_head':None,'pending_repairs':[]}))
+
+    def test_deploy_reject_reports_fixed_reason_code(self):
+        sha,bundle=self.make_docich_bundle()
+        self.assertEqual(self.call(f'upload docich production {sha}',bundle).returncode,0)
+        self.assertEqual(self.call(f'bootstrap docich production {sha}').returncode,0)
+        (self.doc/'app.py').write_text('manual-hotfix\n')
+        p=self.call(f'deploy docich production {sha}')
+        self.assertNotEqual(p.returncode,0)
+        err=p.stderr.decode()
+        self.assertIn('VM operation rejected: tracked_vm_drift',err)
+        self.assertNotIn('tracked VM drift detected',err)
+
+    def test_rebaseline_recovers_ancestor_drift_then_deploys(self):
+        base=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
+        subprocess.run(['git','-C',self.doc,'commit','--allow-empty','-qm','B'],check=True)
+        drift=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
+        cand=self.base/'rebased-cand'
+        subprocess.run(['git','clone','-q',self.doc,cand],check=True)
+        subprocess.run(['git','-C',cand,'config','user.email','t@example.com'],check=True)
+        subprocess.run(['git','-C',cand,'config','user.name','T'],check=True)
+        (Path(cand)/'app.py').write_text('v3\n')
+        subprocess.run(['git','-C',cand,'add','app.py'],check=True)
+        subprocess.run(['git','-C',cand,'commit','-qm','C'],check=True)
+        sha=subprocess.check_output(['git','-C',cand,'rev-parse','HEAD'],text=True).strip()
+        bundle_path=self.base/'rebased.bundle'
+        subprocess.run(['git','-C',cand,'bundle','create',bundle_path,'HEAD'],check=True)
+        self.assertEqual(self.call(f'upload docich production {sha}',bundle_path.read_bytes()).returncode,0)
+        self._write_baseline(base)
+        p=self.call(f'rebaseline docich production {sha}')
+        self.assertEqual(p.returncode,0,p.stderr.decode())
+        state=json.loads((self.state/'current'/'docich.json').read_text())
+        self.assertEqual(state['sha'],drift)
+        p=self.call(f'deploy docich production {sha}')
+        self.assertEqual(p.returncode,0,p.stderr.decode())
+        self.assertEqual(subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip(),sha)
+
+    def test_rebaseline_refuses_non_ancestor(self):
+        sha,bundle=self.make_docich_bundle()
+        self.assertEqual(self.call(f'upload docich production {sha}',bundle).returncode,0)
+        base=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
+        subprocess.run(['git','-C',self.doc,'commit','--allow-empty','-qm','D'],check=True)
+        self._write_baseline(base)
+        p=self.call(f'rebaseline docich production {sha}')
+        self.assertNotEqual(p.returncode,0)
+        self.assertIn('rebaseline_not_ancestor',p.stderr.decode())
+
+
     def test_preview_deploy_and_exec(self):
         sha,bundle=self.make_docich_bundle()
         self.assertEqual(self.call(f'upload docich preview {sha}',bundle).returncode,0)

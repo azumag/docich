@@ -3,10 +3,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+import json
 import math
 import os
 from pathlib import Path
 import sqlite3
+from typing import Mapping
 
 from .models import AllocationDecision, PaperFill
 from .settlement import MultiLegSettlement, SettlementLeg
@@ -38,7 +40,8 @@ CREATE TABLE IF NOT EXISTS paper_fills (
     quote_notional TEXT NOT NULL,
     reference_notional TEXT NOT NULL,
     reason_code TEXT NOT NULL,
-    filled_at REAL NOT NULL
+    filled_at REAL NOT NULL,
+    signal_context TEXT
 );
 CREATE TABLE IF NOT EXISTS paper_multileg_settlements (
     settlement_id TEXT PRIMARY KEY,
@@ -108,7 +111,37 @@ class PaperLedger:
         except OSError:
             pass
         self._conn.executescript(_SCHEMA)
+        self._ensure_columns()
         self._conn.commit()
+
+    def _ensure_columns(self) -> None:
+        """Non-destructive, idempotent column migration for older ledgers."""
+        existing = {
+            str(row[1])
+            for row in self._conn.execute("PRAGMA table_info(paper_fills)").fetchall()
+        }
+        if "signal_context" not in existing:
+            self._conn.execute("ALTER TABLE paper_fills ADD COLUMN signal_context TEXT")
+
+    @staticmethod
+    def _dump_signal_context(value: Mapping[str, object] | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            text = json.dumps(dict(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        except (TypeError, ValueError):
+            return None
+        return text[:4000]
+
+    @staticmethod
+    def _load_signal_context(value: object) -> dict[str, object] | None:
+        if value is None:
+            return None
+        try:
+            data = json.loads(str(value))
+        except (TypeError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
 
     def close(self) -> None:
         self._conn.close()
@@ -128,18 +161,28 @@ class PaperLedger:
             reference_notional=Decimal(row[9]),
             reason_code=row[10],
             filled_at=float(row[11]),
+            signal_context=PaperLedger._load_signal_context(row[12] if len(row) > 12 else None),
         )
+
+    _FILL_COLUMNS = (
+        "fill_id, opportunity_id, strategy_id, symbol, side, quote, amount, price, "
+        "quote_notional, reference_notional, reason_code, filled_at, signal_context"
+    )
 
     def get_fill_for_opportunity(self, opportunity_id: str) -> PaperFill | None:
         row = self._conn.execute(
-            """SELECT fill_id, opportunity_id, strategy_id, symbol, side, quote,
-                      amount, price, quote_notional, reference_notional, reason_code, filled_at
-                 FROM paper_fills WHERE opportunity_id = ?""",
+            f"SELECT {self._FILL_COLUMNS} FROM paper_fills WHERE opportunity_id = ?",
             (opportunity_id,),
         ).fetchone()
         return None if row is None else self._row_to_fill(row)
 
-    def record_fill(self, decision: AllocationDecision, *, timestamp: float) -> PaperFill:
+    def record_fill(
+        self,
+        decision: AllocationDecision,
+        *,
+        timestamp: float,
+        signal_context: Mapping[str, object] | None = None,
+    ) -> PaperFill:
         existing = self.get_fill_for_opportunity(decision.opportunity_id)
         if existing is not None:
             return existing
@@ -168,9 +211,9 @@ class PaperLedger:
             self._conn.execute(
                 """INSERT OR IGNORE INTO paper_fills
                    (fill_id, opportunity_id, strategy_id, symbol, side, quote, amount, price,
-                    quote_notional, reference_notional, reason_code, filled_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (fill_id, *values),
+                    quote_notional, reference_notional, reason_code, filled_at, signal_context)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (fill_id, *values, self._dump_signal_context(signal_context)),
             )
         recorded = self.get_fill_for_opportunity(decision.opportunity_id)
         if recorded is None:
@@ -181,11 +224,9 @@ class PaperLedger:
         if limit <= 0:
             return []
         rows = self._conn.execute(
-            """SELECT fill_id, opportunity_id, strategy_id, symbol, side, quote,
-                      amount, price, quote_notional, reference_notional, reason_code, filled_at
-                 FROM paper_fills
-                ORDER BY filled_at DESC, rowid DESC
-                LIMIT ?""",
+            f"""SELECT {self._FILL_COLUMNS} FROM paper_fills
+                 ORDER BY filled_at DESC, rowid DESC
+                 LIMIT ?""",
             (int(limit),),
         ).fetchall()
         return [self._row_to_fill(row) for row in rows]
