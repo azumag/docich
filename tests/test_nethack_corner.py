@@ -2,10 +2,12 @@ import json
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -225,6 +227,34 @@ class TestNethackCornerLifecycle(NethackCornerTestBase):
 
         self.now_value = self.now_value.replace(hour=21)
         self.assertEqual(mgr._scheduled_tick(self.now_value).detail, "outside-window")
+
+    def test_tick_outside_window_does_not_join_program_queue(self):
+        self.now_value = self.now_value.replace(hour=21)
+        current = [None]
+        mgr, coordinator = self.manager(current)
+        with patch(
+            "docich.nethack_corner.program_slot",
+            side_effect=AssertionError("outside-window tick must not queue"),
+        ):
+            result = mgr.tick()
+        self.assertEqual(result.status, "noop")
+        self.assertEqual(result.detail, "outside-window")
+        self.assertEqual(coordinator.calls, [])
+
+    def test_tick_rechecks_schedule_after_program_slot_wait(self):
+        current = [None]
+        mgr, coordinator = self.manager(current)
+
+        @contextmanager
+        def delayed_slot(*args, **kwargs):
+            self.now_value = self.now_value.replace(hour=23)
+            yield self.g.state_dir
+
+        with patch("docich.nethack_corner.program_slot", delayed_slot):
+            result = mgr.tick()
+        self.assertEqual(result.status, "noop")
+        self.assertEqual(result.detail, "outside-window")
+        self.assertEqual(coordinator.calls, [])
 
     def test_state_is_isolated_from_other_corners(self):
         current = [None]
