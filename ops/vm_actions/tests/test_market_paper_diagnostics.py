@@ -126,11 +126,17 @@ class MarketPaperDiagnosticsTests(unittest.TestCase):
         self.assertIn("docich-market-worker@fx.service", result["unit_dir_entries"])
         self.assertIn("prod_root", result)
 
-    def test_unit_installed_reflects_unit_dir_presence(self):
-        (self.unit_dir / "docich-market-worker@fx.service").write_text("[Unit]\n", encoding="utf-8")
+    def test_unit_installed_reflects_shared_template_presence(self):
+        # manage_market_paper_units.sh installs the shared systemd *template*
+        # (docich-market-worker@.service, no instance name) once for both
+        # markets -- an instantiated name like ...@fx.service is never
+        # written to disk; systemd resolves it from the template at
+        # is-active/is-enabled/start time. So the template's presence must
+        # make both markets report unit_installed=true, not just one.
+        (self.unit_dir / "docich-market-worker@.service").write_text("[Unit]\n", encoding="utf-8")
         result = self.module._collect_market_paper(self.state, self.now, unit_dir=self.unit_dir)
         self.assertTrue(result["fx"]["unit_installed"])
-        self.assertFalse(result["stocks"]["unit_installed"])
+        self.assertTrue(result["stocks"]["unit_installed"])
 
     def test_systemctl_unavailable_yields_none_not_a_crash(self):
         # In CI/sandbox there is normally no user session bus; the helper
