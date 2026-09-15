@@ -29,7 +29,7 @@ bin/docich start nethack  # ゲーム起動 (docich-game tmux セッション内
 bin/docich status
 ```
 
-`config/games/nethack.toml` の既定値:
+`config/games/nethack.toml` の主要設定:
 
 ```toml
 [game]
@@ -44,11 +44,19 @@ rows = 24
 font = "monospace"
 font_size = 18
 
+[nethack]
+persistent_run = true
+player_name = "docich"
+save_dir = "/var/games/nethack/save"
+
 [agent]
 enabled = false
 brain = "random"
 interval_ms = 1500
 ```
+
+`persistent_run=true` は長期攻略用の明示 opt-in。これが無い通常の CLI `nethack` 定義は、従来どおり
+汎用 `CliCoordinatorAdapter` として動作し、ディストリビューション固有の save path を要求しない。
 
 ---
 
@@ -140,3 +148,36 @@ P0 の時点では `agent.enabled=false` のままであり、「AI攻略が完�
 structured observation → 死亡履歴からの継続改善、の順に追加する。特にグラフィック表示は AI の
 正確な text/structured observation と分離し、視聴者向け presentation のためだけに画像認識へ
 退化させない。
+
+---
+
+## 8. 長期runの通常save/restore (P1a)
+
+`persistent_run=true` の NetHack だけ、coordinator の switch/stop 前に通常の NetHack save を安全境界として
+利用する。legacy `docich obs/send` は引き続き汎用 CLI adapter を使うため、AI observation 契約は変わらない。
+
+起動時は coordinator adapter が `-u docich` を追加する。同じ Unix uid + player name を継続することで、
+NetHack 自身の通常 restore を利用する。wizard (`-D`) / explore (`-X`) mode は長期攻略では拒否する。
+
+終了時の順序:
+
+1. active runtime/session ownership を確認
+2. 実ゲームを持つ tmux birth window を一意に確認
+3. 現在存在する同player saveの署名 (mtime/size) を記録
+4. `Escape` でmenu/promptから抜ける
+5. 通常コマンド `S` を送る
+6. NetHack process window が終了したことを確認
+7. **送信前から新規作成または更新された**同player saveを確認
+8. 両方揃った場合だけ round-boundary を成功させ、coordinator が元ゲームへ切り替える
+
+processだけ消えてsaveが作られない、tmux window一覧が取得できない、runtime windowが曖昧、という場合は
+fail closed とし、単に「ゲームが終わった」と推測して切替を続行しない。古いsave fileが残っているだけでも
+成功扱いしない。
+
+ゲーム側が既に `S` で終了していて、process windowが無い一方で同player saveが存在する場合は
+`suspended` として扱う。processもsaveも無い場合だけ `ended` と記録し、死亡・quit・ascension の分類は
+P1b の run-history/dumplog 側へ委ねる。
+
+境界の診断結果は generation runtime の `nethack_boundary.json` に `suspended` / `ended` として残す。
+P1b ではこの結果と Debian/Ubuntu NetHack の dumplog を `NethackRunStore` に取り込み、冒険番号・死亡理由・
+到達深度・turn・score・ascension 等を永続履歴へ接続する。
