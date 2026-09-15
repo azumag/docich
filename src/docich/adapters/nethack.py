@@ -8,8 +8,8 @@ lifecycle semantics needed by the NetHack corner:
 * always launch the game with one stable ``-u`` player name so normal NetHack
   save files can be restored by the next runtime;
 * before any coordinator switch/stop, use NetHack's normal ``S`` command and
-  wait for both the game process window to exit and a save file for that
-  player to exist;
+  wait for both the game process window to exit and a newly-created/changed
+  save file for that player to exist;
 * fail closed if durable suspension cannot be verified.  The coordinator then
   keeps/rolls back the runtime rather than silently destroying an adventure.
 
@@ -20,13 +20,12 @@ new one.
 from __future__ import annotations
 
 import datetime as dt
-import os
 import re
 import time
 from dataclasses import replace
 from pathlib import Path
 
-from ..game_switch import ReadinessTimeoutError, atomic_write_json
+from ..game_switch import DeadlineExceededError, ReadinessTimeoutError, atomic_write_json
 from .base import AdapterError
 from .cli_game import CliCoordinatorAdapter
 
@@ -40,8 +39,8 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
     """CLI coordinator adapter with NetHack's suspend/resume boundary."""
 
     def __init__(self, g, game, spec):
-        # NetHack's program boundary is a safe save, even though the generic
-        # nethack.toml remains a plain CLI definition for legacy observation.
+        # NetHack's program boundary is a safe save, even though legacy
+        # observation/action remains the normal CLI adapter.
         lifecycle = replace(game.lifecycle, require_round_boundary=True)
         super().__init__(g, replace(game, lifecycle=lifecycle), spec)
         self.player_name, self.save_dir = self._load_nethack_settings(game)
@@ -90,11 +89,17 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
     def _runtime_process_window_target(self) -> str | None:
         """Resolve the birth window which owns the actual NetHack process.
 
-        The coordinator session contains one unnamed/name-derived birth window
-        for the CLI process plus the named presentation/agent windows.  The
-        birth window deliberately is not the viewer window.
+        A healthy coordinator CLI runtime always has the named presentation
+        window.  Therefore an empty/torn window listing is never interpreted
+        as a real game end: that would turn a tmux probe failure into false
+        success.  With the presentation window present, no remaining birth
+        window means the NetHack process has genuinely ended.
         """
         names = self.tmux.list_windows()
+        if not names:
+            raise AdapterError("NetHack runtime window一覧を取得できません")
+        if self.spec.game_window not in names:
+            raise AdapterError("NetHack presentation windowを確認できません")
         excluded = {self.spec.game_window, self.spec.agent_window}
         candidates = [name for name in names if name not in excluded]
         if not candidates:
@@ -116,6 +121,32 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
             for entry in entries
             if entry.is_file() and needle in entry.name.casefold()
         )
+
+    def _save_signatures(self) -> dict[str, tuple[int, int]]:
+        signatures: dict[str, tuple[int, int]] = {}
+        for path in self._matching_save_files():
+            try:
+                stat = path.stat()
+            except OSError as exc:
+                raise AdapterError("NetHack save fileを検査できません") from exc
+            signatures[path.name] = (stat.st_mtime_ns, stat.st_size)
+        return signatures
+
+    def _new_or_changed_save(
+        self, before: dict[str, tuple[int, int]]
+    ) -> Path | None:
+        candidates: list[tuple[int, Path]] = []
+        for path in self._matching_save_files():
+            try:
+                stat = path.stat()
+            except OSError as exc:
+                raise AdapterError("NetHack save fileを検査できません") from exc
+            signature = (stat.st_mtime_ns, stat.st_size)
+            if before.get(path.name) != signature:
+                candidates.append((stat.st_mtime_ns, path))
+        if not candidates:
+            return None
+        return max(candidates, key=lambda item: item[0])[1]
 
     def _write_boundary_result(
         self,
@@ -140,6 +171,12 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
             payload["save_file"] = save_file.name
         atomic_write_json(self.spec.runtime_dir / BOUNDARY_RESULT_FILENAME, payload)
 
+    def _boundary_wait_check(self, deadline: float, cancel) -> None:
+        if cancel is not None and cancel.is_set():
+            raise DeadlineExceededError("NetHack save boundaryはcancelされました")
+        if time.monotonic() >= deadline:
+            raise ReadinessTimeoutError("NetHackの安全なsave終了を確認できませんでした")
+
     def request_round_boundary(self, request_id: str, deadline: float, cancel) -> None:
         self._check_active(deadline, cancel)
         if not self.tmux.session_target_exists(self.spec.adapter_session):
@@ -148,52 +185,51 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
 
         process_target = self._runtime_process_window_target()
         if process_target is None:
-            # The game already ended (for example a real death).  That is a
-            # valid program boundary but not a suspension; later run-history
-            # phases classify the terminal outcome from game records.
-            self._write_boundary_result(request_id, outcome="ended")
+            # A player/agent may have already used NetHack's normal save command.
+            # If a save exists, preserve that as a suspension.  Otherwise this
+            # is a terminal boundary (death/quit/ascension is classified later).
+            existing = self._matching_save_files()
+            if existing:
+                try:
+                    newest = max(existing, key=lambda path: path.stat().st_mtime_ns)
+                except OSError as exc:
+                    raise AdapterError("NetHack save fileを検査できません") from exc
+                self._write_boundary_result(
+                    request_id, outcome="suspended", save_file=newest
+                )
+            else:
+                self._write_boundary_result(request_id, outcome="ended")
             return
 
+        before = self._save_signatures()
         # Leave menus/prompts before issuing the normal save command.  Escape
         # is non-destructive at the map prompt; if it cannot normalize the UI,
-        # the absence of a verified save below makes the operation fail closed.
+        # the absence of a verified fresh save below makes the operation fail closed.
         self.tmux.send_keys(process_target, ["Escape"], literal=False)
         self._check_active(deadline, cancel)
         self.tmux.send_keys(process_target, ["S"], literal=True)
 
         while True:
-            self._check_active(deadline, cancel)
+            self._boundary_wait_check(deadline, cancel)
             try:
                 process_alive = self.tmux.window_target_exists(process_target, strict=True)
             except Exception as exc:
-                # A vanished whole session is not evidence that the save was
-                # durable.  Continue only when a save file independently proves
-                # successful suspension; otherwise report a hard error below.
-                process_alive = False
-                probe_error = exc
-            else:
-                probe_error = None
+                # A failed tmux probe is not evidence that the game exited.
+                raise AdapterError("NetHack runtime processを確認できません") from exc
 
-            saves = self._matching_save_files()
-            if not process_alive and saves:
-                newest = max(saves, key=lambda path: path.stat().st_mtime_ns)
+            save_file = self._new_or_changed_save(before)
+            if not process_alive and save_file is not None:
                 self._write_boundary_result(
-                    request_id, outcome="suspended", save_file=newest
+                    request_id, outcome="suspended", save_file=save_file
                 )
                 return
-            if not process_alive and probe_error is not None and not saves:
-                raise AdapterError(
-                    "NetHack runtime消失後にsave fileを確認できませんでした"
-                ) from probe_error
-            if time.monotonic() >= deadline:
-                raise ReadinessTimeoutError(
-                    "NetHackの安全なsave終了を確認できませんでした"
-                )
+            # Process exit without a fresh/changed save is deliberately not
+            # success; wait until the deadline so a just-finishing fsync can land.
             time.sleep(min(0.1, max(0.01, deadline - time.monotonic())))
 
     def cancel_round_boundary(self, request_id: str, deadline: float, cancel) -> None:
         # ``S`` has no reversible in-process phase: once NetHack accepts it the
-        # game is writing a normal save and exiting.  Cancellation therefore
-        # must not send any extra key that could corrupt/alter that operation.
-        self._check_active(deadline, cancel)
+        # game is writing a normal save and exiting.  Cancellation must not send
+        # any extra key.  In particular, do not re-check an already-expired
+        # deadline here: cancellation itself must stay best-effort/no-op.
         return None
