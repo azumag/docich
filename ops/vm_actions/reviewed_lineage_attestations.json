@@ -67,6 +67,17 @@
       "source_commit": "075fa8c4e561342b0b0e6b6ccf1d4a063c9de7c2",
       "source_pr": 288,
       "reason": "Same PR #288 pre-merge live deployment as tools/ab_report.py above; see that entry's reason."
+    },
+    {
+      "projection": "games/soviet_now",
+      "old_sub": "7ea3df494b77aa5fd3adde873bd45bf577fe1a47",
+      "new_sub": "d1a2a4a379b6c0b1c5ca087d3b9fb29832f699fa",
+      "path": "start_shared_overlay_service.sh",
+      "mode": "100755",
+      "sha256": "1d96a03f5c51409794918adbf8391ecd373c73c112d05e8fcb19072bd7d4478c",
+      "source_commit": "9336a1dd48ce3353e1a58b62f9cf2b34963830db",
+      "source_pr": 345,
+      "reason": "PR #345 (squash merge 9336a1d) is the only commit that ever contained this path in soviet_now history. Production live carried the pre-#345 wrapper deployed directly to the VM on 2026-09-05 from the reviewed game-lifecycle work, so its bytes exist in no git object and match neither old_sub (absent) nor new_sub. This one-time entry for the 7ea3df4->d1a2a4a transition records the exact live bytes+mode so the push-triggered reconcile may converge the path to the old baseline (absent); the canonical deploy then projects the reviewed #345 content. Convergence still requires an exact live byte+mode match, and the final live state is the reviewed new content, never the attested bytes."
     }
   ]
 }
