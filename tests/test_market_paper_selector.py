@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from docich.trading.markets.__main__ import Runtime
-from docich.trading.markets.core import JST, Policy, Quote, report_window
+from docich.trading.markets.core import Policy, Quote, report_window
 from docich.trading.markets.lab import write_json
 from docich.trading.markets.selector import (Candidate, SelectorPolicy, candidate_score,
                                              rank_candidates, read_file_candidates,
@@ -25,6 +25,10 @@ def candidate(now, symbol="7203", *, momentum="20", volume="2", turnover="500000
                      momentum_bps=momentum, volume_accel=volume,
                      volatility_bps=volatility, spread_bps=spread,
                      tradeable=tradeable)
+
+
+def quote(now, price=100, symbol="7203"):
+    return Quote(symbol, now, str(price), str(price + .01), "100000", "100000", True, "test-fixture")
 
 
 class SelectorTests(unittest.TestCase):
@@ -103,6 +107,10 @@ class SelectorTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             read_file_candidates({"candidate_file": path.name}, self.root,
                                  self.now + self.policy.candidate_age_s + 1, self.policy)
+        write_json(path, {"market": "stocks", "realtime": True, "as_of": self.now + 1,
+                          "candidates": [asdict(candidate(self.now))]})
+        with self.assertRaises(ValueError):
+            read_file_candidates({"candidate_file": path.name}, self.root, self.now, self.policy)
         write_json(path, {"market": "stocks", "realtime": False, "as_of": self.now,
                           "candidates": [asdict(candidate(self.now))]})
         with self.assertRaises(ValueError):
@@ -114,8 +122,11 @@ class RuntimeSelectorTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         source = Path(__file__).resolve().parents[1] / "config/market-paper.toml"
+        text = source.read_text()
+        text = text.replace("[stocks]\nenabled = false", "[stocks]\nenabled = true", 1)
+        text = text.replace("[stocks.selector]\nenabled = false", "[stocks.selector]\nenabled = true", 1)
         self.settings = self.root / "market.toml"
-        self.settings.write_text(source.read_text().replace("enabled = false", "enabled = true", 1))
+        self.settings.write_text(text)
         self.profile = self.root / "docich.toml"
         self.profile.write_text("[paper_corner]\nimprove_agents = ''\n")
         self.g = SimpleNamespace(state_dir=self.root / "run", config_path=self.profile)
@@ -167,6 +178,25 @@ class RuntimeSelectorTests(unittest.TestCase):
         self.assertTrue(allowed["allow_entries"])
         self.assertFalse(blocked["allow_entries"])
         self.assertEqual(blocked["selector"]["entry_cutoff_at"], after)
+
+    def test_scanner_failure_stops_entries_but_keeps_held_exit_quote(self):
+        entry_policy = Policy(lookback=3, entry_bps=2)
+        for i in range(3):
+            self.runtime.book.process([quote(self.now+i, 100+i*.1)], entry_policy,
+                                      now=self.now+i, allow_entries=True)
+        self.assertIn("7203", self.runtime.book.state()["positions"])
+        seen = []
+        def quotes(config, _market, _root, now):
+            seen.extend(config["symbols"])
+            return [quote(now, 101)]
+        self.lease(self.now+10)
+        with patch("docich.trading.markets.__main__.read_file_candidates", side_effect=ValueError("feed down")), \
+             patch("docich.trading.markets.__main__.read_quotes", side_effect=quotes):
+            result = self.runtime.tick(clock=lambda: self.now+10)
+        self.assertFalse(result["allow_entries"])
+        self.assertEqual(result["selector"]["status"], "unavailable")
+        self.assertEqual(seen, ["7203"])
+        self.assertFalse(self.runtime.book.state()["positions"])
 
 
 if __name__ == "__main__":
