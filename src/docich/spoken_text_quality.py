@@ -14,7 +14,10 @@ import sys
 from collections.abc import Callable
 
 JAPANESE_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
-TERMINAL_PUNCTUATION_RE = re.compile(r"[。！？!?]")
+# A comment must actually *end* with sentence punctuation.  Accept common
+# closing quotes/brackets after that punctuation, but do not let punctuation in
+# an earlier sentence make an unpunctuated final sentence pass validation.
+TERMINAL_PUNCTUATION_RE = re.compile(r"[。！？!?][」』】）》）)\]\"'”’]*\s*\Z")
 SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[。！？!?])")
 COMMA_RE = re.compile(r"[、，,]")
 WHITESPACE_RE = re.compile(r"\s+")
