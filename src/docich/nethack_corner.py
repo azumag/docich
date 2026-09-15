@@ -245,11 +245,15 @@ class NethackCornerManager(RetroCornerManager):
         with self._tick_guard() as single:
             if not single:
                 return CornerResult("noop", detail="already-running")
+            now = self._local_now()
             if not self.config.enabled:
                 with self._locked():
-                    self._reconcile_stale_locked(self._local_now())
+                    self._reconcile_stale_locked(now)
                 return CornerResult("noop", detail="disabled")
-            now = self._local_now()
+            if now.hour != self.config.start_hour or not self._due_on_weekday(now):
+                with self._locked():
+                    self._reconcile_stale_locked(now)
+                return CornerResult("noop", detail="outside-window")
             end_of_day = now.replace(hour=23, minute=59, second=59, microsecond=0)
             try:
                 with program_slot(
@@ -261,7 +265,10 @@ class NethackCornerManager(RetroCornerManager):
                     sleep=self._sleep,
                     now=lambda: self._local_now().timestamp(),
                 ):
-                    return self._scheduled_tick(now)
+                    # The slot may have been queued behind another corner. Re-read
+                    # wall clock before firing so a late grant cannot start NetHack
+                    # outside its configured hour/day.
+                    return self._scheduled_tick(self._local_now())
             except CornerWaitExpired:
                 return CornerResult("expired", detail="program-wait-expired")
 
