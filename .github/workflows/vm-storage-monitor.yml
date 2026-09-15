@@ -166,6 +166,78 @@ jobs:
           gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
           echo "::warning::Production checkout tracked drift detected (${DRIFT_CONTEXT})."
 
+      - name: Assess production baseline
+        id: baseline
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/storage-status.json" "$RUNNER_TEMP/runtime-diagnostics.json" >> "$GITHUB_OUTPUT" <<'PY'
+          import json, os, sys
+          data=json.load(open(sys.argv[1], encoding='utf-8'))
+          allowed={'configured', 'drift', 'recovery_required', 'bootstrap_required'}
+          status=str(data.get('status') or 'unknown')
+          if status not in allowed:
+              status='unknown'
+          pending=len(data.get('pending_repairs') or [])
+          sha=str(data.get('sha') or '')
+          if not (len(sha) == 40 and all(c in '0123456789abcdef' for c in sha)):
+              sha='unknown'
+          drift_detected=-1
+          diagnostics_path=sys.argv[2]
+          if os.path.exists(diagnostics_path):
+              try:
+                  envelope=json.load(open(diagnostics_path, encoding='utf-8'))
+                  tracked=(envelope.get('diagnostics') or {}).get('tracked_drift') or {}
+                  drift_detected=int(bool(tracked.get('drift_detected', 0)))
+              except Exception:
+                  drift_detected=-1
+          # git_clean(root)==false is already covered by the tracked drift alert,
+          # so only flag the remaining shapes (out-of-band HEAD/baseline move,
+          # recovery required, missing baseline).
+          flagged=1 if (status != 'configured' and drift_detected != 1) else 0
+          print(f'baseline_status={status}')
+          print(f'baseline_flagged={flagged}')
+          print(f'baseline_pending={pending}')
+          print(f'baseline_sha={sha}')
+          PY
+
+      - name: Update deduplicated production baseline alert
+        env:
+          BASELINE_STATUS: ${{ steps.baseline.outputs.baseline_status }}
+          BASELINE_FLAGGED: ${{ steps.baseline.outputs.baseline_flagged }}
+          BASELINE_PENDING: ${{ steps.baseline.outputs.baseline_pending }}
+          BASELINE_SHA: ${{ steps.baseline.outputs.baseline_sha }}
+        run: |
+          set -euo pipefail
+          title='[VM deploy] production baseline alert'
+          mapfile -t alerts < <(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title --jq '.[] | select(.title == "[VM deploy] production baseline alert") | "\(.number)\t\(.title)"')
+          if [[ "$BASELINE_FLAGGED" != '1' ]]; then
+            for entry in "${alerts[@]}"; do
+              number="${entry%%$'\t'*}"
+              gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Production returned to the configured baseline (status=${BASELINE_STATUS})."
+            done
+            echo "production baseline: ${BASELINE_STATUS}"
+            exit 0
+          fi
+          body="$(cat <<EOF
+          Production is not at the reviewed configured baseline. This is the shape of an out-of-band change or an unresolved deploy.
+
+          - status: ${BASELINE_STATUS}
+          - pending_repairs: ${BASELINE_PENDING}
+          - docich sha: ${BASELINE_SHA}
+          - Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          Fixed status enums and counters only. Paths, file names, diffs, file bytes, raw exceptions, credentials and command output are never published. This check is read-only: no reset, checkout, restart or cleanup is performed. Recovery uses the reviewed owner-only rebaseline/deploy path.
+          EOF
+          )"
+          for entry in "${alerts[@]}"; do
+            number="${entry%%$'\t'*}"
+            gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+            echo "Existing production baseline alert #${number} refreshed."
+            exit 0
+          done
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          echo "::warning::Production baseline is not configured (status=${BASELINE_STATUS})."
+
       - name: Update deduplicated GitHub alert
         env:
           SEVERITY: ${{ steps.storage.outputs.severity }}
