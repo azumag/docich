@@ -8,6 +8,12 @@ existing runtime summary unchanged and adds fixed-category attribution where
 sample evidence exists; any aggregate remainder is assigned to ``unknown``
 rather than being silently reported as zero for every component.
 
+It is the single runtime-summary entry point used by the VM monitor, so it
+also composes the fixed ``ai_rate_limit_pressure`` signal from
+``summarize_runtime_pressure``. That keeps both observability additions in one
+``severity``/``summary`` step-output pair instead of competing for the same
+GitHub Actions output key.
+
 Only fixed counts/booleans are emitted.  Dynamic component labels, providers,
 models, errors, paths, prompts and credentials are never printed.
 """
@@ -15,6 +21,7 @@ import json
 import sys
 
 from summarize_runtime import COMPONENTS, _component_bucket, summarize
+from summarize_runtime_pressure import rate_limit_pressure
 
 
 ATTRIBUTION_COMPONENTS = COMPONENTS + ("unknown",)
@@ -63,6 +70,8 @@ def attribute_queue_giveups(data):
 
 def render(data):
     severity, summary = summarize(data)
+    ai = data.get("ai") if isinstance(data, dict) else None
+    summary = f"{summary},ai_rate_limit_pressure={rate_limit_pressure(ai)}"
     counts, consistent, exact = attribute_queue_giveups(data)
     extra = [
         f"ai_queue_giveup_attribution_consistent={int(consistent)}",

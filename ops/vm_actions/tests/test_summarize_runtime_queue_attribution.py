@@ -97,7 +97,33 @@ class QueueGiveupAttributionTests(unittest.TestCase):
         self.assertIn("ai_queue_giveup_component_radio_main=1", summary)
         self.assertIn("ai_queue_giveup_component_unknown=1", summary)
         self.assertIn("ai_queue_giveup_attribution_exact=0", summary)
+        self.assertIn("ai_rate_limit_pressure=0", summary)
         self.assertNotIn("SUPERSECRET", summary)
+
+    def test_render_composes_pressure_with_queue_attribution(self):
+        severity, summary = attribution.render(
+            {
+                "status": "warn",
+                "workers": {},
+                "queues": {"queue_giveups_15m": 2},
+                "ai": {
+                    "attempts_15m": 100,
+                    "rate_limits_15m": 50,
+                    "recent_events": [
+                        {"event": "queue_giveup", "component": "RADIO:secret-route:main"}
+                    ],
+                },
+                "improvement": {},
+                "corners": {},
+                "storage_artifacts": {},
+                "bundle_storage": {},
+            }
+        )
+        # Both observability signals must survive the single severity/summary
+        # step-output pair the VM monitor reads.
+        self.assertIn("ai_rate_limit_pressure=1", summary)
+        self.assertIn("ai_queue_giveup_component_radio_main=1", summary)
+        self.assertIn("ai_queue_giveup_component_unknown=1", summary)
 
 
 if __name__ == "__main__":
