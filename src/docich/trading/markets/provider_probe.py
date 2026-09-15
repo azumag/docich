@@ -118,7 +118,6 @@ def _jp_timestamp(row: dict) -> float | None:
     date = row.get("data_date")
     clock = row.get("data_time")
     if not isinstance(date, str) or not isinstance(clock, str):
-        # Snapshot uses one combined update_time field.
         combined = row.get("update_time")
         if not isinstance(combined, str):
             return None
@@ -160,53 +159,66 @@ def probe_moomoo(symbols: list[str], *, host: str = "127.0.0.1", port: int = 111
 
     ctx = None
     quote_rows: list[dict] = []
-    market_rows: list[dict] = []
     try:
         ctx = module.OpenQuoteContext(host=host, port=port)
+    except Exception:
+        result["status"] = "opend_unreachable"
+        return result
+
+    def call(method: str, *args, **kwargs):
+        started = monotonic()
+        try:
+            value = getattr(ctx, method)(*args, **kwargs)
+        except Exception:
+            return None, monotonic() - started
         result["opend_reachable"] = True
+        return value, monotonic() - started
 
-        started = monotonic()
-        ret, data = ctx.get_market_state(symbols)
-        state_elapsed = monotonic() - started
-        # Fold market-state latency into snapshot bucket if snapshot cannot run;
-        # no raw duration is emitted.
-        if _ret_ok(module, ret):
-            market_rows = _records(data)
-            covered = {str(row.get("code")) for row in market_rows}
-            result["market_state_ok"] = any(symbol in covered for symbol in symbols)
-            names = [_state_name(row.get("market_state")) for row in market_rows]
-            result["market_state_known"] = result["market_state_ok"] and all(names)
-            result["market_open"] = any(name in OPEN_STATES for name in names)
+    try:
+        response, _ = call("get_market_state", symbols)
+        if isinstance(response, tuple) and len(response) == 2:
+            ret, data = response
+            if _ret_ok(module, ret):
+                market_rows = _records(data)
+                covered = {str(row.get("code")) for row in market_rows}
+                result["market_state_ok"] = any(symbol in covered for symbol in symbols)
+                names = [
+                    _state_name(row.get("market_state"))
+                    for row in market_rows if str(row.get("code")) in symbols
+                ]
+                result["market_state_known"] = result["market_state_ok"] and bool(names) and all(names)
+                result["market_open"] = any(name in OPEN_STATES for name in names)
 
-        started = monotonic()
-        ret, data = ctx.get_market_snapshot(symbols)
-        snapshot_elapsed = monotonic() - started
-        result["snapshot_roundtrip_bucket"] = _bucket_ms(snapshot_elapsed)
-        if _ret_ok(module, ret):
-            snapshot_rows = _records(data)
-            covered = {str(row.get("code")) for row in snapshot_rows}
-            result["snapshot_symbol_count"] = sum(symbol in covered for symbol in symbols)
-            result["snapshot_ok"] = result["snapshot_symbol_count"] > 0
-        elif result["snapshot_roundtrip_bucket"] == "unknown":
-            result["snapshot_roundtrip_bucket"] = _bucket_ms(state_elapsed)
+        response, elapsed = call("get_market_snapshot", symbols)
+        result["snapshot_roundtrip_bucket"] = _bucket_ms(elapsed)
+        if isinstance(response, tuple) and len(response) == 2:
+            ret, data = response
+            if _ret_ok(module, ret):
+                snapshot_rows = _records(data)
+                covered = {str(row.get("code")) for row in snapshot_rows}
+                result["snapshot_symbol_count"] = sum(symbol in covered for symbol in symbols)
+                result["snapshot_ok"] = result["snapshot_symbol_count"] > 0
 
+        subtype = None
         try:
             subtype = module.SubType.QUOTE
         except Exception:
-            subtype = None
+            pass
         if subtype is not None:
-            ret_sub, _ = ctx.subscribe(symbols, [subtype], subscribe_push=False)
-            result["quote_subscribe_ok"] = _ret_ok(module, ret_sub)
+            response, _ = call("subscribe", symbols, [subtype], subscribe_push=False)
+            if isinstance(response, tuple) and len(response) == 2:
+                result["quote_subscribe_ok"] = _ret_ok(module, response[0])
+
         if result["quote_subscribe_ok"]:
-            started = monotonic()
-            ret, data = ctx.get_stock_quote(symbols)
-            quote_elapsed = monotonic() - started
-            result["quote_roundtrip_bucket"] = _bucket_ms(quote_elapsed)
-            if _ret_ok(module, ret):
-                quote_rows = _records(data)
-                covered = {str(row.get("code")) for row in quote_rows}
-                result["quote_symbol_count"] = sum(symbol in covered for symbol in symbols)
-                result["quote_ok"] = result["quote_symbol_count"] > 0
+            response, elapsed = call("get_stock_quote", symbols)
+            result["quote_roundtrip_bucket"] = _bucket_ms(elapsed)
+            if isinstance(response, tuple) and len(response) == 2:
+                ret, data = response
+                if _ret_ok(module, ret):
+                    quote_rows = _records(data)
+                    covered = {str(row.get("code")) for row in quote_rows}
+                    result["quote_symbol_count"] = sum(symbol in covered for symbol in symbols)
+                    result["quote_ok"] = result["quote_symbol_count"] > 0
 
         ages = []
         for row in quote_rows:
@@ -222,9 +234,6 @@ def probe_moomoo(symbols: list[str], *, host: str = "127.0.0.1", port: int = 111
         result["fresh_quote_count"] = sum(age <= 15 for age in ages)
         result["quote_age_bucket"] = _bucket_age(max(ages) if ages else None)
         result["jp_quote_entitled"] = result["quote_subscribe_ok"] and result["quote_ok"]
-        # Outside the market session, entitlement can be proven while the last
-        # quote is naturally old. Realtime readiness is asserted only while the
-        # provider itself says the market is open.
         result["realtime_ready"] = (
             result["jp_quote_entitled"]
             and result["market_open"]
@@ -237,16 +246,13 @@ def probe_moomoo(symbols: list[str], *, host: str = "127.0.0.1", port: int = 111
             result["status"] = "entitled_not_realtime_ready"
         elif result["opend_reachable"]:
             result["status"] = "jp_quote_unavailable"
-    except Exception:
-        # Provider/network exception text may contain local/account/provider
-        # details. Collapse it to a fixed status.
-        result["status"] = "probe_failed"
+        else:
+            result["status"] = "opend_unreachable"
     finally:
-        if ctx is not None:
-            try:
-                ctx.close()
-            except Exception:
-                pass
+        try:
+            ctx.close()
+        except Exception:
+            pass
     return result
 
 
