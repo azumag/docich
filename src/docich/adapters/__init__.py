@@ -72,6 +72,12 @@ def make_coordinator_adapter(g, spec: RuntimeSpec):
         from ..trading.markets.program import make_market_view_adapter
         return make_market_view_adapter(g, spec)
     game = load_game(g, spec.game)
+    # NetHack remains a normal CLI game for legacy obs/send.  Only the
+    # coordinator lifecycle is specialized so every switch/stop performs its
+    # normal in-game save before destroying the generation runtime.
+    if spec.game == "nethack" and game.adapter == "cli":
+        from .nethack import NethackCoordinatorAdapter
+        return NethackCoordinatorAdapter(g, game, spec)
     spec_name = _COORDINATOR_REGISTRY.get(game.adapter)
     if spec_name is None:
         raise AdapterError(
