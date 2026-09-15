@@ -127,6 +127,17 @@ function drawChart(chart, live) {
   g.fillText(hasLive ? `${stored.length}本 + LIVE` : `${stored.length}本`, PAD.l + plotW / 2, H - 8);
 }
 
+function signalText(signal, compact) {
+  if (!signal || !Array.isArray(signal.conditions)) return "";
+  const names = { return_bps: "勢い", zscore: "z", pnl_bps: "損益", hold_minutes: "保有" };
+  return signal.conditions.slice(0, 2).map((c) => {
+    if (!c) return "";
+    const feature = compact ? (names[c.feature] || c.feature) : c.feature;
+    const look = !compact && Number.isFinite(Number(c.lookback)) ? ` ${c.lookback}本` : "";
+    return `${feature} ${c.observed}${c.unit || ""} ${c.op || ""} ${c.threshold}${c.unit || ""}${look}`;
+  }).filter(Boolean).join(compact ? " " : " / ");
+}
+
 function renderPaperFill(data) {
   const fills = data && Array.isArray(data.fills) ? data.fills : [];
   const f = fills[0];
@@ -138,7 +149,54 @@ function renderPaperFill(data) {
   const rp = maybeNumber(f.realized_pnl_jpy);
   const pnl = String(f.side).toLowerCase() === "sell" && rp !== null
     ? ` 損益${rp > 0 ? "+" : ""}${fmtMoney(rp)}` : "";
-  $("paperfill").textContent = `${f.symbol} ${side} ${f.amount}@${f.price}${pnl}`;
+  const reason = signalText(f.signal_context, true);
+  $("paperfill").textContent =
+    `${f.symbol} ${side} ${f.amount}@${f.price}${pnl}` + (reason ? ` 根拠:${reason}` : "");
+  $("paperfill").title = reason ? `発注根拠: ${signalText(f.signal_context)}` : "";
+}
+
+const REASON_LABELS = {
+  momentum_breakout: "モメンタム",
+  mean_reversion_discount: "逆張り",
+  take_profit: "利確",
+  stop_loss: "損切",
+  max_hold: "時間切れ",
+};
+
+function reasonLabel(code) {
+  return REASON_LABELS[String(code)] || String(code || "");
+}
+
+function renderPaperFills(data) {
+  const fills = data && Array.isArray(data.fills) ? data.fills : [];
+  $("paperfills").innerHTML = fills.length
+    ? fills.slice(0, 3).map((f) => {
+        const side = String(f.side).toLowerCase();
+        const sideLabel = side === "buy" ? "買" : "売";
+        const klass = side === "buy" ? "pos" : "neg";
+        const rp = maybeNumber(f.realized_pnl_jpy);
+        const meta = rp === null ? "" : `${rp > 0 ? "+" : ""}${fmtMoney(rp)}`;
+        return `<div class="row" title="${esc(signalText(f.signal_context))}">` +
+          `<span>${esc(jst(f.filled_at))}</span><span class="${klass}">${sideLabel}</span>` +
+          `<span class="main">${esc(f.symbol)} ${esc(f.amount)}@${esc(fmtNum(f.price))}</span>` +
+          `<span class="meta ${pnlClass(rp)}">${esc(meta)}</span></div>`;
+      }).join("")
+    : `<div class="muted">約定なし</div>`;
+}
+
+function renderOrders(data) {
+  const orders = data && Array.isArray(data.orders) ? data.orders : [];
+  $("orders").innerHTML = orders.length
+    ? orders.slice(0, 4).map((o) => {
+        const side = String(o.side).toLowerCase();
+        const sideLabel = side === "buy" ? "買" : "売";
+        const klass = side === "buy" ? "pos" : "neg";
+        return `<div class="row" title="${esc(o.reason_code)}"><span>${esc(jst(o.created_at))}</span>` +
+          `<span class="${klass}">${sideLabel}</span>` +
+          `<span class="main">${esc(o.symbol)} ${esc(o.amount)}@${esc(fmtNum(o.price))}</span>` +
+          `<span class="meta">${esc(reasonLabel(o.reason_code))}</span></div>`;
+      }).join("")
+    : `<div class="muted">発注なし</div>`;
 }
 
 function render(data) {
@@ -193,6 +251,8 @@ function render(data) {
     : `<div class="muted">なし（未保有は正常）</div>`;
 
   renderPaperFill(data);
+  renderPaperFills(data);
+  renderOrders(data);
   $("disclaimer").textContent = data.disclaimer || "";
   drawChart(ch, render.liveData);
 }

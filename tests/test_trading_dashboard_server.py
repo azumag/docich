@@ -190,3 +190,64 @@ def test_live_sampler_keeps_last_frame_when_public_refresh_temporarily_fails(tmp
 def test_serve_rejects_non_loopback_bind(tmp_path):
     with pytest.raises(ValueError, match="loopback"):
         dashboard_server.serve(trading_dir=tmp_path, host="0.0.0.0", port=8799)
+
+
+class FakeTimeframeSampler:
+    def __init__(self):
+        self.calls = 0
+
+    def snapshot(self, *, now=None):
+        self.calls += 1
+        return {
+            "schema_version": 1,
+            "available": True,
+            "symbol": "BTC/JPY",
+            "fetched_at": float(now or 0),
+            "timeframes": [
+                {
+                    "timeframe": "1m",
+                    "label": "1分足",
+                    "available": True,
+                    "bars": [{"t": 100.0, "o": 1, "h": 2, "l": 0.5, "c": 1.5, "v": 1}],
+                    "trend": "上昇",
+                    "range_change_pct": 1.0,
+                }
+            ],
+        }
+
+
+def test_server_serves_multi_timeframe_endpoint_and_asset(tmp_path):
+    trading_dir = tmp_path / "trading"
+    trading_dir.mkdir(parents=True)
+    timeframe_sampler = FakeTimeframeSampler()
+    handler = dashboard_server.make_handler(trading_dir, timeframe_sampler=timeframe_sampler)
+    httpd = dashboard_server._ReusableServer(("127.0.0.1", 0), handler)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        payload = json.loads(
+            urllib.request.urlopen(base + "/api/trading/timeframes", timeout=5).read()
+        )
+        assert payload["available"] is True
+        assert payload["timeframes"][0]["timeframe"] == "1m"
+        assert timeframe_sampler.calls == 1
+
+        js = urllib.request.urlopen(base + "/dashboard_timeframes.js", timeout=5).read().decode("utf-8")
+        assert "/api/trading/timeframes" in js
+        assert "Bollinger" in js or "bb_upper" in js
+
+        html = urllib.request.urlopen(base + "/", timeout=5).read().decode("utf-8")
+        assert "dashboard_timeframes.js" in html
+        assert 'id="tfstrip"' in html
+
+        req = urllib.request.Request(base + "/api/trading/timeframes", data=b"x", method="POST")
+        try:
+            urllib.request.urlopen(req, timeout=5)
+            raise AssertionError("POST must be refused")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 405
+    finally:
+        httpd.shutdown()
+        httpd.server_close()

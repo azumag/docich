@@ -33,7 +33,7 @@ jobs:
           tests/test_trading_events.py tests/test_trading_worker.py tests/test_trading_worker_lifecycle.py
           tests/test_trading_presentation.py tests/test_trading_notifications.py
           tests/test_trading_dashboard_snapshot.py tests/test_trading_dashboard_server.py
-          tests/test_trading_dashboard_activity_failover.py
+          tests/test_trading_dashboard_activity_failover.py tests/test_trading_timeframe_chart.py
           tests/test_program_view.py tests/test_program_view_browser_path.py
           tests/test_trading_strategy_store.py tests/test_trading_strategy_lab.py tests/test_trading_strategy_metrics.py tests/test_trading_corner_script.py
           tests/test_trading_corner_research.py tests/test_trading_paper_improve.py tests/test_paper_improve_retry.py

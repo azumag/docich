@@ -26,6 +26,7 @@ from .risk import CapitalPolicy, allocate_opportunities
 from .status import build_public_status, write_public_status
 from .settlement import settlement_observation_id, simulate_multileg_settlement
 from .strategies import scan_exit_opportunities, scan_opportunities, select_diversified_opportunities
+from .strategy_runtime import pop_reason_context
 from .strategy_store import load_strategy_policy
 
 D = Decimal
@@ -432,8 +433,12 @@ def run_worker_cycle(
         broker = PaperBroker(ledger)
         new_fill_count = 0
         for decision in allocation.decisions:
-            fill = broker.fill(decision, timestamp=now)
-            if append_public_event(event_path, build_fill_event(fill)):
+            # The per-opportunity reason context is the allowlisted "why" of the
+            # order (observed signal vs threshold). Pop it once and persist it
+            # with the fill as well as the public event.
+            signal_context = pop_reason_context(decision.opportunity_id)
+            fill = broker.fill(decision, timestamp=now, signal_context=signal_context)
+            if append_public_event(event_path, build_fill_event(fill, reason_context=signal_context)):
                 new_fill_count += 1
 
         errors: list[str] = []

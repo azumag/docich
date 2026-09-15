@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 import math
-from typing import Any
+from typing import Any, Mapping
 
 
 class TradingValidationError(ValueError):
@@ -151,6 +151,10 @@ class PaperFill:
     reference_notional: Decimal
     reason_code: str
     filled_at: float
+    # Allowlisted decision context that explains *why* the order was placed
+    # (observed signal value vs threshold, lookback, exit pnl/hold). Optional
+    # because legacy rows and non-strategy fills predate the column.
+    signal_context: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True)

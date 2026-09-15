@@ -54,7 +54,8 @@ LOCK_FILE = "locks/soren91-corner.lock"
 TICK_GUARD_FILE = "locks/soren91-corner-tick.lock"
 
 # 視聴者向け開始告知。内部語 (Macレンダラー/CDP/SRT等) は含めない。
-ANNOUNCE_TEXT = "ソ連ゲーム91、メリケンAIのコーナーです。"
+ANNOUNCE_TEXT = "ソ連ゲーム91、メリケンAIのコーナーです。今日も91人を相手に、資本主義の力を見せてやりましょう。しばらくお付き合いください。"
+END_ANNOUNCE_TEXT = "ソ連ゲーム91コーナーはここまでです。最後までお付き合いいただき、ありがとうございました。また次のコーナーでお会いしましょう。"
 
 # Chat delivery scope: sink-side duplicate suppression keys on (text, source),
 # so the scheduled corner posts under its own source and never replays or
@@ -266,6 +267,33 @@ class Soren91CornerManager(RetroCornerManager):
             state["voice_error"] = _safe_detail(exc)
         state["announced"] = True
         state.pop("announce_error", None)
+
+    def _announce_end_locked(self, state: dict[str, object]) -> None:
+        """視聴者向け終了告知 (固定文面)。lock 保持中に呼ぶ。
+
+        投稿/読み上げ失敗はコーナー自体を失敗させない。結果は state に記録する。
+        """
+        if state.get("end_announced"):
+            return
+        try:
+            self._chat(END_ANNOUNCE_TEXT)
+        except Exception as exc:
+            state["end_announce_error"] = _safe_detail(exc)
+        try:
+            self._voice(END_ANNOUNCE_TEXT)
+        except Exception as exc:
+            state["end_voice_error"] = _safe_detail(exc)
+        state["end_announced"] = True
+
+    def _finish_locked(self, state: dict[str, object], completed_at: dt.datetime) -> CornerResult:
+        result = super()._finish_locked(state, completed_at)
+        # 終了のひとことを Meriken の声で (best-effort)。state は書き直して残す。
+        self._announce_end_locked(state)
+        try:
+            self._write_state(state)
+        except Exception:
+            pass
+        return result
 
     def _transition_to(self, current: str | None, target: str) -> None:
         try:
