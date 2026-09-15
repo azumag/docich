@@ -90,7 +90,6 @@ class Candidate:
             raise ValueError("candidate spread too wide")
         if decimal(self.volume_accel) < 0 or decimal(self.volatility_bps) < 0:
             raise ValueError("invalid candidate metrics")
-        # Bound untrusted provider data before it participates in ranking.
         if abs(decimal(self.momentum_bps)) > D("5000") or decimal(self.volume_accel) > D("100"):
             raise ValueError("candidate metric out of bounds")
         if decimal(self.volatility_bps) > D("5000"):
@@ -102,13 +101,13 @@ def active_selector_policy(root: Path) -> SelectorPolicy:
     if not path.exists():
         return SelectorPolicy()
     raw = json.loads(path.read_text())
-    if set(raw) < {"policy"}:
+    if not isinstance(raw, dict) or set(raw) != {"policy"} or not isinstance(raw.get("policy"), dict):
         raise ValueError("invalid selector policy file")
     return SelectorPolicy(**raw["policy"])
 
 
 def candidate_score(candidate: Candidate, policy: SelectorPolicy) -> Decimal:
-    candidate.validate(candidate.ts, policy)  # value-domain check independent of wall clock
+    candidate.validate(candidate.ts, policy)
     turnover_ratio = min(D("10"), decimal(candidate.turnover_jpy) / decimal(policy.min_turnover_jpy))
     volume_bonus = max(D(0), decimal(candidate.volume_accel) - 1) * 100
     return (
@@ -127,8 +126,9 @@ def read_file_candidates(config: dict, root: Path, now: float, policy: SelectorP
     raw = json.loads(path.read_text())
     if raw.get("market") != "stocks" or raw.get("realtime") is not True:
         raise ValueError("wrong market or delayed/synthetic candidate input")
-    if abs(stamp(now) - stamp(raw.get("as_of"))) > policy.candidate_age_s:
-        raise ValueError("candidate snapshot stale")
+    age = stamp(now) - stamp(raw.get("as_of"))
+    if not 0 <= age <= policy.candidate_age_s:
+        raise ValueError("candidate snapshot stale/future")
     rows = raw.get("candidates")
     if not isinstance(rows, list) or len(rows) > 5000:
         raise ValueError("invalid candidate list")
@@ -170,6 +170,8 @@ def select_universe(candidates: list[Candidate], policy: SelectorPolicy, *, now:
     current = [symbol for symbol in current_symbols if symbol in scores and symbol not in held]
     focused = current[:policy.focused_universe_count]
     changed = False
+    if not isinstance(last_replaced_at, (int, float)) or last_replaced_at < 0 or last_replaced_at > now:
+        last_replaced_at = 0
 
     if now - last_replaced_at >= policy.replace_cooldown_s:
         for challenger in ranked_symbols:
@@ -187,8 +189,6 @@ def select_universe(candidates: list[Candidate], policy: SelectorPolicy, *, now:
                 changed = True
         focused.sort(key=lambda symbol: (-scores.get(symbol, D("-Infinity")), symbol))
 
-    # Held symbols are pinned even when they leave the scanner ranking, so exit
-    # management never disappears merely because selection conditions changed.
     symbols = list(dict.fromkeys(held + focused[:policy.focused_universe_count]))
     replaced_at = now if changed else last_replaced_at
     return {
