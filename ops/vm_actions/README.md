@@ -43,6 +43,29 @@ main の本番反映、branch/commit の preview 反映、状態確認、owner c
 - out-of-band な HEAD/baseline 移動は hourly `vm-storage-monitor` の `[VM deploy] production baseline alert` が検知する。`git_clean(root)==false` は `[VM deploy] tracked drift alert` が検知する。
 - 監査は `/home/ubuntu/docich` の `git reflog` を read-only で確認する。
 
+### turn-based 戦略を人手の PR で上書き反映する手順
+
+turn-based の `strategy.py` / `strategy_helpers/` / `best_score.txt` などは改善ループ（`eloop_improve.sh` → `strategy/persist.sh`）が**実機で書き**、管理 clone `/home/ubuntu/soren-persist` 経由で **`soviet_now main` に push** します。`/home/ubuntu/soren` は投影先で、投影は live が **旧 gitlink と一致**するときだけ新内容で上書きし、**第三状態では fail-closed（`projection drift`）**で拒否します。したがって人手の上書きは次の順で行います。
+
+前提（これが崩れると fail-closed になる）: 上書きを反映する時点で **live == docich の現 gitlink（= 投影の old）** であること。
+
+1. **改善を止めて live を固定する**
+   - webui「予想・改善ワーカーの停止 / 開始」で `improve_daemon` を停止（`/home/ubuntu/soren/tmp/state/improve_daemon.paused` マーカー）。`soren_loop.sh` はこのマーカー中は改善を起動しません。
+2. **gitlink を live に同期させる（必要なときだけ）**
+   - docich の gitlink が `soviet_now main` より遅れている場合は、まず **現 main へ bump する PR** を作って deploy（live == new の採用で `status=configured`）。これで docich の gitlink == live になります。
+   - 同期確認: `/home/ubuntu/soren-persist` で `git fetch origin main && diff <(git show origin/main:strategy.py) /home/ubuntu/soren/strategy.py` が空。
+3. **上書き PR を作る**
+   - `soviet_now` の **現在の main から** branch を切り、対象ファイルを編集して PR。main が動いていれば rebase し、コンフリクトは必ず明示的に解消する（無視してマージしない）。
+4. **反映する**
+   - 上書き PR を `soviet_now main` へ merge → docich の `games/soviet_now` gitlink bump PR → merge → `VM operations` deploy。投影は live==old を確認して新内容で live を上書きします。
+5. **改善を再開する**
+   - マーカーを削除（webui start）。以降の改善は上書き後の戦略を起点にします。
+
+注意:
+- 改善を止めずに bump すると live が既に先へ進んでおり、`projection drift` で deploy が**拒否**されます（安全側の失敗で live は壊れません）。その場合は無理に進めず、1〜2 に戻って同期してから行います。
+- `ops/vm_actions/stage_repair.py`（bounded repair）の `ALLOWED_FILES` は overlay/audio 限定で **`strategy.py` は対象外**です。strategy を repair で扱うには reviewed control plane の変更（`ALLOWED_FILES` 追加＋`repair_policies` 登録＋root での再install）が必要です。
+- 手動 `git reset` / `git fetch origin` で live を書き換えない（out-of-band 操作は禁止。#412 / 上記「ad-hoc reset 禁止」）。
+
 ## One-time setup
 
 1. docich の main protection/ruleset を設定します。
