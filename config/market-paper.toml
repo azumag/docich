@@ -9,7 +9,7 @@ calendar_file = "jpx-calendar.json" # temporary fail-closed gate until provider 
 quote_file = "market-stocks-quotes.json"
 
 [stocks.selector]
-enabled = true
+enabled = false # enable only after a realtime VM provider is entitlement/latency tested
 feed = "file" # deterministic fixture first; Moomoo/IBKR adapters require entitlement proof
 candidate_file = "market-stocks-candidates.json"
 
