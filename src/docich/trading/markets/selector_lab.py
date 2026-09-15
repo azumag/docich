@@ -20,9 +20,11 @@ from .selector import Candidate, SelectorPolicy, active_selector_policy, select_
 
 D = Decimal
 
+# Only fields that affect the current Candidate observations are mutable today.
+# momentum_window_s / volume_window_s remain in SelectorPolicy for a future live
+# provider that can generate independent windowed measurements, but changing
+# them now would be a no-op and would make the A/B comparison dishonest.
 MUTABLE_FIELDS = {
-    "momentum_window_s",
-    "volume_window_s",
     "momentum_weight",
     "volume_accel_weight",
     "turnover_weight",
@@ -64,8 +66,6 @@ def _bounded_candidate(base: SelectorPolicy, changes: dict) -> SelectorPolicy:
         return abs(decimal(getattr(candidate, name)) - decimal(getattr(base, name)))
 
     for name, limit in {
-        "momentum_window_s": 60,
-        "volume_window_s": 60,
         "momentum_weight": "0.50",
         "volume_accel_weight": "0.50",
         "turnover_weight": "0.50",
@@ -135,11 +135,11 @@ def propose_selector(root: Path, g, *, agents: str, report_id: str, report: dict
         "以下は観測済み事実で、未来価格は含まない。返答はJSONのみ。"
         "changesには許可された項目のうち変更するものだけを書く。"
         "候補は今後の未観測スナップショットでbaselineと並列評価され、即時採用されない。"
-        "資金、売買戦略、feed、URL、credential、candidate_age_s、exit_buffer_s、live権限は変更禁止。"
-        "許可項目: momentum_window_s,volume_window_s,momentum_weight,volume_accel_weight,"
-        "turnover_weight,volatility_weight,spread_penalty,min_turnover_jpy,"
-        "max_spread_bps_for_selection,candidate_count,focused_universe_count,replace_margin,"
-        "replace_cooldown_s,warmup_s。reasonは240字以内。"
+        "資金、売買戦略、feed、URL、credential、momentum_window_s、volume_window_s、"
+        "candidate_age_s、exit_buffer_s、live権限は変更禁止。"
+        "許可項目: momentum_weight,volume_accel_weight,turnover_weight,volatility_weight,"
+        "spread_penalty,min_turnover_jpy,max_spread_bps_for_selection,candidate_count,"
+        "focused_universe_count,replace_margin,replace_cooldown_s,warmup_s。reasonは240字以内。"
         "形式 {\"changes\":{...},\"reason\":\"...\"}\n"
         + json.dumps(facts, ensure_ascii=False)
     )
