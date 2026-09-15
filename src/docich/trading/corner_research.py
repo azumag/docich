@@ -28,7 +28,7 @@ from typing import Callable, Mapping
 RESEARCH_FILENAME = "paper_corner_research.json"
 HISTORY_FILENAME = "paper_corner_research_history.json"
 USER_AGENT = "docich-paper-corner-research/1.0"
-MAX_NEWS_ITEMS = 6
+MAX_NEWS_ITEMS = 14
 MAX_ASSET_NEWS = 3
 MAX_SUMMARY_CHARS = 600
 MAX_BACKGROUND_CHARS = 1800
@@ -176,7 +176,9 @@ def _merge_news(feeds: list[list[dict[str, object]]], seen: set[str], limit: int
 def _fetch_crypto_news(fetcher: Callable[[str], str], seen: set[str]) -> list[dict[str, object]]:
     queries = (
         _rss_url("暗号資産 OR 仮想通貨 OR ビットコイン OR イーサリアム when:2d", lang="ja", gl="JP", ceid="JP:ja"),
+        _rss_url("暗号資産 規制 OR 税制 OR 取引所 when:2d", lang="ja", gl="JP", ceid="JP:ja"),
         _rss_url("cryptocurrency OR bitcoin OR ethereum when:2d", lang="en-US", gl="US", ceid="US:en"),
+        _rss_url("crypto regulation OR stablecoin OR ETF when:2d", lang="en-US", gl="US", ceid="US:en"),
     )
     feeds: list[list[dict[str, object]]] = []
     for url in queries:

@@ -918,3 +918,17 @@ class TestSoren91TwitchSync(Soren91AdapterTestBase):
         with mock.patch.object(mod.subprocess, "run", lambda *a, **k: calls.append(a)):
             adapter._sync_twitch("soren91")
         self.assertEqual(calls, [])
+
+    def test_cleanup_restores_the_main_title_even_on_a_fresh_adapter(self):
+        # The coordinator and the manual cross-process stop clean up through a
+        # different adapter instance than the one that started, so the restore
+        # must not depend on the in-memory `_twitch_synced` flag. Production
+        # regression: the title stayed [Soren91] after every corner.
+        adapter = self._adapter()
+        self.assertFalse(adapter._twitch_synced)
+        calls = []
+        with mock.patch.object(adapter, "_sync_twitch", side_effect=lambda g: calls.append(g)):
+            with self._bound_listener(False), self._http():
+                self.http_plan = [(202, {"ok": True, "stopping": True})]
+                adapter.cleanup_runtime(time.monotonic() + 30, None)
+        self.assertEqual(calls, ["sorengame"])

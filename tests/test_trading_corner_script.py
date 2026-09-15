@@ -16,6 +16,7 @@ from docich.trading.corner_script import (  # noqa: E402
     build_facts,
     build_prompt,
     generate_corner_script,
+    merge_script_segments,
     parse_script,
     render_fallback,
 )
@@ -140,7 +141,7 @@ def test_build_facts_includes_latest_improvement(tmp_path):
     assert "improvement" in facts
 
 
-def test_parse_script_accepts_fenced_and_rejects_bad():
+def test_parse_script_accepts_fenced_and_partial_output():
     good = '```json\n{"corner":"a","strategy":"b","result":"c","improve":"d"}\n```'
     assert parse_script(good) == {
         "corner": "a", "strategy": "b", "result": "c", "improve": "d"
@@ -154,12 +155,25 @@ def test_parse_script_accepts_fenced_and_rejects_bad():
         '{"corner":"' + "あ" * (MAX_SEGMENT_CHARS + 50) + '","strategy":"b","result":"c","improve":"d"}'
     )
     assert len(truncated["corner"]) == MAX_SEGMENT_CHARS
-    with pytest.raises(CornerScriptError):
-        parse_script('{"corner":"a"}')
-    with pytest.raises(CornerScriptError):
-        parse_script('{"corner":"a","strategy":"","result":"c","improve":"d"}')
+    # Partial output keeps the usable segments instead of failing the script.
+    assert parse_script('{"corner":"a"}') == {"corner": "a"}
+    assert parse_script('{"corner":"a","strategy":"","result":"c"}') == {
+        "corner": "a", "result": "c"
+    }
     with pytest.raises(CornerScriptError):
         parse_script("not json")
+    with pytest.raises(CornerScriptError):
+        parse_script('{"news_analysis":"x","improvement_hints":[]}')
+
+
+def test_merge_script_segments_fills_missing_from_fallback():
+    fallback = {key: f"F:{key}" for key in SEGMENT_KEYS}
+    merged = merge_script_segments(fallback, {"chart": "A:chart", "strategy": "A:strategy"})
+    assert set(merged) == set(SEGMENT_KEYS)
+    assert merged["chart"] == "A:chart"
+    assert merged["strategy"] == "A:strategy"
+    assert merged["corner"] == "F:corner"
+    assert merged["improve"] == "F:improve"
 
 
 def test_generate_falls_back_when_ai_disabled(tmp_path, monkeypatch):
@@ -178,4 +192,207 @@ def test_generate_dry_run_never_calls_ai(tmp_path):
     )
     assert result["source"] == "fallback"
     assert result["reason"] == "dry-run"
+    assert set(result["segments"]) == set(SEGMENT_KEYS)
+
+
+_TIMEFRAME_FACTS = {
+    "symbol": "btc_jpy",
+    "generated_at": 1010.0,
+    "timeframes": [
+        {
+            "timeframe": "1d",
+            "label": "日足",
+            "bars": 22,
+            "trend": "上昇",
+            "range_change_pct": 4.2,
+            "momentum_pct": 1.1,
+            "bb_upper": "110",
+            "bb_lower": "90",
+            "bb_position": 0.85,
+            "bb_phrase": "バンド上限寄り",
+            "high": "112",
+            "low": "88",
+            "last_close": "109",
+            "stale": False,
+        },
+        {
+            "timeframe": "1m",
+            "label": "1分足",
+            "bars": 60,
+            "trend": "下降",
+            "range_change_pct": -0.4,
+            "momentum_pct": -0.2,
+            "bb_upper": "110",
+            "bb_lower": "108",
+            "bb_position": 0.1,
+            "bb_phrase": "バンド下限寄り",
+            "high": "111",
+            "low": "107",
+            "last_close": "108.2",
+            "stale": False,
+        },
+    ],
+    "fill_timeframes": [
+        {
+            "symbol": "eth_jpy",
+            "side": "sell",
+            "price": "200",
+            "filled_at": 990.0,
+            "timeframes": [
+                {
+                    "timeframe": "1h",
+                    "label": "1時間足",
+                    "bars": 48,
+                    "trend": "上昇",
+                    "range_change_pct": 1.5,
+                    "momentum_pct": 0.6,
+                    "bb_upper": "210",
+                    "bb_lower": "190",
+                    "bb_position": 0.7,
+                    "bb_phrase": "バンド上限寄り",
+                    "stale": False,
+                }
+            ],
+        }
+    ],
+}
+
+
+def test_build_facts_and_prompt_include_multi_timeframe_walk(tmp_path):
+    _write_status(tmp_path)
+    facts = build_facts(tmp_path, now=1010.0, timeframes=_TIMEFRAME_FACTS)
+    assert facts["timeframes"][0]["label"] == "日足"
+    assert facts["fill_timeframes"][0]["symbol"] == "eth_jpy"
+    prompt = build_prompt(facts)
+    assert "時間足チャートの解説" in prompt
+    assert "次の11キー" in prompt
+    assert "- chart:" in prompt
+    assert "- fills:" in prompt
+    assert "- review:" in prompt
+    assert "ボリンジャーバンド" in prompt
+
+
+def test_build_facts_without_timeframes_stays_empty(tmp_path):
+    _write_status(tmp_path)
+    facts = build_facts(tmp_path, now=1010.0)
+    assert facts["timeframes"] == []
+    assert facts["fill_timeframes"] == []
+
+
+def test_render_fallback_chart_is_grounded_or_honest(tmp_path):
+    _write_status(tmp_path)
+    grounded = render_fallback(build_facts(tmp_path, now=1010.0, timeframes=_TIMEFRAME_FACTS))
+    assert "日足" in grounded["chart"]
+    assert "1分足" in grounded["chart"]
+    assert "eth_jpy" in grounded["chart"]
+    honest = render_fallback(build_facts(tmp_path, now=1010.0))
+    assert "取得" in honest["chart"]
+    assert set(grounded) == set(SEGMENT_KEYS)
+
+
+def test_parse_script_treats_chart_segment_as_optional():
+    four = '{"corner":"a","strategy":"b","result":"c","improve":"d"}'
+    parsed = parse_script(four)
+    assert set(parsed) == {"corner", "strategy", "result", "improve"}
+    five = ('{"corner":"a","strategy":"b","result":"c","improve":"d",'
+            '"chart":"1分足は上昇です"}')
+    assert parse_script(five)["chart"] == "1分足は上昇です"
+    blank = ('{"corner":"a","strategy":"b","result":"c","improve":"d","chart":"  "}')
+    assert "chart" not in parse_script(blank)
+
+
+def test_render_fallback_new_segments_are_grounded():
+    facts = {
+        "policy": {},
+        "capital_jpy": "10000",
+        "deployed_jpy": "0",
+        "position_count": 1,
+        "recent_fills": [
+            {
+                "symbol": "btc_jpy",
+                "side": "buy",
+                "amount": "0.001",
+                "price": "100",
+                "reason_code": "momentum_breakout",
+                "signal": {
+                    "kind": "builtin_entry",
+                    "conditions": [
+                        {"feature": "return_bps", "observed": "320", "threshold": "150",
+                         "op": ">=", "lookback": 6}
+                    ],
+                },
+            }
+        ],
+        "round_trips": [
+            {
+                "symbol": "btc_jpy",
+                "entry_reason": "momentum_breakout",
+                "exit_reason": "take_profit",
+                "realized_jpy": "12",
+                "hold_sec": 600,
+                "entry_signal": {"conditions": [
+                    {"feature": "return_bps", "observed": "320", "threshold": "150",
+                     "op": ">=", "lookback": 6}
+                ]},
+                "exit_signal": {"conditions": [
+                    {"feature": "pnl_bps", "observed": "120", "threshold": "100", "op": ">="}
+                ]},
+            }
+        ],
+        "research": {"news_items": [{"title": "A", "source": "X"}, {"title": "B", "source": "Y"}]},
+    }
+    fallback = render_fallback(facts)
+    assert set(fallback) == set(SEGMENT_KEYS)
+    # The fill explanation names the indicator and the threshold, not the raw code.
+    assert "return_bps" in fallback["fills"] and "150" in fallback["fills"]
+    # News covers every available headline, not just one.
+    assert "A" in fallback["news"] and "B" in fallback["news"]
+    # The review ties the round trip to its entry/exit grounds.
+    assert "btc_jpy" in fallback["review"] and "12" in fallback["review"]
+    assert "正しかった" in fallback["review"] or "利益" in fallback["review"]
+
+
+def test_render_fallback_without_news_is_honest():
+    fallback = render_fallback({"policy": {}, "research": {}})
+    assert "取得" in fallback["news"]
+    assert "取得" in fallback["chart"]
+    assert set(fallback) == set(SEGMENT_KEYS)
+
+
+def test_generate_uses_injected_timeframe_facts_without_network(tmp_path):
+    _write_status(tmp_path)
+    result = generate_corner_script(
+        None, trading_dir=tmp_path, agents="", now=1010.0, timeframe_facts=_TIMEFRAME_FACTS
+    )
+    assert result["source"] == "fallback"
+    assert "日足" in result["segments"]["chart"]
+
+
+def test_generate_merges_partial_ai_with_fallback(tmp_path, monkeypatch):
+    from docich.trading import corner_script
+
+    _write_status(tmp_path)
+    monkeypatch.setenv("DOCICH_ALLOW_REAL_AI", "1")
+    monkeypatch.setattr(corner_script, "prepare_research_context", lambda *a, **k: {})
+    monkeypatch.setattr(
+        corner_script,
+        "generate_text",
+        lambda *a, **k: '{"corner":"AI corner","chart":"AI chart"}',
+    )
+    result = generate_corner_script(
+        object(),
+        trading_dir=tmp_path,
+        agents="opencode:x",
+        now=1010.0,
+        timeframe_facts=_TIMEFRAME_FACTS,
+    )
+    assert result["source"] == "ai-partial"
+    assert sorted(result["fallback_segments"]) == [
+        "fills", "improve", "news", "result", "review", "strategy"
+    ]
+    assert result["segments"]["corner"] == "AI corner"
+    assert result["segments"]["chart"] == "AI chart"
+    # The missing segments keep the grounded deterministic text.
+    assert result["segments"]["strategy"]
+    assert result["segments"]["review"]
     assert set(result["segments"]) == set(SEGMENT_KEYS)

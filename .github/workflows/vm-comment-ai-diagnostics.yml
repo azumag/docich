@@ -1,0 +1,90 @@
+name: VM comment AI diagnostics
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/vm-comment-ai-diagnostics.yml'
+      - 'ops/vm_actions/summarize_comment_winners.py'
+      - 'ops/vm_actions/tests/test_summarize_comment_winners.py'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/vm-comment-ai-diagnostics.yml'
+      - 'ops/vm_actions/summarize_comment_winners.py'
+      - 'ops/vm_actions/tests/test_summarize_comment_winners.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vm-comment-ai-diagnostics-${{ github.repository }}-${{ github.event_name }}
+  cancel-in-progress: false
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          submodules: false
+      - name: Test fixed-category comment winner summary
+        run: python3 -m unittest ops.vm_actions.tests.test_summarize_comment_winners
+
+  production:
+    if: >-
+      ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'push') &&
+          github.ref == 'refs/heads/main' && github.ref_protected == true &&
+          github.actor_id == 9018513 && github.triggering_actor == 'azumag' }}
+    environment: vm-operations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout trusted control plane
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: main
+          persist-credentials: false
+          submodules: false
+
+      - name: Configure pinned SSH client
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          VM_SSH_PORT: ${{ secrets.VM_SSH_PORT }}
+          VM_SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          VM_SSH_KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$VM_SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]
+          [[ "$VM_SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          port="${VM_SSH_PORT:-22}"
+          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+          install -m 700 -d "$RUNNER_TEMP/vm-ssh"
+          printf '%s\n' "$VM_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/vm-ssh/key"
+          printf '%s\n' "$VM_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/vm-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/vm-ssh/key" "$RUNNER_TEMP/vm-ssh/known_hosts"
+          printf 'port=%s\n' "$port" >> "$GITHUB_ENV"
+
+      - name: Read owner-only sanitized diagnostics
+        id: comment_ai
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          diagnostics_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "diagnostics docich production $sha")"
+          printf '%s\n' "$diagnostics_json" > "$RUNNER_TEMP/runtime-diagnostics.json"
+          python3 ops/vm_actions/summarize_comment_winners.py "$RUNNER_TEMP/runtime-diagnostics.json" >> "$GITHUB_OUTPUT"
+
+      - name: Report fixed-category routing only
+        env:
+          SUMMARY: ${{ steps.comment_ai.outputs.summary }}
+        run: |
+          set -euo pipefail
+          printf 'COMMENT AI routing: %s\n' "$SUMMARY"

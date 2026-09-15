@@ -183,3 +183,144 @@ def realized_pnl_for_fill(db_path: Path, fill_id: str) -> Decimal | None:
         if current_id == target:
             return pnl
     return None
+
+
+def _signal_context(value: object) -> dict[str, object] | None:
+    if value is None:
+        return None
+    try:
+        import json
+        data = json.loads(str(value))
+    except (TypeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def build_round_trips(db_path: Path, *, limit: int = 8) -> list[dict[str, object]]:
+    """Pair buys and sells into realized round trips for the corner review.
+
+    Average-cost matching, the same basis as realized P/L. Each record carries
+    the entry and exit reason/context so the narration can judge whether the
+    decision was right and hand the lesson to strategy improvement.
+    """
+    target = Path(db_path)
+    if not target.is_file() or limit <= 0:
+        return []
+    try:
+        uri = f"file:{target.resolve()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+    except (OSError, sqlite3.Error):
+        return []
+    try:
+        raw = conn.execute(
+            """SELECT symbol, side, amount, price, filled_at, reason_code, signal_context,
+                      strategy_id
+                 FROM paper_fills ORDER BY filled_at, rowid"""
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+    lots: dict[str, list[object]] = {}
+    trips: list[dict[str, object]] = []
+    for symbol, side, amount_text, price_text, filled_at, reason_code, context_text, strategy_id in raw:
+        amount = _dec(amount_text)
+        price = _dec(price_text)
+        try:
+            stamp = float(filled_at)
+        except (TypeError, ValueError):
+            continue
+        if amount is None or price is None or amount <= 0 or price <= 0:
+            continue
+        symbol = str(symbol)
+        state = lots.setdefault(symbol, [ZERO, ZERO, None, None, None])
+        held, cost = state[0], state[1]
+        if side == "buy":
+            if held <= 0:
+                # Opening buy: remember the entry context for the round trip.
+                state[2] = stamp
+                state[3] = str(reason_code)
+                state[4] = _signal_context(context_text)
+            lots[symbol][0] = held + amount
+            lots[symbol][1] = cost + amount * price
+            continue
+        if side != "sell" or held <= 0:
+            continue
+        sold = min(amount, held)
+        average = cost / held
+        realized = sold * (price - average)
+        trips.append(
+            {
+                "symbol": symbol,
+                "amount": str(sold),
+                "entry_price": str(average),
+                "exit_price": str(price),
+                "realized_jpy": str(realized),
+                "opened_at": state[2],
+                "closed_at": stamp,
+                "hold_sec": None if state[2] is None else max(0.0, stamp - float(state[2])),
+                "entry_reason": state[3],
+                "entry_signal": state[4],
+                "exit_reason": str(reason_code),
+                "exit_signal": _signal_context(context_text),
+                "strategy_id": str(strategy_id),
+            }
+        )
+        lots[symbol][0] = held - sold
+        lots[symbol][1] = max(ZERO, cost - average * sold)
+        if lots[symbol][0] <= 0:
+            lots[symbol][2] = None
+            lots[symbol][3] = None
+            lots[symbol][4] = None
+    trips.sort(key=lambda item: float(item.get("closed_at") or 0.0), reverse=True)
+    return trips[: int(limit)]
+
+
+def recent_orders(db_path: Path, *, limit: int = 6) -> list[dict[str, object]]:
+    """Read-only allowlist of the most recent paper orders.
+
+    PAPER executes immediately, so an order and its fill share an
+    opportunity, but they are distinct ledger records (decision vs execution).
+    """
+    target = Path(db_path)
+    if not target.is_file() or limit <= 0:
+        return []
+    try:
+        uri = f"file:{target.resolve()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+    except (OSError, sqlite3.Error):
+        return []
+    try:
+        raw = conn.execute(
+            """SELECT opportunity_id, strategy_id, symbol, side, quote, amount, price,
+                      quote_notional, reference_notional, reason_code, created_at
+                 FROM paper_orders ORDER BY created_at DESC, rowid DESC LIMIT ?""",
+            (int(limit),),
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+    orders: list[dict[str, object]] = []
+    for row in raw:
+        try:
+            created = float(row[10])
+        except (TypeError, ValueError):
+            continue
+        orders.append(
+            {
+                "opportunity_id": str(row[0]),
+                "strategy_id": str(row[1]),
+                "symbol": str(row[2]),
+                "side": str(row[3]),
+                "quote": str(row[4]),
+                "amount": str(row[5]),
+                "price": str(row[6]),
+                "quote_notional": str(row[7]),
+                "reference_notional": str(row[8]),
+                "reason_code": str(row[9]),
+                "created_at": created,
+            }
+        )
+    return orders

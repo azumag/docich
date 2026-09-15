@@ -5,7 +5,7 @@ from pathlib import Path, PurePosixPath
 
 SHA_RE=re.compile(r'[0-9a-f]{40}\Z')
 MAX_PAYLOAD=128*1024*1024
-OPS={'upload','deploy','bootstrap','status','exec','diagnostics'}
+OPS={'upload','deploy','bootstrap','status','exec','diagnostics','rebaseline'}
 TARGETS={'preview','production'}
 DIAGNOSTICS_FILES=('ops/vm_actions/collect_diagnostics.py','ops/vm_actions/runtime_registry.py','src/docich/runtime_backend.py')
 DIAGNOSTICS_TIMEOUT=60
@@ -26,6 +26,48 @@ OWNED_SUBMODULES={
 
 def die(msg='VM operation rejected'):
     print(msg,file=sys.stderr); raise SystemExit(1)
+
+
+# Fixed, secret-free reason codes for deploy/bootstrap/rebaseline rejections (#377).
+# Raw exception strings are never exposed to callers; unknown reasons collapse to
+# a single generic code.
+REASON_CODES={
+ 'bootstrap required':'bootstrap_required',
+ 'baseline already recorded':'baseline_already_recorded',
+ 'invalid current HEAD':'invalid_current_head',
+ 'invalid production root/mode':'invalid_production_root',
+ 'git production root required':'git_root_required',
+ 'tracked VM drift detected':'tracked_vm_drift',
+ 'deployment recovery required':'deployment_recovery_required',
+ 'bundle missing':'bundle_missing',
+ 'bundle does not advertise requested SHA':'bundle_sha_mismatch',
+ 'requested object is not commit':'bundle_object_invalid',
+ 'managed projection drift':'managed_projection_drift',
+ 'managed projection missing':'managed_projection_missing',
+ 'git deployment verification failed':'deployment_verification_failed',
+ 'submodule deployment verification failed':'submodule_verification_failed',
+ 'missing .gitmodules':'missing_gitmodules',
+ 'owned submodule URL mismatch':'owned_submodule_url_mismatch',
+ 'owned submodule is missing from .gitmodules':'owned_submodule_not_in_gitmodules',
+ 'owned submodule path is not a gitlink':'owned_submodule_not_gitlink',
+ 'incomplete pending repair; operator recovery required':'incomplete_pending_repair',
+ 'concurrent drift preserved; operator recovery required':'concurrent_drift',
+ 'concurrent projection drift':'concurrent_projection_drift',
+ 'rollback incomplete; unknown drift preserved; recovery required':'rollback_incomplete',
+ 'pending repair drift before state commit':'pending_repair_drift',
+ 'pending repair health failed':'pending_repair_health_failed',
+ 'pending repair overlap':'pending_repair_overlap',
+ 'pending repair policy mismatch':'pending_repair_policy_mismatch',
+ 'pending repair policy missing':'pending_repair_policy_missing',
+ 'pending repair projection missing':'pending_repair_projection_missing',
+ 'projected submodule is not at new gitlink':'projected_submodule_not_at_new_gitlink',
+ 'projected submodule must exist in both parent commits':'projected_submodule_missing_in_parent',
+ 'rebaseline production only':'rebaseline_production_only',
+ 'rebaseline requires an ancestor of the requested commit':'rebaseline_not_ancestor',
+}
+
+def reason_code(exc):
+    return REASON_CODES.get(str(exc),'operation_rejected')
 
 
 def config_ok(path:Path):
@@ -129,6 +171,7 @@ def parse_command(cfg):
     if op not in OPS or repo not in cfg['repos'] or target not in TARGETS or not SHA_RE.fullmatch(sha):
         raise ValueError('invalid forced command')
     if op=='bootstrap' and target!='production': raise ValueError('bootstrap production only')
+    if op=='rebaseline' and target!='production': raise ValueError('rebaseline production only')
     return op,repo,target,sha
 
 def state_root(cfg): return Path(cfg['state'])
@@ -689,6 +732,39 @@ def deploy_git(cfg,repo,sha):
 def deploy_prod(cfg,repo,sha):
     return deploy_git(cfg,repo,sha)
 
+def rebaseline_git(cfg,repo,sha):
+    """Adopt the current production HEAD as the deploy baseline.
+
+    This is the reviewed recovery for a baseline that advanced out-of-band
+    (#377). It refuses unless the checkout is tracked-clean and its HEAD is an
+    ancestor of the requested reviewed commit, so an unknown commit can never
+    become the baseline.
+    """
+    root=Path(cfg['repos'][repo]['production']); state_path=current_file(cfg,repo); state=read_json(state_path)
+    if state is None or state.get('mode')!='git': raise ValueError('bootstrap required')
+    if state.get('deployment_intent'): raise ValueError('deployment recovery required')
+    if state.get('pending_repairs'): raise ValueError('incomplete pending repair; operator recovery required')
+    _verify_managed_projections(cfg,repo,state)
+    if not git_clean(root): raise ValueError('tracked VM drift detected')
+    head=git(root,'rev-parse','HEAD')
+    if not SHA_RE.fullmatch(head): raise ValueError('invalid current HEAD')
+    bundle=bundle_file(cfg,repo,sha)
+    if not bundle.is_file(): raise ValueError('bundle missing')
+    subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','fetch','--no-recurse-submodules','--no-tags','--force',str(bundle),'HEAD'],
+                   stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=120)
+    if git(root,'cat-file','-t',sha)!='commit': raise ValueError('requested object is not commit')
+    ancestor=subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','merge-base','--is-ancestor',head,sha],
+                            stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    if ancestor.returncode!=0: raise ValueError('rebaseline requires an ancestor of the requested commit')
+    old=state.get('sha')
+    history=(state.get('rebaseline_history') or [])[-9:]
+    history.append({'from':old,'to':head,'target':sha})
+    write_json(state_path,{**state,'sha':head,'previous_head':old,'rebaseline_history':history})
+    return {'status':'rebased','sha':head,'from':old}
+
+def rebaseline(cfg,repo,sha):
+    return rebaseline_git(cfg,repo,sha)
+
 def sandbox_argv(work:Path):
     if os.environ.get('VMOPS_TESTING')=='1':
         return ['/bin/bash','--noprofile','--norc','-euo','pipefail','-s'], work
@@ -877,15 +953,19 @@ def main():
     if len(sys.argv)!=2: die()
     cfg=load_config(Path(sys.argv[1])); op,repo,target,sha=parse_command(cfg)
     lock=state_root(cfg)/'vm-operations.lock'; lock.parent.mkdir(parents=True,exist_ok=True)
-    with open(lock,'a+') as f:
-        fcntl.flock(f,fcntl.LOCK_EX)
-        if op=='upload': result=upload(cfg,repo,target,sha)
-        elif op=='bootstrap': result=bootstrap(cfg,repo,sha)
-        elif op=='deploy':
-            result=deploy_preview(cfg,repo,sha) if target=='preview' else deploy_prod(cfg,repo,sha)
-        elif op=='exec': result=execute(cfg,repo,target,sha)
-        elif op=='diagnostics': result=diagnostics_result(cfg,repo,target,sha)
-        else: result=status_result(cfg,repo,target,sha)
+    try:
+        with open(lock,'a+') as f:
+            fcntl.flock(f,fcntl.LOCK_EX)
+            if op=='upload': result=upload(cfg,repo,target,sha)
+            elif op=='bootstrap': result=bootstrap(cfg,repo,sha)
+            elif op=='deploy':
+                result=deploy_preview(cfg,repo,sha) if target=='preview' else deploy_prod(cfg,repo,sha)
+            elif op=='rebaseline': result=rebaseline(cfg,repo,sha)
+            elif op=='exec': result=execute(cfg,repo,target,sha)
+            elif op=='diagnostics': result=diagnostics_result(cfg,repo,target,sha)
+            else: result=status_result(cfg,repo,target,sha)
+    except ValueError as exc:
+        die('VM operation rejected: %s' % reason_code(exc))
     print(json.dumps(result,separators=(',',':')))
     if result.get('exit_code',0): raise SystemExit(result['exit_code'])
 
