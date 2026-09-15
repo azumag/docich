@@ -1,8 +1,8 @@
 """Durable NetHack expedition/run history for the long-running corner.
 
-The game save is still NetHack's own source of truth.  This module tracks the
+The game save is still NetHack's own source of truth. This module tracks the
 program-level identity of an adventure and imports terminal facts from
-NetHack's machine-readable xlogfile.  It deliberately never invents a death
+NetHack's machine-readable xlogfile. It deliberately never invents a death
 reason when xlog evidence is missing or ambiguous.
 """
 from __future__ import annotations
@@ -11,6 +11,7 @@ import datetime as dt
 import fcntl
 import json
 import os
+import re
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -24,6 +25,7 @@ SCHEMA_VERSION = 1
 ASCENDED_ACHIEVEMENT = 0x0100
 AMULET_ACHIEVEMENT = 0x0020
 TERMINAL_STATUSES = frozenset({"dead", "ascended", "ended", "ended_unknown"})
+_PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,31}$")
 
 
 class NethackRunError(RuntimeError):
@@ -57,8 +59,10 @@ def load_nethack_persistence_settings(
         return None
 
     player = raw.get("player_name", "docich")
-    if not isinstance(player, str) or not player:
-        raise NethackRunError("nethack.player_name が不正です")
+    if not isinstance(player, str) or _PLAYER_RE.fullmatch(player) is None:
+        raise NethackRunError(
+            "nethack.player_name は1-31文字の英数字/underscoreで指定してください"
+        )
     save_raw = raw.get("save_dir", "/var/games/nethack/save")
     if not isinstance(save_raw, str) or not save_raw:
         raise NethackRunError("nethack.save_dir が不正です")
@@ -88,7 +92,7 @@ def load_nethack_persistence_settings(
 def parse_xlog_line(line: str) -> dict[str, str]:
     """Parse NetHack's tab-separated ``key=value`` xlog record.
 
-    Unknown fields are preserved.  Malformed fragments are ignored rather than
+    Unknown fields are preserved. Malformed fragments are ignored rather than
     reinterpreted, so callers can require the exact fields they need.
     """
     result: dict[str, str] = {}
@@ -132,6 +136,17 @@ def classify_terminal_record(record: dict[str, str]) -> str:
     if death.startswith("quit") or death.startswith("escaped"):
         return "ended"
     return "dead"
+
+
+def _fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    fd = os.open(path, flags)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 class NethackRunStore:
@@ -193,15 +208,42 @@ class NethackRunStore:
             raise NethackRunError("run_id が標準UUID形式ではありません")
         return self.runs_dir / f"{run_id}.json"
 
+    def _known_max_expedition_unlocked(self) -> int:
+        maximum = 0
+        try:
+            paths = tuple(self.runs_dir.glob("*.json"))
+        except OSError as exc:
+            raise NethackRunError("run history一覧を取得できません") from exc
+        for path in paths:
+            payload = self._read_json(path)
+            if payload is None:
+                continue
+            if payload.get("schema_version") != SCHEMA_VERSION:
+                raise NethackRunError(f"run schemaが不正です: {path.name}")
+            expedition = payload.get("expedition")
+            if type(expedition) is not int or expedition < 1:
+                raise NethackRunError(f"run expeditionが不正です: {path.name}")
+            maximum = max(maximum, expedition)
+        return maximum
+
     def _meta_unlocked(self) -> dict[str, object]:
         payload = self._read_json(self.meta_path)
         if payload is None:
-            return {"schema_version": SCHEMA_VERSION, "last_expedition": 0}
+            payload = {"schema_version": SCHEMA_VERSION, "last_expedition": 0}
         if payload.get("schema_version") != SCHEMA_VERSION:
             raise NethackRunError("run history meta schemaが不正です")
         value = payload.get("last_expedition")
         if type(value) is not int or value < 0:
             raise NethackRunError("run history expedition counterが不正です")
+
+        # meta.json is a cache/counter, not the only source of truth. If a
+        # process crashed after writing a run but before updating meta, recover
+        # the maximum from the durable run files so expedition numbers never
+        # repeat.
+        known_max = self._known_max_expedition_unlocked()
+        if known_max > value:
+            payload["last_expedition"] = known_max
+            atomic_write_json(self.meta_path, payload)
         return payload
 
     def _current_id_unlocked(self) -> str | None:
@@ -249,6 +291,12 @@ class NethackRunStore:
             return
         except OSError as exc:
             raise NethackRunError("current run pointerを削除できません") from exc
+        _fsync_directory(self.root)
+
+    def _save_name_matches_player(self, name: str) -> bool:
+        lowered = name.casefold()
+        player = re.escape(self.settings.player_name.casefold())
+        return re.search(rf"{player}(?:\.[a-z0-9]+)?$", lowered) is not None
 
     def _matching_save_files(self) -> tuple[Path, ...]:
         try:
@@ -257,11 +305,10 @@ class NethackRunStore:
             return ()
         except OSError as exc:
             raise NethackRunError("NetHack save directoryを検査できません") from exc
-        needle = self.settings.player_name.casefold()
         return tuple(
             path
             for path in entries
-            if path.is_file() and needle in path.name.casefold()
+            if path.is_file() and self._save_name_matches_player(path.name)
         )
 
     def save_exists(self) -> bool:
@@ -329,6 +376,13 @@ class NethackRunStore:
         """Validate continuity before the coordinator changes any game state."""
         with self._locked():
             run = self._current_unlocked()
+            # Recover a crash after terminal run write but before current.json
+            # unlink. The terminal run itself is durable, so this stale pointer
+            # is safe to clear before allocating the next expedition.
+            if run is not None and run.get("status") in TERMINAL_STATUSES:
+                self._clear_current_unlocked()
+                run = None
+
             save_exists = bool(self._matching_save_files())
             if run is not None:
                 status = run.get("status")
@@ -353,7 +407,7 @@ class NethackRunStore:
                         )
                 else:
                     raise NethackRunError(
-                        f"terminal runがcurrentのままです: {status!r}"
+                        f"current runのstatusが不正です: {status!r}"
                     )
                 return {
                     "kind": "existing",
@@ -389,6 +443,9 @@ class NethackRunStore:
             run_id = probe.get("run_id")
             if not isinstance(run_id, str):
                 raise NethackRunError("start probe run_idが不正です")
+
+            new_run = False
+            meta: dict[str, object] | None = None
             if kind == "existing":
                 current_id = self._current_id_unlocked()
                 if current_id != run_id:
@@ -401,7 +458,10 @@ class NethackRunStore:
                     raise NethackRunError("別runがstart中にcurrentになりました")
                 meta = self._meta_unlocked()
                 expedition = probe.get("expected_expedition")
-                if type(expedition) is not int or expedition != int(meta["last_expedition"]) + 1:
+                if (
+                    type(expedition) is not int
+                    or expedition != int(meta["last_expedition"]) + 1
+                ):
                     raise NethackRunError("expedition counterがstart中に変更されました")
                 xlog_offset = probe.get("xlog_offset")
                 dump_baseline = probe.get("dump_baseline_mtime_ns")
@@ -438,9 +498,7 @@ class NethackRunStore:
                     "terminal": None,
                     "lessons": [],
                 }
-                meta["last_expedition"] = expedition
-                atomic_write_json(self.meta_path, meta)
-                self._set_current_unlocked(run_id)
+                new_run = True
             else:
                 raise NethackRunError("start probe kindが不正です")
 
@@ -456,8 +514,16 @@ class NethackRunStore:
                     "outcome": None,
                 }
             )
+
+            # Multi-file commit order is deliberate. Never publish a current
+            # pointer before its run body exists. meta is last because it can be
+            # reconstructed from durable run files after a crash.
             self._write_run_unlocked(run)
             self._set_current_unlocked(run_id)
+            if new_run:
+                assert meta is not None
+                meta["last_expedition"] = run["expedition"]
+                atomic_write_json(self.meta_path, meta)
             return dict(run)
 
     @staticmethod
@@ -588,6 +654,10 @@ class NethackRunStore:
                 dump = self._new_dump_file(baseline)
                 if dump is not None:
                     run["dump_file"] = dump.name
+
+            # Persist the terminal body before clearing the public current
+            # pointer. A crash between these writes leaves a stale pointer to a
+            # complete terminal run; prepare_start repairs that case safely.
             self._write_run_unlocked(run)
             self._clear_current_unlocked()
             return dict(run)
