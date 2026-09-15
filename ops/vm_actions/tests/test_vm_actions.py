@@ -95,6 +95,27 @@ class AuthorizeTests(unittest.TestCase):
         self.assertEqual(workflow.count("ServerAliveInterval=30"), ssh_configs)
         self.assertEqual(workflow.count("ServerAliveCountMax=3"), ssh_configs)
 
+    def test_market_paper_requires_production_and_main(self):
+        p=self.run_auth(INPUT_OPERATION='market_paper',INPUT_TARGET='preview',INPUT_REF='main',INPUT_CONFIRM='production')
+        self.assertNotEqual(p.returncode,0)
+        self.assertIn('production-only',p.stderr)
+        p=self.run_auth(INPUT_OPERATION='market_paper',INPUT_TARGET='production',INPUT_REF='feature',INPUT_CONFIRM='production')
+        self.assertNotEqual(p.returncode,0)
+        self.assertIn('must run from main',p.stderr)
+
+    def test_market_paper_needs_confirmation(self):
+        p=self.run_auth(INPUT_OPERATION='market_paper',INPUT_TARGET='production',INPUT_REF='main',INPUT_CONFIRM='')
+        self.assertNotEqual(p.returncode,0)
+        p=self.run_auth(INPUT_OPERATION='market_paper',INPUT_TARGET='production',INPUT_REF='main',INPUT_CONFIRM='production')
+        self.assertEqual(p.returncode,0,p.stderr)
+
+    def test_market_paper_not_blocked_by_public_repo_exec_disable(self):
+        p=self.run_auth(
+            GITHUB_REPOSITORY_PRIVATE='false',
+            INPUT_OPERATION='market_paper',INPUT_TARGET='production',INPUT_REF='main',INPUT_CONFIRM='production',
+        )
+        self.assertEqual(p.returncode,0,p.stderr)
+
     def test_push_is_fixed_to_production_deploy(self):
         p=self.run_auth(GITHUB_EVENT_NAME='push',INPUT_OPERATION='',INPUT_TARGET='',INPUT_REF='')
         self.assertEqual(p.returncode,0,p.stderr)

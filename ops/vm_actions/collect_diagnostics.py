@@ -41,6 +41,7 @@ import json
 import math
 import os
 import re
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -1300,6 +1301,195 @@ def _collect_programs(state_dir, soren, now):
     return payload
 
 
+# Opt-in stocks/FX paper-trading corners (src/docich/trading/markets/). Both
+# markets default to enabled=false; this section only ever reads the same
+# fixed config, systemd --user unit state and the worker's own health/
+# experiment/report JSON that Runtime already writes. It never reads broker
+# credentials, order paths, account identifiers or position prices.
+MARKET_PAPER_MARKETS = ("stocks", "fx")
+MARKET_PAPER_WORKER_STALE_SEC = 30
+MARKET_PAPER_LINGER_USER = "ubuntu"
+
+
+def _market_paper_config():
+    try:
+        import tomllib
+    except ImportError:
+        return {}
+    raw = _read_text_capped(PROD_ROOT / "config" / "market-paper.toml", 16384)
+    if raw is None:
+        return {}
+    try:
+        data = tomllib.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _linger_enabled(user=MARKET_PAPER_LINGER_USER):
+    """Whether `loginctl enable-linger <user>` has been set (own-user marker
+    file under /var/lib/systemd/linger/, world-readable; no root needed)."""
+    try:
+        return Path("/var/lib/systemd/linger", user).is_file()
+    except OSError:
+        return None
+
+
+def _systemctl_user(args, timeout=5):
+    """Run `systemctl --user <args>` as this same VM-ops session. Returns
+    (returncode, stdout) or None when the command cannot run at all (missing
+    binary, timeout, no user session bus). A non-zero returncode with output
+    (e.g. "inactive") is still a valid answer, not an error."""
+    env = {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": str(PROD_ROOT.parent),
+        "XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}",
+        "LANG": "C.UTF-8",
+    }
+    try:
+        proc = subprocess.run(
+            ["systemctl", "--user", *args],
+            capture_output=True, text=True, timeout=timeout, env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return proc.returncode, (proc.stdout or "").strip()
+
+
+def _unit_is_active(unit):
+    result = _systemctl_user(["is-active", unit])
+    if result is None:
+        return None
+    _, out = result
+    if out in ("active", "activating", "reloading"):
+        return True
+    if out in ("inactive", "failed", "deactivating", "unknown"):
+        return False
+    return None
+
+
+def _unit_is_enabled(unit):
+    result = _systemctl_user(["is-enabled", unit])
+    if result is None:
+        return None
+    _, out = result
+    if out in ("enabled", "enabled-runtime", "static", "alias", "linked", "linked-runtime"):
+        return True
+    if out in ("disabled", "masked", "masked-runtime", "not-found", "bad"):
+        return False
+    return None
+
+
+def _market_paper_report_age_sec(sqlite_path, market, now):
+    if not sqlite_path.is_file():
+        return -1
+    try:
+        conn = sqlite3.connect(f"file:{sqlite_path}?mode=ro", uri=True, timeout=2)
+    except sqlite3.Error:
+        return -1
+    try:
+        conn.execute("PRAGMA query_only=1")
+        row = conn.execute(
+            "SELECT id FROM reports WHERE id LIKE ? ORDER BY id DESC LIMIT 1",
+            (f"{market}:%",),
+        ).fetchone()
+    except sqlite3.Error:
+        return -1
+    finally:
+        conn.close()
+    if not row or not isinstance(row[0], str) or ":" not in row[0]:
+        return -1
+    try:
+        end_ts = int(row[0].rsplit(":", 1)[1])
+    except ValueError:
+        return -1
+    return int(now - end_ts) if end_ts > 0 else -1
+
+
+def _collect_one_market_paper(state_dir, market, now, market_cfg, unit_dir):
+    unit = f"docich-market-worker@{market}.service"
+    worker_root = state_dir / "market-paper" / market
+    health_path = worker_root / "health.json"
+    experiment_path = worker_root / "experiment-status.json"
+    sqlite_path = worker_root / "paper.sqlite3"
+
+    h_present, h_readable, h_data = _load_state_file(health_path)
+    health_status = _bounded_str(h_data.get("status"), 32) if h_readable else None
+    health_age_sec = _file_age_sec(health_path, now) if h_present else -1
+    market_as_of = _finite_number(h_data.get("market_as_of")) if h_readable else None
+    positions = h_data.get("positions") if h_readable else None
+    pending_liquidation = (
+        h_data.get("pending_liquidation")
+        if h_readable and isinstance(h_data.get("pending_liquidation"), bool)
+        else None
+    )
+    risk_stopped = (
+        h_data.get("risk_stopped") if h_readable and isinstance(h_data.get("risk_stopped"), bool) else None
+    )
+
+    e_present, e_readable, e_data = _load_state_file(experiment_path)
+
+    corner_active = None
+    if market == "stocks":
+        c_present, c_readable, c_data = _load_state_file(state_dir / f"market-{market}-corner.json")
+        if c_readable:
+            corner_active = c_data.get("status") == "active"
+        elif not c_present:
+            corner_active = False
+
+    try:
+        unit_installed = (unit_dir / unit).is_file()
+    except OSError:
+        unit_installed = False
+
+    return {
+        "enabled": market_cfg.get("enabled") is True,
+        "mode": _bounded_str(market_cfg.get("mode"), 16),
+        "unit_installed": unit_installed,
+        "unit_active": _unit_is_active(unit),
+        "unit_enabled": _unit_is_enabled(unit),
+        "health_present": h_present,
+        "health_readable": h_readable,
+        "health_status": health_status,
+        "health_age_sec": health_age_sec,
+        "worker_stale": bool(h_present and health_age_sec > MARKET_PAPER_WORKER_STALE_SEC),
+        "feed_unavailable": health_status == "price_feed_unavailable",
+        "last_quote_age_sec": int(now - market_as_of) if market_as_of else -1,
+        "pending_liquidation": pending_liquidation,
+        "risk_stopped": risk_stopped,
+        "positions_count": len(positions) if isinstance(positions, dict) else None,
+        "experiment_present": e_present,
+        "experiment_status": _bounded_str(e_data.get("status"), 32) if e_readable else None,
+        "experiment_age_sec": _file_age_sec(experiment_path, now) if e_present else -1,
+        "sqlite_present": sqlite_path.is_file(),
+        "last_report_age_sec": _market_paper_report_age_sec(sqlite_path, market, now),
+        "corner_active": corner_active,
+    }
+
+
+def _collect_market_paper(state_dir, now, unit_dir=None):
+    """Sanitized read-only view of the opt-in stocks/FX paper-trading
+    corners. A failure anywhere degrades a field to null/false; it never
+    raises, so a bug here can never break the rest of diagnostics."""
+    if unit_dir is None:
+        unit_dir = PROD_ROOT.parent / ".config" / "systemd" / "user"
+    state_dir = Path(state_dir)
+    try:
+        config = _market_paper_config()
+    except Exception:
+        config = {}
+    payload = {"config_readable": bool(config), "linger_enabled": _linger_enabled()}
+    for market in MARKET_PAPER_MARKETS:
+        market_cfg = config.get(market)
+        if not isinstance(market_cfg, dict):
+            market_cfg = {}
+        try:
+            payload[market] = _collect_one_market_paper(state_dir, market, now, market_cfg, unit_dir)
+        except Exception:
+            payload[market] = {"error": "collect_failed"}
+    return payload
+
+
 def _count_map_matches(items, counts, keys):
     if not isinstance(items, list) or not isinstance(counts, dict):
         return False
@@ -1376,6 +1566,7 @@ def main(argv):
         },
         "improvement": improvement,
         "corners": _collect_programs(_program_state_dir(), soren, now),
+        "market_paper": _collect_market_paper(_program_state_dir(), now),
         "storage_artifacts": _collect_tmp_shared_objects(now),
     }
     text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
