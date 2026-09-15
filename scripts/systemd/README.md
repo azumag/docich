@@ -122,20 +122,16 @@ bin/docich-soren91-corner-manual --config config/docich.soren-live.toml stop
 env が無い場合、Soren91 アダプタの preflight が fail-closed になりコーナーは
 開始しない (BOT 無しの表示だけの枠が commit されることはない)。
 
-ゲームプレイBOT (`soren91/main.mjs`) をコーディネータに起動させる場合は、ゲーム
-設定 `config/games/soren91.toml` に次を設定する:
+ゲームプレイBOT (`soren91/main.mjs`) はゲーム設定 `config/games/soren91.toml` で
+既定有効 (`[agent] enabled = true` / `[soren91] bot_path`)。切替は Mac 側 CDP
+プロキシの応答を待ってから commit し、BOT は tmux 所有ウィンドウで起動して
+コーナー終了時に停止する。CDP プロキシが応答しない間は切替がロールバックする
+(fail-closed)。
 
-```toml
-[agent]
-enabled = true
-
-[soren91]
-bot_path = "/home/ubuntu/soren/soren91/main.mjs"
-```
-
-この場合、切替は Mac 側 CDP プロキシ (`cdp_port`, 既定 9322) の応答を待ってから
-commit し、BOT は tmux 所有ウィンドウで起動してコーナー終了時に停止する。
-CDP プロキシが応答しない間は切替がロールバックする (fail-closed)。
+- `[soren91] cdp_port` は **OCI から到達できる Tailscale プロキシの port** を
+  指定する。Mac 内の Chrome CDP (127.0.0.1:9322) の port ではない。
+- 表示切替だけを試す検証では `[agent] enabled = false` に戻す。この場合も
+  コーナー開始には env ファイルが必要で、CDP プロキシの待機は行われない。
 
 ## Web UI (docich-webui.service) の導入
 

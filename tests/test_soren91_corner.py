@@ -3,6 +3,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -616,6 +617,25 @@ class TestSystemdTemplates(unittest.TestCase):
         self.assertIn("TimeoutStartSec=infinity", service)
         self.assertIn("OnCalendar=*-*-* *:*:00", timer)
         self.assertIn("Persistent=false", timer)
+
+
+class TestShippedGameConfig(unittest.TestCase):
+    def test_agent_and_cdp_proxy_settings(self):
+        root = Path(__file__).resolve().parents[1]
+        with (root / "config" / "games" / "soren91.toml").open("rb") as fh:
+            data = tomllib.load(fh)
+        self.assertTrue(
+            data["agent"]["enabled"],
+            "Soren91コーナーはOCI botを起動する (表示専用に戻す場合はテストも更新)",
+        )
+        bot_path = str((data.get("soren91") or {}).get("bot_path") or "").strip()
+        self.assertTrue(bot_path, "agent.enabled=true では bot_path が必要")
+        self.assertEqual(
+            data["soren91"]["cdp_port"],
+            19093,
+            "cdp_port は OCI から到達できる Mac 側 Tailscale プロキシの port "
+            "(Mac 内 Chrome CDP の 9322 ではない)",
+        )
 
 
 if __name__ == "__main__":
