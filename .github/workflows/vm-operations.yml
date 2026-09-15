@@ -38,11 +38,11 @@ on:
         default: false
         type: boolean
       market_paper_action:
-        description: market_paper systemd action (opt-in stocks/FX paper-trading corners; never touches config/market-paper.toml)
+        description: market_paper systemd action (opt-in stocks/FX paper-trading corners; never touches config/market-paper.toml; seed-test-quote is fx-only, writes one fixed-shape deterministic test quote to the approved file-feed path)
         required: false
         default: install
         type: choice
-        options: [install, enable, disable, restart]
+        options: [install, enable, disable, restart, seed-test-quote]
       market_paper_market:
         description: market_paper target market
         required: false
@@ -500,7 +500,7 @@ jobs:
           # (no root/sudo) on the fixed unit set for the chosen market. The
           # action/market pair is re-validated here (defense in depth beyond
           # the workflow_dispatch choice inputs) and again inside the script.
-          case "$MP_ACTION" in install|enable|disable|restart) ;; *) echo "invalid market_paper_action" >&2; exit 1 ;; esac
+          case "$MP_ACTION" in install|enable|disable|restart|seed-test-quote) ;; *) echo "invalid market_paper_action" >&2; exit 1 ;; esac
           case "$MP_MARKET" in stocks|fx) ;; *) echo "invalid market_paper_market" >&2; exit 1 ;; esac
           echo "market_paper action=${MP_ACTION} market=${MP_MARKET}"
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)

@@ -8,17 +8,23 @@ set -euo pipefail
 #   - No root/sudo. Only `systemctl --user` on the fixed unit set already
 #     reviewed under scripts/systemd/docich-market-*.
 #   - Only two inputs select behaviour, both from a fixed enum, validated
-#     below: MARKET_PAPER_ACTION (install/enable/disable/restart) and
-#     MARKET_PAPER_MARKET (stocks/fx). No other value is ever interpolated
-#     into a systemctl unit name or path.
+#     below: MARKET_PAPER_ACTION (install/enable/disable/restart/
+#     seed-test-quote) and MARKET_PAPER_MARKET (stocks/fx). No other value
+#     is ever interpolated into a systemctl unit name or path.
 #   - Never edits config/market-paper.toml (that stays a normal reviewed
 #     code change), never touches broker credentials, never sends a real
 #     order. install/enable only ever start an *idle* worker: Runtime.tick()
 #     itself refuses to trade while enabled=false in that same config file.
+#   - seed-test-quote (fx only) writes one fixed-shape, deterministically
+#     generated USD_JPY quote to the approved file-feed path
+#     (<state_dir>/market-data/market-fx-quotes.json), exactly like an
+#     operator-approved price collector would, for verifying the feed ->
+#     tick -> health.json/SQLite pipeline without any real broker
+#     credentials. It never reads or fabricates real market data.
 #
 # Env (set by the owner-only control plane, .github/workflows/vm-operations.yml,
 # operation=market_paper):
-#   MARKET_PAPER_ACTION=install|enable|disable|restart
+#   MARKET_PAPER_ACTION=install|enable|disable|restart|seed-test-quote
 #   MARKET_PAPER_MARKET=stocks|fx
 #
 # Optional flag exists so repository tests can run against a temporary root
@@ -35,7 +41,7 @@ done
 
 action="${MARKET_PAPER_ACTION:-}"
 market="${MARKET_PAPER_MARKET:-}"
-case "$action" in install|enable|disable|restart) ;; *) echo "invalid action: $action" >&2; exit 2 ;; esac
+case "$action" in install|enable|disable|restart|seed-test-quote) ;; *) echo "invalid action: $action" >&2; exit 2 ;; esac
 case "$market" in stocks|fx) ;; *) echo "invalid market: $market" >&2; exit 2 ;; esac
 [[ -d "$root" ]] || { echo "root not found: $root" >&2; exit 2; }
 
@@ -85,11 +91,64 @@ restart_market() {
   systemctl --user restart "$worker_unit"
 }
 
+seed_test_quote() {
+  [[ "$market" == "fx" ]] || { echo "seed-test-quote is fx-only" >&2; exit 21; }
+  PYTHONPATH="$root/src" python3 - "$root" <<'PY'
+import json, os, pathlib, sys, time
+
+sys.path.insert(0, sys.argv[1] + "/src")
+from docich.config import load_global  # noqa: E402
+
+root = pathlib.Path(sys.argv[1])
+g = load_global(root, root / "config" / "docich.soren-live.toml")
+data_root = g.state_dir / "market-data"
+data_root.mkdir(parents=True, exist_ok=True)
+
+# Deterministic, reviewed test-only drift: a fixed 0.05% step per call,
+# tracked in a counter file next to the feed itself. Never reads or
+# fabricates data resembling a real live quote source.
+counter_path = data_root / ".test-feed-seed-counter"
+try:
+    n = int(counter_path.read_text(encoding="utf-8").strip())
+except (OSError, ValueError):
+    n = 0
+n += 1
+counter_path.write_text(str(n), encoding="utf-8")
+
+now = int(time.time())
+base = 150.00
+bid = round(base * (1 + 0.0005 * n), 4)
+ask = round(bid + 0.01, 4)
+payload = {
+    "market": "fx",
+    "realtime": True,
+    "quotes": [
+        {
+            "symbol": "USD_JPY",
+            "ts": now,
+            "bid": f"{bid:.4f}",
+            "ask": f"{ask:.4f}",
+            "bid_size": "100000",
+            "ask_size": "100000",
+            "tradeable": True,
+            "source": "owner-approved-test-feed",
+            "currency": "JPY",
+        }
+    ],
+}
+tmp = data_root / "market-fx-quotes.json.tmp"
+tmp.write_text(json.dumps(payload), encoding="utf-8")
+os.replace(tmp, data_root / "market-fx-quotes.json")
+print(f"seeded n={n} ts={now} bid={bid} ask={ask}")
+PY
+}
+
 case "$action" in
   install) install_units ;;
   enable) enable_market ;;
   disable) disable_market ;;
   restart) restart_market ;;
+  seed-test-quote) seed_test_quote ;;
 esac
 
 # Production exec output is withheld by the gateway regardless of what this

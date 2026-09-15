@@ -27,9 +27,16 @@ max_positions = 3
 max_spread_bps = "30"
 
 [fx]
-enabled = false
+# TEMPORARY: owner-approved file-feed production verification (2026-09-15/16).
+# No OANDA practice credentials are configured yet, so this exercises the
+# feed -> tick -> health.json/SQLite pipeline via the reviewed
+# `market_paper seed-test-quote` operation instead, which writes a fixed-
+# shape, deterministically generated USD_JPY quote -- never real market
+# data. Revert to enabled=false / feed="oanda" once verified, unless the
+# owner decides to keep this market live.
+enabled = true
 mode = "paper"
-feed = "oanda" # oanda practice PRICING only | file
+feed = "file" # oanda practice PRICING only | file
 symbols = ["USD_JPY", "EUR_JPY"]
 quote_file = "market-fx-quotes.json"
 
