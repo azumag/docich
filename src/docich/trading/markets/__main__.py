@@ -14,6 +14,8 @@ from .core import JST, Limits, PaperBook, TITLES, dt, report_window
 from .feeds import FeedUnavailable, fx_week_open, jpx_open, read_news, read_quotes
 from .lab import active_policy, advance_challenger, promotion_assessment, propose, write_json
 from .selector import active_selector_policy, read_file_candidates, select_universe
+from .selector_lab import (advance_selector_challenger, finalize_selector_challenger,
+                           propose_selector)
 
 
 @contextmanager
@@ -51,13 +53,14 @@ class Runtime:
         except (OSError, ValueError, TypeError):
             return {}
 
-    def _stock_quote_config(self, *, now: float, begin: float) -> tuple[dict, dict]:
+    def _stock_quote_config(self, *, now: float, begin: float) -> tuple[dict, dict, list]:
         selector_config = self.config.get("selector", {})
         if not isinstance(selector_config, dict) or not selector_config.get("enabled", False):
             return self.config, {"enabled": False, "ready": True, "status": "disabled",
-                                 "symbols": self.config.get("symbols", [])}
+                                 "symbols": self.config.get("symbols", [])}, []
         held = sorted(self.book.state().get("positions", {}).keys())
         previous = self._selector_state()
+        candidates = []
         try:
             if selector_config.get("feed", "file") != "file":
                 raise FeedUnavailable("dynamic stock selector provider is not configured")
@@ -74,6 +77,15 @@ class Runtime:
                 session_start=begin,
             )
             selection.update(enabled=True, status="ok")
+            try:
+                assessment = advance_selector_challenger(
+                    self.root, candidates, now=now, session_start=begin,
+                )
+                write_json(self.root / "selector-experiment-status.json", {**assessment, "as_of": now})
+            except (OSError, ValueError, RuntimeError, KeyError, TypeError, ArithmeticError) as exc:
+                # Experimental selector evaluation cannot stop the primary selector.
+                write_json(self.root / "selector-experiment-status.json",
+                           {"status": "failed", "error": type(exc).__name__, "as_of": now})
         except (FeedUnavailable, OSError, ValueError, KeyError, TypeError, ArithmeticError):
             # Scanner failure must never open new positions, but a held position
             # remains pinned so its exit quote can still be refreshed.
@@ -87,7 +99,7 @@ class Runtime:
         write_json(self.root / "selector-state.json", selection)
         quote_config = dict(self.config)
         quote_config["symbols"] = selection["symbols"]
-        return quote_config, selection
+        return quote_config, selection, candidates
 
     def tick(self, *, clock=time.time) -> dict:
         if not self.config.get("enabled", False):
@@ -105,7 +117,7 @@ class Runtime:
             if open_market:
                 try:
                     if self.market == "stocks":
-                        quote_config, selector = self._stock_quote_config(now=now, begin=begin)
+                        quote_config, selector, _ = self._stock_quote_config(now=now, begin=begin)
                     if quote_config.get("symbols"):
                         quotes = read_quotes(quote_config, self.market, self.data_root, now)
                         if self.market == "stocks" and selector.get("status") == "unavailable":
@@ -179,19 +191,39 @@ class Runtime:
                 agents = profile.get("paper_corner", {}).get("improve_agents", "")
             result = propose(self.book, self.root, self.g, agents=agents, news=news, now=now)
             write_json(self.root / "improvement-status.json", {**result, "as_of": now})
+            if self.market == "stocks":
+                selector_result = finalize_selector_challenger(
+                    self.root, now=now, has_positions=bool(self.book.state().get("positions")),
+                )
+                # Start/replay a proposal only when there is no challenger still
+                # collecting or waiting for the main PAPER account to flatten.
+                if selector_result.get("status") not in {"collecting", "awaiting_flat"}:
+                    row = self.book.db.execute(
+                        "SELECT id,body FROM reports ORDER BY rowid DESC LIMIT 1"
+                    ).fetchone()
+                    if row:
+                        selector_result = propose_selector(
+                            self.root, self.g, agents=agents, report_id=row[0],
+                            report=json.loads(row[1]), now=now,
+                        )
+                result = {**result, "selector_improvement": selector_result}
+                write_json(self.root / "improvement-status.json", {**result, "as_of": now})
             return result
 
     def status(self) -> dict:
         now = time.time()
         result = self.book.snapshot(now=now)
-        for key, filename in (("health", "health.json"), ("news", "news.json"), ("experiment", "experiment-status.json"),
-                              ("selector", "selector-state.json")):
+        for key, filename in (("health", "health.json"), ("news", "news.json"),
+                              ("experiment", "experiment-status.json"),
+                              ("selector", "selector-state.json"),
+                              ("selector_improvement", "selector-improvement-status.json"),
+                              ("selector_experiment", "selector-experiment-status.json")):
             path = self.root / filename
             try:
                 result[key] = json.loads(path.read_text())
             except (OSError, ValueError):
                 result[key] = {}
-        row = self.book.db.execute("SELECT body FROM reports ORDER BY id DESC LIMIT 1").fetchone()
+        row = self.book.db.execute("SELECT body FROM reports ORDER BY rowid DESC LIMIT 1").fetchone()
         result["report"] = json.loads(row[0]) if row else None
         result["chart"] = [json.loads(r[0])["equity_jpy"] for r in reversed(list(self.book.db.execute("SELECT body FROM metrics ORDER BY ts DESC LIMIT 120")))]
         result["promotion"] = promotion_assessment(self.book, active_policy(self.root))
