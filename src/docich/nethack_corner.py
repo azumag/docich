@@ -31,11 +31,10 @@ LOCK_FILE = "locks/nethack-corner.lock"
 TICK_GUARD_FILE = "locks/nethack-corner-tick.lock"
 DELIVERY_SOURCE = "nethack-corner"
 
-ANNOUNCE_TEXT = (
-    "NetHackコーナーです。ダンジョン探索を続けます。"
-    "生き残れば次回へ続き、倒れた場合はその冒険の記録を残します。"
-)
-END_ANNOUNCE_TEXT = "NetHackコーナーはここまでです。続きは次回の探索でお送りします。"
+# P0 intentionally does not promise save/resume, tiles, or automated AI play.
+# Those become viewer-facing claims only after the corresponding #490 phases land.
+ANNOUNCE_TEXT = "NetHackコーナーです。ダンジョン探索をお送りします。"
+END_ANNOUNCE_TEXT = "NetHackコーナーはここまでです。ありがとうございました。"
 
 _VALID_WEEKDAYS = frozenset(range(7))
 
