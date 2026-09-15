@@ -71,9 +71,6 @@ def make_coordinator_adapter(g, spec: RuntimeSpec):
     if spec.game in ("stock-paper-view", "fx-paper-view"):
         from ..trading.markets.program import make_market_view_adapter
         return make_market_view_adapter(g, spec)
-    if spec.game == "paper-view":
-        from .program import make_program_view_adapter
-        return make_program_view_adapter(g, spec)
     game = load_game(g, spec.game)
     spec_name = _COORDINATOR_REGISTRY.get(game.adapter)
     if spec_name is None:

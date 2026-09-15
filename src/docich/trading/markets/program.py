@@ -56,6 +56,10 @@ class MarketCorner:
         def factory(spec):
             if spec.game in VIEW_MARKETS:
                 return make_market_view_adapter(self.g, spec, settings_path=runtime.settings_path)
+            if spec.game == "paper-view":
+                # Crypto views belong to an explicit corner factory, not the game catalog.
+                from ...adapters.program import make_program_view_adapter
+                return make_program_view_adapter(self.g, spec)
             return make_coordinator_adapter(self.g, spec)
         self.coordinator = coordinator or GameSwitchCoordinator(self.store, factory)
         self.overlay, self.speech = overlay or send_overlay, speech or enqueue_speech
