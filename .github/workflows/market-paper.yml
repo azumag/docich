@@ -4,7 +4,7 @@ on:
     paths:
       - 'src/docich/trading/markets/**'
       - 'src/docich/adapters/**'
-      - 'tests/test_market_paper.py'
+      - 'tests/test_market_paper*.py'
       - 'config/market-paper.toml'
       - 'bin/docich-market-paper'
       - 'scripts/systemd/docich-market-*'
@@ -13,7 +13,7 @@ on:
     branches: [main]
     paths:
       - 'src/docich/trading/markets/**'
-      - 'tests/test_market_paper.py'
+      - 'tests/test_market_paper*.py'
       - '.github/workflows/market-paper.yml'
 permissions:
   contents: read
@@ -28,7 +28,7 @@ jobs:
       - name: Offline paper execution contracts
         env:
           PYTHONPATH: src
-        run: python3 -W error::ResourceWarning -m unittest discover -s tests -p test_market_paper.py -v
+        run: python3 -W error::ResourceWarning -m unittest discover -s tests -p 'test_market_paper*.py' -v
       - name: Compile and launcher syntax
         run: |
           python3 -m compileall -q src/docich/trading/markets
