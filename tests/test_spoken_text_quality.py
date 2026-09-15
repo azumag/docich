@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import io
+import subprocess
 import sys
 import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
 
 from docich import spoken_text_quality  # noqa: E402
 
@@ -67,6 +69,25 @@ class SpokenTextQualityTests(unittest.TestCase):
             sys.stdin = old_stdin
         self.assertEqual(rc, 1)
         self.assertIn("long_japanese_run_without_comma", err.getvalue())
+
+    def test_docich_launcher_routes_to_validator(self) -> None:
+        valid = subprocess.run(
+            ["bash", str(ROOT / "bin" / "docich"), "speech-quality", "--profile", "comment"],
+            input="これは通常の返信です。",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(valid.returncode, 0, valid.stderr)
+
+        invalid = subprocess.run(
+            ["bash", str(ROOT / "bin" / "docich"), "speech-quality", "--profile", "comment"],
+            input="同志Aそうですねこれはかなり面白い動きなので次の展開まで落ち着いて見届けたいと思っています。",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(invalid.returncode, 1, invalid.stderr)
 
 
 if __name__ == "__main__":
