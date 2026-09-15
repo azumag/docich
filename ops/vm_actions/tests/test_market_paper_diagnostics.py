@@ -118,6 +118,14 @@ class MarketPaperDiagnosticsTests(unittest.TestCase):
         self.assertIn("config_readable", result)
         self.assertIn("linger_enabled", result)
 
+    def test_reports_unit_dir_path_and_listing_for_forensics(self):
+        (self.unit_dir / "docich-market-worker@fx.service").write_text("[Unit]\n", encoding="utf-8")
+        result = self.module._collect_market_paper(self.state, self.now, unit_dir=self.unit_dir)
+        self.assertEqual(result["unit_dir"], str(self.unit_dir))
+        self.assertTrue(result["unit_dir_exists"])
+        self.assertIn("docich-market-worker@fx.service", result["unit_dir_entries"])
+        self.assertIn("prod_root", result)
+
     def test_unit_installed_reflects_unit_dir_presence(self):
         (self.unit_dir / "docich-market-worker@fx.service").write_text("[Unit]\n", encoding="utf-8")
         result = self.module._collect_market_paper(self.state, self.now, unit_dir=self.unit_dir)

@@ -1478,7 +1478,18 @@ def _collect_market_paper(state_dir, now, unit_dir=None):
         config = _market_paper_config()
     except Exception:
         config = {}
-    payload = {"config_readable": bool(config), "linger_enabled": _linger_enabled()}
+    try:
+        unit_dir_entries = sorted(p.name for p in unit_dir.iterdir())[:20] if unit_dir.is_dir() else []
+    except OSError:
+        unit_dir_entries = []
+    payload = {
+        "config_readable": bool(config),
+        "linger_enabled": _linger_enabled(),
+        "prod_root": str(PROD_ROOT),
+        "unit_dir": str(unit_dir),
+        "unit_dir_exists": unit_dir.is_dir(),
+        "unit_dir_entries": unit_dir_entries,
+    }
     for market in MARKET_PAPER_MARKETS:
         market_cfg = config.get(market)
         if not isinstance(market_cfg, dict):
