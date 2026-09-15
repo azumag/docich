@@ -1,12 +1,18 @@
 # Deployment is opt-in. This file never enables a real-money broker.
-# Install the owner-approved market data feed/calendar before enabling a show.
+# Install an owner-approved realtime market-data provider before enabling a show.
 [stocks]
 enabled = false
 mode = "paper"
-feed = "kabu" # kabu (GET board only) | file
-symbols = [] # e.g. ["7203"]; operator-owned watchlist, never changed by AI
-calendar_file = "jpx-calendar.json" # under <state_dir>/market-data/
+feed = "file" # focused quote provider; live VM provider is selected separately
+symbols = [] # fallback only; dynamic selector supplies the focused universe
+calendar_file = "jpx-calendar.json" # temporary fail-closed gate until provider market-state is wired
 quote_file = "market-stocks-quotes.json"
+
+[stocks.selector]
+# `enabled` is intentionally omitted: absent means false. Enable only in an
+# owner-reviewed deployment after a realtime VM provider is entitlement/latency tested.
+feed = "file" # deterministic fixture first; Moomoo/IBKR adapters require entitlement proof
+candidate_file = "market-stocks-candidates.json"
 
 [stocks.limits]
 capital_jpy = "10000000"
