@@ -19,6 +19,18 @@ class BundleRetentionWorkflowTests(unittest.TestCase):
         self.assertIn("exec docich production $sha", text)
         self.assertIn("python3 ops/vm_actions/prune_bundles.py /etc/azumag-vm-ops.json --repo docich --json", text)
 
+    def test_superseded_workflow_run_is_a_successful_noop_before_ssh(self):
+        text = WORKFLOW.read_text()
+        self.assertIn("TRIGGER_SHA: ${{ github.event.workflow_run.head_sha }}", text)
+        self.assertIn('"$TRIGGER_SHA" != "$current_sha"', text)
+        self.assertIn("reason=superseded_workflow_run", text)
+        self.assertIn("printf 'rotate=%s\\n' \"$rotate\" >> \"$GITHUB_OUTPUT\"", text)
+        # Configure, exact-main verification, mutation, and post-verification all stay behind the gate.
+        self.assertGreaterEqual(text.count("if: steps.gate.outputs.rotate == '1'"), 4)
+        gate_pos = text.index("Ignore superseded workflow-run trigger")
+        ssh_pos = text.index("Configure pinned SSH client")
+        self.assertLess(gate_pos, ssh_pos)
+
     def test_does_not_add_privileged_or_direct_filesystem_mutation_path(self):
         text = WORKFLOW.read_text()
         self.assertNotIn("sudo ", text)
