@@ -51,6 +51,13 @@ BACKEND_FAMILIES = (
     "other",
 )
 
+STALE_LOCK_LANES = (
+    "radio",
+    "comment",
+    "local",
+    "other",
+)
+
 ACTIVE_CORNER_STATUSES = frozenset({"starting", "active", "restoring"})
 ACTIVE_PAPER_IMPROVE_STATUSES = frozenset({"queued", "running"})
 
@@ -82,6 +89,23 @@ def _game_switch_busy(corners):
         return False
     phase = switch.get("phase")
     return isinstance(phase, str) and phase not in {"", "ready"}
+
+
+def _stale_lock_counts(queues):
+    """Collapse private/dynamic AI lock lanes into fixed public buckets."""
+    counts = Counter()
+    lanes = queues.get("lanes") if isinstance(queues, dict) else None
+    if not isinstance(lanes, dict):
+        return counts
+    for name, state in lanes.items():
+        if not isinstance(name, str) or not isinstance(state, dict):
+            continue
+        if state.get("stale_suspected") is not True:
+            continue
+        normalized = name.strip().lower()
+        bucket = normalized if normalized in {"radio", "comment", "local"} else "other"
+        counts[bucket] += 1
+    return counts
 
 
 def _failure_cause(event):
@@ -203,6 +227,7 @@ def summarize(data):
     fail_component_counts = Counter()
     queue_giveup_component_counts = Counter()
     all_failed_component_counts = Counter()
+    stale_lock_counts = _stale_lock_counts(queues)
     if isinstance(recent, list):
         for event in recent:
             cause = _failure_cause(event)
@@ -264,15 +289,20 @@ def summarize(data):
         f"stale_pid_files={_nlist(workers, 'stale_pid_files')}",
         f"unregistered={_nlist(workers, 'unregistered')}",
         f"stale_locks={_integer(queues, 'stale_locks')}",
-        f"queue_giveups_15m={_integer(queues, 'queue_giveups_15m')}",
-        f"ai_attempts_15m={_integer(ai, 'attempts_15m')}",
-        f"ai_successes_15m={_integer(ai, 'successes')}",
-        f"ai_failures_15m={_integer(ai, 'failures_15m')}",
-        f"ai_rate_limits_15m={_integer(ai, 'rate_limits_15m')}",
-        f"ai_fallbacks_15m={_integer(ai, 'fallbacks_15m')}",
-        f"ai_all_failed_15m={_integer(ai, 'all_failed_15m')}",
-        f"ai_recent_fail_sampled={sampled}",
     ]
+    parts.extend(f"stale_lock_{lane}={stale_lock_counts[lane]}" for lane in STALE_LOCK_LANES)
+    parts.extend(
+        [
+            f"queue_giveups_15m={_integer(queues, 'queue_giveups_15m')}",
+            f"ai_attempts_15m={_integer(ai, 'attempts_15m')}",
+            f"ai_successes_15m={_integer(ai, 'successes')}",
+            f"ai_failures_15m={_integer(ai, 'failures_15m')}",
+            f"ai_rate_limits_15m={_integer(ai, 'rate_limits_15m')}",
+            f"ai_fallbacks_15m={_integer(ai, 'fallbacks_15m')}",
+            f"ai_all_failed_15m={_integer(ai, 'all_failed_15m')}",
+            f"ai_recent_fail_sampled={sampled}",
+        ]
+    )
     parts.extend(f"ai_recent_fail_{cause}={cause_counts[cause]}" for cause in CAUSES)
     parts.extend(
         f"ai_recent_rate_limit_backend_{family}={rate_limit_backend_counts[family]}"
