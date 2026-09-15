@@ -1437,8 +1437,13 @@ def _collect_one_market_paper(state_dir, market, now, market_cfg, unit_dir):
         elif not c_present:
             corner_active = False
 
+    # install_units() (manage_market_paper_units.sh) writes the shared
+    # systemd *template* file (docich-market-worker@.service, no instance
+    # name) once for both markets; systemd resolves the per-market instance
+    # name (docich-market-worker@<market>.service, used for is-active/
+    # is-enabled below) from that same template file at query/start time.
     try:
-        unit_installed = (unit_dir / unit).is_file()
+        unit_installed = (unit_dir / "docich-market-worker@.service").is_file()
     except OSError:
         unit_installed = False
 
