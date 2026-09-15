@@ -54,7 +54,7 @@ LOCK_FILE = "locks/soren91-corner.lock"
 TICK_GUARD_FILE = "locks/soren91-corner-tick.lock"
 
 # 視聴者向け開始告知。内部語 (Macレンダラー/CDP/SRT等) は含めない。
-ANNOUNCE_TEXT = "ソ連ゲーム91、メリケンAIのコーナーです。今日も91人を相手に、資本主義の力を見せてやりましょう。しばらくお付き合いください。"
+ANNOUNCE_TEXT = "ソ連ゲーム91、メリケンAIのコーナーです。今日も91人対戦で、資本主義の力を見せてやりましょう。しばらくお付き合いください。"
 END_ANNOUNCE_TEXT = "ソ連ゲーム91コーナーはここまでです。最後までお付き合いいただき、ありがとうございました。また次のコーナーでお会いしましょう。"
 
 # Chat delivery scope: sink-side duplicate suppression keys on (text, source),
