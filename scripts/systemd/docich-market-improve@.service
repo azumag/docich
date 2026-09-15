@@ -1,0 +1,11 @@
+[Unit]
+Description=docich %i queued paper strategy improvement
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=__DOCICH_ROOT__
+EnvironmentFile=-%h/.config/docich/market-paper.env
+ExecStart=__DOCICH_ROOT__/bin/docich-market-paper --config __DOCICH_ROOT__/config/docich.soren-live.toml --market %i improve
+TimeoutStartSec=240
+UMask=0077
