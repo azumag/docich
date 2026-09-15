@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich import config  # noqa: E402
 from docich.adapters import AdapterError, make_coordinator_adapter  # noqa: E402
-from docich.adapters import nethack as nethack_adapter  # noqa: E402
+from docich.adapters import cli_game, nethack as nethack_adapter  # noqa: E402
 from docich.game_switch import ReadinessTimeoutError, RuntimeSpec  # noqa: E402
 from docich.naming import runtime_names  # noqa: E402
 from docich.tmux import TmuxOwnership  # noqa: E402
@@ -32,17 +32,25 @@ def _spec(root: Path) -> RuntimeSpec:
     )
 
 
-def _root(save_dir: Path, *, player_name: str = "docich", command: str = "nethack") -> Path:
+def _root(
+    save_dir: Path,
+    *,
+    player_name: str = "docich",
+    command: str = "nethack",
+    persistent_run: bool = True,
+) -> Path:
     root = save_dir.parent / "repo"
     (root / "config" / "games").mkdir(parents=True, exist_ok=True)
     (root / "config" / "docich.toml").write_text(
         '[paths]\nstate_dir = "run"\ngames_dir = "config/games"\n',
         encoding="utf-8",
     )
+    persistent = "true" if persistent_run else "false"
     (root / "config" / "games" / "nethack.toml").write_text(
         '[game]\nname = "nethack"\ntitle = "NetHack"\nadapter = "cli"\n\n'
         f'[cli]\ncommand = "{command}"\ncols = 80\nrows = 24\n\n'
         '[nethack]\n'
+        f'persistent_run = {persistent}\n'
         f'player_name = "{player_name}"\n'
         f'save_dir = "{save_dir}"\n',
         encoding="utf-8",
@@ -106,11 +114,29 @@ class TestNethackCoordinatorAdapter(unittest.TestCase):
     def adapter(self):
         return nethack_adapter.NethackCoordinatorAdapter(self.g, self.game, self.spec)
 
-    def test_factory_specializes_only_cli_nethack(self):
+    def test_factory_specializes_only_opted_in_cli_nethack(self):
         adapter = make_coordinator_adapter(self.g, self.spec)
         self.assertIsInstance(adapter, nethack_adapter.NethackCoordinatorAdapter)
         self.assertTrue(adapter.requires_round_boundary)
         self.assertTrue(callable(adapter.request_round_boundary))
+
+        root = _root(self.save_dir, persistent_run=False)
+        g = config.load_global(root)
+        generic = make_coordinator_adapter(g, _spec(root))
+        self.assertIsInstance(generic, cli_game.CliCoordinatorAdapter)
+        self.assertNotIsInstance(generic, nethack_adapter.NethackCoordinatorAdapter)
+
+    def test_non_boolean_persistent_run_is_rejected(self):
+        path = self.root / "config" / "games" / "nethack.toml"
+        path.write_text(
+            '[game]\nname = "nethack"\ntitle = "NetHack"\nadapter = "cli"\n\n'
+            '[cli]\ncommand = "nethack"\n\n'
+            '[nethack]\npersistent_run = "yes"\n',
+            encoding="utf-8",
+        )
+        g = config.load_global(self.root)
+        with self.assertRaises(AdapterError):
+            make_coordinator_adapter(g, self.spec)
 
     def test_game_command_pins_player_name(self):
         adapter = self.adapter()
@@ -151,7 +177,8 @@ class TestNethackCoordinatorAdapter(unittest.TestCase):
         path.write_text(
             '[game]\nname = "nethack"\ntitle = "NetHack"\nadapter = "cli"\n\n'
             '[cli]\ncommand = "nethack"\n\n'
-            '[nethack]\nplayer_name = "docich"\nsave_dir = "relative/save"\n',
+            '[nethack]\npersistent_run = true\nplayer_name = "docich"\n'
+            'save_dir = "relative/save"\n',
             encoding="utf-8",
         )
         g = config.load_global(root)
@@ -199,8 +226,26 @@ class TestNethackCoordinatorAdapter(unittest.TestCase):
         self.assertEqual(marker["outcome"], "ended")
         self.assertNotIn("save_file", marker)
 
-    def test_process_exit_without_save_fails_closed(self):
+    def test_game_already_saved_is_recognized_as_suspended(self):
         adapter = self.adapter()
+        (self.save_dir / "1000docich").write_bytes(b"existing-save")
+        tmux = FakeTmux(self.spec, self.save_dir)
+        tmux.process_alive = False
+        adapter.tmux = tmux
+
+        adapter.request_round_boundary(str(uuid.uuid4()), time.monotonic() + 1.0, None)
+
+        marker = json.loads(
+            (self.spec.runtime_dir / nethack_adapter.BOUNDARY_RESULT_FILENAME).read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(marker["outcome"], "suspended")
+        self.assertEqual(marker["save_file"], "1000docich")
+
+    def test_process_exit_without_fresh_save_fails_closed(self):
+        adapter = self.adapter()
+        (self.save_dir / "1000docich").write_bytes(b"stale-save")
         tmux = FakeTmux(self.spec, self.save_dir, create_save=False)
         adapter.tmux = tmux
         with mock.patch("docich.adapters.nethack.time.sleep", return_value=None):
@@ -212,11 +257,17 @@ class TestNethackCoordinatorAdapter(unittest.TestCase):
             (self.spec.runtime_dir / nethack_adapter.BOUNDARY_RESULT_FILENAME).exists()
         )
 
-    def test_multiple_runtime_process_windows_fail_closed(self):
+    def test_empty_or_ambiguous_window_listing_fails_closed(self):
         adapter = self.adapter()
         tmux = FakeTmux(self.spec, self.save_dir)
-        tmux.list_windows = lambda: ["nethack", "unexpected", self.spec.game_window]
+        tmux.list_windows = lambda: []
         adapter.tmux = tmux
+        with self.assertRaises(AdapterError):
+            adapter.request_round_boundary(
+                str(uuid.uuid4()), time.monotonic() + 1.0, None
+            )
+
+        tmux.list_windows = lambda: ["nethack", "unexpected", self.spec.game_window]
         with self.assertRaises(AdapterError):
             adapter.request_round_boundary(
                 str(uuid.uuid4()), time.monotonic() + 1.0, None
