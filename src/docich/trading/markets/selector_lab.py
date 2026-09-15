@@ -1,7 +1,7 @@
 """Bounded AI improvement and prospective evaluation for stock selection.
 
 Selector tuning is deliberately independent from trade-entry/exit strategy tuning.
-The model may suggest only a small allowlisted parameter delta.  Adoption is based
+The model may suggest only a small allowlisted parameter delta. Adoption is based
 on future, previously unobserved candidate snapshots, never on the model's prose or
 on the selector's own score.
 """
@@ -39,7 +39,7 @@ MUTABLE_FIELDS = {
 
 # Safety/measurement contracts are intentionally NOT mutable by AI:
 # candidate_age_s controls feed freshness and exit_buffer_s protects the fixed
-# 10:00 end.  Risk capital/live authority/feed endpoints are outside this class.
+# 10:00 end. Risk capital/live authority/feed endpoints are outside this class.
 
 
 def _read_json(path: Path) -> dict:
@@ -108,11 +108,13 @@ def propose_selector(root: Path, g, *, agents: str, report_id: str, report: dict
     status_path = root / "selector-improvement-status.json"
     if marker.exists():
         marker_body = _read_json(marker)
-        return {"status": "forward_test_running", "id": marker_body.get("id")}
+        return {"status": "forward_test_running", "id": marker_body.get("id"),
+                "report_id": marker_body.get("report_id"), "as_of": now}
 
     previous = _read_json(status_path)
     if previous.get("report_id") == report_id and previous.get("status") in {
-        "no_change", "forward_test", "needs_ai_configuration", "failed"
+        "no_change", "forward_test", "needs_ai_configuration", "failed",
+        "paper_adopted", "rejected", "awaiting_flat",
     }:
         return previous
     if not isinstance(report_id, str) or not report_id or not isinstance(report, dict):
@@ -208,7 +210,7 @@ def _opportunity(arm: dict, by_symbol: dict[str, Candidate]) -> None:
                 continue
             movement = abs(new / old - 1) * D(10000)
             # Selection quality asks: did the chosen symbol subsequently move
-            # enough to overcome one current spread?  Entry/exit direction and
+            # enough to overcome one current spread? Entry/exit direction and
             # realized PnL remain StrategyPolicy's responsibility.
             total += movement - decimal(current.spread_bps)
             samples += 1
@@ -298,6 +300,7 @@ def selector_assessment(root: Path) -> dict:
     result = {
         "status": "collecting",
         "id": marker.get("id"),
+        "report_id": marker.get("report_id"),
         "days": len(set(days)),
         "samples": {"baseline": baseline_samples, "candidate": candidate_samples},
         "avg_opportunity_bps": {"baseline": str(base_avg), "candidate": str(cand_avg)},
@@ -318,11 +321,14 @@ def finalize_selector_challenger(root: Path, *, now: float, has_positions: bool)
     if verdict.get("status") == "collecting":
         return verdict
     if verdict.get("status") == "qualified" and has_positions:
-        return {**verdict, "status": "awaiting_flat"}
+        result = {**verdict, "status": "awaiting_flat", "as_of": stamp(now)}
+        write_json(root / "selector-improvement-status.json", result)
+        return result
 
     folder = root / "selector-experiments" / str(marker.get("id"))
     final_status = "paper_adopted" if verdict.get("status") == "qualified" else "rejected"
-    final = {**verdict, "status": final_status, "as_of": stamp(now), "proposal": marker}
+    final = {**verdict, "status": final_status, "report_id": marker.get("report_id"),
+             "as_of": stamp(now), "proposal": marker}
     write_json(folder / "verdict.json", final)
     if final_status == "paper_adopted":
         # Keep the active file deliberately minimal; provenance lives in the
