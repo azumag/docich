@@ -25,6 +25,12 @@ from summarize_runtime_pressure import rate_limit_pressure
 
 
 ATTRIBUTION_COMPONENTS = COMPONENTS + ("unknown",)
+CHAIN_SUMMARY_KEYS = (
+    "chain_summary_sampled",
+    "multi_vercel_429_chains",
+    "multi_vercel_429_non_vercel_recovered",
+    "multi_vercel_429_all_failed",
+)
 
 
 def _integer(mapping, name):
@@ -72,6 +78,9 @@ def render(data):
     severity, summary = summarize(data)
     ai = data.get("ai") if isinstance(data, dict) else None
     summary = f"{summary},ai_rate_limit_pressure={rate_limit_pressure(ai)}"
+    summary += "," + ",".join(
+        f"ai_{name}={_integer(ai or {}, name)}" for name in CHAIN_SUMMARY_KEYS
+    )
     counts, consistent, exact = attribute_queue_giveups(data)
     extra = [
         f"ai_queue_giveup_attribution_consistent={int(consistent)}",
