@@ -195,16 +195,17 @@ class Runtime:
                 selector_result = finalize_selector_challenger(
                     self.root, now=now, has_positions=bool(self.book.state().get("positions")),
                 )
-                # Calling proposal every improve tick is safe: an active marker
-                # returns forward_test_running and completed report IDs are deduped.
-                row = self.book.db.execute(
-                    "SELECT id,body FROM reports ORDER BY rowid DESC LIMIT 1"
-                ).fetchone()
-                if row:
-                    selector_result = propose_selector(
-                        self.root, self.g, agents=agents, report_id=row[0],
-                        report=json.loads(row[1]), now=now,
-                    )
+                # Start/replay a proposal only when there is no challenger still
+                # collecting or waiting for the main PAPER account to flatten.
+                if selector_result.get("status") not in {"collecting", "awaiting_flat"}:
+                    row = self.book.db.execute(
+                        "SELECT id,body FROM reports ORDER BY rowid DESC LIMIT 1"
+                    ).fetchone()
+                    if row:
+                        selector_result = propose_selector(
+                            self.root, self.g, agents=agents, report_id=row[0],
+                            report=json.loads(row[1]), now=now,
+                        )
                 result = {**result, "selector_improvement": selector_result}
                 write_json(self.root / "improvement-status.json", {**result, "as_of": now})
             return result
