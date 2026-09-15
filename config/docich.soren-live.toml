@@ -76,8 +76,8 @@ improve_agents = "opencode-go:deepseek-v4.1-flash,amd:DeepSeek-V4-Flash,opencode
 # Soren91 定時コーナー (Phase 3)。当面は無効のまま置く。有効化はユーザー判断。
 # 検証時は一時的に enabled=true + start_hour/duration_minutes を短時間へ変える。
 [soren91_corner]
-enabled = false
-start_hour = 21
+enabled = true
+start_hour = 18
 duration_minutes = 30
 timezone = "Asia/Tokyo"
 

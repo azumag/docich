@@ -28,8 +28,50 @@ def _decimal_text(value: Decimal | str | int | float) -> str:
     return str(as_decimal(value, "status decimal"))
 
 
+_SIGNAL_CONTEXT_KEYS = (
+    "kind", "experiment_id", "rule_id", "combine",
+    "average_price", "last_price", "pnl_bps", "hold_minutes",
+)
+_SIGNAL_CONDITION_KEYS = ("feature", "observed", "threshold", "op", "unit", "lookback")
+
+
+def signal_context_payload(value: object) -> dict[str, object] | None:
+    """Allowlisted, bounded view of a fill's decision context (the "why")."""
+    if not isinstance(value, Mapping):
+        return None
+    result: dict[str, object] = {}
+    for key in _SIGNAL_CONTEXT_KEYS:
+        if key in value:
+            text = str(value.get(key) or "").replace("\n", " ").strip()[:160]
+            if text:
+                result[key] = text
+    raw = value.get("conditions")
+    if isinstance(raw, list):
+        conditions: list[dict[str, object]] = []
+        for item in raw[:4]:
+            if not isinstance(item, Mapping):
+                continue
+            row: dict[str, object] = {}
+            for key in _SIGNAL_CONDITION_KEYS:
+                if key not in item:
+                    continue
+                if key == "lookback":
+                    lookback = item.get(key)
+                    if type(lookback) is int and 2 <= lookback <= 24:
+                        row["lookback"] = lookback
+                    continue
+                text = str(item.get(key) or "").replace("\n", " ").strip()[:80]
+                if text:
+                    row[key] = text
+            if row:
+                conditions.append(row)
+        if conditions:
+            result["conditions"] = conditions
+    return result or None
+
+
 def _fill_payload(fill: PaperFill) -> dict[str, object]:
-    return {
+    payload = {
         "fill_id": fill.fill_id,
         "opportunity_id": fill.opportunity_id,
         "strategy_id": fill.strategy_id,
@@ -43,6 +85,10 @@ def _fill_payload(fill: PaperFill) -> dict[str, object]:
         "reason_code": fill.reason_code,
         "filled_at": float(fill.filled_at),
     }
+    context = signal_context_payload(fill.signal_context)
+    if context is not None:
+        payload["signal_context"] = context
+    return payload
 
 
 def _skip_payloads(
