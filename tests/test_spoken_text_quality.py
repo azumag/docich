@@ -39,6 +39,15 @@ class SpokenTextQualityTests(unittest.TestCase):
             spoken_text_quality.comment_reply_issues("これは短い返信です"),
         )
 
+    def test_punctuation_in_earlier_sentence_does_not_hide_unpunctuated_ending(self) -> None:
+        self.assertIn(
+            "missing_terminal_punctuation",
+            spoken_text_quality.comment_reply_issues("最初の文です。最後の文には句点がありません"),
+        )
+
+    def test_terminal_punctuation_before_closing_quote_is_valid(self) -> None:
+        self.assertEqual(spoken_text_quality.comment_reply_issues("「そうですね。」"), ())
+
     def test_english_only_reply_is_rejected(self) -> None:
         self.assertIn(
             "missing_japanese",
