@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
-export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
-python_bin="$ROOT/.venv-trading/bin/python3"
-if [[ ! -x "$python_bin" ]]; then python_bin=python3; fi
-exec "$python_bin" -m docich.trading.markets.provider_probe "$@"
