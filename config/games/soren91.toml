@@ -4,9 +4,11 @@ title = "Soren91 (Macリモートレンダラー)"
 adapter = "soren91"
 
 [agent]
-# Phase 2 の検証では false のまま表示切替だけを試せる。true にすると
-# coordinator が soren91/main.mjs (OCI bot) を agent window で起動する。
-enabled = false
+# true にすると coordinator が soren91/main.mjs (OCI bot) を agent window で
+# 起動し、コーナー終了時に停止する。切替は Mac 側 CDP プロキシの応答を待って
+# commit する (応答が無い間は fail-closed でロールバック)。
+# 表示切替だけを試す検証では一時的に false へ戻してよい。
+enabled = true
 brain = "command"
 command = ""
 
@@ -23,9 +25,11 @@ agent_token_env = "SOREN91_LOCAL_AGENT_TOKEN"
 # OCI 側 Tailscale IP を持つ環境変数名。viewer listener の bind と
 # Mac agent へ渡す caller URL の host になる (100.64.0.0/10 のみ許可)。
 oci_tailscale_ip_env = "SOREN91_OCI_TAILSCALE_IP"
-# Mac 側 CDP host (soren91_macos_cdp_host.mjs) の port。OCI bot が
-# SOREN91_REMOTE_CDP_URL=http://<mac-tailscale>:<cdp_port> で繋ぎに行く。
-cdp_port = 9322
+# OCI から到達できる Mac 側 CDP プロキシの port。Mac 内の Chrome CDP
+# (127.0.0.1:9322) ではなく、Tailscale 限定プロキシ (soren91_macos_cdp_host.mjs)
+# の port を指定する。OCI bot は SOREN91_REMOTE_CDP_URL=http://<mac-tailscale>:<cdp_port>
+# で繋ぎに行く。
+cdp_port = 19093
 # SRT port。agent へ渡すのは srt://<oci-ip>:<port>?mode=caller、
 # viewer は同 port の ?mode=listener で bind する。passphrase 無し。
 srt_port = 19192
@@ -44,8 +48,8 @@ soren_root = "/home/ubuntu/soren"
 # update_stream_game.sh に渡す docich のゲーム定義ディレクトリ。
 games_dir = "/home/ubuntu/docich/config/games"
 # soviet_now 側の bot。agent.enabled=true のとき必須 (絶対パス)。
-# 例: bot_path = "/home/ubuntu/soren/soren91/main.mjs"
-bot_path = ""
+# bot の作業ディレクトリは bot_path の親ディレクトリになる。
+bot_path = "/home/ubuntu/soren/soren91/main.mjs"
 # Mac コールドブート (Chrome 起動＋Unity ロード＋bot 遷移、約2分) に合わせた
 # 待ち予算。既定: viewer_wait_sec=240、cdp_wait_sec=180。
 # 必要なら上書き可 (どちらも 10-600 の整数)。
