@@ -35,7 +35,7 @@ class MarketProviderProbeWorkflowTests(unittest.TestCase):
         self.assertIn("cat ops/vm_actions/run_market_provider_probe.sh", self.workflow)
         self.assertNotIn("inputs.", self.workflow)
         self.assertNotIn("workflow_dispatch", self.workflow)
-        self.assertIn("production output", self.runner)
+        self.assertIn("gateway withholds stdout/stderr from production exec", self.runner)
 
     def test_runner_is_quote_only_loopback_and_never_installs_or_trades(self):
         self.assertIn("--host 127.0.0.1", self.runner)
