@@ -10,7 +10,7 @@ on:
         required: true
         default: status
         type: choice
-        options: [status, deploy, exec, bootstrap, diagnostics, reclaim, rebaseline]
+        options: [status, deploy, exec, bootstrap, diagnostics, reclaim, rebaseline, market_paper]
       target:
         description: VM target
         required: true
@@ -37,6 +37,18 @@ on:
         required: false
         default: false
         type: boolean
+      market_paper_action:
+        description: market_paper systemd action (opt-in stocks/FX paper-trading corners; never touches config/market-paper.toml)
+        required: false
+        default: install
+        type: choice
+        options: [install, enable, disable, restart]
+      market_paper_market:
+        description: market_paper target market
+        required: false
+        default: fx
+        type: choice
+        options: [stocks, fx]
       confirm:
         description: Type production for production exec/bootstrap
         required: false
@@ -437,6 +449,29 @@ jobs:
           echo "storage reclaim apply=${apply_flag} voicevox_archive=${voicevox_flag}"
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
           { printf 'APPLY=%s\nVOICEVOX_ARCHIVE=%s\n' "$apply_flag" "$voicevox_flag"; cat control/ops/vm_actions/storage_reclaim.sh; } | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
+      - name: Manage market-paper systemd units (opt-in stocks/FX paper corners)
+        if: ${{ steps.auth.outputs.operation == 'market_paper' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+          MP_ACTION: ${{ inputs.market_paper_action }}
+          MP_MARKET: ${{ inputs.market_paper_market }}
+        run: |
+          set -euo pipefail
+          # The helper is a fixed reviewed script from the trusted main checkout.
+          # It never edits config/market-paper.toml, never touches broker
+          # credentials or sends a real order, and only runs `systemctl --user`
+          # (no root/sudo) on the fixed unit set for the chosen market. The
+          # action/market pair is re-validated here (defense in depth beyond
+          # the workflow_dispatch choice inputs) and again inside the script.
+          case "$MP_ACTION" in install|enable|disable|restart) ;; *) echo "invalid market_paper_action" >&2; exit 1 ;; esac
+          case "$MP_MARKET" in stocks|fx) ;; *) echo "invalid market_paper_market" >&2; exit 1 ;; esac
+          echo "market_paper action=${MP_ACTION} market=${MP_MARKET}"
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          { printf 'MARKET_PAPER_ACTION=%s\nMARKET_PAPER_MARKET=%s\n' "$MP_ACTION" "$MP_MARKET"; cat control/ops/vm_actions/manage_market_paper_units.sh; } | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Rebaseline production to the reviewed current HEAD
         if: ${{ steps.auth.outputs.operation == 'rebaseline' }}

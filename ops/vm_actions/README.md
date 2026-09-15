@@ -108,6 +108,7 @@ sudo bash ops/vm_actions/install_vm_gateway.sh ~/.ssh/github-vm-ops.pub ubuntu
 - **preview command**: 同じrefで `exec / preview`。本番filesystem/networkから隔離されます。
 - **production command**: `exec / production / ref=main / confirm=production`。stdout/stderr本文はVM private logだけに保存します。
 - **status**: `status / production` または `status / preview`。production status は総容量・利用可能bytes・使用率だけを返し、pathやログ本文は返しません。
+- **market_paper**: `market_paper / production / ref=main / confirm=production` + `market_paper_action`(install/enable/disable/restart) + `market_paper_market`(stocks/fx)。opt-inのstocks/FXペーパートレードworker(`docich-market-worker@<market>.service` 等、`scripts/systemd/docich-market-*`)を `systemctl --user` だけで install/enable/disable/restart します。root/sudoは使いません。`config/market-paper.toml` は変更しません（enabled/mode切り替えは通常のcode reviewを通るdeployで行う）。結果は本操作自体では返らず(exec同様output withheld)、後続の `diagnostics` の `market_paper.{stocks,fx}` セクション(unit_active/health_status/feed_unavailable等)で確認します。
 
 ## Preview release / Git bundle retention and storage alert
 

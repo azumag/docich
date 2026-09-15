@@ -74,7 +74,10 @@ practice価格を入力し、約定はdocich内のローカル台帳にのみ生
 
 `docich-market-worker@{stocks,fx}.service` が5秒周期、`docich-market-corner@.timer` が毎分番組を判定する。
 `docich-market-improve@.timer` は5分周期でpending jobを処理する。定時起動の取りこぼしを後から再生しない。
-テンプレートの`__DOCICH_ROOT__`置換とowner-only正規デプロイが必要。**このPRはunitを設置・起動しない。**
+テンプレートの`__DOCICH_ROOT__`置換とowner-only正規デプロイが必要。**このPR単体はunitを設置・起動しない。**
+設置・enable/disable/restartは別PRで追加した owner-only `VM operations` の `market_paper` operation
+(`ops/vm_actions/manage_market_paper_units.sh`、`systemctl --user`のみ、root/sudo不使用)経由で行う。
+`config/market-paper.toml`のenabled/mode切り替えはこのoperationの対象外で、通常のcode reviewを通るdeployで行う。
 既存のcrypto worker、既存timer、本番profile、VM gatewayの権限は変更しない。
 `market-paper.env`のAI許可は `DOCICH_ALLOW_REAL_AI=1` を明示する場合のみ。秘密値はEnvironmentFileで管理する。
 
