@@ -48,6 +48,7 @@ class ManageMarketPaperUnitsTests(unittest.TestCase):
     def run_helper(self, action, market, exit_code="0"):
         env = dict(os.environ)
         env["PATH"] = f"{self.fake_bin}:{env['PATH']}"
+        env.pop("XDG_CONFIG_HOME", None)
         env["HOME"] = str(self.home)
         env["MARKET_PAPER_ACTION"] = action
         env["MARKET_PAPER_MARKET"] = market
@@ -74,6 +75,7 @@ class ManageMarketPaperUnitsTests(unittest.TestCase):
 
     def test_missing_root_is_rejected(self):
         env = dict(os.environ)
+        env.pop("XDG_CONFIG_HOME", None)
         env["PATH"] = f"{self.fake_bin}:{env['PATH']}"
         env["HOME"] = str(self.home)
         env["MARKET_PAPER_ACTION"] = "install"
