@@ -123,6 +123,7 @@ jobs:
             if [[ "$a" == "$root" && "$b" == "$cand" ]]; then
               ./set_toggle.sh AB_GATE_ENABLED=1 >/dev/null
               ./set_toggle.sh AB_GATE_DRY_RUN=1 >/dev/null
+              reload_runtime_toggles_force >/dev/null 2>&1
               [[ "$(_ab_env_value AB_GATE_DRY_RUN)" == '1' ]] || exit 73
               _ab_active >/dev/null 2>&1 || exit 74
               exit 0
@@ -149,6 +150,7 @@ jobs:
           b="$(_ab_state_get b_hash)"
           [[ "$a" == "$root" && "$b" == "$cand" ]] || exit 78
           [[ "$(_ab_env_value AB_GATE_DRY_RUN)" == '1' ]] || exit 79
+          reload_runtime_toggles_force >/dev/null 2>&1
           _ab_active >/dev/null 2>&1 || exit 80
           SH
 
