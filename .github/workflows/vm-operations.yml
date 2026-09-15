@@ -368,6 +368,39 @@ jobs:
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
           cat control/ops/vm_actions/restart_radio_worker.sh | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
+      - name: Probe Moomoo JP quote readiness after reviewed production deploy
+        id: market_provider_probe
+        if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        continue-on-error: true
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+          bash -n control/ops/vm_actions/run_market_provider_probe.sh
+          python3 -m py_compile candidate/src/docich/trading/markets/provider_probe.py
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          set +e
+          cat control/ops/vm_actions/run_market_provider_probe.sh | \
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA" >/dev/null
+          rc=$?
+          set -e
+          case "$rc" in
+            0) status=realtime_ready ;;
+            10) status=entitled_not_realtime_ready ;;
+            11) status=jp_quote_unavailable ;;
+            12) status=sdk_unavailable ;;
+            13) status=opend_unreachable ;;
+            14) status=probe_failed ;;
+            15) status=invalid_probe_request ;;
+            *) echo "::warning::Moomoo JP read-only provider probe transport/status unavailable (code=$rc). Stocks remain disabled."; exit 0 ;;
+          esac
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          echo "Moomoo JP read-only provider probe: $status"
+
       - name: Adopt reviewed production baseline
         if: ${{ steps.auth.outputs.operation == 'bootstrap' }}
         shell: bash
