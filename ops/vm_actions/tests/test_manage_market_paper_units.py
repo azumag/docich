@@ -10,6 +10,9 @@ HELPER = ROOT / "ops" / "vm_actions" / "manage_market_paper_units.sh"
 
 FAKE_SYSTEMCTL = """#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$SYSTEMCTL_CALLS_LOG"
+if [[ "${RECORD_XDG_RUNTIME_DIR:-0}" == "1" ]]; then
+  printf '%s\\n' "${XDG_RUNTIME_DIR:-}" > "$(dirname "$SYSTEMCTL_CALLS_LOG")/xdg_runtime_dir.txt"
+fi
 exit "${FAKE_SYSTEMCTL_EXIT:-0}"
 """
 
@@ -111,9 +114,45 @@ class ManageMarketPaperUnitsTests(unittest.TestCase):
     def test_install_fails_closed_on_missing_template(self):
         (self.docroot / "scripts" / "systemd" / "docich-market-worker@.service").unlink()
         result = self.run_helper("install", "fx")
-        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.returncode, 11, result.stderr)
         self.assertIn("missing template", result.stderr)
         self.assertFalse(self.unit_dir.exists() and any(self.unit_dir.iterdir()))
+
+    def test_install_fails_closed_when_unit_dir_cannot_be_created(self):
+        # A stray file where the directory should go makes `mkdir -p` fail;
+        # this must surface as the dedicated exit code (10), not a silent
+        # partial install.
+        (self.home / ".config").mkdir()
+        (self.home / ".config" / "systemd").write_text("not a directory", encoding="utf-8")
+        result = self.run_helper("install", "fx")
+        self.assertEqual(result.returncode, 10, result.stderr)
+        self.assertIn("mkdir failed", result.stderr)
+
+    def test_install_surfaces_daemon_reload_failure_distinctly(self):
+        result = self.run_helper("install", "fx", exit_code="1")
+        self.assertEqual(result.returncode, 13, result.stderr)
+        self.assertIn("daemon-reload failed", result.stderr)
+        # The templates must still have been written before the reload step ran.
+        for name in TEMPLATES:
+            self.assertTrue((self.unit_dir / name).is_file(), name)
+
+    def test_install_sets_xdg_runtime_dir_when_absent(self):
+        env = dict(os.environ)
+        env.pop("XDG_CONFIG_HOME", None)
+        env.pop("XDG_RUNTIME_DIR", None)
+        env["PATH"] = f"{self.fake_bin}:{env['PATH']}"
+        env["HOME"] = str(self.home)
+        env["MARKET_PAPER_ACTION"] = "install"
+        env["MARKET_PAPER_MARKET"] = "fx"
+        env["SYSTEMCTL_CALLS_LOG"] = str(self.calls_log)
+        env["RECORD_XDG_RUNTIME_DIR"] = "1"
+        result = subprocess.run(
+            ["bash", str(HELPER), "--root", str(self.docroot)],
+            env=env, capture_output=True, text=True, timeout=30, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        recorded = (self.base / "xdg_runtime_dir.txt").read_text(encoding="utf-8").strip()
+        self.assertEqual(recorded, f"/run/user/{os.getuid()}")
 
     def test_enable_fx_only_touches_fx_units(self):
         result = self.run_helper("enable", "fx")

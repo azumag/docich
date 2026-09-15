@@ -39,13 +39,19 @@ case "$action" in install|enable|disable|restart) ;; *) echo "invalid action: $a
 case "$market" in stocks|fx) ;; *) echo "invalid market: $market" >&2; exit 2 ;; esac
 [[ -d "$root" ]] || { echo "root not found: $root" >&2; exit 2; }
 
+# Production exec runs this without an interactive login session, so the
+# `systemctl --user` D-Bus socket must be located explicitly rather than
+# relying on an ambient XDG_RUNTIME_DIR (gateway.py's execute() sets a
+# minimal fixed env with no such variable).
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
 unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 worker_unit="docich-market-worker@${market}.service"
 corner_timer="docich-market-corner@${market}.timer"
 improve_timer="docich-market-improve@${market}.timer"
 
 install_units() {
-  mkdir -p "$unit_dir"
+  mkdir -p "$unit_dir" || { echo "mkdir failed: $unit_dir" >&2; exit 10; }
   local templates=(
     docich-market-worker@.service
     docich-market-corner@.service
@@ -56,10 +62,10 @@ install_units() {
   local name src
   for name in "${templates[@]}"; do
     src="$root/scripts/systemd/$name"
-    [[ -f "$src" ]] || { echo "missing template: $src" >&2; exit 2; }
-    sed "s#__DOCICH_ROOT__#$root#g" "$src" > "$unit_dir/$name"
+    [[ -f "$src" ]] || { echo "missing template: $src" >&2; exit 11; }
+    sed "s#__DOCICH_ROOT__#$root#g" "$src" > "$unit_dir/$name" || { echo "write failed: $unit_dir/$name" >&2; exit 12; }
   done
-  systemctl --user daemon-reload
+  systemctl --user daemon-reload || { echo "daemon-reload failed (XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR)" >&2; exit 13; }
   echo "installed: ${templates[*]}"
 }
 
