@@ -5,6 +5,7 @@ import argparse
 from contextlib import contextmanager
 import fcntl
 import json
+import math
 from pathlib import Path
 import time
 import tomllib
@@ -53,21 +54,36 @@ class Runtime:
     def _stock_quote_config(self, *, now: float, begin: float) -> tuple[dict, dict]:
         selector_config = self.config.get("selector", {})
         if not isinstance(selector_config, dict) or not selector_config.get("enabled", False):
-            return self.config, {"enabled": False, "ready": True, "symbols": self.config.get("symbols", [])}
-        if selector_config.get("feed", "file") != "file":
-            raise FeedUnavailable("dynamic stock selector provider is not configured")
-        policy = active_selector_policy(self.root)
-        candidates = read_file_candidates(selector_config, self.data_root, now, policy)
-        previous = self._selector_state()
+            return self.config, {"enabled": False, "ready": True, "status": "disabled",
+                                 "symbols": self.config.get("symbols", [])}
         held = sorted(self.book.state().get("positions", {}).keys())
-        selection = select_universe(
-            candidates, policy, now=now,
-            current_symbols=previous.get("focused_symbols", []),
-            held_symbols=held,
-            last_replaced_at=float(previous.get("last_replaced_at", 0) or 0),
-            session_start=begin,
-        )
-        selection["enabled"] = True
+        previous = self._selector_state()
+        try:
+            if selector_config.get("feed", "file") != "file":
+                raise FeedUnavailable("dynamic stock selector provider is not configured")
+            policy = active_selector_policy(self.root)
+            candidates = read_file_candidates(selector_config, self.data_root, now, policy)
+            last_replaced = float(previous.get("last_replaced_at", 0) or 0)
+            if not math.isfinite(last_replaced) or last_replaced < 0 or last_replaced > now:
+                last_replaced = 0
+            selection = select_universe(
+                candidates, policy, now=now,
+                current_symbols=previous.get("focused_symbols", []),
+                held_symbols=held,
+                last_replaced_at=last_replaced,
+                session_start=begin,
+            )
+            selection.update(enabled=True, status="ok")
+        except (FeedUnavailable, OSError, ValueError, KeyError, TypeError, ArithmeticError):
+            # Scanner failure must never open new positions, but a held position
+            # remains pinned so its exit quote can still be refreshed.
+            selection = {
+                "enabled": True, "ready": False, "status": "unavailable",
+                "symbols": held, "focused_symbols": [], "held_symbols": held,
+                "ranking": [], "changed": False,
+                "last_replaced_at": previous.get("last_replaced_at", 0),
+                "policy": previous.get("policy", "unavailable"), "as_of": now,
+            }
         write_json(self.root / "selector-state.json", selection)
         quote_config = dict(self.config)
         quote_config["symbols"] = selection["symbols"]
@@ -83,7 +99,8 @@ class Runtime:
             open_market = (fx_week_open(now) if self.market == "fx" else
                            jpx_open(self.data_root / self.config.get("calendar_file", "jpx-calendar.json"), now))
             reason, quotes = "market_closed", []
-            selector = {"enabled": False, "ready": True, "symbols": self.config.get("symbols", [])}
+            selector = {"enabled": False, "ready": True, "status": "disabled",
+                        "symbols": self.config.get("symbols", [])}
             quote_config = self.config
             if open_market:
                 try:
@@ -91,36 +108,47 @@ class Runtime:
                         quote_config, selector = self._stock_quote_config(now=now, begin=begin)
                     if quote_config.get("symbols"):
                         quotes = read_quotes(quote_config, self.market, self.data_root, now)
-                        reason = "ok" if quotes else "no_tradeable_quotes"
+                        if self.market == "stocks" and selector.get("status") == "unavailable":
+                            reason = "selector_unavailable"
+                        else:
+                            reason = "ok" if quotes else "no_tradeable_quotes"
                     else:
-                        reason = "no_candidates" if selector.get("enabled") else "price_feed_unavailable"
+                        if self.market == "stocks" and selector.get("status") == "unavailable":
+                            reason = "selector_unavailable"
+                        else:
+                            reason = "no_candidates" if selector.get("enabled") else "price_feed_unavailable"
                 except (FeedUnavailable, OSError, ValueError, KeyError, TypeError):
-                    reason = "selector_unavailable" if self.market == "stocks" and self.config.get("selector", {}).get("enabled") else "price_feed_unavailable"
-            now = clock()  # assess freshness and the session AFTER network I/O
+                    reason = "price_feed_unavailable"
+                    if self.market == "stocks":
+                        selector["ready"] = False
+            now = clock()
             begin, end = report_window(self.market, now)
             allow_entries = open_market
             force_flat = False
             entry_cutoff = end
+            selector_policy_version = selector.get("policy", "disabled")
             if self.market == "stocks":
                 try:
                     lease = json.loads(self.corner_path.read_text())
                 except (OSError, ValueError):
                     lease = {}
-                selector_policy = active_selector_policy(self.root)
-                # Never open a position that the configured max holding horizon
-                # cannot reasonably close before the fixed 10:00 session end.
-                entry_cutoff = max(begin, end - policy.max_hold_s - selector_policy.exit_buffer_s)
+                try:
+                    selector_policy = active_selector_policy(self.root)
+                    selector_policy_version = selector_policy.version
+                    entry_cutoff = max(begin, end - policy.max_hold_s - selector_policy.exit_buffer_s)
+                except (OSError, ValueError, KeyError, TypeError, ArithmeticError):
+                    # Invalid explicit selector policy is a hard no-entry state.
+                    entry_cutoff = begin
+                    selector["ready"] = False
+                    selector_policy_version = "invalid"
                 allow_entries = (open_market and selector.get("ready", True) and begin <= now < entry_cutoff
                                  and lease.get("status") == "active" and lease.get("ends_at") == end
                                  and 0 <= now - lease.get("heartbeat", 0) <= 20)
-                # Exit management continues even if the display/scanner crashes.
-                # No fabricated close is produced when a held symbol has no quote.
                 force_flat = not allow_entries
             result = self.book.process(quotes, policy, now=now, allow_entries=allow_entries, force_flat=force_flat)
             try:
                 advance_challenger(self.book, self.root, quotes, now=now, allow_entries=allow_entries, force_flat=force_flat)
             except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
-                # An experiment failure must not stop primary execution.
                 write_json(self.root / "experiment-status.json", {"status": "failed", "error": type(exc).__name__, "as_of": now})
             cutoff = end if self.market == "stocks" else begin
             if now >= cutoff and (self.market == "fx" or lease.get("ends_at") == cutoff):
@@ -130,9 +158,10 @@ class Runtime:
                 result["selector"] = {
                     "enabled": bool(selector.get("enabled")),
                     "ready": bool(selector.get("ready", True)),
+                    "status": selector.get("status", "unknown"),
                     "focused_count": len(selector.get("focused_symbols", selector.get("symbols", []))),
                     "held_count": len(selector.get("held_symbols", [])),
-                    "policy": selector.get("policy", active_selector_policy(self.root).version),
+                    "policy": selector_policy_version,
                     "entry_cutoff_at": entry_cutoff,
                 }
             write_json(self.root / "health.json", result)
@@ -141,7 +170,6 @@ class Runtime:
     def improve(self, *, now: float) -> dict:
         if not self.config.get("enabled", False):
             return {"status": "disabled"}
-        # A separate lock/process: a slow AI call never stalls the resident FX bot.
         with guard(self.root / "improve.lock"):
             news = read_news(self.settings.get("news", {}).get("rss_urls", []), now)
             write_json(self.root / "news.json", {"as_of": now, "items": news, "status": "ok" if news else "unavailable"})
