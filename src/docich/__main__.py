@@ -26,6 +26,19 @@ def _direct_paper_argv(command: str, argv: list[str]) -> list[str] | None:
     return None
 
 
+def _speech_quality_argv(argv: list[str]) -> list[str] | None:
+    """Route the stdin-only text validator before loading the config CLI."""
+    if argv and argv[0] == "speech-quality":
+        return argv[1:]
+    return None
+
+
+speech_quality_argv = _speech_quality_argv(sys.argv[1:])
+if speech_quality_argv is not None:
+    from .spoken_text_quality import main as speech_quality_main
+
+    sys.exit(speech_quality_main(speech_quality_argv))
+
 free_strategy_argv = _direct_paper_argv("free-strategy", sys.argv[1:])
 if free_strategy_argv is not None:
     from .trading.free_strategy.cli import main as free_strategy_main
