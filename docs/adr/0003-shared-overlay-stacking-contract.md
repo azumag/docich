@@ -1,6 +1,6 @@
 # ADR 0003: 共通オーバーレイ（共有レール）のレイヤリング契約
 
-- Status: Proposed
+- Status: Accepted（soviet_now#345 は main へ統合済み。production への反映と `enable --now` は docich の通常 deploy 経路で実施）
 - 関連 Issue: [azumag/soviet_now#303](https://github.com/azumag/soviet_now/issues/303)（Soren91 macOS renderer → OCI SRT → docich corner）
 - 関連 PR: [azumag/soviet_now#345](https://github.com/azumag/soviet_now/pull/345)（本ADRの決定を実装）
 - 関連実装（soviet_now）: `start_shared_overlay_service.sh` / `game_lifecycle_control.sh` /
