@@ -5,6 +5,11 @@ After=network.target
 [Service]
 Type=oneshot
 WorkingDirectory=__DOCICH_ROOT__
+# macOS ローカルエージェントの接続情報 (base URL / OCI Tailscale IP / token)。
+# これが無いと soren91 アダプタの preflight が fail-closed となり、コーナーは
+# 開始できない (時刻外 tick は env が無くても no-op のまま)。値は秘密情報を
+# 含むためリポジトリへ commit せず、VM 上に 0600 で配置する。
+EnvironmentFile=-/home/ubuntu/soren/soren91-macos-agent.env
 # 時刻外tickは完全no-op。live runtime準備は開始/期限切れ復旧が必要な時だけ
 # soren91_corner.py が既存 `docich up` 契約を通して実行する。
 ExecStart=__DOCICH_ROOT__/bin/docich --config __DOCICH_ROOT__/config/docich.soren-live.toml soren91-corner tick
