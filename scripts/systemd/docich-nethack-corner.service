@@ -1,0 +1,11 @@
+[Unit]
+Description=docich NetHack 定時コーナー判定
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=__DOCICH_ROOT__
+# P0では live profile に nethack_corner を明示しない限り disabled のまま。
+# runtime の準備とゲーム切替は nethack_corner.py が既存契約を通して行う。
+ExecStart=__DOCICH_ROOT__/bin/docich-nethack-corner --config __DOCICH_ROOT__/config/docich.soren-live.toml tick
+TimeoutStartSec=infinity

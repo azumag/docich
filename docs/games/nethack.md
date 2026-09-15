@@ -97,3 +97,46 @@ game window では xterm が `tmux attach -r` (読み取り専用) して端末�
 NetHack は例であり、`[cli] command` を差し替えれば任意の CLI/TUI ゲームが同じアダプタで動く
 (§4.2)。ゲームの生死は `docich-game` tmux セッションの生死で判定するため、xterm 表示側が
 落ちても (映像が消えるだけで) ゲーム進行自体は失われない。
+
+---
+
+## 7. NetHack 長期攻略コーナー (#490)
+
+P0 では既存の CLI NetHack を変更せず、独立した番組枠だけを追加する。定時コーナーと手動テストは
+別々の state/lock を使うため、手動 smoke がその日の定時枠を消費しない。
+
+通常設定は安全のため `enabled = false`。本番時刻を決めて有効化するまでは自動起動しない。
+
+```toml
+[nethack_corner]
+enabled = false
+start_hour = 22       # 設定例。P0では本番時刻として確定していない
+duration_minutes = 30
+timezone = "Asia/Tokyo"
+# weekdays = [0, 2, 4]  # 任意。0=Mon .. 6=Sun
+```
+
+定時 runner:
+
+```bash
+bin/docich-nethack-corner tick
+bin/docich-nethack-corner status --json
+```
+
+手動 smoke runner:
+
+```bash
+bin/docich-nethack-corner-manual start --duration-minutes 5
+bin/docich-nethack-corner-manual status --json
+bin/docich-nethack-corner-manual stop
+```
+
+どちらもゲーム切替を直接操作せず `GameSwitchCoordinator` を通す。開始前に別ゲームが active なら
+NetHack へ transactional switch し、終了時に元のゲームへ戻す。元が idle なら NetHack 終了後も
+idle に戻す。
+
+P0 の時点では `agent.enabled=false` のままであり、「AI攻略が完成した」とは扱わない。以降は #490 の
+ロードマップに従い、run 永続化 → spectator tile renderer → tactical/mid-level/LLM policy →
+structured observation → 死亡履歴からの継続改善、の順に追加する。特にグラフィック表示は AI の
+正確な text/structured observation と分離し、視聴者向け presentation のためだけに画像認識へ
+退化させない。

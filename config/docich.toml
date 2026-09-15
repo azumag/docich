@@ -75,6 +75,16 @@ start_hour = 21
 duration_minutes = 30
 timezone = "Asia/Tokyo"
 
+# --- NetHack 長期攻略コーナー (#490 P0) ---
+# P0 では番組枠だけを追加し、既存の CLI NetHack をそのまま利用する。
+# 本番時刻はまだ固定しないため通常profileでは無効。start_hour=22 は設定例。
+# games は ["nethack"] 固定。weekdays を置くとその曜日のみ (0=Mon..6=Sun)。
+[nethack_corner]
+enabled = false
+start_hour = 22
+duration_minutes = 30
+timezone = "Asia/Tokyo"
+
 # --- Web UI (モデルチェーン / バックオフ管理) ---
 
 [webui]
