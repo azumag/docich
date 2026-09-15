@@ -87,7 +87,7 @@ jobs:
           echo 'production did not converge to current protected main' >&2
           exit 1
 
-      - name: Enable fixed auto-adopt A/B probe
+      - name: Enable fixed observe-only A/B probe
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -106,9 +106,9 @@ jobs:
           active_branch="${ACTIVE_BRANCH_FILE:-tmp/state/active_branch.json}"
           [[ -f "$candidate" ]] || exit 71
 
-          # If a deploy left an invalid/stale experiment behind, let the reviewed
-          # integrity wrapper retire it without assigning a winner before deciding
-          # whether a real active experiment conflicts with this probe.
+          # The frozen pre-#343 candidate is useful for causal comparison, but
+          # it is known to violate the current merge-opportunity strategy contract.
+          # Keep the existing history while ensuring this probe can never adopt it.
           if [[ -f "$state" ]]; then
             _ab_active >/dev/null 2>&1 || true
           fi
@@ -122,9 +122,9 @@ jobs:
             b="$(_ab_state_get b_hash)"
             if [[ "$a" == "$root" && "$b" == "$cand" ]]; then
               ./set_toggle.sh AB_GATE_ENABLED=1 >/dev/null
-              ./set_toggle.sh AB_GATE_DRY_RUN=0 >/dev/null
+              ./set_toggle.sh AB_GATE_DRY_RUN=1 >/dev/null
               reload_runtime_toggles_force >/dev/null 2>&1
-              [[ "$(_ab_env_value AB_GATE_DRY_RUN)" == '0' ]] || exit 73
+              [[ "$(_ab_env_value AB_GATE_DRY_RUN)" == '1' ]] || exit 73
               _ab_active >/dev/null 2>&1 || exit 74
               exit 0
             fi
@@ -133,7 +133,7 @@ jobs:
 
           [[ ! -f "$active_branch" ]] || exit 76
           ./set_toggle.sh AB_GATE_ENABLED=1 >/dev/null
-          ./set_toggle.sh AB_GATE_DRY_RUN=0 >/dev/null
+          ./set_toggle.sh AB_GATE_DRY_RUN=1 >/dev/null
 
           started=0
           for _ in $(seq 1 6); do
@@ -149,9 +149,9 @@ jobs:
           a="$(_ab_state_get a_hash)"
           b="$(_ab_state_get b_hash)"
           [[ "$a" == "$root" && "$b" == "$cand" ]] || exit 78
-          [[ "$(_ab_env_value AB_GATE_DRY_RUN)" == '0' ]] || exit 79
+          [[ "$(_ab_env_value AB_GATE_DRY_RUN)" == '1' ]] || exit 79
           reload_runtime_toggles_force >/dev/null 2>&1
           _ab_active >/dev/null 2>&1 || exit 80
           SH
 
-          echo 'auto-adopt A/B probe is active'
+          echo 'observe-only A/B probe is active'
