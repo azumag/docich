@@ -142,6 +142,13 @@ GitHub 側の secret masking により、PID や commit SHA の一部が `***` �
 定期監視を追加する場合は healthy → 通知なし、warning / critical → 結果を残す
 運用にし、noisy な schedule を増やさないこと。
 
+`.github/workflows/vm-storage-monitor.yml` は storage / runtime health に加えて、
+diagnostics の `tracked_drift.drift_detected=1`（= canonical deploy を塞ぐ
+`git_clean(root)==false`）を **`[VM deploy] tracked drift alert` 1件の open Issue**
+へ dedup して通知する。復旧（`drift_detected=0`）で自動 close する。通知本文は
+固定カテゴリと counter だけで、path / filename / diff / bytes / raw exception を
+含めない。診断が取得できない・`tracked_drift` が無い場合はアラートを変更しない。
+
 ## Runtime 変更 checklist
 
 worker / queue / model / provider / fallback / runtime component を変えたら：

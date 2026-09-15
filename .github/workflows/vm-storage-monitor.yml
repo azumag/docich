@@ -98,6 +98,74 @@ jobs:
           python3 ops/vm_actions/summarize_runtime_queue_attribution.py "$RUNNER_TEMP/runtime-diagnostics.json" >> "$GITHUB_OUTPUT"
           python3 ops/vm_actions/summarize_worker_state.py "$RUNNER_TEMP/runtime-diagnostics.json" >> "$GITHUB_OUTPUT"
 
+      - name: Assess tracked drift
+        id: drift
+        run: |
+          set -euo pipefail
+          file="$RUNNER_TEMP/runtime-diagnostics.json"
+          if [[ ! -f "$file" ]]; then
+            {
+              echo 'available=0'
+              echo 'drift_detected=0'
+              echo 'drift_context=diagnostics_unavailable=1'
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 - "$file" >> "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          data=json.load(open(sys.argv[1], encoding='utf-8'))
+          diagnostics=data.get('diagnostics') if isinstance(data, dict) else None
+          drift=diagnostics.get('tracked_drift') if isinstance(diagnostics, dict) else None
+          if not isinstance(drift, dict):
+              print('available=0')
+              print('drift_detected=0')
+              print('drift_context=tracked_drift_missing=1')
+              raise SystemExit(0)
+          keys=('parent_tracked_dirty', 'owned_submodule_head_mismatch',
+                'owned_submodule_tracked_dirty', 'owned_submodule_missing_or_invalid',
+                'scan_complete', 'unknown')
+          context=','.join(f'{key}={int(bool(drift.get(key, 0)))}' for key in keys)
+          print('available=1')
+          print(f'drift_detected={int(bool(drift.get("drift_detected", 0)))}')
+          print(f'drift_context={context}')
+          PY
+
+      - name: Update deduplicated tracked drift alert
+        if: ${{ steps.drift.outputs.available == '1' }}
+        env:
+          DRIFT_DETECTED: ${{ steps.drift.outputs.drift_detected }}
+          DRIFT_CONTEXT: ${{ steps.drift.outputs.drift_context }}
+        run: |
+          set -euo pipefail
+          title='[VM deploy] tracked drift alert'
+          mapfile -t alerts < <(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title --jq '.[] | select(.title == "[VM deploy] tracked drift alert") | "\(.number)\t\(.title)"')
+          if [[ "$DRIFT_DETECTED" != '1' ]]; then
+            for entry in "${alerts[@]}"; do
+              number="${entry%%$'\t'*}"
+              gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment "Production checkout tracked drift recovered (drift_detected=0)."
+            done
+            echo "tracked drift: none (${DRIFT_CONTEXT})"
+            exit 0
+          fi
+          body="$(cat <<EOF
+          The owner-only read-only diagnostics reports tracked drift that blocks canonical production deploy.
+
+          - drift_detected: 1
+          - Categories: ${DRIFT_CONTEXT}
+          - Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          Fixed categories and counters only. Paths, file names, diffs, file bytes, raw exceptions, credentials and command output are never published. This check is read-only: no reset, checkout, restart or cleanup is performed.
+          EOF
+          )"
+          for entry in "${alerts[@]}"; do
+            number="${entry%%$'\t'*}"
+            gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+            echo "Existing tracked drift alert #${number} refreshed."
+            exit 0
+          done
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          echo "::warning::Production checkout tracked drift detected (${DRIFT_CONTEXT})."
+
       - name: Update deduplicated GitHub alert
         env:
           SEVERITY: ${{ steps.storage.outputs.severity }}
