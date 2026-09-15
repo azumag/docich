@@ -83,6 +83,11 @@ default_pid_relpath = _REG.default_pid_relpath
 required_workers = _REG.required_workers
 
 RATE_LIMIT_RC = "79"
+CHAIN_SUMMARY_MAX_COUNT = 1000
+CHAIN_SUMMARY_RE = re.compile(
+    r"\Avrl=(0|[1-9][0-9]{0,3});vda=(0|[1-9][0-9]{0,3});nfs=([01]);"
+    r"term=(winner|all_failed|queue_giveup|gate_giveup)\Z"
+)
 TMP_SO_ROOT = Path("/tmp")
 TMP_SO_PATTERNS = (
     re.compile(r"^\..+-00000000\.so\Z"),
@@ -616,6 +621,21 @@ def _split_agent(agent):
     return _redact_text(provider or "unknown", 40), _redact_text(model or "unknown", 80)
 
 
+def _parse_chain_summary(value):
+    """Parse the fixed Soren chain_summary payload without exposing free text."""
+    if not isinstance(value, str):
+        return None
+    match = CHAIN_SUMMARY_RE.fullmatch(value)
+    if match is None:
+        return None
+    vrl, vda, nfs, terminal = match.groups()
+    vrl = int(vrl)
+    vda = int(vda)
+    if vrl > CHAIN_SUMMARY_MAX_COUNT or vda > CHAIN_SUMMARY_MAX_COUNT or vda > vrl:
+        return None
+    return vrl, vda, int(nfs), terminal
+
+
 def _collect_ai(soren, now):
     stats_dir = soren / "tmp" / "state" / "ai_stats"
     window_start = now - DIAG_WINDOW_SEC
@@ -623,6 +643,10 @@ def _collect_ai(soren, now):
     paths = [stats_dir / f"{day}.jsonl" for day in sorted(days)]
     attempts = successes = failures = rate_limits = winners = 0
     all_failed = queue_giveups = gate_giveups = 0
+    chain_summary_sampled = 0
+    multi_vercel_429_chains = 0
+    multi_vercel_429_non_vercel_recovered = 0
+    multi_vercel_429_all_failed = 0
     by_label = {}
     recent = []
     malformed = 0
@@ -646,6 +670,22 @@ def _collect_ai(soren, now):
         label = _redact_text(str(event.get("label") or "unknown"), 80)
         agent = str(event.get("agent") or "")
         rc = str(event.get("rc") or "")
+        if kind == "chain_summary":
+            # The producer intentionally stores only this fixed aggregate in
+            # the error field. Reject anything outside that exact grammar and
+            # never add chain summaries to recent_events, where arbitrary
+            # labels/models/errors could become public or evict fail evidence.
+            chain = _parse_chain_summary(event.get("error"))
+            if chain is not None:
+                vrl, vda, non_vercel_success, terminal = chain
+                chain_summary_sampled += 1
+                if vrl >= 2 and vda >= 2:
+                    multi_vercel_429_chains += 1
+                    if non_vercel_success == 1 and terminal == "winner":
+                        multi_vercel_429_non_vercel_recovered += 1
+                    if terminal == "all_failed":
+                        multi_vercel_429_all_failed += 1
+            continue
         entry = by_label.setdefault(label, {"fail": 0, "winner": 0, "agents": set(), "all_failed": 0})
         if kind == "attempt":
             attempts += 1
@@ -712,6 +752,10 @@ def _collect_ai(soren, now):
         "all_failed": all_failed,
         "queue_giveups": queue_giveups,
         "gate_giveups": gate_giveups,
+        "chain_summary_sampled": chain_summary_sampled,
+        "multi_vercel_429_chains": multi_vercel_429_chains,
+        "multi_vercel_429_non_vercel_recovered": multi_vercel_429_non_vercel_recovered,
+        "multi_vercel_429_all_failed": multi_vercel_429_all_failed,
         "malformed_lines": malformed,
         "anomalous_components": anomalous,
         "recent_events": recent,
