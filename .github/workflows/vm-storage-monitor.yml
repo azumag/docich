@@ -95,7 +95,7 @@ jobs:
             exit 0
           fi
           printf '%s\n' "$diagnostics_json" > "$RUNNER_TEMP/runtime-diagnostics.json"
-          python3 ops/vm_actions/summarize_runtime_pressure.py "$RUNNER_TEMP/runtime-diagnostics.json" >> "$GITHUB_OUTPUT"
+          python3 ops/vm_actions/summarize_runtime_queue_attribution.py "$RUNNER_TEMP/runtime-diagnostics.json" >> "$GITHUB_OUTPUT"
           python3 ops/vm_actions/summarize_worker_state.py "$RUNNER_TEMP/runtime-diagnostics.json" >> "$GITHUB_OUTPUT"
 
       - name: Update deduplicated GitHub alert
