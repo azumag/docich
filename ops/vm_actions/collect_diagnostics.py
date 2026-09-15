@@ -36,6 +36,7 @@ Usage: collect_diagnostics.py <soren_root>
 Exit 0 with JSON on stdout on success; nonzero (no usable stdout) on crash,
 in which case the gateway refuses fail-closed.
 """
+import configparser
 import json
 import math
 import os
@@ -801,7 +802,7 @@ def _collect_improvement(soren, now):
     }
 
 
-def _git_head(repo, *args):
+def _git_text(repo, *args):
     try:
         out = subprocess.check_output(
             ["git", "-C", str(repo), "-c", "core.hooksPath=/dev/null", *args],
@@ -814,10 +815,10 @@ def _git_head(repo, *args):
 
 
 def _collect_meta(soren, now):
-    docich_head = _git_head(PROD_ROOT, "rev-parse", "HEAD")
+    docich_head = _git_text(PROD_ROOT, "rev-parse", "HEAD")
     if not docich_head or not re.fullmatch(r"[0-9a-f]{40}", docich_head):
         docich_head = None
-    soviet_link = _git_head(PROD_ROOT, "ls-tree", "HEAD", "--", "games/soviet_now")
+    soviet_link = _git_text(PROD_ROOT, "ls-tree", "HEAD", "--", "games/soviet_now")
     soviet_head = None
     if soviet_link:
         fields = soviet_link.split()
@@ -830,6 +831,136 @@ def _collect_meta(soren, now):
         "docich_head": docich_head,
         "soviet_head": soviet_head,
     }
+
+
+# Owned submodule allowlist for tracked-drift attribution. This MUST stay
+# identical to the gateway's ``OWNED_SUBMODULES`` contract; a regression test
+# asserts the two mappings are equal. Only fixed categories/counters are ever
+# emitted for drift -- never paths, file names, diffs, bytes or raw exception
+# text.
+OWNED_SUBMODULES = {
+    "games/soviet_now": "https://github.com/azumag/soviet_now.git",
+    "games/hanjuku-sfc-speedrun": "https://github.com/azumag/hanjuku-sfc-speedrun.git",
+}
+
+TRACKED_DRIFT_CATEGORIES = (
+    "parent_tracked_dirty",
+    "owned_submodule_head_mismatch",
+    "owned_submodule_tracked_dirty",
+    "owned_submodule_missing_or_invalid",
+)
+
+
+def classify_tracked_drift(scan_complete, parent_dirty, submodule_drift):
+    """Reduce tracked-drift probes to fixed booleans/counters only.
+
+    ``submodule_drift`` is an iterable of per-submodule probe dicts (or ``None``
+    when an allowlisted path is simply absent from this commit). An incomplete
+    scan makes ``unknown`` and ``drift_detected`` explicit, so a failed probe is
+    never reported as a clean zero (#412).
+    """
+    probes = [item for item in submodule_drift if item]
+    missing = any(item.get("missing_or_invalid") for item in probes)
+    head_mismatch = any(item.get("head_mismatch") for item in probes)
+    tracked_dirty = any(item.get("tracked_dirty") for item in probes)
+    scan_complete = bool(scan_complete)
+    result = {
+        "scan_complete": int(scan_complete),
+        "parent_tracked_dirty": int(bool(parent_dirty)),
+        "owned_submodule_head_mismatch": int(head_mismatch),
+        "owned_submodule_tracked_dirty": int(tracked_dirty),
+        "owned_submodule_missing_or_invalid": int(missing),
+        "unknown": int(not scan_complete),
+    }
+    result["drift_detected"] = int(
+        not scan_complete or any(result[name] for name in TRACKED_DRIFT_CATEGORIES)
+    )
+    return result
+
+
+def _declared_submodule_url(root, path):
+    """Return the ``.gitmodules`` url for ``path`` (``""`` if absent/unreadable)."""
+    try:
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read(root / ".gitmodules", encoding="utf-8")
+    except (OSError, configparser.Error):
+        return ""
+    for section in parser.sections():
+        if parser.get(section, "path", fallback="") == path:
+            return parser.get(section, "url", fallback="") or ""
+    return ""
+
+
+def _probe_tracked_drift_submodule(root, path):
+    """Return ``(probe, complete)`` for one allowlisted submodule.
+
+    ``probe`` is ``None`` when the path is not a gitlink in ``HEAD`` (nothing to
+    attribute), a fixed-category dict otherwise. ``complete=False`` marks a scan
+    that could not be finished and must become ``unknown``.
+    """
+    probe = {"missing_or_invalid": False, "head_mismatch": False, "tracked_dirty": False}
+    link = _git_text(root, "ls-tree", "HEAD", "--", path)
+    if link is None:
+        return None, False
+    if not link:
+        return None, True
+    fields = link.split()
+    if len(fields) < 3 or fields[0] != "160000" or not re.fullmatch(r"[0-9a-f]{40}", fields[2]):
+        probe["missing_or_invalid"] = True
+        return probe, True
+    gitlink = fields[2]
+    if _declared_submodule_url(root, path) != OWNED_SUBMODULES[path]:
+        probe["missing_or_invalid"] = True
+        return probe, True
+    work = root / path
+    if not work.is_dir():
+        probe["missing_or_invalid"] = True
+        return probe, True
+    # ``git -C`` climbs to the nearest enclosing repository, so an
+    # uninitialized/empty submodule directory would otherwise be probed as the
+    # parent checkout. Require the submodule directory to be its own worktree
+    # root before attributing a head mismatch or dirty state.
+    toplevel = _git_text(work, "rev-parse", "--show-toplevel")
+    if toplevel is None:
+        return None, False
+    if Path(toplevel).resolve() != work.resolve():
+        probe["missing_or_invalid"] = True
+        return probe, True
+    head = _git_text(work, "rev-parse", "HEAD")
+    if head is None:
+        return None, False
+    if head != gitlink:
+        probe["head_mismatch"] = True
+    porcelain = _git_text(work, "status", "--porcelain", "--untracked-files=no")
+    if porcelain is None:
+        return None, False
+    if porcelain:
+        probe["tracked_dirty"] = True
+    return probe, True
+
+
+def _collect_tracked_drift(root):
+    """Fixed-category attribution for why ``git_clean(root)`` would be false.
+
+    Read-only. Emits only the fixed categories/counters from
+    ``TRACKED_DRIFT_CATEGORIES`` plus ``scan_complete``/``unknown``/
+    ``drift_detected``. Never emits paths, file names, diffs, bytes or raw
+    exception text.
+    """
+    scan_complete = True
+    parent_dirty = False
+    parent = _git_text(root, "status", "--porcelain", "--untracked-files=no", "--ignore-submodules=all")
+    if parent is None:
+        scan_complete = False
+    else:
+        parent_dirty = bool(parent)
+    submodule_drift = []
+    for path in OWNED_SUBMODULES:
+        probe, complete = _probe_tracked_drift_submodule(root, path)
+        submodule_drift.append(probe)
+        if not complete:
+            scan_complete = False
+    return classify_tracked_drift(scan_complete, parent_dirty, submodule_drift)
 
 
 # Corner/program state filenames under the docich production state_dir. These
@@ -1188,6 +1319,7 @@ def main(argv):
     payload = {
         "status": _severity(workers, queues, ai, improvement),
         "meta": _collect_meta(soren, now),
+        "tracked_drift": _collect_tracked_drift(PROD_ROOT),
         "workers": workers,
         "queues": {**queues, "queue_giveups_15m": ai["queue_giveups"]},
         "ai": {

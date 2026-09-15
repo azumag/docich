@@ -36,6 +36,10 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
 {
   "status": "ok",
   "meta": {"generated_at": 0, "window_sec": 900, "docich_head": null, "soviet_head": null, ...},
+  "tracked_drift": {"parent_tracked_dirty": 0, "owned_submodule_head_mismatch": 0,
+                    "owned_submodule_tracked_dirty": 0,
+                    "owned_submodule_missing_or_invalid": 0,
+                    "scan_complete": 1, "unknown": 0, "drift_detected": 0},
   "workers": {"expected": 19, "running": 6, "stopped": [], "paused": [],
               "duplicates": [], "zombies": [], "stale_pid_files": [],
               "unregistered": [], "required_down": [], "required_stale": [], "details": {}},
@@ -67,6 +71,12 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
 - 診断は stale lock を削除しない。観測のみ。
 - `corners` はコーナー/番組のライフサイクル観測であり、現時点では severity を
   変えない（時間監視の通知を増やさない）。失敗状態の警報化は別途判断する。
+- `tracked_drift` は deploy を拒否させる `git_clean(root)==false` の内訳を、
+  **固定カテゴリとcounterだけ**で帰属する（#412）。`parent_tracked_dirty` /
+  `owned_submodule_head_mismatch` / `owned_submodule_tracked_dirty` /
+  `owned_submodule_missing_or_invalid` は 0|1。`scan_complete=0` のときは
+  `unknown=1`・`drift_detected=1` とし、失敗したscanを drift なしの0件扱いにしない。
+  path・filename・diff・file bytes・raw exception は出さない。severity は変えない。
 
 ## 収集元（すべて read-only）
 

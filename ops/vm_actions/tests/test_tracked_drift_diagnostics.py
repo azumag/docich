@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import shutil
@@ -159,6 +160,36 @@ class TrackedDriftDiagnosticsTests(unittest.TestCase):
         self.assertFalse(result["scan_complete"])
         self.assertGreaterEqual(result["unknown"], 1)
         self.assertEqual(result["drift_detected"], 1)
+
+
+class OwnedSubmoduleContractTests(unittest.TestCase):
+    def test_owned_submodule_allowlist_matches_gateway(self):
+        gateway = ROOT / "ops" / "vm_actions" / "gateway.py"
+        tree = ast.parse(gateway.read_text(encoding="utf-8"))
+        gateway_owned = None
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and any(
+                getattr(target, "id", None) == "OWNED_SUBMODULES" for target in node.targets
+            ):
+                gateway_owned = ast.literal_eval(node.value)
+                break
+        self.assertIsNotNone(gateway_owned, "gateway OWNED_SUBMODULES not found")
+        self.assertEqual(load_collector().OWNED_SUBMODULES, gateway_owned)
+
+    def test_category_values_are_fixed_booleans(self):
+        collector = load_collector()
+        result = collector.classify_tracked_drift(
+            scan_complete=True,
+            parent_dirty=True,
+            submodule_drift=[
+                {"missing_or_invalid": True, "head_mismatch": True, "tracked_dirty": True}
+            ],
+        )
+        self.assertEqual(result["unknown"], 0)
+        self.assertEqual(result["drift_detected"], 1)
+        for value in result.values():
+            self.assertIsInstance(value, int)
+            self.assertIn(value, (0, 1))
 
 
 if __name__ == "__main__":
