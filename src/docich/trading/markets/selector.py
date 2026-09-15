@@ -1,6 +1,6 @@
 """Deterministic stock-universe selection for paper trading.
 
-This module intentionally has no broker or order capability.  It ranks bounded,
+This module intentionally has no broker or order capability. It ranks bounded,
 read-only candidate observations and keeps the focused universe stable with
 hysteresis/cooldown while pinning already-held symbols for exit management.
 """
@@ -76,24 +76,39 @@ class Candidate:
     spread_bps: str
     tradeable: bool
 
-    def validate(self, now: float, policy: SelectorPolicy) -> None:
+    def validate_feed(self, now: float, max_age_s: int) -> None:
+        """Validate provider data without applying the active selector's filters.
+
+        This separation is required for fair forward tests: a challenger with a
+        lower turnover floor or slightly wider spread ceiling must be able to see
+        observations that the current policy would have excluded.
+        """
         if not re.fullmatch(r"[0-9A-Z]{4}", self.symbol):
             raise ValueError("invalid TSE symbol")
         age = stamp(now) - stamp(self.ts)
-        if not 0 <= age <= policy.candidate_age_s:
+        if type(max_age_s) is not int or max_age_s < 1 or not 0 <= age <= max_age_s:
             raise ValueError("stale/future candidate")
         if self.tradeable is not True:
             raise ValueError("candidate not tradeable")
-        if decimal(self.price) <= 0 or decimal(self.turnover_jpy) < decimal(policy.min_turnover_jpy):
-            raise ValueError("candidate below liquidity floor")
-        if not 0 <= decimal(self.spread_bps) <= decimal(policy.max_spread_bps_for_selection):
-            raise ValueError("candidate spread too wide")
-        if decimal(self.volume_accel) < 0 or decimal(self.volatility_bps) < 0:
+        if decimal(self.price) <= 0 or decimal(self.turnover_jpy) < 0:
+            raise ValueError("invalid candidate liquidity")
+        spread = decimal(self.spread_bps)
+        volume_accel = decimal(self.volume_accel)
+        volatility = decimal(self.volatility_bps)
+        momentum = decimal(self.momentum_bps)
+        if not 0 <= spread <= D("1000"):
+            raise ValueError("candidate spread out of feed bounds")
+        if not 0 <= volume_accel <= D("100") or not 0 <= volatility <= D("5000"):
             raise ValueError("invalid candidate metrics")
-        if abs(decimal(self.momentum_bps)) > D("5000") or decimal(self.volume_accel) > D("100"):
+        if abs(momentum) > D("5000"):
             raise ValueError("candidate metric out of bounds")
-        if decimal(self.volatility_bps) > D("5000"):
-            raise ValueError("candidate volatility out of bounds")
+
+    def validate(self, now: float, policy: SelectorPolicy) -> None:
+        self.validate_feed(now, policy.candidate_age_s)
+        if decimal(self.turnover_jpy) < decimal(policy.min_turnover_jpy):
+            raise ValueError("candidate below liquidity floor")
+        if decimal(self.spread_bps) > decimal(policy.max_spread_bps_for_selection):
+            raise ValueError("candidate spread too wide")
 
 
 def active_selector_policy(root: Path) -> SelectorPolicy:
@@ -137,7 +152,7 @@ def read_file_candidates(config: dict, root: Path, now: float, policy: SelectorP
     for row in rows:
         try:
             candidate = Candidate(**row)
-            candidate.validate(now, policy)
+            candidate.validate_feed(now, policy.candidate_age_s)
         except (TypeError, ValueError, ArithmeticError):
             continue
         if candidate.symbol in seen:
