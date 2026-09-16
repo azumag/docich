@@ -46,6 +46,8 @@ EXIT_CATEGORIES = {
     102: "opencode_cli_failure",
     103: "opencode_failure_other",
     104: "legacy_cli_missing",
+    105: "opencode_json_invalid",
+    106: "opencode_tool_or_error_event",
 }
 
 
