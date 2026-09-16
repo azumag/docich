@@ -1,0 +1,5 @@
+# Optional read-only market-data SDK for the Japanese-stock PAPER provider probe.
+# Keep this separate from the base/runtime requirements: the normal Docich runtime
+# does not need Moomoo, and stocks remain disabled until OpenD reachability,
+# JP quote entitlement, and quote freshness are proven on the production VM.
+moomoo-api==10.10.7008
