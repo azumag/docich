@@ -16,7 +16,9 @@ def obs(map_rows: tuple[str, str], *, hp="10(10)", condition=""):
         f"Dlvl:2 HP:{hp} Pw:4(4) AC:5 Exp:2\n"
         f"T:12 {condition}\n"
     )
-    return normalize_tty(text, cols=12, rows=5)
+    # Real NetHack TTY uses 80 columns. Keep the status line intact here;
+    # shrinking cols for a compact map would truncate HP/condition evidence.
+    return normalize_tty(text, cols=80, rows=5)
 
 
 class TestNethackExplorer(unittest.TestCase):
