@@ -411,7 +411,11 @@ def test_boundary_wait_longer_than_reacquire_grace_succeeds():
 def test_hung_boundary_cancel_is_short_and_keeps_input_unlocked():
     with tempfile.TemporaryDirectory() as tmp:
         factory = BoundaryFactory()
-        store, coordinator = _coordinator(factory, Path(tmp) / "run")
+        # Keep the boundary-step deadline comfortably ahead of the request-wide
+        # deadline so this test deterministically exercises hung cancellation.
+        store, coordinator = _coordinator(
+            factory, Path(tmp) / "run", round_boundary_s=0.1
+        )
         coordinator.step_timeouts = replace(coordinator.step_timeouts, round_cancel_s=0.15)
         coordinator.cancel_grace_s = 0.05
         assert coordinator.start("nethack").status == "succeeded"
@@ -426,7 +430,11 @@ def test_hung_boundary_cancel_is_short_and_keeps_input_unlocked():
         old.cancel_round_boundary = hung_cancel
         results = []
         started = time.monotonic()
-        worker = threading.Thread(target=lambda: results.append(coordinator.switch("robots", timeout_s=0.2)))
+        worker = threading.Thread(
+            target=lambda: results.append(
+                coordinator.switch("robots", timeout_s=1.0)
+            )
+        )
         worker.start()
         try:
             assert entered.wait(1.0)
