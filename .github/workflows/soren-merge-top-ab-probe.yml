@@ -175,6 +175,41 @@ jobs:
 
           state="${AB_STATE_FILE:-tmp/state/ab_state.json}"
           active_branch="${ACTIVE_BRANCH_FILE:-tmp/state/active_branch.json}"
+          root="$(_ab_hash "${STRATEGY_FILE:-strategy.py}")"
+          [[ -n "$root" ]] || exit 73
+          alt="${AB_ALT_FILE:-${TMP_STATE_DIR:-tmp/state}/ab_alt_strategy.py}"
+
+          # 冪等化 (2026-09-17): デプロイ完了のたびに A/B を finish して作り直すと、
+          # 判定に必要な ABBA ブロックが毎回 0 に戻り、1 試合 5 分 × 数十試合が永久に
+          # 積み上がらない (ab_history.jsonl に games=2〜10 の
+          # manual:superseded_by_adopting_merge_top_probe が並ぶ実測)。
+          # 既に同じ probe (a=b=root, env 2 vs 1, ABBA) が有効ならリセットせず温存する。
+          keep_current=0
+          if [[ -f "$state" ]]; then
+            a="$(_ab_state_get a_hash)"
+            b="$(_ab_state_get b_hash)"
+            a_env="$(_ab_state_get a_env)"
+            b_env="$(_ab_state_get b_env)"
+            cur_pattern="$(_ab_state_get pattern)"
+            if [[ "$a" == "$root" && "$b" == "$root" && "$cur_pattern" == 'ABBA' \
+               && "$a_env" == 'ANALYZE_BOARD_MERGE_TOP_MODEL=2' \
+               && "$b_env" == 'ANALYZE_BOARD_MERGE_TOP_MODEL=1' \
+               && -f "$alt" && "$(_ab_hash "$alt")" == "$b" ]]; then
+              keep_current=1
+            fi
+          fi
+
+          if [[ "$keep_current" -eq 1 ]]; then
+            echo 'merge-top A/B already active; keep the current experiment without reset'
+            # デプロイで .env / runtime toggle が変わっていても実験そのものは触らない。
+            ./set_toggle.sh ANALYZE_BOARD_MERGE_TOP_MODEL=2 >/dev/null
+            ./set_toggle.sh AB_GATE_ENABLED=1 >/dev/null
+            ./set_toggle.sh AB_GATE_DRY_RUN=0 >/dev/null
+            ./set_toggle.sh SOREN_AB_PATTERN=ABBA >/dev/null
+            ./set_toggle.sh "SOREN_AB_ALT_STRATEGY=$alt" >/dev/null
+            reload_runtime_toggles_force >/dev/null 2>&1
+            exit 0
+          fi
 
           if [[ -f "$state" ]]; then
             ./tools/ab_ctl.sh finish A superseded_by_adopting_merge_top_probe >/dev/null
@@ -182,8 +217,6 @@ jobs:
 
           [[ ! -f "$state" ]] || exit 71
           [[ ! -f "$active_branch" ]] || exit 72
-          root="$(_ab_hash "${STRATEGY_FILE:-strategy.py}")"
-          [[ -n "$root" ]] || exit 73
 
           ./set_toggle.sh ANALYZE_BOARD_MERGE_TOP_MODEL=2 >/dev/null
           ./set_toggle.sh AB_GATE_ENABLED=1 >/dev/null
