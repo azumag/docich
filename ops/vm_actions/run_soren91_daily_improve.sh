@@ -188,8 +188,9 @@ export PATH="$opencode_shim_dir:/usr/local/bin:/usr/bin:/bin:/snap/bin"
 # provider text. This makes failed daily runs diagnosable without weakening the
 # gateway's stdout/stderr boundary.
 out="$(mktemp /home/ubuntu/.soren91-daily.XXXXXX)"
+smoke_out="$(mktemp /home/ubuntu/.soren91-opencode-smoke.XXXXXX)"
 cleanup() {
-  rm -f "$out"
+  rm -f "$out" "$smoke_out"
   rm -rf "$opencode_shim_dir"
 }
 trap cleanup EXIT INT TERM HUP
@@ -243,6 +244,17 @@ classify_private_output() {
   if grep -Eq 'spawn (claude|gemini) ENOENT|claude error: code=ENOENT|gemini.*ENOENT' "$out"; then failure_rc=104; return; fi
 }
 
+classify_smoke_failure() {
+  local smoke_rc="$1"
+  if [[ "$smoke_rc" -eq 124 || "$smoke_rc" -eq 137 ]]; then return 113; fi
+  if grep -Eiq 'ProviderModelNotFoundError|Model not found:|unknown model|model .* not found' "$smoke_out"; then return 107; fi
+  if grep -Eiq 'agent not found|unknown agent' "$smoke_out"; then return 108; fi
+  if grep -Eiq 'Configuration is invalid|invalid config|config.*invalid|Invalid input' "$smoke_out"; then return 109; fi
+  if grep -Eiq 'not logged in|authentication|unauthorized|invalid.*token|api key|credential' "$smoke_out"; then return 110; fi
+  if grep -Eiq 'rate.?limit|too many requests|429|quota|usage limit|payment required|insufficient.*credit|subscription' "$smoke_out"; then return 111; fi
+  return 112
+}
+
 # Preflight uses the reviewed runner's --dry-run path. It exercises persist
 # checkout, runtime compatibility, pending-PR reconciliation, bounded evidence
 # copy, and evidence continuity without calling a model or opening a PR.
@@ -253,6 +265,24 @@ set -e
 if [[ "$preflight_rc" -ne 0 ]]; then
   classify_private_output 98
   exit "$failure_rc"
+fi
+
+# A fixed, bounded model smoke distinguishes OpenCode/model/config/auth startup
+# failures from failures that only occur with the full retained-evidence prompt.
+# Its prompt and output contain no match evidence. Output still stays private.
+set +e
+printf '%s\n' 'Return exactly OK.' | \
+  /usr/bin/timeout --kill-after=5s 20s \
+  "$opencode_shim_dir/opencode" run --format json --model opencode-go/deepseek-v4.1-flash \
+  >"$smoke_out" 2>&1
+smoke_rc=$?
+set -e
+if [[ "$smoke_rc" -ne 0 ]]; then
+  set +e
+  classify_smoke_failure "$smoke_rc"
+  smoke_category=$?
+  set -e
+  exit "$smoke_category"
 fi
 
 # The real run gets a fresh private log so a successful preflight can never
