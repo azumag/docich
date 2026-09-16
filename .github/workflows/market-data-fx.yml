@@ -1,0 +1,82 @@
+name: FX market-data provider
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Read-only OANDA practice market-data collector action
+        required: true
+        default: enable
+        type: choice
+        options: [enable, disable, restart]
+
+permissions:
+  contents: read
+
+# Share the VM operations lane so provider changes cannot race production deploys.
+concurrency:
+  group: vm-operations-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  manage:
+    if: ${{ github.actor_id == 9018513 && github.triggering_actor == 'azumag' && github.ref == 'refs/heads/main' && github.ref_protected == true }}
+    environment: vm-operations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout trusted current main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: main
+          persist-credentials: false
+          fetch-depth: 1
+          submodules: false
+
+      - name: Resolve reviewed main SHA
+        id: revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          remote="$(git ls-remote --refs https://github.com/${GITHUB_REPOSITORY}.git refs/heads/main | awk '{print $1}')"
+          [[ "$remote" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$sha" == "$remote" ]] || { echo "stale main checkout refused" >&2; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Configure pinned SSH client
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          VM_SSH_PORT: ${{ secrets.VM_SSH_PORT }}
+          VM_SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          VM_SSH_KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$VM_SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]
+          [[ "$VM_SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          port="${VM_SSH_PORT:-22}"
+          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+          install -m 700 -d "$RUNNER_TEMP/vm-ssh"
+          printf '%s\n' "$VM_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/vm-ssh/key"
+          printf '%s\n' "$VM_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/vm-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/vm-ssh/key" "$RUNNER_TEMP/vm-ssh/known_hosts"
+          printf 'port=%s\n' "$port" >> "$GITHUB_ENV"
+
+      - name: Manage read-only FX data collector
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.revision.outputs.sha }}
+          ACTION: ${{ inputs.action }}
+        run: |
+          set -euo pipefail
+          case "$ACTION" in enable|disable|restart) ;; *) echo "invalid provider action" >&2; exit 1 ;; esac
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+          bash -n ops/vm_actions/manage_market_paper_units.sh
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          { printf 'MARKET_PAPER_ACTION=provider-%s\nMARKET_PAPER_MARKET=fx\n' "$ACTION"; cat ops/vm_actions/manage_market_paper_units.sh; } | \
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
