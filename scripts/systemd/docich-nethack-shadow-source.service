@@ -1,0 +1,16 @@
+[Unit]
+Description=docich NetHack structured shadow source
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=__DOCICH_ROOT__
+# Read-only observation producer. It must not control the NetHack runtime.
+# The external command output is validated against the P4a public-only schema
+# before latest.json is atomically replaced.
+ExecStart=__DOCICH_ROOT__/bin/docich --config __DOCICH_ROOT__/config/docich.soren-live.toml nethack-shadow-source
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
