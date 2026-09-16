@@ -52,7 +52,8 @@ workflowは:
 2. production deployが同じSHAへ収束するまで待つ
 3. normal production gatewayからbounded requestをspoolへatomic publish
 4. path unitがDocker権限付きoneshotを起動
-5. oneshotがreviewed mainからNetHack canary imageをimmutable IDでbuild
+5. oneshotがreviewed main commitのbuild入力だけを `git archive` で一時contextへexportし、そこからNetHack canary imageをimmutable IDでbuild
+   - production checkoutは長寿命で、improve daemonのruntime生成物・backup・`._*` などをuntrackedのまま持つ。commit objectからexportすることで、reviewed SHA以外のファイルがimageへ混入しない
 6. baseline P3b 1 episodeを `network=none` / `runsc` containerで実行
 7. production save/xlog/dump fingerprint不変とcontainer cleanupを確認
 8. fixed categoryだけをgateway exit codeとしてActionsへ返す

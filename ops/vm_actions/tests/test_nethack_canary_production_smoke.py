@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 import unittest
-from types import SimpleNamespace
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -83,14 +85,50 @@ class ScopeTests(unittest.TestCase):
                 effective_gids=(1000,),
             )
 
-    def test_reviewed_build_context_rejects_tracked_or_untracked_drift(self):
-        clean = SimpleNamespace(returncode=0, stdout="")
-        dirty = SimpleNamespace(returncode=0, stdout="?? src/rogue.py\n")
-        with mock.patch.object(smoke.subprocess, "run", return_value=clean):
-            smoke._assert_reviewed_build_context(Path("/home/ubuntu/docich"))
-        with mock.patch.object(smoke.subprocess, "run", return_value=dirty):
+    def test_reviewed_build_context_is_exported_from_commit_not_worktree(self):
+        if shutil.which("git") is None:
+            self.skipTest("git is required")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            (repo / "src").mkdir(parents=True)
+            (repo / "brains").mkdir()
+            docker_dir = repo / "containers" / "nethack-canary"
+            docker_dir.mkdir(parents=True)
+            (repo / "src" / "tracked.py").write_text("tracked\n", encoding="utf-8")
+            (repo / "brains" / "tracked.py").write_text("brain\n", encoding="utf-8")
+            (docker_dir / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+            env = dict(os.environ)
+            env.update(
+                {
+                    "GIT_AUTHOR_NAME": "t",
+                    "GIT_AUTHOR_EMAIL": "t@example.com",
+                    "GIT_COMMITTER_NAME": "t",
+                    "GIT_COMMITTER_EMAIL": "t@example.com",
+                }
+            )
+            subprocess.run(["git", "init", "-q", str(repo)], check=True, env=env)
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True, env=env)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "reviewed"], check=True, env=env)
+            sha = subprocess.check_output(
+                ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
+            ).strip()
+            # The production checkout legitimately carries untracked runtime
+            # state; it must never leak into the image build context.
+            (repo / "src" / "untracked_runtime.py").write_text("runtime\n", encoding="utf-8")
+            (repo / "brains" / "untracked_bot.py").write_text("bot\n", encoding="utf-8")
+            dest = Path(tmp) / "context"
+            smoke._export_reviewed_build_context(repo, sha, dest)
+            self.assertTrue((dest / "src" / "tracked.py").is_file())
+            self.assertTrue((dest / "brains" / "tracked.py").is_file())
+            self.assertTrue((dest / "containers" / "nethack-canary" / "Dockerfile").is_file())
+            self.assertFalse((dest / "src" / "untracked_runtime.py").exists())
+            self.assertFalse((dest / "brains" / "untracked_bot.py").exists())
+
+    def test_reviewed_build_context_export_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "missing"
             with self.assertRaisesRegex(smoke.SmokeError, "reviewed_checkout_drift"):
-                smoke._assert_reviewed_build_context(Path("/home/ubuntu/docich"))
+                smoke._export_reviewed_build_context(missing, "a" * 40, Path(tmp) / "context")
 
     def test_canary_path_must_be_disjoint(self):
         settings = mock.Mock()

@@ -8,6 +8,7 @@ unprivileged and communicates through a bounded request/result spool.
 from __future__ import annotations
 
 import grp
+import io
 import json
 import os
 import pwd
@@ -16,6 +17,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -185,31 +187,52 @@ def _git_head(root: Path) -> str:
         raise SmokeError("repo_head_mismatch") from exc
 
 
-def _assert_reviewed_build_context(root: Path) -> None:
-    paths = [
-        ".dockerignore",
-        "src",
-        "brains",
-        "containers/nethack-canary",
-        "ops/vm_actions/nethack_canary_production_smoke.py",
-    ]
+# The canary image must contain exactly the reviewed commit's build inputs. The
+# production checkout is long-lived and carries legitimate untracked runtime
+# state (improve-daemon outputs, backups, ``._*`` metadata), so the Docker build
+# context is materialized from the commit object instead of the working tree.
+# Only paths tracked at the requested SHA can ever reach the image.
+REVIEWED_BUILD_PATHS = ("src", "brains", "containers/nethack-canary")
+DOCKERFILE_REL = Path("containers") / "nethack-canary" / "Dockerfile"
+
+
+def _export_reviewed_build_context(root: Path, sha: str, dest: Path) -> Path:
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True, mode=0o700)
+    try:
+        os.chmod(dest, 0o700)
+    except OSError as exc:
+        raise SmokeError("reviewed_checkout_drift") from exc
     try:
         proc = subprocess.run(
             [
                 "git", "-C", str(root), "-c", "core.hooksPath=/dev/null",
-                "status", "--porcelain", "--untracked-files=all", "--", *paths,
+                "archive", "--format=tar", sha, *REVIEWED_BUILD_PATHS,
             ],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=15,
+            timeout=120,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise SmokeError("reviewed_checkout_drift") from exc
-    if proc.returncode or proc.stdout.strip():
+    if proc.returncode or not proc.stdout:
         raise SmokeError("reviewed_checkout_drift")
+    try:
+        with tarfile.open(fileobj=io.BytesIO(proc.stdout), mode="r:") as tar:
+            try:
+                tar.extractall(path=dest, filter="data")
+            except TypeError:  # Python < 3.11.4 has no extraction filter.
+                tar.extractall(path=dest)
+    except (tarfile.TarError, OSError, ValueError) as exc:
+        raise SmokeError("reviewed_checkout_drift") from exc
+    if not (dest / "src").is_dir() or not (dest / "brains").is_dir():
+        raise SmokeError("reviewed_checkout_drift")
+    if not (dest / DOCKERFILE_REL).is_file():
+        raise SmokeError("reviewed_checkout_drift")
+    return dest
 
 
 def _load_json_strict(path: Path) -> dict[str, object] | None:
@@ -320,7 +343,7 @@ def _canary_container_ids(docker: str) -> tuple[str, ...]:
     return ids
 
 
-def _build_image(root: Path, setup: Path, *, docker: str) -> str:
+def _build_image(context: Path, setup: Path, *, docker: str) -> str:
     setup.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(setup, 0o700)
     iid = setup / "image-id"
@@ -334,12 +357,12 @@ def _build_image(root: Path, setup: Path, *, docker: str) -> str:
                 docker,
                 "build",
                 "--file",
-                str(root / "containers" / "nethack-canary" / "Dockerfile"),
+                str(context / DOCKERFILE_REL),
                 "--iidfile",
                 str(iid),
                 ".",
             ],
-            cwd=root,
+            cwd=context,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -439,7 +462,6 @@ def run_smoke(
     _verify_process_scope()
     if _git_head(root) != request.sha:
         raise SmokeError("repo_head_mismatch")
-    _assert_reviewed_build_context(root)
 
     g = load_global(root, root / "config" / "docich.soren-live.toml")
     state_dir = Path(g.state_dir).resolve()
@@ -456,12 +478,14 @@ def run_smoke(
         raise SmokeError("canary_container_busy")
 
     setup = state_dir / "nethack" / "canary" / "p5i-smoke" / "_images" / request.sha
+    context = setup / "context"
     result: dict[str, object] | None = None
     category: str | None = None
     failure: Exception | None = None
     old_timeout = os.environ.get("DOCICH_CANARY_INNER_TIMEOUT_S")
     try:
-        image = build_image(root, setup, docker=docker)
+        _export_reviewed_build_context(root, request.sha, context)
+        image = build_image(context, setup, docker=docker)
         arena = _arena(smoke_root / "baseline" / "episode-000")
         payload = _worker_request(request, arena)
         os.environ["DOCICH_CANARY_INNER_TIMEOUT_S"] = INNER_TIMEOUT_S
