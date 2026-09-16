@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for owner-gated NetHack canary smoke requests
+
+[Path]
+PathExists=/home/ubuntu/.local/state/docich/nethack-canary-smoke/request.json
+Unit=docich-nethack-canary-smoke.service
+
+[Install]
+WantedBy=multi-user.target

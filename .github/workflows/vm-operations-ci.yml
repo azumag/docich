@@ -21,7 +21,15 @@ jobs:
       - run: python3 -m unittest discover -s ops/self_repair/tests -v
       - name: External VM monitor watchdog contracts
         run: node --test ops/vm_monitor_watchdog/worker.test.mjs
-      - run: python3 -m py_compile ops/vm_actions/authorize.py ops/vm_actions/gateway.py ops/vm_actions/stage_repair.py ops/vm_actions/collect_diagnostics.py ops/vm_actions/runtime_registry.py ops/self_repair/worker.py
+      - run: >-
+          python3 -m py_compile
+          ops/vm_actions/authorize.py
+          ops/vm_actions/gateway.py
+          ops/vm_actions/stage_repair.py
+          ops/vm_actions/collect_diagnostics.py
+          ops/vm_actions/runtime_registry.py
+          ops/vm_actions/nethack_canary_production_smoke.py
+          ops/self_repair/worker.py
       - name: Fetch soviet_now entrypoint for registry drift check
         run: |
           set -euo pipefail
@@ -37,4 +45,8 @@ jobs:
           done
           echo "SOVIET_START_ALL=$RUNNER_TEMP/soren-entry/start_all.sh" >> "$GITHUB_ENV"
       - run: SOVIET_START_ALL="$SOVIET_START_ALL" python3 -m unittest ops.vm_actions.tests.test_runtime_registry -v
-      - run: bash -n ops/vm_actions/install_vm_gateway.sh
+      - run: >-
+          bash -n
+          ops/vm_actions/install_vm_gateway.sh
+          ops/vm_actions/install_nethack_canary_smoke.sh
+          ops/vm_actions/request_nethack_canary_smoke.sh
