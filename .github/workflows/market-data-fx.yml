@@ -78,5 +78,11 @@ jobs:
           [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
           bash -n ops/vm_actions/manage_market_paper_units.sh
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          # The FX unit is new in this revision. Deploy only restarts already-active
+          # units, so refresh the reviewed unit definitions first without starting
+          # either PAPER or provider services. This keeps the first provider action
+          # functional on a VM that has never installed docich-market-data-fx.service.
+          { printf 'MARKET_PAPER_ACTION=install\nMARKET_PAPER_MARKET=fx\n'; cat ops/vm_actions/manage_market_paper_units.sh; } | \
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
           { printf 'MARKET_PAPER_ACTION=provider-%s\nMARKET_PAPER_MARKET=fx\n' "$ACTION"; cat ops/vm_actions/manage_market_paper_units.sh; } | \
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
