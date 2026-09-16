@@ -152,6 +152,14 @@ if nethack_candidate_argv is not None:
 
     sys.exit(nethack_candidate_main(nethack_candidate_argv))
 
+nethack_candidate_shadow_eval_argv = _nethack_sidecar_argv(
+    "nethack-candidate-shadow-evaluate", sys.argv[1:]
+)
+if nethack_candidate_shadow_eval_argv is not None:
+    from .nethack_candidate_shadow_eval import main as nethack_candidate_shadow_eval_main
+
+    sys.exit(nethack_candidate_shadow_eval_main(nethack_candidate_shadow_eval_argv))
+
 from .cli import main
 
 sys.exit(main())
