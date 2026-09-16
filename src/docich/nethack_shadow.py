@@ -8,6 +8,7 @@ normalized public contract.
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -119,8 +120,11 @@ def parse_shadow_snapshot(data: str | bytes | dict[str, object]) -> ShadowPublic
     if not isinstance(source, str) or not source.strip() or len(source) > 80:
         raise ValueError("shadow source must be a short non-empty string")
     captured_at = raw.get("captured_at")
-    if isinstance(captured_at, bool) or not isinstance(captured_at, (int, float)) or captured_at < 0:
-        raise ValueError("captured_at must be a non-negative number")
+    if isinstance(captured_at, bool) or not isinstance(captured_at, (int, float)):
+        raise ValueError("captured_at must be a finite non-negative number")
+    captured_at_value = float(captured_at)
+    if not math.isfinite(captured_at_value) or captured_at_value < 0:
+        raise ValueError("captured_at must be a finite non-negative number")
 
     public = raw.get("public")
     if not isinstance(public, dict):
@@ -183,7 +187,7 @@ def parse_shadow_snapshot(data: str | bytes | dict[str, object]) -> ShadowPublic
 
     return ShadowPublicSnapshot(
         source=source.strip(),
-        captured_at=float(captured_at),
+        captured_at=captured_at_value,
         message=message,
         map_rows=tuple(map_rows),
         player=player,
