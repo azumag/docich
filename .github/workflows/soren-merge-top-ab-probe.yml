@@ -100,19 +100,21 @@ jobs:
           set -euo pipefail
           cd /home/ubuntu/soren
 
-          # env-only winner promotion landed in soviet_now #377. Refuse to start
-          # an adopting A/B until the VM checkout contains that exact fix.
+          # env-only winner promotion landed in soviet_now #377. Do not depend on
+          # the VM checkout's configured origin credentials: this repo is public,
+          # so fetch reviewed main explicitly over HTTPS and fast-forward only.
           expected_soviet_sha='3f67cbf159dc59da35ad2cdff3d2f483dade7a3b'
-          git fetch -q origin main
-          git merge-base --is-ancestor "$expected_soviet_sha" origin/main || exit 68
-          if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
-            git diff --quiet && git diff --cached --quiet || exit 69
-            git merge --ff-only origin/main >/dev/null || exit 70
+          git fetch https://github.com/azumag/soviet_now.git main || exit 68
+          fetched="$(git rev-parse FETCH_HEAD)"
+          git merge-base --is-ancestor "$expected_soviet_sha" "$fetched" || exit 69
+          if [[ "$(git rev-parse HEAD)" != "$fetched" ]]; then
+            git diff --quiet && git diff --cached --quiet || exit 70
+            git merge --ff-only "$fetched" >/dev/null || exit 71
           fi
-          git merge-base --is-ancestor "$expected_soviet_sha" HEAD || exit 71
+          git merge-base --is-ancestor "$expected_soviet_sha" HEAD || exit 72
 
           source ./eloop_lib.sh >/dev/null 2>&1
-          declare -F _ab_finish_without_envonly_promotion >/dev/null 2>&1 || exit 72
+          declare -F _ab_finish_without_envonly_promotion >/dev/null 2>&1 || exit 73
 
           state="${AB_STATE_FILE:-tmp/state/ab_state.json}"
           active_branch="${ACTIVE_BRANCH_FILE:-tmp/state/active_branch.json}"
@@ -122,10 +124,10 @@ jobs:
             ./tools/ab_ctl.sh finish A superseded_by_adopting_merge_top_probe >/dev/null
           fi
 
-          [[ ! -f "$state" ]] || exit 73
-          [[ ! -f "$active_branch" ]] || exit 74
+          [[ ! -f "$state" ]] || exit 74
+          [[ ! -f "$active_branch" ]] || exit 75
           root="$(_ab_hash "${STRATEGY_FILE:-strategy.py}")"
-          [[ -n "$root" ]] || exit 75
+          [[ -n "$root" ]] || exit 76
 
           # Explicitly pin the baseline. If A wins this remains 2; if B wins the
           # #377 finish wrapper promotes B's mode=1 into this persistent setting.
@@ -135,8 +137,6 @@ jobs:
           export AB_A_ENV='ANALYZE_BOARD_MERGE_TOP_MODEL=2'
           export AB_B_ENV='ANALYZE_BOARD_MERGE_TOP_MODEL=1'
 
-          # tools/ab_ctl.sh deliberately disables nounset before invoking the
-          # shared strategy validator; preserve that contract on this direct path.
           set +u
 
           # This is an env-only A/B: B is byte-for-byte the already-running A.
@@ -160,23 +160,23 @@ jobs:
             fi
             if [[ "$rc" -ne 75 ]]; then
               echo "merge-top A/B start failed rc=$rc" >&2
-              exit 76
+              exit 77
             fi
             sleep 10
           done
-          [[ "$started" -eq 1 ]] || exit 77
+          [[ "$started" -eq 1 ]] || exit 78
 
           a="$(_ab_state_get a_hash)"
           b="$(_ab_state_get b_hash)"
           a_env="$(_ab_state_get a_env)"
           b_env="$(_ab_state_get b_env)"
-          [[ "$a" == "$root" && "$b" == "$root" ]] || exit 78
-          [[ "$a_env" == 'ANALYZE_BOARD_MERGE_TOP_MODEL=2' ]] || exit 79
-          [[ "$b_env" == 'ANALYZE_BOARD_MERGE_TOP_MODEL=1' ]] || exit 80
-          [[ "$(_ab_env_value ANALYZE_BOARD_MERGE_TOP_MODEL)" == '2' ]] || exit 81
-          [[ "$(_ab_env_value AB_GATE_DRY_RUN)" == '0' ]] || exit 82
+          [[ "$a" == "$root" && "$b" == "$root" ]] || exit 79
+          [[ "$a_env" == 'ANALYZE_BOARD_MERGE_TOP_MODEL=2' ]] || exit 80
+          [[ "$b_env" == 'ANALYZE_BOARD_MERGE_TOP_MODEL=1' ]] || exit 81
+          [[ "$(_ab_env_value ANALYZE_BOARD_MERGE_TOP_MODEL)" == '2' ]] || exit 82
+          [[ "$(_ab_env_value AB_GATE_DRY_RUN)" == '0' ]] || exit 83
           reload_runtime_toggles_force >/dev/null 2>&1
-          _ab_active >/dev/null 2>&1 || exit 83
+          _ab_active >/dev/null 2>&1 || exit 84
           SH
 
           echo 'adopting merge-top A/B probe is active'
