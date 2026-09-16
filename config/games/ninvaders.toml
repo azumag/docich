@@ -4,14 +4,17 @@ title = "Space Invaders"
 adapter = "cli"
 
 # ninvaders はタイトル起動・試合終了時に自動でタイトルへ戻る (同一プロセス継続)。
-# wrapper (/usr/local/bin/ninvaders_docich) が SPACE 開始を駆動し、最終スコアを
-# scorelog へ追記する。docich CLI adapter には wrapper 型ゲームの丸境界フックが
-# まだ無いため、切替は従来の immediate-quiesce 経路を使う。
+# deploy 済み repo 内の wrapper (games/cli-wrappers/ninvaders_docich.sh) が
+# SPACE 開始とゲーム中の左右移動・射撃を駆動し、最終スコアを scorelog へ追記する。
+# docich CLI adapter には wrapper 型ゲームの丸境界フックがまだ無いため、切替は
+# 従来の immediate-quiesce 経路を使う。
 [lifecycle]
 require_round_boundary = false
 
 [cli]
-command = "/usr/local/bin/ninvaders_docich"
+# docich の systemd unit は repo root を WorkingDirectory にしている。
+# /usr/local/bin の手動コピーを介さず、deploy された tracked wrapper を直接使う。
+command = "/bin/sh games/cli-wrappers/ninvaders_docich.sh"
 cols = 80
 rows = 24
 font = "monospace"
