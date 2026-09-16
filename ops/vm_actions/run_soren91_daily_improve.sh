@@ -70,6 +70,14 @@ command -v python3 >/dev/null 2>&1 || {
   echo 'python3 is missing' >&2
   exit 84
 }
+command -v opencode >/dev/null 2>&1 || {
+  echo 'opencode is missing' >&2
+  exit 87
+}
+command -v script >/dev/null 2>&1 || {
+  echo 'script is missing' >&2
+  exit 88
+}
 
 exec 9>"$lock"
 flock -w 30 9 || {
@@ -193,6 +201,15 @@ classify_private_output() {
   if grep -Eq 'pending_pr_lookup_failed|unexpected_pr_state:|pr_number_parse_failed|git_diff_failed|gh .* failed' "$out"; then failure_rc=96; return; fi
   if grep -Fq 'strategy_changed_during_analysis' "$out"; then failure_rc=97; return; fi
   if grep -Eq '^\[soren91_daily_runtime\] git -C .* failed rc=' "$out"; then failure_rc=90; return; fi
+
+  # Model diagnostics remain private. Match only stable, non-secret reason
+  # fragments and turn them into fixed exit categories for the owner workflow.
+  # Prefer the underlying OpenCode failure over the later missing legacy CLI.
+  if grep -Fq 'opencode provider failure (' "$out"; then failure_rc=100; return; fi
+  if grep -Eq 'model returned empty text|opencode returned no strategy code' "$out"; then failure_rc=101; return; fi
+  if grep -Eq 'opencode model failed \([^)]*\): Command failed: script|opencode model failed \([^)]*\): spawn script ' "$out"; then failure_rc=102; return; fi
+  if grep -Fq 'opencode model failed (' "$out"; then failure_rc=103; return; fi
+  if grep -Eq 'spawn (claude|gemini) ENOENT|claude error: code=ENOENT|gemini.*ENOENT' "$out"; then failure_rc=104; return; fi
 }
 
 # Preflight uses the reviewed runner's --dry-run path. It exercises persist

@@ -29,6 +29,8 @@ EXIT_CATEGORIES = {
     84: "python_missing",
     85: "state_invalid",
     86: "state_bootstrap_failure",
+    87: "opencode_missing",
+    88: "script_missing",
     90: "persist_repo",
     91: "runtime_compatibility",
     92: "evidence_blocked",
@@ -39,6 +41,11 @@ EXIT_CATEGORIES = {
     97: "strategy_race",
     98: "preflight_other",
     99: "runtime_other",
+    100: "opencode_provider_failure",
+    101: "opencode_output_invalid",
+    102: "opencode_cli_failure",
+    103: "opencode_failure_other",
+    104: "legacy_cli_missing",
 }
 
 
