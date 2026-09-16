@@ -119,6 +119,10 @@ jobs:
           export AB_A_ENV='ANALYZE_BOARD_MERGE_TOP_MODEL=2'
           export AB_B_ENV='ANALYZE_BOARD_MERGE_TOP_MODEL=1'
 
+          # tools/ab_ctl.sh deliberately disables nounset before invoking the
+          # shared strategy validator; preserve that contract on this direct path.
+          set +u
+
           # Use the lower-level starter so return 75 remains distinguishable from
           # a permanent validation/configuration failure. Busy is retried until a
           # safe game/improvement boundary; any other failure stops immediately.
