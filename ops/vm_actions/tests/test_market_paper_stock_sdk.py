@@ -21,6 +21,7 @@ class MarketPaperStockSdkTests(unittest.TestCase):
                 "docich-market-corner@.timer",
                 "docich-market-improve@.service",
                 "docich-market-improve@.timer",
+                "docich-moomoo-opend.service",
                 "docich-market-data-stocks.service",
                 "docich-market-data-fx.service",
             ):
@@ -70,8 +71,10 @@ class MarketPaperStockSdkTests(unittest.TestCase):
             self.assertIn("requirements-market-data.txt", calls)
             self.assertIn("-c import moomoo", calls)
             unit_root = pathlib.Path(tmp) / "home" / ".config" / "systemd" / "user"
+            self.assertTrue((unit_root / "docich-moomoo-opend.service").is_file())
             self.assertTrue((unit_root / "docich-market-data-stocks.service").is_file())
             self.assertTrue((unit_root / "docich-market-data-fx.service").is_file())
+            self.assertNotIn("enable --now docich-moomoo-opend.service", calls)
             self.assertNotIn("enable --now docich-market-data-stocks.service", calls)
             self.assertNotIn("enable --now docich-market-data-fx.service", calls)
 
