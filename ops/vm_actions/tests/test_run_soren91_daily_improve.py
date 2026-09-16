@@ -92,6 +92,17 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
         self.assertIn("failure_rc=95", text)
         self.assertNotIn('cat "$out"', text)
 
+    def test_runner_prechecks_model_cli_and_maps_only_fixed_model_failure_categories(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("command -v opencode >/dev/null 2>&1", text)
+        self.assertIn("command -v script >/dev/null 2>&1", text)
+        self.assertIn("exit 87", text)
+        self.assertIn("exit 88", text)
+        for exit_code in range(100, 105):
+            self.assertIn(f"failure_rc={exit_code}", text)
+        self.assertNotIn('printf "%s" "$(cat "$out")"', text)
+        self.assertNotIn('echo "$(cat "$out")"', text)
+
     def test_gateway_classifier_maps_only_fixed_categories(self):
         classifier = load_classifier()
         sha = "a" * 40
@@ -115,6 +126,28 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
         self.assertEqual(
             classifier.classify_gateway_result(gateway_result(99), sha, 99),
             "runtime_other",
+        )
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(87), sha, 87), "opencode_missing")
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(88), sha, 88), "script_missing")
+        self.assertEqual(
+            classifier.classify_gateway_result(gateway_result(100), sha, 100),
+            "opencode_provider_failure",
+        )
+        self.assertEqual(
+            classifier.classify_gateway_result(gateway_result(101), sha, 101),
+            "opencode_output_invalid",
+        )
+        self.assertEqual(
+            classifier.classify_gateway_result(gateway_result(102), sha, 102),
+            "opencode_cli_failure",
+        )
+        self.assertEqual(
+            classifier.classify_gateway_result(gateway_result(103), sha, 103),
+            "opencode_failure_other",
+        )
+        self.assertEqual(
+            classifier.classify_gateway_result(gateway_result(104), sha, 104),
+            "legacy_cli_missing",
         )
         self.assertEqual(classifier.classify_gateway_result(gateway_result(1), sha, 1), "other")
 
