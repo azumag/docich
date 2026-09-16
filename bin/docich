@@ -37,9 +37,20 @@ fi
 
 if (( use_trading_python )); then
     trading_python="$ROOT/.venv-trading/bin/python3"
-    if [[ -x "$trading_python" ]]; then
-        exec "$trading_python" -m docich "$@"
+    if [[ ! -x "$trading_python" ]]; then
+        trading_python=python3
     fi
+
+    # The scheduled PAPER corner has a non-blocking runtime wrapper: it marks
+    # the corner active before AI/network narration work, starts with local
+    # fallback content, and enriches future segments asynchronously. Keep the
+    # public CLI shape unchanged while routing only this command to that runner.
+    if (( command_index < ${#args[@]} )) && [[ "${args[command_index]}" == "paper-corner" ]]; then
+        paper_args=("${args[@]:0:$command_index}" "${args[@]:$((command_index + 1))}")
+        exec "$trading_python" -m docich.paper_corner_fast "${paper_args[@]}"
+    fi
+
+    exec "$trading_python" -m docich "$@"
 fi
 
 exec python3 -m docich "$@"
