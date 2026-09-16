@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch reviewed NetHack canary smoke epoch
+
+[Path]
+PathChanged=__DOCICH_ROOT__/ops/vm_actions/nethack_canary_smoke_epoch
+Unit=docich-nethack-canary-smoke.service
+
+[Install]
+WantedBy=multi-user.target
