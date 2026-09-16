@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from docich.nethack_canary_worker import (
     CanaryWorkerError,
     _candidate_broker,
     _read_request,
+    _start_game,
     _terminal_result,
 )
 
@@ -129,3 +131,51 @@ def test_game_worker_source_does_not_embed_candidate_process_launcher():
     assert "load_candidate_manifest" not in source
     assert "/canary/candidate.json" not in source
     assert "broker_socket" in source
+
+
+class _FakeTmuxGame:
+    def __init__(self, screens):
+        self.screens = list(screens)
+        self.keys: list[str] = []
+        self.started = False
+
+    def start(self) -> None:
+        self.started = True
+
+    def alive(self) -> bool:
+        return True
+
+    def capture(self) -> str:
+        if len(self.screens) > 1:
+            return self.screens.pop(0)
+        return self.screens[0]
+
+    def literal(self, value: str) -> None:
+        self.keys.append(value)
+
+    def special(self, value: str) -> None:  # pragma: no cover - not used here
+        self.keys.append(value)
+
+
+def test_start_game_answers_pick_and_confirmation_prompts():
+    pick = "Shall I pick character's race, role, gender and alignment for you? [ynaq]\n"
+    confirm = "Is this ok? [ynq]\n y * Yes; start game\n"
+    more = "Aloha TestHero, welcome to NetHack!  You are a neutral male human Tourist.\n--More--\n"
+    frame = [""] * 24
+    frame[1] = ".@.."
+    frame[2] = "...."
+    frame[22] = "HP:10(10) Pw:3(3) AC:5 Exp:1"
+    frame[23] = "Dlvl:1 T:2"
+    gameplay = "\n".join(frame) + "\n"
+    game = _FakeTmuxGame([pick, confirm, more, gameplay])
+    text = _start_game(game, deadline=time.monotonic() + 30)
+    assert game.started is True
+    assert game.keys == ["y", "y", " "]
+    assert "HP:10" in text
+
+
+def test_start_game_fails_closed_when_creation_never_completes():
+    stuck = "Shall I pick character's race, role, gender and alignment for you? [ynaq]\n"
+    game = _FakeTmuxGame([stuck])
+    with pytest.raises(CanaryWorkerError, match="character creation"):
+        _start_game(game, deadline=time.monotonic() - 1)

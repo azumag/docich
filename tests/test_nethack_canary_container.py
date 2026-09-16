@@ -178,13 +178,15 @@ def test_game_container_is_runsc_hardened_and_mounts_only_episode(tmp_path):
     )
     joined = " ".join(argv)
     for flag in (
-        "--runtime=runsc", "--network=none", "--read-only", "--cap-drop=ALL",
+        "-i", "--runtime=runsc", "--network=none", "--read-only", "--cap-drop=ALL",
         "--security-opt=no-new-privileges:true", "--memory=1024m",
         "--memory-swap=1024m", "--pids-limit=256", "--ipc=none",
         "--log-driver=none", "--restart=no",
     ):
         assert flag in argv
-    assert f"src={host_arena['episode_root']},dst=/canary/episode,rw" in joined
+    # `docker run --mount` rejects a `rw` key; read-write is the default.
+    assert f"src={host_arena['episode_root']},dst=/canary/episode" in joined
+    assert f"src={host_arena['episode_root']},dst=/canary/episode,readonly" not in joined
     assert "/canary/candidate.json" not in joined
     assert joined.count("type=bind") == 1
 
@@ -211,7 +213,8 @@ def test_candidate_broker_has_ipc_and_manifest_but_no_episode_mount(tmp_path):
     )
     joined = " ".join(argv)
     assert "--detach" in argv
-    assert f"src={ipc},dst=/canary/ipc,rw" in joined
+    assert f"src={ipc},dst=/canary/ipc" in joined
+    assert f"src={ipc},dst=/canary/ipc,readonly" not in joined
     assert f"src={manifest},dst=/canary/candidate.json,readonly" in joined
     assert f"src={episode},dst=/canary/episode" not in joined
     assert "/canary/episode/playground" not in joined
