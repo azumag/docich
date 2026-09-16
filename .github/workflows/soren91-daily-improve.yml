@@ -16,9 +16,11 @@ on:
 permissions:
   contents: read
 
-# Serialize with production deploy/exec users of the same owner-only gateway.
+# Do not share the deploy concurrency lock: this workflow must be able to wait
+# for the canonical VM operations deploy to converge to the same protected-main
+# SHA.  A separate group still deduplicates daily-improvement runs themselves.
 concurrency:
-  group: vm-operations-${{ github.repository }}
+  group: soren91-daily-improve-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
