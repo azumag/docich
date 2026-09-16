@@ -11,6 +11,9 @@ on:
     paths:
       - '.github/workflows/soren91-daily-improve.yml'
       - 'ops/vm_actions/run_soren91_daily_improve.sh'
+      - 'ops/vm_actions/soren91_opencode_capture_shim.sh'
+      - 'ops/vm_actions/soren91_opencode_fixed_exec.sh'
+      - 'ops/vm_actions/classify_soren91_opencode_nonzero.py'
       - 'ops/vm_actions/classify_soren91_daily_gateway.py'
       - 'games/soviet_now'
 
