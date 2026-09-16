@@ -11,7 +11,7 @@ WORKFLOW = ROOT / ".github" / "workflows" / "market-paper-runtime-reload.yml"
 
 
 class RestartActiveMarketPaperWorkersTests(unittest.TestCase):
-    def _run(self, *, stocks_provider=False, fx_provider=False):
+    def _run(self, *, stocks_provider=False, fx_provider=False, crypto_worker=False):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         tmp = temp.name
@@ -23,7 +23,7 @@ class RestartActiveMarketPaperWorkersTests(unittest.TestCase):
         fx_rc = 0 if fx_provider else 3
         systemctl.write_text(
             "#!/usr/bin/env bash\n"
-            "printf '%s\\n' \"$*\" >> \"$CALL_LOG\"\n"
+            "printf 'systemctl %s\\n' \"$*\" >> \"$CALL_LOG\"\n"
             "if [[ \"$*\" == *'is-active --quiet docich-market-worker@fx.service' ]]; then exit 0; fi\n"
             "if [[ \"$*\" == *'is-active --quiet docich-market-worker@stocks.service' ]]; then exit 3; fi\n"
             f"if [[ \"$*\" == *'is-active --quiet docich-market-data-stocks.service' ]]; then exit {stocks_rc}; fi\n"
@@ -33,8 +33,36 @@ class RestartActiveMarketPaperWorkersTests(unittest.TestCase):
         )
         systemctl.chmod(0o755)
 
+        tmux = fake_bin / "tmux"
+        crypto_rc = 0 if crypto_worker else 1
+        tmux.write_text(
+            "#!/usr/bin/env bash\n"
+            "printf 'tmux %s\\n' \"$*\" >> \"$CALL_LOG\"\n"
+            f"if [[ \"$1\" == 'has-session' ]]; then exit {crypto_rc}; fi\n"
+            "if [[ \"$1\" == 'list-windows' ]]; then printf 'trading\\n'; exit 0; fi\n"
+            "exit 1\n",
+            encoding="utf-8",
+        )
+        tmux.chmod(0o755)
+
+        prod_root = pathlib.Path(tmp) / "docich"
+        (prod_root / "bin").mkdir(parents=True)
+        (prod_root / "config").mkdir(parents=True)
+        operator = prod_root / "bin" / "docich-paper-corner-operator"
+        operator.write_text(
+            "#!/usr/bin/env bash\n"
+            "printf 'operator %s\\n' \"$*\" >> \"$CALL_LOG\"\n",
+            encoding="utf-8",
+        )
+        operator.chmod(0o755)
+        (prod_root / "config" / "docich.soren-live.toml").write_text("", encoding="utf-8")
+
         env = os.environ.copy()
-        env.update(PATH=f"{fake_bin}:{env.get('PATH', '')}", CALL_LOG=str(log))
+        env.update(
+            PATH=f"{fake_bin}:{env.get('PATH', '')}",
+            CALL_LOG=str(log),
+            DOCICH_PROD_ROOT=str(prod_root),
+        )
         result = subprocess.run(
             ["bash", str(SCRIPT)],
             cwd=ROOT,
@@ -57,8 +85,22 @@ class RestartActiveMarketPaperWorkersTests(unittest.TestCase):
         self.assertIn("--user restart docich-market-worker@fx.service", calls)
         self.assertNotIn("--user restart docich-market-data-stocks.service", calls)
         self.assertNotIn("--user restart docich-market-data-fx.service", calls)
+        self.assertNotIn("operator ", calls)
         self.assertNotIn(" enable ", calls)
         self.assertNotIn(" start ", calls)
+
+    def test_active_crypto_tmux_worker_is_reloaded_without_starting_absent_one(self):
+        inactive_result, inactive_calls = self._run(crypto_worker=False)
+        self.assertEqual(inactive_result.returncode, 0, inactive_result.stderr)
+        self.assertIn("tmux has-session -t docich", inactive_calls)
+        self.assertNotIn("operator ", inactive_calls)
+
+        active_result, active_calls = self._run(crypto_worker=True)
+        self.assertEqual(active_result.returncode, 0, active_result.stderr)
+        self.assertIn("tmux has-session -t docich", active_calls)
+        self.assertIn("tmux list-windows -t docich -F #{window_name}", active_calls)
+        self.assertIn("operator --config", active_calls)
+        self.assertIn("--reload-worker", active_calls)
 
     def test_active_read_only_providers_are_reloaded_independently(self):
         stocks_result, stocks_calls = self._run(stocks_provider=True)
