@@ -1,0 +1,78 @@
+name: Market PAPER runtime reload
+
+on:
+  workflow_run:
+    workflows: ["VM operations"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+# Serialize with the deploy/control workflow.  This workflow is deliberately
+# post-deploy only; it never deploys code or changes opt-in state itself.
+concurrency:
+  group: vm-operations-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  reload:
+    if: >-
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.actor.id == 9018513
+    environment: vm-operations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact deployed main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+          submodules: false
+
+      - name: Configure pinned SSH client
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          VM_SSH_PORT: ${{ secrets.VM_SSH_PORT }}
+          VM_SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          VM_SSH_KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$VM_SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]
+          [[ "$VM_SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          port="${VM_SSH_PORT:-22}"
+          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+          install -m 700 -d "$RUNNER_TEMP/vm-ssh"
+          printf '%s\n' "$VM_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/vm-ssh/key"
+          printf '%s\n' "$VM_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/vm-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/vm-ssh/key" "$RUNNER_TEMP/vm-ssh/known_hosts"
+          printf 'port=%s\n' "$port" >> "$GITHUB_ENV"
+
+      - name: Restart only already-active PAPER workers
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+          bash -n ops/vm_actions/restart_active_market_paper_workers.sh
+
+          # A newer main push may have deployed while this workflow was queued.
+          # Never restart an older reviewed runtime over a newer baseline.
+          current_main="$(git ls-remote --refs https://github.com/${GITHUB_REPOSITORY}.git refs/heads/main | awk '{print $1}')"
+          [[ "$current_main" =~ ^[0-9a-f]{40}$ ]]
+          if [[ "$current_main" != "$SHA" ]]; then
+            echo "skip market PAPER reload: main advanced to $current_main"
+            exit 0
+          fi
+
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          cat ops/vm_actions/restart_active_market_paper_workers.sh | \
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
