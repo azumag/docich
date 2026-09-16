@@ -83,6 +83,14 @@ class TestShadowSchema(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_shadow_snapshot(payload3)
 
+    def test_non_finite_captured_at_is_rejected(self) -> None:
+        obs = normalize_tty(tty_text(), cols=80, rows=5)
+        for captured_at in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(captured_at=captured_at):
+                payload = public_payload(obs, captured_at=captured_at)
+                with self.assertRaises(ValueError):
+                    parse_shadow_snapshot(json.dumps(payload))
+
     def test_public_difference_is_telemetry_not_truth_selection(self) -> None:
         tty = normalize_tty(tty_text(hp="10(10)"), cols=80, rows=5)
         payload = public_payload(tty)
