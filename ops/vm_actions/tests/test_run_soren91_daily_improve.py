@@ -59,10 +59,30 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
         self.assertIn("export OPENCODE_DISABLE_PROJECT_CONFIG=true", text)
         self.assertIn("export OPENCODE_CONFIG_CONTENT=", text)
         self.assertIn('"permission":{"*":"deny"}', text)
-        self.assertIn('"agent":{"build":{"mode":"primary","permission":{"*":"deny"},"steps":1}}', text)
+        self.assertIn(
+            '"agent":{"soren-daily-improve":{"mode":"primary","permission":{"*":"deny"},"steps":1}}',
+            text,
+        )
         self.assertIn('"share":"disabled"', text)
         self.assertIn('"instructions":[]', text)
         self.assertNotIn('"tools":', text)
+
+    def test_runner_uses_fixed_opencode_binary_and_explicit_agent_shim(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('[[ -x /snap/bin/opencode ]]', text)
+        self.assertIn('opencode_shim_dir="$(mktemp -d /home/ubuntu/.soren91-opencode-shim.XXXXXX)"', text)
+        self.assertIn('[[ "$#" -eq 5 ]]', text)
+        self.assertIn('[[ "$1" == "run" ]]', text)
+        self.assertIn('[[ "$2" == "--format" && "$3" == "json" ]]', text)
+        self.assertIn('[[ "$4" == "--model" ]]', text)
+        self.assertIn('[[ "$5" =~ ^[A-Za-z0-9_./:-]{1,160}$ ]]', text)
+        self.assertIn(
+            'exec /snap/bin/opencode run --format json --agent soren-daily-improve --model "$5"',
+            text,
+        )
+        self.assertIn('export PATH="$opencode_shim_dir:/usr/local/bin:/usr/bin:/bin:/snap/bin"', text)
+        self.assertIn('rm -rf "$opencode_shim_dir"', text)
+        self.assertNotIn('exec /snap/bin/opencode "$', text)
 
     def test_runner_serializes_with_existing_persist_lock(self):
         text = SCRIPT.read_text(encoding="utf-8")
@@ -105,7 +125,7 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
 
     def test_runner_prechecks_model_cli_and_maps_only_fixed_model_failure_categories(self):
         text = SCRIPT.read_text(encoding="utf-8")
-        self.assertIn("command -v opencode >/dev/null 2>&1", text)
+        self.assertIn("[[ -x /snap/bin/opencode ]]", text)
         self.assertIn("exit 87", text)
         for exit_code in range(100, 107):
             self.assertIn(f"failure_rc={exit_code}", text)
