@@ -23,6 +23,15 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
         self.assertIn('flock -w 30 9', text)
         self.assertIn('exec node "$runner"', text)
 
+    def test_runner_bootstraps_only_missing_state_from_earliest_retained_game(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("if os.path.lexists(state):", text)
+        self.assertIn("invalid existing improve_daily state", text)
+        self.assertIn("baseline = max(0, min(games) - 1)", text)
+        self.assertIn("'pendingPr': None", text)
+        self.assertIn("os.replace(tmp, state)", text)
+        self.assertIn("os.chmod(state, 0o600)", text)
+
     def test_workflow_runs_after_corner_with_owner_only_gateway(self):
         text = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("cron: '45 9 * * *'", text)  # 18:45 JST
