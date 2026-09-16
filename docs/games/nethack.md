@@ -48,6 +48,8 @@ font_size = 18
 persistent_run = true
 player_name = "docich"
 save_dir = "/var/games/nethack/save"
+xlogfile = "/var/games/nethack/xlogfile"
+dump_dir = "/var/games/nethack/dumps"
 
 [agent]
 enabled = false
@@ -176,8 +178,67 @@ fail closed とし、単に「ゲームが終わった」と推測して切替�
 
 ゲーム側が既に `S` で終了していて、process windowが無い一方で同player saveが存在する場合は
 `suspended` として扱う。processもsaveも無い場合だけ `ended` と記録し、死亡・quit・ascension の分類は
-P1b の run-history/dumplog 側へ委ねる。
+P1b の run history へ委ねる。
 
 境界の診断結果は generation runtime の `nethack_boundary.json` に `suspended` / `ended` として残す。
-P1b ではこの結果と Debian/Ubuntu NetHack の dumplog を `NethackRunStore` に取り込み、冒険番号・死亡理由・
-到達深度・turn・score・ascension 等を永続履歴へ接続する。
+
+---
+
+## 9. 遠征履歴と終了結果 (P1b)
+
+`NethackRunStore` はゲーム本体のsaveとは別に、番組側の「第N次遠征」を
+`state_dir/nethack/` 以下へ記録する。run JSON はゲームを復元するためのsaveではなく、分析・番組表示・
+将来の戦略改善のための履歴である。ゲーム状態の正本は常にNetHack自身のsaveとする。
+
+### 継続するrun
+
+- 初回開始: 新しい `run_id` と `expedition` を採番
+- コーナー終了時に通常saveが存在: `suspended`
+- 次回restore: 同じ `run_id` / `expedition` を `active` に戻す
+- NetHackが元からactiveのままコーナーだけ終わる: `active` のまま session を `continued` として閉じる
+- 履歴導入前のsaveが存在: 削除せず `recovered_existing_save=true` で採用
+- 履歴導入前からNetHack runtimeがactive: `adopted_active_runtime=true` で採用
+
+tracked `suspended` runなのにsaveが無い場合は、勝手に新規runを始めず fail closed にする。
+またP1aを通した外部game switchによって `active` 履歴だけが残り、実際にはsave済みだった場合は、saveの存在を
+根拠に `external_suspend_detected` として再同期する。
+
+### terminal result の正本
+
+Debian/Ubuntu版NetHackが書く `xlogfile` を機械可読な終了結果の正本として扱う。run開始時にxlogfileの
+byte offsetを記録し、そのoffsetより後に追加された **同じplayer nameのrecordだけ**を読む。これにより、
+過去の死亡を現在runの死亡と取り違えない。
+
+保存する主な値:
+
+- `points` → score
+- `turns`
+- `maxlvl` → max depth
+- `death` → 記録上の終了理由
+- `role`, `race`, `gender`, `align`
+- `achieve` bit field
+- start/end/realtime
+
+`achieve & 0x0100` または `death` がascensionを示す場合は `ascended`、quit/escapeは `ended`、それ以外の
+terminal recordは `dead` とする。`achieve & 0x0020` は Amulet of Yendor 取得として保存する。
+
+xlogfileが無い、run開始後にtruncateされた、同playerの新規recordが無い場合は **死因を推測しない**。
+`ended_unknown` と `analysis_error` を記録する。
+
+### dumplog
+
+`dump_dir` は詳細な反省材料として使う。run開始時点の最新mtimeをbaselineとして保存し、終了後にそれより新しい
+同playerのdumplogだけを関連付ける。run JSONにはhost path全体ではなくbasenameだけを保存する。
+
+### stateのクラッシュ整合性
+
+run本体、`current.json`、`meta.json` は複数ファイルなので、書込み順を明示する。
+
+1. run本体をatomic write + fsync
+2. `current.json` をatomic write + fsync
+3. expedition counter (`meta.json`) を更新
+
+`meta.json` はrunファイル群から最大expeditionを復元できるため、3の前に停止しても番号を再利用しない。
+terminal時はrun本体を先に保存してからcurrent pointerを削除する。削除直前に停止してterminal runへのpointerが
+残った場合は、次回 `prepare_start` がterminal runを確認してpointerだけを安全に除去する。逆にpointerだけあり
+run本体が無い状態は推測で修復せず fail closed にする。
