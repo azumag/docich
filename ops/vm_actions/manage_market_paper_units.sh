@@ -15,6 +15,11 @@ set -euo pipefail
 #     code change), never touches broker credentials, never sends a real
 #     order. install/enable only ever start an *idle* worker: Runtime.tick()
 #     itself refuses to trade while enabled=false in that same config file.
+#   - For market=stocks, install also provisions the exact pinned optional
+#     read-only Moomoo quote SDK into the existing .venv-trading when that
+#     venv exists. It never installs/starts OpenD, logs in, enables stocks,
+#     or creates/imports a trading context. Provider readiness still has to
+#     pass the separate fixed read-only probe before stocks can be enabled.
 #   - seed-test-quote (fx only) writes one fixed-shape, deterministically
 #     generated USD_JPY quote to the approved file-feed path
 #     (<state_dir>/market-data/market-fx-quotes.json), exactly like an
@@ -73,6 +78,27 @@ install_units() {
   done
   systemctl --user daemon-reload || { echo "daemon-reload failed (XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR)" >&2; exit 13; }
   echo "installed: ${templates[*]}"
+}
+
+provision_stock_quote_sdk() {
+  [[ "$market" == "stocks" ]] || return 0
+  local python_bin="$root/.venv-trading/bin/python3"
+  local requirements="$root/requirements-market-data.txt"
+
+  # Existing production trading installs already own .venv-trading. Do not
+  # silently create a new interpreter environment from this bounded unit
+  # installer: if it is absent, leave the read-only probe fail-closed as
+  # sdk_unavailable and let diagnostics/operator repair the base runtime.
+  if [[ ! -x "$python_bin" ]]; then
+    echo "trading venv unavailable; skipped optional stock quote SDK provision" >&2
+    return 0
+  fi
+  [[ -f "$requirements" ]] || { echo "missing market-data requirements: $requirements" >&2; exit 14; }
+
+  "$python_bin" -m pip install --disable-pip-version-check --no-input -r "$requirements" \
+    || { echo "market-data SDK install failed" >&2; exit 15; }
+  "$python_bin" -c 'import moomoo' >/dev/null 2>&1 \
+    || { echo "market-data SDK import failed" >&2; exit 16; }
 }
 
 enable_market() {
@@ -144,7 +170,7 @@ PY
 }
 
 case "$action" in
-  install) install_units ;;
+  install) install_units; provision_stock_quote_sdk ;;
   enable) enable_market ;;
   disable) disable_market ;;
   restart) restart_market ;;
