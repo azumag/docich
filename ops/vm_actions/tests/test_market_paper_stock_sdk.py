@@ -22,6 +22,7 @@ class MarketPaperStockSdkTests(unittest.TestCase):
                 "docich-market-improve@.service",
                 "docich-market-improve@.timer",
                 "docich-market-data-stocks.service",
+                "docich-market-data-fx.service",
             ):
                 (templates / name).write_text("WorkingDirectory=__DOCICH_ROOT__\n", encoding="utf-8")
             (root / "requirements-market-data.txt").write_text(
@@ -68,9 +69,11 @@ class MarketPaperStockSdkTests(unittest.TestCase):
             self.assertIn("-m pip install --disable-pip-version-check --no-input -r", calls)
             self.assertIn("requirements-market-data.txt", calls)
             self.assertIn("-c import moomoo", calls)
-            provider = pathlib.Path(tmp) / "home" / ".config" / "systemd" / "user" / "docich-market-data-stocks.service"
-            self.assertTrue(provider.is_file())
+            unit_root = pathlib.Path(tmp) / "home" / ".config" / "systemd" / "user"
+            self.assertTrue((unit_root / "docich-market-data-stocks.service").is_file())
+            self.assertTrue((unit_root / "docich-market-data-fx.service").is_file())
             self.assertNotIn("enable --now docich-market-data-stocks.service", calls)
+            self.assertNotIn("enable --now docich-market-data-fx.service", calls)
 
     def test_fx_install_does_not_provision_moomoo(self):
         text = SCRIPT.read_text(encoding="utf-8")
