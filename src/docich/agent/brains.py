@@ -91,17 +91,18 @@ class RandomBrain:
 
 
 class NethackPolicyBrain:
-    """P3a fail-closed layered NetHack brain.
+    """Layered CLI NetHack brain with an advisory-only strategic sidecar.
 
-    Selecting this brain does not make the unfinished policy roam the dungeon.
-    P3a automatically advances only an explicit ``--More--`` prompt; all
-    movement, combat, item use and meaningful prompts return no action and are
-    represented as mid-level/strategic decisions for later phases.
+    Gameplay actions still come exclusively from the reviewed deterministic
+    P3b policy surface (More-space and one safe visible h/j/k/l exploration
+    step).  P3e may call an external strategist and narrate its advice, but the
+    advisory result is never translated into gameplay Actions here.
     """
 
     def __init__(self, g: GlobalConfig, game: GameConfig):
         if game.name != "nethack" or game.adapter != "cli":
             raise AdapterError("brain='nethack' はCLI NetHack専用です")
+        from ..nethack_advisory import NethackAdvisoryController
         from ..nethack_policy import NethackLayeredPolicy
 
         self.g = g
@@ -111,17 +112,35 @@ class NethackPolicyBrain:
         self.rows = int(raw.get("rows", 24)) if isinstance(raw, dict) else 24
         self.policy = NethackLayeredPolicy()
         self.last_decision = None
+        self.last_advisory = None
+        try:
+            self.advisory = NethackAdvisoryController(g, game)
+        except ValueError as exc:
+            raise AdapterError(f"NetHack strategist設定が不正です: {exc}") from exc
 
     def decide(self, obs: Observation) -> list[Action]:
         if obs.adapter != "cli" or obs.text is None:
             return []
         from ..nethack_observation import normalize_tty
-        from ..nethack_policy import assert_p3a_safe
+        from ..nethack_policy import assert_p3b_safe
 
         normalized = normalize_tty(obs.text, cols=self.cols, rows=self.rows)
         decision = self.policy.decide(normalized)
-        assert_p3a_safe(decision)
+        assert_p3b_safe(decision)
         self.last_decision = decision
+
+        # Strategist/narration is deliberately fail-open relative to gameplay:
+        # an advisory integration failure must not suppress or invent a P3b
+        # action.  The controller itself is defensive; this outer boundary is a
+        # final containment fence around optional viewer/LLM integration.
+        try:
+            self.last_advisory = self.advisory.consider(obs.text, normalized, decision)
+        except Exception as exc:
+            self.last_advisory = None
+            print(
+                f"docich: 警告: NetHack strategist advisory をスキップしました: {str(exc)[:200]}",
+                file=sys.stderr,
+            )
         return list(decision.actions)
 
 
