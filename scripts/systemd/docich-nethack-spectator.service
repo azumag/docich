@@ -1,0 +1,15 @@
+[Unit]
+Description=docich NetHack spectator renderer
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=__DOCICH_ROOT__
+# Viewer-only sidecar. It reads only the committed NetHack tmux window and
+# writes run/nethack/spectator/index.html for an OBS Browser Source.
+ExecStart=__DOCICH_ROOT__/bin/docich --config __DOCICH_ROOT__/config/docich.soren-live.toml nethack-spectator-live
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
