@@ -1,15 +1,15 @@
 """In-container NetHack gameplay worker for controlled canaries (P5h).
 
-The container image compiles NetHack with VAR_PLAYGROUND fixed to
-``/canary/episode/playground``.  This module owns the only interactive NetHack
-process in the container, drives it through a private tmux TTY, and emits one
-strict P5g worker result to stdout.
+The game worker owns the private NetHack arena but never executes candidate
+code. Candidate strategic requests cross a Unix socket to a sibling broker
+container which has no arena mount. Only validated public proposals come back.
 """
 from __future__ import annotations
 
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -17,17 +17,18 @@ from pathlib import Path
 
 from .actions import Action
 from .nethack_canary_executor import CanaryKey, canary_execution_plan
-from .nethack_candidate_eval import load_candidate_manifest
 from .nethack_inventory import VisibleInventoryItem, parse_visible_inventory
 from .nethack_observation import NethackObservation, normalize_tty
 from .nethack_policy import NethackLayeredPolicy, PolicyDecision, assert_p3b_safe
 from .nethack_run import AMULET_ACHIEVEMENT, classify_terminal_record, parse_xlog_line
-from .nethack_strategist import CommandStrategist, StrategistDispatchResult, evaluate_proposal
-from .nethack_strategy import build_strategic_request
+from .nethack_strategist import ProposalEvaluation, evaluate_proposal
+from .nethack_strategy import StrategicProposal, build_strategic_request, parse_strategic_proposal
 
 REQUEST_SCHEMA_VERSION = 1
 RESULT_SCHEMA_VERSION = 1
+BROKER_SCHEMA_VERSION = 1
 MAX_REQUEST_BYTES = 256 * 1024
+MAX_BROKER_RESPONSE_BYTES = 32 * 1024
 PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,31}$")
 ARENA = {
     "episode_root": "/canary/episode",
@@ -97,13 +98,21 @@ def _read_request(text: str) -> dict[str, object]:
             raise CanaryWorkerError("baseline controller must be baseline_p3b")
     else:
         required = {
-            "kind", "manifest_path", "candidate_id", "candidate_version",
-            "candidate_fingerprint", "command_sha256",
+            "kind", "candidate_id", "candidate_version", "candidate_fingerprint",
+            "command_sha256", "broker_socket", "broker_timeout_s",
         }
         if set(controller) != required or controller.get("kind") != "candidate_strategist":
-            raise CanaryWorkerError("candidate controller shape invalid")
-        if controller.get("manifest_path") != "/canary/candidate.json":
-            raise CanaryWorkerError("candidate manifest must be mounted at /canary/candidate.json")
+            raise CanaryWorkerError("candidate broker controller shape invalid")
+        broker_socket = controller.get("broker_socket")
+        if broker_socket != "/canary/episode/.candidate-ipc/candidate.sock":
+            raise CanaryWorkerError("candidate broker socket is not the reviewed path")
+        broker_timeout = controller.get("broker_timeout_s")
+        if (
+            isinstance(broker_timeout, bool)
+            or not isinstance(broker_timeout, (int, float))
+            or not 0.1 <= float(broker_timeout) <= 130.0
+        ):
+            raise CanaryWorkerError("candidate broker timeout is invalid")
     return raw
 
 
@@ -241,7 +250,6 @@ def _terminal_result(request: dict[str, object], record: dict[str, str], *, exit
         "arena": dict(ARENA),
         "player_name": request["player_name"],
         "seed": request.get("seed"),
-        # Stock NetHack 5.0 has no reviewed public deterministic seed interface.
         "seed_applied": False,
         "controller_kind": "baseline_p3b" if request["arm"] == "baseline" else "candidate_strategist",
         "terminal_status": classify_terminal_record(record),
@@ -251,7 +259,7 @@ def _terminal_result(request: dict[str, object], record: dict[str, str], *, exit
         "death_reason": record.get("death"),
         "got_amulet": bool(isinstance(bits, int) and bits & AMULET_ACHIEVEMENT),
         "exit_reason": exit_reason,
-        "candidate_action_source": "baseline_p3b" if request["arm"] == "baseline" else "candidate_strategist",
+        "candidate_action_source": "baseline_p3b" if request["arm"] == "baseline" else "candidate_strategist_broker",
         "production_state_touched": False,
     }
 
@@ -275,7 +283,7 @@ def _timeout_result(request: dict[str, object], *, reason: str) -> dict[str, obj
         "death_reason": None,
         "got_amulet": False,
         "exit_reason": reason,
-        "candidate_action_source": "baseline_p3b" if request["arm"] == "baseline" else "candidate_strategist",
+        "candidate_action_source": "baseline_p3b" if request["arm"] == "baseline" else "candidate_strategist_broker",
         "production_state_touched": False,
     }
 
@@ -310,34 +318,60 @@ def _probe_inventory(game: _TmuxGame) -> tuple[VisibleInventoryItem, ...]:
     return inventory
 
 
-def _candidate_strategist(request: dict[str, object]) -> CommandStrategist | None:
+def _candidate_broker(request: dict[str, object]) -> tuple[str, float] | None:
     if request["arm"] != "candidate":
         return None
     controller = request["controller"]
     assert isinstance(controller, dict)
-    manifest = load_candidate_manifest(Path("/canary/candidate.json"))
-    expected = {
-        "candidate_id": manifest.candidate_id,
-        "candidate_version": manifest.version,
-        "candidate_fingerprint": manifest.fingerprint,
-        "command_sha256": manifest.command_hash,
-    }
-    for key, value in expected.items():
-        if controller.get(key) != value:
-            raise CanaryWorkerError(f"candidate manifest identity mismatch: {key}")
-    command = manifest.command if isinstance(manifest.command, str) else list(manifest.command)
-    return CommandStrategist(
-        command,
-        timeout_s=manifest.timeout_s,
-        max_request_bytes=manifest.max_request_bytes,
-        max_response_bytes=manifest.max_response_bytes,
-        cwd=Path("/opt/docich"),
-    )
+    return str(controller["broker_socket"]), float(controller["broker_timeout_s"])
+
+
+def _broker_dispatch(socket_path: str, timeout_s: float, request) -> StrategicProposal | None:
+    payload = request.to_json().encode("utf-8") + b"\n"
+    if len(payload) > 64 * 1024:
+        return None
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        client.settimeout(timeout_s)
+        client.connect(socket_path)
+        client.sendall(payload)
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = client.recv(4096)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > MAX_BROKER_RESPONSE_BYTES:
+                return None
+            if b"\n" in chunk:
+                break
+    except (OSError, socket.timeout):
+        return None
+    finally:
+        client.close()
+    raw_line = b"".join(chunks).split(b"\n", 1)[0]
+    try:
+        envelope = json.loads(raw_line.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(envelope, dict) or set(envelope) != {"schema_version", "status", "proposal", "error"}:
+        return None
+    if envelope.get("schema_version") != BROKER_SCHEMA_VERSION or envelope.get("status") != "proposed":
+        return None
+    raw_proposal = envelope.get("proposal")
+    if not isinstance(raw_proposal, dict):
+        return None
+    try:
+        return parse_strategic_proposal(raw_proposal)
+    except ValueError:
+        return None
 
 
 def _candidate_keys(
     game: _TmuxGame,
-    strategist: CommandStrategist,
+    broker: tuple[str, float],
     raw_text: str,
     observation: NethackObservation,
     decision: PolicyDecision,
@@ -348,15 +382,12 @@ def _candidate_keys(
         raw_text = game.capture()
         observation = normalize_tty(raw_text, cols=80, rows=24)
     request = build_strategic_request(observation, decision, inventory)
-    try:
-        dispatch = strategist.dispatch(request)
-    except Exception as exc:
-        dispatch = StrategistDispatchResult(status="error", error=str(exc)[:200])
-    if dispatch.status != "proposed" or dispatch.proposal is None:
+    proposal = _broker_dispatch(broker[0], broker[1], request)
+    if proposal is None:
         return ()
-    evaluation = evaluate_proposal(
+    evaluation: ProposalEvaluation = evaluate_proposal(
         request,
-        dispatch.proposal,
+        proposal,
         current_observation=observation,
         current_inventory=inventory,
     )
@@ -374,16 +405,14 @@ def run_episode(request: dict[str, object]) -> dict[str, object]:
     player = str(request["player_name"])
     max_turns = int(request["max_turns"])
     wall_timeout = float(request.get("wall_timeout_s", 900.0))
-    # Return before the outer P5g subprocess timeout so the launcher has time
-    # to tear down the container and report a clean timeout result.
     deadline = time.monotonic() + max(1.0, wall_timeout - 5.0)
     game = _TmuxGame(player)
     policy = NethackLayeredPolicy()
-    strategist = _candidate_strategist(request)
+    broker = _candidate_broker(request)
     last_candidate_fingerprint: tuple[object, ...] | None = None
     idle_cycles = 0
     try:
-        raw_text = _start_game(game, deadline=deadline)
+        _start_game(game, deadline=deadline)
         while time.monotonic() < deadline:
             record = _terminal_record(player)
             if record is not None:
@@ -405,7 +434,7 @@ def run_episode(request: dict[str, object]) -> dict[str, object]:
                 for action in decision.actions:
                     game.apply_action(action)
                 acted = True
-            elif request["arm"] == "candidate" and decision.requires_llm and strategist is not None:
+            elif request["arm"] == "candidate" and decision.requires_llm and broker is not None:
                 fingerprint = (
                     decision.intent,
                     observation.vitals.turn,
@@ -414,7 +443,7 @@ def run_episode(request: dict[str, object]) -> dict[str, object]:
                     observation.message,
                 )
                 if fingerprint != last_candidate_fingerprint:
-                    keys = _candidate_keys(game, strategist, raw_text, observation, decision)
+                    keys = _candidate_keys(game, broker, raw_text, observation, decision)
                     last_candidate_fingerprint = fingerprint
                     for key in keys:
                         game.apply_key(key)
@@ -425,8 +454,6 @@ def run_episode(request: dict[str, object]) -> dict[str, object]:
                 time.sleep(0.10)
             else:
                 idle_cycles += 1
-                # A policy which cannot make progress should yield a bounded
-                # canary timeout rather than burning the full wall-clock budget.
                 if idle_cycles >= 40:
                     return _timeout_result(request, reason=f"policy_stall:{decision.intent}")
                 time.sleep(0.10)
