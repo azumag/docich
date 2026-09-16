@@ -64,6 +64,13 @@ EXIT_CATEGORIES = {
     120: "opencode_full_timeout",
     121: "opencode_full_network",
     122: "opencode_full_provider_unavailable",
+    123: "opencode_nonzero_error_event",
+    124: "opencode_nonzero_error_part",
+    125: "opencode_nonzero_tool_event",
+    126: "opencode_nonzero_unexpected_event",
+    127: "opencode_nonzero_invalid_json",
+    128: "opencode_nonzero_structured",
+    129: "opencode_nonzero_no_json",
 }
 
 
