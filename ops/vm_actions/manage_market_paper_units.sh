@@ -26,6 +26,8 @@ set -euo pipefail
 #     never creates, reads or prints that credential file.
 #   - Provider enable/restart first installs the reviewed unit templates so a
 #     first-use provider action cannot depend on a stale/manual unit copy.
+#   - Disabling the stock provider also stops its dedicated, non-enabled OpenD
+#     dependency; restarting the stock provider refreshes OpenD first.
 #   - seed-test-quote (fx only) writes one fixed-shape deterministic USD_JPY
 #     quote for validating the file-feed pipeline. It never reads or fabricates
 #     data resembling a real live provider.
@@ -64,6 +66,7 @@ worker_unit="docich-market-worker@${market}.service"
 corner_timer="docich-market-corner@${market}.timer"
 improve_timer="docich-market-improve@${market}.timer"
 provider_unit="docich-market-data-${market}.service"
+opend_unit="docich-moomoo-opend.service"
 
 install_units() {
   mkdir -p "$unit_dir" || { echo "mkdir failed: $unit_dir" >&2; exit 10; }
@@ -128,9 +131,15 @@ enable_provider() {
 
 disable_provider() {
   systemctl --user disable --now "$provider_unit"
+  if [[ "$market" == "stocks" ]]; then
+    systemctl --user stop "$opend_unit"
+  fi
 }
 
 restart_provider() {
+  if [[ "$market" == "stocks" ]]; then
+    systemctl --user restart "$opend_unit"
+  fi
   systemctl --user restart "$provider_unit"
 }
 
