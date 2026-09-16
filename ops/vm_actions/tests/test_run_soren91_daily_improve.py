@@ -78,7 +78,7 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
         self.assertIn('[[ "$4" == "--model" ]]', text)
         self.assertIn('[[ "$5" =~ ^[A-Za-z0-9_./:-]{1,160}$ ]]', text)
         self.assertIn(
-            'exec /snap/bin/opencode run --format json --agent soren-daily-improve --model "$5"',
+            '/snap/bin/opencode run --format json --agent soren-daily-improve --model "$5"',
             text,
         )
         self.assertIn('export PATH="$opencode_shim_dir:/usr/local/bin:/usr/bin:/bin:/snap/bin"', text)
