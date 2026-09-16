@@ -53,13 +53,16 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
         self.assertIn("export SOREN91_IMPROVE_OPENCODE_TIMEOUT=90", text)
         self.assertNotIn("muse-spark-1.3-contributor-free", text)
 
-    def test_runner_isolates_daily_opencode_from_project_tools(self):
+    def test_runner_isolates_daily_opencode_with_proven_agent_schema(self):
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("export OPENCODE_DISABLE_CLAUDE_CODE=true", text)
         self.assertIn("export OPENCODE_DISABLE_PROJECT_CONFIG=true", text)
         self.assertIn("export OPENCODE_CONFIG_CONTENT=", text)
-        for tool in ("bash", "edit", "glob", "grep", "list", "read", "webfetch", "write"):
-            self.assertIn(f'"{tool}":false', text)
+        self.assertIn('"permission":{"*":"deny"}', text)
+        self.assertIn('"agent":{"build":{"mode":"primary","permission":{"*":"deny"},"steps":1}}', text)
+        self.assertIn('"share":"disabled"', text)
+        self.assertIn('"instructions":[]', text)
+        self.assertNotIn('"tools":', text)
 
     def test_runner_serializes_with_existing_persist_lock(self):
         text = SCRIPT.read_text(encoding="utf-8")
