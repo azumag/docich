@@ -190,19 +190,46 @@ class TestShadowSourceWriter(unittest.TestCase):
         self.assertEqual(status["status"], "published")
         self.assertEqual(status["source"], "test-source")
         self.assertEqual(status["updated_at"], 456.0)
+        self.assertFalse(writer.evidence_path.exists())
 
-    def test_source_error_preserves_last_good_snapshot(self) -> None:
+    def test_source_error_preserves_last_good_and_records_sticky_evidence(self) -> None:
         writer = ShadowSourceWriter(
             self.g,
             self.game,
             config=self.cfg,
-            source=FakeSource(SourceCaptureResult(status="error", error="bad snapshot")),
+            source=FakeSource(SourceCaptureResult(status="error", error="bad snapshot SECRET")),
+            wall_time=lambda: 789.0,
         )
         writer.output_path.parent.mkdir(parents=True, exist_ok=True)
         writer.output_path.write_text("LAST-GOOD", encoding="utf-8")
         result = writer.capture_once()
         self.assertEqual(result.status, "error")
         self.assertEqual(writer.output_path.read_text(encoding="utf-8"), "LAST-GOOD")
+
+        lines = writer.evidence_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 1)
+        evidence = json.loads(lines[0])
+        self.assertEqual(evidence["schema_version"], 1)
+        self.assertEqual(evidence["status"], "invalid")
+        self.assertEqual(evidence["source"], "<unknown>")
+        self.assertEqual(evidence["evidence_kind"], "producer_error")
+        self.assertEqual(evidence["policy_effect"], "none")
+        self.assertEqual(evidence["ts"], 789.0)
+        self.assertNotIn("bad snapshot", lines[0])
+        self.assertNotIn("SECRET", lines[0])
+
+        # A later successful status update must not erase the historical
+        # failure evidence used by P4c.
+        writer.source = FakeSource(
+            SourceCaptureResult(
+                status="snapshot",
+                snapshot=parse_shadow_snapshot(snapshot_payload(captured_at=790.0)),
+            )
+        )
+        self.assertEqual(writer.capture_once().status, "published")
+        self.assertEqual(len(writer.evidence_path.read_text(encoding="utf-8").splitlines()), 1)
+        status = json.loads(writer.status_path.read_text(encoding="utf-8"))
+        self.assertEqual(status["status"], "published")
 
     def test_disabled_writer_does_not_call_source_or_publish(self) -> None:
         source = FakeSource(
@@ -220,6 +247,7 @@ class TestShadowSourceWriter(unittest.TestCase):
         self.assertEqual(writer.capture_once().status, "disabled")
         self.assertEqual(source.calls, 0)
         self.assertFalse(writer.output_path.exists())
+        self.assertFalse(writer.evidence_path.exists())
 
 
 if __name__ == "__main__":
