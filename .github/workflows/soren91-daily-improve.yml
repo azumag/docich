@@ -1,0 +1,122 @@
+name: Soren91 daily improvement
+
+on:
+  schedule:
+    # Soren91 corner: 18:00-18:30 JST. Give graceful shutdown/evidence archive
+    # another 15 minutes before consuming the retained runtime evidence.
+    - cron: '45 9 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/soren91-daily-improve.yml'
+      - 'ops/vm_actions/run_soren91_daily_improve.sh'
+      - 'games/soviet_now'
+
+permissions:
+  contents: read
+
+# Serialize with production deploy/exec users of the same owner-only gateway.
+concurrency:
+  group: vm-operations-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  improve:
+    if: ${{ github.repository_owner == 'azumag' && github.repository_owner_id == '9018513' && github.ref == 'refs/heads/main' && github.ref_protected == true }}
+    environment: vm-operations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout current protected main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: main
+          persist-credentials: false
+          submodules: false
+
+      - name: Resolve current main
+        id: current
+        shell: bash
+        env:
+          EVENT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          # Scheduled/manual runs point at current default-branch HEAD; push
+          # runs must not execute an older queued revision after main advanced.
+          current_remote="$(git ls-remote --refs https://github.com/${GITHUB_REPOSITORY}.git refs/heads/main | awk '{print $1}')"
+          [[ "$current_remote" =~ ^[0-9a-f]{40}$ ]]
+          if [[ "$sha" != "$current_remote" ]]; then
+            echo "skip stale daily run: checked out=$sha current=$current_remote"
+            echo 'skip=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'skip=false' >> "$GITHUB_OUTPUT"
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Configure pinned SSH client
+        if: steps.current.outputs.skip != 'true'
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          VM_SSH_PORT: ${{ secrets.VM_SSH_PORT }}
+          VM_SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          VM_SSH_KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$VM_SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]
+          [[ "$VM_SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          port="${VM_SSH_PORT:-22}"
+          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+          install -m 700 -d "$RUNNER_TEMP/vm-ssh"
+          printf '%s\n' "$VM_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/vm-ssh/key"
+          printf '%s\n' "$VM_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/vm-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/vm-ssh/key" "$RUNNER_TEMP/vm-ssh/known_hosts"
+          printf 'port=%s\n' "$port" >> "$GITHUB_ENV"
+
+      - name: Wait for production to equal current main
+        if: steps.current.outputs.skip != 'true'
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.current.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          for _ in $(seq 1 36); do
+            status_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $SHA" || true)"
+            if python3 - "$status_json" "$SHA" <<'PY'
+          import json, sys
+          try:
+              data = json.loads(sys.argv[1])
+          except Exception:
+              raise SystemExit(1)
+          raise SystemExit(0 if data.get('status') == 'configured' and data.get('sha') == sys.argv[2] else 1)
+          PY
+            then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo 'production did not converge to current protected main' >&2
+          exit 1
+
+      - name: Run retained-evidence improvement
+        if: steps.current.outputs.skip != 'true'
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.current.outputs.sha }}
+        run: |
+          set -euo pipefail
+          bash -n ops/vm_actions/run_soren91_daily_improve.sh
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          # Production exec deliberately suppresses remote stdout/stderr. Raw
+          # match logs, screenshots, prompts, and tokens never enter Actions.
+          cat ops/vm_actions/run_soren91_daily_improve.sh | \
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA" >/dev/null
