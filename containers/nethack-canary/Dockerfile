@@ -6,7 +6,7 @@ ARG NETHACK_SHA256=2959b7886aac76185b90aea0c9f80d14343f604de0ae96b3dd2a760f7ab3b
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       build-essential ca-certificates curl groff gzip liblua5.4-dev libncurses-dev \
+       build-essential ca-certificates curl git groff gzip liblua5.4-dev libncurses-dev \
        lua5.4 pkg-config uuid-dev \
     && rm -rf /var/lib/apt/lists/*
 
@@ -23,9 +23,12 @@ WORKDIR /build/nethack
 # NetHack 5.0 Unix paths are compile-time settings. Keep immutable support
 # data under /opt and route every mutable game file into the one bind-mounted
 # episode playground. Wizard/explore/shell access stays disabled.
+# WANT_SYSTEM_LUA must be present while setup.sh expands linux.500; passing it
+# only to the later make invocation is too late and causes bundled-Lua fetches.
 RUN cat >> sys/unix/hints/linux.500 <<'EOF'
 
 # docich P5h isolated canary overrides
+WANT_SYSTEM_LUA=1
 PREFIX=/opt/nethack
 HACKDIR=/opt/nethack/playground
 INSTDIR=$(HACKDIR)
@@ -41,7 +44,7 @@ RUN sed -i 's/^WIZARDS=.*/WIZARDS=/' sys/unix/sysconf \
     && cd sys/unix \
     && sh setup.sh hints/linux.500 \
     && cd /build/nethack \
-    && make install WANT_SYSTEM_LUA=1 WANT_WIN_TTY=1
+    && make install WANT_WIN_TTY=1
 
 RUN test -x /opt/nethack/playground/nethack \
     && /opt/nethack/playground/nethack --version >/dev/null
