@@ -42,14 +42,14 @@ export AI_COMMON_AGENTS=opencode-go:deepseek-v4.1-flash
 export SOREN91_IMPROVE_OPENCODE_AGENT=opencode-go:deepseek-v4.1-flash
 export SOREN91_IMPROVE_OPENCODE_TIMEOUT=90
 
-# Match the known-good docich self-repair OpenCode isolation. The daily prompt
-# already contains all allowed evidence, so model-side filesystem/project tools
-# are unnecessary and can make the default OpenCode agent enter a tool lifecycle
-# that the strict JSON parser correctly rejects. Keep this scoped to the daily
+# Match the exact configuration schema already proven by docich self-repair:
+# deny every permission, use one primary one-step text agent, disable sharing
+# and project instructions. Override the default `build` agent so Soren91 does
+# not need an additional CLI --agent option. This is scoped to the daily
 # process only; normal Soren91 commentary/runtime configuration is unchanged.
 export OPENCODE_DISABLE_CLAUDE_CODE=true
 export OPENCODE_DISABLE_PROJECT_CONFIG=true
-export OPENCODE_CONFIG_CONTENT='{"tools":{"bash":false,"edit":false,"glob":false,"grep":false,"list":false,"read":false,"webfetch":false,"write":false}}'
+export OPENCODE_CONFIG_CONTENT='{"permission":{"*":"deny"},"agent":{"build":{"mode":"primary","permission":{"*":"deny"},"steps":1}},"share":"disabled","instructions":[]}'
 
 [[ -d "$runtime" && -f "$runtime/strategy.mjs" ]] || {
   echo 'soren91 runtime is missing' >&2
