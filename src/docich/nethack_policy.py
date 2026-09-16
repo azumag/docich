@@ -48,9 +48,6 @@ class PolicyDecision:
 
 
 def _visible_creature_contact(obs: NethackObservation) -> bool:
-    # Do not infer peaceful/hostile or species identity from a TTY letter.
-    # This is only a reason to stop the low-level explorer and ask a higher
-    # layer what to do with a visible adjacent contact.
     for glyph in obs.visible_neighbors():
         if glyph.isalpha() or glyph in "&;:'":
             return True
@@ -120,9 +117,6 @@ class NethackLayeredPolicy:
                 reason="visible Hungry status should alter exploration priority",
             )
 
-        # P3b does not implement recovery/rest tactics yet. Stop exploration at
-        # half health rather than continuing just because the state is not yet
-        # critical enough for the strategic emergency threshold.
         if hp_ratio is not None and hp_ratio <= 0.50:
             return PolicyDecision(
                 layer="midlevel",
@@ -169,21 +163,6 @@ class NethackLayeredPolicy:
         )
 
 
-def assert_p3a_safe(decision: PolicyDecision) -> None:
-    """P3a guard retained for tests/backward compatibility."""
-    if not decision.actions:
-        return
-    if (
-        decision.layer == "tactical"
-        and decision.intent == "advance_message"
-        and len(decision.actions) == 1
-        and decision.actions[0].type == "text"
-        and decision.actions[0].text == " "
-    ):
-        return
-    raise RuntimeError("P3a policy attempted an action outside the safe tactical surface")
-
-
 def assert_p3b_safe(decision: PolicyDecision) -> None:
     """Allow only More-space or one reviewed cardinal exploration step."""
     if not decision.actions:
@@ -205,3 +184,12 @@ def assert_p3b_safe(decision: PolicyDecision) -> None:
     ):
         return
     raise RuntimeError("P3b policy attempted an action outside the reviewed safe surface")
+
+
+def assert_p3a_safe(decision: PolicyDecision) -> None:
+    """Compatibility entrypoint used by the brain; current branch is P3b.
+
+    The function name remains so the stacked P3a tests and brain wiring do not
+    churn.  On P3b it delegates to the expanded reviewed safe surface.
+    """
+    assert_p3b_safe(decision)
