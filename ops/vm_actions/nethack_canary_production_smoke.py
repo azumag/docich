@@ -356,6 +356,12 @@ def _build_image(context: Path, setup: Path, *, docker: str) -> str:
             [
                 docker,
                 "build",
+                # The reviewed host state intentionally leaves containers without
+                # egress (iptables=false / ip-forward=false), while building the
+                # pinned NetHack image needs apt/curl/fetch-lua. Use the host
+                # network for this build step only; the canary episode itself
+                # always runs with --network=none.
+                "--network=host",
                 "--file",
                 str(context / DOCKERFILE_REL),
                 "--iidfile",
