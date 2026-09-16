@@ -7,7 +7,10 @@ persist=/home/ubuntu/soren-persist
 runner="$runtime/daily_runtime_improve.mjs"
 state="$runtime/tmp/state/improve_daily.json"
 lock="$persist/.git/persist.lock"
-classifier="$(pwd -P)/ops/vm_actions/classify_soren91_opencode_nonzero.py"
+reviewed_dir="$(pwd -P)/ops/vm_actions"
+classifier="$reviewed_dir/classify_soren91_opencode_nonzero.py"
+capture_shim="$reviewed_dir/soren91_opencode_capture_shim.sh"
+fixed_exec_shim="$reviewed_dir/soren91_opencode_fixed_exec.sh"
 
 [[ "$(id -un)" == "ubuntu" ]] || {
   echo 'soren91 daily improvement must run as ubuntu' >&2
@@ -19,7 +22,8 @@ export PATH=/usr/local/bin:/usr/bin:/bin:/snap/bin
 export LANG=C.UTF-8
 export AI_COMMON_AGENTS=opencode-go:deepseek-v4.1-flash
 export SOREN91_IMPROVE_OPENCODE_AGENT=opencode-go:deepseek-v4.1-flash
-export SOREN91_IMPROVE_OPENCODE_TIMEOUT=90
+export SOREN91_TEXT_OPENCODE_TIMEOUT=90
+export SOREN91_TEXT_OPENCODE_MODEL_TIMEOUT=90
 export SOREN91_TEXT_OPENCODE_PERMISSION='{"*":"deny"}'
 export OPENCODE_DISABLE_CLAUDE_CODE=true
 export OPENCODE_DISABLE_PROJECT_CONFIG=true
@@ -62,6 +66,10 @@ command -v python3 >/dev/null 2>&1 || {
   echo 'reviewed classifier is missing' >&2
   exit 88
 }
+[[ -f "$capture_shim" && ! -L "$capture_shim" && -f "$fixed_exec_shim" && ! -L "$fixed_exec_shim" ]] || {
+  echo 'reviewed opencode shim is missing' >&2
+  exit 89
+}
 
 exec 9>"$lock"
 flock -w 30 9 || {
@@ -69,7 +77,6 @@ flock -w 30 9 || {
   exit 75
 }
 
-# First-run bootstrap. Existing malformed state must fail closed.
 python3 - "$runtime" "$state" <<'PY'
 import json
 import os
@@ -136,40 +143,9 @@ except Exception:
     raise SystemExit(86)
 PY
 
-# Daily-only fixed OpenCode shim. Non-zero stdout is classified by the reviewed
-# helper already deployed with this exact main SHA; raw output remains private.
 opencode_shim_dir="$(mktemp -d /home/ubuntu/.soren91-opencode-shim.XXXXXX)"
-cat >"$opencode_shim_dir/opencode" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-umask 077
-[[ "$#" -eq 5 ]] || exit 64
-[[ "$1" == "run" ]] || exit 64
-[[ "$2" == "--format" && "$3" == "json" ]] || exit 64
-[[ "$4" == "--model" ]] || exit 64
-[[ "$5" =~ ^[A-Za-z0-9_./:-]{1,160}$ ]] || exit 64
-[[ -f "$SOREN91_OPENCODE_NONZERO_CLASSIFIER" && ! -L "$SOREN91_OPENCODE_NONZERO_CLASSIFIER" ]] || exit 65
-child_out="$(mktemp /home/ubuntu/.soren91-opencode-child-out.XXXXXX)"
-child_err="$(mktemp /home/ubuntu/.soren91-opencode-child-err.XXXXXX)"
-cleanup_child() { rm -f "$child_out" "$child_err"; }
-trap cleanup_child EXIT INT TERM HUP
-set +e
-/snap/bin/opencode run --format json --agent soren-daily-improve --model "$5" >"$child_out" 2>"$child_err"
-rc=$?
-set -e
-cat "$child_out"
-cat "$child_err" >&2
-if [[ "$rc" -ne 0 ]]; then
-  category="$(python3 "$SOREN91_OPENCODE_NONZERO_CLASSIFIER" "$child_out" 2>/dev/null || printf 'structured_nonzero\n')"
-  case "$category" in
-    error_event|error_part|tool_event|unexpected_event|invalid_json|structured_nonzero|no_json) ;;
-    *) category=structured_nonzero ;;
-  esac
-  printf 'soren91_opencode_nonzero_json=%s\n' "$category" >&2
-fi
-exit "$rc"
-SH
-chmod 700 "$opencode_shim_dir/opencode"
+/usr/bin/install -m 700 -- "$capture_shim" "$opencode_shim_dir/opencode"
+/usr/bin/install -m 700 -- "$fixed_exec_shim" "$opencode_shim_dir/opencode-fixed-exec"
 export PATH="$opencode_shim_dir:/usr/local/bin:/usr/bin:/bin:/snap/bin"
 
 out="$(mktemp /home/ubuntu/.soren91-daily.XXXXXX)"
@@ -180,7 +156,6 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM HUP
 
-# Do not forward caller-controlled argv through this production wrapper.
 run_daily() {
   local mode="$1"
   case "$mode" in
@@ -221,6 +196,7 @@ classify_private_output() {
   if grep -Fq 'soren91_opencode_nonzero_json=invalid_json' "$out"; then failure_rc=127; return; fi
   if grep -Fq 'soren91_opencode_nonzero_json=structured_nonzero' "$out"; then failure_rc=128; return; fi
   if grep -Fq 'soren91_opencode_nonzero_json=no_json' "$out"; then failure_rc=129; return; fi
+  if grep -Fq 'soren91_opencode_signal=TERM' "$out"; then failure_rc=120; return; fi
   if grep -Eiq 'permission.{0,40}(denied|reject|blocked)|((tool|bash|read|glob|grep|list|webfetch|websearch).{0,40}(denied|reject|blocked))|denied.{0,40}permission|not allowed.{0,40}(tool|permission)|tool call.{0,40}(denied|reject)|PermissionDenied' "$out"; then failure_rc=114; return; fi
   if grep -Eiq 'context.{0,60}(length|window|limit|too (large|long)|exceed)|input.{0,60}(too (large|long)|limit|exceed)|prompt.{0,60}(too (large|long)|limit|exceed)|maximum context|max(imum)? input|token limit exceeded' "$out"; then failure_rc=115; return; fi
   if grep -Eiq 'max(imum)? output|output.{0,60}(too (large|long)|limit|exceed)|max_tokens|max tokens|finish_reason.{0,30}length' "$out"; then failure_rc=116; return; fi
