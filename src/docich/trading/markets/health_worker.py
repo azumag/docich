@@ -18,7 +18,7 @@ import math
 from pathlib import Path
 import time
 
-from . import Runtime
+from .__main__ import Runtime
 from .lab import write_json
 
 
