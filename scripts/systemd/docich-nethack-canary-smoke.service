@@ -1,0 +1,30 @@
+[Unit]
+Description=docich NetHack production canary one-shot worker
+Requires=docker.service
+After=docker.service
+ConditionPathExists=/home/ubuntu/.local/state/docich/nethack-canary-smoke/request.json
+
+[Service]
+Type=oneshot
+User=ubuntu
+SupplementaryGroups=docker
+WorkingDirectory=__DOCICH_ROOT__
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/tmp
+Environment=LANG=C.UTF-8
+Environment=PYTHONPATH=__DOCICH_ROOT__/src
+ExecStart=/usr/bin/python3 __DOCICH_ROOT__/ops/vm_actions/nethack_canary_production_smoke.py
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX
+CPUQuota=100%
+MemoryMax=2G
+TasksMax=128
+TimeoutStartSec=14min
