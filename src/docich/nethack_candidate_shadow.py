@@ -1,8 +1,11 @@
 """Live shadow-only candidate strategist comparison for NetHack (P5e).
 
 The candidate receives the same public observation used by the reviewed
-NetHack policy, but its proposal is telemetry only.  This module never returns
+NetHack policy, but its proposal is telemetry only. This module never returns
 or injects gameplay Actions and never mutates the active policy/config.
+
+A live shadow candidate must first have a successful P5d offline safety report
+for the exact manifest fingerprint and regression suite it declares.
 """
 from __future__ import annotations
 
@@ -102,6 +105,46 @@ def _action_dict(action: object) -> dict[str, object]:
     return {key: value for key, value in payload.items() if value not in ("", [], 0, None)} | {"type": payload.get("type")}
 
 
+def _require_offline_safety_report(g: GlobalConfig, manifest: CandidateManifest) -> None:
+    suite_id = manifest.expected_suite_id
+    if suite_id is None:
+        raise ValueError("live candidate_shadow requires manifest expected_suite_id")
+    report_path = (
+        Path(getattr(g, "state_dir", "."))
+        / "nethack"
+        / "regression"
+        / "candidates"
+        / manifest.candidate_id
+        / manifest.version
+        / f"{suite_id}.json"
+    )
+    try:
+        raw = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("P5d candidate safety report is missing or unreadable") from exc
+    if not isinstance(raw, dict):
+        raise ValueError("P5d candidate safety report root is invalid")
+    required = {
+        "schema_version": 1,
+        "candidate_id": manifest.candidate_id,
+        "candidate_version": manifest.version,
+        "candidate_fingerprint": manifest.fingerprint,
+        "command_sha256": manifest.command_hash,
+        "suite_id": suite_id,
+        "status": "completed",
+        "baseline_contract_passed": True,
+        "candidate_safety_contract_passed": True,
+        "eligible_for_behavior_review": True,
+        "eligible_for_promotion_review": False,
+        "performance_improvement_assessed": False,
+        "automatic_promotion": False,
+        "policy_effect": "none",
+    }
+    for key, expected in required.items():
+        if raw.get(key) != expected:
+            raise ValueError(f"P5d candidate safety report does not authorize live shadow: {key}")
+
+
 class NethackCandidateShadowController:
     """Rate-limited live candidate shadow that cannot affect gameplay."""
 
@@ -133,8 +176,9 @@ class NethackCandidateShadowController:
                 if not path.is_absolute():
                     path = Path(getattr(g, "repo_root", ".")) / path
                 self.manifest = load_candidate_manifest(path)
+            assert self.manifest is not None
+            _require_offline_safety_report(g, self.manifest)
             if self.strategist is None:
-                assert self.manifest is not None
                 command = list(self.manifest.command) if isinstance(self.manifest.command, tuple) else self.manifest.command
                 self.strategist = CommandStrategist(
                     command,
@@ -263,6 +307,7 @@ class NethackCandidateShadowController:
                 "candidate_id": self.manifest.candidate_id,
                 "version": self.manifest.version,
                 "candidate_fingerprint": self.manifest.fingerprint,
+                "suite_id": self.manifest.expected_suite_id,
                 "status": outcome.status,
                 "call_index": call_index,
                 "baseline": {
