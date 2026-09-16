@@ -11,7 +11,14 @@ WORKFLOW = ROOT / ".github" / "workflows" / "market-paper-runtime-reload.yml"
 
 
 class RestartActiveMarketPaperWorkersTests(unittest.TestCase):
-    def _run(self, *, stocks_provider=False, fx_provider=False, crypto_worker=False):
+    def _run(
+        self,
+        *,
+        stocks_provider=False,
+        fx_provider=False,
+        crypto_worker=False,
+        paper_corner_enabled=True,
+    ):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         tmp = temp.name
@@ -48,6 +55,7 @@ class RestartActiveMarketPaperWorkersTests(unittest.TestCase):
         prod_root = pathlib.Path(tmp) / "docich"
         (prod_root / "bin").mkdir(parents=True)
         (prod_root / "config").mkdir(parents=True)
+        (prod_root / "scripts/systemd").mkdir(parents=True)
         operator = prod_root / "bin" / "docich-paper-corner-operator"
         operator.write_text(
             "#!/usr/bin/env bash\n"
@@ -57,13 +65,30 @@ class RestartActiveMarketPaperWorkersTests(unittest.TestCase):
         # Intentionally leave the operator non-executable. Production reload
         # must invoke reviewed shell content through bash and must not depend on
         # deployment preserving an executable mode for this helper.
-        (prod_root / "config" / "docich.soren-live.toml").write_text("", encoding="utf-8")
+        (prod_root / "config" / "docich.soren-live.toml").write_text(
+            f"[paper_corner]\nenabled = {'true' if paper_corner_enabled else 'false'}\n",
+            encoding="utf-8",
+        )
+        for name in (
+            "docich-paper-corner-watchdog.service",
+            "docich-paper-corner-watchdog.timer",
+        ):
+            source = ROOT / "scripts/systemd" / name
+            (prod_root / "scripts/systemd" / name).write_text(
+                source.read_text(encoding="utf-8"), encoding="utf-8"
+            )
 
+        home = pathlib.Path(tmp) / "home"
+        home.mkdir()
+        xdg_config = pathlib.Path(tmp) / "xdg-config"
+        xdg_config.mkdir()
         env = os.environ.copy()
         env.update(
             PATH=f"{fake_bin}:{env.get('PATH', '')}",
             CALL_LOG=str(log),
             DOCICH_PROD_ROOT=str(prod_root),
+            HOME=str(home),
+            XDG_CONFIG_HOME=str(xdg_config),
         )
         result = subprocess.run(
             ["bash", str(SCRIPT)],
@@ -73,10 +98,11 @@ class RestartActiveMarketPaperWorkersTests(unittest.TestCase):
             capture_output=True,
             check=False,
         )
-        return result, log.read_text(encoding="utf-8")
+        unit_dir = xdg_config / "systemd/user"
+        return result, log.read_text(encoding="utf-8"), unit_dir, prod_root
 
     def test_only_active_worker_is_restarted_when_providers_inactive(self):
-        result, calls = self._run()
+        result, calls, unit_dir, prod_root = self._run()
         self.assertEqual(result.returncode, 0, result.stderr)
         for unit in (
             "docich-market-worker@stocks.service", "docich-market-worker@fx.service",
@@ -88,16 +114,30 @@ class RestartActiveMarketPaperWorkersTests(unittest.TestCase):
         self.assertNotIn("--user restart docich-market-data-stocks.service", calls)
         self.assertNotIn("--user restart docich-market-data-fx.service", calls)
         self.assertNotIn("operator ", calls)
-        self.assertNotIn(" enable ", calls)
-        self.assertNotIn(" start ", calls)
+
+        self.assertIn("--user daemon-reload", calls)
+        self.assertIn("--user enable --now docich-paper-corner-watchdog.timer", calls)
+        self.assertNotIn("--user enable --now docich-market-", calls)
+
+        service = (unit_dir / "docich-paper-corner-watchdog.service").read_text(encoding="utf-8")
+        timer = (unit_dir / "docich-paper-corner-watchdog.timer").read_text(encoding="utf-8")
+        self.assertIn(str(prod_root), service)
+        self.assertNotIn("__DOCICH_ROOT__", service)
+        self.assertNotIn("__DOCICH_ROOT__", timer)
+
+    def test_watchdog_enablement_follows_paper_corner_opt_in(self):
+        result, calls, _, _ = self._run(paper_corner_enabled=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--user disable --now docich-paper-corner-watchdog.timer", calls)
+        self.assertNotIn("--user enable --now docich-paper-corner-watchdog.timer", calls)
 
     def test_active_crypto_tmux_worker_is_reloaded_without_starting_absent_one(self):
-        inactive_result, inactive_calls = self._run(crypto_worker=False)
+        inactive_result, inactive_calls, _, _ = self._run(crypto_worker=False)
         self.assertEqual(inactive_result.returncode, 0, inactive_result.stderr)
         self.assertIn("tmux has-session -t docich", inactive_calls)
         self.assertNotIn("operator ", inactive_calls)
 
-        active_result, active_calls = self._run(crypto_worker=True)
+        active_result, active_calls, _, _ = self._run(crypto_worker=True)
         self.assertEqual(active_result.returncode, 0, active_result.stderr)
         self.assertIn("tmux has-session -t docich", active_calls)
         self.assertIn("tmux list-windows -t docich -F #{window_name}", active_calls)
@@ -105,12 +145,12 @@ class RestartActiveMarketPaperWorkersTests(unittest.TestCase):
         self.assertIn("--reload-worker", active_calls)
 
     def test_active_read_only_providers_are_reloaded_independently(self):
-        stocks_result, stocks_calls = self._run(stocks_provider=True)
+        stocks_result, stocks_calls, _, _ = self._run(stocks_provider=True)
         self.assertEqual(stocks_result.returncode, 0, stocks_result.stderr)
         self.assertIn("--user restart docich-market-data-stocks.service", stocks_calls)
         self.assertNotIn("--user restart docich-market-data-fx.service", stocks_calls)
 
-        fx_result, fx_calls = self._run(fx_provider=True)
+        fx_result, fx_calls, _, _ = self._run(fx_provider=True)
         self.assertEqual(fx_result.returncode, 0, fx_result.stderr)
         self.assertIn("--user restart docich-market-data-fx.service", fx_calls)
         self.assertNotIn("--user restart docich-market-data-stocks.service", fx_calls)
