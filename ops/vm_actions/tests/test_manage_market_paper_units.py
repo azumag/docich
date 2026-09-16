@@ -235,16 +235,25 @@ class ManageMarketPaperUnitsTests(unittest.TestCase):
             "--user enable --now docich-market-data-fx.service",
         ])
 
-    def test_provider_disable_and_restart_touch_only_selected_provider(self):
+    def test_provider_disable_and_restart_manage_stock_opend_dependency(self):
         disabled = self.run_helper("provider-disable", "fx")
         self.assertEqual(disabled.returncode, 0, disabled.stderr)
         self.assertEqual(self.calls(), ["--user disable --now docich-market-data-fx.service"])
+
+        self.calls_log.write_text("", encoding="utf-8")
+        stock_disabled = self.run_helper("provider-disable", "stocks")
+        self.assertEqual(stock_disabled.returncode, 0, stock_disabled.stderr)
+        self.assertEqual(self.calls(), [
+            "--user disable --now docich-market-data-stocks.service",
+            "--user stop docich-moomoo-opend.service",
+        ])
 
         self.calls_log.write_text("", encoding="utf-8")
         restarted = self.run_helper("provider-restart", "stocks")
         self.assertEqual(restarted.returncode, 0, restarted.stderr)
         self.assertEqual(self.calls(), [
             "--user daemon-reload",
+            "--user restart docich-moomoo-opend.service",
             "--user restart docich-market-data-stocks.service",
         ])
 
