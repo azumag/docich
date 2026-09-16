@@ -130,6 +130,25 @@ class ScopeTests(unittest.TestCase):
             with self.assertRaisesRegex(smoke.SmokeError, "reviewed_checkout_drift"):
                 smoke._export_reviewed_build_context(missing, "a" * 40, Path(tmp) / "context")
 
+    def test_build_image_uses_host_network_for_build_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Path(tmp) / "context"
+            (context / "containers" / "nethack-canary").mkdir(parents=True)
+            setup = Path(tmp) / "setup"
+            captured: dict[str, list[str]] = {}
+
+            def fake_run(argv, **kwargs):
+                captured["argv"] = list(argv)
+                Path(argv[argv.index("--iidfile") + 1]).write_text(
+                    "sha256:" + "a" * 64 + "\n", encoding="ascii"
+                )
+                return mock.Mock(returncode=0)
+
+            with mock.patch.object(smoke.subprocess, "run", side_effect=fake_run):
+                image = smoke._build_image(context, setup, docker="/usr/bin/docker")
+            self.assertEqual(image, "sha256:" + "a" * 64)
+            self.assertIn("--network=host", captured["argv"])
+
     def test_canary_path_must_be_disjoint(self):
         settings = mock.Mock()
         settings.save_dir = Path("/var/games/nethack/save")

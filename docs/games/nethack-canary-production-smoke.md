@@ -54,6 +54,7 @@ workflowは:
 4. path unitがDocker権限付きoneshotを起動
 5. oneshotがreviewed main commitのbuild入力だけを `git archive` で一時contextへexportし、そこからNetHack canary imageをimmutable IDでbuild
    - production checkoutは長寿命で、improve daemonのruntime生成物・backup・`._*` などをuntrackedのまま持つ。commit objectからexportすることで、reviewed SHA以外のファイルがimageへ混入しない
+   - reviewed host stateはコンテナegressを持たない（`iptables=false` / `ip-forward=false`）が、image buildは `apt` / `curl` / `fetch-lua` にegressが要る。このbuild stepだけ `docker build --network=host` を使う。episode実行containerは常に `--network=none` で、build時のhost networkとは別
 6. baseline P3b 1 episodeを `network=none` / `runsc` containerで実行
 7. production save/xlog/dump fingerprint不変とcontainer cleanupを確認
 8. fixed categoryだけをgateway exit codeとしてActionsへ返す
