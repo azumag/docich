@@ -89,9 +89,9 @@ def load_advisory_config(game: GameConfig) -> NethackAdvisoryConfig:
     command_raw = section.get("command", "")
     command: str | tuple[str, ...]
     if isinstance(command_raw, str):
-        command = command_raw
+        command = command_raw.strip()
     elif isinstance(command_raw, list) and all(isinstance(part, str) for part in command_raw):
-        command = tuple(command_raw)
+        command = tuple(part for part in command_raw if part)
     else:
         raise ValueError("strategist command must be a string or string array")
     if enabled and not command:
@@ -172,7 +172,7 @@ class NethackAdvisoryController:
             self.strategist = CommandStrategist(
                 command,
                 timeout_s=self.config.timeout_s,
-                cwd=g.repo_root,
+                cwd=Path(getattr(g, "repo_root", ".")),
             )
         else:
             self.strategist = None
@@ -189,7 +189,7 @@ class NethackAdvisoryController:
         else:
             self._narrator = None
 
-        self.log_path = Path(g.state_dir) / "nethack" / "strategist" / "advisory.jsonl"
+        self.log_path = Path(getattr(g, "state_dir", ".")) / "nethack" / "strategist" / "advisory.jsonl"
 
     @property
     def calls_used(self) -> int:
