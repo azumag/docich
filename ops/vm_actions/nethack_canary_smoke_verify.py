@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -29,10 +30,20 @@ EXIT_UNIT_UNAVAILABLE = 5
 
 def _system_unit_available() -> bool:
     try:
-        path = Path("/etc/systemd/system/docich-nethack-canary-smoke.service")
+        service = Path("/etc/systemd/system/docich-nethack-canary-smoke.service")
         watcher = Path("/etc/systemd/system/docich-nethack-canary-smoke.path")
-        return path.is_file() and watcher.is_file()
-    except OSError:
+        if not service.is_file() or not watcher.is_file():
+            return False
+        active = subprocess.run(
+            ["systemctl", "is-active", "--quiet", "docich-nethack-canary-smoke.path"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+        return active.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
         return False
 
 
