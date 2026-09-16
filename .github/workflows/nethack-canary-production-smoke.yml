@@ -2,6 +2,10 @@ name: NetHack production canary smoke
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'ops/vm_actions/nethack_canary_smoke_epoch'
 
 permissions:
   contents: read
