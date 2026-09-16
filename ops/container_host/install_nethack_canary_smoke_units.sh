@@ -28,13 +28,14 @@ if id -nG ubuntu | tr ' ' '\n' | grep -qx docker; then
 fi
 systemctl is-active --quiet docker.service || { echo "error: docker.service is not active" >&2; exit 1; }
 
-tmp_service="$(mktemp)"
-tmp_path="$(mktemp)"
-trap 'rm -f "${tmp_service}" "${tmp_path}"' EXIT
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "${tmp_dir}"' EXIT
+tmp_service="${tmp_dir}/docich-nethack-canary-smoke.service"
+tmp_path="${tmp_dir}/docich-nethack-canary-smoke.path"
 sed "s|__DOCICH_ROOT__|${ROOT}|g" "${SERVICE_SRC}" >"${tmp_service}"
 sed "s|__DOCICH_ROOT__|${ROOT}|g" "${PATH_SRC}" >"${tmp_path}"
 
-# Verify the exact rendered units before touching /etc.
+# Verify the exact rendered units under their canonical names before touching /etc.
 systemd-analyze verify "${tmp_service}" "${tmp_path}" >/dev/null
 install -o root -g root -m 0644 "${tmp_service}" "${SERVICE_DST}"
 install -o root -g root -m 0644 "${tmp_path}" "${PATH_DST}"
