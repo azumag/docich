@@ -53,6 +53,14 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
         self.assertIn("export SOREN91_IMPROVE_OPENCODE_TIMEOUT=90", text)
         self.assertNotIn("muse-spark-1.3-contributor-free", text)
 
+    def test_runner_isolates_daily_opencode_from_project_tools(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("export OPENCODE_DISABLE_CLAUDE_CODE=true", text)
+        self.assertIn("export OPENCODE_DISABLE_PROJECT_CONFIG=true", text)
+        self.assertIn("export OPENCODE_CONFIG_CONTENT=", text)
+        for tool in ("bash", "edit", "glob", "grep", "list", "read", "webfetch", "write"):
+            self.assertIn(f'"{tool}":false', text)
+
     def test_runner_serializes_with_existing_persist_lock(self):
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn('lock="$persist/.git/persist.lock"', text)
@@ -95,10 +103,8 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
     def test_runner_prechecks_model_cli_and_maps_only_fixed_model_failure_categories(self):
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("command -v opencode >/dev/null 2>&1", text)
-        self.assertIn("command -v script >/dev/null 2>&1", text)
         self.assertIn("exit 87", text)
-        self.assertIn("exit 88", text)
-        for exit_code in range(100, 105):
+        for exit_code in range(100, 107):
             self.assertIn(f"failure_rc={exit_code}", text)
         self.assertNotIn('printf "%s" "$(cat "$out")"', text)
         self.assertNotIn('echo "$(cat "$out")"', text)
@@ -107,48 +113,19 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
         classifier = load_classifier()
         sha = "a" * 40
         self.assertEqual(classifier.classify_gateway_result(gateway_result(0), sha, 0), "success")
-        self.assertEqual(
-            classifier.classify_gateway_result(gateway_result(85), sha, 85),
-            "state_invalid",
-        )
-        self.assertEqual(
-            classifier.classify_gateway_result(gateway_result(92), sha, 92),
-            "evidence_blocked",
-        )
-        self.assertEqual(
-            classifier.classify_gateway_result(gateway_result(94), sha, 94),
-            "candidate_invalid",
-        )
-        self.assertEqual(
-            classifier.classify_gateway_result(gateway_result(98), sha, 98),
-            "preflight_other",
-        )
-        self.assertEqual(
-            classifier.classify_gateway_result(gateway_result(99), sha, 99),
-            "runtime_other",
-        )
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(85), sha, 85), "state_invalid")
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(92), sha, 92), "evidence_blocked")
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(94), sha, 94), "candidate_invalid")
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(98), sha, 98), "preflight_other")
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(99), sha, 99), "runtime_other")
         self.assertEqual(classifier.classify_gateway_result(gateway_result(87), sha, 87), "opencode_missing")
-        self.assertEqual(classifier.classify_gateway_result(gateway_result(88), sha, 88), "script_missing")
-        self.assertEqual(
-            classifier.classify_gateway_result(gateway_result(100), sha, 100),
-            "opencode_provider_failure",
-        )
-        self.assertEqual(
-            classifier.classify_gateway_result(gateway_result(101), sha, 101),
-            "opencode_output_invalid",
-        )
-        self.assertEqual(
-            classifier.classify_gateway_result(gateway_result(102), sha, 102),
-            "opencode_cli_failure",
-        )
-        self.assertEqual(
-            classifier.classify_gateway_result(gateway_result(103), sha, 103),
-            "opencode_failure_other",
-        )
-        self.assertEqual(
-            classifier.classify_gateway_result(gateway_result(104), sha, 104),
-            "legacy_cli_missing",
-        )
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(100), sha, 100), "opencode_provider_failure")
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(101), sha, 101), "opencode_output_invalid")
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(102), sha, 102), "opencode_cli_failure")
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(103), sha, 103), "opencode_failure_other")
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(104), sha, 104), "legacy_cli_missing")
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(105), sha, 105), "opencode_json_invalid")
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(106), sha, 106), "opencode_tool_or_error_event")
         self.assertEqual(classifier.classify_gateway_result(gateway_result(1), sha, 1), "other")
 
     def test_gateway_classifier_fails_closed_on_shape_or_transport_mismatch(self):

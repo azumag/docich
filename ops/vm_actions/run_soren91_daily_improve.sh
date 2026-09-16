@@ -42,6 +42,15 @@ export AI_COMMON_AGENTS=opencode-go:deepseek-v4.1-flash
 export SOREN91_IMPROVE_OPENCODE_AGENT=opencode-go:deepseek-v4.1-flash
 export SOREN91_IMPROVE_OPENCODE_TIMEOUT=90
 
+# Match the known-good docich self-repair OpenCode isolation. The daily prompt
+# already contains all allowed evidence, so model-side filesystem/project tools
+# are unnecessary and can make the default OpenCode agent enter a tool lifecycle
+# that the strict JSON parser correctly rejects. Keep this scoped to the daily
+# process only; normal Soren91 commentary/runtime configuration is unchanged.
+export OPENCODE_DISABLE_CLAUDE_CODE=true
+export OPENCODE_DISABLE_PROJECT_CONFIG=true
+export OPENCODE_CONFIG_CONTENT='{"tools":{"bash":false,"edit":false,"glob":false,"grep":false,"list":false,"read":false,"webfetch":false,"write":false}}'
+
 [[ -d "$runtime" && -f "$runtime/strategy.mjs" ]] || {
   echo 'soren91 runtime is missing' >&2
   exit 78
@@ -73,10 +82,6 @@ command -v python3 >/dev/null 2>&1 || {
 command -v opencode >/dev/null 2>&1 || {
   echo 'opencode is missing' >&2
   exit 87
-}
-command -v script >/dev/null 2>&1 || {
-  echo 'script is missing' >&2
-  exit 88
 }
 
 exec 9>"$lock"
@@ -206,8 +211,10 @@ classify_private_output() {
   # fragments and turn them into fixed exit categories for the owner workflow.
   # Prefer the underlying OpenCode failure over the later missing legacy CLI.
   if grep -Fq 'opencode provider failure (' "$out"; then failure_rc=100; return; fi
-  if grep -Eq 'model returned empty text|opencode returned no strategy code' "$out"; then failure_rc=101; return; fi
-  if grep -Eq 'opencode model failed \([^)]*\): Command failed: script|opencode model failed \([^)]*\): spawn script ' "$out"; then failure_rc=102; return; fi
+  if grep -Eq 'model returned empty text|opencode returned no strategy code|opencode returned no text' "$out"; then failure_rc=101; return; fi
+  if grep -Eq 'opencode returned invalid JSON event|opencode returned unexpected event type:|opencode returned invalid text part|opencode returned invalid text event' "$out"; then failure_rc=105; return; fi
+  if grep -Eq 'opencode returned error event|opencode returned error part|opencode returned tool/error event' "$out"; then failure_rc=106; return; fi
+  if grep -Eq 'opencode model failed \([^)]*\): Command failed: (script|opencode)|opencode model failed \([^)]*\): spawn (script|opencode) ' "$out"; then failure_rc=102; return; fi
   if grep -Fq 'opencode model failed (' "$out"; then failure_rc=103; return; fi
   if grep -Eq 'spawn (claude|gemini) ENOENT|claude error: code=ENOENT|gemini.*ENOENT' "$out"; then failure_rc=104; return; fi
 }
