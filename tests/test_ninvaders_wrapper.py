@@ -7,11 +7,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WRAPPER = ROOT / "games" / "cli-wrappers" / "ninvaders_docich.sh"
+NINVADERS_CONFIG = ROOT / "config" / "games" / "ninvaders.toml"
 
 
 def _write_executable(path: Path, body: str) -> None:
     path.write_text(body, encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
+
+
+def test_ninvaders_config_launches_deployed_tracked_wrapper() -> None:
+    text = NINVADERS_CONFIG.read_text(encoding="utf-8")
+    assert 'command = "/bin/sh games/cli-wrappers/ninvaders_docich.sh"' in text
+    assert "/usr/local/bin/ninvaders_docich" not in text
 
 
 def test_ninvaders_wrapper_drives_gameplay_not_only_title_start() -> None:
