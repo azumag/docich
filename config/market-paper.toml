@@ -27,16 +27,14 @@ max_positions = 3
 max_spread_bps = "30"
 
 [fx]
-# TEMPORARY: owner-approved file-feed production verification (2026-09-15/16).
-# No OANDA practice credentials are configured yet, so this exercises the
-# feed -> tick -> health.json/SQLite pipeline via the reviewed
-# `market_paper seed-test-quote` operation instead, which writes a fixed-
-# shape, deterministically generated USD_JPY quote -- never real market
-# data. Revert to enabled=false / feed="oanda" once verified, unless the
-# owner decides to keep this market live.
-enabled = true
+# The temporary synthetic file-feed production verification is complete.
+# Keep FX fail-closed until the separately managed OANDA-practice pricing
+# collector is installed, credentialed on the VM, and observed publishing
+# fresh market-fx-quotes.json data. The PAPER runtime never receives the
+# OANDA token and never sends OANDA orders; it consumes this file contract.
+enabled = false
 mode = "paper"
-feed = "file" # oanda practice PRICING only | file
+feed = "file"
 symbols = ["USD_JPY", "EUR_JPY"]
 quote_file = "market-fx-quotes.json"
 
