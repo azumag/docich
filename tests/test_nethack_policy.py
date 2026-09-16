@@ -10,7 +10,7 @@ from docich.nethack_observation import normalize_tty
 from docich.nethack_policy import (
     NethackLayeredPolicy,
     PolicyDecision,
-    assert_p3a_safe,
+    assert_p3b_safe,
 )
 
 
@@ -31,7 +31,7 @@ class TestNethackLayeredPolicy(unittest.TestCase):
     def decide(self, text: str):
         return self.policy.decide(normalize_tty(text, cols=80, rows=5))
 
-    def test_more_is_only_p3a_auto_action(self) -> None:
+    def test_more_remains_safe_tactical_auto_action(self) -> None:
         decision = self.decide(frame("You hit the goblin. --More--"))
         self.assertEqual(decision.layer, "tactical")
         self.assertEqual(decision.intent, "advance_message")
@@ -39,7 +39,7 @@ class TestNethackLayeredPolicy(unittest.TestCase):
         self.assertEqual(len(decision.actions), 1)
         self.assertEqual(decision.actions[0].type, "text")
         self.assertEqual(decision.actions[0].text, " ")
-        assert_p3a_safe(decision)
+        assert_p3b_safe(decision)
 
     def test_critical_hp_escalates_without_keypress(self) -> None:
         decision = self.decide(frame(hp="2(10)"))
@@ -66,13 +66,15 @@ class TestNethackLayeredPolicy(unittest.TestCase):
         self.assertEqual(decision.intent, "assess_contact")
         self.assertEqual(decision.actions, ())
 
-    def test_clear_screen_requests_exploration_but_does_not_move_yet(self) -> None:
+    def test_clear_screen_can_emit_one_reviewed_exploration_step(self) -> None:
         decision = self.decide(frame())
         self.assertEqual(decision.layer, "midlevel")
-        self.assertEqual(decision.intent, "explore")
-        self.assertEqual(decision.actions, ())
+        self.assertEqual(decision.intent, "explore_step")
+        self.assertEqual(len(decision.actions), 1)
+        self.assertIn(decision.actions[0].text, {"h", "j", "k", "l"})
+        assert_p3b_safe(decision)
 
-    def test_p3a_safety_guard_rejects_unreviewed_action_surface(self) -> None:
+    def test_p3b_safety_guard_rejects_unreviewed_action_surface(self) -> None:
         decision = PolicyDecision(
             layer="tactical",
             intent="attack",
@@ -80,7 +82,7 @@ class TestNethackLayeredPolicy(unittest.TestCase):
             actions=(Action(type="text", text="h"),),
         )
         with self.assertRaises(RuntimeError):
-            assert_p3a_safe(decision)
+            assert_p3b_safe(decision)
 
 
 class TestNethackPolicyBrain(unittest.TestCase):
@@ -92,7 +94,7 @@ class TestNethackPolicyBrain(unittest.TestCase):
             agent=SimpleNamespace(brain=brain, command=""),
         )
 
-    def test_brain_builds_and_only_advances_more(self) -> None:
+    def test_brain_builds_more_and_reviewed_exploration_actions(self) -> None:
         brain = build_brain(SimpleNamespace(), self._game())
         self.assertIsInstance(brain, NethackPolicyBrain)
         obs = Observation(
@@ -115,8 +117,11 @@ class TestNethackPolicyBrain(unittest.TestCase):
             kind="text",
             text=frame(),
         )
-        self.assertEqual(brain.decide(obs2), [])
-        self.assertEqual(brain.last_decision.intent, "explore")
+        actions2 = brain.decide(obs2)
+        self.assertEqual(len(actions2), 1)
+        self.assertEqual(actions2[0].type, "text")
+        self.assertIn(actions2[0].text, {"h", "j", "k", "l"})
+        self.assertEqual(brain.last_decision.intent, "explore_step")
 
     def test_brain_is_restricted_to_cli_nethack(self) -> None:
         from docich.adapters import AdapterError
