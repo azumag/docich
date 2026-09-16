@@ -42,14 +42,15 @@ export AI_COMMON_AGENTS=opencode-go:deepseek-v4.1-flash
 export SOREN91_IMPROVE_OPENCODE_AGENT=opencode-go:deepseek-v4.1-flash
 export SOREN91_IMPROVE_OPENCODE_TIMEOUT=90
 
-# Match the exact configuration schema already proven by docich self-repair:
-# deny every permission, use one primary one-step text agent, disable sharing
-# and project instructions. Override the default `build` agent so Soren91 does
-# not need an additional CLI --agent option. This is scoped to the daily
-# process only; normal Soren91 commentary/runtime configuration is unchanged.
+# Match the exact configuration pattern already proven by docich self-repair:
+# deny every permission, use one explicitly named primary one-step text agent,
+# disable sharing and project instructions. The small PATH shim created below
+# injects this fixed agent into the upstream direct JSON OpenCode transport.
+# This is scoped to the daily process only; normal Soren91 commentary/runtime
+# configuration is unchanged.
 export OPENCODE_DISABLE_CLAUDE_CODE=true
 export OPENCODE_DISABLE_PROJECT_CONFIG=true
-export OPENCODE_CONFIG_CONTENT='{"permission":{"*":"deny"},"agent":{"build":{"mode":"primary","permission":{"*":"deny"},"steps":1}},"share":"disabled","instructions":[]}'
+export OPENCODE_CONFIG_CONTENT='{"permission":{"*":"deny"},"agent":{"soren-daily-improve":{"mode":"primary","permission":{"*":"deny"},"steps":1}},"share":"disabled","instructions":[]}'
 
 [[ -d "$runtime" && -f "$runtime/strategy.mjs" ]] || {
   echo 'soren91 runtime is missing' >&2
@@ -79,7 +80,7 @@ command -v python3 >/dev/null 2>&1 || {
   echo 'python3 is missing' >&2
   exit 84
 }
-command -v opencode >/dev/null 2>&1 || {
+[[ -x /snap/bin/opencode ]] || {
   echo 'opencode is missing' >&2
   exit 87
 }
@@ -162,12 +163,35 @@ except Exception:
     raise SystemExit(86)
 PY
 
+# Upstream text_ai.mjs intentionally invokes the generic executable name
+# `opencode`. For the production daily job only, resolve that name through a
+# private reviewed shim which accepts exactly the argv shape emitted by the
+# direct JSON transport and inserts the explicit known-good text-only agent.
+# It cannot execute arbitrary operations, flags, models with shell metacharacters,
+# or caller-controlled commands.
+opencode_shim_dir="$(mktemp -d /home/ubuntu/.soren91-opencode-shim.XXXXXX)"
+cat >"$opencode_shim_dir/opencode" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$#" -eq 5 ]] || exit 64
+[[ "$1" == "run" ]] || exit 64
+[[ "$2" == "--format" && "$3" == "json" ]] || exit 64
+[[ "$4" == "--model" ]] || exit 64
+[[ "$5" =~ ^[A-Za-z0-9_./:-]{1,160}$ ]] || exit 64
+exec /snap/bin/opencode run --format json --agent soren-daily-improve --model "$5"
+SH
+chmod 700 "$opencode_shim_dir/opencode"
+export PATH="$opencode_shim_dir:/usr/local/bin:/usr/bin:/bin:/snap/bin"
+
 # Keep detailed model/runtime output private on the VM. The owner workflow only
 # receives a fixed exit category, never raw match logs, prompts, screenshots or
 # provider text. This makes failed daily runs diagnosable without weakening the
 # gateway's stdout/stderr boundary.
 out="$(mktemp /home/ubuntu/.soren91-daily.XXXXXX)"
-cleanup() { rm -f "$out"; }
+cleanup() {
+  rm -f "$out"
+  rm -rf "$opencode_shim_dir"
+}
 trap cleanup EXIT INT TERM HUP
 
 # Do not forward caller-controlled argv through this production wrapper. Only
