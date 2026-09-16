@@ -77,13 +77,11 @@ flock -w 30 9 || {
   exit 75
 }
 
-# First-run bootstrap: the runtime retains only a bounded recent window.  If
+# First-run bootstrap: the runtime retains only a bounded recent window. If
 # improve_daily.json has never existed, insisting on game #1 would falsely
-# classify a healthy retained window (for example #421..#433) as a gap.  Set
-# the initial cursor to one before the earliest *retained* summary, so every
-# available contiguous game is still consumed and no retained evidence is
-# skipped.  Once the state exists it is authoritative; malformed state fails
-# closed instead of being silently reset.
+# classify a healthy retained window (for example #421..#433) as a gap. Set
+# the initial cursor to one before the earliest retained summary. Existing
+# malformed state gets a fixed exit code; its contents are never emitted.
 python3 - "$runtime" "$state" <<'PY'
 import json
 import os
@@ -92,54 +90,63 @@ import sys
 import tempfile
 
 runtime, state = sys.argv[1], sys.argv[2]
-if os.path.lexists(state):
-    try:
-        with open(state, encoding='utf-8') as f:
-            doc = json.load(f)
-    except Exception as exc:
-        raise SystemExit(f'invalid existing improve_daily state: {type(exc).__name__}')
-    if not isinstance(doc, dict):
-        raise SystemExit('invalid existing improve_daily state: not object')
-    value = doc.get('lastConsumedGame')
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise SystemExit('invalid existing improve_daily state: lastConsumedGame')
-    pending = doc.get('pendingPr')
-    if pending is not None and not isinstance(pending, dict):
-        raise SystemExit('invalid existing improve_daily state: pendingPr')
-    raise SystemExit(0)
 
-summaries = os.path.join(runtime, 'tmp', 'summaries')
+def invalid_state():
+    raise SystemExit(85)
+
 try:
-    names = os.listdir(summaries)
-except FileNotFoundError:
-    raise SystemExit(0)
+    if os.path.lexists(state):
+        try:
+            with open(state, encoding='utf-8') as f:
+                doc = json.load(f)
+        except Exception:
+            invalid_state()
+        if not isinstance(doc, dict):
+            invalid_state()
+        value = doc.get('lastConsumedGame')
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            invalid_state()
+        pending = doc.get('pendingPr')
+        if pending is not None and not isinstance(pending, dict):
+            invalid_state()
+        raise SystemExit(0)
 
-games = []
-for name in names:
-    match = re.fullmatch(r'game_(\d+)\.json', name)
-    if match:
-        games.append(int(match.group(1)))
-if not games:
-    raise SystemExit(0)
-
-baseline = max(0, min(games) - 1)
-state_dir = os.path.dirname(state)
-os.makedirs(state_dir, mode=0o700, exist_ok=True)
-fd, tmp = tempfile.mkstemp(prefix='.improve_daily.', dir=state_dir, text=True)
-try:
-    with os.fdopen(fd, 'w', encoding='utf-8') as f:
-        json.dump({'lastConsumedGame': baseline, 'pendingPr': None}, f, separators=(',', ':'))
-        f.write('\n')
-        f.flush()
-        os.fsync(f.fileno())
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, state)
-    os.chmod(state, 0o600)
-finally:
+    summaries = os.path.join(runtime, 'tmp', 'summaries')
     try:
-        os.unlink(tmp)
+        names = os.listdir(summaries)
     except FileNotFoundError:
-        pass
+        raise SystemExit(0)
+
+    games = []
+    for name in names:
+        match = re.fullmatch(r'game_(\d+)\.json', name)
+        if match:
+            games.append(int(match.group(1)))
+    if not games:
+        raise SystemExit(0)
+
+    baseline = max(0, min(games) - 1)
+    state_dir = os.path.dirname(state)
+    os.makedirs(state_dir, mode=0o700, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix='.improve_daily.', dir=state_dir, text=True)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump({'lastConsumedGame': baseline, 'pendingPr': None}, f, separators=(',', ':'))
+            f.write('\n')
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, state)
+        os.chmod(state, 0o600)
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+except SystemExit:
+    raise
+except Exception:
+    raise SystemExit(86)
 PY
 
 # Keep detailed model/runtime output private on the VM. The owner workflow only
@@ -150,23 +157,49 @@ out="$(mktemp /home/ubuntu/.soren91-daily.XXXXXX)"
 cleanup() { rm -f "$out"; }
 trap cleanup EXIT INT TERM HUP
 
+run_daily() {
+  node "$runner" \
+    --runtime-dir "$runtime" \
+    --repo-dir "$persist" \
+    --state "$state" "$@" >"$out" 2>&1
+}
+
+classify_private_output() {
+  local fallback="$1"
+  failure_rc="$fallback"
+  if grep -Fq 'candidate_invalid:' "$out"; then failure_rc=94; return; fi
+  if grep -Fq 'model_no_candidate' "$out"; then failure_rc=93; return; fi
+  if grep -Fq 'evidence_blocked:' "$out"; then failure_rc=92; return; fi
+  if grep -Eq 'focus_evidence_missing:|path_escape|unsafe_evidence_root:|evidence_symlink:|unexpected_evidence_directory:|non_regular_evidence:|evidence_file_limit:|evidence_file_too_large:|history_too_large:|evidence_total_limit:' "$out"; then failure_rc=95; return; fi
+  if grep -Eq 'runtime_not_current:|runtime_compat_missing:' "$out"; then failure_rc=91; return; fi
+  if grep -Eq 'persist_repo_(tracked_dirty|missing)' "$out"; then failure_rc=90; return; fi
+  if grep -Eq 'pending_pr_lookup_failed|unexpected_pr_state:|pr_number_parse_failed|git_diff_failed|gh .* failed' "$out"; then failure_rc=96; return; fi
+  if grep -Fq 'strategy_changed_during_analysis' "$out"; then failure_rc=97; return; fi
+  if grep -Eq '^\[soren91_daily_runtime\] git -C .* failed rc=' "$out"; then failure_rc=90; return; fi
+}
+
+# Preflight uses the reviewed runner's --dry-run path. It exercises persist
+# checkout, runtime compatibility, pending-PR reconciliation, bounded evidence
+# copy, and evidence continuity without calling a model or opening a PR.
 set +e
-node "$runner" \
-  --runtime-dir "$runtime" \
-  --repo-dir "$persist" \
-  --state "$state" >"$out" 2>&1
+run_daily --dry-run
+preflight_rc=$?
+set -e
+if [[ "$preflight_rc" -ne 0 ]]; then
+  classify_private_output 98
+  exit "$failure_rc"
+fi
+
+# The real run gets a fresh private log so a successful preflight can never
+# influence the failure classifier below.
+: >"$out"
+set +e
+run_daily
 rc=$?
 set -e
-
 if [[ "$rc" -eq 0 ]]; then
   exit 0
 fi
 
-# Stable failure categories. Do not print the matched line itself.
-if grep -Fq 'candidate_invalid:' "$out"; then exit 94; fi
-if grep -Fq 'model_no_candidate' "$out"; then exit 93; fi
-if grep -Fq 'evidence_blocked:' "$out"; then exit 92; fi
-if grep -Eq 'runtime_not_current:|runtime_compat_missing:' "$out"; then exit 91; fi
-if grep -Eq 'persist_repo_(tracked_dirty|missing)' "$out"; then exit 90; fi
-if grep -Eq 'pending_pr_lookup_failed|pr_number_parse_failed|gh .* failed' "$out"; then exit 96; fi
-exit 1
+classify_private_output 99
+exit "$failure_rc"
