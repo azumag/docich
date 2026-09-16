@@ -6,6 +6,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 UNIT = ROOT / "scripts" / "systemd" / "docich-market-data-fx.service"
 PREFLIGHT = ROOT / "ops" / "vm_actions" / "check_oanda_practice_env.sh"
+READINESS = ROOT / "ops" / "vm_actions" / "wait_oanda_practice_ready.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "market-data-fx.yml"
 CONFIG = ROOT / "config" / "market-paper.toml"
 
@@ -17,6 +18,8 @@ class FxMarketDataProviderTests(unittest.TestCase):
         self.assertIn("EnvironmentFile=%h/.config/docich/oanda-practice.env", text)
         self.assertNotIn("EnvironmentFile=-", text)
         self.assertIn("ExecStartPre=/usr/bin/bash __DOCICH_ROOT__/ops/vm_actions/check_oanda_practice_env.sh", text)
+        self.assertIn("ExecStartPre=/usr/bin/touch %t/docich-oanda-practice-start.marker", text)
+        self.assertIn("ExecStartPost=__DOCICH_ROOT__/.venv-trading/bin/python3 __DOCICH_ROOT__/ops/vm_actions/wait_oanda_practice_ready.py", text)
         self.assertIn("--symbols USD_JPY,EUR_JPY", text)
         self.assertIn("--interval 5", text)
         self.assertIn("NoNewPrivileges=true", text)
@@ -42,6 +45,15 @@ class FxMarketDataProviderTests(unittest.TestCase):
         # The failure path must remain generic: never echo $line/$value.
         self.assertNotIn('echo "$line"', text)
         self.assertNotIn('echo "$value"', text)
+
+    def test_readiness_gate_revalidates_provider_contract_without_logging(self):
+        text = READINESS.read_text(encoding="utf-8")
+        self.assertIn('PROVIDER = "oanda-practice"', text)
+        self.assertIn('SOURCE = "oanda-practice-pricing"', text)
+        self.assertIn('ALLOWED_SYMBOLS = frozenset({"USD_JPY", "EUR_JPY"})', text)
+        self.assertIn("MAX_AGE_S = 15.0", text)
+        self.assertIn('health.get("live_order_capability") is not False', text)
+        self.assertNotIn("print(", text)
 
     def test_owner_workflow_controls_fx_provider_not_fx_paper(self):
         text = WORKFLOW.read_text(encoding="utf-8")
