@@ -7,6 +7,7 @@ from pathlib import Path
 
 from docich.nethack_spectator_live import (
     LiveNethackSpectator,
+    NethackSpectatorLiveError,
     active_nethack_runtime,
 )
 from docich.tmux import TmuxOwnership
@@ -77,7 +78,7 @@ class TestLiveSpectator(unittest.TestCase):
     def tearDown(self) -> None:
         self.tempdir.cleanup()
 
-    def _spectator(self, state, *, tmux_factory=None) -> LiveNethackSpectator:
+    def _spectator(self, state, *, tmux_factory=None, visual_mode="tiles") -> LiveNethackSpectator:
         kwargs = {}
         if tmux_factory is not None:
             kwargs["tmux_factory"] = tmux_factory
@@ -88,6 +89,7 @@ class TestLiveSpectator(unittest.TestCase):
             rows=5,
             interval_ms=500,
             refresh_ms=750,
+            visual_mode=visual_mode,
             state_loader=lambda: state,
             now=lambda: 1234.5,
             **kwargs,
@@ -99,8 +101,10 @@ class TestLiveSpectator(unittest.TestCase):
         rendered = self.output.read_text(encoding="utf-8")
         self.assertIn("NetHackコーナー待機中です。", rendered)
         self.assertIn("window.location.reload()", rendered)
+        self.assertIn("mode-tiles", rendered)
         status = json.loads((self.output.parent / "status.json").read_text(encoding="utf-8"))
         self.assertEqual(status["status"], "idle")
+        self.assertEqual(status["visual_mode"], "tiles")
         self.assertEqual(status["updated_at"], 1234.5)
 
     def test_active_capture_verifies_ownership_before_reading(self) -> None:
@@ -125,10 +129,34 @@ class TestLiveSpectator(unittest.TestCase):
         rendered = self.output.read_text(encoding="utf-8")
         self.assertIn("AI、ダンジョンに潜る", rendered)
         self.assertIn('class="cell player"', rendered)
+        self.assertIn('href="#tile-player"', rendered)
         status = json.loads((self.output.parent / "status.json").read_text(encoding="utf-8"))
         self.assertEqual(status["status"], "active")
         self.assertEqual(status["runtime_id"], RUNTIME_ID)
         self.assertEqual(status["generation"], 3)
+        self.assertEqual(status["visual_mode"], "tiles")
+
+    def test_ascii_visual_mode_is_operational_fallback(self) -> None:
+        made: list[FakeTmux] = []
+
+        def factory(session: str) -> FakeTmux:
+            tmux = FakeTmux(session)
+            made.append(tmux)
+            return tmux
+
+        spectator = self._spectator(
+            ready_state(), tmux_factory=factory, visual_mode="ascii"
+        )
+        self.assertEqual(spectator.render_once(), "active")
+        rendered = self.output.read_text(encoding="utf-8")
+        self.assertIn("mode-ascii", rendered)
+        self.assertNotIn('href="#tile-player"', rendered)
+        status = json.loads((self.output.parent / "status.json").read_text(encoding="utf-8"))
+        self.assertEqual(status["visual_mode"], "ascii")
+
+    def test_invalid_visual_mode_is_rejected(self) -> None:
+        with self.assertRaises(NethackSpectatorLiveError):
+            self._spectator({"phase": "idle", "active": None}, visual_mode="broken")
 
     def test_ownership_mismatch_keeps_last_good_frame(self) -> None:
         self.output.parent.mkdir(parents=True)
