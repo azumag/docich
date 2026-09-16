@@ -17,14 +17,17 @@ set -euo pipefail
 #     explicitly separate: enabling one never implicitly enables the other.
 #   - For market=stocks, install provisions the exact pinned optional
 #     read-only Moomoo quote SDK into the existing .venv-trading when that
-#     venv exists. It never installs/starts OpenD, logs in, enables stocks,
-#     or creates/imports a trading context.
+#     venv exists. It never downloads OpenD, logs in, enables stocks, or
+#     creates/imports a trading context. The separately reviewed OpenD unit
+#     only uses operator-managed files under $HOME and loopback port 11111.
 #   - The stocks provider is the loopback-only Moomoo collector. The FX
 #     provider is the OANDA-practice pricing-only collector and requires the
 #     operator-managed %h/.config/docich/oanda-practice.env file. This script
 #     never creates, reads or prints that credential file.
+#   - Provider enable/restart first installs the reviewed unit templates so a
+#     first-use provider action cannot depend on a stale/manual unit copy.
 #   - seed-test-quote (fx only) writes one fixed-shape deterministic USD_JPY
-#     quote for validating the file-feed pipeline. It never reads/fabricates
+#     quote for validating the file-feed pipeline. It never reads or fabricates
 #     data resembling a real live provider.
 #
 # Env (set by an owner-only reviewed control plane):
@@ -70,6 +73,7 @@ install_units() {
     docich-market-corner@.timer
     docich-market-improve@.service
     docich-market-improve@.timer
+    docich-moomoo-opend.service
     docich-market-data-stocks.service
     docich-market-data-fx.service
   )
@@ -187,9 +191,9 @@ case "$action" in
   enable) enable_market ;;
   disable) disable_market ;;
   restart) restart_market ;;
-  provider-enable) enable_provider ;;
+  provider-enable) install_units; provision_stock_quote_sdk; enable_provider ;;
   provider-disable) disable_provider ;;
-  provider-restart) restart_provider ;;
+  provider-restart) install_units; provision_stock_quote_sdk; restart_provider ;;
   seed-test-quote) seed_test_quote ;;
 esac
 
