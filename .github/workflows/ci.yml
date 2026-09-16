@@ -56,7 +56,7 @@ jobs:
           tests/test_nethack_spectator.py tests/test_nethack_spectator_live.py
           tests/test_nethack_observation.py tests/test_nethack_policy.py tests/test_nethack_exploration.py
           tests/test_nethack_inventory.py tests/test_nethack_strategy.py tests/test_nethack_strategist.py
-          tests/test_ninvaders_wrapper.py tests/test_corner_boundary.py tests/test_paper_corner.py
+          tests/test_nethack_advisory.py tests/test_ninvaders_wrapper.py tests/test_corner_boundary.py tests/test_paper_corner.py
           tests/test_paper_corner_manual.py tests/test_paper_corner_chatter_schedule.py
           tests/test_config.py tests/test_robots_config.py
       - name: PAPER improve sidebar contract
