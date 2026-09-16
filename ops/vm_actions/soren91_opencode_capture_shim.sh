@@ -57,9 +57,16 @@ trap 'on_signal TERM' TERM
 trap 'on_signal INT' INT
 trap 'on_signal HUP' HUP
 
+# Bash may attach /dev/null to an asynchronous command's stdin when job
+# control is disabled. Preserve the reviewed prompt stream explicitly at the
+# compound-command boundary while keeping the fixed child argv unchanged.
+exec 8<&0
 set +e
-"$inner" run --format json --model "$5" >"$child_out" 2>"$child_err" &
-child_pid=$!
+{
+  "$inner" run --format json --model "$5" >"$child_out" 2>"$child_err" &
+  child_pid=$!
+} <&8
+exec 8<&-
 wait "$child_pid"
 rc=$?
 child_pid=''
