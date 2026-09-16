@@ -71,9 +71,10 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
 
     def test_runner_preflights_without_model_before_real_run(self):
         text = SCRIPT.read_text(encoding="utf-8")
-        dry = text.index("run_daily --dry-run")
-        real = text.index("run_daily\n", dry)
+        dry = text.index("run_daily preflight")
+        real = text.index("run_daily run", dry)
         self.assertLess(dry, real)
+        self.assertIn("--dry-run", text)
         self.assertIn("classify_private_output 98", text)
         self.assertIn(': >"$out"', text)
         self.assertIn("classify_private_output 99", text)
