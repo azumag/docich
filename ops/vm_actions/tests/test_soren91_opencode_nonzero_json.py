@@ -1,13 +1,29 @@
+import importlib.util
 from pathlib import Path
+import tempfile
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[3]
 RUNNER = ROOT / "ops" / "vm_actions" / "run_soren91_daily_improve.sh"
 CLASSIFIER = ROOT / "ops" / "vm_actions" / "classify_soren91_daily_gateway.py"
+NONZERO_HELPER = ROOT / "ops" / "vm_actions" / "classify_soren91_opencode_nonzero.py"
+
+
+def load_nonzero_helper():
+    spec = importlib.util.spec_from_file_location("soren91_opencode_nonzero", NONZERO_HELPER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class Soren91OpenCodeNonzeroJsonTests(unittest.TestCase):
+    def test_runner_fits_gateway_production_exec_budget(self):
+        self.assertLessEqual(len(RUNNER.read_bytes()), 16384)
+        text = RUNNER.read_text(encoding="utf-8")
+        self.assertIn("classify_soren91_opencode_nonzero.py", text)
+        self.assertIn("SOREN91_OPENCODE_NONZERO_CLASSIFIER", text)
+
     def test_shim_keeps_child_output_private_and_adds_only_fixed_marker(self):
         text = RUNNER.read_text(encoding="utf-8")
         self.assertIn('child_out="$(mktemp /home/ubuntu/.soren91-opencode-child-out.XXXXXX)"', text)
@@ -31,6 +47,23 @@ class Soren91OpenCodeNonzeroJsonTests(unittest.TestCase):
             self.assertIn(category, text)
         self.assertIn('case "$category" in', text)
         self.assertIn('*) category=structured_nonzero ;;', text)
+
+    def test_private_helper_classifies_without_exposing_payload(self):
+        helper = load_nonzero_helper()
+        cases = [
+            (b"", "no_json"),
+            (b"not json\n", "invalid_json"),
+            (b'{"error":{"message":"private"}}\n', "error_event"),
+            (b'{"type":"text","part":{"error":{"message":"private"}}}\n', "error_part"),
+            (b'{"type":"step_finish","part":{"reason":"tool-calls"}}\n', "tool_event"),
+            (b'{"type":"mystery","part":{}}\n', "unexpected_event"),
+            (b'{"type":"text","part":{"type":"text","text":"private"}}\n', "structured_nonzero"),
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "events.jsonl"
+            for payload, expected in cases:
+                path.write_bytes(payload)
+                self.assertEqual(helper.classify(path), expected)
 
     def test_specific_nonzero_json_categories_precede_generic_cli_failure(self):
         text = RUNNER.read_text(encoding="utf-8")
