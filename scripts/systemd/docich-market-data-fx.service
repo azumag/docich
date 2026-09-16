@@ -13,6 +13,7 @@ Environment=PYTHONPATH=__DOCICH_ROOT__/src
 #   DOCICH_OANDA_TOKEN=...
 # Never put these values in GitHub, repository files, CLI args, or unit text.
 EnvironmentFile=%h/.config/docich/oanda-practice.env
+ExecStartPre=/usr/bin/bash __DOCICH_ROOT__/ops/vm_actions/check_oanda_practice_env.sh
 ExecStart=__DOCICH_ROOT__/.venv-trading/bin/python3 -m docich.trading.markets.oanda_market_data worker --config __DOCICH_ROOT__/config/docich.soren-live.toml --symbols USD_JPY,EUR_JPY --interval 5
 Restart=on-failure
 RestartSec=15
