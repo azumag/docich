@@ -7,6 +7,10 @@ read-only market-data provider を production で安全に実データ取得で�
 > スコープ外（本調査でも未実施）: 実取引・live order・`stocks.enabled=true`・
 > `fx.enabled=true`・stock selector 有効化・PAPER worker/corner/timer の有効化。
 
+> 関連Issue: #482（日本株 live feed）, #132（FX/株 production readiness 残件）,
+> #579（FX market data を OANDA REST から Windows MT5 bridge へ切替）。
+> #579 により、本レポート §4 の FX 節（OANDA REST PAT 前提）は方針更新済み。FX の最新方針は #579 を正とする。
+
 ## 1. 結論（要約）
 
 | 対象 | 結果 | ブロッカー |
@@ -101,9 +105,16 @@ PR #521 / #528 / #547 の provider 設計は、production のアーキテクチ�
 - 参考: `run-soren-live/market-data/market-fx-quotes.json` に、以前の file-feed 検証で
   seed された合成 test feed（`source=owner-approved-test-feed`）が残存。OANDA 由来ではない。
 
-必要な人間操作: Practice アカウントで Personal Access Token を発行し、VM 上で
-`~/.config/docich/oanda-practice.env`（mode 0600、`DOCICH_OANDA_ACCOUNT_ID` と
+必要な人間操作（旧・OANDA REST 前提）: Practice アカウントで Personal Access Token を発行し、
+VM 上で `~/.config/docich/oanda-practice.env`（mode 0600、`DOCICH_OANDA_ACCOUNT_ID` と
 `DOCICH_OANDA_TOKEN` を各 1 つ）を作成する。値は GitHub / Issue / PR / ログ / チャットへ出さない。
+
+> **方針更新（#579, 2026-09-16）**: FX の実市場データ経路は、OANDA Japan REST API / PAT ではなく
+> **Windows 上の OANDA MT5 Demo + MetaTrader5 Python API を market-data host とする MT5 bridge 構成**
+> へ切り替える。理由は OANDA Japan REST API の利用条件（read-only pricing/Practice でも対象）が重いこと。
+> #525 / #528 / #549 の OANDA REST collector は main に入っているが、新しい本番 FX market-data path としては
+> **採用しない（当面は無効のまま残す）**。したがって本節の credential 設定は現行の次アクションではない。
+> MT5 bridge の境界・実装ステップ・完了条件は #579 を正とする。
 
 ## 5. diagnostics のカバレッジ
 
@@ -151,9 +162,11 @@ worker health/report のみを返す。
 
 FX provider:
 
-- 人間が `~/.config/docich/oanda-practice.env` を作成
-- その後 owner-only `FX market-data provider` workflow の `enable` を実行し、unit active /
-  fresh quote / `live_order_capability=false` を実測。
+- 方針更新（#579）: OANDA REST collector（#525/#528/#549）は新しい本番 FX path としては採用せず、
+  当面は無効のまま残す。
+- 次アクションは #579 の MT5 bridge 実装（Windows MT5 Demo host + Tailscale-only + read-only bridge →
+  provider-neutral `market-fx-quotes.json` → 既存 FX PAPER worker）。`fx.enabled=true` は
+  証跡が揃った後の別レビュー。
 
 共通:
 
