@@ -169,17 +169,82 @@ PY
 # private reviewed shim which accepts exactly the argv shape emitted by the
 # direct JSON transport and inserts the explicit known-good text-only agent.
 # It cannot execute arbitrary operations, flags, models with shell metacharacters,
-# or caller-controlled commands.
+# or caller-controlled commands. On a non-zero OpenCode exit the shim inspects
+# stdout JSON privately and appends only one fixed diagnostic marker to stderr;
+# raw stdout/stderr still remain inside the VM-side private runner log.
 opencode_shim_dir="$(mktemp -d /home/ubuntu/.soren91-opencode-shim.XXXXXX)"
 cat >"$opencode_shim_dir/opencode" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 [[ "$#" -eq 5 ]] || exit 64
 [[ "$1" == "run" ]] || exit 64
 [[ "$2" == "--format" && "$3" == "json" ]] || exit 64
 [[ "$4" == "--model" ]] || exit 64
 [[ "$5" =~ ^[A-Za-z0-9_./:-]{1,160}$ ]] || exit 64
-exec /snap/bin/opencode run --format json --agent soren-daily-improve --model "$5"
+
+child_out="$(mktemp /home/ubuntu/.soren91-opencode-child-out.XXXXXX)"
+child_err="$(mktemp /home/ubuntu/.soren91-opencode-child-err.XXXXXX)"
+cleanup_child() { rm -f "$child_out" "$child_err"; }
+trap cleanup_child EXIT INT TERM HUP
+
+set +e
+/snap/bin/opencode run --format json --agent soren-daily-improve --model "$5" >"$child_out" 2>"$child_err"
+rc=$?
+set -e
+
+cat "$child_out"
+cat "$child_err" >&2
+
+if [[ "$rc" -ne 0 ]]; then
+  category="$(python3 - "$child_out" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+try:
+    with open(path, encoding='utf-8', errors='replace') as f:
+        lines = f.readlines(2 * 1024 * 1024 + 1)
+except Exception:
+    print('no_json')
+    raise SystemExit(0)
+
+saw = False
+for line in lines:
+    if not line.strip():
+        continue
+    try:
+        event = json.loads(line)
+    except Exception:
+        print('invalid_json')
+        raise SystemExit(0)
+    if not isinstance(event, dict) or event.get('error'):
+        print('error_event')
+        raise SystemExit(0)
+    saw = True
+    event_type = event.get('type')
+    if event_type not in ('step_start', 'step_finish', 'text'):
+        print('unexpected_event')
+        raise SystemExit(0)
+    part = event.get('part') or {}
+    if not isinstance(part, dict) or part.get('error'):
+        print('error_part')
+        raise SystemExit(0)
+    if part.get('reason') in ('tool-calls', 'tool_calls', 'error') or any(
+        key in part for key in ('tool', 'toolCallID', 'tool_calls')
+    ):
+        print('tool_event')
+        raise SystemExit(0)
+print('structured_nonzero' if saw else 'no_json')
+PY
+)"
+  case "$category" in
+    error_event|error_part|tool_event|unexpected_event|invalid_json|structured_nonzero|no_json) ;;
+    *) category=structured_nonzero ;;
+  esac
+  printf 'soren91_opencode_nonzero_json=%s\n' "$category" >&2
+fi
+exit "$rc"
 SH
 chmod 700 "$opencode_shim_dir/opencode"
 export PATH="$opencode_shim_dir:/usr/local/bin:/usr/bin:/bin:/snap/bin"
@@ -237,6 +302,13 @@ classify_private_output() {
   # fragments and turn them into fixed exit categories for the owner workflow.
   # Prefer a specific full-prompt cause over the generic child-process error.
   if grep -Fq 'opencode provider failure (' "$out"; then failure_rc=100; return; fi
+  if grep -Fq 'soren91_opencode_nonzero_json=error_event' "$out"; then failure_rc=123; return; fi
+  if grep -Fq 'soren91_opencode_nonzero_json=error_part' "$out"; then failure_rc=124; return; fi
+  if grep -Fq 'soren91_opencode_nonzero_json=tool_event' "$out"; then failure_rc=125; return; fi
+  if grep -Fq 'soren91_opencode_nonzero_json=unexpected_event' "$out"; then failure_rc=126; return; fi
+  if grep -Fq 'soren91_opencode_nonzero_json=invalid_json' "$out"; then failure_rc=127; return; fi
+  if grep -Fq 'soren91_opencode_nonzero_json=structured_nonzero' "$out"; then failure_rc=128; return; fi
+  if grep -Fq 'soren91_opencode_nonzero_json=no_json' "$out"; then failure_rc=129; return; fi
   if grep -Eiq 'permission.{0,40}(denied|reject|blocked)|((tool|bash|read|glob|grep|list|webfetch|websearch).{0,40}(denied|reject|blocked))|denied.{0,40}permission|not allowed.{0,40}(tool|permission)|tool call.{0,40}(denied|reject)|PermissionDenied' "$out"; then failure_rc=114; return; fi
   if grep -Eiq 'context.{0,60}(length|window|limit|too (large|long)|exceed)|input.{0,60}(too (large|long)|limit|exceed)|prompt.{0,60}(too (large|long)|limit|exceed)|maximum context|max(imum)? input|token limit exceeded' "$out"; then failure_rc=115; return; fi
   if grep -Eiq 'max(imum)? output|output.{0,60}(too (large|long)|limit|exceed)|max_tokens|max tokens|finish_reason.{0,30}length' "$out"; then failure_rc=116; return; fi
