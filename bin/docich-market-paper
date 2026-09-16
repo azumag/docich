@@ -4,4 +4,12 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 python_bin="$ROOT/.venv-trading/bin/python3"
 if [[ ! -x "$python_bin" ]]; then python_bin=python3; fi
+
+# Keep one-shot/status/corner/improve behaviour on the existing CLI.  Only the
+# resident worker needs to retain the timestamp of the last actually accepted
+# quote across later stale/closed ticks so production diagnostics can measure
+# quote age instead of collapsing to -1.
+if [[ "${*: -1}" == "worker" ]]; then
+  exec "$python_bin" -m docich.trading.markets.health_worker "$@"
+fi
 exec "$python_bin" -m docich.trading.markets "$@"
