@@ -183,6 +183,9 @@ classify_private_output() {
   if grep -Fq 'candidate_invalid:decide is not exported as a function' "$out"; then failure_rc=131; return; fi
   if grep -Fq 'candidate_invalid:decide() returned invalid format' "$out"; then failure_rc=132; return; fi
   if grep -Fq 'candidate_invalid:decide() returned x=' "$out"; then failure_rc=133; return; fi
+  if grep -Fq 'candidate_invalid:Strategy contract: behavior no-op;' "$out"; then failure_rc=142; return; fi
+  if grep -Fq 'candidate_invalid:Strategy contract: behavior replay failed' "$out"; then failure_rc=143; return; fi
+  if grep -Eq 'candidate_invalid:Strategy contract: (retained-match )?behavior replay coverage was insufficient' "$out"; then failure_rc=144; return; fi
   if grep -Fq 'candidate_invalid:Strategy contract:' "$out"; then failure_rc=134; return; fi
   if grep -Fq 'candidate_invalid:Undefined variable detected:' "$out"; then failure_rc=135; return; fi
   if grep -Eiq 'candidate_invalid:Code error:.*(Unexpected end|unterminated|string constant|template literal|unterminated comment)' "$out"; then failure_rc=137; return; fi

@@ -43,6 +43,9 @@ class Soren91CandidateInvalidCategoriesTests(unittest.TestCase):
             139: "candidate_code_module_dependency",
             140: "candidate_code_top_level_reference",
             141: "candidate_code_syntax",
+            142: "candidate_behavior_noop",
+            143: "candidate_behavior_replay_failure",
+            144: "candidate_behavior_replay_coverage",
         }
         for exit_code, category in expected.items():
             self.assertEqual(
@@ -54,6 +57,7 @@ class Soren91CandidateInvalidCategoriesTests(unittest.TestCase):
         text = SCRIPT.read_text(encoding="utf-8")
         generic = text.index("if grep -Fq 'candidate_invalid:'")
         generic_code = text.index("if grep -Fq 'candidate_invalid:Code error:'")
+        generic_behavior = text.index("if grep -Fq 'candidate_invalid:Strategy contract:'")
         markers = {
             "candidate_invalid:no decide() function found": 130,
             "candidate_invalid:decide is not exported as a function": 131,
@@ -67,6 +71,16 @@ class Soren91CandidateInvalidCategoriesTests(unittest.TestCase):
             pos = text.index(marker)
             self.assertLess(pos, generic)
             self.assertIn(f"failure_rc={exit_code}", text[pos:generic])
+
+        behavior_markers = {
+            "candidate_invalid:Strategy contract: behavior no-op;": 142,
+            "candidate_invalid:Strategy contract: behavior replay failed": 143,
+            "candidate_invalid:Strategy contract: (retained-match )?behavior replay coverage was insufficient": 144,
+        }
+        for marker, exit_code in behavior_markers.items():
+            pos = text.index(marker)
+            self.assertLess(pos, generic_behavior)
+            self.assertIn(f"failure_rc={exit_code}", text[pos:generic_behavior])
 
         subtype_markers = {
             "Unexpected end|unterminated|string constant|template literal|unterminated comment": 137,

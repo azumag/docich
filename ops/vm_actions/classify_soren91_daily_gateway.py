@@ -83,6 +83,9 @@ EXIT_CATEGORIES = {
     139: "candidate_code_module_dependency",
     140: "candidate_code_top_level_reference",
     141: "candidate_code_syntax",
+    142: "candidate_behavior_noop",
+    143: "candidate_behavior_replay_failure",
+    144: "candidate_behavior_replay_coverage",
 }
 
 
