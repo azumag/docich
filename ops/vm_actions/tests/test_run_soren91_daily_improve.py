@@ -145,8 +145,25 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
         self.assertIn("exit 87", text)
         for exit_code in range(100, 107):
             self.assertIn(f"failure_rc={exit_code}", text)
+        for exit_code in range(114, 123):
+            self.assertIn(f"failure_rc={exit_code}", text)
         self.assertNotIn('printf "%s" "$(cat "$out")"', text)
         self.assertNotIn('echo "$(cat "$out")"', text)
+
+    def test_full_prompt_specific_causes_precede_generic_cli_failure(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        generic = text.index("failure_rc=102")
+        for marker in [
+            "failure_rc=114", "failure_rc=115", "failure_rc=116",
+            "failure_rc=117", "failure_rc=118", "failure_rc=119",
+            "failure_rc=120", "failure_rc=121", "failure_rc=122",
+        ]:
+            self.assertLess(text.index(marker), generic)
+        self.assertIn("ERR_CHILD_PROCESS_STDIO_MAXBUFFER", text)
+        self.assertIn("ERR_CHILD_PROCESS_TIMEOUT", text)
+        self.assertIn("ECONNRESET", text)
+        self.assertIn("context", text)
+        self.assertIn("permission", text)
 
     def test_gateway_classifier_maps_only_fixed_categories(self):
         classifier = load_classifier()
@@ -172,6 +189,15 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
         self.assertEqual(classifier.classify_gateway_result(gateway_result(111), sha, 111), "opencode_smoke_provider_limit")
         self.assertEqual(classifier.classify_gateway_result(gateway_result(112), sha, 112), "opencode_smoke_cli_other")
         self.assertEqual(classifier.classify_gateway_result(gateway_result(113), sha, 113), "opencode_smoke_timeout")
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(114), sha, 114), "opencode_full_permission_or_tool")
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(115), sha, 115), "opencode_full_context_limit")
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(116), sha, 116), "opencode_full_output_limit")
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(117), sha, 117), "opencode_full_request_invalid")
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(118), sha, 118), "opencode_full_safety_reject")
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(119), sha, 119), "opencode_full_maxbuffer")
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(120), sha, 120), "opencode_full_timeout")
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(121), sha, 121), "opencode_full_network")
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(122), sha, 122), "opencode_full_provider_unavailable")
         self.assertEqual(classifier.classify_gateway_result(gateway_result(1), sha, 1), "other")
 
     def test_gateway_classifier_fails_closed_on_shape_or_transport_mismatch(self):
