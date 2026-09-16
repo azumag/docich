@@ -7,6 +7,7 @@ on:
       - "src/docich/nethack_canary_worker.py"
       - "src/docich/nethack_canary_container.py"
       - "src/docich/nethack_canary_executor.py"
+      - "tests/test_nethack_canary_image.py"
       - ".github/workflows/nethack-canary-image-ci.yml"
   push:
     branches: [main]
@@ -15,6 +16,7 @@ on:
       - "src/docich/nethack_canary_worker.py"
       - "src/docich/nethack_canary_container.py"
       - "src/docich/nethack_canary_executor.py"
+      - "tests/test_nethack_canary_image.py"
       - ".github/workflows/nethack-canary-image-ci.yml"
 
 permissions:
@@ -29,21 +31,34 @@ jobs:
         with:
           persist-credentials: false
       - name: Build pinned NetHack 5.0 canary image
-        run: >-
-          docker build
-          --file containers/nethack-canary/Dockerfile
-          --tag docich-nethack-canary:5.0.0-p5h
-          .
+        shell: bash
+        run: |
+          docker build \
+            --file containers/nethack-canary/Dockerfile \
+            --iidfile "$RUNNER_TEMP/nethack-canary-image-id" \
+            .
+          image_id="$(<"$RUNNER_TEMP/nethack-canary-image-id")"
+          [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf 'DOCICH_TEST_NETHACK_CANARY_IMAGE=%s\n' "$image_id" >> "$GITHUB_ENV"
+      - name: Verify image provenance labels
+        shell: bash
+        run: |
+          test "$(docker image inspect "$DOCICH_TEST_NETHACK_CANARY_IMAGE" --format '{{ index .Config.Labels "org.docich.nethack-canary.abi" }}')" = "1"
+          test "$(docker image inspect "$DOCICH_TEST_NETHACK_CANARY_IMAGE" --format '{{ index .Config.Labels "org.docich.nethack.version" }}')" = "5.0.0"
+          test "$(docker image inspect "$DOCICH_TEST_NETHACK_CANARY_IMAGE" --format '{{ index .Config.Labels "org.docich.nethack.source-sha256" }}')" = "2959b7886aac76185b90aea0c9f80d14343f604de0ae96b3dd2a760f7ab3bde9"
       - name: Verify NetHack binary
         run: >-
           docker run --rm
           --entrypoint /usr/local/bin/nethack
-          docich-nethack-canary:5.0.0-p5h
+          "$DOCICH_TEST_NETHACK_CANARY_IMAGE"
           --version
       - name: Verify worker modules import
         run: >-
           docker run --rm
           --entrypoint python3
-          docich-nethack-canary:5.0.0-p5h
+          "$DOCICH_TEST_NETHACK_CANARY_IMAGE"
           -c
           "import docich.nethack_canary_worker, docich.nethack_canary_executor"
+      - name: Note production runtime boundary
+        run: >-
+          echo "Hosted CI only proves image build/import; production P5h requires Docker runsc preflight and never falls back to runc."
