@@ -91,18 +91,19 @@ class RandomBrain:
 
 
 class NethackPolicyBrain:
-    """Layered CLI NetHack brain with advisory and shadow sidecars.
+    """Layered CLI NetHack brain with observational sidecars.
 
     Gameplay actions still come exclusively from the reviewed deterministic
     P3b policy surface (More-space and one safe visible h/j/k/l exploration
-    step). P3e strategist output and P4a shadow data are observational only and
-    are never translated into gameplay Actions here.
+    step). P3e advisory output, P4a structured shadow data and P5e candidate
+    shadow proposals are observational only and never become gameplay Actions.
     """
 
     def __init__(self, g: GlobalConfig, game: GameConfig):
         if game.name != "nethack" or game.adapter != "cli":
             raise AdapterError("brain='nethack' はCLI NetHack専用です")
         from ..nethack_advisory import NethackAdvisoryController
+        from ..nethack_candidate_shadow import NethackCandidateShadowController
         from ..nethack_policy import NethackLayeredPolicy
         from ..nethack_shadow import NethackShadowController
 
@@ -114,11 +115,13 @@ class NethackPolicyBrain:
         self.policy = NethackLayeredPolicy()
         self.last_decision = None
         self.last_shadow = None
+        self.last_candidate_shadow = None
         self.last_advisory = None
         try:
             self.shadow = NethackShadowController(g, game)
+            self.candidate_shadow = NethackCandidateShadowController(g, game)
             self.advisory = NethackAdvisoryController(g, game)
-        except ValueError as exc:
+        except (ValueError, RuntimeError) as exc:
             raise AdapterError(f"NetHack sidecar設定が不正です: {exc}") from exc
 
     def decide(self, obs: Observation) -> list[Action]:
@@ -132,14 +135,28 @@ class NethackPolicyBrain:
         assert_p3b_safe(decision)
         self.last_decision = decision
 
-        # Shadow comparison deliberately happens after policy + safety guard.
-        # A mismatch is telemetry only and cannot replace the TTY observation.
+        # Structured shadow comparison deliberately happens after policy +
+        # safety guard. A mismatch is telemetry only and cannot replace TTY.
         try:
             self.last_shadow = self.shadow.compare(normalized)
         except Exception as exc:
             self.last_shadow = None
             print(
                 f"docich: 警告: NetHack shadow observation をスキップしました: {str(exc)[:200]}",
+                file=sys.stderr,
+            )
+
+        # P5e candidate receives the already-reviewed public observation only
+        # after the real action has been determined. Its proposal is logged for
+        # comparison and is never returned by this brain.
+        try:
+            self.last_candidate_shadow = self.candidate_shadow.consider(
+                obs.text, normalized, decision
+            )
+        except Exception as exc:
+            self.last_candidate_shadow = None
+            print(
+                f"docich: 警告: NetHack candidate shadow をスキップしました: {str(exc)[:200]}",
                 file=sys.stderr,
             )
 
