@@ -78,6 +78,11 @@ EXIT_CATEGORIES = {
     134: "candidate_behavior_contract",
     135: "candidate_undefined_variable",
     136: "candidate_code_error",
+    137: "candidate_code_truncated_or_unterminated",
+    138: "candidate_code_duplicate_declaration",
+    139: "candidate_code_module_dependency",
+    140: "candidate_code_top_level_reference",
+    141: "candidate_code_syntax",
 }
 
 
