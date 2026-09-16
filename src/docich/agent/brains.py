@@ -91,12 +91,12 @@ class RandomBrain:
 
 
 class NethackPolicyBrain:
-    """Layered CLI NetHack brain with an advisory-only strategic sidecar.
+    """Layered CLI NetHack brain with advisory and shadow sidecars.
 
     Gameplay actions still come exclusively from the reviewed deterministic
     P3b policy surface (More-space and one safe visible h/j/k/l exploration
-    step).  P3e may call an external strategist and narrate its advice, but the
-    advisory result is never translated into gameplay Actions here.
+    step). P3e strategist output and P4a shadow data are observational only and
+    are never translated into gameplay Actions here.
     """
 
     def __init__(self, g: GlobalConfig, game: GameConfig):
@@ -104,6 +104,7 @@ class NethackPolicyBrain:
             raise AdapterError("brain='nethack' はCLI NetHack専用です")
         from ..nethack_advisory import NethackAdvisoryController
         from ..nethack_policy import NethackLayeredPolicy
+        from ..nethack_shadow import NethackShadowController
 
         self.g = g
         self.game = game
@@ -112,11 +113,13 @@ class NethackPolicyBrain:
         self.rows = int(raw.get("rows", 24)) if isinstance(raw, dict) else 24
         self.policy = NethackLayeredPolicy()
         self.last_decision = None
+        self.last_shadow = None
         self.last_advisory = None
         try:
+            self.shadow = NethackShadowController(g, game)
             self.advisory = NethackAdvisoryController(g, game)
         except ValueError as exc:
-            raise AdapterError(f"NetHack strategist設定が不正です: {exc}") from exc
+            raise AdapterError(f"NetHack sidecar設定が不正です: {exc}") from exc
 
     def decide(self, obs: Observation) -> list[Action]:
         if obs.adapter != "cli" or obs.text is None:
@@ -129,9 +132,20 @@ class NethackPolicyBrain:
         assert_p3b_safe(decision)
         self.last_decision = decision
 
+        # Shadow comparison deliberately happens after policy + safety guard.
+        # A mismatch is telemetry only and cannot replace the TTY observation.
+        try:
+            self.last_shadow = self.shadow.compare(normalized)
+        except Exception as exc:
+            self.last_shadow = None
+            print(
+                f"docich: 警告: NetHack shadow observation をスキップしました: {str(exc)[:200]}",
+                file=sys.stderr,
+            )
+
         # Strategist/narration is deliberately fail-open relative to gameplay:
         # an advisory integration failure must not suppress or invent a P3b
-        # action.  The controller itself is defensive; this outer boundary is a
+        # action. The controller itself is defensive; this outer boundary is a
         # final containment fence around optional viewer/LLM integration.
         try:
             self.last_advisory = self.advisory.consider(obs.text, normalized, decision)
@@ -148,7 +162,7 @@ class ResolverBrain:
     """Deterministic in-process resolver (token-free).
 
     Parses the observation text and computes the next keys locally
-    (docich.resolver); no LLM call and no subprocess per move.  Strategy
+    (docich.resolver); no LLM call and no subprocess per move. Strategy
     weights hot-reload from ``<state_dir>/resolver/<game>_strategy.json`` on
     mtime change, so docich.resolver.improve can promote new parameters
     without restarting the agent loop.
@@ -189,7 +203,7 @@ class ResolverBrain:
         text = obs.text or ""
         keys = self.policy(text, self._load_strategy())
         # In BSD robots, ``y`` is both the normal up-left movement key and the
-        # affirmative answer at the end-of-match prompt.  Bind the draining
+        # affirmative answer at the end-of-match prompt. Bind the draining
         # hold to the prompt itself; key value alone would freeze a live match
         # whenever the resolver's safest movement happened to be up-left.
         from ..resolver import robots
@@ -212,7 +226,7 @@ class ResolverBrain:
         """True while a game switch is waiting for this match to end.
 
         Read straight from the canonical JSON (never through the coordinator
-        lock: the brain must stay lock-free).  Missing file = no coordinator
+        lock: the brain must stay lock-free). Missing file = no coordinator
         activity = safe to restart as usual.
         """
         try:
