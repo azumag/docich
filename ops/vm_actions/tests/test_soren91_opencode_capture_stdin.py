@@ -7,6 +7,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
 OUTER_SHIM = ROOT / "ops" / "vm_actions" / "soren91_opencode_capture_shim.sh"
+NORMALIZER = ROOT / "ops" / "vm_actions" / "normalize_soren91_opencode_success.py"
 
 
 class Soren91OpenCodeCaptureStdinTests(unittest.TestCase):
@@ -54,6 +55,7 @@ class Soren91OpenCodeCaptureStdinTests(unittest.TestCase):
 
             env = os.environ.copy()
             env["SOREN91_OPENCODE_NONZERO_CLASSIFIER"] = str(classifier)
+            env["SOREN91_OPENCODE_SUCCESS_NORMALIZER"] = str(NORMALIZER)
             proc = subprocess.run(
                 [str(outer), "run", "--format", "json", "--model", "model/test"],
                 input=prompt,
