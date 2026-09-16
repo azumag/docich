@@ -4,7 +4,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from docich.nethack_spectator import classify_char, main, parse_tty, render_html
+from docich.nethack_spectator import (
+    blank_frame,
+    classify_char,
+    main,
+    parse_tty,
+    render_html,
+)
 
 
 class TestNethackSpectator(unittest.TestCase):
@@ -33,6 +39,17 @@ class TestNethackSpectator(unittest.TestCase):
         self.assertNotIn("<script>", rendered)
         self.assertIn("&lt;script&gt;", rendered)
         self.assertIn('class="cell player"', rendered)
+
+    def test_blank_frame_and_auto_refresh_are_presentation_only(self) -> None:
+        frame = blank_frame("standby <safe>", cols=8, rows=5)
+        self.assertEqual(frame.rows, 2)
+        self.assertTrue(all(cell.kind == "void" for cell in frame.cells))
+        rendered = render_html(frame, auto_refresh_ms=750)
+        self.assertIn("standby &lt;safe&gt;", rendered)
+        self.assertIn("window.location.reload()", rendered)
+        self.assertIn("750", rendered)
+        with self.assertRaises(ValueError):
+            render_html(frame, auto_refresh_ms=99)
 
     def test_cli_writes_html(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -105,6 +105,24 @@ if soren91_manual_argv is not None:
 
     sys.exit(soren91_corner_manual_main(soren91_manual_argv))
 
+
+def _nethack_spectator_live_argv(argv: list[str]) -> list[str] | None:
+    command = "nethack-spectator-live"
+    if argv and argv[0] == command:
+        return argv[1:]
+    if len(argv) >= 3 and argv[0] == "--config" and argv[2] == command:
+        return ["--config", argv[1], *argv[3:]]
+    if len(argv) >= 2 and argv[0].startswith("--config=") and argv[1] == command:
+        return [argv[0], *argv[2:]]
+    return None
+
+
+nethack_spectator_argv = _nethack_spectator_live_argv(sys.argv[1:])
+if nethack_spectator_argv is not None:
+    from .nethack_spectator_live import main as nethack_spectator_main
+
+    sys.exit(nethack_spectator_main(nethack_spectator_argv))
+
 from .cli import main
 
 sys.exit(main())
