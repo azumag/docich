@@ -16,6 +16,8 @@ from docich import config  # noqa: E402
 from docich.retro_corner import RetroCornerError  # noqa: E402
 from docich.soren91_corner import (  # noqa: E402
     ANNOUNCE_TEXT,
+    CHAT_ANNOUNCE_TEXT,
+    LICENSE_NOTICE,
     DELIVERY_SOURCE,
     END_ANNOUNCE_TEXT,
     GAME_NAME,
@@ -24,6 +26,8 @@ from docich.soren91_corner import (  # noqa: E402
     Soren91CornerManager,
     load_soren91_corner_config,
 )
+
+from docich.soren91_corner_manual import ManualSoren91CornerManager  # noqa: E402
 
 
 def _recover_ok():
@@ -350,7 +354,7 @@ class TestSoren91CornerAnnounce(Soren91CornerTestBase):
         current = [None]
         mgr, _ = self.manager(current)
         self.assertEqual(mgr.start().status, "completed")
-        self.assertEqual(self.chats, [ANNOUNCE_TEXT, END_ANNOUNCE_TEXT])
+        self.assertEqual(self.chats, [CHAT_ANNOUNCE_TEXT, END_ANNOUNCE_TEXT])
         self.assertTrue(ANNOUNCE_TEXT.startswith("ソ連ゲーム91"))
         for banned in ("Mac", "レンダラー", "renderer", "CDP", "SRT", "bot"):
             self.assertNotIn(banned, ANNOUNCE_TEXT)
@@ -375,7 +379,7 @@ class TestSoren91CornerAnnounce(Soren91CornerTestBase):
         with mgr._locked():
             state = mgr._read_state()
             mgr._announce_start_locked(state)
-        self.assertEqual(self.chats, [ANNOUNCE_TEXT, END_ANNOUNCE_TEXT])
+        self.assertEqual(self.chats, [CHAT_ANNOUNCE_TEXT, END_ANNOUNCE_TEXT])
 
     def test_announce_is_also_spoken_in_the_meriken_voice(self):
         voices = []
@@ -420,6 +424,108 @@ class TestSoren91CornerAnnounce(Soren91CornerTestBase):
             corner_module.enqueue_chat = real
         self.assertEqual(seen, [("hello", DELIVERY_SOURCE)])
         self.assertEqual(DELIVERY_SOURCE, "soren91-corner")
+
+
+class TestSoren91LicenseNotice(unittest.TestCase):
+    """Exercise both real announce methods without starting the game runtime."""
+
+    managers = (Soren91CornerManager, ManualSoren91CornerManager)
+
+    def manager(self, cls, *, chat=None, voice=None):
+        mgr = cls.__new__(cls)
+        mgr._chat = chat if chat is not None else self.chats.append
+        mgr._voice = voice if voice is not None else self.voices.append
+        return mgr
+
+    def setUp(self):
+        self.chats = []
+        self.voices = []
+
+    def test_notice_matches_requested_credit_exactly(self):
+        self.assertEqual(
+            LICENSE_NOTICE,
+            "【91人対戦】ソ連ゲーム91 - たアケイク https://unityroom.com/games/sorengame91",
+        )
+
+    def test_both_start_paths_post_credit_once_without_speaking_it(self):
+        for cls in self.managers:
+            with self.subTest(manager=cls.__name__):
+                self.setUp()
+                state = {"game": GAME_NAME}
+                self.manager(cls)._announce_start_locked(state)
+                self.assertEqual(len(self.chats), 1)
+                self.assertEqual(len(self.voices), 1)
+                self.assertEqual(self.chats[0], f"{self.voices[0]} {LICENSE_NOTICE}")
+                self.assertEqual(self.chats[0].count(LICENSE_NOTICE), 1)
+                self.assertNotIn("https://", self.voices[0])
+                self.assertTrue(state["announced"])
+
+    def test_repeated_announce_does_not_repeat_credit(self):
+        for cls in self.managers:
+            with self.subTest(manager=cls.__name__):
+                self.setUp()
+                mgr = self.manager(cls)
+                state = {"game": GAME_NAME}
+                mgr._announce_start_locked(state)
+                mgr._announce_start_locked(state)
+                self.assertEqual(len(self.chats), 1)
+                self.assertEqual(len(self.voices), 1)
+
+    def test_missing_game_does_not_post_credit(self):
+        for cls in self.managers:
+            for game in (None, "", 91):
+                with self.subTest(manager=cls.__name__, game=game):
+                    self.setUp()
+                    state = {"game": game}
+                    self.manager(cls)._announce_start_locked(state)
+                    self.assertEqual(self.chats, [])
+                    self.assertEqual(self.voices, [])
+                    self.assertNotIn("announced", state)
+
+    def test_failed_chat_can_retry_the_whole_credited_announcement(self):
+        def fail(text):
+            raise RuntimeError("sink down")
+
+        for cls in self.managers:
+            with self.subTest(manager=cls.__name__):
+                self.setUp()
+                mgr = self.manager(cls, chat=fail)
+                state = {"game": GAME_NAME}
+                mgr._announce_start_locked(state)
+                self.assertNotIn("announced", state)
+                self.assertIn("announce_error", state)
+                self.assertEqual(self.voices, [])
+                mgr._chat = self.chats.append
+                mgr._announce_start_locked(state)
+                self.assertEqual(len(self.chats), 1)
+                self.assertTrue(self.chats[0].endswith(LICENSE_NOTICE))
+                self.assertTrue(state["announced"])
+                self.assertNotIn("announce_error", state)
+
+    def test_voice_failure_does_not_duplicate_the_posted_credit(self):
+        def fail(text):
+            raise RuntimeError("tts down")
+
+        for cls in self.managers:
+            with self.subTest(manager=cls.__name__):
+                self.setUp()
+                mgr = self.manager(cls, voice=fail)
+                state = {"game": GAME_NAME}
+                mgr._announce_start_locked(state)
+                mgr._announce_start_locked(state)
+                self.assertEqual(len(self.chats), 1)
+                self.assertTrue(state["announced"])
+                self.assertIn("voice_error", state)
+
+    def test_new_corner_state_posts_the_credit_again(self):
+        for cls in self.managers:
+            with self.subTest(manager=cls.__name__):
+                self.setUp()
+                mgr = self.manager(cls)
+                mgr._announce_start_locked({"game": GAME_NAME})
+                mgr._announce_start_locked({"game": GAME_NAME})
+                self.assertEqual(len(self.chats), 2)
+                self.assertTrue(all(text.endswith(LICENSE_NOTICE) for text in self.chats))
 
 
 class TestSoren91CornerRecover(Soren91CornerTestBase):

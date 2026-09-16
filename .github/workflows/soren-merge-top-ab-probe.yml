@@ -1,0 +1,153 @@
+name: Soren merge-top A/B probe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/soren-merge-top-ab-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: soren-merge-top-ab-probe-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  start-probe:
+    if: ${{ github.repository_owner == 'azumag' && github.repository_owner_id == '9018513' && github.actor == 'azumag' && github.actor_id == 9018513 && github.ref == 'refs/heads/main' && github.ref_protected == true }}
+    environment: vm-operations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - name: Checkout current protected main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: main
+          persist-credentials: false
+          submodules: false
+
+      - name: Require event SHA to equal current main
+        id: current
+        shell: bash
+        env:
+          EVENT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$sha" == "$EVENT_SHA" ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Configure pinned SSH client
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          VM_SSH_PORT: ${{ secrets.VM_SSH_PORT }}
+          VM_SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          VM_SSH_KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$VM_SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]
+          [[ "$VM_SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          port="${VM_SSH_PORT:-22}"
+          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+          install -m 700 -d "$RUNNER_TEMP/vm-ssh"
+          printf '%s\n' "$VM_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/vm-ssh/key"
+          printf '%s\n' "$VM_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/vm-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/vm-ssh/key" "$RUNNER_TEMP/vm-ssh/known_hosts"
+          printf 'port=%s\n' "$port" >> "$GITHUB_ENV"
+
+      - name: Wait for production to equal current main
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.current.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          for _ in $(seq 1 48); do
+            status_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $SHA" || true)"
+            if python3 - "$status_json" "$SHA" <<'PY'
+          import json, sys
+          try:
+              data = json.loads(sys.argv[1])
+          except Exception:
+              raise SystemExit(1)
+          raise SystemExit(0 if data.get('status') == 'configured' and data.get('sha') == sys.argv[2] else 1)
+          PY
+            then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo 'production did not converge to current protected main' >&2
+          exit 1
+
+      - name: Replace current A/B with post-merge-risk A/B
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.current.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          cat <<'SH' | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA" >/dev/null
+          set -euo pipefail
+          cd /home/ubuntu/soren
+          source ./eloop_lib.sh >/dev/null 2>&1
+
+          state="${AB_STATE_FILE:-tmp/state/ab_state.json}"
+          active_branch="${ACTIVE_BRANCH_FILE:-tmp/state/active_branch.json}"
+
+          # If an A/B reappeared since the previous attempt, cancel it by keeping A.
+          if [[ -f "$state" ]]; then
+            ./tools/ab_ctl.sh finish A superseded_by_merge_top_risk_probe >/dev/null
+          fi
+
+          [[ ! -f "$state" ]] || exit 71
+          [[ ! -f "$active_branch" ]] || exit 72
+          root="$(_ab_hash "${STRATEGY_FILE:-strategy.py}")"
+          [[ -n "$root" ]] || exit 73
+
+          ./set_toggle.sh AB_GATE_ENABLED=1 >/dev/null
+          ./set_toggle.sh AB_GATE_DRY_RUN=1 >/dev/null
+          export AB_A_ENV='ANALYZE_BOARD_MERGE_TOP_MODEL=2'
+          export AB_B_ENV='ANALYZE_BOARD_MERGE_TOP_MODEL=1'
+
+          # Use the lower-level starter so return 75 remains distinguishable from
+          # a permanent validation/configuration failure. Busy is retried until a
+          # safe game/improvement boundary; any other failure stops immediately.
+          bundle="$(mktemp -d "${TMP_STATE_DIR:-tmp/state}/merge_top_ab.XXXXXX")"
+          trap 'rm -rf "$bundle"' EXIT
+          cp -p "${STRATEGY_FILE:-strategy.py}" "$bundle/strategy.py"
+          started=0
+          for _ in $(seq 1 30); do
+            rc=0
+            _ab_start_from_bundle "$bundle" ABBA || rc=$?
+            if [[ "$rc" -eq 0 ]]; then
+              started=1
+              break
+            fi
+            [[ "$rc" -eq 75 ]] || exit 74
+            sleep 10
+          done
+          [[ "$started" -eq 1 ]] || exit 75
+
+          a="$(_ab_state_get a_hash)"
+          b="$(_ab_state_get b_hash)"
+          a_env="$(_ab_state_get a_env)"
+          b_env="$(_ab_state_get b_env)"
+          [[ "$a" == "$root" && "$b" == "$root" ]] || exit 76
+          [[ "$a_env" == 'ANALYZE_BOARD_MERGE_TOP_MODEL=2' ]] || exit 77
+          [[ "$b_env" == 'ANALYZE_BOARD_MERGE_TOP_MODEL=1' ]] || exit 78
+          [[ "$(_ab_env_value AB_GATE_DRY_RUN)" == '1' ]] || exit 79
+          reload_runtime_toggles_force >/dev/null 2>&1
+          _ab_active >/dev/null 2>&1 || exit 80
+          SH
+
+          echo 'observe-only merge-top A/B probe is active'
