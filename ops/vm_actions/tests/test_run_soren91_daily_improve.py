@@ -1,3 +1,5 @@
+import importlib.util
+import json
 from pathlib import Path
 import unittest
 
@@ -5,6 +7,26 @@ import unittest
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "ops" / "vm_actions" / "run_soren91_daily_improve.sh"
 WORKFLOW = ROOT / ".github" / "workflows" / "soren91-daily-improve.yml"
+CLASSIFIER = ROOT / "ops" / "vm_actions" / "classify_soren91_daily_gateway.py"
+
+
+def load_classifier():
+    spec = importlib.util.spec_from_file_location("soren91_daily_gateway", CLASSIFIER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def gateway_result(exit_code, sha="a" * 40, **overrides):
+    data = {
+        "status": "executed",
+        "sha": sha,
+        "exit_code": exit_code,
+        "output": "withheld",
+        "operation_id": "b" * 32,
+    }
+    data.update(overrides)
+    return json.dumps(data, separators=(",", ":"))
 
 
 class Soren91DailyImproveOpsTests(unittest.TestCase):
@@ -57,6 +79,38 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
         self.assertIn("then exit 93", text)
         self.assertNotIn('cat "$out"', text)
 
+    def test_gateway_classifier_maps_only_fixed_categories(self):
+        classifier = load_classifier()
+        sha = "a" * 40
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(0), sha, 0), "success")
+        self.assertEqual(
+            classifier.classify_gateway_result(gateway_result(92), sha, 92),
+            "evidence_blocked",
+        )
+        self.assertEqual(
+            classifier.classify_gateway_result(gateway_result(94), sha, 94),
+            "candidate_invalid",
+        )
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(1), sha, 1), "other")
+
+    def test_gateway_classifier_fails_closed_on_shape_or_transport_mismatch(self):
+        classifier = load_classifier()
+        sha = "a" * 40
+        extra = json.loads(gateway_result(92))
+        extra["detail"] = "must never be surfaced"
+        self.assertEqual(
+            classifier.classify_gateway_result(json.dumps(extra), sha, 92),
+            "gateway_response_invalid",
+        )
+        self.assertEqual(
+            classifier.classify_gateway_result(gateway_result(92), sha, 1),
+            "gateway_exit_mismatch",
+        )
+        self.assertEqual(
+            classifier.classify_gateway_result(gateway_result(92, sha="c" * 40), sha, 92),
+            "gateway_response_invalid",
+        )
+
     def test_workflow_runs_after_corner_with_owner_only_gateway(self):
         text = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("cron: '45 9 * * *'", text)  # 18:45 JST
@@ -64,6 +118,11 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
         self.assertIn("github.repository_owner_id == '9018513'", text)
         self.assertIn('"exec docich production $SHA"', text)
         self.assertIn("run_soren91_daily_improve.sh", text)
+        self.assertIn("classify_soren91_daily_gateway.py", text)
+        self.assertIn('gateway_json="$(cat ops/vm_actions/run_soren91_daily_improve.sh', text)
+        self.assertIn('echo "Soren91 daily improvement: result=${category}"', text)
+        self.assertNotIn('"exec docich production $SHA" >/dev/null', text)
+        self.assertNotIn('echo "$gateway_json"', text)
         self.assertIn("group: soren91-daily-improve-${{ github.repository }}", text)
         self.assertNotIn("group: vm-operations-${{ github.repository }}", text)
 
