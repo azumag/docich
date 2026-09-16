@@ -41,7 +41,10 @@ CONFIG_PATH = SOURCE_ROOT / "config" / "docich.soren-live.toml"
 USER = "ubuntu"
 MAX_REQUEST_BYTES = 4096
 MAX_TURNS = 1000
-INNER_TIMEOUT_S = "180"
+# The tactical canary plays roughly 2.5 turns/second, so reaching the 1000-turn
+# limit needs a few hundred seconds.  Keep this well below the 14-minute systemd
+# TimeoutStartSec and the 780-second requester deadline.
+INNER_TIMEOUT_S = "600"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 REQUEST_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 ALLOWED_RESULT_CATEGORIES = frozenset({"terminal", "policy_stall", "turn_limit", "other_timeout"})

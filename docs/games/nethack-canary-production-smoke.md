@@ -76,6 +76,24 @@ gateway control resultは:
 
 にmode 0600で残る。Actionsへraw VM outputやproduction filesystem内容は返さない。
 
+## canary tactical baseline (P5j)
+
+baseline arm は production P3b (`NethackLayeredPolicy`) ではなく canary 専用
+`CanaryTacticalPolicy` を使う。production NetHack brain (`agent/brains.py`) は不変。
+
+reviewed な追加 action は次のとおりで、`assert_canary_safe` が allowlist 検証する。
+
+- `attack_adjacent`: 隣接する可視 monster glyph へ移動して攻撃（`@` human は対象外）。
+- `open_door`: 隣接する閉じた door (`+`) を `o` + 方向で開ける。
+- `directional_travel`: `In what direction?` prompt に可視 frontier 方向を返す。
+- `confirm_attack`: `Really attack? [yn]` prompt を accept。
+- `decline_prompt`: それ以外の unreviewed な yes/no prompt は `n` で decline。
+- `advance_message` / `explore_step`: 従来どおり。
+
+`.nethackrc` は `!tutorial`（NetHack 5.0 の blocking tutorial query を抑止）と `time`
+（turn counter `T:` を出し `max_turns` を機能させる）を含む。episode の inner timeout は
+1000 turn limit に届くよう 600 秒。
+
 ## 正常カテゴリ
 
 初版のaction schemaでは戦闘・door操作などが未実装なので、以下はいずれも「隔離実行経路が成立した」smoke成功として扱う。

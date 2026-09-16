@@ -13,6 +13,7 @@ from docich.nethack_canary_worker import (
     _read_request,
     _start_game,
     _terminal_result,
+    _timeout_result,
 )
 
 
@@ -123,6 +124,23 @@ def test_baseline_never_uses_candidate_broker():
     assert _candidate_broker(parsed) is None
 
 
+def test_timeout_result_records_last_observed_progress():
+    result = _timeout_result(
+        baseline_request(),
+        reason="wall_timeout",
+        turns=321,
+        max_depth=2,
+        last_message="Pick up the dagger? [ynq]",
+    )
+    assert result["worker_status"] == "completed"
+    assert result["terminal_status"] == "timeout"
+    assert result["exit_reason"] == "wall_timeout"
+    assert result["turns"] == 321
+    assert result["max_depth"] == 2
+    assert result["last_message"] == "Pick up the dagger? [ynq]"
+    assert result["production_state_touched"] is False
+
+
 def test_game_worker_source_does_not_embed_candidate_process_launcher():
     source = (Path(__file__).resolve().parents[1] / "src/docich/nethack_canary_worker.py").read_text(
         encoding="utf-8"
@@ -172,6 +190,25 @@ def test_start_game_answers_pick_and_confirmation_prompts():
     assert game.started is True
     assert game.keys == ["y", "y", " "]
     assert "HP:10" in text
+
+
+def test_start_game_dismisses_tutorial_before_returning_gameplay():
+    tutorial = [""] * 24
+    tutorial[0] = "Do you want a tutorial?"
+    tutorial[1] = " y - Yes, do a tutorial"
+    tutorial[2] = " n - No, just start play"
+    tutorial[20] = "|(@.$|"
+    tutorial[22] = "HP:18(18) Pw:1(1) AC:6 Exp:1"
+    tutorial[23] = "Dlvl:1 T:1"
+    gameplay = [""] * 24
+    gameplay[1] = ".@.."
+    gameplay[2] = "...."
+    gameplay[22] = "HP:18(18) Pw:1(1) AC:6 Exp:1"
+    gameplay[23] = "Dlvl:1 T:1"
+    game = _FakeTmuxGame(["\n".join(tutorial) + "\n", "\n".join(gameplay) + "\n"])
+    text = _start_game(game, deadline=time.monotonic() + 30)
+    assert game.keys == ["n"]
+    assert "Do you want a tutorial" not in text
 
 
 def test_start_game_fails_closed_when_creation_never_completes():

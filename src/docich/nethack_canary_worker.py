@@ -19,6 +19,7 @@ from .actions import Action
 from .nethack_canary_executor import CanaryKey, canary_execution_plan
 from .nethack_inventory import VisibleInventoryItem, parse_visible_inventory
 from .nethack_observation import NethackObservation, normalize_tty
+from .nethack_canary_tactics import CanaryTacticalPolicy, assert_canary_safe
 from .nethack_policy import NethackLayeredPolicy, PolicyDecision, assert_p3b_safe
 from .nethack_run import AMULET_ACHIEVEMENT, classify_terminal_record, parse_xlog_line
 from .nethack_strategist import ProposalEvaluation, evaluate_proposal
@@ -130,7 +131,11 @@ def _prepare_runtime() -> None:
     home = Path("/tmp/home")
     home.mkdir(parents=True, exist_ok=True, mode=0o700)
     (home / ".nethackrc").write_text(
-        "OPTIONS=!legacy,menustyle:traditional\n",
+        # !legacy keeps the short startup, traditional menus keep the visible
+        # frame small, !tutorial suppresses NetHack 5.0's blocking
+        # "Do you want a tutorial?" query, and time exposes the T: turn counter
+        # so the worker can enforce max_turns and report progress.
+        "OPTIONS=!legacy,menustyle:traditional,!tutorial,time\n",
         encoding="utf-8",
     )
     os.chmod(home / ".nethackrc", 0o600)
@@ -264,7 +269,14 @@ def _terminal_result(request: dict[str, object], record: dict[str, str], *, exit
     }
 
 
-def _timeout_result(request: dict[str, object], *, reason: str) -> dict[str, object]:
+def _timeout_result(
+    request: dict[str, object],
+    *,
+    reason: str,
+    turns: int | None = None,
+    max_depth: int | None = None,
+    last_message: str | None = None,
+) -> dict[str, object]:
     return {
         "schema_version": RESULT_SCHEMA_VERSION,
         "worker_status": "completed",
@@ -278,13 +290,14 @@ def _timeout_result(request: dict[str, object], *, reason: str) -> dict[str, obj
         "controller_kind": "baseline_p3b" if request["arm"] == "baseline" else "candidate_strategist",
         "terminal_status": "timeout",
         "score": None,
-        "turns": None,
-        "max_depth": None,
+        "turns": turns,
+        "max_depth": max_depth,
         "death_reason": None,
         "got_amulet": False,
         "exit_reason": reason,
         "candidate_action_source": "baseline_p3b" if request["arm"] == "baseline" else "candidate_strategist_broker",
         "production_state_touched": False,
+        "last_message": last_message[:120] if isinstance(last_message, str) else None,
     }
 
 
@@ -296,16 +309,21 @@ def _start_game(game: _TmuxGame, *, deadline: float) -> str:
             raise CanaryWorkerError("NetHack exited during character creation")
         text = game.capture()
         last = text
-        observation = normalize_tty(text, cols=80, rows=24)
-        if observation.player is not None and observation.vitals.hp is not None:
-            return text
         lower = text.lower()
+        # A blocking startup query can overlay an already-drawn map, so answer
+        # the reviewed prompts before the gameplay check below.
+        if "do you want a tutorial" in lower:
+            game.literal("n")
+            continue
         if "shall i pick" in lower or "is this ok" in lower or ("pick a character" in lower and "[y" in lower):
             game.literal("y")
             continue
         if "--more--" in lower:
             game.literal(" ")
             continue
+        observation = normalize_tty(text, cols=80, rows=24)
+        if observation.player is not None and observation.vitals.hp is not None:
+            return text
         time.sleep(0.10)
     raise CanaryWorkerError(f"NetHack character creation did not reach gameplay: {last[-160:]!r}")
 
@@ -407,10 +425,16 @@ def run_episode(request: dict[str, object]) -> dict[str, object]:
     wall_timeout = float(request.get("wall_timeout_s", 900.0))
     deadline = time.monotonic() + max(1.0, wall_timeout - 5.0)
     game = _TmuxGame(player)
-    policy = NethackLayeredPolicy()
+    baseline = request["arm"] == "baseline"
+    # The isolated canary baseline uses the reviewed tactical surface; the
+    # candidate arm keeps the production P3b policy and broker dispatch.
+    policy = CanaryTacticalPolicy() if baseline else NethackLayeredPolicy()
     broker = _candidate_broker(request)
     last_candidate_fingerprint: tuple[object, ...] | None = None
     idle_cycles = 0
+    last_turns: int | None = None
+    last_depth: int | None = None
+    last_message: str | None = None
     try:
         _start_game(game, deadline=deadline)
         while time.monotonic() < deadline:
@@ -421,14 +445,32 @@ def run_episode(request: dict[str, object]) -> dict[str, object]:
                 record = _terminal_record(player)
                 if record is not None:
                     return _terminal_result(request, record, exit_reason="process_exit_xlog")
-                return _timeout_result(request, reason="process_exited_without_terminal_xlog")
+                return _timeout_result(
+                    request,
+                    reason="process_exited_without_terminal_xlog",
+                    turns=last_turns,
+                    max_depth=last_depth,
+                    last_message=last_message,
+                )
 
             raw_text = game.capture()
             observation = normalize_tty(raw_text, cols=80, rows=24)
+            last_turns = observation.vitals.turn
+            last_depth = observation.vitals.dungeon_level
+            last_message = observation.message
             if observation.vitals.turn is not None and observation.vitals.turn >= max_turns:
-                return _timeout_result(request, reason="max_turns")
+                return _timeout_result(
+                    request,
+                    reason="max_turns",
+                    turns=last_turns,
+                    max_depth=last_depth,
+                    last_message=last_message,
+                )
             decision = policy.decide(observation)
-            assert_p3b_safe(decision)
+            if baseline:
+                assert_canary_safe(decision)
+            else:
+                assert_p3b_safe(decision)
             acted = False
             if decision.actions:
                 for action in decision.actions:
@@ -455,9 +497,21 @@ def run_episode(request: dict[str, object]) -> dict[str, object]:
             else:
                 idle_cycles += 1
                 if idle_cycles >= 40:
-                    return _timeout_result(request, reason=f"policy_stall:{decision.intent}")
+                    return _timeout_result(
+                        request,
+                        reason=f"policy_stall:{decision.intent}",
+                        turns=last_turns,
+                        max_depth=last_depth,
+                        last_message=last_message,
+                    )
                 time.sleep(0.10)
-        return _timeout_result(request, reason="wall_timeout")
+        return _timeout_result(
+            request,
+            reason="wall_timeout",
+            turns=last_turns,
+            max_depth=last_depth,
+            last_message=last_message,
+        )
     finally:
         game.stop()
 
