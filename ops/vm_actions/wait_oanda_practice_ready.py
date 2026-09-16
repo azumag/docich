@@ -101,7 +101,7 @@ def snapshot_ready(output_dir: Path, marker: Path, now: float | None = None) -> 
 
     health_path = output_dir / "market-fx-provider-health.json"
     health_mtime = _safe_mtime(health_path)
-    if health_mtime is None or health_mtime < marker_mtime:
+    if health_mtime is None or health_mtime <= marker_mtime:
         return False
     health = _read_json(health_path)
     if not health:
@@ -128,7 +128,7 @@ def snapshot_ready(output_dir: Path, marker: Path, now: float | None = None) -> 
 
     quote_path = output_dir / "market-fx-quotes.json"
     quote_mtime = _safe_mtime(quote_path)
-    if quote_mtime is None or quote_mtime < marker_mtime:
+    if quote_mtime is None or quote_mtime <= marker_mtime:
         return False
     payload = _read_json(quote_path)
     if not payload or payload.get("market") != "fx" or payload.get("realtime") is not True:
