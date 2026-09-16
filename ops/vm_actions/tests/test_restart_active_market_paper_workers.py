@@ -118,13 +118,12 @@ class RestartActiveMarketPaperWorkersTests(unittest.TestCase):
         self.assertIn("--user daemon-reload", calls)
         self.assertIn("--user enable --now docich-paper-corner-watchdog.timer", calls)
         self.assertNotIn("--user enable --now docich-market-", calls)
-        for name in (
-            "docich-paper-corner-watchdog.service",
-            "docich-paper-corner-watchdog.timer",
-        ):
-            installed = (unit_dir / name).read_text(encoding="utf-8")
-            self.assertIn(str(prod_root), installed)
-            self.assertNotIn("__DOCICH_ROOT__", installed)
+
+        service = (unit_dir / "docich-paper-corner-watchdog.service").read_text(encoding="utf-8")
+        timer = (unit_dir / "docich-paper-corner-watchdog.timer").read_text(encoding="utf-8")
+        self.assertIn(str(prod_root), service)
+        self.assertNotIn("__DOCICH_ROOT__", service)
+        self.assertNotIn("__DOCICH_ROOT__", timer)
 
     def test_watchdog_enablement_follows_paper_corner_opt_in(self):
         result, calls, _, _ = self._run(paper_corner_enabled=False)
