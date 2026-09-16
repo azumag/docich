@@ -1,0 +1,49 @@
+name: NetHack canary image CI
+
+on:
+  pull_request:
+    paths:
+      - "containers/nethack-canary/**"
+      - "src/docich/nethack_canary_worker.py"
+      - "src/docich/nethack_canary_container.py"
+      - "src/docich/nethack_canary_executor.py"
+      - ".github/workflows/nethack-canary-image-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "containers/nethack-canary/**"
+      - "src/docich/nethack_canary_worker.py"
+      - "src/docich/nethack_canary_container.py"
+      - "src/docich/nethack_canary_executor.py"
+      - ".github/workflows/nethack-canary-image-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Build pinned NetHack 5.0 canary image
+        run: >-
+          docker build
+          --file containers/nethack-canary/Dockerfile
+          --tag docich-nethack-canary:5.0.0-p5h
+          .
+      - name: Verify NetHack binary
+        run: >-
+          docker run --rm
+          --entrypoint /usr/local/bin/nethack
+          docich-nethack-canary:5.0.0-p5h
+          --version
+      - name: Verify worker modules import
+        run: >-
+          docker run --rm
+          --entrypoint python3
+          docich-nethack-canary:5.0.0-p5h
+          -c
+          "import docich.nethack_canary_worker, docich.nethack_canary_executor"
