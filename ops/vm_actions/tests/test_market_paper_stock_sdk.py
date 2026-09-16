@@ -47,6 +47,7 @@ class MarketPaperStockSdkTests(unittest.TestCase):
             python.chmod(0o755)
 
             env = os.environ.copy()
+            env.pop("XDG_CONFIG_HOME", None)
             env.update(
                 PATH=f"{fake_bin}:{env.get('PATH', '')}",
                 HOME=str(pathlib.Path(tmp) / "home"),
