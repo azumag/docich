@@ -6,6 +6,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "ops" / "vm_actions" / "run_soren91_daily_improve.sh"
+OUTER_SHIM = ROOT / "ops" / "vm_actions" / "soren91_opencode_capture_shim.sh"
+INNER_SHIM = ROOT / "ops" / "vm_actions" / "soren91_opencode_fixed_exec.sh"
 WORKFLOW = ROOT / ".github" / "workflows" / "soren91-daily-improve.yml"
 CLASSIFIER = ROOT / "ops" / "vm_actions" / "classify_soren91_daily_gateway.py"
 
@@ -36,8 +38,10 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
         self.assertIn("persist=/home/ubuntu/soren-persist", text)
         self.assertIn('runner="$runtime/daily_runtime_improve.mjs"', text)
         self.assertIn('state="$runtime/tmp/state/improve_daily.json"', text)
-        self.assertNotIn("eval ", text)
-        self.assertNotIn("$@", text)
+        for path in (SCRIPT, OUTER_SHIM, INNER_SHIM):
+            candidate = path.read_text(encoding="utf-8")
+            self.assertNotIn("eval ", candidate)
+            self.assertNotIn("$@", candidate)
 
     def test_runner_uses_gateway_username_not_host_specific_numeric_uid(self):
         text = SCRIPT.read_text(encoding="utf-8")
@@ -50,7 +54,9 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("export AI_COMMON_AGENTS=opencode-go:deepseek-v4.1-flash", text)
         self.assertIn("export SOREN91_IMPROVE_OPENCODE_AGENT=opencode-go:deepseek-v4.1-flash", text)
-        self.assertIn("export SOREN91_IMPROVE_OPENCODE_TIMEOUT=90", text)
+        self.assertIn("export SOREN91_TEXT_OPENCODE_TIMEOUT=90", text)
+        self.assertIn("export SOREN91_TEXT_OPENCODE_MODEL_TIMEOUT=90", text)
+        self.assertNotIn("export SOREN91_IMPROVE_OPENCODE_TIMEOUT=", text)
         self.assertNotIn("muse-spark-1.3-contributor-free", text)
 
     def test_runner_isolates_daily_opencode_with_proven_agent_schema(self):
@@ -69,21 +75,32 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
         self.assertNotIn('"tools":', text)
 
     def test_runner_uses_fixed_opencode_binary_and_explicit_agent_shim(self):
-        text = SCRIPT.read_text(encoding="utf-8")
-        self.assertIn('[[ -x /snap/bin/opencode ]]', text)
-        self.assertIn('opencode_shim_dir="$(mktemp -d /home/ubuntu/.soren91-opencode-shim.XXXXXX)"', text)
-        self.assertIn('[[ "$#" -eq 5 ]]', text)
-        self.assertIn('[[ "$1" == "run" ]]', text)
-        self.assertIn('[[ "$2" == "--format" && "$3" == "json" ]]', text)
-        self.assertIn('[[ "$4" == "--model" ]]', text)
-        self.assertIn('[[ "$5" =~ ^[A-Za-z0-9_./:-]{1,160}$ ]]', text)
+        runner = SCRIPT.read_text(encoding="utf-8")
+        outer = OUTER_SHIM.read_text(encoding="utf-8")
+        inner = INNER_SHIM.read_text(encoding="utf-8")
+        self.assertIn('[[ -x /snap/bin/opencode ]]', runner)
+        self.assertIn('opencode_shim_dir="$(mktemp -d /home/ubuntu/.soren91-opencode-shim.XXXXXX)"', runner)
+        self.assertIn('soren91_opencode_capture_shim.sh', runner)
+        self.assertIn('soren91_opencode_fixed_exec.sh', runner)
+        self.assertIn('/usr/bin/install -m 700 -- "$capture_shim" "$opencode_shim_dir/opencode"', runner)
+        self.assertIn('/usr/bin/install -m 700 -- "$fixed_exec_shim" "$opencode_shim_dir/opencode-fixed-exec"', runner)
+        for text in (outer, inner):
+            self.assertIn('[[ "$#" -eq 5 ]]', text)
+            self.assertIn('[[ "$1" == "run" ]]', text)
+            self.assertIn('[[ "$2" == "--format" && "$3" == "json" ]]', text)
+            self.assertIn('[[ "$4" == "--model" ]]', text)
+            self.assertIn('[[ "$5" =~ ^[A-Za-z0-9_./:-]{1,160}$ ]]', text)
         self.assertIn(
-            '/snap/bin/opencode run --format json --agent soren-daily-improve --model "$5"',
-            text,
+            'exec /snap/bin/opencode run --format json --agent soren-daily-improve --model "$5"',
+            inner,
         )
-        self.assertIn('export PATH="$opencode_shim_dir:/usr/local/bin:/usr/bin:/bin:/snap/bin"', text)
-        self.assertIn('rm -rf "$opencode_shim_dir"', text)
-        self.assertNotIn('exec /snap/bin/opencode "$', text)
+        self.assertNotIn('/snap/bin/opencode run ', outer)
+        self.assertIn('inner="$shim_dir/opencode-fixed-exec"', outer)
+        self.assertIn('"$inner" run --format json --model "$5" >"$child_out" 2>"$child_err" &', outer)
+        self.assertIn('child_out="$(mktemp /home/ubuntu/.soren91-opencode-child-out.XXXXXX)"', outer)
+        self.assertIn('child_err="$(mktemp /home/ubuntu/.soren91-opencode-child-err.XXXXXX)"', outer)
+        self.assertIn('export PATH="$opencode_shim_dir:/usr/local/bin:/usr/bin:/bin:/snap/bin"', runner)
+        self.assertIn('rm -rf "$opencode_shim_dir"', runner)
 
     def test_runner_serializes_with_existing_persist_lock(self):
         text = SCRIPT.read_text(encoding="utf-8")
@@ -128,7 +145,9 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
 
     def test_runner_keeps_raw_failure_output_private_and_maps_categories(self):
         text = SCRIPT.read_text(encoding="utf-8")
+        outer = OUTER_SHIM.read_text(encoding="utf-8")
         self.assertIn("umask 077", text)
+        self.assertIn("umask 077", outer)
         self.assertIn('out="$(mktemp /home/ubuntu/.soren91-daily.XXXXXX)"', text)
         self.assertIn('>"$out" 2>&1', text)
         self.assertIn("grep -Fq 'candidate_invalid:'", text)
@@ -137,6 +156,8 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
         self.assertIn("failure_rc=93", text)
         self.assertIn("evidence_file_too_large:", text)
         self.assertIn("failure_rc=95", text)
+        self.assertIn("soren91_opencode_nonzero_json=", outer)
+        self.assertIn("soren91_opencode_signal=%s", outer)
         self.assertNotIn('cat "$out"', text)
 
     def test_runner_prechecks_model_cli_and_maps_only_fixed_model_failure_categories(self):
@@ -159,6 +180,7 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
             "failure_rc=120", "failure_rc=121", "failure_rc=122",
         ]:
             self.assertLess(text.index(marker), generic)
+        self.assertIn("soren91_opencode_signal=TERM", text)
         self.assertIn("ERR_CHILD_PROCESS_STDIO_MAXBUFFER", text)
         self.assertIn("ERR_CHILD_PROCESS_TIMEOUT", text)
         self.assertIn("ECONNRESET", text)
