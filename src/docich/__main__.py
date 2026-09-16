@@ -134,6 +134,12 @@ if nethack_shadow_eval_argv is not None:
 
     sys.exit(nethack_shadow_eval_main(nethack_shadow_eval_argv))
 
+nethack_retrospective_argv = _nethack_sidecar_argv("nethack-retrospective", sys.argv[1:])
+if nethack_retrospective_argv is not None:
+    from .nethack_retrospective import main as nethack_retrospective_main
+
+    sys.exit(nethack_retrospective_main(nethack_retrospective_argv))
+
 from .cli import main
 
 sys.exit(main())
