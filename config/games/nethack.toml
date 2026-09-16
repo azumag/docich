@@ -21,8 +21,20 @@ save_dir = "/var/games/nethack/save"
 xlogfile = "/var/games/nethack/xlogfile"
 dump_dir = "/var/games/nethack/dumps"
 
+# P3eのstrategistは明示opt-in。enabled=falseでは外部model commandを起動しない。
+# proposalはadvisory-onlyで、consume/equip/prompt/階段等のkeyには変換しない。
+[nethack.strategist]
+enabled = false
+command = []
+timeout_s = 20.0
+cooldown_s = 30.0
+max_calls = 24
+narration_enabled = false
+narration_cooldown_s = 20.0
+speaker = ""
+
 [agent]
-enabled = false        # random brain の配線テストは CLI から明示実行
+enabled = false        # 本番有効化は別段階。brain切替だけでは自動起動しない
 brain = "random"
 interval_ms = 1500
 
