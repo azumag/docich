@@ -23,12 +23,13 @@ from typing import Callable
 from .adapters.cli_game import cli_cols, cli_rows
 from .config import ConfigError, load_game, load_global
 from .game_switch import GameSwitchError, GameSwitchStore, atomic_write_json
-from .nethack_spectator import blank_frame, parse_tty, render_html
+from .nethack_spectator import VISUAL_MODES, blank_frame, parse_tty, render_html
 from .tmux import Tmux, TmuxError, TmuxOwnership
 
 GAME_NAME = "nethack"
 DEFAULT_INTERVAL_MS = 500
 DEFAULT_REFRESH_MS = 750
+DEFAULT_VISUAL_MODE = "tiles"
 
 
 class NethackSpectatorLiveError(RuntimeError):
@@ -135,6 +136,7 @@ class LiveNethackSpectator:
         rows: int = 24,
         interval_ms: int = DEFAULT_INTERVAL_MS,
         refresh_ms: int = DEFAULT_REFRESH_MS,
+        visual_mode: str = DEFAULT_VISUAL_MODE,
         state_loader: Callable[[], dict[str, object]] | None = None,
         tmux_factory: Callable[[str], object] = Tmux,
         sleep: Callable[[float], None] = time.sleep,
@@ -148,6 +150,10 @@ class LiveNethackSpectator:
             raise NethackSpectatorLiveError("interval_ms must be between 100 and 60000")
         if type(refresh_ms) is not int or not 100 <= refresh_ms <= 60_000:
             raise NethackSpectatorLiveError("refresh_ms must be between 100 and 60000")
+        if visual_mode not in VISUAL_MODES:
+            raise NethackSpectatorLiveError(
+                f"visual_mode must be one of {sorted(VISUAL_MODES)}"
+            )
 
         self.state_dir = Path(state_dir)
         self.output = Path(output)
@@ -156,6 +162,7 @@ class LiveNethackSpectator:
         self.rows = rows
         self.interval_ms = interval_ms
         self.refresh_ms = refresh_ms
+        self.visual_mode = visual_mode
         self._tmux_factory = tmux_factory
         self._sleep = sleep
         self._now = now
@@ -170,6 +177,7 @@ class LiveNethackSpectator:
             blank_frame(message, cols=self.cols, rows=self.rows),
             title="NetHack",
             auto_refresh_ms=self.refresh_ms,
+            visual_mode=self.visual_mode,
         )
 
     def _write_status(
@@ -182,6 +190,7 @@ class LiveNethackSpectator:
         payload: dict[str, object] = {
             "schema_version": 1,
             "status": status,
+            "visual_mode": self.visual_mode,
             "updated_at": self._now(),
         }
         if runtime is not None:
@@ -223,6 +232,7 @@ class LiveNethackSpectator:
                     frame,
                     title="NetHack — AI、ダンジョンに潜る",
                     auto_refresh_ms=self.refresh_ms,
+                    visual_mode=self.visual_mode,
                 ),
             )
             self._write_status("active", runtime=runtime)
@@ -260,6 +270,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", metavar="PATH")
     parser.add_argument("--interval-ms", type=int, default=DEFAULT_INTERVAL_MS)
     parser.add_argument("--refresh-ms", type=int, default=DEFAULT_REFRESH_MS)
+    parser.add_argument("--visual-mode", choices=sorted(VISUAL_MODES), default=DEFAULT_VISUAL_MODE)
     parser.add_argument("--once", action="store_true")
     return parser
 
@@ -282,6 +293,7 @@ def main(argv: list[str] | None = None) -> int:
             rows=cli_rows(game),
             interval_ms=args.interval_ms,
             refresh_ms=args.refresh_ms,
+            visual_mode=args.visual_mode,
         )
         if args.once:
             return 0 if spectator.render_once() != "degraded" else 1
