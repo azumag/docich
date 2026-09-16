@@ -91,18 +91,22 @@ class RandomBrain:
 
 
 class NethackPolicyBrain:
-    """Layered CLI NetHack brain with advisory and shadow sidecars.
+    """Layered CLI NetHack brain with observational sidecars.
 
     Gameplay actions still come exclusively from the reviewed deterministic
     P3b policy surface (More-space and one safe visible h/j/k/l exploration
-    step). P3e strategist output and P4a shadow data are observational only and
-    are never translated into gameplay Actions here.
+    step). P3e advisory, P4a observation shadow, and P5e candidate shadow are
+    observational only and are never translated into gameplay Actions here.
     """
 
     def __init__(self, g: GlobalConfig, game: GameConfig):
         if game.name != "nethack" or game.adapter != "cli":
             raise AdapterError("brain='nethack' はCLI NetHack専用です")
         from ..nethack_advisory import NethackAdvisoryController
+        from ..nethack_candidate_shadow import (
+            NethackCandidateShadowController,
+            NethackCandidateShadowError,
+        )
         from ..nethack_policy import NethackLayeredPolicy
         from ..nethack_shadow import NethackShadowController
 
@@ -115,10 +119,12 @@ class NethackPolicyBrain:
         self.last_decision = None
         self.last_shadow = None
         self.last_advisory = None
+        self.last_candidate_shadow = None
         try:
             self.shadow = NethackShadowController(g, game)
             self.advisory = NethackAdvisoryController(g, game)
-        except ValueError as exc:
+            self.candidate_shadow = NethackCandidateShadowController(g, game)
+        except (ValueError, NethackCandidateShadowError) as exc:
             raise AdapterError(f"NetHack sidecar設定が不正です: {exc}") from exc
 
     def decide(self, obs: Observation) -> list[Action]:
@@ -131,6 +137,7 @@ class NethackPolicyBrain:
         decision = self.policy.decide(normalized)
         assert_p3b_safe(decision)
         self.last_decision = decision
+        production_actions = list(decision.actions)
 
         # Shadow comparison deliberately happens after policy + safety guard.
         # A mismatch is telemetry only and cannot replace the TTY observation.
@@ -155,7 +162,24 @@ class NethackPolicyBrain:
                 f"docich: 警告: NetHack strategist advisory をスキップしました: {str(exc)[:200]}",
                 file=sys.stderr,
             )
-        return list(decision.actions)
+
+        # P5e receives a copy of the already-fixed production action surface.
+        # Its candidate command runs on a daemon worker, so a slow/failed
+        # candidate cannot delay or replace the action returned by this call.
+        try:
+            self.last_candidate_shadow = self.candidate_shadow.consider(
+                obs.text,
+                normalized,
+                decision,
+                tuple(production_actions),
+            )
+        except Exception as exc:
+            self.last_candidate_shadow = None
+            print(
+                f"docich: 警告: NetHack candidate shadow をスキップしました: {str(exc)[:200]}",
+                file=sys.stderr,
+            )
+        return production_actions
 
 
 class ResolverBrain:
