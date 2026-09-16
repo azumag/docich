@@ -2,9 +2,9 @@
 set -euo pipefail
 
 # Reload reviewed market PAPER/runtime code after a production deploy without
-# changing opt-in state. Only already-active resident workers or the read-only
-# stock market-data collector are restarted; disabled/inactive units are left
-# untouched.
+# changing opt-in state. Only already-active resident PAPER workers and
+# read-only market-data collectors are restarted; disabled/inactive units are
+# left untouched.
 #
 # This helper deliberately does NOT:
 # - enable/start an inactive unit;
@@ -15,13 +15,13 @@ set -euo pipefail
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 for market in stocks fx; do
-  unit="docich-market-worker@${market}.service"
-  if systemctl --user is-active --quiet "$unit"; then
-    systemctl --user restart "$unit"
+  worker_unit="docich-market-worker@${market}.service"
+  if systemctl --user is-active --quiet "$worker_unit"; then
+    systemctl --user restart "$worker_unit"
+  fi
+
+  provider_unit="docich-market-data-${market}.service"
+  if systemctl --user is-active --quiet "$provider_unit"; then
+    systemctl --user restart "$provider_unit"
   fi
 done
-
-provider_unit="docich-market-data-stocks.service"
-if systemctl --user is-active --quiet "$provider_unit"; then
-  systemctl --user restart "$provider_unit"
-fi
