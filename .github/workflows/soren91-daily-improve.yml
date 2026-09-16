@@ -16,9 +16,12 @@ on:
 permissions:
   contents: read
 
-# Serialize with production deploy/exec users of the same owner-only gateway.
+# Do NOT share the VM operations concurrency group: this job first waits for
+# the production deploy to converge. Sharing vm-operations-* would deadlock
+# by holding the group while the deploy itself is queued. Actual remote exec
+# remains protected by the owner-only forced gateway and the persist flock.
 concurrency:
-  group: vm-operations-${{ github.repository }}
+  group: soren91-daily-improve-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:

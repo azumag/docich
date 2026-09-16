@@ -39,7 +39,8 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
         self.assertIn("github.repository_owner_id == '9018513'", text)
         self.assertIn('"exec docich production $SHA"', text)
         self.assertIn("run_soren91_daily_improve.sh", text)
-        self.assertIn("group: vm-operations-${{ github.repository }}", text)
+        self.assertIn("group: soren91-daily-improve-${{ github.repository }}", text)
+        self.assertNotIn("group: vm-operations-${{ github.repository }}", text)
 
 
 if __name__ == "__main__":
