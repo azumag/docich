@@ -59,7 +59,7 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
         self.assertIn("export OPENCODE_DISABLE_PROJECT_CONFIG=true", text)
         self.assertIn("export OPENCODE_CONFIG_CONTENT=", text)
         for tool in ("bash", "edit", "glob", "grep", "list", "read", "webfetch", "write"):
-            self.assertIn(f'\\"{tool}\\":false', text)
+            self.assertIn(f'"{tool}":false', text)
 
     def test_runner_serializes_with_existing_persist_lock(self):
         text = SCRIPT.read_text(encoding="utf-8")
