@@ -1,4 +1,4 @@
-FROM debian:bookworm-slim AS builder
+FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea AS builder
 
 ARG NETHACK_VERSION=5.0.0
 ARG NETHACK_ARCHIVE=nethack-500-src.tgz
@@ -20,9 +20,9 @@ RUN curl --fail --location --silent --show-error \
     && rm "/tmp/${NETHACK_ARCHIVE}"
 
 WORKDIR /build/nethack
-# NetHack 5.0 Unix paths are compile-time settings.  Keep immutable support
-# data under /opt and route *all* mutable game files into the one bind-mounted
-# episode playground.  Do not enable debug/explore/shell access in the canary.
+# NetHack 5.0 Unix paths are compile-time settings. Keep immutable support
+# data under /opt and route every mutable game file into the one bind-mounted
+# episode playground. Wizard/explore/shell access stays disabled.
 RUN cat >> sys/unix/hints/linux.500 <<'EOF'
 
 # docich P5h isolated canary overrides
@@ -46,10 +46,14 @@ RUN sed -i 's/^WIZARDS=.*/WIZARDS=/' sys/unix/sysconf \
 RUN test -x /opt/nethack/playground/nethack \
     && /opt/nethack/playground/nethack --version >/dev/null
 
-FROM debian:bookworm-slim AS runtime
+FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea AS runtime
+LABEL org.docich.nethack-canary.abi="1" \
+      org.docich.nethack.version="5.0.0" \
+      org.docich.nethack.source-sha256="2959b7886aac76185b90aea0c9f80d14343f604de0ae96b3dd2a760f7ab3bde9"
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       ca-certificates gzip liblua5.4-0 libncurses6 libtinfo6 libuuid1 python3 tmux \
+       gzip liblua5.4-0 libncurses6 libtinfo6 libuuid1 tmux \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /opt/nethack /opt/nethack
