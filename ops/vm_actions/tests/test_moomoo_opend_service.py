@@ -1,4 +1,7 @@
+import os
 import pathlib
+import subprocess
+import tempfile
 import unittest
 
 
@@ -34,6 +37,53 @@ class MoomooOpenDServiceTests(unittest.TestCase):
         self.assertIn("--host 127.0.0.1", text)
         self.assertIn("--port 11111", text)
 
+    def _runtime_fixture(self, base: pathlib.Path, config_mode: int = 0o600):
+        root = base / "docich"
+        python = root / ".venv-trading" / "bin" / "python3"
+        python.parent.mkdir(parents=True)
+        python.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        python.chmod(0o755)
+
+        home = base / "home"
+        runtime = home / ".local" / "share" / "docich" / "moomoo-opend"
+        runtime.mkdir(parents=True)
+        binary = runtime / "OpenD"
+        binary.write_text("stub", encoding="utf-8")
+        binary.chmod(0o755)
+        (runtime / "Appdata.dat").write_text("stub", encoding="utf-8")
+
+        config = home / ".config" / "docich" / "moomoo-opend" / "OpenD.xml"
+        config.parent.mkdir(parents=True)
+        config.write_text("<xml/>", encoding="utf-8")
+        config.chmod(config_mode)
+        return root, home, config
+
+    def _run_preflight(self, root: pathlib.Path, home: pathlib.Path):
+        env = os.environ.copy()
+        env["HOME"] = str(home)
+        return subprocess.run(
+            ["bash", str(CHECK), str(root)],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_preflight_accepts_owned_private_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, home, _ = self._runtime_fixture(pathlib.Path(tmp))
+            result = self._run_preflight(root, home)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "")
+
+    def test_preflight_rejects_group_or_world_readable_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, home, _ = self._runtime_fixture(pathlib.Path(tmp), config_mode=0o644)
+            result = self._run_preflight(root, home)
+            self.assertEqual(result.returncode, 35, result.stderr)
+            self.assertEqual(result.stdout, "")
+
     def test_preflight_never_reads_or_prints_config(self):
         text = CHECK.read_text(encoding="utf-8")
         self.assertIn(".local/share/docich/moomoo-opend", text)
@@ -54,6 +104,8 @@ class MoomooOpenDServiceTests(unittest.TestCase):
         self.assertIn("docich-moomoo-opend.service", text)
         self.assertIn("provider-enable) install_units; provision_stock_quote_sdk; enable_provider", text)
         self.assertIn("provider-restart) install_units; provision_stock_quote_sdk; restart_provider", text)
+        self.assertIn('systemctl --user stop "$opend_unit"', text)
+        self.assertIn('systemctl --user restart "$opend_unit"', text)
         self.assertNotIn("systemctl --user enable --now docich-market-worker@stocks.service", text)
 
 
