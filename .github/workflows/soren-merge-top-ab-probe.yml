@@ -88,6 +88,32 @@ jobs:
           echo 'production did not converge to current protected main' >&2
           exit 1
 
+      - name: Wait for reviewed Soren projection
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.current.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          expected_soviet_sha='3f67cbf159dc59da35ad2cdff3d2f483dade7a3b'
+          for _ in $(seq 1 36); do
+            if printf '%s\n' \
+              'set -euo pipefail' \
+              'cd /home/ubuntu/soren' \
+              "git merge-base --is-ancestor '$expected_soviet_sha' HEAD" \
+              'source ./eloop_lib.sh >/dev/null 2>&1' \
+              'declare -F _ab_finish_without_envonly_promotion >/dev/null 2>&1' \
+              | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA" >/dev/null 2>&1; then
+              echo 'reviewed Soren projection is ready'
+              exit 0
+            fi
+            sleep 5
+          done
+          echo 'reviewed Soren projection did not become ready' >&2
+          exit 1
+
       - name: Replace current A/B with adopting post-merge-risk A/B
         shell: bash
         env:
@@ -101,8 +127,7 @@ jobs:
           set -euo pipefail
           cd /home/ubuntu/soren
 
-          # docich production deploy projects the reviewed games/soviet_now gitlink
-          # into this runtime. Do not perform network fetches inside the exec sandbox.
+          # Re-check locally after the projection wait; no network access is used here.
           expected_soviet_sha='3f67cbf159dc59da35ad2cdff3d2f483dade7a3b'
           git merge-base --is-ancestor "$expected_soviet_sha" HEAD || exit 68
 
@@ -144,7 +169,7 @@ jobs:
           trap 'rm -rf "$bundle"' EXIT
           cp -p "${STRATEGY_FILE:-strategy.py}" "$bundle/strategy.py"
           started=0
-          for _ in $(seq 1 30); do
+          for _ in $(seq 1 24); do
             rc=0
             _ab_start_from_bundle "$bundle" ABBA || rc=$?
             if [[ "$rc" -eq 0 ]]; then
