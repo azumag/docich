@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Callable
 
 DEFAULT_IMAGE = "docich-nethack-canary:5.0.0-p5h"
+DEFAULT_INNER_TIMEOUT_S = 840.0
 MAX_REQUEST_BYTES = 256 * 1024
 MAX_RESPONSE_BYTES = 512 * 1024
 _INTERNAL_ROOT = Path("/canary/episode")
@@ -115,12 +116,27 @@ def _runtime_name(explicit: str | None = None) -> str:
     raise CanaryContainerError("podman/docker is not available")
 
 
+def _inner_timeout_s() -> float:
+    raw = os.environ.get("DOCICH_CANARY_INNER_TIMEOUT_S", "").strip()
+    if not raw:
+        return DEFAULT_INNER_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise CanaryContainerError("DOCICH_CANARY_INNER_TIMEOUT_S must be numeric") from exc
+    if not 10.0 <= value <= 7100.0:
+        raise CanaryContainerError("DOCICH_CANARY_INNER_TIMEOUT_S must be 10-7100")
+    return value
+
+
 def _internal_request(
     request: dict[str, object], manifest: Path | None
 ) -> dict[str, object]:
     rewritten = json.loads(json.dumps(request))
     assert isinstance(rewritten, dict)
     rewritten["arena"] = dict(_INTERNAL_ARENA)
+    if "wall_timeout_s" not in rewritten:
+        rewritten["wall_timeout_s"] = _inner_timeout_s()
     requirements = rewritten.get("requirements")
     if not isinstance(requirements, dict):
         raise CanaryContainerError("canary requirements are invalid")
@@ -157,7 +173,7 @@ def build_container_argv(
         "--memory=1024m",
         "--cpus=1.0",
         "--tmpfs",
-        "/tmp:rw,nosuid,nodev,noexec,size=268435456",
+        "/tmp:rw,nosuid,nodev,noexec,size=268435456,mode=1777",
         "--env",
         "HOME=/tmp/home",
         "--env",
@@ -228,13 +244,14 @@ def run_container_worker(
         manifest=manifest,
     )
     payload = json.dumps(internal, ensure_ascii=False, separators=(",", ":"))
+    inner_timeout = float(internal.get("wall_timeout_s", DEFAULT_INNER_TIMEOUT_S))
     try:
         completed = runner(
             argv,
             input=payload,
             text=True,
             capture_output=True,
-            timeout=7400,
+            timeout=min(7200.0, inner_timeout + 30.0),
             check=False,
         )
     except subprocess.TimeoutExpired:
