@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Reviewed, bounded systemd --user unit management for the opt-in stocks/FX
-# paper-trading corners (src/docich/trading/markets/).
+# PAPER corners and their separately controlled read-only market-data providers.
 #
 # Safety properties:
 #   - No root/sudo. Only `systemctl --user` on the fixed unit set already
@@ -12,34 +12,26 @@ set -euo pipefail
 #     provider-enable/provider-disable/provider-restart/seed-test-quote) and
 #     MARKET_PAPER_MARKET (stocks/fx). No other value is ever interpolated
 #     into a systemctl unit name or path.
-#   - Never edits config/market-paper.toml (that stays a normal reviewed
-#     code change), never touches broker credentials, never sends a real
-#     order. install/enable only ever start an *idle* PAPER worker when the
-#     checked-in config still has enabled=false; Runtime.tick() itself also
-#     refuses to trade while enabled=false.
+#   - Never edits config/market-paper.toml, never creates broker credentials,
+#     never sends an order. PAPER units and market-data provider units are
+#     explicitly separate: enabling one never implicitly enables the other.
 #   - For market=stocks, install provisions the exact pinned optional
 #     read-only Moomoo quote SDK into the existing .venv-trading when that
 #     venv exists. It never installs/starts OpenD, logs in, enables stocks,
-#     or creates/imports a trading context. Provider readiness still has to
-#     pass the separate fixed read-only probe before stocks can be enabled.
-#   - The Moomoo collector is managed by three explicit stocks-only provider
-#     actions. Installing the units never enables/starts the collector, and
-#     starting the collector never enables the stocks PAPER worker/corner.
-#     The collector itself is loopback-only and has no account/order API.
-#   - seed-test-quote (fx only) writes one fixed-shape, deterministically
-#     generated USD_JPY quote to the approved file-feed path
-#     (<state_dir>/market-data/market-fx-quotes.json), exactly like an
-#     operator-approved price collector would, for verifying the feed ->
-#     tick -> health.json/SQLite pipeline without any real broker
-#     credentials. It never reads or fabricates real market data.
+#     or creates/imports a trading context.
+#   - The stocks provider is the loopback-only Moomoo collector. The FX
+#     provider is the OANDA-practice pricing-only collector and requires the
+#     operator-managed %h/.config/docich/oanda-practice.env file. This script
+#     never creates, reads or prints that credential file.
+#   - seed-test-quote (fx only) writes one fixed-shape deterministic USD_JPY
+#     quote for validating the file-feed pipeline. It never reads/fabricates
+#     data resembling a real live provider.
 #
-# Env (set by the owner-only control plane, .github/workflows/vm-operations.yml,
-# operation=market_paper):
+# Env (set by an owner-only reviewed control plane):
 #   MARKET_PAPER_ACTION=install|enable|disable|restart|provider-enable|provider-disable|provider-restart|seed-test-quote
 #   MARKET_PAPER_MARKET=stocks|fx
 #
-# Optional flag exists so repository tests can run against a temporary root
-# (with a stub `systemctl` earlier on PATH and HOME pointed at a temp dir):
+# Optional flag exists so repository tests can run against a temporary root:
 #   --root DIR   (default /home/ubuntu/docich)
 
 root="/home/ubuntu/docich"
@@ -61,15 +53,14 @@ case "$market" in stocks|fx) ;; *) echo "invalid market: $market" >&2; exit 2 ;;
 
 # Production exec runs this without an interactive login session, so the
 # `systemctl --user` D-Bus socket must be located explicitly rather than
-# relying on an ambient XDG_RUNTIME_DIR (gateway.py's execute() sets a
-# minimal fixed env with no such variable).
+# relying on an ambient XDG_RUNTIME_DIR.
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 worker_unit="docich-market-worker@${market}.service"
 corner_timer="docich-market-corner@${market}.timer"
 improve_timer="docich-market-improve@${market}.timer"
-provider_unit="docich-market-data-stocks.service"
+provider_unit="docich-market-data-${market}.service"
 
 install_units() {
   mkdir -p "$unit_dir" || { echo "mkdir failed: $unit_dir" >&2; exit 10; }
@@ -80,6 +71,7 @@ install_units() {
     docich-market-improve@.service
     docich-market-improve@.timer
     docich-market-data-stocks.service
+    docich-market-data-fx.service
   )
   local name src
   for name in "${templates[@]}"; do
@@ -97,9 +89,7 @@ provision_stock_quote_sdk() {
   local requirements="$root/requirements-market-data.txt"
 
   # Existing production trading installs already own .venv-trading. Do not
-  # silently create a new interpreter environment from this bounded unit
-  # installer: if it is absent, leave the read-only probe fail-closed as
-  # sdk_unavailable and let diagnostics/operator repair the base runtime.
+  # silently create a new interpreter environment from this bounded installer.
   if [[ ! -x "$python_bin" ]]; then
     echo "trading venv unavailable; skipped optional stock quote SDK provision" >&2
     return 0
@@ -128,22 +118,15 @@ restart_market() {
   systemctl --user restart "$worker_unit"
 }
 
-require_stock_provider_action() {
-  [[ "$market" == "stocks" ]] || { echo "provider actions are stocks-only" >&2; exit 22; }
-}
-
 enable_provider() {
-  require_stock_provider_action
   systemctl --user enable --now "$provider_unit"
 }
 
 disable_provider() {
-  require_stock_provider_action
   systemctl --user disable --now "$provider_unit"
 }
 
 restart_provider() {
-  require_stock_provider_action
   systemctl --user restart "$provider_unit"
 }
 
@@ -211,7 +194,4 @@ case "$action" in
 esac
 
 # Production exec output is withheld by the gateway regardless of what this
-# script prints (ops/vm_actions/gateway.py execute()), so results are
-# verified afterwards through the `diagnostics` operation
-# (_collect_market_paper in collect_diagnostics.py), not by printing status
-# here.
+# script prints, so state is verified afterwards through read-only diagnostics.
