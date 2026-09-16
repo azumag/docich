@@ -110,6 +110,20 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
         self.assertIn(': >"$out"', text)
         self.assertIn("classify_private_output 99", text)
 
+    def test_runner_runs_private_bounded_opencode_smoke_before_full_prompt(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        smoke = text.index("Return exactly OK.")
+        real = text.index("run_daily run", smoke)
+        self.assertLess(smoke, real)
+        self.assertIn('smoke_out="$(mktemp /home/ubuntu/.soren91-opencode-smoke.XXXXXX)"', text)
+        self.assertIn('/usr/bin/timeout --kill-after=5s 20s', text)
+        self.assertIn('"$opencode_shim_dir/opencode" run --format json --model opencode-go/deepseek-v4.1-flash', text)
+        self.assertIn('>"$smoke_out" 2>&1', text)
+        self.assertIn('rm -f "$out" "$smoke_out"', text)
+        self.assertNotIn('cat "$smoke_out"', text)
+        for exit_code in range(107, 114):
+            self.assertIn(f"return {exit_code}", text)
+
     def test_runner_keeps_raw_failure_output_private_and_maps_categories(self):
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("umask 077", text)
@@ -149,6 +163,13 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
         self.assertEqual(classifier.classify_gateway_result(gateway_result(104), sha, 104), "legacy_cli_missing")
         self.assertEqual(classifier.classify_gateway_result(gateway_result(105), sha, 105), "opencode_json_invalid")
         self.assertEqual(classifier.classify_gateway_result(gateway_result(106), sha, 106), "opencode_tool_or_error_event")
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(107), sha, 107), "opencode_smoke_model_unavailable")
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(108), sha, 108), "opencode_smoke_agent_unavailable")
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(109), sha, 109), "opencode_smoke_config_invalid")
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(110), sha, 110), "opencode_smoke_auth_failure")
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(111), sha, 111), "opencode_smoke_provider_limit")
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(112), sha, 112), "opencode_smoke_cli_other")
+        self.assertEqual(classifier.classify_gateway_result(gateway_result(113), sha, 113), "opencode_smoke_timeout")
         self.assertEqual(classifier.classify_gateway_result(gateway_result(1), sha, 1), "other")
 
     def test_gateway_classifier_fails_closed_on_shape_or_transport_mismatch(self):

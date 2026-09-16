@@ -48,6 +48,13 @@ EXIT_CATEGORIES = {
     104: "legacy_cli_missing",
     105: "opencode_json_invalid",
     106: "opencode_tool_or_error_event",
+    107: "opencode_smoke_model_unavailable",
+    108: "opencode_smoke_agent_unavailable",
+    109: "opencode_smoke_config_invalid",
+    110: "opencode_smoke_auth_failure",
+    111: "opencode_smoke_provider_limit",
+    112: "opencode_smoke_cli_other",
+    113: "opencode_smoke_timeout",
 }
 
 
