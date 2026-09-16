@@ -88,6 +88,23 @@ class MarketPaperDiagnosticsTests(unittest.TestCase):
         self.assertEqual(fx["positions_count"], 1)
         self.assertEqual(fx["last_quote_age_sec"], 500)
 
+    def test_accepted_and_rejected_quotes_are_surfaced(self):
+        self.write_json(
+            self.state / "market-paper" / "fx" / "health.json",
+            {
+                "status": "ok",
+                "accepted_quotes": 1,
+                "rejected_quotes": ["EUR_JPY"],
+                "market_as_of": self.now - 2,
+            },
+        )
+        result = self.module._collect_market_paper(self.state, self.now, unit_dir=self.unit_dir)
+        fx = result["fx"]
+        self.assertEqual(fx["accepted_quotes"], 1)
+        self.assertEqual(fx["rejected_quotes"], ["EUR_JPY"])
+        self.assertEqual(fx["market_as_of_raw"], self.now - 2)
+        self.assertEqual(fx["last_quote_age_sec"], 2)
+
     def test_corrupt_health_json_does_not_crash(self):
         health = self.state / "market-paper" / "stocks" / "health.json"
         health.parent.mkdir(parents=True, exist_ok=True)

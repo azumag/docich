@@ -1426,6 +1426,8 @@ def _collect_one_market_paper(state_dir, market, now, market_cfg, unit_dir):
     risk_stopped = (
         h_data.get("risk_stopped") if h_readable and isinstance(h_data.get("risk_stopped"), bool) else None
     )
+    accepted_quotes = h_data.get("accepted_quotes") if h_readable else None
+    rejected_quotes = h_data.get("rejected_quotes") if h_readable else None
 
     e_present, e_readable, e_data = _load_state_file(experiment_path)
 
@@ -1460,9 +1462,14 @@ def _collect_one_market_paper(state_dir, market, now, market_cfg, unit_dir):
         "worker_stale": bool(h_present and health_age_sec > MARKET_PAPER_WORKER_STALE_SEC),
         "feed_unavailable": health_status == "price_feed_unavailable",
         "last_quote_age_sec": int(now - market_as_of) if market_as_of else -1,
+        "market_as_of_raw": market_as_of,
         "pending_liquidation": pending_liquidation,
         "risk_stopped": risk_stopped,
         "positions_count": len(positions) if isinstance(positions, dict) else None,
+        "accepted_quotes": _bounded_int(accepted_quotes) if isinstance(accepted_quotes, int) else None,
+        "rejected_quotes": (
+            [_bounded_str(s, 20) for s in rejected_quotes[:10]] if isinstance(rejected_quotes, list) else None
+        ),
         "experiment_present": e_present,
         "experiment_status": _bounded_str(e_data.get("status"), 32) if e_readable else None,
         "experiment_age_sec": _file_age_sec(experiment_path, now) if e_present else -1,
