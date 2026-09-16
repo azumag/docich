@@ -160,6 +160,12 @@ if nethack_candidate_shadow_eval_argv is not None:
 
     sys.exit(nethack_candidate_shadow_eval_main(nethack_candidate_shadow_eval_argv))
 
+nethack_canary_argv = _nethack_sidecar_argv("nethack-canary", sys.argv[1:])
+if nethack_canary_argv is not None:
+    from .nethack_canary import main as nethack_canary_main
+
+    sys.exit(nethack_canary_main(nethack_canary_argv))
+
 from .cli import main
 
 sys.exit(main())
