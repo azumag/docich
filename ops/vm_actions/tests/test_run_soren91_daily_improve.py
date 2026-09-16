@@ -24,11 +24,18 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
         self.assertIn("export HOME=/home/ubuntu", text)
         self.assertIn("export PATH=/usr/local/bin:/usr/bin:/bin:/snap/bin", text)
 
+    def test_runner_uses_one_reviewed_fast_model_for_daily_job(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("export AI_COMMON_AGENTS=opencode-go:deepseek-v4.1-flash", text)
+        self.assertIn("export SOREN91_IMPROVE_OPENCODE_AGENT=opencode-go:deepseek-v4.1-flash", text)
+        self.assertIn("export SOREN91_IMPROVE_OPENCODE_TIMEOUT=90", text)
+        self.assertNotIn("muse-spark-1.3-contributor-free", text)
+
     def test_runner_serializes_with_existing_persist_lock(self):
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn('lock="$persist/.git/persist.lock"', text)
         self.assertIn('flock -w 30 9', text)
-        self.assertIn('exec node "$runner"', text)
+        self.assertIn('node "$runner"', text)
 
     def test_runner_bootstraps_only_missing_state_from_earliest_retained_game(self):
         text = SCRIPT.read_text(encoding="utf-8")
@@ -38,6 +45,17 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
         self.assertIn("'pendingPr': None", text)
         self.assertIn("os.replace(tmp, state)", text)
         self.assertIn("os.chmod(state, 0o600)", text)
+
+    def test_runner_keeps_raw_failure_output_private_and_maps_categories(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("umask 077", text)
+        self.assertIn('out="$(mktemp /home/ubuntu/.soren91-daily.XXXXXX)"', text)
+        self.assertIn('>"$out" 2>&1', text)
+        self.assertIn("grep -Fq 'candidate_invalid:'", text)
+        self.assertIn("then exit 94", text)
+        self.assertIn("grep -Fq 'model_no_candidate'", text)
+        self.assertIn("then exit 93", text)
+        self.assertNotIn('cat "$out"', text)
 
     def test_workflow_runs_after_corner_with_owner_only_gateway(self):
         text = WORKFLOW.read_text(encoding="utf-8")
