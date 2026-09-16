@@ -2,8 +2,8 @@
 """Classify the fixed VM-gateway result for Soren91 daily improvement.
 
 The production gateway deliberately withholds command stdout/stderr and returns
-only a fixed JSON envelope.  This helper accepts that envelope on stdin,
-validates its exact shape, and emits one fixed category.  It never prints the
+only a fixed JSON envelope. This helper accepts that envelope on stdin,
+validates its exact shape, and emits one fixed category. It never prints the
 raw gateway response, operation id, match evidence, prompts, or provider text.
 """
 from __future__ import annotations
@@ -27,12 +27,18 @@ EXIT_CATEGORIES = {
     82: "gh_missing",
     83: "flock_missing",
     84: "python_missing",
+    85: "state_invalid",
+    86: "state_bootstrap_failure",
     90: "persist_repo",
     91: "runtime_compatibility",
     92: "evidence_blocked",
     93: "model_no_candidate",
     94: "candidate_invalid",
+    95: "evidence_invalid",
     96: "pr_failure",
+    97: "strategy_race",
+    98: "preflight_other",
+    99: "runtime_other",
 }
 
 
