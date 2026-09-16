@@ -57,6 +57,10 @@ TICK_GUARD_FILE = "locks/soren91-corner-tick.lock"
 ANNOUNCE_TEXT = "ソ連ゲーム91、メリケンAIのコーナーです。今日も91人対戦で、資本主義の力を見せてやりましょう。しばらくお付き合いください。"
 END_ANNOUNCE_TEXT = "ソ連ゲーム91コーナーはここまでです。最後までお付き合いいただき、ありがとうございました。また次のコーナーでお会いしましょう。"
 
+# チャット限定のライセンス通知。音声の開始告知には付けない。
+LICENSE_NOTICE = "【91人対戦】ソ連ゲーム91 - たアケイク https://unityroom.com/games/sorengame91"
+CHAT_ANNOUNCE_TEXT = f"{ANNOUNCE_TEXT} {LICENSE_NOTICE}"
+
 # Chat delivery scope: sink-side duplicate suppression keys on (text, source),
 # so the scheduled corner posts under its own source and never replays or
 # consumes another corner's deliveries. The in-state ``announced`` flag guards
@@ -256,7 +260,7 @@ class Soren91CornerManager(RetroCornerManager):
         if not isinstance(game, str) or not game:
             return
         try:
-            self._chat(ANNOUNCE_TEXT)
+            self._chat(CHAT_ANNOUNCE_TEXT)
         except Exception as exc:
             state["announce_error"] = _safe_detail(exc)
             return

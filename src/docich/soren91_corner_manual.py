@@ -20,6 +20,7 @@ from .retro_corner import (
     RetroCornerManager,
     load_retro_corner_config,
 )
+from .soren91_corner import LICENSE_NOTICE
 from .trading.soren_output import enqueue_audio_text
 
 MANUAL_STATE_FILE = "soren91_corner_manual.json"
@@ -101,7 +102,7 @@ class ManualSoren91CornerManager(RetroCornerManager):
         from .retro_corner import _safe_detail
 
         try:
-            self._chat(text)
+            self._chat(f"{text} {LICENSE_NOTICE}")
         except Exception as exc:
             state["announce_error"] = _safe_detail(exc)
             return
