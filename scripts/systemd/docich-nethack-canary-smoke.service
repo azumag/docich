@@ -1,0 +1,35 @@
+[Unit]
+Description=docich NetHack isolated canary production smoke
+After=docker.service
+Requires=docker.service
+ConditionPathExists=__DOCICH_ROOT__/ops/vm_actions/nethack_canary_smoke_epoch
+
+[Service]
+Type=oneshot
+User=ubuntu
+SupplementaryGroups=docker
+WorkingDirectory=__DOCICH_ROOT__
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=__DOCICH_ROOT__/src
+ExecStart=/usr/bin/python3 __DOCICH_ROOT__/ops/vm_actions/nethack_canary_production_smoke.py
+TimeoutStartSec=1800
+UMask=0077
+Nice=10
+CPUQuota=200%
+MemoryMax=3G
+TasksMax=256
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=__DOCICH_ROOT__/run-soren-live
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+StandardOutput=journal
+StandardError=journal
