@@ -29,11 +29,13 @@ done
 # Crypto PAPER predates the stocks/FX systemd workers and still lives in the
 # shared `docich:trading` tmux window. A normal code deploy updates files but a
 # live Python process keeps its old imports, so reload it only when that exact
-# worker is already present. The reviewed operator preserves the SQLite ledger,
-# restarts only `trading`, and verifies that the replacement pane stays alive.
+# worker is already present. Use bash explicitly: production deployment may
+# preserve the reviewed file contents while not making this helper executable.
+# The operator itself preserves the SQLite ledger, restarts only `trading`, and
+# verifies that the replacement pane stays alive.
 if tmux has-session -t docich >/dev/null 2>&1 \
   && tmux list-windows -t docich -F '#{window_name}' 2>/dev/null | grep -Fxq 'trading'; then
-  "$DOCICH_PROD_ROOT/bin/docich-paper-corner-operator" \
+  bash "$DOCICH_PROD_ROOT/bin/docich-paper-corner-operator" \
     --config "$DOCICH_PROD_ROOT/config/docich.soren-live.toml" \
     --reload-worker >/dev/null
 fi
