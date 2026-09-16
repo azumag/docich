@@ -38,6 +38,11 @@ class Soren91CandidateInvalidCategoriesTests(unittest.TestCase):
             134: "candidate_behavior_contract",
             135: "candidate_undefined_variable",
             136: "candidate_code_error",
+            137: "candidate_code_truncated_or_unterminated",
+            138: "candidate_code_duplicate_declaration",
+            139: "candidate_code_module_dependency",
+            140: "candidate_code_top_level_reference",
+            141: "candidate_code_syntax",
         }
         for exit_code, category in expected.items():
             self.assertEqual(
@@ -48,6 +53,7 @@ class Soren91CandidateInvalidCategoriesTests(unittest.TestCase):
     def test_specific_candidate_markers_precede_generic_candidate_invalid(self):
         text = SCRIPT.read_text(encoding="utf-8")
         generic = text.index("if grep -Fq 'candidate_invalid:'")
+        generic_code = text.index("if grep -Fq 'candidate_invalid:Code error:'")
         markers = {
             "candidate_invalid:no decide() function found": 130,
             "candidate_invalid:decide is not exported as a function": 131,
@@ -61,6 +67,18 @@ class Soren91CandidateInvalidCategoriesTests(unittest.TestCase):
             pos = text.index(marker)
             self.assertLess(pos, generic)
             self.assertIn(f"failure_rc={exit_code}", text[pos:generic])
+
+        subtype_markers = {
+            "Unexpected end|unterminated|string constant|template literal|unterminated comment": 137,
+            "already been declared|duplicate export|duplicate declaration": 138,
+            "Cannot find package|Cannot find module|module not found|ERR_MODULE_NOT_FOUND": 139,
+            "is not defined|before initialization|cannot access .* before initialization": 140,
+            "Unexpected token|invalid or unexpected token|SyntaxError|missing \\)|missing \\]|missing \\}|illegal return|await is only valid|reserved word": 141,
+        }
+        for marker, exit_code in subtype_markers.items():
+            pos = text.index(marker)
+            self.assertLess(pos, generic_code)
+            self.assertIn(f"failure_rc={exit_code}", text[pos:generic_code])
 
         # Raw model/candidate output remains private; only the fixed exit category
         # is allowed to leave the owner-only gateway.
