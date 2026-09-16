@@ -71,6 +71,13 @@ EXIT_CATEGORIES = {
     127: "opencode_nonzero_invalid_json",
     128: "opencode_nonzero_structured",
     129: "opencode_nonzero_no_json",
+    130: "candidate_missing_decide",
+    131: "candidate_decide_not_function",
+    132: "candidate_return_invalid",
+    133: "candidate_x_out_of_range",
+    134: "candidate_behavior_contract",
+    135: "candidate_undefined_variable",
+    136: "candidate_code_error",
 }
 
 

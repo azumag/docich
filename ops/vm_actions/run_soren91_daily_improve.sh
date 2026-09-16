@@ -179,6 +179,13 @@ run_daily() {
 classify_private_output() {
   local fallback="$1"
   failure_rc="$fallback"
+  if grep -Fq 'candidate_invalid:no decide() function found' "$out"; then failure_rc=130; return; fi
+  if grep -Fq 'candidate_invalid:decide is not exported as a function' "$out"; then failure_rc=131; return; fi
+  if grep -Fq 'candidate_invalid:decide() returned invalid format' "$out"; then failure_rc=132; return; fi
+  if grep -Fq 'candidate_invalid:decide() returned x=' "$out"; then failure_rc=133; return; fi
+  if grep -Fq 'candidate_invalid:Strategy contract:' "$out"; then failure_rc=134; return; fi
+  if grep -Fq 'candidate_invalid:Undefined variable detected:' "$out"; then failure_rc=135; return; fi
+  if grep -Fq 'candidate_invalid:Code error:' "$out"; then failure_rc=136; return; fi
   if grep -Fq 'candidate_invalid:' "$out"; then failure_rc=94; return; fi
   if grep -Fq 'model_no_candidate' "$out"; then failure_rc=93; return; fi
   if grep -Fq 'evidence_blocked:' "$out"; then failure_rc=92; return; fi
