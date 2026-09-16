@@ -185,6 +185,11 @@ classify_private_output() {
   if grep -Fq 'candidate_invalid:decide() returned x=' "$out"; then failure_rc=133; return; fi
   if grep -Fq 'candidate_invalid:Strategy contract:' "$out"; then failure_rc=134; return; fi
   if grep -Fq 'candidate_invalid:Undefined variable detected:' "$out"; then failure_rc=135; return; fi
+  if grep -Eiq 'candidate_invalid:Code error:.*(Unexpected end|unterminated|string constant|template literal|unterminated comment)' "$out"; then failure_rc=137; return; fi
+  if grep -Eiq 'candidate_invalid:Code error:.*(already been declared|duplicate export|duplicate declaration)' "$out"; then failure_rc=138; return; fi
+  if grep -Eiq 'candidate_invalid:Code error:.*(Cannot find package|Cannot find module|module not found|ERR_MODULE_NOT_FOUND)' "$out"; then failure_rc=139; return; fi
+  if grep -Eiq 'candidate_invalid:Code error:.*(is not defined|before initialization|cannot access .* before initialization)' "$out"; then failure_rc=140; return; fi
+  if grep -Eiq 'candidate_invalid:Code error:.*(Unexpected token|invalid or unexpected token|SyntaxError|missing \)|missing \]|missing \}|illegal return|await is only valid|reserved word)' "$out"; then failure_rc=141; return; fi
   if grep -Fq 'candidate_invalid:Code error:' "$out"; then failure_rc=136; return; fi
   if grep -Fq 'candidate_invalid:' "$out"; then failure_rc=94; return; fi
   if grep -Fq 'model_no_candidate' "$out"; then failure_rc=93; return; fi
