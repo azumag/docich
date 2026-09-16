@@ -186,6 +186,8 @@ classify_private_output() {
   if grep -Fq 'candidate_invalid:Strategy contract: behavior no-op;' "$out"; then failure_rc=142; return; fi
   if grep -Fq 'candidate_invalid:Strategy contract: behavior replay failed' "$out"; then failure_rc=143; return; fi
   if grep -Eq 'candidate_invalid:Strategy contract: (retained-match )?behavior replay coverage was insufficient' "$out"; then failure_rc=144; return; fi
+  if grep -Fq 'candidate_invalid:Strategy contract: source search consistency;' "$out"; then failure_rc=145; return; fi
+  if grep -Fq 'candidate_invalid:Strategy contract: source unpositioned piece;' "$out"; then failure_rc=146; return; fi
   if grep -Fq 'candidate_invalid:Strategy contract:' "$out"; then failure_rc=134; return; fi
   if grep -Fq 'candidate_invalid:Undefined variable detected:' "$out"; then failure_rc=135; return; fi
   if grep -Eiq 'candidate_invalid:Code error:.*(Unexpected end|unterminated|string constant|template literal|unterminated comment)' "$out"; then failure_rc=137; return; fi

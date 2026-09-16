@@ -46,6 +46,8 @@ class Soren91CandidateInvalidCategoriesTests(unittest.TestCase):
             142: "candidate_behavior_noop",
             143: "candidate_behavior_replay_failure",
             144: "candidate_behavior_replay_coverage",
+            145: "candidate_source_search_consistency",
+            146: "candidate_source_unpositioned_piece",
         }
         for exit_code, category in expected.items():
             self.assertEqual(
@@ -76,6 +78,8 @@ class Soren91CandidateInvalidCategoriesTests(unittest.TestCase):
             "candidate_invalid:Strategy contract: behavior no-op;": 142,
             "candidate_invalid:Strategy contract: behavior replay failed": 143,
             "candidate_invalid:Strategy contract: (retained-match )?behavior replay coverage was insufficient": 144,
+            "candidate_invalid:Strategy contract: source search consistency;": 145,
+            "candidate_invalid:Strategy contract: source unpositioned piece;": 146,
         }
         for marker, exit_code in behavior_markers.items():
             pos = text.index(marker)
