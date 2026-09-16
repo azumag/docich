@@ -1,0 +1,24 @@
+[Unit]
+Description=docich read-only OANDA practice FX market-data collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__DOCICH_ROOT__
+Environment=PYTHONPATH=__DOCICH_ROOT__/src
+# Mandatory, operator-managed file outside the repository. Expected mode: 0600.
+# It must contain only:
+#   DOCICH_OANDA_ACCOUNT_ID=...
+#   DOCICH_OANDA_TOKEN=...
+# Never put these values in GitHub, repository files, CLI args, or unit text.
+EnvironmentFile=%h/.config/docich/oanda-practice.env
+ExecStart=__DOCICH_ROOT__/.venv-trading/bin/python3 -m docich.trading.markets.oanda_market_data worker --config __DOCICH_ROOT__/config/docich.soren-live.toml --symbols USD_JPY,EUR_JPY --interval 5
+Restart=on-failure
+RestartSec=15
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
