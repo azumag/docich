@@ -1,0 +1,113 @@
+name: NetHack canary image CI
+
+on:
+  pull_request:
+    paths:
+      - "containers/nethack-canary/**"
+      - "src/docich/nethack_canary_worker.py"
+      - "src/docich/nethack_canary_container.py"
+      - "src/docich/nethack_canary_executor.py"
+      - "src/docich/nethack_canary_candidate_broker.py"
+      - "brains/nethack_canary_hold.py"
+      - "brains/nethack_canary_arena_probe.py"
+      - "tests/test_nethack_canary_image.py"
+      - ".github/workflows/nethack-canary-image-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "containers/nethack-canary/**"
+      - "src/docich/nethack_canary_worker.py"
+      - "src/docich/nethack_canary_container.py"
+      - "src/docich/nethack_canary_executor.py"
+      - "src/docich/nethack_canary_candidate_broker.py"
+      - "brains/nethack_canary_hold.py"
+      - "brains/nethack_canary_arena_probe.py"
+      - "tests/test_nethack_canary_image.py"
+      - ".github/workflows/nethack-canary-image-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Build pinned NetHack 5.0 canary image
+        shell: bash
+        run: |
+          docker build \
+            --file containers/nethack-canary/Dockerfile \
+            --iidfile "$RUNNER_TEMP/nethack-canary-image-id" \
+            .
+          image_id="$(<"$RUNNER_TEMP/nethack-canary-image-id")"
+          [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf 'DOCICH_TEST_NETHACK_CANARY_IMAGE=%s\n' "$image_id" >> "$GITHUB_ENV"
+      - name: Verify image provenance labels
+        shell: bash
+        run: |
+          test "$(docker image inspect "$DOCICH_TEST_NETHACK_CANARY_IMAGE" --format '{{ index .Config.Labels "org.docich.nethack-canary.abi" }}')" = "1"
+          test "$(docker image inspect "$DOCICH_TEST_NETHACK_CANARY_IMAGE" --format '{{ index .Config.Labels "org.docich.nethack.version" }}')" = "5.0.0"
+          test "$(docker image inspect "$DOCICH_TEST_NETHACK_CANARY_IMAGE" --format '{{ index .Config.Labels "org.docich.nethack.source-sha256" }}')" = "2959b7886aac76185b90aea0c9f80d14343f604de0ae96b3dd2a760f7ab3bde9"
+      - name: Verify NetHack binary
+        run: >-
+          docker run --rm
+          --entrypoint /usr/local/bin/nethack
+          "$DOCICH_TEST_NETHACK_CANARY_IMAGE"
+          --version
+      - name: Verify worker modules import
+        run: >-
+          docker run --rm
+          --entrypoint python3
+          "$DOCICH_TEST_NETHACK_CANARY_IMAGE"
+          -c
+          "import docich.nethack_canary_worker, docich.nethack_canary_executor, docich.nethack_canary_candidate_broker"
+      - name: Verify local smoke candidate
+        shell: bash
+        run: |
+          output="$(printf '%s\n' '{"schema_version":1,"intent":"survival_emergency"}' \
+            | docker run --rm -i \
+                --entrypoint python3 \
+                "$DOCICH_TEST_NETHACK_CANARY_IMAGE" \
+                brains/nethack_canary_hold.py)"
+          python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["schema_version"] == 1 and d["kind"] == "hold"' "$output"
+      - name: Prove candidate broker cannot read or write game arena
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/canary-game-arena/playground"
+          printf 'production-like-secret\n' > "$RUNNER_TEMP/canary-game-arena/playground/xlogfile"
+          cat > "$RUNNER_TEMP/arena-probe-manifest.json" <<'JSON'
+          {
+            "schema_version": 1,
+            "candidate_id": "arena-probe",
+            "version": "v1",
+            "command": ["python3", "brains/nethack_canary_arena_probe.py"],
+            "timeout_s": 2.0,
+            "max_request_bytes": 32768,
+            "max_response_bytes": 16384,
+            "max_cases": 1,
+            "min_replay_cases": 1,
+            "expected_suite_id": null
+          }
+          JSON
+          request='{"schema_version":1,"intent":"survival_emergency","reason":"probe","observation":{"message":"danger","prompt":"none","player":[2,1],"vitals":{"hp":2,"hp_max":10,"hp_ratio":0.2,"dungeon_level":1,"turn":1},"conditions":[],"local_map":["..@.."]},"inventory":[],"constraints":[]}'
+          output="$(printf '%s\n' "$request" | docker run --rm -i \
+            --network=none \
+            --read-only \
+            --cap-drop=ALL \
+            --security-opt=no-new-privileges:true \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=67108864,mode=1777 \
+            --mount "type=bind,src=$RUNNER_TEMP/arena-probe-manifest.json,dst=/canary/candidate.json,readonly" \
+            --entrypoint python3 \
+            "$DOCICH_TEST_NETHACK_CANARY_IMAGE" \
+            -m docich.nethack_canary_candidate_broker \
+            --manifest /canary/candidate.json \
+            --stdio-once)"
+          python3 -c 'import json,sys; d=json.loads(sys.argv[1]); p=d["proposal"]; assert d["status"]=="proposed" and p["kind"]=="hold" and p["rationale"]=="arena_readable=false;arena_writable=false"' "$output"
+          test "$(cat "$RUNNER_TEMP/canary-game-arena/playground/xlogfile")" = "production-like-secret"
+      - name: Note production runtime boundary
+        run: >-
+          echo "Hosted CI proves image/broker mount isolation; production P5h still requires Docker runsc preflight and never falls back to runc."
