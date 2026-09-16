@@ -91,15 +91,51 @@ class TestCandidateShadowController(unittest.TestCase):
         self.g = SimpleNamespace(state_dir=self.state, repo_root=self.root)
         self.game = SimpleNamespace(name="nethack", raw={})
         self.clock = [100.0]
+        self.suite_id = "a" * 64
         self.manifest = CandidateManifest(
             candidate_id="candidate-a",
             version="v1",
             command=("secret-candidate-command", "--token=do-not-log"),
             timeout_s=1.0,
+            expected_suite_id=self.suite_id,
         )
+        self._write_safety_report()
 
     def tearDown(self) -> None:
         self.tempdir.cleanup()
+
+    def _report_path(self) -> Path:
+        return (
+            self.state
+            / "nethack"
+            / "regression"
+            / "candidates"
+            / self.manifest.candidate_id
+            / self.manifest.version
+            / f"{self.suite_id}.json"
+        )
+
+    def _write_safety_report(self, **overrides) -> None:
+        payload = {
+            "schema_version": 1,
+            "candidate_id": self.manifest.candidate_id,
+            "candidate_version": self.manifest.version,
+            "candidate_fingerprint": self.manifest.fingerprint,
+            "command_sha256": self.manifest.command_hash,
+            "suite_id": self.suite_id,
+            "status": "completed",
+            "baseline_contract_passed": True,
+            "candidate_safety_contract_passed": True,
+            "eligible_for_behavior_review": True,
+            "eligible_for_promotion_review": False,
+            "performance_improvement_assessed": False,
+            "automatic_promotion": False,
+            "policy_effect": "none",
+        }
+        payload.update(overrides)
+        path = self._report_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload), encoding="utf-8")
 
     def controller(self, strategist, *, max_calls=24, cooldown=30.0):
         return NethackCandidateShadowController(
@@ -117,9 +153,31 @@ class TestCandidateShadowController(unittest.TestCase):
             wall_time=lambda: 1234.5,
         )
 
+    def test_live_shadow_requires_exact_green_p5d_report(self) -> None:
+        strategist = FakeStrategist(StrategistDispatchResult(status="error", error="unused"))
+        self._write_safety_report(candidate_safety_contract_passed=False)
+        with self.assertRaises(ValueError):
+            self.controller(strategist)
+        self.assertEqual(strategist.calls, [])
+
+        manifest_without_suite = CandidateManifest(
+            candidate_id="candidate-a",
+            version="v1",
+            command=("fake",),
+            expected_suite_id=None,
+        )
+        with self.assertRaises(ValueError):
+            NethackCandidateShadowController(
+                self.g,
+                self.game,
+                config=CandidateShadowConfig(enabled=True, manifest="unused.json"),
+                manifest=manifest_without_suite,
+                strategist=strategist,
+            )
+
     def test_safe_candidate_is_logged_as_shadow_only_with_run_id(self) -> None:
         current = self.state / "nethack" / "current.json"
-        current.parent.mkdir(parents=True)
+        current.parent.mkdir(parents=True, exist_ok=True)
         current.write_text(json.dumps({"schema_version": 1, "run_id": "run-123"}), encoding="utf-8")
         strategist = FakeStrategist(
             StrategistDispatchResult(
@@ -142,6 +200,7 @@ class TestCandidateShadowController(unittest.TestCase):
         text = log.read_text(encoding="utf-8")
         event = json.loads(text.splitlines()[-1])
         self.assertEqual(event["run_id"], "run-123")
+        self.assertEqual(event["suite_id"], self.suite_id)
         self.assertEqual(event["execution"], "shadow_only")
         self.assertEqual(event["policy_effect"], "none")
         self.assertEqual(event["baseline"]["intent"], "survival_emergency")
