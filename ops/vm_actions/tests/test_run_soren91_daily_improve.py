@@ -62,11 +62,22 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
     def test_runner_bootstraps_only_missing_state_from_earliest_retained_game(self):
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("if os.path.lexists(state):", text)
-        self.assertIn("invalid existing improve_daily state", text)
+        self.assertIn("raise SystemExit(85)", text)
+        self.assertIn("raise SystemExit(86)", text)
         self.assertIn("baseline = max(0, min(games) - 1)", text)
         self.assertIn("'pendingPr': None", text)
         self.assertIn("os.replace(tmp, state)", text)
         self.assertIn("os.chmod(state, 0o600)", text)
+
+    def test_runner_preflights_without_model_before_real_run(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        dry = text.index("run_daily preflight")
+        real = text.index("run_daily run", dry)
+        self.assertLess(dry, real)
+        self.assertIn("--dry-run", text)
+        self.assertIn("classify_private_output 98", text)
+        self.assertIn(': >"$out"', text)
+        self.assertIn("classify_private_output 99", text)
 
     def test_runner_keeps_raw_failure_output_private_and_maps_categories(self):
         text = SCRIPT.read_text(encoding="utf-8")
@@ -74,9 +85,11 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
         self.assertIn('out="$(mktemp /home/ubuntu/.soren91-daily.XXXXXX)"', text)
         self.assertIn('>"$out" 2>&1', text)
         self.assertIn("grep -Fq 'candidate_invalid:'", text)
-        self.assertIn("then exit 94", text)
+        self.assertIn("failure_rc=94", text)
         self.assertIn("grep -Fq 'model_no_candidate'", text)
-        self.assertIn("then exit 93", text)
+        self.assertIn("failure_rc=93", text)
+        self.assertIn("evidence_file_too_large:", text)
+        self.assertIn("failure_rc=95", text)
         self.assertNotIn('cat "$out"', text)
 
     def test_gateway_classifier_maps_only_fixed_categories(self):
@@ -84,12 +97,24 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
         sha = "a" * 40
         self.assertEqual(classifier.classify_gateway_result(gateway_result(0), sha, 0), "success")
         self.assertEqual(
+            classifier.classify_gateway_result(gateway_result(85), sha, 85),
+            "state_invalid",
+        )
+        self.assertEqual(
             classifier.classify_gateway_result(gateway_result(92), sha, 92),
             "evidence_blocked",
         )
         self.assertEqual(
             classifier.classify_gateway_result(gateway_result(94), sha, 94),
             "candidate_invalid",
+        )
+        self.assertEqual(
+            classifier.classify_gateway_result(gateway_result(98), sha, 98),
+            "preflight_other",
+        )
+        self.assertEqual(
+            classifier.classify_gateway_result(gateway_result(99), sha, 99),
+            "runtime_other",
         )
         self.assertEqual(classifier.classify_gateway_result(gateway_result(1), sha, 1), "other")
 
