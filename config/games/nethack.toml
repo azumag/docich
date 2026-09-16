@@ -50,6 +50,14 @@ interval_s = 1.0
 timeout_s = 2.0
 max_response_bytes = 131072
 
+# P5e candidate shadow はP5d offline評価済みmanifestだけを明示opt-inで使用する。
+# candidate proposalはdaemon workerで評価し、本番Actionへは一切接続しない。
+[nethack.candidate_shadow]
+enabled = false
+manifest = ""
+cooldown_s = 30.0
+max_calls = 24
+
 [agent]
 enabled = false        # 本番有効化は別段階。brain切替だけでは自動起動しない
 brain = "random"
