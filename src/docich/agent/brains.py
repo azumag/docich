@@ -90,6 +90,41 @@ class RandomBrain:
         return [Action(type="wait", ms=500)]
 
 
+class NethackPolicyBrain:
+    """P3a fail-closed layered NetHack brain.
+
+    Selecting this brain does not make the unfinished policy roam the dungeon.
+    P3a automatically advances only an explicit ``--More--`` prompt; all
+    movement, combat, item use and meaningful prompts return no action and are
+    represented as mid-level/strategic decisions for later phases.
+    """
+
+    def __init__(self, g: GlobalConfig, game: GameConfig):
+        if game.name != "nethack" or game.adapter != "cli":
+            raise AdapterError("brain='nethack' はCLI NetHack専用です")
+        from ..nethack_policy import NethackLayeredPolicy
+
+        self.g = g
+        self.game = game
+        raw = game.raw.get("cli", {}) if isinstance(game.raw, dict) else {}
+        self.cols = int(raw.get("cols", 80)) if isinstance(raw, dict) else 80
+        self.rows = int(raw.get("rows", 24)) if isinstance(raw, dict) else 24
+        self.policy = NethackLayeredPolicy()
+        self.last_decision = None
+
+    def decide(self, obs: Observation) -> list[Action]:
+        if obs.adapter != "cli" or obs.text is None:
+            return []
+        from ..nethack_observation import normalize_tty
+        from ..nethack_policy import assert_p3a_safe
+
+        normalized = normalize_tty(obs.text, cols=self.cols, rows=self.rows)
+        decision = self.policy.decide(normalized)
+        assert_p3a_safe(decision)
+        self.last_decision = decision
+        return list(decision.actions)
+
+
 class ResolverBrain:
     """Deterministic in-process resolver (token-free).
 
@@ -171,7 +206,6 @@ class ResolverBrain:
             return False
         return isinstance(data, dict) and data.get("phase") == "draining"
 
-
     def _record_match_score(self, text: str) -> None:
         """Append the live match score to the per-game history (best effort)."""
         try:
@@ -187,13 +221,16 @@ class ResolverBrain:
             pass
 
 
-
 def build_brain(g: GlobalConfig, game: GameConfig):
     kind = game.agent.brain
     if kind == "command":
         return CommandBrain(g, game)
     if kind == "random":
         return RandomBrain(g, game)
+    if kind == "nethack":
+        return NethackPolicyBrain(g, game)
     if kind == "resolver":
         return ResolverBrain(g, game)
-    raise AdapterError(f"未知の brain です: {kind!r} (使用可能: command, random, resolver)")
+    raise AdapterError(
+        f"未知の brain です: {kind!r} (使用可能: command, random, nethack, resolver)"
+    )
