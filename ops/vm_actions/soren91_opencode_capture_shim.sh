@@ -8,6 +8,8 @@ umask 077
 [[ "$4" == "--model" ]] || exit 64
 [[ "$5" =~ ^[A-Za-z0-9_./:-]{1,160}$ ]] || exit 64
 [[ -f "$SOREN91_OPENCODE_NONZERO_CLASSIFIER" && ! -L "$SOREN91_OPENCODE_NONZERO_CLASSIFIER" ]] || exit 65
+success_normalizer="${SOREN91_OPENCODE_SUCCESS_NORMALIZER:-$(dirname -- "$SOREN91_OPENCODE_NONZERO_CLASSIFIER")/normalize_soren91_opencode_success.py}"
+[[ -f "$success_normalizer" && ! -L "$success_normalizer" ]] || exit 67
 
 shim_dir="$(cd -- "$(dirname -- "$0")" && pwd -P)"
 inner="$shim_dir/opencode-fixed-exec"
@@ -72,7 +74,14 @@ rc=$?
 child_pid=''
 set -e
 
-cat "$child_out"
+if [[ "$rc" -eq 0 ]]; then
+  # Successful model stdout is still private here. Normalize only a complete
+  # fenced strategy module; otherwise the helper returns the original bytes so
+  # the existing runtime parser remains fail-closed.
+  python3 "$success_normalizer" "$child_out"
+else
+  cat "$child_out"
+fi
 cat "$child_err" >&2
 if [[ "$rc" -ne 0 ]]; then
   classify_nonzero
