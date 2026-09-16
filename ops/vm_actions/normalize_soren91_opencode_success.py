@@ -2,11 +2,11 @@
 """Normalize successful Soren91 OpenCode JSONL without exposing raw model text.
 
 The daily OpenCode process already writes stdout to a private 0600 temporary
-file.  This helper reads that file, and only when it can identify a fenced
-JavaScript block containing the mandatory strategy entrypoint does it replace
-the successful stdout with one canonical text event containing that block.
-Otherwise it emits the original bytes unchanged so the existing runtime parser
-and fail-closed validation remain authoritative.
+file. This helper reads that file, and only when the stream itself satisfies
+the reviewed no-tool event contract and contains a fenced JavaScript block with
+the mandatory strategy entrypoint does it replace stdout with one canonical
+text event containing that block. Otherwise it emits the original bytes
+unchanged so the existing runtime parser remains fail-closed.
 """
 from __future__ import annotations
 
@@ -17,6 +17,8 @@ from pathlib import Path
 
 MAX_BYTES = 2 * 1024 * 1024
 DECIDE = "export function decide(boardState)"
+ALLOWED_EVENT_TYPES = {"step_start", "step_finish", "text"}
+TOOL_REASONS = {"tool-calls", "tool_calls", "error"}
 FENCE_RE = re.compile(
     r"```(?:javascript|js|mjs)?[ \t]*\r?\n([\s\S]*?)```",
     re.IGNORECASE,
@@ -45,13 +47,25 @@ def _collect_text(raw: bytes) -> str | None:
             event = json.loads(line)
         except (TypeError, ValueError):
             return None
-        if not isinstance(event, dict):
+        if not isinstance(event, dict) or event.get("error"):
+            return None
+        event_type = event.get("type")
+        if event_type not in ALLOWED_EVENT_TYPES:
+            return None
+        part = event.get("part") or {}
+        if not isinstance(part, dict) or part.get("error"):
+            return None
+        if (
+            part.get("reason") in TOOL_REASONS
+            or "tool" in part
+            or "toolCallID" in part
+            or "tool_calls" in part
+        ):
             return None
         saw_event = True
-        if event.get("type") != "text":
+        if event_type != "text":
             continue
-        part = event.get("part")
-        if not isinstance(part, dict):
+        if part.get("type") not in (None, "text"):
             return None
         text = part.get("text")
         if not isinstance(text, str):
@@ -70,7 +84,7 @@ def _select_complete_block(text: str) -> str | None:
             matches.append(code)
     if not matches:
         return None
-    # A complete module is normally the largest matching block.  This also
+    # A complete module is normally the largest matching block. This also
     # avoids adopting a short illustrative decide() snippet before the actual
     # complete strategy module.
     return max(matches, key=len)
@@ -101,7 +115,7 @@ def main(argv: list[str]) -> int:
         return 65
     raw = _read_bounded(path)
     if not raw:
-        # Preserve fail-closed behavior for empty/oversized output.  Emit no
+        # Preserve fail-closed behavior for empty/oversized output. Emit no
         # model text rather than trying to synthesize a candidate.
         return 0
     sys.stdout.buffer.write(normalize(raw))
