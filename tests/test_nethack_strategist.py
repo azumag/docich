@@ -38,6 +38,16 @@ def emergency_request(items=()):
 
 
 class TestCommandStrategist(unittest.TestCase):
+    def test_constructor_rejects_empty_command_and_invalid_timeout(self) -> None:
+        with self.assertRaises(ValueError):
+            CommandStrategist([])
+        with self.assertRaises(ValueError):
+            CommandStrategist("   ")
+        with self.assertRaises(ValueError):
+            CommandStrategist(["fake"], timeout_s=0)
+        with self.assertRaises(ValueError):
+            CommandStrategist(["fake"], timeout_s=121)
+
     def test_successful_dispatch_parses_advisory_proposal(self) -> None:
         seen = {}
 
