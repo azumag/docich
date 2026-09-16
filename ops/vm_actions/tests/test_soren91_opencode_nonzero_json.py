@@ -6,6 +6,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
 RUNNER = ROOT / "ops" / "vm_actions" / "run_soren91_daily_improve.sh"
+OUTER_SHIM = ROOT / "ops" / "vm_actions" / "soren91_opencode_capture_shim.sh"
+INNER_SHIM = ROOT / "ops" / "vm_actions" / "soren91_opencode_fixed_exec.sh"
 CLASSIFIER = ROOT / "ops" / "vm_actions" / "classify_soren91_daily_gateway.py"
 NONZERO_HELPER = ROOT / "ops" / "vm_actions" / "classify_soren91_opencode_nonzero.py"
 
@@ -23,18 +25,35 @@ class Soren91OpenCodeNonzeroJsonTests(unittest.TestCase):
         text = RUNNER.read_text(encoding="utf-8")
         self.assertIn("classify_soren91_opencode_nonzero.py", text)
         self.assertIn("SOREN91_OPENCODE_NONZERO_CLASSIFIER", text)
+        self.assertIn("soren91_opencode_capture_shim.sh", text)
+        self.assertIn("soren91_opencode_fixed_exec.sh", text)
 
-    def test_shim_keeps_child_output_private_and_adds_only_fixed_marker(self):
-        text = RUNNER.read_text(encoding="utf-8")
+    def test_outer_shim_keeps_child_output_private_and_adds_only_fixed_marker(self):
+        text = OUTER_SHIM.read_text(encoding="utf-8")
         self.assertIn('child_out="$(mktemp /home/ubuntu/.soren91-opencode-child-out.XXXXXX)"', text)
         self.assertIn('child_err="$(mktemp /home/ubuntu/.soren91-opencode-child-err.XXXXXX)"', text)
-        self.assertIn('/snap/bin/opencode run --format json --agent soren-daily-improve --model "$5" >"$child_out" 2>"$child_err"', text)
+        self.assertIn('"$inner" run --format json --model "$5" >"$child_out" 2>"$child_err" &', text)
         self.assertIn('printf \'soren91_opencode_nonzero_json=%s\\n\' "$category" >&2', text)
         self.assertIn('rm -f "$child_out" "$child_err"', text)
         self.assertNotIn('echo "$category"', text)
+        self.assertNotIn('/snap/bin/opencode run ', text)
+
+    def test_inner_shim_preserves_fixed_exec_security_contract(self):
+        text = INNER_SHIM.read_text(encoding="utf-8")
+        self.assertIn('[[ "$#" -eq 5 ]]', text)
+        self.assertIn('[[ "$1" == "run" ]]', text)
+        self.assertIn('[[ "$2" == "--format" && "$3" == "json" ]]', text)
+        self.assertIn('[[ "$4" == "--model" ]]', text)
+        self.assertIn('[[ "$5" =~ ^[A-Za-z0-9_./:-]{1,160}$ ]]', text)
+        self.assertIn(
+            'exec /snap/bin/opencode run --format json --agent soren-daily-improve --model "$5"',
+            text,
+        )
+        self.assertNotIn("$@", text)
+        self.assertNotIn("eval ", text)
 
     def test_nonzero_stdout_json_categories_are_closed_vocabulary(self):
-        text = RUNNER.read_text(encoding="utf-8")
+        text = OUTER_SHIM.read_text(encoding="utf-8")
         for category in (
             "error_event",
             "error_part",
