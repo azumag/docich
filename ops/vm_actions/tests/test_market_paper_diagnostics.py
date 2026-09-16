@@ -27,6 +27,16 @@ class MarketPaperDiagnosticsTests(unittest.TestCase):
         self.unit_dir.mkdir(parents=True)
         self.now = int(time.time())
         self.module = load_collector()
+        # Isolate from this checkout's actual config/market-paper.toml
+        # (_market_paper_config() otherwise reads it directly via
+        # PROD_ROOT), which is expected to change independently of these
+        # tests (e.g. a temporary owner-approved file-feed verification
+        # toggling fx.enabled). Tests that care about a specific config
+        # override self.module._market_paper_config after this.
+        self.module._market_paper_config = lambda: {
+            "stocks": {"enabled": False, "mode": "paper"},
+            "fx": {"enabled": False, "mode": "paper"},
+        }
 
     def write_json(self, path, payload):
         path.parent.mkdir(parents=True, exist_ok=True)

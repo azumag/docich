@@ -1,3 +1,4 @@
+import json
 import os
 import stat
 import subprocess
@@ -47,6 +48,22 @@ class ManageMarketPaperUnitsTests(unittest.TestCase):
 
         self.calls_log = self.base / "calls.log"
         self.calls_log.write_text("", encoding="utf-8")
+
+        # Minimal stub of docich.config.load_global(repo_root, config_path)
+        # for the seed-test-quote action, which imports the real module by
+        # name -- this only needs to expose a .state_dir attribute.
+        self.state_dir = self.base / "state"
+        stub_pkg = self.docroot / "src" / "docich"
+        stub_pkg.mkdir(parents=True)
+        (self.docroot / "src" / "docich" / "__init__.py").write_text("", encoding="utf-8")
+        (stub_pkg / "config.py").write_text(
+            "from pathlib import Path\n"
+            "from types import SimpleNamespace\n"
+            f"STATE_DIR = Path({str(self.state_dir)!r})\n"
+            "def load_global(repo_root, config_path):\n"
+            "    return SimpleNamespace(state_dir=STATE_DIR)\n",
+            encoding="utf-8",
+        )
 
     def run_helper(self, action, market, exit_code="0"):
         env = dict(os.environ)
@@ -187,6 +204,42 @@ class ManageMarketPaperUnitsTests(unittest.TestCase):
     def test_enable_failure_propagates_nonzero_exit(self):
         result = self.run_helper("enable", "fx", exit_code="1")
         self.assertNotEqual(result.returncode, 0)
+
+    def test_seed_test_quote_is_fx_only(self):
+        result = self.run_helper("seed-test-quote", "stocks")
+        self.assertEqual(result.returncode, 21, result.stderr)
+        self.assertIn("fx-only", result.stderr)
+
+    def test_seed_test_quote_writes_valid_fixed_shape_quote(self):
+        result = self.run_helper("seed-test-quote", "fx")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        quote_path = self.state_dir / "market-data" / "market-fx-quotes.json"
+        payload = json.loads(quote_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["market"], "fx")
+        self.assertIs(payload["realtime"], True)
+        self.assertEqual(len(payload["quotes"]), 1)
+        quote = payload["quotes"][0]
+        self.assertEqual(quote["symbol"], "USD_JPY")
+        self.assertEqual(quote["currency"], "JPY")
+        self.assertIs(quote["tradeable"], True)
+        self.assertGreater(float(quote["bid_size"]), 0)
+        self.assertGreater(float(quote["ask_size"]), 0)
+        self.assertGreater(float(quote["ask"]), float(quote["bid"]))
+        self.assertLessEqual(abs(quote["ts"] - int(__import__("time").time())), 5)
+
+    def test_seed_test_quote_drifts_deterministically_across_calls(self):
+        first = self.run_helper("seed-test-quote", "fx")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        quote_path = self.state_dir / "market-data" / "market-fx-quotes.json"
+        bid1 = float(json.loads(quote_path.read_text(encoding="utf-8"))["quotes"][0]["bid"])
+
+        second = self.run_helper("seed-test-quote", "fx")
+        self.assertEqual(second.returncode, 0, second.stderr)
+        bid2 = float(json.loads(quote_path.read_text(encoding="utf-8"))["quotes"][0]["bid"])
+
+        self.assertGreater(bid2, bid1)
+        counter = (self.state_dir / "market-data" / ".test-feed-seed-counter").read_text(encoding="utf-8").strip()
+        self.assertEqual(counter, "2")
 
 
 if __name__ == "__main__":
