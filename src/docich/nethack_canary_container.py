@@ -1,24 +1,29 @@
-"""Host-side hardened container launcher for the P5g canary worker (P5h).
+"""Host-side hardened Docker/runsc launcher for the P5g canary worker (P5h).
 
-The P5g orchestrator invokes this module as its external worker command.  Only
+The P5g orchestrator invokes this module as its external worker command. Only
 one episode directory and, for the candidate arm, one manifest file are mounted
-into the container.  The repository and production NetHack playground are not
-mounted.
+into the container. The repository and production NetHack playground are never
+mounted. There is deliberately no runc, Podman, or host-Python fallback.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 from typing import Callable
 
-DEFAULT_IMAGE = "docich-nethack-canary:5.0.0-p5h"
 DEFAULT_INNER_TIMEOUT_S = 840.0
 MAX_REQUEST_BYTES = 256 * 1024
 MAX_RESPONSE_BYTES = 512 * 1024
+IMAGE_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+CANARY_ABI = "1"
+NETHACK_VERSION = "5.0.0"
+NETHACK_SOURCE_SHA256 = "2959b7886aac76185b90aea0c9f80d14343f604de0ae96b3dd2a760f7ab3bde9"
 _INTERNAL_ROOT = Path("/canary/episode")
 _INTERNAL_ARENA = {
     "episode_root": "/canary/episode",
@@ -101,19 +106,23 @@ def _candidate_manifest(request: dict[str, object]) -> Path | None:
     return path.resolve()
 
 
-def _runtime_name(explicit: str | None = None) -> str:
-    value = explicit or os.environ.get("DOCICH_CANARY_RUNTIME", "").strip()
-    if value:
-        if value not in {"podman", "docker"}:
-            raise CanaryContainerError("DOCICH_CANARY_RUNTIME must be podman or docker")
-        if shutil.which(value) is None:
-            raise CanaryContainerError(f"container runtime not found: {value}")
-        return value
-    if shutil.which("podman") is not None:
-        return "podman"
-    if shutil.which("docker") is not None:
-        return "docker"
-    raise CanaryContainerError("podman/docker is not available")
+def _docker_binary(explicit: str | None = None) -> str:
+    value = explicit or os.environ.get("DOCICH_CANARY_DOCKER", "docker").strip()
+    if not value or Path(value).name != "docker":
+        raise CanaryContainerError("P5h requires the reviewed Docker/runsc runtime")
+    resolved = shutil.which(value)
+    if resolved is None:
+        raise CanaryContainerError("docker is not available")
+    return resolved
+
+
+def _image_id(explicit: str | None = None) -> str:
+    value = explicit or os.environ.get("DOCICH_NETHACK_CANARY_IMAGE", "").strip()
+    if not IMAGE_RE.fullmatch(value):
+        raise CanaryContainerError(
+            "DOCICH_NETHACK_CANARY_IMAGE must be an immutable sha256 image ID"
+        )
+    return value
 
 
 def _inner_timeout_s() -> float:
@@ -124,9 +133,76 @@ def _inner_timeout_s() -> float:
         value = float(raw)
     except ValueError as exc:
         raise CanaryContainerError("DOCICH_CANARY_INNER_TIMEOUT_S must be numeric") from exc
-    if not 10.0 <= value <= 7100.0:
-        raise CanaryContainerError("DOCICH_CANARY_INNER_TIMEOUT_S must be 10-7100")
+    if not 10.0 <= value <= 7000.0:
+        raise CanaryContainerError("DOCICH_CANARY_INNER_TIMEOUT_S must be 10-7000")
     return value
+
+
+def _checked(
+    runner: Callable[..., object], argv: list[str], *, timeout: float = 10.0
+) -> object:
+    try:
+        result = runner(
+            argv,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise CanaryContainerError("docker control unavailable") from exc
+    if getattr(result, "returncode", 1) != 0:
+        raise CanaryContainerError("docker control failed")
+    return result
+
+
+def _preflight(
+    docker: str,
+    image: str,
+    *,
+    runner: Callable[..., object],
+) -> None:
+    info_format = (
+        '{"OSType":{{json .OSType}},"Runtimes":{{json .Runtimes}},'
+        '"MemoryLimit":{{json .MemoryLimit}},"PidsLimit":{{json .PidsLimit}},'
+        '"CPUCfsQuota":{{json .CPUCfsQuota}}}'
+    )
+    info_result = _checked(runner, [docker, "info", "--format", info_format])
+    try:
+        info = json.loads(str(getattr(info_result, "stdout", "")))
+    except json.JSONDecodeError as exc:
+        raise CanaryContainerError("docker capability response is invalid") from exc
+    if (
+        not isinstance(info, dict)
+        or info.get("OSType") != "linux"
+        or "runsc" not in (info.get("Runtimes") or {})
+    ):
+        raise CanaryContainerError("gVisor runsc is required")
+    if not info.get("MemoryLimit") or not info.get("PidsLimit") or not info.get("CPUCfsQuota"):
+        raise CanaryContainerError("docker resource limits are unavailable")
+
+    inspect_result = _checked(runner, [docker, "image", "inspect", image])
+    try:
+        inspected = json.loads(str(getattr(inspect_result, "stdout", "")))
+    except json.JSONDecodeError as exc:
+        raise CanaryContainerError("canary image inspect response is invalid") from exc
+    if not isinstance(inspected, list) or len(inspected) != 1 or not isinstance(inspected[0], dict):
+        raise CanaryContainerError("canary image inspect response is invalid")
+    entry = inspected[0]
+    if entry.get("Id") != image:
+        raise CanaryContainerError("canary image ID does not match immutable image")
+    config = entry.get("Config")
+    if not isinstance(config, dict) or config.get("Volumes"):
+        raise CanaryContainerError("canary image declares unexpected volumes")
+    labels = config.get("Labels")
+    if not isinstance(labels, dict):
+        raise CanaryContainerError("canary image labels are missing")
+    if labels.get("org.docich.nethack-canary.abi") != CANARY_ABI:
+        raise CanaryContainerError("canary image ABI mismatch")
+    if labels.get("org.docich.nethack.version") != NETHACK_VERSION:
+        raise CanaryContainerError("canary NetHack version mismatch")
+    if labels.get("org.docich.nethack.source-sha256") != NETHACK_SOURCE_SHA256:
+        raise CanaryContainerError("canary NetHack source hash mismatch")
 
 
 def _internal_request(
@@ -156,24 +232,42 @@ def _internal_request(
 def build_container_argv(
     request: dict[str, object],
     *,
-    runtime: str,
+    docker: str,
     image: str,
+    name: str,
     host_arena: dict[str, Path],
     manifest: Path | None,
 ) -> list[str]:
+    del request
     root = host_arena["episode_root"]
     args = [
-        runtime,
+        docker,
         "run",
         "--rm",
+        "--name",
+        name,
+        "--label",
+        "org.docich.nethack-canary=1",
+        "--runtime=runsc",
         "--network=none",
         "--read-only",
         "--cap-drop=ALL",
-        "--pids-limit=256",
+        "--security-opt=no-new-privileges:true",
+        "--user",
+        f"{os.getuid()}:{os.getgid()}",
+        "--cpus=1",
         "--memory=1024m",
-        "--cpus=1.0",
+        "--memory-swap=1024m",
+        "--pids-limit=256",
+        "--ipc=none",
+        "--ulimit",
+        "nofile=128:128",
+        "--ulimit",
+        "core=0:0",
         "--tmpfs",
-        "/tmp:rw,nosuid,nodev,noexec,size=268435456,mode=1777",
+        "/tmp:rw,noexec,nosuid,nodev,size=268435456,mode=1777",
+        "--log-driver=none",
+        "--restart=no",
         "--env",
         "HOME=/tmp/home",
         "--env",
@@ -183,16 +277,6 @@ def build_container_argv(
         "--mount",
         f"type=bind,src={root},dst={_INTERNAL_ROOT},rw",
     ]
-    if runtime == "podman":
-        args.extend(["--security-opt=no-new-privileges", "--userns=keep-id"])
-    else:
-        args.extend(
-            [
-                "--security-opt=no-new-privileges:true",
-                "--user",
-                f"{os.getuid()}:{os.getgid()}",
-            ]
-        )
     if manifest is not None:
         args.extend(
             [
@@ -202,6 +286,24 @@ def build_container_argv(
         )
     args.append(image)
     return args
+
+
+def _remove_container(
+    docker: str,
+    name: str,
+    *,
+    runner: Callable[..., object],
+) -> None:
+    try:
+        runner(
+            [docker, "rm", "--force", name],
+            text=True,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except Exception:
+        return
 
 
 def _rewrite_result_arena(
@@ -224,44 +326,52 @@ def _rewrite_result_arena(
 def run_container_worker(
     request_text: str,
     *,
-    runtime: str | None = None,
+    docker: str | None = None,
     image: str | None = None,
     runner: Callable[..., object] = subprocess.run,
 ) -> dict[str, object]:
     request = _load_request(request_text)
     arena = _host_arena(request)
     manifest = _candidate_manifest(request)
-    selected_runtime = _runtime_name(runtime)
-    selected_image = image or os.environ.get("DOCICH_NETHACK_CANARY_IMAGE", DEFAULT_IMAGE)
-    if not selected_image or len(selected_image) > 256:
-        raise CanaryContainerError("canary image name is invalid")
+    selected_docker = _docker_binary(docker)
+    selected_image = _image_id(image)
+    _preflight(selected_docker, selected_image, runner=runner)
     internal = _internal_request(request, manifest)
+    payload = json.dumps(internal, ensure_ascii=False, separators=(",", ":"))
+    inner_timeout = float(internal.get("wall_timeout_s", DEFAULT_INNER_TIMEOUT_S))
+    name = "docich-nh-canary-" + uuid.uuid4().hex
     argv = build_container_argv(
         request,
-        runtime=selected_runtime,
+        docker=selected_docker,
         image=selected_image,
+        name=name,
         host_arena=arena,
         manifest=manifest,
     )
-    payload = json.dumps(internal, ensure_ascii=False, separators=(",", ":"))
-    inner_timeout = float(internal.get("wall_timeout_s", DEFAULT_INNER_TIMEOUT_S))
     try:
         completed = runner(
             argv,
             input=payload,
             text=True,
             capture_output=True,
-            timeout=min(7200.0, inner_timeout + 30.0),
+            timeout=min(7200.0, inner_timeout + 15.0),
             check=False,
         )
     except subprocess.TimeoutExpired:
-        return {"schema_version": 1, "worker_status": "timeout", "error": "container launcher timeout"}
+        return {
+            "schema_version": 1,
+            "worker_status": "timeout",
+            "error": "container launcher timeout",
+        }
     except OSError as exc:
         return {
             "schema_version": 1,
             "worker_status": "error",
             "error": f"container launch failed: {str(exc)[:180]}",
         }
+    finally:
+        _remove_container(selected_docker, name, runner=runner)
+
     returncode = getattr(completed, "returncode", None)
     stdout = getattr(completed, "stdout", "")
     stderr = getattr(completed, "stderr", "")
