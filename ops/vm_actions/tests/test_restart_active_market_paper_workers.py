@@ -80,12 +80,15 @@ class RestartActiveMarketPaperWorkersTests(unittest.TestCase):
 
         home = pathlib.Path(tmp) / "home"
         home.mkdir()
+        xdg_config = pathlib.Path(tmp) / "xdg-config"
+        xdg_config.mkdir()
         env = os.environ.copy()
         env.update(
             PATH=f"{fake_bin}:{env.get('PATH', '')}",
             CALL_LOG=str(log),
             DOCICH_PROD_ROOT=str(prod_root),
             HOME=str(home),
+            XDG_CONFIG_HOME=str(xdg_config),
         )
         result = subprocess.run(
             ["bash", str(SCRIPT)],
@@ -95,7 +98,7 @@ class RestartActiveMarketPaperWorkersTests(unittest.TestCase):
             capture_output=True,
             check=False,
         )
-        unit_dir = home / ".config/systemd/user"
+        unit_dir = xdg_config / "systemd/user"
         return result, log.read_text(encoding="utf-8"), unit_dir, prod_root
 
     def test_only_active_worker_is_restarted_when_providers_inactive(self):
