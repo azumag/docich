@@ -4,11 +4,17 @@ An external source command may observe its own structured environment and emit
 one P4a public-only shadow snapshot.  Docich validates it strictly before
 atomically publishing ``latest.json``.  This sidecar never reads or writes the
 game tmux session and never participates in policy/action selection.
+
+Producer/publish failures are also appended to the P4 comparison evidence log
+as source-unattributed ``invalid`` events.  This is deliberate: before a valid
+snapshot is parsed there is no trustworthy source id, so P4c must conservatively
+make all source buckets ineligible rather than let missing failures disappear.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -231,6 +237,7 @@ class ShadowSourceWriter:
             config=load_shadow_config(game),
         )
         self.output_path = shadow_controller.snapshot_path
+        self.evidence_path = shadow_controller.log_path
         self.status_path = Path(getattr(g, "state_dir", ".")) / "nethack" / "shadow" / "source-status.json"
 
         if source is not None:
@@ -261,6 +268,41 @@ class ShadowSourceWriter:
         except OSError:
             pass
 
+    def _record_unattributed_failure(self, kind: str) -> None:
+        """Persist a failure without leaking raw producer stderr/details.
+
+        Before strict snapshot parsing succeeds there is no trustworthy source
+        id.  P4c treats this ``<unknown>`` invalid event as a global integrity
+        failure, preventing successful samples from hiding producer failures.
+        """
+        payload = {
+            "schema_version": 1,
+            "ts": self._wall_time(),
+            "status": "invalid",
+            "source": "<unknown>",
+            "evidence_kind": kind,
+            "policy_effect": "none",
+        }
+        try:
+            self.evidence_path.parent.mkdir(parents=True, exist_ok=True)
+            line = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+            encoded = line.encode("utf-8")
+            fd = os.open(self.evidence_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            try:
+                offset = 0
+                while offset < len(encoded):
+                    written = os.write(fd, encoded[offset:])
+                    if written <= 0:
+                        raise OSError("short write")
+                    offset += written
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except OSError:
+            # The source call still fails.  A persistent filesystem failure also
+            # prevents a trustworthy P4c evidence set from being produced.
+            pass
+
     def capture_once(self) -> SourceRunResult:
         if not self.config.enabled or self.source is None:
             result = SourceRunResult(status="disabled")
@@ -271,6 +313,7 @@ class ShadowSourceWriter:
         except Exception as exc:
             capture = SourceCaptureResult(status="error", error=str(exc).replace("\n", " ")[:240])
         if capture.status != "snapshot" or capture.snapshot is None:
+            self._record_unattributed_failure("producer_error")
             result = SourceRunResult(status="error", error=capture.error or "shadow source failed")
             self._status(result)
             return result
@@ -280,6 +323,7 @@ class ShadowSourceWriter:
             # the source's raw JSON, so rejected/unknown fields can never leak.
             atomic_write_json(self.output_path, snapshot_to_dict(capture.snapshot))
         except OSError as exc:
+            self._record_unattributed_failure("publish_error")
             result = SourceRunResult(status="error", error=f"publish failed: {str(exc)[:200]}")
             self._status(result)
             return result

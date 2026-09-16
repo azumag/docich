@@ -128,6 +128,12 @@ if nethack_shadow_source_argv is not None:
 
     sys.exit(nethack_shadow_source_main(nethack_shadow_source_argv))
 
+nethack_shadow_eval_argv = _nethack_sidecar_argv("nethack-shadow-evaluate", sys.argv[1:])
+if nethack_shadow_eval_argv is not None:
+    from .nethack_shadow_eval import main as nethack_shadow_eval_main
+
+    sys.exit(nethack_shadow_eval_main(nethack_shadow_eval_argv))
+
 from .cli import main
 
 sys.exit(main())
