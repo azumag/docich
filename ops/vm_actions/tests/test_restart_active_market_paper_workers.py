@@ -54,7 +54,9 @@ class RestartActiveMarketPaperWorkersTests(unittest.TestCase):
             "printf 'operator %s\\n' \"$*\" >> \"$CALL_LOG\"\n",
             encoding="utf-8",
         )
-        operator.chmod(0o755)
+        # Intentionally leave the operator non-executable. Production reload
+        # must invoke reviewed shell content through bash and must not depend on
+        # deployment preserving an executable mode for this helper.
         (prod_root / "config" / "docich.soren-live.toml").write_text("", encoding="utf-8")
 
         env = os.environ.copy()
