@@ -44,6 +44,14 @@ def test_canary_image_disables_debug_explore_and_shell_permissions():
     assert "DUMPLOGFILE=/canary/episode/playground/dumps/" in text
 
 
+def test_canary_image_disables_mail_for_passwd_less_runtime_uid():
+    # The canary runs as an arbitrary host uid with no /etc/passwd entry.
+    # NetHack's getmailstatus() dereferences getpwuid(getuid())->pw_name
+    # without a NULL check, so MAIL must stay disabled.
+    text = DOCKERFILE.read_text(encoding="utf-8")
+    assert "CFLAGS+=-DNOMAIL" in text
+
+
 def test_canary_image_entrypoint_is_only_the_worker_module():
     text = DOCKERFILE.read_text(encoding="utf-8")
     assert 'ENTRYPOINT ["python3", "-m", "docich.nethack_canary_worker"]' in text
