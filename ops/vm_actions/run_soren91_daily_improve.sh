@@ -157,11 +157,28 @@ out="$(mktemp /home/ubuntu/.soren91-daily.XXXXXX)"
 cleanup() { rm -f "$out"; }
 trap cleanup EXIT INT TERM HUP
 
+# Do not forward caller-controlled argv through this production wrapper. Only
+# these two reviewed invocations are permitted.
 run_daily() {
-  node "$runner" \
-    --runtime-dir "$runtime" \
-    --repo-dir "$persist" \
-    --state "$state" "$@" >"$out" 2>&1
+  local mode="$1"
+  case "$mode" in
+    preflight)
+      node "$runner" \
+        --runtime-dir "$runtime" \
+        --repo-dir "$persist" \
+        --state "$state" \
+        --dry-run >"$out" 2>&1
+      ;;
+    run)
+      node "$runner" \
+        --runtime-dir "$runtime" \
+        --repo-dir "$persist" \
+        --state "$state" >"$out" 2>&1
+      ;;
+    *)
+      return 125
+      ;;
+  esac
 }
 
 classify_private_output() {
@@ -182,7 +199,7 @@ classify_private_output() {
 # checkout, runtime compatibility, pending-PR reconciliation, bounded evidence
 # copy, and evidence continuity without calling a model or opening a PR.
 set +e
-run_daily --dry-run
+run_daily preflight
 preflight_rc=$?
 set -e
 if [[ "$preflight_rc" -ne 0 ]]; then
@@ -194,7 +211,7 @@ fi
 # influence the failure classifier below.
 : >"$out"
 set +e
-run_daily
+run_daily run
 rc=$?
 set -e
 if [[ "$rc" -eq 0 ]]; then
