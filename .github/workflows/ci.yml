@@ -52,7 +52,7 @@ jobs:
         run: >-
           python3 -m pytest -q
           tests/test_retro_corner.py tests/test_retro_corner_manual.py
-          tests/test_nethack_corner.py tests/test_ninvaders_wrapper.py
+          tests/test_nethack_corner.py tests/test_nethack_run.py tests/test_nethack_run_recovery.py tests/test_ninvaders_wrapper.py
           tests/test_corner_boundary.py tests/test_paper_corner.py
           tests/test_paper_corner_manual.py tests/test_paper_corner_chatter_schedule.py
           tests/test_config.py tests/test_robots_config.py

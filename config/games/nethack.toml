@@ -13,11 +13,13 @@ font_size = 18
 # 長期攻略コーナーでは通常の NetHack save/restore を使う。
 # persistent_run=true のときだけ coordinator lifecycle をNetHack専用にする。
 # -u player_name は coordinator adapter が付与し、この名前とUIDでsaveが識別される。
-# save_dir は Ubuntu/Debian nethack-common の variable playground。
+# xlogfile は終了結果の機械可読な正本、dump_dir は詳細な反省材料として使う。
 [nethack]
 persistent_run = true
 player_name = "docich"
 save_dir = "/var/games/nethack/save"
+xlogfile = "/var/games/nethack/xlogfile"
+dump_dir = "/var/games/nethack/dumps"
 
 [agent]
 enabled = false        # random brain の配線テストは CLI から明示実行

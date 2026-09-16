@@ -1,12 +1,12 @@
 """Scheduled NetHack program corner.
 
-This module deliberately owns only program scheduling/orchestration.  The
-existing ``nethack`` CLI game remains the runtime of record and every game
-lifecycle transition continues to go through ``GameSwitchCoordinator``.
+The existing ``nethack`` CLI game remains the runtime of record and every game
+lifecycle transition continues to go through ``GameSwitchCoordinator``.  When
+the canonical game opts into ``persistent_run``, this layer also links each
+program session to the durable expedition history in ``nethack_run``.
 
-The graphical spectator renderer, persistent run store, and gameplay policy
-are added in later phases of #490.  Keeping this P0 layer small lets those
-features evolve without weakening the existing text-observation contract.
+The graphical spectator renderer and gameplay policy are later phases of #490;
+run history is intentionally independent from both presentation and AI.
 """
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .config import ConfigError, GlobalConfig, load_game, load_global
 from .corner_boundary import CornerWaitExpired, program_slot
+from .nethack_run import NethackRunError, NethackRunStore
 from .retro_corner import CornerResult, RetroCornerError, RetroCornerManager, _safe_detail
 from .trading.soren_output import enqueue_audio_text, enqueue_chat
 
@@ -31,8 +32,8 @@ LOCK_FILE = "locks/nethack-corner.lock"
 TICK_GUARD_FILE = "locks/nethack-corner-tick.lock"
 DELIVERY_SOURCE = "nethack-corner"
 
-# P0 intentionally does not promise save/resume, tiles, or automated AI play.
-# Those become viewer-facing claims only after the corresponding #490 phases land.
+# Viewer-facing claims stay capability-accurate: P1 adds durable run history,
+# but graphical tiles and automated AI play are still later phases.
 ANNOUNCE_TEXT = "NetHackコーナーです。ダンジョン探索をお送りします。"
 END_ANNOUNCE_TEXT = "NetHackコーナーはここまでです。ありがとうございました。"
 
@@ -51,8 +52,8 @@ class NethackCornerConfig:
     timezone: str = "Asia/Tokyo"
     weekdays: tuple[int, ...] = ()
     games: tuple[str, ...] = (GAME_NAME,)
-    # RetroCornerManager calls the improve hook at finish. P0 overrides that
-    # hook, but keep these fields for a stable config shape for later phases.
+    # RetroCornerManager calls the improve hook at finish. P0/P1 override that
+    # hook; P3/P5 later add a bounded NetHack-specific improvement pipeline.
     improve_agents: str = ""
     improve_matches: int = 2
     improve_margin_pct: float = 10.0
@@ -142,7 +143,7 @@ def load_nethack_corner_config(g: GlobalConfig) -> NethackCornerConfig:
 
 
 class NethackCornerManager(RetroCornerManager):
-    """Fixed-game NetHack corner with state isolated from every other corner."""
+    """Fixed-game NetHack corner with isolated schedule and run history."""
 
     def __init__(
         self,
@@ -180,9 +181,11 @@ class NethackCornerManager(RetroCornerManager):
         self._voice = voice or (
             lambda text: enqueue_audio_text(g, text, context="nethack:announce")
         )
+        self._run_store = NethackRunStore.from_global(g)
+        self._run_history_error: str | None = None
 
     def _validate_games(self) -> None:
-        """P0 validates the existing runtime without pretending an AI exists yet."""
+        """Validate the existing CLI runtime without pretending an AI exists yet."""
         try:
             game = load_game(self.g, GAME_NAME)
         except Exception as exc:
@@ -194,30 +197,107 @@ class NethackCornerManager(RetroCornerManager):
                 f"nethack corner対象は既存CLI NetHackに限定されます: {GAME_NAME}"
             )
 
+    def _remember_run_in_state(
+        self, state: dict[str, object], run: dict[str, object] | None
+    ) -> None:
+        if run is None:
+            return
+        for source, target in (
+            ("run_id", "run_id"),
+            ("expedition", "expedition"),
+            ("status", "run_status"),
+            ("score", "run_score"),
+            ("turns", "run_turns"),
+            ("max_depth", "run_max_depth"),
+            ("death_reason", "run_death_reason"),
+            ("dump_file", "run_dump_file"),
+        ):
+            if source in run:
+                state[target] = run[source]
+        if self._run_history_error:
+            state["run_history_error"] = self._run_history_error
+        else:
+            state.pop("run_history_error", None)
+
+    def _transition_to(self, current: str | None, target: str) -> None:
+        probe: dict[str, object] | None = None
+        if self._run_store is not None and target == GAME_NAME:
+            try:
+                probe = self._run_store.prepare_start(
+                    current_is_nethack=current == GAME_NAME,
+                    now=self._local_now(),
+                )
+            except NethackRunError as exc:
+                raise NethackCornerError(
+                    f"NetHack run continuityを確認できません: {_safe_detail(exc)}"
+                ) from exc
+
+        super()._transition_to(current, target)
+
+        if self._run_store is not None and probe is not None:
+            try:
+                self._run_store.record_started(probe, now=self._local_now())
+                self._run_history_error = None
+            except Exception as exc:
+                # The coordinator transition already succeeded. Do not destroy
+                # or roll back a live game solely because analytics/history
+                # persistence failed; surface the error in corner state instead.
+                self._run_history_error = _safe_detail(exc)
+
     def _announce_start_locked(self, state: dict[str, object]) -> None:
         if state.get("announced"):
             return
+        run: dict[str, object] | None = None
+        if self._run_store is not None:
+            try:
+                run = self._run_store.current()
+            except Exception as exc:
+                self._run_history_error = _safe_detail(exc)
+            self._remember_run_in_state(state, run)
+
+        text = ANNOUNCE_TEXT
+        expedition = state.get("expedition")
+        if type(expedition) is int and expedition > 0:
+            text = f"第{expedition}次遠征。{ANNOUNCE_TEXT}"
         try:
-            self._chat(ANNOUNCE_TEXT)
+            self._chat(text)
         except Exception as exc:
             state["announce_error"] = _safe_detail(exc)
             return
         try:
-            self._voice(ANNOUNCE_TEXT)
+            self._voice(text)
         except Exception as exc:
             state["voice_error"] = _safe_detail(exc)
         state["announced"] = True
         state.pop("announce_error", None)
 
+    def _end_announcement(self, state: dict[str, object]) -> str:
+        status = state.get("run_status")
+        expedition = state.get("expedition")
+        prefix = f"第{expedition}次遠征は" if type(expedition) is int else "今回の遠征は"
+        if status == "suspended":
+            return f"{prefix}生存しています。続きは次回です。"
+        if status == "ascended":
+            return f"{prefix}昇天しました。NetHack攻略成功です。"
+        if status == "dead":
+            reason = state.get("run_death_reason")
+            if isinstance(reason, str) and reason:
+                return f"{prefix}終了しました。記録上の死因は、{reason}です。"
+            return f"{prefix}終了しました。死因は記録から確認します。"
+        if status == "ended_unknown":
+            return f"{prefix}終了しました。終了理由は記録から確定できませんでした。"
+        return END_ANNOUNCE_TEXT
+
     def _announce_end_locked(self, state: dict[str, object]) -> None:
         if state.get("end_announced"):
             return
+        text = self._end_announcement(state)
         try:
-            self._chat(END_ANNOUNCE_TEXT)
+            self._chat(text)
         except Exception as exc:
             state["end_announce_error"] = _safe_detail(exc)
         try:
-            self._voice(END_ANNOUNCE_TEXT)
+            self._voice(text)
         except Exception as exc:
             state["end_voice_error"] = _safe_detail(exc)
         state["end_announced"] = True
@@ -226,6 +306,20 @@ class NethackCornerManager(RetroCornerManager):
         self, state: dict[str, object], completed_at: dt.datetime
     ) -> CornerResult:
         result = super()._finish_locked(state, completed_at)
+        if self._run_store is not None and result.status == "completed":
+            try:
+                run = self._run_store.record_finished(
+                    now=completed_at,
+                    nethack_still_active=self._active_game_reader() == GAME_NAME,
+                )
+                self._run_history_error = None
+                self._remember_run_in_state(state, run)
+            except Exception as exc:
+                # GameSwitchCoordinator has already completed its safe switch.
+                # History failure is visible and retryable, not a reason to
+                # disturb the saved/terminal game state after the fact.
+                self._run_history_error = _safe_detail(exc)
+                state["run_history_error"] = self._run_history_error
         self._announce_end_locked(state)
         try:
             self._write_state(state)
@@ -234,8 +328,8 @@ class NethackCornerManager(RetroCornerManager):
         return result
 
     def _spawn_improve_once(self, state: dict[str, object]) -> None:
-        # P0 has no gameplay policy to evolve. P3/P5 will introduce a bounded,
-        # testable NetHack-specific improvement pipeline.
+        # P1 records evidence only. P3/P5 add a bounded, testable strategy
+        # improvement pipeline over these records.
         return
 
     def _due_on_weekday(self, now: dt.datetime) -> bool:
@@ -347,7 +441,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0
-    except (ConfigError, RetroCornerError, RuntimeError) as exc:
+    except (ConfigError, RetroCornerError, NethackRunError, RuntimeError) as exc:
         print(f"docich: エラー: {exc}", file=sys.stderr)
         return 2
 
