@@ -9,17 +9,23 @@ set -euo pipefail
 #     reviewed under scripts/systemd/docich-market-*.
 #   - Only two inputs select behaviour, both from a fixed enum, validated
 #     below: MARKET_PAPER_ACTION (install/enable/disable/restart/
-#     seed-test-quote) and MARKET_PAPER_MARKET (stocks/fx). No other value
-#     is ever interpolated into a systemctl unit name or path.
+#     provider-enable/provider-disable/provider-restart/seed-test-quote) and
+#     MARKET_PAPER_MARKET (stocks/fx). No other value is ever interpolated
+#     into a systemctl unit name or path.
 #   - Never edits config/market-paper.toml (that stays a normal reviewed
 #     code change), never touches broker credentials, never sends a real
-#     order. install/enable only ever start an *idle* worker: Runtime.tick()
-#     itself refuses to trade while enabled=false in that same config file.
-#   - For market=stocks, install also provisions the exact pinned optional
+#     order. install/enable only ever start an *idle* PAPER worker when the
+#     checked-in config still has enabled=false; Runtime.tick() itself also
+#     refuses to trade while enabled=false.
+#   - For market=stocks, install provisions the exact pinned optional
 #     read-only Moomoo quote SDK into the existing .venv-trading when that
 #     venv exists. It never installs/starts OpenD, logs in, enables stocks,
 #     or creates/imports a trading context. Provider readiness still has to
 #     pass the separate fixed read-only probe before stocks can be enabled.
+#   - The Moomoo collector is managed by three explicit stocks-only provider
+#     actions. Installing the units never enables/starts the collector, and
+#     starting the collector never enables the stocks PAPER worker/corner.
+#     The collector itself is loopback-only and has no account/order API.
 #   - seed-test-quote (fx only) writes one fixed-shape, deterministically
 #     generated USD_JPY quote to the approved file-feed path
 #     (<state_dir>/market-data/market-fx-quotes.json), exactly like an
@@ -29,7 +35,7 @@ set -euo pipefail
 #
 # Env (set by the owner-only control plane, .github/workflows/vm-operations.yml,
 # operation=market_paper):
-#   MARKET_PAPER_ACTION=install|enable|disable|restart|seed-test-quote
+#   MARKET_PAPER_ACTION=install|enable|disable|restart|provider-enable|provider-disable|provider-restart|seed-test-quote
 #   MARKET_PAPER_MARKET=stocks|fx
 #
 # Optional flag exists so repository tests can run against a temporary root
@@ -46,7 +52,10 @@ done
 
 action="${MARKET_PAPER_ACTION:-}"
 market="${MARKET_PAPER_MARKET:-}"
-case "$action" in install|enable|disable|restart|seed-test-quote) ;; *) echo "invalid action: $action" >&2; exit 2 ;; esac
+case "$action" in
+  install|enable|disable|restart|provider-enable|provider-disable|provider-restart|seed-test-quote) ;;
+  *) echo "invalid action: $action" >&2; exit 2 ;;
+esac
 case "$market" in stocks|fx) ;; *) echo "invalid market: $market" >&2; exit 2 ;; esac
 [[ -d "$root" ]] || { echo "root not found: $root" >&2; exit 2; }
 
@@ -60,6 +69,7 @@ unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 worker_unit="docich-market-worker@${market}.service"
 corner_timer="docich-market-corner@${market}.timer"
 improve_timer="docich-market-improve@${market}.timer"
+provider_unit="docich-market-data-stocks.service"
 
 install_units() {
   mkdir -p "$unit_dir" || { echo "mkdir failed: $unit_dir" >&2; exit 10; }
@@ -69,6 +79,7 @@ install_units() {
     docich-market-corner@.timer
     docich-market-improve@.service
     docich-market-improve@.timer
+    docich-market-data-stocks.service
   )
   local name src
   for name in "${templates[@]}"; do
@@ -115,6 +126,25 @@ disable_market() {
 
 restart_market() {
   systemctl --user restart "$worker_unit"
+}
+
+require_stock_provider_action() {
+  [[ "$market" == "stocks" ]] || { echo "provider actions are stocks-only" >&2; exit 22; }
+}
+
+enable_provider() {
+  require_stock_provider_action
+  systemctl --user enable --now "$provider_unit"
+}
+
+disable_provider() {
+  require_stock_provider_action
+  systemctl --user disable --now "$provider_unit"
+}
+
+restart_provider() {
+  require_stock_provider_action
+  systemctl --user restart "$provider_unit"
 }
 
 seed_test_quote() {
@@ -174,6 +204,9 @@ case "$action" in
   enable) enable_market ;;
   disable) disable_market ;;
   restart) restart_market ;;
+  provider-enable) enable_provider ;;
+  provider-disable) disable_provider ;;
+  provider-restart) restart_provider ;;
   seed-test-quote) seed_test_quote ;;
 esac
 

@@ -23,6 +23,7 @@ TEMPLATES = {
     "docich-market-corner@.timer": "[Timer]\nUnit=docich-market-corner@%i.service\n",
     "docich-market-improve@.service": "[Service]\nExecStart=__DOCICH_ROOT__/bin/docich-market-paper --market %i improve\n",
     "docich-market-improve@.timer": "[Timer]\nUnit=docich-market-improve@%i.service\n",
+    "docich-market-data-stocks.service": "[Service]\nExecStart=__DOCICH_ROOT__/.venv-trading/bin/python3 -m docich.trading.markets.moomoo_market_data worker\n",
 }
 
 
@@ -128,6 +129,13 @@ class ManageMarketPaperUnitsTests(unittest.TestCase):
         self.assertEqual(stocks_files, fx_files)
         self.assertEqual(stocks_files, set(TEMPLATES))
 
+    def test_install_does_not_start_read_only_provider(self):
+        result = self.run_helper("install", "stocks")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        self.assertFalse(any("docich-market-data-stocks.service" in call and "enable" in call for call in calls))
+        self.assertFalse(any("docich-market-data-stocks.service" in call and "start" in call for call in calls))
+
     def test_install_fails_closed_on_missing_template(self):
         (self.docroot / "scripts" / "systemd" / "docich-market-worker@.service").unlink()
         result = self.run_helper("install", "fx")
@@ -135,10 +143,13 @@ class ManageMarketPaperUnitsTests(unittest.TestCase):
         self.assertIn("missing template", result.stderr)
         self.assertFalse(self.unit_dir.exists() and any(self.unit_dir.iterdir()))
 
+    def test_install_fails_closed_when_provider_template_missing(self):
+        (self.docroot / "scripts" / "systemd" / "docich-market-data-stocks.service").unlink()
+        result = self.run_helper("install", "stocks")
+        self.assertEqual(result.returncode, 11, result.stderr)
+        self.assertIn("missing template", result.stderr)
+
     def test_install_fails_closed_when_unit_dir_cannot_be_created(self):
-        # A stray file where the directory should go makes `mkdir -p` fail;
-        # this must surface as the dedicated exit code (10), not a silent
-        # partial install.
         (self.home / ".config").mkdir()
         (self.home / ".config" / "systemd").write_text("not a directory", encoding="utf-8")
         result = self.run_helper("install", "fx")
@@ -149,7 +160,6 @@ class ManageMarketPaperUnitsTests(unittest.TestCase):
         result = self.run_helper("install", "fx", exit_code="1")
         self.assertEqual(result.returncode, 13, result.stderr)
         self.assertIn("daemon-reload failed", result.stderr)
-        # The templates must still have been written before the reload step ran.
         for name in TEMPLATES:
             self.assertTrue((self.unit_dir / name).is_file(), name)
 
@@ -181,12 +191,13 @@ class ManageMarketPaperUnitsTests(unittest.TestCase):
         self.assertFalse(any("stocks" in c for c in calls))
         self.assertEqual(len(calls), 3)
 
-    def test_enable_stocks_only_touches_stocks_units(self):
+    def test_enable_stocks_only_touches_stocks_paper_units_not_provider(self):
         result = self.run_helper("enable", "stocks")
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.calls()
         self.assertIn("--user enable --now docich-market-worker@stocks.service", calls)
         self.assertFalse(any("fx" in c for c in calls))
+        self.assertFalse(any("docich-market-data-stocks.service" in c for c in calls))
 
     def test_disable_touches_the_same_fixed_unit_set(self):
         result = self.run_helper("disable", "fx")
@@ -200,6 +211,27 @@ class ManageMarketPaperUnitsTests(unittest.TestCase):
         result = self.run_helper("restart", "fx")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.calls(), ["--user restart docich-market-worker@fx.service"])
+
+    def test_provider_enable_is_stocks_only_and_does_not_enable_paper(self):
+        result = self.run_helper("provider-enable", "stocks")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls(), ["--user enable --now docich-market-data-stocks.service"])
+
+        self.calls_log.write_text("", encoding="utf-8")
+        rejected = self.run_helper("provider-enable", "fx")
+        self.assertEqual(rejected.returncode, 22, rejected.stderr)
+        self.assertIn("stocks-only", rejected.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_provider_disable_and_restart_touch_only_provider(self):
+        disabled = self.run_helper("provider-disable", "stocks")
+        self.assertEqual(disabled.returncode, 0, disabled.stderr)
+        self.assertEqual(self.calls(), ["--user disable --now docich-market-data-stocks.service"])
+
+        self.calls_log.write_text("", encoding="utf-8")
+        restarted = self.run_helper("provider-restart", "stocks")
+        self.assertEqual(restarted.returncode, 0, restarted.stderr)
+        self.assertEqual(self.calls(), ["--user restart docich-market-data-stocks.service"])
 
     def test_enable_failure_propagates_nonzero_exit(self):
         result = self.run_helper("enable", "fx", exit_code="1")

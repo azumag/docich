@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Reload reviewed market PAPER runtime code after a production deploy without
-# changing opt-in state.  Only already-active resident workers are restarted;
-# disabled/inactive stock or FX workers are left untouched.
+# Reload reviewed market PAPER/runtime code after a production deploy without
+# changing opt-in state. Only already-active resident workers or the read-only
+# stock market-data collector are restarted; disabled/inactive units are left
+# untouched.
 #
 # This helper deliberately does NOT:
 # - enable/start an inactive unit;
@@ -19,3 +20,8 @@ for market in stocks fx; do
     systemctl --user restart "$unit"
   fi
 done
+
+provider_unit="docich-market-data-stocks.service"
+if systemctl --user is-active --quiet "$provider_unit"; then
+  systemctl --user restart "$provider_unit"
+fi

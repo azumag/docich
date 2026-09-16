@@ -1,0 +1,16 @@
+[Unit]
+Description=docich read-only Moomoo JP market-data collector
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=__DOCICH_ROOT__
+Environment=PYTHONPATH=__DOCICH_ROOT__/src
+ExecStart=__DOCICH_ROOT__/.venv-trading/bin/python3 -m docich.trading.markets.moomoo_market_data worker --config __DOCICH_ROOT__/config/docich.soren-live.toml --host 127.0.0.1 --port 11111 --interval 10 --per-scan 20
+Restart=on-failure
+RestartSec=15
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

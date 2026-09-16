@@ -21,6 +21,7 @@ class MarketPaperStockSdkTests(unittest.TestCase):
                 "docich-market-corner@.timer",
                 "docich-market-improve@.service",
                 "docich-market-improve@.timer",
+                "docich-market-data-stocks.service",
             ):
                 (templates / name).write_text("WorkingDirectory=__DOCICH_ROOT__\n", encoding="utf-8")
             (root / "requirements-market-data.txt").write_text(
@@ -46,6 +47,7 @@ class MarketPaperStockSdkTests(unittest.TestCase):
             python.chmod(0o755)
 
             env = os.environ.copy()
+            env.pop("XDG_CONFIG_HOME", None)
             env.update(
                 PATH=f"{fake_bin}:{env.get('PATH', '')}",
                 HOME=str(pathlib.Path(tmp) / "home"),
@@ -66,6 +68,9 @@ class MarketPaperStockSdkTests(unittest.TestCase):
             self.assertIn("-m pip install --disable-pip-version-check --no-input -r", calls)
             self.assertIn("requirements-market-data.txt", calls)
             self.assertIn("-c import moomoo", calls)
+            provider = pathlib.Path(tmp) / "home" / ".config" / "systemd" / "user" / "docich-market-data-stocks.service"
+            self.assertTrue(provider.is_file())
+            self.assertNotIn("enable --now docich-market-data-stocks.service", calls)
 
     def test_fx_install_does_not_provision_moomoo(self):
         text = SCRIPT.read_text(encoding="utf-8")
