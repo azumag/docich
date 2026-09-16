@@ -88,6 +88,36 @@ jobs:
           echo 'production did not converge to current protected main' >&2
           exit 1
 
+      - name: Wait for reviewed Soren projection
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.current.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          expected_soviet_sha='3f67cbf159dc59da35ad2cdff3d2f483dade7a3b'
+          for _ in $(seq 1 36); do
+            if printf '%s\n' \
+              'set -euo pipefail' \
+              "expected_soviet_sha='$expected_soviet_sha'" \
+              'reviewed=/home/ubuntu/docich/games/soviet_now' \
+              'live=/home/ubuntu/soren' \
+              'git -C "$reviewed" merge-base --is-ancestor "$expected_soviet_sha" HEAD' \
+              'cmp -s "$reviewed/strategy/ab_integrity.sh" "$live/strategy/ab_integrity.sh"' \
+              'cd "$live"' \
+              'source ./eloop_lib.sh >/dev/null 2>&1' \
+              'declare -F _ab_finish_without_envonly_promotion >/dev/null 2>&1' \
+              | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA" >/dev/null 2>&1; then
+              echo 'reviewed Soren projection is ready'
+              exit 0
+            fi
+            sleep 5
+          done
+          echo 'reviewed Soren projection did not become ready' >&2
+          exit 1
+
       - name: Replace current A/B with adopting post-merge-risk A/B
         shell: bash
         env:
@@ -99,15 +129,19 @@ jobs:
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
           cat <<'SH' | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA" >/dev/null
           set -euo pipefail
-          cd /home/ubuntu/soren
-
-          # docich production deploy projects the reviewed games/soviet_now gitlink
-          # into this runtime. Do not perform network fetches inside the exec sandbox.
           expected_soviet_sha='3f67cbf159dc59da35ad2cdff3d2f483dade7a3b'
-          git merge-base --is-ancestor "$expected_soviet_sha" HEAD || exit 68
+          reviewed=/home/ubuntu/docich/games/soviet_now
+          live=/home/ubuntu/soren
+
+          # /home/ubuntu/soren is a projected live runtime: its Git HEAD is not
+          # expected to move with every parent gitlink bump. Verify the reviewed
+          # submodule lineage and the exact projected implementation file instead.
+          git -C "$reviewed" merge-base --is-ancestor "$expected_soviet_sha" HEAD || exit 68
+          cmp -s "$reviewed/strategy/ab_integrity.sh" "$live/strategy/ab_integrity.sh" || exit 69
+          cd "$live"
 
           source ./eloop_lib.sh >/dev/null 2>&1
-          declare -F _ab_finish_without_envonly_promotion >/dev/null 2>&1 || exit 69
+          declare -F _ab_finish_without_envonly_promotion >/dev/null 2>&1 || exit 70
 
           state="${AB_STATE_FILE:-tmp/state/ab_state.json}"
           active_branch="${ACTIVE_BRANCH_FILE:-tmp/state/active_branch.json}"
@@ -117,10 +151,10 @@ jobs:
             ./tools/ab_ctl.sh finish A superseded_by_adopting_merge_top_probe >/dev/null
           fi
 
-          [[ ! -f "$state" ]] || exit 70
-          [[ ! -f "$active_branch" ]] || exit 71
+          [[ ! -f "$state" ]] || exit 71
+          [[ ! -f "$active_branch" ]] || exit 72
           root="$(_ab_hash "${STRATEGY_FILE:-strategy.py}")"
-          [[ -n "$root" ]] || exit 72
+          [[ -n "$root" ]] || exit 73
 
           # Explicitly pin the baseline. If A wins this remains 2; if B wins the
           # #377 finish wrapper promotes B's mode=1 into this persistent setting.
@@ -144,7 +178,7 @@ jobs:
           trap 'rm -rf "$bundle"' EXIT
           cp -p "${STRATEGY_FILE:-strategy.py}" "$bundle/strategy.py"
           started=0
-          for _ in $(seq 1 30); do
+          for _ in $(seq 1 24); do
             rc=0
             _ab_start_from_bundle "$bundle" ABBA || rc=$?
             if [[ "$rc" -eq 0 ]]; then
@@ -153,23 +187,23 @@ jobs:
             fi
             if [[ "$rc" -ne 75 ]]; then
               echo "merge-top A/B start failed rc=$rc" >&2
-              exit 73
+              exit 74
             fi
             sleep 10
           done
-          [[ "$started" -eq 1 ]] || exit 74
+          [[ "$started" -eq 1 ]] || exit 75
 
           a="$(_ab_state_get a_hash)"
           b="$(_ab_state_get b_hash)"
           a_env="$(_ab_state_get a_env)"
           b_env="$(_ab_state_get b_env)"
-          [[ "$a" == "$root" && "$b" == "$root" ]] || exit 75
-          [[ "$a_env" == 'ANALYZE_BOARD_MERGE_TOP_MODEL=2' ]] || exit 76
-          [[ "$b_env" == 'ANALYZE_BOARD_MERGE_TOP_MODEL=1' ]] || exit 77
-          [[ "$(_ab_env_value ANALYZE_BOARD_MERGE_TOP_MODEL)" == '2' ]] || exit 78
-          [[ "$(_ab_env_value AB_GATE_DRY_RUN)" == '0' ]] || exit 79
+          [[ "$a" == "$root" && "$b" == "$root" ]] || exit 76
+          [[ "$a_env" == 'ANALYZE_BOARD_MERGE_TOP_MODEL=2' ]] || exit 77
+          [[ "$b_env" == 'ANALYZE_BOARD_MERGE_TOP_MODEL=1' ]] || exit 78
+          [[ "$(_ab_env_value ANALYZE_BOARD_MERGE_TOP_MODEL)" == '2' ]] || exit 79
+          [[ "$(_ab_env_value AB_GATE_DRY_RUN)" == '0' ]] || exit 80
           reload_runtime_toggles_force >/dev/null 2>&1
-          _ab_active >/dev/null 2>&1 || exit 80
+          _ab_active >/dev/null 2>&1 || exit 81
           SH
 
           echo 'adopting merge-top A/B probe is active'
