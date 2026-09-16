@@ -1,0 +1,157 @@
+name: NetHack production canary smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ops/vm_actions/nethack_canary_smoke_epoch
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nethack-production-canary-smoke-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    if: ${{ github.actor_id == 9018513 && github.triggering_actor == 'azumag' && github.ref == 'refs/heads/main' && github.ref_protected == true }}
+    environment: vm-operations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout reviewed main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          submodules: false
+
+      - name: Verify immutable trigger
+        id: trigger
+        shell: bash
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "$SHA" ]]
+          epoch="$(tr -d '\r\n' < ops/vm_actions/nethack_canary_smoke_epoch)"
+          [[ "$epoch" =~ ^[0-9]{1,12}$ ]]
+          echo "epoch=$epoch" >> "$GITHUB_OUTPUT"
+
+      - name: Configure pinned SSH client
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          VM_SSH_PORT: ${{ secrets.VM_SSH_PORT }}
+          VM_SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          VM_SSH_KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$VM_SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]
+          [[ "$VM_SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          port="${VM_SSH_PORT:-22}"
+          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+          install -m 700 -d "$RUNNER_TEMP/vm-ssh"
+          printf '%s\n' "$VM_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/vm-ssh/key"
+          printf '%s\n' "$VM_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/vm-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/vm-ssh/key" "$RUNNER_TEMP/vm-ssh/known_hosts"
+          echo "port=$port" >> "$GITHUB_ENV"
+
+      - name: Wait for reviewed production deployment
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          ready=0
+          for _ in $(seq 1 150); do
+            status_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $SHA")"
+            if python3 - "$status_json" "$SHA" <<'PY'
+          import json, sys
+          data=json.loads(sys.argv[1]); expected=sys.argv[2]
+          ok=data.get('status')=='configured' and data.get('sha')==expected and not data.get('pending_repairs')
+          raise SystemExit(0 if ok else 1)
+          PY
+            then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          [[ "$ready" -eq 1 ]]
+
+      - name: Wait for system-scoped runsc smoke
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ github.sha }}
+          EPOCH: ${{ steps.trigger.outputs.epoch }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          verified=0
+          for _ in $(seq 1 150); do
+            set +e
+            response="$(printf 'python3 ops/vm_actions/nethack_canary_smoke_verify.py --sha %s --epoch %s\n' "$SHA" "$EPOCH" | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA")"
+            transport_rc=$?
+            set -e
+            [[ "$transport_rc" -eq 0 ]]
+            code="$(python3 - "$response" "$SHA" <<'PY'
+          import json, sys
+          data=json.loads(sys.argv[1]); expected=sys.argv[2]
+          if data.get('status')!='executed' or data.get('sha')!=expected:
+              raise SystemExit(2)
+          code=data.get('exit_code')
+          if type(code) is not int:
+              raise SystemExit(2)
+          print(code)
+          PY
+            )"
+            case "$code" in
+              0) verified=1; break ;;
+              3) sleep 10 ;;
+              4) echo 'NetHack production canary smoke failed; inspect VM-private result/journal.' >&2; exit 1 ;;
+              5) echo 'NetHack canary system units are not installed; run the reviewed root installer once.' >&2; exit 1 ;;
+              *) echo "unexpected smoke verifier exit code: $code" >&2; exit 1 ;;
+            esac
+          done
+          [[ "$verified" -eq 1 ]]
+
+      - name: Verify production remained non-critical
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          diagnostics_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "diagnostics docich production $SHA")"
+          python3 - "$diagnostics_json" <<'PY'
+          import json, sys
+          data=json.loads(sys.argv[1]); diagnostics=data.get('diagnostics') or {}
+          raise SystemExit(0 if data.get('status')=='diagnosed' and diagnostics.get('status')!='critical' else 1)
+          PY
+
+      - name: Record safe smoke summary
+        shell: bash
+        env:
+          SHA: ${{ github.sha }}
+          EPOCH: ${{ steps.trigger.outputs.epoch }}
+        run: |
+          {
+            echo '### NetHack production canary smoke'
+            echo
+            echo "- reviewed SHA: \`$SHA\`"
+            echo "- epoch: \`$EPOCH\`"
+            echo '- result: verified'
+            echo '- runtime boundary: Docker + gVisor runsc, service-scoped docker group only'
+            echo '- production NetHack persistence: unchanged'
+          } >> "$GITHUB_STEP_SUMMARY"
