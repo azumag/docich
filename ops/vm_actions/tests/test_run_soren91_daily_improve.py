@@ -17,6 +17,13 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
         self.assertNotIn("eval ", text)
         self.assertNotIn("$@", text)
 
+    def test_runner_uses_gateway_username_not_host_specific_numeric_uid(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('[[ "$(id -un)" == "ubuntu" ]]', text)
+        self.assertNotIn('[[ "$(id -u)" -eq 1000 ]]', text)
+        self.assertIn("export HOME=/home/ubuntu", text)
+        self.assertIn("export PATH=/usr/local/bin:/usr/bin:/bin:/snap/bin", text)
+
     def test_runner_serializes_with_existing_persist_lock(self):
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn('lock="$persist/.git/persist.lock"', text)

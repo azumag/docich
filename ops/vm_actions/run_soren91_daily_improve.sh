@@ -16,10 +16,21 @@ runner="$runtime/daily_runtime_improve.mjs"
 state="$runtime/tmp/state/improve_daily.json"
 lock="$persist/.git/persist.lock"
 
-[[ "$(id -u)" -eq 1000 ]] || {
+# install_vm_gateway.sh installs the forced-command key for the named SSH user
+# (production default: ubuntu). Numeric UIDs are host-specific and must not be
+# treated as part of the security contract.
+[[ "$(id -un)" == "ubuntu" ]] || {
   echo 'soren91 daily improvement must run as ubuntu' >&2
   exit 77
 }
+
+# gateway.py deliberately supplies a minimal PATH. OpenCode is installed from
+# snap on this host, so add only its fixed system path; keep HOME explicit so
+# gh/opencode use the ubuntu-owned credentials/state rather than caller input.
+export HOME=/home/ubuntu
+export PATH=/usr/local/bin:/usr/bin:/bin:/snap/bin
+export LANG=C.UTF-8
+
 [[ -d "$runtime" && -f "$runtime/strategy.mjs" ]] || {
   echo 'soren91 runtime is missing' >&2
   exit 78
