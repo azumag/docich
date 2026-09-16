@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 # Production entry point for the external Soren91 daily improvement loop.
 # The live player tree is evidence-only: the Node runner copies a strict,
@@ -30,6 +31,16 @@ lock="$persist/.git/persist.lock"
 export HOME=/home/ubuntu
 export PATH=/usr/local/bin:/usr/bin:/bin:/snap/bin
 export LANG=C.UTF-8
+
+# The default text chain starts with two free opencode models that were already
+# measured hanging for ~45 s each on this VM. Daily improvement is a bounded
+# offline job, so use the known working opencode-go coding model first for both
+# the optional PNG attachment attempt and the text fallback. This is an
+# execution choice only; the reviewed strategy/evidence/validation contracts
+# stay unchanged.
+export AI_COMMON_AGENTS=opencode-go:deepseek-v4.1-flash
+export SOREN91_IMPROVE_OPENCODE_AGENT=opencode-go:deepseek-v4.1-flash
+export SOREN91_IMPROVE_OPENCODE_TIMEOUT=90
 
 [[ -d "$runtime" && -f "$runtime/strategy.mjs" ]] || {
   echo 'soren91 runtime is missing' >&2
@@ -131,10 +142,31 @@ finally:
         pass
 PY
 
-# No caller-provided path/model/command is accepted here.  The runner itself
-# also fixes the GitHub repository and validates live runtime bytes against
-# origin/main before generating a candidate.
-exec node "$runner" \
+# Keep detailed model/runtime output private on the VM. The owner workflow only
+# receives a fixed exit category, never raw match logs, prompts, screenshots or
+# provider text. This makes failed daily runs diagnosable without weakening the
+# gateway's stdout/stderr boundary.
+out="$(mktemp /home/ubuntu/.soren91-daily.XXXXXX)"
+cleanup() { rm -f "$out"; }
+trap cleanup EXIT INT TERM HUP
+
+set +e
+node "$runner" \
   --runtime-dir "$runtime" \
   --repo-dir "$persist" \
-  --state "$state"
+  --state "$state" >"$out" 2>&1
+rc=$?
+set -e
+
+if [[ "$rc" -eq 0 ]]; then
+  exit 0
+fi
+
+# Stable failure categories. Do not print the matched line itself.
+if grep -Fq 'candidate_invalid:' "$out"; then exit 94; fi
+if grep -Fq 'model_no_candidate' "$out"; then exit 93; fi
+if grep -Fq 'evidence_blocked:' "$out"; then exit 92; fi
+if grep -Eq 'runtime_not_current:|runtime_compat_missing:' "$out"; then exit 91; fi
+if grep -Eq 'persist_repo_(tracked_dirty|missing)' "$out"; then exit 90; fi
+if grep -Eq 'pending_pr_lookup_failed|pr_number_parse_failed|gh .* failed' "$out"; then exit 96; fi
+exit 1
