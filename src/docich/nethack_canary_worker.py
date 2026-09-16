@@ -300,7 +300,7 @@ def _start_game(game: _TmuxGame, *, deadline: float) -> str:
         if observation.player is not None and observation.vitals.hp is not None:
             return text
         lower = text.lower()
-        if "shall i pick" in lower or ("pick a character" in lower and "[y" in lower):
+        if "shall i pick" in lower or "is this ok" in lower or ("pick a character" in lower and "[y" in lower):
             game.literal("y")
             continue
         if "--more--" in lower:

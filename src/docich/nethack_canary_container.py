@@ -306,9 +306,13 @@ def build_container_argv(
     return [
         docker,
         "run",
+        # Attach stdin so the worker receives its request JSON over the pipe.
+        "-i",
         *_security_args(name=name, memory="1024m", cpus="1.0", pids=256),
         "--mount",
-        f"type=bind,src={root},dst={_INTERNAL_ROOT},rw",
+        # `docker run --mount` has no `rw` key; a bind mount is read-write
+        # unless `readonly` is given.
+        f"type=bind,src={root},dst={_INTERNAL_ROOT}",
         image,
     ]
 
@@ -328,7 +332,7 @@ def build_candidate_broker_argv(
         "--detach",
         *_security_args(name=name, memory="512m", cpus="0.5", pids=128),
         "--mount",
-        f"type=bind,src={ipc_dir},dst={_BROKER_IPC_DIR},rw",
+        f"type=bind,src={ipc_dir},dst={_BROKER_IPC_DIR}",
         "--mount",
         f"type=bind,src={manifest},dst=/canary/candidate.json,readonly",
         "--entrypoint",
