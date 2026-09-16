@@ -55,7 +55,7 @@ command -v flock >/dev/null 2>&1 || {
   exit 83
 }
 command -v python3 >/dev/null 2>&1 || {
-  echo 'python is missing' >&2
+  echo 'python3 is missing' >&2
   exit 84
 }
 [[ -x /snap/bin/opencode ]] || {
