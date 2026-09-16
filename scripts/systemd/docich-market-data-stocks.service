@@ -1,6 +1,8 @@
 [Unit]
 Description=docich read-only Moomoo JP market-data collector
-After=network.target
+Wants=network-online.target
+Requires=docich-moomoo-opend.service
+After=network-online.target docich-moomoo-opend.service
 
 [Service]
 Type=simple
