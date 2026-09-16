@@ -31,7 +31,7 @@ export OPENCODE_CONFIG_CONTENT='{"permission":{"*":"deny"},"agent":{"soren-daily
 export SOREN91_OPENCODE_NONZERO_CLASSIFIER="$classifier"
 
 [[ -d "$runtime" && -f "$runtime/strategy.mjs" ]] || {
-  echo 'soren91 daily improvement must run as ubuntu' >&2
+  echo 'soren91 runtime is missing' >&2
   exit 78
 }
 [[ -f "$runner" ]] || {
