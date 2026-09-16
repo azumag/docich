@@ -20,15 +20,18 @@ RUN curl --fail --location --silent --show-error \
     && rm "/tmp/${NETHACK_ARCHIVE}"
 
 WORKDIR /build/nethack
+# NetHack 5.0's linux.500 gates system-Lua detection behind
+# `ifdef WANT_SYSTEM_LUA`. Define it *before* that conditional is parsed;
+# appending it at the end of the hints file or only passing it to `make` is too
+# late for setup.sh's generated makefiles and falls back to bundled Lua.
+RUN sed -i '/^ifdef WANT_SYSTEM_LUA/i WANT_SYSTEM_LUA=1' sys/unix/hints/linux.500
+
 # NetHack 5.0 Unix paths are compile-time settings. Keep immutable support
 # data under /opt and route every mutable game file into the one bind-mounted
 # episode playground. Wizard/explore/shell access stays disabled.
-# WANT_SYSTEM_LUA must be present while setup.sh expands linux.500; passing it
-# only to the later make invocation is too late and causes bundled-Lua fetches.
 RUN cat >> sys/unix/hints/linux.500 <<'EOF'
 
 # docich P5h isolated canary overrides
-WANT_SYSTEM_LUA=1
 PREFIX=/opt/nethack
 HACKDIR=/opt/nethack/playground
 INSTDIR=$(HACKDIR)
