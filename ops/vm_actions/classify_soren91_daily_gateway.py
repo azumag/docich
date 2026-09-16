@@ -55,6 +55,15 @@ EXIT_CATEGORIES = {
     111: "opencode_smoke_provider_limit",
     112: "opencode_smoke_cli_other",
     113: "opencode_smoke_timeout",
+    114: "opencode_full_permission_or_tool",
+    115: "opencode_full_context_limit",
+    116: "opencode_full_output_limit",
+    117: "opencode_full_request_invalid",
+    118: "opencode_full_safety_reject",
+    119: "opencode_full_maxbuffer",
+    120: "opencode_full_timeout",
+    121: "opencode_full_network",
+    122: "opencode_full_provider_unavailable",
 }
 
 
