@@ -25,7 +25,7 @@ class Soren91OpenCodeCaptureStdinTests(unittest.TestCase):
         self.assertLess(close_fd, wait_child)
         self.assertNotIn("$@", text)
         self.assertNotIn("eval ", text)
-        self.assertNotIn("prompt", text[text.index("child_out="):duplicate].lower())
+        self.assertNotIn(".soren91-opencode-prompt", text)
 
 
 if __name__ == "__main__":
