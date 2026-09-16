@@ -1,12 +1,11 @@
-"""Layered NetHack gameplay policy foundation (P3a).
+"""Layered NetHack gameplay policy.
 
-P3a deliberately performs only one automatic gameplay action: advancing a
-visible ``--More--`` prompt.  Every choice that could alter strategy, consume a
-resource, attack a possibly peaceful creature, answer a prompt, or choose a
-movement direction is escalated to a higher layer with no keypress.
+P3a established a fail-closed action surface where only ``--More--`` could be
+automatically advanced. P3b adds one conservative movement action at a time on
+currently visible, known-safe terrain chosen by :mod:`nethack_exploration`.
 
-This gives later tactical/mid-level/LLM work a stable contract without making
-an unfinished policy dangerous merely by selecting the brain.
+The policy still never automatically attacks, uses items, answers prompts,
+opens doors, steps onto a visible trap/item/creature, or descends stairs.
 """
 from __future__ import annotations
 
@@ -14,6 +13,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from .actions import Action
+from .nethack_exploration import NethackExplorer
 from .nethack_observation import NethackObservation
 
 
@@ -62,14 +62,16 @@ def _has_any(obs: NethackObservation, names: set[str]) -> bool:
 
 
 class NethackLayeredPolicy:
-    """Fail-closed P3a policy over normalized public observation."""
+    """Fail-closed layered policy over normalized public observation."""
 
     _SEVERE_CONDITIONS = {"Sick", "FoodPois", "Ill", "Slime", "Strngl"}
     _FOOD_EMERGENCY = {"Weak", "Fainting", "Fainted", "Starved"}
+    _MOVEMENT_IMPAIRING = {"Blind", "Conf", "Stun", "Hallu"}
+
+    def __init__(self, explorer: NethackExplorer | None = None) -> None:
+        self.explorer = explorer or NethackExplorer()
 
     def decide(self, obs: NethackObservation) -> PolicyDecision:
-        # --More-- carries no strategic choice: advancing it only reveals the
-        # next already-visible message/page. This is the sole P3a auto-action.
         if obs.prompt == "more":
             return PolicyDecision(
                 layer="tactical",
@@ -78,8 +80,6 @@ class NethackLayeredPolicy:
                 actions=(Action(type="text", text=" "),),
             )
 
-        # Prompts may consume, attack, name, identify, or otherwise commit a
-        # choice. Never answer them from a generic low-level policy.
         if obs.prompt in {"yes_no", "direction", "selection", "text"}:
             return PolicyDecision(
                 layer="strategic",
@@ -120,6 +120,23 @@ class NethackLayeredPolicy:
                 reason="visible Hungry status should alter exploration priority",
             )
 
+        # P3b does not implement recovery/rest tactics yet. Stop exploration at
+        # half health rather than continuing just because the state is not yet
+        # critical enough for the strategic emergency threshold.
+        if hp_ratio is not None and hp_ratio <= 0.50:
+            return PolicyDecision(
+                layer="midlevel",
+                intent="hold_low_hp",
+                reason=f"visible HP is below exploration threshold ({obs.vitals.hp}/{obs.vitals.hp_max})",
+            )
+
+        if _has_any(obs, self._MOVEMENT_IMPAIRING):
+            return PolicyDecision(
+                layer="midlevel",
+                intent="hold_impaired",
+                reason="visible status can make deterministic movement unsafe",
+            )
+
         if obs.player is None:
             return PolicyDecision(
                 layer="midlevel",
@@ -134,20 +151,26 @@ class NethackLayeredPolicy:
                 reason="adjacent creature glyph is visible but hostility is unknown",
             )
 
+        step = self.explorer.plan_step(obs)
+        if step is not None:
+            return PolicyDecision(
+                layer="midlevel",
+                intent="explore_step",
+                reason=(
+                    f"{step.reason}; visible target {step.target} glyph={step.target_glyph!r}"
+                ),
+                actions=(Action(type="text", text=step.key),),
+            )
+
         return PolicyDecision(
             layer="midlevel",
-            intent="explore",
-            reason="no blocking prompt or visible emergency",
+            intent="exploration_blocked",
+            reason="no visible safe cardinal exploration step is available",
         )
 
 
 def assert_p3a_safe(decision: PolicyDecision) -> None:
-    """Guard the intentionally tiny P3a automatic action surface.
-
-    Later phases can replace this guard when they add tested movement/combat
-    rules. Until then, a regression cannot silently turn an unfinished policy
-    into an autonomous attacker or item consumer.
-    """
+    """P3a guard retained for tests/backward compatibility."""
     if not decision.actions:
         return
     if (
@@ -159,3 +182,26 @@ def assert_p3a_safe(decision: PolicyDecision) -> None:
     ):
         return
     raise RuntimeError("P3a policy attempted an action outside the safe tactical surface")
+
+
+def assert_p3b_safe(decision: PolicyDecision) -> None:
+    """Allow only More-space or one reviewed cardinal exploration step."""
+    if not decision.actions:
+        return
+    if (
+        decision.layer == "tactical"
+        and decision.intent == "advance_message"
+        and len(decision.actions) == 1
+        and decision.actions[0].type == "text"
+        and decision.actions[0].text == " "
+    ):
+        return
+    if (
+        decision.layer == "midlevel"
+        and decision.intent == "explore_step"
+        and len(decision.actions) == 1
+        and decision.actions[0].type == "text"
+        and decision.actions[0].text in {"h", "j", "k", "l"}
+    ):
+        return
+    raise RuntimeError("P3b policy attempted an action outside the reviewed safe surface")
