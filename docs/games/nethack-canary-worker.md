@@ -1,10 +1,8 @@
 # NetHack controlled-canary container worker (P5h)
 
-P5g の controlled canary を、VM 上で実際に動かせる container worker にする。
+P5g の controlled canary を、production VM 上で本当に NetHack 5.0.0 を動かせる container worker にする。
 
-## 目的
-
-P5g は比較オーケストレータと worker protocol までを実装した。P5h はその protocol を実装する実workerを追加する。
+## 境界
 
 ```text
 P5g orchestrator (host)
@@ -13,9 +11,10 @@ P5g orchestrator (host)
   v
 python -m docich.nethack_canary_container
   |
-  | podman/docker, network=none
+  | Docker + gVisor runsc only
+  | network=none / read-only rootfs
   v
-NetHack 5.0 canary container
+NetHack 5.0.0 canary container
   |
   +-- private /canary/episode/playground
   +-- baseline_p3b or candidate_strategist
@@ -26,53 +25,29 @@ NetHack 5.0 canary container
 JSON worker result
 ```
 
-production NetHack の runtime/save/xlog/dump は container に mount しない。
+production NetHack の runtime/save/xlog/dump、home、SSH key、Docker socket は container に mount しない。
 
-## なぜ専用ビルドが必要か
+P5h は `runc`、Podman、host Python への fallback を行わない。production VM でレビュー済みの Docker + gVisor `runsc` が使えなければ fail-closed する。
 
-NetHack 5.0 Unix build は HACKDIR/SAVEDIR を通常の runtime config で安全に差し替える方式ではない。
+## NetHack source / build
 
-P5h image は公式 NetHack 5.0.0 source archive を SHA-256 固定で取得し、build 時に:
-
-```text
-HACKDIR=/opt/nethack/playground
-VAR_PLAYGROUND=/canary/episode/playground
-```
-
-を埋め込む。
-
-immutable support data は `/opt/nethack/playground`、ゲームごとの可変データは bind-mounted `/canary/episode/playground` に分離する。
-
-公式 source:
+image は公式 NetHack 5.0.0 source archive を固定する。
 
 ```text
 https://nethack.org/download/5.0.0/nethack-500-src.tgz
 sha256 2959b7886aac76185b90aea0c9f80d14343f604de0ae96b3dd2a760f7ab3bde9
 ```
 
-## Image build
+base image も digest pin した `python:3.12-slim` を builder/runtime 両方に使う。
 
-Docker:
+Unix版NetHackでは可変playgroundを安全に分離するため build 時に:
 
-```bash
-docker build \
-  -f containers/nethack-canary/Dockerfile \
-  -t docich-nethack-canary:5.0.0-p5h \
-  .
+```text
+HACKDIR=/opt/nethack/playground
+VAR_PLAYGROUND=/canary/episode/playground
 ```
 
-Podman:
-
-```bash
-podman build \
-  -f containers/nethack-canary/Dockerfile \
-  -t docich-nethack-canary:5.0.0-p5h \
-  .
-```
-
-CI の `NetHack canary image CI` でも image を実buildし、NetHack binary と worker module importを確認する。
-
-## System configuration
+を設定する。Debian の `linux.500` が正式に持つ `WANT_SYSTEM_LUA=1` を使い、system Lua 5.4でbuildする。
 
 canary buildでは:
 
@@ -83,40 +58,70 @@ SHELLERS=
 MAXPLAYERS=1
 ```
 
-にする。
+とし、`-D` wizard / `-X` explore / shell escape をcanary controllerへ提供しない。DUMPLOGFILEも `/canary/episode/playground/dumps/...` 固定。
 
-`-D` wizard、`-X` explore、shell escape をcanary controllerへ提供しない。
+## Image attestation
 
-DUMPLOGFILEも `/canary/episode/playground/dumps/...` に固定する。
-
-## Host launcher hardening
-
-`docich.nethack_canary_container` は `podman` を優先し、なければ `docker` を使う。
-
-明示指定:
-
-```bash
-export DOCICH_CANARY_RUNTIME=podman
-export DOCICH_NETHACK_CANARY_IMAGE=docich-nethack-canary:5.0.0-p5h
-```
-
-containerには以下を固定する。
+runtime imageには以下を埋め込む。
 
 ```text
---rm
+org.docich.nethack-canary.abi=1
+org.docich.nethack.version=5.0.0
+org.docich.nethack.source-sha256=2959b7886aac76185b90aea0c9f80d14343f604de0ae96b3dd2a760f7ab3bde9
+```
+
+host launcherは tag を受け付けない。`docker build --iidfile` で得た `sha256:<64 hex>` の image ID のみ利用する。
+
+```bash
+mkdir -p run/nethack-canary-setup
+docker build \
+  -f containers/nethack-canary/Dockerfile \
+  --iidfile run/nethack-canary-setup/image-id \
+  .
+cat run/nethack-canary-setup/image-id
+```
+
+環境変数:
+
+```bash
+export DOCICH_NETHACK_CANARY_IMAGE="$(cat run/nethack-canary-setup/image-id)"
+```
+
+launcherは `docker image inspect` で image ID と3つのlabelを再照合する。imageが `VOLUME` を宣言している場合も拒否する。
+
+## Docker/runsc preflight
+
+launcherは `docker info` から必要な項目だけ読み、次を必須にする。
+
+- OSType=linux
+- runtime `runsc` 登録済み
+- MemoryLimit=true
+- PidsLimit=true
+- CPUCfsQuota=true
+
+実行containerには最低でも次を固定する。
+
+```text
+--runtime=runsc
 --network=none
 --read-only
 --cap-drop=ALL
---security-opt=no-new-privileges
---pids-limit=256
+--security-opt=no-new-privileges:true
+--cpus=1
 --memory=1024m
---cpus=1.0
-/tmp = tmpfs, nosuid,nodev,noexec
+--memory-swap=1024m
+--pids-limit=256
+--ipc=none
+--ulimit nofile=128:128
+--ulimit core=0:0
+--tmpfs /tmp:rw,noexec,nosuid,nodev,size=256MiB
+--log-driver=none
+--restart=no
 ```
 
-Podmanでは `--userns=keep-id`、Dockerではhost uid/gidを明示する。
+containerには一意な名前を付け、正常終了・timeout・launcher例外のいずれでも `docker rm --force` をbest-effort実行する。
 
-### mount surface
+## Mount surface
 
 baseline arm:
 
@@ -127,21 +132,17 @@ host episode root -> /canary/episode (rw)
 candidate arm:
 
 ```text
-host episode root      -> /canary/episode (rw)
+host episode root       -> /canary/episode (rw)
 candidate manifest only -> /canary/candidate.json (ro)
 ```
 
-repository全体、production playground、SSH key、home directory、Docker socket等はmountしない。
+repository全体はmountしない。candidate commandが参照するコードはimage build時に `/opt/docich/brains` 等へ含まれている必要がある。candidateを更新した場合はimageも再buildし、新しいimmutable image IDで実験する。
 
-candidate command自体はimageに含まれる `/opt/docich/brains` 等から解決する前提。
+## Network / credentials
 
-## Network
+`--network=none` 固定なので、P5hで使えるcandidateはcontainer内だけで完結するlocal commandに限る。
 
-P5h は `network=none` 固定。
-
-したがって、この段階でcanary実行できるcandidateは **container内だけで完結するlocal command** に限る。
-
-HTTP/API型LLM candidateのegress許可はP5hには入れない。必要なら、接続先allowlist・credential scope・request budgetを別設計で追加する。
+HTTP/API型LLM candidateのegress、API key、credential forwardingはP5hには入れない。必要なら接続先allowlist・credential scope・request budgetを別設計・別レビューで追加する。
 
 ## Worker lifecycle
 
@@ -156,10 +157,10 @@ workerは:
 1. internal requestをstrict validation
 2. `/canary/episode/playground` を準備
 3. tmux 80x24 TTYでNetHackを起動
-4. character creation promptはworkerが通常モードで処理
+4. character creationを通常モードで処理
 5. TTYを `normalize_tty` へ渡す
 6. baseline/candidate controllerを実行
-7. xlogfileをterminal factの正本として読む
+7. canary専用xlogfileをterminal factの正本として読む
 8. JSON resultを1件だけstdoutへ返す
 9. tmux sessionを必ず終了
 
@@ -167,7 +168,7 @@ workerは:
 
 ## Baseline arm
 
-baselineはproductionと同じ `NethackLayeredPolicy` + `assert_p3b_safe` を使う。
+baselineはproductionと同じ `NethackLayeredPolicy` + `assert_p3b_safe` を利用する。
 
 自動操作は現行P3bの:
 
@@ -178,9 +179,7 @@ baselineはproductionと同じ `NethackLayeredPolicy` + `assert_p3b_safe` を使
 
 ## Candidate arm
 
-通常のP3b actionがある局面はbaselineと同じ。
-
-`requires_llm=true` のstrategic局面だけcandidate manifestの `CommandStrategist` を呼ぶ。
+通常のP3b actionがある局面はbaselineと同じ。`requires_llm=true` のstrategic局面だけcandidate manifestの `CommandStrategist` を呼ぶ。
 
 ```text
 visible TTY
@@ -189,7 +188,7 @@ visible TTY
  -> optional visible inventory probe
  -> public StrategicRequest
  -> candidate
- -> P3d evaluate_proposal (fresh state)
+ -> P3d evaluate_proposal (fresh visible state)
  -> P5h canary-only executor
  -> canary keypress
 ```
@@ -198,7 +197,7 @@ production P3d `execution_plan()` は変更しない。productionでは引き続
 
 ## Canary-only executor
 
-P5hで実行を許すもの:
+現段階のallowlist:
 
 | proposal | visible condition | canary keys |
 |---|---|---|
@@ -211,77 +210,58 @@ P5hで実行を許すもの:
 | equip | category=armor | `W` + letter |
 | use | category=tool | `a` + letter |
 
-拒否:
+拒否する例:
 
 - unpaid item
 - unknown category
-- wand (`z`後のdirectionがproposal schemaにない)
+- wand（directionがproposal schemaにない）
 - ring/amulet equip
-- ascend/descend/move_to_stairs
 - stale inventory letter
-- fresh prompt mismatch
+- prompt mismatch
+- ascend/descend/move_to_stairs
 
-特に階段は、TTY上の`@`の下にあるterrainを公開観測だけで確定できないため推測しない。
+階段はTTY上の`@`の下にあるterrainを公開観測だけで確定できないため推測しない。
 
-## Inventory probe
+## Capability limit
 
-strategic局面かつblocking promptがない場合、worker自身が `i` でvisible inventoryを表示し、公開情報だけを解析してEscapeで戻る。
+P5h初版は実NetHackを操作できるが、まだ完全攻略AIではない。
 
-candidateは未鑑定itemのtrue identityを受け取らない。
-
-## Current capability limit
-
-P5hは「完全攻略AI」ではない。
-
-現行StrategicProposalにはattack/open-door/travel direction等がなく、P3bも隣接creatureで停止する。そのためcontrolled canaryが:
+現行StrategicProposalにはattack/open-door/travel direction等がなく、P3bも隣接creatureで停止する。そのため:
 
 ```text
 terminal_status=timeout
 exit_reason=policy_stall:...
 ```
 
-になることは正常にあり得る。
-
-この段階の目的は **candidateが実操作できる隔離実験基盤を安全に成立させること**。action schema/executorの拡張は別PRで、productionとは分離してレビューする。
+は正常に起こり得る。この段階では実container経路・隔離・実xlog結果取得を成立させることを優先する。canary専用tactical action schemaは次段で拡張する。
 
 ## Seed
 
-stock NetHack 5.0.0にP5hが依存できるreviewed public deterministic seed injectionは追加しない。
+stock NetHack 5.0.0について、P5hが依存できるreviewed public deterministic seed injectionは使用しない。
 
-requestのseedは結果にechoするが:
+requestのseedはechoしても:
 
 ```text
 seed_applied=false
 ```
 
-を返す。
-
-したがってP5hで実際に回すP5g planは当面:
+を返す。したがって現行workerで実行するplanは:
 
 ```json
-{
-  "seed_base": null,
-  "require_seed_control": false
-}
+{"seed_base": null, "require_seed_control": false}
 ```
 
-とする。
+とする。seed patch版を将来導入する場合は別image ABIとして扱う。
 
-NetHack本体へのseed patchはゲーム挙動を変えるため、このPRには含めない。
+## Timeout
 
-## Wall-clock timeout
-
-P5gの既定 `episode_timeout_s=900` に対して、host launcherはcontainer内に既定840秒を渡す。
+P5g既定 `episode_timeout_s=900` に対し、P5h launcherはcontainer workerへ既定840秒を渡し、外側より先に終了させる。
 
 ```bash
 export DOCICH_CANARY_INNER_TIMEOUT_S=840
 ```
 
-内部workerが先に終了することで、外側timeoutがcontainer launcherを強制killするのを避ける。
-
-P5g planで900秒より短いepisode timeoutを使う場合、inner timeoutも必ずそれより十分短く設定する。
-
-例:
+P5g planのepisode timeoutを短くする場合は、inner timeoutも十分短く設定する。例:
 
 ```bash
 export DOCICH_CANARY_INNER_TIMEOUT_S=240
@@ -289,8 +269,6 @@ export DOCICH_CANARY_INNER_TIMEOUT_S=240
 ```
 
 ## P5g plan example
-
-candidate manifestが `/srv/docich/candidates/cand-a-v1.json` にある場合:
 
 ```json
 {
@@ -308,32 +286,44 @@ candidate manifestが `/srv/docich/candidates/cand-a-v1.json` にある場合:
 }
 ```
 
-実行:
+実行前に `DOCICH_NETHACK_CANARY_IMAGE=sha256:...` を設定する。
 
 ```bash
 bin/docich --config config/docich.soren-live.toml \
   nethack-canary --plan /path/to/plan.json
 ```
 
+production VMの `ubuntu` ユーザーを恒久的にdocker groupへ追加しない。Docker socket権限が必要な実行経路は、既存container workerと同様にservice/owner-gated実行単位で `SupplementaryGroups=docker` を付与する。
+
 ## Result source of truth
 
-workerはterminal factsをcanary専用:
+terminal factsはcanary専用:
 
 ```text
 /canary/episode/playground/xlogfile
 ```
 
-から取得する。
+から取得する。score / turns / max depth / death reason / achievement bitsはxlog由来で、画面から死因を推測しない。
 
-score / turns / max depth / death reason / achievement bitsはxlog由来。画面から死因を推測しない。
+## CI
+
+通常CIはlauncher/executor/workerをmock/fakeで契約テストする。
+
+`NetHack canary image CI` は実際に公式sourceからimageをbuildし、immutable image IDで:
+
+- provenance labels
+- NetHack binary `--version`
+- worker module import
+
+をsmokeする。GitHub-hosted runnerでの通常runc smokeは**image build検証だけ**であり、productionの隔離認証ではない。production P5hはlauncherのDocker/runsc preflightを通らない限り起動しない。
 
 ## 次
 
 P5i候補:
 
-1. P5h image/workerをVMへ配置してsmoke canaryを実測
-2. policy stall分布を収集
-3. canary専用proposal/action schemaへ attack/open-door 等を追加
-4. controlled canaryのsample数を増やす
-5. 事前定義metricと統計判定を追加
-6. その後にだけ、rollback可能なproduction promotion設計を検討
+1. P5h imageをproduction VMでbuildしimmutable image IDを記録
+2. owner-gated / service-scoped Docker権限で1 episode smoke canaryを実測
+3. policy stall分布を収集
+4. canary専用proposal/action schemaへ attack/open-door 等を追加
+5. sample数を増やし事前定義metric・統計判定を追加
+6. その後にだけrollback可能なproduction promotion設計を検討
