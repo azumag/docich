@@ -7,6 +7,7 @@ on:
       - "src/docich/nethack_canary_worker.py"
       - "src/docich/nethack_canary_container.py"
       - "src/docich/nethack_canary_executor.py"
+      - "brains/nethack_canary_hold.py"
       - "tests/test_nethack_canary_image.py"
       - ".github/workflows/nethack-canary-image-ci.yml"
   push:
@@ -16,6 +17,7 @@ on:
       - "src/docich/nethack_canary_worker.py"
       - "src/docich/nethack_canary_container.py"
       - "src/docich/nethack_canary_executor.py"
+      - "brains/nethack_canary_hold.py"
       - "tests/test_nethack_canary_image.py"
       - ".github/workflows/nethack-canary-image-ci.yml"
 
@@ -59,6 +61,15 @@ jobs:
           "$DOCICH_TEST_NETHACK_CANARY_IMAGE"
           -c
           "import docich.nethack_canary_worker, docich.nethack_canary_executor"
+      - name: Verify local smoke candidate
+        shell: bash
+        run: |
+          output="$(printf '%s\n' '{"schema_version":1,"intent":"survival_emergency"}' \
+            | docker run --rm -i \
+                --entrypoint python3 \
+                "$DOCICH_TEST_NETHACK_CANARY_IMAGE" \
+                brains/nethack_canary_hold.py)"
+          python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["schema_version"] == 1 and d["kind"] == "hold"' "$output"
       - name: Note production runtime boundary
         run: >-
           echo "Hosted CI only proves image build/import; production P5h requires Docker runsc preflight and never falls back to runc."
