@@ -32,6 +32,11 @@ VARDIR=$(HACKDIR)
 CHOWN=true
 CHGRP=true
 CFLAGS+=-DVAR_PLAYGROUND='"/canary/episode/playground"'
+# The canary runs as an arbitrary host uid that has no /etc/passwd entry.
+# Without NOMAIL, NetHack's getmailstatus() dereferences
+# getpwuid(getuid())->pw_name without a NULL check and crashes at startup.
+# The isolated canary has no mail, so disable the mail feature.
+CFLAGS+=-DNOMAIL
 EOF
 RUN sed -i 's/^WIZARDS=.*/WIZARDS=/' sys/unix/sysconf \
     && sed -i 's/^EXPLORERS=.*/EXPLORERS=/' sys/unix/sysconf \
