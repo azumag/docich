@@ -16,7 +16,7 @@ def obs(map_rows: tuple[str, str], *, hp="10(10)", condition=""):
         f"Dlvl:2 HP:{hp} Pw:4(4) AC:5 Exp:2\n"
         f"T:12 {condition}\n"
     )
-    return normalize_tty(text, cols=12, rows=5)
+    return normalize_tty(text, cols=80, rows=5)
 
 
 class TestNethackExplorer(unittest.TestCase):
@@ -30,8 +30,6 @@ class TestNethackExplorer(unittest.TestCase):
         self.assertEqual(step.source, observation.player)
 
     def test_creature_item_trap_door_and_unknown_are_never_targets(self) -> None:
-        # Player has a single safe left corridor. Right/vertical neighbors are
-        # creature/item/unknown; the visible trap/door are also non-passable.
         observation = obs(("#@d!+^     ", "            "))
         step = NethackExplorer().plan_step(observation)
         self.assertIsNotNone(step)
@@ -50,8 +48,6 @@ class TestNethackExplorer(unittest.TestCase):
         step1 = explorer.plan_step(first)
         self.assertIsNotNone(step1)
         assert step1 is not None
-        # Simulate that the chosen cell became the next player location while
-        # the same visible corridor remains.
         row = list(".....      ")
         row[step1.target[0]] = "@"
         second = obs(("".join(row), "            "))
