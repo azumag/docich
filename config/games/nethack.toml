@@ -33,6 +33,14 @@ narration_enabled = false
 narration_cooldown_s = 20.0
 speaker = ""
 
+# P4a structured observation は比較専用shadow。policy/actionへは使わない。
+# pathが空なら <state_dir>/nethack/shadow/latest.json を読む。
+[nethack.shadow]
+enabled = false
+path = ""
+max_age_s = 5.0
+max_bytes = 131072
+
 [agent]
 enabled = false        # 本番有効化は別段階。brain切替だけでは自動起動しない
 brain = "random"
