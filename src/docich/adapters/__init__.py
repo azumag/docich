@@ -72,6 +72,21 @@ def make_coordinator_adapter(g, spec: RuntimeSpec):
         from ..trading.markets.program import make_market_view_adapter
         return make_market_view_adapter(g, spec)
     game = load_game(g, spec.game)
+    # NetHack remains a normal CLI game for legacy obs/send and for existing
+    # installations.  The save-safe coordinator lifecycle is an explicit
+    # per-game opt-in so merely naming a CLI game "nethack" never changes its
+    # process contract or starts requiring distro-specific save paths.
+    if spec.game == "nethack" and game.adapter == "cli":
+        nethack_raw = game.raw.get("nethack") if isinstance(game.raw, dict) else None
+        if nethack_raw is not None and not isinstance(nethack_raw, dict):
+            raise AdapterError("[nethack] はtableである必要があります")
+        if isinstance(nethack_raw, dict):
+            persistent_run = nethack_raw.get("persistent_run", False)
+            if type(persistent_run) is not bool:
+                raise AdapterError("nethack.persistent_run はtrue/falseで指定してください")
+            if persistent_run:
+                from .nethack import NethackCoordinatorAdapter
+                return NethackCoordinatorAdapter(g, game, spec)
     spec_name = _COORDINATOR_REGISTRY.get(game.adapter)
     if spec_name is None:
         raise AdapterError(
