@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "candidate_id": "canary-hold",
+  "version": "v1",
+  "command": ["python3", "brains/nethack_canary_hold.py"],
+  "timeout_s": 2.0,
+  "max_request_bytes": 32768,
+  "max_response_bytes": 16384,
+  "max_cases": 64,
+  "min_replay_cases": 1,
+  "expected_suite_id": null
+}

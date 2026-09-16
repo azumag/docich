@@ -61,6 +61,9 @@ jobs:
           tests/test_nethack_shadow_eval.py tests/test_nethack_retrospective.py tests/test_nethack_regression.py
           tests/test_nethack_candidate_eval.py tests/test_nethack_candidate_shadow.py
           tests/test_nethack_candidate_shadow_eval.py tests/test_nethack_canary.py
+          tests/test_nethack_canary_executor.py tests/test_nethack_canary_container.py
+          tests/test_nethack_canary_worker.py tests/test_nethack_canary_candidate_broker.py
+          tests/test_nethack_canary_image.py
           tests/test_ninvaders_wrapper.py tests/test_corner_boundary.py tests/test_paper_corner.py
           tests/test_paper_corner_manual.py tests/test_paper_corner_chatter_schedule.py
           tests/test_config.py tests/test_robots_config.py
