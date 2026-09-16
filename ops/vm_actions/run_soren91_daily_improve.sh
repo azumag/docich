@@ -235,8 +235,17 @@ classify_private_output() {
 
   # Model diagnostics remain private. Match only stable, non-secret reason
   # fragments and turn them into fixed exit categories for the owner workflow.
-  # Prefer the underlying OpenCode failure over the later missing legacy CLI.
+  # Prefer a specific full-prompt cause over the generic child-process error.
   if grep -Fq 'opencode provider failure (' "$out"; then failure_rc=100; return; fi
+  if grep -Eiq 'permission.{0,40}(denied|reject|blocked)|((tool|bash|read|glob|grep|list|webfetch|websearch).{0,40}(denied|reject|blocked))|denied.{0,40}permission|not allowed.{0,40}(tool|permission)|tool call.{0,40}(denied|reject)|PermissionDenied' "$out"; then failure_rc=114; return; fi
+  if grep -Eiq 'context.{0,60}(length|window|limit|too (large|long)|exceed)|input.{0,60}(too (large|long)|limit|exceed)|prompt.{0,60}(too (large|long)|limit|exceed)|maximum context|max(imum)? input|token limit exceeded' "$out"; then failure_rc=115; return; fi
+  if grep -Eiq 'max(imum)? output|output.{0,60}(too (large|long)|limit|exceed)|max_tokens|max tokens|finish_reason.{0,30}length' "$out"; then failure_rc=116; return; fi
+  if grep -Eiq 'bad request|invalid request|HTTP[^0-9]*400|status[^0-9]*400|unprocessable|HTTP[^0-9]*422|status[^0-9]*422' "$out"; then failure_rc=117; return; fi
+  if grep -Eiq 'content policy|safety policy|policy violation|moderation|unsafe|sensitive content' "$out"; then failure_rc=118; return; fi
+  if grep -Eiq 'maxBuffer|ERR_CHILD_PROCESS_STDIO_MAXBUFFER|stdout maxBuffer length exceeded|stderr maxBuffer length exceeded' "$out"; then failure_rc=119; return; fi
+  if grep -Eiq 'timed out|ETIMEDOUT|ERR_CHILD_PROCESS_TIMEOUT|signal=SIGTERM|SIGKILL' "$out"; then failure_rc=120; return; fi
+  if grep -Eiq 'ECONNRESET|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|socket hang up|network error|connection.{0,30}(reset|refused)|fetch failed|DNS' "$out"; then failure_rc=121; return; fi
+  if grep -Eiq 'HTTP[^0-9]*5[0-9][0-9]|status[^0-9]*5[0-9][0-9]|internal server error|service unavailable|bad gateway|gateway timeout|overloaded' "$out"; then failure_rc=122; return; fi
   if grep -Eq 'model returned empty text|opencode returned no strategy code|opencode returned no text' "$out"; then failure_rc=101; return; fi
   if grep -Eq 'opencode returned invalid JSON event|opencode returned unexpected event type:|opencode returned invalid text part|opencode returned invalid text event' "$out"; then failure_rc=105; return; fi
   if grep -Eq 'opencode returned error event|opencode returned error part|opencode returned tool/error event' "$out"; then failure_rc=106; return; fi
