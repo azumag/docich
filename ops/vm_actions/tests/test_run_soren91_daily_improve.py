@@ -54,8 +54,8 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("export AI_COMMON_AGENTS=opencode-go:deepseek-v4.1-flash", text)
         self.assertIn("export SOREN91_IMPROVE_OPENCODE_AGENT=opencode-go:deepseek-v4.1-flash", text)
-        self.assertIn("export SOREN91_TEXT_OPENCODE_TIMEOUT=90", text)
-        self.assertIn("export SOREN91_TEXT_OPENCODE_MODEL_TIMEOUT=90", text)
+        self.assertIn("export SOREN91_TEXT_OPENCODE_TIMEOUT=240", text)
+        self.assertIn("export SOREN91_TEXT_OPENCODE_MODEL_TIMEOUT=240", text)
         self.assertNotIn("export SOREN91_IMPROVE_OPENCODE_TIMEOUT=", text)
         self.assertNotIn("muse-spark-1.3-contributor-free", text)
 
