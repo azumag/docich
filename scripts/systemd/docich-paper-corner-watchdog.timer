@@ -1,0 +1,12 @@
+[Unit]
+Description=docich PAPER corner deadline watchdog timer
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=5s
+Persistent=false
+Unit=docich-paper-corner-watchdog.service
+
+[Install]
+WantedBy=timers.target
