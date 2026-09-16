@@ -1,11 +1,9 @@
 name: Soren merge-top A/B probe
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/soren-merge-top-ab-probe.yml'
-      - 'games/soviet_now'
+  workflow_run:
+    workflows: ['VM operations']
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -17,7 +15,21 @@ concurrency:
 
 jobs:
   start-probe:
-    if: ${{ github.repository_owner == 'azumag' && github.repository_owner_id == '9018513' && github.actor == 'azumag' && github.actor_id == 9018513 && github.ref == 'refs/heads/main' && github.ref_protected == true }}
+    if: >-
+      ${{
+        (github.event_name == 'workflow_run' &&
+         github.event.workflow_run.conclusion == 'success' &&
+         github.event.workflow_run.event == 'push' &&
+         github.event.workflow_run.head_branch == 'main' &&
+         github.event.workflow_run.actor.id == 9018513) ||
+        (github.event_name == 'workflow_dispatch' &&
+         github.repository_owner == 'azumag' &&
+         github.repository_owner_id == '9018513' &&
+         github.actor == 'azumag' &&
+         github.actor_id == 9018513 &&
+         github.ref == 'refs/heads/main' &&
+         github.ref_protected == true)
+      }}
     environment: vm-operations
     runs-on: ubuntu-24.04
     timeout-minutes: 8
@@ -26,22 +38,40 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           ref: main
+          fetch-depth: 2
           persist-credentials: false
           submodules: false
 
-      - name: Require event SHA to equal current main
+      - name: Select matching deployed revision
         id: current
         shell: bash
         env:
-          EVENT_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          TRIGGER_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           set -euo pipefail
           sha="$(git rev-parse HEAD)"
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$sha" == "$EVENT_SHA" ]]
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
+          if [[ "$EVENT_NAME" == 'workflow_run' ]]; then
+            if [[ "$sha" != "$TRIGGER_SHA" ]]; then
+              echo 'Current main has advanced beyond the completed VM deployment; skip stale A/B trigger.'
+              echo 'should_run=false' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            changed="$(git diff --name-only "$sha^" "$sha")"
+            if ! printf '%s\n' "$changed" | grep -Eq '^(\.github/workflows/soren-merge-top-ab-probe\.yml|games/soviet_now)$'; then
+              echo 'Completed deployment did not change the merge-top A/B workflow or Soren gitlink; skip.'
+              echo 'should_run=false' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          echo 'should_run=true' >> "$GITHUB_OUTPUT"
+
       - name: Configure pinned SSH client
+        if: ${{ steps.current.outputs.should_run == 'true' }}
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -61,7 +91,8 @@ jobs:
           chmod 600 "$RUNNER_TEMP/vm-ssh/key" "$RUNNER_TEMP/vm-ssh/known_hosts"
           printf 'port=%s\n' "$port" >> "$GITHUB_ENV"
 
-      - name: Wait for production to equal current main
+      - name: Confirm production equals deployed main
+        if: ${{ steps.current.outputs.should_run == 'true' }}
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -70,7 +101,7 @@ jobs:
         run: |
           set -euo pipefail
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
-          for _ in $(seq 1 48); do
+          for _ in $(seq 1 12); do
             status_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $SHA" || true)"
             if python3 - "$status_json" "$SHA" <<'PY'
           import json, sys
@@ -85,10 +116,11 @@ jobs:
             fi
             sleep 5
           done
-          echo 'production did not converge to current protected main' >&2
+          echo 'production does not match the completed main deployment' >&2
           exit 1
 
       - name: Wait for reviewed Soren projection
+        if: ${{ steps.current.outputs.should_run == 'true' }}
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -119,6 +151,7 @@ jobs:
           exit 1
 
       - name: Replace current A/B with adopting post-merge-risk A/B
+        if: ${{ steps.current.outputs.should_run == 'true' }}
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -133,9 +166,6 @@ jobs:
           reviewed=/home/ubuntu/docich/games/soviet_now
           live=/home/ubuntu/soren
 
-          # /home/ubuntu/soren is a projected live runtime: its Git HEAD is not
-          # expected to move with every parent gitlink bump. Verify the reviewed
-          # submodule lineage and the exact projected implementation file instead.
           git -C "$reviewed" merge-base --is-ancestor "$expected_soviet_sha" HEAD || exit 68
           cmp -s "$reviewed/strategy/ab_integrity.sh" "$live/strategy/ab_integrity.sh" || exit 69
           cd "$live"
@@ -146,7 +176,6 @@ jobs:
           state="${AB_STATE_FILE:-tmp/state/ab_state.json}"
           active_branch="${ACTIVE_BRANCH_FILE:-tmp/state/active_branch.json}"
 
-          # Supersede the old observe-only experiment by keeping A/current root.
           if [[ -f "$state" ]]; then
             ./tools/ab_ctl.sh finish A superseded_by_adopting_merge_top_probe >/dev/null
           fi
@@ -156,8 +185,6 @@ jobs:
           root="$(_ab_hash "${STRATEGY_FILE:-strategy.py}")"
           [[ -n "$root" ]] || exit 73
 
-          # Explicitly pin the baseline. If A wins this remains 2; if B wins the
-          # #377 finish wrapper promotes B's mode=1 into this persistent setting.
           ./set_toggle.sh ANALYZE_BOARD_MERGE_TOP_MODEL=2 >/dev/null
           ./set_toggle.sh AB_GATE_ENABLED=1 >/dev/null
           ./set_toggle.sh AB_GATE_DRY_RUN=0 >/dev/null
@@ -166,8 +193,6 @@ jobs:
 
           set +u
 
-          # This is an env-only A/B: B is byte-for-byte the already-running A.
-          # Permit the start only when the candidate hash exactly equals root.
           validate_strategy_with_helpers() {
             local target="$1" target_hash
             target_hash="$(_ab_hash "$target")"
