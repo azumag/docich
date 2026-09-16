@@ -86,6 +86,8 @@ EXIT_CATEGORIES = {
     142: "candidate_behavior_noop",
     143: "candidate_behavior_replay_failure",
     144: "candidate_behavior_replay_coverage",
+    145: "candidate_source_search_consistency",
+    146: "candidate_source_unpositioned_piece",
 }
 
 
