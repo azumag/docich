@@ -113,7 +113,11 @@ def snapshot_ready(output_dir: Path, marker: Path, now: float | None = None) -> 
 
     status = health.get("status")
     if status == "closed":
-        return health.get("quote_count") == 0 and health.get("market_open") is False
+        return (
+            health.get("quote_count") == 0
+            and health.get("market_open") is False
+            and _fresh_timestamp(health.get("as_of"), now)
+        )
     if status != "ok" or health.get("market_open") is not True:
         return False
     quote_count = health.get("quote_count")
@@ -131,6 +135,9 @@ def snapshot_ready(output_dir: Path, marker: Path, now: float | None = None) -> 
         return False
     quotes = payload.get("quotes")
     if not isinstance(quotes, list) or len(quotes) != quote_count:
+        return False
+    symbols = [row.get("symbol") for row in quotes if isinstance(row, dict)]
+    if len(symbols) != len(quotes) or len(set(symbols)) != len(symbols):
         return False
     return all(_quote_valid(row, now) for row in quotes)
 
