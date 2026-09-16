@@ -44,10 +44,11 @@ export SOREN91_IMPROVE_OPENCODE_TIMEOUT=90
 
 # Match the exact configuration pattern already proven by docich self-repair:
 # deny every permission, use one explicitly named primary one-step text agent,
-# disable sharing and project instructions. The small PATH shim created below
-# injects this fixed agent into the upstream direct JSON OpenCode transport.
-# This is scoped to the daily process only; normal Soren91 commentary/runtime
-# configuration is unchanged.
+# disable sharing and project instructions. text_ai.mjs also sets the
+# OPENCODE_PERMISSION env var for each model attempt, so force its daily-only
+# source to the same deny-all policy; otherwise its broader comment defaults
+# can override the intended no-tool daily execution boundary.
+export SOREN91_TEXT_OPENCODE_PERMISSION='{"*":"deny"}'
 export OPENCODE_DISABLE_CLAUDE_CODE=true
 export OPENCODE_DISABLE_PROJECT_CONFIG=true
 export OPENCODE_CONFIG_CONTENT='{"permission":{"*":"deny"},"agent":{"soren-daily-improve":{"mode":"primary","permission":{"*":"deny"},"steps":1}},"share":"disabled","instructions":[]}'
@@ -269,9 +270,11 @@ fi
 
 # A fixed, bounded model smoke distinguishes OpenCode/model/config/auth startup
 # failures from failures that only occur with the full retained-evidence prompt.
-# Its prompt and output contain no match evidence. Output still stays private.
+# Mirror the exact deny-all OPENCODE_PERMISSION used by the Node text path so
+# this smoke also covers the per-attempt permission merge. Output stays private.
 set +e
 printf '%s\n' 'Return exactly OK.' | \
+  OPENCODE_PERMISSION='{"*":"deny"}' \
   /usr/bin/timeout --kill-after=5s 20s \
   "$opencode_shim_dir/opencode" run --format json --model opencode-go/deepseek-v4.1-flash \
   >"$smoke_out" 2>&1
