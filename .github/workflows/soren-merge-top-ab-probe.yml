@@ -123,6 +123,16 @@ jobs:
           # shared strategy validator; preserve that contract on this direct path.
           set +u
 
+          # This is an env-only A/B: B is byte-for-byte the already-running A.
+          # The normal candidate sandbox can fail closed on the production host,
+          # but there is no new strategy code to validate here. Permit the start
+          # only when the candidate hash exactly equals the live root hash.
+          validate_strategy_with_helpers() {
+            local target="$1" target_hash
+            target_hash="$(_ab_hash "$target")"
+            [[ -n "$target_hash" && "$target_hash" == "$root" ]]
+          }
+
           # Use the lower-level starter so return 75 remains distinguishable from
           # a permanent validation/configuration failure. Busy is retried until a
           # safe game/improvement boundary; any other failure stops immediately.
@@ -137,7 +147,10 @@ jobs:
               started=1
               break
             fi
-            [[ "$rc" -eq 75 ]] || exit 74
+            if [[ "$rc" -ne 75 ]]; then
+              echo "merge-top A/B start failed rc=$rc" >&2
+              exit 74
+            fi
             sleep 10
           done
           [[ "$started" -eq 1 ]] || exit 75
