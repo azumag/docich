@@ -18,7 +18,10 @@ def test_canary_image_pins_base_and_official_nethack_source_and_playground():
     assert "sha256sum -c -" in text
     assert "VAR_PLAYGROUND='\"/canary/episode/playground\"'" in text
     assert "HACKDIR=/opt/nethack/playground" in text
-    assert "WANT_SYSTEM_LUA=1" in text
+    # NetHack's linux.500 evaluates this as a make conditional, so the setting
+    # must be inserted immediately before the conditional, not appended later.
+    assert "sed -i '/^ifdef WANT_SYSTEM_LUA/i WANT_SYSTEM_LUA=1'" in text
+    assert "make install WANT_SYSTEM_LUA=1" not in text
 
 
 def test_canary_image_has_runtime_attestation_labels():
