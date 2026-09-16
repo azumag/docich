@@ -7,7 +7,7 @@ Issue #490 の攻略AI。P3では **見えている情報だけを使う層分�
 - AIへ渡すのはプレイヤーが端末上で見えている情報だけ。
 - process memory、未探索map、未鑑定itemの真のidentity、見えていないmonster等は使わない。
 - spectatorのtile分類をAI semantic observationとして使わない。
-- `config/games/nethack.toml` の `agent.enabled=false` はP3bでも変更しない。
+- `config/games/nethack.toml` の `agent.enabled=false` はP3cでも変更しない。
 - 自動操作は明示的にレビュー・テストした小さいsurfaceだけを許可する。
 
 ## Normalized observation (P3a)
@@ -46,9 +46,7 @@ NethackObservation
 
 - `--More--` → Space
 
-### Mid-level
-
-P3bで **保守的な可視地形探索** を追加した。
+### Mid-level (P3b)
 
 `src/docich/nethack_exploration.py` は現在見えているmapだけをBFSし、1 observationにつき最大1歩だけ返す。
 
@@ -61,7 +59,7 @@ P3bで **保守的な可視地形探索** を追加した。
 >   downstairs tile
 ```
 
-上下階段の **マスへ歩くこと** は可能だが、階段コマンド `<` / `>` 自体は送らない。階層移動は長期進行判断なので後続のstrategic policyに残す。
+上下階段の **マスへ歩くこと** は可能だが、階段コマンド `<` / `>` 自体は送らない。
 
 自動で踏み込まないもの:
 
@@ -74,46 +72,101 @@ blank / unseen area
 その他unknown glyph
 ```
 
-探索memoryはvisible `Dlvl` ごとに持ち、visible cellとvisit countを記録する。frontier候補は:
+探索memoryはvisible `Dlvl` ごとにvisible cellとvisit countを保持する。frontier候補は visit count → distance → stable coordinates の順で決める。
 
-1. visit countが少ない
-2. 現在地から近い
-3. 座標順（replayをdeterministicにするtie-break）
-
-の順で選ぶ。
-
-ただし次の場合は探索actionを出さない。
+探索を止める条件:
 
 - `Hungry` → `seek_food`
 - HP <= 50% → `hold_low_hp`
 - `Blind` / `Conf` / `Stun` / `Hallu` → `hold_impaired`
-- 隣接にcreature glyph → `assess_contact`
-- player `@` が一意に特定できない → `inspect_screen`
-- safe cardinal pathが無い → `exploration_blocked`
+- 隣接creature → `assess_contact`
+- player `@` が一意でない → `inspect_screen`
+- safe pathなし → `exploration_blocked`
 
-隠れた罠など、人間にも見えていない情報は当然このpolicyでも回避できない。P3bは「可視情報から分かる危険を勝手に踏まない」範囲を保証する。
+隠れた罠など、人間にも見えていない情報は回避できない。P3bは「可視情報から分かる危険を勝手に踏まない」範囲を保証する。
 
-### Strategic
+### Strategic (P3c)
 
-まだLLM call自体は行わず、`requires_llm=true` のdecisionとして上位層へ渡す。
+P3cは **入力/出力schemaを作るだけ**で、まだモデル呼び出しもproposal実行も行わない。
 
-- HP <= 25%: `survival_emergency`
-- severe visible status: `status_emergency`
-- Weak/Fainting等: `food_emergency`
-- yes/no / direction / selection / naming prompt: `prompt_decision`
+#### Visible inventory parser
 
-未鑑定品、装備、branch progression、店、祭壇、階段を降りる判断等もP3c以降でここへ入れる。
+NetHack 5.0の通常UIが表示するinventory letter付き行だけを `src/docich/nethack_inventory.py` で読む。
+
+保存するもの:
+
+- inventory letter
+- 画面に出たdescriptionそのもの
+- visible quantity
+- visible `blessed` / `uncursed` / `cursed` word（無ければ `unknown`）
+- visible equipped annotation
+- visible `unpaid`
+- description中の単語から作るcoarse `category_hint`
+
+特に:
+
+```text
+c - a potion called cloudy
+```
+
+を見ても、`cloudy` が実際に何のpotionかを補完しない。`true_identity` のようなfield自体をschemaへ持たない。
+
+#### StrategicRequest
+
+`build_strategic_request()` は:
+
+```text
+intent / reason
+public observation summary
+visible inventory summary
+constraints
+```
+
+だけをJSON互換objectへする。constraintには「hidden stateを仮定しない」「未鑑定品の真のidentityを仮定しない」「proposalは助言であり直接実行しない」を含める。
+
+#### StrategicProposal
+
+将来LLMが返す候補schema:
+
+```text
+hold
+inspect
+move_to_stairs
+ascend
+descend
+consume
+equip
+use
+answer_prompt
+```
+
+`consume/equip/use` はinventory letter必須、`answer_prompt` は短いprompt answer必須。余計なinventory letterやprompt answerを別kindへ混ぜるとvalidation errorにする。
+
+**StrategicProposalはActionを持たない。** P3cではproposalからNetHack keyへ変換するexecutorを実装しない。従ってLLMを将来接続しても、それだけではitem使用・階段移動・prompt回答はゲームへ到達しない。
+
+#### Narration threshold
+
+`should_narrate()` は毎歩しゃべらないための土台。
+
+- strategic / `requires_llm=true`
+- survival/status/food emergency
+- prompt decision
+- contact assessment
+- exploration blocked
+- intentが変化したとき
+
+だけを主な読み上げ候補にする。通常の `explore_step` は読み上げない。
 
 ## Fail-closed action guard
 
-P3bの `assert_p3b_safe()` が許可する自動actionは2種類だけ。
+P3b/P3c時点で自動actionとして許可するのは:
 
 ```text
 1. tactical / advance_message / Space
 2. midlevel / explore_step / h|j|k|l の1キー
 ```
 
-攻撃コマンド、item使用、open、階段コマンド、prompt回答等をpolicy実装途中で誤って返すとguardで拒否する。
+攻撃、item使用、open、階段コマンド、prompt回答等はまだguardを通らない。
 
 ## Brain integration
 
@@ -127,21 +180,23 @@ TTY Observation
   -> agent loop
 ```
 
+P3cのstrategic schemaはこの横にある**未接続のadvisory境界**。次の段階でmodel dispatchを追加する場合も、直接agent actionへは繋がずproposal evaluator/executorを別に置く。
+
 標準configはまだ `enabled=false / brain=random` のままなので、これらのコードをマージしただけでは本番AI操作は開始しない。
 
 ## 次
 
-P3c:
+P3d:
 
-- inventory/menu parser
-- item risk model
-- equipment comparison
-- stairs/branch progression decision
-- strategic LLM request/response schema
-- narration threshold
-- LLM不調時のfail-closed fallback
+- strategic model dispatch（timeout / fallback / budget）
+- proposal evaluator
+- inventory letterが現在も同じitemを指すことの再確認
+- stairs progression rule
+- item risk / equipment comparison
+- narration delivery
+- executorごとの明示allowlist
 
-P3d/P4:
+P4:
 
 - NLE/maintained fork等のstructured observation比較
 - hidden information leak test
