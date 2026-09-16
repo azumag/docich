@@ -5,6 +5,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 UNIT = ROOT / "scripts" / "systemd" / "docich-market-data-fx.service"
+PREFLIGHT = ROOT / "ops" / "vm_actions" / "check_oanda_practice_env.sh"
 WORKFLOW = ROOT / ".github" / "workflows" / "market-data-fx.yml"
 CONFIG = ROOT / "config" / "market-paper.toml"
 
@@ -15,6 +16,7 @@ class FxMarketDataProviderTests(unittest.TestCase):
         self.assertIn(".venv-trading/bin/python3 -m docich.trading.markets.oanda_market_data worker", text)
         self.assertIn("EnvironmentFile=%h/.config/docich/oanda-practice.env", text)
         self.assertNotIn("EnvironmentFile=-", text)
+        self.assertIn("ExecStartPre=/usr/bin/bash __DOCICH_ROOT__/ops/vm_actions/check_oanda_practice_env.sh", text)
         self.assertIn("--symbols USD_JPY,EUR_JPY", text)
         self.assertIn("--interval 5", text)
         self.assertIn("NoNewPrivileges=true", text)
@@ -25,6 +27,21 @@ class FxMarketDataProviderTests(unittest.TestCase):
             "DOCICH_OANDA_TOKEN=fixture", "DOCICH_OANDA_ACCOUNT_ID=101-",
         ):
             self.assertNotIn(forbidden, text)
+
+    def test_credential_preflight_requires_owner_mode_600_and_exact_keys(self):
+        text = PREFLIGHT.read_text(encoding="utf-8")
+        self.assertIn("! -L", text)
+        self.assertIn("stat -c '%u'", text)
+        self.assertIn("$(id -u)", text)
+        self.assertIn("stat -c '%a'", text)
+        self.assertIn('== "600"', text)
+        self.assertIn("DOCICH_OANDA_ACCOUNT_ID", text)
+        self.assertIn("DOCICH_OANDA_TOKEN", text)
+        self.assertIn("account_count", text)
+        self.assertIn("token_count", text)
+        # The failure path must remain generic: never echo $line/$value.
+        self.assertNotIn('echo "$line"', text)
+        self.assertNotIn('echo "$value"', text)
 
     def test_owner_workflow_controls_fx_provider_not_fx_paper(self):
         text = WORKFLOW.read_text(encoding="utf-8")
