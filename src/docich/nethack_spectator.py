@@ -2,7 +2,7 @@
 
 This module deliberately does not participate in gameplay observation or input.
 It converts an already-observed TTY frame into a browser/OBS-friendly HTML
-presentation.  The boundary is intentionally small so a later NLE/glyph source
+presentation. The boundary is intentionally small so a later NLE/glyph source
 or a real tileset can replace the text classifier without changing the corner,
 agent, or save/resume lifecycle.
 """
@@ -38,7 +38,7 @@ def classify_char(char: str) -> str:
     """Return a presentation-only coarse cell class.
 
     NetHack characters are context-sensitive, so this is intentionally not an
-    AI semantic decoder.  Ambiguous glyphs remain coarse visual classes.
+    AI semantic decoder. Ambiguous glyphs remain coarse visual classes.
     """
     if char == "@":
         return "player"
@@ -73,7 +73,7 @@ def parse_tty(text: str, *, cols: int = DEFAULT_COLS, rows: int = DEFAULT_ROWS) 
         lines.append(" " * cols)
 
     # NetHack's classic TTY layout normally reserves the first row for a
-    # message and the final two rows for status.  Keeping this extraction
+    # message and the final two rows for status. Keeping this extraction
     # conservative makes malformed/partial captures fail soft for presentation.
     message = lines[0].rstrip()
     status = tuple(line.rstrip() for line in lines[-2:] if line.rstrip())
@@ -93,10 +93,40 @@ def parse_tty(text: str, *, cols: int = DEFAULT_COLS, rows: int = DEFAULT_ROWS) 
     )
 
 
-def render_html(frame: Frame, *, title: str = "NetHack") -> str:
+def blank_frame(
+    message: str,
+    *,
+    cols: int = DEFAULT_COLS,
+    rows: int = DEFAULT_ROWS,
+) -> Frame:
+    """Create an empty viewer frame without inventing gameplay state."""
+    if type(cols) is not int or cols < 1:
+        raise ValueError("cols must be a positive integer")
+    if type(rows) is not int or rows < 3:
+        raise ValueError("rows must be an integer >= 3")
+    map_rows = rows - 3
+    cells = tuple(
+        Cell(x=x, y=y, char=" ", kind="void")
+        for y in range(map_rows)
+        for x in range(cols)
+    )
+    return Frame(cols=cols, rows=map_rows, cells=cells, message=message, status=())
+
+
+def render_html(
+    frame: Frame,
+    *,
+    title: str = "NetHack",
+    auto_refresh_ms: int | None = None,
+) -> str:
+    if auto_refresh_ms is not None and (
+        type(auto_refresh_ms) is not int or not 100 <= auto_refresh_ms <= 60_000
+    ):
+        raise ValueError("auto_refresh_ms must be an integer between 100 and 60000")
+
     cells = []
     for cell in frame.cells:
-        char = html.escape(cell.char if cell.char != " " else "&nbsp;")
+        char = html.escape(cell.char)
         if cell.char == " ":
             char = "&nbsp;"
         cells.append(
@@ -104,6 +134,12 @@ def render_html(frame: Frame, *, title: str = "NetHack") -> str:
         )
 
     status_html = "".join(f"<div>{html.escape(line)}</div>" for line in frame.status)
+    refresh_script = ""
+    if auto_refresh_ms is not None:
+        refresh_script = (
+            "<script>window.setTimeout(function(){window.location.reload();},"
+            f"{auto_refresh_ms});</script>"
+        )
     return f"""<!doctype html>
 <html lang="ja">
 <head>
@@ -131,6 +167,7 @@ body {{ margin:0; background:#07090c; color:#f3f4f6; font-family:ui-monospace,SF
 .other {{ color:#d1d5db; }}
 .void {{ color:transparent; }}
 </style>
+{refresh_script}
 </head>
 <body>
 <div class="wrap">
@@ -156,7 +193,11 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     source = Path(args.input)
     target = Path(args.output)
-    frame = parse_tty(source.read_text(encoding="utf-8", errors="replace"), cols=args.cols, rows=args.rows)
+    frame = parse_tty(
+        source.read_text(encoding="utf-8", errors="replace"),
+        cols=args.cols,
+        rows=args.rows,
+    )
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(render_html(frame), encoding="utf-8")
     return 0
