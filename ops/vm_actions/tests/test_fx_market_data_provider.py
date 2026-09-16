@@ -58,6 +58,14 @@ class FxMarketDataProviderTests(unittest.TestCase):
         self.assertNotIn("DOCICH_OANDA_TOKEN", text)
         self.assertNotIn("DOCICH_OANDA_ACCOUNT_ID", text)
 
+    def test_owner_workflow_installs_reviewed_units_before_first_provider_action(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        install = text.index("MARKET_PAPER_ACTION=install")
+        provider = text.index("MARKET_PAPER_ACTION=provider-%s")
+        self.assertLess(install, provider)
+        # The install action is intentionally the non-starting unit refresh path.
+        self.assertNotIn("MARKET_PAPER_ACTION=enable\n", text)
+
     def test_fx_returns_to_fail_closed_until_provider_is_verified(self):
         config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
         self.assertIs(config["fx"]["enabled"], False)
