@@ -212,7 +212,10 @@ class NethackAdvisoryController:
             line = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
             fd = os.open(self.log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
             try:
-                os.write(fd, line.encode("utf-8"))
+                encoded = line.encode("utf-8")
+                offset = 0
+                while offset < len(encoded):
+                    offset += os.write(fd, encoded[offset:])
                 os.fsync(fd)
             finally:
                 os.close(fd)
@@ -224,12 +227,13 @@ class NethackAdvisoryController:
         self,
         decision: PolicyDecision,
         *,
+        previous_intent: str | None,
         proposal_narration: str = "",
         proposal_rationale: str = "",
     ) -> bool:
         if self._narrator is None:
             return False
-        if not should_narrate(decision, previous_intent=self._previous_intent):
+        if not should_narrate(decision, previous_intent=previous_intent):
             return False
         now = self._monotonic()
         if (
@@ -259,16 +263,16 @@ class NethackAdvisoryController:
         self._previous_intent = decision.intent
 
         if not self.config.enabled or self.strategist is None:
-            narrated = self._narrate(decision)
+            narrated = self._narrate(decision, previous_intent=previous_intent)
             return AdvisoryOutcome(status="disabled", narrated=narrated)
 
         if not decision.requires_llm:
-            narrated = self._narrate(decision)
+            narrated = self._narrate(decision, previous_intent=previous_intent)
             return AdvisoryOutcome(status="not_needed", narrated=narrated)
 
         now = self._monotonic()
         if self._calls >= self.config.max_calls:
-            narrated = self._narrate(decision)
+            narrated = self._narrate(decision, previous_intent=previous_intent)
             outcome = AdvisoryOutcome(status="budget_exhausted", call_index=self._calls, narrated=narrated)
             self._append_log(
                 {
@@ -288,7 +292,7 @@ class NethackAdvisoryController:
             and self._last_dispatch_intent == decision.intent
             and now - self._last_dispatch_at < self.config.cooldown_s
         ):
-            narrated = self._narrate(decision)
+            narrated = self._narrate(decision, previous_intent=previous_intent)
             return AdvisoryOutcome(status="cooldown", call_index=self._calls, narrated=narrated)
 
         inventory = parse_visible_inventory(raw_text)
@@ -318,12 +322,13 @@ class NethackAdvisoryController:
                 current_observation=obs,
                 current_inventory=inventory,
             )
-            # Keep P3e advisory-only.  The plan is computed for diagnostics but
+            # Keep P3e advisory-only. The plan is computed for diagnostics but
             # its Actions are deliberately not returned to the brain.
             execution_plan(evaluation)
 
         narrated = self._narrate(
             decision,
+            previous_intent=previous_intent,
             proposal_narration=proposal_narration,
             proposal_rationale=proposal_rationale,
         )
@@ -358,8 +363,4 @@ class NethackAdvisoryController:
                 "execution": "advisory_only",
             }
         )
-        # Preserve caller-visible previous intent semantics for narration even
-        # though `_narrate` reads the controller state.
-        if previous_intent is None and self._previous_intent is None:
-            self._previous_intent = decision.intent
         return outcome
