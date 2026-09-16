@@ -55,6 +55,7 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
 
     def test_runner_isolates_daily_opencode_with_proven_agent_schema(self):
         text = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("export SOREN91_TEXT_OPENCODE_PERMISSION='{\"*\":\"deny\"}'", text)
         self.assertIn("export OPENCODE_DISABLE_CLAUDE_CODE=true", text)
         self.assertIn("export OPENCODE_DISABLE_PROJECT_CONFIG=true", text)
         self.assertIn("export OPENCODE_CONFIG_CONTENT=", text)
@@ -116,6 +117,7 @@ class Soren91DailyImproveOpsTests(unittest.TestCase):
         real = text.index("run_daily run", smoke)
         self.assertLess(smoke, real)
         self.assertIn('smoke_out="$(mktemp /home/ubuntu/.soren91-opencode-smoke.XXXXXX)"', text)
+        self.assertIn("OPENCODE_PERMISSION='{\"*\":\"deny\"}'", text)
         self.assertIn('/usr/bin/timeout --kill-after=5s 20s', text)
         self.assertIn('"$opencode_shim_dir/opencode" run --format json --model opencode-go/deepseek-v4.1-flash', text)
         self.assertIn('>"$smoke_out" 2>&1', text)
