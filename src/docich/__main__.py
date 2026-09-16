@@ -146,6 +146,12 @@ if nethack_regression_argv is not None:
 
     sys.exit(nethack_regression_main(nethack_regression_argv))
 
+nethack_candidate_argv = _nethack_sidecar_argv("nethack-candidate-evaluate", sys.argv[1:])
+if nethack_candidate_argv is not None:
+    from .nethack_candidate_eval import main as nethack_candidate_main
+
+    sys.exit(nethack_candidate_main(nethack_candidate_argv))
+
 from .cli import main
 
 sys.exit(main())
