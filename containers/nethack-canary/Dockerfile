@@ -6,8 +6,7 @@ ARG NETHACK_SHA256=2959b7886aac76185b90aea0c9f80d14343f604de0ae96b3dd2a760f7ab3b
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       build-essential ca-certificates curl git groff gzip liblua5.4-dev libncurses-dev \
-       lua5.4 pkg-config uuid-dev \
+       build-essential ca-certificates curl groff gzip libncurses-dev pkg-config uuid-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
@@ -20,12 +19,6 @@ RUN curl --fail --location --silent --show-error \
     && rm "/tmp/${NETHACK_ARCHIVE}"
 
 WORKDIR /build/nethack
-# NetHack 5.0's linux.500 gates system-Lua detection behind
-# `ifdef WANT_SYSTEM_LUA`. Define it *before* that conditional is parsed;
-# appending it at the end of the hints file or only passing it to `make` is too
-# late for setup.sh's generated makefiles and falls back to bundled Lua.
-RUN sed -i '/^ifdef WANT_SYSTEM_LUA/i WANT_SYSTEM_LUA=1' sys/unix/hints/linux.500
-
 # NetHack 5.0 Unix paths are compile-time settings. Keep immutable support
 # data under /opt and route every mutable game file into the one bind-mounted
 # episode playground. Wizard/explore/shell access stays disabled.
@@ -47,6 +40,10 @@ RUN sed -i 's/^WIZARDS=.*/WIZARDS=/' sys/unix/sysconf \
     && cd sys/unix \
     && sh setup.sh hints/linux.500 \
     && cd /build/nethack \
+    # NetHack 5.0 upstream and Homebrew both use fetch-lua for Unix builds.
+    # The upstream make target performs its normal checksum verification;
+    # never set NOCHKSUM here.
+    && make fetch-lua \
     && make install WANT_WIN_TTY=1
 
 RUN test -x /opt/nethack/playground/nethack \
@@ -59,7 +56,7 @@ LABEL org.docich.nethack-canary.abi="1" \
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       gzip liblua5.4-0 libncurses6 libtinfo6 libuuid1 tmux \
+       gzip libncurses6 libtinfo6 libuuid1 tmux \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /opt/nethack /opt/nethack
