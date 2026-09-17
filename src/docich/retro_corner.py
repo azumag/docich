@@ -385,7 +385,7 @@ class RetroCornerManager:
         atomic_write_json(self.state_path, state)
 
     def _due_game(self, now: dt.datetime, state: dict) -> str | None:
-        games = self.config.games if self.config.daily_each_game else [select_game(self.config.games, now.date())]
+        games = self.config.games if getattr(self.config, "daily_each_game", False) else [select_game(self.config.games, now.date())]
         attempted = state.get("daily_attempts", {}).get(now.date().isoformat(), [])
         for game in sorted(games, key=lambda name: (scheduled_start(self.config, name, now.date()), name)):
             if game not in attempted and now >= scheduled_start(self.config, game, now.date()):
@@ -587,7 +587,7 @@ class RetroCornerManager:
             raise RetroCornerError("retro cornerは既にactiveです")
         if (
             scheduled
-            and not self.config.daily_each_game
+            and not getattr(self.config, "daily_each_game", False)
             and existing.get("date") == now.date().isoformat()
             and existing.get("status") in TERMINAL_STATUSES
         ):
@@ -595,7 +595,11 @@ class RetroCornerManager:
 
         target = select_game(self.config.games, now.date())
         attempts = dict(existing.get("daily_attempts") or {})
-        if self.config.daily_each_game:
+        # サブクラス corner (soren91/nethack) の config dataclass には新フィールドが
+        # 無いため、既定値は getattr で落とす (後方互換)。
+        daily_each_game = getattr(self.config, "daily_each_game", False)
+        randomize_start = getattr(self.config, "randomize_start", False)
+        if daily_each_game:
             due = self._due_game(now, existing)
             if due is None:
                 if set(attempts.get(now.date().isoformat(), [])) >= set(self.config.games):
@@ -605,7 +609,7 @@ class RetroCornerManager:
             if scheduled_start(self.config, target, now.date()) > now:
                 return None, CornerResult("noop", detail="start-window-not-due")
             attempts.setdefault(now.date().isoformat(), []).append(target)
-        elif self.config.randomize_start:
+        elif randomize_start:
             if scheduled_start(self.config, target, now.date()) > now:
                 return None, CornerResult("noop", detail="start-window-not-due")
 
@@ -624,9 +628,9 @@ class RetroCornerManager:
             "completed_at": None,
             "last_error": None,
         }
-        if self.config.daily_each_game:
+        if getattr(self.config, "daily_each_game", False):
             state["daily_attempts"] = attempts
-            state["target_matches"] = self.config.target_matches
+            state["target_matches"] = getattr(self.config, "target_matches", 3)
         self._write_state(state)
         try:
             self._transition_to(previous, target)
