@@ -1,50 +1,72 @@
 # レトロ日次3試合: ローカル実装の途中経過
 
-本番反映・自動プレイ有効化の完了記録ではない。2026-09-18、
-`feature/retro-daily-three`、base `a25c201`。
+**2026-09-18更新: A/B/Cの中核実装は完了 (feature/retro-daily-three)。**
+本番反映・VM実測は未実施。base `a25c201`。
 
-## 実装した範囲
+## 実装済み (検証済み)
 
-- `acc03de` の ninvaders 3試合制御を保持し、0点保存と保存失敗時の再開抑止を追加。
-- tracked `games/cli-wrappers/nsnake_docich.sh` に既定3試合の終了画面待機を追加。
-  `NSNAKE_BIN` / `NSNAKE_DRIVER_INTERVAL` でローカルfake gameを使って検証できる。
-  終了判定とスコア抽出は同じcaptureを使い、先頭ゼロを正規化する。
-- 両wrapperの試合数は正の整数のみ。試合終了・保存後に次回開始キーを抑止し、
-  実行中試合を終了させるキーやkillは追加していない。
-- `origin/codex/robots-game` (`63bd0ef`) の ninvaders/nsnake brain と
-  対応テストを復元。標準ライブラリのみで動作する。
-  `run/brain/<game>/weights.json` はtracked素材に存在せず、未作成なら
-  各brain内の `DEFAULT_WEIGHTS` を使用する。
+- **A スケジューラ** (`5f5263f`, `05b1b67`):
+  `RetroCornerConfig` に `daily_each_game` / `randomize_start` /
+  `start_window_minutes` / `target_matches` を追加。既定は現行挙動のまま
+  (既存テスト62件は無変更で通る)。
+  開始時刻は `scheduled_start()` が `random.Random(f"{date}|{game}")` で
+  `start_hour:00` から窓内オフセット秒を決定的に導出し、再起動・再tickで不変。
+  23:59を超える窓は当日中にクランプ。`_begin_locked` は due チェックと
+  実行済み試行 (state `daily_attempts`) を持ち、1日1ゲーム×各ゲームで回す。
+  3試合検知は scorelog (`<state_dir>/scores/<game>.jsonl`) のコーナー開始
+  以降の件数で行い、検知できたら `_finish_locked` で早期終了。
+  検知できなければ従来どおり `ends_at` で終了 (時間上限は必ず保持)。
+  プレイ入力は止めない。legacy 1ゲームモードは単一sleepの元挙動を維持。
+  soren91/nethack corner サブクラスは `getattr` フォールバックで後方互換。
+  program boundary 経路 (`require_program_boundary=true`) + daily_each_game の
+  同日複数ゲーム実行をテストで検証 (`TestDailyEachGameWithProgramBoundary`)。
+  `improve-once` に `--game` を追加し、spawn argv が終了ゲームを明示
+  (`select_game(日付)` の誤選択を解消)。
+- **B 改善dispatch** (`c0e58f3`): `run_corner_improve` のハードコードを
+  `BOT_GAMES = ("nsnake", "ninvaders")` レジストリに置換。
+  `origin/codex/robots-game` の `bot_eval.py` (tmux headless evaluator) を復元し、
+  生バイナリ (wrapperでない) + bot_eval 自前の start/retry キーで評価。
+  `maxed` (turn cap到達) 試合は完走扱いにせず昇格 gate を fail closed。
+  候補重みは一時ディレクトリの weights.json を `DOCICH_BRAIN_WEIGHTS` env で
+  brain に渡す (グローバル共有ファイルは書き換えない、並行安全)。
+  真偽値重み (nsnake `tail_passable`) は LLM 提案キーから除外。
+  `DOCICH_ALLOW_REAL_AI=1` ガードは維持。gnurobots 経路は不変。
+  昇格先は既存 `strategy_path(g.state_dir, game)`。
+- **C 設定と自動プレイ** (`9b036d9`): live `[retro_corner]` を
+  `games = ["ninvaders", "nsnake"]` + `daily_each_game = true` +
+  `randomize_start = true` + `target_matches = 3` + 非空 `improve_agents`
+  (両ゲームが bot_eval 対応のため)。`config/games/nsnake.toml` は tracked
+  wrapper 参照へ変更し、`[agent] enabled=true brain="command"
+  command=["python3", "brains/nsnake/brain.py"]` (hanjuku-hero と同一スキーマ)。
+  wrapper は menu/retry/score 記録/3試合上限のみ担当。ninvaders は wrapper
+  自走 (`self_play=true`) を維持。pacman4console / moon-buggy / bastet は
+  tracked wrapper と動作 brain が無いため games に追加しない。
+- 旧実装 (`8c200b2`): wrapper 0点保存/保存失敗時再開抑止/上限検証。
 
-## 有効化前の必須残件
+## 検証
 
-1. **試合境界契約:** ninvaders/nsnakeの現configは
-   `lifecycle.require_round_boundary=false`。CLI adapterの境界検知は
-   robotsの `Another game?` 系であり、wrapperが結果保存したことと次回開始を
-   止めたことを示すruntime世代に紐づくackがまだない。
-   `ends_at` 到達時の既存immediate-quiesceをそのまま新日次制御に使ってはならない。
-   境界を確認できなければ待機/失敗にし、プレイ入力は継続する必要がある。
-2. **スケジューラ:** `select_game` の既存決定性を維持したまま、各ゲーム・日付別の
-   決定的ランダム時刻と実行済ledgerを追加する。日跨ぎ、再起動、program_slotの
-   待機/直列化、3試合早期終了と時間切れ時の安全な境界待ちの回帰テストが必要。
-3. **自動プレイ:** 復元brainは未接続。nsnake wrapperはmenu/retryだけで方向入力を
-   行わない。ninvadersは現在のwrapper自走を維持する。
-   nsnakeのconfigは依然 `/usr/local/bin/nsnake_docich` を参照し、未有効化。
-   brainとwrapperの入力所有権を分け、tracked wrapperを参照してから有効化する。
-4. **改善:** `corner_improve` は依然gnurobotsのみ。未マージ素材の `bot_eval.py` は
-   wrapper自動再開との競合、turn capを完走と扱うこと、評価戦略ファイルの受渡しを
-   解消してから採用する。現brainの `run/brain/.../weights.json` と昇格先の
-   `<state_dir>/resolver/<game>_strategy.json` を統一する必要がある。
-   日付だけで改善ゲームを再選択せず、終了したゲームを明示するargvと
-   ゲーム別終了stateが必要（現状次コーナーで `retro_corner.json` が上書きされる）。
-5. **設定:** 上記未接続のためlive games / improve_agentsは変更していない。
-   pacman4console / moon-buggy / bastetも未対応。
+```
+tests/test_retro_daily_schedule.py tests/test_retro_corner.py
+tests/test_retro_corner_manual.py tests/test_corner_boundary.py
+tests/test_corner_improve.py tests/test_corner_improve_dispatch.py
+tests/test_nsnake_agent_config.py tests/test_ninvaders_wrapper.py
+tests/test_retro_wrapper_limits.py tests/test_ninvaders_brain.py
+tests/test_nsnake_brain.py tests/test_soren91_corner.py
+tests/test_nethack_corner.py
+→ 173 passed, 45 subtests passed
+```
 
-## 検証と制約
+base `a25c201` のクリーン worktree で全テストを走らせ、既存失敗 10件
+(test_tts 2 / test_chat 2 / test_overlay 1 / test_overlay_interop 4 /
+test_hanjuku_brain 1) は環境起因と確定 (今回の退行ではない)。
 
-fake tmux/fake gameで開始キー数、0点を含む保存数、保存失敗時の再開抑止を検証。
-これは実ゲームのスコア抽出・盤面解析・無人完走の証明ではない。
-ローカルにはtmuxがあるが `/usr/games/nsnake` はない。
-VM・共通配信基盤・本番設定への操作は行っていない。
-バナーはスクリプト不在で未実施。独立レビューは子エージェント深度制限で未実施。
-root handoff.mdはこのworktreeに存在せず、作成・コミットしていない。
+## 未検証
+
+- 実ゲーム (`/usr/games/ninvaders`, `/usr/games/nsnake`) はローカルに無く、
+  headless 評価の実走・無人完走は未実測。
+- `run/brain/<game>/weights.json` 未作成 (brain内蔵既定値で動作)。
+  改善昇格後の live brain 反映は follow-up (昇格先 `<state_dir>/resolver/`
+  と brain 参照先 `run/brain/` の統合が必要)。
+- VM実測・本番反映・program boundary 実運用との干渉は未実施。
+  本番適用は docich 正規フロー (branch→PR→CI→protected main→VM gateway)。
+- ローカルには tmux あり。バナー未実施 (スクリプト不在)。音声不要。
