@@ -97,11 +97,44 @@ def build_proposal_request(
             or (
                 "return the full catalog with schema_version and an actions list",
                 "only use ids from allowed_actions (handlers are reviewed code)",
-                "keys are fixed per action id; do not invent predicates or placeholders",
+                "risk_class and key_pattern are fixed per action id",
+                "only enabled, priority, preconditions, postconditions, and description may change",
                 "prefer the smallest change that removes the stall",
             )
         ),
     }
+
+
+def _proposal_baseline(
+    request: Mapping[str, object], *, allowed_action_ids: frozenset[str]
+) -> tuple[ActionSpec, ...]:
+    """Read the reviewed catalog embedded in the request and fail closed."""
+    try:
+        return parse_action_catalog(request.get("catalog"), allowed_action_ids=allowed_action_ids)
+    except ValueError as exc:
+        raise CatalogProposalError("proposer request does not contain a valid baseline catalog") from exc
+
+
+def _validate_candidate_contract(
+    baseline: tuple[ActionSpec, ...], candidate: tuple[ActionSpec, ...]
+) -> None:
+    """Keep code-owned action identity and key effects immutable.
+
+    The proposer may tune only the documented data surface.  Replacing or
+    omitting an action, changing its reviewed risk class, or changing the key
+    pattern would silently expand the capability boundary and must require a
+    reviewed code change instead of an LLM/data-only proposal.
+    """
+    baseline_by_id = {spec.id: spec for spec in baseline}
+    candidate_by_id = {spec.id: spec for spec in candidate}
+    if candidate_by_id.keys() != baseline_by_id.keys():
+        raise CatalogProposalError("proposer catalog must preserve the full reviewed action set")
+    for spec_id, baseline_spec in baseline_by_id.items():
+        candidate_spec = candidate_by_id[spec_id]
+        if candidate_spec.risk_class != baseline_spec.risk_class:
+            raise CatalogProposalError(f"proposer catalog changed fixed risk_class for {spec_id}")
+        if candidate_spec.key_pattern != baseline_spec.key_pattern:
+            raise CatalogProposalError(f"proposer catalog changed fixed key_pattern for {spec_id}")
 
 
 @dataclass(frozen=True)
@@ -126,6 +159,7 @@ class CommandCatalogProposer:
         *,
         allowed_action_ids: frozenset[str],
     ) -> tuple[ActionSpec, ...]:
+        baseline = _proposal_baseline(request, allowed_action_ids=allowed_action_ids)
         payload = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         if len(payload) > self.max_request_bytes:
             raise CatalogProposalError("proposer request exceeds size limit")
@@ -149,6 +183,8 @@ class CommandCatalogProposer:
         except (UnicodeError, json.JSONDecodeError) as exc:
             raise CatalogProposalError("proposer response is not valid JSON") from exc
         try:
-            return parse_action_catalog(raw, allowed_action_ids=allowed_action_ids)
+            candidate = parse_action_catalog(raw, allowed_action_ids=allowed_action_ids)
         except ValueError as exc:
             raise CatalogProposalError(f"proposer catalog is invalid: {exc}") from exc
+        _validate_candidate_contract(baseline, candidate)
+        return candidate
