@@ -4,7 +4,7 @@ title = "Moon Buggy"
 adapter = "cli"
 
 # moon-buggy はタイトル起動・試合終了時にハイスコア画面 ("y,RET:new game")
-# を出す (同一プロセス継続)。wrapper (/usr/local/bin/moon-buggy_docich) が
+# を出す (同一プロセス継続)。wrapper (/bin/sh games/cli-wrappers/moon-buggy_docich.sh) が
 # 開始・再開キーを駆動し、最終スコアを scorelog へ追記する。docich CLI adapter
 # には wrapper 型ゲームの丸境界フックがまだ無いため、切替は従来の
 # immediate-quiesce 経路を使う。
@@ -12,14 +12,26 @@ adapter = "cli"
 require_round_boundary = false
 
 [cli]
-command = "/usr/local/bin/moon-buggy_docich"
+command = "/bin/sh games/cli-wrappers/moon-buggy_docich.sh"
 cols = 80
 rows = 24
 font = "monospace"
 font_size = 18
 
 [agent]
-enabled = false  # wrapper が無人プレイする (bot は issue #15 の AI 方針で別途)
+# ジャンプ・射撃は brain、開始・再開は wrapper が所有する。
+# DOCICH_BRAIN_WEIGHTS または run/brain/moon-buggy/weights.json を毎回読む。
+enabled = true
+brain = "command"
+command = ["python3", "brains/moon-buggy/brain.py"]
+interval_ms = 200
+
+[corner]
+self_play = true
+intro = "Moon Buggyは月面を走る端末ゲームです。自動ジャンプとレーザーで走行を続けます。"
+
+[retro_corner]
+unattended = true
 
 # Twitch 配信カテゴリー・タイトル連動 (soviet_now update_stream_game.sh が読む)。
 # Moon Buggy (207111248) を採用 (照合済み)。
