@@ -75,6 +75,11 @@ WEBUI_ALLOWLIST = {
     "RADIO_PREPASS_AGENTS",
     "COMMENT_AGENTS",
     "COMMENT_TRANSLATION_AGENTS",
+    "RADIO_JIJI_RESEARCH_AGENTS",
+    "RADIO_FACT_CHECK_AGENTS",
+    "COMMENT_CLASSIFIER_AGENTS",
+    "COMMENT_CLASSIFIER_EDIT_AGENTS",
+    "COMMENT_TRANSLATION_MAX_ATTEMPTS",
     # backoff
     "AI_BACKOFF_SEC_ITEMS",
     "AI_AGENT_BACKOFF_SEC",
@@ -101,13 +106,18 @@ WEBUI_ALLOWLIST = {
 
 # hard defaults from core/config.sh
 DEFAULTS: dict[str, str] = {
-    "AI_COMMON_AGENTS": "opencode:deepseek-v4-flash-free,codex:amd-token-factory-deepseek-v4-flash,codex:openrouter/free,local,codex:deepseek-v4-flash,codex:minimax-m3,opencode-go:muse-spark-1.2-contributor",
-    "MODEL_IMPROVE_LIST": "opencode:deepseek-v4-flash-free,codex:amd-token-factory-deepseek-v4-flash,codex:deepseek-v4-flash,codex:minimax-m3",
+    "AI_COMMON_AGENTS": "opencode-go:union-alpha,openrouter:stealth/union-alpha,opencode:muse-spark-1.3-contributor-free,opencode:muse-spark-1.2-contributor-free,vercel:minimax/minimax-m3-free,vercel:poolside/laguna-s-2.1-free,vercel:inclusionai/ling-3.0-flash-fin,vercel:zai/glm-5.3-flash,vercel:xiaomi/mimo-v2.5,vercel:alibaba/qwen3.8-flash,vercel:xiaomi/mimo-v2.5-pro,amd:DeepSeek-V4-Flash,opencode-go:muse-spark-1.3-contributor,opencode-go:muse-spark-1.2-contributor,opencode-go:deepseek-v4.1-flash,opencode-go:deepseek-v4-flash",
+    "MODEL_IMPROVE_LIST": "opencode-go:union-alpha,openrouter:stealth/union-alpha,opencode:muse-spark-1.3-contributor-free,opencode:muse-spark-1.2-contributor-free,opencode-go:muse-spark-1.3-contributor,opencode-go:muse-spark-1.2-contributor,opencode-go:deepseek-v4.1-flash,opencode-go:deepseek-v4-flash",
     "MODEL_IMPROVE_PEAK_LIST": "",  # inherits MODEL_IMPROVE_LIST
     "RADIO_AGENTS": "",  # inherits AI_COMMON_AGENTS
     "RADIO_PREPASS_AGENTS": "",  # inherits AI_COMMON_AGENTS
     "COMMENT_AGENTS": "",  # inherits AI_COMMON_AGENTS
     "COMMENT_TRANSLATION_AGENTS": "",  # inherits COMMENT_AGENTS
+    "RADIO_JIJI_RESEARCH_AGENTS": "opencode-go:union-alpha,openrouter:stealth/union-alpha,opencode:muse-spark-1.3-contributor-free,amd:DeepSeek-V4-Flash",
+    "RADIO_FACT_CHECK_AGENTS": "opencode-go:union-alpha,openrouter:stealth/union-alpha,opencode:muse-spark-1.3-contributor-free,opencode-go:deepseek-v4.1-flash,amd:DeepSeek-V4-Flash,opencode-go:muse-spark-1.3-contributor",
+    "COMMENT_CLASSIFIER_AGENTS": "opencode-go:union-alpha,openrouter:stealth/union-alpha,opencode:muse-spark-1.3-contributor-free,amd:DeepSeek-V4-Flash",
+    "COMMENT_CLASSIFIER_EDIT_AGENTS": "opencode-go:union-alpha,openrouter:stealth/union-alpha,opencode:muse-spark-1.3-contributor-free,amd:DeepSeek-V4-Flash",
+    "COMMENT_TRANSLATION_MAX_ATTEMPTS": "4",
     "AI_BACKOFF_SEC_ITEMS": "deepseek-v4-flash-free:86400 amd-token-factory-deepseek-v4-flash:86400 openrouter/free:86400 local:1800 deepseek-v4-flash:18000 minimax-m3:18000 muse-spark-1.2-contributor:86400",
     "AI_AGENT_BACKOFF_SEC": "600",
     "AI_BACKOFF_FAILURE_SEC": "300",
@@ -115,7 +125,7 @@ DEFAULTS: dict[str, str] = {
     "PEAK_HOURS_WINDOWS": "10-13,15-19",
     "PEAK_HOURS_TZ": "Asia/Tokyo",
     "PEAK_HOURS_PRIORITY_AGENT": "codex:minimax-m3",
-    "PEAK_HOURS_AGENT_PREFERENCE": "codex:minimax-m3,codex:openrouter/free,local",
+    "PEAK_HOURS_AGENT_PREFERENCE": "opencode-go:union-alpha,openrouter:stealth/union-alpha,opencode:muse-spark-1.3-contributor-free,opencode:muse-spark-1.2-contributor-free,vercel:minimax/minimax-m3-free,vercel:poolside/laguna-s-2.1-free,vercel:inclusionai/ling-3.0-flash-fin,vercel:zai/glm-5.3-flash,vercel:xiaomi/mimo-v2.5,vercel:alibaba/qwen3.8-flash,vercel:xiaomi/mimo-v2.5-pro,amd:DeepSeek-V4-Flash,opencode-go:muse-spark-1.3-contributor,opencode-go:muse-spark-1.2-contributor",
     "PEAK_HOURS_QUEUE_GATE_ENABLED": "1",
     "IMPROVE_PEAK_CHAIN_ENABLED": "0",
     "IMPROVE_PEAK_HOUR_DEFER_ENABLED": "0",
@@ -127,6 +137,28 @@ DEFAULTS: dict[str, str] = {
     "SOREN_DIRECT_STREAM_AUDIO_DELAY_MS": "0",
     "DOCICH_CC_ENABLED": "0",
     "TWITCH_ADS_ENABLED": "1",
+}
+
+# Acyclic, single-model parents for the explicit auxiliary chains. These are
+# read for inheritance only, not exposed as additional writable settings.
+AUX_CHAIN_PARENTS = {
+    "RADIO_JIJI_RESEARCH_AGENTS": ("RADIO_MAIN_PREPASS_AGENT", "RADIO_MAIN_FALLBACK"),
+    "RADIO_FACT_CHECK_AGENTS": ("RADIO_FACT_CHECK_AGENT", "RADIO_FACT_CHECK_SECONDARY", "RADIO_FACT_CHECK_FALLBACK", "RADIO_FACT_CHECK_TERTIARY", "RADIO_FACT_CHECK_QUINARY"),
+    "COMMENT_CLASSIFIER_AGENTS": ("COMMENT_CLASSIFIER_AGENT", "COMMENT_CLASSIFIER_FALLBACK"),
+    "COMMENT_CLASSIFIER_EDIT_AGENTS": ("COMMENT_CLASSIFIER_EDIT_AGENT", "COMMENT_CLASSIFIER_EDIT_FALLBACK"),
+}
+AUX_PARENT_DEFAULTS = {
+    "RADIO_MAIN_PREPASS_AGENT": "opencode:muse-spark-1.3-contributor-free",
+    "RADIO_MAIN_FALLBACK": "amd:DeepSeek-V4-Flash",
+    "RADIO_FACT_CHECK_AGENT": "opencode:muse-spark-1.3-contributor-free",
+    "RADIO_FACT_CHECK_SECONDARY": "opencode-go:deepseek-v4.1-flash",
+    "RADIO_FACT_CHECK_FALLBACK": "amd:DeepSeek-V4-Flash",
+    "RADIO_FACT_CHECK_TERTIARY": "opencode-go:muse-spark-1.3-contributor",
+    "RADIO_FACT_CHECK_QUINARY": "",
+    "COMMENT_CLASSIFIER_AGENT": "opencode:muse-spark-1.3-contributor-free",
+    "COMMENT_CLASSIFIER_FALLBACK": "amd:DeepSeek-V4-Flash",
+    "COMMENT_CLASSIFIER_EDIT_AGENT": "opencode:muse-spark-1.3-contributor-free",
+    "COMMENT_CLASSIFIER_EDIT_FALLBACK": "amd:DeepSeek-V4-Flash",
 }
 
 AGENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
@@ -472,6 +504,14 @@ def _effective_value(key: str, dotenv: dict[str, str]) -> str:
             return dotenv[key].strip()
         if dotenv[key] != "":
             return dotenv[key]
+    # config.sh uses ${VAR-default} for auxiliary chains: absent means the
+    # explicit default prefix; an explicitly empty value restores legacy parents.
+    if key in AUX_CHAIN_PARENTS:
+        parents = [dotenv.get(parent) or AUX_PARENT_DEFAULTS[parent]
+                   for parent in AUX_CHAIN_PARENTS[key]]
+        if key not in dotenv:
+            parents = DEFAULTS[key].split(",")[:2] + parents
+        return ",".join(value for value in parents if value)
     # handle inheritance
     if key in ("RADIO_AGENTS", "RADIO_PREPASS_AGENTS", "COMMENT_AGENTS"):
         # inherits AI_COMMON_AGENTS
@@ -544,7 +584,13 @@ def _validate_value(key: str, value: str) -> None:
     if not isinstance(value, str):
         raise ValueError(f"{key} の値は文字列である必要があります")
     # .env は bash で source されるため、シェルメタ文字を許すキーは存在しない
-    if key in ("AI_COMMON_AGENTS", "MODEL_IMPROVE_LIST", "MODEL_IMPROVE_PEAK_LIST", "RADIO_AGENTS", "RADIO_PREPASS_AGENTS", "COMMENT_AGENTS", "COMMENT_TRANSLATION_AGENTS", "PEAK_HOURS_AGENT_PREFERENCE"):
+    if key == "COMMENT_TRANSLATION_MAX_ATTEMPTS":
+        if value == "":
+            return  # inherit the positive default
+        if not re.fullmatch(r"[0-9]+", value) or int(value) <= 0:
+            raise ValueError(f"{key} は正整数である必要があります")
+        return
+    if key in AUX_CHAIN_PARENTS or key in ("AI_COMMON_AGENTS", "MODEL_IMPROVE_LIST", "MODEL_IMPROVE_PEAK_LIST", "RADIO_AGENTS", "RADIO_PREPASS_AGENTS", "COMMENT_AGENTS", "COMMENT_TRANSLATION_AGENTS", "PEAK_HOURS_AGENT_PREFERENCE"):
         if key == "AI_COMMON_AGENTS" and not value.strip():
             raise ValueError(f"{key} は空にできません")
         if not value.strip():
@@ -6987,12 +7033,12 @@ def _atomic_env_update(soren_root: Path, updates: dict[str, str], expected_mtime
             new_lines.append(line)
         # append updates
         for k, v in updates.items():
-            # 継承キー (RADIO_AGENTS 等) の空値 = 行削除 (既定へ復帰)
-            # PEAK_HOURS_WINDOWS は config.sh が ${VAR-...} で読むため、
-            # 「空=無効」を明示するには空行を残す必要がある
+            # 通常の継承キーの空値は行削除。${VAR-default} を使う補助chainは
+            # 空行を残して単一モデル親へ継承する（削除するとprefix付き既定値）。
+            # PEAK_HOURS_WINDOWS も「空=無効」の明示行が必要。
             if v == "":
-                if k == "PEAK_HOURS_WINDOWS":
-                    new_lines.append("PEAK_HOURS_WINDOWS=")
+                if k == "PEAK_HOURS_WINDOWS" or k in AUX_CHAIN_PARENTS:
+                    new_lines.append(f"{k}=")
                 continue
             new_lines.append(f"{k}={_dotenv_quote(v)}")
         # ensure file ends with newline

@@ -94,7 +94,10 @@ class TestEffectiveValue(unittest.TestCase):
         self.assertEqual(webui._effective_value("RADIO_AGENTS", d), "codex:a")
 
     def test_defaults(self):
-        self.assertIn("deepseek-v4-flash-free", webui._effective_value("AI_COMMON_AGENTS", {}))
+        self.assertEqual(
+            webui._effective_value("AI_COMMON_AGENTS", {}).split(",")[:2],
+            ["opencode-go:union-alpha", "openrouter:stealth/union-alpha"],
+        )
         self.assertEqual(webui._effective_value("AI_AGENT_BACKOFF_SEC", {}), "600")
 
 
