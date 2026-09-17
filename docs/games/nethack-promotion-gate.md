@@ -29,7 +29,7 @@ smoke_ok: bool                     # production fingerprint 不変 / cleanup / p
 
 ## fitness（退化しない）
 
-`EpisodeOutcome.fitness()` は **辞書式 `(max_depth, score, turns)`**。深さを最優先にすることで、`turns` だけを最大化する **endless rest** のような退化行動を昇格させません（P5k で導入した `rest` の副作用）。
+`EpisodeOutcome.fitness()` は **辞書式 `(max_depth, score, turns)`**。深さを最優先にすることで、`turns` だけを最大化する **endless rest** のような退化行動を昇格させません（P5k で導入した `rest` の副作用）。NetHack は seed を固定しても時刻依存コードで完全再現しないため、`turns` は `GateConfig.turn_tolerance_ratio`（既定 0.15）以内のドリフトを許容し、depth と score は厳密に比較します。
 
 - `max_depth_non_regression`: いずれかの seed で候補の depth が baseline を下回れば reject。
 - `required_non_regression`: 非退行 seed の割合（既定 1.0）。
