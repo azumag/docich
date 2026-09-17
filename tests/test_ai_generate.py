@@ -68,6 +68,54 @@ class TestBuildAiInvocation(AiTestBase):
                 agents="", prompt_file=prompt,
             )
 
+    def test_namespaced_models_preserve_route_and_order(self):
+        prompt = self._write_ai()
+        agents = (
+            "opencode-go:union-alpha,"
+            "openrouter:stealth/union-alpha,"
+            "opencode:deepseek-v4-flash"
+        )
+        inv = ai_generate.build_ai_invocation(
+            self.g, game_name="sorengame", label="COMMENT",
+            agents=agents, prompt_file=prompt,
+        )
+        self.assertEqual(inv.agents, agents)
+        self.assertEqual(inv.argv[6], agents)
+
+    def test_namespaced_models_cross_bash_wrapper_unchanged(self):
+        prompt = self._write_ai()
+        (self.submodule / "eloop_lib.sh").write_text(
+            'ai_generate_list() { printf "%s" "$3" > "$6"; }\n',
+            encoding="utf-8",
+        )
+        agents = "opencode-go/union-alpha,openrouter:stealth/union-alpha,local"
+        winner = self.repo_root / "received-agents.txt"
+        inv = ai_generate.build_ai_invocation(
+            self.g, game_name="sorengame", label="COMMENT",
+            agents=f" {agents} ", prompt_file=prompt, last_agent_file=winner,
+        )
+        result = ai_generate.run(inv.argv, cwd=str(inv.cwd), env_extra=inv.env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(winner.read_text(), agents)
+
+    def test_namespaced_models_still_reject_shell_syntax(self):
+        for agents in (
+            "opencode:openrouter/stealth/union-alpha;true",
+            "opencode:$(id)/union-alpha",
+            "opencode:openrouter/stealth/union-alpha\ntrue",
+            "opencode:openrouter/stealth/union-alpha|cat",
+            "/openrouter/stealth/union-alpha",
+            "opencode:openrouter/stealth/union-alpha,,local",
+        ):
+            with self.subTest(agents=agents), self.assertRaises(ai_generate.AiError):
+                ai_generate._validate_agents(agents, "agents")
+
+    def test_agent_identifier_length_boundary(self):
+        valid = "openrouter/" + "x" * (128 - len("openrouter/"))
+        self.assertEqual(ai_generate._validate_agents(valid, "agents"), valid)
+        with self.assertRaises(ai_generate.AiError):
+            ai_generate._validate_agents(valid + "x", "agents")
+
     def test_missing_prompt_raises(self):
         self._write_ai()
         with self.assertRaises(ai_generate.AiError):
