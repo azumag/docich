@@ -58,9 +58,19 @@ manifest = ""
 cooldown_s = 30.0
 max_calls = 24
 
+# 起動時だけ既知のキャラ作成質問を応答。60秒/40観測/12入力でfail-closed。
+[nethack.startup]
+enabled = true
+
+# P3bの判断説明。strategistとは独立し、既存audio workerのキューへ投入する。
+[nethack.narration]
+enabled = true
+cooldown_s = 20.0
+speaker = ""  # 共通audio workerの既定音声
+
 [agent]
-enabled = false        # 本番有効化は別段階。brain切替だけでは自動起動しない
-brain = "random"
+enabled = true
+brain = "nethack"
 interval_ms = 1500
 
 # Twitch 配信カテゴリー・タイトル連動 (soviet_now update_stream_game.sh が読む)。

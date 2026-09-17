@@ -120,7 +120,12 @@ class NethackPolicyBrain:
         self.last_shadow = None
         self.last_advisory = None
         self.last_candidate_shadow = None
+        from ..nethack_narration import NethackNarrator, enabled_flag, runtime_table
+        from ..nethack_startup import NethackStartup
+
         try:
+            self.startup = NethackStartup(enabled=enabled_flag(runtime_table(game, "startup")))
+            self.narrator = NethackNarrator(g, game)
             self.shadow = NethackShadowController(g, game)
             self.advisory = NethackAdvisoryController(g, game)
             self.candidate_shadow = NethackCandidateShadowController(g, game)
@@ -134,10 +139,18 @@ class NethackPolicyBrain:
         from ..nethack_policy import assert_p3b_safe
 
         normalized = normalize_tty(obs.text, cols=self.cols, rows=self.rows)
+        startup_actions = self.startup.consider(normalized)
+        if startup_actions is not None:
+            return startup_actions
         decision = self.policy.decide(normalized)
         assert_p3b_safe(decision)
         self.last_decision = decision
         production_actions = list(decision.actions)
+        try:
+            self.narrator.consider(normalized, decision)
+        except Exception:
+            # Narration can neither suppress nor invent gameplay actions.
+            print("[nethack-narration] status=consider_failed", file=sys.stderr)
 
         # Shadow comparison deliberately happens after policy + safety guard.
         # A mismatch is telemetry only and cannot replace the TTY observation.

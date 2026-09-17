@@ -7,7 +7,7 @@ Issue #490 の攻略AI。P3では **見えている情報だけを使う層分�
 - AIへ渡すのはプレイヤーが端末上で見えている情報だけ。
 - process memory、未探索map、未鑑定itemの真のidentity、見えていないmonster等は使わない。
 - spectatorのtile分類をAI semantic observationとして使わない。
-- `config/games/nethack.toml` の `agent.enabled=false` はP3cでも変更しない。
+- P3cでは自動起動を無効にしていたが、本番経路接続段では標準configの `agent.enabled=true / brain=nethack` とする（配備・本番検証は別途）。
 - 自動操作は明示的にレビュー・テストした小さいsurfaceだけを許可する。
 
 ## Normalized observation (P3a)
@@ -182,7 +182,65 @@ TTY Observation
 
 P3cのstrategic schemaはこの横にある**未接続のadvisory境界**。次の段階でmodel dispatchを追加する場合も、直接agent actionへは繋がずproposal evaluator/executorを別に置く。
 
-標準configはまだ `enabled=false / brain=random` のままなので、これらのコードをマージしただけでは本番AI操作は開始しない。
+標準configは `agent.enabled=true / brain=nethack`。起動ゲートとローカルナレーションも明示有効化する。
+設定の省略時は両機能とも無効で、既存の明示brain利用・canary・shadowの意味論を変えない。
+本変更はPR段階であり、マージ・VM配備・本番での操作/音声確認は別担当が行う。
+
+### 本番起動ゲート（P3bとは独立）
+
+`[nethack.startup] enabled=true` で `NethackPolicyBrain` の観測直後に実行する。
+`NethackLayeredPolicy` と `assert_p3b_safe` は変更しない。
+起動キーも通常の `Action` として返すだけで、agent loopのlease fence / coordinator lockを迂回しない。
+
+| 観測 | 応答 |
+|---|---|
+| `Do you want a tutorial? [yn…]`（map上の質問も含む） | `n` |
+| `Shall I pick a character for you? [yn…]` または race/role/gender/alignment版 | `y` |
+| `Pick a character? [yn…]` / `Is this ok? [yn…]` | `y` |
+| 既知の起動質問を認識済みで末尾が `--More--` | Space |
+| normalize_ttyで一意のplayerとHPが見える（起動質問なし） | gameplayへ不可逆移行、以降はP3bだけ |
+| 未知画面・質問・save/restore/recover質問 | 無入力、policyへも渡さず待機 |
+| 60秒 / 40観測 / 12応答のいずれかを消費 | `exhausted`、以降このbrainは無入力 |
+
+時間は初回観測からmonotonic計測、1観測1キーまで。同一画面への再応答は抑止する。
+未知画面は上限内なら次の既知画面を待てるが、上限超過は自動リセットしない。
+定型質問の語句・疑問符・回答選択肢を照合し、任意プロンプトの推測回答はしない。
+英語TTY向けで、ローカライズ版や独自メニューは未対応。
+停止時の既存save boundary（キャラ作成中はsaveを要求しない #687）、corner recover（#690）を変更しない。
+自動再起動・新run・save復元のキー送信は追加しない。
+
+### P3bローカルナレーション（LLM不要）
+
+`[nethack.narration] enabled=true / cooldown_s=20.0 / speaker=""`。
+`cooldown_s` は5〜300秒の有限値。speakerは空なら共通audio workerの既定音声、
+指定時は64文字以内の英数字と `._:-` のみ。contextは固定 `nethack:policy`。
+AGENTSの `work_indicator` 作業中音声や、コーナー開始/終了の `nethack:announce` とは別物。
+
+- `PolicyDecision.intent` と既知reasonを日本語の固定1文へ写す（座標・raw reason・TTY本文は読まない）。
+- 初回階層/階層変化、探索の意図、安全な道なし、低HP、空腹、状態異常、接触などを説明する。
+  `search`・戦闘・階段コマンド等の未実装操作を実行したとは語らない。
+- 可視 `You die.` / `You have died.` は死亡表示として説明し、確定した終了結果は既存corner終了音声が担当する。
+- 1決定1文まで、全イベント共通cooldown、連続した同一intentは座標/HPが変わっても再発話しない。
+  cooldown中のイベントは蓄積/再生しない（次の観測時の現在状態だけを判断）。
+- daemon threadは最大1件のenqueueのみ。遅いキューでもactionを待たせず、ローカルbacklogやretryは作らない。
+  `enqueue_audio_text` →既存Sorenキュー→audio workerで順次再生する。sinkのpause/dedupeは維持する。
+- enqueue失敗や補助処理例外は固定statusだけstderrへ記録し、確定済みdecision/actionはそのまま返す。
+  worker再起動で発話抑制memoryは失われ、終了直前のin-flight発話は欠落し得る（best-effort）。
+  既に共通キューへ入った音声のゲーム切替時キャンセルは行わない。
+- strategist/advisoryの発話設定とは独立。標準configではそちらは無効のまま。
+  同時opt-in時は独立cooldownなので重複説明の可能性がある。
+
+運用観測: startupは固定 `state=pending/answering/waiting/unknown/gameplay/exhausted`、
+ナレーション失敗は固定 `status=delivery_failed/consider_failed` をagent stderrへ出す。
+本文・例外文字列・機密はログへ追加しない。新しい常駐worker/queue laneはなく、既存agent/audio workerを利用する。
+owner-only diagnosticsの既存corner/worker/queue coverageは変更しないが、このbrain内部状態のcollector公開は未実装。
+agent生存だけではgameplay到達や音声再生の証拠にならない。
+
+無効化は `agent.enabled=false`（自動agent全体）、`nethack.narration.enabled=false`（発話のみ）、
+`nethack.startup.enabled=false`（追加起動応答のみ）。設定はbrain生成時に読むので既存workerへhot reloadしない。
+本番反映後は別担当が正規運用経路で新agentの実効設定、gameplay到達、P3bの移動/保留、
+音声の順次再生と終了復帰、共通配信PID維持を確認する必要がある。
+P3bは敵・ドア・空腹などで保留するため、これだけで長期攻略が完走するとは主張しない。
 
 ## 次
 
