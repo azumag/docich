@@ -96,10 +96,6 @@ class TestSorenOutputAdapter(unittest.TestCase):
         self.assertNotEqual(first, later)
         self.assertIn("BTC/JPY", later)
 
-
-if __name__ == "__main__":
-    unittest.main()
-
     def test_persona_pick_is_stable_and_covers_both_voices(self):
         seen = {soren_output.pick_paper_persona(f"paper-corner:2026-09-17:script:{i}") for i in range(40)}
         self.assertEqual(seen, {"chuka", "meriken"})
@@ -164,3 +160,7 @@ if __name__ == "__main__":
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self.assertEqual(soren_output._meriken_speaker_id(root), "46")
+
+
+if __name__ == "__main__":
+    unittest.main()
