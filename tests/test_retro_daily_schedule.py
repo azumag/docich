@@ -9,6 +9,7 @@ import sys
 import unittest
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -320,6 +321,110 @@ class TestRandomizedSingleGame(RetroCornerTestBase):
         self.assertEqual(
             coordinator.calls, [("switch", "robots"), ("switch", "sorengame")]
         )
+
+
+class TestDailyEachGameWithProgramBoundary(RetroCornerTestBase):
+    """本番契約 (require_program_boundary=True) + daily_each_game の統合検証。"""
+
+    def _daily_boundary_cfg(self):
+        from dataclasses import replace
+
+        return replace(
+            self.cfg,
+            require_program_boundary=True,
+            daily_each_game=True,
+            randomize_start=True,
+            start_window_minutes=30,
+            target_matches=3,
+            duration_minutes=60,
+        )
+
+    def _write_boundary_fixture(self):
+        import os as _os
+
+        from docich.trading.soren_output import resolve_soren_root
+
+        root = resolve_soren_root(self.g) / "tmp" / "state"
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "prediction_worker.pid").write_text(str(_os.getpid()))
+        (root / "current_prediction.json").write_text(
+            json.dumps({"status": "ACTIVE"}), encoding="utf-8"
+        )
+        test = self
+
+        def complete_boundary():
+            (root / "corner_boundary_prediction.json").write_text(
+                json.dumps({"completed_at": test.now_value.timestamp()}),
+                encoding="utf-8",
+            )
+
+        return complete_boundary
+
+    def test_two_games_run_on_the_same_day_through_program_slot(self):
+        from dataclasses import replace
+        from datetime import timedelta
+
+        from docich.retro_corner import scheduled_start
+
+        self.cfg = self._daily_boundary_cfg()
+        complete_boundary = self._write_boundary_fixture()
+        games = ["ninvaders", "nsnake"]
+        cfg = replace(self.cfg, games=games)
+        for name in games:
+            (self.root / "config" / "games" / f"{name}.toml").write_text(
+                f'[game]\nname = "{name}"\ntitle = "{name}"\nadapter = "cli"\n'
+                f"[agent]\nenabled = false\n[corner]\nself_play = true\n",
+                encoding="utf-8",
+            )
+        test = self
+        current = ["sorengame"]
+        ran = []
+        coordinator = FakeCoordinator(current)
+
+        def advance(seconds):
+            test.now_value += timedelta(seconds=seconds)
+            if seconds == 5:
+                complete_boundary()
+
+        mgr = RetroCornerManager(
+            self.g,
+            config=cfg,
+            coordinator=coordinator,
+            now=lambda: test.now_value,
+            sleep=advance,
+            active_game_reader=lambda: current[0],
+            ensure_runtime=lambda: None,
+            chat=lambda text: None,
+        )
+        starts = sorted(scheduled_start(cfg, g, self.now_value.date()) for g in games)
+        test.now_value = starts[0] + timedelta(seconds=1)
+        first = mgr.tick()
+        self.assertEqual(first.status, "completed", first.detail)
+        self.assertEqual(first.game, games[0])
+        # 1試合目のスコア3件を scorelog に書いてから次のゲームへ
+        log = self.root / "run" / "scores" / f"{games[0]}.jsonl"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        ts = self.now_value.timestamp()
+        log.write_text(
+            "\n".join(
+                json.dumps({"ts": ts + i, "game": games[0], "score": 5})
+                for i in range(3)
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        test.now_value = starts[1] + timedelta(seconds=1)
+        second = mgr.tick()
+        self.assertEqual(second.status, "completed", second.detail)
+        self.assertEqual(second.game, games[1])
+        # 3ゲーム目は無いので同日 noop
+        test.now_value += timedelta(minutes=5)
+        third = mgr.tick()
+        self.assertEqual(third.status, "noop")
+        self.assertEqual(third.detail, "already-ran-today")
+        # 全終了後 canonical active game は元のゲームへ復帰している
+        self.assertEqual(current[0], "sorengame")
+        self.assertEqual(mgr.status()["daily_attempts"]["2026-09-06"], games)
 
 
 if __name__ == "__main__":

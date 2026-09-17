@@ -472,6 +472,11 @@ class RetroCornerManager:
             sys.executable, "-m", "docich", "--config", str(self.g.config_path),
             "retro-corner", "improve-once", "--date", date_str,
         ]
+        # 日次複数ゲームでは select_game(日付) が実走ゲームと一致しないため、
+        # 終了したゲームを argv で明示する (state は次コーナーで上書きされる)。
+        game = state.get("game")
+        if isinstance(game, str) and game:
+            argv += ["--game", game]
         try:
             self._spawn(argv, log_path)
             state["improve_job"] = {"spawned": True, "date": date_str, "log": str(log_path)}
@@ -486,13 +491,20 @@ class RetroCornerManager:
         matches: int | None = None,
         margin_pct: float | None = None,
         dry_run: bool = False,
+        game: str | None = None,
     ) -> dict:
         from .corner_improve import run_corner_improve
 
-        try:
-            game = select_game(self.config.games, dt.date.fromisoformat(date_str))
-        except ValueError as exc:
-            raise RetroCornerError(f"日付が不正です: {date_str}") from exc
+        if game is None:
+            try:
+                game = select_game(self.config.games, dt.date.fromisoformat(date_str))
+            except ValueError as exc:
+                raise RetroCornerError(f"日付が不正です: {date_str}") from exc
+        else:
+            try:
+                game = validate_game_name(game)
+            except NameValidationError as exc:
+                raise RetroCornerError(f"ゲーム名が不正です: {game}") from exc
         agents = self.config.improve_agents if agents is None else agents
         matches = self.config.improve_matches if matches is None else matches
         margin_pct = float(self.config.improve_margin_pct) if margin_pct is None else margin_pct
@@ -760,10 +772,27 @@ class RetroCornerManager:
                     if now.hour < self.config.start_hour:
                         return CornerResult("noop", detail="outside-window")
                     if state.get("date") == now.date().isoformat() and status in TERMINAL_STATUSES:
-                        return CornerResult("noop", detail="already-ran-today")
-                    state = self._default_state()
-                    state.update(status="waiting", date=now.date().isoformat(), requested_at=now.timestamp())
-                    self._write_state(state)
+                        daily = getattr(self.config, "daily_each_game", False)
+                        attempted = set(
+                            (state.get("daily_attempts") or {}).get(now.date().isoformat(), [])
+                        )
+                        if not daily or attempted >= set(self.config.games):
+                            return CornerResult("noop", detail="already-ran-today")
+                        # 日次モード: 同日の次のゲームへ。試行履歴を保持したまま
+                        # waiting に戻し、_due_game が残りゲームを選べるようにする。
+                        waiting = self._default_state()
+                        waiting.update(
+                            status="waiting",
+                            date=state.get("date"),
+                            requested_at=now.timestamp(),
+                            daily_attempts=state.get("daily_attempts") or {},
+                        )
+                        self._write_state(waiting)
+                        state = waiting
+                    else:
+                        state = self._default_state()
+                        state.update(status="waiting", date=now.date().isoformat(), requested_at=now.timestamp())
+                        self._write_state(state)
                 requested_at = state.get("requested_at")
                 if isinstance(requested_at, bool) or not isinstance(requested_at, (int, float)):
                     requested_at = now.timestamp()
@@ -841,6 +870,7 @@ def _build_parser() -> argparse.ArgumentParser:
     status.add_argument("--json", action="store_true")
     once = sub.add_parser("improve-once")
     once.add_argument("--date", required=True, help="対象コーナー日 (YYYY-MM-DD)")
+    once.add_argument("--game", default=None, help="終了したコーナーのゲーム (既定は日付から選択)")
     once.add_argument("--agents", default=None, help="LLM委任先 (既定は設定値)")
     once.add_argument("--matches", type=int, default=None)
     once.add_argument("--margin-pct", type=float, default=None)
@@ -871,6 +901,7 @@ def main(argv: list[str] | None = None) -> int:
                 summary = manager.improve_once(
                     args.date, agents=args.agents, matches=args.matches,
                     margin_pct=args.margin_pct, dry_run=args.dry_run,
+                    game=getattr(args, "game", None),
                 )
             except CornerImproveError as exc:
                 print(f"docich: エラー: {exc}", file=sys.stderr)

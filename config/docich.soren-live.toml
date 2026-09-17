@@ -49,10 +49,18 @@ require_program_boundary = true
 start_hour = 19
 duration_minutes = 30
 timezone = "Asia/Tokyo"
-games = ["ninvaders"]
-# NInvaders は現状 wrapper 自走で、GNU Robots 用の戦略重み改善には未対応。
-# 不要な終了時LLM改善ジョブを起動しない。
-improve_agents = ""
+# 各ゲームを日1回、ランダム開始 (start_hour から start_window_minutes の窓)。
+# 各コーナーは target_matches 試合の完了を scorelog で検知できれば早期終了し、
+# 来なければ duration_minutes を上限として終了する (入力停止で強制終了しない)。
+daily_each_game = true
+randomize_start = true
+start_window_minutes = 30
+target_matches = 3
+games = ["ninvaders", "nsnake"]
+# ninvaders/nsnake は bot_eval headless 評価に対応したため終了時改善を有効化。
+# 揃っていないゲーム (gnurobots 以外の旧ゲーム等) は run_corner_improve が
+# skipped unsupported-game を返してスキップする。
+improve_agents = "opencode-go:deepseek-v4.1-flash,amd:DeepSeek-V4-Flash,opencode-go:deepseek-v4-flash,opencode-go:muse-spark-1.3-contributor"
 improve_matches = 2
 improve_margin_pct = 10.0
 
