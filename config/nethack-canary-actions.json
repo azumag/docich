@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "actions": [
+    {
+      "id": "advance_message",
+      "risk_class": "message",
+      "description": "Advance a visible --More-- prompt.",
+      "preconditions": ["prompt:more"],
+      "key_pattern": [" "],
+      "postconditions": ["prompt_not:more"]
+    },
+    {
+      "id": "confirm_attack",
+      "risk_class": "prompt",
+      "description": "Accept a visible 'Really attack?' confirmation.",
+      "preconditions": ["prompt:yes_no", "message_contains:really attack"],
+      "key_pattern": ["y"],
+      "postconditions": ["prompt_not:yes_no"]
+    },
+    {
+      "id": "decline_prompt",
+      "risk_class": "prompt",
+      "description": "Decline any other unreviewed yes/no confirmation.",
+      "preconditions": ["prompt:yes_no"],
+      "key_pattern": ["n"],
+      "postconditions": ["prompt_not:yes_no"]
+    },
+    {
+      "id": "directional_travel",
+      "risk_class": "movement",
+      "description": "Answer a direction prompt toward a visible safe target.",
+      "preconditions": ["prompt:direction", "safe_step"],
+      "key_pattern": ["{direction}"],
+      "postconditions": ["screen_changed"]
+    },
+    {
+      "id": "attack_adjacent",
+      "risk_class": "combat",
+      "description": "Move into an adjacent attackable monster.",
+      "preconditions": ["player_visible", "adjacent_attackable"],
+      "key_pattern": ["{direction}"],
+      "postconditions": ["screen_changed"]
+    },
+    {
+      "id": "open_door",
+      "risk_class": "door",
+      "description": "Open an adjacent closed door with o + direction.",
+      "preconditions": ["player_visible", "adjacent_closed_door"],
+      "key_pattern": ["o", "{direction}"],
+      "postconditions": ["screen_changed"]
+    },
+    {
+      "id": "eat_food",
+      "risk_class": "item",
+      "description": "Eat a visible unpaid-free food item while Hungry.",
+      "preconditions": ["condition_any:Hungry|Weak|Fainting|Fainted|Starved", "inventory_food"],
+      "key_pattern": ["e", "{item_letter}"],
+      "postconditions": ["screen_changed"]
+    },
+    {
+      "id": "rest_low_hp",
+      "risk_class": "rest",
+      "description": "Rest to regenerate while visibly low HP and no adjacent monster.",
+      "preconditions": ["hp_ratio_at_most:0.5", "no_adjacent_attackable"],
+      "key_pattern": ["."],
+      "postconditions": ["screen_changed"]
+    },
+    {
+      "id": "rest",
+      "risk_class": "rest",
+      "description": "Rest while movement is impaired or no safe step is visible.",
+      "preconditions": ["player_visible"],
+      "key_pattern": ["."],
+      "postconditions": ["screen_changed"]
+    },
+    {
+      "id": "explore_step",
+      "risk_class": "movement",
+      "description": "One reviewed cardinal/diagonal step toward visible safe terrain.",
+      "preconditions": ["player_visible", "safe_step"],
+      "key_pattern": ["{direction}"],
+      "postconditions": ["screen_changed"]
+    }
+  ]
+}

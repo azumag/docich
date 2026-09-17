@@ -191,6 +191,41 @@ def test_game_container_is_runsc_hardened_and_mounts_only_episode(tmp_path):
     assert joined.count("type=bind") == 1
 
 
+def test_extra_env_is_validated_and_rendered(tmp_path):
+    req = request(tmp_path)
+    host_arena = {key: Path(value) for key, value in req["arena"].items()}
+    argv = build_container_argv(
+        req,
+        docker="/usr/bin/docker",
+        image=IMAGE,
+        name="game",
+        host_arena=host_arena,
+        manifest=None,
+        extra_env={"DOCICH_CANARY_ACTION_TRACE": "1"},
+    )
+    assert "DOCICH_CANARY_ACTION_TRACE=1" in argv
+    with pytest.raises(CanaryContainerError):
+        build_container_argv(
+            req,
+            docker="/usr/bin/docker",
+            image=IMAGE,
+            name="game",
+            host_arena=host_arena,
+            manifest=None,
+            extra_env={"HOME": "/tmp/elsewhere"},
+        )
+    with pytest.raises(CanaryContainerError):
+        build_container_argv(
+            req,
+            docker="/usr/bin/docker",
+            image=IMAGE,
+            name="game",
+            host_arena=host_arena,
+            manifest=None,
+            extra_env={"bad-name": "1"},
+        )
+
+
 def test_game_container_refuses_manifest_mount(tmp_path):
     req = request(tmp_path, candidate=True)
     host_arena = {key: Path(value) for key, value in req["arena"].items()}
