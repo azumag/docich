@@ -39,7 +39,16 @@ class CornerScriptError(RuntimeError):
 
 
 def _safe_reason(exc: BaseException) -> str:
-    """Reason for state/logs: exception type only, never model output/stderr."""
+    """Reason for state/logs: type + non-secret kind, never model output/stderr.
+
+    ``kind`` (when the exception carries one, e.g. :class:`AiTextError`) is
+    drawn from a fixed small vocabulary (gate state / rc bucket / upstream
+    failure_kind) so a class name alone ("AiTextError") stops being the only
+    diagnostic left after AI narration fails end to end.
+    """
+    kind = getattr(exc, "kind", None)
+    if isinstance(kind, str) and kind:
+        return f"{type(exc).__name__}:{kind}"
     return type(exc).__name__
 
 

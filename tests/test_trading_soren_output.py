@@ -129,6 +129,33 @@ class TestSorenOutputAdapter(unittest.TestCase):
         self.assertTrue(spoken.endswith("損益を見ます。"))
         self.assertIn(persona, ("chuka", "meriken"))
 
+    def test_manual_scope_delivery_also_gets_persona_quip(self):
+        """Manual test runs must get the same anti-collision quip as production.
+
+        (9/18 outage: a manual run's ``paper-corner-manual-<uuid>:...`` event_id
+        did not match the old literal ``"paper-corner:"`` prefix check, so
+        manual deliveries spoke the raw deterministic-fallback text unchanged.
+        When two manual runs produced byte-identical fallback narration
+        (unchanged trading facts), the player-side content-hash dedupe treated
+        every delivery of the second run as a replay and silently dropped it.)
+        """
+        key = "paper-corner-manual-abc123def456:2026-09-18:script:2"
+        persona, quip = soren_output.paper_persona_quip(key)
+        self.assertIn(persona, ("chuka", "meriken"))
+        self.assertTrue(quip)
+        spoken = soren_output._paper_corner_speech_text("損益を見ます。", key)
+        self.assertTrue(spoken.startswith(quip))
+        self.assertTrue(spoken.endswith("損益を見ます。"))
+
+    def test_two_manual_runs_with_identical_fallback_text_speak_differently(self):
+        """The actual regression: same raw text, different manual delivery_scope."""
+        raw_text = "時間足チャートの解説です。今回は公開ローソクの取得が間に合わず、数字をお伝えできません。"
+        first_key = "paper-corner-manual-000000000000:2026-09-18:script:3"
+        second_key = "paper-corner-manual-111111111111:2026-09-18:script:3"
+        first = soren_output._paper_corner_speech_text(raw_text, first_key)
+        second = soren_output._paper_corner_speech_text(raw_text, second_key)
+        self.assertNotEqual(first, second)
+
     def test_meriken_delivery_uses_soren91_voice_and_chuka_uses_default(self):
         def key_for(persona):
             for i in range(500):
