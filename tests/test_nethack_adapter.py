@@ -66,10 +66,15 @@ class FakeTmux:
         self.create_save = create_save
         self.calls = []
         self.process_name = "nethack"
+        self.pane_text = ""
 
     def session_target_exists(self, session):
         self.calls.append(("session_target_exists", session))
         return True
+
+    def capture_pane(self, target):
+        self.calls.append(("capture_pane", target))
+        return self.pane_text
 
     def read_session_ownership(self, session):
         self.calls.append(("read_session_ownership", session))
@@ -291,6 +296,86 @@ class TestNethackCoordinatorAdapter(unittest.TestCase):
             adapter.request_round_boundary(
                 str(uuid.uuid4()), time.monotonic() + 1.0, None
             )
+
+    def test_character_creation_screen_is_terminal_boundary_without_save(self):
+        adapter = self.adapter()
+        tmux = FakeTmux(self.spec, self.save_dir)
+        tmux.pane_text = "Shall I pick a character for you? [ynq]"
+        adapter.tmux = tmux
+        request_id = str(uuid.uuid4())
+
+        adapter.request_round_boundary(request_id, time.monotonic() + 1.0, None)
+
+        # No `S` save is attempted: there is no run to suspend yet.
+        self.assertFalse(any(call[0] == "send_keys" for call in tmux.calls))
+        marker = json.loads(
+            (self.spec.runtime_dir / nethack_adapter.BOUNDARY_RESULT_FILENAME).read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(marker["outcome"], "ended")
+        self.assertNotIn("save_file", marker)
+        self.assertEqual(marker["request_id"], request_id)
+
+    def test_gameplay_screen_still_uses_save_boundary(self):
+        adapter = self.adapter()
+        tmux = FakeTmux(self.spec, self.save_dir)
+        tmux.pane_text = "  -----\n  |...|\n  |.@.|\n  -----\n\nDlvl:1 HP:18(18)\n"
+        adapter.tmux = tmux
+
+        adapter.request_round_boundary(str(uuid.uuid4()), time.monotonic() + 1.0, None)
+
+        target = f"{self.spec.adapter_session}:nethack"
+        self.assertIn(("send_keys", target, ["Escape"], False), tmux.calls)
+        self.assertIn(("send_keys", target, ["S"], True), tmux.calls)
+        marker = json.loads(
+            (self.spec.runtime_dir / nethack_adapter.BOUNDARY_RESULT_FILENAME).read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(marker["outcome"], "suspended")
+
+    def test_character_creation_markers_are_specific(self):
+        for marker in (
+            "Do you want a tutorial?",
+            "Shall I pick a character for you?",
+            "Pick a role or press ? for more info.",
+            "Pick a race",
+            "Pick an alignment",
+            "Pick a gender",
+            "Is this ok? [ynq]",
+            "Welcome to NetHack!",
+        ):
+            with self.subTest(marker=marker):
+                self.assertTrue(nethack_adapter._is_character_creation_screen(marker))
+        # A normal gameplay status line and map must not be mistaken for
+        # character creation.
+        self.assertFalse(
+            nethack_adapter._is_character_creation_screen(
+                "Dlvl:3 HP:18(18) Pw:5(5) AC:6 Exp:1 T:120\n--More--"
+            )
+        )
+
+    def test_capture_failure_falls_back_to_save_boundary(self):
+        adapter = self.adapter()
+        tmux = FakeTmux(self.spec, self.save_dir)
+
+        def _boom(target):
+            raise RuntimeError("capture failed")
+
+        tmux.capture_pane = _boom
+        adapter.tmux = tmux
+
+        adapter.request_round_boundary(str(uuid.uuid4()), time.monotonic() + 1.0, None)
+
+        target = f"{self.spec.adapter_session}:nethack"
+        self.assertIn(("send_keys", target, ["S"], True), tmux.calls)
+        marker = json.loads(
+            (self.spec.runtime_dir / nethack_adapter.BOUNDARY_RESULT_FILENAME).read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(marker["outcome"], "suspended")
 
 
 if __name__ == "__main__":
