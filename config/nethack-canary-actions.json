@@ -3,6 +3,8 @@
   "actions": [
     {
       "id": "advance_message",
+      "priority": 10,
+      "enabled": true,
       "risk_class": "message",
       "description": "Advance a visible --More-- prompt.",
       "preconditions": ["prompt:more"],
@@ -11,6 +13,8 @@
     },
     {
       "id": "confirm_attack",
+      "priority": 20,
+      "enabled": true,
       "risk_class": "prompt",
       "description": "Accept a visible 'Really attack?' confirmation.",
       "preconditions": ["prompt:yes_no", "message_contains:really attack"],
@@ -19,6 +23,8 @@
     },
     {
       "id": "decline_prompt",
+      "priority": 30,
+      "enabled": true,
       "risk_class": "prompt",
       "description": "Decline any other unreviewed yes/no confirmation.",
       "preconditions": ["prompt:yes_no"],
@@ -27,6 +33,8 @@
     },
     {
       "id": "directional_travel",
+      "priority": 40,
+      "enabled": true,
       "risk_class": "movement",
       "description": "Answer a direction prompt toward a visible safe target.",
       "preconditions": ["prompt:direction", "safe_step"],
@@ -34,51 +42,73 @@
       "postconditions": ["screen_changed"]
     },
     {
-      "id": "attack_adjacent",
-      "risk_class": "combat",
-      "description": "Move into an adjacent attackable monster.",
-      "preconditions": ["player_visible", "adjacent_attackable"],
-      "key_pattern": ["{direction}"],
-      "postconditions": ["screen_changed"]
-    },
-    {
-      "id": "open_door",
-      "risk_class": "door",
-      "description": "Open an adjacent closed door with o + direction.",
-      "preconditions": ["player_visible", "adjacent_closed_door"],
-      "key_pattern": ["o", "{direction}"],
-      "postconditions": ["screen_changed"]
-    },
-    {
       "id": "eat_food",
+      "priority": 50,
+      "enabled": true,
       "risk_class": "item",
       "description": "Eat a visible unpaid-free food item while Hungry.",
-      "preconditions": ["condition_any:Hungry|Weak|Fainting|Fainted|Starved", "inventory_food"],
+      "preconditions": ["prompt:none", "condition_any:Hungry|Weak|Fainting|Fainted|Starved", "inventory_food"],
       "key_pattern": ["e", "{item_letter}"],
       "postconditions": ["screen_changed"]
     },
     {
-      "id": "rest_low_hp",
+      "id": "rest_impaired",
+      "priority": 60,
+      "enabled": true,
       "risk_class": "rest",
-      "description": "Rest to regenerate while visibly low HP and no adjacent monster.",
-      "preconditions": ["hp_ratio_at_most:0.5", "no_adjacent_attackable"],
+      "description": "Rest while movement is visibly impaired.",
+      "preconditions": ["prompt:none", "condition_any:Blind|Conf|Stun|Hallu"],
       "key_pattern": ["."],
       "postconditions": ["screen_changed"]
     },
     {
-      "id": "rest",
+      "id": "attack_adjacent",
+      "priority": 70,
+      "enabled": true,
+      "risk_class": "combat",
+      "description": "Move into an adjacent attackable monster.",
+      "preconditions": ["prompt:none", "player_visible", "adjacent_attackable"],
+      "key_pattern": ["{direction}"],
+      "postconditions": ["screen_changed"]
+    },
+    {
+      "id": "rest_low_hp",
+      "priority": 75,
+      "enabled": true,
       "risk_class": "rest",
-      "description": "Rest while movement is impaired or no safe step is visible.",
-      "preconditions": ["player_visible"],
+      "description": "Rest to regenerate while visibly low HP and no adjacent monster.",
+      "preconditions": ["prompt:none", "hp_ratio_at_most:0.5", "no_adjacent_attackable"],
       "key_pattern": ["."],
+      "postconditions": ["screen_changed"]
+    },
+    {
+      "id": "open_door",
+      "priority": 80,
+      "enabled": true,
+      "risk_class": "door",
+      "description": "Open an adjacent closed door with o + direction.",
+      "preconditions": ["prompt:none", "player_visible", "adjacent_closed_door"],
+      "key_pattern": ["o", "{direction}"],
       "postconditions": ["screen_changed"]
     },
     {
       "id": "explore_step",
+      "priority": 85,
+      "enabled": true,
       "risk_class": "movement",
       "description": "One reviewed cardinal/diagonal step toward visible safe terrain.",
-      "preconditions": ["player_visible", "safe_step"],
+      "preconditions": ["prompt:none", "player_visible", "safe_step"],
       "key_pattern": ["{direction}"],
+      "postconditions": ["screen_changed"]
+    },
+    {
+      "id": "rest",
+      "priority": 90,
+      "enabled": true,
+      "risk_class": "rest",
+      "description": "Rest when no reviewed action applies (for example fully blocked).",
+      "preconditions": ["prompt:none", "player_visible"],
+      "key_pattern": ["."],
       "postconditions": ["screen_changed"]
     }
   ]

@@ -54,6 +54,7 @@ def test_catalog_loads_and_matches_the_canary_policy_surface():
         "attack_adjacent",
         "open_door",
         "eat_food",
+        "rest_impaired",
         "rest_low_hp",
         "rest",
         "explore_step",

@@ -94,9 +94,12 @@ class ScopeTests(unittest.TestCase):
             (repo / "brains").mkdir()
             docker_dir = repo / "containers" / "nethack-canary"
             docker_dir.mkdir(parents=True)
+            config_dir = repo / "config"
+            config_dir.mkdir()
             (repo / "src" / "tracked.py").write_text("tracked\n", encoding="utf-8")
             (repo / "brains" / "tracked.py").write_text("brain\n", encoding="utf-8")
             (docker_dir / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+            (config_dir / "nethack-canary-actions.json").write_text("{}\n", encoding="utf-8")
             env = dict(os.environ)
             env.update(
                 {

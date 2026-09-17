@@ -17,14 +17,15 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from .nethack_canary_tactics import (
-    _DIRECTION_KEY,
-    _attackable_neighbors,
-    _food_item,
-    _openable_neighbors,
+from .nethack_canary_rules import (
+    DIRECTION_KEY,
+    attackable_neighbors,
+    door_key,
+    food_item,
+    openable_neighbors,
 )
 from .nethack_exploration import NethackExplorer
 from .nethack_inventory import VisibleInventoryItem
@@ -41,7 +42,7 @@ REVIEWED_RISK_CLASSES = frozenset(
 # eight vi movement keys; ``{item_letter}`` stands for one inventory letter.
 KNOWN_PLACEHOLDERS = frozenset({"direction", "item_letter"})
 
-_DIRECTION_KEYS = frozenset(_DIRECTION_KEY.values())
+_DIRECTION_KEYS = frozenset(DIRECTION_KEY.values())
 _LETTER_RE = re.compile(r"^[A-Za-z]$")
 _TOKEN_RE = re.compile(r"^\{[a-z_]+\}$")
 
@@ -59,6 +60,10 @@ class ActionSpec:
     key_pattern: tuple[str, ...]
     postconditions: tuple[str, ...]
     description: str = ""
+    # Catalog-driven policy fields: a disabled spec is never selected, and
+    # lower priority numbers are tried first.
+    enabled: bool = True
+    priority: int = 100
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -68,6 +73,8 @@ class ActionSpec:
             "key_pattern": list(self.key_pattern),
             "postconditions": list(self.postconditions),
             "description": self.description,
+            "enabled": self.enabled,
+            "priority": self.priority,
         }
 
 
@@ -96,12 +103,6 @@ class ActionContext:
 # --- preconditions -----------------------------------------------------------
 
 
-def _door_key(obs: NethackObservation, dx: int, dy: int) -> tuple[int, int, int]:
-    depth = obs.vitals.dungeon_level
-    px, py = obs.player if obs.player is not None else (0, 0)
-    return (depth if depth is not None else -1, px + dx, py + dy)
-
-
 def precondition(name: str, ctx: ActionContext) -> bool:
     """Evaluate one declarative precondition name against a visible frame."""
     obs = ctx.observation
@@ -122,18 +123,20 @@ def precondition(name: str, ctx: ActionContext) -> bool:
     if head == "player_absent":
         return obs.player is None
     if head == "adjacent_attackable":
-        return bool(_attackable_neighbors(obs))
+        return bool(attackable_neighbors(obs))
     if head == "no_adjacent_attackable":
-        return not _attackable_neighbors(obs)
+        return not attackable_neighbors(obs)
     if head == "adjacent_closed_door":
         return any(
-            _door_key(obs, dx, dy) not in ctx.failed_doors
-            for dx, dy, _glyph in _openable_neighbors(obs)
+            door_key(obs, dx, dy) not in ctx.failed_doors
+            for dx, dy, _glyph in openable_neighbors(obs)
         )
     if head == "inventory_food":
-        return _food_item(ctx.inventory) is not None
+        return food_item(ctx.inventory) is not None
     if head == "safe_step":
-        return ctx.explorer.plan_step(obs) is not None
+        # A direction prompt blocks plan_step, but the observable map is the
+        # same; evaluate as if no prompt were up.
+        return ctx.explorer.plan_step(replace(obs, prompt="none")) is not None
     raise ValueError(f"unknown precondition {name!r}")
 
 
@@ -194,6 +197,12 @@ def _spec_from_dict(item: object) -> ActionSpec:
     if not isinstance(item, dict):
         raise ValueError("action catalog entry must be an object")
     try:
+        enabled = item.get("enabled", True)
+        priority = item.get("priority", 100)
+        if type(enabled) is not bool:
+            raise ValueError(f"enabled must be a boolean: {enabled!r}")
+        if type(priority) is not int or isinstance(priority, bool):
+            raise ValueError(f"priority must be an integer: {priority!r}")
         return ActionSpec(
             id=str(item["id"]),
             risk_class=str(item["risk_class"]),
@@ -201,6 +210,8 @@ def _spec_from_dict(item: object) -> ActionSpec:
             key_pattern=tuple(str(v) for v in item["key_pattern"]),
             postconditions=tuple(str(v) for v in item["postconditions"]),
             description=str(item.get("description", "")),
+            enabled=enabled,
+            priority=priority,
         )
     except (KeyError, TypeError) as exc:
         raise ValueError(f"invalid action catalog entry: {item!r}") from exc
