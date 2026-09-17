@@ -51,9 +51,17 @@ save_dir = "/var/games/nethack/save"
 xlogfile = "/var/games/nethack/xlogfile"
 dump_dir = "/var/games/nethack/dumps"
 
+[nethack.startup]
+enabled = true
+
+[nethack.narration]
+enabled = true
+cooldown_s = 20.0
+speaker = ""
+
 [agent]
-enabled = false
-brain = "random"
+enabled = true
+brain = "nethack"
 interval_ms = 1500
 ```
 
@@ -157,7 +165,12 @@ NetHack のまま残った場合に、manual state に記録された previous g
 NetHack へ transactional switch し、終了時に元のゲームへ戻す。元が idle なら NetHack 終了後も
 idle に戻す。
 
-P0 の時点では `agent.enabled=false` のままであり、「AI攻略が完成した」とは扱わない。以降は #490 の
+P0時点は `agent.enabled=false` だったが、現在の標準configでは reviewed P3b brainと起動応答・ナレーションを有効化する。
+既知の英語キャラ作成質問のみ応答し、60秒/40観測/12入力で停止する。
+未知画面では無入力、gameplay到達後は可視安全地形への一歩とMoreだけを許可する。
+ナレーションは `nethack:policy` context・既定音声でaudio workerへ順次投入し、20秒cooldownと同一intent抑制を行う。
+発話障害はゲーム操作に影響させない。設定・上限・未対応範囲は [nethack-ai.md](nethack-ai.md) を参照。
+本番での到達・音声再生は配備後の別検証が必要であり、「AI攻略が完成した」とは扱わない。以降は #490 の
 ロードマップに従い、run 永続化 → spectator tile renderer → tactical/mid-level/LLM policy →
 structured observation → 死亡履歴からの継続改善、の順に追加する。特にグラフィック表示は AI の
 正確な text/structured observation と分離し、視聴者向け presentation のためだけに画像認識へ

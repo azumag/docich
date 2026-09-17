@@ -56,6 +56,7 @@ jobs:
           tests/test_nethack_run.py tests/test_nethack_run_recovery.py
           tests/test_nethack_spectator.py tests/test_nethack_spectator_live.py
           tests/test_nethack_observation.py tests/test_nethack_policy.py tests/test_nethack_exploration.py
+          tests/test_nethack_narration.py
           tests/test_nethack_inventory.py tests/test_nethack_strategy.py tests/test_nethack_strategist.py
           tests/test_nethack_advisory.py tests/test_nethack_shadow.py tests/test_nethack_shadow_source.py
           tests/test_nethack_shadow_eval.py tests/test_nethack_retrospective.py tests/test_nethack_regression.py
