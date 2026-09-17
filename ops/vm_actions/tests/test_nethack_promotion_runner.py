@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "ops" / "vm_actions"))
 
-from nethack_promotion_runner import PromotionRunSpec, run_promotion  # noqa: E402
+from nethack_promotion_runner import PromotionRunSpec, run_improvement_cycle, run_promotion  # noqa: E402
 
 CATALOG = ROOT / "config" / "nethack-canary-actions.json"
 
@@ -122,6 +122,37 @@ class RunnerTests(unittest.TestCase):
             )
         self.assertFalse(decision.promote)
         self.assertIn("smoke_gate_failed", decision.reasons)
+
+    def test_improvement_cycle_proposes_verifies_and_gates(self):
+        from dataclasses import replace
+
+        from docich.nethack_action_spec import load_action_catalog
+
+        class FakeProposer:
+            def propose(self, request, *, allowed_action_ids):
+                specs = load_action_catalog(CATALOG)
+                return tuple(
+                    replace(spec, enabled=False) if spec.id == "rest" else spec for spec in specs
+                )
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "nethack_promotion_runner.verify_trace_file",
+            return_value=(SimpleNamespace(verified=True),),
+        ):
+            decision, signal, specs, base, cand = run_improvement_cycle(
+                self.spec(),
+                proposer=FakeProposer(),
+                baseline_catalog=CATALOG,
+                work_root=Path(tmp),
+                worker=fake_worker(baseline=(100, 2), candidate=(120, 3)),
+                docker="/usr/bin/docker",
+                image="sha256:" + "a" * 64,
+            )
+        self.assertTrue(decision.promote)
+        self.assertTrue(signal.exit_reason)
+        self.assertIn("rest", {spec.id for spec in specs})
+        self.assertEqual(len(base.outcomes), 3)
+        self.assertEqual(len(cand.outcomes), 3)
 
 
 if __name__ == "__main__":

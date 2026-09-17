@@ -18,6 +18,13 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from docich.nethack_action_spec import load_action_catalog, verify_trace_file
+from docich.nethack_canary_tactics import SUPPORTED_ACTION_IDS
+from docich.nethack_catalog_proposer import (
+    FailureSignal,
+    build_proposal_request,
+    catalog_to_dict,
+    failure_signal_from_outcomes,
+)
 from docich.nethack_promotion_gate import (
     EpisodeOutcome,
     GateConfig,
@@ -203,3 +210,45 @@ def run_promotion(
         smoke_ok=smoke_ok,
     )
     return evaluate_promotion(inputs, config), baseline, candidate
+
+
+def run_improvement_cycle(
+    spec: PromotionRunSpec,
+    *,
+    proposer,
+    baseline_catalog: Path,
+    work_root: Path,
+    worker: Callable[..., dict[str, object]],
+    docker: str,
+    image: str,
+    config: GateConfig | None = None,
+    regression_green: bool = True,
+    smoke_ok: bool = True,
+    isolation_check: Callable[[], bool] | None = None,
+) -> tuple[PromotionDecision, FailureSignal, tuple, ArmResult, ArmResult]:
+    """Run baseline, ask the proposer for a catalog, verify it, and gate it."""
+    baseline = run_arm(
+        spec, arm="baseline", catalog=None, work_root=work_root, worker=worker,
+        docker=docker, image=image, isolation_check=isolation_check,
+    )
+    signal = failure_signal_from_outcomes(baseline.outcomes)
+    specs = load_action_catalog(baseline_catalog)
+    request = build_proposal_request(signal, specs, allowed_action_ids=SUPPORTED_ACTION_IDS)
+    candidate_specs = proposer.propose(request, allowed_action_ids=SUPPORTED_ACTION_IDS)
+    candidate_path = work_root / "candidate-catalog.json"
+    candidate_path.parent.mkdir(parents=True, exist_ok=True)
+    candidate_path.write_text(json.dumps(catalog_to_dict(candidate_specs), indent=2), encoding="utf-8")
+    candidate = run_arm(
+        spec, arm="candidate", catalog=candidate_path, work_root=work_root, worker=worker,
+        docker=docker, image=image, isolation_check=isolation_check,
+    )
+    inputs = PromotionInputs(
+        candidate_id=spec.candidate_id,
+        baseline_id=spec.baseline_id,
+        baseline=baseline.outcomes,
+        candidate=candidate.outcomes,
+        trace_unverified=candidate.trace_unverified,
+        regression_green=regression_green,
+        smoke_ok=smoke_ok,
+    )
+    return evaluate_promotion(inputs, config), signal, candidate_specs, baseline, candidate
