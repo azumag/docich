@@ -11,6 +11,7 @@ import datetime as dt
 import fcntl
 import json
 import os
+import random
 import sys
 import time
 import tomllib
@@ -48,6 +49,10 @@ class RetroCornerConfig:
     improve_agents: str = ""
     improve_matches: int = 2
     improve_margin_pct: float = 10.0
+    daily_each_game: bool = False
+    randomize_start: bool = False
+    start_window_minutes: int = 30
+    target_matches: int = 3
 
 
 @dataclass(frozen=True)
@@ -96,7 +101,18 @@ def load_retro_corner_config(g: GlobalConfig) -> RetroCornerConfig:
         improve_agents=raw.get("improve_agents", ""),
         improve_matches=raw.get("improve_matches", 2),
         improve_margin_pct=raw.get("improve_margin_pct", 10.0),
+        daily_each_game=raw.get("daily_each_game", False),
+        randomize_start=raw.get("randomize_start", False),
+        start_window_minutes=raw.get("start_window_minutes", 30),
+        target_matches=raw.get("target_matches", 3),
     )
+    for key in ("daily_each_game", "randomize_start"):
+        if type(getattr(cfg, key)) is not bool:
+            raise RetroCornerError(f"{key} must be boolean")
+    if type(cfg.start_window_minutes) is not int or not 1 <= cfg.start_window_minutes <= 1440:
+        raise RetroCornerError("start_window_minutes must be 1-1440")
+    if type(cfg.target_matches) is not int or not 1 <= cfg.target_matches <= 100:
+        raise RetroCornerError("target_matches must be 1-100")
     if type(cfg.require_program_boundary) is not bool:
         raise RetroCornerError("require_program_boundary must be boolean")
     if type(cfg.enabled) is not bool:
@@ -143,6 +159,10 @@ def load_retro_corner_config(g: GlobalConfig) -> RetroCornerConfig:
         improve_agents=cfg.improve_agents,
         improve_matches=cfg.improve_matches,
         improve_margin_pct=float(cfg.improve_margin_pct),
+        daily_each_game=cfg.daily_each_game,
+        randomize_start=cfg.randomize_start,
+        start_window_minutes=cfg.start_window_minutes,
+        target_matches=cfg.target_matches,
     )
 
 
@@ -150,6 +170,14 @@ def select_game(games: list[str], local_date: dt.date) -> str:
     if not games:
         raise RetroCornerError("retro corner対象ゲームがありません")
     return games[local_date.toordinal() % len(games)]
+
+
+def scheduled_start(cfg: RetroCornerConfig, game: str, day: dt.date) -> dt.datetime:
+    """Stable across interpreter restarts; never schedules beyond the local day."""
+    start = dt.datetime.combine(day, dt.time(cfg.start_hour), ZoneInfo(cfg.timezone))
+    seconds = min(cfg.start_window_minutes * 60, (24 - cfg.start_hour) * 3600)
+    offset = random.Random(f"{day.isoformat()}|{game}").randrange(seconds) if cfg.randomize_start else 0
+    return start + dt.timedelta(seconds=offset)
 
 
 def corner_intro(g: GlobalConfig, game_name: str) -> str:
@@ -356,6 +384,14 @@ class RetroCornerManager:
         os.chmod(self.state_path.parent, 0o700)
         atomic_write_json(self.state_path, state)
 
+    def _due_game(self, now: dt.datetime, state: dict) -> str | None:
+        games = self.config.games if self.config.daily_each_game else [select_game(self.config.games, now.date())]
+        attempted = state.get("daily_attempts", {}).get(now.date().isoformat(), [])
+        for game in sorted(games, key=lambda name: (scheduled_start(self.config, name, now.date()), name)):
+            if game not in attempted and now >= scheduled_start(self.config, game, now.date()):
+                return game
+        return None
+
     def _validate_games(self) -> None:
         for name in self.config.games:
             try:
@@ -551,15 +587,31 @@ class RetroCornerManager:
             raise RetroCornerError("retro cornerは既にactiveです")
         if (
             scheduled
+            and not self.config.daily_each_game
             and existing.get("date") == now.date().isoformat()
             and existing.get("status") in TERMINAL_STATUSES
         ):
             return None, CornerResult("noop", detail="already-ran-today")
 
+        target = select_game(self.config.games, now.date())
+        attempts = dict(existing.get("daily_attempts") or {})
+        if self.config.daily_each_game:
+            due = self._due_game(now, existing)
+            if due is None:
+                if set(attempts.get(now.date().isoformat(), [])) >= set(self.config.games):
+                    return None, CornerResult("noop", detail="already-ran-today")
+                return None, CornerResult("noop", detail="start-window-not-due")
+            target = due
+            if scheduled_start(self.config, target, now.date()) > now:
+                return None, CornerResult("noop", detail="start-window-not-due")
+            attempts.setdefault(now.date().isoformat(), []).append(target)
+        elif self.config.randomize_start:
+            if scheduled_start(self.config, target, now.date()) > now:
+                return None, CornerResult("noop", detail="start-window-not-due")
+
         self._validate_games()
         self._ensure_runtime()
         previous = self._active_game_reader()
-        target = select_game(self.config.games, now.date())
         ends_at = now + dt.timedelta(minutes=self.config.duration_minutes)
         state = {
             "schema_version": STATE_SCHEMA_VERSION,
@@ -572,6 +624,9 @@ class RetroCornerManager:
             "completed_at": None,
             "last_error": None,
         }
+        if self.config.daily_each_game:
+            state["daily_attempts"] = attempts
+            state["target_matches"] = self.config.target_matches
         self._write_state(state)
         try:
             self._transition_to(previous, target)
@@ -592,17 +647,65 @@ class RetroCornerManager:
             raise RetroCornerError(_safe_detail(exc)) from exc
         return state, None
 
+    def _target_reached(self, state: dict) -> bool:
+        """3試合検知: scorelogの当該コーナー開始以降の件数で判定する。"""
+        target = state.get("target_matches")
+        if not isinstance(target, int) or target <= 0:
+            return False
+        game = state.get("game")
+        if not isinstance(game, str) or not game:
+            return False
+        try:
+            start_ts = dt.datetime.fromisoformat(str(state.get("started_at"))).timestamp()
+        except (ValueError, TypeError, OverflowError, OSError):
+            return False
+        log_path = Path(self.g.state_dir) / "scores" / f"{game}.jsonl"
+        try:
+            lines = log_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return False
+        count = 0
+        for line in lines:
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(entry, dict) or entry.get("game") != game:
+                continue
+            try:
+                ts = float(entry.get("ts", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if ts >= start_ts:
+                count += 1
+        return count >= target
+
     def _wait_and_finish(self, state: dict[str, object]) -> CornerResult:
         ends_at = self._parse_ends_at(state)
         if ends_at is None:
             raise RetroCornerError("retro corner ends_atが不正です")
-        remaining = max(0.0, (ends_at - self._local_now()).total_seconds())
-        self._sleep(remaining)
-        with self._locked():
-            latest = self._read_state()
-            if latest.get("status") != "active":
-                return self._state_result(latest)
-            return self._finish_locked(latest, self._local_now())
+        if not state.get("target_matches"):
+            remaining = max(0.0, (ends_at - self._local_now()).total_seconds())
+            self._sleep(remaining)
+            with self._locked():
+                latest = self._read_state()
+                if latest.get("status") != "active":
+                    return self._state_result(latest)
+                return self._finish_locked(latest, self._local_now())
+        else:
+            # 3試合早期終了: 試合境界はwrapperの保存後に訪れる。時間上限
+            # ends_at は必ず残し、来なければ従来どおり ends_at で終了する。
+            while True:
+                remaining = max(0.0, (ends_at - self._local_now()).total_seconds())
+                self._sleep(min(5.0, remaining))
+                with self._locked():
+                    latest = self._read_state()
+                    if latest.get("status") != "active":
+                        return self._state_result(latest)
+                    if remaining <= 0.0:
+                        return self._finish_locked(latest, self._local_now())
+                    if self._target_reached(latest):
+                        return self._finish_locked(latest, self._local_now())
 
     def start(self) -> CornerResult:
         with self._locked():
