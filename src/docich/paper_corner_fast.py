@@ -306,6 +306,9 @@ class FastPaperCornerManager(PaperCornerManager):
                     state["script_segments"] = {}
                     self.save(state)
 
+        if state.get("status") == "active":
+            self._refresh_paper_flag(state)
+
         while self.clock() < state["ends_at"]:
             self._refresh_ai_script(state)
             elapsed = max(0.0, self.clock() - state["started_at"])

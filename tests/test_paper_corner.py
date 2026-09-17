@@ -497,3 +497,29 @@ def test_long_segment_truncates_overlay_but_keeps_full_speech(tmp_path):
     assert state['reports']['script:2']['overlay'] is True
     assert state['reports']['script:2']['speech'] is True
     assert state['reports']['script:2']['text'] == long_text
+
+
+def test_paper_flag_advertises_active_window_and_clears_on_restore(tmp_path):
+    import json as _json
+    g = setup(tmp_path)
+    now = [datetime(2026, 9, 8, 22, tzinfo=ZoneInfo('Asia/Tokyo')).timestamp()]
+    flag = tmp_path / 'soren' / 'tmp' / '.paper_corner_active'
+    mgr = manager(g, clock=lambda: now[0], sleep=lambda t: None,
+                  overlay=lambda g, p: None, speech=lambda g, t, **kw: None)
+    # Non-active states never advertise.
+    mgr._refresh_paper_flag({'status': 'starting'})
+    assert not flag.exists()
+    mgr._refresh_paper_flag({'status': 'active', 'date': '2026-09-08',
+                             'started_at': now[0], 'ends_at': now[0] + 1800})
+    assert _json.loads(flag.read_text())['ends_at'] == now[0] + 1800
+    mgr._clear_paper_flag()
+    assert not flag.exists()
+    # Clearing twice is harmless.
+    mgr._clear_paper_flag()
+
+
+def test_end_text_is_date_stamped_against_dup_suppression(tmp_path):
+    g = setup(tmp_path)
+    mgr = manager(g)
+    assert '9月8日' in mgr._end_text({'date': '2026-09-08'})
+    assert mgr._end_text({'date': 'not-a-date'}) == '規定時間を終え、通常の短報に戻ります。'
