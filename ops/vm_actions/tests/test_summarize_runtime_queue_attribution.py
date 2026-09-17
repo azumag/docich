@@ -98,7 +98,45 @@ class QueueGiveupAttributionTests(unittest.TestCase):
         self.assertIn("ai_queue_giveup_component_unknown=1", summary)
         self.assertIn("ai_queue_giveup_attribution_exact=0", summary)
         self.assertIn("ai_rate_limit_pressure=0", summary)
+        self.assertIn("improvement_running=0", summary)
+        self.assertIn("improvement_backing_off=0", summary)
         self.assertNotIn("SUPERSECRET", summary)
+
+    def test_render_exposes_only_bounded_fixed_improvement_retry_state(self):
+        severity, summary = attribution.render(
+            {
+                "status": "warn",
+                "workers": {},
+                "queues": {"queue_giveups_15m": 0},
+                "ai": {"recent_events": []},
+                "improvement": {
+                    "running": False,
+                    "backing_off": True,
+                    "retry_pending": True,
+                    "retry_age_sec": 90000,
+                    "backoff_age_sec": 301,
+                    "blocked_by": ["rate_limit_backoff", "SECRET_FREE_FORM_BLOCKER"],
+                },
+                "corners": {},
+                "storage_artifacts": {},
+                "bundle_storage": {},
+            }
+        )
+        self.assertEqual(severity, "warn")
+        self.assertIn("retry_pending=1", summary)
+        self.assertIn("improvement_running=0", summary)
+        self.assertIn("improvement_backing_off=1", summary)
+        self.assertIn("improvement_retry_age_sec=86400", summary)
+        self.assertIn("improvement_retry_age_capped=1", summary)
+        self.assertIn("improvement_backoff_age_sec=301", summary)
+        self.assertIn("improvement_backoff_age_capped=0", summary)
+        self.assertIn("improvement_blocked_by_rate_limit_backoff=1", summary)
+        self.assertIn("improvement_blocked_by_peak_hour_defer=0", summary)
+        self.assertIn("improvement_blocked_by_ab_pending=0", summary)
+        self.assertIn("improvement_blocked_by_daemon_paused=0", summary)
+        self.assertIn("improvement_blocked_by_unknown=0", summary)
+        self.assertNotIn("SECRET_FREE_FORM_BLOCKER", summary)
+        self.assertNotIn("90000", summary)
 
     def test_render_composes_pressure_with_queue_attribution(self):
         severity, summary = attribution.render(
