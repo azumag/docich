@@ -448,6 +448,16 @@ class PaperCornerManager:
         self._require_outputs()
         return self._with_guard(self._start_locked)
 
+    def _prewarm_script(self, state) -> None:
+        """Prepare narration while waiting for the program boundary (hook).
+
+        Base implementation is a no-op: its script generation blocks on the
+        AI chain, so warming it here would stall boundary acquisition.
+        FastPaperCornerManager overrides this to install immediate fallback
+        content and detach the AI worker, so scripts are ready at switch.
+        """
+        return None
+
     def _start_locked(self):
         state = self._read_state()
         if state.get('status') in ('starting', 'active'):
@@ -461,6 +471,13 @@ class PaperCornerManager:
             'requested_at': self.clock(),
         }
         self.save(state)
+        try:
+            # Manual/operator start: prepare every script before the display
+            # switches, so narration begins immediately. Slow here, silent
+            # never after the switch. _run_locked still retries/falls back.
+            self._announce_script(state)
+        except Exception:
+            pass
         return self._run_locked(state)
 
     def stop(self):
@@ -501,6 +518,10 @@ class PaperCornerManager:
             state = {'status': 'waiting', 'date': now.date().isoformat(), 'requested_at': requested_at}
             self.save(state)
             wait_boundary = True
+        if wait_boundary and state.get('status') == 'waiting':
+            # Still waiting on the match boundary: use the idle time to get
+            # scripts ready, so the corner narrates from the first minute.
+            self._prewarm_script(state)
         try:
             with program_slot(
                 self.g,
