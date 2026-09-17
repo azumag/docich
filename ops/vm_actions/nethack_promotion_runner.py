@@ -154,10 +154,21 @@ def run_arm(
             )
         outcomes.append(outcome)
         trace = arena["episode_root"] / "action-trace.jsonl"
-        if trace.is_file() and catalog_specs is not None:
-            trace_unverified += sum(
-                1 for verification in verify_trace_file(trace, catalog_specs) if not verification.verified
-            )
+        if catalog_specs is not None:
+            if not trace.is_file():
+                # Candidate promotion is trace-gated. Absence of evidence must
+                # fail closed rather than being treated as zero violations.
+                trace_unverified += 1
+            else:
+                verifications = tuple(verify_trace_file(trace, catalog_specs))
+                if not verifications:
+                    # An empty trace is also absence of evidence for this
+                    # catalog-driven candidate episode.
+                    trace_unverified += 1
+                else:
+                    trace_unverified += sum(
+                        1 for verification in verifications if not verification.verified
+                    )
     return ArmResult(arm=arm, outcomes=tuple(outcomes), trace_unverified=trace_unverified)
 
 
