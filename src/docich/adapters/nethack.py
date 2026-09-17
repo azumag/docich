@@ -34,6 +34,29 @@ DEFAULT_SAVE_DIR = Path("/var/games/nethack/save")
 BOUNDARY_RESULT_FILENAME = "nethack_boundary.json"
 _PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,31}$")
 
+# Character-creation / startup screens have no durable run to save: NetHack has
+# not created an adventure yet.  The normal ``S`` boundary only succeeds after a
+# fresh save file appears, which can never happen here, so a switch away from a
+# game that never reached gameplay would otherwise wait until the deadline,
+# fail closed, and leave the canonical active game stuck on NetHack.
+_PREGAME_SCREEN_MARKERS = (
+    "do you want a tutorial",
+    "shall i pick",
+    "pick a character",
+    "pick a role",
+    "pick a race",
+    "pick an alignment",
+    "pick a gender",
+    "is this ok",
+    "welcome to net",
+)
+
+
+def _is_character_creation_screen(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in _PREGAME_SCREEN_MARKERS)
+
+
 
 class NethackCoordinatorAdapter(CliCoordinatorAdapter):
     """CLI coordinator adapter with NetHack's suspend/resume boundary."""
@@ -188,6 +211,15 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
         if time.monotonic() >= deadline:
             raise ReadinessTimeoutError("NetHackの安全なsave終了を確認できませんでした")
 
+    def _at_character_creation(self, process_target: str) -> bool:
+        try:
+            text = self.tmux.capture_pane(process_target)
+        except Exception:
+            # A failed capture is not evidence of character creation.  Fall
+            # through to the normal (fail-closed) save boundary.
+            return False
+        return _is_character_creation_screen(text)
+
     def request_round_boundary(self, request_id: str, deadline: float, cancel) -> None:
         self._check_active(deadline, cancel)
         if not self.tmux.session_target_exists(self.spec.adapter_session):
@@ -210,6 +242,13 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
                 )
             else:
                 self._write_boundary_result(request_id, outcome="ended")
+            return
+
+        if self._at_character_creation(process_target):
+            # The adventure never started, so there is nothing to suspend.
+            # Record a terminal boundary instead of waiting for a save file
+            # that cannot be written, which would leave the active game stuck.
+            self._write_boundary_result(request_id, outcome="ended")
             return
 
         before = self._save_signatures()
