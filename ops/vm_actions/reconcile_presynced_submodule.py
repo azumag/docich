@@ -54,6 +54,8 @@ PROJECTION_UNKNOWN_CLASS_PER_PATH = 3
 PROJECTION_UNKNOWN_CLASS_ABSENT = 0
 PROJECTION_UNKNOWN_CLASS_RESIZED = 1
 PROJECTION_UNKNOWN_CLASS_SAME_LENGTH = 2
+SUBMODULE_DIRTY_MAX_PATHS = 64
+SUBMODULE_LINEAGE_MAX_COMMITS = 64
 
 
 class ReconcileError(RuntimeError):
@@ -240,6 +242,96 @@ def _reviewed_attestation(rel, live):
     return live is not None and any(p == rel and d == live["sha256"] and m == live["mode"] for p, d, m in _ATTESTED)
 
 
+def _reviewed_worktree_state(repo, rel, old_sub, new_sub, live):
+    """Accept only exact bytes+mode from the reviewed old..new lineage.
+
+    This is deliberately stricter than the projection-only hash helper above:
+    the owned Git checkout carries executable-bit semantics, so both content
+    and mode must match a real reviewed commit (or an explicit attestation).
+    """
+    try:
+        commits = [old_sub] + _git(repo, "rev-list", "--reverse", f"{old_sub}..{new_sub}", "--", rel).split()
+        if len(commits) > SUBMODULE_LINEAGE_MAX_COMMITS + 1:
+            return False
+        for commit in commits:
+            expected = _projection_expected(repo, _projection_entry(repo, commit, rel))
+            if _projection_same(live, expected):
+                return True
+    except ReconcileError:
+        return False
+    return _reviewed_attestation(rel, live)
+
+
+def _normalize_reviewed_submodule_drift(repo, current_sub, old_sub, new_sub):
+    """Converge reviewed-ahead tracked worktree bytes back to current HEAD.
+
+    The production Soren checkout can be pre-synced by an owner-only reviewed
+    operation before the parent gitlink advances. Previously this shape was
+    indistinguishable from arbitrary tracked drift and always returned 55.
+    Under the existing explicit ``lineage`` opt-in, normalize only when every
+    dirty tracked path is an ordinary file whose live bytes+mode exactly match
+    the reviewed old..new lineage. Unknown/staged/symlink/excessive drift is
+    left untouched and still fails closed with reason 55.
+    """
+    if not _LINEAGE:
+        raise ReconcileError(REASON_SUBMODULE_DRIFT, "tracked drift")
+
+    try:
+        staged = _git(repo, "diff", "--cached", "--name-only", "-z", "--no-renames", "--", raw=True, reason=REASON_SUBMODULE_DRIFT)
+        if staged:
+            raise ReconcileError(REASON_SUBMODULE_DRIFT, "staged tracked drift")
+        raw = _git(repo, "diff", "--name-only", "-z", "--no-renames", "--", raw=True, reason=REASON_SUBMODULE_DRIFT)
+        dirty = [item.decode("utf-8", "strict") for item in raw.split(b"\0") if item]
+    except (UnicodeDecodeError, ReconcileError) as exc:
+        if isinstance(exc, ReconcileError) and exc.code == REASON_SUBMODULE_DRIFT:
+            raise
+        raise ReconcileError(REASON_SUBMODULE_DRIFT, "tracked drift") from exc
+
+    if not dirty or len(dirty) > SUBMODULE_DIRTY_MAX_PATHS:
+        raise ReconcileError(REASON_SUBMODULE_DRIFT, "tracked drift outside bound")
+
+    plans = []
+    try:
+        for rel in dirty:
+            path = _safe_projection_path(repo, rel)
+            target = _projection_expected(repo, _projection_entry(repo, current_sub, rel))
+            live = _projection_live(path)
+            # A path reported by git diff must be tracked by the current HEAD;
+            # additions/untracked entries are intentionally outside this path.
+            if target is None or not _reviewed_worktree_state(repo, rel, old_sub, new_sub, live):
+                raise ReconcileError(REASON_SUBMODULE_DRIFT, "unreviewed tracked drift")
+            plans.append((path, target, live))
+    except ReconcileError as exc:
+        if exc.code == REASON_SUBMODULE_DRIFT:
+            raise
+        raise ReconcileError(REASON_SUBMODULE_DRIFT, "unsupported tracked drift") from exc
+
+    applied = []
+    try:
+        for path, target, original in plans:
+            if not _projection_same(_projection_live(path), original):
+                raise ReconcileError(REASON_SUBMODULE_DRIFT, "concurrent tracked drift")
+            _set_projection(path, target)
+            applied.append((path, target, original))
+        if _git(repo, "status", "--porcelain", "--untracked-files=no", reason=REASON_POSTVERIFY_FAILED):
+            raise ReconcileError(REASON_POSTVERIFY_FAILED, "submodule worktree did not converge")
+    except Exception as exc:
+        rollback_failed = False
+        for path, target, original in reversed(applied):
+            try:
+                if _projection_same(_projection_live(path), target):
+                    _set_projection(path, original)
+                elif not _projection_same(_projection_live(path), original):
+                    rollback_failed = True
+            except Exception:
+                rollback_failed = True
+        if rollback_failed:
+            raise ReconcileError(REASON_MUTATION_FAILED, "submodule rollback incomplete") from exc
+        if isinstance(exc, ReconcileError):
+            raise
+        raise ReconcileError(REASON_MUTATION_FAILED, "submodule normalization failed") from exc
+
+
 def _set_projection(path, target):
     if target is None:
         if path.exists():
@@ -337,13 +429,13 @@ def reconcile(root, old_parent, old_sub, new_sub, sub_path, projection_destinati
         if current_tree != reviewed_tree or not _is_ancestor(sub, current_sub, new_sub):
             raise ReconcileError(REASON_SUBMODULE_HEAD_MISMATCH, "not at accepted state")
 
-    if _git(sub, "status", "--porcelain", "--untracked-files=no", reason=REASON_SUBMODULE_DRIFT):
-        raise ReconcileError(REASON_SUBMODULE_DRIFT, "tracked drift")
-
     _git(sub, "cat-file", "-e", f"{old_sub}^{{commit}}", reason=REASON_OLD_OBJECT_MISSING)
     _git(sub, "cat-file", "-e", f"{new_sub}^{{commit}}", reason=REASON_NEW_OBJECT_MISSING)
     if not _is_ancestor(sub, old_sub, new_sub):
         raise ReconcileError(REASON_NOT_DESCENDANT, "not descendant")
+
+    if _git(sub, "status", "--porcelain", "--untracked-files=no", reason=REASON_SUBMODULE_DRIFT):
+        _normalize_reviewed_submodule_drift(sub, current_sub, old_sub, new_sub)
 
     if current_sub != old_sub:
         _git_run(sub, "checkout", "--detach", "--quiet", old_sub)
