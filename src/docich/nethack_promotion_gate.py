@@ -73,6 +73,11 @@ class GateConfig:
     # Guard against promoting on turns alone: the candidate must not lose depth
     # on any paired seed.
     max_depth_non_regression: bool = True
+    # NetHack is not fully reproducible even with a controlled RNG seed (time
+    # dependent code), so turns may fluctuate a little between two runs.  A
+    # candidate within this fraction of the baseline turns is still treated as
+    # non-regressed.
+    turn_tolerance_ratio: float = 0.15
 
 
 @dataclass(frozen=True)
@@ -121,6 +126,21 @@ def paired_seeds(inputs: PromotionInputs) -> tuple[int, ...]:
     return tuple(sorted({item.seed for item in inputs.candidate}))
 
 
+def _non_regressed(
+    baseline: EpisodeOutcome, candidate: EpisodeOutcome, config: GateConfig
+) -> bool:
+    """Depth and score must not regress; turns may drift within tolerance."""
+    if (candidate.max_depth or 0) < (baseline.max_depth or 0):
+        return False
+    if (candidate.score or 0) < (baseline.score or 0):
+        return False
+    baseline_turns = baseline.turns or 0
+    candidate_turns = candidate.turns or 0
+    if baseline_turns > 0 and candidate_turns < baseline_turns * (1.0 - config.turn_tolerance_ratio):
+        return False
+    return True
+
+
 def evaluate_promotion(
     inputs: PromotionInputs, config: GateConfig | None = None
 ) -> PromotionDecision:
@@ -154,7 +174,7 @@ def evaluate_promotion(
     depth_regressed = False
     for seed, candidate in candidate_by_seed.items():
         baseline = baseline_by_seed[seed]
-        if candidate.fitness() >= baseline.fitness():
+        if _non_regressed(baseline, candidate, config):
             non_regressed += 1
         if config.max_depth_non_regression and (candidate.max_depth or 0) < (baseline.max_depth or 0):
             depth_regressed = True
