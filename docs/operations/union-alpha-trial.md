@@ -42,6 +42,16 @@ Union Alpha は期間に応じて実行時に注入せず、設定のモデル�
 従来の上限2より遅延が増えるのは先行候補が失敗した場合のみ。用途別に上限を変える場合は
 Web UIで正整数を明示する（空欄は既定4）。カスタムチェーンにも同じ上限が適用される。
 
+## 調査系の例外（Union Alpha を末尾に置く）
+
+JIJI調査 (`RADIO_JIJI_RESEARCH_AGENTS`) は他モデルと同じ単一タイムアウト
+(`RADIO_JIJI_RESEARCH_TIMEOUT`、既定300秒) を共有する。2026-09-18 の本番実測で
+Go版・OpenRouter版の両方が約300秒で `timeout` したため、既存候補
+(`RADIO_MAIN_PREPASS_AGENT` → `RADIO_MAIN_FALLBACK`) を先に試し、Union Alpha 2経路は
+**末尾のフォールバック**に置く。ファクトチェックの `opencode-go:omen-alpha` のような
+モデル別タイムアウト延長は、調査系では行わない（generation slot を長時間占有するため）。
+Chain表記は `既存候補, opencode-go:union-alpha, openrouter:stealth/union-alpha`。
+
 ## 提供終了・失敗時
 
 2経路の失敗・backoffは独立して扱い、通常のfallback/backoffで既存候補へ進む。

@@ -797,7 +797,8 @@ class TestHttpHandlers(unittest.TestCase):
         mtime = data["env_mtime"]
         entry = next(e for e in data["entries"] if e["key"] == "RADIO_JIJI_RESEARCH_AGENTS")
         self.assertEqual(entry["value"], "")
-        self.assertTrue(entry["effective"].startswith("opencode-go:union-alpha,"))
+        self.assertTrue(entry["effective"].startswith("opencode:muse-spark-1.3-contributor-free,"))
+        self.assertTrue(entry["effective"].endswith(",opencode-go:union-alpha,openrouter:stealth/union-alpha"))
         status, data = self._request(
             "PUT", "/api/config",
             {"values": {"RADIO_JIJI_RESEARCH_AGENTS": ""}, "expected_mtime": mtime, "confirm": True},

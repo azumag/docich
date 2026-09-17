@@ -66,7 +66,10 @@ class TestExplicitUnionAlphaConfig(unittest.TestCase):
                 self.assertFalse(set(parents) & set(webui.AUX_CHAIN_PARENTS))
                 custom = {parent: f'opencode:fixture-{i}' for i, parent in enumerate(parents)}
                 chain = ','.join(custom.values())
-                self.assertEqual(webui._effective_value(key, custom), ','.join(PREFIX) + ',' + chain)
+                if key in webui.AUX_CHAIN_STATIC_SUFFIX:
+                    self.assertEqual(webui._effective_value(key, custom), chain + ',' + ','.join(PREFIX))
+                else:
+                    self.assertEqual(webui._effective_value(key, custom), ','.join(PREFIX) + ',' + chain)
                 self.assertEqual(webui._effective_value(key, {**custom, key: ''}), chain)
                 self.assertEqual(webui._effective_value(key, {key: 'local'}), 'local')
                 default_parents = ','.join(webui.AUX_PARENT_DEFAULTS[p] for p in parents
