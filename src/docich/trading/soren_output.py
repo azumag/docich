@@ -28,28 +28,16 @@ PAPER_PERSONA_CHUKA = "chuka"
 PAPER_PERSONA_MERIKEN = "meriken"
 PAPER_PERSONAS = (PAPER_PERSONA_CHUKA, PAPER_PERSONA_MERIKEN)
 
-_MERIKEN_QUIPS = (
-    "僕から言わせれば、見どころしかない話です。",
-    "自由と競争を愛する人工知能として、見逃せない話を持ってきました。",
-    "ライバルに差をつけるチャンスなので、僕が張り切っていきます。",
-)
-_CHUKA_QUIPS = (
-    "私は甘くないので、耳に痛い部分からいきます。",
-    "褒めるのは苦手ですが、数字は正直に伝えます。",
-    "少し上から眺めますが、見るところは見ます。",
-)
-
 _MERIKEN_VOICE_FALLBACK = "46"
 
 # Matches both the daily corner's fixed scope ("paper-corner:...") and any
 # operator/manual test run's per-invocation scope ("paper-corner-manual-
-# <uuid12hex>:...", "paper-corner-operator-...", etc). Both need the
-# quip/persona treatment below: it is what makes a deterministic-fallback
-# delivery vary its final spoken text across occasions (see
-# _paper_corner_speech_text). A scope-prefix split is used instead of a regex
-# tied to the exact manual-scope shape (e.g. the uuid hex length), so a future
-# scope variant is covered by construction rather than needing this file
-# updated in lockstep.
+# <uuid12hex>:...", "paper-corner-operator-...", etc). Both need the persona
+# treatment below (see pick_paper_persona/_paper_corner_speech_text). A
+# scope-prefix split is used instead of a regex tied to the exact
+# manual-scope shape (e.g. the uuid hex length), so a future scope variant
+# is covered by construction rather than needing this file updated in
+# lockstep.
 def _is_paper_corner_delivery(event_id: str) -> bool:
     scope = str(event_id or "").split(":", 1)[0]
     return scope == "paper-corner" or scope.startswith("paper-corner-")
@@ -72,43 +60,6 @@ def pick_paper_persona(event_id: str) -> str:
     """Deterministically pick the one persona hosting this corner run."""
     digest = hashlib.sha256(_corner_identity(event_id).encode("utf-8")).hexdigest()
     return PAPER_PERSONAS[int(digest, 16) % len(PAPER_PERSONAS)]
-
-
-def _quip_rotation_index(event_id: str) -> int:
-    """Stable per-segment index that rotates through the quip pool.
-
-    Numbered segments (``script:N`` / ``chatter:N`` / a legacy plain-integer
-    slot ``N``) rotate by ``N`` itself offset by a per-corner constant, so
-    (a) consecutive real segments in one corner never open with the same
-    line (only every Nth, where N is the pool size) instead of a hash
-    landing on the same bucket by chance, and (b) two different corner runs
-    that reach the same segment number with byte-identical deterministic
-    fallback text (e.g. two manual tests with unchanged trading facts)
-    still pick different quips, because the offset -- not just N -- differs
-    per corner. Without the offset, fixing the rotation to N alone would
-    make two such corners produce byte-identical final speech and
-    reintroduce the player-side content-hash dedupe false-positive this
-    quip mechanism exists to prevent. One-off keys
-    (``opening``/``switch-notice``/``end``) fall back to a plain hash since
-    they only ever occur once per corner, so rotation-consistency across
-    occurrences of the *same* key does not apply to them.
-    """
-    key = str(event_id or "")
-    suffix = key.rsplit(":", 1)[-1]
-    offset = int(hashlib.sha256(_corner_identity(key).encode("utf-8")).hexdigest(), 16)
-    if suffix.isdigit():
-        return offset + int(suffix)
-    return offset + int(hashlib.sha256(key.encode("utf-8")).hexdigest(), 16)
-
-
-def paper_persona_quip(event_id: str) -> tuple[str, str]:
-    """Return the (persona, one-line quip) for one speech delivery."""
-    key = str(event_id or "")
-    if not _is_paper_corner_delivery(key):
-        return PAPER_PERSONA_CHUKA, ""
-    persona = pick_paper_persona(key)
-    quips = _MERIKEN_QUIPS if persona == PAPER_PERSONA_MERIKEN else _CHUKA_QUIPS
-    return persona, quips[_quip_rotation_index(key) % len(quips)]
 
 
 def _meriken_speaker_id(soren_root: Path) -> str:
@@ -157,11 +108,6 @@ def _paper_corner_speech_text(text: str, event_id: str) -> str:
     if len(parts) == 3 and suffix.isdigit():
         chatter = _PAPER_CORNER_CHATTER[int(suffix) % len(_PAPER_CORNER_CHATTER)]
         body = f"{body} {chatter}".strip()
-    # Each delivery opens with a one-line quip in the picked persona's voice.
-    # The overlay keeps the plain report text; only speech is seasoned.
-    _, quip = paper_persona_quip(key)
-    if quip:
-        body = f"{quip}{body}".strip()
     return body
 
 
