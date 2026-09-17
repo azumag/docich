@@ -14,6 +14,7 @@ SCORELOG="${NINVADERS_SCORELOG:-/home/ubuntu/docich/run-soren-live/scores/ninvad
 PANE="${TMUX_PANE:-}"
 NINVADERS_BIN="${NINVADERS_BIN:-/usr/games/ninvaders}"
 DRIVER_INTERVAL="${NINVADERS_DRIVER_INTERVAL:-0.35}"
+MAX_MATCHES="${NINVADERS_MAX_MATCHES:-3}"
 
 record_score() {
   [ "$1" -gt 0 ] 2>/dev/null || return 0
@@ -24,6 +25,7 @@ record_score() {
 driver() {
   max_score=0
   seen_game=0
+  matches=0
   direction=Right
   move_ticks=0
   while :; do
@@ -46,6 +48,11 @@ driver() {
           record_score "$max_score"
           max_score=0
           seen_game=0
+          matches=$((matches + 1))
+          # 指定試合数を完走したら自動開始しない (コーナー終了を待つ)。
+          if [ "$matches" -ge "$MAX_MATCHES" ] 2>/dev/null; then
+            break
+          fi
         fi
         tmux send-keys -t "$PANE" Space
         ;;
