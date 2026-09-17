@@ -64,9 +64,18 @@ test_hanjuku_brain 1) は環境起因と確定 (今回の退行ではない)。
 
 - 実ゲーム (`/usr/games/ninvaders`, `/usr/games/nsnake`) はローカルに無く、
   headless 評価の実走・無人完走は未実測。
-- `run/brain/<game>/weights.json` 未作成 (brain内蔵既定値で動作)。
-  改善昇格後の live brain 反映は follow-up (昇格先 `<state_dir>/resolver/`
-  と brain 参照先 `run/brain/` の統合が必要)。
 - VM実測・本番反映・program boundary 実運用との干渉は未実施。
   本番適用は docich 正規フロー (branch→PR→CI→protected main→VM gateway)。
 - ローカルには tmux あり。バナー未実施 (スクリプト不在)。音声不要。
+
+## live hot-swap (2026-09-18追記: 実装済み)
+
+改善昇格 (`_promote`) は bot ゲーム (nsnake/ninvaders) の候補重み全文を
+live brain の `run/brain/<game>/weights.json` へも書く
+(`DOCICH_BOT_BRAIN_DIR` で基底差し替え可、テストはtmp使用)。
+brain は観測ごとの新規プロセスで `load_weights()` するため次tickから反映
+(gnurobots の render hot-swap と対称)。真偽値キー (nsnake `tail_passable`)
+を含む完全な重みを出力。書き込み失敗は既存 gnurobots と同一の fail-closed
+(昇格は済み、ジョブはエラー終了)。kept (据え置き) 時は書き換えない。
+昇格時のみ書くため、テスト含め `run/brain` 非生成を実測済み。
+VM 上の live 重みへの初回配布 (既定重みの seed) は follow-up。
