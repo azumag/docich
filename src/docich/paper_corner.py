@@ -14,6 +14,7 @@ from .adapters.program import PAPER_VIEW_NAME, make_program_view_adapter
 from .config import load_global
 from .corner_boundary import CornerWaitExpired, program_slot
 from .game_switch import GameSwitchStore, atomic_write_json
+from .overlay_queue import OVERLAY_BODY_LIMIT
 from .tmux import Tmux
 from .trading.presentation import write_presentation
 from .trading.soren_output import send_overlay, enqueue_speech
@@ -171,8 +172,13 @@ class PaperCornerManager:
         report = reports[key]
         event_id = self._event_id(state, key)
         if not report['overlay']:
+            # The overlay queue rejects bodies over OVERLAY_BODY_LIMIT, while
+            # narration segments (enriched in #424, up to 600-700 chars) are
+            # legitimately longer for speech. Truncate only the overlay copy;
+            # state and speech keep the full text.
+            overlay_body = report['text'][:OVERLAY_BODY_LIMIT]
             self.overlay(self.g, {'ts': int(self.clock()), 'category': 'system', 'level': 'info',
-                                 'title': 'PAPER 暗号資産コーナー', 'body': report['text'], 'source_id': event_id})
+                                 'title': 'PAPER 暗号資産コーナー', 'body': overlay_body, 'source_id': event_id})
             report['overlay'] = True
             self.save(state)
         if not report['speech']:
