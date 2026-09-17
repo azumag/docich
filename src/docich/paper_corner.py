@@ -197,6 +197,47 @@ class PaperCornerManager:
         """Durably deliver one periodic/end message without repeating the intro."""
         self.announce(state, str(slot), str(text))
 
+    def _paper_flag_path(self):
+        from .trading.soren_output import resolve_soren_root
+
+        return resolve_soren_root(self.g) / "tmp" / ".paper_corner_active"
+
+    def _refresh_paper_flag(self, state) -> None:
+        """Advertise the program-view window to the Soren radio (advisory only).
+
+        The radio suppresses new generation while the flag is unexpired, so
+        corner narration is not interleaved with regular radio. Failures are
+        swallowed: the radio treats a missing/broken flag as inactive.
+        """
+        if state.get('status') != 'active':
+            return
+        try:
+            flag = self._paper_flag_path()
+            flag.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_json(flag, {
+                'date': state.get('date'),
+                'started_at': state.get('started_at'),
+                'ends_at': state.get('ends_at'),
+            })
+        except Exception:
+            pass
+
+    def _clear_paper_flag(self) -> None:
+        try:
+            self._paper_flag_path().unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    def _end_text(self, state) -> str:
+        # Date-stamped so the player-side duplicate suppression (which hashes
+        # file content) does not mistake tonight's closing for a replay of a
+        # previous corner's identical line and skip it unheard.
+        try:
+            day = dt.date.fromisoformat(str(state.get('date')))
+            return f'{day.month}月{day.day}日のPAPER・暗号資産コーナーを終え、通常の短報に戻ります。'
+        except (ValueError, TypeError):
+            return '規定時間を終え、通常の短報に戻ります。'
+
     def _announce_script(self, state) -> None:
         """Prepare four fact-grounded narration segments for later delivery.
 
@@ -515,6 +556,7 @@ class PaperCornerManager:
                          last_error=None,
                          detail='operator switched during corner; restore skipped')
             self._spawn_improve_once(state)
+            self._clear_paper_flag()
             self.save(state)
             return 'completed'
         if previous is not None and current == previous:
@@ -522,6 +564,7 @@ class PaperCornerManager:
             write_presentation(self.presentation, 'compact', now=self.clock())
             state.update(status='completed', completed_at=self.clock(), last_error=None)
             self._spawn_improve_once(state)
+            self._clear_paper_flag()
             self.save(state)
             return 'completed'
         if previous is None and current is not None and current != PAPER_VIEW_NAME:
@@ -530,6 +573,7 @@ class PaperCornerManager:
             write_presentation(self.presentation, 'compact', now=self.clock())
             state.update(status='completed', completed_at=self.clock(), last_error=None,
                          detail='no view session evidence; live game left running')
+            self._clear_paper_flag()
             self.save(state)
             return 'completed'
         # Restoring: hand the display back to the previous game first,
@@ -547,13 +591,15 @@ class PaperCornerManager:
                     self.coordinator.switch(previous), f'program view->{previous} restore')
         except PaperCornerError as exc:
             state.update(status='failed', completed_at=self.clock(), last_error=str(exc)[:240])
+            self._clear_paper_flag()
             self.save(state)
             return 'failed'
         # Restore compact even when completion output is temporarily unavailable.
         write_presentation(self.presentation, 'compact', now=self.clock())
-        self.deliver(state, 'end', '規定時間を終え、通常の短報に戻ります。')
+        self.deliver(state, 'end', self._end_text(state))
         state.update(status='completed', completed_at=self.clock(), last_error=None)
         self._spawn_improve_once(state)
+        self._clear_paper_flag()
         self.save(state)
         return 'completed'
 
@@ -620,6 +666,10 @@ class PaperCornerManager:
             self.save(state)
         elif self.clock() < state['ends_at']:
             write_presentation(self.presentation, 'detailed', now=self.clock())
+        if state.get('status') == 'active':
+            # Tell the Soren radio a program view is showing (also heals a
+            # flag lost to a crash mid-corner).
+            self._refresh_paper_flag(state)
 
         # States created by older code have no script_segments. Keep their old
         # cadence for crash-safe replay; newly started corners use the denser,
