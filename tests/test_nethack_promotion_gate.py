@@ -101,6 +101,25 @@ def test_rejects_fitness_regression():
     assert decision.reasons == (REASON_FITNESS,)
 
 
+def test_tolerates_small_turn_drift_between_runs():
+    # NetHack is not fully reproducible even with a fixed seed, so a candidate
+    # within the turn tolerance is still non-regressed.
+    inputs = paired_inputs(
+        baseline_kw={"depth": 3, "score": 100, "turns": 100},
+        candidate_kw={"depth": 3, "score": 100, "turns": 90},
+    )
+    assert evaluate_promotion(inputs).promote is True
+
+
+def test_rejects_regression_beyond_turn_tolerance():
+    inputs = paired_inputs(
+        baseline_kw={"depth": 3, "score": 100, "turns": 100},
+        candidate_kw={"depth": 3, "score": 100, "turns": 50},
+    )
+    decision = evaluate_promotion(inputs)
+    assert decision.reasons == (REASON_FITNESS,)
+
+
 def test_rejects_degenerate_turns_only_candidate():
     # No terminal and depth 0 on both sides: a turns-only "win" must not promote.
     inputs = paired_inputs(

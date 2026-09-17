@@ -265,8 +265,10 @@ class _NullContext:
     explorer = NethackExplorer()
 
 
-def load_action_catalog(path: Path) -> tuple[ActionSpec, ...]:
-    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+def parse_action_catalog(
+    raw: object, *, allowed_action_ids: frozenset[str] | None = None
+) -> tuple[ActionSpec, ...]:
+    """Validate an in-memory catalog object (used by the P6 proposer too)."""
     if not isinstance(raw, dict) or raw.get("schema_version") != CATALOG_SCHEMA_VERSION:
         raise ValueError("action catalog schema_version is invalid")
     entries = raw.get("actions")
@@ -274,7 +276,15 @@ def load_action_catalog(path: Path) -> tuple[ActionSpec, ...]:
         raise ValueError("action catalog must contain an actions list")
     specs = tuple(_spec_from_dict(item) for item in entries)
     validate_action_catalog(specs)
+    if allowed_action_ids is not None:
+        unknown = sorted({spec.id for spec in specs if spec.id not in allowed_action_ids})
+        if unknown:
+            raise ValueError(f"catalog references actions outside the allowed set: {unknown}")
     return specs
+
+
+def load_action_catalog(path: Path) -> tuple[ActionSpec, ...]:
+    return parse_action_catalog(json.loads(Path(path).read_text(encoding="utf-8")))
 
 
 def spec_by_id(specs: tuple[ActionSpec, ...], spec_id: str) -> ActionSpec:

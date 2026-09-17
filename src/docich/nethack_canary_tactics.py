@@ -36,6 +36,25 @@ from .nethack_policy import NethackLayeredPolicy, PolicyDecision
 CATALOG_ENV = "DOCICH_CANARY_CATALOG"
 _CATALOG_RELATIVE = Path("config") / "nethack-canary-actions.json"
 
+# Action ids that have a reviewed handler in this module.  A catalog candidate
+# may re-enable/reorder/recondition these, but may not invent a new id: a new
+# capability needs a new reviewed handler (code), not just data.
+SUPPORTED_ACTION_IDS = frozenset(
+    {
+        "advance_message",
+        "confirm_attack",
+        "decline_prompt",
+        "directional_travel",
+        "eat_food",
+        "rest_impaired",
+        "attack_adjacent",
+        "rest_low_hp",
+        "open_door",
+        "explore_step",
+        "rest",
+    }
+)
+
 
 def resolve_catalog_path() -> Path:
     """Resolve the reviewed catalog for the host checkout or the image."""

@@ -29,7 +29,7 @@ smoke_ok: bool                     # production fingerprint 不変 / cleanup / p
 
 ## fitness（退化しない）
 
-`EpisodeOutcome.fitness()` は **辞書式 `(max_depth, score, turns)`**。深さを最優先にすることで、`turns` だけを最大化する **endless rest** のような退化行動を昇格させません（P5k で導入した `rest` の副作用）。
+`EpisodeOutcome.fitness()` は **辞書式 `(max_depth, score, turns)`**。深さを最優先にすることで、`turns` だけを最大化する **endless rest** のような退化行動を昇格させません（P5k で導入した `rest` の副作用）。NetHack は seed を固定しても時刻依存コードで完全再現しないため、`turns` は `GateConfig.turn_tolerance_ratio`（既定 0.15）以内のドリフトを許容し、depth と score は厳密に比較します。
 
 - `max_depth_non_regression`: いずれかの seed で候補の depth が baseline を下回れば reject。
 - `required_non_regression`: 非退行 seed の割合（既定 1.0）。
@@ -55,9 +55,21 @@ smoke_ok: bool                     # production fingerprint 不変 / cleanup / p
 - seed 制御は、image が NetHack の `DEV_RANDOM` を `/canary/episode/seed` へ向け、worker が `request.seed` を 8 byte で書くことで成立（`seed_applied=true`）。
 - production isolation チェックは caller が `isolation_check` で注入。
 
+## improvement loop（P6f）
+
+`run_improvement_cycle`（`ops/vm_actions/nethack_promotion_runner.py` + `src/docich/nethack_catalog_proposer.py`）:
+
+1. baseline arm を実行し `FailureSignal`（stall intent / exit_reason / turns / depth）を作る。
+2. `build_proposal_request` で bounded な公開 JSON（failure + 現行 catalog + `allowed_actions` + constraints）を作り、外部 command（proposer）へ渡す。
+3. proposer 出力は `parse_action_catalog` で schema/safety 検証し、**existing handler id のみ**許可（新 capability はハンドラ＝コードが必要）。
+4. 候補 catalog を runner で seed 比較 → P6c trace 検証 → `evaluate_promotion`。
+5. promote なら known-good 更新、reject なら作り直し。
+
+proposer は外部 command 境界（`CommandCatalogProposer`）。timeout / 非0 exit / 過大要求・応答 / 不正 JSON / 未知 id は `CatalogProposalError` で fail-closed。
+
 ## 未実装（次）
 
-- **capability の自動生成**: 失敗 episode → LLM が catalog spec / handler を提案 → P6c 検証 → runner → 本 gate、のループ。
+- **新 capability（新キー効果）**: ハンドラはコードなので、LLM が handler を提案 → sandbox build → P6c 検証 → gate の経路が別途必要。
 - fitness の本格化（simulator / 並列 rollout）。
 
 Relates to #630, #631, #586, #490.
