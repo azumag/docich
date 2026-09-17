@@ -20,10 +20,12 @@ from .trading.presentation import write_presentation
 from .trading.soren_output import send_overlay, enqueue_speech
 
 # Narrate eight substantial segments across the whole 30-minute corner instead
-# of front-loading a few and going quiet. 170s gives ten narration slots in a
-# 30-minute run (plus opening/end), so slots 1-8 carry corner, news, chart,
-# strategy, result, fills, review and improve, and slots 9-10 stay casual talk.
-NARRATION_INTERVAL_S = 170
+# of front-loading a few and going quiet. 120s gives fourteen narration slots
+# in a 30-minute run (plus opening/end), so slots 1-8 carry corner, news,
+# chart, strategy, result, fills, review and improve, and slots 9-14 stay
+# casual talk. The interval stays above typical speech duration so the audio
+# queue does not backlog and narrations do not overlap.
+NARRATION_INTERVAL_S = 120
 LEGACY_INTERVAL_S = 300
 SCRIPT_SLOTS = {1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8}
 
@@ -266,40 +268,52 @@ class PaperCornerManager:
             symbol = str(focus.get('symbol') or '注目銘柄')
             change = focus.get('change_pct')
             change_text = f'{float(change):+.2f}%' if isinstance(change, (int, float)) else '値動きを観測中'
+            bars = focus.get('bars')
+            bars_text = f'足は{bars}本分たまっています。' if isinstance(bars, int) else ''
             return (f'BOT側ではいま{symbol}を注目していて、保存足ベースでは{change_text}です。'
-                    '画面のローソクは見やすさのため活発な銘柄へ一時退避することがありますが、売買判断そのものは別です。')
+                    '画面のローソクは見やすさのため活発な銘柄へ一時退避することがありますが、売買判断そのものは別です。'
+                    f'{bars_text}材料がそろえばすぐ動けるよう、候補の監視は続けています。')
         if variant == 1:
             count = int(facts.get('candidate_count', 0) or 0)
             reasons = [str(x) for x in (facts.get('candidate_reasons') or []) if str(x).strip()]
             why = f'主な理由は「{reasons[0]}」です。' if reasons else 'まだ条件の決め手がありません。'
             return (f'いま売買候補は{count}件です。{why}'
-                    '候補ゼロも故障ではなく、手数料やスリッページを払ってまで入る価値がないなら待つ、というのも戦略です。')
+                    '候補ゼロも故障ではなく、手数料やスリッページを払ってまで入る価値がないなら待つ、というのも戦略です。'
+                    '待っている間も相場の監視は止めないので、次の変化は逃しません。')
         if variant == 2:
             return (f'資金配分を見てみると、模擬資金は{self._fmt_money(facts.get("capital_jpy"))}、'
                     f'投入は{self._fmt_money(facts.get("deployed_jpy"))}、保有は{int(facts.get("position_count", 0) or 0)}銘柄です。'
-                    '余力を残している時間は地味ですが、急な値動きに反応できる余白でもあります。')
+                    '余力を残している時間は地味ですが、急な値動きに反応できる余白でもあります。'
+                    '投入を抑えている分、連敗しても致命傷になりにくい形です。')
         if variant == 3:
             cumulative = self._fmt_money(perf.get('cumulative_pnl_jpy'))
             today = self._fmt_money(perf.get('today_realized_pnl_jpy'))
             unrealized = self._fmt_money(perf.get('unrealized_pnl_jpy'))
             return (f'損益も途中経過を確認します。累積は{cumulative}、今日の確定分は{today}、含みは{unrealized}です。'
-                    '短い区間の勝ち負けだけで作戦の良し悪しを決めず、コスト込みで積み上がるかを見ます。')
+                    '短い区間の勝ち負けだけで作戦の良し悪しを決めず、コスト込みで積み上がるかを見ます。'
+                    '確定分と含みを分けて見るのが、このコーナーの流儀です。')
         if variant == 4:
             lookback = policy.get('momentum_lookback', '?')
             threshold = policy.get('momentum_threshold_bps', '?')
             z = policy.get('mean_reversion_z', '?')
             return (f'作戦の中身にも少し触れると、勢いは直近{lookback}本を見て、基準上限は{threshold}bpsです。'
-                    f'平均回帰側はz={z}あたりを見ています。勢い側は相場の実現ボラで必要幅を調整するので、BTCのような低ボラ時間も拾いやすくしています。')
+                    f'平均回帰側はz={z}あたりを見ています。勢い側は相場の実現ボラで必要幅を調整するので、BTCのような低ボラ時間も拾いやすくしています。'
+                    'この網にかからなければ見送るだけ、という割り切りです。')
         if variant == 5 and fills:
             fill = fills[0] if isinstance(fills[0], dict) else {}
             side = '買い' if str(fill.get('side')).lower() == 'buy' else '売り'
-            return (f'直近の模擬約定は{fill.get("symbol", "銘柄不明")}の{side}です。'
+            price_text = f'価格はおおむね{self._fmt_money(fill.get("price"))}でした。'
+            return (f'直近の模擬約定は{fill.get("symbol", "銘柄不明")}の{side}です。{price_text}'
                     '表示される約定価格にはPAPERでも手数料とスリッページを乗せているので、都合のいい理想価格だけで勝ったことにはしません。')
         if variant == 6 and skipped:
             item = skipped[0] if isinstance(skipped[0], dict) else {}
             symbol = str(item.get('symbol') or '候補')
             reason = str(item.get('reason') or '条件未達')
-            return (f'見送り側を見ると、{symbol}は「{reason}」で止まっています。'
+            extra = ''
+            if len(skipped) > 1 and isinstance(skipped[1], dict):
+                second = skipped[1]
+                extra = f'{second.get("symbol", "別の候補")}も「{second.get("reason", "条件未達")}」で止まっています。'
+            return (f'見送り側を見ると、{symbol}は「{reason}」で止まっています。{extra}'
                     '売買した話だけでなく、なぜ見送ったかを眺めるとBOTの癖が分かるので、この時間もちゃんと観察対象です。')
         return ('暗号資産はずっと派手に動くわけではありません。こういう無風の時間は、'
                 'ローソクの形、候補の増減、保有の偏りをのんびり見ながら、次の変化を待ちます。')

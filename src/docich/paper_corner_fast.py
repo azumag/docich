@@ -23,7 +23,7 @@ from .paper_corner import (
 from .trading.presentation import write_presentation
 
 MAIN_NARRATION_INTERVAL_S = 75
-FOLLOWUP_NARRATION_INTERVAL_S = 180
+FOLLOWUP_NARRATION_INTERVAL_S = 90
 MAIN_SCRIPT_SLOTS = 8
 SCHEDULE_VERSION = 2
 SCRIPT_RESULT_SCHEMA = 1

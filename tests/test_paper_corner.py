@@ -79,8 +79,8 @@ def test_delayed_boundary_runs_full_duration_and_does_not_repeat(tmp_path):
     state=json.loads(mgr.path.read_text())
     assert state['started_at']==due+2100
     assert state['completed_at']-state['started_at']==1800
-    # opening + 4 narration segments + 6 x 5-minute deliveries + end
-    assert len(output)==len(voice)==12
+    # opening + 14 x 2-minute deliveries (slots 1-8 script, 9-14 chatter) + end
+    assert len(output)==len(voice)==16
     assert all(f'script:{i}' in state['reports'] for i in range(1, 5))
     assert all(p['body'] for p in output)
     assert all(str(kw.get('event_id', '')).startswith('paper-corner:') for kw in voice)

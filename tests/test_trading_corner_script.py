@@ -106,7 +106,7 @@ def test_render_fallback_is_deterministic_and_grounded(tmp_path):
     first = render_fallback(facts)
     assert first == render_fallback(facts)
     assert set(first) == set(SEGMENT_KEYS)
-    assert "10000" in first["result"]
+    assert "10,000" in first["result"]
     assert "btc_jpy" in first["result"]
     assert "xrp_jpy" in first["result"]
     assert "本日の確定損益" in first["result"]
@@ -396,3 +396,63 @@ def test_generate_merges_partial_ai_with_fallback(tmp_path, monkeypatch):
     assert result["segments"]["strategy"]
     assert result["segments"]["review"]
     assert set(result["segments"]) == set(SEGMENT_KEYS)
+
+
+def test_news_segment_has_no_repeated_disclaimer():
+    fallback = render_fallback({
+        "policy": {},
+        "research": {"news_items": [
+            {"title": "A", "source": "X"},
+            {"title": "B", "source": "Y"},
+        ]},
+    })
+    assert "A" in fallback["news"] and "B" in fallback["news"]
+    assert "見出しの段階" not in fallback["news"]
+    assert fallback["news"].count("事実と推測") == 0
+
+
+def test_spoken_numbers_are_rounded_to_two_decimals():
+    from docich.trading.corner_script import _fmt_num
+    assert _fmt_num("-198.4754669238077029463999998") == "-198.48"
+    assert _fmt_num("7.843078654615100") == "7.84"
+    assert _fmt_num("69.31023953378063559684045000") == "69.31"
+    assert _fmt_num("10000") == "10,000"
+    assert _fmt_num("0.001") is None
+    assert _fmt_num(None) is None
+    assert _fmt_num("not-a-number") is None
+    fallback = render_fallback({
+        "policy": {},
+        "capital_jpy": "10000",
+        "deployed_jpy": "0",
+        "position_count": 0,
+        "recent_fills": [{
+            "symbol": "ARB/JPY",
+            "side": "sell",
+            "amount": "58.1395",
+            "price": "25.97877651380",
+            "reason_code": "paper_lab_exit",
+            "realized_pnl_jpy": "7.843078654615100",
+            "signal": {"conditions": [
+                {"feature": "pnl_bps", "observed": "69.31023953378063559684045000",
+                 "threshold": "65", "op": ">="},
+            ]},
+        }],
+        "performance": {
+            "cumulative_pnl_jpy": "-198.4754669238077029463999998",
+            "today_realized_pnl_jpy": "103.4405891598143589596000000",
+            "unrealized_pnl_jpy": "0",
+        },
+        "research": {},
+    })
+    for key in ("result", "fills", "review"):
+        assert "198.47546692380" not in fallback[key]
+        assert "7.84307865461" not in fallback[key]
+        assert "69.31023953" not in fallback[key]
+    assert "-198.48" in fallback["result"]
+    assert "69.31" in fallback["fills"]
+
+
+def test_prompt_instructs_two_decimal_speech():
+    prompt = build_prompt({"policy": {}})
+    assert "小数第2位" in prompt
+    assert "見出しの段階なので" in prompt
