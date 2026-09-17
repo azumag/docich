@@ -170,16 +170,20 @@ jobs:
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA" >/dev/null
           code=$?
           set -e
+          status_ok=1
           case "$code" in
             0) reason=idle_or_terminal ;;
             10) reason=starting ;;
             11) reason=active ;;
             12) reason=failed ;;
             13) reason=unreadable ;;
-            255) reason=transport_error ;;
-            *) reason=unclassified ;;
+            255) reason=transport_error; status_ok=0 ;;
+            *) reason=unclassified; status_ok=0 ;;
           esac
           echo "::notice::NetHack corner manual status: ${reason} (code ${code})"
+          if (( status_ok == 0 )); then
+            exit 1
+          fi
 
       - name: Fail unsuccessful NetHack start
         if: ${{ steps.start.outcome == 'failure' }}
