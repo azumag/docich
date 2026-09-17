@@ -171,6 +171,8 @@ def precondition(name: str, ctx: ActionContext) -> bool:
         # A direction prompt blocks plan_step, but the observable map is the
         # same; evaluate as if no prompt were up.
         return ctx.explorer.plan_step(replace(obs, prompt="none")) is not None
+    if head == "no_safe_step":
+        return ctx.explorer.plan_step(replace(obs, prompt="none")) is None
     raise ValueError(f"unknown precondition {name!r}")
 
 

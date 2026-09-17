@@ -68,8 +68,10 @@ player_visible / player_absent
 adjacent_attackable / no_adjacent_attackable
 adjacent_closed_door
 inventory_food
-safe_step
+safe_step / no_safe_step
 ```
+
+`no_safe_step` は `explorer.plan_step(replace(obs, prompt="none")) is None` のとき True です。`safe_step` と対称で、direction prompt は評価時だけ `none` に置き換えます。policy と trace verifier は同じ `precondition()` を呼び、既存 explorer の判定を再利用します。player や dungeon level が不明な場合も planner は None を返すため、search は別途 `player_visible` と `prompt:none` を要求します。
 
 postconditions（before/after frame に対して評価）:
 
@@ -83,6 +85,36 @@ screen_changed
 ```
 
 predicate は `nethack_canary_tactics` と同じ判定関数を使うため、policy の挙動と検証が一致します。
+
+## data だけで追加する例（P6h）
+
+`no_safe_step` を reviewed predicate に追加した後、search の action 自体は次の catalog data だけで追加できます。専用 handler や action id 分岐は不要です。
+
+```json
+{
+  "id": "search_when_blocked",
+  "effect": "keys",
+  "risk_class": "movement",
+  "preconditions": ["prompt:none", "player_visible", "no_safe_step", "no_adjacent_attackable"],
+  "key_pattern": ["s"],
+  "postconditions": ["always"],
+  "enabled": true,
+  "priority": 88,
+  "description": "探索不能で隣接する攻撃可能モンスターもいない時は search して隠し扉/罠を探す。"
+}
+```
+
+`explore_step`（85）の後、`rest`（90）の前に選択します。既存の低HP・状態異常・戦闘・door の優先順位は変えません。`rest` の fallback 条件も保持します。両者の preconditions は論理的には重なりますが、最初に成立した action だけを選ぶので選択上は排他です。search を disabled にすると従来の rest に戻ります。
+
+現行 proposer は新規 id の汎用 `keys` effect を拒否します。この例は **PR でレビューする catalog 追加**であり、任意 literal key の自動生成を許可する変更ではありません。レビュー済み search を disabled にした baseline から、proposer が enabled に戻す data-only 候補を生成し、policy → trace 検証 → 昇格判定へ渡せます。ローカルテストの合成 frame・outcome による経路確認と、実ゲームでの効果測定は別です。
+
+## 単一 frame の検証境界
+
+**player の足元 glyph は `@` に隠れるため、「階段の上に立っている」という precondition は単一 frame から検証できません。現在の P6c trace 検証ではその条件を証明できないため、descent 系は当面 auto-promote 対象外です。** 近傍に `>` が見えることと player がその上にいることは同じではありません。
+
+`effect=keys` と `key_pattern=[">"]` の構文テストが通っても、階段上にいる証拠にはなりません。条件を `player_visible` だけへ弱めると形式上 verify できても安全な降下を検証したことにはなりません。履歴や追加観測による足元の証拠と、その reviewed verifier が必要です。
+
+search の `postconditions=["always"]` も隠し扉・罠の発見や攻略性能の改善を保証しません。発見しない search は画面が変わらない場合もあるため、trace は発火条件と送出キーを確認するだけです。実際の有用性と昇格可否は、別担当による複数 seed の canary・fitness・smoke 検証で判断します。
 
 ## 検証
 

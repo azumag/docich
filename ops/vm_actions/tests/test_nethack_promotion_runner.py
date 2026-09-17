@@ -123,6 +123,102 @@ class RunnerTests(unittest.TestCase):
         self.assertFalse(decision.promote)
         self.assertIn("smoke_gate_failed", decision.reasons)
 
+    def test_improvement_cycle_enables_reviewed_search_candidate(self):
+        # Only the external command and game process are doubles. Catalog
+        # validation, policy, frame normalization, trace verifier and gate are
+        # real. These fixture frames/outcomes do NOT measure game performance.
+        from dataclasses import replace
+
+        from docich.nethack_action_spec import load_action_catalog, verify_trace_file
+        from docich.nethack_canary_tactics import CanaryTacticalPolicy
+        from docich.nethack_catalog_proposer import CommandCatalogProposer, catalog_to_dict
+        from docich.nethack_observation import normalize_tty
+
+        baseline_specs = tuple(
+            replace(spec, enabled=False) if spec.id == "search_when_blocked" else spec
+            for spec in load_action_catalog(CATALOG)
+        )
+
+        def enable_search(command, *, input, **kwargs):
+            request = json.loads(input)
+            self.assertEqual(request["failure"]["stall_intent"], "rest")
+            self.assertNotIn("keys", request["allowed_new_action_effects"])
+            raw = request["catalog"]
+            self.assertEqual(raw, catalog_to_dict(baseline_specs))
+            search = next(a for a in raw["actions"] if a["id"] == "search_when_blocked")
+            self.assertFalse(search["enabled"])
+            search["enabled"] = True
+            return SimpleNamespace(returncode=0, stdout=json.dumps(raw).encode())
+
+        def frame(turn):
+            # A complete 80x24 TTY frame, not an empty verifier placeholder.
+            lines = ["", "-----", "-@---", "-----"] + [""] * 19
+            lines.append(f"HP:18(18) Pw:1(1) AC:6 Exp:1 Dlvl:1 T:{turn}")
+            return normalize_tty("\n".join(lines) + "\n", cols=80, rows=24)
+
+        for corruption in (None, "keys", "precondition"):
+            with self.subTest(corruption=corruption), tempfile.TemporaryDirectory() as tmp:
+                work_root = Path(tmp)
+                baseline_path = work_root / "baseline-catalog.json"
+                baseline_path.write_text(json.dumps(catalog_to_dict(baseline_specs)), encoding="utf-8")
+                intents = []
+
+                def worker(request_text, *, docker, image, extra_env=None):
+                    request = json.loads(request_text)
+                    root = Path(request["arena"]["episode_root"])
+                    is_candidate = "DOCICH_CANARY_CATALOG" in extra_env
+                    # The runner's baseline uses the installed/default catalog;
+                    # emulate an installation with reviewed search disabled.
+                    catalog = root / "catalog.json" if is_candidate else baseline_path
+                    policy = CanaryTacticalPolicy(specs=load_action_catalog(catalog))
+                    before, after = frame(50), frame(51)
+                    action = policy.decide(before)
+                    policy.assert_safe(action)
+                    expected = "search_when_blocked" if is_candidate else "rest"
+                    self.assertEqual(action.intent, expected)
+                    keys = [a.text for a in action.actions]
+                    self.assertEqual(keys, ["s"] if is_candidate else ["."])
+                    intents.append(action.intent)
+                    record = {"intent": action.intent, "keys": keys,
+                              "before": before.raw_text, "after": after.raw_text}
+                    if is_candidate and corruption == "keys":
+                        record["keys"] = ["."]
+                    if is_candidate and corruption == "precondition":
+                        record["before"] = before.raw_text.replace("-@---", "-@.--")
+                    trace = root / "action-trace.jsonl"
+                    trace.write_text(json.dumps(record) + "\n", encoding="utf-8")
+                    if not is_candidate:
+                        self.assertTrue(all(v.verified for v in verify_trace_file(trace, baseline_specs)))
+                    return {
+                        "worker_status": "completed", "terminal_status": "timeout",
+                        "turns": 120 if is_candidate else 100,
+                        "max_depth": 3 if is_candidate else 2, "score": 100,
+                        "exit_reason": "max_turns" if is_candidate else "policy_stall:rest",
+                        "production_state_touched": False,
+                    }
+
+                decision, signal, specs, base, cand = run_improvement_cycle(
+                    self.spec(),
+                    proposer=CommandCatalogProposer(("fixture-proposer",), runner=enable_search),
+                    baseline_catalog=baseline_path,
+                    work_root=work_root,
+                    worker=worker,
+                    docker="/usr/bin/docker",
+                    image="sha256:" + "a" * 64,
+                )
+                expected_specs = tuple(
+                    replace(s, enabled=True) if s.id == "search_when_blocked" else s
+                    for s in baseline_specs
+                )
+                self.assertEqual(specs, expected_specs)  # enabled is the only data diff
+                self.assertEqual(signal.stall_intent, "rest")
+                self.assertEqual(intents, ["rest"] * 3 + ["search_when_blocked"] * 3)
+                self.assertEqual(len(base.outcomes), 3)
+                self.assertEqual(len(cand.outcomes), 3)
+                self.assertEqual(decision.promote, corruption is None)
+                self.assertEqual(cand.trace_unverified, 0 if corruption is None else 3)
+                self.assertEqual(decision.reasons, () if corruption is None else ("trace_unverified",))
+
     def test_improvement_cycle_proposes_verifies_and_gates(self):
         from dataclasses import replace
 
