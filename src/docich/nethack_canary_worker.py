@@ -30,6 +30,11 @@ RESULT_SCHEMA_VERSION = 1
 BROKER_SCHEMA_VERSION = 1
 MAX_REQUEST_BYTES = 256 * 1024
 MAX_BROKER_RESPONSE_BYTES = 32 * 1024
+# The canary baseline eats only after this many turns since its last meal, so a
+# single Hungry reading cannot empty the whole inventory or overshoot Satiated.
+EAT_COOLDOWN_TURNS = 12
+# Base-policy intents that mean "the visible character needs food".
+_FOOD_INTENTS = frozenset({"seek_food", "food_emergency"})
 PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,31}$")
 ARENA = {
     "episode_root": "/canary/episode",
@@ -418,6 +423,15 @@ def _candidate_keys(
     return plan.keys if plan.allowed else ()
 
 
+def _eat_allowed(turn: int | None, last_eat_turn: int | None) -> bool:
+    """True when the visible turn counter allows another canary meal."""
+    if turn is None:
+        return False
+    if last_eat_turn is None:
+        return True
+    return turn - last_eat_turn >= EAT_COOLDOWN_TURNS
+
+
 def run_episode(request: dict[str, object]) -> dict[str, object]:
     _prepare_runtime()
     player = str(request["player_name"])
@@ -435,6 +449,7 @@ def run_episode(request: dict[str, object]) -> dict[str, object]:
     last_turns: int | None = None
     last_depth: int | None = None
     last_message: str | None = None
+    last_eat_turn: int | None = None
     try:
         _start_game(game, deadline=deadline)
         while time.monotonic() < deadline:
@@ -467,6 +482,21 @@ def run_episode(request: dict[str, object]) -> dict[str, object]:
                     last_message=last_message,
                 )
             decision = policy.decide(observation)
+            if (
+                baseline
+                and decision.intent in _FOOD_INTENTS
+                and observation.prompt == "none"
+                and _eat_allowed(observation.vitals.turn, last_eat_turn)
+            ):
+                # Hunger is visible, so probe the inventory and eat a reviewed
+                # food item instead of stalling on seek_food.
+                inventory = _probe_inventory(game)
+                raw_text = game.capture()
+                observation = normalize_tty(raw_text, cols=80, rows=24)
+                last_turns = observation.vitals.turn
+                last_depth = observation.vitals.dungeon_level
+                last_message = observation.message
+                decision = policy.decide(observation, inventory=inventory)
             if baseline:
                 assert_canary_safe(decision)
             else:
@@ -476,6 +506,8 @@ def run_episode(request: dict[str, object]) -> dict[str, object]:
                 for action in decision.actions:
                     game.apply_action(action)
                 acted = True
+                if decision.intent == "eat_food":
+                    last_eat_turn = observation.vitals.turn
             elif request["arm"] == "candidate" and decision.requires_llm and broker is not None:
                 fingerprint = (
                     decision.intent,
