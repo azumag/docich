@@ -57,3 +57,11 @@ def test_canary_image_entrypoint_is_only_the_worker_module():
     assert 'ENTRYPOINT ["python3", "-m", "docich.nethack_canary_worker"]' in text
     assert "COPY src /opt/docich/src" in text
     assert "COPY brains /opt/docich/brains" in text
+
+
+def test_canary_image_ships_the_reviewed_action_catalog():
+    text = DOCKERFILE.read_text(encoding="utf-8")
+    assert (
+        "COPY config/nethack-canary-actions.json /opt/docich/config/nethack-canary-actions.json"
+        in text
+    )

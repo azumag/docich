@@ -22,6 +22,22 @@ P6 は capability 追加を「禁止」ではなく「canary で自動検証し�
 
 `validate_action_catalog()` が schema と safety invariant（未知 predicate・未知 placeholder・未レビュー risk_class・id 重複）を検査します。
 
+## catalog が policy を駆動する（P6）
+
+`CanaryTacticalPolicy` は catalog をそのまま action table として使います。
+
+- `priority` の小さい順に評価し、全 `preconditions` が成立した最初の spec を選ぶ。
+- `enabled=false` の spec は決して選ばれない。
+- handler（reviewed なキー効果）は spec.id ごとに `nethack_canary_tactics` が持つ。
+- 生成した keys は spec の `key_pattern` と照合し、外れれば fail-closed。
+- どの spec も成立しない場合のみ P3b base policy に委譲（selection prompt / severe status などは `requires_llm` のまま）。
+
+したがって **catalog の `enabled` / `priority` / `preconditions` を変えると canary の挙動が変わる**。これが P6d 昇格ゲートが比較する behavioural な候補になります（例: `attack_adjacent` を disabled にした候補）。
+
+ゲーム内 prompt を取り違えないよう、gameplay 系 spec は `prompt:none` を precondition に含みます（yes/no prompt を移動キーで答えてしまう事故を防ぐ）。
+
+catalog は image にも同梱します（`Dockerfile` の `COPY config/nethack-canary-actions.json`、build context の `REVIEWED_BUILD_PATHS` に同ファイルを追加）。container 内の policy は `resolve_catalog_path()` がチェックアウト/image の `config/nethack-canary-actions.json` を解決します。候補差し替えは `DOCICH_CANARY_CATALOG` で上書きできます。
+
 ## predicate
 
 preconditions（可視 frame に対して評価）:

@@ -195,7 +195,7 @@ def _git_head(root: Path) -> str:
 # state (improve-daemon outputs, backups, ``._*`` metadata), so the Docker build
 # context is materialized from the commit object instead of the working tree.
 # Only paths tracked at the requested SHA can ever reach the image.
-REVIEWED_BUILD_PATHS = ("src", "brains", "containers/nethack-canary")
+REVIEWED_BUILD_PATHS = ("src", "brains", "containers/nethack-canary", "config/nethack-canary-actions.json")
 DOCKERFILE_REL = Path("containers") / "nethack-canary" / "Dockerfile"
 
 

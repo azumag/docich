@@ -17,9 +17,10 @@ from pathlib import Path
 
 from .actions import Action
 from .nethack_canary_executor import CanaryKey, canary_execution_plan
+from .nethack_canary_rules import HUNGER_CONDITIONS
 from .nethack_inventory import VisibleInventoryItem, parse_visible_inventory
 from .nethack_observation import NethackObservation, normalize_tty
-from .nethack_canary_tactics import CanaryTacticalPolicy, assert_canary_safe
+from .nethack_canary_tactics import CanaryTacticalPolicy
 from .nethack_policy import NethackLayeredPolicy, PolicyDecision, assert_p3b_safe
 from .nethack_run import AMULET_ACHIEVEMENT, classify_terminal_record, parse_xlog_line
 from .nethack_strategist import ProposalEvaluation, evaluate_proposal
@@ -33,8 +34,6 @@ MAX_BROKER_RESPONSE_BYTES = 32 * 1024
 # The canary baseline eats only after this many turns since its last meal, so a
 # single Hungry reading cannot empty the whole inventory or overshoot Satiated.
 EAT_COOLDOWN_TURNS = 12
-# Base-policy intents that mean "the visible character needs food".
-_FOOD_INTENTS = frozenset({"seek_food", "food_emergency"})
 # Opt-in: when set to "1" the worker records every applied action as a JSONL
 # trace so the P6 action verifier can check it against the catalog.
 ACTION_TRACE_ENV = "DOCICH_CANARY_ACTION_TRACE"
@@ -497,24 +496,23 @@ def run_episode(request: dict[str, object]) -> dict[str, object]:
                     last_message=last_message,
                 )
             inventory: tuple[VisibleInventoryItem, ...] = ()
-            decision = policy.decide(observation)
             if (
                 baseline
-                and decision.intent in _FOOD_INTENTS
                 and observation.prompt == "none"
+                and any(condition in HUNGER_CONDITIONS for condition in observation.conditions)
                 and _eat_allowed(observation.vitals.turn, last_eat_turn)
             ):
-                # Hunger is visible, so probe the inventory and eat a reviewed
-                # food item instead of stalling on seek_food.
+                # Hunger is visible, so probe the inventory before deciding; the
+                # catalog's eat_food precondition then sees the food item.
                 inventory = _probe_inventory(game)
                 raw_text = game.capture()
                 observation = normalize_tty(raw_text, cols=80, rows=24)
                 last_turns = observation.vitals.turn
                 last_depth = observation.vitals.dungeon_level
                 last_message = observation.message
-                decision = policy.decide(observation, inventory=inventory)
+            decision = policy.decide(observation, inventory=inventory)
             if baseline:
-                assert_canary_safe(decision)
+                policy.assert_safe(decision)
             else:
                 assert_p3b_safe(decision)
             acted = False

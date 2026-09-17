@@ -71,6 +71,8 @@ RUN chmod -R a+rX /opt/nethack \
 WORKDIR /opt/docich
 COPY src /opt/docich/src
 COPY brains /opt/docich/brains
+# The reviewed canary action catalog is data the in-container policy loads.
+COPY config/nethack-canary-actions.json /opt/docich/config/nethack-canary-actions.json
 
 ENV PYTHONPATH=/opt/docich/src \
     PYTHONDONTWRITEBYTECODE=1 \
