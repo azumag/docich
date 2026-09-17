@@ -42,6 +42,10 @@ RUN sed -i 's/^WIZARDS=.*/WIZARDS=/' sys/unix/sysconf \
     && sed -i 's/^EXPLORERS=.*/EXPLORERS=/' sys/unix/sysconf \
     && sed -i 's/^MAXPLAYERS=.*/MAXPLAYERS=1/' sys/unix/sysconf \
     && printf '\nSHELLERS=\nDUMPLOGFILE=/canary/episode/playground/dumps/%%n.%%d.log\n' >> sys/unix/sysconf \
+    # Seed-controlled episodes: NetHack reads its initial RNG seed from
+    # DEV_RANDOM, so point it at the per-episode arena seed file the worker
+    # writes. When the file is absent NetHack falls back to a time seed.
+    && sed -i 's#"/dev/urandom"#"/canary/episode/seed"#' include/unixconf.h \
     && cd sys/unix \
     && sh setup.sh hints/linux.500 \
     && cd /build/nethack \

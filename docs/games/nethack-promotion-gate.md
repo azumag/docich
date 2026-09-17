@@ -46,10 +46,18 @@ smoke_ok: bool                     # production fingerprint 不変 / cleanup / p
 
 実測で 1 run のばらつきが非常に大きい（P5j 746 / P5k 1005 / locked-door 11 / low-HP 493 turns）ため、`min_episodes_per_arm` と seed 固定のペア比較を必須にしています。
 
+## runner（P6e）
+
+`ops/vm_actions/nethack_promotion_runner.py` が seed 固定で 2 arm を実行し、`EpisodeOutcome` と trace 検証を集めて `evaluate_promotion` を呼びます。
+
+- baseline arm は image 同梱の catalog、candidate arm は候補 catalog を arena に置き `DOCICH_CANARY_CATALOG` で注入（両 arm とも canary tactical baseline policy）。
+- 各 episode は seed 固定（`DOCICH_CANARY_ACTION_TRACE=1` で trace も取得し P6c 検証）。
+- seed 制御は、image が NetHack の `DEV_RANDOM` を `/canary/episode/seed` へ向け、worker が `request.seed` を 8 byte で書くことで成立（`seed_applied=true`）。
+- production isolation チェックは caller が `isolation_check` で注入。
+
 ## 未実装（次）
 
-- **behavioral な候補**: 現状 catalog は記述的で policy を駆動しない。候補を実際に挙動へ反映するには catalog を policy へ配線する（P6a-complete）。
-- **runner**: seed 固定で baseline/candidate を実行し `EpisodeOutcome` と trace を集める層（P6e）。
-- **capability の自動生成**: 失敗 episode → LLM が action spec / handler を提案 → canary 検証 → 本 gate、のループ。
+- **capability の自動生成**: 失敗 episode → LLM が catalog spec / handler を提案 → P6c 検証 → runner → 本 gate、のループ。
+- fitness の本格化（simulator / 並列 rollout）。
 
 Relates to #630, #631, #586, #490.

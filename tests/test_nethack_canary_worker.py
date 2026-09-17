@@ -115,7 +115,8 @@ def test_terminal_result_uses_xlog_facts_and_marks_broker_source():
     assert result["max_depth"] == 7
     assert result["got_amulet"] is True
     assert result["seed"] == 42
-    assert result["seed_applied"] is False
+    # A provided seed is written to the arena DEV_RANDOM file and used by NetHack.
+    assert result["seed_applied"] is True
     assert result["candidate_action_source"] == "candidate_strategist_broker"
     assert result["production_state_touched"] is False
 
@@ -132,6 +133,25 @@ def test_eat_cooldown_requires_a_visible_turn_and_spacing():
     assert _eat_allowed(50, None) is True
     assert _eat_allowed(50 + EAT_COOLDOWN_TURNS - 1, 50) is False
     assert _eat_allowed(50 + EAT_COOLDOWN_TURNS, 50) is True
+
+
+def test_prepare_runtime_writes_a_seed_file(tmp_path, monkeypatch):
+    from docich import nethack_canary_worker as worker
+
+    episode = tmp_path / "episode-000"
+    playground = episode / "playground"
+    arena = {
+        "episode_root": str(episode),
+        "playground_dir": str(playground),
+        "save_dir": str(playground / "save"),
+        "xlogfile": str(playground / "xlogfile"),
+        "dump_dir": str(playground / "dumps"),
+    }
+    monkeypatch.setattr(worker, "ARENA", arena)
+    worker._prepare_runtime(seed=123)
+    assert (episode / "seed").read_bytes() == (123).to_bytes(8, "little")
+    worker._prepare_runtime(seed=None)
+    assert len((episode / "seed").read_bytes()) == 8
 
 
 def test_timeout_result_records_last_observed_progress():
