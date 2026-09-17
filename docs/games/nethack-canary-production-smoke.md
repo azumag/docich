@@ -76,7 +76,7 @@ gateway control resultは:
 
 にmode 0600で残る。Actionsへraw VM outputやproduction filesystem内容は返さない。
 
-## canary tactical baseline (P5j)
+## canary tactical baseline (P5j/P5k)
 
 baseline arm は production P3b (`NethackLayeredPolicy`) ではなく canary 専用
 `CanaryTacticalPolicy` を使う。production NetHack brain (`agent/brains.py`) は不変。
@@ -84,8 +84,12 @@ baseline arm は production P3b (`NethackLayeredPolicy`) ではなく canary 専
 reviewed な追加 action は次のとおりで、`assert_canary_safe` が allowlist 検証する。
 
 - `attack_adjacent`: 隣接する可視 monster glyph へ移動して攻撃（`@` human は対象外）。
-- `open_door`: 隣接する閉じた door (`+`) を `o` + 方向で開ける。
+- `open_door`: 隣接する閉じた door (`+`) を `o` + 方向で開ける。開かなかった door は記録し再試行しない（lock ループ防止）。
 - `directional_travel`: `In what direction?` prompt に可視 frontier 方向を返す。
+- `eat_food`: `Hungry` 等で可視 inventory に food があれば `e` + letter で食べる（`EAT_COOLDOWN_TURNS` で連食を抑制、unpaid は対象外、tin は他に food が無い時のみ）。
+- `rest_low_hp`: 可視 HP が低い時、隣接 monster がいれば attack、いなければ `.` で回復。
+- `rest`: movement 阻害（Blind/Conf/Stun/Hallu）や探索不能時に `.` で待つ。
+- hunger priority (`seek_food`/`food_emergency`) は food が無い・eat cooldown 中でも dead-end にせず、通常の tactical 判断へフォールバックする。
 - `confirm_attack`: `Really attack? [yn]` prompt を accept。
 - `decline_prompt`: それ以外の unreviewed な yes/no prompt は `n` で decline。
 - `advance_message` / `explore_step`: 従来どおり。

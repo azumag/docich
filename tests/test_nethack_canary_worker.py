@@ -10,6 +10,7 @@ from docich.nethack_canary_worker import (
     ARENA,
     CanaryWorkerError,
     _candidate_broker,
+    _eat_allowed,
     _read_request,
     _start_game,
     _terminal_result,
@@ -122,6 +123,15 @@ def test_terminal_result_uses_xlog_facts_and_marks_broker_source():
 def test_baseline_never_uses_candidate_broker():
     parsed = _read_request(json.dumps(baseline_request()))
     assert _candidate_broker(parsed) is None
+
+
+def test_eat_cooldown_requires_a_visible_turn_and_spacing():
+    from docich.nethack_canary_worker import EAT_COOLDOWN_TURNS
+
+    assert _eat_allowed(None, None) is False
+    assert _eat_allowed(50, None) is True
+    assert _eat_allowed(50 + EAT_COOLDOWN_TURNS - 1, 50) is False
+    assert _eat_allowed(50 + EAT_COOLDOWN_TURNS, 50) is True
 
 
 def test_timeout_result_records_last_observed_progress():

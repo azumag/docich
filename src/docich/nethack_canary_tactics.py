@@ -1,9 +1,10 @@
-"""Canary-only tactical action schema (P5j).
+"""Canary-only tactical action schema (P5j/P5k).
 
 The isolated canary is allowed to do a few things the production P3b policy
 deliberately never does: attack a visible adjacent monster, open a closed door,
-and answer a direction request toward a visible frontier.  This module is
-imported only by :mod:`docich.nethack_canary_worker`; production NetHack
+answer a direction request toward a visible frontier, and eat a visible food
+item when Hungry.  This module is imported only by
+:mod:`docich.nethack_canary_worker`; production NetHack
 (``src/docich/agent/brains.py``) keeps using :mod:`docich.nethack_policy`
 unchanged.
 
@@ -12,10 +13,12 @@ allowlist over the exact reviewed key surface.
 """
 from __future__ import annotations
 
+import string
 from dataclasses import replace
 
 from .actions import Action
 from .nethack_exploration import NethackExplorer
+from .nethack_inventory import VisibleInventoryItem
 from .nethack_observation import NethackObservation
 from .nethack_policy import NethackLayeredPolicy, PolicyDecision
 
@@ -41,6 +44,9 @@ _CLOSED_DOOR = "+"
 _CARDINAL_MOVES = frozenset({"h", "j", "k", "l"})
 _DIAGONAL_MOVES = frozenset({"y", "u", "b", "n"})
 _ALL_MOVES = _CARDINAL_MOVES | _DIAGONAL_MOVES
+_INVENTORY_LETTERS = frozenset(string.ascii_letters)
+# Base-policy conditions that trigger seek_food / food_emergency.
+_HUNGER_CONDITIONS = frozenset({"Hungry", "Weak", "Fainting", "Fainted", "Starved"})
 
 
 def _glyph_at(obs: NethackObservation, dx: int, dy: int) -> str:
@@ -74,13 +80,41 @@ def _openable_neighbors(obs: NethackObservation) -> tuple[tuple[int, int, str], 
     return tuple(found)
 
 
+def _food_item(
+    inventory: tuple[VisibleInventoryItem, ...],
+) -> VisibleInventoryItem | None:
+    """Return a visible, unpaid-free food item, preferring simple foods.
+
+    A closed tin cannot be eaten directly, so it is only chosen when it is the
+    sole food available.
+    """
+    foods = [item for item in inventory if item.category_hint == "food" and not item.unpaid]
+    for item in foods:
+        if "tin" not in item.description.lower():
+            return item
+    return foods[0] if foods else None
+
+
 class CanaryTacticalPolicy:
     """Baseline canary policy: P3b safety layers plus reviewed tactical actions."""
 
     def __init__(self, explorer: NethackExplorer | None = None) -> None:
         self._base = NethackLayeredPolicy(explorer)
+        # (dungeon_level, x, y) of doors whose open attempt did not change the
+        # tile; they are never retried so the canary cannot loop on a lock.
+        self._failed_doors: set[tuple[int, int, int]] = set()
 
-    def decide(self, obs: NethackObservation) -> PolicyDecision:
+    def _door_key(self, obs: NethackObservation, dx: int, dy: int) -> tuple[int, int, int]:
+        depth = obs.vitals.dungeon_level
+        px, py = obs.player if obs.player is not None else (0, 0)
+        return (depth if depth is not None else -1, px + dx, py + dy)
+
+    def decide(
+        self,
+        obs: NethackObservation,
+        *,
+        inventory: tuple[VisibleInventoryItem, ...] = (),
+    ) -> PolicyDecision:
         if obs.prompt == "more":
             return PolicyDecision(
                 layer="tactical",
@@ -128,6 +162,59 @@ class CanaryTacticalPolicy:
 
         decision = self._base.decide(obs)
 
+        if decision.intent in {"seek_food", "food_emergency"}:
+            food = _food_item(inventory)
+            if food is not None:
+                return PolicyDecision(
+                    layer="tactical",
+                    intent="eat_food",
+                    reason=f"eat visible food item {food.letter!r}",
+                    actions=(
+                        Action(type="text", text="e"),
+                        Action(type="text", text=food.letter),
+                    ),
+                )
+            # Nothing edible is available (or the worker is on its eat
+            # cooldown).  Drop the hunger priority and keep playing instead of
+            # stalling on a no-action seek_food decision.
+            decision = self._base.decide(
+                replace(
+                    obs,
+                    conditions=tuple(
+                        c for c in obs.conditions if c not in _HUNGER_CONDITIONS
+                    ),
+                )
+            )
+
+        if decision.intent in {"hold_low_hp", "survival_emergency"}:
+            # P3b deliberately holds at low HP.  The isolated canary keeps
+            # playing: fight an adjacent monster, otherwise rest to regenerate.
+            neighbors = _attackable_neighbors(obs)
+            if neighbors:
+                dx, dy, glyph = neighbors[0]
+                return PolicyDecision(
+                    layer="tactical",
+                    intent="attack_adjacent",
+                    reason=f"fight visible adjacent {glyph!r} at low HP",
+                    actions=(Action(type="text", text=_DIRECTION_KEY[(dx, dy)]),),
+                )
+            return PolicyDecision(
+                layer="tactical",
+                intent="rest_low_hp",
+                reason="rest to regenerate at low visible HP",
+                actions=(Action(type="text", text="."),),
+            )
+
+        if decision.intent == "hold_impaired":
+            # Blinded/confused/stunned/hallucinating: P3b holds, the canary
+            # rests so turns pass and the status can recover.
+            return PolicyDecision(
+                layer="tactical",
+                intent="rest",
+                reason="rest while movement is visibly impaired",
+                actions=(Action(type="text", text="."),),
+            )
+
         if decision.intent == "assess_contact":
             neighbors = _attackable_neighbors(obs)
             if neighbors:
@@ -152,10 +239,17 @@ class CanaryTacticalPolicy:
             return decision
 
         if decision.intent in {"explore_step", "exploration_blocked"}:
-            doors = _openable_neighbors(obs)
+            doors = [
+                (dx, dy, glyph)
+                for (dx, dy, glyph) in _openable_neighbors(obs)
+                if self._door_key(obs, dx, dy) not in self._failed_doors
+            ]
             if doors:
                 dx, dy, glyph = doors[0]
                 key = _DIRECTION_KEY[(dx, dy)]
+                # A locked door stays "+"; remember the attempt so the canary
+                # never loops on the same door and instead routes around it.
+                self._failed_doors.add(self._door_key(obs, dx, dy))
                 return PolicyDecision(
                     layer="tactical",
                     intent="open_door",
@@ -164,6 +258,13 @@ class CanaryTacticalPolicy:
                         Action(type="text", text="o"),
                         Action(type="text", text=key),
                     ),
+                )
+            if decision.intent == "exploration_blocked":
+                return PolicyDecision(
+                    layer="tactical",
+                    intent="rest",
+                    reason="rest when no safe step is visible",
+                    actions=(Action(type="text", text="."),),
                 )
 
         return decision
@@ -181,6 +282,16 @@ def assert_canary_safe(decision: PolicyDecision) -> None:
     if decision.intent == "confirm_attack" and keys == ("y",):
         return
     if decision.intent == "decline_prompt" and keys == ("n",):
+        return
+    if decision.intent in {"rest_low_hp", "rest"} and keys == (".",):
+        return
+    if (
+        decision.intent == "eat_food"
+        and len(keys) == 2
+        and keys[0] == "e"
+        and len(keys[1]) == 1
+        and keys[1] in _INVENTORY_LETTERS
+    ):
         return
     if (
         decision.intent in {"attack_adjacent", "directional_travel", "explore_step"}
