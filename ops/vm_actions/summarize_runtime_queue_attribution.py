@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
-"""Extend the public runtime summary with full-window queue-giveup attribution.
+"""Extend the public runtime summary with bounded operational attribution.
 
-The VM diagnostics already expose the 15-minute aggregate count plus a bounded,
-redacted recent-event sample.  A queue_giveup can therefore age out of the
-sample while remaining present in the aggregate.  This helper keeps the
-existing runtime summary unchanged and adds fixed-category attribution where
-sample evidence exists; any aggregate remainder is assigned to ``unknown``
-rather than being silently reported as zero for every component.
+The VM diagnostics already expose the 15-minute aggregate queue-giveup count
+plus a bounded, redacted recent-event sample.  A queue_giveup can therefore age
+out of the sample while remaining present in the aggregate.  This helper keeps
+the existing runtime summary unchanged and adds fixed-category attribution
+where sample evidence exists; any aggregate remainder is assigned to
+``unknown`` rather than being silently reported as zero for every component.
 
-It is the single runtime-summary entry point used by the VM monitor, so it
-also composes the fixed ``ai_rate_limit_pressure`` signal from
-``summarize_runtime_pressure``. That keeps both observability additions in one
-``severity``/``summary`` step-output pair instead of competing for the same
-GitHub Actions output key.
+It is the single runtime-summary entry point used by the VM monitor, so it also
+composes the fixed ``ai_rate_limit_pressure`` signal and bounded improvement
+retry state.  That keeps observability additions in one ``severity``/``summary``
+step-output pair instead of competing for the same GitHub Actions output key.
 
-Only fixed counts/booleans are emitted.  Dynamic component labels, providers,
-models, errors, paths, prompts and credentials are never printed.
+Only fixed counts/booleans and capped ages are emitted. Dynamic component
+labels, providers, models, errors, paths, prompts, credentials and free-form
+blocker values are never printed.
 """
 import json
 import sys
@@ -31,11 +31,59 @@ CHAIN_SUMMARY_KEYS = (
     "multi_vercel_429_non_vercel_recovered",
     "multi_vercel_429_all_failed",
 )
+IMPROVEMENT_BLOCKERS = (
+    "rate_limit_backoff",
+    "peak_hour_defer",
+    "ab_pending",
+    "daemon_paused",
+    "unknown",
+)
+IMPROVEMENT_AGE_CAP_SEC = 86400
 
 
 def _integer(mapping, name):
     value = mapping.get(name, 0) if isinstance(mapping, dict) else 0
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _bounded_age(mapping, name):
+    """Return a non-negative age capped at one day plus a capped flag."""
+    value = mapping.get(name) if isinstance(mapping, dict) else None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return 0, False
+    return min(value, IMPROVEMENT_AGE_CAP_SEC), value > IMPROVEMENT_AGE_CAP_SEC
+
+
+def _improvement_metrics(data):
+    """Project retry state to fixed booleans/capped counters only.
+
+    ``blocked_by`` is private runtime state even though the collector already
+    restricts it to stable values.  Re-check the allowlist here and emit only
+    one boolean per known category so an unexpected/free-form value can never
+    enter the public GitHub issue body.
+    """
+    improvement = data.get("improvement") if isinstance(data, dict) else None
+    improvement = improvement if isinstance(improvement, dict) else {}
+    retry_age, retry_age_capped = _bounded_age(improvement, "retry_age_sec")
+    backoff_age, backoff_age_capped = _bounded_age(improvement, "backoff_age_sec")
+    raw_blockers = improvement.get("blocked_by")
+    blockers = {
+        item for item in raw_blockers
+        if isinstance(raw_blockers, list) and isinstance(item, str) and item in IMPROVEMENT_BLOCKERS
+    } if isinstance(raw_blockers, list) else set()
+    metrics = [
+        f"improvement_running={int(improvement.get('running') is True)}",
+        f"improvement_backing_off={int(improvement.get('backing_off') is True)}",
+        f"improvement_retry_age_sec={retry_age}",
+        f"improvement_retry_age_capped={int(retry_age_capped)}",
+        f"improvement_backoff_age_sec={backoff_age}",
+        f"improvement_backoff_age_capped={int(backoff_age_capped)}",
+    ]
+    metrics.extend(
+        f"improvement_blocked_by_{blocker}={int(blocker in blockers)}"
+        for blocker in IMPROVEMENT_BLOCKERS
+    )
+    return metrics
 
 
 def attribute_queue_giveups(data):
@@ -81,6 +129,7 @@ def render(data):
     summary += "," + ",".join(
         f"ai_{name}={_integer(ai or {}, name)}" for name in CHAIN_SUMMARY_KEYS
     )
+    summary += "," + ",".join(_improvement_metrics(data))
     counts, consistent, exact = attribute_queue_giveups(data)
     extra = [
         f"ai_queue_giveup_attribution_consistent={int(consistent)}",
