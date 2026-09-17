@@ -113,7 +113,7 @@ DEFAULTS: dict[str, str] = {
     "RADIO_PREPASS_AGENTS": "",  # inherits AI_COMMON_AGENTS
     "COMMENT_AGENTS": "",  # inherits AI_COMMON_AGENTS
     "COMMENT_TRANSLATION_AGENTS": "",  # inherits COMMENT_AGENTS
-    "RADIO_JIJI_RESEARCH_AGENTS": "opencode-go:union-alpha,openrouter:stealth/union-alpha,opencode:muse-spark-1.3-contributor-free,amd:DeepSeek-V4-Flash",
+    "RADIO_JIJI_RESEARCH_AGENTS": "opencode:muse-spark-1.3-contributor-free,amd:DeepSeek-V4-Flash,opencode-go:union-alpha,openrouter:stealth/union-alpha",
     "RADIO_FACT_CHECK_AGENTS": "opencode-go:union-alpha,openrouter:stealth/union-alpha,opencode:muse-spark-1.3-contributor-free,opencode-go:deepseek-v4.1-flash,amd:DeepSeek-V4-Flash,opencode-go:muse-spark-1.3-contributor",
     "COMMENT_CLASSIFIER_AGENTS": "opencode-go:union-alpha,openrouter:stealth/union-alpha,opencode:muse-spark-1.3-contributor-free,amd:DeepSeek-V4-Flash",
     "COMMENT_CLASSIFIER_EDIT_AGENTS": "opencode-go:union-alpha,openrouter:stealth/union-alpha,opencode:muse-spark-1.3-contributor-free,amd:DeepSeek-V4-Flash",
@@ -160,6 +160,10 @@ AUX_PARENT_DEFAULTS = {
     "COMMENT_CLASSIFIER_EDIT_AGENT": "opencode:muse-spark-1.3-contributor-free",
     "COMMENT_CLASSIFIER_EDIT_FALLBACK": "amd:DeepSeek-V4-Flash",
 }
+# Auxiliary chains whose static (Union Alpha) pair sits at the END instead of the
+# front. JIJI research shares one timeout for every model and both Union routes
+# timed out in production (2026-09-18), so existing candidates are tried first.
+AUX_CHAIN_STATIC_SUFFIX = {"RADIO_JIJI_RESEARCH_AGENTS"}
 
 AGENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 # For AI_BACKOFF_SEC_ITEMS name part (model without prefix)
@@ -505,12 +509,16 @@ def _effective_value(key: str, dotenv: dict[str, str]) -> str:
         if dotenv[key] != "":
             return dotenv[key]
     # config.sh uses ${VAR-default} for auxiliary chains: absent means the
-    # explicit default prefix; an explicitly empty value restores legacy parents.
+    # explicit default pair; an explicitly empty value restores legacy parents.
     if key in AUX_CHAIN_PARENTS:
         parents = [dotenv.get(parent) or AUX_PARENT_DEFAULTS[parent]
                    for parent in AUX_CHAIN_PARENTS[key]]
         if key not in dotenv:
-            parents = DEFAULTS[key].split(",")[:2] + parents
+            entries = DEFAULTS[key].split(",")
+            if key in AUX_CHAIN_STATIC_SUFFIX:
+                parents = parents + entries[-2:]
+            else:
+                parents = entries[:2] + parents
         return ",".join(value for value in parents if value)
     # handle inheritance
     if key in ("RADIO_AGENTS", "RADIO_PREPASS_AGENTS", "COMMENT_AGENTS"):
