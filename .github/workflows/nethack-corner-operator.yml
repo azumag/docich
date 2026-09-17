@@ -1,0 +1,204 @@
+name: NetHack corner operator
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Fixed operation
+        required: true
+        default: start
+        type: choice
+        options: [start, stop, status]
+      duration_minutes:
+        description: Bounded manual run duration (1-60 minutes; ignored by stop/status)
+        required: true
+        default: '5'
+        type: string
+      confirm:
+        description: Type production
+        required: true
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nethack-corner-operator-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  operate:
+    if: >-
+      github.actor_id == 9018513 &&
+      github.triggering_actor == 'azumag' &&
+      github.ref == 'refs/heads/main' &&
+      github.ref_protected == true
+    environment: vm-operations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout trusted operator from current main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: main
+          path: control
+          persist-credentials: false
+          submodules: false
+
+      - name: Authorize bounded NetHack corner operation
+        id: auth
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          GITHUB_REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_ACTOR_ID: ${{ github.actor_id }}
+          GITHUB_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_REF_PROTECTED: ${{ github.ref_protected }}
+          GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_SHA: ${{ github.sha }}
+          INPUT_OPERATION: ${{ inputs.operation }}
+          INPUT_DURATION_MINUTES: ${{ inputs.duration_minutes }}
+          INPUT_CONFIRM: ${{ inputs.confirm }}
+        run: python3 control/ops/vm_actions/authorize_nethack_corner.py >/dev/null
+
+      - name: Resolve immutable current-main SHA
+        id: candidate
+        shell: bash
+        env:
+          EVENT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          sha="$(git -C control rev-parse HEAD)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$sha" == "$EVENT_SHA" ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Configure pinned SSH client
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          VM_SSH_PORT: ${{ secrets.VM_SSH_PORT }}
+          VM_SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          VM_SSH_KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$VM_SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]
+          [[ "$VM_SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          port="${VM_SSH_PORT:-22}"
+          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+          install -m 700 -d "$RUNNER_TEMP/vm-ssh"
+          printf '%s\n' "$VM_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/vm-ssh/key"
+          printf '%s\n' "$VM_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/vm-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/vm-ssh/key" "$RUNNER_TEMP/vm-ssh/known_hosts"
+          printf 'port=%s\n' "$port" >> "$GITHUB_ENV"
+
+      - name: Require production to equal current protected main
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          status_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "status docich production $SHA")"
+          python3 - "$status_json" "$SHA" <<'PY'
+          import json, sys
+          data=json.loads(sys.argv[1])
+          expected=sys.argv[2]
+          if data.get('status')!='configured' or data.get('sha')!=expected:
+              raise SystemExit('production is not exactly current protected main')
+          PY
+
+      - name: Start bounded NetHack corner
+        id: start
+        if: ${{ steps.auth.outputs.operation == 'start' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+          DURATION_MINUTES: ${{ steps.auth.outputs.duration_minutes }}
+        run: |
+          set -euo pipefail
+          [[ "$DURATION_MINUTES" =~ ^[0-9]+$ ]]
+          (( DURATION_MINUTES >= 1 && DURATION_MINUTES <= 60 ))
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          # gateway exec intentionally starts in an inert release sandbox. This
+          # fixed reviewed operator must address the canonical production root
+          # explicitly so state_dir/tmux/coordinator state are the live ones.
+          printf "cd /home/ubuntu/docich && exec bash /home/ubuntu/docich/bin/docich-nethack-corner-operator --config /home/ubuntu/docich/config/docich.soren-live.toml --start --duration-minutes '%s'\n" "$DURATION_MINUTES" |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
+      - name: Stop bounded NetHack corner
+        id: stop
+        if: ${{ steps.auth.outputs.operation == 'stop' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          printf 'cd /home/ubuntu/docich && exec bash /home/ubuntu/docich/bin/docich-nethack-corner-operator --config /home/ubuntu/docich/config/docich.soren-live.toml --stop\n' |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
+      - name: Report NetHack corner manual status
+        id: status
+        if: ${{ steps.auth.outputs.operation == 'status' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -uo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          set +e
+          printf 'cd /home/ubuntu/docich && exec bash /home/ubuntu/docich/bin/docich-nethack-corner-operator --config /home/ubuntu/docich/config/docich.soren-live.toml --status\n' |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA" >/dev/null
+          code=$?
+          set -e
+          status_ok=1
+          case "$code" in
+            0) reason=idle_or_terminal ;;
+            10) reason=starting ;;
+            11) reason=active ;;
+            12) reason=failed ;;
+            13) reason=unreadable ;;
+            255) reason=transport_error; status_ok=0 ;;
+            *) reason=unclassified; status_ok=0 ;;
+          esac
+          echo "::notice::NetHack corner manual status: ${reason} (code ${code})"
+          if (( status_ok == 0 )); then
+            exit 1
+          fi
+
+      - name: Fail unsuccessful NetHack start
+        if: ${{ steps.start.outcome == 'failure' }}
+        run: |
+          echo '::error::NetHack corner start failed'
+          exit 1
+
+      - name: Fail unsuccessful NetHack stop
+        if: ${{ steps.stop.outcome == 'failure' }}
+        run: |
+          echo '::error::NetHack corner stop failed'
+          exit 1
+
+      - name: Fail unsuccessful NetHack status
+        if: ${{ steps.status.outcome == 'failure' }}
+        run: |
+          echo '::error::NetHack corner status failed'
+          exit 1
