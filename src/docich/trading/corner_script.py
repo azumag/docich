@@ -305,8 +305,9 @@ def build_prompt(facts: Mapping[str, object]) -> str:
         "- news_analysis: ニュースから得た考察だけを400〜1200文字で要約。事実と推測を区別する。\n"
         "- asset_spotlight: 選択保有銘柄の解説だけを300〜1200文字。research.assetが無ければ空文字。\n"
         "- improvement_hints: 改善価値がある時だけ最大4件の配列。各要素は kind,title,rationale,evidence,confidence。無ければ空配列。\n"
-        f"corner/news/chart/strategy/result/fills/review/improveの各値は日本語で{MIN_SEGMENT_CHARS}〜{MAX_SEGMENT_CHARS}文字程度の本文にすること。"
-        "JSON以外は出力しないこと。"
+         f"corner/news/chart/strategy/result/fills/review/improveの各値は日本語で{MIN_SEGMENT_CHARS}〜{MAX_SEGMENT_CHARS}文字程度の本文にすること。"
+         "JSONは1行で出力し、文字列値の中に改行や制御文字を入れないこと（整形のための改行も禁止）。"
+         "JSON以外は出力しないこと。"
     )
 
 
@@ -673,6 +674,12 @@ def generate_corner_script(
         )
         model_data = extract_json_object(raw)
         parsed = parse_script(raw)
+    except CornerScriptError as exc:
+        # Record which half failed (type only, never model output): no JSON
+        # object at all vs JSON without usable narration segments.
+        message = str(exc)
+        kind = "no-json-object" if "抽出" in message else "no-usable-segments"
+        return {"source": "fallback", "reason": f"CornerScriptError:{kind}", "segments": fallback}
     except Exception as exc:
         return {"source": "fallback", "reason": _safe_reason(exc), "segments": fallback}
 

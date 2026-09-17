@@ -456,3 +456,46 @@ def test_prompt_instructs_two_decimal_speech():
     prompt = build_prompt({"policy": {}})
     assert "小数第2位" in prompt
     assert "見出しの段階なので" in prompt
+
+
+def test_generate_accepts_multiline_model_json(tmp_path, monkeypatch):
+    from docich.trading import corner_script
+
+    _write_status(tmp_path)
+    monkeypatch.setenv("DOCICH_ALLOW_REAL_AI", "1")
+    monkeypatch.setattr(corner_script, "prepare_research_context", lambda *a, **k: {})
+    body = '{\n  "corner": "生成文1\nつづき",\n  "news": "生成文2",\n  "chart": "生成文3",\n  "strategy": "生成文4",\n  "result": "生成文5",\n  "fills": "生成文6",\n  "review": "生成文7",\n  "improve": "生成文8"\n}'
+    monkeypatch.setattr(corner_script, "generate_text", lambda *a, **k: body)
+    result = generate_corner_script(
+        object(), trading_dir=tmp_path, agents="opencode:x", now=1010.0,
+        timeframe_facts=_TIMEFRAME_FACTS,
+    )
+    assert result["source"] == "ai"
+    assert "生成文1" in result["segments"]["corner"]
+
+
+def test_generate_records_parse_failure_kind(tmp_path, monkeypatch):
+    from docich.trading import corner_script
+
+    _write_status(tmp_path)
+    monkeypatch.setenv("DOCICH_ALLOW_REAL_AI", "1")
+    monkeypatch.setattr(corner_script, "prepare_research_context", lambda *a, **k: {})
+    monkeypatch.setattr(corner_script, "generate_text", lambda *a, **k: "ただの文章です。")
+    result = generate_corner_script(
+        object(), trading_dir=tmp_path, agents="opencode:x", now=1010.0,
+        timeframe_facts=_TIMEFRAME_FACTS,
+    )
+    assert result["source"] == "fallback"
+    assert result["reason"] == "CornerScriptError:no-json-object"
+    monkeypatch.setattr(corner_script, "generate_text", lambda *a, **k: '{"other": 1}')
+    result = generate_corner_script(
+        object(), trading_dir=tmp_path, agents="opencode:x", now=1010.0,
+        timeframe_facts=_TIMEFRAME_FACTS,
+    )
+    assert result["reason"] == "CornerScriptError:no-usable-segments"
+
+
+def test_prompt_requires_single_line_json(tmp_path):
+    _write_status(tmp_path)
+    prompt = build_prompt(build_facts(tmp_path, now=1010.0))
+    assert "1行で出力" in prompt
