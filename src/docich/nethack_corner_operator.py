@@ -171,6 +171,8 @@ def recover(config_path: Path) -> dict[str, object]:
     current = manager._active_game_reader()
     if current != GAME_NAME:
         return {"status": "noop", "detail": "nethack is not active", "active_game": current}
+    if state.get("status") != "failed":
+        raise NethackCornerError("recover は failed manual corner にのみ使用できます")
     if not isinstance(previous, str) or not previous or previous == GAME_NAME:
         raise NethackCornerError("restore target gameをmanual stateから特定できません")
     manager._transition_to(current, previous)
