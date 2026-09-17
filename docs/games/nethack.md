@@ -141,6 +141,16 @@ bin/docich-nethack-corner-manual status --json
 bin/docich-nethack-corner-manual stop
 ```
 
+本番 VM で owner-only に手動実行する場合は、GitHub Actions の **NetHack corner operator** を
+protected `main` から手動実行する。固定 operation `start` / `stop` / `status` だけを受け付け、
+`start` は `--duration-minutes`（1-60分）で bounded に実行する。workflow は値の検証と、production が
+現在の protected main と一致することの確認だけを行い、VM 上では reviewed な
+`bin/docich-nethack-corner-operator` が `config/docich.soren-live.toml` を明示して manual runner を
+呼ぶ。generic な arbitrary exec は public repo では無効のままとする。`start` は長時間 oneshot を
+detach 起動するため workflow は duration 分ブロックしない。`status` は VM 出力を返さず、固定の
+exit-code カテゴリ（idle/terminal=0, starting=10, active=11, failed=12, unreadable=13）だけを
+workflow の notice に出す。
+
 どちらもゲーム切替を直接操作せず `GameSwitchCoordinator` を通す。開始前に別ゲームが active なら
 NetHack へ transactional switch し、終了時に元のゲームへ戻す。元が idle なら NetHack 終了後も
 idle に戻す。

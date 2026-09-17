@@ -24,6 +24,7 @@ jobs:
       - run: >-
           python3 -m py_compile
           ops/vm_actions/authorize.py
+          ops/vm_actions/authorize_nethack_corner.py
           ops/vm_actions/gateway.py
           ops/vm_actions/stage_repair.py
           ops/vm_actions/collect_diagnostics.py
