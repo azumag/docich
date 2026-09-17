@@ -26,6 +26,27 @@ def _safe_detail(value: BaseException | str) -> str:
     return str(value).replace("\n", " ")[:240]
 
 
+def _try_parse_json(candidate: str) -> dict | None:
+    """Parse one balanced candidate, tolerating raw control characters.
+
+    Models often pretty-print JSON with literal newlines/tabs inside string
+    values, which strict ``json.loads`` rejects (9/17 corner: every AI script
+    died this way with CornerScriptError). Raw C0 controls can never be
+    meaningful JSON content or structure, so a sanitized retry is safe.
+    """
+    try:
+        data = json.loads(candidate)
+    except ValueError:
+        data = None
+    if isinstance(data, dict):
+        return data
+    try:
+        data = json.loads(re.sub(r"[\x00-\x1f]", " ", candidate))
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def extract_json_object(text: str) -> dict | None:
     """Best-effort extraction of one JSON object from model output.
 
@@ -57,11 +78,8 @@ def extract_json_object(text: str) -> dict | None:
             elif char == "}":
                 depth -= 1
                 if depth == 0:
-                    try:
-                        data = json.loads(candidate[start:index + 1])
-                    except ValueError:
-                        data = None
-                    if isinstance(data, dict):
+                    data = _try_parse_json(candidate[start:index + 1])
+                    if data is not None:
                         return data
                     break
         start = candidate.find("{", start + 1)
