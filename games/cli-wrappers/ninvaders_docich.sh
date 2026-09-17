@@ -16,10 +16,14 @@ NINVADERS_BIN="${NINVADERS_BIN:-/usr/games/ninvaders}"
 DRIVER_INTERVAL="${NINVADERS_DRIVER_INTERVAL:-0.35}"
 MAX_MATCHES="${NINVADERS_MAX_MATCHES:-3}"
 
+case "$MAX_MATCHES" in
+  ''|*[!0-9]*|0*) echo "NINVADERS_MAX_MATCHES must be a positive integer" >&2; exit 2 ;;
+esac
+
 record_score() {
-  [ "$1" -gt 0 ] 2>/dev/null || return 0
-  mkdir -p "$(dirname "$SCORELOG")" 2>/dev/null || true
-  printf '{"ts":%s,"game":"ninvaders","score":%s,"source":"wrapper"}\n' "$(date +%s)" "$1" >>"$SCORELOG" 2>/dev/null || true
+  [ "$1" -ge 0 ] 2>/dev/null || return 1
+  mkdir -p "$(dirname "$SCORELOG")" 2>/dev/null || return 1
+  printf '{"ts":%s,"game":"ninvaders","score":%s,"source":"wrapper"}\n' "$(date +%s)" "$1" >>"$SCORELOG" 2>/dev/null
 }
 
 driver() {
@@ -32,6 +36,7 @@ driver() {
     sleep "$DRIVER_INTERVAL"
     [ -n "$PANE" ] || continue
     text="$(tmux capture-pane -p -t "$PANE" 2>/dev/null)" || continue
+    [ "$matches" -lt "$MAX_MATCHES" ] || continue
     cur="$(printf '%s' "$text" | grep -oE 'Score: [0-9]+' | tail -1 | grep -oE '[0-9]+')"
     if [ -n "$cur" ]; then
       # Strip leading zeros for POSIX $(( )) (dash has no base#number syntax
@@ -45,15 +50,15 @@ driver() {
     case "$text" in
       *"Press SPACE to start"*)
         if [ "$seen_game" = "1" ]; then
-          record_score "$max_score"
+          # Persistence failure must not silently discard this match or
+          # start the next one. Retry saving while holding the title screen.
+          record_score "$max_score" || continue
           max_score=0
           seen_game=0
           matches=$((matches + 1))
-          # 指定試合数を完走したら自動開始しない (コーナー終了を待つ)。
-          if [ "$matches" -ge "$MAX_MATCHES" ] 2>/dev/null; then
-            break
-          fi
         fi
+        # Observe while parked; no input is withdrawn from a running match.
+        [ "$matches" -lt "$MAX_MATCHES" ] || continue
         tmux send-keys -t "$PANE" Space
         ;;
       *"Level:"*)
