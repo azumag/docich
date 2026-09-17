@@ -30,7 +30,8 @@ from .tts import TtsError, game_submodule
 AI_FUNCTION = "ai_generate_list"
 
 SAFE_TOKEN_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
-AGENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+# Namespaced provider/model IDs (e.g. OpenRouter) use '/' just as in webui.
+AGENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")
 
 # Fixed wrapper.  No user text or shell metacharacters ever enter this file;
 # the function name and arguments are validated by docich before execution.
@@ -84,7 +85,7 @@ def _validate_agents(agents: str, what: str) -> str:
     if not items or not all(a for a in items):
         raise AiError(f"{what} が空です: {agents!r}")
     for a in items:
-        if not AGENT_RE.match(a):
+        if not AGENT_RE.fullmatch(a):
             raise AiError(
                 f"{what} に安全でない識別子が含まれます: {a!r} "
                 "(英数字 / . _ : - のみ、カンマ区切り)"
