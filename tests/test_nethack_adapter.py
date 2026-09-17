@@ -344,12 +344,14 @@ class TestNethackCoordinatorAdapter(unittest.TestCase):
             "Pick an alignment",
             "Pick a gender",
             "Is this ok? [ynq]",
-            "Welcome to NetHack!",
         ):
             with self.subTest(marker=marker):
                 self.assertTrue(nethack_adapter._is_character_creation_screen(marker))
-        # A normal gameplay status line and map must not be mistaken for
-        # character creation.
+        # Post-creation banners and normal gameplay must not be mistaken for
+        # character creation; both require the durable save boundary.
+        self.assertFalse(
+            nethack_adapter._is_character_creation_screen("Welcome to NetHack!")
+        )
         self.assertFalse(
             nethack_adapter._is_character_creation_screen(
                 "Dlvl:3 HP:18(18) Pw:5(5) AC:6 Exp:1 T:120\n--More--"
