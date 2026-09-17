@@ -59,7 +59,7 @@
       "description": "Rest while movement is visibly impaired.",
       "preconditions": ["prompt:none", "condition_any:Blind|Conf|Stun|Hallu"],
       "key_pattern": ["."],
-      "postconditions": ["screen_changed"]
+      "postconditions": ["always"]
     },
     {
       "id": "attack_adjacent",
@@ -79,7 +79,7 @@
       "description": "Rest to regenerate while visibly low HP and no adjacent monster.",
       "preconditions": ["prompt:none", "hp_ratio_at_most:0.5", "no_adjacent_attackable"],
       "key_pattern": ["."],
-      "postconditions": ["screen_changed"]
+      "postconditions": ["always"]
     },
     {
       "id": "open_door",
@@ -109,7 +109,7 @@
       "description": "Rest when no reviewed action applies (for example fully blocked).",
       "preconditions": ["prompt:none", "player_visible"],
       "key_pattern": ["."],
-      "postconditions": ["screen_changed"]
+      "postconditions": ["always"]
     }
   ]
 }

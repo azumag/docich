@@ -124,13 +124,19 @@ def _read_request(text: str) -> dict[str, object]:
     return raw
 
 
-def _prepare_runtime() -> None:
+def _prepare_runtime(seed: int | None = None) -> None:
     root = Path(ARENA["playground_dir"])
     save = Path(ARENA["save_dir"])
     dumps = Path(ARENA["dump_dir"])
     for path in (root, save, dumps):
         path.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(path, 0o700)
+    # The image redirects NetHack's DEV_RANDOM to this file, so a provided seed
+    # makes an episode reproducible (seed-controlled promotion comparisons).
+    seed_path = Path(ARENA["episode_root"]) / "seed"
+    seed_bytes = seed.to_bytes(8, "little", signed=False) if seed is not None else os.urandom(8)
+    seed_path.write_bytes(seed_bytes)
+    os.chmod(seed_path, 0o600)
     for name in ("xlogfile", "logfile", "record", "perm"):
         path = root / name
         path.touch(exist_ok=True)
@@ -262,7 +268,7 @@ def _terminal_result(request: dict[str, object], record: dict[str, str], *, exit
         "arena": dict(ARENA),
         "player_name": request["player_name"],
         "seed": request.get("seed"),
-        "seed_applied": False,
+        "seed_applied": request.get("seed") is not None,
         "controller_kind": "baseline_p3b" if request["arm"] == "baseline" else "candidate_strategist",
         "terminal_status": classify_terminal_record(record),
         "score": _int(record, "points"),
@@ -293,7 +299,7 @@ def _timeout_result(
         "arena": dict(ARENA),
         "player_name": request["player_name"],
         "seed": request.get("seed"),
-        "seed_applied": False,
+        "seed_applied": request.get("seed") is not None,
         "controller_kind": "baseline_p3b" if request["arm"] == "baseline" else "candidate_strategist",
         "terminal_status": "timeout",
         "score": None,
@@ -444,7 +450,7 @@ def _append_trace(path: Path, record: dict[str, object]) -> None:
 
 
 def run_episode(request: dict[str, object]) -> dict[str, object]:
-    _prepare_runtime()
+    _prepare_runtime(seed=request.get("seed"))
     player = str(request["player_name"])
     max_turns = int(request["max_turns"])
     wall_timeout = float(request.get("wall_timeout_s", 900.0))
