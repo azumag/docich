@@ -77,3 +77,22 @@ def test_distinct_events_with_same_clock_do_not_overwrite(tmp_path, monkeypatch)
     for key in ("first", "second"):
         webui._enqueue_audio_text(tmp_path, "PAPER " + key, "crypto_paper", delivery_key=key)
     assert {p.read_text().strip() for p in (tmp_path / "tmp/.comment_queue").glob("comment_announce_*.txt")} == {"PAPER first", "PAPER second"}
+
+
+def test_delivery_speaker_sidecar_selects_voice_without_breaking_dedupe(tmp_path):
+    voiced = webui._enqueue_audio_text(
+        tmp_path, "声つき通知", "crypto_paper", speaker="14", delivery_key="voiced-event"
+    )
+    assert voiced["ok"] is True
+    sidecar = Path(str(tmp_path / "tmp/.comment_queue" / voiced["filename"]) + ".speaker")
+    assert sidecar.read_text(encoding="utf-8") == "14"
+    plain = webui._enqueue_audio_text(
+        tmp_path, "声なし通知", "crypto_paper", delivery_key="plain-event"
+    )
+    assert not Path(str(tmp_path / "tmp/.comment_queue" / plain["filename"]) + ".speaker").exists()
+    # Same event redelivers nothing, regardless of speaker.
+    assert webui._enqueue_audio_text(
+        tmp_path, "声つき通知", "crypto_paper", speaker="14", delivery_key="voiced-event"
+    )["dedup"] is True
+    with pytest.raises(ValueError, match="reserved for crypto_paper"):
+        webui._enqueue_audio_text(tmp_path, "他ソース", "webui_test", delivery_key="other-source")

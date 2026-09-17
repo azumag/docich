@@ -1049,7 +1049,7 @@ def _validate_audio_delivery_key(delivery_key: str) -> str:
     return value
 
 
-def _enqueue_audio_delivery(soren_root: Path, text: str, delivery: str) -> dict[str, Any]:
+def _enqueue_audio_delivery(soren_root: Path, text: str, delivery: str, *, speaker: str = "") -> dict[str, Any]:
     """Publish once by atomically moving a prepared payload into the queue.
 
     A complete receipt directory is installed before publication. Its payload
@@ -1058,6 +1058,11 @@ def _enqueue_audio_delivery(soren_root: Path, text: str, delivery: str) -> dict[
     receipts: text TTL and bounded marker eviction cannot deduplicate events.
     This guarantees process-crash recovery on one local filesystem, not
     exactly-once playback or recovery from filesystem/power loss.
+
+    ``speaker`` (when non-empty) is published as a ``.speaker`` sidecar next
+    to the queue file, mirroring the claim path. The Soren audio worker reads
+    the sidecar to pick the voice. A redelivery of the same event reuses the
+    same speaker because callers derive it deterministically from ``delivery``.
     """
     import fcntl
     import shutil
@@ -1104,6 +1109,11 @@ def _enqueue_audio_delivery(soren_root: Path, text: str, delivery: str) -> dict[
         # This rename is both publication and the durable committed state.
         # Do not recreate/remove the receipt on any exception after this point.
         os.replace(payload, dest)
+        if speaker:
+            try:
+                (Path(str(dest) + ".speaker")).write_text(speaker, encoding="utf-8")
+            except Exception:
+                pass
         return {"ok": True, "dedup": False, "filename": filename, "path": str(dest)}
 
 
@@ -1262,9 +1272,9 @@ def _enqueue_audio_text(
     spk = _validate_audio_speaker(speaker)
     delivery = _validate_audio_delivery_key(delivery_key)
     if delivery:
-        if src != "crypto_paper" or spk:
-            raise ValueError("delivery_key is reserved for crypto_paper without speaker override")
-        return _enqueue_audio_delivery(soren_root, cleaned, delivery)
+        if src != "crypto_paper":
+            raise ValueError("delivery_key is reserved for crypto_paper")
+        return _enqueue_audio_delivery(soren_root, cleaned, delivery, speaker=spk)
     claimed = _comment_audio_claim_enqueue_key(soren_root, cleaned)
     if not claimed:
         return {"ok": True, "dedup": True, "filename": None}
