@@ -1613,6 +1613,170 @@ def _severity(workers, queues, ai, improvement):
     return "ok"
 
 
+# Fixed v1 Soren91 sent-to-sent metrics, never game acceptance or raw records.
+DROP_STAGES = ('capture', 'analyze', 'ranking', 'decide', 'input', 'holdInput',
+               'cooldown', 'poll', 'overlap', 'unattributed')
+DROP_CALLS = DROP_STAGES[:-2]
+DROP_REASONS = ('unknown-current', 'uncalibrated', 'invalid-board', 'confirm-frame',
+                'preview-changed', 'board-moving', 'stable', 'stable-slow-advance',
+                'non-move', 'other')
+DROP_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _drop_number(value, integer=False):
+    return (type(value) in (int, float) and math.isfinite(value)
+            and 0 <= value <= 9007199254740991
+            and (not integer or type(value) is int))
+
+
+def _drop_stats(values):
+    if not values:
+        return dict.fromkeys(('mean', 'median', 'p95', 'max', 'total'))
+    values = sorted(values)
+    return {k: round(v, 6) for k, v in {
+        'mean': sum(values) / len(values),
+        'median': values[math.ceil(len(values) * .5) - 1],
+        'p95': values[math.ceil(len(values) * .95) - 1],
+        'max': values[-1], 'total': sum(values),
+    }.items()}
+
+
+def _drop_summary(rows):
+    total = sum(r['durationMs'] for r in rows)
+    phases = {}
+    for stage in ('interval', *DROP_STAGES):
+        values = [r['durationMs'] if stage == 'interval' else r['stageMs'][stage]
+                  for r in rows]
+        phases[stage] = {
+            **_drop_stats([v / 1000 for v in values]),
+            'sharePercent': round(sum(values) / total * 100, 6) if total else None,
+            'calls': sum(r['phaseCalls'][stage] for r in rows)
+                     if rows and stage in DROP_CALLS else None,
+        }
+    return {'samples': len(rows), 'phasesSeconds': phases,
+            'observations': sum(r['observations'] for r in rows),
+            'holds': sum(r['holds'] for r in rows),
+            'errors': sum(r['errors'] for r in rows),
+            'reasonCounts': {k: sum(r['reasonCounts'][k] for r in rows) for k in DROP_REASONS}}
+
+
+def _drop_profile_summary(data):
+    p = data.get('dropProfile')
+    if p is None:
+        return {'profileStatus': 'missing'}
+    if (type(data.get('schemaVersion')) is not int or data['schemaVersion'] != 1
+            or not isinstance(p, dict) or type(p.get('schemaVersion')) is not int
+            or p['schemaVersion'] != 1 or p.get('basis') != 'sent-to-sent'
+            or p.get('acceptedDropsMeasured') is not False
+            or not isinstance(p.get('session'), str)
+            or not re.fullmatch(r'[a-f0-9-]{36}', p['session'])
+            or p.get('capacity') != 128
+            or not all(_drop_number(p.get(k), True) for k in ('totalSamples', 'evictedSamples'))
+            or not isinstance(p.get('records'), list) or len(p['records']) > 128
+            or p['totalSamples'] != p['evictedSamples'] + len(p['records'])):
+        return {'profileStatus': 'invalid'}
+    rows = p['records']
+    usable = []
+    for i, r in enumerate(rows, p['evictedSamples'] + 1):
+        if (not isinstance(r, dict)
+                or not all(_drop_number(r.get(k), True) for k in
+                           ('sample', 'game', 'fromTurn', 'toTurn', 'endedAtMs',
+                            'observations', 'holds', 'errors'))
+                or r['sample'] != i or not _drop_number(r.get('durationMs'))
+                or type(r.get('accountingValid')) is not bool
+                or type(r.get('accountingErrorMs')) not in (int, float)
+                or not math.isfinite(r['accountingErrorMs'])):
+            return {'profileStatus': 'invalid'}
+        for field, keys, integer in (('stageMs', DROP_STAGES, False),
+                                     ('phaseCalls', DROP_CALLS, True),
+                                     ('reasonCounts', DROP_REASONS, True)):
+            if (not isinstance(r.get(field), dict)
+                    or not all(_drop_number(r[field].get(k), integer) for k in keys)):
+                return {'profileStatus': 'invalid'}
+        error = r['durationMs'] - sum(r['stageMs'][k] for k in DROP_STAGES)
+        if abs(error - r['accountingErrorMs']) > .11:
+            return {'profileStatus': 'invalid'}
+        if r['accountingValid'] and abs(error) <= 1 and r['durationMs'] > 0:
+            usable.append(r)
+    deferred = lambda r: any(r['reasonCounts'][k] for k in DROP_REASONS
+                             if k not in ('stable', 'stable-slow-advance'))
+    groups = {
+        'withoutHold': [r for r in usable if not r['holds']],
+        'withHold': [r for r in usable if r['holds']],
+        'beforeTurn10': [r for r in usable if r['fromTurn'] < 10],
+        'fromTurn10': [r for r in usable if r['fromTurn'] >= 10],
+        'withoutDeferral': [r for r in usable if not deferred(r)],
+        'withDeferral': [r for r in usable if deferred(r)],
+    }
+    games = sorted(set(r['game'] for r in usable))
+    result = {
+        'profileStatus': 'ok', 'basis': 'sent-to-sent', 'acceptedDropsMeasured': False,
+        'session': p['session'], 'totalSamples': p['totalSamples'],
+        'missingSamples': p['evictedSamples'], 'retainedSamples': len(rows),
+        'excludedSamples': len(rows) - len(usable),
+        'firstSample': rows[0]['sample'] if rows else None,
+        'lastSample': rows[-1]['sample'] if rows else None,
+        'firstEndedAtMs': rows[0]['endedAtMs'] if rows else None,
+        'latestDropAtMs': max((r['endedAtMs'] for r in rows), default=None),
+        'gameCount': len(games), 'omittedGameGroups': max(0, len(games) - 4),
+        'all': _drop_summary(usable),
+        'groups': {k: _drop_summary(v) for k, v in groups.items()},
+        'games': [{'game': g, **_drop_summary([r for r in usable if r['game'] == g])}
+                  for g in games[-4:]],
+        # Bounded numeric representative, not a raw record or arbitrary map.
+        'slowest': [{k: r[k] for k in ('sample', 'game', 'fromTurn', 'toTurn', 'endedAtMs')}
+                    | _drop_summary([r])
+                    for r in sorted(usable, key=lambda r: r['durationMs'], reverse=True)[:1]],
+    }
+    for key in ('updatedAtMs', 'sinceDropSentMs', 'game', 'turn', 'elapsedMs'):
+        value = data.get(key)
+        result[key] = value if _drop_number(value) else None
+    # sinceDropSentMs is the open tail at the last flush, NOT a live stall clock.
+    result['omittedComparisonGroups'] = 0
+    while len(json.dumps(result).encode('utf-8')) > 24000:
+        if result['games']:
+            result['games'].pop(0)
+            result['omittedGameGroups'] += 1
+        elif result['groups']:
+            result['groups'].popitem()
+            result['omittedComparisonGroups'] += 1
+        else:
+            break
+    return result
+
+
+def _collect_soren91_drop_profile(soren):
+    """One fixed regular file; no state writes, subprocesses or game observations."""
+    path = soren / 'soren91' / 'tmp' / 'state' / 'soren91_loop_metrics.json'
+    result = {'present': False, 'readable': False, 'profileStatus': 'unavailable'}
+    try:
+        # Reject symlinks in the entire path below the authorized Soren root.
+        current = soren
+        for part in ('soren91', 'tmp', 'state', 'soren91_loop_metrics.json'):
+            current = current / part
+            if current.is_symlink():
+                return result
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, 'rb') as handle:
+            info = os.fstat(handle.fileno())
+            result['present'] = True
+            if not stat.S_ISREG(info.st_mode) or info.st_size > DROP_MAX_BYTES:
+                return result
+            result['fileMtimeMs'] = int(info.st_mtime * 1000)
+            result['fileBytes'] = info.st_size
+            raw = handle.read(DROP_MAX_BYTES + 1)
+            if len(raw) > DROP_MAX_BYTES:
+                return result
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return result
+        result['readable'] = True
+        result.update(_drop_profile_summary(data))
+    except (OSError, ValueError, TypeError, OverflowError, RecursionError):
+        result['profileStatus'] = 'unavailable'
+    return result
+
+
 def main(argv):
     if len(argv) != 2:
         print("usage: collect_diagnostics.py <soren_root>", file=sys.stderr)
@@ -1641,6 +1805,7 @@ def main(argv):
         "corners": _collect_programs(_program_state_dir(), soren, now),
         "market_paper": _collect_market_paper(_program_state_dir(), now),
         "storage_artifacts": _collect_tmp_shared_objects(now),
+        "soren91_drop_profile": _collect_soren91_drop_profile(soren),
     }
     text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     if len(text.encode("utf-8")) > MAX_JSON_BYTES:
@@ -1650,6 +1815,16 @@ def main(argv):
         if len(text.encode("utf-8")) > MAX_JSON_BYTES:
             payload["ai"]["anomalous_components"] = {}
             text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
+        profile = payload["soren91_drop_profile"]
+        if profile.get('profileStatus') == 'ok':
+            profile['omittedComparisonGroups'] += len(profile['groups'])
+            profile['omittedGameGroups'] += len(profile['games'])
+            profile['groups'] = {}
+            profile['games'] = []
+            profile['slowest'] = []
+            profile['representativeOmitted'] = True
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     sys.stdout.write(text + "\n")
     return 0
 
