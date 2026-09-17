@@ -4,9 +4,16 @@
 The VM diagnostics already expose the 15-minute aggregate queue-giveup count
 plus a bounded, redacted recent-event sample.  A queue_giveup can therefore age
 out of the sample while remaining present in the aggregate.  This helper keeps
-the existing runtime summary unchanged and adds fixed-category attribution
-where sample evidence exists; any aggregate remainder is assigned to
-``unknown`` rather than being silently reported as zero for every component.
+the existing runtime summary unchanged and adds fixed-category caller
+attribution where sample evidence exists; any aggregate remainder is assigned
+to ``unknown`` rather than being silently reported as zero for every
+component.
+
+Soren also emits a dedicated ``queue_giveup_detail`` event with only a bounded
+wait and a fixed holder category.  The collector validates that strict grammar
+before placing fixed counters in diagnostics; this helper projects those
+counters separately so caller attribution can never be confused with the lane
+holder that caused the wait.
 
 It is the single runtime-summary entry point used by the VM monitor, so it also
 composes the fixed ``ai_rate_limit_pressure`` signal and bounded improvement
@@ -25,6 +32,16 @@ from summarize_runtime_pressure import rate_limit_pressure
 
 
 ATTRIBUTION_COMPONENTS = COMPONENTS + ("unknown",)
+QUEUE_GIVEUP_HOLDERS = (
+    "radio_prepass",
+    "radio_main",
+    "news",
+    "jiji",
+    "celebration",
+    "other",
+    "unknown",
+)
+QUEUE_GIVEUP_WAIT_CAP_SEC = 86400
 CHAIN_SUMMARY_KEYS = (
     "chain_summary_sampled",
     "multi_vercel_429_chains",
@@ -87,12 +104,13 @@ def _improvement_metrics(data):
 
 
 def attribute_queue_giveups(data):
-    """Return fixed full-window buckets, failing closed to ``unknown``.
+    """Return fixed caller buckets, failing closed to ``unknown``.
 
     ``consistent`` means the bounded recent sample does not contain more
     queue-giveup events than the full-window aggregate. ``exact`` means every
     aggregate event is still present in the recent sample, so no unknown
-    remainder was required.
+    remainder was required. These are caller metrics only; holder metrics are
+    projected independently by :func:`attribute_queue_giveup_holders`.
     """
     queues = data.get("queues") if isinstance(data, dict) else None
     ai = data.get("ai") if isinstance(data, dict) else None
@@ -122,6 +140,33 @@ def attribute_queue_giveups(data):
     return counts, True, counts["unknown"] == 0
 
 
+def attribute_queue_giveup_holders(data):
+    """Return fixed holder counters from validated detail telemetry.
+
+    The collector is the trust boundary for the detail grammar, but re-check
+    every shape here before publishing it to a GitHub issue.  An inconsistent
+    holder map fails closed to zeroed holder buckets. ``exact`` additionally
+    requires one valid detail record for every aggregate queue giveup and no
+    malformed detail records in the window.
+    """
+    queues = data.get("queues") if isinstance(data, dict) else None
+    ai = data.get("ai") if isinstance(data, dict) else None
+    ai = ai if isinstance(ai, dict) else {}
+    aggregate = _integer(queues or {}, "queue_giveups_15m")
+    sampled = _integer(ai, "queue_giveup_detail_sampled")
+    malformed = _integer(ai, "queue_giveup_detail_malformed")
+    wait_max = min(_integer(ai, "queue_giveup_detail_wait_max_sec"), QUEUE_GIVEUP_WAIT_CAP_SEC)
+    raw_counts = ai.get("queue_giveup_detail_holders")
+    raw_counts = raw_counts if isinstance(raw_counts, dict) else {}
+    counts = {holder: _integer(raw_counts, holder) for holder in QUEUE_GIVEUP_HOLDERS}
+    consistent = sum(counts.values()) == sampled
+    if not consistent:
+        counts = {holder: 0 for holder in QUEUE_GIVEUP_HOLDERS}
+        wait_max = 0
+    exact = consistent and malformed == 0 and sampled == aggregate
+    return counts, sampled, malformed, wait_max, consistent, exact
+
+
 def render(data):
     severity, summary = summarize(data)
     ai = data.get("ai") if isinstance(data, dict) else None
@@ -132,12 +177,37 @@ def render(data):
     summary += "," + ",".join(_improvement_metrics(data))
     counts, consistent, exact = attribute_queue_giveups(data)
     extra = [
+        # Keep the historical names for dashboards while adding explicit
+        # caller-prefixed aliases so they cannot be mistaken for holder data.
         f"ai_queue_giveup_attribution_consistent={int(consistent)}",
         f"ai_queue_giveup_attribution_exact={int(exact)}",
+        f"ai_queue_giveup_caller_attribution_consistent={int(consistent)}",
+        f"ai_queue_giveup_caller_attribution_exact={int(exact)}",
     ]
     extra.extend(
         f"ai_queue_giveup_component_{component}={counts[component]}"
         for component in ATTRIBUTION_COMPONENTS
+    )
+    (
+        holder_counts,
+        detail_sampled,
+        detail_malformed,
+        holder_wait_max,
+        holder_consistent,
+        holder_exact,
+    ) = attribute_queue_giveup_holders(data)
+    extra.extend(
+        [
+            f"ai_queue_giveup_holder_detail_sampled={detail_sampled}",
+            f"ai_queue_giveup_holder_detail_malformed={detail_malformed}",
+            f"ai_queue_giveup_holder_wait_max_sec={holder_wait_max}",
+            f"ai_queue_giveup_holder_attribution_consistent={int(holder_consistent)}",
+            f"ai_queue_giveup_holder_coverage_exact={int(holder_exact)}",
+        ]
+    )
+    extra.extend(
+        f"ai_queue_giveup_holder_{holder}={holder_counts[holder]}"
+        for holder in QUEUE_GIVEUP_HOLDERS
     )
     return severity, summary + "," + ",".join(extra)
 
