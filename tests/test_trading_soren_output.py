@@ -122,72 +122,46 @@ class TestSorenOutputAdapter(unittest.TestCase):
         }
         self.assertEqual(seen, {"chuka", "meriken"})
 
-    def test_persona_quips_match_house_speech_rules(self):
-        for persona, quips in (
-            ("meriken", soren_output._MERIKEN_QUIPS),
-            ("chuka", soren_output._CHUKA_QUIPS),
+    def test_speech_text_has_no_fixed_persona_preamble(self):
+        """Both personas used to open with one of a 3-line canned quip pool,
+
+        which read as "the same fixed preamble" to a listener regardless of
+        which persona was speaking (reported 2026-09-18). The quip existed
+        only to inject entropy against the player-side content-hash dedupe;
+        that dedupe now exempts this channel entirely upstream (soviet_now
+        #431), so the quip has no remaining purpose and is removed. Speech
+        text must depend only on the body/segment, not on which persona a
+        given corner happens to be hosted by.
+        """
+        body = "損益を見ます。"
+        for key in (
+            "paper-corner:2026-09-17:script:3",
+            "paper-corner-manual-abc123def456:2026-09-18:script:2",
         ):
-            self.assertTrue(2 <= len(quips) <= 5)
-            for quip in quips:
-                self.assertTrue(quip.endswith(("です。", "ます。", "ました。", "でしょう。", "ですけど。")), quip)
-                self.assertFalse(quip.endswith("ね。"))
-                self.assertNotIn("だ。", quip)
-                self.assertNotIn("である", quip)
-        self.assertTrue(any("僕" in q for q in soren_output._MERIKEN_QUIPS))
-        self.assertTrue(any("私" in q for q in soren_output._CHUKA_QUIPS))
-        self.assertTrue(all("ね。" not in q for q in soren_output._MERIKEN_QUIPS))
-        # Non-corner events stay plain with the default voice.
-        self.assertEqual(soren_output.paper_persona_quip("fill:event-a"), ("chuka", ""))
+            spoken = soren_output._paper_corner_speech_text(body, key)
+            self.assertEqual(spoken, body)
 
-    def test_speech_text_opens_with_the_delivery_persona_quip(self):
-        key = "paper-corner:2026-09-17:script:3"
-        persona, quip = soren_output.paper_persona_quip(key)
-        spoken = soren_output._paper_corner_speech_text("損益を見ます。", key)
-        self.assertTrue(spoken.startswith(quip))
-        self.assertTrue(spoken.endswith("損益を見ます。"))
-        self.assertIn(persona, ("chuka", "meriken"))
-
-    def test_manual_scope_delivery_also_gets_persona_quip(self):
-        """Manual test runs must get the same anti-collision quip as production.
-
-        (9/18 outage: a manual run's ``paper-corner-manual-<uuid>:...`` event_id
-        did not match the old literal ``"paper-corner:"`` prefix check, so
-        manual deliveries spoke the raw deterministic-fallback text unchanged.
-        When two manual runs produced byte-identical fallback narration
-        (unchanged trading facts), the player-side content-hash dedupe treated
-        every delivery of the second run as a replay and silently dropped it.)
-        """
-        key = "paper-corner-manual-abc123def456:2026-09-18:script:2"
-        persona, quip = soren_output.paper_persona_quip(key)
-        self.assertIn(persona, ("chuka", "meriken"))
-        self.assertTrue(quip)
-        spoken = soren_output._paper_corner_speech_text("損益を見ます。", key)
-        self.assertTrue(spoken.startswith(quip))
-        self.assertTrue(spoken.endswith("損益を見ます。"))
-
-    def test_quip_rotates_within_one_corner_without_adjacent_repeats(self):
-        """The opening line must not sound "always the same" within one corner
-
-        (reported: メリケンAI's opening phrase looked fixed). A hash-per-
-        segment pick could land on the same quip repeatedly by chance with
-        only 3 quips in the pool; rotation guarantees no two consecutive
-        script segments share a quip.
-        """
-        quips = [
-            soren_output.paper_persona_quip(f"paper-corner-manual-fixedscope:2026-09-18:script:{i}")[1]
-            for i in range(1, 9)
-        ]
-        for first, second in zip(quips, quips[1:]):
-            self.assertNotEqual(first, second)
-
-    def test_two_manual_runs_with_identical_fallback_text_speak_differently(self):
-        """The actual regression: same raw text, different manual delivery_scope."""
-        raw_text = "時間足チャートの解説です。今回は公開ローソクの取得が間に合わず、数字をお伝えできません。"
-        first_key = "paper-corner-manual-000000000000:2026-09-18:script:3"
-        second_key = "paper-corner-manual-111111111111:2026-09-18:script:3"
-        first = soren_output._paper_corner_speech_text(raw_text, first_key)
-        second = soren_output._paper_corner_speech_text(raw_text, second_key)
-        self.assertNotEqual(first, second)
+    def test_speech_text_is_identical_across_corners_with_different_personas(self):
+        # Two corners that land on different personas must still speak the
+        # same body text identically -- no per-persona prefix.
+        body = "損益を見ます。"
+        meriken_key = None
+        chuka_key = None
+        for day in range(1, 29):
+            key = f"paper-corner:2026-09-{day:02d}:script:3"
+            persona = soren_output.pick_paper_persona(key)
+            if persona == "meriken" and meriken_key is None:
+                meriken_key = key
+            elif persona == "chuka" and chuka_key is None:
+                chuka_key = key
+            if meriken_key and chuka_key:
+                break
+        self.assertIsNotNone(meriken_key)
+        self.assertIsNotNone(chuka_key)
+        self.assertEqual(
+            soren_output._paper_corner_speech_text(body, meriken_key),
+            soren_output._paper_corner_speech_text(body, chuka_key),
+        )
 
     def test_meriken_delivery_uses_soren91_voice_and_chuka_uses_default(self):
         def key_for(persona):
@@ -210,8 +184,7 @@ class TestSorenOutputAdapter(unittest.TestCase):
                 soren_output.enqueue_speech(g, "本文", event_id=meriken_key)
                 _, kwargs = enqueue.call_args
                 self.assertEqual(kwargs.get("speaker"), "14")
-                quip = soren_output.paper_persona_quip(meriken_key)[1]
-                self.assertTrue(kwargs and quip in str(enqueue.call_args.args[1]))
+                self.assertEqual(enqueue.call_args.args[1], "本文")
             with mock.patch.object(soren_output, "resolve_soren_root", return_value=root), \
                  mock.patch("docich.webui._enqueue_audio_text", return_value={"ok": True}) as enqueue:
                 soren_output.enqueue_speech(g, "本文", event_id=chuka_key)
