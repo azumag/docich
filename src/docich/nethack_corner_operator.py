@@ -22,7 +22,9 @@ import uuid
 from pathlib import Path
 
 from .config import ConfigError, load_global
-from .nethack_corner import NethackCornerError
+from .nethack_corner import GAME_NAME, NethackCornerError
+from .nethack_corner_manual import ManualNethackCornerManager
+from .retro_corner import RetroCornerError
 
 MIN_DURATION = 1
 MAX_DURATION = 60
@@ -53,6 +55,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--start", action="store_true")
     parser.add_argument("--stop", action="store_true")
     parser.add_argument("--status", action="store_true")
+    parser.add_argument("--recover", action="store_true")
     return parser
 
 
@@ -151,6 +154,29 @@ def stop(config_path: Path) -> dict[str, object]:
     return {"status": "stopped"}
 
 
+def recover(config_path: Path) -> dict[str, object]:
+    """Restore the game a failed manual corner could not switch back to.
+
+    A corner can fail after NetHack became the canonical active game (for
+    example a round-boundary timeout).  The manual runner's ``stop`` only
+    finishes an ``active`` corner, so it no-ops on a ``failed`` one and leaves
+    the active game stranded.  This bounded operation switches back only to the
+    previous game recorded in the manual state; it cannot choose an arbitrary
+    target.
+    """
+    g = load_global(_repo_root(), config_path)
+    manager = ManualNethackCornerManager(g, duration_minutes=MIN_DURATION)
+    state = manager.status()
+    previous = state.get("previous_game")
+    current = manager._active_game_reader()
+    if current != GAME_NAME:
+        return {"status": "noop", "detail": "nethack is not active", "active_game": current}
+    if not isinstance(previous, str) or not previous or previous == GAME_NAME:
+        raise NethackCornerError("restore target gameをmanual stateから特定できません")
+    manager._transition_to(current, previous)
+    return {"status": "recovered", "from_game": current, "to_game": previous}
+
+
 def status_category(state_dir: Path) -> str:
     path = state_dir / MANUAL_STATE_FILE
     if not path.exists():
@@ -179,13 +205,23 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         config_path = Path(args.config)
-        selected = int(bool(args.start)) + int(bool(args.stop)) + int(bool(args.status))
+        selected = (
+            int(bool(args.start))
+            + int(bool(args.stop))
+            + int(bool(args.status))
+            + int(bool(args.recover))
+        )
         if selected != 1:
             raise NethackCornerError("exactly one NetHack corner operation is required")
         if args.status:
             return status(config_path)
-        result = stop(config_path) if args.stop else launch(config_path, args.duration_minutes)
-    except (ConfigError, NethackCornerError, OSError, ValueError) as exc:
+        if args.recover:
+            result = recover(config_path)
+        elif args.stop:
+            result = stop(config_path)
+        else:
+            result = launch(config_path, args.duration_minutes)
+    except (ConfigError, NethackCornerError, RetroCornerError, OSError, ValueError) as exc:
         print(f"docich: エラー: {exc}", file=sys.stderr)
         return 2
     print(json.dumps(result, separators=(",", ":")))
