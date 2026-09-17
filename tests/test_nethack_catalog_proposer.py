@@ -42,10 +42,14 @@ def proposer_returning(payload: bytes, returncode: int = 0) -> CommandCatalogPro
     )
 
 
-def test_build_request_carries_signal_catalog_and_allowlist():
+def proposal_request():
     specs = load_action_catalog(CATALOG)
     signal = FailureSignal("policy_stall:seek_food", "seek_food", (), "x", 10, 1)
-    request = build_proposal_request(signal, specs, allowed_action_ids=SUPPORTED_ACTION_IDS)
+    return build_proposal_request(signal, specs, allowed_action_ids=SUPPORTED_ACTION_IDS)
+
+
+def test_build_request_carries_signal_catalog_and_allowlist():
+    request = proposal_request()
     assert request["schema_version"] == 1
     assert request["failure"]["stall_intent"] == "seek_food"
     assert set(request["allowed_actions"]) == set(SUPPORTED_ACTION_IDS)
@@ -66,7 +70,9 @@ def test_failure_signal_prefers_a_stall_over_fitness():
 def test_proposer_accepts_a_valid_reviewed_catalog():
     specs = load_action_catalog(CATALOG)
     payload = json.dumps(catalog_to_dict(specs)).encode("utf-8")
-    proposed = proposer_returning(payload).propose({}, allowed_action_ids=SUPPORTED_ACTION_IDS)
+    proposed = proposer_returning(payload).propose(
+        proposal_request(), allowed_action_ids=SUPPORTED_ACTION_IDS
+    )
     assert {spec.id for spec in proposed} == set(SUPPORTED_ACTION_IDS)
 
 
@@ -84,14 +90,62 @@ def test_proposer_rejects_an_unknown_action_id():
     )
     payload = json.dumps(raw).encode("utf-8")
     with pytest.raises(CatalogProposalError):
+        proposer_returning(payload).propose(
+            proposal_request(), allowed_action_ids=SUPPORTED_ACTION_IDS
+        )
+
+
+def test_proposer_rejects_an_incomplete_action_set():
+    specs = load_action_catalog(CATALOG)
+    raw = catalog_to_dict(specs)
+    raw["actions"] = raw["actions"][:-1]
+    payload = json.dumps(raw).encode("utf-8")
+    with pytest.raises(CatalogProposalError, match="full reviewed action set"):
+        proposer_returning(payload).propose(
+            proposal_request(), allowed_action_ids=SUPPORTED_ACTION_IDS
+        )
+
+
+def test_proposer_rejects_key_pattern_changes():
+    specs = load_action_catalog(CATALOG)
+    raw = catalog_to_dict(specs)
+    raw["actions"][0]["key_pattern"] = ["z"]
+    payload = json.dumps(raw).encode("utf-8")
+    with pytest.raises(CatalogProposalError, match="fixed key_pattern"):
+        proposer_returning(payload).propose(
+            proposal_request(), allowed_action_ids=SUPPORTED_ACTION_IDS
+        )
+
+
+def test_proposer_rejects_risk_class_changes():
+    specs = load_action_catalog(CATALOG)
+    raw = catalog_to_dict(specs)
+    current = raw["actions"][0]["risk_class"]
+    raw["actions"][0]["risk_class"] = "rest" if current != "rest" else "movement"
+    payload = json.dumps(raw).encode("utf-8")
+    with pytest.raises(CatalogProposalError, match="fixed risk_class"):
+        proposer_returning(payload).propose(
+            proposal_request(), allowed_action_ids=SUPPORTED_ACTION_IDS
+        )
+
+
+def test_proposer_rejects_a_request_without_reviewed_baseline():
+    specs = load_action_catalog(CATALOG)
+    payload = json.dumps(catalog_to_dict(specs)).encode("utf-8")
+    with pytest.raises(CatalogProposalError, match="valid baseline catalog"):
         proposer_returning(payload).propose({}, allowed_action_ids=SUPPORTED_ACTION_IDS)
 
 
 def test_proposer_fails_closed_on_nonzero_or_bad_json():
+    request = proposal_request()
     with pytest.raises(CatalogProposalError):
-        proposer_returning(b"", returncode=2).propose({}, allowed_action_ids=SUPPORTED_ACTION_IDS)
+        proposer_returning(b"", returncode=2).propose(
+            request, allowed_action_ids=SUPPORTED_ACTION_IDS
+        )
     with pytest.raises(CatalogProposalError):
-        proposer_returning(b"not json").propose({}, allowed_action_ids=SUPPORTED_ACTION_IDS)
+        proposer_returning(b"not json").propose(
+            request, allowed_action_ids=SUPPORTED_ACTION_IDS
+        )
 
 
 def test_proposer_timeout_is_bounded():
