@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from docich.nethack_action_spec import (
+    ActionContext,
     ActionSpec,
     REVIEWED_EFFECTS,
     STATUS_KEYS,
@@ -15,6 +16,7 @@ from docich.nethack_action_spec import (
     keys_match,
     load_action_catalog,
     parse_action_catalog,
+    precondition,
     spec_by_id,
     validate_action_catalog,
     verify_action_spec,
@@ -60,8 +62,61 @@ def test_catalog_loads_and_matches_the_canary_policy_surface():
         "rest_low_hp",
         "rest",
         "explore_step",
+        "search_when_blocked",
     }
     assert {spec.effect for spec in specs} <= set(REVIEWED_EFFECTS)
+
+
+@pytest.mark.parametrize("message", ["", "In what direction? "])
+@pytest.mark.parametrize(
+    ("map_rows", "blocked"),
+    [(("-----", "-@.--", "-----"), False), (("-----", "-@---", "-----"), True)],
+)
+def test_no_safe_step_is_symmetric_with_safe_step(map_rows, blocked, message):
+    observation = frame(message, map_rows)
+    ctx = ActionContext(observation)
+    assert precondition("no_safe_step", ctx) is blocked
+    assert precondition("safe_step", ctx) is not blocked
+    assert observation.prompt == ("direction" if message else "none")
+
+
+def test_search_catalog_parses_and_validates():
+    specs = parse_action_catalog(json.loads(CATALOG.read_text(encoding="utf-8")))
+    validate_action_catalog(specs)
+    search = spec_by_id(specs, "search_when_blocked")
+    assert search.effect == "keys"
+    assert search.key_pattern == ("s",)
+    assert search.risk_class == "movement"
+    assert search.enabled
+    assert search.preconditions == (
+        "prompt:none", "player_visible", "no_safe_step", "no_adjacent_attackable",
+    )
+    assert search.postconditions == ("always",)
+    assert spec_by_id(specs, "explore_step").priority < search.priority == 88
+    assert search.priority < spec_by_id(specs, "rest").priority
+
+
+@pytest.mark.parametrize(
+    ("map_rows", "message", "expected"),
+    [
+        (("-----", "-@---", "-----"), "", STATUS_VERIFIED),
+        (("-----", "-@.--", "-----"), "", STATUS_PRECONDITION),
+        (("-----", "-@k--", "-----"), "", STATUS_PRECONDITION),
+        (("-----", "-----", "-----"), "", STATUS_PRECONDITION),
+        (("-----", "-@---", "-----"), "In what direction? ", STATUS_PRECONDITION),
+    ],
+)
+def test_verify_search_trace(tmp_path, map_rows, message, expected):
+    before = frame(message, map_rows)
+    path = tmp_path / "search-trace.jsonl"
+    path.write_text(json.dumps({
+        "intent": "search_when_blocked",
+        "keys": ["s"],
+        "before": before.raw_text,
+        "after": before.raw_text,
+    }) + "\n", encoding="utf-8")
+    (result,) = verify_trace_file(path, load_action_catalog(CATALOG))
+    assert result.status == expected
 
 
 def test_new_id_with_reviewed_effect_is_accepted_and_verifiable():

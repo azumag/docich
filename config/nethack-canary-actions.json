@@ -112,6 +112,17 @@
       "postconditions": ["screen_changed"]
     },
     {
+      "id": "search_when_blocked",
+      "priority": 88,
+      "enabled": true,
+      "risk_class": "movement",
+      "effect": "keys",
+      "description": "Search for hidden doors or traps when exploration is blocked and no attackable monster is adjacent.",
+      "preconditions": ["prompt:none", "player_visible", "no_safe_step", "no_adjacent_attackable"],
+      "key_pattern": ["s"],
+      "postconditions": ["always"]
+    },
+    {
       "id": "rest",
       "priority": 90,
       "enabled": true,

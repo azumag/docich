@@ -131,8 +131,46 @@ def test_impaired_rests_instead_of_holding():
     assert tuple(a.text for a in decision.actions) == (".",)
 
 
-def test_blocked_without_door_rests():
-    decision = decide(obs("", ("-----", "-@--", "-----")))
+def test_blocked_without_door_searches():
+    policy = CanaryTacticalPolicy()
+    decision = policy.decide(obs("", ("-----", "-@---", "-----")))
+    assert decision.intent == "search_when_blocked"
+    assert tuple(a.text for a in decision.actions) == ("s",)
+    policy.assert_safe(decision)
+
+
+def test_disabled_search_preserves_rest_fallback():
+    specs = tuple(
+        replace(spec, enabled=False) if spec.id == "search_when_blocked" else spec
+        for spec in load_action_catalog(CATALOG)
+    )
+    decision = CanaryTacticalPolicy(specs=specs).decide(obs("", ("-----", "-@---", "-----")))
+    assert decision.intent == "rest"
+    assert tuple(a.text for a in decision.actions) == (".",)
+
+
+@pytest.mark.parametrize(
+    ("map_rows", "status", "intent", "keys"),
+    [
+        (("-----", "-@.--", "-----"), STATUS, "explore_step", ("l",)),
+        (("-----", "-@k--", "-----"), STATUS, "attack_adjacent", ("l",)),
+        (("-----", "-@+--", "-----"), STATUS, "open_door", ("o", "l")),
+        (("-----", "-@---", "-----"), LOW_HP_STATUS, "rest_low_hp", (".",)),
+        (("-----", "-@---", "-----"), IMPAIRED_STATUS, "rest_impaired", (".",)),
+    ],
+)
+def test_search_preserves_higher_priority_actions(map_rows, status, intent, keys):
+    decision = decide(obs("", map_rows, status=status))
+    assert decision.intent == intent
+    assert tuple(a.text for a in decision.actions) == keys
+
+
+def test_search_rejects_adjacent_monster_even_when_attack_is_disabled():
+    specs = tuple(
+        replace(spec, enabled=False) if spec.id == "attack_adjacent" else spec
+        for spec in load_action_catalog(CATALOG)
+    )
+    decision = CanaryTacticalPolicy(specs=specs).decide(obs("", ("-----", "-@k--", "-----")))
     assert decision.intent == "rest"
     assert tuple(a.text for a in decision.actions) == (".",)
 
