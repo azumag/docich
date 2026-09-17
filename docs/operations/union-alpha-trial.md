@@ -49,9 +49,12 @@ improve daemonは次ループ、soren_loopは次試合、単発ジョブは次�
 旧子ジョブには親の再sourceだけでは反映されない。radioは既存deployの対象限定
 再起動とruntime signature監視を持つ。
 
-**poll_workerは通常tickで再sourceしないため、承認された対象限定reloadが必要。**
-現行のpublicリポジトリでは任意`exec`が拒否される。これを迂回せず、必要な
-承認済み操作が利用できなければ全チェーン反映は未完了とする。
+**poll_workerは通常tickで再sourceしないため、対象限定reloadが必要。**
+`ops/vm_actions/reload_poll_worker.py`を既存post-deploy workflowへ追加し、
+ownerのmain push配備成功後だけ固定helperを呼ぶ。PID/cwd/argv/開始時刻/trapを
+検証してpidfd経由でUSR1を一度送り、同一プロセスのreloadログ到達を待つ。
+pause/不在は起動せずskip。任意`exec`の許可は拡張しない。ログ到達はモデルの
+実効利用の証明ではなく、未確認なら全チェーン反映は未完了とする。
 ゲーム・配信・共通音声の再起動で代用しない。
 
 [read-only diagnostics](runtime-diagnostics.md) で次を確認する。
