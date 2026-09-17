@@ -48,8 +48,8 @@ class NetHackCornerAuthorizeTests(unittest.TestCase):
         self.assertEqual(data['duration_minutes'], 5)
         self.assertEqual((data['operation'], data['target'], data['ref']), ('start', 'production', 'main'))
 
-    def test_stop_and_status_are_fixed_operations(self):
-        for operation in ('stop', 'status'):
+    def test_stop_status_and_recover_are_fixed_operations(self):
+        for operation in ('stop', 'status', 'recover'):
             with self.subTest(operation=operation):
                 p = self.run_auth(INPUT_OPERATION=operation)
                 self.assertEqual(p.returncode, 0, p.stderr)
@@ -177,10 +177,49 @@ class NetHackCornerOperatorTests(unittest.TestCase):
         with mock.patch.object(operator, 'load_global', return_value=fake_g):
             self.assertEqual(operator.status(fake_g.config_path), operator.STATUS_EXIT_CODES['active'])
 
+    def test_recover_restores_only_the_recorded_previous_game(self):
+        base = Path(tempfile.mkdtemp(prefix='nethack-op-'))
+        fake_g = self._fake_g(base)
+        manager = mock.Mock()
+        manager.status.return_value = {'status': 'failed', 'previous_game': 'sorengame'}
+        manager._active_game_reader.return_value = 'nethack'
+        with mock.patch.object(operator, 'load_global', return_value=fake_g), \
+             mock.patch.object(operator, 'ManualNethackCornerManager', return_value=manager):
+            result = operator.recover(fake_g.config_path)
+        self.assertEqual(
+            result, {'status': 'recovered', 'from_game': 'nethack', 'to_game': 'sorengame'}
+        )
+        manager._transition_to.assert_called_once_with('nethack', 'sorengame')
+
+    def test_recover_noops_when_nethack_is_not_active(self):
+        base = Path(tempfile.mkdtemp(prefix='nethack-op-'))
+        fake_g = self._fake_g(base)
+        manager = mock.Mock()
+        manager.status.return_value = {'status': 'failed', 'previous_game': 'sorengame'}
+        manager._active_game_reader.return_value = 'sorengame'
+        with mock.patch.object(operator, 'load_global', return_value=fake_g), \
+             mock.patch.object(operator, 'ManualNethackCornerManager', return_value=manager):
+            result = operator.recover(fake_g.config_path)
+        self.assertEqual(result['status'], 'noop')
+        manager._transition_to.assert_not_called()
+
+    def test_recover_fails_closed_without_a_previous_game(self):
+        base = Path(tempfile.mkdtemp(prefix='nethack-op-'))
+        fake_g = self._fake_g(base)
+        manager = mock.Mock()
+        manager.status.return_value = {'status': 'failed', 'previous_game': None}
+        manager._active_game_reader.return_value = 'nethack'
+        with mock.patch.object(operator, 'load_global', return_value=fake_g), \
+             mock.patch.object(operator, 'ManualNethackCornerManager', return_value=manager):
+            with self.assertRaises(NethackCornerError):
+                operator.recover(fake_g.config_path)
+        manager._transition_to.assert_not_called()
+
     def test_main_requires_exactly_one_operation(self):
         self.assertEqual(operator.main(['--config', 'x']), 2)
         self.assertEqual(operator.main(['--config', 'x', '--start', '--stop']), 2)
         self.assertEqual(operator.main(['--config', 'x', '--stop', '--status']), 2)
+        self.assertEqual(operator.main(['--config', 'x', '--recover', '--status']), 2)
 
 
 class NetHackCornerWorkflowPolicyTests(unittest.TestCase):
@@ -202,8 +241,11 @@ class NetHackCornerWorkflowPolicyTests(unittest.TestCase):
         self.assertIn('id: start', text)
         self.assertIn('id: stop', text)
         self.assertIn('id: status', text)
+        self.assertIn('id: recover', text)
+        self.assertIn('--recover', text)
         self.assertIn('continue-on-error: true', text)
         self.assertIn('NetHack corner start failed', text)
+        self.assertIn('NetHack corner recover failed', text)
         self.assertNotIn('pull_request_target:', text)
         self.assertNotIn('inputs.command', text)
         self.assertNotIn('event.comment.body', text)

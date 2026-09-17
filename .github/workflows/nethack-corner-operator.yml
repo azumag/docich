@@ -8,7 +8,7 @@ on:
         required: true
         default: start
         type: choice
-        options: [start, stop, status]
+        options: [start, stop, status, recover]
       duration_minutes:
         description: Bounded manual run duration (1-60 minutes; ignored by stop/status)
         required: true
@@ -153,6 +153,21 @@ jobs:
           printf 'cd /home/ubuntu/docich && exec bash /home/ubuntu/docich/bin/docich-nethack-corner-operator --config /home/ubuntu/docich/config/docich.soren-live.toml --stop\n' |
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
+      - name: Recover stranded NetHack corner
+        id: recover
+        if: ${{ steps.auth.outputs.operation == 'recover' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          printf 'cd /home/ubuntu/docich && exec bash /home/ubuntu/docich/bin/docich-nethack-corner-operator --config /home/ubuntu/docich/config/docich.soren-live.toml --recover\n' |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
       - name: Report NetHack corner manual status
         id: status
         if: ${{ steps.auth.outputs.operation == 'status' }}
@@ -195,6 +210,12 @@ jobs:
         if: ${{ steps.stop.outcome == 'failure' }}
         run: |
           echo '::error::NetHack corner stop failed'
+          exit 1
+
+      - name: Fail unsuccessful NetHack recover
+        if: ${{ steps.recover.outcome == 'failure' }}
+        run: |
+          echo '::error::NetHack corner recover failed'
           exit 1
 
       - name: Fail unsuccessful NetHack status
