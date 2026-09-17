@@ -4,6 +4,7 @@
 env 経由の候補重み注入 (DOCICH_BRAIN_WEIGHTS) と margin gate を決定的に検証する。
 """
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -93,6 +94,9 @@ class TestDispatch(unittest.TestCase):
 
             self.assertEqual(corner_improve.run_bot_matches.__name__, "run_bot_matches")
             corner_improve.run_bot_matches = fake_run
+            # live hot-swap 先を tmp へ退避 (リポジトリの run/ を汚さない)。
+            old_brain_dir = os.environ.get("DOCICH_BOT_BRAIN_DIR")
+            os.environ["DOCICH_BOT_BRAIN_DIR"] = str(tmp_path / "live-brain")
             try:
                 result = run_corner_improve(
                     _G(state_dir), game="nsnake", date_str="2026-09-10", agents="a",
@@ -103,6 +107,10 @@ class TestDispatch(unittest.TestCase):
                 corner_improve.run_bot_matches = __import__(
                     "docich.resolver.bot_eval", fromlist=["run_bot_matches"]
                 ).run_bot_matches
+                if old_brain_dir is None:
+                    os.environ.pop("DOCICH_BOT_BRAIN_DIR", None)
+                else:
+                    os.environ["DOCICH_BOT_BRAIN_DIR"] = old_brain_dir
             self.assertEqual(result["status"], "promoted", result)
             self.assertEqual(result["baseline_mean"], 10.0)
             self.assertEqual(result["candidate_mean"], 100.0)
@@ -113,6 +121,9 @@ class TestDispatch(unittest.TestCase):
                 (state_dir / "resolver" / "nsnake_strategy.json").read_text(encoding="utf-8")
             )
             self.assertEqual(strategy["min_free"], 6)
+            # live hot-swap: 昇格済み全文が tmp の live brain へ出る
+            live = tmp_path / "live-brain" / "nsnake" / "weights.json"
+            self.assertEqual(json.loads(live.read_text(encoding="utf-8")), strategy)
 
     def test_all_maxed_matches_fail_closed_and_keep(self):
         import tempfile
@@ -166,6 +177,107 @@ class TestDispatch(unittest.TestCase):
                 _G(state_dir), game="gnurobots", date_str="2026-09-10", agents="a", dry_run=True
             )
             self.assertEqual(result["status"], "dry-run")
+
+
+class TestLiveBrainHotSwap(unittest.TestCase):
+    """昇格時の live brain 重み hot-swap (次tickの load_weights() で反映)。"""
+
+    def setUp(self):
+        import tempfile
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.brain = Path(self._tmp.name) / "brain"
+        self._old_dir = os.environ.get("DOCICH_BOT_BRAIN_DIR")
+        os.environ["DOCICH_BOT_BRAIN_DIR"] = str(self.brain)
+
+    def tearDown(self):
+        if self._old_dir is None:
+            os.environ.pop("DOCICH_BOT_BRAIN_DIR", None)
+        else:
+            os.environ["DOCICH_BOT_BRAIN_DIR"] = self._old_dir
+        self._tmp.cleanup()
+
+    def test_promote_writes_candidate_weights_to_live_brain(self):
+        import tempfile
+
+        for game, delta in (("nsnake", {"min_free": 6}), ("ninvaders", {"dodge_radius": 3})):
+            with self.subTest(game=game):
+                with tempfile.TemporaryDirectory() as tmp:
+                    state_dir = _setup_completed(Path(tmp), game, [10, 20])
+
+                    def fake_run(_game=game, _delta=delta, **kwargs):
+                        # 評価は注入重みの中身に依存する (env注入の実検証)。
+                        weights = json.loads(
+                            Path(kwargs["env"]["DOCICH_BRAIN_WEIGHTS"]).read_text()
+                        )
+                        score = 100.0 if all(
+                            weights.get(k) == v for k, v in _delta.items()
+                        ) else 10.0
+                        return {"game": _game,
+                                "matches": [{"score": int(score), "maxed": False}],
+                                "mean_score": score}
+
+                    corner_improve.run_bot_matches = fake_run
+                    try:
+                        result = run_corner_improve(
+                            _G(state_dir), game=game, date_str="2026-09-10", agents="a",
+                            llm=lambda prompt, _d=delta: json.dumps(_d),
+                            margin_pct=10.0,
+                        )
+                    finally:
+                        corner_improve.run_bot_matches = __import__(
+                            "docich.resolver.bot_eval", fromlist=["run_bot_matches"]
+                        ).run_bot_matches
+                    self.assertEqual(result["status"], "promoted", result)
+                    live = self.brain / game / "weights.json"
+                    self.assertTrue(live.is_file())
+                    written = json.loads(live.read_text(encoding="utf-8"))
+                    strategy = json.loads(
+                        (state_dir / "resolver" / f"{game}_strategy.json").read_text(encoding="utf-8")
+                    )
+                    # 昇格済み戦略 (既定値マージ済み+delta) の全文が live へ出る
+                    self.assertEqual(written, strategy)
+                    for key, value in delta.items():
+                        self.assertEqual(written[key], value)
+
+    def test_kept_does_not_touch_live_weights(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = _setup_completed(Path(tmp), "nsnake", [10])
+            corner_improve.run_bot_matches = lambda **kwargs: {
+                "game": "nsnake",
+                "matches": [{"score": 1, "maxed": False}],
+                "mean_score": 1.0,
+            }
+            try:
+                # baseline と同点の候補 -> kept (昇格しないので live は不変)
+                result = run_corner_improve(
+                    _G(state_dir), game="nsnake", date_str="2026-09-10", agents="a",
+                    llm=lambda prompt: '{"min_free": 8}',
+                    margin_pct=10.0,
+                )
+            finally:
+                corner_improve.run_bot_matches = __import__(
+                    "docich.resolver.bot_eval", fromlist=["run_bot_matches"]
+                ).run_bot_matches
+            self.assertEqual(result["status"], "kept")
+            self.assertFalse((self.brain / "nsnake" / "weights.json").exists())
+
+    def test_gnurobots_promotion_does_not_write_bot_weights(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = _setup_completed(Path(tmp), "gnurobots", [10, 20])
+            import docich.resolver.improve as improve
+
+            improve.GNUROBOTS_RESOLVER = str(Path(tmp) / "resolver.scm")
+            run_corner_improve(
+                _G(state_dir), game="gnurobots", date_str="2026-09-10", agents="a",
+                llm=lambda prompt: '```json\n{"flee_retries": 2.5}\n```',
+                evaluator=lambda strat: {"mean_score": 100.0, "played": 1},
+            )
+            self.assertEqual(list(self.brain.glob("**/*")), [])
 
 
 if __name__ == "__main__":
