@@ -263,26 +263,36 @@ def _bot_presets() -> dict:
 
 
 def bot_preset(g, game: str) -> dict:
-    """corner_improve 用の評価プリセット (生バイナリ＋bot_eval 自前の遷移キー)。"""
-    from ..adapters.cli_game import cli_cols, cli_command_list, cli_rows
-    from .runner import resolve_command
+    """corner_improve 用の評価プリセット (生バイナリ＋bot_eval 自前の遷移キー)。
 
+    cols/rows は両ゲームとも固定 80x24 (config/games/*.toml と同一)。
+    """
     presets = _bot_presets()
     if game not in presets:
         raise ValueError(f"bot preset がありません: {game} (対応: {sorted(presets)})")
     return {
-        "binary": lambda _game: resolve_command(cli_command_list(g and _load_game(g, game))),
+        "binary": lambda _game: _resolve_binary(game),
         "bot_cmd": presets[game]["bot_cmd"],
-        "cols": cli_cols(_load_game(g, game)),
-        "rows": cli_rows(_load_game(g, game)),
+        "cols": 80,
+        "rows": 24,
         "run_kwargs": presets[game]["run_kwargs"],
     }
 
 
-def _load_game(g, game: str):
-    from ..config import load_game
+def bot_games() -> tuple[str, ...]:
+    """bot_eval が対応するゲーム名 (corner_improve の dispatch と単一ソース)。"""
+    return tuple(_bot_presets())
 
-    return load_game(g, game)
+
+def bot_brain_weights_path(game: str) -> Path:
+    """Live brain が読む重みファイル (次tickの load_weights() で hot-reload)。
+
+    DOCICH_BOT_BRAIN_DIR で基底ディレクトリを差し替え可能 (テストが run/ を
+    汚さず tmp へ書ける)。未設定時は <repo>/run/brain (本番の live brain 既定)。
+    """
+    base = os.environ.get("DOCICH_BOT_BRAIN_DIR", "").strip()
+    root = Path(base).expanduser() if base else Path(__file__).resolve().parents[3] / "run" / "brain"
+    return root / game / "weights.json"
 
 
 def _resolve_binary(game) -> list[str]:
@@ -310,20 +320,3 @@ def bot_default_weights(game: str) -> dict:
 
 if __name__ == "__main__":
     sys.exit(main())
-
-
-def bot_preset(g, game: str) -> dict:
-    """corner_improve 用の評価プリセット (生バイナリ＋bot_eval 自前の遷移キー)。
-
-    cols/rows は両ゲームとも固定 80x24 (config/games/*.toml と同一)。
-    """
-    presets = _bot_presets()
-    if game not in presets:
-        raise ValueError(f"bot preset がありません: {game} (対応: {sorted(presets)})")
-    return {
-        "binary": lambda _game: _resolve_binary(game),
-        "bot_cmd": presets[game]["bot_cmd"],
-        "cols": 80,
-        "rows": 24,
-        "run_kwargs": presets[game]["run_kwargs"],
-    }
