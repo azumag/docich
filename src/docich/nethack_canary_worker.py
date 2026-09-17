@@ -35,6 +35,9 @@ MAX_BROKER_RESPONSE_BYTES = 32 * 1024
 EAT_COOLDOWN_TURNS = 12
 # Base-policy intents that mean "the visible character needs food".
 _FOOD_INTENTS = frozenset({"seek_food", "food_emergency"})
+# Opt-in: when set to "1" the worker records every applied action as a JSONL
+# trace so the P6 action verifier can check it against the catalog.
+ACTION_TRACE_ENV = "DOCICH_CANARY_ACTION_TRACE"
 PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,31}$")
 ARENA = {
     "episode_root": "/canary/episode",
@@ -432,6 +435,15 @@ def _eat_allowed(turn: int | None, last_eat_turn: int | None) -> bool:
     return turn - last_eat_turn >= EAT_COOLDOWN_TURNS
 
 
+def _append_trace(path: Path, record: dict[str, object]) -> None:
+    """Best-effort action-trace append; tracing must never break an episode."""
+    try:
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+    except OSError:
+        return
+
+
 def run_episode(request: dict[str, object]) -> dict[str, object]:
     _prepare_runtime()
     player = str(request["player_name"])
@@ -450,6 +462,9 @@ def run_episode(request: dict[str, object]) -> dict[str, object]:
     last_depth: int | None = None
     last_message: str | None = None
     last_eat_turn: int | None = None
+    trace_path: Path | None = None
+    if os.environ.get(ACTION_TRACE_ENV) == "1":
+        trace_path = Path(ARENA["episode_root"]) / "action-trace.jsonl"
     try:
         _start_game(game, deadline=deadline)
         while time.monotonic() < deadline:
@@ -481,6 +496,7 @@ def run_episode(request: dict[str, object]) -> dict[str, object]:
                     max_depth=last_depth,
                     last_message=last_message,
                 )
+            inventory: tuple[VisibleInventoryItem, ...] = ()
             decision = policy.decide(observation)
             if (
                 baseline
@@ -503,11 +519,22 @@ def run_episode(request: dict[str, object]) -> dict[str, object]:
                 assert_p3b_safe(decision)
             acted = False
             if decision.actions:
+                trace_before = observation.raw_text if trace_path is not None else ""
                 for action in decision.actions:
                     game.apply_action(action)
                 acted = True
                 if decision.intent == "eat_food":
                     last_eat_turn = observation.vitals.turn
+                if trace_path is not None:
+                    trace_record: dict[str, object] = {
+                        "intent": decision.intent,
+                        "keys": [action.text for action in decision.actions],
+                        "before": trace_before,
+                        "after": game.capture(),
+                    }
+                    if decision.intent == "eat_food":
+                        trace_record["inventory"] = [item.public_dict() for item in inventory]
+                    _append_trace(trace_path, trace_record)
             elif request["arm"] == "candidate" and decision.requires_llm and broker is not None:
                 fingerprint = (
                     decision.intent,

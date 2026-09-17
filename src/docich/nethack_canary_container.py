@@ -253,7 +253,28 @@ def _internal_request(
     return rewritten
 
 
-def _security_args(*, name: str, memory: str, cpus: str, pids: int) -> list[str]:
+_RESERVED_CONTAINER_ENV = frozenset({"HOME", "TERM", "PYTHONDONTWRITEBYTECODE", "PATH"})
+
+
+def _extra_env_args(extra_env: dict[str, str] | None) -> list[str]:
+    """Validate and render reviewed extra container environment variables."""
+    if not extra_env:
+        return []
+    args: list[str] = []
+    for key, value in extra_env.items():
+        if re.fullmatch(r"[A-Z_][A-Z0-9_]*", key) is None:
+            raise CanaryContainerError(f"invalid extra env name {key!r}")
+        if not isinstance(value, str) or "\n" in value or "\x00" in value or len(value) > 256:
+            raise CanaryContainerError(f"invalid extra env value for {key!r}")
+        if key in _RESERVED_CONTAINER_ENV:
+            raise CanaryContainerError(f"extra env may not override {key!r}")
+        args += ["--env", f"{key}={value}"]
+    return args
+
+
+def _security_args(
+    *, name: str, memory: str, cpus: str, pids: int, extra_env: dict[str, str] | None = None
+) -> list[str]:
     return [
         "--rm",
         "--name",
@@ -286,6 +307,7 @@ def _security_args(*, name: str, memory: str, cpus: str, pids: int) -> list[str]
         "TERM=xterm-256color",
         "--env",
         "PYTHONDONTWRITEBYTECODE=1",
+        *_extra_env_args(extra_env),
     ]
 
 
@@ -297,6 +319,7 @@ def build_container_argv(
     name: str,
     host_arena: dict[str, Path],
     manifest: Path | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> list[str]:
     """Build the game-container argv. Candidate manifests are never mounted."""
     del request
@@ -308,7 +331,7 @@ def build_container_argv(
         "run",
         # Attach stdin so the worker receives its request JSON over the pipe.
         "-i",
-        *_security_args(name=name, memory="1024m", cpus="1.0", pids=256),
+        *_security_args(name=name, memory="1024m", cpus="1.0", pids=256, extra_env=extra_env),
         "--mount",
         # `docker run --mount` has no `rw` key; a bind mount is read-write
         # unless `readonly` is given.
@@ -419,6 +442,7 @@ def run_container_worker(
     image: str | None = None,
     runner: Callable[..., object] = subprocess.run,
     wait_for_broker: Callable[[Path, float], None] = _wait_for_broker_socket,
+    extra_env: dict[str, str] | None = None,
 ) -> dict[str, object]:
     request = _load_request(request_text)
     arena = _host_arena(request)
@@ -460,6 +484,7 @@ def run_container_worker(
             name=game_name,
             host_arena=arena,
             manifest=None,
+            extra_env=extra_env,
         )
         try:
             completed = runner(
