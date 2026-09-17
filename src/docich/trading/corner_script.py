@@ -43,6 +43,30 @@ def _safe_reason(exc: BaseException) -> str:
     return type(exc).__name__
 
 
+def _fmt_num(value, ndigits: int = 2) -> str | None:
+    """Format a spoken number with at most ``ndigits`` decimals.
+
+    Long raw decimals (e.g. ``7.843078654615100``) are tedious when read aloud,
+    so narration rounds to two places. Trailing zeros are stripped (``10000``
+    stays ``10,000``, not ``10,000.00``). Returns None when the value is not
+    numeric, or when rounding would collapse a nonzero value to zero (tiny
+    quantities like ``0.001``); callers then fall back to the raw string.
+    """
+    try:
+        if value is None or isinstance(value, bool):
+            return None
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if number != 0.0 and round(number, ndigits) == 0.0:
+        return None
+    import math
+    if not math.isfinite(number):
+        return None
+    text = f"{number:,.{ndigits}f}".rstrip("0").rstrip(".")
+    return text if text not in ("", "-", "-0") else "0"
+
+
 _POLICY_FACT_KEYS = (
     "momentum_lookback",
     "momentum_threshold_bps",
@@ -260,6 +284,8 @@ def build_prompt(facts: Mapping[str, object]) -> str:
         "【話し方】\n"
         "- です・ます調の自然な話し言葉。結論を先に言い、その後に理由や数字を添える。\n"
         "- factsを順番に復唱するだけは禁止。数字同士を比較し、意味を説明する。\n"
+        "- 金額・価格・指標などの数値は小数第2位までに丸めて言うこと（0.001のような小さい数量はそのまま）。factsの桁数をそのまま読み上げない。\n"
+        "- 「見出しの段階なので」のような決まり文句を各項目で繰り返さないこと。\n"
         "- 軽いツッコミ、たとえ、意外性のある一言を適度に入れる。ただし事実を曲げるギャグは禁止。\n"
         "- 損失なら言い訳せず率直に言う。利益でも一時的な含み益だけで戦略成功と断定しない。\n"
         "- 同じ文型・同じオチを各段落で繰り返さない。箇条書き、見出し、マークダウンは禁止。\n"
@@ -332,10 +358,10 @@ def _policy_text(policy: Mapping[str, object]) -> str:
         )
     return (
         f"戦略は直近{policy.get('momentum_lookback')}本の上昇が"
-        f"{policy.get('momentum_threshold_bps')}bpsを超えたら買い、"
+        f"{_fmt_num(policy.get('momentum_threshold_bps')) or policy.get('momentum_threshold_bps')}bpsを超えたら買い、"
         f"平均回帰は{policy.get('mean_reversion_lookback')}本でz値"
-        f"{policy.get('mean_reversion_z')}以下、1回の投入は資金の"
-        f"{policy.get('max_notional_fraction')}までです。"
+        f"{_fmt_num(policy.get('mean_reversion_z')) or policy.get('mean_reversion_z')}以下、1回の投入は資金の"
+        f"{_fmt_num(policy.get('max_notional_fraction')) or policy.get('max_notional_fraction')}までです。"
     )
 
 
@@ -346,13 +372,13 @@ def _pnl_text(facts: Mapping[str, object]) -> str:
     today = perf.get("today_realized_pnl_jpy")
     unrealized = perf.get("unrealized_pnl_jpy")
     if cumulative is not None:
-        parts.append(f"評価込みの累積損益は{cumulative}円")
+        parts.append(f"評価込みの累積損益は{_fmt_num(cumulative) or cumulative}円")
     else:
         parts.append("累積損益は一部の保有価格が不足していて評価待ち")
     if today is not None:
-        parts.append(f"本日の確定損益は{today}円")
+        parts.append(f"本日の確定損益は{_fmt_num(today) or today}円")
     if unrealized is not None:
-        parts.append(f"現在の含み損益は{unrealized}円")
+        parts.append(f"現在の含み損益は{_fmt_num(unrealized) or unrealized}円")
     return "、".join(parts) + "です。"
 
 
@@ -418,7 +444,10 @@ def _condition_text(signal: object) -> str:
         lookback = item.get("lookback")
         look = f"{lookback}本" if isinstance(lookback, int) else ""
         if feature and observed and threshold:
-            parts.append(f"{feature}が{observed}{unit}で閾値{threshold}{unit}を{op}（{look}）")
+            parts.append(
+                f"{feature}が{_fmt_num(observed) or observed}{unit}で閾値"
+                f"{_fmt_num(threshold) or threshold}{unit}を{op}（{look}）"
+            )
     return "、".join(parts)
 
 
@@ -437,10 +466,7 @@ def _news_text(facts: Mapping[str, object]) -> str:
         title = str(item.get("title") or "").strip()
         source = str(item.get("source") or "").strip()
         who = f"（{source}）" if source else ""
-        parts.append(
-            f"「{title}」{who}。見出しの段階なので、事実と推測を分けたうえで、"
-            "相場への含意は実際の値動きと突き合わせて確認します。"
-        )
+        parts.append(f"「{title}」{who}。")
     return "".join(parts)
 
 
@@ -487,11 +513,14 @@ def _review_text(facts: Mapping[str, object]) -> str:
             pnl = float(realized)
         except (TypeError, ValueError):
             pnl = None
+        realized_text = _fmt_num(realized) if pnl is not None else None
+        if realized_text is None:
+            realized_text = str(realized)
         verdict = "利益" if pnl is not None and pnl > 0 else "損失"
         entry_text = f"（{entry}）" if entry else ""
         parts.append(
             f"{symbol}は{entry_reason}{entry_text}で入り、{exit_reason}で出口、{hold_min}保有で"
-            f"{realized}円の{verdict}です。根拠どおりの結果だったか、次に同じ形が来たらどうするかを"
+            f"{realized_text}円の{verdict}です。根拠どおりの結果だったか、次に同じ形が来たらどうするかを"
             "ここで切り分け、改善側の検証条件に渡します。"
         )
     return "".join(parts)
@@ -515,17 +544,20 @@ def render_fallback(facts: Mapping[str, object]) -> dict:
     )
 
     result = (
-        f"まず成績です。{_pnl_text(facts)}模擬資金は{facts.get('capital_jpy')}円、"
-        f"投入は{facts.get('deployed_jpy')}円、保有は{facts.get('position_count', len(positions))}銘柄です。"
+        f"まず成績です。{_pnl_text(facts)}模擬資金は{_fmt_num(facts.get('capital_jpy')) or facts.get('capital_jpy')}円、"
+        f"投入は{_fmt_num(facts.get('deployed_jpy')) or facts.get('deployed_jpy')}円、保有は{facts.get('position_count', len(positions))}銘柄です。"
     )
     if fills:
         first = fills[0]
+        amount_text = _fmt_num(first.get("amount")) or first.get("amount")
+        price_text = _fmt_num(first.get("price")) or first.get("price")
         result += (
-            f"直近の約定は{first.get('symbol')}の{first.get('side')}、数量{first.get('amount')}、"
-            f"価格{first.get('price')}でした。"
+            f"直近の約定は{first.get('symbol')}の{first.get('side')}、数量{amount_text}、"
+            f"価格{price_text}でした。"
         )
         if first.get("side") == "sell" and first.get("realized_pnl_jpy") is not None:
-            result += f"損益は{first.get('realized_pnl_jpy')}円です。"
+            pnl_text = _fmt_num(first.get("realized_pnl_jpy")) or first.get("realized_pnl_jpy")
+            result += f"損益は{pnl_text}円です。"
     else:
         result += "直近の約定はなく、BOTは様子見を選んでいます。"
     if skipped:

@@ -49,11 +49,11 @@ def _manager(tmp_path, *, clock=lambda: 1000.0, sleep=lambda seconds: None, scri
 
 def test_main_segments_are_front_loaded_then_followups_slow_down():
     assert MAIN_NARRATION_INTERVAL_S == 75
-    assert FOLLOWUP_NARRATION_INTERVAL_S == 180
+    assert FOLLOWUP_NARRATION_INTERVAL_S == 90
     assert FastPaperCornerManager._due_seconds(1) == 75
     assert FastPaperCornerManager._due_seconds(8) == 600
-    assert FastPaperCornerManager._due_seconds(9) == 780
-    assert FastPaperCornerManager._due_seconds(10) == 960
+    assert FastPaperCornerManager._due_seconds(9) == 690
+    assert FastPaperCornerManager._due_seconds(10) == 780
 
 
 def test_script_prepare_uses_local_fallback_and_detaches_real_ai(tmp_path, monkeypatch):
