@@ -60,16 +60,18 @@ smoke_ok: bool                     # production fingerprint 不変 / cleanup / p
 `run_improvement_cycle`（`ops/vm_actions/nethack_promotion_runner.py` + `src/docich/nethack_catalog_proposer.py`）:
 
 1. baseline arm を実行し `FailureSignal`（stall intent / exit_reason / turns / depth）を作る。
-2. `build_proposal_request` で bounded な公開 JSON（failure + 現行 catalog + `allowed_effects` / `allowed_placeholders` / `allowed_risk_classes` + constraints）を作り、外部 command（proposer）へ渡す。
-3. proposer 出力は `parse_action_catalog` で schema/safety 検証し、**reviewed effect/predicate/placeholder 語彙のみ**許可（新 action id は reviewed effect を使う場合に限り data で追加可能）。
+2. `build_proposal_request` で bounded な公開 JSON（failure + 現行 catalog + `allowed_effects` / `allowed_new_action_effects` / `allowed_placeholders` / `allowed_risk_classes` + constraints）を作り、外部 command（proposer）へ渡す。
+3. proposer 出力は `parse_action_catalog` で schema/safety 検証し、**reviewed effect/predicate/placeholder 語彙のみ**許可する。新 action id は固定セマンティクスを持つ `allowed_new_action_effects` の effect を使う場合に限り data で追加可能。
 4. 候補 catalog を runner で seed 比較 → P6c trace 検証 → `evaluate_promotion`。
 5. promote なら known-good 更新、reject なら作り直し。
 
-proposer は外部 command 境界（`CommandCatalogProposer`）。timeout / 非0 exit / 過大要求・応答 / 不正 JSON / 未知 effect・predicate・placeholder / 既存 action の effect・risk_class・key_pattern 変更・既存 action の削除は `CatalogProposalError` で fail-closed。`allowed_action_ids` 引数は後方互換のため残しているが、新規呼び出しは `allowed_effects` を使う。
+proposer は外部 command 境界（`CommandCatalogProposer`）。timeout / 非0 exit / 過大要求・応答 / 不正 JSON / 未知 effect・predicate・placeholder / 既存 action の effect・risk_class・key_pattern 変更・既存 action の削除 / 新 action での generic `keys` effect 使用は `CatalogProposalError` で fail-closed。`allowed_action_ids` 引数は後方互換のため残しているが、新規呼び出しは `allowed_effects` を使う。
 
 ## 新 capability（P6g で data 化）
 
-reviewed effect 語彙（`keys` / `attack_direction` / `open_door` / `eat_item` / `explore_step` / `directional_travel`）を再利用する新 action id は、catalog entry の追加だけで policy 実行・trace 検証・昇格判定の対象になる（詳細は `nethack-action-catalog.md` の effect 語彙表）。真に新しいキー効果（語彙に無い effect）の追加だけが、引き続き reviewed なコード変更を要する。
+reviewed effect のうち `attack_direction` / `open_door` / `eat_item` / `explore_step` / `directional_travel` のように **key_pattern の意味が固定された effect** を再利用する新 action id は、catalog entry の追加だけで policy 実行・trace 検証・昇格判定の対象になる（詳細は `nethack-action-catalog.md` の effect 語彙表）。
+
+`keys` は任意の1文字 literal を送れる汎用 effect なので、自動 proposer の新 action id には使用できない。`>` など新しい literal key capability を追加する場合は、catalog/code の reviewed change が必要。未知 effect の追加も従来どおり reviewed なコード変更を要する。
 
 ## 未実装（次）
 
