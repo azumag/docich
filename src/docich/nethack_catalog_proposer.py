@@ -8,11 +8,13 @@ pass :func:`docich.nethack_action_spec.parse_action_catalog` and may only use
 reviewed effects, predicates, and placeholders.
 
 Since P6g the key effect is data too: a candidate may introduce a new action
-id as long as its ``effect`` is in the reviewed vocabulary and its
-``key_pattern`` matches that effect's contract.  Per-action identity and key
-effects of pre-existing actions stay immutable (code-owned); the proposer may
-tune only the documented data surface (enable/disable, priority,
-preconditions, postconditions, description) plus adding new reviewed-effect
+id when it reuses a reviewed, fixed-semantics effect.  The generic ``keys``
+effect is deliberately excluded from automatic new-action creation because it
+accepts arbitrary literal key patterns; adding a new literal-key capability
+therefore still requires a reviewed code/catalog change.  Per-action identity
+and key effects of pre-existing actions stay immutable (code-owned); the
+proposer may tune only the documented data surface (enable/disable, priority,
+preconditions, postconditions, description) plus adding new fixed-effect
 actions.
 """
 from __future__ import annotations
@@ -36,6 +38,7 @@ DEFAULT_TIMEOUT_S = 20.0
 MAX_TIMEOUT_S = 120.0
 MAX_REQUEST_BYTES = 256 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
+GENERIC_LITERAL_EFFECT = "keys"
 
 
 class CatalogProposalError(RuntimeError):
@@ -99,18 +102,23 @@ def build_proposal_request(
     allowed_action_ids: frozenset[str] | None = None,
     constraints: tuple[str, ...] = (),
 ) -> dict[str, object]:
+    allowed_new_action_effects = sorted(
+        effect for effect in allowed_effects if effect != GENERIC_LITERAL_EFFECT
+    )
     request: dict[str, object] = {
         "schema_version": PROPOSAL_SCHEMA_VERSION,
         "failure": signal.to_dict(),
         "catalog": catalog_to_dict(specs),
         "allowed_effects": sorted(allowed_effects),
+        "allowed_new_action_effects": allowed_new_action_effects,
         "allowed_placeholders": sorted(KNOWN_PLACEHOLDERS),
         "allowed_risk_classes": sorted(REVIEWED_RISK_CLASSES),
         "constraints": list(
             constraints
             or (
                 "return the full catalog with schema_version and an actions list",
-                "new action ids are allowed only with an effect from allowed_effects",
+                "new action ids are allowed only with an effect from allowed_new_action_effects",
+                "the generic keys effect may not be used for a new action id",
                 "effect, risk_class, and key_pattern are fixed per pre-existing action id",
                 "only enabled, priority, preconditions, postconditions, and description may change for pre-existing actions",
                 "prefer the smallest change that removes the stall",
@@ -149,14 +157,21 @@ def _validate_candidate_contract(
     action must still be present with its reviewed effect, risk class, and key
     pattern unchanged; changing them would silently expand the capability
     boundary and must require a reviewed code change instead of an
-    LLM/data-only proposal.  New action ids are allowed: their reviewed
-    vocabulary membership is already enforced by ``parse_action_catalog``.
+    LLM/data-only proposal.  New action ids may reuse reviewed fixed-semantics
+    effects, but not the generic ``keys`` effect: its arbitrary literal pattern
+    would otherwise let a data-only proposal mint a new key capability.
     """
     baseline_by_id = {spec.id: spec for spec in baseline}
     candidate_by_id = {spec.id: spec for spec in candidate}
     missing = sorted(set(baseline_by_id) - set(candidate_by_id))
     if missing:
         raise CatalogProposalError(f"proposer catalog dropped reviewed actions: {missing}")
+    new_ids = sorted(set(candidate_by_id) - set(baseline_by_id))
+    for spec_id in new_ids:
+        if candidate_by_id[spec_id].effect == GENERIC_LITERAL_EFFECT:
+            raise CatalogProposalError(
+                f"proposer catalog added {spec_id} with non-extensible generic effect 'keys'"
+            )
     for spec_id, baseline_spec in baseline_by_id.items():
         candidate_spec = candidate_by_id[spec_id]
         if candidate_spec.effect != baseline_spec.effect:

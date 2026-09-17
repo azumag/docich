@@ -18,7 +18,7 @@ P6 は capability 追加を「禁止」ではなく「canary で自動検証し�
 ```
 
 - `risk_class`: `message` / `prompt` / `movement` / `combat` / `door` / `item` / `rest` の reviewed 集合のみ。
-- `effect`: 下記 reviewed effect 語彙のみ。policy は action id をハードコードせず、この `effect` で dispatch する。**reviewed effect を使う新しい id はデータ追加だけで実行できる**（ハンドラ用コード追加は不要）。
+- `effect`: 下記 reviewed effect 語彙のみ。policy は action id をハードコードせず、この `effect` で dispatch する。固定セマンティクスを持つ reviewed effect を使う新しい id はデータ追加だけで実行できる（ハンドラ用コード追加は不要）。
 - `key_pattern`: 1文字キー、または `{direction}`（vi 8方向）/ `{item_letter}`（inventory letter）の placeholder。`effect` と整合すること（下表）。
 - `preconditions` / `postconditions`: 下記 predicate 名（`name` または `name:arg`）。
 
@@ -28,25 +28,14 @@ P6 は capability 追加を「禁止」ではなく「canary で自動検証し�
 
 | effect | キー効果 | 要求 key_pattern |
 |---|---|---|
-| `keys` | `key_pattern` を literal のまま送出（placeholder 解決なし） | literal のみ（placeholder 不可） |
+| `keys` | `key_pattern` を literal のまま送出（placeholder 解決なし） | literal のみ（placeholder 不可）。既存 reviewed action 用であり、proposer が新 action id に使うことは禁止 |
 | `attack_direction` | `{direction}` を隣接する攻撃可能 monster の方向に解決 | `["{direction}"]` |
 | `open_door` | `("o", 隣接する閉じた door の方向)` を送出（失敗 door は記録し再試行しない） | `["o", "{direction}"]` |
 | `eat_item` | `("e", inventory の unpaid-free food の letter)` を送出 | `["e", "{item_letter}"]` |
 | `explore_step` | `{direction}` を `explorer.plan_step` の方向に解決 | `["{direction}"]` |
 | `directional_travel` | `explore_step` と同じだが direction prompt 中でも許容 | `["{direction}"]` |
 
-例: 階段を降りる action は catalog に 1 entry 足すだけで policy が実行し、verifier が検証できる:
-
-```json
-{
-  "id": "descend_stairs",
-  "effect": "keys",
-  "risk_class": "movement",
-  "preconditions": ["prompt:none", "player_visible"],
-  "key_pattern": [">"],
-  "postconditions": ["screen_changed"]
-}
-```
+`keys` は任意の1文字 literal を表せるため、これを proposer の新 action id に許すと、reviewed effect という境界を越えて任意キー capability を生成できてしまいます。そのため **新しい literal-key action（例: `>` で階段を降りる）を追加する場合は、reviewed catalog/code change として明示的にレビュー**します。自動 proposer が追加できるのは、`attack_direction` など固定された `key_pattern` 契約を持つ effect の再利用だけです。
 
 ## catalog が policy を駆動する（P6）
 
@@ -54,11 +43,12 @@ P6 は capability 追加を「禁止」ではなく「canary で自動検証し�
 
 - `priority` の小さい順に評価し、全 `preconditions` が成立した最初の spec を選ぶ。
 - `enabled=false` の spec は決して選ばれない。
-- キー効果は spec の宣言的 `effect` で dispatch する（`nethack_canary_tactics` は action id をハードコードしない）。reviewed effect を使う新 id もそのまま実行できる。
+- キー効果は spec の宣言的 `effect` で dispatch する（`nethack_canary_tactics` は action id をハードコードしない）。固定セマンティクスを持つ reviewed effect の新 id もそのまま実行できる。
+- `keys` の新 id は proposer からは拒否される。任意 literal key の追加は reviewed change が必要。
 - 生成した keys は spec の `key_pattern` と照合し、外れれば fail-closed。
 - どの spec も成立しない場合のみ P3b base policy に委譲（selection prompt / severe status などは `requires_llm` のまま）。
 
-したがって **catalog の `enabled` / `priority` / `preconditions` を変えると canary の挙動が変わる**。これが P6d 昇格ゲートが比較する behavioural な候補になります（例: `attack_adjacent` を disabled にした候補）。P6g 以降は **reviewed effect を再利用する新 action id の追加も catalog 差分**として扱えます（例: `descend_stairs`）。
+したがって **catalog の `enabled` / `priority` / `preconditions` を変えると canary の挙動が変わる**。これが P6d 昇格ゲートが比較する behavioural な候補になります（例: `attack_adjacent` を disabled にした候補）。P6g 以降は **固定セマンティクスの reviewed effect を再利用する新 action id の追加も catalog 差分**として扱えます。
 
 ゲーム内 prompt を取り違えないよう、gameplay 系 spec は `prompt:none` を precondition に含みます（yes/no prompt を移動キーで答えてしまう事故を防ぐ）。
 

@@ -58,6 +58,8 @@ def test_build_request_carries_signal_catalog_and_allowlist():
     assert request["failure"]["stall_intent"] == "seek_food"
     assert set(request["allowed_effects"]) == set(SUPPORTED_EFFECTS)
     assert set(request["allowed_effects"]) == set(REVIEWED_EFFECTS)
+    assert "keys" not in request["allowed_new_action_effects"]
+    assert set(request["allowed_new_action_effects"]) == set(SUPPORTED_EFFECTS) - {"keys"}
     assert request["catalog"]["schema_version"] == 1
     assert request["constraints"]
 
@@ -79,23 +81,40 @@ def test_proposer_accepts_a_valid_reviewed_catalog():
     assert {spec.id for spec in proposed} == {spec.id for spec in specs}
 
 
-def test_proposer_accepts_a_new_id_with_a_reviewed_effect():
-    # P6g: a new action id reusing a reviewed effect is data, not code.
+def test_proposer_accepts_a_new_id_with_a_fixed_reviewed_effect():
     specs = load_action_catalog(CATALOG)
     raw = catalog_to_dict(specs)
     raw["actions"].append(
         {
-            "id": "descend_stairs",
-            "effect": "keys",
-            "risk_class": "movement",
-            "preconditions": ["prompt:none", "player_visible"],
-            "key_pattern": [">"],
+            "id": "attack_adjacent_backup",
+            "effect": "attack_direction",
+            "risk_class": "combat",
+            "preconditions": ["prompt:none", "player_visible", "adjacent_attackable"],
+            "key_pattern": ["{direction}"],
             "postconditions": ["screen_changed"],
         }
     )
     payload = json.dumps(raw).encode("utf-8")
     proposed = proposer_returning(payload).propose(proposal_request(), **propose_kwargs())
-    assert "descend_stairs" in {spec.id for spec in proposed}
+    assert "attack_adjacent_backup" in {spec.id for spec in proposed}
+
+
+def test_proposer_rejects_new_id_with_generic_literal_keys_effect():
+    specs = load_action_catalog(CATALOG)
+    raw = catalog_to_dict(specs)
+    raw["actions"].append(
+        {
+            "id": "quit_game",
+            "effect": "keys",
+            "risk_class": "movement",
+            "preconditions": ["prompt:none", "player_visible"],
+            "key_pattern": ["Q"],
+            "postconditions": ["always"],
+        }
+    )
+    payload = json.dumps(raw).encode("utf-8")
+    with pytest.raises(CatalogProposalError, match="non-extensible generic effect 'keys'"):
+        proposer_returning(payload).propose(proposal_request(), **propose_kwargs())
 
 
 def test_proposer_rejects_a_new_id_with_an_unreviewed_effect():
