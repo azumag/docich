@@ -4,7 +4,7 @@ Capability additions (new action types) should be gated by an automatic
 canary check instead of by forbidding them.  This module makes an action a
 piece of data:
 
-    {id, risk_class, preconditions, key_pattern, postconditions}
+    {id, risk_class, effect, preconditions, key_pattern, postconditions}
 
 and provides the predicates needed to verify a recorded action trace
 (before frame -> keys -> after frame) without any human in the loop.
@@ -12,6 +12,10 @@ and provides the predicates needed to verify a recorded action trace
 The catalog is descriptive in P6a: it does not yet drive the policy.  A
 consistency test keeps the catalog and the canary policy from drifting, and
 the verifier is what a later promotion gate will call.
+
+In P6g each action also declares its key ``effect`` (reviewed vocabulary in
+``REVIEWED_EFFECTS``).  The policy dispatches on the effect, so a new action
+id that reuses a reviewed effect needs no code change.
 """
 from __future__ import annotations
 
@@ -38,6 +42,32 @@ REVIEWED_RISK_CLASSES = frozenset(
     {"message", "prompt", "movement", "combat", "door", "item", "rest"}
 )
 
+# Reviewed key-effect vocabulary (P6g).  The catalog is the single source of
+# truth for which key effect each action uses; the policy dispatches on
+# ``effect`` instead of hard-coding handlers per action id.  A new id that
+# uses one of these reviewed effects needs no code change.
+REVIEWED_EFFECTS = frozenset(
+    {
+        "keys",
+        "attack_direction",
+        "open_door",
+        "eat_item",
+        "explore_step",
+        "directional_travel",
+    }
+)
+
+# The key_pattern contract per effect.  ``None`` means "any literal-only
+# pattern" (no placeholder resolution); otherwise the exact pattern required.
+EFFECT_KEY_PATTERNS: dict[str, tuple[str, ...] | None] = {
+    "keys": None,
+    "attack_direction": ("{direction}",),
+    "open_door": ("o", "{direction}"),
+    "eat_item": ("e", "{item_letter}"),
+    "explore_step": ("{direction}",),
+    "directional_travel": ("{direction}",),
+}
+
 # Placeholders allowed in a key pattern.  ``{direction}`` stands for one of the
 # eight vi movement keys; ``{item_letter}`` stands for one inventory letter.
 KNOWN_PLACEHOLDERS = frozenset({"direction", "item_letter"})
@@ -60,6 +90,9 @@ class ActionSpec:
     key_pattern: tuple[str, ...]
     postconditions: tuple[str, ...]
     description: str = ""
+    # Declarative key effect (P6g): which reviewed key-producing behaviour
+    # this action uses.  Read from the catalog like enabled/priority.
+    effect: str = "keys"
     # Catalog-driven policy fields: a disabled spec is never selected, and
     # lower priority numbers are tried first.
     enabled: bool = True
@@ -69,6 +102,7 @@ class ActionSpec:
         return {
             "id": self.id,
             "risk_class": self.risk_class,
+            "effect": self.effect,
             "preconditions": list(self.preconditions),
             "key_pattern": list(self.key_pattern),
             "postconditions": list(self.postconditions),
@@ -206,6 +240,7 @@ def _spec_from_dict(item: object) -> ActionSpec:
         return ActionSpec(
             id=str(item["id"]),
             risk_class=str(item["risk_class"]),
+            effect=str(item.get("effect", "keys")),
             preconditions=tuple(str(v) for v in item["preconditions"]),
             key_pattern=tuple(str(v) for v in item["key_pattern"]),
             postconditions=tuple(str(v) for v in item["postconditions"]),
@@ -227,6 +262,8 @@ def validate_action_catalog(specs: tuple[ActionSpec, ...]) -> None:
         seen.add(spec.id)
         if spec.risk_class not in REVIEWED_RISK_CLASSES:
             raise ValueError(f"{spec.id}: unreviewed risk_class {spec.risk_class!r}")
+        if spec.effect not in REVIEWED_EFFECTS:
+            raise ValueError(f"{spec.id}: unreviewed effect {spec.effect!r}")
         if not spec.key_pattern:
             raise ValueError(f"{spec.id}: empty key_pattern")
         for token in spec.key_pattern:
@@ -235,11 +272,31 @@ def validate_action_catalog(specs: tuple[ActionSpec, ...]) -> None:
                     raise ValueError(f"{spec.id}: unknown placeholder {token!r}")
             elif len(token) != 1:
                 raise ValueError(f"{spec.id}: key token must be one character: {token!r}")
+        _validate_effect_contract(spec)
         for name in spec.preconditions:
             # Raises ValueError for an unknown name.
             precondition(name, _NullContext())
         for name in spec.postconditions:
             postcondition(name, _NULL_OBS, _NULL_OBS)
+
+
+def _validate_effect_contract(spec: ActionSpec) -> None:
+    """Require the key_pattern to match the declared effect's contract."""
+    required = EFFECT_KEY_PATTERNS.get(spec.effect)
+    if required is None:
+        # The "keys" effect emits the literal pattern with no placeholder
+        # resolution, so placeholders are not allowed here.
+        for token in spec.key_pattern:
+            if _TOKEN_RE.match(token):
+                raise ValueError(
+                    f"{spec.id}: effect 'keys' must not use placeholders: {token!r}"
+                )
+        return
+    if tuple(spec.key_pattern) != tuple(required):
+        raise ValueError(
+            f"{spec.id}: effect {spec.effect!r} requires key_pattern "
+            f"{list(required)!r}, got {list(spec.key_pattern)!r}"
+        )
 
 
 def _null_observation() -> NethackObservation:
@@ -266,9 +323,20 @@ class _NullContext:
 
 
 def parse_action_catalog(
-    raw: object, *, allowed_action_ids: frozenset[str] | None = None
+    raw: object,
+    *,
+    allowed_action_ids: frozenset[str] | None = None,
+    allowed_effects: frozenset[str] | None = None,
 ) -> tuple[ActionSpec, ...]:
-    """Validate an in-memory catalog object (used by the P6 proposer too)."""
+    """Validate an in-memory catalog object (used by the P6 proposer too).
+
+    The reviewed boundary is the effect/predicate/placeholder vocabulary
+    (``REVIEWED_EFFECTS`` / precondition+postcondition names /
+    ``KNOWN_PLACEHOLDERS``), enforced by :func:`validate_action_catalog`, so a
+    catalog may introduce new action ids.  ``allowed_action_ids`` is kept for
+    backward compatibility (P6f callers); new callers should pass
+    ``allowed_effects`` to bound the effects a proposer may use.
+    """
     if not isinstance(raw, dict) or raw.get("schema_version") != CATALOG_SCHEMA_VERSION:
         raise ValueError("action catalog schema_version is invalid")
     entries = raw.get("actions")
@@ -280,6 +348,10 @@ def parse_action_catalog(
         unknown = sorted({spec.id for spec in specs if spec.id not in allowed_action_ids})
         if unknown:
             raise ValueError(f"catalog references actions outside the allowed set: {unknown}")
+    if allowed_effects is not None:
+        unknown_effects = sorted({spec.effect for spec in specs if spec.effect not in allowed_effects})
+        if unknown_effects:
+            raise ValueError(f"catalog references effects outside the allowed set: {unknown_effects}")
     return specs
 
 

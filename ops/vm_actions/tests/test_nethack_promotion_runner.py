@@ -129,7 +129,7 @@ class RunnerTests(unittest.TestCase):
         from docich.nethack_action_spec import load_action_catalog
 
         class FakeProposer:
-            def propose(self, request, *, allowed_action_ids):
+            def propose(self, request, *, allowed_effects):
                 specs = load_action_catalog(CATALOG)
                 return tuple(
                     replace(spec, enabled=False) if spec.id == "rest" else spec for spec in specs

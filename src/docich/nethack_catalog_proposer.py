@@ -5,11 +5,15 @@ external command (for example an LLM) receives a bounded public JSON request
 containing that signal and the current reviewed action catalog, and may return
 a candidate catalog.  The proposal never reaches the game directly: it must
 pass :func:`docich.nethack_action_spec.parse_action_catalog` and may only use
-action ids that already have a reviewed handler.
+reviewed effects, predicates, and placeholders.
 
-Adding a truly new capability (a new key effect) still needs reviewed code;
-this boundary covers data-only candidate changes (enable/disable, priority,
-preconditions, postconditions).
+Since P6g the key effect is data too: a candidate may introduce a new action
+id as long as its ``effect`` is in the reviewed vocabulary and its
+``key_pattern`` matches that effect's contract.  Per-action identity and key
+effects of pre-existing actions stay immutable (code-owned); the proposer may
+tune only the documented data surface (enable/disable, priority,
+preconditions, postconditions, description) plus adding new reviewed-effect
+actions.
 """
 from __future__ import annotations
 
@@ -18,7 +22,14 @@ import subprocess
 from dataclasses import dataclass
 from typing import Callable, Mapping, Sequence
 
-from .nethack_action_spec import ActionSpec, CATALOG_SCHEMA_VERSION, parse_action_catalog
+from .nethack_action_spec import (
+    KNOWN_PLACEHOLDERS,
+    REVIEWED_EFFECTS,
+    REVIEWED_RISK_CLASSES,
+    ActionSpec,
+    CATALOG_SCHEMA_VERSION,
+    parse_action_catalog,
+)
 
 PROPOSAL_SCHEMA_VERSION = 1
 DEFAULT_TIMEOUT_S = 20.0
@@ -84,33 +95,47 @@ def build_proposal_request(
     signal: FailureSignal,
     specs: tuple[ActionSpec, ...],
     *,
-    allowed_action_ids: frozenset[str],
+    allowed_effects: frozenset[str],
+    allowed_action_ids: frozenset[str] | None = None,
     constraints: tuple[str, ...] = (),
 ) -> dict[str, object]:
-    return {
+    request: dict[str, object] = {
         "schema_version": PROPOSAL_SCHEMA_VERSION,
         "failure": signal.to_dict(),
         "catalog": catalog_to_dict(specs),
-        "allowed_actions": sorted(allowed_action_ids),
+        "allowed_effects": sorted(allowed_effects),
+        "allowed_placeholders": sorted(KNOWN_PLACEHOLDERS),
+        "allowed_risk_classes": sorted(REVIEWED_RISK_CLASSES),
         "constraints": list(
             constraints
             or (
                 "return the full catalog with schema_version and an actions list",
-                "only use ids from allowed_actions (handlers are reviewed code)",
-                "risk_class and key_pattern are fixed per action id",
-                "only enabled, priority, preconditions, postconditions, and description may change",
+                "new action ids are allowed only with an effect from allowed_effects",
+                "effect, risk_class, and key_pattern are fixed per pre-existing action id",
+                "only enabled, priority, preconditions, postconditions, and description may change for pre-existing actions",
                 "prefer the smallest change that removes the stall",
             )
         ),
     }
+    if allowed_action_ids is not None:
+        # Deprecated P6f field, kept for backward-compatible readers.
+        request["allowed_actions"] = sorted(allowed_action_ids)
+    return request
 
 
 def _proposal_baseline(
-    request: Mapping[str, object], *, allowed_action_ids: frozenset[str]
+    request: Mapping[str, object],
+    *,
+    allowed_effects: frozenset[str],
+    allowed_action_ids: frozenset[str] | None = None,
 ) -> tuple[ActionSpec, ...]:
     """Read the reviewed catalog embedded in the request and fail closed."""
     try:
-        return parse_action_catalog(request.get("catalog"), allowed_action_ids=allowed_action_ids)
+        return parse_action_catalog(
+            request.get("catalog"),
+            allowed_action_ids=allowed_action_ids,
+            allowed_effects=allowed_effects,
+        )
     except ValueError as exc:
         raise CatalogProposalError("proposer request does not contain a valid baseline catalog") from exc
 
@@ -120,17 +145,22 @@ def _validate_candidate_contract(
 ) -> None:
     """Keep code-owned action identity and key effects immutable.
 
-    The proposer may tune only the documented data surface.  Replacing or
-    omitting an action, changing its reviewed risk class, or changing the key
-    pattern would silently expand the capability boundary and must require a
-    reviewed code change instead of an LLM/data-only proposal.
+    The proposer may tune only the documented data surface.  Every baseline
+    action must still be present with its reviewed effect, risk class, and key
+    pattern unchanged; changing them would silently expand the capability
+    boundary and must require a reviewed code change instead of an
+    LLM/data-only proposal.  New action ids are allowed: their reviewed
+    vocabulary membership is already enforced by ``parse_action_catalog``.
     """
     baseline_by_id = {spec.id: spec for spec in baseline}
     candidate_by_id = {spec.id: spec for spec in candidate}
-    if candidate_by_id.keys() != baseline_by_id.keys():
-        raise CatalogProposalError("proposer catalog must preserve the full reviewed action set")
+    missing = sorted(set(baseline_by_id) - set(candidate_by_id))
+    if missing:
+        raise CatalogProposalError(f"proposer catalog dropped reviewed actions: {missing}")
     for spec_id, baseline_spec in baseline_by_id.items():
         candidate_spec = candidate_by_id[spec_id]
+        if candidate_spec.effect != baseline_spec.effect:
+            raise CatalogProposalError(f"proposer catalog changed fixed effect for {spec_id}")
         if candidate_spec.risk_class != baseline_spec.risk_class:
             raise CatalogProposalError(f"proposer catalog changed fixed risk_class for {spec_id}")
         if candidate_spec.key_pattern != baseline_spec.key_pattern:
@@ -157,9 +187,12 @@ class CommandCatalogProposer:
         self,
         request: Mapping[str, object],
         *,
-        allowed_action_ids: frozenset[str],
+        allowed_effects: frozenset[str] = REVIEWED_EFFECTS,
+        allowed_action_ids: frozenset[str] | None = None,
     ) -> tuple[ActionSpec, ...]:
-        baseline = _proposal_baseline(request, allowed_action_ids=allowed_action_ids)
+        baseline = _proposal_baseline(
+            request, allowed_effects=allowed_effects, allowed_action_ids=allowed_action_ids
+        )
         payload = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         if len(payload) > self.max_request_bytes:
             raise CatalogProposalError("proposer request exceeds size limit")
@@ -183,7 +216,9 @@ class CommandCatalogProposer:
         except (UnicodeError, json.JSONDecodeError) as exc:
             raise CatalogProposalError("proposer response is not valid JSON") from exc
         try:
-            candidate = parse_action_catalog(raw, allowed_action_ids=allowed_action_ids)
+            candidate = parse_action_catalog(
+                raw, allowed_effects=allowed_effects, allowed_action_ids=allowed_action_ids
+            )
         except ValueError as exc:
             raise CatalogProposalError(f"proposer catalog is invalid: {exc}") from exc
         _validate_candidate_contract(baseline, candidate)

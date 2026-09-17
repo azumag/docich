@@ -60,16 +60,19 @@ smoke_ok: bool                     # production fingerprint 不変 / cleanup / p
 `run_improvement_cycle`（`ops/vm_actions/nethack_promotion_runner.py` + `src/docich/nethack_catalog_proposer.py`）:
 
 1. baseline arm を実行し `FailureSignal`（stall intent / exit_reason / turns / depth）を作る。
-2. `build_proposal_request` で bounded な公開 JSON（failure + 現行 catalog + `allowed_actions` + constraints）を作り、外部 command（proposer）へ渡す。
-3. proposer 出力は `parse_action_catalog` で schema/safety 検証し、**existing handler id のみ**許可（新 capability はハンドラ＝コードが必要）。
+2. `build_proposal_request` で bounded な公開 JSON（failure + 現行 catalog + `allowed_effects` / `allowed_placeholders` / `allowed_risk_classes` + constraints）を作り、外部 command（proposer）へ渡す。
+3. proposer 出力は `parse_action_catalog` で schema/safety 検証し、**reviewed effect/predicate/placeholder 語彙のみ**許可（新 action id は reviewed effect を使う場合に限り data で追加可能）。
 4. 候補 catalog を runner で seed 比較 → P6c trace 検証 → `evaluate_promotion`。
 5. promote なら known-good 更新、reject なら作り直し。
 
-proposer は外部 command 境界（`CommandCatalogProposer`）。timeout / 非0 exit / 過大要求・応答 / 不正 JSON / 未知 id は `CatalogProposalError` で fail-closed。
+proposer は外部 command 境界（`CommandCatalogProposer`）。timeout / 非0 exit / 過大要求・応答 / 不正 JSON / 未知 effect・predicate・placeholder / 既存 action の effect・risk_class・key_pattern 変更・既存 action の削除は `CatalogProposalError` で fail-closed。`allowed_action_ids` 引数は後方互換のため残しているが、新規呼び出しは `allowed_effects` を使う。
+
+## 新 capability（P6g で data 化）
+
+reviewed effect 語彙（`keys` / `attack_direction` / `open_door` / `eat_item` / `explore_step` / `directional_travel`）を再利用する新 action id は、catalog entry の追加だけで policy 実行・trace 検証・昇格判定の対象になる（詳細は `nethack-action-catalog.md` の effect 語彙表）。真に新しいキー効果（語彙に無い effect）の追加だけが、引き続き reviewed なコード変更を要する。
 
 ## 未実装（次）
 
-- **新 capability（新キー効果）**: ハンドラはコードなので、LLM が handler を提案 → sandbox build → P6c 検証 → gate の経路が別途必要。
 - fitness の本格化（simulator / 並列 rollout）。
 
 Relates to #630, #631, #586, #490.
