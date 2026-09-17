@@ -1,10 +1,12 @@
 """Catalog-driven canary tactical policy (P6).
 
 The action table is data: ``config/nethack-canary-actions.json``.  This module
-holds only the handlers (the reviewed key effect per action id).  A catalog
-change (enable/disable, priority order, different preconditions) therefore
-changes canary behaviour, which is what lets a candidate be compared and
-promoted by :mod:`docich.nethack_promotion_gate`.
+holds only the reviewed key effects (``REVIEWED_EFFECTS``); the catalog is the
+single source of truth mapping each action id to its effect.  A catalog change
+(enable/disable, priority order, different preconditions, or a new action id
+reusing a reviewed effect) therefore changes canary behaviour, which is what
+lets a candidate be compared and promoted by
+:mod:`docich.nethack_promotion_gate`.
 
 Only the canary worker imports this module.  Production NetHack
 (``src/docich/agent/brains.py``) keeps using :mod:`docich.nethack_policy`.
@@ -16,6 +18,7 @@ from pathlib import Path
 
 from .actions import Action
 from .nethack_action_spec import (
+    REVIEWED_EFFECTS,
     ActionContext,
     ActionSpec,
     keys_match,
@@ -36,9 +39,14 @@ from .nethack_policy import NethackLayeredPolicy, PolicyDecision
 CATALOG_ENV = "DOCICH_CANARY_CATALOG"
 _CATALOG_RELATIVE = Path("config") / "nethack-canary-actions.json"
 
-# Action ids that have a reviewed handler in this module.  A catalog candidate
-# may re-enable/reorder/recondition these, but may not invent a new id: a new
-# capability needs a new reviewed handler (code), not just data.
+# Reviewed key effects this policy can execute.  A catalog candidate may use
+# any of these effects under a new or existing action id; the policy never
+# hard-codes action ids.
+SUPPORTED_EFFECTS = frozenset(REVIEWED_EFFECTS)
+
+# Deprecated P6f alias: the set of action ids shipped in the reviewed catalog.
+# New code should use SUPPORTED_EFFECTS.  Kept so existing imports keep
+# working during the migration.
 SUPPORTED_ACTION_IDS = frozenset(
     {
         "advance_message",
@@ -86,63 +94,47 @@ class CanaryTacticalPolicy:
         self._base = NethackLayeredPolicy(explorer)
         self._specs = specs if specs is not None else load_default_catalog()
         self._ordered = tuple(sorted(self._specs, key=lambda spec: spec.priority))
-        self._by_id = {spec.id: spec for spec in self._specs}
         # (dungeon_level, x, y) of doors whose open attempt did not change the
         # tile; they are never retried so the canary cannot loop on a lock.
         self._failed_doors: set[tuple[int, int, int]] = set()
-        self._handlers = {
-            "advance_message": self._h_advance_message,
-            "confirm_attack": self._h_confirm_attack,
-            "decline_prompt": self._h_decline_prompt,
-            "directional_travel": self._h_directional_travel,
-            "eat_food": self._h_eat_food,
-            "rest_impaired": self._h_rest,
-            "attack_adjacent": self._h_attack_adjacent,
-            "rest_low_hp": self._h_rest,
-            "open_door": self._h_open_door,
-            "explore_step": self._h_explore_step,
-            "rest": self._h_rest,
-        }
 
-    # --- handlers ---------------------------------------------------------
+    # --- effects (reviewed key producers, dispatched by spec.effect) --------
 
-    def _h_advance_message(self, obs, inventory, ctx):
-        return (" ",)
+    def _run_effect(
+        self, spec: ActionSpec, obs, inventory, ctx: ActionContext
+    ) -> tuple[str, ...] | None:
+        """Produce keys for a spec via its declarative effect.
 
-    def _h_confirm_attack(self, obs, inventory, ctx):
-        return ("y",)
-
-    def _h_decline_prompt(self, obs, inventory, ctx):
-        return ("n",)
-
-    def _h_directional_travel(self, obs, inventory, ctx):
-        step = self._base.explorer.plan_step(_without_prompt(obs))
-        return (step.key,) if step is not None else None
-
-    def _h_eat_food(self, obs, inventory, ctx):
-        item = food_item(inventory)
-        return ("e", item.letter) if item is not None else None
-
-    def _h_attack_adjacent(self, obs, inventory, ctx):
-        neighbors = attackable_neighbors(obs)
-        if not neighbors:
+        Returns None when the effect cannot resolve right now (no adjacent
+        monster, no safe step, no food), so the policy falls through to the
+        next spec.  The policy never branches on the action id.
+        """
+        if spec.effect not in SUPPORTED_EFFECTS:
             return None
-        dx, dy, _glyph = neighbors[0]
-        return (DIRECTION_KEY[(dx, dy)],)
-
-    def _h_open_door(self, obs, inventory, ctx):
-        for dx, dy, _glyph in openable_neighbors(obs):
-            if door_key(obs, dx, dy) not in ctx.failed_doors:
-                self._failed_doors.add(door_key(obs, dx, dy))
-                return ("o", DIRECTION_KEY[(dx, dy)])
+        if spec.effect == "keys":
+            return tuple(spec.key_pattern)
+        if spec.effect == "attack_direction":
+            neighbors = attackable_neighbors(obs)
+            if not neighbors:
+                return None
+            dx, dy, _glyph = neighbors[0]
+            return (DIRECTION_KEY[(dx, dy)],)
+        if spec.effect == "open_door":
+            for dx, dy, _glyph in openable_neighbors(obs):
+                if door_key(obs, dx, dy) not in ctx.failed_doors:
+                    self._failed_doors.add(door_key(obs, dx, dy))
+                    return ("o", DIRECTION_KEY[(dx, dy)])
+            return None
+        if spec.effect == "eat_item":
+            item = food_item(inventory)
+            return ("e", item.letter) if item is not None else None
+        if spec.effect == "explore_step":
+            step = self._base.explorer.plan_step(obs)
+            return (step.key,) if step is not None else None
+        if spec.effect == "directional_travel":
+            step = self._base.explorer.plan_step(_without_prompt(obs))
+            return (step.key,) if step is not None else None
         return None
-
-    def _h_explore_step(self, obs, inventory, ctx):
-        step = self._base.explorer.plan_step(obs)
-        return (step.key,) if step is not None else None
-
-    def _h_rest(self, obs, inventory, ctx):
-        return (".",)
 
     # --- decision ---------------------------------------------------------
 
@@ -163,10 +155,7 @@ class CanaryTacticalPolicy:
                 continue
             if not all(precondition(name, ctx) for name in spec.preconditions):
                 continue
-            handler = self._handlers.get(spec.id)
-            if handler is None:
-                continue
-            keys = handler(obs, inventory, ctx)
+            keys = self._run_effect(spec, obs, inventory, ctx)
             if keys is None:
                 continue
             if not keys_match(spec.key_pattern, keys):

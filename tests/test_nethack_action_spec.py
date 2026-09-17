@@ -7,12 +7,14 @@ import pytest
 
 from docich.nethack_action_spec import (
     ActionSpec,
+    REVIEWED_EFFECTS,
     STATUS_KEYS,
     STATUS_POSTCONDITION,
     STATUS_PRECONDITION,
     STATUS_VERIFIED,
     keys_match,
     load_action_catalog,
+    parse_action_catalog,
     spec_by_id,
     validate_action_catalog,
     verify_action_spec,
@@ -59,6 +61,110 @@ def test_catalog_loads_and_matches_the_canary_policy_surface():
         "rest",
         "explore_step",
     }
+    assert {spec.effect for spec in specs} <= set(REVIEWED_EFFECTS)
+
+
+def test_new_id_with_reviewed_effect_is_accepted_and_verifiable():
+    # P6g acceptance: a brand-new id using a reviewed effect parses,
+    # validates, and verifies a recorded trace.
+    raw = {
+        "schema_version": 1,
+        "actions": [
+            {
+                "id": "descend_stairs",
+                "effect": "keys",
+                "risk_class": "movement",
+                "preconditions": ["prompt:none", "player_visible"],
+                "key_pattern": [">"],
+                "postconditions": ["screen_changed"],
+            }
+        ],
+    }
+    (spec,) = parse_action_catalog(raw, allowed_effects=frozenset(REVIEWED_EFFECTS))
+    assert spec.effect == "keys"
+    before = frame("", ("....", ".@..", "...."))
+    after = frame("You go down the stairs.", ("....", ".@..", "...."))
+    assert (
+        verify_action_spec(spec, before=before, after=after, keys=(">",)).status
+        == STATUS_VERIFIED
+    )
+
+
+def test_parse_rejects_effects_outside_the_allowed_set():
+    raw = {
+        "schema_version": 1,
+        "actions": [
+            {
+                "id": "descend_stairs",
+                "effect": "keys",
+                "risk_class": "movement",
+                "preconditions": ["prompt:none", "player_visible"],
+                "key_pattern": [">"],
+                "postconditions": ["screen_changed"],
+            }
+        ],
+    }
+    with pytest.raises(ValueError, match="outside the allowed set"):
+        parse_action_catalog(raw, allowed_effects=frozenset({"attack_direction"}))
+
+
+def test_validate_rejects_unknown_effect_and_effect_pattern_mismatch():
+    # Unknown effect.
+    with pytest.raises(ValueError, match="unreviewed effect"):
+        validate_action_catalog(
+            (
+                ActionSpec(
+                    "x",
+                    "movement",
+                    ("prompt:none",),
+                    (">",),
+                    ("screen_changed",),
+                    effect="zap_wand",
+                ),
+            )
+        )
+    # eat_item requires ["e", "{item_letter}"].
+    with pytest.raises(ValueError, match="requires key_pattern"):
+        validate_action_catalog(
+            (
+                ActionSpec(
+                    "x",
+                    "item",
+                    ("prompt:none",),
+                    ("e",),
+                    ("screen_changed",),
+                    effect="eat_item",
+                ),
+            )
+        )
+    # open_door requires ["o", "{direction}"].
+    with pytest.raises(ValueError, match="requires key_pattern"):
+        validate_action_catalog(
+            (
+                ActionSpec(
+                    "x",
+                    "door",
+                    ("prompt:none",),
+                    ("{direction}",),
+                    ("screen_changed",),
+                    effect="open_door",
+                ),
+            )
+        )
+    # The literal "keys" effect must not use placeholders.
+    with pytest.raises(ValueError, match="must not use placeholders"):
+        validate_action_catalog(
+            (
+                ActionSpec(
+                    "x",
+                    "movement",
+                    ("prompt:none",),
+                    ("{direction}",),
+                    ("screen_changed",),
+                    effect="keys",
+                ),
+            )
+        )
 
 
 def test_validate_rejects_unreviewed_catalog_entries():

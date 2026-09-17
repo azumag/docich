@@ -5,7 +5,8 @@ This is the ops-layer runner.  It reuses the reviewed container launcher and
 the P6 catalog/trace verification, and hands the collected outcomes to the
 pure promotion gate.  Both arms run the canary tactical baseline policy; the
 only difference is the action catalog injected via ``DOCICH_CANARY_CATALOG``,
-so a candidate is a catalog diff (enable/disable, priority, preconditions).
+so a candidate is a catalog diff (enable/disable, priority, preconditions,
+or a new action id reusing a reviewed effect).
 
 The production-isolation checks (fingerprint / container cleanup) are supplied
 by the caller through ``isolation_check`` so this module stays unit-testable.
@@ -18,7 +19,7 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from docich.nethack_action_spec import load_action_catalog, verify_trace_file
-from docich.nethack_canary_tactics import SUPPORTED_ACTION_IDS
+from docich.nethack_canary_tactics import SUPPORTED_EFFECTS
 from docich.nethack_catalog_proposer import (
     FailureSignal,
     build_proposal_request,
@@ -233,8 +234,8 @@ def run_improvement_cycle(
     )
     signal = failure_signal_from_outcomes(baseline.outcomes)
     specs = load_action_catalog(baseline_catalog)
-    request = build_proposal_request(signal, specs, allowed_action_ids=SUPPORTED_ACTION_IDS)
-    candidate_specs = proposer.propose(request, allowed_action_ids=SUPPORTED_ACTION_IDS)
+    request = build_proposal_request(signal, specs, allowed_effects=SUPPORTED_EFFECTS)
+    candidate_specs = proposer.propose(request, allowed_effects=SUPPORTED_EFFECTS)
     candidate_path = work_root / "candidate-catalog.json"
     candidate_path.parent.mkdir(parents=True, exist_ok=True)
     candidate_path.write_text(json.dumps(catalog_to_dict(candidate_specs), indent=2), encoding="utf-8")

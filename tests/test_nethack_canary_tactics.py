@@ -6,8 +6,9 @@ from pathlib import Path
 import pytest
 
 from docich.actions import Action
+from docich.nethack_action_spec import ActionSpec, REVIEWED_EFFECTS, load_action_catalog
 from docich.nethack_canary_rules import attackable_neighbors
-from docich.nethack_canary_tactics import CanaryTacticalPolicy
+from docich.nethack_canary_tactics import SUPPORTED_EFFECTS, CanaryTacticalPolicy
 from docich.nethack_inventory import VisibleInventoryItem
 from docich.nethack_observation import normalize_tty
 from docich.nethack_policy import PolicyDecision
@@ -168,6 +169,51 @@ def test_safety_gate_is_catalog_driven():
         policy.assert_safe(
             PolicyDecision("tactical", "not_in_catalog", "", (Action(type="text", text="."),))
         )
+
+
+def test_supported_effects_cover_the_reviewed_vocabulary():
+    assert set(SUPPORTED_EFFECTS) == set(REVIEWED_EFFECTS)
+
+
+def test_new_catalog_id_with_reviewed_effect_is_executed():
+    # P6g acceptance: a brand-new id needs no handler code; the policy
+    # dispatches on its declarative effect.
+    descend = ActionSpec(
+        id="descend_stairs",
+        effect="keys",
+        risk_class="movement",
+        preconditions=("prompt:none", "player_visible"),
+        key_pattern=(">",),
+        postconditions=("screen_changed",),
+        description="Descend a visible staircase.",
+        enabled=True,
+        priority=5,
+    )
+    specs = load_action_catalog(CATALOG) + (descend,)
+    policy = CanaryTacticalPolicy(specs=specs)
+    decision = policy.decide(obs("", ("....", ".@..", "....")))
+    assert decision.intent == "descend_stairs"
+    assert tuple(a.text for a in decision.actions) == (">",)
+    policy.assert_safe(decision)
+
+
+def test_spec_with_unreviewed_effect_is_skipped_fail_closed():
+    # A spec whose effect is outside the reviewed vocabulary never produces
+    # keys: the policy falls through instead of executing it.
+    weird = ActionSpec(
+        id="zap_wand",
+        effect="zap_wand",
+        risk_class="item",
+        preconditions=("prompt:none", "player_visible"),
+        key_pattern=("z",),
+        postconditions=("always",),
+        enabled=True,
+        priority=1,
+    )
+    policy = CanaryTacticalPolicy(specs=(weird,) + load_action_catalog(CATALOG))
+    decision = policy.decide(obs("", ("....", ".@..", "....")))
+    assert decision.intent != "zap_wand"
+    assert decision.actions
 
 
 def test_disabling_a_catalog_action_changes_behaviour():
