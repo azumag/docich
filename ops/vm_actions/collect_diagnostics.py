@@ -89,6 +89,20 @@ CHAIN_SUMMARY_RE = re.compile(
     r"\Avrl=(0|[1-9][0-9]{0,3});vda=(0|[1-9][0-9]{0,3});nfs=([01]);"
     r"term=(winner|all_failed|queue_giveup|gate_giveup)\Z"
 )
+QUEUE_GIVEUP_DETAIL_MAX_WAIT_SEC = 86400
+QUEUE_GIVEUP_DETAIL_HOLDERS = (
+    "radio_prepass",
+    "radio_main",
+    "news",
+    "jiji",
+    "celebration",
+    "other",
+    "unknown",
+)
+QUEUE_GIVEUP_DETAIL_RE = re.compile(
+    r"\Await=(0|[1-9][0-9]{0,4});holder="
+    r"(radio_prepass|radio_main|news|jiji|celebration|other|unknown)\Z"
+)
 TMP_SO_ROOT = Path("/tmp")
 TMP_SO_PATTERNS = (
     re.compile(r"^\..+-00000000\.so\Z"),
@@ -637,6 +651,20 @@ def _parse_chain_summary(value):
     return vrl, vda, int(nfs), terminal
 
 
+def _parse_queue_giveup_detail(value):
+    """Parse the producer's fixed queue holder record, fail-closed."""
+    if not isinstance(value, str):
+        return None
+    match = QUEUE_GIVEUP_DETAIL_RE.fullmatch(value)
+    if match is None:
+        return None
+    wait_raw, holder = match.groups()
+    wait_sec = int(wait_raw)
+    if wait_sec > QUEUE_GIVEUP_DETAIL_MAX_WAIT_SEC:
+        return None
+    return wait_sec, holder
+
+
 def _collect_ai(soren, now):
     stats_dir = soren / "tmp" / "state" / "ai_stats"
     window_start = now - DIAG_WINDOW_SEC
@@ -648,6 +676,10 @@ def _collect_ai(soren, now):
     multi_vercel_429_chains = 0
     multi_vercel_429_non_vercel_recovered = 0
     multi_vercel_429_all_failed = 0
+    queue_giveup_detail_sampled = 0
+    queue_giveup_detail_malformed = 0
+    queue_giveup_detail_wait_max_sec = 0
+    queue_giveup_detail_holders = {holder: 0 for holder in QUEUE_GIVEUP_DETAIL_HOLDERS}
     by_label = {}
     recent = []
     malformed = 0
@@ -686,6 +718,20 @@ def _collect_ai(soren, now):
                         multi_vercel_429_non_vercel_recovered += 1
                     if terminal == "all_failed":
                         multi_vercel_429_all_failed += 1
+            continue
+        if kind == "queue_giveup_detail":
+            # This event is emitted with a constant label and fixed grammar by
+            # Soren's queue observability shim. Parse only the exact allowlist
+            # and never copy the raw error/label into diagnostics or the recent
+            # event sample. Malformed content is counted, not reproduced.
+            detail = _parse_queue_giveup_detail(event.get("error"))
+            if detail is None:
+                queue_giveup_detail_malformed += 1
+            else:
+                wait_sec, holder = detail
+                queue_giveup_detail_sampled += 1
+                queue_giveup_detail_wait_max_sec = max(queue_giveup_detail_wait_max_sec, wait_sec)
+                queue_giveup_detail_holders[holder] += 1
             continue
         entry = by_label.setdefault(label, {"fail": 0, "winner": 0, "agents": set(), "all_failed": 0})
         if kind == "attempt":
@@ -757,6 +803,10 @@ def _collect_ai(soren, now):
         "multi_vercel_429_chains": multi_vercel_429_chains,
         "multi_vercel_429_non_vercel_recovered": multi_vercel_429_non_vercel_recovered,
         "multi_vercel_429_all_failed": multi_vercel_429_all_failed,
+        "queue_giveup_detail_sampled": queue_giveup_detail_sampled,
+        "queue_giveup_detail_malformed": queue_giveup_detail_malformed,
+        "queue_giveup_detail_wait_max_sec": queue_giveup_detail_wait_max_sec,
+        "queue_giveup_detail_holders": queue_giveup_detail_holders,
         "malformed_lines": malformed,
         "anomalous_components": anomalous,
         "recent_events": recent,
