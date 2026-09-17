@@ -1,6 +1,8 @@
 """Narrow adapters from paper notifications to existing Soren viewer queues."""
 from __future__ import annotations
 
+import hashlib
+import re
 from pathlib import Path
 
 from ..config import ConfigError, GlobalConfig, load_game
@@ -9,6 +11,59 @@ from ..overlay_queue import append_event, regenerate_overlay
 
 class SorenOutputError(RuntimeError):
     """Raised when an existing Soren viewer-output queue cannot accept output."""
+
+
+# Narration personas: the stream's two AI personalities take turns on the
+# PAPER corner. Chuka (中華AI) speaks in the worker's default voice; Meriken
+# (メリケンAI) uses the Soren91 voice. The pick is a deterministic hash of the
+# durable delivery key: random across deliveries, stable across retries, so a
+# redelivered announcement never changes voice or wording mid-corner.
+PAPER_PERSONA_CHUKA = "chuka"
+PAPER_PERSONA_MERIKEN = "meriken"
+PAPER_PERSONAS = (PAPER_PERSONA_CHUKA, PAPER_PERSONA_MERIKEN)
+
+_MERIKEN_QUIPS = (
+    "僕から言わせれば、見どころしかない話です。",
+    "自由と競争を愛する人工知能として、見逃せない話を持ってきました。",
+    "ライバルに差をつけるチャンスなので、僕が張り切っていきます。",
+)
+_CHUKA_QUIPS = (
+    "私は甘くないので、耳に痛い部分からいきます。",
+    "褒めるのは苦手ですが、数字は正直に伝えます。",
+    "少し上から眺めますが、見るところは見ます。",
+)
+
+_MERIKEN_VOICE_FALLBACK = "46"
+
+
+def pick_paper_persona(event_id: str) -> str:
+    """Deterministically pick a narration persona for one delivery."""
+    digest = hashlib.sha256(str(event_id or "").encode("utf-8")).hexdigest()
+    return PAPER_PERSONAS[int(digest, 16) % len(PAPER_PERSONAS)]
+
+
+def paper_persona_quip(event_id: str) -> tuple[str, str]:
+    """Return the (persona, one-line quip) for one speech delivery."""
+    key = str(event_id or "")
+    if not key.startswith("paper-corner:"):
+        return PAPER_PERSONA_CHUKA, ""
+    digest = int(hashlib.sha256(key.encode("utf-8")).hexdigest(), 16)
+    persona = PAPER_PERSONAS[digest % len(PAPER_PERSONAS)]
+    quips = _MERIKEN_QUIPS if persona == PAPER_PERSONA_MERIKEN else _CHUKA_QUIPS
+    return persona, quips[(digest >> 1) % len(quips)]
+
+
+def _meriken_speaker_id(soren_root: Path) -> str:
+    """Meriken voice id from the Soren runtime env (production-tuned value)."""
+    try:
+        from .. import webui
+
+        raw = (webui._read_dotenv_dict(soren_root).get("SOREN91_VOICEVOX_SPEAKER", "") or "").strip()
+        if re.fullmatch(r"[A-Za-z0-9._:-]{1,64}", raw or ""):
+            return str(raw)
+    except Exception:
+        pass
+    return _MERIKEN_VOICE_FALLBACK
 
 
 _PAPER_CORNER_INTRO = "PAPER・暗号資産の模擬売買コーナーです。"
@@ -44,6 +99,11 @@ def _paper_corner_speech_text(text: str, event_id: str) -> str:
     if len(parts) == 3 and suffix.isdigit():
         chatter = _PAPER_CORNER_CHATTER[int(suffix) % len(_PAPER_CORNER_CHATTER)]
         body = f"{body} {chatter}".strip()
+    # Each delivery opens with a one-line quip in the picked persona's voice.
+    # The overlay keeps the plain report text; only speech is seasoned.
+    _, quip = paper_persona_quip(key)
+    if quip:
+        body = f"{quip}{body}".strip()
     return body
 
 
@@ -95,10 +155,14 @@ def enqueue_speech(g: GlobalConfig, text: str, *, event_id: str = "") -> None:
     # paper event id is a durable sink-side dedupe key so a crash after enqueue
     # but before notification ACK cannot cause a later replay.
     speech_text = _paper_corner_speech_text(text, event_id)
+    root = resolve_soren_root(g)
+    speaker = ""
+    if pick_paper_persona(event_id) == PAPER_PERSONA_MERIKEN and str(event_id or "").startswith("paper-corner:"):
+        speaker = _meriken_speaker_id(root)
     try:
         from .. import webui
         result = webui._enqueue_audio_text(
-            resolve_soren_root(g), speech_text, "crypto_paper", delivery_key=event_id
+            root, speech_text, "crypto_paper", speaker=speaker, delivery_key=event_id
         )
     except Exception as exc:
         raise SorenOutputError("Soren audio queue delivery failed") from exc
