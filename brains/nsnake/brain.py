@@ -19,12 +19,16 @@ docich との境界は CommandBrain のまま変えない: stdin から Observat
 from __future__ import annotations
 
 import json
+import os
 import sys
 from collections import deque
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-WEIGHTS_PATH = REPO_ROOT / "run" / "brain" / "nsnake" / "weights.json"
+WEIGHTS_PATH = Path(os.environ.get(
+    "DOCICH_BRAIN_WEIGHTS",
+    str(REPO_ROOT / "run" / "brain" / "nsnake" / "weights.json"),
+))
 
 DEFAULT_WEIGHTS = {
     "tail_passable": True,

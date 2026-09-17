@@ -25,12 +25,24 @@ from .resolver.improve import (
     evaluate_gnurobots,
     read_strategy_for_game,
 )
+from .resolver.bot_eval import run_bot_matches
 
 JSON_FENCE_RE = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
 
 
 class CornerImproveError(RuntimeError):
     """User-facing failure in the end-of-corner improvement job."""
+
+
+BOT_GAMES = ("nsnake", "ninvaders")
+
+
+def numeric_weights(weights: dict) -> set[str]:
+    """bot_games の重みのうち LLM に提案させる数値キー (真偽値は固定方策)。"""
+    return {
+        key for key, value in weights.items()
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    }
 
 
 @contextmanager
@@ -191,7 +203,7 @@ def run_corner_improve(
 ) -> dict:
     """指定日次コーナー終了後の改善を1回実行する。結果サマリ dict を返す。"""
 
-    if game != "gnurobots":
+    if game != "gnurobots" and game not in BOT_GAMES:
         return {"status": "skipped", "reason": f"unsupported-game:{game}"}
     with _singleflight(g.state_dir, game) as single:
         if not single:
@@ -201,6 +213,46 @@ def run_corner_improve(
             matches=matches, margin_pct=margin_pct, dry_run=dry_run,
             llm=llm, evaluator=evaluator,
         )
+
+
+def _bot_evaluator(g, game: str, matches: int):
+    """bot_eval 経由の headless evaluator (一時weightsをenvで注入、並行安全)。
+
+    評価は生バイナリを bot_eval 自身の start/retry キーで駆動し、本番の
+    wrapper セッション・game-switch state・配信には触れない。
+    turn cap 到達 (maxed) の試合は完走扱いにしない (fail closed)。
+    """
+
+    def evaluate(strategy: dict) -> dict:
+        import tempfile
+
+        from .resolver.bot_eval import bot_preset
+
+        preset = bot_preset(g, game)
+        with tempfile.TemporaryDirectory(prefix="docich-bot-weights-") as tmp:
+            weights_file = Path(tmp) / "weights.json"
+            weights_file.write_text(
+                json.dumps(strategy, ensure_ascii=False) + "\n", encoding="utf-8"
+            )
+            summary = run_bot_matches(
+                label=game,
+                binary=preset["binary"](game),
+                bot_cmd=preset["bot_cmd"],
+                cwd=str(Path(__file__).resolve().parents[2]),
+                cols=preset["cols"], rows=preset["rows"],
+                matches=matches,
+                env={"DOCICH_BRAIN_WEIGHTS": str(weights_file)},
+                **preset["run_kwargs"],
+            )
+        completed = [m for m in summary.get("matches", []) if not m.get("maxed")]
+        scores = [m["score"] for m in completed if isinstance(m.get("score"), int)]
+        return {
+            "matches": summary.get("matches", []),
+            "mean_score": (sum(scores) / len(scores)) if scores else 0.0,
+            "played": len(scores),
+        }
+
+    return evaluate
 
 
 def _run_corner_improve(
@@ -234,6 +286,7 @@ def _run_corner_improve(
         return {"status": "skipped", "reason": "no-matches", "stats": stats}
 
     defaults = _game_defaults(game)
+    proposable = numeric_weights(defaults) if game in BOT_GAMES else set(defaults)
     current = read_strategy_for_game(game, strategy_path(g.state_dir, game))
     history_dir = Path(g.state_dir) / "resolver" / "history"
     try:
@@ -254,7 +307,7 @@ def _run_corner_improve(
     llm = llm or (lambda text: _default_llm(g, agents=agents, prompt_text=text))
     try:
         raw_output = llm(prompt_text)
-        candidate_delta = parse_candidate(raw_output, set(defaults))
+        candidate_delta = parse_candidate(raw_output, proposable)
     except CornerImproveError:
         raise
     except Exception as exc:
@@ -262,7 +315,10 @@ def _run_corner_improve(
     candidate = dict(current)
     candidate.update(candidate_delta)
 
-    evaluator = evaluator or (lambda strat: evaluate_gnurobots(strat, matches))
+    if game in BOT_GAMES:
+        evaluator = evaluator or _bot_evaluator(g, game, matches)
+    else:
+        evaluator = evaluator or (lambda strat: evaluate_gnurobots(strat, matches))
     try:
         baseline_ev = evaluator(current)
         candidate_ev = evaluator(candidate)

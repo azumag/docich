@@ -182,6 +182,10 @@ def evaluate_gnurobots(
 def _game_defaults(game_name: str) -> dict:
     if game_name == "gnurobots":
         return dict(gnurobots_resolver.DEFAULT_STRATEGY)
+    if game_name in ("nsnake", "ninvaders"):
+        from .bot_eval import bot_default_weights
+
+        return bot_default_weights(game_name)
     return _robots_defaults()
 
 
