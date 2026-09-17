@@ -11,6 +11,8 @@ from pathlib import Path, PurePosixPath
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 ALLOWED_SUBMODULES = {"games/soviet_now"}
 LIVE_PROJECTION = Path("/home/ubuntu/soren")
+SUBMODULE_FETCH_URLS = {"games/soviet_now": "https://github.com/azumag/soviet_now.git"}
+SUBMODULE_FETCH_REF = "refs/heads/main"
 
 # Numeric refusal reasons only; exec output is withheld. All codes <128.
 REASON_INVALID_ROOT = 40
@@ -187,7 +189,7 @@ def _atomic_projection_write(path, data, mode):
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=".v-", dir=path.parent)
     try:
-        with os.fdopen(fd, "wb") as handle:
+        with os.fdopen(fd, "wb", closefd=True) as handle:
             handle.write(data)
             handle.flush()
             os.fchmod(handle.fileno(), mode)
@@ -401,6 +403,43 @@ def _normalize_projection(repo, old_sub, new_sub, destination):
         raise ReconcileError(REASON_PROJECTION_MUTATION_FAILED, "normalization failed") from exc
 
 
+def _ensure_reviewed_new_object(repo, new_sub, sub_path):
+    """Populate a missing reviewed Soren commit without touching the worktree.
+
+    A tracked-drift rejection happens before deploy_git() consumes the uploaded
+    parent bundle, and the owned Soren checkout can likewise lack the newly
+    reviewed gitlink object. Only the existing explicit lineage recovery path
+    may perform this fixed public-main object fetch. The reviewed ``new_sub``
+    must be present afterwards and be reachable from the fetched protected
+    upstream main; otherwise recovery stays fail-closed with reason 57.
+    """
+    try:
+        _git(repo, "cat-file", "-e", f"{new_sub}^{{commit}}", reason=REASON_NEW_OBJECT_MISSING)
+        return
+    except ReconcileError as exc:
+        if exc.code != REASON_NEW_OBJECT_MISSING:
+            raise
+    if not _LINEAGE:
+        raise ReconcileError(REASON_NEW_OBJECT_MISSING, "new object missing")
+    url = SUBMODULE_FETCH_URLS.get(sub_path)
+    if not url:
+        raise ReconcileError(REASON_NEW_OBJECT_MISSING, "no reviewed object source")
+    try:
+        subprocess.run(
+            _gb(repo) + ["fetch", "--no-recurse-submodules", "--no-tags", "--force", url, SUBMODULE_FETCH_REF],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+            timeout=60,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        raise ReconcileError(REASON_NEW_OBJECT_MISSING, "reviewed object fetch failed") from exc
+    _git(repo, "cat-file", "-e", f"{new_sub}^{{commit}}", reason=REASON_NEW_OBJECT_MISSING)
+    if not _is_ancestor(repo, new_sub, "FETCH_HEAD"):
+        raise ReconcileError(REASON_NEW_OBJECT_MISSING, "reviewed object is not on upstream main")
+
+
 def reconcile(root, old_parent, old_sub, new_sub, sub_path, projection_destination=None):
     if not root.is_absolute() or not root.is_dir():
         raise ReconcileError(REASON_INVALID_ROOT, "invalid root")
@@ -422,6 +461,9 @@ def reconcile(root, old_parent, old_sub, new_sub, sub_path, projection_destinati
     if not sub.is_dir():
         raise ReconcileError(REASON_SUBMODULE_MISSING, "checkout missing")
 
+    _git(sub, "cat-file", "-e", f"{old_sub}^{{commit}}", reason=REASON_OLD_OBJECT_MISSING)
+    _ensure_reviewed_new_object(sub, new_sub, sub_path)
+
     current_sub = _git(sub, "rev-parse", "HEAD", reason=REASON_SUBMODULE_HEAD_MISMATCH)
     if current_sub not in {old_sub, new_sub}:
         current_tree = _git(sub, "rev-parse", f"{current_sub}^{{tree}}", reason=REASON_SUBMODULE_HEAD_MISMATCH)
@@ -429,8 +471,6 @@ def reconcile(root, old_parent, old_sub, new_sub, sub_path, projection_destinati
         if current_tree != reviewed_tree or not _is_ancestor(sub, current_sub, new_sub):
             raise ReconcileError(REASON_SUBMODULE_HEAD_MISMATCH, "not at accepted state")
 
-    _git(sub, "cat-file", "-e", f"{old_sub}^{{commit}}", reason=REASON_OLD_OBJECT_MISSING)
-    _git(sub, "cat-file", "-e", f"{new_sub}^{{commit}}", reason=REASON_NEW_OBJECT_MISSING)
     if not _is_ancestor(sub, old_sub, new_sub):
         raise ReconcileError(REASON_NOT_DESCENDANT, "not descendant")
 
