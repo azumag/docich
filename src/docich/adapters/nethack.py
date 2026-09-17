@@ -34,11 +34,15 @@ DEFAULT_SAVE_DIR = Path("/var/games/nethack/save")
 BOUNDARY_RESULT_FILENAME = "nethack_boundary.json"
 _PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,31}$")
 
-# Character-creation / startup screens have no durable run to save: NetHack has
-# not created an adventure yet.  The normal ``S`` boundary only succeeds after a
+# Character-creation prompts have no durable run to save: NetHack has not
+# created an adventure yet. The normal ``S`` boundary only succeeds after a
 # fresh save file appears, which can never happen here, so a switch away from a
 # game that never reached gameplay would otherwise wait until the deadline,
 # fail closed, and leave the canonical active game stuck on NetHack.
+#
+# Do not include post-creation banners such as "Welcome to NetHack!": that
+# message can remain visible after the map/status line exists, at which point
+# an adventure has started and must use the normal durable save boundary.
 _PREGAME_SCREEN_MARKERS = (
     "do you want a tutorial",
     "shall i pick",
@@ -48,14 +52,12 @@ _PREGAME_SCREEN_MARKERS = (
     "pick an alignment",
     "pick a gender",
     "is this ok",
-    "welcome to net",
 )
 
 
 def _is_character_creation_screen(text: str) -> bool:
     lowered = text.lower()
     return any(marker in lowered for marker in _PREGAME_SCREEN_MARKERS)
-
 
 
 class NethackCoordinatorAdapter(CliCoordinatorAdapter):
@@ -113,9 +115,9 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
         """Resolve the birth window which owns the actual NetHack process.
 
         A healthy coordinator CLI runtime always has the named presentation
-        window.  Therefore an empty/torn window listing is never interpreted
+        window. Therefore an empty/torn window listing is never interpreted
         as a real game end: that would turn a tmux probe failure into false
-        success.  With the presentation window present, no remaining birth
+        success. With the presentation window present, no remaining birth
         window means the NetHack process has genuinely ended.
         """
         names = self.tmux.list_windows()
@@ -135,7 +137,7 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
 
     def _save_name_matches_player(self, name: str) -> bool:
         # Unix NetHack save files are named ``<uid><player>``; an optional
-        # compression suffix may be present while the save is at rest.  A
+        # compression suffix may be present while the save is at rest. A
         # plain substring match can incorrectly treat another player's save
         # such as ``1000otherdocich`` as proof that this run was suspended.
         player = re.escape(self.player_name)
@@ -160,10 +162,10 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
         signatures: dict[str, tuple[int, int]] = {}
         for path in self._matching_save_files():
             try:
-                stat = path.stat()
+                stat_result = path.stat()
             except OSError as exc:
                 raise AdapterError("NetHack save fileを検査できません") from exc
-            signatures[path.name] = (stat.st_mtime_ns, stat.st_size)
+            signatures[path.name] = (stat_result.st_mtime_ns, stat_result.st_size)
         return signatures
 
     def _new_or_changed_save(
@@ -172,12 +174,12 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
         candidates: list[tuple[int, Path]] = []
         for path in self._matching_save_files():
             try:
-                stat = path.stat()
+                stat_result = path.stat()
             except OSError as exc:
                 raise AdapterError("NetHack save fileを検査できません") from exc
-            signature = (stat.st_mtime_ns, stat.st_size)
+            signature = (stat_result.st_mtime_ns, stat_result.st_size)
             if before.get(path.name) != signature:
-                candidates.append((stat.st_mtime_ns, path))
+                candidates.append((stat_result.st_mtime_ns, path))
         if not candidates:
             return None
         return max(candidates, key=lambda item: item[0])[1]
@@ -215,7 +217,7 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
         try:
             text = self.tmux.capture_pane(process_target)
         except Exception:
-            # A failed capture is not evidence of character creation.  Fall
+            # A failed capture is not evidence of character creation. Fall
             # through to the normal (fail-closed) save boundary.
             return False
         return _is_character_creation_screen(text)
@@ -229,7 +231,7 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
         process_target = self._runtime_process_window_target()
         if process_target is None:
             # A player/agent may have already used NetHack's normal save command.
-            # If a save exists, preserve that as a suspension.  Otherwise this
+            # If a save exists, preserve that as a suspension. Otherwise this
             # is a terminal boundary (death/quit/ascension is classified later).
             existing = self._matching_save_files()
             if existing:
@@ -252,7 +254,7 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
             return
 
         before = self._save_signatures()
-        # Leave menus/prompts before issuing the normal save command.  Escape
+        # Leave menus/prompts before issuing the normal save command. Escape
         # is non-destructive at the map prompt; if it cannot normalize the UI,
         # the absence of a verified fresh save below makes the operation fail closed.
         self.tmux.send_keys(process_target, ["Escape"], literal=False)
@@ -279,7 +281,7 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
 
     def cancel_round_boundary(self, request_id: str, deadline: float, cancel) -> None:
         # ``S`` has no reversible in-process phase: once NetHack accepts it the
-        # game is writing a normal save and exiting.  Cancellation must not send
-        # any extra key.  In particular, do not re-check an already-expired
+        # game is writing a normal save and exiting. Cancellation must not send
+        # any extra key. In particular, do not re-check an already-expired
         # deadline here: cancellation itself must stay best-effort/no-op.
         return None
