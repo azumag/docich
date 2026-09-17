@@ -26,6 +26,11 @@ from .trading.soren_output import send_overlay, enqueue_speech
 # casual talk. The interval stays above typical speech duration so the audio
 # queue does not backlog and narrations do not overlap.
 NARRATION_INTERVAL_S = 120
+# Floor for a duration-shrunk interval (short manual/operator test runs; see
+# _narration_interval). 45s is roughly a spoken 300-700 char segment's actual
+# duration, so 60s keeps ~15s of margin for VOICEVOX synthesis latency
+# (multi-endpoint backoff chain) before the say-queue starts to backlog.
+MIN_NARRATION_INTERVAL_S = 60
 LEGACY_INTERVAL_S = 300
 SCRIPT_SLOTS = {1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8}
 
@@ -359,16 +364,48 @@ class PaperCornerManager:
         return ('暗号資産はずっと派手に動くわけではありません。こういう無風の時間は、'
                 'ローソクの形、候補の増減、保有の偏りをのんびり見ながら、次の変化を待ちます。')
 
+    def _narration_interval(self, state) -> int:
+        """Duration-aware narration cadence (issue: short manual tests could
+
+        never reach script slots 5-8 at a fixed 120s interval). Shrinks
+        towards ``MIN_NARRATION_INTERVAL_S`` only when the corner is too
+        short for all script segments to fit at the tuned 120s cadence;
+        production's 30-minute default (and anything >= ~18 minutes) is
+        unaffected (still exactly 120s, matching the historical cadence).
+        """
+        total = int(max(1, float(state['ends_at']) - float(state['started_at'])))
+        last_slot = max(SCRIPT_SLOTS)
+        ideal = total // (last_slot + 1)
+        interval = max(MIN_NARRATION_INTERVAL_S, min(NARRATION_INTERVAL_S, ideal))
+        # Escape hatch for pathologically short durations (e.g. a 1-minute
+        # smoke test): never let the floor swallow the whole corner without
+        # narrating anything.
+        return min(interval, max(5, total // 2))
+
     def _scheduled_narration(self, state, slot: int) -> None:
+        """Deliver the lowest not-yet-announced script segment due by ``slot``.
+
+        Catches up a segment whose exact slot index was missed by a slow
+        prior iteration (announce() does a state save, an overlay append and
+        an overlay HTML regeneration, which can occasionally overrun a short
+        interval) instead of permanently skipping it. Behaves exactly like
+        the old direct slot->index lookup whenever no slot is skipped, since
+        every lower index is already recorded in ``reports`` by then.
+        """
         if slot <= 0:
             return
-        script_index = SCRIPT_SLOTS.get(int(slot))
         segments = state.get('script_segments') if isinstance(state.get('script_segments'), dict) else {}
-        if script_index is not None:
-            text = str(segments.get(str(script_index), '')).strip()
+        reports = state.get('reports') if isinstance(state.get('reports'), dict) else {}
+        for index in sorted(set(SCRIPT_SLOTS.values())):
+            if index > slot:
+                break
+            if f'script:{index}' in reports:
+                continue
+            text = str(segments.get(str(index), '')).strip()
             if text:
-                self.announce(state, f'script:{script_index}', text)
+                self.announce(state, f'script:{index}', text)
                 return
+            break
         self.announce(state, f'chatter:{int(slot)}', self._casual_text(int(slot)))
 
     def _default_spawn_improve_proc(self, argv, log_path) -> None:
@@ -696,7 +733,7 @@ class PaperCornerManager:
         # cadence for crash-safe replay; newly started corners use the denser,
         # distributed narration schedule.
         modern = 'script_segments' in state
-        interval = NARRATION_INTERVAL_S if modern else LEGACY_INTERVAL_S
+        interval = self._narration_interval(state) if modern else LEGACY_INTERVAL_S
         while self.clock() < state['ends_at']:
             elapsed = max(0.0, self.clock() - state['started_at'])
             slot = int(elapsed // interval)

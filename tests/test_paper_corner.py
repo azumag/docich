@@ -522,6 +522,43 @@ def test_end_text_is_date_stamped_against_dup_suppression(tmp_path):
     g = setup(tmp_path)
     mgr = manager(g)
     assert '9月8日' in mgr._end_text({'date': '2026-09-08'})
+
+
+def test_narration_interval_matches_production_cadence_at_30_minutes(tmp_path):
+    from docich.paper_corner import NARRATION_INTERVAL_S
+
+    g = setup(tmp_path)
+    mgr = manager(g)
+    state = {'started_at': 0.0, 'ends_at': 1800.0}
+    assert mgr._narration_interval(state) == NARRATION_INTERVAL_S == 120
+
+
+def test_narration_interval_shrinks_to_fit_a_short_manual_test(tmp_path):
+    from docich.paper_corner import MIN_NARRATION_INTERVAL_S, NARRATION_INTERVAL_S, SCRIPT_SLOTS
+
+    g = setup(tmp_path)
+    mgr = manager(g)
+    last_slot = max(SCRIPT_SLOTS)
+    for duration_s, expected in (
+        (60.0, 30), (600.0, 66), (1080.0, 120), (1200.0, 120), (43200.0, 120),
+    ):
+        state = {'started_at': 0.0, 'ends_at': duration_s}
+        interval = mgr._narration_interval(state)
+        assert interval == expected, (duration_s, interval, expected)
+        assert interval <= NARRATION_INTERVAL_S
+        if duration_s >= (last_slot + 1) * NARRATION_INTERVAL_S:
+            assert interval == NARRATION_INTERVAL_S
+        elif duration_s >= (last_slot + 1) * MIN_NARRATION_INTERVAL_S:
+            # Long enough for the floor to still fit every script segment:
+            # all 8 must fire strictly before ends_at.
+            assert interval >= MIN_NARRATION_INTERVAL_S
+            assert last_slot * interval < duration_s
+        else:
+            # Pathologically short (e.g. a 1-minute smoke test): the floor
+            # would swallow the whole corner, so the escape hatch shrinks
+            # below MIN_NARRATION_INTERVAL_S to guarantee at least one
+            # narration instead of delivering nothing.
+            assert interval < MIN_NARRATION_INTERVAL_S
     assert mgr._end_text({'date': 'not-a-date'}) == '規定時間を終え、通常の短報に戻ります。'
 
 

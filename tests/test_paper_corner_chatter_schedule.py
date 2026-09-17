@@ -100,7 +100,37 @@ def test_all_eight_segments_are_scheduled_early(tmp_path):
     assert SCRIPT_SLOTS[3] == 3
     assert SCRIPT_SLOTS[6] == 6
     assert SCRIPT_SLOTS[7] == 7
-    mgr._scheduled_narration(state, 3)
+    for slot in range(1, 9):
+        mgr._scheduled_narration(state, slot)
     assert state["reports"]["script:3"]["text"] == "文3です。"
+    assert state["reports"]["script:6"]["text"] == "文6です。"
+    assert state["reports"]["script:7"]["text"] == "文7です。"
     mgr._scheduled_narration(state, 9)
     assert "chatter:9" in state["reports"]
+
+
+def test_missed_slot_catches_up_instead_of_being_lost(tmp_path):
+    """A slow announce() overrunning its interval must not permanently skip a
+
+    segment (the loop's slot index can jump ahead of the naive slot->segment
+    mapping); the next scheduled call should catch the missed one up instead.
+    """
+    mgr = _manager(tmp_path)
+    state = {
+        "date": "2026-09-12",
+        "reports": {},
+        "script_segments": {str(index): f"文{index}です。" for index in range(1, 9)},
+    }
+    mgr._scheduled_narration(state, 1)
+    assert "script:1" in state["reports"]
+    # Slot 2 never fires (e.g. a slow prior announce() overran it); the loop's
+    # next call jumps straight to slot 3.
+    mgr._scheduled_narration(state, 3)
+    assert state["reports"]["script:2"]["text"] == "文2です。", (
+        "script:2 must be delivered on catch-up, not skipped"
+    )
+    assert "script:3" not in state["reports"], (
+        "only one segment is delivered per call, so flooding never happens"
+    )
+    mgr._scheduled_narration(state, 3)
+    assert state["reports"]["script:3"]["text"] == "文3です。"

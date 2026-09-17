@@ -474,6 +474,32 @@ def test_generate_accepts_multiline_model_json(tmp_path, monkeypatch):
     assert "生成文1" in result["segments"]["corner"]
 
 
+def test_generate_records_ai_text_error_kind_not_just_class_name(tmp_path, monkeypatch):
+    """A generate_text failure must leave a diagnosable reason (issue: 9/18 corner
+
+    outage where every AI attempt failed and state only recorded the bare
+    exception class name ``AiTextError``, with no way to tell rate-limit vs
+    provider failure vs empty output without re-running with instrumentation).
+    """
+    from docich.trading import corner_script
+    from docich.trading.ai_text import AiTextError
+
+    _write_status(tmp_path)
+    monkeypatch.setenv("DOCICH_ALLOW_REAL_AI", "1")
+    monkeypatch.setattr(corner_script, "prepare_research_context", lambda *a, **k: {})
+
+    def _raise(*a, **k):
+        raise AiTextError("AI生成が失敗しました (rc=1)", kind="rc-1:rate_limit")
+
+    monkeypatch.setattr(corner_script, "generate_text", _raise)
+    result = generate_corner_script(
+        object(), trading_dir=tmp_path, agents="opencode:x", now=1010.0,
+        timeframe_facts=_TIMEFRAME_FACTS,
+    )
+    assert result["source"] == "fallback"
+    assert result["reason"] == "AiTextError:rc-1:rate_limit"
+
+
 def test_generate_records_parse_failure_kind(tmp_path, monkeypatch):
     from docich.trading import corner_script
 

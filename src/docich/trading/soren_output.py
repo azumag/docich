@@ -35,6 +35,19 @@ _CHUKA_QUIPS = (
 
 _MERIKEN_VOICE_FALLBACK = "46"
 
+# Matches both the daily corner's fixed scope ("paper-corner:...") and any
+# operator/manual test run's per-invocation scope ("paper-corner-manual-
+# <uuid12hex>:...", "paper-corner-operator-...", etc). Both need the
+# quip/persona treatment below: it is what makes a deterministic-fallback
+# delivery vary its final spoken text across occasions (see
+# _paper_corner_speech_text). A scope-prefix split is used instead of a regex
+# tied to the exact manual-scope shape (e.g. the uuid hex length), so a future
+# scope variant is covered by construction rather than needing this file
+# updated in lockstep.
+def _is_paper_corner_delivery(event_id: str) -> bool:
+    scope = str(event_id or "").split(":", 1)[0]
+    return scope == "paper-corner" or scope.startswith("paper-corner-")
+
 
 def pick_paper_persona(event_id: str) -> str:
     """Deterministically pick a narration persona for one delivery."""
@@ -45,7 +58,7 @@ def pick_paper_persona(event_id: str) -> str:
 def paper_persona_quip(event_id: str) -> tuple[str, str]:
     """Return the (persona, one-line quip) for one speech delivery."""
     key = str(event_id or "")
-    if not key.startswith("paper-corner:"):
+    if not _is_paper_corner_delivery(key):
         return PAPER_PERSONA_CHUKA, ""
     digest = int(hashlib.sha256(key.encode("utf-8")).hexdigest(), 16)
     persona = PAPER_PERSONAS[digest % len(PAPER_PERSONAS)]
@@ -87,7 +100,7 @@ def _paper_corner_speech_text(text: str, event_id: str) -> str:
     """
     body = str(text).strip()
     key = str(event_id or "")
-    if not key.startswith("paper-corner:"):
+    if not _is_paper_corner_delivery(key):
         return body
     parts = key.split(":")
     suffix = parts[-1]
@@ -157,7 +170,7 @@ def enqueue_speech(g: GlobalConfig, text: str, *, event_id: str = "") -> None:
     speech_text = _paper_corner_speech_text(text, event_id)
     root = resolve_soren_root(g)
     speaker = ""
-    if pick_paper_persona(event_id) == PAPER_PERSONA_MERIKEN and str(event_id or "").startswith("paper-corner:"):
+    if pick_paper_persona(event_id) == PAPER_PERSONA_MERIKEN and _is_paper_corner_delivery(event_id):
         speaker = _meriken_speaker_id(root)
     try:
         from .. import webui
