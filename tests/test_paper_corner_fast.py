@@ -128,3 +128,26 @@ def test_start_becomes_active_before_script_enrichment(tmp_path):
     assert observed == [("active", 1000.0, 1060.0)]
     saved = json.loads(mgr.path.read_text(encoding="utf-8"))
     assert saved["status"] == "completed"
+
+
+def test_prewarm_installs_fallback_and_spawns_worker_once(tmp_path):
+    spawned = []
+    mgr = _manager(tmp_path, script_spawn=lambda argv, log: spawned.append(argv) or 999)
+    state = {'status': 'waiting', 'date': '2026-09-17', 'requested_at': 1000.0}
+    mgr._prewarm_script(state)
+    assert state.get('script_segments')
+    assert len(state['script_segments']) == 8
+    assert state['script_job']['status'] == 'running'
+    count = len(spawned)
+    assert count == 1
+    mgr._prewarm_script(state)
+    assert len(spawned) == count
+
+
+def test_prewarm_ignores_non_waiting_states(tmp_path):
+    spawned = []
+    mgr = _manager(tmp_path, script_spawn=lambda argv, log: spawned.append(argv) or 999)
+    state = {'status': 'active', 'date': '2026-09-17'}
+    mgr._prewarm_script(state)
+    assert spawned == []
+    assert 'script_segments' not in state

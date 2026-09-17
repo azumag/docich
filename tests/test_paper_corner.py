@@ -523,3 +523,41 @@ def test_end_text_is_date_stamped_against_dup_suppression(tmp_path):
     mgr = manager(g)
     assert '9月8日' in mgr._end_text({'date': '2026-09-08'})
     assert mgr._end_text({'date': 'not-a-date'}) == '規定時間を終え、通常の短報に戻ります。'
+
+
+def test_start_prepares_script_before_switch(tmp_path):
+    g = setup(tmp_path)
+    now = [datetime(2026, 9, 8, 22, tzinfo=ZoneInfo('Asia/Tokyo')).timestamp()]
+    coord = FakeCoordinator(active='sorengame')
+    order = []
+    mgr = manager(g, clock=lambda: now[0],
+                  sleep=lambda t: now.__setitem__(0, now[0] + 2000),
+                  overlay=lambda g, p: None, speech=lambda g, t, **kw: None,
+                  coordinator=coord)
+
+    def spy(state):
+        order.append('script')
+        state['script_segments'] = {'1': 'x'}
+        mgr.save(state)
+    mgr._announce_script = spy
+    orig_switch = coord.switch
+
+    def switch(game):
+        order.append(f'switch:{game}')
+        return orig_switch(game)
+    coord.switch = switch
+    mgr._active_game = (
+        lambda: 'sorengame' if not any(o.startswith('switch:') for o in order) else 'paper-view'
+    )
+    assert mgr.start() == 'completed'
+    assert order[0] == 'script'
+    assert order.index('script') < order.index('switch:paper-view')
+
+
+def test_base_prewarm_is_noop(tmp_path):
+    g = setup(tmp_path)
+    mgr = manager(g)
+    state = {'status': 'waiting', 'date': '2026-09-08'}
+    assert mgr._prewarm_script(state) is None
+    assert 'script_segments' not in state
+    assert 'script_job' not in state

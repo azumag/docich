@@ -127,6 +127,13 @@ class FastPaperCornerManager(PaperCornerManager):
             )
         return int(proc.pid)
 
+    def _prewarm_script(self, state) -> None:
+        # Waiting-phase hook (see base): fallback installs locally in seconds
+        # and the AI worker runs detached, so this never blocks the tick.
+        # Spawn-once is guarded by script_job inside _announce_script.
+        if state.get('status') == 'waiting':
+            self._announce_script(state)
+
     def _announce_script(self, state) -> None:
         """Install an immediate fallback script, then enrich it in a detached worker."""
         existing = state.get("script_segments")
