@@ -34,11 +34,15 @@ DEFAULT_SAVE_DIR = Path("/var/games/nethack/save")
 BOUNDARY_RESULT_FILENAME = "nethack_boundary.json"
 _PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,31}$")
 
-# Character-creation / startup screens have no durable run to save: NetHack has
-# not created an adventure yet.  The normal ``S`` boundary only succeeds after a
+# Character-creation prompts have no durable run to save: NetHack has not
+# created an adventure yet.  The normal ``S`` boundary only succeeds after a
 # fresh save file appears, which can never happen here, so a switch away from a
 # game that never reached gameplay would otherwise wait until the deadline,
 # fail closed, and leave the canonical active game stuck on NetHack.
+#
+# Do not include post-creation banners such as "Welcome to NetHack!": that
+# message can remain visible after the map/status line exists, at which point
+# an adventure has started and must use the normal durable save boundary.
 _PREGAME_SCREEN_MARKERS = (
     "do you want a tutorial",
     "shall i pick",
@@ -48,7 +52,6 @@ _PREGAME_SCREEN_MARKERS = (
     "pick an alignment",
     "pick a gender",
     "is this ok",
-    "welcome to net",
 )
 
 
