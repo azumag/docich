@@ -13,11 +13,17 @@ class SorenOutputError(RuntimeError):
     """Raised when an existing Soren viewer-output queue cannot accept output."""
 
 
-# Narration personas: the stream's two AI personalities take turns on the
-# PAPER corner. Chuka (中華AI) speaks in the worker's default voice; Meriken
-# (メリケンAI) uses the Soren91 voice. The pick is a deterministic hash of the
-# durable delivery key: random across deliveries, stable across retries, so a
-# redelivered announcement never changes voice or wording mid-corner.
+# Narration personas: the stream's two AI personalities take turns hosting
+# the PAPER corner. Chuka (中華AI) speaks in the worker's default voice;
+# Meriken (メリケンAI) uses the Soren91 voice. Exactly one persona hosts an
+# entire corner run (decided once, effectively at random, when the corner
+# starts) rather than switching mid-corner segment to segment; a listener
+# hearing both voices alternate within the same 10/30-minute corner read as
+# a bug, not a feature. The pick is a deterministic hash of the corner's
+# fixed identity (delivery scope + date, i.e. every event_id up to and
+# including the date segment) rather than the full per-segment delivery key:
+# stable across every segment and retry within one corner, but still varies
+# across different corners (different dates, or a fresh manual-run uuid).
 PAPER_PERSONA_CHUKA = "chuka"
 PAPER_PERSONA_MERIKEN = "meriken"
 PAPER_PERSONAS = (PAPER_PERSONA_CHUKA, PAPER_PERSONA_MERIKEN)
@@ -49,10 +55,50 @@ def _is_paper_corner_delivery(event_id: str) -> bool:
     return scope == "paper-corner" or scope.startswith("paper-corner-")
 
 
+def _corner_identity(event_id: str) -> str:
+    """The part of a delivery key shared by every segment of one corner run.
+
+    ``event_id`` is ``{delivery_scope}:{date}:{key}`` (e.g.
+    ``paper-corner:2026-09-18:script:3`` or
+    ``paper-corner-manual-<uuid>:2026-09-18:opening``); the first two
+    colon-separated parts (scope + date) identify one corner run and are
+    shared by every segment/retry inside it, unlike ``key`` itself.
+    """
+    parts = str(event_id or "").split(":")
+    return ":".join(parts[:2]) if len(parts) >= 2 else str(event_id or "")
+
+
 def pick_paper_persona(event_id: str) -> str:
-    """Deterministically pick a narration persona for one delivery."""
-    digest = hashlib.sha256(str(event_id or "").encode("utf-8")).hexdigest()
+    """Deterministically pick the one persona hosting this corner run."""
+    digest = hashlib.sha256(_corner_identity(event_id).encode("utf-8")).hexdigest()
     return PAPER_PERSONAS[int(digest, 16) % len(PAPER_PERSONAS)]
+
+
+def _quip_rotation_index(event_id: str) -> int:
+    """Stable per-segment index that rotates through the quip pool.
+
+    Numbered segments (``script:N`` / ``chatter:N`` / a legacy plain-integer
+    slot ``N``) rotate by ``N`` itself offset by a per-corner constant, so
+    (a) consecutive real segments in one corner never open with the same
+    line (only every Nth, where N is the pool size) instead of a hash
+    landing on the same bucket by chance, and (b) two different corner runs
+    that reach the same segment number with byte-identical deterministic
+    fallback text (e.g. two manual tests with unchanged trading facts)
+    still pick different quips, because the offset -- not just N -- differs
+    per corner. Without the offset, fixing the rotation to N alone would
+    make two such corners produce byte-identical final speech and
+    reintroduce the player-side content-hash dedupe false-positive this
+    quip mechanism exists to prevent. One-off keys
+    (``opening``/``switch-notice``/``end``) fall back to a plain hash since
+    they only ever occur once per corner, so rotation-consistency across
+    occurrences of the *same* key does not apply to them.
+    """
+    key = str(event_id or "")
+    suffix = key.rsplit(":", 1)[-1]
+    offset = int(hashlib.sha256(_corner_identity(key).encode("utf-8")).hexdigest(), 16)
+    if suffix.isdigit():
+        return offset + int(suffix)
+    return offset + int(hashlib.sha256(key.encode("utf-8")).hexdigest(), 16)
 
 
 def paper_persona_quip(event_id: str) -> tuple[str, str]:
@@ -60,10 +106,9 @@ def paper_persona_quip(event_id: str) -> tuple[str, str]:
     key = str(event_id or "")
     if not _is_paper_corner_delivery(key):
         return PAPER_PERSONA_CHUKA, ""
-    digest = int(hashlib.sha256(key.encode("utf-8")).hexdigest(), 16)
-    persona = PAPER_PERSONAS[digest % len(PAPER_PERSONAS)]
+    persona = pick_paper_persona(key)
     quips = _MERIKEN_QUIPS if persona == PAPER_PERSONA_MERIKEN else _CHUKA_QUIPS
-    return persona, quips[(digest >> 1) % len(quips)]
+    return persona, quips[_quip_rotation_index(key) % len(quips)]
 
 
 def _meriken_speaker_id(soren_root: Path) -> str:

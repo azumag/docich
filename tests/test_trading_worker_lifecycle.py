@@ -172,6 +172,54 @@ class TestTradingWorkerLifecycle(unittest.TestCase):
             )
             self.assertEqual(fallback.stdout, "SYSTEM\n")
 
+    def test_manual_paper_corner_prefers_trading_virtualenv(self):
+        """docich-paper-corner-manual must run under the trading venv too.
+
+        It previously used the bare system `python3` unlike every sibling
+        paper-corner launcher (-operator/-restore/-watchdog), so ccxt (only
+        installed in .venv-trading) was unavailable and every manual test's
+        multi-timeframe chart fetch raised CCXTUnavailableError, silently
+        falling back to "取得が間に合わず" narration on every run.
+        """
+        source_launcher = Path(__file__).resolve().parents[1] / "bin" / "docich-paper-corner-manual"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            launcher = root / "bin" / "docich-paper-corner-manual"
+            launcher.parent.mkdir(parents=True)
+            launcher.write_text(source_launcher.read_text(encoding="utf-8"), encoding="utf-8")
+            launcher.chmod(0o755)
+
+            trading_python = root / ".venv-trading" / "bin" / "python3"
+            trading_python.parent.mkdir(parents=True)
+            trading_python.write_text("#!/bin/sh\nprintf 'TRADING\\n'\n", encoding="utf-8")
+            trading_python.chmod(0o755)
+
+            system_bin = root / "system-bin"
+            system_bin.mkdir()
+            system_python = system_bin / "python3"
+            system_python.write_text("#!/bin/sh\nprintf 'SYSTEM\\n'\n", encoding="utf-8")
+            system_python.chmod(0o755)
+            env = dict(os.environ, PATH=f"{system_bin}:/usr/bin:/bin")
+
+            preferred = subprocess.run(
+                [str(launcher), "status"],
+                check=True,
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            self.assertEqual(preferred.stdout, "TRADING\n")
+
+            trading_python.unlink()
+            fallback = subprocess.run(
+                [str(launcher), "status"],
+                check=True,
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            self.assertEqual(fallback.stdout, "SYSTEM\n")
+
 
 if __name__ == "__main__":
     unittest.main()
