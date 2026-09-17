@@ -96,13 +96,31 @@ class TestSorenOutputAdapter(unittest.TestCase):
         self.assertNotEqual(first, later)
         self.assertIn("BTC/JPY", later)
 
-    def test_persona_pick_is_stable_and_covers_both_voices(self):
-        seen = {soren_output.pick_paper_persona(f"paper-corner:2026-09-17:script:{i}") for i in range(40)}
+    def test_persona_is_fixed_for_every_segment_of_one_corner(self):
+        """One persona hosts the whole corner; it must not alternate segment
+
+        to segment (a listener hearing both voices swap mid-corner reported
+        this as a bug, not a feature).
+        """
+        keys = [
+            "paper-corner:2026-09-17:opening",
+            "paper-corner:2026-09-17:script:1",
+            "paper-corner:2026-09-17:script:2",
+            "paper-corner:2026-09-17:script:8",
+            "paper-corner:2026-09-17:chatter:9",
+            "paper-corner:2026-09-17:switch-notice",
+        ]
+        personas = {soren_output.pick_paper_persona(key) for key in keys}
+        self.assertEqual(len(personas), 1, personas)
+
+    def test_persona_pick_covers_both_voices_across_different_corners(self):
+        # Persona varies by corner identity (scope+date), so different dates
+        # (production) or different manual-run uuids still cover both voices.
+        seen = {
+            soren_output.pick_paper_persona(f"paper-corner:2026-09-{day:02d}:script:1")
+            for day in range(1, 29)
+        }
         self.assertEqual(seen, {"chuka", "meriken"})
-        for key in ("paper-corner:2026-09-17:opening", "paper-corner:2026-09-17:script:2"):
-            self.assertEqual(
-                soren_output.pick_paper_persona(key), soren_output.pick_paper_persona(key)
-            )
 
     def test_persona_quips_match_house_speech_rules(self):
         for persona, quips in (
@@ -147,6 +165,21 @@ class TestSorenOutputAdapter(unittest.TestCase):
         self.assertTrue(spoken.startswith(quip))
         self.assertTrue(spoken.endswith("損益を見ます。"))
 
+    def test_quip_rotates_within_one_corner_without_adjacent_repeats(self):
+        """The opening line must not sound "always the same" within one corner
+
+        (reported: メリケンAI's opening phrase looked fixed). A hash-per-
+        segment pick could land on the same quip repeatedly by chance with
+        only 3 quips in the pool; rotation guarantees no two consecutive
+        script segments share a quip.
+        """
+        quips = [
+            soren_output.paper_persona_quip(f"paper-corner-manual-fixedscope:2026-09-18:script:{i}")[1]
+            for i in range(1, 9)
+        ]
+        for first, second in zip(quips, quips[1:]):
+            self.assertNotEqual(first, second)
+
     def test_two_manual_runs_with_identical_fallback_text_speak_differently(self):
         """The actual regression: same raw text, different manual delivery_scope."""
         raw_text = "時間足チャートの解説です。今回は公開ローソクの取得が間に合わず、数字をお伝えできません。"
@@ -158,8 +191,10 @@ class TestSorenOutputAdapter(unittest.TestCase):
 
     def test_meriken_delivery_uses_soren91_voice_and_chuka_uses_default(self):
         def key_for(persona):
-            for i in range(500):
-                key = f"paper-corner:2026-09-17:probe:{i}"
+            # Persona is now fixed per corner (scope+date), so vary the date
+            # to find one corner hosted by each voice.
+            for day in range(1, 29):
+                key = f"paper-corner:2026-09-{day:02d}:probe:0"
                 if soren_output.pick_paper_persona(key) == persona:
                     return key
             raise AssertionError(f"no {persona} key found")

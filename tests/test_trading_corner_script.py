@@ -13,6 +13,7 @@ from docich.trading.corner_script import (  # noqa: E402
     MAX_SEGMENT_CHARS,
     SEGMENT_KEYS,
     CornerScriptError,
+    _condition_text,
     build_facts,
     build_prompt,
     generate_corner_script,
@@ -343,10 +344,15 @@ def test_render_fallback_new_segments_are_grounded():
     }
     fallback = render_fallback(facts)
     assert set(fallback) == set(SEGMENT_KEYS)
-    # The fill explanation names the indicator and the threshold, not the raw code.
-    assert "return_bps" in fallback["fills"] and "150" in fallback["fills"]
-    # News covers every available headline, not just one.
-    assert "A" in fallback["news"] and "B" in fallback["news"]
+    # The fill explanation names the indicator in plain language and its
+    # meaning, not the raw feature code, while keeping the real numbers.
+    assert "return_bps" not in fallback["fills"]
+    assert "直近の値上がり率" in fallback["fills"] and "150" in fallback["fills"]
+    assert "値上がりの勢いが十分だった" in fallback["fills"]
+    # News covers every available headline, not just one (by position; see
+    # test_news_segment_explains_content_instead_of_reciting_title_and_source
+    # for the "no verbatim recitation" contract).
+    assert "1件目は" in fallback["news"] and "2件目は" in fallback["news"]
     # The review ties the round trip to its entry/exit grounds.
     assert "btc_jpy" in fallback["review"] and "12" in fallback["review"]
     assert "正しかった" in fallback["review"] or "利益" in fallback["review"]
@@ -398,6 +404,30 @@ def test_generate_merges_partial_ai_with_fallback(tmp_path, monkeypatch):
     assert set(result["segments"]) == set(SEGMENT_KEYS)
 
 
+def test_condition_text_explains_meaning_not_just_the_raw_feature_code():
+    # RSI at/above threshold ("overbought") must read as such, not just the
+    # bare code name and comparison symbol.
+    overbought = _condition_text({"conditions": [
+        {"feature": "rsi", "observed": "78.4", "threshold": "70", "op": ">=", "lookback": 12},
+    ]})
+    assert "rsiが" not in overbought  # bare code name, not the plain-language label
+    assert "買われすぎ" in overbought
+    assert "78.4" in overbought and "70" in overbought
+    assert "以上" in overbought  # natural-language op, not a bare ">=" symbol
+
+    # The same feature at/below threshold ("oversold") must read the other way.
+    oversold = _condition_text({"conditions": [
+        {"feature": "rsi", "observed": "22.1", "threshold": "30", "op": "<=", "lookback": 12},
+    ]})
+    assert "売られすぎ" in oversold
+    assert "以下" in oversold
+
+    unknown = _condition_text({"conditions": [
+        {"feature": "some_future_feature", "observed": "1", "threshold": "2", "op": ">="},
+    ]})
+    assert "some_future_feature" in unknown  # unknown features degrade gracefully
+
+
 def test_news_segment_has_no_repeated_disclaimer():
     fallback = render_fallback({
         "policy": {},
@@ -406,9 +436,35 @@ def test_news_segment_has_no_repeated_disclaimer():
             {"title": "B", "source": "Y"},
         ]},
     })
-    assert "A" in fallback["news"] and "B" in fallback["news"]
+    # Every item is addressed (by position), without reciting the raw title
+    # text or the outlet name aloud (see test_news_segment_explains_content).
+    assert "1件目は" in fallback["news"] and "2件目は" in fallback["news"]
+    assert "A" not in fallback["news"] and "B" not in fallback["news"]
+    assert "X" not in fallback["news"] and "Y" not in fallback["news"]
     assert "見出しの段階" not in fallback["news"]
     assert fallback["news"].count("事実と推測") == 0
+
+
+def test_news_segment_explains_content_instead_of_reciting_title_and_source():
+    """Do not read the headline verbatim or name the outlet aloud; explain
+
+    what the headline is about instead (regulation/flows/price direction).
+    """
+    fallback = render_fallback({
+        "policy": {},
+        "research": {"news_items": [
+            {"title": "米議会が暗号資産規制法案を否決、先送りへ", "source": "Example News"},
+            {"title": "ビットコインETFに資金流入が拡大", "source": "Another Outlet"},
+            {"title": "ビットコイン価格が急落、下値模索", "source": "Third Outlet"},
+        ]},
+    })
+    news = fallback["news"]
+    for raw in ("米議会が暗号資産規制法案を否決", "ビットコインETFに資金流入が拡大",
+                "ビットコイン価格が急落", "Example News", "Another Outlet", "Third Outlet"):
+        assert raw not in news, raw
+    assert "規制" in news and ("否決" in news or "足踏み" in news)
+    assert "資金" in news and "入ってきている" in news
+    assert "下向き" in news
 
 
 def test_spoken_numbers_are_rounded_to_two_decimals():
@@ -456,6 +512,12 @@ def test_prompt_instructs_two_decimal_speech():
     prompt = build_prompt({"policy": {}})
     assert "小数第2位" in prompt
     assert "見出しの段階なので" in prompt
+
+
+def test_prompt_forbids_reciting_headline_and_outlet_name():
+    prompt = build_prompt({"policy": {}})
+    assert "見出しの文言をそのまま読み上げず" in prompt
+    assert "媒体名も口に出さない" in prompt
 
 
 def test_generate_accepts_multiline_model_json(tmp_path, monkeypatch):

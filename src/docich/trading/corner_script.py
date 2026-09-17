@@ -253,6 +253,8 @@ def build_prompt(facts: Mapping[str, object]) -> str:
         "【ニュースの扱い】\n"
         "- research.news_items はGoogle News RSSから取得した見出し・媒体・時刻・RSS要約です。記事全文ではありません。"
         "見出しだけで断定せず、複数項目の共通点や相違点を見て、事実とあなたの推測を言い分けてください。\n"
+        "- **見出しの文言をそのまま読み上げず、媒体名も口に出さないでください。** 「『見出し』（媒体）」という紹介は禁止です。"
+        "見出しから読み取れる内容（規制・資金動向・価格変動・技術など）を自分の言葉で説明してください。\n"
         "- **1件で済ませず、重要そうなものを5〜6件選び**、それぞれ『何が起きたか』→『市場やBOTにどう効き得るか』→"
         "『実際に何を観測すべきか』の順で、他の項目と関連づけながら具体的に掘り下げます。"
         "価格が動いた理由をニュースだけで決めつけないでください。\n"
@@ -437,6 +439,54 @@ def _chart_text(facts: Mapping[str, object]) -> str:
     return "".join(parts)
 
 
+# Plain-language label and directional interpretation for each strategy_lab
+# feature (see ENTRY_FEATURES/EXIT_FEATURES in trading/strategy_lab.py -- this
+# is the complete allowlisted set). "high" is what the condition means when
+# the observed value sits at/above the threshold (op ">="/">"); "low" is the
+# at/below case (op "<="/"<"). This turns a bare feature/threshold dump
+# ("sma_gap_bpsが45.39bpsで閾値30bpsを>=") into an explanation a listener can
+# act on ("移動平均からの乖離幅が45.39bpsと、移動平均を上回る勢いがあったため").
+_FEATURE_GLOSS: dict[str, dict[str, str]] = {
+    "return_bps": {
+        "label": "直近の値上がり率", "unit": "bps",
+        "high": "値上がりの勢いが十分だった", "low": "値下がりが目立った",
+    },
+    "zscore": {
+        "label": "平均からの乖離度(zスコア)", "unit": "",
+        "high": "平均よりかなり買われている(上に乖離)", "low": "平均よりかなり売られている(下に乖離)",
+    },
+    "rsi": {
+        "label": "買われすぎ・売られすぎの指標(RSI)", "unit": "",
+        "high": "買われすぎの水準", "low": "売られすぎの水準",
+    },
+    "sma_gap_bps": {
+        "label": "移動平均からの乖離幅", "unit": "bps",
+        "high": "移動平均を大きく上回る勢い", "low": "移動平均を大きく下回る弱さ",
+    },
+    "volatility_bps": {
+        "label": "値動きの荒さ(実現ボラティリティ)", "unit": "bps",
+        "high": "値動きが荒くなっている", "low": "値動きが落ち着いている",
+    },
+    "breakout_bps": {
+        "label": "直近レンジからの突破幅", "unit": "bps",
+        "high": "直近のレンジを上に突破した", "low": "直近のレンジを下に割り込んだ",
+    },
+    "drawdown_bps": {
+        "label": "高値からの下落幅", "unit": "bps",
+        "high": "高値からの下落が浅い", "low": "高値からかなり下落した",
+    },
+    "pnl_bps": {
+        "label": "含み損益の割合", "unit": "bps",
+        "high": "利益が目標水準に達した", "low": "損失が許容ラインを超えた",
+    },
+    "hold_minutes": {
+        "label": "保有時間", "unit": "分",
+        "high": "保有時間が長くなった", "low": "保有時間はまだ短い",
+    },
+}
+_OP_WORDS = {">=": "以上", "<=": "以下", ">": "より大きく", "<": "より小さく"}
+
+
 def _condition_text(signal: object) -> str:
     if not isinstance(signal, Mapping):
         return ""
@@ -447,18 +497,85 @@ def _condition_text(signal: object) -> str:
         if not isinstance(item, Mapping):
             continue
         feature = str(item.get("feature") or "")
-        observed = str(item.get("observed") or "")
-        threshold = str(item.get("threshold") or "")
+        observed = item.get("observed")
+        threshold = item.get("threshold")
         op = str(item.get("op") or "")
-        unit = str(item.get("unit") or "")
         lookback = item.get("lookback")
-        look = f"{lookback}本" if isinstance(lookback, int) else ""
-        if feature and observed and threshold:
-            parts.append(
-                f"{feature}が{_fmt_num(observed) or observed}{unit}で閾値"
-                f"{_fmt_num(threshold) or threshold}{unit}を{op}（{look}）"
-            )
+        if not (feature and observed not in (None, "") and threshold not in (None, "")):
+            continue
+        gloss = _FEATURE_GLOSS.get(feature, {"label": feature, "unit": "", "high": "", "low": ""})
+        unit = gloss["unit"]
+        op_word = _OP_WORDS.get(op, op)
+        interp = gloss["high"] if op in (">=", ">") else gloss["low"]
+        look = f"、直近{lookback}本基準" if isinstance(lookback, int) else ""
+        meaning = f"（{interp}{look}）" if interp else f"（{look.lstrip('、')}）" if look else ""
+        parts.append(
+            f"{gloss['label']}が{_fmt_num(observed) or observed}{unit}で"
+            f"閾値{_fmt_num(threshold) or threshold}{unit}{op_word}{meaning}"
+        )
     return "、".join(parts)
+
+
+# Keyword-driven topic/sentiment heuristic for the deterministic news
+# fallback. Google News RSS gives only a headline (its "description" field
+# is just the headline again, with no real article body), so there is no
+# genuine content to summarize without fetching the linked page -- which
+# this module deliberately does not do. This heuristic reads the headline
+# for a topic and a directional cue and narrates *that* instead of reciting
+# the headline text or naming the outlet aloud. Checked in order: an earlier
+# match wins when a headline could plausibly match more than one topic.
+_NEWS_TOPIC_RULES: tuple[tuple[str, tuple[str, ...], tuple[str, ...], str, str, str], ...] = (
+    (
+        "regulation",
+        ("規制", "法案", "金融庁", "sec", "上院", "下院", "議会", "当局"),
+        ("否決", "廃案", "頓挫", "懸念", "延期", "困難"),
+        ("可決", "承認", "前進", "成立", "明確化"),
+        "規制・制度面の話題で、制度がどちらへ転ぶか足踏みしている内容です。相場の重しになり得るので続報を待ちます。",
+        "規制・制度面の話題で、制度整備が前進した内容です。不透明感が薄れる材料になり得ます。",
+    ),
+    (
+        "flows",
+        ("etf", "資金流入", "資金流出", "機関投資家", "カストディ", "銀行"),
+        ("流出", "撤退", "縮小"),
+        ("流入", "参入", "開始", "拡大"),
+        "ETFや機関投資家の資金動向に関する話題で、資金が抜けている内容です。中期的な需給の重しになり得ます。",
+        "ETFや機関投資家の資金動向に関する話題で、資金が入ってきている内容です。中期的な需給の支えになり得ます。",
+    ),
+    (
+        "price_action",
+        ("価格", "相場", "btc", "ビットコイン", "イーサリアム", "eth"),
+        ("下落", "下げ", "反落", "急落", "安値", "下値"),
+        ("上昇", "上げ", "反発", "急騰", "高値", "上値"),
+        "相場そのものの値動きに関する話題で、下向きの内容です。実際の値動きと突き合わせて確認します。",
+        "相場そのものの値動きに関する話題で、上向きの内容です。実際の値動きと突き合わせて確認します。",
+    ),
+    (
+        "technology",
+        ("技術", "開発", "アップグレード", "量子", "ネットワーク"),
+        (),
+        (),
+        "技術・開発面の話題です。すぐに値動きへ直結する材料ではありませんが、中長期の観点で押さえておきます。",
+        "",
+    ),
+)
+
+
+def _news_item_commentary(title: str) -> str:
+    lowered = title.lower()
+    for _key, topic_kw, negative_kw, positive_kw, negative_text, positive_text in _NEWS_TOPIC_RULES:
+        if not any(kw in lowered for kw in topic_kw):
+            continue
+        if any(kw in lowered for kw in negative_kw) and negative_text:
+            return negative_text
+        if any(kw in lowered for kw in positive_kw) and positive_text:
+            return positive_text
+        return negative_text or positive_text or (
+            "市場に関する話題ですが、見出しだけでは方向感を断定できません。実際の値動きと突き合わせて確認します。"
+        )
+    return (
+        "個別銘柄や市場全体に関する話題です。見出し以上の詳細は確認できていないため、"
+        "実際の値動きと突き合わせて確認します。"
+    )
 
 
 def _news_text(facts: Mapping[str, object]) -> str:
@@ -471,12 +588,11 @@ def _news_text(facts: Mapping[str, object]) -> str:
             "個別のニュース解説はお休みします。取得できた次のコーナーでまとめて扱います。"
         )
     shown = news[:6]
-    parts = [f"暗号資産ニュースです。今回は{len(shown)}件を取り上げます。"]
-    for item in shown:
+    parts = [f"暗号資産ニュースです。今回は{len(shown)}件の話題が入っています。見出しをそのまま読み上げるのではなく、"
+             "何についての話かを一件ずつかいつまんで伝えます。"]
+    for index, item in enumerate(shown, start=1):
         title = str(item.get("title") or "").strip()
-        source = str(item.get("source") or "").strip()
-        who = f"（{source}）" if source else ""
-        parts.append(f"「{title}」{who}。")
+        parts.append(f"{index}件目は、{_news_item_commentary(title)}")
     return "".join(parts)
 
 

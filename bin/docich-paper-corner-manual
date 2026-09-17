@@ -3,4 +3,15 @@
 set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
-exec python3 -m docich.paper_corner_manual "$@"
+
+# Multi-timeframe chart narration needs ccxt, which lives only in the trading
+# venv (see docich-paper-corner-operator/-restore/-watchdog, which already do
+# this). The bare `python3` used here previously meant every manual test's
+# public-candlestick fetch raised CCXTUnavailableError and silently fell back
+# to "取得が間に合わず" narration, unlike the scheduled corner (which runs
+# through bin/docich's trading-venv dispatch).
+PYTHON="$ROOT/.venv-trading/bin/python3"
+if [[ ! -x "$PYTHON" ]]; then
+  PYTHON=python3
+fi
+exec "$PYTHON" -m docich.paper_corner_manual "$@"
