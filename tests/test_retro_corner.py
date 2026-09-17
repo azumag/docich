@@ -228,7 +228,10 @@ class TestProductionProfile(unittest.TestCase):
         )
         self.assertEqual(live_cfg.start_hour, 19)
         self.assertEqual(live_cfg.duration_minutes, 30)
-        self.assertEqual(live_cfg.games, ["ninvaders", "nsnake"])
+        self.assertEqual(
+            live_cfg.games,
+            ["ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console"],
+        )
         self.assertTrue(live_cfg.daily_each_game)
         self.assertTrue(live_cfg.randomize_start)
         self.assertEqual(live_cfg.target_matches, 3)
