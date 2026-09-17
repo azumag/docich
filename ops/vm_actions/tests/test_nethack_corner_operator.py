@@ -180,8 +180,8 @@ class NetHackCornerOperatorTests(unittest.TestCase):
     def test_recover_restores_only_the_recorded_previous_game(self):
         base = Path(tempfile.mkdtemp(prefix='nethack-op-'))
         fake_g = self._fake_g(base)
-        manager = mock.Mock()
-        manager.status.return_value = {'status': 'failed', 'previous_game': 'sorengame'}
+        manager = mock.MagicMock()
+        manager._read_state.return_value = {'status': 'failed', 'previous_game': 'sorengame'}
         manager._active_game_reader.return_value = 'nethack'
         with mock.patch.object(operator, 'load_global', return_value=fake_g), \
              mock.patch.object(operator, 'ManualNethackCornerManager', return_value=manager):
@@ -194,8 +194,8 @@ class NetHackCornerOperatorTests(unittest.TestCase):
     def test_recover_noops_when_nethack_is_not_active(self):
         base = Path(tempfile.mkdtemp(prefix='nethack-op-'))
         fake_g = self._fake_g(base)
-        manager = mock.Mock()
-        manager.status.return_value = {'status': 'failed', 'previous_game': 'sorengame'}
+        manager = mock.MagicMock()
+        manager._read_state.return_value = {'status': 'failed', 'previous_game': 'sorengame'}
         manager._active_game_reader.return_value = 'sorengame'
         with mock.patch.object(operator, 'load_global', return_value=fake_g), \
              mock.patch.object(operator, 'ManualNethackCornerManager', return_value=manager):
@@ -206,8 +206,8 @@ class NetHackCornerOperatorTests(unittest.TestCase):
     def test_recover_fails_closed_without_a_previous_game(self):
         base = Path(tempfile.mkdtemp(prefix='nethack-op-'))
         fake_g = self._fake_g(base)
-        manager = mock.Mock()
-        manager.status.return_value = {'status': 'failed', 'previous_game': None}
+        manager = mock.MagicMock()
+        manager._read_state.return_value = {'status': 'failed', 'previous_game': None}
         manager._active_game_reader.return_value = 'nethack'
         with mock.patch.object(operator, 'load_global', return_value=fake_g), \
              mock.patch.object(operator, 'ManualNethackCornerManager', return_value=manager):

@@ -166,14 +166,21 @@ def recover(config_path: Path) -> dict[str, object]:
     """
     g = load_global(_repo_root(), config_path)
     manager = ManualNethackCornerManager(g, duration_minutes=MIN_DURATION)
-    state = manager.status()
-    previous = state.get("previous_game")
-    current = manager._active_game_reader()
-    if current != GAME_NAME:
-        return {"status": "noop", "detail": "nethack is not active", "active_game": current}
-    if not isinstance(previous, str) or not previous or previous == GAME_NAME:
-        raise NethackCornerError("restore target gameをmanual stateから特定できません")
-    manager._transition_to(current, previous)
+    # Keep the state check, active-game check, and switch in the same manual
+    # corner critical section.  Otherwise a new start can move the state from
+    # failed -> starting/active after the check and recover would switch the
+    # canonical game out from underneath that live corner.
+    with manager._locked():
+        state = manager._read_state()
+        previous = state.get("previous_game")
+        current = manager._active_game_reader()
+        if current != GAME_NAME:
+            return {"status": "noop", "detail": "nethack is not active", "active_game": current}
+        if state.get("status") != "failed":
+            raise NethackCornerError("recover は failed manual corner にのみ使用できます")
+        if not isinstance(previous, str) or not previous or previous == GAME_NAME:
+            raise NethackCornerError("restore target gameをmanual stateから特定できません")
+        manager._transition_to(current, previous)
     return {"status": "recovered", "from_game": current, "to_game": previous}
 
 
