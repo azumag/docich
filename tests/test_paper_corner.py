@@ -467,3 +467,33 @@ def test_ensure_trading_window_never_raises(tmp_path):
     assert ensure_trading_window(g, tmux=FakeTmux(fail='all')).startswith('unavailable:')
     assert ensure_trading_window(g, tmux=FakeTmux(windows={}), ).startswith(('created', 'unavailable'))
     assert ensure_trading_window(object()) == 'disabled'
+
+
+def test_long_segment_truncates_overlay_but_keeps_full_speech(tmp_path):
+    # Regression for the 2026-09-17 22:00 incident: enriched (#424) segments up
+    # to 600-700 chars crashed tick() in announce() because the overlay queue
+    # rejects bodies over 500 chars (OverlayQueueError -> SorenOutputError),
+    # killing narration after script:1. Overlay gets the truncated copy while
+    # state and speech keep the full text.
+    from docich.overlay_queue import OVERLAY_BODY_LIMIT, validate_event
+    g = setup(tmp_path)
+    now = [datetime(2026, 9, 8, 22, tzinfo=ZoneInfo('Asia/Tokyo')).timestamp()]
+    overlay = []
+    speech = []
+
+    def fake_overlay(g, payload):
+        overlay.append(validate_event(dict(payload)))
+
+    def fake_speech(g, text, **kw):
+        speech.append((text, kw))
+
+    mgr = manager(g, clock=lambda: now[0], sleep=lambda t: None,
+                  overlay=fake_overlay, speech=fake_speech)
+    long_text = 'あ' * (OVERLAY_BODY_LIMIT + 100)
+    state = {'status': 'active', 'date': '2026-09-08'}
+    mgr.announce(state, 'script:2', long_text)
+    assert len(overlay[0]['body']) <= OVERLAY_BODY_LIMIT
+    assert speech[0][0] == long_text
+    assert state['reports']['script:2']['overlay'] is True
+    assert state['reports']['script:2']['speech'] is True
+    assert state['reports']['script:2']['text'] == long_text
