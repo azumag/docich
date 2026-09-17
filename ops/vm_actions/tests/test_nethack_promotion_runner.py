@@ -5,6 +5,8 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "src"))
@@ -15,11 +17,14 @@ from nethack_promotion_runner import PromotionRunSpec, run_promotion  # noqa: E4
 CATALOG = ROOT / "config" / "nethack-canary-actions.json"
 
 
-def fake_worker(*, baseline=(100, 2), candidate=(120, 3)):
+def fake_worker(*, baseline=(100, 2), candidate=(120, 3), write_candidate_trace=True):
     def worker(request_text, *, docker, image, extra_env=None):
         is_candidate = bool(extra_env) and "DOCICH_CANARY_CATALOG" in extra_env
         turns, depth = candidate if is_candidate else baseline
         request = json.loads(request_text)
+        if is_candidate and write_candidate_trace:
+            trace = Path(request["arena"]["episode_root"]) / "action-trace.jsonl"
+            trace.write_text("{}\n", encoding="utf-8")
         return {
             "worker_status": "completed",
             "terminal_status": "timeout",
@@ -42,7 +47,10 @@ class RunnerTests(unittest.TestCase):
         )
 
     def test_promotes_non_regressing_catalog_candidate(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "nethack_promotion_runner.verify_trace_file",
+            return_value=(SimpleNamespace(verified=True),),
+        ):
             decision, base, cand = run_promotion(
                 self.spec(),
                 work_root=Path(tmp),
@@ -55,8 +63,40 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(len(cand.outcomes), 3)
         self.assertEqual(cand.trace_unverified, 0)
 
-    def test_rejects_regressing_catalog_candidate(self):
+    def test_rejects_missing_candidate_trace_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
+            decision, _base, cand = run_promotion(
+                self.spec(),
+                work_root=Path(tmp),
+                worker=fake_worker(write_candidate_trace=False),
+                docker="/usr/bin/docker",
+                image="sha256:" + "a" * 64,
+            )
+        self.assertFalse(decision.promote)
+        self.assertIn("trace_unverified", decision.reasons)
+        self.assertEqual(cand.trace_unverified, 3)
+
+    def test_rejects_empty_candidate_trace_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "nethack_promotion_runner.verify_trace_file",
+            return_value=(),
+        ):
+            decision, _base, cand = run_promotion(
+                self.spec(),
+                work_root=Path(tmp),
+                worker=fake_worker(),
+                docker="/usr/bin/docker",
+                image="sha256:" + "a" * 64,
+            )
+        self.assertFalse(decision.promote)
+        self.assertIn("trace_unverified", decision.reasons)
+        self.assertEqual(cand.trace_unverified, 3)
+
+    def test_rejects_regressing_catalog_candidate(self):
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "nethack_promotion_runner.verify_trace_file",
+            return_value=(SimpleNamespace(verified=True),),
+        ):
             decision, _base, _cand = run_promotion(
                 self.spec(),
                 work_root=Path(tmp),
@@ -68,7 +108,10 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("fitness_regression", decision.reasons)
 
     def test_rejects_when_smoke_gate_fails(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "nethack_promotion_runner.verify_trace_file",
+            return_value=(SimpleNamespace(verified=True),),
+        ):
             decision, _base, _cand = run_promotion(
                 self.spec(),
                 work_root=Path(tmp),
