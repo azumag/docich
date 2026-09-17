@@ -108,6 +108,35 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   boundary が保留されるため、コーナー遅延の直接原因になる。
 - meta: デプロイ済み docich HEAD と soviet_now gitlink（検証用。secret ではない）。
 
+## Soren91 投下間の read-only 集計
+
+`diagnostics.soren91_drop_profile` は固定ファイル
+`<soren_root>/soren91/tmp/state/soren91_loop_metrics.json` の v1
+`dropProfile.records` を集計する。戦略・設定・入力・撮影は変更せず、
+新しいスクリーンショットや計測プロセスも起動しない。
+
+- 最大2MiB、regular fileのみ、Soren root以下のsymlink拒否、読取失敗は固定status。
+- 公開するのは固定数値・UUID session・分類のみ。生records・自由文は出さない。
+- `all.phasesSeconds` は投下間総時間と10フェーズの mean / median（nearest rank） /
+  p95 / max / total（秒）、合計時間構成比、合計call数。空集団はnull。
+- 同一区間の内訳合計と総時間を検証。不整合はinvalidまたはexcludedとし、
+  `missingSamples`（ringから追い出された数）と区別する。
+- HOLD有無、fromTurn<10/≥10、認識保留有無、直近最大4試合、最遅1区間の
+  固定数値集計を含む。保留分類はstable/stable-slow-advance以外のreasonが
+  一つ以上ある区間（non-move/otherも含む）。原因確定ではない。
+- プロファイル集計の24KB予算を超えたら試合別→比較別を省略し、
+  omittedGameGroups / omittedComparisonGroupsで明示する。全体49KB予算に
+  達した場合も比較/試合/代表を省略する。既存診断のredactionは不変。
+- session / firstSample / lastSample / firstEndedAtMs / latestDropAtMs /
+  fileMtimeMs / updatedAtMsで範囲と鮮度を追跡する。重なるスナップショットの
+  集計同士を足してはいけない（分位点は再結合できない）。生データを取得できる
+  承認済み経路が別にない限り、Nodeサマライザの複数snapshot再集計は未実施となる。
+- sinceDropSentMsは最後のflush時点の未完了末尾であり、現在の停滞時間ではない。
+  実行revision・撮影方式・プロセス開始時刻・計測負荷はこのJSONだけでは証明しない。
+  送信完了間隔であってゲーム側の受理率・投下数の計測ではない。
+- Actions maskingで数値が`***`になった場合は欠測扱い。復元や推定をしない。
+  フェーズ中央値を足して全体中央値と比較しない。
+
 ## 出さないもの
 
 secrets・token・raw environment・prompt 本文・生成本文・HTTP header・
