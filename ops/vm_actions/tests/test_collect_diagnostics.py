@@ -606,7 +606,7 @@ class NethackPaneTests(unittest.TestCase):
         self.assertEqual(entry["game"], [])
         self.assertEqual(entry["agent"], [])
 
-    def test_nethack_panes_are_captured_read_only(self):
+    def test_process_window_is_captured_read_only(self):
         module = load_collector()
         self._write_switch(
             {
@@ -616,13 +616,23 @@ class NethackPaneTests(unittest.TestCase):
                 "generation": 9,
             }
         )
-        result = mock.Mock(returncode=0, stdout="a map line\nShall I pick a character? [yn]\n")
-        with mock.patch.object(module.subprocess, "run", return_value=result) as run:
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            if argv[1] == "list-windows":
+                return mock.Mock(returncode=0, stdout="game-g9\nnethack\nagent-g9\n")
+            if argv[1] == "capture-pane":
+                return mock.Mock(returncode=0, stdout="Shall I pick a character? [yn]\n")
+            return mock.Mock(returncode=1, stdout="")
+
+        with mock.patch.object(module.subprocess, "run", side_effect=fake_run):
             entry = module._collect_nethack_panes(self.state, int(time.time()))
-        targets = [call.args[0][-1] for call in run.call_args_list]
-        self.assertEqual(targets, ["docich-game-g9:game-g9", "docich-game-g9:agent-g9"])
-        self.assertIn("Shall I pick a character? [yn]", entry["game"])
-        self.assertIn("a map line", entry["game"])
+        targets = [call[-1] for call in calls if call[1] == "capture-pane"]
+        self.assertIn("docich-game-g9:nethack", targets)
+        self.assertIn("docich-game-g9:agent-g9", targets)
+        self.assertEqual(entry["game"], ["Shall I pick a character? [yn]"])
+        self.assertIn("nethack", entry["windows"])
 
 
 if __name__ == "__main__":
