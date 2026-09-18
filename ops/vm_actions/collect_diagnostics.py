@@ -24,6 +24,10 @@ Observed sources (all read-only):
     trading/paper_improve_status.json): lifecycle statuses, timestamps and
     counters only. Announcement/script bodies, prompts and log bodies are
     never read out.
+  - a bounded, redacted tail (last lines only) of the NetHack agent's own log
+    (state_dir/logs/agent.log, written by supervise.run_callable_loop) so a
+    corner that reaches gameplay but never acts stays diagnosable. No other
+    log body is read.
   - Soren boundary/A-B wait markers the corners gate on
     (tmp/state/corner_boundary_*.json, ab_state.json, ab_games.jsonl,
     ab_candidate/): only presence, counts, enums and mtimes; strategy/hash
@@ -1897,6 +1901,54 @@ def _collect_soren91_drop_profile(soren):
     return result
 
 
+NETHACK_AGENT_LOG_TAIL_BYTES = 8192
+NETHACK_AGENT_LOG_LINES = 12
+NETHACK_AGENT_LOG_LINE_LIMIT = 240
+
+
+def _read_tail_lines(path, *, max_bytes=NETHACK_AGENT_LOG_TAIL_BYTES):
+    """Read only the tail bytes of an append-only log (never the whole file)."""
+    try:
+        size = path.stat().st_size
+        with path.open('rb') as handle:
+            if size > max_bytes:
+                handle.seek(size - max_bytes)
+            raw = handle.read(max_bytes)
+    except OSError:
+        return None
+    text = raw.decode('utf-8', errors='replace')
+    return [line for line in text.splitlines() if line.strip()]
+
+
+def _collect_nethack_agent_log(state_dir, now):
+    """Bounded, redacted tail of the NetHack agent's own log.
+
+    The agent loop appends one line per start/exit/error to
+    ``logs/agent.log`` (supervise.run_callable_loop). A corner that reaches
+    gameplay but never acts is otherwise invisible through this read-only
+    channel, so emit only the last few lines, redacted and length-capped.
+    No other log bodies are read.
+    """
+    path = Path(state_dir) / "logs" / "agent.log"
+    entry = {"present": False, "readable": False, "mtime": None, "lines": []}
+    if not path.is_file():
+        return entry
+    entry["present"] = True
+    try:
+        entry["mtime"] = int(path.stat().st_mtime)
+    except OSError:
+        return entry
+    lines = _read_tail_lines(path)
+    if lines is None:
+        return entry
+    entry["readable"] = True
+    entry["lines"] = [
+        _redact_text(line, NETHACK_AGENT_LOG_LINE_LIMIT)
+        for line in lines[-NETHACK_AGENT_LOG_LINES:]
+    ]
+    return entry
+
+
 def main(argv):
     if len(argv) != 2:
         print("usage: collect_diagnostics.py <soren_root>", file=sys.stderr)
@@ -1937,6 +1989,7 @@ def main(argv):
         },
         "improvement": improvement,
         "corners": _collect_programs(_program_state_dir(), soren, now),
+        "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),
         "market_paper": _collect_market_paper(_program_state_dir(), now),
         "storage_artifacts": _collect_tmp_shared_objects(now),
         "soren91_drop_profile": _collect_soren91_drop_profile(soren),
