@@ -28,9 +28,10 @@ Observed sources (all read-only):
     (state_dir/logs/agent.log, written by supervise.run_callable_loop) so a
     corner that reaches gameplay but never acts stays diagnosable. No other
     log body is read.
-  - bounded, redacted captures of the committed NetHack runtime's presentation
-    (game) and agent tmux panes, so a corner that is active but not progressing
-    stays diagnosable. Never sends tmux input.
+  - bounded, redacted captures of the committed NetHack runtime's tmux
+    windows (window names, the birth/process window TTY, and the agent window)
+    so a corner that is active but not progressing stays diagnosable. Never
+    sends tmux input.
   - Soren boundary/A-B wait markers the corners gate on
     (tmp/state/corner_boundary_*.json, ab_state.json, ab_games.jsonl,
     ab_candidate/): only presence, counts, enums and mtimes; strategy/hash
@@ -1977,15 +1978,40 @@ def _capture_tmux_pane(target, *, max_lines=NETHACK_PANE_LINES):
     return [_redact_text(line, NETHACK_PANE_LINE_LIMIT) for line in lines[-max_lines:]]
 
 
+def _list_window_names(session):
+    if not isinstance(session, str) or _TMUX_TARGET_RE.fullmatch(session) is None:
+        return []
+    try:
+        proc = subprocess.run(
+            ["tmux", "list-windows", "-t", session, "-F", "#{window_name}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0:
+        return []
+    return [name.strip() for name in proc.stdout.splitlines() if name.strip()]
+
+
 def _collect_nethack_panes(state_dir, now):
-    """Bounded read-only view of the committed NetHack game/agent panes.
+    """Bounded read-only view of the committed NetHack runtime's tmux windows.
 
     A corner that is active but not progressing is otherwise invisible through
-    this channel. Capture the presentation window (game TTY) and the agent
-    window (agent print/errors) for the committed runtime only. Never sends
-    tmux input.
+    this channel. The NetHack TTY lives in the runtime's birth/process window,
+    not the presentation xterm window, so capture every window by name plus the
+    resolved process and agent panes. Never sends tmux input.
     """
-    result = {"present": False, "phase": None, "active_game": None, "game": [], "agent": []}
+    result = {
+        "present": False,
+        "phase": None,
+        "active_game": None,
+        "windows": [],
+        "game": [],
+        "agent": [],
+    }
     try:
         data = json.loads((Path(state_dir) / "game_switch.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -2009,8 +2035,17 @@ def _collect_nethack_panes(state_dir, now):
         or type(generation) is not int
     ):
         return result
-    result["game"] = _capture_tmux_pane(f"{session}:{game_window}")
-    result["agent"] = _capture_tmux_pane(f"{session}:agent-g{generation}")
+    agent_window = f"agent-g{generation}"
+    names = _list_window_names(session)
+    result["windows"] = [name for name in names if _TMUX_TARGET_RE.fullmatch(name)]
+    for name in result["windows"][:4]:
+        result.setdefault("all", []).append(
+            {"name": name, "lines": _capture_tmux_pane(f"{session}:{name}")}
+        )
+    candidates = [name for name in names if name not in {game_window, agent_window}]
+    if len(candidates) == 1:
+        result["game"] = _capture_tmux_pane(f"{session}:{candidates[0]}")
+    result["agent"] = _capture_tmux_pane(f"{session}:{agent_window}")
     return result
 
 
