@@ -69,12 +69,14 @@ QUEUE_STALE_SEC = 900
 # Freshness bound for the supervisor-written duplicates report.
 DUPLICATES_FRESH_SEC = 600
 
-# Output bounds (the gateway additionally caps total stdout at 64 KiB).
+# Output bounds. The collector needs enough room for one 24 KiB manual
+# Soren91 evidence chunk after base64/JSON expansion; the gateway still applies
+# the stricter outer 48 KiB sanitized-JSON cap after adding its own metadata.
 MAX_RECENT_EVENTS = 20
 MAX_ERROR_PREVIEW_LEN = 200
 MAX_COMPONENTS = 10
 MAX_UNREGISTERED = 50
-MAX_JSON_BYTES = 32768
+MAX_JSON_BYTES = 36 * 1024
 MAX_JSONL_SCAN_LINES = 20000
 MAX_JSONL_SCAN_BYTES = 8 * 1024 * 1024
 
