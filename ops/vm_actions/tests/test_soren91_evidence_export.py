@@ -294,7 +294,7 @@ class AuthorizationAndWorkflowTests(unittest.TestCase):
         self.assertIn("github.event.comment.body == '/soren91-evidence-export'", text)
         self.assertIn("actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02", text)
         self.assertIn("retention-days: 1", text)
-        self.assertIn("soren91_evidence_export.py prepare", text)
+        self.assertIn("soren91_evidence_prepare.py", text)
         self.assertIn("soren91_evidence_export.py select", text)
         self.assertIn("soren91_evidence_export.py clear", text)
         self.assertIn('"diagnostics docich production $SHA"', text)

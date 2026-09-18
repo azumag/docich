@@ -135,12 +135,31 @@ jobs:
           set -euo pipefail
           [[ "$GAMES" =~ ^[1-3]$ ]]
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
-          command="python3 ops/vm_actions/soren91_evidence_export.py prepare $GAMES"
-          ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA" <<< "$command" >/dev/null
-
           archive="$RUNNER_TEMP/soren91-evidence.tar.gz"
           meta="$RUNNER_TEMP/soren91-evidence-meta.json"
           envelope="$RUNNER_TEMP/soren91-evidence-envelope.json"
+
+          command="python3 ops/vm_actions/soren91_evidence_prepare.py $GAMES"
+          set +e
+          ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA" <<< "$command" >/dev/null
+          prepare_rc=$?
+          set -e
+          if (( prepare_rc != 0 )); then
+            diagnostics_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "diagnostics docich production $SHA")"
+            printf '%s\n' "$diagnostics_json" > "$envelope"
+            set +e
+            chunk_count="$(python3 control/ops/vm_actions/extract_soren91_evidence.py append "$envelope" 0 "$archive" "$meta" 2>/dev/null)"
+            extract_rc=$?
+            set -e
+            reason=unclassified_prepare_failure
+            if (( extract_rc == 0 )) && [[ "$chunk_count" == "1" ]]; then
+              python3 control/ops/vm_actions/extract_soren91_evidence.py verify "$archive" "$meta" >/dev/null 2>&1 || true
+              reason="$(python3 control/ops/vm_actions/read_soren91_evidence_failure.py "$archive")"
+            fi
+            echo "::error::Soren91 evidence prepare failed: $reason"
+            exit 1
+          fi
+
           diagnostics_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "diagnostics docich production $SHA")"
           printf '%s\n' "$diagnostics_json" > "$envelope"
           chunk_count="$(python3 control/ops/vm_actions/extract_soren91_evidence.py append "$envelope" 0 "$archive" "$meta")"

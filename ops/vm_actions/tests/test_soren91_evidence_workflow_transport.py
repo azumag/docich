@@ -20,7 +20,7 @@ class EvidenceWorkflowTransportTests(unittest.TestCase):
         )
         self.assertNotIn("|             ssh", evidence)
         self.assertIn(
-            'command="python3 ops/vm_actions/soren91_evidence_export.py prepare $GAMES"',
+            'command="python3 ops/vm_actions/soren91_evidence_prepare.py $GAMES"',
             evidence,
         )
         self.assertIn(
