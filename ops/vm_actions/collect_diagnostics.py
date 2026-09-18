@@ -29,13 +29,19 @@ Observed sources (all read-only):
     ab_candidate/): only presence, counts, enums and mtimes; strategy/hash
     bodies and environment values are never read out.
 
-Never emitted: secrets, tokens, raw environment, prompt/generation bodies,
-HTTP headers, file contents. Error previews are truncated and redacted.
+Never emitted during normal diagnostics: secrets, tokens, raw environment,
+prompt/generation bodies, HTTP headers, or file contents. Error previews are
+truncated and redacted. The sole exception is an owner-prepared, short-lived
+Soren91 manual evidence export: while its fixed state marker is active, this
+collector returns only one bounded base64 chunk from the fixed export bundle
+instead of normal diagnostics. That bundle itself is produced from a strict
+Soren91 evidence allowlist for explicit manual review.
 
 Usage: collect_diagnostics.py <soren_root>
 Exit 0 with JSON on stdout on success; nonzero (no usable stdout) on crash,
 in which case the gateway refuses fail-closed.
 """
+import base64
 import configparser
 import json
 import math
@@ -1745,6 +1751,120 @@ def _drop_profile_summary(data):
     return result
 
 
+
+MANUAL_EVIDENCE_STATE_NAME = "soren91_manual_evidence_export.json"
+MANUAL_EVIDENCE_BUNDLE_NAME = "soren91_manual_evidence_export.tar.gz"
+MANUAL_EVIDENCE_STATE_MAX = 4096
+MANUAL_EVIDENCE_BUNDLE_MAX = 3 * 1024 * 1024
+MANUAL_EVIDENCE_CHUNK_BYTES = 24 * 1024
+MANUAL_EVIDENCE_PART_CHARS = 480
+MANUAL_EVIDENCE_MAX_CHUNKS = 256
+MANUAL_EVIDENCE_TTL_MS = 10 * 60 * 1000
+_MANUAL_EVIDENCE_SHA_RE = re.compile(r"[0-9a-f]{64}\Z")
+
+
+def _collect_soren91_manual_evidence(soren, now_ms=None):
+    """Return one fixed chunk only for a short-lived owner-prepared export.
+
+    No paths come from state, and this function never writes or advances the
+    cursor. Chunk selection is a separate owner-only exec action, preserving
+    the diagnostics operation's read-only contract.
+    """
+    result = {"active": False}
+    now_ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
+    runtime = soren / "soren91"
+    state_dir = runtime / "tmp" / "state"
+    state_path = state_dir / MANUAL_EVIDENCE_STATE_NAME
+    bundle_path = state_dir / MANUAL_EVIDENCE_BUNDLE_NAME
+    try:
+        current = soren
+        for part in ("soren91", "tmp", "state"):
+            current = current / part
+            if current.is_symlink():
+                return result
+        if state_path.is_symlink() or bundle_path.is_symlink():
+            return result
+
+        state_fd = os.open(state_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(state_fd, "rb") as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > MANUAL_EVIDENCE_STATE_MAX:
+                return result
+            raw = handle.read(MANUAL_EVIDENCE_STATE_MAX + 1)
+        if len(raw) > MANUAL_EVIDENCE_STATE_MAX:
+            return result
+        state = json.loads(raw)
+        if not isinstance(state, dict) or state.get("version") != 1:
+            return result
+
+        created = state.get("createdAtMs")
+        expires = state.get("expiresAtMs")
+        bundle_bytes = state.get("bundleBytes")
+        chunk_bytes = state.get("chunkBytes")
+        chunk_count = state.get("chunkCount")
+        chunk_index = state.get("currentChunk")
+        digest = state.get("bundleSha256")
+        games = state.get("games")
+        if (
+            not isinstance(created, int)
+            or not isinstance(expires, int)
+            or created > now_ms + 60_000
+            or expires < now_ms
+            or expires - created != MANUAL_EVIDENCE_TTL_MS
+            or not isinstance(bundle_bytes, int)
+            or not 1 <= bundle_bytes <= MANUAL_EVIDENCE_BUNDLE_MAX
+            or chunk_bytes != MANUAL_EVIDENCE_CHUNK_BYTES
+            or not isinstance(chunk_count, int)
+            or not 1 <= chunk_count <= MANUAL_EVIDENCE_MAX_CHUNKS
+            or not isinstance(chunk_index, int)
+            or not 0 <= chunk_index < chunk_count
+            or not isinstance(digest, str)
+            or not _MANUAL_EVIDENCE_SHA_RE.fullmatch(digest)
+            or not isinstance(games, list)
+            or not 1 <= len(games) <= 3
+            or any(isinstance(game, bool) or not isinstance(game, int) or game < 0 for game in games)
+        ):
+            return result
+        expected_chunks = (bundle_bytes + chunk_bytes - 1) // chunk_bytes
+        if chunk_count != expected_chunks:
+            return result
+
+        bundle_fd = os.open(bundle_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(bundle_fd, "rb") as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size != bundle_bytes:
+                return result
+            offset = chunk_index * chunk_bytes
+            expected_len = min(chunk_bytes, bundle_bytes - offset)
+            handle.seek(offset)
+            chunk = handle.read(expected_len)
+        if len(chunk) != expected_len:
+            return result
+        encoded = base64.b64encode(chunk).decode("ascii")
+        parts = [
+            encoded[index:index + MANUAL_EVIDENCE_PART_CHARS]
+            for index in range(0, len(encoded), MANUAL_EVIDENCE_PART_CHARS)
+        ]
+        if len(parts) > 100 or any(len(part) > MANUAL_EVIDENCE_PART_CHARS for part in parts):
+            return result
+        return {
+            "active": True,
+            "version": 1,
+            "createdAtMs": created,
+            "expiresAtMs": expires,
+            "bundleBytes": bundle_bytes,
+            "bundleSha256": digest,
+            "chunkBytes": chunk_bytes,
+            "chunkCount": chunk_count,
+            "chunkIndex": chunk_index,
+            "games": games,
+            "parts": parts,
+        }
+    except (OSError, ValueError, TypeError, OverflowError, json.JSONDecodeError):
+        return result
+
+
+
 def _collect_soren91_drop_profile(soren):
     """One fixed regular file; no state writes, subprocesses or game observations."""
     path = soren / 'soren91' / 'tmp' / 'state' / 'soren91_loop_metrics.json'
@@ -1783,6 +1903,20 @@ def main(argv):
         return 2
     now = int(time.time())
     soren = Path(argv[1])
+    manual_evidence = _collect_soren91_manual_evidence(soren, now * 1000)
+    if manual_evidence.get("active"):
+        # Keep the envelope intentionally tiny so the installed gateway's
+        # 49 KiB diagnostics cap and 500-char per-string sanitizer remain
+        # effective. Base64 is split into <=480-char list items above.
+        payload = {
+            "status": "ok",
+            "soren91_manual_evidence": manual_evidence,
+        }
+        text = json.dumps(payload, sort_keys=True, ensure_ascii=True)
+        if len(text.encode("utf-8")) > MAX_JSON_BYTES:
+            return 1
+        sys.stdout.write(text + "\\n")
+        return 0
     workers = _collect_workers(soren, now)
     queues = _collect_queues(soren, now)
     ai = _collect_ai(soren, now)
