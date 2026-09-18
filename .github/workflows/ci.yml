@@ -66,6 +66,12 @@ jobs:
           tests/test_nethack_canary_worker.py tests/test_nethack_canary_candidate_broker.py
           tests/test_nethack_canary_image.py
           tests/test_ninvaders_wrapper.py tests/test_corner_boundary.py tests/test_paper_corner.py
+          tests/test_retro_daily_schedule.py tests/test_corner_improve.py
+          tests/test_corner_improve_dispatch.py tests/test_retro_command_brains.py
+          tests/test_retro_wrapper_limits.py tests/test_retro_wrapper_real_panes.py
+          tests/test_bastet_brain.py tests/test_moon_buggy_brain.py
+          tests/test_pacman4console_brain.py tests/test_ninvaders_brain.py
+          tests/test_nsnake_brain.py tests/test_nsnake_agent_config.py tests/test_bot_eval.py
           tests/test_paper_corner_manual.py tests/test_paper_corner_chatter_schedule.py
           tests/test_config.py tests/test_robots_config.py
       - name: PAPER improve sidebar contract

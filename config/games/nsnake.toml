@@ -4,21 +4,41 @@ title = "Snake"
 adapter = "cli"
 
 # nsnake はメインメニュー起動・試合終了時に Game Over/Retry ダイアログを出す
-# (同一プロセス継続)。wrapper (/usr/local/bin/nsnake_docich) が両遷移を駆動し、
-# 最終スコアを scorelog へ追記する。docich CLI adapter には wrapper 型ゲームの
-# 丸境界フックがまだ無いため、切替は従来の immediate-quiesce 経路を使う。
+# (同一プロセス継続)。tracked wrapper (games/cli-wrappers/nsnake_docich.sh) が
+# menu/retry と最終スコアの scorelog 追記、3試合上限 (NSNAKE_MAX_MATCHES) の
+# みを担当する。/usr/local/bin への手動コピー依存は廃止。
+# 方向入力は command brain (brains/nsnake/brain.py) が担い、切替は従来の
+# immediate-quiesce 経路を使う。
 [lifecycle]
 require_round_boundary = false
 
 [cli]
-command = "/usr/local/bin/nsnake_docich"
+# docich の systemd unit は repo root を WorkingDirectory にしている。
+command = "/bin/sh games/cli-wrappers/nsnake_docich.sh"
 cols = 80
 rows = 24
 font = "monospace"
 font_size = 18
 
 [agent]
-enabled = false  # wrapper が menu/retry を駆動し無人プレイする (bot は issue #15 の AI 方針で別途)
+# CommandBrain: stdin に Observation JSON、stdout に action JSON。
+# 重みは DOCICH_BRAIN_WEIGHTS もしくは run/brain/nsnake/weights.json (省略時は
+# brain 内蔵の既定値)。改善昇格は <state_dir>/resolver/nsnake_strategy.json に
+# 加えて同じ run/brain 下の重みへも hot-swap される (corner_improve._promote)。
+enabled = true
+brain = "command"
+command = ["python3", "brains/nsnake/brain.py"]
+interval_ms = 500
+
+# 日次レトロコーナーでは wrapper が無人完走できるため、per-move agent なし
+# でも選択可能。brain を付けても self_play のまま (どちらでも完走する)。
+[corner]
+self_play = true
+intro = "nsnakeは端末上で動くクラシックなSnakeゲームです。自動プレイで餌を求めて成長します。"
+
+# operatorの手動retro-cornerテストからも無人ゲームとして選択可能。
+[retro_corner]
+unattended = true
 
 # Twitch 配信カテゴリー・タイトル連動 (soviet_now update_stream_game.sh が読む)。
 # "Snake" 名義の IGDB 項目は複数版があり、検索先頭の 458463 を採用 (照合済み)。

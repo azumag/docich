@@ -4,15 +4,18 @@
 # moon-buggy boots to a title screen and shows the high-score table with
 # "y,RET:new game" at game over (same process continues).  Pane input only
 # reaches the FOREGROUND process, so the game runs in the foreground while
-# a background driver loop sends the transition keys.  The game plays
-# unattended with the docich [agent] disabled, and each final score is
-# recorded for the score stats panel (scorelog JSONL).
+# a background driver loop sends the transition keys (a ranking score first
+# stops at a "please enter your name" prompt, which Enter accepts).  In play the
+# docich [agent] command brain (brains/moon-buggy/brain.py) jumps and fires and
+# stays silent on those screens.  Each final score is recorded for the score
+# stats panel (scorelog JSONL).
 #
 # Shell portability: this file runs under /bin/sh (dash on Ubuntu), which
 # has no base#number arithmetic and exits a non-interactive shell on a
 # syntax error.  Keep it strictly POSIX (no [[ ]], no $((10#...))).
 SCORELOG="${MOONBUGGY_SCORELOG:-/home/ubuntu/docich/run-soren-live/scores/moon-buggy.jsonl}"
 PANE="${TMUX_PANE:-}"
+MOONBUGGY_BIN="${MOONBUGGY_BIN:-/usr/games/moon-buggy}"
 
 record_score() {
   [ "$1" -gt 0 ] 2>/dev/null || return 0
@@ -47,6 +50,12 @@ driver() {
       *"level:"*) seen_game=1 ;;
     esac
     case "$text" in
+      *"enter your name"*)
+        # A score that ranks in the high-score table stops at a name prompt
+        # before the "new game" screen.  Enter accepts the default name.
+        tmux send-keys -t "$PANE" Enter
+        sleep 2
+        ;;
       *"new game"*)
         if [ "$seen_game" = "1" ]; then
           record_score "$max_score"
@@ -68,7 +77,7 @@ driver() {
 
 driver &
 DRIVER=$!
-/usr/games/moon-buggy
+"$MOONBUGGY_BIN"
 rc=$?
 kill "$DRIVER" 2>/dev/null
 exit "$rc"

@@ -41,6 +41,7 @@ from ..config import load_game, load_global
 from . import resolver_policy, strategy_path
 from . import gnurobots as gnurobots_resolver
 from .runner import EvaluationCleanupError, _session_absent, resolve_command, run_match
+from .bot_eval import bot_games as _bot_games
 from .lease import activity_lock
 
 GNUROBOTS_BIN = os.environ.get("GNUROBOTS_BIN", "/usr/local/bin/gnurobots")
@@ -182,6 +183,10 @@ def evaluate_gnurobots(
 def _game_defaults(game_name: str) -> dict:
     if game_name == "gnurobots":
         return dict(gnurobots_resolver.DEFAULT_STRATEGY)
+    if game_name in _bot_games():
+        from .bot_eval import bot_default_weights
+
+        return bot_default_weights(game_name)
     return _robots_defaults()
 
 
@@ -345,6 +350,18 @@ def _promote(g, game_name: str, s_file: Path, old: dict, new: dict) -> None:
         # Live hot-swap: the match-loop wrapper re-reads the script at the
         # next match start.
         Path(GNUROBOTS_RESOLVER).write_text(gnurobots_resolver.render(new), encoding="utf-8")
+    elif game_name in _bot_games():
+        # Live hot-swap for command brains: each observation spawns a fresh
+        # process whose load_weights() re-reads the file, so writing the full
+        # candidate weights here takes effect from the next tick.  Default
+        # weights (bool keys included) are part of the file the brain reads.
+        from .bot_eval import bot_brain_weights_path
+
+        bot_brain_weights_path(game_name).parent.mkdir(parents=True, exist_ok=True)
+        bot_brain_weights_path(game_name).write_text(
+            json.dumps(new, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
 
 def _append_log(state_dir, game_name: str, summary: dict) -> None:

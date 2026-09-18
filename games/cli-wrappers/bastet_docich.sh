@@ -5,9 +5,10 @@
 # a dialog ("Try again!"), then the high-score table, then back to the menu;
 # one Enter advances each screen (same process continues).  Pane input only
 # reaches the FOREGROUND process, so the game runs in the foreground while
-# a background driver loop presses Enter on those screens.  The game plays
-# unattended with the docich [agent] disabled, and each final Score is
-# recorded for the score stats panel (scorelog JSONL).
+# a background driver loop presses Enter on those screens.  In play the docich
+# [agent] command brain (brains/bastet/brain.py) drops the pieces and stays
+# silent on these screens.  Each final Score (0 included) is recorded for the
+# score stats panel (scorelog JSONL).
 #
 # Known limitation: a score high enough to enter the high-score table opens
 # a name-entry screen the driver does not fill (unattended play never
@@ -18,9 +19,13 @@
 # syntax error.  Keep it strictly POSIX (no [[ ]], no $((10#...))).
 SCORELOG="${BASTET_SCORELOG:-/home/ubuntu/docich/run-soren-live/scores/bastet.jsonl}"
 PANE="${TMUX_PANE:-}"
+BASTET_BIN="${BASTET_BIN:-/usr/games/bastet}"
 
 record_score() {
-  [ "$1" -gt 0 ] 2>/dev/null || return 0
+  # A completed match is recorded even at 0: the brain cannot see the board
+  # (coloured blanks), so 0-point matches are normal, and the corner counts
+  # recorded matches to end early.  Non-numeric input is still skipped.
+  [ "$1" -ge 0 ] 2>/dev/null || return 0
   mkdir -p "$(dirname "$SCORELOG")" 2>/dev/null || true
   printf '{"ts":%s,"game":"bastet","score":%s,"source":"wrapper"}\n' "$(date +%s)" "$1" >>"$SCORELOG" 2>/dev/null || true
 }
@@ -40,7 +45,8 @@ driver() {
     sleep 2
     [ -n "$PANE" ] || continue
     text="$(tmux capture-pane -p -t "$PANE" 2>/dev/null)" || continue
-    cur="$(printf '%s' "$text" | grep -oE 'Score: [0-9]+' | tail -1 | grep -oE '[0-9]+')"
+    # The score is right-aligned ("Score:      0"), so allow any run of spaces.
+    cur="$(printf '%s' "$text" | grep -oE 'Score: *[0-9]+' | tail -1 | grep -oE '[0-9]+')"
     if [ -n "$cur" ]; then
       cur="$(dec "$cur")"
       if [ "$cur" -gt "$max_score" ]; then
@@ -65,6 +71,14 @@ driver() {
         sleep 2
         ;;
       *"Play! (normal version)"*)
+        if [ "$seen_game" = "1" ]; then
+          # The menu is only reached after a match.  If "Try again!" was
+          # dismissed before this driver saw it (an Enter the brain already
+          # had in flight does that), flush the finished match here.
+          record_score "$max_score"
+          max_score=0
+          seen_game=0
+        fi
         tmux send-keys -t "$PANE" Enter
         sleep 2
         ;;
@@ -74,7 +88,7 @@ driver() {
 
 driver &
 DRIVER=$!
-/usr/games/bastet
+"$BASTET_BIN"
 rc=$?
 kill "$DRIVER" 2>/dev/null
 exit "$rc"

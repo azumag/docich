@@ -6,21 +6,34 @@ adapter = "cli"
 # pacman4console は最低 29x32 の pane を要求するため rows=32 を宣言する
 # (他CLIゲームの 80x24 とは異なる。presentation は contain で吸収する)。
 # タイトル起動・試合終了時は Game Over ダイアログを出す (同一プロセス継続)。
-# wrapper (/usr/local/bin/pacman4console_docich) が開始・再開キーを駆動し、
+# wrapper (/bin/sh games/cli-wrappers/pacman4console_docich.sh) が開始・再開キーを駆動し、
 # 最終スコアを scorelog へ追記する。docich CLI adapter には wrapper 型ゲームの
 # 丸境界フックがまだ無いため、切替は従来の immediate-quiesce 経路を使う。
 [lifecycle]
 require_round_boundary = false
 
 [cli]
-command = "/usr/local/bin/pacman4console_docich"
+command = "/bin/sh games/cli-wrappers/pacman4console_docich.sh"
 cols = 80
 rows = 32
 font = "monospace"
 font_size = 18
 
 [agent]
-enabled = false  # wrapper が無人プレイする (bot は issue #15 の AI 方針で別途)
+# 矢印入力は brain、開始・再開は wrapper が所有する。
+# DOCICH_BRAIN_WEIGHTS または run/brain/pacman4console/weights.json を毎回読む。
+# 色付き空白の壁を補うためインストール済み標準レベルファイルを読み取る。
+enabled = true
+brain = "command"
+command = ["python3", "brains/pacman4console/brain.py"]
+interval_ms = 150
+
+[corner]
+self_play = true
+intro = "Pac-Manは迷路の餌を集めるゲームです。自動プレイでゴーストを避けながら餌を目指します。"
+
+[retro_corner]
+unattended = true
 
 # Twitch 配信カテゴリー・タイトル連動 (soviet_now update_stream_game.sh が読む)。
 # 原作 PAC-MAN (140023) を採用 (照合済み)。
