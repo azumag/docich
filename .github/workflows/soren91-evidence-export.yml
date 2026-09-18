@@ -190,13 +190,46 @@ jobs:
             exit 1
           fi
 
+          # Run the deployed checkout's diagnostics_result in-process without
+          # emitting its result. The helper returns only bounded fixed exit
+          # codes, which lets us distinguish a current-source logic rejection
+          # from a stale/different installed forced-command gateway.
+          command="python3 ops/vm_actions/probe_gateway_diagnostics.py $SHA"
+          if ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA" <<< "$command" >/dev/null 2>&1; then
+            source_gateway_probe_rc=0
+          else
+            source_gateway_probe_rc=$?
+          fi
+          source_gateway_probe_reason=
+          case "$source_gateway_probe_rc" in
+            0) ;;
+            2) source_gateway_probe_reason=source_gateway_probe_invalid_sha ;;
+            20) source_gateway_probe_reason=source_gateway_production_only_rejected ;;
+            21) source_gateway_probe_reason=source_gateway_collector_missing ;;
+            22) source_gateway_probe_reason=source_gateway_collector_verification_failed ;;
+            23) source_gateway_probe_reason=source_gateway_collector_drift ;;
+            24) source_gateway_probe_reason=source_gateway_projection_missing ;;
+            25) source_gateway_probe_reason=source_gateway_collector_failed ;;
+            26) source_gateway_probe_reason=source_gateway_output_invalid ;;
+            27) source_gateway_probe_reason=source_gateway_output_too_deep ;;
+            28) source_gateway_probe_reason=source_gateway_output_unsupported_type ;;
+            29) source_gateway_probe_reason=source_gateway_output_too_large ;;
+            30) source_gateway_probe_reason=source_gateway_unclassified_value_error ;;
+            31) source_gateway_probe_reason=source_gateway_probe_internal_error ;;
+            *) source_gateway_probe_reason=source_gateway_probe_transport_or_unknown_exit ;;
+          esac
+          if (( source_gateway_probe_rc != 0 )); then
+            echo "::error::Soren91 evidence export failed: $source_gateway_probe_reason"
+            exit 1
+          fi
+
           if diagnostics_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "diagnostics docich production $SHA")"; then
             diagnostics_rc=0
           else
             diagnostics_rc=$?
           fi
           if (( diagnostics_rc != 0 )); then
-            echo "::error::Soren91 evidence export failed: post_prepare_gateway_diagnostics_failed_after_collector_success"
+            echo "::error::Soren91 evidence export failed: post_prepare_installed_gateway_rejected_after_source_gateway_success"
             exit 1
           fi
           printf '%s\n' "$diagnostics_json" > "$envelope"
