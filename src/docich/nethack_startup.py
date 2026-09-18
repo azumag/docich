@@ -60,7 +60,7 @@ class NethackStartup:
         # as "Shall I pick your weapon? [yn]".
         patterns = (
             (r"do you want a tutorial\?\s*\[yn", "n"),
-            (r"shall i pick a character[^?]*\?\s*\[yn", "y"),
+            (r"shall i pick (?:a )?character[^?]*\?\s*\[yn", "y"),
             (r"pick a character\?\s*\[yn", "y"),
             (r"is this ok\?\s*\[yn", "y"),
         )
