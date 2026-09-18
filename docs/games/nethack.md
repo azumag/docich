@@ -134,6 +134,20 @@ timezone = "Asia/Tokyo"
 # weekdays = [0, 2, 4]  # 任意。0=Mon .. 6=Sun
 ```
 
+### 一試合(死亡)境界とハング対策
+
+NetHack は分数ではなく **一試合（死亡・昇天で終了）を境界**にします。`run_boundary = true`（既定）のとき、
+コーナーは `duration_minutes` では終わらず、committed runtime の可視 TTY が終了画面になった時点で
+終了します。終了判定は read-only の spectator と同じ経路（canonical の committed NetHack runtime の
+game window のみを所有者確認して capture）で行い、入力を送りません。
+
+- 終了マーカー: `You die...` / `You have died.` / `Do you want your possessions identified?` /
+  `You ascend ...` / `Do you want to see what you had ...`
+- ハング対策: **`stall_timeout_minutes`（既定 10 分）の間 TTY が変化しなければ打ち切ります**。
+- `run_boundary = false` にすると従来どおり `duration_minutes` で終了します（後方互換）。
+- run boundary 中は `duration_minutes` を境界に使いません。手動 runner も config の `run_boundary` に従うため、
+  `bin/docich-nethack-corner-manual start --duration-minutes 5` の分数は run boundary 時は無視されます。
+
 定時 runner:
 
 ```bash
