@@ -39,6 +39,24 @@ END_ANNOUNCE_TEXT = "NetHackコーナーはここまでです。ありがとう�
 
 _VALID_WEEKDAYS = frozenset(range(7))
 
+# A run boundary is detected from the visible TTY.  Unknown screens never end
+# the corner early; they only count toward the stall guard.  These markers are
+# the reviewed end-of-run prompts; deaths can otherwise sit on the "Do you want
+# your possessions identified?" prompt until the stall guard fires.
+_TERMINAL_SCREEN_MARKERS = (
+    "you die",
+    "you have died",
+    "do you want your possessions identified",
+    "you ascend",
+    "you have ascended",
+    "do you want to see what you had",
+)
+
+
+def _is_terminal_screen(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in _TERMINAL_SCREEN_MARKERS)
+
 
 class NethackCornerError(RetroCornerError):
     """User-facing failure in the scheduled NetHack corner."""
@@ -52,6 +70,13 @@ class NethackCornerConfig:
     timezone: str = "Asia/Tokyo"
     weekdays: tuple[int, ...] = ()
     games: tuple[str, ...] = (GAME_NAME,)
+    # NetHack runs have no natural minute boundary, so the corner ends on one
+    # completed run (death/ascension) instead of a fixed duration.  A hang
+    # guard ends the corner when the visible TTY has not changed for
+    # ``stall_timeout_minutes``.
+    run_boundary: bool = True
+    stall_timeout_minutes: int = 10
+    poll_interval_s: float = 5.0
     # RetroCornerManager calls the improve hook at finish. P0/P1 override that
     # hook; P3/P5 later add a bounded NetHack-specific improvement pipeline.
     improve_agents: str = ""
@@ -120,6 +145,9 @@ def load_nethack_corner_config(g: GlobalConfig) -> NethackCornerConfig:
         timezone=raw.get("timezone", "Asia/Tokyo"),
         weekdays=weekdays,
         games=(GAME_NAME,),
+        run_boundary=raw.get("run_boundary", True),
+        stall_timeout_minutes=raw.get("stall_timeout_minutes", 10),
+        poll_interval_s=raw.get("poll_interval_s", 5.0),
     )
     if type(cfg.enabled) is not bool:
         raise NethackCornerError("nethack_corner.enabled はtrue/falseである必要があります")
@@ -128,6 +156,19 @@ def load_nethack_corner_config(g: GlobalConfig) -> NethackCornerConfig:
     if type(cfg.duration_minutes) is not int or not 1 <= cfg.duration_minutes <= 720:
         raise NethackCornerError(
             "nethack_corner.duration_minutes は1-720の整数である必要があります"
+        )
+    if type(cfg.run_boundary) is not bool:
+        raise NethackCornerError("nethack_corner.run_boundary はtrue/falseである必要があります")
+    if type(cfg.stall_timeout_minutes) is not int or not 1 <= cfg.stall_timeout_minutes <= 1440:
+        raise NethackCornerError(
+            "nethack_corner.stall_timeout_minutes は1-1440の整数である必要があります"
+        )
+    if (
+        type(cfg.poll_interval_s) not in (int, float)
+        or not 0.5 <= cfg.poll_interval_s <= 60.0
+    ):
+        raise NethackCornerError(
+            "nethack_corner.poll_interval_s は0.5-60の数値である必要があります"
         )
     if not isinstance(cfg.timezone, str) or not cfg.timezone.strip():
         raise NethackCornerError(
@@ -158,6 +199,7 @@ class NethackCornerManager(RetroCornerManager):
         chat: Callable[[str], None] | None = None,
         voice: Callable[[str], None] | None = None,
         spawn=None,
+        runtime_screen: Callable[[], str | None] | None = None,
     ):
         if chat is None:
             chat = lambda text: enqueue_chat(g, text, source=DELIVERY_SOURCE)
@@ -183,6 +225,73 @@ class NethackCornerManager(RetroCornerManager):
         )
         self._run_store = NethackRunStore.from_global(g)
         self._run_history_error: str | None = None
+        self._runtime_screen = runtime_screen or self._default_runtime_screen
+
+    def _default_runtime_screen(self) -> str | None:
+        """Read-only capture of the committed NetHack game window.
+
+        Mirrors the live spectator: only the canonical committed runtime is
+        followed, and its generation-owned game window ownership is verified
+        before capture.  Any uncertainty returns None (counts as no progress),
+        never as an input or a switch.
+        """
+        try:
+            from .nethack_spectator_live import active_nethack_runtime
+            from .tmux import Tmux
+        except Exception:
+            return None
+        try:
+            store = getattr(self.coordinator, "store", None)
+            state, _migrated = store.canonical.load()
+        except Exception:
+            return None
+        try:
+            runtime = active_nethack_runtime(state)
+        except Exception:
+            return None
+        if runtime is None:
+            return None
+        try:
+            tmux = Tmux(runtime.adapter_session)
+            if tmux.read_window_ownership(runtime.target) != runtime.ownership:
+                return None
+            return tmux.capture_pane_checked(runtime.target)
+        except Exception:
+            return None
+
+    def _wait_and_finish(self, state: dict[str, object]) -> CornerResult:
+        if not self.config.run_boundary:
+            return super()._wait_and_finish(state)
+        return self._wait_run_boundary(state)
+
+    def _wait_run_boundary(self, state: dict[str, object]) -> CornerResult:
+        interval = float(self.config.poll_interval_s)
+        stall_s = int(self.config.stall_timeout_minutes) * 60
+        last_text: str | None = None
+        unchanged_since = self._local_now()
+        while True:
+            self._sleep(interval)
+            with self._locked():
+                latest = self._read_state()
+            if latest.get("status") != "active":
+                return self._state_result(latest)
+            text = self._runtime_screen()
+            now = self._local_now()
+            if text is not None and text != last_text:
+                last_text = text
+                unchanged_since = now
+            if text is not None and _is_terminal_screen(text):
+                reason = "terminal"
+            elif (now - unchanged_since).total_seconds() >= stall_s:
+                reason = "stalled"
+            else:
+                continue
+            with self._locked():
+                latest = self._read_state()
+                if latest.get("status") != "active":
+                    return self._state_result(latest)
+                latest["finish_reason"] = reason
+                return self._finish_locked(latest, now)
 
     def _validate_games(self) -> None:
         """Validate the existing CLI runtime without pretending an AI exists yet."""

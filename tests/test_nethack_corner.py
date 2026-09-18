@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from contextlib import contextmanager
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -65,6 +65,7 @@ games_dir = "config/games"
 enabled = true
 start_hour = 22
 duration_minutes = 30
+run_boundary = false
 timezone = "Asia/Tokyo"
 """,
             encoding="utf-8",
@@ -127,6 +128,7 @@ class TestNethackCornerConfig(NethackCornerTestBase):
                 start_hour=22,
                 duration_minutes=30,
                 timezone="Asia/Tokyo",
+                run_boundary=False,
             ),
         )
 
@@ -142,6 +144,9 @@ class TestNethackCornerConfig(NethackCornerTestBase):
             "weekdays = [1, 1]\n",
             "weekdays = []\n",
             'games = ["robots"]\n',
+            'run_boundary = "yes"\n',
+            "stall_timeout_minutes = 0\n",
+            "poll_interval_s = 0.1\n",
         )
         for body in bad_bodies:
             with self.subTest(body=body):
@@ -300,6 +305,79 @@ class TestManualNethackCorner(NethackCornerTestBase):
             ManualNethackCornerManager(self.g, duration_minutes=0)
         with self.assertRaises(NethackCornerError):
             ManualNethackCornerManager(self.g, duration_minutes=121)
+
+
+class TestNethackRunBoundary(NethackCornerTestBase):
+    def _boundary_manager(self, screens, *, stall_minutes=10):
+        cfg = replace(
+            self.cfg,
+            run_boundary=True,
+            stall_timeout_minutes=stall_minutes,
+            poll_interval_s=1.0,
+        )
+        current = ["robots"]
+        clock = {"now": self.now_value}
+        index = {"i": 0}
+
+        def screen():
+            value = screens[min(index["i"], len(screens) - 1)]
+            index["i"] += 1
+            return value
+
+        def sleep(seconds):
+            clock["now"] = clock["now"] + timedelta(seconds=seconds)
+
+        mgr, coordinator = self.manager(
+            current,
+            config=cfg,
+            now=lambda: clock["now"],
+            sleep=sleep,
+            runtime_screen=screen,
+        )
+        return mgr, coordinator, clock
+
+    def test_terminal_screen_ends_the_run_boundary(self):
+        screens = ["a map", "a map", "You die...\nDo you want your possessions identified?"]
+        mgr, coordinator, _clock = self._boundary_manager(screens)
+        result = mgr.start()
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(
+            coordinator.calls,
+            [("switch", "nethack"), ("switch", "robots")],
+        )
+        self.assertEqual(mgr.status().get("finish_reason"), "terminal")
+
+    def test_unchanged_screen_ends_after_stall_timeout(self):
+        mgr, coordinator, clock = self._boundary_manager(["frozen screen"], stall_minutes=10)
+        result = mgr.start()
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(mgr.status().get("finish_reason"), "stalled")
+        self.assertGreaterEqual(
+            (clock["now"] - self.now_value).total_seconds(),
+            10 * 60,
+        )
+        self.assertEqual(
+            coordinator.calls,
+            [("switch", "nethack"), ("switch", "robots")],
+        )
+
+    def test_terminal_markers_are_specific(self):
+        from docich.nethack_corner import _is_terminal_screen
+
+        for text in (
+            "You die...",
+            "You have died.",
+            "Do you want your possessions identified? [ynq]",
+            "You ascend to the status of Demigod",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(_is_terminal_screen(text))
+        self.assertFalse(_is_terminal_screen("Dlvl:3 HP:18(18) --More--"))
+
+    def test_run_boundary_is_the_default(self):
+        root = Path(__file__).resolve().parents[1]
+        default_g = config.load_global(root, root / "config/docich.toml")
+        self.assertTrue(load_nethack_corner_config(default_g).run_boundary)
 
 
 if __name__ == "__main__":

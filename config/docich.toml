@@ -84,6 +84,9 @@ enabled = false
 start_hour = 22
 duration_minutes = 30
 timezone = "Asia/Tokyo"
+# 一試合(死亡・昇天)を境界にする。画面が10分変わらなければ打ち切る。
+run_boundary = true
+stall_timeout_minutes = 10
 
 # --- Web UI (モデルチェーン / バックオフ管理) ---
 
