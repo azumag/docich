@@ -542,5 +542,36 @@ class ProgramCornerStateTests(CollectorFixture):
         self.assertIn("improvement", data["corners"]["boundary"])
 
 
+class NethackAgentLogTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="vmops-agent-log-")
+        self.state = Path(self.tmp.name) / "run-soren-live"
+        (self.state / "logs").mkdir(parents=True)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_missing_log_is_absent_not_an_error(self):
+        module = load_collector()
+        entry = module._collect_nethack_agent_log(self.state, int(time.time()))
+        self.assertFalse(entry["present"])
+        self.assertFalse(entry["readable"])
+        self.assertEqual(entry["lines"], [])
+
+    def test_tail_is_bounded_and_redacted(self):
+        module = load_collector()
+        path = self.state / "logs" / "agent.log"
+        path.write_text(
+            "".join(f"line {i} token=sekret{i}\n" for i in range(20)),
+            encoding="utf-8",
+        )
+        entry = module._collect_nethack_agent_log(self.state, int(time.time()))
+        self.assertTrue(entry["present"])
+        self.assertTrue(entry["readable"])
+        self.assertEqual(len(entry["lines"]), module.NETHACK_AGENT_LOG_LINES)
+        self.assertIn("line 19", entry["lines"][-1])
+        self.assertNotIn("sekret", " ".join(entry["lines"]))
+
+
 if __name__ == "__main__":
     unittest.main()
