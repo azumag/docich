@@ -33,6 +33,7 @@ DEFAULT_PLAYER_NAME = "docich"
 DEFAULT_SAVE_DIR = Path("/var/games/nethack/save")
 BOUNDARY_RESULT_FILENAME = "nethack_boundary.json"
 _PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,31}$")
+_SAVE_CONFIRMATION_RE = re.compile(r"really\s+save\?\s*\[yn\]", re.IGNORECASE)
 
 # Character-creation prompts have no durable run to save: NetHack has not
 # created an adventure yet.  The normal ``S`` boundary only succeeds after a
@@ -59,6 +60,9 @@ def _is_character_creation_screen(text: str) -> bool:
     lowered = text.lower()
     return any(marker in lowered for marker in _PREGAME_SCREEN_MARKERS)
 
+
+def _is_save_confirmation_screen(text: str) -> bool:
+    return _SAVE_CONFIRMATION_RE.search(text) is not None
 
 
 class NethackCoordinatorAdapter(CliCoordinatorAdapter):
@@ -261,6 +265,7 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
         self.tmux.send_keys(process_target, ["Escape"], literal=False)
         self._check_active(deadline, cancel)
         self.tmux.send_keys(process_target, ["S"], literal=True)
+        save_confirmed = False
 
         while True:
             self._boundary_wait_check(deadline, cancel)
@@ -269,6 +274,18 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
             except Exception as exc:
                 # A failed tmux probe is not evidence that the game exited.
                 raise AdapterError("NetHack runtime processを確認できません") from exc
+
+            if process_alive and not save_confirmed:
+                try:
+                    text = self.tmux.capture_pane(process_target)
+                except Exception:
+                    # A failed capture is not evidence that confirmation is needed.
+                    # Keep waiting under the existing fail-closed deadline.
+                    text = ""
+                if _is_save_confirmation_screen(text):
+                    self._boundary_wait_check(deadline, cancel)
+                    self.tmux.send_keys(process_target, ["y"], literal=True)
+                    save_confirmed = True
 
             save_file = self._new_or_changed_save(before)
             if not process_alive and save_file is not None:
