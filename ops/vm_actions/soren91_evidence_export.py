@@ -113,7 +113,14 @@ def _write_private(path: Path, data: bytes) -> None:
             os.unlink(tmp)
 
 
-def _safe_game_ids(root: Path, now_ms: int, count: int) -> list[int]:
+def _safe_games(root: Path, now_ms: int, count: int) -> list[tuple[int, str]]:
+    """Return (numeric game id, exact on-disk digit token).
+
+    Soren91 deliberately stores completed evidence as game_0001.*, so never
+    round-trip the filename through int() and accidentally look for game_1.*.
+    The token comes only from the strict GAME_RE match and is reused across
+    history/summary/snapshot/screenshot paths.
+    """
     runtime = _runtime(root)
     summary_dir = runtime / "tmp" / "summaries"
     history_dir = runtime / "game_history"
@@ -121,10 +128,17 @@ def _safe_game_ids(root: Path, now_ms: int, count: int) -> list[int]:
     _reject_symlink_chain(runtime, history_dir)
     if not summary_dir.is_dir() or not history_dir.is_dir():
         return []
-    candidates: list[tuple[int, int]] = []
+    candidates: list[tuple[int, str, int]] = []
     for entry in os.scandir(summary_dir):
         match = GAME_RE.fullmatch(entry.name)
         if not match or entry.is_symlink():
+            continue
+        token = match.group(1)
+        game = int(token)
+        # Completed Soren91 runtime evidence uses the canonical four-digit
+        # token. Reject aliases such as game_1.json instead of widening the
+        # reviewed export surface.
+        if token != f"{game:04d}":
             continue
         try:
             info = entry.stat(follow_symlinks=False)
@@ -132,8 +146,7 @@ def _safe_game_ids(root: Path, now_ms: int, count: int) -> list[int]:
             continue
         if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_SUMMARY_BYTES:
             continue
-        game = int(match.group(1))
-        history = history_dir / f"game_{game}.jsonl"
+        history = history_dir / f"game_{token}.jsonl"
         try:
             _read_regular(runtime, history, MAX_HISTORY_BYTES)
         except EvidenceError:
@@ -141,9 +154,9 @@ def _safe_game_ids(root: Path, now_ms: int, count: int) -> list[int]:
         mtime_ms = int(info.st_mtime * 1000)
         if now_ms - mtime_ms < 0 or now_ms - mtime_ms > MAX_AGE_MS:
             continue
-        candidates.append((game, mtime_ms))
-    candidates.sort(key=lambda item: (item[1], item[0]), reverse=True)
-    return [game for game, _ in candidates[:count]]
+        candidates.append((game, token, mtime_ms))
+    candidates.sort(key=lambda item: (item[2], item[0]), reverse=True)
+    return [(game, token) for game, token, _ in candidates[:count]]
 
 
 def _default_transcode(src: Path, dst: Path) -> None:
@@ -189,9 +202,10 @@ def prepare_export(
     _reject_symlink_chain(runtime, state_dir)
     state_dir.mkdir(parents=True, exist_ok=True)
 
-    games = _safe_game_ids(root, now_ms, game_count)
-    if not games:
+    selected_games = _safe_games(root, now_ms, game_count)
+    if not selected_games:
         raise EvidenceError("no completed Soren91 evidence in the last 24 hours")
+    games = [game for game, _token in selected_games]
 
     staging = Path(tempfile.mkdtemp(prefix=".soren91-evidence-", dir=state_dir))
     manifest: dict[str, object] = {
@@ -203,25 +217,26 @@ def prepare_export(
     }
     files_meta: list[dict[str, object]] = manifest["files"]  # type: ignore[assignment]
     try:
-        for game in games:
+        for game, token in selected_games:
+            game_dir = f"game_{token}"
             specs = [
                 (
-                    runtime / "game_history" / f"game_{game}.jsonl",
-                    staging / f"game_{game}" / "history.jsonl",
+                    runtime / "game_history" / f"{game_dir}.jsonl",
+                    staging / game_dir / "history.jsonl",
                     MAX_HISTORY_BYTES,
                     "history",
                     True,
                 ),
                 (
-                    runtime / "tmp" / "summaries" / f"game_{game}.json",
-                    staging / f"game_{game}" / "summary.json",
+                    runtime / "tmp" / "summaries" / f"{game_dir}.json",
+                    staging / game_dir / "summary.json",
                     MAX_SUMMARY_BYTES,
                     "summary",
                     True,
                 ),
                 (
-                    runtime / "tmp" / "strategy_snapshots" / f"game_{game}_strategy.mjs",
-                    staging / f"game_{game}" / "strategy.mjs",
+                    runtime / "tmp" / "strategy_snapshots" / f"{game_dir}_strategy.mjs",
+                    staging / game_dir / "strategy.mjs",
                     MAX_STRATEGY_BYTES,
                     "strategy",
                     False,
@@ -240,7 +255,7 @@ def prepare_export(
                     "sha256": _sha256_bytes(data),
                 })
 
-            screenshot_dir = runtime / "tmp" / "game_screenshots" / f"game_{game}"
+            screenshot_dir = runtime / "tmp" / "game_screenshots" / game_dir
             _reject_symlink_chain(runtime, screenshot_dir)
             if screenshot_dir.is_dir():
                 shots: list[tuple[int, Path]] = []
@@ -258,7 +273,7 @@ def prepare_export(
                 shots.sort(key=lambda item: (item[0], item[1].name))
                 for turn, src in shots[:MAX_SCREENSHOTS_PER_GAME]:
                     _read_regular(runtime, src, MAX_SCREENSHOT_BYTES)
-                    dst = staging / f"game_{game}" / "screenshots" / f"turn_{turn}.jpg"
+                    dst = staging / game_dir / "screenshots" / f"turn_{turn}.jpg"
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     try:
                         transcode(src, dst)
