@@ -53,12 +53,16 @@ class NethackStartup:
         # Whitespace may wrap at the normal 80-column terminal width.
         text = " ".join(obs.raw_text.lower().split())
         key = None
+        # NetHack 5.0 wording varies by options: role/race order, an Oxford
+        # comma before the final item, and a "(y)" default.  Match the reviewed
+        # phrase plus a y/n prompt instead of one exact sentence.  "shall i
+        # pick a character" deliberately does not match unrelated prompts such
+        # as "Shall I pick your weapon? [yn]".
         patterns = (
-            (r"do you want a tutorial\?\s*\[yn[^\]]*\](?:\s*\([yn]\))?", "n"),
-            (r"shall i pick a character's (?:race, role|role, race), gender and alignment for you\?\s*\[yn[^\]]*\](?:\s*\([yn]\))?", "y"),
-            (r"shall i pick a character for you\?\s*\[yn[^\]]*\](?:\s*\([yn]\))?", "y"),
-            (r"pick a character\?\s*\[yn[^\]]*\](?:\s*\([yn]\))?", "y"),
-            (r"is this ok\?\s*\[yn[^\]]*\](?:\s*\([yn]\))?", "y"),
+            (r"do you want a tutorial\?\s*\[yn", "n"),
+            (r"shall i pick a character[^?]*\?\s*\[yn", "y"),
+            (r"pick a character\?\s*\[yn", "y"),
+            (r"is this ok\?\s*\[yn", "y"),
         )
         # Only the initial selection/confirmation screens can consume y/n.
         # A tutorial may overlay an already drawn map before the first turn.
@@ -66,12 +70,7 @@ class NethackStartup:
         for pattern, answer in patterns:
             if has_gameplay and answer != "n":
                 continue
-            if re.search(r"(?:^| )" + pattern + r"$", text) or (
-                answer == "n" and any(
-                    re.fullmatch(pattern, line.strip().lower())
-                    for line in obs.raw_text.splitlines()
-                )
-            ):
+            if re.search(pattern, text):
                 key = answer
                 self._creation_seen = True
                 break

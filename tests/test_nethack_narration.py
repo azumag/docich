@@ -35,6 +35,8 @@ def observation(text):
     ("Do you want a tutorial? [yn] (n)", "n"),
     ("Shall I pick a character for you? [ynaq] (y)", "y"),
     ("Shall I pick a character's race, role, gender and alignment for you? [ynq]", "y"),
+    ("Shall I pick a character's role, race, gender, and alignment for you? [ynq] (y)", "y"),
+    ("Shall I pick a character's role, race, gender and alignment for you? [ynq]", "y"),
     ("Pick a character? [yn]", "y"),
     ("Is this ok? [ynq]", "y"),
     ("Name: docich\nRole: Valkyrie\nIs this ok? [ynq] (y)", "y"),
