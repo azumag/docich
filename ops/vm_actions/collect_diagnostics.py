@@ -1915,7 +1915,7 @@ def main(argv):
         text = json.dumps(payload, sort_keys=True, ensure_ascii=True)
         if len(text.encode("utf-8")) > MAX_JSON_BYTES:
             return 1
-        sys.stdout.write(text + "\\n")
+        sys.stdout.write(text + "\n")
         return 0
     workers = _collect_workers(soren, now)
     queues = _collect_queues(soren, now)
