@@ -80,11 +80,9 @@ class EvidenceBundleTests(unittest.TestCase):
         self.add_game(100, age_minutes=70)
         self.add_game(101, age_minutes=20)
         self.add_game(102, age_minutes=10)
-        # Incomplete newer summary must not enter the export.
         incomplete = self.runtime / "tmp" / "summaries" / "game_0103.json"
         incomplete.write_text('{"game":103}\n')
         os.utime(incomplete, ((self.now_ms - 60_000) / 1000,) * 2)
-        # Unrelated files must never be swept into the archive.
         (self.runtime / "tmp" / "state" / "secret.env").write_text("TOKEN=do-not-export\n")
         (self.runtime / "tmp" / "state" / "soren91_loop_metrics.json").write_text(
             '{"profileStatus":"ok","samples":[]}\n'
@@ -119,8 +117,6 @@ class EvidenceBundleTests(unittest.TestCase):
             )
 
     def test_noncanonical_unpadded_alias_is_not_exported(self):
-        # Production completion paths are exactly game_XXXX.*. A stray
-        # unpadded alias must not be interpreted as a valid completed game.
         history = self.runtime / "game_history" / "game_7.jsonl"
         summary = self.runtime / "tmp" / "summaries" / "game_7.json"
         history.write_text('{"turn":1}\n')
@@ -294,7 +290,7 @@ class AuthorizationAndWorkflowTests(unittest.TestCase):
         self.assertIn("github.event.comment.body == '/soren91-evidence-export'", text)
         self.assertIn("actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02", text)
         self.assertIn("retention-days: 1", text)
-        self.assertIn("soren91_evidence_export.py prepare", text)
+        self.assertIn("soren91_evidence_prepare.py", text)
         self.assertIn("soren91_evidence_export.py select", text)
         self.assertIn("soren91_evidence_export.py clear", text)
         self.assertIn('"diagnostics docich production $SHA"', text)
