@@ -332,10 +332,7 @@ class NethackCornerManager(RetroCornerManager):
         probe: dict[str, object] | None = None
         if self._run_store is not None and target == GAME_NAME:
             try:
-                probe = self._run_store.prepare_start(
-                    current_is_nethack=current == GAME_NAME,
-                    now=self._local_now(),
-                )
+                probe = self._prepare_start_with_reconcile(current)
             except NethackRunError as exc:
                 raise NethackCornerError(
                     f"NetHack run continuityを確認できません: {_safe_detail(exc)}"
@@ -352,6 +349,41 @@ class NethackCornerManager(RetroCornerManager):
                 # or roll back a live game solely because analytics/history
                 # persistence failed; surface the error in corner state instead.
                 self._run_history_error = _safe_detail(exc)
+
+    def _prepare_start_with_reconcile(self, current: str | None) -> dict[str, object]:
+        """Close an unreachable leftover run before starting a new expedition.
+
+        A failed corner finish (for example a switch-back boundary timeout)
+        can leave the run history ``active`` after the NetHack runtime and save
+        are both gone.  ``NethackRunStore.prepare_start`` correctly fails
+        closed on that state, but with no runtime/save there is nothing left to
+        protect, and without reconciliation every future start would be blocked
+        forever.  Close it explicitly as ``ended_unknown`` (never invent a
+        death) and retry once.  When NetHack is still the canonical game the
+        original fail-closed error is preserved.
+        """
+        assert self._run_store is not None
+        is_nethack = current == GAME_NAME
+        try:
+            return self._run_store.prepare_start(
+                current_is_nethack=is_nethack, now=self._local_now()
+            )
+        except NethackRunError:
+            if is_nethack:
+                raise
+        try:
+            reconciled = self._run_store.record_finished(
+                now=self._local_now(), nethack_still_active=False
+            )
+        except NethackRunError as exc:
+            raise NethackRunError(f"到達不能runを回収できません: {_safe_detail(exc)}") from exc
+        print(
+            f"[nethack-corner] reconciled unreachable run status={reconciled.get('status')}",
+            file=sys.stderr,
+        )
+        return self._run_store.prepare_start(
+            current_is_nethack=False, now=self._local_now()
+        )
 
     def _announce_start_locked(self, state: dict[str, object]) -> None:
         if state.get("announced"):

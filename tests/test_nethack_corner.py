@@ -7,7 +7,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -22,6 +22,7 @@ from docich.nethack_corner import (  # noqa: E402
     load_nethack_corner_config,
 )
 from docich.nethack_corner_manual import ManualNethackCornerManager  # noqa: E402
+from docich.nethack_run import NethackRunError  # noqa: E402
 from docich.retro_corner import RetroCornerError  # noqa: E402
 
 
@@ -378,6 +379,48 @@ class TestNethackRunBoundary(NethackCornerTestBase):
         root = Path(__file__).resolve().parents[1]
         default_g = config.load_global(root, root / "config/docich.toml")
         self.assertTrue(load_nethack_corner_config(default_g).run_boundary)
+
+
+class TestNethackStrandedRunReconcile(NethackCornerTestBase):
+    def test_unreachable_leftover_run_is_reconciled_then_started(self):
+        current = [None]
+        mgr, _ = self.manager(current)
+        store = Mock()
+        store.prepare_start.side_effect = [
+            NethackRunError("active runなのにNetHack runtime/saveがありません"),
+            {"kind": "new", "run_id": "r1", "expected_expedition": 2},
+        ]
+        store.record_finished.return_value = {"status": "ended_unknown"}
+        mgr._run_store = store
+
+        probe = mgr._prepare_start_with_reconcile(None)
+
+        self.assertEqual(probe["kind"], "new")
+        self.assertEqual(store.prepare_start.call_count, 2)
+        store.record_finished.assert_called_once()
+        self.assertEqual(store.record_finished.call_args.kwargs["nethack_still_active"], False)
+
+    def test_reconcile_is_skipped_while_nethack_is_still_active(self):
+        current = ["nethack"]
+        mgr, _ = self.manager(current)
+        store = Mock()
+        store.prepare_start.side_effect = NethackRunError("boom")
+        mgr._run_store = store
+
+        with self.assertRaises(NethackRunError):
+            mgr._prepare_start_with_reconcile("nethack")
+        store.record_finished.assert_not_called()
+
+    def test_reconcile_failure_stays_fail_closed(self):
+        current = [None]
+        mgr, _ = self.manager(current)
+        store = Mock()
+        store.prepare_start.side_effect = NethackRunError("active runなのにNetHack runtime/saveがありません")
+        store.record_finished.side_effect = NethackRunError("終了対象のcurrent NetHack runがありません")
+        mgr._run_store = store
+
+        with self.assertRaises(NethackRunError):
+            mgr._prepare_start_with_reconcile(None)
 
 
 if __name__ == "__main__":
