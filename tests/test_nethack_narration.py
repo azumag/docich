@@ -79,6 +79,22 @@ def test_startup_sequence_then_permanent_gameplay():
     assert startup.consider(normalized("Is this ok? [yn]")) is None
 
 
+def test_intro_more_with_status_lines_is_advanced():
+    # The intro --More-- sits above the status lines, so it is not the last
+    # line of the frame; the gate must still advance it instead of holding.
+    startup = NethackStartup(enabled=True)
+    assert startup.consider(
+        normalized("Shall I pick character's race, role, gender and alignment for you? [ynaq]")
+    )[0].text == "y"
+    intro = (
+        "Go bravely with Tyr!\n"
+        "--More--\n"
+        "[Docich the Stripling ] St:17 Dx:12\n"
+        "Dlvl:1 $:0 HP:16(16) Pw:2(2) AC:6\n"
+    )
+    assert startup.consider(normalized(intro))[0].text == " "
+
+
 @pytest.mark.parametrize("kind", ["time", "observations", "actions"])
 def test_startup_bounds_latch_closed(kind):
     now = [0.0]

@@ -77,7 +77,9 @@ class NethackStartup:
         if key is None and has_gameplay:
             self._state("gameplay")
             return None
-        if key is None and self._creation_seen and text.endswith("--more--"):
+        if key is None and self._creation_seen and "--more--" in text:
+            # The intro/--More-- screen can show the status lines below the
+            # prompt, so it is not the last line of the frame.
             key = " "
         if key is None:
             self._state("unknown")
