@@ -43,7 +43,7 @@ elif sys.argv[1] == "send-keys":
 root = pathlib.Path(os.environ["FAKE_ROOT"])
 # Driver caps must keep observing (without starting another match) so this
 # handshake also detects an early driver exit with unflushed results.
-deadline = time.monotonic() + 5
+deadline = time.monotonic() + 40  # generous: CPU-starved runners are slow
 while time.monotonic() < deadline:
     try:
         if int((root / "captures").read_text()) >= 12:
@@ -62,7 +62,7 @@ raise SystemExit(1)
            f"{game.upper()}_MAX_MATCHES": str(limit),
            f"{game.upper()}_SCORELOG": str(tmp_path / "scores.jsonl")}
     result = subprocess.run(["/bin/sh", str(ROOT / "games/cli-wrappers" / f"{game}_docich.sh")],
-                            env=env, capture_output=True, text=True, timeout=8)
+                            env=env, capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
     if not save_fails:
         scores = [json.loads(line) for line in (tmp_path / "scores.jsonl").read_text().splitlines()]

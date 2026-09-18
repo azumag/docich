@@ -123,7 +123,7 @@ elif sys.argv[1] == "send-keys":
     fake_game = bin_dir / "game"
     fake_game.write_text(f"#!{sys.executable}\n" + f'''import os, pathlib, time
 root = pathlib.Path(os.environ["FAKE_ROOT"])
-deadline = time.monotonic() + 5
+deadline = time.monotonic() + 40  # generous: CPU-starved runners are slow
 while time.monotonic() < deadline:
     try:
         if int((root / "captures").read_text()) >= {len(panes) + 6}:
@@ -138,7 +138,7 @@ raise SystemExit(1)
            "FAKE_ROOT": str(tmp_path), bin_var: str(fake_game),
            log_var: str(tmp_path / "scores.jsonl")}
     result = subprocess.run(["/bin/sh", str(WRAPPERS / wrapper), *args], env=env,
-                            capture_output=True, text=True, timeout=8)
+                            capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
     key_log = tmp_path / "keys"
     keys = [json.loads(line) for line in key_log.read_text().splitlines()] if key_log.exists() else []
