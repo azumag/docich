@@ -146,7 +146,15 @@ jobs:
             prepare_rc=$?
           fi
           if (( prepare_rc != 0 )); then
-            diagnostics_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "diagnostics docich production $SHA")"
+            if diagnostics_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "diagnostics docich production $SHA")"; then
+              diagnostics_rc=0
+            else
+              diagnostics_rc=$?
+            fi
+            if (( diagnostics_rc != 0 )); then
+              echo "::error::Soren91 evidence export failed: prepare_failed_diagnostics_transport_failed"
+              exit 1
+            fi
             printf '%s\n' "$diagnostics_json" > "$envelope"
             if chunk_count="$(python3 control/ops/vm_actions/extract_soren91_evidence.py append "$envelope" 0 "$archive" "$meta" 2>/dev/null)"; then
               extract_rc=0
@@ -162,7 +170,15 @@ jobs:
             exit 1
           fi
 
-          diagnostics_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "diagnostics docich production $SHA")"
+          if diagnostics_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "diagnostics docich production $SHA")"; then
+            diagnostics_rc=0
+          else
+            diagnostics_rc=$?
+          fi
+          if (( diagnostics_rc != 0 )); then
+            echo "::error::Soren91 evidence export failed: post_prepare_diagnostics_transport_failed"
+            exit 1
+          fi
           printf '%s\n' "$diagnostics_json" > "$envelope"
           chunk_count="$(python3 control/ops/vm_actions/extract_soren91_evidence.py append "$envelope" 0 "$archive" "$meta")"
           [[ "$chunk_count" =~ ^[1-9][0-9]{0,2}$ ]] && (( chunk_count <= 256 ))
@@ -170,7 +186,15 @@ jobs:
           for (( index=1; index<chunk_count; index++ )); do
             command="python3 ops/vm_actions/soren91_evidence_export.py select $index"
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA" <<< "$command" >/dev/null
-            diagnostics_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "diagnostics docich production $SHA")"
+            if diagnostics_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "diagnostics docich production $SHA")"; then
+              diagnostics_rc=0
+            else
+              diagnostics_rc=$?
+            fi
+            if (( diagnostics_rc != 0 )); then
+              echo "::error::Soren91 evidence export failed: selected_chunk_diagnostics_transport_failed"
+              exit 1
+            fi
             printf '%s\n' "$diagnostics_json" > "$envelope"
             returned="$(python3 control/ops/vm_actions/extract_soren91_evidence.py append "$envelope" "$index" "$archive" "$meta")"
             [[ "$returned" == "$chunk_count" ]]

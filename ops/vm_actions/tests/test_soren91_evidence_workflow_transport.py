@@ -44,6 +44,30 @@ class EvidenceWorkflowTransportTests(unittest.TestCase):
         self.assertIn("if chunk_count=\"$(python3 control/ops/vm_actions/extract_soren91_evidence.py append", evidence)
         self.assertIn("extract_rc=$?", evidence)
 
+    def test_diagnostics_transport_failure_is_classified_by_stage(self):
+        evidence = EVIDENCE_WORKFLOW.read_text(encoding="utf-8")
+        conditional = (
+            'if diagnostics_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" '
+            '"diagnostics docich production $SHA")"; then'
+        )
+        self.assertEqual(evidence.count(conditional), 3)
+        self.assertIn("diagnostics_rc=$?", evidence)
+        self.assertIn(
+            "Soren91 evidence export failed: prepare_failed_diagnostics_transport_failed",
+            evidence,
+        )
+        self.assertIn(
+            "Soren91 evidence export failed: post_prepare_diagnostics_transport_failed",
+            evidence,
+        )
+        self.assertIn(
+            "Soren91 evidence export failed: selected_chunk_diagnostics_transport_failed",
+            evidence,
+        )
+        # Keep classification fixed-vocabulary: do not print SSH output or the
+        # numeric return code into Actions logs.
+        self.assertNotIn("diagnostics_rc=$diagnostics_rc", evidence)
+
 
 if __name__ == "__main__":
     unittest.main()
