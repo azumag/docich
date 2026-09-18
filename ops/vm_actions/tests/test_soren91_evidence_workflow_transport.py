@@ -16,7 +16,7 @@ class EvidenceWorkflowTransportTests(unittest.TestCase):
         self.assertIn(canonical, retention)
         self.assertEqual(
             evidence.count('"exec docich production $SHA" <<< "$command"'),
-            5,
+            6,
         )
         self.assertNotIn("|             ssh", evidence)
         self.assertIn(
@@ -28,6 +28,10 @@ class EvidenceWorkflowTransportTests(unittest.TestCase):
             evidence,
         )
         self.assertIn("command=':'", evidence)
+        self.assertIn(
+            'command="python3 ops/vm_actions/probe_gateway_diagnostics.py $SHA"',
+            evidence,
+        )
         self.assertIn(
             'command="python3 ops/vm_actions/soren91_evidence_export.py select $index"',
             evidence,
@@ -59,15 +63,26 @@ class EvidenceWorkflowTransportTests(unittest.TestCase):
         self.assertIn("if (( collector_probe_rc != 0 )); then", evidence)
         self.assertIn("post_prepare_collector_failed", evidence)
         self.assertIn("post_prepare_exec_probe_transport_failed", evidence)
-        self.assertIn(
-            "post_prepare_gateway_diagnostics_failed_after_collector_success",
-            evidence,
-        )
-        # Never print the numeric probe return code or collector output. The
-        # command itself redirects both streams before the existing production
-        # exec logger can persist retained evidence bytes.
         self.assertNotIn("collector_probe_rc=$collector_probe_rc", evidence)
         self.assertNotIn("echo \"$collector_probe_rc\"", evidence)
+
+    def test_source_gateway_probe_is_output_free_and_fixed_vocabulary(self):
+        evidence = EVIDENCE_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn(
+            'command="python3 ops/vm_actions/probe_gateway_diagnostics.py $SHA"',
+            evidence,
+        )
+        self.assertIn("source_gateway_probe_rc=$?", evidence)
+        self.assertIn("source_gateway_output_too_large", evidence)
+        self.assertIn("source_gateway_collector_verification_failed", evidence)
+        self.assertIn("source_gateway_unclassified_value_error", evidence)
+        self.assertIn("source_gateway_probe_internal_error", evidence)
+        self.assertIn(
+            "post_prepare_installed_gateway_rejected_after_source_gateway_success",
+            evidence,
+        )
+        self.assertNotIn("source_gateway_probe_rc=$source_gateway_probe_rc", evidence)
+        self.assertNotIn('echo "$source_gateway_probe_rc"', evidence)
 
     def test_diagnostics_transport_failure_is_classified_by_stage(self):
         evidence = EVIDENCE_WORKFLOW.read_text(encoding="utf-8")
@@ -82,15 +97,13 @@ class EvidenceWorkflowTransportTests(unittest.TestCase):
             evidence,
         )
         self.assertIn(
-            "Soren91 evidence export failed: post_prepare_gateway_diagnostics_failed_after_collector_success",
+            "Soren91 evidence export failed: post_prepare_installed_gateway_rejected_after_source_gateway_success",
             evidence,
         )
         self.assertIn(
             "Soren91 evidence export failed: selected_chunk_diagnostics_transport_failed",
             evidence,
         )
-        # Keep classification fixed-vocabulary: do not print SSH output or the
-        # numeric return code into Actions logs.
         self.assertNotIn("diagnostics_rc=$diagnostics_rc", evidence)
 
 
