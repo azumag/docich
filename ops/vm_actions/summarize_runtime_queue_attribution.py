@@ -56,6 +56,8 @@ IMPROVEMENT_BLOCKERS = (
     "unknown",
 )
 IMPROVEMENT_AGE_CAP_SEC = 86400
+PAPER_IMPROVE_ACTIVE_STATUSES = frozenset({"queued", "running"})
+PAPER_IMPROVE_STALE_SEC = 1800
 
 
 def _integer(mapping, name):
@@ -101,6 +103,25 @@ def _improvement_metrics(data):
         for blocker in IMPROVEMENT_BLOCKERS
     )
     return metrics
+
+
+def _paper_improve_stale(data):
+    """Return a fixed stale flag for PAPER improve metadata only.
+
+    The collector already reduces PAPER improve state to fixed lifecycle fields
+    and a file age.  Treat queued/running metadata older than the conservative
+    30-minute bound as stale, while failing closed to zero for malformed shapes.
+    This is observability-only: it does not change runtime severity or mutate
+    production state.
+    """
+    corners = data.get("corners") if isinstance(data, dict) else None
+    paper = corners.get("paper_improve") if isinstance(corners, dict) else None
+    if not isinstance(paper, dict) or paper.get("status") not in PAPER_IMPROVE_ACTIVE_STATUSES:
+        return 0
+    age = paper.get("age_sec")
+    if isinstance(age, bool) or not isinstance(age, int) or age < 0:
+        return 0
+    return int(age > PAPER_IMPROVE_STALE_SEC)
 
 
 def attribute_queue_giveups(data):
@@ -175,6 +196,7 @@ def render(data):
         f"ai_{name}={_integer(ai or {}, name)}" for name in CHAIN_SUMMARY_KEYS
     )
     summary += "," + ",".join(_improvement_metrics(data))
+    summary += f",corner_paper_improve_stale={_paper_improve_stale(data)}"
     counts, consistent, exact = attribute_queue_giveups(data)
     extra = [
         # Keep the historical names for dashboards while adding explicit
