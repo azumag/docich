@@ -52,6 +52,29 @@ nsnake 3.0.1-2.1。リポジトリの実 wrapper＋実ブレインを docich の
 を `ninvaders_docich.sh brain` (wrapper は開始・記録のみ) + `[agent]` command brain (interval 250ms) に
 切替えた。最終再走 (コミット対象の設定そのまま) で 330秒に 3試合記録 (6300/5050/6350)。
 
+### 改善ループ (bot_eval) の実走で見つかった問題と修正
+
+改善ループが ninvaders を評価できるかを、本番と同じ経路 (`corner_improve._bot_evaluator` →
+`run_bot_matches` → 実 tmux + 実バイナリ) で Docker 実走して確かめた。
+
+- **試合終了を検出できず、全試合が turn cap (`maxed`) になっていた**: preset の
+  `game_over_res` は `Game Over` だが、実ゲームは Game Over 画面なしでタイトルへ直行する。
+  `maxed` は完走扱いにしない (fail-closed) ため `played=0` で昇格ゲートは通らず、本番既定
+  (3000手×0.7秒) では1試合 約35分の空回りだった。`Press SPACE to start` (タイトル再出現) で終了を検出するよう修正。
+- **判断周期が live とかけ離れていた**: 評価は 0.7秒/手、live は 250ms。敵弾は約8行/秒で落ちるため
+  別のゲームを評価していた。ninvaders preset に `interval_s=0.2` / `max_turns=1500` を追加。
+- **CLI (`python -m docich.resolver.bot_eval <game>`) が起動直後に落ちていた**: GameConfig を
+  名前 (str) の代わりに渡していた (本番の改善ループ経路は名前を渡すため無影響)。
+- 修正後の実走 (評価器・既定重み・2試合): **5900点 (504手) / 5550点 (709手)、`maxed:false`、
+  `played=2`、平均5725、所要328秒**。live の実測 (平均約5900) と整合する。
+- nsnake: 実走 (CLI, 1試合・上限300手) で **蛇が死なず `maxed:true` (Score 24)**。fail-closed の仕様では
+  nsnake の改善は昇格に至らない。ただし改善ジョブはコーナーで試合が1件も記録されない場合
+  (`skipped: no-matches`) は LLM も評価も走らないため、死なない nsnake では空回りしない。
+  試合が記録されたコーナーでは 2評価×2試合が上限3000手まで回り得る。生存型ゲームの評価は
+  「固定手数時点のスコア」を認めるか、nsnake の終了条件を別に定義する設計判断が必要 (未対応)。
+- 評価のばらつき (live 実測 4750–6800点/試合) に対し、`improve_matches=2` / `improve_margin_pct=10` は
+  ノイズを昇格と取り違え得る。値の見直しは未対応。
+
 ## 検証まとめ (実測)
 
 - ユニット/契約テスト: Ubuntu 24.04 (`/bin/sh`=dash, Python 3.12.3, pytest 9.1.1) で

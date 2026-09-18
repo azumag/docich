@@ -175,7 +175,7 @@ def run_bot_matches(
                 break
             for key in retry_keys or []:
                 send_key(key)
-                time.sleep(interval_s * 2)
+                time.sleep(max(interval_s * 2, 0.5))
                 if not is_over(capture()):
                     break
     finally:
@@ -195,8 +195,10 @@ def main(argv=None) -> int:
     ap.add_argument("game")
     ap.add_argument("--config", default="config/docich.toml")
     ap.add_argument("--matches", type=int, default=3)
-    ap.add_argument("--interval-ms", type=int, default=700)
-    ap.add_argument("--max-turns", type=int, default=3000)
+    ap.add_argument("--interval-ms", type=int, default=None,
+                    help="判断周期 (未指定: preset の interval_s、無ければ 700)")
+    ap.add_argument("--max-turns", type=int, default=None,
+                    help="1試合の手数上限 (未指定: preset の max_turns、無ければ 3000)")
     ap.add_argument("--bot-timeout-s", type=float, default=10.0)
     ap.add_argument("--out", default=None)
     args = ap.parse_args(argv)
@@ -210,7 +212,12 @@ def main(argv=None) -> int:
     if args.game not in presets:
         raise SystemExit(f"bot preset がありません: {args.game} (対応: {sorted(presets)})")
     preset = presets[args.game]
-    cmd = preset["command"](game)
+    cmd = preset["command"](args.game)  # 名前を渡す (GameConfig ではない)
+    run_kwargs = dict(preset["run_kwargs"])
+    if args.interval_ms is not None:
+        run_kwargs["interval_s"] = args.interval_ms / 1000
+    if args.max_turns is not None:
+        run_kwargs["max_turns"] = args.max_turns
     summary = run_bot_matches(
         label=args.game,
         binary=cmd,
@@ -219,10 +226,8 @@ def main(argv=None) -> int:
         cols=cli_cols(game),
         rows=cli_rows(game),
         matches=args.matches,
-        interval_s=args.interval_ms / 1000,
-        max_turns=args.max_turns,
         bot_timeout_s=args.bot_timeout_s,
-        **preset["run_kwargs"],
+        **run_kwargs,
     )
     print(json.dumps(summary, ensure_ascii=False))
     if args.out:
@@ -255,8 +260,16 @@ def _bot_presets() -> dict:
                 "boot_sleep_s": 2.0,
                 "start_keys": ["Space"],
                 "retry_keys": ["Space"],
-                "game_over_res": [r"Game Over"],
+                # nInvaders has no "Game Over" screen: a finished match goes
+                # straight back to the title (measured on the real binary), so
+                # "Game Over" never matched and every match ran to the turn cap.
+                "game_over_res": [r"Press SPACE to start"],
                 "score_res": [r"Score:\s*([0-9]+)"],
+                # Same decision cadence as the live brain ([agent] interval_ms=250):
+                # bombs fall ~8 rows/s, so the 0.7s default would evaluate a
+                # different game from the one that is broadcast.
+                "interval_s": 0.2,
+                "max_turns": 1500,
             },
         },
     }
