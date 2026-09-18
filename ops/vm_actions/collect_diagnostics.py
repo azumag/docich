@@ -1835,9 +1835,9 @@ def _collect_soren91_manual_evidence(soren, now_ms=None):
             if not stat.S_ISREG(info.st_mode) or info.st_size != bundle_bytes:
                 return result
             offset = chunk_index * chunk_bytes
+            expected_len = min(chunk_bytes, bundle_bytes - offset)
             handle.seek(offset)
-            chunk = handle.read(min(chunk_bytes, bundle_bytes - offset) + 1)
-        expected_len = min(chunk_bytes, bundle_bytes - offset)
+            chunk = handle.read(expected_len)
         if len(chunk) != expected_len:
             return result
         encoded = base64.b64encode(chunk).decode("ascii")
