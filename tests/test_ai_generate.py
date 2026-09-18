@@ -71,8 +71,8 @@ class TestBuildAiInvocation(AiTestBase):
     def test_namespaced_models_preserve_route_and_order(self):
         prompt = self._write_ai()
         agents = (
-            "opencode-go:union-alpha,"
-            "openrouter:stealth/union-alpha,"
+            "opencode-go:namespaced-model,"
+            "openrouter:vendor/namespaced-model,"
             "opencode:deepseek-v4-flash"
         )
         inv = ai_generate.build_ai_invocation(
@@ -88,7 +88,7 @@ class TestBuildAiInvocation(AiTestBase):
             'ai_generate_list() { printf "%s" "$3" > "$6"; }\n',
             encoding="utf-8",
         )
-        agents = "opencode-go/union-alpha,openrouter:stealth/union-alpha,local"
+        agents = "opencode-go/namespaced-model,openrouter:vendor/namespaced-model,local"
         winner = self.repo_root / "received-agents.txt"
         inv = ai_generate.build_ai_invocation(
             self.g, game_name="sorengame", label="COMMENT",
@@ -100,12 +100,12 @@ class TestBuildAiInvocation(AiTestBase):
 
     def test_namespaced_models_still_reject_shell_syntax(self):
         for agents in (
-            "opencode:openrouter/stealth/union-alpha;true",
-            "opencode:$(id)/union-alpha",
-            "opencode:openrouter/stealth/union-alpha\ntrue",
-            "opencode:openrouter/stealth/union-alpha|cat",
-            "/openrouter/stealth/union-alpha",
-            "opencode:openrouter/stealth/union-alpha,,local",
+            "opencode:openrouter/vendor/namespaced-model;true",
+            "opencode:$(id)/namespaced-model",
+            "opencode:openrouter/vendor/namespaced-model\ntrue",
+            "opencode:openrouter/vendor/namespaced-model|cat",
+            "/openrouter/vendor/namespaced-model",
+            "opencode:openrouter/vendor/namespaced-model,,local",
         ):
             with self.subTest(agents=agents), self.assertRaises(ai_generate.AiError):
                 ai_generate._validate_agents(agents, "agents")
