@@ -28,6 +28,9 @@ Observed sources (all read-only):
     (state_dir/logs/agent.log, written by supervise.run_callable_loop) so a
     corner that reaches gameplay but never acts stays diagnosable. No other
     log body is read.
+  - bounded, redacted captures of the committed NetHack runtime's presentation
+    (game) and agent tmux panes, so a corner that is active but not progressing
+    stays diagnosable. Never sends tmux input.
   - Soren boundary/A-B wait markers the corners gate on
     (tmp/state/corner_boundary_*.json, ab_state.json, ab_games.jsonl,
     ab_candidate/): only presence, counts, enums and mtimes; strategy/hash
@@ -1949,6 +1952,68 @@ def _collect_nethack_agent_log(state_dir, now):
     return entry
 
 
+NETHACK_PANE_LINES = 14
+NETHACK_PANE_LINE_LIMIT = 240
+_TMUX_TARGET_RE = re.compile(r"^[A-Za-z0-9_.@:-]+$")
+
+
+def _capture_tmux_pane(target, *, max_lines=NETHACK_PANE_LINES):
+    """Read one pane's visible lines read-only; never sends input."""
+    if not isinstance(target, str) or _TMUX_TARGET_RE.fullmatch(target) is None:
+        return []
+    try:
+        proc = subprocess.run(
+            ["tmux", "capture-pane", "-p", "-t", target],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0:
+        return []
+    lines = [line for line in proc.stdout.splitlines() if line.strip()]
+    return [_redact_text(line, NETHACK_PANE_LINE_LIMIT) for line in lines[-max_lines:]]
+
+
+def _collect_nethack_panes(state_dir, now):
+    """Bounded read-only view of the committed NetHack game/agent panes.
+
+    A corner that is active but not progressing is otherwise invisible through
+    this channel. Capture the presentation window (game TTY) and the agent
+    window (agent print/errors) for the committed runtime only. Never sends
+    tmux input.
+    """
+    result = {"present": False, "phase": None, "active_game": None, "game": [], "agent": []}
+    try:
+        data = json.loads((Path(state_dir) / "game_switch.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return result
+    if not isinstance(data, dict):
+        return result
+    result["present"] = True
+    result["phase"] = _redact_text(str(data.get("phase") or ""), 32)
+    active = data.get("active")
+    if not isinstance(active, dict):
+        return result
+    result["active_game"] = _redact_text(str(active.get("game") or ""), 32)
+    if active.get("game") != "nethack":
+        return result
+    session = active.get("adapter_session")
+    game_window = active.get("game_window")
+    generation = active.get("generation")
+    if (
+        not isinstance(session, str)
+        or not isinstance(game_window, str)
+        or type(generation) is not int
+    ):
+        return result
+    result["game"] = _capture_tmux_pane(f"{session}:{game_window}")
+    result["agent"] = _capture_tmux_pane(f"{session}:agent-g{generation}")
+    return result
+
+
 def main(argv):
     if len(argv) != 2:
         print("usage: collect_diagnostics.py <soren_root>", file=sys.stderr)
@@ -1990,6 +2055,7 @@ def main(argv):
         "improvement": improvement,
         "corners": _collect_programs(_program_state_dir(), soren, now),
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),
+        "nethack_panes": _collect_nethack_panes(_program_state_dir(), now),
         "market_paper": _collect_market_paper(_program_state_dir(), now),
         "storage_artifacts": _collect_tmp_shared_objects(now),
         "soren91_drop_profile": _collect_soren91_drop_profile(soren),

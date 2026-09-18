@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[3]
 COLLECTOR = ROOT / "ops" / "vm_actions" / "collect_diagnostics.py"
@@ -571,6 +572,57 @@ class NethackAgentLogTests(unittest.TestCase):
         self.assertEqual(len(entry["lines"]), module.NETHACK_AGENT_LOG_LINES)
         self.assertIn("line 19", entry["lines"][-1])
         self.assertNotIn("sekret", " ".join(entry["lines"]))
+
+
+class NethackPaneTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="vmops-panes-")
+        self.state = Path(self.tmp.name) / "run-soren-live"
+        self.state.mkdir(parents=True)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _write_switch(self, active):
+        (self.state / "game_switch.json").write_text(
+            json.dumps({"phase": "ready", "active": active}), encoding="utf-8"
+        )
+
+    def test_absent_game_switch_is_reported(self):
+        module = load_collector()
+        entry = module._collect_nethack_panes(self.state, int(time.time()))
+        self.assertFalse(entry["present"])
+        self.assertEqual(entry["game"], [])
+
+    def test_only_committed_nethack_runtime_is_captured(self):
+        module = load_collector()
+        self._write_switch(
+            {"game": "sorengame", "adapter_session": "s", "game_window": "w", "generation": 3}
+        )
+        with mock.patch.object(module.subprocess, "run") as run:
+            entry = module._collect_nethack_panes(self.state, int(time.time()))
+        self.assertEqual(entry["active_game"], "sorengame")
+        run.assert_not_called()
+        self.assertEqual(entry["game"], [])
+        self.assertEqual(entry["agent"], [])
+
+    def test_nethack_panes_are_captured_read_only(self):
+        module = load_collector()
+        self._write_switch(
+            {
+                "game": "nethack",
+                "adapter_session": "docich-game-g9",
+                "game_window": "game-g9",
+                "generation": 9,
+            }
+        )
+        result = mock.Mock(returncode=0, stdout="a map line\nShall I pick a character? [yn]\n")
+        with mock.patch.object(module.subprocess, "run", return_value=result) as run:
+            entry = module._collect_nethack_panes(self.state, int(time.time()))
+        targets = [call.args[0][-1] for call in run.call_args_list]
+        self.assertEqual(targets, ["docich-game-g9:game-g9", "docich-game-g9:agent-g9"])
+        self.assertIn("Shall I pick a character? [yn]", entry["game"])
+        self.assertIn("a map line", entry["game"])
 
 
 if __name__ == "__main__":
