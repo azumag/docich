@@ -1,81 +1,82 @@
-# レトロ日次3試合: ローカル実装の途中経過
+# レトロ日次3試合＋各ゲーム動作ブレイン: 実装・検証の現状
 
-**2026-09-18更新: A/B/Cの中核実装は完了 (feature/retro-daily-three)。**
-本番反映・VM実測は未実施。base `a25c201`。
+**2026-09-19更新 (feature/retro-daily-three)。** ローカル実装＋ローカル Docker の実バイナリ検証
+まで完了。**VM実測・本番反映は未実施** (docich 正規フロー: branch→PR→CI→protected main→VM gateway)。
 
-## 実装済み (検証済み)
+## 実装済み
 
-- **A スケジューラ** (`5f5263f`, `05b1b67`):
-  `RetroCornerConfig` に `daily_each_game` / `randomize_start` /
-  `start_window_minutes` / `target_matches` を追加。既定は現行挙動のまま
-  (既存テスト62件は無変更で通る)。
-  開始時刻は `scheduled_start()` が `random.Random(f"{date}|{game}")` で
-  `start_hour:00` から窓内オフセット秒を決定的に導出し、再起動・再tickで不変。
-  23:59を超える窓は当日中にクランプ。`_begin_locked` は due チェックと
-  実行済み試行 (state `daily_attempts`) を持ち、1日1ゲーム×各ゲームで回す。
-  3試合検知は scorelog (`<state_dir>/scores/<game>.jsonl`) のコーナー開始
-  以降の件数で行い、検知できたら `_finish_locked` で早期終了。
-  検知できなければ従来どおり `ends_at` で終了 (時間上限は必ず保持)。
-  プレイ入力は止めない。legacy 1ゲームモードは単一sleepの元挙動を維持。
-  soren91/nethack corner サブクラスは `getattr` フォールバックで後方互換。
-  program boundary 経路 (`require_program_boundary=true`) + daily_each_game の
-  同日複数ゲーム実行をテストで検証 (`TestDailyEachGameWithProgramBoundary`)。
-  `improve-once` に `--game` を追加し、spawn argv が終了ゲームを明示
-  (`select_game(日付)` の誤選択を解消)。
-- **B 改善dispatch** (`c0e58f3`): `run_corner_improve` のハードコードを
-  `BOT_GAMES = ("nsnake", "ninvaders")` レジストリに置換。
-  `origin/codex/robots-game` の `bot_eval.py` (tmux headless evaluator) を復元し、
-  生バイナリ (wrapperでない) + bot_eval 自前の start/retry キーで評価。
-  `maxed` (turn cap到達) 試合は完走扱いにせず昇格 gate を fail closed。
-  候補重みは一時ディレクトリの weights.json を `DOCICH_BRAIN_WEIGHTS` env で
-  brain に渡す (グローバル共有ファイルは書き換えない、並行安全)。
-  真偽値重み (nsnake `tail_passable`) は LLM 提案キーから除外。
-  `DOCICH_ALLOW_REAL_AI=1` ガードは維持。gnurobots 経路は不変。
-  昇格先は既存 `strategy_path(g.state_dir, game)`。
-- **C 設定と自動プレイ** (`9b036d9`): live `[retro_corner]` を
-  `games = ["ninvaders", "nsnake"]` + `daily_each_game = true` +
-  `randomize_start = true` + `target_matches = 3` + 非空 `improve_agents`
-  (両ゲームが bot_eval 対応のため)。`config/games/nsnake.toml` は tracked
-  wrapper 参照へ変更し、`[agent] enabled=true brain="command"
-  command=["python3", "brains/nsnake/brain.py"]` (hanjuku-hero と同一スキーマ)。
-  wrapper は menu/retry/score 記録/3試合上限のみ担当。ninvaders は wrapper
-  自走 (`self_play=true`) を維持。pacman4console / moon-buggy / bastet は
-  tracked wrapper と動作 brain が無いため games に追加しない。
-- 旧実装 (`8c200b2`): wrapper 0点保存/保存失敗時再開抑止/上限検証。
+- **A スケジューラ** (`retro_corner.py`): `RetroCornerConfig` に `daily_each_game` /
+  `randomize_start` / `start_window_minutes` / `target_matches` を追加 (既定は従来挙動)。
+  開始時刻は `scheduled_start()` が `random.Random(f"{date}|{game}")` で窓内オフセットを
+  決定的に導出 (再起動・再tickで不変)。`daily_attempts` 台帳で各ゲーム日1回。
+  3試合到達は scorelog (`<state_dir>/scores/<game>.jsonl`) のコーナー開始以降の件数で検知して
+  早期 finish、検知できなければ `ends_at` で終了 (時間上限は常に保持・入力停止で終わらせない)。
+  `improve-once --game` で実際に走ったゲームを改善ジョブへ明示。
+- **B 改善 dispatch** (`corner_improve.py`, `resolver/bot_eval.py`): ハードコードを
+  `BOT_GAMES = ("nsnake", "ninvaders")` に。生バイナリ＋bot_eval 自前の start/retry キーで
+  headless 評価 (turn cap `maxed` は fail-closed)。候補重みは一時 weights.json を
+  `DOCICH_BRAIN_WEIGHTS` で渡す。昇格 `_promote` は live brain の
+  `run/brain/<game>/weights.json` へも hot-swap (brain は毎サイクル新規プロセスで読む)。
+- **C/D 各ゲームのコマンドブレイン** (live `[retro_corner].games` は5ゲーム):
+  nsnake / bastet / moon-buggy / pacman4console / ninvaders。いずれも
+  `[agent] brain="command"` で、wrapper は開始・再開・スコア記録のみを担当する。
 
-## 検証
+## 実バイナリ検証 (ローカル Docker, 2026-09-19)
 
-```
-tests/test_retro_daily_schedule.py tests/test_retro_corner.py
-tests/test_retro_corner_manual.py tests/test_corner_boundary.py
-tests/test_corner_improve.py tests/test_corner_improve_dispatch.py
-tests/test_nsnake_agent_config.py tests/test_ninvaders_wrapper.py
-tests/test_retro_wrapper_limits.py tests/test_ninvaders_brain.py
-tests/test_nsnake_brain.py tests/test_soren91_corner.py
-tests/test_nethack_corner.py
-→ 173 passed, 45 subtests passed
-```
+`scripts/retro_smoke/run.sh` (README 参照)。Ubuntu 24.04 aarch64 / tmux 3.4 / Python 3.12.3、
+bastet 0.43-7build1・moon-buggy 1.0.51-14・pacman4console 1.3-1build3・ninvaders 0.1.1-5・
+nsnake 3.0.1-2.1。リポジトリの実 wrapper＋実ブレインを docich の `CliGameAdapter` →
+`CommandBrain` → エージェントループ1周と同じ経路で回した (coordinator は含まない)。
+**合成 pane のユニットテストでは全て緑だったのに、実走で下記の不具合が出た。**
 
-base `a25c201` のクリーン worktree で全テストを走らせ、既存失敗 10件
-(test_tts 2 / test_chat 2 / test_overlay 1 / test_overlay_interop 4 /
-test_hanjuku_brain 1) は環境起因と確定 (今回の退行ではない)。
+| ゲーム | 実走で見つかった問題 | 対応 | 修正後の実測 |
+|---|---|---|---|
+| bastet | 枠線が `x` 文字で返り `xScore:` と密着、ブレインの `\bScore:` が**一度もマッチせず 40/40 サイクル無行動**。wrapper の `Score: [0-9]+` は右寄せスコア (`Score:      0`) を読めず、0 点は記録もしない → scorelog が永久に空 | ブレインの正規表現から `\b` を除去、wrapper は可変スペース対応・0点も記録・メニュー到達時の未記録フラッシュ | 430秒で 3試合記録 (Score は毎回 0: 盲目ブレイン) |
+| moon-buggy | ランクインすると Game Over の後に `please enter your name` が挟まり wrapper が進めず停止、scorelog 0 件 | 名前入力で Enter | 330秒で 8試合記録 (8〜30点) |
+| pacman4console | ブレインが判断中に送ったキーが「any other key で再開」の Game Over 画面を先に閉じ、wrapper (2秒ポーリング) が記録できないことがある | スコア低下=新試合とみなして直前の最大スコアを記録 | 300秒で 2試合 (523/491)・330秒で 1試合 (586) 記録。全 pane を記録した 500秒では 2試合が終了し、**Game Over 画面は 2回とも観測されなかった**が (ブレインのキーが先に閉じた)、スコア低下検知で 2/2 記録 (817/734) |
+| ninvaders | (a) `!` は**自機の弾**、脅威は `:` (爆弾) なのにブレインは `!` を回避、(b) 新試合直後は自機が描画されず、無入力だと自機が出ないまま停止 (697/1185 フレーム自機不在) | ブレイン v2: `:` を回避・自機不在ならキーで再描画・移動+発射を1回の send-keys へ | 下記 A/B |
+| nsnake | (問題なし) wrapper は実 `Game Over / Retry? <Yes>` を認識し記録・再戦 (ブレイン無効の実走で 2試合記録)。ブレインは Game Over/メニューで沈黙 | — | ブレイン有効では 330秒死なず Score 0→16 (試合は終わらない) |
 
-## 未検証
+### ninvaders: 評価対象と実プレイヤーの一致
 
-- 実ゲーム (`/usr/games/ninvaders`, `/usr/games/nsnake`) はローカルに無く、
-  headless 評価の実走・無人完走は未実測。
-- VM実測・本番反映・program boundary 実運用との干渉は未実施。
-  本番適用は docich 正規フロー (branch→PR→CI→protected main→VM gateway)。
-- ローカルには tmux あり。バナー未実施 (スクリプト不在)。音声不要。
+改善ループ (bot_eval) が評価・昇格させるのは `brains/ninvaders/brain.py` の重みだが、従来の live
+プレイヤーは wrapper の左右スイープ自走で、ブレインは未接続だった (昇格しても実プレイは変わらない)。
+実走 A/B (各 2 走 × 300秒、同一ホスト):
 
-## live hot-swap (2026-09-18追記: 実装済み)
+| | 記録試合 | スコア範囲 | 平均 / 中央値 | 1試合の長さ |
+|---|---|---|---|---|
+| 基準 (wrapper 自走) | 6 | 1950–3100 | 2775 / 2900 | 約80秒 |
+| ブレイン v2 (修正後) | 8 | 4750–6800 | 5938 / 6050 | 約60秒 |
 
-改善昇格 (`_promote`) は bot ゲーム (nsnake/ninvaders) の候補重み全文を
-live brain の `run/brain/<game>/weights.json` へも書く
-(`DOCICH_BOT_BRAIN_DIR` で基底差し替え可、テストはtmp使用)。
-brain は観測ごとの新規プロセスで `load_weights()` するため次tickから反映
-(gnurobots の render hot-swap と対称)。真偽値キー (nsnake `tail_passable`)
-を含む完全な重みを出力。書き込み失敗は既存 gnurobots と同一の fail-closed
-(昇格は済み、ジョブはエラー終了)。kept (据え置き) 時は書き換えない。
-昇格時のみ書くため、テスト含め `run/brain` 非生成を実測済み。
-VM 上の live 重みへの初回配布 (既定重みの seed) は follow-up。
+レンジが重ならず約 2.1 倍。標本は小さい (2走) が差は大きい。これを受け `config/games/ninvaders.toml`
+を `ninvaders_docich.sh brain` (wrapper は開始・記録のみ) + `[agent]` command brain (interval 250ms) に
+切替えた。最終再走 (コミット対象の設定そのまま) で 330秒に 3試合記録 (6300/5050/6350)。
+
+## 検証まとめ (実測)
+
+- ユニット/契約テスト: Ubuntu 24.04 (`/bin/sh`=dash, Python 3.12.3, pytest 9.1.1) で
+  retro/brain/wrapper/corner_improve/NetHack corner 契約 **314 passed, 31 subtests passed**。
+  CI の「Retro corner contract」ステップに、この PR の新規テストを追加した
+  (従来は `test_ninvaders_wrapper` しか CI で走っていなかった)。
+- 回帰テストは実 pane を fixture にし、修正を外す変異確認で落ちること (旧バグの捕捉) を確認済み。
+- 記録スコアは wrapper のポーリング (pacman は2秒) 時点の最大値。スコア低下検知で記録した試合は
+  真の最終スコアより最大でポーリング1回分低い (実測: 740 に対し 734 を記録)。
+
+## 未検証・残件 (成功と扱わない)
+
+- **VM 実測・本番反映・PR/CI/マージは未実施。** ここでの実測は「ローカル Docker (aarch64) の実バイナリ」で、
+  VM 本番の実測ではない。ゲームの版・`/usr/games`・pacman のレベルファイル
+  (`/usr/share/pacman4console/Levels`) は Ubuntu 24.04 パッケージで確認したもので、VM の版は未確認。
+- coordinator (tick・`_target_reached`・program boundary) 経由の「無人3試合で早期終了」の通し実測は
+  していない。wrapper が scorelog に試合を記録するところまでを実バイナリで確認し、カウントと早期終了は
+  ユニットテストで検証している。
+- **bastet ブレインは盲目**: 盤面は色付き空白で `capture-pane -p` に出ず、中央へ ENTER ハードドロップ
+  するだけで Score は毎回 0 (前進はするが最適配置しない)。`tmux capture-pane -e` の色情報を読む
+  ブレインが必要。0 点も記録するため「3試合で早期終了」は成立する (約7分)。
+- **moon-buggy ブレインは最小方策** (周期ジャンプ + 稀な射撃、クレーター追跡なし)。平均約17点。
+- **nsnake は死なない**: ブレインは生き延びるが Speed 1 では得点が遅く (300秒で 8個)、Game Over が来ない
+  ため 3試合検知は現実的でなく、コーナーは時間上限で終了する。
+- bot_eval preset が無い bastet / moon-buggy / pacman4console は改善が `unsupported-game` でスキップ
+  (コーナー自体は回る)。改善を有効化するには preset (binary / bot_cmd / start・retry keys / score 正規表現) が必要。
+- 各ゲーム `[lifecycle] require_round_boundary=false` は据え置き。
+- 改善昇格の live 重みへの初回 seed (既定重みの配布) は follow-up。
