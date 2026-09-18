@@ -23,8 +23,8 @@ font_size = 18
 [agent]
 # CommandBrain: stdin に Observation JSON、stdout に action JSON。
 # 重みは DOCICH_BRAIN_WEIGHTS もしくは run/brain/nsnake/weights.json (省略時は
-# brain 内蔵の既定値)。改善昇格は <state_dir>/resolver/nsnake_strategy.json へ
-# 行われるが、live brain は run/ 下の重みを読むため、昇格反映は follow-up。
+# brain 内蔵の既定値)。改善昇格は <state_dir>/resolver/nsnake_strategy.json に
+# 加えて同じ run/brain 下の重みへも hot-swap される (corner_improve._promote)。
 enabled = true
 brain = "command"
 command = ["python3", "brains/nsnake/brain.py"]

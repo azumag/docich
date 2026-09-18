@@ -12,6 +12,35 @@ BRAIN = ROOT / "brains/bastet/brain.py"
 PLAY = "┌────────────────────┐\n│                    │ Next block:\n│                    │ Score:     0\n│                    │ Lines:     0\n└────────────────────┘ Level:     0"
 
 
+# Captured from real bastet 0.43 (Ubuntu 24.04) via `tmux capture-pane -p`: the
+# ACS border is rendered as letters (x/q/l/k/m/j), so the side border "x" is
+# glued to "Score:" and a `\bScore:` regex never matches.
+REAL_PLAY = "\n".join([
+    '                            lqqqqqqqqqqqqqqqqqqqqk lqqqqqqqqqqqqqqk',
+    '                            x                    x x Next block:  x',
+    '                            x                    x x              x',
+    '                            x                    x x              x',
+    '                            x                    x x              x',
+    '                            x                    x x              x',
+    '                            x                    x mqqqqqqqqqqqqqqj',
+    '                            x                    x lqqqqqqqqqqqqqqk',
+    '                            x                    x x              x',
+    '                            x                    x xScore:      0 x',
+    '                            x                    x x              x',
+    '                            x                    x xLines:      0 x',
+    '                            x                    x x              x',
+    '                            x                    x xLevel:      0 x',
+    '                            x                    x x              x',
+    '                            x                    x mqqqqqqqqqqqqqqj',
+    '                            x                    x',
+    '                            x                    x',
+    '                            x                    x',
+    '                            x                    x',
+    '                            x                    x',
+    '                            mqqqqqqqqqqqqqqqqqqqqj',
+])
+
+
 def run(raw, weights):
     proc = subprocess.run(
         [sys.executable, str(BRAIN)], input=raw, capture_output=True,
@@ -31,6 +60,15 @@ def decide(text, tmp_path):
 def test_places_piece(tmp_path):
     assert decide(PLAY, tmp_path) == [{"type": "key", "keys": ["Enter"]}]
     assert decide(PLAY, tmp_path) == decide(PLAY, tmp_path)
+
+
+def test_places_piece_on_real_captured_pane(tmp_path):
+    assert decide(REAL_PLAY, tmp_path) == [{"type": "key", "keys": ["Enter"]}]
+    # High-scoring boards keep the border letter glued to the label too.
+    assert decide(REAL_PLAY.replace("Score:      0", "Score:   1200"), tmp_path) == [
+        {"type": "key", "keys": ["Enter"]}
+    ]
+    assert decide(REAL_PLAY + "\nTry again!", tmp_path) == []
 
 
 @pytest.mark.parametrize("text", [

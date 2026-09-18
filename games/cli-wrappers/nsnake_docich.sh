@@ -5,8 +5,9 @@
 # match end (the same process continues).  Pane input only reaches the
 # FOREGROUND process, so the game itself runs in the foreground while a
 # background driver loop sends the two transition keys. This wrapper owns
-# menu/retry and result recording only, NOT a direction-playing AI. It must
-# not be advertised as an enabled bot until a gameplay brain is connected.
+# menu/retry and result recording only, NOT a direction-playing AI: steering
+# is the docich [agent] command brain (brains/nsnake/brain.py), which stays
+# silent on the menu and "Game Over" dialog.
 # Each final Score (including zero) is saved before retry; after MAX_MATCHES
 # completed rounds it holds the result screen until the coordinator returns.
 SCORELOG="${NSNAKE_SCORELOG:-/home/ubuntu/docich/run-soren-live/scores/nsnake.jsonl}"

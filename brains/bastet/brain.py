@@ -48,7 +48,9 @@ def decide(text: str, weights: dict) -> str | None:
         "to start", "press any key", "resume", "paused", "key you wish",
     )):
         return None
-    if not re.search(r"\bScore:\s*[0-9]+\b", text):
+    # No leading \b: tmux capture-pane renders the ACS side border as a letter
+    # ("xScore:      0 x"), which is a word character glued to "Score:".
+    if not re.search(r"Score:\s*[0-9]+", text):
         return None
     return "Enter" if weights["hard_drop"] >= 0.5 else "Down"
 

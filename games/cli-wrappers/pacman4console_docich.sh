@@ -6,12 +6,14 @@
 # shows "Game Over / ... or any other key to play again" at match end
 # (same process continues).  Pane input only reaches the FOREGROUND
 # process, so the game runs in the foreground while a background driver
-# loop sends the transition keys.  The game plays unattended with the
-# docich [agent] disabled, and each final Score is recorded for the score
-# stats panel (scorelog JSONL).
+# loop sends the transition keys.  In play the docich [agent] command brain
+# (brains/pacman4console/brain.py) steers and stays silent on the title and
+# "Game Over" screens.  Each final Score is recorded for the score stats
+# panel (scorelog JSONL).
 SCORELOG="${PACMAN_SCORELOG:-/home/ubuntu/docich/run-soren-live/scores/pacman4console.jsonl}"
 PANE="${TMUX_PANE:-}"
 LEVEL="${PACMAN_LEVEL:-1}"
+PACMAN_BIN="${PACMAN_BIN:-/usr/games/pacman4console}"
 
 record_score() {
   [ "$1" -gt 0 ] 2>/dev/null || return 0
@@ -33,6 +35,15 @@ driver() {
       # and treats leading-zero literals as octal, so e.g. 8/9 would fail).
       cur="$(printf '%s' "$cur" | sed 's/^0*//')"
       [ -z "$cur" ] && cur=0
+      if [ "$seen_game" = "1" ] && [ "$cur" -lt "$max_score" ]; then
+        # The score only ever falls when a new match has begun.  Any key the
+        # brain had already in flight when "Game Over" appeared restarts the
+        # game at once ("... or any other key to play again"), so this driver
+        # may never see that screen: flush the finished match here instead.
+        record_score "$max_score"
+        max_score=0
+        seen_game=0
+      fi
       if [ "$cur" -gt "$max_score" ]; then
         max_score="$cur"
       fi
@@ -63,7 +74,7 @@ driver() {
 
 driver &
 DRIVER=$!
-/usr/games/pacman4console --level="$LEVEL"
+"$PACMAN_BIN" --level="$LEVEL"
 rc=$?
 kill "$DRIVER" 2>/dev/null
 exit "$rc"

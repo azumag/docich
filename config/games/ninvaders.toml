@@ -4,8 +4,11 @@ title = "Space Invaders"
 adapter = "cli"
 
 # ninvaders はタイトル起動・試合終了時に自動でタイトルへ戻る (同一プロセス継続)。
-# deploy 済み repo 内の wrapper (games/cli-wrappers/ninvaders_docich.sh) が
-# SPACE 開始とゲーム中の左右移動・射撃を駆動し、最終スコアを scorelog へ追記する。
+# deploy 済み repo 内の wrapper (games/cli-wrappers/ninvaders_docich.sh) は "brain"
+# 引数付きで SPACE 開始と最終スコアの scorelog 追記だけを担当し、ゲーム中の左右移動・
+# 射撃は下の [agent] command brain (brains/ninvaders/brain.py) が担当する。
+# 実ゲーム (Docker/実バイナリ) の 300秒 A/B では wrapper 自走の基準プレイヤーが
+# 1試合 1950-3100点だったのに対し brain は 4750-6800点 (各2走・約2倍) だった。
 # docich CLI adapter には wrapper 型ゲームの丸境界フックがまだ無いため、切替は
 # 従来の immediate-quiesce 経路を使う。
 [lifecycle]
@@ -14,17 +17,26 @@ require_round_boundary = false
 [cli]
 # docich の systemd unit は repo root を WorkingDirectory にしている。
 # /usr/local/bin の手動コピーを介さず、deploy された tracked wrapper を直接使う。
-command = "/bin/sh games/cli-wrappers/ninvaders_docich.sh"
+command = "/bin/sh games/cli-wrappers/ninvaders_docich.sh brain"
 cols = 80
 rows = 24
 font = "monospace"
 font_size = 18
 
 [agent]
-enabled = false  # wrapper が無人プレイする (bot は issue #15 の AI 方針で別途)
+# CommandBrain: stdin に Observation JSON、stdout に action JSON。トークン不要。
+# 重みは DOCICH_BRAIN_WEIGHTS もしくは run/brain/ninvaders/weights.json (省略時は
+# brain 内蔵の既定値)。改善ループの昇格は同じ run/brain 下へ hot-swap される
+# ため、評価対象 (bot_eval) と実プレイヤーが一致する。
+# 弾 (!) は自機弾・爆弾 (:) が脅威、新試合直後は自機が未描画 (キーで再描画) —
+# いずれも実バイナリで確認済み。250ms は基準 wrapper の 350ms より短く保つ。
+enabled = true
+brain = "command"
+command = ["python3", "brains/ninvaders/brain.py"]
+interval_ms = 250
 
-# 日次レトロコーナーでも wrapper 自身が無人プレイを完結できるため、
-# per-move agent なしで選択可能。
+# 日次レトロコーナーでは wrapper と command brain (LLM不要) が無人で完走できるため、
+# per-move agent (LLM) なしで選択可能。
 [corner]
 self_play = true
 intro = "NInvadersは端末上で動くSpace Invaders系のレトロゲームです。自動プレイで侵略者を迎撃します。"

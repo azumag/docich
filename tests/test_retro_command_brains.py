@@ -11,12 +11,16 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from docich.actions import parse_actions
+from docich.adapters.cli_game import cli_command_list
 from docich.agent.brains import CommandBrain
 from docich.config import load_game, load_global
 from docich.corner_improve import run_corner_improve
 from docich.retro_corner import load_retro_corner_config
 
 GAMES = ("bastet", "moon-buggy", "pacman4console")
+# Every live retro game is now played by a command brain (ninvaders included: its
+# wrapper runs with the "brain" argument and only starts matches / records scores).
+BRAIN_GAMES = ("ninvaders", "nsnake", *GAMES)
 
 
 def test_live_daily_games():
@@ -25,11 +29,16 @@ def test_live_daily_games():
     assert cfg.games == ["ninvaders", "nsnake", *GAMES]
     assert cfg.daily_each_game and cfg.randomize_start
     assert cfg.target_matches == 3
-    assert not load_game(g, "ninvaders").agent.enabled
-    for game in GAMES:
+    for game in BRAIN_GAMES:
         loaded = load_game(g, game)
         assert loaded.agent.enabled and loaded.agent.brain == "command"
+        assert loaded.agent.command == ["python3", f"brains/{game}/brain.py"]
         assert 0 < loaded.agent.interval_ms <= 500
+    # The baseline wrapper sweeps every 0.35s; the brain must not be slower.
+    assert load_game(g, "ninvaders").agent.interval_ms <= 350
+    assert cli_command_list(load_game(g, "ninvaders")) == [
+        "/bin/sh", "games/cli-wrappers/ninvaders_docich.sh", "brain",
+    ]
 
 
 @pytest.mark.parametrize("game", GAMES)
@@ -47,6 +56,7 @@ def test_improvement_skips_without_ai(game, tmp_path):
     ("bastet", "Score: 0\nLines: 0\nLevel: 0"),
     ("moon-buggy", "score: 0\nlevel: 1"),
     ("pacman4console", "\n" + " C.\n" + "\n" * 28 + " C C C\nLevel: 1 Score: 0"),
+    ("ninvaders", "  _O-_O-\n\n\n /-^-\\\n Level: 01 Score: 0000000 Lives: /-\\"),
 ])
 def test_real_command_brain_contract(game, text, tmp_path, monkeypatch):
     monkeypatch.setenv("DOCICH_BRAIN_WEIGHTS", str(tmp_path / "missing"))
@@ -63,7 +73,7 @@ def test_real_command_brain_contract(game, text, tmp_path, monkeypatch):
     assert parse_actions({"actions": [{"type": "key", "keys": actions[0].keys}]})
 
 
-@pytest.mark.parametrize("game", GAMES)
+@pytest.mark.parametrize("game", ("ninvaders", *GAMES))
 def test_default_weight_path_and_numeric_keys(game, monkeypatch):
     monkeypatch.delenv("DOCICH_BRAIN_WEIGHTS", raising=False)
     spec = importlib.util.spec_from_file_location("brain_under_test", ROOT / "brains" / game / "brain.py")
