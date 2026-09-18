@@ -140,17 +140,18 @@ jobs:
           envelope="$RUNNER_TEMP/soren91-evidence-envelope.json"
 
           command="python3 ops/vm_actions/soren91_evidence_prepare.py $GAMES"
-          set +e
-          ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA" <<< "$command" >/dev/null
-          prepare_rc=$?
-          set -e
+          prepare_rc=0
+          if ! ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA" <<< "$command" >/dev/null; then
+            prepare_rc=$?
+          fi
           if (( prepare_rc != 0 )); then
             diagnostics_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "diagnostics docich production $SHA")"
             printf '%s\n' "$diagnostics_json" > "$envelope"
-            set +e
-            chunk_count="$(python3 control/ops/vm_actions/extract_soren91_evidence.py append "$envelope" 0 "$archive" "$meta" 2>/dev/null)"
-            extract_rc=$?
-            set -e
+            extract_rc=0
+            chunk_count=''
+            if ! chunk_count="$(python3 control/ops/vm_actions/extract_soren91_evidence.py append "$envelope" 0 "$archive" "$meta" 2>/dev/null)"; then
+              extract_rc=$?
+            fi
             reason=unclassified_prepare_failure
             if (( extract_rc == 0 )) && [[ "$chunk_count" == "1" ]]; then
               python3 control/ops/vm_actions/extract_soren91_evidence.py verify "$archive" "$meta" >/dev/null 2>&1 || true
