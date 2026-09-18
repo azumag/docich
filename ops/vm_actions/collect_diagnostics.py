@@ -1760,7 +1760,7 @@ MANUAL_EVIDENCE_CHUNK_BYTES = 24 * 1024
 MANUAL_EVIDENCE_PART_CHARS = 480
 MANUAL_EVIDENCE_MAX_CHUNKS = 256
 MANUAL_EVIDENCE_TTL_MS = 10 * 60 * 1000
-_MANUAL_EVIDENCE_SHA_RE = re.compile(r"[0-9a-f]{64}\\Z")
+_MANUAL_EVIDENCE_SHA_RE = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def _collect_soren91_manual_evidence(soren, now_ms=None):
