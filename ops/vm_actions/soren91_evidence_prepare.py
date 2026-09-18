@@ -128,7 +128,7 @@ def prepare(game_count: int, *, root: Path | None = None, now_ms: int | None = N
     try:
         exporter.prepare_export(root, game_count=game_count, now_ms=now_ms)
         return 0
-    except BaseException as exc:
+    except Exception as exc:
         # Never persist the raw exception. Only one fixed enum leaves this
         # wrapper, and failure-envelope creation is itself best-effort.
         reason = classify_failure(exc)
