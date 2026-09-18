@@ -16,13 +16,18 @@ class EvidenceWorkflowTransportTests(unittest.TestCase):
         self.assertIn(canonical, retention)
         self.assertEqual(
             evidence.count('"exec docich production $SHA" <<< "$command"'),
-            3,
+            5,
         )
         self.assertNotIn("|             ssh", evidence)
         self.assertIn(
             'command="python3 ops/vm_actions/soren91_evidence_prepare.py $GAMES"',
             evidence,
         )
+        self.assertIn(
+            "command='python3 ops/vm_actions/collect_diagnostics.py /home/ubuntu/soren >/dev/null 2>&1'",
+            evidence,
+        )
+        self.assertIn("command=':'", evidence)
         self.assertIn(
             'command="python3 ops/vm_actions/soren91_evidence_export.py select $index"',
             evidence,
@@ -44,6 +49,26 @@ class EvidenceWorkflowTransportTests(unittest.TestCase):
         self.assertIn("if chunk_count=\"$(python3 control/ops/vm_actions/extract_soren91_evidence.py append", evidence)
         self.assertIn("extract_rc=$?", evidence)
 
+    def test_post_prepare_collector_probe_is_output_free_and_fixed_vocabulary(self):
+        evidence = EVIDENCE_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn(
+            "command='python3 ops/vm_actions/collect_diagnostics.py /home/ubuntu/soren >/dev/null 2>&1'",
+            evidence,
+        )
+        self.assertIn("collector_probe_rc=$?", evidence)
+        self.assertIn("if (( collector_probe_rc != 0 )); then", evidence)
+        self.assertIn("post_prepare_collector_failed", evidence)
+        self.assertIn("post_prepare_exec_probe_transport_failed", evidence)
+        self.assertIn(
+            "post_prepare_gateway_diagnostics_failed_after_collector_success",
+            evidence,
+        )
+        # Never print the numeric probe return code or collector output. The
+        # command itself redirects both streams before the existing production
+        # exec logger can persist retained evidence bytes.
+        self.assertNotIn("collector_probe_rc=$collector_probe_rc", evidence)
+        self.assertNotIn("echo \"$collector_probe_rc\"", evidence)
+
     def test_diagnostics_transport_failure_is_classified_by_stage(self):
         evidence = EVIDENCE_WORKFLOW.read_text(encoding="utf-8")
         conditional = (
@@ -57,7 +82,7 @@ class EvidenceWorkflowTransportTests(unittest.TestCase):
             evidence,
         )
         self.assertIn(
-            "Soren91 evidence export failed: post_prepare_diagnostics_transport_failed",
+            "Soren91 evidence export failed: post_prepare_gateway_diagnostics_failed_after_collector_success",
             evidence,
         )
         self.assertIn(
