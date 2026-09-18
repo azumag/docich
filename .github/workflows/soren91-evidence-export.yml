@@ -170,13 +170,33 @@ jobs:
             exit 1
           fi
 
+          # The production exec path withholds command output. Redirect the
+          # collector itself as well so retained evidence bytes never enter the
+          # private exec log. This probe distinguishes collector execution from
+          # the gateway diagnostics post-processing path without mutating state.
+          command='python3 ops/vm_actions/collect_diagnostics.py /home/ubuntu/soren >/dev/null 2>&1'
+          if ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA" <<< "$command" >/dev/null 2>&1; then
+            collector_probe_rc=0
+          else
+            collector_probe_rc=$?
+          fi
+          if (( collector_probe_rc != 0 )); then
+            command=':'
+            if ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA" <<< "$command" >/dev/null 2>&1; then
+              echo "::error::Soren91 evidence export failed: post_prepare_collector_failed"
+            else
+              echo "::error::Soren91 evidence export failed: post_prepare_exec_probe_transport_failed"
+            fi
+            exit 1
+          fi
+
           if diagnostics_json="$(ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "diagnostics docich production $SHA")"; then
             diagnostics_rc=0
           else
             diagnostics_rc=$?
           fi
           if (( diagnostics_rc != 0 )); then
-            echo "::error::Soren91 evidence export failed: post_prepare_diagnostics_transport_failed"
+            echo "::error::Soren91 evidence export failed: post_prepare_gateway_diagnostics_failed_after_collector_success"
             exit 1
           fi
           printf '%s\n' "$diagnostics_json" > "$envelope"
