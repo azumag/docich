@@ -13,7 +13,12 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from ops.vm_actions import gateway
+# Executed as ``python3 ops/vm_actions/probe_gateway_diagnostics.py`` from the
+# production checkout, so make the repository root importable explicitly.
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+
+from ops.vm_actions import gateway  # noqa: E402
 
 
 CONFIG_PATH = Path("/etc/azumag-vm-ops.json")
