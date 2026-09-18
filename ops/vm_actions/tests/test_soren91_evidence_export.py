@@ -44,7 +44,8 @@ class EvidenceBundleTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def add_game(self, game: int, *, age_minutes: int = 5, screenshot_turns=(3, 11)):
-        history = self.runtime / "game_history" / f"game_{game}.jsonl"
+        token = f"{game:04d}"
+        history = self.runtime / "game_history" / f"game_{token}.jsonl"
         history.write_text(
             "\n".join(
                 json.dumps(
@@ -58,14 +59,14 @@ class EvidenceBundleTests(unittest.TestCase):
             )
             + "\n"
         )
-        summary = self.runtime / "tmp" / "summaries" / f"game_{game}.json"
+        summary = self.runtime / "tmp" / "summaries" / f"game_{token}.json"
         summary.write_text(json.dumps({"game": game, "rank": 42, "turns": 14}) + "\n")
         mtime = (self.now_ms - age_minutes * 60_000) / 1000
         os.utime(summary, (mtime, mtime))
-        (self.runtime / "tmp" / "strategy_snapshots" / f"game_{game}_strategy.mjs").write_text(
+        (self.runtime / "tmp" / "strategy_snapshots" / f"game_{token}_strategy.mjs").write_text(
             "export const marker = true;\n"
         )
-        shot_dir = self.runtime / "tmp" / "game_screenshots" / f"game_{game}"
+        shot_dir = self.runtime / "tmp" / "game_screenshots" / f"game_{token}"
         shot_dir.mkdir(parents=True, exist_ok=True)
         for turn in screenshot_turns:
             (shot_dir / f"turn_{turn}.png").write_bytes(b"PNG" + bytes([turn % 256]))
@@ -80,7 +81,7 @@ class EvidenceBundleTests(unittest.TestCase):
         self.add_game(101, age_minutes=20)
         self.add_game(102, age_minutes=10)
         # Incomplete newer summary must not enter the export.
-        incomplete = self.runtime / "tmp" / "summaries" / "game_103.json"
+        incomplete = self.runtime / "tmp" / "summaries" / "game_0103.json"
         incomplete.write_text('{"game":103}\n')
         os.utime(incomplete, ((self.now_ms - 60_000) / 1000,) * 2)
         # Unrelated files must never be swept into the archive.
@@ -101,12 +102,12 @@ class EvidenceBundleTests(unittest.TestCase):
         with tarfile.open(bundle, "r:gz") as archive:
             names = set(archive.getnames())
         self.assertIn("manifest.json", names)
-        self.assertIn("game_102/history.jsonl", names)
-        self.assertIn("game_102/summary.json", names)
-        self.assertIn("game_102/strategy.mjs", names)
-        self.assertIn("game_102/screenshots/turn_3.jpg", names)
+        self.assertIn("game_0102/history.jsonl", names)
+        self.assertIn("game_0102/summary.json", names)
+        self.assertIn("game_0102/strategy.mjs", names)
+        self.assertIn("game_0102/screenshots/turn_3.jpg", names)
         self.assertIn("telemetry/soren91_loop_metrics.json", names)
-        self.assertNotIn("game_100/history.jsonl", names)
+        self.assertNotIn("game_0100/history.jsonl", names)
         self.assertTrue(all("secret.env" not in name for name in names))
         self.assertTrue(all(not name.endswith(".png") for name in names))
 
@@ -117,9 +118,23 @@ class EvidenceBundleTests(unittest.TestCase):
                 self.root, game_count=1, now_ms=self.now_ms, transcode=self.fake_transcode
             )
 
+    def test_noncanonical_unpadded_alias_is_not_exported(self):
+        # Production completion paths are exactly game_XXXX.*. A stray
+        # unpadded alias must not be interpreted as a valid completed game.
+        history = self.runtime / "game_history" / "game_7.jsonl"
+        summary = self.runtime / "tmp" / "summaries" / "game_7.json"
+        history.write_text('{"turn":1}\n')
+        summary.write_text('{"gameNumber":7}\n')
+        mtime = (self.now_ms - 60_000) / 1000
+        os.utime(summary, (mtime, mtime))
+        with self.assertRaises(self.mod.EvidenceError):
+            self.mod.prepare_export(
+                self.root, game_count=1, now_ms=self.now_ms, transcode=self.fake_transcode
+            )
+
     def test_symlinked_required_evidence_is_rejected(self):
         self.add_game(20)
-        history = self.runtime / "game_history" / "game_20.jsonl"
+        history = self.runtime / "game_history" / "game_0020.jsonl"
         target = self.runtime / "game_history" / "real.jsonl"
         target.write_text(history.read_text())
         history.unlink()
