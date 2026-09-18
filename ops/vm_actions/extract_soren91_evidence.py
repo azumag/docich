@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import json
 import re
@@ -66,7 +67,7 @@ def append_chunk(envelope: Path, expected_index: int, output: Path, metadata: Pa
         fail("invalid Soren91 evidence chunk parts")
     try:
         raw = base64.b64decode("".join(parts), validate=True)
-    except (ValueError, base64.binascii.Error) as exc:
+    except (ValueError, binascii.Error) as exc:
         fail(f"invalid Soren91 evidence chunk encoding: {type(exc).__name__}")
     if not raw or len(raw) > identity["chunkBytes"]:
         fail("invalid Soren91 evidence chunk size")
@@ -98,7 +99,7 @@ def main(argv: list[str]) -> int:
         count = append_chunk(Path(argv[1]), expected, Path(argv[3]), Path(argv[4]))
         print(count)
         return 0
-    if len(argv) == 4 and argv[0] == "verify":
+    if len(argv) == 3 and argv[0] == "verify":
         verify(Path(argv[1]), Path(argv[2]))
         print("verified")
         return 0
