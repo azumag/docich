@@ -42,6 +42,8 @@ class Soren91EvidenceDiagnosticsBudgetTests(unittest.TestCase):
         self.assertLess(runtime_registry.MAX_JSON_BYTES, gateway.DIAGNOSTICS_JSON_MAX)
 
     def test_active_manual_evidence_stdout_is_one_valid_json_document(self):
+        # The gateway parses the collector's entire stdout with json.loads();
+        # a literal backslash+n trailer is therefore a protocol failure.
         evidence = {
             "active": True,
             "version": 1,
