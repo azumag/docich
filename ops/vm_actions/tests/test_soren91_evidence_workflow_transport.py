@@ -32,6 +32,18 @@ class EvidenceWorkflowTransportTests(unittest.TestCase):
             evidence,
         )
 
+    def test_prepare_failure_is_caught_inside_errexit_safe_conditional(self):
+        evidence = EVIDENCE_WORKFLOW.read_text(encoding="utf-8")
+        self.assertNotIn("set +e", evidence)
+        self.assertIn(
+            'if ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA" <<< "$command" >/dev/null; then',
+            evidence,
+        )
+        self.assertIn("prepare_rc=$?", evidence)
+        self.assertIn("if (( prepare_rc != 0 )); then", evidence)
+        self.assertIn("if chunk_count=\"$(python3 control/ops/vm_actions/extract_soren91_evidence.py append", evidence)
+        self.assertIn("extract_rc=$?", evidence)
+
 
 if __name__ == "__main__":
     unittest.main()
