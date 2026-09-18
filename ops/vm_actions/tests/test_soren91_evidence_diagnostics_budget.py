@@ -1,6 +1,8 @@
 import base64
+import io
 import json
 import unittest
+from unittest import mock
 
 from ops.vm_actions import collect_diagnostics, gateway, runtime_registry
 
@@ -38,6 +40,36 @@ class Soren91EvidenceDiagnosticsBudgetTests(unittest.TestCase):
         # Preserve room for gateway-added bundle/projection metadata rather
         # than simply widening the public diagnostics boundary to match it.
         self.assertLess(runtime_registry.MAX_JSON_BYTES, gateway.DIAGNOSTICS_JSON_MAX)
+
+    def test_active_manual_evidence_stdout_is_one_valid_json_document(self):
+        evidence = {
+            "active": True,
+            "version": 1,
+            "createdAtMs": 1,
+            "expiresAtMs": 2,
+            "bundleBytes": 1,
+            "bundleSha256": "f" * 64,
+            "chunkBytes": collect_diagnostics.MANUAL_EVIDENCE_CHUNK_BYTES,
+            "chunkCount": 1,
+            "chunkIndex": 0,
+            "games": [1],
+            "parts": ["eA=="],
+        }
+        out = io.StringIO()
+        with mock.patch.object(
+            collect_diagnostics,
+            "_collect_soren91_manual_evidence",
+            return_value=evidence,
+        ), mock.patch("sys.stdout", out):
+            rc = collect_diagnostics.main(["collect_diagnostics.py", "/tmp/soren"])
+
+        self.assertEqual(rc, 0)
+        raw = out.getvalue()
+        self.assertTrue(raw.endswith("\n"))
+        self.assertFalse(raw.endswith("\\n"))
+        decoded = json.loads(raw)
+        self.assertEqual(decoded["status"], "ok")
+        self.assertEqual(decoded["soren91_manual_evidence"], evidence)
 
 
 if __name__ == "__main__":
