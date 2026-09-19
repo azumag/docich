@@ -53,12 +53,12 @@ class BudgetExhaustedDiagnosticsTests(unittest.TestCase):
     def test_collects_only_fixed_component_counts_and_hides_dynamic_fields(self):
         self.write_events(
             [
-                self.budget("RADIO:secret:prepass"),
-                self.budget("RADIO:secret:main"),
-                self.budget("news:spam_check:secret"),
-                self.budget("comment:secret"),
-                self.budget("improvement:secret"),
-                self.budget("totally-secret-component"),
+                self.budget("RADIO:private-topic:prepass"),
+                self.budget("RADIO:private-topic:main"),
+                self.budget("news:spam_check:private-topic"),
+                self.budget("comment:private-topic"),
+                self.budget("improvement:private-topic"),
+                self.budget("totally-private-component"),
             ]
         )
         ai = self.collector._collect_ai(self.soren, self.now)
@@ -77,7 +77,8 @@ class BudgetExhaustedDiagnosticsTests(unittest.TestCase):
         self.assertEqual(ai["recent_events"], [])
         rendered = json.dumps(ai)
         self.assertNotIn("SUPERSECRET", rendered)
-        self.assertNotIn("totally-secret-component", rendered)
+        self.assertNotIn("private-topic", rendered)
+        self.assertNotIn("totally-private-component", rendered)
 
     def test_missing_event_keeps_zero_counters(self):
         self.write_events(
