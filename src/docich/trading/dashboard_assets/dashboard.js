@@ -41,6 +41,33 @@ function setPnl(id, value, fallback = "-") {
   el.textContent = fmtMoney(n, true);
   el.className = `v ${pnlClass(n)}`.trim();
 }
+function renderBenchmark(perf) {
+  const target = $("benchmark");
+  const sub = $("benchmark-sub");
+  const benchmark = perf && perf.theoretical_benchmark;
+  if (!target || !sub || !benchmark || !["ready", "partial"].includes(String(benchmark.status))) {
+    if (target) {
+      target.textContent = "比較待ち";
+      target.className = "v muted";
+    }
+    if (sub) sub.textContent = "5分足履歴待ち";
+    return;
+  }
+  const actual = maybeNumber(benchmark.actual_today_realized_pnl_jpy);
+  const theoretical = maybeNumber(benchmark.theoretical_pnl_jpy);
+  if (theoretical === null) {
+    target.textContent = "比較待ち";
+    target.className = "v muted";
+    sub.textContent = "理論値を算出できません";
+    return;
+  }
+  target.textContent = `${actual === null ? "-" : fmtMoney(actual, true)} / ${fmtMoney(theoretical, true)}`;
+  target.className = `v ${pnlClass(actual)}`.trim();
+  const rate = maybeNumber(benchmark.capture_rate_pct);
+  const rateText = rate === null ? "捕捉率 -" : `捕捉率 ${fmtNum(rate)}%`;
+  const scope = benchmark.status === "partial" ? "暫定" : "観測済み";
+  sub.textContent = `${rateText}・${scope}・${benchmark.best_symbol || "銘柄不明"}`;
+}
 function esc(v) {
   return String(v ?? "")
     .replaceAll("&", "&amp;")
@@ -217,6 +244,7 @@ function render(data) {
   $("equity").className = perf.equity_jpy === null || perf.equity_jpy === undefined ? "v muted" : "v";
   setPnl("totalpnl", perf.cumulative_pnl_jpy, "価格不足");
   setPnl("todaypnl", perf.today_realized_pnl_jpy, "-");
+  renderBenchmark(perf);
   setPnl("unrealized", perf.unrealized_pnl_jpy, "価格不足");
   $("positions").textContent = `${p.position_count ?? 0} 銘柄`;
   $("fresh").textContent = `${p.fresh_markets ?? 0}/${p.total_markets ?? 0}`;

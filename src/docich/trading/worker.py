@@ -381,7 +381,8 @@ def run_worker_cycle(
                     market_cache, symbol, fetched_at=fetched_at, data_as_of=frame.as_of,
                     last_bar_start=frame.timestamps[-1] if frame.timestamps else None,
                     timeframe_s=frame.timeframe_seconds, last_close=str(frame.last_price),
-                    closes=[str(value) for value in frame.closes], now=now,
+                    closes=[str(value) for value in frame.closes],
+                    timestamps=frame.timestamps, now=now,
                 )
             except Exception:
                 # A bad public market is isolated; cached values are never

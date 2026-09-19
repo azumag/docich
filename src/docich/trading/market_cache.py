@@ -1,9 +1,10 @@
 """Persistent per-market public-data cache for the paper worker.
 
 The cache keeps the last successful frame batch per symbol so a failed or
-over-budget cycle never erases the last good observation. Cached frames are
-for display/history only: trading decisions always use freshly fetched
-frames from the current cycle.
+over-budget cycle never erases the last good observation. It also merges the
+timestamped 5-minute closes used by the read-only daily benchmark. Cached
+frames/history are for display and analysis only: trading decisions always use
+freshly fetched frames from the current cycle.
 """
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ import os
 import tempfile
 import time
 from pathlib import Path
+from typing import Sequence
 
 # Cached entries older than this are pruned (daily retention).
 CACHE_MAX_AGE_S = 7 * 24 * 3600
@@ -20,6 +22,10 @@ CACHE_MAX_AGE_S = 7 * 24 * 3600
 CACHE_MAX_SYMBOLS = 512
 # Stored closes per symbol (contract is 24 bars; the cap guards future callers).
 CACHE_MAX_CLOSES = 512
+# Timestamped 5-minute closes retained for the daily hindsight benchmark.  The
+# cache is private runtime state, but the cap keeps malformed/long-lived state
+# from growing without bound.
+CACHE_MAX_HISTORY_BARS = 512
 
 
 def cache_path(state_dir: Path) -> Path:
@@ -82,6 +88,44 @@ def _atomic_write_json(path: Path, payload: dict[str, object]) -> None:
         raise
 
 
+def _merge_history(
+    previous: object,
+    timestamps: Sequence[object] | None,
+    closes: Sequence[object],
+) -> list[dict[str, object]]:
+    """Merge timestamped closes without trusting malformed cache contents."""
+    merged: dict[int, dict[str, object]] = {}
+    raw_history = previous if isinstance(previous, list) else []
+    for row in raw_history:
+        if not isinstance(row, dict):
+            continue
+        raw_timestamp = row.get("timestamp")
+        raw_close = row.get("close")
+        try:
+            timestamp = float(raw_timestamp)
+            close = float(raw_close)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(timestamp) or not math.isfinite(close) or close <= 0:
+            continue
+        key = int(round(timestamp))
+        merged[key] = {"timestamp": float(timestamp), "close": str(raw_close)}
+
+    if timestamps is not None:
+        for raw_timestamp, raw_close in zip(timestamps, closes):
+            try:
+                timestamp = float(raw_timestamp)
+                close = float(raw_close)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(timestamp) or not math.isfinite(close) or close <= 0:
+                continue
+            key = int(round(timestamp))
+            merged[key] = {"timestamp": float(timestamp), "close": str(raw_close)}
+
+    return sorted(merged.values(), key=lambda row: float(row["timestamp"]))[-CACHE_MAX_HISTORY_BARS:]
+
+
 def store_frames(
     cache: dict[str, dict[str, object]],
     symbol: str,
@@ -92,10 +136,13 @@ def store_frames(
     timeframe_s: int,
     last_close: str,
     closes: list[str],
+    timestamps: Sequence[object] | None = None,
     now: float | None = None,
 ) -> None:
     closes = [str(value) for value in closes][:CACHE_MAX_CLOSES]
-    cache[str(symbol)] = {
+    symbol_key = str(symbol)
+    previous = cache.get(symbol_key, {})
+    payload: dict[str, object] = {
         "fetched_at": float(fetched_at),
         "data_as_of": float(data_as_of),
         "last_bar_start": last_bar_start,
@@ -103,6 +150,14 @@ def store_frames(
         "last_close": str(last_close),
         "closes": closes,
     }
+    history = _merge_history(
+        previous.get("history") if isinstance(previous, dict) else None,
+        timestamps,
+        closes,
+    )
+    if history:
+        payload["history"] = history
+    cache[symbol_key] = payload
     prune_cache(cache, now=now)
 
 

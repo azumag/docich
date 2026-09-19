@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import datetime as dt
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -99,6 +100,43 @@ def test_prompt_requires_interpretation_and_pnl_commentary(tmp_path):
     assert "本日の確定損益" in prompt
     assert "軽いツッコミ" in prompt
     assert "損失なら言い訳せず" in prompt
+
+
+def test_corner_facts_and_fallback_include_theoretical_comparison(tmp_path):
+    now = dt.datetime(2026, 9, 11, 12, 0, tzinfo=dt.timezone(dt.timedelta(hours=9))).timestamp()
+    _write_status(tmp_path)
+    day_start = dt.datetime.fromtimestamp(
+        now, tz=dt.timezone(dt.timedelta(hours=9))
+    ).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    history = [
+        {
+            "timestamp": day_start + index * 300,
+            "close": {0: "100", 1: "90", 2: "120"}.get(index, "110"),
+        }
+        for index in range(int((now - day_start) // 300))
+    ]
+    (tmp_path / "market_cache.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "symbols": {
+                "btc_jpy": {
+                    "fetched_at": now,
+                    "data_as_of": now - 300,
+                    "timeframe_s": 300,
+                    "closes": ["100", "90", "120", "110"],
+                    "history": history,
+                }
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    facts = build_facts(tmp_path, now=now)
+    benchmark = facts["performance"]["theoretical_benchmark"]
+    assert benchmark["status"] == "ready"
+    assert benchmark["best_symbol"] == "btc_jpy"
+    fallback = render_fallback(facts)
+    assert "理論値" in fallback["result"]
 
 
 def test_render_fallback_is_deterministic_and_grounded(tmp_path):

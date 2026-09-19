@@ -7,13 +7,24 @@ from __future__ import annotations
 
 import datetime as dt
 from decimal import Decimal, InvalidOperation
+import math
 from pathlib import Path
 import sqlite3
 from typing import Mapping
 
+from .market_cache import load_cache
+from .paper import DEFAULT_SLIPPAGE_BPS, DEFAULT_TAKER_FEE_RATE
+
 D = Decimal
 ZERO = D("0")
 JST = dt.timezone(dt.timedelta(hours=9), "JST")
+BPS = D("10000")
+BENCHMARK_TIMEFRAME_S = 300
+BENCHMARK_TOLERANCE_BARS = 2
+# A complete 5-minute series must not skip an interior bar.  The endpoint
+# tolerance above covers a live fetch being a few bars behind; it must not
+# hide a gap inside the observed day.
+MAX_INTERNAL_GAP_BARS = 1
 
 
 def _dec(value: object) -> Decimal | None:
@@ -62,6 +73,225 @@ def _day_start_epoch(now: float) -> float:
     return start.timestamp()
 
 
+def _history_points(entry: Mapping[str, object]) -> list[tuple[float, Decimal]]:
+    raw = entry.get("history")
+    if not isinstance(raw, list):
+        return []
+    points: dict[int, tuple[float, Decimal]] = {}
+    for row in raw:
+        if isinstance(row, Mapping):
+            raw_timestamp = row.get("timestamp")
+            raw_close = row.get("close")
+        elif isinstance(row, (list, tuple)) and len(row) >= 2:
+            raw_timestamp, raw_close = row[0], row[1]
+        else:
+            continue
+        try:
+            timestamp = float(raw_timestamp)
+        except (TypeError, ValueError):
+            continue
+        close = _dec(raw_close)
+        if not math.isfinite(timestamp) or close is None or close <= 0:
+            continue
+        points[int(round(timestamp))] = (timestamp, close)
+    return sorted(points.values(), key=lambda item: item[0])
+
+
+def _benchmark_unavailable(
+    *, date: str, actual: Decimal | None, reason: str
+) -> dict[str, object]:
+    return {
+        "status": "unavailable",
+        "date": date,
+        "timeframe_seconds": BENCHMARK_TIMEFRAME_S,
+        "basis": "5m_close",
+        "scope": "best_single_symbol_round_trip",
+        "taker_fee_bps": None,
+        "slippage_bps": None,
+        "theoretical_pnl_jpy": None,
+        "theoretical_return_pct": None,
+        "actual_today_realized_pnl_jpy": None if actual is None else str(actual),
+        "gap_jpy": None,
+        "capture_rate_pct": None,
+        "best_symbol": None,
+        "best_entry_at": None,
+        "best_exit_at": None,
+        "best_entry_price": None,
+        "best_exit_price": None,
+        "observed_bars": 0,
+        "observed_symbols": 0,
+        "coverage_complete_to_now": False,
+        "coverage_ratio": None,
+        "reason": reason,
+        "definition": (
+            "当日5分足の終値だけを使い、1銘柄を1回だけ買って売る場合の比較用の理論値。"
+            "元本全額、手数料とスリッページ込みで計算します。"
+        ),
+    }
+
+
+def build_theoretical_benchmark(
+    cache_path: Path | None,
+    *,
+    capital_reference: object,
+    actual_today_realized: object,
+    now: float,
+    taker_fee_rate: object = DEFAULT_TAKER_FEE_RATE,
+    slippage_bps: object = DEFAULT_SLIPPAGE_BPS,
+) -> dict[str, object]:
+    """Compare today's realized PAPER P/L with a bounded hindsight benchmark.
+
+    The benchmark is deliberately narrow: it picks the best single symbol and
+    one buy-then-sell round trip from timestamped 5-minute closes observed
+    during the current JST day.  It is not a backtest, does not combine
+    symbols, and never claims that intrabar prices were available.
+    """
+    moment = float(now)
+    date = dt.datetime.fromtimestamp(moment, tz=dt.timezone.utc).astimezone(JST).date().isoformat()
+    actual = _dec(actual_today_realized)
+    capital = _dec(capital_reference)
+    if cache_path is None:
+        return _benchmark_unavailable(date=date, actual=actual, reason="history_not_configured")
+    if capital is None or capital <= 0:
+        return _benchmark_unavailable(date=date, actual=actual, reason="capital_unavailable")
+
+    fee = _dec(taker_fee_rate)
+    slippage = _dec(slippage_bps)
+    if (
+        fee is None or slippage is None or fee < 0 or fee >= 1
+        or slippage < 0 or slippage >= BPS
+    ):
+        return _benchmark_unavailable(date=date, actual=actual, reason="execution_cost_unavailable")
+
+    try:
+        cache = load_cache(Path(cache_path))
+    except (OSError, ValueError):
+        cache = {}
+    if not cache:
+        return _benchmark_unavailable(date=date, actual=actual, reason="intraday_history_unavailable")
+
+    day_start = _day_start_epoch(moment)
+    day_end = day_start + 24 * 60 * 60
+    target_end = min(moment, day_end)
+    buy_factor = (D("1") + slippage / BPS) * (D("1") + fee)
+    sell_factor = (D("1") - slippage / BPS) * (D("1") - fee)
+    best: dict[str, object] | None = None
+    best_complete: dict[str, object] | None = None
+    observed_bars = 0
+    observed_symbols = 0
+    history_symbols = 0
+
+    for symbol, entry in sorted(cache.items()):
+        if not isinstance(entry, Mapping):
+            continue
+        try:
+            timeframe_s = int(entry.get("timeframe_s", BENCHMARK_TIMEFRAME_S))
+        except (TypeError, ValueError):
+            continue
+        if timeframe_s != BENCHMARK_TIMEFRAME_S:
+            continue
+        points = [
+            (timestamp, close)
+            for timestamp, close in _history_points(entry)
+            if day_start <= timestamp <= target_end + 1
+        ]
+        if points:
+            history_symbols += 1
+        if len(points) < 2:
+            continue
+        observed_symbols += 1
+        observed_bars += len(points)
+        first_timestamp = points[0][0]
+        last_timestamp = points[-1][0]
+        elapsed = max(float(timeframe_s), target_end - day_start)
+        covered = max(0.0, min(target_end, last_timestamp) - max(day_start, first_timestamp))
+        coverage_ratio = min(1.0, covered / elapsed)
+        max_internal_gap = max(
+            next_timestamp - timestamp
+            for (timestamp, _), (next_timestamp, _) in zip(points, points[1:])
+        )
+        coverage_complete = (
+            first_timestamp <= day_start + timeframe_s * BENCHMARK_TOLERANCE_BARS
+            and last_timestamp >= target_end - timeframe_s * BENCHMARK_TOLERANCE_BARS
+            and max_internal_gap <= timeframe_s * MAX_INTERNAL_GAP_BARS
+        )
+
+        minimum: tuple[float, Decimal] | None = None
+        symbol_best: dict[str, object] | None = None
+        for timestamp, price in points:
+            if minimum is not None:
+                entry_timestamp, entry_price = minimum
+                return_fraction = (price * sell_factor) / (entry_price * buy_factor) - D("1")
+                if symbol_best is None or return_fraction > symbol_best["return_fraction"]:
+                    symbol_best = {
+                        "return_fraction": return_fraction,
+                        "entry_timestamp": entry_timestamp,
+                        "entry_price": entry_price,
+                        "exit_timestamp": timestamp,
+                        "exit_price": price,
+                    }
+            if minimum is None or price < minimum[1]:
+                minimum = (timestamp, price)
+        if symbol_best is None:
+            continue
+        symbol_best.update({
+            "symbol": str(symbol),
+            "coverage_complete": coverage_complete,
+            "coverage_ratio": coverage_ratio,
+            "bars": len(points),
+        })
+        if best is None or symbol_best["return_fraction"] > best["return_fraction"]:
+            best = symbol_best
+        if coverage_complete and (
+            best_complete is None
+            or symbol_best["return_fraction"] > best_complete["return_fraction"]
+        ):
+            best_complete = symbol_best
+
+    best = best_complete or best
+    if best is None:
+        reason = "intraday_history_too_short" if history_symbols else "intraday_history_unavailable"
+        return _benchmark_unavailable(date=date, actual=actual, reason=reason)
+
+    return_fraction = max(ZERO, best["return_fraction"])
+    theoretical_pnl = capital * return_fraction
+    theoretical_return_pct = return_fraction * D("100")
+    gap = None if actual is None else theoretical_pnl - actual
+    capture = (
+        None if actual is None or theoretical_pnl <= 0
+        else actual / theoretical_pnl * D("100")
+    )
+    coverage_ratio = float(best["coverage_ratio"])
+    return {
+        "status": "ready" if bool(best["coverage_complete"]) else "partial",
+        "date": date,
+        "timeframe_seconds": BENCHMARK_TIMEFRAME_S,
+        "basis": "5m_close",
+        "scope": "best_single_symbol_round_trip",
+        "taker_fee_bps": str(fee * BPS),
+        "slippage_bps": str(slippage),
+        "theoretical_pnl_jpy": str(theoretical_pnl),
+        "theoretical_return_pct": str(theoretical_return_pct),
+        "actual_today_realized_pnl_jpy": None if actual is None else str(actual),
+        "gap_jpy": None if gap is None else str(gap),
+        "capture_rate_pct": None if capture is None else str(capture),
+        "best_symbol": best["symbol"],
+        "best_entry_at": float(best["entry_timestamp"]),
+        "best_exit_at": float(best["exit_timestamp"]),
+        "best_entry_price": str(best["entry_price"]),
+        "best_exit_price": str(best["exit_price"]),
+        "observed_bars": observed_bars,
+        "observed_symbols": observed_symbols,
+        "coverage_complete_to_now": bool(best["coverage_complete"]),
+        "coverage_ratio": coverage_ratio,
+        "reason": "partial_intraday_coverage" if not best["coverage_complete"] else "",
+        "definition": (
+            "当日5分足の終値だけを使い、1銘柄を1回だけ買って売る場合の比較用の理論値。"
+            "元本全額、手数料とスリッページ込みで計算します。"
+        ),
+    }
+
+
 def build_performance(
     db_path: Path,
     *,
@@ -69,6 +299,7 @@ def build_performance(
     positions: Mapping[str, object],
     prices: Mapping[str, object],
     now: float,
+    market_cache_path: Path | None = None,
 ) -> dict[str, object]:
     """Return bounded JPY P/L facts using average-cost accounting.
 
@@ -144,6 +375,12 @@ def build_performance(
     complete = total_positions == valued
     cumulative = realized_total + unrealized if complete else None
     equity = None if capital is None or cumulative is None else capital + cumulative
+    benchmark = build_theoretical_benchmark(
+        market_cache_path,
+        capital_reference=capital,
+        actual_today_realized=realized_today,
+        now=now,
+    )
     return {
         "as_of": float(now),
         "complete": bool(complete),
@@ -155,6 +392,7 @@ def build_performance(
         "unrealized_pnl_jpy": str(unrealized) if complete else None,
         "cumulative_pnl_jpy": None if cumulative is None else str(cumulative),
         "equity_jpy": None if equity is None else str(equity),
+        "theoretical_benchmark": benchmark,
         "positions": position_rows,
     }
 
