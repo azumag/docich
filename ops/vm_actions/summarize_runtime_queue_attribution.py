@@ -48,6 +48,9 @@ CHAIN_SUMMARY_KEYS = (
     "multi_vercel_429_non_vercel_recovered",
     "multi_vercel_429_all_failed",
 )
+BUDGET_EXHAUSTED_DETAIL_COMPONENTS = ("radio_prepass", "radio_main")
+BUDGET_EXHAUSTED_DETAIL_MAX_COUNT = 99
+BUDGET_EXHAUSTED_DETAIL_MAX_LAST_BUDGET_SEC = 240
 IMPROVEMENT_BLOCKERS = (
     "rate_limit_backoff",
     "peak_hour_defer",
@@ -142,6 +145,83 @@ def budget_exhausted_metrics(data):
     if not consistent:
         counts = {component: 0 for component in COMPONENTS}
     return total, counts, consistent
+
+
+def budget_exhausted_detail_metrics(data):
+    """Project validated RADIO dispatch detail to bounded fixed counters."""
+    ai = data.get("ai") if isinstance(data, dict) else None
+    ai = ai if isinstance(ai, dict) else {}
+
+    def strict_nonnegative(mapping, name):
+        value = mapping.get(name) if isinstance(mapping, dict) else None
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return None
+        return value
+
+    sampled_raw = strict_nonnegative(ai, "budget_exhausted_detail_sampled")
+    malformed_raw = strict_nonnegative(ai, "budget_exhausted_detail_malformed")
+    missing_raw = strict_nonnegative(ai, "budget_exhausted_detail_missing")
+    sampled = sampled_raw if sampled_raw is not None else 0
+    malformed = malformed_raw if malformed_raw is not None else 0
+    missing = missing_raw if missing_raw is not None else 0
+    consistent = all(value is not None for value in (sampled_raw, malformed_raw, missing_raw))
+
+    raw_components = ai.get("budget_exhausted_detail_components")
+    raw_components = raw_components if isinstance(raw_components, dict) else {}
+    rows = {}
+    component_samples = 0
+    for component in BUDGET_EXHAUSTED_DETAIL_COMPONENTS:
+        raw = raw_components.get(component)
+        values = {
+            name: strict_nonnegative(raw, name)
+            for name in (
+                "sampled",
+                "exec_sum",
+                "skip_sum",
+                "last_budget_min_sec",
+                "last_budget_max_sec",
+            )
+        }
+        if any(value is None for value in values.values()):
+            consistent = False
+            values = {name: 0 for name in values}
+        row_sampled = values["sampled"]
+        component_samples += row_sampled
+        if (
+            values["exec_sum"] > row_sampled * BUDGET_EXHAUSTED_DETAIL_MAX_COUNT
+            or values["skip_sum"] > row_sampled * BUDGET_EXHAUSTED_DETAIL_MAX_COUNT
+            or values["last_budget_min_sec"] > BUDGET_EXHAUSTED_DETAIL_MAX_LAST_BUDGET_SEC
+            or values["last_budget_max_sec"] > BUDGET_EXHAUSTED_DETAIL_MAX_LAST_BUDGET_SEC
+            or values["last_budget_min_sec"] > values["last_budget_max_sec"]
+            or (
+                row_sampled == 0
+                and any(values[name] != 0 for name in values if name != "sampled")
+            )
+        ):
+            consistent = False
+        rows[component] = values
+    if component_samples != sampled:
+        consistent = False
+    if not consistent:
+        rows = {
+            component: {
+                "sampled": 0,
+                "exec_sum": 0,
+                "skip_sum": 0,
+                "last_budget_min_sec": 0,
+                "last_budget_max_sec": 0,
+            }
+            for component in BUDGET_EXHAUSTED_DETAIL_COMPONENTS
+        }
+
+    raw_budget_counts = ai.get("budget_exhausted_components")
+    raw_budget_counts = raw_budget_counts if isinstance(raw_budget_counts, dict) else {}
+    radio_total = sum(
+        _integer(raw_budget_counts, component)
+        for component in BUDGET_EXHAUSTED_DETAIL_COMPONENTS
+    )
+    coverage_exact = consistent and sampled + malformed + missing == radio_total
+    return sampled, malformed, missing, rows, consistent, coverage_exact
 
 
 def invalid_output_component_metrics(data):
@@ -246,6 +326,32 @@ def render(data):
         f"ai_budget_exhausted_component_{component}={budget_counts[component]}"
         for component in COMPONENTS
     )
+    (
+        detail_sampled,
+        detail_malformed,
+        detail_missing,
+        detail_rows,
+        detail_consistent,
+        detail_coverage_exact,
+    ) = budget_exhausted_detail_metrics(data)
+    summary += f",ai_budget_exhausted_detail_sampled={detail_sampled}"
+    summary += f",ai_budget_exhausted_detail_malformed={detail_malformed}"
+    summary += f",ai_budget_exhausted_detail_missing={detail_missing}"
+    summary += f",ai_budget_exhausted_detail_attribution_consistent={int(detail_consistent)}"
+    summary += f",ai_budget_exhausted_detail_coverage_exact={int(detail_coverage_exact)}"
+    for component in BUDGET_EXHAUSTED_DETAIL_COMPONENTS:
+        row = detail_rows[component]
+        summary += f",ai_budget_exhausted_detail_{component}_sampled={row['sampled']}"
+        summary += f",ai_budget_exhausted_detail_{component}_exec_sum={row['exec_sum']}"
+        summary += f",ai_budget_exhausted_detail_{component}_skip_sum={row['skip_sum']}"
+        summary += (
+            f",ai_budget_exhausted_detail_{component}_last_budget_min_sec="
+            f"{row['last_budget_min_sec']}"
+        )
+        summary += (
+            f",ai_budget_exhausted_detail_{component}_last_budget_max_sec="
+            f"{row['last_budget_max_sec']}"
+        )
     summary += "," + ",".join(_improvement_metrics(data))
     summary += f",corner_paper_improve_stale={_paper_improve_stale(data)}"
     counts, consistent, exact = attribute_queue_giveups(data)
