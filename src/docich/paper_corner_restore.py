@@ -67,14 +67,24 @@ def _recover_failed_paper_view(manager: FastPaperCornerManager):
     logic.
     """
     state = manager._read_state()
-    if state.get("date") != _today(manager):
+    if not isinstance(state, dict):
+        return None
+    state_date = state.get("date")
+    if not isinstance(state_date, str) or state_date != _today(manager):
         return None
     if state.get("status") not in {"starting", "active", "restoring", "failed", "completed"}:
         return None
     if not state.get("previous_game") or state.get("previous_game") == PAPER_VIEW_NAME:
         return None
 
-    canonical, _missing = manager.store.canonical.load()
+    loaded = manager.store.canonical.load()
+    if (
+        not isinstance(loaded, tuple)
+        or len(loaded) != 2
+        or not isinstance(loaded[0], dict)
+    ):
+        return None
+    canonical = loaded[0]
     if canonical.get("phase") != "failed":
         return None
     previous = canonical.get("previous")
