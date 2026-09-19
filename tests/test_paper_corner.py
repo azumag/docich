@@ -216,8 +216,9 @@ def test_view_switch_and_restore_cycle(tmp_path):
     assert coord.calls.index(('switch', PAPER_VIEW_NAME)) < coord.calls.index(('switch', 'sorengame'))
 
 
-def test_view_is_not_a_game_definition(tmp_path):
-    # The program view must never resolve from the games catalog.
+def test_view_resolves_as_a_synthetic_coordinator_runtime(tmp_path):
+    # The program view is synthetic, but recovery must still resolve it
+    # without looking for a catalog game definition.
     from docich.adapters import make_coordinator_adapter
     from docich.game_switch import RuntimeSpec
     from pathlib import Path as _Path
@@ -228,12 +229,10 @@ def test_view_is_not_a_game_definition(tmp_path):
                        runtime_dir=_Path(tmp_path) / 'run' / 'runtimes' / 'g1-x',
                        game_window='game-g1', agent_window='agent-g1',
                        adapter_session='docich-game-g1')
-    try:
-        make_coordinator_adapter(g, spec)
-    except Exception as exc:
-        assert '見つかりません' in str(exc)
-    else:
-        raise AssertionError('paper-view must not resolve as a catalog game')
+    adapter = make_coordinator_adapter(g, spec)
+    assert adapter.name == 'program'
+    assert adapter.agent_enabled is False
+    assert adapter.requires_round_boundary is False
 
 
 def test_restore_failure_is_failed_not_completed(tmp_path):
