@@ -148,7 +148,8 @@ def audio(monkeypatch):
 
 @pytest.mark.parametrize("intent,expected", [
     ("exploration_blocked", "安全に進める道が見えないので、ターンを進めて様子を見ます。"),
-    ("hold_low_hp", "体力が半分以下なので、無理に動かず休んで回復を待ちます。"),
+    ("hold_low_hp", "体力が半分以下なので、無理に進まず状況を確認します。"),
+    ("assess_contact", "隣に生き物が見えますが敵味方が不明なので、入力せず判断を保留します。"),
     ("explore_step", "未探索部分に近い安全な地形を選び、一歩ずつ探索します。"),
 ])
 def test_narration_text_and_api(audio, intent, expected):
@@ -300,25 +301,35 @@ def _status(hp="10(10)", extra=""):
     return f"Dlvl:2 HP:{hp} Pw:4(4) AC:5 Exp:2\nT:12 {extra}\n"
 
 
-STALLED_FRAMES = {
-    # boxed in: no cardinal step exists
+SAFE_STALLED_FRAMES = {
+    # boxed in: no cardinal step exists and no recognized adjacent creature is visible
     "exploration_blocked": "msg\n#-@-#\n-----\n" + _status(),
-    # something beside the hero that we cannot tell friend from foe
-    "assess_contact": "msg\n##@d.\n     \n" + _status(),
     "hold_low_hp": "msg\n###@.\n     \n" + _status(hp="4(10)"),
     "hold_impaired": "msg\n###@.\n     \n" + _status(extra="Blind"),
     "seek_food": "msg\n###@.\n     \n" + _status(extra="Hungry"),
 }
 
 
-@pytest.mark.parametrize("intent,text", sorted(STALLED_FRAMES.items()))
-def test_brain_rests_one_turn_instead_of_freezing_on_a_stalled_hold(intent, text):
+@pytest.mark.parametrize("intent,text", sorted(SAFE_STALLED_FRAMES.items()))
+def test_brain_rests_one_turn_instead_of_freezing_on_a_safe_stalled_hold(intent, text):
     brain = build_brain(SimpleNamespace(), game())
     actions = brain.decide(observation(text))
     assert [(a.type, a.text) for a in actions] == [("text", ".")]
     # the policy's own verdict is untouched, so downstream layers still see the hold
     assert brain.last_decision.intent == intent
     assert brain.last_decision.actions == ()
+
+
+@pytest.mark.parametrize("intent,text", [
+    ("assess_contact", "msg\n##@d.\n     \n" + _status()),
+    ("hold_low_hp", "msg\n##@d.\n     \n" + _status(hp="4(10)")),
+    ("hold_impaired", "msg\n##@d.\n     \n" + _status(extra="Blind")),
+    ("seek_food", "msg\n##@d.\n     \n" + _status(extra="Hungry")),
+])
+def test_brain_never_rests_beside_a_recognized_creature(intent, text):
+    brain = build_brain(SimpleNamespace(), game())
+    assert brain.decide(observation(text)) == []
+    assert brain.last_decision.intent == intent
 
 
 def test_brain_does_not_rest_when_it_has_a_real_step_or_needs_a_plan():
@@ -334,7 +345,7 @@ def test_brain_does_not_rest_when_it_has_a_real_step_or_needs_a_plan():
 def test_agent_loop_sends_the_rest_key_for_a_stalled_hold():
     brain = build_brain(SimpleNamespace(), game())
     adapter = Mock()
-    adapter.observe.return_value = observation(STALLED_FRAMES["exploration_blocked"])
+    adapter.observe.return_value = observation(SAFE_STALLED_FRAMES["exploration_blocked"])
     assert _run_iteration(adapter, brain, 1500) == 1
     assert adapter.act.call_args.args[0].text == "."
 
