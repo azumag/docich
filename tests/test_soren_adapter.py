@@ -46,6 +46,44 @@ class TestSorenCoordinatorAdapter(unittest.TestCase):
             self.assertEqual(calls[0][calls[0].index("--generation") + 1], "7")
             self.assertEqual(calls[0][calls[0].index("--request-id") + 1], "req-1")
 
+    def test_reconfigure_player_commits_only_after_prepared_boundary(self):
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = self.make_adapter(Path(temp))
+            request_id = "11111111-1111-4111-8111-111111111111"
+            run_id = "22222222-2222-4222-8222-222222222222"
+            config_hash = "a" * 64
+            outputs = [
+                {"capabilities": ["player_policy_v1"], "game_generation": 9},
+                {"ack": {"request_id": request_id, "status": "accepted"}},
+                {"ack": {"request_id": request_id, "status": "prepared"}},
+                {
+                    "status": "committed",
+                    "player_state": {"policy": "jev", "player_generation": 1},
+                    "ack": {"request_id": request_id, "status": "committed"},
+                },
+            ]
+            calls = []
+
+            def fake_run(argv, **kwargs):
+                calls.append(argv)
+                return SimpleNamespace(returncode=0, stdout=json.dumps(outputs.pop(0)), stderr="")
+
+            with patch("docich.adapters.soren.subprocess.run", side_effect=fake_run):
+                state = adapter.reconfigure_player(
+                    request_id=request_id,
+                    target_policy="jev",
+                    run_id=run_id,
+                    expected_player_generation=0,
+                    config_hash=config_hash,
+                    deadline=time.monotonic() + 30,
+                    cancel=None,
+                )
+
+            self.assertEqual(state["policy"], "jev")
+            self.assertEqual(calls[1][calls[1].index("--generation") + 1], "9")
+            self.assertEqual(calls[1][calls[1].index("--operation") + 1], "player_change")
+            self.assertEqual(calls[3], [str(adapter.control), "player-commit", request_id])
+
     def test_cleanup_uses_fixed_control_argv_and_requires_stopped(self):
         with tempfile.TemporaryDirectory() as temp:
             adapter = self.make_adapter(Path(temp))
