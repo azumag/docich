@@ -9,6 +9,7 @@ from docich.nethack_spectator_live import (
     LiveNethackSpectator,
     NethackSpectatorLiveError,
     active_nethack_runtime,
+    process_window_name,
 )
 from docich.tmux import TmuxOwnership
 
@@ -189,6 +190,49 @@ class TestLiveSpectator(unittest.TestCase):
         )
         self.assertEqual(spectator.render_once(), "idle")
         self.assertEqual(opened, [])
+
+
+class TestProcessWindowName(unittest.TestCase):
+    """game-g<N> runs only the mirroring xterm; the TTY is in the birth window."""
+
+    def runtime(self):
+        return active_nethack_runtime(ready_state())
+
+    def test_production_window_listing_resolves_the_birth_window(self) -> None:
+        # Observed on production (generation 244): the map was in the console
+        # window, while game-g<N> held xterm's own keysym warnings.
+        names = ["nethack-console", "game-g3", "agent-g3"]
+        self.assertEqual(process_window_name(names, self.runtime()), "nethack-console")
+
+    def test_order_does_not_matter(self) -> None:
+        self.assertEqual(
+            process_window_name(["agent-g3", "game-g3", "nethack-console"], self.runtime()),
+            "nethack-console",
+        )
+
+    def test_missing_presentation_window_is_not_evidence(self) -> None:
+        # A torn/empty listing must never be read as "the game window is the rest".
+        for names in ([], ["nethack-console"], ["nethack-console", "agent-g3"]):
+            with self.subTest(names=names):
+                self.assertIsNone(process_window_name(names, self.runtime()))
+
+    def test_ambiguous_or_absent_birth_window_fails_closed(self) -> None:
+        for names in (
+            ["game-g3", "agent-g3"],                                  # no birth window
+            ["game-g3", "agent-g3", "nethack-console", "stray"],      # two candidates
+        ):
+            with self.subTest(names=names):
+                self.assertIsNone(process_window_name(names, self.runtime()))
+
+    def test_another_generations_agent_window_is_not_excluded(self) -> None:
+        # Only this runtime's own agent window is excluded, so a leftover from
+        # another generation makes the resolution ambiguous instead of wrong.
+        names = ["game-g3", "agent-g3", "nethack-console", "agent-g2"]
+        self.assertIsNone(process_window_name(names, self.runtime()))
+
+    def test_non_string_entries_are_ignored(self) -> None:
+        names = ["game-g3", "agent-g3", "nethack-console", "", None]
+        self.assertEqual(process_window_name(names, self.runtime()), "nethack-console")
 
 
 if __name__ == "__main__":

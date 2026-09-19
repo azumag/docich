@@ -228,15 +228,19 @@ class NethackCornerManager(RetroCornerManager):
         self._runtime_screen = runtime_screen or self._default_runtime_screen
 
     def _default_runtime_screen(self) -> str | None:
-        """Read-only capture of the committed NetHack game window.
+        """Read-only capture of the committed NetHack game TTY.
 
-        Mirrors the live spectator: only the canonical committed runtime is
-        followed, and its generation-owned game window ownership is verified
-        before capture.  Any uncertainty returns None (counts as no progress),
-        never as an input or a switch.
+        Only the canonical committed runtime is followed, and its
+        generation-owned presentation window ownership is verified before
+        anything is captured.  The capture itself must come from the runtime's
+        birth window: ``game-g<N>`` merely runs the xterm that mirrors the game,
+        so watching it saw a frozen banner while the game was being played --
+        the corner then hit ``stall_timeout_minutes`` from its own start every
+        time and never saw a death/ascension screen.  Any uncertainty returns
+        None (counts as no progress), never as an input or a switch.
         """
         try:
-            from .nethack_spectator_live import active_nethack_runtime
+            from .nethack_spectator_live import active_nethack_runtime, process_window_name
             from .tmux import Tmux
         except Exception:
             return None
@@ -255,7 +259,10 @@ class NethackCornerManager(RetroCornerManager):
             tmux = Tmux(runtime.adapter_session)
             if tmux.read_window_ownership(runtime.target) != runtime.ownership:
                 return None
-            return tmux.capture_pane_checked(runtime.target)
+            name = process_window_name(tmux.list_windows(), runtime)
+            if name is None:
+                return None
+            return tmux.capture_pane_checked(f"{runtime.adapter_session}:{name}")
         except Exception:
             return None
 
