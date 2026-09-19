@@ -22,6 +22,7 @@ import uuid
 from pathlib import Path
 
 from .config import ConfigError, load_global
+from .game_switch import atomic_write_json
 from .nethack_corner import GAME_NAME, NethackCornerError
 from .nethack_corner_manual import ManualNethackCornerManager
 from .retro_corner import RetroCornerError
@@ -150,8 +151,34 @@ def stop(config_path: Path) -> dict[str, object]:
     g = load_global(_repo_root(), config_path)
     proc = _run_manual(g, ["stop"])
     if proc.returncode != 0:
+        # The gateway withholds child stdout/stderr. Map the runner's fixed
+        # failure modes to a bounded category so the owner can diagnose a stuck
+        # stop without exposing private state, then raise.
+        _record_stop_failure(g, proc.returncode, proc.stderr or "")
         raise NethackCornerError("NetHack manual runner stop failed")
     return {"status": "stopped"}
+
+
+def _record_stop_failure(g, returncode, stderr: str) -> None:
+    """Persist a bounded stop-failure category under the manual state dir."""
+    lowered = stderr.lower()
+    if "docich up が失敗" in stderr or "ディスプレイ" in stderr:
+        category = "prepare_runtime_failed"
+    elif "game switch" in lowered or "switch" in lowered or "recovery" in lowered:
+        category = "switch_back_failed"
+    elif "save" in lowered and "確認" in stderr:
+        category = "save_boundary_failed"
+    else:
+        category = "unknown"
+    try:
+        path = Path(g.state_dir) / "nethack_corner_manual_stop_failure.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(
+            path,
+            {"schema_version": 1, "returncode": int(returncode), "category": category},
+        )
+    except Exception:
+        return
 
 
 def recover(config_path: Path) -> dict[str, object]:

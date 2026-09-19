@@ -144,9 +144,34 @@ class NetHackCornerOperatorTests(unittest.TestCase):
         self.assertEqual(argv[1:3], ['-m', 'docich.nethack_corner_manual'])
         self.assertEqual(argv[-1], 'stop')
         with mock.patch.object(operator, 'load_global', return_value=fake_g), \
-             mock.patch.object(operator.subprocess, 'run', return_value=SimpleNamespace(returncode=2)):
+             mock.patch.object(
+                 operator.subprocess, 'run',
+                 return_value=SimpleNamespace(returncode=2, stderr='docich: エラー: docich up が失敗しました (rc=1)'),
+             ):
             with self.assertRaises(NethackCornerError):
                 operator.stop(fake_g.config_path)
+        marker = json.loads(
+            (fake_g.state_dir / 'nethack_corner_manual_stop_failure.json').read_text(encoding='utf-8')
+        )
+        self.assertEqual(marker['returncode'], 2)
+        self.assertEqual(marker['category'], 'prepare_runtime_failed')
+
+    def test_stop_failure_category_is_bounded(self):
+        base = Path(tempfile.mkdtemp(prefix='nethack-op-'))
+        fake_g = self._fake_g(base)
+        cases = {
+            'docich: エラー: docich up が失敗しました (rc=1)': 'prepare_runtime_failed',
+            'docich: エラー: game switchに失敗しました: recovery_required': 'switch_back_failed',
+            'traceback token=SUPERSECRET': 'unknown',
+        }
+        for stderr, expected in cases.items():
+            with self.subTest(expected=expected):
+                operator._record_stop_failure(fake_g, 2, stderr)
+                marker = json.loads(
+                    (fake_g.state_dir / 'nethack_corner_manual_stop_failure.json').read_text(encoding='utf-8')
+                )
+                self.assertEqual(marker['category'], expected)
+                self.assertNotIn('SUPERSECRET', json.dumps(marker))
 
     def test_status_category_maps_only_fixed_states(self):
         self.assertEqual(operator.status_category(Path(tempfile.mkdtemp(prefix='nethack-op-'))), 'idle')
