@@ -218,7 +218,7 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
         if not isinstance(audio_sink, str) or "\x00" in audio_sink:
             raise AdapterError("[soren91].audio_sink は文字列である必要があります")
         self.audio_sink = audio_sink.strip()
-        # Twitch category/title sync on switch (update_stream_game.sh in the
+        # Twitch category-only sync on switch (update_stream_game.sh in the
         # Soren root). Best-effort: a failure must not fail the corner.
         self.twitch_game = str(raw.get("twitch_game", "soren91") or "").strip()
         self.restore_twitch_game = str(raw.get("restore_twitch_game", "sorengame") or "").strip()
@@ -531,7 +531,7 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
             raise AdapterError(f"{self.ffplay_bin} にSRT対応がありません")
 
     def _sync_twitch(self, game: str) -> None:
-        """Best-effort Twitch category/title switch for the corner.
+        """Best-effort Twitch category-only switch for the corner.
 
         update_stream_game.sh lives in the Soren root and reads the docich
         game config's [twitch] table. Failures are logged but never fail the
@@ -544,7 +544,7 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
         if not script.is_file():
             return
         try:
-            cmd = ["bash", str(script), "--game", game]
+            cmd = ["bash", str(script), "--game", game, "--category-only"]
             if self.games_dir:
                 cmd += ["--games-dir", self.games_dir]
             proc = subprocess.run(

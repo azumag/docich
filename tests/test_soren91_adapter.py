@@ -907,6 +907,7 @@ class TestSoren91TwitchSync(Soren91AdapterTestBase):
         cmd = calls[0][0]
         self.assertIn("--game", cmd)
         self.assertIn("soren91", cmd)
+        self.assertIn("--category-only", cmd)
         self.assertEqual(calls[0][1].get("cwd"), str(root))
 
     def test_twitch_sync_is_a_noop_without_the_script(self):

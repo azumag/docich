@@ -1,9 +1,9 @@
 """Keep the stream's category on whichever game or view is actually running.
 
 The reviewed Soren-side script ``update_stream_game.sh`` owns every Twitch
-call; this module only decides *when* to run it and with which fixed
-arguments.  No token, channel id, or other secret is read or passed here: the
-script loads its own ``.env`` from the Soren root.
+call; this module only decides *when* to run it and with which fixed,
+category-only arguments.  No token, channel id, or other secret is read or
+passed here: the script loads its own ``.env`` from the Soren root.
 
 Failure is always non-fatal.  A stale category is a cosmetic problem; a game
 switch that gets rolled back because Twitch was unreachable is a real one.
@@ -98,7 +98,7 @@ def _announce_explicit_category(
     script = script_path(g)
     if not script.is_file() or not os.access(script, os.X_OK):
         raise StreamCategoryError(f"{SCRIPT_NAME} が見つかりません: {script}")
-    argv = [str(script), "--category-id", category_id.strip()]
+    argv = [str(script), "--category-id", category_id.strip(), "--category-only"]
     if category_name:
         argv.extend(["--category-name", str(category_name)])
     (spawn or _spawn)(
@@ -125,7 +125,14 @@ def announce_stream_game(g: GlobalConfig, game: str, *, spawn=None) -> bool:
     script = script_path(g)
     if not script.is_file() or not os.access(script, os.X_OK):
         raise StreamCategoryError(f"{SCRIPT_NAME} が見つかりません: {script}")
-    argv = [str(script), "--game", game, "--games-dir", str(Path(g.games_dir).resolve())]
+    argv = [
+        str(script),
+        "--game",
+        game,
+        "--games-dir",
+        str(Path(g.games_dir).resolve()),
+        "--category-only",
+    ]
     (spawn or _spawn)(
         argv,
         cwd=script.parent,

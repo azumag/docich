@@ -1,4 +1,4 @@
-"""The stream category/title follows the running game through the reviewed script."""
+"""The stream category follows the running game through the reviewed script."""
 from __future__ import annotations
 
 import os
@@ -74,7 +74,14 @@ class TestAnnounceStreamGame(StreamCategoryTestBase):
         call = self.spawned[0]
         self.assertEqual(
             call["argv"],
-            [str(script.resolve()), "--game", "nethack", "--games-dir", str(Path(self.g.games_dir).resolve())],
+            [
+                str(script.resolve()),
+                "--game",
+                "nethack",
+                "--games-dir",
+                str(Path(self.g.games_dir).resolve()),
+                "--category-only",
+            ],
         )
         # The script loads its own .env from the Soren root, so it must run
         # there -- and no token/channel id is ever passed through this call.
@@ -95,6 +102,7 @@ class TestAnnounceStreamGame(StreamCategoryTestBase):
                 str(script.resolve()),
                 "--category-id",
                 PAPER_CATEGORY_ID,
+                "--category-only",
                 "--category-name",
                 PAPER_CATEGORY_NAME,
             ],
