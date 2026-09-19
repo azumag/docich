@@ -95,10 +95,13 @@ NetHackはターン制なので、agentが何もしない間はゲーム内で�
 |---|---|
 | `exploration_blocked` / `hold_low_hp` / `hold_impaired` / `seek_food`、かつ認識済み隣接creatureなし | `.` |
 | `assess_contact`、または上記holdでも認識済み隣接creatureあり | 無入力のまま |
-| `survival_emergency` / `status_emergency` / `food_emergency`（回復計画が必要） | 無入力のまま |
+| `survival_emergency` / `status_emergency`、かつ認識済み隣接creatureなし | `.`（時間経過でしか回復しないため） |
+| `food_emergency`（休むと空腹が進み、食事は安全面の外） | 無入力のまま |
 | `inspect_screen`（playerが一意でない）・プロンプト表示中 | 無入力のまま（`.` を誤入力させない） |
 
 `Hungry` / 低HP / 状態異常はpolicy上、contact判定より先に決まる。そのため `rest_action_for_hold()` 自身が `visible_neighbors()` を再確認し、これらのhold名になっていても隣に認識済みcreatureが見えていれば `.` を送らない。敵味方不明の隣接相手へ無入力のまま1ターン渡して攻撃を受けることを、stall解消だけを理由に許可しない。
+
+緊急（`survival_emergency` / `status_emergency`）は本来 strategist の回復計画（薬・祈り・逃走）が要るが、strategist 未設定では「無入力」= ターン制では永久停止になる（2026-09-19 本番 HP 4/16 で実測、stall guard に切られるまで `0 件のアクション` を繰り返した）。`.` は計画の代わりにはならないが、HP と多くの状態異常は時間経過でしか回復しないため、凍り付くよりはよい。空腹だけは休むと悪化するので除外する。
 
 policy 自身の判定（`PolicyDecision`）は変えず、agent brain が実行する action だけを差し替える。
 strategy / advisory / shadow は従来どおり保留として観測する。`assert_rest_safe` は「`.` 1個だけ」以外を拒否する。
