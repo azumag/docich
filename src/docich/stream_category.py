@@ -1,9 +1,9 @@
-"""Keep the stream's category/title on whichever game is actually running.
+"""Keep the stream's category on whichever game or view is actually running.
 
 The reviewed Soren-side script ``update_stream_game.sh`` owns every Twitch
-call; this module only decides *when* to run it and with which fixed
-arguments.  No token, channel id, or other secret is read or passed here: the
-script loads its own ``.env`` from the Soren root.
+call; this module only decides *when* to run it and with which fixed,
+category-only arguments.  No token, channel id, or other secret is read or
+passed here: the script loads its own ``.env`` from the Soren root.
 
 Failure is always non-fatal.  A stale category is a cosmetic problem; a game
 switch that gets rolled back because Twitch was unreachable is a real one.
@@ -19,6 +19,12 @@ from .naming import NameValidationError, validate_game_name
 
 SCRIPT_NAME = "update_stream_game.sh"
 LOG_NAME = "stream-game.log"
+
+# ``paper-view`` is a synthetic program view, not a game in ``config/games``.
+# Use Twitch's technology category instead of leaving the category of the game
+# that was displaced behind.  The title is intentionally left unchanged.
+PAPER_CATEGORY_ID = "509670"
+PAPER_CATEGORY_NAME = "Science & Technology"
 
 
 class StreamCategoryError(RuntimeError):
@@ -73,6 +79,36 @@ def _spawn(argv: list[str], *, cwd: Path, log_path: Path) -> None:
         raise StreamCategoryError(f"{SCRIPT_NAME} を起動できません: {exc}") from exc
 
 
+def _announce_explicit_category(
+    g: GlobalConfig,
+    *,
+    category_id: str,
+    category_name: str = "",
+    spawn=None,
+) -> bool:
+    """Ask the Soren updater to use a category without a game TOML.
+
+    Synthetic program views such as ``paper-view`` intentionally do not live
+    in the game catalog.  The reviewed updater already supports explicit
+    category arguments, so keep that boundary instead of adding a fake game
+    definition that could be selected by the game switcher.
+    """
+    if not isinstance(category_id, str) or not category_id.strip().isdigit():
+        raise StreamCategoryError("TwitchカテゴリIDが不正です")
+    script = script_path(g)
+    if not script.is_file() or not os.access(script, os.X_OK):
+        raise StreamCategoryError(f"{SCRIPT_NAME} が見つかりません: {script}")
+    argv = [str(script), "--category-id", category_id.strip(), "--category-only"]
+    if category_name:
+        argv.extend(["--category-name", str(category_name)])
+    (spawn or _spawn)(
+        argv,
+        cwd=script.parent,
+        log_path=Path(g.state_dir) / "logs" / LOG_NAME,
+    )
+    return True
+
+
 def announce_stream_game(g: GlobalConfig, game: str, *, spawn=None) -> bool:
     """Ask the Soren updater to follow ``game``; ``False`` when skipped.
 
@@ -89,10 +125,27 @@ def announce_stream_game(g: GlobalConfig, game: str, *, spawn=None) -> bool:
     script = script_path(g)
     if not script.is_file() or not os.access(script, os.X_OK):
         raise StreamCategoryError(f"{SCRIPT_NAME} が見つかりません: {script}")
-    argv = [str(script), "--game", game, "--games-dir", str(Path(g.games_dir).resolve())]
+    argv = [
+        str(script),
+        "--game",
+        game,
+        "--games-dir",
+        str(Path(g.games_dir).resolve()),
+        "--category-only",
+    ]
     (spawn or _spawn)(
         argv,
         cwd=script.parent,
         log_path=Path(g.state_dir) / "logs" / LOG_NAME,
     )
     return True
+
+
+def announce_stream_paper(g: GlobalConfig, *, spawn=None) -> bool:
+    """Move the stream to the non-game category used by the PAPER view."""
+    return _announce_explicit_category(
+        g,
+        category_id=PAPER_CATEGORY_ID,
+        category_name=PAPER_CATEGORY_NAME,
+        spawn=spawn,
+    )

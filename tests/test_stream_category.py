@@ -1,4 +1,4 @@
-"""The stream category/title follows the running game through the reviewed script."""
+"""The stream category follows the running game through the reviewed script."""
 from __future__ import annotations
 
 import os
@@ -13,9 +13,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich import config  # noqa: E402
 from docich.stream_category import (  # noqa: E402
+    PAPER_CATEGORY_ID,
+    PAPER_CATEGORY_NAME,
     SCRIPT_NAME,
     StreamCategoryError,
     announce_stream_game,
+    announce_stream_paper,
     script_path,
     twitch_category,
 )
@@ -71,7 +74,14 @@ class TestAnnounceStreamGame(StreamCategoryTestBase):
         call = self.spawned[0]
         self.assertEqual(
             call["argv"],
-            [str(script.resolve()), "--game", "nethack", "--games-dir", str(Path(self.g.games_dir).resolve())],
+            [
+                str(script.resolve()),
+                "--game",
+                "nethack",
+                "--games-dir",
+                str(Path(self.g.games_dir).resolve()),
+                "--category-only",
+            ],
         )
         # The script loads its own .env from the Soren root, so it must run
         # there -- and no token/channel id is ever passed through this call.
@@ -79,6 +89,26 @@ class TestAnnounceStreamGame(StreamCategoryTestBase):
         joined = " ".join(call["argv"]).lower()
         for secret in ("token", "client_id", "broadcaster", "oauth"):
             self.assertNotIn(secret, joined)
+
+    def test_paper_view_uses_explicit_non_game_category(self) -> None:
+        script = self._install_script()
+
+        self.assertTrue(announce_stream_paper(self.g, spawn=self._recorder))
+
+        call = self.spawned[0]
+        self.assertEqual(
+            call["argv"],
+            [
+                str(script.resolve()),
+                "--category-id",
+                PAPER_CATEGORY_ID,
+                "--category-only",
+                "--category-name",
+                PAPER_CATEGORY_NAME,
+            ],
+        )
+        self.assertNotIn("--game", call["argv"])
+        self.assertNotIn("--title-prefix", call["argv"])
 
     def test_a_game_without_a_twitch_category_is_left_alone(self) -> None:
         self._install_script()

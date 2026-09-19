@@ -283,6 +283,7 @@ class FastPaperCornerManager(PaperCornerManager):
             committed = self._active_game()
             if committed is not None and committed != PAPER_VIEW_NAME:
                 raise PaperCornerError(f"切替後に旧ゲームが残っています: {committed}")
+            self._announce_stream_paper()
 
             self.announce(state, "opening", self.opening_text())
             write_presentation(self.presentation, "detailed", now=self.clock())
