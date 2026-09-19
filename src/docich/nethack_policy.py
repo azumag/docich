@@ -284,6 +284,49 @@ def rest_action_for_hold(
     return Action(type="text", text=REST_KEY)
 
 
+# A hold beside a visible creature is a deadlock, not a pause: NetHack only
+# advances when the hero acts, so the creature never takes its turn either and
+# the frame is frozen for good (observed on production 2026-09-19, generation
+# 250: HP 4/16 with a ':' adjacent, byte-identical screen, "0 actions" forever).
+# Resting there is not allowed -- standing still next to something that can hit
+# a weakened hero is how it dies -- so take the explorer's own safe step
+# instead.  That step never moves onto a creature, item, trap or door, and it is
+# the same reviewed h/j/k/l surface P3b already uses for exploring.
+STEP_OUT_INTENTS = REST_HOLD_INTENTS | REST_EMERGENCY_INTENTS | {"assess_contact"}
+
+
+def step_out_of_hold(decision: PolicyDecision, obs: NethackObservation, explorer) -> Action | None:
+    """One reviewed move to break a frozen hold, else ``None``.
+
+    Used only after ``rest_action_for_hold`` declined: a hold that produced no
+    action, with a uniquely visible player and no prompt, where the explorer
+    can still name a safe cardinal step.  ``food_emergency`` and
+    ``inspect_screen`` are excluded -- moving cannot help hunger, and without a
+    unique player glyph there is nothing to plan from.
+    """
+    if (
+        decision.actions
+        or obs.prompt != "none"
+        or obs.player is None
+        or decision.intent not in STEP_OUT_INTENTS
+    ):
+        return None
+    step = explorer.plan_step(obs)
+    if step is None or step.key not in {"h", "j", "k", "l"}:
+        return None
+    return Action(type="text", text=step.key)
+
+
+def assert_step_out_safe(actions: list[Action] | tuple[Action, ...]) -> None:
+    """The step-out fallback may only ever be one reviewed cardinal move."""
+    if (
+        len(actions) != 1
+        or actions[0].type != "text"
+        or actions[0].text not in {"h", "j", "k", "l"}
+    ):
+        raise RuntimeError("step-out fallback attempted an action outside the reviewed safe surface")
+
+
 def assert_rest_safe(actions: list[Action] | tuple[Action, ...]) -> None:
     """The rest fallback may only ever be exactly one ``.`` text action."""
     if len(actions) != 1 or actions[0].type != "text" or actions[0].text != REST_KEY:

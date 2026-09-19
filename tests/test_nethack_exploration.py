@@ -3,16 +3,19 @@ from __future__ import annotations
 import unittest
 
 from docich.actions import Action
-from docich.nethack_exploration import NethackExplorer, PASSABLE
+from docich.nethack_exploration import ExplorationStep, NethackExplorer, PASSABLE
 from docich.nethack_observation import normalize_tty
 from docich.nethack_policy import (
     NethackLayeredPolicy,
     PolicyDecision,
     REST_EMERGENCY_INTENTS,
     REST_HOLD_INTENTS,
+    STEP_OUT_INTENTS,
     assert_p3b_safe,
+    assert_step_out_safe,
     assert_rest_safe,
     rest_action_for_hold,
+    step_out_of_hold,
 )
 
 
@@ -249,6 +252,109 @@ class TestRestOnStalledHold(unittest.TestCase):
             with self.subTest(bad=bad):
                 with self.assertRaises(RuntimeError):
                     assert_rest_safe(bad)
+
+
+class TestStepOutOfDeadlock(unittest.TestCase):
+    """A hold beside a creature must not freeze the game forever."""
+
+    FREE_ROWS = ("##@d.      ", "...........")
+
+    def _decide(self, map_rows, **kw):
+        observation = obs(map_rows, **kw)
+        policy = NethackLayeredPolicy()
+        return observation, policy.decide(observation), policy
+
+    def test_every_hold_beside_a_creature_gets_a_safe_step_instead(self):
+        rows = ("##@d.      ", "...........")
+        cases = {
+            "assess_contact": {},
+            "hold_low_hp": {"hp": "4(10)"},
+            "hold_impaired": {"condition": "Blind"},
+            "seek_food": {"condition": "Hungry"},
+            "survival_emergency": {"hp": "2(10)"},
+            "status_emergency": {"condition": "Sick"},
+        }
+        for intent, kw in cases.items():
+            with self.subTest(intent=intent):
+                observation, decision, policy = self._decide(rows, **kw)
+                self.assertEqual(decision.intent, intent)
+                # rest is still refused beside a creature (#748)
+                self.assertIsNone(rest_action_for_hold(decision, observation))
+                action = step_out_of_hold(decision, observation, policy.explorer)
+                self.assertIsNotNone(action)
+                self.assertIn(action.text, {"h", "j", "k", "l"})
+                assert_step_out_safe([action])
+
+    def test_no_step_is_invented_when_nothing_safe_is_reachable(self):
+        # Walls on every side but the creature: holding is the honest answer.
+        observation, decision, policy = self._decide(("-d@-       ", "-----------"), hp="4(10)")
+        self.assertIsNone(step_out_of_hold(decision, observation, policy.explorer))
+
+    def test_hunger_and_unknown_screens_are_never_stepped_out_of(self):
+        rows = ("##@d.      ", "...........")
+        observation, decision, policy = self._decide(rows, condition="Weak")
+        self.assertEqual(decision.intent, "food_emergency")
+        self.assertIsNone(step_out_of_hold(decision, observation, policy.explorer))
+        self.assertNotIn("food_emergency", STEP_OUT_INTENTS)
+        self.assertNotIn("inspect_screen", STEP_OUT_INTENTS)
+
+    def test_a_decision_that_already_acts_is_left_alone(self):
+        observation, decision, policy = self._decide(("###@.      ", "           "))
+        self.assertEqual(decision.intent, "explore_step")
+        self.assertIsNone(step_out_of_hold(decision, observation, policy.explorer))
+
+    def test_a_prompt_or_missing_player_never_gets_a_step(self):
+        policy = NethackLayeredPolicy()
+        hold = PolicyDecision("midlevel", "assess_contact", "x")
+        more = normalize_tty("Really? --More--\n###@.\n.....\nDlvl:2 HP:10(10) Pw:4(4) AC:5 Exp:2\nT:12\n", cols=80, rows=5)
+        self.assertIsNone(step_out_of_hold(hold, more, policy.explorer))
+        no_player = obs(("### .      ", "           "))
+        self.assertIsNone(step_out_of_hold(hold, no_player, policy.explorer))
+
+    def test_the_guards_do_not_rely_on_the_explorer_being_careful(self):
+        # The explorer happens to refuse prompts itself, so pass one that does
+        # not: this function must still never move on a prompt, without a
+        # player, for a decision that already acts, or for an excluded intent.
+        class EagerExplorer:
+            def plan_step(self, obs):
+                return ExplorationStep(
+                    key="l", source=(0, 0), target=(1, 0), target_glyph=".", reason="eager"
+                )
+
+        eager = EagerExplorer()
+        hold = PolicyDecision("midlevel", "assess_contact", "x")
+        free = obs(self.FREE_ROWS)
+        self.assertIsNotNone(step_out_of_hold(hold, free, eager))  # the stub is usable
+
+        more = normalize_tty(
+            "Really? --More--\n###@.\n.....\nDlvl:2 HP:10(10) Pw:4(4) AC:5 Exp:2\nT:12\n",
+            cols=80,
+            rows=5,
+        )
+        self.assertEqual(more.prompt, "more")
+        self.assertIsNone(step_out_of_hold(hold, more, eager))
+        self.assertIsNone(step_out_of_hold(hold, obs(("### .      ", "           ")), eager))
+        acting = PolicyDecision(
+            "midlevel", "assess_contact", "x", actions=(Action(type="text", text="h"),)
+        )
+        self.assertIsNone(step_out_of_hold(acting, free, eager))
+        self.assertIsNone(
+            step_out_of_hold(PolicyDecision("strategic", "food_emergency", "x"), free, eager)
+        )
+
+    def test_step_out_guard_accepts_only_one_cardinal_move(self):
+        assert_step_out_safe([Action(type="text", text="h")])
+        for bad in (
+            [],
+            [Action(type="text", text=".")],
+            [Action(type="text", text="a")],
+            [Action(type="text", text=">")],
+            [Action(type="key", key="Enter")],
+            [Action(type="text", text="h"), Action(type="text", text="j")],
+        ):
+            with self.subTest(bad=bad):
+                with self.assertRaises(RuntimeError):
+                    assert_step_out_safe(bad)
 
 
 if __name__ == "__main__":
