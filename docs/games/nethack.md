@@ -164,7 +164,7 @@ bin/docich-nethack-corner-manual stop
 ```
 
 本番 VM で owner-only に手動実行する場合は、GitHub Actions の **NetHack corner operator** を
-protected `main` から手動実行する。固定 operation `start` / `stop` / `status` / `recover` だけを受け付け、
+protected `main` から手動実行する。固定 operation `start` / `stop` / `status` / `recover` / `force-recover` だけを受け付け、
 `start` は `--duration-minutes`（1-60分）で bounded に実行する。workflow は値の検証と、production が
 現在の protected main と一致することの確認だけを行い、VM 上では reviewed な
 `bin/docich-nethack-corner-operator` が `config/docich.soren-live.toml` を明示して manual runner を
@@ -173,7 +173,8 @@ detach 起動するため workflow は duration 分ブロックしない。`stat
 exit-code カテゴリ（idle/terminal=0, starting=10, active=11, failed=12, unreadable=13）だけを
 workflow の notice に出す。`recover` は、コーナーが `failed` になった後も canonical の active game が
 NetHack のまま残った場合に、manual state に記録された previous game へ bounded に戻す（任意の
-ゲームは指定できない。記録が無ければ fail-closed）。
+ゲームは指定できない。記録が無ければ fail-closed）。`force-recover` は `active` / `draining` の
+まま動けなくなった中途状態を解消するための最後の手段で、後述の「中途状態の回復」にまとめる。
 
 どちらもゲーム切替を直接操作せず `GameSwitchCoordinator` を通す。開始前に別ゲームが active なら
 NetHack へ transactional switch し、終了時に元のゲームへ戻す。元が idle なら NetHack 終了後も
@@ -189,6 +190,57 @@ P0時点は `agent.enabled=false` だったが、現在の標準configでは rev
 structured observation → 死亡履歴からの継続改善、の順に追加する。特にグラフィック表示は AI の
 正確な text/structured observation と分離し、視聴者向け presentation のためだけに画像認識へ
 退化させない。
+
+### 中途状態の回復（`force-recover`）
+
+manual state が `active` のまま canonical の phase が `draining` で止まると、従来は `stop` も `recover` も
+進められなかった。原因は `_finish_locked` の先頭にある canonical active game の読み出し
+（`retro_corner.py` の `_canonical_active_game`）が `ready` / `idle` 以外の phase で例外を投げ、しかもそれが
+`failed` 記録より前のため state が `active` のまま残ることにある。`_ensure_runtime()`（`cmd_up`）の失敗も
+同じく `active` のまま残っていた。加えて operator が manual runner を 600 秒で kill する
+（`subprocess.run(timeout)`）と、coordinator の既定 request timeout（600 秒）と競合して `draining` を残しうる
+（後者は推測であり、本番では未確認）。
+
+- **`stop` の堅牢化**: manual manager の `stop` は、`_ensure_runtime()` 失敗・canonical phase が安定でない・
+  canonical が読めない、のいずれでも manual state を `failed` にし、`last_error` に固定 token
+  `stop_blocked:<runtime_unavailable|switch_not_stable|switch_state_unreadable>` を残して失敗する。
+  以降の `stop` は `noop`（not-active）になり、同じ失敗で詰まらない。save boundary 経由で元ゲームへ戻す
+  通常の `stop` の意味論は変えない。scheduled corner の `stop` も変えない。トレードオフとして、稼働中の runner が
+  ある状態で `stop` が preflight 失敗すると corner は `failed` で終わり（runner は次の poll で終了する）、
+  NetHack は canonical active のまま残るので `recover` が必要になる。
+- **`force-recover`**: 引数も対象ゲームも取らない固定 operation。ゲームの stop / switch / start を自分では呼ばず、
+  変更するのは manual state と、canonical が非安定 phase のときの `GameSwitchCoordinator.recover()`
+  （既存の recover 契約）だけ。`recover()` は canonical に記録済みの中途 transition を契約の範囲で完了/巻き戻す
+  だけで（期限切れ `draining` は同じ runtime を active のまま取り消す）、新しい対象は選ばない。
+  成否は `recover()` の戻り値ではなく、呼出し後に canonical を読み直した phase で判定する
+  （期限切れ `draining` の取消しは `failed`/`timeout` の receipt を返すが、canonical は `ready` に戻るため）。
+  期限内の `draining` は `recover()` が read-only の `busy` を返すので何も変えない。
+- **fail-closed**: 解消後も NetHack が canonical active のままなら stop しない。`active` は `stop`、
+  `failed`（と、`starting` を `failed` に落としたもの）は `recover` へ誘導する。manual state を終端にするのは
+  NetHack が canonical active でない場合だけで、終端は `interrupted`（`ended_unknown` は run history の
+  status であり corner state では無効）。
+- **Actions**: workflow の `operation=force-recover` は固定 exit code だけを notice に出す（`status` と同様、
+  VM の出力は返らない）。step が green になるのは `start` を実行してよい状態（`recovered` /
+  `nothing_to_recover`）のときだけで、それ以外は notice に理由を出したうえで red にする。
+
+| exit code | category | 意味 / 次の手 |
+| --- | --- | --- |
+| 0 | `recovered` | manual state を終端化し canonical は安定。`start` 可 |
+| 20 | `nothing_to_recover` | 何も変更なし。`start` 可 |
+| 21 | `manual_lock_busy` | 稼働中の runner が lock を保持。何も変更なし |
+| 22 | `manual_state_unreadable` | manual state が壊れている。上書きしない |
+| 23 | `switch_state_unreadable` | canonical が読めない |
+| 24 | `switch_busy` | 期限内の `draining` 待機中。期限後に再実行 |
+| 25 | `switch_recover_failed` | coordinator が非安定 phase を解消できなかった |
+| 26 | `nethack_active_use_stop` | NetHack が active。次に `stop` |
+| 27 | `nethack_active_use_recover` | NetHack が active。次に `recover` |
+| 28 | `out_of_scope` | 対象外（無関係な切替中、所有者不在の NetHack、復元先不明） |
+| 29 | `unexpected_error` | 想定外の失敗 |
+
+エージェントを新コードで入れ替える手順は、`force-recover` → （26 なら `stop`、27 なら `recover`）→ `start`。
+`stop` / `recover` は通常どおり save boundary 経由で元ゲームへ戻し、`start` が新しい runtime と agent を起動する。
+`start` は manual state が `active` の間は拒否され、`force-recover` の後でも NetHack が canonical active の
+ままなら新しい runtime にならない（`current == target` で transition が no-op になる）ため、必ず元ゲームへ戻してから行う。
 
 ---
 

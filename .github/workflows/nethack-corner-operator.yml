@@ -8,9 +8,9 @@ on:
         required: true
         default: start
         type: choice
-        options: [start, stop, status, recover]
+        options: [start, stop, status, recover, force-recover]
       duration_minutes:
-        description: Bounded manual run duration (1-60 minutes; ignored by stop/status)
+        description: Bounded manual run duration (1-60 minutes; ignored by every operation except start)
         required: true
         default: '5'
         type: string
@@ -168,6 +168,48 @@ jobs:
           printf 'cd /home/ubuntu/docich && exec bash /home/ubuntu/docich/bin/docich-nethack-corner-operator --config /home/ubuntu/docich/config/docich.soren-live.toml --recover\n' |
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
+      - name: Force-recover wedged NetHack corner
+        id: force_recover
+        if: ${{ steps.auth.outputs.operation == 'force-recover' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -uo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          set +e
+          printf 'cd /home/ubuntu/docich && exec bash /home/ubuntu/docich/bin/docich-nethack-corner-operator --config /home/ubuntu/docich/config/docich.soren-live.toml --force-recover\n' |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA" >/dev/null
+          code=$?
+          set -e
+          # Only the fixed exit code crosses the gateway. The step is green only
+          # when a new start may proceed (recovered / nothing_to_recover).
+          ok=1
+          case "$code" in
+            0) reason=recovered ;;
+            1) reason=uncaught_exception; ok=0 ;;
+            2) reason=operator_error; ok=0 ;;
+            20) reason=nothing_to_recover ;;
+            21) reason=manual_lock_busy; ok=0 ;;
+            22) reason=manual_state_unreadable; ok=0 ;;
+            23) reason=switch_state_unreadable; ok=0 ;;
+            24) reason=switch_busy; ok=0 ;;
+            25) reason=switch_recover_failed; ok=0 ;;
+            26) reason=nethack_active_use_stop; ok=0 ;;
+            27) reason=nethack_active_use_recover; ok=0 ;;
+            28) reason=out_of_scope; ok=0 ;;
+            29) reason=unexpected_error; ok=0 ;;
+            255) reason=transport_error; ok=0 ;;
+            *) reason=unclassified; ok=0 ;;
+          esac
+          echo "::notice::NetHack corner force-recover: ${reason} (code ${code})"
+          if (( ok == 0 )); then
+            exit 1
+          fi
+
       - name: Report NetHack corner manual status
         id: status
         if: ${{ steps.auth.outputs.operation == 'status' }}
@@ -216,6 +258,12 @@ jobs:
         if: ${{ steps.recover.outcome == 'failure' }}
         run: |
           echo '::error::NetHack corner recover failed'
+          exit 1
+
+      - name: Fail unsuccessful NetHack force-recover
+        if: ${{ steps.force_recover.outcome == 'failure' }}
+        run: |
+          echo '::error::NetHack corner force-recover did not reach a startable state'
           exit 1
 
       - name: Fail unsuccessful NetHack status

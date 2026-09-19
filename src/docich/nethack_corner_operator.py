@@ -3,8 +3,8 @@
 The owner-only VM gateway runs reviewed production commands in the canonical
 ``/home/ubuntu/docich`` checkout but withholds child stdout/stderr.  This
 operator therefore performs exactly one fixed operation per invocation and, for
-``--status``, communicates the result category through its process exit code so
-the workflow can surface it.
+``--status`` and ``--force-recover``, communicates the result category through
+its process exit code so the workflow can surface it.
 
 A manual NetHack corner is a long-running oneshot: ``start`` holds the game for
 the whole duration.  The operator therefore detaches the reviewed manual runner
@@ -24,7 +24,11 @@ from pathlib import Path
 from .config import ConfigError, load_global
 from .game_switch import atomic_write_json
 from .nethack_corner import GAME_NAME, NethackCornerError
-from .nethack_corner_manual import ManualNethackCornerManager
+from .nethack_corner_manual import (
+    STOP_BLOCKED_CATEGORIES,
+    STOP_BLOCKED_PREFIX,
+    ManualNethackCornerManager,
+)
 from .retro_corner import RetroCornerError
 
 MIN_DURATION = 1
@@ -42,6 +46,24 @@ STATUS_EXIT_CODES = {
     "unreadable": 13,
 }
 
+# Fixed exit-code categories for --force-recover. Keep stable: the workflow maps
+# them to a bounded notice and never exposes raw VM output. Codes are disjoint
+# from --status (10-13), the generic error (2) and ssh transport failure (255).
+# Only ``recovered`` and ``nothing_to_recover`` mean ``start`` may proceed now.
+FORCE_RECOVER_EXIT_CODES = {
+    "recovered": 0,
+    "nothing_to_recover": 20,
+    "manual_lock_busy": 21,
+    "manual_state_unreadable": 22,
+    "switch_state_unreadable": 23,
+    "switch_busy": 24,
+    "switch_recover_failed": 25,
+    "nethack_active_use_stop": 26,
+    "nethack_active_use_recover": 27,
+    "out_of_scope": 28,
+    "unexpected_error": 29,
+}
+
 MANUAL_STATE_FILE = "nethack_corner_manual.json"
 
 
@@ -57,6 +79,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--stop", action="store_true")
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--recover", action="store_true")
+    parser.add_argument("--force-recover", action="store_true")
     return parser
 
 
@@ -149,7 +172,14 @@ def _run_manual(g, extra: list[str], *, timeout_s: float = 600.0) -> subprocess.
 def stop(config_path: Path) -> dict[str, object]:
     """End the active manual NetHack corner and switch back to the old game."""
     g = load_global(_repo_root(), config_path)
-    proc = _run_manual(g, ["stop"])
+    try:
+        proc = _run_manual(g, ["stop"])
+    except subprocess.TimeoutExpired:
+        # ``subprocess.run`` kills the runner on timeout, which can strand the
+        # coordinator mid-drain; report it as a bounded category instead of an
+        # uncaught traceback. ``--force-recover`` is the way out.
+        _record_stop_failure(g, -1, "", category="stop_timeout")
+        raise NethackCornerError("NetHack manual runner stop timed out")
     if proc.returncode != 0:
         # The gateway withholds child stdout/stderr. Map the runner's fixed
         # failure modes to a bounded category so the owner can diagnose a stuck
@@ -159,17 +189,27 @@ def stop(config_path: Path) -> dict[str, object]:
     return {"status": "stopped"}
 
 
-def _record_stop_failure(g, returncode, stderr: str) -> None:
-    """Persist a bounded stop-failure category under the manual state dir."""
+def _classify_stop_failure(stderr: str) -> str:
+    # The manual runner tags a stop that was blocked before the switch-back with
+    # a fixed token; prefer it over free-form substring matching.
+    if STOP_BLOCKED_PREFIX in stderr:
+        tail = stderr.split(STOP_BLOCKED_PREFIX, 1)[1]
+        for token in STOP_BLOCKED_CATEGORIES:
+            if tail.startswith(token):
+                return f"blocked_{token}"
     lowered = stderr.lower()
     if "docich up が失敗" in stderr or "ディスプレイ" in stderr:
-        category = "prepare_runtime_failed"
-    elif "game switch" in lowered or "switch" in lowered or "recovery" in lowered:
-        category = "switch_back_failed"
-    elif "save" in lowered and "確認" in stderr:
-        category = "save_boundary_failed"
-    else:
-        category = "unknown"
+        return "prepare_runtime_failed"
+    if "game switch" in lowered or "switch" in lowered or "recovery" in lowered:
+        return "switch_back_failed"
+    if "save" in lowered and "確認" in stderr:
+        return "save_boundary_failed"
+    return "unknown"
+
+
+def _record_stop_failure(g, returncode, stderr: str, *, category: str | None = None) -> None:
+    """Persist a bounded stop-failure category under the manual state dir."""
+    category = category or _classify_stop_failure(stderr)
     try:
         path = Path(g.state_dir) / "nethack_corner_manual_stop_failure.json"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -211,6 +251,125 @@ def recover(config_path: Path) -> dict[str, object]:
     return {"status": "recovered", "from_game": current, "to_game": previous}
 
 
+_STABLE_PHASES = frozenset({"ready", "idle"})
+
+
+def _runtime_game(runtime: object) -> str | None:
+    if isinstance(runtime, dict) and isinstance(runtime.get("game"), str):
+        return runtime["game"]
+    return None
+
+
+def _canonical_games(canonical: dict) -> set[str]:
+    games = {
+        _runtime_game(canonical.get(key)) for key in ("active", "candidate", "previous")
+    }
+    games.update(_runtime_game(rt) for rt in canonical.get("retiring") or [])
+    games.discard(None)
+    return games  # type: ignore[return-value]
+
+
+def _end_manual_state(manager, state: dict, status: str, reason: str | None) -> None:
+    state.update(
+        status=status,
+        completed_at=manager._local_now().isoformat(),
+        last_error=reason,
+        finish_reason="force_recover",
+    )
+    manager._write_state(state)
+
+
+def _force_recover_locked(manager) -> str:
+    """Resolve a wedged manual corner without ever stopping NetHack itself.
+
+    Runs with the manual corner lock held.  It may (1) ask the coordinator's own
+    ``recover()`` to clear a non-stable canonical phase, and (2) move the manual
+    state to a terminal status.  It never calls ``coordinator.stop/switch/start``
+    itself and never names a game: ``recover()`` only completes or rolls back a
+    transition that canonical state already recorded, under its own contract
+    (an expired ``draining`` is cancelled with the same runtime kept active).
+    When NetHack is still the canonical active game this fails closed and reports
+    which reviewed operation (``stop``/``recover``) finishes the job.
+    """
+    try:
+        state = manager._read_state()
+    except RetroCornerError:
+        return "manual_state_unreadable"
+    status = state.get("status")
+    running = status in ("starting", "active")
+
+    try:
+        canonical, _missing = manager.store.canonical.load()
+    except Exception:
+        return "switch_state_unreadable"
+
+    acted = False
+    if canonical.get("phase") not in _STABLE_PHASES:
+        # Do not touch a transition that has nothing to do with NetHack.
+        if not running and GAME_NAME not in _canonical_games(canonical):
+            return "out_of_scope"
+        try:
+            result = manager.coordinator.recover()
+        except Exception:
+            return "switch_recover_failed"
+        acted = True
+        try:
+            canonical, _missing = manager.store.canonical.load()
+        except Exception:
+            return "switch_state_unreadable"
+        if canonical.get("phase") not in _STABLE_PHASES:
+            # Judge by the durable phase, not ``result.status``: a successfully
+            # cancelled expired drain is reported as a ``failed``/``timeout``
+            # receipt while canonical is back to ``ready``.
+            return (
+                "switch_busy"
+                if getattr(result, "status", None) == "busy"
+                else "switch_recover_failed"
+            )
+
+    active = _runtime_game(canonical.get("active")) if canonical["phase"] == "ready" else None
+    if active == GAME_NAME:
+        previous = state.get("previous_game")
+        if status == "active":
+            return "nethack_active_use_stop"
+        if status in ("starting", "failed"):
+            if not isinstance(previous, str) or not previous or previous == GAME_NAME:
+                return "out_of_scope"
+            if status == "starting":
+                # The runner died before it ever reached ``active``; ``failed``
+                # is what unlocks the reviewed ``recover`` restore.
+                _end_manual_state(manager, state, "failed", "force_recover:nethack_active")
+            return "nethack_active_use_recover"
+        return "out_of_scope"
+
+    if running:
+        _end_manual_state(manager, state, "interrupted", None)
+        return "recovered"
+    return "recovered" if acted else "nothing_to_recover"
+
+
+def force_recover(config_path: Path) -> str:
+    """Unstick a manual NetHack corner and return a fixed category name.
+
+    Fixed operation: no target game, no arguments.  Changes only the manual
+    corner state and, when the canonical phase is not ``ready``/``idle``, invokes
+    the coordinator's existing ``recover()`` contract.  The returned category is
+    mapped to a stable exit code by ``main`` because the gateway withholds output.
+    """
+    g = load_global(_repo_root(), config_path)
+    manager = ManualNethackCornerManager(g, duration_minutes=MIN_DURATION)
+    try:
+        with manager._locked():
+            try:
+                return _force_recover_locked(manager)
+            except Exception:
+                return "unexpected_error"
+    except RetroCornerError:
+        # The body above never raises, so this can only be lock acquisition:
+        # a live runner (or another operation) owns the manual corner.
+        return "manual_lock_busy"
+
+
 def status_category(state_dir: Path) -> str:
     path = state_dir / MANUAL_STATE_FILE
     if not path.exists():
@@ -244,11 +403,16 @@ def main(argv: list[str] | None = None) -> int:
             + int(bool(args.stop))
             + int(bool(args.status))
             + int(bool(args.recover))
+            + int(bool(args.force_recover))
         )
         if selected != 1:
             raise NethackCornerError("exactly one NetHack corner operation is required")
         if args.status:
             return status(config_path)
+        if args.force_recover:
+            category = force_recover(config_path)
+            print(json.dumps({"status": "force_recover", "category": category}, separators=(",", ":")))
+            return FORCE_RECOVER_EXIT_CODES[category]
         if args.recover:
             result = recover(config_path)
         elif args.stop:
