@@ -10,7 +10,9 @@ from docich.nethack_observation import normalize_tty
 from docich.nethack_policy import (
     NethackLayeredPolicy,
     PolicyDecision,
+    REST_EMERGENCY_INTENTS,
     assert_p3b_safe,
+    rest_action_for_hold,
 )
 
 
@@ -47,6 +49,18 @@ class TestNethackLayeredPolicy(unittest.TestCase):
         self.assertEqual(decision.intent, "survival_emergency")
         self.assertTrue(decision.requires_llm)
         self.assertEqual(decision.actions, ())
+
+    def test_severe_status_never_spends_turn_on_generic_rest(self) -> None:
+        self.assertEqual(REST_EMERGENCY_INTENTS, frozenset({"survival_emergency"}))
+        for condition in ("Sick", "FoodPois", "Ill", "Slime", "Strngl"):
+            with self.subTest(condition=condition):
+                observation = normalize_tty(frame(condition=condition), cols=80, rows=5)
+                decision = self.policy.decide(observation)
+                self.assertEqual(decision.layer, "strategic")
+                self.assertEqual(decision.intent, "status_emergency")
+                self.assertTrue(decision.requires_llm)
+                self.assertEqual(decision.actions, ())
+                self.assertIsNone(rest_action_for_hold(decision, observation))
 
     def test_prompt_escalates_without_guessing_answer(self) -> None:
         decision = self.decide(frame("Really attack? [yn]"))
@@ -149,6 +163,19 @@ class TestNethackPolicyBrain(unittest.TestCase):
         self.assertEqual(actions2[0].type, "text")
         self.assertIn(actions2[0].text, {"h", "j", "k", "l"})
         self.assertEqual(brain.last_decision.intent, "explore_step")
+
+    def test_brain_holds_severe_status_instead_of_resting(self) -> None:
+        brain = build_brain(SimpleNamespace(), self._game())
+        obs = Observation(
+            game="nethack",
+            title="NetHack",
+            adapter="cli",
+            ts=1.0,
+            kind="text",
+            text=frame(condition="Sick"),
+        )
+        self.assertEqual(brain.decide(obs), [])
+        self.assertEqual(brain.last_decision.intent, "status_emergency")
 
     def test_brain_is_restricted_to_cli_nethack(self) -> None:
         from docich.adapters import AdapterError
