@@ -117,6 +117,13 @@ QUEUE_GIVEUP_DETAIL_RE = re.compile(
     r"\Await=(0|[1-9][0-9]{0,4});holder="
     r"(radio_prepass|radio_main|news|jiji|celebration|other|unknown)\Z"
 )
+BUDGET_EXHAUSTED_DETAIL_COMPONENTS = ("radio_prepass", "radio_main")
+BUDGET_EXHAUSTED_DETAIL_MAX_COUNT = 99
+BUDGET_EXHAUSTED_DETAIL_MAX_LAST_BUDGET_SEC = 240
+BUDGET_EXHAUSTED_DETAIL_RE = re.compile(
+    r"\Aexec=(0|[1-9][0-9]?);skip=(0|[1-9][0-9]?);"
+    r"last_budget=(0|[1-9][0-9]{0,2});rem=0\Z"
+)
 AI_COMPONENTS = (
     "radio_prepass",
     "radio_main",
@@ -687,6 +694,23 @@ def _parse_queue_giveup_detail(value):
     return wait_sec, holder
 
 
+def _parse_budget_exhausted_detail(value):
+    """Parse Soren's fixed RADIO budget-exhaustion detail, fail-closed."""
+    if not isinstance(value, str):
+        return None
+    match = BUDGET_EXHAUSTED_DETAIL_RE.fullmatch(value)
+    if match is None:
+        return None
+    executed, skipped, last_budget = (int(item) for item in match.groups())
+    if (
+        executed > BUDGET_EXHAUSTED_DETAIL_MAX_COUNT
+        or skipped > BUDGET_EXHAUSTED_DETAIL_MAX_COUNT
+        or last_budget > BUDGET_EXHAUSTED_DETAIL_MAX_LAST_BUDGET_SEC
+    ):
+        return None
+    return executed, skipped, last_budget
+
+
 def _ai_component_bucket(label):
     """Collapse a private/dynamic AI label into the public fixed enum."""
     normalized = str(label or "").strip().lower()
@@ -710,6 +734,19 @@ def _collect_ai(soren, now):
     all_failed = queue_giveups = gate_giveups = 0
     budget_exhausted = 0
     budget_exhausted_components = {component: 0 for component in AI_COMPONENTS}
+    budget_exhausted_detail_sampled = 0
+    budget_exhausted_detail_malformed = 0
+    budget_exhausted_detail_missing = 0
+    budget_exhausted_detail_components = {
+        component: {
+            "sampled": 0,
+            "exec_sum": 0,
+            "skip_sum": 0,
+            "last_budget_min_sec": 0,
+            "last_budget_max_sec": 0,
+        }
+        for component in BUDGET_EXHAUSTED_DETAIL_COMPONENTS
+    }
     chain_summary_sampled = 0
     multi_vercel_429_chains = 0
     multi_vercel_429_non_vercel_recovered = 0
@@ -744,8 +781,31 @@ def _collect_ai(soren, now):
         if kind == "budget_exhausted":
             # Observability-only fixed counters. Never publish this event's
             # agent/provider/model/error or dynamic label into recent_events.
+            component = _ai_component_bucket(label)
             budget_exhausted += 1
-            budget_exhausted_components[_ai_component_bucket(label)] += 1
+            budget_exhausted_components[component] += 1
+            if component in BUDGET_EXHAUSTED_DETAIL_COMPONENTS:
+                raw_detail = event.get("error")
+                if raw_detail is None:
+                    # Older events did not carry dispatch detail. Keep them
+                    # compatible and distinguish absence from malformed input.
+                    budget_exhausted_detail_missing += 1
+                else:
+                    detail = _parse_budget_exhausted_detail(raw_detail)
+                    if detail is None:
+                        budget_exhausted_detail_malformed += 1
+                    else:
+                        executed, skipped, last_budget = detail
+                        budget_exhausted_detail_sampled += 1
+                        row = budget_exhausted_detail_components[component]
+                        row["sampled"] += 1
+                        row["exec_sum"] += executed
+                        row["skip_sum"] += skipped
+                        if row["sampled"] == 1:
+                            row["last_budget_min_sec"] = last_budget
+                        else:
+                            row["last_budget_min_sec"] = min(row["last_budget_min_sec"], last_budget)
+                        row["last_budget_max_sec"] = max(row["last_budget_max_sec"], last_budget)
             continue
         if kind == "chain_summary":
             # The producer intentionally stores only this fixed aggregate in
@@ -845,6 +905,10 @@ def _collect_ai(soren, now):
         "gate_giveups": gate_giveups,
         "budget_exhausted": budget_exhausted,
         "budget_exhausted_components": budget_exhausted_components,
+        "budget_exhausted_detail_sampled": budget_exhausted_detail_sampled,
+        "budget_exhausted_detail_malformed": budget_exhausted_detail_malformed,
+        "budget_exhausted_detail_missing": budget_exhausted_detail_missing,
+        "budget_exhausted_detail_components": budget_exhausted_detail_components,
         "chain_summary_sampled": chain_summary_sampled,
         "multi_vercel_429_chains": multi_vercel_429_chains,
         "multi_vercel_429_non_vercel_recovered": multi_vercel_429_non_vercel_recovered,
