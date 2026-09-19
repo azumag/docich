@@ -224,17 +224,16 @@ def assert_p3b_safe(decision: PolicyDecision) -> None:
 
 
 # NetHack is turn-based: while the agent does nothing, nothing changes, so the
-# same frame -- and the same hold -- comes back forever.  A pet standing in the
-# corridor ahead, an unknown creature beside the hero, low HP that only time
-# fixes: each of these "holds" froze a run for good (observed on production,
-# 2026-09-19).  For exactly these non-LLM mid-level holds the production agent
-# lets one turn pass with NetHack's rest command; the policy's own decision is
-# unchanged, so strategy/advisory/shadow keep seeing the hold.
+# same frame -- and the same hold -- comes back forever.  A pet-like ambiguous
+# glyph blocking the only corridor or low HP that only time fixes can otherwise
+# freeze a run for good.  For exactly these non-LLM mid-level holds the
+# production agent lets one turn pass with NetHack's rest command, but only
+# while no recognized adjacent creature is visible.  The policy's own decision
+# is unchanged, so strategy/advisory/shadow keep seeing the hold.
 REST_KEY = "."
 REST_HOLD_INTENTS = frozenset(
     {
         "exploration_blocked",
-        "assess_contact",
         "hold_low_hp",
         "hold_impaired",
         "seek_food",
@@ -248,9 +247,10 @@ def rest_action_for_hold(
     """The single reviewed rest action for a stalled hold, else ``None``.
 
     Only a mid-level, non-LLM hold that produced no action, with a uniquely
-    visible player and no prompt on screen.  Emergencies (which need a recovery
-    plan) and unknown screens stay holds: a stray ``.`` on a prompt or menu is
-    not something this guard may risk.
+    visible player, no prompt, and no recognized adjacent creature.  Emergencies
+    (which need a recovery plan) and unknown/contact screens stay holds: a stray
+    ``.`` on a prompt or beside a possibly hostile creature is not something
+    this guard may risk.
     """
     if (
         decision.actions
@@ -259,6 +259,7 @@ def rest_action_for_hold(
         or decision.intent not in REST_HOLD_INTENTS
         or obs.prompt != "none"
         or obs.player is None
+        or _visible_creature_contact(obs)
     ):
         return None
     return Action(type="text", text=REST_KEY)
