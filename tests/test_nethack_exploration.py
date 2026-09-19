@@ -111,7 +111,7 @@ class TestP3bPolicy(unittest.TestCase):
 
 
 class TestRestOnStalledHold(unittest.TestCase):
-    """A hold on a turn-based game never resolves by itself; let one turn pass."""
+    """A hold on a turn-based game never resolves by itself; let one turn pass safely."""
 
     FREE = ("###@.      ", "            ")
 
@@ -119,12 +119,11 @@ class TestRestOnStalledHold(unittest.TestCase):
         observation = obs(map_rows, **kw)
         return observation, NethackLayeredPolicy().decide(observation)
 
-    def test_each_stalled_hold_gets_exactly_one_rest_key(self):
+    def test_each_safe_stalled_hold_gets_exactly_one_rest_key(self):
         cases = {
             "hold_low_hp": (self.FREE, {"hp": "4(10)"}),
             "hold_impaired": (self.FREE, {"condition": "Blind"}),
             "seek_food": (self.FREE, {"condition": "Hungry"}),
-            "assess_contact": (("##@d.      ", "            "), {}),
             # hero boxed in by walls: the planner has no cardinal step
             "exploration_blocked": (("#-@-#      ", "-----       "), {}),
         }
@@ -138,6 +137,34 @@ class TestRestOnStalledHold(unittest.TestCase):
                 action = rest_action_for_hold(decision, observation)
                 self.assertEqual((action.type, action.text), ("text", "."))
                 assert_rest_safe([action])
+
+    def test_visible_creature_contact_never_gets_rest(self):
+        rows = ("##@d.      ", "            ")
+        cases = {
+            "assess_contact": {},
+            # These holds are evaluated before contact in policy.decide(), so
+            # the rest guard must independently notice the adjacent creature.
+            "hold_low_hp": {"hp": "4(10)"},
+            "hold_impaired": {"condition": "Blind"},
+            "seek_food": {"condition": "Hungry"},
+        }
+        for intent, kw in cases.items():
+            with self.subTest(intent=intent):
+                observation, decision = self._decide(rows, **kw)
+                self.assertEqual(decision.intent, intent)
+                self.assertIsNone(rest_action_for_hold(decision, observation))
+
+    def test_ambiguous_f_can_still_unblock_by_resting(self):
+        # Production's plain-text TTY cannot distinguish fountain vs cat for
+        # glyph 'f'.  The planner still refuses to step onto it, but the
+        # existing bounded rest escape remains available for the observed pet
+        # corridor stall until colour-aware observation exists.
+        observation, decision = self._decide(("#-@f#      ", "-----       "))
+        self.assertEqual(decision.intent, "exploration_blocked")
+        action = rest_action_for_hold(decision, observation)
+        self.assertIsNotNone(action)
+        assert action is not None
+        self.assertEqual(action.text, ".")
 
     def test_no_rest_when_the_policy_already_acts_or_needs_a_plan(self):
         cases = {
@@ -173,6 +200,7 @@ class TestRestOnStalledHold(unittest.TestCase):
             PolicyDecision("midlevel", "exploration_blocked", "x", requires_llm=True),
             PolicyDecision("midlevel", "inspect_screen", "x"),
             PolicyDecision("midlevel", "advance_message", "x"),
+            PolicyDecision("midlevel", "assess_contact", "x"),
             PolicyDecision("midlevel", "exploration_blocked", "x", actions=(Action(type="text", text="h"),)),
         ):
             with self.subTest(decision=decision):
