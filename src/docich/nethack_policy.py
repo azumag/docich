@@ -47,9 +47,14 @@ class PolicyDecision:
         }
 
 
-# Visible terrain glyphs that are letters in NetHack but are not creatures.
+# Visible glyphs that are letters in NetHack but are not treated as creatures.
 # Treating them as adjacent monsters made P3b hold instead of exploring
 # (observed around a fountain 'f' on Dlvl:1).
+#
+# Caveat: the observation is plain text, so colour is lost, and ``f`` is
+# genuinely ambiguous -- depending on colour it is a fountain or a cat (the
+# starting pet, or a hostile feline).  The planner never steps onto it either
+# way; telling the cases apart needs a colour-aware capture (not done here).
 _TERRAIN_LETTER_GLYPHS = frozenset(
     {"f", "{"}  # fountain, water/lava variants rendered as letters
 )
@@ -216,6 +221,53 @@ def assert_p3b_safe(decision: PolicyDecision) -> None:
     ):
         return
     raise RuntimeError("P3b policy attempted an action outside the reviewed safe surface")
+
+
+# NetHack is turn-based: while the agent does nothing, nothing changes, so the
+# same frame -- and the same hold -- comes back forever.  A pet standing in the
+# corridor ahead, an unknown creature beside the hero, low HP that only time
+# fixes: each of these "holds" froze a run for good (observed on production,
+# 2026-09-19).  For exactly these non-LLM mid-level holds the production agent
+# lets one turn pass with NetHack's rest command; the policy's own decision is
+# unchanged, so strategy/advisory/shadow keep seeing the hold.
+REST_KEY = "."
+REST_HOLD_INTENTS = frozenset(
+    {
+        "exploration_blocked",
+        "assess_contact",
+        "hold_low_hp",
+        "hold_impaired",
+        "seek_food",
+    }
+)
+
+
+def rest_action_for_hold(
+    decision: PolicyDecision, obs: NethackObservation
+) -> Action | None:
+    """The single reviewed rest action for a stalled hold, else ``None``.
+
+    Only a mid-level, non-LLM hold that produced no action, with a uniquely
+    visible player and no prompt on screen.  Emergencies (which need a recovery
+    plan) and unknown screens stay holds: a stray ``.`` on a prompt or menu is
+    not something this guard may risk.
+    """
+    if (
+        decision.actions
+        or decision.requires_llm
+        or decision.layer != "midlevel"
+        or decision.intent not in REST_HOLD_INTENTS
+        or obs.prompt != "none"
+        or obs.player is None
+    ):
+        return None
+    return Action(type="text", text=REST_KEY)
+
+
+def assert_rest_safe(actions: list[Action] | tuple[Action, ...]) -> None:
+    """The rest fallback may only ever be exactly one ``.`` text action."""
+    if len(actions) != 1 or actions[0].type != "text" or actions[0].text != REST_KEY:
+        raise RuntimeError("rest fallback attempted an action outside the reviewed safe surface")
 
 
 def assert_p3a_safe(decision: PolicyDecision) -> None:
