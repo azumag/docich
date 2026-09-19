@@ -21,6 +21,10 @@ JST = dt.timezone(dt.timedelta(hours=9), "JST")
 BPS = D("10000")
 BENCHMARK_TIMEFRAME_S = 300
 BENCHMARK_TOLERANCE_BARS = 2
+# A complete 5-minute series must not skip an interior bar.  The endpoint
+# tolerance above covers a live fetch being a few bars behind; it must not
+# hide a gap inside the observed day.
+MAX_INTERNAL_GAP_BARS = 1
 
 
 def _dec(value: object) -> Decimal | None:
@@ -202,9 +206,14 @@ def build_theoretical_benchmark(
         elapsed = max(float(timeframe_s), target_end - day_start)
         covered = max(0.0, min(target_end, last_timestamp) - max(day_start, first_timestamp))
         coverage_ratio = min(1.0, covered / elapsed)
+        max_internal_gap = max(
+            next_timestamp - timestamp
+            for (timestamp, _), (next_timestamp, _) in zip(points, points[1:])
+        )
         coverage_complete = (
             first_timestamp <= day_start + timeframe_s * BENCHMARK_TOLERANCE_BARS
             and last_timestamp >= target_end - timeframe_s * BENCHMARK_TOLERANCE_BARS
+            and max_internal_gap <= timeframe_s * MAX_INTERNAL_GAP_BARS
         )
 
         minimum: tuple[float, Decimal] | None = None

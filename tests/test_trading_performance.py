@@ -50,12 +50,10 @@ def _write_history_cache(path: Path, *, now: float, symbol: str = "BTC/JPY") -> 
     day_start = dt.datetime.fromtimestamp(now, tz=JST).replace(
         hour=0, minute=0, second=0, microsecond=0
     ).timestamp()
-    history = [
-        {"timestamp": day_start, "close": "100"},
-        {"timestamp": day_start + 300, "close": "90"},
-        {"timestamp": day_start + 600, "close": "120"},
-        {"timestamp": now - 300, "close": "110"},
-    ]
+    history = []
+    for index in range(int((now - day_start) // 300)):
+        close = {0: "100", 1: "90", 2: "120"}.get(index, "110")
+        history.append({"timestamp": day_start + index * 300, "close": close})
     path.write_text(
         json.dumps({
             "schema_version": 1,
@@ -143,6 +141,36 @@ def test_theoretical_benchmark_marks_late_started_history_as_partial(tmp_path):
     assert benchmark["status"] == "partial"
     assert benchmark["coverage_complete_to_now"] is False
     assert D(benchmark["theoretical_pnl_jpy"]) == D("200")
+
+
+def test_theoretical_benchmark_marks_internal_history_gap_as_partial(tmp_path):
+    now = dt.datetime(2026, 9, 11, 12, 0, tzinfo=JST).timestamp()
+    day_start = dt.datetime(2026, 9, 11, tzinfo=JST).timestamp()
+    cache = tmp_path / "market_cache.json"
+    cache.write_text(
+        json.dumps({"schema_version": 1, "symbols": {
+            "BTC/JPY": {
+                "fetched_at": now,
+                "timeframe_s": 300,
+                "history": [
+                    {"timestamp": day_start, "close": "100"},
+                    {"timestamp": day_start + 300, "close": "90"},
+                    {"timestamp": day_start + 600, "close": "120"},
+                    {"timestamp": now - 300, "close": "110"},
+                ],
+            }
+        }}),
+        encoding="utf-8",
+    )
+
+    benchmark = build_theoretical_benchmark(
+        cache, capital_reference="1000", actual_today_realized="5", now=now,
+        taker_fee_rate="0", slippage_bps="0",
+    )
+
+    assert benchmark["status"] == "partial"
+    assert benchmark["coverage_complete_to_now"] is False
+    assert benchmark["reason"] == "partial_intraday_coverage"
 
 
 def test_performance_combines_realized_unrealized_and_today(tmp_path):

@@ -108,6 +108,13 @@ def test_corner_facts_and_fallback_include_theoretical_comparison(tmp_path):
     day_start = dt.datetime.fromtimestamp(
         now, tz=dt.timezone(dt.timedelta(hours=9))
     ).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    history = [
+        {
+            "timestamp": day_start + index * 300,
+            "close": {0: "100", 1: "90", 2: "120"}.get(index, "110"),
+        }
+        for index in range(int((now - day_start) // 300))
+    ]
     (tmp_path / "market_cache.json").write_text(
         json.dumps({
             "schema_version": 1,
@@ -117,12 +124,7 @@ def test_corner_facts_and_fallback_include_theoretical_comparison(tmp_path):
                     "data_as_of": now - 300,
                     "timeframe_s": 300,
                     "closes": ["100", "90", "120", "110"],
-                    "history": [
-                        {"timestamp": day_start, "close": "100"},
-                        {"timestamp": day_start + 300, "close": "90"},
-                        {"timestamp": day_start + 600, "close": "120"},
-                        {"timestamp": now - 300, "close": "110"},
-                    ],
+                    "history": history,
                 }
             },
         }),
