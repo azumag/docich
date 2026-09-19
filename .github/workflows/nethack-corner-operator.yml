@@ -202,6 +202,7 @@ jobs:
             27) reason=nethack_active_use_recover; ok=0 ;;
             28) reason=out_of_scope; ok=0 ;;
             29) reason=unexpected_error; ok=0 ;;
+            30) reason=drain_cancel_refused; ok=0 ;;
             255) reason=transport_error; ok=0 ;;
             *) reason=unclassified; ok=0 ;;
           esac

@@ -34,6 +34,12 @@ DEFAULT_SAVE_DIR = Path("/var/games/nethack/save")
 BOUNDARY_RESULT_FILENAME = "nethack_boundary.json"
 _PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,31}$")
 _SAVE_CONFIRMATION_RE = re.compile(r"really\s+save\?\s*\[yn\]", re.IGNORECASE)
+# The confirmation while it is still waiting for an answer: NetHack shows the
+# default ``(n)`` and nothing after it.  Once an answer has been typed the line
+# ends with that key, which is no longer something we may take back.
+_SAVE_PROMPT_PENDING_RE = re.compile(
+    r"^\s*really\s+save\?\s*\[yn\]\s*\(n\)\s*$", re.IGNORECASE | re.MULTILINE
+)
 
 # Character-creation prompts have no durable run to save: NetHack has not
 # created an adventure yet.  The normal ``S`` boundary only succeeds after a
@@ -63,6 +69,10 @@ def _is_character_creation_screen(text: str) -> bool:
 
 def _is_save_confirmation_screen(text: str) -> bool:
     return _SAVE_CONFIRMATION_RE.search(text) is not None
+
+
+def _is_save_prompt_pending(text: str) -> bool:
+    return _SAVE_PROMPT_PENDING_RE.search(text) is not None
 
 
 class NethackCoordinatorAdapter(CliCoordinatorAdapter):
@@ -298,9 +308,50 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
             time.sleep(min(0.1, max(0.01, deadline - time.monotonic())))
 
     def cancel_round_boundary(self, request_id: str, deadline: float, cancel) -> bool:
-        # ``S`` has no reversible in-process phase: once NetHack accepts it the
-        # game is writing a normal save and exiting. Cancellation must not send
-        # any extra key. Report cancellation as unsupported so generic draining
-        # recovery fails closed instead of clearing canonical state while the
-        # process may still be blocked on NetHack's save-confirmation prompt.
-        return False
+        """Withdraw a save request, but only while its confirmation is unanswered.
+
+        ``S`` is reversible exactly until it is confirmed: NetHack asks
+        ``Really save? [yn] (n)`` and its default answer ``n`` simply continues
+        the game.  If the driver that sent ``S`` died or timed out at that
+        prompt, the game sits there and canonical state stays ``draining``
+        forever, because generic recovery needs this method to acknowledge.
+        So answer ``n`` -- and only ``n`` -- when the runtime is verified to be
+        ours, its process window exists and the screen shows the *unanswered*
+        prompt, then require the prompt gone and the process still alive before
+        acknowledging.  After ``y`` the game is writing its save and exiting,
+        which cannot be undone; every other observation (no prompt, process
+        gone, capture failure) refuses without sending a key so recovery stays
+        fail-closed.
+        """
+        self._check_active(deadline, cancel)
+        if not self.tmux.session_target_exists(self.spec.adapter_session):
+            return False
+        self._verify_session_ownership()
+        process_target = self._runtime_process_window_target()
+        if process_target is None:
+            return False
+        try:
+            text = self.tmux.capture_pane(process_target)
+        except Exception:
+            return False
+        if not _is_save_prompt_pending(text):
+            return False
+
+        self._check_active(deadline, cancel)
+        self.tmux.send_keys(process_target, ["n"], literal=True)
+        while True:
+            self._check_active(deadline, cancel)
+            try:
+                alive = self.tmux.window_target_exists(process_target, strict=True)
+            except Exception:
+                return False
+            if not alive:
+                # The save went through anyway; nothing was cancelled.
+                return False
+            try:
+                text = self.tmux.capture_pane(process_target)
+            except Exception:
+                return False
+            if not _is_save_confirmation_screen(text):
+                return True
+            time.sleep(min(0.1, max(0.01, deadline - time.monotonic())))

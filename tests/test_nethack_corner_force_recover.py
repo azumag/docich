@@ -25,7 +25,8 @@ from docich.nethack_corner_manual import (  # noqa: E402
 )
 from docich.retro_corner import RetroCornerError  # noqa: E402
 from test_nethack_corner import NethackCornerTestBase  # noqa: E402
-from test_round_boundary import BoundaryFactory, _coordinator, _wait_for_phase  # noqa: E402
+from test_round_boundary import BoundaryAdapter, BoundaryFactory, _coordinator, _wait_for_phase  # noqa: E402
+from docich.adapters import nethack as nethack_adapter  # noqa: E402
 
 
 def _runtime(generation: int, game: str) -> dict:
@@ -392,10 +393,18 @@ class TestForceRecoverFailsClosed(ForceRecoverBase):
         before = self.manual_path.read_text(encoding="utf-8")
         coord = StoreCoordinator(self, drain="stuck")
 
-        self.assertEqual(self.force_recover(coord), "switch_recover_failed")
+        # the adapter refused to acknowledge the cancel (``recovery_required``)
+        self.assertEqual(self.force_recover(coord), "drain_cancel_refused")
 
         self.assertEqual(self.canonical(), ("draining", "nethack"))
         self.assertEqual(self.manual_path.read_text(encoding="utf-8"), before)
+
+    def test_other_failed_recoveries_keep_the_generic_category(self):
+        self.set_canonical("draining", "nethack")
+        self.set_manual("active")
+        coord = StoreCoordinator(self, drain="stuck")
+        coord.recover = lambda: SimpleNamespace(status="failed", error_code="x", detail="x")
+        self.assertEqual(self.force_recover(coord), "switch_recover_failed")
 
     def test_coordinator_exception_is_categorised_not_raised(self):
         self.set_canonical("draining", "nethack")
@@ -674,3 +683,117 @@ class TestForceRecoverWithRealCoordinator(ForceRecoverBase):
         self.assertGreater(len(generations), 1)
         self.assertGreater(generations[-1], 1)
         self.assertEqual(self.canonical(), ("ready", "robots"))
+
+
+class _NethackPane:
+    """tmux double for the game window: shows a pane and reacts to ``n``."""
+
+    def __init__(self, pane):
+        self.pane_text = pane
+        self.process_alive = True
+        self.calls = []
+
+    def session_target_exists(self, session):
+        return True
+
+    def window_target_exists(self, target, *, strict=False):
+        return self.process_alive
+
+    def capture_pane(self, target):
+        return self.pane_text
+
+    def send_keys(self, target, keys, literal=False):
+        self.calls.append((list(keys), literal))
+        if keys == ["n"]:
+            self.pane_text = "Dlvl:1 HP:16(16)"
+
+
+class NethackCancelAdapter(BoundaryAdapter):
+    """Boundary adapter whose cancel is the *real* NetHack adapter's, over a fake pane."""
+
+    def __init__(self, spec, tmux, **kwargs):
+        super().__init__(spec, **kwargs)
+        real = object.__new__(nethack_adapter.NethackCoordinatorAdapter)
+        real.spec = SimpleNamespace(adapter_session="adapter")
+        real.tmux = tmux
+        real._check_active = lambda deadline, cancel: None
+        real._verify_session_ownership = lambda: None
+        real._runtime_process_window_target = lambda: "adapter:nethack"
+        self._real = real
+
+    def cancel_round_boundary(self, request_id, deadline, cancel):
+        self.cancel_request_ids.append(request_id)
+        return self._real.cancel_round_boundary(request_id, deadline, cancel)
+
+
+class NethackCancelFactory(ReleasingFactory):
+    def __init__(self, tmux):
+        super().__init__()
+        self.tmux = tmux
+
+    def __call__(self, spec):
+        key = (spec.game, spec.generation)
+        if key not in self.adapters and spec.game == "nethack":
+            adapter = NethackCancelAdapter(spec, self.tmux, required=True, method=True)
+            self.adapters[key] = adapter
+            if self.auto_release:
+                adapter.boundary_release.set()
+            return adapter
+        return super().__call__(spec)
+
+
+class TestForceRecoverWithTheRealNethackCancel(ForceRecoverBase):
+    """The production wedge: NetHack parked on ``Really save? [yn] (n)`` after its driver died."""
+
+    def _wedge(self, pane):
+        tmux = _NethackPane(pane)
+        factory = NethackCancelFactory(tmux)
+        store, coordinator = _coordinator(factory, Path(self.g.state_dir))
+        self.assertEqual(coordinator.start("nethack").status, "succeeded")
+        old = factory.adapters[("nethack", 1)]
+        request_id = str(uuid.uuid4())
+        box = []
+        worker = threading.Thread(
+            target=lambda: box.append(coordinator.switch("robots", request_id=request_id, timeout_s=60.0))
+        )
+        worker.start()
+        _wait_for_phase(store, "draining")
+        self.assertTrue(old.boundary_entered.wait(1.0))
+        with store.lock(exclusive=True, blocking=False):
+            state, _ = store.canonical.load()
+            state["deadline_at"] = "2000-01-01T00:00:00Z"  # the driver died long ago
+            store.canonical.save(state)
+        self.set_manual("active", previous="robots")
+        return tmux, factory, coordinator, old, worker
+
+    def test_pending_save_prompt_is_dismissed_so_the_drain_can_be_cancelled(self):
+        tmux, factory, coordinator, old, worker = self._wedge("Really save? [yn] (n)\n|......@...|")
+        try:
+            self.assertEqual(self.force_recover(coordinator), "nethack_active_use_stop")
+            self.assertEqual(tmux.calls, [(["n"], True)])  # exactly one key, and it is ``n``
+            self.assertEqual(self.canonical(), ("ready", "nethack"))
+            self.assertTrue(old.runtime.alive)
+            self.assertNotIn("stop_agent", old.runtime.events)
+            self.assertEqual(self.manual_state()["status"], "active")
+        finally:
+            old.boundary_release.set()
+            worker.join(3.0)
+        self.assertFalse(worker.is_alive())
+
+        # ...and the regular stop then switches back through the coordinator.
+        factory.auto_release = True
+        self.assertEqual(self.make_manager(coordinator).stop().status, "completed")
+        self.assertEqual(self.canonical(), ("ready", "robots"))
+
+    def test_without_a_pending_prompt_the_refusal_is_reported_and_nothing_is_sent(self):
+        tmux, factory, coordinator, old, worker = self._wedge("Dlvl:1 HP:16(16)")
+        try:
+            before = self.manual_path.read_text(encoding="utf-8")
+            self.assertEqual(self.force_recover(coordinator), "drain_cancel_refused")
+            self.assertEqual(tmux.calls, [])
+            self.assertEqual(self.canonical(), ("draining", "nethack"))
+            self.assertEqual(self.manual_path.read_text(encoding="utf-8"), before)
+        finally:
+            old.boundary_release.set()
+            worker.join(3.0)
+        self.assertFalse(worker.is_alive())

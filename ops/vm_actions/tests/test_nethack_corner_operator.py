@@ -279,7 +279,7 @@ class NetHackCornerOperatorTests(unittest.TestCase):
             if name != 'recovered':
                 with self.subTest(category=name):
                     self.assertNotIn(code, reserved)
-                    self.assertTrue(20 <= code <= 29)
+                    self.assertTrue(20 <= code <= 30)
 
     def test_main_returns_the_category_code_and_prints_only_the_category(self):
         for name, code in operator.FORCE_RECOVER_EXIT_CODES.items():
