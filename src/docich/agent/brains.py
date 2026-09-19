@@ -136,7 +136,7 @@ class NethackPolicyBrain:
         if obs.adapter != "cli" or obs.text is None:
             return []
         from ..nethack_observation import normalize_tty
-        from ..nethack_policy import assert_p3b_safe
+        from ..nethack_policy import assert_p3b_safe, assert_rest_safe, rest_action_for_hold
 
         normalized = normalize_tty(obs.text, cols=self.cols, rows=self.rows)
         startup_actions = self.startup.consider(normalized)
@@ -146,6 +146,12 @@ class NethackPolicyBrain:
         assert_p3b_safe(decision)
         self.last_decision = decision
         production_actions = list(decision.actions)
+        # A hold on a turn-based game never resolves by itself: let one turn
+        # pass (rest) so a pet can move, HP can recover, and so on.
+        rest = rest_action_for_hold(decision, normalized)
+        if rest is not None:
+            production_actions = [rest]
+            assert_rest_safe(production_actions)
         try:
             self.narrator.consider(normalized, decision)
         except Exception:

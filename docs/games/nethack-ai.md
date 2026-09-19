@@ -85,6 +85,26 @@ blank / unseen area
 
 隠れた罠など、人間にも見えていない情報は回避できない。P3bは「可視情報から分かる危険を勝手に踏まない」範囲を保証する。
 
+#### 保留のあいだもターンを進める（rest）
+
+NetHackはターン制なので、agentが何もしない間はゲーム内で何も変わらず、同じ画面に対して同じ保留が永久に返る
+（ペットが唯一の通路を塞ぐ、正体不明の生き物が隣にいる、HPは時間でしか回復しない、など。本番で実際に停止した）。
+そこで production agent は、次の**中位・LLM不要の保留**で policy が無入力のときに限り、reviewed な単一キー `.`
+（1ターン休む）を実行する。
+
+| policy の判定 | 実行する入力 |
+|---|---|
+| `exploration_blocked` / `assess_contact` / `hold_low_hp` / `hold_impaired` / `seek_food` | `.` |
+| `survival_emergency` / `status_emergency` / `food_emergency`（回復計画が必要） | 無入力のまま |
+| `inspect_screen`（playerが一意でない）・プロンプト表示中 | 無入力のまま（`.` を誤入力させない） |
+
+policy 自身の判定（`PolicyDecision`）は変えず、agent brain が実行する action だけを差し替える。
+strategy / advisory / shadow は従来どおり保留として観測する。`assert_rest_safe` は「`.` 1個だけ」以外を拒否する。
+連続して休み続けても TTY が変化しなければ、既存の stall guard（`stall_timeout_minutes`）がコーナーを終了する。
+
+注意: 観測はプレーンテキストで色を失うため、`f` は色によって噴水・猫（ペット/敵）のどれにもなり、区別できない。
+planner はどれであっても `f` の上へは踏み込まない。色を使った判別は今後の課題。
+
 ### Strategic (P3c)
 
 P3cは **入力/出力schemaを作るだけ**で、まだモデル呼び出しもproposal実行も行わない。

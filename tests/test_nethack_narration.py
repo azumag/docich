@@ -147,8 +147,8 @@ def audio(monkeypatch):
 
 
 @pytest.mark.parametrize("intent,expected", [
-    ("exploration_blocked", "安全に進める道が見えないので、探索を保留します。"),
-    ("hold_low_hp", "体力が半分以下なので、無理に動かず探索を保留します。"),
+    ("exploration_blocked", "安全に進める道が見えないので、ターンを進めて様子を見ます。"),
+    ("hold_low_hp", "体力が半分以下なので、無理に動かず休んで回復を待ちます。"),
     ("explore_step", "未探索部分に近い安全な地形を選び、一歩ずつ探索します。"),
 ])
 def test_narration_text_and_api(audio, intent, expected):
@@ -294,3 +294,59 @@ def test_brain_and_loop_advance_the_restore_more():
     adapter.observe.return_value = observation(RESTORE_FRAME)
     assert _run_iteration(adapter, brain, 1500) == 1
     assert adapter.act.call_args.args[0].text == " "
+
+
+def _status(hp="10(10)", extra=""):
+    return f"Dlvl:2 HP:{hp} Pw:4(4) AC:5 Exp:2\nT:12 {extra}\n"
+
+
+STALLED_FRAMES = {
+    # boxed in: no cardinal step exists
+    "exploration_blocked": "msg\n#-@-#\n-----\n" + _status(),
+    # something beside the hero that we cannot tell friend from foe
+    "assess_contact": "msg\n##@d.\n     \n" + _status(),
+    "hold_low_hp": "msg\n###@.\n     \n" + _status(hp="4(10)"),
+    "hold_impaired": "msg\n###@.\n     \n" + _status(extra="Blind"),
+    "seek_food": "msg\n###@.\n     \n" + _status(extra="Hungry"),
+}
+
+
+@pytest.mark.parametrize("intent,text", sorted(STALLED_FRAMES.items()))
+def test_brain_rests_one_turn_instead_of_freezing_on_a_stalled_hold(intent, text):
+    brain = build_brain(SimpleNamespace(), game())
+    actions = brain.decide(observation(text))
+    assert [(a.type, a.text) for a in actions] == [("text", ".")]
+    # the policy's own verdict is untouched, so downstream layers still see the hold
+    assert brain.last_decision.intent == intent
+    assert brain.last_decision.actions == ()
+
+
+def test_brain_does_not_rest_when_it_has_a_real_step_or_needs_a_plan():
+    brain = build_brain(SimpleNamespace(), game())
+    step = brain.decide(observation("msg\n###@.\n     \n" + _status()))
+    assert [a.text for a in step] in (["h"], ["j"], ["k"], ["l"])
+    assert brain.last_decision.intent == "explore_step"
+    # HP <= 25% is an emergency that needs a recovery plan, not a nap
+    assert brain.decide(observation("msg\n###@.\n     \n" + _status(hp="2(10)"))) == []
+    assert brain.last_decision.intent == "survival_emergency"
+
+
+def test_agent_loop_sends_the_rest_key_for_a_stalled_hold():
+    brain = build_brain(SimpleNamespace(), game())
+    adapter = Mock()
+    adapter.observe.return_value = observation(STALLED_FRAMES["exploration_blocked"])
+    assert _run_iteration(adapter, brain, 1500) == 1
+    assert adapter.act.call_args.args[0].text == "."
+
+
+def test_a_pet_blocking_the_only_exit_is_waited_out_instead_of_frozen_on():
+    # The classic freeze: the pet stands in the only way out, cardinal cells are
+    # blocked, nothing moves while we wait, and the hold repeats forever.
+    # Resting lets the pet move; the next frame has a step again.
+    brain = build_brain(SimpleNamespace(), game())
+    blocked = "msg\n-f@-\n----\n" + _status()
+    assert [a.text for a in brain.decide(observation(blocked))] == ["."]
+    assert brain.last_decision.intent == "exploration_blocked"
+    cleared = "msg\n-.@-\n----\n" + _status()
+    assert [a.text for a in brain.decide(observation(cleared))] == ["h"]
+    assert brain.last_decision.intent == "explore_step"
