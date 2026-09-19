@@ -47,7 +47,7 @@ _REASON_CODES = frozenset({
 
 def classify_failure(exc: BaseException) -> str:
     text = str(exc)
-    if text == "no completed Soren91 evidence in the last 24 hours":
+    if text == "no completed Soren91 evidence in the last 72 hours":
         return "no_recent_completed_evidence"
     if text in {
         "path outside Soren91 runtime",
