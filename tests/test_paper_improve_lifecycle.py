@@ -48,6 +48,36 @@ def test_abnormal_baseexception_terminalizes_active_status(tmp_path, monkeypatch
     assert "must-not-leak" not in json.dumps(status)
 
 
+def test_sigterm_exception_uses_fixed_terminal_detail(tmp_path, monkeypatch):
+    trading = tmp_path / "state" / "trading"
+
+    def terminate(_g, **kwargs):
+        paper_improve._write_improve_status(
+            trading,
+            status="running",
+            phase="generate",
+            progress=35,
+            started_at=100.0,
+            updated_at=101.0,
+            detail="working",
+        )
+        raise paper_improve._PaperImproveTermination()
+
+    monkeypatch.setattr(paper_improve, "_run_paper_improve", terminate)
+
+    with pytest.raises(paper_improve._PaperImproveTermination):
+        paper_improve.run_paper_improve(
+            _g(tmp_path), trading_dir=trading, agents="x", now=123.0
+        )
+
+    status = json.loads((trading / paper_improve.STATUS_FILENAME).read_text())
+    assert status["status"] == "failed"
+    assert status["phase"] == "interrupted"
+    assert status["progress"] == 35
+    assert status["detail"] == "terminated"
+    assert status["completed_at"] == 123.0
+
+
 def test_abnormal_wrapper_never_overwrites_terminal_status(tmp_path, monkeypatch):
     trading = tmp_path / "state" / "trading"
 
