@@ -12,7 +12,7 @@ OWNER_ID = "9018513"
 REPOSITORY = "azumag/docich"
 REPOSITORY_ID = "1327276249"
 WORKFLOW = ".github/workflows/nethack-corner-operator.yml"
-OPERATIONS = {"start", "stop", "status", "recover"}
+OPERATIONS = {"start", "stop", "status", "recover", "force-recover"}
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 MIN_DURATION = 1
 MAX_DURATION = 60
@@ -65,7 +65,7 @@ def main() -> None:
     operation = env.get("INPUT_OPERATION", "")
     if operation not in OPERATIONS:
         fail("unsupported NetHack corner operation")
-    # stop/status ignore the duration, but validating one grammar keeps a second
+    # stop/status/recover/force-recover ignore the duration, but validating one grammar keeps a second
     # looser issue payload grammar from becoming another control surface.
     duration = _validate_duration(env.get("INPUT_DURATION_MINUTES", ""))
 

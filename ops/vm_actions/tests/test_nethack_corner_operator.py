@@ -1,4 +1,6 @@
+import io
 import json
+import re
 import stat
 import subprocess
 import sys
@@ -6,6 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from contextlib import redirect_stdout
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -54,6 +57,23 @@ class NetHackCornerAuthorizeTests(unittest.TestCase):
                 p = self.run_auth(INPUT_OPERATION=operation)
                 self.assertEqual(p.returncode, 0, p.stderr)
                 self.assertEqual(json.loads(p.stdout)['operation'], operation)
+
+    def test_force_recover_is_a_fixed_owner_operation_with_the_same_guards(self):
+        p = self.run_auth(INPUT_OPERATION='force-recover')
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(json.loads(p.stdout)['operation'], 'force-recover')
+        # every existing guard still applies to it
+        self.assertNotEqual(self.run_auth(INPUT_OPERATION='force-recover', INPUT_CONFIRM='').returncode, 0)
+        self.assertNotEqual(
+            self.run_auth(INPUT_OPERATION='force-recover', GITHUB_ACTOR='collab', GITHUB_ACTOR_ID='42').returncode, 0
+        )
+        self.assertNotEqual(
+            self.run_auth(INPUT_OPERATION='force-recover', GITHUB_REF_PROTECTED='false').returncode, 0
+        )
+        # only the exact fixed spelling is accepted
+        for bad in ('force_recover', 'forcerecover', 'force-recover;id', 'FORCE-RECOVER', 'force-recover '):
+            with self.subTest(operation=bad):
+                self.assertNotEqual(self.run_auth(INPUT_OPERATION=bad).returncode, 0)
 
     def test_non_owner_and_non_owner_rerun_fail_closed(self):
         self.assertNotEqual(self.run_auth(GITHUB_ACTOR='collab', GITHUB_ACTOR_ID='42').returncode, 0)
@@ -245,6 +265,67 @@ class NetHackCornerOperatorTests(unittest.TestCase):
         self.assertEqual(operator.main(['--config', 'x', '--start', '--stop']), 2)
         self.assertEqual(operator.main(['--config', 'x', '--stop', '--status']), 2)
         self.assertEqual(operator.main(['--config', 'x', '--recover', '--status']), 2)
+        self.assertEqual(operator.main(['--config', 'x', '--force-recover', '--recover']), 2)
+        self.assertEqual(operator.main(['--config', 'x', '--force-recover', '--stop']), 2)
+        self.assertEqual(operator.main(['--config', 'x', '--force-recover', '--status']), 2)
+        self.assertEqual(operator.main(['--config', 'x', '--force-recover', '--start']), 2)
+
+    def test_force_recover_exit_codes_are_fixed_unique_and_disjoint(self):
+        codes = operator.FORCE_RECOVER_EXIT_CODES
+        self.assertEqual(codes['recovered'], 0)
+        self.assertEqual(len(set(codes.values())), len(codes))
+        reserved = set(operator.STATUS_EXIT_CODES.values()) | {1, 2, 255}
+        for name, code in codes.items():
+            if name != 'recovered':
+                with self.subTest(category=name):
+                    self.assertNotIn(code, reserved)
+                    self.assertTrue(20 <= code <= 29)
+
+    def test_main_returns_the_category_code_and_prints_only_the_category(self):
+        for name, code in operator.FORCE_RECOVER_EXIT_CODES.items():
+            with self.subTest(category=name):
+                out = io.StringIO()
+                with mock.patch.object(operator, 'force_recover', return_value=name), \
+                     redirect_stdout(out):
+                    self.assertEqual(operator.main(['--config', 'x', '--force-recover']), code)
+                self.assertEqual(json.loads(out.getvalue()), {'status': 'force_recover', 'category': name})
+
+    def test_force_recover_never_takes_a_target_or_duration(self):
+        parser = operator._parser()
+        with self.assertRaises(SystemExit):
+            parser.parse_args(['--config', 'x', '--force-recover', '--target', 'sorengame'])
+        args = parser.parse_args(['--config', 'x', '--force-recover'])
+        self.assertTrue(args.force_recover)
+        self.assertIsNone(args.duration_minutes)
+
+    def test_stop_timeout_is_a_bounded_category_not_a_traceback(self):
+        base = Path(tempfile.mkdtemp(prefix='nethack-op-'))
+        fake_g = self._fake_g(base)
+        with mock.patch.object(operator, 'load_global', return_value=fake_g), \
+             mock.patch.object(
+                 operator.subprocess, 'run',
+                 side_effect=operator.subprocess.TimeoutExpired(cmd='x', timeout=600),
+             ):
+            with self.assertRaises(NethackCornerError):
+                operator.stop(fake_g.config_path)
+            self.assertEqual(operator.main(['--config', 'x', '--stop']), 2)
+        marker = json.loads(
+            (fake_g.state_dir / 'nethack_corner_manual_stop_failure.json').read_text(encoding='utf-8')
+        )
+        self.assertEqual(marker['category'], 'stop_timeout')
+
+    def test_stop_failure_prefers_the_fixed_blocked_token_over_substring_guessing(self):
+        cases = {
+            # the draining message used to fall through to ``unknown``
+            'docich: エラー: NetHack stop blocked [stop_blocked:switch_not_stable]': 'blocked_switch_not_stable',
+            'docich: エラー: NetHack stop blocked [stop_blocked:runtime_unavailable]': 'blocked_runtime_unavailable',
+            'docich: エラー: NetHack stop blocked [stop_blocked:switch_state_unreadable]': 'blocked_switch_state_unreadable',
+            # an unknown token never becomes a category
+            'docich: エラー: [stop_blocked:SUPERSECRET]': 'unknown',
+        }
+        for stderr, expected in cases.items():
+            with self.subTest(expected=expected):
+                self.assertEqual(operator._classify_stop_failure(stderr), expected)
 
 
 class NetHackCornerWorkflowPolicyTests(unittest.TestCase):
@@ -275,6 +356,47 @@ class NetHackCornerWorkflowPolicyTests(unittest.TestCase):
         self.assertNotIn('inputs.command', text)
         self.assertNotIn('event.comment.body', text)
         self.assertNotIn('event.issue.body', text)
+
+    def _force_recover_step(self):
+        text = WF.read_text(encoding='utf-8')
+        start = text.index('id: force_recover')
+        end = text.index('- name: Report NetHack corner manual status')
+        return text[start:end]
+
+    def test_force_recover_is_a_fixed_workflow_operation(self):
+        text = WF.read_text(encoding='utf-8')
+        self.assertIn('options: [start, stop, status, recover, force-recover]', text)
+        self.assertIn("steps.auth.outputs.operation == 'force-recover'", text)
+        step = self._force_recover_step()
+        self.assertIn('--force-recover', step)
+        self.assertIn('bin/docich-nethack-corner-operator', step)
+        self.assertIn('config/docich.soren-live.toml', step)
+        # the gateway withholds output, so nothing but the code is consumed
+        self.assertIn('>/dev/null', step)
+        self.assertIn('continue-on-error: true', step)
+        self.assertNotIn('inputs.', step)
+        self.assertIn("steps.force_recover.outcome == 'failure'", text)
+        self.assertIn('NetHack corner force-recover did not reach a startable state', text)
+
+    def test_workflow_code_table_matches_the_operator_exit_codes(self):
+        step = self._force_recover_step()
+        rows = {}
+        for line in step.splitlines():
+            m = re.match(r'\s+(\d+)\) reason=(\w+)(.*);;\s*$', line)
+            if m:
+                rows[int(m.group(1))] = (m.group(2), 'ok=0' not in m.group(3))
+        # every operator category is mapped to exactly its own name...
+        for name, code in operator.FORCE_RECOVER_EXIT_CODES.items():
+            with self.subTest(category=name):
+                self.assertEqual(rows[code][0], name)
+                # ...and the step is green only when a start may proceed now
+                self.assertEqual(rows[code][1], name in ('recovered', 'nothing_to_recover'))
+        # transport / uncaught / generic operator errors are never green
+        for code, name in ((1, 'uncaught_exception'), (2, 'operator_error'), (255, 'transport_error')):
+            with self.subTest(code=code):
+                self.assertEqual(rows[code], (name, False))
+        self.assertIn('*) reason=unclassified; ok=0 ;;', step)
+        self.assertIn('::notice::NetHack corner force-recover: ${reason} (code ${code})', step)
 
     def test_public_repo_generic_arbitrary_exec_stays_disabled(self):
         text = GENERIC_AUTH.read_text(encoding='utf-8')

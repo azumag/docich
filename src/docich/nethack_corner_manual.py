@@ -18,11 +18,24 @@ from .nethack_corner import (
     _repo_root,
     load_nethack_corner_config,
 )
-from .retro_corner import RetroCornerError
+from .retro_corner import CornerResult, RetroCornerError, _safe_detail
 
 MANUAL_STATE_FILE = "nethack_corner_manual.json"
 MANUAL_LOCK_FILE = "locks/nethack-corner-manual.lock"
 MANUAL_TICK_GUARD_FILE = "locks/nethack-corner-manual-tick.lock"
+
+# A stop that cannot even reach the coordinator switch-back is recorded with one
+# of these fixed tokens (never raw exception text in the raised message) so the
+# operator can classify it without parsing free-form stderr.
+STOP_BLOCKED_PREFIX = "stop_blocked:"
+STOP_BLOCKED_RUNTIME = "runtime_unavailable"
+STOP_BLOCKED_SWITCH_UNSTABLE = "switch_not_stable"
+STOP_BLOCKED_SWITCH_UNREADABLE = "switch_state_unreadable"
+STOP_BLOCKED_CATEGORIES = (
+    STOP_BLOCKED_RUNTIME,
+    STOP_BLOCKED_SWITCH_UNSTABLE,
+    STOP_BLOCKED_SWITCH_UNREADABLE,
+)
 
 
 class ManualNethackCornerManager(NethackCornerManager):
@@ -35,6 +48,55 @@ class ManualNethackCornerManager(NethackCornerManager):
         self.state_path = Path(g.state_dir) / MANUAL_STATE_FILE
         self.lock_path = Path(g.state_dir) / MANUAL_LOCK_FILE
         self.tick_guard_path = Path(g.state_dir) / MANUAL_TICK_GUARD_FILE
+
+    def stop(self) -> CornerResult:
+        """End an active manual corner; never leave a blocked stop ``active``.
+
+        The inherited ``stop`` runs ``_ensure_runtime`` and the canonical-game
+        read *outside* the ``failed`` bookkeeping of ``_finish_locked``.  When
+        either raises (runtime unavailable, or the canonical phase is not
+        ``ready``/``idle`` -- e.g. a stranded ``draining``), the manual state
+        stayed ``active`` and every later ``stop`` hit the same wall.  Record
+        those pre-switch failures as ``failed`` so the state is terminal and
+        recoverable; the switch-back itself still goes through the unchanged
+        ``_finish_locked`` (save boundary, previous-game restore).
+        """
+        with self._locked():
+            state = self._read_state()
+            if state.get("status") != "active":
+                return CornerResult("noop", detail="not-active")
+            blocked: tuple[str, BaseException] | None = None
+            try:
+                self._ensure_runtime()
+            except Exception as exc:
+                blocked = (STOP_BLOCKED_RUNTIME, exc)
+            else:
+                try:
+                    self._active_game_reader()
+                except RetroCornerError as exc:
+                    blocked = (STOP_BLOCKED_SWITCH_UNSTABLE, exc)
+                except Exception as exc:
+                    blocked = (STOP_BLOCKED_SWITCH_UNREADABLE, exc)
+            if blocked is not None:
+                self._record_blocked_stop_locked(state, *blocked)
+            return self._finish_locked(state, self._local_now())
+
+    def _record_blocked_stop_locked(
+        self, state: dict[str, object], category: str, cause: BaseException
+    ) -> None:
+        token = f"{STOP_BLOCKED_PREFIX}{category}"
+        state.update(
+            status="failed",
+            completed_at=self._local_now().isoformat(),
+            last_error=f"{token}: {_safe_detail(cause)}",
+        )
+        try:
+            self._write_state(state)
+        except Exception:
+            # The state file is the thing that is broken; the categorised error
+            # below is still the most useful signal we can return.
+            pass
+        raise NethackCornerError(f"NetHack stop blocked [{token}]") from cause
 
 
 def _build_parser() -> argparse.ArgumentParser:
