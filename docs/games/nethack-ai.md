@@ -94,7 +94,7 @@ NetHackはターン制なので、agentが何もしない間はゲーム内で�
 | policy の判定 | 実行する入力 |
 |---|---|
 | `exploration_blocked` / `hold_low_hp` / `hold_impaired` / `seek_food`、かつ認識済み隣接creatureなし | `.` |
-| `assess_contact`、または上記holdでも認識済み隣接creatureあり | 無入力のまま |
+| `assess_contact`、または上記 hold でも認識済み隣接 creature あり | **休まず**、explorer の安全な1歩（`h`/`j`/`k`/`l`）。無ければ無入力 |
 | `survival_emergency` / `status_emergency`、かつ認識済み隣接creatureなし | `.`（時間経過でしか回復しないため） |
 | `food_emergency`（休むと空腹が進み、食事は安全面の外） | 無入力のまま |
 | `inspect_screen`（playerが一意でない）・プロンプト表示中 | 無入力のまま（`.` を誤入力させない） |
@@ -102,6 +102,13 @@ NetHackはターン制なので、agentが何もしない間はゲーム内で�
 `Hungry` / 低HP / 状態異常はpolicy上、contact判定より先に決まる。そのため `rest_action_for_hold()` 自身が `visible_neighbors()` を再確認し、これらのhold名になっていても隣に認識済みcreatureが見えていれば `.` を送らない。敵味方不明の隣接相手へ無入力のまま1ターン渡して攻撃を受けることを、stall解消だけを理由に許可しない。
 
 緊急（`survival_emergency` / `status_emergency`）は本来 strategist の回復計画（薬・祈り・逃走）が要るが、strategist 未設定では「無入力」= ターン制では永久停止になる（2026-09-19 本番 HP 4/16 で実測、stall guard に切られるまで `0 件のアクション` を繰り返した）。`.` は計画の代わりにはならないが、HP と多くの状態異常は時間経過でしか回復しないため、凍り付くよりはよい。空腹だけは休むと悪化するので除外する。
+
+隣接 creature がいる hold は「休まない」だけでは**永久停止**になる。ターン制なので、ヒーローが動かなければ
+その creature も手番を得ず、画面は一切変化しない（2026-09-19 本番 generation 250 で実測: HP 4/16・`:` が斜め隣・
+90秒間フレーム完全同一・`0 件のアクション` が 63 行）。そこで休む代わりに **explorer が選んだ安全な1歩**を実行する。
+explorer は creature・アイテム・罠・扉・未知マスの上へは踏み込まないので、P3b の reviewed な移動面のままである。
+安全な1歩が無ければ（壁で囲まれている等）従来どおり無入力で、これは嘘のない「本当に打つ手が無い」状態である。
+`food_emergency` と `inspect_screen` は対象外。`assert_step_out_safe` は `h`/`j`/`k`/`l` 1個以外を拒否する。
 
 policy 自身の判定（`PolicyDecision`）は変えず、agent brain が実行する action だけを差し替える。
 strategy / advisory / shadow は従来どおり保留として観測する。`assert_rest_safe` は「`.` 1個だけ」以外を拒否する。

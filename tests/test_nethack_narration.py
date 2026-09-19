@@ -328,8 +328,23 @@ def test_brain_rests_one_turn_instead_of_freezing_on_a_safe_stalled_hold(intent,
 ])
 def test_brain_never_rests_beside_a_recognized_creature(intent, text):
     brain = build_brain(SimpleNamespace(), game())
-    assert brain.decide(observation(text)) == []
+    actions = brain.decide(observation(text))
+    # Still never the rest key beside a creature (#748). The brain steps away
+    # on reviewed terrain instead, because standing still there is a deadlock:
+    # the creature only gets a turn when the hero takes one.
+    assert [a.text for a in actions] != ["."]
+    assert [a.text for a in actions] in (["h"], ["j"], ["k"], ["l"])
     assert brain.last_decision.intent == intent
+    assert brain.last_decision.actions == ()
+
+
+def test_brain_freezes_only_when_no_safe_step_exists_beside_a_creature():
+    # Boxed in by walls with a creature adjacent: nothing safe to step onto,
+    # and resting is not allowed, so holding is the only honest answer.
+    brain = build_brain(SimpleNamespace(), game())
+    walled = "msg\n-d@-\n----\n" + _status(hp="4(10)")
+    assert brain.decide(observation(walled)) == []
+    assert brain.last_decision.actions == ()
 
 
 def test_brain_does_not_rest_when_it_has_a_real_step_or_needs_a_plan():
@@ -342,6 +357,17 @@ def test_brain_does_not_rest_when_it_has_a_real_step_or_needs_a_plan():
     assert brain.last_decision.intent == "food_emergency"
 
 
+def test_brain_steps_out_of_the_production_deadlock():
+    # Production 2026-09-19, generation 250: HP 4/16 with ':' adjacent, a
+    # byte-identical screen for minutes and "0 actions" on every iteration.
+    brain = build_brain(SimpleNamespace(), game())
+    frozen = "msg\n.:...\n..@..\n" + _status(hp="4(16)")
+    actions = brain.decide(observation(frozen))
+    assert [a.text for a in actions] in (["h"], ["j"], ["k"], ["l"])
+    assert [a.text for a in actions] != ["."]
+    assert brain.last_decision.intent == "survival_emergency"
+
+
 def test_brain_waits_a_turn_at_critical_hp_instead_of_freezing():
     # Production 2026-09-19: HP 4/16 with nothing adjacent reported "0 actions"
     # on every iteration until the corner's stall guard ended it.
@@ -350,8 +376,9 @@ def test_brain_waits_a_turn_at_critical_hp_instead_of_freezing():
     assert [(a.type, a.text) for a in actions] == [("text", ".")]
     assert brain.last_decision.intent == "survival_emergency"
     assert brain.last_decision.actions == ()
-    # ...but not while something stands next to the weakened hero.
-    assert brain.decide(observation("msg\n##@d.\n     \n" + _status(hp="4(16)"))) == []
+    # ...but beside a creature it steps away rather than resting or freezing.
+    beside = brain.decide(observation("msg\n##@d.\n     \n" + _status(hp="4(16)")))
+    assert [a.text for a in beside] in (["h"], ["j"], ["k"], ["l"])
 
 
 def test_agent_loop_sends_the_rest_key_for_a_stalled_hold():

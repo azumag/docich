@@ -136,7 +136,13 @@ class NethackPolicyBrain:
         if obs.adapter != "cli" or obs.text is None:
             return []
         from ..nethack_observation import normalize_tty
-        from ..nethack_policy import assert_p3b_safe, assert_rest_safe, rest_action_for_hold
+        from ..nethack_policy import (
+            assert_p3b_safe,
+            assert_rest_safe,
+            assert_step_out_safe,
+            rest_action_for_hold,
+            step_out_of_hold,
+        )
 
         normalized = normalize_tty(obs.text, cols=self.cols, rows=self.rows)
         startup_actions = self.startup.consider(normalized)
@@ -152,6 +158,13 @@ class NethackPolicyBrain:
         if rest is not None:
             production_actions = [rest]
             assert_rest_safe(production_actions)
+        else:
+            # Resting was declined (typically a creature is adjacent). Standing
+            # still there is a deadlock, so step away on reviewed terrain.
+            step = step_out_of_hold(decision, normalized, self.policy.explorer)
+            if step is not None:
+                production_actions = [step]
+                assert_step_out_safe(production_actions)
         try:
             self.narrator.consider(normalized, decision)
         except Exception:
