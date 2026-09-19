@@ -1,7 +1,10 @@
 """Bounded character-creation gate, separate from the P3b gameplay policy.
 
 Only returns Actions; never sends keys itself or bypasses the agent lease fence.
-No save/restore, recovery, gameplay prompt, or new-run restart automation lives here.
+No save/restore, recovery, gameplay prompt, or new-run restart automation lives here,
+with one exception: the ``--More--`` of NetHack's ``Restoring save file...`` banner is
+advanced (see ``_RESTORE_MORE_RE``), because a resumed run never shows a creation prompt
+and would otherwise sit on it forever.
 """
 from __future__ import annotations
 
@@ -12,6 +15,14 @@ from typing import Callable
 
 from .actions import Action
 from .nethack_observation import NethackObservation
+
+# A saved run being resumed (the program boundary's normal save, restored by the
+# next start) opens with "Restoring save file...--More--" above the copyright
+# banner.  The game cannot draw the map until this is dismissed, and the
+# character-creation prompts that arm ``_creation_seen`` never appear on a
+# resume, so without this the gate held the frame until it was exhausted.
+# Deliberately specific: only this fixed NetHack message, only before gameplay.
+_RESTORE_MORE_RE = re.compile(r"restoring save file\.*\s*--more--")
 
 
 class NethackStartup:
@@ -77,6 +88,8 @@ class NethackStartup:
         if key is None and has_gameplay:
             self._state("gameplay")
             return None
+        if key is None and not has_gameplay and _RESTORE_MORE_RE.search(text):
+            key = " "
         if key is None and self._creation_seen and "--more--" in text:
             # The intro/--More-- screen can show the status lines below the
             # prompt, so it is not the last line of the frame.

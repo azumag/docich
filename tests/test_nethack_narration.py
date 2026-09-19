@@ -238,3 +238,59 @@ def test_checked_in_config_enables_only_reviewed_runtime():
     assert cfg["nethack"]["narration"]["enabled"] is True
     for key in ("strategist", "shadow", "shadow_source", "candidate_shadow"):
         assert cfg["nethack"][key]["enabled"] is False
+
+
+# The frame the game showed on production after a program-boundary save was
+# resumed (captured from diagnostics 2026-09-19): the agent sat on it forever.
+RESTORE_FRAME = (
+    "Restoring save file...--More--\n"
+    "NetHack, Copyright 1985-2023\n"
+    "By Stichting Mathematisch Centrum and M. Stephenson.\n"
+    "Version 3.6.7 Unix, revised Apr 1 07:02:11 2024.\n"
+    "See license for details.\n"
+)
+
+
+def test_resumed_run_restore_banner_more_is_advanced_once():
+    startup = NethackStartup(enabled=True)
+    assert [a.text for a in startup.consider(normalized(RESTORE_FRAME))] == [" "]
+    assert startup.consider(normalized(RESTORE_FRAME)) == []  # stale frame is not answered twice
+    assert startup.state == "waiting"
+    # once the map is drawn the gate hands over to the gameplay policy for good
+    assert startup.consider(normalized(frame("Hello docich, welcome back to NetHack!"))) is None
+    assert startup.state == "gameplay"
+
+
+@pytest.mark.parametrize("text", [
+    "Restoring save file...",                 # banner without a --More--
+    "Restoring save file... done",
+    "Unknown --More--",                       # --More-- without the restore banner
+    "Restore save? [yn]",
+    "Restoring the save file...--More--",     # not NetHack's wording
+])
+def test_restore_more_needs_the_exact_banner_and_a_more(text):
+    startup = NethackStartup(enabled=True)
+    assert startup.consider(normalized(text)) == []
+    assert startup.actions == 0
+
+
+def test_restore_more_is_never_pressed_once_gameplay_is_visible():
+    startup = NethackStartup(enabled=True)
+    assert startup.consider(normalized(frame("Restoring save file...--More--"))) is None
+    assert startup.actions == 0
+
+
+def test_restore_more_key_is_bounded_by_the_action_budget():
+    startup = NethackStartup(enabled=True)
+    for i in range(12):
+        assert [a.text for a in startup.consider(normalized(f"Restoring save file...--More--\nframe {i}"))] == [" "]
+    assert startup.consider(normalized("Restoring save file...--More--\nframe 12")) == []
+    assert startup.state == "exhausted"
+
+
+def test_brain_and_loop_advance_the_restore_more():
+    brain = build_brain(SimpleNamespace(), game(startup={"enabled": True}))
+    adapter = Mock()
+    adapter.observe.return_value = observation(RESTORE_FRAME)
+    assert _run_iteration(adapter, brain, 1500) == 1
+    assert adapter.act.call_args.args[0].text == " "

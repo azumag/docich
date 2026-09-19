@@ -198,8 +198,9 @@ P3cのstrategic schemaはこの横にある**未接続のadvisory境界**。次�
 | `Shall I pick a character for you? [yn…]` または race/role/gender/alignment版 | `y` |
 | `Pick a character? [yn…]` / `Is this ok? [yn…]` | `y` |
 | 既知の起動質問を認識済みで末尾が `--More--` | Space |
+| gameplay前に `Restoring save file...--More--`（program boundary で保存した run の復元） | Space（1画面1回） |
 | normalize_ttyで一意のplayerとHPが見える（起動質問なし） | gameplayへ不可逆移行、以降はP3bだけ |
-| 未知画面・質問・save/restore/recover質問 | 無入力、policyへも渡さず待機 |
+| 未知画面・質問・save/restore/recover質問（上の復元バナーの `--More--` を除く） | 無入力、policyへも渡さず待機 |
 | 60秒 / 40観測 / 12応答のいずれかを消費 | `exhausted`、以降このbrainは無入力 |
 
 時間は初回観測からmonotonic計測、1観測1キーまで。同一画面への再応答は抑止する。
@@ -207,7 +208,7 @@ P3cのstrategic schemaはこの横にある**未接続のadvisory境界**。次�
 定型質問の語句・疑問符・回答選択肢を照合し、任意プロンプトの推測回答はしない。
 英語TTY向けで、ローカライズ版や独自メニューは未対応。
 停止時の既存save boundary（キャラ作成中はsaveを要求しない #687）、corner recover（#690）を変更しない。
-自動再起動・新run・save復元のキー送信は追加しない。
+自動再起動・新run・save復元の質問への回答は追加しない。復元では、gameplay前の固定文言 `Restoring save file...` の `--More--` だけを Space で進める（復元した run にはキャラ作成質問が出ず、これを進めないと地図が描画されず60秒の上限で `exhausted` になり、以後 agent が入力しなくなるため）。
 
 ### P3bローカルナレーション（LLM不要）
 
