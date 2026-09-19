@@ -44,6 +44,8 @@ intro = "NInvadersは端末上で動くSpace Invaders系のレトロゲームで
 # operatorの手動retro-cornerテストからも無人ゲームとして選択可能。
 [retro_corner]
 unattended = true
+# 毎時抽選 (mode = "lottery") で「遊べる」= この実行ファイルが実在すること。
+requires = ["/usr/games/ninvaders"]
 
 # Twitch 配信カテゴリー・タイトル連動 (soviet_now update_stream_game.sh が読む)。
 # 原作 Space Invaders (4669) を採用 (照合済み)。

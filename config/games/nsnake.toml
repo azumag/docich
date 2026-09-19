@@ -39,6 +39,8 @@ intro = "nsnakeは端末上で動くクラシックなSnakeゲームです。自
 # operatorの手動retro-cornerテストからも無人ゲームとして選択可能。
 [retro_corner]
 unattended = true
+# 毎時抽選 (mode = "lottery") で「遊べる」= この実行ファイルが実在すること。
+requires = ["/usr/games/nsnake"]
 
 # Twitch 配信カテゴリー・タイトル連動 (soviet_now update_stream_game.sh が読む)。
 # "Snake" 名義の IGDB 項目は複数版があり、検索先頭の 458463 を採用 (照合済み)。
