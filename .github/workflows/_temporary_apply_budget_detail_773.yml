@@ -1,0 +1,505 @@
+name: Temporary budget detail patch
+
+on:
+  push:
+    branches:
+      - ops/radio-budget-detail-773
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.repository == 'azumag/docich' && github.ref == 'refs/heads/ops/radio-budget-detail-773'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply deterministic source patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_exact(path, old, new):
+              text = path.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one replacement target, got {count}")
+              path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          collector = Path("ops/vm_actions/collect_diagnostics.py")
+          replace_exact(
+              collector,
+              '''QUEUE_GIVEUP_DETAIL_RE = re.compile(
+              r"\\Await=(0|[1-9][0-9]{0,4});holder="
+              r"(radio_prepass|radio_main|news|jiji|celebration|other|unknown)\\Z"
+          )
+          AI_COMPONENTS = (
+          ''',
+              '''QUEUE_GIVEUP_DETAIL_RE = re.compile(
+              r"\\Await=(0|[1-9][0-9]{0,4});holder="
+              r"(radio_prepass|radio_main|news|jiji|celebration|other|unknown)\\Z"
+          )
+          BUDGET_EXHAUSTED_DETAIL_COMPONENTS = ("radio_prepass", "radio_main")
+          BUDGET_EXHAUSTED_DETAIL_MAX_COUNT = 99
+          BUDGET_EXHAUSTED_DETAIL_MAX_LAST_BUDGET_SEC = 240
+          BUDGET_EXHAUSTED_DETAIL_RE = re.compile(
+              r"\\Aexec=(0|[1-9][0-9]?);skip=(0|[1-9][0-9]?);"
+              r"last_budget=(0|[1-9][0-9]{0,2});rem=0\\Z"
+          )
+          AI_COMPONENTS = (
+          ''',
+          )
+          replace_exact(
+              collector,
+              '''def _ai_component_bucket(label):
+          ''',
+              '''def _parse_budget_exhausted_detail(value):
+              """Parse Soren's fixed RADIO budget-exhaustion detail, fail-closed."""
+              if not isinstance(value, str):
+                  return None
+              match = BUDGET_EXHAUSTED_DETAIL_RE.fullmatch(value)
+              if match is None:
+                  return None
+              executed, skipped, last_budget = (int(item) for item in match.groups())
+              if (
+                  executed > BUDGET_EXHAUSTED_DETAIL_MAX_COUNT
+                  or skipped > BUDGET_EXHAUSTED_DETAIL_MAX_COUNT
+                  or last_budget > BUDGET_EXHAUSTED_DETAIL_MAX_LAST_BUDGET_SEC
+              ):
+                  return None
+              return executed, skipped, last_budget
+
+
+          def _ai_component_bucket(label):
+          ''',
+          )
+          replace_exact(
+              collector,
+              '''    budget_exhausted = 0
+              budget_exhausted_components = {component: 0 for component in AI_COMPONENTS}
+              chain_summary_sampled = 0
+          ''',
+              '''    budget_exhausted = 0
+              budget_exhausted_components = {component: 0 for component in AI_COMPONENTS}
+              budget_exhausted_detail_sampled = 0
+              budget_exhausted_detail_malformed = 0
+              budget_exhausted_detail_missing = 0
+              budget_exhausted_detail_components = {
+                  component: {
+                      "sampled": 0,
+                      "exec_sum": 0,
+                      "skip_sum": 0,
+                      "last_budget_min_sec": 0,
+                      "last_budget_max_sec": 0,
+                  }
+                  for component in BUDGET_EXHAUSTED_DETAIL_COMPONENTS
+              }
+              chain_summary_sampled = 0
+          ''',
+          )
+          replace_exact(
+              collector,
+              '''        if kind == "budget_exhausted":
+                  # Observability-only fixed counters. Never publish this event's
+                  # agent/provider/model/error or dynamic label into recent_events.
+                  budget_exhausted += 1
+                  budget_exhausted_components[_ai_component_bucket(label)] += 1
+                  continue
+          ''',
+              '''        if kind == "budget_exhausted":
+                  # Observability-only fixed counters. Never publish this event's
+                  # agent/provider/model/error or dynamic label into recent_events.
+                  component = _ai_component_bucket(label)
+                  budget_exhausted += 1
+                  budget_exhausted_components[component] += 1
+                  if component in BUDGET_EXHAUSTED_DETAIL_COMPONENTS:
+                      raw_detail = event.get("error")
+                      if raw_detail is None or raw_detail == "":
+                          # Older events did not carry dispatch detail. Keep them
+                          # compatible and distinguish absence from malformed input.
+                          budget_exhausted_detail_missing += 1
+                      else:
+                          detail = _parse_budget_exhausted_detail(raw_detail)
+                          if detail is None:
+                              budget_exhausted_detail_malformed += 1
+                          else:
+                              executed, skipped, last_budget = detail
+                              budget_exhausted_detail_sampled += 1
+                              component_detail = budget_exhausted_detail_components[component]
+                              component_detail["sampled"] += 1
+                              component_detail["exec_sum"] += executed
+                              component_detail["skip_sum"] += skipped
+                              if component_detail["sampled"] == 1:
+                                  component_detail["last_budget_min_sec"] = last_budget
+                              else:
+                                  component_detail["last_budget_min_sec"] = min(
+                                      component_detail["last_budget_min_sec"], last_budget
+                                  )
+                              component_detail["last_budget_max_sec"] = max(
+                                  component_detail["last_budget_max_sec"], last_budget
+                              )
+                  continue
+          ''',
+          )
+          replace_exact(
+              collector,
+              '''        "budget_exhausted": budget_exhausted,
+                  "budget_exhausted_components": budget_exhausted_components,
+                  "chain_summary_sampled": chain_summary_sampled,
+          ''',
+              '''        "budget_exhausted": budget_exhausted,
+                  "budget_exhausted_components": budget_exhausted_components,
+                  "budget_exhausted_detail_sampled": budget_exhausted_detail_sampled,
+                  "budget_exhausted_detail_malformed": budget_exhausted_detail_malformed,
+                  "budget_exhausted_detail_missing": budget_exhausted_detail_missing,
+                  "budget_exhausted_detail_components": budget_exhausted_detail_components,
+                  "chain_summary_sampled": chain_summary_sampled,
+          ''',
+          )
+
+          summary = Path("ops/vm_actions/summarize_runtime_queue_attribution.py")
+          replace_exact(
+              summary,
+              '''CHAIN_SUMMARY_KEYS = (
+              "chain_summary_sampled",
+              "multi_vercel_429_chains",
+              "multi_vercel_429_non_vercel_recovered",
+              "multi_vercel_429_all_failed",
+          )
+          IMPROVEMENT_BLOCKERS = (
+          ''',
+              '''CHAIN_SUMMARY_KEYS = (
+              "chain_summary_sampled",
+              "multi_vercel_429_chains",
+              "multi_vercel_429_non_vercel_recovered",
+              "multi_vercel_429_all_failed",
+          )
+          BUDGET_EXHAUSTED_DETAIL_COMPONENTS = ("radio_prepass", "radio_main")
+          BUDGET_EXHAUSTED_DETAIL_MAX_COUNT = 99
+          BUDGET_EXHAUSTED_DETAIL_MAX_LAST_BUDGET_SEC = 240
+          IMPROVEMENT_BLOCKERS = (
+          ''',
+          )
+          replace_exact(
+              summary,
+              '''def invalid_output_component_metrics(data):
+          ''',
+              '''def budget_exhausted_detail_metrics(data):
+              """Project validated RADIO dispatch detail to bounded fixed counters.
+
+              The collector is the raw-error trust boundary. Re-check every numeric
+              shape and producer bound here before publishing it in the GitHub issue
+              summary. Any inconsistent component map is zeroed rather than partially
+              trusted; aggregate sampled/malformed/missing counts remain visible.
+              """
+              ai = data.get("ai") if isinstance(data, dict) else None
+              ai = ai if isinstance(ai, dict) else {}
+
+              def strict_nonnegative(mapping, name):
+                  value = mapping.get(name) if isinstance(mapping, dict) else None
+                  if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                      return None
+                  return value
+
+              sampled_raw = strict_nonnegative(ai, "budget_exhausted_detail_sampled")
+              malformed_raw = strict_nonnegative(ai, "budget_exhausted_detail_malformed")
+              missing_raw = strict_nonnegative(ai, "budget_exhausted_detail_missing")
+              sampled = sampled_raw if sampled_raw is not None else 0
+              malformed = malformed_raw if malformed_raw is not None else 0
+              missing = missing_raw if missing_raw is not None else 0
+              consistent = all(value is not None for value in (sampled_raw, malformed_raw, missing_raw))
+
+              raw_components = ai.get("budget_exhausted_detail_components")
+              raw_components = raw_components if isinstance(raw_components, dict) else {}
+              rows = {}
+              component_samples = 0
+              for component in BUDGET_EXHAUSTED_DETAIL_COMPONENTS:
+                  raw = raw_components.get(component)
+                  values = {
+                      name: strict_nonnegative(raw, name)
+                      for name in (
+                          "sampled",
+                          "exec_sum",
+                          "skip_sum",
+                          "last_budget_min_sec",
+                          "last_budget_max_sec",
+                      )
+                  }
+                  if any(value is None for value in values.values()):
+                      consistent = False
+                      values = {name: 0 for name in values}
+                  row_sampled = values["sampled"]
+                  component_samples += row_sampled
+                  if (
+                      values["exec_sum"] > row_sampled * BUDGET_EXHAUSTED_DETAIL_MAX_COUNT
+                      or values["skip_sum"] > row_sampled * BUDGET_EXHAUSTED_DETAIL_MAX_COUNT
+                      or values["last_budget_min_sec"] > BUDGET_EXHAUSTED_DETAIL_MAX_LAST_BUDGET_SEC
+                      or values["last_budget_max_sec"] > BUDGET_EXHAUSTED_DETAIL_MAX_LAST_BUDGET_SEC
+                      or values["last_budget_min_sec"] > values["last_budget_max_sec"]
+                      or (
+                          row_sampled == 0
+                          and any(values[name] != 0 for name in values if name != "sampled")
+                      )
+                  ):
+                      consistent = False
+                  rows[component] = values
+              if component_samples != sampled:
+                  consistent = False
+              if not consistent:
+                  rows = {
+                      component: {
+                          "sampled": 0,
+                          "exec_sum": 0,
+                          "skip_sum": 0,
+                          "last_budget_min_sec": 0,
+                          "last_budget_max_sec": 0,
+                      }
+                      for component in BUDGET_EXHAUSTED_DETAIL_COMPONENTS
+                  }
+
+              raw_budget_counts = ai.get("budget_exhausted_components")
+              raw_budget_counts = raw_budget_counts if isinstance(raw_budget_counts, dict) else {}
+              radio_total = sum(_integer(raw_budget_counts, component) for component in BUDGET_EXHAUSTED_DETAIL_COMPONENTS)
+              coverage_exact = consistent and sampled + malformed + missing == radio_total
+              return sampled, malformed, missing, rows, consistent, coverage_exact
+
+
+          def invalid_output_component_metrics(data):
+          ''',
+          )
+          replace_exact(
+              summary,
+              '''    summary += "," + ",".join(
+                  f"ai_budget_exhausted_component_{component}={budget_counts[component]}"
+                  for component in COMPONENTS
+              )
+              summary += "," + ",".join(_improvement_metrics(data))
+          ''',
+              '''    summary += "," + ",".join(
+                  f"ai_budget_exhausted_component_{component}={budget_counts[component]}"
+                  for component in COMPONENTS
+              )
+              (
+                  detail_sampled,
+                  detail_malformed,
+                  detail_missing,
+                  detail_rows,
+                  detail_consistent,
+                  detail_coverage_exact,
+              ) = budget_exhausted_detail_metrics(data)
+              summary += f",ai_budget_exhausted_detail_sampled={detail_sampled}"
+              summary += f",ai_budget_exhausted_detail_malformed={detail_malformed}"
+              summary += f",ai_budget_exhausted_detail_missing={detail_missing}"
+              summary += f",ai_budget_exhausted_detail_attribution_consistent={int(detail_consistent)}"
+              summary += f",ai_budget_exhausted_detail_coverage_exact={int(detail_coverage_exact)}"
+              for component in BUDGET_EXHAUSTED_DETAIL_COMPONENTS:
+                  row = detail_rows[component]
+                  summary += f",ai_budget_exhausted_detail_{component}_sampled={row['sampled']}"
+                  summary += f",ai_budget_exhausted_detail_{component}_exec_sum={row['exec_sum']}"
+                  summary += f",ai_budget_exhausted_detail_{component}_skip_sum={row['skip_sum']}"
+                  summary += (
+                      f",ai_budget_exhausted_detail_{component}_last_budget_min_sec="
+                      f"{row['last_budget_min_sec']}"
+                  )
+                  summary += (
+                      f",ai_budget_exhausted_detail_{component}_last_budget_max_sec="
+                      f"{row['last_budget_max_sec']}"
+                  )
+              summary += "," + ",".join(_improvement_metrics(data))
+          ''',
+          )
+
+          tests = Path("ops/vm_actions/tests/test_ai_budget_exhausted_diagnostics.py")
+          replace_exact(
+              tests,
+              '''\n\nif __name__ == "__main__":
+              unittest.main()
+          ''',
+              '''
+              def test_collects_bounded_radio_dispatch_detail(self):
+                  self.write_events(
+                      [
+                          self.budget(
+                              "RADIO:private-topic:prepass",
+                              error="exec=1;skip=2;last_budget=17;rem=0",
+                          ),
+                          self.budget(
+                              "RADIO:private-topic:main",
+                              error="exec=2;skip=1;last_budget=43;rem=0",
+                          ),
+                          self.budget(
+                              "RADIO:private-topic:main",
+                              error="exec=1;skip=3;last_budget=7;rem=0",
+                          ),
+                      ]
+                  )
+                  ai = self.collector._collect_ai(self.soren, self.now)
+                  self.assertEqual(ai["budget_exhausted_detail_sampled"], 3)
+                  self.assertEqual(ai["budget_exhausted_detail_malformed"], 0)
+                  self.assertEqual(ai["budget_exhausted_detail_missing"], 0)
+                  self.assertEqual(
+                      ai["budget_exhausted_detail_components"]["radio_prepass"],
+                      {
+                          "sampled": 1,
+                          "exec_sum": 1,
+                          "skip_sum": 2,
+                          "last_budget_min_sec": 17,
+                          "last_budget_max_sec": 17,
+                      },
+                  )
+                  self.assertEqual(
+                      ai["budget_exhausted_detail_components"]["radio_main"],
+                      {
+                          "sampled": 2,
+                          "exec_sum": 3,
+                          "skip_sum": 4,
+                          "last_budget_min_sec": 7,
+                          "last_budget_max_sec": 43,
+                      },
+                  )
+                  rendered = json.dumps(ai)
+                  self.assertNotIn("private-topic", rendered)
+                  self.assertNotIn("SUPERSECRET", rendered)
+
+              def test_rejects_malformed_budget_detail_without_leaking_raw_text(self):
+                  missing = self.budget("RADIO:topic:main")
+                  missing.pop("error")
+                  self.write_events(
+                      [
+                          self.budget("RADIO:topic:main", error="exec=100;skip=1;last_budget=20;rem=0"),
+                          self.budget("RADIO:topic:main", error="exec=1;skip=1;last_budget=241;rem=0"),
+                          self.budget("RADIO:topic:prepass", error="exec=1;skip=1;last_budget=20;rem=1"),
+                          self.budget("RADIO:topic:prepass", error="token=SUPERSECRET provider=vercel"),
+                          missing,
+                      ]
+                  )
+                  ai = self.collector._collect_ai(self.soren, self.now)
+                  self.assertEqual(ai["budget_exhausted_detail_sampled"], 0)
+                  self.assertEqual(ai["budget_exhausted_detail_malformed"], 4)
+                  self.assertEqual(ai["budget_exhausted_detail_missing"], 1)
+                  self.assertEqual(
+                      sum(row["sampled"] for row in ai["budget_exhausted_detail_components"].values()),
+                      0,
+                  )
+                  self.assertNotIn("SUPERSECRET", json.dumps(ai))
+                  self.assertNotIn("vercel", json.dumps(ai))
+
+              def test_public_summary_exposes_fixed_dispatch_detail_only(self):
+                  data = {
+                      "status": "ok",
+                      "workers": {},
+                      "queues": {"queue_giveups_15m": 0},
+                      "ai": {
+                          "budget_exhausted_15m": 3,
+                          "budget_exhausted_components": {
+                              "radio_prepass": 1,
+                              "radio_main": 2,
+                              "news_spam_check": 0,
+                              "comment": 0,
+                              "improvement": 0,
+                              "other": 0,
+                          },
+                          "budget_exhausted_detail_sampled": 2,
+                          "budget_exhausted_detail_malformed": 1,
+                          "budget_exhausted_detail_missing": 0,
+                          "budget_exhausted_detail_components": {
+                              "radio_prepass": {
+                                  "sampled": 1,
+                                  "exec_sum": 1,
+                                  "skip_sum": 2,
+                                  "last_budget_min_sec": 17,
+                                  "last_budget_max_sec": 17,
+                              },
+                              "radio_main": {
+                                  "sampled": 1,
+                                  "exec_sum": 2,
+                                  "skip_sum": 1,
+                                  "last_budget_min_sec": 43,
+                                  "last_budget_max_sec": 43,
+                              },
+                              "SUPERSECRET_COMPONENT": {"sampled": 999},
+                          },
+                          "recent_events": [],
+                      },
+                      "improvement": {},
+                      "corners": {},
+                      "storage_artifacts": {},
+                      "bundle_storage": {},
+                  }
+                  severity, summary = attribution.render(data)
+                  self.assertEqual(severity, "ok")
+                  self.assertIn("ai_budget_exhausted_detail_sampled=2", summary)
+                  self.assertIn("ai_budget_exhausted_detail_malformed=1", summary)
+                  self.assertIn("ai_budget_exhausted_detail_coverage_exact=1", summary)
+                  self.assertIn("ai_budget_exhausted_detail_radio_prepass_exec_sum=1", summary)
+                  self.assertIn("ai_budget_exhausted_detail_radio_main_skip_sum=1", summary)
+                  self.assertIn("ai_budget_exhausted_detail_radio_main_last_budget_max_sec=43", summary)
+                  self.assertNotIn("SUPERSECRET", summary)
+
+              def test_inconsistent_dispatch_detail_fails_closed(self):
+                  sampled, malformed, missing, rows, consistent, coverage_exact = (
+                      attribution.budget_exhausted_detail_metrics(
+                          {
+                              "ai": {
+                                  "budget_exhausted_components": {
+                                      "radio_prepass": 0,
+                                      "radio_main": 1,
+                                  },
+                                  "budget_exhausted_detail_sampled": 1,
+                                  "budget_exhausted_detail_malformed": 0,
+                                  "budget_exhausted_detail_missing": 0,
+                                  "budget_exhausted_detail_components": {
+                                      "radio_prepass": {
+                                          "sampled": 0,
+                                          "exec_sum": 0,
+                                          "skip_sum": 0,
+                                          "last_budget_min_sec": 0,
+                                          "last_budget_max_sec": 0,
+                                      },
+                                      "radio_main": {
+                                          "sampled": 1,
+                                          "exec_sum": 100,
+                                          "skip_sum": 0,
+                                          "last_budget_min_sec": 20,
+                                          "last_budget_max_sec": 20,
+                                      },
+                                  },
+                              }
+                          }
+                      )
+                  )
+                  self.assertEqual((sampled, malformed, missing), (1, 0, 0))
+                  self.assertFalse(consistent)
+                  self.assertFalse(coverage_exact)
+                  self.assertEqual(sum(row["sampled"] for row in rows.values()), 0)
+
+
+          if __name__ == "__main__":
+              unittest.main()
+          ''',
+          )
+          PY
+      - name: Validate targeted regression tests
+        shell: bash
+        run: |
+          python3 -m py_compile \
+            ops/vm_actions/collect_diagnostics.py \
+            ops/vm_actions/summarize_runtime_queue_attribution.py \
+            ops/vm_actions/tests/test_ai_budget_exhausted_diagnostics.py
+          python3 -m unittest discover -s ops/vm_actions/tests -p 'test_ai_budget_exhausted_diagnostics.py'
+      - name: Commit deterministic patch and remove temporary workflow
+        shell: bash
+        run: |
+          git config user.name 'docich automation'
+          git config user.email 'docich@example.invalid'
+          git rm .github/workflows/_temporary_apply_budget_detail_773.yml
+          git add \
+            ops/vm_actions/collect_diagnostics.py \
+            ops/vm_actions/summarize_runtime_queue_attribution.py \
+            ops/vm_actions/tests/test_ai_budget_exhausted_diagnostics.py
+          git diff --cached --check
+          git commit -m 'ops: expose radio budget dispatch detail'
+          git push origin HEAD:ops/radio-budget-detail-773
