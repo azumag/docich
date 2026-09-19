@@ -47,8 +47,18 @@ class PolicyDecision:
         }
 
 
+# Visible terrain glyphs that are letters in NetHack but are not creatures.
+# Treating them as adjacent monsters made P3b hold instead of exploring
+# (observed around a fountain 'f' on Dlvl:1).
+_TERRAIN_LETTER_GLYPHS = frozenset(
+    {"f", "{"}  # fountain, water/lava variants rendered as letters
+)
+
+
 def _visible_creature_contact(obs: NethackObservation) -> bool:
     for glyph in obs.visible_neighbors():
+        if glyph in _TERRAIN_LETTER_GLYPHS:
+            continue
         if glyph.isalpha() or glyph in "&;:'":
             return True
     return False
@@ -76,6 +86,20 @@ class NethackLayeredPolicy:
                 reason="visible --More-- prompt",
                 actions=(Action(type="text", text=" "),),
             )
+
+        if obs.prompt == "yes_no":
+            # Reviewed, safe default answers.  The corner exists to keep one
+            # adventure running, so a "Really save? [yn]" (a normal save would
+            # end the run and conflict with the run boundary) is declined and
+            # play continues.  Anything else stays a deliberate hold.
+            lowered = " ".join(obs.raw_text.lower().split())
+            if "really save" in lowered:
+                return PolicyDecision(
+                    layer="tactical",
+                    intent="decline_save",
+                    reason="decline the save prompt to keep the run going",
+                    actions=(Action(type="text", text="n"),),
+                )
 
         if obs.prompt in {"yes_no", "direction", "selection", "text"}:
             return PolicyDecision(
@@ -164,7 +188,7 @@ class NethackLayeredPolicy:
 
 
 def assert_p3b_safe(decision: PolicyDecision) -> None:
-    """Allow only More-space or one reviewed cardinal exploration step."""
+    """Allow only reviewed safe surface: More-space, decline-save, or one step."""
     if not decision.actions:
         return
     if (
@@ -173,6 +197,14 @@ def assert_p3b_safe(decision: PolicyDecision) -> None:
         and len(decision.actions) == 1
         and decision.actions[0].type == "text"
         and decision.actions[0].text == " "
+    ):
+        return
+    if (
+        decision.layer == "tactical"
+        and decision.intent == "decline_save"
+        and len(decision.actions) == 1
+        and decision.actions[0].type == "text"
+        and decision.actions[0].text == "n"
     ):
         return
     if (
