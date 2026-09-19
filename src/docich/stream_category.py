@@ -1,4 +1,4 @@
-"""Keep the stream's category/title on whichever game is actually running.
+"""Keep the stream's category on whichever game or view is actually running.
 
 The reviewed Soren-side script ``update_stream_game.sh`` owns every Twitch
 call; this module only decides *when* to run it and with which fixed
@@ -21,11 +21,10 @@ SCRIPT_NAME = "update_stream_game.sh"
 LOG_NAME = "stream-game.log"
 
 # ``paper-view`` is a synthetic program view, not a game in ``config/games``.
-# Twitch has no custom category for it; use the documented generic fallback
-# instead of leaving the category of the game that was displaced behind.
-PAPER_CATEGORY_ID = "509658"
-PAPER_CATEGORY_NAME = "Just Chatting"
-PAPER_TITLE_PREFIX = "[PAPER]"
+# Use Twitch's technology category instead of leaving the category of the game
+# that was displaced behind.  The title is intentionally left unchanged.
+PAPER_CATEGORY_ID = "509670"
+PAPER_CATEGORY_NAME = "Science & Technology"
 
 
 class StreamCategoryError(RuntimeError):
@@ -85,7 +84,6 @@ def _announce_explicit_category(
     *,
     category_id: str,
     category_name: str = "",
-    title_prefix: str = "",
     spawn=None,
 ) -> bool:
     """Ask the Soren updater to use a category without a game TOML.
@@ -103,8 +101,6 @@ def _announce_explicit_category(
     argv = [str(script), "--category-id", category_id.strip()]
     if category_name:
         argv.extend(["--category-name", str(category_name)])
-    if title_prefix:
-        argv.extend(["--title-prefix", str(title_prefix)])
     (spawn or _spawn)(
         argv,
         cwd=script.parent,
@@ -144,6 +140,5 @@ def announce_stream_paper(g: GlobalConfig, *, spawn=None) -> bool:
         g,
         category_id=PAPER_CATEGORY_ID,
         category_name=PAPER_CATEGORY_NAME,
-        title_prefix=PAPER_TITLE_PREFIX,
         spawn=spawn,
     )

@@ -15,7 +15,6 @@ from docich import config  # noqa: E402
 from docich.stream_category import (  # noqa: E402
     PAPER_CATEGORY_ID,
     PAPER_CATEGORY_NAME,
-    PAPER_TITLE_PREFIX,
     SCRIPT_NAME,
     StreamCategoryError,
     announce_stream_game,
@@ -98,11 +97,10 @@ class TestAnnounceStreamGame(StreamCategoryTestBase):
                 PAPER_CATEGORY_ID,
                 "--category-name",
                 PAPER_CATEGORY_NAME,
-                "--title-prefix",
-                PAPER_TITLE_PREFIX,
             ],
         )
         self.assertNotIn("--game", call["argv"])
+        self.assertNotIn("--title-prefix", call["argv"])
 
     def test_a_game_without_a_twitch_category_is_left_alone(self) -> None:
         self._install_script()
