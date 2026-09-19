@@ -180,30 +180,40 @@ class TestRestOnStalledHold(unittest.TestCase):
                 self.assertEqual(decision.intent, intent)
                 self.assertIsNone(rest_action_for_hold(decision, observation))
 
-    def test_survivable_emergencies_wait_a_turn_rather_than_freeze(self):
+    def test_critical_hp_emergency_waits_a_turn_rather_than_freeze(self):
         # No strategist is configured, so "requires a recovery plan" means "no
         # action at all" -- and on a turn-based game that is a permanent stop.
-        cases = {
-            "survival_emergency": (self.FREE, {"hp": "2(10)"}),
-            "status_emergency": (self.FREE, {"condition": "Sick"}),
-        }
-        self.assertEqual(set(cases), set(REST_EMERGENCY_INTENTS))
-        for intent, (rows, kw) in cases.items():
-            with self.subTest(intent=intent):
-                observation, decision = self._decide(rows, **kw)
-                self.assertEqual(decision.intent, intent)
+        self.assertEqual(REST_EMERGENCY_INTENTS, frozenset({"survival_emergency"}))
+        observation, decision = self._decide(self.FREE, hp="2(10)")
+        self.assertEqual(decision.intent, "survival_emergency")
+        self.assertTrue(decision.requires_llm)
+        self.assertEqual(decision.actions, ())  # the policy itself is unchanged
+        action = rest_action_for_hold(decision, observation)
+        self.assertEqual((action.type, action.text), ("text", "."))
+        assert_rest_safe([action])
+
+    def test_severe_status_emergencies_never_get_generic_rest(self):
+        for condition in ("Sick", "FoodPois", "Ill", "Slime", "Strngl"):
+            with self.subTest(condition=condition):
+                observation, decision = self._decide(self.FREE, condition=condition)
+                self.assertEqual(decision.intent, "status_emergency")
                 self.assertTrue(decision.requires_llm)
-                self.assertEqual(decision.actions, ())  # the policy itself is unchanged
-                action = rest_action_for_hold(decision, observation)
-                self.assertEqual((action.type, action.text), ("text", "."))
-                assert_rest_safe([action])
+                self.assertIsNone(rest_action_for_hold(decision, observation))
 
     def test_a_weakened_hero_never_rests_beside_a_creature(self):
-        for kw in ({"hp": "2(10)"}, {"condition": "Sick"}):
-            with self.subTest(kw=kw):
-                observation, decision = self._decide(("##@d.      ", "            "), **kw)
-                self.assertIn(decision.intent, REST_EMERGENCY_INTENTS)
-                self.assertIsNone(rest_action_for_hold(decision, observation))
+        observation, decision = self._decide(
+            ("##@d.      ", "            "), hp="2(10)"
+        )
+        self.assertEqual(decision.intent, "survival_emergency")
+        self.assertIn(decision.intent, REST_EMERGENCY_INTENTS)
+        self.assertIsNone(rest_action_for_hold(decision, observation))
+
+        sick_observation, sick_decision = self._decide(
+            ("##@d.      ", "            "), condition="Sick"
+        )
+        self.assertEqual(sick_decision.intent, "status_emergency")
+        self.assertNotIn(sick_decision.intent, REST_EMERGENCY_INTENTS)
+        self.assertIsNone(rest_action_for_hold(sick_decision, sick_observation))
 
     def test_no_rest_on_a_prompt_or_without_a_visible_player(self):
         observation = obs(self.FREE)
@@ -225,6 +235,7 @@ class TestRestOnStalledHold(unittest.TestCase):
             PolicyDecision("tactical", "survival_emergency", "x"),
             PolicyDecision("strategic", "exploration_blocked", "x"),
             PolicyDecision("strategic", "food_emergency", "x", requires_llm=True),
+            PolicyDecision("strategic", "status_emergency", "x", requires_llm=True),
             PolicyDecision("midlevel", "survival_emergency", "x"),
             PolicyDecision("midlevel", "exploration_blocked", "x", requires_llm=True),
             PolicyDecision("midlevel", "inspect_screen", "x"),
