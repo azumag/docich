@@ -293,6 +293,7 @@ class RetroCornerManager:
         chat: Callable[[str], None] | None = None,
         spawn=None,
         rng: random.Random | None = None,
+        stream_game: Callable[[str], None] | None = None,
     ):
         self.g = g
         self.config = config or load_retro_corner_config(g)
@@ -308,6 +309,7 @@ class RetroCornerManager:
         self._chat = chat or (lambda text: enqueue_chat(self.g, text, source="retro-corner"))
         self._spawn = spawn or self._default_spawn_improve_proc
         self._rng = rng or random.Random()
+        self._stream_game = stream_game or self._default_stream_game
         self.state_path = Path(g.state_dir) / STATE_FILE
         self.lock_path = Path(g.state_dir) / LOCK_FILE
         self.tick_guard_path = Path(g.state_dir) / TICK_GUARD_FILE
@@ -475,6 +477,29 @@ class RetroCornerManager:
             self._require_success(self.coordinator.start(target), f"{target} start")
         else:
             self._require_success(self.coordinator.switch(target), f"{current}->{target} switch")
+        self._announce_stream_game(target)
+
+    def _announce_stream_game(self, game: str | None) -> None:
+        """Let the stream's category/title follow the game that now runs.
+
+        Strictly best-effort, and only after the coordinator has committed the
+        switch: a stale category is cosmetic, whereas failing a switch because
+        Twitch was unreachable would take the game itself down.
+        """
+        if not isinstance(game, str) or not game:
+            return
+        try:
+            self._stream_game(game)
+        except Exception as exc:
+            print(
+                f"[stream-game] status=failed game={game} detail={_safe_detail(exc)}",
+                file=sys.stderr,
+            )
+
+    def _default_stream_game(self, game: str) -> None:
+        from .stream_category import announce_stream_game
+
+        announce_stream_game(self.g, game)
 
     @staticmethod
     def _state_result(state: dict[str, object]) -> CornerResult:
@@ -599,6 +624,10 @@ class RetroCornerManager:
                 self._require_success(
                     self.coordinator.switch(previous), f"{game}->{previous} restore"
                 )
+                # The corner restores the old game without going through
+                # _transition_to, so announce here as well; otherwise the
+                # category stays on the corner's game after it ends.
+                self._announce_stream_game(previous)
             state.update(
                 status="completed",
                 completed_at=completed_at.isoformat(),
