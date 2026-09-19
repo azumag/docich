@@ -54,6 +54,25 @@ def test_map_glyphs_are_not_prompt_text(message, fragment):
     assert obs.player == (40, 14)
 
 
+@pytest.mark.parametrize("length", [60, 73, 78])
+@pytest.mark.parametrize("map_row", ["-" * 80, "#" * 80, "dfyn" * 20, "[yn" * 26])
+def test_long_normal_message_does_not_use_next_map_row_as_wrap_evidence(length, map_row):
+    message = "You see " + "x" * (length - len("You see .")) + "."
+    assert len(message) == length
+    obs = normalize_tty(tty_layout(message, map_row))
+    assert obs.prompt == "none"
+    assert obs.map_rows[0].rstrip() == map_row
+    assert obs.player == (40, 14)
+
+
+@pytest.mark.parametrize("message", ["Really", "Really save", "Really attack the kitten", "Would you like to inspect"])
+@pytest.mark.parametrize("map_row", ["", "-" * 80, "#" * 80, "dfyn" * 20])
+def test_incomplete_question_stem_holds_independent_of_next_row(message, map_row):
+    obs = normalize_tty(tty_layout(message, map_row))
+    assert obs.prompt == "unknown"
+    assert decline_prompt(obs) is None
+
+
 @pytest.mark.parametrize("message", [
     "Would you like to inspect " + "this unusual object " * 5 + "before continuing?",
     "Really attack the " + "very " * 20 + "peaceful kitten? [yn] (n)",
@@ -70,6 +89,14 @@ def test_wrapped_questions_in_full_tty_are_unknown_not_answers(message, wrap):
     assert obs.prompt == "unknown"
     assert decline_prompt(obs) is None
     assert obs.player == (40, 14)  # wrapped text must not shift map coordinates
+
+
+def test_hard_wrap_without_recognizable_question_stem_is_unknown():
+    # The only question mark is on the second row. The top row's width, not
+    # the following glyphs or question vocabulary, is the blocking evidence.
+    obs = normalize_tty(tty_layout("An unusual object " + "x" * 62, "continue?"))
+    assert len(obs.message) == 80
+    assert obs.prompt == "unknown"
 
 
 def test_short_split_save_is_not_reconstructed_into_an_allowed_answer():

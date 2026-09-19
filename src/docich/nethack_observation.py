@@ -148,21 +148,14 @@ class NethackObservation:
 def _message_may_wrap(raw_lines: list[str], cols: int) -> bool:
     """Reject an ambiguous top line without interpreting map glyphs as prose.
 
-    A plain TTY capture has no message-window/cursor metadata. A full line
-    (including a joined capture wider than cols), or a word that would not fit
-    from the next row, can be an incomplete question. NetHack can word-wrap
-    before the right edge; checking just len(line) == cols misses that case.
-    Use the one-column terminal margin conservatively. The second row is used
-    only for the overflow bound, never to recognize/authorize a prompt answer.
-    Long ordinary messages near a map row can consequently hold as unknown.
+    Only the top row is evidence: lower rows may be walls, corridors or
+    creatures, not message continuations. Keep the one-column terminal margin
+    and reject joined captures wider than cols. This cannot detect arbitrary
+    short word-wrapped questions without message-window/cursor metadata.
     """
     if not raw_lines or not raw_lines[0].rstrip():
         return False
-    width = len(raw_lines[0].rstrip())
-    if width >= cols - 1:
-        return True
-    next_words = raw_lines[1].split() if len(raw_lines) > 1 else []
-    return bool(next_words and width + 1 + len(next_words[0]) >= cols - 1)
+    return len(raw_lines[0].rstrip()) >= cols - 1
 
 
 def _prompt_kind(message: str, *, may_wrap: bool) -> str:
@@ -189,6 +182,9 @@ def _prompt_kind(message: str, *, may_wrap: bool) -> str:
         or msg.rstrip().endswith(":")
         or re.search(r"\[[^\]]+\]", msg)
         or re.search(r"\((?:end|\d+ of \d+)\)", msg)
+        # An incomplete, recognizable question stem is blocking on its own.
+        # This is NOT general word-wrap detection and never uses a map row.
+        or re.match(r"\s*(?:really\b|(?:would|could|should|do|did|can|will|are) you\b)", msg)
     ):
         return "unknown"
     if "--more--" in msg:

@@ -180,6 +180,27 @@ def test_map_yes_no_glyphs_do_not_block_diagonal_progress():
     assert act(brain(), text) == ["n"]
 
 
+@pytest.mark.parametrize("length", [60, 73, 78])
+@pytest.mark.parametrize("map_row", ["-" * 80, "#" * 80, "dfyn" * 20, "[yn" * 26])
+def test_long_normal_message_and_next_map_row_keep_progress(length, map_row):
+    message = "You see " + "x" * (length - len("You see .")) + "."
+    lines = frame({"n": "#", "k": "d"}, message=message, hp="4(16)").splitlines()
+    lines[1] = map_row
+    text = "\n".join(lines)
+    assert normalize_tty(text).prompt == "none"
+    assert act(brain(), text) == ["n"]
+
+
+@pytest.mark.parametrize("message", ["Really", "Really save", "Really attack the kitten", "Would you like to inspect"])
+def test_incomplete_question_stem_never_sends_map_or_decline_key(message):
+    assert act(brain(), frame({"n": "#"}, message=message), canonical=READY) == []
+
+
+def test_hard_wrapped_unknown_stem_never_sends_map_key():
+    message = "An unusual object " + "x" * 62 + "\ncontinue?"
+    assert act(brain(), frame({"n": "#"}, message=message), canonical=READY) == []
+
+
 @pytest.mark.parametrize("message,intent", [
     ("Really attack? [yn]", "decline_attack"),
     ("Really attack the kitten? [yn] (n)", "decline_attack"),
