@@ -27,7 +27,7 @@ blocker values are never printed.
 import json
 import sys
 
-from summarize_runtime import COMPONENTS, _component_bucket, summarize
+from summarize_runtime import COMPONENTS, _component_bucket, _failure_cause, summarize
 from summarize_runtime_pressure import rate_limit_pressure
 
 
@@ -144,6 +144,25 @@ def budget_exhausted_metrics(data):
     return total, counts, consistent
 
 
+def invalid_output_component_metrics(data):
+    """Attribute sampled invalid-output failures to fixed component buckets.
+
+    ``recent_events`` is already bounded/redacted by the VM collector. Reuse
+    the same fixed failure classifier and component allowlist as the base
+    summary, and publish counts only. Dynamic labels, providers, models and
+    error previews are never copied into the output.
+    """
+    ai = data.get("ai") if isinstance(data, dict) else None
+    recent = ai.get("recent_events") if isinstance(ai, dict) else None
+    counts = {component: 0 for component in COMPONENTS}
+    if not isinstance(recent, list):
+        return counts
+    for event in recent:
+        if _failure_cause(event) == "invalid_output":
+            counts[_component_bucket(event)] += 1
+    return counts
+
+
 def attribute_queue_giveups(data):
     """Return fixed caller buckets, failing closed to ``unknown``.
 
@@ -210,6 +229,11 @@ def attribute_queue_giveup_holders(data):
 
 def render(data):
     severity, summary = summarize(data)
+    invalid_output_counts = invalid_output_component_metrics(data)
+    summary += "," + ",".join(
+        f"ai_recent_invalid_output_component_{component}={invalid_output_counts[component]}"
+        for component in COMPONENTS
+    )
     ai = data.get("ai") if isinstance(data, dict) else None
     summary = f"{summary},ai_rate_limit_pressure={rate_limit_pressure(ai)}"
     summary += "," + ",".join(
