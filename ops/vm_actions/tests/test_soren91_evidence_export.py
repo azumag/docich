@@ -118,6 +118,8 @@ class EvidenceBundleTests(unittest.TestCase):
         )
         self.assertEqual(state["games"], [9])
         self.mod.clear_export(self.root)
+        (self.runtime / "tmp" / "summaries" / "game_0009.json").unlink()
+        (self.runtime / "game_history" / "game_0009.jsonl").unlink()
 
         # Older than the retained review window is still rejected.
         self.add_game(10, age_minutes=72 * 60 + 1)
