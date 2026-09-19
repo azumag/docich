@@ -4,7 +4,7 @@ A program view is NOT a game: it has no matches, no score, no agent, and no
 round boundary. It reuses the CLI presentation path (owned tmux session +
 private Xvfb + contained ffplay through presentation.py) so placement,
 ownership, quiesce and rollback behave exactly like a CLI game switch, while
-``make_coordinator_adapter`` never resolves it from the games catalog.
+the adapter registry never resolves it from the games catalog.
 
 The default dashboard is the read-only HTML/canvas page served on loopback and
 shown in a chromium app window. Set ``[paper_corner] dashboard = "text"`` to
