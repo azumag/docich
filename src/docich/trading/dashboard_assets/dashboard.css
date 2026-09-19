@@ -15,11 +15,13 @@ html, body {
 #header .meta { display: flex; gap: 8px; align-items: center; font-size: 11px; color: #9fb3d4; white-space: nowrap; }
 .badge { background: #1d4ed8; color: #fff; border-radius: 4px; padding: 2px 7px; font-weight: 700; }
 
-#cards { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; padding: 6px 10px; }
+#cards { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; padding: 6px 10px; }
 .card { background: #101a2e; border: 1px solid #22335a; border-radius: 7px; padding: 7px 8px; min-width: 0; }
 .card .k { font-size: 11px; color: #8fa6c9; white-space: nowrap; }
 .card .v { font-size: 18px; font-weight: 750; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tiny { font-size: 9px; font-weight: 400; }
+.benchmark-card .v { font-size: 13px; letter-spacing: -.02em; }
+.benchmark-sub { margin-top: 2px; font-size: 9px; color: #8fa6c9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 main { display: grid; grid-template-columns: 540px 1fr; gap: 8px; padding: 0 10px 4px; min-height: 0; }
 #chartwrap {

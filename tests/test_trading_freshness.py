@@ -343,6 +343,23 @@ class TestMarketCache(unittest.TestCase):
             reloaded = load_cache(path)
             self.assertEqual(reloaded["BTC/JPY"]["last_close"], "100")
 
+    def test_timestamped_history_is_merged_and_capped_to_latest_observations(self):
+        cache: dict = {}
+        store_frames(
+            cache, "BTC/JPY", fetched_at=NOW, data_as_of=NOW - 60,
+            last_bar_start=NOW - 360, timeframe_s=300, last_close="102",
+            closes=["100", "101"], timestamps=[NOW - 600, NOW - 300], now=NOW,
+        )
+        store_frames(
+            cache, "BTC/JPY", fetched_at=NOW + 60, data_as_of=NOW,
+            last_bar_start=NOW, timeframe_s=300, last_close="103",
+            closes=["102", "103"], timestamps=[NOW - 300, NOW], now=NOW + 60,
+        )
+
+        history = cache["BTC/JPY"]["history"]
+        self.assertEqual([row["timestamp"] for row in history], [NOW - 600, NOW - 300, NOW])
+        self.assertEqual([row["close"] for row in history], ["100", "102", "103"])
+
 
 class TestSummaryUsesSnapshotAge(unittest.TestCase):
     def _corner_manager(self, root, now):

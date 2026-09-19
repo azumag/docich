@@ -119,6 +119,7 @@ def build_dashboard_snapshot(trading_dir: Path, *, now: float | None = None) -> 
         positions={symbol: amount for symbol, amount in raw_positions},
         prices=prices,
         now=moment,
+        market_cache_path=target / "market_cache.json",
     )
     valued_positions = performance.get("positions")
     positions = list(valued_positions)[:MAX_POSITIONS] if isinstance(valued_positions, list) else []
