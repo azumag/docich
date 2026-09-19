@@ -117,6 +117,14 @@ QUEUE_GIVEUP_DETAIL_RE = re.compile(
     r"\Await=(0|[1-9][0-9]{0,4});holder="
     r"(radio_prepass|radio_main|news|jiji|celebration|other|unknown)\Z"
 )
+AI_COMPONENTS = (
+    "radio_prepass",
+    "radio_main",
+    "news_spam_check",
+    "comment",
+    "improvement",
+    "other",
+)
 TMP_SO_ROOT = Path("/tmp")
 TMP_SO_PATTERNS = (
     re.compile(r"^\..+-00000000\.so\Z"),
@@ -679,6 +687,20 @@ def _parse_queue_giveup_detail(value):
     return wait_sec, holder
 
 
+def _ai_component_bucket(label):
+    """Collapse a private/dynamic AI label into the public fixed enum."""
+    normalized = str(label or "").strip().lower()
+    if normalized.startswith("news:spam_check"):
+        return "news_spam_check"
+    if normalized.startswith(("radio", "news", "jiji", "celebration")):
+        return "radio_prepass" if "prepass" in normalized else "radio_main"
+    if normalized.startswith("comment"):
+        return "comment"
+    if normalized.startswith(("improve", "improvement", "eloop")):
+        return "improvement"
+    return "other"
+
+
 def _collect_ai(soren, now):
     stats_dir = soren / "tmp" / "state" / "ai_stats"
     window_start = now - DIAG_WINDOW_SEC
@@ -686,6 +708,8 @@ def _collect_ai(soren, now):
     paths = [stats_dir / f"{day}.jsonl" for day in sorted(days)]
     attempts = successes = failures = rate_limits = winners = 0
     all_failed = queue_giveups = gate_giveups = 0
+    budget_exhausted = 0
+    budget_exhausted_components = {component: 0 for component in AI_COMPONENTS}
     chain_summary_sampled = 0
     multi_vercel_429_chains = 0
     multi_vercel_429_non_vercel_recovered = 0
@@ -717,6 +741,12 @@ def _collect_ai(soren, now):
         label = _redact_text(str(event.get("label") or "unknown"), 80)
         agent = str(event.get("agent") or "")
         rc = str(event.get("rc") or "")
+        if kind == "budget_exhausted":
+            # Observability-only fixed counters. Never publish this event's
+            # agent/provider/model/error or dynamic label into recent_events.
+            budget_exhausted += 1
+            budget_exhausted_components[_ai_component_bucket(label)] += 1
+            continue
         if kind == "chain_summary":
             # The producer intentionally stores only this fixed aggregate in
             # the error field. Reject anything outside that exact grammar and
@@ -813,6 +843,8 @@ def _collect_ai(soren, now):
         "all_failed": all_failed,
         "queue_giveups": queue_giveups,
         "gate_giveups": gate_giveups,
+        "budget_exhausted": budget_exhausted,
+        "budget_exhausted_components": budget_exhausted_components,
         "chain_summary_sampled": chain_summary_sampled,
         "multi_vercel_429_chains": multi_vercel_429_chains,
         "multi_vercel_429_non_vercel_recovered": multi_vercel_429_non_vercel_recovered,
@@ -2086,6 +2118,7 @@ def main(argv):
             "rate_limits_15m": ai["rate_limits"],
             "fallbacks_15m": ai["fallbacks"],
             "all_failed_15m": ai["all_failed"],
+            "budget_exhausted_15m": ai["budget_exhausted"],
         },
         "improvement": improvement,
         "corners": _collect_programs(_program_state_dir(), soren, now),
