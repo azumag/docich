@@ -83,6 +83,16 @@ class TestNethackSaveConfirmation(unittest.TestCase):
             nethack_adapter._is_save_confirmation_screen("Really quit? [yn] (n)")
         )
 
+    def test_cancel_boundary_fails_closed_without_sending_input(self):
+        adapter = object.__new__(nethack_adapter.NethackCoordinatorAdapter)
+        tmux = _ConfirmingTmux()
+        adapter.tmux = tmux
+
+        self.assertFalse(
+            adapter.cancel_round_boundary("req-1", time.monotonic() + 1.0, None)
+        )
+        self.assertEqual(tmux.calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()

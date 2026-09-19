@@ -297,9 +297,10 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
             # success; wait until the deadline so a just-finishing fsync can land.
             time.sleep(min(0.1, max(0.01, deadline - time.monotonic())))
 
-    def cancel_round_boundary(self, request_id: str, deadline: float, cancel) -> None:
+    def cancel_round_boundary(self, request_id: str, deadline: float, cancel) -> bool:
         # ``S`` has no reversible in-process phase: once NetHack accepts it the
-        # game is writing a normal save and exiting.  Cancellation must not send
-        # any extra key.  In particular, do not re-check an already-expired
-        # deadline here: cancellation itself must stay best-effort/no-op.
-        return None
+        # game is writing a normal save and exiting. Cancellation must not send
+        # any extra key. Report cancellation as unsupported so generic draining
+        # recovery fails closed instead of clearing canonical state while the
+        # process may still be blocked on NetHack's save-confirmation prompt.
+        return False
