@@ -130,7 +130,7 @@ def test_take_profit_brief_says_observed_move_and_threshold():
     rendered = render_notification(event, mode="compact")
     assert "平均取得価格から1.5%上昇" in rendered.speech_text
     assert "利確基準1%以上" in rendered.speech_text
-    assert "BTC/JPYを売り、損益プラス1.5円です。" in rendered.speech_text
+    assert "BTC/JPYを売り。損益はプラス1.5円です。" in rendered.speech_text
     assert "利確条件を検出" not in rendered.speech_text
 
 
@@ -188,7 +188,7 @@ def test_strategy_experiment_is_private_and_drives_entry_and_exit(tmp_path):
     exit_event["realized_pnl_reference"] = "3"
     exit_text = render_notification(exit_event, mode="compact").speech_text
     assert "平均取得価格から3%上昇" in exit_text
-    assert "BTC/JPYを売り、損益プラス3円です。" in exit_text
+    assert "BTC/JPYを売り。損益はプラス3円です。" in exit_text
 
 
 def test_paper_improve_prefers_strategy_experiment_and_legacy_still_works(tmp_path):

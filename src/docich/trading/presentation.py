@@ -245,6 +245,60 @@ def _reason_text(code: str, context: object = None) -> str:
     return _REASON_TEXT.get(code, f"取引条件 {code}" if code != "unknown" else "取引条件")
 
 
+def _decision_commentary(reason_code: str, *, is_sell: bool) -> str:
+    """Add the meaning of a fill without inventing market facts.
+
+    The event notification is intentionally short, but a bare condition and
+    symbol sound like a ticker readout when several fills arrive close
+    together.  These lines explain the role of the decision and name the next
+    thing worth watching.  They are derived only from the allowlisted reason
+    code; prices, forecasts, and extra trade claims do not belong here.
+    """
+    if is_sell:
+        if reason_code == "take_profit":
+            return (
+                "利益を確保する狙いでポジションを軽くする利確です。売った後にさらに伸びても、"
+                "取り逃しより、決めたルールを守れたかを重視します。"
+            )
+        if reason_code == "stop_loss":
+            return (
+                "想定が外れたため損失を限定する撤退です。取り返そうとすぐ入り直さず、"
+                "弱さが収まるかを次に見ます。"
+            )
+        if reason_code == "max_hold":
+            return (
+                "決めた時間内に決済条件が成立しなかったため、資金を解放する売りです。"
+                "動かないこともコストなので、次の機会へ回します。"
+            )
+        if reason_code == "paper_lab_exit":
+            return (
+                "実験ルールによる売りです。結果だけでなく、仮説どおりの場面で"
+                "手仕舞いできたかをあとで振り返ります。"
+            )
+        return "ポジションを閉じ、次の条件を待つ売りです。売却後の値動きも判断材料として残します。"
+    if reason_code == "momentum_breakout":
+        return (
+            "短期の勢いに乗るエントリーです。上がったから無条件に追うのではなく、"
+            "勢いが続くか、平均へ戻るかを次に確認します。"
+        )
+    if reason_code == "mean_reversion_discount":
+        return (
+            "平均から売られた反動を狙う買いです。反発がまだ確認できない逆張りなので、"
+            "戻らなければ小さく撤退します。"
+        )
+    if reason_code == "relative_value_lag":
+        return (
+            "同じ値動きの仲間に比べた出遅れを拾う買いです。遅れが埋まるのか、"
+            "全体が弱いだけなのかを見分けます。"
+        )
+    if reason_code == "paper_lab_entry":
+        return (
+            "実験ルールによる買いです。通常条件とは別の仮説なので、"
+            "単発の結果ではなく同じ条件の積み重ねで評価します。"
+        )
+    return "条件がそろったための買いですが、約定後に想定した動きが出るかを確認します。"
+
+
 def _fill(
     event: Mapping[str, object], mode: str, status: Mapping[str, object] | None, *, display_at: float
 ) -> RenderedNotification:
@@ -258,26 +312,24 @@ def _fill(
     title = "暗号資産 PAPER 約定"
     brief = f"{reason}を検出：{symbol}を{side}"
     body = f"{brief} / {strategy}"
-    speech = brief
+    speech = f"{_decision_commentary(reason_code, is_sell=is_sell)}{brief}。"
     if is_sell:
         if event.get("realized_pnl_reference") is None:
             body += " / 実現損益 取得失敗"
-            speech += "、損益は確認できませんでした。"
+            speech += "損益は確認できませんでした。"
         else:
             try:
                 pnl_text, spoken_sign = _signed_money(event.get("realized_pnl_reference"))
                 pnl_value = _decimal(event.get("realized_pnl_reference"), "pnl")
             except PresentationError:
                 body += " / 実現損益 取得失敗"
-                speech += "、損益は確認できませんでした。"
+                speech += "損益は確認できませんでした。"
             else:
                 body += f" / 実現損益 {pnl_text}円"
                 if pnl_value == 0:
-                    speech += "、損益プラスマイナスゼロです。"
+                    speech += "損益はプラスマイナスゼロです。"
                 else:
-                    speech += f"、損益{spoken_sign}{_money(abs(pnl_value))}円です。"
-    else:
-        speech += "。"
+                    speech += f"損益は{spoken_sign}{_money(abs(pnl_value))}円です。"
     overlay = validate_event(
         {
             "ts": int(display_at), "category": "worker", "title": title, "body": body[:500],
@@ -300,13 +352,20 @@ def _settlement(
     if complete:
         edge = _money(event.get("net_edge_bps"))
         body = f"{route} / {start_amount} {start_asset} / 模擬edge {edge} bps"
-        speech = f"ペーパー裁定観測。{start_amount}{start_asset}の模擬経路が成立し、模擬エッジは{edge}ベーシスポイントでした。"
+        speech = (
+            f"ペーパー裁定観測。{start_amount}{start_asset}の模擬経路が成立し、"
+            f"模擬エッジは{edge}ベーシスポイントでした。複数の交換を通した価格差の候補ですが、"
+            "実運用の利益を保証するものではないため、板の厚みとコストを含めて検証します。"
+        )
         level = "info"
     else:
         code = _safe_code(event.get("failure_reason"))
         reason = _FAILURE_TEXT.get(code, f"失敗理由 {code}")
         body = f"{route} / {start_amount} {start_asset} / 模擬不成立: {reason}"
-        speech = f"ペーパー裁定観測。{start_amount}{start_asset}の模擬経路は成立しませんでした。理由は{reason}です。"
+        speech = (
+            f"ペーパー裁定観測。{start_amount}{start_asset}の模擬経路は成立しませんでした。"
+            f"理由は{reason}です。無理に通さず見送れたので、次は条件が戻るかを見ます。"
+        )
         level = "warn"
     overlay = validate_event(
         {

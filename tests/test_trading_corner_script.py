@@ -286,6 +286,7 @@ def test_render_fallback_chart_is_grounded_or_honest(tmp_path):
     assert "日足" in grounded["chart"]
     assert "1分足" in grounded["chart"]
     assert "eth_jpy" in grounded["chart"]
+    assert "高値づかみ" in grounded["chart"]
     honest = render_fallback(build_facts(tmp_path, now=1010.0))
     assert "取得" in honest["chart"]
     assert set(grounded) == set(SEGMENT_KEYS)
@@ -349,6 +350,7 @@ def test_render_fallback_new_segments_are_grounded():
     assert "return_bps" not in fallback["fills"]
     assert "直近の値上がり率" in fallback["fills"] and "150" in fallback["fills"]
     assert "値上がりの勢いが十分だった" in fallback["fills"]
+    assert "反発の有無を次に見ます" in fallback["fills"]
     # News covers every available headline, not just one (by position; see
     # test_news_segment_explains_content_instead_of_reciting_title_and_source
     # for the "no verbatim recitation" contract).
@@ -356,6 +358,7 @@ def test_render_fallback_new_segments_are_grounded():
     # The review ties the round trip to its entry/exit grounds.
     assert "btc_jpy" in fallback["review"] and "12" in fallback["review"]
     assert "正しかった" in fallback["review"] or "利益" in fallback["review"]
+    assert "根拠が再現した結果か" in fallback["review"]
 
 
 def test_render_fallback_without_news_is_honest():
@@ -512,6 +515,8 @@ def test_prompt_instructs_two_decimal_speech():
     prompt = build_prompt({"policy": {}})
     assert "小数第2位" in prompt
     assert "見出しの段階なので" in prompt
+    assert "数字ではなく相場や判断の意味を先に言う" in prompt
+    assert "だから何を見るか" in prompt
 
 
 def test_prompt_forbids_reciting_headline_and_outlet_name():

@@ -8,6 +8,7 @@ model output is never persisted.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import time
@@ -294,7 +295,9 @@ def build_prompt(facts: Mapping[str, object]) -> str:
         "- 表示中のチャートは表示専用で、売買判断は保存済みの5分足と戦略パラメータで行っている点を必要なら一言添える。\n"
         "【話し方】\n"
         "- です・ます調の自然な話し言葉。結論を先に言い、その後に理由や数字を添える。\n"
+        "- 各セグメントの最初の一文は、数字ではなく相場や判断の意味を先に言う。\n"
         "- factsを順番に復唱するだけは禁止。数字同士を比較し、意味を説明する。\n"
+        "- 数字は根拠として必要な分だけ使い、数値を二つ以上続けて読んだら、必ず『だから何を見るか』を続ける。\n"
         "- 金額・価格・指標などの数値は小数第2位までに丸めて言うこと（0.001のような小さい数量はそのまま）。factsの桁数をそのまま読み上げない。\n"
         "- 「見出しの段階なので」のような決まり文句を各項目で繰り返さないこと。\n"
         "- 軽いツッコミ、たとえ、意外性のある一言を適度に入れる。ただし事実を曲げるギャグは禁止。\n"
@@ -362,19 +365,64 @@ def merge_script_segments(fallback: Mapping[str, object], parsed: Mapping[str, o
     return merged
 
 
+_REASON_LABELS = {
+    "momentum_breakout": "短期モメンタムの上振れ",
+    "mean_reversion_discount": "平均からの下方乖離",
+    "relative_value_lag": "相対的な出遅れ",
+    "take_profit": "利確条件",
+    "stop_loss": "損切り条件",
+    "max_hold": "保有期限",
+    "paper_lab_entry": "実験戦略の買い条件",
+    "paper_lab_exit": "実験戦略の売り条件",
+}
+
+
+def _reason_label(code: object) -> str:
+    value = str(code or "").strip()
+    return _REASON_LABELS.get(value, value or "不明な条件")
+
+
 def _policy_text(policy: Mapping[str, object]) -> str:
     if not policy:
         return (
             "戦略は既定のパラメータで動いており、値動きの勢いと平均回帰を組み合わせて"
-            "売買の判断をします。"
+            "売買の判断をします。つまり、動いたからすぐ追いかけるのではなく、"
+            "動きの強さと平均からの距離が条件に合う場面だけを候補にします。"
         )
     return (
-        f"戦略は直近{policy.get('momentum_lookback')}本の上昇が"
+        "この戦略は、上昇の勢いがある局面では流れに乗り、平均から離れた局面では"
+        "戻りを狙う二本立てです。"
+        f"直近{policy.get('momentum_lookback')}本の上昇が"
         f"{_fmt_num(policy.get('momentum_threshold_bps')) or policy.get('momentum_threshold_bps')}bpsを超えたら買い、"
         f"平均回帰は{policy.get('mean_reversion_lookback')}本でz値"
         f"{_fmt_num(policy.get('mean_reversion_z')) or policy.get('mean_reversion_z')}以下、1回の投入は資金の"
         f"{_fmt_num(policy.get('max_notional_fraction')) or policy.get('max_notional_fraction')}までです。"
+        "これらの数値は入口を決める境界であって、利益を保証する数字ではありません。"
     )
+
+
+def _finite_float(value) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _pnl_interpretation(facts: Mapping[str, object]) -> str:
+    """Explain what the PnL fields mean instead of leaving a number dump."""
+    perf = facts.get("performance") if isinstance(facts.get("performance"), Mapping) else {}
+    cumulative = _finite_float(perf.get("cumulative_pnl_jpy"))
+    unrealized = _finite_float(perf.get("unrealized_pnl_jpy"))
+    if cumulative is None:
+        return "確定分と保有中の評価がそろっていないため、成績の方向はまだ判断待ちです。"
+    if cumulative > 0 and unrealized is not None and unrealized > 0:
+        return "評価上はプラスですが、保有中の利益はまだ確定していません。確定した往復でも同じ強さが出るかを見ます。"
+    if cumulative > 0:
+        return "数字はプラスでも、一度の利確だけで戦略成功とは決めません。確定した往復が積み上がるかを見ます。"
+    if cumulative < 0:
+        return "いまはマイナスなので、相場のせいにせず、どの条件で入り、どこで逃げたかを振り返る局面です。"
+    return "損益は拮抗しています。勝ち負けを急いで決めず、条件が機能した場面と見送った場面を分けて見ます。"
 
 
 def _pnl_text(facts: Mapping[str, object]) -> str:
@@ -391,7 +439,7 @@ def _pnl_text(facts: Mapping[str, object]) -> str:
         parts.append(f"本日の確定損益は{_fmt_num(today) or today}円")
     if unrealized is not None:
         parts.append(f"現在の含み損益は{_fmt_num(unrealized) or unrealized}円")
-    return "、".join(parts) + "です。"
+    return "、".join(parts) + "です。" + _pnl_interpretation(facts)
 
 
 def _fmt_pct(value) -> str:
@@ -401,6 +449,28 @@ def _fmt_pct(value) -> str:
         return f"{float(value):+.2f}"
     except (TypeError, ValueError, OverflowError):
         return "算出待ち"
+
+
+def _chart_interpretation(view: Mapping[str, object]) -> str:
+    """Turn trend/band facts into one bounded, qualitative takeaway."""
+    trend = str(view.get("trend") or "")
+    phrase = str(view.get("bb_phrase") or "")
+    momentum = _finite_float(view.get("momentum_pct"))
+    if trend == "上昇" and momentum is not None and momentum > 0:
+        text = "大きな流れと直近の勢いが同じ向きなので、追随の候補にはなります"
+    elif trend == "下降" and momentum is not None and momentum < 0:
+        text = "大きな流れと直近の勢いが同じ向きなので、買い急ぎは避けたい場面です"
+    elif trend == "上昇":
+        text = "大きな流れは上ですが、直近の勢いが鈍っていないかを確認したい場面です"
+    elif trend == "下降":
+        text = "大きな流れが下なので、短い反発だけで底打ちとは決めない場面です"
+    else:
+        text = "方向感がはっきりしないため、次の足で勢いがそろうかを見ます"
+    if "上限" in phrase:
+        text += "。上限寄りなら、追いかけるより高値づかみを警戒します"
+    elif "下限" in phrase:
+        text += "。下限寄りなら、反発を待てるか、それとも弱さが続くかを見ます"
+    return text + "。"
 
 
 def _chart_text(facts: Mapping[str, object]) -> str:
@@ -419,10 +489,10 @@ def _chart_text(facts: Mapping[str, object]) -> str:
         change = _fmt_pct(view.get("range_change_pct"))
         momentum = _fmt_pct(view.get("momentum_pct"))
         phrase = str(view.get("bb_phrase") or "バンド位置は算出待ち")
-        bars = view.get("bars")
+        bars = view.get("bars") if view.get("bars") is not None else "本数不明"
         parts.append(
-            f"{label}は{bars}本で{trend}基調、表示区間の変化率は{change}パーセント、"
-            f"直近の勢いは{momentum}パーセント、{phrase}です。"
+            f"{label}は{trend}基調です。表示区間は{bars}本、変化率は{change}パーセント、"
+            f"直近の勢いは{momentum}パーセントで、{phrase}。{_chart_interpretation(view)}"
         )
     raw_fills = facts.get("fill_timeframes")
     fills = [item for item in raw_fills if isinstance(item, Mapping)] if isinstance(raw_fills, list) else []
@@ -605,14 +675,18 @@ def _fills_text(facts: Mapping[str, object]) -> str:
     for item in fills[:3]:
         symbol = str(item.get("symbol") or "銘柄不明")
         side = "買い" if str(item.get("side")) == "buy" else "売り"
-        reason = str(item.get("reason_code") or "")
+        reason = _reason_label(item.get("reason_code"))
         condition = _condition_text(item.get("signal"))
         if condition:
-            parts.append(f"{symbol}の{side}は、{condition}を満たしたため発注しています。")
+            if side == "買い":
+                takeaway = "勢いに乗る買いなら継続、平均回帰なら反発の有無を次に見ます。"
+            else:
+                takeaway = "利確や損切りの条件を満たしたため、次の機会へ資金を戻す判断です。"
+            parts.append(f"{symbol}の{side}は、{condition}を満たしたため発注しています。{takeaway}")
         else:
             parts.append(
                 f"{symbol}の{side}約定は記録がありますが、発注根拠の詳細が残っていないため、"
-                "価格と理由コードだけをお伝えします。"
+                f"価格と{reason}だけをお伝えします。"
             )
     parts.append("表示中のチャートは参考で、実際の判断は保存済みの5分足と戦略パラメータで行っています。")
     return "".join(parts)
@@ -629,8 +703,8 @@ def _review_text(facts: Mapping[str, object]) -> str:
     parts = ["往復の振り返りです。買ってから売って損益が確定した取引を1件ずつ、判断が正しかったのか見ます。"]
     for item in trips[:3]:
         symbol = str(item.get("symbol") or "銘柄不明")
-        entry_reason = str(item.get("entry_reason") or "不明")
-        exit_reason = str(item.get("exit_reason") or "不明")
+        entry_reason = _reason_label(item.get("entry_reason"))
+        exit_reason = _reason_label(item.get("exit_reason"))
         entry = _condition_text(item.get("entry_signal"))
         realized = item.get("realized_jpy")
         hold = item.get("hold_sec")
@@ -644,9 +718,15 @@ def _review_text(facts: Mapping[str, object]) -> str:
             realized_text = str(realized)
         verdict = "利益" if pnl is not None and pnl > 0 else "損失"
         entry_text = f"（{entry}）" if entry else ""
+        if pnl is not None and pnl > 0:
+            lesson = "利益にはなりましたが、根拠が再現した結果か、たまたま追い風だったかを分けて見ます。"
+        elif pnl is not None and pnl < 0:
+            lesson = "損失でしたが、条件どおりに撤退できたかまで含めて評価します。"
+        else:
+            lesson = "損益が確定していないため、出口の判断はまだ保留です。"
         parts.append(
             f"{symbol}は{entry_reason}{entry_text}で入り、{exit_reason}で出口、{hold_min}保有で"
-            f"{realized_text}円の{verdict}です。根拠どおりの結果だったか、次に同じ形が来たらどうするかを"
+            f"{realized_text}円の{verdict}です。{lesson}次に同じ形が来たらどうするかを"
             "ここで切り分け、改善側の検証条件に渡します。"
         )
     return "".join(parts)
@@ -670,17 +750,20 @@ def render_fallback(facts: Mapping[str, object]) -> dict:
     )
 
     result = (
-        f"まず成績です。{_pnl_text(facts)}模擬資金は{_fmt_num(facts.get('capital_jpy')) or facts.get('capital_jpy')}円、"
+        f"まず成績の読み方です。{_pnl_text(facts)}模擬資金は{_fmt_num(facts.get('capital_jpy')) or facts.get('capital_jpy')}円、"
         f"投入は{_fmt_num(facts.get('deployed_jpy')) or facts.get('deployed_jpy')}円、保有は{facts.get('position_count', len(positions))}銘柄です。"
     )
     if fills:
         first = fills[0]
-        amount_text = _fmt_num(first.get("amount")) or first.get("amount")
-        price_text = _fmt_num(first.get("price")) or first.get("price")
+        side_label = "買い" if str(first.get("side")) == "buy" else "売り"
+        condition = _condition_text(first.get("signal"))
         result += (
-            f"直近の約定は{first.get('symbol')}の{first.get('side')}、数量{amount_text}、"
-            f"価格{price_text}でした。"
+            f"直近の約定は{first.get('symbol')}の{side_label}でした。"
         )
+        if condition:
+            result += f"数字の大小だけでなく、{condition}という条件がそろったことが判断の中心です。"
+        else:
+            result += "発注根拠の詳細は残っていないため、結果だけで判断を後付けしません。"
         if first.get("side") == "sell" and first.get("realized_pnl_jpy") is not None:
             pnl_text = _fmt_num(first.get("realized_pnl_jpy")) or first.get("realized_pnl_jpy")
             result += f"損益は{pnl_text}円です。"
@@ -696,7 +779,7 @@ def render_fallback(facts: Mapping[str, object]) -> dict:
     if focus.get("symbol"):
         result += (
             f"注目している{focus.get('symbol')}は直近{focus.get('bars')}本で"
-            f"{focus.get('change_pct')}パーセント動いています。"
+            f"{_fmt_num(focus.get('change_pct')) or focus.get('change_pct')}パーセント動いています。"
         )
     if asset.get("symbol"):
         result += (
