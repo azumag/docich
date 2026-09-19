@@ -1112,6 +1112,8 @@ CORNER_STATE_FILES = {
     "retro_corner": "retro_corner.json",
     "paper_corner": "paper_corner.json",
     "paper_corner_manual": "paper_corner_manual.json",
+    "nethack_corner": "nethack_corner.json",
+    "nethack_corner_manual": "nethack_corner_manual.json",
 }
 
 
@@ -1351,7 +1353,13 @@ def _collect_corner_files(state_dir, payload, now):
         )
     payload["game_switch"] = entry
 
-    for name in ("retro_corner", "paper_corner", "paper_corner_manual"):
+    for name in (
+        "retro_corner",
+        "paper_corner",
+        "paper_corner_manual",
+        "nethack_corner",
+        "nethack_corner_manual",
+    ):
         present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES[name])
         entry = {"present": present, "readable": readable}
         if readable:
