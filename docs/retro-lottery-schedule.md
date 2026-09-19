@@ -58,6 +58,8 @@
   `bastet → sorengame` と切替えて戻り、別プロセスが program lock を保持中は `program-locked` で取りやめ、
   同じ時の再 tick は引き直さない。
 - **未検証**: VM 上の実運用 (実際の PAPER/soren91 との共存、実プレイを含む1サイクル)。
-- nsnake は死なないため 3試合検知が成立せず、当たると上限 (20分) まで遊ぶ。
-- 発火が増えると改善ジョブ (`improve_agents`、ninvaders/nsnake のみ対応) の起動も増える。1日あたりの
-  LLM 呼び出しが気になる場合は `improve_agents` を空にする (改善ジョブは起動されなくなる)。
+- nsnake は死なないため 3試合検知が成立せず、当たると上限 (20分) まで遊ぶ。ただし終了後の
+  改善は bounded headless 評価へ進み、固定手数時点のスコアを候補比較に使う。
+- 5ゲームすべてが同じ改善経路 (`improve_agents` → baseline/candidate headless 評価 → margin gate)
+  を使う。systemd の oneshot から起動する場合は独立 transient user service に分離される。
+  1日あたりの LLM 呼び出しが気になる場合は `improve_agents` を空にする (改善ジョブは起動されなくなる)。

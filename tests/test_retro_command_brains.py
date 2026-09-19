@@ -16,6 +16,7 @@ from docich.agent.brains import CommandBrain
 from docich.config import load_game, load_global
 from docich.corner_improve import run_corner_improve
 from docich.retro_corner import RetroCornerManager, load_retro_corner_config
+from docich.resolver.bot_eval import bot_games, bot_preset
 
 GAMES = ("bastet", "moon-buggy", "pacman4console")
 # Every live retro game is now played by a command brain (ninvaders included: its
@@ -47,15 +48,36 @@ def test_live_daily_games():
     ]
 
 
-@pytest.mark.parametrize("game", GAMES)
-def test_improvement_skips_without_ai(game, tmp_path):
-    def forbidden(_):
-        pytest.fail("unsupported game must not call AI")
+@pytest.mark.parametrize("game", BRAIN_GAMES)
+def test_each_live_brain_has_an_improvement_preset(game):
+    assert game in bot_games()
+    preset = bot_preset(None, game)
+    assert preset["bot_cmd"][-1] == f"brains/{game}/brain.py"
+    assert preset["cols"] == 80
+    assert preset["rows"] == (32 if game == "pacman4console" else 24)
+
+
+@pytest.mark.parametrize("game", BRAIN_GAMES)
+def test_improvement_dry_run_accepts_without_live_matches(game, tmp_path):
+    state_dir = tmp_path / "run"
+    state_dir.mkdir()
+    (state_dir / "retro_corner.json").write_text(json.dumps({
+        "schema_version": 1,
+        "status": "completed",
+        "date": "2026-09-18",
+        "game": game,
+        "previous_game": "sorengame",
+        "started_at": "2026-09-18T19:00:00+09:00",
+        "ends_at": "2026-09-18T19:20:00+09:00",
+        "completed_at": "2026-09-18T19:20:00+09:00",
+    }), encoding="utf-8")
     result = run_corner_improve(
-        SimpleNamespace(state_dir=tmp_path), game=game,
-        date_str="2026-09-18", agents="test-only", llm=forbidden,
+        SimpleNamespace(state_dir=state_dir), game=game,
+        date_str="2026-09-18", agents="test-only", dry_run=True,
     )
-    assert result == {"status": "skipped", "reason": f"unsupported-game:{game}"}
+    assert result["status"] == "dry-run"
+    assert result["stats"]["n"] == 0
+    assert "bounded headless evaluation" in result["stats"]["basis"]
 
 
 @pytest.mark.parametrize("game,text", [

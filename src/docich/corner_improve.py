@@ -25,7 +25,7 @@ from .resolver.improve import (
     evaluate_gnurobots,
     read_strategy_for_game,
 )
-from .resolver.bot_eval import run_bot_matches
+from .resolver.bot_eval import bot_games, run_bot_matches
 
 JSON_FENCE_RE = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
 
@@ -34,7 +34,11 @@ class CornerImproveError(RuntimeError):
     """User-facing failure in the end-of-corner improvement job."""
 
 
-BOT_GAMES = ("nsnake", "ninvaders")
+# Keep the improvement dispatch in lockstep with the headless evaluator.  Every
+# retro game using a command brain gets the same candidate/evaluate/promote
+# lifecycle; adding a game to only one of these lists silently disables its
+# improvement path.
+BOT_GAMES = bot_games()
 
 
 def numeric_weights(weights: dict) -> set[str]:
@@ -101,9 +105,11 @@ def summarize_matches(matches: list[dict]) -> dict:
 
 
 def build_prompt(*, game: str, stats: dict, current: dict, previous: dict) -> str:
+    basis = stats.get("basis", "live scorelog")
     return f"""あなたはレトロゲームコーナーの戦略改善担当です。
 対象ゲーム: {game}
 今回コーナーの実戦成績: {stats['n']}試合、平均{stats['mean']:.1f}点、最高{stats['best']}点
+今回の改善データ: {basis}
 現在の戦略重み (JSON):
 {json.dumps(current, ensure_ascii=False, indent=2, sort_keys=True)}
 前回の戦略重み (JSON):
@@ -220,7 +226,9 @@ def _bot_evaluator(g, game: str, matches: int):
 
     評価は生バイナリを bot_eval 自身の start/retry キーで駆動し、本番の
     wrapper セッション・game-switch state・配信には触れない。
-    turn cap 到達 (maxed) の試合は完走扱いにしない (fail closed)。
+    turn cap 到達 (maxed) でも、bounded evaluation を許可したプリセットが
+    有効なスコアを返した場合は、その固定上限までの比較結果として採用する。
+    それ以外のゲームでは従来どおり fail closed にする。
     """
 
     def evaluate(strategy: dict) -> dict:
@@ -244,7 +252,12 @@ def _bot_evaluator(g, game: str, matches: int):
                 env={"DOCICH_BRAIN_WEIGHTS": str(weights_file)},
                 **preset["run_kwargs"],
             )
-        completed = [m for m in summary.get("matches", []) if not m.get("maxed")]
+        accept_maxed = bool(preset.get("accept_maxed", False))
+        completed = [
+            m for m in summary.get("matches", [])
+            if not m.get("maxed")
+            or (accept_maxed and isinstance(m.get("score"), int))
+        ]
         scores = [m["score"] for m in completed if isinstance(m.get("score"), int)]
         return {
             "matches": summary.get("matches", []),
@@ -282,8 +295,16 @@ def _run_corner_improve(
     log_path = Path(log_env) if log_env else (Path(g.state_dir) / "scores" / f"{game}.jsonl")
     corner_matches = slice_corner_matches(log_path, game, start_ts, end_ts)
     stats = summarize_matches(corner_matches)
-    if stats["n"] == 0:
+    if stats["n"] == 0 and game not in BOT_GAMES:
         return {"status": "skipped", "reason": "no-matches", "stats": stats}
+    if stats["n"] == 0:
+        # A bounded command-brain evaluation is the primary comparable signal
+        # for survival-style games such as Snake.  Requiring a natural Game
+        # Over in the live corner made a safe run produce no improvement job
+        # even though the strategy could be evaluated safely headlessly.
+        stats["basis"] = "bounded headless evaluation (live corner had no completed match)"
+    else:
+        stats["basis"] = "live scorelog plus bounded headless evaluation"
 
     defaults = _game_defaults(game)
     proposable = numeric_weights(defaults) if game in BOT_GAMES else set(defaults)

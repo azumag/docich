@@ -12,9 +12,11 @@
   3試合到達は scorelog (`<state_dir>/scores/<game>.jsonl`) のコーナー開始以降の件数で検知して
   早期 finish、検知できなければ `ends_at` で終了 (時間上限は常に保持・入力停止で終わらせない)。
   `improve-once --game` で実際に走ったゲームを改善ジョブへ明示。
-- **B 改善 dispatch** (`corner_improve.py`, `resolver/bot_eval.py`): ハードコードを
-  `BOT_GAMES = ("nsnake", "ninvaders")` に。生バイナリ＋bot_eval 自前の start/retry キーで
-  headless 評価 (turn cap `maxed` は fail-closed)。候補重みは一時 weights.json を
+- **B 改善 dispatch** (`corner_improve.py`, `resolver/bot_eval.py`): `BOT_GAMES` は
+  `bot_eval` の5ゲームプリセット (`ninvaders`, `nsnake`, `bastet`, `moon-buggy`,
+  `pacman4console`) から単一ソースで導出する。生バイナリ＋bot_eval 自前の start/retry
+  キーで bounded headless 評価を行い、Snakeなど自然な Game Over が来ないゲームは
+  固定手数までに得た数値スコアを比較対象にする。候補重みは一時 weights.json を
   `DOCICH_BRAIN_WEIGHTS` で渡す。昇格 `_promote` は live brain の
   `run/brain/<game>/weights.json` へも hot-swap (brain は毎サイクル新規プロセスで読む)。
 - **C/D 各ゲームのコマンドブレイン** (live `[retro_corner].games` は5ゲーム):
@@ -67,11 +69,10 @@ nsnake 3.0.1-2.1。リポジトリの実 wrapper＋実ブレインを docich の
   名前 (str) の代わりに渡していた (本番の改善ループ経路は名前を渡すため無影響)。
 - 修正後の実走 (評価器・既定重み・2試合): **5900点 (504手) / 5550点 (709手)、`maxed:false`、
   `played=2`、平均5725、所要328秒**。live の実測 (平均約5900) と整合する。
-- nsnake: 実走 (CLI, 1試合・上限300手) で **蛇が死なず `maxed:true` (Score 24)**。fail-closed の仕様では
-  nsnake の改善は昇格に至らない。ただし改善ジョブはコーナーで試合が1件も記録されない場合
-  (`skipped: no-matches`) は LLM も評価も走らないため、死なない nsnake では空回りしない。
-  試合が記録されたコーナーでは 2評価×2試合が上限3000手まで回り得る。生存型ゲームの評価は
-  「固定手数時点のスコア」を認めるか、nsnake の終了条件を別に定義する設計判断が必要 (未対応)。
+- nsnake: 実走 (CLI, 1試合・上限300手) で **蛇が死なず `maxed:true` (Score 24)** だったため、
+  bounded preset は固定手数時点の数値スコアを完走扱いとして比較する。コーナーでスコアが
+  1件も記録されなくても、改善ジョブは bounded headless 評価へ進むため、Snakeだけが
+  `no-matches` で改善経路から外れることはない。
 - 評価のばらつき (live 実測 4750–6800点/試合) に対し、`improve_matches=2` / `improve_margin_pct=10` は
   ノイズを昇格と取り違え得る。値の見直しは未対応。
 
@@ -99,7 +100,8 @@ nsnake 3.0.1-2.1。リポジトリの実 wrapper＋実ブレインを docich の
 - **moon-buggy ブレインは最小方策** (周期ジャンプ + 稀な射撃、クレーター追跡なし)。平均約17点。
 - **nsnake は死なない**: ブレインは生き延びるが Speed 1 では得点が遅く (300秒で 8個)、Game Over が来ない
   ため 3試合検知は現実的でなく、コーナーは時間上限で終了する。
-- bot_eval preset が無い bastet / moon-buggy / pacman4console は改善が `unsupported-game` でスキップ
-  (コーナー自体は回る)。改善を有効化するには preset (binary / bot_cmd / start・retry keys / score 正規表現) が必要。
+- 5ゲームすべてに binary / bot_cmd / start・retry keys / score 正規表現の preset を持たせ、
+  `unsupported-game` のまま終了する対象をライブ設定から無くした。systemd の oneshot からの
+  改善は独立 transient user service に投入し、親 tick 終了で巻き取られないようにした。
 - 各ゲーム `[lifecycle] require_round_boundary=false` は据え置き。
 - 改善昇格の live 重みへの初回 seed (既定重みの配布) は follow-up。

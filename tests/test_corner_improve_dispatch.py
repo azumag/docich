@@ -150,6 +150,42 @@ class TestDispatch(unittest.TestCase):
             self.assertFalse(result["promoted"])
             self.assertEqual(result["candidate_played"], 0)
 
+    def test_bounded_nsnake_accepts_scored_maxed_matches(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            state_dir = _setup_completed(tmp_path, "nsnake", [30])
+            old_brain_dir = os.environ.get("DOCICH_BOT_BRAIN_DIR")
+            os.environ["DOCICH_BOT_BRAIN_DIR"] = str(tmp_path / "live-brain")
+
+            def fake_run(**kwargs):
+                weights = json.loads(Path(kwargs["env"]["DOCICH_BRAIN_WEIGHTS"]).read_text())
+                score = 100 if weights.get("min_free") == 6 else 10
+                return {
+                    "game": "nsnake",
+                    "matches": [{"score": score, "turns": 1500, "maxed": True}],
+                    "mean_score": score,
+                }
+
+            corner_improve.run_bot_matches = fake_run
+            try:
+                result = run_corner_improve(
+                    _G(state_dir), game="nsnake", date_str="2026-09-10", agents="a",
+                    llm=lambda prompt: '{"min_free": 6}',
+                )
+            finally:
+                corner_improve.run_bot_matches = __import__(
+                    "docich.resolver.bot_eval", fromlist=["run_bot_matches"]
+                ).run_bot_matches
+                if old_brain_dir is None:
+                    os.environ.pop("DOCICH_BOT_BRAIN_DIR", None)
+                else:
+                    os.environ["DOCICH_BOT_BRAIN_DIR"] = old_brain_dir
+            self.assertEqual(result["status"], "promoted", result)
+            self.assertEqual(result["baseline_played"], 1)
+            self.assertEqual(result["candidate_played"], 1)
+
     def test_nsnake_boolean_weight_is_not_proposable(self):
         import tempfile
 
