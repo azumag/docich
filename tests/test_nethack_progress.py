@@ -144,6 +144,42 @@ def test_unknown_dangerous_stale_or_malformed_prompts_are_fail_closed(message):
     assert act(brain(), text) == []
 
 
+@pytest.mark.parametrize("message", [
+    "Would you like to inspect " + "this unusual object " * 5 + "before continuing?",
+    "Really attack the " + "very " * 20 + "peaceful kitten? [yn] (n)",
+    " " * 68 + "Really save? [yn] (n)",
+])
+@pytest.mark.parametrize("wrap", ["hard", "word", "joined"])
+def test_wrapped_prompt_never_sends_diagonal_or_confirmation_n(message, wrap):
+    import textwrap
+    if wrap == "hard":
+        message = "\n".join(message[i:i + 80] for i in range(0, len(message), 80))
+    elif wrap == "word":
+        message = "\n".join(textwrap.wrap(message, width=80))
+    # Without the prompt guard, the only safe terrain would select 'n'. Save
+    # is tested with an eligible canonical state, not masked by its owner gate.
+    text = frame({"n": "#", "k": "d"}, message=message, hp="4(16)")
+    assert normalize_tty(text).prompt == "unknown"
+    assert act(brain(), text, canonical=READY) == []
+
+
+def test_full_width_attack_with_continuation_never_authorizes_decline():
+    message = "Really attack " + "x" * 55 + "? [yn] (n)"
+    assert len(message) == 79
+    text = frame({"n": "#"}, message=message + "\ny")
+    assert normalize_tty(text).prompt == "unknown"
+    assert act(brain(), text, canonical=READY) == []
+
+
+def test_map_yes_no_glyphs_do_not_block_diagonal_progress():
+    text = frame({"n": "#", "k": "d"}, hp="4(16)")
+    lines = text.splitlines()
+    lines[5] = " " * 20 + "|.[yn.|"
+    text = "\n".join(lines)
+    assert normalize_tty(text).prompt == "none"
+    assert act(brain(), text) == ["n"]
+
+
 @pytest.mark.parametrize("message,intent", [
     ("Really attack? [yn]", "decline_attack"),
     ("Really attack the kitten? [yn] (n)", "decline_attack"),

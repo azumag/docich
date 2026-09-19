@@ -145,14 +145,39 @@ class NethackObservation:
         }
 
 
-def _prompt_kind(text: str, message: str) -> str:
-    lower = text.lower()
+def _message_may_wrap(raw_lines: list[str], cols: int) -> bool:
+    """Reject an ambiguous top line without interpreting map glyphs as prose.
+
+    A plain TTY capture has no message-window/cursor metadata. A full line
+    (including a joined capture wider than cols), or a word that would not fit
+    from the next row, can be an incomplete question. NetHack can word-wrap
+    before the right edge; checking just len(line) == cols misses that case.
+    Use the one-column terminal margin conservatively. The second row is used
+    only for the overflow bound, never to recognize/authorize a prompt answer.
+    Long ordinary messages near a map row can consequently hold as unknown.
+    """
+    if not raw_lines or not raw_lines[0].rstrip():
+        return False
+    width = len(raw_lines[0].rstrip())
+    if width >= cols - 1:
+        return True
+    next_words = raw_lines[1].split() if len(raw_lines) > 1 else []
+    return bool(next_words and width + 1 + len(next_words[0]) >= cols - 1)
+
+
+def _prompt_kind(message: str, *, may_wrap: bool) -> str:
+    # Only row zero is the unambiguous message region of the classic TTY.
+    # In particular, armor '[' next to monsters 'y'/'n' in the map is NOT a
+    # yes/no question. Never search the whole frame for prompt vocabulary.
+    # Do not reconstruct or authorize wrapped save/attack confirmations.
+    if may_wrap:
+        return "unknown"
     msg = message.lower()
-    if "in what direction" in lower or "what direction" in msg:
+    if "what direction" in msg:
         return "direction"
-    if "(y/n)" in lower or "[yn" in lower or "yes or no" in lower:
+    if "(y/n)" in msg or "[yn" in msg or "yes or no" in msg:
         return "yes_no"
-    if "what do you want to" in lower or "pick an object" in lower:
+    if "what do you want to" in msg or "pick an object" in msg:
         return "selection"
     if "call a" in msg or "name an" in msg:
         return "text"
@@ -163,10 +188,10 @@ def _prompt_kind(text: str, message: str) -> str:
         "?" in msg
         or msg.rstrip().endswith(":")
         or re.search(r"\[[^\]]+\]", msg)
-        or re.search(r"\((?:end|\d+ of \d+)\)", lower)
+        or re.search(r"\((?:end|\d+ of \d+)\)", msg)
     ):
         return "unknown"
-    if "--more--" in lower:
+    if "--more--" in msg:
         return "more"
     return "none"
 
@@ -272,5 +297,5 @@ def normalize_tty(
         player=player,
         vitals=_parse_vitals(status),
         conditions=conditions,
-        prompt=_prompt_kind(text, message),
+        prompt=_prompt_kind(message, may_wrap=_message_may_wrap(raw_lines, cols)),
     )

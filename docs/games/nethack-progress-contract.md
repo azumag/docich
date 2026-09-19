@@ -18,7 +18,7 @@
 
 | 観測・状態 | 本番で許可する次の入力 |
 |---|---|
-| 明示 `--More--`、ほかの質問を検出しない | Space 1個。同じraw frameには再送せず `progress_blocked` |
+| 最上段に明示 `--More--`、ほかの質問・折り返し疑いを検出しない | Space 1個。同じraw frameには再送せず `progress_blocked` |
 | 最上段に完全な未回答 `Really save? [yn] (n)` / `Really attack …? [yn] (n)`（既定表示は省略可） | `n` 1個。全く同じ観測には再送しない。save拒否は下記のcanonical所有権確認が必須 |
 | その他の質問、方向・選択・命名・メニュー、曖昧/回答済み/切れた確認 | 無入力 |
 | `Sick/FoodPois/Ill/Slime/Strngl/Stone/TermIll`、`Weak/Fainting/Fainted/Starved` | 無入力。低HPが同時にあっても優先 |
@@ -33,6 +33,19 @@
 `n` は確認では拒否、地図上では南東です。`assert_production_safe` は intent・キー形だけでなく、
 現在の prompt、状態、player、移動先glyphを再検証します。未知プロンプトを `none` と扱わないよう、
 未分類の質問・選択肢・メニュー終端も `unknown` とします。文字による推定なので、未対応の表示形式は残ります。
+
+### TTYのメッセージ領域と折り返し
+
+ゲームプレイ用parserの質問・More判定は最上段だけを対象にします。地図・statusの文字列は検索せず、
+防具 `[` とcreature `y` / `n` が並ぶ地図をyes/noとして扱いません。地図の座標は従来どおり維持します。
+最上段が右端1列以内まで達する場合、幅を超える結合captureの場合、または次行先頭の単語が
+最上段に収まらない場合は、文字/単語折り返しの疑いとして `unknown` にします。
+折り返したsave/attackを連結して応答可能な確認へ昇格させません。完全な短い最上段の確認だけが従来の拒否候補です。
+
+plain TTYにはメッセージウィンドウ境界・cursor情報がないため、これは保守的な判定です。
+長い通常メッセージや複数行Moreも無入力で止める可能性があります。次行は単語の幅だけを参照し、
+そこにある語句から確認入力を許可しません。任意の別port・手動改行・独自レイアウトの完全なprompt解析や、
+実TTYでの無停止を保証しません。startup専用gateとcoordinatorのsave処理は今回変更していません。
 
 ## 送信直前の再検証とsave境界
 
@@ -96,6 +109,8 @@ advisory/narrator/observation shadow は元の判断を受け取り、candidate 
 LLMが本番Actionを差し替える経路は追加しません。
 
 `tests/test_nethack_progress.py` を CI の Retro corner contract 明示リストに追加しています。
+さらに `test_nethack_canary_tactics.py`、`test_agent_loop.py`、`test_agent_fence.py`、
+`test_agent_action_lock.py` も同リストで実行します。`rg --files`で実在する関連lockテストを確認しました。
 報告局面・斜め4方向・隣接8方向・混合状態・攻撃拒否連鎖・移動拒否・通常戦闘のターン更新・未知プロンプト・
 送信前文脈ガードを検証します。既存 NetHack/operator スイートと、修正を無効化した変異検証も実行します。
 
@@ -107,7 +122,7 @@ canaryにも届くため、既存スイート成功だけで production の進�
 `prompt_decision`（無入力）を維持します。既定canary catalogの `confirm_attack` は従来どおり `y` です。
 `unknown` と `Stone/TermIll` はshadow・candidate replayのschemaへ同時に追加し、round-trip/comparisonを検証します。
 
-### ローカル検証結果（Solレビュー指摘反映後）
+### 前回のローカル検証結果（c0f1616）
 
 - 指定 Python 3.14 venv、`PYTHONPATH=src`、NetHack/VM actions の `test_nethack_*.py`: 700 passed / 216 subtests passed。
 - 同スイートに `test_agent_loop.py` / `test_agent_fence.py` を加えた検証: 727 passed / 220 subtests passed。
@@ -117,4 +132,16 @@ canaryにも届くため、既存スイート成功だけで production の進�
   文脈ガード・fresh再検証・送信前ack・Stone/TermIll欠落・More連打・Tなし連打・Hungry欠落・save所有権・
   shadow unknown・canary攻撃prompt混入を壊すと関連テストが失敗することを確認。ファイル自体は変異していない。
 
-リモートCI・実ゲーム・本番・Solによる修正後の再レビューは未実施です。
+### Sol再レビューのTTY/CI指摘反映後のローカル検証
+
+- 指定venv、NetHack/VM actions の `test_nethack_*.py`: 741 passed / 216 subtests passed。
+- 上記に `test_agent_loop.py` / `test_agent_fence.py` / `test_agent_action_lock.py` を追加: 770 passed / 220 subtests passed。
+- operator unittest: 27件 OK。`git diff --check`: 成功。
+- 80×24再構成フレームで通常More/save/attack/direction/selection/text、地図内 `[yn`、
+  80桁文字/単語折り返し、結合capture、短い分割save、確認後の続行文字、実送信ゼロを検証。
+- プロセス内変異3件を検出: 折り返しガード無効化（12 failures）、単語折り返し検出無効化（4 failures）、
+  全画面prompt検索へ逆戻り（19 failures）。sourceファイル自体は変異していない。
+- CI明示リストの追加4件と既存の観測/進行テストを確認し、同step内の全参照ファイルの実在も確認。
+  補助確認でPyYAML未導入だったため標準ライブラリで確認。スイートに環境要因の失敗はなし。
+
+リモートCI・実ゲーム・本番・この追加修正へのSol再レビューは未実施です。
