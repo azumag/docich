@@ -598,3 +598,57 @@ def test_base_prewarm_is_noop(tmp_path):
     assert mgr._prewarm_script(state) is None
     assert 'script_segments' not in state
     assert 'script_job' not in state
+
+
+def test_systemd_improve_submission_is_independent_and_bounded(tmp_path, monkeypatch):
+    import subprocess
+    g = setup(tmp_path)
+    mgr = manager(g)
+    monkeypatch.setattr(sys, 'platform', 'linux')
+    monkeypatch.setenv('INVOCATION_ID', 'parent-corner')
+    monkeypatch.setenv('PRIVATE_TEST_TOKEN', 'must-not-forward')
+    calls = []
+    monkeypatch.setattr(subprocess, 'run', lambda argv, **kw: calls.append((argv, kw)))
+    monkeypatch.setattr(subprocess, 'Popen', lambda *a, **kw: (_ for _ in ()).throw(AssertionError('child in parent cgroup')))
+    child = ['/python', '-m', 'docich', 'trading', 'paper-improve']
+    log = g.state_dir / 'logs' / 'improve.log'
+    mgr._default_spawn_improve_proc(child, log)
+    argv, kwargs = calls[0]
+    assert argv[:4] == ['systemd-run', '--user', '--quiet', '--collect']
+    assert '--property=Type=exec' in argv
+    assert '--property=RuntimeMaxSec=1500' in argv
+    assert '--property=TimeoutStopSec=30' in argv
+    assert '--setenv=DOCICH_ALLOW_REAL_AI=1' in argv
+    assert f'--setenv=PYTHONPATH={g.repo_root / "src"}' in argv
+    assert f'--property=StandardOutput=append:{log.resolve()}' in argv
+    assert argv[argv.index('--') + 1:] == child
+    assert 'must-not-forward' not in str(argv)
+    assert kwargs['check'] and kwargs['timeout'] == 30
+
+
+def test_failed_systemd_submission_is_recorded_without_unsafe_fallback(tmp_path, monkeypatch):
+    import subprocess
+    g = setup(tmp_path)
+    mgr = manager(g)
+    mgr.improve_agents = 'test-agent'
+    monkeypatch.setattr(sys, 'platform', 'linux')
+    monkeypatch.setenv('INVOCATION_ID', 'parent-corner')
+    def fail(*a, **kw):
+        raise subprocess.CalledProcessError(1, 'systemd-run')
+    monkeypatch.setattr(subprocess, 'run', fail)
+    monkeypatch.setattr(subprocess, 'Popen', lambda *a, **kw: (_ for _ in ()).throw(AssertionError('unsafe fallback')))
+    state = {'date': '2026-09-19'}
+    mgr._spawn_improve_once(state)
+    assert state['improve_job']['spawned'] is False
+
+
+def test_non_systemd_improve_preserves_detached_launch(tmp_path, monkeypatch):
+    import subprocess
+    g = setup(tmp_path)
+    mgr = manager(g)
+    monkeypatch.delenv('INVOCATION_ID', raising=False)
+    calls = []
+    monkeypatch.setattr(subprocess, 'Popen', lambda argv, **kw: calls.append((argv, kw)))
+    mgr._default_spawn_improve_proc(['python', '-m', 'docich'], g.state_dir / 'logs' / 'improve.log')
+    assert calls[0][1]['start_new_session']
+    assert calls[0][1]['env']['DOCICH_ALLOW_REAL_AI'] == '1'

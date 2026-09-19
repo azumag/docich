@@ -416,6 +416,33 @@ class PaperCornerManager:
         # needs the explicit real-AI gate (the tick service env lacks it).
         env = dict(os.environ)
         env['DOCICH_ALLOW_REAL_AI'] = '1'
+        if sys.platform == 'linux' and os.environ.get('INVOCATION_ID'):
+            # setsid does not escape a systemd cgroup: the corner's default
+            # KillMode=control-group kills detached children when tick exits.
+            # Give improvement its own bounded service, including AI children.
+            import uuid
+
+            command = [
+                'systemd-run', '--user', '--quiet', '--collect',
+                f'--unit=docich-paper-improve-{uuid.uuid4().hex}',
+                '--property=Type=exec', '--property=RuntimeMaxSec=1500',
+                '--property=TimeoutStopSec=30', '--property=UMask=0077',
+                f'--working-directory={self.g.repo_root}',
+                f'--property=StandardOutput=append:{Path(log_path).resolve()}',
+                '--property=StandardError=inherit',
+                '--setenv=DOCICH_ALLOW_REAL_AI=1',
+                f'--setenv=PYTHONPATH={self.g.repo_root / "src"}',
+            ]
+            if env.get('PATH'):
+                command.append(f'--setenv=PATH={env["PATH"]}')
+            # Do not fall back to the parent's cgroup on submission failure.
+            # Do not pass arbitrary inherited credentials on the command line.
+            subprocess.run(
+                [*command, '--', *argv], check=True, timeout=30,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return
         with open(log_path, 'ab') as log_fh:
             subprocess.Popen(
                 argv,

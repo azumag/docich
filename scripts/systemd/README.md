@@ -204,3 +204,18 @@ systemctl --user disable --now docich.service
 `docich.service` の `ExecStop` は `docich down` (全コンポーネント停止) を
 呼ぶので、`stop`/`disable` すれば watchdog window を含め tmux セッション
 ごと片付く。
+
+## PAPERコーナー終了後の戦略改善
+
+systemdから動くコーナーは、改善を独立した一時user service
+`docich-paper-improve-<id>.service` に投入します。`start_new_session=True` だけでは
+親のcgroupを抜けないため、既定の `KillMode=control-group` で親の終了とともに
+改善も停止されます。コーナー側のKillModeは変更しません。
+
+一時serviceは `Type=exec`、実行上限1500秒（生成600+60秒を検証リトライ込みで2回）、
+終了猶予30秒で、既存のsingle-flight lockを維持します。投入失敗は
+`improve_job.spawned=false` となり、元のcgroupへの代替起動は行いません。
+ログは従来の `paper-corner-improve-<date>.log`、結果は
+`trading/paper_improve_status.json` です。投入成功だけでは完了を意味しません。
+新しい `started_at` とterminal statusを確認してください。systemd外の手動実行や
+macOSでは従来の独立セッション起動を使います。
