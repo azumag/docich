@@ -240,17 +240,18 @@ REST_HOLD_INTENTS = frozenset(
     }
 )
 
-# Emergencies ask for a recovery plan (quaff, pray, flee) that only a strategic
-# layer can choose, so the policy deliberately produces no action.  With no
-# strategist configured that is again a permanent freeze: observed on production
-# 2026-09-19 at HP 4/16, where the agent reported "0 actions" every iteration
-# until the corner's stall guard ended it.  Waiting a turn is not the plan, but
-# for these two it beats freezing, because HP and most status effects only
-# recover as turns pass.  ``food_emergency`` is deliberately excluded: resting
-# burns nutrition, so passing turns makes starvation worse, and eating is not on
-# the reviewed action surface.  The shared no-adjacent-creature rule still
-# applies, so a weakened hero never rests next to something that can hit it.
-REST_EMERGENCY_INTENTS = frozenset({"survival_emergency", "status_emergency"})
+# A critical-HP emergency asks for a recovery plan (quaff, pray, flee) that only
+# a strategic layer can choose.  With no strategist configured that becomes a
+# permanent freeze, so a single reviewed rest turn is allowed when there is no
+# recognized adjacent creature; HP can recover as turns pass.
+#
+# Severe status emergencies are deliberately *not* included.  The policy's
+# severe set is Sick/FoodPois/Ill/Slime/Strngl: these require active recovery or
+# progress toward death, so spending a turn on generic rest is not a safe
+# fallback.  food_emergency is likewise excluded because resting burns
+# nutrition.  Both remain fail-closed holds until a reviewed recovery action is
+# available.
+REST_EMERGENCY_INTENTS = frozenset({"survival_emergency"})
 
 
 def rest_action_for_hold(
@@ -260,11 +261,11 @@ def rest_action_for_hold(
 
     Requires a hold that produced no action, a uniquely visible player, no
     prompt, and no recognized adjacent creature.  Within that, either a
-    mid-level non-LLM hold (``REST_HOLD_INTENTS``) or one of the two
-    emergencies time alone can improve (``REST_EMERGENCY_INTENTS``).  Anything
-    else -- an unknown screen, ``food_emergency``, a hold that already acts --
-    stays a hold: a stray ``.`` on a prompt or beside a possibly hostile
-    creature is not something this guard may risk.
+    mid-level non-LLM hold (``REST_HOLD_INTENTS``) or the critical-HP
+    ``survival_emergency``.  Anything else -- an unknown screen,
+    ``status_emergency``, ``food_emergency``, or a hold that already acts --
+    stays a hold: a stray ``.`` on a prompt, beside a possibly hostile creature,
+    or during a worsening emergency is not something this guard may risk.
     """
     if (
         decision.actions
