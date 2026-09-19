@@ -53,10 +53,12 @@ jobs:
         run: >-
           python3 -m pytest -q
           tests/test_retro_corner.py tests/test_retro_corner_manual.py
+          tests/test_agent_loop.py tests/test_agent_fence.py tests/test_agent_action_lock.py
           tests/test_nethack_corner.py tests/test_nethack_corner_p5.py tests/test_nethack_corner_force_recover.py
           tests/test_nethack_run.py tests/test_nethack_run_recovery.py
           tests/test_nethack_spectator.py tests/test_nethack_spectator_live.py
           tests/test_nethack_observation.py tests/test_nethack_policy.py tests/test_nethack_exploration.py
+          tests/test_nethack_progress.py
           tests/test_nethack_narration.py
           tests/test_nethack_inventory.py tests/test_nethack_strategy.py tests/test_nethack_strategist.py
           tests/test_nethack_advisory.py tests/test_nethack_shadow.py tests/test_nethack_shadow_source.py
@@ -65,7 +67,7 @@ jobs:
           tests/test_nethack_candidate_shadow_eval.py tests/test_nethack_canary.py
           tests/test_nethack_canary_executor.py tests/test_nethack_canary_container.py
           tests/test_nethack_canary_worker.py tests/test_nethack_canary_candidate_broker.py
-          tests/test_nethack_canary_image.py
+          tests/test_nethack_canary_image.py tests/test_nethack_canary_tactics.py
           tests/test_ninvaders_wrapper.py tests/test_corner_boundary.py tests/test_paper_corner.py
           tests/test_retro_daily_schedule.py tests/test_corner_improve.py
           tests/test_corner_improve_dispatch.py tests/test_retro_command_brains.py

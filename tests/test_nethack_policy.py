@@ -13,6 +13,7 @@ from docich.nethack_policy import (
     REST_EMERGENCY_INTENTS,
     assert_p3b_safe,
     rest_action_for_hold,
+    step_out_of_hold,
 )
 
 
@@ -63,7 +64,7 @@ class TestNethackLayeredPolicy(unittest.TestCase):
                 self.assertIsNone(rest_action_for_hold(decision, observation))
 
     def test_prompt_escalates_without_guessing_answer(self) -> None:
-        decision = self.decide(frame("Really attack? [yn]"))
+        decision = self.decide(frame("Really quit? [yn]"))
         self.assertEqual(decision.layer, "strategic")
         self.assertEqual(decision.intent, "prompt_decision")
         self.assertEqual(decision.actions, ())
@@ -90,9 +91,13 @@ class TestNethackLayeredPolicy(unittest.TestCase):
         obs = normalize_tty(text, cols=80, rows=24)
         self.assertIsNotNone(obs.player)
         decision = self.policy.decide(obs)
-        self.assertEqual(decision.intent, "explore_step")
-        self.assertEqual(len(decision.actions), 1)
-        self.assertIn(decision.actions[0].text, {"h", "j", "k", "l"})
+        # The adjacent f is a feline, not terrain. Preserve the policy hold
+        # for observers while the reviewed fallback retreats on visible floor.
+        self.assertEqual(decision.intent, "assess_contact")
+        self.assertEqual(decision.actions, ())
+        step = step_out_of_hold(decision, obs, self.policy.explorer)
+        self.assertIsNotNone(step)
+        self.assertIn(step.text, {"h", "j", "k", "l"})
         assert_p3b_safe(decision)
 
     def test_visible_hunger_changes_midlevel_priority(self) -> None:

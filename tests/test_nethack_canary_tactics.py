@@ -80,6 +80,16 @@ def test_accepts_really_attack_prompt():
     assert tuple(a.text for a in decision.actions) == ("y",)
 
 
+def test_base_and_empty_catalog_do_not_inherit_production_attack_decline():
+    from docich.nethack_policy import NethackLayeredPolicy
+    observation = obs("Really attack the kitten? [yn] (n)", ("....", ".@f.", "...."))
+    for policy in (NethackLayeredPolicy(), CanaryTacticalPolicy(specs=())):
+        decision = policy.decide(observation)
+        assert decision.intent == "prompt_decision"
+        assert decision.requires_llm
+        assert decision.actions == ()
+
+
 def test_declines_unreviewed_yes_no_prompt():
     decision = decide(obs("Pick up the dagger? [ynq]", ("....", ".@..", "....")))
     assert decision.intent == "decline_prompt"

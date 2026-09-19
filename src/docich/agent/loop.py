@@ -51,26 +51,48 @@ def _run_iteration(adapter, brain, interval_ms: int, *, fence=None, state_dir=No
         obs = adapter.observe()
 
     acts = brain.decide(obs)
-    if fence is not None:
-        _check_loop_fence(fence, state_dir)
-
-    for action in acts:
-        if action.type == "wait":
-            time.sleep(max(action.ms, 0) / 1000)
-            continue
-
-        if fence is None:
-            adapter.act(action)
-            continue
-
-        def _act(single=action):
-            # Same TOCTOU guard as observe: validate the lease only after
-            # acquiring the shared lock and keep it held through one action.
+    # This opt-in is deliberately limited to the stateful NetHack brain.
+    # Other brains retain their existing observation/action protocol.
+    guarded = isinstance(brain, brains.NethackPolicyBrain)
+    completed = 0
+    try:
+        if fence is not None:
             _check_loop_fence(fence, state_dir)
-            adapter.act(single)
 
-        shared_section(state_dir, _act)
-    return len(acts)
+        for action in acts:
+            if action.type == "wait":
+                time.sleep(max(action.ms, 0) / 1000)
+                completed += 1
+                continue
+
+            def _act(single=action):
+                # Fresh capture, context check, send and acknowledgement share
+                # the lease lock. No sidecar/LLM runs between check and send.
+                if fence is not None:
+                    _check_loop_fence(fence, state_dir)
+                if guarded:
+                    fresh = adapter.observe()
+                    if fence is not None:
+                        _check_loop_fence(fence, state_dir)
+                    canonical = read_canonical(state_dir) if state_dir is not None else None
+                    if not brain.validate_action(single, fresh, canonical=canonical):
+                        return False
+                adapter.act(single)
+                if guarded:
+                    brain.action_sent(single)
+                return True
+
+            # An unfenced CLI invocation with a state_dir still needs the
+            # same lock for the save-boundary ownership check.
+            locked_send = fence is not None or (guarded and state_dir is not None)
+            sent = shared_section(state_dir, _act) if locked_send else _act()
+            completed += int(sent)
+        return completed
+    finally:
+        if guarded:
+            # Includes fresh rejection, observe/act errors and terminal fence
+            # loss. None of those creates an unsent pending/blocked move.
+            brain.discard_action_plan()
 
 
 def run_agent(

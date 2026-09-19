@@ -40,6 +40,8 @@ _CONDITIONS = (
     "Stun",
     "Hallu",
     "Sick",
+    "Stone",
+    "TermIll",
     "FoodPois",
     "Ill",
     "Slime",
@@ -49,6 +51,8 @@ _CONDITIONS = (
     "Fly",
     "Ride",
 )
+VISIBLE_CONDITIONS = frozenset(_CONDITIONS)
+PROMPT_KINDS = frozenset({"none", "more", "yes_no", "direction", "selection", "text", "unknown"})
 
 
 @dataclass(frozen=True)
@@ -141,19 +145,50 @@ class NethackObservation:
         }
 
 
-def _prompt_kind(text: str, message: str) -> str:
-    lower = text.lower()
+def _message_may_wrap(raw_lines: list[str], cols: int) -> bool:
+    """Reject an ambiguous top line without interpreting map glyphs as prose.
+
+    Only the top row is evidence: lower rows may be walls, corridors or
+    creatures, not message continuations. Keep the one-column terminal margin
+    and reject joined captures wider than cols. This cannot detect arbitrary
+    short word-wrapped questions without message-window/cursor metadata.
+    """
+    if not raw_lines or not raw_lines[0].rstrip():
+        return False
+    return len(raw_lines[0].rstrip()) >= cols - 1
+
+
+def _prompt_kind(message: str, *, may_wrap: bool) -> str:
+    # Only row zero is the unambiguous message region of the classic TTY.
+    # In particular, armor '[' next to monsters 'y'/'n' in the map is NOT a
+    # yes/no question. Never search the whole frame for prompt vocabulary.
+    # Do not reconstruct or authorize wrapped save/attack confirmations.
+    if may_wrap:
+        return "unknown"
     msg = message.lower()
-    if "--more--" in lower:
-        return "more"
-    if "in what direction" in lower or "what direction" in msg:
+    if "what direction" in msg:
         return "direction"
-    if "(y/n)" in lower or "[yn" in lower or "yes or no" in lower:
+    if "(y/n)" in msg or "[yn" in msg or "yes or no" in msg:
         return "yes_no"
-    if "what do you want to" in lower or "pick an object" in lower:
+    if "what do you want to" in msg or "pick an object" in msg:
         return "selection"
     if "call a" in msg or "name an" in msg:
         return "text"
+    # Unknown questions/menus are blocking, even with a stale map and status
+    # behind them. Never interpret a movement key (notably diagonal y/n) as an
+    # answer. A known question takes precedence over a stale More marker.
+    if (
+        "?" in msg
+        or msg.rstrip().endswith(":")
+        or re.search(r"\[[^\]]+\]", msg)
+        or re.search(r"\((?:end|\d+ of \d+)\)", msg)
+        # An incomplete, recognizable question stem is blocking on its own.
+        # This is NOT general word-wrap detection and never uses a map row.
+        or re.match(r"\s*(?:really\b|(?:would|could|should|do|did|can|will|are) you\b)", msg)
+    ):
+        return "unknown"
+    if "--more--" in msg:
+        return "more"
     return "none"
 
 
@@ -258,5 +293,5 @@ def normalize_tty(
         player=player,
         vitals=_parse_vitals(status),
         conditions=conditions,
-        prompt=_prompt_kind(text, message),
+        prompt=_prompt_kind(message, may_wrap=_message_may_wrap(raw_lines, cols)),
     )

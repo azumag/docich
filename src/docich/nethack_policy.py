@@ -4,16 +4,18 @@ P3a established a fail-closed action surface where only ``--More--`` could be
 automatically advanced. P3b adds one conservative movement action at a time on
 currently visible, known-safe terrain chosen by :mod:`nethack_exploration`.
 
-The policy still never automatically attacks, uses items, answers prompts,
-opens doors, steps onto a visible trap/item/creature, or descends stairs.
+Production hold resolution is in nethack_progress: a bounded ordinary bump is
+now the last resort after visible escape, never a forced attack. Item use,
+doors, stair traversal and arbitrary prompt answers remain outside the surface.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Literal
 
 from .actions import Action
-from .nethack_exploration import NethackExplorer
+from .nethack_exploration import MOVE_KEYS, NethackExplorer, visible_safe_step
 from .nethack_observation import NethackObservation
 
 
@@ -47,26 +49,34 @@ class PolicyDecision:
         }
 
 
-# Visible glyphs that are letters in NetHack but are not treated as creatures.
-# Treating them as adjacent monsters made P3b hold instead of exploring
-# (observed around a fountain 'f' on Dlvl:1).
-#
-# Caveat: the observation is plain text, so colour is lost, and ``f`` is
-# genuinely ambiguous -- depending on colour it is a fountain or a cat (the
-# starting pet, or a hostile feline).  The planner never steps onto it either
-# way; telling the cases apart needs a colour-aware capture (not done here).
-_TERRAIN_LETTER_GLYPHS = frozenset(
-    {"f", "{"}  # fountain, water/lava variants rendered as letters
-)
+# Default NetHack symbols: f is a feline, { is a fountain. Colour does not
+# turn f into terrain, nor does plain text establish a creature's hostility.
+def creature_glyph(glyph: str) -> bool:
+    return len(glyph) == 1 and ((glyph.isascii() and glyph.isalpha()) or glyph in "&;:'@")
 
 
 def _visible_creature_contact(obs: NethackObservation) -> bool:
-    for glyph in obs.visible_neighbors():
-        if glyph in _TERRAIN_LETTER_GLYPHS:
-            continue
-        if glyph.isalpha() or glyph in "&;:'":
-            return True
-    return False
+    return any(creature_glyph(glyph) for glyph in obs.visible_neighbors())
+
+
+def decline_prompt(obs: NethackObservation) -> str | None:
+    """Only a whole, unanswered top-line save/attack confirmation permits n.
+
+    Substrings in message history, answered prompts, wrapped/truncated prompts,
+    and attack questions with any other answer grammar remain fail-closed.
+    """
+    if obs.prompt != "yes_no":
+        return None
+    raw_lines = obs.raw_text.splitlines()
+    if not raw_lines or raw_lines[0].strip() != obs.message.strip():
+        return None  # do not discard an answer/suffix beyond the capture width
+    for intent, pattern in (
+        ("decline_save", r"Really save\?\s*\[yn\](?:\s*\(n\))?"),
+        ("decline_attack", r"Really attack(?: [^?\[\]\r\n]+)?\?\s*\[yn\](?:\s*\(n\))?"),
+    ):
+        if re.fullmatch(pattern, obs.message.strip(), re.IGNORECASE):
+            return intent
+    return None
 
 
 def _has_any(obs: NethackObservation, names: set[str]) -> bool:
@@ -76,7 +86,7 @@ def _has_any(obs: NethackObservation, names: set[str]) -> bool:
 class NethackLayeredPolicy:
     """Fail-closed layered policy over normalized public observation."""
 
-    _SEVERE_CONDITIONS = {"Sick", "FoodPois", "Ill", "Slime", "Strngl"}
+    _SEVERE_CONDITIONS = {"Sick", "FoodPois", "Ill", "Slime", "Strngl", "Stone", "TermIll"}
     _FOOD_EMERGENCY = {"Weak", "Fainting", "Fainted", "Starved"}
     _MOVEMENT_IMPAIRING = {"Blind", "Conf", "Stun", "Hallu"}
 
@@ -92,21 +102,17 @@ class NethackLayeredPolicy:
                 actions=(Action(type="text", text=" "),),
             )
 
-        if obs.prompt == "yes_no":
-            # Reviewed, safe default answers.  The corner exists to keep one
-            # adventure running, so a "Really save? [yn]" (a normal save would
-            # end the run and conflict with the run boundary) is declined and
-            # play continues.  Anything else stays a deliberate hold.
-            lowered = " ".join(obs.raw_text.lower().split())
-            if "really save" in lowered:
-                return PolicyDecision(
-                    layer="tactical",
-                    intent="decline_save",
-                    reason="decline the save prompt to keep the run going",
-                    actions=(Action(type="text", text="n"),),
-                )
+        decline = decline_prompt(obs)
+        # Attack refusal belongs to the production resolver, not this base
+        # policy shared with candidate/canary evaluation.
+        if decline == "decline_save":
+            return PolicyDecision(
+                layer="tactical", intent=decline,
+                reason="decline an explicit unanswered save/attack confirmation",
+                actions=(Action(type="text", text="n"),),
+            )
 
-        if obs.prompt in {"yes_no", "direction", "selection", "text"}:
+        if obs.prompt != "none":
             return PolicyDecision(
                 layer="strategic",
                 intent="prompt_decision",
@@ -114,15 +120,8 @@ class NethackLayeredPolicy:
                 requires_llm=True,
             )
 
-        hp_ratio = obs.vitals.hp_ratio
-        if hp_ratio is not None and hp_ratio <= 0.25:
-            return PolicyDecision(
-                layer="strategic",
-                intent="survival_emergency",
-                reason=f"visible HP is critical ({obs.vitals.hp}/{obs.vitals.hp_max})",
-                requires_llm=True,
-            )
-
+        # Fatal status/hunger must dominate low HP; otherwise critical HP
+        # silently turns their fail-closed holds into generic rest/movement.
         if _has_any(obs, self._SEVERE_CONDITIONS):
             return PolicyDecision(
                 layer="strategic",
@@ -136,6 +135,14 @@ class NethackLayeredPolicy:
                 layer="strategic",
                 intent="food_emergency",
                 reason="visible hunger state is already dangerous",
+                requires_llm=True,
+            )
+
+        hp_ratio = obs.vitals.hp_ratio
+        if hp_ratio is not None and hp_ratio <= 0.25:
+            return PolicyDecision(
+                layer="strategic", intent="survival_emergency",
+                reason=f"visible HP is critical ({obs.vitals.hp}/{obs.vitals.hp_max})",
                 requires_llm=True,
             )
 
@@ -160,7 +167,11 @@ class NethackLayeredPolicy:
                 reason="visible status can make deterministic movement unsafe",
             )
 
-        if obs.player is None:
+        if (
+            obs.player is None or obs.vitals.dungeon_level is None
+            or obs.vitals.hp is None or obs.vitals.hp <= 0
+            or obs.vitals.hp_max is None or obs.vitals.hp_max <= 0
+        ):
             return PolicyDecision(
                 layer="midlevel",
                 intent="inspect_screen",
@@ -188,7 +199,7 @@ class NethackLayeredPolicy:
         return PolicyDecision(
             layer="midlevel",
             intent="exploration_blocked",
-            reason="no visible safe cardinal exploration step is available",
+            reason="no visible safe exploration step is available",
         )
 
 
@@ -217,7 +228,7 @@ def assert_p3b_safe(decision: PolicyDecision) -> None:
         and decision.intent == "explore_step"
         and len(decision.actions) == 1
         and decision.actions[0].type == "text"
-        and decision.actions[0].text in {"h", "j", "k", "l"}
+        and decision.actions[0].text in MOVE_KEYS
     ):
         return
     raise RuntimeError("P3b policy attempted an action outside the reviewed safe surface")
@@ -236,7 +247,6 @@ REST_HOLD_INTENTS = frozenset(
         "exploration_blocked",
         "hold_low_hp",
         "hold_impaired",
-        "seek_food",
     }
 )
 
@@ -272,6 +282,8 @@ def rest_action_for_hold(
         or obs.prompt != "none"
         or obs.player is None
         or _visible_creature_contact(obs)
+        or "Hungry" in obs.conditions
+        or _has_any(obs, NethackLayeredPolicy._SEVERE_CONDITIONS | NethackLayeredPolicy._FOOD_EMERGENCY)
     ):
         return None
     if decision.layer == "midlevel" and not decision.requires_llm:
@@ -292,16 +304,16 @@ def rest_action_for_hold(
 # Resting there is not allowed -- standing still next to something that can hit
 # a weakened hero is how it dies -- so take the explorer's own safe step
 # instead.  That step never moves onto a creature, item, trap or door, and it is
-# the same reviewed h/j/k/l surface P3b already uses for exploring.
-STEP_OUT_INTENTS = REST_HOLD_INTENTS | REST_EMERGENCY_INTENTS | {"assess_contact"}
+# the same one-key terrain surface used for exploring (including diagonals).
+STEP_OUT_INTENTS = REST_HOLD_INTENTS | REST_EMERGENCY_INTENTS | {"assess_contact", "seek_food"}
 
 
 def step_out_of_hold(decision: PolicyDecision, obs: NethackObservation, explorer) -> Action | None:
     """One reviewed move to break a frozen hold, else ``None``.
 
-    Used only after ``rest_action_for_hold`` declined: a hold that produced no
+    Used after rest declined or for Hungry exploration: a hold that produced no
     action, with a uniquely visible player and no prompt, where the explorer
-    can still name a safe cardinal step.  ``food_emergency`` and
+    can still name a safe step.  ``food_emergency`` and
     ``inspect_screen`` are excluded -- moving cannot help hunger, and without a
     unique player glyph there is nothing to plan from.
     """
@@ -310,20 +322,21 @@ def step_out_of_hold(decision: PolicyDecision, obs: NethackObservation, explorer
         or obs.prompt != "none"
         or obs.player is None
         or decision.intent not in STEP_OUT_INTENTS
+        or _has_any(obs, NethackLayeredPolicy._SEVERE_CONDITIONS | NethackLayeredPolicy._FOOD_EMERGENCY | NethackLayeredPolicy._MOVEMENT_IMPAIRING)
     ):
         return None
     step = explorer.plan_step(obs)
-    if step is None or step.key not in {"h", "j", "k", "l"}:
+    if step is None or not visible_safe_step(obs, step.key):
         return None
     return Action(type="text", text=step.key)
 
 
 def assert_step_out_safe(actions: list[Action] | tuple[Action, ...]) -> None:
-    """The step-out fallback may only ever be one reviewed cardinal move."""
+    """The step-out fallback may only ever be one reviewed movement key."""
     if (
         len(actions) != 1
         or actions[0].type != "text"
-        or actions[0].text not in {"h", "j", "k", "l"}
+        or actions[0].text not in MOVE_KEYS
     ):
         raise RuntimeError("step-out fallback attempted an action outside the reviewed safe surface")
 

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Literal
 
 from .config import GameConfig, GlobalConfig
-from .nethack_observation import NethackObservation, Vitals
+from .nethack_observation import NethackObservation, Vitals, PROMPT_KINDS, VISIBLE_CONDITIONS
 
 
 SCHEMA_VERSION = 1
@@ -25,13 +25,8 @@ _ALLOWED_PUBLIC = frozenset({"message", "map_rows", "player", "vitals", "conditi
 _ALLOWED_VITALS = frozenset(
     {"hp", "hp_max", "power", "power_max", "ac", "experience_level", "dungeon_level", "gold", "turn"}
 )
-_ALLOWED_PROMPTS = frozenset({"none", "more", "direction", "yes_no", "selection", "text"})
-_ALLOWED_CONDITIONS = frozenset(
-    {
-        "Hungry", "Weak", "Fainting", "Fainted", "Starved", "Blind", "Conf", "Stun",
-        "Hallu", "Sick", "FoodPois", "Ill", "Slime", "Strngl", "Deaf", "Lev", "Fly", "Ride",
-    }
-)
+_ALLOWED_PROMPTS = PROMPT_KINDS
+_ALLOWED_CONDITIONS = VISIBLE_CONDITIONS
 
 
 ShadowStatus = Literal["disabled", "missing", "stale", "invalid", "match", "mismatch"]

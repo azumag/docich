@@ -127,7 +127,6 @@ class TestRestOnStalledHold(unittest.TestCase):
         cases = {
             "hold_low_hp": (self.FREE, {"hp": "4(10)"}),
             "hold_impaired": (self.FREE, {"condition": "Blind"}),
-            "seek_food": (self.FREE, {"condition": "Hungry"}),
             # hero boxed in by walls: the planner has no cardinal step
             "exploration_blocked": (("#-@-#      ", "-----       "), {}),
         }
@@ -158,22 +157,17 @@ class TestRestOnStalledHold(unittest.TestCase):
                 self.assertEqual(decision.intent, intent)
                 self.assertIsNone(rest_action_for_hold(decision, observation))
 
-    def test_ambiguous_f_can_still_unblock_by_resting(self):
-        # Production's plain-text TTY cannot distinguish fountain vs cat for
-        # glyph 'f'.  The planner still refuses to step onto it, but the
-        # existing bounded rest escape remains available for the observed pet
-        # corridor stall until colour-aware observation exists.
+    def test_feline_is_contact_and_never_allows_rest(self):
+        # f is always feline under default symbols; { is the fountain.
         observation, decision = self._decide(("#-@f#      ", "-----       "))
-        self.assertEqual(decision.intent, "exploration_blocked")
-        action = rest_action_for_hold(decision, observation)
-        self.assertIsNotNone(action)
-        assert action is not None
-        self.assertEqual(action.text, ".")
+        self.assertEqual(decision.intent, "assess_contact")
+        self.assertIsNone(rest_action_for_hold(decision, observation))
 
     def test_no_rest_when_the_policy_already_acts_or_cannot_be_helped_by_time(self):
         cases = {
             # has its own action
             "explore_step": (self.FREE, {}),
+            "seek_food": (self.FREE, {"condition": "Hungry"}),
             # resting burns nutrition, so passing turns makes starvation worse
             "food_emergency": (self.FREE, {"condition": "Weak"}),
         }
@@ -227,7 +221,7 @@ class TestRestOnStalledHold(unittest.TestCase):
         self.assertIsNone(no_player.player)
         self.assertIsNone(rest_action_for_hold(hold, no_player))  # inspect_screen territory
 
-        more = normalize_tty("Really? --More--\n###@.\n.....\nDlvl:2 HP:10(10) Pw:4(4) AC:5 Exp:2\nT:12\n", cols=80, rows=5)
+        more = normalize_tty("Message --More--\n###@.\n.....\nDlvl:2 HP:10(10) Pw:4(4) AC:5 Exp:2\nT:12\n", cols=80, rows=5)
         self.assertEqual(more.prompt, "more")
         self.assertIsNone(rest_action_for_hold(hold, more))
 
@@ -280,7 +274,6 @@ class TestStepOutOfDeadlock(unittest.TestCase):
         cases = {
             "assess_contact": {},
             "hold_low_hp": {"hp": "4(10)"},
-            "hold_impaired": {"condition": "Blind"},
             "seek_food": {"condition": "Hungry"},
             "survival_emergency": {"hp": "2(10)"},
         }
@@ -346,10 +339,11 @@ class TestStepOutOfDeadlock(unittest.TestCase):
         eager = EagerExplorer()
         hold = PolicyDecision("midlevel", "assess_contact", "x")
         free = obs(self.FREE_ROWS)
-        self.assertIsNotNone(step_out_of_hold(hold, free, eager))  # the stub is usable
+        # Stub's right key actually targets a creature: independently rejected.
+        self.assertIsNone(step_out_of_hold(hold, free, eager))
 
         more = normalize_tty(
-            "Really? --More--\n###@.\n.....\nDlvl:2 HP:10(10) Pw:4(4) AC:5 Exp:2\nT:12\n",
+            "Message --More--\n###@.\n.....\nDlvl:2 HP:10(10) Pw:4(4) AC:5 Exp:2\nT:12\n",
             cols=80,
             rows=5,
         )
