@@ -1,4 +1,4 @@
-"""Daily Meriken AI retro-game program slot.
+"""Meriken AI retro-game program slot (daily schedule or hourly lottery).
 
 The corner owns scheduling/orchestration state only. All game lifecycle changes
 still go through GameSwitchCoordinator, preserving transactional switching,
@@ -12,6 +12,7 @@ import fcntl
 import json
 import os
 import random
+import shutil
 import sys
 import time
 import tomllib
@@ -32,6 +33,13 @@ STATE_FILE = "retro_corner.json"
 LOCK_FILE = "locks/retro-corner.lock"
 TICK_GUARD_FILE = "locks/retro-corner-tick.lock"
 TERMINAL_STATUSES = {"completed", "interrupted", "failed"}
+# 抽選モード: 各時の抽選は lottery_minute から この分数の間に届いた最初の tick だけが行う
+# (毎分 tick の取りこぼしに耐えつつ、遅すぎる抽選で次の正時に食い込ませない)。
+LOTTERY_DRAW_WINDOW_MINUTES = 10
+# 抽選コーナーは次の正時の前に必ず終わらせる (毎正時に始まる固定枠のコーナーを塞がない)。
+LOTTERY_LATEST_END_MINUTE = 55
+# starting のまま残った (tick が落ちた) 状態を割り込み扱いにするまでの猶予。
+STARTING_STALE_MINUTES = 10
 
 
 class RetroCornerError(RuntimeError):
@@ -53,6 +61,14 @@ class RetroCornerConfig:
     randomize_start: bool = False
     start_window_minutes: int = 30
     target_matches: int = 3
+    # mode="lottery": 固定枠を持たず、毎時 lottery_minute 分に確率 lottery_probability で
+    # 発火を抽選し、当たれば遊べるゲームを無作為に選んで target_matches 試合 (上限
+    # duration_minutes) 遊んで元のゲームへ戻る。他コーナーが進行中/待機中なら抽選を取りやめる。
+    mode: str = "daily"
+    lottery_probability: float = 0.3
+    lottery_minute: int = 5
+    lottery_wait_minutes: int = 10
+    lottery_avoid_repeat: bool = True
 
 
 @dataclass(frozen=True)
@@ -105,10 +121,27 @@ def load_retro_corner_config(g: GlobalConfig) -> RetroCornerConfig:
         randomize_start=raw.get("randomize_start", False),
         start_window_minutes=raw.get("start_window_minutes", 30),
         target_matches=raw.get("target_matches", 3),
+        mode=raw.get("mode", "daily"),
+        lottery_probability=raw.get("lottery_probability", 0.3),
+        lottery_minute=raw.get("lottery_minute", 5),
+        lottery_wait_minutes=raw.get("lottery_wait_minutes", 10),
+        lottery_avoid_repeat=raw.get("lottery_avoid_repeat", True),
     )
-    for key in ("daily_each_game", "randomize_start"):
+    for key in ("daily_each_game", "randomize_start", "lottery_avoid_repeat"):
         if type(getattr(cfg, key)) is not bool:
             raise RetroCornerError(f"{key} must be boolean")
+    if cfg.mode not in ("daily", "lottery"):
+        raise RetroCornerError('retro_corner.mode must be "daily" or "lottery"')
+    if (
+        isinstance(cfg.lottery_probability, bool)
+        or not isinstance(cfg.lottery_probability, (int, float))
+        or not 0 < float(cfg.lottery_probability) <= 1
+    ):
+        raise RetroCornerError("lottery_probability must be a number in (0, 1]")
+    if type(cfg.lottery_minute) is not int or not 0 <= cfg.lottery_minute <= 50:
+        raise RetroCornerError("lottery_minute must be 0-50")
+    if type(cfg.lottery_wait_minutes) is not int or not 0 <= cfg.lottery_wait_minutes <= 30:
+        raise RetroCornerError("lottery_wait_minutes must be 0-30")
     if type(cfg.start_window_minutes) is not int or not 1 <= cfg.start_window_minutes <= 1440:
         raise RetroCornerError("start_window_minutes must be 1-1440")
     if type(cfg.target_matches) is not int or not 1 <= cfg.target_matches <= 100:
@@ -121,6 +154,16 @@ def load_retro_corner_config(g: GlobalConfig) -> RetroCornerConfig:
         raise RetroCornerError("retro_corner.start_hour は0-23の整数である必要があります")
     if type(cfg.duration_minutes) is not int or not 1 <= cfg.duration_minutes <= 720:
         raise RetroCornerError("retro_corner.duration_minutes は1-720の整数である必要があります")
+    if (
+        cfg.mode == "lottery"
+        and cfg.lottery_minute + cfg.lottery_wait_minutes + cfg.duration_minutes > LOTTERY_LATEST_END_MINUTE
+    ):
+        # 最悪でも「抽選 → 境界待ち上限 → 上限時間」で次の正時の前に終わる。
+        raise RetroCornerError(
+            "lottery mode: lottery_minute + lottery_wait_minutes + duration_minutes must be <= "
+            f"{LOTTERY_LATEST_END_MINUTE} so a drawn corner ends before the next hour "
+            "(fixed-slot corners start on the hour)"
+        )
     if not isinstance(cfg.timezone, str) or not cfg.timezone.strip():
         raise RetroCornerError("retro_corner.timezone はIANA timezone文字列である必要があります")
     try:
@@ -163,6 +206,11 @@ def load_retro_corner_config(g: GlobalConfig) -> RetroCornerConfig:
         randomize_start=cfg.randomize_start,
         start_window_minutes=cfg.start_window_minutes,
         target_matches=cfg.target_matches,
+        mode=cfg.mode,
+        lottery_probability=float(cfg.lottery_probability),
+        lottery_minute=cfg.lottery_minute,
+        lottery_wait_minutes=cfg.lottery_wait_minutes,
+        lottery_avoid_repeat=cfg.lottery_avoid_repeat,
     )
 
 
@@ -244,6 +292,7 @@ class RetroCornerManager:
         ensure_runtime: Callable[[], None] | None = None,
         chat: Callable[[str], None] | None = None,
         spawn=None,
+        rng: random.Random | None = None,
     ):
         self.g = g
         self.config = config or load_retro_corner_config(g)
@@ -258,6 +307,7 @@ class RetroCornerManager:
         self._ensure_runtime = ensure_runtime or self._default_ensure_runtime
         self._chat = chat or (lambda text: enqueue_chat(self.g, text, source="retro-corner"))
         self._spawn = spawn or self._default_spawn_improve_proc
+        self._rng = rng or random.Random()
         self.state_path = Path(g.state_dir) / STATE_FILE
         self.lock_path = Path(g.state_dir) / LOCK_FILE
         self.tick_guard_path = Path(g.state_dir) / TICK_GUARD_FILE
@@ -321,8 +371,9 @@ class RetroCornerManager:
         game = state.get("game")
         if not isinstance(game, str) or not game:
             return
+        lead = "今回は" if getattr(self.config, "mode", "daily") == "lottery" else "本日は"
         text = (
-            "レトロゲームコーナーです。本日は"
+            "レトロゲームコーナーです。" + lead
             + corner_intro(self.g, game)
             + describe_strategy_change(self.g.state_dir, game)
         )
@@ -392,8 +443,8 @@ class RetroCornerManager:
                 return game
         return None
 
-    def _validate_games(self) -> None:
-        for name in self.config.games:
+    def _validate_games(self, names: list[str] | None = None) -> None:
+        for name in names if names is not None else self.config.games:
             try:
                 game = load_game(self.g, name)
             except Exception as exc:
@@ -589,43 +640,58 @@ class RetroCornerManager:
             self._finish_locked(state, now)
 
     def _begin_locked(
-        self, now: dt.datetime, *, scheduled: bool
+        self,
+        now: dt.datetime,
+        *,
+        scheduled: bool,
+        target_override: str | None = None,
+        extra_state: dict[str, object] | None = None,
     ) -> tuple[dict[str, object] | None, CornerResult | None]:
+        """corner を開始する。target_override (抽選モード) は日次の時刻・試行台帳の判定を
+        すべて飛ばし、指定ゲームだけを検証して始める。"""
         self._reconcile_stale_locked(now)
         existing = self._read_state()
         if existing.get("status") == "active":
             if scheduled:
                 return None, CornerResult("noop", detail="already-active")
             raise RetroCornerError("retro cornerは既にactiveです")
-        if (
-            scheduled
-            and not getattr(self.config, "daily_each_game", False)
-            and existing.get("date") == now.date().isoformat()
-            and existing.get("status") in TERMINAL_STATUSES
-        ):
-            return None, CornerResult("noop", detail="already-ran-today")
-
-        target = select_game(self.config.games, now.date())
-        attempts = dict(existing.get("daily_attempts") or {})
         # サブクラス corner (soren91/nethack) の config dataclass には新フィールドが
         # 無いため、既定値は getattr で落とす (後方互換)。
         daily_each_game = getattr(self.config, "daily_each_game", False)
         randomize_start = getattr(self.config, "randomize_start", False)
-        if daily_each_game:
-            due = self._due_game(now, existing)
-            if due is None:
-                if set(attempts.get(now.date().isoformat(), [])) >= set(self.config.games):
-                    return None, CornerResult("noop", detail="already-ran-today")
-                return None, CornerResult("noop", detail="start-window-not-due")
-            target = due
-            if scheduled_start(self.config, target, now.date()) > now:
-                return None, CornerResult("noop", detail="start-window-not-due")
-            attempts.setdefault(now.date().isoformat(), []).append(target)
-        elif randomize_start:
-            if scheduled_start(self.config, target, now.date()) > now:
-                return None, CornerResult("noop", detail="start-window-not-due")
+        attempts: dict = {}
+        if target_override is not None:
+            target = target_override
+        else:
+            if (
+                scheduled
+                and not daily_each_game
+                and existing.get("date") == now.date().isoformat()
+                and existing.get("status") in TERMINAL_STATUSES
+            ):
+                return None, CornerResult("noop", detail="already-ran-today")
 
-        self._validate_games()
+            target = select_game(self.config.games, now.date())
+            attempts = dict(existing.get("daily_attempts") or {})
+            if daily_each_game:
+                due = self._due_game(now, existing)
+                if due is None:
+                    if set(attempts.get(now.date().isoformat(), [])) >= set(self.config.games):
+                        return None, CornerResult("noop", detail="already-ran-today")
+                    return None, CornerResult("noop", detail="start-window-not-due")
+                target = due
+                if scheduled_start(self.config, target, now.date()) > now:
+                    return None, CornerResult("noop", detail="start-window-not-due")
+                attempts.setdefault(now.date().isoformat(), []).append(target)
+            elif randomize_start:
+                if scheduled_start(self.config, target, now.date()) > now:
+                    return None, CornerResult("noop", detail="start-window-not-due")
+
+        if target_override is not None:
+            self._validate_games([target])
+        else:
+            # サブクラス (soren91/nethack) は引数なしで override しているため、通常経路は従来どおり。
+            self._validate_games()
         self._ensure_runtime()
         previous = self._active_game_reader()
         ends_at = now + dt.timedelta(minutes=self.config.duration_minutes)
@@ -640,9 +706,13 @@ class RetroCornerManager:
             "completed_at": None,
             "last_error": None,
         }
-        if getattr(self.config, "daily_each_game", False):
+        if target_override is not None:
+            state["target_matches"] = getattr(self.config, "target_matches", 3)
+        elif daily_each_game:
             state["daily_attempts"] = attempts
             state["target_matches"] = getattr(self.config, "target_matches", 3)
+        if extra_state:
+            state.update(extra_state)
         self._write_state(state)
         try:
             self._transition_to(previous, target)
@@ -743,6 +813,8 @@ class RetroCornerManager:
         with self._tick_guard() as single:
             if not single:
                 return CornerResult("noop", detail="already-running")
+            if getattr(self.config, "mode", "daily") == "lottery":
+                return self._lottery_tick()
             if self.config.require_program_boundary:
                 return self._boundary_tick()
             return self._legacy_tick()
@@ -840,6 +912,153 @@ class RetroCornerManager:
                 active["date"] = state["date"]
                 self._write_state(active)
         return result if result is not None else self._wait_and_finish(active)
+
+    # ---- 毎時抽選モード -------------------------------------------------------
+
+    @staticmethod
+    def _required_executables(game) -> list[str]:
+        raw = game.raw.get("retro_corner", {}) if isinstance(game.raw, dict) else {}
+        required = raw.get("requires", []) if isinstance(raw, dict) else []
+        return [r for r in required if isinstance(r, str) and r] if isinstance(required, list) else []
+
+    @staticmethod
+    def _executable_exists(path: str) -> bool:
+        if "/" in path:
+            return os.path.isfile(path) and os.access(path, os.X_OK)
+        return shutil.which(path) is not None
+
+    def _playable_games(self) -> list[str]:
+        """設定・種別が正しく、必要な実行ファイル ([retro_corner].requires) が実在するゲーム。"""
+        playable = []
+        for name in self.config.games:
+            try:
+                self._validate_games([name])
+                game = load_game(self.g, name)
+            except Exception:
+                # 1つの壊れたゲーム設定で抽選 tick 全体を落とさず、遊べないものとして除外する。
+                continue
+            if all(self._executable_exists(path) for path in self._required_executables(game)):
+                playable.append(name)
+        return playable
+
+    def _lottery_pick(self, state: dict[str, object]) -> str | None:
+        candidates = self._playable_games()
+        if getattr(self.config, "lottery_avoid_repeat", True) and len(candidates) > 1:
+            candidates = [name for name in candidates if name != state.get("game")] or candidates
+        return self._rng.choice(candidates) if candidates else None
+
+    def _other_corner_busy(self) -> str | None:
+        """他コーナーの進行中/待機中、または切替中なら理由。抽選はこの場合取りやめる。"""
+        from .corner_boundary import other_corner_busy
+
+        try:
+            self._active_game_reader()
+        except RetroCornerError:
+            return "game-switch-in-progress"
+        return other_corner_busy(self.g, self.state_path, now=self._local_now().timestamp())
+
+    def _lottery_starting_is_stale(self, state: dict[str, object], now: dt.datetime) -> bool:
+        try:
+            started = dt.datetime.fromisoformat(str(state.get("started_at")))
+        except (TypeError, ValueError):
+            return True
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=self.tz)
+        return now - started > dt.timedelta(minutes=STARTING_STALE_MINUTES)
+
+    def _record_lottery(self, record: dict[str, object]) -> None:
+        with self._locked():
+            state = self._read_state()
+            state["lottery"] = record
+            self._write_state(state)
+
+    def _lottery_tick(self) -> CornerResult:
+        """毎時1回、確率で発火を抽選する。
+
+        当たれば遊べるゲームを無作為に選び、target_matches 試合 (上限 duration_minutes) 遊んで
+        元のゲームへ戻る。他コーナーが進行中/待機中なら抽選そのものを取りやめる (待たない)。
+        抽選結果は発火前に state へ記録するので、tick の再起動・重複で同じ時に引き直さない。
+        抽選は毎正時に起動する固定枠のコーナーが先に枠を取れるよう lottery_minute 分に行う。
+        """
+        from .corner_boundary import CornerWaitExpired, program_slot
+
+        cfg = self.config
+        now = self._local_now()
+        if not cfg.enabled:
+            return CornerResult("noop", detail="disabled")
+        slot = now.strftime("%Y-%m-%dT%H")
+        with self._locked():
+            self._reconcile_stale_locked(now)
+            state = self._read_state()
+            status = state.get("status")
+            if status == "active":
+                return CornerResult("noop", detail="already-active")
+            if status == "starting":
+                if not self._lottery_starting_is_stale(state, now):
+                    return CornerResult("noop", detail="already-starting")
+                state.update(status="interrupted", completed_at=now.isoformat())
+            drawn = state.get("lottery")
+            if isinstance(drawn, dict) and drawn.get("slot") == slot:
+                return CornerResult("noop", detail="already-drawn")
+            if not cfg.lottery_minute <= now.minute < cfg.lottery_minute + LOTTERY_DRAW_WINDOW_MINUTES:
+                return CornerResult("noop", detail="outside-window")
+
+            record: dict[str, object] = {
+                "slot": slot,
+                "at": now.isoformat(),
+                "probability": cfg.lottery_probability,
+            }
+            game: str | None = None
+            busy = self._other_corner_busy()
+            if busy is not None:
+                record.update(result="cancelled", reason=busy)
+            else:
+                roll = self._rng.random()
+                record["roll"] = round(roll, 6)
+                if roll >= cfg.lottery_probability:
+                    record.update(result="miss")
+                else:
+                    game = self._lottery_pick(state)
+                    if game is None:
+                        record.update(result="cancelled", reason="no-playable-game")
+                    else:
+                        record.update(result="fire", game=game)
+            state["lottery"] = record
+            self._write_state(state)
+        if game is None:
+            reason = record.get("reason")
+            return CornerResult(
+                "noop", detail=f"lottery-{record['result']}" + (f":{reason}" if reason else "")
+            )
+
+        deadline = now.timestamp() + cfg.lottery_wait_minutes * 60
+        try:
+            if cfg.require_program_boundary:
+                with program_slot(
+                    self.g,
+                    self.state_path,
+                    requested_at=now.timestamp(),
+                    wait_deadline_ts=deadline,
+                    wait_boundary=True,
+                    sleep=self._sleep,
+                    now=lambda: self._local_now().timestamp(),
+                ):
+                    return self._lottery_run(game, record)
+            return self._lottery_run(game, record)
+        except CornerWaitExpired:
+            # 境界/枠の待ちが上限を超えた = 他が塞いでいる。実行せず取りやめる。
+            self._record_lottery({**record, "result": "cancelled", "reason": "wait-expired"})
+            return CornerResult("noop", detail="lottery-cancelled:wait-expired")
+
+    def _lottery_run(self, game: str, record: dict[str, object]) -> CornerResult:
+        with self._locked():
+            state, result = self._begin_locked(
+                self._local_now(), scheduled=True, target_override=game, extra_state={"lottery": record}
+            )
+        if result is not None:
+            return result
+        assert state is not None
+        return self._wait_and_finish(state)
 
     def _legacy_tick(self) -> CornerResult:
         now = self._local_now()
