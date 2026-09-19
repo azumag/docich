@@ -25,7 +25,7 @@ from typing import Callable
 PRODUCTION_ROOT = Path("/home/ubuntu/soren")
 MAX_GAMES = 3
 DEFAULT_GAMES = 2
-MAX_AGE_MS = 24 * 60 * 60 * 1000
+MAX_AGE_MS = 72 * 60 * 60 * 1000
 MAX_HISTORY_BYTES = 2 * 1024 * 1024
 MAX_SUMMARY_BYTES = 256 * 1024
 MAX_STRATEGY_BYTES = 256 * 1024
@@ -204,14 +204,14 @@ def prepare_export(
 
     selected_games = _safe_games(root, now_ms, game_count)
     if not selected_games:
-        raise EvidenceError("no completed Soren91 evidence in the last 24 hours")
+        raise EvidenceError("no completed Soren91 evidence in the last 72 hours")
     games = [game for game, _token in selected_games]
 
     staging = Path(tempfile.mkdtemp(prefix=".soren91-evidence-", dir=state_dir))
     manifest: dict[str, object] = {
         "schema": 1,
         "createdAtMs": now_ms,
-        "windowHours": 24,
+        "windowHours": 72,
         "games": games,
         "files": [],
     }
