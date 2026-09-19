@@ -240,27 +240,46 @@ REST_HOLD_INTENTS = frozenset(
     }
 )
 
+# Emergencies ask for a recovery plan (quaff, pray, flee) that only a strategic
+# layer can choose, so the policy deliberately produces no action.  With no
+# strategist configured that is again a permanent freeze: observed on production
+# 2026-09-19 at HP 4/16, where the agent reported "0 actions" every iteration
+# until the corner's stall guard ended it.  Waiting a turn is not the plan, but
+# for these two it beats freezing, because HP and most status effects only
+# recover as turns pass.  ``food_emergency`` is deliberately excluded: resting
+# burns nutrition, so passing turns makes starvation worse, and eating is not on
+# the reviewed action surface.  The shared no-adjacent-creature rule still
+# applies, so a weakened hero never rests next to something that can hit it.
+REST_EMERGENCY_INTENTS = frozenset({"survival_emergency", "status_emergency"})
+
 
 def rest_action_for_hold(
     decision: PolicyDecision, obs: NethackObservation
 ) -> Action | None:
     """The single reviewed rest action for a stalled hold, else ``None``.
 
-    Only a mid-level, non-LLM hold that produced no action, with a uniquely
-    visible player, no prompt, and no recognized adjacent creature.  Emergencies
-    (which need a recovery plan) and unknown/contact screens stay holds: a stray
-    ``.`` on a prompt or beside a possibly hostile creature is not something
-    this guard may risk.
+    Requires a hold that produced no action, a uniquely visible player, no
+    prompt, and no recognized adjacent creature.  Within that, either a
+    mid-level non-LLM hold (``REST_HOLD_INTENTS``) or one of the two
+    emergencies time alone can improve (``REST_EMERGENCY_INTENTS``).  Anything
+    else -- an unknown screen, ``food_emergency``, a hold that already acts --
+    stays a hold: a stray ``.`` on a prompt or beside a possibly hostile
+    creature is not something this guard may risk.
     """
     if (
         decision.actions
-        or decision.requires_llm
-        or decision.layer != "midlevel"
-        or decision.intent not in REST_HOLD_INTENTS
         or obs.prompt != "none"
         or obs.player is None
         or _visible_creature_contact(obs)
     ):
+        return None
+    if decision.layer == "midlevel" and not decision.requires_llm:
+        allowed = decision.intent in REST_HOLD_INTENTS
+    elif decision.layer == "strategic":
+        allowed = decision.intent in REST_EMERGENCY_INTENTS
+    else:
+        allowed = False
+    if not allowed:
         return None
     return Action(type="text", text=REST_KEY)
 

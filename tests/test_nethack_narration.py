@@ -337,9 +337,21 @@ def test_brain_does_not_rest_when_it_has_a_real_step_or_needs_a_plan():
     step = brain.decide(observation("msg\n###@.\n     \n" + _status()))
     assert [a.text for a in step] in (["h"], ["j"], ["k"], ["l"])
     assert brain.last_decision.intent == "explore_step"
-    # HP <= 25% is an emergency that needs a recovery plan, not a nap
-    assert brain.decide(observation("msg\n###@.\n     \n" + _status(hp="2(10)"))) == []
+    # Hunger is the one emergency resting makes worse, so it still holds.
+    assert brain.decide(observation("msg\n###@.\n     \n" + _status(extra="Weak"))) == []
+    assert brain.last_decision.intent == "food_emergency"
+
+
+def test_brain_waits_a_turn_at_critical_hp_instead_of_freezing():
+    # Production 2026-09-19: HP 4/16 with nothing adjacent reported "0 actions"
+    # on every iteration until the corner's stall guard ended it.
+    brain = build_brain(SimpleNamespace(), game())
+    actions = brain.decide(observation("msg\n###@.\n     \n" + _status(hp="4(16)")))
+    assert [(a.type, a.text) for a in actions] == [("text", ".")]
     assert brain.last_decision.intent == "survival_emergency"
+    assert brain.last_decision.actions == ()
+    # ...but not while something stands next to the weakened hero.
+    assert brain.decide(observation("msg\n##@d.\n     \n" + _status(hp="4(16)"))) == []
 
 
 def test_agent_loop_sends_the_rest_key_for_a_stalled_hold():
