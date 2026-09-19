@@ -124,6 +124,26 @@ def _paper_improve_stale(data):
     return int(age > PAPER_IMPROVE_STALE_SEC)
 
 
+def budget_exhausted_metrics(data):
+    """Project budget exhaustion to fixed component counters only.
+
+    The collector owns the dynamic-label trust boundary and emits only the
+    fixed COMPONENTS mapping. Re-check the shape here before publishing it in a
+    GitHub issue; inconsistent maps fail closed to zeroed attribution while the
+    aggregate count remains visible.
+    """
+    ai = data.get("ai") if isinstance(data, dict) else None
+    ai = ai if isinstance(ai, dict) else {}
+    total = _integer(ai, "budget_exhausted_15m")
+    raw_counts = ai.get("budget_exhausted_components")
+    raw_counts = raw_counts if isinstance(raw_counts, dict) else {}
+    counts = {component: _integer(raw_counts, component) for component in COMPONENTS}
+    consistent = sum(counts.values()) == total
+    if not consistent:
+        counts = {component: 0 for component in COMPONENTS}
+    return total, counts, consistent
+
+
 def attribute_queue_giveups(data):
     """Return fixed caller buckets, failing closed to ``unknown``.
 
@@ -194,6 +214,13 @@ def render(data):
     summary = f"{summary},ai_rate_limit_pressure={rate_limit_pressure(ai)}"
     summary += "," + ",".join(
         f"ai_{name}={_integer(ai or {}, name)}" for name in CHAIN_SUMMARY_KEYS
+    )
+    budget_total, budget_counts, budget_consistent = budget_exhausted_metrics(data)
+    summary += f",ai_budget_exhausted_15m={budget_total}"
+    summary += f",ai_budget_exhausted_attribution_consistent={int(budget_consistent)}"
+    summary += "," + ",".join(
+        f"ai_budget_exhausted_component_{component}={budget_counts[component]}"
+        for component in COMPONENTS
     )
     summary += "," + ",".join(_improvement_metrics(data))
     summary += f",corner_paper_improve_stale={_paper_improve_stale(data)}"
