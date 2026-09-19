@@ -40,6 +40,8 @@ _CONDITIONS = (
     "Stun",
     "Hallu",
     "Sick",
+    "Stone",
+    "TermIll",
     "FoodPois",
     "Ill",
     "Slime",
@@ -49,6 +51,8 @@ _CONDITIONS = (
     "Fly",
     "Ride",
 )
+VISIBLE_CONDITIONS = frozenset(_CONDITIONS)
+PROMPT_KINDS = frozenset({"none", "more", "yes_no", "direction", "selection", "text", "unknown"})
 
 
 @dataclass(frozen=True)
@@ -144,8 +148,6 @@ class NethackObservation:
 def _prompt_kind(text: str, message: str) -> str:
     lower = text.lower()
     msg = message.lower()
-    if "--more--" in lower:
-        return "more"
     if "in what direction" in lower or "what direction" in msg:
         return "direction"
     if "(y/n)" in lower or "[yn" in lower or "yes or no" in lower:
@@ -154,6 +156,18 @@ def _prompt_kind(text: str, message: str) -> str:
         return "selection"
     if "call a" in msg or "name an" in msg:
         return "text"
+    # Unknown questions/menus are blocking, even with a stale map and status
+    # behind them. Never interpret a movement key (notably diagonal y/n) as an
+    # answer. A known question takes precedence over a stale More marker.
+    if (
+        "?" in msg
+        or msg.rstrip().endswith(":")
+        or re.search(r"\[[^\]]+\]", msg)
+        or re.search(r"\((?:end|\d+ of \d+)\)", lower)
+    ):
+        return "unknown"
+    if "--more--" in lower:
+        return "more"
     return "none"
 
 

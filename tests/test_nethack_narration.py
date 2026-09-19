@@ -306,7 +306,6 @@ SAFE_STALLED_FRAMES = {
     "exploration_blocked": "msg\n#-@-#\n-----\n" + _status(),
     "hold_low_hp": "msg\n###@.\n     \n" + _status(hp="4(10)"),
     "hold_impaired": "msg\n###@.\n     \n" + _status(extra="Blind"),
-    "seek_food": "msg\n###@.\n     \n" + _status(extra="Hungry"),
 }
 
 
@@ -323,7 +322,6 @@ def test_brain_rests_one_turn_instead_of_freezing_on_a_safe_stalled_hold(intent,
 @pytest.mark.parametrize("intent,text", [
     ("assess_contact", "msg\n##@d.\n     \n" + _status()),
     ("hold_low_hp", "msg\n##@d.\n     \n" + _status(hp="4(10)")),
-    ("hold_impaired", "msg\n##@d.\n     \n" + _status(extra="Blind")),
     ("seek_food", "msg\n##@d.\n     \n" + _status(extra="Hungry")),
 ])
 def test_brain_never_rests_beside_a_recognized_creature(intent, text):
@@ -338,12 +336,12 @@ def test_brain_never_rests_beside_a_recognized_creature(intent, text):
     assert brain.last_decision.actions == ()
 
 
-def test_brain_freezes_only_when_no_safe_step_exists_beside_a_creature():
-    # Boxed in by walls with a creature adjacent: nothing safe to step onto,
-    # and resting is not allowed, so holding is the only honest answer.
+def test_brain_uses_normal_bump_only_after_no_safe_step_exists():
+    # No terrain exit: one normal bump can fight or displace. Never force-fight.
     brain = build_brain(SimpleNamespace(), game())
     walled = "msg\n-d@-\n----\n" + _status(hp="4(10)")
-    assert brain.decide(observation(walled)) == []
+    assert [a.text for a in brain.decide(observation(walled))] == ["h"]
+    assert brain.last_progress_decision.intent == "bump_creature"
     assert brain.last_decision.actions == ()
 
 
@@ -389,14 +387,13 @@ def test_agent_loop_sends_the_rest_key_for_a_stalled_hold():
     assert adapter.act.call_args.args[0].text == "."
 
 
-def test_a_pet_blocking_the_only_exit_is_waited_out_instead_of_frozen_on():
-    # The classic freeze: the pet stands in the only way out, cardinal cells are
-    # blocked, nothing moves while we wait, and the hold repeats forever.
-    # Resting lets the pet move; the next frame has a step again.
+def test_a_feline_blocking_the_only_exit_gets_one_ordinary_bump():
+    # Text cannot establish pet identity. Ordinary movement lets NetHack
+    # displace a pet or ask about peaceful contact; '.' is no longer allowed.
     brain = build_brain(SimpleNamespace(), game())
     blocked = "msg\n-f@-\n----\n" + _status()
-    assert [a.text for a in brain.decide(observation(blocked))] == ["."]
-    assert brain.last_decision.intent == "exploration_blocked"
+    assert [a.text for a in brain.decide(observation(blocked))] == ["h"]
+    assert brain.last_decision.intent == "assess_contact"
     cleared = "msg\n-.@-\n----\n" + _status()
     assert [a.text for a in brain.decide(observation(cleared))] == ["h"]
     assert brain.last_decision.intent == "explore_step"

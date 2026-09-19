@@ -22,7 +22,7 @@ from typing import Callable
 from .config import ConfigError, GlobalConfig, load_global
 from .game_switch import atomic_write_json
 from .nethack_inventory import VisibleInventoryItem
-from .nethack_observation import NethackObservation, Vitals, normalize_tty
+from .nethack_observation import NethackObservation, Vitals, normalize_tty, PROMPT_KINDS, VISIBLE_CONDITIONS
 from .nethack_policy import NethackLayeredPolicy
 from .nethack_regression import NethackRegressionError, _load_suite, evaluate_suite
 from .nethack_strategist import (
@@ -52,13 +52,8 @@ _ALLOWED_VITAL_KEYS = frozenset(
 _ALLOWED_ITEM_KEYS = frozenset(
     {"letter", "description", "quantity", "buc", "equipped", "unpaid", "category_hint"}
 )
-_ALLOWED_PROMPTS = frozenset({"none", "more", "yes_no", "direction", "selection", "text"})
-_ALLOWED_CONDITIONS = frozenset(
-    {
-        "Hungry", "Weak", "Fainting", "Fainted", "Starved", "Blind", "Conf", "Stun",
-        "Hallu", "Sick", "FoodPois", "Ill", "Slime", "Strngl", "Deaf", "Lev", "Fly", "Ride",
-    }
-)
+_ALLOWED_PROMPTS = PROMPT_KINDS
+_ALLOWED_CONDITIONS = VISIBLE_CONDITIONS
 
 
 class NethackCandidateError(RuntimeError):

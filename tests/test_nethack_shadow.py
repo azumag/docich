@@ -56,6 +56,20 @@ def public_payload(obs, *, captured_at=100.0, source="shadow-test") -> dict[str,
 
 
 class TestShadowSchema(unittest.TestCase):
+    def test_unknown_prompt_and_new_tty_conditions_round_trip_and_compare(self) -> None:
+        for condition in ("Stone", "TermIll"):
+            text = tty_text().replace("msg", "Unknown question?").replace("T:12", f"T:12 {condition}")
+            obs = normalize_tty(text, cols=80, rows=5)
+            self.assertEqual(obs.prompt, "unknown")
+            self.assertIn(condition, obs.conditions)
+            snapshot = parse_shadow_snapshot(json.dumps(public_payload(obs)))
+            self.assertEqual(snapshot.to_observation().prompt, "unknown")
+            self.assertEqual(snapshot.to_observation().conditions, obs.conditions)
+            self.assertTrue(compare_public_observations(obs, snapshot).matches)
+            changed = public_payload(obs)
+            changed["public"]["prompt"] = "none"
+            self.assertIn("prompt", compare_public_observations(obs, parse_shadow_snapshot(changed)).mismatches)
+
     def test_valid_public_snapshot_round_trips(self) -> None:
         obs = normalize_tty(tty_text(), cols=80, rows=5)
         snapshot = parse_shadow_snapshot(public_payload(obs))

@@ -11,6 +11,7 @@ import random
 import shlex
 import subprocess
 import sys
+from copy import deepcopy
 
 from .. import procs
 from ..actions import Action, ActionError, parse_actions
@@ -94,8 +95,8 @@ class NethackPolicyBrain:
     """Layered CLI NetHack brain with observational sidecars.
 
     Gameplay actions still come exclusively from the reviewed deterministic
-    P3b policy surface (More-space and one safe visible h/j/k/l exploration
-    step). P3e advisory, P4a observation shadow, and P5e candidate shadow are
+    policy and progress resolver (one observed-context-checked key).
+    P3e advisory, P4a observation shadow, and P5e candidate shadow are
     observational only and are never translated into gameplay Actions here.
     """
 
@@ -116,6 +117,12 @@ class NethackPolicyBrain:
         self.cols = int(raw.get("cols", 80)) if isinstance(raw, dict) else 80
         self.rows = int(raw.get("rows", 24)) if isinstance(raw, dict) else 24
         self.policy = NethackLayeredPolicy()
+        from ..nethack_progress import NethackProgressResolver
+        self.progress = NethackProgressResolver()
+        self.last_progress_decision = None
+        self._action_plan = None
+        self._action_validated = False
+        self._startup_checkpoint = None
         self.last_decision = None
         self.last_shadow = None
         self.last_advisory = None
@@ -133,38 +140,33 @@ class NethackPolicyBrain:
             raise AdapterError(f"NetHack sidecar設定が不正です: {exc}") from exc
 
     def decide(self, obs: Observation) -> list[Action]:
+        self.discard_action_plan()
         if obs.adapter != "cli" or obs.text is None:
             return []
         from ..nethack_observation import normalize_tty
-        from ..nethack_policy import (
-            assert_p3b_safe,
-            assert_rest_safe,
-            assert_step_out_safe,
-            rest_action_for_hold,
-            step_out_of_hold,
-        )
+        from ..nethack_policy import assert_p3b_safe
 
         normalized = normalize_tty(obs.text, cols=self.cols, rows=self.rows)
+        startup_before = dict(self.startup.__dict__)
         startup_actions = self.startup.consider(normalized)
         if startup_actions is not None:
+            if startup_actions:
+                self._action_plan = (normalized, deepcopy(startup_actions), None)
+                self._startup_checkpoint = startup_before
             return startup_actions
+        self.progress.observe(normalized, self.policy.explorer)
         decision = self.policy.decide(normalized)
         assert_p3b_safe(decision)
         self.last_decision = decision
-        production_actions = list(decision.actions)
-        # A hold on a turn-based game never resolves by itself: let one turn
-        # pass (rest) so a pet can move, HP can recover, and so on.
-        rest = rest_action_for_hold(decision, normalized)
-        if rest is not None:
-            production_actions = [rest]
-            assert_rest_safe(production_actions)
-        else:
-            # Resting was declined (typically a creature is adjacent). Standing
-            # still there is a deadlock, so step away on reviewed terrain.
-            step = step_out_of_hold(decision, normalized, self.policy.explorer)
-            if step is not None:
-                production_actions = [step]
-                assert_step_out_safe(production_actions)
+        resolved = self.progress.resolve(decision, normalized, self.policy.explorer)
+        if self.last_progress_decision is None or resolved.intent != self.last_progress_decision.intent:
+            # Fixed policy enums only; this is a plan, not proof of actuation
+            # or turn progress. Never persist raw prompts in diagnostics.
+            print(f"[nethack-progress] planned={resolved.intent}", file=sys.stderr)
+        self.last_progress_decision = resolved
+        production_actions = list(self.last_progress_decision.actions)
+        if production_actions:
+            self._action_plan = (normalized, deepcopy(production_actions), deepcopy(resolved))
         try:
             self.narrator.consider(normalized, decision)
         except Exception:
@@ -212,6 +214,66 @@ class NethackPolicyBrain:
                 file=sys.stderr,
             )
         return production_actions
+
+    def validate_action(self, action: Action, fresh: Observation, *, canonical=None) -> bool:
+        """Called by the loop inside its send lock, with a fresh TTY capture.
+
+        Exact normalized frame equality intentionally rejects even a changed
+        message/turn, not just a changed target. ts is transport metadata and
+        is not compared. No progress memory is mutated on rejection.
+        """
+        from ..nethack_observation import normalize_tty
+        from ..nethack_progress import assert_production_safe
+
+        self._action_validated = False
+        if self._action_plan is None or fresh.game != "nethack" or fresh.adapter != "cli" or fresh.text is None:
+            return False
+        planned_obs, actions, decision = self._action_plan
+        if len(actions) != 1 or action != actions[0]:
+            return False
+        current = normalize_tty(fresh.text, cols=self.cols, rows=self.rows)
+        if current != planned_obs:
+            return False
+        if decision is not None and decision.intent == "decline_save":
+            # During draining the coordinator owns S/confirmation/cancel. A
+            # fresh save prompt alone is NOT permission for the agent to send
+            # n. Missing state (including standalone unit calls) fails closed.
+            if (
+                not isinstance(canonical, dict)
+                or canonical.get("phase") != "ready"
+                or canonical.get("operation") is not None
+                or canonical.get("request_id") is not None
+                or not isinstance(canonical.get("active"), dict)
+                or canonical["active"].get("game") != "nethack"
+            ):
+                return False
+        if decision is not None:
+            assert_production_safe(decision, current)
+        # Startup has its own reviewed answers; exact-frame equality applies
+        # there too, without passing gameplay y/n semantics to the startup gate.
+        self._action_validated = True
+        return True
+
+    def action_sent(self, action: Action) -> None:
+        """Transport acknowledgement, never proof that NetHack advanced."""
+        if self._action_plan is None or not self._action_validated:
+            raise RuntimeError("NetHack action was not freshly validated")
+        planned_obs, actions, decision = self._action_plan
+        if action != actions[0]:
+            raise RuntimeError("NetHack action changed after validation")
+        if decision is not None:
+            self.progress.sent(decision, planned_obs)
+        self._startup_checkpoint = None
+        self.discard_action_plan()
+
+    def discard_action_plan(self) -> None:
+        if self._startup_checkpoint is not None:
+            # A startup answer rejected before transport must remain retryable.
+            self.startup.__dict__.clear()
+            self.startup.__dict__.update(self._startup_checkpoint)
+        self._startup_checkpoint = None
+        self._action_plan = None
+        self._action_validated = False
 
 
 class ResolverBrain:

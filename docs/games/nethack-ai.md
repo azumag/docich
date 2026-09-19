@@ -29,7 +29,7 @@ NethackObservation
     gold
     turn
   conditions               # visible status words only
-  prompt                    # more / yes_no / direction / selection / text / none
+  prompt                    # more / yes_no / direction / selection / text / unknown / none
   local_map(radius=2)
   visible_neighbors()
 ```
@@ -85,37 +85,19 @@ blank / unseen area
 
 隠れた罠など、人間にも見えていない情報は回避できない。P3bは「可視情報から分かる危険を勝手に踏まない」範囲を保証する。
 
-#### 保留のあいだもターンを進める（rest）
+#### 保留の解決（production progress resolver）
 
-NetHackはターン制なので、agentが何もしない間はゲーム内で何も変わらず、同じ画面に対して同じ保留が永久に返る
-（ペット相当の曖昧なglyphが唯一の通路を塞ぐ、HPは時間でしか回復しない、など。本番で実際に停止した）。
-そこで production agent は、次の**中位・LLM不要の保留**で policy が無入力、playerが一意、promptなし、かつ認識済みの隣接creatureがいない場合に限り、reviewed な単一キー `.`（1ターン休む）を実行する。
+現在の実行契約は [本番の行動・保留契約](nethack-progress-contract.md) を正本とする。
+探索は縦横を優先し、候補がなければ斜め `y/u/b/n` も調べる。隣接creatureがいる場合、退避を先に試し、
+可視の退避先がない場合だけ通常の方向入力1個で接触する。攻撃確認は `n` で拒否し、同じ拒否を繰り返さない。
+これは旧P3bからの意図した行動面拡張であり、生存を保証しない。
 
-| policy の判定 | 実行する入力 |
-|---|---|
-| `exploration_blocked` / `hold_low_hp` / `hold_impaired` / `seek_food`、かつ認識済み隣接creatureなし | `.` |
-| `assess_contact`、または上記 hold でも認識済み隣接 creature あり | **休まず**、explorer の安全な1歩（`h`/`j`/`k`/`l`）。無ければ無入力 |
-| `survival_emergency` / `status_emergency`、かつ認識済み隣接creatureなし | `.`（時間経過でしか回復しないため） |
-| `food_emergency`（休むと空腹が進み、食事は安全面の外） | 無入力のまま |
-| `inspect_screen`（playerが一意でない）・プロンプト表示中 | 無入力のまま（`.` を誤入力させない） |
+低HP・移動障害の保留で隣接creatureがなければ `.` を使えるが、重篤状態・深刻な飢餓は低HPと同時でも無入力を維持する。
+`Hungry` では探索を優先して無制限のrestを避ける。`Blind/Conf/Stun/Hallu` では退避・接触を禁止する。
+`f` は猫科、`{` は噴水である。`f` を地形扱いして休む旧説明・実装は誤りだった。
 
-`Hungry` / 低HP / 状態異常はpolicy上、contact判定より先に決まる。そのため `rest_action_for_hold()` 自身が `visible_neighbors()` を再確認し、これらのhold名になっていても隣に認識済みcreatureが見えていれば `.` を送らない。敵味方不明の隣接相手へ無入力のまま1ターン渡して攻撃を受けることを、stall解消だけを理由に許可しない。
-
-緊急（`survival_emergency` / `status_emergency`）は本来 strategist の回復計画（薬・祈り・逃走）が要るが、strategist 未設定では「無入力」= ターン制では永久停止になる（2026-09-19 本番 HP 4/16 で実測、stall guard に切られるまで `0 件のアクション` を繰り返した）。`.` は計画の代わりにはならないが、HP と多くの状態異常は時間経過でしか回復しないため、凍り付くよりはよい。空腹だけは休むと悪化するので除外する。
-
-隣接 creature がいる hold は「休まない」だけでは**永久停止**になる。ターン制なので、ヒーローが動かなければ
-その creature も手番を得ず、画面は一切変化しない（2026-09-19 本番 generation 250 で実測: HP 4/16・`:` が斜め隣・
-90秒間フレーム完全同一・`0 件のアクション` が 63 行）。そこで休む代わりに **explorer が選んだ安全な1歩**を実行する。
-explorer は creature・アイテム・罠・扉・未知マスの上へは踏み込まないので、P3b の reviewed な移動面のままである。
-安全な1歩が無ければ（壁で囲まれている等）従来どおり無入力で、これは嘘のない「本当に打つ手が無い」状態である。
-`food_emergency` と `inspect_screen` は対象外。`assert_step_out_safe` は `h`/`j`/`k`/`l` 1個以外を拒否する。
-
-policy 自身の判定（`PolicyDecision`）は変えず、agent brain が実行する action だけを差し替える。
-strategy / advisory / shadow は従来どおり保留として観測する。`assert_rest_safe` は「`.` 1個だけ」以外を拒否する。
-連続して休み続けても TTY が変化しなければ、既存の stall guard（`stall_timeout_minutes`）がコーナーを終了する。
-
-注意: 観測はプレーンテキストで色を失うため、`f` は色によって噴水・猫（ペット/敵）のどれにもなり、区別できない。
-planner はどれであっても `f` の上へは踏み込まない一方、現行のcontact判定では `f` をcreature確定扱いしない。そのため、唯一の通路を `f` が塞ぐ既知のproduction stallではbounded restが引き続き可能。色を使った判別は今後の課題。
+policyの判断と実行候補を分離し、`last_decision` と `last_progress_decision` で観測する。
+候補が全て拒否された場合は `progress_blocked` として残し、未知のキーを推測して進めない。
 
 ### Strategic (P3c)
 
@@ -191,16 +173,19 @@ answer_prompt
 
 ## Fail-closed action guard
 
-P3b/P3c時点で自動actionとして許可するのは、明示された小さいsurfaceだけ:
+自動actionとして許可するのは、観測条件を満たした次のsurfaceだけ:
 
 ```text
 1. tactical / advance_message / Space
-2. tactical / decline_save / n
-3. midlevel / explore_step / h|j|k|l の1キー
-4. production hold fallback / . の1キー
+2. tactical / decline_save / n（canonical ready・境界要求なしを送信直前に確認）
+3. midlevel / explore_step / h|j|k|l|y|u|b|n の1キー
+4. production / retreat_step または bump_creature / 方向1キー
+5. production / rest_turn / . の1キー
+6. production / decline_attack / n（共有base policy/canaryには追加しない）
 ```
 
-4はpolicy actionそのものではなく `rest_action_for_hold()` によるbounded fallbackで、prompt/player/contact条件を別途確認し `assert_rest_safe()` が`.`以外を拒否する。攻撃、item使用、open、階段コマンド、任意prompt回答等はまだguardを通らない。
+`assert_production_safe()` が最終候補のprompt/player/status/targetを再検証する。
+強制攻撃、item使用、open、階段コマンド、任意prompt回答はguardを通らない。
 
 ## Brain integration
 
@@ -210,8 +195,10 @@ P3b/P3c時点で自動actionとして許可するのは、明示された小さ�
 TTY Observation
   -> normalize_tty
   -> NethackLayeredPolicy
-  -> reviewed-action guard
-  -> agent loop
+  -> NethackProgressResolver（保留解決・拒否記憶）
+  -> observed-context action guard
+  -> agent loop / shared_section内でfresh再観測・canonical境界確認
+  -> adapter.act成功後だけprogressへ送信通知
 ```
 
 P3cのstrategic schemaはこの横にある**未接続のadvisory境界**。次の段階でmodel dispatchを追加する場合も、直接agent actionへは繋がずproposal evaluator/executorを別に置く。
