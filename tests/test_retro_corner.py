@@ -596,6 +596,18 @@ class TestRetroCornerImproveSpawn(RetroCornerTestBase):
         state = mgr.status()
         self.assertEqual(state.get('improve_job', {}).get('spawned'), True)
 
+    def test_finish_persists_completed_before_spawning_improve(self):
+        spawned = []
+        mgr = self._manager_with_spawn([None], spawned, 'agent-a')
+        observed = []
+
+        def observe_state(argv, log_path):
+            observed.append(mgr._read_state())
+
+        mgr._spawn = observe_state
+        self.assertEqual(mgr.start().status, 'completed')
+        self.assertEqual(observed[0].get('status'), 'completed')
+
     def test_no_spawn_without_agents(self):
         spawned = []
         mgr = self._manager_with_spawn([None], spawned, '')

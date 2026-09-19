@@ -666,6 +666,11 @@ class RetroCornerManager:
                 completed_at=completed_at.isoformat(),
                 last_error=None,
             )
+            # Persist the terminal corner state before handing control to the
+            # independent improvement service.  systemd-run may start the
+            # child immediately; if it reads the old active state first, the
+            # improvement command returns wrong-status and silently skips.
+            self._write_state(state)
             self._spawn_improve_once(state)
             self._write_state(state)
             return self._state_result(state)
