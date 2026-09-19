@@ -521,6 +521,39 @@ class RetroCornerManager:
         # 子プロセスへ明示許可を引き継ぐ (tick の service 環境には無いため)。
         env = dict(os.environ)
         env["DOCICH_ALLOW_REAL_AI"] = "1"
+        if sys.platform == "linux" and os.environ.get("INVOCATION_ID"):
+            # setsid/start_new_session は systemd の cgroup を抜けない。
+            # retro-corner.service は KillMode=control-group の oneshot なので、
+            # 子を同じ cgroup で起動すると tick 終了時に改善も殺される。
+            # 改善とそのAI子プロセスを独立した bounded user service に投入し、
+            # 投入失敗時は親cgroupへ安全にフォールバックしない。
+            import uuid
+
+            repo_root = getattr(self.g, "repo_root", _repo_root())
+            command = [
+                "systemd-run", "--user", "--quiet", "--collect",
+                f"--unit=docich-retro-improve-{uuid.uuid4().hex}",
+                "--property=Type=exec",
+                "--property=RuntimeMaxSec=1500",
+                "--property=TimeoutStopSec=30",
+                "--property=UMask=0077",
+                f"--working-directory={repo_root}",
+                f"--property=StandardOutput=append:{Path(log_path).resolve()}",
+                f"--property=StandardError=append:{Path(log_path).resolve()}",
+                "--setenv=DOCICH_ALLOW_REAL_AI=1",
+                f"--setenv=PYTHONPATH={repo_root / 'src'}",
+            ]
+            if env.get("PATH"):
+                command.append(f"--setenv=PATH={env['PATH']}")
+            subprocess.run(
+                [*command, "--", *argv],
+                check=True,
+                timeout=30,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return
         with open(log_path, "ab") as log_fh:
             subprocess.Popen(
                 argv,
@@ -528,7 +561,7 @@ class RetroCornerManager:
                 stdout=log_fh,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
-                cwd=str(_repo_root()),
+                cwd=str(getattr(self.g, "repo_root", _repo_root())),
                 env=env,
             )
 

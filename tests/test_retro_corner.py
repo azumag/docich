@@ -604,8 +604,56 @@ class TestRetroCornerImproveSpawn(RetroCornerTestBase):
 
 
 class TestRetroCornerImproveSpawnEnv(RetroCornerTestBase):
-    def test_spawn_passes_real_ai_consent_to_child(self):
+    def test_systemd_spawn_is_independent_and_bounded(self):
+        from unittest.mock import patch
+
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return SimpleNamespace(returncode=0)
+
+        mgr, _ = self.manager(["sorengame"])
+        with patch.object(sys, "platform", "linux"), \
+             patch.dict(os.environ, {"INVOCATION_ID": "parent-corner"}, clear=False), \
+             patch("subprocess.run", side_effect=fake_run), \
+             patch("subprocess.Popen", side_effect=AssertionError("unsafe parent cgroup")):
+            mgr._default_spawn_improve_proc(
+                ["python3", "-m", "docich", "retro-corner", "improve-once"],
+                self.root / "run" / "x.log",
+            )
+
+        assert len(calls) == 1
+        argv, kwargs = calls[0]
+        assert argv[:4] == ["systemd-run", "--user", "--quiet", "--collect"]
+        assert any(item.startswith("--unit=docich-retro-improve-") for item in argv)
+        assert "--property=Type=exec" in argv
+        assert "--property=RuntimeMaxSec=1500" in argv
+        assert "--property=TimeoutStopSec=30" in argv
+        assert "--setenv=DOCICH_ALLOW_REAL_AI=1" in argv
+        assert f"--setenv=PYTHONPATH={self.g.repo_root / 'src'}" in argv
+        assert f"--property=StandardOutput=append:{(self.root / 'run' / 'x.log').resolve()}" in argv
+        assert f"--property=StandardError=append:{(self.root / 'run' / 'x.log').resolve()}" in argv
+        assert kwargs["check"] and kwargs["timeout"] == 30
+
+    def test_failed_systemd_submission_is_recorded_without_fallback(self):
+        from dataclasses import replace
+        from unittest.mock import patch
+
+        mgr, _ = self.manager(["sorengame"])
+        mgr.config = replace(mgr.config, improve_agents="test-agent")
+        state = {"date": "2026-09-06"}
+        with patch.object(sys, "platform", "linux"), \
+             patch.dict(os.environ, {"INVOCATION_ID": "parent-corner"}, clear=False), \
+             patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "systemd-run")), \
+             patch("subprocess.Popen", side_effect=AssertionError("unsafe parent cgroup")):
+            mgr._spawn_improve_once(state)
+
+        assert state["improve_job"]["spawned"] is False
+
+    def test_non_systemd_spawn_passes_real_ai_consent_to_child(self):
         import subprocess
+        from unittest.mock import patch
 
         calls = []
         real_popen = subprocess.Popen
@@ -619,7 +667,9 @@ class TestRetroCornerImproveSpawnEnv(RetroCornerTestBase):
         old = sp_module.Popen
         sp_module.Popen = fake_popen
         try:
-            mgr._default_spawn_improve_proc(['echo', 'hi'], self.root / 'run' / 'x.log')
+            with patch.object(sys, "platform", "darwin"), \
+                 patch.dict(os.environ, {"INVOCATION_ID": ""}, clear=False):
+                mgr._default_spawn_improve_proc(['echo', 'hi'], self.root / 'run' / 'x.log')
         finally:
             sp_module.Popen = old
         assert len(calls) == 1

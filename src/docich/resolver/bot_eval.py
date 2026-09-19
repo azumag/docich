@@ -245,12 +245,18 @@ def _bot_presets() -> dict:
         "nsnake": {
             "command": lambda game: _resolve_binary(game),
             "bot_cmd": [exe, "brains/nsnake/brain.py"],
+            "accept_maxed": True,
             "run_kwargs": {
                 "boot_sleep_s": 2.0,
                 "start_keys": ["Enter"],
                 "retry_keys": ["Enter"],
                 "game_over_res": [r"Game Over"],
                 "score_res": [r"Score\s+([0-9]+)"],
+                # Snake is intentionally evaluated as a bounded survival
+                # episode: a safe brain can outlive the corner window and
+                # therefore never display Game Over.
+                "interval_s": 0.2,
+                "max_turns": 1500,
             },
         },
         "ninvaders": {
@@ -272,23 +278,77 @@ def _bot_presets() -> dict:
                 "max_turns": 1500,
             },
         },
+        "bastet": {
+            "command": lambda game: _resolve_binary(game),
+            "bot_cmd": [exe, "brains/bastet/brain.py"],
+            "accept_maxed": True,
+            "run_kwargs": {
+                "boot_sleep_s": 2.0,
+                "start_keys": ["Enter"],
+                "retry_keys": ["Enter", "Enter", "Enter"],
+                "game_over_res": [
+                    r"Try again!", r"high score", r"High score",
+                    r"Play! \(normal version\)", r"enter your name",
+                ],
+                "score_res": [r"Score:\s*([0-9]+)"],
+                "interval_s": 0.3,
+                "max_turns": 1200,
+            },
+        },
+        "moon-buggy": {
+            "command": lambda game: _resolve_binary(game),
+            "bot_cmd": [exe, "brains/moon-buggy/brain.py"],
+            "accept_maxed": True,
+            "run_kwargs": {
+                "boot_sleep_s": 2.0,
+                "start_keys": ["y"],
+                "retry_keys": ["Enter", "y"],
+                "game_over_res": [r"new game", r"enter your name"],
+                "score_res": [r"score:\s*([0-9]+)"],
+                "interval_s": 0.2,
+                "max_turns": 1500,
+            },
+        },
+        "pacman4console": {
+            "command": lambda game: _resolve_binary(game),
+            "bot_cmd": [exe, "brains/pacman4console/brain.py"],
+            "accept_maxed": True,
+            "run_kwargs": {
+                "boot_sleep_s": 2.0,
+                "start_keys": ["Space"],
+                "retry_keys": ["Space"],
+                "game_over_res": [r"Game Over"],
+                "score_res": [r"Score:\s*([0-9]+)"],
+                "interval_s": 0.15,
+                "max_turns": 1800,
+            },
+        },
     }
 
 
 def bot_preset(g, game: str) -> dict:
     """corner_improve 用の評価プリセット (生バイナリ＋bot_eval 自前の遷移キー)。
 
-    cols/rows は両ゲームとも固定 80x24 (config/games/*.toml と同一)。
+    cols/rows は config/games/*.toml と同じ端末サイズを使う。
     """
     presets = _bot_presets()
     if game not in presets:
         raise ValueError(f"bot preset がありません: {game} (対応: {sorted(presets)})")
+    dimensions = {
+        "pacman4console": (80, 32),
+    }
+    cols, rows = dimensions.get(game, (80, 24))
     return {
         "binary": lambda _game: _resolve_binary(game),
         "bot_cmd": presets[game]["bot_cmd"],
-        "cols": 80,
-        "rows": 24,
-        "run_kwargs": presets[game]["run_kwargs"],
+        "cols": cols,
+        "rows": rows,
+        "accept_maxed": bool(presets[game].get("accept_maxed", False)),
+        "run_kwargs": {
+            key: value
+            for key, value in presets[game]["run_kwargs"].items()
+            if key != "accept_maxed"
+        },
     }
 
 
@@ -311,7 +371,13 @@ def bot_brain_weights_path(game: str) -> Path:
 def _resolve_binary(game) -> list[str]:
     """評価用の生バイナリ。wrapper (自動再開) ではなくゲーム本体を直接使う。"""
     raw = os.environ.get(f"DOCICH_BOTEVAL_{game.upper()}_BIN", "").strip()
-    defaults = {"nsnake": "/usr/games/nsnake", "ninvaders": "/usr/games/ninvaders"}
+    defaults = {
+        "nsnake": "/usr/games/nsnake",
+        "ninvaders": "/usr/games/ninvaders",
+        "bastet": "/usr/games/bastet",
+        "moon-buggy": "/usr/games/moon-buggy",
+        "pacman4console": "/usr/games/pacman4console",
+    }
     if raw:
         return shlex.split(raw)
     return shlex.split(defaults.get(game, "")) if defaults.get(game) else []

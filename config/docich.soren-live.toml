@@ -69,10 +69,9 @@ daily_each_game = true
 randomize_start = true
 start_window_minutes = 30
 games = ["ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console"]
-# ninvaders/nsnake は bot_eval headless 評価に対応したため終了時改善を有効化。
-# bastet/moon-buggy/pacman4console は command brain のみ (実ゲーム実走未検証)。
-# bot_eval preset は未対応なので run_corner_improve が unsupported-game で
-# スキップする。improve_agents はゲーム一覧ではなく既存のAI委任先チェーン。
+# 5ゲームとも command brain と bot_eval の bounded headless 評価を使い、
+# コーナー終了後に同じ baseline/candidate 比較から改善候補を判定する。
+# improve_agents はゲーム一覧ではなく既存のAI委任先チェーン。
 improve_agents = "opencode-go:deepseek-v4.1-flash,amd:DeepSeek-V4-Flash,opencode-go:deepseek-v4-flash,opencode-go:muse-spark-1.3-contributor"
 improve_matches = 2
 improve_margin_pct = 10.0

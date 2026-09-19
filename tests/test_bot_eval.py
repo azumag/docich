@@ -89,10 +89,25 @@ def test_cli_passes_the_game_name_and_uses_the_preset_cadence(monkeypatch, tmp_p
     seen.clear()
     monkeypatch.setenv("DOCICH_BOTEVAL_NSNAKE_BIN", "/fake/nsnake")
     assert bot_eval.main(["nsnake", "--config", cfg]) == 0
-    # nsnake sets no cadence: nothing is passed, so run_bot_matches' defaults apply.
-    assert "interval_s" not in seen and "max_turns" not in seen
+    assert seen["interval_s"] == 0.2 and seen["max_turns"] == 1500
     params = inspect.signature(real_run).parameters
     assert params["interval_s"].default == 0.7 and params["max_turns"].default == 3000
+
+
+@pytest.mark.parametrize("game,rows", [
+    ("nsnake", 24),
+    ("ninvaders", 24),
+    ("bastet", 24),
+    ("moon-buggy", 24),
+    ("pacman4console", 32),
+])
+def test_every_live_command_brain_has_a_bounded_preset(game, rows):
+    preset = bot_eval.bot_preset(None, game)
+    assert preset["cols"] == 80
+    assert preset["rows"] == rows
+    assert preset["bot_cmd"][-1].endswith(f"brains/{game}/brain.py")
+    assert "game_over_res" in preset["run_kwargs"]
+    assert "score_res" in preset["run_kwargs"]
 
 
 def _fake_tmux_env(tmp_path, frames):
