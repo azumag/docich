@@ -157,6 +157,19 @@ def _prompt_kind(text: str, message: str) -> str:
     return "none"
 
 
+def _looks_like_status(line: str) -> bool:
+    """True when a row carries NetHack's fixed status fields.
+
+    The status block always includes HP (and almost always dungeon level); a
+    map row or message row never does. Requiring both keeps a stray ``HP:`` in
+    prose from being mistaken for the status block.
+    """
+    return bool(
+        _STATUS_PATTERNS["hp"].search(line)
+        and _STATUS_PATTERNS["dungeon_level"].search(line)
+    )
+
+
 def _parse_vitals(status: str) -> Vitals:
     hp_match = _STATUS_PATTERNS["hp"].search(status)
     power_match = _STATUS_PATTERNS["power"].search(status)
@@ -196,8 +209,30 @@ def normalize_tty(
         lines.append(" " * cols)
 
     message = lines[0].rstrip()
-    status_lines = tuple(line.rstrip() for line in lines[-2:] if line.rstrip())
-    map_rows = tuple(lines[1:-2])
+    # NetHack does not always place the status block on the last two rows: the
+    # message/--More-- line and the trailing blank row can push it up (for
+    # example the intro screen shows ``--More--`` above the status lines). Find
+    # the status rows by their fixed vitals fields instead of by position, then
+    # treat every earlier non-message row as visible map.
+    status_indexes = [
+        index
+        for index, line in enumerate(lines)
+        if index > 0 and _looks_like_status(line)
+    ]
+    if status_indexes:
+        first_status = min(status_indexes)
+        # Every non-blank row from the first status row down belongs to the
+        # status block (it can span multiple rows, e.g. conditions on the next
+        # line). The map is the rows between the message and the status block.
+        status_lines = tuple(
+            line.rstrip() for line in lines[first_status:] if line.rstrip()
+        )
+        map_rows = tuple(lines[1:first_status])
+    else:
+        # No status block is visible (menus/prompts). Fall back to the legacy
+        # contract so existing callers and fixtures are unchanged.
+        status_lines = tuple(line.rstrip() for line in lines[-2:] if line.rstrip())
+        map_rows = tuple(lines[1:-2])
 
     players: list[tuple[int, int]] = []
     for y, row in enumerate(map_rows):

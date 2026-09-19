@@ -19,6 +19,7 @@ from .trading.soren_output import enqueue_audio_text
 
 _TEXT = {
     "advance_message": "画面の続きを確認するため、メッセージを送ります。",
+    "decline_save": "終了を避けるため、セーブ確認を断って冒険を続けます。",
     "prompt_decision": "文脈が必要な質問なので、回答せず判断を保留します。",
     "survival_emergency": "体力が危険な水準なので、探索を止めて判断を保留します。",
     "status_emergency": "重い状態異常が見えるので、探索を止めて判断を保留します。",

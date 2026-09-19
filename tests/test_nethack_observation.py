@@ -69,6 +69,30 @@ class TestNethackObservation(unittest.TestCase):
         self.assertEqual(obs.local_map(), ())
         self.assertEqual(obs.visible_neighbors(), ())
 
+    def test_status_block_is_found_without_the_legacy_two_trailing_rows(self) -> None:
+        # Real 3.6.7 frame: the status row is second-to-last because a message
+        # and a trailing blank row follow it, and the row above the map is the
+        # message the map was drawn with. The player must still be seen and the
+        # vitals parsed.
+        text = (
+            "Really save? [yn] (n)\n"
+            "------------\n"
+            "|$....f.....|\n"
+            "|......@...|\n"
+            "|..........|\n"
+            "------------\n"
+            "[Docich the Stripling ] St:17 Dx:12 Co:18 In:7 Wi:11 Ch:8 Lawful\n"
+            "Dlvl:1 $:0 HP:16(16) Pw:2(2) AC:6 Xp:1\n"
+        )
+        obs = normalize_tty(text, cols=80, rows=24)
+        self.assertEqual(obs.player, (7, 2))
+        self.assertEqual(obs.vitals.hp, 16)
+        self.assertEqual(obs.vitals.hp_max, 16)
+        self.assertEqual(obs.vitals.dungeon_level, 1)
+        self.assertIn("Dlvl:1", obs.status_lines[0])
+        # The map starts below the message row and stops before the status row.
+        self.assertTrue(any("|$....f.....|" in row for row in obs.map_rows))
+
     def test_invalid_local_radius_is_rejected(self) -> None:
         obs = normalize_tty("", cols=8, rows=5)
         with self.assertRaises(ValueError):

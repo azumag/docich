@@ -54,6 +54,33 @@ class TestNethackLayeredPolicy(unittest.TestCase):
         self.assertEqual(decision.intent, "prompt_decision")
         self.assertEqual(decision.actions, ())
 
+    def test_save_prompt_is_declined_to_keep_the_run_going(self) -> None:
+        decision = self.decide(frame("Really save? [yn] (n)"))
+        self.assertEqual(decision.layer, "tactical")
+        self.assertEqual(decision.intent, "decline_save")
+        self.assertFalse(decision.requires_llm)
+        self.assertEqual([a.text for a in decision.actions], ["n"])
+        assert_p3b_safe(decision)
+
+    def test_real_frame_still_explores_after_the_save_prompt(self) -> None:
+        # Full 3.6.7 frame, status not on the last two rows, save prompt gone.
+        text = (
+            "------------\n"
+            "|$....f.....|\n"
+            "|......@...|\n"
+            "|..........|\n"
+            "------------\n"
+            "[Docich the Stripling ] St:17 Dx:12 Co:18 In:7 Wi:11 Ch:8 Lawful\n"
+            "Dlvl:1 $:0 HP:16(16) Pw:2(2) AC:6 Xp:1\n"
+        )
+        obs = normalize_tty(text, cols=80, rows=24)
+        self.assertIsNotNone(obs.player)
+        decision = self.policy.decide(obs)
+        self.assertEqual(decision.intent, "explore_step")
+        self.assertEqual(len(decision.actions), 1)
+        self.assertIn(decision.actions[0].text, {"h", "j", "k", "l"})
+        assert_p3b_safe(decision)
+
     def test_visible_hunger_changes_midlevel_priority(self) -> None:
         decision = self.decide(frame(condition="Hungry"))
         self.assertEqual(decision.layer, "midlevel")
