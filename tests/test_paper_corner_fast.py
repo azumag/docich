@@ -29,7 +29,14 @@ class Coordinator:
         return Result()
 
 
-def _manager(tmp_path, *, clock=lambda: 1000.0, sleep=lambda seconds: None, script_spawn=None):
+def _manager(
+    tmp_path,
+    *,
+    clock=lambda: 1000.0,
+    sleep=lambda seconds: None,
+    script_spawn=None,
+    stream_paper=None,
+):
     cfg = tmp_path / "config.toml"
     cfg.write_text(
         f'''[paths]\nstate_dir = "run"\n[trading]\npaper_worker_enabled = true\nnotifications_enabled = true\nnotification_speech_enabled = true\n[webui]\nsoren_root = "{tmp_path}/soren"\n[paper_corner]\nenabled = true\nstart_hour = 22\nduration_minutes = 30\nscript_agents = "fixture:agent"\n''',
@@ -44,6 +51,7 @@ def _manager(tmp_path, *, clock=lambda: 1000.0, sleep=lambda seconds: None, scri
         overlay=lambda g, payload: None,
         speech=lambda g, text, **kwargs: None,
         script_spawn=script_spawn,
+        stream_paper=stream_paper,
     )
 
 
@@ -128,6 +136,27 @@ def test_start_becomes_active_before_script_enrichment(tmp_path):
     assert observed == [("active", 1000.0, 1060.0)]
     saved = json.loads(mgr.path.read_text(encoding="utf-8"))
     assert saved["status"] == "completed"
+
+
+def test_fast_path_announces_paper_category_after_view_commit(tmp_path):
+    now = [1000.0]
+    announced = []
+    mgr = _manager(
+        tmp_path,
+        clock=lambda: now[0],
+        sleep=lambda seconds: now.__setitem__(0, now[0] + seconds),
+        stream_paper=lambda: announced.append("paper"),
+    )
+    mgr.minutes = 1
+    mgr._announce_script = lambda state: None
+
+    assert mgr._run_locked({
+        "status": "starting",
+        "date": "2026-09-16",
+        "previous_game": None,
+        "reports": {},
+    }) == "completed"
+    assert announced == ["paper"]
 
 
 def test_prewarm_installs_fallback_and_spawns_worker_once(tmp_path):

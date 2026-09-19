@@ -13,9 +13,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich import config  # noqa: E402
 from docich.stream_category import (  # noqa: E402
+    PAPER_CATEGORY_ID,
+    PAPER_CATEGORY_NAME,
+    PAPER_TITLE_PREFIX,
     SCRIPT_NAME,
     StreamCategoryError,
     announce_stream_game,
+    announce_stream_paper,
     script_path,
     twitch_category,
 )
@@ -79,6 +83,26 @@ class TestAnnounceStreamGame(StreamCategoryTestBase):
         joined = " ".join(call["argv"]).lower()
         for secret in ("token", "client_id", "broadcaster", "oauth"):
             self.assertNotIn(secret, joined)
+
+    def test_paper_view_uses_explicit_non_game_category(self) -> None:
+        script = self._install_script()
+
+        self.assertTrue(announce_stream_paper(self.g, spawn=self._recorder))
+
+        call = self.spawned[0]
+        self.assertEqual(
+            call["argv"],
+            [
+                str(script.resolve()),
+                "--category-id",
+                PAPER_CATEGORY_ID,
+                "--category-name",
+                PAPER_CATEGORY_NAME,
+                "--title-prefix",
+                PAPER_TITLE_PREFIX,
+            ],
+        )
+        self.assertNotIn("--game", call["argv"])
 
     def test_a_game_without_a_twitch_category_is_left_alone(self) -> None:
         self._install_script()

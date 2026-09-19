@@ -78,7 +78,7 @@ def _safe_detail(value: BaseException | str) -> str:
 
 class PaperCornerManager:
     def __init__(self, g, *, clock=time.time, sleep=time.sleep, overlay=send_overlay, speech=enqueue_speech,
-                 coordinator=None, spawn=None):
+                 coordinator=None, spawn=None, stream_game=None, stream_paper=None):
         self.g, self.clock, self.sleep = g, clock, sleep
         self.overlay, self.speech = overlay, speech
         import tomllib
@@ -100,6 +100,8 @@ class PaperCornerManager:
             raise ValueError('invalid paper corner script timeout')
         self.script_timeout = script_timeout
         self._spawn = spawn or self._default_spawn_improve_proc
+        self._stream_game = stream_game or self._default_stream_game
+        self._stream_paper = stream_paper or self._default_stream_paper
         self.path = g.state_dir / 'paper_corner.json'
         self.trading_dir = g.state_dir / 'trading'
         self.presentation = g.state_dir / 'trading/presentation.json'
@@ -120,6 +122,44 @@ class PaperCornerManager:
 
             coordinator = GameSwitchCoordinator(self.store, _factory)
         self.coordinator = coordinator
+
+    def _default_stream_game(self, game: str) -> None:
+        from .stream_category import announce_stream_game
+
+        announce_stream_game(self.g, game)
+
+    def _default_stream_paper(self) -> None:
+        from .stream_category import announce_stream_paper
+
+        announce_stream_paper(self.g)
+
+    def _announce_stream_game(self, game: str | None) -> None:
+        """Best-effort category/title restoration for a real game."""
+        if not isinstance(game, str) or not game:
+            return
+        try:
+            self._stream_game(game)
+        except Exception as exc:
+            print(
+                f"[stream-game] status=failed game={game} detail={_safe_detail(exc)}",
+                file=sys.stderr,
+            )
+
+    def _announce_stream_paper(self) -> None:
+        """Best-effort category/title update for the synthetic PAPER view."""
+        try:
+            self._stream_paper()
+        except Exception as exc:
+            print(
+                f"[stream-game] status=failed game={PAPER_VIEW_NAME} detail={_safe_detail(exc)}",
+                file=sys.stderr,
+            )
+
+    def _announce_stream_restore(self, previous: object) -> None:
+        if previous == PAPER_VIEW_NAME:
+            self._announce_stream_paper()
+        else:
+            self._announce_stream_game(previous)
 
     @staticmethod
     def _optional_agents(raw, key: str) -> str:
@@ -647,6 +687,7 @@ class PaperCornerManager:
         if previous is not None and current == previous:
             # Already home (manual recovery or idempotent retry).
             write_presentation(self.presentation, 'compact', now=self.clock())
+            self._announce_stream_restore(previous)
             state.update(status='completed', completed_at=self.clock(), last_error=None)
             self._spawn_improve_once(state)
             self._clear_paper_flag()
@@ -674,6 +715,7 @@ class PaperCornerManager:
             else:
                 self._require_success(
                     self.coordinator.switch(previous), f'program view->{previous} restore')
+            self._announce_stream_restore(previous)
         except PaperCornerError as exc:
             state.update(status='failed', completed_at=self.clock(), last_error=str(exc)[:240])
             self._clear_paper_flag()
@@ -736,6 +778,7 @@ class PaperCornerManager:
             if committed is not None and committed != PAPER_VIEW_NAME:
                 raise PaperCornerError(
                     f"切替後に旧ゲームが残っています: {committed}")
+            self._announce_stream_paper()
             self.announce(state, 'opening', self.opening_text())
             try:
                 self._announce_script(state)

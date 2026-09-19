@@ -132,6 +132,70 @@ def test_switch_notice_announced_when_displacing_game(tmp_path):
     assert '切り替えました' in state['reports']['opening']['text']
 
 
+def test_stream_category_follows_paper_view_and_restored_game(tmp_path):
+    g = setup(tmp_path)
+    now = [1000.0]
+    events = []
+
+    class RecordingCoordinator(FakeCoordinator):
+        def switch(self, game):
+            events.append(f'switch:{game}')
+            return super().switch(game)
+
+    coord = RecordingCoordinator(active='sorengame')
+    mgr = manager(
+        g,
+        clock=lambda: now[0],
+        sleep=lambda seconds: now.__setitem__(0, now[0] + seconds),
+        overlay=lambda g, p: None,
+        speech=lambda g, t, **kw: None,
+        coordinator=coord,
+        stream_paper=lambda: events.append('announce:paper'),
+        stream_game=lambda game: events.append(f'announce:{game}'),
+    )
+    mgr.minutes = 1
+    mgr._active_game = lambda: coord.active_game
+    mgr._announce_script = lambda state: None
+
+    assert mgr._run_locked({
+        'status': 'starting',
+        'date': '2026-09-08',
+        'previous_game': 'sorengame',
+        'reports': {},
+    }) == 'completed'
+    assert events == [
+        'switch:paper-view',
+        'announce:paper',
+        'switch:sorengame',
+        'announce:sorengame',
+    ]
+
+
+def test_stream_category_failure_does_not_fail_paper_corner(tmp_path):
+    g = setup(tmp_path)
+    now = [1000.0]
+    coord = FakeCoordinator(active='paper-view')
+    mgr = manager(
+        g,
+        clock=lambda: now[0],
+        sleep=lambda seconds: now.__setitem__(0, now[0] + seconds),
+        overlay=lambda g, p: None,
+        speech=lambda g, t, **kw: None,
+        coordinator=coord,
+        stream_paper=lambda: (_ for _ in ()).throw(RuntimeError('twitch unreachable')),
+    )
+    mgr.minutes = 1
+    mgr._active_game = lambda: coord.active_game
+    mgr._announce_script = lambda state: None
+
+    assert mgr._run_locked({
+        'status': 'starting',
+        'date': '2026-09-08',
+        'previous_game': 'paper-view',
+        'reports': {},
+    }) == 'completed'
+
+
 def test_commit_verification_fails_when_old_game_remains(tmp_path):
     g=setup(tmp_path)
     now=[datetime(2026,9,8,22,tzinfo=ZoneInfo('Asia/Tokyo')).timestamp()]
