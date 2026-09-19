@@ -275,7 +275,7 @@ class TestStepOutOfDeadlock(unittest.TestCase):
         policy = NethackLayeredPolicy()
         return observation, policy.decide(observation), policy
 
-    def test_every_hold_beside_a_creature_gets_a_safe_step_instead(self):
+    def test_every_reviewed_hold_beside_a_creature_gets_a_safe_step_instead(self):
         rows = ("##@d.      ", "...........")
         cases = {
             "assess_contact": {},
@@ -283,7 +283,6 @@ class TestStepOutOfDeadlock(unittest.TestCase):
             "hold_impaired": {"condition": "Blind"},
             "seek_food": {"condition": "Hungry"},
             "survival_emergency": {"hp": "2(10)"},
-            "status_emergency": {"condition": "Sick"},
         }
         for intent, kw in cases.items():
             with self.subTest(intent=intent):
@@ -295,6 +294,18 @@ class TestStepOutOfDeadlock(unittest.TestCase):
                 self.assertIsNotNone(action)
                 self.assertIn(action.text, {"h", "j", "k", "l"})
                 assert_step_out_safe([action])
+
+    def test_severe_status_stays_fail_closed_even_beside_a_creature(self):
+        rows = ("##@d.      ", "...........")
+        for condition in ("Sick", "FoodPois", "Ill", "Slime", "Strngl"):
+            with self.subTest(condition=condition):
+                observation, decision, policy = self._decide(rows, condition=condition)
+                self.assertEqual(decision.intent, "status_emergency")
+                self.assertTrue(decision.requires_llm)
+                self.assertNotIn(decision.intent, REST_EMERGENCY_INTENTS)
+                self.assertNotIn(decision.intent, STEP_OUT_INTENTS)
+                self.assertIsNone(rest_action_for_hold(decision, observation))
+                self.assertIsNone(step_out_of_hold(decision, observation, policy.explorer))
 
     def test_no_step_is_invented_when_nothing_safe_is_reachable(self):
         # Walls on every side but the creature: holding is the honest answer.
