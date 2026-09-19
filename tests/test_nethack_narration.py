@@ -55,6 +55,14 @@ def test_unknown_startup_holds(text):
     assert startup.actions == 0
 
 
+def test_restore_more_delegates_to_reviewed_policy():
+    brain = build_brain(SimpleNamespace(), game(startup={"enabled": True}))
+    actions = brain.decide(observation("Restoring save file...--More--"))
+    assert [action.text for action in actions] == [" "]
+    assert brain.startup.state == "gameplay"
+    assert brain.last_decision.intent == "advance_message"
+
+
 def test_tutorial_overlay_and_gameplay_completion():
     startup = NethackStartup(enabled=True)
     assert startup.consider(normalized(frame("Do you want a tutorial? [yn] (n)")))[0].text == "n"
