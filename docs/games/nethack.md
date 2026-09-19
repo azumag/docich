@@ -211,7 +211,7 @@ manual state が `active` のまま canonical の phase が `draining` で止ま
 - **`force-recover`**: 引数も対象ゲームも取らない固定 operation。ゲームの stop / switch / start を自分では呼ばず、
   変更するのは manual state と、canonical が非安定 phase のときの `GameSwitchCoordinator.recover()`
   （既存の recover 契約）だけ。`recover()` は canonical に記録済みの中途 transition を契約の範囲で完了/巻き戻す
-  だけで（期限切れ `draining` は同じ runtime を active のまま取り消す）、新しい対象は選ばない。
+  だけで（期限切れ `draining` は、game adapter が boundary の取消しを acknowledge したときだけ、同じ runtime を active のまま取り消す）、新しい対象は選ばない。
   成否は `recover()` の戻り値ではなく、呼出し後に canonical を読み直した phase で判定する
   （期限切れ `draining` の取消しは `failed`/`timeout` の receipt を返すが、canonical は `ready` に戻るため）。
   期限内の `draining` は `recover()` が read-only の `busy` を返すので何も変えない。
@@ -236,6 +236,7 @@ manual state が `active` のまま canonical の phase が `draining` で止ま
 | 27 | `nethack_active_use_recover` | NetHack が active。次に `recover` |
 | 28 | `out_of_scope` | 対象外（無関係な切替中、所有者不在の NetHack、復元先不明） |
 | 29 | `unexpected_error` | 想定外の失敗 |
+| 30 | `drain_cancel_refused` | 期限切れ `draining` の取消しを game adapter が受理しなかった（canonical は `draining` のまま）。NetHack は「未回答の `Really save? [yn] (n)` を観測できたとき」だけ受理する |
 
 エージェントを新コードで入れ替える手順は、`force-recover` → （26 なら `stop`、27 なら `recover`）→ `start`。
 `stop` / `recover` は通常どおり save boundary 経由で元ゲームへ戻し、`start` が新しい runtime と agent を起動する。
@@ -272,6 +273,20 @@ fail closed とし、単に「ゲームが終わった」と推測して切替�
 P1b の run history へ委ねる。
 
 境界の診断結果は generation runtime の `nethack_boundary.json` に `suspended` / `ended` として残す。
+
+### boundary の取消し（cancel）
+
+coordinator は boundary の待機が失敗・期限切れになると、adapter に boundary request の取消しを要求し、
+adapter が acknowledge しない限り canonical の `draining` を `ready` に戻せない（`recover()` も同じ）。
+`S` は確認（`y`）を与えるまでは可逆で、NetHack が出す `Really save? [yn] (n)` は既定回答 `n` でゲームを続行する。
+確認後は save を書いて終了するため戻れない。よって NetHack adapter の cancel は次の条件をすべて満たしたときだけ
+`n` を1回送り、プロンプトが消えてプロセスが生きていることを確認してから acknowledge する。
+
+- session と所有権を確認でき、プロセス window が存在する
+- 画面に**未回答**の `Really save? [yn] (n)` 行がある（`... (n) y` のように回答済みの行は対象外）
+
+それ以外（プロンプトなし・プロセス消失・capture 失敗・所有権不一致）は一切キーを送らず拒否する
+（fail closed）。かつては無条件に拒否していたため、driver が確認前に死ぬと `draining` が恒久的に残った。
 
 ---
 

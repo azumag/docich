@@ -22,7 +22,7 @@ import uuid
 from pathlib import Path
 
 from .config import ConfigError, load_global
-from .game_switch import atomic_write_json
+from .game_switch import ERROR_RECOVERY_REQUIRED, atomic_write_json
 from .nethack_corner import GAME_NAME, NethackCornerError
 from .nethack_corner_manual import (
     STOP_BLOCKED_CATEGORIES,
@@ -49,6 +49,8 @@ STATUS_EXIT_CODES = {
 # Fixed exit-code categories for --force-recover. Keep stable: the workflow maps
 # them to a bounded notice and never exposes raw VM output. Codes are disjoint
 # from --status (10-13), the generic error (2) and ssh transport failure (255).
+# ``drain_cancel_refused``: the game's adapter would not acknowledge cancelling the
+# expired drain (canonical stays ``draining``).
 # Only ``recovered`` and ``nothing_to_recover`` mean ``start`` may proceed now.
 FORCE_RECOVER_EXIT_CODES = {
     "recovered": 0,
@@ -62,6 +64,7 @@ FORCE_RECOVER_EXIT_CODES = {
     "nethack_active_use_recover": 27,
     "out_of_scope": 28,
     "unexpected_error": 29,
+    "drain_cancel_refused": 30,
 }
 
 MANUAL_STATE_FILE = "nethack_corner_manual.json"
@@ -321,11 +324,11 @@ def _force_recover_locked(manager) -> str:
             # Judge by the durable phase, not ``result.status``: a successfully
             # cancelled expired drain is reported as a ``failed``/``timeout``
             # receipt while canonical is back to ``ready``.
-            return (
-                "switch_busy"
-                if getattr(result, "status", None) == "busy"
-                else "switch_recover_failed"
-            )
+            if getattr(result, "status", None) == "busy":
+                return "switch_busy"
+            if getattr(result, "error_code", None) == ERROR_RECOVERY_REQUIRED:
+                return "drain_cancel_refused"
+            return "switch_recover_failed"
 
     active = _runtime_game(canonical.get("active")) if canonical["phase"] == "ready" else None
     if active == GAME_NAME:
