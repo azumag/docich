@@ -13,6 +13,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import signal
 import tempfile
 import time
 from typing import Mapping
@@ -49,10 +50,15 @@ EARLY_STOP_CLOSED_SELLS = 8
 EARLY_STOP_PROFIT_FACTOR = Decimal("0.75")
 _ALLOWED_HINT_KINDS = {"parameter", "feature", "risk", "data"}
 _ALLOWED_CONFIDENCE = {"low", "medium", "high"}
+_TERMINAL_STATUSES = frozenset({"improved", "failed", "skipped", "dry-run"})
 
 
 class PaperImproveError(RuntimeError):
     """Raised when an improvement candidate or AI call is invalid."""
+
+
+class _PaperImproveTermination(BaseException):
+    """Internal bounded signal used to terminalize a SIGTERM interruption."""
 
 
 def _safe_reason(value: BaseException | str) -> str:
@@ -88,7 +94,7 @@ def _write_improve_status(
     }
     if changed is not None:
         payload["changed"] = bool(changed)
-    if status in {"improved", "failed", "skipped", "dry-run"}:
+    if status in _TERMINAL_STATUSES:
         payload["completed_at"] = float(updated_at)
     fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
     tmp = Path(tmp_name)
@@ -107,6 +113,81 @@ def _write_improve_status(
     finally:
         tmp.unlink(missing_ok=True)
     return target
+
+
+def _terminalize_abnormal_exit(trading_dir, *, started_at: float, updated_at: float, detail: str) -> None:
+    """Fail closed after Python-level abnormal exit without overwriting a terminal result.
+
+    The status file is advisory/durable state, not process ownership. Keep only
+    fixed classifications in ``detail`` and preserve the original start/progress
+    when an active status is readable. A later/terminal run is never rewritten.
+    """
+    target = Path(trading_dir) / STATUS_FILENAME
+    current: dict[str, object] = {}
+    try:
+        raw = json.loads(target.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            current = raw
+    except (OSError, json.JSONDecodeError):
+        pass
+    if current.get("status") in _TERMINAL_STATUSES:
+        return
+    try:
+        preserved_started = float(current.get("started_at", started_at))
+    except (TypeError, ValueError):
+        preserved_started = float(started_at)
+    try:
+        preserved_progress = int(current.get("progress", 0))
+    except (TypeError, ValueError):
+        preserved_progress = 0
+    _write_improve_status(
+        trading_dir,
+        status="failed",
+        phase="interrupted",
+        progress=preserved_progress,
+        started_at=preserved_started,
+        updated_at=updated_at,
+        detail=detail,
+    )
+
+
+@contextmanager
+def _sigterm_as_exception():
+    """Turn the default SIGTERM into a catchable bounded interruption.
+
+    This process is a dedicated detached PAPER improvement worker. Respect any
+    pre-existing custom handler and fail open on non-main-thread callers where
+    Python does not permit installing signal handlers.
+    """
+    sig = getattr(signal, "SIGTERM", None)
+    if sig is None:
+        yield
+        return
+    try:
+        previous = signal.getsignal(sig)
+    except (OSError, ValueError):
+        yield
+        return
+    if previous is not signal.SIG_DFL:
+        yield
+        return
+
+    def _raise_termination(_signum, _frame):
+        raise _PaperImproveTermination()
+
+    try:
+        signal.signal(sig, _raise_termination)
+    except (OSError, ValueError):
+        yield
+        return
+    try:
+        yield
+    finally:
+        try:
+            if signal.getsignal(sig) is _raise_termination:
+                signal.signal(sig, previous)
+        except (OSError, ValueError):
+            pass
 
 
 @contextmanager
@@ -310,10 +391,23 @@ def run_paper_improve(
     with _singleflight(g.state_dir) as single:
         if not single:
             return {"status": "skipped", "reason": "already-running"}
-        return _run_paper_improve(
-            g, trading_dir=trading_dir, agents=agents, dry_run=dry_run,
-            llm=llm, now=now, timeout=timeout,
-        )
+        started_at = time.time() if now is None else float(now)
+        try:
+            with _sigterm_as_exception():
+                return _run_paper_improve(
+                    g, trading_dir=trading_dir, agents=agents, dry_run=dry_run,
+                    llm=llm, now=now, timeout=timeout,
+                )
+        except BaseException as exc:
+            try:
+                _terminalize_abnormal_exit(
+                    trading_dir,
+                    started_at=started_at,
+                    updated_at=time.time() if now is None else float(now),
+                    detail="terminated" if isinstance(exc, _PaperImproveTermination) else "abnormal-exit",
+                )
+            finally:
+                raise
 
 
 def _run_paper_improve(
