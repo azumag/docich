@@ -563,5 +563,89 @@ class TestDefaultRuntimeScreen(NethackCornerTestBase):
         self.assertIsNone(mgr._default_runtime_screen())
 
 
+class TestStreamCategoryFollowsTheCorner(NethackCornerTestBase):
+    """While NetHack is on, the stream should say NetHack -- and stop saying it after."""
+
+    def _manager(self, current, **kwargs):
+        announced: list[str] = []
+        mgr, coordinator = self.manager(current, stream_game=announced.append, **kwargs)
+        return mgr, coordinator, announced
+
+    def test_the_corner_announces_nethack_and_then_the_game_it_restores(self):
+        mgr, coordinator, announced = self._manager(["sorengame"])
+
+        result = mgr.start()
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(
+            coordinator.calls, [("switch", "nethack"), ("switch", "sorengame")]
+        )
+        # ...and the announcements follow the same order, so the category is
+        # never left on NetHack after the corner ended.
+        self.assertEqual(announced, ["nethack", "sorengame"])
+
+    def test_announcement_happens_only_after_the_switch_succeeded(self):
+        order: list[str] = []
+        current = ["sorengame"]
+
+        class RecordingCoordinator(FakeCoordinator):
+            def switch(self, game):
+                order.append(f"switch:{game}")
+                return super().switch(game)
+
+        mgr, _, _announced = self._manager(
+            current, coordinator=RecordingCoordinator(current)
+        )
+        mgr._stream_game = lambda game: order.append(f"announce:{game}")
+
+        mgr.start()
+
+        self.assertEqual(
+            order,
+            ["switch:nethack", "announce:nethack", "switch:sorengame", "announce:sorengame"],
+        )
+
+    def test_a_failing_switch_is_never_announced(self):
+        current = ["sorengame"]
+
+        class FailingCoordinator(FakeCoordinator):
+            def switch(self, game):
+                self.calls.append(("switch", game))
+                return SimpleNamespace(status="failed", error_code="timeout", detail="boom")
+
+        mgr, _, announced = self._manager(current, coordinator=FailingCoordinator(current))
+
+        with self.assertRaises(RetroCornerError):
+            mgr.start()
+
+        self.assertEqual(announced, [])
+
+    def test_a_broken_announcement_never_breaks_the_corner(self):
+        def broken(game):
+            raise RuntimeError("twitch unreachable")
+
+        mgr, coordinator = self.manager(["sorengame"], stream_game=broken)
+
+        result = mgr.start()
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(
+            coordinator.calls, [("switch", "nethack"), ("switch", "sorengame")]
+        )
+
+    def test_nothing_is_announced_when_no_switch_was_needed(self):
+        # NetHack was already the canonical game: no switch, so no announcement.
+        mgr, coordinator, announced = self._manager(["nethack"])
+        mgr._transition_to("nethack", "nethack")
+        self.assertEqual(announced, [])
+        self.assertEqual(coordinator.calls, [])
+
+    def test_an_empty_game_name_is_ignored(self):
+        mgr, _coordinator, announced = self._manager(["sorengame"])
+        for value in (None, "", 7):
+            mgr._announce_stream_game(value)
+        self.assertEqual(announced, [])
+
+
 if __name__ == "__main__":
     unittest.main()

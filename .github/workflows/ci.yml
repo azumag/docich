@@ -75,7 +75,7 @@ jobs:
           tests/test_nsnake_brain.py tests/test_nsnake_agent_config.py tests/test_bot_eval.py
           tests/test_retro_lottery.py
           tests/test_paper_corner_manual.py tests/test_paper_corner_chatter_schedule.py
-          tests/test_config.py tests/test_robots_config.py
+          tests/test_config.py tests/test_robots_config.py tests/test_stream_category.py
       - name: PAPER improve sidebar contract
         run: node --test games/soviet_now/tests/test_paper_improve_sidebar.mjs
       - name: Transactional switch contract

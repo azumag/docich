@@ -199,6 +199,7 @@ class NethackCornerManager(RetroCornerManager):
         chat: Callable[[str], None] | None = None,
         voice: Callable[[str], None] | None = None,
         spawn=None,
+        stream_game: Callable[[str], None] | None = None,
         runtime_screen: Callable[[], str | None] | None = None,
     ):
         if chat is None:
@@ -216,6 +217,8 @@ class NethackCornerManager(RetroCornerManager):
             kwargs["sleep"] = sleep
         if spawn is not None:
             kwargs["spawn"] = spawn
+        if stream_game is not None:
+            kwargs["stream_game"] = stream_game
         super().__init__(g, **kwargs)
         self.state_path = Path(g.state_dir) / STATE_FILE
         self.lock_path = Path(g.state_dir) / LOCK_FILE

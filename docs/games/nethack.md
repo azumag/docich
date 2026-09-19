@@ -183,6 +183,24 @@ NetHack のまま残った場合に、manual state に記録された previous g
 ゲームは指定できない。記録が無ければ fail-closed）。`force-recover` は `active` / `draining` の
 まま動けなくなった中途状態を解消するための最後の手段で、後述の「中途状態の回復」にまとめる。
 
+### 配信カテゴリー・タイトルの追従
+
+コーナーが実際にゲームを切り替えたら、配信の Twitch カテゴリーも追従する。NetHack コーナー中は
+`[NetHack]`（category_id 130、`config/games/nethack.toml` の `[twitch]`）、コーナーが終わって元ゲームへ
+戻れば元のカテゴリーへ戻る。
+
+- 実行するのは reviewed な Soren 側スクリプト `update_stream_game.sh` のみ。docich 側は
+  `src/docich/stream_category.py` が **固定引数**（`--game <検証済みゲーム名> --games-dir <このリポジトリの
+  config/games>`）で detached 起動するだけで、token・channel id 等の機密は一切渡さない
+  （スクリプトが Soren root の `.env` を自分で読む）。`--games-dir` は必須: スクリプトの既定は Soren
+  チェックアウト側で、ゲーム定義はこのリポジトリにあるため。
+- 呼ぶのは **coordinator の切替が成功した後**だけ。失敗した切替は通知しない。
+- 通知の失敗はコーナーを失敗させない（カテゴリーのズレは表示の問題、切替の巻き戻しは配信事故）。
+  結果は `<state_dir>/logs/stream-game.log`（0600）に残す。
+- `[twitch]` が無い・`category_id` が空のゲームは**何も通知しない**（現在のカテゴリーを推測で変えない）。
+- 対象はコーナー経由の切替（NetHack・レトロ各種、operator の `recover` を含む）。CLI の
+  `docich switch` からの直接切替は未接続。
+
 どちらもゲーム切替を直接操作せず `GameSwitchCoordinator` を通す。開始前に別ゲームが active なら
 NetHack へ transactional switch し、終了時に元のゲームへ戻す。元が idle なら NetHack 終了後も
 idle に戻す。
