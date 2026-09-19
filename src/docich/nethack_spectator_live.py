@@ -56,6 +56,26 @@ class ActiveRuntime:
         )
 
 
+def process_window_name(window_names, runtime: ActiveRuntime) -> str | None:
+    """The birth window that owns the real game process, or ``None`` if unsure.
+
+    ``game-g<N>`` only runs the xterm that mirrors the game session for video
+    (``adapters/cli_game.py``), so capturing it yields xterm's own output, never
+    the game screen.  The TTY lives in the runtime's birth window.  Resolve it
+    the same fail-closed way the NetHack adapter does: the presentation window
+    must be present (an empty/torn listing is not evidence), and exactly one
+    other non-agent window may remain.
+    """
+    names = [name for name in window_names if isinstance(name, str) and name]
+    if runtime.game_window not in names:
+        return None
+    excluded = {runtime.game_window, f"agent-g{runtime.generation}"}
+    candidates = [name for name in names if name not in excluded]
+    if len(candidates) != 1:
+        return None
+    return candidates[0]
+
+
 def active_nethack_runtime(state: dict[str, object]) -> ActiveRuntime | None:
     """Return only a committed NetHack runtime.
 

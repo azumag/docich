@@ -138,8 +138,15 @@ timezone = "Asia/Tokyo"
 
 NetHack は分数ではなく **一試合（死亡・昇天で終了）を境界**にします。`run_boundary = true`（既定）のとき、
 コーナーは `duration_minutes` では終わらず、committed runtime の可視 TTY が終了画面になった時点で
-終了します。終了判定は read-only の spectator と同じ経路（canonical の committed NetHack runtime の
-game window のみを所有者確認して capture）で行い、入力を送りません。
+終了します。終了判定は read-only の capture で行い、入力を送りません。canonical の committed NetHack
+runtime だけを追い、presentation window (`game-g<N>`) の所有者を確認したうえで、**実際の capture は
+runtime の birth window (`nethack-console`) から**行う。`game-g<N>` はゲーム session を映像化する xterm を
+起動しているだけで、その pane に出るのは xterm 自身の出力であり、ゲーム画面ではない
+（`adapters/cli_game.py`）。ここを取り違えていたため、プレイ中でも画面が変化していないと判定され、
+**コーナーが必ず開始ちょうど `stall_timeout_minutes` 後に `stalled` で終了し、死亡/昇天も検出できなかった**
+（2026-09-19 に本番で実測。16:12→16:21 / 16:27→16:37 / 16:56→17:06 と3回とも約10分）。
+birth window は「presentation window が存在し、agent window を除いた残りがちょうど1つ」のときだけ
+採用する fail-closed な解決で、曖昧なら capture しない（= 進捗なし扱い）。
 
 - 終了マーカー: `You die...` / `You have died.` / `Do you want your possessions identified?` /
   `You ascend ...` / `Do you want to see what you had ...`

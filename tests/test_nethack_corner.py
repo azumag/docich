@@ -423,5 +423,145 @@ class TestNethackStrandedRunReconcile(NethackCornerTestBase):
             mgr._prepare_start_with_reconcile(None)
 
 
+# Production window layout observed on generation 244 (2026-09-19): the NetHack
+# TTY is in the birth window, while game-g<N> only runs the xterm that mirrors
+# the session for video, so its pane text is xterm's own startup noise.
+XTERM_PANE = (
+    "> Warning: Could not resolve keysym XF86Sos\n"
+    "> Warning: Could not resolve keysym XF86NavChart\n"
+)
+MAP_PANE = (
+    "------------\n|......@...|\n------------\n"
+    "[Docich the Stripling ] St:17 Dx:12\nDlvl:1 $:0 HP:16(16) Pw:2(2) AC:6 Xp:1\n"
+)
+
+
+class WatchTmux:
+    """Fake tmux exposing both windows so a capture of the wrong one is visible."""
+
+    def __init__(self, session, *, ownership=None, windows=None, panes=None):
+        self.session = session
+        from docich.tmux import TmuxOwnership
+
+        self.ownership = ownership or TmuxOwnership("g7-abcdef", 7, "game")
+        self.windows = ["nethack-console", "game-g7", "agent-g7"] if windows is None else windows
+        self.panes = panes or {
+            "docich-game-g7:nethack-console": MAP_PANE,
+            "docich-game-g7:game-g7": XTERM_PANE,
+            "docich-game-g7:agent-g7": "[agent] nethack: 1\n",
+        }
+        self.captured: list[str] = []
+
+    def read_window_ownership(self, target):
+        return self.ownership
+
+    def list_windows(self):
+        return list(self.windows)
+
+    def capture_pane_checked(self, target):
+        self.captured.append(target)
+        return self.panes[target]
+
+
+class TestDefaultRuntimeScreen(NethackCornerTestBase):
+    """The stall/terminal watcher must read the game TTY, not the xterm window."""
+
+    def _state(self, *, phase="ready", game="nethack"):
+        return {
+            "phase": phase,
+            "active": {
+                "game": game,
+                "adapter": "cli",
+                "generation": 7,
+                "runtime_id": "g7-abcdef",
+                "lease_id": None,
+                "game_window": "game-g7",
+                "agent_window": "agent-g7",
+                "adapter_session": "docich-game-g7",
+                "started_at": "2026-09-19T07:00:00Z",
+            },
+        }
+
+    def _manager(self, state, tmux):
+        coordinator = FakeCoordinator(["nethack"])
+        coordinator.store = SimpleNamespace(
+            canonical=SimpleNamespace(load=lambda: (state, False))
+        )
+        mgr, _ = self.manager(["nethack"], coordinator=coordinator)
+        patcher = patch("docich.tmux.Tmux", lambda session: tmux)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return mgr
+
+    def test_capture_comes_from_the_birth_window_not_the_xterm(self):
+        tmux = WatchTmux("docich-game-g7")
+        mgr = self._manager(self._state(), tmux)
+
+        text = mgr._default_runtime_screen()
+
+        self.assertEqual(text, MAP_PANE)
+        self.assertNotIn("keysym", text)
+        self.assertEqual(tmux.captured, ["docich-game-g7:nethack-console"])
+
+    def test_a_played_game_is_not_mistaken_for_a_stall(self):
+        # The production symptom: the xterm pane never changes, so watching it
+        # made every corner end at exactly stall_timeout after it started.
+        tmux = WatchTmux("docich-game-g7")
+        mgr = self._manager(self._state(), tmux)
+        first = mgr._default_runtime_screen()
+        tmux.panes["docich-game-g7:nethack-console"] = MAP_PANE.replace("|......@...|", "|.......@..|")
+        self.assertNotEqual(mgr._default_runtime_screen(), first)
+
+    def test_a_death_screen_in_the_birth_window_is_seen(self):
+        from docich.nethack_corner import _is_terminal_screen
+
+        tmux = WatchTmux("docich-game-g7")
+        tmux.panes["docich-game-g7:nethack-console"] = "You die...\nDo you want your possessions identified?"
+        mgr = self._manager(self._state(), tmux)
+        self.assertTrue(_is_terminal_screen(mgr._default_runtime_screen()))
+        self.assertFalse(_is_terminal_screen(XTERM_PANE))
+
+    def test_ownership_mismatch_captures_nothing(self):
+        from docich.tmux import TmuxOwnership
+
+        tmux = WatchTmux("docich-game-g7", ownership=TmuxOwnership("g6-abcdef", 6, "game"))
+        mgr = self._manager(self._state(), tmux)
+        self.assertIsNone(mgr._default_runtime_screen())
+        self.assertEqual(tmux.captured, [])
+
+    def test_ambiguous_or_torn_window_listing_captures_nothing(self):
+        for windows in (
+            ["game-g7", "agent-g7"],                                   # no birth window
+            ["game-g7", "agent-g7", "nethack-console", "stray"],       # ambiguous
+            [],                                                        # torn listing
+            ["nethack-console"],                                       # presentation gone
+        ):
+            with self.subTest(windows=windows):
+                tmux = WatchTmux("docich-game-g7", windows=windows)
+                mgr = self._manager(self._state(), tmux)
+                self.assertIsNone(mgr._default_runtime_screen())
+                self.assertEqual(tmux.captured, [])
+
+    def test_uncommitted_or_foreign_runtime_captures_nothing(self):
+        for state in (
+            self._state(phase="draining"),
+            self._state(phase="idle"),
+            self._state(game="sorengame"),
+        ):
+            with self.subTest(state=state["phase"] + "/" + state["active"]["game"]):
+                tmux = WatchTmux("docich-game-g7")
+                mgr = self._manager(state, tmux)
+                self.assertIsNone(mgr._default_runtime_screen())
+                self.assertEqual(tmux.captured, [])
+
+    def test_a_tmux_failure_is_no_progress_not_a_crash(self):
+        class Broken(WatchTmux):
+            def list_windows(self):
+                raise RuntimeError("tmux gone")
+
+        mgr = self._manager(self._state(), Broken("docich-game-g7"))
+        self.assertIsNone(mgr._default_runtime_screen())
+
+
 if __name__ == "__main__":
     unittest.main()
