@@ -111,8 +111,16 @@ class EvidenceBundleTests(unittest.TestCase):
         self.assertTrue(all("secret.env" not in name for name in names))
         self.assertTrue(all(not name.endswith(".png") for name in names))
 
-    def test_old_or_incomplete_evidence_is_not_exported(self):
-        self.add_game(10, age_minutes=24 * 60 + 1)
+    def test_retained_evidence_within_72h_is_exported_and_older_is_not(self):
+        self.add_game(9, age_minutes=48 * 60)
+        state = self.mod.prepare_export(
+            self.root, game_count=1, now_ms=self.now_ms, transcode=self.fake_transcode
+        )
+        self.assertEqual(state["games"], [9])
+        self.mod.clear_export(self.root)
+
+        # Older than the retained review window is still rejected.
+        self.add_game(10, age_minutes=72 * 60 + 1)
         with self.assertRaises(self.mod.EvidenceError):
             self.mod.prepare_export(
                 self.root, game_count=1, now_ms=self.now_ms, transcode=self.fake_transcode
