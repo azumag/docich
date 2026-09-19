@@ -34,6 +34,8 @@ intro = "Pac-Manは迷路の餌を集めるゲームです。自動プレイで�
 
 [retro_corner]
 unattended = true
+# 毎時抽選 (mode = "lottery") で「遊べる」= この実行ファイルが実在すること。
+requires = ["/usr/games/pacman4console"]
 
 # Twitch 配信カテゴリー・タイトル連動 (soviet_now update_stream_game.sh が読む)。
 # 原作 PAC-MAN (140023) を採用 (照合済み)。

@@ -150,6 +150,58 @@ def _owner_free(root, owner_state):
     return state.get('status') not in BUSY_OWNER_STATUSES
 
 
+# 待機中とみなすキュー状態 (running は flock が実体なので数えない: 強制終了で残る)。
+QUEUED_STATUSES = frozenset({'waiting', 'waiting_turn', 'waiting_boundary'})
+# 待機エントリの鮮度。強制終了で残った古い待機が抽選を永久に塞がないための上限。
+QUEUE_FRESH_SECONDS = 3 * 3600
+
+
+def other_corner_busy(g, owner_state, *, now=None):
+    """他コーナーが program 枠を占有中/待機中なら理由文字列、空いていれば None。
+
+    待たず・書かない (lock は一瞬試して即解放するだけ)。毎時抽選のように
+    「busy ならキャンセル」したい呼び出し側向けで、判定不能なら fail-closed で
+    busy を返す。占有 (flock)・registry の所有者・待機中の他コーナー (FIFO で
+    先に待っているものを追い越さない) を見る。自コーナーのエントリは無視する。
+    """
+    now = time.time() if now is None else now
+    root = resolve_soren_root(g) / 'tmp/state'
+    key = Path(owner_state).stem or Path(owner_state).name
+    lock_path = root / 'docich_program.lock'
+    if lock_path.exists():  # 探るためだけに lock ファイルを作らない
+        try:
+            with lock_path.open('a') as lock:
+                try:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return 'program-locked'
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            return 'lock-probe-failed'
+    try:
+        if not _owner_free(root, owner_state):
+            return 'owner-busy'
+    except ProgramRegistryError:
+        return 'registry-error'
+    try:
+        names = sorted(p.stem for p in (root / QUEUE_DIR).iterdir() if p.suffix == '.json')
+    except OSError:
+        return None  # キュー用ディレクトリが無い = 誰も待っていない
+    for other in names:
+        if other == key:
+            continue
+        entry = _queue_read(root, other)
+        if entry.get('status') not in QUEUED_STATUSES:
+            continue
+        try:
+            requested_at = float(entry.get('requested_at', 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if now - requested_at <= QUEUE_FRESH_SECONDS:
+            return f'queued:{other}'
+    return None
+
+
 def _queue_path(root, key):
     return root / QUEUE_DIR / f'{key}.json'
 

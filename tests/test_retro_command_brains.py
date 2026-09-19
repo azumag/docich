@@ -15,7 +15,7 @@ from docich.adapters.cli_game import cli_command_list
 from docich.agent.brains import CommandBrain
 from docich.config import load_game, load_global
 from docich.corner_improve import run_corner_improve
-from docich.retro_corner import load_retro_corner_config
+from docich.retro_corner import RetroCornerManager, load_retro_corner_config
 
 GAMES = ("bastet", "moon-buggy", "pacman4console")
 # Every live retro game is now played by a command brain (ninvaders included: its
@@ -27,8 +27,14 @@ def test_live_daily_games():
     g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
     cfg = load_retro_corner_config(g)
     assert cfg.games == ["ninvaders", "nsnake", *GAMES]
-    assert cfg.daily_each_game and cfg.randomize_start
+    assert cfg.daily_each_game and cfg.randomize_start  # mode="daily" へ戻すとき用に残す
     assert cfg.target_matches == 3
+    # 固定枠を持たず毎時抽選。次の正時 (固定枠のコーナーの開始) までに必ず終わる。
+    assert cfg.mode == "lottery" and 0 < cfg.lottery_probability <= 1
+    assert cfg.lottery_minute + cfg.lottery_wait_minutes + cfg.duration_minutes <= 55
+    for name in cfg.games:
+        required = RetroCornerManager._required_executables(load_game(g, name))
+        assert required and all(path.startswith("/usr/games/") for path in required), name
     for game in BRAIN_GAMES:
         loaded = load_game(g, game)
         assert loaded.agent.enabled and loaded.agent.brain == "command"

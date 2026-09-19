@@ -226,8 +226,12 @@ class TestProductionProfile(unittest.TestCase):
              live_g.display.viewport_width, live_g.display.viewport_height),
             (0, 90, 960, 540),
         )
-        self.assertEqual(live_cfg.start_hour, 19)
-        self.assertEqual(live_cfg.duration_minutes, 30)
+        # 毎時抽選: 固定枠を持たない。上限は次の正時までに終わる長さ。
+        self.assertEqual(live_cfg.mode, "lottery")
+        self.assertEqual(live_cfg.duration_minutes, 20)
+        self.assertLessEqual(
+            live_cfg.lottery_minute + live_cfg.lottery_wait_minutes + live_cfg.duration_minutes, 55)
+        self.assertEqual(live_cfg.start_hour, 19)  # mode="daily" へ戻すとき用に残す
         self.assertEqual(
             live_cfg.games,
             ["ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console"],

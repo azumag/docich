@@ -32,6 +32,8 @@ intro = "Bastetは意地悪なブロックが出現する落ち物ゲームで�
 
 [retro_corner]
 unattended = true
+# 毎時抽選 (mode = "lottery") で「遊べる」= この実行ファイルが実在すること。
+requires = ["/usr/games/bastet"]
 
 # Twitch 配信カテゴリー・タイトル連動 (soviet_now update_stream_game.sh が読む)。
 # IGDB に Bastet 項目は無いため Tetris 系として Tetris (128844908) で代替 (照合済み)。

@@ -46,16 +46,28 @@ games = []
 [retro_corner]
 enabled = true
 require_program_boundary = true
-start_hour = 19
-duration_minutes = 30
 timezone = "Asia/Tokyo"
-# 各ゲームを日1回、ランダム開始 (start_hour から start_window_minutes の窓)。
-# 各コーナーは target_matches 試合の完了を scorelog で検知できれば早期終了し、
-# 来なければ duration_minutes を上限として終了する (入力停止で強制終了しない)。
+# 毎時抽選: 固定枠を持たず、毎時 lottery_minute 分に lottery_probability の確率で
+# 発火を抽選する。当たれば遊べる (実行ファイルが実在する) ゲームを無作為に選び、
+# target_matches 試合の完了を scorelog で検知できれば早期終了し、来なければ
+# duration_minutes を上限として終了して元のゲームへ戻る (入力停止で強制終了しない)。
+# 他コーナーが進行中/待機中、またはゲーム切替中なら抽選そのものを取りやめる (待たない)。
+# 抽選は :05 = 毎正時に始まる固定枠 (soren91 18:00 / PAPER 22:00 など) が先に枠を取れる
+# よう正時をずらし、境界待ちを含めても次の正時までに終わる長さにする
+# (lottery_minute + lottery_wait_minutes + duration_minutes <= 55。読込時に検証)。
+# 前回と同じゲームは、他に遊べるゲームがある限り選ばない。
+mode = "lottery"
+lottery_probability = 0.3
+lottery_minute = 5
+lottery_wait_minutes = 10
+lottery_avoid_repeat = true
+duration_minutes = 20
+target_matches = 3
+# mode = "daily" (旧方式: 各ゲームを日1回・start_hour からランダム開始) へ戻すときだけ使う。
+start_hour = 19
 daily_each_game = true
 randomize_start = true
 start_window_minutes = 30
-target_matches = 3
 games = ["ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console"]
 # ninvaders/nsnake は bot_eval headless 評価に対応したため終了時改善を有効化。
 # bastet/moon-buggy/pacman4console は command brain のみ (実ゲーム実走未検証)。
