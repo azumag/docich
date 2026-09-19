@@ -530,6 +530,34 @@ class ProgramCornerStateTests(CollectorFixture):
         self.assertNotIn("SUPERSECRET123", rendered)
         self.assertIn("[REDACTED]", rendered)
 
+    def test_nethack_corner_states_are_reported_and_redacted(self):
+        module = load_collector()
+        directory = self.state_dir()
+        self.write_state(
+            directory,
+            "nethack_corner_manual.json",
+            {
+                "status": "failed",
+                "game": "nethack",
+                "previous_game": "sorengame",
+                "last_error": "restore failed token=SUPERSECRET123",
+            },
+        )
+        self.write_state(
+            directory,
+            "nethack_corner.json",
+            {"status": "completed", "game": "nethack", "previous_game": "sorengame"},
+        )
+        result = module._collect_programs(directory, self.soren, self.now)
+        manual = result["nethack_corner_manual"]
+        self.assertEqual(manual["status"], "failed")
+        self.assertEqual(manual["previous_game"], "sorengame")
+        self.assertIn("last_error", manual)
+        rendered = json.dumps(result)
+        self.assertNotIn("SUPERSECRET123", rendered)
+        self.assertIn("[REDACTED]", rendered)
+        self.assertEqual(result["nethack_corner"]["status"], "completed")
+
     def test_full_output_includes_corners_section(self):
         self.write_required_alive()
         proc = self.run_collector()
