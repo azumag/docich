@@ -77,6 +77,18 @@ class NethackStartup:
         if key is None and has_gameplay:
             self._state("gameplay")
             return None
+        if (
+            key is None
+            and not self._creation_seen
+            and obs.prompt == "more"
+            and "restoring save file" in text
+        ):
+            # A resumed adventure bypasses character creation.  The startup
+            # gate must not turn its known restore --More-- into an unknown
+            # startup screen forever.  Delegate to the already-reviewed P3b
+            # More-space policy instead of sending a key from this gate.
+            self._state("gameplay")
+            return None
         if key is None and self._creation_seen and "--more--" in text:
             # The intro/--More-- screen can show the status lines below the
             # prompt, so it is not the last line of the frame.
