@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from .config import load_global
-from .game_switch import atomic_write_json
+from .game_switch import atomic_write_json, new_request_id
 from .adapters.program import PAPER_VIEW_NAME
 from .paper_corner import (
     SCRIPT_SLOTS,
@@ -267,19 +267,36 @@ class FastPaperCornerManager(PaperCornerManager):
                 self.save(state)
             else:
                 previous = state.get("previous_game")
+            request_id = state.get("switch_request_id")
+            if not isinstance(request_id, str):
+                request_id = new_request_id()
+                state["switch_request_id"] = request_id
+                self.save(state)
             if previous is None:
-                self._require_success(self.coordinator.start(PAPER_VIEW_NAME), "program view start")
+                result = self._invoke_transition(
+                    self.coordinator.start, PAPER_VIEW_NAME, request_id=request_id
+                )
             elif previous == PAPER_VIEW_NAME:
-                pass
+                result = None
             else:
                 self.announce(
                     state,
                     "switch-notice",
                     "まもなくPAPER・暗号資産の模擬売買コーナーのため、試合終了後に画面を切り替えます。",
                 )
-                self._require_success(
-                    self.coordinator.switch(PAPER_VIEW_NAME), f"{previous}->program view switch"
+                result = self._invoke_transition(
+                    self.coordinator.switch,
+                    PAPER_VIEW_NAME,
+                    request_id=request_id,
                 )
+            if result is not None and self._is_queued(result):
+                state["switch_status"] = getattr(result, "status", "queued")
+                self.save(state)
+                return "queued"
+            if result is not None:
+                self._require_success(result, f"{previous or '(none)'}->program view switch")
+            state.pop("switch_request_id", None)
+            state.pop("switch_status", None)
             committed = self._active_game()
             if committed is not None and committed != PAPER_VIEW_NAME:
                 raise PaperCornerError(f"切替後に旧ゲームが残っています: {committed}")

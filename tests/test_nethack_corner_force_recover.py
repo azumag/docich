@@ -180,12 +180,9 @@ class ForceRecoverBase(NethackCornerTestBase):
 class TestForceRecoverProductionShape(ForceRecoverBase):
     """draining + manual active + NetHack canonical active (the stuck production state)."""
 
-    def test_inherited_stop_raises_on_draining_and_leaves_state_active(self):
-        # Root-cause evidence: the canonical-phase read at the top of the
-        # inherited ``_finish_locked`` raises for ``draining`` *before* its
-        # ``failed`` bookkeeping, so the state stays ``active`` and every later
-        # ``stop`` hits the same wall.  (The scheduled manager keeps this
-        # behaviour; only the manual manager is hardened, see below.)
+    def test_inherited_stop_queues_restore_while_canonical_is_draining(self):
+        # A corner stop must retain its restore request instead of leaving the
+        # corner active forever when canonical is waiting at a game boundary.
         self.set_canonical("draining", "nethack")
         self.set_manual("active")
         coord = StoreCoordinator(self)
@@ -200,11 +197,11 @@ class TestForceRecoverProductionShape(ForceRecoverBase):
             voice=self.voices.append,
         )
         scheduled.state_path = self.manual_path
-        with self.assertRaises(RetroCornerError) as ctx:
-            scheduled.stop()
-        self.assertIn("安定phase", str(ctx.exception))
-        self.assertEqual(self.manual_state()["status"], "active")
-        self.assertEqual(coord.calls, [])
+        result = scheduled.stop()
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(self.manual_state()["status"], "completed")
+        self.assertEqual(coord.calls, [("switch", "sorengame")])
+        self.assertEqual(self.canonical(), ("ready", "sorengame"))
 
     def test_force_recover_unwedges_drain_but_never_stops_nethack(self):
         self.set_canonical("draining", "nethack")

@@ -235,7 +235,8 @@ manual state が `active` のまま canonical の phase が `draining` で止ま
   canonical が読めない、のいずれでも manual state を `failed` にし、`last_error` に固定 token
   `stop_blocked:<runtime_unavailable|switch_not_stable|switch_state_unreadable>` を残して失敗する。
   以降の `stop` は `noop`（not-active）になり、同じ失敗で詰まらない。save boundary 経由で元ゲームへ戻す
-  通常の `stop` の意味論は変えない。scheduled corner の `stop` も変えない。トレードオフとして、稼働中の runner が
+  通常の `stop` の意味論は変えない。scheduled corner の `stop` は、canonical が切替中なら復帰要求を
+  `restoring` として保持し、次のtickで再試行する。トレードオフとして、稼働中の runner が
   ある状態で `stop` が preflight 失敗すると corner は `failed` で終わり（runner は次の poll で終了する）、
   NetHack は canonical active のまま残るので `recover` が必要になる。
 - **`force-recover`**: 引数も対象ゲームも取らない固定 operation。ゲームの stop / switch / start を自分では呼ばず、

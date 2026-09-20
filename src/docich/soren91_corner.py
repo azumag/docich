@@ -316,10 +316,15 @@ class Soren91CornerManager(RetroCornerManager):
             pass
         return result
 
-    def _transition_to(self, current: str | None, target: str) -> None:
+    def _transition_to(
+        self,
+        current: str | None,
+        target: str,
+        *,
+        request_id: str | None = None,
+    ):
         try:
-            super()._transition_to(current, target)
-            return
+            return super()._transition_to(current, target, request_id=request_id)
         except RetroCornerError:
             recover = getattr(self.coordinator, "recover", None)
             if recover is None:
@@ -333,7 +338,7 @@ class Soren91CornerManager(RetroCornerManager):
                 raise
             if getattr(recovered, "status", None) != "succeeded":
                 raise
-            super()._transition_to(current, target)
+            return super()._transition_to(current, target, request_id=request_id)
 
     def _spawn_improve_once(self, state: dict[str, object]) -> None:
         """終了時改善は未連携 (残作業)。finish を壊さず理由だけ記録する。"""
@@ -443,11 +448,17 @@ class Soren91CornerManager(RetroCornerManager):
         with self._tick_guard() as single:
             if not single:
                 return CornerResult("noop", detail="already-running")
+            now = self._local_now()
+            restoring = self._retry_restoring_tick(now)
+            if restoring is not None:
+                return restoring
+            starting = self._retry_starting_tick(now)
+            if starting is not None:
+                return starting
             if not self.config.enabled:
                 with self._locked():
-                    self._reconcile_stale_locked(self._local_now())
+                    self._reconcile_stale_locked(now)
                 return CornerResult("noop", detail="disabled")
-            now = self._local_now()
             end_of_day = now.replace(hour=23, minute=59, second=59, microsecond=0)
             try:
                 with program_slot(

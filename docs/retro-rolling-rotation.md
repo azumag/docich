@@ -11,6 +11,11 @@
 - 選択時刻が24時間ちょうど前になったゲームは候補へ戻る。
 - 最初の6枠は、直近履歴が空なら重複なしのランダム順になる。
 - 他コーナーや切替境界が占有中の場合は発火せず、次のtickで再試行する。
+- ゲーム切替中に到着した要求は `run-soren-live/game-switch/requests/*.json` へ
+  `queued` としてFIFO順に保存し、先行要求が安定phaseへ戻ってから順番に消化する。
+  選択済みの `pending` は切替中・境界待ちの理由だけでは破棄しない。
+- 期限切れの `draining` を新しい要求が検出した場合は、現在のboundary要求を安全に
+  取り消してcanonicalを復旧できたときだけ、保持していたキュー先頭を続けて実行する。
 - `[paper_corner]`、`[soren91_corner]`、専用の `[nethack_corner]` の有効な固定枠を先読みする。rotationの
   `rotation_wait_minutes + duration_minutes` の最悪終了時刻が固定枠開始の5分前までに
   収まらない場合は選択せず延期し、固定枠の実行中も開始しない。たとえば22:00の

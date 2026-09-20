@@ -273,6 +273,24 @@ class TestRequestReceipts(GameSwitchTestBase):
         with self.assertRaises(game_switch.RequestConflictError):
             self.store.accept_request(request_id, "switch", "robots", {"timeout": 40})
 
+    def test_queued_requests_are_fifo_and_the_head_can_be_claimed(self):
+        first_id = str(uuid.uuid4())
+        second_id = str(uuid.uuid4())
+        first = self.store.enqueue_request(first_id, "switch", "robots")
+        second = self.store.enqueue_request(second_id, "switch", "nethack")
+
+        self.assertEqual((first.status, second.status), ("queued", "queued"))
+        self.assertEqual(
+            [item["request_id"] for item in self.store.receipts.queued()],
+            [first_id, second_id],
+        )
+        claimed = self.store.accept_request(first_id, "switch", "robots")
+        self.assertTrue(claimed.claimed_from_queue)
+        self.assertEqual(claimed.status, "accepted")
+        state, _ = self.store.canonical.load()
+        self.assertEqual((state["phase"], state["request_id"]), ("validating", first_id))
+        self.assertEqual(self.store.receipts.load(second_id)["status"], "queued")
+
     def test_terminal_result_is_returned_on_retry(self):
         request_id = str(uuid.uuid4())
         self.store.accept_request(request_id, "start", "nethack")

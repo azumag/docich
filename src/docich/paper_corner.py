@@ -3,6 +3,7 @@ import argparse
 import datetime as dt
 import fcntl
 import json
+import inspect
 import os
 import sys
 from pathlib import Path
@@ -13,7 +14,7 @@ from .adapters import make_coordinator_adapter
 from .adapters.program import PAPER_VIEW_NAME, make_program_view_adapter
 from .config import load_global
 from .corner_boundary import CornerWaitExpired, program_slot
-from .game_switch import GameSwitchStore, atomic_write_json
+from .game_switch import GameSwitchStore, atomic_write_json, new_request_id
 from .overlay_queue import OVERLAY_BODY_LIMIT
 from .tmux import Tmux
 from .trading.presentation import write_presentation
@@ -667,6 +668,24 @@ class PaperCornerManager:
             )
             raise PaperCornerError(f"{action} に失敗しました: {detail}")
 
+    @staticmethod
+    def _invoke_transition(method, target=None, *, request_id=None):
+        try:
+            parameters = inspect.signature(method).parameters.values()
+            accepts_request_id = any(
+                parameter.name == "request_id"
+                or parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters
+            )
+        except (TypeError, ValueError):
+            accepts_request_id = True
+        kwargs = {"request_id": request_id} if request_id is not None and accepts_request_id else {}
+        return method(target, **kwargs) if target is not None else method(**kwargs)
+
+    @staticmethod
+    def _is_queued(result) -> bool:
+        return getattr(result, "status", None) in {"queued", "in_progress", "busy"}
+
     def _restore_locked(self, state) -> str:
         """Hand the display back. Never kills a game the view did not displace.
 
@@ -706,15 +725,30 @@ class PaperCornerManager:
         # then fall back to compact notifications. A failed restore stays
         # failed (never silently completed) so the next tick retries it.
         state['status'] = 'restoring'
+        request_id = state.get('switch_request_id')
+        if not isinstance(request_id, str):
+            request_id = new_request_id()
+            state['switch_request_id'] = request_id
         self.save(state)
         try:
             if previous is None:
-                self._require_success(self.coordinator.stop(), 'program view stop')
+                result = self._invoke_transition(self.coordinator.stop, request_id=request_id)
+                if self._is_queued(result):
+                    state['switch_status'] = getattr(result, 'status', 'queued')
+                    self.save(state)
+                    return 'queued'
+                self._require_success(result, 'program view stop')
             elif previous == PAPER_VIEW_NAME:
                 pass
             else:
-                self._require_success(
-                    self.coordinator.switch(previous), f'program view->{previous} restore')
+                result = self._invoke_transition(
+                    self.coordinator.switch, previous, request_id=request_id
+                )
+                if self._is_queued(result):
+                    state['switch_status'] = getattr(result, 'status', 'queued')
+                    self.save(state)
+                    return 'queued'
+                self._require_success(result, f'program view->{previous} restore')
             self._announce_stream_restore(previous)
         except PaperCornerError as exc:
             state.update(status='failed', completed_at=self.clock(), last_error=str(exc)[:240])
@@ -724,6 +758,8 @@ class PaperCornerManager:
         # Restore compact even when completion output is temporarily unavailable.
         write_presentation(self.presentation, 'compact', now=self.clock())
         self.deliver(state, 'end', self._end_text(state))
+        state.pop('switch_request_id', None)
+        state.pop('switch_status', None)
         state.update(status='completed', completed_at=self.clock(), last_error=None)
         self._spawn_improve_once(state)
         self._clear_paper_flag()
@@ -759,18 +795,34 @@ class PaperCornerManager:
                 self.save(state)
             else:
                 previous = state.get('previous_game')
+            request_id = state.get('switch_request_id')
+            if not isinstance(request_id, str):
+                request_id = new_request_id()
+                state['switch_request_id'] = request_id
+                self.save(state)
             if previous is None:
-                self._require_success(self.coordinator.start(PAPER_VIEW_NAME), 'program view start')
+                result = self._invoke_transition(
+                    self.coordinator.start, PAPER_VIEW_NAME, request_id=request_id
+                )
             elif previous == PAPER_VIEW_NAME:
-                pass
+                result = None
             else:
                 # The match runs to its boundary first (repo rule: never
                 # kill a match mid-game). Tell viewers the switch is
                 # pending so the continuing game is not confusing.
                 self.announce(state, 'switch-notice',
                               'まもなくPAPER・暗号資産の模擬売買コーナーのため、試合終了後に画面を切り替えます。')
-                self._require_success(
-                    self.coordinator.switch(PAPER_VIEW_NAME), f'{previous}->program view switch')
+                result = self._invoke_transition(
+                    self.coordinator.switch, PAPER_VIEW_NAME, request_id=request_id
+                )
+            if result is not None and self._is_queued(result):
+                state['switch_status'] = getattr(result, 'status', 'queued')
+                self.save(state)
+                return 'queued'
+            if result is not None:
+                self._require_success(result, f'{previous or "(none)"}->program view switch')
+            state.pop('switch_request_id', None)
+            state.pop('switch_status', None)
             # Post-commit stop verification: the displaced game must be
             # gone from canonical. A mismatch fails (and retries) instead
             # of silently showing the dashboard over a live game.

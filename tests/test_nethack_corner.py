@@ -247,6 +247,33 @@ class TestNethackCornerLifecycle(NethackCornerTestBase):
         self.assertEqual(result.detail, "outside-window")
         self.assertEqual(coordinator.calls, [])
 
+    def test_queued_start_retries_outside_start_hour(self):
+        current = ["robots"]
+
+        class QueueOnce(FakeCoordinator):
+            def __init__(self, current):
+                super().__init__(current)
+                self.queue_once = True
+
+            def switch(self, game):
+                if self.queue_once:
+                    self.queue_once = False
+                    return SimpleNamespace(
+                        status="queued", error_code="queued", detail="queued"
+                    )
+                return super().switch(game)
+
+        coordinator = QueueOnce(current)
+        mgr, _ = self.manager(current, coordinator=coordinator)
+        self.assertEqual(mgr.start().status, "queued")
+
+        self.now_value = self.now_value.replace(hour=21)
+        result = mgr.tick()
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(current[0], "robots")
+        self.assertEqual(coordinator.calls, [("switch", "nethack"), ("switch", "robots")])
+
     def test_tick_rechecks_schedule_after_program_slot_wait(self):
         current = [None]
         mgr, coordinator = self.manager(current)
