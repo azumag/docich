@@ -8,7 +8,7 @@ on:
         required: true
         default: start
         type: choice
-        options: [start, finish, status, recover]
+        options: [start, finish, status, recover, diagnose, refresh-bridge]
       confirm:
         description: Type production
         required: true
@@ -125,6 +125,41 @@ jobs:
           printf '%s\n' '/home/ubuntu/docich/bin/docich-jev-corner --config /home/ubuntu/docich/config/docich.soren-live.toml start --timeout-seconds 600' |
             ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
+      - name: Diagnose fixed JEV preflight
+        id: diagnose
+        if: ${{ steps.auth.outputs.operation == 'diagnose' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -uo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          set +e
+          printf '%s\n' '/home/ubuntu/docich/bin/docich-jev-corner --config /home/ubuntu/docich/config/docich.soren-live.toml diagnose' |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA" >/dev/null
+          code=$?
+          set -e
+          echo "::notice::JEV preflight diagnostic exit=${code} (fixed category vocabulary)"
+          (( code == 0 ))
+
+      - name: Refresh only the Soren game bridge
+        id: refresh_bridge
+        if: ${{ steps.auth.outputs.operation == 'refresh-bridge' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          printf '%s\n' '/home/ubuntu/docich/bin/docich-jev-corner --config /home/ubuntu/docich/config/docich.soren-live.toml refresh-bridge' |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
       - name: Finish JEV corner and restore existing player
         id: finish
         if: ${{ steps.auth.outputs.operation == 'finish' }}
@@ -179,6 +214,18 @@ jobs:
         if: ${{ steps.start.outcome == 'failure' }}
         run: |
           echo '::error::JEV corner start failed'
+          exit 1
+
+      - name: Fail unsuccessful JEV preflight diagnosis
+        if: ${{ steps.diagnose.outcome == 'failure' }}
+        run: |
+          echo '::error::JEV preflight diagnosis failed'
+          exit 1
+
+      - name: Fail unsuccessful game bridge refresh
+        if: ${{ steps.refresh_bridge.outcome == 'failure' }}
+        run: |
+          echo '::error::Soren game bridge refresh failed'
           exit 1
 
       - name: Fail unsuccessful JEV finish

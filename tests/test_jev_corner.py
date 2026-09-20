@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from docich import config
-from docich.jev_corner import JevCornerConfig, JevCornerError, JevCornerManager, load_jev_corner_config
+from docich.jev_corner import JevCornerConfig, JevCornerError, JevCornerManager, diagnose, load_jev_corner_config
 
 
 class FakeJevAdapter:
@@ -86,6 +86,9 @@ max_requests_per_run = 500
         self.assertEqual(result.status, "active")
         self.assertEqual(self.adapter.calls[0]["target_policy"], "jev")
         self.assertEqual(self.adapter.calls[0]["expected_player_generation"], 0)
+
+    def test_diagnose_uses_fixed_category_when_bridge_capability_is_missing(self):
+        self.assertEqual(diagnose(self.g), "capability_missing")
 
     def test_one_game_state_requires_explicit_finish_to_restore_existing(self):
         self.manager.start(timeout_s=1)
