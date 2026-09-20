@@ -92,6 +92,14 @@ RECOVER_DIAGNOSE_CODES = {
     "corner_stale_precommit_resource_unrecoverable": 86,
     "corner_stale_precommit_accepted": 87,
     "corner_stale_precommit_waiting": 88,
+    "corner_stale_precommit_accepted_live": 89,
+    "corner_stale_precommit_accepted_expired": 90,
+    "corner_stale_precommit_waiting_live": 91,
+    "corner_stale_precommit_waiting_expired": 92,
+    "corner_stale_precommit_boundary_live": 93,
+    "corner_stale_precommit_boundary_expired": 94,
+    "corner_stale_precommit_stop_requested_live": 95,
+    "corner_stale_precommit_stop_requested_expired": 96,
 }
 
 
@@ -334,7 +342,10 @@ def _stale_precommit_recovery_category(manager: "JevCornerManager") -> str:
         return "corner_stale_precommit_request_missing"
     if ack and ack_id != request_id:
         return "corner_stale_precommit_identity_mismatch"
-    if status in {"accepted", "waiting", "boundary", "stop_requested", "stopping", "stopped", "timeout"}:
+    if status in {"accepted", "waiting", "boundary", "stop_requested"}:
+        suffix = "expired" if _expired_pre_stop_request(payload) else "live"
+        return f"corner_stale_precommit_{status}_{suffix}"
+    if status in {"stopping", "stopped", "timeout"}:
         return f"corner_stale_precommit_{status}"
     if (
         not ack
