@@ -274,25 +274,50 @@ def diagnose(g: GlobalConfig) -> str:
 
 
 def _run_bridge_relaunch(root: Path) -> None:
-    """Run the reviewed game-bridge-only relaunch entry point."""
+    """Restart only the Soren game bridge (its dedicated tmux session).
 
+    The previous entry point sourced ``_br_relaunch`` from eloop_lib.sh, but
+    that helper no longer exists, so the operation always failed.  Recreate the
+    bridge exactly the way the production watchdog does: a dedicated tmux
+    session that re-sources .env and execs soviet_local.mjs, then wait for a
+    live capability pid.
+    """
+
+    session = os.environ.get("SOREN_BRIDGE_TMUX_SESSION", "soren_bridge")
+    log_path = root / "tmp" / "soviet_local.log"
     subprocess.run(
-        [
-            "/bin/bash",
-            "--noprofile",
-            "--norc",
-            "-euo",
-            "pipefail",
-            "-c",
-            "source ./eloop_lib.sh && _br_relaunch",
-        ],
-        cwd=str(root),
+        ["tmux", "kill-session", "-t", session],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.STDOUT,
-        timeout=240,
+        timeout=30,
+        check=False,
+    )
+    command = (
+        f"cd '{root}' && set -a && . ./.env && set +a && "
+        f"exec node soviet_local.mjs > '{log_path}' 2>&1"
+    )
+    subprocess.run(
+        ["tmux", "new-session", "-d", "-s", session, command],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.STDOUT,
+        timeout=30,
         check=True,
     )
+    capability = root / "tmp/state/game_lifecycle/player_capabilities.json"
+    deadline = time.monotonic() + 120.0
+    while time.monotonic() < deadline:
+        value = _read_json(capability)
+        pid = value.get("pid") if isinstance(value, dict) else None
+        if isinstance(pid, int) and pid > 0:
+            try:
+                os.kill(pid, 0)
+                return
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        time.sleep(1.0)
+    raise JevCornerError("Soren bridge capabilityを確認できません")
 
 
 def _expired_pre_stop_request(payload: dict[str, object]) -> bool:
@@ -548,7 +573,10 @@ def refresh_bridge(g: GlobalConfig) -> None:
     """Reload only the live Soren game bridge at a safe game boundary."""
 
     category = diagnose(g)
-    if category not in {"capability_missing", "capability_invalid"}:
+    # `ready` is included so the same reviewed operation can reload the bridge
+    # after a reviewed bridge-code deploy (the docich gateway only restarts the
+    # radio worker).  JEV-active and invalid states stay fail-closed.
+    if category not in {"ready", "capability_missing", "capability_invalid"}:
         raise JevCornerError("Soren bridge refreshのpreflight条件を満たしません")
     root = _soren_root(g)
     manager = JevCornerManager(g)

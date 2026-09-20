@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from docich import config
 from docich.jev_corner import (
@@ -12,6 +13,7 @@ from docich.jev_corner import (
     JevCornerManager,
     _recover_precommit_failure,
     _expired_pre_stop_request,
+    _run_bridge_relaunch,
     _stale_precommit_recovery_category,
     diagnose,
     load_jev_corner_config,
@@ -87,6 +89,20 @@ max_requests_per_run = 500
 
     def tearDown(self):
         self.tempdir.cleanup()
+
+    def test_bridge_relaunch_restarts_the_tmux_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capability = root / "tmp/state/game_lifecycle/player_capabilities.json"
+            capability.parent.mkdir(parents=True)
+            capability.write_text(json.dumps({"schema": 1, "pid": 4242}), encoding="utf-8")
+            calls = []
+            with patch("docich.jev_corner.subprocess.run", side_effect=lambda argv, **kw: calls.append(argv)):
+                with patch("docich.jev_corner.os.kill", return_value=None):
+                    _run_bridge_relaunch(root)
+            self.assertEqual(calls[0][:3], ["tmux", "kill-session", "-t"])
+            self.assertEqual(calls[1][:4], ["tmux", "new-session", "-d", "-s"])
+            self.assertIn("soviet_local.mjs", calls[1][-1])
 
     def test_config_is_disabled_by_default_but_manual_start_is_explicit(self):
         loaded = load_jev_corner_config(self.g)
