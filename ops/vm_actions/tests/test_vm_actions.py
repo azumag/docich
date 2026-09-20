@@ -88,6 +88,51 @@ class AuthorizeTests(unittest.TestCase):
         )
         self.assertEqual(p.returncode,0,p.stderr)
 
+    def test_configure_jev_requires_production_main_and_confirmation(self):
+        p=self.run_auth(
+            GITHUB_REPOSITORY_PRIVATE='false',
+            INPUT_OPERATION='configure_jev',
+            INPUT_TARGET='preview',
+            INPUT_REF='main',
+            INPUT_CONFIRM='production',
+        )
+        self.assertNotEqual(p.returncode,0)
+        self.assertIn('production-only',p.stderr)
+        p=self.run_auth(
+            GITHUB_REPOSITORY_PRIVATE='false',
+            INPUT_OPERATION='configure_jev',
+            INPUT_TARGET='production',
+            INPUT_REF='feature/test',
+            INPUT_CONFIRM='production',
+        )
+        self.assertNotEqual(p.returncode,0)
+        self.assertIn('must run from main',p.stderr)
+        p=self.run_auth(
+            GITHUB_REPOSITORY_PRIVATE='false',
+            INPUT_OPERATION='configure_jev',
+            INPUT_TARGET='production',
+            INPUT_REF='main',
+            INPUT_CONFIRM='',
+        )
+        self.assertNotEqual(p.returncode,0)
+        self.assertIn('confirmation required',p.stderr)
+        p=self.run_auth(
+            GITHUB_REPOSITORY_PRIVATE='false',
+            INPUT_OPERATION='configure_jev',
+            INPUT_TARGET='production',
+            INPUT_REF='main',
+            INPUT_CONFIRM='production',
+        )
+        self.assertEqual(p.returncode,0,p.stderr)
+        p=self.run_auth(
+            GITHUB_REPOSITORY_PRIVATE='false',
+            INPUT_OPERATION='disable_jev',
+            INPUT_TARGET='production',
+            INPUT_REF='main',
+            INPUT_CONFIRM='production',
+        )
+        self.assertEqual(p.returncode,0,p.stderr)
+
     def test_all_vm_ssh_calls_enable_encrypted_keepalives(self):
         workflow = WF.read_text(encoding="utf-8")
         ssh_configs = workflow.count("ssh_args=(-F /dev/null")
@@ -264,6 +309,35 @@ class GatewayTests(unittest.TestCase):
         self.assertTrue(logs)
         self.assertIn('SUPERSECRET',logs[-1].read_text())
 
+    def test_configure_jev_uses_fixed_reviewed_script_and_withholds_key(self):
+        soren=self.base/'soren'; soren.mkdir()
+        script_dir=self.doc/'ops'/'vm_actions'; script_dir.mkdir(parents=True)
+        (script_dir/'configure_comment_classifier_jev.py').write_text(
+            'import os\n'
+            'from pathlib import Path\n'
+            'Path(os.environ["SOREN_ROOT"], "observed").write_text('
+            '"present" if os.environ.get("TYPESAFE_API_KEY") else "missing")\n'
+            'print("configured api_key=present")\n',
+            encoding='utf-8',
+        )
+        subprocess.run(['git','-C',self.doc,'add','.'],check=True)
+        subprocess.run(['git','-C',self.doc,'commit','-qm','jev configurator'],check=True)
+        sha=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
+        self.config.write_text(json.dumps({'state':str(self.state),'repos':{
+            'docich':{'production':str(self.doc),'mode':'git',
+                      'projections':{'games/soviet_now':str(soren)}}
+        }}))
+        p=self.call(f'configure_jev docich production {sha}',b'SECRET_KEY')
+        self.assertEqual(p.returncode,0,p.stderr.decode())
+        self.assertNotIn(b'SECRET_KEY',p.stdout)
+        self.assertEqual((soren/'observed').read_text(), 'present')
+        logs=list((self.state/'logs').glob('*.log'))
+        self.assertTrue(logs)
+        self.assertNotIn('SECRET_KEY', logs[-1].read_text())
+        p=self.call(f'disable_jev docich production {sha}')
+        self.assertEqual(p.returncode,0,p.stderr.decode())
+        self.assertEqual((soren/'observed').read_text(), 'missing')
+
 class WorkflowPolicyTests(unittest.TestCase):
     def test_installer_projects_docich_owned_soviet_submodule_only(self):
         text=(ROOT/'ops/vm_actions/install_vm_gateway.sh').read_text()
@@ -291,5 +365,15 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertNotIn('ssh-keyscan',text)
         self.assertIn('bundle create',text)
         self.assertNotIn('build_archive.py',text)
+
+    def test_jev_configuration_uses_environment_secret_and_fixed_gateway_operation(self):
+        text=WF.read_text()
+        self.assertIn('configure_jev',text)
+        self.assertIn('disable_jev',text)
+        self.assertIn('TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}',text)
+        self.assertIn('printf \'%s\' "$TYPESAFE_API_KEY" | ssh',text)
+        self.assertIn('"configure_jev docich production $SHA"',text)
+        self.assertIn('The VM gateway loads the',text)
+        self.assertNotIn('VM_COMMAND: ${{ secrets.TYPESAFE_API_KEY }}',text)
 
 if __name__=='__main__': unittest.main()

@@ -97,6 +97,7 @@ sudo bash ops/vm_actions/install_vm_gateway.sh ~/.ssh/github-vm-ops.pub ubuntu
 - `VM_SSH_PORT`
 - `VM_SSH_PRIVATE_KEY`
 - `VM_SSH_KNOWN_HOSTS`
+- `TYPESAFE_API_KEY`（Jevコメント分類器を有効化するときだけ。値はチャット、Issue、workflow input、ログへ貼らない）
 
 7. 初回だけ Actions → **VM operations** で `bootstrap / production / ref=main / confirm=production` を実行します。bootstrap は本番コードを変更しません。
 
@@ -109,6 +110,8 @@ sudo bash ops/vm_actions/install_vm_gateway.sh ~/.ssh/github-vm-ops.pub ubuntu
 - **production command**: `exec / production / ref=main / confirm=production`。stdout/stderr本文はVM private logだけに保存します。
 - **status**: `status / production` または `status / preview`。production status は総容量・利用可能bytes・使用率だけを返し、pathやログ本文は返しません。
 - **market_paper**: `market_paper / production / ref=main / confirm=production` + `market_paper_action`(install/enable/disable/restart) + `market_paper_market`(stocks/fx)。opt-inのstocks/FXペーパートレードworker(`docich-market-worker@<market>.service` 等、`scripts/systemd/docich-market-*`)を `systemctl --user` だけで install/enable/disable/restart します。root/sudoは使いません。`config/market-paper.toml` は変更しません（enabled/mode切り替えは通常のcode reviewを通るdeployで行う）。結果は本操作自体では返らず(exec同様output withheld)、後続の `diagnostics` の `market_paper.{stocks,fx}` セクション(unit_active/health_status/feed_unavailable等)で確認します。
+- **Jevコメント分類器の有効化**: 先に Environment `vm-operations` へ `TYPESAFE_API_KEY` を登録し、`configure_jev / production / ref=main / confirm=production` を実行します。キーはstdinで固定gatewayへ渡され、呼び出し元のshellや任意commandは実行されません。VMの`.env`をatomic更新し、chat workerだけを完全再起動して、backend=`jev`・モデル・キー存在を実効環境で確認します。配信encoder、radio worker、共通基盤は再起動しません。
+- **Jevコメント分類器の無効化**: `disable_jev / production / ref=main / confirm=production` を実行します。`COMMENT_CLASSIFIER_BACKEND=`を明示し、Jev設定とキーを`.env`から除去してchat workerだけを完全再起動します。どちらの操作も直前の`.env`をVM内のmode 0600バックアップへ保存し、キー値はworkflow出力へ返しません。
 
 ## Preview release / Git bundle retention and storage alert
 
