@@ -128,6 +128,10 @@ max_requests_per_run = 500
         self.assertTrue(_expired_pre_stop_request(payload))
         payload["ack"]["status"] = "stop_requested"
         self.assertTrue(_expired_pre_stop_request(payload))
+        payload["ack"]["status"] = "accepted"
+        self.assertTrue(_expired_pre_stop_request(payload))
+        payload["ack"]["status"] = "waiting"
+        self.assertTrue(_expired_pre_stop_request(payload))
         payload["ack"]["status"] = "timeout"
         self.assertTrue(_expired_pre_stop_request(payload))
         payload["resource"] = {"status": "stopped"}
