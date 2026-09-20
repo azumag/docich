@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 import subprocess
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
 from ..game_switch import DeadlineExceededError, ReadinessTimeoutError, RuntimeSpec
@@ -112,6 +114,38 @@ class SorenCoordinatorAdapter:
             self._check(deadline, cancel)
             time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
 
+    def _wait_player_change_prepared(self, request_id: str, deadline: float, cancel) -> None:
+        """Drive the side-effect-free boundary poll for a player transaction.
+
+        The normal loop polls ``boundary`` after its own game bookkeeping. A
+        one-game JEV loop intentionally exits and parks, however, so the
+        explicit ``finish`` command must still be able to prepare an already
+        GAMEOVER board without requiring a second loop process. Calling the
+        broker's boundary command here is safe for both cases: it only records
+        ``waiting``/``prepared`` and never sends input or stops the bridge.
+        """
+
+        while True:
+            payload = self._status(deadline, cancel)
+            ack = self._ack(payload)
+            if ack.get("request_id") != request_id:
+                raise AdapterError("Soren lifecycle request identityが変化しました")
+            status = str(ack.get("status") or "")
+            if status == "prepared":
+                return
+            if status in {"failed", "timeout", "unsupported", "cancelled", "resumed"}:
+                raise AdapterError(f"Soren lifecycleが停止しました: {status}")
+
+            rc, boundary = self._broker("boundary", request_id, deadline, cancel)
+            boundary_ack = self._ack(boundary)
+            if boundary_ack and boundary_ack.get("request_id") != request_id:
+                raise AdapterError("Soren lifecycle boundary request identityが変化しました")
+            if rc not in {0, 1}:
+                boundary_status = str(boundary_ack.get("status") or "unknown")
+                raise AdapterError(f"Soren player_change boundaryを確定できません: {boundary_status}")
+            self._check(deadline, cancel)
+            time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
+
     def preflight(self, deadline: float, cancel) -> None:
         self._check(deadline, cancel)
         if not self.broker.is_file() or not self.control.is_file():
@@ -128,6 +162,92 @@ class SorenCoordinatorAdapter:
         if rc != 0 or self._ack(payload).get("request_id") != request_id:
             raise AdapterError("Soren lifecycle boundary要求を受理できません")
         self._wait_status(request_id, {"boundary"}, deadline, cancel)
+
+    def reconfigure_player(
+        self,
+        *,
+        request_id: str,
+        target_policy: str,
+        run_id: str,
+        expected_player_generation: int,
+        config_hash: str,
+        deadline: float,
+        cancel,
+        game_generation: int | None = None,
+    ) -> dict:
+        """Switch the player at a confirmed game boundary.
+
+        This is intentionally separate from ``request_round_boundary`` and
+        the normal game-switch path.  The Soren bridge remains alive; the
+        lifecycle broker parks only the game-owned loop and commits the
+        player snapshot with a generation CAS.  No normal strategy or
+        improvement endpoint is called here.
+        """
+
+        self._check(deadline, cancel)
+        if self.spec.game != "sorengame":
+            raise AdapterError("player reconfigure はsorengame専用です")
+        if target_policy not in {"existing", "jev"}:
+            raise AdapterError("target_policy はexistingまたはjevである必要があります")
+        try:
+            canonical_run_id = str(uuid.UUID(str(run_id)))
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise AdapterError("run_id がUUIDではありません") from exc
+        if canonical_run_id != str(run_id):
+            raise AdapterError("run_id は標準UUID形式である必要があります")
+        if type(expected_player_generation) is not int or expected_player_generation < 0:
+            raise AdapterError("expected_player_generation が不正です")
+        if not re.fullmatch(r"[0-9a-f]{64}", str(config_hash)):
+            raise AdapterError("config_hash が不正です")
+
+        self.preflight(deadline, cancel)
+        rc, capabilities = self._broker("capabilities", None, deadline, cancel)
+        advertised = capabilities.get("capabilities")
+        if rc != 0 or not isinstance(advertised, list) or "player_policy_v1" not in advertised:
+            raise AdapterError("Soren player_policy_v1 capabilityを確認できません")
+        advertised_generation = capabilities.get("game_generation")
+        if type(advertised_generation) is int and advertised_generation >= 1:
+            generation = advertised_generation
+        else:
+            generation = self.spec.generation
+        if game_generation is not None:
+            if type(game_generation) is not int or game_generation < 1 or game_generation != generation:
+                raise AdapterError("Soren game_generationが変化しました")
+            generation = game_generation
+
+        self._request_id = request_id
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.1:
+            raise DeadlineExceededError("Soren player_change要求のdeadlineが短すぎます")
+        rc, payload = self._broker(
+            "request", request_id, deadline, cancel,
+            "--game", "sorengame", "--generation", str(generation),
+            "--deadline-sec", str(remaining),
+            "--operation", "player_change",
+            "--target-policy", target_policy,
+            "--run-id", canonical_run_id,
+            "--expected-player-generation", str(expected_player_generation),
+            "--config-hash", config_hash,
+        )
+        ack = self._ack(payload)
+        if rc != 0 or ack.get("request_id") != request_id or ack.get("status") not in {"accepted", "prepared"}:
+            raise AdapterError("Soren player_change要求を受理できません")
+
+        self._wait_player_change_prepared(request_id, deadline, cancel)
+        rc, committed = self._run(
+            [str(self.control), "player-commit", request_id], deadline, cancel
+        )
+        committed_ack = self._ack(committed)
+        if (
+            rc != 0
+            or committed.get("status") != "committed"
+            or committed_ack.get("status") not in {"committed", ""}
+        ):
+            raise AdapterError("Soren player_changeのcommitに失敗しました")
+        player_state = committed.get("player_state")
+        if not isinstance(player_state, dict) or player_state.get("policy") != target_policy:
+            raise AdapterError("Soren player_changeのcommit結果を検証できません")
+        return player_state
 
     def cancel_round_boundary(self, request_id: str, deadline: float, cancel) -> bool:
         rc, payload = self._run(
