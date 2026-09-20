@@ -81,6 +81,15 @@ RECOVER_DIAGNOSE_CODES = {
     "corner_stale_precommit_resumable": 75,
     "corner_stale_precommit_unrecoverable": 76,
     "corner_stale_precommit_timeout": 77,
+    "corner_stale_precommit_ack_missing": 78,
+    "corner_stale_precommit_request_missing": 79,
+    "corner_stale_precommit_identity_mismatch": 80,
+    "corner_stale_precommit_ack_unknown": 81,
+    "corner_stale_precommit_cancelled": 82,
+    "corner_stale_precommit_failed": 83,
+    "corner_stale_precommit_unsupported": 84,
+    "corner_stale_precommit_resumed": 85,
+    "corner_stale_precommit_resource_unrecoverable": 86,
 }
 
 
@@ -317,15 +326,36 @@ def _stale_precommit_recovery_category(manager: "JevCornerManager") -> str:
     if request.get("game") not in {None, GAME_NAME} or resource.get("game") not in {None, GAME_NAME}:
         return "corner_stale_precommit_unrecoverable"
     status = ack.get("status")
+    request_id = request.get("request_id")
+    ack_id = ack.get("request_id")
+    if not isinstance(request_id, str) or not request_id:
+        return "corner_stale_precommit_request_missing"
+    if ack and ack_id != request_id:
+        return "corner_stale_precommit_identity_mismatch"
     if status in {"boundary", "stop_requested", "stopping", "stopped", "timeout"}:
         return f"corner_stale_precommit_{status}"
     if (
         not ack
         and resource.get("status") == "stopped"
-        and isinstance(request.get("request_id"), str)
-        and resource.get("request_id") == request.get("request_id")
+        and resource.get("request_id") == request_id
     ):
         return "corner_stale_precommit_resumable"
+    if not ack:
+        return "corner_stale_precommit_ack_missing"
+    terminal = {
+        "cancelled": "corner_stale_precommit_cancelled",
+        "failed": "corner_stale_precommit_failed",
+        "unsupported": "corner_stale_precommit_unsupported",
+        "resumed": "corner_stale_precommit_resumed",
+    }
+    if status in terminal:
+        return terminal[status]
+    if resource.get("request_id") not in {None, request_id}:
+        return "corner_stale_precommit_identity_mismatch"
+    if resource and resource.get("status") not in {None, "stopped"}:
+        return "corner_stale_precommit_resource_unrecoverable"
+    if status is None:
+        return "corner_stale_precommit_ack_unknown"
     return "corner_stale_precommit_unrecoverable"
 
 
