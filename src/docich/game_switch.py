@@ -749,6 +749,9 @@ class GameSwitchTransaction:
             self.lock, request_id, operation, target, payload
         )
 
+    def requeue_request(self, request_id: str) -> RequestAcceptance:
+        return self.store._requeue_request_locked(self.lock, request_id)
+
     def finish_request(
         self,
         request_id: str,
@@ -1116,6 +1119,46 @@ class GameSwitchStore:
             status=QUEUED_RECEIPT_STATUS,
             existing=False,
             receipt=copy.deepcopy(receipt),
+        )
+
+    def _requeue_request_locked(
+        self, lock: GameSwitchLock, request_id: str
+    ) -> RequestAcceptance:
+        """Move a pre-queue non-terminal receipt into the durable FIFO.
+
+        Older coordinators could leave a second request as ``accepted`` while
+        another request owned the canonical draining slot.  Such a receipt is
+        not a live driver (only ``canonical.request_id`` owns that slot), so
+        preserving it as an accepted receipt would strand it forever after a
+        restart or deploy.  Keep its original creation time/generation and
+        only change the durable status to ``queued``.
+        """
+
+        self._require_exclusive_lock(lock)
+        receipt = self.receipts.load(request_id)
+        if receipt is None:
+            raise StateCorruptError("再キュー対象のrequest receiptがありません")
+        status = receipt.get("status")
+        if status in TERMINAL_RECEIPT_STATUSES or status == QUEUED_RECEIPT_STATUS:
+            return RequestAcceptance(
+                request_id=str(receipt["request_id"]),
+                generation=int(receipt["generation"]),
+                status=str(status),
+                existing=True,
+                receipt=copy.deepcopy(receipt),
+            )
+        if status not in {"allocating", "accepted"}:
+            raise StateCorruptError(f"再キュー対象のrequest statusが不正です: {status}")
+        updated = dict(receipt)
+        updated["status"] = QUEUED_RECEIPT_STATUS
+        updated["result"] = None
+        saved = self.receipts.save(updated)
+        return RequestAcceptance(
+            request_id=str(saved["request_id"]),
+            generation=int(saved["generation"]),
+            status=QUEUED_RECEIPT_STATUS,
+            existing=True,
+            receipt=copy.deepcopy(saved),
         )
 
     def _require_exclusive_lock(self, lock: GameSwitchLock) -> None:
@@ -2244,7 +2287,19 @@ class GameSwitchCoordinator:
             )
         if existing.get("status") in TERMINAL_RECEIPT_STATUSES:
             return _result_from_receipt(existing)
-        if existing.get("status") == QUEUED_RECEIPT_STATUS:
+        if (
+            request_id != canonical_request_id
+            and existing.get("status") != QUEUED_RECEIPT_STATUS
+        ):
+            # Before the FIFO implementation, a second caller could leave an
+            # accepted receipt while the canonical driver waited at a round
+            # boundary.  It never owned the canonical slot, so migrate it to
+            # the same durable queue used by new callers before attempting
+            # recovery or returning to the caller.
+            existing = dict(tx.requeue_request(request_id).receipt)
+        if existing.get("status") == QUEUED_RECEIPT_STATUS or _wall_deadline_expired(
+            state.get("deadline_at")
+        ):
             if _wall_deadline_expired(state.get("deadline_at")):
                 recovered = self._recover_locked(tx, deadline=deadline)
                 self._log(
@@ -2265,7 +2320,8 @@ class GameSwitchCoordinator:
                         deadline,
                         deadline_at,
                     )
-            return self._queued_result(existing, state)
+            if existing.get("status") == QUEUED_RECEIPT_STATUS:
+                return self._queued_result(existing, state)
         return SwitchResult(
             request_id=request_id,
             operation=recorded_operation,
