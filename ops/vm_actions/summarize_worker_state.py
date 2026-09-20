@@ -48,6 +48,9 @@ UNREGISTERED_CATEGORY_BY_NAME = {
 UNREGISTERED_CATEGORIES = ("manual_loop", "exploration", "exploration_bridge", "other")
 
 CATEGORY_BY_NAME = {name: category for name, _required, category, _pid, _kind in WORKERS}
+REQUIRED_CATEGORY_BY_NAME = {
+    name: category for name, required, category, _pid, _kind in WORKERS if required
+}
 
 
 def _flag(record, name):
@@ -66,6 +69,19 @@ def summarize_worker_state(data):
     workers = workers if isinstance(workers, dict) else {}
     details = workers.get("details")
     details = details if isinstance(details, dict) else {}
+
+    required_down = {category: 0 for category in WORKER_CATEGORIES}
+    required_down_names = workers.get("required_down")
+    if not isinstance(required_down_names, list):
+        required_down_names = []
+    for worker_name in required_down_names:
+        if not isinstance(worker_name, str):
+            continue
+        category = REQUIRED_CATEGORY_BY_NAME.get(worker_name)
+        if category is None:
+            continue
+        bucket = category if category in required_down else "other"
+        required_down[bucket] += 1
 
     paused = {category: 0 for category in WORKER_CATEGORIES}
     stale = {category: 0 for category in WORKER_CATEGORIES}
@@ -106,6 +122,9 @@ def summarize_worker_state(data):
     unregistered_health = workers.get("unregistered_health")
 
     parts = []
+    parts.extend(
+        f"required_down_{category}={required_down[category]}" for category in WORKER_CATEGORIES
+    )
     parts.extend(f"paused_{category}={paused[category]}" for category in WORKER_CATEGORIES)
     parts.extend(f"stale_pid_{category}={stale[category]}" for category in WORKER_CATEGORIES)
     parts.extend(
