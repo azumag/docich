@@ -15,6 +15,7 @@ DIAGNOSTICS_STR_MAX=500
 DIAGNOSTICS_LIST_MAX=100
 DIAGNOSTICS_KEY_MAX=128
 DIAGNOSTICS_REDACT_KEYS=('API_KEY','TOKEN','SECRET','STREAM_KEY','PASSWORD','AUTHORIZATION','COOKIE','PRIVATE_KEY')
+CONFIGURE_ERROR_RE=re.compile(rb'configuration failed: ([a-z][a-z0-9_]{0,80})')
 PROJECTION_REVIEW_PATH_MAX=25
 BUNDLE_DIAGNOSTICS_MAX_ENTRIES=4096
 BUNDLE_AGE_7D_SEC=7*24*60*60
@@ -857,8 +858,17 @@ def configure_jev(cfg,repo,target,sha,*,disable=False):
             argv,
             input=script,cwd=root,env=env,stdout=out,stderr=subprocess.STDOUT,timeout=180,
         )
-    return {'status':('disabled' if disable else 'configured') if p.returncode==0 else 'failed','sha':sha,
+    result={'status':('disabled' if disable else 'configured') if p.returncode==0 else 'failed','sha':sha,
             'exit_code':p.returncode,'output':'withheld','operation_id':opid}
+    if p.returncode:
+        # The configurator emits only fixed, secret-free ConfigureError names.
+        # Expose that bounded code to the owner without exposing its log or key.
+        try:
+            match=CONFIGURE_ERROR_RE.search(log.read_bytes()[-4096:])
+        except OSError:
+            match=None
+        result['error_code']=match.group(1).decode('ascii') if match else 'unexpected_failure'
+    return result
 
 def _sanitize_diagnostics(value, depth=0):
     if depth>8: raise ValueError('diagnostics output too deep')
