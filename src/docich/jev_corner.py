@@ -34,6 +34,9 @@ GAME_NAME = "sorengame"
 STATE_SCHEMA_VERSION = 1
 STATE_FILE = "jev_corner.json"
 LOCK_FILE = "locks/jev-corner.lock"
+FIXED_MAX_REQUESTS_PER_RUN = 500
+FIXED_DECISION_BUDGET_MS = 1500
+FIXED_HTTP_TIMEOUT_MS = 1000
 ACTIVE_STATUSES = frozenset({"preparing", "active", "restoring", "recovery_required"})
 TERMINAL_STATUSES = frozenset({"completed", "failed", "idle"})
 UUID_RE = re.compile(
@@ -51,9 +54,9 @@ class JevCornerConfig:
 
     enabled: bool = False
     one_game: bool = True
-    max_requests_per_run: int = 500
-    decision_budget_ms: int = 1500
-    http_timeout_ms: int = 1000
+    max_requests_per_run: int = FIXED_MAX_REQUESTS_PER_RUN
+    decision_budget_ms: int = FIXED_DECISION_BUDGET_MS
+    http_timeout_ms: int = FIXED_HTTP_TIMEOUT_MS
     boundary_timeout_s: float = 7200.0
     candidate_version: str = "uniform25-v1"
     model: str = "jev-1.13.0"
@@ -67,6 +70,14 @@ class JevCornerConfig:
             value = getattr(self, name)
             if type(value) is not int or value <= 0:
                 raise JevCornerError(f"jev_corner.{name} は正の整数である必要があります")
+        fixed_values = {
+            "max_requests_per_run": FIXED_MAX_REQUESTS_PER_RUN,
+            "decision_budget_ms": FIXED_DECISION_BUDGET_MS,
+            "http_timeout_ms": FIXED_HTTP_TIMEOUT_MS,
+        }
+        for name, expected in fixed_values.items():
+            if getattr(self, name) != expected:
+                raise JevCornerError(f"jev_corner.{name} は{expected}固定です")
         if self.http_timeout_ms > self.decision_budget_ms:
             raise JevCornerError("jev_corner.http_timeout_ms はdecision_budget_ms以下である必要があります")
         if isinstance(self.boundary_timeout_s, bool) or not isinstance(self.boundary_timeout_s, (int, float)):
@@ -94,9 +105,9 @@ def load_jev_corner_config(g: GlobalConfig) -> JevCornerConfig:
     values = {
         "enabled": raw.get("enabled", False),
         "one_game": raw.get("one_game", True),
-        "max_requests_per_run": raw.get("max_requests_per_run", 500),
-        "decision_budget_ms": raw.get("decision_budget_ms", 1500),
-        "http_timeout_ms": raw.get("http_timeout_ms", 1000),
+        "max_requests_per_run": raw.get("max_requests_per_run", FIXED_MAX_REQUESTS_PER_RUN),
+        "decision_budget_ms": raw.get("decision_budget_ms", FIXED_DECISION_BUDGET_MS),
+        "http_timeout_ms": raw.get("http_timeout_ms", FIXED_HTTP_TIMEOUT_MS),
         "boundary_timeout_s": raw.get("boundary_timeout_s", 7200.0),
         "candidate_version": raw.get("candidate_version", "uniform25-v1"),
         "model": raw.get("model", "jev-1.13.0"),

@@ -7,7 +7,7 @@ Issue #771 の第一段階は、既存の `sorengame` を停止・複製せず�
 ```sh
 bin/docich-jev-corner status --json
 bin/docich-jev-corner start
-# JEV の1試合終了と外側プロセスの停止を確認した後
+# JEV の1試合終了と supervisor の one-game park を確認した後
 bin/docich-jev-corner finish
 ```
 
@@ -20,4 +20,6 @@ bin/docich-jev-corner finish
 
 `finish` は同じ契約で `jev → existing` を行う。通常の `GameSwitchCoordinator` のゲーム切替、Soren91、通常の改善・回帰・promotion はこの経路から呼ばない。共通配信、音声、overlay、encoderも所有しない。
 
-JEVの候補選択・API境界・drop結果・専用証跡は `games/soviet_now` 側が所有する。ここでの設定値は契約ハッシュに束ねるだけで、APIキーやネットワークを有効化しない。実API、VM、本番配信、画面スクリーンショットを使った受入確認は別段階である。
+JEV試合の終了時は Soren側に `jev_one_game.json` を記録し、supervisor が同じJEV試合を自動再起動しない。`finish` は loop が既にparkしていても `GAMEOVER` 境界をbrokerへ再確認してから `existing` をcommitする。
+
+JEVの候補選択・API境界・drop結果・専用証跡は `games/soviet_now` 側が所有する。request budget/decision/http timeout は Issue #771 の固定値として runtime 側でも強制し、設定値を契約ハッシュに束ねる。APIキーやネットワークは有効化しない。実API、VM、本番配信、画面スクリーンショットを使った受入確認は別段階である。

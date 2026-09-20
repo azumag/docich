@@ -114,6 +114,38 @@ class SorenCoordinatorAdapter:
             self._check(deadline, cancel)
             time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
 
+    def _wait_player_change_prepared(self, request_id: str, deadline: float, cancel) -> None:
+        """Drive the side-effect-free boundary poll for a player transaction.
+
+        The normal loop polls ``boundary`` after its own game bookkeeping. A
+        one-game JEV loop intentionally exits and parks, however, so the
+        explicit ``finish`` command must still be able to prepare an already
+        GAMEOVER board without requiring a second loop process. Calling the
+        broker's boundary command here is safe for both cases: it only records
+        ``waiting``/``prepared`` and never sends input or stops the bridge.
+        """
+
+        while True:
+            payload = self._status(deadline, cancel)
+            ack = self._ack(payload)
+            if ack.get("request_id") != request_id:
+                raise AdapterError("Soren lifecycle request identityが変化しました")
+            status = str(ack.get("status") or "")
+            if status == "prepared":
+                return
+            if status in {"failed", "timeout", "unsupported", "cancelled", "resumed"}:
+                raise AdapterError(f"Soren lifecycleが停止しました: {status}")
+
+            rc, boundary = self._broker("boundary", request_id, deadline, cancel)
+            boundary_ack = self._ack(boundary)
+            if boundary_ack and boundary_ack.get("request_id") != request_id:
+                raise AdapterError("Soren lifecycle boundary request identityが変化しました")
+            if rc not in {0, 1}:
+                boundary_status = str(boundary_ack.get("status") or "unknown")
+                raise AdapterError(f"Soren player_change boundaryを確定できません: {boundary_status}")
+            self._check(deadline, cancel)
+            time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
+
     def preflight(self, deadline: float, cancel) -> None:
         self._check(deadline, cancel)
         if not self.broker.is_file() or not self.control.is_file():
@@ -201,7 +233,7 @@ class SorenCoordinatorAdapter:
         if rc != 0 or ack.get("request_id") != request_id or ack.get("status") not in {"accepted", "prepared"}:
             raise AdapterError("Soren player_change要求を受理できません")
 
-        self._wait_status(request_id, {"prepared"}, deadline, cancel)
+        self._wait_player_change_prepared(request_id, deadline, cancel)
         rc, committed = self._run(
             [str(self.control), "player-commit", request_id], deadline, cancel
         )
