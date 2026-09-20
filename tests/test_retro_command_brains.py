@@ -27,12 +27,13 @@ BRAIN_GAMES = ("ninvaders", "nsnake", *GAMES)
 def test_live_rolling_games():
     g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
     cfg = load_retro_corner_config(g)
-    assert cfg.games == ["ninvaders", "nsnake", *GAMES]
+    assert cfg.games == ["ninvaders", "nsnake", *GAMES, "nethack"]
     assert cfg.daily_each_game and cfg.randomize_start  # mode="daily" へ戻すとき用に残す
     assert cfg.target_matches == 3
     # 24時間を登録ゲーム数で割った間隔。毎時の確率抽選ではない。
     assert cfg.mode == "rotation"
     assert cfg.rotation_period_hours == 24.0
+    assert cfg.rotation_period_hours * 3600 / len(cfg.games) == 4 * 3600
     assert cfg.rotation_wait_minutes == 10
     for name in cfg.games:
         required = RetroCornerManager._required_executables(load_game(g, name))
@@ -47,6 +48,15 @@ def test_live_rolling_games():
     assert cli_command_list(load_game(g, "ninvaders")) == [
         "/bin/sh", "games/cli-wrappers/ninvaders_docich.sh", "brain",
     ]
+
+
+def test_live_nethack_is_a_save_safe_bounded_candidate():
+    g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
+    loaded = load_game(g, "nethack")
+    assert loaded.agent.enabled and loaded.agent.brain == "nethack"
+    assert loaded.agent.interval_ms == 1500
+    assert loaded.raw["nethack"]["persistent_run"] is True
+    assert RetroCornerManager._required_executables(loaded) == ["/usr/games/nethack"]
 
 
 @pytest.mark.parametrize("game", BRAIN_GAMES)

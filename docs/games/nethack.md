@@ -120,8 +120,13 @@ NetHack は例であり、`[cli] command` を差し替えれば任意の CLI/TUI
 
 ## 7. NetHack 長期攻略コーナー (#490)
 
-P0 では既存の CLI NetHack を変更せず、独立した番組枠だけを追加する。定時コーナーと手動テストは
-別々の state/lock を使うため、手動 smoke がその日の定時枠を消費しない。
+NetHackには、24時間 rolling rotationに参加するbounded slotと、死亡・昇天を境界にする専用の
+長期攻略枠の2経路があります。rolling rotationでは `config/docich.soren-live.toml` の
+`[retro_corner].games` に登録され、通常の `duration_minutes` で終了します。`persistent_run = true`
+と `NethackCoordinatorAdapter` がslot切替時に通常のsave boundaryを作るため、次回のNetHack slotで
+同じ冒険を再開できます。専用の `[nethack_corner]` と同時には有効化できません。
+
+専用の定時コーナーと手動テストは別々の state/lock を使うため、手動 smoke がその日の定時枠を消費しません。
 
 通常設定は安全のため `enabled = false`。本番時刻を決めて有効化するまでは自動起動しない。
 
