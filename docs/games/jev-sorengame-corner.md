@@ -11,6 +11,12 @@ bin/docich-jev-corner start
 bin/docich-jev-corner finish
 ```
 
+本番VMでの実行は任意コマンド経路を使わず、owner-onlyの
+`.github/workflows/jev-corner-operator.yml` から `start` / `finish` / `status` /
+`recover` の固定操作だけをdispatchする。workflowはproductionが現在のprotected
+main SHAと一致することを確認してから `/home/ubuntu/docich/bin/docich-jev-corner`
+を呼び出す。
+
 `start` は次の順で固定される。
 
 1. Soren bridge の `player_policy_v1` capability を確認する。
