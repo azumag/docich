@@ -20,7 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: soren91-manual-evidence-export-${{ github.repository }}
+  group: vm-storage-monitor-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
