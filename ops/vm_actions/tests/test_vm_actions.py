@@ -338,6 +338,29 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(p.returncode,0,p.stderr.decode())
         self.assertEqual((soren/'observed').read_text(), 'missing')
 
+    def test_configure_jev_returns_only_fixed_failure_code(self):
+        soren=self.base/'soren'; soren.mkdir()
+        script_dir=self.doc/'ops'/'vm_actions'; script_dir.mkdir(parents=True)
+        (script_dir/'configure_comment_classifier_jev.py').write_text(
+            'import sys\n'
+            'print("configuration failed: chat_worker_model_mismatch", file=sys.stderr)\n'
+            'raise SystemExit(1)\n',
+            encoding='utf-8',
+        )
+        subprocess.run(['git','-C',self.doc,'add','.'],check=True)
+        subprocess.run(['git','-C',self.doc,'commit','-qm','jev failure'],check=True)
+        sha=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
+        self.config.write_text(json.dumps({'state':str(self.state),'repos':{
+            'docich':{'production':str(self.doc),'mode':'git',
+                      'projections':{'games/soviet_now':str(soren)}}
+        }}))
+        p=self.call(f'configure_jev docich production {sha}',b'SECRET_KEY')
+        self.assertNotEqual(p.returncode,0)
+        result=json.loads(p.stdout)
+        self.assertEqual(result['status'],'failed')
+        self.assertEqual(result['error_code'],'chat_worker_model_mismatch')
+        self.assertNotIn('SECRET_KEY',p.stdout.decode())
+
 class WorkflowPolicyTests(unittest.TestCase):
     def test_installer_projects_docich_owned_soviet_submodule_only(self):
         text=(ROOT/'ops/vm_actions/install_vm_gateway.sh').read_text()
