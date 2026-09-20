@@ -4,10 +4,21 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 EVIDENCE_WORKFLOW = ROOT / ".github" / "workflows" / "soren91-evidence-export.yml"
+MONITOR_WORKFLOW = ROOT / ".github" / "workflows" / "vm-storage-monitor.yml"
 RETENTION_WORKFLOW = ROOT / ".github" / "workflows" / "vm-bundle-retention.yml"
 
 
 class EvidenceWorkflowTransportTests(unittest.TestCase):
+    def test_evidence_export_serializes_with_runtime_monitor(self):
+        evidence = EVIDENCE_WORKFLOW.read_text(encoding="utf-8")
+        monitor = MONITOR_WORKFLOW.read_text(encoding="utf-8")
+
+        shared_group = "group: vm-storage-monitor-${{ github.repository }}"
+        self.assertIn(shared_group, evidence)
+        self.assertIn(shared_group, monitor)
+        self.assertIn("cancel-in-progress: false", evidence)
+        self.assertIn("cancel-in-progress: false", monitor)
+
     def test_production_exec_uses_proven_here_string_transport(self):
         evidence = EVIDENCE_WORKFLOW.read_text(encoding="utf-8")
         retention = RETENTION_WORKFLOW.read_text(encoding="utf-8")
