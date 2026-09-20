@@ -166,7 +166,7 @@ max_requests_per_run = 500
             "resource": {"game": "sorengame", "request_id": "req-1"},
         }
         manager = Manager(StatusAdapter(self.soren_root, payload))
-        self.assertEqual(_stale_precommit_recovery_category(manager), "corner_stale_precommit_boundary")
+        self.assertEqual(_stale_precommit_recovery_category(manager), "corner_stale_precommit_boundary_live")
 
     def test_one_game_state_requires_explicit_finish_to_restore_existing(self):
         self.manager.start(timeout_s=1)
