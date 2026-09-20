@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import fcntl
+import inspect
 import json
 import os
 import random
@@ -24,7 +25,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .adapters import make_coordinator_adapter
 from .config import ConfigError, GlobalConfig, load_game, load_global
-from .game_switch import GameSwitchCoordinator, GameSwitchStore, atomic_write_json
+from .game_switch import (
+    GameSwitchCoordinator,
+    GameSwitchStore,
+    atomic_write_json,
+    new_request_id,
+)
 from .naming import NameValidationError, validate_game_name
 from .trading.soren_output import enqueue_chat
 
@@ -45,6 +51,7 @@ ROTATION_FIXED_SLOT_BUFFER_MINUTES = 5
 FIXED_CORNER_SECTIONS = ("paper_corner", "soren91_corner", "nethack_corner")
 # starting のまま残った (tick が落ちた) 状態を割り込み扱いにするまでの猶予。
 STARTING_STALE_MINUTES = 10
+PENDING_SWITCH_STATUSES = {"queued", "in_progress", "busy"}
 
 
 class RetroCornerError(RuntimeError):
@@ -461,7 +468,10 @@ class RetroCornerManager:
             raise RetroCornerError(f"retro corner stateを読み込めません: {_safe_detail(exc)}") from exc
         if not isinstance(state, dict) or state.get("schema_version") != STATE_SCHEMA_VERSION:
             raise RetroCornerError("retro corner state schemaが不正です")
-        if state.get("status") not in {"idle", "waiting", "starting", "active", "completed", "interrupted", "failed"}:
+        if state.get("status") not in {
+            "idle", "waiting", "starting", "active", "restoring",
+            "completed", "interrupted", "failed",
+        }:
             raise RetroCornerError("retro corner state statusが不正です")
         return state
 
@@ -503,14 +513,74 @@ class RetroCornerManager:
             )
             raise RetroCornerError(f"{action} に失敗しました: {_safe_detail(detail)}")
 
-    def _transition_to(self, current: str | None, target: str) -> None:
+    def _transition_to(
+        self,
+        current: str | None,
+        target: str,
+        *,
+        request_id: str | None = None,
+    ):
         if current == target:
-            return
+            # A queued switch can become redundant after an operator or a
+            # recovery process has already brought the target back.  Let the
+            # coordinator terminalize that receipt so it cannot block later
+            # FIFO requests; a fresh request still remains a local no-op.
+            receipt = self.store.receipts.load(request_id) if request_id else None
+            if receipt is None:
+                return None
+            recorded_operation = receipt.get("operation")
+            if recorded_operation == "switch":
+                result = self._invoke_coordinator(
+                    self.coordinator.switch, target, request_id=request_id
+                )
+                action = f"{current}->{target} switch"
+            elif recorded_operation == "start":
+                result = self._invoke_coordinator(
+                    self.coordinator.start, target, request_id=request_id
+                )
+                action = f"{target} start"
+            else:
+                return None
+            if getattr(result, "status", None) in PENDING_SWITCH_STATUSES:
+                return result
+            self._require_success(result, action)
+            self._announce_stream_game(target)
+            return result
         if current is None:
-            self._require_success(self.coordinator.start(target), f"{target} start")
+            result = self._invoke_coordinator(
+                self.coordinator.start, target, request_id=request_id
+            )
+            action = f"{target} start"
         else:
-            self._require_success(self.coordinator.switch(target), f"{current}->{target} switch")
+            result = self._invoke_coordinator(
+                self.coordinator.switch, target, request_id=request_id
+            )
+            action = f"{current}->{target} switch"
+        if getattr(result, "status", None) in PENDING_SWITCH_STATUSES:
+            return result
+        self._require_success(result, action)
         self._announce_stream_game(target)
+        return result
+
+    @staticmethod
+    def _invoke_coordinator(method, target=None, *, request_id: str | None = None):
+        """Call old test doubles and current coordinators with one request ID."""
+
+        try:
+            parameters = inspect.signature(method).parameters.values()
+            accepts_request_id = any(
+                parameter.name == "request_id"
+                or parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters
+            )
+        except (TypeError, ValueError):
+            accepts_request_id = True
+        kwargs = (
+            {"request_id": request_id}
+            if request_id is not None and accepts_request_id
+            else {}
+        )
+        return method(**kwargs) if target is None else method(target, **kwargs)
 
     def _announce_stream_game(self, game: str | None) -> None:
         """Let the stream's category/title follow the game that now runs.
@@ -679,7 +749,17 @@ class RetroCornerManager:
         previous = state.get("previous_game")
         if not isinstance(game, str):
             raise RetroCornerError("active retro corner stateにgameがありません")
-        current = self._active_game_reader()
+        try:
+            current = self._active_game_reader()
+        except RetroCornerError:
+            # A queued restore may be retried while another boundary drain is
+            # still visible in canonical state.  The canonical active runtime
+            # is safe to inspect and keeps the corner from being marked as a
+            # terminal failure merely because the reader refuses non-ready
+            # state.
+            canonical, _missing = self.store.canonical.load()
+            active = canonical.get("active")
+            current = active.get("game") if isinstance(active, dict) else None
         if current != game:
             state.update(
                 status="interrupted",
@@ -689,22 +769,50 @@ class RetroCornerManager:
             self._write_state(state)
             return self._state_result(state)
 
+        request_id = state.get("switch_request_id")
+        if not isinstance(request_id, str):
+            request_id = new_request_id()
+            state["switch_request_id"] = request_id
+        state["status"] = "restoring"
+        self._write_state(state)
         try:
             if previous is None:
-                self._require_success(self.coordinator.stop(), "retro corner stop")
-            elif isinstance(previous, str) and previous != game:
-                self._require_success(
-                    self.coordinator.switch(previous), f"{game}->{previous} restore"
+                result = self._invoke_coordinator(
+                    self.coordinator.stop, request_id=request_id
                 )
-                # The corner restores the old game without going through
-                # _transition_to, so announce here as well; otherwise the
-                # category stays on the corner's game after it ends.
+                action = "retro corner stop"
+            elif isinstance(previous, str) and previous != game:
+                result = self._invoke_coordinator(
+                    self.coordinator.switch, previous, request_id=request_id
+                )
+                action = f"{game}->{previous} restore"
+            else:
+                result = None
+                action = "retro corner restore"
+            if getattr(result, "status", None) in PENDING_SWITCH_STATUSES:
+                state["switch_status"] = getattr(result, "status", "queued")
+                self._write_state(state)
+                return CornerResult(
+                    "queued",
+                    game=game,
+                    previous_game=previous if isinstance(previous, str) else None,
+                    detail=getattr(result, "detail", None)
+                    or "ゲーム切替キューで順番待ちです",
+                )
+            if result is not None:
+                self._require_success(result, action)
+            # The corner restores the old game without going through
+            # _transition_to, so announce here as well; otherwise the
+            # category stays on the corner's game after it ends.
+            if isinstance(previous, str) and previous != game:
                 self._announce_stream_game(previous)
             state.update(
                 status="completed",
                 completed_at=completed_at.isoformat(),
                 last_error=None,
             )
+            state.pop("switch_request_id", None)
+            state.pop("switch_status", None)
             # Persist the terminal corner state before handing control to the
             # independent improvement service.  systemd-run may start the
             # child immediately; if it reads the old active state first, the
@@ -761,6 +869,17 @@ class RetroCornerManager:
             if scheduled:
                 return None, CornerResult("noop", detail="already-active")
             raise RetroCornerError("retro cornerは既にactiveです")
+        if existing.get("status") == "restoring":
+            self._ensure_runtime()
+            return existing, self._finish_locked(existing, now)
+        if (
+            existing.get("status") == "starting"
+            and isinstance(existing.get("switch_request_id"), str)
+        ):
+            resumed, resume_result = self._resume_queued_start_locked(existing, now)
+            if resume_result is not None:
+                return resumed, resume_result
+            return resumed, None
         # サブクラス corner (soren91/nethack) の config dataclass には新フィールドが
         # 無いため、既定値は getattr で落とす (後方互換)。
         daily_each_game = getattr(self.config, "daily_each_game", False)
@@ -799,7 +918,16 @@ class RetroCornerManager:
             # サブクラス (soren91/nethack) は引数なしで override しているため、通常経路は従来どおり。
             self._validate_games()
         self._ensure_runtime()
-        previous = self._active_game_reader()
+        try:
+            previous = self._active_game_reader()
+        except RetroCornerError:
+            # A concurrent coordinator drain is still allowed to own the
+            # canonical transition.  Preserve the currently active runtime
+            # as the return target and let GameSwitchCoordinator queue this
+            # corner's request instead of cancelling it.
+            canonical, _missing = self.store.canonical.load()
+            active = canonical.get("active")
+            previous = active.get("game") if isinstance(active, dict) else None
         ends_at = now + dt.timedelta(minutes=self.config.duration_minutes)
         state = {
             "schema_version": STATE_SCHEMA_VERSION,
@@ -811,6 +939,7 @@ class RetroCornerManager:
             "ends_at": ends_at.isoformat(),
             "completed_at": None,
             "last_error": None,
+            "switch_request_id": new_request_id(),
         }
         if target_override is not None:
             state["target_matches"] = getattr(self.config, "target_matches", 3)
@@ -821,8 +950,24 @@ class RetroCornerManager:
             state.update(extra_state)
         self._write_state(state)
         try:
-            self._transition_to(previous, target)
+            transition = self._transition_to(
+                previous,
+                target,
+                request_id=state["switch_request_id"],
+            )
+            if getattr(transition, "status", None) in PENDING_SWITCH_STATUSES:
+                state["switch_status"] = getattr(transition, "status", "queued")
+                self._write_state(state)
+                return state, CornerResult(
+                    "queued",
+                    game=target,
+                    previous_game=previous,
+                    detail=getattr(transition, "detail", None)
+                    or "ゲーム切替キューで順番待ちです",
+                )
             started = self._local_now()
+            state.pop("switch_request_id", None)
+            state.pop("switch_status", None)
             state.update(status="active", started_at=started.isoformat(),
                          ends_at=(started + dt.timedelta(minutes=self.config.duration_minutes)).isoformat())
             self._announce_start_locked(state)
@@ -837,6 +982,58 @@ class RetroCornerManager:
             if isinstance(exc, RetroCornerError):
                 raise
             raise RetroCornerError(_safe_detail(exc)) from exc
+        return state, None
+
+    def _resume_queued_start_locked(
+        self, state: dict[str, object], now: dt.datetime
+    ) -> tuple[dict[str, object] | None, CornerResult | None]:
+        """Retry a corner start whose game-switch request was queued."""
+
+        request_id = state.get("switch_request_id")
+        target = state.get("game")
+        previous = state.get("previous_game")
+        if not isinstance(request_id, str) or not isinstance(target, str):
+            return None, None
+        if previous is not None and not isinstance(previous, str):
+            previous = None
+        try:
+            transition = self._transition_to(
+                previous,
+                target,
+                request_id=request_id,
+            )
+            if getattr(transition, "status", None) in PENDING_SWITCH_STATUSES:
+                state["switch_status"] = getattr(transition, "status", "queued")
+                self._write_state(state)
+                return state, CornerResult(
+                    "queued",
+                    game=target,
+                    previous_game=previous,
+                    detail=getattr(transition, "detail", None)
+                    or "ゲーム切替キューで順番待ちです",
+                )
+        except Exception as exc:
+            state.update(
+                status="failed",
+                completed_at=now.isoformat(),
+                last_error=_safe_detail(exc),
+            )
+            self._write_state(state)
+            if isinstance(exc, RetroCornerError):
+                raise
+            raise RetroCornerError(_safe_detail(exc)) from exc
+
+        started = self._local_now()
+        state.pop("switch_request_id", None)
+        state.pop("switch_status", None)
+        state.update(
+            status="active",
+            started_at=started.isoformat(),
+            ends_at=(started + dt.timedelta(minutes=self.config.duration_minutes)).isoformat(),
+            last_error=None,
+        )
+        self._announce_start_locked(state)
+        self._write_state(state)
         return state, None
 
     def _target_reached(self, state: dict) -> bool:
@@ -899,6 +1096,33 @@ class RetroCornerManager:
                     if self._target_reached(latest):
                         return self._finish_locked(latest, self._local_now())
 
+    def _retry_restoring_tick(self, now: dt.datetime) -> CornerResult | None:
+        """Retry a queued corner restore before considering a new slot."""
+
+        with self._locked():
+            state = self._read_state()
+            if state.get("status") != "restoring":
+                return None
+            self._ensure_runtime()
+            return self._finish_locked(state, now)
+
+    def _retry_starting_tick(self, now: dt.datetime) -> CornerResult | None:
+        """Retry a queued corner start independently of its schedule window."""
+
+        with self._locked():
+            state = self._read_state()
+            if (
+                state.get("status") != "starting"
+                or not isinstance(state.get("switch_request_id"), str)
+            ):
+                return None
+            resumed, result = self._begin_locked(now, scheduled=True)
+        if result is not None:
+            return result
+        if resumed is None:
+            return None
+        return self._wait_and_finish(resumed)
+
     def start(self) -> CornerResult:
         with self._locked():
             state, result = self._begin_locked(self._local_now(), scheduled=False)
@@ -910,7 +1134,7 @@ class RetroCornerManager:
     def stop(self) -> CornerResult:
         with self._locked():
             state = self._read_state()
-            if state.get("status") != "active":
+            if state.get("status") not in {"active", "restoring"}:
                 return CornerResult("noop", detail="not-active")
             self._ensure_runtime()
             return self._finish_locked(state, self._local_now())
@@ -919,6 +1143,13 @@ class RetroCornerManager:
         with self._tick_guard() as single:
             if not single:
                 return CornerResult("noop", detail="already-running")
+            now = self._local_now()
+            restoring = self._retry_restoring_tick(now)
+            if restoring is not None:
+                return restoring
+            starting = self._retry_starting_tick(now)
+            if starting is not None:
+                return starting
             if getattr(self.config, "mode", "daily") == "rotation":
                 return self._rotation_tick()
             if getattr(self.config, "mode", "daily") == "lottery":
@@ -1002,8 +1233,30 @@ class RetroCornerManager:
                     state.update(status="interrupted", completed_at=self._local_now().isoformat())
                     self._write_state(state)
                     return self._state_result(state)
-                self._transition_to(current, state["game"])
+                request_id = state.get("switch_request_id")
+                if not isinstance(request_id, str):
+                    request_id = new_request_id()
+                    state["switch_request_id"] = request_id
+                transition = self._transition_to(
+                    current, state["game"], request_id=request_id
+                )
+                if getattr(transition, "status", None) in PENDING_SWITCH_STATUSES:
+                    state["switch_status"] = getattr(transition, "status", "queued")
+                    self._write_state(state)
+                    return CornerResult(
+                        "queued",
+                        game=state.get("game") if isinstance(state.get("game"), str) else None,
+                        previous_game=(
+                            state.get("previous_game")
+                            if isinstance(state.get("previous_game"), str)
+                            else None
+                        ),
+                        detail=getattr(transition, "detail", None)
+                        or "ゲーム切替キューで順番待ちです",
+                    )
                 started = self._local_now()
+                state.pop("switch_request_id", None)
+                state.pop("switch_status", None)
                 state.update(status="active", started_at=started.isoformat(),
                              ends_at=(started + dt.timedelta(minutes=self.config.duration_minutes)).isoformat())
                 self._announce_start_locked(state)
@@ -1130,14 +1383,28 @@ class RetroCornerManager:
             pending_game = pending.get("game")
             pending_at = self._rotation_datetime(pending.get("selected_at"))
             pending_deadline = self._rotation_datetime(pending.get("deadline_at"))
+            queued = pending.get("queued") is True or pending_deadline is None
             if (
                 not isinstance(pending_game, str)
                 or pending_game not in configured_games
                 or pending_at is None
-                or pending_deadline is None
-                or now >= pending_deadline
             ):
                 rotation.pop("pending", None)
+            elif queued:
+                rotation["pending"] = {
+                    "game": pending_game,
+                    "selected_at": pending_at.isoformat(),
+                    "queued": True,
+                }
+            elif now >= pending_deadline:
+                # A selected slot is never discarded merely because its
+                # boundary/program wait window elapsed.  It remains the FIFO
+                # item for the next tick, which receives a fresh wait window.
+                rotation["pending"] = {
+                    "game": pending_game,
+                    "selected_at": pending_at.isoformat(),
+                    "queued": True,
+                }
             else:
                 rotation["pending"] = {
                     "game": pending_game,
@@ -1248,9 +1515,17 @@ class RetroCornerManager:
             rotation, _changed = self._rotation_state(state, self._local_now())
             pending = rotation.get("pending")
             if isinstance(pending, dict) and pending.get("game") == game:
-                rotation.pop("pending", None)
+                if reason == "wait-expired":
+                    pending = dict(pending)
+                    pending.pop("deadline_at", None)
+                    pending["queued"] = True
+                    rotation["pending"] = pending
+                    result = "queued"
+                else:
+                    rotation.pop("pending", None)
+                    result = "cancelled"
                 rotation["last_result"] = {
-                    "result": "cancelled",
+                    "result": result,
                     "reason": reason,
                     "game": game,
                     "at": self._local_now().isoformat(),
@@ -1308,6 +1583,7 @@ class RetroCornerManager:
 
         game: str | None = None
         deadline_ts: float | None = None
+        resume_state: dict[str, object] | None = None
         with self._locked():
             self._reconcile_stale_locked(now)
             state = self._read_state()
@@ -1315,20 +1591,41 @@ class RetroCornerManager:
             if status == "active":
                 return CornerResult("noop", detail="already-active")
             if status == "starting":
-                if not self._lottery_starting_is_stale(state, now):
+                if isinstance(state.get("switch_request_id"), str):
+                    resumed, resume_result = self._resume_queued_start_locked(state, now)
+                    if resume_result is not None:
+                        return resume_result
+                    resume_state = resumed
+                elif not self._lottery_starting_is_stale(state, now):
                     return CornerResult("noop", detail="already-starting")
-                state.update(status="interrupted", completed_at=now.isoformat())
+                elif resume_state is None:
+                    state.update(status="interrupted", completed_at=now.isoformat())
+
+            if resume_state is not None:
+                state = resume_state
 
             rotation, changed = self._rotation_state(state, now)
             pending = rotation.get("pending")
             if isinstance(pending, dict):
                 pending_game = pending.get("game")
                 pending_deadline = self._rotation_datetime(pending.get("deadline_at"))
-                if isinstance(pending_game, str) and pending_deadline is not None and now < pending_deadline:
+                if isinstance(pending_game, str) and (
+                    pending.get("queued") is True
+                    or (pending_deadline is not None and now < pending_deadline)
+                ):
                     game = pending_game
-                    deadline_ts = pending_deadline.timestamp()
+                    if pending.get("queued") is True or pending_deadline is None:
+                        deadline = now + dt.timedelta(minutes=cfg.rotation_wait_minutes)
+                        rotation["pending"] = {
+                            "game": pending_game,
+                            "selected_at": pending.get("selected_at", now.isoformat()),
+                            "deadline_at": deadline.isoformat(),
+                        }
+                        deadline_ts = deadline.timestamp()
+                    else:
+                        deadline_ts = pending_deadline.timestamp()
 
-            if game is None:
+            if game is None and resume_state is None:
                 next_due = self._rotation_datetime(rotation.get("next_due_at"))
                 if next_due is None or now < next_due:
                     state["rotation"] = rotation
@@ -1341,16 +1638,6 @@ class RetroCornerManager:
                     if changed:
                         self._write_state(state)
                     return CornerResult("noop", detail=f"rotation-deferred:{fixed_guard}")
-                busy = self._other_corner_busy()
-                if busy is not None:
-                    rotation["last_result"] = {
-                        "result": "cancelled",
-                        "reason": busy,
-                        "at": now.isoformat(),
-                    }
-                    state["rotation"] = rotation
-                    self._write_state(state)
-                    return CornerResult("noop", detail=f"rotation-cancelled:{busy}")
                 game = self._rotation_pick(rotation, now)
                 if game is None:
                     rotation["last_result"] = {
@@ -1361,6 +1648,22 @@ class RetroCornerManager:
                     state["rotation"] = rotation
                     self._write_state(state)
                     return CornerResult("noop", detail="rotation-no-eligible-game")
+                busy = self._other_corner_busy()
+                if busy is not None:
+                    rotation["pending"] = {
+                        "game": game,
+                        "selected_at": now.isoformat(),
+                        "queued": True,
+                    }
+                    rotation["last_result"] = {
+                        "result": "queued",
+                        "game": game,
+                        "reason": busy,
+                        "at": now.isoformat(),
+                    }
+                    state["rotation"] = rotation
+                    self._write_state(state)
+                    return CornerResult("queued", game=game, detail=f"rotation-queued:{busy}")
                 deadline = now + dt.timedelta(minutes=cfg.rotation_wait_minutes)
                 rotation["pending"] = {
                     "game": game,
@@ -1376,6 +1679,9 @@ class RetroCornerManager:
 
             state["rotation"] = rotation
             self._write_state(state)
+
+        if resume_state is not None:
+            return self._wait_and_finish(resume_state)
 
         assert game is not None
         requested_at = now.timestamp()
@@ -1394,16 +1700,22 @@ class RetroCornerManager:
             return self._rotation_run(game)
         except CornerWaitExpired:
             self._rotation_cancel_pending(game, "wait-expired")
-            return CornerResult("noop", detail="rotation-cancelled:wait-expired")
+            return CornerResult("queued", game=game, detail="rotation-queued:wait-expired")
 
-    def _other_corner_busy(self) -> str | None:
-        """他コーナーの進行中/待機中、または切替中なら理由。抽選はこの場合取りやめる。"""
+    def _other_corner_busy(self, *, include_game_switch: bool = False) -> str | None:
+        """Return only another corner's program-slot ownership.
+
+        A game-switch drain is handled by GameSwitchCoordinator's durable
+        request queue; treating it as a lottery cancellation here would lose
+        the selected slot before the queue can consume it.
+        """
         from .corner_boundary import other_corner_busy
 
-        try:
-            self._active_game_reader()
-        except RetroCornerError:
-            return "game-switch-in-progress"
+        if include_game_switch:
+            try:
+                self._active_game_reader()
+            except RetroCornerError:
+                return "game-switch-in-progress"
         return other_corner_busy(self.g, self.state_path, now=self._local_now().timestamp())
 
     def _lottery_starting_is_stale(self, state: dict[str, object], now: dt.datetime) -> bool:
@@ -1458,7 +1770,7 @@ class RetroCornerManager:
                 "probability": cfg.lottery_probability,
             }
             game: str | None = None
-            busy = self._other_corner_busy()
+            busy = self._other_corner_busy(include_game_switch=True)
             if busy is not None:
                 record.update(result="cancelled", reason=busy)
             else:

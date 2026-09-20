@@ -161,7 +161,8 @@ def test_boundary_wait_releases_writer_and_orders_stop_after_ack():
         assert same.status == "in_progress"
         assert coordinator.restart(request_id=request_id).status == "request_conflict"
         other = coordinator.switch("hanjuku", request_id=str(uuid.uuid4()))
-        assert other.status == "busy"
+        assert other.status == "queued"
+        assert store.receipts.load(other.request_id)["status"] == "queued"
 
         old.boundary_release.set()
         worker.join(2.0)
@@ -170,6 +171,20 @@ def test_boundary_wait_releases_writer_and_orders_stop_after_ack():
         assert old.boundary_request_ids == [request_id]
         assert old.runtime.events.index("boundary") < old.runtime.events.index("stop_agent")
         assert old.runtime.events.index("stop_agent") < old.runtime.events.index("cleanup")
+
+        queued_box = []
+        queued_worker = threading.Thread(
+            target=lambda: queued_box.append(
+                coordinator.switch("hanjuku", request_id=other.request_id)
+            )
+        )
+        queued_worker.start()
+        robots = factory.adapters[("robots", 2)]
+        assert robots.boundary_entered.wait(1.0)
+        robots.boundary_release.set()
+        queued_worker.join(2.0)
+        assert not queued_worker.is_alive()
+        assert queued_box[0].status == "succeeded"
 
 
 def test_boundary_timeout_override_extends_request_deadline():
@@ -240,6 +255,75 @@ def test_boundary_without_override_times_out_at_request_deadline():
         assert state["phase"] == "ready"
         assert state["active"]["game"] == "nethack"
         assert old.runtime.alive
+
+
+def test_new_request_recovers_expired_drain_and_consumes_queue_head():
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp) / "run"
+        factory = BoundaryFactory()
+        store, coordinator = _coordinator(factory, state_dir)
+        assert coordinator.start("nethack").status == "succeeded"
+        old = factory.adapters[("nethack", 1)]
+        first_result = []
+        first_id = str(uuid.uuid4())
+        first_worker = threading.Thread(
+            target=lambda: first_result.append(
+                coordinator.switch("robots", request_id=first_id, timeout_s=60.0)
+            )
+        )
+        first_worker.start()
+        _wait_for_phase(store, "draining")
+        assert old.boundary_entered.wait(1.0)
+        with store.lock(exclusive=True, blocking=False):
+            state, _ = store.canonical.load()
+            state["deadline_at"] = "2000-01-01T00:00:00Z"
+            store.canonical.save(state)
+
+        queued = coordinator.switch("hanjuku")
+        assert queued.status == "succeeded"
+        assert queued.to_game == "hanjuku"
+        assert store.canonical.load()[0]["active"]["game"] == "hanjuku"
+
+        first_worker.join(2.0)
+        assert not first_worker.is_alive()
+        assert first_result[0].status == "failed"
+        assert old.cancel_request_ids == [first_id]
+
+
+def test_queued_request_retries_expired_drain_recovery_after_a_refusal():
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp) / "run"
+        factory = BoundaryFactory()
+        store, coordinator = _coordinator(factory, state_dir)
+        assert coordinator.start("nethack").status == "succeeded"
+        old = factory.adapters[("nethack", 1)]
+        first_result = []
+        first_id = str(uuid.uuid4())
+        first_worker = threading.Thread(
+            target=lambda: first_result.append(
+                coordinator.switch("robots", request_id=first_id, timeout_s=60.0)
+            )
+        )
+        first_worker.start()
+        _wait_for_phase(store, "draining")
+        assert old.boundary_entered.wait(1.0)
+        with store.lock(exclusive=True, blocking=False):
+            state, _ = store.canonical.load()
+            state["deadline_at"] = "2000-01-01T00:00:00Z"
+            store.canonical.save(state)
+
+        original_cancel = old.cancel_round_boundary
+        old.cancel_round_boundary = lambda *_args: False
+        queued = coordinator.switch("hanjuku")
+        assert queued.status == "queued"
+        assert store.canonical.load()[0]["phase"] == "draining"
+
+        old.cancel_round_boundary = original_cancel
+        retried = coordinator.switch("hanjuku", request_id=queued.request_id)
+        assert retried.status == "succeeded"
+        first_worker.join(2.0)
+        assert not first_worker.is_alive()
+        assert first_result[0].status == "failed"
 
 
 def test_boundary_timeout_retains_old_active_without_cleanup():

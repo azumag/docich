@@ -429,7 +429,7 @@ class TestRequestIdempotency(CoordinatorTestBase):
         self.assertEqual(result.status, "request_conflict")
         self.assertEqual(result.error_code, game_switch.ERROR_REQUEST_CONFLICT)
 
-    def test_other_request_is_busy_while_canonical_in_progress(self):
+    def test_other_request_is_queued_while_canonical_in_progress(self):
         first_id = str(uuid.uuid4())
         self.coordinator.start("nethack")
         self.coordinator.crash_hook = self._crash_on_replace(1)
@@ -439,8 +439,21 @@ class TestRequestIdempotency(CoordinatorTestBase):
         self.assertEqual(self.canonical()["phase"], "preparing")
 
         result = self.coordinator.switch("robots", request_id=str(uuid.uuid4()))
-        self.assertEqual(result.status, "busy")
-        self.assertEqual(result.error_code, game_switch.ERROR_BUSY)
+        self.assertEqual(result.status, "queued")
+        self.assertEqual(result.error_code, game_switch.ERROR_QUEUED)
+        self.assertEqual(self.store.receipts.load(result.request_id)["status"], "queued")
+
+    def test_queued_request_to_current_game_is_terminalized(self):
+        self.coordinator.start("nethack")
+        request_id = str(uuid.uuid4())
+        queued = self.store.enqueue_request(request_id, "switch", "nethack")
+
+        result = self.coordinator.switch("nethack", request_id=request_id)
+
+        self.assertEqual(queued.status, "queued")
+        self.assertEqual(result.status, "succeeded")
+        self.assertEqual(self.store.receipts.load(request_id)["status"], "succeeded")
+        self.assertEqual(self.store.receipts.queued(), [])
 
     def test_lock_contention_returns_busy_or_in_progress(self):
         held = game_switch.GameSwitchLock(self.state_dir).acquire(exclusive=True)
@@ -1343,7 +1356,7 @@ class TestStateConsistency(CoordinatorTestBase):
         with self.assertRaises(game_switch.StateCorruptError):
             self.coordinator.start("nethack")
 
-    def test_dangling_in_progress_canonical_blocks_new_request(self):
+    def test_dangling_in_progress_canonical_queues_new_request(self):
         request_id = str(uuid.uuid4())
         self.store.initialize()
         self.store.canonical.transition(
@@ -1356,8 +1369,9 @@ class TestStateConsistency(CoordinatorTestBase):
             },
         )
         result = self.coordinator.start("nethack")
-        self.assertEqual(result.status, "busy")
-        self.assertEqual(result.error_code, game_switch.ERROR_BUSY)
+        self.assertEqual(result.status, "queued")
+        self.assertEqual(result.error_code, game_switch.ERROR_QUEUED)
+        self.assertEqual(self.store.receipts.load(result.request_id)["status"], "queued")
 
     def test_crash_mid_rollback_retry_converges(self):
         request_id = str(uuid.uuid4())

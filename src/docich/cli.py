@@ -715,7 +715,7 @@ def _read_active_game(g: GlobalConfig) -> str | None:
 def _result_exit_code(result: SwitchResult) -> int:
     if result.status == "succeeded":
         return 0
-    if result.status in {"in_progress", "busy"}:
+    if result.status in {"queued", "in_progress", "busy"}:
         return 1
     if result.status == "rolled_back":
         return 1
@@ -737,6 +737,8 @@ def _print_switch_result(verb: str, result: SwitchResult) -> None:
         print(f"docich: {verb}に失敗したため旧ゲームを復元しました{direction}{detail}", file=sys.stderr)
     elif result.status == "in_progress":
         print(f"docich: {verb}は既に進行中です{direction}{detail}", file=sys.stderr)
+    elif result.status == "queued":
+        print(f"docich: {verb}はキューに入りました{direction}{detail}", file=sys.stderr)
     elif result.status == "busy":
         print(f"docich: 別のゲーム切替が進行中のため{verb}できません{direction}{detail}", file=sys.stderr)
     elif result.status == "request_conflict":

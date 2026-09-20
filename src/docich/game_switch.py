@@ -4,9 +4,9 @@ P0 (:class:`GameSwitchStore`) establishes the canonical state, locking,
 generation allocation and request-receipt contracts.
 
 P1 (:class:`GameSwitchCoordinator`) drives those contracts through the
-design's replace-mode state machine. It is deliberately not wired to the
-existing CLI lifecycle yet: adapters that implement the P1 contract
-(:class:`CoordinatorAdapter`) arrive in P2.
+design's replace-mode state machine. Requests that arrive while another
+transition owns the canonical driver slot are recorded as durable FIFO
+receipts and claimed only after the current transition reaches a stable phase.
 
 The coordinator runs every adapter call inside a bounded worker thread so a
 hung adapter cannot hold the exclusive game-switch lock forever.  Adapters
@@ -70,6 +70,7 @@ PHASES = frozenset(
 )
 OPERATIONS = frozenset({"start", "stop", "switch", "restart", "rotate", "recover"})
 TERMINAL_RECEIPT_STATUSES = frozenset({"succeeded", "failed", "rolled_back"})
+QUEUED_RECEIPT_STATUS = "queued"
 
 CrashHook = Callable[[str, Path], None]
 
@@ -597,7 +598,7 @@ def validate_receipt(
     if receipt.get("adapter_session") != names.adapter_session:
         raise StateCorruptError("request receiptのadapter_sessionが不正です")
     status = receipt.get("status")
-    if status not in {"allocating", "accepted", *TERMINAL_RECEIPT_STATUSES}:
+    if status not in {"allocating", "accepted", QUEUED_RECEIPT_STATUS, *TERMINAL_RECEIPT_STATUSES}:
         raise StateCorruptError("request receiptのstatusが不正です")
     result = receipt.get("result")
     if status in TERMINAL_RECEIPT_STATUSES:
@@ -661,6 +662,22 @@ class RequestReceiptStore:
                 found.append(found_receipt)
         return found
 
+    def queued(self) -> list[dict[str, object]]:
+        """Return queued requests in durable FIFO order."""
+
+        return sorted(
+            (
+                receipt
+                for receipt in self.receipts()
+                if receipt.get("status") == QUEUED_RECEIPT_STATUS
+            ),
+            key=lambda receipt: (
+                str(receipt.get("created_at", "")),
+                int(receipt.get("generation", 0)),
+                str(receipt.get("request_id", "")),
+            ),
+        )
+
     def max_generation(self) -> int:
         return max((int(r["generation"]) for r in self.receipts()), default=0)
 
@@ -689,6 +706,7 @@ class RequestAcceptance:
     status: str
     existing: bool
     receipt: Mapping[str, object]
+    claimed_from_queue: bool = False
 
 
 class GameSwitchTransaction:
@@ -718,6 +736,17 @@ class GameSwitchTransaction:
             target,
             payload,
             crash_hook=crash_hook,
+        )
+
+    def enqueue_request(
+        self,
+        request_id: str,
+        operation: str,
+        target: str | None,
+        payload: Mapping[str, object] | None = None,
+    ) -> RequestAcceptance:
+        return self.store._enqueue_request_locked(
+            self.lock, request_id, operation, target, payload
         )
 
     def finish_request(
@@ -812,7 +841,7 @@ class GameSwitchStore:
         if receipt.get("payload_hash") != payload_hash:
             raise RequestConflictError("同じrequest_idが異なるpayloadで使用されています")
         status = str(receipt.get("status", "in_progress"))
-        if status not in TERMINAL_RECEIPT_STATUSES:
+        if status not in TERMINAL_RECEIPT_STATUSES and status != QUEUED_RECEIPT_STATUS:
             status = "in_progress"
         return RequestAcceptance(
             request_id=str(receipt["request_id"]),
@@ -865,6 +894,19 @@ class GameSwitchStore:
         except GameSwitchBusyError:
             return self.classify_request(request_id, operation, target, payload)
 
+    def enqueue_request(
+        self,
+        request_id: str,
+        operation: str,
+        target: str | None,
+        payload: Mapping[str, object] | None = None,
+    ) -> RequestAcceptance:
+        try:
+            with self.transaction(blocking=False) as transaction:
+                return transaction.enqueue_request(request_id, operation, target, payload)
+        except GameSwitchBusyError:
+            return self.classify_request(request_id, operation, target, payload)
+
     def _accept_request_locked(
         self,
         lock: GameSwitchLock,
@@ -901,6 +943,7 @@ class GameSwitchStore:
             receipt
             for receipt in self.receipts.receipts()
             if receipt.get("status") not in TERMINAL_RECEIPT_STATUSES
+            and receipt.get("status") != QUEUED_RECEIPT_STATUS
             and receipt.get("request_id") != request_id
         ]
         if nonterminal_receipts:
@@ -935,6 +978,29 @@ class GameSwitchStore:
                 existing["status"] = "accepted"
                 existing = self.receipts.save(existing)
                 classified = self._classify_existing(existing, payload_hash)
+            elif existing.get("status") == QUEUED_RECEIPT_STATUS:
+                queued = self.receipts.queued()
+                if not queued or queued[0].get("request_id") != request_id:
+                    raise GameSwitchBusyError("先行するゲーム切替要求がキューに残っています")
+                if canonical_request_id is not None or state.get("phase") not in {"idle", "ready"}:
+                    raise GameSwitchBusyError("現在のゲーム切替が完了していません")
+                next_state = copy.deepcopy(state)
+                next_state.update(
+                    {
+                        "phase": "validating",
+                        "operation": operation,
+                        "request_id": request_id,
+                    }
+                )
+                self.canonical.save(next_state)
+                existing = dict(existing)
+                existing["status"] = "accepted"
+                existing = self.receipts.save(existing)
+                classified = replace(
+                    self._classify_existing(existing, payload_hash),
+                    status="accepted",
+                    claimed_from_queue=True,
+                )
             elif canonical_request_id is None:
                 raise StateCorruptError("accepted receiptに対応するcanonical requestがありません")
             return classified
@@ -992,6 +1058,62 @@ class GameSwitchStore:
             request_id=request_id,
             generation=generation,
             status="accepted",
+            existing=False,
+            receipt=copy.deepcopy(receipt),
+        )
+
+    def _enqueue_request_locked(
+        self,
+        lock: GameSwitchLock,
+        request_id: str,
+        operation: str,
+        target: str | None,
+        payload: Mapping[str, object] | None = None,
+    ) -> RequestAcceptance:
+        """Durably append a request without claiming the canonical driver slot."""
+
+        self._require_exclusive_lock(lock)
+        request_id = validate_request_id(request_id)
+        operation, target = validate_request(operation, target)
+        request_payload = copy.deepcopy(dict(payload or {}))
+        payload_hash = _request_payload_hash(operation, target, request_payload)
+        state = self.canonical.initialize()
+        existing = self.receipts.load(request_id)
+        if existing is not None:
+            return self._classify_existing(existing, payload_hash)
+        if state.get("phase") in {"failed", "recovery_required"}:
+            raise GameSwitchBusyError("canonical stateの復旧が必要です")
+
+        generation = max(int(state["next_generation"]), self.receipts.max_generation() + 1)
+        runtime_id = new_runtime_id(generation)
+        names = runtime_names(generation)
+        runtime_dir = runtime_directory(self.state_dir, runtime_id)
+        receipt: dict[str, object] = {
+            "schema_version": RECEIPT_SCHEMA_VERSION,
+            "request_id": request_id,
+            "operation": operation,
+            "target": target,
+            "payload_hash": payload_hash,
+            "generation": generation,
+            "runtime_id": runtime_id,
+            "runtime_dir": str(runtime_dir),
+            "game_window": names.game_window,
+            "agent_window": names.agent_window,
+            "adapter_session": names.adapter_session,
+            "status": QUEUED_RECEIPT_STATUS,
+            "result": None,
+            "created_at": _utc_now(),
+            "updated_at": _utc_now(),
+        }
+        receipt = self.receipts.save(receipt)
+        next_state = copy.deepcopy(state)
+        next_state["next_generation"] = generation + 1
+        self.canonical.save(next_state)
+        self.receipts.prune_terminal()
+        return RequestAcceptance(
+            request_id=request_id,
+            generation=generation,
+            status=QUEUED_RECEIPT_STATUS,
             existing=False,
             receipt=copy.deepcopy(receipt),
         )
@@ -1074,6 +1196,7 @@ CANCEL_GRACE_S = 0.5
 ROLLBACK_TIMEOUT_S = 120.0
 
 ERROR_BUSY = "busy"
+ERROR_QUEUED = "queued"
 ERROR_REQUEST_CONFLICT = "request_conflict"
 ERROR_INVALID_GAME = "invalid_game"
 ERROR_ALREADY_ACTIVE = "already_active"
@@ -1366,7 +1489,7 @@ class SwitchResult:
 
     request_id: str
     operation: str
-    status: str  # succeeded | rolled_back | failed | in_progress | busy | request_conflict
+    status: str  # succeeded | rolled_back | failed | queued | in_progress | busy | request_conflict
     target: str | None
     from_game: str | None
     to_game: str | None
@@ -1505,6 +1628,28 @@ class GameSwitchCoordinator:
             detail=detail,
             cleanup_pending=cleanup_pending,
             duration_ms=int((time.monotonic() - t0) * 1000),
+        )
+
+    def _queued_result(
+        self,
+        receipt: Mapping[str, object],
+        state: Mapping[str, object] | None = None,
+    ) -> SwitchResult:
+        active = state.get("active") if isinstance(state, Mapping) else None
+        from_game = active.get("game") if isinstance(active, dict) else None
+        return SwitchResult(
+            request_id=str(receipt["request_id"]),
+            operation=str(receipt["operation"]),
+            status=QUEUED_RECEIPT_STATUS,
+            target=receipt.get("target"),
+            from_game=from_game if isinstance(from_game, str) else None,
+            to_game=receipt.get("target") if isinstance(receipt.get("target"), str) else None,
+            generation=receipt.get("generation"),
+            error_code=ERROR_QUEUED,
+            detail="ゲーム切替キューで順番待ちです",
+            warnings=(),
+            cleanup_pending=False,
+            receipt=copy.deepcopy(dict(receipt)),
         )
 
     # --- public API --------------------------------------------------------
@@ -1747,6 +1892,8 @@ class GameSwitchCoordinator:
             )
         if classified.status in TERMINAL_RECEIPT_STATUSES:
             return _result_from_receipt(classified.receipt)
+        if classified.status == QUEUED_RECEIPT_STATUS:
+            return self._queued_result(classified.receipt)
         return SwitchResult(
             request_id=request_id,
             operation=operation,
@@ -1778,6 +1925,12 @@ class GameSwitchCoordinator:
         active = state.get("active")
         if isinstance(active, dict):
             self._log_update(from_game=active.get("game"))
+        if operation == "restart" and target is None:
+            existing_restart = self.store.receipts.load(request_id)
+            if existing_restart is not None and existing_restart.get("target") is not None:
+                target = str(existing_restart["target"])
+            elif isinstance(active, dict) and isinstance(active.get("game"), str):
+                target = str(active["game"])
         if state["phase"] in {"failed", "recovery_required"}:
             return SwitchResult(
                 request_id=request_id,
@@ -1800,7 +1953,7 @@ class GameSwitchCoordinator:
             # generic recovery path and stop the active runtime underneath
             # the boundary wait.
             return self._handle_draining_request_locked(
-                state, request_id, operation, target, payload
+                tx, state, request_id, operation, target, payload, deadline, deadline_at
             )
         # A request_id that was already accepted fixes its operation and
         # target.  The only caller-side alias the coordinator sanctions is
@@ -1817,6 +1970,33 @@ class GameSwitchCoordinator:
                     recorded_operation, recorded_target, payload or {}
                 ) == existing.get("payload_hash"):
                     operation = "switch"
+        queued = self.store.receipts.queued()
+        if state["phase"] not in {"idle", "ready"} and existing is None:
+            acceptance = tx.enqueue_request(request_id, operation, target, payload)
+            return self._queued_result(acceptance.receipt, state)
+        if queued and queued[0].get("request_id") != request_id:
+            if existing is not None and existing.get("status") in TERMINAL_RECEIPT_STATUSES:
+                return _result_from_receipt(existing)
+            acceptance = tx.enqueue_request(request_id, operation, target, payload)
+            return self._queued_result(acceptance.receipt, state)
+        if (
+            existing is not None
+            and existing.get("status") == QUEUED_RECEIPT_STATUS
+            and operation in {"start", "switch"}
+            and isinstance(active, dict)
+            and active.get("game") == target
+        ):
+            result = {
+                "request_id": request_id,
+                "operation": operation,
+                "status": "succeeded",
+                "from_game": target,
+                "to_game": target,
+                "generation": existing.get("generation"),
+                "detail": "既に起動中です",
+            }
+            saved = tx.finish_request(request_id, "succeeded", result)
+            return _result_from_receipt(saved)
         if operation == "start":
             active = state.get("active")
             if active is not None:
@@ -1877,6 +2057,18 @@ class GameSwitchCoordinator:
                     )
                 target = active["game"]
         if operation == "stop" and state.get("active") is None:
+            if existing is not None and existing.get("status") == QUEUED_RECEIPT_STATUS:
+                result = {
+                    "request_id": request_id,
+                    "operation": operation,
+                    "status": "succeeded",
+                    "from_game": None,
+                    "to_game": None,
+                    "generation": existing.get("generation"),
+                    "detail": "実行中のゲームはありません",
+                }
+                saved = tx.finish_request(request_id, "succeeded", result)
+                return _result_from_receipt(saved)
             return SwitchResult(
                 request_id=request_id,
                 operation=operation,
@@ -1929,7 +2121,7 @@ class GameSwitchCoordinator:
             raise
         if acceptance.status in TERMINAL_RECEIPT_STATUSES:
             return _result_from_receipt(acceptance.receipt)
-        if acceptance.existing:
+        if acceptance.existing and not acceptance.claimed_from_queue:
             # The previous driver is provably dead (we hold the lock).
             # Converge fail-closed through the recovery path.
             recovered = self._recover_locked(tx, deadline=deadline)
@@ -1953,18 +2145,22 @@ class GameSwitchCoordinator:
 
     def _handle_draining_request_locked(
         self,
+        tx: GameSwitchTransaction,
         state: Mapping[str, object],
         request_id: str,
         operation: str,
         target: str | None,
         payload: Mapping[str, object] | None,
+        deadline: float,
+        deadline_at: str,
     ) -> SwitchResult:
-        """Classify requests while an active runtime is awaiting a boundary.
+        """Queue requests while an active runtime is awaiting a boundary.
 
-        ``_accept_request_locked`` intentionally rejects a second canonical
-        request.  This specialized read-only path additionally handles the
-        same-request retry without calling ``recover()``; recovery during a
-        live drain must not tear down the game or its input fence.
+        The current boundary owner remains authoritative.  New requests are
+        durably appended and are claimed FIFO after the owner reaches a
+        stable phase.  If the owner's durable deadline has expired, recover
+        the exact boundary first; a failed recovery leaves the queued request
+        intact for a later retry.
         """
 
         existing = self.store.receipts.load(request_id)
@@ -1974,20 +2170,41 @@ class GameSwitchCoordinator:
                 raise StateCorruptError(
                     "draining canonical requestに対応するreceiptがありません"
                 )
-            return SwitchResult(
+            acceptance = tx.enqueue_request(request_id, operation, target, payload)
+            queued = self._queued_result(acceptance.receipt, state)
+            self._log_update(
                 request_id=request_id,
                 operation=operation,
-                status="busy",
                 target=target,
-                from_game=state.get("active")["game"] if state.get("active") else None,
-                to_game=target,
-                generation=state.get("active")["generation"] if state.get("active") else None,
-                error_code=ERROR_BUSY,
-                detail="別のゲームが試合終了境界を待っています",
-                warnings=(),
-                cleanup_pending=False,
-                receipt=None,
             )
+            self._log(
+                "queued",
+                phase="draining",
+                result=QUEUED_RECEIPT_STATUS,
+                error_code=ERROR_QUEUED,
+                detail="先行するゲーム切替要求の完了後に処理します",
+            )
+            if _wall_deadline_expired(state.get("deadline_at")):
+                recovered = self._recover_locked(tx, deadline=deadline)
+                self._log(
+                    "recovery_finished",
+                    phase=str(self.store.canonical.load()[0].get("phase")),
+                    result=recovered.status,
+                    error_code=recovered.error_code,
+                    cleanup_pending=recovered.cleanup_pending,
+                )
+                current, _migrated = self.store.canonical.load()
+                if current.get("phase") == "ready":
+                    return self._execute_locked(
+                        tx,
+                        request_id,
+                        operation,
+                        target,
+                        payload,
+                        deadline,
+                        deadline_at,
+                    )
+            return queued
 
         recorded_operation = str(existing.get("operation"))
         recorded_target = existing.get("target")
@@ -2027,6 +2244,28 @@ class GameSwitchCoordinator:
             )
         if existing.get("status") in TERMINAL_RECEIPT_STATUSES:
             return _result_from_receipt(existing)
+        if existing.get("status") == QUEUED_RECEIPT_STATUS:
+            if _wall_deadline_expired(state.get("deadline_at")):
+                recovered = self._recover_locked(tx, deadline=deadline)
+                self._log(
+                    "recovery_finished",
+                    phase=str(self.store.canonical.load()[0].get("phase")),
+                    result=recovered.status,
+                    error_code=recovered.error_code,
+                    cleanup_pending=recovered.cleanup_pending,
+                )
+                current, _migrated = self.store.canonical.load()
+                if current.get("phase") == "ready":
+                    return self._execute_locked(
+                        tx,
+                        request_id,
+                        operation,
+                        target,
+                        payload,
+                        deadline,
+                        deadline_at,
+                    )
+            return self._queued_result(existing, state)
         return SwitchResult(
             request_id=request_id,
             operation=recorded_operation,

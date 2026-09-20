@@ -338,7 +338,13 @@ class NethackCornerManager(RetroCornerManager):
         else:
             state.pop("run_history_error", None)
 
-    def _transition_to(self, current: str | None, target: str) -> None:
+    def _transition_to(
+        self,
+        current: str | None,
+        target: str,
+        *,
+        request_id: str | None = None,
+    ):
         probe: dict[str, object] | None = None
         if self._run_store is not None and target == GAME_NAME:
             try:
@@ -348,7 +354,9 @@ class NethackCornerManager(RetroCornerManager):
                     f"NetHack run continuityを確認できません: {_safe_detail(exc)}"
                 ) from exc
 
-        super()._transition_to(current, target)
+        result = super()._transition_to(current, target, request_id=request_id)
+        if getattr(result, "status", None) in {"queued", "in_progress", "busy"}:
+            return result
 
         if self._run_store is not None and probe is not None:
             try:
@@ -359,6 +367,7 @@ class NethackCornerManager(RetroCornerManager):
                 # or roll back a live game solely because analytics/history
                 # persistence failed; surface the error in corner state instead.
                 self._run_history_error = _safe_detail(exc)
+        return result
 
     def _prepare_start_with_reconcile(self, current: str | None) -> dict[str, object]:
         """Close an unreachable leftover run before starting a new expedition.
@@ -491,6 +500,12 @@ class NethackCornerManager(RetroCornerManager):
             if not single:
                 return CornerResult("noop", detail="already-running")
             now = self._local_now()
+            restoring = self._retry_restoring_tick(now)
+            if restoring is not None:
+                return restoring
+            starting = self._retry_starting_tick(now)
+            if starting is not None:
+                return starting
             if not self.config.enabled:
                 with self._locked():
                     self._reconcile_stale_locked(now)

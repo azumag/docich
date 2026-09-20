@@ -316,6 +316,51 @@ class TestRetroCornerRotation(RetroCornerTestBase):
         # eligible again; games selected later are still cooling down.
         self.assertEqual(seen[-1], seen[0])
 
+    def test_due_rotation_keeps_a_queued_switch_for_next_tick(self):
+        mgr, _coordinator, games = self._rotation_manager()
+        current = mgr.coordinator.current
+
+        class QueuingCoordinator(FakeCoordinator):
+            def __init__(self, current):
+                super().__init__(current)
+                self.queue_once = True
+
+            def switch(self, game):
+                self.calls.append(("switch", game))
+                if self.queue_once:
+                    self.queue_once = False
+                    return SimpleNamespace(
+                        status="queued",
+                        request_id="queued-request",
+                        error_code="queued",
+                        detail="queued",
+                    )
+                self.current[0] = game
+                return SimpleNamespace(
+                    status="succeeded", request_id="queued-request", error_code=None, detail=None
+                )
+
+        coordinator = QueuingCoordinator(current)
+        mgr.coordinator = coordinator
+
+        first = mgr.tick()
+
+        self.assertEqual(first.status, "queued")
+        self.assertEqual(mgr.status()["status"], "starting")
+        self.assertTrue(mgr.status()["switch_request_id"])
+
+        second = mgr.tick()
+
+        self.assertEqual(second.status, "completed")
+        self.assertEqual(current[0], "sorengame")
+        self.assertEqual(
+            [call[0] for call in coordinator.calls],
+            ["switch", "switch", "switch"],
+        )
+        self.assertIn(coordinator.calls[0][1], games)
+        self.assertEqual(coordinator.calls[1][1], coordinator.calls[0][1])
+        self.assertEqual(coordinator.calls[2][1], "sorengame")
+
     def test_games_selected_within_24_hours_are_not_fallback_candidates(self):
         mgr, _coordinator, games = self._rotation_manager()
         now = self.now_value
@@ -418,6 +463,51 @@ class TestRetroCornerLifecycle(RetroCornerTestBase):
         self.assertEqual(holder["stop"].status, "completed")
         self.assertEqual(result.status, "completed")
         self.assertEqual(coordinator.calls, [("switch", "robots"), ("switch", "sorengame")])
+
+    def test_restore_switch_is_kept_queued_until_a_later_tick(self):
+        current = ["sorengame"]
+
+        class QueueRestoreCoordinator(FakeCoordinator):
+            def __init__(self, current):
+                super().__init__(current)
+                self.queue_restore_once = True
+
+            def switch(self, game):
+                self.calls.append(("switch", game))
+                if game == "sorengame" and self.queue_restore_once:
+                    self.queue_restore_once = False
+                    return SimpleNamespace(
+                        status="queued", error_code="queued", detail="queued"
+                    )
+                self.current[0] = game
+                return SimpleNamespace(status="succeeded", error_code=None, detail=None)
+
+        coordinator = QueueRestoreCoordinator(current)
+        mgr = RetroCornerManager(
+            self.g,
+            config=self.cfg,
+            coordinator=coordinator,
+            now=lambda: self.now_value,
+            sleep=lambda seconds: None,
+            active_game_reader=lambda: current[0],
+            ensure_runtime=lambda: None,
+        )
+
+        first = mgr.start()
+
+        self.assertEqual(first.status, "queued")
+        self.assertEqual(mgr.status()["status"], "restoring")
+        self.assertTrue(mgr.status()["switch_request_id"])
+
+        second = mgr.tick()
+
+        self.assertEqual(second.status, "completed")
+        self.assertEqual(mgr.status()["status"], "completed")
+        self.assertEqual(current[0], "sorengame")
+        self.assertEqual(
+            coordinator.calls,
+            [("switch", "robots"), ("switch", "sorengame"), ("switch", "sorengame")],
+        )
 
     def test_tick_outside_start_hour_is_noop(self):
         self.now_value = datetime(2026, 9, 6, 19, 0, tzinfo=ZoneInfo("Asia/Tokyo"))
