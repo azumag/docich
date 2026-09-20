@@ -323,6 +323,46 @@ class TestRetroCornerRotation(RetroCornerTestBase):
         self.assertEqual(result.status, "noop")
         self.assertEqual(result.detail, "rotation-no-eligible-game")
 
+    def _enable_fixed_corner(self, section: str, start_hour: int, duration_minutes: int = 30):
+        self.g.config_path.write_text(
+            self.g.config_path.read_text(encoding="utf-8")
+            + f"\n[{section}]\nenabled = true\nstart_hour = {start_hour}\n"
+            + f"duration_minutes = {duration_minutes}\ntimezone = \"Asia/Tokyo\"\n",
+            encoding="utf-8",
+        )
+
+    def test_due_rotation_defers_before_imminent_fixed_slot(self):
+        self._enable_fixed_corner("paper_corner", 22)
+        mgr, coordinator, _games = self._rotation_manager()
+        self.now_value = self.now_value.replace(hour=21, minute=50)
+
+        result = mgr.tick()
+
+        self.assertEqual(result.status, "noop")
+        self.assertEqual(result.detail, "rotation-deferred:fixed-slot-imminent:paper_corner")
+        self.assertEqual(coordinator.calls, [])
+
+    def test_due_rotation_defers_while_fixed_slot_is_active(self):
+        self._enable_fixed_corner("soren91_corner", 18)
+        mgr, coordinator, _games = self._rotation_manager()
+        self.now_value = self.now_value.replace(hour=18, minute=5)
+
+        result = mgr.tick()
+
+        self.assertEqual(result.status, "noop")
+        self.assertEqual(result.detail, "rotation-deferred:fixed-slot-active:soren91_corner")
+        self.assertEqual(coordinator.calls, [])
+
+    def test_due_rotation_can_start_when_it_finishes_before_fixed_slot_buffer(self):
+        self._enable_fixed_corner("paper_corner", 22)
+        mgr, coordinator, _games = self._rotation_manager()
+        self.now_value = self.now_value.replace(hour=21, minute=25)
+
+        result = mgr.tick()
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(coordinator.calls[0][0], "switch")
+
 
 class TestRetroCornerLifecycle(RetroCornerTestBase):
     def test_restores_previous_game_after_duration(self):

@@ -38,6 +38,11 @@ TERMINAL_STATUSES = {"completed", "interrupted", "failed"}
 LOTTERY_DRAW_WINDOW_MINUTES = 10
 # 抽選コーナーは次の正時の前に必ず終わらせる (毎正時に始まる固定枠のコーナーを塞がない)。
 LOTTERY_LATEST_END_MINUTE = 55
+# rolling rotation も、設定された固定時刻コーナーへ枠を返すために同じ
+# 5分の引き継ぎ余白を確保する。
+ROTATION_FIXED_SLOT_BUFFER_MINUTES = 5
+# rolling rotation が先読みする、program lock を使う固定時刻コーナー。
+FIXED_CORNER_SECTIONS = ("paper_corner", "soren91_corner")
 # starting のまま残った (tick が落ちた) 状態を割り込み扱いにするまでの猶予。
 STARTING_STALE_MINUTES = 10
 
@@ -1138,6 +1143,89 @@ class RetroCornerManager:
         candidates = self._rotation_candidates(rotation, now)
         return self._rng.choice(candidates) if candidates else None
 
+    def _rotation_fixed_slot_windows(
+        self, now: dt.datetime
+    ) -> list[tuple[dt.datetime, dt.datetime, str]]:
+        """Return enabled fixed-corner windows around ``now``.
+
+        The fixed corners are configured outside ``[retro_corner]`` and do not
+        share the retro manager's dataclass. Read their scheduling contract
+        from the selected profile so a rolling slot does not assume the live
+        hours in source code. A malformed enabled fixed corner fails closed.
+        """
+        raw = _raw_config(self.g)
+        windows: list[tuple[dt.datetime, dt.datetime, str]] = []
+        for section_name in FIXED_CORNER_SECTIONS:
+            section = raw.get(section_name)
+            if not isinstance(section, dict) or section.get("enabled") is not True:
+                continue
+
+            start_hour = section.get("start_hour")
+            duration_minutes = section.get("duration_minutes")
+            if type(start_hour) is not int or not 0 <= start_hour <= 23:
+                raise RetroCornerError(f"{section_name}.start_hour が不正です")
+            if type(duration_minutes) is not int or not 1 <= duration_minutes <= 720:
+                raise RetroCornerError(f"{section_name}.duration_minutes が不正です")
+
+            timezone_name = section.get("timezone", self.config.timezone)
+            if not isinstance(timezone_name, str) or not timezone_name.strip():
+                raise RetroCornerError(f"{section_name}.timezone が不正です")
+            try:
+                fixed_tz = ZoneInfo(timezone_name)
+            except (ZoneInfoNotFoundError, ValueError) as exc:
+                raise RetroCornerError(f"{section_name}.timezone が不正です") from exc
+
+            weekdays_raw = section.get("weekdays")
+            if weekdays_raw is None or weekdays_raw == []:
+                weekdays: set[int] | None = None
+            elif (
+                isinstance(weekdays_raw, list)
+                and all(type(day) is int and 0 <= day <= 6 for day in weekdays_raw)
+            ):
+                weekdays = set(weekdays_raw)
+            else:
+                raise RetroCornerError(f"{section_name}.weekdays が不正です")
+
+            fixed_now = now.astimezone(fixed_tz)
+            # A weekday-restricted fixed corner can be seven days away. The
+            # extra day also covers an active window that crossed midnight.
+            for day_offset in range(-1, 9):
+                day = fixed_now.date() + dt.timedelta(days=day_offset)
+                if weekdays is not None and day.weekday() not in weekdays:
+                    continue
+                start_local = dt.datetime.combine(
+                    day, dt.time(hour=start_hour), tzinfo=fixed_tz
+                )
+                end_local = start_local + dt.timedelta(minutes=duration_minutes)
+                start = start_local.astimezone(self.tz)
+                end = end_local.astimezone(self.tz)
+                if end > now:
+                    windows.append((start, end, section_name))
+        return sorted(windows, key=lambda item: item[0])
+
+    def _rotation_fixed_slot_guard(self, now: dt.datetime) -> str | None:
+        """Defer a due rotation that could overlap an imminent fixed slot.
+
+        The rotation may wait for ``rotation_wait_minutes`` before acquiring
+        the program slot, then holds it through its configured duration. The
+        worst-case end therefore gets a five-minute handoff buffer before the
+        next fixed corner's start. Once a fixed window is active, defer as
+        well; the existing other-corner check handles unrelated busy owners.
+        """
+        latest_end = now + dt.timedelta(
+            minutes=self.config.rotation_wait_minutes + self.config.duration_minutes
+        )
+        buffer = dt.timedelta(minutes=ROTATION_FIXED_SLOT_BUFFER_MINUTES)
+        for start, end, section_name in self._rotation_fixed_slot_windows(now):
+            if start <= now < end:
+                return f"fixed-slot-active:{section_name}"
+            if start > now:
+                if latest_end > start - buffer:
+                    return f"fixed-slot-imminent:{section_name}"
+                # Windows are sorted, so later fixed starts have more room.
+                return None
+        return None
+
     def _rotation_cancel_pending(self, game: str, reason: str) -> None:
         with self._locked():
             state = self._read_state()
@@ -1231,6 +1319,12 @@ class RetroCornerManager:
                     if changed:
                         self._write_state(state)
                     return CornerResult("noop", detail="rotation-not-due")
+                fixed_guard = self._rotation_fixed_slot_guard(now)
+                if fixed_guard is not None:
+                    state["rotation"] = rotation
+                    if changed:
+                        self._write_state(state)
+                    return CornerResult("noop", detail=f"rotation-deferred:{fixed_guard}")
                 busy = self._other_corner_busy()
                 if busy is not None:
                     rotation["last_result"] = {
