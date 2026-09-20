@@ -432,6 +432,32 @@ class TestLifecycle(Soren91AdapterTestBase):
             self.http_plan = [urllib.error.URLError("down")]
             self.assertFalse(adapter.alive(time.monotonic() + 30, None))
 
+    def test_agent_alive_is_true_when_no_agent_is_expected(self):
+        adapter = self._adapter()
+        self.assertFalse(adapter.agent_enabled)
+        self.assertTrue(adapter.agent_alive(time.monotonic() + 30, None))
+
+    def test_agent_alive_tracks_the_bot_window_and_dead_panes(self):
+        game = self.game
+        game.agent.enabled = True
+        adapter = self._adapter(game)
+        # agent enabled but the bot window has not been materialized yet -> dead
+        self.assertFalse(adapter.agent_alive(time.monotonic() + 30, None))
+        adapter.tmux.create_window_owned("agent-g3", ["node"], adapter._ownership("agent"))
+        self.assertIn("docich-game-g3:agent-g3", self.tmux.windows)
+        self.assertTrue(adapter.agent_alive(time.monotonic() + 30, None))
+        # A window kept around with a dead pane is not a live bot.
+        self.tmux.pane_states_checked = lambda target: [PaneState(dead=True, pid=1234)]
+        self.assertFalse(adapter.agent_alive(time.monotonic() + 30, None))
+
+    def test_agent_alive_fails_closed_on_ownership_mismatch(self):
+        game = self.game
+        game.agent.enabled = True
+        adapter = self._adapter(game)
+        adapter.tmux.create_window_owned("agent-g3", ["node"], adapter._ownership("agent"))
+        self.tmux.windows["docich-game-g3:agent-g3"] = ("other-runtime", 99, "agent")
+        self.assertFalse(adapter.agent_alive(time.monotonic() + 30, None))
+
     def test_cleanup_posts_stop_and_tears_down(self):
         adapter = self._adapter()
         with self._bound_listener(True), self._http():

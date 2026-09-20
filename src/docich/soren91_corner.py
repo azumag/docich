@@ -29,6 +29,7 @@ import datetime as dt
 import json
 import os
 import sys
+import time
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -38,7 +39,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .adapters import make_coordinator_adapter
 from .config import ConfigError, GlobalConfig, load_game, load_global
 from .corner_boundary import CornerWaitExpired, program_slot
-from .game_switch import GameSwitchCoordinator, GameSwitchStore
+from .game_switch import GameSwitchCoordinator, GameSwitchStore, RuntimeSpec
 from .retro_corner import (
     CornerResult,
     RetroCornerError,
@@ -202,6 +203,10 @@ class Soren91CornerManager(RetroCornerManager):
         chat: Callable[[str], None] | None = None,
         voice: Callable[[str], None] | None = None,
         spawn=None,
+        agent_alive_probe: Callable[[], bool | None] | None = None,
+        agent_liveness_poll_s: float = 30.0,
+        agent_liveness_strikes: int = 2,
+        agent_liveness_timeout_s: float = 5.0,
     ):
         if chat is None:
             chat = lambda text: enqueue_chat(g, text, source=DELIVERY_SOURCE)
@@ -234,6 +239,18 @@ class Soren91CornerManager(RetroCornerManager):
                 self.g, text, context="soren91:announce", speaker=self.voicevox_speaker
             )
         )
+        if not (isinstance(agent_liveness_poll_s, (int, float)) and agent_liveness_poll_s > 0):
+            raise Soren91CornerError("agent_liveness_poll_s は正の秒数である必要があります")
+        if type(agent_liveness_strikes) is not int or agent_liveness_strikes < 1:
+            raise Soren91CornerError("agent_liveness_strikes は1以上の整数である必要があります")
+        if not (
+            isinstance(agent_liveness_timeout_s, (int, float)) and agent_liveness_timeout_s > 0
+        ):
+            raise Soren91CornerError("agent_liveness_timeout_s は正の秒数である必要があります")
+        self._agent_liveness_poll_s = float(agent_liveness_poll_s)
+        self._agent_liveness_strikes = agent_liveness_strikes
+        self._agent_liveness_timeout_s = float(agent_liveness_timeout_s)
+        self._agent_alive_probe = agent_alive_probe or self._active_agent_alive
 
     # --- lifecycle customizations -------------------------------------------
 
@@ -324,6 +341,98 @@ class Soren91CornerManager(RetroCornerManager):
         if not agents:
             return
         state["improve_job"] = {"spawned": False, "reason": "soren91-improve-not-supported"}
+
+    # --- run-window supervision ---------------------------------------------
+
+    def _probe_agent_alive(self) -> bool | None:
+        """Best-effort agent liveness: True/False, or None when undeterminable."""
+        try:
+            result = self._agent_alive_probe()
+        except Exception:  # noqa: BLE001 - an indeterminate probe must not end the run
+            return None
+        if result is True or result is False:
+            return result
+        return None
+
+    def _active_agent_alive(self) -> bool | None:
+        """Liveness of the active runtime's agent (bot) through its adapter.
+
+        Returns None when canonical is not this corner's game or the check
+        cannot be made, so an indeterminate probe never ends a healthy corner.
+        """
+        try:
+            state, _missing = self.store.canonical.load()
+            if state.get("phase") != "ready":
+                return None
+            active = state.get("active")
+            if not isinstance(active, dict) or active.get("game") != GAME_NAME:
+                return None
+            spec = RuntimeSpec.from_runtime(self.g.state_dir, active)
+            adapter = make_coordinator_adapter(self.g, spec)
+        except Exception:  # noqa: BLE001 - liveness is best-effort
+            return None
+        check = getattr(adapter, "agent_alive", None)
+        if check is None:
+            return None
+        try:
+            deadline = time.monotonic() + self._agent_liveness_timeout_s
+            return bool(check(deadline, None))
+        except Exception:  # noqa: BLE001 - liveness is best-effort
+            return None
+
+    def _wait_and_finish(self, state: dict[str, object]) -> CornerResult:
+        """Run the slot while watching the in-window bot (soren91-specific).
+
+        The sustained corner keeps its runtime for the whole slot, so a bot that
+        exits mid-run would otherwise leave dead air until ``ends_at``. Poll the
+        generation-owned agent window and end the corner (restoring the previous
+        game) once it is confirmed gone. A single miss is tolerated and an
+        indeterminate probe never ends a healthy corner.
+        """
+        ends_at = self._parse_ends_at(state)
+        if ends_at is None:
+            raise RetroCornerError("soren91 corner ends_atが不正です")
+        strikes = 0
+        while True:
+            remaining = max(0.0, (ends_at - self._local_now()).total_seconds())
+            if remaining <= 0.0:
+                return self._finish_active_or_state()
+            before = self._local_now()
+            self._sleep(min(self._agent_liveness_poll_s, remaining))
+            after = self._local_now()
+            if after <= before:
+                # The sleeper did not move the clock (no-op test double). With
+                # no passage of time there is nothing to supervise over, so
+                # honor the base single-sleep contract and finish now.
+                return self._finish_active_or_state()
+            latest = self._read_state()
+            if latest.get("status") != "active":
+                return self._state_result(latest)
+            alive = self._probe_agent_alive()
+            if alive is False:
+                strikes += 1
+                if strikes >= self._agent_liveness_strikes:
+                    with self._locked():
+                        latest = self._read_state()
+                        if latest.get("status") != "active":
+                            return self._state_result(latest)
+                        latest["early_end_reason"] = "soren91-agent-not-alive"
+                        print(
+                            "[soren91-corner] agent window not alive; ending corner early",
+                            file=sys.stderr,
+                        )
+                        return self._finish_locked(latest, self._local_now())
+            elif alive is True:
+                strikes = 0
+            # None (undeterminable): keep the slot rather than end on doubt.
+
+    def _finish_active_or_state(self) -> CornerResult:
+        """Finish the active corner, or return the current state result."""
+        with self._locked():
+            latest = self._read_state()
+            if latest.get("status") != "active":
+                return self._state_result(latest)
+            return self._finish_locked(latest, self._local_now())
 
     # --- scheduling ----------------------------------------------------------
 

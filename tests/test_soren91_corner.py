@@ -5,7 +5,7 @@ import sys
 import tempfile
 import tomllib
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -218,14 +218,22 @@ class TestSoren91CornerLifecycle(Soren91CornerTestBase):
     def test_tick_runs_full_overlay_cycle_and_restores(self):
         current = ["sorengame"]
         sleeps = []
-        mgr, coordinator = self.manager(current, sleep=sleeps.append)
+        clock = [self.now_value]
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            clock[0] = clock[0] + timedelta(seconds=seconds)
+
+        mgr, coordinator = self.manager(current, now=lambda: clock[0], sleep=sleep)
         result = mgr.tick()
         self.assertEqual(result.status, "completed")
         self.assertEqual(
             coordinator.calls, [("switch", "soren91"), ("switch", "sorengame")]
         )
         self.assertEqual(current[0], "sorengame")
-        self.assertEqual(sleeps, [30 * 60])
+        # The corner polls the agent window while it holds the slot, so the wait
+        # is split into chunks; the intent is that it spans the full 30 minutes.
+        self.assertAlmostEqual(sum(sleeps), 30 * 60, delta=1.0)
 
     def test_tick_from_idle_stops_back_to_idle(self):
         current = [None]
@@ -289,20 +297,26 @@ class TestSoren91CornerLifecycle(Soren91CornerTestBase):
         )
 
     def test_transition_delay_does_not_shorten_corner(self):
-        from datetime import timedelta
-
         current = [None]
         sleeps = []
-        mgr, coordinator = self.manager(current, sleep=sleeps.append)
+        clock = [self.now_value]
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            clock[0] = clock[0] + timedelta(seconds=seconds)
+
+        mgr, coordinator = self.manager(current, now=lambda: clock[0], sleep=sleep)
         original = coordinator.start
 
         def delayed(game):
-            self.now_value += timedelta(minutes=25)
+            clock[0] += timedelta(minutes=25)
             return original(game)
 
         coordinator.start = delayed
         mgr.tick()
-        self.assertEqual(sleeps, [30 * 60])
+        # ends_at is fixed after the switch completes, so the 25-minute
+        # transition must not shorten the 30-minute slot.
+        self.assertAlmostEqual(sum(sleeps), 30 * 60, delta=1.0)
 
     def test_expired_active_state_is_reconciled_on_next_tick(self):
         current = ["soren91"]
@@ -742,6 +756,66 @@ class TestShippedGameConfig(unittest.TestCase):
             "cdp_port は OCI から到達できる Mac 側 Tailscale プロキシの port "
             "(Mac 内 Chrome CDP の 9322 ではない)",
         )
+
+
+class TestSoren91CornerAgentSupervision(Soren91CornerTestBase):
+    """A bot that dies mid-slot must not leave dead air until ends_at."""
+
+    def _run(self, current, probe, *, poll_s=60.0, strikes=1):
+        clock = [self.now_value]
+
+        def sleep(seconds):
+            clock[0] = clock[0] + timedelta(seconds=seconds)
+
+        mgr, coordinator = self.manager(
+            current,
+            now=lambda: clock[0],
+            sleep=sleep,
+            agent_alive_probe=probe,
+            agent_liveness_poll_s=poll_s,
+            agent_liveness_strikes=strikes,
+        )
+        return mgr, coordinator
+
+    def test_dead_agent_ends_corner_early_and_restores_previous_game(self):
+        mgr, coordinator = self._run(["sorengame"], lambda: False)
+        result = mgr.start()
+        self.assertEqual(result.status, "completed")
+        state = mgr.status()
+        self.assertEqual(state.get("status"), "completed")
+        self.assertEqual(state.get("early_end_reason"), "soren91-agent-not-alive")
+        self.assertIn(("switch", "sorengame"), coordinator.calls)
+
+    def test_alive_agent_runs_to_the_scheduled_end(self):
+        mgr, coordinator = self._run(["sorengame"], lambda: True)
+        self.assertEqual(mgr.start().status, "completed")
+        self.assertNotIn("early_end_reason", mgr.status())
+        self.assertIn(("switch", "sorengame"), coordinator.calls)
+
+    def test_indeterminate_probe_never_ends_the_slot_early(self):
+        mgr, _coordinator = self._run(["sorengame"], lambda: None)
+        self.assertEqual(mgr.start().status, "completed")
+        self.assertNotIn("early_end_reason", mgr.status())
+
+    def test_a_single_dead_probe_is_debounced(self):
+        answers = iter([False, True, True, True, True, True, True, True, True, False])
+        mgr, _coordinator = self._run(["sorengame"], lambda: next(answers, True), strikes=2)
+        self.assertEqual(mgr.start().status, "completed")
+        self.assertNotIn("early_end_reason", mgr.status())
+
+    def test_raising_probe_is_treated_as_indeterminate(self):
+        def boom():
+            raise RuntimeError("tmux unavailable")
+
+        mgr, _coordinator = self._run(["sorengame"], boom)
+        self.assertEqual(mgr.start().status, "completed")
+        self.assertNotIn("early_end_reason", mgr.status())
+
+    def test_invalid_liveness_settings_are_rejected(self):
+        with self.assertRaises(Soren91CornerError):
+            self.manager(["sorengame"], agent_liveness_poll_s=0)
+        with self.assertRaises(Soren91CornerError):
+            self.manager(["sorengame"], agent_liveness_strikes=0)
 
 
 if __name__ == "__main__":

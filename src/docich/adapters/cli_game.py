@@ -455,6 +455,33 @@ class CliCoordinatorAdapter:
         self._verify_session_ownership()
         return True
 
+    def agent_alive(self, deadline: float, cancel) -> bool:
+        """Liveness of the generation-owned agent (bot) window.
+
+        ``alive`` only proves the adapter session still exists. A corner that
+        keeps its runtime up for the whole slot while an in-window bot plays
+        (soren91) must also know whether that bot is still running: once it
+        exits, tmux tears its window down and the corner would otherwise
+        broadcast a dead game until the scheduled end. Fail closed on every
+        uncertainty (missing window, ownership mismatch, unreadable pane).
+        """
+        if not self.agent_enabled:
+            # No agent is expected, so there is nothing that can die mid-slot.
+            return True
+        self._check_active(deadline, cancel)
+        target = self._agent_window_target()
+        if not self.tmux.window_target_exists(target):
+            return False
+        try:
+            self._verify_window_ownership(target, "agent")
+        except OwnershipMismatchError:
+            return False
+        try:
+            states = self.tmux.pane_states_checked(target)
+        except Exception:  # noqa: BLE001 - a liveness probe must never raise
+            return False
+        return not any(pane.dead for pane in states)
+
     def cleanup_runtime(self, deadline: float, cancel) -> None:
         marker = Path(self.g.state_dir) / "resolver" / "active" / f"{self.game.name}.json"
         while marker.exists():
