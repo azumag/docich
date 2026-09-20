@@ -64,6 +64,14 @@ RECOVER_DIAGNOSE_CODES = {
     "lifecycle_stopped": 59,
     "lifecycle_resumable": 60,
     "lifecycle_unrecoverable": 61,
+    "corner_recovery_required_no_player": 62,
+    "corner_recovery_required_generation_mismatch": 63,
+    "corner_recovery_required_request_invalid": 64,
+    "corner_recovery_required_started": 65,
+    "corner_preparing": 66,
+    "corner_restoring": 67,
+    "corner_active_committed": 68,
+    "corner_recovery_required_invalid": 69,
 }
 
 
@@ -304,9 +312,25 @@ def recover_bridge_diagnose(g: GlobalConfig) -> str:
         if corner_state.get("schema_version") != STATE_SCHEMA_VERSION or corner_state.get("game") != GAME_NAME:
             return "corner_state_invalid"
         if corner_state.get("status") in ACTIVE_STATUSES:
-            if _recover_precommit_failure(corner_state, player_state):
-                return "corner_stale_precommit"
-            return "corner_state_active"
+            status = corner_state.get("status")
+            if status == "recovery_required":
+                if corner_state.get("started_at") is not None or corner_state.get("completed_at") is not None:
+                    return "corner_recovery_required_started"
+                if not isinstance(player_state, dict):
+                    return "corner_recovery_required_no_player"
+                if corner_state.get("player_generation") != player_state.get("player_generation"):
+                    return "corner_recovery_required_generation_mismatch"
+                if not isinstance(corner_state.get("request_id"), str) or UUID_RE.fullmatch(corner_state["request_id"]) is None:
+                    return "corner_recovery_required_request_invalid"
+                if _recover_precommit_failure(corner_state, player_state):
+                    return "corner_stale_precommit"
+                return "corner_recovery_required_invalid"
+            elif status == "preparing":
+                return "corner_preparing"
+            elif status == "restoring":
+                return "corner_restoring"
+            else:
+                return "corner_active_committed"
         if corner_state.get("status") not in TERMINAL_STATUSES:
             return "corner_state_invalid"
 
