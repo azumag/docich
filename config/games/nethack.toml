@@ -73,6 +73,16 @@ enabled = true
 brain = "nethack"
 interval_ms = 1500
 
+# レトロ rolling rotation のbounded候補。rotation slotでは
+# NethackCoordinatorAdapter が通常の NetHack save boundary を使って途中保存し、
+# 次回のNetHack slotで同じ player_name の冒険を再開する。
+[corner]
+intro = "NetHackを、保存と再開に対応した短時間のレトロゲーム枠でお送りします。"
+
+[retro_corner]
+unattended = true
+requires = ["/usr/games/nethack"]
+
 # Twitch 配信カテゴリー・タイトル連動 (soviet_now update_stream_game.sh が読む)。
 # category は IGDB 照合済み。運用ルールは games/soviet_now/docs/twitch_game_sync.md。
 [twitch]

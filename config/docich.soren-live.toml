@@ -47,10 +47,10 @@ enabled = true
 require_program_boundary = true
 timezone = "Asia/Tokyo"
 # rolling: 24時間を登録ゲーム数で割った間隔で必ず候補を抽選する。
-# 直近24時間以内に選ばれたゲームは候補から外すので、5ゲームなら4時間48分ごとに
-# 最初の5枠は重複なしのランダム順になり、24時間経過後に再び候補へ戻る。
+# 直近24時間以内に選ばれたゲームは候補から外すので、6ゲームなら4時間ごとに
+# 最初の6枠は重複なしのランダム順になり、24時間経過後に再び候補へ戻る。
 # 実行ファイルが無いゲームはその枠の候補から除外し、他コーナーが塞いでいる場合は
-# 次のtickで再試行する。毎時の確率抽選ではない。PAPER/Soren91の固定枠が近い場合は、
+# 次のtickで再試行する。毎時の確率抽選ではない。PAPER/Soren91/専用NetHackの固定枠が近い場合は、
 # 最悪の待ち時間＋durationが固定枠の5分前までに収まるときだけ開始し、固定枠を優先する。
 mode = "rotation"
 rotation_period_hours = 24.0
@@ -62,9 +62,11 @@ start_hour = 19
 daily_each_game = true
 randomize_start = true
 start_window_minutes = 30
-games = ["ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console"]
-# 5ゲームとも command brain と bot_eval の bounded headless 評価を使い、
-# コーナー終了後に同じ baseline/candidate 比較から改善候補を判定する。
+games = ["ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console", "nethack"]
+# 最初の5ゲームは command brain と bot_eval の bounded headless 評価を使う。
+# NetHackは専用brainと persistent_run のセーブ境界を使うbounded slotで、改善評価は未対応。
+# 専用の [nethack_corner] を有効化する場合は、rolling候補からNetHackを外す。
+# コーナー終了後は対応ゲームだけ同じ baseline/candidate 比較から改善候補を判定する。
 # improve_agents はゲーム一覧ではなく既存のAI委任先チェーン。
 improve_agents = "opencode-go:deepseek-v4.1-flash,amd:DeepSeek-V4-Flash,opencode-go:deepseek-v4-flash,opencode-go:muse-spark-1.3-contributor"
 improve_matches = 2

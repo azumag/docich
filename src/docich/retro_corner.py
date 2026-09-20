@@ -42,7 +42,7 @@ LOTTERY_LATEST_END_MINUTE = 55
 # 5分の引き継ぎ余白を確保する。
 ROTATION_FIXED_SLOT_BUFFER_MINUTES = 5
 # rolling rotation が先読みする、program lock を使う固定時刻コーナー。
-FIXED_CORNER_SECTIONS = ("paper_corner", "soren91_corner")
+FIXED_CORNER_SECTIONS = ("paper_corner", "soren91_corner", "nethack_corner")
 # starting のまま残った (tick が落ちた) 状態を割り込み扱いにするまでの猶予。
 STARTING_STALE_MINUTES = 10
 
@@ -197,6 +197,16 @@ def load_retro_corner_config(g: GlobalConfig) -> RetroCornerConfig:
         or not all(isinstance(name, str) for name in cfg.games)
     ):
         raise RetroCornerError("retro_corner.games は空でないゲーム名リストである必要があります")
+    nethack_corner = _raw_config(g).get("nethack_corner")
+    if (
+        cfg.mode == "rotation"
+        and "nethack" in cfg.games
+        and isinstance(nethack_corner, dict)
+        and nethack_corner.get("enabled") is True
+    ):
+        raise RetroCornerError(
+            "rotation modeでNetHackを登録する場合、専用の[nethack_corner]は無効にしてください"
+        )
     if not isinstance(cfg.improve_agents, str):
         raise RetroCornerError("retro_corner.improve_agents は文字列である必要があります")
     if type(cfg.improve_matches) is not int or not 1 <= cfg.improve_matches <= 10:
@@ -590,6 +600,12 @@ class RetroCornerManager:
 
     def _spawn_improve_once(self, state: dict[str, object]) -> None:
         """終了時改善ジョブを切り離して起動する。失敗しても finish を壊さない。"""
+        if state.get("game") == "nethack":
+            state["improve_job"] = {
+                "spawned": False,
+                "reason": "nethack-improvement-not-supported",
+            }
+            return
         agents = (self.config.improve_agents or "").strip()
         date_str = state.get("date")
         if not agents or not isinstance(date_str, str) or not date_str:

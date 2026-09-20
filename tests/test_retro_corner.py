@@ -152,6 +152,17 @@ class TestRetroCornerConfig(RetroCornerTestBase):
         with self.assertRaises(RetroCornerError):
             mgr.start()
 
+    def test_rotation_rejects_duplicate_dedicated_nethack_slot(self):
+        path = self.root / "config" / "docich.toml"
+        path.write_text(
+            '[retro_corner]\nmode = "rotation"\ngames = ["nethack"]\n'
+            '[nethack_corner]\nenabled = true\n',
+            encoding="utf-8",
+        )
+        self.g = config.load_global(self.root)
+        with self.assertRaisesRegex(RetroCornerError, "専用の\\[nethack_corner\\]"):
+            load_retro_corner_config(self.g)
+
     def test_self_play_game_without_agent_is_accepted(self):
         (self.root / "config" / "games" / "gnurobots.toml").write_text(
             """
@@ -235,7 +246,10 @@ class TestProductionProfile(unittest.TestCase):
         self.assertEqual(live_cfg.start_hour, 19)  # mode="daily" へ戻すとき用に残す
         self.assertEqual(
             live_cfg.games,
-            ["ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console"],
+            [
+                "ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console",
+                "nethack",
+            ],
         )
         self.assertTrue(live_cfg.daily_each_game)
         self.assertTrue(live_cfg.randomize_start)
@@ -727,6 +741,17 @@ class TestRetroCornerImproveSpawn(RetroCornerTestBase):
         mgr = self._manager_with_spawn([None], spawned, '')
         self.assertEqual(mgr.start().status, 'completed')
         self.assertEqual(spawned, [])
+
+    def test_nethack_records_unsupported_improvement_without_spawning(self):
+        spawned = []
+        mgr = self._manager_with_spawn([None], spawned, 'agent-a')
+        state = {"date": "2026-09-06", "game": "nethack"}
+        mgr._spawn_improve_once(state)
+        self.assertEqual(spawned, [])
+        self.assertEqual(
+            state["improve_job"],
+            {"spawned": False, "reason": "nethack-improvement-not-supported"},
+        )
 
 
 class TestRetroCornerImproveSpawnEnv(RetroCornerTestBase):
