@@ -5,7 +5,7 @@ from pathlib import Path, PurePosixPath
 
 SHA_RE=re.compile(r'[0-9a-f]{40}\Z')
 MAX_PAYLOAD=128*1024*1024
-OPS={'upload','deploy','bootstrap','status','exec','diagnostics','rebaseline'}
+OPS={'upload','deploy','bootstrap','status','exec','configure_jev','disable_jev','diagnostics','rebaseline'}
 TARGETS={'preview','production'}
 DIAGNOSTICS_FILES=('ops/vm_actions/collect_diagnostics.py','ops/vm_actions/runtime_registry.py','src/docich/runtime_backend.py')
 DIAGNOSTICS_TIMEOUT=60
@@ -64,6 +64,11 @@ REASON_CODES={
  'projected submodule must exist in both parent commits':'projected_submodule_missing_in_parent',
  'rebaseline production only':'rebaseline_production_only',
  'rebaseline requires an ancestor of the requested commit':'rebaseline_not_ancestor',
+ 'configure_jev is production-only':'configure_jev_production_only',
+ 'disable_jev is production-only':'disable_jev_production_only',
+ 'configured Jev script missing':'configure_jev_script_missing',
+ 'invalid Jev API key payload':'configure_jev_key_invalid',
+ 'production checkout is not the requested commit':'configure_jev_stale_checkout',
 }
 
 def reason_code(exc):
@@ -799,6 +804,62 @@ def execute(cfg,repo,target,sha):
                          env={'PATH':'/usr/local/bin:/usr/bin:/bin','HOME':str(cwd.parent),'LANG':'C.UTF-8'},timeout=900)
     return {'status':'executed','sha':sha,'exit_code':p.returncode,'output':'withheld','operation_id':opid}
 
+
+def configure_jev(cfg,repo,target,sha,*,disable=False):
+    """Run the fixed Jev configurator with a key supplied only on stdin.
+
+    Unlike ``exec``, this operation never executes caller-supplied shell.  The
+    payload is only the API key; the script is loaded from the exact reviewed
+    production commit and its output is kept in the VM operation log.
+    """
+    if target != 'production':
+        raise ValueError('disable_jev is production-only' if disable else 'configure_jev is production-only')
+    root=Path(cfg['repos'][repo]['production'])
+    if git(root,'rev-parse','HEAD') != sha or not git_clean(root):
+        raise ValueError('production checkout is not the requested commit')
+    raw=sys.stdin.buffer.read(4097)
+    if disable:
+        if raw:
+            raise ValueError('invalid Jev API key payload')
+        key=''
+    else:
+        if not raw or len(raw)>4096 or b'\0' in raw or b'\r' in raw or b'\n' in raw:
+            raise ValueError('invalid Jev API key payload')
+        try:
+            key=raw.decode('ascii')
+        except UnicodeDecodeError as exc:
+            raise ValueError('invalid Jev API key payload') from exc
+        if not key or any(ord(char)<33 or ord(char)>126 for char in key):
+            raise ValueError('invalid Jev API key payload')
+    script_path='ops/vm_actions/configure_comment_classifier_jev.py'
+    try:
+        script=subprocess.check_output(
+            ['git','-C',str(root),'-c','core.hooksPath=/dev/null','show',f'{sha}:{script_path}'],
+            stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, OSError) as exc:
+        raise ValueError('configured Jev script missing') from exc
+    if len(script)>128*1024:
+        raise ValueError('configured Jev script missing')
+    soren_root=cfg['repos'][repo].get('projections',{}).get('games/soviet_now')
+    if not isinstance(soren_root,str) or not Path(soren_root).is_dir():
+        raise ValueError('configured Jev script missing')
+    logs=state_root(cfg)/'logs'; logs.mkdir(parents=True,exist_ok=True)
+    opid=uuid.uuid4().hex; log=logs/f'{opid}.log'
+    fd=os.open(log,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+    env={'PATH':'/usr/local/bin:/usr/bin:/bin','HOME':str(root.parent),'LANG':'C.UTF-8',
+         'SOREN_ROOT':soren_root,'TYPESAFE_API_KEY':key}
+    argv=[sys.executable,'-','--soren-root',soren_root]
+    if disable:
+        argv.append('--disable')
+    with os.fdopen(fd,'wb') as out:
+        p=subprocess.run(
+            argv,
+            input=script,cwd=root,env=env,stdout=out,stderr=subprocess.STDOUT,timeout=180,
+        )
+    return {'status':('disabled' if disable else 'configured') if p.returncode==0 else 'failed','sha':sha,
+            'exit_code':p.returncode,'output':'withheld','operation_id':opid}
+
 def _sanitize_diagnostics(value, depth=0):
     if depth>8: raise ValueError('diagnostics output too deep')
     if value is None or isinstance(value,(bool,int,float)): return value
@@ -962,6 +1023,8 @@ def main():
                 result=deploy_preview(cfg,repo,sha) if target=='preview' else deploy_prod(cfg,repo,sha)
             elif op=='rebaseline': result=rebaseline(cfg,repo,sha)
             elif op=='exec': result=execute(cfg,repo,target,sha)
+            elif op=='configure_jev': result=configure_jev(cfg,repo,target,sha)
+            elif op=='disable_jev': result=configure_jev(cfg,repo,target,sha,disable=True)
             elif op=='diagnostics': result=diagnostics_result(cfg,repo,target,sha)
             else: result=status_result(cfg,repo,target,sha)
     except ValueError as exc:

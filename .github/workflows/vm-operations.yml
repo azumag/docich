@@ -10,7 +10,7 @@ on:
         required: true
         default: status
         type: choice
-        options: [status, deploy, exec, bootstrap, diagnostics, reclaim, rebaseline, market_paper]
+        options: [status, deploy, exec, configure_jev, disable_jev, bootstrap, diagnostics, reclaim, rebaseline, market_paper]
       target:
         description: VM target
         required: true
@@ -50,7 +50,7 @@ on:
         type: choice
         options: [stocks, fx]
       confirm:
-        description: Type production for production exec/bootstrap
+        description: Type production for production exec/configure/disable/bootstrap
         required: false
         default: ''
         type: string
@@ -461,6 +461,34 @@ jobs:
           [[ -n "$VM_COMMAND" ]]
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
           printf '%s' "$VM_COMMAND" | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich $TARGET $SHA"
+
+      - name: Configure Jev comment classifier from environment secret
+        if: ${{ steps.auth.outputs.operation == 'configure_jev' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$TYPESAFE_API_KEY" ]]
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          # The stdin payload is only the secret. The VM gateway loads the
+          # configurator from this exact reviewed SHA; no caller shell is run.
+          printf '%s' "$TYPESAFE_API_KEY" | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "configure_jev docich production $SHA"
+
+      - name: Disable Jev comment classifier
+        if: ${{ steps.auth.outputs.operation == 'disable_jev' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          < /dev/null ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "disable_jev docich production $SHA"
 
       - name: Run reviewed storage reclaim
         if: ${{ steps.auth.outputs.operation == 'reclaim' }}
