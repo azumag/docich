@@ -245,7 +245,7 @@ def _run_bridge_relaunch(root: Path) -> None:
     )
 
 
-def _assert_stopped_bridge_recovery(g: GlobalConfig, manager: "JevCornerManager") -> None:
+def _assert_stopped_bridge_recovery(g: GlobalConfig, manager: "JevCornerManager") -> dict[str, object]:
     """Fail closed unless only the previously parked game runtime is recoverable."""
 
     corner_path = Path(g.state_dir) / STATE_FILE
@@ -278,16 +278,27 @@ def _assert_stopped_bridge_recovery(g: GlobalConfig, manager: "JevCornerManager"
 
     payload = manager.adapter._status(time.monotonic() + 30.0, None)
     ack = manager.adapter._ack(payload)
-    if ack.get("status") != "stopped" or not isinstance(ack.get("request_id"), str):
-        raise JevCornerError("停止済みのSoren game-only requestを確認できません")
     request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
     resource = payload.get("resource") if isinstance(payload.get("resource"), dict) else {}
-    request_id = ack.get("request_id")
+    ack_status = ack.get("status")
+    recoverable_ack_statuses = {"boundary", "stop_requested", "stopping", "stopped"}
+    resumable_without_ack = (
+        not ack
+        and resource.get("status") == "stopped"
+        and isinstance(request.get("request_id"), str)
+        and resource.get("request_id") == request.get("request_id")
+    )
+    if ack_status not in recoverable_ack_statuses and not resumable_without_ack:
+        raise JevCornerError("停止済みのSoren game-only requestを確認できません")
+    request_id = ack.get("request_id") or request.get("request_id") or resource.get("request_id")
+    if not isinstance(request_id, str):
+        raise JevCornerError("Soren stopped request identityを確認できません")
     if request.get("request_id") not in {None, request_id} or resource.get("request_id") not in {None, request_id}:
         raise JevCornerError("Soren stopped request identityが一致しません")
     for record in (request, resource):
         if record.get("game") not in {None, GAME_NAME}:
             raise JevCornerError("Soren stopped requestのgameがsorengameではありません")
+    return payload
 
 
 def refresh_bridge(g: GlobalConfig) -> None:
@@ -323,10 +334,16 @@ def recover_bridge(g: GlobalConfig) -> None:
 
     root = _soren_root(g)
     manager = JevCornerManager(g)
-    _assert_stopped_bridge_recovery(g, manager)
+    payload = _assert_stopped_bridge_recovery(g, manager)
     deadline = time.monotonic() + 600.0
     try:
         manager.adapter.preflight(deadline, None)
+        ack = manager.adapter._ack(payload)
+        if ack and ack.get("status") != "stopped":
+            # A refresh can fail after parking the loop but before the
+            # irreversible stop acknowledgement is written.  Complete that
+            # same request; never create a second lifecycle request.
+            manager.adapter.cleanup_runtime(deadline, None)
         _run_bridge_relaunch(root)
         manager.adapter.materialize_runtime(deadline, None)
         manager.adapter.readiness(deadline, None)
