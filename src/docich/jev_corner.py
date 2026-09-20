@@ -223,6 +223,73 @@ def diagnose(g: GlobalConfig) -> str:
     return "ready"
 
 
+def _run_bridge_relaunch(root: Path) -> None:
+    """Run the reviewed game-bridge-only relaunch entry point."""
+
+    subprocess.run(
+        [
+            "/bin/bash",
+            "--noprofile",
+            "--norc",
+            "-euo",
+            "pipefail",
+            "-c",
+            "source ./eloop_lib.sh && _br_relaunch",
+        ],
+        cwd=str(root),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.STDOUT,
+        timeout=240,
+        check=True,
+    )
+
+
+def _assert_stopped_bridge_recovery(g: GlobalConfig, manager: "JevCornerManager") -> None:
+    """Fail closed unless only the previously parked game runtime is recoverable."""
+
+    corner_path = Path(g.state_dir) / STATE_FILE
+    corner_state = _read_json(corner_path)
+    if corner_state is None and corner_path.exists():
+        raise JevCornerError("jev corner stateを読み込めません")
+    if corner_state is not None:
+        if corner_state.get("schema_version") != STATE_SCHEMA_VERSION or corner_state.get("game") != GAME_NAME:
+            raise JevCornerError("jev corner state schemaが不正です")
+        if corner_state.get("status") in ACTIVE_STATUSES:
+            raise JevCornerError("JEV cornerがactiveのためbridge recoveryを実行できません")
+        if corner_state.get("status") not in TERMINAL_STATUSES:
+            raise JevCornerError("jev corner state statusが不正です")
+
+    player_path = manager.adapter.root / "tmp/state/game_lifecycle/player_state.json"
+    player_state = _read_json(player_path)
+    if player_state is None and player_path.exists():
+        raise JevCornerError("Soren player_state.jsonが不正です")
+    if player_state is not None:
+        if (
+            player_state.get("schema") != 1
+            or player_state.get("game") != GAME_NAME
+            or player_state.get("policy") not in {"existing", "jev"}
+            or type(player_state.get("player_generation")) is not int
+            or player_state.get("player_generation") < 0
+        ):
+            raise JevCornerError("Soren player_state.jsonの契約が不正です")
+        if player_state.get("policy") == "jev":
+            raise JevCornerError("JEV player policyがactiveのためbridge recoveryを実行できません")
+
+    payload = manager.adapter._status(time.monotonic() + 30.0, None)
+    ack = manager.adapter._ack(payload)
+    if ack.get("status") != "stopped" or not isinstance(ack.get("request_id"), str):
+        raise JevCornerError("停止済みのSoren game-only requestを確認できません")
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    resource = payload.get("resource") if isinstance(payload.get("resource"), dict) else {}
+    request_id = ack.get("request_id")
+    if request.get("request_id") not in {None, request_id} or resource.get("request_id") not in {None, request_id}:
+        raise JevCornerError("Soren stopped request identityが一致しません")
+    for record in (request, resource):
+        if record.get("game") not in {None, GAME_NAME}:
+            raise JevCornerError("Soren stopped requestのgameがsorengameではありません")
+
+
 def refresh_bridge(g: GlobalConfig) -> None:
     """Reload only the live Soren game bridge at a safe game boundary."""
 
@@ -230,7 +297,6 @@ def refresh_bridge(g: GlobalConfig) -> None:
     if category not in {"capability_missing", "capability_invalid"}:
         raise JevCornerError("Soren bridge refreshのpreflight条件を満たしません")
     root = _soren_root(g)
-    command = "source ./eloop_lib.sh && _br_relaunch"
     manager = JevCornerManager(g)
     deadline = time.monotonic() + 600.0
     request_id = _new_uuid()
@@ -240,15 +306,7 @@ def refresh_bridge(g: GlobalConfig) -> None:
         # game-owned runtime; common overlay/audio/encoder workers remain up.
         manager.adapter.request_round_boundary(request_id, deadline, None)
         manager.adapter.cleanup_runtime(deadline, None)
-        subprocess.run(
-            ["/bin/bash", "--noprofile", "--norc", "-euo", "pipefail", "-c", command],
-            cwd=str(root),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.STDOUT,
-            timeout=240,
-            check=True,
-        )
+        _run_bridge_relaunch(root)
         manager.adapter.materialize_runtime(deadline, None)
         manager.adapter.readiness(deadline, None)
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
@@ -258,6 +316,27 @@ def refresh_bridge(g: GlobalConfig) -> None:
     capability = root / "tmp/state/game_lifecycle/player_capabilities.json"
     if not capability.is_file():
         raise JevCornerError("Soren bridge capabilityを確認できません")
+
+
+def recover_bridge(g: GlobalConfig) -> None:
+    """Recover the game-only runtime left stopped by a failed bridge refresh."""
+
+    root = _soren_root(g)
+    manager = JevCornerManager(g)
+    _assert_stopped_bridge_recovery(g, manager)
+    deadline = time.monotonic() + 600.0
+    try:
+        manager.adapter.preflight(deadline, None)
+        _run_bridge_relaunch(root)
+        manager.adapter.materialize_runtime(deadline, None)
+        manager.adapter.readiness(deadline, None)
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise JevCornerError("停止済みSoren game bridgeの復旧に失敗しました") from exc
+    except Exception as exc:
+        raise JevCornerError("停止済みSoren game runtimeの安全な復旧に失敗しました") from exc
+    capability = root / "tmp/state/game_lifecycle/player_capabilities.json"
+    if not capability.is_file():
+        raise JevCornerError("Soren bridge capabilityを復旧後に確認できません")
 
 
 class JevCornerManager:
@@ -516,6 +595,7 @@ def _parser():
     sub.add_parser("recover")
     sub.add_parser("diagnose")
     sub.add_parser("refresh-bridge")
+    sub.add_parser("recover-bridge")
     status = sub.add_parser("status")
     status.add_argument("--json", action="store_true")
     return parser
@@ -532,6 +612,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "refresh-bridge":
             refresh_bridge(g)
             print("jev-corner: bridge-refreshed")
+            return 0
+        if args.command == "recover-bridge":
+            recover_bridge(g)
+            print("jev-corner: bridge-recovered")
             return 0
         manager = JevCornerManager(g)
         if args.command == "status":

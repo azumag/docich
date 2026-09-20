@@ -14,11 +14,13 @@ bin/docich-jev-corner finish
 
 本番VMでの実行は任意コマンド経路を使わず、owner-onlyの
 `.github/workflows/jev-corner-operator.yml` から `start` / `finish` / `status` /
-`recover` の固定操作だけをdispatchする。workflowはproductionが現在のprotected
+`recover` / `diagnose` / `refresh-bridge` / `recover-bridge` の固定操作だけをdispatchする。workflowはproductionが現在のprotected
 main SHAと一致することを確認してから `/home/ubuntu/docich/bin/docich-jev-corner`
 を呼び出す。`diagnose` は固定されたpreflightカテゴリだけを返し、必要な場合の
 `refresh-bridge` も現試合を境界まで継続してからゲームbridgeだけを再起動するため、
-共通配信・音声・encoderは再起動しない。
+共通配信・音声・encoderは再起動しない。`refresh-bridge` がゲーム専用停止後に
+失敗した場合だけ、`recover-bridge` が停止済みの同一requestを確認してbridgeと
+game-only runtimeを復旧する。JEV active中やplayer policyが`jev`の状態では実行しない。
 
 `start` は次の順で固定される。
 

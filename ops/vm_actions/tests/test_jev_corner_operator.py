@@ -32,7 +32,7 @@ class JevCornerAuthorizeTests(unittest.TestCase):
         return subprocess.run(["python3", str(AUTH)], capture_output=True, text=True, env=env)
 
     def test_owner_dispatch_allows_only_fixed_operations(self):
-        for operation in ("start", "finish", "status", "recover", "diagnose", "refresh-bridge"):
+        for operation in ("start", "finish", "status", "recover", "diagnose", "refresh-bridge", "recover-bridge"):
             with self.subTest(operation=operation):
                 result = self.run_auth(INPUT_OPERATION=operation)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -72,8 +72,10 @@ class JevCornerAuthorizeTests(unittest.TestCase):
             "steps.auth.outputs.operation == 'recover'",
             "steps.auth.outputs.operation == 'diagnose'",
             "steps.auth.outputs.operation == 'refresh-bridge'",
+            "steps.auth.outputs.operation == 'recover-bridge'",
             "fixed category vocabulary",
             "docich-jev-corner --config /home/ubuntu/docich/config/docich.soren-live.toml refresh-bridge",
+            "docich-jev-corner --config /home/ubuntu/docich/config/docich.soren-live.toml recover-bridge",
         ):
             self.assertIn(required, text)
         self.assertNotIn("inputs.command", text)
