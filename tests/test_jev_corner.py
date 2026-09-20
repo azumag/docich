@@ -108,6 +108,10 @@ max_requests_per_run = 500
         }
         player = {"policy": "existing", "player_generation": 4}
         self.assertTrue(_recover_precommit_failure(corner, player))
+        corner["last_error"] = "Soren player_policy_v1 capabilityを確認できません"
+        self.assertTrue(_recover_precommit_failure(corner, None))
+        corner["last_error"] = "別の失敗"
+        self.assertFalse(_recover_precommit_failure(corner, None))
         corner["status"] = "active"
         self.assertFalse(_recover_precommit_failure(corner, player))
         corner["status"] = "recovery_required"

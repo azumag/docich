@@ -40,6 +40,7 @@ FIXED_DECISION_BUDGET_MS = 1500
 FIXED_HTTP_TIMEOUT_MS = 1000
 ACTIVE_STATUSES = frozenset({"preparing", "active", "restoring", "recovery_required"})
 TERMINAL_STATUSES = frozenset({"completed", "failed", "idle"})
+PRECOMMIT_CAPABILITY_ERROR = "Soren player_policy_v1 capabilityを確認できません"
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 )
@@ -270,17 +271,30 @@ def _run_bridge_relaunch(root: Path) -> None:
 def _recover_precommit_failure(corner_state: dict[str, object], player_state: dict[str, object] | None) -> bool:
     """Prove that a recovery_required corner never committed JEV."""
 
-    return (
+    base = (
         corner_state.get("status") == "recovery_required"
         and corner_state.get("policy") == "jev"
         and corner_state.get("started_at") is None
         and corner_state.get("completed_at") is None
-        and isinstance(player_state, dict)
-        and player_state.get("policy") == "existing"
-        and type(player_state.get("player_generation")) is int
-        and corner_state.get("player_generation") == player_state.get("player_generation")
         and isinstance(corner_state.get("request_id"), str)
         and UUID_RE.fullmatch(corner_state["request_id"]) is not None
+    )
+    if not base:
+        return False
+    if player_state is None:
+        # The adapter checks the bridge capability before it creates the
+        # remote player_change request.  In that exact failure case the
+        # player snapshot may legitimately be absent, so allow recovery only
+        # when the persisted error proves that no commit could have happened.
+        return (
+            corner_state.get("last_error") == PRECOMMIT_CAPABILITY_ERROR
+            and type(corner_state.get("player_generation")) is int
+            and corner_state.get("player_generation") >= 0
+        )
+    return (
+        player_state.get("policy") == "existing"
+        and type(player_state.get("player_generation")) is int
+        and corner_state.get("player_generation") == player_state.get("player_generation")
     )
 
 
@@ -316,12 +330,14 @@ def recover_bridge_diagnose(g: GlobalConfig) -> str:
             if status == "recovery_required":
                 if corner_state.get("started_at") is not None or corner_state.get("completed_at") is not None:
                     return "corner_recovery_required_started"
-                if not isinstance(player_state, dict):
+                if not isinstance(corner_state.get("request_id"), str) or UUID_RE.fullmatch(corner_state["request_id"]) is None:
+                    return "corner_recovery_required_request_invalid"
+                if player_state is None:
+                    if _recover_precommit_failure(corner_state, None):
+                        return "corner_stale_precommit"
                     return "corner_recovery_required_no_player"
                 if corner_state.get("player_generation") != player_state.get("player_generation"):
                     return "corner_recovery_required_generation_mismatch"
-                if not isinstance(corner_state.get("request_id"), str) or UUID_RE.fullmatch(corner_state["request_id"]) is None:
-                    return "corner_recovery_required_request_invalid"
                 if _recover_precommit_failure(corner_state, player_state):
                     return "corner_stale_precommit"
                 return "corner_recovery_required_invalid"
