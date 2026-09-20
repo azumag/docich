@@ -51,6 +51,20 @@ DIAGNOSE_CODES = {
     "corner_state_active": 44,
     "corner_state_invalid": 45,
 }
+RECOVER_DIAGNOSE_CODES = {
+    "ready_stopped": 0,
+    "corner_stale_precommit": 51,
+    "corner_state_active": 52,
+    "corner_state_invalid": 53,
+    "player_state_invalid": 54,
+    "player_policy_jev": 55,
+    "lifecycle_boundary": 56,
+    "lifecycle_stop_requested": 57,
+    "lifecycle_stopping": 58,
+    "lifecycle_stopped": 59,
+    "lifecycle_resumable": 60,
+    "lifecycle_unrecoverable": 61,
+}
 
 
 class JevCornerError(RuntimeError):
@@ -245,6 +259,75 @@ def _run_bridge_relaunch(root: Path) -> None:
     )
 
 
+def _recover_precommit_failure(corner_state: dict[str, object], player_state: dict[str, object] | None) -> bool:
+    """Prove that a recovery_required corner never committed JEV."""
+
+    return (
+        corner_state.get("status") == "recovery_required"
+        and corner_state.get("policy") == "jev"
+        and corner_state.get("started_at") is None
+        and corner_state.get("completed_at") is None
+        and isinstance(player_state, dict)
+        and player_state.get("policy") == "existing"
+        and type(player_state.get("player_generation")) is int
+        and corner_state.get("player_generation") == player_state.get("player_generation")
+        and isinstance(corner_state.get("request_id"), str)
+        and UUID_RE.fullmatch(corner_state["request_id"]) is not None
+    )
+
+
+def recover_bridge_diagnose(g: GlobalConfig) -> str:
+    """Return fixed, non-sensitive recovery preflight categories."""
+
+    root = _soren_root(g)
+    manager = JevCornerManager(g)
+    player_path = manager.adapter.root / "tmp/state/game_lifecycle/player_state.json"
+    player_state = _read_json(player_path)
+    if player_state is None and player_path.exists():
+        return "player_state_invalid"
+    if player_state is not None and (
+        player_state.get("schema") != 1
+        or player_state.get("game") != GAME_NAME
+        or player_state.get("policy") not in {"existing", "jev"}
+        or type(player_state.get("player_generation")) is not int
+        or player_state.get("player_generation") < 0
+    ):
+        return "player_state_invalid"
+    if player_state is not None and player_state.get("policy") == "jev":
+        return "player_policy_jev"
+
+    corner_path = Path(g.state_dir) / STATE_FILE
+    corner_state = _read_json(corner_path)
+    if corner_state is None and corner_path.exists():
+        return "corner_state_invalid"
+    if corner_state is not None:
+        if corner_state.get("schema_version") != STATE_SCHEMA_VERSION or corner_state.get("game") != GAME_NAME:
+            return "corner_state_invalid"
+        if corner_state.get("status") in ACTIVE_STATUSES:
+            if _recover_precommit_failure(corner_state, player_state):
+                return "corner_stale_precommit"
+            return "corner_state_active"
+        if corner_state.get("status") not in TERMINAL_STATUSES:
+            return "corner_state_invalid"
+
+    payload = manager.adapter._status(time.monotonic() + 30.0, None)
+    ack = manager.adapter._ack(payload)
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    resource = payload.get("resource") if isinstance(payload.get("resource"), dict) else {}
+    if request.get("game") not in {None, GAME_NAME} or resource.get("game") not in {None, GAME_NAME}:
+        return "lifecycle_unrecoverable"
+    if ack.get("status") in {"boundary", "stop_requested", "stopping", "stopped"}:
+        return f"lifecycle_{ack['status']}"
+    if (
+        not ack
+        and resource.get("status") == "stopped"
+        and isinstance(request.get("request_id"), str)
+        and resource.get("request_id") == request.get("request_id")
+    ):
+        return "lifecycle_resumable"
+    return "lifecycle_unrecoverable"
+
+
 def _assert_stopped_bridge_recovery(g: GlobalConfig, manager: "JevCornerManager") -> dict[str, object]:
     """Fail closed unless only the previously parked game runtime is recoverable."""
 
@@ -253,7 +336,6 @@ def _assert_stopped_bridge_recovery(g: GlobalConfig, manager: "JevCornerManager"
     if player_state is None and player_path.exists():
         raise JevCornerError("Soren player_state.jsonが不正です")
     player_policy = "existing"
-    player_generation = None
     if player_state is not None:
         if (
             player_state.get("schema") != 1
@@ -264,7 +346,6 @@ def _assert_stopped_bridge_recovery(g: GlobalConfig, manager: "JevCornerManager"
         ):
             raise JevCornerError("Soren player_state.jsonの契約が不正です")
         player_policy = str(player_state.get("policy"))
-        player_generation = player_state.get("player_generation")
         if player_policy == "jev":
             raise JevCornerError("JEV player policyがactiveのためbridge recoveryを実行できません")
 
@@ -277,17 +358,7 @@ def _assert_stopped_bridge_recovery(g: GlobalConfig, manager: "JevCornerManager"
         if corner_state.get("schema_version") != STATE_SCHEMA_VERSION or corner_state.get("game") != GAME_NAME:
             raise JevCornerError("jev corner state schemaが不正です")
         if corner_state.get("status") in ACTIVE_STATUSES:
-            precommit_failure = (
-                corner_state.get("status") == "recovery_required"
-                and corner_state.get("policy") == "jev"
-                and corner_state.get("started_at") is None
-                and corner_state.get("completed_at") is None
-                and player_policy == "existing"
-                and type(player_generation) is int
-                and corner_state.get("player_generation") == player_generation
-                and isinstance(corner_state.get("request_id"), str)
-                and UUID_RE.fullmatch(corner_state["request_id"]) is not None
-            )
+            precommit_failure = _recover_precommit_failure(corner_state, player_state)
             if not precommit_failure:
                 raise JevCornerError("JEV cornerがactiveのためbridge recoveryを実行できません")
             stale_corner_state = True
@@ -340,8 +411,6 @@ def refresh_bridge(g: GlobalConfig) -> None:
         _run_bridge_relaunch(root)
         manager.adapter.materialize_runtime(deadline, None)
         manager.adapter.readiness(deadline, None)
-        if payload.get("_stale_corner_state") is True:
-            manager.recover()
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         raise JevCornerError("Soren bridgeの再起動に失敗しました") from exc
     except Exception as exc:
@@ -369,6 +438,8 @@ def recover_bridge(g: GlobalConfig) -> None:
         _run_bridge_relaunch(root)
         manager.adapter.materialize_runtime(deadline, None)
         manager.adapter.readiness(deadline, None)
+        if payload.get("_stale_corner_state") is True:
+            manager.recover()
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         raise JevCornerError("停止済みSoren game bridgeの復旧に失敗しました") from exc
     except Exception as exc:
@@ -633,6 +704,7 @@ def _parser():
     finish.add_argument("--timeout-seconds", type=float)
     sub.add_parser("recover")
     sub.add_parser("diagnose")
+    sub.add_parser("recover-diagnose")
     sub.add_parser("refresh-bridge")
     sub.add_parser("recover-bridge")
     status = sub.add_parser("status")
@@ -648,6 +720,10 @@ def main(argv: list[str] | None = None) -> int:
             category = diagnose(g)
             print(f"jev-corner: diagnose={category}")
             return DIAGNOSE_CODES[category]
+        if args.command == "recover-diagnose":
+            category = recover_bridge_diagnose(g)
+            print(f"jev-corner: recover-diagnose={category}")
+            return RECOVER_DIAGNOSE_CODES[category]
         if args.command == "refresh-bridge":
             refresh_bridge(g)
             print("jev-corner: bridge-refreshed")

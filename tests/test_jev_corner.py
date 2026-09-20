@@ -6,7 +6,14 @@ import unittest
 from pathlib import Path
 
 from docich import config
-from docich.jev_corner import JevCornerConfig, JevCornerError, JevCornerManager, diagnose, load_jev_corner_config
+from docich.jev_corner import (
+    JevCornerConfig,
+    JevCornerError,
+    JevCornerManager,
+    _recover_precommit_failure,
+    diagnose,
+    load_jev_corner_config,
+)
 
 
 class FakeJevAdapter:
@@ -89,6 +96,23 @@ max_requests_per_run = 500
 
     def test_diagnose_uses_fixed_category_when_bridge_capability_is_missing(self):
         self.assertEqual(diagnose(self.g), "capability_missing")
+
+    def test_recovery_only_clears_uncommitted_matching_corner_state(self):
+        corner = {
+            "status": "recovery_required",
+            "policy": "jev",
+            "started_at": None,
+            "completed_at": None,
+            "player_generation": 4,
+            "request_id": "123e4567-e89b-12d3-a456-426614174000",
+        }
+        player = {"policy": "existing", "player_generation": 4}
+        self.assertTrue(_recover_precommit_failure(corner, player))
+        corner["status"] = "active"
+        self.assertFalse(_recover_precommit_failure(corner, player))
+        corner["status"] = "recovery_required"
+        player["player_generation"] = 5
+        self.assertFalse(_recover_precommit_failure(corner, player))
 
     def test_one_game_state_requires_explicit_finish_to_restore_existing(self):
         self.manager.start(timeout_s=1)
