@@ -248,22 +248,12 @@ def _run_bridge_relaunch(root: Path) -> None:
 def _assert_stopped_bridge_recovery(g: GlobalConfig, manager: "JevCornerManager") -> dict[str, object]:
     """Fail closed unless only the previously parked game runtime is recoverable."""
 
-    corner_path = Path(g.state_dir) / STATE_FILE
-    corner_state = _read_json(corner_path)
-    if corner_state is None and corner_path.exists():
-        raise JevCornerError("jev corner stateを読み込めません")
-    if corner_state is not None:
-        if corner_state.get("schema_version") != STATE_SCHEMA_VERSION or corner_state.get("game") != GAME_NAME:
-            raise JevCornerError("jev corner state schemaが不正です")
-        if corner_state.get("status") in ACTIVE_STATUSES:
-            raise JevCornerError("JEV cornerがactiveのためbridge recoveryを実行できません")
-        if corner_state.get("status") not in TERMINAL_STATUSES:
-            raise JevCornerError("jev corner state statusが不正です")
-
     player_path = manager.adapter.root / "tmp/state/game_lifecycle/player_state.json"
     player_state = _read_json(player_path)
     if player_state is None and player_path.exists():
         raise JevCornerError("Soren player_state.jsonが不正です")
+    player_policy = "existing"
+    player_generation = None
     if player_state is not None:
         if (
             player_state.get("schema") != 1
@@ -273,8 +263,36 @@ def _assert_stopped_bridge_recovery(g: GlobalConfig, manager: "JevCornerManager"
             or player_state.get("player_generation") < 0
         ):
             raise JevCornerError("Soren player_state.jsonの契約が不正です")
-        if player_state.get("policy") == "jev":
+        player_policy = str(player_state.get("policy"))
+        player_generation = player_state.get("player_generation")
+        if player_policy == "jev":
             raise JevCornerError("JEV player policyがactiveのためbridge recoveryを実行できません")
+
+    corner_path = Path(g.state_dir) / STATE_FILE
+    corner_state = _read_json(corner_path)
+    if corner_state is None and corner_path.exists():
+        raise JevCornerError("jev corner stateを読み込めません")
+    stale_corner_state = False
+    if corner_state is not None:
+        if corner_state.get("schema_version") != STATE_SCHEMA_VERSION or corner_state.get("game") != GAME_NAME:
+            raise JevCornerError("jev corner state schemaが不正です")
+        if corner_state.get("status") in ACTIVE_STATUSES:
+            precommit_failure = (
+                corner_state.get("status") == "recovery_required"
+                and corner_state.get("policy") == "jev"
+                and corner_state.get("started_at") is None
+                and corner_state.get("completed_at") is None
+                and player_policy == "existing"
+                and type(player_generation) is int
+                and corner_state.get("player_generation") == player_generation
+                and isinstance(corner_state.get("request_id"), str)
+                and UUID_RE.fullmatch(corner_state["request_id"]) is not None
+            )
+            if not precommit_failure:
+                raise JevCornerError("JEV cornerがactiveのためbridge recoveryを実行できません")
+            stale_corner_state = True
+        elif corner_state.get("status") not in TERMINAL_STATUSES:
+            raise JevCornerError("jev corner state statusが不正です")
 
     payload = manager.adapter._status(time.monotonic() + 30.0, None)
     ack = manager.adapter._ack(payload)
@@ -298,6 +316,8 @@ def _assert_stopped_bridge_recovery(g: GlobalConfig, manager: "JevCornerManager"
     for record in (request, resource):
         if record.get("game") not in {None, GAME_NAME}:
             raise JevCornerError("Soren stopped requestのgameがsorengameではありません")
+    if stale_corner_state:
+        payload = {**payload, "_stale_corner_state": True}
     return payload
 
 
@@ -320,6 +340,8 @@ def refresh_bridge(g: GlobalConfig) -> None:
         _run_bridge_relaunch(root)
         manager.adapter.materialize_runtime(deadline, None)
         manager.adapter.readiness(deadline, None)
+        if payload.get("_stale_corner_state") is True:
+            manager.recover()
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         raise JevCornerError("Soren bridgeの再起動に失敗しました") from exc
     except Exception as exc:
