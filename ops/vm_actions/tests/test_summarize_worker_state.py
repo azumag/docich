@@ -20,6 +20,7 @@ class WorkerStateSummaryTests(unittest.TestCase):
     def test_registered_workers_are_collapsed_to_fixed_categories(self):
         data = {
             "workers": {
+                "required_down": ["radio_worker", "audio_worker"],
                 "details": {
                     "radio_worker": {"paused": True, "stale_pid_file": False},
                     "audio_worker": {"paused": False, "stale_pid_file": True},
@@ -29,12 +30,29 @@ class WorkerStateSummaryTests(unittest.TestCase):
             }
         }
         summary = self.mod.summarize_worker_state(data)
+        self.assertIn("required_down_radio=1", summary)
+        self.assertIn("required_down_audio=1", summary)
+        self.assertIn("required_down_chat=0", summary)
         self.assertIn("paused_radio=1", summary)
         self.assertIn("paused_chat=1", summary)
         self.assertIn("stale_pid_audio=1", summary)
         self.assertIn("stale_pid_chat=1", summary)
         self.assertNotIn("radio_worker", summary)
         self.assertNotIn("youtube_worker", summary)
+
+    def test_required_down_ignores_optional_and_unknown_names(self):
+        data = {
+            "workers": {
+                "required_down": ["youtube_worker", "SECRET_DYNAMIC", 123],
+                "details": {},
+                "unregistered": [],
+            }
+        }
+        summary = self.mod.summarize_worker_state(data)
+        self.assertIn("required_down_chat=0", summary)
+        self.assertIn("required_down_other=0", summary)
+        self.assertNotIn("youtube_worker", summary)
+        self.assertNotIn("SECRET_DYNAMIC", summary)
 
     def test_unregistered_workers_emit_only_fixed_state_counts(self):
         data = {
@@ -98,6 +116,7 @@ class WorkerStateSummaryTests(unittest.TestCase):
     def test_malformed_dynamic_values_fail_closed_to_zero(self):
         data = {
             "workers": {
+                "required_down": "radio_worker",
                 "unregistered": "SECRET_DYNAMIC",
                 "details": {
                     "radio_worker": {"paused": "true", "stale_pid_file": 1},
@@ -105,6 +124,7 @@ class WorkerStateSummaryTests(unittest.TestCase):
             }
         }
         summary = self.mod.summarize_worker_state(data)
+        self.assertIn("required_down_radio=0", summary)
         self.assertIn("paused_radio=0", summary)
         self.assertIn("stale_pid_radio=0", summary)
         self.assertIn("unregistered_alive=0", summary)
