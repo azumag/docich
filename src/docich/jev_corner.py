@@ -73,6 +73,13 @@ RECOVER_DIAGNOSE_CODES = {
     "corner_restoring": 67,
     "corner_active_committed": 68,
     "corner_recovery_required_invalid": 69,
+    "corner_stale_precommit_recovery_lock": 70,
+    "corner_stale_precommit_boundary": 71,
+    "corner_stale_precommit_stop_requested": 72,
+    "corner_stale_precommit_stopping": 73,
+    "corner_stale_precommit_stopped": 74,
+    "corner_stale_precommit_resumable": 75,
+    "corner_stale_precommit_unrecoverable": 76,
 }
 
 
@@ -284,6 +291,38 @@ def _expired_pre_stop_request(payload: dict[str, object]) -> bool:
     return float(deadline_epoch) < time.time()
 
 
+def _stale_precommit_recovery_category(manager: "JevCornerManager") -> str:
+    """Classify the lifecycle side of a proven stale corner without mutation."""
+
+    lock_path = manager.adapter.root / "tmp/state/.runtime_recovery.lock"
+    if lock_path.is_dir():
+        try:
+            if time.time() - lock_path.stat().st_mtime < 120:
+                return "corner_stale_precommit_recovery_lock"
+        except OSError:
+            return "corner_stale_precommit_unrecoverable"
+    try:
+        payload = manager.adapter._status(time.monotonic() + 30.0, None)
+    except Exception:
+        return "corner_stale_precommit_unrecoverable"
+    ack = manager.adapter._ack(payload)
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    resource = payload.get("resource") if isinstance(payload.get("resource"), dict) else {}
+    if request.get("game") not in {None, GAME_NAME} or resource.get("game") not in {None, GAME_NAME}:
+        return "corner_stale_precommit_unrecoverable"
+    status = ack.get("status")
+    if status in {"boundary", "stop_requested", "stopping", "stopped"}:
+        return f"corner_stale_precommit_{status}"
+    if (
+        not ack
+        and resource.get("status") == "stopped"
+        and isinstance(request.get("request_id"), str)
+        and resource.get("request_id") == request.get("request_id")
+    ):
+        return "corner_stale_precommit_resumable"
+    return "corner_stale_precommit_unrecoverable"
+
+
 def _recover_precommit_failure(corner_state: dict[str, object], player_state: dict[str, object] | None) -> bool:
     """Prove that a recovery_required corner never committed JEV."""
 
@@ -350,12 +389,12 @@ def recover_bridge_diagnose(g: GlobalConfig) -> str:
                     return "corner_recovery_required_request_invalid"
                 if player_state is None:
                     if _recover_precommit_failure(corner_state, None):
-                        return "corner_stale_precommit"
+                        return _stale_precommit_recovery_category(manager)
                     return "corner_recovery_required_no_player"
                 if corner_state.get("player_generation") != player_state.get("player_generation"):
                     return "corner_recovery_required_generation_mismatch"
                 if _recover_precommit_failure(corner_state, player_state):
-                    return "corner_stale_precommit"
+                    return _stale_precommit_recovery_category(manager)
                 return "corner_recovery_required_invalid"
             elif status == "preparing":
                 return "corner_preparing"

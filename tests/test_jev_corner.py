@@ -12,6 +12,7 @@ from docich.jev_corner import (
     JevCornerManager,
     _recover_precommit_failure,
     _expired_pre_stop_request,
+    _stale_precommit_recovery_category,
     diagnose,
     load_jev_corner_config,
 )
@@ -132,6 +133,31 @@ max_requests_per_run = 500
         payload["ack"]["status"] = "boundary"
         payload["ack"]["request_id"] = "other"
         self.assertFalse(_expired_pre_stop_request(payload))
+
+    def test_stale_precommit_diagnose_classifies_lifecycle_without_mutation(self):
+        class StatusAdapter:
+            def __init__(self, root, payload):
+                self.root = root
+                self.payload = payload
+
+            def _status(self, deadline, cancel):
+                return self.payload
+
+            @staticmethod
+            def _ack(payload):
+                return payload.get("ack", {})
+
+        class Manager:
+            def __init__(self, adapter):
+                self.adapter = adapter
+
+        payload = {
+            "request": {"game": "sorengame", "request_id": "req-1"},
+            "ack": {"game": "sorengame", "request_id": "req-1", "status": "boundary"},
+            "resource": {"game": "sorengame", "request_id": "req-1"},
+        }
+        manager = Manager(StatusAdapter(self.soren_root, payload))
+        self.assertEqual(_stale_precommit_recovery_category(manager), "corner_stale_precommit_boundary")
 
     def test_one_game_state_requires_explicit_finish_to_restore_existing(self):
         self.manager.start(timeout_s=1)
