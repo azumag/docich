@@ -12,7 +12,7 @@ OWNER_ID = "9018513"
 REPOSITORY = "azumag/docich"
 REPOSITORY_ID = "1327276249"
 WORKFLOW = ".github/workflows/jev-corner-operator.yml"
-OPERATIONS = {"start", "finish", "status", "recover"}
+OPERATIONS = {"start", "finish", "status", "recover", "diagnose", "refresh-bridge"}
 
 
 def fail(message: str) -> None:

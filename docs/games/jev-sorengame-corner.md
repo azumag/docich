@@ -6,6 +6,7 @@ Issue #771 の第一段階は、既存の `sorengame` を停止・複製せず�
 
 ```sh
 bin/docich-jev-corner status --json
+bin/docich-jev-corner diagnose
 bin/docich-jev-corner start
 # JEV の1試合終了と supervisor の one-game park を確認した後
 bin/docich-jev-corner finish
@@ -15,7 +16,9 @@ bin/docich-jev-corner finish
 `.github/workflows/jev-corner-operator.yml` から `start` / `finish` / `status` /
 `recover` の固定操作だけをdispatchする。workflowはproductionが現在のprotected
 main SHAと一致することを確認してから `/home/ubuntu/docich/bin/docich-jev-corner`
-を呼び出す。
+を呼び出す。`diagnose` は固定されたpreflightカテゴリだけを返し、必要な場合の
+`refresh-bridge` も現試合を境界まで継続してからゲームbridgeだけを再起動するため、
+共通配信・音声・encoderは再起動しない。
 
 `start` は次の順で固定される。
 
