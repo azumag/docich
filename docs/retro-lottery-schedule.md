@@ -1,4 +1,7 @@
-# レトロ枠: 毎時抽選モード (`[retro_corner] mode = "lottery"`)
+# レトロ枠: 毎時抽選モード（互換モード） (`[retro_corner] mode = "lottery"`)
+
+> 現在の本番設定は、毎時の確率抽選ではなく [`retro-rolling-rotation.md`](retro-rolling-rotation.md)
+> の rolling rotation を使用する。この文書は既存の `lottery` モードを維持・切り戻しするための仕様である。
 
 固定枠 (各ゲームを日1回・19時台) をやめ、**毎時1回「発火するか」を確率で抽選**する。
 当たれば遊べるゲームを無作為に選んで数試合遊び、元のゲームへ戻る。他のコーナーが進行中の
@@ -44,7 +47,7 @@
 次の正時の前に終わり、**毎正時に始まる固定枠のコーナー (soren91 18:00・PAPER 22:00 など) を塞がない**。
 抽選を正時でなく :05 にしているのも、同じ分に起動する固定枠コーナーが先に枠を取れるようにするため。
 
-本番の値 (`config/docich.soren-live.toml`): `lottery_probability = 0.3`、`lottery_minute = 5`、
+切り戻し時の例: `lottery_probability = 0.3`、`lottery_minute = 5`、
 `lottery_wait_minutes = 10`、`duration_minutes = 20`、`target_matches = 3`。確率は運用で調整する値
 (0.3 なら約 7 回/日・1回 5〜20 分)。日次用のキー (`start_hour` など) は `mode = "daily"` へ戻すために残してある。
 

@@ -35,7 +35,7 @@ brain = "command"
 command = ["python3", "brains/ninvaders/brain.py"]
 interval_ms = 250
 
-# 日次レトロコーナーでは wrapper と command brain (LLM不要) が無人で完走できるため、
+# レトロコーナーでは wrapper と command brain (LLM不要) が無人で完走できるため、
 # per-move agent (LLM) なしで選択可能。
 [corner]
 self_play = true
@@ -44,7 +44,7 @@ intro = "NInvadersは端末上で動くSpace Invaders系のレトロゲームで
 # operatorの手動retro-cornerテストからも無人ゲームとして選択可能。
 [retro_corner]
 unattended = true
-# 毎時抽選 (mode = "lottery") で「遊べる」= この実行ファイルが実在すること。
+# rolling/lottery mode で「遊べる」= この実行ファイルが実在すること。
 requires = ["/usr/games/ninvaders"]
 
 # Twitch 配信カテゴリー・タイトル連動 (soviet_now update_stream_game.sh が読む)。

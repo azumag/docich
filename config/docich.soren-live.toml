@@ -41,26 +41,19 @@ notification_speech_enabled = true
 [rotation]
 games = []
 
-# 19:00 JSTに開始し、実際の切替完了から30分NInvadersを載せる。
 # docich側canonicalがidleなら、終了時はstopして背景のSorenへ自然に戻る。
 [retro_corner]
 enabled = true
 require_program_boundary = true
 timezone = "Asia/Tokyo"
-# 毎時抽選: 固定枠を持たず、毎時 lottery_minute 分に lottery_probability の確率で
-# 発火を抽選する。当たれば遊べる (実行ファイルが実在する) ゲームを無作為に選び、
-# target_matches 試合の完了を scorelog で検知できれば早期終了し、来なければ
-# duration_minutes を上限として終了して元のゲームへ戻る (入力停止で強制終了しない)。
-# 他コーナーが進行中/待機中、またはゲーム切替中なら抽選そのものを取りやめる (待たない)。
-# 抽選は :05 = 毎正時に始まる固定枠 (soren91 18:00 / PAPER 22:00 など) が先に枠を取れる
-# よう正時をずらし、境界待ちを含めても次の正時までに終わる長さにする
-# (lottery_minute + lottery_wait_minutes + duration_minutes <= 55。読込時に検証)。
-# 前回と同じゲームは、他に遊べるゲームがある限り選ばない。
-mode = "lottery"
-lottery_probability = 0.3
-lottery_minute = 5
-lottery_wait_minutes = 10
-lottery_avoid_repeat = true
+# rolling: 24時間を登録ゲーム数で割った間隔で必ず候補を抽選する。
+# 直近24時間以内に選ばれたゲームは候補から外すので、5ゲームなら4時間48分ごとに
+# 最初の5枠は重複なしのランダム順になり、24時間経過後に再び候補へ戻る。
+# 実行ファイルが無いゲームはその枠の候補から除外し、他コーナーが塞いでいる場合は
+# 次のtickで再試行する。毎時の確率抽選ではない。
+mode = "rotation"
+rotation_period_hours = 24.0
+rotation_wait_minutes = 10
 duration_minutes = 20
 target_matches = 3
 # mode = "daily" (旧方式: 各ゲームを日1回・start_hour からランダム開始) へ戻すときだけ使う。

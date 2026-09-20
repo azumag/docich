@@ -4,7 +4,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import datetime, date
+from dataclasses import replace
+from datetime import datetime, date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -211,7 +212,7 @@ enabled = false
 
 
 class TestProductionProfile(unittest.TestCase):
-    def test_only_soren_live_profile_enables_daily_corner(self):
+    def test_only_soren_live_profile_enables_rolling_corner(self):
         root = Path(__file__).resolve().parents[1]
         default_g = config.load_global(root, root / "config/docich.toml")
         live_g = config.load_global(root, root / "config/docich.soren-live.toml")
@@ -226,11 +227,11 @@ class TestProductionProfile(unittest.TestCase):
              live_g.display.viewport_width, live_g.display.viewport_height),
             (0, 90, 960, 540),
         )
-        # 毎時抽選: 固定枠を持たない。上限は次の正時までに終わる長さ。
-        self.assertEqual(live_cfg.mode, "lottery")
+        # Rolling rotation: 24 hours divided by the registered game count.
+        self.assertEqual(live_cfg.mode, "rotation")
+        self.assertEqual(live_cfg.rotation_period_hours, 24.0)
+        self.assertEqual(live_cfg.rotation_wait_minutes, 10)
         self.assertEqual(live_cfg.duration_minutes, 20)
-        self.assertLessEqual(
-            live_cfg.lottery_minute + live_cfg.lottery_wait_minutes + live_cfg.duration_minutes, 55)
         self.assertEqual(live_cfg.start_hour, 19)  # mode="daily" へ戻すとき用に残す
         self.assertEqual(
             live_cfg.games,
@@ -248,6 +249,79 @@ class TestRetroCornerSelection(unittest.TestCase):
         expected = games[day.toordinal() % len(games)]
         self.assertEqual(select_game(games, day), expected)
         self.assertEqual(select_game(games, day), expected)
+
+
+class TestRetroCornerRotation(RetroCornerTestBase):
+    def _rotation_manager(self):
+        games = ["ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console"]
+        self.cfg = replace(
+            self.cfg,
+            games=games,
+            mode="rotation",
+            duration_minutes=1,
+            rotation_period_hours=24.0,
+            rotation_wait_minutes=10,
+        )
+        current = ["sorengame"]
+        coordinator = FakeCoordinator(current)
+        mgr = RetroCornerManager(
+            self.g,
+            config=self.cfg,
+            coordinator=coordinator,
+            now=lambda: self.now_value,
+            sleep=lambda seconds: None,
+            active_game_reader=lambda: current[0],
+            ensure_runtime=lambda: None,
+            chat=lambda text: None,
+            stream_game=lambda game: None,
+        )
+        # The selection contract is under test here; game-file/executable
+        # validation is covered by the existing production-profile tests.
+        mgr._validate_games = lambda names=None: None
+        mgr._playable_games = lambda: list(games)
+        mgr._other_corner_busy = lambda: None
+        mgr._target_reached = lambda state: True
+        return mgr, coordinator, games
+
+    def test_interval_is_24_hours_divided_by_registered_games(self):
+        mgr, _coordinator, games = self._rotation_manager()
+        self.assertEqual(mgr._rotation_interval_seconds(), 24 * 3600 / len(games))
+
+    def test_first_five_slots_are_random_without_repeating_recent_games(self):
+        mgr, _coordinator, games = self._rotation_manager()
+        seen = []
+        interval = timedelta(seconds=mgr._rotation_interval_seconds())
+        for slot in range(6):
+            self.now_value = datetime(2026, 9, 6, 20, 0, tzinfo=ZoneInfo("Asia/Tokyo")) + slot * interval
+            result = mgr.tick()
+            self.assertEqual(result.status, "completed")
+            seen.append(mgr.status()["game"])
+
+        self.assertEqual(len(set(seen[: len(games)])), len(games))
+        # The first game is exactly 24 hours old at slot six and becomes
+        # eligible again; games selected later are still cooling down.
+        self.assertEqual(seen[-1], seen[0])
+
+    def test_games_selected_within_24_hours_are_not_fallback_candidates(self):
+        mgr, _coordinator, games = self._rotation_manager()
+        now = self.now_value
+        rotation = {
+            "games": games,
+            "interval_seconds": mgr._rotation_interval_seconds(),
+            "anchor_at": now.isoformat(),
+            "next_due_at": now.isoformat(),
+            "selection_history": [
+                {"game": game, "selected_at": now.isoformat()} for game in games
+            ],
+        }
+        state = mgr._default_state()
+        state["rotation"] = rotation
+        mgr._write_state(state)
+
+        result = mgr.tick()
+
+        self.assertEqual(result.status, "noop")
+        self.assertEqual(result.detail, "rotation-no-eligible-game")
 
 
 class TestRetroCornerLifecycle(RetroCornerTestBase):

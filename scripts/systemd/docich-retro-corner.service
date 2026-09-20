@@ -1,5 +1,5 @@
 [Unit]
-Description=docich メリケンAI レトロゲームコーナー日次判定
+Description=docich メリケンAI レトロゲームコーナー rolling rotation 判定
 After=network.target
 
 [Service]

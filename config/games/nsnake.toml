@@ -30,7 +30,7 @@ brain = "command"
 command = ["python3", "brains/nsnake/brain.py"]
 interval_ms = 500
 
-# 日次レトロコーナーでは wrapper が無人完走できるため、per-move agent なし
+# レトロコーナーでは wrapper が無人完走できるため、per-move agent なし
 # でも選択可能。brain を付けても self_play のまま (どちらでも完走する)。
 [corner]
 self_play = true
@@ -39,7 +39,7 @@ intro = "nsnakeは端末上で動くクラシックなSnakeゲームです。自
 # operatorの手動retro-cornerテストからも無人ゲームとして選択可能。
 [retro_corner]
 unattended = true
-# 毎時抽選 (mode = "lottery") で「遊べる」= この実行ファイルが実在すること。
+# rolling/lottery mode で「遊べる」= この実行ファイルが実在すること。
 requires = ["/usr/games/nsnake"]
 
 # Twitch 配信カテゴリー・タイトル連動 (soviet_now update_stream_game.sh が読む)。
