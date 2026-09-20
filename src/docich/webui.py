@@ -101,21 +101,21 @@ WEBUI_ALLOWLIST = {
 
 # hard defaults from core/config.sh
 DEFAULTS: dict[str, str] = {
-    "AI_COMMON_AGENTS": "opencode:muse-spark-1.3-contributor-free,opencode:muse-spark-1.2-contributor-free,vercel:minimax/minimax-m3-free,vercel:poolside/laguna-s-2.1-free,vercel:inclusionai/ling-3.0-flash-fin,vercel:zai/glm-5.3-flash,vercel:xiaomi/mimo-v2.5,vercel:alibaba/qwen3.8-flash,vercel:xiaomi/mimo-v2.5-pro,amd:DeepSeek-V4-Flash,opencode-go:muse-spark-1.3-contributor,opencode-go:muse-spark-1.2-contributor,opencode-go:deepseek-v4.1-flash,opencode-go:deepseek-v4-flash",
+    "AI_COMMON_AGENTS": "opencode:muse-spark-1.3-contributor-free,opencode:muse-spark-1.2-contributor-free,vercel:poolside/laguna-s-2.1-free,vercel:inclusionai/ling-3.0-flash-fin,vercel:zai/glm-5.3-flash,vercel:xiaomi/mimo-v2.5,vercel:alibaba/qwen3.8-flash,vercel:xiaomi/mimo-v2.5-pro,amd:DeepSeek-V4-Flash,opencode-go:muse-spark-1.3-contributor,opencode-go:muse-spark-1.2-contributor,opencode-go:deepseek-v4.1-flash,opencode-go:deepseek-v4-flash",
     "MODEL_IMPROVE_LIST": "opencode:muse-spark-1.3-contributor-free,opencode:muse-spark-1.2-contributor-free,opencode-go:muse-spark-1.3-contributor,opencode-go:muse-spark-1.2-contributor,opencode-go:deepseek-v4.1-flash,opencode-go:deepseek-v4-flash",
     "MODEL_IMPROVE_PEAK_LIST": "",  # inherits MODEL_IMPROVE_LIST
     "RADIO_AGENTS": "",  # inherits AI_COMMON_AGENTS
     "RADIO_PREPASS_AGENTS": "",  # inherits AI_COMMON_AGENTS
     "COMMENT_AGENTS": "",  # inherits AI_COMMON_AGENTS
     "COMMENT_TRANSLATION_AGENTS": "",  # inherits COMMENT_AGENTS
-    "AI_BACKOFF_SEC_ITEMS": "deepseek-v4-flash-free:86400 amd-token-factory-deepseek-v4-flash:86400 openrouter/free:86400 local:1800 deepseek-v4-flash:18000 minimax-m3:18000 muse-spark-1.2-contributor:86400",
+    "AI_BACKOFF_SEC_ITEMS": "deepseek-v4-flash-free:86400 amd-token-factory-deepseek-v4-flash:86400 openrouter/free:86400 local:1800 deepseek-v4-flash:18000 muse-spark-1.2-contributor:86400",
     "AI_AGENT_BACKOFF_SEC": "600",
     "AI_BACKOFF_FAILURE_SEC": "300",
     "PEAK_HOURS_AGENT_SWAP_ENABLED": "1",
     "PEAK_HOURS_WINDOWS": "10-13,15-19",
     "PEAK_HOURS_TZ": "Asia/Tokyo",
-    "PEAK_HOURS_PRIORITY_AGENT": "codex:minimax-m3",
-    "PEAK_HOURS_AGENT_PREFERENCE": "opencode:muse-spark-1.3-contributor-free,opencode:muse-spark-1.2-contributor-free,vercel:minimax/minimax-m3-free,vercel:poolside/laguna-s-2.1-free,vercel:inclusionai/ling-3.0-flash-fin,vercel:zai/glm-5.3-flash,vercel:xiaomi/mimo-v2.5,vercel:alibaba/qwen3.8-flash,vercel:xiaomi/mimo-v2.5-pro,amd:DeepSeek-V4-Flash,opencode-go:muse-spark-1.3-contributor,opencode-go:muse-spark-1.2-contributor",
+    "PEAK_HOURS_PRIORITY_AGENT": "opencode:muse-spark-1.3-contributor-free",
+    "PEAK_HOURS_AGENT_PREFERENCE": "opencode:muse-spark-1.3-contributor-free,opencode:muse-spark-1.2-contributor-free,vercel:poolside/laguna-s-2.1-free,vercel:inclusionai/ling-3.0-flash-fin,vercel:zai/glm-5.3-flash,vercel:xiaomi/mimo-v2.5,vercel:alibaba/qwen3.8-flash,vercel:xiaomi/mimo-v2.5-pro,amd:DeepSeek-V4-Flash,opencode-go:muse-spark-1.3-contributor,opencode-go:muse-spark-1.2-contributor",
     "PEAK_HOURS_QUEUE_GATE_ENABLED": "1",
     "IMPROVE_PEAK_CHAIN_ENABLED": "0",
     "IMPROVE_PEAK_HOUR_DEFER_ENABLED": "0",
@@ -2748,10 +2748,10 @@ input:checked+.slider:before{transform:translateX(20px)}
 </section>
 <!-- PEAK -->
 <section id="tab-peak" style="display:none">
-<div class="card"><h2>ピーク時間帯</h2><p class="desc">ピーク中は minimax 等を優先（PEAK_HOURS_AGENT_PREFERENCE）。WINDOWS は "10-13,15-19" のようにカンマ区切り、日跨ぎ "22-02" も可。チェックで hours を選択し、保存時に <code>start-end</code> (end exclusive) にマージされます。</p>
+<div class="card"><h2>ピーク時間帯</h2><p class="desc">ピーク中は PEAK_HOURS_AGENT_PREFERENCE の順に候補を優先します。WINDOWS は "10-13,15-19" のようにカンマ区切り、日跨ぎ "22-02" も可。チェックで hours を選択し、保存時に <code>start-end</code> (end exclusive) にマージされます。</p>
 <div><label>PEAK_HOURS_WINDOWS (24h タイムライン)</label><div id="peak-timeline" class="timeline"></div><div class="help">クリックで選択。選択された時間は青。保存時に <span class="mono" id="peak-windows-preview"></span> にシリアライズ。</div></div>
 <div class="row" style="margin-top:12px"><div><label>PEAK_HOURS_TZ</label><input id="peak-tz" list="tz-list" placeholder="Asia/Tokyo"/><datalist id="tz-list"><option value="Asia/Tokyo"><option value="UTC"><option value="Asia/Shanghai"><option value="America/New_York"><option value="Europe/London"><option value="Australia/Sydney"><option value="Asia/Seoul"><option value="Europe/Berlin"><option value="America/Los_Angeles"><option value="Asia/Singapore"></datalist></div>
-<div><label>PEAK_HOURS_PRIORITY_AGENT</label><input id="peak-priority" placeholder="codex:minimax-m3"/></div></div>
+<div><label>PEAK_HOURS_PRIORITY_AGENT</label><input id="peak-priority" placeholder="codex:xxx"/></div></div>
 <div style="margin-top:12px"><label>PEAK_HOURS_AGENT_PREFERENCE (ドラッグで順序変更)</label><div id="peak-pref-palette" style="margin-bottom:6px"></div><ul id="peak-pref-list" class="ordered"></ul><div class="row"><div style="flex:1"><input id="peak-pref-custom" placeholder="codex:xxx"/><div class="help">AGENT_RE で検証</div></div><div style="align-self:end"><button class="btn" id="peak-pref-add">追加</button></div></div></div>
 <div class="row" style="margin-top:12px"><div><label>PEAK_HOURS_AGENT_SWAP_ENABLED</label><label class="switch"><input type="checkbox" id="peak-swap"><span class="slider"></span></label><span id="peak-swap-label" class="badge" style="margin-left:8px">1</span></div><div><label>PEAK_HOURS_QUEUE_GATE_ENABLED</label><label class="switch"><input type="checkbox" id="peak-gate"><span class="slider"></span></label><span id="peak-gate-label" class="badge" style="margin-left:8px">1</span></div></div>
 <div class="card" style="margin-top:12px"><h3>改善ピークチェーン</h3><p class="desc">ピーク時のみ使用する改善モデルチェーン。空なら通常の <code>MODEL_IMPROVE_LIST</code> を継承。<code>IMPROVE_PEAK_CHAIN_ENABLED=1</code> かつピーク中の時のみ有効。旧 defer（ピーク時に改善を遅延）は既定で無効（<code>IMPROVE_PEAK_HOUR_DEFER_ENABLED=0</code>）。</p>
@@ -2828,8 +2828,8 @@ const PREDICTION_LABELS = ["建国なし","ロシア建国(ソ連不成立)","�
 const AGENT_RE = /^[A-Za-z0-9][A-Za-z0-9._:\/-]{0,127}$/;
 const BACKOFF_NAME_RE = /^[A-Za-z0-9._\/-]+$/;
 const CHAIN_PRESETS = {
-  "Latency": "local,codex:deepseek-v4-flash,codex:minimax-m3",
-  "Cost": "codex:deepseek-v4-flash-free,codex:amd-token-factory-deepseek-v4-flash,codex:openrouter/free,local,codex:deepseek-v4-flash,codex:minimax-m3",
+  "Latency": "local,codex:deepseek-v4-flash",
+  "Cost": "codex:deepseek-v4-flash-free,codex:amd-token-factory-deepseek-v4-flash,codex:openrouter/free,local,codex:deepseek-v4-flash",
   "Local": "local"
 };
 function toast(msg, ms=3000){

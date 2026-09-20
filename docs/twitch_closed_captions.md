@@ -114,9 +114,8 @@ FFmpeg protocol still exposes 32 page slots (`0`–`31`); an unbounded speech
 sequence is mapped to a reusable slot with `sequence % 32` after the previous
 chunk has committed.
 
-For the built-in local MiniMax-compatible route, the request sets deterministic
-JSON mode and disables reasoning for the simple translation task. Regardless of
-provider behavior, the parser accepts only:
+The request sets deterministic JSON mode for the simple translation task.
+Regardless of provider behavior, the parser accepts only:
 
 ```json
 {"translations":["Caption one.","Caption two."]}
