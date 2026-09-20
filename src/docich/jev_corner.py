@@ -80,6 +80,7 @@ RECOVER_DIAGNOSE_CODES = {
     "corner_stale_precommit_stopped": 74,
     "corner_stale_precommit_resumable": 75,
     "corner_stale_precommit_unrecoverable": 76,
+    "corner_stale_precommit_timeout": 77,
 }
 
 
@@ -280,7 +281,8 @@ def _expired_pre_stop_request(payload: dict[str, object]) -> bool:
 
     ack = payload.get("ack") if isinstance(payload.get("ack"), dict) else {}
     request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
-    if ack.get("status") not in {"boundary", "stop_requested"}:
+    status = ack.get("status")
+    if status not in {"boundary", "stop_requested", "timeout"}:
         return False
     request_id = request.get("request_id")
     if not isinstance(request_id, str) or not request_id or ack.get("request_id") != request_id:
@@ -288,6 +290,10 @@ def _expired_pre_stop_request(payload: dict[str, object]) -> bool:
     deadline_epoch = request.get("deadline_epoch")
     if isinstance(deadline_epoch, bool) or not isinstance(deadline_epoch, (int, float)):
         return False
+    if status == "timeout":
+        resource = payload.get("resource") if isinstance(payload.get("resource"), dict) else {}
+        if resource.get("status") == "stopped" or resource.get("irreversible") or resource.get("quit_called"):
+            return False
     return float(deadline_epoch) < time.time()
 
 
@@ -311,7 +317,7 @@ def _stale_precommit_recovery_category(manager: "JevCornerManager") -> str:
     if request.get("game") not in {None, GAME_NAME} or resource.get("game") not in {None, GAME_NAME}:
         return "corner_stale_precommit_unrecoverable"
     status = ack.get("status")
-    if status in {"boundary", "stop_requested", "stopping", "stopped"}:
+    if status in {"boundary", "stop_requested", "stopping", "stopped", "timeout"}:
         return f"corner_stale_precommit_{status}"
     if (
         not ack
@@ -465,7 +471,7 @@ def _assert_stopped_bridge_recovery(g: GlobalConfig, manager: "JevCornerManager"
     request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
     resource = payload.get("resource") if isinstance(payload.get("resource"), dict) else {}
     ack_status = ack.get("status")
-    recoverable_ack_statuses = {"boundary", "stop_requested", "stopping", "stopped"}
+    recoverable_ack_statuses = {"boundary", "stop_requested", "stopping", "stopped", "timeout"}
     resumable_without_ack = (
         not ack
         and resource.get("status") == "stopped"
