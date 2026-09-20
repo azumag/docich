@@ -290,6 +290,48 @@ def test_new_request_recovers_expired_drain_and_consumes_queue_head():
         assert old.cancel_request_ids == [first_id]
 
 
+def test_pre_fifo_accepted_request_is_migrated_before_expired_drain_recovery():
+    """A request accepted by the pre-queue code must not strand the drain."""
+
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp) / "run"
+        factory = BoundaryFactory()
+        store, coordinator = _coordinator(factory, state_dir)
+        assert coordinator.start("nethack").status == "succeeded"
+        old = factory.adapters[("nethack", 1)]
+        first_result = []
+        first_id = str(uuid.uuid4())
+        first_worker = threading.Thread(
+            target=lambda: first_result.append(
+                coordinator.switch("robots", request_id=first_id, timeout_s=60.0)
+            )
+        )
+        first_worker.start()
+        _wait_for_phase(store, "draining")
+        assert old.boundary_entered.wait(1.0)
+
+        legacy = store.enqueue_request(str(uuid.uuid4()), "switch", "hanjuku")
+        with store.lock(exclusive=True, blocking=False):
+            receipt = store.receipts.load(legacy.request_id)
+            assert receipt is not None
+            receipt["status"] = "accepted"
+            store.receipts.save(receipt)
+            state, _ = store.canonical.load()
+            state["deadline_at"] = "2000-01-01T00:00:00Z"
+            store.canonical.save(state)
+
+        resumed = coordinator.switch("hanjuku", request_id=legacy.request_id)
+        assert resumed.status == "succeeded"
+        assert resumed.to_game == "hanjuku"
+        assert store.receipts.load(legacy.request_id)["status"] == "succeeded"
+        assert store.canonical.load()[0]["active"]["game"] == "hanjuku"
+
+        first_worker.join(2.0)
+        assert not first_worker.is_alive()
+        assert first_result[0].status == "failed"
+        assert old.cancel_request_ids == [first_id]
+
+
 def test_queued_request_retries_expired_drain_recovery_after_a_refusal():
     with tempfile.TemporaryDirectory() as tmp:
         state_dir = Path(tmp) / "run"
