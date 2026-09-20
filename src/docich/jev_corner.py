@@ -90,6 +90,8 @@ RECOVER_DIAGNOSE_CODES = {
     "corner_stale_precommit_unsupported": 84,
     "corner_stale_precommit_resumed": 85,
     "corner_stale_precommit_resource_unrecoverable": 86,
+    "corner_stale_precommit_accepted": 87,
+    "corner_stale_precommit_waiting": 88,
 }
 
 
@@ -291,7 +293,7 @@ def _expired_pre_stop_request(payload: dict[str, object]) -> bool:
     ack = payload.get("ack") if isinstance(payload.get("ack"), dict) else {}
     request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
     status = ack.get("status")
-    if status not in {"boundary", "stop_requested", "timeout"}:
+    if status not in {"accepted", "waiting", "boundary", "stop_requested", "timeout"}:
         return False
     request_id = request.get("request_id")
     if not isinstance(request_id, str) or not request_id or ack.get("request_id") != request_id:
@@ -332,7 +334,7 @@ def _stale_precommit_recovery_category(manager: "JevCornerManager") -> str:
         return "corner_stale_precommit_request_missing"
     if ack and ack_id != request_id:
         return "corner_stale_precommit_identity_mismatch"
-    if status in {"boundary", "stop_requested", "stopping", "stopped", "timeout"}:
+    if status in {"accepted", "waiting", "boundary", "stop_requested", "stopping", "stopped", "timeout"}:
         return f"corner_stale_precommit_{status}"
     if (
         not ack
@@ -501,7 +503,15 @@ def _assert_stopped_bridge_recovery(g: GlobalConfig, manager: "JevCornerManager"
     request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
     resource = payload.get("resource") if isinstance(payload.get("resource"), dict) else {}
     ack_status = ack.get("status")
-    recoverable_ack_statuses = {"boundary", "stop_requested", "stopping", "stopped", "timeout"}
+    recoverable_ack_statuses = {
+        "accepted",
+        "waiting",
+        "boundary",
+        "stop_requested",
+        "stopping",
+        "stopped",
+        "timeout",
+    }
     resumable_without_ack = (
         not ack
         and resource.get("status") == "stopped"
