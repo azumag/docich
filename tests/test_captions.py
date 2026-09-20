@@ -103,10 +103,11 @@ class ClosedCaptionPlanTests(unittest.TestCase):
         )
         self.assertEqual(client.translate(["こんにちは。"]), ["Hello."])
         self.assertEqual(requests[0]["response_format"], {"type": "json_object"})
-        self.assertEqual(requests[0]["reasoning_effort"], "none")
         self.assertEqual(
-            requests[0]["allowed_openai_params"], ["reasoning_effort"]
+            requests[0]["model"], "amd-token-factory-deepseek-v4-flash"
         )
+        self.assertNotIn("reasoning_effort", requests[0])
+        self.assertNotIn("allowed_openai_params", requests[0])
 
     def test_translation_client_keeps_partial_prefix(self) -> None:
         response = {
@@ -186,7 +187,7 @@ class ClosedCaptionPlanTests(unittest.TestCase):
         )
         self.assertEqual(len(plan["chunks"]), 40)
 
-    def test_translation_client_disables_reasoning_only_for_minimax_m3(self) -> None:
+    def test_translation_client_does_not_send_provider_specific_reasoning_controls(self) -> None:
         response = {
             "choices": [{"message": {"content": '{"translations":["Hello."]}'}}]
         }

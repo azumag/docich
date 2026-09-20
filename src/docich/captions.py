@@ -36,7 +36,7 @@ DEFAULT_SOCKET_PATH = str(
     / "ffmpeg-cc.sock"
 )
 DEFAULT_TRANSLATION_URL = "http://127.0.0.1:4100/v1/chat/completions"
-DEFAULT_TRANSLATION_MODEL = "minimax-m3"
+DEFAULT_TRANSLATION_MODEL = "amd-token-factory-deepseek-v4-flash"
 EXECUTION_ID_RE = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 
 
@@ -272,13 +272,6 @@ class TranslationRuntimeClient:
                     # varies, so the strict parser below remains the trust boundary.
                     "response_format": {"type": "json_object"},
                 }
-                # MiniMax M3 can spend the whole completion budget in hidden
-                # reasoning for this simple formatting task.  The production
-                # LiteLLM route exposes the OpenAI-compatible control only when
-                # it is explicitly allowlisted per request.
-                if model.rsplit("/", 1)[-1].lower() == "minimax-m3":
-                    payload["reasoning_effort"] = "none"
-                    payload["allowed_openai_params"] = ["reasoning_effort"]
                 request = urllib.request.Request(
                     self.endpoint,
                     data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
