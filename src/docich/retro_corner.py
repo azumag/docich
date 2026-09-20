@@ -1,4 +1,4 @@
-"""Meriken AI retro-game program slot (daily schedule or hourly lottery).
+"""Meriken AI retro-game program slot (daily, hourly lottery, or rolling rotation).
 
 The corner owns scheduling/orchestration state only. All game lifecycle changes
 still go through GameSwitchCoordinator, preserving transactional switching,
@@ -38,6 +38,11 @@ TERMINAL_STATUSES = {"completed", "interrupted", "failed"}
 LOTTERY_DRAW_WINDOW_MINUTES = 10
 # 抽選コーナーは次の正時の前に必ず終わらせる (毎正時に始まる固定枠のコーナーを塞がない)。
 LOTTERY_LATEST_END_MINUTE = 55
+# rolling rotation も、設定された固定時刻コーナーへ枠を返すために同じ
+# 5分の引き継ぎ余白を確保する。
+ROTATION_FIXED_SLOT_BUFFER_MINUTES = 5
+# rolling rotation が先読みする、program lock を使う固定時刻コーナー。
+FIXED_CORNER_SECTIONS = ("paper_corner", "soren91_corner")
 # starting のまま残った (tick が落ちた) 状態を割り込み扱いにするまでの猶予。
 STARTING_STALE_MINUTES = 10
 
@@ -69,6 +74,10 @@ class RetroCornerConfig:
     lottery_minute: int = 5
     lottery_wait_minutes: int = 10
     lottery_avoid_repeat: bool = True
+    # mode="rotation": 24時間を登録ゲーム数で割った間隔で発火し、直近24時間に
+    # 選ばれたゲームを候補から外す。登録ゲーム数が変わっても実効間隔を再計算する。
+    rotation_period_hours: float = 24.0
+    rotation_wait_minutes: int = 10
 
 
 @dataclass(frozen=True)
@@ -126,12 +135,16 @@ def load_retro_corner_config(g: GlobalConfig) -> RetroCornerConfig:
         lottery_minute=raw.get("lottery_minute", 5),
         lottery_wait_minutes=raw.get("lottery_wait_minutes", 10),
         lottery_avoid_repeat=raw.get("lottery_avoid_repeat", True),
+        rotation_period_hours=raw.get("rotation_period_hours", 24.0),
+        rotation_wait_minutes=raw.get(
+            "rotation_wait_minutes", raw.get("lottery_wait_minutes", 10)
+        ),
     )
     for key in ("daily_each_game", "randomize_start", "lottery_avoid_repeat"):
         if type(getattr(cfg, key)) is not bool:
             raise RetroCornerError(f"{key} must be boolean")
-    if cfg.mode not in ("daily", "lottery"):
-        raise RetroCornerError('retro_corner.mode must be "daily" or "lottery"')
+    if cfg.mode not in ("daily", "lottery", "rotation"):
+        raise RetroCornerError('retro_corner.mode must be "daily", "lottery", or "rotation"')
     if (
         isinstance(cfg.lottery_probability, bool)
         or not isinstance(cfg.lottery_probability, (int, float))
@@ -142,6 +155,14 @@ def load_retro_corner_config(g: GlobalConfig) -> RetroCornerConfig:
         raise RetroCornerError("lottery_minute must be 0-50")
     if type(cfg.lottery_wait_minutes) is not int or not 0 <= cfg.lottery_wait_minutes <= 30:
         raise RetroCornerError("lottery_wait_minutes must be 0-30")
+    if (
+        isinstance(cfg.rotation_period_hours, bool)
+        or not isinstance(cfg.rotation_period_hours, (int, float))
+        or not 1 <= float(cfg.rotation_period_hours) <= 168
+    ):
+        raise RetroCornerError("rotation_period_hours must be a number in [1, 168]")
+    if type(cfg.rotation_wait_minutes) is not int or not 0 <= cfg.rotation_wait_minutes <= 30:
+        raise RetroCornerError("rotation_wait_minutes must be 0-30")
     if type(cfg.start_window_minutes) is not int or not 1 <= cfg.start_window_minutes <= 1440:
         raise RetroCornerError("start_window_minutes must be 1-1440")
     if type(cfg.target_matches) is not int or not 1 <= cfg.target_matches <= 100:
@@ -211,6 +232,8 @@ def load_retro_corner_config(g: GlobalConfig) -> RetroCornerConfig:
         lottery_minute=cfg.lottery_minute,
         lottery_wait_minutes=cfg.lottery_wait_minutes,
         lottery_avoid_repeat=cfg.lottery_avoid_repeat,
+        rotation_period_hours=float(cfg.rotation_period_hours),
+        rotation_wait_minutes=cfg.rotation_wait_minutes,
     )
 
 
@@ -880,6 +903,8 @@ class RetroCornerManager:
         with self._tick_guard() as single:
             if not single:
                 return CornerResult("noop", detail="already-running")
+            if getattr(self.config, "mode", "daily") == "rotation":
+                return self._rotation_tick()
             if getattr(self.config, "mode", "daily") == "lottery":
                 return self._lottery_tick()
             if self.config.require_program_boundary:
@@ -1013,6 +1038,347 @@ class RetroCornerManager:
         if getattr(self.config, "lottery_avoid_repeat", True) and len(candidates) > 1:
             candidates = [name for name in candidates if name != state.get("game")] or candidates
         return self._rng.choice(candidates) if candidates else None
+
+    def _rotation_interval_seconds(self) -> float:
+        """Return the rolling slot interval derived from the current game count."""
+        return float(self.config.rotation_period_hours) * 3600.0 / len(self.config.games)
+
+    def _rotation_datetime(self, value: object) -> dt.datetime | None:
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            parsed = dt.datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=self.tz)
+        return parsed.astimezone(self.tz)
+
+    def _rotation_history(self, rotation: dict[str, object], now: dt.datetime) -> list[dict[str, str]]:
+        """Keep only selections that still participate in the rolling cooldown."""
+        raw_history = rotation.get("selection_history")
+        if not isinstance(raw_history, list):
+            return []
+        cutoff = now - dt.timedelta(hours=float(self.config.rotation_period_hours))
+        history: list[dict[str, str]] = []
+        for raw in raw_history:
+            if not isinstance(raw, dict):
+                continue
+            game = raw.get("game")
+            selected_at = self._rotation_datetime(raw.get("selected_at"))
+            if not isinstance(game, str) or game not in self.config.games or selected_at is None:
+                continue
+            # Exactly 24 hours old is eligible again; only a strictly newer
+            # selection blocks the game.
+            if selected_at > cutoff:
+                history.append({"game": game, "selected_at": selected_at.isoformat()})
+        history.sort(key=lambda item: item["selected_at"])
+        return history
+
+    def _rotation_state(self, state: dict[str, object], now: dt.datetime) -> tuple[dict[str, object], bool]:
+        """Load/migrate the persisted rolling schedule without losing history."""
+        raw = state.get("rotation")
+        raw_rotation = raw if isinstance(raw, dict) else {}
+        interval_seconds = self._rotation_interval_seconds()
+        history = self._rotation_history(raw_rotation, now)
+        configured_games = list(self.config.games)
+        try:
+            old_interval = float(raw_rotation.get("interval_seconds"))
+        except (TypeError, ValueError):
+            old_interval = 0.0
+        games_changed = raw_rotation.get("games") != configured_games
+        interval_changed = abs(old_interval - interval_seconds) > 0.5
+        reset_schedule = not raw_rotation or games_changed or interval_changed
+
+        rotation = dict(raw_rotation)
+        rotation.update(
+            {
+                "period_hours": float(self.config.rotation_period_hours),
+                "interval_seconds": interval_seconds,
+                "games": configured_games,
+                "selection_history": history,
+            }
+        )
+        anchor = self._rotation_datetime(rotation.get("anchor_at"))
+        next_due = self._rotation_datetime(rotation.get("next_due_at"))
+        if reset_schedule or anchor is None or next_due is None:
+            rotation["anchor_at"] = now.isoformat()
+            rotation["next_due_at"] = now.isoformat()
+            rotation.pop("pending", None)
+        else:
+            rotation["anchor_at"] = anchor.isoformat()
+            rotation["next_due_at"] = next_due.isoformat()
+
+        pending = rotation.get("pending")
+        if isinstance(pending, dict):
+            pending_game = pending.get("game")
+            pending_at = self._rotation_datetime(pending.get("selected_at"))
+            pending_deadline = self._rotation_datetime(pending.get("deadline_at"))
+            if (
+                not isinstance(pending_game, str)
+                or pending_game not in configured_games
+                or pending_at is None
+                or pending_deadline is None
+                or now >= pending_deadline
+            ):
+                rotation.pop("pending", None)
+            else:
+                rotation["pending"] = {
+                    "game": pending_game,
+                    "selected_at": pending_at.isoformat(),
+                    "deadline_at": pending_deadline.isoformat(),
+                }
+        changed = rotation != raw_rotation
+        return rotation, changed
+
+    def _rotation_candidates(self, rotation: dict[str, object], now: dt.datetime) -> list[str]:
+        recent = {
+            item["game"]
+            for item in self._rotation_history(rotation, now)
+            if isinstance(item.get("game"), str)
+        }
+        return [game for game in self._playable_games() if game not in recent]
+
+    def _rotation_pick(self, rotation: dict[str, object], now: dt.datetime) -> str | None:
+        candidates = self._rotation_candidates(rotation, now)
+        return self._rng.choice(candidates) if candidates else None
+
+    def _rotation_fixed_slot_windows(
+        self, now: dt.datetime
+    ) -> list[tuple[dt.datetime, dt.datetime, str]]:
+        """Return enabled fixed-corner windows around ``now``.
+
+        The fixed corners are configured outside ``[retro_corner]`` and do not
+        share the retro manager's dataclass. Read their scheduling contract
+        from the selected profile so a rolling slot does not assume the live
+        hours in source code. A malformed enabled fixed corner fails closed.
+        """
+        raw = _raw_config(self.g)
+        windows: list[tuple[dt.datetime, dt.datetime, str]] = []
+        for section_name in FIXED_CORNER_SECTIONS:
+            section = raw.get(section_name)
+            if not isinstance(section, dict) or section.get("enabled") is not True:
+                continue
+
+            start_hour = section.get("start_hour")
+            duration_minutes = section.get("duration_minutes")
+            if type(start_hour) is not int or not 0 <= start_hour <= 23:
+                raise RetroCornerError(f"{section_name}.start_hour が不正です")
+            if type(duration_minutes) is not int or not 1 <= duration_minutes <= 720:
+                raise RetroCornerError(f"{section_name}.duration_minutes が不正です")
+
+            timezone_name = section.get("timezone", self.config.timezone)
+            if not isinstance(timezone_name, str) or not timezone_name.strip():
+                raise RetroCornerError(f"{section_name}.timezone が不正です")
+            try:
+                fixed_tz = ZoneInfo(timezone_name)
+            except (ZoneInfoNotFoundError, ValueError) as exc:
+                raise RetroCornerError(f"{section_name}.timezone が不正です") from exc
+
+            weekdays_raw = section.get("weekdays")
+            if weekdays_raw is None or weekdays_raw == []:
+                weekdays: set[int] | None = None
+            elif (
+                isinstance(weekdays_raw, list)
+                and all(type(day) is int and 0 <= day <= 6 for day in weekdays_raw)
+            ):
+                weekdays = set(weekdays_raw)
+            else:
+                raise RetroCornerError(f"{section_name}.weekdays が不正です")
+
+            fixed_now = now.astimezone(fixed_tz)
+            # A weekday-restricted fixed corner can be seven days away. The
+            # extra day also covers an active window that crossed midnight.
+            for day_offset in range(-1, 9):
+                day = fixed_now.date() + dt.timedelta(days=day_offset)
+                if weekdays is not None and day.weekday() not in weekdays:
+                    continue
+                start_local = dt.datetime.combine(
+                    day, dt.time(hour=start_hour), tzinfo=fixed_tz
+                )
+                end_local = start_local + dt.timedelta(minutes=duration_minutes)
+                start = start_local.astimezone(self.tz)
+                end = end_local.astimezone(self.tz)
+                if end > now:
+                    windows.append((start, end, section_name))
+        return sorted(windows, key=lambda item: item[0])
+
+    def _rotation_fixed_slot_guard(self, now: dt.datetime) -> str | None:
+        """Defer a due rotation that could overlap an imminent fixed slot.
+
+        The rotation may wait for ``rotation_wait_minutes`` before acquiring
+        the program slot, then holds it through its configured duration. The
+        worst-case end therefore gets a five-minute handoff buffer before the
+        next fixed corner's start. Once a fixed window is active, defer as
+        well; the existing other-corner check handles unrelated busy owners.
+        """
+        latest_end = now + dt.timedelta(
+            minutes=self.config.rotation_wait_minutes + self.config.duration_minutes
+        )
+        buffer = dt.timedelta(minutes=ROTATION_FIXED_SLOT_BUFFER_MINUTES)
+        for start, end, section_name in self._rotation_fixed_slot_windows(now):
+            if start <= now < end:
+                return f"fixed-slot-active:{section_name}"
+            if start > now:
+                if latest_end > start - buffer:
+                    return f"fixed-slot-imminent:{section_name}"
+                # Windows are sorted, so later fixed starts have more room.
+                return None
+        return None
+
+    def _rotation_cancel_pending(self, game: str, reason: str) -> None:
+        with self._locked():
+            state = self._read_state()
+            rotation, _changed = self._rotation_state(state, self._local_now())
+            pending = rotation.get("pending")
+            if isinstance(pending, dict) and pending.get("game") == game:
+                rotation.pop("pending", None)
+                rotation["last_result"] = {
+                    "result": "cancelled",
+                    "reason": reason,
+                    "game": game,
+                    "at": self._local_now().isoformat(),
+                }
+                state["rotation"] = rotation
+                self._write_state(state)
+
+    def _rotation_run(self, game: str) -> CornerResult:
+        now = self._local_now()
+        with self._locked():
+            state = self._read_state()
+            rotation, _changed = self._rotation_state(state, now)
+            pending = rotation.get("pending")
+            if not isinstance(pending, dict) or pending.get("game") != game:
+                return CornerResult("noop", detail="rotation-selection-lost")
+            selected_at = self._rotation_datetime(pending.get("selected_at")) or now
+            history = self._rotation_history(rotation, now)
+            history.append({"game": game, "selected_at": selected_at.isoformat()})
+            rotation["selection_history"] = self._rotation_history(
+                {"selection_history": history}, now
+            )
+            rotation.pop("pending", None)
+            rotation["next_due_at"] = (
+                selected_at + dt.timedelta(seconds=self._rotation_interval_seconds())
+            ).isoformat()
+            rotation["last_selected"] = {"game": game, "at": selected_at.isoformat()}
+            rotation["last_result"] = {
+                "result": "fire",
+                "game": game,
+                "at": selected_at.isoformat(),
+            }
+            state["rotation"] = rotation
+            # Reserve the selection before the coordinator transition. A
+            # failed transition must not immediately retry the same game.
+            self._write_state(state)
+            state, result = self._begin_locked(
+                now,
+                scheduled=True,
+                target_override=game,
+                extra_state={"rotation": rotation},
+            )
+        if result is not None:
+            return result
+        assert state is not None
+        return self._wait_and_finish(state)
+
+    def _rotation_tick(self) -> CornerResult:
+        """Run one rolling slot every 24/N hours with a 24-hour per-game cooldown."""
+        from .corner_boundary import CornerWaitExpired, program_slot
+
+        cfg = self.config
+        now = self._local_now()
+        if not cfg.enabled:
+            return CornerResult("noop", detail="disabled")
+
+        game: str | None = None
+        deadline_ts: float | None = None
+        with self._locked():
+            self._reconcile_stale_locked(now)
+            state = self._read_state()
+            status = state.get("status")
+            if status == "active":
+                return CornerResult("noop", detail="already-active")
+            if status == "starting":
+                if not self._lottery_starting_is_stale(state, now):
+                    return CornerResult("noop", detail="already-starting")
+                state.update(status="interrupted", completed_at=now.isoformat())
+
+            rotation, changed = self._rotation_state(state, now)
+            pending = rotation.get("pending")
+            if isinstance(pending, dict):
+                pending_game = pending.get("game")
+                pending_deadline = self._rotation_datetime(pending.get("deadline_at"))
+                if isinstance(pending_game, str) and pending_deadline is not None and now < pending_deadline:
+                    game = pending_game
+                    deadline_ts = pending_deadline.timestamp()
+
+            if game is None:
+                next_due = self._rotation_datetime(rotation.get("next_due_at"))
+                if next_due is None or now < next_due:
+                    state["rotation"] = rotation
+                    if changed:
+                        self._write_state(state)
+                    return CornerResult("noop", detail="rotation-not-due")
+                fixed_guard = self._rotation_fixed_slot_guard(now)
+                if fixed_guard is not None:
+                    state["rotation"] = rotation
+                    if changed:
+                        self._write_state(state)
+                    return CornerResult("noop", detail=f"rotation-deferred:{fixed_guard}")
+                busy = self._other_corner_busy()
+                if busy is not None:
+                    rotation["last_result"] = {
+                        "result": "cancelled",
+                        "reason": busy,
+                        "at": now.isoformat(),
+                    }
+                    state["rotation"] = rotation
+                    self._write_state(state)
+                    return CornerResult("noop", detail=f"rotation-cancelled:{busy}")
+                game = self._rotation_pick(rotation, now)
+                if game is None:
+                    rotation["last_result"] = {
+                        "result": "cancelled",
+                        "reason": "no-game-past-cooldown",
+                        "at": now.isoformat(),
+                    }
+                    state["rotation"] = rotation
+                    self._write_state(state)
+                    return CornerResult("noop", detail="rotation-no-eligible-game")
+                deadline = now + dt.timedelta(minutes=cfg.rotation_wait_minutes)
+                rotation["pending"] = {
+                    "game": game,
+                    "selected_at": now.isoformat(),
+                    "deadline_at": deadline.isoformat(),
+                }
+                rotation["last_result"] = {
+                    "result": "selected",
+                    "game": game,
+                    "at": now.isoformat(),
+                }
+                deadline_ts = deadline.timestamp()
+
+            state["rotation"] = rotation
+            self._write_state(state)
+
+        assert game is not None
+        requested_at = now.timestamp()
+        try:
+            if cfg.require_program_boundary:
+                with program_slot(
+                    self.g,
+                    self.state_path,
+                    requested_at=requested_at,
+                    wait_deadline_ts=deadline_ts if deadline_ts is not None else requested_at,
+                    wait_boundary=True,
+                    sleep=self._sleep,
+                    now=lambda: self._local_now().timestamp(),
+                ):
+                    return self._rotation_run(game)
+            return self._rotation_run(game)
+        except CornerWaitExpired:
+            self._rotation_cancel_pending(game, "wait-expired")
+            return CornerResult("noop", detail="rotation-cancelled:wait-expired")
 
     def _other_corner_busy(self) -> str | None:
         """他コーナーの進行中/待機中、または切替中なら理由。抽選はこの場合取りやめる。"""

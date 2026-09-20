@@ -32,7 +32,7 @@ intro = "Moon Buggyは月面を走る端末ゲームです。自動ジャンプ�
 
 [retro_corner]
 unattended = true
-# 毎時抽選 (mode = "lottery") で「遊べる」= この実行ファイルが実在すること。
+# rolling/lottery mode で「遊べる」= この実行ファイルが実在すること。
 requires = ["/usr/games/moon-buggy"]
 
 # Twitch 配信カテゴリー・タイトル連動 (soviet_now update_stream_game.sh が読む)。

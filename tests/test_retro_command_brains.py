@@ -24,15 +24,16 @@ GAMES = ("bastet", "moon-buggy", "pacman4console")
 BRAIN_GAMES = ("ninvaders", "nsnake", *GAMES)
 
 
-def test_live_daily_games():
+def test_live_rolling_games():
     g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
     cfg = load_retro_corner_config(g)
     assert cfg.games == ["ninvaders", "nsnake", *GAMES]
     assert cfg.daily_each_game and cfg.randomize_start  # mode="daily" へ戻すとき用に残す
     assert cfg.target_matches == 3
-    # 固定枠を持たず毎時抽選。次の正時 (固定枠のコーナーの開始) までに必ず終わる。
-    assert cfg.mode == "lottery" and 0 < cfg.lottery_probability <= 1
-    assert cfg.lottery_minute + cfg.lottery_wait_minutes + cfg.duration_minutes <= 55
+    # 24時間を登録ゲーム数で割った間隔。毎時の確率抽選ではない。
+    assert cfg.mode == "rotation"
+    assert cfg.rotation_period_hours == 24.0
+    assert cfg.rotation_wait_minutes == 10
     for name in cfg.games:
         required = RetroCornerManager._required_executables(load_game(g, name))
         assert required and all(path.startswith("/usr/games/") for path in required), name
