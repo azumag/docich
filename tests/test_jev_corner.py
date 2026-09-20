@@ -11,6 +11,7 @@ from docich.jev_corner import (
     JevCornerError,
     JevCornerManager,
     _recover_precommit_failure,
+    _expired_pre_stop_request,
     diagnose,
     load_jev_corner_config,
 )
@@ -117,6 +118,20 @@ max_requests_per_run = 500
         corner["status"] = "recovery_required"
         player["player_generation"] = 5
         self.assertFalse(_recover_precommit_failure(corner, player))
+
+    def test_expired_pre_stop_request_is_reversible_only_before_stopping(self):
+        payload = {
+            "request": {"request_id": "req-1", "deadline_epoch": 1},
+            "ack": {"request_id": "req-1", "status": "boundary"},
+        }
+        self.assertTrue(_expired_pre_stop_request(payload))
+        payload["ack"]["status"] = "stop_requested"
+        self.assertTrue(_expired_pre_stop_request(payload))
+        payload["ack"]["status"] = "stopping"
+        self.assertFalse(_expired_pre_stop_request(payload))
+        payload["ack"]["status"] = "boundary"
+        payload["ack"]["request_id"] = "other"
+        self.assertFalse(_expired_pre_stop_request(payload))
 
     def test_one_game_state_requires_explicit_finish_to_restore_existing(self):
         self.manager.start(timeout_s=1)

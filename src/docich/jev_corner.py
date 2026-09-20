@@ -268,6 +268,22 @@ def _run_bridge_relaunch(root: Path) -> None:
     )
 
 
+def _expired_pre_stop_request(payload: dict[str, object]) -> bool:
+    """Identify a reversible lifecycle request that expired before stop claim."""
+
+    ack = payload.get("ack") if isinstance(payload.get("ack"), dict) else {}
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    if ack.get("status") not in {"boundary", "stop_requested"}:
+        return False
+    request_id = request.get("request_id")
+    if not isinstance(request_id, str) or not request_id or ack.get("request_id") != request_id:
+        return False
+    deadline_epoch = request.get("deadline_epoch")
+    if isinstance(deadline_epoch, bool) or not isinstance(deadline_epoch, (int, float)):
+        return False
+    return float(deadline_epoch) < time.time()
+
+
 def _recover_precommit_failure(corner_state: dict[str, object], player_state: dict[str, object] | None) -> bool:
     """Prove that a recovery_required corner never committed JEV."""
 
@@ -471,10 +487,22 @@ def recover_bridge(g: GlobalConfig) -> None:
         manager.adapter.preflight(deadline, None)
         ack = manager.adapter._ack(payload)
         if ack and ack.get("status") != "stopped":
-            # A refresh can fail after parking the loop but before the
-            # irreversible stop acknowledgement is written.  Complete that
-            # same request; never create a second lifecycle request.
-            manager.adapter.cleanup_runtime(deadline, None)
+            if _expired_pre_stop_request(payload):
+                # A boundary/stop_requested request has not crossed the
+                # irreversible stopping fence.  If its deadline expired,
+                # cancel that same reversible request before relaunching;
+                # never create a second lifecycle request or force a stop.
+                request_id = payload["request"]["request_id"]
+                if not manager.adapter.cancel_round_boundary(request_id, deadline, None):
+                    raise JevCornerError("期限切れのSoren pre-stop requestをcancelできません")
+                payload = manager.adapter._status(deadline, None)
+                if manager.adapter._ack(payload).get("status") != "cancelled":
+                    raise JevCornerError("Soren pre-stop requestのcancel結果を確認できません")
+            else:
+                # A refresh can fail after parking the loop but before the
+                # irreversible stop acknowledgement is written.  Complete
+                # that same request; never create a second lifecycle request.
+                manager.adapter.cleanup_runtime(deadline, None)
         _run_bridge_relaunch(root)
         manager.adapter.materialize_runtime(deadline, None)
         manager.adapter.readiness(deadline, None)
