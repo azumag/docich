@@ -32,6 +32,9 @@ JEVは自動有効化されていない手動のplayer-policy試験であり、�
   N回/日を保証しない。候補空は明示待機し、重複で穴埋めしない。
 - 初回はdue。既存retro履歴があれば引き継ぐ。取りこぼしは1回にまとめ、過去slotを連発しない。
   次回は実際に受理/開始したslotから24/N。queuedの遅延開始が分かればanchorを更新する。
+- cadence上はdueでも全eligible cornerがrolling cooldown中なら、最も早くcooldownが解ける時刻へ
+  `next_due_at`を再アンカーする。過去のnominal時刻を保存し続けず、毎分tickはその時刻に到達した
+  次の候補を一度だけ選ぶ。これはcooldownを短縮したり、同じcornerを重複起動したりするものではない。
 - 永続seed、slot番号、corner IDのSHA-256順位で候補を選ぶ。登録順に依存せず、同じseedと
   clockで再現可能。seedは初回だけ生成し、再起動による再抽選をしない。
 - 時刻逆行は以前の観測時刻へ戻るまで待つ。観測間隔が24時間を超えた場合は、長期停止と
@@ -80,12 +83,15 @@ productionのretroゲーム一覧はcatalogから導出し、二重のリスト�
 ## 診断とローカル検証の引継ぎ
 
 新しい常駐worker/外部queueは追加しない。既存timerとgame-switch FIFOを使用する。
-read-only diagnosticsは`corners.corner_rotation`に状態、slot、next_due、last_seen、
-適格数、pending有無だけを固定投影する。seed、prompt、生成文、adapter例外は公開しない。
+`docich-retro-corner.timer`はdeploy時にreview済みunitを再配置してenableし、enable直後/boot後の
+30秒tickと60秒間隔のmonotonic tickを持つ。read-only diagnosticsは`corners.corner_rotation`に
+状態、待機理由、slot、next_due、last_seen、last_slot、interval、適格数、pending有無を固定投影し、
+`corner_rotation_timer`にそのunitのactive/enabledだけを投影する。seed、prompt、生成文、adapter例外は
+公開しない。
 
-本変更は専用worktreeの実装・ローカルテストまで。本番操作、バナー/音声、push、PR、
-merge、deployは実施しない。worktreeに`handoff.md`は存在せず、この資料を設計引継ぎとする。
-運用状態を変更していないため、運用中のhandoff/ops_briefは生成・配布しない。
+本変更の実装・テストは専用worktreeで行う。本番受入はPR/required CI/protected main/
+canonical VM deploy後に、timer active/enabled、待機理由、game-switch/FIFO、実開始を別々に
+確認する。timerの有効化は共通配信基盤を再起動せず、review済みのowner-only deploy hookだけが行う。
 
 未実施の受入ゲート:
 

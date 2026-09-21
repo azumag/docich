@@ -55,6 +55,7 @@ systemctl --user enable --now docich-rotate.timer
 
 # 現行の全corner共通rotationを使う場合。PAPER/メリケンもこのtimerで判定する。
 # 本番設定は config/docich.soren-live.toml の [corner_rotation] を読む。
+# protected mainからのproduction deploy時にも同じreview済みunitを再配置してenableする。
 systemctl --user enable --now docich-retro-corner.timer
 
 # ゲーム切替の呼び出し元が停止しても、期限切れdrainingとFIFOを復旧する。

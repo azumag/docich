@@ -1668,8 +1668,11 @@ def _collect_corner_files(state_dir, payload, now):
         status = data.get("status")
         rotation.update(
             status=status if status in {"ready", "waiting", "running", "recovery_required"} else "unknown",
+            reason=_bounded_str(data.get("reason"), 64),
             next_due_at=_bounded_time(data.get("next_due_at")),
             last_seen_at=_bounded_time(data.get("last_seen_at")),
+            last_slot_at=_bounded_time(data.get("last_slot_at")),
+            interval_seconds=_finite_number(data.get("interval_seconds")),
             slot=_bounded_int(data.get("slot")),
             eligible_count=len(data["eligible"]) if isinstance(data.get("eligible"), list) else None,
             pending=isinstance(data.get("pending"), dict),
@@ -1735,6 +1738,11 @@ def _collect_programs(state_dir, soren, now):
     payload = {
         "state_dir_found": state_dir.is_dir(),
         "corner_rotation": {"present": False, "readable": False},
+        "corner_rotation_timer": {
+            "unit": "docich-retro-corner.timer",
+            "active": None,
+            "enabled": None,
+        },
         "game_switch": {"present": False, "readable": False},
         "game_switch_fifo": {
             "present": False,
@@ -1754,6 +1762,11 @@ def _collect_programs(state_dir, soren, now):
     }
     if state_dir.is_dir():
         _collect_corner_files(state_dir, payload, now)
+    payload["corner_rotation_timer"] = {
+        "unit": "docich-retro-corner.timer",
+        "active": _unit_is_active("docich-retro-corner.timer"),
+        "enabled": _unit_is_enabled("docich-retro-corner.timer"),
+    }
     soren = Path(soren)
     payload["boundary"] = _collect_boundary(soren / "tmp" / "state", now)
     payload["ab"] = _collect_ab(soren, now)
