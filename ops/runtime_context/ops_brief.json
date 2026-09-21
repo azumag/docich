@@ -1,11 +1,11 @@
 {
-  "output_sha256": "8c943c78e7a1c5ff02487f0dbe4900ddfc46beafe7cd0d23d7100a01cf887729",
+  "output_sha256": "340631d9ae696ad5ebad7afdc22cb700b079874857c84c8885999dcaa4c43998",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "aa0196799f68beff641c5531738e7eb4a2ed08e94819bb7b467e8c7e59352f52",
+  "source_sha256": "0bcf5939604eb922dfeca76108cba8d7f24888499a62190a7e1c5a1ffe42d812",
   "topics": [
+    "PR #899を統合・現行mainへVM反映、Snake復帰カテゴリのlive境界を確認",
     "Snake終了後のSorenカテゴリ復帰順序を恒久修正",
-    "ゲーム別target_matchesと定期rotation停止の恒久修正",
-    "NetHackの判断保留を明示的なドット待機へ変更"
+    "ゲーム別target_matchesと定期rotation停止の恒久修正"
   ]
 }
