@@ -511,6 +511,83 @@ def test_expired_draining_recovery_cancels_stale_driver_without_stop(legacy_canc
         assert old.cancel_request_ids == [request_id]
 
 
+def test_fifo_maintenance_does_not_cancel_a_live_drain():
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp) / "run"
+        factory = BoundaryFactory()
+        store, coordinator = _coordinator(factory, state_dir)
+        assert coordinator.start("nethack").status == "succeeded"
+        old = factory.adapters[("nethack", 1)]
+        result_box = []
+        worker = threading.Thread(
+            target=lambda: result_box.append(
+                coordinator.switch("robots", timeout_s=60.0)
+            )
+        )
+        worker.start()
+        _wait_for_phase(store, "draining")
+        assert old.boundary_entered.wait(1.0)
+
+        maintained = coordinator.maintain_fifo(timeout_s=0.2)
+        assert maintained.status == "busy"
+        assert maintained.error_code == game_switch.ERROR_BUSY
+        assert old.cancel_request_ids == []
+        assert store.canonical.load()[0]["phase"] == "draining"
+
+        old.boundary_release.set()
+        worker.join(2.0)
+        assert not worker.is_alive()
+        assert result_box[0].status == "succeeded"
+
+
+def test_fifo_maintenance_recovers_expired_drain_and_starts_only_queue_head():
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp) / "run"
+        factory = BoundaryFactory()
+        store, coordinator = _coordinator(factory, state_dir)
+        assert coordinator.start("nethack").status == "succeeded"
+        old = factory.adapters[("nethack", 1)]
+        first_result = []
+        first_id = str(uuid.uuid4())
+        first_worker = threading.Thread(
+            target=lambda: first_result.append(
+                coordinator.switch("robots", request_id=first_id, timeout_s=60.0)
+            )
+        )
+        first_worker.start()
+        _wait_for_phase(store, "draining")
+        assert old.boundary_entered.wait(1.0)
+
+        queued = coordinator.switch("hanjuku")
+        assert queued.status == "queued"
+        queued_second = coordinator.switch("robots")
+        assert queued_second.status == "queued"
+        with store.lock(exclusive=True, blocking=False):
+            state, _ = store.canonical.load()
+            state["deadline_at"] = "2000-01-01T00:00:00Z"
+            store.canonical.save(state)
+
+        maintenance_result = []
+        maintenance_worker = threading.Thread(
+            target=lambda: maintenance_result.append(
+                coordinator.maintain_fifo(timeout_s=1.0)
+            )
+        )
+        maintenance_worker.start()
+        maintenance_worker.join(3.0)
+        first_worker.join(3.0)
+        assert not maintenance_worker.is_alive()
+        assert not first_worker.is_alive()
+        assert maintenance_result[0].status == "succeeded"
+        assert first_result[0].status == "failed"
+        assert old.cancel_request_ids == [first_id]
+        state, _ = store.canonical.load()
+        assert state["phase"] == "ready"
+        assert state["active"]["game"] == "hanjuku"
+        assert store.receipts.load(queued.request_id)["status"] == "succeeded"
+        assert store.receipts.load(queued_second.request_id)["status"] == "queued"
+
+
 def test_boundary_wait_longer_than_reacquire_grace_succeeds():
     with tempfile.TemporaryDirectory() as tmp:
         factory = BoundaryFactory()

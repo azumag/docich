@@ -64,11 +64,28 @@ class RetroCornerOperatorPolicyTests(unittest.TestCase):
     def test_script_has_only_the_fixed_user_service_restart(self):
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn('unit="docich-retro-corner.service"', text)
+        self.assertIn('fifo_timer="docich-game-switch-fifo.timer"', text)
+        self.assertIn("docich-game-switch-fifo.service", text)
+        self.assertIn('systemctl --user daemon-reload', text)
+        self.assertIn('systemctl --user enable --now "$fifo_timer"', text)
         self.assertIn('systemctl --user show "$unit"', text)
         self.assertIn('systemctl --user --no-block restart "$unit"', text)
         self.assertNotIn("$1", text)
         self.assertNotIn("sudo", text)
         self.assertNotIn("docich.service", text)
+
+    def test_fifo_watchdog_units_are_independent_from_the_retro_service(self):
+        service = (ROOT / "scripts/systemd/docich-game-switch-fifo.service").read_text(
+            encoding="utf-8"
+        )
+        timer = (ROOT / "scripts/systemd/docich-game-switch-fifo.timer").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("maintain-fifo", service)
+        self.assertIn("TimeoutStartSec=infinity", service)
+        self.assertIn("OnUnitActiveSec=30s", timer)
+        self.assertIn("Unit=docich-game-switch-fifo.service", timer)
+        self.assertNotIn("docich-retro-corner.service", service)
 
     def test_workflow_is_fixed_and_never_exposes_arbitrary_command_input(self):
         text = WF.read_text(encoding="utf-8")
