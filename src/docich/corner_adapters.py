@@ -83,6 +83,8 @@ class MerikenCornerAdapter(GameCornerAdapter):
         self.manager = Soren91CornerManager(g)
 
     def eligible(self):
+        if not self.manager.config.enabled:
+            return False
         self.manager._validate_games()
         return True
 
@@ -113,6 +115,8 @@ class PaperCornerAdapter(GameCornerAdapter):
         return self.manager.path
 
     def eligible(self):
+        if not self.manager.enabled:
+            return False
         self.manager._require_outputs()
         return True
 

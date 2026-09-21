@@ -79,6 +79,36 @@ def test_real_adapters_derive_live_eligible_count(tmp_path, monkeypatch):
     assert excluded == {"hanjuku-hero": "disabled-or-paused"}
 
 
+def test_adapter_config_disables_paper_and_meriken_from_effective_n(tmp_path, monkeypatch):
+    from docich.paper_corner_fast import FastPaperCornerManager
+    from docich.retro_corner import RetroCornerManager
+
+    monkeypatch.setattr(
+        RetroCornerManager,
+        "_executable_exists",
+        staticmethod(lambda _name: True),
+    )
+    monkeypatch.setattr(FastPaperCornerManager, "_require_outputs", lambda _self: None)
+
+    config = replace(
+        load_global(ROOT, ROOT / "config/docich.soren-live.toml"),
+        state_dir=tmp_path,
+    )
+    manager = CornerRotationManager(config)
+
+    paper = manager.adapters["paper"]
+    meriken = manager.adapters["meriken"]
+    paper.manager.enabled = False
+    meriken.manager.config = replace(meriken.manager.config, enabled=False)
+
+    eligible, excluded = manager._eligible()
+
+    assert "paper" not in eligible
+    assert "meriken" not in eligible
+    assert excluded["paper"] == "adapter-unavailable"
+    assert excluded["meriken"] == "adapter-unavailable"
+
+
 @pytest.mark.parametrize("entry", [
     'id="paper",adapter="paper",game="paper-view",live_eligible=true',
     'id="paper",adapter="paper",game="paper-view",enabled="yes"',
