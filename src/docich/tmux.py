@@ -20,6 +20,7 @@ from .naming import (
     validate_tmux_window_id,
     validate_tmux_window_ref,
 )
+from .process_tree import terminate_process_tree
 
 SESSION = "docich"
 
@@ -347,6 +348,44 @@ class Tmux:
         except (ValueError, TypeError) as exc:
             raise OwnershipMismatchError("session ownership tagが不正です") from exc
 
+    def _pane_pids(self, target: str) -> list[int]:
+        """Return pane leaders for an already ownership-checked target."""
+
+        # list-panes -a ignores -t and would enumerate every pane on the tmux
+        # server.  Cleanup must stay scoped to the already ownership-checked
+        # window/session target, so never use -a here.
+        result = self._run(["list-panes", "-t", target, "-F", "#{pane_pid}"])
+        if result.returncode != 0:
+            return []
+        pids: list[int] = []
+        for raw in result.stdout.splitlines():
+            try:
+                pid = int(raw.strip())
+            except ValueError:
+                continue
+            if pid > 0:
+                pids.append(pid)
+        return list(dict.fromkeys(pids))
+
+    def _stop_pane_processes(self, target: str) -> tuple[int, ...]:
+        """Stop descendants after the caller has validated the target scope."""
+
+        pids = self._pane_pids(target)
+        if not pids:
+            return ()
+        return terminate_process_tree(pids).remaining
+
+    def stop_game_session_named(self, session: str) -> None:
+        """Stop the legacy game-only session, never a shared runtime session."""
+
+        generation_suffix = session.removeprefix("docich-game-g")
+        if session != "docich-game" and not generation_suffix.isdigit():
+            raise ValueError("legacy game cleanup only accepts docich-game")
+        remaining = self._stop_pane_processes(session)
+        self._run(["kill-session", "-t", session])
+        if remaining:
+            raise TmuxError(f"legacy game sessionの子プロセスが停止しませんでした: {remaining}")
+
     def kill_window_owned(self, target: str, expected: TmuxOwnership) -> bool:
         validate_tmux_window_ref(target)
         if not self.window_target_exists(target):
@@ -356,7 +395,10 @@ class Tmux:
             raise OwnershipMismatchError(
                 f"window ownershipが一致しません (expected={expected}, actual={actual})"
             )
+        remaining = self._stop_pane_processes(target)
         self._checked(["kill-window", "-t", target], "window停止")
+        if remaining:
+            raise TmuxError(f"tmux windowの子プロセスが停止しませんでした: {remaining}")
         return True
 
     def kill_session_owned(self, session: str, expected: TmuxOwnership) -> bool:
@@ -368,7 +410,10 @@ class Tmux:
             raise OwnershipMismatchError(
                 f"session ownershipが一致しません (expected={expected}, actual={actual})"
             )
+        remaining = self._stop_pane_processes(session)
         self._checked(["kill-session", "-t", session], "session停止")
+        if remaining:
+            raise TmuxError(f"tmux sessionの子プロセスが停止しませんでした: {remaining}")
         return True
 
     def capture_pane(self, session: str) -> str:

@@ -13,6 +13,8 @@
 # Shell portability: this file runs under /bin/sh (dash on Ubuntu), which
 # has no base#number arithmetic and exits a non-interactive shell on a
 # syntax error.  Keep it strictly POSIX (no [[ ]], no $((10#...))).
+SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
+. "$SCRIPT_DIR/_run_with_driver.sh"
 SCORELOG="${MOONBUGGY_SCORELOG:-/home/ubuntu/docich/run-soren-live/scores/moon-buggy.jsonl}"
 PANE="${TMUX_PANE:-}"
 MOONBUGGY_BIN="${MOONBUGGY_BIN:-/usr/games/moon-buggy}"
@@ -75,9 +77,8 @@ driver() {
   done
 }
 
-driver &
+driver </dev/null &
 DRIVER=$!
-"$MOONBUGGY_BIN"
+docich_wrapper_run_with_driver "$DRIVER" "$MOONBUGGY_BIN"
 rc=$?
-kill "$DRIVER" 2>/dev/null
 exit "$rc"

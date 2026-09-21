@@ -16,6 +16,8 @@
 #   brain         the docich [agent] command brain (brains/ninvaders/brain.py)
 #                 plays; this wrapper only starts matches and records scores, so
 #                 the two never send competing keys.
+SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
+. "$SCRIPT_DIR/_run_with_driver.sh"
 SCORELOG="${NINVADERS_SCORELOG:-/home/ubuntu/docich/run-soren-live/scores/ninvaders.jsonl}"
 PANE="${TMUX_PANE:-}"
 NINVADERS_BIN="${NINVADERS_BIN:-/usr/games/ninvaders}"
@@ -99,9 +101,8 @@ driver() {
   done
 }
 
-driver &
+driver </dev/null &
 DRIVER=$!
-"$NINVADERS_BIN"
+docich_wrapper_run_with_driver "$DRIVER" "$NINVADERS_BIN"
 rc=$?
-kill "$DRIVER" 2>/dev/null
 exit "$rc"

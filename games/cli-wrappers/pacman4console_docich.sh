@@ -10,6 +10,8 @@
 # (brains/pacman4console/brain.py) steers and stays silent on the title and
 # "Game Over" screens.  Each final Score is recorded for the score stats
 # panel (scorelog JSONL).
+SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
+. "$SCRIPT_DIR/_run_with_driver.sh"
 SCORELOG="${PACMAN_SCORELOG:-/home/ubuntu/docich/run-soren-live/scores/pacman4console.jsonl}"
 PANE="${TMUX_PANE:-}"
 LEVEL="${PACMAN_LEVEL:-1}"
@@ -72,9 +74,8 @@ driver() {
   done
 }
 
-driver &
+driver </dev/null &
 DRIVER=$!
-"$PACMAN_BIN" --level="$LEVEL"
+docich_wrapper_run_with_driver "$DRIVER" "$PACMAN_BIN" --level="$LEVEL"
 rc=$?
-kill "$DRIVER" 2>/dev/null
 exit "$rc"
