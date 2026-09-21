@@ -4,8 +4,11 @@
 > 以下は`corner_rotation.enabled`を有効にしていない旧profileの互換仕様。
 > 統一モードではPAPER/メリケンも同列で、間隔の分母は実効有効数Nとなる。
 
-本番の `[retro_corner]` は `mode = "rotation"` で、登録ゲームを無作為な順番で回す。
-毎分の timer tick は状態だけを確認し、次回予定時刻に達したときだけ1ゲームを発火する。
+`corner_rotation.enabled=false` の旧profileでは、`[retro_corner]` の
+`mode = "rotation"` が登録ゲームを無作為な順番で回す。現行productionの共通catalogでは
+レトロゲーム・PAPER・メリケンを同列に扱うため、選択規則は
+[全corner共通rotation](corner-rotation.md)を参照する。
+旧profileの毎分timer tickは状態だけを確認し、次回予定時刻に達したときだけ1ゲームを発火する。
 
 ## 選択ルール
 
@@ -39,7 +42,8 @@
 
 ## 本番設定
 
-`config/docich.soren-live.toml` のリポジトリ設定は次のとおり（本番反映とは別）。
+旧profileで使う `config/docich.soren-live.toml` 相当の設定例は次のとおり
+（現行productionのcatalogとは別）。
 
 ```toml
 [retro_corner]

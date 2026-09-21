@@ -11,7 +11,7 @@ tmux 常駐 (architecture.md §2) を主に systemd --user ユニットで包む
 | `docich-rotate.service` | `docich rotate` を1回実行する oneshot ユニット (`[Install]` なし。timer 専用) |
 | `docich-rotate.timer` | `docich-rotate.service` を毎時起動する timer ([rotation] 利用時のみ) |
 | `docich-retro-corner.service` | Soren本番 `:99` にメリケンAIレトロゲーム枠を載せる長時間oneshot |
-| `docich-retro-corner.timer` | 毎分 `retro-corner tick`。設定timezone/start_hourに一致した時だけ1日1回実行 |
+| `docich-retro-corner.timer` | 毎分 `corner-rotation tick`。全catalogを実効N件の24時間rollingで判定 |
 | `docich-game-switch-fifo.service` | 期限切れdrainingを安全に復旧し、保存済みFIFO先頭を再駆動するoneshot |
 | `docich-game-switch-fifo.timer` | ゲーム切替FIFOを30秒ごとに独立監視するtimer |
 | `docich-soren91-corner.service` | Soren本番 `:99` にSoren91定時コーナーを載せる長時間oneshot |
@@ -50,19 +50,19 @@ systemctl --user daemon-reload
 # 基盤 (display/audio/stream) を起動する。必要な場合だけ明示enableする。
 systemctl --user enable --now docich.service
 
-# rotation.games を設定して自動ローテーションを使う場合のみ。
+# 旧 [rotation].games の互換ローテーションを使う場合のみ。
 systemctl --user enable --now docich-rotate.timer
 
-# メリケンAI レトロゲームコーナーを使う場合。
-# 本番設定は config/docich.soren-live.toml の [retro_corner] を読む。
+# 現行の全corner共通rotationを使う場合。PAPER/メリケンもこのtimerで判定する。
+# 本番設定は config/docich.soren-live.toml の [corner_rotation] を読む。
 systemctl --user enable --now docich-retro-corner.timer
 
 # ゲーム切替の呼び出し元が停止しても、期限切れdrainingとFIFOを復旧する。
 # 期限前の試合終了待ちは変更せず、共通配信基盤も再起動しない。
 systemctl --user enable --now docich-game-switch-fifo.timer
 
-# Soren91 定時コーナーを使う場合 (当面は無効のまま。検証時だけ一時的に有効化)。
-# 本番設定は config/docich.soren-live.toml の [soren91_corner] を読む。
+# 旧Soren91固定時刻入口を個別に使う場合。共通rotationでは新規導入不要。
+# 有効化しても同じcorner-rotation state/lockへ委譲される。
 systemctl --user enable --now docich-soren91-corner.timer
 ```
 
@@ -70,19 +70,22 @@ systemctl --user enable --now docich-soren91-corner.timer
 直接 `enable` しない。timer が起動するoneshotである。
 `docich-game-switch-fifo.service` も同様に直接 `enable` せず、専用timerだけを有効化する。
 
-## メリケンAI レトロゲームコーナー
+## 全corner共通 rolling rotation
 
 本番では `config/docich.soren-live.toml` を必ず使う。このprofileは
 `display=:99`, `managed=false`, `stream.mode="null"`, `audio.enabled=false` で、
 **SorenのXvfb・音声bus・FFmpegを所有しない**。
 
-毎分のtimerで開始予定を確認します。レトロ枠は毎日20:00予定・実開始60分、
-PAPER枠は毎日22:00予定です。PAPER枠は固定時間を持たず、事実に基づく読み上げネタを
-1件ずつ生成して生成できた順に読み上げ、ネタが尽きたら読み上げキューが捌けるのを
-待ってから表示を戻します（AI失敗時は有限の決定論フォールバックを読み切り、失敗として
-記録します）。いずれも予定時刻を過ぎたら待機状態を保存し、
-その後の改善サイクル完了または予想のAPI確定成功を待ちます。単なる試合終了や
-改善stateの消失を境界とみなしません。候補がA/B比較待ちなら、その採否完了が改善境界です。
+毎分のtimerで `corner-rotation tick` を実行し、`[corner_rotation].corners` のうち
+実行可能で休止していないN件を同列に扱います。目標間隔は24時間/Nで、直近24時間の
+使用履歴を除外した決定論的なseed順位から選びます。固定時刻のレトロ/PAPER/メリケン枠は
+共通rotationにはありません。詳細な永続化・移行・復旧契約は
+[corner-rotation.md](../../docs/corner-rotation.md) を正本とします。
+
+PAPERは固定時間を持たず、事実に基づく読み上げネタを1件ずつ生成して生成できた順に
+読み上げ、ネタが尽きたら読み上げキューが捌けるのを待ってから表示を戻します
+（AI失敗時は有限の決定論フォールバックを読み切り、失敗として記録します）。
+いずれも終了境界・改善サイクル・予想APIの確定を確認できない場合は次のcornerを開始しません。
 
 両枠はSoren rootの共通lockで直列化します。開始が遅れても短縮せず、レトロ枠は
 ゲーム切替完了後、PAPER枠は詳細表示へ切替後から読み上げを始めます。境界が来なければ
@@ -91,15 +94,17 @@ PAPER枠は毎日22:00予定です。PAPER枠は固定時間を持たず、事�
 終了後compactへ戻ります。通常ゲーム中も公開データのPAPER workerは継続します。
 
 本番導入では `.venv-trading` に `requirements-trading.txt` をインストールし、
-`docich-paper-runtime.service`、`docich-paper-corner.service/timer` と
-更新した `docich-retro-corner.service/timer` を同じ方法で配置します。
-`docich-paper-runtime.service` と両timerをenableします。過去通知を避けるため、
+`docich-paper-runtime.service` と更新した `docich-retro-corner.service/timer` を配置します。
+共通rotationでは `docich-retro-corner.timer` をenableすれば全cornerを判定します。
+旧PAPER/Soren91 timerを併用しても同じstate/lockで重複実行は防止されますが、新規導入は不要です。
+過去通知を避けるため、
 workerの初回起動より先にlive profileの `trading notify-once` を実行します。
 実注文・private API・鍵は使用しません。資金は模擬1万円、投入上限30%です。
 
 状態確認:
 
 ```sh
+bin/docich --config config/docich.soren-live.toml corner-rotation status
 bin/docich --config config/docich.soren-live.toml retro-corner status --json
 bin/docich --config config/docich.soren-live.toml paper-corner status
 bin/docich --config config/docich.soren-live.toml soren91-corner status --json
