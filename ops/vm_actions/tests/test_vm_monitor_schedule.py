@@ -19,6 +19,21 @@ class VmMonitorScheduleTests(unittest.TestCase):
         self.assertNotIn("exec docich production", text)
 
 
+class VmMonitorStorageBreakdownTests(unittest.TestCase):
+    def setUp(self):
+        self.text = WORKFLOW.read_text()
+
+    def test_storage_alert_uses_sanitized_fixed_breakdown(self):
+        self.assertIn("name: Summarize storage breakdown", self.text)
+        self.assertIn("summarize_storage.py", self.text)
+        self.assertIn("storage_breakdown_available", self.text)
+        self.assertIn("storage_breakdown_incomplete", self.text)
+        self.assertIn("STORAGE_CONTEXT", self.text)
+        self.assertIn("fixed overlapping categories", self.text)
+        self.assertNotIn('cat "$RUNNER_TEMP/runtime-diagnostics.json"', self.text)
+        self.assertNotIn("exec docich production", self.text)
+
+
 class VmMonitorTrackedDriftAlertTests(unittest.TestCase):
     def setUp(self):
         self.text = WORKFLOW.read_text()
