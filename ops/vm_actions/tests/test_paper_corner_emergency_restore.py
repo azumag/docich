@@ -48,6 +48,7 @@ class PaperCornerEmergencyRestoreTests(unittest.TestCase):
         manager.stop.side_effect = ["not-active", "completed"]
         manager._active_game.side_effect = [PAPER_VIEW_NAME, "sorengame"]
         manager.path = Path("/nonexistent-paper-state/paper_corner.json")
+        manager.g = SimpleNamespace(state_dir=Path("/nonexistent-paper-state"))
         manager._read_state.return_value = {
             "status": "completed",
             "date": "2026-09-16",
