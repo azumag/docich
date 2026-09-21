@@ -1812,6 +1812,190 @@ class GameSwitchCoordinator:
                 receipt=None,
             )
 
+    def resume_queued(
+        self,
+        *,
+        timeout_s: float | None = None,
+    ) -> SwitchResult:
+        """Claim and execute exactly the first durable FIFO request.
+
+        Queue receipts intentionally do not contain executable payloads, so
+        the automatic driver only replays the operations whose identity is
+        fully represented by the receipt (``start``, ``switch``, ``stop``, and
+        ``restart``).  An unsupported head is left untouched and reported as
+        recovery-required instead of skipping it and violating FIFO order.
+        """
+
+        self._log_reset("", "resume_fifo", None)
+        try:
+            with self.store.transaction(blocking=False):
+                state = self.store.canonical.initialize()
+                phase = str(state.get("phase"))
+                active = state.get("active")
+                from_game = active.get("game") if isinstance(active, dict) else None
+                if phase not in {"idle", "ready"}:
+                    return SwitchResult(
+                        request_id="",
+                        operation="resume_fifo",
+                        status="busy",
+                        target=None,
+                        from_game=from_game if isinstance(from_game, str) else None,
+                        to_game=None,
+                        generation=None,
+                        error_code=ERROR_BUSY,
+                        detail=f"canonical phase={phase} のためFIFOを開始できません",
+                        warnings=(),
+                        cleanup_pending=False,
+                        receipt=None,
+                    )
+                queued = self.store.receipts.queued()
+                if not queued:
+                    return SwitchResult(
+                        request_id="",
+                        operation="resume_fifo",
+                        status="succeeded",
+                        target=None,
+                        from_game=from_game if isinstance(from_game, str) else None,
+                        to_game=None,
+                        generation=None,
+                        error_code=None,
+                        detail="ゲーム切替FIFOは空です",
+                        warnings=(),
+                        cleanup_pending=False,
+                        receipt=None,
+                    )
+                head = copy.deepcopy(queued[0])
+        except GameSwitchBusyError as exc:
+            return SwitchResult(
+                request_id="",
+                operation="resume_fifo",
+                status="busy",
+                target=None,
+                from_game=None,
+                to_game=None,
+                generation=None,
+                error_code=ERROR_BUSY,
+                detail=_safe_detail(exc),
+                warnings=(),
+                cleanup_pending=False,
+                receipt=None,
+            )
+
+        request_id = str(head.get("request_id") or "")
+        operation = str(head.get("operation") or "")
+        target = head.get("target")
+        timeout = timeout_s
+        if operation == "start" and isinstance(target, str):
+            return self.start(target, request_id=request_id, timeout_s=timeout)
+        if operation == "switch" and isinstance(target, str):
+            return self.switch(target, request_id=request_id, timeout_s=timeout)
+        if operation == "stop" and target is None:
+            return self.stop(request_id=request_id, timeout_s=timeout)
+        if operation == "restart" and isinstance(target, str):
+            return self.restart(request_id=request_id, timeout_s=timeout)
+        return SwitchResult(
+            request_id=request_id,
+            operation=operation or "resume_fifo",
+            status="failed",
+            target=target if isinstance(target, str) else None,
+            from_game=None,
+            to_game=target if isinstance(target, str) else None,
+            generation=head.get("generation"),
+            error_code=ERROR_RECOVERY_REQUIRED,
+            detail="FIFO先頭のrequestを安全に再実行できないため、先頭を保持しました",
+            warnings=(),
+            cleanup_pending=False,
+            receipt=head,
+        )
+
+    def maintain_fifo(
+        self,
+        *,
+        timeout_s: float | None = None,
+    ) -> SwitchResult:
+        """Recover an expired drain and keep the FIFO moving.
+
+        This is deliberately narrower than :meth:`recover`: a live
+        ``draining`` phase is read-only, and failed/recovery-required phases
+        are not guessed at.  Once an expired drain is cancelled with an exact
+        adapter acknowledgement, the first queued request is replayed outside
+        the recovery transaction.  A later invocation continues with the next
+        request, so only the FIFO head can be claimed at a time.
+        """
+
+        self._log_reset("", "maintain_fifo", None)
+        recovered: SwitchResult | None = None
+        try:
+            with self.store.transaction(blocking=False) as tx:
+                state = self.store.canonical.initialize()
+                phase = str(state.get("phase"))
+                active = state.get("active")
+                from_game = active.get("game") if isinstance(active, dict) else None
+                if phase == "draining":
+                    if not _wall_deadline_expired(state.get("deadline_at")):
+                        return SwitchResult(
+                            request_id=str(state.get("request_id") or ""),
+                            operation=str(state.get("operation") or "maintain_fifo"),
+                            status="busy",
+                            target=None,
+                            from_game=from_game if isinstance(from_game, str) else None,
+                            to_game=None,
+                            generation=active.get("generation") if isinstance(active, dict) else None,
+                            error_code=ERROR_BUSY,
+                            detail="試合終了境界の待機中です。deadline前のdrainingには触れません",
+                            warnings=(),
+                            cleanup_pending=False,
+                            receipt=None,
+                        )
+                    deadline = time.monotonic() + (
+                        timeout_s if timeout_s is not None else self.default_timeout_s
+                    )
+                    recovered = self._recover_draining_locked(tx, state, deadline)
+                    current, _migrated = self.store.canonical.load()
+                    if current.get("phase") != "ready":
+                        return recovered
+                elif phase in {"idle", "ready"}:
+                    pass
+                else:
+                    return SwitchResult(
+                        request_id=str(state.get("request_id") or ""),
+                        operation=str(state.get("operation") or "maintain_fifo"),
+                        status="failed",
+                        target=None,
+                        from_game=from_game if isinstance(from_game, str) else None,
+                        to_game=None,
+                        generation=active.get("generation") if isinstance(active, dict) else None,
+                        error_code=ERROR_RECOVERY_REQUIRED,
+                        detail=f"canonical phase={phase} は自動FIFO復旧の対象外です",
+                        warnings=(),
+                        cleanup_pending=False,
+                        receipt=None,
+                    )
+        except GameSwitchBusyError as exc:
+            return SwitchResult(
+                request_id="",
+                operation="maintain_fifo",
+                status="busy",
+                target=None,
+                from_game=None,
+                to_game=None,
+                generation=None,
+                error_code=ERROR_BUSY,
+                detail=_safe_detail(exc),
+                warnings=(),
+                cleanup_pending=False,
+                receipt=None,
+            )
+
+        resumed = self.resume_queued(timeout_s=timeout_s)
+        # _recover_draining_locked intentionally reports the cancelled switch
+        # as ``failed/timeout``.  Keep that result visible when there was no
+        # queued request, but prefer the newly claimed FIFO head when one was
+        # actually resumed.
+        if recovered is not None and not resumed.request_id:
+            return recovered
+        return resumed
+
     # --- request plumbing --------------------------------------------------
 
     def _execute(

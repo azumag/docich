@@ -34,6 +34,7 @@ from .game_switch import (
     GameSwitchCoordinator,
     GameSwitchError,
     GameSwitchStore,
+    ERROR_TIMEOUT,
     StateCorruptError,
     SwitchResult,
     new_request_id,
@@ -163,6 +164,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_recover = sub.add_parser("recover", help="中断した切替を復旧する (crash/failed 後の再開)")
     p_recover.add_argument("--timeout", type=float, metavar="SEC", help="request 全体の deadline (秒)")
+
+    p_maintain_fifo = sub.add_parser(
+        "maintain-fifo",
+        help="期限切れdrainingを安全に復旧し、FIFO先頭の切替を再開する",
+    )
+    p_maintain_fifo.add_argument(
+        "--timeout", type=float, metavar="SEC", help="復旧・再開処理のdeadline (秒)"
+    )
 
     p_rotate = sub.add_parser("rotate", help="[rotation] games を順に切り替える (時間割ローテーション)")
     p_rotate.add_argument(
@@ -342,6 +351,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return cmd_restart(g, request_id=args.request_id, timeout_s=args.timeout)
     if command == "recover":
         return cmd_recover(g, timeout_s=args.timeout)
+    if command == "maintain-fifo":
+        return cmd_maintain_fifo(g, timeout_s=args.timeout)
     if command == "rotate":
         return cmd_rotate(g, args.dry_run, request_id=args.request_id, timeout_s=args.timeout)
     if command == "status":
@@ -886,6 +897,31 @@ def cmd_recover(g: GlobalConfig, *, timeout_s: float | None = None) -> int:
     else:
         _print_switch_result("復旧", result)
     return _result_exit_code(result)
+
+
+def cmd_maintain_fifo(g: GlobalConfig, *, timeout_s: float | None = None) -> int:
+    """Run the independent, fail-closed game-switch FIFO maintenance tick."""
+
+    _require_no_legacy_runtime(g)
+    try:
+        result = _coordinator(g).maintain_fifo(
+            timeout_s=_checked_timeout(timeout_s),
+        )
+    except GameSwitchError as exc:
+        raise CliError(f"FIFOを維持できませんでした: {exc}") from exc
+
+    # A live boundary is an expected no-op for the timer.  A successful
+    # expiry recovery is represented by the original switch's timeout result;
+    # canonical state is already ready at that point, so systemd must not mark
+    # the watchdog unhealthy merely because that original request failed.
+    if result.status in {"succeeded", "queued", "in_progress", "busy"}:
+        print(f"docich: ゲーム切替FIFOを確認しました ({result.detail or result.status})")
+        return 0
+    if result.status == "failed" and result.error_code == ERROR_TIMEOUT:
+        print("docich: 期限切れdrainingを安全に解除しました")
+        return 0
+    _print_switch_result("ゲーム切替FIFOの維持", result)
+    return 2
 
 
 def cmd_rotate(g: GlobalConfig, dry_run: bool, *, request_id: str | None = None, timeout_s: float | None = None) -> int:

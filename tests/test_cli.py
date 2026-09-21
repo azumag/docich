@@ -53,6 +53,11 @@ class TestParseArgsAcceptsAllSubcommands(unittest.TestCase):
         self.assertEqual(args.command, "rotate")
         self.assertFalse(args.dry_run)
 
+    def test_maintain_fifo(self):
+        args = self.parser.parse_args(["maintain-fifo"])
+        self.assertEqual(args.command, "maintain-fifo")
+        self.assertIsNone(args.timeout)
+
     def test_rotate_dry_run(self):
         args = self.parser.parse_args(["rotate", "--dry-run"])
         self.assertEqual(args.command, "rotate")
@@ -196,6 +201,12 @@ class TestGamesSmoke(IsolatedConfigTestBase):
         rc, _out, err = self.run_main(["games"])
         self.assertEqual(rc, 0)
         self.assertIn("broken.toml", err)
+
+    def test_maintain_fifo_is_a_safe_noop_without_pending_requests(self):
+        with mock.patch("docich.cli._require_no_legacy_runtime"):
+            rc, out, err = self.run_main(["maintain-fifo"])
+        self.assertEqual(rc, 0, err)
+        self.assertIn("ゲーム切替FIFOを確認しました", out)
 
 
 class TestDoctorSmoke(IsolatedConfigTestBase):
