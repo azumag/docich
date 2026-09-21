@@ -445,6 +445,9 @@ class Soren91CornerManager(RetroCornerManager):
         return not self.config.weekdays or now.weekday() in self.config.weekdays
 
     def tick(self) -> CornerResult:
+        from .corner_catalog import rotation_enabled
+        if rotation_enabled(self.g):
+            return super().tick()
         with self._tick_guard() as single:
             if not single:
                 return CornerResult("noop", detail="already-running")

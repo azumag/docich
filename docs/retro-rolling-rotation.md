@@ -1,5 +1,9 @@
 # レトロ枠: 24時間 rolling rotation
 
+> production設定は[全corner共通rotation](corner-rotation.md)へ移行した。
+> 以下は`corner_rotation.enabled`を有効にしていない旧profileの互換仕様。
+> 統一モードではPAPER/メリケンも同列で、間隔の分母は実効有効数Nとなる。
+
 本番の `[retro_corner]` は `mode = "rotation"` で、登録ゲームを無作為な順番で回す。
 毎分の timer tick は状態だけを確認し、次回予定時刻に達したときだけ1ゲームを発火する。
 

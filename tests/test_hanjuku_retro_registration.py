@@ -75,7 +75,9 @@ def test_immediate_start_uses_only_playable_candidates(manager, monkeypatch, mod
     monkeypatch.setattr(manager, "_executable_exists", lambda _: True)
     monkeypatch.setattr(manager, "_wait_and_finish", manager._state_result)
     manager.coordinator.start.return_value = SimpleNamespace(status="succeeded")
-    result = manager.start()
+    # Exercise the adapter's legacy immediate-start eligibility; unified manual
+    # entry/locking/cooldown is covered by test_corner_rotation.
+    result = manager._start_direct()
     assert result.status == "active"
     assert result.game in EXISTING
     assert manager.coordinator.start.call_args.args == (result.game,)
@@ -84,7 +86,7 @@ def test_immediate_start_uses_only_playable_candidates(manager, monkeypatch, mod
 
 def test_immediate_start_without_candidates_does_not_start_runtime(manager, monkeypatch):
     monkeypatch.setattr(manager, "_executable_exists", lambda _: False)
-    result = manager.start()
+    result = manager._start_direct()
     assert (result.status, result.detail) == ("noop", "no-eligible-game")
     manager._ensure_runtime.assert_not_called()
     manager.coordinator.start.assert_not_called()

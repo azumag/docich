@@ -41,17 +41,29 @@ notification_speech_enabled = true
 [rotation]
 games = []
 
+[corner_rotation]
+enabled = true
+# 唯一のproduction corner catalog。実行可能で休止していないN件で24h/N。
+# 選択・実行履歴はrolling 24hで除外。adapter設定のstart_hourは互換用のみ。
+corners = [
+  { id = "ninvaders", adapter = "game", game = "ninvaders" },
+  { id = "nsnake", adapter = "game", game = "nsnake" },
+  { id = "bastet", adapter = "game", game = "bastet" },
+  { id = "moon-buggy", adapter = "game", game = "moon-buggy" },
+  { id = "pacman4console", adapter = "game", game = "pacman4console" },
+  { id = "nethack", adapter = "game", game = "nethack" },
+  { id = "hanjuku-hero", adapter = "game", game = "hanjuku-hero", enabled = false },
+  { id = "paper", adapter = "paper", game = "paper-view", live_eligible = false },
+  { id = "meriken", adapter = "meriken", game = "soren91" },
+]
+
 # docich側canonicalがidleなら、終了時はstopして背景のSorenへ自然に戻る。
 [retro_corner]
 enabled = true
 require_program_boundary = true
 timezone = "Asia/Tokyo"
-# rolling: 24時間を登録ゲーム数で割った間隔で必ず候補を抽選する。
-# 7件登録なら約3時間26分ごと。無効な登録も分母に含む。
-# 直近24時間以内に選ばれたゲームは候補から外し、24時間経過後に戻す。
-# 実行ファイルが無いゲームはその枠の候補から除外し、他コーナーが塞いでいる場合は
-# 次のtickで再試行する。毎時の確率抽選ではない。PAPER/Soren91/専用NetHackの固定枠が近い場合は、
-# 最悪の待ち時間＋durationが固定枠の5分前までに収まるときだけ開始し、固定枠を優先する。
+# 以下は実行adapter設定。日次/lottery/rotation設定は旧profileとの互換用。
+# 統一モードの選択・間隔・cooldownはcorner_rotationが所有する。
 mode = "rotation"
 rotation_period_hours = 24.0
 rotation_wait_minutes = 10
@@ -62,7 +74,6 @@ start_hour = 19
 daily_each_game = true
 randomize_start = true
 start_window_minutes = 30
-games = ["ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console", "nethack", "hanjuku-hero"]
 # 半熟英雄は登録のみ。ゲーム側retro_corner.enabled=falseにより抽選から除外する。
 # 最初の5ゲームは command brain と bot_eval の bounded headless 評価を使う。
 # NetHackは専用brainと persistent_run のセーブ境界を使うbounded slotで、改善評価は未対応。
@@ -89,8 +100,7 @@ script_timeout_s = 240
 # 終了後の戦略パラメータ改善の委任先。非空で改善ジョブを切り離し起動する。
 improve_agents = "opencode-go:deepseek-v4.1-flash,amd:DeepSeek-V4-Flash,opencode-go:deepseek-v4-flash,opencode-go:muse-spark-1.3-contributor"
 
-# Soren91 定時コーナー (Phase 3)。当面は無効のまま置く。有効化はユーザー判断。
-# 検証時は一時的に enabled=true + start_hour/duration_minutes を短時間へ変える。
+# メリケン実行adapter。共通catalogでPAPER/各ゲームと同列に選択される。
 [soren91_corner]
 enabled = true
 start_hour = 18

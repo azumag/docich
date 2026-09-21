@@ -660,7 +660,7 @@ class TestSystemdTemplates(unittest.TestCase):
         timer = (root / "scripts/systemd/docich-retro-corner.timer").read_text(encoding="utf-8")
         self.assertNotIn("ExecStartPre=", service)
         self.assertIn(
-            "ExecStart=__DOCICH_ROOT__/bin/docich --config __DOCICH_ROOT__/config/docich.soren-live.toml retro-corner tick",
+            "ExecStart=__DOCICH_ROOT__/bin/docich --config __DOCICH_ROOT__/config/docich.soren-live.toml corner-rotation tick",
             service,
         )
         self.assertIn("TimeoutStartSec=infinity", service)

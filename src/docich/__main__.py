@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import sys
 
-
 def _retro_corner_argv(argv: list[str]) -> list[str] | None:
     if argv and argv[0] == "retro-corner":
         return argv[1:]
@@ -12,6 +11,22 @@ def _retro_corner_argv(argv: list[str]) -> list[str] | None:
     if len(argv) >= 2 and argv[0].startswith("--config=") and argv[1] == "retro-corner":
         return [argv[0], *argv[2:]]
     return None
+
+
+def _rotation_argv(argv: list[str]) -> list[str] | None:
+    if argv and argv[0] == "corner-rotation":
+        return argv[1:]
+    if len(argv) >= 3 and argv[0] == "--config" and argv[2] == "corner-rotation":
+        return ["--config", argv[1], *argv[3:]]
+    if len(argv) >= 2 and argv[0].startswith("--config=") and argv[1] == "corner-rotation":
+        return [argv[0], *argv[2:]]
+    return None
+
+
+rotation_argv = _rotation_argv(sys.argv[1:])
+if rotation_argv is not None:
+    from .corner_rotation import main as corner_rotation_main
+    sys.exit(corner_rotation_main(rotation_argv))
 
 
 def _direct_paper_argv(command: str, argv: list[str]) -> list[str] | None:

@@ -1345,6 +1345,7 @@ def _collect_tracked_drift(root):
 # are the only files read by _collect_programs; announcement/script bodies are
 # deliberately never surfaced (statuses, timestamps and counters only).
 CORNER_STATE_FILES = {
+    "corner_rotation": "corner_rotation.json",
     "game_switch": "game_switch.json",
     "retro_corner": "retro_corner.json",
     "paper_corner": "paper_corner.json",
@@ -1569,6 +1570,21 @@ def _collect_paper_improve_status(state_dir, now):
 
 
 def _collect_corner_files(state_dir, payload, now):
+    present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES["corner_rotation"])
+    rotation = {"present": present, "readable": readable}
+    if readable:
+        # Fixed projection only: never emit seed, adapter errors or arbitrary
+        # request payloads. Queued ownership remains local for operator recovery.
+        status = data.get("status")
+        rotation.update(
+            status=status if status in {"ready", "waiting", "running", "recovery_required"} else "unknown",
+            next_due_at=_bounded_time(data.get("next_due_at")),
+            last_seen_at=_bounded_time(data.get("last_seen_at")),
+            slot=_bounded_int(data.get("slot")),
+            eligible_count=len(data["eligible"]) if isinstance(data.get("eligible"), list) else None,
+            pending=isinstance(data.get("pending"), dict),
+        )
+    payload["corner_rotation"] = rotation
     present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES["game_switch"])
     entry = {"present": present, "readable": readable}
     if readable:

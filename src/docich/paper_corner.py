@@ -189,6 +189,9 @@ class PaperCornerManager:
         return value.strip()
 
     def save(self, state):
+        if state.get('status') == 'active':
+            from .corner_ownership import bind_runtime
+            bind_runtime(self.store, state, PAPER_VIEW_NAME)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_json(self.path, state)
 
@@ -542,6 +545,10 @@ class PaperCornerManager:
             state['improve_job'] = {'spawned': False, 'error': _safe_detail(exc)}
 
     def tick(self):
+        from .corner_catalog import rotation_enabled
+        if rotation_enabled(self.g):
+            from .corner_rotation import CornerRotationManager
+            return CornerRotationManager(self.g).tick()["status"]
         if not self.enabled:
             return 'disabled'
         self._require_outputs()
@@ -575,6 +582,10 @@ class PaperCornerManager:
         through the coordinator, so a running match is never cut mid-game.
         """
         self._require_outputs()
+        from .corner_catalog import rotation_enabled
+        if rotation_enabled(self.g):
+            from .corner_rotation import run_manual
+            return run_manual(self.g, self, [PAPER_VIEW_NAME])
         return self._with_guard(self._start_locked)
 
     def _prewarm_script(self, state) -> None:
@@ -586,7 +597,26 @@ class PaperCornerManager:
         """
         return None
 
-    def _start_locked(self):
+    def run_rotation(self, request_id):
+        """Identity-preserving common rotation execution, without the daily gate."""
+        self._require_outputs()
+        self.delivery_scope = f'corner-rotation:{request_id}'
+        def run():
+            state = self._read_state()
+            if state.get('rotation_request_id') == request_id:
+                if state.get('status') == 'completed':
+                    return 'completed'
+                if state.get('status') == 'restoring':
+                    return self._restore_locked(state)
+                if state.get('status') in ('starting', 'active'):
+                    return self._run_locked(state)
+                raise PaperCornerError('rotation execution requires recovery')
+            if state.get('status', 'idle') not in ('idle', 'completed', 'interrupted'):
+                raise PaperCornerError('rotation execution owner mismatch')
+            return self._start_locked(rotation_request_id=request_id)
+        return self._with_guard(run)
+
+    def _start_locked(self, rotation_request_id=None):
         state = self._read_state()
         if state.get('status') in ('starting', 'active'):
             return 'already-active'
@@ -608,6 +638,16 @@ class PaperCornerManager:
             'previous_game': self._active_game(),
             'requested_at': self.clock(),
         }
+        if rotation_request_id is not None:
+            canonical, _ = self.store.canonical.load()
+            if canonical.get('phase') not in ('idle', 'ready', 'draining'):
+                raise PaperCornerError('rotation canonical requires recovery')
+            active = canonical.get('active') or {}
+            state['previous_game'] = active.get('game')
+            if state['previous_game'] == PAPER_VIEW_NAME:
+                raise PaperCornerError('rotation target already owned by another execution')
+            state.update(rotation_request_id=rotation_request_id,
+                         switch_request_id=rotation_request_id, live_eligible=False)
         self.save(state)
         try:
             # Manual/operator start: prepare the finite fallback before the
@@ -619,6 +659,10 @@ class PaperCornerManager:
         return self._run_locked(state)
 
     def stop(self):
+        from .corner_catalog import rotation_enabled
+        if rotation_enabled(self.g):
+            from .corner_rotation import stop_manual
+            return stop_manual(self.g, self, lambda: self._with_guard(self._stop_locked))
         return self._with_guard(self._stop_locked)
 
     def _stop_locked(self):
@@ -724,6 +768,9 @@ class PaperCornerManager:
 
         Returns the terminal result string ('completed' or 'failed').
         """
+        if state.get('status') == 'active':
+            from .corner_ownership import verify_runtime
+            verify_runtime(self.store, state, PAPER_VIEW_NAME)
         previous = state.get('previous_game')
         current = self._active_game()
         if current is not None and current != PAPER_VIEW_NAME and current != previous:
@@ -878,6 +925,8 @@ class PaperCornerManager:
                 state.setdefault('fallback_segments', {})
                 self.save(state)
         elif state.get('status') == 'active':
+            from .corner_ownership import verify_runtime
+            verify_runtime(self.store, state, PAPER_VIEW_NAME)
             write_presentation(self.presentation, 'detailed', now=self.clock())
         if state.get('status') == 'active':
             # Tell the Soren radio a program view is showing (also heals a
