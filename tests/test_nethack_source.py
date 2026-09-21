@@ -41,7 +41,7 @@ def source_inputs(origin="scheduled", status="dead"):
     context = new_session_context(origin, str(uuid.uuid4()))
     session = {"session_id": context["session_id"], "corner_context": context,
                "runtime": deepcopy(SOURCE), "started_at": NOW.isoformat(),
-               "ended_at": (NOW + dt.timedelta(seconds=110)).isoformat()}
+               "ended_at": (NOW + dt.timedelta(seconds=95)).isoformat()}
     run = {"run_id": str(uuid.uuid4()), "status": status, "started_at": NOW.isoformat(),
            "birth_not_before_epoch": START,
            "recovered_existing_save": False, "adopted_active_runtime": False,
@@ -177,13 +177,17 @@ def test_weak_terminal_evidence_never_eligible(mutation):
     assert build_post_restore_source(run, session, restoration, finish_reason="terminal")["eligibility"] == "terminal_unverified"
 
 
-@pytest.mark.parametrize("mutation", ["session", "foreign_run", "runtime", "end_order", "cleanup", "source_binding", "secret"])
+@pytest.mark.parametrize("mutation", [
+    "session", "foreign_run", "runtime", "end_order", "restore_before_session_end",
+    "cleanup", "source_binding", "secret",
+])
 def test_invalid_source_is_not_serialized(mutation):
     run, session, restoration = source_inputs()
     if mutation == "session": session["session_id"] = str(uuid.uuid4())
     elif mutation == "foreign_run": session["run_id"] = str(uuid.uuid4())
     elif mutation == "runtime": session["runtime"] = deepcopy(TARGET)
-    elif mutation == "end_order": session["ended_at"] = NOW.isoformat()
+    elif mutation == "end_order": session["ended_at"] = (NOW - dt.timedelta(seconds=1)).isoformat()
+    elif mutation == "restore_before_session_end": session["ended_at"] = (NOW + dt.timedelta(seconds=110)).isoformat()
     elif mutation == "cleanup": restoration["cleanup_completed"] = False
     elif mutation == "source_binding": restoration["source_binding_verified"] = False
     elif mutation == "secret": restoration["secret"] = "sentinel"
