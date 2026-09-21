@@ -58,23 +58,42 @@ def _today(manager: FastPaperCornerManager) -> str:
 
 
 def _today_corner_state(manager: FastPaperCornerManager) -> tuple[dict, Path] | None:
-    """Today's PAPER corner state and its state file, scheduled first.
+    """Today's PAPER corner state and its state file.
 
     Scheduled failures live in ``paper_corner.json``; an operator/manual run
     keeps its own ``paper_corner_manual.json``. Both can strand the canonical
     game-switch the same way, so the bounded recovery must consider either.
+    Prefer a non-terminal state over an older completed state from the other
+    runner; otherwise preserve scheduled-first ordering.
     """
     today = _today(manager)
     scheduled = manager._read_state()
-    if isinstance(scheduled, dict) and scheduled.get("date") == today:
-        return scheduled, Path(manager.path)
+    scheduled_today = (
+        scheduled
+        if isinstance(scheduled, dict) and scheduled.get("date") == today
+        else None
+    )
+
     manual_path = Path(manager.g.state_dir) / MANUAL_STATE_FILE
     try:
         manual = json.loads(manual_path.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError, AttributeError):
-        return None
-    if isinstance(manual, dict) and manual.get("date") == today:
-        return manual, manual_path
+        manual = None
+    manual_today = (
+        manual
+        if isinstance(manual, dict) and manual.get("date") == today
+        else None
+    )
+
+    recoverable = {"starting", "active", "restoring", "failed"}
+    if scheduled_today is not None and scheduled_today.get("status") in recoverable:
+        return scheduled_today, Path(manager.path)
+    if manual_today is not None and manual_today.get("status") in recoverable:
+        return manual_today, manual_path
+    if scheduled_today is not None:
+        return scheduled_today, Path(manager.path)
+    if manual_today is not None:
+        return manual_today, manual_path
     return None
 
 
