@@ -149,3 +149,32 @@ def announce_stream_paper(g: GlobalConfig, *, spawn=None) -> bool:
         category_name=PAPER_CATEGORY_NAME,
         spawn=spawn,
     )
+
+
+def announce_running_view(g: GlobalConfig, game: str, *, spawn=None) -> bool:
+    """Follow whatever a committed game switch put on screen.
+
+    The ``GameSwitchCoordinator`` commits a real game or a synthetic program
+    view such as ``paper-view``.  Routing both through one function lets the
+    coordinator own the *when* and keeps the category from being left on the
+    game a killed corner displaced.
+    """
+    from .adapters.program import PAPER_VIEW_NAME
+
+    if game == PAPER_VIEW_NAME:
+        return announce_stream_paper(g, spawn=spawn)
+    return announce_stream_game(g, game, spawn=spawn)
+
+
+def commit_hook(g: GlobalConfig, *, spawn=None):
+    """Build the ``GameSwitchCoordinator`` post-commit hook for this config.
+
+    The coordinator calls the returned callable with the game it just made
+    active.  An error here is non-fatal by construction: the coordinator logs
+    it and keeps the committed switch.
+    """
+
+    def hook(game: str) -> None:
+        announce_running_view(g, game, spawn=spawn)
+
+    return hook

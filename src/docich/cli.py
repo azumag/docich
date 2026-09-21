@@ -617,8 +617,14 @@ def cmd_down(g: GlobalConfig, *, request_id: str | None = None, timeout_s: float
 
 
 def _coordinator(g: GlobalConfig) -> GameSwitchCoordinator:
+    from .stream_category import commit_hook
+
     store = GameSwitchStore(g.state_dir)
-    return GameSwitchCoordinator(store, lambda spec: make_coordinator_adapter(g, spec))
+    return GameSwitchCoordinator(
+        store,
+        lambda spec: make_coordinator_adapter(g, spec),
+        post_commit=commit_hook(g),
+    )
 
 
 def _legacy_footprint(g: GlobalConfig) -> dict:

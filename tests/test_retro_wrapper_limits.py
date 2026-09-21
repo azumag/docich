@@ -4,10 +4,14 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from unittest import mock
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from docich import tmux as tmux_mod  # noqa: E402
 
 
 @pytest.mark.parametrize("game", ["ninvaders", "nsnake"])
@@ -92,8 +96,9 @@ def test_driver_helper_preserves_game_stdin_when_game_is_tracked_asynchronously(
     script.write_text(
         "#!/bin/sh\n"
         f". {helper!s}\n"
-        "driver() { while :; do sleep 10; done; }\n"
-        "driver </dev/null &\n"
+        # Keep the dummy driver's own descriptors out of subprocess capture;
+        # this test isolates stdin inheritance of the tracked game process.
+        "driver() { while :; do sleep 10; done; } >/dev/null 2>&1 &\n"
         "DRIVER=$!\n"
         "docich_wrapper_run_with_driver \"$DRIVER\" sh -c "
         "'IFS= read -r line || exit 7; printf \"%s\\n\" \"$line\" > \"$DOCICH_STDIN_PROBE\"'\n"
@@ -114,3 +119,17 @@ def test_driver_helper_preserves_game_stdin_when_game_is_tracked_asynchronously(
 
     assert result.returncode == 0
     assert output.read_text(encoding="utf-8") == "pane-input\n"
+
+
+def test_tmux_pane_cleanup_lookup_stays_scoped_to_owned_target():
+    """Retro CI must guard against accidentally enumerating all tmux panes."""
+
+    completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="123\n", stderr="")
+    with mock.patch("docich.tmux.procs.run", return_value=completed) as run:
+        pids = tmux_mod.Tmux()._pane_pids("docich:game-g1")
+
+    assert pids == [123]
+    assert run.call_args.args[0] == [
+        "tmux", "list-panes", "-t", "docich:game-g1", "-F", "#{pane_pid}"
+    ]
+    assert "-a" not in run.call_args.args[0]
