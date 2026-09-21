@@ -96,8 +96,9 @@ def test_driver_helper_preserves_game_stdin_when_game_is_tracked_asynchronously(
     script.write_text(
         "#!/bin/sh\n"
         f". {helper!s}\n"
-        "driver() { while :; do sleep 10; done; }\n"
-        "driver &\n"
+        # Keep the dummy driver's own descriptors out of subprocess capture;
+        # this test isolates stdin inheritance of the tracked game process.
+        "driver() { while :; do sleep 10; done; } >/dev/null 2>&1 &\n"
         "DRIVER=$!\n"
         "docich_wrapper_run_with_driver \"$DRIVER\" sh -c "
         "'IFS= read -r line || exit 7; printf \"%s\\n\" \"$line\" > \"$DOCICH_STDIN_PROBE\"'\n"
