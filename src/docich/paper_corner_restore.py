@@ -78,7 +78,7 @@ def _today_corner_state(manager: FastPaperCornerManager) -> dict | None:
     return None
 
 
-def _recover_failed_paper_view(manager: FastPaperCornerManager):
+def _recover_failed_paper_view(manager: FastPaperCornerManager, *, abandon: bool = False):
     """Reconcile a failed switch before asking the corner manager to restore.
 
     ``PaperCornerManager._active_game`` intentionally returns ``None`` while
@@ -88,6 +88,10 @@ def _recover_failed_paper_view(manager: FastPaperCornerManager):
     started corner with a canonical ``previous.game`` of ``paper-view`` is
     eligible; all other states remain fail-closed for the existing recovery
     logic.
+
+    When the synthetic program view itself cannot be restored, ``abandon``
+    clears the failed program-view transition and starts the recorded previous
+    game directly, so a broken dashboard cannot pin the display black.
     """
     state = _today_corner_state(manager)
     if state is None:
@@ -111,6 +115,19 @@ def _recover_failed_paper_view(manager: FastPaperCornerManager):
     if not isinstance(previous, dict) or previous.get("game") != PAPER_VIEW_NAME:
         return None
 
+    if abandon:
+        result = manager.coordinator.recover(
+            timeout_s=RECOVERY_TIMEOUT_S, abandon_program_view=True
+        )
+        if getattr(result, "status", None) != "succeeded":
+            detail = getattr(result, "detail", None) or getattr(result, "error_code", None) or "unknown"
+            raise PaperCornerError(f"failed program-view transition could not be abandoned: {detail}")
+        started = manager.coordinator.start(str(state.get("previous_game")))
+        if getattr(started, "status", None) != "succeeded":
+            detail = getattr(started, "detail", None) or getattr(started, "error_code", None) or "unknown"
+            raise PaperCornerError(f"could not start the recorded previous game: {detail}")
+        return started
+
     result = manager.coordinator.recover(timeout_s=RECOVERY_TIMEOUT_S)
     if getattr(result, "status", None) not in {"succeeded", "rolled_back"}:
         detail = getattr(result, "detail", None) or getattr(result, "error_code", None) or "unknown"
@@ -125,7 +142,14 @@ def restore(config_path: Path, *, run=subprocess.run, sleep=time.sleep) -> dict[
     g = load_global(_repo_root(), config_path)
     _stop_scheduled_service(run=run)
     manager = FastPaperCornerManager(g)
-    _recover_failed_paper_view(manager)
+    try:
+        _recover_failed_paper_view(manager)
+    except PaperCornerError:
+        # The synthetic program view itself cannot be restored (for example a
+        # stranded/ownership-mismatched dashboard session). Abandon the failed
+        # program-view transition and start the recorded previous game instead
+        # of pinning the display black.
+        _recover_failed_paper_view(manager, abandon=True)
 
     result = "already-running"
     for _ in range(LOCK_RETRIES):

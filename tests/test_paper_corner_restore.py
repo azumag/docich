@@ -132,7 +132,30 @@ def test_failed_manual_corner_state_is_recovered_before_restore(tmp_path, monkey
     assert manager.coordinator.calls == [paper_corner_restore.RECOVERY_TIMEOUT_S]
 
 
-def test_restore_falls_back_to_manual_state_when_scheduled_is_stale(tmp_path, monkeypatch):
+def test_abandon_fallback_clears_program_view_and_starts_recorded_game(tmp_path, monkeypatch):
+    manager = _Manager(state_dir=tmp_path)
+    manager.state["date"] = "2026-09-18"
+    (tmp_path / paper_corner_restore.MANUAL_STATE_FILE).write_text(
+        json.dumps({"status": "failed", "date": "2026-09-19", "previous_game": "sorengame"}),
+        encoding="utf-8",
+    )
+    calls = []
+
+    class Coordinator:
+        def recover(self, *, timeout_s=None, abandon_program_view=False):
+            calls.append(("recover", abandon_program_view))
+            return _Result(status="succeeded")
+
+        def start(self, game):
+            calls.append(("start", game))
+            return _Result(status="succeeded")
+
+    manager.coordinator = Coordinator()
+
+    result = paper_corner_restore._recover_failed_paper_view(manager, abandon=True)
+
+    assert result.status == "succeeded"
+    assert calls == [("recover", True), ("start", "sorengame")]
     g = SimpleNamespace(state_dir=tmp_path)
     manager = _Manager(state_dir=tmp_path)
     manager.state["date"] = "2026-09-18"

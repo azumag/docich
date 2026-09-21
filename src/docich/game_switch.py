@@ -1794,12 +1794,15 @@ class GameSwitchCoordinator:
         self,
         *,
         timeout_s: float | None = None,
+        abandon_program_view: bool = False,
     ) -> SwitchResult:
         self._log_reset("", "recover", None)
         try:
             with self.store.transaction() as tx:
                 deadline = time.monotonic() + (timeout_s if timeout_s is not None else self.default_timeout_s)
-                recovered = self._recover_locked(tx, deadline=deadline)
+                recovered = self._recover_locked(
+                    tx, deadline=deadline, abandon_program_view=abandon_program_view
+                )
                 self._log(
                     "recovery_finished", phase="",
                     result=recovered.status, error_code=recovered.error_code,
@@ -4385,6 +4388,7 @@ class GameSwitchCoordinator:
         tx: GameSwitchTransaction,
         *,
         deadline: float,
+        abandon_program_view: bool = False,
     ) -> SwitchResult:
         state = self.store.canonical.initialize()
         phase = state["phase"]
@@ -4441,7 +4445,13 @@ class GameSwitchCoordinator:
             state, _migrated = self.store.canonical.load()
             previous = state.get("previous")
             active = state.get("active")
-            if previous is not None:
+            abandon = (
+                abandon_program_view
+                and isinstance(previous, Mapping)
+                and previous.get("adapter") == "program"
+                and active is None
+            )
+            if previous is not None and not abandon:
                 return self._recover_from_previous_locked(
                     tx, previous, deadline, warnings, cleanup_pending
                 )

@@ -742,6 +742,43 @@ class TestFailureRollback(CoordinatorTestBase):
         self.assertEqual(state["phase"], "ready")
         self.assertEqual(state["active"]["game"], "nethack")
 
+    def test_recover_abandons_failed_program_view_transition(self):
+        # When the program view cannot be restored, the bounded abandon path
+        # clears the failed transition so the recorded game can start fresh.
+        state, _ = self.store.canonical.load()
+        previous = _runtime_dict(1, "nethack")
+        previous["adapter"] = "program"
+        state.update(
+            {
+                "phase": "failed",
+                "previous": previous,
+                "candidate": None,
+                "next_generation": 3,
+                "last_result": {
+                    "request_id": str(uuid.uuid4()),
+                    "operation": "switch",
+                    "status": "failed",
+                    "from_game": "nethack",
+                    "to_game": "robots",
+                    "generation": 2,
+                    "error_code": "rollback_failed",
+                },
+                "last_error": {"error_code": "rollback_failed", "detail": "prev"},
+            }
+        )
+        self.store.canonical.save(state)
+        self.behaviors["nethack"]["name"] = "program"
+
+        result = self.coordinator.recover(abandon_program_view=True)
+
+        self.assertEqual(result.status, "succeeded")
+        state = self.canonical()
+        self.assertEqual(state["phase"], "idle")
+        self.assertIsNone(state["active"])
+        self.assertIsNone(state["previous"])
+        self.coordinator.start("robots")
+        self.assertEqual(self.canonical()["active"]["game"], "robots")
+
     def test_failed_phase_blocks_new_requests_until_recover(self):
         self.behaviors["robots"]["materialize_error"] = AdapterError("start boom")
         self.coordinator.start("robots")
