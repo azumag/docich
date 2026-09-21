@@ -345,6 +345,7 @@ def summarize(data):
             f"corner_retro_active={int(_fixed_status_is(retro, ACTIVE_CORNER_STATUSES))}",
             f"corner_retro_waiting={int(_fixed_status_is(retro, frozenset({'waiting'})))}",
             f"corner_paper_active={int(_fixed_status_is(paper, ACTIVE_CORNER_STATUSES))}",
+            f"corner_paper_degraded={int(isinstance(paper, dict) and paper.get('degraded') is True)}",
             f"corner_paper_manual_active={int(_fixed_status_is(paper_manual, ACTIVE_CORNER_STATUSES))}",
             f"corner_paper_improve_running={int(_fixed_status_is(paper_improve, ACTIVE_PAPER_IMPROVE_STATUSES))}",
             f"corner_ab_candidate_pending={int(isinstance(ab, dict) and ab.get('candidate_pending') is True)}",

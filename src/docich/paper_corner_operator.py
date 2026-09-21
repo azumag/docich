@@ -1,4 +1,4 @@
-"""Owner-only fixed operations for the bounded PAPER corner/runtime."""
+"""Owner-only fixed operations for the content-driven PAPER corner/runtime."""
 from __future__ import annotations
 
 import argparse
@@ -16,10 +16,7 @@ from .paper_corner import PaperCornerError
 from .paper_corner_manual import ManualPaperCornerManager
 from .tmux import Tmux
 
-MIN_DURATION = 1
-MAX_DURATION = 60
 STARTUP_GRACE_SECONDS = 1.0
-
 # Diagnose-only mode deliberately communicates only a fixed category through
 # the process exit code. The gateway withholds child stdout/stderr in production,
 # so no game-switch detail, path, environment value or log body crosses the VM
@@ -46,7 +43,6 @@ def _repo_root() -> Path:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="docich-paper-corner-operator")
     parser.add_argument("--config", metavar="PATH", required=True)
-    parser.add_argument("--duration-minutes", type=int)
     parser.add_argument("--diagnose-only", action="store_true")
     parser.add_argument("--reload-worker", action="store_true")
     return parser
@@ -94,7 +90,7 @@ def _diagnose(config_path: Path) -> int:
     return DIAG_EXIT_CODES[category]
 
 
-def _recover_stale_manual_state(g, duration_minutes: int) -> bool:
+def _recover_stale_manual_state(g) -> bool:
     """Recover only a provably stale manual state before a new owner start.
 
     A previous prepare failure can leave the manual state at ``starting`` even
@@ -103,7 +99,7 @@ def _recover_stale_manual_state(g, duration_minutes: int) -> bool:
     manual session without stopping/restarting anything.  Any ambiguous state
     remains fail-closed.
     """
-    manager = ManualPaperCornerManager(g, duration_minutes=duration_minutes)
+    manager = ManualPaperCornerManager(g)
     state = manager._read_state()
     if state.get("status") not in ("starting", "active"):
         return False
@@ -157,11 +153,9 @@ def reload_worker(config_path: Path, *, tmux: Tmux | None = None, sleep=time.sle
     return {"status": "reloaded" if existed else "started", "worker": "trading"}
 
 
-def launch(config_path: Path, duration_minutes: int) -> dict[str, object]:
-    if type(duration_minutes) is not int or not MIN_DURATION <= duration_minutes <= MAX_DURATION:
-        raise PaperCornerError(f"duration_minutes は{MIN_DURATION}-{MAX_DURATION}の整数である必要があります")
+def launch(config_path: Path) -> dict[str, object]:
     g = load_global(_repo_root(), config_path)
-    recovered = _recover_stale_manual_state(g, duration_minutes)
+    recovered = _recover_stale_manual_state(g)
     log_dir = Path(g.state_dir) / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(log_dir, 0o700)
@@ -175,8 +169,6 @@ def launch(config_path: Path, duration_minutes: int) -> dict[str, object]:
         "--config",
         str(g.config_path),
         "start",
-        "--duration-minutes",
-        str(duration_minutes),
     ]
     env = {
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
@@ -208,7 +200,6 @@ def launch(config_path: Path, duration_minutes: int) -> dict[str, object]:
     return {
         "status": "started",
         "operation_id": operation_id,
-        "duration_minutes": duration_minutes,
         "recovered_stale_state": recovered,
         "pid": proc.pid,
     }
@@ -218,15 +209,14 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         config_path = Path(args.config)
-        selected = int(bool(args.diagnose_only)) + int(bool(args.reload_worker)) + int(args.duration_minutes is not None)
-        if selected != 1:
+        if args.diagnose_only and args.reload_worker:
             raise PaperCornerError("exactly one PAPER operation is required")
         if args.diagnose_only:
             return _diagnose(config_path)
         if args.reload_worker:
             result = reload_worker(config_path)
         else:
-            result = launch(config_path, args.duration_minutes)
+            result = launch(config_path)
     except (ConfigError, PaperCornerError, OSError, ValueError) as exc:
         print(f"docich: エラー: {exc}", file=sys.stderr)
         return 2

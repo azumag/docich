@@ -16,10 +16,12 @@
   選択済みの `pending` は切替中・境界待ちの理由だけでは破棄しない。
 - 期限切れの `draining` を新しい要求が検出した場合は、現在のboundary要求を安全に
   取り消してcanonicalを復旧できたときだけ、保持していたキュー先頭を続けて実行する。
-- `[paper_corner]`、`[soren91_corner]`、専用の `[nethack_corner]` の有効な固定枠を先読みする。rotationの
+- `[soren91_corner]`、専用の `[nethack_corner]` の有効な固定枠を先読みする。rotationの
   `rotation_wait_minutes + duration_minutes` の最悪終了時刻が固定枠開始の5分前までに
-  収まらない場合は選択せず延期し、固定枠の実行中も開始しない。たとえば22:00の
-  PAPER枠に対して21:50にdueになっても、rotationは発火せず固定枠終了後に再試行する。
+  収まらない場合は選択せず延期し、固定枠の実行中も開始しない。たとえば18:00の
+  soren91枠に対して17:50にdueになっても、rotationは発火せず固定枠終了後に再試行する。
+  固定時間を持たない `[paper_corner]` は静的な予約枠を持たず、program slot の実行時排他で
+  PAPER枠の開始を待たせる（rotationが先に走ってもPAPERはprogram lock待ちになる）。
 
 選択履歴と `next_due_at` は `run-soren-live/retro_corner.json` に保存する。途中で
 プロセスが再起動しても履歴・次回時刻を引き継ぎ、pending選択が境界待ち中なら同じゲームを

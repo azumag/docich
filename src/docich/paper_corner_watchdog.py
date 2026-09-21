@@ -1,10 +1,12 @@
-"""Independent deadline watchdog for the scheduled PAPER corner.
+"""Independent liveness watchdog for the scheduled PAPER corner.
 
 The normal scheduled runner owns narration and the happy-path restore. This
 watchdog runs in a separate systemd timer so a wedged runner cannot keep the
-PAPER dashboard on screen indefinitely. It only intervenes when the canonical
-program view is still PAPER and the durable scheduled state proves that the
-run is overdue. Manual PAPER runs are explicitly excluded.
+PAPER dashboard on screen indefinitely. The corner has no fixed duration, so an
+active run is judged by narration progress: if no segment is delivered within
+the stall window, the durable scheduled state proves the run is wedged. It only
+intervenes when the canonical program view is still PAPER. Manual PAPER runs are
+explicitly excluded.
 """
 from __future__ import annotations
 
@@ -25,6 +27,11 @@ from .paper_corner_restore import restore
 
 WATCHDOG_GRACE_S = 30
 STARTING_TIMEOUT_S = 300
+# The corner has no fixed duration, so an active run is judged by liveness:
+# narration must make progress within this window or the runner is treated as
+# wedged and the scheduled view is restored. This is a watchdog staleness
+# threshold, not a cap on how long a healthy corner may run.
+ACTIVE_STALL_S = 1800
 
 
 def _repo_root() -> Path:
@@ -54,7 +61,6 @@ def _deadline_reason(
     today: str,
     active_game: str | None,
     manual_active: bool,
-    duration_minutes: int,
 ) -> str | None:
     if active_game != PAPER_VIEW_NAME or manual_active or not isinstance(state, dict):
         return None
@@ -66,17 +72,13 @@ def _deadline_reason(
 
     status = state.get("status")
     if status == "active":
-        ends_at = _finite_number(state.get("ends_at"))
-        if ends_at is not None:
-            return "active-deadline" if now >= ends_at + WATCHDOG_GRACE_S else None
-
-        # Corrupt/incomplete active state should not pin the dashboard forever.
-        # Use a bounded fallback only after the run has demonstrably been in
-        # PAPER long enough that a healthy start would already have persisted
-        # its deadline.
-        base = _finite_number(state.get("started_at")) or _finite_number(state.get("requested_at"))
-        if base is not None and now >= base + max(STARTING_TIMEOUT_S, duration_minutes * 60 + WATCHDOG_GRACE_S):
-            return "active-missing-deadline"
+        base = (
+            _finite_number(state.get("last_progress_at"))
+            or _finite_number(state.get("started_at"))
+            or _finite_number(state.get("requested_at"))
+        )
+        if base is not None and now >= base + ACTIVE_STALL_S + WATCHDOG_GRACE_S:
+            return "active-stalled"
         return None
 
     if status == "starting":
@@ -111,7 +113,6 @@ def check(
         today=today,
         active_game=manager._active_game(),
         manual_active=_manual_corner_active(g),
-        duration_minutes=manager.minutes,
     )
     if reason is None:
         return {"status": "ok", "action": "none"}

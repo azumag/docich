@@ -13,7 +13,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Sequence
 
 from ..config import GlobalConfig
 from .ai_text import extract_json_object, generate_text
@@ -938,3 +938,128 @@ def generate_corner_script(
         "fallback_segments": missing,
         "research_status": research_status,
     }
+
+
+# --- Content-driven sequential narration -------------------------------------
+#
+# The scheduled/manual PAPER corner no longer runs for a fixed duration. It
+# generates the next fact-grounded segment one at a time and reads it as soon as
+# it is ready; when the narrator has nothing new to say the corner ends. Read
+# "covered" is a bounded list of short topic labels already spoken, so the model
+# can avoid repeating itself and decide when it is done.
+
+NEXT_SCRIPT_LABEL = "RADIO:paper-next"
+
+
+def build_next_prompt(facts: Mapping[str, object], covered: Sequence[object] | None = None) -> str:
+    """Prompt for exactly one next narration segment (or an explicit done)."""
+    facts_json = json.dumps(dict(facts), ensure_ascii=False, sort_keys=True)
+    covered_list = [str(item).strip() for item in (covered or []) if str(item).strip()]
+    covered_text = "、".join(covered_list) if covered_list else "（まだ何も話していません）"
+    return (
+        "あなたはPAPER暗号資産コーナーのラジオMC兼リサーチャーです。"
+        "以下の実データ(facts)だけを根拠に、まだ話していない切り口を1つ選び、"
+        "次の読み上げセグメントを1つだけ作ってください。存在しない数値・銘柄・ニュース・因果関係は絶対に作らないでください。\n"
+        f"{facts_json}\n\n"
+        f"【話し済みの切り口】{covered_text}\n"
+        "【切り口の例】今日の相場の見取り図、ニュースの含意、時間足チャート、戦略パラメータの狙い、"
+        "損益と保有、直近約定の理由、往復の振り返り、次回改善で検証したいこと。\n"
+        "【話し方】\n"
+        "- です・ます調の自然な話し言葉。結論を先に言い、その後に理由や数字を添える。\n"
+        "- factsを順番に復唱するだけは禁止。数字同士を比較し、意味を説明する。\n"
+        "- 金額・価格・指標などの数値は小数第2位までに丸めて言うこと。\n"
+        "- 事実と推測を言い分け、ニュースの見出しをそのまま読み上げない。\n"
+        "- 同じ文型・同じオチを繰り返さない。箇条書き、見出し、マークダウンは禁止。\n"
+        "もう話す価値のある新しい切り口が無いと判断したら、次のJSONだけを出力してください。\n"
+        '{"done": true}\n'
+        "それ以外の場合は、次のJSONだけを出力してください。\n"
+        '{"topic": "切り口を表す短い日本語ラベル", "text": "本文"}\n'
+        f"textは日本語で{MIN_SEGMENT_CHARS}〜{MAX_SEGMENT_CHARS}文字程度にすること。"
+        "JSONは1行で出力し、文字列値の中に改行や制御文字を入れないこと。JSON以外は出力しないこと。"
+    )
+
+
+def parse_next_narration(text: str) -> dict:
+    """Parse one next-narration response.
+
+    Returns ``{"status": "done"}`` for an explicit exhaustion signal, or
+    ``{"status": "item", "topic", "text"}`` for a usable segment. Malformed
+    output raises :class:`CornerScriptError` so the caller can retry and, if it
+    never recovers, distinguish a generation failure from material exhaustion.
+    """
+    data = extract_json_object(text)
+    if not isinstance(data, Mapping):
+        raise CornerScriptError("次の台本のJSONオブジェクトを抽出できません")
+    if data.get("done") is True:
+        return {"status": "done"}
+    body = data.get("text")
+    if not isinstance(body, str) or not body.strip():
+        raise CornerScriptError("次の台本に有効な本文がありません")
+    cleaned = body.strip().replace("\n", " ")
+    if len(cleaned) > MAX_SEGMENT_CHARS:
+        cleaned = cleaned[:MAX_SEGMENT_CHARS]
+    topic = data.get("topic")
+    label = topic.strip().replace("\n", " ")[:40] if isinstance(topic, str) and topic.strip() else cleaned[:20]
+    return {"status": "item", "topic": label, "text": cleaned}
+
+
+def generate_next_narration(
+    g: GlobalConfig,
+    *,
+    trading_dir,
+    agents: str,
+    timeout: int = 180,
+    covered: Sequence[object] | None = None,
+    now=None,
+    policy: StrategyPolicy | None = None,
+    timeframe_facts: Mapping[str, object] | None = None,
+) -> dict:
+    """Generate the single next narration segment from the freshest facts.
+
+    Distinguishes exhaustion (``status="done"``) from any failure
+    (``status="failed"`` with a bounded, non-secret ``reason``). The caller owns
+    the real-AI gate and the fallback policy; failures are returned, never
+    raised, so a broken model chain cannot crash the corner loop.
+    """
+    target = Path(trading_dir)
+    moment = time.time() if now is None else float(now)
+    cleaned_agents = (agents or "").strip()
+    if not cleaned_agents:
+        return {"status": "failed", "reason": "no-agents"}
+    if os.environ.get("DOCICH_ALLOW_REAL_AI") != "1":
+        return {"status": "failed", "reason": "real-ai-disabled"}
+
+    research_context: dict = {}
+    try:
+        research_context = prepare_research_context(target, now=moment)
+    except Exception:
+        research_context = {}
+    tf_context: Mapping[str, object] = timeframe_facts if isinstance(timeframe_facts, Mapping) else {}
+    if not tf_context:
+        try:
+            from .timeframe_chart import build_narration_facts
+
+            tf_context = build_narration_facts(target, now=moment)
+        except Exception:
+            tf_context = {}
+
+    try:
+        effective = policy if policy is not None else load_strategy_policy(target)
+        facts = build_facts(target, now=moment, policy=effective, timeframes=tf_context)
+        if research_context:
+            facts["research"] = research_context
+    except Exception as exc:
+        return {"status": "failed", "reason": _safe_reason(exc)}
+
+    try:
+        prompt = build_next_prompt(facts, covered)
+        raw = generate_text(
+            g, label=NEXT_SCRIPT_LABEL, agents=cleaned_agents, prompt_text=prompt, timeout=timeout
+        )
+        return parse_next_narration(raw)
+    except CornerScriptError as exc:
+        message = str(exc)
+        kind = "no-json-object" if "抽出" in message else "no-usable-segment"
+        return {"status": "failed", "reason": f"CornerScriptError:{kind}"}
+    except Exception as exc:
+        return {"status": "failed", "reason": _safe_reason(exc)}

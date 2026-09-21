@@ -1506,6 +1506,12 @@ class RetroCornerManager:
             duration_minutes = section.get("duration_minutes")
             if type(start_hour) is not int or not 0 <= start_hour <= 23:
                 raise RetroCornerError(f"{section_name}.start_hour が不正です")
+            if duration_minutes is None:
+                # Duration-less fixed corners (the content-driven PAPER corner)
+                # have no statically reservable window. They are protected by
+                # the runtime program-slot exclusivity instead, so a due
+                # rotation may start and the duration-less corner waits.
+                continue
             if type(duration_minutes) is not int or not 1 <= duration_minutes <= 720:
                 raise RetroCornerError(f"{section_name}.duration_minutes が不正です")
 

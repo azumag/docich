@@ -96,7 +96,8 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   （内容は読まない）。running かつ更新停滞／PID 死亡なら stale。
 - corner: 本番 `state_dir` 配下の `game_switch.json` / `retro_corner.json` /
   `paper_corner.json` / `trading/presentation.json`。status・時刻・announce 件数のみで、
-  announce/台本本文は読まない・出さない。state_dir は固定 config
+  announce/台本本文は読まない・出さない。`paper_corner.json` の `degraded` は
+  固定boolean `corner_paper_degraded` としてのみ要約する。state_dir は固定 config
   (`config/docich.soren-live.toml`) の `paths.state_dir` から解決し、
   production checkout 内に制約する。
 - boundary: Soren `tmp/state/corner_boundary_improvement.json` /
