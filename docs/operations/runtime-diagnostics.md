@@ -52,6 +52,8 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   "corners": {"state_dir_found": true,
               "game_switch": {"present": true, "phase": "ready", "active_game": "sorengame",
                               "last_status": "succeeded", "last_error_code": null, ...},
+              "game_switch_fifo": {"present": true, "readable": true,
+                                    "queued_count": 0, "head": null, ...},
               "retro_corner": {"present": true, "status": "active", "game": "gnurobots", ...},
               "paper_corner": {"present": false, "readable": false},
               "presentation": {"present": true, "mode": "detailed", ...},
@@ -69,8 +71,13 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
 - 単発の rate-limit だけで critical にしない。rate-limit は件数のみ報告する。
 - queue waiter 数は lock 形式から観測できないため報告しない（不明は不明と扱う）。
 - 診断は stale lock を削除しない。観測のみ。
-- `corners` はコーナー/番組のライフサイクル観測であり、現時点では severity を
-  変えない（時間監視の通知を増やさない）。失敗状態の警報化は別途判断する。
+- `corners` はコーナー/番組のライフサイクル観測。`retro_corner` が
+  `status=failed` かつ `recovery_required=true` の場合だけ severity を `warn` にし、
+  owner-only の固定 `recover-failed` 操作を許可する。`draining` / `recovery_required`
+  のcanonical phaseは自動でリセットしない。
+- `game_switch_fifo` は `game-switch/requests` のreceiptを固定上限で読み、queued件数と
+  FIFO先頭の operation/target/age だけを出す。request ID、payload、生成本文、秘密情報は
+  出さない。malformed receiptやscan未完了は復旧せず、監視側で要対応として扱う。
 - `tracked_drift` は deploy を拒否させる `git_clean(root)==false` の内訳を、
   **固定カテゴリとcounterだけ**で帰属する（#412）。`parent_tracked_dirty` /
   `owned_submodule_head_mismatch` / `owned_submodule_tracked_dirty` /
@@ -94,9 +101,11 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
 - improve: `improve_state.json`、`tmp/improve.lock`、
   `improve_monitor_status.json`、`rate_limit_backoff` と retry batch の存在のみ
   （内容は読まない）。running かつ更新停滞／PID 死亡なら stale。
-- corner: 本番 `state_dir` 配下の `game_switch.json` / `retro_corner.json` /
+- corner: 本番 `state_dir` 配下の `game_switch.json` / `game-switch/requests/*.json` /
+  `retro_corner.json` /
   `paper_corner.json` / `trading/presentation.json`。status・時刻・announce 件数のみで、
-  announce/台本本文は読まない・出さない。`paper_corner.json` の `degraded` は
+  announce/台本本文は読まない・出さない。FIFOはqueued件数・先頭の固定項目だけを出す。
+  `paper_corner.json` の `degraded` は
   固定boolean `corner_paper_degraded` としてのみ要約する。state_dir は固定 config
   (`config/docich.soren-live.toml`) の `paths.state_dir` から解決し、
   production checkout 内に制約する。

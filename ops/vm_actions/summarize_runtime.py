@@ -259,6 +259,7 @@ def summarize(data):
     sampled_queue_giveups = sum(queue_giveup_component_counts.values())
     sampled_all_failed = sum(all_failed_component_counts.values())
     retro = corners.get("retro_corner") if isinstance(corners, dict) else None
+    fifo = corners.get("game_switch_fifo") if isinstance(corners, dict) else None
     paper = corners.get("paper_corner") if isinstance(corners, dict) else None
     paper_manual = corners.get("paper_corner_manual") if isinstance(corners, dict) else None
     paper_improve = corners.get("paper_improve") if isinstance(corners, dict) else None
@@ -342,8 +343,12 @@ def summarize(data):
             f"improvement_stale={int(improvement.get('stale') is True)}",
             f"retry_pending={int(improvement.get('retry_pending') is True)}",
             f"corner_game_switch_busy={int(_game_switch_busy(corners))}",
+            f"game_switch_fifo_queued={_integer(fifo, 'queued_count')}",
+            f"game_switch_fifo_malformed={_integer(fifo, 'malformed_count')}",
+            f"game_switch_fifo_head_present={int(isinstance(fifo, dict) and isinstance(fifo.get('head'), dict))}",
             f"corner_retro_active={int(_fixed_status_is(retro, ACTIVE_CORNER_STATUSES))}",
             f"corner_retro_waiting={int(_fixed_status_is(retro, frozenset({'waiting'})))}",
+            f"corner_retro_recovery_required={int(isinstance(retro, dict) and retro.get('recovery_required') is True)}",
             f"corner_paper_active={int(_fixed_status_is(paper, ACTIVE_CORNER_STATUSES))}",
             f"corner_paper_degraded={int(isinstance(paper, dict) and paper.get('degraded') is True)}",
             f"corner_paper_manual_active={int(_fixed_status_is(paper_manual, ACTIVE_CORNER_STATUSES))}",

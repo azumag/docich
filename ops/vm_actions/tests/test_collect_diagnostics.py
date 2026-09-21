@@ -362,6 +362,8 @@ class ProgramCornerStateTests(CollectorFixture):
     def test_corner_state_reports_lifecycle_without_bodies(self):
         module = load_collector()
         directory = self.state_dir()
+        requests = directory / "game-switch" / "requests"
+        requests.mkdir(parents=True, exist_ok=True)
         self.write_state(
             directory,
             "game_switch.json",
@@ -389,6 +391,28 @@ class ProgramCornerStateTests(CollectorFixture):
                 "ends_at": "2026-09-10T19:30:30+09:00",
                 "completed_at": None,
                 "last_error": None,
+            },
+        )
+        self.write_state(
+            requests,
+            "queued-request.json",
+            {
+                "status": "queued",
+                "operation": "switch",
+                "target": "moon-buggy",
+                "generation": 3,
+                "created_at": "2026-09-10T10:00:00+00:00",
+            },
+        )
+        self.write_state(
+            requests,
+            "done-request.json",
+            {
+                "status": "succeeded",
+                "operation": "switch",
+                "target": "ninvaders",
+                "generation": 2,
+                "created_at": "2026-09-10T09:00:00+00:00",
             },
         )
         self.write_state(
@@ -422,12 +446,18 @@ class ProgramCornerStateTests(CollectorFixture):
         self.assertEqual(game_switch["active_generation"], 67)
         self.assertEqual(game_switch["last_status"], "succeeded")
         self.assertIsNone(game_switch["last_error_code"])
+        fifo = result["game_switch_fifo"]
+        self.assertEqual(fifo["queued_count"], 1)
+        self.assertEqual(fifo["terminal_count"], 1)
+        self.assertEqual(fifo["head"]["operation"], "switch")
+        self.assertEqual(fifo["head"]["target"], "moon-buggy")
 
         retro = result["retro_corner"]
         self.assertEqual(retro["present"], True)
         self.assertEqual(retro["status"], "active")
         self.assertEqual(retro["game"], "gnurobots")
         self.assertEqual(retro["previous_game"], "sorengame")
+        self.assertEqual(retro["recovery_required"], False)
 
         paper = result["paper_corner"]
         self.assertEqual(paper["present"], True)
@@ -529,6 +559,24 @@ class ProgramCornerStateTests(CollectorFixture):
         rendered = json.dumps(result)
         self.assertNotIn("SUPERSECRET123", rendered)
         self.assertIn("[REDACTED]", rendered)
+
+    def test_recovery_required_corner_is_classified_without_exposing_request_identity(self):
+        module = load_collector()
+        directory = self.state_dir()
+        self.write_state(
+            directory,
+            "retro_corner.json",
+            {
+                "status": "failed",
+                "game": "ninvaders",
+                "last_error_code": "recovery_required",
+                "last_error": "canonical stateの復旧が必要です (`docich recover`)",
+            },
+        )
+        result = module._collect_programs(directory, self.soren, self.now)
+        self.assertEqual(result["retro_corner"]["recovery_required"], True)
+        self.assertEqual(result["retro_corner"]["last_error_code"], "recovery_required")
+        self.assertIsNone(result["game_switch_fifo"]["head"])
 
     def test_nethack_corner_states_are_reported_and_redacted(self):
         module = load_collector()

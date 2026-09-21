@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 AUTH = ROOT / "ops/vm_actions/authorize_retro_corner.py"
 SCRIPT = ROOT / "ops/vm_actions/restart_retro_corner.sh"
+RECOVER_SCRIPT = ROOT / "ops/vm_actions/recover_retro_corner.sh"
 WF = ROOT / ".github/workflows/retro-corner-operator.yml"
 
 
@@ -39,7 +40,13 @@ class RetroCornerAuthorizeTests(unittest.TestCase):
             json.loads(result.stdout),
             {"operation": "restart-service", "target": "production", "ref": "main"},
         )
-        for operation in ("status", "restart", "exec", "restart-service;id", ""):
+        recovered = self.run_auth(INPUT_OPERATION="recover-failed")
+        self.assertEqual(recovered.returncode, 0, recovered.stderr)
+        self.assertEqual(
+            json.loads(recovered.stdout),
+            {"operation": "recover-failed", "target": "production", "ref": "main"},
+        )
+        for operation in ("status", "restart", "exec", "restart-service;id", "", "recover-failed;id"):
             with self.subTest(operation=operation):
                 self.assertNotEqual(self.run_auth(INPUT_OPERATION=operation).returncode, 0)
 
@@ -91,7 +98,7 @@ class RetroCornerOperatorPolicyTests(unittest.TestCase):
     def test_workflow_is_fixed_and_never_exposes_arbitrary_command_input(self):
         text = WF.read_text(encoding="utf-8")
         for required in (
-            "options: [restart-service]",
+            "options: [restart-service, recover-failed]",
             "github.actor_id == 9018513",
             "github.triggering_actor == 'azumag'",
             "github.ref_protected == true",
@@ -99,6 +106,9 @@ class RetroCornerOperatorPolicyTests(unittest.TestCase):
             "Require production to equal current protected main",
             "control/ops/vm_actions/authorize_retro_corner.py",
             "control/ops/vm_actions/restart_retro_corner.sh",
+            "control/ops/vm_actions/recover_retro_corner.sh",
+            "Recover only the failed retro corner slot",
+            "if: steps.auth.outputs.operation == 'recover-failed'",
             "StrictHostKeyChecking=yes",
             "ForwardAgent=no",
             "ClearAllForwardings=yes",
@@ -108,6 +118,15 @@ class RetroCornerOperatorPolicyTests(unittest.TestCase):
         self.assertNotIn("inputs.command", text)
         self.assertNotIn("event.issue.body", text)
         self.assertNotIn("pull_request_target", text)
+
+    def test_failed_recovery_script_restarts_only_the_corner_unit(self):
+        text = RECOVER_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('unit="docich-retro-corner.service"', text)
+        self.assertIn('systemctl --user show "$unit"', text)
+        self.assertIn('systemctl --user --no-block restart "$unit"', text)
+        self.assertNotIn("docich.service", text)
+        self.assertNotIn("$1", text)
+        self.assertNotIn("sudo", text)
 
 
 if __name__ == "__main__":

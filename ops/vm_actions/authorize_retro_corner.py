@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed authorization for the fixed retro corner service restart."""
+"""Fail-closed authorization for fixed retro-corner operations."""
 from __future__ import annotations
 
 import json
@@ -12,7 +12,7 @@ OWNER_ID = "9018513"
 REPOSITORY = "azumag/docich"
 REPOSITORY_ID = "1327276249"
 WORKFLOW = ".github/workflows/retro-corner-operator.yml"
-OPERATION = "restart-service"
+ALLOWED_OPERATIONS = {"restart-service", "recover-failed"}
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 
 
@@ -46,14 +46,15 @@ def main() -> None:
         fail("unsupported event")
     if env.get("INPUT_CONFIRM") != "production":
         fail("production confirmation required")
-    if env.get("INPUT_OPERATION") != OPERATION:
+    operation = env.get("INPUT_OPERATION", "")
+    if operation not in ALLOWED_OPERATIONS:
         fail("unsupported retro corner operation")
 
-    result = {"operation": OPERATION, "target": "production", "ref": "main"}
+    result = {"operation": operation, "target": "production", "ref": "main"}
     output = env.get("GITHUB_OUTPUT")
     if output:
         with open(output, "a", encoding="utf-8") as out:
-            out.write(f"operation={OPERATION}\n")
+            out.write(f"operation={operation}\n")
             out.write("target=production\n")
             out.write("ref=main\n")
     print(json.dumps(result, separators=(",", ":")))

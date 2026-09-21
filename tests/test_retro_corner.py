@@ -460,6 +460,142 @@ class TestRetroCornerRotation(RetroCornerTestBase):
         self.assertEqual(result.status, "completed")
         self.assertEqual(coordinator.calls[0][0], "switch")
 
+    def test_recovery_required_retries_only_after_canonical_failed_recovery(self):
+        from unittest.mock import patch
+
+        class RecoveringCoordinator(FakeCoordinator):
+            def __init__(self, current):
+                super().__init__(current)
+                self.fail_once = True
+                self.recover_calls = 0
+
+            def switch(self, game):
+                self.calls.append(("switch", game))
+                if self.fail_once:
+                    self.fail_once = False
+                    return SimpleNamespace(
+                        status="failed",
+                        error_code="recovery_required",
+                        detail="canonical stateの復旧が必要です",
+                    )
+                self.current[0] = game
+                return SimpleNamespace(status="succeeded", error_code=None, detail=None)
+
+            def recover(self, **_kwargs):
+                self.recover_calls += 1
+                return SimpleNamespace(status="succeeded", error_code=None, detail="recovered")
+
+        current = ["sorengame"]
+        coordinator = RecoveringCoordinator(current)
+        mgr = RetroCornerManager(
+            self.g,
+            config=self.cfg,
+            coordinator=coordinator,
+            now=lambda: self.now_value,
+            sleep=lambda seconds: None,
+            active_game_reader=lambda: current[0],
+            ensure_runtime=lambda: None,
+        )
+        with patch.object(
+            mgr.store.canonical,
+            "load",
+            return_value=({"phase": "failed", "previous": None, "active": None}, False),
+        ):
+            result = mgr._transition_to("sorengame", "robots")
+
+        self.assertEqual(result.status, "succeeded")
+        self.assertEqual(coordinator.recover_calls, 1)
+        self.assertEqual(coordinator.calls, [("switch", "robots"), ("switch", "robots")])
+        self.assertEqual(current[0], "robots")
+
+    def test_recovery_required_does_not_touch_live_draining(self):
+        from unittest.mock import patch
+
+        class FailingCoordinator(FakeCoordinator):
+            def __init__(self, current):
+                super().__init__(current)
+                self.recover_calls = 0
+
+            def switch(self, game):
+                self.calls.append(("switch", game))
+                return SimpleNamespace(
+                    status="failed", error_code="recovery_required", detail="canonical stateの復旧が必要です"
+                )
+
+            def recover(self, **_kwargs):
+                self.recover_calls += 1
+                return SimpleNamespace(status="succeeded")
+
+        coordinator = FailingCoordinator(["sorengame"])
+        mgr, _ = self.manager(["sorengame"])
+        mgr.coordinator = coordinator
+        with patch.object(mgr.store.canonical, "load", return_value=({"phase": "draining"}, False)):
+            with self.assertRaises(RetroCornerError):
+                mgr._transition_to("sorengame", "robots")
+        self.assertEqual(coordinator.recover_calls, 0)
+        self.assertEqual(coordinator.calls, [("switch", "robots")])
+
+
+class TestRetroCornerFailedRecovery(RetroCornerTestBase):
+    def test_recover_failed_preserves_rotation_history_and_retries_same_game(self):
+        from unittest.mock import patch
+
+        current = ["sorengame"]
+        mgr, coordinator = self.manager(current)
+        mgr._target_reached = lambda state: True
+        rotation = {
+            "selection_history": [{"game": "robots", "selected_at": self.now_value.isoformat()}],
+            "next_due_at": (self.now_value + timedelta(hours=4)).isoformat(),
+            "last_result": {"result": "fire", "game": "robots"},
+        }
+        state = mgr._default_state()
+        state.update(
+            status="failed",
+            game="robots",
+            previous_game="sorengame",
+            last_error="retro start failed: canonical stateの復旧が必要です (`docich recover`)",
+            last_error_code="recovery_required",
+            rotation=rotation,
+        )
+        mgr._write_state(state)
+        with patch.object(
+            mgr.store.canonical,
+            "load",
+            return_value=({"phase": "ready"}, False),
+        ):
+            result = mgr.recover_failed()
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(
+            coordinator.calls,
+            [("switch", "robots"), ("switch", "sorengame")],
+        )
+        finished = mgr.status()
+        self.assertEqual(finished["status"], "completed")
+        self.assertEqual(finished["rotation"]["selection_history"], rotation["selection_history"])
+        self.assertEqual(finished["rotation"]["last_result"]["result"], "recovery-retry")
+
+    def test_recover_failed_keeps_boundary_wait_untouched(self):
+        current = ["sorengame"]
+        mgr, coordinator = self.manager(current)
+        state = mgr._default_state()
+        state.update(
+            status="failed",
+            game="robots",
+            previous_game="sorengame",
+            last_error="canonical stateの復旧が必要です",
+            last_error_code="recovery_required",
+        )
+        mgr._write_state(state)
+        mgr.store.canonical.load = lambda: ({"phase": "draining"}, False)
+
+        result = mgr.recover_failed()
+
+        self.assertEqual(result.status, "queued")
+        self.assertIn("期限前のdrainingには触れません", result.detail)
+        self.assertEqual(coordinator.calls, [])
+        self.assertEqual(mgr.status()["status"], "failed")
+
 
 class TestRetroCornerLifecycle(RetroCornerTestBase):
     def test_restores_previous_game_after_duration(self):
