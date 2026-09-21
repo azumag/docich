@@ -51,8 +51,11 @@
 
 - 対象コミット、決定、実行コマンドと結果、未確認事項、残件、次の具体的な一手を事実ベースで残す。デプロイしただけ、テストが緑なだけで「直った」と書かない。
 - `handoff` スキルがある場合は `/handoff` の保存モードを使ってよい。
-- `handoff.md` を更新したら `games/soviet_now/tools/build_ops_brief.sh` を実行し、`games/soviet_now/prompts/ops_brief.md` の最新セクション見出し3件を再生成する。この3行はコメント返しプロンプトの【いまの配信・運用状況メモ】に使われる。
-- VMの `handoff.md` は古いままのため、生成は必ずdocichチェックアウト側で行う。許可された運用環境では生成物をVMへ配布し、一致を確認する。
+- 運用正本はdocichルートのローカル `handoff.md` だけ。内部記録のためGit管理外を維持し、SorenサブモジュールやVM側のhandoffを正本にしない。
+- 更新時は親の `python3 ops/vm_actions/ops_brief.py build` と `check-source` を実行する。公開可能な最新見出し3件・ソースSHA-256・出力SHA-256だけが `ops/runtime_context/ops_brief.json` へ決定的に生成される。見出しに機密情報を含めず、親の作業ブランチで生成物をレビュー・コミットする。分離worktreeでは `--handoff /絶対パス/docich/handoff.md` で唯一の正本を明示する。
+- CIは `check-artifact` とstale検知回帰テストを実行する。非公開ソースがないCIは正本の最新性までは証明できないため、ローカルの `check-source` 成功を別に記録する。ソース欠落は成功扱いしない。
+- runtimeの `prompts/ops_brief.md` は親の生成物を入力にcanonical gatewayが同一deploy transactionで生成・検証する。`games/soviet_now/prompts/ops_brief.md` の既存tracked copyはlegacyであり、以後の配布元ではない。Soren側で手動再生成・コミット・VMコピーは不要。旧 `games/soviet_now/tools/build_ops_brief.sh` はこの経路では使用しない。
+- gateway初回切替・drift・未配布の扱いは `docs/operations/ops-brief.md` を参照する。生成だけでVM反映済みと書かない。
 - GitHub上の文書改訂だけで運用状況に変更がない場合は、PR本文を引き継ぎとし、運用中の `handoff.md` / `ops_brief.md` を書き換えない。生成・配布環境がない場合は未実施と記録し、配布済みと書かない。
 
 ## 3. 機密情報を書かない
@@ -65,7 +68,7 @@
 
 ## 5. VM反映とリポジトリ同期
 
-`/home/ubuntu/soren`（Oracle VM、git管理外）へ本番反映する変更は、同時に `azumag/soviet_now` の作業ブランチへコミット・pushする。コミット前は「反映済み」と報告しない。
+`/home/ubuntu/soren`（Oracle VM、git管理外）へ本番反映するSorenコード変更は、同時に `azumag/soviet_now` の作業ブランチへコミット・pushする。親handoff由来の `prompts/ops_brief.md` は例外で、docichの `ops/runtime_context/ops_brief.json` を正規の配布入力として親だけでコミットする。コミット前は「反映済み」と報告しない。
 
 VMとリポジトリが乖離した場合は履歴・内容・実際の動作から新しい側を確認し、バックアップを保って同期する。更新時刻だけで上書きせず、他者の変更を消さない。
 
@@ -74,11 +77,11 @@ VMとリポジトリが乖離した場合は履歴・内容・実際の動作か
 
 - 本番反映を伴う作業は、作業ブランチへのcommit/pushやPR作成だけで完了にしない。明示された停止段階がない限り、対象変更のレビュー・必要なテスト・最新HEADの必須CIを確認し、Sorenのmainへマージする。
 - 原則はmain統合後にVMへ反映する。承認済みの緊急対応でVMへ先行適用した場合も、同じ作業の中でmain統合と照合まで完了する。未マージや未照合のまま終了せざるを得ない場合は、未完了として理由・残差分・次の手順を明記する。
-- 配備前に対象ファイル一覧と旧SHAを確認し、バックアップを取る。配備後はリモートmainの最終コミットとVM現物のSHA-256を対象ファイルごとに比較する。コード・設定コードだけでなく、配布したテストや`prompts/ops_brief.md`等の追跡対象生成物も含める。秘密情報・実行時stateはGitへ追加しない。
+- 配備前に対象ファイル一覧と旧SHAを確認し、バックアップを取る。配備後はリモートmainの最終コミットとVM現物のSHA-256を対象ファイルごとに比較する。配布したテストも含む。`prompts/ops_brief.md` はSorenのtracked copyではなく、対象docichコミットの公開用生成物から再生成したバイト列と比較する。秘密情報・実行時stateはGitへ追加しない。
 - Sorenのmainが確定したら、docichの`games/soviet_now`参照もそのコミットへ更新し、最新HEADの必須CI成功後にdocichのmainへ統合する。最後にリモートmainの実際の参照先を確認する。
 - 並行更新があれば直前にfetchし、他の修正を含む後続コミットへ統合する。古い参照やVMファイルで上書きしない。共有`soren-integration`でcheckout・commitせず、他の作業が使っていない同目的の既存ディレクトリ、または専用の軽量worktreeを使う。
 - ファイル一致と実行中プロセスへの反映は別に確認する。再起動が必要な変更は対象workerだけを入れ替え、旧子プロセスの終了、新PID・起動時刻・実効設定を検証する。配信・共通基盤のPID維持も確認する。文書だけの変更では再起動しない。
-- 最終報告・handoffにはSoren/docichのmainコミット、照合範囲と結果、CI、実機確認、残件を残す。部分照合だけでVM全体の一致を主張しない。生成物を後から更新した場合は、それもmain・VM・docich参照へ同期してから完了とする。
+- 最終報告・handoffにはSoren/docichのmainコミット、照合範囲と結果、CI、実機確認、残件を残す。部分照合だけでVM全体の一致を主張しない。親handoff由来の生成物だけを更新する場合、Sorenコミット/gitlink更新は不要で、docichのレビュー・CI・main・canonical VM配布の範囲で同期する。
 
 
 ## 6. config.sh既定値の変更はworker完全再起動で反映する

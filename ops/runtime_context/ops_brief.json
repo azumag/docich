@@ -1,0 +1,11 @@
+{
+  "output_sha256": "b6a5cea6ce52960b7f15a30f174a01775fd088aadb5d27e4420e1dcd60cebde1",
+  "schema": 1,
+  "source": "handoff.md",
+  "source_sha256": "9233e44079cac824f9df034fe180b5cbe883fb0f64c18698f2202e872fc19e3a",
+  "topics": [
+    "NetHackの判断保留を明示的なドット待機へ変更",
+    "Soren91（メリケンAI）コーナーの画面凍結 → 早期終了で復旧",
+    "A/B現在腕表示をレビュー・main・VMへ反映"
+  ]
+}

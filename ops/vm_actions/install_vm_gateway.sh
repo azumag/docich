@@ -32,6 +32,7 @@ read -r key_type key_body _ < "$pubkey_file"
 [[ "$key_type" == ssh-ed25519 && "$key_body" =~ ^[A-Za-z0-9+/=]+$ ]]
 
 install -d -o root -g root -m 0755 /usr/local/libexec/azumag-vm-ops
+install -o root -g root -m 0644 "$source_dir/ops_brief.py" /usr/local/libexec/azumag-vm-ops/ops_brief.py
 install -o root -g root -m 0755 "$gateway_source" /usr/local/libexec/azumag-vm-ops/gateway.py
 install -o root -g root -m 0755 "$source_dir/stage_repair.py" /usr/local/libexec/azumag-vm-ops/stage_repair.py
 

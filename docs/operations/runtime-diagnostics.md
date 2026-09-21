@@ -85,6 +85,11 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   `unknown=1`・`drift_detected=1` とし、失敗したscanを drift なしの0件扱いにしない。
   path・filename・diff・file bytes・raw exception は出さない。severity は変えない。
 
+- gatewayの `ops_brief_projection.status` は親コミットの公開用生成物とVMの
+  実バイト/modeを比較した `matched` / `drift` / `unmanaged` / `unknown`。
+  `drift` は少なくともwarnとする。`unmanaged` は親生成物への移行前で同期成功を
+  意味しない。ソース本文・生成本文・SHAは返さない。詳細は [ops-brief.md](ops-brief.md)。
+
 ## 収集元（すべて read-only）
 
 - common rotation: `corner_rotation.json` の固定projectionを
