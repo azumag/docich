@@ -22,29 +22,33 @@ _docich_wrapper_running() {
 }
 
 _docich_wrapper_stop_tree() {
-  root="$1"
-  case "$root" in
+  case "$1" in
     ''|*[!0-9]*|0) return 0 ;;
   esac
 
   # Stop leaves first. This prevents the root shell from exiting and
   # reparenting a still-running sleep/tmux/driver child.
-  for child in $(_docich_wrapper_children "$root"); do
-    _docich_wrapper_stop_tree "$child"
+  # Each recursive call runs in a subshell because POSIX sh has no portable
+  # local-variable declaration. Without that isolation, the recursive
+  # function's loop variables overwrite the parent's root PID and the driver
+  # is left alive after the game exits; its inherited capture pipe then keeps
+  # the caller blocked forever on Linux.
+  for child in $(_docich_wrapper_children "$1"); do
+    (_docich_wrapper_stop_tree "$child")
   done
 
-  kill -TERM "$root" 2>/dev/null || true
+  kill -TERM "$1" 2>/dev/null || true
   waited=0
-  while _docich_wrapper_running "$root" && [ "$waited" -lt 10 ]; do
+  while _docich_wrapper_running "$1" && [ "$waited" -lt 10 ]; do
     sleep 0.1
     waited=$((waited + 1))
   done
-  if _docich_wrapper_running "$root"; then
-    kill -KILL "$root" 2>/dev/null || true
+  if _docich_wrapper_running "$1"; then
+    kill -KILL "$1" 2>/dev/null || true
   fi
   # The driver and game are direct children of this wrapper. wait() is the
   # actual zombie-prevention step; kill alone only changes them into zombies.
-  wait "$root" 2>/dev/null || true
+  wait "$1" 2>/dev/null || true
 }
 
 docich_wrapper_run_with_driver() {
