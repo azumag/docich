@@ -81,3 +81,35 @@ def test_wrapper_rejects_invalid_limits(game, value):
                             env=env, capture_output=True, text=True, timeout=5)
     assert result.returncode == 2
     assert "positive integer" in result.stderr
+
+
+def test_driver_helper_preserves_game_stdin_when_game_is_tracked_asynchronously(tmp_path):
+    """A tracked interactive game must not inherit POSIX async /dev/null stdin."""
+
+    output = tmp_path / "stdin.txt"
+    script = tmp_path / "probe.sh"
+    helper = ROOT / "games/cli-wrappers/_run_with_driver.sh"
+    script.write_text(
+        "#!/bin/sh\n"
+        f". {helper!s}\n"
+        "driver() { while :; do sleep 10; done; }\n"
+        "driver &\n"
+        "DRIVER=$!\n"
+        "docich_wrapper_run_with_driver \"$DRIVER\" sh -c "
+        "'IFS= read -r line || exit 7; printf \"%s\\n\" \"$line\" > \"$DOCICH_STDIN_PROBE\"'\n"
+        "exit $?\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o700)
+
+    result = subprocess.run(
+        ["/bin/sh", str(script)],
+        input="pane-input\n",
+        env={**os.environ, "DOCICH_STDIN_PROBE": str(output)},
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert output.read_text(encoding="utf-8") == "pane-input\n"
