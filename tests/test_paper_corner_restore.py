@@ -133,6 +133,22 @@ def test_failed_manual_corner_state_is_recovered_before_restore(tmp_path, monkey
     assert manager.coordinator.calls == [paper_corner_restore.RECOVERY_TIMEOUT_S]
 
 
+def test_failed_manual_state_wins_over_completed_scheduled_state_same_day(tmp_path):
+    manager = _Manager(status="completed", state_dir=tmp_path)
+    manual_path = tmp_path / paper_corner_restore.MANUAL_STATE_FILE
+    manual_path.write_text(
+        json.dumps({"status": "failed", "date": "2026-09-19", "previous_game": "sorengame"}),
+        encoding="utf-8",
+    )
+
+    found = paper_corner_restore._today_corner_state(manager)
+
+    assert found is not None
+    state, path = found
+    assert state["status"] == "failed"
+    assert path == manual_path
+
+
 def test_abandon_fallback_clears_program_view_and_starts_recorded_game(tmp_path, monkeypatch):
     manager = _Manager(state_dir=tmp_path)
     manager.state["date"] = "2026-09-18"
