@@ -18,9 +18,13 @@ SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
 SCORELOG="${MOONBUGGY_SCORELOG:-/home/ubuntu/docich/run-soren-live/scores/moon-buggy.jsonl}"
 PANE="${TMUX_PANE:-}"
 MOONBUGGY_BIN="${MOONBUGGY_BIN:-/usr/games/moon-buggy}"
+MAX_MATCHES="${MOONBUGGY_MAX_MATCHES:-${DOCICH_TARGET_MATCHES:-3}}"
+case "$MAX_MATCHES" in
+  ''|*[!0-9]*|0*) echo "MOONBUGGY_MAX_MATCHES must be a positive integer" >&2; exit 2 ;;
+esac
 
 record_score() {
-  [ "$1" -gt 0 ] 2>/dev/null || return 0
+  [ "$1" -ge 0 ] 2>/dev/null || return 0
   mkdir -p "$(dirname "$SCORELOG")" 2>/dev/null || true
   printf '{"ts":%s,"game":"moon-buggy","score":%s,"source":"wrapper"}\n' "$(date +%s)" "$1" >>"$SCORELOG" 2>/dev/null || true
 }
@@ -37,6 +41,7 @@ driver() {
   max_score=0
   seen_game=0
   started=0
+  matches=0
   while :; do
     sleep 2
     [ -n "$PANE" ] || continue
@@ -61,9 +66,11 @@ driver() {
       *"new game"*)
         if [ "$seen_game" = "1" ]; then
           record_score "$max_score"
+          matches=$((matches + 1))
           max_score=0
           seen_game=0
         fi
+        [ "$matches" -lt "$MAX_MATCHES" ] || continue
         tmux send-keys -t "$PANE" -l "y"
         sleep 3
         ;;

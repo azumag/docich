@@ -1545,6 +1545,10 @@ def _project_corner_state(data):
         "started_at": _bounded_time(data.get("started_at")),
         "ends_at": _bounded_time(data.get("ends_at")),
         "completed_at": _bounded_time(data.get("completed_at")),
+        "target_matches": (
+            data["target_matches"] if type(data.get("target_matches")) is int
+            and 1 <= data["target_matches"] <= 100 else None
+        ),
         "last_error": _bounded_str(data.get("last_error"), 200),
         "last_error_code": (
             "recovery_required" if error_code == "recovery_required" else None

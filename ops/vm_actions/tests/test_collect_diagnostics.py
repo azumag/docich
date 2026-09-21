@@ -36,6 +36,24 @@ def test_rotation_projection_never_emits_seed_or_request_text(tmp_path):
     assert "DO-NOT-PUBLISH" not in json.dumps(output)
 
 
+def test_corner_match_target_projection_is_bounded_and_does_not_change_n(tmp_path):
+    module = load_collector()
+    for value in (1, 3, 100, 0, 101, True, "SECRET-TARGET", None):
+        (tmp_path / "retro_corner.json").write_text(json.dumps({
+            "game": "nsnake", "target_matches": value, "save": "SECRET-SAVE",
+        }))
+        (tmp_path / "corner_rotation.json").write_text(json.dumps({
+            "eligible": ["nsnake", "paper"], "interval_seconds": 43200,
+        }))
+        output = {}
+        module._collect_corner_files(tmp_path, output, 100)
+        expected = value if type(value) is int and 1 <= value <= 100 else None
+        assert output["retro_corner"]["target_matches"] == expected
+        assert output["corner_rotation"]["eligible_count"] == 2
+        assert output["corner_rotation"]["interval_seconds"] == 43200
+        assert "SECRET" not in json.dumps(output)
+
+
 class CollectorFixture(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="vmops-diag-")

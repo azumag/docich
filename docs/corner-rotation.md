@@ -8,6 +8,12 @@
 項目だけを有効数Nに数える。ゲーム設定の無効化、実行ファイル不足、catalogの
 `paused=true`、`state_dir/corners/<id>.paused` を反映し、Nを固定しない。
 
+`adapter="game"`の項目には`target_matches`（整数1〜100）を任意指定できる。
+省略時は従来の`retro_corner.target_matches`（既定3）を継承する。
+productionの`nsnake`は1試合とし、開始以降のscorelog保存を確認して既存の終了・復帰へ進む。
+時間上限、試合境界待ち、次slotの間隔とcooldownは維持する。試合数はNに加算しない。
+試合数を扱わないPAPER/メリケン/専用NetHack adapterへの指定と不正値は設定エラーとする。
+
 `corner_catalog.py` は登録検証、`corner_rotation.py` は選択・時刻・履歴・予約、
 `corner_adapters.py` はcorner固有managerの構築と実行、
 `CornerExecutionCoordinator` は共通program slotの排他を担当する。
@@ -57,6 +63,12 @@ canonicalの危険phase、failed/restoringの他ownerも次の開始を阻止す
 `ready`で記録済みの元ゲームへ戻っていることを確認できる場合だけである。この場合はstateを
 削除・上書きせず、観測上のみterminalとして扱う。canonicalが読めない、遷移中、元ゲームが
 一致しない場合は従来どおりfail-closedで次の開始を阻止する。
+PAPERの専用stateは`game=null`の旧手動記録も観測する。canonical欠落や`previous_game`キー欠落は
+復帰の証拠としない。明示された`previous_game=null`だけは、実在するcanonicalのidle/activeなしを要求する。
+この例外は現行catalogと削除済みPAPERの双方に適用し、retroなど他cornerのfailed判定は変えない。
+共有program slotのowner記録にも同じ観測判定を使い、復帰済みPAPERのraw failedで再び待たせない。
+対象は同じcanonical stateディレクトリ内のPAPER専用stateだけで、元stateは保存する。
+完了時刻は有限非負数またはtimezone付きISOを要求し、`recovery_required`がある場合はboolean falseのみ許可する。
 共通encoder/audio/通知/statusの停止・再起動経路は追加しない。
 
 終了後の独立改善ジョブは既存の実行方式を維持し、次のcornerはlock解放とその実行以後の
@@ -92,6 +104,7 @@ productionのretroゲーム一覧はcatalogから導出し、二重のリスト�
 状態、待機理由、slot、next_due、last_seen、last_slot、interval、適格数、pending有無を固定投影し、
 `corner_rotation_timer`にそのunitのactive/enabledだけを投影する。seed、prompt、生成文、adapter例外は
 公開しない。
+各cornerの固定投影には実行stateの`target_matches`（有効な整数1〜100のみ）も含める。
 
 本変更の実装・テストは専用worktreeで行う。本番受入はPR/required CI/protected main/
 canonical VM deploy後に、timer active/enabled、待機理由、game-switch/FIFO、実開始を別々に

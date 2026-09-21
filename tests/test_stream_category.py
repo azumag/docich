@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import os
 import stat
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -12,6 +14,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich import config  # noqa: E402
+from docich import stream_category_runner  # noqa: E402
 from docich.adapters.program import PAPER_VIEW_NAME  # noqa: E402
 from docich.stream_category import (  # noqa: E402
     PAPER_CATEGORY_ID,
@@ -202,13 +205,60 @@ class TestSpawnMechanics(StreamCategoryTestBase):
             announce_stream_game(self.g, "nethack")
 
         kwargs = popen.call_args.kwargs
-        self.assertEqual(Path(popen.call_args.args[0][0]).resolve(), script.resolve())
+        child = popen.call_args.args[0]
+        runner = Path(__file__).resolve().parents[1] / "src/docich/stream_category_runner.py"
+        self.assertEqual(Path(child[0]).resolve(), Path(sys.executable).resolve())
+        self.assertEqual(Path(child[1]).resolve(), runner.resolve())
+        self.assertEqual(
+            Path(child[2]).resolve(),
+            (Path(self.g.state_dir) / "logs" / "stream-category.lock").resolve(),
+        )
+        self.assertEqual(child[3], "--")
+        self.assertEqual(Path(child[4]).resolve(), script.resolve())
         self.assertTrue(kwargs["start_new_session"])
         self.assertEqual(Path(kwargs["cwd"]).resolve(), self.soren)
         log = Path(self.g.state_dir) / "logs" / "stream-game.log"
         self.assertTrue(log.is_file())
         self.assertEqual(stat.S_IMODE(log.stat().st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(log.parent.stat().st_mode), 0o700)
+
+    def test_category_runner_executes_the_reviewed_command_under_the_lock(self) -> None:
+        lock = self.root / "run" / "logs" / "stream-category.lock"
+        command = ["/bin/echo", "category-only"]
+        completed = subprocess.CompletedProcess(command, 0)
+        with mock.patch(
+            "docich.stream_category_runner.subprocess.run", return_value=completed
+        ) as run:
+            self.assertEqual(
+                stream_category_runner.main([str(lock), "--", *command]), 0
+            )
+        run.assert_called_once_with(command, check=False)
+        self.assertTrue(lock.is_file())
+
+    def test_category_runner_does_not_interleave_updates(self) -> None:
+        lock = self.root / "run" / "logs" / "stream-category.lock"
+        events = self.root / "events.txt"
+        worker = self.root / "worker.py"
+        worker.write_text(
+            "import pathlib, sys, time\n"
+            "pathlib.Path(sys.argv[1]).open('a').write('start:' + sys.argv[2] + '\\n')\n"
+            "time.sleep(0.1)\n"
+            "pathlib.Path(sys.argv[1]).open('a').write('end:' + sys.argv[2] + '\\n')\n",
+            encoding="utf-8",
+        )
+        runner = Path(__file__).resolve().parents[1] / "src/docich/stream_category_runner.py"
+        command = [sys.executable, str(runner), str(lock), "--",
+                   sys.executable, str(worker), str(events)]
+        first = subprocess.Popen([*command, "first"])
+        time.sleep(0.02)
+        second = subprocess.Popen([*command, "second"])
+        self.assertEqual(first.wait(timeout=5), 0)
+        self.assertEqual(second.wait(timeout=5), 0)
+        lines = events.read_text(encoding="utf-8").splitlines()
+        self.assertIn(lines, [
+            ["start:first", "end:first", "start:second", "end:second"],
+            ["start:second", "end:second", "start:first", "end:first"],
+        ])
 
     def test_log_is_appended_so_history_survives_repeated_switches(self) -> None:
         self._install_script()

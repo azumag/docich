@@ -47,7 +47,7 @@ enabled = true
 # 選択・実行履歴はrolling 24hで除外。adapter設定のstart_hourは互換用のみ。
 corners = [
   { id = "ninvaders", adapter = "game", game = "ninvaders" },
-  { id = "nsnake", adapter = "game", game = "nsnake" },
+  { id = "nsnake", adapter = "game", game = "nsnake", target_matches = 1 },
   { id = "bastet", adapter = "game", game = "bastet" },
   { id = "moon-buggy", adapter = "game", game = "moon-buggy" },
   { id = "pacman4console", adapter = "game", game = "pacman4console" },

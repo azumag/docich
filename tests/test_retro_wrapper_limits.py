@@ -87,6 +87,22 @@ def test_wrapper_rejects_invalid_limits(game, value):
     assert "positive integer" in result.stderr
 
 
+@pytest.mark.parametrize("env_prefix,script_name", [
+    ("BASTET", "bastet_docich.sh"),
+    ("MOONBUGGY", "moon-buggy_docich.sh"),
+    ("PACMAN", "pacman4console_docich.sh"),
+])
+@pytest.mark.parametrize("value", ["0", "-1", "abc", "01"])
+def test_other_wrapper_rejects_invalid_limits(env_prefix, script_name, value):
+    env = {**os.environ, f"{env_prefix}_MAX_MATCHES": value}
+    result = subprocess.run(
+        ["/bin/sh", str(ROOT / "games/cli-wrappers" / script_name)],
+        env=env, capture_output=True, text=True, timeout=5,
+    )
+    assert result.returncode == 2
+    assert "positive integer" in result.stderr
+
+
 def test_driver_helper_preserves_game_stdin_when_game_is_tracked_asynchronously(tmp_path):
     """A tracked interactive game must not inherit POSIX async /dev/null stdin."""
 
