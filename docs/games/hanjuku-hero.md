@@ -17,6 +17,9 @@
    - docich は ROM の取得・配布に一切関与しない。著作権ポリシーは `games/roms/README.md` を参照。
    - ファイル名は `config/games/hanjuku-hero.toml` の `[retroarch] rom` と一致させる
      (既定値は `games/roms/hanjuku-hero.sfc`)。
+   - 「リポジトリ外」はGit追跡対象外の意味。配置先は変更しない。
+     VMでは `/home/ubuntu/docich/games/roms/hanjuku-hero.sfc` を前提にする。
+     `.gitignore` 対象であり、ROM本体をcommit・Git bundle・PRへ含めない。
 2. `config/games/hanjuku-hero.toml` の内容を確認する (既定値):
 
    ```toml
@@ -30,21 +33,25 @@
    core = "auto"
 
    [agent]
-   enabled = false     # 半熟英雄 brain は Phase 2 (§7 参照)
+   enabled = false     # 認証・費用・実機ゲートの確認まで維持
    brain = "command"
-   command = ""
-   interval_ms = 2000
+   command = ["python3", "brains/hanjuku/brain.py"]
+   interval_ms = 7000
+
+   [lifecycle]
+   require_round_boundary = true
+   boundary_timeout_s = 300
    ```
 
 ---
 
 ## 2. 起動
 
-```bash
-bin/docich up                 # display(:98)/audio/stream 基盤を起動
-bin/docich start hanjuku-hero # ゲーム起動
-bin/docich status              # 起動確認
-```
+本変更はオフライン実装段階。起動は §9 のゲート確認後、別途許可された検証環境で行う。
+`start hanjuku-hero` は `[display] viewport_width/height` が未設定ならpreflightで拒否する。
+配信と同じ配置を検証する設定は `viewport_x=0`, `viewport_y=90`,
+`viewport_width=960`, `viewport_height=540`。共通displayはこの矩形を内包する必要がある。
+既存配信へ接続する場合、ゲーム起動のために共通display・配信serviceを再起動しない。
 
 ---
 
@@ -69,8 +76,10 @@ docich 用の sink にルーティングされる (soren の既定 sink は変�
 
 ## 4. ra-cmd (RetroArch へのコマンド送信)
 
-`docich ra-cmd` は RetroArch の Network Command インターフェース (UDP, ポート 55355。生成 cfg で
+`docich ra-cmd` は RetroArch の Network Command インターフェース (UDP。生成 cfg で
 `network_cmd_enable = true` になっている) 経由でコマンドを送る。
+coordinator runtimeは `55355 + generation % 1000` の世代別ポートを使う。
+固定55355はcanonical stateが存在しないlegacy経路だけ。
 
 ```bash
 bin/docich ra-cmd SAVE_STATE      # 現在の状態を保存
@@ -128,13 +137,11 @@ bin/docich snap                                  # run/screenshots/ に保存
 
 ---
 
-## 7. Phase 2: brain (今後の計画)
+## 7. brain の実装と検証状態
 
-半熟英雄の本物の brain (画面認識・戦略プロンプト) は Phase 2 で実装する
-(`docs/architecture.md` §10)。スクリーンショット → claude CLI → pad 操作、というプロンプト設計と、
-`ra-cmd SAVE_STATE` を絡めた復帰運用が計画されている。Phase 1 時点では
-`config/games/hanjuku-hero.toml` の `[agent] enabled = false` のまま、
-`bin/docich send` での単発操作確認にとどめる。
+`brains/hanjuku/brain.py` と攻略資料注入は実装済み (`docs/hanjuku_brain.md`)。
+fake backendの契約テストと実ROM・課金backendでの動作保証は別。
+`[agent] enabled = false` を維持し、認証・費用承認・観測→推論→入力の実機E2Eは未確認。
 
 ## 8. レトロコーナー登録と実行資格
 
@@ -154,11 +161,10 @@ bin/docich snap                                  # run/screenshots/ に保存
 1. `RetroCornerManager._validate_games` と手動コーナーは現在CLI限定。
    RetroArchを許可する前に、ROM/core/brainの準備不足を選択前に除外する契約を追加する。
    `requires` は実行ファイルの存在検査のみで、ROM/core/CLI認証の検査ではない。
-2. `RetroArchCoordinatorAdapter` は世代別プロセスとUDP readinessを持つが、
-   `request_round_boundary` は未実装。結果保存・安全な停止境界・次回再開を実装し、
-   入力を続けたまま境界を待ち、タイムアウトでは強制終了しないことを検証する。
-3. 現在のRetroArch生成cfgは共通display全体のfullscreenを指定している。
-   元ゲーム寸法の観測・入力を保ち、配信側でのみ `(0,90,960,540)` へcontainする対応が必要。
+2. `RetroArchCoordinatorAdapter` の明示保存境界を §9 のとおり実装した。
+   自動試合終了検出・自動checkpoint復元・無人の境界確認は未実装で、実行資格には使わない。
+3. viewport設定時は専用Xvfbでゲーム本来のwindowを描画し、既存 `presentation.py` で
+   `(0,90,960,540)` へcontainする。実装と合成画像の四辺テストは実ROMの表示証拠ではない。
    実機で四辺と周囲枠、共通配信PID維持、旧ゲーム子プロセス終了を確認する。
 4. 自己吸い出しROM、libretro core、`retroarch`、`dbus-run-session`、`python3`、
    共通基盤のtmux/X11/ffmpeg/xdotoolを用意する。既定brainは `claude` CLIを使うため、
@@ -168,3 +174,68 @@ bin/docich snap                                  # run/screenshots/ に保存
 
 今回の登録ではROM取得・有料LLM実行・本番操作を行わない。
 オフライン検証: `python3 -m pytest -q tests/test_hanjuku_retro_registration.py tests/test_hanjuku_brain.py`
+
+## 9. 明示保存境界と配信containの契約（オフライン実装）
+
+### 停止・切替・再起動
+
+RetroArchはcoordinatorの `switch` / `restart` に加えて `stop` もdrainingへ入る。
+`requires_stop_boundary` は今回RetroArchだけが公開するcapabilityで、他adapterのstop手順は変更しない。
+writer lockを解放して待つ間はactive identityを保持し、agentと手動入力を継続する。
+`run/runtimes/<runtime_id>/retroarch_boundary.json` に要求ID・ゲーム・世代・leaseを束縛した
+`waiting` を原子的に保存する。既定300秒で確認できなければ要求を失敗にし、
+自分のwaitingだけをcancelする。ゲーム・agent・共通基盤を停止せず、ユーザーのpauseも解除しない。
+
+安全境界は **運用者が明示確認する保存完了済み・一時停止状態**。試合終了画面を推測しない。
+別途許可された実機検証時、次の順序で確認する（本実装タスクでは未実行）。
+
+1. stop/switch要求のdrainingと要求IDを確認する。
+2. 対象runtimeのゲームを明示的に一時停止し、`ra-cmd GET_STATUS` で対象ROMの `PAUSED` を確認する。
+   `PAUSE_TOGGLE` はトグルなので、既にpause中なら送らない。
+3. `ra-cmd SAVE_STATE` でslot 0へ保存し、runtime内 `states/hanjuku-hero.state` の保存完了を確認する。
+   UDP送信成功や無応答を保存完了の証拠にしない。
+4. 同じconfigで `ra-boundary --request-id <要求ID> --checkpoint hanjuku-hero.state` を実行する。
+   canonicalのdraining identity、runtime window所有権、対象ROMのPAUSED応答、要求後の非空checkpoint、
+   fsync前後のSHA-256一致を確認し、`reached` / `outcome=suspended` を保存してからackする。
+
+確認と入力はruntime別flockで直列化する。reached後はpad/keyおよび `ra-cmd` の変更コマンドを拒否し、
+次の試合開始・pause解除・state上書きを防ぐ。GET_STATUSだけは読み取りを継続できる。
+境界待ち側でも保存hashとpauseを再確認し、agent停止→ゲームwindow停止→子プロセス終了確認の順に進む。
+不正JSON・stale要求・別世代・異なるROM・欠損/空/古い/変更中checkpoint・所有権不一致はfail-closed。
+確認後のcancelや、確認済みruntimeの無条件再起動は拒否する。保存データは世代directoryに残し、
+明示的な復元と継続確認を要する。**自動復帰・次世代へのsave移行はまだ実装していない**。
+
+PAUSED応答形式は [RetroArch v1.18.0 command.c](https://github.com/libretro/RetroArch/blob/v1.18.0/command.c)
+に合わせる。別形式や判定不能は成功扱いしない。
+
+### 描画・入力・プロセス
+
+viewport経路のRetroArchはwindowed / 標準 `video_scale=3.0` / coreのaspect維持 / overscan crop無効。
+ゲームwindowを配信枠へresizeせず、private Xvfb上の実window寸法を取得して全体をx11grabする。
+dbus-run-sessionの子がwindowを持つため、private display内でRetroArchの唯一のwindowを検査する。
+既存のffplay presenterが映像だけを縦横比維持・黒余白・中央配置する。
+正方形は540×540＋左右210px、4:3は720×540＋左右120px。encoder・共通display・音声busは操作しない。
+AI観測は同じprivate window全体、入力は同じprivate display/windowへ向け、配信座標へ変換しない。
+
+`presentation.json` は `starting → ready → stopped`（異常時 `presentation_failed` / `cleanup_failed`）を記録する。
+投影のffplayだけが終了した場合、native game/Xvfbと入力経路は保持する。TERM/HUPは通常どおり応答する。
+停止時はwrapperが所有するXvfb・dbus/RetroArch・ffplayのプロセスグループだけを終了し、
+leaderをwaitした上でグループ消滅を確認する。tmux pane消滅・deadだけでは終了成功にしない。
+終了記録が欠ける/子が残る場合は次ゲームを起動せず復旧待ちにする。
+OSからの強制終了や別sessionへ離脱する子まで救済する仕組みではなく、その実機検証も有効化ゲート。
+
+### 残る実機ゲート・runtime checklist
+
+- 実ROM/coreでの四辺・スコア・操作案内と周囲枠、common encoder/display/audio PIDの維持。
+- 実ROMの観測→brain→入力、pause応答、saveの完了/ロード/再開、試合結果の継続性。
+- dbus/RetroArchとその子、Xvfb、ffplayの正常停止・異常終了・資源解放・旧runtime非復活。
+- runtime registryは既存retroarch adapterを使用し、新しい常駐worker/queue/model/providerは追加しない。
+  世代別manifestとhealth契約を追加。新しいAI telemetryはなし。
+- 固定VM diagnostics collectorへの詳細manifest収集は未追加。canonicalの既存phase/error収集に加え、
+  有効化前に `presentation.json` / `retroarch_boundary.json` のsanitized収集をレビューする。
+  ROM/state本文・brain本文・credentialsは公開ログや診断へ出さない。
+- deployは未実施。`retro_corner.enabled=false` / `agent.enabled=false` / CLI候補制限を維持する。
+  この実装・ローカルテスト合格だけで自動抽選/無人運用へ昇格させない。
+
+契約テスト: `tests/test_retroarch_safe_boundary.py`、`tests/test_presentation.py`。
+ROM取得、実機起動、課金brain、VM操作、push/PR/merge/deployは本タスクでは実施しない。

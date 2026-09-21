@@ -31,7 +31,7 @@ class XKit:
             time.sleep(0.5)
         return self.display_ready()
 
-    def screenshot(self, out_path: Path, width: int, height: int) -> Path:
+    def screenshot(self, out_path: Path, width: int, height: int, *, window_id: str | None = None) -> Path:
         out_path = Path(out_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_name = tempfile.mkstemp(
@@ -45,6 +45,7 @@ class XKit:
                     "ffmpeg", "-loglevel", "error", "-y",
                     # -draw_mouse 0 が無いとマウスポインタが画面中央に映り込む (architecture.md §5)
                     "-f", "x11grab", "-draw_mouse", "0",
+                    *(["-window_id", window_id] if window_id is not None else []),
                     "-video_size", f"{width}x{height}", "-i", self.display,
                     "-frames:v", "1",
                     # 出力先は拡張子の無い一時ファイル名なので、ffmpeg のフォーマット

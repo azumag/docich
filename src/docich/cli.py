@@ -199,6 +199,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_ra = sub.add_parser("ra-cmd", help="RetroArch へ UDP コマンドを送る")
     p_ra.add_argument("cmd", nargs="+", help="コマンド (例: SAVE_STATE)")
+    p_boundary = sub.add_parser("ra-boundary", help="保存済み・一時停止中のRetroArch安全境界を明示確認")
+    p_boundary.add_argument("--request-id", required=True)
+    p_boundary.add_argument("--checkpoint", required=True, help="runtime states内の保存完了した.stateファイル名")
 
     p_caption = sub.add_parser("caption", help="英語字幕計画とFFmpeg字幕IPCを操作する")
     captions.configure_parser(p_caption)
@@ -367,6 +370,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return cmd_send(g, args.game, args.json)
     if command == "ra-cmd":
         return cmd_ra_cmd(g, args.cmd)
+    if command == "ra-boundary":
+        return cmd_ra_boundary(g, args.request_id, args.checkpoint)
     if command == "caption":
         return captions.run_args(args, default_socket=g.captions.socket_path)
     if command == "say":
@@ -1270,18 +1275,51 @@ def _bind_active_cli_session(g: GlobalConfig, resolved: str) -> None:
 
 def cmd_ra_cmd(g: GlobalConfig, cmd_parts: list[str]) -> int:
     cmd_text = " ".join(cmd_parts)
+    return shared_section(g.state_dir, lambda: _send_ra_guarded(g, cmd_text))
+
+
+def _send_ra_guarded(g: GlobalConfig, cmd_text: str) -> int:
+    from .retroarch_boundary import input_gate, require_input_open
+    from .naming import runtime_directory
+    from contextlib import nullcontext
+
     try:
         port = _read_ra_port(g)
     except StateCorruptError as exc:
         raise CliError(f"canonical state が読み込めません: {exc}") from exc
     if port is None:
         raise CliError("送信対象の RetroArch runtime がありません (RetroArch ゲームを起動してください)")
-    reply = send_ra_cmd(cmd_text, port=port)
+    canonical, _ = GameSwitchStore(g.state_dir).canonical.load()
+    active = canonical.get("active")
+    runtime_dir = (runtime_directory(g.state_dir, active["runtime_id"])
+                   if isinstance(active, dict) and active.get("adapter") == "retroarch"
+                   else None)
+    with (input_gate(runtime_dir, time.monotonic() + 5)
+          if runtime_dir and cmd_text != "GET_STATUS" else nullcontext()):
+        if runtime_dir and cmd_text != "GET_STATUS":
+            require_input_open(runtime_dir)
+        reply = send_ra_cmd(cmd_text, port=port)
     if reply is not None:
         print(reply)
     else:
         print("docich: 返信がありませんでした (タイムアウト)", file=sys.stderr)
     return 0
+
+
+def cmd_ra_boundary(g: GlobalConfig, request_id: str, checkpoint: str) -> int:
+    from .game_switch import RuntimeSpec
+
+    def confirm():
+        canonical, _ = GameSwitchStore(g.state_dir).canonical.load()
+        active = canonical.get("active")
+        if (canonical.get("phase") != "draining" or canonical.get("request_id") != request_id
+                or not isinstance(active, dict) or active.get("adapter") != "retroarch"):
+            raise CliError("matching draining RetroArch request is required")
+        adapter = make_coordinator_adapter(g, RuntimeSpec.from_runtime(g.state_dir, active))
+        adapter.confirm_safe_boundary(request_id, checkpoint, time.monotonic() + 5, None)
+        return 0
+
+    return shared_section(g.state_dir, confirm)
 
 
 def _read_ra_port(g: GlobalConfig) -> int | None:

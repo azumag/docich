@@ -89,6 +89,12 @@ jobs:
           tests/test_nethack_adapter.py tests/test_nethack_save_confirmation.py
       - name: Round-boundary contract
         run: python3 -m pytest -q tests/test_round_boundary.py
+      - name: RetroArch saved-boundary and native presentation contracts
+        run: >-
+          python3 -m pytest -q
+          tests/test_retroarch_safe_boundary.py tests/test_retroarch_adapter.py
+          tests/test_coordinator_adapter_retroarch.py tests/test_retroarch_readiness_contract.py
+          tests/test_presentation.py tests/test_presentation_viewer_wait.py
       - name: Robots resolver contract
         run: python3 -m pytest -q tests/test_resolver.py
       - name: Founding policy hotfix contract

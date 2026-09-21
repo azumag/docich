@@ -12,6 +12,42 @@ import select
 import signal
 import subprocess
 import time
+import json
+from pathlib import Path
+import tempfile
+
+
+def _write_state(path, **fields):
+    if not path:
+        return
+    target = Path(path)
+    fd, temporary = tempfile.mkstemp(dir=target.parent, prefix='.presentation-')
+    try:
+        with os.fdopen(fd, 'w') as stream:
+            json.dump(fields, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, target)
+        directory_fd = os.open(target.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _groups_stopped(children):
+    # A reaped wrapper (e.g. dbus-run-session) does not prove its children
+    # exited. Never publish stopped while its process group still exists.
+    for process in children:
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            continue
+        return False
+    return True
 
 
 def contain_filter(width: int, height: int) -> str:
@@ -47,6 +83,10 @@ def _parser() -> argparse.ArgumentParser:
     # Soren91 Mac remote renderer) carry game audio that must reach the
     # broadcast encoder, which listens on the shared `soren_null` sink.
     parser.add_argument('--audio-sink', default=None)
+    # Used by RetroArch only: dbus-run-session owns the process group, but
+    # the X window belongs to its child. Search only the private X server.
+    parser.add_argument('--window-pattern')
+    parser.add_argument('--runtime-state')
     parser.add_argument('command', nargs=argparse.REMAINDER)
     return parser
 
@@ -118,11 +158,16 @@ def main(argv=None) -> int:
         deadline = time.monotonic() + args.viewer_wait_sec
         window = ''
         while time.monotonic() < deadline and viewer.poll() is None:
+            selector = (['--name', args.window_pattern] if args.window_pattern
+                        else ['--pid', str(viewer.pid)])
             found = subprocess.run(
-                ['xdotool', 'search', '--onlyvisible', '--pid', str(viewer.pid)],
+                ['xdotool', 'search', '--onlyvisible', *selector],
                 env=source_env, capture_output=True, text=True, timeout=2)
             if found.returncode == 0 and found.stdout.strip():
-                window = found.stdout.splitlines()[0]
+                windows = found.stdout.strip().splitlines()
+                if args.window_pattern and len(windows) != 1:
+                    raise RuntimeError('native game window is ambiguous')
+                window = windows[0]
                 break
             time.sleep(0.1)
         if not window:
@@ -145,7 +190,20 @@ def main(argv=None) -> int:
             '-left', str(args.x), '-top', str(args.y),
             '-x', str(args.width), '-y', str(args.height),
         ], env=output_env)
-        while all(process.poll() is None for process in children):
+        _write_state(args.runtime_state, status='ready', display=f':{number}',
+                     window=window, width=width, height=height,
+                     groups=[child.pid for child in children])
+        # In the runtime-tracked RetroArch path, loss of the projection alone
+        # must not end gameplay. Keep supervising the native display/game;
+        # ordinary TERM/HUP handling remains responsive for owned cleanup.
+        watched = children[:-1] if args.runtime_state else children
+        projection_failed = False
+        while all(process.poll() is None for process in watched):
+            if args.runtime_state and player.poll() is not None and not projection_failed:
+                _write_state(args.runtime_state, status='presentation_failed',
+                             display=f':{number}', window=window, width=width, height=height,
+                             groups=[child.pid for child in children])
+                projection_failed = True
             time.sleep(0.2)
         return player.returncode or 1
     finally:
@@ -160,6 +218,14 @@ def main(argv=None) -> int:
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
+        if args.runtime_state:
+            # Do not escalate against detached/unknown processes or declare
+            # cleanup complete solely because the owned tmux pane vanished.
+            limit = time.monotonic() + 3
+            while not _groups_stopped(children) and time.monotonic() < limit:
+                time.sleep(0.05)
+            _write_state(args.runtime_state,
+                         status='stopped' if _groups_stopped(children) else 'cleanup_failed')
         if display_read_fd is not None:
             os.close(display_read_fd)
 
