@@ -83,18 +83,6 @@ def _load_registry():
 
 
 _REG = _load_registry()
-
-
-def _load_storage_breakdown():
-    spec = _importlib_util.spec_from_file_location(
-        "vm_storage_breakdown", str(PROD_ROOT / "ops" / "vm_actions" / "storage_breakdown.py")
-    )
-    module = _importlib_util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-_STORAGE = _load_storage_breakdown()
 DIAG_WINDOW_SEC = _REG.DIAG_WINDOW_SEC
 DUPLICATES_FRESH_SEC = _REG.DUPLICATES_FRESH_SEC
 KNOWN_LANES = _REG.KNOWN_LANES
@@ -155,6 +143,176 @@ TMP_SO_PATTERNS = (
 TMP_SO_STALE_SEC = 6 * 60 * 60
 TMP_SO_MAX_CANDIDATES = 4096
 TMP_SO_MAX_PROC_FDS = 50000
+
+STORAGE_MAX_ENTRIES = 100000
+
+
+def _storage_allocated_bytes(st):
+    blocks = getattr(st, "st_blocks", None)
+    if isinstance(blocks, int) and blocks >= 0:
+        return blocks * 512
+    return max(0, int(getattr(st, "st_size", 0) or 0))
+
+
+def _storage_base_result():
+    return {
+        "present": False,
+        "scan_complete": True,
+        "count": 0,
+        "allocated_bytes": 0,
+        "symlink_entries": 0,
+        "hardlink_duplicates": 0,
+    }
+
+
+def _storage_tree_usage(path, *, max_entries=STORAGE_MAX_ENTRIES):
+    path = Path(path)
+    result = _storage_base_result()
+    try:
+        root_st = os.lstat(path)
+    except FileNotFoundError:
+        return result
+    except OSError:
+        result["scan_complete"] = False
+        return result
+
+    result["present"] = True
+    seen = set()
+
+    def account(st):
+        key = (int(st.st_dev), int(st.st_ino))
+        result["count"] += 1
+        if key in seen:
+            result["hardlink_duplicates"] += 1
+            return
+        seen.add(key)
+        result["allocated_bytes"] += _storage_allocated_bytes(st)
+
+    account(root_st)
+    if stat.S_ISLNK(root_st.st_mode):
+        result["symlink_entries"] += 1
+        result["scan_complete"] = False
+        return result
+    if not stat.S_ISDIR(root_st.st_mode):
+        if not stat.S_ISREG(root_st.st_mode):
+            result["scan_complete"] = False
+        return result
+
+    stack = [path]
+    while stack:
+        current = stack.pop()
+        try:
+            entries = os.scandir(current)
+        except OSError:
+            result["scan_complete"] = False
+            continue
+        try:
+            with entries:
+                for entry in entries:
+                    if result["count"] >= max_entries:
+                        result["scan_complete"] = False
+                        return result
+                    try:
+                        st = entry.stat(follow_symlinks=False)
+                    except FileNotFoundError:
+                        continue
+                    except OSError:
+                        result["scan_complete"] = False
+                        continue
+                    account(st)
+                    if stat.S_ISLNK(st.st_mode):
+                        result["symlink_entries"] += 1
+                        continue
+                    if stat.S_ISDIR(st.st_mode):
+                        stack.append(Path(entry.path))
+        except OSError:
+            result["scan_complete"] = False
+    return result
+
+
+def _storage_file_usage(path):
+    path = Path(path)
+    result = _storage_base_result()
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return result
+    except OSError:
+        result["scan_complete"] = False
+        return result
+
+    result["present"] = True
+    result["count"] = 1
+    result["allocated_bytes"] = _storage_allocated_bytes(st)
+    if stat.S_ISLNK(st.st_mode):
+        result["symlink_entries"] = 1
+        result["scan_complete"] = False
+    elif not stat.S_ISREG(st.st_mode):
+        result["scan_complete"] = False
+    return result
+
+
+def _storage_db_family(db_path):
+    db_path = Path(db_path)
+    entries = {
+        "db": _storage_file_usage(db_path),
+        "wal": _storage_file_usage(Path(str(db_path) + "-wal")),
+        "shm": _storage_file_usage(Path(str(db_path) + "-shm")),
+    }
+    return {
+        "scan_complete": all(item["scan_complete"] for item in entries.values()),
+        "present_count": sum(1 for item in entries.values() if item["present"]),
+        "allocated_bytes": sum(item["allocated_bytes"] for item in entries.values()),
+        **entries,
+    }
+
+
+def _collect_storage_breakdown(
+    soren,
+    prod_root,
+    *,
+    home_root=None,
+    voicevox_root=Path("/opt/voicevox"),
+    max_entries=STORAGE_MAX_ENTRIES,
+):
+    """Fixed, bounded, identity-free storage attribution.
+
+    Categories overlap by design and must not be summed. No file content is
+    read, symlinks are never followed, and partial scans are marked incomplete.
+    """
+    soren = Path(soren)
+    prod_root = Path(prod_root)
+    home = Path(home_root) if home_root is not None else soren.parent
+    voicevox_root = Path(voicevox_root)
+    default_db = home / ".local" / "share" / "opencode" / "opencode.db"
+    worker_db = soren / "tmp" / "state" / "xdg_data" / "opencode" / "opencode.db"
+
+    return {
+        "version": 1,
+        "categories_overlap": True,
+        "max_entries_per_tree": int(max_entries),
+        "opencode_default": _storage_db_family(default_db),
+        "opencode_worker": _storage_db_family(worker_db),
+        "opencode_default_total": _storage_tree_usage(default_db.parent, max_entries=max_entries),
+        "opencode_worker_total": _storage_tree_usage(worker_db.parent, max_entries=max_entries),
+        "soren_logs": _storage_tree_usage(soren / "logs", max_entries=max_entries),
+        "soren_tmp": _storage_tree_usage(soren / "tmp", max_entries=max_entries),
+        "say_queue": _storage_tree_usage(soren / "tmp" / ".say_queue", max_entries=max_entries),
+        "browser_profile": _storage_tree_usage(
+            soren / "tmp" / "soviet_local_chromium_profile", max_entries=max_entries
+        ),
+        "strategy_archive": _storage_tree_usage(
+            soren / "strategy_versions_archive" / "by_hash", max_entries=max_entries
+        ),
+        "docich_git": _storage_tree_usage(prod_root / ".git", max_entries=max_entries),
+        "soren_live_git": _storage_tree_usage(soren / ".git", max_entries=max_entries),
+        "soren_persist_git": _storage_tree_usage(
+            home / "soren-persist" / ".git", max_entries=max_entries
+        ),
+        "voicevox_root": _storage_tree_usage(voicevox_root, max_entries=max_entries),
+        "voicevox_archive": _storage_file_usage(voicevox_root / "voicevox.7z.001"),
+    }
+
 
 VALUE_REDACT_RES = (
     re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/-]+=*"),
@@ -2212,7 +2370,7 @@ def main(argv):
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),
         "nethack_panes": _collect_nethack_panes(_program_state_dir(), now),
         "market_paper": _collect_market_paper(_program_state_dir(), now),
-        "storage_breakdown": _STORAGE.collect_storage_breakdown(soren, PROD_ROOT),
+        "storage_breakdown": _collect_storage_breakdown(soren, PROD_ROOT),
         "storage_artifacts": _collect_tmp_shared_objects(now),
         "soren91_drop_profile": _collect_soren91_drop_profile(soren),
     }
