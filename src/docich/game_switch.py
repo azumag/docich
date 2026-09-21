@@ -1235,6 +1235,7 @@ START_TIMEOUT_S = 60.0
 AGENT_START_TIMEOUT_S = 60.0
 CLEANUP_TIMEOUT_S = 120.0
 PROBE_TIMEOUT_S = 5.0
+AGENT_REPAIR_TIMEOUT_S = 30.0
 CANCEL_GRACE_S = 0.5
 ROLLBACK_TIMEOUT_S = 120.0
 
@@ -1995,6 +1996,181 @@ class GameSwitchCoordinator:
         if recovered is not None and not resumed.request_id:
             return recovered
         return resumed
+
+    def repair_active_agent(
+        self,
+        *,
+        game: str | None = None,
+        timeout_s: float | None = None,
+    ) -> bool | None:
+        """Probe and, when necessary, restart only the active runtime's agent.
+
+        ``alive`` proves that the game session still exists, but it does not
+        prove that the generation-owned bot window is still running.  A
+        corner can therefore remain ``active`` while the game waits forever
+        for input.  This watchdog is intentionally narrower than ``recover``:
+        it requires canonical ``ready`` state, keeps the active runtime and
+        lease unchanged, and touches only that runtime's agent window.
+
+        Return values are deliberately tri-state:
+
+        * ``True``: no repair was needed, or the agent was restarted and
+          observed alive;
+        * ``False``: the agent was known dead but the game-specific repair
+          failed;
+        * ``None``: the state/capability was not safely repairable or was
+          temporarily busy/unknown.  In this case no agent mutation is made.
+        """
+
+        self._log_reset("", "agent_watchdog", game)
+        try:
+            budget = AGENT_REPAIR_TIMEOUT_S if timeout_s is None else float(timeout_s)
+        except (TypeError, ValueError):
+            budget = AGENT_REPAIR_TIMEOUT_S
+        if budget <= 0:
+            return None
+        deadline = time.monotonic() + budget
+
+        def log_probe(
+            *,
+            result: str,
+            error_code: str | None = None,
+            detail: str | None = None,
+        ) -> None:
+            self._log(
+                "agent_watchdog",
+                phase="ready",
+                result=result,
+                error_code=error_code,
+                detail=detail,
+            )
+
+        try:
+            with self.store.transaction(blocking=False):
+                state = self.store.canonical.initialize()
+                phase = str(state.get("phase"))
+                active = state.get("active")
+                active_game = active.get("game") if isinstance(active, dict) else None
+                if phase != "ready" or not isinstance(active, dict) or not isinstance(active_game, str):
+                    log_probe(
+                        result="skipped",
+                        error_code=ERROR_BUSY if phase not in {"idle", "ready"} else None,
+                        detail=f"canonical phase={phase} にagent repairを適用できません",
+                    )
+                    return None
+                if game is not None and active_game != game:
+                    log_probe(result="skipped", detail="active gameが要求対象と一致しません")
+                    return None
+
+                spec = RuntimeSpec.from_runtime(self.store.state_dir, active)
+                self._log_update(
+                    from_game=active_game,
+                    to_game=active_game,
+                    target=active_game,
+                    generation=spec.generation,
+                    runtime_id=spec.runtime_id,
+                )
+                adapter = self._make_adapter(spec, deadline)
+                if not bool(getattr(adapter, "agent_enabled", False)):
+                    log_probe(result="not_required")
+                    return True
+
+                agent_alive = getattr(adapter, "agent_alive", None)
+                stop_agent = getattr(adapter, "stop_agent", None)
+                start_agent = getattr(adapter, "start_agent", None)
+                if not all(callable(method) for method in (agent_alive, stop_agent, start_agent)):
+                    log_probe(
+                        result="unknown",
+                        error_code=ERROR_PROBE_FAILED,
+                        detail="active adapterにagent liveness/restart capabilityがありません",
+                    )
+                    return None
+
+                try:
+                    alive = self._call_adapter(
+                        lambda cancel: agent_alive(deadline, cancel),
+                        deadline,
+                        self.step_timeouts.probe_s,
+                        "agent_alive",
+                    )
+                except Exception as exc:  # noqa: BLE001 - probe is fail-closed
+                    log_probe(
+                        result="unknown",
+                        error_code=ERROR_PROBE_FAILED,
+                        detail=_safe_detail(exc),
+                    )
+                    return None
+                if bool(alive):
+                    log_probe(result="alive")
+                    return True
+
+                # Do not recreate an agent for a runtime whose game process
+                # has also disappeared.  That case belongs to the normal
+                # coordinator recovery path, not this game-only watchdog.
+                if self._probe_alive(adapter, deadline) is not True:
+                    log_probe(
+                        result="unknown",
+                        error_code=ERROR_PROBE_FAILED,
+                        detail="active game runtimeの生存を確認できません",
+                    )
+                    return None
+
+                try:
+                    self._call_adapter(
+                        lambda cancel: stop_agent(deadline, cancel),
+                        deadline,
+                        self.step_timeouts.stop_agent_s,
+                        "stop_agent",
+                    )
+                    self._call_adapter(
+                        lambda cancel: start_agent(deadline, cancel),
+                        deadline,
+                        self.step_timeouts.agent_start_s,
+                        "start_agent",
+                    )
+                    # A freshly-created tmux window may need a short moment
+                    # for the command to replace the shell.  Verify the
+                    # result instead of declaring recovery from create_window
+                    # alone.
+                    for attempt in range(5):
+                        alive = self._call_adapter(
+                            lambda cancel: agent_alive(deadline, cancel),
+                            deadline,
+                            self.step_timeouts.probe_s,
+                            "agent_alive",
+                        )
+                        if bool(alive):
+                            log_probe(result="repaired")
+                            return True
+                        if attempt < 4:
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                break
+                            time.sleep(min(0.2, remaining))
+                except Exception as exc:  # noqa: BLE001 - keep corner alive
+                    log_probe(
+                        result="failed",
+                        error_code=ERROR_AGENT_START_FAILED,
+                        detail=_safe_detail(exc),
+                    )
+                    return False
+
+                log_probe(
+                    result="failed",
+                    error_code=ERROR_AGENT_START_FAILED,
+                    detail="agent repair後の生存確認に失敗しました",
+                )
+                return False
+        except GameSwitchBusyError as exc:
+            log_probe(result="busy", error_code=ERROR_BUSY, detail=_safe_detail(exc))
+            return None
+        except Exception as exc:  # noqa: BLE001 - watchdog must not kill the corner
+            log_probe(
+                result="unknown",
+                error_code=ERROR_PROBE_FAILED,
+                detail=_safe_detail(exc),
+            )
+            return None
 
     # --- request plumbing --------------------------------------------------
 
