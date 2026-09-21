@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from docich.config import load_game, load_global
 from docich.retro_corner import RetroCornerError, RetroCornerManager, load_retro_corner_config
 
-EXISTING = ["ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console", "nethack"]
+EXISTING = ["ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console"]
 
 
 @pytest.fixture
@@ -43,7 +43,7 @@ def test_live_registration_is_dormant_and_keeps_brain_opt_in(manager):
         "retroarch", "dbus-run-session", "python3", "claude",
     ]
     assert game.raw["retroarch"] == {"rom": "games/roms/hanjuku-hero.sfc", "core": "auto"}
-    assert manager._rotation_interval_seconds() == 86400 / 7
+    assert manager._rotation_interval_seconds() == 86400 / 6
 
 
 def test_installed_binaries_cannot_enable_hanjuku(manager, monkeypatch):
@@ -75,7 +75,9 @@ def test_immediate_start_uses_only_playable_candidates(manager, monkeypatch, mod
     monkeypatch.setattr(manager, "_executable_exists", lambda _: True)
     monkeypatch.setattr(manager, "_wait_and_finish", manager._state_result)
     manager.coordinator.start.return_value = SimpleNamespace(status="succeeded")
-    result = manager.start()
+    # Exercise the adapter's legacy immediate-start eligibility; unified manual
+    # entry/locking/cooldown is covered by test_corner_rotation.
+    result = manager._start_direct()
     assert result.status == "active"
     assert result.game in EXISTING
     assert manager.coordinator.start.call_args.args == (result.game,)
@@ -84,7 +86,7 @@ def test_immediate_start_uses_only_playable_candidates(manager, monkeypatch, mod
 
 def test_immediate_start_without_candidates_does_not_start_runtime(manager, monkeypatch):
     monkeypatch.setattr(manager, "_executable_exists", lambda _: False)
-    result = manager.start()
+    result = manager._start_direct()
     assert (result.status, result.detail) == ("noop", "no-eligible-game")
     manager._ensure_runtime.assert_not_called()
     manager.coordinator.start.assert_not_called()

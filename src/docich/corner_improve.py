@@ -15,6 +15,7 @@ import fcntl
 import json
 import os
 import re
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from .resolver import strategy_path
@@ -214,11 +215,23 @@ def run_corner_improve(
     with _singleflight(g.state_dir, game) as single:
         if not single:
             return {"status": "skipped", "reason": "already-running"}
-        return _run_corner_improve(
-            g, game=game, date_str=date_str, agents=agents,
-            matches=matches, margin_pct=margin_pct, dry_run=dry_run,
-            llm=llm, evaluator=evaluator,
-        )
+        from .game_switch import atomic_write_json
+        status_path = Path(g.state_dir) / f"corner_improve_{game}.json"
+        started = time.time()
+        atomic_write_json(status_path, {"status": "running", "started_at": started})
+        try:
+            result = _run_corner_improve(
+                g, game=game, date_str=date_str, agents=agents,
+                matches=matches, margin_pct=margin_pct, dry_run=dry_run,
+                llm=llm, evaluator=evaluator,
+            )
+        except BaseException:
+            atomic_write_json(status_path, {"status": "failed", "started_at": started,
+                                           "completed_at": time.time()})
+            raise
+        atomic_write_json(status_path, {"status": result["status"], "started_at": started,
+                                       "completed_at": time.time()})
+        return result
 
 
 def _bot_evaluator(g, game: str, matches: int):

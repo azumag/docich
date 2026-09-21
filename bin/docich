@@ -24,6 +24,10 @@ use_trading_python=0
 if (( command_index < ${#args[@]} )); then
     command="${args[command_index]}"
     if [[ "$command" == "trading" \
+        || "$command" == "corner-rotation" \
+        || "$command" == "retro-corner" \
+        || "$command" == "soren91-corner" \
+        || "$command" == "nethack-corner" \
         || "$command" == "paper-corner" \
         || "$command" == "free-strategy" \
         || "$command" == "free-strategy-worker" ]]; then

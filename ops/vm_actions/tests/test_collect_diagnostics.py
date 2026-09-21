@@ -19,6 +19,23 @@ def load_collector():
     return module
 
 
+def test_rotation_projection_never_emits_seed_or_request_text(tmp_path):
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "waiting", "seed": "DO-NOT-PUBLISH-SEED", "slot": 3,
+        "last_seen_at": 100, "next_due_at": 200, "eligible": ["paper", "meriken"],
+        "pending": {"request_id": "DO-NOT-PUBLISH-REQUEST", "prompt": "DO-NOT-PUBLISH-BODY"},
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    projection = output["corner_rotation"]
+    assert projection["status"] == "waiting"
+    assert projection["slot"] == 3
+    assert projection["pending"] is True
+    assert projection["eligible_count"] == 2
+    assert "DO-NOT-PUBLISH" not in json.dumps(output)
+
+
 class CollectorFixture(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="vmops-diag-")
@@ -124,6 +141,10 @@ class CollectorContractTests(CollectorFixture):
         data = json.loads(proc.stdout)
         self.assertIn(data["status"], ("ok", "warn", "critical"))
         self.assertEqual(data["meta"]["soren_root_exists"], False)
+        self.assertEqual(
+            data["corners"]["corner_rotation"],
+            {"present": False, "readable": False},
+        )
 
     def test_stopped_required_worker_is_critical(self):
         proc = self.run_collector()

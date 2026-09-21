@@ -12,7 +12,7 @@ from .trading.soren_output import resolve_soren_root
 QUEUE_DIR = 'docich_program_queue'
 REGISTRY_FILE = 'docich_program_active.json'
 # program_lock の保持中に他コーナーが starting/active のまま残る状態。
-BUSY_OWNER_STATUSES = frozenset({'starting', 'active'})
+BUSY_OWNER_STATUSES = frozenset({'starting', 'active', 'restoring', 'recovery_required', 'failed'})
 
 
 class CornerWaitExpired(RuntimeError):

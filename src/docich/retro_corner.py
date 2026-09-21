@@ -134,6 +134,13 @@ def load_retro_corner_config(g: GlobalConfig) -> RetroCornerConfig:
     if not isinstance(raw, dict):
         raise RetroCornerError("[retro_corner] はtableである必要があります")
 
+    from .corner_catalog import rotation_enabled, load_catalog
+    rotation_has_nethack = False
+    if rotation_enabled(g):
+        raw = dict(raw)
+        raw["games"] = [c.game for c in load_catalog(g) if c.adapter == "game"] or ["gnurobots"]
+        rotation_has_nethack = any(c.game == "nethack" for c in load_catalog(g))
+
     cfg = RetroCornerConfig(
         enabled=raw.get("enabled", False),
         require_program_boundary=raw.get("require_program_boundary", False),
@@ -218,7 +225,7 @@ def load_retro_corner_config(g: GlobalConfig) -> RetroCornerConfig:
     nethack_corner = _raw_config(g).get("nethack_corner")
     if (
         cfg.mode == "rotation"
-        and "nethack" in cfg.games
+        and ("nethack" in cfg.games or rotation_has_nethack)
         and isinstance(nethack_corner, dict)
         and nethack_corner.get("enabled") is True
     ):
@@ -527,6 +534,9 @@ class RetroCornerManager:
         return state
 
     def _write_state(self, state: dict[str, object]) -> None:
+        if state.get("status") == "active":
+            from .corner_ownership import bind_runtime
+            bind_runtime(self.store, state, state.get("game"))
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         os.chmod(self.state_path.parent, 0o700)
         atomic_write_json(self.state_path, state)
@@ -878,6 +888,9 @@ class RetroCornerManager:
         )
 
     def _finish_locked(self, state: dict[str, object], completed_at: dt.datetime) -> CornerResult:
+        if state.get("status") in {"active", "restoring"}:
+            from .corner_ownership import verify_runtime
+            verify_runtime(self.store, state, state.get("game"))
         game = state.get("game")
         previous = state.get("previous_game")
         if not isinstance(game, str):
@@ -1076,6 +1089,8 @@ class RetroCornerManager:
             active = canonical.get("active")
             previous = active.get("game") if isinstance(active, dict) else None
         ends_at = now + dt.timedelta(minutes=self.config.duration_minutes)
+        if extra_state and extra_state.get("rotation_request_id") and previous == target:
+            raise RetroCornerError("rotation target already owned by another execution")
         state = {
             "schema_version": STATE_SCHEMA_VERSION,
             "status": "starting",
@@ -1220,13 +1235,34 @@ class RetroCornerManager:
                 count += 1
         return count >= target
 
+    def _rotation_stop_result(self):
+        from .corner_rotation import clear_rotation_stop_request, rotation_stop_requested
+
+        if not rotation_stop_requested(self.g, self.state_path):
+            return None
+        with self._locked():
+            latest = self._read_state()
+            if latest.get("status") in {"active", "restoring"}:
+                result = self._finish_locked(latest, self._local_now())
+            else:
+                result = self._state_result(latest)
+        if getattr(result, "status", None) in {"completed", "interrupted"}:
+            clear_rotation_stop_request(self.g, self.state_path)
+        return result
+
     def _wait_and_finish(self, state: dict[str, object]) -> CornerResult:
         ends_at = self._parse_ends_at(state)
         if ends_at is None:
             raise RetroCornerError("retro corner ends_atが不正です")
         if not state.get("target_matches"):
+            stopped = self._rotation_stop_result()
+            if stopped is not None:
+                return stopped
             remaining = max(0.0, (ends_at - self._local_now()).total_seconds())
             self._sleep(remaining)
+            stopped = self._rotation_stop_result()
+            if stopped is not None:
+                return stopped
             with self._locked():
                 latest = self._read_state()
                 if latest.get("status") != "active":
@@ -1238,6 +1274,9 @@ class RetroCornerManager:
             next_agent_repair_at = 0.0
             agent_repair_failed = False
             while True:
+                stopped = self._rotation_stop_result()
+                if stopped is not None:
+                    return stopped
                 remaining = max(0.0, (ends_at - self._local_now()).total_seconds())
                 self._sleep(min(5.0, remaining))
                 with self._locked():
@@ -1392,6 +1431,13 @@ class RetroCornerManager:
         return self._wait_and_finish(resumed)
 
     def start(self) -> CornerResult:
+        from .corner_catalog import rotation_enabled
+        if rotation_enabled(self.g):
+            from .corner_rotation import run_manual
+            return run_manual(self.g, self, self.config.games)
+        return self._start_direct()
+
+    def _start_direct(self) -> CornerResult:
         with self._locked():
             state, result = self._begin_locked(self._local_now(), scheduled=False)
         if result is not None:
@@ -1399,7 +1445,49 @@ class RetroCornerManager:
         assert state is not None
         return self._wait_and_finish(state)
 
+    def run_rotation(self, request_id: str, target: str | None = None) -> CornerResult:
+        """Execute/replay one common rotation request, bypassing legacy calendars."""
+        with self._tick_guard() as single:
+            if not single:
+                return CornerResult("queued", detail="already-running")
+            with self._locked():
+                state = self._read_state()
+                if state.get("rotation_request_id") == request_id:
+                    status = state.get("status")
+                    if status == "completed":
+                        return self._state_result(state)
+                    if status == "starting":
+                        state, result = self._resume_queued_start_locked(state, self._local_now())
+                        if result is not None:
+                            return result
+                    elif status == "restoring":
+                        return self._finish_locked(state, self._local_now())
+                    elif status != "active":
+                        raise RetroCornerError("rotation execution requires recovery")
+                    elif status == "active":
+                        from .corner_ownership import verify_runtime
+                        verify_runtime(self.store, state, state.get("game"))
+                else:
+                    if state.get("status") not in {"idle", "completed", "interrupted"}:
+                        raise RetroCornerError("rotation execution owner mismatch")
+                    state, result = self._begin_locked(
+                        self._local_now(), scheduled=False, target_override=target,
+                        extra_state={"rotation_request_id": request_id, "switch_request_id": request_id},
+                    )
+                    if result is not None:
+                        return result
+            if state is None:
+                raise RetroCornerError("rotation execution state missing")
+            return self._wait_and_finish(state)
+
     def stop(self) -> CornerResult:
+        from .corner_catalog import rotation_enabled
+        if rotation_enabled(self.g):
+            from .corner_rotation import stop_manual
+            return stop_manual(self.g, self, self._stop_direct, busy_callback=self._stop_direct)
+        return self._stop_direct()
+
+    def _stop_direct(self) -> CornerResult:
         with self._locked():
             state = self._read_state()
             if state.get("status") not in {"active", "restoring"}:
@@ -1408,6 +1496,11 @@ class RetroCornerManager:
             return self._finish_locked(state, self._local_now())
 
     def tick(self) -> CornerResult:
+        from .corner_catalog import rotation_enabled
+        if rotation_enabled(self.g):
+            from .corner_rotation import CornerRotationManager
+            result = CornerRotationManager(self.g).tick()
+            return CornerResult(result["status"], detail=result.get("reason"))
         with self._tick_guard() as single:
             if not single:
                 return CornerResult("noop", detail="already-running")

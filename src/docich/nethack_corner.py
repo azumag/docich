@@ -280,6 +280,9 @@ class NethackCornerManager(RetroCornerManager):
         last_text: str | None = None
         unchanged_since = self._local_now()
         while True:
+            stopped = self._rotation_stop_result()
+            if stopped is not None:
+                return stopped
             self._sleep(interval)
             with self._locked():
                 latest = self._read_state()
@@ -496,6 +499,9 @@ class NethackCornerManager(RetroCornerManager):
         return not self.config.weekdays or now.weekday() in self.config.weekdays
 
     def tick(self) -> CornerResult:
+        from .corner_catalog import rotation_enabled
+        if rotation_enabled(self.g):
+            return super().tick()
         with self._tick_guard() as single:
             if not single:
                 return CornerResult("noop", detail="already-running")
