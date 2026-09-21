@@ -598,6 +598,28 @@ class TestStreamCategoryFollowsTheCorner(NethackCornerTestBase):
         mgr, coordinator = self.manager(current, stream_game=announced.append, **kwargs)
         return mgr, coordinator, announced
 
+    def test_coordinator_post_commit_hook_is_the_only_announcement_path(self):
+        posted: list[str] = []
+        current = ["sorengame"]
+
+        class PostCommitCoordinator(FakeCoordinator):
+            def __init__(self, current):
+                super().__init__(current)
+                self.post_commit = posted.append
+
+            def switch(self, game):
+                result = super().switch(game)
+                self.post_commit(game)
+                return result
+
+        coordinator = PostCommitCoordinator(current)
+        mgr, _, announced = self._manager(current, coordinator=coordinator)
+        result = mgr.start()
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(posted, ["nethack", "sorengame"])
+        self.assertEqual(announced, [])
+
     def test_the_corner_announces_nethack_and_then_the_game_it_restores(self):
         mgr, coordinator, announced = self._manager(["sorengame"])
 

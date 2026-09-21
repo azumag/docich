@@ -367,6 +367,12 @@ class RetroCornerManager:
                 post_commit=commit_hook(g),
             )
         self.coordinator = coordinator
+        # The production coordinator owns the post-commit category hook.
+        # Legacy/test coordinators may not expose it, so retain the local
+        # callback only for those paths and never announce a switch twice.
+        self._coordinator_announces_stream = callable(
+            getattr(coordinator, "post_commit", None)
+        )
         self._now = now or (lambda: dt.datetime.now(self.tz))
         self._sleep = sleep
         self._active_game_reader = active_game_reader or self._canonical_active_game
@@ -668,7 +674,7 @@ class RetroCornerManager:
             if getattr(result, "status", None) in PENDING_SWITCH_STATUSES:
                 return result
             self._require_success(result, action)
-            self._announce_stream_game(target)
+            self._announce_after_switch(target)
             return result
         if current is None:
             result = self._invoke_coordinator(
@@ -683,7 +689,7 @@ class RetroCornerManager:
         if getattr(result, "status", None) in PENDING_SWITCH_STATUSES:
             return result
         self._require_success(result, action)
-        self._announce_stream_game(target)
+        self._announce_after_switch(target)
         return result
 
     def _transition_to(
@@ -741,6 +747,11 @@ class RetroCornerManager:
                 f"[stream-game] status=failed game={game} detail={_safe_detail(exc)}",
                 file=sys.stderr,
             )
+
+    def _announce_after_switch(self, game: str | None) -> None:
+        """Announce only when the coordinator has no post-commit hook."""
+        if not self._coordinator_announces_stream:
+            self._announce_stream_game(game)
 
     def _default_stream_game(self, game: str) -> None:
         from .stream_category import announce_stream_game
@@ -952,7 +963,7 @@ class RetroCornerManager:
             # _transition_to, so announce here as well; otherwise the
             # category stays on the corner's game after it ends.
             if isinstance(previous, str) and previous != game:
-                self._announce_stream_game(previous)
+                self._announce_after_switch(previous)
             state.update(
                 status="completed",
                 completed_at=completed_at.isoformat(),

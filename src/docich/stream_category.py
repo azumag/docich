@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from .config import GlobalConfig, load_game
@@ -62,12 +63,24 @@ def _spawn(argv: list[str], *, cwd: Path, log_path: Path) -> None:
     os.chmod(log_path.parent, 0o700)
     # The child is detached and its output kept in a private log: the switch
     # must not wait on a Twitch API round trip, and the log can contain the
-    # stream title, which is not something to put on a shared stream.
+    # stream title, which is not something to put on a shared stream.  Keep
+    # detached updates FIFO-ordered so a slow Snake request cannot overwrite a
+    # later Soren restore.
+    runner = Path(__file__).with_name("stream_category_runner.py")
+    child_argv = list(argv)
+    if runner.is_file():
+        child_argv = [
+            sys.executable,
+            str(runner),
+            str(log_path.parent / "stream-category.lock"),
+            "--",
+            *child_argv,
+        ]
     fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
         with os.fdopen(fd, "ab", closefd=True) as log:
             subprocess.Popen(
-                argv,
+                child_argv,
                 stdin=subprocess.DEVNULL,
                 stdout=log,
                 stderr=subprocess.STDOUT,
