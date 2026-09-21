@@ -37,7 +37,7 @@ class TestTmuxCallsUseStripTmux(unittest.TestCase):
         mock_run.return_value = _ok()
         self.tmux.has_session()
         self.tmux.ensure_session()
-        self.tmux.kill_session()
+        self.tmux.kill_session(allow_shared=True)
         self.tmux.list_windows()
         self.tmux.new_window("w", ["true"])
         self.tmux.kill_window("w")
@@ -345,6 +345,41 @@ class TestCheckedOperations(unittest.TestCase):
         ]
         self.assertTrue(self.tmux.session_target_exists("docich-game", strict=True))
         self.assertFalse(self.tmux.session_target_exists("docich-game", strict=True))
+
+
+class TestSharedSessionKillGuard(unittest.TestCase):
+    """Issue #219: 共有 session の kill は明示的な全体停止経路でのみ許可する。"""
+
+    def setUp(self):
+        self.tmux = tmux_mod.Tmux()
+
+    @mock.patch("docich.tmux.procs.run")
+    def test_kill_session_named_refuses_shared_session(self, mock_run):
+        with self.assertRaises(tmux_mod.OwnershipMismatchError):
+            self.tmux.kill_session_named("docich")
+        mock_run.assert_not_called()
+
+    @mock.patch("docich.tmux.procs.run")
+    def test_kill_session_refuses_default_shared_session(self, mock_run):
+        with self.assertRaises(tmux_mod.OwnershipMismatchError):
+            self.tmux.kill_session()
+        mock_run.assert_not_called()
+
+    @mock.patch("docich.tmux.procs.run")
+    def test_kill_session_named_allows_shared_with_explicit_flag(self, mock_run):
+        mock_run.return_value = _ok()
+        self.tmux.kill_session_named("docich", allow_shared=True)
+        mock_run.assert_called_once()
+
+    @mock.patch("docich.tmux.procs.run")
+    def test_kill_session_named_allows_game_session(self, mock_run):
+        mock_run.return_value = _ok()
+        self.tmux.kill_session_named("docich-game")
+        mock_run.assert_called_once()
+
+    def test_stop_game_session_named_rejects_shared_session(self):
+        with self.assertRaises(ValueError):
+            self.tmux.stop_game_session_named("docich")
 
 
 if __name__ == "__main__":
