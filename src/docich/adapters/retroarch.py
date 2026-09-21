@@ -10,14 +10,21 @@ game window and confirms readiness on that runtime's own port (design v2 §4.2).
 from __future__ import annotations
 
 import glob
+import os
 import sys
 import time
+from contextlib import nullcontext
 from pathlib import Path
 
 from .. import procs
 from ..actions import Action
-from ..game_switch import DeadlineExceededError, ReadinessTimeoutError, RuntimeSpec
+from ..game_switch import (DeadlineExceededError, ReadinessTimeoutError, RuntimeSpec,
+                           RoundBoundaryUnsupportedError, atomic_write_json)
 from ..netcmd import send_ra_cmd
+from ..retroarch_boundary import (BOUNDARY_FILE, checkpoint_digest, identity,
+                                 input_gate, matches, read_record, require_input_open)
+from ..naming import runtime_directory
+from ..xkit import XKit
 from ..tmux import SESSION, Tmux, TmuxOwnership
 from .base import Adapter, AdapterError, Observation
 
@@ -160,6 +167,13 @@ def retroarch_cfg_lines(g, game, cfg_path: Path, network_port: int) -> list[str]
     ]
     for button, (cfg_val, _xdotool_key) in buttons.items():
         lines.append(f'input_player1_{button} = "{cfg_val}"')
+    if d.viewport_width > 0:
+        # Keep the core's ordinary window scale/aspect, independently of the
+        # broadcast rectangle. presentation.py scales only its captured image.
+        lines = [line for line in lines if not line.startswith('video_fullscreen')]
+        lines += ['video_fullscreen = "false"', 'video_scale = "3.0"',
+                  'video_force_aspect = "true"', 'video_crop_overscan = "false"',
+                  'savestate_auto_index = "false"', 'state_slot = "0"']
     return lines
 
 
@@ -208,6 +222,29 @@ class RetroArchAdapter(Adapter):
     def _cfg_path(self) -> Path:
         return self.ctx.state.retroarch_dir / "retroarch.cfg"
 
+    def _runtime_dir(self) -> Path | None:
+        fence = self.ctx.fence
+        if fence is not None:
+            return runtime_directory(self.ctx.g.state_dir, fence.runtime_id)
+        if self.ctx.g.display.viewport_width > 0:
+            raise AdapterError("contained RetroArch I/O requires a runtime fence")
+        return None
+
+    def _source(self):
+        runtime_dir = self._runtime_dir()
+        if self.ctx.g.display.viewport_width <= 0:
+            return self.ctx.xkit, None
+        state = read_record(runtime_dir / "presentation.json")
+        if (state.get("status") not in {"ready", "presentation_failed"} or not isinstance(state.get("display"), str)
+                or not state["display"].startswith(":")
+                or not state["display"][1:].isdigit()
+                or state["display"] == self.ctx.g.display.name
+                or not str(state.get("window", "")).isdigit()
+                or any(type(state.get(k)) is not int or state[k] <= 0
+                       for k in ("width", "height"))):
+            raise AdapterError("RetroArch native presentation is not ready")
+        return XKit(state["display"]), state
+
     # --- Adapter contract ------------------------------------------------
 
     def prepare(self) -> None:
@@ -240,7 +277,12 @@ class RetroArchAdapter(Adapter):
         self._check_fence()
         d = self.ctx.g.display
         out_path = self.ctx.state.screenshots_dir / "latest.png"
-        result = self.ctx.xkit.screenshot(out_path, d.width, d.height)
+        source, native = self._source()
+        if native:
+            result = source.screenshot(out_path, native["width"], native["height"],
+                                       window_id=native["window"])
+        else:
+            result = source.screenshot(out_path, d.width, d.height)
         return Observation(
             game=self.ctx.game.name,
             title=self.ctx.game.title,
@@ -263,6 +305,18 @@ class RetroArchAdapter(Adapter):
 
     def act(self, action: Action) -> None:
         self._check_fence()
+        runtime_dir = self._runtime_dir()
+        with (input_gate(runtime_dir, time.monotonic() + 5) if runtime_dir else nullcontext()):
+            if runtime_dir:
+                require_input_open(runtime_dir)
+            source, native = self._source()
+            if native:
+                # Never focus or inject into the broadcast presenter.
+                self.ctx.xkit = source
+                self._window_id = native["window"]
+            self._act(action)
+
+    def _act(self, action: Action) -> None:
         if action.type == "pad":
             buttons = self._resolved_buttons()
             keys = []
@@ -301,6 +355,36 @@ class RetroArchCoordinatorAdapter:
         self.tmux = Tmux()
         self.agent_enabled = game.agent.enabled
         self.requires_round_boundary = game.lifecycle.require_round_boundary
+        # stop historically bypasses draining; opt in without changing the
+        # lifecycle of unrelated adapters in this RetroArch implementation.
+        self.requires_stop_boundary = game.lifecycle.require_round_boundary
+        self.round_boundary_timeout_s = game.lifecycle.boundary_timeout_s
+        if not self.requires_round_boundary:
+            # game_switch treats the callable boundary method itself as a
+            # capability. Hide it for legacy RetroArch games so the lifecycle
+            # policy remains a real opt-in, matching the CLI adapter.
+            self.request_round_boundary = None
+            self.cancel_round_boundary = None
+
+    def _contained(self) -> bool:
+        return self.g.display.viewport_width > 0
+
+    def _presentation_path(self) -> Path:
+        return self.spec.runtime_dir / "presentation.json"
+
+    def _game_command(self) -> list[str]:
+        command = retroarch_command(self.g, self.game, self._cfg_path())
+        if not self._contained():
+            return command
+        d = self.g.display
+        return [sys.executable, str(Path(__file__).resolve().parents[1] / "presentation.py"),
+                '--display', d.name, '--title', f'docich-present-{self.spec.runtime_id}',
+                '--x', str(d.viewport_x), '--y', str(d.viewport_y),
+                '--width', str(d.viewport_width), '--height', str(d.viewport_height),
+                '--window-pattern', '^RetroArch',
+                '--runtime-state', str(self._presentation_path()),
+                *(['--audio-sink', self.g.audio.sink_name] if self.g.audio.enabled else []),
+                '--', *command]
 
     def _ownership(self, role: str) -> TmuxOwnership:
         return TmuxOwnership(
@@ -358,9 +442,12 @@ class RetroArchCoordinatorAdapter:
 
     def preflight(self, deadline: float, cancel) -> None:
         self._check_active(deadline, cancel)
+        if self.game.lifecycle.require_round_boundary and not self._contained():
+            raise AdapterError("safe RetroArch requires a private contained presentation")
         resolve_rom(self.g, self.game)
         resolve_core(self.game)
-        for binary in ("dbus-run-session", "retroarch"):
+        for binary in ("dbus-run-session", "retroarch", *(("Xvfb", "ffplay", "xdotool")
+                                                        if self._contained() else ())):
             if procs.which(binary) is None:
                 raise AdapterError(f"コマンドが見つかりません: {binary}")
         if self.agent_enabled and not Path(_docich_bin()).is_file():
@@ -382,9 +469,16 @@ class RetroArchCoordinatorAdapter:
             self._verify_window_ownership(target, "game")
             return
         self._check_active(deadline, cancel)
+        if self._contained():
+            if read_record(self.spec.runtime_dir / BOUNDARY_FILE).get("status") == "reached":
+                raise AdapterError("saved RetroArch runtime needs explicit checkpoint restoration")
+            prior = read_record(self._presentation_path())
+            if prior and prior.get("status") != "stopped":
+                raise AdapterError("previous RetroArch child cleanup is unconfirmed")
+            atomic_write_json(self._presentation_path(), {"status": "starting"})
         self.tmux.create_window_owned(
             self.spec.game_window,
-            retroarch_command(self.g, self.game, cfg_path),
+            self._game_command(),
             self._ownership("game"),
             env={"DISPLAY": self.g.display.name},
         )
@@ -402,6 +496,18 @@ class RetroArchCoordinatorAdapter:
         # runtime 固有 network command port で status を確認する
         # (generic RetroArch window や screenshot の存在だけでは ready にしない)。
         self._probe_network_status(deadline, cancel)
+        if self._contained():
+            presenter = XKit(self.g.display.name)
+            while True:
+                self._check_active(deadline, cancel)
+                if not self.alive(deadline, cancel):
+                    raise ReadinessTimeoutError("RetroArch presenter exited")
+                state = read_record(self._presentation_path())
+                if state.get("status") == "ready" and presenter.find_window(
+                    f"^docich-present-{self.spec.runtime_id}$", timeout=0.1
+                ):
+                    return
+                time.sleep(min(0.05, max(0, deadline - time.monotonic())))
 
     def _probe_network_status(self, deadline: float, cancel) -> None:
         while True:
@@ -431,12 +537,38 @@ class RetroArchCoordinatorAdapter:
         self._check_active(deadline, cancel)
         target = self._game_window_target()
         if not self.tmux.window_target_exists(target):
+            if self._contained():
+                record = read_record(self._presentation_path())
+                if (record or self._cfg_path().exists()) and record.get("status") != "stopped":
+                    raise AdapterError("RetroArch child shutdown is not confirmed")
             return False
         self._verify_window_ownership(target, "game")
         states = self.tmux.pane_states_checked(target)
+        if self._contained() and any(pane.dead for pane in states):
+            if read_record(self._presentation_path()).get("status") != "stopped":
+                raise AdapterError("RetroArch child shutdown is not confirmed")
         return not any(pane.dead for pane in states)
 
+    def _require_safe_cleanup(self, deadline: float, cancel) -> None:
+        if self._contained():
+            from ..agent.fence import read_canonical
+            state = read_canonical(self.g.state_dir)
+            committed = any(isinstance(state.get(slot), dict) and
+                            state[slot].get("runtime_id") == self.spec.runtime_id
+                            for slot in ("active", "previous"))
+            if committed:
+                record = read_record(self.spec.runtime_dir / BOUNDARY_FILE)
+                if not matches(record, self.spec, record.get("request_id")) or record.get("status") != "reached":
+                    raise AdapterError("RetroArch committed runtime has no safe boundary")
+                if self.tmux.window_target_exists(self._game_window_target()):
+                    states = self.tmux.pane_states_checked(self._game_window_target())
+                    if not any(pane.dead for pane in states):
+                        self._require_paused(deadline, cancel)
+                        if checkpoint_digest(self._checkpoint(record["checkpoint"]), deadline, cancel) != record.get("sha256"):
+                            raise AdapterError("RetroArch checkpoint changed before cleanup")
+
     def cleanup_runtime(self, deadline: float, cancel) -> None:
+        self._require_safe_cleanup(deadline, cancel)
         for name, role in (
             (self.spec.agent_window, "agent"),
             (self.spec.game_window, "game"),
@@ -446,6 +578,105 @@ class RetroArchCoordinatorAdapter:
             if self.tmux.window_target_exists(target):
                 self._check_active(deadline, cancel)
                 self.tmux.kill_window_owned(target, self._ownership(role))
+
+    def request_round_boundary(self, request_id: str, deadline: float, cancel) -> None:
+        if not self._contained():
+            raise RoundBoundaryUnsupportedError("RetroArch safe boundary requires private presentation")
+        path = self.spec.runtime_dir / BOUNDARY_FILE
+        with input_gate(self.spec.runtime_dir, deadline, cancel):
+            self._check_active(deadline, cancel)
+            record = read_record(path)
+            if record and record.get("status") != "cancelled":
+                if not matches(record, self.spec, request_id):
+                    raise AdapterError("RetroArch boundary identity mismatch")
+            else:
+                atomic_write_json(path, dict(identity(self.spec, request_id),
+                                             status="waiting", requested_ns=time.time_ns()))
+        while True:
+            self._check_active(deadline, cancel)
+            if not self.alive(deadline, cancel):
+                raise AdapterError("RetroArch exited without a safe boundary")
+            with input_gate(self.spec.runtime_dir, deadline, cancel):
+                record = read_record(path)
+                if not matches(record, self.spec, request_id):
+                    raise AdapterError("RetroArch boundary identity changed")
+                if record.get("status") == "reached":
+                    checkpoint = self._checkpoint(record["checkpoint"])
+                    if checkpoint_digest(checkpoint, deadline, cancel) != record.get("sha256"):
+                        raise AdapterError("RetroArch checkpoint changed")
+                    self._require_paused(deadline, cancel)
+                    return
+                if record.get("status") != "waiting":
+                    raise AdapterError("RetroArch boundary needs explicit recovery")
+            if cancel is not None:
+                cancel.wait(min(0.05, max(0, deadline - time.monotonic())))
+            else:
+                time.sleep(min(0.05, max(0, deadline - time.monotonic())))
+
+    def _checkpoint(self, name: str) -> Path:
+        if name != resolve_rom(self.g, self.game).stem + '.state':
+            raise AdapterError("checkpoint must be a slot-zero .state basename")
+        path = self.spec.runtime_dir / 'states' / name
+        if path.parent.is_symlink():
+            raise AdapterError("checkpoint directory may not be a symlink")
+        return path
+
+    def _require_paused(self, deadline: float, cancel) -> None:
+        self._check_active(deadline, cancel)
+        if not self._contained() or not self.alive(deadline, cancel):
+            raise AdapterError("RetroArch native runtime is not alive")
+        self._verify_window_ownership(self._game_window_target(), "game")
+        reply = send_ra_cmd("GET_STATUS", port=self._network_port(),
+                            wait_reply_s=min(0.1, max(0.001, deadline - time.monotonic())))
+        self._check_active(deadline, cancel)
+        # v1.18 GET_STATUS: PAUSED <core>,<content basename>[,<crc>].
+        # A menu, missing response, PLAYING or generic OK is not a boundary.
+        prefix = "GET_STATUS PAUSED "
+        fields = reply[len(prefix):].strip().split(',') if reply and reply.startswith(prefix) else []
+        if len(fields) < 2 or fields[1] != resolve_rom(self.g, self.game).stem:
+            raise AdapterError("RetroArch paused content identity is unconfirmed")
+
+    def confirm_safe_boundary(self, request_id: str, checkpoint: str, deadline: float, cancel) -> None:
+        """Explicit operator acknowledgement of a completed paused checkpoint.
+
+        Caller holds the canonical shared lock and verifies draining identity.
+        No save, pause, quit, or automatic game-over inference is issued here.
+        """
+        path = self.spec.runtime_dir / BOUNDARY_FILE
+        with input_gate(self.spec.runtime_dir, deadline, cancel):
+            record = read_record(path)
+            if not matches(record, self.spec, request_id) or record.get("status") != "waiting":
+                raise AdapterError("RetroArch has no matching pending boundary")
+            self._require_paused(deadline, cancel)
+            saved = self._checkpoint(checkpoint)
+            digest = checkpoint_digest(saved, deadline, cancel)
+            if saved.stat().st_mtime_ns < record["requested_ns"]:
+                raise AdapterError("checkpoint predates the boundary request")
+            # The operator attests save completion. fsync plus a second digest
+            # rejects a changing checkpoint; do not infer save success from UDP.
+            with saved.open('rb') as stream:
+                os.fsync(stream.fileno())
+            self._require_paused(deadline, cancel)
+            if checkpoint_digest(saved, deadline, cancel) != digest:
+                raise AdapterError("checkpoint is still changing")
+            self._check_active(deadline, cancel)
+            atomic_write_json(path, dict(record, status="reached", checkpoint=checkpoint,
+                                         sha256=digest, outcome="suspended"))
+
+    def cancel_round_boundary(self, request_id: str, deadline: float, cancel) -> bool:
+        # Only our waiting marker is reversible. Never unpause a user's game
+        # or release a confirmed hold as a side effect of timeout/recovery.
+        with input_gate(self.spec.runtime_dir, deadline, cancel):
+            path = self.spec.runtime_dir / BOUNDARY_FILE
+            record = read_record(path)
+            if not record:
+                return True
+            if not matches(record, self.spec, request_id):
+                return False
+            if record.get("status") not in {"waiting", "cancelled"}:
+                return False
+            atomic_write_json(path, dict(record, status="cancelled"))
+            return True
 
     def start_agent(self, deadline: float, cancel) -> None:
         self._check_active(deadline, cancel)
@@ -463,6 +694,7 @@ class RetroArchCoordinatorAdapter:
 
     def stop_agent(self, deadline: float, cancel) -> None:
         self._check_active(deadline, cancel)
+        self._require_safe_cleanup(deadline, cancel)
         target = self._agent_window_target()
         if self.tmux.window_target_exists(target):
             self._check_active(deadline, cancel)

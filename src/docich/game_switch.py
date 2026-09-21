@@ -1503,6 +1503,10 @@ class RoundBoundaryAdapter(Protocol):
     game.  ``requires_round_boundary`` is a game-definition policy flag; a
     missing method is tolerated for legacy games when it is false, but is a
     fail-closed unsupported result when it is true.
+
+    Adapters may additionally expose ``requires_stop_boundary = True`` to
+    apply this same drain-before-input-stop contract to an explicit stop.
+    Absent that opt-in, legacy stop behavior remains unchanged.
     """
 
     requires_round_boundary: bool
@@ -2741,7 +2745,7 @@ class GameSwitchCoordinator:
     ) -> SwitchResult:
         try:
             if operation == "stop":
-                return self._stop_locked(tx, acceptance, deadline)
+                return self._stop_locked(tx, acceptance, deadline, deadline_at)
             if operation in {"start", "switch", "restart", "rotate"}:
                 return self._switch_locked(
                     tx, acceptance, operation, target, deadline, deadline_at
@@ -3625,11 +3629,10 @@ class GameSwitchCoordinator:
         tx: GameSwitchTransaction,
         acceptance: RequestAcceptance,
         deadline: float,
+        deadline_at: str,
     ) -> SwitchResult:
         state, _migrated = self.store.canonical.load()
         active = state.get("active")
-        tx.transition({"validating"}, "quiescing", crash_hook=self.crash_hook)
-        self._log("quiesce_started", phase="quiescing")
         warnings: list[str] = []
         cleanup_pending = False
         if active is not None:
@@ -3644,6 +3647,38 @@ class GameSwitchCoordinator:
                     detail=f"old runtime adapter: {_safe_detail(exc)}",
                     keep_active=True,
                 )
+            if getattr(adapter, "requires_stop_boundary", False):
+                tx.transition({"validating"}, "draining",
+                              updates={"deadline_at": deadline_at}, crash_hook=self.crash_hook)
+                try:
+                    deadline = self._await_round_boundary_locked(
+                        tx, adapter, active, acceptance, deadline
+                    )
+                except RoundBoundaryStateChangedError:
+                    receipt = self.store.receipts.load(acceptance.request_id)
+                    if receipt is not None and receipt.get("status") in TERMINAL_RECEIPT_STATUSES:
+                        return _result_from_receipt(receipt)
+                    return self._round_boundary_stale_result(
+                        acceptance, None, "stop draining identity changed"
+                    )
+                except Exception as exc:
+                    if tx.lock._file is None:
+                        return self._round_boundary_stale_result(
+                            acceptance, None, "stop draining writer lock unavailable"
+                        )
+                    unsupported = isinstance(exc, RoundBoundaryUnsupportedError)
+                    error_code = (ERROR_ROUND_BOUNDARY_UNSUPPORTED if unsupported else
+                                  ERROR_TIMEOUT if isinstance(exc, (ReadinessTimeoutError, DeadlineExceededError))
+                                  else ERROR_QUIESCE_FAILED)
+                    return self._round_boundary_failure_locked(
+                        tx, acceptance, None, active, adapter,
+                        error_code=error_code, detail=_safe_detail(exc),
+                        cancel_boundary=(not unsupported or bool(getattr(exc, "request_started", False))),
+                    )
+                tx.transition({"draining"}, "quiescing", crash_hook=self.crash_hook)
+            else:
+                tx.transition({"validating"}, "quiescing", crash_hook=self.crash_hook)
+            self._log("quiesce_started", phase="quiescing")
             try:
                 self._call_adapter(
                     lambda cancel: adapter.stop_agent(deadline, cancel),
@@ -3688,6 +3723,7 @@ class GameSwitchCoordinator:
                 )
             self._log("quiesced", phase="stopping")
         else:
+            tx.transition({"validating"}, "quiescing", crash_hook=self.crash_hook)
             tx.transition({"quiescing"}, "stopping", crash_hook=self.crash_hook)
         last_result = {
             "request_id": acceptance.request_id,

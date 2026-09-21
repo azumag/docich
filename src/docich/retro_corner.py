@@ -537,6 +537,14 @@ class RetroCornerManager:
                 raise RetroCornerError(
                     f"retro corner対象ゲームを読み込めません ({name}): {_safe_detail(exc)}"
                 ) from exc
+            retro = game.raw.get("retro_corner", {})
+            if not isinstance(retro, dict):
+                raise RetroCornerError(f"{name} の [retro_corner] はtableである必要があります")
+            enabled = retro.get("enabled", True)
+            if type(enabled) is not bool:
+                raise RetroCornerError(f"{name} の retro_corner.enabled はtrue/falseが必要です")
+            if not enabled:
+                raise RetroCornerError(f"retro corner対象は登録済みですが無効です: {name}")
             if game.adapter != "cli":
                 raise RetroCornerError(f"retro corner対象はCLIゲームに限定されます: {name}")
             corner_raw = game.raw.get("corner", {}) if isinstance(game.raw, dict) else {}
@@ -921,6 +929,17 @@ class RetroCornerManager:
             if resume_result is not None:
                 return resumed, resume_result
             return resumed, None
+        # Immediate start in a rolling/lottery profile must use the same
+        # eligibility gate as its timer, including dormant registrations.
+        if (
+            target_override is None
+            and not scheduled
+            and getattr(self.config, "mode", "daily") in {"rotation", "lottery"}
+        ):
+            candidates = self._playable_games()
+            if not candidates:
+                return None, CornerResult("noop", detail="no-eligible-game")
+            target_override = self._rng.choice(candidates)
         # サブクラス corner (soren91/nethack) の config dataclass には新フィールドが
         # 無いため、既定値は getattr で落とす (後方互換)。
         daily_each_game = getattr(self.config, "daily_each_game", False)

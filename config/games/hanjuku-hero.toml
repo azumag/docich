@@ -8,12 +8,26 @@ rom = "games/roms/hanjuku-hero.sfc"   # 自己吸い出し ROM を配置
 core = "auto"                          # or コア .so の絶対パス
 # [retroarch.pad_map] で既定マップの上書きも可能
 
+[lifecycle]
+require_round_boundary = true
+boundary_timeout_s = 300
+
 [agent]
 enabled = false                        # 有効化はユーザー判断 (認証・ROM・コスト確認後)
 # brain の詳細設計・知識注入 (games/hanjuku-sfc-speedrun submodule) は docs/hanjuku_brain.md 参照
 brain = "command"
 command = ["python3", "brains/hanjuku/brain.py"]
 interval_ms = 7000                     # LLM レイテンシ (3〜6秒) を織り込んだ周期
+
+# live rotationへの登録のみ。明示保存境界・containの実装は実機検証待ち。
+# enabledだけ変更してもCLI限定の適格性チェックで除外される。解除条件は
+# docs/games/hanjuku-hero.md §8参照。agent/課金LLMの有効化は別途判断する。
+[retro_corner]
+enabled = false
+unattended = false
+# ROM/coreは実行ファイルではないためrequiresへ混ぜない。
+# claudeは既定brain backend用。存在だけでは認証・予算を保証しない。
+requires = ["retroarch", "dbus-run-session", "python3", "claude"]
 
 # Twitch 配信カテゴリー・タイトル連動 (soviet_now update_stream_game.sh が読む)。
 # category は IGDB 照合済み (SFC初代の副題付き項目を採用)。

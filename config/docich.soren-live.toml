@@ -47,8 +47,8 @@ enabled = true
 require_program_boundary = true
 timezone = "Asia/Tokyo"
 # rolling: 24時間を登録ゲーム数で割った間隔で必ず候補を抽選する。
-# 直近24時間以内に選ばれたゲームは候補から外すので、6ゲームなら4時間ごとに
-# 最初の6枠は重複なしのランダム順になり、24時間経過後に再び候補へ戻る。
+# 7件登録なら約3時間26分ごと。無効な登録も分母に含む。
+# 直近24時間以内に選ばれたゲームは候補から外し、24時間経過後に戻す。
 # 実行ファイルが無いゲームはその枠の候補から除外し、他コーナーが塞いでいる場合は
 # 次のtickで再試行する。毎時の確率抽選ではない。PAPER/Soren91/専用NetHackの固定枠が近い場合は、
 # 最悪の待ち時間＋durationが固定枠の5分前までに収まるときだけ開始し、固定枠を優先する。
@@ -62,7 +62,8 @@ start_hour = 19
 daily_each_game = true
 randomize_start = true
 start_window_minutes = 30
-games = ["ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console", "nethack"]
+games = ["ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console", "nethack", "hanjuku-hero"]
+# 半熟英雄は登録のみ。ゲーム側retro_corner.enabled=falseにより抽選から除外する。
 # 最初の5ゲームは command brain と bot_eval の bounded headless 評価を使う。
 # NetHackは専用brainと persistent_run のセーブ境界を使うbounded slotで、改善評価は未対応。
 # 専用の [nethack_corner] を有効化する場合は、rolling候補からNetHackを外す。
