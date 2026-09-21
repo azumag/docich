@@ -3869,8 +3869,20 @@ class GameSwitchCoordinator:
             return None
         previous_alive = self._probe_alive(previous_adapter, deadline)
         if previous_alive is None:
-            warnings.append("previous runtimeの生存確認ができません (probe失敗)")
-            return None
+            if previous_adapter.name == "program":
+                # The synthetic PAPER dashboard has no game state and is always
+                # replaceable. A stranded or ownership-mismatched session must
+                # not pin the display black: tear it down best-effort and
+                # restore the view as a fresh generation instead of failing
+                # closed the way a real game runtime does.
+                if self._teardown_runtime(previous_adapter, deadline):
+                    warnings.append("program viewの生存確認不能をteardownして復旧")
+                else:
+                    warnings.append("program viewの生存確認不能 (teardown未確認)")
+                previous_alive = False
+            else:
+                warnings.append("previous runtimeの生存確認ができません (probe失敗)")
+                return None
         if previous_alive:
             # The runtime was quiescing: a living process is not necessarily a
             # ready game.  Verify readiness BEFORE re-issuing the agent so a

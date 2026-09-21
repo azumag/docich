@@ -705,6 +705,43 @@ class TestFailureRollback(CoordinatorTestBase):
         self.assertEqual(state["active"]["generation"], 4)
         self.assertEqual(self.mirror_text(), "nethack")
 
+    def test_program_view_probe_failure_is_replaced_not_failed(self):
+        # The synthetic PAPER dashboard has no game state: a stranded or
+        # ownership-mismatched session must be torn down and restored as a
+        # fresh generation, not fail closed the way a real game runtime does.
+        state, _ = self.store.canonical.load()
+        previous = _runtime_dict(1, "nethack")
+        previous["adapter"] = "program"
+        state.update(
+            {
+                "phase": "failed",
+                "previous": previous,
+                "candidate": None,
+                "next_generation": 3,
+                "last_result": {
+                    "request_id": str(uuid.uuid4()),
+                    "operation": "switch",
+                    "status": "failed",
+                    "from_game": "nethack",
+                    "to_game": "robots",
+                    "generation": 2,
+                    "error_code": "rollback_failed",
+                },
+                "last_error": {"error_code": "rollback_failed", "detail": "prev"},
+            }
+        )
+        self.store.canonical.save(state)
+        self.behaviors["nethack"]["name"] = "program"
+        self.behaviors["nethack"]["agent_enabled"] = False
+        self.behaviors["nethack"]["alive_error"] = AdapterError("probe boom")
+
+        result = self.coordinator.recover()
+
+        self.assertEqual(result.status, "rolled_back")
+        state = self.canonical()
+        self.assertEqual(state["phase"], "ready")
+        self.assertEqual(state["active"]["game"], "nethack")
+
     def test_failed_phase_blocks_new_requests_until_recover(self):
         self.behaviors["robots"]["materialize_error"] = AdapterError("start boom")
         self.coordinator.start("robots")
