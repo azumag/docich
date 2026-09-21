@@ -88,7 +88,7 @@ driver() {
   done
 }
 
-driver &
+driver </dev/null &
 DRIVER=$!
 docich_wrapper_run_with_driver "$DRIVER" "$BASTET_BIN"
 rc=$?

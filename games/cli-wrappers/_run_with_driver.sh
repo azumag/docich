@@ -26,18 +26,34 @@ _docich_wrapper_stop_tree() {
     ''|*[!0-9]*|0) return 0 ;;
   esac
 
-  # Stop leaves first. This prevents the root shell from exiting and
-  # reparenting a still-running sleep/tmux/driver child.
+  # Freeze each process before walking its children. A driver shell can be
+  # waiting for sleep(1) and start a replacement immediately after that
+  # child is terminated; stopping the parent first closes that race and
+  # prevents a newly-created child from becoming an orphan when the parent
+  # is finally killed.
   # Each recursive call runs in a subshell because POSIX sh has no portable
   # local-variable declaration. Without that isolation, the recursive
   # function's loop variables overwrite the parent's root PID and the driver
   # is left alive after the game exits; its inherited capture pipe then keeps
   # the caller blocked forever on Linux.
-  for child in $(_docich_wrapper_children "$1"); do
+  kill -STOP "$1" 2>/dev/null || true
+  children="$(_docich_wrapper_children "$1")"
+  # macOS can briefly omit a just-created asynchronous child from a `ps`
+  # snapshot even after the parent is stopped. Take one delayed snapshot so
+  # that child is still included before the parent is terminated.
+  if [ -z "$children" ]; then
+    sleep 0.05
+    children="$(_docich_wrapper_children "$1")"
+  fi
+  for child in $children; do
     (_docich_wrapper_stop_tree "$child")
   done
 
+  # Resume only for the graceful TERM opportunity. If the process ignores
+  # TERM, the bounded wait below falls through to KILL while no child can be
+  # spawned behind it.
   kill -TERM "$1" 2>/dev/null || true
+  kill -CONT "$1" 2>/dev/null || true
   waited=0
   while _docich_wrapper_running "$1" && [ "$waited" -lt 10 ]; do
     sleep 0.1

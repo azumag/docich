@@ -93,7 +93,7 @@ def test_driver_helper_preserves_game_stdin_when_game_is_tracked_asynchronously(
         "#!/bin/sh\n"
         f". {helper!s}\n"
         "driver() { while :; do sleep 10; done; }\n"
-        "driver &\n"
+        "driver </dev/null &\n"
         "DRIVER=$!\n"
         "docich_wrapper_run_with_driver \"$DRIVER\" sh -c "
         "'IFS= read -r line || exit 7; printf \"%s\\n\" \"$line\" > \"$DOCICH_STDIN_PROBE\"'\n"
@@ -106,10 +106,11 @@ def test_driver_helper_preserves_game_stdin_when_game_is_tracked_asynchronously(
         ["/bin/sh", str(script)],
         input="pane-input\n",
         env={**os.environ, "DOCICH_STDIN_PROBE": str(output)},
-        capture_output=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         text=True,
         timeout=10,
     )
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 0
     assert output.read_text(encoding="utf-8") == "pane-input\n"
