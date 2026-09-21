@@ -78,8 +78,14 @@ docich_wrapper_run_with_driver() {
   trap 'docich_wrapper_signal INT' INT
   trap 'docich_wrapper_signal TERM' TERM
 
-  "$@" &
+  # POSIX sh connects an asynchronous command's stdin to /dev/null when job
+  # control is disabled unless that command has an explicit stdin redirection.
+  # These games are interactive terminal programs, so preserve the wrapper's
+  # tmux pane stdin explicitly while still keeping the game PID trackable.
+  exec 9<&0
+  "$@" <&9 9<&- &
   game_pid=$!
+  exec 9<&-
   wait "$game_pid"
   rc=$?
   trap - HUP INT TERM
