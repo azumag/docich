@@ -4,10 +4,14 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from unittest import mock
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from docich import tmux as tmux_mod  # noqa: E402
 
 
 @pytest.mark.parametrize("game", ["ninvaders", "nsnake"])
@@ -113,3 +117,17 @@ def test_driver_helper_preserves_game_stdin_when_game_is_tracked_asynchronously(
 
     assert result.returncode == 0, result.stderr
     assert output.read_text(encoding="utf-8") == "pane-input\n"
+
+
+def test_tmux_pane_cleanup_lookup_stays_scoped_to_owned_target():
+    """Retro CI must guard against accidentally enumerating all tmux panes."""
+
+    completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="123\n", stderr="")
+    with mock.patch("docich.tmux.procs.run", return_value=completed) as run:
+        pids = tmux_mod.Tmux()._pane_pids("docich:game-g1")
+
+    assert pids == [123]
+    assert run.call_args.args[0] == [
+        "tmux", "list-panes", "-t", "docich:game-g1", "-F", "#{pane_pid}"
+    ]
+    assert "-a" not in run.call_args.args[0]
