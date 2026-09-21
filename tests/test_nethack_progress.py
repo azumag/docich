@@ -105,28 +105,26 @@ def test_terrain_planner_and_bump_never_target_unreviewed_glyphs(glyph):
 def test_severe_status_and_starvation_dominate_hp_and_all_fallbacks(condition, hp):
     text = frame({"k": "d", "n": "#"}, hp=hp, condition=condition)
     agent = brain()
-    assert act(agent, text) == ["."]
+    assert act(agent, text) == []
     assert agent.last_decision.intent in {"status_emergency", "food_emergency"}
     # Helpers also guard the observation even if a caller supplies a misleading
     # survival intent (the exact critical-HP masking regression).
     obs = normalize_tty(text)
     fake = PolicyDecision("strategic", "survival_emergency", "test", requires_llm=True)
     assert step_out_of_hold(fake, obs, NethackExplorer()) is None
-    rest = rest_action_for_hold(fake, normalize_tty(frame(hp=hp, condition=condition)))
-    assert rest is not None
-    assert rest.text == "."
+    assert rest_action_for_hold(fake, normalize_tty(frame(hp=hp, condition=condition))) is None
 
 
 @pytest.mark.parametrize("condition", ["Blind", "Conf", "Stun", "Hallu"])
 @pytest.mark.parametrize("hp", ["16(16)", "4(16)"])
 def test_impairment_never_moves_or_bumps_even_if_hp_masks_its_intent(condition, hp):
-    assert act(brain(), frame({"k": "d", "n": "#"}, hp=hp, condition=condition)) == ["."]
+    assert act(brain(), frame({"k": "d", "n": "#"}, hp=hp, condition=condition)) == []
     assert act(brain(), frame({"n": "#"}, hp=hp, condition=condition)) == ["."]
 
 
 def test_hungry_explores_instead_of_repeatedly_resting_until_weak():
     assert act(brain(), frame({"n": "#"}, condition="Hungry")) == ["n"]
-    assert act(brain(), frame(condition="Hungry")) == ["."]
+    assert act(brain(), frame(condition="Hungry")) == []
 
 
 @pytest.mark.parametrize("message", [
@@ -229,8 +227,8 @@ def test_peaceful_attack_rejection_does_not_loop_bump_no_bump():
     assert act(agent, frame(occupied, message="Never mind.")) == ["h"]
     assert act(agent, frame(occupied, message="Really attack the cat? [yn] (n)")) == ["n"]
     # New messages/turns do not establish a peaceful creature is gone.
-    assert act(agent, frame(occupied, message="Never mind.", turn=13)) == ["."]
-    assert agent.last_progress_decision.intent == "rest_turn"
+    assert act(agent, frame(occupied, message="Never mind.", turn=13)) == []
+    assert agent.last_progress_decision.intent == "progress_blocked"
     assert act(agent, frame({"h": "."}, turn=14)) == ["h"]
 
 
@@ -244,7 +242,7 @@ def test_rejected_diagonal_yields_to_another_route_then_bump():
     assert act(agent, text) == ["k"]
     assert agent.last_progress_decision.intent == "bump_creature"
     assert act(agent, text) == ["k"]
-    assert act(agent, text) == ["."]  # wait explicitly after bounded contact retries
+    assert act(agent, text) == []  # remain fail-closed after bounded contact retries
     # New map/player/depth invalidates transient rejected edges.
     assert act(agent, frame({"k": "d", "b": ".", "n": "#"}, hp="4(16)", depth=2)) == ["b"]
 
@@ -261,7 +259,7 @@ def test_more_page_preserves_pending_contact_until_attack_confirmation():
     assert act(agent, frame({"h": "f"})) == ["h"]
     assert act(agent, frame({"h": "f"}, message="A message --More--")) == [" "]
     assert act(agent, frame({"h": "f"}, message="Really attack the cat? [yn] (n)")) == ["n"]
-    assert act(agent, frame({"h": "f"})) == ["."]
+    assert act(agent, frame({"h": "f"})) == []
 
 
 @pytest.mark.parametrize("key", ["Fh", "h.", "y\n", ">", "<", "o", "e", "q", "s", "\x1b"])
@@ -280,14 +278,12 @@ def test_final_guard_rechecks_context_instead_of_trusting_policy_intent():
         (move, frame({"n": "d"})), (move, frame({"n": "^"})),
         (move, frame({"n": "#"}, condition="Conf")),
         (attack, frame({"n": "."})), (attack, frame({"n": "I"})),
+        (rest, frame({"h": "f"})), (rest, frame(condition="Slime", hp="4(16)")),
         (move, frame({"n": "#"}, hp="0(16)")),
         (replace(move, intent="decline_attack"), frame({"n": "#"})),
     ]:
         with pytest.raises(RuntimeError):
             assert_production_safe(decision, normalize_tty(text))
-
-    assert_production_safe(rest, normalize_tty(frame({"h": "f"})))
-
 
 def test_missing_status_does_not_make_stale_map_actionable():
     text = "\n @#\n   \n"
@@ -302,8 +298,8 @@ def test_no_turn_field_bounds_unchanged_terrain_and_combat():
     assert act(agent, text) == ["k"]
     assert act(agent, text) == ["k"]
     for _ in range(4):
-        assert act(agent, text) == ["."]
-        assert agent.last_progress_decision.intent == "rest_turn"
+        assert act(agent, text) == []
+        assert agent.last_progress_decision.intent == "progress_blocked"
     assert act(agent, frame({"k": "d", "n": "#"}, hp="4(16)", turn=None, depth=2)) == ["n"]
 
 
@@ -346,17 +342,18 @@ def test_new_contract_suite_is_in_explicit_ci_list():
 def test_real_tty_severe_condition_spelling_is_normalized(condition):
     text = frame({"n": "#"}, condition=condition, hp="4(16)")
     assert condition in normalize_tty(text).conditions
-    assert act(brain(), text) == ["."]
+    assert act(brain(), text) == []
 
 
 @pytest.mark.parametrize("hp", ["4(16)", "8(16)", "16(16)"])
-def test_hungry_at_any_hp_uses_terrain_then_bump_then_explicit_wait(hp):
+def test_hungry_at_any_hp_uses_terrain_then_bump_then_hold(hp):
     assert act(brain(), frame({"n": "#", "k": "d"}, hp=hp, condition="Hungry")) == ["n"]
     assert act(brain(), frame({"n": "#"}, hp=hp, condition="Hungry")) == ["n"]
     assert act(brain(), frame({"k": "d"}, hp=hp, condition="Hungry")) == ["k"]
-    assert act(brain(), frame(hp=hp, condition="Hungry")) == ["."]
+    assert act(brain(), frame(hp=hp, condition="Hungry")) == []
     rest = PolicyDecision("tactical", "rest_turn", "test", (Action(type="text", text="."),))
-    assert_production_safe(rest, normalize_tty(frame(hp=hp, condition="Hungry")))
+    with pytest.raises(RuntimeError):
+        assert_production_safe(rest, normalize_tty(frame(hp=hp, condition="Hungry")))
 
 
 def test_same_more_frame_is_sent_once_until_frame_changes():

@@ -350,9 +350,9 @@ def test_brain_prefers_real_step_and_uses_explicit_wait_without_one():
     step = brain.decide(observation("msg\n###@.\n     \n" + _status()))
     assert [a.text for a in step] in (["h"], ["j"], ["k"], ["l"])
     assert brain.last_decision.intent == "explore_step"
-    # Even hunger/status emergencies must consume a turn explicitly when no
-    # reviewed movement is available.
-    assert [a.text for a in brain.decide(observation("msg\n###@.\n     \n" + _status(extra="Weak")))] == ["."]
+    # Food emergencies remain fail-closed until a reviewed recovery action is
+    # available; a generic rest would spend nutrition.
+    assert brain.decide(observation("msg\n###@.\n     \n" + _status(extra="Weak"))) == []
     assert brain.last_decision.intent == "food_emergency"
 
 

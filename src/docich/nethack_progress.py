@@ -60,7 +60,9 @@ def assert_production_safe(decision: PolicyDecision, obs: NethackObservation) ->
         )
     elif intent == "rest_turn":
         allowed = (
-            turn_ready(obs) and key == "."
+            gameplay_ready(obs) and key == "."
+            and not _visible_creature_contact(obs)
+            and "Hungry" not in obs.conditions
         )
     if not allowed:
         raise RuntimeError("production action violates its observed context")
@@ -163,10 +165,10 @@ class NethackProgressResolver:
 
         contact = _visible_creature_contact(obs)
         # Prefer an explicit rest command whenever there is no visible contact
-        # and the policy has no action. This includes strategic emergencies:
-        # no input is not a meaningful choice in a turn-based game. Hungry
-        # exploration gets one chance to find visible terrain first; if that
-        # fails, the same explicit wait fallback is used below.
+        # and the policy has a reviewed safe hold. Severe status and food
+        # emergencies remain fail-closed until a recovery action is reviewed;
+        # Hungry exploration gets one chance to find visible terrain first and
+        # is also not allowed to burn nutrition through this fallback.
         if not contact and decision.intent != "seek_food" and "Hungry" not in obs.conditions:
             rest = rest_action_for_hold(decision, obs)
             if rest is not None:

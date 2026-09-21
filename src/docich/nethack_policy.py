@@ -53,9 +53,11 @@ class PolicyDecision:
 def turn_ready(obs: NethackObservation) -> bool:
     """Whether a literal gameplay key can safely consume one turn.
 
-    Status effects and hunger are strategic facts, not reasons to freeze a
-    turn-based run. Prompt, unknown, and player-less frames remain outside
-    this contract because ``.`` could answer a question rather than wait.
+    Severe status and hunger emergencies are still handled by the strategic
+    safety boundary; this predicate only establishes that the frame is a
+    complete gameplay frame. Prompt, unknown, and player-less frames remain
+    outside this contract because ``.`` could answer a question rather than
+    wait.
     """
     return (
         obs.prompt == "none"
@@ -254,14 +256,14 @@ def assert_p3b_safe(decision: PolicyDecision) -> None:
 
 
 # NetHack is turn-based: while the agent does nothing, nothing changes, so the
-# same frame comes back forever.  A pet-like ambiguous
-# glyph blocking the only corridor or low HP that only time fixes can otherwise
-# freeze a run for good.  The production agent lets one turn pass with
-# NetHack's rest command whenever a normal gameplay frame has no reviewed
-# action.  Visible creature contact gets safer movement/contact attempts first;
-# the same explicit wait is the final resolver fallback.  The policy's own
-# decision remains available to advisory/shadow telemetry, but it is never
-# exposed as a no-op gameplay choice.
+# same frame comes back forever. A pet-like ambiguous glyph blocking the only
+# corridor or low HP that only time fixes can otherwise freeze a run for good.
+# The production agent lets one turn pass with NetHack's rest command for the
+# reviewed safe holds below. Severe status and food emergencies remain
+# fail-closed until an explicit recovery path is reviewed; a generic rest can
+# move them closer to death. The policy's own decision remains available to
+# advisory/shadow telemetry, but it is never exposed as a no-op gameplay choice
+# for the safe hold surface.
 REST_KEY = "."
 REST_HOLD_INTENTS = frozenset(
     {
@@ -271,33 +273,40 @@ REST_HOLD_INTENTS = frozenset(
     }
 )
 
-# A critical-HP, severe-status, or food emergency may eventually need an
-# active recovery plan.  Until one is available, however, returning no action
-# permanently freezes the turn-based game.  A single explicit ``.`` is allowed
-# when the frame is otherwise complete.  The progress resolver orders it after
-# safer movement/contact attempts when a creature is visible.
+# A critical-HP emergency may eventually need an active recovery plan. Until
+# one is available, returning no action permanently freezes the turn-based
+# game, so a single explicit ``.`` is allowed when the frame is otherwise
+# complete. Severe status and food emergencies are different: passing a turn
+# can worsen them, so they remain fail-closed until recovery is reviewed.
 REST_EMERGENCY_INTENTS = frozenset({"survival_emergency"})
-RESTABLE_INTENTS = (
-    REST_HOLD_INTENTS
-    | REST_EMERGENCY_INTENTS
-    | {"status_emergency", "food_emergency", "seek_food", "assess_contact"}
-)
+RESTABLE_INTENTS = REST_HOLD_INTENTS | REST_EMERGENCY_INTENTS
 
 
 def rest_action_for_hold(
     decision: PolicyDecision, obs: NethackObservation
 ) -> Action | None:
-    """Return the explicit ``.`` wait action for a stalled gameplay decision.
+    """Return the explicit ``.`` wait action for a reviewed safe hold.
 
-    Unknown screens, prompts, and player-less frames remain fail-closed because
-    ``.`` could be interpreted outside a gameplay turn. Creature contact is
-    allowed only after the resolver has exhausted its safer movement choices.
+    Unknown screens, prompts, player-less frames, visible creature contact,
+    hunger, and severe status emergencies remain fail-closed because ``.`` is
+    not a reviewed recovery action for those states.
     """
     if (
         decision.actions
         or decision.intent not in RESTABLE_INTENTS
         or not turn_ready(obs)
+        or _visible_creature_contact(obs)
+        or "Hungry" in obs.conditions
+        or _has_any(obs, NethackLayeredPolicy._SEVERE_CONDITIONS | NethackLayeredPolicy._FOOD_EMERGENCY)
     ):
+        return None
+    if decision.layer == "midlevel" and not decision.requires_llm:
+        allowed = decision.intent in REST_HOLD_INTENTS
+    elif decision.layer == "strategic":
+        allowed = decision.intent in REST_EMERGENCY_INTENTS
+    else:
+        allowed = False
+    if not allowed:
         return None
     return Action(type="text", text=REST_KEY)
 
@@ -307,8 +316,8 @@ def rest_action_for_hold(
 # not take its turn either, and the frame can freeze for good. Prefer the
 # explorer's safe step, then one
 # ordinary contact attempt. If those reviewed routes are exhausted, the
-# resolver sends the explicit ``.`` wait key rather than returning no input;
-# the caller can then observe the creature's response and re-plan.
+# resolver remains fail-closed rather than resting beside the creature; the
+# caller can then surface the blocked state for recovery planning.
 STEP_OUT_INTENTS = REST_HOLD_INTENTS | REST_EMERGENCY_INTENTS | {"assess_contact", "seek_food"}
 
 

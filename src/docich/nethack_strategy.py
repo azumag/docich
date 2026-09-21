@@ -90,7 +90,7 @@ _BASE_CONSTRAINTS = (
     "Do not reinterpret an unidentified item as its hidden true identity.",
     "A proposal is advisory only and will not be executed directly.",
     "Prefer survival over progress when the visible state is ambiguous.",
-    "When waiting is the right choice, propose rest; rest means exactly one '.' key, never no input.",
+    "When a reviewed safe wait is the right choice, propose rest; rest means exactly one '.' key, never no input.",
 )
 
 

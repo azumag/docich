@@ -21,7 +21,7 @@ from . import procs
 from .actions import Action
 from .nethack_inventory import VisibleInventoryItem
 from .nethack_observation import NethackObservation
-from .nethack_policy import _visible_creature_contact
+from .nethack_policy import NethackLayeredPolicy, _has_any, _visible_creature_contact
 from .nethack_strategy import (
     StrategicProposal,
     StrategicRequest,
@@ -166,8 +166,10 @@ def _item_snapshot_still_matches(
 def _allowed_kinds(intent: str) -> frozenset[str]:
     if intent == "prompt_decision":
         return frozenset({"inspect", "answer_prompt"})
-    if intent in {"survival_emergency", "status_emergency", "food_emergency"}:
+    if intent == "survival_emergency":
         return frozenset({"rest", "inspect", "consume", "equip", "use"})
+    if intent in {"status_emergency", "food_emergency"}:
+        return frozenset({"inspect", "consume", "equip", "use"})
     if intent == "stairs_decision":
         return frozenset({"rest", "inspect", "ascend", "descend"})
     if intent in {"assess_contact", "exploration_blocked"}:
@@ -228,7 +230,8 @@ def evaluate_proposal(
 
     if proposal.kind == "rest":
         if (
-            current_observation.prompt != "none"
+            request.intent != "survival_emergency"
+            or current_observation.prompt != "none"
             or current_observation.player is None
             or current_observation.vitals.dungeon_level is None
             or current_observation.vitals.hp is None
@@ -236,10 +239,16 @@ def evaluate_proposal(
             or current_observation.vitals.hp_max is None
             or current_observation.vitals.hp_max <= 0
             or _visible_creature_contact(current_observation)
+            or "Hungry" in current_observation.conditions
+            or _has_any(
+                current_observation,
+                NethackLayeredPolicy._SEVERE_CONDITIONS
+                | NethackLayeredPolicy._FOOD_EMERGENCY,
+            )
         ):
             return ProposalEvaluation(
                 status="rejected",
-                reason="rest requires a complete gameplay frame without visible creature contact",
+                reason="rest requires a reviewed safe intent and complete gameplay frame without visible creature contact or emergency hunger/status",
                 proposal=proposal,
             )
 

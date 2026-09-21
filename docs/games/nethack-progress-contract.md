@@ -7,9 +7,10 @@
 
 ## 安全性と進行性の範囲
 
-ターン制なので「判断保留＝無入力」を続けても局面は変わりません。通常の完全な gameplay frame で
-行動を選べない場合は、NetHack の明示コマンド `.` を1回送り、1ターン進めて再観測します。
-質問・未知画面・player不明など、`.` が質問への回答になり得る局面だけは fail-closed で無入力にします。
+ターン制なので「判断保留＝無入力」を続けても局面は変わりません。安全性を確認できる通常の完全な
+gameplay frame で行動を選べない場合は、NetHack の明示コマンド `.` を1回送り、1ターン進めて再観測します。
+重い状態異常・危険な空腹・隣接creatureなど、時間経過や待機が危険な局面は回復手段がレビューされるまで
+fail-closed で無入力にします。質問・未知画面・player不明など、`.` が質問への回答になり得る局面も同様です。
 全局面の無停止・生存・昇天は保証しません。
 
 ここで「安全」は入力の種類と観測条件の契約です。可視床にも未知の罠があり、通常戦闘でも死亡します。
@@ -23,12 +24,12 @@
 | 最上段に明示 `--More--`、ほかの質問・折り返し疑いを検出しない | Space 1個。同じraw frameには再送せず `progress_blocked` |
 | 最上段に完全な未回答 `Really save? [yn] (n)` / `Really attack …? [yn] (n)`（既定表示は省略可） | `n` 1個。全く同じ観測には再送しない。save拒否は下記のcanonical所有権確認が必須 |
 | その他の質問、方向・選択・命名・メニュー、曖昧/回答済み/切れた確認 | 無入力 |
-| `Sick/FoodPois/Ill/Slime/Strngl/Stone/TermIll`、`Weak/Fainting/Fainted/Starved` | 完全な gameplay frame なら `.` 1ターン。低HPが同時でも無入力で凍結しない |
+| `Sick/FoodPois/Ill/Slime/Strngl/Stone/TermIll`、`Weak/Fainting/Fainted/Starved` | 回復手段がレビューされるまで無入力。generic な `.` は送らない |
 | player・HP・HP最大値・階層を確認できない、死亡HP | 無入力 |
 | 隣接creatureなし、低HP/移動障害の判断、空腹で移動候補なし | `.` 1ターン |
-| 隣接creatureあり、移動障害なし | 可視安全マスへの縦横1歩 → 斜め1歩 → creature への通常接触1回 → 全候補拒否後は `.` |
-| `Blind/Conf/Stun/Hallu` と隣接creature | 退避移動はしない。完全な gameplay frame で他の行動がなければ `.` |
-| `Hungry`（critical HPとの同時発生も含む） | 可視探索/退避 → 通常接触 → 全候補拒否後は `.` |
+| 隣接creatureあり、移動障害なし | 可視安全マスへの縦横1歩 → 斜め1歩 → creature への通常接触1回 → 全候補拒否後は無入力 |
+| `Blind/Conf/Stun/Hallu` と隣接creature | 退避移動はしない。`.` は送らず無入力 |
+| `Hungry`（critical HPとの同時発生も含む） | 可視探索/退避 → 通常接触。全候補拒否後は無入力 |
 | 通常の探索 | 可視 `.` / `#` / `<` / `>` への縦横優先の1歩。縦横候補なしなら斜め |
 | 安全マスなしの探索判断 | `.` 1ターン |
 
