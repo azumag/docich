@@ -51,8 +51,9 @@ WORKERS = (
 # the historic lanes keep working.
 KNOWN_LANES = ("radio", "comment", "local")
 
-# Lock-directory name suffixes that are mutex guards, not lanes.
-LANE_GUARD_SUFFIXES = (".owner_guard.lock", ".owner_guard.d")
+# Scheduler metadata directory suffixes that are not execution lanes. This
+# includes owner guards and the priority scheduler's pending-request container.
+LANE_GUARD_SUFFIXES = (".owner_guard.lock", ".owner_guard.d", ".pending")
 
 # Pid files owned by the supervision infrastructure itself (not workers).
 # Never reported as unregistered; liveness is still recorded in details.
