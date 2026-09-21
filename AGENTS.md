@@ -53,7 +53,7 @@
 - `handoff` スキルがある場合は `/handoff` の保存モードを使ってよい。
 - 運用正本はdocichルートのローカル `handoff.md` だけ。内部記録のためGit管理外を維持し、SorenサブモジュールやVM側のhandoffを正本にしない。
 - 更新時は親の `python3 ops/vm_actions/ops_brief.py build` と `check-source` を実行する。公開可能な最新見出し3件・ソースSHA-256・出力SHA-256だけが `ops/runtime_context/ops_brief.json` へ決定的に生成される。見出しに機密情報を含めず、親の作業ブランチで生成物をレビュー・コミットする。分離worktreeでは `--handoff /絶対パス/docich/handoff.md` で唯一の正本を明示する。
-- CIは `check-artifact` とstale検知回帰テストを実行する。非公開ソースがないCIは正本の最新性までは証明できないため、ローカルの `check-source` 成功を別に記録する。ソース欠落は成功扱いしない。
+- CIは `check-artifact` とstale検知回帰テストを実行する。非公開ソースがないCIは正本の最新性までは証明できないため、最終コミット・pushの担当者が直前に毎回 `build` / `check-source` を実行する。並行更新され得る正本に対して過去の照合成功を恒久的な保証としてコードや文書に記録しない。ソース欠落は成功扱いしない。
 - runtimeの `prompts/ops_brief.md` は親の生成物を入力にcanonical gatewayが同一deploy transactionで生成・検証する。`games/soviet_now/prompts/ops_brief.md` の既存tracked copyはlegacyであり、以後の配布元ではない。Soren側で手動再生成・コミット・VMコピーは不要。旧 `games/soviet_now/tools/build_ops_brief.sh` はこの経路では使用しない。
 - gateway初回切替・drift・未配布の扱いは `docs/operations/ops-brief.md` を参照する。生成だけでVM反映済みと書かない。
 - GitHub上の文書改訂だけで運用状況に変更がない場合は、PR本文を引き継ぎとし、運用中の `handoff.md` / `ops_brief.md` を書き換えない。生成・配布環境がない場合は未実施と記録し、配布済みと書かない。

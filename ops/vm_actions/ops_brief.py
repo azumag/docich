@@ -51,7 +51,7 @@ def extract_topics(source: bytes) -> list[str]:
         stripped = re.sub(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}\s.*?[—–]\s*", "", topic).strip()
         if stripped == topic:
             stripped = re.sub(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}[0-9:x\s\-]*(?:JST)?\s*", "", topic).strip()
-        topic = re.sub(r"(?i)\b(?:issue|docich)\s*#?\s*-?\d+\b", "", stripped)
+        topic = re.sub(r"(?i)\b(?:issue|docich|pr)\s*#?\s*-?\d+(?![0-9a-z_])", "", stripped)
         topic = re.sub(r"^[\s:：,、。\-–—]+", "", topic)
         topic = re.sub(r"\s+", " ", topic).strip()
         if not topic:

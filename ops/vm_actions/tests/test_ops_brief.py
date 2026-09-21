@@ -30,6 +30,14 @@ class BriefGenerationTests(unittest.TestCase):
         self.assertNotEqual(old, new)
         self.assertEqual(brief.render(old), brief.render(new))
 
+    def test_issue_pr_and_docich_identifiers_are_removed(self):
+        for marker in ("PR #899", "pr-899", "Issue #899", "docich#899"):
+            with self.subTest(marker=marker):
+                data = brief.build(f"## 2026-09-22 — {marker} 配信復旧\n".encode())
+                self.assertEqual(brief.validate(data)["topics"], ["配信復旧"])
+        data = brief.build("## 2026-09-22 — PR #899等の対応\n".encode())
+        self.assertEqual(brief.validate(data)["topics"], ["等の対応"])
+
     def test_bounded_topics_and_fenced_headings(self):
         source = "```md\n## fake\n```\n## " + "長" * 100 + "\n## second\n## third\n## fourth\n"
         topics = brief.validate(brief.build(source.encode()))["topics"]
@@ -75,9 +83,11 @@ class BriefGenerationTests(unittest.TestCase):
         self.assertLess(workflow.index("Require parent operations brief gateway capability"),
                         workflow.index("Upload candidate to VM staging"))
         self.assertIn(brief.CAPABILITY, workflow)
+        self.assertIn(gw.projection_io.CAPABILITY, workflow)
         self.assertIn("check-artifact --artifact candidate/" + brief.ARTIFACT, workflow)
         self.assertIn("/handoff.md", (ROOT / ".gitignore").read_text())
         self.assertIn('"$source_dir/ops_brief.py"', (ROOT / "ops/vm_actions/install_vm_gateway.sh").read_text())
+        self.assertIn('"$source_dir/projection_io.py"', (ROOT / "ops/vm_actions/install_vm_gateway.sh").read_text())
 
 
 class BriefDeploymentTests(unittest.TestCase):
@@ -212,6 +222,54 @@ class BriefDeploymentTests(unittest.TestCase):
         self.assertEqual(stale["ops_brief_projection"], {"status": "drift"})
         for hidden in ("PRIVATE_RUNTIME_TEXT", "private body", brief.digest(SOURCE), "最新の修正"):
             self.assertNotIn(hidden, json.dumps(stale, ensure_ascii=False))
+
+    def prepare_diagnostics(self):
+        collector = self.root / "ops/vm_actions/collect_diagnostics.py"
+        collector.parent.mkdir(parents=True)
+        collector.write_text('print(\'{"status":"ok"}\')\n')
+        self.baseline = self.commit(self.root)
+        gw.write_json(self.state_path, {"mode": "git", "sha": self.baseline})
+        sha = self.candidate()
+        self.deploy(sha)
+        return sha
+
+    def assert_unknown_diagnostics_warn(self, sha):
+        data = gw.diagnostics_result(self.cfg, "docich", "production", sha)["diagnostics"]
+        self.assertEqual(data["ops_brief_projection"], {"status": "unknown"})
+        self.assertEqual(data["status"], "warn")
+        self.assertNotIn("private body", json.dumps(data))
+
+    def test_unknown_malformed_artifact_warns(self):
+        self.prepare_diagnostics()
+        (self.root / brief.ARTIFACT).write_bytes(b"{}")
+        sha = self.commit(self.root)
+        gw.write_json(self.state_path, {"mode": "git", "sha": sha})
+        self.assert_unknown_diagnostics_warn(sha)
+
+    def test_unknown_missing_mapping_warns(self):
+        sha = self.prepare_diagnostics()
+        self.cfg["repos"]["docich"]["projections"] = {}
+        self.assertEqual(gw._ops_brief_health(self.cfg, "docich", sha), "unknown")
+        self.assert_unknown_diagnostics_warn(sha)
+        report = gw.diagnostics_result(self.cfg, "docich", "production", sha)["diagnostics"]
+        self.assertEqual(report["collection"], {"status": "unavailable", "reason": "projection_missing"})
+        self.assertNotIn("workers", report)
+
+    def test_unknown_symlink_and_dangling_symlink_warn(self):
+        sha = self.prepare_diagnostics()
+        output = self.live / brief.DESTINATION
+        for target in (self.live / "handoff.md", self.live / "missing"):
+            with self.subTest(target=target.name):
+                output.unlink()
+                output.symlink_to(target)
+                self.assert_unknown_diagnostics_warn(sha)
+
+    def test_unknown_projection_directory_symlink_warns(self):
+        sha = self.prepare_diagnostics()
+        prompts = self.live / "prompts"
+        prompts.rename(self.live / "saved-prompts")
+        prompts.symlink_to(self.live / "saved-prompts", target_is_directory=True)
+        self.assert_unknown_diagnostics_warn(sha)
 
     def test_concurrent_edit_during_failure_is_preserved(self):
         sha = self.candidate()

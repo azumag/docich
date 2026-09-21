@@ -176,19 +176,18 @@ class DeployStateTransactionTests(unittest.TestCase):
 
     def test_projection_partial_write_failure_rolls_back_prior_files(self):
         live, subremote, old_parent, new_parent = self._projection_case(change_second=True)
-        real_atomic = gw.atomic_write
+        real_publish = gw.projection_io.publish
         calls = {'live': 0}
 
-        def flaky_atomic(path, data, mode=0o600):
-            path = Path(path)
-            if path.parent == live and path.name in {'game.txt', 'second.txt'}:
+        def flaky_publish(source_fd, source_name, destination_fd, destination_name):
+            if source_name == 'after' and destination_name in {'game.txt', 'second.txt'}:
                 calls['live'] += 1
                 if calls['live'] == 2:
                     raise OSError('simulated second projection write failure')
-            return real_atomic(path, data, mode)
+            return real_publish(source_fd, source_name, destination_fd, destination_name)
 
         with mock.patch.object(gw, 'OWNED_SUBMODULES', {'games/soviet_now': str(subremote)}), \
-             mock.patch.object(gw, 'atomic_write', side_effect=flaky_atomic):
+             mock.patch.object(gw.projection_io, 'publish', side_effect=flaky_publish):
             with self.assertRaises(OSError):
                 gw.deploy_git(self.cfg, 'docich', new_parent)
         self.assertEqual((live / 'game.txt').read_text(), 'v1\n')

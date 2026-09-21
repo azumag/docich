@@ -7,6 +7,9 @@ from pathlib import Path, PurePosixPath
 _brief_spec=importlib.util.spec_from_file_location('vmops_brief',Path(__file__).with_name('ops_brief.py'))
 ops_brief=importlib.util.module_from_spec(_brief_spec)
 _brief_spec.loader.exec_module(ops_brief)
+_projection_spec=importlib.util.spec_from_file_location('vmops_projection_io',Path(__file__).with_name('projection_io.py'))
+projection_io=importlib.util.module_from_spec(_projection_spec)
+_projection_spec.loader.exec_module(projection_io)
 
 SHA_RE=re.compile(r'[0-9a-f]{40}\Z')
 MAX_PAYLOAD=128*1024*1024
@@ -383,7 +386,7 @@ def _safe_projection_path(root:Path, rel:str)->Path:
     if root.is_symlink(): raise ValueError('projection root is a symlink')
     for part in p.parts:
         current=current/part
-        if current.exists() and current.is_symlink(): raise ValueError('symlink in projection path')
+        if current.is_symlink(): raise ValueError('symlink in projection path')
     return current
 
 
@@ -413,8 +416,9 @@ def _blob_bytes(root:Path, obj:str)->bytes:
 
 
 def _live_meta(path:Path):
+    if path.is_symlink(): raise ValueError('projection path is not a regular file')
     if not path.exists(): return None
-    if path.is_symlink() or not path.is_file(): raise ValueError('projection path is not a regular file')
+    if not path.is_file(): raise ValueError('projection path is not a regular file')
     data=path.read_bytes()
     return {'sha256':hashlib.sha256(data).hexdigest(),'mode':stat.S_IMODE(path.stat().st_mode)}
 
@@ -444,7 +448,8 @@ def _plan_projection(subrepo:Path, destination:Path, old_sha:str, new_sha:str):
             raise ValueError(f'projection drift detected: {rel}')
         old_data=_blob_bytes(subrepo,old_entry['object']) if old_entry else None
         new_data=_blob_bytes(subrepo,new_entry['object']) if new_entry else None
-        changes.append({'path':live,'old_data':old_data,'old_mode':old_entry['mode'] if old_entry else None,
+        changes.append({'path':live,'_binding':projection_io.ProjectionPath(destination,rel),
+                        'old_data':old_data,'old_mode':old_entry['mode'] if old_entry else None,
                         'new_data':new_data,'new_mode':new_entry['mode'] if new_entry else None})
     return changes
 
@@ -493,7 +498,7 @@ def _plan_repaired_projection(subrepo, destination, old_sha, new_sha, pending, e
             continue
         if live_meta != before_meta:
             raise ValueError(f'projection drift detected: {rel}')
-        changes.append({'path': live,
+        changes.append({'path': live,'_binding':projection_io.ProjectionPath(destination,rel),
                         'old_data': _blob_bytes(subrepo, before['object']) if before else None,
                         'old_mode': before['mode'] if before else None,
                         'new_data': _blob_bytes(subrepo, after['object']) if after else None,
@@ -508,34 +513,38 @@ def _change_meta(change, prefix):
 
 def _assert_projection_current(changes, prefix):
     for change in changes:
-        if _live_meta(change['path'])!=_change_meta(change,prefix):
+        binding=change['_binding']
+        binding.verify_escrows()
+        if binding.current()!=_change_meta(change,prefix):
             raise ValueError('concurrent projection drift')
 
 
 def _apply_projection(changes):
     for change in changes:
         _assert_projection_current([change],'old')
-        path=change['path']
-        if change['new_data'] is None:
-            if path.exists(): path.unlink()
-        else:
-            atomic_write(path,change['new_data'],change['new_mode'])
+        change['_binding'].replace(_change_meta(change,'old'),change['new_data'],change['new_mode'])
 
 
 def _rollback_projection(changes):
     drift=False
     for change in reversed(changes):
-        path=change['path']
-        current=_live_meta(path)
-        if current==_change_meta(change,'old'): continue
-        if current!=_change_meta(change,'new'):
+        binding=change['_binding']
+        try:
+            binding.verify_escrows()
+            current=binding.current()
+            if current==_change_meta(change,'old'): continue
+            if not binding.mutated or current!=_change_meta(change,'new'):
+                raise ValueError('concurrent projection drift')
+            binding.replace(_change_meta(change,'new'),change['old_data'],change['old_mode'])
+        except (OSError,ValueError):
             drift=True
-            continue  # never erase an unknown writer's data during rollback
-        if change['old_data'] is None:
-            if path.exists(): path.unlink()
-        else:
-            atomic_write(path,change['old_data'],change['old_mode'])
     if drift: raise ValueError('concurrent drift preserved; operator recovery required')
+
+
+def _close_projection_plans(plans):
+    for changes in plans:
+        for change in changes:
+            change['_binding'].close()
 
 
 def _verify_pending_live(cfg,repo,pending):
@@ -615,7 +624,9 @@ def _plan_ops_brief(cfg,repo,root,old_parent,new_parent):
     else:
         before=ops_brief.render(old_data)
         old_mode=0o644
-    change={'path':live,'old_data':before,'old_mode':old_mode,
+    destination=cfg['repos'][repo]['projections'][ops_brief.PROJECTION]
+    change={'path':live,'_binding':projection_io.ProjectionPath(destination,ops_brief.DESTINATION),
+            'old_data':before,'old_mode':old_mode,
             'new_data':ops_brief.render(new_data),'new_mode':0o644}
     _assert_projection_current([change],'old')
     return change
@@ -806,6 +817,7 @@ def deploy_git(cfg,repo,sha):
         write_json(state_path,final_state)
         _verify_managed_projections(cfg,repo,final_state)
         _verify_pending_live(cfg,repo,remaining)
+        for changes in applied: _assert_projection_current(changes,'new')
     except Exception as failure:
         rollback_errors=[]
         for changes in reversed(applied):
@@ -822,6 +834,8 @@ def deploy_git(cfg,repo,sha):
             raise ValueError('rollback incomplete; unknown drift preserved; recovery required') from failure
         if intent_written: write_json(state_path,state)
         raise
+    finally:
+        _close_projection_plans(projection_plans)
     return {'status':'deployed','sha':sha}
 
 def deploy_prod(cfg,repo,sha):
@@ -1199,7 +1213,13 @@ def diagnostics_result(cfg,repo,target,sha):
     if drift: raise ValueError('diagnostics collector drift')
     mappings=cfg['repos'][repo].get('projections',{})
     destination=mappings.get('games/soviet_now')
-    if not destination: raise ValueError('diagnostics projection missing')
+    if not destination:
+        # No collector can run without its configured runtime root. Report
+        # missing evidence, never invent healthy workers or silently use a VM
+        # path inferred from another checkout.
+        return {'status':'diagnosed','sha':sha,'diagnostics':{
+            'status':'warn','ops_brief_projection':{'status':'unknown'},
+            'collection':{'status':'unavailable','reason':'projection_missing'}}}
     env={'PATH':'/usr/local/bin:/usr/bin:/bin','LANG':'C.UTF-8','HOME':'/tmp',
          'PYTHONPATH':str(root/'src')}
     try:
@@ -1221,7 +1241,7 @@ def diagnostics_result(cfg,repo,target,sha):
     current=read_json(current_file(cfg,repo)) or {}
     brief_health=_ops_brief_health(cfg,repo,current.get('sha'))
     clean['ops_brief_projection']={'status':brief_health}
-    if brief_health=='drift' and clean['status']=='ok': clean['status']='warn'
+    if brief_health in {'drift','unknown'} and clean['status']=='ok': clean['status']='warn'
     if len(json.dumps(clean,separators=(',',':')).encode())>DIAGNOSTICS_JSON_MAX:
         raise ValueError('diagnostics output too large')
     return {'status':'diagnosed','sha':sha,'diagnostics':clean}
@@ -1234,7 +1254,7 @@ def status_result(cfg,repo,target,sha):
         except (ValueError,subprocess.CalledProcessError,FileNotFoundError): ready=False
         return {'status':'ready' if ready else 'drift','sha':sha}
     cur=read_json(current_file(cfg,repo))
-    if cur is None: return {'status':'bootstrap_required','sha':None,'capabilities':[ops_brief.CAPABILITY]}
+    if cur is None: return {'status':'bootstrap_required','sha':None,'capabilities':[ops_brief.CAPABILITY,projection_io.CAPABILITY]}
     root=Path(cfg['repos'][repo]['production']); head=git(root,'rev-parse','HEAD')
     clean=git_clean(root); expected=cur.get('sha')
     health_status='configured' if clean and head==expected else 'drift'
@@ -1245,7 +1265,7 @@ def status_result(cfg,repo,target,sha):
             _verify_pending_live(cfg,repo,cur.get('pending_repairs',[]))
             _verify_managed_projections(cfg,repo,cur)
         except Exception: health_status='drift'
-    return {'status':health_status,'sha':head,'storage':_filesystem_status(root),'capabilities':[ops_brief.CAPABILITY],
+    return {'status':health_status,'sha':head,'storage':_filesystem_status(root),'capabilities':[ops_brief.CAPABILITY,projection_io.CAPABILITY],
             'ops_brief_projection':{'status':_ops_brief_health(cfg,repo,expected)},
             'pending_repairs':[{k:r.get(k) for k in ('id','status','candidate_sha','pr_url')} for r in cur.get('pending_repairs',[])]}
 

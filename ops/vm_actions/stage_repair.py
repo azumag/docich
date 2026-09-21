@@ -125,17 +125,21 @@ def apply(cfg,policy,report_id,candidate,base,sha):
     try:
         gw._apply_projection(changes)
         run_probe(policy,live,0)
+        gw._assert_projection_current(changes,'new')
         for rel,meta in files.items():
             if gw._live_meta(gw._safe_projection_path(live,rel))!=meta['after']:
                 raise ValueError('post-apply drift')
         repair={**repair,'status':'active','verification':{**repair['verification'],'after':'passed'}}
         gw.write_json(state_path,{**state,'pending_repairs':[*pending,repair]})
+        gw._assert_projection_current(changes,'new')
     except Exception:
         # Restore every provably-owned write, even if another path was changed
         # by an unknown writer. Keep intent journal if full recovery is unsafe.
         gw._rollback_projection(changes)
         gw.write_json(state_path,state)
         raise
+    finally:
+        gw._close_projection_plans([changes])
     return {'status':'active','id':report_id,'candidate_sha':sha}
 
 
