@@ -39,6 +39,7 @@ STATE_NAME = "soren91_manual_evidence_export.json"
 BUNDLE_NAME = "soren91_manual_evidence_export.tar.gz"
 GAME_RE = re.compile(r"game_(\d+)\.json\Z")
 SCREENSHOT_RE = re.compile(r"turn_(\d+)(?:[._-][A-Za-z0-9._-]+)?\.png\Z", re.I)
+TELEMETRY_NAMES = ("soren91_loop_metrics.json", "soren91_runtime_metrics.json")
 
 
 class EvidenceError(RuntimeError):
@@ -96,6 +97,30 @@ def _read_regular(runtime: Path, path: Path, limit: int, *, required: bool = Tru
     finally:
         if fd >= 0:
             os.close(fd)
+
+
+def _read_recent_optional(
+    runtime: Path,
+    path: Path,
+    limit: int,
+    *,
+    now_ms: int,
+) -> bytes | None:
+    """Read one optional evidence file only when its mtime is in the review window."""
+    _reject_symlink_chain(runtime, path)
+    try:
+        info = path.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise EvidenceError("evidence file outside size/type contract") from exc
+    if not stat.S_ISREG(info.st_mode) or info.st_size < 0 or info.st_size > limit:
+        raise EvidenceError("evidence file outside size/type contract")
+    mtime_ms = int(info.st_mtime * 1000)
+    age_ms = now_ms - mtime_ms
+    if age_ms < 0 or age_ms > MAX_AGE_MS:
+        return None
+    return _read_regular(runtime, path, limit, required=False)
 
 
 def _write_private(path: Path, data: bytes) -> None:
@@ -203,15 +228,33 @@ def prepare_export(
     state_dir.mkdir(parents=True, exist_ok=True)
 
     selected_games = _safe_games(root, now_ms, game_count)
+    fresh_partial_telemetry: dict[str, bytes] = {}
     if not selected_games:
-        raise EvidenceError("no completed Soren91 evidence in the last 72 hours")
+        for telemetry_name in TELEMETRY_NAMES:
+            data = _read_recent_optional(
+                runtime,
+                state_dir / telemetry_name,
+                MAX_TELEMETRY_BYTES,
+                now_ms=now_ms,
+            )
+            if data:
+                fresh_partial_telemetry[telemetry_name] = data
+        if not fresh_partial_telemetry:
+            raise EvidenceError("no completed Soren91 evidence in the last 72 hours")
+
     games = [game for game, _token in selected_games]
+    evidence_mode = "completed_games" if selected_games else "telemetry_only"
+    # The transport contract historically requires one to three non-negative
+    # numeric game identifiers. Zero is reserved as a no-completed-game
+    # sentinel; no game_0000 files are ever synthesized or exported.
+    transport_games = games if games else [0]
 
     staging = Path(tempfile.mkdtemp(prefix=".soren91-evidence-", dir=state_dir))
     manifest: dict[str, object] = {
         "schema": 1,
         "createdAtMs": now_ms,
         "windowHours": 72,
+        "evidenceMode": evidence_mode,
         "games": games,
         "files": [],
     }
@@ -291,9 +334,16 @@ def prepare_export(
                         "sha256": _sha256_bytes(image),
                     })
 
-        for telemetry_name in ("soren91_loop_metrics.json", "soren91_runtime_metrics.json"):
-            src = state_dir / telemetry_name
-            data = _read_regular(runtime, src, MAX_TELEMETRY_BYTES, required=False)
+        for telemetry_name in TELEMETRY_NAMES:
+            if fresh_partial_telemetry:
+                data = fresh_partial_telemetry.get(telemetry_name)
+            else:
+                data = _read_regular(
+                    runtime,
+                    state_dir / telemetry_name,
+                    MAX_TELEMETRY_BYTES,
+                    required=False,
+                )
             if data is None:
                 continue
             dst = staging / "telemetry" / telemetry_name
@@ -334,7 +384,8 @@ def prepare_export(
             "chunkBytes": CHUNK_BYTES,
             "chunkCount": chunk_count,
             "currentChunk": 0,
-            "games": games,
+            "evidenceMode": evidence_mode,
+            "games": transport_games,
         }
         _write_private(_state_path(root), (json.dumps(state, sort_keys=True) + "\n").encode())
         return state

@@ -110,9 +110,10 @@ def write_failure_envelope(exporter, reason: str, *, root: Path, now_ms: int) ->
         "chunkBytes": exporter.CHUNK_BYTES,
         "chunkCount": chunk_count,
         "currentChunk": 0,
-        # Sentinel used only by this private diagnostic envelope. The archive
-        # itself identifies the failure contract and is never uploaded as a
-        # successful evidence export.
+        # Zero is the transport sentinel for bundles with no completed-game
+        # group. A failed prepare uses it here; a successful telemetry-only
+        # export may use the same transport identity but is distinguished by
+        # the prepare exit status and its manifest.
         "games": [0],
     }
     exporter._write_private(
