@@ -61,6 +61,7 @@ jobs:
           tests/test_agent_loop.py tests/test_agent_fence.py tests/test_agent_action_lock.py
           tests/test_nethack_corner.py tests/test_nethack_corner_p5.py tests/test_nethack_corner_force_recover.py
           tests/test_nethack_run.py tests/test_nethack_run_recovery.py
+          tests/test_nethack_source.py
           tests/test_nethack_spectator.py tests/test_nethack_spectator_live.py
           tests/test_nethack_observation.py tests/test_nethack_policy.py tests/test_nethack_exploration.py
           tests/test_nethack_progress.py
