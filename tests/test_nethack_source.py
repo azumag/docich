@@ -44,8 +44,10 @@ def source_inputs(origin="scheduled", status="dead"):
                "ended_at": (NOW + dt.timedelta(seconds=110)).isoformat()}
     run = {"run_id": str(uuid.uuid4()), "status": status, "started_at": NOW.isoformat(),
            "birth_not_before_epoch": START,
+           "recovered_existing_save": False, "adopted_active_runtime": False,
            "terminal": {"source": "xlogfile", "identity_verified": True,
                         "starttime": START, "endtime": START + 90}}
+    session["run_id"] = run["run_id"]
     return run, session, verify_restoration(**restore_inputs())
 
 
@@ -160,7 +162,7 @@ def test_eligibility_is_observation_not_permission(origin, status, finish, expec
     assert result["source_id"] == digest({k: v for k, v in result.items() if k != "source_id"})
 
 
-@pytest.mark.parametrize("mutation", ["no_birth", "wrong_birth", "unverified", "future_terminal", "adopted", "recovered"])
+@pytest.mark.parametrize("mutation", ["no_birth", "wrong_birth", "unverified", "future_terminal", "adopted", "recovered", "missing_adopted", "missing_recovered", "after_restore"])
 def test_weak_terminal_evidence_never_eligible(mutation):
     run, session, restoration = source_inputs()
     if mutation == "no_birth": del run["birth_not_before_epoch"]
@@ -169,13 +171,17 @@ def test_weak_terminal_evidence_never_eligible(mutation):
     elif mutation == "future_terminal": run["terminal"]["endtime"] = START + 1000
     elif mutation == "adopted": run["adopted_active_runtime"] = True
     elif mutation == "recovered": run["recovered_existing_save"] = True
+    elif mutation == "missing_adopted": del run["adopted_active_runtime"]
+    elif mutation == "missing_recovered": del run["recovered_existing_save"]
+    elif mutation == "after_restore": run["terminal"]["endtime"] = START + 105
     assert build_post_restore_source(run, session, restoration, finish_reason="terminal")["eligibility"] == "terminal_unverified"
 
 
-@pytest.mark.parametrize("mutation", ["session", "runtime", "end_order", "cleanup", "source_binding", "secret"])
+@pytest.mark.parametrize("mutation", ["session", "foreign_run", "runtime", "end_order", "cleanup", "source_binding", "secret"])
 def test_invalid_source_is_not_serialized(mutation):
     run, session, restoration = source_inputs()
     if mutation == "session": session["session_id"] = str(uuid.uuid4())
+    elif mutation == "foreign_run": session["run_id"] = str(uuid.uuid4())
     elif mutation == "runtime": session["runtime"] = deepcopy(TARGET)
     elif mutation == "end_order": session["ended_at"] = NOW.isoformat()
     elif mutation == "cleanup": restoration["cleanup_completed"] = False
@@ -206,3 +212,11 @@ def test_summary_does_not_allow_raw_runtime_fields():
     restoration["source_runtime"]["argv"] = "secret-sentinel"
     with pytest.raises(SourceEvidenceError):
         validate_restoration_summary(restoration)
+
+
+def test_terminal_id_uses_only_fixed_facts():
+    run, session, restoration = source_inputs()
+    original = build_post_restore_source(run, session, restoration, finish_reason="terminal")
+    run["terminal"]["untrusted_free_text"] = "sentinel-secret" * 10000
+    result = build_post_restore_source(run, session, restoration, finish_reason="terminal")
+    assert result == original

@@ -211,8 +211,13 @@ def build_post_restore_source(
     restoration: Mapping[str, object], *, finish_reason: str,
 ) -> dict[str, object]:
     """Build a sealed observation, never an executable job or paid permission."""
+    _require(isinstance(run, Mapping) and isinstance(session, Mapping), "invalid_evidence")
     context = validate_session_context(session.get("corner_context"))
     run_id = canonical_uuid(run.get("run_id"))
+    _require(session.get("run_id") == run_id, "session_run_mismatch")
+    _require(type(run.get("status")) is str
+             and run["status"] in {"active", "suspended", "dead", "ascended", "ended", "ended_unknown"},
+             "terminal_unverified")
     _require(session.get("session_id") == context["session_id"], "session_identity_mismatch")
     _require(type(finish_reason) is str and finish_reason in FINISH_REASONS,
              "invalid_finish_reason")
@@ -237,12 +242,15 @@ def build_post_restore_source(
             and birth_floor <= start <= int(_time(run.get("started_at")).timestamp())
             and start <= end <= int(_time(session.get("ended_at")).timestamp())
             and end >= int(_time(session.get("started_at")).timestamp())
-            and not run.get("recovered_existing_save") and not run.get("adopted_active_runtime")
+            and end <= int(_time(restoration.get("completed_at")).timestamp())
+            and run.get("recovered_existing_save") is False
+            and run.get("adopted_active_runtime") is False
         )
         if not confirmed:
             eligibility = "terminal_unverified"
         else:
-            terminal_id = digest({"run_id": run_id, "terminal": dict(terminal)})
+            terminal_id = digest({"run_id": run_id, "source": "xlogfile",
+                                  "starttime": start, "endtime": end, "status": run["status"]})
             if context["origin"] not in {"scheduled", "rotation"}:
                 eligibility = "manual_origin" if context["origin"] == "manual" else "origin_unverified"
             elif finish_reason == "operator_stop":
