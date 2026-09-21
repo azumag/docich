@@ -80,6 +80,18 @@ def _load_registry():
 
 
 _REG = _load_registry()
+
+
+def _load_storage_breakdown():
+    spec = _importlib_util.spec_from_file_location(
+        "vm_storage_breakdown", str(PROD_ROOT / "ops" / "vm_actions" / "storage_breakdown.py")
+    )
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_STORAGE = _load_storage_breakdown()
 DIAG_WINDOW_SEC = _REG.DIAG_WINDOW_SEC
 DUPLICATES_FRESH_SEC = _REG.DUPLICATES_FRESH_SEC
 KNOWN_LANES = _REG.KNOWN_LANES
@@ -2197,6 +2209,7 @@ def main(argv):
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),
         "nethack_panes": _collect_nethack_panes(_program_state_dir(), now),
         "market_paper": _collect_market_paper(_program_state_dir(), now),
+        "storage_breakdown": _STORAGE.collect_storage_breakdown(soren, PROD_ROOT),
         "storage_artifacts": _collect_tmp_shared_objects(now),
         "soren91_drop_profile": _collect_soren91_drop_profile(soren),
     }
