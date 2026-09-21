@@ -57,7 +57,7 @@ class TestCommandStrategist(unittest.TestCase):
             seen["timeout"] = kwargs["timeout"]
             return SimpleNamespace(
                 returncode=0,
-                stdout='{"schema_version":1,"kind":"hold","rationale":"wait"}',
+                stdout='{"schema_version":1,"kind":"rest","rationale":"wait one turn with dot"}',
                 stderr="",
             )
 
@@ -66,7 +66,7 @@ class TestCommandStrategist(unittest.TestCase):
         self.assertEqual(result.status, "proposed")
         self.assertIsNotNone(result.proposal)
         assert result.proposal is not None
-        self.assertEqual(result.proposal.kind, "hold")
+        self.assertEqual(result.proposal.kind, "rest")
         self.assertEqual(seen["command"], ["fake-strategist"])
         self.assertEqual(seen["timeout"], 7.0)
         self.assertIn('"constraints"', seen["input"])
@@ -192,14 +192,29 @@ class TestProposalEvaluation(unittest.TestCase):
         self.assertFalse(result.approved)
         self.assertIn("not allowed", result.reason)
 
-    def test_only_hold_is_executable_and_it_is_noop(self) -> None:
+    def test_only_explicit_rest_is_executable_and_it_sends_dot(self) -> None:
         request = emergency_request()
-        proposal = StrategicProposal(schema_version=1, kind="hold", rationale="wait")
+        proposal = StrategicProposal(schema_version=1, kind="rest", rationale="wait one turn with dot")
         evaluation = evaluate_proposal(request, proposal, current_observation=obs())
         self.assertTrue(evaluation.approved)
         plan = execution_plan(evaluation)
         self.assertTrue(plan.allowed)
-        self.assertEqual(plan.actions, ())
+        self.assertEqual([(action.type, action.text) for action in plan.actions], [("text", ".")])
+
+    def test_rest_is_not_a_recovery_action_for_severe_status_or_food(self) -> None:
+        proposal = StrategicProposal(schema_version=1, kind="rest", rationale="wait one turn with dot")
+        for intent in ("status_emergency", "food_emergency"):
+            with self.subTest(intent=intent):
+                decision = PolicyDecision(
+                    layer="strategic",
+                    intent=intent,
+                    reason="visible emergency",
+                    requires_llm=True,
+                )
+                request = build_strategic_request(obs(), decision)
+                evaluation = evaluate_proposal(request, proposal, current_observation=obs())
+                self.assertFalse(evaluation.approved)
+                self.assertIn("not allowed", evaluation.reason)
 
 
 if __name__ == "__main__":

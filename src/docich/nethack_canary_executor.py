@@ -1,9 +1,9 @@
 """Canary-only executor for approved NetHack strategic proposals (P5h).
 
 This module is deliberately NOT imported by the production NetHack brain.
-Production P3d keeps its hold-only execution gate.  The mappings below exist
-only inside the isolated canary container where state-changing proposals may be
-exercised without touching the long-running production adventure.
+Production P3d keeps its explicit-rest-only execution gate. The mappings below
+exist only inside the isolated canary container where state-changing proposals
+may be exercised without touching the long-running production adventure.
 """
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from typing import Literal
 
 from .nethack_inventory import VisibleInventoryItem
 from .nethack_observation import NethackObservation
+from .nethack_policy import _visible_creature_contact
 from .nethack_strategist import ProposalEvaluation
 from .nethack_strategy import StrategicRequest
 
@@ -67,12 +68,28 @@ def canary_execution_plan(
         )
 
     proposal = evaluation.proposal
-    if proposal.kind in {"hold", "inspect"}:
+    if proposal.kind == "rest":
+        if (
+            current_observation.prompt != "none"
+            or current_observation.player is None
+            or _visible_creature_contact(current_observation)
+        ):
+            return CanaryExecutionPlan(
+                allowed=False,
+                reason="fresh gameplay frame no longer permits an explicit rest",
+            )
+        return CanaryExecutionPlan(
+            allowed=True,
+            reason="rest is one explicit wait command",
+            keys=(_literal("."),),
+        )
+
+    if proposal.kind == "inspect":
         # Inspection is advisory in P5h.  Inventory probing is performed by the
         # worker before strategist dispatch and never delegated to the model.
         return CanaryExecutionPlan(
             allowed=True,
-            reason=f"{proposal.kind} is a canary no-op",
+            reason="inspect is a canary no-op",
         )
 
     if proposal.kind == "answer_prompt":

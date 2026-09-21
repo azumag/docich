@@ -212,7 +212,7 @@ idle に戻す。
 
 P0時点は `agent.enabled=false` だったが、現在の標準configでは reviewed P3b brainと起動応答・ナレーションを有効化する。
 既知の英語キャラ作成質問のみ応答し、60秒/40観測/12入力で停止する。
-未知画面では無入力、gameplay到達後は可視安全地形への一歩とMoreだけを許可する。
+未知画面では無入力、gameplay到達後は可視安全地形への一歩・More・明示的な `.` 待機を許可する。
 ナレーションは `nethack:policy` context・既定音声でaudio workerへ順次投入し、20秒cooldownと同一intent抑制を行う。
 発話障害はゲーム操作に影響させない。設定・上限・未対応範囲は [nethack-ai.md](nethack-ai.md) を参照。
 本番での到達・音声再生は配備後の別検証が必要であり、「AI攻略が完成した」とは扱わない。以降は #490 の

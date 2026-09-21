@@ -146,7 +146,7 @@ class TestCandidateShadowEvaluation(unittest.TestCase):
         self,
         *,
         run_id: str,
-        proposal_kind="hold",
+        proposal_kind="rest",
         evaluation="approved",
         candidate_status="proposed",
         current_actions=None,
@@ -195,7 +195,7 @@ class TestCandidateShadowEvaluation(unittest.TestCase):
                 else None
             ),
             "candidate_error": "provider down" if candidate_status == "error" else None,
-            "would_execute_allowed": proposal_kind == "hold" and evaluation == "approved",
+            "would_execute_allowed": proposal_kind == "rest" and evaluation == "approved",
             "would_execute_action_count": would_count,
             "candidate_action_sent": False,
             "execution": "candidate_shadow_only",
@@ -217,7 +217,7 @@ class TestCandidateShadowEvaluation(unittest.TestCase):
         self._write_events(
             run_id,
             [
-                self._event(run_id=run_id, proposal_kind="hold", evaluation="approved"),
+                self._event(run_id=run_id, proposal_kind="rest", evaluation="approved"),
                 self._event(
                     run_id=run_id,
                     proposal_kind="descend",
@@ -227,7 +227,7 @@ class TestCandidateShadowEvaluation(unittest.TestCase):
                 self._event(
                     run_id=run_id,
                     candidate_status="error",
-                    proposal_kind="hold",
+                    proposal_kind="rest",
                     critical_tags=["critical_hp"],
                 ),
             ],
@@ -241,7 +241,7 @@ class TestCandidateShadowEvaluation(unittest.TestCase):
         self.assertEqual(report["approved_proposals"], 1)
         self.assertEqual(report["rejected_proposals"], 1)
         self.assertAlmostEqual(report["proposal_reject_rate"], 0.5)
-        self.assertEqual(report["proposal_kind_counts"], {"descend": 1, "hold": 1})
+        self.assertEqual(report["proposal_kind_counts"], {"descend": 1, "rest": 1})
         self.assertEqual(report["critical_events"], 3)
         self.assertEqual(report["critical_rejected"], 1)
         self.assertEqual(report["critical_errors"], 1)
@@ -263,7 +263,7 @@ class TestCandidateShadowEvaluation(unittest.TestCase):
         group = report["death_signature_correlations"][0]
         self.assertEqual(group["death_signature"], "killed_by:grid bug")
         self.assertEqual(group["runs"], 1)
-        self.assertEqual(group["proposal_kind_counts"], {"descend": 1, "hold": 1})
+        self.assertEqual(group["proposal_kind_counts"], {"descend": 1, "rest": 1})
         self.assertEqual(group["interpretation"], "correlation_only")
 
         self.assertNotIn("command", report)
@@ -271,14 +271,14 @@ class TestCandidateShadowEvaluation(unittest.TestCase):
 
     def test_intent_proposal_matrix_is_aggregated(self):
         run_id = self._run(status="ended", death_signature=None)
-        first = self._event(run_id=run_id, proposal_kind="hold", evaluation="approved")
+        first = self._event(run_id=run_id, proposal_kind="rest", evaluation="approved")
         second = self._event(run_id=run_id, proposal_kind="inspect", evaluation="rejected")
         second["current_decision"]["intent"] = "status_emergency"
         self._write_events(run_id, [first, second])
         report = evaluate_live_candidate_shadow(self.g, self.manifest, now=self.now)
         self.assertEqual(
             report["intent_proposal_counts"],
-            {"status_emergency|inspect": 1, "survival_emergency|hold": 1},
+            {"status_emergency|inspect": 1, "survival_emergency|rest": 1},
         )
 
     def test_action_sent_or_policy_effect_violation_fails_integrity(self):

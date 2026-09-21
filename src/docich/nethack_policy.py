@@ -4,9 +4,10 @@ P3a established a fail-closed action surface where only ``--More--`` could be
 automatically advanced. P3b adds one conservative movement action at a time on
 currently visible, known-safe terrain chosen by :mod:`nethack_exploration`.
 
-Production hold resolution is in nethack_progress: a bounded ordinary bump is
-now the last resort after visible escape, never a forced attack. Item use,
-doors, stair traversal and arbitrary prompt answers remain outside the surface.
+Production wait resolution is in nethack_progress: a bounded ordinary bump is
+now the last resort after visible escape, never a forced attack, and a
+turn-based wait is always the literal ``.`` command. Item use, doors, stair
+traversal and arbitrary prompt answers remain outside the surface.
 """
 from __future__ import annotations
 
@@ -47,6 +48,26 @@ class PolicyDecision:
                 for action in self.actions
             ],
         }
+
+
+def turn_ready(obs: NethackObservation) -> bool:
+    """Whether a literal gameplay key can safely consume one turn.
+
+    Severe status and hunger emergencies are still handled by the strategic
+    safety boundary; this predicate only establishes that the frame is a
+    complete gameplay frame. Prompt, unknown, and player-less frames remain
+    outside this contract because ``.`` could answer a question rather than
+    wait.
+    """
+    return (
+        obs.prompt == "none"
+        and obs.player is not None
+        and obs.vitals.dungeon_level is not None
+        and obs.vitals.hp is not None
+        and obs.vitals.hp > 0
+        and obs.vitals.hp_max is not None
+        and obs.vitals.hp_max > 0
+    )
 
 
 # Default NetHack symbols: f is a feline, { is a fountain. Colour does not
@@ -235,12 +256,14 @@ def assert_p3b_safe(decision: PolicyDecision) -> None:
 
 
 # NetHack is turn-based: while the agent does nothing, nothing changes, so the
-# same frame -- and the same hold -- comes back forever.  A pet-like ambiguous
-# glyph blocking the only corridor or low HP that only time fixes can otherwise
-# freeze a run for good.  For exactly these non-LLM mid-level holds the
-# production agent lets one turn pass with NetHack's rest command, but only
-# while no recognized adjacent creature is visible.  The policy's own decision
-# is unchanged, so strategy/advisory/shadow keep seeing the hold.
+# same frame comes back forever. A pet-like ambiguous glyph blocking the only
+# corridor or low HP that only time fixes can otherwise freeze a run for good.
+# The production agent lets one turn pass with NetHack's rest command for the
+# reviewed safe holds below. Severe status and food emergencies remain
+# fail-closed until an explicit recovery path is reviewed; a generic rest can
+# move them closer to death. The policy's own decision remains available to
+# advisory/shadow telemetry, but it is never exposed as a no-op gameplay choice
+# for the safe hold surface.
 REST_KEY = "."
 REST_HOLD_INTENTS = frozenset(
     {
@@ -250,37 +273,28 @@ REST_HOLD_INTENTS = frozenset(
     }
 )
 
-# A critical-HP emergency asks for a recovery plan (quaff, pray, flee) that only
-# a strategic layer can choose.  With no strategist configured that becomes a
-# permanent freeze, so a single reviewed rest turn is allowed when there is no
-# recognized adjacent creature; HP can recover as turns pass.
-#
-# Severe status emergencies are deliberately *not* included.  The policy's
-# severe set is Sick/FoodPois/Ill/Slime/Strngl: these require active recovery or
-# progress toward death, so spending a turn on generic rest is not a safe
-# fallback.  food_emergency is likewise excluded because resting burns
-# nutrition.  Both remain fail-closed holds until a reviewed recovery action is
-# available.
+# A critical-HP emergency may eventually need an active recovery plan. Until
+# one is available, returning no action permanently freezes the turn-based
+# game, so a single explicit ``.`` is allowed when the frame is otherwise
+# complete. Severe status and food emergencies are different: passing a turn
+# can worsen them, so they remain fail-closed until recovery is reviewed.
 REST_EMERGENCY_INTENTS = frozenset({"survival_emergency"})
+RESTABLE_INTENTS = REST_HOLD_INTENTS | REST_EMERGENCY_INTENTS
 
 
 def rest_action_for_hold(
     decision: PolicyDecision, obs: NethackObservation
 ) -> Action | None:
-    """The single reviewed rest action for a stalled hold, else ``None``.
+    """Return the explicit ``.`` wait action for a reviewed safe hold.
 
-    Requires a hold that produced no action, a uniquely visible player, no
-    prompt, and no recognized adjacent creature.  Within that, either a
-    mid-level non-LLM hold (``REST_HOLD_INTENTS``) or the critical-HP
-    ``survival_emergency``.  Anything else -- an unknown screen,
-    ``status_emergency``, ``food_emergency``, or a hold that already acts --
-    stays a hold: a stray ``.`` on a prompt, beside a possibly hostile creature,
-    or during a worsening emergency is not something this guard may risk.
+    Unknown screens, prompts, player-less frames, visible creature contact,
+    hunger, and severe status emergencies remain fail-closed because ``.`` is
+    not a reviewed recovery action for those states.
     """
     if (
         decision.actions
-        or obs.prompt != "none"
-        or obs.player is None
+        or decision.intent not in RESTABLE_INTENTS
+        or not turn_ready(obs)
         or _visible_creature_contact(obs)
         or "Hungry" in obs.conditions
         or _has_any(obs, NethackLayeredPolicy._SEVERE_CONDITIONS | NethackLayeredPolicy._FOOD_EMERGENCY)
@@ -297,21 +311,20 @@ def rest_action_for_hold(
     return Action(type="text", text=REST_KEY)
 
 
-# A hold beside a visible creature is a deadlock, not a pause: NetHack only
-# advances when the hero acts, so the creature never takes its turn either and
-# the frame is frozen for good (observed on production 2026-09-19, generation
-# 250: HP 4/16 with a ':' adjacent, byte-identical screen, "0 actions" forever).
-# Resting there is not allowed -- standing still next to something that can hit
-# a weakened hero is how it dies -- so take the explorer's own safe step
-# instead.  That step never moves onto a creature, item, trap or door, and it is
-# the same one-key terrain surface used for exploring (including diagonals).
+# A no-action decision beside a visible creature is a deadlock, not a pause:
+# NetHack advances only when the hero acts. Without input, the creature does
+# not take its turn either, and the frame can freeze for good. Prefer the
+# explorer's safe step, then one
+# ordinary contact attempt. If those reviewed routes are exhausted, the
+# resolver remains fail-closed rather than resting beside the creature; the
+# caller can then surface the blocked state for recovery planning.
 STEP_OUT_INTENTS = REST_HOLD_INTENTS | REST_EMERGENCY_INTENTS | {"assess_contact", "seek_food"}
 
 
 def step_out_of_hold(decision: PolicyDecision, obs: NethackObservation, explorer) -> Action | None:
-    """One reviewed move to break a frozen hold, else ``None``.
+    """One reviewed move to break a frozen no-action state, else ``None``.
 
-    Used after rest declined or for Hungry exploration: a hold that produced no
+    Used after rest declined or for Hungry exploration: a decision that produced no
     action, with a uniquely visible player and no prompt, where the explorer
     can still name a safe step.  ``food_emergency`` and
     ``inspect_screen`` are excluded -- moving cannot help hunger, and without a

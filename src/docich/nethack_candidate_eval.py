@@ -491,7 +491,11 @@ def evaluate_candidate(
         else:
             rejected += 1
         action_count = len(plan.actions)
-        if action_count:
+        # ``rest`` is the one deliberately executable proposal in P3d.  Its
+        # single ``.`` key is an expected, bounded wait rather than an
+        # unexpected state-changing action.  Other executor actions remain
+        # outside the candidate safety contract.
+        if action_count and proposal.kind != "rest":
             unexpected_actions += 1
         results.append(
             {
@@ -501,7 +505,8 @@ def evaluate_candidate(
                 "proposal_kind": proposal.kind,
                 "evaluation_status": evaluation.status,
                 "evaluation_reason": evaluation.reason,
-                # P3d may mark hold as allowed, but its plan is still a no-op.
+                # P3d may approve rest, and its plan contains the explicit
+                # one-turn ``.`` action; state-changing plans remain empty.
                 "execution_allowed": plan.allowed,
                 "execution_action_count": action_count,
             }

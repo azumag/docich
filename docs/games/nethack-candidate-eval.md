@@ -79,11 +79,12 @@ P5c case
   X gameplay action
 ```
 
-P3d execution gateは現在、`hold` のno-op以外を実行可能にしない。
+P3d execution gateは現在、`rest` の明示的な `.` 1キーだけを実行可能にする。
 
 P5dはplanを診断用に計算するだけで、そのActionをagent loopへ返さない。
 
-`execution_action_count != 0` はcandidate safety contract failureになる。
+`rest` の `execution_action_count == 1` は許可済みの待機として扱う。それ以外の予期しない
+state-changing actionが計画された場合だけcandidate safety contract failureになる。
 
 ## Candidate report
 

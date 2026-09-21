@@ -1,4 +1,4 @@
-"""Production action arbitration for NetHack's turn-based holds (#490).
+"""Production action arbitration for NetHack's turn-based waits (#490).
 
 Safety is a bounded command contract, not a promise that the hero survives.
 A normal bump may fight a hostile creature or displace a pet. It is allowed
@@ -13,7 +13,7 @@ from .nethack_observation import NethackObservation
 from .nethack_policy import (
     NethackLayeredPolicy, PolicyDecision, STEP_OUT_INTENTS, _has_any,
     _visible_creature_contact, creature_glyph, decline_prompt,
-    rest_action_for_hold, step_out_of_hold,
+    rest_action_for_hold, step_out_of_hold, turn_ready,
 )
 
 
@@ -60,7 +60,8 @@ def assert_production_safe(decision: PolicyDecision, obs: NethackObservation) ->
         )
     elif intent == "rest_turn":
         allowed = (
-            gameplay_ready(obs) and key == "." and not _visible_creature_contact(obs)
+            gameplay_ready(obs) and key == "."
+            and not _visible_creature_contact(obs)
             and "Hungry" not in obs.conditions
         )
     if not allowed:
@@ -68,7 +69,7 @@ def assert_production_safe(decision: PolicyDecision, obs: NethackObservation) ->
 
 
 class NethackProgressResolver:
-    """Resolve reviewed holds without changing advisory/shadow policy intent.
+    """Resolve reviewed waits without changing advisory/shadow policy intent.
 
     Memory is local to a brain/runtime, bounded by the current visible scene.
     Rejected movement/bump edges expire when map, player or depth changes;
@@ -147,6 +148,8 @@ class NethackProgressResolver:
 
     @staticmethod
     def _hold(reason: str) -> PolicyDecision:
+        # This is a fail-closed observation state, not a gameplay choice:
+        # complete gameplay frames are resolved to an explicit ``.`` below.
         return PolicyDecision("strategic", "progress_blocked", reason, requires_llm=True)
 
     def _resolve(self, decision: PolicyDecision, obs: NethackObservation, explorer) -> PolicyDecision:
@@ -157,17 +160,19 @@ class NethackProgressResolver:
             if decision.intent in {"decline_save", "decline_attack", "advance_message"} and self._answered_prompt == obs.raw_text:
                 return self._hold("prompt already answered; waiting for a new frame")
             return decision
-        if not gameplay_ready(obs) or decision.intent not in STEP_OUT_INTENTS:
+        if not turn_ready(obs):
             return decision
 
         contact = _visible_creature_contact(obs)
-        # Low HP/impairment without contact benefits from one rest turn.
-        # Hungry exploration must not be replaced by endless nutrition-burning
-        # rest. It may travel, but does not guess food or item commands.
-        if not contact and "Hungry" not in obs.conditions:
+        # Prefer an explicit rest command whenever there is no visible contact
+        # and the policy has a reviewed safe hold. Severe status and food
+        # emergencies remain fail-closed until a recovery action is reviewed;
+        # Hungry exploration gets one chance to find visible terrain first and
+        # is also not allowed to burn nutrition through this fallback.
+        if not contact and decision.intent != "seek_food" and "Hungry" not in obs.conditions:
             rest = rest_action_for_hold(decision, obs)
             if rest is not None:
-                return self._action("rest_turn", "one recovery turn without visible contact", rest.text)
+                return self._action("rest_turn", "one explicit wait turn without visible contact", rest.text)
 
         step = step_out_of_hold(decision, obs, explorer)
         if step is not None:
@@ -182,4 +187,7 @@ class NethackProgressResolver:
                     # NetHack's pet/peaceful handling. F+direction or y would
                     # bypass that protection and remain forbidden.
                     return self._action("bump_creature", "no visible retreat; one ordinary contact attempt", key)
-        return self._hold("no reviewed progress action; prompt, impairment or rejected routes need context")
+        rest = rest_action_for_hold(decision, obs)
+        if rest is not None:
+            return self._action("rest_turn", "no reviewed progress action; spend one explicit wait turn", rest.text)
+        return self._hold("prompt, unknown screen or player position is not a gameplay turn")

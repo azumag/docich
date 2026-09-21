@@ -129,12 +129,12 @@ def load_advisory_config(game: GameConfig) -> NethackAdvisoryConfig:
 
 def _fallback_narration(decision: PolicyDecision) -> str:
     fixed = {
-        "survival_emergency": "体力が危険域です。進行を止めて、生存を優先します。",
-        "status_emergency": "危険な状態異常が見えています。回復方針を確認します。",
-        "food_emergency": "空腹が危険域です。食料判断を優先します。",
-        "prompt_decision": "選択を求められています。内容を確認してから判断します。",
-        "assess_contact": "近くに生物がいます。敵味方を決めつけず、いったん止まります。",
-        "exploration_blocked": "安全に進める道が見つかりません。状況を見直します。",
+        "survival_emergency": "体力が危険域です。安全な画面では . で1ターン待機します。",
+        "status_emergency": "危険な状態異常が見えています。回復手段を確認するまで入力せず再観測します。",
+        "food_emergency": "空腹が危険域です。食料などの回復手段を確認するまで入力せず再観測します。",
+        "prompt_decision": "選択を求められています。内容を確認してから回答します。",
+        "assess_contact": "近くに生物がいます。安全な退避または通常の接触を選びます。",
+        "exploration_blocked": "安全に進める道が見つからないため、. で1ターン進めます。",
     }
     return fixed.get(decision.intent, "NetHackの状況が変わりました。判断を見直します。")
 

@@ -51,7 +51,7 @@ class TestNethackLayeredPolicy(unittest.TestCase):
         self.assertTrue(decision.requires_llm)
         self.assertEqual(decision.actions, ())
 
-    def test_severe_status_never_spends_turn_on_generic_rest(self) -> None:
+    def test_severe_status_stays_fail_closed_without_generic_rest(self) -> None:
         self.assertEqual(REST_EMERGENCY_INTENTS, frozenset({"survival_emergency"}))
         for condition in ("Sick", "FoodPois", "Ill", "Slime", "Strngl"):
             with self.subTest(condition=condition):

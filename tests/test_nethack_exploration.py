@@ -115,7 +115,7 @@ class TestP3bPolicy(unittest.TestCase):
 
 
 class TestRestOnStalledHold(unittest.TestCase):
-    """A hold on a turn-based game never resolves by itself; let one turn pass safely."""
+    """A no-action policy decision must become one explicit wait turn."""
 
     FREE = ("###@.      ", "            ")
 
@@ -145,8 +145,7 @@ class TestRestOnStalledHold(unittest.TestCase):
         rows = ("##@d.      ", "            ")
         cases = {
             "assess_contact": {},
-            # These holds are evaluated before contact in policy.decide(), so
-            # the rest guard must independently notice the adjacent creature.
+            # The rest guard independently notices the adjacent creature.
             "hold_low_hp": {"hp": "4(10)"},
             "hold_impaired": {"condition": "Blind"},
             "seek_food": {"condition": "Hungry"},
@@ -163,12 +162,12 @@ class TestRestOnStalledHold(unittest.TestCase):
         self.assertEqual(decision.intent, "assess_contact")
         self.assertIsNone(rest_action_for_hold(decision, observation))
 
-    def test_no_rest_when_the_policy_already_acts_or_cannot_be_helped_by_time(self):
+    def test_no_rest_when_policy_already_acts_or_state_needs_recovery(self):
         cases = {
             # has its own action
             "explore_step": (self.FREE, {}),
             "seek_food": (self.FREE, {"condition": "Hungry"}),
-            # resting burns nutrition, so passing turns makes starvation worse
+            # Resting burns nutrition, so passing turns makes starvation worse.
             "food_emergency": (self.FREE, {"condition": "Weak"}),
         }
         for intent, (rows, kw) in cases.items():
@@ -225,23 +224,31 @@ class TestRestOnStalledHold(unittest.TestCase):
         self.assertEqual(more.prompt, "more")
         self.assertIsNone(rest_action_for_hold(hold, more))
 
-    def test_only_reviewed_holds_qualify(self):
+    def test_only_reviewed_no_action_gameplay_decisions_qualify(self):
         observation = obs(self.FREE)
-        for decision in (
-            PolicyDecision("tactical", "exploration_blocked", "x"),
-            PolicyDecision("tactical", "survival_emergency", "x"),
-            PolicyDecision("strategic", "exploration_blocked", "x"),
-            PolicyDecision("strategic", "food_emergency", "x", requires_llm=True),
-            PolicyDecision("strategic", "status_emergency", "x", requires_llm=True),
-            PolicyDecision("midlevel", "survival_emergency", "x"),
-            PolicyDecision("midlevel", "exploration_blocked", "x", requires_llm=True),
-            PolicyDecision("midlevel", "inspect_screen", "x"),
-            PolicyDecision("midlevel", "advance_message", "x"),
-            PolicyDecision("midlevel", "assess_contact", "x"),
-            PolicyDecision("midlevel", "exploration_blocked", "x", actions=(Action(type="text", text="h"),)),
-        ):
+        cases = (
+            (PolicyDecision("midlevel", "exploration_blocked", "x"), True),
+            (PolicyDecision("strategic", "survival_emergency", "x"), True),
+            (PolicyDecision("midlevel", "hold_low_hp", "x"), True),
+            (PolicyDecision("tactical", "exploration_blocked", "x"), False),
+            (PolicyDecision("strategic", "exploration_blocked", "x"), False),
+            (PolicyDecision("strategic", "food_emergency", "x", requires_llm=True), False),
+            (PolicyDecision("strategic", "status_emergency", "x", requires_llm=True), False),
+            (PolicyDecision("midlevel", "survival_emergency", "x"), False),
+            (PolicyDecision("midlevel", "exploration_blocked", "x", requires_llm=True), False),
+            (PolicyDecision("midlevel", "inspect_screen", "x"), False),
+            (PolicyDecision("midlevel", "advance_message", "x"), False),
+            (PolicyDecision("midlevel", "assess_contact", "x"), False),
+            (PolicyDecision("midlevel", "exploration_blocked", "x", actions=(Action(type="text", text="h"),)), False),
+        )
+        for decision, qualifies in cases:
             with self.subTest(decision=decision):
-                self.assertIsNone(rest_action_for_hold(decision, observation))
+                action = rest_action_for_hold(decision, observation)
+                if qualifies:
+                    self.assertIsNotNone(action)
+                    self.assertEqual(action.text, ".")
+                else:
+                    self.assertIsNone(action)
 
     def test_rest_guard_accepts_only_a_single_dot(self):
         assert_rest_safe([Action(type="text", text=".")])
@@ -260,7 +267,7 @@ class TestRestOnStalledHold(unittest.TestCase):
 
 
 class TestStepOutOfDeadlock(unittest.TestCase):
-    """A hold beside a creature must not freeze the game forever."""
+    """A creature contact must not leave a turn-based game without input."""
 
     FREE_ROWS = ("##@d.      ", "...........")
 
@@ -269,7 +276,7 @@ class TestStepOutOfDeadlock(unittest.TestCase):
         policy = NethackLayeredPolicy()
         return observation, policy.decide(observation), policy
 
-    def test_every_reviewed_hold_beside_a_creature_gets_a_safe_step_instead(self):
+    def test_every_reviewed_contact_tries_a_safe_step_before_rest(self):
         rows = ("##@d.      ", "...........")
         cases = {
             "assess_contact": {},
@@ -281,7 +288,8 @@ class TestStepOutOfDeadlock(unittest.TestCase):
             with self.subTest(intent=intent):
                 observation, decision, policy = self._decide(rows, **kw)
                 self.assertEqual(decision.intent, intent)
-                # rest is still refused beside a creature (#748)
+                # The resolver prefers this step; if it cannot use it, the
+                # final fallback is still an explicit dot.
                 self.assertIsNone(rest_action_for_hold(decision, observation))
                 action = step_out_of_hold(decision, observation, policy.explorer)
                 self.assertIsNotNone(action)
@@ -301,15 +309,18 @@ class TestStepOutOfDeadlock(unittest.TestCase):
                 self.assertIsNone(step_out_of_hold(decision, observation, policy.explorer))
 
     def test_no_step_is_invented_when_nothing_safe_is_reachable(self):
-        # Walls on every side but the creature: holding is the honest answer.
+        # Walls on every side but the creature: no safe step exists, so the
+        # resolver remains fail-closed rather than inventing a risky action.
         observation, decision, policy = self._decide(("-d@-       ", "-----------"), hp="4(10)")
         self.assertIsNone(step_out_of_hold(decision, observation, policy.explorer))
+        self.assertIsNone(rest_action_for_hold(decision, observation))
 
     def test_hunger_and_unknown_screens_are_never_stepped_out_of(self):
         rows = ("##@d.      ", "...........")
         observation, decision, policy = self._decide(rows, condition="Weak")
         self.assertEqual(decision.intent, "food_emergency")
         self.assertIsNone(step_out_of_hold(decision, observation, policy.explorer))
+        self.assertIsNone(rest_action_for_hold(decision, observation))
         self.assertNotIn("food_emergency", STEP_OUT_INTENTS)
         self.assertNotIn("inspect_screen", STEP_OUT_INTENTS)
 

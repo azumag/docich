@@ -4,10 +4,10 @@ The strategist is intentionally model-provider agnostic: a configured external
 command receives a :class:`StrategicRequest` JSON document on stdin and must
 return one :class:`StrategicProposal` JSON document on stdout.
 
-Crucially, this module does *not* turn proposals into NetHack keypresses.  The
-execution gate currently permits only ``hold`` (which has no actions).  Every
-state-changing proposal remains advisory until a later executor is separately
-implemented, allowlisted, and tested.
+Crucially, this module does *not* turn proposals into live NetHack keypresses.
+The only wait proposal is explicit ``rest`` and maps to one ``.`` key. Every
+other state-changing proposal remains advisory until a later executor is
+separately implemented, allowlisted, and tested.
 """
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from . import procs
 from .actions import Action
 from .nethack_inventory import VisibleInventoryItem
 from .nethack_observation import NethackObservation
+from .nethack_policy import NethackLayeredPolicy, _has_any, _visible_creature_contact
 from .nethack_strategy import (
     StrategicProposal,
     StrategicRequest,
@@ -164,14 +165,16 @@ def _item_snapshot_still_matches(
 
 def _allowed_kinds(intent: str) -> frozenset[str]:
     if intent == "prompt_decision":
-        return frozenset({"hold", "inspect", "answer_prompt"})
-    if intent in {"survival_emergency", "status_emergency", "food_emergency"}:
-        return frozenset({"hold", "inspect", "consume", "equip", "use"})
+        return frozenset({"inspect", "answer_prompt"})
+    if intent == "survival_emergency":
+        return frozenset({"rest", "inspect", "consume", "equip", "use"})
+    if intent in {"status_emergency", "food_emergency"}:
+        return frozenset({"inspect", "consume", "equip", "use"})
     if intent == "stairs_decision":
-        return frozenset({"hold", "inspect", "ascend", "descend"})
+        return frozenset({"rest", "inspect", "ascend", "descend"})
     if intent in {"assess_contact", "exploration_blocked"}:
-        return frozenset({"hold", "inspect"})
-    return frozenset({"hold", "inspect"})
+        return frozenset({"rest", "inspect"})
+    return frozenset({"rest", "inspect"})
 
 
 def _prompt_answer_is_compatible(obs: NethackObservation, answer: str | None) -> bool:
@@ -225,6 +228,30 @@ def evaluate_proposal(
             proposal=proposal,
         )
 
+    if proposal.kind == "rest":
+        if (
+            request.intent != "survival_emergency"
+            or current_observation.prompt != "none"
+            or current_observation.player is None
+            or current_observation.vitals.dungeon_level is None
+            or current_observation.vitals.hp is None
+            or current_observation.vitals.hp <= 0
+            or current_observation.vitals.hp_max is None
+            or current_observation.vitals.hp_max <= 0
+            or _visible_creature_contact(current_observation)
+            or "Hungry" in current_observation.conditions
+            or _has_any(
+                current_observation,
+                NethackLayeredPolicy._SEVERE_CONDITIONS
+                | NethackLayeredPolicy._FOOD_EMERGENCY,
+            )
+        ):
+            return ProposalEvaluation(
+                status="rejected",
+                reason="rest requires a reviewed safe intent and complete gameplay frame without visible creature contact or emergency hunger/status",
+                proposal=proposal,
+            )
+
     if proposal.kind != "answer_prompt" and current_observation.prompt not in {"none", "more"}:
         return ProposalEvaluation(
             status="rejected",
@@ -236,11 +263,15 @@ def evaluate_proposal(
 
 
 def execution_plan(evaluation: ProposalEvaluation) -> ExecutionPlan:
-    """Final P3d gate. Only no-op ``hold`` is executable in this phase."""
+    """Final P3d gate. Only explicit ``rest`` is executable in this phase."""
     if not evaluation.approved:
         return ExecutionPlan(allowed=False, reason=f"proposal rejected: {evaluation.reason}")
-    if evaluation.proposal.kind == "hold":
-        return ExecutionPlan(allowed=True, reason="hold is a no-op", actions=())
+    if evaluation.proposal.kind == "rest":
+        return ExecutionPlan(
+            allowed=True,
+            reason="rest is the explicit one-turn wait command",
+            actions=(Action(type="text", text="."),),
+        )
     return ExecutionPlan(
         allowed=False,
         reason=(

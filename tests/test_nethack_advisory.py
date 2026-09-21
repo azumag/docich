@@ -126,9 +126,9 @@ class TestAdvisoryController(unittest.TestCase):
                 status="proposed",
                 proposal=StrategicProposal(
                     schema_version=1,
-                    kind="hold",
-                    rationale="survival first",
-                    narration="ここは止まって状況を確認します。",
+                    kind="rest",
+                    rationale="wait one turn with dot",
+                    narration="ここは . で1ターン待機します。",
                 ),
             )
         )
@@ -137,24 +137,24 @@ class TestAdvisoryController(unittest.TestCase):
         outcome = ctl.consider(text, normalized(), emergency())
 
         self.assertEqual(outcome.status, "proposed")
-        self.assertEqual(outcome.proposal_kind, "hold")
+        self.assertEqual(outcome.proposal_kind, "rest")
         self.assertEqual(outcome.evaluation_status, "approved")
         self.assertTrue(outcome.narrated)
-        self.assertEqual(spoken, ["ここは止まって状況を確認します。"])
+        self.assertEqual(spoken, ["ここは . で1ターン待機します。"])
         self.assertFalse(hasattr(outcome, "actions"))
         self.assertEqual(len(strategist.calls), 1)
 
         log_path = self.root / "state" / "nethack" / "strategist" / "advisory.jsonl"
         event = json.loads(log_path.read_text(encoding="utf-8").splitlines()[-1])
         self.assertEqual(event["execution"], "advisory_only")
-        self.assertEqual(event["proposal"]["kind"], "hold")
+        self.assertEqual(event["proposal"]["kind"], "rest")
         self.assertEqual(event["evaluation"]["status"], "approved")
 
     def test_same_intent_is_cooled_down_and_budget_is_bounded(self) -> None:
         strategist = FakeStrategist(
             StrategistDispatchResult(
                 status="proposed",
-                proposal=StrategicProposal(schema_version=1, kind="hold", rationale="wait"),
+                proposal=StrategicProposal(schema_version=1, kind="rest", rationale="wait one turn with dot"),
             )
         )
         ctl = self.controller(strategist, max_calls=2, cooldown=10.0)
@@ -217,7 +217,7 @@ class TestAdvisoryController(unittest.TestCase):
         strategist = FakeStrategist(
             StrategistDispatchResult(
                 status="proposed",
-                proposal=StrategicProposal(schema_version=1, kind="hold", rationale="wait"),
+                proposal=StrategicProposal(schema_version=1, kind="rest", rationale="wait one turn with dot"),
             )
         )
         ctl = self.controller(strategist)

@@ -73,7 +73,7 @@ jobs:
                 --entrypoint python3 \
                 "$DOCICH_TEST_NETHACK_CANARY_IMAGE" \
                 brains/nethack_canary_hold.py)"
-          python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["schema_version"] == 1 and d["kind"] == "hold"' "$output"
+          python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["schema_version"] == 1 and d["kind"] == "rest"' "$output"
       - name: Prove candidate broker cannot read or write game arena
         shell: bash
         run: |
@@ -106,7 +106,7 @@ jobs:
             -m docich.nethack_canary_candidate_broker \
             --manifest /canary/candidate.json \
             --stdio-once)"
-          python3 -c 'import json,sys; d=json.loads(sys.argv[1]); p=d["proposal"]; assert d["status"]=="proposed" and p["kind"]=="hold" and p["rationale"]=="arena_readable=false;arena_writable=false"' "$output"
+          python3 -c 'import json,sys; d=json.loads(sys.argv[1]); p=d["proposal"]; assert d["status"]=="proposed" and p["kind"]=="rest" and p["rationale"]=="arena_readable=false;arena_writable=false"' "$output"
           test "$(cat "$RUNNER_TEMP/canary-game-arena/playground/xlogfile")" = "production-like-secret"
       - name: Note production runtime boundary
         run: >-

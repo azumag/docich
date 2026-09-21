@@ -186,10 +186,10 @@ class TestNethackCandidateEval(unittest.TestCase):
             "constraints": [],
         }
 
-    def test_safe_hold_candidate_passes_behavior_review_but_never_promotion(self):
+    def test_safe_rest_candidate_passes_behavior_review_but_never_promotion(self):
         suite = self.build_survival_suite()
         fake = FakeStrategist(
-            StrategicProposal(schema_version=1, kind="hold", rationale="stay safe")
+            StrategicProposal(schema_version=1, kind="rest", rationale="wait one turn with dot")
         )
         report = evaluate_candidate(self.g, self.manifest(), strategist=fake, now=self.now)
         self.assertEqual(len(fake.requests), 1)
@@ -202,7 +202,7 @@ class TestNethackCandidateEval(unittest.TestCase):
         self.assertEqual(report["policy_effect"], "none")
         self.assertNotIn("command", report)
         self.assertEqual(len(report["command_sha256"]), 64)
-        self.assertEqual(report["results"][0]["execution_action_count"], 0)
+        self.assertEqual(report["results"][0]["execution_action_count"], 1)
 
     def test_disallowed_candidate_kind_is_rejected(self):
         self.build_survival_suite()
@@ -227,11 +227,12 @@ class TestNethackCandidateEval(unittest.TestCase):
         suite = self.build_survival_suite(with_hidden_replay=True)
         self.assertIsNotNone(suite["cases"][0]["replay_request"])
         fake = FakeStrategist(
-            StrategicProposal(schema_version=1, kind="hold", rationale="fallback")
+            StrategicProposal(schema_version=1, kind="rest", rationale="wait one turn with dot")
         )
         report = evaluate_candidate(self.g, self.manifest(), strategist=fake, now=self.now)
         self.assertTrue(report["candidate_safety_contract_passed"])
         self.assertEqual(report["results"][0]["request_source"], "synthetic_public_fixture")
+        self.assertEqual(report["results"][0]["execution_action_count"], 1)
         self.assertNotIn("hidden_map", fake.requests[0].observation)
 
     def test_public_replay_rejects_non_finite_or_out_of_range_hp_ratio(self):
@@ -259,7 +260,7 @@ class TestNethackCandidateEval(unittest.TestCase):
         self.write_memory([self.memory(key, "repeated_death", run_id)])
         build_suite(self.g, now=self.now)
         fake = FakeStrategist(
-            StrategicProposal(schema_version=1, kind="hold", rationale="unused")
+            StrategicProposal(schema_version=1, kind="rest", rationale="wait one turn with dot")
         )
         report = evaluate_candidate(self.g, self.manifest(), strategist=fake, now=self.now)
         self.assertEqual(report["status"], "blocked_baseline")
@@ -269,7 +270,7 @@ class TestNethackCandidateEval(unittest.TestCase):
     def test_expected_suite_id_prevents_accidental_cross_suite_replay(self):
         self.build_survival_suite()
         fake = FakeStrategist(
-            StrategicProposal(schema_version=1, kind="hold", rationale="unused")
+            StrategicProposal(schema_version=1, kind="rest", rationale="wait one turn with dot")
         )
         with self.assertRaises(NethackCandidateError):
             evaluate_candidate(
@@ -292,7 +293,7 @@ class TestNethackCandidateEval(unittest.TestCase):
         )
         build_suite(self.g, now=self.now)
         fake = FakeStrategist(
-            StrategicProposal(schema_version=1, kind="hold", rationale="safe")
+            StrategicProposal(schema_version=1, kind="rest", rationale="wait one turn with dot")
         )
         report = evaluate_candidate(
             self.g,

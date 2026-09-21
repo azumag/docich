@@ -83,21 +83,27 @@ blank / unseen area
 - player `@` が一意でない → `inspect_screen`
 - safe pathなし → `exploration_blocked`
 
+`hold_low_hp` / `hold_impaired` は従来の観測用intent名として残るが、実行上の選択肢ではない。
+完全な gameplay frame でActionが空なら、progress resolverが明示的な `.` に変換する。
+
 隠れた罠など、人間にも見えていない情報は回避できない。P3bは「可視情報から分かる危険を勝手に踏まない」範囲を保証する。
 
-#### 保留の解決（production progress resolver）
+#### 待機の解決（production progress resolver）
 
-現在の実行契約は [本番の行動・保留契約](nethack-progress-contract.md) を正本とする。
+現在の実行契約は [本番の行動・待機契約](nethack-progress-contract.md) を正本とする。
 探索は縦横を優先し、候補がなければ斜め `y/u/b/n` も調べる。隣接creatureがいる場合、退避を先に試し、
 可視の退避先がない場合だけ通常の方向入力1個で接触する。攻撃確認は `n` で拒否し、同じ拒否を繰り返さない。
 これは旧P3bからの意図した行動面拡張であり、生存を保証しない。
 
-低HP・移動障害の保留で隣接creatureがなければ `.` を使えるが、重篤状態・深刻な飢餓は低HPと同時でも無入力を維持する。
-`Hungry` では探索を優先して無制限のrestを避ける。`Blind/Conf/Stun/Hallu` では退避・接触を禁止する。
+通常の完全な gameplay frame で、移動・接触・回復計画などの reviewed action がない場合は、判断保留を返さず
+`.` を1回送る。重篤状態・空腹・低HPも同じであり、ターンを消費して再観測する。`Hungry` では探索を優先し、
+隣接creatureでは退避・通常接触を先に試し、候補が尽きた時だけ `.` にする。
+`Blind/Conf/Stun/Hallu` の安全な移動は作らないが、完全な gameplay frame の無入力にはしない。
 `f` は猫科、`{` は噴水である。`f` を地形扱いして休む旧説明・実装は誤りだった。
 
 policyの判断と実行候補を分離し、`last_decision` と `last_progress_decision` で観測する。
-候補が全て拒否された場合は `progress_blocked` として残し、未知のキーを推測して進めない。
+候補が全て拒否された場合は、完全な gameplay frame なら `.` を実行候補にし、未知のキーを推測して進めない。
+`progress_blocked` の無入力は、質問・未知画面・player不明など `.` を安全に送れない場合に限定する。
 
 ### Strategic (P3c)
 
@@ -143,7 +149,7 @@ constraints
 将来LLMが返す候補schema:
 
 ```text
-hold
+rest
 inspect
 move_to_stairs
 ascend
@@ -156,7 +162,9 @@ answer_prompt
 
 `consume/equip/use` はinventory letter必須、`answer_prompt` は短いprompt answer必須。余計なinventory letterやprompt answerを別kindへ混ぜるとvalidation errorにする。
 
-**StrategicProposalはActionを持たない。** P3cではproposalからNetHack keyへ変換するexecutorを実装しない。従ってLLMを将来接続しても、それだけではitem使用・階段移動・prompt回答はゲームへ到達しない。
+**StrategicProposalは任意のAction列を持たない。** 待機候補 `rest` だけはP3dの最終gateで
+NetHackの `.` 1キーへ固定変換する。item使用・階段移動・prompt回答などのstate-changing proposalは、
+別executorを実装しない限りゲームへ到達しない。
 
 #### Narration threshold
 
@@ -195,7 +203,7 @@ answer_prompt
 TTY Observation
   -> normalize_tty
   -> NethackLayeredPolicy
-  -> NethackProgressResolver（保留解決・拒否記憶）
+  -> NethackProgressResolver（待機解決・拒否記憶）
   -> observed-context action guard
   -> agent loop / shared_section内でfresh再観測・canonical境界確認
   -> adapter.act成功後だけprogressへ送信通知
@@ -240,7 +248,8 @@ AGENTSの `work_indicator` 作業中音声や、コーナー開始/終了の `ne
 
 - `PolicyDecision.intent` と既知reasonを日本語の固定1文へ写す（座標・raw reason・TTY本文は読まない）。
 - 初回階層/階層変化、探索の意図、安全な道なし、低HP、空腹、状態異常、接触などを説明する。
-  `search`・戦闘・階段コマンド等の未実装操作を実行したとは語らない。contactや低HP等では実際にrestが抑止される場合があるため、「休んだ」と断定しない。
+  `search`・戦闘・階段コマンド等の未実装操作を実行したとは語らない。contactでは退避・通常接触を先に試し、
+  候補が尽きた時だけ `.` を送るため、実際の候補を越えて「休んだ」と断定しない。
 - 可視 `You die.` / `You have died.` は死亡表示として説明し、確定した終了結果は既存corner終了音声が担当する。
 - 1決定1文まで、全イベント共通cooldown、連続した同一intentは座標/HPが変わっても再発話しない。
   cooldown中のイベントは蓄積/再生しない（次の観測時の現在状態だけを判断）。
@@ -260,9 +269,10 @@ agent生存だけではgameplay到達や音声再生の証拠にならない。
 
 無効化は `agent.enabled=false`（自動agent全体）、`nethack.narration.enabled=false`（発話のみ）、
 `nethack.startup.enabled=false`（追加起動応答のみ）。設定はbrain生成時に読むので既存workerへhot reloadしない。
-本番反映後は別担当が正規運用経路で新agentの実効設定、gameplay到達、P3bの移動/保留、
+本番反映後は別担当が正規運用経路で新agentの実効設定、gameplay到達、P3bの移動/`.` 待機、
 音声の順次再生と終了復帰、共通配信PID維持を確認する必要がある。
-P3bは敵・ドア・空腹などで保留するため、これだけで長期攻略が完走するとは主張しない。
+P3bは安全性を確認できる局面で `.` 待機しますが、重い状態異常・危険な空腹・隣接creatureでは
+fail-closed で無入力になるため、これだけで長期攻略が完走するとは主張しない。
 
 ## 次
 

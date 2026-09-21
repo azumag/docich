@@ -79,6 +79,7 @@ class TestStrategicProposal(unittest.TestCase):
     def test_invalid_or_overpowered_shapes_are_rejected(self) -> None:
         invalid = [
             {"schema_version": 2, "kind": "hold", "rationale": "x"},
+            {"schema_version": 1, "kind": "hold", "rationale": "x"},
             {"schema_version": 1, "kind": "shell", "rationale": "x"},
             {"schema_version": 1, "kind": "consume", "rationale": "x"},
             {

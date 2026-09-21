@@ -242,7 +242,7 @@ def test_rejected_diagonal_yields_to_another_route_then_bump():
     assert act(agent, text) == ["k"]
     assert agent.last_progress_decision.intent == "bump_creature"
     assert act(agent, text) == ["k"]
-    assert act(agent, text) == []  # no endless key spam mistaken for progress
+    assert act(agent, text) == []  # remain fail-closed after bounded contact retries
     # New map/player/depth invalidates transient rejected edges.
     assert act(agent, frame({"k": "d", "b": ".", "n": "#"}, hp="4(16)", depth=2)) == ["b"]
 
@@ -284,7 +284,6 @@ def test_final_guard_rechecks_context_instead_of_trusting_policy_intent():
     ]:
         with pytest.raises(RuntimeError):
             assert_production_safe(decision, normalize_tty(text))
-
 
 def test_missing_status_does_not_make_stale_map_actionable():
     text = "\n @#\n   \n"

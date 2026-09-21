@@ -1,9 +1,8 @@
-"""Strategic decision schema for the NetHack layered policy (P3c).
+"""Strategic decision schema for the NetHack layered policy (P3c/P3d).
 
-P3c prepares compact, public-information requests for a future LLM strategist
-but does not invoke a model and does not translate a proposal into a keypress.
-That separation keeps an untrusted/unfinished strategic response outside the
-gameplay action path until a later reviewed executor exists.
+The schema carries public-information proposals, not arbitrary action lists.
+The reviewed executor gate accepts only explicit ``rest`` and fixes it to one
+literal ``.`` key; every other state-changing proposal remains advisory.
 """
 from __future__ import annotations
 
@@ -18,7 +17,7 @@ from .nethack_policy import PolicyDecision
 
 SCHEMA_VERSION = 1
 ProposalKind = Literal[
-    "hold",
+    "rest",
     "inspect",
     "move_to_stairs",
     "ascend",
@@ -30,7 +29,7 @@ ProposalKind = Literal[
 ]
 _ALLOWED_KINDS = frozenset(
     {
-        "hold",
+        "rest",
         "inspect",
         "move_to_stairs",
         "ascend",
@@ -91,6 +90,7 @@ _BASE_CONSTRAINTS = (
     "Do not reinterpret an unidentified item as its hidden true identity.",
     "A proposal is advisory only and will not be executed directly.",
     "Prefer survival over progress when the visible state is ambiguous.",
+    "When a reviewed safe wait is the right choice, propose rest; rest means exactly one '.' key, never no input.",
 )
 
 
