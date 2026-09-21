@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich.config import load_global
-from docich.paper_corner import PaperCornerManager
+from docich.paper_corner import SPEECH_DRAIN_STABLE_POLLS, PaperCornerManager
 
 
 class Result:
@@ -159,3 +159,43 @@ def test_no_explicit_narration_interval_between_segments(tmp_path, monkeypatch):
 
     assert mgr._run_locked(_starting_state()) == "completed"
     assert sleeps == [], "segments must be spoken as generated, with no fixed interval"
+
+
+def test_corner_waits_for_speech_to_finish_before_restoring(tmp_path):
+    speaking = tmp_path / "soren" / "tmp" / "state" / "speaking.json"
+    speaking.parent.mkdir(parents=True)
+    speaking.write_text("{}", encoding="utf-8")
+    sleeps = []
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        speaking.unlink(missing_ok=True)
+
+    mgr, _coord = _manager(tmp_path, script_agents="", sleep=sleep)
+
+    assert mgr._run_locked(_starting_state()) == "completed"
+
+    assert sleeps == [2.0] * SPEECH_DRAIN_STABLE_POLLS, (
+        "the corner must wait for the audio queue to drain"
+    )
+    saved = json.loads(mgr.path.read_text())
+    assert "speech_drain_timeout" not in saved
+
+
+def test_corner_bounds_the_speech_wait(tmp_path):
+    speaking = tmp_path / "soren" / "tmp" / "state" / "speaking.json"
+    speaking.parent.mkdir(parents=True)
+    speaking.write_text("{}", encoding="utf-8")
+    now = [1000.0]
+
+    mgr, _coord = _manager(
+        tmp_path,
+        script_agents="",
+        clock=lambda: now[0],
+        sleep=lambda seconds: now.__setitem__(0, now[0] + seconds),
+    )
+
+    assert mgr._run_locked(_starting_state()) == "completed"
+
+    saved = json.loads(mgr.path.read_text())
+    assert saved.get("speech_drain_timeout") is True
