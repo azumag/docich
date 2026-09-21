@@ -266,6 +266,21 @@ class TestCheckedOperations(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.tmux.stop_game_session_named("docich")
 
+    @mock.patch("docich.tmux.terminate_process_tree")
+    @mock.patch("docich.tmux.procs.run")
+    def test_legacy_game_cleanup_stops_generation_session_descendants(self, mock_run, mock_terminate):
+        mock_run.side_effect = [_ok("123\n"), _ok()]
+        mock_terminate.return_value = TerminationResult(
+            roots=(123,), term_sent=(123,), kill_sent=(), remaining=()
+        )
+
+        self.tmux.stop_game_session_named("docich-game-g7")
+        mock_terminate.assert_called_once_with([123])
+        self.assertEqual(
+            mock_run.call_args_list[-1].args[0],
+            ["tmux", "kill-session", "-t", "docich-game-g7"],
+        )
+
     @mock.patch("docich.tmux.procs.run")
     def test_window_exists_lists_and_matches_by_name(self, mock_run):
         # display-message succeeds even for nonexistent names on real tmux,
