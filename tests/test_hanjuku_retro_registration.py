@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from docich.config import load_game, load_global
 from docich.retro_corner import RetroCornerError, RetroCornerManager, load_retro_corner_config
 
-EXISTING = ["ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console", "nethack"]
+EXISTING = ["ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console"]
 
 
 @pytest.fixture
@@ -43,7 +43,7 @@ def test_live_registration_is_dormant_and_keeps_brain_opt_in(manager):
         "retroarch", "dbus-run-session", "python3", "claude",
     ]
     assert game.raw["retroarch"] == {"rom": "games/roms/hanjuku-hero.sfc", "core": "auto"}
-    assert manager._rotation_interval_seconds() == 86400 / 7
+    assert manager._rotation_interval_seconds() == 86400 / 6
 
 
 def test_installed_binaries_cannot_enable_hanjuku(manager, monkeypatch):

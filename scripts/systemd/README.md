@@ -125,6 +125,8 @@ commit しない):
 - `SOREN91_LOCAL_AGENT_TOKEN` … Mac エージェントの Bearer token
 
 `docich-soren91-corner.service` はこのファイルを `EnvironmentFile=` で読む。
+現行の共通rotation timerでは同じファイルをunit全体へ継承せず、メリケンadapterが
+allowlistした3項目だけを実行中に読み込むため、レトロ/PAPER子プロセスへ秘密を渡しません。
 手動でコーナーを実行する場合 (検証時) も同じ env が必要:
 
 ```sh

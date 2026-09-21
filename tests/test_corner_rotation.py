@@ -109,6 +109,68 @@ def test_adapter_config_disables_paper_and_meriken_from_effective_n(tmp_path, mo
     assert excluded["meriken"] == "adapter-unavailable"
 
 
+def test_nethack_legacy_state_is_visible_to_unified_rotation(tmp_path, monkeypatch):
+    from docich.retro_corner import RetroCornerManager
+
+    monkeypatch.setattr(RetroCornerManager, "_executable_exists", staticmethod(lambda _: True))
+    config = replace(
+        load_global(ROOT, ROOT / "config/docich.soren-live.toml"),
+        state_dir=tmp_path,
+    )
+    manager = CornerRotationManager(config, seed="nethack-state")
+    assert manager.adapters["nethack"].state_path.name == "nethack_corner.json"
+
+    (tmp_path / "nethack_corner.json").write_text(
+        json.dumps({"status": "active", "started_at": 100.0}),
+        encoding="utf-8",
+    )
+
+    result = manager.tick()
+
+    assert result["reason"] == "other-corner-needs-finish-or-recovery"
+
+
+def test_removed_corner_keeps_improvement_release_gate(setup):
+    _, clock, catalog, executor, make = setup
+    manager = make()
+    manager.tick()
+    (manager.g.state_dir / "retro_corner.json").write_text(
+        json.dumps({
+            "status": "completed",
+            "game": "nsnake",
+            "completed_at": clock[0],
+            "improve_job": {"spawned": True},
+        }),
+        encoding="utf-8",
+    )
+    clock[0] += DAY
+    remaining = [corner for corner in catalog if corner.id != "retro"]
+
+    result = make(remaining).tick()
+
+    assert result["reason"] == "other-corner-needs-finish-or-recovery"
+    assert len(executor.calls) == 1
+
+
+def test_initial_migration_observes_removed_legacy_corner(setup):
+    g, clock, catalog, executor, make = setup
+    state_dir = Path(g.state_dir)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "retro_corner.json").write_text(json.dumps({
+        "schema_version": 1,
+        "status": "completed",
+        "game": "nsnake",
+        "completed_at": clock[0],
+        "improve_job": {"spawned": True},
+    }))
+    remaining = [corner for corner in catalog if corner.id != "retro"]
+
+    result = make(remaining).tick()
+
+    assert result["reason"] == "other-corner-needs-finish-or-recovery"
+    assert not executor.calls
+
+
 @pytest.mark.parametrize("entry", [
     'id="paper",adapter="paper",game="paper-view",live_eligible=true',
     'id="paper",adapter="paper",game="paper-view",enabled="yes"',
@@ -343,3 +405,48 @@ def test_manual_queue_replay_uses_same_durable_request(setup, monkeypatch):
     assert corner_rotation.run_manual(g, manager, ["paper-view"]) == "completed"
     assert executor.calls[1]["request_id"] == first
     assert state(make()).get("manual_pending") is None
+
+
+def test_stop_reaches_owner_when_scheduler_lock_is_busy(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from docich import corner_rotation
+
+    class BusyRotation:
+        @contextmanager
+        def locked(self):
+            yield False
+
+    monkeypatch.setattr(corner_rotation, "CornerRotationManager", lambda _g: BusyRotation())
+    manager = SimpleNamespace(path=tmp_path / "paper_corner.json")
+    manager.path.write_text(json.dumps({"status": "active"}))
+    assert corner_rotation.stop_manual(
+        SimpleNamespace(state_dir=tmp_path),
+        manager,
+        lambda: "stopped",
+        busy_callback=lambda: "owner-stopped",
+    ) == "owner-stopped"
+
+
+def test_stop_queues_durable_request_while_owner_is_starting(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from docich import corner_rotation
+
+    class BusyRotation:
+        @contextmanager
+        def locked(self):
+            yield False
+
+    monkeypatch.setattr(corner_rotation, "CornerRotationManager", lambda _g: BusyRotation())
+    manager = SimpleNamespace(path=tmp_path / "paper_corner.json")
+    manager.path.write_text(json.dumps({"status": "starting"}))
+    g = SimpleNamespace(state_dir=tmp_path)
+    assert corner_rotation.stop_manual(
+        g,
+        manager,
+        lambda: "stopped",
+        busy_callback=lambda: "owner-stopped",
+    ) == "queued"
+    marker = tmp_path / "corner-stop-requests" / manager.path.name
+    marker_state = json.loads(marker.read_text())
+    assert marker_state["state_file"] == manager.path.name
+    assert isinstance(marker_state["requested_at"], (int, float))

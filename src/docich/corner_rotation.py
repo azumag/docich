@@ -14,10 +14,11 @@ import time
 import uuid
 
 from .corner_catalog import load_catalog, rotation_enabled
-from .corner_adapters import make_corner_adapter, CornerExecutionCoordinator
+from .corner_adapters import make_corner_adapter, CornerExecutionCoordinator, RetiredCornerObserver
 from .game_switch import atomic_write_json
 
 DAY = 86400.0
+STOP_REQUEST_DIR = "corner-stop-requests"
 BUSY = {"waiting", "starting", "active", "restoring", "preparing", "recovery_required", "failed"}
 TERMINAL = {"idle", "completed", "interrupted", "expired"}
 
@@ -35,6 +36,33 @@ def timestamp(value):
     if type(value) not in (float, int) or not math.isfinite(value) or value < 0:
         raise RotationError("invalid timestamp")
     return float(value)
+
+
+def _stop_request_path(g, state_path):
+    return Path(g.state_dir) / STOP_REQUEST_DIR / Path(state_path).name
+
+
+def rotation_stop_requested(g, state_path):
+    path = _stop_request_path(g, state_path)
+    if not path.exists():
+        return False
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return True
+    return isinstance(data, dict) and data.get("state_file") == Path(state_path).name
+
+
+def clear_rotation_stop_request(g, state_path):
+    path = _stop_request_path(g, state_path)
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        # A stale marker is fail-closed and will be retried by the next owner.
+        return False
+    return True
 
 
 class CornerRotationManager:
@@ -65,6 +93,57 @@ class CornerRotationManager:
     def save(self, state):
         atomic_write_json(self.path, state)
 
+    def _initial_known_corners(self):
+        """Seed the migration ledger from pre-catalog corner state files.
+
+        A catalog can be edited before the first unified state is written. In
+        that case the current rows alone cannot identify an old active corner
+        or an unfinished improvement job. Keep the legacy state visible as a
+        retired observer until it reaches a terminal, released state.
+        """
+        known = {
+            corner.id: {
+                "id": corner.id,
+                "adapter": corner.adapter,
+                "game": corner.game,
+            }
+            for corner in self.catalog
+        }
+        current_by_game = {corner.game: corner for corner in self.catalog}
+        legacy = (
+            ("retro_corner.json", "game", None),
+            ("paper_corner.json", "paper", ("paper", "paper-view")),
+            ("soren91_corner.json", "meriken", ("meriken", "soren91")),
+            ("nethack_corner.json", "nethack", ("nethack", "nethack")),
+        )
+        for filename, adapter, fixed_identity in legacy:
+            path = Path(self.g.state_dir) / filename
+            if not path.exists():
+                continue
+            try:
+                raw = json.loads(path.read_text())
+            except (OSError, ValueError) as exc:
+                raise RotationError("legacy corner state requires explicit recovery") from exc
+            if not isinstance(raw, dict):
+                raise RotationError("legacy corner state requires explicit recovery")
+            if fixed_identity is not None:
+                corner_id, game = fixed_identity
+                known.setdefault(corner_id, {"id": corner_id, "adapter": adapter, "game": game})
+                continue
+            game = raw.get("game")
+            if not isinstance(game, str) or not game:
+                continue
+            current = current_by_game.get(game)
+            if current is not None:
+                known.setdefault(current.id, {
+                    "id": current.id,
+                    "adapter": current.adapter,
+                    "game": current.game,
+                })
+            else:
+                known.setdefault(game, {"id": game, "adapter": adapter, "game": game})
+        return known
+
     def load(self, now):
         if not self.path.exists():
             if any(raw.get("rotation_request_id") for adapter in self.adapters.values()
@@ -72,7 +151,8 @@ class CornerRotationManager:
                 raise RotationError("rotation ledger missing; explicit recovery required")
             state = dict(schema_version=1, seed=str(self.seed if self.seed is not None else secrets.token_hex(32)),
                          slot=0, last_seen_at=now, next_due_at=now, last_slot_at=None,
-                         history=[], pending=None, status="ready", migration="legacy-imported")
+                         history=[], pending=None, status="ready", migration="legacy-imported",
+                         known_corners=self._initial_known_corners())
             # Import rolling history even for disabled/removed entries. Never
             # reset cooldown because catalog ordering or eligibility changed.
             old = Path(self.g.state_dir) / "retro_corner.json"
@@ -100,6 +180,16 @@ class CornerRotationManager:
                 or not isinstance(state.get("history"), list)
                 or state.get("status") not in {"ready", "waiting", "running", "recovery_required"}):
             raise RotationError("invalid rotation state")
+        known = state.get("known_corners")
+        if known is not None:
+            if not isinstance(known, dict):
+                raise RotationError("invalid known corner ledger")
+            for record in known.values():
+                if (not isinstance(record, dict)
+                        or not isinstance(record.get("id"), str)
+                        or record.get("adapter") not in {"game", "paper", "meriken", "nethack"}
+                        or not isinstance(record.get("game"), str)):
+                    raise RotationError("invalid known corner identity")
         if (state.get("status") == "running"
                 and state.get("pending") is None
                 and state.get("manual_pending") is None):
@@ -129,11 +219,36 @@ class CornerRotationManager:
             timestamp(manual["selected_at"])
         return state
 
+    def _remember_catalog(self, state):
+        known = state.setdefault("known_corners", {})
+        if not isinstance(known, dict):
+            raise RotationError("invalid known corner ledger")
+        for corner in self.catalog:
+            current = {"id": corner.id, "adapter": corner.adapter, "game": corner.game}
+            previous = known.get(corner.id)
+            if (isinstance(previous, dict)
+                    and (previous.get("adapter"), previous.get("game"))
+                    != (corner.adapter, corner.game)):
+                retired_key = f"retired:{corner.id}:{previous.get('game', 'unknown')}"
+                known.setdefault(retired_key, previous)
+            known[corner.id] = current
+
+    def _observers(self, state):
+        observers = dict(self.adapters)
+        known = state.get("known_corners") or {}
+        current_ids = set(self.adapters)
+        for key, record in known.items():
+            if key in current_ids:
+                continue
+            observers[key] = RetiredCornerObserver(self.g, record)
+        return observers
+
     def _observe(self, state, now):
         """Import manual usage; unknown or orphaned execution blocks selection."""
         pending = state.get("pending")
         busy = False
-        for corner_id, adapter in self.adapters.items():
+        for corner_id, adapter in self._observers(state).items():
+            history_id = getattr(adapter, "corner_id", corner_id)
             released = getattr(adapter, "resources_released", None)
             if released is not None and not released():
                 busy = True
@@ -151,9 +266,9 @@ class CornerRotationManager:
                     stamp = max(stamps)
                     if stamp > now:
                         raise RotationError("adapter timestamp is in the future")
-                    previous = max((r["at"] for r in state["history"] if r["corner"] == corner_id), default=-1)
+                    previous = max((r["at"] for r in state["history"] if r["corner"] == history_id), default=-1)
                     if stamp > previous:
-                        state["history"].append(dict(corner=corner_id, at=stamp, source="execution"))
+                        state["history"].append(dict(corner=history_id, at=stamp, source="execution"))
         return busy
 
     def _eligible(self):
@@ -180,6 +295,7 @@ class CornerRotationManager:
                 return {"status": "waiting", "reason": "already-running"}
             now = timestamp(self.clock())
             state = self.load(now)
+            self._remember_catalog(state)
             if state["status"] == "recovery_required":
                 return {"status": "recovery_required", "reason": state.get("reason")}
             if now < state["last_seen_at"]:
@@ -289,13 +405,40 @@ class CornerRotationManager:
         return {"status": "waiting", "reason": reason}
 
 
-def stop_manual(g, manager, callback):
-    """Stops share the coordinator lock; the manager retains its restore receipt."""
+def stop_manual(g, manager, callback, *, busy_callback=None):
+    """Stop through the common lock, or the owner state if a run is active.
+
+    A long-running corner owns the scheduler lock while its adapter waits for
+    a boundary or drains content. Refusing an operator stop in that window
+    would strand the owner. The manager-specific state/coordinator path is the
+    fallback and still fails closed on an unverified runtime owner.
+    """
     rotation = CornerRotationManager(g)
     with rotation.locked() as acquired:
-        if not acquired:
-            raise RotationError("common corner coordinator is busy")
+        if acquired:
+            return callback()
+    state_path = getattr(manager, "state_path", None) or getattr(manager, "path", None)
+    if state_path is None:
+        return busy_callback() if busy_callback is not None else callback()
+    try:
+        current = json.loads(Path(state_path).read_text()) if Path(state_path).exists() else {}
+    except (OSError, ValueError):
+        current = {"status": "recovery_required"}
+    # An already-active owner can be stopped through its manager-specific
+    # coordinator path even while the common lock is held.  A starting owner
+    # must instead receive a durable marker: direct stop has no runtime to
+    # restore yet, and the marker is consumed once the start reaches active.
+    if busy_callback is not None and current.get("status") != "starting":
+        return busy_callback()
+    if current.get("status") not in {"starting", "active", "restoring"}:
         return callback()
+    request_path = _stop_request_path(g, state_path)
+    request_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    atomic_write_json(request_path, {
+        "state_file": Path(state_path).name,
+        "requested_at": time.time(),
+    })
+    return "queued"
 
 
 def main(argv=None):
@@ -326,6 +469,7 @@ def run_manual(g, manager, games):
             raise RotationError("common corner coordinator is busy")
         now = timestamp(rotation.clock())
         state = rotation.load(now)
+        rotation._remember_catalog(state)
         if state["status"] == "recovery_required" or state.get("pending"):
             raise RotationError("pending corner must finish or recover before manual start")
         if now < state["last_seen_at"]:

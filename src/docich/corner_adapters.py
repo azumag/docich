@@ -1,9 +1,11 @@
 """Corner execution adapters. No scheduling or random selection lives here."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import replace
 import fcntl
 import json
+import os
 from pathlib import Path
 
 from .retro_corner import RetroCornerManager, load_retro_corner_config
@@ -26,6 +28,11 @@ class GameCornerAdapter:
 
     def eligible(self):
         return self.corner.game in self.manager._playable_games()
+
+    @contextmanager
+    def runtime_environment(self):
+        """Yield without adding credentials for ordinary game adapters."""
+        yield
 
     def observations(self):
         paths = [self.state_path, self.state_path.with_name(self.state_path.stem + "_manual.json")]
@@ -75,6 +82,13 @@ class GameCornerAdapter:
 
 
 class MerikenCornerAdapter(GameCornerAdapter):
+    DEFAULT_ENV_FILE = Path("/home/ubuntu/soren/soren91-macos-agent.env")
+    ENV_KEYS = (
+        "SOREN91_MACOS_AGENT_BASE_URL",
+        "SOREN91_LOCAL_AGENT_TOKEN",
+        "SOREN91_OCI_TAILSCALE_IP",
+    )
+
     def __init__(self, g, corner):
         from .soren91_corner import Soren91CornerManager, GAME_NAME
         if corner.game != GAME_NAME:
@@ -88,17 +102,89 @@ class MerikenCornerAdapter(GameCornerAdapter):
         self.manager._validate_games()
         return True
 
+    @classmethod
+    def _read_env_file(cls, path):
+        values = {}
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            raise CornerExecutionError("Soren91接続情報ファイルを読めません") from exc
+        for line_number, line in enumerate(lines, 1):
+            raw = line.strip()
+            if not raw or raw.startswith("#"):
+                continue
+            if raw.startswith("export "):
+                raw = raw[7:].lstrip()
+            key, separator, value = raw.partition("=")
+            if not separator or key not in cls.ENV_KEYS:
+                continue
+            value = value.strip()
+            if value[:1] in {"'", '"'}:
+                if len(value) < 2 or value[-1] != value[0]:
+                    raise CornerExecutionError(
+                        f"Soren91接続情報ファイルの引用符が不正です (line {line_number})"
+                    )
+                value = value[1:-1]
+            if not value:
+                raise CornerExecutionError(
+                    f"Soren91接続情報ファイルの値が空です (line {line_number})"
+                )
+            values[key] = value
+        return values
+
+    @contextmanager
+    def runtime_environment(self):
+        """Load Meriken credentials only for this adapter's execution."""
+        path = Path(os.environ.get("DOCICH_SOREN91_ENV_FILE", str(self.DEFAULT_ENV_FILE)))
+        if not path.is_file():
+            yield
+            return
+        values = self._read_env_file(path)
+        missing = object()
+        previous = {key: os.environ.get(key, missing) for key in values}
+        os.environ.update(values)
+        try:
+            yield
+        finally:
+            for key, value in previous.items():
+                if value is missing:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
     def run(self, request):
         return self.manager.run_rotation(request["request_id"])
 
 
-class NethackCornerAdapter(MerikenCornerAdapter):
+class NethackCornerAdapter(GameCornerAdapter):
     def __init__(self, g, corner):
         from .nethack_corner import NethackCornerManager, GAME_NAME
+        from .nethack_corner import load_nethack_corner_config
+        from .retro_corner import load_retro_corner_config
         if corner.game != GAME_NAME:
             raise CornerExecutionError("NetHack adapter game mismatch")
         self.g, self.corner = g, corner
-        self.manager = NethackCornerManager(g)
+        fixed = load_nethack_corner_config(g)
+        rolling = load_retro_corner_config(g)
+        # The catalog owns whether this entry is enabled. Keep NetHack's
+        # save-boundary settings, but not its legacy fixed-hour schedule.
+        self.manager = NethackCornerManager(
+            g,
+            config=replace(
+                fixed,
+                enabled=True,
+                duration_minutes=rolling.duration_minutes,
+                timezone=rolling.timezone,
+            ),
+        )
+
+    def eligible(self):
+        from .config import load_game
+
+        self.manager._validate_games()
+        game = load_game(self.g, self.corner.game)
+        required = self.manager._required_executables(game)
+        return all(self.manager._executable_exists(path) for path in required)
 
 
 class PaperCornerAdapter(GameCornerAdapter):
@@ -128,6 +214,64 @@ class PaperCornerAdapter(GameCornerAdapter):
         return root / "locks/paper-improve.lock", root / "trading/paper_improve_status.json"
 
 
+class RetiredCornerObserver:
+    """Observe a removed catalog entry until its old work is terminal."""
+
+    STATE_FILES = {
+        "game": "retro_corner.json",
+        "paper": "paper_corner.json",
+        "meriken": "soren91_corner.json",
+        "nethack": "nethack_corner.json",
+    }
+
+    def __init__(self, g, record):
+        self.g = g
+        self.corner_id = record["id"]
+        self.game = record["game"]
+        self.adapter_name = record["adapter"]
+        self.state_path = Path(g.state_dir) / self.STATE_FILES[self.adapter_name]
+
+    def observations(self):
+        paths = [self.state_path, self.state_path.with_name(self.state_path.stem + "_manual.json")]
+        for path in paths:
+            if not path.exists():
+                continue
+            state = json.loads(path.read_text())
+            if not isinstance(state, dict):
+                raise CornerExecutionError("invalid retired corner state")
+            if self.adapter_name == "paper" or state.get("game", self.game) == self.game:
+                yield state
+
+    def improvement_paths(self):
+        root = Path(self.g.state_dir)
+        if self.adapter_name == "paper":
+            return root / "locks/paper-improve.lock", root / "trading/paper_improve_status.json"
+        return root / "locks" / f"corner-improve-{self.game}.lock", root / f"corner_improve_{self.game}.json"
+
+    def resources_released(self):
+        from .corner_rotation import timestamp
+
+        lock_path, status_path = self.improvement_paths()
+        if lock_path.exists():
+            with lock_path.open("a") as lock:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return False
+        for state in self.observations():
+            job = state.get("improve_job") or {}
+            if job.get("spawned") is not True:
+                continue
+            if not status_path.exists():
+                return False
+            status = json.loads(status_path.read_text())
+            if status.get("status") not in {"promoted", "kept", "improved", "dry-run", "skipped"}:
+                return False
+            if timestamp(status.get("started_at")) < timestamp(state.get("completed_at")):
+                return False
+        return True
+
+
 ADAPTERS = {
     "game": GameCornerAdapter,
     "meriken": MerikenCornerAdapter,
@@ -153,6 +297,7 @@ class CornerExecutionCoordinator:
     def execute(self, adapter, request):
         from .corner_boundary import program_slot, CornerWaitExpired
         from .game_switch import GameSwitchBusyError
+        from contextlib import nullcontext
         try:
             with adapter.manager.store.lock(exclusive=False):
                 canonical, _ = adapter.manager.store.canonical.load()
@@ -162,12 +307,15 @@ class CornerExecutionCoordinator:
         except GameSwitchBusyError:
             return "queued"
         try:
-            with program_slot(
-                self.g, adapter.state_path,
-                requested_at=request["selected_at"],
-                wait_deadline_ts=self.clock() + self.wait_seconds,
-                wait_boundary=True, sleep=self.sleep, now=self.clock,
-            ):
-                return adapter.run(request)
+            environment = getattr(adapter, "runtime_environment", None)
+            scope = environment() if callable(environment) else nullcontext()
+            with scope:
+                with program_slot(
+                    self.g, adapter.state_path,
+                    requested_at=request["selected_at"],
+                    wait_deadline_ts=self.clock() + self.wait_seconds,
+                    wait_boundary=True, sleep=self.sleep, now=self.clock,
+                ):
+                    return adapter.run(request)
         except CornerWaitExpired:
             return "queued"

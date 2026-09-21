@@ -1643,6 +1643,7 @@ def _collect_programs(state_dir, soren, now):
     state_dir = Path(state_dir)
     payload = {
         "state_dir_found": state_dir.is_dir(),
+        "corner_rotation": {"present": False, "readable": False},
         "game_switch": {"present": False, "readable": False},
         "retro_corner": {"present": False, "readable": False},
         "paper_corner": {"present": False, "readable": False},

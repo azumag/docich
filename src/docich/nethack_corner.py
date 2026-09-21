@@ -280,6 +280,9 @@ class NethackCornerManager(RetroCornerManager):
         last_text: str | None = None
         unchanged_since = self._local_now()
         while True:
+            stopped = self._rotation_stop_result()
+            if stopped is not None:
+                return stopped
             self._sleep(interval)
             with self._locked():
                 latest = self._read_state()

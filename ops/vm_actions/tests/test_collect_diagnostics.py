@@ -141,6 +141,10 @@ class CollectorContractTests(CollectorFixture):
         data = json.loads(proc.stdout)
         self.assertIn(data["status"], ("ok", "warn", "critical"))
         self.assertEqual(data["meta"]["soren_root_exists"], False)
+        self.assertEqual(
+            data["corners"]["corner_rotation"],
+            {"present": False, "readable": False},
+        )
 
     def test_stopped_required_worker_is_critical(self):
         proc = self.run_collector()

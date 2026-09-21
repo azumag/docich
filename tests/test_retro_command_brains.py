@@ -27,13 +27,13 @@ BRAIN_GAMES = ("ninvaders", "nsnake", *GAMES)
 def test_live_rolling_games():
     g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
     cfg = load_retro_corner_config(g)
-    assert cfg.games == ["ninvaders", "nsnake", *GAMES, "nethack", "hanjuku-hero"]
+    assert cfg.games == ["ninvaders", "nsnake", *GAMES, "hanjuku-hero"]
     assert cfg.daily_each_game and cfg.randomize_start  # mode="daily" へ戻すとき用に残す
     assert cfg.target_matches == 3
     # 24時間を登録ゲーム数で割った間隔。毎時の確率抽選ではない。
     assert cfg.mode == "rotation"
     assert cfg.rotation_period_hours == 24.0
-    assert cfg.rotation_period_hours * 3600 / len(cfg.games) == 24 * 3600 / 7
+    assert cfg.rotation_period_hours * 3600 / len(cfg.games) == 24 * 3600 / 6
     assert cfg.rotation_wait_minutes == 10
     for name in [*BRAIN_GAMES, "nethack"]:
         required = RetroCornerManager._required_executables(load_game(g, name))

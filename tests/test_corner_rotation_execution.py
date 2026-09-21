@@ -1,6 +1,7 @@
 """Common adapter lifecycle tests using local state and fake game processes."""
 import datetime as dt
 import json
+import os
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -72,6 +73,20 @@ class TestRotationGameExecution(RetroCornerTestBase):
             mgr.run_rotation("identity")
         assert coord.calls == [("start", "robots")]
 
+    def test_restoring_same_game_different_generation_is_not_stopped(self):
+        mgr, coord, _ = self.execution()
+        mgr._wait_and_finish = lambda state: mgr._state_result(state)
+        assert mgr.run_rotation("restore-identity").status == "active"
+        state = mgr._read_state()
+        state["status"] = "restoring"
+        mgr._write_state(state)
+        mgr.store.canonical.load = lambda: ({"phase": "ready", "active": {
+            "game": "robots", "runtime_id": "g2-another-owner"}}, False)
+
+        with pytest.raises(RuntimeError, match="generation changed"):
+            mgr._finish_locked(state, mgr._local_now())
+        assert coord.calls == [("start", "robots")]
+
 
 def test_improvement_terminal_evidence_is_required(tmp_path):
     corner = Corner("snake", "game", "nsnake")
@@ -98,6 +113,29 @@ def test_game_coordinator_unsafe_phase_never_calls_adapter(tmp_path):
     with pytest.raises(CornerExecutionError):
         coordinator.execute(adapter, {"selected_at": 100})
     adapter.run.assert_not_called()
+
+
+def test_meriken_env_file_is_scoped_to_adapter_execution(tmp_path, monkeypatch):
+    from docich.corner_adapters import MerikenCornerAdapter
+
+    env_file = tmp_path / "soren91.env"
+    env_file.write_text(
+        "SOREN91_MACOS_AGENT_BASE_URL='http://100.64.0.2:8787'\n"
+        "SOREN91_LOCAL_AGENT_TOKEN=secret-token\n"
+        "export SOREN91_OCI_TAILSCALE_IP=100.64.0.3\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DOCICH_SOREN91_ENV_FILE", str(env_file))
+    for key in MerikenCornerAdapter.ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+    adapter = MerikenCornerAdapter.__new__(MerikenCornerAdapter)
+    with adapter.runtime_environment():
+        assert os.environ["SOREN91_MACOS_AGENT_BASE_URL"] == "http://100.64.0.2:8787"
+        assert os.environ["SOREN91_LOCAL_AGENT_TOKEN"] == "secret-token"
+        assert os.environ["SOREN91_OCI_TAILSCALE_IP"] == "100.64.0.3"
+    for key in MerikenCornerAdapter.ENV_KEYS:
+        assert key not in os.environ
 
 
 def test_paper_rotation_replays_same_request_and_remains_non_live(tmp_path, monkeypatch):

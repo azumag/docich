@@ -768,7 +768,7 @@ class PaperCornerManager:
 
         Returns the terminal result string ('completed' or 'failed').
         """
-        if state.get('status') == 'active':
+        if state.get('status') in ('active', 'restoring'):
             from .corner_ownership import verify_runtime
             verify_runtime(self.store, state, PAPER_VIEW_NAME)
         previous = state.get('previous_game')
@@ -938,6 +938,12 @@ class PaperCornerManager:
         # loop ends when the narrator has nothing new to say (or a lasting
         # generation failure degrades the corner, recorded separately).
         while True:
+            from .corner_rotation import clear_rotation_stop_request, rotation_stop_requested
+            if rotation_stop_requested(self.g, self.path):
+                result = self._restore_locked(state)
+                if result == 'completed':
+                    clear_rotation_stop_request(self.g, self.path)
+                return result
             kind, payload = self._next_narration_item(state)
             if kind == 'item':
                 self.announce(state, payload['key'], payload['text'])

@@ -99,22 +99,23 @@ merge、deployは実施しない。worktreeに`handoff.md`は存在せず、こ�
 
 ### 2026-09-21 ローカル検証結果
 
-- 基点: `origin/main = 73efda448d7e6fd81a55c0cc66a00e6211ff5a08`（ローカル参照）。
+- 基点: `origin/main = efb353de7944c6060f995f991997ecb744a155cb`（ローカル参照）。
   専用branch: `codex/corner-rotation-unification`。共有checkoutは編集していない。
 - 最終focused/回帰: `python3 -m pytest -q -p no:cacheprovider` に
   `test_corner_rotation{,_execution}.py`、retro/PAPER/manual/restore/watchdog、
   Soren91、NetHack、corner_boundary/improve、game_switch/security、coordinator、
-  program_viewの計21ファイルを指定。`subprocess.run(timeout=60)`で上限を固定。
-  **452 passed / 84 subtests passed、9.32秒、終了コード0**。タイムアウトなし。
+  program_view、diagnostics、hanjuku registrationを指定。
+  **535 passed / 80 subtests passed、15.99秒、終了コード0**。タイムアウトなし。
 - 先行した広い関連回帰: 952 passed / 102 subtests passed、40.71秒。
   診断projectionを含む追加検証: 65 passed、6.65秒。
-- 全体pytestは`--maxfail=5`で終了コード1（134.82秒、785 passed、3 skipped、
+- Astra先行の全体pytestは`--maxfail=5`で終了コード1（134.82秒、785 passed、3 skipped、
   249 subtests passed）。失敗は今回未変更のLinux/実行環境依存領域:
   `test_moomoo_opend_service.py`の2件はmacOSの`stat`に`-c`がないため、
   `test_restart_radio_worker.py`の1件はLinux `/proc/<pid>/cmdline`前提、
   `test_captions.py`の2件はsandboxでUnix socket bindが`Operation not permitted`。
-  baseline全体の再実行はしていない。今回のcorner関連退行は最終452件では検出されていない。
-- 自己レビュー実施。独立した他エージェントによるレビュー、CI、実機/E2Eは未実施。
+  baseline全体の再実行はしていない。今回のcorner関連退行は最終535件では検出されていない。
+- 独立レビューで報告されたMeriken環境、restoring世代、停止要求、NetHack状態、catalog削除、
+  diagnostics固定キーの6点を実装・テストで対応。CI、実機/E2Eは未実施。
 
 ### 変更ファイル一覧
 

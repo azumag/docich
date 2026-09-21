@@ -248,7 +248,7 @@ class TestProductionProfile(unittest.TestCase):
             live_cfg.games,
             [
                 "ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console",
-                "nethack", "hanjuku-hero",
+                "hanjuku-hero",
             ],
         )
         self.assertTrue(live_cfg.daily_each_game)
