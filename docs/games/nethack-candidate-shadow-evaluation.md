@@ -12,7 +12,7 @@ candidateはそのrunを操作していないため、死亡・score・深度を
 - proposalがP3d evaluatorに何回rejectされたか
 - candidate dispatch error率
 - critical HPや状態異常時のproposal分布
-- production policyが停止していた局面でcandidateがnon-holdを提案した頻度
+- production policyが停止していた局面でcandidateがnon-restを提案した頻度
 - death signatureごとに、どんなproposalが観測されていたか
 
 ここから因果関係は断定しない。
@@ -106,7 +106,7 @@ run_idがないeventは`untracked`として別bucketに置く。
 - critical event count
 - critical reject/error count
 - critical tag counts
-- production Actionが空なのにcandidateがnon-holdを提案した件数/率
+- production Actionが空なのにcandidateがnon-restを提案した件数/率（report field名は後方互換で `nonhold` のまま）
 - unexpected would-execute Action event数
 - terminal evidence
 
@@ -121,7 +121,7 @@ P5f時点ではcandidateとproduction policyは異なるaction spaceを持つた
 ```text
 production current_actions == []
 かつ
-candidate proposal != hold
+candidate proposal != rest
 ```
 
 を保守的なdivergence proxyとして数える。
@@ -157,7 +157,7 @@ P5a death signatureがあるterminal runはsignature別にもまとめる。
   "runs": 3,
   "events": 15,
   "proposal_kind_counts": {
-    "hold": 9,
+    "rest": 9,
     "inspect": 4,
     "descend": 2
   },

@@ -67,7 +67,11 @@ class _RunBucket:
             if isinstance(kind, str) and kind:
                 proposal_kind = kind
                 self.proposal_kinds[kind] += 1
-                if kind == "hold":
+                # Keep the legacy report fields for schema compatibility, but
+                # classify the new explicit rest proposal with the old
+                # wait/no-op bucket.  ``hold`` is accepted only for historical
+                # shadow logs; it is no longer a proposal schema value.
+                if kind in {"hold", "rest"}:
                     self.hold += 1
                 else:
                     self.nonhold += 1
@@ -99,7 +103,7 @@ class _RunBucket:
             self.current_action_events += 1
         else:
             self.current_no_action_events += 1
-            if proposal_kind is not None and proposal_kind != "hold":
+            if proposal_kind is not None and proposal_kind not in {"hold", "rest"}:
                 self.nonhold_on_current_no_action += 1
 
         tags = event.get("critical_tags")

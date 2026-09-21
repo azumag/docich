@@ -45,10 +45,10 @@ model出力がschema-validでも、そのまま信用しない。`evaluate_propo
 
 例:
 
-- `prompt_decision` → hold / inspect / answer_prompt
-- survival/status/food emergency → hold / inspect / consume / equip / use
-- `stairs_decision` → hold / inspect / ascend / descend
-- contact / exploration blocked → hold / inspect
+- `prompt_decision` → inspect / answer_prompt（質問中に `rest` は許可しない）
+- survival/status/food emergency → rest / inspect / consume / equip / use
+- `stairs_decision` → rest / inspect / ascend / descend
+- contact / exploration blocked → rest / inspect
 
 元intentに無関係なproposal kindはrejectする。
 
@@ -82,9 +82,9 @@ request後にpromptが消えたり種類が変わった場合はrejectする。
 
 ## Execution gate
 
-P3dの `execution_plan()` は、approved proposalのうち **`hold` だけ**を実行可能扱いする。
+P3dの `execution_plan()` は、approved proposalのうち **`rest` だけ**を実行可能扱いする。
 
-`hold` 自体もaction 0件のno-op。
+`rest` はaction 1件の明示的な `.` キーであり、action 0件の判断保留ではない。
 
 以下はproposal evaluatorでapprovedになり得ても、executor未実装のため `allowed=false`:
 

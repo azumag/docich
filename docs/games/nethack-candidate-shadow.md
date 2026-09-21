@@ -195,7 +195,7 @@ P5fではrun単位のcandidate shadow JSONLとterminal retrospectiveを集計し
 - strategic局面数
 - candidate dispatch error率
 - proposal reject率
-- candidateがholdを選んだ割合
+- candidateがrest（`.`）を選んだ割合
 - critical HP時のproposal分布
 - repeated death signatureとの相関
 - baseline current decisionとのdivergence

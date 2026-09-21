@@ -18,8 +18,8 @@ def main() -> int:
         return 2
     response = {
         "schema_version": 1,
-        "kind": "hold",
-        "rationale": f"canary smoke candidate holds on {intent}",
+        "kind": "rest",
+        "rationale": f"canary smoke candidate waits with '.' on {intent}",
         "inventory_letter": None,
         "prompt_answer": None,
         "narration": "",

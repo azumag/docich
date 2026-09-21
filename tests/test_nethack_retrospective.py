@@ -141,7 +141,7 @@ class TestRetrospectiveEngine(unittest.TestCase):
                 "status": "proposed",
                 "intent": "survival_emergency",
                 "reason": "visible HP is critical",
-                "proposal": {"kind": "hold"},
+                "proposal": {"kind": "rest"},
                 "evaluation": {"status": "approved", "reason": "public-state checks passed"},
                 "narrated": True,
             },

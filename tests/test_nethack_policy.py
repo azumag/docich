@@ -51,7 +51,7 @@ class TestNethackLayeredPolicy(unittest.TestCase):
         self.assertTrue(decision.requires_llm)
         self.assertEqual(decision.actions, ())
 
-    def test_severe_status_never_spends_turn_on_generic_rest(self) -> None:
+    def test_severe_status_gets_explicit_rest_fallback(self) -> None:
         self.assertEqual(REST_EMERGENCY_INTENTS, frozenset({"survival_emergency"}))
         for condition in ("Sick", "FoodPois", "Ill", "Slime", "Strngl"):
             with self.subTest(condition=condition):
@@ -61,7 +61,10 @@ class TestNethackLayeredPolicy(unittest.TestCase):
                 self.assertEqual(decision.intent, "status_emergency")
                 self.assertTrue(decision.requires_llm)
                 self.assertEqual(decision.actions, ())
-                self.assertIsNone(rest_action_for_hold(decision, observation))
+                action = rest_action_for_hold(decision, observation)
+                self.assertIsNotNone(action)
+                assert action is not None
+                self.assertEqual((action.type, action.text), ("text", "."))
 
     def test_prompt_escalates_without_guessing_answer(self) -> None:
         decision = self.decide(frame("Really quit? [yn]"))
@@ -169,7 +172,7 @@ class TestNethackPolicyBrain(unittest.TestCase):
         self.assertIn(actions2[0].text, {"h", "j", "k", "l"})
         self.assertEqual(brain.last_decision.intent, "explore_step")
 
-    def test_brain_holds_severe_status_instead_of_resting(self) -> None:
+    def test_brain_sends_rest_for_severe_status_instead_of_no_input(self) -> None:
         brain = build_brain(SimpleNamespace(), self._game())
         obs = Observation(
             game="nethack",
@@ -179,7 +182,7 @@ class TestNethackPolicyBrain(unittest.TestCase):
             kind="text",
             text=frame(condition="Sick"),
         )
-        self.assertEqual(brain.decide(obs), [])
+        self.assertEqual([action.text for action in brain.decide(obs)], ["."])
         self.assertEqual(brain.last_decision.intent, "status_emergency")
 
     def test_brain_is_restricted_to_cli_nethack(self) -> None:

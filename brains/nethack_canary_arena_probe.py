@@ -33,7 +33,7 @@ def main() -> int:
 
     response = {
         "schema_version": 1,
-        "kind": "hold",
+        "kind": "rest",
         "rationale": f"arena_readable={str(readable).lower()};arena_writable={str(writable).lower()}",
         "inventory_letter": None,
         "prompt_answer": None,

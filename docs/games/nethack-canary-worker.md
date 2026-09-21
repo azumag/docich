@@ -193,7 +193,8 @@ visible TTY
  -> canary keypress
 ```
 
-production P3d `execution_plan()` は変更しない。productionでは引き続きhold以外を実行しない。
+production P3d `execution_plan()` は変更しない。productionでは引き続き、任意操作ではなく
+明示的な `rest`（`.` 1キー）だけを実行する。
 
 ## Canary-only executor
 
@@ -201,7 +202,7 @@ production P3d `execution_plan()` は変更しない。productionでは引き続
 
 | proposal | visible condition | canary keys |
 |---|---|---|
-| hold | approved | none |
+| rest | approved, fresh complete gameplay frame without visible creature contact | `.` |
 | inspect | approved | none |
 | answer_prompt | fresh prompt compatible | answer |
 | consume | category=food | `e` + letter |

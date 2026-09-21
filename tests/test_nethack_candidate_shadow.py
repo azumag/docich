@@ -253,7 +253,7 @@ class TestCandidateShadowController(unittest.TestCase):
         with self.assertRaises(NethackCandidateShadowError):
             self._controller(
                 FakeStrategist(
-                    StrategicProposal(schema_version=1, kind="hold", rationale="safe")
+                    StrategicProposal(schema_version=1, kind="rest", rationale="wait one turn with dot")
                 )
             )
 
@@ -270,7 +270,7 @@ class TestCandidateShadowController(unittest.TestCase):
         with self.assertRaises(NethackCandidateShadowError):
             self._controller(
                 FakeStrategist(
-                    StrategicProposal(schema_version=1, kind="hold", rationale="safe")
+                    StrategicProposal(schema_version=1, kind="rest", rationale="wait one turn with dot")
                 )
             )
 
@@ -295,7 +295,7 @@ class TestCandidateShadowController(unittest.TestCase):
     def test_log_is_run_scoped_public_and_contains_no_command_argv(self):
         run_id = self._install_run_context()
         strategist = FakeStrategist(
-            StrategicProposal(schema_version=1, kind="hold", rationale="stay safe")
+            StrategicProposal(schema_version=1, kind="rest", rationale="wait one turn with dot")
         )
         ctl = self._controller(strategist)
         outcome = ctl.consider(
@@ -322,7 +322,7 @@ class TestCandidateShadowController(unittest.TestCase):
         self.assertFalse(event["candidate_action_sent"])
         self.assertEqual(event["execution"], "candidate_shadow_only")
         self.assertEqual(event["policy_effect"], "none")
-        self.assertEqual(event["candidate_proposal"]["kind"], "hold")
+        self.assertEqual(event["candidate_proposal"]["kind"], "rest")
         self.assertEqual(event["candidate_evaluation"]["status"], "approved")
         self.assertNotIn("command", event)
         self.assertEqual(event["command_sha256"], self.manifest.command_hash)
@@ -339,7 +339,7 @@ class TestCandidateShadowController(unittest.TestCase):
 
     def test_only_strategic_decisions_are_called_and_budget_cooldown_are_bounded(self):
         strategist = FakeStrategist(
-            StrategicProposal(schema_version=1, kind="hold", rationale="safe")
+            StrategicProposal(schema_version=1, kind="rest", rationale="wait one turn with dot")
         )
         ctl = self._controller(strategist, cooldown=10.0, max_calls=2)
         local = PolicyDecision(
@@ -370,7 +370,7 @@ class TestCandidateShadowController(unittest.TestCase):
 
     def test_disabled_controller_never_requires_manifest_or_calls_candidate(self):
         strategist = FakeStrategist(
-            StrategicProposal(schema_version=1, kind="hold", rationale="unused")
+            StrategicProposal(schema_version=1, kind="rest", rationale="wait one turn with dot")
         )
         ctl = NethackCandidateShadowController(
             self.g,

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "candidate_id": "canary-hold",
+  "candidate_id": "canary-rest",
   "version": "v1",
   "command": ["python3", "brains/nethack_canary_hold.py"],
   "timeout_s": 2.0,

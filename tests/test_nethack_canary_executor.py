@@ -53,12 +53,15 @@ def values(plan):
     return [(key.kind, key.value) for key in plan.keys]
 
 
-def test_hold_and_inspect_are_noop_only():
+def test_rest_is_dot_and_inspect_is_the_only_noop():
     obs = observation()
-    for kind in ("hold", "inspect"):
-        plan = canary_execution_plan(request(), approved(kind), current_observation=obs)
-        assert plan.allowed is True
-        assert plan.keys == ()
+    rest = canary_execution_plan(request(), approved("rest"), current_observation=obs)
+    assert rest.allowed is True
+    assert values(rest) == [("literal", ".")]
+
+    inspect = canary_execution_plan(request(), approved("inspect"), current_observation=obs)
+    assert inspect.allowed is True
+    assert inspect.keys == ()
 
 
 def test_visible_food_and_potion_can_be_consumed():
@@ -154,7 +157,7 @@ def test_prompt_answer_uses_fresh_prompt_shape():
 
 
 def test_rejected_proposal_never_reaches_canary_keys():
-    proposal = StrategicProposal(schema_version=1, kind="hold", rationale="fixture")
+    proposal = StrategicProposal(schema_version=1, kind="rest", rationale="fixture")
     evaluation = ProposalEvaluation(status="rejected", reason="fresh state changed", proposal=proposal)
     plan = canary_execution_plan(request(), evaluation, current_observation=observation())
     assert plan.allowed is False

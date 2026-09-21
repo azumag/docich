@@ -15,7 +15,7 @@ class FakeStrategist:
             status="proposed",
             proposal=StrategicProposal(
                 schema_version=1,
-                kind="hold",
+                kind="rest",
                 rationale="arena blind",
             ),
         )
@@ -43,7 +43,7 @@ def test_valid_public_request_is_the_only_candidate_input():
     strategist = FakeStrategist()
     result = dispatch_public_request(strategist, public_request())
     assert result["status"] == "proposed"
-    assert result["proposal"]["kind"] == "hold"
+    assert result["proposal"]["kind"] == "rest"
     assert len(strategist.requests) == 1
     assert strategist.requests[0].observation["vitals"]["hp"] == 2
 

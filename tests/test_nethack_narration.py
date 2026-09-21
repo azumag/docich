@@ -147,9 +147,9 @@ def audio(monkeypatch):
 
 
 @pytest.mark.parametrize("intent,expected", [
-    ("exploration_blocked", "安全に進める道が見えないので、ターンを進めて様子を見ます。"),
-    ("hold_low_hp", "体力が半分以下なので、無理に進まず状況を確認します。"),
-    ("assess_contact", "隣に生き物が見えますが敵味方が不明なので、入力せず判断を保留します。"),
+    ("exploration_blocked", "安全に進める道が見えないので、. で1ターン進めて様子を見ます。"),
+    ("hold_low_hp", "体力が半分以下です。安全な画面では . で1ターン待機します。"),
+    ("assess_contact", "隣に生き物が見えるため、安全な退避または通常の接触を選びます。"),
     ("explore_step", "未探索部分に近い安全な地形を選び、一歩ずつ探索します。"),
 ])
 def test_narration_text_and_api(audio, intent, expected):
@@ -345,13 +345,14 @@ def test_brain_uses_normal_bump_only_after_no_safe_step_exists():
     assert brain.last_decision.actions == ()
 
 
-def test_brain_does_not_rest_when_it_has_a_real_step_or_needs_a_plan():
+def test_brain_prefers_real_step_and_uses_explicit_wait_without_one():
     brain = build_brain(SimpleNamespace(), game())
     step = brain.decide(observation("msg\n###@.\n     \n" + _status()))
     assert [a.text for a in step] in (["h"], ["j"], ["k"], ["l"])
     assert brain.last_decision.intent == "explore_step"
-    # Hunger is the one emergency resting makes worse, so it still holds.
-    assert brain.decide(observation("msg\n###@.\n     \n" + _status(extra="Weak"))) == []
+    # Even hunger/status emergencies must consume a turn explicitly when no
+    # reviewed movement is available.
+    assert [a.text for a in brain.decide(observation("msg\n###@.\n     \n" + _status(extra="Weak")))] == ["."]
     assert brain.last_decision.intent == "food_emergency"
 
 
