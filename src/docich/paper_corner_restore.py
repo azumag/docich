@@ -20,6 +20,7 @@ from .adapters.program import PAPER_VIEW_NAME
 from .config import ConfigError, load_global
 from .paper_corner import PaperCornerError
 from .paper_corner_fast import FastPaperCornerManager
+from .paper_corner_manual import MANUAL_STATE_FILE, ManualPaperCornerManager
 
 SCHEDULED_SERVICE = "docich-paper-corner.service"
 STOP_TIMEOUT_S = 15
@@ -55,6 +56,28 @@ def _today(manager: FastPaperCornerManager) -> str:
     return dt.datetime.fromtimestamp(manager.clock(), manager.tz).date().isoformat()
 
 
+def _today_corner_state(manager: FastPaperCornerManager) -> dict | None:
+    """Today's PAPER corner state, scheduled first then the manual run.
+
+    Scheduled failures live in ``paper_corner.json``; an operator/manual run
+    keeps its own ``paper_corner_manual.json``. Both can strand the canonical
+    game-switch the same way, so the bounded recovery must consider either.
+    """
+    today = _today(manager)
+    scheduled = manager._read_state()
+    if isinstance(scheduled, dict) and scheduled.get("date") == today:
+        return scheduled
+    try:
+        manual = json.loads(
+            (Path(manager.g.state_dir) / MANUAL_STATE_FILE).read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError, TypeError):
+        return None
+    if isinstance(manual, dict) and manual.get("date") == today:
+        return manual
+    return None
+
+
 def _recover_failed_paper_view(manager: FastPaperCornerManager):
     """Reconcile a failed switch before asking the corner manager to restore.
 
@@ -66,11 +89,8 @@ def _recover_failed_paper_view(manager: FastPaperCornerManager):
     eligible; all other states remain fail-closed for the existing recovery
     logic.
     """
-    state = manager._read_state()
-    if not isinstance(state, dict):
-        return None
-    state_date = state.get("date")
-    if not isinstance(state_date, str) or state_date != _today(manager):
+    state = _today_corner_state(manager)
+    if state is None:
         return None
     if state.get("status") not in {"starting", "active", "restoring", "failed", "completed"}:
         return None
@@ -122,14 +142,21 @@ def restore(config_path: Path, *, run=subprocess.run, sleep=time.sleep) -> dict[
         # actually handed the display back. Reuse only today's durable state;
         # never guess a previous game from an older run.
         state = manager._read_state()
-        if state.get("date") != _today(manager):
-            raise PaperCornerError("stuck PAPER view has no current-day restore state")
-        if state.get("previous_game") == PAPER_VIEW_NAME:
-            raise PaperCornerError("stuck PAPER view restore target is ambiguous")
-        state["status"] = "restoring"
-        manager.save(state)
-        result = manager.stop()
-        current = manager._active_game()
+        if not isinstance(state, dict) or state.get("date") != _today(manager):
+            # The stranded view is an operator/manual run with its own state.
+            # Its recorded previous game is the only safe restore target.
+            manual_state = _today_corner_state(manager)
+            if manual_state is None or manual_state.get("previous_game") == PAPER_VIEW_NAME:
+                raise PaperCornerError("stuck PAPER view has no current-day restore state")
+            result = ManualPaperCornerManager(g).stop()
+            current = manager._active_game()
+        else:
+            if state.get("previous_game") == PAPER_VIEW_NAME:
+                raise PaperCornerError("stuck PAPER view restore target is ambiguous")
+            state["status"] = "restoring"
+            manager.save(state)
+            result = manager.stop()
+            current = manager._active_game()
 
     if result == "already-running" or current == PAPER_VIEW_NAME:
         raise PaperCornerError("scheduled PAPER view is still active after restore")

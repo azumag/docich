@@ -1,4 +1,5 @@
 import datetime as dt
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,7 +31,7 @@ class _Coordinator:
 
 
 class _Manager:
-    def __init__(self, *, status="failed", result=None, canonical=None):
+    def __init__(self, *, status="failed", result=None, canonical=None, state_dir=None):
         self.clock = lambda: dt.datetime(2026, 9, 19, 23, tzinfo=ZoneInfo("Asia/Tokyo")).timestamp()
         self.tz = ZoneInfo("Asia/Tokyo")
         self.state = {
@@ -38,6 +39,7 @@ class _Manager:
             "date": "2026-09-19",
             "previous_game": "sorengame",
         }
+        self.g = SimpleNamespace(state_dir=state_dir or Path("/nonexistent-paper-state"))
         self.coordinator = _Coordinator(result)
         self.store = SimpleNamespace(
             canonical=SimpleNamespace(load=lambda: (canonical or {
@@ -112,3 +114,54 @@ def test_restore_runs_canonical_recovery_before_manager_stop(monkeypatch, tmp_pa
 
     assert result == {"status": "restored", "result": "completed"}
     assert events == ["recover", "stop"]
+
+
+def test_failed_manual_corner_state_is_recovered_before_restore(tmp_path, monkeypatch):
+    # The scheduled state is stale (yesterday); today's operator/manual run is
+    # the stranded one. Its previous game is the only safe restore target.
+    manager = _Manager(state_dir=tmp_path)
+    manager.state["date"] = "2026-09-18"
+    (tmp_path / paper_corner_restore.MANUAL_STATE_FILE).write_text(
+        json.dumps({"status": "failed", "date": "2026-09-19", "previous_game": "sorengame"}),
+        encoding="utf-8",
+    )
+
+    result = paper_corner_restore._recover_failed_paper_view(manager)
+
+    assert result.status == "rolled_back"
+    assert manager.coordinator.calls == [paper_corner_restore.RECOVERY_TIMEOUT_S]
+
+
+def test_restore_falls_back_to_manual_state_when_scheduled_is_stale(tmp_path, monkeypatch):
+    g = SimpleNamespace(state_dir=tmp_path)
+    manager = _Manager(state_dir=tmp_path)
+    manager.state["date"] = "2026-09-18"
+    (tmp_path / paper_corner_restore.MANUAL_STATE_FILE).write_text(
+        json.dumps({"status": "failed", "date": "2026-09-19", "previous_game": "sorengame"}),
+        encoding="utf-8",
+    )
+    manager.stop = lambda: "not-active"
+
+    events = []
+
+    def recover(*, timeout_s):
+        events.append("recover")
+        manager.active = "paper-view"
+        return _Result()
+
+    manager.coordinator.recover = recover
+    manager._active_game = lambda: manager.active
+
+    manual = SimpleNamespace(
+        stop=lambda: events.append("manual-stop") or setattr(manager, "active", "sorengame") or "completed"
+    )
+
+    monkeypatch.setattr(paper_corner_restore, "load_global", lambda *_args: g)
+    monkeypatch.setattr(paper_corner_restore, "_stop_scheduled_service", lambda **_kwargs: None)
+    monkeypatch.setattr(paper_corner_restore, "FastPaperCornerManager", lambda _g: manager)
+    monkeypatch.setattr(paper_corner_restore, "ManualPaperCornerManager", lambda _g: manual)
+
+    result = paper_corner_restore.restore(tmp_path / "config.toml")
+
+    assert result == {"status": "restored", "result": "completed"}
+    assert events == ["recover", "manual-stop"]
