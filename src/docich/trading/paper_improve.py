@@ -11,15 +11,18 @@ from contextlib import contextmanager
 from decimal import Decimal, InvalidOperation
 import fcntl
 import json
+import math
 import os
 from pathlib import Path
 import signal
 import tempfile
 import time
-from typing import Mapping
+from statistics import fmean, pstdev
+from typing import Mapping, Sequence
 
 from .ai_text import AiTextError, extract_json_object, generate_text
 from .corner_script import build_facts
+from .dashboard import load_snapshot
 from .models import TradingValidationError
 from .strategy_lab import (
     StrategyExperiment,
@@ -34,11 +37,14 @@ from .strategy_lab import (
 from .strategy_metrics import evaluate_strategy_experiment
 from .strategy_store import (
     POLICY_KEYS,
+    StrategyStoreError,
+    adopt_strategy_policy,
+    list_policy_revisions,
     load_strategy_policy,
     policy_to_payload,
-    save_strategy_policy,
+    rollback_strategy_policy,
 )
-from .strategies import StrategyPolicy
+from .strategies import StrategyPolicy, _adaptive_momentum_threshold_bps, check_policy_bounds
 
 
 IMPROVE_LABEL = "RADIO:paper-improve"
@@ -50,7 +56,142 @@ EARLY_STOP_CLOSED_SELLS = 8
 EARLY_STOP_PROFIT_FACTOR = Decimal("0.75")
 _ALLOWED_HINT_KINDS = {"parameter", "feature", "risk", "data"}
 _ALLOWED_CONFIDENCE = {"low", "medium", "high"}
-_TERMINAL_STATUSES = frozenset({"improved", "failed", "skipped", "dry-run"})
+_TERMINAL_STATUSES = frozenset({"improved", "failed", "skipped", "dry-run", "rejected", "rolled_back"})
+
+
+def load_cache_closes(trading_dir) -> dict[str, list[float]]:
+    """dashboard の cache closes を network なしで読む (docich#267 shadow 評価用)。"""
+    try:
+        _, closes = load_snapshot(trading_dir)
+    except Exception:
+        return {}
+    clean: dict[str, list[float]] = {}
+    if not isinstance(closes, dict):
+        return {}
+    for symbol, values in closes.items():
+        if not isinstance(values, list):
+            continue
+        numbers = [
+            float(value)
+            for value in values
+            if isinstance(value, bool) is False
+            and isinstance(value, (int, float))
+            and math.isfinite(float(value))
+            and float(value) > 0
+        ]
+        if numbers:
+            clean[str(symbol)] = numbers
+    return clean
+
+
+def shadow_signal_counts(
+    closes_map: Mapping[str, Sequence[float]], policy: StrategyPolicy
+) -> dict[str, int]:
+    """同一 snapshot 上の deterministic な発火数え上げ (docich#267)。
+
+    scan_opportunities と同じ momentum / mean-reversion 発火式だけを使い、
+    Opportunity 組立・reason context・experiment 分岐は含まない。legacy
+    policy 同士の比較専用であり、 network や現在時刻に依存しない。
+    """
+    momentum = 0
+    mean_reversion = 0
+    evaluated = 0
+    for symbol in sorted(closes_map):
+        raw = closes_map[symbol]
+        closes = [float(value) for value in raw if math.isfinite(float(value)) and float(value) > 0]
+        if not closes:
+            continue
+        evaluated += 1
+        lookback = int(policy.momentum_lookback)
+        if len(closes) >= lookback + 1:
+            start = closes[-(lookback + 1)]
+            last = closes[-1]
+            if start > 0:
+                bps = (last / start - 1.0) * 10000.0
+                try:
+                    gate = float(
+                        _adaptive_momentum_threshold_bps(
+                            [Decimal(str(value)) for value in closes], policy
+                        )
+                    )
+                except Exception:
+                    gate = math.inf
+                if math.isfinite(gate) and bps >= gate:
+                    momentum += 1
+        mr_lookback = int(policy.mean_reversion_lookback)
+        if len(closes) >= mr_lookback:
+            window = closes[-mr_lookback:]
+            mean = fmean(window)
+            try:
+                deviation = pstdev(window)
+            except Exception:
+                deviation = 0.0
+            if deviation > 0:
+                zscore = (window[-1] - mean) / deviation
+                if zscore <= float(policy.mean_reversion_z):
+                    mean_reversion += 1
+    return {
+        "symbols": evaluated,
+        "momentum": momentum,
+        "mean_reversion": mean_reversion,
+        "total": momentum + mean_reversion,
+    }
+
+
+def shadow_compare(
+    closes_map: Mapping[str, Sequence[float]],
+    current: StrategyPolicy,
+    candidate: StrategyPolicy,
+) -> dict[str, object]:
+    """現行と候補を同一 snapshot で比べる。戻り値は verdict 付き dict。
+
+    - `accept`: 候補が現行を明確に悪化させない (同等以上、または比較不能)。
+    - `dead`: 候補が無発火かつ現行が発火中 (シグナル死。即 reject)。
+    - `no-data`: snapshot が空で比較不能 (bounds のみで判定へ)。
+    """
+    if not closes_map:
+        return {"verdict": "no-data", "current": {}, "candidate": {}}
+    current_counts = shadow_signal_counts(closes_map, current)
+    candidate_counts = shadow_signal_counts(closes_map, candidate)
+    if candidate_counts["total"] == 0 and current_counts["total"] > 0:
+        verdict = "dead"
+    else:
+        verdict = "accept"
+    return {"verdict": verdict, "current": current_counts, "candidate": candidate_counts}
+
+
+def _maybe_auto_rollback(trading_dir, current: StrategyPolicy) -> tuple[StrategyPolicy, str] | None:
+    """現行が cache 上で信号死かつ直前 revision が発火可能なら復帰する (docich#267)。
+
+    evidence がない (cache 空)・revision がない・直前も死んでいる場合は
+    何もしない。復帰は保存済みの有効 revision への deterministic な復元で、
+    コーナーを失敗させない。
+    """
+    closes = load_cache_closes(trading_dir)
+    if not closes:
+        return None
+    if shadow_signal_counts(closes, current)["total"] > 0:
+        return None
+    try:
+        revisions = [
+            revision
+            for revision in list_policy_revisions(trading_dir)
+            if revision["policy"] != current
+        ]
+    except Exception:
+        return None
+    if not revisions:
+        return None
+    latest = revisions[-1]["policy"]
+    if shadow_signal_counts(closes, latest)["total"] == 0:
+        return None
+    try:
+        restored = rollback_strategy_policy(trading_dir)
+    except StrategyStoreError:
+        return None
+    if restored != latest:
+        return None
+    return restored, "signal-dead-rollback"
 
 
 class PaperImproveError(RuntimeError):
@@ -75,6 +216,8 @@ def _write_improve_status(
     updated_at: float,
     detail: str = "",
     changed: bool | None = None,
+    decision: str | None = None,
+    reason_code: str | None = None,
 ) -> Path:
     target = Path(trading_dir) / STATUS_FILENAME
     target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -94,6 +237,10 @@ def _write_improve_status(
     }
     if changed is not None:
         payload["changed"] = bool(changed)
+    if decision is not None:
+        payload["decision"] = str(decision)[:32]
+    if reason_code is not None:
+        payload["reason_code"] = str(reason_code)[:64]
     if status in _TERMINAL_STATUSES:
         payload["completed_at"] = float(updated_at)
     fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
@@ -424,12 +571,14 @@ def _run_paper_improve(
     moment = time.time() if now is None else float(now)
     started_at = moment
 
-    def publish(status: str, phase: str, progress: int, detail: str = "", changed=None) -> None:
+    def publish(status: str, phase: str, progress: int, detail: str = "", changed=None,
+                decision=None, reason_code=None) -> None:
         try:
             stamp = time.time() if now is None else float(now)
             _write_improve_status(
                 target, status=status, phase=phase, progress=progress,
                 started_at=started_at, updated_at=stamp, detail=detail, changed=changed,
+                decision=decision, reason_code=reason_code,
             )
         except Exception:
             pass
@@ -461,6 +610,22 @@ def _run_paper_improve(
             "prompt_chars": len(prompt),
             "policy": policy_to_payload(current),
             "experiment": None if active_experiment is None else experiment_to_payload(active_experiment),
+        }
+
+    publish("running", "rollback-check", 20, "現行policyの退行を検査中")
+    auto_rollback = _maybe_auto_rollback(target, current)
+    if auto_rollback is not None:
+        restored, rollback_reason = auto_rollback
+        detail = f"退行を検知し直前policyへ復帰: {rollback_reason}"
+        publish("rolled_back", "done", 100, detail, changed=True,
+                decision="rolled_back", reason_code=rollback_reason)
+        return {
+            "status": "rolled_back",
+            "kind": "legacy-policy",
+            "changed": True,
+            "decision": "rolled_back",
+            "reason_code": rollback_reason,
+            "policy": policy_to_payload(restored),
         }
 
     cleaned_agents = (agents or "").strip()
@@ -529,14 +694,58 @@ def _run_paper_improve(
                 }
         else:
             assert legacy_policy is not None
-            save_strategy_policy(target, legacy_policy)
-            changed = legacy_policy != current
-            detail = "従来パラメータを更新" if changed else "候補は現行パラメータと同一"
+            bounds_ok, bound_reason = check_policy_bounds(current, legacy_policy)
+            if not bounds_ok:
+                detail = f"候補を安全弁で不採用: {bound_reason}"
+                publish("rejected", "done", 100, detail, changed=False,
+                        decision="rejected", reason_code=bound_reason)
+                return {
+                    "status": "rejected",
+                    "kind": "legacy-policy",
+                    "changed": False,
+                    "decision": "rejected",
+                    "reason_code": bound_reason,
+                    "policy": policy_to_payload(legacy_policy),
+                }
+            if bound_reason == "no-change":
+                detail = "候補は現行パラメータと同一"
+                publish("improved", "done", 100, detail, changed=False,
+                        decision="unchanged", reason_code="no-change")
+                return {
+                    "status": "improved",
+                    "kind": "legacy-policy",
+                    "policy": policy_to_payload(legacy_policy),
+                    "changed": False,
+                    "decision": "unchanged",
+                    "reason_code": "no-change",
+                }
+            comparison = shadow_compare(load_cache_closes(target), current, legacy_policy)
+            if comparison["verdict"] == "dead":
+                detail = "候補をshadow評価で不採用: signal-dead"
+                publish("rejected", "done", 100, detail, changed=False,
+                        decision="rejected", reason_code="signal-dead")
+                return {
+                    "status": "rejected",
+                    "kind": "legacy-policy",
+                    "changed": False,
+                    "decision": "rejected",
+                    "reason_code": "signal-dead",
+                    "policy": policy_to_payload(legacy_policy),
+                    "shadow": comparison,
+                }
+            adopt_strategy_policy(target, legacy_policy)
+            changed = True
+            detail = "従来パラメータを更新"
+            publish("improved", "done", 100, detail, changed=changed,
+                    decision="accepted", reason_code="ok")
             result = {
                 "status": "improved",
                 "kind": "legacy-policy",
                 "policy": policy_to_payload(legacy_policy),
                 "changed": changed,
+                "decision": "accepted",
+                "reason_code": "ok",
+                "shadow": comparison,
             }
     except Exception as exc:
         reason = f"save:{_safe_reason(exc)}"

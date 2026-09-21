@@ -19,6 +19,8 @@ from .strategies import StrategyPolicy
 
 
 POLICY_FILENAME = "strategy_policy.json"
+POLICY_REVISIONS_DIRNAME = "strategy_policy.revisions"
+POLICY_MAX_REVISIONS = 10
 POLICY_KEYS = (
     "momentum_lookback",
     "momentum_threshold_bps",
@@ -157,3 +159,129 @@ def save_strategy_policy(trading_dir, policy: StrategyPolicy) -> Path:
         tmp_path.unlink(missing_ok=True)
         raise
     return target
+
+
+def _write_revision_document(path: Path, payload: Mapping[str, object]) -> None:
+    """Write one revision file atomically (0600, fsync)."""
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        os.chmod(path.parent, 0o700)
+    except OSError:
+        pass
+    fd, tmp_name = tempfile.mkstemp(prefix=".revision.", dir=path.parent)
+    tmp_path = Path(tmp_name)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def _revision_files(trading_dir) -> list[Path]:
+    directory = Path(trading_dir) / POLICY_REVISIONS_DIRNAME
+    try:
+        entries = sorted(directory.iterdir(), key=lambda item: item.name)
+    except OSError:
+        return []
+    return [item for item in entries if item.is_file() and item.suffix == ".json"]
+
+
+def archive_strategy_policy(trading_dir, policy: StrategyPolicy, *, at: float | None = None) -> Path:
+    """直前採用版を revision として保存する (docich#267)。保存は 0600・atomic。
+
+    同一内容の連続 archive は重複保存しない。最新 POLICY_MAX_REVISIONS 件を
+    保持し、古いものから prune する。
+    """
+    import time
+
+    stamp = time.time() if at is None else float(at)
+    directory = Path(trading_dir) / POLICY_REVISIONS_DIRNAME
+    existing = _revision_files(trading_dir)
+    if existing:
+        try:
+            latest = json.loads(existing[-1].read_text(encoding="utf-8"))
+            if isinstance(latest, dict) and latest.get("policy") == policy_to_payload(policy):
+                return existing[-1]
+        except (OSError, ValueError):
+            pass
+    # 同一ミリ秒の連続 archive でも衝突しないようナノ秒＋連番で一意化する。
+    sequence = 0
+    while True:
+        name = f"{stamp:.3f}_{sequence:04d}.json"
+        path = directory / name
+        if not path.exists():
+            break
+        sequence += 1
+    _write_revision_document(path, {"adopted_at": stamp, "policy": policy_to_payload(policy)})
+    for stale in _revision_files(trading_dir)[: -POLICY_MAX_REVISIONS]:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+    return path
+
+
+def list_policy_revisions(trading_dir) -> list[dict[str, object]]:
+    """保存済み revision を古い順に返す。壊れたファイルは読み飛ばす。"""
+    revisions: list[dict[str, object]] = []
+    for path in _revision_files(trading_dir):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict) or not isinstance(data.get("policy"), dict):
+            continue
+        try:
+            policy = policy_from_mapping(data["policy"])
+        except StrategyStoreError:
+            continue
+        revisions.append({"path": str(path), "adopted_at": data.get("adopted_at"), "policy": policy})
+    return revisions
+
+
+def rollback_strategy_policy(trading_dir) -> StrategyPolicy:
+    """直前の有効 revision へ戻す (docich#267)。現行と同一内容の revision は
+    飛ばし、異なる最新のものを復元・保存する。候補がなければ StrategyStoreError。
+    """
+    from .strategies import StrategyPolicy as _Policy
+
+    current = load_strategy_policy(trading_dir)
+    revisions = list_policy_revisions(trading_dir)
+    target = None
+    for revision in reversed(revisions):
+        policy = revision["policy"]
+        if isinstance(policy, _Policy) and policy != current:
+            target = policy
+            break
+    if target is None:
+        raise StrategyStoreError("rollback 可能な直前 revision がありません")
+    save_strategy_policy(trading_dir, target)
+    return target
+
+
+def adopt_strategy_policy(trading_dir, policy: StrategyPolicy) -> Path:
+    """現行を archive してから採用版を保存する。戻り値は保存先パス。"""
+    try:
+        previous = load_strategy_policy(trading_dir)
+    except Exception:
+        previous = None
+    if previous is not None and previous != policy:
+        try:
+            archive_strategy_policy(trading_dir, previous)
+        except Exception:
+            pass
+    return save_strategy_policy(trading_dir, policy)

@@ -54,6 +54,84 @@ class StrategySelectionResult:
     rejected: tuple[SkipDecision, ...]
 
 
+# --- Legacy policy adoption safety (docich#267) ---
+#
+# 根拠:
+# - 絶対範囲: 既定値 (lookback 6/10、threshold 300bps、z -1.5、notional 0.15)
+#   を中心に、シグナルが構造的に死ぬ値を除外する。momentum は
+#   lookback+1 本の closes を要し、dashboard の cache closes は最大 24 本
+#   (load_snapshot) のため lookback 上限は 24。threshold 2000bps (20%の
+#   値動きゲート) を超えると intraday ではほぼ発火せず、|z|>=5 も同様。
+#   notional 1.0 への一気寄せ (all-in) を禁じ、上限は既定の約3倍の 0.5。
+# - 1回あたりの bounded delta: 現行値からの逸脱を抑え、緩やかな探索にする。
+#   lookback は 1/2〜2倍、threshold/z の大きさは 1/2〜2倍 (絶対範囲で丸め)、
+#   notional は既定1ステップ分 (0.15) 以内の移動。
+POLICY_ABSOLUTE_BOUNDS = {
+    "momentum_lookback": (2, 24),
+    "mean_reversion_lookback": (3, 24),
+    "momentum_threshold_bps": (D("0"), D("2000")),
+    "mean_reversion_z": (D("-5.0"), D("-0.1")),
+    "max_notional_fraction": (D("0"), D("0.5")),
+}
+POLICY_DELTA_LOOKBACK_FACTOR = 2
+POLICY_DELTA_RATIO_FACTOR = D("2")
+POLICY_DELTA_NOTIONAL_STEP = D("0.15")
+
+
+def _decimal_in_range(value: Decimal, low: Decimal, high: Decimal, low_open: bool = False) -> bool:
+    if low_open:
+        return bool(value > low and value <= high)
+    return bool(value >= low and value <= high)
+
+
+def check_policy_bounds(current: StrategyPolicy, candidate: StrategyPolicy) -> tuple[bool, str]:
+    """採用可否を判定する。戻り値は (ok, reason_code)。
+
+    reason_code は `ok` / `no-change` / `range-exceeded:<param>` /
+    `delta-exceeded:<param>` のいずれか。StrategyPolicy 自体の検証
+    (不正形式) はここでは扱わず、呼び出し前の domain validation に任せる。
+    """
+    if candidate == current:
+        return True, "no-change"
+    open_low = {"momentum_threshold_bps", "max_notional_fraction"}
+    for name in (
+        "momentum_lookback",
+        "mean_reversion_lookback",
+        "momentum_threshold_bps",
+        "mean_reversion_z",
+        "max_notional_fraction",
+    ):
+        value = getattr(candidate, name)
+        if not isinstance(value, Decimal):
+            value = D(value)
+        low, high = POLICY_ABSOLUTE_BOUNDS[name]
+        if not _decimal_in_range(value, low, high, low_open=name in open_low):
+            return False, f"range-exceeded:{name}"
+    pairs = (
+        ("momentum_lookback", current.momentum_lookback, candidate.momentum_lookback),
+        ("mean_reversion_lookback", current.mean_reversion_lookback, candidate.mean_reversion_lookback),
+    )
+    for name, old, new in pairs:
+        # 上限・下限の絶対範囲は先に検証済み。ここでは現行の 1/2〜2倍に収める。
+        lo = -(-old // POLICY_DELTA_LOOKBACK_FACTOR)
+        hi = old * POLICY_DELTA_LOOKBACK_FACTOR
+        if not (lo <= new <= hi):
+            return False, f"delta-exceeded:{name}"
+    ratio_pairs = (
+        ("momentum_threshold_bps", current.momentum_threshold_bps, candidate.momentum_threshold_bps),
+    )
+    for name, old, new in ratio_pairs:
+        if not (old / POLICY_DELTA_RATIO_FACTOR <= new <= old * POLICY_DELTA_RATIO_FACTOR):
+            return False, f"delta-exceeded:{name}"
+    old_mag = abs(current.mean_reversion_z)
+    new_mag = abs(candidate.mean_reversion_z)
+    if not (old_mag / POLICY_DELTA_RATIO_FACTOR <= new_mag <= old_mag * POLICY_DELTA_RATIO_FACTOR):
+        return False, "delta-exceeded:mean_reversion_z"
+    if abs(candidate.max_notional_fraction - current.max_notional_fraction) > POLICY_DELTA_NOTIONAL_STEP:
+        return False, "delta-exceeded:max_notional_fraction"
+    return True, "ok"
+
+
 def _opportunity_id(strategy_id: str, symbol: str, as_of: float) -> str:
     return f"{strategy_id}:{symbol}:{int(as_of)}"
 
