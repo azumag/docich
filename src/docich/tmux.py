@@ -375,6 +375,23 @@ class Tmux:
             return ()
         return terminate_process_tree(pids).remaining
 
+    def _kill_after_process_stop(self, args: list[str], operation: str) -> None:
+        """Finish cleanup while accepting only a target that already vanished.
+
+        Stopping the final pane leader can make tmux remove its window/session
+        before the explicit kill runs.  That is a successful cleanup race, not
+        an error.  Transport/permission failures still fail closed.
+        """
+
+        result = self._run(args)
+        if result.returncode == 0:
+            return
+        detail = (result.stderr or "").replace("\n", " ").strip()
+        if any(marker in detail.lower() for marker in _STRICT_MISSING_MARKERS):
+            return
+        suffix = f": {detail[:200]}" if detail else ""
+        raise TmuxError(f"tmux {operation} に失敗しました{suffix}")
+
     def stop_game_session_named(self, session: str) -> None:
         """Stop the legacy game-only session, never a shared runtime session."""
 
@@ -396,7 +413,7 @@ class Tmux:
                 f"window ownershipが一致しません (expected={expected}, actual={actual})"
             )
         remaining = self._stop_pane_processes(target)
-        self._checked(["kill-window", "-t", target], "window停止")
+        self._kill_after_process_stop(["kill-window", "-t", target], "window停止")
         if remaining:
             raise TmuxError(f"tmux windowの子プロセスが停止しませんでした: {remaining}")
         return True
@@ -411,7 +428,7 @@ class Tmux:
                 f"session ownershipが一致しません (expected={expected}, actual={actual})"
             )
         remaining = self._stop_pane_processes(session)
-        self._checked(["kill-session", "-t", session], "session停止")
+        self._kill_after_process_stop(["kill-session", "-t", session], "session停止")
         if remaining:
             raise TmuxError(f"tmux sessionの子プロセスが停止しませんでした: {remaining}")
         return True
