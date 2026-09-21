@@ -1,11 +1,11 @@
 {
-  "output_sha256": "340631d9ae696ad5ebad7afdc22cb700b079874857c84c8885999dcaa4c43998",
+  "output_sha256": "d923aefa2b91ff93e28ea040202cc3b93d740605e5fbbb744c967a6c07a0bfe4",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "e54768b592bdd9fa82fee18dcda44fa2850664427589079237ad26211e4fd0f4",
+  "source_sha256": "a2b40c6eafbb79904f8896820720fbfc9d0a516e352ca3d0654bec28ac621c39",
   "topics": [
-    "PR #899を統合・現行mainへVM反映、Snake復帰カテゴリのlive境界を確認",
-    "Snake終了後のSorenカテゴリ復帰順序を恒久修正",
-    "ゲーム別target_matchesと定期rotation停止の恒久修正"
+    "OpenCode優先キューをmain・canonical VMへ反映",
+    "OpenCode生成をコメント優先キューへ分離（PR段階・本番未反映）",
+    "Hanjuku HeroをVM限定rotation候補として有効化・main/VMへ反映"
   ]
 }
