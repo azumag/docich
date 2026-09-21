@@ -246,6 +246,18 @@ def test_failure_does_not_drop_reserved_request_or_expose_exception(setup):
     assert len(executor.calls) == 1
 
 
+def test_running_state_without_request_owner_fails_closed(setup):
+    _, clock, _, executor, make = setup
+    manager = make()
+    saved = manager.load(clock[0])
+    saved["status"] = "running"
+    manager.save(saved)
+
+    with pytest.raises(RotationError, match="missing request owner"):
+        manager.tick()
+    assert not executor.calls
+
+
 def test_corrupt_state_never_becomes_fresh_schedule(setup):
     _, _, _, executor, make = setup
     manager = make()

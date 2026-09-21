@@ -100,6 +100,10 @@ class CornerRotationManager:
                 or not isinstance(state.get("history"), list)
                 or state.get("status") not in {"ready", "waiting", "running", "recovery_required"}):
             raise RotationError("invalid rotation state")
+        if (state.get("status") == "running"
+                and state.get("pending") is None
+                and state.get("manual_pending") is None):
+            raise RotationError("running state missing request owner")
         for key in ("next_due_at", "last_seen_at"):
             timestamp(state[key])
         if state.get("last_slot_at") is not None:
