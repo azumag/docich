@@ -1461,5 +1461,51 @@ class TestGenerationContract(CoordinatorTestBase):
         )
 
 
+class TestPostCommitHook(CoordinatorTestBase):
+    """The committed game is announced from the commit, on every switch path."""
+
+    def _coordinator_with(self, hook):
+        return game_switch.GameSwitchCoordinator(
+            self.store,
+            self.factory,
+            quiesce_verify_timeout_s=0.3,
+            poll_interval_s=0.01,
+            default_timeout_s=60,
+            step_timeouts=game_switch.StepTimeouts(
+                preflight_s=2.0,
+                stop_agent_s=2.0,
+                start_s=2.0,
+                agent_start_s=2.0,
+                cleanup_s=2.0,
+                probe_s=0.5,
+            ),
+            post_commit=hook,
+        )
+
+    def test_hook_receives_the_committed_game_on_start_and_switch(self):
+        seen = []
+        coordinator = self._coordinator_with(seen.append)
+        self.assertEqual(coordinator.start("nethack").status, "succeeded")
+        self.assertEqual(coordinator.switch("robots").status, "succeeded")
+        self.assertEqual(seen, ["nethack", "robots"])
+
+    def test_stop_does_not_announce_a_game(self):
+        seen = []
+        coordinator = self._coordinator_with(seen.append)
+        self.assertEqual(coordinator.start("nethack").status, "succeeded")
+        seen.clear()
+        self.assertEqual(coordinator.stop().status, "succeeded")
+        self.assertEqual(seen, [])
+
+    def test_a_raising_hook_never_fails_the_committed_switch(self):
+        def boom(_game: str) -> None:
+            raise RuntimeError("twitch unreachable")
+
+        coordinator = self._coordinator_with(boom)
+        result = coordinator.start("nethack")
+        self.assertEqual(result.status, "succeeded")
+        self.assertEqual(self.canonical()["active"]["game"], "nethack")
+
+
 if __name__ == "__main__":
     unittest.main()

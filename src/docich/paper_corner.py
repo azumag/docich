@@ -115,13 +115,16 @@ class PaperCornerManager:
         self.store = GameSwitchStore(g.state_dir)
         if coordinator is None:
             from .game_switch import GameSwitchCoordinator
+            from .stream_category import commit_hook
 
             def _factory(spec):
                 if spec.game == PAPER_VIEW_NAME:
                     return make_program_view_adapter(g, spec)
                 return make_coordinator_adapter(g, spec)
 
-            coordinator = GameSwitchCoordinator(self.store, _factory)
+            coordinator = GameSwitchCoordinator(
+                self.store, _factory, post_commit=commit_hook(g)
+            )
         self.coordinator = coordinator
 
     def _default_stream_game(self, game: str) -> None:

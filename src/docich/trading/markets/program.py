@@ -51,6 +51,7 @@ class MarketCorner:
         self.view = next(k for k, v in VIEW_MARKETS.items() if v == runtime.market)
         from ...game_switch import GameSwitchCoordinator, GameSwitchStore
         from ...adapters import make_coordinator_adapter
+        from ...stream_category import commit_hook
         from ..soren_output import send_overlay, enqueue_speech
         self.store = GameSwitchStore(self.g.state_dir)
         def factory(spec):
@@ -61,7 +62,9 @@ class MarketCorner:
                 from ...adapters.program import make_program_view_adapter
                 return make_program_view_adapter(self.g, spec)
             return make_coordinator_adapter(self.g, spec)
-        self.coordinator = coordinator or GameSwitchCoordinator(self.store, factory)
+        self.coordinator = coordinator or GameSwitchCoordinator(
+            self.store, factory, post_commit=commit_hook(self.g)
+        )
         self.overlay, self.speech = overlay or send_overlay, speech or enqueue_speech
 
     def current(self):
