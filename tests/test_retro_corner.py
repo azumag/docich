@@ -361,6 +361,27 @@ class TestRetroCornerRotation(RetroCornerTestBase):
         self.assertEqual(coordinator.calls[1][1], coordinator.calls[0][1])
         self.assertEqual(coordinator.calls[2][1], "sorengame")
 
+    def test_active_rotation_tick_repairs_agent_without_switching_game(self):
+        mgr, coordinator, _games = self._rotation_manager()
+        calls = []
+        mgr._agent_repair = lambda game: calls.append(game) or True
+        mgr._write_state(
+            {
+                **mgr._default_state(),
+                "status": "active",
+                "game": "bastet",
+                "started_at": self.now_value.isoformat(),
+                "ends_at": (self.now_value + timedelta(minutes=1)).isoformat(),
+            }
+        )
+
+        result = mgr.tick()
+
+        self.assertEqual(result.status, "noop")
+        self.assertEqual(result.detail, "already-active")
+        self.assertEqual(calls, ["bastet"])
+        self.assertEqual(coordinator.calls, [])
+
     def test_games_selected_within_24_hours_are_not_fallback_candidates(self):
         mgr, _coordinator, games = self._rotation_manager()
         now = self.now_value

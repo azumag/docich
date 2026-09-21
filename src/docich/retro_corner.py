@@ -51,6 +51,8 @@ ROTATION_FIXED_SLOT_BUFFER_MINUTES = 5
 FIXED_CORNER_SECTIONS = ("paper_corner", "soren91_corner", "nethack_corner")
 # starting のまま残った (tick が落ちた) 状態を割り込み扱いにするまでの猶予。
 STARTING_STALE_MINUTES = 10
+# active slot中のゲーム専用agent監視間隔。共通配信基盤やゲーム本体は触らない。
+AGENT_REPAIR_POLL_SECONDS = 30.0
 PENDING_SWITCH_STATUSES = {"queued", "in_progress", "busy"}
 
 
@@ -334,6 +336,7 @@ class RetroCornerManager:
         spawn=None,
         rng: random.Random | None = None,
         stream_game: Callable[[str], None] | None = None,
+        agent_repair: Callable[[str], bool | None] | None = None,
     ):
         self.g = g
         self.config = config or load_retro_corner_config(g)
@@ -350,9 +353,41 @@ class RetroCornerManager:
         self._spawn = spawn or self._default_spawn_improve_proc
         self._rng = rng or random.Random()
         self._stream_game = stream_game or self._default_stream_game
+        self._agent_repair = agent_repair or self._default_repair_active_agent
         self.state_path = Path(g.state_dir) / STATE_FILE
         self.lock_path = Path(g.state_dir) / LOCK_FILE
         self.tick_guard_path = Path(g.state_dir) / TICK_GUARD_FILE
+
+    def _default_repair_active_agent(self, game: str) -> bool | None:
+        """Repair only the active game's generation-owned agent window."""
+
+        repair = getattr(self.coordinator, "repair_active_agent", None)
+        if not callable(repair):
+            # Older test doubles and non-agent corners simply have no
+            # watchdog capability; the coordinator remains the source of
+            # truth for whether a repair is safe.
+            return None
+        try:
+            return repair(game=game)
+        except Exception as exc:  # noqa: BLE001 - a watchdog must not end a slot
+            print(
+                f"[retro-corner] agent repair failed game={game} detail={_safe_detail(exc)}",
+                file=sys.stderr,
+            )
+            return False
+
+    def _repair_active_agent(self, state: dict[str, object]) -> bool | None:
+        game = state.get("game")
+        if not isinstance(game, str) or not game:
+            return None
+        try:
+            return self._agent_repair(game)
+        except Exception as exc:  # noqa: BLE001 - injected probes must be fail-closed
+            print(
+                f"[retro-corner] agent repair failed game={game} detail={_safe_detail(exc)}",
+                file=sys.stderr,
+            )
+            return False
 
     def _default_ensure_runtime(self) -> None:
         # Import lazily so ``python -m docich retro-corner`` can route here
@@ -1084,6 +1119,8 @@ class RetroCornerManager:
         else:
             # 3試合早期終了: 試合境界はwrapperの保存後に訪れる。時間上限
             # ends_at は必ず残し、来なければ従来どおり ends_at で終了する。
+            next_agent_repair_at = 0.0
+            agent_repair_failed = False
             while True:
                 remaining = max(0.0, (ends_at - self._local_now()).total_seconds())
                 self._sleep(min(5.0, remaining))
@@ -1093,6 +1130,22 @@ class RetroCornerManager:
                         return self._state_result(latest)
                     if remaining <= 0.0:
                         return self._finish_locked(latest, self._local_now())
+                    now_monotonic = time.monotonic()
+                    if now_monotonic >= next_agent_repair_at:
+                        repaired = self._repair_active_agent(latest)
+                        next_agent_repair_at = now_monotonic + AGENT_REPAIR_POLL_SECONDS
+                        if repaired is False and not agent_repair_failed:
+                            print(
+                                f"[retro-corner] agent repair did not recover game={latest.get('game')}",
+                                file=sys.stderr,
+                            )
+                            agent_repair_failed = True
+                        elif repaired is True and agent_repair_failed:
+                            print(
+                                f"[retro-corner] agent recovered game={latest.get('game')}",
+                                file=sys.stderr,
+                            )
+                            agent_repair_failed = False
                     if self._target_reached(latest):
                         return self._finish_locked(latest, self._local_now())
 
@@ -1589,6 +1642,9 @@ class RetroCornerManager:
             state = self._read_state()
             status = state.get("status")
             if status == "active":
+                repaired = self._repair_active_agent(state)
+                if repaired is False:
+                    return CornerResult("noop", game=state.get("game"), detail="agent-repair-failed")
                 return CornerResult("noop", detail="already-active")
             if status == "starting":
                 if isinstance(state.get("switch_request_id"), str):

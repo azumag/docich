@@ -138,6 +138,7 @@ class FakeAdapter:
         self._maybe_hang("hang_agent_start", cancel)
         self._maybe_fail("agent_start_error")
         self.runtime.agent_started = True
+        self.runtime.agent_stopped = False
         self.runtime.agent_lease = self.spec.lease_id
         self.runtime.events.append("agent_start")
 
@@ -145,6 +146,10 @@ class FakeAdapter:
         self._maybe_fail("agent_stop_error")
         self.runtime.agent_stopped = True
         self.runtime.events.append("agent_stop")
+
+    def agent_alive(self, deadline, cancel):
+        self._maybe_fail("agent_alive_error")
+        return self.runtime.agent_started and not self.runtime.agent_stopped
 
 
 class FakeAdapterFactory:
@@ -794,6 +799,32 @@ class TestCleanupPending(CoordinatorTestBase):
 
 
 class TestRuntimeTracking(CoordinatorTestBase):
+    def test_agent_watchdog_restarts_dead_agent_without_replacing_runtime(self):
+        self.coordinator.start("nethack")
+        state_before = self.canonical()
+        active = state_before["active"]
+        adapter = self.factory.adapter("nethack", active["generation"])
+        adapter.runtime.agent_started = False
+        adapter.runtime.agent_stopped = False
+
+        repaired = self.coordinator.repair_active_agent(game="nethack", timeout_s=2.0)
+
+        self.assertTrue(repaired)
+        state_after = self.canonical()
+        self.assertEqual(state_after["phase"], "ready")
+        self.assertEqual(state_after["active"], active)
+        self.assertEqual(adapter.runtime.events[-2:], ["agent_stop", "agent_start"])
+
+    def test_agent_watchdog_does_not_touch_a_different_active_game(self):
+        self.coordinator.start("nethack")
+        adapter = self.factory.adapter("nethack", self.canonical()["active"]["generation"])
+        events_before = list(adapter.runtime.events)
+
+        result = self.coordinator.repair_active_agent(game="robots", timeout_s=1.0)
+
+        self.assertIsNone(result)
+        self.assertEqual(adapter.runtime.events, events_before)
+
     def test_candidate_agent_is_never_orphaned_on_rollback(self):
         """Crash after the candidate agent started: the retry's rollback must
         stop the candidate agent as well as the game."""
