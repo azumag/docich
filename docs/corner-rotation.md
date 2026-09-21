@@ -108,12 +108,12 @@ merge、deployは実施しない。worktreeに`handoff.md`は存在せず、こ�
   **535 passed / 80 subtests passed、15.99秒、終了コード0**。タイムアウトなし。
 - 先行した広い関連回帰: 952 passed / 102 subtests passed、40.71秒。
   診断projectionを含む追加検証: 65 passed、6.65秒。
-- Astra先行の全体pytestは`--maxfail=5`で終了コード1（134.82秒、785 passed、3 skipped、
+- 全体pytestは`--maxfail=5`で終了コード1（204.59秒、786 passed、3 skipped、
   249 subtests passed）。失敗は今回未変更のLinux/実行環境依存領域:
   `test_moomoo_opend_service.py`の2件はmacOSの`stat`に`-c`がないため、
   `test_restart_radio_worker.py`の1件はLinux `/proc/<pid>/cmdline`前提、
   `test_captions.py`の2件はsandboxでUnix socket bindが`Operation not permitted`。
-  baseline全体の再実行はしていない。今回のcorner関連退行は最終535件では検出されていない。
+  今回のcorner関連退行は全体pytestでも検出されていない。
 - 独立レビューで報告されたMeriken環境、restoring世代、停止要求、NetHack状態、catalog削除、
   diagnostics固定キーの6点を実装・テストで対応。CI、実機/E2Eは未実施。
 
