@@ -190,6 +190,91 @@ def test_nethack_legacy_state_is_visible_to_unified_rotation(tmp_path, monkeypat
     assert result["reason"] == "other-corner-needs-finish-or-recovery"
 
 
+def test_terminal_failed_manual_paper_state_does_not_pin_rotation(tmp_path, monkeypatch):
+    from docich import corner_adapters
+    from docich.corner_adapters import RetiredCornerObserver
+
+    config = load_global(tmp_path)
+    config.state_dir.mkdir(parents=True, exist_ok=True)
+    (config.state_dir / "paper_corner_manual.json").write_text(json.dumps({
+        "status": "failed",
+        "game": None,
+        "previous_game": "sorengame",
+        "completed_at": 100.0,
+        "last_error": "restore failed after the view was already gone",
+    }))
+
+    class Canonical:
+        def load(self):
+            return ({"phase": "ready", "active": {"game": "sorengame"}}, False)
+
+    class Store:
+        canonical = Canonical()
+
+    monkeypatch.setattr(corner_adapters, "GameSwitchStore", lambda _path: Store())
+    observer = RetiredCornerObserver(
+        config,
+        {"id": "retired-paper", "adapter": "paper", "game": "paper-view"},
+    )
+
+    [state] = list(observer.observations())
+    assert state["status"] == "completed"
+
+    manager = CornerRotationManager(
+        config,
+        catalog=[Corner("retro", "game", "nsnake")],
+        adapter_factory=Adapter,
+        executor=Executor(),
+    )
+    observed = manager.load(1000.0)
+    observed["known_corners"] = {
+        "retired-paper": {"id": "retired-paper", "adapter": "paper", "game": "paper-view"}
+    }
+    assert manager._observe(observed, 1000.0) is False
+
+
+def test_unstable_failed_manual_paper_state_still_blocks_rotation(tmp_path, monkeypatch):
+    from docich import corner_adapters
+    from docich.corner_adapters import RetiredCornerObserver
+
+    config = load_global(tmp_path)
+    config.state_dir.mkdir(parents=True, exist_ok=True)
+    (config.state_dir / "paper_corner_manual.json").write_text(json.dumps({
+        "status": "failed",
+        "game": None,
+        "previous_game": "sorengame",
+        "completed_at": 100.0,
+    }))
+
+    class Canonical:
+        def load(self):
+            return ({"phase": "draining", "active": {"game": "sorengame"}}, False)
+
+    class Store:
+        canonical = Canonical()
+
+    monkeypatch.setattr(corner_adapters, "GameSwitchStore", lambda _path: Store())
+    observer = RetiredCornerObserver(
+        config,
+        {"id": "retired-paper", "adapter": "paper", "game": "paper-view"},
+    )
+
+    [state] = list(observer.observations())
+    assert state["status"] == "failed"
+
+    manager = CornerRotationManager(
+        config,
+        catalog=[Corner("retro", "game", "nsnake")],
+        adapter_factory=Adapter,
+        executor=Executor(),
+    )
+    observed = manager.load(1000.0)
+    observed["known_corners"] = {
+        "retired-paper": {"id": "retired-paper", "adapter": "paper", "game": "paper-view"}
+    }
+    assert manager._observe(observed, 1000.0) is True
+
+
 def test_removed_corner_keeps_improvement_release_gate(setup):
     _, clock, catalog, executor, make = setup
     manager = make()

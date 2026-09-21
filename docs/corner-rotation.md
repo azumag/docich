@@ -52,7 +52,11 @@ last_seen、pending、request UUID、結果をatomic writeする。
 された場合は予約を保持して待機する。pending対象のcatalog削除は要復旧。
 各managerのstateには`rotation_request_id`と`rotation_runtime_id`を記録する。
 同名ゲームでもruntime世代が違えば復帰せず要復旧。終了境界不明、timeout、停止未確認、
-canonicalの危険phase、failed/restoringの他ownerも次の開始を阻止する。
+canonicalの危険phase、failed/restoringの他ownerも次の開始を阻止する。例外はPAPERの
+手動枠が復帰失敗を記録した後、stateに完了時刻があり、`recovery_required`でなく、canonicalが
+`ready`で記録済みの元ゲームへ戻っていることを確認できる場合だけである。この場合はstateを
+削除・上書きせず、観測上のみterminalとして扱う。canonicalが読めない、遷移中、元ゲームが
+一致しない場合は従来どおりfail-closedで次の開始を阻止する。
 共通encoder/audio/通知/statusの停止・再起動経路は追加しない。
 
 終了後の独立改善ジョブは既存の実行方式を維持し、次のcornerはlock解放とその実行以後の
