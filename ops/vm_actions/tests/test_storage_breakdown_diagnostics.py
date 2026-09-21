@@ -6,11 +6,13 @@ import unittest
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
+COLLECTOR = ROOT / "ops" / "vm_actions" / "collect_diagnostics.py"
+SUMMARIZER = ROOT / "ops" / "vm_actions" / "summarize_storage.py"
 
 
-def load_module(name, relpath):
-    spec = importlib.util.spec_from_file_location(name, ROOT / relpath)
+def load_module(name, path):
+    spec = importlib.util.spec_from_file_location(name, str(path))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
