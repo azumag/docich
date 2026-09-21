@@ -268,25 +268,15 @@ jobs:
           )"
             attest_args=()
             if [[ -n "$attest_raw" ]]; then read -r -a attest_args <<< "$attest_raw"; fi
-            # deploy_git() checks tracked cleanliness before it fetches the
-            # uploaded bundle. A pre-existing drift rejection therefore does
-            # not guarantee that $SHA exists in the production object DB.
-            # Populate objects from protected public main only; this fetch
-            # does not checkout/reset or alter tracked worktree files. The
-            # helpers are still read from the exact reviewed $SHA afterwards.
-            printf "git -C /home/ubuntu/docich -c core.hooksPath=/dev/null fetch --no-recurse-submodules --no-tags --force https://github.com/azumag/docich.git refs/heads/main >/dev/null 2>&1\n"
-            printf "git -C /home/ubuntu/docich -c core.hooksPath=/dev/null cat-file -e '%s^{commit}'\n" "$SHA"
-            # First converge only parent files whose *current* bytes+mode are
-            # exactly present on reviewed old_root..SHA lineage. Unknown/staged
-            # parent drift remains fail-closed. This makes the existing Soren
-            # helper's root-clean precondition meaningful rather than bypassed.
-            printf "git -C /home/ubuntu/docich -c core.hooksPath=/dev/null show '%s:ops/vm_actions/reconcile_presynced_root.py' | python3 - '%s' '%s' '%s'\n" \
-              "$SHA" /home/ubuntu/docich "$old_root" "$SHA"
-            printf "git -C /home/ubuntu/docich -c core.hooksPath=/dev/null show '%s:ops/vm_actions/reconcile_presynced_submodule.py' | python3 - '%s' '%s' '%s' '%s' '%s' lineage" \
-              "$SHA" /home/ubuntu/docich "$old_root" "$old_sub" "$new_sub" games/soviet_now
-            for token in "${attest_args[@]}"; do printf " '%s'" "$token"; done
-            printf '\n'
-          } | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+            # Issue #225: reconcile は専用の狭い gateway operation へ送る。
+            # stdin は厳格なトークン (old_root/old_sub/new_sub + lineage +
+            # attestation triples) のみで、任意シェルは一切流さない。
+            # fetch・ reviewed SHA からの helper 読込・固定 argv 実行は
+            # VM 側の reconcile op が shell なしで行う。
+            {
+              printf '%s %s %s lineage' "$old_root" "$old_sub" "$new_sub"
+              for token in "${attest_args[@]}"; do printf ' %s' "$token"; done
+            } | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "reconcile docich production $SHA"
 
       - name: Normalize other owned submodule checkouts
         id: normalize_other

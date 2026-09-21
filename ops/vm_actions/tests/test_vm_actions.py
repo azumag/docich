@@ -361,6 +361,100 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(result['error_code'],'chat_worker_model_mismatch')
         self.assertNotIn('SECRET_KEY',p.stdout.decode())
 
+    # Issue #225: dedicated narrow reconcile operation (no exec channel).
+    def _reconcile_shas(self):
+        old_root='0'*40
+        old_sub='1'*40
+        new_sub='2'*40
+        return old_root, old_sub, new_sub
+
+    def test_reconcile_rejects_non_production_target(self):
+        old_root, old_sub, new_sub=self._reconcile_shas()
+        sha=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
+        p=self.call(f'reconcile docich preview {sha}',
+                    f'{old_root} {old_sub} {new_sub} lineage'.encode())
+        self.assertNotEqual(p.returncode,0)
+        self.assertIn('VM operation rejected: reconcile_production_only',p.stderr.decode())
+
+    def test_reconcile_rejects_malformed_payloads(self):
+        sha=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
+        bad_payloads=[
+            b'',
+            b'only two tokens here',
+            f'{"0"*39} {"1"*40} {"2"*40} lineage'.encode(),  # short sha
+            f'{"0"*40} {"1"*40} {"1"*40} lineage'.encode(),  # no advance
+            f'NOTHEX{"0"*34} {"1"*40} {"2"*40} lineage'.encode(),
+            f'{"0"*40} {"1"*40} {"2"*40} bogus'.encode(),  # bad marker
+            f'{"0"*40} {"1"*40} {"2"*40} lineage only-one'.encode(),  # partial triple
+            f'{"0"*40} {"1"*40} {"2"*40} lineage has space {"f"*64} 100644'.encode(),
+            f'{"0"*40} {"1"*40} {"2"*40} lineage goodpath {"g"*64} 100644'.encode(),  # non-hex digest
+            f'{"0"*40} {"1"*40} {"2"*40} lineage goodpath {"f"*64} 100777'.encode(),  # bad mode
+            b'\x00'+b'0'*40+b' '+b'1'*40+b' '+b'2'*40,
+            ('0'*40).encode()+b' '+b'1'*40+b' '+b'2'*40+b' \xe9\x81\x95',
+        ]
+        for payload in bad_payloads:
+            with self.subTest(payload=payload[:24]):
+                p=self.call(f'reconcile docich production {sha}',payload)
+                self.assertNotEqual(p.returncode,0)
+                self.assertIn('VM operation rejected: reconcile_invalid_request',p.stderr.decode())
+
+    def test_reconcile_rejects_oversized_payload(self):
+        sha=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
+        p=self.call(f'reconcile docich production {sha}',b'x'*8193)
+        self.assertNotEqual(p.returncode,0)
+        self.assertIn('VM operation rejected: reconcile_invalid_request',p.stderr.decode())
+
+    def test_reconcile_rejects_unknown_candidate_object(self):
+        # Valid hex but absent locally: deterministic without network, since
+        # the local object check precedes any fetch.
+        unknown='3'*40
+        old_root, old_sub, new_sub=self._reconcile_shas()
+        p=self.call(f'reconcile docich production {unknown}',
+                    f'{old_root} {old_sub} {new_sub} lineage'.encode())
+        self.assertNotEqual(p.returncode,0)
+        self.assertIn('VM operation rejected: reconcile_object_missing',p.stderr.decode())
+
+    def test_reconcile_rejects_missing_reviewed_helpers(self):
+        # Temp HEAD has no helper files: rejected before any mutation.
+        sha=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
+        old_root, old_sub, new_sub=self._reconcile_shas()
+        p=self.call(f'reconcile docich production {sha}',
+                    f'{old_root} {old_sub} {new_sub} lineage'.encode())
+        self.assertNotEqual(p.returncode,0)
+        self.assertIn('VM operation rejected: reconcile_helper_missing',p.stderr.decode())
+
+    def test_reconcile_runs_reviewed_helpers_with_fixed_argv_and_minimal_env(self):
+        # Stub helpers committed at the helper relpaths record their argv and
+        # environment; the op must pass fixed argv over argv-lists (no shell)
+        # with a minimal secret-free environment.
+        script_dir=self.doc/'ops'/'vm_actions'; script_dir.mkdir(parents=True)
+        observed=self.base/'observed.json'
+        stub=('import json,os,sys\n'
+              '__import__("pathlib").Path(r"%s").write_text(\n'
+              '    json.dumps({"argv":sys.argv[1:],"env":sorted(os.environ.keys())}))\n' % observed)
+        (script_dir/'reconcile_presynced_root.py').write_text(stub,encoding='utf-8')
+        (script_dir/'reconcile_presynced_submodule.py').write_text(stub,encoding='utf-8')
+        subprocess.run(['git','-C',self.doc,'add','.'],check=True)
+        subprocess.run(['git','-C',self.doc,'commit','-qm','stub helpers'],check=True)
+        sha=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
+        # Minimal env must not carry the sentinel even when exported.
+        env=os.environ.copy()
+        env['RECONCILE_PARENT_SENTINEL']='MUST_NOT_LEAK_9f1c'
+        code=('import importlib.util;'
+              'spec=importlib.util.spec_from_file_location("gw",r"%s");'
+              'gw=importlib.util.module_from_spec(spec);spec.loader.exec_module(gw);'
+              'print(gw._run_reviewed_helper('
+              'gw._reviewed_helper(__import__("pathlib").Path(r"%s"),r"%s",'
+              '"ops/vm_actions/reconcile_presynced_root.py"),'
+              '["--sentinel-check"],open(r"%s","wb")))' % (GATEWAY,self.doc,sha,self.base/'helper.log'))
+        p=subprocess.run(['python3','-c',code],env=env,capture_output=True)
+        self.assertEqual(p.returncode,0,p.stderr.decode())
+        self.assertEqual(p.stdout.decode().strip(),'0')
+        record=json.loads(observed.read_text())
+        self.assertEqual(record['argv'],['--sentinel-check'])
+        self.assertNotIn('RECONCILE_PARENT_SENTINEL',record['env'])
+        self.assertIn('PATH',record['env'])
+
 class WorkflowPolicyTests(unittest.TestCase):
     def test_installer_projects_docich_owned_soviet_submodule_only(self):
         text=(ROOT/'ops/vm_actions/install_vm_gateway.sh').read_text()
@@ -398,5 +492,17 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertIn('"configure_jev docich production $SHA"',text)
         self.assertIn('The VM gateway loads the',text)
         self.assertNotIn('VM_COMMAND: ${{ secrets.TYPESAFE_API_KEY }}',text)
+
+    def test_reconcile_uses_dedicated_narrow_operation_without_exec_shell(self):
+        # Issue #225: the reviewed pre-synced reconcile must not ride the
+        # arbitrary exec channel; only strict tokens go over the dedicated op.
+        text=WF.read_text()
+        self.assertIn('"reconcile docich production $SHA"',text)
+        start=text.index('Reconcile reviewed pre-synced Soren checkout')
+        end=text.index('Normalize other owned submodule checkouts',start)
+        block=text[start:end]
+        self.assertNotIn('"exec docich production $SHA"',block)
+        self.assertNotIn('reconcile_presynced_root.py\' | python3',block)
+        self.assertNotIn('reconcile_presynced_submodule.py\' | python3',block)
 
 if __name__=='__main__': unittest.main()

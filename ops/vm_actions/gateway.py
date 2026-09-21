@@ -5,7 +5,7 @@ from pathlib import Path, PurePosixPath
 
 SHA_RE=re.compile(r'[0-9a-f]{40}\Z')
 MAX_PAYLOAD=128*1024*1024
-OPS={'upload','deploy','bootstrap','status','exec','configure_jev','disable_jev','diagnostics','rebaseline'}
+OPS={'upload','deploy','bootstrap','status','exec','configure_jev','disable_jev','diagnostics','rebaseline','reconcile'}
 TARGETS={'preview','production'}
 DIAGNOSTICS_FILES=('ops/vm_actions/collect_diagnostics.py','ops/vm_actions/runtime_registry.py','src/docich/runtime_backend.py')
 DIAGNOSTICS_TIMEOUT=60
@@ -70,6 +70,12 @@ REASON_CODES={
  'configured Jev script missing':'configure_jev_script_missing',
  'invalid Jev API key payload':'configure_jev_key_invalid',
  'production checkout is not the requested commit':'configure_jev_stale_checkout',
+ 'reconcile production only':'reconcile_production_only',
+ 'invalid reconcile payload':'reconcile_invalid_request',
+ 'reviewed reconcile helper missing':'reconcile_helper_missing',
+ 'reviewed candidate object missing':'reconcile_object_missing',
+ 'presynced reconcile fetch failed':'reconcile_fetch_failed',
+ 'presynced reconcile refused':'reconcile_refused',
 }
 
 def reason_code(exc):
@@ -806,6 +812,137 @@ def execute(cfg,repo,target,sha):
     return {'status':'executed','sha':sha,'exit_code':p.returncode,'output':'withheld','operation_id':opid}
 
 
+RECONCILE_SUBMODULE = 'games/soviet_now'
+RECONCILE_FETCH_URL = 'https://github.com/azumag/docich.git'
+RECONCILE_FETCH_REF = 'refs/heads/main'
+RECONCILE_PAYLOAD_MAX = 8192
+RECONCILE_HELPER_MAX = 128*1024
+RECONCILE_ATTEST_MAX = 16
+RECONCILE_ATTEST_SHA_RE = re.compile(r'[a-f0-9]{64}\Z')
+RECONCILE_ATTEST_PATH_RE = re.compile(r'[A-Za-z0-9._/-]+\Z')
+RECONCILE_ATTEST_MODES = {'100644','100755'}
+RECONCILE_ROOT_HELPER = 'ops/vm_actions/reconcile_presynced_root.py'
+RECONCILE_SUBMODULE_HELPER = 'ops/vm_actions/reconcile_presynced_submodule.py'
+RECONCILE_ENV = {'PATH':'/usr/local/bin:/usr/bin:/bin','HOME':'/tmp','LANG':'C.UTF-8'}
+RECONCILE_TIMEOUT = 600
+
+def _reconcile_payload():
+    raw = sys.stdin.buffer.read(RECONCILE_PAYLOAD_MAX + 1)
+    if not raw or len(raw) > RECONCILE_PAYLOAD_MAX or b'\0' in raw:
+        raise ValueError('invalid reconcile payload')
+    try:
+        tokens = raw.decode('ascii').split()
+    except UnicodeDecodeError:
+        raise ValueError('invalid reconcile payload')
+    if len(tokens) < 3:
+        raise ValueError('invalid reconcile payload')
+    old_root, old_sub, new_sub = tokens[0:3]
+    for token in (old_root, old_sub, new_sub):
+        if not SHA_RE.fullmatch(token):
+            raise ValueError('invalid reconcile payload')
+    if old_sub == new_sub:
+        raise ValueError('invalid reconcile payload')
+    rest = tokens[3:]
+    attest: list[str] = []
+    if rest:
+        if rest[0] != 'lineage':
+            raise ValueError('invalid reconcile payload')
+        triples = rest[1:]
+        if len(triples) % 3 != 0 or len(triples) // 3 > RECONCILE_ATTEST_MAX:
+            raise ValueError('invalid reconcile payload')
+        for path, digest, mode in zip(triples[0::3], triples[1::3], triples[2::3]):
+            if not RECONCILE_ATTEST_PATH_RE.fullmatch(path):
+                raise ValueError('invalid reconcile payload')
+            if not RECONCILE_ATTEST_SHA_RE.fullmatch(digest):
+                raise ValueError('invalid reconcile payload')
+            if mode not in RECONCILE_ATTEST_MODES:
+                raise ValueError('invalid reconcile payload')
+        attest = ['lineage', *triples]
+    return old_root, old_sub, new_sub, attest
+
+def _reconcile_git(root: Path, *args: str):
+    try:
+        return subprocess.check_output(
+            ['git', '-C', str(root), '-c', 'core.hooksPath=/dev/null', *args],
+            stderr=subprocess.DEVNULL, text=True, timeout=300,
+        ).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        raise ValueError('presynced reconcile fetch failed') from exc
+
+def _reviewed_helper(root: Path, sha: str, relpath: str) -> bytes:
+    try:
+        script = subprocess.check_output(
+            ['git', '-C', str(root), '-c', 'core.hooksPath=/dev/null',
+             'show', f'{sha}:{relpath}'],
+            stderr=subprocess.DEVNULL, timeout=120,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+        raise ValueError('reviewed reconcile helper missing')
+    if not script or len(script) > RECONCILE_HELPER_MAX:
+        raise ValueError('reviewed reconcile helper missing')
+    return script
+
+def _run_reviewed_helper(script: bytes, argv: list[str], log) -> int:
+    try:
+        p = subprocess.run(
+            [sys.executable, '-', *argv], input=script,
+            stdout=subprocess.DEVNULL, stderr=log,
+            env=RECONCILE_ENV, timeout=RECONCILE_TIMEOUT,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        raise ValueError('presynced reconcile refused')
+    return p.returncode
+
+def reconcile_presynced(cfg, repo, target, sha):
+    """Converge a reviewed pre-synced checkout without the exec channel (#225).
+
+    Unlike ``exec``, this operation never runs caller-supplied shell.  The
+    stdin payload carries only strict tokens (three 40-hex SHAs, the fixed
+    ``lineage`` marker, and bounded attestation triples); both helper
+    programs are loaded from the exact reviewed ``sha`` and executed with a
+    fixed argv over argv-lists only.  Helper diagnostics stay in the VM-side
+    operation log and are withheld from the output, matching ``execute``.
+    """
+    if target != 'production':
+        raise ValueError('reconcile production only')
+    old_root, old_sub, new_sub, attest = _reconcile_payload()
+    root = Path(cfg['repos'][repo]['production'])
+    logs = state_root(cfg)/'logs'; logs.mkdir(parents=True, exist_ok=True)
+    opid = uuid.uuid4().hex; log = logs/f'{opid}.log'
+    fd = os.open(log, os.O_WRONLY|os.O_CREAT|os.O_EXCL, 0o600)
+    with os.fdopen(fd, 'wb') as out:
+        # Candidate objects already uploaded with the deploy bundle are
+        # authoritative once hash-verified; the protected-main refresh is
+        # best-effort so a transient fetch failure cannot wedge recovery.
+        # Every mutation below re-verifies reviewed ancestry/bytes anyway.
+        try:
+            _reconcile_git(root, 'fetch', '--no-recurse-submodules', '--no-tags',
+                           '--force', RECONCILE_FETCH_URL, RECONCILE_FETCH_REF)
+        except ValueError:
+            out.write(b'reconcile: protected-main refresh failed; continuing with verified local objects\n')
+        try:
+            subprocess.check_output(
+                ['git', '-C', str(root), '-c', 'core.hooksPath=/dev/null',
+                 'cat-file', '-e', f'{sha}^{{commit}}'],
+                stderr=subprocess.DEVNULL, timeout=120,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+            raise ValueError('reviewed candidate object missing')
+        root_helper = _reviewed_helper(root, sha, RECONCILE_ROOT_HELPER)
+        sub_helper = _reviewed_helper(root, sha, RECONCILE_SUBMODULE_HELPER)
+        rc = _run_reviewed_helper(root_helper, [str(root), old_root, sha], out)
+        if rc != 0:
+            raise ValueError('presynced reconcile refused')
+        rc = _run_reviewed_helper(
+            sub_helper,
+            [str(root), old_root, old_sub, new_sub, RECONCILE_SUBMODULE, *attest],
+            out,
+        )
+        if rc != 0:
+            raise ValueError('presynced reconcile refused')
+    return {'status':'reconciled','sha':sha,'output':'withheld','operation_id':opid}
+
+
 def configure_jev(cfg,repo,target,sha,*,disable=False):
     """Run the fixed Jev configurator with a key supplied only on stdin.
 
@@ -1033,6 +1170,7 @@ def main():
                 result=deploy_preview(cfg,repo,sha) if target=='preview' else deploy_prod(cfg,repo,sha)
             elif op=='rebaseline': result=rebaseline(cfg,repo,sha)
             elif op=='exec': result=execute(cfg,repo,target,sha)
+            elif op=='reconcile': result=reconcile_presynced(cfg,repo,target,sha)
             elif op=='configure_jev': result=configure_jev(cfg,repo,target,sha)
             elif op=='disable_jev': result=configure_jev(cfg,repo,target,sha,disable=True)
             elif op=='diagnostics': result=diagnostics_result(cfg,repo,target,sha)

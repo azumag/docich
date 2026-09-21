@@ -20,8 +20,9 @@ class VmOperationsPresyncWorkflowTests(unittest.TestCase):
         self.assertIn("status docich production $SHA", workflow)
         self.assertIn("[[ \"$pending_count\" == 0 ]]", workflow)
         self.assertIn("merge-base --is-ancestor \"$old_root\" \"$SHA\"", workflow)
-        self.assertIn("reconcile_presynced_root.py", workflow)
-        self.assertIn("reconcile_presynced_submodule.py", workflow)
+        # Issue #225: reconcile rides the dedicated narrow gateway operation,
+        # never the arbitrary exec channel.
+        self.assertIn('"reconcile docich production $SHA"', workflow)
         self.assertIn("Retry production deploy after exact reconcile", workflow)
         self.assertIn("Fail unresolved deployment", workflow)
 
@@ -38,39 +39,36 @@ class VmOperationsPresyncWorkflowTests(unittest.TestCase):
     def test_reconcile_bootstraps_reviewed_candidate_object_before_show(self):
         # deploy_git() validates git_clean(root) before its bundle fetch. A
         # pre-existing tracked drift rejection therefore leaves the candidate
-        # commit absent from the production object DB. The fallback must fetch
-        # protected main without touching the worktree, verify the exact
-        # candidate object, and only then read helpers from that object.
+        # commit absent from the production object DB. Issue #225 moved the
+        # fallback into the dedicated gateway op: it refreshes protected main
+        # without touching the worktree, verifies the exact candidate object,
+        # and only then reads helpers from that object. The ordering contract
+        # now lives in the gateway (shell-free), not in piped workflow text.
+        gateway = Path("ops/vm_actions/gateway.py").read_text(encoding="utf-8")
+        fetch = "RECONCILE_FETCH_URL"
+        verify = "cat-file', '-e'"
+        root_helper = "RECONCILE_ROOT_HELPER"
+        sub_helper = "RECONCILE_SUBMODULE_HELPER"
+        self.assertIn(fetch, gateway)
+        self.assertIn(verify, gateway)
+        self.assertIn(root_helper, gateway)
+        self.assertIn(sub_helper, gateway)
+        body = gateway[gateway.index("def reconcile_presynced"):]
+        self.assertLess(body.index(fetch), body.index(verify))
+        self.assertLess(body.index(verify), body.index(root_helper))
+        self.assertLess(body.index(root_helper), body.index(sub_helper))
         workflow = Path(".github/workflows/vm-operations.yml").read_text(encoding="utf-8")
-        fetch = (
-            "fetch --no-recurse-submodules --no-tags --force "
-            "https://github.com/azumag/docich.git refs/heads/main"
-        )
-        verify = "cat-file -e '%s^{commit}'"
-        root_show = "show '%s:ops/vm_actions/reconcile_presynced_root.py'"
-        sub_show = "show '%s:ops/vm_actions/reconcile_presynced_submodule.py'"
-        self.assertIn(fetch, workflow)
-        self.assertIn(verify, workflow)
-        self.assertIn(root_show, workflow)
-        self.assertIn(sub_show, workflow)
-        self.assertLess(workflow.index(fetch), workflow.index(root_show))
-        self.assertLess(workflow.index(verify), workflow.index(root_show))
-        self.assertLess(workflow.index(root_show), workflow.index(sub_show))
+        self.assertNotIn("reconcile_presynced_root.py' | python3", workflow)
+        self.assertNotIn("reconcile_presynced_submodule.py' | python3", workflow)
 
     def test_parent_reconcile_runs_before_submodule_reconcile(self):
+        # The fixed argv order is enforced inside the gateway op: the root
+        # helper must converge (exit 0) before the submodule helper runs.
+        gateway = Path("ops/vm_actions/gateway.py").read_text(encoding="utf-8")
+        body = gateway[gateway.index("def reconcile_presynced"):]
+        self.assertLess(body.index("root_helper"), body.index("sub_helper"))
+        self.assertIn("RECONCILE_SUBMODULE = 'games/soviet_now'", gateway)
         workflow = Path(".github/workflows/vm-operations.yml").read_text(encoding="utf-8")
-        # Four substitutions are required: helper commit, root, old root, new root.
-        # Bash printf repeats a format string when extra values are supplied, so
-        # dropping the final %s generates a second bogus command with empty args.
-        root_cmd = (
-            "show '%s:ops/vm_actions/reconcile_presynced_root.py' | python3 - '%s' '%s' '%s'"
-        )
-        sub_cmd = (
-            "show '%s:ops/vm_actions/reconcile_presynced_submodule.py' | python3 - '%s' '%s' '%s' '%s' '%s' lineage"
-        )
-        self.assertIn(root_cmd, workflow)
-        self.assertIn(sub_cmd, workflow)
-        self.assertLess(workflow.index(root_cmd), workflow.index(sub_cmd))
         self.assertNotIn(
             "show '%s:ops/vm_actions/reconcile_presynced_root.py' | python3 - '%s' '%s'\\n",
             workflow,
@@ -80,13 +78,12 @@ class VmOperationsPresyncWorkflowTests(unittest.TestCase):
         # #279: a named path (overlays/direct_broadcast_overlay.html) was
         # confirmed live-present but matching neither old nor new -- exactly
         # the "reviewed intermediate" shape the bounded lineage opt-in
-        # exists for. The helper only converges bytes that are
-        # sha256-identical to a real reviewed commit in old_sub..new_sub;
-        # anything else still refuses.
+        # exists for. The workflow passes the fixed `lineage` marker as a
+        # strict token (never shell), and the gateway forwards it in the
+        # submodule helper argv.
         workflow = Path(".github/workflows/vm-operations.yml").read_text(encoding="utf-8")
         self.assertIn(
-            "printf \"git -C /home/ubuntu/docich -c core.hooksPath=/dev/null show '%s:ops/vm_actions/reconcile_presynced_submodule.py' | python3 - '%s' '%s' '%s' '%s' '%s' lineage\" \\\n"
-            "              \"$SHA\" /home/ubuntu/docich \"$old_root\" \"$old_sub\" \"$new_sub\" games/soviet_now",
+            "printf '%s %s %s lineage' \"$old_root\" \"$old_sub\" \"$new_sub\"",
             workflow,
         )
         # Helpers must still be read from the exact reviewed candidate object
@@ -94,6 +91,8 @@ class VmOperationsPresyncWorkflowTests(unittest.TestCase):
         # DB; it does not checkout/reset production tracked files.
         self.assertNotIn("cat control/ops/vm_actions/reconcile_presynced_submodule.py", workflow)
         self.assertNotIn("cat control/ops/vm_actions/reconcile_presynced_root.py", workflow)
+        gateway = Path("ops/vm_actions/gateway.py").read_text(encoding="utf-8")
+        self.assertIn("*attest", gateway)
 
     def test_reconcile_attests_reviewed_commits_lost_to_squash(self):
         # #279 follow-up: a reviewed branch commit dropped from
@@ -106,7 +105,13 @@ class VmOperationsPresyncWorkflowTests(unittest.TestCase):
         self.assertIn('item.get("old_sub") != old_sub or item.get("new_sub") != new_sub', workflow)
         self.assertIn('re.fullmatch(r"[A-Za-z0-9._/-]+", rel)', workflow)
         self.assertIn('read -r -a attest_args <<< "$attest_raw"', workflow)
-        self.assertIn('for token in "${attest_args[@]}"; do printf " \'%s\'" "$token"; done', workflow)
+        self.assertIn('for token in "${attest_args[@]}"; do printf \' %s\' "$token"; done', workflow)
+        # Tokens travel unquoted over the dedicated op; the gateway
+        # re-validates every triple (path/digest/mode) before use.
+        gateway = Path("ops/vm_actions/gateway.py").read_text(encoding="utf-8")
+        self.assertIn("RECONCILE_ATTEST_PATH_RE", gateway)
+        self.assertIn("RECONCILE_ATTEST_SHA_RE", gateway)
+        self.assertIn("RECONCILE_ATTEST_MODES", gateway)
 
     def test_manual_deploy_does_not_auto_reconcile(self):
         workflow = Path(".github/workflows/vm-operations.yml").read_text(encoding="utf-8")
