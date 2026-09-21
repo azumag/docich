@@ -396,12 +396,12 @@ title = "半熟英雄 (SFC)"
 adapter = "retroarch"
 
 [retroarch]
-rom = "games/roms/hanjuku-hero.sfc"   # 自己吸い出し ROM を配置
+rom = "games/roms/hanjuku-hero.sfc"   # 著作権物のためGit追跡外。自己吸い出しROMはVMにのみ配置
 core = "auto"                          # or コア .so の絶対パス
 # [retroarch.pad_map] で既定マップの上書きも可能
 
 [agent]
-enabled = false                        # 有効化はユーザー判断 (認証・ROM・コスト確認後)
+enabled = true                         # VMのROM・認証・費用運用を前提に自動rotationで有効化
 # brain の詳細設計・知識注入 (games/hanjuku-sfc-speedrun submodule) は docs/hanjuku_brain.md 参照
 brain = "command"
 command = ["python3", "brains/hanjuku/brain.py"]
@@ -470,7 +470,7 @@ enabled = false        # viewer専用。productionはsoviet_nowが運転
   Linux実機確認は、対象環境ごとのrelease gateとして残る。
 
 ### Phase 2: Game bring-up
-- **半熟英雄 brain: 実装済み** (`brains/hanjuku/` + `docs/hanjuku_brain.md`)。コンテナで fake/claude-cli 両経路の E2E 済み (`scripts/smoke_brain.sh` + 実 LLM 1サイクル)。残り: VM で ROM 実プレイ (`[agent] enabled = true` 化) — **ユーザー判断で一旦ペンディング中** (2026-08-16。引き継ぎ: `docs/handoff_common_parts.md`)。
+- **半熟英雄 brain: 実装済み** (`brains/hanjuku/` + `docs/hanjuku_brain.md`)。コンテナで fake/claude-cli 両経路の E2E 済み (`scripts/smoke_brain.sh` + 実 LLM 1サイクル)。残り: VM でROM実プレイと配信・保存境界の確認 (`[agent] enabled = true` は設定済み)。
 - Oracle ARM で `setup_ubuntu_arm.sh` → `doctor` → RetroArch 実機検証 (§9 の 1-5)。
 - RTMP 実配信 (24h 連続・CPU 実測で preset 決定)。ステート保存 (`ra-cmd SAVE_STATE`) を絡めた復帰運用。
 - sorengame: viewer rehearsalは可能。本番所有権移管はgame-only entry pointと別cutoverが揃うまで行わない。

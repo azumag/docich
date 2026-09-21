@@ -565,8 +565,14 @@ class RetroCornerManager:
                 raise RetroCornerError(f"{name} の retro_corner.enabled はtrue/falseが必要です")
             if not enabled:
                 raise RetroCornerError(f"retro corner対象は登録済みですが無効です: {name}")
-            if game.adapter != "cli":
-                raise RetroCornerError(f"retro corner対象はCLIゲームに限定されます: {name}")
+            if game.adapter not in {"cli", "retroarch"}:
+                raise RetroCornerError(
+                    f"retro corner対象はCLIまたはRetroArchゲームに限定されます: {name}"
+                )
+            if game.adapter == "retroarch" and game.lifecycle.require_round_boundary is not True:
+                raise RetroCornerError(
+                    f"RetroArchのretro corner対象はlifecycle.require_round_boundary=trueが必要です: {name}"
+                )
             corner_raw = game.raw.get("corner", {}) if isinstance(game.raw, dict) else {}
             self_play = isinstance(corner_raw, dict) and corner_raw.get("self_play") is True
             if game.agent.enabled is not True and not self_play:
@@ -1652,17 +1658,46 @@ class RetroCornerManager:
             return os.path.isfile(path) and os.access(path, os.X_OK)
         return shutil.which(path) is not None
 
+    def _retroarch_ready(self, game) -> bool:
+        """Check the local runtime prerequisites for a RetroArch corner.
+
+        ROMs are intentionally outside Git, so a checkout can pass config
+        validation while remaining ineligible.  Resolve the ROM/core and the
+        same helper binaries used by ``RetroArchCoordinatorAdapter.preflight``
+        before including the game in the random candidate set.
+        """
+        from .adapters.retroarch import resolve_core, resolve_rom
+
+        resolve_rom(self.g, game)
+        resolve_core(game)
+        required = self._required_executables(game)
+        for binary in ("dbus-run-session", "retroarch"):
+            if binary not in required:
+                required.append(binary)
+        if self.g.display.viewport_width > 0:
+            for binary in ("Xvfb", "ffplay", "xdotool"):
+                if binary not in required:
+                    required.append(binary)
+        return all(self._executable_exists(path) for path in required)
+
     def _playable_games(self) -> list[str]:
-        """設定・種別が正しく、必要な実行ファイル ([retro_corner].requires) が実在するゲーム。"""
+        """設定と実行環境が揃ったゲームだけを抽選候補にする。"""
         playable = []
         for name in self.config.games:
             try:
                 self._validate_games([name])
                 game = load_game(self.g, name)
+                if game.adapter == "retroarch":
+                    ready = self._retroarch_ready(game)
+                else:
+                    ready = all(
+                        self._executable_exists(path)
+                        for path in self._required_executables(game)
+                    )
             except Exception:
                 # 1つの壊れたゲーム設定で抽選 tick 全体を落とさず、遊べないものとして除外する。
                 continue
-            if all(self._executable_exists(path) for path in self._required_executables(game)):
+            if ready:
                 playable.append(name)
         return playable
 

@@ -4,8 +4,8 @@
 
 `config/docich.soren-live.toml` の `[corner_rotation].corners` がproduction登録の正本。
 各レトロゲーム・PAPER・メリケンを同列の項目として登録する。レトロという親枠はない。
-既存設定から移した9件中、半熟英雄は引き続き無効。残る8件もadapter適格性を通った
-項目だけを有効数Nに数える。ゲーム設定の無効化、実行ファイル不足、catalogの
+既存設定から移した9件には半熟英雄も有効登録する。ただし半熟英雄はVM限定ROMのため、
+ROM/core/adapter適格性を通った項目だけを有効数Nに数える。ゲーム設定の無効化、実行ファイル不足、catalogの
 `paused=true`、`state_dir/corners/<id>.paused` を反映し、Nを固定しない。
 
 `corner_catalog.py` は登録検証、`corner_rotation.py` は選択・時刻・履歴・予約、

@@ -192,14 +192,14 @@ def test_wrong_window_owner_cannot_confirm(adapter):
         confirm(adapter)
 
 
-def test_registration_requires_boundary_and_keeps_original_ignored_rom_path():
+def test_registration_requires_boundary_and_keeps_vm_only_rom_path():
     from docich.config import load_game, load_global
     root = Path(__file__).resolve().parents[1]
     game = load_game(load_global(root), 'hanjuku-hero')
     assert game.lifecycle.require_round_boundary is True
     assert game.lifecycle.boundary_timeout_s == 300
     assert game.raw['retroarch']['rom'] == 'games/roms/hanjuku-hero.sfc'
-    assert game.agent.enabled is False and game.raw['retro_corner']['enabled'] is False
+    assert game.agent.enabled is True and game.raw['retro_corner']['enabled'] is True
 
 
 def test_confirmation_serializes_with_input(adapter):

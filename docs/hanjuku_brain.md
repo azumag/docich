@@ -100,7 +100,7 @@ thinking を既定 off にする理由: 5〜10秒周期の行動ループでは�
 
 ```toml
 [agent]
-enabled = false                # 有効化はユーザー判断 (認証・ROM・コスト確認後)
+enabled = true                 # VMのROM・認証・費用運用を前提に自動rotationで有効化
 brain = "command"
 command = ["python3", "brains/hanjuku/brain.py"]
 interval_ms = 7000             # LLM レイテンシ (3〜6秒) を織り込んだ周期
@@ -127,7 +127,8 @@ observe → brain → act を回す。手動デバッグは
 
 ## 6. VM 側に残る作業 (ユーザー側)
 
-1. `games/roms/hanjuku-hero.sfc` に自己吸い出し ROM を配置
+1. VMの `/home/ubuntu/docich/games/roms/hanjuku-hero.sfc` に自己吸い出し ROM を配置
 2. VM 上で `claude` CLI が認証済みであること (`claude -p "ping"` が返る)
-3. `hanjuku-hero.toml` の `[agent] enabled = true` に変更
+3. VMへ最新設定を反映し、`hanjuku-hero.toml` の `[agent] enabled = true` と
+   共通catalogの有効化を確認
 4. (任意) `DOCICH_BRAIN_MODEL` でモデル変更、`DOCICH_BRAIN_LLM=api` + `pip install anthropic` で SDK 経路

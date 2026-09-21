@@ -1,4 +1,4 @@
-"""Offline registration gates; no ROM, emulator, paid brain or live state."""
+"""Offline registration gates; VM-only ROM and live state stay out of tests."""
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -29,16 +29,16 @@ def manager(tmp_path):
     )
 
 
-def test_live_registration_is_dormant_and_keeps_brain_opt_in(manager):
+def test_live_registration_is_enabled_but_keeps_vm_prerequisites_separate(manager):
     assert manager.config.games == [*EXISTING, "hanjuku-hero"]
     game = load_game(manager.g, "hanjuku-hero")
     assert game.adapter == "retroarch"
-    assert not game.agent.enabled
+    assert game.agent.enabled
     assert game.agent.brain == "command"
     assert game.agent.command == ["python3", "brains/hanjuku/brain.py"]
     assert (ROOT / game.agent.command[1]).is_file()
-    assert game.raw["retro_corner"]["enabled"] is False
-    assert game.raw["retro_corner"]["unattended"] is False
+    assert game.raw["retro_corner"]["enabled"] is True
+    assert game.raw["retro_corner"]["unattended"] is True
     assert manager._required_executables(game) == [
         "retroarch", "dbus-run-session", "python3", "claude",
     ]
@@ -46,17 +46,22 @@ def test_live_registration_is_dormant_and_keeps_brain_opt_in(manager):
     assert manager._rotation_interval_seconds() == 86400 / 6
 
 
-def test_installed_binaries_cannot_enable_hanjuku(manager, monkeypatch):
+def test_vm_only_rom_gate_keeps_local_checkout_out_of_candidates(manager, monkeypatch):
     monkeypatch.setattr(manager, "_executable_exists", lambda _: True)
-    with pytest.raises(RetroCornerError, match="登録済みですが無効"):
-        manager._validate_games(["hanjuku-hero"])
+    # Configuration is valid even when the checkout intentionally has no ROM.
+    manager._validate_games(["hanjuku-hero"])
     assert manager._playable_games() == EXISTING
+
+    # A VM with its private ROM/core and binaries passes the same gate.
+    monkeypatch.setattr("docich.adapters.retroarch.resolve_rom", lambda *_: ROOT / "vm-only.sfc")
+    monkeypatch.setattr("docich.adapters.retroarch.resolve_core", lambda *_: "/vm-only/core.so")
+    assert manager._playable_games() == [*EXISTING, "hanjuku-hero"]
     now = datetime(2026, 9, 21, 12, tzinfo=ZoneInfo("Asia/Tokyo"))
     history = []
     selected = []
-    for _ in EXISTING:
+    for _ in [*EXISTING, "hanjuku-hero"]:
         game = manager._rotation_pick({"selection_history": history}, now)
-        assert game in EXISTING and game not in selected
+        assert game in [*EXISTING, "hanjuku-hero"] and game not in selected
         selected.append(game)
         history.append({"game": game, "selected_at": now.isoformat()})
     assert manager._rotation_pick({"selection_history": history}, now) is None
@@ -107,10 +112,9 @@ def test_gate_is_strict_and_absent_preserves_cli_behavior(manager, monkeypatch, 
             manager._validate_games([game.name])
 
 
-def test_gate_alone_cannot_bypass_unimplemented_retroarch_contract(manager, monkeypatch):
+def test_retroarch_requires_safe_round_boundary(manager, monkeypatch):
     game = load_game(manager.g, "hanjuku-hero")
-    game.raw["retro_corner"]["enabled"] = True
-    game.agent.enabled = True
+    game.lifecycle = replace(game.lifecycle, require_round_boundary=False)
     monkeypatch.setattr("docich.retro_corner.load_game", lambda *_: game)
-    with pytest.raises(RetroCornerError, match="CLIゲームに限定"):
+    with pytest.raises(RetroCornerError, match="require_round_boundary=true"):
         manager._validate_games([game.name])
