@@ -71,7 +71,7 @@ def _today_corner_state(manager: FastPaperCornerManager) -> dict | None:
         manual = json.loads(
             (Path(manager.g.state_dir) / MANUAL_STATE_FILE).read_text(encoding="utf-8")
         )
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, AttributeError):
         return None
     if isinstance(manual, dict) and manual.get("date") == today:
         return manual

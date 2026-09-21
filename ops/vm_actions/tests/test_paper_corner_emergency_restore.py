@@ -31,6 +31,10 @@ class PaperCornerEmergencyRestoreTests(unittest.TestCase):
         manager = mock.Mock()
         manager.stop.side_effect = ["already-running", "completed"]
         manager._active_game.return_value = "sorengame"
+        manager.tz = ZoneInfo("Asia/Tokyo")
+        manager.clock = lambda: dt.datetime(2026, 9, 16, 22, 0, tzinfo=manager.tz).timestamp()
+        manager._read_state.return_value = {}
+        manager.g = SimpleNamespace(state_dir=Path("/nonexistent-paper-state"))
         with mock.patch.object(restore_op, "load_global", return_value=object()), \
              mock.patch.object(restore_op, "FastPaperCornerManager", return_value=manager), \
              mock.patch.object(restore_op, "_stop_scheduled_service") as stop_service:
