@@ -225,8 +225,8 @@ def build_post_restore_source(
     canonical_uuid(restoration.get("request_id"))
     _require(runtime_identity(session.get("runtime")) == restoration.get("source_runtime"),
              "source_runtime_mismatch")
-    _require(_time(session.get("started_at")) <= _time(restoration.get("completed_at"))
-             <= _time(session.get("ended_at")), "invalid_evidence_order")
+    _require(_time(session.get("started_at")) <= _time(session.get("ended_at"))
+             <= _time(restoration.get("completed_at")), "invalid_evidence_order")
     terminal = run.get("terminal")
     terminal_id = None
     if run.get("status") not in {"dead", "ascended", "ended"}:
