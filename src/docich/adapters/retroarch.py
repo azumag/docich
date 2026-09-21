@@ -359,6 +359,12 @@ class RetroArchCoordinatorAdapter:
         # lifecycle of unrelated adapters in this RetroArch implementation.
         self.requires_stop_boundary = game.lifecycle.require_round_boundary
         self.round_boundary_timeout_s = game.lifecycle.boundary_timeout_s
+        if not self.requires_round_boundary:
+            # game_switch treats the callable boundary method itself as a
+            # capability. Hide it for legacy RetroArch games so the lifecycle
+            # policy remains a real opt-in, matching the CLI adapter.
+            self.request_round_boundary = None
+            self.cancel_round_boundary = None
 
     def _contained(self) -> bool:
         return self.g.display.viewport_width > 0

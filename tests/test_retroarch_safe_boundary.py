@@ -62,6 +62,18 @@ def confirm(adapter):
     adapter.confirm_safe_boundary('request-1', 'hanjuku.state', time.monotonic() + 1, None)
 
 
+def test_boundary_capability_is_opt_in_for_legacy_retroarch_games():
+    base = RetroArchCoordinatorTestBase()
+    base.setUp()
+    try:
+        assert base.adapter.requires_round_boundary is False
+        assert base.adapter.requires_stop_boundary is False
+        assert base.adapter.request_round_boundary is None
+        assert base.adapter.cancel_round_boundary is None
+    finally:
+        base.tearDown()
+
+
 def test_wait_leaves_input_and_processes_running_and_timeout_is_reversible(adapter):
     with pytest.raises(game_switch.DeadlineExceededError):
         adapter.request_round_boundary('request-1', time.monotonic() + .03, None)
