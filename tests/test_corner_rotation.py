@@ -294,6 +294,34 @@ def test_unavailable_and_empty_candidates_wait_without_duplicate(setup):
     assert make().tick()["reason"] == "all-corners-cooling-down"
 
 
+def test_all_cooling_corners_reanchor_next_due_to_earliest_expiry(setup):
+    g, clock, catalog, executor, make = setup
+    manager = make()
+    now = clock[0]
+    manager.save({
+        "schema_version": 1,
+        "seed": "test-seed",
+        "slot": 4,
+        "last_seen_at": now - 1,
+        "last_slot_at": now - 2 * DAY,
+        "next_due_at": now - 60,
+        "interval_seconds": DAY / len(catalog),
+        "history": [
+            {"corner": corner.id, "at": now - 3600, "source": "test"}
+            for corner in catalog
+        ],
+        "pending": None,
+        "status": "waiting",
+        "known_corners": {},
+    })
+
+    result = manager.tick()
+
+    assert result["reason"] == "all-corners-cooling-down"
+    assert state(manager)["next_due_at"] == now - 3600 + DAY
+    assert not executor.calls
+
+
 def test_queue_replay_preserves_identity_across_restart_and_catalog_change(setup):
     _, clock, catalog, executor, make = setup
     executor.result = "queued"

@@ -287,6 +287,26 @@ class CornerRotationManager:
                 excluded[corner.id] = "adapter-unavailable"
         return result, excluded
 
+    @staticmethod
+    def _cooldown_due_at(history, eligible, now):
+        """Return the earliest timestamp at which a cooling corner can recur.
+
+        ``next_due_at`` is the nominal 24/N cadence.  When the cadence gets
+        ahead of the rolling cooldown (for example after downtime or a late
+        completion), every eligible corner can still be excluded even though
+        the nominal slot is overdue.  Keeping the old nominal timestamp makes
+        diagnostics report a permanent overdue slot and causes each tick to
+        reconsider the same impossible selection.  Re-anchor to the first
+        actual cooldown expiry instead.
+        """
+        eligible = set(eligible)
+        deadlines = [
+            row["at"] + DAY
+            for row in history
+            if row.get("corner") in eligible and row["at"] > now - DAY
+        ]
+        return min(deadlines) if deadlines else None
+
     def tick(self):
         if not rotation_enabled(self.g):
             return {"status": "disabled"}
@@ -335,6 +355,9 @@ class CornerRotationManager:
                     recent = {r["corner"] for r in state["history"] if r["at"] > now - DAY}
                     candidates = [c for c in eligible if c not in recent]
                     if not candidates:
+                        cooldown_due = self._cooldown_due_at(state["history"], eligible, now)
+                        if cooldown_due is not None:
+                            state["next_due_at"] = cooldown_due
                         return self._wait(state, "all-corners-cooling-down")
                     # Seeded independent random ranking is stable across restart
                     # and catalog order, without persisting interpreter RNG state.

@@ -800,7 +800,11 @@ class TestSystemdTemplates(unittest.TestCase):
             service,
         )
         self.assertIn("TimeoutStartSec=infinity", service)
-        self.assertIn("OnCalendar=*-*-* *:*:00", timer)
+        self.assertIn("OnActiveSec=30s", timer)
+        self.assertIn("OnBootSec=30s", timer)
+        self.assertIn("OnUnitActiveSec=60s", timer)
+        self.assertIn("AccuracySec=5s", timer)
+        self.assertNotIn("OnCalendar=", timer)
         self.assertIn("Persistent=false", timer)
 
 
