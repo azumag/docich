@@ -98,6 +98,21 @@ jobs:
           python3 ops/vm_actions/summarize_runtime_queue_attribution.py "$RUNNER_TEMP/runtime-diagnostics.json" >> "$GITHUB_OUTPUT"
           python3 ops/vm_actions/summarize_worker_state.py "$RUNNER_TEMP/runtime-diagnostics.json" >> "$GITHUB_OUTPUT"
 
+      - name: Summarize storage breakdown
+        id: storage_breakdown
+        run: |
+          set -euo pipefail
+          file="$RUNNER_TEMP/runtime-diagnostics.json"
+          if [[ ! -f "$file" ]]; then
+            {
+              echo 'storage_breakdown_available=0'
+              echo 'storage_breakdown_incomplete=1'
+              echo 'storage_context=storage_breakdown_unavailable=1'
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 ops/vm_actions/summarize_storage.py "$file" >> "$GITHUB_OUTPUT"
+
       - name: Assess tracked drift
         id: drift
         run: |
@@ -244,6 +259,9 @@ jobs:
           USED_PERCENT: ${{ steps.storage.outputs.used_percent }}
           AVAILABLE_BYTES: ${{ steps.storage.outputs.available_bytes }}
           TOTAL_BYTES: ${{ steps.storage.outputs.total_bytes }}
+          STORAGE_BREAKDOWN_AVAILABLE: ${{ steps.storage_breakdown.outputs.storage_breakdown_available }}
+          STORAGE_BREAKDOWN_INCOMPLETE: ${{ steps.storage_breakdown.outputs.storage_breakdown_incomplete }}
+          STORAGE_CONTEXT: ${{ steps.storage_breakdown.outputs.storage_context }}
         run: |
           set -euo pipefail
           prefix='[VM storage]'
@@ -269,9 +287,12 @@ jobs:
           - Total: ${total}
           - Warning threshold: ${WARN_PERCENT}%
           - Critical threshold: ${CRITICAL_PERCENT}%
+          - Storage breakdown available: ${STORAGE_BREAKDOWN_AVAILABLE}
+          - Storage breakdown incomplete: ${STORAGE_BREAKDOWN_INCOMPLETE}
+          - Breakdown (allocated bytes; fixed overlapping categories): ${STORAGE_CONTEXT}
           - Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
 
-          The monitor reports capacity only; it does not include VM logs, paths, credentials, or command output.
+          The breakdown contains only fixed category names, counts, booleans and allocated-byte totals. Categories overlap and must not be summed. VM logs, paths, filenames, credentials, prompts and command output are not published.
           EOF
           )"
           for entry in "${alerts[@]}"; do
