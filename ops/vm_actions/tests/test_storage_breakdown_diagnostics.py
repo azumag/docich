@@ -16,8 +16,8 @@ def load_module(name, relpath):
     return mod
 
 
-storage = load_module("storage_breakdown_tested", "storage_breakdown.py")
-summary = load_module("summarize_storage_tested", "summarize_storage.py")
+collector = load_module("storage_breakdown_tested", COLLECTOR)
+summary = load_module("summarize_storage_tested", SUMMARIZER)
 
 
 class StorageBreakdownTests(unittest.TestCase):
@@ -40,7 +40,7 @@ class StorageBreakdownTests(unittest.TestCase):
         return path
 
     def collect(self, max_entries=1000):
-        return storage.collect_storage_breakdown(
+        return collector._collect_storage_breakdown(
             self.soren,
             self.prod,
             home_root=self.home,
