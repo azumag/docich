@@ -10,6 +10,8 @@
 # silent on the menu and "Game Over" dialog.
 # Each final Score (including zero) is saved before retry; after MAX_MATCHES
 # completed rounds it holds the result screen until the coordinator returns.
+SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
+. "$SCRIPT_DIR/_run_with_driver.sh"
 SCORELOG="${NSNAKE_SCORELOG:-/home/ubuntu/docich/run-soren-live/scores/nsnake.jsonl}"
 PANE="${TMUX_PANE:-}"
 NSNAKE_BIN="${NSNAKE_BIN:-/usr/games/nsnake}"
@@ -70,7 +72,6 @@ driver() {
 
 driver &
 DRIVER=$!
-"$NSNAKE_BIN"
+docich_wrapper_run_with_driver "$DRIVER" "$NSNAKE_BIN"
 rc=$?
-kill "$DRIVER" 2>/dev/null
 exit "$rc"

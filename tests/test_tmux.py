@@ -7,6 +7,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich import tmux as tmux_mod  # noqa: E402
+from docich.process_tree import TerminationResult  # noqa: E402
 
 
 def _ok(stdout: str = "") -> subprocess.CompletedProcess:
@@ -241,6 +242,29 @@ class TestCheckedOperations(unittest.TestCase):
             self.tmux.kill_window_owned("docich:game-g1", self.owner)
         calls = [call.args[0] for call in mock_run.call_args_list]
         self.assertFalse(any("kill-window" in call for call in calls))
+
+    @mock.patch("docich.tmux.terminate_process_tree")
+    @mock.patch("docich.tmux.procs.run")
+    def test_owned_kill_stops_pane_descendants_before_window(self, mock_run, mock_terminate):
+        mock_run.side_effect = [
+            _ok("game-g1\n"),
+            _ok("g1-abcdef\n"),
+            _ok("1\n"),
+            _ok("game\n"),
+            _ok("123\n"),
+            _ok(),
+        ]
+        mock_terminate.return_value = TerminationResult(
+            roots=(123,), term_sent=(123,), kill_sent=(), remaining=()
+        )
+
+        self.assertTrue(self.tmux.kill_window_owned("docich:game-g1", self.owner))
+        mock_terminate.assert_called_once_with([123])
+        self.assertEqual(mock_run.call_args_list[-1].args[0], ["tmux", "kill-window", "-t", "docich:game-g1"])
+
+    def test_legacy_game_cleanup_rejects_shared_session(self):
+        with self.assertRaises(ValueError):
+            self.tmux.stop_game_session_named("docich")
 
     @mock.patch("docich.tmux.procs.run")
     def test_window_exists_lists_and_matches_by_name(self, mock_run):

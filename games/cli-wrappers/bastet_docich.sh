@@ -17,6 +17,8 @@
 # Shell portability: this file runs under /bin/sh (dash on Ubuntu), which
 # has no base#number arithmetic and exits a non-interactive shell on a
 # syntax error.  Keep it strictly POSIX (no [[ ]], no $((10#...))).
+SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
+. "$SCRIPT_DIR/_run_with_driver.sh"
 SCORELOG="${BASTET_SCORELOG:-/home/ubuntu/docich/run-soren-live/scores/bastet.jsonl}"
 PANE="${TMUX_PANE:-}"
 BASTET_BIN="${BASTET_BIN:-/usr/games/bastet}"
@@ -88,7 +90,6 @@ driver() {
 
 driver &
 DRIVER=$!
-"$BASTET_BIN"
+docich_wrapper_run_with_driver "$DRIVER" "$BASTET_BIN"
 rc=$?
-kill "$DRIVER" 2>/dev/null
 exit "$rc"

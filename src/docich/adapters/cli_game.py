@@ -218,7 +218,13 @@ class CliGameAdapter(Adapter):
         raise AdapterError(f"cli アダプタは action type '{action.type}' に対応していません")
 
     def cleanup(self) -> None:
-        self.ctx.tmux.kill_session_named(self._session())
+        session = self._session()
+        stop_game_session = getattr(self.ctx.tmux, "stop_game_session_named", None)
+        if callable(stop_game_session):
+            stop_game_session(session)
+        else:
+            # Compatibility with small test doubles and older Tmux wrappers.
+            self.ctx.tmux.kill_session_named(session)
 
 
 class CliCoordinatorAdapter:
