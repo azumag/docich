@@ -354,10 +354,10 @@ class RetroArchCoordinatorAdapter:
         self.spec = spec
         self.tmux = Tmux()
         self.agent_enabled = game.agent.enabled
-        self.requires_round_boundary = True
+        self.requires_round_boundary = game.lifecycle.require_round_boundary
         # stop historically bypasses draining; opt in without changing the
         # lifecycle of unrelated adapters in this RetroArch implementation.
-        self.requires_stop_boundary = True
+        self.requires_stop_boundary = game.lifecycle.require_round_boundary
         self.round_boundary_timeout_s = game.lifecycle.boundary_timeout_s
 
     def _contained(self) -> bool:

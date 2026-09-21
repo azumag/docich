@@ -29,7 +29,11 @@ def adapter(monkeypatch):
         g = replace(base.g, display=replace(base.g.display, width=1280, height=720,
                     viewport_x=0, viewport_y=90, viewport_width=960, viewport_height=540))
         spec = replace(base.spec, runtime_dir=g.state_dir / 'runtimes' / base.spec.runtime_id)
-        result = RetroArchCoordinatorAdapter(g, base.adapter.game, spec)
+        safe_game = replace(
+            base.adapter.game,
+            lifecycle=replace(base.adapter.game.lifecycle, require_round_boundary=True),
+        )
+        result = RetroArchCoordinatorAdapter(g, safe_game, spec)
         result.tmux = base.tmux
         result.spec.runtime_dir.mkdir(parents=True)
         (result.spec.runtime_dir / 'states').mkdir()
