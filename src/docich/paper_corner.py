@@ -41,6 +41,16 @@ PAPER_FLAG_TTL_S = 1800
 # Bounded memory of already-spoken topic labels handed back to the narrator so
 # the model can avoid repeating itself across a long sequential run.
 MAX_COVERED_TOPICS = 24
+# After the last segment is generated, wait for the enqueued speech to finish
+# playing before handing the display back, so the corner never cuts off its own
+# narration. Poll the Soren audio queue (pending items + speaking state) and
+# give up after this bound so a wedged audio worker cannot pin the corner.
+SPEECH_DRAIN_TIMEOUT_S = 1800
+SPEECH_DRAIN_POLL_S = 2.0
+# Require the queues/playing state to stay empty for several consecutive polls
+# so the brief hand-off gap between the comment queue and the say queue cannot
+# make the corner end mid-sentence.
+SPEECH_DRAIN_STABLE_POLLS = 3
 
 
 def ensure_trading_window(g, tmux=None) -> str:
@@ -283,6 +293,63 @@ class PaperCornerManager:
             self._paper_flag_path().unlink(missing_ok=True)
         except Exception:
             pass
+
+    def _pending_speech(self) -> bool:
+        """True while corner/say audio is still queued or being spoken.
+
+        Uses the Soren audio queue that :func:`enqueue_speech` feeds: pending
+        comment items, pending say-queue items, and the ``speaking.json`` state
+        the player writes while a line is playing. Any unreadable path is
+        treated as "not pending" so a missing Soren root never stalls the
+        corner.
+        """
+        try:
+            from .trading.soren_output import resolve_soren_root
+
+            root = resolve_soren_root(self.g)
+            if (root / "tmp/state/speaking.json").exists():
+                return True
+            if any((root / "tmp/.comment_queue").glob("comment_*.txt")):
+                return True
+            if any((root / "tmp/.say_queue").glob("*.txt")):
+                return True
+        except Exception:
+            return False
+        return False
+
+    def _wait_for_speech(self, state) -> bool:
+        """Wait for the enqueued narration to finish playing (bounded).
+
+        Keeps the corner (and the program slot) while speech drains so the
+        display is not handed back mid-sentence. Progress is re-advertised so
+        the watchdog and radio gate see a live corner; an audio worker that
+        never drains is bounded by ``SPEECH_DRAIN_TIMEOUT_S``.
+        """
+        deadline = self.clock() + SPEECH_DRAIN_TIMEOUT_S
+        saw_pending = False
+        stable = 0
+        while True:
+            if self._pending_speech():
+                saw_pending = True
+                stable = 0
+            else:
+                if not saw_pending:
+                    # Nothing was ever queued (or speech delivery is disabled),
+                    # so there is nothing to drain.
+                    return True
+                stable += 1
+                if stable >= SPEECH_DRAIN_STABLE_POLLS:
+                    return True
+            if self.clock() >= deadline:
+                state['speech_drain_timeout'] = True
+                self.save(state)
+                return False
+            # Keep the liveness marker and radio gate fresh while waiting.
+            state['last_progress_at'] = self.clock()
+            self._refresh_paper_flag(state)
+            self.save(state)
+            self.sleep(SPEECH_DRAIN_POLL_S)
+        return True
 
     def _end_text(self, state) -> str:
         # Date-stamped so the player-side duplicate suppression (which hashes
@@ -832,6 +899,10 @@ class PaperCornerManager:
                 state['end_reason'] = 'exhausted'
             self.save(state)
             break
+        # The narration material is exhausted, but its speech may still be
+        # playing. Wait for the audio queue to drain before handing the display
+        # back so the corner never cuts off its own closing segments.
+        self._wait_for_speech(state)
         return self._restore_locked(state)
 
 
