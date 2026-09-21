@@ -511,8 +511,13 @@ def run_manual(g, manager, games):
             manager.config = replace(manager.config, **overrides)
         state.update(last_seen_at=now, status="running")
         rotation.save(state)
-        adapter = SimpleNamespace(manager=manager, state_path=path,
-                                  run=lambda req: manager.run_rotation(req["request_id"]))
+        selected_adapter = rotation.adapters[chosen.id]
+        adapter = SimpleNamespace(
+            manager=manager,
+            state_path=path,
+            run=lambda req: manager.run_rotation(req["request_id"]),
+            runtime_environment=getattr(selected_adapter, "runtime_environment", None),
+        )
         try:
             result = rotation.executor.execute(adapter, request)
             status = result if isinstance(result, str) else result.status

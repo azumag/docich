@@ -109,6 +109,66 @@ def test_adapter_config_disables_paper_and_meriken_from_effective_n(tmp_path, mo
     assert excluded["meriken"] == "adapter-unavailable"
 
 
+def test_manual_meriken_start_scopes_runtime_environment(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+    import os
+    from docich import corner_rotation
+
+    config = replace(
+        load_global(ROOT, ROOT / "config/docich.soren-live.toml"),
+        state_dir=tmp_path,
+    )
+    env_file = tmp_path / "soren91.env"
+    env_file.write_text(
+        "SOREN91_MACOS_AGENT_BASE_URL=http://100.64.0.2:8787\n"
+        "SOREN91_LOCAL_AGENT_TOKEN=manual-test-token\n"
+        "SOREN91_OCI_TAILSCALE_IP=100.64.0.3\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DOCICH_SOREN91_ENV_FILE", str(env_file))
+    for key in (
+        "SOREN91_MACOS_AGENT_BASE_URL",
+        "SOREN91_LOCAL_AGENT_TOKEN",
+        "SOREN91_OCI_TAILSCALE_IP",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    captured = {}
+
+    class Executor:
+        def execute(self, adapter, request):
+            scope_factory = getattr(adapter, "runtime_environment", None)
+            scope = scope_factory() if callable(scope_factory) else nullcontext()
+            with scope:
+                captured["inside"] = os.environ.get("SOREN91_LOCAL_AGENT_TOKEN")
+            captured["after"] = os.environ.get("SOREN91_LOCAL_AGENT_TOKEN")
+            return "completed"
+
+    original_manager = corner_rotation.CornerRotationManager
+    holder = {}
+
+    def build_manager(g):
+        if "manager" not in holder:
+            holder["manager"] = original_manager(
+                g,
+                clock=lambda: 1000000.0,
+                seed="manual-meriken-env",
+                executor=Executor(),
+            )
+            holder["manager"]._eligible = lambda: (["meriken"], {})
+        return holder["manager"]
+
+    monkeypatch.setattr(corner_rotation, "CornerRotationManager", build_manager)
+    manager = holder.setdefault(
+        "owner", build_manager(config).adapters["meriken"].manager
+    )
+
+    result = corner_rotation.run_manual(config, manager, ["soren91"])
+
+    assert result.status == "completed"
+    assert captured == {"inside": "manual-test-token", "after": None}
+
+
 def test_nethack_legacy_state_is_visible_to_unified_rotation(tmp_path, monkeypatch):
     from docich.retro_corner import RetroCornerManager
 
