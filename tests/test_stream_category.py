@@ -12,13 +12,16 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich import config  # noqa: E402
+from docich.adapters.program import PAPER_VIEW_NAME  # noqa: E402
 from docich.stream_category import (  # noqa: E402
     PAPER_CATEGORY_ID,
     PAPER_CATEGORY_NAME,
     SCRIPT_NAME,
     StreamCategoryError,
+    announce_running_view,
     announce_stream_game,
     announce_stream_paper,
+    commit_hook,
     script_path,
     twitch_category,
 )
@@ -152,6 +155,44 @@ class TestAnnounceStreamGame(StreamCategoryTestBase):
 
     def test_script_path_follows_the_configured_soren_root(self) -> None:
         self.assertEqual(script_path(self.g), self.soren / SCRIPT_NAME)
+
+
+class TestRunningView(StreamCategoryTestBase):
+    """A committed switch announces whichever view it put on screen."""
+
+    def test_a_committed_game_uses_its_twitch_category(self) -> None:
+        script = self._install_script()
+        self.assertTrue(announce_running_view(self.g, "nethack", spawn=self._recorder))
+        self.assertEqual(self.spawned[0]["argv"][0], str(script.resolve()))
+        self.assertIn("--game", self.spawned[0]["argv"])
+        self.assertIn("nethack", self.spawned[0]["argv"])
+
+    def test_a_committed_paper_view_uses_the_explicit_category(self) -> None:
+        script = self._install_script()
+        self.assertTrue(announce_running_view(self.g, PAPER_VIEW_NAME, spawn=self._recorder))
+        self.assertEqual(
+            self.spawned[0]["argv"],
+            [
+                str(script.resolve()),
+                "--category-id",
+                PAPER_CATEGORY_ID,
+                "--category-only",
+                "--category-name",
+                PAPER_CATEGORY_NAME,
+            ],
+        )
+
+    def test_a_game_without_a_category_is_left_alone(self) -> None:
+        self._install_script()
+        self.assertFalse(announce_running_view(self.g, "plain", spawn=self._recorder))
+        self.assertEqual(self.spawned, [])
+
+    def test_commit_hook_announces_the_game_it_is_given(self) -> None:
+        self._install_script()
+        hook = commit_hook(self.g, spawn=self._recorder)
+        hook("nethack")
+        self.assertEqual(self.spawned[0]["argv"][-1], "--category-only")
+        self.assertIn("nethack", self.spawned[0]["argv"])
 
 
 class TestSpawnMechanics(StreamCategoryTestBase):

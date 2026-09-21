@@ -1609,10 +1609,16 @@ class GameSwitchCoordinator:
         rollback_timeout_s: float = ROLLBACK_TIMEOUT_S,
         round_reacquire_timeout_s: float = ROUND_REACQUIRE_TIMEOUT_S,
         event_log: EventLog | None = None,
+        post_commit: Callable[[str], None] | None = None,
     ):
         self.store = store
         self.adapter_factory = adapter_factory
         self.crash_hook = crash_hook
+        # Called with the committed game name right after a successful
+        # start/switch commit.  It exists for cosmetic side effects that must
+        # follow whichever game is actually running (the Twitch category), so
+        # callers do not have to remember to run them on every switch path.
+        self.post_commit = post_commit
         self.default_timeout_s = default_timeout_s
         self.quiesce_verify_timeout_s = quiesce_verify_timeout_s
         self.poll_interval_s = poll_interval_s
@@ -3246,6 +3252,27 @@ class GameSwitchCoordinator:
             receipt=copy.deepcopy(dict(acceptance.receipt)),
         )
 
+    def _emit_post_commit(self, game: str) -> None:
+        """Run the post-commit hook without ever failing a committed switch.
+
+        The hook is best-effort and cosmetic (Twitch category).  A raising
+        hook must not turn a successful switch into a failed one, so failures
+        are only recorded in the switch log.
+        """
+
+        hook = self.post_commit
+        if hook is None:
+            return
+        try:
+            hook(game)
+        except Exception as exc:
+            self._log(
+                "post_commit_failed",
+                phase="ready",
+                result="succeeded",
+                detail=_safe_detail(exc),
+            )
+
     def _switch_locked(
         self,
         tx: GameSwitchTransaction,
@@ -3532,6 +3559,11 @@ class GameSwitchCoordinator:
         )
         receipt = tx.finish_request(acceptance.request_id, "succeeded", last_result)
         self._log("committed", phase="ready", result="succeeded")
+        # Announce from the same commit that made this game the running one.
+        # Doing it here (not in each corner) makes the category follow every
+        # switch path, including a direct CLI switch or a corner whose owner
+        # process was restarted mid-corner.
+        self._emit_post_commit(target)
         warnings: list[str] = []
         cleanup_pending = self._finalize_locked(tx, deadline, warnings=warnings)
         return _result_from_receipt(receipt, warnings=tuple(warnings), cleanup_pending=cleanup_pending)

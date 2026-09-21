@@ -342,9 +342,15 @@ class RetroCornerManager:
         self.config = config or load_retro_corner_config(g)
         self.tz = ZoneInfo(self.config.timezone)
         self.store = GameSwitchStore(g.state_dir)
-        self.coordinator = coordinator or GameSwitchCoordinator(
-            self.store, lambda spec: make_coordinator_adapter(g, spec)
-        )
+        if coordinator is None:
+            from .stream_category import commit_hook
+
+            coordinator = GameSwitchCoordinator(
+                self.store,
+                lambda spec: make_coordinator_adapter(g, spec),
+                post_commit=commit_hook(g),
+            )
+        self.coordinator = coordinator
         self._now = now or (lambda: dt.datetime.now(self.tz))
         self._sleep = sleep
         self._active_game_reader = active_game_reader or self._canonical_active_game
