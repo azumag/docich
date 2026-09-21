@@ -2,7 +2,7 @@
   "output_sha256": "340631d9ae696ad5ebad7afdc22cb700b079874857c84c8885999dcaa4c43998",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "0bcf5939604eb922dfeca76108cba8d7f24888499a62190a7e1c5a1ffe42d812",
+  "source_sha256": "e54768b592bdd9fa82fee18dcda44fa2850664427589079237ad26211e4fd0f4",
   "topics": [
     "PR #899を統合・現行mainへVM反映、Snake復帰カテゴリのlive境界を確認",
     "Snake終了後のSorenカテゴリ復帰順序を恒久修正",
