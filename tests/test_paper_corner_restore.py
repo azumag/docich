@@ -40,6 +40,7 @@ class _Manager:
             "previous_game": "sorengame",
         }
         self.g = SimpleNamespace(state_dir=state_dir or Path("/nonexistent-paper-state"))
+        self.path = (state_dir or Path("/nonexistent-paper-state")) / "paper_corner.json"
         self.coordinator = _Coordinator(result)
         self.store = SimpleNamespace(
             canonical=SimpleNamespace(load=lambda: (canonical or {
@@ -156,6 +157,9 @@ def test_abandon_fallback_clears_program_view_and_starts_recorded_game(tmp_path,
 
     assert result.status == "succeeded"
     assert calls == [("recover", True), ("start", "sorengame")]
+    saved = json.loads((tmp_path / paper_corner_restore.MANUAL_STATE_FILE).read_text())
+    assert saved["status"] == "completed"
+    assert saved["end_reason"] == "recovered"
     g = SimpleNamespace(state_dir=tmp_path)
     manager = _Manager(state_dir=tmp_path)
     manager.state["date"] = "2026-09-18"
