@@ -87,6 +87,24 @@ def test_manual_start_narrates_and_restores(tmp_path):
     assert not (g.state_dir / 'paper_corner.json').exists()
 
 
+def test_manual_start_after_failed_but_restored_run_starts_fresh(tmp_path):
+    from docich.adapters.program import PAPER_VIEW_NAME
+    g = setup(tmp_path)
+    now = [datetime(2026, 9, 11, 3, 0, tzinfo=ZoneInfo('Asia/Tokyo')).timestamp()]
+    coord = FakeCoordinator(active='sorengame')
+    mgr = _manager(g, now, coord)
+    # The stale failed run already handed the display back to sorengame, so a
+    # fresh operator start must actually start instead of no-oping on restore.
+    mgr._active_game = lambda: coord.active_game
+    mgr.save({'status': 'failed', 'date': '2026-09-11', 'previous_game': 'sorengame'})
+
+    assert mgr.start() == 'completed'
+
+    saved = json.loads(mgr.path.read_text())
+    assert saved['previous_game'] == 'sorengame'
+    assert ('switch', PAPER_VIEW_NAME) in coord.calls
+
+
 def test_manual_stop_is_noop_when_inactive(tmp_path):
     g = setup(tmp_path)
     now = [datetime(2026, 9, 11, 3, 0, tzinfo=ZoneInfo('Asia/Tokyo')).timestamp()]

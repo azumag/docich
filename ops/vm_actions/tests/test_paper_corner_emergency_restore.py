@@ -47,6 +47,7 @@ class PaperCornerEmergencyRestoreTests(unittest.TestCase):
         manager = mock.Mock()
         manager.stop.side_effect = ["not-active", "completed"]
         manager._active_game.side_effect = [PAPER_VIEW_NAME, "sorengame"]
+        manager.path = Path("/nonexistent-paper-state/paper_corner.json")
         manager._read_state.return_value = {
             "status": "completed",
             "date": "2026-09-16",

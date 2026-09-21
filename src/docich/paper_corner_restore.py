@@ -18,6 +18,7 @@ from pathlib import Path
 
 from .adapters.program import PAPER_VIEW_NAME
 from .config import ConfigError, load_global
+from .game_switch import atomic_write_json
 from .paper_corner import PaperCornerError
 from .paper_corner_fast import FastPaperCornerManager
 from .paper_corner_manual import MANUAL_STATE_FILE, ManualPaperCornerManager
@@ -56,8 +57,8 @@ def _today(manager: FastPaperCornerManager) -> str:
     return dt.datetime.fromtimestamp(manager.clock(), manager.tz).date().isoformat()
 
 
-def _today_corner_state(manager: FastPaperCornerManager) -> dict | None:
-    """Today's PAPER corner state, scheduled first then the manual run.
+def _today_corner_state(manager: FastPaperCornerManager) -> tuple[dict, Path] | None:
+    """Today's PAPER corner state and its state file, scheduled first.
 
     Scheduled failures live in ``paper_corner.json``; an operator/manual run
     keeps its own ``paper_corner_manual.json``. Both can strand the canonical
@@ -66,16 +67,31 @@ def _today_corner_state(manager: FastPaperCornerManager) -> dict | None:
     today = _today(manager)
     scheduled = manager._read_state()
     if isinstance(scheduled, dict) and scheduled.get("date") == today:
-        return scheduled
+        return scheduled, Path(manager.path)
+    manual_path = Path(manager.g.state_dir) / MANUAL_STATE_FILE
     try:
-        manual = json.loads(
-            (Path(manager.g.state_dir) / MANUAL_STATE_FILE).read_text(encoding="utf-8")
-        )
+        manual = json.loads(manual_path.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError, AttributeError):
         return None
     if isinstance(manual, dict) and manual.get("date") == today:
-        return manual
+        return manual, manual_path
     return None
+
+
+def _terminalize_state(state: dict, path: Path, manager: FastPaperCornerManager) -> None:
+    """Mark a recovered corner's durable state terminal.
+
+    A stale ``failed`` state makes the next operator/manual start a no-op (its
+    recorded previous game is already active), so the recovery closes it out.
+    """
+    state.update(
+        status="completed",
+        completed_at=manager.clock(),
+        last_error=None,
+        end_reason="recovered",
+        detail="program-view transition abandoned; previous game restored",
+    )
+    atomic_write_json(path, state)
 
 
 def _recover_failed_paper_view(manager: FastPaperCornerManager, *, abandon: bool = False):
@@ -93,9 +109,10 @@ def _recover_failed_paper_view(manager: FastPaperCornerManager, *, abandon: bool
     clears the failed program-view transition and starts the recorded previous
     game directly, so a broken dashboard cannot pin the display black.
     """
-    state = _today_corner_state(manager)
-    if state is None:
+    found = _today_corner_state(manager)
+    if found is None:
         return None
+    state, state_path = found
     if state.get("status") not in {"starting", "active", "restoring", "failed", "completed"}:
         return None
     if not state.get("previous_game") or state.get("previous_game") == PAPER_VIEW_NAME:
@@ -126,6 +143,7 @@ def _recover_failed_paper_view(manager: FastPaperCornerManager, *, abandon: bool
         if getattr(started, "status", None) != "succeeded":
             detail = getattr(started, "detail", None) or getattr(started, "error_code", None) or "unknown"
             raise PaperCornerError(f"could not start the recorded previous game: {detail}")
+        _terminalize_state(state, state_path, manager)
         return started
 
     result = manager.coordinator.recover(timeout_s=RECOVERY_TIMEOUT_S)
@@ -169,7 +187,8 @@ def restore(config_path: Path, *, run=subprocess.run, sleep=time.sleep) -> dict[
         if not isinstance(state, dict) or state.get("date") != _today(manager):
             # The stranded view is an operator/manual run with its own state.
             # Its recorded previous game is the only safe restore target.
-            manual_state = _today_corner_state(manager)
+            found = _today_corner_state(manager)
+            manual_state = found[0] if found is not None else None
             if manual_state is None or manual_state.get("previous_game") == PAPER_VIEW_NAME:
                 raise PaperCornerError("stuck PAPER view has no current-day restore state")
             result = ManualPaperCornerManager(g).stop()

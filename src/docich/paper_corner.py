@@ -591,7 +591,17 @@ class PaperCornerManager:
         if state.get('status') in ('starting', 'active'):
             return 'already-active'
         if state.get('status') in ('failed', 'restoring'):
-            return self._restore_locked(state)
+            previous = state.get('previous_game')
+            # A failed run whose display is already back at the previous game
+            # has nothing left to restore. An operator/manual start must then
+            # actually start instead of no-oping on the stale failure.
+            already_home = (
+                state.get('status') == 'failed'
+                and previous is not None
+                and self._active_game() == previous
+            )
+            if not already_home:
+                return self._restore_locked(state)
         state = {
             'status': 'starting',
             'date': dt.datetime.fromtimestamp(self.clock(), self.tz).date().isoformat(),
