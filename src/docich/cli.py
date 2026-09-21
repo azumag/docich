@@ -610,7 +610,7 @@ def cmd_down(g: GlobalConfig, *, request_id: str | None = None, timeout_s: float
         _print_switch_result("全コンポーネントを停止", result)
         return _result_exit_code(result)
     tmux = Tmux()
-    tmux.kill_session()
+    tmux.kill_session(allow_shared=True)
     State(g).clear_current_game()
     print("docich: 停止しました")
     return 0

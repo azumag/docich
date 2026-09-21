@@ -86,8 +86,8 @@ class Tmux:
         if not self.has_session():
             self._run(["new-session", "-d", "-s", self.session, "-x", "200", "-y", "50"])
 
-    def kill_session(self) -> None:
-        self.kill_session_named(self.session)
+    def kill_session(self, *, allow_shared: bool = False) -> None:
+        self.kill_session_named(self.session, allow_shared=allow_shared)
 
     def has_window(self, name: str) -> bool:
         return name in self.list_windows()
@@ -226,7 +226,18 @@ class Tmux:
     def set_status_off(self, session: str) -> None:
         self._run(["set-option", "-t", session, "status", "off"])
 
-    def kill_session_named(self, session: str) -> None:
+    def kill_session_named(self, session: str, *, allow_shared: bool = False) -> None:
+        # Issue #219: 共有 session ("docich") の kill は明示的な全体停止
+        # (cmd_down) 経由でのみ許可する。汎用経路からの誤 kill は
+        # fail-closed で拒否し、将来の再発を大音量の証拠つきで検出する。
+        # 共有 session が最後の session だった場合、その kill は tmux server
+        # 自体の終了を招き、watchdog の再作成で「server 再起動」に見える
+        # (9/10 の socket mtime 更新の観測と整合する再構成)。
+        if session == SESSION and not allow_shared:
+            raise OwnershipMismatchError(
+                "共有 session 'docich' の kill は汎用経路では拒否します"
+                " (全体停止 cmd_down 経由で allow_shared=True が必要)"
+            )
         # 存在しないセッションの kill はエラーになるが無視する
         self._run(["kill-session", "-t", session])
 

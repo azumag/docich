@@ -218,13 +218,12 @@ class CliGameAdapter(Adapter):
         raise AdapterError(f"cli アダプタは action type '{action.type}' に対応していません")
 
     def cleanup(self) -> None:
+        # Issue #219: 共有 session への誤 kill を構造的に防ぐため、
+        # game-only へ fail-closed する stop_game_session_named 経由に一本化する。
+        # 無防備な kill_session_named へのフォールバックは持たない。
+        # ("docich" 等の非 game session は ValueError で大音量に失敗する)
         session = self._session()
-        stop_game_session = getattr(self.ctx.tmux, "stop_game_session_named", None)
-        if callable(stop_game_session):
-            stop_game_session(session)
-        else:
-            # Compatibility with small test doubles and older Tmux wrappers.
-            self.ctx.tmux.kill_session_named(session)
+        self.ctx.tmux.stop_game_session_named(session)
 
 
 class CliCoordinatorAdapter:

@@ -36,8 +36,13 @@ class FakeTmux:
     def send_keys(self, session, keys, literal=False):
         self.calls.append(("send_keys", session, list(keys), literal))
 
-    def kill_session_named(self, session):
-        self.calls.append(("kill_session_named", session))
+    def stop_game_session_named(self, session):
+        # 実 Tmux.stop_game_session_named の game-only 制約を模す。
+        if session != "docich-game" and not (
+            session.startswith("docich-game-g") and session[len("docich-game-g"):].isdigit()
+        ):
+            raise ValueError("legacy game cleanup only accepts docich-game")
+        self.calls.append(("stop_game_session_named", session))
 
 
 class CliAdapterTestBase(unittest.TestCase):
@@ -199,7 +204,17 @@ class TestCleanup(CliAdapterTestBase):
         ctx = self._make_ctx(cli_raw={"command": "nethack"}, tmux=tmux)
         adapter = cli_game.CliGameAdapter(ctx)
         adapter.cleanup()
-        self.assertIn(("kill_session_named", "docich-game"), tmux.calls)
+        self.assertIn(("stop_game_session_named", "docich-game"), tmux.calls)
+
+    def test_cleanup_refuses_shared_session(self):
+        # Issue #219: DOCICH_GAME_SESSION=docich の混入があっても共有 session は殺さない。
+        tmux = FakeTmux()
+        ctx = self._make_ctx(cli_raw={"command": "nethack"}, tmux=tmux)
+        adapter = cli_game.CliGameAdapter(ctx)
+        with mock.patch.dict("os.environ", {"DOCICH_GAME_SESSION": "docich"}):
+            with self.assertRaises(ValueError):
+                adapter.cleanup()
+        self.assertNotIn(("stop_game_session_named", "docich"), tmux.calls)
 
 
 class TestRobotsCatalog(unittest.TestCase):
