@@ -33,7 +33,7 @@
    core = "auto"
 
    [agent]
-   enabled = false     # 認証・費用・実機ゲートの確認まで維持
+   enabled = true      # VMのROM・認証・費用運用を前提に自動rotationで有効化
    brain = "command"
    command = ["python3", "brains/hanjuku/brain.py"]
    interval_ms = 7000
@@ -141,26 +141,25 @@ bin/docich snap                                  # run/screenshots/ に保存
 
 `brains/hanjuku/brain.py` と攻略資料注入は実装済み (`docs/hanjuku_brain.md`)。
 fake backendの契約テストと実ROM・課金backendでの動作保証は別。
-`[agent] enabled = false` を維持し、認証・費用承認・観測→推論→入力の実機E2Eは未確認。
+`[agent] enabled = true` は設定済みだが、VM上の認証・費用運用と観測→推論→入力の実機E2Eは未確認。
 
 ## 8. レトロコーナー登録と実行資格
 
-`config/docich.soren-live.toml` の `retro_corner.games` に登録しているが、
-**実行可能な抽選候補にはまだ入らない**。ゲーム側 `[retro_corner] enabled = false` により
-自動選択から除外し、`agent.enabled = false` も維持する。`unattended = false` は
-無人運転を検証済みと扱わないための明示で、自動コーナーの有効化スイッチではない。
-登録・ユニットテストは本番反映やROM実プレイの証拠ではない。
+`config/docich.soren-live.toml` の共通catalogとゲーム側 `[retro_corner] enabled = true` により、
+半熟英雄は自動rotationへ登録される。`RetroCornerManager` はRetroArchをCLIと別の実行経路として
+検証し、ROM・core・RetroArch/表示用バイナリが揃った環境だけを抽選候補にする。
+したがって、ROMを持たないローカルcheckoutでは候補から除外されるが、それは未実装ではなく、
+著作権物をGitへ入れないための期待された状態である。登録・ユニットテストは本番反映やROM実プレイの証拠ではない。
 
-登録数は無効なゲームも含むため、rolling間隔は `24h / 7`（約3時間26分）になる。
-既存6ゲームが全て24時間のクールダウン中なら、その間は開始しない。
-旧6件からの設定変更時には `next_due_at` が再計算され、最初のtickで抽選し得る。
-日次モードへ戻す場合は無効な登録をgamesから外すこと（日次startは対象検証で拒否する）。
+共通catalogは9件で、rollingの分母Nは無効化・pause・実行環境不足を除いた実効適格数である。
+VMで半熟英雄を含む全項目が準備済みならNは9になり、ROMなしcheckoutでは半熟英雄を除いて計算される。
+既存の履歴がある場合も、次のtickで実効適格性を再評価する。
 
-実行有効化には設定変更だけでなく、次の実装と別途検証が必要。
+設定上は実行有効化済みだが、実機運用には次の検証が残る。
 
-1. `RetroCornerManager._validate_games` と手動コーナーは現在CLI限定。
-   RetroArchを許可する前に、ROM/core/brainの準備不足を選択前に除外する契約を追加する。
-   `requires` は実行ファイルの存在検査のみで、ROM/core/CLI認証の検査ではない。
+1. `RetroCornerManager._validate_games` はCLIとRetroArchを許可する。手動の旧コーナー入口は引き続き
+   CLI限定であり、共通rotationは `GameCornerAdapter` 経由でRetroArch coordinatorへ委譲する。
+   `requires` に加えて、RetroArchではROM/coreと表示経路のバイナリを選択前に検査する。
 2. `RetroArchCoordinatorAdapter` の明示保存境界を §9 のとおり実装した。
    自動試合終了検出・自動checkpoint復元・無人の境界確認は未実装で、実行資格には使わない。
 3. viewport設定時は専用Xvfbでゲーム本来のwindowを描画し、既存 `presentation.py` で
@@ -170,7 +169,7 @@ fake backendの契約テストと実ROM・課金backendでの動作保証は別�
    共通基盤のtmux/X11/ffmpeg/xdotoolを用意する。既定brainは `claude` CLIを使うため、
    認証と課金承認は別途必要。実行ファイルが存在するだけでは承認済みと扱わない。
 5. fake backendによる契約テストと、実ROMでの観測→brain→入力→保存→復帰を分けて検証する。
-   `retro_corner.enabled` と `agent.enabled` をtrueにするだけではCLI制限を通過しない。
+   `retro_corner.enabled` と `agent.enabled` はtrueにしたが、VMの実行環境・認証・実機E2Eを別途確認する。
 
 今回の登録ではROM取得・有料LLM実行・本番操作を行わない。
 オフライン検証: `python3 -m pytest -q tests/test_hanjuku_retro_registration.py tests/test_hanjuku_brain.py`
@@ -234,8 +233,8 @@ OSからの強制終了や別sessionへ離脱する子まで救済する仕組�
 - 固定VM diagnostics collectorへの詳細manifest収集は未追加。canonicalの既存phase/error収集に加え、
   有効化前に `presentation.json` / `retroarch_boundary.json` のsanitized収集をレビューする。
   ROM/state本文・brain本文・credentialsは公開ログや診断へ出さない。
-- deployは未実施。`retro_corner.enabled=false` / `agent.enabled=false` / CLI候補制限を維持する。
-  この実装・ローカルテスト合格だけで自動抽選/無人運用へ昇格させない。
+- deployは未実施。今回の設定・コード変更はこのworktreeだけで、共有mainとVMにはまだ反映していない。
+  ローカルテスト合格だけでVMの自動抽選/無人プレイやROM実プレイを証明しない。
 
 契約テスト: `tests/test_retroarch_safe_boundary.py`、`tests/test_presentation.py`。
 ROM取得、実機起動、課金brain、VM操作、push/PR/merge/deployは本タスクでは実施しない。

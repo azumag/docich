@@ -4,7 +4,7 @@ title = "半熟英雄 (SFC)"
 adapter = "retroarch"
 
 [retroarch]
-rom = "games/roms/hanjuku-hero.sfc"   # 自己吸い出し ROM を配置
+rom = "games/roms/hanjuku-hero.sfc"   # 著作権物のためGit追跡外。自己吸い出しROMはVMのこの相対位置にのみ配置
 core = "auto"                          # or コア .so の絶対パス
 # [retroarch.pad_map] で既定マップの上書きも可能
 
@@ -13,18 +13,17 @@ require_round_boundary = true
 boundary_timeout_s = 300
 
 [agent]
-enabled = false                        # 有効化はユーザー判断 (認証・ROM・コスト確認後)
+enabled = true                         # VMのROM・認証・費用運用を前提に自動rotationで有効化
 # brain の詳細設計・知識注入 (games/hanjuku-sfc-speedrun submodule) は docs/hanjuku_brain.md 参照
 brain = "command"
 command = ["python3", "brains/hanjuku/brain.py"]
 interval_ms = 7000                     # LLM レイテンシ (3〜6秒) を織り込んだ周期
 
-# live rotationへの登録のみ。明示保存境界・containの実装は実機検証待ち。
-# enabledだけ変更してもCLI限定の適格性チェックで除外される。解除条件は
-# docs/games/hanjuku-hero.md §8参照。agent/課金LLMの有効化は別途判断する。
+# unified live rotationへ登録済み。ROM/core/実行ファイルが揃った環境だけ抽選候補になる。
+# 実機プレイ、brainの認証・費用、表示・保存境界のE2E確認は別ゲートであり、設定有効化だけでは証明しない。
 [retro_corner]
-enabled = false
-unattended = false
+enabled = true
+unattended = true
 # ROM/coreは実行ファイルではないためrequiresへ混ぜない。
 # claudeは既定brain backend用。存在だけでは認証・予算を保証しない。
 requires = ["retroarch", "dbus-run-session", "python3", "claude"]

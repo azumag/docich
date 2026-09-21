@@ -52,7 +52,9 @@ corners = [
   { id = "moon-buggy", adapter = "game", game = "moon-buggy" },
   { id = "pacman4console", adapter = "game", game = "pacman4console" },
   { id = "nethack", adapter = "nethack", game = "nethack" },
-  { id = "hanjuku-hero", adapter = "game", game = "hanjuku-hero", enabled = false },
+  # ROM本体は著作権物のためGit追跡外。自己吸い出しROMはVMにのみ配置し、
+  # ROM/core/実行環境が揃ったVMでだけ適格性検査を通過して抽選される。
+  { id = "hanjuku-hero", adapter = "game", game = "hanjuku-hero" },
   { id = "paper", adapter = "paper", game = "paper-view", live_eligible = false },
   { id = "meriken", adapter = "meriken", game = "soren91" },
 ]
@@ -74,7 +76,7 @@ start_hour = 19
 daily_each_game = true
 randomize_start = true
 start_window_minutes = 30
-# 半熟英雄は登録のみ。ゲーム側retro_corner.enabled=falseにより抽選から除外する。
+# 半熟英雄はVM限定の自己吸い出しROMを使う。ROM本体はGitへ含めず、VMの実行時適格性検査で抽選可否を決める。
 # 最初の5ゲームは command brain と bot_eval の bounded headless 評価を使う。
 # NetHackは専用adapterで同列のcatalogに入り、persistent_runのセーブ境界を使うbounded slot。
 # 旧来の [nethack_corner] 固定tickを別途有効化しない。

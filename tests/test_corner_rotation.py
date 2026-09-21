@@ -64,7 +64,7 @@ def test_flat_live_catalog_and_financial_boundary():
     assert {c.id for c in catalog} == {"ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console",
                                      "nethack", "hanjuku-hero", "paper", "meriken"}
     assert all(c.live_eligible is False for c in catalog)
-    assert not next(c for c in catalog if c.id == "hanjuku-hero").enabled
+    assert next(c for c in catalog if c.id == "hanjuku-hero").enabled
     assert not any(c.id == "retro" for c in catalog)
     assert next(c for c in catalog if c.id == "nsnake").target_matches == 1
     assert all(c.target_matches is None for c in catalog if c.id != "nsnake")
@@ -101,11 +101,13 @@ def test_real_adapters_derive_live_eligible_count(tmp_path, monkeypatch):
     from docich.retro_corner import RetroCornerManager
     g = replace(load_global(ROOT, ROOT / "config/docich.soren-live.toml"), state_dir=tmp_path)
     monkeypatch.setattr(RetroCornerManager, "_executable_exists", staticmethod(lambda _: True))
+    monkeypatch.setattr("docich.adapters.retroarch.resolve_rom", lambda *_: ROOT / "vm-only.sfc")
+    monkeypatch.setattr("docich.adapters.retroarch.resolve_core", lambda *_: "/vm-only/core.so")
     manager = CornerRotationManager(g)
     eligible, excluded = manager._eligible()
-    assert len(eligible) == 8
-    assert {"paper", "meriken", "nsnake", "nethack"} <= set(eligible)
-    assert excluded == {"hanjuku-hero": "disabled-or-paused"}
+    assert len(eligible) == 9
+    assert {"paper", "meriken", "nsnake", "nethack", "hanjuku-hero"} <= set(eligible)
+    assert excluded == {}
 
 
 def test_adapter_config_disables_paper_and_meriken_from_effective_n(tmp_path, monkeypatch):

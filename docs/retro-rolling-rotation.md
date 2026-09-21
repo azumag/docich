@@ -14,7 +14,8 @@
 
 - 発火間隔は `24時間 ÷ [retro_corner].games の登録数`。7件登録なら約3時間26分。
   無効な登録も分母に含む。半熟英雄の登録前の6件では4時間だった。
-- 候補は、ゲーム設定が有効で必要な実行ファイルが存在するゲームに限る。
+- 候補は、ゲーム設定が有効で必要な実行ファイルが存在するゲームに限る。RetroArchゲームは
+  さらにVM上のROM・core・表示経路も必要とする。
 - ゲーム側 `[retro_corner].enabled = false` は自動コーナーの適格性検査で除外する。
   省略時は `true`。boolean以外は不正設定として除外する。これはagent起動の許可ではない。
 - rotation/lottery設定の即時 `retro-corner start` も適格なゲームだけから選ぶ。
@@ -53,7 +54,7 @@ rotation_wait_minutes = 10
 games = ["ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console", "nethack", "hanjuku-hero"]
 ```
 
-7件のうち半熟英雄は登録のみで、ゲーム側 `retro_corner.enabled = false` により除外される。
+7件のうち半熟英雄はVM限定ROM・core・実行環境が揃ったときだけ候補になる。
 既存6ゲームも必要な実行ファイルがない環境では除外される。
 半熟英雄の実行資格は [ゲーム資料](games/hanjuku-hero.md#8-レトロコーナー登録と実行資格) を参照。
 登録数変更で次回予定が再計算されるため、配備後の最初のtickは即時dueになり得る。
