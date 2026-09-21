@@ -18,6 +18,9 @@ Observed sources (all read-only):
   - fixed, known temporary shared-object filename families under /tmp plus
     same-user /proc maps/fd references; only bounded counts/bytes/booleans are
     emitted, never filenames, PIDs, mappings or file contents
+  - fixed-category storage attribution for OpenCode DB/WAL/SHM, Soren
+    logs/tmp/runtime caches, strategy archive, Git metadata, and VOICEVOX;
+    scans are bounded, never follow symlinks, and emit no paths or filenames
   - docich program/corner state under the production state_dir
     (game_switch.json, retro_corner.json, paper_corner.json,
     paper_corner_manual.json, trading/presentation.json,
