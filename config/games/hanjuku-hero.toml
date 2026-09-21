@@ -15,6 +15,16 @@ brain = "command"
 command = ["python3", "brains/hanjuku/brain.py"]
 interval_ms = 7000                     # LLM レイテンシ (3〜6秒) を織り込んだ周期
 
+# live rotationへの登録のみ。RetroArchの終了境界・配信枠対応と実機検証が未完了。
+# enabledだけ変更してもCLI限定の適格性チェックで除外される。解除条件は
+# docs/games/hanjuku-hero.md §8参照。agent/課金LLMの有効化は別途判断する。
+[retro_corner]
+enabled = false
+unattended = false
+# ROM/coreは実行ファイルではないためrequiresへ混ぜない。
+# claudeは既定brain backend用。存在だけでは認証・予算を保証しない。
+requires = ["retroarch", "dbus-run-session", "python3", "claude"]
+
 # Twitch 配信カテゴリー・タイトル連動 (soviet_now update_stream_game.sh が読む)。
 # category は IGDB 照合済み (SFC初代の副題付き項目を採用)。
 # 運用ルールは games/soviet_now/docs/twitch_game_sync.md。

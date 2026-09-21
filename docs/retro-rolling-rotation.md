@@ -5,11 +5,17 @@
 
 ## 選択ルール
 
-- 発火間隔は `24時間 ÷ [retro_corner].games の登録数`。現在の6ゲームなら4時間。
+- 発火間隔は `24時間 ÷ [retro_corner].games の登録数`。7件登録なら約3時間26分。
+  無効な登録も分母に含む。半熟英雄の登録前の6件では4時間だった。
 - 候補は、ゲーム設定が有効で必要な実行ファイルが存在するゲームに限る。
+- ゲーム側 `[retro_corner].enabled = false` は自動コーナーの適格性検査で除外する。
+  省略時は `true`。boolean以外は不正設定として除外する。これはagent起動の許可ではない。
+- rotation/lottery設定の即時 `retro-corner start` も適格なゲームだけから選ぶ。
+  適格なゲームがなければ `no-eligible-game` で開始しない。
 - `selection_history` にある直近24時間以内のゲームは候補から除外する。
 - 選択時刻が24時間ちょうど前になったゲームは候補へ戻る。
-- 最初の6枠は、直近履歴が空なら重複なしのランダム順になる。
+- 適格なゲームは、直近履歴が空なら重複なしのランダム順になる。
+  全ゲームがクールダウン中なら開始せず、候補が戻るまで次のtickで再試行する。
 - 他コーナーや切替境界が占有中の場合は発火せず、次のtickで再試行する。
 - ゲーム切替中に到着した要求は `run-soren-live/game-switch/requests/*.json` へ
   `queued` としてFIFO順に保存し、先行要求が安定phaseへ戻ってから順番に消化する。
@@ -29,17 +35,20 @@
 
 ## 本番設定
 
-`config/docich.soren-live.toml` の現在値は次のとおり。
+`config/docich.soren-live.toml` のリポジトリ設定は次のとおり（本番反映とは別）。
 
 ```toml
 [retro_corner]
 mode = "rotation"
 rotation_period_hours = 24.0
 rotation_wait_minutes = 10
-games = ["ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console", "nethack"]
+games = ["ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console", "nethack", "hanjuku-hero"]
 ```
 
-現在の本番設定は上記の6ゲームです。
+7件のうち半熟英雄は登録のみで、ゲーム側 `retro_corner.enabled = false` により除外される。
+既存6ゲームも必要な実行ファイルがない環境では除外される。
+半熟英雄の実行資格は [ゲーム資料](games/hanjuku-hero.md#8-レトロコーナー登録と実行資格) を参照。
+登録数変更で次回予定が再計算されるため、配備後の最初のtickは即時dueになり得る。
 NetHackは通常の20分slotでローテーションし、`config/games/nethack.toml` の
 `persistent_run = true` と `NethackCoordinatorAdapter` により、slot終了時に通常の
 NetHack save boundaryで保存して次回へ再開します。死亡・昇天まで待つ専用の長期攻略枠ではありません。

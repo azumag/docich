@@ -135,3 +135,36 @@ bin/docich snap                                  # run/screenshots/ に保存
 `ra-cmd SAVE_STATE` を絡めた復帰運用が計画されている。Phase 1 時点では
 `config/games/hanjuku-hero.toml` の `[agent] enabled = false` のまま、
 `bin/docich send` での単発操作確認にとどめる。
+
+## 8. レトロコーナー登録と実行資格
+
+`config/docich.soren-live.toml` の `retro_corner.games` に登録しているが、
+**実行可能な抽選候補にはまだ入らない**。ゲーム側 `[retro_corner] enabled = false` により
+自動選択から除外し、`agent.enabled = false` も維持する。`unattended = false` は
+無人運転を検証済みと扱わないための明示で、自動コーナーの有効化スイッチではない。
+登録・ユニットテストは本番反映やROM実プレイの証拠ではない。
+
+登録数は無効なゲームも含むため、rolling間隔は `24h / 7`（約3時間26分）になる。
+既存6ゲームが全て24時間のクールダウン中なら、その間は開始しない。
+旧6件からの設定変更時には `next_due_at` が再計算され、最初のtickで抽選し得る。
+日次モードへ戻す場合は無効な登録をgamesから外すこと（日次startは対象検証で拒否する）。
+
+実行有効化には設定変更だけでなく、次の実装と別途検証が必要。
+
+1. `RetroCornerManager._validate_games` と手動コーナーは現在CLI限定。
+   RetroArchを許可する前に、ROM/core/brainの準備不足を選択前に除外する契約を追加する。
+   `requires` は実行ファイルの存在検査のみで、ROM/core/CLI認証の検査ではない。
+2. `RetroArchCoordinatorAdapter` は世代別プロセスとUDP readinessを持つが、
+   `request_round_boundary` は未実装。結果保存・安全な停止境界・次回再開を実装し、
+   入力を続けたまま境界を待ち、タイムアウトでは強制終了しないことを検証する。
+3. 現在のRetroArch生成cfgは共通display全体のfullscreenを指定している。
+   元ゲーム寸法の観測・入力を保ち、配信側でのみ `(0,90,960,540)` へcontainする対応が必要。
+   実機で四辺と周囲枠、共通配信PID維持、旧ゲーム子プロセス終了を確認する。
+4. 自己吸い出しROM、libretro core、`retroarch`、`dbus-run-session`、`python3`、
+   共通基盤のtmux/X11/ffmpeg/xdotoolを用意する。既定brainは `claude` CLIを使うため、
+   認証と課金承認は別途必要。実行ファイルが存在するだけでは承認済みと扱わない。
+5. fake backendによる契約テストと、実ROMでの観測→brain→入力→保存→復帰を分けて検証する。
+   `retro_corner.enabled` と `agent.enabled` をtrueにするだけではCLI制限を通過しない。
+
+今回の登録ではROM取得・有料LLM実行・本番操作を行わない。
+オフライン検証: `python3 -m pytest -q tests/test_hanjuku_retro_registration.py tests/test_hanjuku_brain.py`
