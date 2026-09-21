@@ -351,7 +351,10 @@ class Tmux:
     def _pane_pids(self, target: str) -> list[int]:
         """Return pane leaders for an already ownership-checked target."""
 
-        result = self._run(["list-panes", "-a", "-t", target, "-F", "#{pane_pid}"])
+        # list-panes -a ignores -t and would enumerate every pane on the tmux
+        # server.  Cleanup must stay scoped to the already ownership-checked
+        # window/session target, so never use -a here.
+        result = self._run(["list-panes", "-t", target, "-F", "#{pane_pid}"])
         if result.returncode != 0:
             return []
         pids: list[int] = []
