@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich.adapters.program import PAPER_VIEW_NAME
 from docich.paper_corner_watchdog import (
+    ACTIVE_STALL_S,
     STARTING_TIMEOUT_S,
     WATCHDOG_GRACE_S,
     _deadline_reason,
@@ -16,29 +17,38 @@ from docich.paper_corner_watchdog import (
 )
 
 
-def test_active_deadline_fires_only_after_grace():
+def test_active_stall_fires_only_after_grace():
     state = {
         "status": "active",
         "date": "2026-09-16",
         "started_at": 1000.0,
-        "ends_at": 2800.0,
+        "last_progress_at": 2800.0,
     }
     assert _deadline_reason(
         state,
-        now=2800.0 + WATCHDOG_GRACE_S - 0.1,
+        now=2800.0 + ACTIVE_STALL_S + WATCHDOG_GRACE_S - 0.1,
         today="2026-09-16",
         active_game=PAPER_VIEW_NAME,
         manual_active=False,
-        duration_minutes=30,
     ) is None
     assert _deadline_reason(
         state,
-        now=2800.0 + WATCHDOG_GRACE_S,
+        now=2800.0 + ACTIVE_STALL_S + WATCHDOG_GRACE_S,
         today="2026-09-16",
         active_game=PAPER_VIEW_NAME,
         manual_active=False,
-        duration_minutes=30,
-    ) == "active-deadline"
+    ) == "active-stalled"
+
+
+def test_active_without_progress_falls_back_to_started_at():
+    state = {"status": "active", "date": "2026-09-16", "started_at": 1000.0}
+    assert _deadline_reason(
+        state,
+        now=1000.0 + ACTIVE_STALL_S + WATCHDOG_GRACE_S,
+        today="2026-09-16",
+        active_game=PAPER_VIEW_NAME,
+        manual_active=False,
+    ) == "active-stalled"
 
 
 def test_starting_timeout_and_terminal_stuck_view_are_recoverable():
@@ -49,7 +59,6 @@ def test_starting_timeout_and_terminal_stuck_view_are_recoverable():
         today="2026-09-16",
         active_game=PAPER_VIEW_NAME,
         manual_active=False,
-        duration_minutes=30,
     ) == "starting-timeout"
 
     for status in ("failed", "restoring", "completed"):
@@ -59,31 +68,28 @@ def test_starting_timeout_and_terminal_stuck_view_are_recoverable():
             today="2026-09-16",
             active_game=PAPER_VIEW_NAME,
             manual_active=False,
-            duration_minutes=30,
         ) == f"stuck-{status}"
 
 
 def test_watchdog_never_touches_non_paper_or_manual_paper():
-    state = {"status": "active", "date": "2026-09-16", "ends_at": 1000.0}
+    state = {"status": "active", "date": "2026-09-16", "last_progress_at": 1000.0}
     assert _deadline_reason(
         state,
-        now=5000.0,
+        now=5000.0 + ACTIVE_STALL_S,
         today="2026-09-16",
         active_game="sorengame91",
         manual_active=False,
-        duration_minutes=30,
     ) is None
     assert _deadline_reason(
         state,
-        now=5000.0,
+        now=5000.0 + ACTIVE_STALL_S,
         today="2026-09-16",
         active_game=PAPER_VIEW_NAME,
         manual_active=True,
-        duration_minutes=30,
     ) is None
 
 
-def test_watchdog_restores_overdue_scheduled_run(tmp_path):
+def test_watchdog_restores_stalled_scheduled_run(tmp_path):
     now = 1_789_563_000.0
     today = "2026-09-16"
     state_dir = tmp_path / "state"
@@ -91,13 +97,12 @@ def test_watchdog_restores_overdue_scheduled_run(tmp_path):
     fake_g = SimpleNamespace(state_dir=state_dir)
     manager = mock.Mock()
     manager.tz = ZoneInfo("Asia/Tokyo")
-    manager.minutes = 30
     manager._active_game.return_value = PAPER_VIEW_NAME
     manager._read_state.return_value = {
         "status": "active",
         "date": today,
-        "started_at": now - 2000,
-        "ends_at": now - WATCHDOG_GRACE_S,
+        "started_at": now - ACTIVE_STALL_S - 2000,
+        "last_progress_at": now - ACTIVE_STALL_S - WATCHDOG_GRACE_S,
     }
     restored = mock.Mock(return_value={"status": "restored", "result": "completed"})
 
@@ -107,7 +112,7 @@ def test_watchdog_restores_overdue_scheduled_run(tmp_path):
         result = check(tmp_path / "config.toml", now_fn=lambda: now, restore_fn=restored)
 
     assert result["status"] == "restored"
-    assert result["reason"] == "active-deadline"
+    assert result["reason"] == "active-stalled"
     restored.assert_called_once_with(tmp_path / "config.toml")
 
 
@@ -121,12 +126,11 @@ def test_manual_state_suppresses_automatic_restore(tmp_path):
     fake_g = SimpleNamespace(state_dir=state_dir)
     manager = mock.Mock()
     manager.tz = ZoneInfo("Asia/Tokyo")
-    manager.minutes = 30
     manager._active_game.return_value = PAPER_VIEW_NAME
     manager._read_state.return_value = {
         "status": "active",
         "date": "2026-09-16",
-        "ends_at": now - 999,
+        "last_progress_at": now - ACTIVE_STALL_S - 999,
     }
     restored = mock.Mock()
 

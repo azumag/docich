@@ -22,7 +22,6 @@ soren_root = "{tmp_path}/soren"
 [paper_corner]
 enabled = true
 start_hour = 22
-duration_minutes = 30
 ''')
     return load_global(tmp_path,cfg)
 
@@ -60,7 +59,7 @@ def manager(g, **kwargs):
     return PaperCornerManager(g, **kwargs)
 
 
-def test_delayed_boundary_runs_full_duration_and_does_not_repeat(tmp_path):
+def test_delayed_boundary_runs_until_narration_exhausted(tmp_path):
     g=setup(tmp_path)
     now=[datetime(2026,9,8,22,tzinfo=ZoneInfo('Asia/Tokyo')).timestamp()]
     due=now[0]; output=[]; voice=[]
@@ -76,15 +75,17 @@ def test_delayed_boundary_runs_full_duration_and_does_not_repeat(tmp_path):
         else: now[0]+=seconds
     mgr=manager(g,clock=lambda:now[0],sleep=sleep,overlay=lambda g,p:output.append(p),speech=lambda g,t,**kw:voice.append(kw))
     assert mgr.tick() == 'completed'
-    state=json.loads(mgr.path.read_text())
-    assert state['started_at']==due+2100
-    assert state['completed_at']-state['started_at']==1800
-    # opening + 14 x 2-minute deliveries (slots 1-8 script, 9-14 chatter) + end
-    assert len(output)==len(voice)==16
-    assert all(f'script:{i}' in state['reports'] for i in range(1, 5))
+    saved=json.loads(mgr.path.read_text())
+    assert saved['status']=='completed'
+    assert saved['end_reason']=='exhausted'
+    assert saved['started_at']==due+2100
+    # opening + eight finite fallback segments + end (no AI configured)
+    assert len(output)==len(voice)==10
+    delivered={key for key in saved['reports'] if key.startswith('fallback:')}
+    assert delivered=={f'fallback:{i}' for i in range(1,9)}
     assert all(p['body'] for p in output)
     assert all(str(kw.get('event_id', '')).startswith('paper-corner:') for kw in voice)
-    assert '切り替えました' in state['reports']['opening']['text']
+    assert '切り替えました' in saved['reports']['opening']['text']
     assert json.loads(mgr.presentation.read_text())['mode']=='compact'
     assert mgr.tick()=='not-due'
 
@@ -153,9 +154,8 @@ def test_stream_category_follows_paper_view_and_restored_game(tmp_path):
         stream_paper=lambda: events.append('announce:paper'),
         stream_game=lambda game: events.append(f'announce:{game}'),
     )
-    mgr.minutes = 1
     mgr._active_game = lambda: coord.active_game
-    mgr._announce_script = lambda state: None
+    mgr._next_narration_item = lambda state: ('done', 'test')
 
     assert mgr._run_locked({
         'status': 'starting',
@@ -184,9 +184,8 @@ def test_stream_category_failure_does_not_fail_paper_corner(tmp_path):
         coordinator=coord,
         stream_paper=lambda: (_ for _ in ()).throw(RuntimeError('twitch unreachable')),
     )
-    mgr.minutes = 1
     mgr._active_game = lambda: coord.active_game
-    mgr._announce_script = lambda state: None
+    mgr._next_narration_item = lambda state: ('done', 'test')
 
     assert mgr._run_locked({
         'status': 'starting',
@@ -213,21 +212,30 @@ def test_commit_verification_fails_when_old_game_remains(tmp_path):
         mgr._tick_locked(None,datetime.fromtimestamp(now[0],tz=ZoneInfo('Asia/Tokyo')))
 
 
-def test_restart_retries_only_failed_sink_and_preserves_deadline(tmp_path):
+def test_restart_retries_only_failed_sink_and_preserves_completed_items(tmp_path):
     g=setup(tmp_path)
     now=[datetime(2026,9,8,22,tzinfo=ZoneInfo('Asia/Tokyo')).timestamp()]
     overlay=[]; speech=[]
-    mgr=manager(g,clock=lambda:now[0],sleep=lambda t:now.__setitem__(0,now[0]+t),overlay=lambda g,p:overlay.append(p),speech=lambda *a,**k:(_ for _ in ()).throw(RuntimeError('sink unavailable')))
-    state={'status':'active','date':'2026-09-08','started_at':now[0],'ends_at':now[0]+1800}
+    def flaky_speech(g,text,**kw):
+        raise RuntimeError('sink unavailable')
+    mgr=manager(g,clock=lambda:now[0],sleep=lambda t:now.__setitem__(0,now[0]+t),
+                overlay=lambda g,p:overlay.append(p),speech=flaky_speech)
+    state={'status':'active','date':'2026-09-08','started_at':now[0],
+           'reports':{}, 'fallback_segments':{str(i):f'文{i}です。' for i in range(1,9)}}
     mgr.save(state)
     import pytest
     with pytest.raises(RuntimeError):mgr.tick()
     assert len(overlay)==1
+    # The overlay half of the failed item was already committed durably.
+    assert json.loads(mgr.path.read_text())['reports']['fallback:1']['overlay'] is True
     mgr.speech=lambda *a,**k:speech.append(k)
     now[0]+=10
-    mgr.tick()
-    assert len(overlay)==7 and len(speech)==7
-    assert json.loads(mgr.path.read_text())['ends_at']==state['ends_at']
+    assert mgr.tick()=='completed'
+    saved=json.loads(mgr.path.read_text())
+    assert saved['end_reason']=='exhausted'
+    # eight fallback items + the closing announcement; overlay:1 is not repeated.
+    assert len(overlay)==9 and len(speech)==9
+    assert saved['reports']['fallback:1']['overlay'] is True
 
 
 def test_another_crashed_active_corner_blocks_new_start(tmp_path):
@@ -564,6 +572,7 @@ def test_long_segment_truncates_overlay_but_keeps_full_speech(tmp_path):
 
 def test_paper_flag_advertises_active_window_and_clears_on_restore(tmp_path):
     import json as _json
+    from docich.paper_corner import PAPER_FLAG_TTL_S
     g = setup(tmp_path)
     now = [datetime(2026, 9, 8, 22, tzinfo=ZoneInfo('Asia/Tokyo')).timestamp()]
     flag = tmp_path / 'soren' / 'tmp' / '.paper_corner_active'
@@ -572,9 +581,16 @@ def test_paper_flag_advertises_active_window_and_clears_on_restore(tmp_path):
     # Non-active states never advertise.
     mgr._refresh_paper_flag({'status': 'starting'})
     assert not flag.exists()
+    # The expiry slides with progress instead of encoding a fixed duration.
     mgr._refresh_paper_flag({'status': 'active', 'date': '2026-09-08',
-                             'started_at': now[0], 'ends_at': now[0] + 1800})
-    assert _json.loads(flag.read_text())['ends_at'] == now[0] + 1800
+                             'started_at': now[0], 'last_progress_at': now[0]})
+    payload = _json.loads(flag.read_text())
+    assert payload['ends_at'] == now[0] + PAPER_FLAG_TTL_S
+    assert payload['progress_at'] == now[0]
+    now[0] += 600
+    mgr._refresh_paper_flag({'status': 'active', 'date': '2026-09-08',
+                             'started_at': now[0] - 600, 'last_progress_at': now[0]})
+    assert _json.loads(flag.read_text())['ends_at'] == now[0] + PAPER_FLAG_TTL_S
     mgr._clear_paper_flag()
     assert not flag.exists()
     # Clearing twice is harmless.
@@ -587,45 +603,13 @@ def test_end_text_is_date_stamped_against_dup_suppression(tmp_path):
     assert '9月8日' in mgr._end_text({'date': '2026-09-08'})
 
 
-def test_narration_interval_matches_production_cadence_at_30_minutes(tmp_path):
-    from docich.paper_corner import NARRATION_INTERVAL_S
-
+def test_end_text_falls_back_without_a_date(tmp_path):
     g = setup(tmp_path)
     mgr = manager(g)
-    state = {'started_at': 0.0, 'ends_at': 1800.0}
-    assert mgr._narration_interval(state) == NARRATION_INTERVAL_S == 120
+    assert mgr._end_text({'date': 'not-a-date'}) == 'PAPER・暗号資産コーナーを終え、通常の短報に戻ります。'
 
 
-def test_narration_interval_shrinks_to_fit_a_short_manual_test(tmp_path):
-    from docich.paper_corner import MIN_NARRATION_INTERVAL_S, NARRATION_INTERVAL_S, SCRIPT_SLOTS
-
-    g = setup(tmp_path)
-    mgr = manager(g)
-    last_slot = max(SCRIPT_SLOTS)
-    for duration_s, expected in (
-        (60.0, 30), (600.0, 66), (1080.0, 120), (1200.0, 120), (43200.0, 120),
-    ):
-        state = {'started_at': 0.0, 'ends_at': duration_s}
-        interval = mgr._narration_interval(state)
-        assert interval == expected, (duration_s, interval, expected)
-        assert interval <= NARRATION_INTERVAL_S
-        if duration_s >= (last_slot + 1) * NARRATION_INTERVAL_S:
-            assert interval == NARRATION_INTERVAL_S
-        elif duration_s >= (last_slot + 1) * MIN_NARRATION_INTERVAL_S:
-            # Long enough for the floor to still fit every script segment:
-            # all 8 must fire strictly before ends_at.
-            assert interval >= MIN_NARRATION_INTERVAL_S
-            assert last_slot * interval < duration_s
-        else:
-            # Pathologically short (e.g. a 1-minute smoke test): the floor
-            # would swallow the whole corner, so the escape hatch shrinks
-            # below MIN_NARRATION_INTERVAL_S to guarantee at least one
-            # narration instead of delivering nothing.
-            assert interval < MIN_NARRATION_INTERVAL_S
-    assert mgr._end_text({'date': 'not-a-date'}) == '規定時間を終え、通常の短報に戻ります。'
-
-
-def test_start_prepares_script_before_switch(tmp_path):
+def test_start_prepares_fallback_before_switch(tmp_path):
     g = setup(tmp_path)
     now = [datetime(2026, 9, 8, 22, tzinfo=ZoneInfo('Asia/Tokyo')).timestamp()]
     coord = FakeCoordinator(active='sorengame')
@@ -634,12 +618,13 @@ def test_start_prepares_script_before_switch(tmp_path):
                   sleep=lambda t: now.__setitem__(0, now[0] + 2000),
                   overlay=lambda g, p: None, speech=lambda g, t, **kw: None,
                   coordinator=coord)
+    mgr._next_narration_item = lambda state: ('done', 'test')
 
     def spy(state):
-        order.append('script')
-        state['script_segments'] = {'1': 'x'}
+        order.append('fallback')
+        state['fallback_segments'] = {'1': 'x'}
         mgr.save(state)
-    mgr._announce_script = spy
+    mgr._ensure_fallback_script = spy
     orig_switch = coord.switch
 
     def switch(game):
@@ -650,8 +635,8 @@ def test_start_prepares_script_before_switch(tmp_path):
         lambda: 'sorengame' if not any(o.startswith('switch:') for o in order) else 'paper-view'
     )
     assert mgr.start() == 'completed'
-    assert order[0] == 'script'
-    assert order.index('script') < order.index('switch:paper-view')
+    assert order[0] == 'fallback'
+    assert order.index('fallback') < order.index('switch:paper-view')
 
 
 def test_base_prewarm_is_noop(tmp_path):
@@ -659,7 +644,7 @@ def test_base_prewarm_is_noop(tmp_path):
     mgr = manager(g)
     state = {'status': 'waiting', 'date': '2026-09-08'}
     assert mgr._prewarm_script(state) is None
-    assert 'script_segments' not in state
+    assert 'fallback_segments' not in state
     assert 'script_job' not in state
 
 

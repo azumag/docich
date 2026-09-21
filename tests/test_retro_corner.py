@@ -443,6 +443,23 @@ class TestRetroCornerRotation(RetroCornerTestBase):
         self.assertEqual(result.status, "completed")
         self.assertEqual(coordinator.calls[0][0], "switch")
 
+    def test_duration_less_fixed_corner_is_not_statically_reserved(self):
+        # The content-driven PAPER corner has no fixed duration, so no static
+        # window can be reserved for it. The rotation starts and the runtime
+        # program-slot exclusivity makes the duration-less corner wait instead.
+        self.g.config_path.write_text(
+            self.g.config_path.read_text(encoding="utf-8")
+            + '\n[paper_corner]\nenabled = true\nstart_hour = 22\ntimezone = "Asia/Tokyo"\n',
+            encoding="utf-8",
+        )
+        mgr, coordinator, _games = self._rotation_manager()
+        self.now_value = self.now_value.replace(hour=21, minute=50)
+
+        result = mgr.tick()
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(coordinator.calls[0][0], "switch")
+
 
 class TestRetroCornerLifecycle(RetroCornerTestBase):
     def test_restores_previous_game_after_duration(self):

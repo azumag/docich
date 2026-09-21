@@ -178,6 +178,7 @@ class RuntimeSummaryTests(unittest.TestCase):
         self.assertIn("corner_retro_active=1", summary)
         self.assertIn("corner_retro_waiting=0", summary)
         self.assertIn("corner_paper_active=0", summary)
+        self.assertIn("corner_paper_degraded=0", summary)
         self.assertIn("corner_paper_manual_active=1", summary)
         self.assertIn("corner_paper_improve_running=1", summary)
         self.assertIn("corner_ab_candidate_pending=1", summary)
@@ -223,9 +224,28 @@ class RuntimeSummaryTests(unittest.TestCase):
         self.assertIn("corner_retro_active=0", summary)
         self.assertIn("corner_retro_waiting=0", summary)
         self.assertIn("corner_paper_active=0", summary)
+        self.assertIn("corner_paper_degraded=0", summary)
         self.assertIn("corner_paper_manual_active=0", summary)
         self.assertIn("corner_paper_improve_running=0", summary)
         self.assertIn("corner_ab_candidate_pending=0", summary)
+
+    def test_degraded_paper_corner_is_reported_as_a_fixed_boolean(self):
+        data = {
+            "status": "ok",
+            "workers": {},
+            "queues": {},
+            "ai": {},
+            "improvement": {},
+            "corners": {
+                "paper_corner": {"status": "completed", "degraded": True,
+                                 "end_reason": "generation-failed",
+                                 "end_detail": "SECRET_FAILURE_DETAIL"},
+            },
+        }
+        _, summary = self.mod.summarize(data)
+        self.assertIn("corner_paper_degraded=1", summary)
+        self.assertNotIn("SECRET_FAILURE_DETAIL", summary)
+        self.assertNotIn("generation-failed", summary)
 
     def test_invalid_severity_is_rejected(self):
         with self.assertRaises(ValueError):

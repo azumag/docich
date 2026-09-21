@@ -1,4 +1,12 @@
-"""Daily PAPER program: confirmed boundary, actual start plus duration, durable replay."""
+#!/usr/bin/env python3
+"""Content-driven PAPER program: confirmed boundary, sequential narration, restore.
+
+The corner no longer runs for a fixed duration. It generates the next
+fact-grounded narration segment one at a time and reads it as soon as it is
+ready; the corner ends when the narrator signals there is nothing new to say.
+A model/chain failure is recorded as a distinct degraded end, not as material
+exhaustion.
+"""
 import argparse
 import datetime as dt
 import fcntl
@@ -20,20 +28,19 @@ from .tmux import Tmux
 from .trading.presentation import write_presentation
 from .trading.soren_output import send_overlay, enqueue_speech
 
-# Narrate eight substantial segments across the whole 30-minute corner instead
-# of front-loading a few and going quiet. 120s gives fourteen narration slots
-# in a 30-minute run (plus opening/end), so slots 1-8 carry corner, news,
-# chart, strategy, result, fills, review and improve, and slots 9-14 stay
-# casual talk. The interval stays above typical speech duration so the audio
-# queue does not backlog and narrations do not overlap.
-NARRATION_INTERVAL_S = 120
-# Floor for a duration-shrunk interval (short manual/operator test runs; see
-# _narration_interval). 45s is roughly a spoken 300-700 char segment's actual
-# duration, so 60s keeps ~15s of margin for VOICEVOX synthesis latency
-# (multi-endpoint backoff chain) before the say-queue starts to backlog.
-MIN_NARRATION_INTERVAL_S = 60
-LEGACY_INTERVAL_S = 300
-SCRIPT_SLOTS = {1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8}
+# The corner narrates a sequence of fact-grounded segments and ends when the
+# narrator has nothing new to say. There is no fixed duration and no explicit
+# narration interval: each segment is spoken as soon as it is generated. A
+# bounded retry keeps one transient model failure from ending the corner, and a
+# lasting failure ends it as a distinct degraded result (not as exhaustion).
+NARRATION_AI_RETRIES = 2
+# Advisory Soren radio gate. The radio treats a missing/expired flag as
+# inactive, so the flag carries a sliding expiry refreshed on every segment.
+# If narration makes no progress for this long the radio resumes fail-open.
+PAPER_FLAG_TTL_S = 1800
+# Bounded memory of already-spoken topic labels handed back to the narrator so
+# the model can avoid repeating itself across a long sequential run.
+MAX_COVERED_TOPICS = 24
 
 
 def ensure_trading_window(g, tmux=None) -> str:
@@ -86,12 +93,9 @@ class PaperCornerManager:
         raw = tomllib.loads(g.config_path.read_text()).get('paper_corner', {})
         self.enabled = raw.get('enabled', False)
         self.hour = raw.get('start_hour', 22)
-        self.minutes = raw.get('duration_minutes', 30)
         self.tz = ZoneInfo(raw.get('timezone', 'Asia/Tokyo'))
         if type(self.enabled) is not bool or type(self.hour) is not int or not 0 <= self.hour <= 23:
             raise ValueError('invalid paper corner schedule')
-        if type(self.minutes) is not int or not 1 <= self.minutes <= 720:
-            raise ValueError('invalid paper corner duration')
         # Optional AI narration/improvement delegation. Empty means fallback-only
         # narration or no improvement job (end of corner).
         self.script_agents = self._optional_agents(raw, 'script_agents')
@@ -239,7 +243,7 @@ class PaperCornerManager:
 
     def opening_text(self) -> str:
         return ('PAPER・暗号資産の模擬売買コーナーです。ゲーム画面を取引ダッシュボードに'
-                f'切り替えました。実際の開始から{self.minutes}分間、相場・BOTの判断・保有の順でお送りします。'
+                '切り替えました。相場・BOTの判断・保有の順で、話すネタが尽きるまでお送りします。'
                 + self.summary())
 
     def deliver(self, state, slot, text):
@@ -254,19 +258,22 @@ class PaperCornerManager:
     def _refresh_paper_flag(self, state) -> None:
         """Advertise the program-view window to the Soren radio (advisory only).
 
-        The radio suppresses new generation while the flag is unexpired, so
-        corner narration is not interleaved with regular radio. Failures are
-        swallowed: the radio treats a missing/broken flag as inactive.
+        The radio suppresses new generation only while the flag's ``ends_at`` is
+        in the future, so the expiry is refreshed on every segment. Failures are
+        swallowed: the radio treats a missing/broken flag as inactive, and a
+        stalled corner lets the radio resume fail-open instead of staying muted.
         """
         if state.get('status') != 'active':
             return
         try:
             flag = self._paper_flag_path()
             flag.parent.mkdir(parents=True, exist_ok=True)
+            now = self.clock()
             atomic_write_json(flag, {
                 'date': state.get('date'),
                 'started_at': state.get('started_at'),
-                'ends_at': state.get('ends_at'),
+                'progress_at': state.get('last_progress_at', state.get('started_at')),
+                'ends_at': now + PAPER_FLAG_TTL_S,
             })
         except Exception:
             pass
@@ -285,172 +292,119 @@ class PaperCornerManager:
             day = dt.date.fromisoformat(str(state.get('date')))
             return f'{day.month}月{day.day}日のPAPER・暗号資産コーナーを終え、通常の短報に戻ります。'
         except (ValueError, TypeError):
-            return '規定時間を終え、通常の短報に戻ります。'
+            return 'PAPER・暗号資産コーナーを終え、通常の短報に戻ります。'
 
-    def _announce_script(self, state) -> None:
-        """Prepare four fact-grounded narration segments for later delivery.
+    def _ensure_fallback_script(self, state) -> None:
+        """Install the finite deterministic narration set once.
 
-        Earlier versions spoke all four immediately at corner start, which made
-        the first few minutes dense and the rest of a 30-minute corner empty.
-        The cleaned segments are now stored in bounded state and distributed by
-        `_scheduled_narration`; raw model output is still never persisted.
+        These fact-grounded segments are spoken only when the AI narrator is
+        unavailable or has failed; they are the safe, offline base and they are
+        finite, so reading them through ends the corner normally.
         """
-        existing = state.get('script_segments')
+        existing = state.get('fallback_segments')
         if isinstance(existing, dict) and existing:
             return
-        from .trading.corner_script import SEGMENT_KEYS, generate_corner_script
+        from .trading.corner_script import (
+            MAX_SEGMENT_CHARS,
+            SEGMENT_KEYS,
+            build_facts,
+            render_fallback,
+        )
 
-        previous_gate = os.environ.get('DOCICH_ALLOW_REAL_AI')
-        if self.script_agents:
-            os.environ['DOCICH_ALLOW_REAL_AI'] = '1'
         try:
-            result = generate_corner_script(
-                self.g,
-                trading_dir=self.trading_dir,
-                agents=self.script_agents,
-                timeout=self.script_timeout,
-                now=self.clock(),
-            )
-        finally:
-            if self.script_agents:
-                if previous_gate is None:
-                    os.environ.pop('DOCICH_ALLOW_REAL_AI', None)
-                else:
-                    os.environ['DOCICH_ALLOW_REAL_AI'] = previous_gate
-        segments = result.get('segments') or {}
+            segments = render_fallback(build_facts(self.trading_dir, now=self.clock()))
+        except Exception as exc:
+            state['fallback_error'] = _safe_detail(exc)
+            segments = render_fallback({})
         prepared = {}
         for index, key in enumerate(SEGMENT_KEYS, start=1):
             text = str(segments.get(key, '')).strip()
             if text:
-                prepared[str(index)] = text[:600]
-        state['script_segments'] = prepared
-        state['script_source'] = result.get('source')
-        if result.get('reason'):
-            state['script_reason'] = str(result.get('reason'))[:120]
-        else:
-            state.pop('script_reason', None)
+                prepared[str(index)] = text[:MAX_SEGMENT_CHARS]
+        state['fallback_segments'] = prepared
         self.save(state)
 
+    def _ai_narration_enabled(self) -> bool:
+        return bool(self.script_agents)
+
     @staticmethod
-    def _fmt_money(value) -> str:
-        try:
-            return f'{float(value):,.0f}円'
-        except (TypeError, ValueError, OverflowError):
-            return '確認待ち'
+    def _covered_topics(state) -> list:
+        raw = state.get('covered_topics')
+        return [str(item) for item in raw] if isinstance(raw, list) else []
 
-    def _casual_text(self, slot: int) -> str:
-        """Fresh, factual filler between the four longer AI segments."""
-        try:
-            from .trading.corner_script import build_facts
-            facts = build_facts(self.trading_dir, now=self.clock())
-        except Exception:
-            return ('相場が静かな時間も、BOTにとっては立派な判断材料です。'
-                    '無理に売買回数を増やさず、次に条件がそろうまで値動きと見送り理由を眺めていきます。')
+    def _next_narration_item(self, state) -> tuple[str, object]:
+        """Return the next narration action as ``(kind, payload)``.
 
-        focus = facts.get('focus') if isinstance(facts.get('focus'), dict) else {}
-        perf = facts.get('performance') if isinstance(facts.get('performance'), dict) else {}
-        policy = facts.get('policy') if isinstance(facts.get('policy'), dict) else {}
-        fills = facts.get('recent_fills') if isinstance(facts.get('recent_fills'), list) else []
-        skipped = facts.get('skipped_decisions') if isinstance(facts.get('skipped_decisions'), list) else []
-        variant = int(slot) % 7
-
-        if variant == 0:
-            symbol = str(focus.get('symbol') or '注目銘柄')
-            change = focus.get('change_pct')
-            change_text = f'{float(change):+.2f}%' if isinstance(change, (int, float)) else '値動きを観測中'
-            bars = focus.get('bars')
-            bars_text = f'足は{bars}本分たまっています。' if isinstance(bars, int) else ''
-            return (f'BOT側ではいま{symbol}を注目していて、保存足ベースでは{change_text}です。'
-                    '画面のローソクは見やすさのため活発な銘柄へ一時退避することがありますが、売買判断そのものは別です。'
-                    f'{bars_text}材料がそろえばすぐ動けるよう、候補の監視は続けています。')
-        if variant == 1:
-            count = int(facts.get('candidate_count', 0) or 0)
-            reasons = [str(x) for x in (facts.get('candidate_reasons') or []) if str(x).strip()]
-            why = f'主な理由は「{reasons[0]}」です。' if reasons else 'まだ条件の決め手がありません。'
-            return (f'いま売買候補は{count}件です。{why}'
-                    '候補ゼロも故障ではなく、手数料やスリッページを払ってまで入る価値がないなら待つ、というのも戦略です。'
-                    '待っている間も相場の監視は止めないので、次の変化は逃しません。')
-        if variant == 2:
-            return (f'資金配分を見てみると、模擬資金は{self._fmt_money(facts.get("capital_jpy"))}、'
-                    f'投入は{self._fmt_money(facts.get("deployed_jpy"))}、保有は{int(facts.get("position_count", 0) or 0)}銘柄です。'
-                    '余力を残している時間は地味ですが、急な値動きに反応できる余白でもあります。'
-                    '投入を抑えている分、連敗しても致命傷になりにくい形です。')
-        if variant == 3:
-            cumulative = self._fmt_money(perf.get('cumulative_pnl_jpy'))
-            today = self._fmt_money(perf.get('today_realized_pnl_jpy'))
-            unrealized = self._fmt_money(perf.get('unrealized_pnl_jpy'))
-            return (f'損益も途中経過を確認します。累積は{cumulative}、今日の確定分は{today}、含みは{unrealized}です。'
-                    '短い区間の勝ち負けだけで作戦の良し悪しを決めず、コスト込みで積み上がるかを見ます。'
-                    '確定分と含みを分けて見るのが、このコーナーの流儀です。')
-        if variant == 4:
-            lookback = policy.get('momentum_lookback', '?')
-            threshold = policy.get('momentum_threshold_bps', '?')
-            z = policy.get('mean_reversion_z', '?')
-            return (f'作戦の中身にも少し触れると、勢いは直近{lookback}本を見て、基準上限は{threshold}bpsです。'
-                    f'平均回帰側はz={z}あたりを見ています。勢い側は相場の実現ボラで必要幅を調整するので、BTCのような低ボラ時間も拾いやすくしています。'
-                    'この網にかからなければ見送るだけ、という割り切りです。')
-        if variant == 5 and fills:
-            fill = fills[0] if isinstance(fills[0], dict) else {}
-            side = '買い' if str(fill.get('side')).lower() == 'buy' else '売り'
-            price_text = f'価格はおおむね{self._fmt_money(fill.get("price"))}でした。'
-            return (f'直近の模擬約定は{fill.get("symbol", "銘柄不明")}の{side}です。{price_text}'
-                    '表示される約定価格にはPAPERでも手数料とスリッページを乗せているので、都合のいい理想価格だけで勝ったことにはしません。')
-        if variant == 6 and skipped:
-            item = skipped[0] if isinstance(skipped[0], dict) else {}
-            symbol = str(item.get('symbol') or '候補')
-            reason = str(item.get('reason') or '条件未達')
-            extra = ''
-            if len(skipped) > 1 and isinstance(skipped[1], dict):
-                second = skipped[1]
-                extra = f'{second.get("symbol", "別の候補")}も「{second.get("reason", "条件未達")}」で止まっています。'
-            return (f'見送り側を見ると、{symbol}は「{reason}」で止まっています。{extra}'
-                    '売買した話だけでなく、なぜ見送ったかを眺めるとBOTの癖が分かるので、この時間もちゃんと観察対象です。')
-        return ('暗号資産はずっと派手に動くわけではありません。こういう無風の時間は、'
-                'ローソクの形、候補の増減、保有の偏りをのんびり見ながら、次の変化を待ちます。')
-
-    def _narration_interval(self, state) -> int:
-        """Duration-aware narration cadence (issue: short manual tests could
-
-        never reach script slots 5-8 at a fixed 120s interval). Shrinks
-        towards ``MIN_NARRATION_INTERVAL_S`` only when the corner is too
-        short for all script segments to fit at the tuned 120s cadence;
-        production's 30-minute default (and anything >= ~18 minutes) is
-        unaffected (still exactly 120s, matching the historical cadence).
+        ``("item", {"key", "text", "topic"})`` speaks one segment,
+        ``("done", reason)`` ends after genuine material exhaustion, and
+        ``("failed", reason)`` ends a degraded corner whose narrator could not
+        produce more output. Failure is never reported as exhaustion.
         """
-        total = int(max(1, float(state['ends_at']) - float(state['started_at'])))
-        last_slot = max(SCRIPT_SLOTS)
-        ideal = total // (last_slot + 1)
-        interval = max(MIN_NARRATION_INTERVAL_S, min(NARRATION_INTERVAL_S, ideal))
-        # Escape hatch for pathologically short durations (e.g. a 1-minute
-        # smoke test): never let the floor swallow the whole corner without
-        # narrating anything.
-        return min(interval, max(5, total // 2))
-
-    def _scheduled_narration(self, state, slot: int) -> None:
-        """Deliver the lowest not-yet-announced script segment due by ``slot``.
-
-        Catches up a segment whose exact slot index was missed by a slow
-        prior iteration (announce() does a state save, an overlay append and
-        an overlay HTML regeneration, which can occasionally overrun a short
-        interval) instead of permanently skipping it. Behaves exactly like
-        the old direct slot->index lookup whenever no slot is skipped, since
-        every lower index is already recorded in ``reports`` by then.
-        """
-        if slot <= 0:
-            return
-        segments = state.get('script_segments') if isinstance(state.get('script_segments'), dict) else {}
         reports = state.get('reports') if isinstance(state.get('reports'), dict) else {}
-        for index in sorted(set(SCRIPT_SLOTS.values())):
-            if index > slot:
-                break
-            if f'script:{index}' in reports:
+        # Complete a half-delivered generated item first (e.g. overlay committed
+        # but the speech sink failed) instead of skipping its missing half.
+        pending_seq = int(state.get('narration_seq', 0) or 0)
+        if pending_seq:
+            report = reports.get(f'ai:{pending_seq}')
+            if isinstance(report, dict) and not (report.get('overlay') and report.get('speech')):
+                text = str(report.get('text') or '')
+                if text:
+                    return 'item', {'key': f'ai:{pending_seq}', 'text': text, 'topic': ''}
+
+        if self._ai_narration_enabled() and not state.get('ai_failed'):
+            from .trading.corner_script import generate_next_narration
+
+            last_reason = 'generation-failed'
+            previous_gate = os.environ.get('DOCICH_ALLOW_REAL_AI')
+            os.environ['DOCICH_ALLOW_REAL_AI'] = '1'
+            try:
+                for _ in range(NARRATION_AI_RETRIES):
+                    result = generate_next_narration(
+                        self.g,
+                        trading_dir=self.trading_dir,
+                        agents=self.script_agents,
+                        timeout=self.script_timeout,
+                        covered=self._covered_topics(state),
+                        now=self.clock(),
+                    )
+                    status = result.get('status') if isinstance(result, dict) else None
+                    if status == 'item':
+                        seq = int(state.get('narration_seq', 0) or 0) + 1
+                        state['narration_seq'] = seq
+                        return 'item', {
+                            'key': f'ai:{seq}',
+                            'text': str(result.get('text', '')),
+                            'topic': str(result.get('topic', '')),
+                        }
+                    if status == 'done':
+                        return 'done', 'ai-done'
+                    last_reason = str((result or {}).get('reason') or 'generation-failed')[:120]
+            finally:
+                if previous_gate is None:
+                    os.environ.pop('DOCICH_ALLOW_REAL_AI', None)
+                else:
+                    os.environ['DOCICH_ALLOW_REAL_AI'] = previous_gate
+            state['ai_failed'] = True
+            state['ai_failure_reason'] = last_reason
+            self.save(state)
+
+        segments = state.get('fallback_segments') if isinstance(state.get('fallback_segments'), dict) else {}
+        reports = state.get('reports') if isinstance(state.get('reports'), dict) else {}
+        for index in sorted(
+            segments, key=lambda value: int(value) if str(value).isdigit() else 0
+        ):
+            report = reports.get(f'fallback:{index}')
+            if isinstance(report, dict) and report.get('overlay') and report.get('speech'):
                 continue
-            text = str(segments.get(str(index), '')).strip()
+            text = str(segments[index]).strip()
             if text:
-                self.announce(state, f'script:{index}', text)
-                return
-            break
-        self.announce(state, f'chatter:{int(slot)}', self._casual_text(int(slot)))
+                # A half-delivered item (e.g. overlay committed, speech sink
+                # failed) is returned again so announce() completes the pending
+                # half without repeating the committed one.
+                return 'item', {'key': f'fallback:{index}', 'text': text, 'topic': ''}
+        if state.get('ai_failed'):
+            return 'failed', str(state.get('ai_failure_reason') or 'generation-failed')
+        return 'done', 'fallback-exhausted'
 
     def _default_spawn_improve_proc(self, argv, log_path) -> None:
         import subprocess
@@ -557,12 +511,11 @@ class PaperCornerManager:
         return self._with_guard(self._start_locked)
 
     def _prewarm_script(self, state) -> None:
-        """Prepare narration while waiting for the program boundary (hook).
+        """Prepare the finite fallback narration while waiting for a boundary.
 
-        Base implementation is a no-op: its script generation blocks on the
-        AI chain, so warming it here would stall boundary acquisition.
-        FastPaperCornerManager overrides this to install immediate fallback
-        content and detach the AI worker, so scripts are ready at switch.
+        Base implementation is a no-op; FastPaperCornerManager installs the
+        deterministic fallback set during the wait so the corner can speak
+        immediately after the switch even if the first AI generation is slow.
         """
         return None
 
@@ -580,10 +533,10 @@ class PaperCornerManager:
         }
         self.save(state)
         try:
-            # Manual/operator start: prepare every script before the display
-            # switches, so narration begins immediately. Slow here, silent
-            # never after the switch. _run_locked still retries/falls back.
-            self._announce_script(state)
+            # Manual/operator start: prepare the finite fallback before the
+            # display switches, so narration can begin immediately. AI segments
+            # are generated one at a time after the switch.
+            self._ensure_fallback_script(state)
         except Exception:
             pass
         return self._run_locked(state)
@@ -835,41 +788,50 @@ class PaperCornerManager:
                     f"切替後に旧ゲームが残っています: {committed}")
             self._announce_stream_paper()
             self.announce(state, 'opening', self.opening_text())
-            try:
-                self._announce_script(state)
-            except Exception as exc:
-                # Narration is an add-on; generation failure must not abort the
-                # switch. An empty prepared set still enables fresh casual talk.
-                state['script_error'] = _safe_detail(exc)
-                state['script_segments'] = {}
-                self.save(state)
             write_presentation(self.presentation, 'detailed', now=self.clock())
             started = self.clock()
-            state.update(status='active', started_at=started, ends_at=started + self.minutes * 60)
+            state.update(status='active', started_at=started, last_progress_at=started)
             self.save(state)
-        elif self.clock() < state['ends_at']:
+            try:
+                # Narration is an add-on; a fallback-generation failure must not
+                # abort the switch. An empty fallback set still ends cleanly.
+                self._ensure_fallback_script(state)
+            except Exception as exc:
+                state['fallback_error'] = _safe_detail(exc)
+                state.setdefault('fallback_segments', {})
+                self.save(state)
+        elif state.get('status') == 'active':
             write_presentation(self.presentation, 'detailed', now=self.clock())
         if state.get('status') == 'active':
             # Tell the Soren radio a program view is showing (also heals a
             # flag lost to a crash mid-corner).
             self._refresh_paper_flag(state)
 
-        # States created by older code have no script_segments. Keep their old
-        # cadence for crash-safe replay; newly started corners use the denser,
-        # distributed narration schedule.
-        modern = 'script_segments' in state
-        interval = self._narration_interval(state) if modern else LEGACY_INTERVAL_S
-        while self.clock() < state['ends_at']:
-            elapsed = max(0.0, self.clock() - state['started_at'])
-            slot = int(elapsed // interval)
-            if modern:
-                self._scheduled_narration(state, slot)
+        # Sequential narration: generate the next segment and speak it as soon
+        # as it is ready. There is no fixed interval and no fixed duration; the
+        # loop ends when the narrator has nothing new to say (or a lasting
+        # generation failure degrades the corner, recorded separately).
+        while True:
+            kind, payload = self._next_narration_item(state)
+            if kind == 'item':
+                self.announce(state, payload['key'], payload['text'])
+                topic = payload.get('topic')
+                if topic:
+                    covered = self._covered_topics(state)
+                    covered.append(str(topic))
+                    state['covered_topics'] = covered[-MAX_COVERED_TOPICS:]
+                state['last_progress_at'] = self.clock()
+                self._refresh_paper_flag(state)
+                self.save(state)
+                continue
+            if kind == 'failed':
+                state['end_reason'] = 'generation-failed'
+                state['end_detail'] = str(payload)[:240]
+                state['degraded'] = True
             else:
-                self.deliver(state, slot, self._casual_text(slot))
-            remaining = state['ends_at'] - self.clock()
-            if remaining > 0:
-                sleep_for = interval - (elapsed % interval)
-                self.sleep(min(sleep_for, remaining))
+                state['end_reason'] = 'exhausted'
+            self.save(state)
+            break
         return self._restore_locked(state)
 
 

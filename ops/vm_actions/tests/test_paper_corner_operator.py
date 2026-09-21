@@ -42,17 +42,16 @@ class PaperCornerAuthorizeTests(unittest.TestCase):
             'GITHUB_ISSUE_AUTHOR_ID': '',
             'GITHUB_ISSUE_BODY': '',
             'INPUT_OPERATION': 'start',
-            'INPUT_DURATION_MINUTES': '15',
             'INPUT_CONFIRM': 'production',
         }
         env.update(overrides)
         return subprocess.run(['python3', str(AUTH)], text=True, capture_output=True, env=env)
 
-    def test_owner_dispatch_allows_bounded_start(self):
+    def test_owner_dispatch_allows_start(self):
         p = self.run_auth()
         self.assertEqual(p.returncode, 0, p.stderr)
         data = json.loads(p.stdout)
-        self.assertEqual(data['duration_minutes'], 15)
+        self.assertNotIn('duration_minutes', data)
         self.assertEqual((data['operation'], data['target'], data['ref']), ('start', 'production', 'main'))
 
     def test_non_owner_and_non_owner_rerun_fail_closed(self):
@@ -64,14 +63,12 @@ class PaperCornerAuthorizeTests(unittest.TestCase):
         self.assertNotEqual(self.run_auth(GITHUB_REF='refs/heads/feature').returncode, 0)
         self.assertNotEqual(self.run_auth(GITHUB_WORKFLOW_REF='azumag/docich/.github/workflows/paper-corner-operator.yml@refs/heads/feature').returncode, 0)
 
-    def test_dispatch_requires_production_confirmation_and_range(self):
+    def test_dispatch_requires_production_confirmation(self):
         self.assertNotEqual(self.run_auth(INPUT_CONFIRM='').returncode, 0)
-        self.assertNotEqual(self.run_auth(INPUT_DURATION_MINUTES='0').returncode, 0)
-        self.assertNotEqual(self.run_auth(INPUT_DURATION_MINUTES='61').returncode, 0)
-        self.assertNotEqual(self.run_auth(INPUT_DURATION_MINUTES='15;id').returncode, 0)
+        self.assertNotEqual(self.run_auth(INPUT_OPERATION='exec').returncode, 0)
 
     def test_owner_issue_bridge_accepts_only_exact_command_issue_and_json(self):
-        body = json.dumps({'operation': 'start', 'duration_minutes': 15, 'confirm': 'production', 'nonce': 'test-1'})
+        body = json.dumps({'operation': 'start', 'confirm': 'production', 'nonce': 'test-1'})
         p = self.run_auth(
             GITHUB_EVENT_NAME='issues',
             GITHUB_EVENT_ACTION='edited',
@@ -79,15 +76,16 @@ class PaperCornerAuthorizeTests(unittest.TestCase):
             GITHUB_ISSUE_AUTHOR='azumag',
             GITHUB_ISSUE_AUTHOR_ID='9018513',
             GITHUB_ISSUE_BODY=body,
-            INPUT_OPERATION='', INPUT_DURATION_MINUTES='', INPUT_CONFIRM='',
+            INPUT_OPERATION='', INPUT_CONFIRM='',
         )
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertEqual(json.loads(p.stdout)['duration_minutes'], 15)
+        self.assertNotIn('duration_minutes', json.loads(p.stdout))
         self.assertNotEqual(self.run_auth(
             GITHUB_EVENT_NAME='issues', GITHUB_EVENT_ACTION='edited', GITHUB_ISSUE_NUMBER='999',
             GITHUB_ISSUE_AUTHOR='azumag', GITHUB_ISSUE_AUTHOR_ID='9018513', GITHUB_ISSUE_BODY=body,
         ).returncode, 0)
-        bad = json.dumps({'operation': 'start', 'duration_minutes': '15;id', 'confirm': 'production', 'nonce': 'x'})
+        # The former duration field is no longer part of the command schema.
+        bad = json.dumps({'operation': 'start', 'duration_minutes': 15, 'confirm': 'production', 'nonce': 'x'})
         self.assertNotEqual(self.run_auth(
             GITHUB_EVENT_NAME='issues', GITHUB_EVENT_ACTION='edited', GITHUB_ISSUE_NUMBER='293',
             GITHUB_ISSUE_AUTHOR='azumag', GITHUB_ISSUE_AUTHOR_ID='9018513', GITHUB_ISSUE_BODY=bad,
@@ -101,7 +99,7 @@ class PaperCornerOperatorTests(unittest.TestCase):
         manager._active_game.return_value = 'sorengame'
         with mock.patch.object(operator, 'ManualPaperCornerManager', return_value=manager), \
              mock.patch.object(operator.time, 'time', return_value=123.0):
-            self.assertTrue(operator._recover_stale_manual_state(object(), 15))
+            self.assertTrue(operator._recover_stale_manual_state(object()))
         saved = manager.save.call_args.args[0]
         self.assertEqual(saved['status'], 'completed')
         self.assertEqual(saved['completed_at'], 123.0)
@@ -113,11 +111,11 @@ class PaperCornerOperatorTests(unittest.TestCase):
         manager._active_game.return_value = PAPER_VIEW_NAME
         with mock.patch.object(operator, 'ManualPaperCornerManager', return_value=manager):
             with self.assertRaises(PaperCornerError):
-                operator._recover_stale_manual_state(object(), 15)
+                operator._recover_stale_manual_state(object())
         manager._active_game.return_value = 'other-game'
         with mock.patch.object(operator, 'ManualPaperCornerManager', return_value=manager):
             with self.assertRaises(PaperCornerError):
-                operator._recover_stale_manual_state(object(), 15)
+                operator._recover_stale_manual_state(object())
         manager.save.assert_not_called()
 
     def test_prepare_failure_classifier_emits_only_fixed_categories(self):
@@ -170,18 +168,19 @@ class PaperCornerOperatorTests(unittest.TestCase):
              mock.patch.object(operator, '_recover_stale_manual_state', return_value=False), \
              mock.patch.object(operator.subprocess, 'Popen', return_value=proc) as popen, \
              mock.patch.object(operator.time, 'sleep'):
-            result = operator.launch(config, 15)
-        self.assertEqual(result['duration_minutes'], 15)
+            result = operator.launch(config)
+        self.assertNotIn('duration_minutes', result)
         self.assertFalse(result['recovered_stale_state'])
         argv = popen.call_args.args[0]
         self.assertEqual(argv[1:3], ['-m', 'docich.paper_corner_manual'])
-        self.assertEqual(argv[-2:], ['--duration-minutes', '15'])
+        self.assertEqual(argv[-1], 'start')
+        self.assertEqual(argv[-3:-1], ['--config', str(config)])
         self.assertTrue(popen.call_args.kwargs['start_new_session'])
         logs = list((state / 'logs').glob('paper-manual-*.log'))
         self.assertEqual(len(logs), 1)
         self.assertEqual(stat.S_IMODE(logs[0].stat().st_mode), 0o600)
 
-    def test_launcher_rejects_early_exit_and_out_of_range(self):
+    def test_launcher_rejects_early_exit(self):
         base = Path(tempfile.mkdtemp(prefix='paper-op-'))
         state = base / 'state'; repo = base / 'repo'
         state.mkdir(); repo.mkdir()
@@ -189,14 +188,12 @@ class PaperCornerOperatorTests(unittest.TestCase):
         fake_g = SimpleNamespace(state_dir=state, repo_root=repo, config_path=config)
         proc = mock.Mock(pid=1234)
         proc.poll.return_value = 0
-        with self.assertRaises(PaperCornerError):
-            operator.launch(config, 0)
         with mock.patch.object(operator, 'load_global', return_value=fake_g), \
              mock.patch.object(operator, '_recover_stale_manual_state', return_value=False), \
              mock.patch.object(operator.subprocess, 'Popen', return_value=proc), \
              mock.patch.object(operator.time, 'sleep'):
             with self.assertRaises(PaperCornerError):
-                operator.launch(config, 15)
+                operator.launch(config)
         logs = list((state / 'logs').glob('paper-manual-*.log'))
         self.assertEqual(len(logs), 1)
         self.assertEqual(stat.S_IMODE(logs[0].stat().st_mode), 0o600)

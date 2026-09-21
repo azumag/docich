@@ -75,7 +75,6 @@ improve_margin_pct = 10.0
 [paper_corner]
 enabled = true
 start_hour = 22
-duration_minutes = 30
 timezone = "Asia/Tokyo"
 # PAPER ビューの表示: "html" = read-only HTML/canvas ダッシュボード (既定)、
 # "text" = 従来の 80x24 テキスト。切り戻しはこの1行のみ。

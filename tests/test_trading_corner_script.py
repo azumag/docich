@@ -16,9 +16,12 @@ from docich.trading.corner_script import (  # noqa: E402
     CornerScriptError,
     _condition_text,
     build_facts,
+    build_next_prompt,
     build_prompt,
     generate_corner_script,
+    generate_next_narration,
     merge_script_segments,
+    parse_next_narration,
     parse_script,
     render_fallback,
 )
@@ -630,3 +633,68 @@ def test_prompt_requires_single_line_json(tmp_path):
     _write_status(tmp_path)
     prompt = build_prompt(build_facts(tmp_path, now=1010.0))
     assert "1行で出力" in prompt
+
+
+def test_build_next_prompt_lists_covered_topics_and_done_option(tmp_path):
+    _write_status(tmp_path)
+    prompt = build_next_prompt(build_facts(tmp_path, now=1010.0), ["相場", "ニュース"])
+    assert "相場" in prompt and "ニュース" in prompt
+    assert '"done"' in prompt
+    assert "JSON以外は出力しない" in prompt
+
+
+def test_parse_next_narration_accepts_item_and_done():
+    assert parse_next_narration('{"done": true}') == {"status": "done"}
+    assert parse_next_narration('{"topic": "相場", "text": " 本文です "}') == {
+        "status": "item", "topic": "相場", "text": "本文です",
+    }
+    with pytest.raises(CornerScriptError):
+        parse_next_narration('{"topic": "見出しだけ"}')
+    with pytest.raises(CornerScriptError):
+        parse_next_narration('not json')
+
+
+def test_generate_next_narration_fails_closed_without_agents_or_gate(tmp_path, monkeypatch):
+    _write_status(tmp_path)
+    assert generate_next_narration(None, trading_dir=tmp_path, agents="") == {
+        "status": "failed", "reason": "no-agents",
+    }
+    monkeypatch.delenv("DOCICH_ALLOW_REAL_AI", raising=False)
+    assert generate_next_narration(
+        object(), trading_dir=tmp_path, agents="opencode:x", now=1010.0
+    ) == {"status": "failed", "reason": "real-ai-disabled"}
+
+
+def test_generate_next_narration_parses_item_then_done(tmp_path, monkeypatch):
+    from docich.trading import corner_script
+
+    _write_status(tmp_path)
+    monkeypatch.setenv("DOCICH_ALLOW_REAL_AI", "1")
+    monkeypatch.setattr(corner_script, "prepare_research_context", lambda *a, **k: {})
+    outputs = iter(['{"topic":"相場","text":"AIの本文です。"}', '{"done":true}'])
+    monkeypatch.setattr(corner_script, "generate_text", lambda *a, **k: next(outputs))
+
+    item = generate_next_narration(
+        object(), trading_dir=tmp_path, agents="opencode:x", covered=["旧"], now=1010.0,
+        timeframe_facts=_TIMEFRAME_FACTS,
+    )
+    assert item == {"status": "item", "topic": "相場", "text": "AIの本文です。"}
+    assert generate_next_narration(
+        object(), trading_dir=tmp_path, agents="opencode:x", now=1010.0,
+        timeframe_facts=_TIMEFRAME_FACTS,
+    ) == {"status": "done"}
+
+
+def test_generate_next_narration_reports_unusable_output_as_failure(tmp_path, monkeypatch):
+    from docich.trading import corner_script
+
+    _write_status(tmp_path)
+    monkeypatch.setenv("DOCICH_ALLOW_REAL_AI", "1")
+    monkeypatch.setattr(corner_script, "prepare_research_context", lambda *a, **k: {})
+    monkeypatch.setattr(corner_script, "generate_text", lambda *a, **k: 'not json')
+
+    result = generate_next_narration(
+        object(), trading_dir=tmp_path, agents="opencode:x", now=1010.0,
+        timeframe_facts=_TIMEFRAME_FACTS,
+    )
+    assert result == {"status": "failed", "reason": "CornerScriptError:no-json-object"}

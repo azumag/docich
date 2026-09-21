@@ -38,7 +38,6 @@ class ReloadAuthorizeTests(unittest.TestCase):
             "GITHUB_ISSUE_AUTHOR_ID": "9018513",
             "GITHUB_ISSUE_BODY": body,
             "INPUT_OPERATION": "",
-            "INPUT_DURATION_MINUTES": "",
             "INPUT_CONFIRM": "",
         }
         return subprocess.run(["python3", str(AUTH)], env=env, text=True, capture_output=True)
@@ -46,7 +45,6 @@ class ReloadAuthorizeTests(unittest.TestCase):
     def test_issue_bridge_accepts_only_fixed_reload_worker(self):
         body = json.dumps({
             "operation": "reload-worker",
-            "duration_minutes": 1,
             "confirm": "production",
             "nonce": "reload-1",
         })
@@ -59,7 +57,6 @@ class ReloadAuthorizeTests(unittest.TestCase):
         for operation in ("exec", "shell", "restart-all"):
             bad = json.dumps({
                 "operation": operation,
-                "duration_minutes": 1,
                 "confirm": "production",
                 "nonce": "bad",
             })
@@ -68,13 +65,11 @@ class ReloadAuthorizeTests(unittest.TestCase):
     def test_reload_still_requires_exact_schema_and_confirmation(self):
         no_confirm = json.dumps({
             "operation": "reload-worker",
-            "duration_minutes": 1,
             "confirm": "",
             "nonce": "x",
         })
         extra = json.dumps({
             "operation": "reload-worker",
-            "duration_minutes": 1,
             "confirm": "production",
             "nonce": "x",
             "command": "id",
