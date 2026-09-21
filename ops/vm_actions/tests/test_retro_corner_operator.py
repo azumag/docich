@@ -83,6 +83,7 @@ class RetroCornerOperatorPolicyTests(unittest.TestCase):
         )
         self.assertIn("maintain-fifo", service)
         self.assertIn("TimeoutStartSec=infinity", service)
+        self.assertIn("OnActiveSec=30s", timer)
         self.assertIn("OnUnitActiveSec=30s", timer)
         self.assertIn("Unit=docich-game-switch-fifo.service", timer)
         self.assertNotIn("docich-retro-corner.service", service)

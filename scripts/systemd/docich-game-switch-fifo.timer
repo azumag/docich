@@ -2,6 +2,9 @@
 Description=docich ゲーム切替 FIFO を独立監視するタイマー
 
 [Timer]
+# OnBootSec は既に起動済みの user manager へ後から enable した場合に
+# 初回tickの基準にならないため、enable --now 直後の初回実行を保証する。
+OnActiveSec=30s
 OnBootSec=30s
 OnUnitActiveSec=30s
 AccuracySec=5s
