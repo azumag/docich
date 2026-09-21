@@ -5,8 +5,9 @@ adapter = "cli"
 
 # nsnake はメインメニュー起動・試合終了時に Game Over/Retry ダイアログを出す
 # (同一プロセス継続)。tracked wrapper (games/cli-wrappers/nsnake_docich.sh) が
-# menu/retry と最終スコアの scorelog 追記、3試合上限 (NSNAKE_MAX_MATCHES) の
-# みを担当する。/usr/local/bin への手動コピー依存は廃止。
+# menu/retry と最終スコアの scorelog 追記、corner catalog から渡される
+# ゲーム別試合数上限 (NSNAKE_MAX_MATCHES) のみを担当する。/usr/local/bin への
+# 手動コピー依存は廃止。
 # 方向入力は command brain (brains/nsnake/brain.py) が担い、切替は従来の
 # immediate-quiesce 経路を使う。
 [lifecycle]

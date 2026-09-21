@@ -16,7 +16,7 @@ SCORELOG="${NSNAKE_SCORELOG:-/home/ubuntu/docich/run-soren-live/scores/nsnake.js
 PANE="${TMUX_PANE:-}"
 NSNAKE_BIN="${NSNAKE_BIN:-/usr/games/nsnake}"
 DRIVER_INTERVAL="${NSNAKE_DRIVER_INTERVAL:-2}"
-MAX_MATCHES="${NSNAKE_MAX_MATCHES:-3}"
+MAX_MATCHES="${NSNAKE_MAX_MATCHES:-${DOCICH_TARGET_MATCHES:-3}}"
 case "$MAX_MATCHES" in
   ''|*[!0-9]*|0*) echo "NSNAKE_MAX_MATCHES must be a positive integer" >&2; exit 2 ;;
 esac

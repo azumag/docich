@@ -112,6 +112,17 @@ def program_lock(g, owner_state=None, *, wait_deadline_ts=None, sleep=time.sleep
         yield slot_root
 
 
+def _observed_owner_status(previous, state, owner_state):
+    # Only dedicated PAPER records in this canonical state directory may use
+    # the recovered-failure exception. Retro/other profiles remain fail-closed.
+    previous = Path(previous)
+    if (previous.name in {'paper_corner.json', 'paper_corner_manual.json'}
+            and previous.parent.resolve() == Path(owner_state).parent.resolve()):
+        from .corner_terminal import normalize_terminal_paper_failure
+        state = normalize_terminal_paper_failure(previous.parent, state)
+    return state.get('status')
+
+
 def _register_owner(root, owner_state):
     from .game_switch import atomic_write_json
     registry = root / REGISTRY_FILE
@@ -125,7 +136,7 @@ def _register_owner(root, owner_state):
                 state = json.loads(Path(previous).read_text())
             except (OSError, ValueError) as exc:
                 raise ProgramRegistryError(f'他コーナー状態が不正です: {exc}') from exc
-            if state.get('status') in BUSY_OWNER_STATUSES:
+            if _observed_owner_status(previous, state, owner_state) in BUSY_OWNER_STATUSES:
                 raise RuntimeError('another corner must recover or finish before starting')
     atomic_write_json(registry, {'owner_state': str(owner_state)})
 
@@ -147,7 +158,7 @@ def _owner_free(root, owner_state):
         state = json.loads(Path(previous).read_text())
     except (OSError, ValueError) as exc:
         raise ProgramRegistryError(f'他コーナー状態が不正です: {exc}') from exc
-    return state.get('status') not in BUSY_OWNER_STATUSES
+    return _observed_owner_status(previous, state, owner_state) not in BUSY_OWNER_STATUSES
 
 
 # 待機中とみなすキュー状態 (running は flock が実体なので数えない: 強制終了で残る)。

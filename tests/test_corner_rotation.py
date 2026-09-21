@@ -66,6 +66,35 @@ def test_flat_live_catalog_and_financial_boundary():
     assert all(c.live_eligible is False for c in catalog)
     assert not next(c for c in catalog if c.id == "hanjuku-hero").enabled
     assert not any(c.id == "retro" for c in catalog)
+    assert next(c for c in catalog if c.id == "nsnake").target_matches == 1
+    assert all(c.target_matches is None for c in catalog if c.id != "nsnake")
+
+
+@pytest.mark.parametrize("value", ["0", "101", "-1", "true", '"1"', "1.5", "[]"])
+def test_catalog_rejects_invalid_match_targets(tmp_path, value):
+    path = tmp_path / "config.toml"
+    path.write_text('[corner_rotation]\ncorners=[{id="nsnake",adapter="game",game="nsnake",target_matches=' + value + '}]')
+    with pytest.raises(CornerCatalogError, match="target_matches"):
+        load_catalog(load_global(tmp_path, path))
+
+
+@pytest.mark.parametrize("adapter,game", [("paper", "paper-view"), ("meriken", "soren91"), ("nethack", "nethack")])
+def test_non_match_adapters_reject_match_targets(tmp_path, adapter, game):
+    path = tmp_path / "config.toml"
+    path.write_text(f'[corner_rotation]\ncorners=[{{id="{game}",adapter="{adapter}",game="{game}",target_matches=1}}]')
+    with pytest.raises(CornerCatalogError, match="target_matches"):
+        load_catalog(load_global(tmp_path, path))
+
+
+def test_match_targets_do_not_weight_eligible_count_or_interval(setup):
+    _, _, catalog, _, make = setup
+    manager = make([replace(catalog[0], target_matches=100), *catalog[1:]])
+    assert manager.tick()["status"] == "ready"
+    assert len(state(manager)["eligible"]) == 3
+    assert state(manager)["interval_seconds"] == DAY / 3
+    manager = make([replace(catalog[0], target_matches=1), *catalog[1:]])
+    assert manager.tick()["reason"] == "not-due"
+    assert state(manager)["interval_seconds"] == DAY / 3
 
 
 def test_real_adapters_derive_live_eligible_count(tmp_path, monkeypatch):
@@ -191,7 +220,7 @@ def test_nethack_legacy_state_is_visible_to_unified_rotation(tmp_path, monkeypat
 
 
 def test_terminal_failed_manual_paper_state_does_not_pin_rotation(tmp_path, monkeypatch):
-    from docich import corner_adapters
+    from docich import corner_terminal
     from docich.corner_adapters import RetiredCornerObserver
 
     config = load_global(tmp_path)
@@ -211,7 +240,7 @@ def test_terminal_failed_manual_paper_state_does_not_pin_rotation(tmp_path, monk
     class Store:
         canonical = Canonical()
 
-    monkeypatch.setattr(corner_adapters, "GameSwitchStore", lambda _path: Store())
+    monkeypatch.setattr(corner_terminal, "GameSwitchStore", lambda _path: Store())
     observer = RetiredCornerObserver(
         config,
         {"id": "retired-paper", "adapter": "paper", "game": "paper-view"},
@@ -233,8 +262,75 @@ def test_terminal_failed_manual_paper_state_does_not_pin_rotation(tmp_path, monk
     assert manager._observe(observed, 1000.0) is False
 
 
+@pytest.mark.parametrize("retired", [False, True])
+@pytest.mark.parametrize("game_field", [{}, {"game": None}, {"game": "paper-view"}])
+@pytest.mark.parametrize("case", [
+    "restored", "mismatch", "draining", "failed", "missing", "corrupt",
+    "recovery-required", "error-code", "no-completion", "no-previous",
+    "idle-restored", "idle-missing",
+])
+def test_paper_terminal_contract_through_rotation_tick(tmp_path, monkeypatch, retired, game_field, case):
+    from docich import corner_terminal
+    from docich.corner_adapters import PaperCornerAdapter
+
+    path = tmp_path / "config.toml"
+    path.write_text('[corner_rotation]\nenabled=true\n[paths]\nstate_dir="run"\n')
+    g = load_global(tmp_path, path)
+    g.state_dir.mkdir(parents=True)
+    paper_state = dict(status="failed", previous_game="sorengame", completed_at=100,
+                       recovery_required=False, **game_field)
+    canonical = {"phase": "ready", "active": {"game": "sorengame"}}
+    if case == "mismatch":
+        canonical["active"]["game"] = "nsnake"
+    elif case in {"draining", "failed"}:
+        canonical["phase"] = case
+    elif case == "recovery-required":
+        paper_state["recovery_required"] = True
+    elif case == "error-code":
+        paper_state["last_error_code"] = "recovery_required"
+    elif case == "no-completion":
+        paper_state.pop("completed_at")
+    elif case == "no-previous":
+        paper_state.pop("previous_game")
+        canonical = {"phase": "idle", "active": None}
+    elif case in {"idle-restored", "idle-missing"}:
+        paper_state["previous_game"] = None
+        canonical = {"phase": "idle", "active": None}
+    state_path = g.state_dir / "paper_corner_manual.json"
+    original = json.dumps(paper_state)
+    state_path.write_text(original)
+
+    def load():
+        if case == "corrupt":
+            raise ValueError("unreadable canonical")
+        return canonical, case in {"missing", "idle-missing"}
+
+    monkeypatch.setattr(corner_terminal, "GameSwitchStore", lambda _: SimpleNamespace(canonical=SimpleNamespace(load=load)))
+    paper = PaperCornerAdapter.__new__(PaperCornerAdapter)
+    paper.g = g
+    paper.corner = Corner("paper", "paper", "paper-view")
+    paper.manager = SimpleNamespace(path=g.state_dir / "paper_corner.json")
+    paper.eligible = lambda: True
+    catalog = [Corner("nsnake", "game", "nsnake")]
+    if not retired:
+        catalog.append(paper.corner)
+    executor = Executor()
+    manager = CornerRotationManager(
+        g, clock=lambda: 1000, catalog=catalog, executor=executor,
+        adapter_factory=lambda g, c: paper if c.adapter == "paper" else Adapter(g, c),
+    )
+    result = manager.tick()
+    if case in {"restored", "idle-restored"}:
+        assert result["status"] == "ready"
+        assert executor.calls[0]["corner"] == "nsnake"
+    else:
+        assert result["reason"] == "other-corner-needs-finish-or-recovery"
+        assert not executor.calls
+    assert state_path.read_text() == original
+
+
 def test_unstable_failed_manual_paper_state_still_blocks_rotation(tmp_path, monkeypatch):
-    from docich import corner_adapters
+    from docich import corner_terminal
     from docich.corner_adapters import RetiredCornerObserver
 
     config = load_global(tmp_path)
@@ -253,7 +349,7 @@ def test_unstable_failed_manual_paper_state_still_blocks_rotation(tmp_path, monk
     class Store:
         canonical = Canonical()
 
-    monkeypatch.setattr(corner_adapters, "GameSwitchStore", lambda _path: Store())
+    monkeypatch.setattr(corner_terminal, "GameSwitchStore", lambda _path: Store())
     observer = RetiredCornerObserver(
         config,
         {"id": "retired-paper", "adapter": "paper", "game": "paper-view"},
@@ -273,6 +369,48 @@ def test_unstable_failed_manual_paper_state_still_blocks_rotation(tmp_path, monk
         "retired-paper": {"id": "retired-paper", "adapter": "paper", "game": "paper-view"}
     }
     assert manager._observe(observed, 1000.0) is True
+
+
+def test_recovered_paper_owner_allows_real_coordinator_slot_dispatch(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+    import time
+    from docich import corner_boundary, corner_terminal
+    from docich.corner_adapters import CornerExecutionCoordinator, PaperCornerAdapter
+
+    path = tmp_path / "config.toml"
+    path.write_text('[corner_rotation]\nenabled=true\n[paths]\nstate_dir="run"\n')
+    g = load_global(tmp_path, path)
+    g.state_dir.mkdir(parents=True)
+    paper_path = g.state_dir / "paper_corner_manual.json"
+    original = json.dumps({"status": "failed", "game": None, "previous_game": "sorengame",
+                           "completed_at": time.time() - 10, "recovery_required": False})
+    paper_path.write_text(original)
+    registry = tmp_path / "tmp/state" / corner_boundary.REGISTRY_FILE
+    registry.parent.mkdir(parents=True)
+    registry.write_text(json.dumps({"owner_state": str(paper_path)}))
+    store = SimpleNamespace(
+        canonical=SimpleNamespace(load=lambda: ({"phase": "ready", "active": {"game": "sorengame"}}, False)),
+        lock=lambda **_: nullcontext(),
+    )
+    monkeypatch.setattr(corner_terminal, "GameSwitchStore", lambda _: store)
+    monkeypatch.setattr(corner_boundary, "resolve_soren_root", lambda _: tmp_path)
+    calls = []
+    paper = PaperCornerAdapter.__new__(PaperCornerAdapter)
+    paper.g, paper.corner = g, Corner("paper", "paper", "paper-view")
+    paper.manager = SimpleNamespace(path=g.state_dir / "paper_corner.json")
+    paper.eligible = lambda: True
+    game = Adapter(g, Corner("nsnake", "game", "nsnake", target_matches=1))
+    game.manager = SimpleNamespace(store=store)
+    game.state_path = g.state_dir / "retro_corner.json"
+    game.run = lambda request: calls.append(request) or "completed"
+    executor = CornerExecutionCoordinator(g, clock=time.time, sleep=lambda _: None, wait_seconds=-1)
+    manager = CornerRotationManager(g, catalog=[game.corner, paper.corner], executor=executor,
+                                    adapter_factory=lambda _, c: paper if c.adapter == "paper" else game)
+    assert manager.tick()["status"] == "ready"
+    assert len(calls) == 1
+    assert calls[0]["corner"] == "nsnake"
+    assert json.loads(registry.read_text())["owner_state"] == str(game.state_path)
+    assert paper_path.read_text() == original
 
 
 def test_removed_corner_keeps_improvement_release_gate(setup):

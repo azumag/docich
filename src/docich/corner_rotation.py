@@ -113,6 +113,7 @@ class CornerRotationManager:
         legacy = (
             ("retro_corner.json", "game", None),
             ("paper_corner.json", "paper", ("paper", "paper-view")),
+            ("paper_corner_manual.json", "paper", ("paper", "paper-view")),
             ("soren91_corner.json", "meriken", ("meriken", "soren91")),
             ("nethack_corner.json", "nethack", ("nethack", "nethack")),
         )

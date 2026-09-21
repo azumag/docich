@@ -1,5 +1,6 @@
 """Common adapter lifecycle tests using local state and fake game processes."""
 import datetime as dt
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,48 @@ from docich.corner_ownership import verify_runtime
 
 
 class TestRotationGameExecution(RetroCornerTestBase):
+    def test_catalog_match_target_controls_end_of_game_and_restoration(self):
+        from docich.config import load_global
+        from docich.corner_catalog import load_catalog
+        root = Path(__file__).resolve().parents[1]
+        production = load_global(root, root / "config/docich.soren-live.toml")
+        catalog = {c.game: c for c in load_catalog(production)}
+        for game, expected in (("nsnake", 1), ("ninvaders", 3)):
+            with self.subTest(game=game):
+                game_path = self.root / "config/games" / f"{game}.toml"
+                game_path.write_text(f'[game]\nname="{game}"\ntitle="{game}"\nadapter="cli"\n'
+                                     '[corner]\nself_play=true\n')
+                adapter = GameCornerAdapter(production, catalog[game])
+                self.cfg = replace(adapter.manager.config, games=[game])
+                current = ["sorengame"]
+                started = self.now_value
+                score = self.g.state_dir / "scores" / f"{game}.jsonl"
+                score.parent.mkdir(parents=True, exist_ok=True)
+                score.write_text(json.dumps({"game": game, "ts": started.timestamp() - 1}) + "\n"
+                                 + json.dumps({"game": "other", "ts": started.timestamp()}) + "\n")
+                completed = []
+
+                def finish_match(seconds):
+                    self.now_value += dt.timedelta(seconds=seconds)
+                    completed.append(1)
+                    assert len(completed) <= expected, "corner waited past configured matches"
+                    with score.open("a") as stream:
+                        stream.write(json.dumps({"game": game, "ts": self.now_value.timestamp()}) + "\n")
+
+                mgr, coord = self.manager(current, sleep=finish_match)
+                mgr._chat = Mock()
+                mgr._stream_game = Mock()
+                mgr._repair_active_agent = Mock(return_value=True)
+                mgr.store.canonical.load = lambda: ({"phase": "ready", "active": {
+                    "game": current[0], "runtime_id": "g1-test"}}, False)
+                result = mgr.run_rotation(f"match-target-{game}", game)
+                assert result.status == "completed"
+                assert mgr._read_state()["target_matches"] == expected
+                assert len(completed) == expected
+                assert coord.calls == [("switch", game), ("switch", "sorengame")]
+                assert current == ["sorengame"]
+                assert (self.now_value - started).total_seconds() < 60
+
     def execution(self):
         current = [None]
         mgr, coord = self.manager(current)
@@ -102,6 +145,55 @@ def test_improvement_terminal_evidence_is_required(tmp_path):
     assert adapter.resources_released() is False
     path.write_text(json.dumps({"status": "kept", "started_at": 101}))
     assert adapter.resources_released() is True
+
+
+@pytest.mark.parametrize("configured", [None, 7])
+def test_game_adapter_inherits_global_match_target_when_omitted(tmp_path, configured):
+    from docich.config import load_global
+    path = tmp_path / "config.toml"
+    path.write_text('[retro_corner]\ngames=["nsnake"]\n' + (
+        f'target_matches={configured}\n' if configured is not None else ''
+    ))
+    adapter = GameCornerAdapter(load_global(tmp_path, path), Corner("nsnake", "game", "nsnake"))
+    assert adapter.manager.config.target_matches == (configured or 3)
+
+
+def test_runtime_environment_uses_persisted_target_for_resumed_request(tmp_path, monkeypatch):
+    from docich.config import load_global
+
+    path = tmp_path / "config.toml"
+    path.write_text('[retro_corner]\ngames=["nsnake"]\ntarget_matches=3\n')
+    g = load_global(tmp_path, path)
+    adapter = GameCornerAdapter(g, Corner("nsnake", "game", "nsnake", target_matches=3))
+    adapter.state_path.parent.mkdir(parents=True, exist_ok=True)
+    adapter.state_path.write_text(json.dumps({
+        "status": "starting", "rotation_request_id": "req-1", "target_matches": 1,
+    }))
+    monkeypatch.delenv("DOCICH_TARGET_MATCHES", raising=False)
+    monkeypatch.delenv("NSNAKE_MAX_MATCHES", raising=False)
+    with adapter.runtime_environment({"request_id": "req-1"}):
+        assert os.environ["DOCICH_TARGET_MATCHES"] == "1"
+        assert os.environ["NSNAKE_MAX_MATCHES"] == "1"
+    assert "DOCICH_TARGET_MATCHES" not in os.environ
+    assert "NSNAKE_MAX_MATCHES" not in os.environ
+
+    adapter.target_matches = 1
+    adapter.state_path.write_text(json.dumps({
+        "status": "active", "rotation_request_id": "req-2", "target_matches": 3,
+    }))
+    with adapter.runtime_environment({"request_id": "req-2"}):
+        assert os.environ["DOCICH_TARGET_MATCHES"] == "3"
+        assert os.environ["NSNAKE_MAX_MATCHES"] == "3"
+
+
+@pytest.mark.parametrize("adapter_name", ["paper", "nethack"])
+def test_adapters_without_game_match_target_have_no_runtime_environment_side_effect(adapter_name):
+    from docich.corner_adapters import NethackCornerAdapter, PaperCornerAdapter
+
+    adapter_cls = {"paper": PaperCornerAdapter, "nethack": NethackCornerAdapter}[adapter_name]
+    adapter = adapter_cls.__new__(adapter_cls)
+    with adapter.runtime_environment({"request_id": "no-target"}):
+        pass
 
 
 def test_game_coordinator_unsafe_phase_never_calls_adapter(tmp_path):

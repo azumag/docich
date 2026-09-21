@@ -19,6 +19,8 @@ class Corner:
     enabled: bool = True
     paused: bool = False
     live_eligible: bool = False
+    # None inherits retro_corner.target_matches (legacy default: 3).
+    target_matches: int | None = None
 
 
 def rotation_config(g) -> dict:
@@ -44,7 +46,7 @@ def load_catalog(g) -> tuple[Corner, ...]:
     result = []
     for row in rows:
         if not isinstance(row, dict) or set(row) - {
-            "id", "adapter", "game", "enabled", "paused", "live_eligible"
+            "id", "adapter", "game", "enabled", "paused", "live_eligible", "target_matches"
         }:
             raise CornerCatalogError("invalid corner catalog entry")
         try:
@@ -55,6 +57,11 @@ def load_catalog(g) -> tuple[Corner, ...]:
             raise CornerCatalogError("invalid corner identity") from exc
         if item.adapter not in ADAPTERS:
             raise CornerCatalogError("unsupported corner adapter")
+        if item.target_matches is not None and (
+            item.adapter != "game" or type(item.target_matches) is not int
+            or not 1 <= item.target_matches <= 100
+        ):
+            raise CornerCatalogError("target_matches requires game adapter and integer 1-100")
         if any(type(value) is not bool for value in
                (item.enabled, item.paused, item.live_eligible)) or item.live_eligible:
             raise CornerCatalogError("corners must remain live_eligible=false")

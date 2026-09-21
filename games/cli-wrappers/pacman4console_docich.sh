@@ -16,9 +16,13 @@ SCORELOG="${PACMAN_SCORELOG:-/home/ubuntu/docich/run-soren-live/scores/pacman4co
 PANE="${TMUX_PANE:-}"
 LEVEL="${PACMAN_LEVEL:-1}"
 PACMAN_BIN="${PACMAN_BIN:-/usr/games/pacman4console}"
+MAX_MATCHES="${PACMAN_MAX_MATCHES:-${DOCICH_TARGET_MATCHES:-3}}"
+case "$MAX_MATCHES" in
+  ''|*[!0-9]*|0*) echo "PACMAN_MAX_MATCHES must be a positive integer" >&2; exit 2 ;;
+esac
 
 record_score() {
-  [ "$1" -gt 0 ] 2>/dev/null || return 0
+  [ "$1" -ge 0 ] 2>/dev/null || return 0
   mkdir -p "$(dirname "$SCORELOG")" 2>/dev/null || true
   printf '{"ts":%s,"game":"pacman4console","score":%s,"source":"wrapper"}\n' "$(date +%s)" "$1" >>"$SCORELOG" 2>/dev/null || true
 }
@@ -27,6 +31,7 @@ driver() {
   max_score=0
   seen_game=0
   started=0
+  matches=0
   while :; do
     sleep 2
     [ -n "$PANE" ] || continue
@@ -43,8 +48,10 @@ driver() {
         # game at once ("... or any other key to play again"), so this driver
         # may never see that screen: flush the finished match here instead.
         record_score "$max_score"
+        matches=$((matches + 1))
         max_score=0
         seen_game=0
+        [ "$matches" -lt "$MAX_MATCHES" ] || continue
       fi
       if [ "$cur" -gt "$max_score" ]; then
         max_score="$cur"
@@ -57,9 +64,11 @@ driver() {
       *"Game Over"*)
         if [ "$seen_game" = "1" ]; then
           record_score "$max_score"
+          matches=$((matches + 1))
           max_score=0
           seen_game=0
         fi
+        [ "$matches" -lt "$MAX_MATCHES" ] || continue
         # "any other key" restarts; SPACE is guaranteed not to be 'q'.
         tmux send-keys -t "$PANE" -l " "
         sleep 3

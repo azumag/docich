@@ -140,6 +140,63 @@ def test_failfast_without_deadline_preserved(tmp_path):
             pass
 
 
+@pytest.mark.parametrize("filename", ["paper_corner.json", "paper_corner_manual.json", "retro_corner.json"])
+@pytest.mark.parametrize("case", ["restored", "mismatch", "draining", "recovery-required", "no-completion", "missing", "corrupt", "other-directory"])
+@pytest.mark.parametrize("queued", [False, True])
+def test_program_owner_paper_terminal_contract(tmp_path, monkeypatch, filename, case, queued):
+    from docich import corner_terminal
+    root = _state_dir(tmp_path)
+    state_dir = tmp_path / "run"
+    state_dir.mkdir()
+    previous = state_dir / filename
+    original = {"status": "failed", "previous_game": "sorengame", "completed_at": 100,
+                "recovery_required": case == "recovery-required"}
+    if case == "no-completion":
+        original.pop("completed_at")
+    previous.write_text(json.dumps(original))
+    original_bytes = previous.read_bytes()
+    (root / REGISTRY_FILE).write_text(json.dumps({"owner_state": str(previous)}))
+    mine = (tmp_path if case == "other-directory" else state_dir) / "next_corner.json"
+    _owner(mine, "idle")
+
+    def load():
+        if case == "corrupt":
+            raise ValueError("invalid canonical")
+        return {"phase": "draining" if case == "draining" else "ready",
+                "active": {"game": "nsnake" if case == "mismatch" else "sorengame"}}, case == "missing"
+
+    monkeypatch.setattr(corner_terminal, "GameSwitchStore", lambda _: SimpleNamespace(canonical=SimpleNamespace(load=load)))
+    scope = (_program_slot(root, mine, time.time() - 1, sleep=lambda _: None)
+             if queued else program_lock(_fake_g(tmp_path), mine))
+    if filename.startswith("paper_") and case == "restored":
+        with scope:
+            assert json.loads((root / REGISTRY_FILE).read_text())["owner_state"] == str(mine)
+    else:
+        with pytest.raises(CornerWaitExpired if queued else RuntimeError):
+            with scope:
+                pytest.fail("unsafe owner must block")
+    assert previous.read_bytes() == original_bytes
+
+
+@pytest.mark.parametrize("completed", ["", "invalid", "2026-09-22T00:00:00", True, -1, float("nan"), float("inf"), []])
+def test_invalid_completion_never_releases_paper_owner(tmp_path, monkeypatch, completed):
+    from docich import corner_terminal
+    monkeypatch.setattr(corner_terminal, "GameSwitchStore", lambda _: SimpleNamespace(
+        canonical=SimpleNamespace(load=lambda: ({"phase": "ready", "active": {"game": "sorengame"}}, False))))
+    state = {"status": "failed", "previous_game": "sorengame", "completed_at": completed}
+    assert corner_terminal.normalize_terminal_paper_failure(tmp_path, state) is state
+
+
+@pytest.mark.parametrize("recovery", [True, None, "false", 0, 1, []])
+def test_invalid_or_required_recovery_never_releases_paper_owner(tmp_path, monkeypatch, recovery):
+    from docich import corner_terminal
+    monkeypatch.setattr(corner_terminal, "GameSwitchStore", lambda _: SimpleNamespace(
+        canonical=SimpleNamespace(load=lambda: ({"phase": "ready", "active": {"game": "sorengame"}}, False))))
+    state = {"status": "failed", "previous_game": "sorengame", "completed_at": 100,
+             "recovery_required": recovery}
+    assert corner_terminal.normalize_terminal_paper_failure(tmp_path, state) is state
+
+
 def test_waiter_proceeds_after_owner_finishes(tmp_path):
     busy = tmp_path / 'a.json'
     _owner(busy, 'active')

@@ -22,6 +22,10 @@ SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
 SCORELOG="${BASTET_SCORELOG:-/home/ubuntu/docich/run-soren-live/scores/bastet.jsonl}"
 PANE="${TMUX_PANE:-}"
 BASTET_BIN="${BASTET_BIN:-/usr/games/bastet}"
+MAX_MATCHES="${BASTET_MAX_MATCHES:-${DOCICH_TARGET_MATCHES:-3}}"
+case "$MAX_MATCHES" in
+  ''|*[!0-9]*|0*) echo "BASTET_MAX_MATCHES must be a positive integer" >&2; exit 2 ;;
+esac
 
 record_score() {
   # A completed match is recorded even at 0: the brain cannot see the board
@@ -43,6 +47,7 @@ dec() {
 driver() {
   max_score=0
   seen_game=0
+  matches=0
   while :; do
     sleep 2
     [ -n "$PANE" ] || continue
@@ -62,9 +67,11 @@ driver() {
       *"Try again!"*)
         if [ "$seen_game" = "1" ]; then
           record_score "$max_score"
+          matches=$((matches + 1))
           max_score=0
           seen_game=0
         fi
+        [ "$matches" -lt "$MAX_MATCHES" ] || continue
         tmux send-keys -t "$PANE" Enter
         sleep 2
         ;;
@@ -78,9 +85,11 @@ driver() {
           # dismissed before this driver saw it (an Enter the brain already
           # had in flight does that), flush the finished match here.
           record_score "$max_score"
+          matches=$((matches + 1))
           max_score=0
           seen_game=0
         fi
+        [ "$matches" -lt "$MAX_MATCHES" ] || continue
         tmux send-keys -t "$PANE" Enter
         sleep 2
         ;;

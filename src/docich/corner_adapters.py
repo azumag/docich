@@ -8,7 +8,7 @@ import json
 import os
 from pathlib import Path
 
-from .game_switch import GameSwitchStore
+from .corner_terminal import normalize_terminal_paper_failure
 from .retro_corner import RetroCornerManager, load_retro_corner_config
 
 
@@ -16,50 +16,21 @@ class CornerExecutionError(RuntimeError):
     pass
 
 
-def _normalize_terminal_paper_failure(g, state, target_game):
-    """Treat a failed PAPER record as terminal only after canonical proof.
-
-    A manual PAPER run can record ``failed`` after its restore attempt even
-    though a later owner has already returned the canonical display to the
-    recorded previous game.  The record is intentionally kept for diagnosis;
-    it must not, by itself, pin the unified scheduler forever.  Any missing or
-    unstable canonical evidence remains fail-closed.
-    """
-    if (state.get("status") != "failed"
-            or state.get("recovery_required") is True
-            or state.get("last_error_code") == "recovery_required"
-            or state.get("completed_at") is None
-            or state.get("game") not in (None, target_game)):
-        return state
-    previous = state.get("previous_game")
-    if previous == target_game or (previous is not None and not isinstance(previous, str)):
-        return state
-    try:
-        canonical, _ = GameSwitchStore(g.state_dir).canonical.load()
-    except Exception:
-        return state
-    phase = canonical.get("phase")
-    active = canonical.get("active")
-    if previous is None:
-        terminal = phase == "idle" and active is None
-    else:
-        terminal = (
-            phase == "ready"
-            and isinstance(active, dict)
-            and active.get("game") == previous
-        )
-    if not terminal:
-        return state
-    normalized = dict(state)
-    normalized["status"] = "completed"
-    return normalized
-
-
 class GameCornerAdapter:
     def __init__(self, g, corner):
         self.g, self.corner = g, corner
         cfg = replace(load_retro_corner_config(g), games=[corner.game],
                       daily_each_game=False, randomize_start=False)
+        if corner.target_matches is not None:
+            cfg = replace(cfg, target_matches=corner.target_matches)
+        self.target_matches = cfg.target_matches
+        self._target_matches_env = {
+            "ninvaders": "NINVADERS_MAX_MATCHES",
+            "nsnake": "NSNAKE_MAX_MATCHES",
+            "bastet": "BASTET_MAX_MATCHES",
+            "moon-buggy": "MOONBUGGY_MAX_MATCHES",
+            "pacman4console": "PACMAN_MAX_MATCHES",
+        }.get(corner.game)
         self.manager = RetroCornerManager(g, config=cfg)
 
     @property
@@ -69,10 +40,51 @@ class GameCornerAdapter:
     def eligible(self):
         return self.corner.game in self.manager._playable_games()
 
+    def _runtime_target_matches(self, request=None):
+        target = self.target_matches
+        request_id = request.get("request_id") if isinstance(request, dict) else None
+        if not isinstance(request_id, str):
+            return target
+        try:
+            state = json.loads(self.state_path.read_text())
+        except (OSError, ValueError):
+            return target
+        persisted = state.get("target_matches") if isinstance(state, dict) else None
+        if (isinstance(state, dict)
+                and state.get("rotation_request_id") == request_id
+                and type(persisted) is int and 1 <= persisted <= 100):
+            return persisted
+        return target
+
     @contextmanager
-    def runtime_environment(self):
-        """Yield without adding credentials for ordinary game adapters."""
-        yield
+    def runtime_environment(self, request=None):
+        """Expose the selected match limit only to the game subprocess.
+
+        The manager's scorelog boundary is authoritative, but the tracked
+        wrappers also auto-retry their foreground game.  Keeping the wrapper
+        cap equal to the per-corner target prevents a second match from being
+        started during the poll interval before the manager restores Soren.
+        """
+        target_matches = self._runtime_target_matches(request) if hasattr(self, "target_matches") else None
+        if target_matches is None:
+            yield
+            return
+
+        env_names = ["DOCICH_TARGET_MATCHES"]
+        target_env = getattr(self, "_target_matches_env", None)
+        if target_env:
+            env_names.append(target_env)
+        previous = {name: os.environ.get(name) for name in env_names}
+        for name in env_names:
+            os.environ[name] = str(target_matches)
+        try:
+            yield
+        finally:
+            for name, value in previous.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
 
     def observations(self):
         paths = [self.state_path, self.state_path.with_name(self.state_path.stem + "_manual.json")]
@@ -173,7 +185,7 @@ class MerikenCornerAdapter(GameCornerAdapter):
         return values
 
     @contextmanager
-    def runtime_environment(self):
+    def runtime_environment(self, request=None):
         """Load Meriken credentials only for this adapter's execution."""
         path = Path(os.environ.get("DOCICH_SOREN91_ENV_FILE", str(self.DEFAULT_ENV_FILE)))
         if not path.is_file():
@@ -247,8 +259,15 @@ class PaperCornerAdapter(GameCornerAdapter):
         return True
 
     def observations(self):
-        for state in super().observations():
-            yield _normalize_terminal_paper_failure(self.g, state, self.corner.game)
+        # PAPER owns dedicated files, unlike retro's shared per-game file.
+        # Legacy manual runs may record game=null (or omit it altogether).
+        for path in (self.state_path, self.state_path.with_name(self.state_path.stem + "_manual.json")):
+            if not path.exists():
+                continue
+            state = json.loads(path.read_text())
+            if not isinstance(state, dict):
+                raise CornerExecutionError("invalid adapter state")
+            yield normalize_terminal_paper_failure(self.g.state_dir, state, self.corner.game)
 
     def run(self, request):
         return self.manager.run_rotation(request["request_id"])
@@ -285,7 +304,7 @@ class RetiredCornerObserver:
                 raise CornerExecutionError("invalid retired corner state")
             if self.adapter_name == "paper" or state.get("game", self.game) == self.game:
                 if self.adapter_name == "paper":
-                    state = _normalize_terminal_paper_failure(self.g, state, self.game)
+                    state = normalize_terminal_paper_failure(self.g.state_dir, state, self.game)
                 yield state
 
     def improvement_paths(self):
@@ -354,7 +373,7 @@ class CornerExecutionCoordinator:
             return "queued"
         try:
             environment = getattr(adapter, "runtime_environment", None)
-            scope = environment() if callable(environment) else nullcontext()
+            scope = environment(request) if callable(environment) else nullcontext()
             with scope:
                 with program_slot(
                     self.g, adapter.state_path,

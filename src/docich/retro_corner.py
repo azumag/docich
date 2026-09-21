@@ -1203,9 +1203,9 @@ class RetroCornerManager:
         return state, None
 
     def _target_reached(self, state: dict) -> bool:
-        """3試合検知: scorelogの当該コーナー開始以降の件数で判定する。"""
+        """設定試合数の検知: scorelogの当該コーナー開始以降の件数で判定する。"""
         target = state.get("target_matches")
-        if not isinstance(target, int) or target <= 0:
+        if type(target) is not int or not 1 <= target <= 100:
             return False
         game = state.get("game")
         if not isinstance(game, str) or not game:
@@ -1269,7 +1269,7 @@ class RetroCornerManager:
                     return self._state_result(latest)
                 return self._finish_locked(latest, self._local_now())
         else:
-            # 3試合早期終了: 試合境界はwrapperの保存後に訪れる。時間上限
+            # 設定試合数で早期終了: 試合境界はwrapperの保存後に訪れる。時間上限
             # ends_at は必ず残し、来なければ従来どおり ends_at で終了する。
             next_agent_repair_at = 0.0
             agent_repair_failed = False
