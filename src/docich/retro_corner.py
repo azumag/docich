@@ -26,6 +26,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .adapters import make_coordinator_adapter
 from .config import ConfigError, GlobalConfig, load_game, load_global
 from .game_switch import (
+    ERROR_RECOVERY_REQUIRED,
     GameSwitchCoordinator,
     GameSwitchStore,
     atomic_write_json,
@@ -58,6 +59,14 @@ PENDING_SWITCH_STATUSES = {"queued", "in_progress", "busy"}
 
 class RetroCornerError(RuntimeError):
     """User-facing failure in the daily retro corner."""
+
+
+class RetroCornerTransitionError(RetroCornerError):
+    """A coordinator transition failed with a machine-readable error code."""
+
+    def __init__(self, message: str, *, error_code: str | None = None):
+        super().__init__(message)
+        self.error_code = error_code
 
 
 @dataclass(frozen=True)
@@ -498,6 +507,7 @@ class RetroCornerManager:
             "ends_at": None,
             "completed_at": None,
             "last_error": None,
+            "last_error_code": None,
         }
 
     def _read_state(self) -> dict[str, object]:
@@ -555,20 +565,75 @@ class RetroCornerManager:
     @staticmethod
     def _require_success(result, action: str) -> None:
         if getattr(result, "status", None) != "succeeded":
+            error_code = getattr(result, "error_code", None)
             detail = (
                 getattr(result, "detail", None)
-                or getattr(result, "error_code", None)
+                or error_code
                 or "unknown"
             )
-            raise RetroCornerError(f"{action} に失敗しました: {_safe_detail(detail)}")
+            raise RetroCornerTransitionError(
+                f"{action} に失敗しました: {_safe_detail(detail)}",
+                error_code=error_code if isinstance(error_code, str) else None,
+            )
 
-    def _transition_to(
+    def _canonical_phase(self) -> str | None:
+        """Read only the canonical phase used to gate automatic recovery."""
+
+        canonical, _missing = self.store.canonical.load()
+        phase = canonical.get("phase")
+        return phase if isinstance(phase, str) else None
+
+    def _recover_canonical_failure(self):
+        """Recover one canonical ``failed`` state without touching a live drain.
+
+        ``GameSwitchCoordinator.recover`` already contains the detailed
+        cleanup contract.  This wrapper only decides whether the corner is
+        allowed to call it: an in-progress boundary or an explicitly
+        unrecoverable canonical state is never guessed at or force-reset.
+        """
+
+        recover = getattr(self.coordinator, "recover", None)
+        if not callable(recover):
+            return None
+        canonical, _missing = self.store.canonical.load()
+        if canonical.get("phase") != "failed":
+            return None
+        previous = canonical.get("previous")
+        active = canonical.get("active")
+        abandon_program_view = (
+            isinstance(previous, dict)
+            and previous.get("adapter") == "program"
+            and active is None
+        )
+        try:
+            return recover(abandon_program_view=abandon_program_view)
+        except TypeError:
+            # Keep compatibility with narrow test doubles and older deployed
+            # coordinator shims; the real coordinator accepts this keyword.
+            return recover()
+
+    @staticmethod
+    def _transition_error_code(exc: BaseException) -> str | None:
+        value = getattr(exc, "error_code", None)
+        return value if isinstance(value, str) else None
+
+    def _transition_recovery_allowed(self, exc: BaseException) -> bool:
+        """Return true only for the exact canonical-failure retry contract."""
+
+        return (
+            self._transition_error_code(exc) == ERROR_RECOVERY_REQUIRED
+            and self._canonical_phase() == "failed"
+        )
+
+    def _transition_once(
         self,
         current: str | None,
         target: str,
         *,
         request_id: str | None = None,
     ):
+        """Execute one transition attempt, without implicit recovery."""
+
         if current == target:
             # A queued switch can become redundant after an operator or a
             # recovery process has already brought the target back.  Let the
@@ -610,6 +675,25 @@ class RetroCornerManager:
         self._require_success(result, action)
         self._announce_stream_game(target)
         return result
+
+    def _transition_to(
+        self,
+        current: str | None,
+        target: str,
+        *,
+        request_id: str | None = None,
+    ):
+        """Transition once, then recover/retry only a canonical failed state."""
+
+        try:
+            return self._transition_once(current, target, request_id=request_id)
+        except RetroCornerTransitionError as exc:
+            if not self._transition_recovery_allowed(exc):
+                raise
+            recovered = self._recover_canonical_failure()
+            if getattr(recovered, "status", None) != "succeeded":
+                raise
+            return self._transition_once(current, target, request_id=request_id)
 
     @staticmethod
     def _invoke_coordinator(method, target=None, *, request_id: str | None = None):
@@ -814,6 +898,7 @@ class RetroCornerManager:
                 status="interrupted",
                 completed_at=completed_at.isoformat(),
                 last_error=None,
+                last_error_code=None,
             )
             self._write_state(state)
             return self._state_result(state)
@@ -859,6 +944,7 @@ class RetroCornerManager:
                 status="completed",
                 completed_at=completed_at.isoformat(),
                 last_error=None,
+                last_error_code=None,
             )
             state.pop("switch_request_id", None)
             state.pop("switch_status", None)
@@ -875,6 +961,7 @@ class RetroCornerManager:
                 status="failed",
                 completed_at=completed_at.isoformat(),
                 last_error=_safe_detail(exc),
+                last_error_code=self._transition_error_code(exc),
             )
             self._write_state(state)
             if isinstance(exc, RetroCornerError):
@@ -999,6 +1086,7 @@ class RetroCornerManager:
             "ends_at": ends_at.isoformat(),
             "completed_at": None,
             "last_error": None,
+            "last_error_code": None,
             "switch_request_id": new_request_id(),
         }
         if target_override is not None:
@@ -1037,6 +1125,7 @@ class RetroCornerManager:
                 status="failed",
                 completed_at=self._local_now().isoformat(),
                 last_error=_safe_detail(exc),
+                last_error_code=self._transition_error_code(exc),
             )
             self._write_state(state)
             if isinstance(exc, RetroCornerError):
@@ -1077,6 +1166,7 @@ class RetroCornerManager:
                 status="failed",
                 completed_at=now.isoformat(),
                 last_error=_safe_detail(exc),
+                last_error_code=self._transition_error_code(exc),
             )
             self._write_state(state)
             if isinstance(exc, RetroCornerError):
@@ -1091,6 +1181,7 @@ class RetroCornerManager:
             started_at=started.isoformat(),
             ends_at=(started + dt.timedelta(minutes=self.config.duration_minutes)).isoformat(),
             last_error=None,
+            last_error_code=None,
         )
         self._announce_start_locked(state)
         self._write_state(state)
@@ -1201,6 +1292,105 @@ class RetroCornerManager:
             return None
         return self._wait_and_finish(resumed)
 
+    @staticmethod
+    def _failed_state_is_recoverable(state: dict[str, object]) -> bool:
+        """Recognize only failures caused by the canonical recovery gate.
+
+        Older deployed states predate ``last_error_code``.  The legacy detail
+        is accepted only as the exact fixed coordinator message, never as a
+        general-purpose error string or an operator-supplied command.
+        """
+
+        if state.get("status") != "failed":
+            return False
+        if state.get("last_error_code") == ERROR_RECOVERY_REQUIRED:
+            return True
+        detail = state.get("last_error")
+        return isinstance(detail, str) and "canonical stateの復旧が必要です" in detail
+
+    def _retry_failed_tick(self, now: dt.datetime) -> CornerResult | None:
+        """Retry a recoverable failed slot before evaluating a new schedule."""
+
+        try:
+            state = self._read_state()
+        except RetroCornerError:
+            raise
+        if not self._failed_state_is_recoverable(state):
+            return None
+        return self.recover_failed()
+
+    def recover_failed(self) -> CornerResult:
+        """Recover and retry one failed retro slot without selecting a new game.
+
+        This is the fixed owner-only recovery entry point.  It never resets a
+        live ``draining`` boundary, never touches an explicit
+        ``recovery_required`` phase, and preserves the rotation history so a
+        recovered slot cannot cause a duplicate selection inside 24 hours.
+        """
+
+        now = self._local_now()
+        with self._locked():
+            state = self._read_state()
+            if not self._failed_state_is_recoverable(state):
+                return CornerResult("noop", detail="failed-slot-not-recoverable")
+            target = state.get("game")
+            if not isinstance(target, str) or not target:
+                return CornerResult("failed", detail="failed-slot-has-no-game")
+
+            canonical, _missing = self.store.canonical.load()
+            phase = canonical.get("phase")
+            if phase == "draining":
+                return CornerResult(
+                    "queued",
+                    game=target,
+                    detail="試合終了境界の待機中です。期限前のdrainingには触れません",
+                )
+            if phase == "recovery_required":
+                return CornerResult(
+                    "failed",
+                    game=target,
+                    detail="canonical stateがrecovery_requiredのため自動復旧を停止しました",
+                )
+            if phase == "failed":
+                recovered = self._recover_canonical_failure()
+                if getattr(recovered, "status", None) != "succeeded":
+                    detail = getattr(recovered, "detail", None) or "canonical failed状態を復旧できません"
+                    return CornerResult("failed", game=target, detail=_safe_detail(detail))
+                canonical, _missing = self.store.canonical.load()
+                phase = canonical.get("phase")
+            if phase not in {"idle", "ready"}:
+                return CornerResult(
+                    "queued",
+                    game=target,
+                    detail=f"canonical phase={phase!r} の完了を待っています",
+                )
+
+            extra_state: dict[str, object] = {}
+            for key in ("rotation", "lottery", "daily_attempts"):
+                value = state.get(key)
+                if value is not None:
+                    extra_state[key] = value
+            rotation = extra_state.get("rotation")
+            if isinstance(rotation, dict):
+                rotation = dict(rotation)
+                rotation["last_result"] = {
+                    "result": "recovery-retry",
+                    "game": target,
+                    "at": now.isoformat(),
+                }
+                extra_state["rotation"] = rotation
+            resumed, result = self._begin_locked(
+                now,
+                scheduled=True,
+                target_override=target,
+                extra_state=extra_state,
+            )
+        if result is not None:
+            return result
+        if resumed is None:
+            return CornerResult("failed", game=target, detail="failed-slotの再開状態を作成できません")
+        return self._wait_and_finish(resumed)
+
     def start(self) -> CornerResult:
         with self._locked():
             state, result = self._begin_locked(self._local_now(), scheduled=False)
@@ -1228,6 +1418,9 @@ class RetroCornerManager:
             starting = self._retry_starting_tick(now)
             if starting is not None:
                 return starting
+            failed = self._retry_failed_tick(now)
+            if failed is not None:
+                return failed
             if getattr(self.config, "mode", "daily") == "rotation":
                 return self._rotation_tick()
             if getattr(self.config, "mode", "daily") == "lottery":
@@ -1933,6 +2126,10 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("tick")
     sub.add_parser("start")
     sub.add_parser("stop")
+    sub.add_parser(
+        "recover-failed",
+        help="canonical failed後のレトロ枠を安全に復旧し、同じゲームを再試行する",
+    )
     status = sub.add_parser("status")
     status.add_argument("--json", action="store_true")
     once = sub.add_parser("improve-once")
@@ -1975,7 +2172,10 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             print(json.dumps(summary, ensure_ascii=False, separators=(",", ":")))
             return 0
-        result = getattr(manager, args.command)()
+        method_name = {
+            "recover-failed": "recover_failed",
+        }.get(args.command, args.command)
+        result = getattr(manager, method_name)()
         print(
             json.dumps(
                 {

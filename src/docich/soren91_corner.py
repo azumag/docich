@@ -39,10 +39,16 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .adapters import make_coordinator_adapter
 from .config import ConfigError, GlobalConfig, load_game, load_global
 from .corner_boundary import CornerWaitExpired, program_slot
-from .game_switch import GameSwitchCoordinator, GameSwitchStore, RuntimeSpec
+from .game_switch import (
+    ERROR_RECOVERY_REQUIRED,
+    GameSwitchCoordinator,
+    GameSwitchStore,
+    RuntimeSpec,
+)
 from .retro_corner import (
     CornerResult,
     RetroCornerError,
+    RetroCornerTransitionError,
     RetroCornerManager,
     _safe_detail,
 )
@@ -324,6 +330,22 @@ class Soren91CornerManager(RetroCornerManager):
         request_id: str | None = None,
     ):
         try:
+            return super()._transition_to(current, target, request_id=request_id)
+        except RetroCornerTransitionError as exc:
+            # The shared manager owns the exact canonical-failed retry. Do
+            # not perform a second recovery attempt for recovery_required;
+            # in particular, never turn a live boundary wait into a reset.
+            if exc.error_code == ERROR_RECOVERY_REQUIRED:
+                raise
+            recover = getattr(self.coordinator, "recover", None)
+            if recover is None:
+                raise
+            try:
+                recovered = recover()
+            except Exception:
+                raise
+            if getattr(recovered, "status", None) != "succeeded":
+                raise
             return super()._transition_to(current, target, request_id=request_id)
         except RetroCornerError:
             recover = getattr(self.coordinator, "recover", None)

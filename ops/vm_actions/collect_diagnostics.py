@@ -22,11 +22,12 @@ Observed sources (all read-only):
     logs/tmp/runtime caches, strategy archive, Git metadata, and VOICEVOX;
     scans are bounded, never follow symlinks, and emit no paths or filenames
   - docich program/corner state under the production state_dir
-    (game_switch.json, retro_corner.json, paper_corner.json,
+    (game_switch.json, game-switch/requests/*.json, retro_corner.json, paper_corner.json,
     paper_corner_manual.json, trading/presentation.json,
     trading/paper_improve_status.json): lifecycle statuses, timestamps and
     counters only. Announcement/script bodies, prompts and log bodies are
-    never read out.
+    never read out. FIFO output is limited to queued count and the head's
+    fixed operation/target/age fields.
   - a bounded, redacted tail (last lines only) of the NetHack agent's own log
     (state_dir/logs/agent.log, written by supervise.run_callable_loop) so a
     corner that reaches gameplay but never acts stays diagnosable. No other
@@ -54,6 +55,7 @@ in which case the gateway refuses fail-closed.
 """
 import base64
 import configparser
+import datetime as dt
 import json
 import math
 import os
@@ -1524,6 +1526,15 @@ def _project_corner_state(data):
             "date": _bounded_str(improve.get("date"), 16),
             "error": _bounded_str(improve.get("error"), 160),
         }
+    error_code = data.get("last_error_code")
+    legacy_recovery_error = (
+        isinstance(data.get("last_error"), str)
+        and "canonical stateの復旧が必要です" in data.get("last_error", "")
+    )
+    recovery_required = (
+        data.get("status") == "failed"
+        and (error_code == "recovery_required" or legacy_recovery_error)
+    )
     return {
         "status": _bounded_str(data.get("status"), 32),
         "date": _bounded_str(data.get("date"), 16),
@@ -1534,9 +1545,88 @@ def _project_corner_state(data):
         "ends_at": _bounded_time(data.get("ends_at")),
         "completed_at": _bounded_time(data.get("completed_at")),
         "last_error": _bounded_str(data.get("last_error"), 200),
+        "last_error_code": (
+            "recovery_required" if error_code == "recovery_required" else None
+        ),
+        "recovery_required": recovery_required,
         "announcements": announcements,
         "improve_job": improve_job,
     }
+
+
+FIFO_OPERATIONS = frozenset({"start", "stop", "switch", "restart", "rotate", "recover"})
+FIFO_MAX_RECEIPTS = 512
+
+
+def _receipt_age_sec(value, now):
+    if not isinstance(value, str) or not value:
+        return -1
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        return max(0, int(now - parsed.timestamp()))
+    except (TypeError, ValueError, OverflowError, OSError):
+        return -1
+
+
+def _collect_game_switch_fifo(state_dir, now):
+    """Return a bounded, identity-free view of the durable switch FIFO."""
+
+    directory = Path(state_dir) / "game-switch" / "requests"
+    result = {
+        "present": False,
+        "readable": False,
+        "scan_complete": True,
+        "receipt_count": 0,
+        "queued_count": 0,
+        "terminal_count": 0,
+        "malformed_count": 0,
+        "head": None,
+    }
+    try:
+        if not directory.is_dir():
+            return result
+        result["present"] = True
+        result["readable"] = True
+        paths = sorted(directory.glob("*.json"))
+    except OSError:
+        result["readable"] = False
+        return result
+    if len(paths) > FIFO_MAX_RECEIPTS:
+        result["scan_complete"] = False
+        paths = paths[:FIFO_MAX_RECEIPTS]
+
+    queued = []
+    for path in paths:
+        present, readable, data = _load_state_file(path)
+        if not present or not readable or not isinstance(data, dict):
+            result["malformed_count"] += 1
+            continue
+        result["receipt_count"] += 1
+        status = data.get("status")
+        if status == "queued":
+            queued.append(data)
+            result["queued_count"] += 1
+        elif status in {"succeeded", "failed", "rolled_back"}:
+            result["terminal_count"] += 1
+
+    queued.sort(
+        key=lambda item: (
+            str(item.get("created_at", "")),
+            int(item.get("generation", 0)) if isinstance(item.get("generation"), int) else 0,
+        )
+    )
+    if queued:
+        head = queued[0]
+        operation = head.get("operation")
+        result["head"] = {
+            "status": "queued",
+            "operation": operation if operation in FIFO_OPERATIONS else None,
+            "target": _bounded_str(head.get("target"), 64),
+            "age_sec": _receipt_age_sec(head.get("created_at"), now),
+        }
+    return result
 
 
 def _collect_paper_improve_status(state_dir, now):
@@ -1589,6 +1679,7 @@ def _collect_corner_files(state_dir, payload, now):
             }
         )
     payload["game_switch"] = entry
+    payload["game_switch_fifo"] = _collect_game_switch_fifo(state_dir, now)
 
     for name in (
         "retro_corner",
@@ -1628,6 +1719,16 @@ def _collect_programs(state_dir, soren, now):
     payload = {
         "state_dir_found": state_dir.is_dir(),
         "game_switch": {"present": False, "readable": False},
+        "game_switch_fifo": {
+            "present": False,
+            "readable": False,
+            "scan_complete": True,
+            "receipt_count": 0,
+            "queued_count": 0,
+            "terminal_count": 0,
+            "malformed_count": 0,
+            "head": None,
+        },
         "retro_corner": {"present": False, "readable": False},
         "paper_corner": {"present": False, "readable": False},
         "paper_corner_manual": {"present": False, "readable": False},
@@ -1886,9 +1987,12 @@ def _unregistered_workers_actionable(workers):
     return any(counts.get(key, 0) > 0 for key in ("alive", "paused", "unknown"))
 
 
-def _severity(workers, queues, ai, improvement):
+def _severity(workers, queues, ai, improvement, corners=None):
     if workers["required_down"] or workers["required_stale"]:
         return "critical"
+    retro = corners.get("retro_corner") if isinstance(corners, dict) else None
+    if isinstance(retro, dict) and retro.get("recovery_required") is True:
+        return "warn"
     if (
         _paused_workers_actionable(workers)
         or _unregistered_workers_actionable(workers)
@@ -2350,8 +2454,9 @@ def main(argv):
     queues = _collect_queues(soren, now)
     ai = _collect_ai(soren, now)
     improvement = _collect_improvement(soren, now)
+    corners = _collect_programs(_program_state_dir(), soren, now)
     payload = {
-        "status": _severity(workers, queues, ai, improvement),
+        "status": _severity(workers, queues, ai, improvement, corners),
         "meta": _collect_meta(soren, now),
         "tracked_drift": _collect_tracked_drift(PROD_ROOT),
         "workers": workers,
@@ -2366,7 +2471,7 @@ def main(argv):
             "budget_exhausted_15m": ai["budget_exhausted"],
         },
         "improvement": improvement,
-        "corners": _collect_programs(_program_state_dir(), soren, now),
+        "corners": corners,
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),
         "nethack_panes": _collect_nethack_panes(_program_state_dir(), now),
         "market_paper": _collect_market_paper(_program_state_dir(), now),
