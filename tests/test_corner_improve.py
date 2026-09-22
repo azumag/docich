@@ -240,6 +240,38 @@ def test_parse_candidate_attaches_fixed_codes():
         assert excinfo.value.phase == 'llm'
 
 
+def test_prompt_shows_only_proposable_numeric_weights(tmp_path):
+    state_dir = tmp_path / 'run'
+    (state_dir / 'scores').mkdir(parents=True)
+    base = 1789034400  # 2026-09-10T19:00:00+09:00
+    (state_dir / 'scores' / 'nsnake.jsonl').write_text(
+        json.dumps({'ts': str(base + 60), 'game': 'nsnake', 'score': 10, 'source': 'wrapper'}) + '\n',
+        encoding='utf-8')
+    (state_dir / 'retro_corner.json').write_text(json.dumps({
+        'schema_version': 1, 'status': 'completed', 'date': '2026-09-10', 'game': 'nsnake',
+        'previous_game': 'sorengame',
+        'started_at': '2026-09-10T19:00:00+09:00',
+        'ends_at': '2026-09-10T19:30:00+09:00',
+        'completed_at': '2026-09-10T19:30:00+09:00',
+    }), encoding='utf-8')
+    g = _G(state_dir)
+    prompts = []
+
+    def llm(prompt):
+        prompts.append(prompt)
+        return '```json\n{"min_free": 9}\n```'
+
+    result = run_corner_improve(
+        g, game='nsnake', date_str='2026-09-10', agents='a',
+        llm=llm, evaluator=lambda strat: {'mean_score': 100.0, 'played': 2},
+    )
+    assert result['status'] == 'kept'
+    assert '"min_free"' in prompts[0]
+    # nsnake's fixed boolean flag must not be presented as a tunable weight;
+    # the model returned it once and the strict parser failed the whole job.
+    assert 'tail_passable' not in prompts[0]
+
+
 def test_parse_candidate_boundaries():
     keys = set(_weights())
     key = sorted(keys)[0]
