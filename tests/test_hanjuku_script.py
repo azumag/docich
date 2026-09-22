@@ -241,6 +241,49 @@ def test_corrupt_terminal_record_cannot_authorize_teardown(tmp_path):
         hanjuku_run.terminal(tmp_path,IDENTITY)
 
 
+@pytest.mark.parametrize('busy_kind', ['input', 'switch'])
+def test_corner_observation_contention_retries_then_finishes_only_on_game_over(manager, monkeypatch, busy_kind):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from docich.game_switch import DeadlineExceededError, GameSwitchBusyError
+    from docich.naming import runtime_directory
+    state={'status':'active','game':'hanjuku-hero','previous_game':'sorengame'}
+    runtime=runtime_directory(manager.g.state_dir,IDENTITY['runtime_id'])
+    runtime.mkdir(parents=True)
+    error=DeadlineExceededError('busy') if busy_kind=='input' else GameSwitchBusyError('busy')
+    observe=Mock(side_effect=[error,SimpleNamespace(meta={'hanjuku':{
+        'phase':'title','terminal_reason':'game_over','actions_sent':5}})])
+    manager.store.canonical.load=Mock(return_value=({'active':IDENTITY},False))
+    monkeypatch.setattr('docich.agent.fence.shared_section',lambda root,fn:fn())
+    monkeypatch.setattr('docich.adapters.make_adapter',lambda *a,**kw:SimpleNamespace(observe=observe))
+    monkeypatch.setattr(manager,'_rotation_stop_result',lambda:None)
+    monkeypatch.setattr(manager,'_read_state',lambda:dict(state))
+    monkeypatch.setattr(manager,'_write_state',lambda update:state.update(update))
+    sleep=Mock()
+    monkeypatch.setattr(manager,'_sleep',sleep)
+    finish=Mock(return_value='restored')
+    monkeypatch.setattr(manager,'_finish_locked',finish)
+    assert manager._wait_hanjuku(state)=='restored'
+    sleep.assert_called_once_with(2.)
+    finish.assert_called_once()
+    assert observe.call_count==2 and manager.store.canonical.load.call_count==2
+    assert state['end_reason']=='game_over'
+    retry=json.loads((runtime/'hanjuku_events.jsonl').read_text())
+    assert retry['event']=='observation_retry' and 'terminal_reason' not in retry
+
+
+def test_corner_unknown_observation_failure_is_not_silently_retried(manager, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    manager.store.canonical.load=Mock(return_value=({'active':IDENTITY},False))
+    monkeypatch.setattr('docich.agent.fence.shared_section',lambda root,fn:fn())
+    monkeypatch.setattr('docich.adapters.make_adapter',lambda *a,**kw:SimpleNamespace(
+        observe=Mock(side_effect=AdapterError('ownership unknown'))))
+    monkeypatch.setattr(manager,'_rotation_stop_result',lambda:None)
+    with pytest.raises(AdapterError,match='ownership unknown'):
+        manager._wait_hanjuku({'status':'active','game':'hanjuku-hero'})
+
+
 def test_optional_concert_exits_instead_of_selecting_the_same_track():
     rgb=bytearray(frame((160,110,60)).rgb)
     for y in range(150,208):
