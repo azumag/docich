@@ -47,6 +47,20 @@ class UnitTemplateContractTests(unittest.TestCase):
         self.assertIn("corner-rotation tick", service)
         self.assertIn("Unit=docich-retro-corner.service", timer)
 
+    def test_legacy_per_corner_tick_templates_carry_the_user_bus_env(self):
+        # These timers still exist in production and delegate to the common
+        # rotation tick; a tick they run spawns follow-up jobs with
+        # systemd-run --user, which needs XDG_RUNTIME_DIR (#947).
+        for name in (
+            "docich-paper-corner.service",
+            "docich-soren91-corner.service",
+            "docich-nethack-corner.service",
+        ):
+            with self.subTest(unit=name):
+                service = (SYSTEMD_DIR / name).read_text(encoding="utf-8")
+                self.assertIn("Environment=XDG_RUNTIME_DIR=%t", service)
+                self.assertIn("WorkingDirectory=__DOCICH_ROOT__", service)
+
     def test_stage2_reviewed_epoch_enables_the_production_migration(self):
         # The reviewed epoch is what turns the deploy hook's migration branch
         # on; it must stay a regular file so a deploy can never follow a
@@ -130,9 +144,10 @@ class SystemdAnalyzeVerifyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="corner-rotation-verify-") as tmp:
             root = Path(tmp) / "docich"
             (root / "bin").mkdir(parents=True)
-            docich = root / "bin" / "docich"
-            docich.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-            docich.chmod(0o755)
+            for binary in ("docich", "docich-nethack-corner"):
+                executed = root / "bin" / binary
+                executed.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                executed.chmod(0o755)
             (root / "config").mkdir()
             (root / "config" / "docich.soren-live.toml").write_text(
                 '[paths]\nstate_dir="run"\n', encoding="utf-8"
@@ -140,7 +155,15 @@ class SystemdAnalyzeVerifyTests(unittest.TestCase):
             units_dir = Path(tmp) / "units"
             units_dir.mkdir()
             rendered = []
-            for name in (CANONICAL_SERVICE, CANONICAL_TIMER, LEGACY_SERVICE, LEGACY_TIMER):
+            for name in (
+                CANONICAL_SERVICE,
+                CANONICAL_TIMER,
+                LEGACY_SERVICE,
+                LEGACY_TIMER,
+                "docich-paper-corner.service",
+                "docich-soren91-corner.service",
+                "docich-nethack-corner.service",
+            ):
                 text = (SYSTEMD_DIR / name).read_text(encoding="utf-8").replace(
                     "__DOCICH_ROOT__", str(root)
                 )

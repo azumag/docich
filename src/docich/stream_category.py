@@ -17,6 +17,7 @@ from pathlib import Path
 
 from .config import GlobalConfig, load_game
 from .naming import NameValidationError, validate_game_name
+from .procs import user_bus_env
 
 SCRIPT_NAME = "update_stream_game.sh"
 LOG_NAME = "stream-game.log"
@@ -90,6 +91,9 @@ def _submit_transient(child_argv: list[str], *, cwd: Path, log_path: Path) -> No
             text=True,
             timeout=30,
             stdin=subprocess.DEVNULL,
+            # The tick unit does not reliably carry the user-bus environment a
+            # timer-launched service needs for systemd-run --user (#947).
+            env=user_bus_env(),
         )
     except subprocess.TimeoutExpired as exc:
         raise StreamCategoryError(f"{SCRIPT_NAME} の投入がタイムアウトしました") from exc

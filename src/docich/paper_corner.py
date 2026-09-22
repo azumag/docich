@@ -24,6 +24,7 @@ from .config import load_global
 from .corner_boundary import CornerWaitExpired, program_slot
 from .game_switch import GameSwitchStore, atomic_write_json, new_request_id
 from .overlay_queue import OVERLAY_BODY_LIMIT
+from .procs import user_bus_env
 from .tmux import Tmux
 from .trading.presentation import write_presentation
 from .trading.soren_output import send_overlay, enqueue_speech
@@ -557,11 +558,31 @@ class PaperCornerManager:
                 command.append(f'--setenv=PATH={env["PATH"]}')
             # Do not fall back to the parent's cgroup on submission failure.
             # Do not pass arbitrary inherited credentials on the command line.
-            subprocess.run(
-                [*command, '--', *argv], check=True, timeout=30,
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+            # systemd-run --user resolves the user manager bus from
+            # XDG_RUNTIME_DIR; a timer-launched tick unit does not reliably
+            # inherit it, so default it here and keep systemd's own stderr in
+            # the durable failure record (#947).
+            try:
+                submitted = subprocess.run(
+                    [*command, '--', *argv], check=False, timeout=30,
+                    stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                    env=user_bus_env(),
+                )
+            except subprocess.TimeoutExpired as exc:
+                raw = exc.stderr
+                if isinstance(raw, bytes):
+                    raw = raw.decode('utf-8', 'replace')
+                detail = _safe_detail((raw or '').strip())
+                raise PaperCornerError(
+                    '改善ジョブの起動がタイムアウトしました (systemd-run 30s)'
+                    + (f': {detail}' if detail else '')
+                ) from exc
+            if submitted.returncode != 0:
+                detail = _safe_detail((submitted.stderr or '').strip())
+                raise PaperCornerError(
+                    f'改善ジョブの起動に失敗しました (rc={submitted.returncode})'
+                    + (f': {detail}' if detail else '')
+                )
             return
         with open(log_path, 'ab') as log_fh:
             subprocess.Popen(
