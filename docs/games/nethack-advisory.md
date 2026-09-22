@@ -92,7 +92,7 @@ modelを呼んだ判断は以下へJSONLで保存する。
 - public request
 - proposal
 - evaluation result
-- dispatch error
+- dispatch error category (`error_kind`; raw stderr/exception textは保存しない)
 - narration実施有無
 - `execution = advisory_only`
 

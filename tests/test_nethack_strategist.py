@@ -14,6 +14,7 @@ from docich.nethack_strategist import (
     DispatchErrorKind,
     evaluate_proposal,
     execution_plan,
+    safe_dispatch_error_kind,
 )
 from docich.nethack_strategy import (
     StrategicProposal,
@@ -123,6 +124,12 @@ class TestCommandStrategist(unittest.TestCase):
                 }
             ),
         )
+
+    def test_safe_dispatch_error_kind_fails_closed(self) -> None:
+        for raw in (None, 3, b"timeout", {"kind": "timeout"}, "Timeout", "raw stderr", ""):
+            self.assertEqual(safe_dispatch_error_kind(raw), "internal_error")
+        for kind in sorted(DISPATCH_ERROR_KINDS):
+            self.assertEqual(safe_dispatch_error_kind(kind), kind)
 
     def test_request_and_response_size_limits_fail_closed(self) -> None:
         huge = StrategicRequest(

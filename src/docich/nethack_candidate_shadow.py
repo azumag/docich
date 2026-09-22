@@ -15,7 +15,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal
 
 from .actions import Action
 from .config import GameConfig, GlobalConfig
@@ -25,7 +25,6 @@ from .nethack_observation import NethackObservation
 from .nethack_policy import PolicyDecision
 from .nethack_regression import NethackRegressionError, _load_suite
 from .nethack_strategist import (
-    DISPATCH_ERROR_KINDS,
     CommandStrategist,
     DispatchErrorKind,
     ProposalEvaluation,
@@ -33,6 +32,7 @@ from .nethack_strategist import (
     dispatch_error_kind_for_exception,
     evaluate_proposal,
     execution_plan,
+    safe_dispatch_error_kind,
 )
 from .nethack_strategy import StrategicRequest, build_strategic_request
 
@@ -75,9 +75,7 @@ class CandidateShadowOutcome:
 
 def _safe_error_kind(raw: object) -> DispatchErrorKind:
     """Fail closed to a finite category; never persist producer-supplied text."""
-    if isinstance(raw, str) and raw in DISPATCH_ERROR_KINDS:
-        return cast(DispatchErrorKind, raw)
-    return "internal_error"
+    return safe_dispatch_error_kind(raw)
 
 
 @dataclass(frozen=True)
