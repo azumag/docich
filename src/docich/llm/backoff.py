@@ -82,14 +82,35 @@ class BackoffStore:
             pass
 
 
-def model_backoff_seconds(spec: AgentSpec, label: str, env: dict[str, str]) -> int:
+def model_backoff_seconds(
+    spec: AgentSpec,
+    label: str,
+    env: dict[str, str],
+    *,
+    now: int | None = None,
+) -> int:
     """Resolve explicit rate-limit backoff using the shell-compatible names."""
 
-    model = spec.resolved_model
+    model_keys = {spec.resolved_model}
+    if spec.model:
+        # The legacy config historically keys OpenCode quota entries by the
+        # model suffix (for example ``muse-spark-...``), while Vercel entries
+        # commonly use the resolved ``vercel/...`` form. Accept both so the
+        # native dispatcher consumes the same operator policy.
+        model_keys.add(spec.model)
     for item in env.get("AI_BACKOFF_SEC_ITEMS", "").split():
         name, separator, seconds = item.partition(":")
-        if separator and name == model and seconds.isdigit() and int(seconds) > 0:
-            return int(seconds)
+        if separator and name in model_keys and seconds.isdigit() and int(seconds) > 0:
+            configured = int(seconds)
+            # Zen Muse free is an IP daily bucket reset at UTC midnight, not a
+            # rolling 24-hour lockout. Preserve shorter explicit overrides.
+            if spec.raw in {
+                "opencode:muse-spark-1.2-contributor-free",
+                "opencode:muse-spark-1.3-contributor-free",
+            }:
+                current = int(time.time() if now is None else now)
+                return min(configured, 86400 - current % 86400)
+            return configured
     name = "COMMENT_AGENT_BACKOFF_SEC" if label.startswith("COMMENT") else "RADIO_AGENT_BACKOFF_SEC"
     default = 18000 if label.startswith(("COMMENT", "RADIO")) else 600
     raw = env.get(name, str(default))
