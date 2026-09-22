@@ -3,6 +3,9 @@
 > production設定は[全corner共通rotation](corner-rotation.md)へ移行した。
 > 以下は`corner_rotation.enabled`を有効にしていない旧profileの互換仕様。
 > 統一モードではPAPER/メリケンも同列で、間隔の分母は実効有効数Nとなる。
+> canonical unit名は`docich-corner-rotation.service/timer`で、移行期間中は
+> 旧`docich-retro-corner.service/timer`がそのrelative aliasになる。
+> 旧名を独立timerとしてenableしない。
 
 `corner_rotation.enabled=false` の旧profileでは、`[retro_corner]` の
 `mode = "rotation"` が登録ゲームを無作為な順番で回す。現行productionの共通catalogでは

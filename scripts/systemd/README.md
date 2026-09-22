@@ -10,8 +10,10 @@ tmux 常駐 (architecture.md §2) を主に systemd --user ユニットで包む
 | `docich.service` | `docich up` / `docich down` を包む oneshot ユニット (`RemainAfterExit=yes`) |
 | `docich-rotate.service` | `docich rotate` を1回実行する oneshot ユニット (`[Install]` なし。timer 専用) |
 | `docich-rotate.timer` | `docich-rotate.service` を毎時起動する timer ([rotation] 利用時のみ) |
-| `docich-retro-corner.service` | Soren本番 `:99` にメリケンAIレトロゲーム枠を載せる長時間oneshot |
-| `docich-retro-corner.timer` | 毎分 `corner-rotation tick`。全catalogを実効N件の24時間rollingで判定 |
+| `docich-corner-rotation.service` | Soren本番 `:99` に全corner rolling rotationを載せる長時間oneshot (canonical) |
+| `docich-corner-rotation.timer` | 毎分 `corner-rotation tick`。全catalogを実効N件の24時間rollingで判定 |
+| `docich-retro-corner.service` | canonical serviceの互換名。移行前はregular template、移行後はrelative alias |
+| `docich-retro-corner.timer` | canonical timerの互換名。移行後はcanonicalへのrelative alias |
 | `docich-game-switch-fifo.service` | 期限切れdrainingを安全に復旧し、保存済みFIFO先頭を再駆動するoneshot |
 | `docich-game-switch-fifo.timer` | ゲーム切替FIFOを30秒ごとに独立監視するtimer |
 | `docich-soren91-corner.service` | Soren本番 `:99` にSoren91定時コーナーを載せる長時間oneshot |
@@ -34,6 +36,8 @@ for f in \
   docich.service \
   docich-rotate.service \
   docich-rotate.timer \
+  docich-corner-rotation.service \
+  docich-corner-rotation.timer \
   docich-retro-corner.service \
   docich-retro-corner.timer \
   docich-game-switch-fifo.service \
@@ -56,7 +60,9 @@ systemctl --user enable --now docich-rotate.timer
 # 現行の全corner共通rotationを使う場合。PAPER/メリケンもこのtimerで判定する。
 # 本番設定は config/docich.soren-live.toml の [corner_rotation] を読む。
 # protected mainからのproduction deploy時にも同じreview済みunitを再配置してenableする。
-systemctl --user enable --now docich-retro-corner.timer
+# 移行期間中は docich-retro-corner.timer を独立にenableしない
+# (移行後はcanonical timerへのaliasとして解決される)。
+systemctl --user enable --now docich-corner-rotation.timer
 
 # ゲーム切替の呼び出し元が停止しても、期限切れdrainingとFIFOを復旧する。
 # 期限前の試合終了待ちは変更せず、共通配信基盤も再起動しない。
@@ -67,7 +73,7 @@ systemctl --user enable --now docich-game-switch-fifo.timer
 systemctl --user enable --now docich-soren91-corner.timer
 ```
 
-`docich-rotate.service` と `docich-retro-corner.service` は `[Install]` を持たないため
+`docich-rotate.service` と `docich-corner-rotation.service` は `[Install]` を持たないため
 直接 `enable` しない。timer が起動するoneshotである。
 `docich-game-switch-fifo.service` も同様に直接 `enable` せず、専用timerだけを有効化する。
 
@@ -95,8 +101,9 @@ PAPERは固定時間を持たず、事実に基づく読み上げネタを1件�
 終了後compactへ戻ります。通常ゲーム中も公開データのPAPER workerは継続します。
 
 本番導入では `.venv-trading` に `requirements-trading.txt` をインストールし、
-`docich-paper-runtime.service` と更新した `docich-retro-corner.service/timer` を配置します。
-共通rotationでは `docich-retro-corner.timer` をenableすれば全cornerを判定します。
+`docich-paper-runtime.service` と `docich-corner-rotation.service/timer` を配置します。
+共通rotationでは `docich-corner-rotation.timer` をenableすれば全cornerを判定します
+（移行期間中は旧 `docich-retro-corner.timer` が同unitへのalias）。
 旧PAPER/Soren91 timerを併用しても同じstate/lockで重複実行は防止されますが、新規導入は不要です。
 過去通知を避けるため、
 workerの初回起動より先にlive profileの `trading notify-once` を実行します。
@@ -111,6 +118,22 @@ bin/docich --config config/docich.soren-live.toml paper-corner status
 bin/docich --config config/docich.soren-live.toml soren91-corner status --json
 bin/docich --config config/docich.soren-live.toml trading status
 ```
+
+### 旧unit名からの移行（review済み deploy hook）
+
+- canonical unitは `docich-corner-rotation.service/timer`。移行後は旧
+  `docich-retro-corner.service/timer` がcanonicalへのrelative aliasになり、
+  旧名を独立timerとして二重enableしない。
+- 移行はdeploy hook `ops/vm_actions/ensure_corner_rotation_timer.sh` が
+  `ops/vm_actions/corner_rotation_timer_migration_epoch` の存在時だけ
+  `ops/vm_actions/migrate_corner_rotation_timer.sh` を実行する。
+- migrationは旧timerのstop/disable後でなければ切り替えず、旧serviceがactiveなら
+  killせず中断する。旧unitがreview済み内容と一致しない場合は上書きしない。
+- rollbackは `ops/vm_actions/rollback_corner_rotation_timer.sh` が新timerを停止し、
+  旧regular unitを復元する。state/lock/pause marker/receiptは変更しない。
+- 共有の `docich.service` / Soren / 表示 / 音声 / 配信unitは移行・rollbackで
+  restartしない。installerはunitを一時ファイルへ描画してrenameで配置し、
+  symlink（alias）へ直接書き込まない。
 
 ## Soren91 コーナー (macOS リモートレンダラー)
 
@@ -193,10 +216,11 @@ loginctl enable-linger "$(whoami)"
 依存関係も持たず、Soren本番のXvfb・PulseAudio・FFmpeg・worker ownershipは従来どおり
 Soren側に残る。
 
-`docich-retro-corner.service` だけは例外的に、既存のlive-handoff契約として外部所有
+`docich-corner-rotation.service` だけは例外的に、既存のlive-handoff契約として外部所有
 `:99` の指定viewportへゲームwindowを載せる。しかしX serverや配信process自体は
 制御しない。これは `config/docich.soren-live.toml` の `managed=false` / `stream=null`
-でfail-safeに固定される。
+でfail-safeに固定される。移行期間中の `docich-retro-corner.service` は同じunitへの
+互換aliasであり、別serviceではない。
 
 ## watchdog の誤検知に関する注意
 
@@ -216,7 +240,7 @@ interval_s` 秒続くと自動的に切り替えが走る**。判定は「agent 
 
 ```sh
 systemctl --user disable --now docich-soren91-corner.timer # 有効化していた場合のみ
-systemctl --user disable --now docich-retro-corner.timer  # 有効化していた場合のみ
+systemctl --user disable --now docich-corner-rotation.timer # 有効化していた場合のみ
 systemctl --user disable --now docich-rotate.timer        # 有効化していた場合のみ
 systemctl --user disable --now docich.service
 ```

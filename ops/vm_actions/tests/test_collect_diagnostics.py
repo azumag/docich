@@ -750,5 +750,83 @@ class NethackPaneTests(unittest.TestCase):
         self.assertIn("nethack", entry["windows"])
 
 
+class RotationTimerUnitProjectionTests(unittest.TestCase):
+    """The corner_rotation_timer projection follows the reviewed unit rename."""
+
+    def setUp(self):
+        self.module = load_collector()
+        self.tmp = tempfile.TemporaryDirectory(prefix="vmops-rotation-unit-")
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+        self.prod = self.base / "docich"
+        self.prod.mkdir()
+        self.unit_dir = self.base / ".config" / "systemd" / "user"
+        self.unit_dir.mkdir(parents=True)
+        self.soren = self.base / "soren"
+        (self.soren / "tmp" / "state").mkdir(parents=True)
+
+    def test_pre_migration_reports_the_legacy_unit_without_an_alias(self):
+        (self.unit_dir / "docich-retro-corner.timer").write_text("[Timer]\n")
+        with mock.patch.object(self.module, "PROD_ROOT", self.prod):
+            unit, legacy_alias = self.module._rotation_timer_selection()
+        self.assertEqual(unit, "docich-retro-corner.timer")
+        self.assertIs(legacy_alias, False)
+
+    def test_post_migration_reports_the_canonical_unit_and_alias(self):
+        (self.unit_dir / "docich-corner-rotation.timer").write_text("[Timer]\n")
+        (self.unit_dir / "docich-retro-corner.timer").symlink_to(
+            "docich-corner-rotation.timer"
+        )
+        with mock.patch.object(self.module, "PROD_ROOT", self.prod):
+            unit, legacy_alias = self.module._rotation_timer_selection()
+        self.assertEqual(unit, "docich-corner-rotation.timer")
+        self.assertIs(legacy_alias, True)
+
+    def test_wrong_alias_target_is_not_reported_as_migrated(self):
+        (self.unit_dir / "docich-corner-rotation.timer").write_text("[Timer]\n")
+        (self.unit_dir / "docich-retro-corner.timer").symlink_to("somewhere-else.timer")
+        with mock.patch.object(self.module, "PROD_ROOT", self.prod):
+            unit, legacy_alias = self.module._rotation_timer_selection()
+        self.assertEqual(unit, "docich-corner-rotation.timer")
+        self.assertIs(legacy_alias, False)
+
+    def test_missing_unit_dir_fails_closed_to_the_legacy_name(self):
+        unit, legacy_alias = self.module._rotation_timer_selection(
+            unit_dir=self.unit_dir / "missing"
+        )
+        self.assertEqual(unit, "docich-retro-corner.timer")
+        self.assertIs(legacy_alias, False)
+
+    def test_programs_projection_keeps_fixed_keys_and_bounded_alias_boolean(self):
+        (self.unit_dir / "docich-corner-rotation.timer").write_text("[Timer]\n")
+        (self.unit_dir / "docich-retro-corner.timer").symlink_to(
+            "docich-corner-rotation.timer"
+        )
+        state_dir = self.prod / "run-soren-live"
+        state_dir.mkdir()
+        (state_dir / "corner_rotation.json").write_text(
+            json.dumps(
+                {
+                    "status": "waiting",
+                    "seed": "DO-NOT-PUBLISH-SEED",
+                    "pending": {"request_id": "DO-NOT-PUBLISH-REQUEST"},
+                }
+            )
+        )
+        with mock.patch.object(self.module, "PROD_ROOT", self.prod), mock.patch.object(
+            self.module, "_unit_is_active", return_value=True
+        ), mock.patch.object(self.module, "_unit_is_enabled", return_value=True):
+            result = self.module._collect_programs(state_dir, self.soren, 100)
+        for key in ("corner_rotation", "corner_rotation_timer", "retro_corner"):
+            self.assertIn(key, result)
+        timer = result["corner_rotation_timer"]
+        self.assertEqual(timer["unit"], "docich-corner-rotation.timer")
+        self.assertIs(timer["active"], True)
+        self.assertIs(timer["enabled"], True)
+        self.assertIs(timer["legacy_alias"], True)
+        self.assertNotIn("DO-NOT-PUBLISH", json.dumps(result))
+        self.assertNotIn(str(self.base), json.dumps(result))
+
+
 if __name__ == "__main__":
     unittest.main()

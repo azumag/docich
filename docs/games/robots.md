@@ -53,15 +53,19 @@ viewportにRobotsを載せます。終了時にdocich側をstopすると、背�
 
 ## メリケンAI レトロゲームコーナー
 
-本番profileでは毎日20:00 JSTから60分、Robotsを前面へ載せます。
+productionでは[全corner共通rotation](../corner-rotation.md)がRobotsを含む全corner
+（レトロゲーム・PAPER・メリケン・NetHack・半熟英雄）を24時間rollingで回します。
+Robots専用の固定時刻はなく、`[retro_corner].start_hour`は共通rotation有効時には
+選択時刻へ影響しません。
 
 ```bash
 bin/docich --config config/docich.soren-live.toml retro-corner status --json
-bin/docich --config config/docich.soren-live.toml retro-corner start   # 手動試験
+bin/docich --config config/docich.soren-live.toml retro-corner start   # 手動試験 (レトロadapter)
 bin/docich --config config/docich.soren-live.toml retro-corner stop    # 早期終了
 ```
 
-定期起動は `docich-retro-corner.timer` が毎時 `tick` し、Python側が `Asia/Tokyo` の
-開始時刻と「当日実行済み」を判定します。60分待機中はコーナーlockを保持しないため、
-operatorの早期stopや別ゲームへの手動切替を妨げません。途中で別ゲームへ切り替えられた
-場合、終了処理はoperator操作を上書きせず `interrupted` として記録します。
+定期起動はcanonical `docich-corner-rotation.timer`が毎分`corner-rotation tick`します
+（移行期間中は旧`docich-retro-corner.timer`が同unitへのalias）。待機中は
+コーナーlockを保持しないため、operatorの早期stopや別ゲームへの手動切替を
+妨げません。途中で別ゲームへ切り替えられた場合、終了処理はoperator操作を
+上書きせず`interrupted`として記録します。

@@ -807,6 +807,25 @@ class TestSystemdTemplates(unittest.TestCase):
         self.assertNotIn("OnCalendar=", timer)
         self.assertIn("Persistent=false", timer)
 
+    def test_canonical_service_and_timer_contract(self):
+        root = Path(__file__).resolve().parents[1]
+        service = (root / "scripts/systemd/docich-corner-rotation.service").read_text(encoding="utf-8")
+        timer = (root / "scripts/systemd/docich-corner-rotation.timer").read_text(encoding="utf-8")
+        self.assertIn(
+            "ExecStart=__DOCICH_ROOT__/bin/docich --config __DOCICH_ROOT__/config/docich.soren-live.toml corner-rotation tick",
+            service,
+        )
+        self.assertIn("TimeoutStartSec=infinity", service)
+        self.assertNotIn("[Install]", service)
+        self.assertIn("OnActiveSec=30s", timer)
+        self.assertIn("OnBootSec=30s", timer)
+        self.assertIn("OnUnitActiveSec=60s", timer)
+        self.assertIn("AccuracySec=5s", timer)
+        self.assertIn("Persistent=false", timer)
+        self.assertIn("Unit=docich-corner-rotation.service", timer)
+        self.assertIn("WantedBy=timers.target", timer)
+        self.assertNotIn("docich-retro-corner", timer)
+
 
 if __name__ == "__main__":
     unittest.main()

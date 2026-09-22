@@ -1470,6 +1470,46 @@ def _collect_rotation_evidence(state_dir):
     return result
 
 
+# Canonical and legacy user-unit names for the common corner rotation timer.
+# The legacy name becomes a relative alias of the canonical unit after the
+# reviewed migration; diagnostics reports the governing unit name and whether
+# the legacy name currently is that alias.
+CANONICAL_ROTATION_TIMER = "docich-corner-rotation.timer"
+LEGACY_ROTATION_TIMER = "docich-retro-corner.timer"
+
+
+def _rotation_timer_selection(unit_dir=None):
+    """Return (unit, legacy_alias) without executing anything.
+
+    ``legacy_alias`` is True only when the legacy unit is a symlink resolving
+    to the canonical name, False for a regular/missing legacy unit, and None
+    when the unit directory cannot be inspected. Before migration the legacy
+    name governs the timer; after migration the canonical name does.
+    """
+    directory = (
+        Path(unit_dir)
+        if unit_dir is not None
+        else PROD_ROOT.parent / ".config" / "systemd" / "user"
+    )
+    legacy = directory / LEGACY_ROTATION_TIMER
+    canonical = directory / CANONICAL_ROTATION_TIMER
+    try:
+        legacy_is_link = legacy.is_symlink()
+        canonical_regular = canonical.is_file() and not canonical.is_symlink()
+    except OSError:
+        return LEGACY_ROTATION_TIMER, None
+    if legacy_is_link:
+        try:
+            alias_ok = os.readlink(legacy) == CANONICAL_ROTATION_TIMER
+        except OSError:
+            return LEGACY_ROTATION_TIMER, None
+        unit = CANONICAL_ROTATION_TIMER if (alias_ok or canonical_regular) else LEGACY_ROTATION_TIMER
+        return unit, alias_ok
+    if canonical_regular:
+        return CANONICAL_ROTATION_TIMER, False
+    return LEGACY_ROTATION_TIMER, False
+
+
 def _program_state_dir():
     """Return the docich state_dir that holds corner state (read-only).
 
@@ -1853,13 +1893,15 @@ def _collect_programs(state_dir, soren, now):
     mutates any file.
     """
     state_dir = Path(state_dir)
+    timer_unit, legacy_alias = _rotation_timer_selection()
     payload = {
         "state_dir_found": state_dir.is_dir(),
         "corner_rotation": {"present": False, "readable": False},
         "corner_rotation_timer": {
-            "unit": "docich-retro-corner.timer",
-            "active": None,
-            "enabled": None,
+            "unit": timer_unit,
+            "active": _unit_is_active(timer_unit),
+            "enabled": _unit_is_enabled(timer_unit),
+            "legacy_alias": legacy_alias,
         },
         "game_switch": {"present": False, "readable": False},
         "game_switch_fifo": {
@@ -1880,11 +1922,6 @@ def _collect_programs(state_dir, soren, now):
     }
     if state_dir.is_dir():
         _collect_corner_files(state_dir, payload, now)
-    payload["corner_rotation_timer"] = {
-        "unit": "docich-retro-corner.timer",
-        "active": _unit_is_active("docich-retro-corner.timer"),
-        "enabled": _unit_is_enabled("docich-retro-corner.timer"),
-    }
     soren = Path(soren)
     payload["boundary"] = _collect_boundary(soren / "tmp" / "state", now)
     payload["ab"] = _collect_ab(soren, now)

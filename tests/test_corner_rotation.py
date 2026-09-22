@@ -70,6 +70,65 @@ def test_flat_live_catalog_and_financial_boundary():
     assert all(c.target_matches is None for c in catalog if c.id != "nsnake")
 
 
+def test_production_profile_marks_common_rotation_enabled_for_all_nine_corners():
+    from docich.corner_catalog import rotation_config
+
+    g = load_global(ROOT, ROOT / "config/docich.soren-live.toml")
+    raw = rotation_config(g)
+    assert raw["enabled"] is True
+    catalog = load_catalog(g)
+    assert len(catalog) == 9
+    paper = next(c for c in catalog if c.id == "paper")
+    assert paper.enabled is True
+    assert paper.live_eligible is False
+    assert {c.id for c in catalog} >= {
+        "ninvaders", "nsnake", "bastet", "moon-buggy", "pacman4console",
+        "hanjuku-hero", "nethack", "paper", "meriken",
+    }
+
+
+def test_common_rotation_tick_ignores_the_legacy_start_hour(tmp_path, monkeypatch):
+    """Enabled common rotation owns selection; the legacy daily start_hour and
+    mode must not make the legacy entry tick a no-op outside that hour."""
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+
+    from docich.retro_corner import RetroCornerManager, load_retro_corner_config
+
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[paths]\nstate_dir="run"\n'
+        '[retro_corner]\nenabled=true\nmode="daily"\nstart_hour=19\n'
+        'duration_minutes=20\ntimezone="Asia/Tokyo"\ngames=["nsnake"]\n'
+        '[corner_rotation]\nenabled=true\n'
+        'corners=[{id="nsnake",adapter="game",game="nsnake"}]\n'
+    )
+    g = load_global(tmp_path, path)
+    calls = []
+
+    class FakeRotation:
+        def __init__(self, _g):
+            pass
+
+        def tick(self):
+            calls.append(True)
+            return {"status": "ready"}
+
+    monkeypatch.setattr("docich.corner_rotation.CornerRotationManager", FakeRotation)
+    manager = RetroCornerManager(
+        g,
+        config=load_retro_corner_config(g),
+        coordinator=object(),
+        now=lambda: dt.datetime(2026, 9, 22, 3, 0, tzinfo=ZoneInfo("Asia/Tokyo")),
+        sleep=lambda seconds: None,
+        active_game_reader=lambda: None,
+        ensure_runtime=lambda: None,
+    )
+    result = manager.tick()
+    assert calls == [True]
+    assert result.status == "ready"
+
+
 @pytest.mark.parametrize("value", ["0", "101", "-1", "true", '"1"', "1.5", "[]"])
 def test_catalog_rejects_invalid_match_targets(tmp_path, value):
     path = tmp_path / "config.toml"

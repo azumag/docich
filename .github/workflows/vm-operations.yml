@@ -332,7 +332,11 @@ jobs:
         shell: bash
         run: exit 1
 
-      - name: Ensure rolling corner rotation timer
+      # Canonical deploy hook for the common corner rotation timer. Stage 1
+      # keeps the legacy unit names active; the reviewed rename is gated by
+      # ops/vm_actions/corner_rotation_timer_migration_epoch (absent = legacy).
+      # The hook never restarts the shared display/Soren/audio/stream units.
+      - name: Ensure corner rotation timer
         if: ${{ steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
         shell: bash
         env:
