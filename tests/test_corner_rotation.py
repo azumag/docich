@@ -1337,3 +1337,45 @@ def test_recover_cli_reports_a_resolved_latch(tmp_path, capsys):
     captured = capsys.readouterr()
     assert code == 2  # not latched: refused before any claim of success
     assert "not latched" in captured.err
+
+
+@pytest.mark.parametrize("corner_id", ["ninvaders", "nethack", "meriken"])
+def test_rotation_target_override_validation_matches_the_manager_signature(
+        tmp_path, monkeypatch, corner_id):
+    """A common rotation dispatch always passes the selected game (#986).
+
+    ``RetroCornerManager._begin_locked`` calls ``_validate_games([target])``
+    whenever a target override is present. A fixed single-game manager whose
+    override accepted no argument therefore raised a TypeError before writing
+    any corner state, which latched the entire rotation.
+    """
+    from docich.retro_corner import RetroCornerManager
+
+    g = replace(load_global(ROOT, ROOT / "config/docich.soren-live.toml"),
+                state_dir=tmp_path)
+    monkeypatch.setattr(RetroCornerManager, "_executable_exists",
+                        staticmethod(lambda _: True))
+    monkeypatch.setattr("docich.adapters.retroarch.resolve_rom",
+                        lambda *_: ROOT / "vm-only.sfc")
+    monkeypatch.setattr("docich.adapters.retroarch.resolve_core",
+                        lambda *_: "/vm-only/core.so")
+    catalog = {c.id: c for c in load_catalog(g)}
+    corner = catalog[corner_id]
+    manager = CornerRotationManager(g)
+    adapter = manager.adapters[corner_id]
+    assert isinstance(adapter.manager, RetroCornerManager)
+    # the exact call _begin_locked makes for this dispatch
+    adapter.manager._validate_games([corner.game])
+
+
+def test_latch_classifies_corner_side_errors_as_execution_error(setup):
+    from docich.retro_corner import RetroCornerError
+
+    _, clock, _, executor, make = setup
+    manager = make()
+    executor.result = RetroCornerError("retro corner対象は登録済みですが無効です: nethack")
+    with pytest.raises(RetroCornerError):
+        manager.tick()
+    latched = state(manager)
+    assert latched["status"] == "recovery_required"
+    assert latched["error_kind"] == "execution-error"

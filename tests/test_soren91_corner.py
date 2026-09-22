@@ -869,5 +869,25 @@ class TestSoren91CornerAgentSupervision(Soren91CornerTestBase):
         self.assertEqual(clock[0] - self.now_value, timedelta(seconds=20))
 
 
+
+class TestSoren91RotationTargetValidation(Soren91CornerTestBase):
+    """Same target-override contract as the NetHack corner (#986)."""
+
+    def test_accepts_the_rotation_target_override(self):
+        mgr, _ = self.manager([None])
+        mgr._validate_games(["soren91"])
+
+    def test_rejects_any_other_target(self):
+        mgr, _ = self.manager([None])
+        for names in (["ninvaders"], [], ["other", "soren91-manual"]):
+            with self.subTest(names=names):
+                with self.assertRaises(RetroCornerError):
+                    mgr._validate_games(names)
+
+    def test_default_call_still_validates_the_owned_game(self):
+        mgr, _ = self.manager([None])
+        mgr._validate_games()
+
+
 if __name__ == "__main__":
     unittest.main()

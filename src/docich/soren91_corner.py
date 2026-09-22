@@ -267,7 +267,14 @@ class Soren91CornerManager(RetroCornerManager):
 
     # --- lifecycle customizations -------------------------------------------
 
-    def _validate_games(self) -> None:
+    def _validate_games(self, names: list[str] | None = None) -> None:
+        # Same target-override contract as the NetHack corner: a dispatch may
+        # pass the selected game, and this fixed manager owns exactly one.
+        if names is not None and (not names or GAME_NAME not in names):
+            raise RetroCornerError(
+                f"soren91 corner対象は{GAME_NAME}だけが有効です: "
+                + "、".join(str(name) for name in names)
+            )
         try:
             game = load_game(self.g, GAME_NAME)
         except Exception as exc:
