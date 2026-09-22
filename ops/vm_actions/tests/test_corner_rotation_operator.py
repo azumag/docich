@@ -55,7 +55,13 @@ class CornerRotationAuthorizeTests(unittest.TestCase):
             json.loads(recovered.stdout),
             {"operation": "recover-failed", "target": "production", "ref": "main"},
         )
-        for operation in ("status", "restart", "exec", "restart-service;id", "", "recover-failed;id"):
+        rolled_back = self.run_auth(INPUT_OPERATION="rollback-timer")
+        self.assertEqual(rolled_back.returncode, 0, rolled_back.stderr)
+        self.assertEqual(
+            json.loads(rolled_back.stdout),
+            {"operation": "rollback-timer", "target": "production", "ref": "main"},
+        )
+        for operation in ("status", "restart", "exec", "restart-service;id", "", "recover-failed;id", "rollback-timer;id"):
             with self.subTest(operation=operation):
                 self.assertNotEqual(self.run_auth(INPUT_OPERATION=operation).returncode, 0)
 
@@ -135,7 +141,7 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
     def test_workflow_is_fixed_and_never_exposes_arbitrary_command_input(self):
         text = WF.read_text(encoding="utf-8")
         for required in (
-            "options: [restart-service, recover-failed]",
+            "options: [restart-service, recover-failed, rollback-timer]",
             "github.actor_id == 9018513",
             "github.triggering_actor == 'azumag'",
             "github.ref_protected == true",
@@ -144,8 +150,13 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
             "control/ops/vm_actions/authorize_corner_rotation.py",
             "control/ops/vm_actions/restart_corner_rotation.sh",
             "control/ops/vm_actions/recover_corner_rotation.sh",
+            "control/ops/vm_actions/rollback_corner_rotation_timer.sh",
             "Recover only the failed corner rotation slot",
+            "Restart only the corner rotation service",
+            "Roll back only the corner rotation timer",
             "if: steps.auth.outputs.operation == 'recover-failed'",
+            "if: steps.auth.outputs.operation == 'restart-service'",
+            "if: steps.auth.outputs.operation == 'rollback-timer'",
             "StrictHostKeyChecking=yes",
             "ForwardAgent=no",
             "ClearAllForwardings=yes",
