@@ -70,6 +70,7 @@ import base64
 import configparser
 import datetime as dt
 import fcntl
+import hashlib
 import json
 import math
 import os
@@ -79,6 +80,7 @@ import stat
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 PROD_ROOT = Path(__file__).resolve().parents[2]
@@ -2209,6 +2211,193 @@ def _unit_is_enabled(unit):
     return None
 
 
+# --- webui unit / served-UI observation (read-only) ---------------------------
+#
+# The webui is a long-running process, so "deployed" and "what the operator
+# sees" can diverge: another instance holding the port, a unit installed from
+# a different checkout, or a unit that never came back after a restart. This
+# section answers only that question. Everything published is a bool / int /
+# null — no path, no cmdline, no response bytes — and severity is unchanged
+# (the webui is optional; see wiki/WebUI.md).
+
+WEBUI_UNIT = "docich-webui.service"
+WEBUI_PORT_DEFAULT = 8787
+WEBUI_HTTP_TIMEOUT_SEC = 4
+WEBUI_MAX_HTML_BYTES = 1_000_000
+WEBUI_SOURCE_MAX_BYTES = 4_000_000
+WEBUI_INDEX_RE = re.compile(r'INDEX_HTML = r"""(.*?)"""', re.S)
+
+
+def _webui_config_port():
+    """Port the service binds, read from the same config it reads."""
+    try:
+        import tomllib
+
+        with open(PROD_ROOT / "config" / "docich.toml", "rb") as fh:
+            cfg = tomllib.load(fh).get("webui") or {}
+        port = int(cfg.get("port", WEBUI_PORT_DEFAULT))
+    except Exception:
+        return WEBUI_PORT_DEFAULT
+    return port if 0 < port < 65536 else WEBUI_PORT_DEFAULT
+
+
+def _webui_unit_dir():
+    return PROD_ROOT.parent / ".config" / "systemd" / "user"
+
+
+def _webui_deployed_index_digest():
+    """sha256 of INDEX_HTML in the deployed src/docich/webui.py, or None."""
+    path = PROD_ROOT / "src" / "docich" / "webui.py"
+    try:
+        if path.stat().st_size > WEBUI_SOURCE_MAX_BYTES:
+            return None
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = WEBUI_INDEX_RE.search(text)
+    if not match:
+        return None
+    return hashlib.sha256(match.group(1).encode("utf-8")).digest()
+
+
+def _webui_fetch(port):
+    """Bounded loopback GET of the webui index.
+
+    Returns ``(body, error)`` with error in {None, "unreachable", "too_large"};
+    never raises and never trusts a proxy (loopback only)."""
+    url = f"http://127.0.0.1:{port}/"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    limit = WEBUI_MAX_HTML_BYTES
+    body = bytearray()
+    try:
+        with opener.open(url, timeout=WEBUI_HTTP_TIMEOUT_SEC) as resp:
+            length = resp.headers.get("Content-Length") if resp.headers is not None else None
+            if length:
+                try:
+                    if int(length) > limit:
+                        return b"", "too_large"
+                except ValueError:
+                    pass
+            while len(body) <= limit:
+                chunk = resp.read(min(65536, limit + 1 - len(body)))
+                if not chunk:
+                    break
+                body += chunk
+    except Exception:
+        return b"", "unreachable"
+    if len(body) > limit:
+        return bytes(body), "too_large"
+    return bytes(body), None
+
+
+def _webui_unit_properties():
+    """(MainPID, NRestarts) from one `systemctl --user show`, or None each."""
+    main_pid = n_restarts = None
+    result = _systemctl_user(
+        ["show", WEBUI_UNIT, "--property=MainPID", "--property=NRestarts"], timeout=4
+    )
+    if result is None:
+        return None, None
+    _, out = result
+    match = re.search(r"(?m)^MainPID=(\d+)$", out)
+    if match:
+        main_pid = int(match.group(1))
+    match = re.search(r"(?m)^NRestarts=(\d+)$", out)
+    if match:
+        n_restarts = int(match.group(1))
+    return main_pid, n_restarts
+
+
+def _listen_inodes(port):
+    """Socket inodes in TCP_LISTEN state on ``port``; None without /proc."""
+    if not Path("/proc/net/tcp").exists() and not Path("/proc/net/tcp6").exists():
+        return None
+    inodes = set()
+    for name in ("tcp", "tcp6"):
+        try:
+            text = Path("/proc/net", name).read_text(encoding="ascii", errors="ignore")
+        except OSError:
+            continue
+        for line in text.splitlines()[1:]:
+            parts = line.split()
+            if len(parts) < 10 or parts[3] != "0A":
+                continue
+            try:
+                if int(parts[1].rsplit(":", 1)[1], 16) != port:
+                    continue
+            except (IndexError, ValueError):
+                continue
+            inodes.add(parts[9])
+    return inodes
+
+
+def _pid_owns_socket(pid, inodes):
+    """True when pid holds one of inodes; False / None when it cannot."""
+    read_any = False
+    try:
+        # NOTE: Path(...).iterdir() is lazy, so a missing /proc/<pid> raises
+        # FileNotFoundError on iteration, not on creation.
+        for fd in Path(f"/proc/{pid}/fd").iterdir():
+            try:
+                target = os.readlink(fd)
+            except OSError:
+                continue
+            read_any = True
+            if target.startswith("socket:[") and target[8:-1] in inodes:
+                return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    if not read_any:
+        return None
+    return False
+
+
+def _listener_is_unit(port, main_pid):
+    """Is the unit's MainPID the process listening on the webui port?"""
+    inodes = _listen_inodes(port)
+    if inodes is None:
+        return None
+    if not inodes:
+        return False
+    if main_pid is None:
+        return None
+    if main_pid <= 0:
+        return False
+    return _pid_owns_socket(main_pid, inodes)
+
+
+def _collect_webui():
+    """Bounded observation: is the deployed UI what the operator can see?"""
+    port = _webui_config_port()
+    unit_file = (_webui_unit_dir() / WEBUI_UNIT).is_file()
+    active = _unit_is_active(WEBUI_UNIT)
+    enabled = _unit_is_enabled(WEBUI_UNIT)
+    main_pid, n_restarts = _webui_unit_properties()
+    listener = _listener_is_unit(port, main_pid)
+    expected = _webui_deployed_index_digest()
+    body, error = _webui_fetch(port)
+    reachable = error in (None, "too_large")
+    matches = None
+    if reachable and expected is not None:
+        if error == "too_large":
+            matches = False
+        else:
+            matches = hashlib.sha256(body).digest() == expected
+    return {
+        "unit_file": unit_file,
+        "unit_active": active,
+        "unit_enabled": enabled,
+        "main_pid": main_pid,
+        "n_restarts": n_restarts,
+        "served_port": port,
+        "served_reachable": reachable,
+        "served_matches_deployed": matches,
+        "listener_is_unit": listener,
+    }
+
+
 def _market_paper_report_age_sec(sqlite_path, market, now):
     if not sqlite_path.is_file():
         return -1
@@ -2868,6 +3057,7 @@ def main(argv):
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),
         "nethack_panes": _collect_nethack_panes(_program_state_dir(), now),
         "market_paper": _collect_market_paper(_program_state_dir(), now),
+        "webui": _collect_webui(),
         "storage_breakdown": _collect_storage_breakdown(soren, PROD_ROOT),
         "storage_artifacts": _collect_tmp_shared_objects(now),
         "soren91_drop_profile": _collect_soren91_drop_profile(soren),
