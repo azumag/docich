@@ -200,6 +200,10 @@ tailscale serve --bg --https=443 http://127.0.0.1:8787
 - `tailscale serve` を使わない場合は、直接 `http://<tailnet-IP>:8787/` へ
   アクセスできる (Tailscale ACL で到達制御すること)。
 - ログは `journalctl --user -u docich-webui -f` で確認できる。
+- **コード更新の反映**: 常駐プロセスなので、docich を deploy して
+  `src/docich/webui.py` が更新されても再起動するまで旧 UI が配信される。
+  owner-only の `restart_webui` operation (`ops/vm_actions/README.md`) で
+  固定 unit だけを再起動する。
 
 ## `loginctl enable-linger` が必要な理由
 

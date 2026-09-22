@@ -199,6 +199,36 @@ class AuthorizeTests(unittest.TestCase):
         )
         self.assertEqual(p.returncode,0,p.stderr)
 
+    def test_restart_webui_requires_production_main_and_confirmation(self):
+        p=self.run_auth(INPUT_OPERATION='restart_webui',INPUT_TARGET='preview',INPUT_REF='main',INPUT_CONFIRM='production')
+        self.assertNotEqual(p.returncode,0)
+        self.assertIn('production-only',p.stderr)
+        p=self.run_auth(INPUT_OPERATION='restart_webui',INPUT_TARGET='production',INPUT_REF='feature',INPUT_CONFIRM='production')
+        self.assertNotEqual(p.returncode,0)
+        self.assertIn('must run from main',p.stderr)
+        p=self.run_auth(INPUT_OPERATION='restart_webui',INPUT_TARGET='production',INPUT_REF='main',INPUT_CONFIRM='')
+        self.assertNotEqual(p.returncode,0)
+        self.assertIn('confirmation required',p.stderr)
+        p=self.run_auth(INPUT_OPERATION='restart_webui',INPUT_TARGET='production',INPUT_REF='main',INPUT_CONFIRM='production')
+        self.assertEqual(p.returncode,0,p.stderr)
+
+    def test_restart_webui_not_blocked_by_public_repo_exec_disable(self):
+        # 固定スクリプトだけを実行する operation なので、public repo で無効化
+        # される arbitrary exec には該当しない (webui 反映の正規経路)。
+        p=self.run_auth(
+            GITHUB_REPOSITORY_PRIVATE='false',
+            INPUT_OPERATION='restart_webui',INPUT_TARGET='production',INPUT_REF='main',INPUT_CONFIRM='production',
+        )
+        self.assertEqual(p.returncode,0,p.stderr)
+
+    def test_workflow_restart_webui_uses_reviewed_fixed_script(self):
+        workflow = WF.read_text(encoding="utf-8")
+        self.assertIn("steps.auth.outputs.operation == 'restart_webui'", workflow)
+        self.assertIn("cat control/ops/vm_actions/restart_webui.sh | ssh", workflow)
+        # arbitrary exec の入力 ($VM_COMMAND) を webui 再起動へ流用しない
+        step = workflow.split("Restart docich webui systemd unit", 1)[1].split("- name:", 1)[0]
+        self.assertNotIn("VM_COMMAND", step)
+
     def test_push_is_fixed_to_production_deploy(self):
         p=self.run_auth(GITHUB_EVENT_NAME='push',INPUT_OPERATION='',INPUT_TARGET='',INPUT_REF='')
         self.assertEqual(p.returncode,0,p.stderr)
