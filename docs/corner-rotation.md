@@ -75,6 +75,33 @@ last_seen、pending、request UUID、結果をatomic writeする。
 選択をside effectより先に記録する。program境界やFIFO待ちではpendingを消さず、
 同じrequest UUIDを既存game-switch receiptへ再投入する。
 
+### latchとoperator復旧（`status=recovery_required`、#986）
+
+予約後の実行が例外で終了すると、ledgerは `status=recovery_required` /
+`reason=execution-or-state-unverified` / `error_kind=<固定enum>` とlatchされ、
+`tick()` は冒頭で即returnする。例外本文はstateに書かない（provider出力やcredentialを
+含み得るため）。latchは自動では解けないfail-closed契約で、次の自動開始も手動startも拒否する。
+
+復旧は固定operation `recover-failed`（`ops/vm_actions/recover_corner_rotation.sh`）だけ:
+
+1. `bin/docich --config ... corner-rotation recover` がlatchを解決する。
+   - adapter観測に同じrequestの**terminal**があれば、それを完了としてcommitする
+     （request identity・history・cooldownを保ち、**二重起動しない**）。
+   - そのrequestが**一度も起動していない**なら、ledgerは `waiting`/`execution-pending`
+     のまま予約を保持して戻す。以降は通常の `tick()` がgame-switch phase・program slot・
+     cooldown・所有権を検証してから同じrequestで実行する。原因が残っていれば再度latch
+     され、`error_kind` が固定分類として残る。
+   - 自分のrequestが**実行中／corner側が要復旧**、`manual_pending` の有無、catalogから
+     削除された予約、時計逆行は拒否してlatchのまま（exit非0、unitには触れない）。
+2. 成功した場合だけ `systemctl --user --no-block restart` でreviewed unitを起動し、
+   直後のtickが同じrecorded gameを再試行する。
+
+`tick()` 自身はlatchを自動解除しない（毎分のtimerが自動再試行ループを作るため）。
+ledgerの手編集・`pending`の強制clear・state削除・seed再生成・時計調整は復旧手順ではない。
+診断は `corners.corner_rotation` に `error_kind` と `pending_corner` / `pending_phase` /
+`pending_age_sec` / `pending_owner` / `pending_owner_status` を固定投影し、
+latch自体を総合 `warn` としてruntime health alertへ届ける。
+
 起動済みcornerは無効化後も安全な終了・復帰を継続する。まだ起動していない予約が無効化
 された場合は予約を保持して待機する。pending対象のcatalog削除は要復旧。
 各managerのstateには`rotation_request_id`と`rotation_runtime_id`を記録する。

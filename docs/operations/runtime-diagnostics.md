@@ -71,7 +71,9 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
 - `status` は `ok` / `warn` / `critical` に正規化する。
 - critical: required worker の停止（pause 中を除く）/ required の stale PID。
 - warn: paused worker、未登録 PID、重複、zombie、stale lock、直近 all_failed /
-  queue give-up、改善ループの stale・retry 滞留。
+  queue give-up、改善ループの stale・retry 滞留、
+  および `corners.corner_rotation.status == "recovery_required"`
+  （共有面は健全でも全自動cornerが止まる latch。#986）。
 - 単発の rate-limit だけで critical にしない。rate-limit は件数のみ報告する。
 - queue waiter 数は lock 形式から観測できないため報告しない（不明は不明と扱う）。
 - 診断は stale lock を削除しない。観測のみ。
@@ -95,6 +97,15 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   `corners.corner_rotation`へ出す。status、slot、next_due_at、last_seen_at、
   eligible_count、pending有無、および設定由来の `schedule_mode` / `cooldown_seconds`
   のみ。seed・request payload・自由文は出さない。
+  latch（`status=recovery_required`）の時は固定分類だけを更に足す:
+  `error_kind`（`docich.corner_rotation.ERROR_KINDS` と同一の固定enum。例外本文は
+  stateにもdiagnosticsにも書かない。欠落はnull、不正値は`unknown`）、
+  `pending_corner`、`pending_phase`（`selected`/`dispatched`/`unknown`）、
+  `pending_age_sec`（-1は不明）、`pending_owner`（固定8種のcorner stateのうち
+  同じrequestを記録したstate名。該当なし`none`、読取不可`unknown`、予約なし`absent`）、
+  `pending_owner_status`。request UUIDは固定stateとの照合にだけ使い出力には含めない。
+  これで「まだ起動していない」「既に終了している」「実行中・corner側の復旧が要る」を
+  証跡から区別できる（#986）。
   `recovery_required`は次cornerを停止する実行契約であり、診断自体は復旧操作をしない。
   `corners.corner_rotation_timer` は支配的なtimer unit名（移行後は
   `docich-corner-rotation.timer`）、active/enabled、旧名が正しいaliasかを示す

@@ -10,11 +10,17 @@ import json
 import math
 from pathlib import Path
 import secrets
+import sys
 import time
 import uuid
 
 from .corner_catalog import cooldown_seconds, load_catalog, rotation_enabled, schedule_mode
-from .corner_adapters import make_corner_adapter, CornerExecutionCoordinator, RetiredCornerObserver
+from .corner_adapters import (
+    make_corner_adapter,
+    CornerExecutionCoordinator,
+    CornerExecutionError,
+    RetiredCornerObserver,
+)
 from .game_switch import atomic_write_json
 
 DAY = 86400.0
@@ -22,9 +28,40 @@ STOP_REQUEST_DIR = "corner-stop-requests"
 BUSY = {"waiting", "starting", "active", "restoring", "preparing", "recovery_required", "failed"}
 TERMINAL = {"idle", "completed", "interrupted", "expired"}
 
+# Fixed latch taxonomy (#986). The exception text is never persisted: provider
+# or config output can carry credentials or generated content. Diagnostics and
+# operators only ever see one of these categories. Keep in sync with
+# ops/vm_actions/collect_diagnostics.py ROTATION_ERROR_KINDS (regression-tested).
+ERROR_KINDS = frozenset({
+    "adapter-state",
+    "adapter-timestamp",
+    "catalog-mismatch",
+    "execution-error",
+    "execution-unverified",
+    "invalid-state",
+    "unexpected",
+})
+
 
 class RotationError(RuntimeError):
-    pass
+    """A fail-closed rotation failure carrying a fixed, persistable category."""
+
+    kind = "invalid-state"
+
+    def __init__(self, message, *, kind=None):
+        super().__init__(message)
+        if kind is not None and kind in ERROR_KINDS:
+            self.kind = kind
+
+
+def _error_kind(exc):
+    """Map a latch cause to a fixed category; never return exception text."""
+    kind = getattr(exc, "kind", None)
+    if isinstance(kind, str) and kind in ERROR_KINDS:
+        return kind
+    if isinstance(exc, CornerExecutionError):
+        return "execution-error"
+    return "unexpected"
 
 
 def timestamp(value):
@@ -260,7 +297,7 @@ class CornerRotationManager:
             for raw in adapter.observations():
                 status = raw.get("status", "idle")
                 if status not in BUSY | TERMINAL:
-                    raise RotationError("unknown adapter state")
+                    raise RotationError("unknown adapter state", kind="adapter-state")
                 own = pending and raw.get("rotation_request_id") == pending["request_id"]
                 if status in BUSY and not own:
                     busy = True
@@ -270,7 +307,8 @@ class CornerRotationManager:
                 if stamps:
                     stamp = max(stamps)
                     if stamp > now:
-                        raise RotationError("adapter timestamp is in the future")
+                        raise RotationError("adapter timestamp is in the future",
+                                            kind="adapter-timestamp")
                     previous = max((r["at"] for r in state["history"] if r["corner"] == history_id), default=-1)
                     if stamp > previous:
                         state["history"].append(dict(corner=history_id, at=stamp, source="execution"))
@@ -389,7 +427,8 @@ class CornerRotationManager:
                     state["slot"] += 1
                     self.save(state)  # write-ahead reservation, before any side effect
                 if pending["corner"] not in self.adapters:
-                    raise RotationError("pending corner removed from catalog")
+                    raise RotationError("pending corner removed from catalog",
+                                        kind="catalog-mismatch")
                 adapter = self.adapters[pending["corner"]]
                 owned = any(raw.get("rotation_request_id") == pending["request_id"]
                             for raw in adapter.observations())
@@ -434,15 +473,115 @@ class CornerRotationManager:
                 elif status in {"queued", "waiting", "already-running"}:
                     state.update(status="waiting", reason="execution-pending")
                 else:
-                    raise RotationError("execution requires recovery")
+                    raise RotationError("execution requires recovery",
+                                        kind="execution-unverified")
                 self.save(state)
                 return {"status": state["status"], "corner": pending["corner"], "result": status}
-            except Exception:
+            except Exception as exc:
                 # Do not persist exception text: provider/config errors may carry
                 # output or credentials. The pending request remains inspectable.
-                state.update(status="recovery_required", reason="execution-or-state-unverified")
+                state.update(status="recovery_required",
+                             reason="execution-or-state-unverified",
+                             error_kind=_error_kind(exc))
                 self.save(state)
                 raise
+
+    def recover(self):
+        """Resolve a latched automatic reservation without bypassing fail-closed gates (#986).
+
+        This is the operator-triggered counterpart of the early return in
+        ``tick()``. It never edits the ledger by hand, never drops the
+        reservation and never starts a second execution:
+
+        - a reservation whose own adapter observation is already terminal is
+          committed from that observation (request identity, history and
+          cooldown preserved, no duplicate launch);
+        - a reservation that never started is handed back to the normal tick
+          path as ``waiting``/``execution-pending``, which re-validates
+          game-switch phase, the program slot, cooldown and ownership before
+          any side effect and re-latches with a fixed ``error_kind`` if the
+          cause persists;
+        - a reservation whose corner is still running or itself needs corner
+          recovery stays latched and fails closed.
+        """
+        if not rotation_enabled(self.g):
+            return {"status": "disabled"}
+        with self.locked() as acquired:
+            if not acquired:
+                return {"status": "waiting", "reason": "already-running"}
+            now = timestamp(self.clock())
+            state = self.load(now)
+            self._remember_catalog(state)
+            if state["status"] != "recovery_required":
+                raise RotationError("rotation state is not latched", kind="invalid-state")
+            if state.get("manual_pending") is not None:
+                raise RotationError("manual reservation needs manual recovery",
+                                    kind="invalid-state")
+            pending = state.get("pending")
+            if not isinstance(pending, dict):
+                # Latched before any reservation existed: retry through the
+                # normal path, which re-derives selection and re-latches with
+                # a fixed error_kind if the cause is still present.
+                state.update(status="waiting", reason="recovery-retry")
+                self.save(state)
+                return {"status": "waiting", "reason": "recovery-retry"}
+            if pending.get("corner") not in self.adapters:
+                raise RotationError("pending corner removed from catalog",
+                                    kind="catalog-mismatch")
+            if now < state["last_seen_at"]:
+                raise RotationError("clock regressed", kind="invalid-state")
+            try:
+                outcome = self._resolve_pending(state, pending, now)
+            except Exception as exc:
+                state.update(status="recovery_required",
+                             reason="execution-or-state-unverified",
+                             error_kind=_error_kind(exc))
+                self.save(state)
+                raise
+            self.save(state)
+            return outcome
+
+    def _resolve_pending(self, state, pending, now):
+        adapter = self.adapters[pending["corner"]]
+        owned = [raw for raw in adapter.observations()
+                 if raw.get("rotation_request_id") == pending.get("request_id")]
+        if owned:
+            raw = owned[-1]
+            observed = raw.get("status", "idle")
+            if observed not in TERMINAL:
+                # Own busy observation: the corner is running or needs its own
+                # recovery. Launching again here would duplicate the corner.
+                raise RotationError("pending execution needs corner-level recovery",
+                                    kind="execution-unverified")
+            finished = (timestamp(raw["completed_at"])
+                        if raw.get("completed_at") is not None else now)
+            if finished > now:
+                raise RotationError("adapter timestamp is in the future",
+                                    kind="adapter-timestamp")
+            started = raw.get("started_at")
+            if started is not None:
+                stamp = timestamp(started)
+                previous = (timestamp(state["last_slot_at"])
+                            if state.get("last_slot_at") is not None else stamp)
+                state["last_slot_at"] = max(previous, stamp, finished)
+            state["history"].append(
+                dict(corner=pending["corner"], at=max(now, finished), source="completion"))
+            state.update(pending=None, status="ready", reason=None,
+                         last_result={"corner": pending["corner"],
+                                      "request_id": pending["request_id"],
+                                      "status": observed, "at": finished})
+            return {"status": "ready", "corner": pending["corner"],
+                    "result": observed, "recovered": True}
+        if self._observe(state, now):
+            state.update(status="waiting", reason="other-corner-needs-finish-or-recovery")
+            return {"status": "waiting",
+                    "reason": "other-corner-needs-finish-or-recovery"}
+        # Hand the unchanged reservation back to the timer tick. The history
+        # row written at dispatch keeps this corner inside its rolling cooldown
+        # either way, so a resume can never bypass cooldown selection.
+        state.update(status="waiting", reason="execution-pending")
+        return {"status": "waiting", "corner": pending["corner"],
+                "reason": "execution-pending", "resumed": True}
 
     def _wait(self, state, reason):
         state.update(status="waiting", reason=reason)
@@ -490,11 +629,24 @@ def main(argv=None):
     from .config import load_global
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path)
-    parser.add_argument("command", choices=["tick", "status"])
+    parser.add_argument("command", choices=["tick", "status", "recover"])
     args = parser.parse_args(argv)
     manager = CornerRotationManager(load_global(Path(__file__).resolve().parents[2], args.config))
     if args.command == "status":
         print(manager.path.read_text() if manager.path.exists() else "{}")
+    elif args.command == "recover":
+        # Operator-gated recovery (#986). RotationError messages are fixed
+        # literals from this module; unexpected exception text is never printed
+        # because it may carry provider output or credentials.
+        try:
+            print(json.dumps(manager.recover(), sort_keys=True))
+        except RotationError as exc:
+            print(f"corner rotation recovery refused: {exc}", file=sys.stderr)
+            return 2
+        except Exception:
+            print("corner rotation recovery failed; see error_kind in the rotation state",
+                  file=sys.stderr)
+            return 3
     else:
         print(json.dumps(manager.tick(), sort_keys=True))
     return 0
@@ -586,13 +738,17 @@ def run_manual(g, manager, games):
                 state.update(status="ready", reason=None)
                 state.pop("manual_pending", None)
             elif status not in {"queued", "waiting", "already-running"}:
-                state.update(status="recovery_required", reason="manual-execution-unverified")
+                state.update(status="recovery_required",
+                             reason="manual-execution-unverified",
+                             error_kind="execution-unverified")
             rotation.save(state)
             if isinstance(result, str) and hasattr(manager, "state_path"):
                 return CornerResult(result, game=chosen.game)
             return result
-        except Exception:
-            state.update(status="recovery_required", reason="manual-execution-unverified")
+        except Exception as exc:
+            state.update(status="recovery_required",
+                         reason="manual-execution-unverified",
+                         error_kind=_error_kind(exc))
             rotation.save(state)
             raise
 
