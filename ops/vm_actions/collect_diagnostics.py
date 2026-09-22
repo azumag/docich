@@ -1465,6 +1465,20 @@ ROTATION_IMPROVE_REASON_CODES = frozenset({
 })
 ROTATION_IMPROVE_PHASES = frozenset({"state", "llm", "eval", "unknown"})
 
+# Fixed latch taxonomy of `corner_rotation.json`'s `error_kind`. Keep in sync
+# with docich.corner_rotation.ERROR_KINDS (regression-tested): the exception
+# text is never persisted or published, only this category.
+ROTATION_ERROR_KINDS = frozenset({
+    "adapter-state",
+    "adapter-timestamp",
+    "catalog-mismatch",
+    "execution-error",
+    "execution-unverified",
+    "invalid-state",
+    "unexpected",
+})
+ROTATION_PENDING_PHASES = frozenset({"selected", "dispatched"})
+
 
 def _rotation_evidence_file(state_dir, relative):
     """Bounded fixed-path read; do not follow links to unrelated runtime data."""
@@ -1946,6 +1960,60 @@ def _rotation_policy():
         return None, None
 
 
+def _rotation_error_kind(value):
+    """Project only the fixed latch category; absent stays None, unknown is unknown."""
+    if value is None:
+        return None
+    if isinstance(value, str) and value in ROTATION_ERROR_KINDS:
+        return value
+    return "unknown"
+
+
+def _rotation_pending_projection(state_dir, data, now):
+    """Bounded identity of the latched reservation (#986), request id never emitted.
+
+    The reservation's request UUID is compared against the fixed corner state
+    files only, so an operator can tell "never started" from "already ended"
+    without publishing request identity, payloads or file contents.
+    """
+    out = {
+        "pending_corner": None,
+        "pending_phase": None,
+        "pending_age_sec": -1,
+        "pending_owner": "absent",
+        "pending_owner_status": "unknown",
+    }
+    pending = data.get("pending")
+    if not isinstance(pending, dict):
+        if pending is not None:
+            out["pending_phase"] = "unknown"
+        return out
+    out["pending_corner"] = _bounded_str(pending.get("corner"), 64)
+    out["pending_phase"] = (
+        pending.get("phase") if pending.get("phase") in ROTATION_PENDING_PHASES
+        else "unknown"
+    )
+    selected = _rotation_time(pending.get("selected_at"))
+    if selected is not None:
+        out["pending_age_sec"] = max(0, int(now - selected))
+    request_id = pending.get("request_id")
+    if not isinstance(request_id, str) or not request_id:
+        out["pending_owner"] = "unknown"
+        return out
+    out["pending_owner"] = "none"
+    for name in ROTATION_CORNER_FILES:
+        _, readable, raw = _rotation_evidence_file(state_dir, name + ".json")
+        if not readable:
+            # An unreadable fixed file may hold the owner; never report "none".
+            out["pending_owner"] = "unknown"
+            continue
+        if raw.get("rotation_request_id") == request_id:
+            out["pending_owner"] = name
+            out["pending_owner_status"] = _rotation_enum(raw.get("status"), ROTATION_STATUSES)
+            break
+    return out
+
+
 def _collect_corner_files(state_dir, payload, now):
     present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES["corner_rotation"])
     rotation = {"present": present, "readable": readable}
@@ -1963,7 +2031,9 @@ def _collect_corner_files(state_dir, payload, now):
             slot=_bounded_int(data.get("slot")),
             eligible_count=len(data["eligible"]) if isinstance(data.get("eligible"), list) else None,
             pending=isinstance(data.get("pending"), dict),
+            error_kind=_rotation_error_kind(data.get("error_kind")),
         )
+        rotation.update(_rotation_pending_projection(state_dir, data, now))
     mode, cooldown = _rotation_policy()
     rotation.update(schedule_mode=mode, cooldown_seconds=cooldown)
     payload["corner_rotation"] = rotation
@@ -2309,6 +2379,11 @@ def _severity(workers, queues, ai, improvement, corners=None):
         return "critical"
     retro = corners.get("retro_corner") if isinstance(corners, dict) else None
     if isinstance(retro, dict) and retro.get("recovery_required") is True:
+        return "warn"
+    # A latched common rotation stops every automatic corner while the shared
+    # plane stays healthy, so it must reach the runtime health alert (#986).
+    rotation = corners.get("corner_rotation") if isinstance(corners, dict) else None
+    if isinstance(rotation, dict) and rotation.get("status") == "recovery_required":
         return "warn"
     if (
         _paused_workers_actionable(workers)

@@ -124,22 +124,34 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
         self.assertNotIn("docich.service", text)
         self.assertNotIn("systemctl --user restart", text)
 
-    def test_recover_script_resolves_the_reviewed_unit_and_never_restarts_shared(self):
+    def test_recover_script_resolves_the_latch_before_restarting_the_reviewed_unit(self):
         text = RECOVER_SCRIPT.read_text(encoding="utf-8")
         for required in (
             'canonical="docich-corner-rotation.service"',
             'legacy="docich-retro-corner.service"',
+            'launcher="$DOCICH_PROD_ROOT/bin/docich"',
+            'config="$DOCICH_PROD_ROOT/config/docich.soren-live.toml"',
+            '"$launcher" --config "$config" corner-rotation recover',
+            "reviewed docich launcher or config missing; refusing to recover",
             "ambiguous corner rotation unit state",
             "no corner rotation service unit found",
             'systemctl --user show "$unit"',
             'systemctl --user --no-block restart "$unit"',
         ):
             self.assertIn(required, text)
+        # fail-closed ordering: the durable latch is resolved first, and a
+        # refusal stops before the unit is touched (#986).
+        self.assertLess(
+            text.index('corner-rotation recover'),
+            text.index('systemctl --user --no-block restart "$unit"'),
+        )
         self.assertNotIn("$@", text)
         self.assertNotIn("eval ", text)
         self.assertNotIn("sudo", text)
         self.assertNotIn("docich.service", text)
         self.assertNotIn("systemctl --user restart", text)
+        self.assertNotIn("rm -", text)
+        self.assertNotIn("corner-rotation tick", text)
 
     def test_workflow_is_fixed_and_never_exposes_arbitrary_command_input(self):
         text = WF.read_text(encoding="utf-8")
