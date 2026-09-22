@@ -21,7 +21,9 @@ set -euo pipefail
 #       10  systemctl restart failed
 #       11  unit not active within the bounded wait
 #       12  deployed INDEX_HTML unreadable, or ExecStart runs another root
-#       13  local webui not reachable on the configured port
+#       13  local webui not reachable on the configured port within the
+#           bounded wait (Type=simple reports active before the socket is
+#           bound; a single-shot check raced the bind and reported 13)
 #       14  served HTML stale while ExecStart runs the production root
 #           (another process holds the port, or the restart missed it)
 [[ $# -eq 0 ]] || { echo "no arguments accepted" >&2; exit 2; }
@@ -49,10 +51,14 @@ systemctl --user show "$unit" --property=ActiveState,SubState,MainPID,ExecMainSt
 
 # The local endpoint comes from the same config the service reads; no knob can
 # be passed in because production exec scrubs the environment to
-# PATH/HOME/LANG. Loopback is tried first, then the configured bind.
+# PATH/HOME/LANG. Loopback is tried first, then the configured bind. Reach
+# the port with a bounded wait: ActiveState flips to active as soon as the
+# Type=simple process spawns (measured: active at 0.04s, bind at 0.69s), so
+# one immediate GET raced the bind and reported a false 13. A reachable but
+# stale body still fails immediately with 14 — waiting cannot fix content.
 set +e
 python3 - <<'PY'
-import hashlib, re, sys, urllib.request
+import hashlib, re, sys, time, urllib.request
 
 try:
     import tomllib
@@ -79,15 +85,19 @@ if not match:
     sys.exit(12)
 expected = hashlib.sha256(match.group(1).encode("utf-8")).digest()
 
-for host in hosts:
-    url = f"http://{host}:{port}/"
-    try:
-        served = urllib.request.urlopen(url, timeout=10).read()
-    except Exception:
-        continue
-    print(f"served: {url}", file=sys.stderr)
-    sys.exit(0 if hashlib.sha256(served).digest() == expected else 14)
-sys.exit(13)
+deadline = time.monotonic() + 6.0
+while True:
+    for host in hosts:
+        url = f"http://{host}:{port}/"
+        try:
+            served = urllib.request.urlopen(url, timeout=2).read()
+        except Exception:
+            continue
+        print(f"served: {url}", file=sys.stderr)
+        sys.exit(0 if hashlib.sha256(served).digest() == expected else 14)
+    if time.monotonic() >= deadline:
+        sys.exit(13)
+    time.sleep(0.2)
 PY
 check_rc=$?
 set -e
