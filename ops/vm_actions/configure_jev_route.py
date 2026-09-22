@@ -32,14 +32,34 @@ import json
 import os
 from pathlib import Path
 import shlex
+import subprocess
 import sys
+import types
 
 
 def _load_sibling(name: str):
     path = Path(__file__).with_name(f"{name}.py")
-    spec = importlib.util.spec_from_file_location(name, str(path))
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    if path.is_file():
+        spec = importlib.util.spec_from_file_location(name, str(path))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    # The owner-only gateway executes this reviewed script through ``python -``
+    # so __file__ is <stdin>. In that path, load the sibling from the reviewed
+    # Git object at HEAD rather than from the mutable worktree. The gateway has
+    # already verified that production HEAD is the requested protected-main SHA.
+    repo_path = Path("ops") / "vm_actions" / f"{name}.py"
+    try:
+        source = subprocess.check_output(
+            ["git", "-c", "core.hooksPath=/dev/null", "show", f"HEAD:{repo_path.as_posix()}"],
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError("reviewed sibling missing") from exc
+    module = types.ModuleType(name)
+    module.__file__ = str(repo_path)
+    exec(compile(source, str(repo_path), "exec"), module.__dict__)
     return module
 
 
