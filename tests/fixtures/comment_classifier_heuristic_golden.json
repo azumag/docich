@@ -1,0 +1,510 @@
+{
+ "provenance": {
+  "source": "azumag/soviet_now broadcast/comment.sh _classify_comments_heuristic | _comment_normalize_classification_for_comments (+ lib/comment_bilingual.py)",
+  "soviet_now_commit": "f2c20234487c9d70953181d5ef6f32c7ff9d2091",
+  "generated_by": "executing that exact shell pipeline on each batch; expected = its stdout",
+  "purpose": "docich.comment_classifier.heuristic must reproduce this byte-for-byte (#882/#829 move)"
+ },
+ "cases": [
+  {
+   "name": "mixed_live_like",
+   "lines": [
+    "viewer: BGM聞こえない？",
+    "viewer: Amazing stream!",
+    "viewer: nextNext: 右に置いた方がよくない？",
+    "Nightbot: raid incoming",
+    "wizebot: レイドが来た",
+    "viewer: 配信止まった",
+    "viewer: 歌って",
+    "viewer: スコア何点？",
+    "viewer: hello",
+    "viewer: LUL LUL LUL",
+    "viewer: dociaiDoci dociaiDoci dociaiDoci",
+    "viewer: check https://example.com this is so cool",
+    "viewer: 盤面見て左に置くべき",
+    "viewer: 返答長すぎる",
+    "ユーザーA が 【SSR】 ソ連の星カード を獲得しました",
+    "ユーザーB が 10連ガチャで 素材: 何か を獲得しました",
+    "viewer: [配信目標達成] おめでとう",
+    "viewer: cheer100 nice",
+    "viewer: サブスクありがとう",
+    "viewer: 今日は何のゲーム？",
+    "viewer: ロシアとソ連",
+    "no colon line here",
+    "viewer: 読み上げが無音",
+    "viewer: why is the game so hard",
+    "viewer: コメントの改善",
+    "viewer: Привет"
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "user": "viewer",
+     "comment": "BGM聞こえない？",
+     "category": "stream_bug_report",
+     "is_english": false
+    },
+    {
+     "index": 2,
+     "user": "viewer",
+     "comment": "Amazing stream!",
+     "category": "chitchat",
+     "is_english": true
+    },
+    {
+     "index": 3,
+     "user": "viewer",
+     "comment": "nextNext: 右に置いた方がよくない？",
+     "category": "strategy_advice",
+     "is_english": false
+    },
+    {
+     "index": 4,
+     "user": "Nightbot",
+     "comment": "raid incoming",
+     "category": "raid",
+     "is_english": false
+    },
+    {
+     "index": 5,
+     "user": "wizebot",
+     "comment": "レイドが来た",
+     "category": "raid",
+     "is_english": false
+    },
+    {
+     "index": 6,
+     "user": "viewer",
+     "comment": "配信止まった",
+     "category": "stream_bug_report",
+     "is_english": false
+    },
+    {
+     "index": 7,
+     "user": "viewer",
+     "comment": "歌って",
+     "category": "sing_request",
+     "is_english": false
+    },
+    {
+     "index": 8,
+     "user": "viewer",
+     "comment": "スコア何点？",
+     "category": "game_question",
+     "is_english": false
+    },
+    {
+     "index": 9,
+     "user": "viewer",
+     "comment": "hello",
+     "category": "chitchat",
+     "is_english": true
+    },
+    {
+     "index": 10,
+     "user": "viewer",
+     "comment": "LUL LUL LUL",
+     "category": "chitchat",
+     "is_english": false
+    },
+    {
+     "index": 11,
+     "user": "viewer",
+     "comment": "dociaiDoci dociaiDoci dociaiDoci",
+     "category": "chitchat",
+     "is_english": false
+    },
+    {
+     "index": 12,
+     "user": "viewer",
+     "comment": "check https://example.com this is so cool",
+     "category": "chitchat",
+     "is_english": true
+    },
+    {
+     "index": 13,
+     "user": "viewer",
+     "comment": "盤面見て左に置くべき",
+     "category": "strategy_advice",
+     "is_english": false
+    },
+    {
+     "index": 14,
+     "user": "viewer",
+     "comment": "返答長すぎる",
+     "category": "comment_advice",
+     "is_english": false
+    },
+    {
+     "index": 15,
+     "user": "",
+     "comment": "ユーザーA が 【SSR】 ソ連の星カード を獲得しました",
+     "category": "card_gacha",
+     "is_english": false
+    },
+    {
+     "index": 16,
+     "user": "ユーザーB が 10連ガチャで 素材",
+     "comment": "何か を獲得しました",
+     "category": "card_gacha",
+     "is_english": false
+    },
+    {
+     "index": 17,
+     "user": "viewer",
+     "comment": "[配信目標達成] おめでとう",
+     "category": "stream_goal",
+     "is_english": false
+    },
+    {
+     "index": 18,
+     "user": "viewer",
+     "comment": "cheer100 nice",
+     "category": "bits",
+     "is_english": true
+    },
+    {
+     "index": 19,
+     "user": "viewer",
+     "comment": "サブスクありがとう",
+     "category": "subscription",
+     "is_english": false
+    },
+    {
+     "index": 20,
+     "user": "viewer",
+     "comment": "今日は何のゲーム？",
+     "category": "game_question",
+     "is_english": false
+    },
+    {
+     "index": 21,
+     "user": "viewer",
+     "comment": "ロシアとソ連",
+     "category": "game_status",
+     "is_english": false
+    },
+    {
+     "index": 22,
+     "user": "",
+     "comment": "no colon line here",
+     "category": "chitchat",
+     "is_english": false
+    },
+    {
+     "index": 23,
+     "user": "viewer",
+     "comment": "読み上げが無音",
+     "category": "stream_bug_report",
+     "is_english": false
+    },
+    {
+     "index": 24,
+     "user": "viewer",
+     "comment": "why is the game so hard",
+     "category": "chitchat",
+     "is_english": true
+    },
+    {
+     "index": 25,
+     "user": "viewer",
+     "comment": "コメントの改善",
+     "category": "comment_advice",
+     "is_english": false
+    },
+    {
+     "index": 26,
+     "user": "viewer",
+     "comment": "Привет",
+     "category": "chitchat",
+     "is_english": false
+    }
+   ]
+  },
+  {
+   "name": "edge_cases",
+   "lines": [
+    "viewer: subtitle please",
+    "viewer: 歌詞が好き",
+    "viewer: gg",
+    "viewer: Thanks!!",
+    "viewer: https://example.com",
+    "viewer: I love this game",
+    "viewer: 画面が固まってる、左に置けば？",
+    "streamelements: 配信が再開されました",
+    "Nightbot: Stream is live",
+    "viewer:   spaced   ",
+    "viewer: what a great play",
+    "viewer: 音ずれしてる",
+    "viewer: 閾値上げたほうがいい",
+    "viewer: ウクライナ出た",
+    "viewer: 何試合目？",
+    "viewer: コメント拾えてない？",
+    "viewer: ワーカー落ちてる",
+    "viewer: 次はholdしたほうが良い",
+    "viewer: 새로운",
+    "viewer: welcome",
+    "viewer: a: b: c",
+    "  leading space: text  ",
+    "viewer: 新しいステータスです",
+    "viewer: ソ連建国おめでとう"
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "user": "viewer",
+     "comment": "subtitle please",
+     "category": "subscription",
+     "is_english": true
+    },
+    {
+     "index": 2,
+     "user": "viewer",
+     "comment": "歌詞が好き",
+     "category": "sing_request",
+     "is_english": false
+    },
+    {
+     "index": 3,
+     "user": "viewer",
+     "comment": "gg",
+     "category": "chitchat",
+     "is_english": false
+    },
+    {
+     "index": 4,
+     "user": "viewer",
+     "comment": "Thanks!!",
+     "category": "chitchat",
+     "is_english": true
+    },
+    {
+     "index": 5,
+     "user": "viewer",
+     "comment": "https://example.com",
+     "category": "chitchat",
+     "is_english": false
+    },
+    {
+     "index": 6,
+     "user": "viewer",
+     "comment": "I love this game",
+     "category": "chitchat",
+     "is_english": true
+    },
+    {
+     "index": 7,
+     "user": "viewer",
+     "comment": "画面が固まってる、左に置けば？",
+     "category": "general_question",
+     "is_english": false
+    },
+    {
+     "index": 8,
+     "user": "streamelements",
+     "comment": "配信が再開されました",
+     "category": "other",
+     "is_english": false
+    },
+    {
+     "index": 9,
+     "user": "Nightbot",
+     "comment": "Stream is live",
+     "category": "other",
+     "is_english": true
+    },
+    {
+     "index": 10,
+     "user": "viewer",
+     "comment": "  spaced   ",
+     "category": "chitchat",
+     "is_english": false
+    },
+    {
+     "index": 11,
+     "user": "viewer",
+     "comment": "what a great play",
+     "category": "chitchat",
+     "is_english": true
+    },
+    {
+     "index": 12,
+     "user": "viewer",
+     "comment": "音ずれしてる",
+     "category": "stream_bug_report",
+     "is_english": false
+    },
+    {
+     "index": 13,
+     "user": "viewer",
+     "comment": "閾値上げたほうがいい",
+     "category": "strategy_advice",
+     "is_english": false
+    },
+    {
+     "index": 14,
+     "user": "viewer",
+     "comment": "ウクライナ出た",
+     "category": "game_status",
+     "is_english": false
+    },
+    {
+     "index": 15,
+     "user": "viewer",
+     "comment": "何試合目？",
+     "category": "game_question",
+     "is_english": false
+    },
+    {
+     "index": 16,
+     "user": "viewer",
+     "comment": "コメント拾えてない？",
+     "category": "stream_bug_report",
+     "is_english": false
+    },
+    {
+     "index": 17,
+     "user": "viewer",
+     "comment": "ワーカー落ちてる",
+     "category": "comment_advice",
+     "is_english": false
+    },
+    {
+     "index": 18,
+     "user": "viewer",
+     "comment": "次はholdしたほうが良い",
+     "category": "strategy_advice",
+     "is_english": false
+    },
+    {
+     "index": 19,
+     "user": "viewer",
+     "comment": "새로운",
+     "category": "chitchat",
+     "is_english": false
+    },
+    {
+     "index": 20,
+     "user": "viewer",
+     "comment": "welcome",
+     "category": "chitchat",
+     "is_english": true
+    },
+    {
+     "index": 21,
+     "user": "viewer",
+     "comment": "a: b: c",
+     "category": "chitchat",
+     "is_english": true
+    },
+    {
+     "index": 22,
+     "user": "  leading space",
+     "comment": "text  ",
+     "category": "chitchat",
+     "is_english": false
+    },
+    {
+     "index": 23,
+     "user": "viewer",
+     "comment": "新しいステータスです",
+     "category": "other",
+     "is_english": false
+    },
+    {
+     "index": 24,
+     "user": "viewer",
+     "comment": "ソ連建国おめでとう",
+     "category": "game_status",
+     "is_english": false
+    }
+   ]
+  },
+  {
+   "name": "single",
+   "lines": [
+    "viewer: こんにちは"
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "user": "viewer",
+     "comment": "こんにちは",
+     "category": "chitchat",
+     "is_english": false
+    }
+   ]
+  },
+  {
+   "name": "eight",
+   "lines": [
+    "viewer1: コメント1 盤面",
+    "viewer2: コメント2 盤面",
+    "viewer3: コメント3 盤面",
+    "viewer4: コメント4 盤面",
+    "viewer5: コメント5 盤面",
+    "viewer6: コメント6 盤面",
+    "viewer7: コメント7 盤面",
+    "viewer8: コメント8 盤面"
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "user": "viewer1",
+     "comment": "コメント1 盤面",
+     "category": "game_status",
+     "is_english": false
+    },
+    {
+     "index": 2,
+     "user": "viewer2",
+     "comment": "コメント2 盤面",
+     "category": "game_status",
+     "is_english": false
+    },
+    {
+     "index": 3,
+     "user": "viewer3",
+     "comment": "コメント3 盤面",
+     "category": "game_status",
+     "is_english": false
+    },
+    {
+     "index": 4,
+     "user": "viewer4",
+     "comment": "コメント4 盤面",
+     "category": "game_status",
+     "is_english": false
+    },
+    {
+     "index": 5,
+     "user": "viewer5",
+     "comment": "コメント5 盤面",
+     "category": "game_status",
+     "is_english": false
+    },
+    {
+     "index": 6,
+     "user": "viewer6",
+     "comment": "コメント6 盤面",
+     "category": "game_status",
+     "is_english": false
+    },
+    {
+     "index": 7,
+     "user": "viewer7",
+     "comment": "コメント7 盤面",
+     "category": "game_status",
+     "is_english": false
+    },
+    {
+     "index": 8,
+     "user": "viewer8",
+     "comment": "コメント8 盤面",
+     "category": "game_status",
+     "is_english": false
+    }
+   ]
+  }
+ ]
+}
