@@ -19,7 +19,12 @@ from pathlib import Path
 
 
 def _tmux(args: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(["tmux", *args], capture_output=True, text=True)
+    # The headless evaluation only needs a terminfo entry that exists on the
+    # host. A caller's TERM (for example xterm-ghostty over SSH) is not
+    # installed everywhere and made tmux fail before the first pane existed.
+    env = dict(os.environ)
+    env["TERM"] = "xterm"
+    return subprocess.run(["tmux", *args], capture_output=True, text=True, env=env)
 
 
 def _run_bot_once(
