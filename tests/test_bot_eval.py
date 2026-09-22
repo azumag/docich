@@ -133,6 +133,23 @@ elif sys.argv[1] == "send-keys":
     return {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "FAKE_ROOT": str(tmp_path)}, bot
 
 
+def test_tmux_calls_use_a_host_portable_term(monkeypatch):
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setenv("TERM", "xterm-ghostty")
+    monkeypatch.setattr(bot_eval.subprocess, "run", fake_run)
+    bot_eval._tmux(["list-sessions"])
+    assert calls[0][0] == ["tmux", "list-sessions"]
+    # A missing xterm-ghostty terminfo entry made the evaluation session fail
+    # before the first pane existed; the evaluation must not depend on the
+    # caller's terminal database.
+    assert calls[0][1]["env"]["TERM"] == "xterm"
+
+
 def test_run_bot_matches_finishes_a_ninvaders_match_when_the_title_returns(tmp_path, monkeypatch):
     frames = [
         ninvaders_play(100),   # turn 1
