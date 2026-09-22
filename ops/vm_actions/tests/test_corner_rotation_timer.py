@@ -17,6 +17,7 @@ SYSTEMD_DIR = ROOT / "scripts" / "systemd"
 class UnitTemplateContractTests(unittest.TestCase):
     def test_canonical_service_template_contract(self):
         service = (SYSTEMD_DIR / CANONICAL_SERVICE).read_text(encoding="utf-8")
+        self.assertIn("Environment=XDG_RUNTIME_DIR=%t", service)
         self.assertIn("WorkingDirectory=__DOCICH_ROOT__", service)
         self.assertIn(
             "ExecStart=__DOCICH_ROOT__/bin/docich --config "
@@ -42,6 +43,7 @@ class UnitTemplateContractTests(unittest.TestCase):
     def test_legacy_units_stay_as_reviewed_compatibility_templates(self):
         service = (SYSTEMD_DIR / LEGACY_SERVICE).read_text(encoding="utf-8")
         timer = (SYSTEMD_DIR / LEGACY_TIMER).read_text(encoding="utf-8")
+        self.assertIn("Environment=XDG_RUNTIME_DIR=%t", service)
         self.assertIn("corner-rotation tick", service)
         self.assertIn("Unit=docich-retro-corner.service", timer)
 

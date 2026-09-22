@@ -4,6 +4,9 @@ After=network.target
 
 [Service]
 Type=oneshot
+# systemd-run --user invoked by corner completion needs the user manager bus.
+# Timer-launched services do not reliably inherit XDG_RUNTIME_DIR from a login shell.
+Environment=XDG_RUNTIME_DIR=%t
 WorkingDirectory=__DOCICH_ROOT__
 # 時刻外tickは完全no-op。live runtime準備は開始/期限切れ復旧が必要な時だけ
 # corner_rotation.py が既存 `docich up` 契約を通して実行する。
