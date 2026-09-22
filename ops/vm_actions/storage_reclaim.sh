@@ -16,12 +16,14 @@ set -euo pipefail
 #     7 days: tagged images, containers, and volumes are never removed (the
 #     PAPER sandbox contract runs without volumes).
 #   - No argument from the network is interpolated into a path; the only
-#     external inputs are the APPLY and VOICEVOX_ARCHIVE flags.
+#     external inputs are the APPLY, VOICEVOX_ARCHIVE and AIVIS_ENGINE flags.
 #
 # Optional flags exist so repository tests can run against a temporary root:
 #   --root DIR, --min-age-days N, --voicevox-root DIR,
 #   --include-voicevox-archive, --skip-system,
-#   --snap-cache-root DIR, --stale-clone DIR
+#   --snap-cache-root DIR, --stale-clone "PATH|ORIGIN",
+#   --home-root DIR, --sys-tmp DIR, --aivis-root DIR,
+#   --include-aivis-engine
 
 apply="${APPLY:-0}"
 root="/home/ubuntu/soren"
@@ -35,8 +37,25 @@ snap_cache_root="/var/lib/snapd/cache"
 snap_cache_explicit=0
 # Stale /tmp clones: fixed allowlist. --stale-clone replaces the list for
 # repository tests only; the control plane never passes it, so production
-# always evaluates this default.
-stale_clones=("/tmp/opencode/docich-sync")
+# always evaluates this default. Each entry is "path|expected-origin-substring".
+stale_clones=(
+  "/tmp/opencode/docich-sync|github.com/azumag/docich"
+  "/home/ubuntu/soren-src|github.com/azumag/soviet_now"
+)
+# Fixed one-off leftovers in HOME and the system /tmp: absolute-path
+# allowlist only (no network input), 7-day gate, and a running-process
+# reference check before removal. --home-root / --sys-tmp are test-only so
+# CI/dev machines never evaluate their real /tmp.
+# NOTE: /home/ubuntu/build is deliberately ABSENT from this list — it holds
+# the live streaming encoder (ffmpeg x11grab, ~18h uptime at 2026-09-23
+# audit) even though its mtime is old.
+home_root="/home/ubuntu"
+sys_tmp="/tmp"
+aivis_root="/home/ubuntu/.local/share/AivisSpeech-Engine"
+# AIVIS_ENGINE arrives via the control-plane stdin preamble (same as APPLY /
+# VOICEVOX_ARCHIVE); --include-aivis-engine overrides it for tests.
+include_aivis="${AIVIS_ENGINE:-0}"
+# stale_paths entries are built AFTER option parsing so --home-root/--sys-tmp win.
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -47,19 +66,51 @@ while [[ $# -gt 0 ]]; do
     --skip-system) skip_system=1; shift ;;
     --snap-cache-root) snap_cache_root="$2"; snap_cache_explicit=1; shift 2 ;;
     --stale-clone) stale_clones=("$2"); shift 2 ;;
+    --home-root) home_root="$2"; shift 2 ;;
+    --sys-tmp) sys_tmp="$2"; shift 2 ;;
+    --aivis-root) aivis_root="$2"; shift 2 ;;
+    --include-aivis-engine) include_aivis=1; shift ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
 
 [[ "$apply" == 0 || "$apply" == 1 ]] || { echo "invalid APPLY" >&2; exit 2; }
 [[ "$include_voicevox" == 0 || "$include_voicevox" == 1 ]] || { echo "invalid VOICEVOX_ARCHIVE" >&2; exit 2; }
+[[ "$include_aivis" == 0 || "$include_aivis" == 1 ]] || { echo "invalid AIVIS_ENGINE" >&2; exit 2; }
 [[ "$min_age_days" =~ ^[0-9]+$ ]] || { echo "invalid min-age-days" >&2; exit 2; }
 [[ -d "$root" ]] || { echo "root not found: $root" >&2; exit 2; }
+
+# Unused second TTS engine: opt-in like VOICEVOX, guarded on the ACTIVE
+# TTS (VOICEVOX engine) being intact (checked at the use site).
+
+# Fixed one-off leftovers in HOME and the system /tmp (absolute-path
+# allowlist, no globs, no network input; 7-day gate + reference check at the
+# use site). Built after option parsing so --home-root/--sys-tmp win.
+# /home/ubuntu/build is deliberately ABSENT: it holds the live streaming
+# encoder (ffmpeg x11grab, ~18h uptime at 2026-09-23 audit) despite its old
+# mtime. /home/ubuntu/soren-persist is absent: referenced by strategy/persist.sh.
+stale_paths=(
+  "$home_root/2026-08-11 05-35-22.mkv"
+  "$home_root/soren91-r97"
+  "$home_root/docich-soren91"
+  "$home_root/soren91-corner-verify"
+  "$home_root/docich-paper-strategy-315"
+  "$home_root/soren-phase1-cc1a1e362.tar"
+  "$home_root/soren-phase1-pre-cc1a1e362.tgz"
+  "$sys_tmp/s91test"
+  "$sys_tmp/soren91-phase1-rx.ts"
+  "$sys_tmp/issue303_srt_recv.ts"
+  "$sys_tmp/issue303_final_recv.ts"
+  "$sys_tmp/issue303_final3_recv.ts"
+  "$sys_tmp/issue303_early_recv.ts"
+  "$sys_tmp/issue303_audio_recv.ts"
+)
+stale_min_age_days=7
 
 # Directories under $root/tmp that are safe to reclaim when older than min_age_days.
 # manual_challenge* also matches dated sibling backups (e.g.
 # manual_challenge_20260824_meriken); the age gate still decides per entry.
-stale_patterns=(direct_av_sync direct_stream_benchmark "manual_challenge*" game-lifecycle-e2e "soviet-iso-verify-*")
+stale_patterns=(direct_av_sync direct_stream_benchmark "manual_challenge*" game-lifecycle-e2e "soviet-iso-verify-*" deploy radio_quarantine)
 # Explicitly live / protected paths that must never be reclaimed.
 protected=(soviet_local_chromium_profile state debug)
 
@@ -166,8 +217,9 @@ if [[ -d "$deploy_backups" ]]; then
   done
 fi
 
-# 3. Stale one-off clones under /tmp: fixed allowlist + age gate + identity and
-#    reference checks. Any doubt skips (fail-safe), and dry-run only prints.
+# 3. Stale one-off clones under /tmp or HOME: fixed allowlist entries of the
+#    form "path|expected-origin" + age gate + identity and reference checks.
+#    Any doubt skips (fail-safe), and dry-run only prints.
 tmp_clone_min_age_days=7
 stale_clone_refs() {
   # Print the number of running processes whose args or cwd reference PATH.
@@ -195,20 +247,24 @@ stale_clone_refs() {
   printf '%s\n' "$found"
 }
 
-for clone in "${stale_clones[@]}"; do
+for clone_spec in "${stale_clones[@]}"; do
+  clone="${clone_spec%%|*}"
+  expected_origin="${clone_spec#*|}"
+  if [[ "$clone" == "$expected_origin" || -z "$expected_origin" ]]; then
+    say "SKIP clone spec without origin: $clone_spec"
+    continue
+  fi
   [[ -e "$clone" ]] || { say "SKIP $clone (absent)"; continue; }
   if [[ ! -d "$clone" || ! -d "$clone/.git" ]]; then
     say "SKIP $clone (not a git working tree)"
     continue
   fi
-  origin="$(git -C "$clone" remote get-url origin 2>/dev/null || true)"
-  case "$origin" in
-    https://github.com/azumag/docich|https://github.com/azumag/docich.git|git@github.com:azumag/docich.git) ;;
-    *) say "SKIP $clone (origin is not azumag/docich)"; continue ;;
-  esac
-  # Freshness: top dir, .git, and .git/objects mtimes (fetch/gc touch these),
-  # then any file inside modified within the gate. Order is cheap checks first;
-  # every failure mode falls through to KEEP/SKIP (fail-safe).
+  # Freshness FIRST, before any git subcommand: even a read-only-looking
+  # `git status` creates .git/index.lock, which bumps .git's dir mtime and
+  # would make later probes see "touched now" (self-defeating gate).
+  # Top dir, .git, and .git/objects mtimes (fetch/gc touch these), then any
+  # file inside modified within the gate. Every failure mode falls through
+  # to KEEP/SKIP (fail-safe).
   clone_fresh=0
   for probe in "$clone" "$clone/.git" "$clone/.git/objects"; do
     [[ -e "$probe" ]] || continue
@@ -228,6 +284,18 @@ for clone in "${stale_clones[@]}"; do
     say "KEEP $clone (files modified within ${tmp_clone_min_age_days}d)"
     continue
   fi
+  origin="$(git -C "$clone" remote get-url origin 2>/dev/null || true)"
+  case "$origin" in
+    *"$expected_origin"*) ;;
+    *) say "SKIP $clone (origin does not match $expected_origin)"; continue ;;
+  esac
+  # Uncommitted work must survive: a dirty tree means somebody is still using
+  # it (the audit check only proved clean at snapshot time).
+  # --no-optional-locks keeps status from rewriting .git/index.
+  if [[ -n "$(git --no-optional-locks -C "$clone" status --porcelain 2>/dev/null || true)" ]]; then
+    say "KEEP $clone (uncommitted changes present)"
+    continue
+  fi
   if ! refs="$(stale_clone_refs "$clone")"; then
     say "SKIP $clone (reference check failed)"
     continue
@@ -237,6 +305,25 @@ for clone in "${stale_clones[@]}"; do
     continue
   fi
   remove_path "$clone"
+done
+
+# 3b. Fixed one-off leftovers (HOME + system /tmp): absolute allowlist only,
+#     7-day gate, and the same fail-closed reference check as the clones.
+for path in "${stale_paths[@]}"; do
+  [[ -e "$path" ]] || { say "SKIP $path (absent)"; continue; }
+  if ! is_older_than "$path" "$stale_min_age_days"; then
+    say "KEEP $path (touched within ${stale_min_age_days}d)"
+    continue
+  fi
+  if ! refs="$(stale_clone_refs "$path")"; then
+    say "SKIP $path (reference check failed)"
+    continue
+  fi
+  if [[ "$refs" != 0 ]]; then
+    say "KEEP $path (referenced by $refs running process(es))"
+    continue
+  fi
+  remove_path "$path"
 done
 
 # 4. snapd download cache: age-gated blobs only, never the snaps themselves.
@@ -277,6 +364,16 @@ if [[ "$include_voicevox" == 1 ]]; then
     remove_path "$archive"
   else
     say "SKIP voicevox archive (archive or extracted engine missing)"
+  fi
+fi
+
+# 5b. AivisSpeech-Engine (unused second TTS): opt-in only, and only while the
+#     ACTIVE TTS (VOICEVOX engine) is intact — never remove the last engine.
+if [[ "$include_aivis" == 1 ]]; then
+  if [[ -d "$aivis_root" && -x "$voicevox_root/current/run" ]]; then
+    remove_path "$aivis_root"
+  else
+    say "SKIP aivis engine (engine missing or voicevox not intact)"
   fi
 fi
 

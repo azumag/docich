@@ -142,6 +142,21 @@ Phase 1 後に承認済み read-only SSH（補助経路）で root fs 37GB を `
 | docker dangling image + build cache | `docker system df` 上の再取得可能分 約113MB（Images 25.12 + Build Cache 88.18）。**ただし `until=168h` gate のため即時分は7日超の部分のみ**（現行 dangling は5〜6日前が中心なので初回は小さく、日を経て対象化する） | `docker image prune -f --filter until=168h`（dangling 強制・作成が7日超のものだけ）+ `docker builder prune -f --filter until=168h`（`unused-for` の同義語＝7日間使用されていない cache だけ。最近使った cache は日付に関係なく残る）。tagged image・container・`volume prune` は一切なし（PAPER sandbox は volume 不使用契約） |
 | `manual_challenge*` 日付付き兄弟 | 18MB（8/24） | pattern を完全一致から前方一致へ。age gate（21日）は個別判定、本体は mtime 次第で KEEP |
 
+### Phase 2b（2026-09-23 追加承認: Tier 1 leftovers + AivisSpeech + soren-src）
+
+オーナーが追加承認した3系統（すべて read-only で絶対パス参照ゼロを確認、`ps`/`/proc` 参照検査は helper 内で apply 時にも再実行）。
+
+| 対象 | 実測 | 安全条件 |
+|---|---|---|
+| HOME 直下の検証残骸: `2026-08-11 05-35-22.mkv`(75.3MB)・`soren91-r97`(22MB)・`docich-soren91`(7MB)・`soren91-corner-verify`(5MB)・`docich-paper-strategy-315`(5MB)・`soren-phase1-*`(約0.4MB) | ≈115MB | `stale_paths` 固定 allowlist（絶対パス・glob なし）・7日 gate・参照プロセス0 のみ削除 |
+| system `/tmp` の古い成果物: `s91test`(181MB, 9/18)・`soren91-phase1-rx.ts`(119MB, 9/13)・`issue303_*_recv.ts` 5個(約117MB, 9/13) | ≈417MB | 同上（`--sys-tmp` はテスト専用、production は `/tmp` 固定） |
+| `soren/tmp/deploy`(75.7MB, 8/16)・`radio_quarantine`(10.7MB, 8/12) | ≈86MB | 既存 `stale_patterns` へ追加、21日 gate |
+| `AivisSpeech-Engine` | **1.11GB** | **opt-in のみ**（`aivis_engine` 入力 / `AIVIS_ENGINE`）。VOICEVOX engine（稼働中のTTS）が intact なときだけ削除。全域 grep で参照ゼロ・process 0・8/13以降更新なしを実測 |
+| `/home/ubuntu/soren-src`（soviet_now clone 2本目） | **1.05GB** | `stale_clones` に `path\|origin` 形式で追加。origin=`azumag/soviet_now` 一致・**dirty なら KEEP**・7日 gate・参照0 のみ削除 |
+
+- **除外（実測で判明）**: `/home/ubuntu/build`（**配信 ffmpeg x11grab が18時間稼働中**、mtime が古くても live）、`/home/ubuntu/soren-persist`（`strategy/persist.sh` 参照）、`.cache/ms-playwright`（chromium 22プロセスが実使用中）。
+- dirty check は `git --no-optional-locks status` で実行（通常の `git status` は `.git/index.lock` 作成で `.git` dir mtime を更新し、直後の freshness gate が自己矛盾するため。順序も freshness → origin → dirty に変更）。
+
 - 実行順: merge 後に `reclaim / apply=false` で DEL/CMD 一覧を VM private log で確認 → `apply=true` → 前後の `status`（使用率・空き）と read-only `du` で削減を実測して本表へ追記。
 - **実施済み（2026-09-23）**: PR #1000 merge → dry-run → apply を実行し、削減と保護パス生存を §5 承認記録へ実測追記した（84% → 80%、+1.49GB）。`until=168h` gate の効き目で docker の 5〜6日前 dangling は保護され次回以降に対象化するため、以後の定期 reclaim で漸減する。
 - スコープ外（参照未検証のため次回以降）: `/tmp/s91test` 181MB、`soren/tmp/deploy` 75MB、`radio_quarantine` 10MB、home 直下の mkv 75.3MB・`build/` 38MB・`soren91-r97/` 22MB。opencode.db(#389) / strategy archive(#392) / Git 履歴重複 / bundle retention(#365,#394) は設計 Issue のまま。
