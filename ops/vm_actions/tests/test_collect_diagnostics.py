@@ -54,6 +54,22 @@ def test_corner_match_target_projection_is_bounded_and_does_not_change_n(tmp_pat
         assert "SECRET" not in json.dumps(output)
 
 
+def test_hanjuku_telemetry_is_enum_only_and_never_publishes_frames_or_state():
+    module=load_collector()
+    state={'game':'hanjuku-hero','end_reason':'screen_stalled','bot_phase':'battle',
+           'bot_actions_sent':17,'battles_started':2,'battles_finished':1,
+           'screen_unchanged_seconds':300,'frame':'SECRET-FRAME','prompt':'SECRET-PROMPT'}
+    output=module._project_corner_state(state)
+    assert output['end_reason']=='screen_stalled'
+    assert output['bot_phase']=='battle' and output['bot_actions_sent']==17
+    assert output['battles_finished']==1
+    assert 'SECRET' not in json.dumps(output)
+    state.update(end_reason='SECRET-OUTCOME',bot_phase='SECRET-PHASE',bot_actions_sent='SECRET-COUNT',screen_unchanged_seconds=float('nan'))
+    output=module._project_corner_state(state)
+    assert output['end_reason'] is None and output['bot_phase'] is None
+    assert output['bot_actions_sent'] is None and output['screen_unchanged_seconds'] is None
+
+
 class CollectorFixture(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="vmops-diag-")

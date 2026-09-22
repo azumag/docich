@@ -1,7 +1,8 @@
 # 半熟英雄 (SFC) を docich で動かす
 
 半熟英雄 (SFC) は docich の `retroarch` アダプタ (RetroArch + snes9x コア) で動かす。
-本書は ROM 配置からの起動手順とトラブルシュートをまとめる。設計の背景は
+現行の操作・終了条件・改善用ログは [script bot](../hanjuku_script_bot.md) を参照。
+本書は ROM 配置からの起動手順とトラブルシュート、および旧保存境界の設計記録をまとめる。設計の背景は
 `docs/architecture.md` §4.1 / §9 を参照。
 
 ## 表記ルール
@@ -33,10 +34,10 @@
    core = "auto"
 
    [agent]
-   enabled = true      # VMのROM・認証・費用運用を前提に自動rotationで有効化
+   enabled = true      # 実ROM/coreがある環境でscript botを実行
    brain = "command"
-   command = ["python3", "brains/hanjuku/brain.py"]
-   interval_ms = 7000
+   command = ["python3", "brains/hanjuku/bot.py"]
+   interval_ms = 1500
 
    [lifecycle]
    require_round_boundary = true
@@ -47,7 +48,7 @@
 
 ## 2. 起動
 
-本変更はオフライン実装段階。起動は §9 のゲート確認後、別途許可された検証環境で行う。
+本番反映はdocichのprotected mainとowner-only VM gatewayを使用する。
 `start hanjuku-hero` は `[display] viewport_width/height` が未設定ならpreflightで拒否する。
 配信と同じ配置を検証する設定は `viewport_x=0`, `viewport_y=90`,
 `viewport_width=960`, `viewport_height=540`。共通displayはこの矩形を内包する必要がある。
@@ -137,42 +138,21 @@ bin/docich snap                                  # run/screenshots/ に保存
 
 ---
 
-## 7. brain の実装と検証状態
+## 7. script botとログ
 
-`brains/hanjuku/brain.py` と攻略資料注入は実装済み (`docs/hanjuku_brain.md`)。
-fake backendの契約テストと実ROM・課金backendでの動作保証は別。
-`[agent] enabled = true` は設定済みだが、VM上の認証・費用運用と観測→推論→入力の実機E2Eは未確認。
+現行設定は標準ライブラリのみの`brains/hanjuku/bot.py`を実行する。
+LLMは操作に使わず、OpenCodeによる結果ベースの自動改善は後続作業とする。
+操作方策・終了条件・ログの場所は[script bot](../hanjuku_script_bot.md)に記載する。
 
 ## 8. レトロコーナー登録と実行資格
 
-`config/docich.soren-live.toml` の共通catalogとゲーム側 `[retro_corner] enabled = true` により、
-半熟英雄は自動rotationへ登録される。`RetroCornerManager` はRetroArchをCLIと別の実行経路として
-検証し、ROM・core・RetroArch/表示用バイナリが揃った環境だけを抽選候補にする。
-したがって、ROMを持たないローカルcheckoutでは候補から除外されるが、それは未実装ではなく、
-著作権物をGitへ入れないための期待された状態である。登録・ユニットテストは本番反映やROM実プレイの証拠ではない。
+半熟英雄は共通catalogに登録済み。ゲーム側の`retro_corner.enabled/unattended`はtrue。
+ROM、core、`retroarch`、`dbus-run-session`、`python3`、共通の表示バイナリが揃うと候補になる。
+Claude/OpenCodeの存在や認証は実行条件ではない。ROMなしcheckoutでは候補から外れる。
 
-共通catalogは9件で、rollingの分母Nは無効化・pause・実行環境不足を除いた実効適格数である。
-VMで半熟英雄を含む全項目が準備済みならNは9になり、ROMなしcheckoutでは半熟英雄を除いて計算される。
-既存の履歴がある場合も、次のtickで実効適格性を再評価する。
-
-設定上は実行有効化済みだが、実機運用には次の検証が残る。
-
-1. `RetroCornerManager._validate_games` はCLIとRetroArchを許可する。手動の旧コーナー入口は引き続き
-   CLI限定であり、共通rotationは `GameCornerAdapter` 経由でRetroArch coordinatorへ委譲する。
-   `requires` に加えて、RetroArchではROM/coreと表示経路のバイナリを選択前に検査する。
-2. `RetroArchCoordinatorAdapter` の明示保存境界を §9 のとおり実装した。
-   自動試合終了検出・自動checkpoint復元・無人の境界確認は未実装で、実行資格には使わない。
-3. viewport設定時は専用Xvfbでゲーム本来のwindowを描画し、既存 `presentation.py` で
-   `(0,90,960,540)` へcontainする。実装と合成画像の四辺テストは実ROMの表示証拠ではない。
-   実機で四辺と周囲枠、共通配信PID維持、旧ゲーム子プロセス終了を確認する。
-4. 自己吸い出しROM、libretro core、`retroarch`、`dbus-run-session`、`python3`、
-   共通基盤のtmux/X11/ffmpeg/xdotoolを用意する。既定brainは `claude` CLIを使うため、
-   認証と課金承認は別途必要。実行ファイルが存在するだけでは承認済みと扱わない。
-5. fake backendによる契約テストと、実ROMでの観測→brain→入力→保存→復帰を分けて検証する。
-   `retro_corner.enabled` と `agent.enabled` はtrueにしたが、VMの実行環境・認証・実機E2Eを別途確認する。
-
-今回の登録ではROM取得・有料LLM実行・本番操作を行わない。
-オフライン検証: `python3 -m pytest -q tests/test_hanjuku_retro_registration.py tests/test_hanjuku_brain.py`
+script botでは20分の保存境界を使わず、ゲームオーバーまたは画面不変300秒を待つ。
+以下§9の明示保存境界は他のRetroArchゲーム・旧設定の契約であり、script botには適用しない。
+設定・テスト・配備・実機受入の結果はそれぞれPRとhandoffで追跡する。
 
 ## 9. 明示保存境界と配信containの契約（オフライン実装）
 
