@@ -64,7 +64,11 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
               "boundary": {"improvement": {"present": true, "completed_at": 0, "age_sec": 0},
                            "prediction": {"present": false, "completed_at": null, "age_sec": -1}},
               "ab": {"state_present": true, "pattern": "ABBA", "games_lines": 12,
-                     "games_tainted": 0, "games_age_sec": 42, "candidate_pending": true, ...}}
+                     "games_tainted": 0, "games_age_sec": 42, "candidate_pending": true, ...}},
+  "webui": {"unit_file": true, "unit_active": true, "unit_enabled": true,
+            "main_pid": 1234, "n_restarts": 0, "served_port": 8787,
+            "served_reachable": true, "served_matches_deployed": true,
+            "listener_is_unit": true}
 }
 ```
 
@@ -175,6 +179,18 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   hash・env 文字列・戦略本文は読まない・出さない。A/B 中は improvement
   boundary が保留されるため、コーナー遅延の直接原因になる。
 - meta: デプロイ済み docich HEAD と soviet_now gitlink（検証用。secret ではない）。
+- webui: `docich-webui.service` の固定 projection と「配信 UI がデプロイ済み UI と一致するか」の観測。
+  `unit_file`（unit ファイル有無）、`unit_active` / `unit_enabled`（`systemctl --user is-active /
+  is-enabled`）、`main_pid` / `n_restarts`（`systemctl --user show`、再起動ループの検出用）、
+  `served_port`（`config/docich.toml` の `[webui].port`、読めなければ既定 8787）、
+  `served_reachable`（`http://127.0.0.1:<port>/` をプロキシ不使用・4秒・1MiB 上限で読み取れるか）、
+  `served_matches_deployed`（配信 HTML とデプロイ済み `src/docich/webui.py` の `INDEX_HTML` の sha256
+  一致。到達不能・ソース読込不能は `null`）、`listener_is_unit`（unit の MainPID がそのポートの LISTEN
+  所有者か。`/proc/net/tcp[6]` と `/proc/<pid>/fd` の読み取りのみ。判定不能は `null`）。
+  path・cmdline・HTML bytes は出さず、値は bool / int / null だけ。
+  **severity には加算しない**（webui は任意コンポーネント）。deploy 済みなのに
+  別プロセスがポートを掴んで旧 UI を出し続ける case を `served_matches_deployed=false` +
+  `listener_is_unit=false` で検出する（`restart_webui` operation の終了コード14と同じ状態）。
 
 ## Soren91 投下間の read-only 集計
 
