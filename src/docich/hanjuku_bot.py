@@ -23,6 +23,28 @@ _TITLE_ROWS = tuple(int(row, 16) for row in (
     '03c0880084a8008480400787c7cfe0', '000107808307c30303800000000000',
 ))
 
+# The merchant's specific "これでもうみせじまいしますが" prompt. The price
+# list remains visible behind this confirmation, so B would reopen shopping.
+# Match its text, not a generic yes/no panel which could confirm a purchase.
+_SHOP_EXIT_ROWS = tuple(int(row, 16) for row in (
+    '00000a000000000a00000000000a0000', '00000a000000000a00000000000a0000',
+    '00000000000000000000000000000000', '00200040707844400800400808200000',
+    '7820fe40001044407e44407efe240000', '0cec08f07810fe400842400808f20000',
+    '10321040841444407e42407e382a0000', '002220f0047c44400842400848480000',
+    '0064204004a648403c40403c38480000', '80a4204408a440444a48444a08a80000',
+    '7c221c3830483e383030383010100000',
+))
+
+
+def shop_exit_confirmation(frame: Frame) -> bool:
+    errors = 0
+    for y, expected in enumerate(_SHOP_EXIT_ROWS, 180):
+        actual = 0
+        for x in range(24, 152):
+            actual = (actual << 1) | int(min(frame.pixel(x, y)) > 180)
+        errors += (actual ^ expected).bit_count()
+    return errors < 20
+
 
 def is_title(frame: Frame) -> bool:
     errors = 0
@@ -115,7 +137,7 @@ def decide(frame: Frame, state: dict) -> tuple[list[dict], dict]:
         picker=any(frame.fraction((200,y,239,y+1),gold)>.8 for y in range(178,196))
         actions=[pad('b' if picker else 'a')]
     elif phase=='shop':
-        actions=[pad('b')]
+        actions=[pad('a' if shop_exit_confirmation(frame) else 'b')]
     elif phase in {'dialogue','field_menu','battle_intro','battle'}:
         if phase=='field_menu' and state.get('deployment_opened'):
             updated['deployment_menu_seen']=True
