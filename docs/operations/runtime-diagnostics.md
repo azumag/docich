@@ -43,7 +43,8 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   "workers": {"expected": 19, "running": 6, "stopped": [], "paused": [],
               "duplicates": [], "zombies": [], "stale_pid_files": [],
               "unregistered": [], "required_down": [], "required_stale": [], "details": {}},
-  "semantic_decision": {"present": true, "readable": true, "backend": "jev",
+  "semantic_decision": {"present": true, "readable": true,
+                        "comment_classifier_backend": "jev", "backend": "jev",
                         "route": "direct", "requested_model": "jev-1.13.0",
                         "credential": "present"},
   "queues": {"lanes": {"radio": {"locked": true, "owner_alive": true, "age_sec": 43}},
@@ -123,12 +124,18 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
  （token は出さず PID 生死・age のみ）。stale 閾値は 900s。
   `*.owner_guard.lock` / `*.owner_guard.d` は mutex guard のため lane 扱いしない。
 - semantic_decision（#882）: 登録済み `chat_worker` が生きている場合のみ、その
-  `/proc/<pid>/environ` から固定4キー名（`DOCICH_SEMANTIC_BACKEND` /
-  `DOCICH_JEV_ROUTE` / `TYPESAFE_API_KEY` / `DOCICH_JEV_VERCEL_API_KEY`）だけを
-  読み、既にレビュー済みの `docich.semantic_decision.diagnostics.describe()`
-  へそのまま通す。出力は `backend` / `route` / `requested_model` /
+  `/proc/<pid>/environ` から固定5キー名（`DOCICH_SEMANTIC_BACKEND` /
+  `DOCICH_JEV_ROUTE` / `TYPESAFE_API_KEY` / `DOCICH_JEV_VERCEL_API_KEY` /
+  `COMMENT_CLASSIFIER_BACKEND`）だけを読む。前4つは既にレビュー済みの
+  `docich.semantic_decision.diagnostics.describe()` へそのまま通し、出力は
+  `backend` / `route` / `requested_model` /
   `credential`（`present`/`absent`/`not_applicable`/`unknown`のみ、値は不可）の
-  固定4項目のみ。生 environ・他の環境変数名・credential の値は一切出さない。
+  固定4項目のみ。`COMMENT_CLASSIFIER_BACKEND`（#678自身の非秘密enumフラグ）は
+  `comment_classifier_backend` として値そのまま（64字上限）を出す。soviet_now
+  のshell wrapperはこれが`jev`でない限りclassifier自体を呼ばず
+  `DOCICH_SEMANTIC_BACKEND`も一切参照しないため、これが無いと
+  `"backend":"jev"`だけでは実際に委譲が機能しているか判断できない。
+  生 environ・他の環境変数名・credential の値は一切出さない。
   worker不在／死亡時は `present:false`、environ読み取り失敗時は
   `present:true, readable:false`（未確認を"legacy"と誤認しない）。
   `DIAGNOSTICS_FILES`（gateway.py）にこの projection とそのroute解決先
