@@ -68,11 +68,14 @@ def run_prompt(
 ) -> DispatchResult:
     """Dispatch one in-memory prompt through the native ordered chain."""
 
+    effective_env = os.environ if env is None else env
+    if effective_env.get("DOCICH_ALLOW_REAL_AI") != "1":
+        raise AiError("AI生成の実実行には DOCICH_ALLOW_REAL_AI=1 が必要です")
     _validate_prompt_text(prompt_text)
     _validate_timeout(timeout)
     try:
         safe_label = validate_label(label)
-        specs = parse_agents(agents, env)
+        specs = parse_agents(agents, effective_env)
     except LlmError as exc:
         raise AiError(str(exc)) from exc
     request = DispatchRequest(
@@ -81,7 +84,7 @@ def run_prompt(
         agents=specs,
         timeout_sec=timeout,
     )
-    return Dispatcher(g=g, env=env, provider_caller=None).dispatch(
+    return Dispatcher(g=g, env=effective_env, provider_caller=None).dispatch(
         request,
         overall_timeout_sec=timeout_sec,
         last_agent_file=last_agent_file,
