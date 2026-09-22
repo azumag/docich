@@ -34,7 +34,7 @@ def failed_improvement_is_terminal(status, state):
     SIGKILLed child leaves ``running`` metadata behind, and an old record can
     belong to a replacement job that never started.
     """
-    if status.get("recovery_required") is True:
+    if "recovery_required" in status and status.get("recovery_required") is not False:
         return False
     started = _bounded_timestamp(status.get("started_at"))
     completed = _bounded_timestamp(status.get("completed_at"))
