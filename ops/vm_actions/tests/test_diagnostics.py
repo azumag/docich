@@ -240,7 +240,9 @@ class DiagnosticsWorkflowTests(unittest.TestCase):
     def test_workflow_exposes_diagnostics_operation(self):
         text = WF.read_text(encoding="utf-8")
         self.assertIn(
-            "options: [status, deploy, exec, configure_jev, disable_jev, bootstrap, diagnostics, reclaim, rebaseline, market_paper]", text
+            "options: [status, deploy, exec, configure_jev, disable_jev, configure_jev_route_direct, "
+            "configure_jev_route_vercel, disable_jev_route, bootstrap, diagnostics, reclaim, rebaseline, "
+            "market_paper]", text
         )
         self.assertIn("Query read-only runtime diagnostics", text)
         self.assertIn('"diagnostics docich production $SHA"', text)
