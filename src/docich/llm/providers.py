@@ -133,6 +133,8 @@ def _codex(spec: AgentSpec, request: DispatchRequest, timeout: float, env: dict[
         output = _clean_model_output(output)
         if not output:
             return ProviderResult(1, failure_kind="empty_output", detail="empty_output")
+        if _rate_limited(output):
+            return ProviderResult(79, failure_kind="rate_limit", detail="rate_limit")
         if PROVIDER_ERROR_RE.search(output):
             return ProviderResult(1, failure_kind="provider_failed", detail="provider_error")
         if len(output.encode("utf-8")) > MAX_OUTPUT_BYTES:
@@ -175,6 +177,8 @@ def _opencode(spec: AgentSpec, request: DispatchRequest, timeout: float, env: di
             break
         if last_rc == 0:
             output = _clean_model_output(last_stdout)
+            if output and _rate_limited(output):
+                return ProviderResult(79, failure_kind="rate_limit", detail="rate_limit")
             if output and not PROVIDER_ERROR_RE.search(output):
                 if len(output.encode("utf-8")) > MAX_OUTPUT_BYTES:
                     return ProviderResult(1, failure_kind="output_too_large", detail="output_too_large")
@@ -190,6 +194,8 @@ def _opencode(spec: AgentSpec, request: DispatchRequest, timeout: float, env: di
     output = _clean_model_output(last_stdout)
     if not output:
         return ProviderResult(1, failure_kind="empty_output", detail="empty_output")
+    if _rate_limited(output):
+        return ProviderResult(79, failure_kind="rate_limit", detail="rate_limit")
     if PROVIDER_ERROR_RE.search(output):
         return ProviderResult(1, failure_kind="provider_failed", detail="provider_error")
     if len(output.encode("utf-8")) > MAX_OUTPUT_BYTES:
