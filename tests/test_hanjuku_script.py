@@ -30,6 +30,17 @@ def test_png_round_trip_and_corruption_rejected(tmp_path):
     with pytest.raises(ValueError): read_png(path)
 
 
+def test_native_unfiltered_png_keeps_every_pixel_and_same_size_is_noop(tmp_path):
+    size = 897 * 672 * 3
+    source = Frame(897, 672, (bytes(range(256)) * ((size + 255) // 256))[:size])
+    assert len(source.rgb) == source.width * source.height * 3
+    path = tmp_path / 'native.png'
+    path.write_bytes(source.png_bytes())
+    assert read_png(path) == source
+    normalized = source.resized()
+    assert normalized.resized() is normalized
+
+
 def test_terminal_only_after_300_continuous_seconds_and_durable_log(tmp_path):
     for now in range(0,300,10):
         result=hanjuku_run.observe(tmp_path,IDENTITY,frame(),now=now,wall=1000+now)
