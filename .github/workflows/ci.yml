@@ -95,6 +95,8 @@ jobs:
           tests/test_soren91_graceful_stop.py
       - name: Round-boundary contract
         run: python3 -m pytest -q tests/test_round_boundary.py
+      - name: WebUI mutation guard and authz audit contract
+        run: python3 -m pytest -q tests/test_webui.py
       - name: RetroArch saved-boundary and native presentation contracts
         run: >-
           python3 -m pytest -q
