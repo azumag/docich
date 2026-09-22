@@ -201,7 +201,8 @@ class TestRunningView(StreamCategoryTestBase):
 class TestSpawnMechanics(StreamCategoryTestBase):
     def test_child_is_detached_and_its_output_kept_in_a_private_log(self) -> None:
         script = self._install_script()
-        with mock.patch("docich.stream_category.subprocess.Popen") as popen:
+        with mock.patch.dict(os.environ, {"INVOCATION_ID": ""}, clear=False), \
+             mock.patch("docich.stream_category.subprocess.Popen") as popen:
             announce_stream_game(self.g, "nethack")
 
         kwargs = popen.call_args.kwargs
@@ -304,15 +305,17 @@ class TestSpawnMechanics(StreamCategoryTestBase):
         log.parent.mkdir(parents=True, exist_ok=True)
         log.write_text("earlier\n", encoding="utf-8")
         os.chmod(log, 0o600)
-        with mock.patch("docich.stream_category.subprocess.Popen"):
+        with mock.patch.dict(os.environ, {"INVOCATION_ID": ""}, clear=False), \
+             mock.patch("docich.stream_category.subprocess.Popen"):
             announce_stream_game(self.g, "nethack")
         self.assertEqual(log.read_text(encoding="utf-8"), "earlier\n")
 
     def test_a_failed_spawn_is_a_stream_category_error(self) -> None:
         self._install_script()
-        with mock.patch(
-            "docich.stream_category.subprocess.Popen", side_effect=OSError("no exec")
-        ):
+        with mock.patch.dict(os.environ, {"INVOCATION_ID": ""}, clear=False), \
+             mock.patch(
+                 "docich.stream_category.subprocess.Popen", side_effect=OSError("no exec")
+             ):
             with self.assertRaises(StreamCategoryError):
                 announce_stream_game(self.g, "nethack")
 
