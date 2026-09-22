@@ -30,6 +30,7 @@ ALLOWED_BROADCAST_FUNCTIONS = {
     "radio": "_radio_generate_and_play",
 }
 SAFE_TOKEN_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+COMMENT_CLASSIFIER = Path(__file__).resolve().parents[2] / "bin" / "docich-comment-classify"
 
 # Fixed wrapper.  No user text or shell metacharacters ever enter this file;
 # the function name and arguments are validated by docich before execution.
@@ -94,6 +95,9 @@ def _env_for(g: GlobalConfig, queue_dir: Path) -> dict[str, str]:
         "SAY_CONTEXT_LABEL": "docich",
         "SAY_CC_TEXT": "",
         "DOCICH_CC_ENABLED": "0",
+        # Classification is docich's (#882): use this checkout's launcher,
+        # not whichever docich is installed at soviet_now's default path.
+        "DOCICH_COMMENT_CLASSIFIER": str(COMMENT_CLASSIFIER),
     }
     if g.audio.enabled:
         env["PULSE_SINK"] = g.audio.sink_name

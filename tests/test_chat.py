@@ -47,6 +47,13 @@ class TestBuildComment(ChatTestBase):
         self.assertEqual(inv.env["DOCICH_CC_ENABLED"], "0")
         self.assertTrue(Path(inv.env["OUTBOUND_CHAT_QUEUE_DIR"]).is_absolute())
 
+    def test_comment_uses_this_checkouts_classifier(self):
+        self._write_broadcast()
+        inv = chat.build_comment_invocation(self.g, game_name="sorengame")
+        classifier = Path(inv.env["DOCICH_COMMENT_CLASSIFIER"])
+        self.assertEqual(classifier, Path(__file__).resolve().parents[1] / "bin" / "docich-comment-classify")
+        self.assertTrue(os.access(classifier, os.X_OK))
+
     def test_comment_source_youtube(self):
         self._write_broadcast()
         inv = chat.build_comment_invocation(
