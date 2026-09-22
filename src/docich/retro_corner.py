@@ -33,6 +33,7 @@ from .game_switch import (
     new_request_id,
 )
 from .naming import NameValidationError, validate_game_name
+from .procs import user_bus_env
 from .trading.soren_output import enqueue_chat
 
 STATE_SCHEMA_VERSION = 1
@@ -790,6 +791,9 @@ class RetroCornerManager:
             # 子を同じ cgroup で起動すると tick 終了時に改善も殺される。
             # 改善とそのAI子プロセスを独立した bounded user service に投入し、
             # 投入失敗時は親cgroupへ安全にフォールバックしない。
+            # systemd-run --user は user manager の bus を XDG_RUNTIME_DIR から
+            # 解決するため、timer 起動の unit 環境に依存せず spawn 側で既定化する
+            # (#947: Failed to connect to bus: No medium found)。
             import uuid
 
             repo_root = getattr(self.g, "repo_root", _repo_root())
@@ -816,6 +820,7 @@ class RetroCornerManager:
                     text=True,
                     timeout=30,
                     stdin=subprocess.DEVNULL,
+                    env=user_bus_env(),
                 )
             except subprocess.TimeoutExpired as exc:
                 raw = exc.stderr

@@ -134,6 +134,20 @@ canonical VM deploy後に、timer active/enabled、待機理由、game-switch/FI
 
 ローカルのmockテスト成功は、これらruntime/E2Eや配信品質の成功を意味しない。
 
+### 終了後改善ジョブの投入環境（#947）
+
+終了後改善ジョブは tick の `KillMode=control-group` から逃がすため `systemd-run --user` の
+transient unit として投入する。このクライアントは user manager の bus を `XDG_RUNTIME_DIR`
+（または `DBUS_SESSION_BUS_ADDRESS`）から解決するが、timer 起動の user service は
+`XDG_RUNTIME_DIR` を継承しないことがある。どの unit が tick を実行しても同じように動くよう、
+spawn 側（`docich.procs.user_bus_env`）が `XDG_RUNTIME_DIR` 未設定時に `/run/user/<uid>` を
+既定化し、bus socket が存在する場合だけ `DBUS_SESSION_BUS_ADDRESS` を補う。unit テンプレートの
+`Environment=XDG_RUNTIME_DIR=%t` は二重の防御であり、これを唯一の根拠にしない。
+
+投入失敗時は親 cgroup へフォールバックしない。`retro` / `paper` は systemd-run の rc と stderr を
+bounded な durable record（`improve_job.error`）に残し、`corners.*.improve_job` として
+read-only diagnostics に投影される。
+
 ### 2026-09-21 ローカル検証結果
 
 - 基点: `origin/main = efb353de7944c6060f995f991997ecb744a155cb`（ローカル参照）。

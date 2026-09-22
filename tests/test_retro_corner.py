@@ -1052,8 +1052,10 @@ class TestRetroCornerImproveSpawnEnv(RetroCornerTestBase):
             return SimpleNamespace(returncode=0, stderr="")
 
         mgr, _ = self.manager(["sorengame"])
+        # Reproduce the tick service environment that caused the production
+        # failures: no user-bus variables at all (#947).
         with patch.object(sys, "platform", "linux"), \
-             patch.dict(os.environ, {"INVOCATION_ID": "parent-corner"}, clear=False), \
+             patch.dict(os.environ, {"INVOCATION_ID": "parent-corner"}, clear=True), \
              patch("subprocess.run", side_effect=fake_run), \
              patch("subprocess.Popen", side_effect=AssertionError("unsafe parent cgroup")):
             mgr._default_spawn_improve_proc(
@@ -1076,6 +1078,9 @@ class TestRetroCornerImproveSpawnEnv(RetroCornerTestBase):
         assert kwargs["capture_output"] is True
         assert kwargs["text"] is True
         assert kwargs["timeout"] == 30
+        # A timer-launched tick unit does not reliably carry the user-bus
+        # environment; the submission must supply it itself (#947).
+        assert kwargs["env"]["XDG_RUNTIME_DIR"] == f"/run/user/{os.getuid()}"
 
     def test_failed_systemd_submission_is_recorded_without_fallback(self):
         from dataclasses import replace

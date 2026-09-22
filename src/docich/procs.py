@@ -4,8 +4,34 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from pathlib import Path
 
 EXTRA_PATH_DIRS = ("/usr/games", "/usr/local/games")
+
+
+def user_bus_env(env: dict | None = None) -> dict:
+    """Return ``env`` with an address for the systemd user manager.
+
+    Corner ticks run as user units and submit their follow-up jobs with
+    ``systemd-run --user``. Timer-launched user services do not reliably
+    inherit ``XDG_RUNTIME_DIR``, and without it the client fails with
+    ``Failed to connect to bus: No medium found`` even though the user
+    manager is running (#947). Derive the runtime directory from the uid
+    instead of depending on the unit template that started the tick, and set
+    the session bus address only when that socket actually exists.
+    """
+    merged = dict(os.environ if env is None else env)
+    runtime = merged.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    merged["XDG_RUNTIME_DIR"] = runtime
+    if not merged.get("DBUS_SESSION_BUS_ADDRESS"):
+        socket = Path(runtime) / "bus"
+        try:
+            socket_exists = socket.exists()
+        except OSError:
+            socket_exists = False
+        if socket_exists:
+            merged["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={socket}"
+    return merged
 
 
 def _build_env(env_extra: dict | None, strip_tmux: bool) -> dict:

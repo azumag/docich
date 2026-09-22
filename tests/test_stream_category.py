@@ -231,8 +231,10 @@ class TestSpawnMechanics(StreamCategoryTestBase):
             calls.append((argv, kwargs))
             return subprocess.CompletedProcess(argv, 0, "", "")
 
+        # Reproduce the tick service environment that caused the production
+        # failures: no user-bus variables at all (#947).
         with mock.patch.object(sys, "platform", "linux"), \
-             mock.patch.dict(os.environ, {"INVOCATION_ID": "parent-corner"}, clear=False), \
+             mock.patch.dict(os.environ, {"INVOCATION_ID": "parent-corner"}, clear=True), \
              mock.patch("docich.stream_category.subprocess.run", side_effect=fake_run), \
              mock.patch("docich.stream_category.subprocess.Popen",
                         side_effect=AssertionError("unsafe parent cgroup")):
@@ -260,6 +262,9 @@ class TestSpawnMechanics(StreamCategoryTestBase):
         self.assertEqual(Path(child[4]).resolve(), script.resolve())
         self.assertFalse(kwargs["check"])
         self.assertEqual(kwargs["timeout"], 30)
+        # The submission carries the user-bus environment itself; the tick unit
+        # it runs under does not reliably provide it (#947).
+        self.assertEqual(kwargs["env"]["XDG_RUNTIME_DIR"], f"/run/user/{os.getuid()}")
 
     def test_category_runner_executes_the_reviewed_command_under_the_lock(self) -> None:
         lock = self.root / "run" / "logs" / "stream-category.lock"

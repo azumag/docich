@@ -4,6 +4,9 @@ After=network.target
 
 [Service]
 Type=oneshot
+# The common rotation tick spawns follow-up jobs with systemd-run --user; a
+# timer-launched service does not reliably inherit XDG_RUNTIME_DIR (#947).
+Environment=XDG_RUNTIME_DIR=%t
 WorkingDirectory=__DOCICH_ROOT__
 # P0では live profile に nethack_corner を明示しない限り disabled のまま。
 # runtime の準備とゲーム切替は nethack_corner.py が既存契約を通して行う。

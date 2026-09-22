@@ -4,6 +4,9 @@ After=network.target
 
 [Service]
 Type=oneshot
+# The common rotation tick spawns follow-up jobs with systemd-run --user; a
+# timer-launched service does not reliably inherit XDG_RUNTIME_DIR (#947).
+Environment=XDG_RUNTIME_DIR=%t
 WorkingDirectory=__DOCICH_ROOT__
 ExecStart=__DOCICH_ROOT__/bin/docich --config __DOCICH_ROOT__/config/docich.soren-live.toml paper-corner tick
 TimeoutStartSec=infinity
