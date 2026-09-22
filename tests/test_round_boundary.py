@@ -550,7 +550,9 @@ def test_fifo_maintenance_recovers_expired_drain_and_starts_only_queue_head():
     with tempfile.TemporaryDirectory() as tmp:
         state_dir = Path(tmp) / "run"
         factory = BoundaryFactory()
-        store, coordinator = _coordinator(factory, state_dir)
+        # This test expires deadline_at explicitly below. Keep the boundary
+        # step timeout out of the race so CI load cannot trigger recovery first.
+        store, coordinator = _coordinator(factory, state_dir, round_boundary_s=5.0)
         assert coordinator.start("nethack").status == "succeeded"
         old = factory.adapters[("nethack", 1)]
         first_result = []
