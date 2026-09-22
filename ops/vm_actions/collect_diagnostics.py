@@ -56,6 +56,7 @@ in which case the gateway refuses fail-closed.
 import base64
 import configparser
 import datetime as dt
+import fcntl
 import json
 import math
 import os
@@ -1356,6 +1357,118 @@ CORNER_STATE_FILES = {
     "nethack_corner_manual": "nethack_corner_manual.json",
 }
 
+# These are the remaining sources consulted by rotation's live and retired
+# adapters. Do not derive filenames from state, catalog rows or request IDs.
+ROTATION_CORNER_FILES = (
+    "retro_corner", "retro_corner_manual", "paper_corner", "paper_corner_manual",
+    "soren91_corner", "soren91_corner_manual", "nethack_corner", "nethack_corner_manual",
+)
+ROTATION_IMPROVE_GAMES = (
+    "gnurobots", "ninvaders", "nsnake", "bastet", "moon-buggy",
+    "pacman4console", "nethack", "hanjuku-hero", "soren91",
+)
+ROTATION_STATUSES = frozenset({
+    "idle", "waiting", "starting", "active", "restoring", "preparing",
+    "recovery_required", "failed", "completed", "interrupted", "expired",
+    "running", "promoted", "kept", "improved", "dry-run", "skipped",
+})
+
+
+def _rotation_evidence_file(state_dir, relative):
+    """Bounded fixed-path read; do not follow links to unrelated runtime data."""
+    path = state_dir / relative
+    if any(parent.is_symlink() for parent in (path, *path.parents)):
+        return True, False, None
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > 65536:
+                return True, False, None
+            raw = handle.read(65537)
+            if len(raw) > 65536:
+                return True, False, None
+            data = json.loads(raw)
+            return True, isinstance(data, dict), data if isinstance(data, dict) else None
+    except FileNotFoundError:
+        return False, False, None
+    except (OSError, ValueError):
+        return True, False, None
+
+
+def _rotation_enum(value, allowed):
+    return value if isinstance(value, str) and value in allowed else "unknown"
+
+
+def _rotation_time(value):
+    from docich.corner_rotation import timestamp, RotationError
+    try:
+        return timestamp(value)
+    except (RotationError, ValueError, OverflowError, OSError):
+        return None
+
+
+def _rotation_lock_state(path):
+    """Probe only an existing lock, retaining no lock and creating no files."""
+    try:
+        if any(parent.is_symlink() for parent in (path, *path.parents)):
+            return "unknown"
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                return "unknown"
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return "held"
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            return "free"
+    except FileNotFoundError:
+        return "absent"
+    except OSError:
+        return "unknown"
+
+
+def _collect_rotation_evidence(state_dir):
+    """Evidence for an overdue wait, not permission to recover or dispatch.
+
+    Worker health does not cover per-game post-corner improvement jobs.
+    Preserve missing/failed/stale evidence so an operator can distinguish
+    those waits from a raw failed PAPER record or a retired corner owner.
+    """
+    result = {"corners": {}, "improvements": {}}
+    for name in ROTATION_CORNER_FILES:
+        present, readable, raw = _rotation_evidence_file(state_dir, name + ".json")
+        entry = {"present": present, "readable": readable}
+        if readable:
+            job = raw.get("improve_job")
+            entry.update(
+                status=_rotation_enum(raw.get("status"), ROTATION_STATUSES),
+                completed_at=_rotation_time(raw.get("completed_at")),
+                game=_rotation_enum(raw.get("game"), ROTATION_IMPROVE_GAMES),
+                previous_game=_rotation_enum(raw.get("previous_game"), (*ROTATION_IMPROVE_GAMES, "sorengame")),
+                improve_spawned=job.get("spawned") if isinstance(job, dict)
+                and type(job.get("spawned")) is bool else None,
+                recovery_required=raw.get("recovery_required")
+                if type(raw.get("recovery_required")) is bool else None,
+            )
+        result["corners"][name] = entry
+    for game in (*ROTATION_IMPROVE_GAMES, "paper"):
+        relative = ("trading/paper_improve_status.json" if game == "paper"
+                    else f"corner_improve_{game}.json")
+        lock_name = "paper-improve.lock" if game == "paper" else f"corner-improve-{game}.lock"
+        present, readable, raw = _rotation_evidence_file(state_dir, relative)
+        entry = {"present": present, "readable": readable,
+                 "lock": _rotation_lock_state(state_dir / "locks" / lock_name)}
+        if readable:
+            entry.update(
+                status=_rotation_enum(raw.get("status"), ROTATION_STATUSES),
+                started_at=_rotation_time(raw.get("started_at")),
+                completed_at=_rotation_time(raw.get("completed_at")),
+            )
+        result["improvements"][game] = entry
+    return result
+
 
 def _program_state_dir():
     """Return the docich state_dir that holds corner state (read-only).
@@ -1728,6 +1841,7 @@ def _collect_corner_files(state_dir, payload, now):
         )
     payload["presentation"] = entry
     payload["paper_improve"] = _collect_paper_improve_status(state_dir, now)
+    payload["rotation_evidence"] = _collect_rotation_evidence(state_dir)
 
 
 def _collect_programs(state_dir, soren, now):

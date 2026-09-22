@@ -92,6 +92,21 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   eligible_count、pending有無のみ。seed・request payload・自由文は出さない。
   `recovery_required`は次cornerを停止する実行契約であり、診断自体は復旧操作をしない。
 
+- rotation 待機の補助証跡: `corners.rotation_evidence` に固定8種の
+  corner state（retro/PAPER/Soren91/NetHackの通常・manual）と固定10種の
+  改善結果（9ゲーム＋PAPER）を出す。状態enum、ゲームenum、完了時刻、
+  improve起動boolean、明示的なrecovery_requiredを観測する。改善結果は
+  status、started_at、completed_atと既存lockの `held/free/absent/unknown` のみ。
+  `spawned=true` と正常なrequired workerだけでは、改善の終了証跡を確認できない。
+  改善status欠落・failed・running・corner完了より古いstarted_at・保持中lockを
+  区別し、`other-corner-needs-finish-or-recovery` の調査に用いる。
+  status/lock単独から子プロセス終了・復旧可否を断定しない。
+  存在しないlockは作成せず、既存lockを非待機でprobeして即解放する。
+  state由来パス、catalog由来パス、request ID、PID、ログ、prompt、save本文は出さない。
+  ファイルは64KiB上限、リンク・非regular fileは拒否、不正な値はunknown/null。
+  読み取りを順に行う観測なので、一つの原子的な状態スナップショットではない。
+  この追加は待機条件・FIFO・scheduler・復旧操作を変更しない。
+
 - worker: `tmp/state/*.pid`（+ `tmp/.soren_loop.lock/pid`、
   `tmp/state/.soviet_watchdog.lock/owner`）、`*.paused` マーカー、
   `worker_duplicates.json`（supervisor 報告、10 分以内のみ採用）。
