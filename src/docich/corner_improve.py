@@ -30,6 +30,20 @@ from .resolver.bot_eval import bot_games, run_bot_matches
 
 JSON_FENCE_RE = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
 
+# Durable failure metadata is an enum contract, not an exception serialization
+# surface. Keep unknown/future/injected exception attributes from becoming
+# free-text state; diagnostics applies the same allowlist at its read boundary.
+CORNER_IMPROVE_REASON_CODES = frozenset({
+    "state-read", "corner-window", "gate-disabled", "llm-call", "llm-rc",
+    "llm-empty", "llm-format", "llm-keys", "llm-values", "llm-unexpected",
+    "eval", "unexpected",
+})
+CORNER_IMPROVE_PHASES = frozenset({"state", "llm", "eval", "unknown"})
+
+
+def _fixed_enum(value, allowed: frozenset[str], fallback: str) -> str:
+    return value if isinstance(value, str) and value in allowed else fallback
+
 
 class CornerImproveError(RuntimeError):
     """User-facing failure in the end-of-corner improvement job."""
@@ -256,8 +270,12 @@ def run_corner_improve(
         except BaseException as exc:
             atomic_write_json(status_path, {
                 "status": "failed", "started_at": started, "completed_at": time.time(),
-                "reason_code": str(getattr(exc, "code", "unexpected")),
-                "phase": str(getattr(exc, "phase", "unknown")),
+                "reason_code": _fixed_enum(
+                    getattr(exc, "code", None), CORNER_IMPROVE_REASON_CODES, "unexpected"
+                ),
+                "phase": _fixed_enum(
+                    getattr(exc, "phase", None), CORNER_IMPROVE_PHASES, "unknown"
+                ),
             })
             raise
         atomic_write_json(status_path, {"status": result["status"], "started_at": started,

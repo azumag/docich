@@ -200,6 +200,30 @@ def test_gate_disabled_records_reason_code(tmp_path, monkeypatch):
     assert record['phase'] == 'llm'
 
 
+def test_untrusted_failure_metadata_is_clamped_before_persist(tmp_path):
+    state_dir = _setup_completed(tmp_path, [10, 20])
+    g = _G(state_dir)
+
+    def hostile_llm(_prompt):
+        raise CornerImproveError(
+            'sensitive exception body',
+            code={'secret-code': 'must-not-persist'},
+            phase=['secret-phase'],
+        )
+
+    with pytest.raises(CornerImproveError):
+        run_corner_improve(
+            g, game='gnurobots', date_str='2026-09-10', agents='a',
+            llm=hostile_llm,
+            evaluator=lambda strat: {'mean_score': 1.0, 'played': 2},
+        )
+    record = json.loads((state_dir / 'corner_improve_gnurobots.json').read_text())
+    assert record['status'] == 'failed'
+    assert record['reason_code'] == 'unexpected'
+    assert record['phase'] == 'unknown'
+    assert 'secret' not in json.dumps(record)
+
+
 def test_parse_candidate_attaches_fixed_codes():
     keys = set(_weights())
     key = sorted(keys)[0]
