@@ -11,7 +11,7 @@ from .actions import Action
 from .nethack_exploration import DIRECTIONS, MOVE_KEYS, _glyph, move_target, visible_safe_step
 from .nethack_observation import NethackObservation
 from .nethack_policy import (
-    NethackLayeredPolicy, PolicyDecision, STEP_OUT_INTENTS, _has_any,
+    NethackLayeredPolicy, PolicyDecision, RESTABLE_FOOD_CONDITIONS, STEP_OUT_INTENTS, _has_any,
     _visible_creature_contact, creature_glyph, decline_prompt,
     rest_action_for_hold, step_out_of_hold, turn_ready,
 )
@@ -24,6 +24,28 @@ def gameplay_ready(obs: NethackObservation) -> bool:
         and obs.vitals.hp is not None and obs.vitals.hp > 0
         and obs.vitals.hp_max is not None and obs.vitals.hp_max > 0
         and not _has_any(obs, NethackLayeredPolicy._SEVERE_CONDITIONS | NethackLayeredPolicy._FOOD_EMERGENCY)
+    )
+
+
+def rest_ready(obs: NethackObservation) -> bool:
+    """Whether one explicit ``.`` wait turn may be consumed here.
+
+    Same frame-completeness contract as ``gameplay_ready`` for the movement
+    keys, except that the reviewed ``Weak`` tier of the food emergency may
+    spend a single wait turn. The worse hunger tiers and severe status stay
+    fail-closed (see ``RESTABLE_FOOD_CONDITIONS``), and movement/bump remain
+    gated by ``gameplay_ready``.
+    """
+    return (
+        obs.prompt == "none" and obs.player is not None
+        and obs.vitals.dungeon_level is not None
+        and obs.vitals.hp is not None and obs.vitals.hp > 0
+        and obs.vitals.hp_max is not None and obs.vitals.hp_max > 0
+        and not _has_any(obs, NethackLayeredPolicy._SEVERE_CONDITIONS)
+        and not _has_any(
+            obs,
+            NethackLayeredPolicy._FOOD_EMERGENCY - RESTABLE_FOOD_CONDITIONS,
+        )
     )
 
 
@@ -60,7 +82,7 @@ def assert_production_safe(decision: PolicyDecision, obs: NethackObservation) ->
         )
     elif intent == "rest_turn":
         allowed = (
-            gameplay_ready(obs) and key == "."
+            rest_ready(obs) and key == "."
             and not _visible_creature_contact(obs)
             and "Hungry" not in obs.conditions
         )

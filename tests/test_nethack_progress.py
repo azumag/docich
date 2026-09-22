@@ -100,7 +100,7 @@ def test_terrain_planner_and_bump_never_target_unreviewed_glyphs(glyph):
     assert act(brain(), text) == ["k"]  # only actual visible creature is eligible
 
 
-@pytest.mark.parametrize("condition", ["Sick", "FoodPois", "Ill", "Slime", "Strngl", "Stone", "TermIll", "Weak", "Fainting", "Fainted", "Starved"])
+@pytest.mark.parametrize("condition", ["Sick", "FoodPois", "Ill", "Slime", "Strngl", "Stone", "TermIll", "Fainting", "Fainted", "Starved"])
 @pytest.mark.parametrize("hp", ["16(16)", "4(16)"])
 def test_severe_status_and_starvation_dominate_hp_and_all_fallbacks(condition, hp):
     text = frame({"k": "d", "n": "#"}, hp=hp, condition=condition)
@@ -113,6 +113,32 @@ def test_severe_status_and_starvation_dominate_hp_and_all_fallbacks(condition, h
     fake = PolicyDecision("strategic", "survival_emergency", "test", requires_llm=True)
     assert step_out_of_hold(fake, obs, NethackExplorer()) is None
     assert rest_action_for_hold(fake, normalize_tty(frame(hp=hp, condition=condition))) is None
+
+
+@pytest.mark.parametrize("hp", ["16(16)", "4(16)"])
+def test_weak_spends_one_explicit_wait_turn_instead_of_freezing(hp):
+    # 2026-09-23 nethack slot: the hero sat at `Weak` and sent 0 actions on
+    # every iteration, so a turn-based game could never move. The reviewed
+    # Weak tier of the food emergency now spends exactly one '.' wait turn;
+    # movement and bump stay gated by gameplay_ready, and the hunger tiers
+    # above Weak stay fail-closed (parametrized test above).
+    text = frame(hp=hp, condition="Weak")
+    agent = brain()
+    assert act(agent, text) == ["."]
+    assert agent.last_decision.intent == "food_emergency"
+    assert agent.last_progress_decision.intent == "rest_turn"
+
+
+def test_weak_never_rests_beside_a_visible_creature():
+    # Resting beside contact is still outside the reviewed surface: movement
+    # is blocked while the food emergency holds, so this stays fail-closed.
+    text = frame({"k": "d"}, hp="16(16)", condition="Weak")
+    agent = brain()
+    assert act(agent, text) == []
+    assert agent.last_decision.intent == "food_emergency"
+    obs = normalize_tty(text)
+    decision = PolicyDecision("strategic", "food_emergency", "test", requires_llm=True)
+    assert rest_action_for_hold(decision, obs) is None
 
 
 @pytest.mark.parametrize("condition", ["Blind", "Conf", "Stun", "Hallu"])
