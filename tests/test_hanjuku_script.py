@@ -279,4 +279,18 @@ def test_red_curtain_merchant_exits_price_list_then_advances_farewell():
     assert classify(shop)=='shop'
     actions,state=decide(shop,{})
     assert actions[0]['buttons']==['b']
+    # The real shop keeps the price panel open for its exit confirmation.
+    # Reconstruct the observed text mask without storing ROM/game images.
+    from docich.hanjuku_bot import _SHOP_EXIT_ROWS
+    for y,row in enumerate(_SHOP_EXIT_ROWS,180):
+        for bit in range(128):
+            if row & (1 << (127-bit)):
+                i=(y*256+24+bit)*3
+                rgb[i:i+3]=b'\xff\xff\xff'
+    confirmation=Frame(256,224,bytes(rgb))
+    assert classify(confirmation)=='shop'
+    actions,state=decide(confirmation,state)
+    assert actions[0]['buttons']==['a']
+    # An unrelated/blank prompt still cancels; never blindly alternate A/B.
+    assert decide(shop,state)[0][0]['buttons']==['b']
     assert decide(farewell,state)[0][0]['buttons']==['a']
