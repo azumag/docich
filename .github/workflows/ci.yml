@@ -53,6 +53,7 @@ jobs:
         run: >-
           python3 -m pytest -q
           tests/test_retro_corner.py tests/test_retro_corner_manual.py
+          tests/test_corner_rotation.py tests/test_corner_rotation_execution.py
           tests/test_hanjuku_retro_registration.py tests/test_hanjuku_brain.py
           tests/test_agent_loop.py tests/test_agent_fence.py tests/test_agent_action_lock.py
           tests/test_nethack_corner.py tests/test_nethack_corner_p5.py tests/test_nethack_corner_force_recover.py

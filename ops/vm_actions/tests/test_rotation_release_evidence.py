@@ -3,11 +3,15 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
 
-from test_collect_diagnostics import load_collector
+ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT / "src"))
+
+from test_collect_diagnostics import load_collector  # noqa: E402
 
 
 def write(path, data):
@@ -17,7 +21,10 @@ def write(path, data):
 
 class RotationReleaseEvidenceTests(unittest.TestCase):
     def temp_state(self):
-        temp = tempfile.TemporaryDirectory()
+        # Resolve first: macOS exposes its temp dir through /var, whose
+        # symlinked ancestor the collector's guard must reject.
+        base = Path(tempfile.gettempdir()).resolve()
+        temp = tempfile.TemporaryDirectory(dir=base)
         self.addCleanup(temp.cleanup)
         return Path(temp.name)
 
