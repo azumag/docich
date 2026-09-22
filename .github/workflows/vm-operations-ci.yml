@@ -51,3 +51,4 @@ jobs:
           ops/vm_actions/install_vm_gateway.sh
           ops/vm_actions/install_nethack_canary_smoke.sh
           ops/vm_actions/request_nethack_canary_smoke.sh
+          ops/vm_actions/restart_webui.sh

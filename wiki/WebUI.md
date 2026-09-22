@@ -50,6 +50,15 @@ systemctl --user daemon-reload
 systemctl --user enable --now docich-webui.service
 ```
 
+**コード更新の反映**: 常駐プロセスなので、docich を deploy して
+`src/docich/webui.py` が更新されても再起動するまで旧 UI が配信される。
+owner-only の `restart_webui` operation で固定 unit だけを再起動する:
+
+```bash
+gh workflow run "VM operations" --repo azumag/docich --ref main \
+  -f operation=restart_webui -f target=production -f ref=main -f confirm=production
+```
+
 **重要**: 本番 VM で docich のサブモジュール (games/soviet_now) とは別に
 `/home/ubuntu/soren` を運用している場合、`--soren-root /home/ubuntu/soren` を必ず明示する
 こと。省略すると auto-discover が docich 側のサブモジュールを指してしまう。

@@ -10,7 +10,7 @@ on:
         required: true
         default: status
         type: choice
-        options: [status, deploy, exec, configure_jev, disable_jev, configure_jev_route_direct, configure_jev_route_vercel, disable_jev_route, bootstrap, diagnostics, reclaim, rebaseline, market_paper]
+        options: [status, deploy, exec, configure_jev, disable_jev, configure_jev_route_direct, configure_jev_route_vercel, disable_jev_route, bootstrap, diagnostics, reclaim, rebaseline, market_paper, restart_webui]
       target:
         description: VM target
         required: true
@@ -374,6 +374,22 @@ jobs:
 
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
           cat control/ops/vm_actions/restart_radio_worker.sh | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
+      - name: Restart docich webui systemd unit
+        if: ${{ steps.auth.outputs.operation == 'restart_webui' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # The helper is a fixed reviewed script from the trusted main checkout.
+          # It runs only `systemctl --user` (no root/sudo) on the fixed unit
+          # docich-webui.service and fails closed unless the unit is active
+          # after the restart. Output stays in the VM-private exec log.
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          cat control/ops/vm_actions/restart_webui.sh | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Probe Moomoo JP quote readiness after reviewed production deploy
         id: market_provider_probe
