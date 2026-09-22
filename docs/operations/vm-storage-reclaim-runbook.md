@@ -129,6 +129,7 @@ tmux ls 2>/dev/null
 | 日付 | Step | 実施者 | 前 used | 後 used | 備考 |
 |---|---|---|---|---|---|
 | 2026-09-23 | Phase 1 apply（reclaim, allowlist + system + logrotate） | owner 承認・Astra 実行（VM operations run 35769050373, exit 0） | 86% / avail 7,091,830,784 B | 84% / avail 約7.6GB | dry-run run 35766163981 先行。before status run 35766046429 / after status run 35769216493・diagnostics run 35769274262。soren_logs 114,114,560 → 108,208,128 B (count 72→85, logrotate 初回ローテート)。soren_tmp は live 増加で相殺のため +12MB。実測削減は約+0.5GB（見込み1〜1.5GBとの差は stale 残骸が調査時より小さいため）。 |
+| 2026-09-23 | Phase 2 apply（PR #1000: snapd cache 7日超・/tmp の古い docich clone・dangling docker 168h・`manual_challenge*`） | owner 承認（マージ→dry-run→apply 一括）・Astra 実行（dry-run run 35782642940 / apply run 35782692590、いずれも exit 0） | 84% / avail 8,016,740,352 B | **80% / avail 9,611,694,080 B（+1,594,953,728 B ≒ +1.49GB）** | production は `configured @ 9c4bb60a`（main push deploy run 35782514283 success 後に実行）。対象実測（apply 後 read-only SSH）: snapd cache 1.75 → **0.05GB**（7日超残 0、残り1件は7日以内で KEEP＝age gate 正常）/ `/tmp/opencode/docich-sync` **削除済** / `manual_challenge_20260824_meriken` **削除済** / docker Images 9→8・Build Cache 93→89 entries・Containers 0・**Local Volumes 0 維持**（`until=168h` gate により 5〜6日前の dangling 7個は保護＝設計どおり）。protected 3件（state/debug/chromium profile）生存。diagnostics: `required_down=[]`・`required_stale=[]`・zombies/duplicates/stale_locks 全 0・tracked drift 全 0・`game_switch` ready。`soren_loop`/`improve_daemon` の paused は `pause_owner=lifecycle_owned`（コーナー稼働時の通常 pause、helper に kill/systemctl 系コマンドは0件）。並行増加分: `/var/lib/snapd/snaps` 0.09 → 1.40GB（同時刻の snap refresh が新 revision を獲得、差分の約1.3GB を相殺）、bundle 1.40 → 1.42GB、journal 172.8 → 180.8M。**削除対象合計 ≈2.9GB に対し df 差分が +1.49GB なのはこの並行増加による**（top-level du で /var 3.67→3.23・/tmp 2.32→1.27・/home 13.73→13.44 を確認）。opencode.db 1.21 → 1.14GB（#389 の retention が動いた模様、引き続き観測）。 |
 
 ## 6. Phase 2（2026-09-23 read-only 全体帰属に基づく追加対象）
 
@@ -142,4 +143,5 @@ Phase 1 後に承認済み read-only SSH（補助経路）で root fs 37GB を `
 | `manual_challenge*` 日付付き兄弟 | 18MB（8/24） | pattern を完全一致から前方一致へ。age gate（21日）は個別判定、本体は mtime 次第で KEEP |
 
 - 実行順: merge 後に `reclaim / apply=false` で DEL/CMD 一覧を VM private log で確認 → `apply=true` → 前後の `status`（使用率・空き）と read-only `du` で削減を実測して本表へ追記。
+- **実施済み（2026-09-23）**: PR #1000 merge → dry-run → apply を実行し、削減と保護パス生存を §5 承認記録へ実測追記した（84% → 80%、+1.49GB）。`until=168h` gate の効き目で docker の 5〜6日前 dangling は保護され次回以降に対象化するため、以後の定期 reclaim で漸減する。
 - スコープ外（参照未検証のため次回以降）: `/tmp/s91test` 181MB、`soren/tmp/deploy` 75MB、`radio_quarantine` 10MB、home 直下の mkv 75.3MB・`build/` 38MB・`soren91-r97/` 22MB。opencode.db(#389) / strategy archive(#392) / Git 履歴重複 / bundle retention(#365,#394) は設計 Issue のまま。
