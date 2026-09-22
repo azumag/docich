@@ -162,6 +162,58 @@ def test_bad_llm_output_raises(tmp_path):
         run_corner_improve(g, game='gnurobots', date_str='2026-09-10', agents='a',
                            llm=lambda prompt: 'not json',
                            evaluator=lambda strat: {'mean_score': 1.0, 'played': 2})
+    record = json.loads((state_dir / 'corner_improve_gnurobots.json').read_text())
+    assert record['status'] == 'failed'
+    assert record['reason_code'] == 'llm-format'
+    assert record['phase'] == 'llm'
+    assert 'not json' not in json.dumps(record)
+
+
+def test_eval_failure_records_reason_code(tmp_path):
+    state_dir = _setup_completed(tmp_path, [10, 20])
+    g = _G(state_dir)
+    key = sorted(_weights())[0]
+
+    def failing_evaluator(strat):
+        raise RuntimeError('sensitive evaluator detail')
+
+    with pytest.raises(CornerImproveError):
+        run_corner_improve(g, game='gnurobots', date_str='2026-09-10', agents='a',
+                           llm=lambda prompt: f'```json\n{{"{key}": 2.5}}\n```',
+                           evaluator=failing_evaluator)
+    record = json.loads((state_dir / 'corner_improve_gnurobots.json').read_text())
+    assert record['status'] == 'failed'
+    assert record['reason_code'] == 'eval'
+    assert record['phase'] == 'eval'
+    assert 'sensitive' not in json.dumps(record)
+
+
+def test_gate_disabled_records_reason_code(tmp_path, monkeypatch):
+    monkeypatch.delenv('DOCICH_ALLOW_REAL_AI', raising=False)
+    state_dir = _setup_completed(tmp_path, [10, 20])
+    g = _G(state_dir)
+    with pytest.raises(CornerImproveError):
+        run_corner_improve(g, game='gnurobots', date_str='2026-09-10', agents='a')
+    record = json.loads((state_dir / 'corner_improve_gnurobots.json').read_text())
+    assert record['status'] == 'failed'
+    assert record['reason_code'] == 'gate-disabled'
+    assert record['phase'] == 'llm'
+
+
+def test_parse_candidate_attaches_fixed_codes():
+    keys = set(_weights())
+    key = sorted(keys)[0]
+    for payload, code in (
+        ('not json', 'llm-format'),
+        ('{}', 'llm-format'),
+        ('{"unknown-key": 1}', 'llm-keys'),
+        (f'{{"{key}": true}}', 'llm-values'),
+        (f'{{"{key}": 0.0009}}', 'llm-values'),
+    ):
+        with pytest.raises(CornerImproveError) as excinfo:
+            parse_candidate(payload, keys)
+        assert excinfo.value.code == code
+        assert excinfo.value.phase == 'llm'
 
 
 def test_parse_candidate_boundaries():

@@ -34,6 +34,11 @@ JSON_FENCE_RE = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
 class CornerImproveError(RuntimeError):
     """User-facing failure in the end-of-corner improvement job."""
 
+    def __init__(self, message, *, code="unexpected", phase="unknown"):
+        super().__init__(message)
+        self.code = code
+        self.phase = phase
+
 
 # Keep the improvement dispatch in lockstep with the headless evaluator.  Every
 # retro game using a command brain gets the same candidate/evaluate/promote
@@ -129,18 +134,33 @@ def parse_candidate(text: str, allowed_keys: set[str]) -> dict:
     try:
         data = json.loads(payload)
     except ValueError as exc:
-        raise CornerImproveError(f"LLM出力がJSONではありません: {_safe_detail(exc)}") from exc
+        raise CornerImproveError(
+            f"LLM出力がJSONではありません: {_safe_detail(exc)}",
+            code="llm-format", phase="llm",
+        ) from exc
     if not isinstance(data, dict) or not data:
-        raise CornerImproveError("LLM出力が空でないJSONオブジェクトではありません")
+        raise CornerImproveError(
+            "LLM出力が空でないJSONオブジェクトではありません",
+            code="llm-format", phase="llm",
+        )
     unknown = sorted(set(data) - set(allowed_keys))
     if unknown:
-        raise CornerImproveError(f"未知の重みキーがあります: {', '.join(unknown[:5])}")
+        raise CornerImproveError(
+            f"未知の重みキーがあります: {', '.join(unknown[:5])}",
+            code="llm-keys", phase="llm",
+        )
     candidate = {}
     for key, value in data.items():
         if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise CornerImproveError(f"重みは数値である必要があります: {key}")
+            raise CornerImproveError(
+                f"重みは数値である必要があります: {key}",
+                code="llm-values", phase="llm",
+            )
         if not (0.001 <= float(value) <= 1e6):
-            raise CornerImproveError(f"重みが範囲外です: {key}={value}")
+            raise CornerImproveError(
+                f"重みが範囲外です: {key}={value}",
+                code="llm-values", phase="llm",
+            )
         candidate[key] = value
     return candidate
 
@@ -149,7 +169,8 @@ def _default_llm(g, *, agents: str, prompt_text: str, timeout: int = 600) -> str
     """sorengame と同じ dispatch 経路で1候補を生成する。本番実行のみ。"""
     if os.environ.get("DOCICH_ALLOW_REAL_AI") != "1":
         raise CornerImproveError(
-            "LLM改善の実実行には DOCICH_ALLOW_REAL_AI=1 が必要です"
+            "LLM改善の実実行には DOCICH_ALLOW_REAL_AI=1 が必要です",
+            code="gate-disabled", phase="llm",
         )
     import tempfile
 
@@ -173,15 +194,19 @@ def _default_llm(g, *, agents: str, prompt_text: str, timeout: int = 600) -> str
                 timeout=float(timeout + 60), capture=True,
             )
         except Exception as exc:
-            raise CornerImproveError(f"LLM呼び出しに失敗しました: {_safe_detail(exc)}") from exc
+            raise CornerImproveError(
+                f"LLM呼び出しに失敗しました: {_safe_detail(exc)}",
+                code="llm-call", phase="llm",
+            ) from exc
     if completed.returncode != 0:
         raise CornerImproveError(
             f"LLM改善が失敗しました (rc={completed.returncode}): "
-            f"{(completed.stderr or '').strip()[:200]}"
+            f"{(completed.stderr or '').strip()[:200]}",
+            code="llm-rc", phase="llm",
         )
     output = (completed.stdout or "").strip()
     if not output:
-        raise CornerImproveError("LLM改善の出力が空でした")
+        raise CornerImproveError("LLM改善の出力が空でした", code="llm-empty", phase="llm")
     return output
 
 
@@ -190,9 +215,12 @@ def _corner_window(state: dict) -> tuple[float, float]:
         start = dt.datetime.fromisoformat(str(state["started_at"])).timestamp()
         end = dt.datetime.fromisoformat(str(state["ends_at"])).timestamp()
     except (KeyError, ValueError, TypeError, OverflowError, OSError) as exc:
-        raise CornerImproveError(f"コーナー期間が不正です: {_safe_detail(exc)}") from exc
+        raise CornerImproveError(
+            f"コーナー期間が不正です: {_safe_detail(exc)}",
+            code="corner-window", phase="state",
+        ) from exc
     if not end >= start:
-        raise CornerImproveError("コーナー期間が不正です")
+        raise CornerImproveError("コーナー期間が不正です", code="corner-window", phase="state")
     return start, end
 
 
@@ -225,9 +253,12 @@ def run_corner_improve(
                 matches=matches, margin_pct=margin_pct, dry_run=dry_run,
                 llm=llm, evaluator=evaluator,
             )
-        except BaseException:
-            atomic_write_json(status_path, {"status": "failed", "started_at": started,
-                                           "completed_at": time.time()})
+        except BaseException as exc:
+            atomic_write_json(status_path, {
+                "status": "failed", "started_at": started, "completed_at": time.time(),
+                "reason_code": str(getattr(exc, "code", "unexpected")),
+                "phase": str(getattr(exc, "phase", "unknown")),
+            })
             raise
         atomic_write_json(status_path, {"status": result["status"], "started_at": started,
                                        "completed_at": time.time()})
@@ -297,7 +328,10 @@ def _run_corner_improve(
     try:
         state = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        raise CornerImproveError(f"コーナー状態を読み込めません: {_safe_detail(exc)}") from exc
+        raise CornerImproveError(
+            f"コーナー状態を読み込めません: {_safe_detail(exc)}",
+            code="state-read", phase="state",
+        ) from exc
     if not isinstance(state, dict) or state.get("date") != date_str:
         return {"status": "skipped", "reason": "wrong-date"}
     if state.get("status") != "completed":
@@ -345,7 +379,10 @@ def _run_corner_improve(
     except CornerImproveError:
         raise
     except Exception as exc:
-        raise CornerImproveError(f"候補生成に失敗しました: {_safe_detail(exc)}") from exc
+        raise CornerImproveError(
+            f"候補生成に失敗しました: {_safe_detail(exc)}",
+            code="llm-unexpected", phase="llm",
+        ) from exc
     candidate = dict(current)
     candidate.update(candidate_delta)
 
@@ -357,7 +394,10 @@ def _run_corner_improve(
         baseline_ev = evaluator(current)
         candidate_ev = evaluator(candidate)
     except Exception as exc:
-        raise CornerImproveError(f"候補評価に失敗しました: {_safe_detail(exc)}") from exc
+        raise CornerImproveError(
+            f"候補評価に失敗しました: {_safe_detail(exc)}",
+            code="eval", phase="eval",
+        ) from exc
     baseline_mean = float(baseline_ev.get("mean_score", 0.0) or 0.0)
     baseline_played = int(baseline_ev.get("played", 0) or 0)
     candidate_mean = float(candidate_ev.get("mean_score", 0.0) or 0.0)

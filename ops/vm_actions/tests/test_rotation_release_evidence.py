@@ -53,7 +53,22 @@ class RotationReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual(output["improvements"]["nsnake"], {
             "present": True, "readable": True, "lock": "absent", "status": "failed",
             "started_at": 101, "completed_at": 102,
+            "reason_code": "unknown", "phase": "unknown",
         })
+
+        # The failure taxonomy is a fixed enum: valid codes are preserved and
+        # anything else is reported as unknown instead of free text.
+        write(status_path, {"status": "failed", "started_at": 101, "completed_at": 102,
+                            "reason_code": "eval", "phase": "eval"})
+        row = module._collect_rotation_evidence(tmp_path)["improvements"]["nsnake"]
+        self.assertEqual(row["reason_code"], "eval")
+        self.assertEqual(row["phase"], "eval")
+        write(status_path, {"status": "failed", "started_at": 101, "completed_at": 102,
+                            "reason_code": "DO-NOT-EMIT", "phase": 7})
+        row = module._collect_rotation_evidence(tmp_path)["improvements"]["nsnake"]
+        self.assertEqual(row["reason_code"], "unknown")
+        self.assertEqual(row["phase"], "unknown")
+        self.assertNotIn("DO-NOT-EMIT", json.dumps(row))
 
         # A partially written/forged failed state is not sufficient evidence.
         write(status_path, {"status": "failed", "started_at": 101})

@@ -99,7 +99,8 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   corner state（retro/PAPER/Soren91/NetHackの通常・manual）と固定10種の
   改善結果（9ゲーム＋PAPER）を出す。状態enum、ゲームenum、完了時刻、
   improve起動boolean、明示的なrecovery_requiredを観測する。改善結果は
-  status、started_at、completed_atと既存lockの `held/free/absent/unknown` のみ。
+  status、started_at、completed_at、失敗理由の固定enum `reason_code` / `phase`
+  （欠落・未知は `unknown`）と既存lockの `held/free/absent/unknown` のみ。
   `spawned=true` と正常なrequired workerだけでは、改善の終了証跡を確認できない。
   改善status欠落・failed・running・corner完了より古いstarted_at・保持中lockを
   区別し、`other-corner-needs-finish-or-recovery` の調査に用いる。
