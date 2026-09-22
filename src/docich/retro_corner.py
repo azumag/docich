@@ -472,6 +472,10 @@ class RetroCornerManager:
 
         投稿失敗はコーナー自体を失敗させない。結果は state に記録する。
         """
+        if self._scripted_hanjuku(state):
+            state['ends_at'] = None
+            state['target_matches'] = 1
+            state['end_condition'] = 'game_over_or_screen_stalled'
         if state.get("announced"):
             return
         game = state.get("game")
@@ -853,6 +857,9 @@ class RetroCornerManager:
 
     def _spawn_improve_once(self, state: dict[str, object]) -> None:
         """終了時改善ジョブを切り離して起動する。失敗しても finish を壊さない。"""
+        if state.get('game') == 'hanjuku-hero':
+            state['improve_job'] = {'spawned': False, 'reason': 'hanjuku-improvement-deferred'}
+            return
         if state.get("game") == "nethack":
             state["improve_job"] = {
                 "spawned": False,
@@ -1036,6 +1043,8 @@ class RetroCornerManager:
     def _reconcile_stale_locked(self, now: dt.datetime) -> None:
         state = self._read_state()
         if state.get("status") != "active":
+            return
+        if self._scripted_hanjuku(state):
             return
         ends_at = self._parse_ends_at(state)
         if ends_at is None or now >= ends_at:
@@ -1291,6 +1300,8 @@ class RetroCornerManager:
         return result
 
     def _wait_and_finish(self, state: dict[str, object]) -> CornerResult:
+        if self._scripted_hanjuku(state):
+            return self._wait_hanjuku(state)
         ends_at = self._parse_ends_at(state)
         if ends_at is None:
             raise RetroCornerError("retro corner ends_atが不正です")
@@ -1343,6 +1354,55 @@ class RetroCornerManager:
                             agent_repair_failed = False
                     if self._target_reached(latest):
                         return self._finish_locked(latest, self._local_now())
+
+    def _scripted_hanjuku(self, state):
+        if state.get('game') != 'hanjuku-hero':
+            return False
+        from .hanjuku_run import enabled
+        return enabled(load_game(self.g, 'hanjuku-hero'))
+
+    def _wait_hanjuku(self, state):
+        """No fixed session deadline: observe until game-over or 300s stasis."""
+        from .adapters import make_adapter
+        from .agent.fence import AgentFence, shared_section
+        next_repair = 0.
+        owned_runtime = state.get('bot_runtime_id')
+        while True:
+            stopped = self._rotation_stop_result()
+            if stopped is not None:
+                return stopped
+            canonical, _missing = self.store.canonical.load()
+            active = canonical.get('active') or {}
+            if active.get('game') != 'hanjuku-hero':
+                with self._locked():
+                    return self._finish_locked(self._read_state(), self._local_now())
+            if owned_runtime is not None and active.get('runtime_id') != owned_runtime:
+                raise RetroCornerError('Hanjuku runtime changed during the corner')
+            owned_runtime = active.get('runtime_id')
+            fence = AgentFence(game=active['game'], runtime_id=active['runtime_id'],
+                               generation=active['generation'], lease_id=active['lease_id'])
+            adapter = make_adapter(self.g, load_game(self.g, 'hanjuku-hero'), fence=fence)
+            observation = shared_section(self.g.state_dir, adapter.observe)
+            run = observation.meta.get('hanjuku') or {}
+            with self._locked():
+                latest = self._read_state()
+                if latest.get('status') != 'active':
+                    return self._state_result(latest)
+                latest['ends_at'] = None
+                latest['end_reason'] = run.get('terminal_reason')
+                latest['bot_phase'] = run.get('phase')
+                latest['bot_actions_sent'] = run.get('actions_sent', 0)
+                latest['battles_started'] = run.get('battles_started', 0)
+                latest['battles_finished'] = run.get('battles_finished', 0)
+                latest['screen_unchanged_seconds'] = run.get('unchanged_seconds', 0)
+                latest['bot_runtime_id'] = active['runtime_id']
+                self._write_state(latest)
+                if run.get('terminal_reason') in {'game_over', 'screen_stalled'}:
+                    return self._finish_locked(latest, self._local_now())
+                if time.monotonic() >= next_repair:
+                    self._repair_active_agent(latest)
+                    next_repair = time.monotonic() + AGENT_REPAIR_POLL_SECONDS
+            self._sleep(2.)
 
     def _retry_restoring_tick(self, now: dt.datetime) -> CornerResult | None:
         """Retry a queued corner restore before considering a new slot."""
