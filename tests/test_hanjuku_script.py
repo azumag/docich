@@ -242,7 +242,11 @@ def test_corrupt_terminal_record_cannot_authorize_teardown(tmp_path):
 
 
 def test_optional_concert_exits_instead_of_selecting_the_same_track():
-    rgb=bytearray(frame((16,72,57)).rgb)
+    rgb=bytearray(frame((160,110,60)).rgb)
+    for y in range(150,208):
+        for x in range(18,236):
+            i=(y*256+x)*3
+            rgb[i:i+3]=bytes((16,72,57))
     for y in range(128):
         for x in (*range(32),*range(224,256)):
             i=(y*256+x)*3
@@ -254,3 +258,25 @@ def test_optional_concert_exits_instead_of_selecting_the_same_track():
         i=(184*256+x)*3
         rgb[i:i+3]=bytes((197,141,74))
     assert decide(Frame(256,224,bytes(rgb)),{})[0][0]['buttons']==['b']
+
+
+def test_red_curtain_merchant_exits_price_list_then_advances_farewell():
+    rgb=bytearray(frame((160,110,60)).rgb)
+    for y in range(128):
+        for x in (*range(32),*range(224,256)):
+            i=(y*256+x)*3
+            rgb[i:i+3]=bytes((200,0,0))
+    for y in range(150,208):
+        for x in range(18,236):
+            i=(y*256+x)*3
+            rgb[i:i+3]=bytes((16,72,57))
+    farewell=Frame(256,224,bytes(rgb))
+    for y in range(30,145):
+        for x in range(120,236):
+            i=(y*256+x)*3
+            rgb[i:i+3]=bytes((16,72,57))
+    shop=Frame(256,224,bytes(rgb))
+    assert classify(shop)=='shop'
+    actions,state=decide(shop,{})
+    assert actions[0]['buttons']==['b']
+    assert decide(farewell,state)[0][0]['buttons']==['a']
