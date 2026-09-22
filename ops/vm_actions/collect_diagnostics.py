@@ -40,6 +40,16 @@ Observed sources (all read-only):
     (tmp/state/corner_boundary_*.json, ab_state.json, ab_games.jsonl,
     ab_candidate/): only presence, counts, enums and mtimes; strategy/hash
     bodies and environment values are never read out.
+  - the registered chat_worker's own live environ (#882), restricted to a
+    fixed 4-name allowlist (never the raw block, never any other name) and
+    projected through the already-reviewed
+    docich.semantic_decision.diagnostics.describe(), which returns only
+    backend/route/requested_model/credential-presence -- never a credential
+    value. This is the one narrow, reviewed exception to "raw environment
+    values are never read out" above: it is a fixed-shape projection of
+    exactly two non-secret configuration strings and a presence boolean,
+    the same bounded-projection contract every other source in this file
+    already follows, never an environment dump.
 
 Never emitted during normal diagnostics: secrets, tokens, raw environment,
 prompt/generation bodies, HTTP headers, or file contents. Error previews are
@@ -72,6 +82,7 @@ PROD_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROD_ROOT / "src"))
 
 from docich.runtime_backend import _pid_is_active, _process_is_zombie  # noqa: E402
+from docich.semantic_decision.diagnostics import describe as _describe_semantic_decision  # noqa: E402
 
 import importlib.util as _importlib_util  # noqa: E402
 
@@ -747,6 +758,59 @@ def _collect_workers(soren, now):
         "required_stale": sorted(n for n in stale_pid_files if n in required),
         "details": details,
     }
+
+
+# Fixed name allowlist (#882): only these exact variable NAMES are ever read
+# from a live worker's environ. Values for the two credential names never
+# leave _read_allowlisted_environ; docich.semantic_decision.diagnostics.describe()
+# converts them to presence-only before this module ever formats output.
+SEMANTIC_DECISION_ENV_ALLOWLIST = (
+    "DOCICH_SEMANTIC_BACKEND",
+    "DOCICH_JEV_ROUTE",
+    "TYPESAFE_API_KEY",
+    "DOCICH_JEV_VERCEL_API_KEY",
+)
+
+
+def _read_allowlisted_environ(pid, names):
+    """Read only the given variable NAMES from /proc/<pid>/environ.
+
+    Returns None on any read failure (process gone, permission, non-Linux).
+    Never returns the raw environ block or a name outside ``names``.
+    """
+    try:
+        raw = (Path("/proc") / str(pid) / "environ").read_bytes()
+    except (FileNotFoundError, OSError):
+        return None
+    wanted = set(names)
+    result = {}
+    for item in raw.split(b"\0"):
+        if b"=" not in item:
+            continue
+        key, value = item.split(b"=", 1)
+        key = key.decode("utf-8", "replace")
+        if key in wanted:
+            result[key] = value.decode("utf-8", "replace")
+    return result
+
+
+def _collect_semantic_decision(workers):
+    """Effective docich semantic-decision config on the live chat_worker (#882).
+
+    Reports whether the registered chat_worker is delegating comment
+    classification to the reviewed docich core, and if so, over which route
+    -- never a credential value, only its presence. A missing/dead worker or
+    an unreadable environ is reported as such, never guessed as "legacy"
+    (an absent observation is not evidence of a disabled backend).
+    """
+    detail = workers.get("details", {}).get("chat_worker") or {}
+    pid = detail.get("pid")
+    if not pid or not detail.get("alive"):
+        return {"present": False, "readable": False}
+    env = _read_allowlisted_environ(pid, SEMANTIC_DECISION_ENV_ALLOWLIST)
+    if env is None:
+        return {"present": True, "readable": False}
+    return {"present": True, "readable": True, **_describe_semantic_decision(env)}
 
 
 def _parse_lock_owner(owner_path):
@@ -2695,6 +2759,7 @@ def main(argv):
         "meta": _collect_meta(soren, now),
         "tracked_drift": _collect_tracked_drift(PROD_ROOT),
         "workers": workers,
+        "semantic_decision": _collect_semantic_decision(workers),
         "queues": {**queues, "queue_giveups_15m": ai["queue_giveups"]},
         "ai": {
             **ai,

@@ -8,7 +8,8 @@ MAX_PAYLOAD=128*1024*1024
 OPS={'upload','deploy','bootstrap','status','exec','configure_jev','disable_jev','configure_jev_route_direct',
      'configure_jev_route_vercel','disable_jev_route','diagnostics','rebaseline','reconcile'}
 TARGETS={'preview','production'}
-DIAGNOSTICS_FILES=('ops/vm_actions/collect_diagnostics.py','ops/vm_actions/runtime_registry.py','src/docich/runtime_backend.py')
+DIAGNOSTICS_FILES=('ops/vm_actions/collect_diagnostics.py','ops/vm_actions/runtime_registry.py','src/docich/runtime_backend.py',
+                   'src/docich/semantic_decision/diagnostics.py','src/docich/semantic_decision/routes.py')
 DIAGNOSTICS_TIMEOUT=60
 DIAGNOSTICS_STDOUT_MAX=65536
 DIAGNOSTICS_JSON_MAX=49152

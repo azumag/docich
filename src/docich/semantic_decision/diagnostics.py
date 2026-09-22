@@ -2,11 +2,10 @@
 
 This module only projects an already-obtained environment mapping into the
 fixed diagnostics shape from #882's own "## diagnostics" section. It never
-reads a file, a process or a secret store itself, and it is not wired into
-any diagnostics collector yet (``ops/vm_actions/collect_diagnostics.py``).
-That wiring -- and which runtime's environment is authoritative for a given
-consumer -- is a separate reviewed gate; #942's own plan doc already listed
-"effective diagnostics" as deferred out of the shared-transport extraction.
+reads a file, a process or a secret store itself. The owner-only diagnostics
+collector supplies a fixed allowlist from the live chat worker and this module
+returns only the reviewed secret-free projection; runtime selection and I/O
+remain owned by ``ops/vm_actions/collect_diagnostics.py``.
 """
 from __future__ import annotations
 

@@ -74,6 +74,57 @@ def test_hanjuku_telemetry_is_enum_only_and_never_publishes_frames_or_state():
     assert output['bot_actions_sent'] is None and output['screen_unchanged_seconds'] is None
 
 
+def _synthetic_environ(pairs):
+    return b'\x00'.join([f'{k}={v}'.encode() for k, v in pairs.items()] + [b''])
+
+
+def test_semantic_decision_absent_worker_reports_present_false():
+    module = load_collector()
+    assert module._collect_semantic_decision({'details': {}}) == {'present': False, 'readable': False}
+    dead = {'details': {'chat_worker': {'pid': 4242, 'alive': False}}}
+    assert module._collect_semantic_decision(dead) == {'present': False, 'readable': False}
+
+
+def test_semantic_decision_unreadable_environ_reports_present_true_readable_false():
+    module = load_collector()
+    workers = {'details': {'chat_worker': {'pid': 4242, 'alive': True}}}
+    with mock.patch.object(module.Path, 'read_bytes', side_effect=FileNotFoundError):
+        assert module._collect_semantic_decision(workers) == {'present': True, 'readable': False}
+
+
+def test_semantic_decision_reads_only_the_fixed_allowlist_and_hides_credential_values():
+    module = load_collector()
+    workers = {'details': {'chat_worker': {'pid': 4242, 'alive': True}}}
+    environ = _synthetic_environ({
+        'PATH': '/usr/bin',
+        'DOCICH_SEMANTIC_BACKEND': 'jev',
+        'DOCICH_JEV_ROUTE': 'vercel',
+        'DOCICH_JEV_VERCEL_API_KEY': 'SYNTHETIC_VERCEL_SECRET',
+        'UNRELATED_OTHER_SECRET': 'SHOULD_NEVER_APPEAR',
+    })
+    with mock.patch.object(module.Path, 'read_bytes', return_value=environ):
+        result = module._collect_semantic_decision(workers)
+    assert result == {'present': True, 'readable': True, 'backend': 'jev', 'route': 'vercel',
+                      'requested_model': 'typesafe-ai/jev', 'credential': 'present'}
+    assert 'SYNTHETIC_VERCEL_SECRET' not in json.dumps(result)
+    assert 'SHOULD_NEVER_APPEAR' not in json.dumps(result)
+
+
+def test_semantic_decision_direct_route_credential_absent_and_unflagged_backend():
+    module = load_collector()
+    workers = {'details': {'chat_worker': {'pid': 4242, 'alive': True}}}
+    with mock.patch.object(module.Path, 'read_bytes',
+                           return_value=_synthetic_environ({'DOCICH_SEMANTIC_BACKEND': 'jev'})):
+        result = module._collect_semantic_decision(workers)
+    assert result == {'present': True, 'readable': True, 'backend': 'jev', 'route': 'direct',
+                      'requested_model': 'jev-1.13.0', 'credential': 'absent'}
+    with mock.patch.object(module.Path, 'read_bytes',
+                           return_value=_synthetic_environ({'TYPESAFE_API_KEY': 'unrelated-not-delegating'})):
+        result = module._collect_semantic_decision(workers)
+    assert result == {'present': True, 'readable': True, 'backend': 'legacy', 'route': None,
+                      'requested_model': None, 'credential': 'not_applicable'}
+
+
 class CollectorFixture(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="vmops-diag-")
