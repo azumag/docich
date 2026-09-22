@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -25,6 +27,24 @@ class VmOperationsPresyncWorkflowTests(unittest.TestCase):
         self.assertIn('"reconcile docich production $SHA"', workflow)
         self.assertIn("Retry production deploy after exact reconcile", workflow)
         self.assertIn("Fail unresolved deployment", workflow)
+
+    def test_reconcile_run_script_is_bash_syntax_valid(self):
+        # A latent unmatched shell group only executes when the initial deploy
+        # fails and the presynced-Soren recovery path is entered. Keep that
+        # exact workflow run block parseable so ordinary CI cannot miss it.
+        workflow = Path(".github/workflows/vm-operations.yml").read_text(encoding="utf-8")
+        start = workflow.index("      - name: Reconcile reviewed pre-synced Soren checkout")
+        end = workflow.index("      - name: Normalize other owned submodule checkouts", start)
+        block = workflow[start:end]
+        script = textwrap.dedent(block.split("        run: |\n", 1)[1])
+        result = subprocess.run(
+            ["bash", "-n"],
+            input=script,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_reconcile_and_normalize_also_accept_configured_status(self):
         # #279: deploy_git()'s own projection check can refuse a mismatched
