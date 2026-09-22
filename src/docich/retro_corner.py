@@ -808,14 +808,32 @@ class RetroCornerManager:
             ]
             if env.get("PATH"):
                 command.append(f"--setenv=PATH={env['PATH']}")
-            subprocess.run(
-                [*command, "--", *argv],
-                check=True,
-                timeout=30,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+            try:
+                submitted = subprocess.run(
+                    [*command, "--", *argv],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    stdin=subprocess.DEVNULL,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raw = exc.stderr
+                if isinstance(raw, bytes):
+                    raw = raw.decode("utf-8", "replace")
+                detail = _safe_detail((raw or "").strip())
+                raise RetroCornerError(
+                    "改善ジョブの起動がタイムアウトしました (systemd-run 30s)"
+                    + (f": {detail}" if detail else "")
+                ) from exc
+            if submitted.returncode != 0:
+                # The operator needs the exit status and systemd's own message;
+                # the full argv only pushed them past the 240-char durable limit.
+                detail = _safe_detail((submitted.stderr or "").strip())
+                raise RetroCornerError(
+                    f"改善ジョブの起動に失敗しました (rc={submitted.returncode})"
+                    + (f": {detail}" if detail else "")
+                )
             return
         with open(log_path, "ab") as log_fh:
             subprocess.Popen(

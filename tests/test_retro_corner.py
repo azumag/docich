@@ -1049,7 +1049,7 @@ class TestRetroCornerImproveSpawnEnv(RetroCornerTestBase):
 
         def fake_run(argv, **kwargs):
             calls.append((argv, kwargs))
-            return SimpleNamespace(returncode=0)
+            return SimpleNamespace(returncode=0, stderr="")
 
         mgr, _ = self.manager(["sorengame"])
         with patch.object(sys, "platform", "linux"), \
@@ -1072,7 +1072,10 @@ class TestRetroCornerImproveSpawnEnv(RetroCornerTestBase):
         assert f"--setenv=PYTHONPATH={self.g.repo_root / 'src'}" in argv
         assert f"--property=StandardOutput=append:{(self.root / 'run' / 'x.log').resolve()}" in argv
         assert f"--property=StandardError=append:{(self.root / 'run' / 'x.log').resolve()}" in argv
-        assert kwargs["check"] and kwargs["timeout"] == 30
+        assert kwargs["check"] is False
+        assert kwargs["capture_output"] is True
+        assert kwargs["text"] is True
+        assert kwargs["timeout"] == 30
 
     def test_failed_systemd_submission_is_recorded_without_fallback(self):
         from dataclasses import replace
@@ -1081,13 +1084,46 @@ class TestRetroCornerImproveSpawnEnv(RetroCornerTestBase):
         mgr, _ = self.manager(["sorengame"])
         mgr.config = replace(mgr.config, improve_agents="test-agent")
         state = {"date": "2026-09-06"}
+
+        def failed_run(argv, **kwargs):
+            return SimpleNamespace(
+                returncode=1,
+                stderr="Failed to start transient service unit: Unit is masked\n",
+            )
+
         with patch.object(sys, "platform", "linux"), \
              patch.dict(os.environ, {"INVOCATION_ID": "parent-corner"}, clear=False), \
-             patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "systemd-run")), \
+             patch("subprocess.run", side_effect=failed_run), \
              patch("subprocess.Popen", side_effect=AssertionError("unsafe parent cgroup")):
             mgr._spawn_improve_once(state)
 
         assert state["improve_job"]["spawned"] is False
+        error = state["improve_job"]["error"]
+        # The durable record must carry the exit status and systemd's message,
+        # not the argv that previously filled the 240-char limit.
+        assert "rc=1" in error
+        assert "Unit is masked" in error
+        assert "systemd-run" not in error
+
+    def test_systemd_submission_timeout_is_recorded(self):
+        from dataclasses import replace
+        from unittest.mock import patch
+
+        mgr, _ = self.manager(["sorengame"])
+        mgr.config = replace(mgr.config, improve_agents="test-agent")
+        state = {"date": "2026-09-06"}
+
+        def timed_out(argv, **kwargs):
+            raise subprocess.TimeoutExpired(cmd="systemd-run", timeout=30)
+
+        with patch.object(sys, "platform", "linux"), \
+             patch.dict(os.environ, {"INVOCATION_ID": "parent-corner"}, clear=False), \
+             patch("subprocess.run", side_effect=timed_out), \
+             patch("subprocess.Popen", side_effect=AssertionError("unsafe parent cgroup")):
+            mgr._spawn_improve_once(state)
+
+        assert state["improve_job"]["spawned"] is False
+        assert "タイムアウト" in state["improve_job"]["error"]
 
     def test_non_systemd_spawn_passes_real_ai_consent_to_child(self):
         import subprocess
