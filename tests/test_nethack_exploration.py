@@ -167,8 +167,9 @@ class TestRestOnStalledHold(unittest.TestCase):
             # has its own action
             "explore_step": (self.FREE, {}),
             "seek_food": (self.FREE, {"condition": "Hungry"}),
-            # Resting burns nutrition, so passing turns makes starvation worse.
-            "food_emergency": (self.FREE, {"condition": "Weak"}),
+            # Resting burns nutrition, so the hunger tiers above Weak stay
+            # fail-closed; only the Weak entry tier may spend one wait turn.
+            "food_emergency": (self.FREE, {"condition": "Fainting"}),
         }
         for intent, (rows, kw) in cases.items():
             with self.subTest(intent=intent):
@@ -317,12 +318,23 @@ class TestStepOutOfDeadlock(unittest.TestCase):
 
     def test_hunger_and_unknown_screens_are_never_stepped_out_of(self):
         rows = ("##@d.      ", "...........")
-        observation, decision, policy = self._decide(rows, condition="Weak")
+        observation, decision, policy = self._decide(rows, condition="Fainting")
         self.assertEqual(decision.intent, "food_emergency")
         self.assertIsNone(step_out_of_hold(decision, observation, policy.explorer))
         self.assertIsNone(rest_action_for_hold(decision, observation))
         self.assertNotIn("food_emergency", STEP_OUT_INTENTS)
         self.assertNotIn("inspect_screen", STEP_OUT_INTENTS)
+
+    def test_weak_tier_rests_one_turn_but_worse_hunger_stays_fail_closed(self):
+        free = ("###@.      ", "            ")
+        weak_obs, weak_decision, _ = self._decide(free, condition="Weak")
+        self.assertEqual(weak_decision.intent, "food_emergency")
+        rest = rest_action_for_hold(weak_decision, weak_obs)
+        self.assertIsNotNone(rest)
+        self.assertEqual(rest.text, ".")
+        faint_obs, faint_decision, _ = self._decide(free, condition="Fainting")
+        self.assertEqual(faint_decision.intent, "food_emergency")
+        self.assertIsNone(rest_action_for_hold(faint_decision, faint_obs))
 
     def test_a_decision_that_already_acts_is_left_alone(self):
         observation, decision, policy = self._decide(("###@.      ", "           "))
