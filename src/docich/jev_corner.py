@@ -51,6 +51,7 @@ DIAGNOSE_CODES = {
     "player_state_invalid": 43,
     "corner_state_active": 44,
     "corner_state_invalid": 45,
+    "program_busy": 46,
 }
 RECOVER_DIAGNOSE_CODES = {
     "ready_stopped": 0,
@@ -219,9 +220,23 @@ def _soren_root(g: GlobalConfig) -> Path:
     return root.resolve()
 
 
+def _program_busy_reason(g: GlobalConfig) -> str | None:
+    """他program cornerが枠を占有/待機中なら理由文字列、空いていれば None。
+
+    Issue #809: PAPER active中に bridge preflight が capability_missing と
+    見える誤診を防ぐ。判定不能時は corner_boundary の fail-closed に従い
+    busy 扱いにする。読み取り専用で何も書かない。
+    """
+    from .corner_boundary import other_corner_busy
+
+    return other_corner_busy(g, str(Path(g.state_dir) / STATE_FILE))
+
+
 def diagnose(g: GlobalConfig) -> str:
     """Return a fixed, non-sensitive preflight category for the owner operator."""
 
+    if _program_busy_reason(g) is not None:
+        return "program_busy"
     root = _soren_root(g)
     capability_path = root / "tmp/state/game_lifecycle/player_capabilities.json"
     if not capability_path.is_file():
@@ -603,6 +618,9 @@ def refresh_bridge(g: GlobalConfig) -> None:
 def recover_bridge(g: GlobalConfig) -> None:
     """Recover the game-only runtime left stopped by a failed bridge refresh."""
 
+    busy = _program_busy_reason(g)
+    if busy is not None:
+        raise JevCornerError("他programコーナー稼働中のため復旧しません")
     root = _soren_root(g)
     manager = JevCornerManager(g)
     payload = _assert_stopped_bridge_recovery(g, manager)

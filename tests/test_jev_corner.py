@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from docich import config
+from docich import jev_corner as jev_mod
 from docich.jev_corner import (
     JevCornerConfig,
     JevCornerError,
@@ -17,6 +18,8 @@ from docich.jev_corner import (
     _stale_precommit_recovery_category,
     diagnose,
     load_jev_corner_config,
+    recover_bridge,
+    refresh_bridge,
 )
 
 
@@ -211,6 +214,98 @@ max_requests_per_run = 500
         with self.assertRaises(JevCornerError):
             manager.start(timeout_s=1)
         self.assertEqual(manager.status()["status"], "recovery_required")
+
+
+class JevProgramBoundaryTests(unittest.TestCase):
+    """Issue #809: bridge operator honors the shared program slot."""
+
+    def _make_g(self, root: Path, soren_root: Path):
+        (root / "config/games").mkdir(parents=True)
+        (root / "config/docich.toml").write_text(
+            "[paths]\nstate_dir = 'run'\ngames_dir = 'config/games'\n",
+            encoding="utf-8",
+        )
+        (root / "config/games/sorengame.toml").write_text(
+            f"""
+[game]
+name = "sorengame"
+title = "Soren"
+adapter = "soren"
+
+[lifecycle]
+require_round_boundary = true
+
+[soren]
+root = "{soren_root}"
+
+[jev_corner]
+enabled = false
+one_game = true
+max_requests_per_run = 500
+""",
+            encoding="utf-8",
+        )
+        return config.load_global(root)
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = Path(self.tempdir.name)
+        self.soren_root = self.root / "soren"
+        self.g = self._make_g(self.root, self.soren_root)
+        self.program_state = self.soren_root / "tmp/state"
+        self.program_state.mkdir(parents=True)
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def _occupy_with_paper_active(self):
+        paper_state = self.program_state / "paper_corner.json"
+        paper_state.write_text(json.dumps({"status": "active"}), encoding="utf-8")
+        (self.program_state / "docich_program_active.json").write_text(
+            json.dumps({"owner_state": str(paper_state)}), encoding="utf-8"
+        )
+
+    def _queue_retro_waiting(self):
+        import time
+
+        queue_dir = self.program_state / "docich_program_queue"
+        queue_dir.mkdir(parents=True, exist_ok=True)
+        (queue_dir / "retro_corner.json").write_text(
+            json.dumps({"status": "waiting", "requested_at": time.time()}),
+            encoding="utf-8",
+        )
+
+    def test_diagnose_reports_program_busy_before_capability(self):
+        # capability file is absent AND paper owns the slot: the operator must
+        # see program_busy, not a misleading capability_missing (issue #809).
+        self._occupy_with_paper_active()
+        self.assertEqual(diagnose(self.g), "program_busy")
+
+    def test_diagnose_reports_program_busy_for_queued_retro(self):
+        self._queue_retro_waiting()
+        self.assertEqual(diagnose(self.g), "program_busy")
+
+    def test_diagnose_keeps_capability_missing_when_program_free(self):
+        self.assertEqual(diagnose(self.g), "capability_missing")
+
+    def test_refresh_bridge_refuses_without_side_effects(self):
+        self._occupy_with_paper_active()
+        with patch.object(jev_mod, "JevCornerManager") as manager_cls:
+            with self.assertRaises(JevCornerError):
+                refresh_bridge(self.g)
+            manager_cls.assert_not_called()
+
+    def test_recover_bridge_refuses_without_side_effects(self):
+        self._occupy_with_paper_active()
+        with patch.object(
+            jev_mod, "_assert_stopped_bridge_recovery"
+        ) as bridge_recovery:
+            with self.assertRaises(JevCornerError):
+                recover_bridge(self.g)
+            bridge_recovery.assert_not_called()
+
+    def test_program_free_leaves_recovery_path_intact(self):
+        self.assertIsNone(jev_mod._program_busy_reason(self.g))
 
 
 if __name__ == "__main__":
