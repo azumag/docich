@@ -29,6 +29,28 @@ def die(msg='VM operation rejected'):
     print(msg,file=sys.stderr); raise SystemExit(1)
 
 
+UNEXPECTED_TRACEBACK_MAX = 32768
+
+def _log_unexpected_traceback(cfg):
+    """Best-effort owner-only record of an unexpected failure (docich#410).
+
+    Never raises: logging must not change the fixed-code rejection contract.
+    Without a loaded config there is no state dir to write to; the fixed
+    response below still applies.
+    """
+    if cfg is None:
+        return
+    try:
+        import traceback
+        logs = state_root(cfg)/'logs'; logs.mkdir(parents=True,exist_ok=True)
+        opid = uuid.uuid4().hex; log = logs/f'unknown-{opid}.log'
+        fd = os.open(log,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+        with os.fdopen(fd,'w',encoding='utf-8',errors='replace') as out:
+            out.write(traceback.format_exc()[-UNEXPECTED_TRACEBACK_MAX:])
+    except Exception:
+        pass
+
+
 # Fixed, secret-free reason codes for deploy/bootstrap/rebaseline rejections (#377).
 # Raw exception strings are never exposed to callers; unknown reasons collapse to
 # a single generic code.
@@ -1159,9 +1181,10 @@ def status_result(cfg,repo,target,sha):
 
 def main():
     if len(sys.argv)!=2: die()
-    cfg=load_config(Path(sys.argv[1])); op,repo,target,sha=parse_command(cfg)
-    lock=state_root(cfg)/'vm-operations.lock'; lock.parent.mkdir(parents=True,exist_ok=True)
+    cfg = None
     try:
+        cfg=load_config(Path(sys.argv[1])); op,repo,target,sha=parse_command(cfg)
+        lock=state_root(cfg)/'vm-operations.lock'; lock.parent.mkdir(parents=True,exist_ok=True)
         with open(lock,'a+') as f:
             fcntl.flock(f,fcntl.LOCK_EX)
             if op=='upload': result=upload(cfg,repo,target,sha)
@@ -1177,6 +1200,15 @@ def main():
             else: result=status_result(cfg,repo,target,sha)
     except ValueError as exc:
         die('VM operation rejected: %s' % reason_code(exc))
+    except Exception:
+        # Issue #410: deploy経路の non-ValueError (CalledProcessError /
+        # TimeoutExpired / OSError 等) が bare raise で素通しし、traceback
+        # 越しに command argv や filesystem path を Actions へ出す経路を塞ぐ。
+        # 応答は固定 code のみ。raw traceback は owner 診断用に VM 側の
+        # 0600 ログへ best-effort で残し、stdout/stderr には出さない。
+        # KeyboardInterrupt / SystemExit (BaseException) は対象外。
+        _log_unexpected_traceback(cfg)
+        die('VM operation rejected: operation_rejected')
     print(json.dumps(result,separators=(',',':')))
     if result.get('exit_code',0): raise SystemExit(result['exit_code'])
 
