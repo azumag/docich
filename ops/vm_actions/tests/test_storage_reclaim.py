@@ -511,6 +511,23 @@ class ControlPlaneWiringTests(unittest.TestCase):
         self.assertNotIn('"$home_root/soren-persist"', text)
         self.assertIn("live streaming encoder", text)
 
+    def test_helper_payload_fits_gateway_stdin_cap(self):
+        # gateway execute() reads at most 16384 bytes from stdin; the control
+        # plane prepends a 3-line preamble (APPLY / VOICEVOX_ARCHIVE /
+        # AIVIS_ENGINE). Exceeding the cap makes every production reclaim run
+        # fail with operation_rejected (observed 2026-09-23 on PR #1005's
+        # first apply attempt: helper had grown to 16919 bytes).
+        preamble = b"APPLY=0\nVOICEVOX_ARCHIVE=0\nAIVIS_ENGINE=0\n"
+        payload = preamble + HELPER.read_bytes()
+        self.assertLessEqual(
+            len(payload), 16384,
+            f"helper + preamble = {len(payload)} bytes exceeds the 16384-byte "
+            "gateway exec stdin cap; trim comments or split the helper",
+        )
+        # Leave headroom for future flag additions (warn before it is too late).
+        self.assertLessEqual(len(payload), 16000,
+                             "helper is within 384 bytes of the gateway cap; trim now")
+
 
 if __name__ == "__main__":
     unittest.main()
