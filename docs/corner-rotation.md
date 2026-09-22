@@ -96,7 +96,8 @@ canonical名へのrelative aliasになり、旧名と新名を独立timerとし�
 移行は`ops/vm_actions/corner_rotation_timer_migration_epoch`をreview済みで追加した
 deployだけが実行し、旧timerのstop/disable後でなければ切り替えない。旧serviceが
 activeならkillせず中断する。review済み内容と一致しない旧unitは上書きしない。
-rollbackは`ops/vm_actions/rollback_corner_rotation_timer.sh`が新timerを停止して
+rollbackはcanonical operator workflowの固定operation `rollback-timer`（またはowner-only `exec`）が
+`ops/vm_actions/rollback_corner_rotation_timer.sh`を実行し、新timerを停止して
 旧regular unitを復元する。state、lock、pause marker、game-switch receiptは
 移行・rollbackで変更しない。`bin/docich`は全corner入口を既存trading Python環境で
 実行可能にする。
@@ -234,3 +235,16 @@ canonical VM deploy後に、timer active/enabled、待機理由、game-switch/FI
 - 未実施: rollback操作の実機試験（rollback helperはowner-only `exec`で実行可能。固定operationへの
   配線は後続）、24時間観測、受入ゲート1〜5の残り。epochはmainに残っているため、rollbackを
   恒久化する場合はepochをrevertするPRが必要。
+
+### 2026-09-22 名称移行 第3段階（rollback operation配線）
+
+- canonical operator workflow `.github/workflows/corner-rotation-operator.yml` に固定operation
+  `rollback-timer` を追加し、`ops/vm_actions/authorize_corner_rotation.py` の許可operationへ加えた。
+  owner / actor ID / protected main / current-main一致 / production確認 / 新旧workflow path完全一致の
+  既存契約は不変。legacy workflow（`retro-corner-operator.yml`）にはoperationを追加しない。
+- rollbackはcanonical serviceがactiveならkillせず中断し（exit 33）、state / lock / pause marker /
+  game-switch receiptを変更せず、共有配信・FFmpeg・音声・通知・`docich.service`をrestartしない。
+- epochはmainに残っているため、rollback後も次のdeployで再migrationされる。恒久rollbackは
+  epochのrevert PRが必要。
+- 実機rollbackは未実施。受入は固定operationのreview/CIと、配線後のdeployでcanonical維持が
+  継続することまで。

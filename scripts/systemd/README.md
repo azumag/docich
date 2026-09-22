@@ -132,8 +132,9 @@ bin/docich --config config/docich.soren-live.toml trading status
   `ops/vm_actions/migrate_corner_rotation_timer.sh` を実行する。
 - migrationは旧timerのstop/disable後でなければ切り替えず、旧serviceがactiveなら
   killせず中断する。旧unitがreview済み内容と一致しない場合は上書きしない。
-- rollbackは `ops/vm_actions/rollback_corner_rotation_timer.sh` が新timerを停止し、
-  旧regular unitを復元する。state/lock/pause marker/receiptは変更しない。
+- rollbackは canonical operator workflow の固定operation `rollback-timer`
+  （またはowner-only `exec`）が `ops/vm_actions/rollback_corner_rotation_timer.sh` を実行し、
+  新timerを停止して旧regular unitを復元する。state/lock/pause marker/receiptは変更しない。
 - 共有の `docich.service` / Soren / 表示 / 音声 / 配信unitは移行・rollbackで
   restartしない。installerはunitを一時ファイルへ描画してrenameで配置し、
   symlink（alias）へ直接書き込まない。

@@ -79,6 +79,12 @@ class RetroCornerAuthorizeTests(unittest.TestCase):
             {"operation": "restart-service", "target": "production", "ref": "main"},
         )
 
+    def test_legacy_auth_does_not_expose_the_timer_rollback(self):
+        # The legacy workflow has no rollback option; its authorization set
+        # stays at the two fixed corner operations.
+        result = self.run_auth(INPUT_OPERATION="rollback-timer")
+        self.assertNotEqual(result.returncode, 0)
+
 
 class RetroCornerOperatorPolicyTests(unittest.TestCase):
     def test_script_has_only_the_fixed_user_service_restart(self):

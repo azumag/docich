@@ -22,7 +22,7 @@ WORKFLOWS = (
     ".github/workflows/corner-rotation-operator.yml",
     ".github/workflows/retro-corner-operator.yml",
 )
-ALLOWED_OPERATIONS = {"restart-service", "recover-failed"}
+ALLOWED_OPERATIONS = {"restart-service", "recover-failed", "rollback-timer"}
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 
 
