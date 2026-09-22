@@ -64,7 +64,7 @@ def test_each_live_brain_has_an_improvement_preset(game):
     assert game in bot_games()
     preset = bot_preset(None, game)
     assert preset["bot_cmd"][-1] == f"brains/{game}/brain.py"
-    assert preset["cols"] == 80
+    assert preset["cols"] == (29 if game == "pacman4console" else 80)
     assert preset["rows"] == (32 if game == "pacman4console" else 24)
 
 
