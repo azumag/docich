@@ -1373,6 +1373,16 @@ ROTATION_STATUSES = frozenset({
     "running", "promoted", "kept", "improved", "dry-run", "skipped",
 })
 
+# Fixed failure taxonomy of the end-of-corner improvement job. Keep in sync
+# with docich.corner_improve.CornerImproveError codes; unknown values stay
+# "unknown" instead of leaking a free-text reason.
+ROTATION_IMPROVE_REASON_CODES = frozenset({
+    "state-read", "corner-window", "gate-disabled", "llm-call", "llm-rc",
+    "llm-empty", "llm-format", "llm-keys", "llm-values", "llm-unexpected",
+    "eval", "unexpected",
+})
+ROTATION_IMPROVE_PHASES = frozenset({"state", "llm", "eval", "unknown"})
+
 
 def _rotation_evidence_file(state_dir, relative):
     """Bounded fixed-path read; do not follow links to unrelated runtime data."""
@@ -1465,6 +1475,8 @@ def _collect_rotation_evidence(state_dir):
                 status=_rotation_enum(raw.get("status"), ROTATION_STATUSES),
                 started_at=_rotation_time(raw.get("started_at")),
                 completed_at=_rotation_time(raw.get("completed_at")),
+                reason_code=_rotation_enum(raw.get("reason_code"), ROTATION_IMPROVE_REASON_CODES),
+                phase=_rotation_enum(raw.get("phase"), ROTATION_IMPROVE_PHASES),
             )
         result["improvements"][game] = entry
     return result
