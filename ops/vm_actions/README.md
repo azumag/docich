@@ -8,8 +8,9 @@ main の本番反映、branch/commit の preview 反映、状態確認、owner c
 - VM credential、Environment `vm-operations`、SSH gateway、production/preview workflow は **docich だけ**が所有します。
 - `soviet_now` 側には VM 用 Environment / Secrets / workflow を置きません。`soviet_now` はゲーム・AI・ロジックの source repository として独立させます。
 - 本番で使う `soviet_now` の版は、docich の `games/soviet_now` gitlink が固定します。`soviet_now` main の更新だけでは VM は変わりません。
+- 運用handoffはdocichルートの非公開ローカル正本だけ。公開用の `ops/runtime_context/ops_brief.json` はdocichで追跡し、gatewayが同一deploy transaction内でruntime `prompts/ops_brief.md` を生成します。gitlink変更やSorenコミットは不要です。ソース照合・初回gateway導入・stale検出は [ops-brief.md](../../docs/operations/ops-brief.md) を参照してください。
 - docich production deploy は親 commit を更新した後、allowlist 済み submodule を親 gitlink の commit へ同期します。現在の allowlist は `games/soviet_now` と `games/hanjuku-sfc-speedrun` です。
-- 配信中の `/home/ubuntu/soren` への反映も **docich gatewayだけ**が担当します。`games/soviet_now` の旧gitlink→新gitlinkで変更されたtracked fileだけを投影し、変更対象のlive fileが旧commitと一致しなければ上書きせず停止します。
+- 配信中の `/home/ubuntu/soren` への反映も **docich gatewayだけ**が担当します。Sorenコードは `games/soviet_now` の旧gitlink→新gitlinkで変更されたtracked fileを投影します。親管理の `prompts/ops_brief.md` は親生成物から別途投影します。変更対象のlive fileが既知の旧内容と一致しなければ上書きせず停止します。
 - submodule URL、HEAD、tracked working tree、投影対象live file が期待値と違う場合は fail-closed します。
 
 ## Security boundary
@@ -104,7 +105,7 @@ sudo bash ops/vm_actions/install_vm_gateway.sh ~/.ssh/github-vm-ops.pub ubuntu
 ## Daily use
 
 - **docich main merge → production**: main push で最新mainを本番へ反映します。
-- **soviet_now更新を本番へ出す**: soviet_now側変更をmainへ入れた後、docichで `games/soviet_now` gitlinkをそのcommitへ更新してPR → docich mainへマージします。docich gatewayがgitlink差分だけをlive Sorenへ安全に投影します。
+- **soviet_now更新を本番へ出す**: soviet_now側変更をmainへ入れた後、docichで `games/soviet_now` gitlinkをそのcommitへ更新してPR → docich mainへマージします。docich gatewayがgitlink差分をlive Sorenへ安全に投影します。親管理のops_briefはdocich生成物が配布元で、gitlink更新とは独立して同期します。
 - **branch/commitをVM test areaへ**: `deploy / preview / ref=<branch-or-sha>`。成功時は展開済みpreviewを現在要求されたSHAを含む最大2世代へGCします（dirty/drift releaseは削除しません）。Git bundle は別の bounded retention で安全にローテーションします。
 - **preview command**: 同じrefで `exec / preview`。本番filesystem/networkから隔離されます。
 - **production command**: `exec / production / ref=main / confirm=production`。stdout/stderr本文はVM private logだけに保存します。

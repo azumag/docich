@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import configparser, fcntl, hashlib, json, os, re, shutil, stat, subprocess, sys, tempfile, time, uuid
+import configparser, fcntl, hashlib, importlib.util, json, os, re, shutil, stat, subprocess, sys, tempfile, time, uuid
 from pathlib import Path, PurePosixPath
+
+# Load only the sibling installed with this trusted gateway, never candidate code.
+_brief_spec=importlib.util.spec_from_file_location('vmops_brief',Path(__file__).with_name('ops_brief.py'))
+ops_brief=importlib.util.module_from_spec(_brief_spec)
+_brief_spec.loader.exec_module(ops_brief)
+_projection_spec=importlib.util.spec_from_file_location('vmops_projection_io',Path(__file__).with_name('projection_io.py'))
+projection_io=importlib.util.module_from_spec(_projection_spec)
+_projection_spec.loader.exec_module(projection_io)
 
 SHA_RE=re.compile(r'[0-9a-f]{40}\Z')
 MAX_PAYLOAD=128*1024*1024
@@ -69,6 +77,9 @@ REASON_CODES={
  'requested object is not commit':'bundle_object_invalid',
  'managed projection drift':'managed_projection_drift',
  'managed projection missing':'managed_projection_missing',
+ 'ops brief projection drift':'ops_brief_projection_drift',
+ 'ops brief artifact removal refused':'ops_brief_artifact_removal_refused',
+ 'ops brief repair conflict':'ops_brief_repair_conflict',
  'git deployment verification failed':'deployment_verification_failed',
  'submodule deployment verification failed':'submodule_verification_failed',
  'missing .gitmodules':'missing_gitmodules',
@@ -404,7 +415,7 @@ def _safe_projection_path(root:Path, rel:str)->Path:
     if root.is_symlink(): raise ValueError('projection root is a symlink')
     for part in p.parts:
         current=current/part
-        if current.exists() and current.is_symlink(): raise ValueError('symlink in projection path')
+        if current.is_symlink(): raise ValueError('symlink in projection path')
     return current
 
 
@@ -434,8 +445,9 @@ def _blob_bytes(root:Path, obj:str)->bytes:
 
 
 def _live_meta(path:Path):
+    if path.is_symlink(): raise ValueError('projection path is not a regular file')
     if not path.exists(): return None
-    if path.is_symlink() or not path.is_file(): raise ValueError('projection path is not a regular file')
+    if not path.is_file(): raise ValueError('projection path is not a regular file')
     data=path.read_bytes()
     return {'sha256':hashlib.sha256(data).hexdigest(),'mode':stat.S_IMODE(path.stat().st_mode)}
 
@@ -465,12 +477,13 @@ def _plan_projection(subrepo:Path, destination:Path, old_sha:str, new_sha:str):
             raise ValueError(f'projection drift detected: {rel}')
         old_data=_blob_bytes(subrepo,old_entry['object']) if old_entry else None
         new_data=_blob_bytes(subrepo,new_entry['object']) if new_entry else None
-        changes.append({'path':live,'old_data':old_data,'old_mode':old_entry['mode'] if old_entry else None,
+        changes.append({'path':live,'_binding':projection_io.ProjectionPath(destination,rel),
+                        'old_data':old_data,'old_mode':old_entry['mode'] if old_entry else None,
                         'new_data':new_data,'new_mode':new_entry['mode'] if new_entry else None})
     return changes
 
 
-def _plan_repaired_projection(subrepo, destination, old_sha, new_sha, pending):
+def _plan_repaired_projection(subrepo, destination, old_sha, new_sha, pending, excluded=()):
     """Plan main against recorded live patches; no writes and no silent overwrite."""
     by_path = {}
     remaining = []
@@ -479,6 +492,8 @@ def _plan_repaired_projection(subrepo, destination, old_sha, new_sha, pending):
             raise ValueError('incomplete pending repair; operator recovery required')
         keep = {}
         for rel, meta in repair['files'].items():
+            if rel in excluded:
+                raise ValueError('ops brief repair conflict')
             if rel in by_path:
                 raise ValueError('pending repair overlap')
             by_path[rel] = meta
@@ -497,7 +512,7 @@ def _plan_repaired_projection(subrepo, destination, old_sha, new_sha, pending):
             remaining.append({**repair, 'files': keep})
     changes = []
     for rel in _changed_paths(subrepo, old_sha, new_sha):
-        if rel in by_path:
+        if rel in by_path or rel in excluded:
             continue
         live = _safe_projection_path(destination, rel)
         before = _tree_entry(subrepo, old_sha, rel)
@@ -512,7 +527,7 @@ def _plan_repaired_projection(subrepo, destination, old_sha, new_sha, pending):
             continue
         if live_meta != before_meta:
             raise ValueError(f'projection drift detected: {rel}')
-        changes.append({'path': live,
+        changes.append({'path': live,'_binding':projection_io.ProjectionPath(destination,rel),
                         'old_data': _blob_bytes(subrepo, before['object']) if before else None,
                         'old_mode': before['mode'] if before else None,
                         'new_data': _blob_bytes(subrepo, after['object']) if after else None,
@@ -527,34 +542,38 @@ def _change_meta(change, prefix):
 
 def _assert_projection_current(changes, prefix):
     for change in changes:
-        if _live_meta(change['path'])!=_change_meta(change,prefix):
+        binding=change['_binding']
+        binding.verify_escrows()
+        if binding.current()!=_change_meta(change,prefix):
             raise ValueError('concurrent projection drift')
 
 
 def _apply_projection(changes):
     for change in changes:
         _assert_projection_current([change],'old')
-        path=change['path']
-        if change['new_data'] is None:
-            if path.exists(): path.unlink()
-        else:
-            atomic_write(path,change['new_data'],change['new_mode'])
+        change['_binding'].replace(_change_meta(change,'old'),change['new_data'],change['new_mode'])
 
 
 def _rollback_projection(changes):
     drift=False
     for change in reversed(changes):
-        path=change['path']
-        current=_live_meta(path)
-        if current==_change_meta(change,'old'): continue
-        if current!=_change_meta(change,'new'):
+        binding=change['_binding']
+        try:
+            binding.verify_escrows()
+            current=binding.current()
+            if current==_change_meta(change,'old'): continue
+            if not binding.mutated or current!=_change_meta(change,'new'):
+                raise ValueError('concurrent projection drift')
+            binding.replace(_change_meta(change,'new'),change['old_data'],change['old_mode'])
+        except (OSError,ValueError):
             drift=True
-            continue  # never erase an unknown writer's data during rollback
-        if change['old_data'] is None:
-            if path.exists(): path.unlink()
-        else:
-            atomic_write(path,change['old_data'],change['old_mode'])
     if drift: raise ValueError('concurrent drift preserved; operator recovery required')
+
+
+def _close_projection_plans(plans):
+    for changes in plans:
+        for change in changes:
+            change['_binding'].close()
 
 
 def _verify_pending_live(cfg,repo,pending):
@@ -575,6 +594,71 @@ def _verify_managed_projections(cfg,repo,state):
             if (projection,rel) in pending: continue
             if _live_meta(_safe_projection_path(Path(mappings[projection]),rel))!=meta:
                 raise ValueError('managed projection drift')
+    _verify_ops_brief(cfg,repo,state['sha'])
+
+
+def _ops_brief_at(root, commit):
+    entry=_tree_entry(root,commit,ops_brief.ARTIFACT)
+    if entry is None: return None
+    data=_blob_bytes(root,entry['object'])
+    ops_brief.validate(data)
+    return data
+
+
+def _ops_brief_destination(cfg,repo):
+    destination=cfg['repos'][repo].get('projections',{}).get(ops_brief.PROJECTION)
+    if destination is None: raise ValueError('managed projection missing')
+    return _safe_projection_path(Path(destination),ops_brief.DESTINATION)
+
+
+def _verify_ops_brief(cfg,repo,commit):
+    root=Path(cfg['repos'][repo]['production'])
+    data=_ops_brief_at(root,commit)
+    if data is None: return
+    expected={'sha256':ops_brief.digest(ops_brief.render(data)),'mode':0o644}
+    if _live_meta(_ops_brief_destination(cfg,repo))!=expected:
+        raise ValueError('ops brief projection drift')
+
+
+def _ops_brief_health(cfg,repo,commit):
+    """Fixed vocabulary only; no prompt text, paths or source hashes in logs."""
+    try:
+        if not SHA_RE.fullmatch(commit or ''): return 'unknown'
+        root=Path(cfg['repos'][repo]['production'])
+        if _ops_brief_at(root,commit) is None: return 'unmanaged'
+        _verify_ops_brief(cfg,repo,commit)
+        return 'matched'
+    except ValueError as exc:
+        return 'drift' if str(exc)=='ops brief projection drift' else 'unknown'
+    except Exception:
+        return 'unknown'
+
+
+def _plan_ops_brief(cfg,repo,root,old_parent,new_parent):
+    old_data=_ops_brief_at(root,old_parent)
+    new_data=_ops_brief_at(root,new_parent)
+    if old_data is not None and new_data is None:
+        raise ValueError('ops brief artifact removal refused')
+    if new_data is None: return None
+    live=_ops_brief_destination(cfg,repo)
+    if old_data is None:
+        # One-time migration: accept only the exact old reviewed submodule blob,
+        # never an arbitrary/stale live memo. Preserve unknown drift for review.
+        old_sub=submodule_gitlink_at(root,old_parent,ops_brief.PROJECTION)
+        if old_sub is None: raise ValueError('projected submodule must exist in both parent commits')
+        subrepo=root/ops_brief.PROJECTION
+        entry=_tree_entry(subrepo,old_sub,ops_brief.DESTINATION)
+        before=_blob_bytes(subrepo,entry['object']) if entry else None
+        old_mode=entry['mode'] if entry else None
+    else:
+        before=ops_brief.render(old_data)
+        old_mode=0o644
+    destination=cfg['repos'][repo]['projections'][ops_brief.PROJECTION]
+    change={'path':live,'_binding':projection_io.ProjectionPath(destination,ops_brief.DESTINATION),
+            'old_data':before,'old_mode':old_mode,
+            'new_data':ops_brief.render(new_data),'new_mode':0o644}
+    _assert_projection_current([change],'old')
+    return change
 
 
 def _verify_pending_health(cfg,pending):
@@ -601,6 +685,7 @@ def _plan_projections(cfg,repo,root:Path,old_parent:str,new_parent:str, pending=
     plans=[]
     remaining=[]
     pending=pending or []
+    brief_change=_plan_ops_brief(cfg,repo,root,old_parent,new_parent)
     mappings=cfg['repos'][repo].get('projections', {})
     if any(r.get('projection') not in mappings for r in pending):
         raise ValueError('pending repair projection missing')
@@ -612,9 +697,12 @@ def _plan_projections(cfg,repo,root:Path,old_parent:str,new_parent:str, pending=
         if old_sub is None or new_sub is None: raise ValueError('projected submodule must exist in both parent commits')
         subrepo=root/sub_path
         if git(subrepo,'rev-parse','HEAD')!=new_sub: raise ValueError('projected submodule is not at new gitlink')
-        changes,keep=_plan_repaired_projection(subrepo,Path(destination),old_sub,new_sub,repairs)
+        excluded=(ops_brief.DESTINATION,) if brief_change and sub_path==ops_brief.PROJECTION else ()
+        changes,keep=_plan_repaired_projection(subrepo,Path(destination),old_sub,new_sub,repairs,excluded)
         plans.append(changes)
         remaining.extend(keep)
+    if brief_change is not None:
+        plans.append([brief_change])
     return plans, remaining
 
 
@@ -654,6 +742,7 @@ def bootstrap_git(cfg,repo,sha):
     if not git_clean(root): raise ValueError('tracked VM drift detected')
     head=git(root,'rev-parse','HEAD')
     if not SHA_RE.fullmatch(head): raise ValueError('invalid current HEAD')
+    _verify_ops_brief(cfg,repo,head)
     write_json(state,{'mode':'git','sha':head,'previous_head':None})
     return {'status':'bootstrapped','sha':head}
 
@@ -749,9 +838,15 @@ def deploy_git(cfg,repo,sha):
                     entries.update({rel:meta['after'] for rel,meta in repair['files'].items()
                                     if (projection,rel) not in remaining_paths})
         final_state={**state,'mode':'git','sha':sha,'previous_head':old,'pending_repairs':remaining,'managed_projection_files':managed}
+        brief=_ops_brief_at(root,sha)
+        if brief is not None:
+            entries=managed.setdefault(ops_brief.PROJECTION,{})
+            entries[ops_brief.DESTINATION]={'sha256':ops_brief.digest(ops_brief.render(brief)),'mode':0o644}
+            final_state['ops_brief_source_sha256']=ops_brief.validate(brief)['source_sha256']
         write_json(state_path,final_state)
         _verify_managed_projections(cfg,repo,final_state)
         _verify_pending_live(cfg,repo,remaining)
+        for changes in applied: _assert_projection_current(changes,'new')
     except Exception as failure:
         rollback_errors=[]
         for changes in reversed(applied):
@@ -768,6 +863,8 @@ def deploy_git(cfg,repo,sha):
             raise ValueError('rollback incomplete; unknown drift preserved; recovery required') from failure
         if intent_written: write_json(state_path,state)
         raise
+    finally:
+        _close_projection_plans(projection_plans)
     return {'status':'deployed','sha':sha}
 
 def deploy_prod(cfg,repo,sha):
@@ -789,6 +886,7 @@ def rebaseline_git(cfg,repo,sha):
     if not git_clean(root): raise ValueError('tracked VM drift detected')
     head=git(root,'rev-parse','HEAD')
     if not SHA_RE.fullmatch(head): raise ValueError('invalid current HEAD')
+    _verify_ops_brief(cfg,repo,head)
     bundle=bundle_file(cfg,repo,sha)
     if not bundle.is_file(): raise ValueError('bundle missing')
     subprocess.run(['git','-C',str(root),'-c','core.hooksPath=/dev/null','fetch','--no-recurse-submodules','--no-tags','--force',str(bundle),'HEAD'],
@@ -1146,6 +1244,7 @@ def _projection_review(cfg,repo,root:Path,sha:str):
         cur=read_json(current_file(cfg,repo))
         if cur is None or not SHA_RE.fullmatch(cur.get('sha') or ''):
             return {'_notes':{'*':'no_current_state'}}
+        parent_brief=_ops_brief_at(root,cur['sha']) is not None or _ops_brief_at(root,sha) is not None
         mappings=cfg['repos'][repo].get('projections',{})
         if not mappings:
             return {'_notes':{'*':'no_projections_configured'}}
@@ -1169,6 +1268,8 @@ def _projection_review(cfg,repo,root:Path,sha:str):
                 notes[sub_path]='no_changed_paths'; continue
             mismatched=[]
             for rel in changed:
+                if parent_brief and sub_path==ops_brief.PROJECTION and rel==ops_brief.DESTINATION:
+                    continue  # reported separately against the parent artifact
                 if len(mismatched)>=PROJECTION_REVIEW_PATH_MAX:
                     mismatched.append({'path':'...truncated...','live_present':None,'matches_new':None})
                     break
@@ -1210,7 +1311,13 @@ def diagnostics_result(cfg,repo,target,sha):
     if drift: raise ValueError('diagnostics collector drift')
     mappings=cfg['repos'][repo].get('projections',{})
     destination=mappings.get('games/soviet_now')
-    if not destination: raise ValueError('diagnostics projection missing')
+    if not destination:
+        # No collector can run without its configured runtime root. Report
+        # missing evidence, never invent healthy workers or silently use a VM
+        # path inferred from another checkout.
+        return {'status':'diagnosed','sha':sha,'diagnostics':{
+            'status':'warn','ops_brief_projection':{'status':'unknown'},
+            'collection':{'status':'unavailable','reason':'projection_missing'}}}
     env={'PATH':'/usr/local/bin:/usr/bin:/bin','LANG':'C.UTF-8','HOME':'/tmp',
          'PYTHONPATH':str(root/'src')}
     try:
@@ -1229,6 +1336,10 @@ def diagnostics_result(cfg,repo,target,sha):
     bundle_storage=_sanitize_diagnostics(_bundle_storage_review(cfg,repo))
     if review: clean={**clean,'projection_paths_needing_review':review}
     clean={**clean,'bundle_storage':bundle_storage}
+    current=read_json(current_file(cfg,repo)) or {}
+    brief_health=_ops_brief_health(cfg,repo,current.get('sha'))
+    clean['ops_brief_projection']={'status':brief_health}
+    if brief_health in {'drift','unknown'} and clean['status']=='ok': clean['status']='warn'
     if len(json.dumps(clean,separators=(',',':')).encode())>DIAGNOSTICS_JSON_MAX:
         raise ValueError('diagnostics output too large')
     return {'status':'diagnosed','sha':sha,'diagnostics':clean}
@@ -1241,7 +1352,7 @@ def status_result(cfg,repo,target,sha):
         except (ValueError,subprocess.CalledProcessError,FileNotFoundError): ready=False
         return {'status':'ready' if ready else 'drift','sha':sha}
     cur=read_json(current_file(cfg,repo))
-    if cur is None: return {'status':'bootstrap_required','sha':None}
+    if cur is None: return {'status':'bootstrap_required','sha':None,'capabilities':[ops_brief.CAPABILITY,projection_io.CAPABILITY]}
     root=Path(cfg['repos'][repo]['production']); head=git(root,'rev-parse','HEAD')
     clean=git_clean(root); expected=cur.get('sha')
     health_status='configured' if clean and head==expected else 'drift'
@@ -1252,7 +1363,8 @@ def status_result(cfg,repo,target,sha):
             _verify_pending_live(cfg,repo,cur.get('pending_repairs',[]))
             _verify_managed_projections(cfg,repo,cur)
         except Exception: health_status='drift'
-    return {'status':health_status,'sha':head,'storage':_filesystem_status(root),
+    return {'status':health_status,'sha':head,'storage':_filesystem_status(root),'capabilities':[ops_brief.CAPABILITY,projection_io.CAPABILITY],
+            'ops_brief_projection':{'status':_ops_brief_health(cfg,repo,expected)},
             'pending_repairs':[{k:r.get(k) for k in ('id','status','candidate_sha','pr_url')} for r in cur.get('pending_repairs',[])]}
 
 def main():

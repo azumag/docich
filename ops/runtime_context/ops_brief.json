@@ -1,0 +1,11 @@
+{
+  "output_sha256": "a215a4cba3fb5c6d0f556048b0fa766b8a53613533c2cedca65e249bc103b649",
+  "schema": 1,
+  "source": "handoff.md",
+  "source_sha256": "b673a7d772d8e8186204542d09db2a30cdd7a349cf5b3233f9af9429600882b7",
+  "topics": [
+    "webui の二重unit衝突を復旧して user unit へ収束（restart_webui も exit 0、 merge）",
+    "#225 のroot-owned gatewayを owner-only で更新し、 → canonical deploy で block…",
+    "Phase 2 reclaim を merge→dry-run→apply まで完遂（84% → 80%、+1.49GB 実測）・記録 m…"
+  ]
+}
