@@ -725,7 +725,7 @@ CSRF_TTL_SEC = 4 * 3600  # 4時間
 # (method, path) の組。フロントエンドは既存の window.confirm() ダイアログ
 # (streamAction/workerControl) または「保存」操作自体を再確認とみなし、
 # confirm:true を body に含める。
-CONFIRM_REQUIRED_PATHS = {("POST", "/api/workers"), ("POST", "/api/stream"), ("PUT", "/api/config")}
+CONFIRM_REQUIRED_PATHS = {("POST", "/api/workers"), ("POST", "/api/stream"), ("PUT", "/api/config"), ("POST", "/api/corners")}
 
 
 def _make_csrf_token(secret: bytes, ttl: int = CSRF_TTL_SEC, now: int | None = None) -> str:
@@ -1660,6 +1660,227 @@ def _load_json_file(path: Path) -> Any | None:
         return None
 
 
+# --- Corners / corner rotation ---------------------------------------------
+# webui は既存の reviewed one-off manual runner (bin/*-corner-manual) と固定 CLI
+# だけを呼ぶ。rotation の自動選択・24h rolling cooldown・latch の fail-closed
+# 契約は変更しない。手動 runner は別 state/lock の one-off 実行で、稼働中はその
+# state が BUSY として観測されるため rotation の次の自動発火は program slot 待ち
+# になる。読み取り側は seed・request UUID・自由文を出さない固定投影とする。
+CORNER_MANUAL_DURATION_DEFAULT = 5
+CORNER_MANUAL_DURATION_MIN = 1
+CORNER_MANUAL_DURATION_MAX = 60
+CORNER_RECOVER_TIMEOUT_SEC = 60
+CORNER_MANUAL_STATE_FILES = (
+    "retro_corner", "retro_corner_manual", "paper_corner", "paper_corner_manual",
+    "soren91_corner", "soren91_corner_manual", "nethack_corner", "nethack_corner_manual",
+)
+_ROTATION_STATUS_ENUM = frozenset({"ready", "waiting", "running", "recovery_required"})
+_ROTATION_ERROR_KIND_ENUM = frozenset({
+    "adapter-state", "adapter-timestamp", "catalog-mismatch", "execution-error",
+    "execution-unverified", "invalid-state", "unexpected",
+})
+_PENDING_PHASE_ENUM = frozenset({"selected", "dispatched"})
+_CORNER_STATUS_ENUM = frozenset({
+    "idle", "waiting", "starting", "active", "restoring", "preparing",
+    "recovery_required", "failed", "completed", "interrupted", "expired",
+    "running", "promoted", "kept", "improved", "dry-run", "skipped",
+})
+# adapter -> (one-off manual runner in bin/, --duration-minutes 有無, --game 必須)
+_CORNER_MANUAL_LAUNCHERS = {
+    "game": ("docich-retro-corner-manual", True, True),
+    "meriken": ("docich-soren91-corner-manual", True, False),
+    "nethack": ("docich-nethack-corner-manual", True, False),
+    "paper": ("docich-paper-corner-manual", False, False),
+}
+
+
+def _view_str(value: Any, limit: int = 64) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        value = str(value)
+    value = value.strip()
+    return value[:limit] or None
+
+
+def _view_int(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _view_time(value: Any) -> float | None:
+    """Epoch seconds for the UI. ISO strings go through the reviewed parser."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        v = float(value)
+        return v if v > 0 else None
+    if isinstance(value, str):
+        try:
+            from .corner_rotation import timestamp
+
+            v = float(timestamp(value))
+            return v if v > 0 else None
+        except Exception:
+            return None
+    return None
+
+
+def _rotation_view(g: GlobalConfig) -> dict[str, Any]:
+    """Bounded, read-only projection of corner_rotation.json (#seed/uuid は出さない)."""
+    from .corner_catalog import cooldown_seconds, rotation_config, rotation_enabled
+
+    path = Path(g.state_dir) / "corner_rotation.json"
+    raw = _load_json_file(path)
+    out: dict[str, Any] = {"present": path.is_file(), "readable": isinstance(raw, dict)}
+    try:
+        out["enabled"] = bool(rotation_enabled(g))
+    except Exception:
+        out["enabled"] = False
+    try:
+        cfg = rotation_config(g)
+        out["schedule_mode"] = cfg.get("schedule_mode", "interval")
+        out["cooldown_seconds"] = float(cooldown_seconds(g))
+    except Exception:
+        out["schedule_mode"] = None
+        out["cooldown_seconds"] = None
+    if not isinstance(raw, dict):
+        return out
+    status = raw.get("status")
+    status = status if status in _ROTATION_STATUS_ENUM else "unknown"
+    pending = raw.get("pending")
+    pending_view: dict[str, Any] | None = None
+    if isinstance(pending, dict):
+        selected = _view_time(pending.get("selected_at"))
+        pending_view = {
+            "corner": _view_str(pending.get("corner")),
+            "phase": (pending.get("phase")
+                      if pending.get("phase") in _PENDING_PHASE_ENUM else "unknown"),
+            "age_sec": max(0, int(time.time() - selected)) if selected else None,
+        }
+    eligible: list[str] = []
+    if isinstance(raw.get("eligible"), list):
+        eligible = [item[:64] for item in raw.get("eligible") if isinstance(item, str)][:20]
+    error_kind = raw.get("error_kind")
+    out.update(
+        status=status,
+        reason=_view_str(raw.get("reason"), 64),
+        error_kind=(error_kind if error_kind in _ROTATION_ERROR_KIND_ENUM
+                    else (None if error_kind is None else "unknown")),
+        slot=_view_int(raw.get("slot")),
+        latch=(status == "recovery_required"),
+        can_recover=bool(out["enabled"]) and status == "recovery_required",
+        pending=pending_view,
+        last_slot_at=_view_time(raw.get("last_slot_at")),
+        next_due_at=_view_time(raw.get("next_due_at")),
+        last_seen_at=_view_time(raw.get("last_seen_at")),
+        eligible_count=len(eligible),
+        eligible=eligible,
+    )
+    return out
+
+
+def _game_switch_view(g: GlobalConfig) -> dict[str, Any]:
+    path = Path(g.state_dir) / "game_switch.json"
+    raw = _load_json_file(path)
+    if not isinstance(raw, dict):
+        return {"present": path.is_file(), "readable": False}
+    active = raw.get("active") if isinstance(raw.get("active"), dict) else {}
+    last = raw.get("last_result") if isinstance(raw.get("last_result"), dict) else {}
+    return {
+        "present": True,
+        "readable": True,
+        "phase": _view_str(raw.get("phase"), 32),
+        "operation": _view_str(raw.get("operation"), 32),
+        "active_game": _view_str(active.get("game")),
+        "active_generation": _view_int(active.get("generation")),
+        "last_status": _view_str(last.get("status"), 32),
+        "last_error_code": _view_str(last.get("error_code"), 64),
+        "last_to_game": _view_str(last.get("to_game")),
+        "updated_at": _view_str(raw.get("updated_at"), 40),
+    }
+
+
+def _corners_view(g: GlobalConfig) -> dict[str, Any]:
+    """Read-only page model: rotation ledger + game switch + catalog + corner states."""
+    from .corner_catalog import load_catalog
+
+    state_dir = Path(g.state_dir)
+    catalog: list[dict[str, Any]] = []
+    try:
+        for row in load_catalog(g):
+            catalog.append({
+                "id": row.id,
+                "adapter": row.adapter,
+                "game": row.game,
+                "enabled": bool(row.enabled),
+                "paused": bool(row.paused),
+                "manual": row.adapter in _CORNER_MANUAL_LAUNCHERS,
+            })
+    except Exception:
+        catalog = []
+    corners: dict[str, dict[str, Any]] = {}
+    for name in CORNER_MANUAL_STATE_FILES:
+        raw = _load_json_file(state_dir / f"{name}.json")
+        entry: dict[str, Any] = {"present": isinstance(raw, dict), "readable": isinstance(raw, dict)}
+        if isinstance(raw, dict):
+            status = raw.get("status")
+            target = raw.get("target_matches")
+            entry.update(
+                status=status if status in _CORNER_STATUS_ENUM else "unknown",
+                game=_view_str(raw.get("game")),
+                previous_game=_view_str(raw.get("previous_game")),
+                started_at=_view_time(raw.get("started_at")),
+                ends_at=_view_time(raw.get("ends_at")),
+                completed_at=_view_time(raw.get("completed_at")),
+                recovery_required=(raw.get("recovery_required")
+                                   if isinstance(raw.get("recovery_required"), bool) else None),
+                target_matches=(target if isinstance(target, int)
+                                and not isinstance(target, bool) and 1 <= target <= 100 else None),
+            )
+        corners[name] = entry
+    return {
+        "generated_at": int(time.time()),
+        "rotation": _rotation_view(g),
+        "game_switch": _game_switch_view(g),
+        "catalog": catalog,
+        "corners": corners,
+    }
+
+
+def _corner_manual_argv(g: GlobalConfig, corner_id: str, action: str,
+                        duration: int) -> tuple[list[str], dict[str, Any]]:
+    """Reviewed one-off runner argv. corner id is resolved through the catalog
+    (config-validated, game-name validated) and passed as an exec list -- never
+    through a shell."""
+    from .corner_catalog import load_catalog
+
+    try:
+        rows = {row.id: row for row in load_catalog(g)}
+    except Exception:
+        rows = {}
+    row = rows.get(corner_id)
+    if row is None:
+        raise ValueError("unknown corner")
+    spec = _CORNER_MANUAL_LAUNCHERS.get(row.adapter)
+    if spec is None:
+        raise ValueError("corner has no manual runner")
+    launcher, supports_duration, needs_game = spec
+    argv = [str(Path(g.repo_root) / "bin" / launcher), action]
+    if needs_game:
+        argv += ["--game", row.game]
+    if action == "start" and supports_duration:
+        argv += ["--duration-minutes", str(duration)]
+    return argv, {"id": row.id, "adapter": row.adapter, "game": row.game}
+
+
+def _rotation_recover_argv(g: GlobalConfig) -> list[str]:
+    """Fixed latch-recovery CLI (same contract as the owner-only operator)."""
+    return [str(Path(g.repo_root) / "bin" / "docich"), "--config", str(g.config_path),
+            "corner-rotation", "recover"]
+
+
 # --- Twitch predictions -----------------------------------------------------
 
 PREDICTION_OUTCOME_LABELS = ("建国なし", "ロシア建国(ソ連不成立)", "ソ連建国", "粛清")
@@ -2548,6 +2769,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 <nav id="tabs">
 <button data-tab="dashboard" class="active">Dashboard</button>
 <button data-tab="status">Status</button>
+<button data-tab="corners">Corners</button>
 <button data-tab="stream">Stream</button>
 <button data-tab="overlay">Overlay</button>
 <button data-tab="audio">Audio</button>
@@ -2593,6 +2815,25 @@ input:checked+.slider:before{transform:translateX(20px)}
 <div class="card"><h3>Game Count</h3><div class="kv"><dt>value</dt><dd id="status-game-count" class="mono">-</dd><dt>path</dt><dd id="status-game-count-path" class="mono">-</dd></div></div>
 <div class="actions"><button class="btn" id="status-refresh">更新</button></div>
 </div>
+</section>
+<!-- CORNERS -->
+<section id="tab-corners" style="display:none">
+<div class="card"><h2>コーナーローテーション</h2><p class="desc"><code>corner_rotation.json</code> と <code>game_switch.json</code> の読み取り専用表示（seed / request UUID / 自由文は出しません）。タブ表示中は10秒ごとに自動更新。</p>
+<div id="corners-rotation" class="help">読込中…</div>
+<div id="corners-gsw" class="help" style="margin-top:8px">-</div>
+</div>
+<div class="card"><h2>手動操作</h2><p class="desc">既存の one-off manual runner（<code>bin/*-corner-manual</code>）と固定復旧 CLI（<code>corner-rotation recover</code>）だけを起動します。rotation の 24h cooldown・latch の fail-closed は runner / CLI 側の既存契約どおりで、手動実行中は自動発火が program slot 待ちになります。復旧成功時は次回 timer tick（60秒）が同じ予約を再dispatchします。</p>
+<div class="row"><div><label>コーナー</label><select id="corners-select"></select></div>
+<div><label>分数 (1-60)</label><input id="corners-duration" type="number" min="1" max="60" value="5"/></div></div>
+<div class="actions">
+<button class="btn primary" id="corners-start">手動開始</button>
+<button class="btn" id="corners-stop">手動停止</button>
+<button class="btn danger" id="corners-recover">ローテーション復旧</button>
+<button class="btn" id="corners-refresh">更新</button>
+</div>
+<div id="corners-msg" class="help"></div>
+</div>
+<div class="card"><h2>コーナー状態</h2><div class="table-wrap"><table><thead><tr><th>state</th><th>status</th><th>game</th><th>started</th><th>ends</th><th>completed</th><th>recovery_required</th><th>matches</th></tr></thead><tbody id="corners-table"></tbody></table></div></div>
 </section>
 <!-- STREAM -->
 <section id="tab-stream" style="display:none">
@@ -4085,6 +4326,7 @@ function applyPredictionsTabVisibility(running){
   }
 }
 let statusTimer=null;
+let cornersTimer=null;
 let overlayPreviewTimer=null;
 let streamTimer=null;
 let audioTimer=null;
@@ -4326,6 +4568,81 @@ async function saveStreamSettings(){
     toast("保存しました");
     await loadConfig();
   }catch(e){ if(msg) msg.textContent=String(e); toast(String(e),5000); }
+}
+async function loadCorners(){
+  try{
+    renderCorners(await api("/api/corners"));
+  }catch(e){
+    const el=document.getElementById("corners-rotation");
+    if(el) el.textContent=String(e);
+  }
+}
+function renderCorners(d){
+  const r=d.rotation||{};
+  const rotEl=document.getElementById("corners-rotation");
+  if(rotEl){
+    const chip=r.latch
+      ? '<span class="badge" style="background:#5a1d26;color:#ffb3c0">recovery_required</span>'
+      : `<span class="badge">${esc(r.status||"-")}</span>`;
+    const pending=r.pending
+      ? ` / 予約 <b>${esc(r.pending.corner||"-")}</b> (${esc(r.pending.phase||"-")}, ${r.pending.age_sec!=null?esc(r.pending.age_sec)+"s":"-"})`
+      : "";
+    rotEl.innerHTML=[
+      `状態 ${chip}`,
+      r.reason?` / reason=${esc(r.reason)}`:"",
+      r.error_kind?` / error_kind=${esc(r.error_kind)}`:"",
+      ` / slot=${r.slot==null?"-":esc(r.slot)}`,
+      pending,
+      ` / mode=${esc(r.schedule_mode||"-")} cooldown=${r.cooldown_seconds!=null?Math.round(r.cooldown_seconds/3600)+"h":"-"}`,
+      ` / eligible=${r.eligible_count==null?"-":esc(r.eligible_count)}${r.eligible&&r.eligible.length?` [${r.eligible.map(esc).join(", ")}]`:""}`,
+      ` / next_due=${fmtTime(r.next_due_at)} last_slot=${fmtTime(r.last_slot_at)} last_seen=${fmtTime(r.last_seen_at)}`,
+      r.enabled===false?" / <b>rotation disabled</b>":"",
+    ].join("<br/>");
+    const recoverBtn=document.getElementById("corners-recover");
+    if(recoverBtn) recoverBtn.disabled=!r.can_recover;
+  }
+  const gsw=d.game_switch||{};
+  const gswEl=document.getElementById("corners-gsw");
+  if(gswEl){
+    gswEl.textContent=`game-switch: phase=${gsw.phase||"-"} active=${gsw.active_game||"-"}`
+      + ` (gen ${gsw.active_generation==null?"-":gsw.active_generation})`
+      + ` last=${gsw.last_status||"-"}${gsw.last_error_code?"/"+gsw.last_error_code:""}`
+      + ` to=${gsw.last_to_game||"-"} updated=${gsw.updated_at||"-"}`;
+  }
+  const sel=document.getElementById("corners-select");
+  if(sel && Array.isArray(d.catalog)){
+    const keep=sel.value;
+    const manual=d.catalog.filter(c=>c.manual);
+    sel.innerHTML=manual.map(c=>
+      `<option value="${esc(c.id)}">${esc(c.id)} (${esc(c.adapter)})${c.enabled?"":" [disabled]"}</option>`
+    ).join("");
+    if(keep && manual.some(c=>c.id===keep)) sel.value=keep;
+  }
+  const tb=document.getElementById("corners-table");
+  if(tb && d.corners){
+    tb.innerHTML=Object.entries(d.corners).map(([name,c])=>{
+      if(!c.present) return `<tr><td class="mono">${esc(name)}</td><td colspan="7" class="help">なし</td></tr>`;
+      return `<tr><td class="mono">${esc(name)}</td><td>${esc(c.status||"-")}</td>`
+        +`<td>${esc(c.game||"-")}</td><td>${fmtTime(c.started_at)}</td>`
+        +`<td>${fmtTime(c.ends_at)}</td><td>${fmtTime(c.completed_at)}</td>`
+        +`<td>${c.recovery_required===true?"yes":(c.recovery_required===false?"no":"-")}</td>`
+        +`<td>${c.target_matches==null?"-":esc(c.target_matches)}</td></tr>`;
+    }).join("");
+  }
+}
+async function cornerAction(payload, confirmText){
+  const msg=document.getElementById("corners-msg");
+  if(msg) msg.textContent="";
+  if(!confirm(confirmText)) return;
+  try{
+    const r=await api("/api/corners",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(Object.assign({confirm:true},payload))});
+    if(msg) msg.textContent=JSON.stringify(r);
+    toast(r.ok?`${r.action}: OK`:`${r.action}: ok=${r.ok} exit=${r.exit_code==null?"-":r.exit_code}`);
+  }catch(e){
+    if(msg) msg.textContent=String(e);
+    toast(String(e),5000);
+  }
+  await loadCorners();
 }
 async function loadStatus(){
   try{
@@ -4820,6 +5137,8 @@ document.addEventListener("DOMContentLoaded",()=>{
     if(tab==="dashboard") loadDashboard();
     if(tab==="status") { loadStatus(); if(statusTimer) clearInterval(statusTimer); statusTimer=setInterval(loadStatus,10000); }
     else { if(statusTimer) { clearInterval(statusTimer); statusTimer=null; } }
+    if(tab==="corners") { loadCorners(); if(cornersTimer) clearInterval(cornersTimer); cornersTimer=setInterval(loadCorners,10000); }
+    else { if(cornersTimer) { clearInterval(cornersTimer); cornersTimer=null; } }
     if(tab==="stream") { loadStream(); loadWorkersControl(); if(streamTimer) clearInterval(streamTimer); streamTimer=setInterval(()=>{ loadStream(); loadWorkersControl(); },10000); }
     else { if(streamTimer) { clearInterval(streamTimer); streamTimer=null; } }
     if(tab==="overlay") { loadOverlayEvents(); loadWorkBanner(); loadTop(); loadPreview(); }
@@ -4904,6 +5223,30 @@ document.addEventListener("DOMContentLoaded",()=>{
   // status
   const sRefresh=document.getElementById("status-refresh");
   if(sRefresh) sRefresh.onclick=()=>loadStatus();
+  // corners (rotation view / one-off manual start-stop / latch recovery)
+  const cRefresh=document.getElementById("corners-refresh");
+  if(cRefresh) cRefresh.onclick=()=>loadCorners();
+  const cStart=document.getElementById("corners-start");
+  if(cStart) cStart.onclick=()=>{
+    const sel=document.getElementById("corners-select");
+    const dur=document.getElementById("corners-duration");
+    const corner=sel?sel.value:"";
+    if(!corner){ toast("コーナーを選択してください"); return; }
+    const minutes=Number(dur&&dur.value?dur.value:5);
+    cornerAction({action:"start",corner,duration_minutes:minutes},
+      `コーナー ${corner} を手動開始しますか？（one-off runner・${minutes}分・確認ダイアログはこの画面だけ）`);
+  };
+  const cStop=document.getElementById("corners-stop");
+  if(cStop) cStop.onclick=()=>{
+    const sel=document.getElementById("corners-select");
+    const corner=sel?sel.value:"";
+    if(!corner){ toast("コーナーを選択してください"); return; }
+    cornerAction({action:"stop",corner},`コーナー ${corner} を手動停止しますか？`);
+  };
+  const cRecover=document.getElementById("corners-recover");
+  if(cRecover) cRecover.onclick=()=>{
+    cornerAction({action:"recover"},"ローテーションの latch を復旧しますか？（固定 CLI を実行し、ledger を手で書き換えません）");
+  };
   // stream
   const stStart=document.getElementById("stream-start");
   if(stStart) stStart.onclick=()=>streamAction("start");
@@ -5275,6 +5618,8 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_get_audio_queue()
             elif path == "/api/predictions":
                 status = self._handle_get_predictions()
+            elif path == "/api/corners":
+                status = self._handle_get_corners()
             else:
                 status = 404
                 self._send_error_json(404, "not_found")
@@ -5384,6 +5729,8 @@ class _Handler(BaseHTTPRequestHandler):
                 status = self._handle_clear_audio_queue()
             elif parsed.path == "/api/predictions/action":
                 status = self._handle_post_prediction_action()
+            elif parsed.path == "/api/corners":
+                status = self._handle_post_corners()
             else:
                 status = 404
                 self._send_error_json(404, "not_found")
@@ -6273,6 +6620,126 @@ class _Handler(BaseHTTPRequestHandler):
                 "hint": hint,
             },
         )
+        return 200
+
+    def _handle_get_corners(self) -> int:
+        """Read-only rotation/game-switch/corner projection (seed/uuid は出さない)."""
+        try:
+            view = _corners_view(self.g)
+        except Exception as exc:
+            self._send_error_json(500, "corners_unavailable", str(exc)[:200])
+            return 500
+        self._send_json(200, view)
+        return 200
+
+    def _handle_post_corners(self) -> int:
+        """One-off manual start/stop and the fixed latch recovery (issue #42 の
+        dangerous action: confirm:true 必須)。rotation の cooldown/latch 契約は
+        runner/CLI 側の既存 fail-closed に委譲する。"""
+        body, err = self._read_body()
+        if err:
+            return err
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except Exception as exc:
+            self._send_error_json(400, "invalid_json", str(exc))
+            return 400
+        if not isinstance(data, dict):
+            self._send_error_json(400, "validation_error", "body must be object")
+            return 400
+        if not _is_confirmed(data, self.headers):
+            self._send_error_json(428, "confirmation_required", "corner操作には confirm:true が必要です")
+            return 428
+        action = str(data.get("action", "")).strip().lower()
+        if action not in ("start", "stop", "recover"):
+            self._send_error_json(400, "invalid_action", "action must be start, stop or recover")
+            return 400
+        if action == "recover":
+            argv = _rotation_recover_argv(self.g)
+            try:
+                proc = subprocess.run(
+                    argv,
+                    cwd=str(self.g.repo_root),
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
+                    timeout=CORNER_RECOVER_TIMEOUT_SEC,
+                )
+            except subprocess.TimeoutExpired:
+                self._send_error_json(504, "recover_timeout",
+                                      f"{CORNER_RECOVER_TIMEOUT_SEC}s を超えて復旧が完了しませんでした")
+                return 504
+            except OSError as exc:
+                self._send_error_json(500, "recover_start_failed", str(exc)[:200])
+                return 500
+            after = _load_json_file(Path(self.g.state_dir) / "corner_rotation.json")
+            latched = isinstance(after, dict) and after.get("status") == "recovery_required"
+            outcome: dict[str, Any] = {}
+            stdout = (proc.stdout or "").strip()
+            if stdout:
+                try:
+                    parsed_out = json.loads(stdout.splitlines()[-1])
+                    if isinstance(parsed_out, dict):
+                        outcome = {key: parsed_out.get(key) for key in
+                                   ("status", "reason", "corner", "result", "latch_resolved")
+                                   if key in parsed_out}
+                except Exception:
+                    outcome = {}
+            detail = ((proc.stderr or "").strip() or stdout)[-200:]
+            self._send_json(200, {
+                # 成否は「試した」ではなく「ledger の latch が消えたか」で決める
+                # (corner-rotation recover 自身の exit 契約と同じ)。
+                "ok": proc.returncode == 0 and not latched,
+                "action": "recover",
+                "exit_code": proc.returncode,
+                "latch_resolved": not latched,
+                "outcome": outcome,
+                "detail": detail,
+            })
+            return 200
+        duration = data.get("duration_minutes", CORNER_MANUAL_DURATION_DEFAULT)
+        if isinstance(duration, bool) or not isinstance(duration, int):
+            self._send_error_json(400, "invalid_duration", "duration_minutes must be an integer")
+            return 400
+        if not (CORNER_MANUAL_DURATION_MIN <= duration <= CORNER_MANUAL_DURATION_MAX):
+            self._send_error_json(
+                400, "invalid_duration",
+                f"duration_minutes must be {CORNER_MANUAL_DURATION_MIN}..{CORNER_MANUAL_DURATION_MAX}",
+            )
+            return 400
+        corner_id = str(data.get("corner", "")).strip()
+        try:
+            argv, meta = _corner_manual_argv(self.g, corner_id, action, duration)
+        except ValueError as exc:
+            self._send_error_json(400, "invalid_corner", str(exc))
+            return 400
+        # one-off runner はコーナー終了まで生きて良い。webui の寿命や HTTP 応答に
+        # 結びつけない (detached, no shell)。
+        log_dir = self.soren_root / "tmp/logs"
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = log_dir / f"corner_manual_{meta['id']}.log"
+            with log_path.open("ab") as log_file:
+                proc = subprocess.Popen(
+                    argv,
+                    cwd=str(self.g.repo_root),
+                    stdin=subprocess.DEVNULL,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                    close_fds=True,
+                )
+        except OSError as exc:
+            self._send_error_json(500, "corner_dispatch_failed", str(exc)[:200])
+            return 500
+        self._send_json(200, {
+            "ok": True,
+            "action": action,
+            "corner": meta,
+            "duration_minutes": duration if action == "start" else None,
+            "pid": proc.pid,
+            "log": f"tmp/logs/corner_manual_{meta['id']}.log",
+        })
         return 200
 
     def _handle_get_overlay_status(self) -> int:
