@@ -209,3 +209,28 @@ canonical VM deploy後に、timer active/enabled、待機理由、game-switch/FI
   macOSで未利用のためskip（Linux CIで実行される）。
 - 本段階のdeployでは旧timerを維持し、canonical unitはVMへ配置しない。実機での
   canonical切替（epoch追加後の後続段階）と24時間観測は未実施。
+
+### 2026-09-22 名称移行 第2段階（canonical timer 切替・実測）
+
+- PR #919でepoch `ops/vm_actions/corner_rotation_timer_migration_epoch` を追加し、
+  merge後のpush deployでdeploy hook経由のmigrationを実行した。
+- 基点/結果: main `f941164f1f18cea66e7e479c23b2c351d7c166c7`。VM operations run
+  `35674462543`（deploy `uploaded`→`deployed`→`executed`、`Ensure corner rotation timer`
+  success、radio worker再起動なし＝restart marker 0件）。
+- 移行前 diagnostics（run `35674191799`）:
+  - `corner_rotation_timer = {unit: "docich-retro-corner.timer", active: true, enabled: true, legacy_alias: false}`
+  - `corner_rotation = {slot: 2, last_slot_at: 1790037296.195363, next_due_at: 1790048096.195363,
+    eligible_count: 8, interval_seconds: 10800, pending: false, status: "waiting", reason: "not-due"}`
+- 移行後 diagnostics（run `35674493731`）:
+  - `corner_rotation_timer = {unit: "docich-corner-rotation.timer", active: true, enabled: true, legacy_alias: true}`
+  - `corner_rotation` は slot / last_slot_at / next_due_at / eligible_count / interval_seconds /
+    pending が移行前と同一。`last_seen_at` のみ毎分更新（timerが継続tickしている証跡）。
+  - 総合 status ok、`tracked_drift.drift_detected=0` / `scan_complete=1`、workers 16 running、
+    `required_down` / `required_stale` 空、`stale_locks=0`、`game_switch` は `ready`/`sorengame` のまま。
+- `status` operation（run `35674552301`）: `configured` at `f941164f`。
+- 旧timerのstop/disableとcanonical timerのenableのみで、共有配信・FFmpeg・音声・通知・
+  `docich.service` の再起動は行っていない。state / lock / pause marker / game-switch receiptも
+  変更していない（上記のstate一致）。
+- 未実施: rollback操作の実機試験（rollback helperはowner-only `exec`で実行可能。固定operationへの
+  配線は後続）、24時間観測、受入ゲート1〜5の残り。epochはmainに残っているため、rollbackを
+  恒久化する場合はepochをrevertするPRが必要。
