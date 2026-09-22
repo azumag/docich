@@ -46,6 +46,19 @@ render_to_temp() {
   printf '%s' "$TEMP_PATH"
 }
 
+verify_regular_unit_matches_reviewed() {
+  local name="$1" dest="$unit_dir/$1" tmp
+  [[ -f "$dest" && ! -L "$dest" ]] || fail "legacy unit is missing or not a regular file: $dest" 31
+  tmp="$(render_to_temp "$name")"
+  if ! cmp -s "$tmp" "$dest"; then
+    rm -f "$tmp"
+    TEMP_PATH=""
+    fail "legacy unit does not match the reviewed template: $dest" 32
+  fi
+  rm -f "$tmp"
+  TEMP_PATH=""
+}
+
 install_regular_unit_if_changed() {
   local name="$1" dest="$unit_dir/$1" tmp
   [[ -L "$dest" ]] && fail "refusing to write a unit through a symlink: $dest" 22
@@ -68,9 +81,11 @@ for name in "$legacy_service" "$legacy_timer"; do
 done
 
 # Idempotency: a production already running the legacy regular units verifies
-# and exits successfully.
+# their reviewed contents as well as the timer state before exiting.
 if [[ -f "$unit_dir/$legacy_timer" && ! -L "$unit_dir/$legacy_timer" && \
       -f "$unit_dir/$legacy_service" && ! -L "$unit_dir/$legacy_service" ]]; then
+  verify_regular_unit_matches_reviewed "$legacy_service"
+  verify_regular_unit_matches_reviewed "$legacy_timer"
   systemctl --user is-enabled --quiet "$legacy_timer" || fail "legacy timer is not enabled" 25
   systemctl --user is-active --quiet "$legacy_timer" || fail "legacy timer is not active" 25
   [[ ! -e "$unit_dir/timers.target.wants/$canonical_timer" && ! -L "$unit_dir/timers.target.wants/$canonical_timer" ]] || \
