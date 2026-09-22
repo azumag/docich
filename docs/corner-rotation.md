@@ -87,9 +87,16 @@ receiptを照合して復旧するまで次の自動枠を待たせる。暗黙�
 `corner_rotation.enabled=true`のとき、旧retro/PAPER/メリケン/専用NetHackのtickは
 共通tickへ委譲する。旧profileはそのままlegacy動作を維持する。
 productionのretroゲーム一覧はcatalogから導出し、二重のリストを編集しない。
-既存`docich-retro-corner.timer/service`は互換unit名を維持し、serviceが
-`corner-rotation tick`を実行する。旧timerが複数残っても単一lock/stateを共有する。
-`bin/docich`は全corner入口を既存trading Python環境で実行可能にする。
+canonical unitは`docich-corner-rotation.service/timer`で、serviceが
+`corner-rotation tick`を実行する。移行期間は`docich-retro-corner.service/timer`が
+canonical名へのrelative aliasになり、旧名と新名を独立timerとして二重enableしない。
+移行は`ops/vm_actions/corner_rotation_timer_migration_epoch`をreview済みで追加した
+deployだけが実行し、旧timerのstop/disable後でなければ切り替えない。旧serviceが
+activeならkillせず中断する。review済み内容と一致しない旧unitは上書きしない。
+rollbackは`ops/vm_actions/rollback_corner_rotation_timer.sh`が新timerを停止して
+旧regular unitを復元する。state、lock、pause marker、game-switch receiptは
+移行・rollbackで変更しない。`bin/docich`は全corner入口を既存trading Python環境で
+実行可能にする。
 
 初回移行はretroの選択履歴とnext_dueを取り込む。legacy active/starting/pendingがあれば
 先に旧実行の終了・復旧を要求する。壊れたJSONや未知schemaは空stateとして再作成しない。
@@ -99,11 +106,13 @@ productionのretroゲーム一覧はcatalogから導出し、二重のリスト�
 ## 診断とローカル検証の引継ぎ
 
 新しい常駐worker/外部queueは追加しない。既存timerとgame-switch FIFOを使用する。
-`docich-retro-corner.timer`はdeploy時にreview済みunitを再配置してenableし、enable直後/boot後の
-30秒tickと60秒間隔のmonotonic tickを持つ。read-only diagnosticsは`corners.corner_rotation`に
+`docich-corner-rotation.timer`はdeploy時にreview済みunitを再配置してenableし、enable直後/boot後の
+30秒tickと60秒間隔のmonotonic tickを持つ。移行前の`docich-retro-corner.timer`は
+同じunitへのaliasとして解決される。read-only diagnosticsは`corners.corner_rotation`に
 状態、待機理由、slot、next_due、last_seen、last_slot、interval、適格数、pending有無を固定投影し、
-`corner_rotation_timer`にそのunitのactive/enabledだけを投影する。seed、prompt、生成文、adapter例外は
-公開しない。
+`corner_rotation_timer`に支配的なunit名（移行後は`docich-corner-rotation.timer`）と
+active/enabled、旧名が正しいaliasかを示すbounded boolean `legacy_alias`だけを投影する。
+seed、prompt、生成文、adapter例外は公開しない。
 各cornerの固定投影には実行stateの`target_matches`（有効な整数1〜100のみ）も含める。
 
 本変更の実装・テストは専用worktreeで行う。本番受入はPR/required CI/protected main/
@@ -170,3 +179,30 @@ canonical VM deploy後に、timer active/enabled、待機理由、game-switch/FI
 - `tests/test_retro_corner.py`
 - `docs/retro-rolling-rotation.md`
 - `docs/operations/runtime-diagnostics.md`
+
+### 2026-09-22 名称移行 第1段階（docich-retro-corner → docich-corner-rotation）
+
+- 目的: 実態が全corner共通rotationである旧unit名をcanonical名へ段階移行する。
+  第1段階は互換準備（実装・テスト・自己レビューと互換deploy）まで。
+  production timerの切替（旧timerのstop/alias化）は
+  `corner_rotation_timer_migration_epoch`を追加する後続段階で行う。
+- 基点: `origin/main = b5e98bc147905eed360b5cf53db7cb502fccd0b6`（#907の
+  `corners.rotation_evidence`と#909の改善復旧修正を含む最新main。固定キーは
+  維持したまま共存させている）。
+- 追加: `scripts/systemd/docich-corner-rotation.service/timer`、
+  `ops/vm_actions/migrate_corner_rotation_timer.sh`、
+  `ops/vm_actions/rollback_corner_rotation_timer.sh`、
+  `ops/vm_actions/authorize_corner_rotation.py`、
+  `ops/vm_actions/restart_corner_rotation.sh`、
+  `ops/vm_actions/recover_corner_rotation.sh`、
+  `.github/workflows/corner-rotation-operator.yml`。
+- 移行は`ops/vm_actions/corner_rotation_timer_migration_epoch`をreview済みで追加した
+  deployだけがdeploy hook経由で実行する（第1段階では未追加。hookは旧timerのみを維持）。
+- 検証: 最低限回帰 401 passed / 1 skipped / 92 subtests passed（17.16秒）。
+  migration/rollback実行テスト21件（fake systemctl、state/lock/pause/receipt不変、
+  二重timerなし、active service中断、disable中のtick復元、drift拒否、冪等、
+  alias上書き拒否を含む）。関連広域 1961 passed / 223 subtests passed。1 failedは
+  サブモジュール未初期化の環境依存で、未変更ベースでも同一。`systemd-analyze verify`は
+  macOSで未利用のためskip（Linux CIで実行される）。
+- 本段階のdeployでは旧timerを維持し、canonical unitはVMへ配置しない。実機での
+  canonical切替（epoch追加後の後続段階）と24時間観測は未実施。

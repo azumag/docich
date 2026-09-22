@@ -91,6 +91,9 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   `corners.corner_rotation`へ出す。status、slot、next_due_at、last_seen_at、
   eligible_count、pending有無のみ。seed・request payload・自由文は出さない。
   `recovery_required`は次cornerを停止する実行契約であり、診断自体は復旧操作をしない。
+  `corners.corner_rotation_timer` は支配的なtimer unit名（移行後は
+  `docich-corner-rotation.timer`）、active/enabled、旧名が正しいaliasかを示す
+  bounded boolean `legacy_alias` のみを出す。unit path・alias target・state pathは出さない。
 
 - rotation 待機の補助証跡: `corners.rotation_evidence` に固定8種の
   corner state（retro/PAPER/Soren91/NetHackの通常・manual）と固定10種の

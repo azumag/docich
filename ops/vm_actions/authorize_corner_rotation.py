@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Fail-closed authorization for fixed retro-corner operations.
+"""Fail-closed authorization for fixed corner-rotation operations.
 
-Kept as the compatibility entry while the canonical
-`corner-rotation-operator` workflow is staged in. Both reviewed workflow
-paths are accepted, but only as an exact
-`<repo>/<workflow path>@refs/heads/main` match; the operation set stays fixed.
+The canonical workflow and the legacy `retro-corner-operator` workflow are
+both accepted during the staged rename, but only as an exact
+`<repo>/<workflow path>@refs/heads/main` match. Operations stay a fixed
+allowlist; arbitrary commands, issue bodies and PR payloads are never an
+authorization source.
 """
 from __future__ import annotations
 
@@ -18,8 +19,8 @@ OWNER_ID = "9018513"
 REPOSITORY = "azumag/docich"
 REPOSITORY_ID = "1327276249"
 WORKFLOWS = (
-    ".github/workflows/retro-corner-operator.yml",
     ".github/workflows/corner-rotation-operator.yml",
+    ".github/workflows/retro-corner-operator.yml",
 )
 ALLOWED_OPERATIONS = {"restart-service", "recover-failed"}
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
@@ -48,7 +49,7 @@ def main() -> None:
         env.get("GITHUB_WORKFLOW_REF") in allowed_refs,
     ]
     if not all(checks):
-        fail("retro corner authorization denied")
+        fail("corner rotation authorization denied")
 
     if not SHA_RE.fullmatch(env.get("GITHUB_SHA", "")):
         fail("invalid workflow SHA")
@@ -58,7 +59,7 @@ def main() -> None:
         fail("production confirmation required")
     operation = env.get("INPUT_OPERATION", "")
     if operation not in ALLOWED_OPERATIONS:
-        fail("unsupported retro corner operation")
+        fail("unsupported corner rotation operation")
 
     result = {"operation": operation, "target": "production", "ref": "main"}
     output = env.get("GITHUB_OUTPUT")

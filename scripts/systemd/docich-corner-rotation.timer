@@ -1,0 +1,16 @@
+[Unit]
+Description=docich 全corner rolling rotationを毎分判定
+
+[Timer]
+# A monotonic first tick makes an enable/redeploy self-starting even when the
+# user manager was already booted. The service is a oneshot; this timer keeps
+# retrying after a bounded wait or an individual tick failure.
+OnActiveSec=30s
+OnBootSec=30s
+OnUnitActiveSec=60s
+AccuracySec=5s
+Persistent=false
+Unit=docich-corner-rotation.service
+
+[Install]
+WantedBy=timers.target
