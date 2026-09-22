@@ -1061,8 +1061,10 @@ def test_recover_never_launches_while_the_pending_corner_is_still_running(setup)
     calls = len(executor.calls)
     with pytest.raises(RotationError, match="corner-level recovery"):
         busy.recover()
-    assert state(busy)["status"] == "recovery_required"
-    assert state(busy)["error_kind"] == "execution-unverified"
+    refused = state(busy)
+    assert refused["status"] == "recovery_required"
+    # a refusal never overwrites the classification of the original latch
+    assert refused["error_kind"] == "unexpected"
     assert len(executor.calls) == calls
 
 
@@ -1136,3 +1138,202 @@ def test_recover_cli_refuses_with_a_fixed_message(tmp_path, capsys):
     captured = capsys.readouterr()
     assert code == 2
     assert "corner rotation recovery refused: rotation state is not latched" in captured.err
+
+
+def _latch_manual(make, executor, clock, corner="paper"):
+    """Turn a latched automatic state into a latched manual reservation."""
+    import uuid as uuid_mod
+
+    manager = make()
+    latched = _latch(manager, executor, clock)
+    latched["pending"] = None
+    latched["manual_pending"] = {
+        "corner": corner, "state_file": f"{corner}_corner_manual.json",
+        "request_id": str(uuid_mod.uuid4()), "selected_at": clock[0],
+    }
+    manager.path.write_text(json.dumps(latched))
+    return manager, state(manager)["manual_pending"]["request_id"]
+
+
+def test_recover_commits_a_finished_manual_reservation(setup):
+    _, clock, _, executor, make = setup
+    manager, request_id = _latch_manual(make, executor, clock)
+    clock[0] += 60
+    manager.adapters["paper"].states = [{
+        "status": "completed",
+        "rotation_request_id": request_id,
+        "started_at": 1000010.0,
+        "completed_at": 1000020.0,
+    }]
+    calls = len(executor.calls)
+
+    outcome = manager.recover()
+    assert outcome == {"status": "ready", "corner": "paper",
+                       "result": "completed", "recovered": True}
+    final = state(manager)
+    assert final["status"] == "ready"
+    assert final["manual_pending"] is None
+    assert final["last_result"]["request_id"] == request_id
+    assert any(row["corner"] == "paper" and row["source"] == "manual-completion"
+               for row in final["history"])
+    assert len(executor.calls) == calls
+
+
+def test_recover_returns_a_started_less_manual_reservation_to_the_operator(setup):
+    _, clock, _, executor, make = setup
+    manager, _ = _latch_manual(make, executor, clock)
+    calls = len(executor.calls)
+
+    outcome = manager.recover()
+    assert outcome["status"] == "waiting"
+    assert outcome["reason"] == "manual-request-needs-resume-or-recovery"
+    kept = state(manager)
+    assert kept["status"] == "waiting"
+    # the operator's slot is kept, not deleted
+    assert kept["manual_pending"] is not None
+    assert kept["pending"] is None
+    # and the automatic path stays parked until that manual start resumes it
+    assert make().tick()["reason"] == "manual-request-needs-resume-or-recovery"
+    assert state(make())["manual_pending"] is not None
+    assert len(executor.calls) == calls
+
+
+def test_recover_refuses_a_running_manual_reservation(setup):
+    _, clock, _, executor, make = setup
+    manager, request_id = _latch_manual(make, executor, clock)
+    manager.adapters["paper"].states = [{
+        "status": "active",
+        "rotation_request_id": request_id,
+        "started_at": clock[0] - 5,
+    }]
+    with pytest.raises(RotationError, match="corner-level recovery"):
+        manager.recover()
+    assert state(manager)["status"] == "recovery_required"
+
+
+def test_recover_refuses_whenever_any_own_observation_is_busy(setup):
+    _, clock, _, executor, make = setup
+    manager = make()
+    latched = _latch(manager, executor, clock)
+    request_id = latched["pending"]["request_id"]
+    corner_id = latched["pending"]["corner"]
+    # a terminal row first, a busy row second: ordering must not decide safety
+    resumed = make()
+    resumed.adapters[corner_id].states = [
+        {"status": "completed", "rotation_request_id": request_id,
+         "completed_at": clock[0] + 10},
+        {"status": "active", "rotation_request_id": request_id,
+         "started_at": clock[0] + 5},
+    ]
+    calls = len(executor.calls)
+    with pytest.raises(RotationError, match="corner-level recovery"):
+        resumed.recover()
+    assert state(resumed)["status"] == "recovery_required"
+    assert len(executor.calls) == calls
+
+
+def test_recover_cli_fails_when_the_latch_remains(tmp_path, capsys):
+    from docich import corner_rotation
+
+    state_dir = tmp_path / "run"
+    state_dir.mkdir()
+    config = tmp_path / "disabled.toml"
+    config.write_text(
+        '[corner_rotation]\nenabled=false\n'
+        f'[paths]\nstate_dir="{state_dir}"\n'
+    )
+    (state_dir / "corner_rotation.json").write_text(json.dumps({
+        "schema_version": 1, "seed": "s", "slot": 3, "history": [],
+        "pending": None, "status": "recovery_required",
+        "reason": "execution-or-state-unverified",
+        "next_due_at": 0.0, "last_seen_at": 0.0,
+    }))
+    code = corner_rotation.main(["--config", str(config), "recover"])
+    captured = capsys.readouterr()
+    assert code == 4
+    assert "latch remains after recovery" in captured.err
+
+
+def test_recover_rejects_clock_regression_before_touching_any_timestamp(setup):
+    _, clock, _, executor, make = setup
+    manager = make()
+    latched = _latch(manager, executor, clock)
+    # no reservation at all: the branch that refreshes last_seen_at
+    latched["pending"] = None
+    latched["last_seen_at"] = clock[0] + DAY / 2
+    manager.path.write_text(json.dumps(latched))
+
+    before = state(manager)
+    with pytest.raises(RotationError, match="clock regressed"):
+        make().recover()
+    after = state(manager)
+    assert after["status"] == "recovery_required"
+    assert after["last_seen_at"] == before["last_seen_at"]
+
+
+def _cli_env(tmp_path, *, enabled, body=None):
+    from docich import corner_rotation
+
+    state_dir = tmp_path / "run"
+    state_dir.mkdir(exist_ok=True)
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f'[corner_rotation]\nenabled={"true" if enabled else "false"}\n'
+        f'[paths]\nstate_dir="{state_dir}"\n'
+    )
+    if body is not None:
+        (state_dir / "corner_rotation.json").write_text(body)
+    return corner_rotation, config, state_dir
+
+
+def _latched_ledger_text():
+    return json.dumps({
+        "schema_version": 1, "seed": "s", "slot": 3, "history": [],
+        "pending": None, "status": "recovery_required",
+        "reason": "execution-or-state-unverified",
+        "next_due_at": 0.0, "last_seen_at": 0.0,
+    })
+
+
+def test_recover_cli_cannot_claim_success_from_an_unreadable_ledger(tmp_path, capsys):
+    corner_rotation, config, state_dir = _cli_env(
+        tmp_path, enabled=False, body="{ not json")
+    code = corner_rotation.main(["--config", str(config), "recover"])
+    captured = capsys.readouterr()
+    assert code == 4
+    assert "latch remains after recovery" in captured.err
+    assert '"latch_resolved":false' in captured.out.replace(" ", "")
+    assert (state_dir / "corner_rotation.json").read_text() == "{ not json"
+
+
+def test_recover_cli_fails_while_the_scheduler_lock_is_busy(tmp_path, capsys):
+    import fcntl
+
+    corner_rotation, config, state_dir = _cli_env(
+        tmp_path, enabled=True, body=_latched_ledger_text())
+    lock_dir = state_dir / "locks"
+    lock_dir.mkdir()
+    handle = (lock_dir / "corner-rotation.lock").open("a")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        code = corner_rotation.main(["--config", str(config), "recover"])
+        captured = capsys.readouterr()
+    finally:
+        fcntl.flock(handle, fcntl.LOCK_UN)
+        handle.close()
+    assert code == 4
+    assert "already-running" in captured.out
+    assert "latch remains after recovery" in captured.err
+    # the unit is never restarted on this path: the script stops on non-zero
+    assert json.loads((state_dir / "corner_rotation.json").read_text())["status"] == "recovery_required"
+
+
+def test_recover_cli_reports_a_resolved_latch(tmp_path, capsys):
+    corner_rotation, config, _ = _cli_env(
+        tmp_path, enabled=True, body=_latched_ledger_text().replace(
+            '"recovery_required"', '"waiting"').replace(
+            '"execution-or-state-unverified"', '"not-due"'))
+    code = corner_rotation.main(["--config", str(config), "recover"])
+    captured = capsys.readouterr()
+    assert code == 2  # not latched: refused before any claim of success
+    assert "not latched" in captured.err
