@@ -150,16 +150,15 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
     else:
         state.update(snapshots=int(old.get('snapshots',0)),last_snapshot_at=last_snapshot)
     # Durable evidence must precede a terminal latch or game teardown.
-    event(runtime_dir,{'event':'observation','at':wall,'phase':phase,
-                      'frame_sha256':digest,'unchanged_seconds':round(duration,3),
-                      'playing':playing,'terminal_reason':reason,
-           'name_entered':named,'gameplay_seen':played,
-           'terminal_candidate':candidate,'title_since':title_since,'title_count':title_count,
-           'terminal_evidence':'title_return_after_gameplay' if reason=='game_over' else None,'bot_version':BOT_VERSION,
-                      'snapshot':snapshot,'battle_started':battle_started,'battle_ended':battle_ended,
-                      'previous_phase':old.get('phase'),
-                      'battle_outcome':'unclassified' if battle_ended else None,
-                      'terminal_evidence':state['terminal_evidence']})
+    event(runtime_dir, {
+        'event': 'observation', 'at': wall, 'phase': phase,
+        'frame_sha256': digest, 'unchanged_seconds': round(duration, 3),
+        'playing': playing, 'terminal_reason': reason, 'bot_version': BOT_VERSION,
+        'terminal_candidate': candidate, 'terminal_evidence': state['terminal_evidence'],
+        'snapshot': snapshot, 'previous_phase': old.get('phase'),
+        'battle_started': battle_started, 'battle_ended': battle_ended,
+        'battle_outcome': 'unclassified' if battle_ended else None,
+    })
     atomic_write_json(runtime_dir/RUN_FILE,state)
     return state
 

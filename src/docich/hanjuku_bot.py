@@ -110,8 +110,8 @@ def decide(frame: Frame, state: dict) -> tuple[list[dict], dict]:
         actions=[pad('b' if phase_step==1 else 'a')]
     elif phase=='concert':
         gold=lambda r,g,b:r>150 and 80<g<180 and 30<b<120
-        confirm=any(frame.fraction((160,y,239,y+1),gold)>.8 for y in range(160,194))
-        actions=[pad('a' if confirm else 'b')]
+        picker=any(frame.fraction((200,y,239,y+1),gold)>.8 for y in range(178,196))
+        actions=[pad('b' if picker else 'a')]
     elif phase=='shop':
         actions=[pad('b')]
     elif phase in {'dialogue','field_menu','battle_intro','battle'}:

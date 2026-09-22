@@ -238,4 +238,8 @@ def test_optional_concert_exits_instead_of_selecting_the_same_track():
             rgb[i:i+3]=bytes((200,0,0))
     concert=Frame(256,224,bytes(rgb))
     assert classify(concert)=='concert'
-    assert decide(concert,{})[0][0]['buttons']==['b']
+    assert decide(concert,{})[0][0]['buttons']==['a']
+    for x in range(200,240):
+        i=(184*256+x)*3
+        rgb[i:i+3]=bytes((197,141,74))
+    assert decide(Frame(256,224,bytes(rgb)),{})[0][0]['buttons']==['b']
