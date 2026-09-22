@@ -437,6 +437,33 @@ def test_removed_corner_keeps_improvement_release_gate(setup):
     assert len(executor.calls) == 1
 
 
+def test_removed_corner_releases_after_its_own_terminal_improvement_failure(setup):
+    _, clock, catalog, executor, make = setup
+    manager = make()
+    manager.tick()
+    state_dir = manager.g.state_dir
+    (state_dir / "retro_corner.json").write_text(
+        json.dumps({
+            "status": "completed",
+            "game": "nsnake",
+            "completed_at": clock[0],
+            "improve_job": {"spawned": True},
+        }),
+        encoding="utf-8",
+    )
+    (state_dir / "corner_improve_nsnake.json").write_text(
+        json.dumps({"status": "failed", "started_at": clock[0] + 1, "completed_at": clock[0] + 2}),
+        encoding="utf-8",
+    )
+    clock[0] += DAY
+    remaining = [corner for corner in catalog if corner.id != "retro"]
+
+    result = make(remaining).tick()
+
+    assert result["status"] == "ready"
+    assert len(executor.calls) == 2
+
+
 def test_initial_migration_observes_removed_legacy_corner(setup):
     g, clock, catalog, executor, make = setup
     state_dir = Path(g.state_dir)

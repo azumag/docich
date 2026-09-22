@@ -8,12 +8,33 @@ import json
 import os
 from pathlib import Path
 
-from .corner_terminal import normalize_terminal_paper_failure
+from .corner_terminal import failed_improvement_is_terminal, normalize_terminal_paper_failure
 from .retro_corner import RetroCornerManager, load_retro_corner_config
 
 
 class CornerExecutionError(RuntimeError):
     pass
+
+
+TERMINAL_IMPROVEMENT_STATUSES = frozenset({"promoted", "kept", "improved", "dry-run", "skipped"})
+
+
+def _improvement_released(status_path, state):
+    """Whether one improve_job's durable record releases the next corner.
+
+    The caller already observed the single-flight lock free.  Successful
+    statuses keep the strict ledger timestamp contract; a ``failed`` record is
+    accepted only as this run's own bounded terminal evidence.
+    """
+    if not status_path.exists():
+        return False
+    status = json.loads(status_path.read_text())
+    if status.get("status") == "failed":
+        return failed_improvement_is_terminal(status, state)
+    if status.get("status") not in TERMINAL_IMPROVEMENT_STATUSES:
+        return False
+    from .corner_rotation import timestamp
+    return timestamp(status.get("started_at")) >= timestamp(state.get("completed_at"))
 
 
 class GameCornerAdapter:
@@ -108,10 +129,10 @@ class GameCornerAdapter:
     def resources_released(self):
         """Wait for bounded post-corner jobs; unknown child ownership never passes.
 
-        No arbitrary PID kill is safe here. A held job lock or missing terminal
-        evidence blocks the next corner until completion/operator recovery.
+        No arbitrary PID kill is safe here. A held job lock or a record that
+        cannot prove this run ended blocks the next corner until completion or
+        operator recovery.
         """
-        from .corner_rotation import timestamp
         lock_path, status_path = self.improvement_paths()
         if lock_path.exists():
             with lock_path.open("a") as lock:
@@ -123,12 +144,7 @@ class GameCornerAdapter:
             job = state.get("improve_job") or {}
             if job.get("spawned") is not True:
                 continue
-            if not status_path.exists():
-                return False
-            status = json.loads(status_path.read_text())
-            if status.get("status") not in {"promoted", "kept", "improved", "dry-run", "skipped"}:
-                return False
-            if timestamp(status.get("started_at")) < timestamp(state.get("completed_at")):
+            if not _improvement_released(status_path, state):
                 return False
         return True
 
@@ -314,8 +330,6 @@ class RetiredCornerObserver:
         return root / "locks" / f"corner-improve-{self.game}.lock", root / f"corner_improve_{self.game}.json"
 
     def resources_released(self):
-        from .corner_rotation import timestamp
-
         lock_path, status_path = self.improvement_paths()
         if lock_path.exists():
             with lock_path.open("a") as lock:
@@ -327,12 +341,7 @@ class RetiredCornerObserver:
             job = state.get("improve_job") or {}
             if job.get("spawned") is not True:
                 continue
-            if not status_path.exists():
-                return False
-            status = json.loads(status_path.read_text())
-            if status.get("status") not in {"promoted", "kept", "improved", "dry-run", "skipped"}:
-                return False
-            if timestamp(status.get("started_at")) < timestamp(state.get("completed_at")):
+            if not _improvement_released(status_path, state):
                 return False
         return True
 

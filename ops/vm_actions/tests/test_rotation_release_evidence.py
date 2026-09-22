@@ -17,11 +17,14 @@ def write(path, data):
 
 class RotationReleaseEvidenceTests(unittest.TestCase):
     def temp_state(self):
-        temp = tempfile.TemporaryDirectory()
+        # Resolve first: macOS exposes its temp dir through /var, whose
+        # symlinked ancestor the collector's guard must reject.
+        base = Path(tempfile.gettempdir()).resolve()
+        temp = tempfile.TemporaryDirectory(dir=base)
         self.addCleanup(temp.cleanup)
         return Path(temp.name)
 
-    def test_existing_wait_can_come_from_failed_improvement_after_corner_completion(self):
+    def test_terminal_failed_improvement_releases_after_corner_completion(self):
         from docich.corner_adapters import GameCornerAdapter
         from docich.corner_catalog import Corner
 
@@ -36,15 +39,20 @@ class RotationReleaseEvidenceTests(unittest.TestCase):
         adapter.g = SimpleNamespace(state_dir=tmp_path)
         adapter.corner = Corner("nsnake", "game", "nsnake")
         adapter.manager = SimpleNamespace(state_path=state_path)
-        # This is a reproduction of an existing gate, NOT proof of the VM cause
-        # or permission to ignore failure/unknown child ownership.
-        self.assertFalse(adapter.resources_released())
+        # The production wait source: this run's own terminal failure with a
+        # free lock releases the next corner, and the record stays visible to
+        # diagnostics instead of being deleted or overwritten.
+        self.assertTrue(adapter.resources_released())
         output = module._collect_rotation_evidence(tmp_path)
         self.assertEqual(output["corners"]["retro_corner"]["status"], "completed")
         self.assertEqual(output["improvements"]["nsnake"], {
             "present": True, "readable": True, "lock": "absent", "status": "failed",
             "started_at": 101, "completed_at": 102,
         })
+        # A stale failure cannot prove that this corner's job already ended.
+        write(tmp_path / "corner_improve_nsnake.json",
+              {"status": "failed", "started_at": 99, "completed_at": 102})
+        self.assertFalse(adapter.resources_released())
 
     def test_per_game_improvement_evidence_is_fixed_and_read_only(self):
         for status in ("running", "failed", "kept", "skipped"):
