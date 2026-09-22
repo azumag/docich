@@ -1379,3 +1379,61 @@ def test_latch_classifies_corner_side_errors_as_execution_error(setup):
     latched = state(manager)
     assert latched["status"] == "recovery_required"
     assert latched["error_kind"] == "execution-error"
+
+
+def test_manual_start_ignores_the_rolling_cooldown_but_still_counts_usage(setup, monkeypatch):
+    """Owner decision 2026-09-23: 手動起動は rolling cooldown を無視する。
+
+    使用の記録は残すので、自動 rotation 側の cooldown 集計は今までどおり効く。
+    latch / 自動pending / program slot の gate は変更しない。
+    """
+    from docich import corner_rotation
+
+    g, clock, _, executor, make = setup
+    monkeypatch.setattr(corner_rotation, "CornerRotationManager", lambda _: make())
+    manager = SimpleNamespace(path=g.state_dir / "paper_corner_manual.json")
+    executor.result = "completed"
+
+    # 1回目の手動開始: 成功し、使用を cooldown へ記録する
+    assert corner_rotation.run_manual(g, manager, ["paper-view"]) == "completed"
+    ledger = state(make())
+    assert any(row["corner"] == "paper" and row["source"] == "manual-reservation"
+               for row in ledger["history"])
+    assert not ledger.get("manual_pending")
+    assert ledger["status"] == "ready"
+
+    # cooldown 中でも2回目の手動開始は拒否されない
+    assert corner_rotation.run_manual(g, manager, ["paper-view"]) == "completed"
+    assert len(executor.calls) == 2
+
+    # 記録は残るので、自動 rotation は interval 到達後も paper を選ばない
+    clock[0] += DAY / 3 + 1
+    before = len(executor.calls)
+    result = make().tick()
+    assert len(executor.calls) == before + 1
+    assert result["corner"] != "paper"
+
+
+def test_manual_start_still_refuses_disabled_corners_and_latches(setup, monkeypatch):
+    from docich import corner_rotation
+
+    g, _, _, executor, make = setup
+    monkeypatch.setattr(corner_rotation, "CornerRotationManager", lambda _: make())
+    manager = SimpleNamespace(path=g.state_dir / "paper_corner_manual.json")
+
+    # cooldown を無視しても disabled/paused は選ばない（eligible gate は維持）
+    # run_manual は毎回新しい manager を建てるため、クラス側の hook で擬似遮断する
+    monkeypatch.setattr(type(make()), "_eligible",
+                        lambda self: ([], {"paper": "disabled-or-paused"}))
+    with pytest.raises(RotationError, match="no eligible manual corner"):
+        corner_rotation.run_manual(g, manager, ["paper-view"])
+    monkeypatch.undo()
+
+    # latch 中は拒否（手動も fail-closed）
+    executor.result = RuntimeError("boom")
+    latched = make()
+    with pytest.raises(RuntimeError):
+        latched.tick()
+    executor.result = "completed"
+    with pytest.raises(RotationError, match="pending corner must finish"):
+        corner_rotation.run_manual(g, manager, ["paper-view"])

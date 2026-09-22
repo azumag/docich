@@ -728,6 +728,12 @@ def run_manual(g, manager, games):
 
     Manual commands keep their original state files and execution options. A
     crash leaves the write-ahead reservation and adapter state for recovery.
+
+    Manual selection deliberately ignores the rolling cooldown (owner decision,
+    2026-09-23: 手動起動は cooldown を無視) so the one-off runners can start a
+    corner on demand for testing and operations. Usage is still appended to the
+    history below, so automatic dispatch and cooldown accounting are unchanged;
+    the latch/pending gates, the common lock and the program slot still apply.
     """
     from types import SimpleNamespace
     from .retro_corner import CornerResult
@@ -763,11 +769,9 @@ def run_manual(g, manager, games):
         else:
             if rotation._observe(state, now):
                 raise RotationError("pending corner must finish or recover before manual start")
-            choices = [c for c in rotation.catalog if c.game in games and c.id in eligible
-                       and not any(r["corner"] == c.id and r["at"] > now - rotation.cooldown_seconds
-                                   for r in state["history"])]
+            choices = [c for c in rotation.catalog if c.game in games and c.id in eligible]
             if not choices:
-                raise RotationError("no eligible manual corner outside rolling cooldown")
+                raise RotationError("no eligible manual corner")
             chosen = min(choices, key=lambda c: hashlib.sha256(f'{state["seed"]}:{state["slot"]}:{c.id}'.encode()).digest())
             request = dict(corner=chosen.id, selected_at=now, request_id=str(uuid.uuid4()), state_file=path.name)
             state["manual_pending"] = request

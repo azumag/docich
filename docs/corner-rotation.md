@@ -148,7 +148,11 @@ terminal記録を書いてからlockを離す。`failed`は、corner完了以後
 SIGKILL後のrunning、終了記録欠落、corner完了より古い`started_at`、`completed_at`の欠落・逆行、
 `recovery_required`、所有権不明を停止済み扱いにしない。安全なPID所有権証明なしにkillする代替経路は設けない。
 
-手動startも共通lock/program slotを通し、同じrolling cooldownに使用を記録する。
+手動startも共通lock/program slotを通し、同じrolling cooldownに**使用を記録する**
+（以後の自動選択とcooldown集計は今までどおり）。ただし**手動start自体はrolling cooldownで
+選択を拒否しない**（オーナー決定2026-09-23: 手動起動はcooldownを無視。one-off runnerで
+テスト・operator起動を即座にできるため）。latch・自動pending・他ownerのprogram slotは
+引き続き手動startを拒否する。
 独立manual stateと既存のduration等は維持する。自動pendingがあれば手動startを拒否する。
 manual予約も`manual_pending`にrequest UUIDとowner state名を保存する。途中で切れた場合は、
 同じmanual startで同じrequestを再開するか、既存のmanual stop/recoverおよびgame-switch
