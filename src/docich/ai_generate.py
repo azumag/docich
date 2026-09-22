@@ -1,12 +1,13 @@
-"""Reference-run wrapper for soviet_now's AI dispatch (common_parts_chat_c4.md C-S1).
+"""Native AI dispatch entrypoint (common_parts_chat_c4.md C-S1, #829 PR-1).
 
-docich does not copy or own the AI dispatch implementation.  This module builds
-a fixed bash wrapper that sources ``eloop_lib.sh`` (the same source order as
-production) and calls one allowlisted function (``ai_generate_list``) with
-allowlisted arguments.  A real run only happens when the user explicitly allows
-it (``DOCICH_ALLOW_REAL_AI=1``); by default the invocation is shown as a dry-run.
-Backoff/lock state is redirected to a private temp dir so a reference run never
-touches production state.
+docich owns the LLM dispatch implementation in :mod:`docich.llm` now.  This
+module builds a native request (label + agent chain + prompt text, all
+validated; no shell, no arbitrary paths forwarded to providers) and runs it
+through the golden-compatible chain: validation, backoff, lane queue,
+improve-gate, provider fallback, telemetry.  A real run only happens when
+the user explicitly allows it (``DOCICH_ALLOW_REAL_AI=1``); by default the
+request is shown as a dry-run.  All runtime state stays in a private temp
+dir, never in the production tree or any game checkout.
 """
 
 from __future__ import annotations
@@ -19,57 +20,37 @@ import sys
 import tempfile
 
 from .config import ConfigError, GlobalConfig
-from .procs import run
-from .tts import TtsError, game_submodule
-
-
-# Only the list-with-backoff entrypoint is exposed.  ``ai_generate`` (single
-# primary + fallback) is used by classification inside comment.sh and is not a
-# stable docich-facing contract.  The validator argument is never forwarded;
-# docich leaves validation to the caller that owns the prompt format.
-AI_FUNCTION = "ai_generate_list"
+from .llm import budget as budget_mod
+from .llm import contracts as contracts_mod
+from .llm import policy as policy_mod
+from .tts import TtsError
 
 SAFE_TOKEN_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 # Namespaced provider/model IDs (e.g. OpenRouter) use '/' just as in webui.
 AGENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")
 
-# Fixed wrapper.  No user text or shell metacharacters ever enter this file;
-# the function name and arguments are validated by docich before execution.
-WRAPPER = """\
-#!/usr/bin/env bash
-# docich reference-run wrapper for soviet_now ai_generate_list.
-set -uo pipefail
-ROOT="$1"; shift
-cd "$ROOT" || exit 2
-export ELOOP_LIB_DIR="$ROOT"
-export EXPLORE_MODE="${EXPLORE_MODE:-0}"
-[ -f "eloop_lib.sh" ] || exit 2
-source ./eloop_lib.sh
-"$@"
-"""
-
 
 class AiError(TtsError):
-    """User-facing AI dispatch reference error."""
+    """User-facing AI dispatch error."""
 
 
 @dataclass(frozen=True)
 class AiInvocation:
-    script_path: Path
-    cwd: Path
-    argv: list[str]
-    env: dict[str, str]
-    fn_name: str
+    label: str
     agents: str
-    rcs_note: str = ""
+    prompt_text: str
+    timeout: int | None
+    last_agent_file: Path
+    failure_kind_file: Path
+    state_dir: Path
 
     def repro(self) -> str:
-        parts = [f"cwd={self.cwd}"]
-        for key, value in sorted(self.env.items()):
-            parts.append(f"{key}={value}")
-        parts.append(f"function={self.fn_name}")
-        parts.append("argv=" + " ".join(repr(str(part)) for part in self.argv))
-        return " ".join(parts)
+        preview = self.prompt_text[:120].replace("\n", " ")
+        return (
+            f"native llm label={self.label} agents={self.agents} "
+            f"timeout={self.timeout} prompt_chars={len(self.prompt_text)} "
+            f"prompt_preview={preview!r}"
+        )
 
 
 def _safe_token(value: str, what: str) -> str:
@@ -102,41 +83,6 @@ def _validate_label(label: str) -> str:
     return label
 
 
-def _script_dir(g: GlobalConfig, game_name: str) -> Path:
-    root = game_submodule(g, game_name)
-    script = root / "lib" / "ai_generate.sh"
-    if not script.is_file():
-        raise AiError(f"lib/ai_generate.sh が見つかりません: {script}")
-    if not (root / "eloop_lib.sh").is_file():
-        raise AiError(f"eloop_lib.sh が見つかりません: {root / 'eloop_lib.sh'}")
-    return root
-
-
-def _write_wrapper(tmp_dir: Path) -> Path:
-    wrapper = tmp_dir / "ai_ref.sh"
-    wrapper.write_text(WRAPPER, encoding="utf-8")
-    wrapper.chmod(0o700)
-    return wrapper
-
-
-def _env_for(g: GlobalConfig, state_dir: Path) -> dict[str, str]:
-    env = {
-        # Redirect backoff/lock state so a reference run never mutates the
-        # production tree's tmp/state.  AI generation queue and opencode run
-        # locks follow the same rule by pointing at the private state dir.
-        "AI_BACKOFF_DIR": str(state_dir / "ai_backoff"),
-        "AI_GENERATION_QUEUE_LOCK_DIR": str(state_dir / "ai_generation_locks"),
-        "OPENCODE_RUN_LOCK_DIR": str(state_dir / "opencode_run_locks"),
-        "SAY_CONTEXT_LABEL": "docich",
-        "SAY_CC_TEXT": "",
-        "DOCICH_CC_ENABLED": "0",
-    }
-    if g.audio.enabled:
-        env["PULSE_SINK"] = g.audio.sink_name
-        env["SAY_AUDIO_DEVICE"] = g.audio.sink_name
-    return env
-
-
 def build_ai_invocation(
     g: GlobalConfig,
     *,
@@ -148,57 +94,38 @@ def build_ai_invocation(
     last_agent_file: Path | None = None,
     failure_kind_file: Path | None = None,
 ) -> AiInvocation:
+    """Build a native dispatch request.
+
+    ``game_name`` is accepted for CLI compatibility but intentionally unused:
+    the native backend resolves providers and credentials from docich
+    runtime/config, never from a game checkout.
+    """
+    _ = (g, game_name)
     label = _validate_label(label)
     agents = _validate_agents(agents, "エージェントリスト")
-    prompt_path = Path(prompt_file).resolve()
+    prompt_path = Path(prompt_file)
     if not prompt_path.is_file():
         raise AiError(f"プロンプトファイルが見つかりません: {prompt_path}")
+    try:
+        prompt_text = prompt_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise AiError(f"プロンプトファイルを読めません: {exc}") from exc
+    if timeout is not None and timeout < 1:
+        raise AiError("timeout は 1 以上である必要があります")
 
-    root = _script_dir(g, game_name)
-    tmp_dir = Path(tempfile.mkdtemp(prefix="docich-ai-"))
-    wrapper = _write_wrapper(tmp_dir)
-
-    # Write the prompt into the temp dir so the referenced script can read it,
-    # and the caller never needs to provide an arbitrary path on the command
-    # line.  The prompt path passed to the wrapper is a private temp file.
-    local_prompt = tmp_dir / "prompt.txt"
-    local_prompt.write_text(prompt_path.read_text(encoding="utf-8"), encoding="utf-8")
-
-    last_file = last_agent_file or (tmp_dir / "last_agent.txt")
-    kind_file = failure_kind_file or (tmp_dir / "failure_kind.txt")
-
-    argv = [
-        "bash",
-        str(wrapper),
-        str(root),
-        AI_FUNCTION,
-        label,
-        str(local_prompt),
-        agents,
-    ]
-    if timeout is not None:
-        if timeout < 1:
-            raise AiError("timeout は 1 以上である必要があります")
-        argv.append(str(timeout))
-    else:
-        # Always keep the timeout slot so the following positional arguments
-        # (validator, last_agent_file, failure_kind_file) stay in the right
-        # positions for ai_generate_list.
-        argv.append("")
-    # validator is intentionally omitted; validation belongs to the prompt owner.
-    argv.append("")
-    argv.append(str(last_file))
-    argv.append(str(kind_file))
-
-    env = _env_for(g, tmp_dir)
+    state_dir = Path(tempfile.mkdtemp(prefix="docich-ai-"))
     return AiInvocation(
-        script_path=root / "lib" / "ai_generate.sh",
-        cwd=root,
-        argv=argv,
-        env=env,
-        fn_name=AI_FUNCTION,
+        label=label,
         agents=agents,
-        rcs_note="rc 0=生成成功 / 1=全エージェント失敗 / 79=レート制限 / 124=タイムアウト",
+        prompt_text=prompt_text,
+        timeout=timeout,
+        last_agent_file=(
+            last_agent_file or (state_dir / "last_agent.txt")
+        ),
+        failure_kind_file=(
+            failure_kind_file or (state_dir / "failure_kind.txt")
+        ),
+        state_dir=state_dir,
     )
 
 
@@ -228,14 +155,26 @@ def run_ai(
             "実実行は既定で無効です。--dry-run で確認するか、"
             "DOCICH_ALLOW_REAL_AI=1 で明示許可してください (AI 呼び出しを含むため)"
         )
-    result = run(
-        inv.argv,
-        cwd=str(inv.cwd),
-        env_extra=inv.env,
-        timeout=timeout_sec,
-        capture=True,
+    settings = contracts_mod.LlmSettings.from_env()
+    chain_budget = (
+        budget_mod.ChainBudget(timeout_sec)
+        if timeout_sec is not None and timeout_sec > 0
+        else None
     )
-    return result.returncode, (result.stderr or "")
+    rc, text, winner, kind = policy_mod.generate_list(
+        settings,
+        inv.state_dir,
+        inv.label,
+        inv.prompt_text,
+        inv.agents.split(","),
+        timeout=inv.timeout,
+        chain_budget=chain_budget,
+        last_agent_file=inv.last_agent_file,
+        failure_kind_file=inv.failure_kind_file,
+    )
+    if rc == 0:
+        return 0, f"winner={winner} chars={len(text)}"
+    return rc, f"failure_kind={kind} rc={rc}"
 
 
 def cli_ai(args) -> int:
@@ -259,7 +198,7 @@ def cli_ai(args) -> int:
         print(f"docich: ai dry-run: {detail}")
         return 0
     if rc != 0:
-        print(f"docich: ai 参照実行がエラー終了しました (rc={rc})", flush=True)
+        print(f"docich: ai 生成がエラー終了しました (rc={rc})", flush=True)
         if detail:
             print(detail, file=sys.stderr, flush=True)
         return rc

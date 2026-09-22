@@ -1,36 +1,36 @@
+"""Native ``docich ai`` dispatch tests (#829 PR-1, mock only).
+
+No shell, no network, no credentials, no game checkout.  Provider runs are
+faked by monkeypatching the dispatch layer; validation, file contracts, and
+CLI gates are exercised for real.
+"""
+
+import io
 import os
 from pathlib import Path
 import sys
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from docich import ai_generate  # noqa: E402
+from docich import ai_generate, cli  # noqa: E402
+from docich.llm import contracts as contracts_mod  # noqa: E402
 from test_tts import TtsTestBase  # noqa: E402
 
 
-class AiTestBase(TtsTestBase):
-    def _write_ai(self, game="sorengame"):
-        self._write_game(game)
-        (self.submodule / "eloop_lib.sh").write_text(
-            "#!/usr/bin/env bash\n",
-            encoding="utf-8",
-        )
-        lib = self.submodule / "lib"
-        lib.mkdir(parents=True, exist_ok=True)
-        (lib / "ai_generate.sh").write_text(
-            "#!/usr/bin/env bash\n",
-            encoding="utf-8",
-        )
+class AiNativeTestBase(TtsTestBase):
+    def _write_prompt(self, text="generate something\n"):
         prompt = self.repo_root / "prompt.txt"
-        prompt.write_text("generate something\n", encoding="utf-8")
+        prompt.write_text(text, encoding="utf-8")
         return prompt
 
 
-class TestBuildAiInvocation(AiTestBase):
+class TestBuildAiInvocation(AiNativeTestBase):
     def test_build_invocation(self):
-        prompt = self._write_ai()
+        prompt = self._write_prompt()
         inv = ai_generate.build_ai_invocation(
             self.g,
             game_name="sorengame",
@@ -38,17 +38,15 @@ class TestBuildAiInvocation(AiTestBase):
             agents="opencode:deepseek-v4-flash,qwen35e",
             prompt_file=prompt,
         )
-        self.assertEqual(inv.cwd, self.submodule.resolve())
-        self.assertEqual(inv.fn_name, "ai_generate_list")
-        self.assertEqual(inv.argv[0], "bash")
-        self.assertEqual(inv.argv[3], "ai_generate_list")
-        self.assertEqual(inv.argv[4], "COMMENT")
-        self.assertEqual(inv.argv[6], "opencode:deepseek-v4-flash,qwen35e")
-        self.assertEqual(inv.env["DOCICH_CC_ENABLED"], "0")
-        self.assertTrue(inv.env["AI_BACKOFF_DIR"].endswith("ai_backoff"))
+        self.assertEqual(inv.label, "COMMENT")
+        self.assertEqual(inv.agents, "opencode:deepseek-v4-flash,qwen35e")
+        self.assertEqual(inv.prompt_text, "generate something\n")
+        self.assertTrue(inv.state_dir.is_absolute())
+        self.assertTrue(str(inv.last_agent_file).endswith("last_agent.txt"))
+        self.assertTrue(str(inv.failure_kind_file).endswith("failure_kind.txt"))
 
     def test_label_must_start_with_comment_or_radio(self):
-        prompt = self._write_ai()
+        prompt = self._write_prompt()
         with self.assertRaises(ai_generate.AiError):
             ai_generate.build_ai_invocation(
                 self.g, game_name="sorengame", label="NEWS", agents="opencode:x",
@@ -56,7 +54,7 @@ class TestBuildAiInvocation(AiTestBase):
             )
 
     def test_agents_require_safe_identifiers(self):
-        prompt = self._write_ai()
+        prompt = self._write_prompt()
         with self.assertRaises(ai_generate.AiError):
             ai_generate.build_ai_invocation(
                 self.g, game_name="sorengame", label="COMMENT",
@@ -69,7 +67,7 @@ class TestBuildAiInvocation(AiTestBase):
             )
 
     def test_namespaced_models_preserve_route_and_order(self):
-        prompt = self._write_ai()
+        prompt = self._write_prompt()
         agents = (
             "opencode-go:namespaced-model,"
             "openrouter:vendor/namespaced-model,"
@@ -80,23 +78,6 @@ class TestBuildAiInvocation(AiTestBase):
             agents=agents, prompt_file=prompt,
         )
         self.assertEqual(inv.agents, agents)
-        self.assertEqual(inv.argv[6], agents)
-
-    def test_namespaced_models_cross_bash_wrapper_unchanged(self):
-        prompt = self._write_ai()
-        (self.submodule / "eloop_lib.sh").write_text(
-            'ai_generate_list() { printf "%s" "$3" > "$6"; }\n',
-            encoding="utf-8",
-        )
-        agents = "opencode-go/namespaced-model,openrouter:vendor/namespaced-model,local"
-        winner = self.repo_root / "received-agents.txt"
-        inv = ai_generate.build_ai_invocation(
-            self.g, game_name="sorengame", label="COMMENT",
-            agents=f" {agents} ", prompt_file=prompt, last_agent_file=winner,
-        )
-        result = ai_generate.run(inv.argv, cwd=str(inv.cwd), env_extra=inv.env)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(winner.read_text(), agents)
 
     def test_namespaced_models_still_reject_shell_syntax(self):
         for agents in (
@@ -117,7 +98,6 @@ class TestBuildAiInvocation(AiTestBase):
             ai_generate._validate_agents(valid + "x", "agents")
 
     def test_missing_prompt_raises(self):
-        self._write_ai()
         with self.assertRaises(ai_generate.AiError):
             ai_generate.build_ai_invocation(
                 self.g, game_name="sorengame", label="COMMENT",
@@ -125,49 +105,36 @@ class TestBuildAiInvocation(AiTestBase):
             )
 
     def test_timeout_must_be_positive(self):
-        prompt = self._write_ai()
+        prompt = self._write_prompt()
         with self.assertRaises(ai_generate.AiError):
             ai_generate.build_ai_invocation(
                 self.g, game_name="sorengame", label="COMMENT",
                 agents="opencode:x", prompt_file=prompt, timeout=0,
             )
 
-    def test_positional_slots_stay_aligned_without_timeout(self):
-        prompt = self._write_ai()
+    def test_native_invocation_has_no_shell(self):
+        """The native boundary must not reference the legacy shell entry."""
+        prompt = self._write_prompt()
         inv = ai_generate.build_ai_invocation(
             self.g, game_name="sorengame", label="COMMENT",
             agents="opencode:x", prompt_file=prompt,
         )
-        self.assertEqual(inv.argv[4], "COMMENT")
-        self.assertEqual(inv.argv[6], "opencode:x")
-        self.assertEqual(inv.argv[7], "")  # timeout slot kept empty
-        self.assertEqual(inv.argv[8], "")  # validator omitted
-        self.assertTrue(inv.argv[9].endswith("last_agent.txt"))
-        self.assertTrue(inv.argv[10].endswith("failure_kind.txt"))
-
-    def test_positional_slots_with_timeout(self):
-        prompt = self._write_ai()
-        inv = ai_generate.build_ai_invocation(
-            self.g, game_name="sorengame", label="COMMENT",
-            agents="opencode:x", prompt_file=prompt, timeout=120,
-        )
-        self.assertEqual(inv.argv[7], "120")
-        self.assertEqual(inv.argv[8], "")
-        self.assertTrue(inv.argv[9].endswith("last_agent.txt"))
-        self.assertTrue(inv.argv[10].endswith("failure_kind.txt"))
+        self.assertNotIn("ai_generate_list", inv.repro())
+        self.assertIn("native llm", inv.repro())
+        self.assertIn("COMMENT", inv.repro())
 
     def test_dry_run_repro(self):
-        prompt = self._write_ai()
+        prompt = self._write_prompt()
         rc, detail = ai_generate.run_ai(
             self.g, game_name="sorengame", label="COMMENT",
             agents="opencode:x", prompt_file=prompt, dry_run=True,
         )
         self.assertEqual(rc, 0)
-        self.assertIn("function=ai_generate_list", detail)
+        self.assertIn("native llm", detail)
         self.assertIn("COMMENT", detail)
 
     def test_real_run_blocked_without_allow_env(self):
-        prompt = self._write_ai()
+        prompt = self._write_prompt()
         os.environ.pop("DOCICH_ALLOW_REAL_AI", None)
         with self.assertRaises(ai_generate.AiError) as ctx:
             ai_generate.run_ai(
@@ -176,16 +143,88 @@ class TestBuildAiInvocation(AiTestBase):
             )
         self.assertIn("DOCICH_ALLOW_REAL_AI", str(ctx.exception))
 
-    @mock.patch("docich.ai_generate.run")
-    def test_run_forwards_invocation(self, mock_run):
-        prompt = self._write_ai()
-        mock_run.return_value = mock.Mock(returncode=0, stderr="")
-        os.environ["DOCICH_ALLOW_REAL_AI"] = "1"
-        rc, detail = ai_generate.run_ai(
-            self.g, game_name="sorengame", label="COMMENT",
-            agents="opencode:x", prompt_file=prompt,
-        )
+    @mock.patch("docich.llm.policy.generate_list")
+    def test_run_forwards_native_request(self, fake_generate):
+        prompt = self._write_prompt()
+        fake_generate.return_value = (0, "hello", "opencode:x", "")
+        with mock.patch.dict(os.environ, {"DOCICH_ALLOW_REAL_AI": "1"}):
+            rc, detail = ai_generate.run_ai(
+                self.g, game_name="sorengame", label="COMMENT",
+                agents="opencode:x", prompt_file=prompt,
+            )
         self.assertEqual(rc, 0)
-        call = mock_run.call_args[0][0]
-        self.assertEqual(call[3], "ai_generate_list")
-        self.assertTrue(mock_run.call_args.kwargs["capture"])
+        self.assertIn("winner=opencode:x", detail)
+        call = fake_generate.call_args
+        self.assertEqual(call.args[2], "COMMENT")
+        self.assertEqual(call.args[3], "generate something\n")
+        self.assertEqual(call.args[4], ["opencode:x"])
+
+    @mock.patch("docich.llm.policy.generate_list")
+    def test_run_reports_failure_kind(self, fake_generate):
+        prompt = self._write_prompt()
+        fake_generate.return_value = (1, "", "", "failed")
+        with mock.patch.dict(os.environ, {"DOCICH_ALLOW_REAL_AI": "1"}):
+            rc, detail = ai_generate.run_ai(
+                self.g, game_name="sorengame", label="COMMENT",
+                agents="opencode:x", prompt_file=prompt,
+            )
+        self.assertEqual(rc, 1)
+        self.assertIn("failure_kind=failed", detail)
+
+    def test_settings_defaults_match_golden(self):
+        settings = contracts_mod.LlmSettings()
+        self.assertEqual(settings.comment_timeout, 90)
+        self.assertEqual(settings.radio_timeout, 240)
+        self.assertEqual(settings.codex_timeout, 300)
+        self.assertEqual(settings.local_timeout, 180)
+        self.assertEqual(settings.agent_backoff_sec, 600)
+        self.assertEqual(settings.comment_agent_backoff_sec, 18000)
+        self.assertEqual(settings.radio_agent_backoff_sec, 18000)
+        self.assertEqual(settings.failure_backoff_sec, 300)
+        self.assertEqual(settings.queue_stale_sec, 900)
+        self.assertEqual(settings.improve_gate_wait_max_sec, 1200)
+
+
+class TestCliAi(AiNativeTestBase):
+    def test_ai_parse(self):
+        args = cli.build_parser().parse_args(
+            ["ai", "sorengame", "--label", "COMMENT", "--agents", "opencode:x",
+             "--prompt-file", "p.txt", "--dry-run"]
+        )
+        self.assertEqual(args.label, "COMMENT")
+        self.assertTrue(args.dry_run)
+
+    def test_ai_dry_run_prints_preview(self):
+        prompt = self._write_prompt()
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = cli.main(
+                ["--config", str(self.toml), "ai", "sorengame",
+                 "--label", "COMMENT", "--agents", "opencode:x",
+                 "--prompt-file", str(prompt), "--dry-run"]
+            )
+        self.assertEqual(rc, 0, err.getvalue())
+        self.assertIn("docich: ai dry-run:", out.getvalue())
+        self.assertIn("native llm", out.getvalue())
+
+    def test_ai_failure_prints_stderr(self):
+        from docich import ai_generate as ai_mod
+
+        self._write_prompt()
+        with mock.patch.object(
+            ai_mod, "run_ai", return_value=(1, "failure_kind=failed rc=1")
+        ):
+            out, err = io.StringIO(), io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                rc = cli.main(
+                    ["--config", str(self.toml), "ai", "sorengame",
+                     "--label", "COMMENT", "--agents", "opencode:x",
+                     "--prompt-file", "p.txt"]
+                )
+        self.assertEqual(rc, 1)
+        self.assertIn("エラー終了しました", out.getvalue())
+        self.assertIn("failure_kind=failed", err.getvalue())
+
+
+if __name__ == "__main__":
+    unittest.main()

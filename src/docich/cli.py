@@ -265,9 +265,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_radio.add_argument("--dry-run", action="store_true", help="実行せずargv/env/cwdを表示する")
 
     p_ai = sub.add_parser(
-        "ai", help="AI ディスパッチを参照実行する (soviet_now lib/ai_generate.sh, C-S1)"
+        "ai", help="AI ディスパッチを実行する (docich native llm, C-S1)"
     )
-    p_ai.add_argument("game", help="ゲーム名 (config/games/<name>.toml)")
+    p_ai.add_argument("game", help="ゲーム名 (config/games/<name>.toml、互換のため受理・未使用)")
     p_ai.add_argument("--label", required=True, help="ラベル (COMMENT または RADIO で始まる識別子)")
     p_ai.add_argument("--agents", required=True, metavar="AGENTS", help="カンマ区切りエージェントリスト (優先度順)")
     p_ai.add_argument("--prompt-file", required=True, metavar="PROMPT_FILE", help="生成プロンプトファイル")
