@@ -203,7 +203,8 @@ tailscale serve --bg --https=443 http://127.0.0.1:8787
 - **コード更新の反映**: 常駐プロセスなので、docich を deploy して
   `src/docich/webui.py` が更新されても再起動するまで旧 UI が配信される。
   owner-only の `restart_webui` operation (`ops/vm_actions/README.md`) で
-  固定 unit だけを再起動する。
+  固定 unit だけを再起動し、配信中の HTML がデプロイ済み `INDEX_HTML` と
+  一致するまでを確認する。
 
 ## `loginctl enable-linger` が必要な理由
 

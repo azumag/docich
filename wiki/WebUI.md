@@ -59,6 +59,11 @@ gh workflow run "VM operations" --repo azumag/docich --ref main \
   -f operation=restart_webui -f target=production -f ref=main -f confirm=production
 ```
 
+この operation は「unit が active」だけでなく、**配信中の HTML がデプロイ済み
+`INDEX_HTML` と一致するまで成功にしない**ため、別プロセスがポートを掴んで旧 UI を
+出し続けるケースも検出される（失敗時は step の終了コードで理由が分かる。定義は
+`ops/vm_actions/README.md`）。
+
 **重要**: 本番 VM で docich のサブモジュール (games/soviet_now) とは別に
 `/home/ubuntu/soren` を運用している場合、`--soren-root /home/ubuntu/soren` を必ず明示する
 こと。省略すると auto-discover が docich 側のサブモジュールを指してしまう。
