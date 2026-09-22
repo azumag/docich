@@ -197,6 +197,7 @@ tailscale serve --bg --https=443 http://127.0.0.1:8787
 ```
 
 - バインド先・ポートは `config/docich.toml` の `[webui]` セクションで変更できる。
+- mutation (PUT / POST) の Origin allowlist を Tailscale 経由の公開 URL で使う場合は、任意で `~/.config/docich/webui.env` に `DOCICH_WEBUI_ALLOWED_ORIGINS=https://<hostname>.<tailnet>.ts.net` を書く。unit は `EnvironmentFile=-%h/.config/docich/webui.env` として読むため、ファイルが無くても起動できる（無し＝loopback の Origin/Host のみ許可）。allowlist 外の Origin からの mutation は 403 `invalid_origin` になる。
 - `tailscale serve` を使わない場合は、直接 `http://<tailnet-IP>:8787/` へ
   アクセスできる (Tailscale ACL で到達制御すること)。
 - ログは `journalctl --user -u docich-webui -f` で確認できる。

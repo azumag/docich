@@ -6,6 +6,7 @@ After=network-online.target
 Type=simple
 WorkingDirectory=__DOCICH_ROOT__
 ExecStart=__DOCICH_ROOT__/bin/docich webui
+EnvironmentFile=-%h/.config/docich/webui.env
 Restart=on-failure
 RestartSec=5
 
