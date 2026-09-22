@@ -111,7 +111,7 @@ class GameCornerAdapter:
         No arbitrary PID kill is safe here. A held job lock or missing terminal
         evidence blocks the next corner until completion/operator recovery.
         """
-        from .corner_rotation import timestamp
+        from .corner_rotation import RotationError, timestamp
         lock_path, status_path = self.improvement_paths()
         if lock_path.exists():
             with lock_path.open("a") as lock:
@@ -131,8 +131,12 @@ class GameCornerAdapter:
                 return False
             if timestamp(status.get("started_at")) < timestamp(state.get("completed_at")):
                 return False
-            if status_name == "failed" and timestamp(status.get("completed_at")) < timestamp(status.get("started_at")):
-                return False
+            if status_name == "failed":
+                try:
+                    if timestamp(status.get("completed_at")) < timestamp(status.get("started_at")):
+                        return False
+                except (RotationError, ValueError, TypeError, OverflowError, OSError):
+                    return False
         return True
 
 
@@ -317,7 +321,7 @@ class RetiredCornerObserver:
         return root / "locks" / f"corner-improve-{self.game}.lock", root / f"corner_improve_{self.game}.json"
 
     def resources_released(self):
-        from .corner_rotation import timestamp
+        from .corner_rotation import RotationError, timestamp
 
         lock_path, status_path = self.improvement_paths()
         if lock_path.exists():
@@ -338,8 +342,12 @@ class RetiredCornerObserver:
                 return False
             if timestamp(status.get("started_at")) < timestamp(state.get("completed_at")):
                 return False
-            if status_name == "failed" and timestamp(status.get("completed_at")) < timestamp(status.get("started_at")):
-                return False
+            if status_name == "failed":
+                try:
+                    if timestamp(status.get("completed_at")) < timestamp(status.get("started_at")):
+                        return False
+                except (RotationError, ValueError, TypeError, OverflowError, OSError):
+                    return False
         return True
 
 
