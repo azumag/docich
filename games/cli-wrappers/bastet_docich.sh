@@ -27,6 +27,24 @@ case "$MAX_MATCHES" in
   ''|*[!0-9]*|0*) echo "BASTET_MAX_MATCHES must be a positive integer" >&2; exit 2 ;;
 esac
 
+# Bastet 0.43 distinguishes an ordinary Enter (character code 13) from
+# curses KEY_ENTER.  Its menus/dialogs accept code 13, but the gameplay Drop
+# key defaults to KEY_ENTER.  docich's command brain sends tmux's ordinary
+# Enter, so without this binding the UI advances while the falling piece never
+# receives a hard-drop input.  Keep the override in an isolated HOME so we do
+# not mutate the operator's ~/.bastetrc.
+BASTET_HOME="${BASTET_HOME:-$(dirname "$SCORELOG")/.bastet-home}"
+mkdir -p "$BASTET_HOME" || {
+  echo "cannot create BASTET_HOME: $BASTET_HOME" >&2
+  exit 2
+}
+printf 'Drop = 13\n' >"$BASTET_HOME/.bastetrc" || {
+  echo "cannot write Bastet key config: $BASTET_HOME/.bastetrc" >&2
+  exit 2
+}
+HOME="$BASTET_HOME"
+export HOME
+
 record_score() {
   # A completed match is recorded even at 0: the brain cannot see the board
   # (coloured blanks), so 0-point matches are normal, and the corner counts
