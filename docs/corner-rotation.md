@@ -96,18 +96,26 @@ last_seen、pending、request UUID、結果をatomic writeする。
    - 自分のrequestが**実行中／corner側が要復旧**（列挙順に依存しない。1件でもbusyなら拒否）、
      `pending` と `manual_pending` の同時存在、catalogから削除された予約、時計逆行は
      拒否してlatchのまま（exit非0、unitには触れない）。
-   - **手動予約でterminal観測がまだない**場合も拒否する。その場合は先に当該cornerの
-     手動 stop/recover を実行し、この操作がterminal観測を読んでcommitする。
+   - **手動予約でterminal観測がまだない**（一度も起動していない）場合は、予約を消さずに
+     `waiting` / `manual-request-needs-resume-or-recovery` へ戻す。以降の `tick()` は
+     自動発火を止めて待ち、**同じ手動 start が同じrequestで再開**するか、当該cornerの
+     手動 stop/recover と game-switch receipt が終了を証明するまで保持する
+     （操作者のスロットを暗黙に捨てない。観測が有れば同じ規則でcommitする）。
+   - 時計の逆行は**どの分支より先に**拒否する（復旧が `last_seen_at` を過去へ書き換えない）。
    - 成功時だけ `last_seen_at` を現在時刻へ進める（長期latch後の復旧で、次のtickが
-     長期停止の隔離（24時間）へ落ちないようにするため。cooldownは履歴だけが決める）。
+     長期停止の隔離（24時間）へ落ちないようにするため。cooldownは履歴だけが決める。
+     前方ジャンプを隔離で検知できるのはこの復旧操作を経由した場合だけ、という意図的な非対称）。
 2. 成功した場合だけ `systemctl --user --no-block restart` でreviewed unitを起動し、
    直後のtickが同じrecorded gameを再試行する。**成否の契約は「試した」ではなく
-   「ledgerから `recovery_required` が消えた」こと**で、残存時はCLIが非0を返して
-   unitを触らない（ロック競合・rotation無効時も同じ）。
+   「ledgerから `recovery_required` が消えた」こと**で、残存時と、ledgerが存在して読めない
+   場合はCLIが非0（exit 4）を返してunitを触れない（ロック競合・rotation無効時も同じ。
+   ledgerが存在しなければlatchは無いので0）。結果JSONには `latch_resolved` を含め、
+   ログを読む側はexit codeとこのフラグで判定する。
 
 `tick()` 自身はlatchを自動解除しない（毎分のtimerが自動再試行ループを作るため）。
 ledgerの手編集・`pending`の強制clear・state削除・seed再生成・時計調整は復旧手順ではない。
-`error_kind` は直近のlatch分類として、次にlatchし直すまでledgerと診断に残る。
+`error_kind` は**初回のlatch時**の固定分類として、次にlatchし直すまでledgerと診断に残る。
+復旧操作が拒否された時に上書きしない（拒否理由より元原因の分類を残す）。
 診断は `corners.corner_rotation` に `error_kind` と `pending_corner` / `pending_phase` /
 `pending_age_sec` / `pending_owner` / `pending_owner_status` を固定投影し（予約が在る限り、
 latch中かどうかを問わず出す）、latch自体を総合 `warn` としてruntime health alertへ届ける。

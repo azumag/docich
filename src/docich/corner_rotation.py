@@ -518,6 +518,10 @@ class CornerRotationManager:
             self._remember_catalog(state)
             if state["status"] != "recovery_required":
                 raise RotationError("rotation state is not latched", kind="invalid-state")
+            # Every branch below may refresh last_seen_at, so clock regression
+            # is rejected before any of them can move a timestamp backwards.
+            if now < state["last_seen_at"]:
+                raise RotationError("clock regressed", kind="invalid-state")
             pending = state.get("pending")
             manual = state.get("manual_pending")
             if pending is not None and manual is not None:
@@ -534,15 +538,16 @@ class CornerRotationManager:
             if reservation.get("corner") not in self.adapters:
                 raise RotationError("pending corner removed from catalog",
                                     kind="catalog-mismatch")
-            if now < state["last_seen_at"]:
-                raise RotationError("clock regressed", kind="invalid-state")
             try:
                 outcome = self._resolve_reservation(state, reservation, now,
                                                     manual=manual is not None)
             except Exception as exc:
+                # A refusal must not overwrite the classification of the
+                # original latch: that is the evidence operators diagnose from.
                 state.update(status="recovery_required",
-                             reason="execution-or-state-unverified",
-                             error_kind=_error_kind(exc))
+                             reason="execution-or-state-unverified")
+                if state.get("error_kind") is None:
+                    state["error_kind"] = _error_kind(exc)
                 self.save(state)
                 raise
             self.save(state)
@@ -562,12 +567,18 @@ class CornerRotationManager:
                                 kind="execution-unverified")
         if not owned:
             if manual:
-                # Resuming a manual run needs the corner's own manual runner.
-                # The documented path is that corner's manual stop/recover
-                # first; this recovery then observes its terminal state.
-                raise RotationError(
-                    "manual reservation needs corner-level manual recovery first",
-                    kind="invalid-state")
+                # The manual attempt never recorded an execution here, so no
+                # corner-side state can ever carry this request id. Return the
+                # reservation to the operator exactly like a mid-run handoff:
+                # ``tick()`` then parks on manual-request-needs-resume-or-
+                # recovery (no automatic corner starts) until the same manual
+                # start resumes this request or a manual stop/recover and the
+                # game-switch receipt prove it finished. Dropping the
+                # reservation here would silently delete an operator's slot.
+                state.update(last_seen_at=now, status="waiting",
+                             reason="manual-request-needs-resume-or-recovery")
+                return {"status": "waiting", "corner": corner_id,
+                        "reason": "manual-request-needs-resume-or-recovery"}
             if self._observe(state, now):
                 state.update(last_seen_at=now, status="waiting",
                              reason="other-corner-needs-finish-or-recovery")
@@ -683,15 +694,22 @@ def main(argv=None):
             print("corner rotation recovery failed; see error_kind in the rotation state",
                   file=sys.stderr)
             return 3
-        print(json.dumps(outcome, sort_keys=True))
         # Success means the durable latch is gone, not that recovery was
         # attempted: a busy lock or a disabled rotation leaves it in place and
-        # must fail the owner-only operation instead of reporting success.
-        try:
-            persisted = json.loads(manager.path.read_text())
-        except (OSError, ValueError):
-            persisted = {}
-        if persisted.get("status") == "recovery_required":
+        # must fail the owner-only operation instead of reporting success. An
+        # existing ledger that cannot be read cannot prove the latch is gone
+        # either (a missing ledger has no latch to resolve).
+        if not manager.path.exists():
+            resolved = True
+        else:
+            try:
+                persisted = json.loads(manager.path.read_text())
+            except (OSError, ValueError):
+                persisted = None
+            resolved = (isinstance(persisted, dict)
+                        and persisted.get("status") != "recovery_required")
+        print(json.dumps({**outcome, "latch_resolved": resolved}, sort_keys=True))
+        if not resolved:
             print("corner rotation latch remains after recovery", file=sys.stderr)
             return 4
         return 0
