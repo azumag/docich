@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Explicit reviewed-commit attestations for reconcile_presynced_submodule.py. Each entry records the exact reviewed blob (sha256 + git mode) for a projected path, scoped to one old_sub -> new_sub gitlink pair. The push-triggered reconcile passes only entries matching the current pair to the VM, and the VM converges a mismatched live file only when its bytes AND mode match the recorded blob exactly. An entry exists only because a squash merge dropped the reviewed commit from main history, so git rev-list old_sub..new_sub cannot see it. Additions here are reviewed through protected main like any other control-plane change.",
+  "description": "Explicit reviewed-commit attestations for reconcile_presynced_submodule.py. Each entry records the exact reviewed blob (sha256 + git mode) for a projected path, scoped to one old_sub -> new_sub gitlink pair. The push-triggered reconcile passes only entries matching the current pair to the VM, and the VM converges a mismatched live file only when its bytes AND mode match the recorded blob exactly. An entry exists only because a squash merge dropped the reviewed commit from main history, so git rev-list old_sub..new_sub cannot see it. Additions here are reviewed through protected main like any other control-plane change. Since docich#225 an entry may instead record owner-approved live bytes that exist in no reviewed commit, solely to authorize discarding exactly those bytes: reconcile converges the path to the old baseline and the canonical deploy then applies the reviewed new_sub state. Enforcement is unchanged: exact byte+mode match, the current old/new pair only, bounded entry count, review through protected main.",
   "attestations": [
     {
       "projection": "games/soviet_now",
@@ -78,6 +78,15 @@
       "source_commit": "9336a1dd48ce3353e1a58b62f9cf2b34963830db",
       "source_pr": 345,
       "reason": "PR #345 (squash merge 9336a1d) is the only commit that ever contained this path in soviet_now history. Production live carried the pre-#345 wrapper deployed directly to the VM on 2026-09-05 from the reviewed game-lifecycle work, so its bytes exist in no git object and match neither old_sub (absent) nor new_sub. This one-time entry for the 7ea3df4->d1a2a4a transition records the exact live bytes+mode so the push-triggered reconcile may converge the path to the old baseline (absent); the canonical deploy then projects the reviewed #345 content. Convergence still requires an exact live byte+mode match, and the final live state is the reviewed new content, never the attested bytes."
+    },
+    {
+      "projection": "games/soviet_now",
+      "old_sub": "f2c20234487c9d70953181d5ef6f32c7ff9d2091",
+      "new_sub": "fa39e06d14f01e157f5b24098066d7ba391707bc",
+      "path": "test_classifier.sh",
+      "mode": "100755",
+      "sha256": "9c3a8f4cb5fcb71e0782499da6435ab64d287348f0fd69a95581f4fac0e7cd9a",
+      "reason": "docich#225: production live /home/ubuntu/soren/test_classifier.sh (3991 bytes, mode 100755, mtime 2026-09-17 01:54 JST, git blob 1fd281e4bdaf4312972a4e13594c03f72951288d) matches neither old_sub (blob d9e58f3e09dd18514112cba713e5d2b6a59da011) nor new_sub (the path was removed by soviet_now #495 / docich #990 when classification moved to docich), and no commit reachable from soviet_now --all carries these bytes for this path: it is an unreviewed direct edit or partial application left on production. The push-triggered reconcile therefore fails closed with 'unknown projection content' (VM op log be2e102468904c209581bf701c66b8c4, canonical run 35769119675) and blocks canonical deploy for the f2c20234->fa39e06d pair. This entry authorizes discarding exactly these bytes+mode: only when the live file still matches this exact sha256 and mode does reconcile converge the path to the old baseline, after which the canonical deploy projects new_sub (file removal). Any other bytes, path, mode or gitlink pair stays refused, changed live content stays fail-closed, and the final live state is the reviewed new_sub state (absent), never the attested bytes."
     }
   ]
 }
