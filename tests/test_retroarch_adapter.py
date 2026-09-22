@@ -159,6 +159,17 @@ class TestPrepareGeneratesCfg(RetroArchTestBase):
         ctx = self._make_ctx(retroarch_raw={"audio_enabled": False})
         self.assertEqual(retroarch.retroarch_audio(ctx.g, ctx.game), (False, "docich_sink"))
 
+    def test_audio_buffer_is_bounded_and_only_applies_to_enabled_game_audio(self):
+        for value in (True, "289", 7, 513):
+            with self.subTest(value=value):
+                ctx = self._make_ctx(retroarch_raw={"audio_latency_ms": value})
+                with self.assertRaises(base.AdapterError):
+                    retroarch.retroarch_cfg_lines(ctx.g, ctx.game, Path('/tmp/retroarch.cfg'), 55355)
+        for enabled in (False, True):
+            ctx = self._make_ctx(retroarch_raw={"audio_enabled": enabled, "audio_latency_ms": 289})
+            lines = retroarch.retroarch_cfg_lines(ctx.g, ctx.game, Path('/tmp/retroarch.cfg'), 55355)
+            self.assertEqual('audio_latency = "289"' in lines, enabled)
+
     def test_prepare_is_idempotent(self):
         ctx = self._make_ctx(retroarch_raw={"rom": "games/roms/hanjuku-hero.sfc", "core": str(self.core_path)})
         adapter = retroarch.RetroArchAdapter(ctx)
