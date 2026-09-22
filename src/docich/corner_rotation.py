@@ -59,7 +59,12 @@ def _error_kind(exc):
     kind = getattr(exc, "kind", None)
     if isinstance(kind, str) and kind in ERROR_KINDS:
         return kind
-    if isinstance(exc, CornerExecutionError):
+    # Corner-side failures (retro/nethack/paper/soren91 errors) all mean the
+    # execution itself failed; everything else -- a coding bug such as a
+    # TypeError, an OS error, a provider crash -- stays "unexpected" (#986).
+    if isinstance(exc, CornerExecutionError) or (
+        (type(exc).__module__ or "").startswith("docich.")
+    ):
         return "execution-error"
     return "unexpected"
 
