@@ -196,3 +196,29 @@ def test_improve_path_sends_no_process_kill():
         text = root.read_text(encoding="utf-8")
         for marker in forbidden:
             assert marker not in text, f"{root}: forbidden process-kill marker {marker!r}"
+
+
+def test_lane_busy_is_skipped_and_recorded(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    from docich import corner_improve
+
+    @contextmanager
+    def busy(_state_dir, **_kwargs):
+        yield False
+
+    monkeypatch.setattr(corner_improve, "improve_lane", busy)
+    monkeypatch.setattr(
+        paper_improve, "_run_paper_improve",
+        lambda *_args, **_kwargs: pytest.fail("the lane must gate the job"),
+    )
+    trading = tmp_path / "state" / "trading"
+
+    result = paper_improve.run_paper_improve(
+        _g(tmp_path), trading_dir=trading, agents="x", now=123.0
+    )
+
+    assert result["status"] == "skipped" and result["reason"] == "lane-busy"
+    status = json.loads((trading / paper_improve.STATUS_FILENAME).read_text())
+    assert status["status"] == "skipped"
+    assert status["reason_code"] == "lane-busy"

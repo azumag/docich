@@ -13,7 +13,7 @@ import secrets
 import time
 import uuid
 
-from .corner_catalog import load_catalog, rotation_enabled
+from .corner_catalog import cooldown_seconds, load_catalog, rotation_enabled, schedule_mode
 from .corner_adapters import make_corner_adapter, CornerExecutionCoordinator, RetiredCornerObserver
 from .game_switch import atomic_write_json
 
@@ -73,6 +73,10 @@ class CornerRotationManager:
         self.adapters = {c.id: adapter_factory(g, c) for c in self.catalog}
         self.executor = executor or CornerExecutionCoordinator(g, clock=clock, sleep=sleep)
         self.seed = seed
+        # Dispatch policy and rolling cooldown are configuration, not state:
+        # flipping schedule_mode must not rewrite the durable ledger.
+        self.schedule_mode = schedule_mode(g)
+        self.cooldown_seconds = cooldown_seconds(g)
         self.path = Path(g.state_dir) / "corner_rotation.json"
         self.lock_path = Path(g.state_dir) / "locks/corner-rotation.lock"
 
@@ -288,8 +292,7 @@ class CornerRotationManager:
                 excluded[corner.id] = "adapter-unavailable"
         return result, excluded
 
-    @staticmethod
-    def _cooldown_due_at(history, eligible, now):
+    def _cooldown_due_at(self, history, eligible, now):
         """Return the earliest timestamp at which a cooling corner can recur.
 
         ``next_due_at`` is the nominal 24/N cadence.  When the cadence gets
@@ -302,9 +305,9 @@ class CornerRotationManager:
         """
         eligible = set(eligible)
         deadlines = [
-            row["at"] + DAY
+            row["at"] + self.cooldown_seconds
             for row in history
-            if row.get("corner") in eligible and row["at"] > now - DAY
+            if row.get("corner") in eligible and row["at"] > now - self.cooldown_seconds
         ]
         return min(deadlines) if deadlines else None
 
@@ -341,19 +344,33 @@ class CornerRotationManager:
                         return self._wait(state, "manual-request-needs-resume-or-recovery")
                     state.pop("manual_pending")
                 eligible, excluded = self._eligible()
-                state.update(eligible=eligible, excluded=excluded,
-                             interval_seconds=DAY / len(eligible) if eligible else None)
+                interval = DAY / len(eligible) if eligible else None
+                state.update(
+                    eligible=eligible, excluded=excluded,
+                    # interval_seconds only describes the interval policy; the
+                    # queue policy has no cadence (cooldown is the only gate).
+                    interval_seconds=interval if self.schedule_mode == "interval" else None,
+                )
                 pending = state.get("pending")
                 if busy:
                     return self._wait(state, "other-corner-needs-finish-or-recovery")
                 if pending is None:
                     if not eligible:
                         return self._wait(state, "no-enabled-corner")
-                    if state.get("last_slot_at") is not None:
-                        state["next_due_at"] = state["last_slot_at"] + state["interval_seconds"]
-                    if now < state["next_due_at"]:
-                        return self._wait(state, "not-due")
-                    recent = {r["corner"] for r in state["history"] if r["at"] > now - DAY}
+                    if self.schedule_mode == "interval":
+                        if state.get("last_slot_at") is not None:
+                            state["next_due_at"] = state["last_slot_at"] + state["interval_seconds"]
+                        if now < state["next_due_at"]:
+                            return self._wait(state, "not-due")
+                    else:
+                        # Queue dispatch: the next eligible corner fires as soon
+                        # as the shared slot is free; next_due_at is informational
+                        # (the earliest cooldown expiry once nothing is eligible).
+                        state["next_due_at"] = now
+                    recent = {
+                        r["corner"] for r in state["history"]
+                        if r["at"] > now - self.cooldown_seconds
+                    }
                     candidates = [c for c in eligible if c not in recent]
                     if not candidates:
                         cooldown_due = self._cooldown_due_at(state["history"], eligible, now)
@@ -382,11 +399,15 @@ class CornerRotationManager:
                     if pending["corner"] not in eligible:
                         return self._wait(state, "selected-corner-disabled-or-paused")
                     # Re-check cooldown after importing concurrent/manual activity.
-                    if any(r["corner"] == pending["corner"] and r["at"] > now - DAY for r in state["history"]):
+                    if any(r["corner"] == pending["corner"] and r["at"] > now - self.cooldown_seconds
+                           for r in state["history"]):
                         return self._wait(state, "selected-corner-cooling-down")
                     pending["phase"] = "dispatched"
                     state["last_slot_at"] = now
-                    state["next_due_at"] = now + state["interval_seconds"]
+                    state["next_due_at"] = (
+                        now + state["interval_seconds"]
+                        if self.schedule_mode == "interval" else now
+                    )
                     state["history"].append(dict(corner=pending["corner"], at=now, source="reservation"))
                 state.update(status="running", reason=None)
                 self.save(state)
@@ -499,7 +520,11 @@ def run_manual(g, manager, games):
         if now < state["last_seen_at"]:
             raise RotationError("clock regressed")
         eligible, _ = rotation._eligible()
-        state.update(eligible=eligible, interval_seconds=DAY / len(eligible) if eligible else None)
+        state.update(
+            eligible=eligible,
+            interval_seconds=(DAY / len(eligible) if eligible else None)
+            if rotation.schedule_mode == "interval" else None,
+        )
         path = getattr(manager, "state_path", None) or manager.path
         request = state.get("manual_pending")
         if request is not None:
@@ -516,7 +541,8 @@ def run_manual(g, manager, games):
             if rotation._observe(state, now):
                 raise RotationError("pending corner must finish or recover before manual start")
             choices = [c for c in rotation.catalog if c.game in games and c.id in eligible
-                       and not any(r["corner"] == c.id and r["at"] > now - DAY for r in state["history"])]
+                       and not any(r["corner"] == c.id and r["at"] > now - rotation.cooldown_seconds
+                                   for r in state["history"])]
             if not choices:
                 raise RotationError("no eligible manual corner outside rolling cooldown")
             chosen = min(choices, key=lambda c: hashlib.sha256(f'{state["seed"]}:{state["slot"]}:{c.id}'.encode()).digest())
@@ -524,7 +550,9 @@ def run_manual(g, manager, games):
             state["manual_pending"] = request
             state["slot"] += 1
             state["history"].append(dict(corner=chosen.id, at=now, source="manual-reservation"))
-            state.update(last_slot_at=now, next_due_at=now + DAY / len(eligible))
+            state["last_slot_at"] = now
+            state["next_due_at"] = (now + DAY / len(eligible)
+                                    if rotation.schedule_mode == "interval" else now)
         # Limit multi-game retro manual starts to the same reserved selection.
         if hasattr(manager, "config"):
             from dataclasses import replace
@@ -551,7 +579,10 @@ def run_manual(g, manager, games):
                 state["history"].append(dict(corner=chosen.id, at=finished, source="manual-completion"))
                 state["last_slot_at"] = max(now, finished)
                 if eligible:
-                    state["next_due_at"] = state["last_slot_at"] + DAY / len(eligible)
+                    state["next_due_at"] = (
+                        state["last_slot_at"] + DAY / len(eligible)
+                        if rotation.schedule_mode == "interval" else finished
+                    )
                 state.update(status="ready", reason=None)
                 state.pop("manual_pending", None)
             elif status not in {"queued", "waiting", "already-running"}:

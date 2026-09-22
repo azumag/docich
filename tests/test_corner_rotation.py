@@ -849,3 +849,91 @@ def test_stop_queues_durable_request_while_owner_is_starting(tmp_path, monkeypat
     marker_state = json.loads(marker.read_text())
     assert marker_state["state_file"] == manager.path.name
     assert isinstance(marker_state["requested_at"], (int, float))
+
+
+def _policy_config(root, *, mode=None, cooldown_hours=None):
+    root.mkdir(parents=True, exist_ok=True)
+    lines = ["[corner_rotation]", "enabled=true"]
+    if mode is not None:
+        lines.append(f'schedule_mode="{mode}"')
+    if cooldown_hours is not None:
+        lines.append(f"cooldown_hours={cooldown_hours}")
+    path = root / "config.toml"
+    path.write_text("\n".join(lines) + '\n[paths]\nstate_dir="run"\n')
+    return load_global(root, path)
+
+
+def _policy_manager(g, clock, executor):
+    catalog = [Corner("retro", "game", "nsnake"), Corner("paper", "paper", "paper-view"),
+               Corner("meriken", "meriken", "soren91")]
+    return CornerRotationManager(g, clock=lambda: clock[0], seed="queue-seed",
+                                 catalog=catalog, adapter_factory=Adapter, executor=executor)
+
+
+def test_queue_mode_dispatches_back_to_back_without_interval(tmp_path):
+    g = _policy_config(tmp_path, mode="queue")
+    clock = [1000000.0]
+    executor = Executor()
+    manager = _policy_manager(g, clock, executor)
+
+    picks = [manager.tick()["corner"] for _ in range(3)]
+
+    assert len(executor.calls) == 3
+    assert len(set(picks)) == 3
+    assert state(manager)["interval_seconds"] is None
+    assert state(manager)["next_due_at"] == clock[0]
+
+
+def test_queue_mode_uses_configured_cooldown_and_reanchors_when_empty(tmp_path):
+    g = _policy_config(tmp_path, mode="queue", cooldown_hours=1)
+    clock = [1000000.0]
+    executor = Executor()
+    manager = _policy_manager(g, clock, executor)
+
+    picks = [manager.tick()["corner"] for _ in range(3)]
+    blocked = manager.tick()
+
+    assert blocked["reason"] == "all-corners-cooling-down"
+    assert state(manager)["next_due_at"] == clock[0] + 3600
+
+    clock[0] += 3601
+    again = manager.tick()
+    assert again["corner"] in picks
+    assert len(executor.calls) == 4
+
+
+@pytest.mark.parametrize("body", [
+    'schedule_mode="bogus"',
+    "cooldown_hours=0",
+    "cooldown_hours=-1",
+    'cooldown_hours="24"',
+    "cooldown_hours=true",
+])
+def test_invalid_dispatch_policy_is_rejected(tmp_path, body):
+    path = tmp_path / "config.toml"
+    path.write_text(f'[corner_rotation]\nenabled=true\n{body}\n[paths]\nstate_dir="run"\n')
+    with pytest.raises(CornerCatalogError):
+        load_catalog(load_global(tmp_path, path))
+
+
+def test_queue_mode_does_not_wait_for_improvement_jobs(tmp_path):
+    from docich.corner_adapters import RetiredCornerObserver
+
+    record = {"id": "nsnake", "adapter": "game", "game": "nsnake"}
+
+    def observer_for(mode):
+        root = tmp_path / mode
+        g = _policy_config(root, mode=mode)
+        state_dir = g.state_dir
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / "retro_corner.json").write_text(json.dumps({
+            "status": "completed", "game": "nsnake",
+            "started_at": 1.0, "completed_at": 2.0,
+            "improve_job": {"spawned": True, "date": "2026-09-10"},
+        }), encoding="utf-8")
+        return RetiredCornerObserver(g, record)
+
+    # interval mode keeps the fail-closed improvement wait
+    assert observer_for("interval").resources_released() is False
+    # queue mode fires the next corner without waiting for the improvement job
+    assert observer_for("queue").resources_released() is True

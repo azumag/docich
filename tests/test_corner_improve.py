@@ -307,3 +307,62 @@ def test_already_running_is_skipped(tmp_path):
         fcntl.flock(held.fileno(), fcntl.LOCK_UN)
         held.close()
     assert result['status'] == 'skipped' and result['reason'] == 'already-running'
+
+
+def test_improve_lane_serializes_and_reports_busy(tmp_path):
+    from docich.corner_improve import improve_lane, improve_lane_free
+
+    state_dir = tmp_path / "run"
+    assert improve_lane_free(state_dir) is True
+    with improve_lane(state_dir) as first:
+        assert first is True
+        assert improve_lane_free(state_dir) is False
+        with improve_lane(state_dir, timeout=0.05, sleep=lambda _seconds: None) as second:
+            assert second is False
+    assert improve_lane_free(state_dir) is True
+
+
+def test_lane_busy_skip_is_recorded(tmp_path, monkeypatch):
+    import json as _json
+    from contextlib import contextmanager
+    from docich import corner_improve
+
+    @contextmanager
+    def busy(_state_dir, **_kwargs):
+        yield False
+
+    monkeypatch.setattr(corner_improve, "improve_lane", busy)
+    state_dir = _setup_completed(tmp_path, [10, 20])
+    result = run_corner_improve(_G(state_dir), game='gnurobots',
+                                date_str='2026-09-10', agents='a')
+
+    assert result['status'] == 'skipped' and result['reason'] == 'lane-busy'
+    status = _json.loads((state_dir / 'corner_improve_gnurobots.json').read_text())
+    assert status['status'] == 'skipped'
+    assert status['reason_code'] == 'lane-busy'
+
+
+def test_explicit_window_ignores_a_shared_state_owned_by_the_next_corner(tmp_path):
+    import datetime as dt
+
+    state_dir = tmp_path / 'run'
+    (state_dir / 'scores').mkdir(parents=True)
+    start = dt.datetime.fromisoformat('2026-09-10T19:00:00+09:00').timestamp()
+    (state_dir / 'scores' / 'gnurobots.jsonl').write_text(
+        json.dumps({'ts': str(start + 60), 'game': 'gnurobots', 'score': 42}) + '\n',
+        encoding='utf-8',
+    )
+    # The next queued corner already owns the shared state file.
+    (state_dir / 'retro_corner.json').write_text(json.dumps({
+        'status': 'active', 'game': 'moon-buggy', 'date': '2026-09-11',
+        'started_at': '2026-09-11T00:00:00+09:00',
+        'ends_at': '2026-09-11T00:20:00+09:00',
+    }), encoding='utf-8')
+
+    result = run_corner_improve(
+        _G(state_dir), game='gnurobots', date_str='2026-09-10', agents='a',
+        dry_run=True, window=(start, start + 1800),
+    )
+
+    assert result['status'] == 'dry-run'
+    assert result['stats']['n'] == 1 and result['stats']['best'] == 42

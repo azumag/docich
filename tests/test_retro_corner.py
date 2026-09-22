@@ -1068,7 +1068,7 @@ class TestRetroCornerImproveSpawnEnv(RetroCornerTestBase):
         assert argv[:4] == ["systemd-run", "--user", "--quiet", "--collect"]
         assert any(item.startswith("--unit=docich-retro-improve-") for item in argv)
         assert "--property=Type=exec" in argv
-        assert "--property=RuntimeMaxSec=1500" in argv
+        assert "--property=RuntimeMaxSec=3600" in argv
         assert "--property=TimeoutStopSec=30" in argv
         assert "--setenv=DOCICH_ALLOW_REAL_AI=1" in argv
         assert f"--setenv=PYTHONPATH={self.g.repo_root / 'src'}" in argv
@@ -1155,3 +1155,36 @@ class TestRetroCornerImproveSpawnEnv(RetroCornerTestBase):
         _, kwargs = calls[0]
         assert kwargs['env']['DOCICH_ALLOW_REAL_AI'] == '1'
         assert kwargs['start_new_session'] is True
+
+
+class TestRetroCornerImproveWindow(RetroCornerTestBase):
+    def test_spawn_passes_the_confirmed_corner_window(self):
+        from dataclasses import replace
+        from unittest.mock import patch
+
+        mgr, _ = self.manager(["sorengame"])
+        mgr.config = replace(mgr.config, improve_agents="test-agent")
+        state = {
+            "date": "2026-09-06",
+            "game": "nsnake",
+            "started_at": "2026-09-06T12:00:00+09:00",
+            "ends_at": "2026-09-06T12:20:00+09:00",
+        }
+        captured = []
+
+        def fake_run(argv, **kwargs):
+            captured.append(argv)
+            return SimpleNamespace(returncode=0, stderr="")
+
+        with patch.object(sys, "platform", "linux"), \
+             patch.dict(os.environ, {"INVOCATION_ID": "parent-corner"}, clear=True), \
+             patch("subprocess.run", side_effect=fake_run), \
+             patch("subprocess.Popen", side_effect=AssertionError("unsafe parent cgroup")):
+            mgr._spawn_improve_once(state)
+
+        assert state["improve_job"]["spawned"] is True
+        argv = captured[0]
+        start = datetime.fromisoformat(state["started_at"]).timestamp()
+        end = datetime.fromisoformat(state["ends_at"]).timestamp()
+        assert argv[argv.index("--started-at") + 1] == f"{start:.6f}"
+        assert argv[argv.index("--ends-at") + 1] == f"{end:.6f}"
