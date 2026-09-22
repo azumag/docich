@@ -50,8 +50,16 @@ class CliAdapterTestBase(unittest.TestCase):
         self._tmpdir = tempfile.TemporaryDirectory()
         self.repo_root = Path(self._tmpdir.name)
         self.g = config.load_global(self.repo_root)
+        # 別のテスト (cli.cmd_start 等) が世代別 session を os.environ へ
+        # 束縛したままにし得るため、この file の期待値 (既定 docich-game) を
+        # 固定する。同一起動プロセスで file をまたいで実行しても順序に依らない。
+        self._env_patch = mock.patch.dict(
+            "os.environ", {cli_game.RUNTIME_GAME_SESSION_ENV: cli_game.GAME_SESSION}
+        )
+        self._env_patch.start()
 
     def tearDown(self):
+        self._env_patch.stop()
         self._tmpdir.cleanup()
 
     def _make_ctx(self, *, cli_raw: dict, tmux=None) -> base.AdapterContext:
