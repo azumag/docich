@@ -88,8 +88,10 @@ def contain_filter(width: int, height: int, *, cell_stretch: float = 1.0) -> str
     filters = []
     if cell_stretch != 1.0:
         # 端末セルを正方形として見せるための水平補正。等倍 (既定) では従来と
-        # 同一のフィルタ列を出し、配信経路の差分を増やさない。
-        filters.append(f"scale=iw*{cell_stretch:g}:ih:flags=neighbor:force_divisible_by=2")
+        # 同一のフィルタ列を出し、配信経路の差分を増やさない。中間フレームの
+        # 幅が奇数になり得るが、x11grab の bgra 入力は間引きが無く、最終段の
+        # pad が 960x540 (偶数) に正規化するため配信フォーマットは変わらない。
+        filters.append(f"scale=iw*{cell_stretch:g}:ih:flags=neighbor")
     filters.append(f"scale={width}:{height}:force_original_aspect_ratio=decrease")
     filters.append(f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black")
     filters.append("setsar=1")

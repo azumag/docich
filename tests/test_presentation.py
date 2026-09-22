@@ -82,9 +82,25 @@ class PresentationPixels(unittest.TestCase):
                 self.assertAlmostEqual(right - left + 1, expected[0], delta=10)
                 self.assertAlmostEqual(bottom - top + 1, expected[1], delta=10)
         # 補正後はタイル (幅308, 高609) が正方形相当になり、縦位置は変わらない。
-        square_left, square_top, square_right, _ = seen[2.0]
-        self.assertAlmostEqual((square_right - square_left + 1) / 489, 1.0, delta=0.03)
+        square_left, square_top, square_right, square_bottom = seen[2.0]
+        measured_height = square_bottom - square_top + 1
+        self.assertAlmostEqual((square_right - square_left + 1) / measured_height,
+                               1.0, delta=0.03)
         self.assertAlmostEqual(square_top, seen[1.0][1], delta=2)
+
+    def test_filter_strings_pin_default_and_pacman_pipelines(self):
+        # 既定は origin/main 時点と完全同一。pacman の補正は水平2倍のみを前置する。
+        self.assertEqual(
+            contain_filter(960, 540),
+            'scale=960:540:force_original_aspect_ratio=decrease,'
+            'pad=960:540:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1',
+        )
+        self.assertEqual(
+            contain_filter(960, 540, cell_stretch=2.0),
+            'scale=iw*2:ih:flags=neighbor,'
+            'scale=960:540:force_original_aspect_ratio=decrease,'
+            'pad=960:540:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1',
+        )
 
 
 class CellAspectScaleTests(unittest.TestCase):
