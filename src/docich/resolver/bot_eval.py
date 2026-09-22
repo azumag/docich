@@ -335,7 +335,8 @@ def bot_preset(g, game: str) -> dict:
     if game not in presets:
         raise ValueError(f"bot preset がありません: {game} (対応: {sorted(presets)})")
     dimensions = {
-        "pacman4console": (80, 32),
+        # pacman4console は最小 29x32 (config/games/pacman4console.toml と同一)。
+        "pacman4console": (29, 32),
     }
     cols, rows = dimensions.get(game, (80, 24))
     return {

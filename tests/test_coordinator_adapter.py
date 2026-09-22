@@ -269,6 +269,54 @@ class TestMaterialize(CoordinatorAdapterTestBase):
         self.assertEqual(self.tmux.windows, {})
 
 
+class TestGameWindowCommand(CoordinatorAdapterTestBase):
+    """PAC-MAN の正方形セル補正 (AGENTS.md の明示例外) が配信コマンドに乗ること。"""
+
+    def _pacman_adapter(self, cli_lines: str):
+        self.game_path = self.g.games_dir / "pacman4console.toml"
+        self.game_path.write_text(
+            '[game]\nname = "pacman4console"\nadapter = "cli"\ntitle = "Pac-Man"\n\n'
+            '[cli]\ncommand = "pacman4console"\n' + cli_lines,
+            encoding="utf-8",
+        )
+        self.g.display.viewport_x = 0
+        self.g.display.viewport_y = 90
+        self.g.display.viewport_width = 960
+        self.g.display.viewport_height = 540
+        game = config.load_game(self.g, "pacman4console")
+        adapter = cli_game.CliCoordinatorAdapter(self.g, game, self.spec)
+        adapter.tmux = self.tmux
+        return adapter
+
+    def _command(self, cli_lines: str):
+        adapter = self._pacman_adapter(cli_lines)
+        with mock.patch(
+            "docich.adapters.cli_game.procs.which", return_value="/usr/bin/xterm"
+        ):
+            return adapter._xterm_command()
+
+    def test_cell_aspect_is_passed_to_presentation(self):
+        cmd = self._command('cols = 29\nrows = 32\ncell_aspect = "1:2"\n')
+        self.assertEqual(cmd[cmd.index("--cell-aspect") + 1], "1:2")
+        self.assertIn("29x32+0+0", cmd)
+        self.assertIn("presentation.py", " ".join(cmd))
+        self.assertIn("docich-present-g1-abcdef", cmd)
+
+    def test_default_keeps_native_presentation(self):
+        cmd = self._command('cols = 29\nrows = 32\n')
+        self.assertNotIn("--cell-aspect", cmd)
+
+    def test_invalid_cell_aspect_fails_closed(self):
+        adapter = self._pacman_adapter('cols = 29\nrows = 32\ncell_aspect = "1:0"\n')
+        with mock.patch(
+            "docich.adapters.cli_game.procs.which", return_value="/usr/bin/xterm"
+        ):
+            with self.assertRaises(AdapterError):
+                adapter._xterm_command()
+            with self.assertRaises(AdapterError):
+                adapter.preflight(self.deadline, None)
+
+
 class TestReadiness(CoordinatorAdapterTestBase):
     def _ready(self):
         self.tmux.sessions["docich-game-g1"] = ("g1-abcdef", 1, "adapter")

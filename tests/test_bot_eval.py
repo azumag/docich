@@ -94,16 +94,16 @@ def test_cli_passes_the_game_name_and_uses_the_preset_cadence(monkeypatch, tmp_p
     assert params["interval_s"].default == 0.7 and params["max_turns"].default == 3000
 
 
-@pytest.mark.parametrize("game,rows", [
-    ("nsnake", 24),
-    ("ninvaders", 24),
-    ("bastet", 24),
-    ("moon-buggy", 24),
-    ("pacman4console", 32),
+@pytest.mark.parametrize("game,cols,rows", [
+    ("nsnake", 80, 24),
+    ("ninvaders", 80, 24),
+    ("bastet", 80, 24),
+    ("moon-buggy", 80, 24),
+    ("pacman4console", 29, 32),
 ])
-def test_every_live_command_brain_has_a_bounded_preset(game, rows):
+def test_every_live_command_brain_has_a_bounded_preset(game, cols, rows):
     preset = bot_eval.bot_preset(None, game)
-    assert preset["cols"] == 80
+    assert preset["cols"] == cols
     assert preset["rows"] == rows
     assert preset["bot_cmd"][-1].endswith(f"brains/{game}/brain.py")
     assert "game_over_res" in preset["run_kwargs"]

@@ -3,8 +3,9 @@ name = "pacman4console"
 title = "Pac-Man"
 adapter = "cli"
 
-# pacman4console は最低 29x32 の pane を要求するため rows=32 を宣言する
-# (他CLIゲームの 80x24 とは異なる。presentation は contain で吸収する)。
+# pacman4console は最低 29x32 の pane を要求するため cols=29 / rows=32 を宣言する
+# (他CLIゲームの 80x24 とは異なる)。80桁に広げても maze は左端の 28 桁しか使わず、
+# 黒い余白が増えるだけなので、ゲーム本来の最小寸法で動かして contain の中央に置く。
 # タイトル起動・試合終了時は Game Over ダイアログを出す (同一プロセス継続)。
 # wrapper (/bin/sh games/cli-wrappers/pacman4console_docich.sh) が開始・再開キーを駆動し、
 # 最終スコアを scorelog へ追記する。docich CLI adapter には wrapper 型ゲームの
@@ -14,10 +15,15 @@ require_round_boundary = false
 
 [cli]
 command = "/bin/sh games/cli-wrappers/pacman4console_docich.sh"
-cols = 80
+cols = 29
 rows = 32
 font = "monospace"
 font_size = 18
+# maze は正方形タイル前提のアートだが、端末セルは 1:2 (monospace/公式スクショと同じ)
+# のため、そのまま配信すると縦に約2倍伸びる。このゲームだけ配信側で水平補正して
+# 正方形セルとして表示する (AGENTS.md §ゲーム切替時の描画サイズと配信レイアウトの
+# 明示例外)。ゲーム本体の窓と内部解像度は変更しない。
+cell_aspect = "1:2"
 
 [agent]
 # 矢印入力は brain、開始・再開は wrapper が所有する。

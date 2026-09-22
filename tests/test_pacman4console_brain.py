@@ -106,7 +106,10 @@ def test_bad_or_mismatched_map_uses_visible_cells(tmp_path):
 def test_config_contract():
     cfg = tomllib.loads((ROOT / "config/games/pacman4console.toml").read_text())
     assert cfg["cli"]["command"] == "/bin/sh games/cli-wrappers/pacman4console_docich.sh"
+    assert cfg["cli"]["cols"] == 29
     assert cfg["cli"]["rows"] == 32
+    # 端末セル 1:2 を正方形セルへ補正する明示例外 (AGENTS.md)。
+    assert cfg["cli"]["cell_aspect"] == "1:2"
     assert cfg["agent"]["enabled"] is True
     assert cfg["agent"]["brain"] == "command"
     assert cfg["agent"]["command"] == ["python3", "brains/pacman4console/brain.py"]

@@ -2,9 +2,10 @@
 # pacman4console match loop for docich: auto-start and auto-retry.
 #
 # pacman4console needs at least a 29x32 pane (the docich toml declares
-# rows=32 for this game).  It boots to a title ("Press any key...") and
-# shows "Game Over / ... or any other key to play again" at match end
-# (same process continues).  Pane input only reaches the FOREGROUND
+# cols=29 / rows=32 and the presentation widens the captured window so the
+# terminal's 1:2 cells display square).  It boots to a title ("Press any
+# key...") and shows "Game Over / ... or any other key to play again" at
+# match end (same process continues).  Pane input only reaches the FOREGROUND
 # process, so the game runs in the foreground while a background driver
 # loop sends the transition keys.  In play the docich [agent] command brain
 # (brains/pacman4console/brain.py) steers and stays silent on the title and

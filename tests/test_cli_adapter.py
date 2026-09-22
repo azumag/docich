@@ -217,6 +217,39 @@ class TestCleanup(CliAdapterTestBase):
         self.assertNotIn(("stop_game_session_named", "docich"), tmux.calls)
 
 
+class TestCellAspect(CliAdapterTestBase):
+    def _game(self, value):
+        return config.GameConfig(
+            name="pacman4console",
+            title="Pac-Man",
+            adapter="cli",
+            raw={"cli": {"command": "pacman4console", "cell_aspect": value}},
+            agent=config.GameAgentConfig(),
+            path=self.repo_root / "config" / "games" / "pacman4console.toml",
+        )
+
+    def test_unset_keeps_native_window(self):
+        game = config.GameConfig(
+            name="nethack", title="NetHack", adapter="cli",
+            raw={"cli": {"command": "nethack"}},
+            agent=config.GameAgentConfig(),
+            path=self.repo_root / "config" / "games" / "nethack.toml",
+        )
+        self.assertIsNone(cli_game.cli_cell_aspect(game))
+
+    def test_valid_value_is_normalized(self):
+        self.assertEqual(cli_game.cli_cell_aspect(self._game(" 1:2 ")), "1:2")
+
+    def test_identity_ratio_disables_correction(self):
+        self.assertIsNone(cli_game.cli_cell_aspect(self._game("1:1")))
+
+    def test_invalid_values_fail_closed(self):
+        for value in ("", "1", "1:0", "1:5", 2, "abc"):
+            with self.subTest(value=value):
+                with self.assertRaises(base.AdapterError):
+                    cli_game.cli_cell_aspect(self._game(value))
+
+
 class TestRobotsCatalog(unittest.TestCase):
     def test_robots_uses_cli_adapter_and_bsdgames_command(self):
         repo_root = Path(__file__).resolve().parents[1]
