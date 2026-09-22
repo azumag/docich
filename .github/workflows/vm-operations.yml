@@ -37,6 +37,11 @@ on:
         required: false
         default: false
         type: boolean
+      aivis_engine:
+        description: Also reclaim the unused AivisSpeech-Engine second TTS (~1.11GiB; audited unreferenced 2026-09-23, guarded on VOICEVOX engine intact)
+        required: false
+        default: false
+        type: boolean
       market_paper_action:
         description: market_paper systemd action (opt-in stocks/FX paper-trading corners; never touches config/market-paper.toml; seed-test-quote is fx-only, writes one fixed-shape deterministic test quote to the approved file-feed path)
         required: false
@@ -563,6 +568,7 @@ jobs:
           SHA: ${{ steps.candidate.outputs.sha }}
           APPLY: ${{ inputs.apply }}
           VOICEVOX_ARCHIVE: ${{ inputs.voicevox_archive }}
+          AIVIS_ENGINE: ${{ inputs.aivis_engine }}
         run: |
           set -euo pipefail
           # The helper is a fixed reviewed script from the trusted main checkout.
@@ -571,9 +577,11 @@ jobs:
           if [[ "${APPLY:-false}" == "true" ]]; then apply_flag=1; fi
           voicevox_flag=0
           if [[ "${VOICEVOX_ARCHIVE:-false}" == "true" ]]; then voicevox_flag=1; fi
-          echo "storage reclaim apply=${apply_flag} voicevox_archive=${voicevox_flag}"
+          aivis_flag=0
+          if [[ "${AIVIS_ENGINE:-false}" == "true" ]]; then aivis_flag=1; fi
+          echo "storage reclaim apply=${apply_flag} voicevox_archive=${voicevox_flag} aivis_engine=${aivis_flag}"
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
-          { printf 'APPLY=%s\nVOICEVOX_ARCHIVE=%s\n' "$apply_flag" "$voicevox_flag"; cat control/ops/vm_actions/storage_reclaim.sh; } | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+          { printf 'APPLY=%s\nVOICEVOX_ARCHIVE=%s\nAIVIS_ENGINE=%s\n' "$apply_flag" "$voicevox_flag" "$aivis_flag"; cat control/ops/vm_actions/storage_reclaim.sh; } | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Manage market-paper systemd units (opt-in stocks/FX paper corners)
         if: ${{ steps.auth.outputs.operation == 'market_paper' }}
