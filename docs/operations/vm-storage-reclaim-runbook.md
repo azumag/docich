@@ -128,4 +128,18 @@ tmux ls 2>/dev/null
 
 | 日付 | Step | 実施者 | 前 used | 後 used | 備考 |
 |---|---|---|---|---|---|
-| | | | | | |
+| 2026-09-23 | Phase 1 apply（reclaim, allowlist + system + logrotate） | owner 承認・Astra 実行（VM operations run 35769050373, exit 0） | 86% / avail 7,091,830,784 B | 84% / avail 約7.6GB | dry-run run 35766163981 先行。before status run 35766046429 / after status run 35769216493・diagnostics run 35769274262。soren_logs 114,114,560 → 108,208,128 B (count 72→85, logrotate 初回ローテート)。soren_tmp は live 増加で相殺のため +12MB。実測削減は約+0.5GB（見込み1〜1.5GBとの差は stale 残骸が調査時より小さいため）。 |
+
+## 6. Phase 2（2026-09-23 read-only 全体帰属に基づく追加対象）
+
+Phase 1 後に承認済み read-only SSH（補助経路）で root fs 37GB を `du` / `docker system df` で切り分け、**tar と docker は合計0.13GBで圧迫要因ではない**ことを確認した。真因は swapfile 8.00 + OS 6.44 + TTS 3.17 の固定費、同一 repo checkout の重複5箇所 約8.3GB、snapd cache 1.75GB、`/tmp/opencode/docich-sync` 1.05GB、opencode.db 1.36GB。以下は helper の allowlist へ追加した対象（すべて age gate 付き、固定 path、dry-run 既定）。
+
+| 対象 | 実測 | 安全条件 |
+|---|---|---|
+| `/var/lib/snapd/cache` の7日超 blob | 1.75GB / 17ファイル（最古 8/24） | 固定 path・`-maxdepth 1`・type f・7日超のみ。root 0700 のため `sudo -n` で list/stat/rm。cache のみで snap 本体は触らない |
+| `/tmp/opencode/docich-sync` | 1.05GB（`.git` 1,054MB、docich HEAD `292a937` = 2026-09-16、`ps`/`/proc` 参照0） | 固定 allowlist。origin が `azumag/docich` のみ・dir/`.git`/`objects` と全ファイルが7日超・参照プロセス0 のみ削除。いずれか不確かなら KEEP/SKIP |
+| docker dangling image + build cache | `docker system df` 上の再取得可能分 約113MB（Images 25.12 + Build Cache 88.18）。**ただし `until=168h` gate のため即時分は7日超の部分のみ**（現行 dangling は5〜6日前が中心なので初回は小さく、日を経て対象化する） | `docker image prune -f --filter until=168h`（dangling 強制・作成が7日超のものだけ）+ `docker builder prune -f --filter until=168h`（`unused-for` の同義語＝7日間使用されていない cache だけ。最近使った cache は日付に関係なく残る）。tagged image・container・`volume prune` は一切なし（PAPER sandbox は volume 不使用契約） |
+| `manual_challenge*` 日付付き兄弟 | 18MB（8/24） | pattern を完全一致から前方一致へ。age gate（21日）は個別判定、本体は mtime 次第で KEEP |
+
+- 実行順: merge 後に `reclaim / apply=false` で DEL/CMD 一覧を VM private log で確認 → `apply=true` → 前後の `status`（使用率・空き）と read-only `du` で削減を実測して本表へ追記。
+- スコープ外（参照未検証のため次回以降）: `/tmp/s91test` 181MB、`soren/tmp/deploy` 75MB、`radio_quarantine` 10MB、home 直下の mkv 75.3MB・`build/` 38MB・`soren91-r97/` 22MB。opencode.db(#389) / strategy archive(#392) / Git 履歴重複 / bundle retention(#365,#394) は設計 Issue のまま。
