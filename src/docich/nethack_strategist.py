@@ -15,7 +15,7 @@ import shlex
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Callable, Literal, cast
 
 from . import procs
 from .actions import Action
@@ -59,6 +59,13 @@ def dispatch_error_kind_for_exception(exc: BaseException) -> DispatchErrorKind:
         return "timeout"
     if isinstance(exc, OSError):
         return "launch_failed"
+    return "internal_error"
+
+
+def safe_dispatch_error_kind(raw: object) -> DispatchErrorKind:
+    """Return only the finite error vocabulary allowed in persistent output."""
+    if isinstance(raw, str) and raw in DISPATCH_ERROR_KINDS:
+        return cast(DispatchErrorKind, raw)
     return "internal_error"
 
 

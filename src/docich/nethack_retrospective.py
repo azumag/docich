@@ -30,6 +30,7 @@ from .nethack_run import (
     NethackRunError,
     load_nethack_persistence_settings,
 )
+from .nethack_strategist import safe_dispatch_error_kind
 
 RETROSPECTIVE_SCHEMA_VERSION = 1
 LESSON_MEMORY_SCHEMA_VERSION = 1
@@ -117,6 +118,7 @@ def _terminal_end_epoch(run: dict[str, object]) -> float | None:
 def _event_public_summary(event: dict[str, object]) -> dict[str, object]:
     proposal = event.get("proposal")
     evaluation = event.get("evaluation")
+    raw_error_kind = event.get("error_kind")
     return {
         "ts": event.get("ts"),
         "intent": event.get("intent"),
@@ -125,7 +127,12 @@ def _event_public_summary(event: dict[str, object]) -> dict[str, object]:
         "proposal_kind": proposal.get("kind") if isinstance(proposal, dict) else None,
         "evaluation_status": evaluation.get("status") if isinstance(evaluation, dict) else None,
         "evaluation_reason": evaluation.get("reason") if isinstance(evaluation, dict) else None,
-        "error": event.get("error"),
+        # Do not re-expose raw ``error`` text from pre-fix advisory logs.
+        "error_kind": (
+            safe_dispatch_error_kind(raw_error_kind)
+            if raw_error_kind is not None
+            else None
+        ),
         "narrated": event.get("narrated") is True,
     }
 
