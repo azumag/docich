@@ -126,9 +126,12 @@ class GameCornerAdapter:
             if not status_path.exists():
                 return False
             status = json.loads(status_path.read_text())
-            if status.get("status") not in {"promoted", "kept", "improved", "dry-run", "skipped"}:
+            status_name = status.get("status")
+            if status_name not in {"promoted", "kept", "improved", "dry-run", "skipped", "failed"}:
                 return False
             if timestamp(status.get("started_at")) < timestamp(state.get("completed_at")):
+                return False
+            if status_name == "failed" and timestamp(status.get("completed_at")) < timestamp(status.get("started_at")):
                 return False
         return True
 
@@ -330,9 +333,12 @@ class RetiredCornerObserver:
             if not status_path.exists():
                 return False
             status = json.loads(status_path.read_text())
-            if status.get("status") not in {"promoted", "kept", "improved", "dry-run", "skipped"}:
+            status_name = status.get("status")
+            if status_name not in {"promoted", "kept", "improved", "dry-run", "skipped", "failed"}:
                 return False
             if timestamp(status.get("started_at")) < timestamp(state.get("completed_at")):
+                return False
+            if status_name == "failed" and timestamp(status.get("completed_at")) < timestamp(status.get("started_at")):
                 return False
         return True
 
