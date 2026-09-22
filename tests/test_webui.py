@@ -223,6 +223,29 @@ class TestValidateValue(unittest.TestCase):
             with self.assertRaises(ValueError):
                 webui._validate_value("DOCICH_CC_ENABLED", bad)
 
+    def test_chain_pause_values(self):
+        # <CHAIN>_PAUSED = "index:agent" (空 = 停止なし)。全チェーン分を allowlist に持つ。
+        for key in webui.CHAIN_KEYS:
+            pause_key = webui.CHAIN_PAUSE_KEYS[key]
+            self.assertIn(pause_key, webui.WEBUI_ALLOWLIST)
+            self.assertIn(pause_key, webui.DEFAULTS)
+            self.assertEqual(webui.CHAIN_PAUSE_KEY_TO_CHAIN[pause_key], key)
+            webui._validate_value(pause_key, "")
+            webui._validate_value(pause_key, "0:codex:a,3:vercel:poolside/laguna-s-2.1-free")
+        webui._validate_value("AI_COMMON_AGENTS_PAUSED", "12:local")
+        # 同一 agent の複数エントリはチェーン内重複の位置記録として有効
+        webui._validate_value("AI_COMMON_AGENTS_PAUSED", "0:codex:a,2:codex:a")
+        with self.assertRaises(ValueError):
+            webui._validate_value("AI_COMMON_AGENTS_PAUSED", "codex:a")  # index なし
+        with self.assertRaises(ValueError):
+            webui._validate_value("AI_COMMON_AGENTS_PAUSED", "1000:codex:a")  # index 過大
+        with self.assertRaises(ValueError):
+            webui._validate_value("AI_COMMON_AGENTS_PAUSED", "0:codex:a;rm -rf /")
+        with self.assertRaises(ValueError):
+            webui._validate_value("AI_COMMON_AGENTS_PAUSED", "0:$(touch /tmp/pwned)")
+        with self.assertRaises(ValueError):
+            webui._validate_value("AI_COMMON_AGENTS_PAUSED", ",".join(f"{i}:codex:a{i}" for i in range(65)))
+
 
 class TestStreamControl(unittest.TestCase):
     def _soren(self) -> Path:
@@ -436,6 +459,13 @@ class TestAtomicEnvUpdate(unittest.TestCase):
         webui._atomic_env_update(self.root, {"AI_BACKOFF_SEC_ITEMS": "deepseek-v4-flash-free:86400 local:1800"}, None)
         lines = (self.root / ".env").read_text(encoding="utf-8").splitlines()
         self.assertIn('AI_BACKOFF_SEC_ITEMS="deepseek-v4-flash-free:86400 local:1800"', lines)
+
+    def test_chain_pause_key_written_and_removed(self):
+        webui._atomic_env_update(self.root, {"AI_COMMON_AGENTS_PAUSED": "1:codex:b"}, None)
+        self.assertEqual(webui._read_dotenv_dict(self.root)["AI_COMMON_AGENTS_PAUSED"], "1:codex:b")
+        # 空 = 停止なし → 行を削除 (継承キーと同じ扱い)
+        webui._atomic_env_update(self.root, {"AI_COMMON_AGENTS_PAUSED": ""}, None)
+        self.assertNotIn("AI_COMMON_AGENTS_PAUSED", webui._read_dotenv_dict(self.root))
 
     def test_peak_windows_empty_line_preserved(self):
         webui._atomic_env_update(self.root, {"PEAK_HOURS_WINDOWS": ""}, None)
@@ -792,6 +822,44 @@ class TestHttpHandlers(unittest.TestCase):
         self.assertEqual(entry["value"], "900")
         self.assertTrue(entry["in_env"])
 
+    def test_chain_pause_roundtrip(self):
+        status, data = self._request("GET", "/api/config")
+        self.assertEqual(status, 200)
+        mtime = data["env_mtime"]
+        status, data = self._request(
+            "PUT", "/api/config",
+            {"values": {
+                "AI_COMMON_AGENTS": "codex:a",
+                "AI_COMMON_AGENTS_PAUSED": "1:codex:b",
+            }, "expected_mtime": mtime},
+        )
+        self.assertEqual(status, 200, data)
+        status, data = self._request("GET", "/api/config")
+        self.assertEqual(status, 200)
+        entries = {e["key"]: e for e in data["entries"]}
+        # 停止中モデルは本体チェーンから除外され、位置は *_PAUSED に残る
+        self.assertEqual(entries["AI_COMMON_AGENTS"]["value"], "codex:a")
+        self.assertEqual(entries["AI_COMMON_AGENTS_PAUSED"]["value"], "1:codex:b")
+        self.assertTrue(entries["AI_COMMON_AGENTS_PAUSED"]["in_env"])
+
+    def test_chain_pause_validation_rejects_malformed(self):
+        status, data = self._request(
+            "PUT", "/api/config",
+            {"values": {"AI_COMMON_AGENTS_PAUSED": "codex:b"}},
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(data["error"], "validation_error")
+        self.assertEqual(data["field"], "AI_COMMON_AGENTS_PAUSED")
+
+    def test_chain_pause_requires_confirm(self):
+        # confirm なしは 428 (他の dangerous action と同じ)
+        status, data = self._request(
+            "PUT", "/api/config",
+            {"values": {"AI_COMMON_AGENTS_PAUSED": "0:codex:b"}, "confirm": False},
+        )
+        self.assertEqual(status, 428)
+        self.assertEqual(data["error"], "confirmation_required")
+
     def test_twitch_ads_toggle_roundtrip(self):
         status, data = self._request("GET", "/api/config")
         self.assertEqual(status, 200)
@@ -822,6 +890,15 @@ class TestHttpHandlers(unittest.TestCase):
         self.assertEqual(res.status, 200)
         self.assertIn('id="twitch-ads-enabled"', body)
         self.assertIn('id="twitch-ads-save"', body)
+
+    def test_index_contains_chain_pause_controls(self):
+        self.client.request("GET", "/")
+        res = self.client.getresponse()
+        body = res.read().decode("utf-8")
+        self.assertEqual(res.status, 200)
+        self.assertIn("data-pause=", body)
+        self.assertIn("_PAUSED", body)
+        self.assertIn("parsePausedEntries", body)
 
     def test_index_hides_predictions_tab_when_worker_stopped(self):
         # 予想ワーカーが止まっているときに Predictions タブを隠すフロント処理が
