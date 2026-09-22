@@ -3,12 +3,15 @@ from __future__ import annotations
 import subprocess
 import unittest
 from types import SimpleNamespace
+from typing import get_args
 
 from docich.nethack_inventory import parse_visible_inventory
 from docich.nethack_observation import normalize_tty
 from docich.nethack_policy import PolicyDecision
 from docich.nethack_strategist import (
+    DISPATCH_ERROR_KINDS,
     CommandStrategist,
+    DispatchErrorKind,
     evaluate_proposal,
     execution_plan,
 )
@@ -78,6 +81,7 @@ class TestCommandStrategist(unittest.TestCase):
         timeout = CommandStrategist(["fake"], runner=timeout_runner).dispatch(emergency_request())
         self.assertEqual(timeout.status, "error")
         self.assertIn("timeout", timeout.error or "")
+        self.assertEqual(timeout.error_kind, "timeout")
 
         def nonzero_runner(command, **kwargs):
             return SimpleNamespace(returncode=9, stdout="", stderr="provider down")
@@ -85,6 +89,7 @@ class TestCommandStrategist(unittest.TestCase):
         nonzero = CommandStrategist(["fake"], runner=nonzero_runner).dispatch(emergency_request())
         self.assertEqual(nonzero.status, "error")
         self.assertIn("code 9", nonzero.error or "")
+        self.assertEqual(nonzero.error_kind, "process_failed")
 
         def invalid_runner(command, **kwargs):
             return SimpleNamespace(returncode=0, stdout="not-json", stderr="")
@@ -92,6 +97,32 @@ class TestCommandStrategist(unittest.TestCase):
         invalid = CommandStrategist(["fake"], runner=invalid_runner).dispatch(emergency_request())
         self.assertEqual(invalid.status, "error")
         self.assertIn("invalid strategist proposal", invalid.error or "")
+        self.assertEqual(invalid.error_kind, "invalid_response")
+
+    def test_launch_failure_is_classified(self) -> None:
+        def missing_runner(command, **kwargs):
+            raise FileNotFoundError("candidate binary is gone")
+
+        failed = CommandStrategist(["missing"], runner=missing_runner).dispatch(emergency_request())
+        self.assertEqual(failed.status, "error")
+        self.assertEqual(failed.error_kind, "launch_failed")
+        self.assertIn("launch failed", failed.error or "")
+
+    def test_dispatch_error_kind_vocabulary_stays_finite(self) -> None:
+        self.assertEqual(set(get_args(DispatchErrorKind)), set(DISPATCH_ERROR_KINDS))
+        self.assertEqual(
+            DISPATCH_ERROR_KINDS,
+            frozenset(
+                {
+                    "timeout",
+                    "launch_failed",
+                    "process_failed",
+                    "invalid_request",
+                    "invalid_response",
+                    "internal_error",
+                }
+            ),
+        )
 
     def test_request_and_response_size_limits_fail_closed(self) -> None:
         huge = StrategicRequest(
@@ -111,6 +142,7 @@ class TestCommandStrategist(unittest.TestCase):
         strategist = CommandStrategist(["fake"], max_request_bytes=1024, runner=runner)
         result = strategist.dispatch(huge)
         self.assertEqual(result.status, "error")
+        self.assertEqual(result.error_kind, "invalid_request")
         self.assertEqual(runner_called, [])
 
         def large_response(command, **kwargs):
@@ -120,6 +152,7 @@ class TestCommandStrategist(unittest.TestCase):
         result2 = strategist2.dispatch(emergency_request())
         self.assertEqual(result2.status, "error")
         self.assertIn("size limit", result2.error or "")
+        self.assertEqual(result2.error_kind, "invalid_response")
 
 
 class TestProposalEvaluation(unittest.TestCase):

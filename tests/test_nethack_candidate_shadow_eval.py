@@ -194,7 +194,7 @@ class TestCandidateShadowEvaluation(unittest.TestCase):
                 if candidate_status == "proposed"
                 else None
             ),
-            "candidate_error": "provider down" if candidate_status == "error" else None,
+            "candidate_error_kind": "process_failed" if candidate_status == "error" else None,
             "would_execute_allowed": proposal_kind == "rest" and evaluation == "approved",
             "would_execute_action_count": would_count,
             "candidate_action_sent": False,

@@ -141,12 +141,32 @@ run外なら:
 - public StrategicRequest
 - candidate proposal
 - proposal evaluation status/reason
+- candidate failure category（`candidate_error_kind`）
 - diagnostic `would_execute_action_count`
 - `candidate_action_sent=false`
 - `execution=candidate_shadow_only`
 - `policy_effect=none`
 
 file modeは0600、directoryは0700。
+
+### Candidate error categories
+
+candidateの失敗は、永続logには有限の固定カテゴリだけを記録する。
+
+```text
+timeout           manifest timeoutを超過
+launch_failed     candidate processを起動できなかった
+process_failed    candidateがnon-zeroで終了した
+invalid_request   public requestが送信前size検証を超えた
+invalid_response  stdoutがtextでない / size超過 / proposal schema不一致
+internal_error    分類不能・想定外例外
+```
+
+candidateのstderr・例外message・provider応答本文はJSONLへ保存しない。
+
+raw detailはプロセス内の `last_completed.error` にだけ保持し、永続化しない。
+
+未知のカテゴリ値が渡された場合は `internal_error` へfail-closedで丸める。
 
 ## Critical tags
 
