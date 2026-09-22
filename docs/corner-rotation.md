@@ -73,11 +73,12 @@ PAPERの専用stateは`game=null`の旧手動記録も観測する。canonical�
 
 終了後の独立改善ジョブは既存の実行方式を維持し、次のcornerはlock解放とその実行以後の
 終了記録を待つ。retroは`corner_improve_<game>.json`、PAPERは既存
-`trading/paper_improve_status.json`。`failed`は、corner完了以後の`started_at`と
+`trading/paper_improve_status.json`。改善ジョブは開始時に`running`を書き、終了時に
+terminal記録を書いてからlockを離す。`failed`は、corner完了以後の`started_at`と
 `started_at`以後の有限な`completed_at`、解放済みlockを確認できる場合に限り、
 この実行のterminalとして次の開始を許可する。記録は削除・上書きせず診断に残す。
 SIGKILL後のrunning、終了記録欠落、corner完了より古い`started_at`、`completed_at`の欠落・逆行、
-所有権不明を停止済み扱いにしない。安全なPID所有権証明なしにkillする代替経路は設けない。
+`recovery_required`、所有権不明を停止済み扱いにしない。安全なPID所有権証明なしにkillする代替経路は設けない。
 
 手動startも共通lock/program slotを通し、同じrolling cooldownに使用を記録する。
 独立manual stateと既存のduration等は維持する。自動pendingがあれば手動startを拒否する。

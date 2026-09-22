@@ -28,25 +28,25 @@ class RotationReleaseEvidenceTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         return Path(temp.name)
 
-    def test_failed_improvement_releases_only_after_terminal_evidence_and_unlock(self):
+    def test_terminal_failed_improvement_releases_after_corner_completion(self):
         from docich.corner_adapters import GameCornerAdapter
         from docich.corner_catalog import Corner
 
         tmp_path = self.temp_state()
         module = load_collector()
         state_path = tmp_path / "retro_corner.json"
+        status_path = tmp_path / "corner_improve_nsnake.json"
         write(state_path, {"game": "nsnake", "status": "completed", "completed_at": 100,
                            "improve_job": {"spawned": True}})
-        status_path = tmp_path / "corner_improve_nsnake.json"
-        write(status_path, {"status": "failed", "started_at": 101, "completed_at": 102})
+        write(status_path,
+              {"status": "failed", "started_at": 101, "completed_at": 102})
         adapter = GameCornerAdapter.__new__(GameCornerAdapter)
         adapter.g = SimpleNamespace(state_dir=tmp_path)
         adapter.corner = Corner("nsnake", "game", "nsnake")
         adapter.manager = SimpleNamespace(state_path=state_path)
-
-        # A failed improvement is terminal: it must not freeze all later corners
-        # once its durable completion evidence exists and its singleflight lock
-        # is no longer owned.
+        # The production wait source: this run's own terminal failure with a
+        # free lock releases the next corner, and the record stays visible to
+        # diagnostics instead of being deleted or overwritten.
         self.assertTrue(adapter.resources_released())
         output = module._collect_rotation_evidence(tmp_path)
         self.assertEqual(output["corners"]["retro_corner"]["status"], "completed")
@@ -55,7 +55,6 @@ class RotationReleaseEvidenceTests(unittest.TestCase):
             "started_at": 101, "completed_at": 102,
             "reason_code": "unknown", "phase": "unknown",
         })
-
         # The failure taxonomy is a fixed enum: valid codes are preserved and
         # anything else is reported as unknown instead of free text.
         write(status_path, {"status": "failed", "started_at": 101, "completed_at": 102,
@@ -70,17 +69,14 @@ class RotationReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual(row["phase"], "unknown")
         self.assertNotIn("DO-NOT-EMIT", json.dumps(row))
 
+        # A stale failure cannot prove that this corner's job already ended.
+        write(status_path,
+              {"status": "failed", "started_at": 99, "completed_at": 102})
+        self.assertFalse(adapter.resources_released())
+
         # A partially written/forged failed state is not sufficient evidence.
         write(status_path, {"status": "failed", "started_at": 101})
         self.assertFalse(adapter.resources_released())
-
-        # Even terminal evidence must never override a live job owner.
-        write(status_path, {"status": "failed", "started_at": 101, "completed_at": 102})
-        lock_path, _ = adapter.improvement_paths()
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        with lock_path.open("a+") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            self.assertFalse(adapter.resources_released())
 
     def test_per_game_improvement_evidence_is_fixed_and_read_only(self):
         for status in ("running", "failed", "kept", "skipped"):
