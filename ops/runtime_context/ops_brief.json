@@ -1,11 +1,11 @@
 {
-  "output_sha256": "d923aefa2b91ff93e28ea040202cc3b93d740605e5fbbb744c967a6c07a0bfe4",
+  "output_sha256": "a215a4cba3fb5c6d0f556048b0fa766b8a53613533c2cedca65e249bc103b649",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "a2b40c6eafbb79904f8896820720fbfc9d0a516e352ca3d0654bec28ac621c39",
+  "source_sha256": "b673a7d772d8e8186204542d09db2a30cdd7a349cf5b3233f9af9429600882b7",
   "topics": [
-    "OpenCode優先キューをmain・canonical VMへ反映",
-    "OpenCode生成をコメント優先キューへ分離（PR段階・本番未反映）",
-    "Hanjuku HeroをVM限定rotation候補として有効化・main/VMへ反映"
+    "webui の二重unit衝突を復旧して user unit へ収束（restart_webui も exit 0、 merge）",
+    "#225 のroot-owned gatewayを owner-only で更新し、 → canonical deploy で block…",
+    "Phase 2 reclaim を merge→dry-run→apply まで完遂（84% → 80%、+1.49GB 実測）・記録 m…"
   ]
 }
