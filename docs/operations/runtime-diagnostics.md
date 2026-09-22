@@ -101,9 +101,10 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   `corners.corner_rotation`へ出す。status、slot、next_due_at、last_seen_at、
   eligible_count、pending有無、および設定由来の `schedule_mode` / `cooldown_seconds`
   のみ。seed・request payload・自由文は出さない。
-  latch（`status=recovery_required`）の時は固定分類だけを更に足す:
-  `error_kind`（`docich.corner_rotation.ERROR_KINDS` と同一の固定enum。例外本文は
-  stateにもdiagnosticsにも書かない。欠落はnull、不正値は`unknown`）、
+  さらに、`error_kind`（`docich.corner_rotation.ERROR_KINDS` と同一の固定enum。
+  例外本文はstateにもdiagnosticsにも書かない。欠落はnull、不正値は`unknown`。
+  直近のlatch分類として次にlatchし直すまで残る）と、予約（`pending`）が在る限り
+  （latch中かどうかを問わず）次を足す:
   `pending_corner`、`pending_phase`（`selected`/`dispatched`/`unknown`）、
   `pending_age_sec`（-1は不明）、`pending_owner`（固定8種のcorner stateのうち
   同じrequestを記録したstate名。該当なし`none`、読取不可`unknown`、予約なし`absent`）、
