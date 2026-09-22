@@ -51,6 +51,19 @@ class TestNativeAiGenerate(unittest.TestCase):
                     )
             self.assertIn("DOCICH_ALLOW_REAL_AI", str(ctx.exception))
 
+    def test_run_prompt_remains_explicitly_gated(self):
+        with mock.patch("docich.llm.dispatch.call_agent") as call_agent:
+            with self.assertRaises(ai_generate.AiError) as ctx:
+                ai_generate.run_prompt(
+                    None,
+                    label="COMMENT:test",
+                    agents="codex",
+                    prompt_text="private prompt",
+                    env={},
+                )
+        self.assertIn("DOCICH_ALLOW_REAL_AI", str(ctx.exception))
+        call_agent.assert_not_called()
+
     def test_input_policy_rejects_unsafe_or_retired_agents(self):
         with tempfile.TemporaryDirectory() as tmp:
             prompt = self._prompt(Path(tmp))
