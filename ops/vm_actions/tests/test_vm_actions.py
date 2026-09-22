@@ -133,6 +133,44 @@ class AuthorizeTests(unittest.TestCase):
         )
         self.assertEqual(p.returncode,0,p.stderr)
 
+    def test_configure_jev_route_requires_production_main_and_confirmation(self):
+        for op in ('configure_jev_route_direct', 'configure_jev_route_vercel', 'disable_jev_route'):
+            p=self.run_auth(
+                GITHUB_REPOSITORY_PRIVATE='false',
+                INPUT_OPERATION=op,
+                INPUT_TARGET='preview',
+                INPUT_REF='main',
+                INPUT_CONFIRM='production',
+            )
+            self.assertNotEqual(p.returncode,0)
+            self.assertIn('production-only',p.stderr)
+            p=self.run_auth(
+                GITHUB_REPOSITORY_PRIVATE='false',
+                INPUT_OPERATION=op,
+                INPUT_TARGET='production',
+                INPUT_REF='feature/test',
+                INPUT_CONFIRM='production',
+            )
+            self.assertNotEqual(p.returncode,0)
+            self.assertIn('must run from main',p.stderr)
+            p=self.run_auth(
+                GITHUB_REPOSITORY_PRIVATE='false',
+                INPUT_OPERATION=op,
+                INPUT_TARGET='production',
+                INPUT_REF='main',
+                INPUT_CONFIRM='',
+            )
+            self.assertNotEqual(p.returncode,0)
+            self.assertIn('confirmation required',p.stderr)
+            p=self.run_auth(
+                GITHUB_REPOSITORY_PRIVATE='false',
+                INPUT_OPERATION=op,
+                INPUT_TARGET='production',
+                INPUT_REF='main',
+                INPUT_CONFIRM='production',
+            )
+            self.assertEqual(p.returncode,0,p.stderr)
+
     def test_all_vm_ssh_calls_enable_encrypted_keepalives(self):
         workflow = WF.read_text(encoding="utf-8")
         ssh_configs = workflow.count("ssh_args=(-F /dev/null")
@@ -422,6 +460,92 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(p.returncode,0,p.stderr.decode())
         self.assertEqual((soren/'observed').read_text(), 'missing')
 
+    def test_configure_jev_route_uses_fixed_reviewed_script_withholds_key_and_owns_disjoint_keys(self):
+        soren=self.base/'soren'; soren.mkdir()
+        script_dir=self.doc/'ops'/'vm_actions'; script_dir.mkdir(parents=True)
+        (script_dir/'configure_jev_route.py').write_text(
+            'import os, sys\n'
+            'from pathlib import Path\n'
+            'args=sys.argv[1:]\n'
+            'route = args[args.index("--route")+1] if "--route" in args else ("disable" if "--disable" in args else None)\n'
+            'Path(os.environ["SOREN_ROOT"], "observed").write_text(\n'
+            '    "route=%s vercel_key=%s typesafe_key_untouched=%s" % (\n'
+            '        route,\n'
+            '        "present" if os.environ.get("DOCICH_JEV_VERCEL_API_KEY") else "absent",\n'
+            '        "yes" if "TYPESAFE_API_KEY" not in os.environ else "no",\n'
+            '    )\n'
+            ')\n'
+            'print("configured")\n',
+            encoding='utf-8',
+        )
+        subprocess.run(['git','-C',self.doc,'add','.'],check=True)
+        subprocess.run(['git','-C',self.doc,'commit','-qm','jev route configurator'],check=True)
+        sha=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
+        self.config.write_text(json.dumps({'state':str(self.state),'repos':{
+            'docich':{'production':str(self.doc),'mode':'git',
+                      'projections':{'games/soviet_now':str(soren)}}
+        }}))
+        # direct: no stdin secret, TYPESAFE_API_KEY (a #678-owned key) never
+        # flows through this operation at all.
+        p=self.call(f'configure_jev_route_direct docich production {sha}')
+        self.assertEqual(p.returncode,0,p.stderr.decode())
+        self.assertEqual((soren/'observed').read_text(),
+                         'route=direct vercel_key=absent typesafe_key_untouched=yes')
+        # vercel: stdin carries only the vercel key, withheld from stdout/logs.
+        p=self.call(f'configure_jev_route_vercel docich production {sha}',b'SECRET_VERCEL_KEY')
+        self.assertEqual(p.returncode,0,p.stderr.decode())
+        self.assertNotIn(b'SECRET_VERCEL_KEY',p.stdout)
+        self.assertEqual((soren/'observed').read_text(),
+                         'route=vercel vercel_key=present typesafe_key_untouched=yes')
+        logs=sorted((self.state/'logs').glob('*.log'), key=lambda p: p.stat().st_mtime)
+        self.assertTrue(logs)
+        self.assertNotIn('SECRET_VERCEL_KEY', logs[-1].read_text())
+        # disable: no stdin secret either.
+        p=self.call(f'disable_jev_route docich production {sha}')
+        self.assertEqual(p.returncode,0,p.stderr.decode())
+        self.assertEqual((soren/'observed').read_text(),
+                         'route=disable vercel_key=absent typesafe_key_untouched=yes')
+
+    def test_configure_jev_route_direct_rejects_unexpected_stdin_payload(self):
+        soren=self.base/'soren'; soren.mkdir()
+        script_dir=self.doc/'ops'/'vm_actions'; script_dir.mkdir(parents=True)
+        (script_dir/'configure_jev_route.py').write_text('print("should not run")\n', encoding='utf-8')
+        subprocess.run(['git','-C',self.doc,'add','.'],check=True)
+        subprocess.run(['git','-C',self.doc,'commit','-qm','jev route configurator'],check=True)
+        sha=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
+        self.config.write_text(json.dumps({'state':str(self.state),'repos':{
+            'docich':{'production':str(self.doc),'mode':'git',
+                      'projections':{'games/soviet_now':str(soren)}}
+        }}))
+        p=self.call(f'configure_jev_route_direct docich production {sha}',b'UNEXPECTED')
+        self.assertNotEqual(p.returncode,0)
+        self.assertIn('configure_jev_route_key_invalid',p.stderr.decode())
+        p=self.call(f'disable_jev_route docich production {sha}',b'UNEXPECTED')
+        self.assertNotEqual(p.returncode,0)
+        self.assertIn('configure_jev_route_key_invalid',p.stderr.decode())
+
+    def test_configure_jev_route_returns_only_fixed_failure_code(self):
+        soren=self.base/'soren'; soren.mkdir()
+        script_dir=self.doc/'ops'/'vm_actions'; script_dir.mkdir(parents=True)
+        (script_dir/'configure_jev_route.py').write_text(
+            'import sys\n'
+            'print("configuration failed: chat_worker_docich_route_mismatch", file=sys.stderr)\n'
+            'raise SystemExit(1)\n',
+            encoding='utf-8',
+        )
+        subprocess.run(['git','-C',self.doc,'add','.'],check=True)
+        subprocess.run(['git','-C',self.doc,'commit','-qm','jev route failure'],check=True)
+        sha=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
+        self.config.write_text(json.dumps({'state':str(self.state),'repos':{
+            'docich':{'production':str(self.doc),'mode':'git',
+                      'projections':{'games/soviet_now':str(soren)}}
+        }}))
+        p=self.call(f'configure_jev_route_direct docich production {sha}')
+        self.assertNotEqual(p.returncode,0)
+        result=json.loads(p.stdout)
+        self.assertEqual(result['status'],'failed')
+        self.assertEqual(result['error_code'],'chat_worker_docich_route_mismatch')
+
     def test_configure_jev_returns_only_fixed_failure_code(self):
         soren=self.base/'soren'; soren.mkdir()
         script_dir=self.doc/'ops'/'vm_actions'; script_dir.mkdir(parents=True)
@@ -576,6 +700,25 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertIn('"configure_jev docich production $SHA"',text)
         self.assertIn('The VM gateway loads the',text)
         self.assertNotIn('VM_COMMAND: ${{ secrets.TYPESAFE_API_KEY }}',text)
+
+    def test_jev_route_configuration_uses_environment_secret_and_fixed_gateway_operation(self):
+        text=WF.read_text()
+        for op in ('configure_jev_route_direct', 'configure_jev_route_vercel', 'disable_jev_route'):
+            self.assertIn(op,text)
+        self.assertIn('DOCICH_JEV_VERCEL_API_KEY: ${{ secrets.DOCICH_JEV_VERCEL_API_KEY }}',text)
+        self.assertIn('printf \'%s\' "$DOCICH_JEV_VERCEL_API_KEY" | ssh',text)
+        self.assertIn('"configure_jev_route_direct docich production $SHA"',text)
+        self.assertIn('"configure_jev_route_vercel docich production $SHA"',text)
+        self.assertIn('"disable_jev_route docich production $SHA"',text)
+        self.assertNotIn('VM_COMMAND: ${{ secrets.DOCICH_JEV_VERCEL_API_KEY }}',text)
+        # The direct route never binds or sends #678's own TYPESAFE_API_KEY
+        # secret (a comment there explains why; only the binding/send matters).
+        start=text.index('Route Jev classification through the docich core (direct)')
+        end=text.index('Route Jev classification through the docich core (vercel)',start)
+        block=text[start:end]
+        self.assertNotIn('TYPESAFE_API_KEY: ${{',block)
+        self.assertNotIn('"$TYPESAFE_API_KEY"',block)
+        self.assertIn('< /dev/null ssh',block)
 
     def test_reconcile_uses_dedicated_narrow_operation_without_exec_shell(self):
         # Issue #225: the reviewed pre-synced reconcile must not ride the

@@ -118,7 +118,8 @@ class ControlPlaneWiringTests(unittest.TestCase):
 
     def test_workflow_exposes_fixed_reclaim_operation(self):
         text = (ROOT / ".github" / "workflows" / "vm-operations.yml").read_text()
-        self.assertIn("status, deploy, exec, configure_jev, disable_jev, bootstrap, diagnostics, reclaim", text)
+        self.assertIn("status, deploy, exec, configure_jev, disable_jev, configure_jev_route_direct, "
+                     "configure_jev_route_vercel, disable_jev_route, bootstrap, diagnostics, reclaim", text)
         self.assertIn("control/ops/vm_actions/storage_reclaim.sh", text)
         self.assertIn("APPLY", text)
         # Arbitrary exec must stay behind the public-repo guard in authorize.py.
