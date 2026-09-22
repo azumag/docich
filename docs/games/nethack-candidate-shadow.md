@@ -139,9 +139,9 @@ run外なら:
 - production policy layer / intent / reason
 - 実際に返したproduction Action summary
 - public StrategicRequest
-- candidate proposal
+- candidate proposal（candidate自身が生成した公開提案。stderr/例外textは含めない）
 - proposal evaluation status/reason
-- candidate failure category（`candidate_error_kind`）
+- candidate failure category（`candidate_error_kind`。旧 `candidate_error` のraw textを置き換える）
 - diagnostic `would_execute_action_count`
 - `candidate_action_sent=false`
 - `execution=candidate_shadow_only`

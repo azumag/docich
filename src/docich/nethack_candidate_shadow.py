@@ -528,7 +528,9 @@ class NethackCandidateShadowController:
                 if evaluation is not None
                 else None
             ),
-            "candidate_error_kind": outcome.error_kind,
+            "candidate_error_kind": (
+                _safe_error_kind(outcome.error_kind) if outcome.status == "error" else None
+            ),
             "would_execute_allowed": bool(getattr(plan, "allowed", False)) if plan is not None else False,
             "would_execute_action_count": action_count,
             "candidate_action_sent": False,

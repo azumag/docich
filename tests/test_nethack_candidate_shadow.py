@@ -357,10 +357,10 @@ class TestCandidateShadowController(unittest.TestCase):
         # Raw detail may stay process-local, but never reaches the JSONL.
         self.assertEqual(ctl.last_completed.error, f"provider down {sentinel}")
         text = self._persisted_log_text()
+        self.assertNotIn(sentinel, text)
         event = json.loads(text.splitlines()[-1])
         self.assertEqual(event["candidate_error_kind"], "internal_error")
         self.assertNotIn("candidate_error", event)
-        self.assertNotIn(sentinel, text)
 
     def test_persisted_log_never_contains_candidate_stderr_secret(self):
         secret = "AKIAIOSFODNN7EXAMPLE-candidate-secret"
@@ -374,10 +374,10 @@ class TestCandidateShadowController(unittest.TestCase):
         self.assertEqual(ctl.last_completed.status, "error")
         self.assertIn(secret, ctl.last_completed.error or "")
         text = self._persisted_log_text()
+        self.assertNotIn(secret, text)
         event = json.loads(text.splitlines()[-1])
         self.assertEqual(event["candidate_error_kind"], "process_failed")
         self.assertIn(event["candidate_error_kind"], DISPATCH_ERROR_KINDS)
-        self.assertNotIn(secret, text)
 
     def test_persisted_log_never_contains_exception_secret(self):
         secret = "SECRET-exception-detail-31b7"
@@ -391,9 +391,9 @@ class TestCandidateShadowController(unittest.TestCase):
         self.assertTrue(ctl.wait_for_idle(timeout=1.0))
         self.assertIn(secret, ctl.last_completed.error or "")
         text = self._persisted_log_text()
+        self.assertNotIn(secret, text)
         event = json.loads(text.splitlines()[-1])
         self.assertEqual(event["candidate_error_kind"], "internal_error")
-        self.assertNotIn(secret, text)
 
     def test_persisted_log_rejects_non_allowlisted_error_kind(self):
         secret = "SECRET-forged-kind-c0ffee"
@@ -410,9 +410,17 @@ class TestCandidateShadowController(unittest.TestCase):
         self.assertEqual(ctl.consider(screen(), observation(), emergency(), ()).status, "queued")
         self.assertTrue(ctl.wait_for_idle(timeout=1.0))
         text = self._persisted_log_text()
+        self.assertNotIn(secret, text)
         event = json.loads(text.splitlines()[-1])
         self.assertEqual(event["candidate_error_kind"], "internal_error")
-        self.assertNotIn(secret, text)
+
+    def test_safe_error_kind_fails_closed_for_unknown_values(self):
+        from docich.nethack_candidate_shadow import _safe_error_kind
+
+        for raw in (None, 3, b"timeout", {"kind": "timeout"}, ["timeout"], "Timeout", "raw stderr", ""):
+            self.assertEqual(_safe_error_kind(raw), "internal_error")
+        for kind in sorted(DISPATCH_ERROR_KINDS):
+            self.assertEqual(_safe_error_kind(kind), kind)
 
     def test_persisted_log_classifies_timeout(self):
         strategist = CommandStrategist(
