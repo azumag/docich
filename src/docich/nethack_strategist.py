@@ -31,6 +31,35 @@ from .nethack_strategy import (
 
 DispatchStatus = Literal["proposed", "error"]
 EvaluationStatus = Literal["approved", "rejected"]
+# Finite, machine-readable failure vocabulary. Raw error/stderr text must stay
+# in-process; callers that persist telemetry may only write these categories.
+DispatchErrorKind = Literal[
+    "timeout",
+    "launch_failed",
+    "process_failed",
+    "invalid_request",
+    "invalid_response",
+    "internal_error",
+]
+DISPATCH_ERROR_KINDS: frozenset[str] = frozenset(
+    {
+        "timeout",
+        "launch_failed",
+        "process_failed",
+        "invalid_request",
+        "invalid_response",
+        "internal_error",
+    }
+)
+
+
+def dispatch_error_kind_for_exception(exc: BaseException) -> DispatchErrorKind:
+    """Classify an exception raised outside ``CommandStrategist`` handling."""
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return "timeout"
+    if isinstance(exc, OSError):
+        return "launch_failed"
+    return "internal_error"
 
 
 @dataclass(frozen=True)
@@ -38,6 +67,7 @@ class StrategistDispatchResult:
     status: DispatchStatus
     proposal: StrategicProposal | None = None
     error: str | None = None
+    error_kind: DispatchErrorKind | None = None
 
 
 @dataclass(frozen=True)
@@ -99,7 +129,11 @@ class CommandStrategist:
     def dispatch(self, request: StrategicRequest) -> StrategistDispatchResult:
         payload = request.to_json()
         if len(payload.encode("utf-8")) > self.max_request_bytes:
-            return StrategistDispatchResult(status="error", error="strategist request exceeds size limit")
+            return StrategistDispatchResult(
+                status="error",
+                error="strategist request exceeds size limit",
+                error_kind="invalid_request",
+            )
         try:
             result = self.runner(
                 self.command,
@@ -108,10 +142,12 @@ class CommandStrategist:
                 cwd=str(self.cwd) if self.cwd is not None else None,
             )
         except subprocess.TimeoutExpired:
-            return StrategistDispatchResult(status="error", error="strategist timeout")
+            return StrategistDispatchResult(status="error", error="strategist timeout", error_kind="timeout")
         except OSError as exc:
             return StrategistDispatchResult(
-                status="error", error=f"strategist launch failed: {self._detail(exc)}"
+                status="error",
+                error=f"strategist launch failed: {self._detail(exc)}",
+                error_kind="launch_failed",
             )
 
         returncode = getattr(result, "returncode", None)
@@ -122,16 +158,27 @@ class CommandStrategist:
             return StrategistDispatchResult(
                 status="error",
                 error=f"strategist exited with code {returncode}: {detail}".rstrip(": "),
+                error_kind="process_failed",
             )
         if not isinstance(stdout, str):
-            return StrategistDispatchResult(status="error", error="strategist stdout is not text")
+            return StrategistDispatchResult(
+                status="error",
+                error="strategist stdout is not text",
+                error_kind="invalid_response",
+            )
         if len(stdout.encode("utf-8")) > self.max_response_bytes:
-            return StrategistDispatchResult(status="error", error="strategist response exceeds size limit")
+            return StrategistDispatchResult(
+                status="error",
+                error="strategist response exceeds size limit",
+                error_kind="invalid_response",
+            )
         try:
             proposal = parse_strategic_proposal(stdout)
         except ValueError as exc:
             return StrategistDispatchResult(
-                status="error", error=f"invalid strategist proposal: {self._detail(exc)}"
+                status="error",
+                error=f"invalid strategist proposal: {self._detail(exc)}",
+                error_kind="invalid_response",
             )
         return StrategistDispatchResult(status="proposed", proposal=proposal)
 

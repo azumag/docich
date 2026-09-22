@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 import tempfile
 import threading
 import unittest
@@ -20,7 +21,11 @@ from docich.nethack_candidate_shadow import (
 from docich.nethack_observation import normalize_tty
 from docich.nethack_policy import PolicyDecision
 from docich.nethack_regression import _canonical_hash
-from docich.nethack_strategist import StrategistDispatchResult
+from docich.nethack_strategist import (
+    DISPATCH_ERROR_KINDS,
+    CommandStrategist,
+    StrategistDispatchResult,
+)
 from docich.nethack_strategy import StrategicProposal
 
 
@@ -226,6 +231,18 @@ class TestCandidateShadowController(unittest.TestCase):
             wall_time=lambda: 1234.5,
         )
 
+    def _persisted_log_text(self) -> str:
+        base = (
+            self.state
+            / "nethack"
+            / "candidate-shadow"
+            / self.manifest.candidate_id
+            / self.manifest.version
+        )
+        paths = sorted(base.glob("*.jsonl"))
+        self.assertEqual(len(paths), 1)
+        return paths[0].read_text(encoding="utf-8")
+
     def _install_run_context(self):
         run_id = str(uuid.uuid4())
         root = self.state / "nethack"
@@ -324,18 +341,99 @@ class TestCandidateShadowController(unittest.TestCase):
         self.assertEqual(event["policy_effect"], "none")
         self.assertEqual(event["candidate_proposal"]["kind"], "rest")
         self.assertEqual(event["candidate_evaluation"]["status"], "approved")
+        self.assertIsNone(event["candidate_error_kind"])
         self.assertNotIn("command", event)
         self.assertEqual(event["command_sha256"], self.manifest.command_hash)
         self.assertEqual(len(event["command_sha256"]), 64)
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
     def test_dispatch_error_is_logged_and_gameplay_side_remains_fail_open(self):
-        ctl = self._controller(FakeStrategist(error="provider down"))
+        sentinel = "SECRET-candidate-token-8f2a"
+        ctl = self._controller(FakeStrategist(error=f"provider down {sentinel}"))
         outcome = ctl.consider(screen(), observation(), emergency(), ())
         self.assertEqual(outcome.status, "queued")
         self.assertTrue(ctl.wait_for_idle(timeout=1.0))
         self.assertEqual(ctl.last_completed.status, "error")
-        self.assertEqual(ctl.last_completed.error, "provider down")
+        # Raw detail may stay process-local, but never reaches the JSONL.
+        self.assertEqual(ctl.last_completed.error, f"provider down {sentinel}")
+        text = self._persisted_log_text()
+        self.assertNotIn(sentinel, text)
+        event = json.loads(text.splitlines()[-1])
+        self.assertEqual(event["candidate_error_kind"], "internal_error")
+        self.assertNotIn("candidate_error", event)
+
+    def test_persisted_log_never_contains_candidate_stderr_secret(self):
+        secret = "AKIAIOSFODNN7EXAMPLE-candidate-secret"
+        strategist = CommandStrategist(
+            [sys.executable, "-c", f"import sys; sys.stderr.write({secret!r}); sys.exit(3)"],
+            timeout_s=5.0,
+        )
+        ctl = self._controller(strategist)
+        self.assertEqual(ctl.consider(screen(), observation(), emergency(), ()).status, "queued")
+        self.assertTrue(ctl.wait_for_idle(timeout=5.0))
+        self.assertEqual(ctl.last_completed.status, "error")
+        self.assertIn(secret, ctl.last_completed.error or "")
+        text = self._persisted_log_text()
+        self.assertNotIn(secret, text)
+        event = json.loads(text.splitlines()[-1])
+        self.assertEqual(event["candidate_error_kind"], "process_failed")
+        self.assertIn(event["candidate_error_kind"], DISPATCH_ERROR_KINDS)
+
+    def test_persisted_log_never_contains_exception_secret(self):
+        secret = "SECRET-exception-detail-31b7"
+
+        class ExplodingStrategist:
+            def dispatch(self, request):
+                raise RuntimeError(f"candidate exploded: {secret}")
+
+        ctl = self._controller(ExplodingStrategist())
+        self.assertEqual(ctl.consider(screen(), observation(), emergency(), ()).status, "queued")
+        self.assertTrue(ctl.wait_for_idle(timeout=1.0))
+        self.assertIn(secret, ctl.last_completed.error or "")
+        text = self._persisted_log_text()
+        self.assertNotIn(secret, text)
+        event = json.loads(text.splitlines()[-1])
+        self.assertEqual(event["candidate_error_kind"], "internal_error")
+
+    def test_persisted_log_rejects_non_allowlisted_error_kind(self):
+        secret = "SECRET-forged-kind-c0ffee"
+
+        class HostileStrategist:
+            def dispatch(self, request):
+                return StrategistDispatchResult(
+                    status="error",
+                    error=secret,
+                    error_kind=secret,  # type: ignore[arg-type]
+                )
+
+        ctl = self._controller(HostileStrategist())
+        self.assertEqual(ctl.consider(screen(), observation(), emergency(), ()).status, "queued")
+        self.assertTrue(ctl.wait_for_idle(timeout=1.0))
+        text = self._persisted_log_text()
+        self.assertNotIn(secret, text)
+        event = json.loads(text.splitlines()[-1])
+        self.assertEqual(event["candidate_error_kind"], "internal_error")
+
+    def test_safe_error_kind_fails_closed_for_unknown_values(self):
+        from docich.nethack_candidate_shadow import _safe_error_kind
+
+        for raw in (None, 3, b"timeout", {"kind": "timeout"}, ["timeout"], "Timeout", "raw stderr", ""):
+            self.assertEqual(_safe_error_kind(raw), "internal_error")
+        for kind in sorted(DISPATCH_ERROR_KINDS):
+            self.assertEqual(_safe_error_kind(kind), kind)
+
+    def test_persisted_log_classifies_timeout(self):
+        strategist = CommandStrategist(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            timeout_s=0.5,
+        )
+        ctl = self._controller(strategist)
+        self.assertEqual(ctl.consider(screen(), observation(), emergency(), ()).status, "queued")
+        self.assertTrue(ctl.wait_for_idle(timeout=5.0))
+        self.assertEqual(ctl.last_completed.status, "error")
+        text = self._persisted_log_text()
+        event = json.loads(text.splitlines()[-1])
+        self.assertEqual(event["candidate_error_kind"], "timeout")
 
     def test_only_strategic_decisions_are_called_and_budget_cooldown_are_bounded(self):
         strategist = FakeStrategist(

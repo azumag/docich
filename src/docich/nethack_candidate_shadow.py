@@ -15,7 +15,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from .actions import Action
 from .config import GameConfig, GlobalConfig
@@ -25,9 +25,12 @@ from .nethack_observation import NethackObservation
 from .nethack_policy import PolicyDecision
 from .nethack_regression import NethackRegressionError, _load_suite
 from .nethack_strategist import (
+    DISPATCH_ERROR_KINDS,
     CommandStrategist,
+    DispatchErrorKind,
     ProposalEvaluation,
     StrategistDispatchResult,
+    dispatch_error_kind_for_exception,
     evaluate_proposal,
     execution_plan,
 )
@@ -65,7 +68,16 @@ class CandidateShadowOutcome:
     proposal_kind: str | None = None
     evaluation_status: str | None = None
     evaluation_reason: str | None = None
+    # Raw detail is process-local only; persisted logs keep ``error_kind``.
     error: str | None = None
+    error_kind: DispatchErrorKind | None = None
+
+
+def _safe_error_kind(raw: object) -> DispatchErrorKind:
+    """Fail closed to a finite category; never persist producer-supplied text."""
+    if isinstance(raw, str) and raw in DISPATCH_ERROR_KINDS:
+        return cast(DispatchErrorKind, raw)
+    return "internal_error"
 
 
 @dataclass(frozen=True)
@@ -433,6 +445,7 @@ class NethackCandidateShadowController:
                     status="error",
                     call_index=job.call_index,
                     error=str(exc).replace("\n", " ")[:240],
+                    error_kind=dispatch_error_kind_for_exception(exc),
                 )
                 self._set_completed(outcome)
                 self._write_job_log(job, outcome, None, None, None)
@@ -449,6 +462,7 @@ class NethackCandidateShadowController:
             result = StrategistDispatchResult(
                 status="error",
                 error=str(exc).replace("\n", " ")[:240],
+                error_kind=dispatch_error_kind_for_exception(exc),
             )
         evaluation: ProposalEvaluation | None = None
         plan = None
@@ -467,6 +481,7 @@ class NethackCandidateShadowController:
             evaluation_status=(evaluation.status if evaluation is not None else None),
             evaluation_reason=(evaluation.reason if evaluation is not None else None),
             error=result.error,
+            error_kind=(None if result.status == "proposed" else _safe_error_kind(result.error_kind)),
         )
         self._set_completed(outcome)
         self._write_job_log(job, outcome, result, evaluation, plan)
@@ -513,7 +528,9 @@ class NethackCandidateShadowController:
                 if evaluation is not None
                 else None
             ),
-            "candidate_error": outcome.error,
+            "candidate_error_kind": (
+                _safe_error_kind(outcome.error_kind) if outcome.status == "error" else None
+            ),
             "would_execute_allowed": bool(getattr(plan, "allowed", False)) if plan is not None else False,
             "would_execute_action_count": action_count,
             "candidate_action_sent": False,
