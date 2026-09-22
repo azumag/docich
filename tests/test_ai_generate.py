@@ -8,6 +8,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich import ai_generate  # noqa: E402
+import docich.llm.dispatch as dispatch_module  # noqa: E402
 from docich.llm.backoff import model_backoff_seconds  # noqa: E402
 from docich.llm.contracts import DispatchRequest, ProviderResult  # noqa: E402
 from docich.llm.dispatch import Dispatcher  # noqa: E402
@@ -206,6 +207,100 @@ class TestNativeAiGenerate(unittest.TestCase):
             self.assertEqual(result.output, "good")
             self.assertEqual(calls, ["codex:first", "local"])
             self.assertFalse((root / "backoff" / "codex:first").exists())
+
+    def test_dispatch_reclamps_provider_timeout_after_lock_wait(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = {
+                "DOCICH_LLM_STATE_DIR": str(root / "state"),
+                "AI_BACKOFF_DIR": str(root / "backoff"),
+                "AI_FAIL_STREAK_DIR": str(root / "streak"),
+                "DOCICH_LLM_TELEMETRY": "0",
+                "AI_GENERATION_QUEUE_ENABLED": "1",
+                "OPENCODE_RUN_LOCK_ENABLED": "1",
+            }
+            clock = [100.0]
+            observed_timeouts = []
+
+            class DelayingLock:
+                def __init__(self, *args, **kwargs):
+                    pass
+
+                def acquire(self, *, deadline=None):
+                    clock[0] += 0.3
+
+                def release(self):
+                    pass
+
+            def provider(spec, request, timeout, provider_env):
+                observed_timeouts.append(timeout)
+                return ProviderResult(0, output="ok")
+
+            request = DispatchRequest(
+                label="COMMENT:test",
+                prompt="prompt",
+                agents=parse_agents("opencode:foo", env),
+                timeout_sec=10,
+            )
+            with (
+                mock.patch.object(dispatch_module, "FileLock", DelayingLock),
+                mock.patch.object(dispatch_module.time, "monotonic", side_effect=lambda: clock[0]),
+            ):
+                result = Dispatcher(env=env, provider_caller=provider).dispatch(
+                    request,
+                    overall_timeout_sec=1,
+                )
+
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(len(observed_timeouts), 1)
+            self.assertAlmostEqual(observed_timeouts[0], 0.4, places=6)
+
+    def test_dispatch_does_not_start_provider_after_lock_wait_exhausts_deadline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = {
+                "DOCICH_LLM_STATE_DIR": str(root / "state"),
+                "AI_BACKOFF_DIR": str(root / "backoff"),
+                "AI_FAIL_STREAK_DIR": str(root / "streak"),
+                "DOCICH_LLM_TELEMETRY": "0",
+                "AI_GENERATION_QUEUE_ENABLED": "1",
+                "OPENCODE_RUN_LOCK_ENABLED": "1",
+            }
+            clock = [100.0]
+            calls = []
+
+            class DelayingLock:
+                def __init__(self, *args, **kwargs):
+                    pass
+
+                def acquire(self, *, deadline=None):
+                    clock[0] += 0.6
+
+                def release(self):
+                    pass
+
+            def provider(spec, request, timeout, provider_env):
+                calls.append(timeout)
+                return ProviderResult(0, output="must not run")
+
+            request = DispatchRequest(
+                label="COMMENT:test",
+                prompt="prompt",
+                agents=parse_agents("opencode:foo", env),
+                timeout_sec=10,
+            )
+            with (
+                mock.patch.object(dispatch_module, "FileLock", DelayingLock),
+                mock.patch.object(dispatch_module.time, "monotonic", side_effect=lambda: clock[0]),
+            ):
+                result = Dispatcher(env=env, provider_caller=provider).dispatch(
+                    request,
+                    overall_timeout_sec=1,
+                )
+
+            self.assertEqual(result.returncode, 124)
+            self.assertEqual(result.failure_kind, "timeout")
+            self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

@@ -120,6 +120,17 @@ def _nonnegative_int(value: object, default: int) -> int:
     return parsed if parsed >= 0 else default
 
 
+def _remaining_timeout(deadline: float | None, default: float) -> float | None:
+    """Clamp one provider attempt to the request-wide deadline."""
+
+    if deadline is None:
+        return float(default)
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return None
+    return min(float(default), remaining)
+
+
 def _request_checks(request: DispatchRequest, env: dict[str, str]) -> None:
     try:
         validate_label(request.label)
@@ -270,8 +281,6 @@ class Dispatcher:
                 return DispatchResult(124, failure_kind="timeout", attempted=attempted, skipped=skipped)
 
             timeout = provider_timeout(request.label, spec, request.timeout_sec, self.env)
-            if deadline is not None:
-                timeout = min(timeout, max(deadline - time.monotonic(), 0.1))
             queue_lock = None
             if self.env.get("AI_GENERATION_QUEUE_ENABLED", "1") == "1":
                 queue_lock = FileLock(
@@ -281,13 +290,18 @@ class Dispatcher:
                     max_wait_sec=queue_max_wait(request.label, self.env),
                 )
             started = time.monotonic()
+            deadline_exhausted = False
             provider_lock = None
             try:
                 if queue_lock is not None:
                     try:
                         queue_lock.acquire(deadline=deadline)
                     except LockTimeout:
-                        result = ProviderResult(92, failure_kind="queue_giveup", detail="queue_giveup")
+                        if deadline is not None and time.monotonic() >= deadline:
+                            result = ProviderResult(124, failure_kind="timeout", detail="timeout")
+                            deadline_exhausted = True
+                        else:
+                            result = ProviderResult(92, failure_kind="queue_giveup", detail="queue_giveup")
                     else:
                         result = None
                 else:
@@ -309,10 +323,16 @@ class Dispatcher:
                             provider_lock.acquire(deadline=deadline)
                         except LockTimeout:
                             result = ProviderResult(124, failure_kind="timeout", detail="timeout")
+                            deadline_exhausted = deadline is not None and time.monotonic() >= deadline
                     if result is None:
-                        attempted += 1
-                        record(self.telemetry_dir, event="attempt", label=request.label, spec=spec)
-                        result = self.provider_caller(spec, request, timeout, self.env)
+                        provider_timeout_sec = _remaining_timeout(deadline, timeout)
+                        if provider_timeout_sec is None:
+                            result = ProviderResult(124, failure_kind="timeout", detail="timeout")
+                            deadline_exhausted = True
+                        else:
+                            attempted += 1
+                            record(self.telemetry_dir, event="attempt", label=request.label, spec=spec)
+                            result = self.provider_caller(spec, request, provider_timeout_sec, self.env)
             except Exception:
                 # Adapter bugs and unavailable binaries are a normal fallback
                 # condition; the exception body must never reach telemetry.
@@ -331,6 +351,18 @@ class Dispatcher:
                 returncode = 1
             output = result.output if isinstance(result.output, str) else ""
             latency_ms = int((time.monotonic() - started) * 1000)
+            if deadline_exhausted:
+                record(
+                    self.telemetry_dir,
+                    event="failure",
+                    label=request.label,
+                    spec=spec,
+                    returncode=124,
+                    failure_kind="timeout",
+                    latency_ms=latency_ms,
+                )
+                _write_sidecar(failure_kind_file, "timeout")
+                return DispatchResult(124, failure_kind="timeout", attempted=attempted, skipped=skipped)
             if returncode == 92:
                 record(self.telemetry_dir, event="queue_giveup", label=request.label, spec=spec, returncode=92, failure_kind="queue_giveup", latency_ms=latency_ms)
                 _write_sidecar(failure_kind_file, "queue_giveup")
