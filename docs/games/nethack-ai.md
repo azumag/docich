@@ -96,8 +96,10 @@ blank / unseen area
 これは旧P3bからの意図した行動面拡張であり、生存を保証しない。
 
 通常の完全な gameplay frame で、移動・接触・回復計画などの reviewed action がない場合は、判断保留を返さず
-`.` を1回送る。重篤状態・空腹・低HPも同じであり、ターンを消費して再観測する。`Hungry` では探索を優先し、
-隣接creatureでは退避・通常接触を先に試し、候補が尽きた時だけ `.` にする。
+`.` を1回送る。ただし重篤状態（`Sick/FoodPois/Ill/Slime/Strngl/Stone/TermIll`）と `Fainting/Fainted/Starved`
+は回復手段がレビューされるまで無入力で、空腹側で `.` を送れるのは `Weak` のみである（詳細と条件は
+`nethack-progress-contract.md` の優先順位テーブルが正本）。低HPで移動候補がない場合も `.` を1回送る。
+`Hungry` では探索を優先し、隣接creatureでは退避・通常接触を先に試し、候補が尽きた時だけ `.` にする。
 `Blind/Conf/Stun/Hallu` の安全な移動は作らないが、完全な gameplay frame の無入力にはしない。
 `f` は猫科、`{` は噴水である。`f` を地形扱いして休む旧説明・実装は誤りだった。
 
