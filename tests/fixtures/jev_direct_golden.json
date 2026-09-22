@@ -1,0 +1,65 @@
+{
+  "baseline": {
+    "docich_main": "da81989a91645cc52cbbf3207135aa8c396a6426",
+    "soviet_now_gitlink": "9af382fbbaae9a79ed4d5921a0f6b9cbf3ef8e23",
+    "source_file": "games/soviet_now/lib/comment_classifier_jev.py",
+    "note": "PR-0 fixed golden for #882 direct route. Mock only; no live API, no secrets. Vercel transport is NOT implemented in soviet_now."
+  },
+  "route_direct": {
+    "endpoint": "https://api.typesafe.ai/v1/systemone",
+    "requested_model": "jev-1.13.0",
+    "model_pattern": "jev-(latest|preview|X.Y.Z)",
+    "credential_env": "TYPESAFE_API_KEY",
+    "rubric_version": "comment-body-v1"
+  },
+  "transport": {
+    "method": "POST",
+    "library": "stdlib urllib",
+    "proxy": "disabled",
+    "redirect": "forbidden",
+    "retry": 0,
+    "timeout_ms": 1500,
+    "timeout_ms_min": 50,
+    "timeout_ms_max": 5000,
+    "killable_child": true
+  },
+  "bounds": {
+    "max_comments_per_request": 8,
+    "max_comment_bytes": 4096,
+    "max_request_bytes": 32768,
+    "max_response_bytes": 131072,
+    "max_source_bytes": 1048576,
+    "min_confidence": 0.7,
+    "categories": [
+      "card_gacha",
+      "raid",
+      "subscription",
+      "stream_goal",
+      "bits",
+      "sing_request",
+      "game_question",
+      "game_status",
+      "general_question",
+      "strategy_advice",
+      "comment_advice",
+      "stream_bug_report",
+      "chitchat",
+      "other"
+    ],
+    "notifications_not_sent": [
+      "card_gacha",
+      "raid",
+      "subscription",
+      "stream_goal",
+      "bits"
+    ],
+    "system_users": ["wizebot", "nightbot", "streamelements", "streamlabs"]
+  },
+  "request_projection": {
+    "sent": ["model", "state.comments[index,text]", "questions(fixed rubric)"],
+    "never_sent": ["persona", "game", "user", "history", "heuristic_prediction", "baseline_labels"]
+  },
+  "metrics_redaction": {
+    "never_stored": ["raw_body", "author", "body_hash", "credential", "raw_error", "headers"]
+  }
+}
