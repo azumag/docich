@@ -1,5 +1,6 @@
 """Regression tests for graceful Soren91 corner shutdown."""
 
+import os
 import sys
 import tempfile
 import time
@@ -10,6 +11,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich.adapters import _COORDINATOR_REGISTRY  # noqa: E402
+from docich.adapters.soren91 import Soren91CoordinatorAdapter  # noqa: E402
 from docich.adapters.soren91_graceful import (  # noqa: E402
     Soren91GracefulCoordinatorAdapter,
 )
@@ -63,6 +65,48 @@ class TestSoren91GracefulStop(unittest.TestCase):
             _COORDINATOR_REGISTRY["soren91"],
             "docich.adapters.soren91_graceful:Soren91GracefulCoordinatorAdapter",
         )
+
+    def test_agent_alive_requires_main_pid_marker_when_bot_is_enabled(self):
+        tmux = FakeTmux(close_on_interrupt=False)
+        adapter = self._adapter(tmux)
+        adapter.agent_enabled = True
+        marker = self.root / "tmp" / "main.pid"
+
+        with mock.patch.object(Soren91CoordinatorAdapter, "agent_alive", return_value=True):
+            # Reproduces the 2026-09-21 incident: tmux/Node still looks alive,
+            # but main.mjs has already left the gameplay loop and removed its
+            # lifecycle marker.  The corner must now observe this as dead.
+            self.assertFalse(adapter.agent_alive(time.monotonic() + 5, None))
+
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(f"{os.getpid()}\n", encoding="utf-8")
+            self.assertTrue(adapter.agent_alive(time.monotonic() + 5, None))
+
+            marker.unlink()
+            self.assertFalse(adapter.agent_alive(time.monotonic() + 5, None))
+
+    def test_agent_alive_rejects_stale_pid_marker(self):
+        tmux = FakeTmux(close_on_interrupt=False)
+        adapter = self._adapter(tmux)
+        adapter.agent_enabled = True
+        marker = self.root / "tmp" / "main.pid"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("424242\n", encoding="utf-8")
+
+        with mock.patch.object(Soren91CoordinatorAdapter, "agent_alive", return_value=True):
+            with mock.patch(
+                "docich.adapters.soren91_graceful.os.kill",
+                side_effect=ProcessLookupError,
+            ):
+                self.assertFalse(adapter.agent_alive(time.monotonic() + 5, None))
+
+    def test_agent_alive_without_bot_preserves_base_liveness(self):
+        tmux = FakeTmux(close_on_interrupt=False)
+        adapter = self._adapter(tmux)
+        adapter.agent_enabled = False
+
+        with mock.patch.object(Soren91CoordinatorAdapter, "agent_alive", return_value=True):
+            self.assertTrue(adapter.agent_alive(time.monotonic() + 5, None))
 
     def test_stop_agent_requests_graceful_exit_before_force_kill(self):
         tmux = FakeTmux(close_on_interrupt=True)
