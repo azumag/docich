@@ -47,3 +47,12 @@ Claude、OpenCode、API、認証情報を操作時に使用しない。旧`brain
 - deploy: docich protected mainの正規gateway経由。共有配信・音声を再起動せず、次回ゲーム起動から適用する。
 - 実機受入: 新規ゲーム→入力→戦闘、終了後の復帰・子プロセス解放、配信PID維持を別々に検証する。
   ユニットテストや設定の有効化だけで実機受入の完了とはしない。
+
+## 固定の手動起動操作
+
+公開リポジトリでは汎用の`VM operations / exec`は拒否される。
+ownerは`Corner rotation operator`の`start-hanjuku`と`confirm=production`を使用する。
+protected mainとVMのSHA一致を検証し、ゲーム・コマンド・unitを入力できない固定scriptだけを送る。
+`docich-hanjuku-corner.service`が共通coordinator経由で起動し、現在試合の境界・pause・cooldownを守る。
+要求の受理とゲームの実起動は別であり、`retro_corner.json`と世代別botログで実起動を確認する。
+他のコーナーが稼働中の場合に強制停止したり、cooldown/stateを削除したりしない。
