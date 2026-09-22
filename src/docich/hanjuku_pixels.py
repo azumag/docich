@@ -19,6 +19,8 @@ class Frame:
         return tuple(self.rgb[i:i+3])
 
     def resized(self, width=256, height=224):
+        if self.width == width and self.height == height:
+            return self
         data = bytearray()
         for y in range(height):
             sy = min(self.height-1, (2*y+1)*self.height//(2*height))
@@ -92,7 +94,9 @@ def read_png(path: Path) -> Frame:
         row=bytearray(raw[start+1:start+1+stride])
         if mode not in range(5):
             raise ValueError('invalid PNG filter')
-        for i in range(stride):
+        # FFmpeg screenshots use filter 0: the row already contains decoded
+        # bytes. Avoid millions of Python iterations per native screenshot.
+        for i in range(stride) if mode else ():
             left=row[i-channels] if i>=channels else 0
             up=previous[i]
             upper_left=previous[i-channels] if i>=channels else 0

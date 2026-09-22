@@ -42,7 +42,7 @@ class XKit:
         try:
             procs.run(
                 [
-                    "ffmpeg", "-loglevel", "error", "-y",
+                    "ffmpeg", "-loglevel", "error", "-y", "-filter_threads", "1",
                     # -draw_mouse 0 が無いとマウスポインタが画面中央に映り込む (architecture.md §5)
                     "-f", "x11grab", "-draw_mouse", "0",
                     *(["-window_id", window_id] if window_id is not None else []),
@@ -50,7 +50,7 @@ class XKit:
                     "-frames:v", "1",
                     # 出力先は拡張子の無い一時ファイル名なので、ffmpeg のフォーマット
                     # 自動判定 (ファイル名の拡張子依存) に頼らず明示指定する。
-                    "-c:v", "png", "-f", "image2",
+                    "-c:v", "png", "-threads", "1", "-f", "image2",
                     str(tmp_path),
                 ],
                 env_extra=self._env(),
