@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import glob
 import os
+import re
 import sys
 import time
 from contextlib import nullcontext
@@ -139,10 +140,23 @@ def resolve_core(game) -> str:
     )
 
 
+def retroarch_audio(g, game) -> tuple[bool, str]:
+    """A game may use the existing broadcast bus without owning that bus."""
+    raw = retroarch_raw(game)
+    enabled = raw.get("audio_enabled", g.audio.enabled)
+    sink = raw.get("audio_sink", g.audio.sink_name)
+    if type(enabled) is not bool:
+        raise AdapterError("retroarch.audio_enabled must be a boolean")
+    if not isinstance(sink, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", sink):
+        raise AdapterError("retroarch.audio_sink must be a PulseAudio sink name")
+    return enabled, sink
+
+
 def retroarch_cfg_lines(g, game, cfg_path: Path, network_port: int) -> list[str]:
     buttons = resolved_buttons(game)
     d = g.display
-    audio_enable = "true" if g.audio.enabled else "false"
+    audio_enabled, audio_sink = retroarch_audio(g, game)
+    audio_enable = "true" if audio_enabled else "false"
     rdir = cfg_path.parent
 
     lines = [
@@ -150,6 +164,7 @@ def retroarch_cfg_lines(g, game, cfg_path: Path, network_port: int) -> list[str]
         'video_driver = "sdl2"',
         'audio_driver = "pulse"',
         f'audio_enable = "{audio_enable}"',
+        *([f'audio_device = "{audio_sink}"'] if audio_enabled else []),
         'video_fullscreen = "true"',
         f'video_fullscreen_x = "{d.width}"',
         f'video_fullscreen_y = "{d.height}"',
@@ -409,13 +424,14 @@ class RetroArchCoordinatorAdapter:
         if not self._contained():
             return command
         d = self.g.display
+        audio_enabled, audio_sink = retroarch_audio(self.g, self.game)
         return [sys.executable, str(Path(__file__).resolve().parents[1] / "presentation.py"),
                 '--display', d.name, '--title', f'docich-present-{self.spec.runtime_id}',
                 '--x', str(d.viewport_x), '--y', str(d.viewport_y),
                 '--width', str(d.viewport_width), '--height', str(d.viewport_height),
                 '--window-pattern', '^RetroArch',
                 '--runtime-state', str(self._presentation_path()),
-                *(['--audio-sink', self.g.audio.sink_name] if self.g.audio.enabled else []),
+                *(['--audio-sink', audio_sink] if audio_enabled else []),
                 '--', *command]
 
     def _ownership(self, role: str) -> TmuxOwnership:

@@ -140,6 +140,25 @@ class TestPrepareGeneratesCfg(RetroArchTestBase):
         self.assertTrue((ctx.state.retroarch_dir / "saves").is_dir())
         self.assertTrue((ctx.state.retroarch_dir / "system").is_dir())
 
+    def test_game_audio_uses_existing_sink_with_global_audio_disabled(self):
+        ctx = self._make_ctx(retroarch_raw={
+            "rom": "games/roms/hanjuku-hero.sfc", "core": str(self.core_path),
+            "audio_enabled": True, "audio_sink": "soren_null",
+        }, audio_enabled=False)
+        retroarch.RetroArchAdapter(ctx).prepare()
+        self.assertIn('audio_enable = "true"', self._cfg_text(ctx))
+        self.assertIn('audio_device = "soren_null"', self._cfg_text(ctx))
+        self.assertFalse(ctx.g.audio.enabled)
+
+    def test_game_audio_can_be_disabled_and_rejects_invalid_settings(self):
+        for raw in ({"audio_enabled": "true"}, {"audio_sink": 'bad"\nsetting'}):
+            with self.subTest(raw=raw):
+                ctx = self._make_ctx(retroarch_raw=raw)
+                with self.assertRaises(base.AdapterError):
+                    retroarch.retroarch_audio(ctx.g, ctx.game)
+        ctx = self._make_ctx(retroarch_raw={"audio_enabled": False})
+        self.assertEqual(retroarch.retroarch_audio(ctx.g, ctx.game), (False, "docich_sink"))
+
     def test_prepare_is_idempotent(self):
         ctx = self._make_ctx(retroarch_raw={"rom": "games/roms/hanjuku-hero.sfc", "core": str(self.core_path)})
         adapter = retroarch.RetroArchAdapter(ctx)

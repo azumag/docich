@@ -42,7 +42,10 @@ def test_live_registration_is_enabled_but_keeps_vm_prerequisites_separate(manage
     assert manager._required_executables(game) == [
         "retroarch", "dbus-run-session", "python3",
     ]
-    assert game.raw["retroarch"] == {"rom": "games/roms/hanjuku-hero.sfc", "core": "auto"}
+    assert game.raw["retroarch"] == {
+        "rom": "games/roms/hanjuku-hero.sfc", "core": "auto",
+        "audio_enabled": True, "audio_sink": "soren_null",
+    }
     assert manager._rotation_interval_seconds() == 86400 / 6
 
 

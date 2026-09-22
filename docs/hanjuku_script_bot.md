@@ -22,6 +22,13 @@ Claude、OpenCode、API、認証情報を操作時に使用しない。旧`brain
   `retroarch_boundary.json`へ引き継ぎ、既存coordinatorがゲーム側の子プロセスを停止して前のゲームへ戻す。
   他のRetroArchゲームの明示pause/save契約は変更しない。
 
+## 音声
+
+半熟英雄の`[retroarch] audio_enabled=true`と`audio_sink="soren_null"`で、
+ゲームのBGM・効果音を既存の配信busへ出す。共通の音声busや配信エンコーダは再起動しない。
+Sorenの`bgm_worker.sh`は半熟英雄中の共通BGMを止め、次のCLIゲームでは再開する。
+読み上げ音声は同じbus上で維持する。
+
 ## 改善用ログ
 
 世代別の`run/runtimes/<runtime_id>/`へ保存する。ゲームを停止しても削除しない。
