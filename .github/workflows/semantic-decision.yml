@@ -48,11 +48,11 @@ jobs:
         run: python3 -m pytest -q tests/test_semantic_decision.py
       - name: docich-owned comment classifier without any game checkout
         run: python3 -m pytest -q tests/test_comment_classifier.py
-      - name: Require the pinned legacy source for compatibility tests
+      - name: Check out the reviewed Soren delegation contract
         run: |
           git submodule update --init games/soviet_now
-          test -f games/soviet_now/lib/comment_classifier_jev.py
-      - name: Category-only compatibility and unchanged direct baseline
-        run: python3 -m pytest -q tests/test_semantic_comment_compat.py tests/test_jev_direct_golden.py
-      - name: Compile the extraction
-        run: python3 -m compileall -q src/docich/semantic_decision src/docich/comment_classifier tests/test_semantic_decision.py tests/test_semantic_comment_compat.py tests/test_comment_classifier.py
+          test -f games/soviet_now/tests/test_comment_classifier_docich.py
+      - name: Soren delegates classification to docich and keeps no local classifier
+        run: python3 games/soviet_now/tests/test_comment_classifier_docich.py
+      - name: Compile the owned implementation
+        run: python3 -m compileall -q src/docich/semantic_decision src/docich/comment_classifier tests/test_semantic_decision.py tests/test_comment_classifier.py
