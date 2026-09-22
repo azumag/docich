@@ -1,9 +1,8 @@
-"""PR-0/PR-1 baseline: pin the broadcast migration boundary for #829.
+"""Pin the broadcast ownership/delegation boundary for #829/#882.
 
-Mock only. No shell execution, no network, no secrets, no VM.
-Static reads assert that chat/radio remain compatibility wrappers while the
-AI entry point uses the native docich dispatcher. Any silent drift of the
-boundary fails before later native pipeline work.
+Mock/static only. No network, secrets, or VM. Chat/radio compatibility wrappers
+remain in docich, while comment classification is owned by docich and Soren only
+delegates to the fixed docich entry point.
 """
 
 import json
@@ -72,8 +71,7 @@ class TestBroadcastBaseline(unittest.TestCase):
             stages["comment"],
             stages["radio_engine"],
             stages["ai_generate"],
-            stages["classifier_py"],
-            stages["classifier_sh"],
+            stages["classifier_owner_entry"],
             stages["news_spam"],
             stages["prepass_budget"],
         ]
@@ -97,14 +95,18 @@ class TestBroadcastBaseline(unittest.TestCase):
             with self.subTest(file=rel):
                 self.assertIn(token, path.read_text(encoding="utf-8"))
 
-    def test_classifier_gate_documented(self):
+    def test_classifier_is_docich_owned_and_soren_only_delegates(self):
         stages = self.golden["soviet_now_stages"]
-        path = REPO_ROOT / stages["classifier_sh"]
-        if not path.is_file():
-            raise unittest.SkipTest("classifier shim absent (no submodule)")
-        content = path.read_text(encoding="utf-8")
-        self.assertIn(stages["classifier_gate_env"], content)
-        self.assertIn(stages["classifier_gate_value"], content)
+        comment = REPO_ROOT / stages["comment"]
+        if not comment.is_file():
+            raise unittest.SkipTest("games/soviet_now submodule not present")
+        content = comment.read_text(encoding="utf-8")
+        self.assertIn(stages["classifier_delegate_env"], content)
+        self.assertIn(stages["classifier_delegate_default"], content)
+        self.assertTrue((REPO_ROOT / stages["classifier_owner_entry"]).is_file())
+        for rel in stages["classifier_removed"]:
+            with self.subTest(removed=rel):
+                self.assertFalse((REPO_ROOT / rel).exists(), rel)
 
 
 if __name__ == "__main__":
