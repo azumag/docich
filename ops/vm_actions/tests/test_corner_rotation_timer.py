@@ -45,11 +45,16 @@ class UnitTemplateContractTests(unittest.TestCase):
         self.assertIn("corner-rotation tick", service)
         self.assertIn("Unit=docich-retro-corner.service", timer)
 
-    def test_stage1_does_not_enable_the_production_migration(self):
-        # The reviewed epoch is added in a later stage; while it is absent the
-        # deploy hook must keep reconciling only the legacy units.
-        self.assertFalse(
-            (ROOT / "ops/vm_actions/corner_rotation_timer_migration_epoch").exists()
+    def test_stage2_reviewed_epoch_enables_the_production_migration(self):
+        # The reviewed epoch is what turns the deploy hook's migration branch
+        # on; it must stay a regular file so a deploy can never follow a
+        # symlink to an unreviewed source.
+        epoch = ROOT / "ops/vm_actions/corner_rotation_timer_migration_epoch"
+        self.assertTrue(epoch.is_file())
+        self.assertFalse(epoch.is_symlink())
+        self.assertRegex(
+            epoch.read_text(encoding="utf-8").strip(),
+            r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$",
         )
 
 
