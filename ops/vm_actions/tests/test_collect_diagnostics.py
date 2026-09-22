@@ -100,11 +100,13 @@ def test_semantic_decision_reads_only_the_fixed_allowlist_and_hides_credential_v
         'DOCICH_SEMANTIC_BACKEND': 'jev',
         'DOCICH_JEV_ROUTE': 'vercel',
         'DOCICH_JEV_VERCEL_API_KEY': 'SYNTHETIC_VERCEL_SECRET',
+        'COMMENT_CLASSIFIER_BACKEND': 'jev',
         'UNRELATED_OTHER_SECRET': 'SHOULD_NEVER_APPEAR',
     })
     with mock.patch.object(module.Path, 'read_bytes', return_value=environ):
         result = module._collect_semantic_decision(workers)
-    assert result == {'present': True, 'readable': True, 'backend': 'jev', 'route': 'vercel',
+    assert result == {'present': True, 'readable': True, 'comment_classifier_backend': 'jev',
+                      'backend': 'jev', 'route': 'vercel',
                       'requested_model': 'typesafe-ai/jev', 'credential': 'present'}
     assert 'SYNTHETIC_VERCEL_SECRET' not in json.dumps(result)
     assert 'SHOULD_NEVER_APPEAR' not in json.dumps(result)
@@ -116,13 +118,47 @@ def test_semantic_decision_direct_route_credential_absent_and_unflagged_backend(
     with mock.patch.object(module.Path, 'read_bytes',
                            return_value=_synthetic_environ({'DOCICH_SEMANTIC_BACKEND': 'jev'})):
         result = module._collect_semantic_decision(workers)
-    assert result == {'present': True, 'readable': True, 'backend': 'jev', 'route': 'direct',
+    assert result == {'present': True, 'readable': True, 'comment_classifier_backend': None,
+                      'backend': 'jev', 'route': 'direct',
                       'requested_model': 'jev-1.13.0', 'credential': 'absent'}
     with mock.patch.object(module.Path, 'read_bytes',
                            return_value=_synthetic_environ({'TYPESAFE_API_KEY': 'unrelated-not-delegating'})):
         result = module._collect_semantic_decision(workers)
-    assert result == {'present': True, 'readable': True, 'backend': 'legacy', 'route': None,
+    assert result == {'present': True, 'readable': True, 'comment_classifier_backend': None,
+                      'backend': 'legacy', 'route': None,
                       'requested_model': None, 'credential': 'not_applicable'}
+
+
+def test_semantic_decision_reports_comment_classifier_backend_prerequisite_gate():
+    # This is the #678 prerequisite: soviet_now's shell wrapper never even
+    # invokes the classifier (and so never consults DOCICH_SEMANTIC_BACKEND)
+    # unless this is exactly "jev". Reporting it lets an operator tell "jev
+    # delegation configured but inert" apart from "actually reachable".
+    module = load_collector()
+    workers = {'details': {'chat_worker': {'pid': 4242, 'alive': True}}}
+    with mock.patch.object(module.Path, 'read_bytes',
+                           return_value=_synthetic_environ({'COMMENT_CLASSIFIER_BACKEND': 'jev'})):
+        result = module._collect_semantic_decision(workers)
+    assert result['comment_classifier_backend'] == 'jev'
+
+    with mock.patch.object(module.Path, 'read_bytes',
+                           return_value=_synthetic_environ({'COMMENT_CLASSIFIER_BACKEND': ''})):
+        result = module._collect_semantic_decision(workers)
+    assert result['comment_classifier_backend'] is None
+
+    with mock.patch.object(module.Path, 'read_bytes', return_value=_synthetic_environ({})):
+        result = module._collect_semantic_decision(workers)
+    assert result['comment_classifier_backend'] is None
+
+
+def test_semantic_decision_comment_classifier_backend_is_length_capped():
+    module = load_collector()
+    workers = {'details': {'chat_worker': {'pid': 4242, 'alive': True}}}
+    huge = 'x' * 5000
+    with mock.patch.object(module.Path, 'read_bytes',
+                           return_value=_synthetic_environ({'COMMENT_CLASSIFIER_BACKEND': huge})):
+        result = module._collect_semantic_decision(workers)
+    assert result['comment_classifier_backend'] == 'x' * module.COMMENT_CLASSIFIER_BACKEND_STR_MAX
 
 
 class CollectorFixture(unittest.TestCase):
