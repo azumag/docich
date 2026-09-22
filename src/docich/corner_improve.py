@@ -386,7 +386,13 @@ def _run_corner_improve(
             previous = data if isinstance(data, dict) else {}
         except (OSError, ValueError):
             previous = {}
-    prompt_text = build_prompt(game=game, stats=stats, current=current, previous=previous)
+    # Show only the weights the candidate may change. The full strategy also
+    # carries fixed flags (for example nsnake's tail_passable boolean); showing
+    # them as tunable weights invited the model to return an unknown key, which
+    # the strict parser then rejected and failed the whole job.
+    prompt_current = {key: value for key, value in current.items() if key in proposable}
+    prompt_previous = {key: value for key, value in previous.items() if key in proposable}
+    prompt_text = build_prompt(game=game, stats=stats, current=prompt_current, previous=prompt_previous)
     if dry_run:
         return {"status": "dry-run", "stats": stats, "prompt_chars": len(prompt_text)}
 
