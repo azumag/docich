@@ -60,14 +60,14 @@ class StrategySelectionResult:
 # - 絶対範囲: 既定値 (lookback 6/10、threshold 300bps、z -1.5、notional 0.15)
 #   を中心に、シグナルが構造的に死ぬ値を除外する。momentum は
 #   lookback+1 本の closes を要し、dashboard の cache closes は最大 24 本
-#   (load_snapshot) のため lookback 上限は 24。threshold 2000bps (20%の
+#   (load_snapshot) のため `24 closes -> lookback max 23`。threshold 2000bps (20%の
 #   値動きゲート) を超えると intraday ではほぼ発火せず、|z|>=5 も同様。
 #   notional 1.0 への一気寄せ (all-in) を禁じ、上限は既定の約3倍の 0.5。
 # - 1回あたりの bounded delta: 現行値からの逸脱を抑え、緩やかな探索にする。
 #   lookback は 1/2〜2倍、threshold/z の大きさは 1/2〜2倍 (絶対範囲で丸め)、
 #   notional は既定1ステップ分 (0.15) 以内の移動。
 POLICY_ABSOLUTE_BOUNDS = {
-    "momentum_lookback": (2, 24),
+    "momentum_lookback": (2, 23),
     "mean_reversion_lookback": (3, 24),
     "momentum_threshold_bps": (D("0"), D("2000")),
     "mean_reversion_z": (D("-5.0"), D("-0.1")),
