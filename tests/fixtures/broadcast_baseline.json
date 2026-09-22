@@ -1,0 +1,34 @@
+{
+  "baseline": {
+    "docich_main": "da81989a91645cc52cbbf3207135aa8c396a6426",
+    "soviet_now_gitlink": "9af382fbbaae9a79ed4d5921a0f6b9cbf3ef8e23",
+    "note": "PR-0 compat boundary pin for #829. docich chat/radio/ai remain reference-run wrappers; native pipeline is out of scope."
+  },
+  "docich_wrappers": {
+    "chat_source": "src/docich/chat.py",
+    "comment_function": "generate_comment_response",
+    "radio_function": "_radio_generate_and_play",
+    "ai_function": "ai_generate_list",
+    "comment_sources": ["twitch", "youtube"],
+    "rc_contract": {"0": "success", "1": "generation failure", "2": "argument error"},
+    "real_run_gates": {
+      "comment": "DOCICH_ALLOW_REAL_COMMENT",
+      "radio": "DOCICH_ALLOW_REAL_RADIO",
+      "ai": "DOCICH_ALLOW_REAL_AI"
+    }
+  },
+  "soviet_now_stages": {
+    "comment": "games/soviet_now/broadcast/comment.sh",
+    "comment_entry": "generate_comment_response",
+    "radio_engine": "games/soviet_now/broadcast/radio_engine.sh",
+    "radio_entry": "_radio_generate_and_play",
+    "ai_generate": "games/soviet_now/lib/ai_generate.sh",
+    "ai_entry": "ai_generate_list",
+    "classifier_py": "games/soviet_now/lib/comment_classifier_jev.py",
+    "classifier_sh": "games/soviet_now/broadcast/comment_classifier_jev.sh",
+    "classifier_gate_env": "COMMENT_CLASSIFIER_BACKEND",
+    "classifier_gate_value": "jev",
+    "news_spam": "games/soviet_now/broadcast/radio_news.sh",
+    "prepass_budget": "games/soviet_now/lib/ai_prepass_budget.sh"
+  }
+}
