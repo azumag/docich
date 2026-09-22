@@ -221,7 +221,17 @@ def _wait_until(predicate, timeout: float, interval: float = 0.5) -> bool:
     return bool(predicate())
 
 
-def restart_chat_worker(soren_root: Path, *, expect_jev: bool, timeout: float = 90.0) -> tuple[int, int]:
+def restart_chat_worker_verified(soren_root: Path, *, verify, timeout: float = 90.0) -> tuple[int, int]:
+    """Stop the current chat_worker, wait for its replacement, then verify it.
+
+    ``verify(runtime_env)`` receives the replacement worker's own environ
+    (never argv/cwd/other processes) and must raise ``ConfigureError`` with a
+    fixed, secret-free reason on any mismatch. This is the shared restart
+    primitive: #678's own env keys and #882's docich-canonical route keys
+    each get their own ``verify`` callback (see ``restart_chat_worker`` below
+    and ``configure_jev_route.py``) rather than a second copy of the
+    PID/cmdline/environ handling.
+    """
     pid_file = soren_root / WORKER_PID_FILE
     old_pid = _read_worker_pid(pid_file)
     if old_pid is None or not _is_worker(old_pid, soren_root):
@@ -242,20 +252,31 @@ def restart_chat_worker(soren_root: Path, *, expect_jev: bool, timeout: float = 
     new_pid = _read_worker_pid(pid_file)
     if new_pid is None or new_pid == old_pid:
         raise ConfigureError("chat_worker_replacement_invalid")
-    runtime_env = _process_env(new_pid)
-    if expect_jev:
-        if runtime_env.get("COMMENT_CLASSIFIER_BACKEND") != "jev":
-            raise ConfigureError("chat_worker_backend_not_jev")
-        if not runtime_env.get("TYPESAFE_API_KEY"):
-            raise ConfigureError("chat_worker_api_key_missing")
-        if runtime_env.get("COMMENT_CLASSIFIER_JEV_MODEL") != MODEL:
-            raise ConfigureError("chat_worker_model_mismatch")
-    else:
-        if runtime_env.get("COMMENT_CLASSIFIER_BACKEND") == "jev":
-            raise ConfigureError("chat_worker_backend_still_jev")
-        if runtime_env.get("TYPESAFE_API_KEY"):
-            raise ConfigureError("chat_worker_api_key_still_present")
+    verify(_process_env(new_pid))
     return old_pid, new_pid
+
+
+def _verify_comment_classifier_jev(expect_jev: bool):
+    """The #678-owned verification: COMMENT_CLASSIFIER_BACKEND/TYPESAFE_API_KEY/model."""
+    def verify(runtime_env: dict[str, str]) -> None:
+        if expect_jev:
+            if runtime_env.get("COMMENT_CLASSIFIER_BACKEND") != "jev":
+                raise ConfigureError("chat_worker_backend_not_jev")
+            if not runtime_env.get("TYPESAFE_API_KEY"):
+                raise ConfigureError("chat_worker_api_key_missing")
+            if runtime_env.get("COMMENT_CLASSIFIER_JEV_MODEL") != MODEL:
+                raise ConfigureError("chat_worker_model_mismatch")
+        else:
+            if runtime_env.get("COMMENT_CLASSIFIER_BACKEND") == "jev":
+                raise ConfigureError("chat_worker_backend_still_jev")
+            if runtime_env.get("TYPESAFE_API_KEY"):
+                raise ConfigureError("chat_worker_api_key_still_present")
+    return verify
+
+
+def restart_chat_worker(soren_root: Path, *, expect_jev: bool, timeout: float = 90.0) -> tuple[int, int]:
+    return restart_chat_worker_verified(
+        soren_root, verify=_verify_comment_classifier_jev(expect_jev), timeout=timeout)
 
 
 def main() -> int:
