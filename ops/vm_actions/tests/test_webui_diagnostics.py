@@ -129,6 +129,12 @@ class WebuiDiagnosticsTests(unittest.TestCase):
         # listener exists (this test process) but the unit has no pid
         self.assertIs(data["listener_is_unit"], None)
 
+    def test_pid_owns_socket_is_false_for_a_missing_pid(self):
+        # Path.iterdir() is lazy: the missing-/proc/<pid> FileNotFoundError
+        # surfaces during iteration, not at construction (regression).
+        self.assertIs(self.module._pid_owns_socket(2_147_483_646, {"1"}), False)
+        self.assertIs(self.module._pid_owns_socket(os.getpid(), {"not-a-real-inode"}), False)
+
 
 class WebuiDiagnosticsCollectorTests(unittest.TestCase):
     """Full collector run: the section is present and stays bounded."""

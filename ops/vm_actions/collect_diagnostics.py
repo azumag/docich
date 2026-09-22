@@ -2333,15 +2333,11 @@ def _listen_inodes(port):
 
 def _pid_owns_socket(pid, inodes):
     """True when pid holds one of inodes; False / None when it cannot."""
-    try:
-        fds = Path(f"/proc/{pid}/fd").iterdir()
-    except FileNotFoundError:
-        return False
-    except OSError:
-        return None
     read_any = False
     try:
-        for fd in fds:
+        # NOTE: Path(...).iterdir() is lazy, so a missing /proc/<pid> raises
+        # FileNotFoundError on iteration, not on creation.
+        for fd in Path(f"/proc/{pid}/fd").iterdir():
             try:
                 target = os.readlink(fd)
             except OSError:
@@ -2349,6 +2345,8 @@ def _pid_owns_socket(pid, inodes):
             read_any = True
             if target.startswith("socket:[") and target[8:-1] in inodes:
                 return True
+    except FileNotFoundError:
+        return False
     except OSError:
         return None
     if not read_any:
