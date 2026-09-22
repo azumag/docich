@@ -13,6 +13,12 @@ Tailscale (tailnet) 経由で安全に公開する想定の機能である。
 - **Chains**: チェーン 6 種の表示・編集 (先頭が最優先、失敗時に次へフォールバック)
   - `AI_COMMON_AGENTS` (共通原典) / `MODEL_IMPROVE_LIST` / `RADIO_AGENTS` /
     `RADIO_PREPASS_AGENTS` / `COMMENT_AGENTS` / `COMMENT_TRANSLATION_AGENTS`
+  - 各行の ⏸ でモデルを一時停止できる。停止中のモデルは順序と位置を保ったまま
+    保存時に本体チェーンから除外され (ランタイムは通常のフォールバックとして扱う)、
+    ▶ で同じ位置へ復帰する。最後の 1 件は停止できない (空 = 継承扱いを防ぐ)
+  - 停止位置は webui 専用キー `<CHAIN>_PAUSED` (`index:agent` のカンマ区切り、
+    index は停止前のチェーン内位置) として .env に保存される。ランタイムは
+    `*_PAUSED` を参照しない (停止はチェーン値からの除外で完結する)
 - **Backoff**: モデル別バックオフ設定 (`AI_BACKOFF_SEC_ITEMS`, `AI_AGENT_BACKOFF_SEC`,
   `AI_BACKOFF_FAILURE_SEC`) の編集と、稼働中 backoff ファイル
   (`tmp/state/ai_backoff/<sanitized>`) の残り時間表示・個別クリア・全クリア
@@ -96,6 +102,8 @@ read_only = false         # true で閲覧専用
   - `PEAK_HOURS_TZ` は IANA 名のみ (`$(...)` 等のシェル構文は 400 で拒否)
   - 空白を含む値 (`AI_BACKOFF_SEC_ITEMS`) はダブルクォートで書き出し (source 時に壊れない)
   - ブール値は `0`/`1` のみ (ランタイムが `"1"` 判定のため)
+  - `<CHAIN>_PAUSED` は `index:agent` 形式のみ (index は 0..999、agent は `AGENT_RE`、
+    過多は 400 で拒否。同一 agent の複数エントリはチェーン内重複の位置記録として有効)
 - `.env` 更新は原子書き込み: バックアップ (`.env.bak.<ns>`) → 一時ファイル →
   `os.replace` → `chmod 600`。同時編集は mtime 比較で 409 (conflict) を返す。
 
