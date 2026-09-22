@@ -121,6 +121,9 @@ bin/docich --config config/docich.soren-live.toml trading status
 
 ### 旧unit名からの移行（review済み deploy hook）
 
+- 2026-09-22時点のproductionは移行済み（epoch追加PR #919、main `f941164f`）。
+  deploy hookはcanonical unitの再配置とcanonical timerのenableを維持し、
+  旧名はcanonicalへのaliasとして解決される。
 - canonical unitは `docich-corner-rotation.service/timer`。移行後は旧
   `docich-retro-corner.service/timer` がcanonicalへのrelative aliasになり、
   旧名を独立timerとして二重enableしない。
