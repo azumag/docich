@@ -1,0 +1,87 @@
+name: PAPER emergency restore request
+
+on:
+  issues:
+    types: [edited]
+
+permissions:
+  contents: read
+  issues: write
+
+# This recorder intentionally has no VM concurrency group.  It persists an
+# owner-validated request before the actual restore enters the shared mutation
+# lane, so a later VM operation cannot erase the request while it is pending.
+jobs:
+  request:
+    if: >-
+      github.actor_id == 9018513 &&
+      github.triggering_actor == 'azumag' &&
+      github.ref == 'refs/heads/main' &&
+      github.ref_protected == true &&
+      github.repository == 'azumag/docich' &&
+      github.event.issue.number == 569 &&
+      github.event.issue.user.id == 9018513 &&
+      github.event.issue.state == 'open'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      needed: ${{ steps.queue.outputs.needed }}
+      nonce: ${{ steps.queue.outputs.nonce }}
+    steps:
+      - name: Checkout trusted request parser from current main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30af803
+        with:
+          ref: main
+          path: control
+          persist-credentials: false
+          submodules: false
+
+      - name: Validate exact owner restore command
+        id: command
+        shell: bash
+        env:
+          BODY: ${{ github.event.issue.body }}
+        run: |
+          set -euo pipefail
+          python3 control/ops/vm_actions/paper_restore_queue.py command "$BODY" >> "$GITHUB_OUTPUT"
+
+      - name: Read existing durable restore markers
+        id: existing
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NONCE: ${{ steps.command.outputs.nonce }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --jq '.[]' "repos/$GITHUB_REPOSITORY/issues/569/comments?per_page=100" > "$RUNNER_TEMP/paper-restore-comments.jsonl"
+          state="$(python3 control/ops/vm_actions/paper_restore_queue.py state "$RUNNER_TEMP/paper-restore-comments.jsonl" "$NONCE")"
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+
+      - name: Record owner-authenticated durable request
+        if: steps.existing.outputs.state == 'state=new'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NONCE: ${{ steps.command.outputs.nonce }}
+        run: |
+          set -euo pipefail
+          body="$(printf '<!-- docich:paper-restore-request nonce=%s -->\n\nPAPER emergency restore requested by the owner.' "$NONCE")"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/569/comments" -f "body=$body" > /dev/null
+
+      - name: Select the oldest pending durable request
+        id: queue
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --jq '.[]' "repos/$GITHUB_REPOSITORY/issues/569/comments?per_page=100" > "$RUNNER_TEMP/paper-restore-comments-final.jsonl"
+          python3 control/ops/vm_actions/paper_restore_queue.py queue "$RUNNER_TEMP/paper-restore-comments-final.jsonl" >> "$GITHUB_OUTPUT"
+
+  restore:
+    needs: request
+    if: needs.request.outputs.needed == 'true'
+    uses: ./.github/workflows/paper-corner-emergency-restore.yml
+    with:
+      nonce: ${{ needs.request.outputs.nonce }}
+    secrets: inherit
