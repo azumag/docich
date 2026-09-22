@@ -61,6 +61,9 @@ class CornerRotationAuthorizeTests(unittest.TestCase):
             json.loads(rolled_back.stdout),
             {"operation": "rollback-timer", "target": "production", "ref": "main"},
         )
+        self.assertEqual(self.run_auth(INPUT_OPERATION="start-hanjuku").returncode, 0)
+        self.assertNotEqual(self.run_auth(INPUT_OPERATION="start-hanjuku",GITHUB_WORKFLOW_REF=LEGACY_REF).returncode, 0)
+        self.assertNotEqual(self.run_auth(INPUT_OPERATION="start-hanjuku;id").returncode, 0)
         for operation in ("status", "restart", "exec", "restart-service;id", "", "recover-failed;id", "rollback-timer;id"):
             with self.subTest(operation=operation):
                 self.assertNotEqual(self.run_auth(INPUT_OPERATION=operation).returncode, 0)
@@ -141,7 +144,7 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
     def test_workflow_is_fixed_and_never_exposes_arbitrary_command_input(self):
         text = WF.read_text(encoding="utf-8")
         for required in (
-            "options: [restart-service, recover-failed, rollback-timer]",
+            "options: [restart-service, recover-failed, rollback-timer, start-hanjuku]",
             "github.actor_id == 9018513",
             "github.triggering_actor == 'azumag'",
             "github.ref_protected == true",
@@ -151,6 +154,7 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
             "control/ops/vm_actions/restart_corner_rotation.sh",
             "control/ops/vm_actions/recover_corner_rotation.sh",
             "control/ops/vm_actions/rollback_corner_rotation_timer.sh",
+            "control/ops/vm_actions/start_hanjuku_corner.sh",
             "Recover only the failed corner rotation slot",
             "Restart only the corner rotation service",
             "Roll back only the corner rotation timer",
@@ -175,3 +179,59 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_hanjuku_operator_rejects_extra_arguments_before_any_launch():
+    script=ROOT/'ops/vm_actions/start_hanjuku_corner.sh'
+    result=subprocess.run(['bash',str(script),'arbitrary-command'],capture_output=True,text=True)
+    assert result.returncode==64
+    assert 'accepts no arguments' in result.stderr
+
+
+def test_hanjuku_start_reuses_common_reservation_without_overriding_policy(monkeypatch):
+    import sys
+    from dataclasses import replace
+    from unittest.mock import Mock
+    sys.path.insert(0,str(ROOT/'src'))
+    from docich import hanjuku_corner
+    from docich.config import load_global
+    from docich.retro_corner import load_retro_corner_config
+    config=load_global(ROOT,ROOT/'config/docich.soren-live.toml')
+    expected=replace(load_retro_corner_config(config),games=['hanjuku-hero'])
+    constructor=Mock()
+    monkeypatch.setattr(hanjuku_corner,'RetroCornerManager',constructor)
+    result=hanjuku_corner.start()
+    constructor.assert_called_once()
+    assert constructor.call_args.kwargs['config']==expected
+    assert result is constructor.return_value.start.return_value
+    constructor.return_value.start.assert_called_once_with()
+    constructor.return_value._start_direct.assert_not_called()
+
+
+def test_hanjuku_entry_rejects_unbounded_arguments_before_start(monkeypatch):
+    import sys
+    from unittest.mock import Mock
+    import pytest
+    sys.path.insert(0,str(ROOT/'src'))
+    from docich import hanjuku_corner
+    start=Mock()
+    monkeypatch.setattr(hanjuku_corner,'start',start)
+    with pytest.raises(SystemExit):hanjuku_corner.main(['--game','another-game'])
+    start.assert_not_called()
+
+
+def test_fixed_hanjuku_script_launches_only_owned_service(tmp_path):
+    import os
+    tool=tmp_path/'systemd-run'
+    tool.write_text('#!/usr/bin/env python3\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n')
+    tool.chmod(0o755)
+    result=subprocess.run(['bash',str(ROOT/'ops/vm_actions/start_hanjuku_corner.sh')],
+        env={**os.environ,'PATH':str(tmp_path)+os.pathsep+os.environ['PATH']},
+        capture_output=True,text=True)
+    assert result.returncode==0,result.stderr
+    args=json.loads(result.stdout.splitlines()[0])
+    assert '--unit=docich-hanjuku-corner' in args
+    assert '--collect' in args and '--property=Type=exec' in args
+    assert '--working-directory=/home/ubuntu/docich' in args
+    assert args[-2:]==['-m','docich.hanjuku_corner']
+    assert not any(x in args for x in ('restart','stop','kill','--shell'))
