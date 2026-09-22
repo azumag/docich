@@ -109,8 +109,10 @@ jobs:
         run: python3 -m pytest -q tests/test_soren_news_spam_improve_wait_hotfix.py
       - name: Soren NEWS spam queue-wait hotfix contract
         run: python3 -m pytest -q tests/test_soren_news_spam_queue_wait_hotfix.py
-      - name: Broadcast baseline contract
-        run: python3 -m pytest -q tests/test_broadcast_baseline.py tests/test_jev_direct_golden.py
+      - name: Broadcast and comment-classifier ownership contracts
+        run: |
+          python3 -m pytest -q tests/test_broadcast_baseline.py
+          python3 games/soviet_now/tests/test_comment_classifier_docich.py
       - name: Improvement command deployment contract
         run: python3 -m unittest discover -s tests -p test_improve_command_deploy.py
       - name: Analysis contract deployment scope
