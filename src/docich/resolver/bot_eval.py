@@ -19,7 +19,12 @@ from pathlib import Path
 
 
 def _tmux(args: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(["tmux", *args], capture_output=True, text=True)
+    # The headless evaluation only needs a terminfo entry that exists on the
+    # host. A caller's TERM (for example xterm-ghostty over SSH) is not
+    # installed everywhere and made tmux fail before the first pane existed.
+    env = dict(os.environ)
+    env["TERM"] = "xterm"
+    return subprocess.run(["tmux", *args], capture_output=True, text=True, env=env)
 
 
 def _run_bot_once(
@@ -335,7 +340,8 @@ def bot_preset(g, game: str) -> dict:
     if game not in presets:
         raise ValueError(f"bot preset がありません: {game} (対応: {sorted(presets)})")
     dimensions = {
-        "pacman4console": (80, 32),
+        # pacman4console は最小 29x32 (config/games/pacman4console.toml と同一)。
+        "pacman4console": (29, 32),
     }
     cols, rows = dimensions.get(game, (80, 24))
     return {

@@ -29,7 +29,28 @@ JEVは自動有効化されていない手動のplayer-policy試験であり、�
 `config/market-paper.toml`の株式/FXも現行設定では双方無効。これらの有効化は本変更に含めない。
 新adapterが必要な項目を未対応名でcatalogに追加した場合は起動時に拒否する。
 
-## 時間と重複排除
+## dispatch policy（`schedule_mode`）
+
+- `interval`（既定）: 目標間隔は常に86400/N秒。毎tickに実効Nを再評価する。N=0なら待機する。
+  遅延やcornerの長さによってN回/日を保証しない。取りこぼしは1回にまとめ、過去slotを連発しない。
+- `queue`: 間隔アンカーを使わず、共有スロットが空き次第、rolling cooldown外の候補を
+  決定論的順位（seed・slot・corner IDのSHA-256）で連続発火する。`next_due_at`は
+  「次に発火可能な時刻」の意味になり、候補が空のときだけ最も早いcooldown明けへ再アンカーする。
+  発火は常に1本ずつで、重複・並行起動はしない（pending・共通program slotは両modeで同じ）。
+- `cooldown_hours`（既定24）は同一cornerを再選択できるまでのrolling窓。小さいほど連続性が上がる。
+  どのmodeでも予約・実開始・終了・手動使用をcooldownへ数える。
+- queue modeの実効間隔は `max(cooldownが許す範囲, 直前cornerの所要時間 + 改善レーンの待ち)`。
+  24h cooldownを維持する場合、eligible N件を消化した後は最も早いcooldown明けまで待機する。
+- queue modeでは次のcornerは前の改善ジョブの終端を待たない（`resources_released`の
+  改善待ちを外す）。改善ジョブは `locks/corner-improve-lane.lock` の共有レーンで直列化し、
+  同時実行を1本に制限する。レーン待ちは1800秒で打ち切り、取得できない回は
+  `status=skipped` / `reason_code=lane-busy` をdurable recordに残す。corner本体と
+  次の発火は止めない。interval modeは従来どおり改善ジョブの終端を待つ。
+- 改善ジョブが共有stateの上書きと競合しないよう、retroのspawnは確定済みの
+  `started_at` / `ends_at` をepoch秒でjobへ明示する（`--started-at` / `--ends-at`）。
+  次コーナーが先にstateを書き換えても、jobは自分のコーナー期間だけを評価する。
+
+## 時間と重複排除（interval mode）
 
 - 目標間隔は常に86400/N秒。毎tickに実効Nを再評価する。N=0なら待機する。
 - 選択候補は有効cornerのうち、予約・実開始・終了・手動使用が直近24時間にないもの。
@@ -54,6 +75,53 @@ last_seen、pending、request UUID、結果をatomic writeする。
 選択をside effectより先に記録する。program境界やFIFO待ちではpendingを消さず、
 同じrequest UUIDを既存game-switch receiptへ再投入する。
 
+### latchとoperator復旧（`status=recovery_required`、#986）
+
+予約後の実行が例外で終了すると、ledgerは `status=recovery_required` /
+`reason=execution-or-state-unverified` / `error_kind=<固定enum>` とlatchされ、
+`tick()` は冒頭で即returnする。例外本文はstateに書かない（provider出力やcredentialを
+含み得るため）。latchは自動では解けないfail-closed契約で、次の自動開始も手動startも拒否する。
+
+復旧は固定operation `recover-failed`（`ops/vm_actions/recover_corner_rotation.sh`）だけ:
+
+1. `bin/docich --config ... corner-rotation recover` がlatchを解決する。
+   - adapter観測に同じrequestの**terminal**があれば、それを完了としてcommitする
+     （request identity・history・cooldownを保ち、**二重起動しない**）。
+     自動予約は `pending`、手動予約は `manual_pending` を同じ規則で解決し、
+     手動のcompletedだけ `manual-completion` の履歴行を足す。
+   - そのrequestが**一度も起動していない**自動予約なら、ledgerは `waiting`/`execution-pending`
+     のまま予約を保持して戻す。以降は通常の `tick()` がgame-switch phase・program slot・
+     cooldown・所有権を検証してから同じrequestで実行する。原因が残っていれば再度latch
+     され、`error_kind` が固定分類として残る。
+   - 自分のrequestが**実行中／corner側が要復旧**（列挙順に依存しない。1件でもbusyなら拒否）、
+     `pending` と `manual_pending` の同時存在、catalogから削除された予約、時計逆行は
+     拒否してlatchのまま（exit非0、unitには触れない）。
+   - **手動予約でterminal観測がまだない**（一度も起動していない）場合は、予約を消さずに
+     `waiting` / `manual-request-needs-resume-or-recovery` へ戻す。以降の `tick()` は
+     自動発火を止めて待ち、**同じ手動 start が同じrequestで再開**するか、当該cornerの
+     手動 stop/recover と game-switch receipt が終了を証明するまで保持する
+     （操作者のスロットを暗黙に捨てない。観測が有れば同じ規則でcommitする）。
+   - 時計の逆行は**どの分支より先に**拒否する（復旧が `last_seen_at` を過去へ書き換えない）。
+   - 成功時だけ `last_seen_at` を現在時刻へ進める（長期latch後の復旧で、次のtickが
+     長期停止の隔離（24時間）へ落ちないようにするため。cooldownは履歴だけが決める。
+     前方ジャンプを隔離で検知できるのはこの復旧操作を経由した場合だけ、という意図的な非対称）。
+2. 成功した場合だけ `systemctl --user --no-block restart` でreviewed unitを起動し、
+   直後のtickが同じrecorded gameを再試行する。**成否の契約は「試した」ではなく
+   「ledgerから `recovery_required` が消えた」こと**で、残存時と、ledgerが存在して読めない
+   場合はCLIが非0（exit 4）を返してunitを触れない（ロック競合・rotation無効時も同じ。
+   ledgerが存在しなければlatchは無いので0）。結果JSONには `latch_resolved` を含め、
+   ログを読む側はexit codeとこのフラグで判定する。
+
+`tick()` 自身はlatchを自動解除しない（毎分のtimerが自動再試行ループを作るため）。
+ledgerの手編集・`pending`の強制clear・state削除・seed再生成・時計調整は復旧手順ではない。
+`error_kind` は**初回のlatch時**の固定分類として、次にlatchし直すまでledgerと診断に残る。
+復旧操作が拒否された時に上書きしない（拒否理由より元原因の分類を残す）。
+診断は `corners.corner_rotation` に `error_kind` と `pending_corner` / `pending_phase` /
+`pending_age_sec` / `pending_owner` / `pending_owner_status` を固定投影し（予約が在る限り、
+latch中かどうかを問わず出す）、latch自体を総合 `warn` としてruntime health alertへ届ける。
+復旧後の `tick()` のcooldown再検証は `phase=="selected"` の予約だけで、
+`dispatched` の復元はdispatch時の履歴行がcooldownを担保する。
+
 起動済みcornerは無効化後も安全な終了・復帰を継続する。まだ起動していない予約が無効化
 された場合は予約を保持して待機する。pending対象のcatalog削除は要復旧。
 各managerのstateには`rotation_request_id`と`rotation_runtime_id`を記録する。
@@ -72,9 +140,13 @@ PAPERの専用stateは`game=null`の旧手動記録も観測する。canonical�
 共通encoder/audio/通知/statusの停止・再起動経路は追加しない。
 
 終了後の独立改善ジョブは既存の実行方式を維持し、次のcornerはlock解放とその実行以後の
-正常な終了記録を待つ。retroは`corner_improve_<game>.json`、PAPERは既存
-`trading/paper_improve_status.json`。失敗、SIGKILL後のrunning、終了記録欠落、所有権不明を
-停止済み扱いにしない。安全なPID所有権証明なしにkillする代替経路は設けない。
+終了記録を待つ。retroは`corner_improve_<game>.json`、PAPERは既存
+`trading/paper_improve_status.json`。改善ジョブは開始時に`running`を書き、終了時に
+terminal記録を書いてからlockを離す。`failed`は、corner完了以後の`started_at`と
+`started_at`以後の有限な`completed_at`、解放済みlockを確認できる場合に限り、
+この実行のterminalとして次の開始を許可する。記録は削除・上書きせず診断に残す。
+SIGKILL後のrunning、終了記録欠落、corner完了より古い`started_at`、`completed_at`の欠落・逆行、
+`recovery_required`、所有権不明を停止済み扱いにしない。安全なPID所有権証明なしにkillする代替経路は設けない。
 
 手動startも共通lock/program slotを通し、同じrolling cooldownに使用を記録する。
 独立manual stateと既存のduration等は維持する。自動pendingがあれば手動startを拒否する。
@@ -87,9 +159,17 @@ receiptを照合して復旧するまで次の自動枠を待たせる。暗黙�
 `corner_rotation.enabled=true`のとき、旧retro/PAPER/メリケン/専用NetHackのtickは
 共通tickへ委譲する。旧profileはそのままlegacy動作を維持する。
 productionのretroゲーム一覧はcatalogから導出し、二重のリストを編集しない。
-既存`docich-retro-corner.timer/service`は互換unit名を維持し、serviceが
-`corner-rotation tick`を実行する。旧timerが複数残っても単一lock/stateを共有する。
-`bin/docich`は全corner入口を既存trading Python環境で実行可能にする。
+canonical unitは`docich-corner-rotation.service/timer`で、serviceが
+`corner-rotation tick`を実行する。移行期間は`docich-retro-corner.service/timer`が
+canonical名へのrelative aliasになり、旧名と新名を独立timerとして二重enableしない。
+移行は`ops/vm_actions/corner_rotation_timer_migration_epoch`をreview済みで追加した
+deployだけが実行し、旧timerのstop/disable後でなければ切り替えない。旧serviceが
+activeならkillせず中断する。review済み内容と一致しない旧unitは上書きしない。
+rollbackはcanonical operator workflowの固定operation `rollback-timer`（またはowner-only `exec`）が
+`ops/vm_actions/rollback_corner_rotation_timer.sh`を実行し、新timerを停止して
+旧regular unitを復元する。state、lock、pause marker、game-switch receiptは
+移行・rollbackで変更しない。`bin/docich`は全corner入口を既存trading Python環境で
+実行可能にする。
 
 初回移行はretroの選択履歴とnext_dueを取り込む。legacy active/starting/pendingがあれば
 先に旧実行の終了・復旧を要求する。壊れたJSONや未知schemaは空stateとして再作成しない。
@@ -99,11 +179,13 @@ productionのretroゲーム一覧はcatalogから導出し、二重のリスト�
 ## 診断とローカル検証の引継ぎ
 
 新しい常駐worker/外部queueは追加しない。既存timerとgame-switch FIFOを使用する。
-`docich-retro-corner.timer`はdeploy時にreview済みunitを再配置してenableし、enable直後/boot後の
-30秒tickと60秒間隔のmonotonic tickを持つ。read-only diagnosticsは`corners.corner_rotation`に
+`docich-corner-rotation.timer`はdeploy時にreview済みunitを再配置してenableし、enable直後/boot後の
+30秒tickと60秒間隔のmonotonic tickを持つ。移行前の`docich-retro-corner.timer`は
+同じunitへのaliasとして解決される。read-only diagnosticsは`corners.corner_rotation`に
 状態、待機理由、slot、next_due、last_seen、last_slot、interval、適格数、pending有無を固定投影し、
-`corner_rotation_timer`にそのunitのactive/enabledだけを投影する。seed、prompt、生成文、adapter例外は
-公開しない。
+`corner_rotation_timer`に支配的なunit名（移行後は`docich-corner-rotation.timer`）と
+active/enabled、旧名が正しいaliasかを示すbounded boolean `legacy_alias`だけを投影する。
+seed、prompt、生成文、adapter例外は公開しない。
 各cornerの固定投影には実行stateの`target_matches`（有効な整数1〜100のみ）も含める。
 
 本変更の実装・テストは専用worktreeで行う。本番受入はPR/required CI/protected main/
@@ -119,6 +201,20 @@ canonical VM deploy後に、timer active/enabled、待機理由、game-switch/FI
 5. 24時間以上の観測で実開始履歴・cooldown・休止/再有効化・時計異常・手動復旧を確認する。
 
 ローカルのmockテスト成功は、これらruntime/E2Eや配信品質の成功を意味しない。
+
+### 終了後改善ジョブの投入環境（#947）
+
+終了後改善ジョブは tick の `KillMode=control-group` から逃がすため `systemd-run --user` の
+transient unit として投入する。このクライアントは user manager の bus を `XDG_RUNTIME_DIR`
+（または `DBUS_SESSION_BUS_ADDRESS`）から解決するが、timer 起動の user service は
+`XDG_RUNTIME_DIR` を継承しないことがある。どの unit が tick を実行しても同じように動くよう、
+spawn 側（`docich.procs.user_bus_env`）が `XDG_RUNTIME_DIR` 未設定時に `/run/user/<uid>` を
+既定化し、bus socket が存在する場合だけ `DBUS_SESSION_BUS_ADDRESS` を補う。unit テンプレートの
+`Environment=XDG_RUNTIME_DIR=%t` は二重の防御であり、これを唯一の根拠にしない。
+
+投入失敗時は親 cgroup へフォールバックしない。`retro` / `paper` は systemd-run の rc と stderr を
+bounded な durable record（`improve_job.error`）に残し、`corners.*.improve_job` として
+read-only diagnostics に投影される。
 
 ### 2026-09-21 ローカル検証結果
 
@@ -170,3 +266,68 @@ canonical VM deploy後に、timer active/enabled、待機理由、game-switch/FI
 - `tests/test_retro_corner.py`
 - `docs/retro-rolling-rotation.md`
 - `docs/operations/runtime-diagnostics.md`
+
+### 2026-09-22 名称移行 第1段階（docich-retro-corner → docich-corner-rotation）
+
+- 目的: 実態が全corner共通rotationである旧unit名をcanonical名へ段階移行する。
+  第1段階は互換準備（実装・テスト・自己レビューと互換deploy）まで。
+  production timerの切替（旧timerのstop/alias化）は
+  `corner_rotation_timer_migration_epoch`を追加する後続段階で行う。
+- 基点: `origin/main = b5e98bc147905eed360b5cf53db7cb502fccd0b6`（#907の
+  `corners.rotation_evidence`と#909の改善復旧修正を含む最新main。固定キーは
+  維持したまま共存させている）。
+- 追加: `scripts/systemd/docich-corner-rotation.service/timer`、
+  `ops/vm_actions/migrate_corner_rotation_timer.sh`、
+  `ops/vm_actions/rollback_corner_rotation_timer.sh`、
+  `ops/vm_actions/authorize_corner_rotation.py`、
+  `ops/vm_actions/restart_corner_rotation.sh`、
+  `ops/vm_actions/recover_corner_rotation.sh`、
+  `.github/workflows/corner-rotation-operator.yml`。
+- 移行は`ops/vm_actions/corner_rotation_timer_migration_epoch`をreview済みで追加した
+  deployだけがdeploy hook経由で実行する（第1段階では未追加。hookは旧timerのみを維持）。
+- 検証: 最低限回帰 401 passed / 1 skipped / 92 subtests passed（17.16秒）。
+  migration/rollback実行テスト21件（fake systemctl、state/lock/pause/receipt不変、
+  二重timerなし、active service中断、disable中のtick復元、drift拒否、冪等、
+  alias上書き拒否を含む）。関連広域 1961 passed / 223 subtests passed。1 failedは
+  サブモジュール未初期化の環境依存で、未変更ベースでも同一。`systemd-analyze verify`は
+  macOSで未利用のためskip（Linux CIで実行される）。
+- 本段階のdeployでは旧timerを維持し、canonical unitはVMへ配置しない。実機での
+  canonical切替（epoch追加後の後続段階）と24時間観測は未実施。
+
+### 2026-09-22 名称移行 第2段階（canonical timer 切替・実測）
+
+- PR #919でepoch `ops/vm_actions/corner_rotation_timer_migration_epoch` を追加し、
+  merge後のpush deployでdeploy hook経由のmigrationを実行した。
+- 基点/結果: main `f941164f1f18cea66e7e479c23b2c351d7c166c7`。VM operations run
+  `35674462543`（deploy `uploaded`→`deployed`→`executed`、`Ensure corner rotation timer`
+  success、radio worker再起動なし＝restart marker 0件）。
+- 移行前 diagnostics（run `35674191799`）:
+  - `corner_rotation_timer = {unit: "docich-retro-corner.timer", active: true, enabled: true, legacy_alias: false}`
+  - `corner_rotation = {slot: 2, last_slot_at: 1790037296.195363, next_due_at: 1790048096.195363,
+    eligible_count: 8, interval_seconds: 10800, pending: false, status: "waiting", reason: "not-due"}`
+- 移行後 diagnostics（run `35674493731`）:
+  - `corner_rotation_timer = {unit: "docich-corner-rotation.timer", active: true, enabled: true, legacy_alias: true}`
+  - `corner_rotation` は slot / last_slot_at / next_due_at / eligible_count / interval_seconds /
+    pending が移行前と同一。`last_seen_at` のみ毎分更新（timerが継続tickしている証跡）。
+  - 総合 status ok、`tracked_drift.drift_detected=0` / `scan_complete=1`、workers 16 running、
+    `required_down` / `required_stale` 空、`stale_locks=0`、`game_switch` は `ready`/`sorengame` のまま。
+- `status` operation（run `35674552301`）: `configured` at `f941164f`。
+- 旧timerのstop/disableとcanonical timerのenableのみで、共有配信・FFmpeg・音声・通知・
+  `docich.service` の再起動は行っていない。state / lock / pause marker / game-switch receiptも
+  変更していない（上記のstate一致）。
+- 未実施: rollback操作の実機試験（rollback helperはowner-only `exec`で実行可能。固定operationへの
+  配線は後続）、24時間観測、受入ゲート1〜5の残り。epochはmainに残っているため、rollbackを
+  恒久化する場合はepochをrevertするPRが必要。
+
+### 2026-09-22 名称移行 第3段階（rollback operation配線）
+
+- canonical operator workflow `.github/workflows/corner-rotation-operator.yml` に固定operation
+  `rollback-timer` を追加し、`ops/vm_actions/authorize_corner_rotation.py` の許可operationへ加えた。
+  owner / actor ID / protected main / current-main一致 / production確認 / 新旧workflow path完全一致の
+  既存契約は不変。legacy workflow（`retro-corner-operator.yml`）にはoperationを追加しない。
+- rollbackはcanonical serviceがactiveならkillせず中断し（exit 33）、state / lock / pause marker /
+  game-switch receiptを変更せず、共有配信・FFmpeg・音声・通知・`docich.service`をrestartしない。
+- epochはmainに残っているため、rollback後も次のdeployで再migrationされる。恒久rollbackは
+  epochのrevert PRが必要。
+- 実機rollbackは未実施。受入は固定operationのreview/CIと、配線後のdeployでcanonical維持が
+  継続することまで。

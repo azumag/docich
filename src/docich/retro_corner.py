@@ -33,6 +33,7 @@ from .game_switch import (
     new_request_id,
 )
 from .naming import NameValidationError, validate_game_name
+from .procs import user_bus_env
 from .trading.soren_output import enqueue_chat
 
 STATE_SCHEMA_VERSION = 1
@@ -471,6 +472,10 @@ class RetroCornerManager:
 
         投稿失敗はコーナー自体を失敗させない。結果は state に記録する。
         """
+        if self._scripted_hanjuku(state):
+            state['ends_at'] = None
+            state['target_matches'] = 1
+            state['end_condition'] = 'game_over_or_screen_stalled'
         if state.get("announced"):
             return
         game = state.get("game")
@@ -790,6 +795,9 @@ class RetroCornerManager:
             # 子を同じ cgroup で起動すると tick 終了時に改善も殺される。
             # 改善とそのAI子プロセスを独立した bounded user service に投入し、
             # 投入失敗時は親cgroupへ安全にフォールバックしない。
+            # systemd-run --user は user manager の bus を XDG_RUNTIME_DIR から
+            # 解決するため、timer 起動の unit 環境に依存せず spawn 側で既定化する
+            # (#947: Failed to connect to bus: No medium found)。
             import uuid
 
             repo_root = getattr(self.g, "repo_root", _repo_root())
@@ -797,7 +805,9 @@ class RetroCornerManager:
                 "systemd-run", "--user", "--quiet", "--collect",
                 f"--unit=docich-retro-improve-{uuid.uuid4().hex}",
                 "--property=Type=exec",
-                "--property=RuntimeMaxSec=1500",
+                # Bounded wait on the cross-corner improve lane (1800s) plus
+                # the job's own work budget.
+                "--property=RuntimeMaxSec=3600",
                 "--property=TimeoutStopSec=30",
                 "--property=UMask=0077",
                 f"--working-directory={repo_root}",
@@ -808,14 +818,33 @@ class RetroCornerManager:
             ]
             if env.get("PATH"):
                 command.append(f"--setenv=PATH={env['PATH']}")
-            subprocess.run(
-                [*command, "--", *argv],
-                check=True,
-                timeout=30,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+            try:
+                submitted = subprocess.run(
+                    [*command, "--", *argv],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    stdin=subprocess.DEVNULL,
+                    env=user_bus_env(),
+                )
+            except subprocess.TimeoutExpired as exc:
+                raw = exc.stderr
+                if isinstance(raw, bytes):
+                    raw = raw.decode("utf-8", "replace")
+                detail = _safe_detail((raw or "").strip())
+                raise RetroCornerError(
+                    "改善ジョブの起動がタイムアウトしました (systemd-run 30s)"
+                    + (f": {detail}" if detail else "")
+                ) from exc
+            if submitted.returncode != 0:
+                # The operator needs the exit status and systemd's own message;
+                # the full argv only pushed them past the 240-char durable limit.
+                detail = _safe_detail((submitted.stderr or "").strip())
+                raise RetroCornerError(
+                    f"改善ジョブの起動に失敗しました (rc={submitted.returncode})"
+                    + (f": {detail}" if detail else "")
+                )
             return
         with open(log_path, "ab") as log_fh:
             subprocess.Popen(
@@ -828,8 +857,25 @@ class RetroCornerManager:
                 env=env,
             )
 
+    @staticmethod
+    def _spawn_window_args(state: dict[str, object]) -> list[str]:
+        """確定したコーナー期間のepoch秒引数 (不正なら空でstate読みへ戻す)。"""
+        values = []
+        for key in ("started_at", "ends_at"):
+            raw = state.get(key)
+            if not isinstance(raw, str) or not raw:
+                return []
+            try:
+                values.append(dt.datetime.fromisoformat(raw).timestamp())
+            except (ValueError, TypeError, OverflowError, OSError):
+                return []
+        return ["--started-at", f"{values[0]:.6f}", "--ends-at", f"{values[1]:.6f}"]
+
     def _spawn_improve_once(self, state: dict[str, object]) -> None:
         """終了時改善ジョブを切り離して起動する。失敗しても finish を壊さない。"""
+        if state.get('game') == 'hanjuku-hero':
+            state['improve_job'] = {'spawned': False, 'reason': 'hanjuku-improvement-deferred'}
+            return
         if state.get("game") == "nethack":
             state["improve_job"] = {
                 "spawned": False,
@@ -855,6 +901,9 @@ class RetroCornerManager:
         game = state.get("game")
         if isinstance(game, str) and game:
             argv += ["--game", game]
+        # queue dispatchでは次コーナーが共有stateを上書きし得るため、確定済みの
+        # コーナー期間も明示して競合させる (job側のstate読みを不要にする)。
+        argv += self._spawn_window_args(state)
         try:
             self._spawn(argv, log_path)
             state["improve_job"] = {"spawned": True, "date": date_str, "log": str(log_path)}
@@ -870,6 +919,7 @@ class RetroCornerManager:
         margin_pct: float | None = None,
         dry_run: bool = False,
         game: str | None = None,
+        window: tuple[float, float] | None = None,
     ) -> dict:
         from .corner_improve import run_corner_improve
 
@@ -902,6 +952,7 @@ class RetroCornerManager:
             matches=matches,
             margin_pct=float(margin_pct),
             dry_run=dry_run,
+            window=window,
         )
 
     def _finish_locked(self, state: dict[str, object], completed_at: dt.datetime) -> CornerResult:
@@ -1013,6 +1064,8 @@ class RetroCornerManager:
     def _reconcile_stale_locked(self, now: dt.datetime) -> None:
         state = self._read_state()
         if state.get("status") != "active":
+            return
+        if self._scripted_hanjuku(state):
             return
         ends_at = self._parse_ends_at(state)
         if ends_at is None or now >= ends_at:
@@ -1268,6 +1321,8 @@ class RetroCornerManager:
         return result
 
     def _wait_and_finish(self, state: dict[str, object]) -> CornerResult:
+        if self._scripted_hanjuku(state):
+            return self._wait_hanjuku(state)
         ends_at = self._parse_ends_at(state)
         if ends_at is None:
             raise RetroCornerError("retro corner ends_atが不正です")
@@ -1320,6 +1375,69 @@ class RetroCornerManager:
                             agent_repair_failed = False
                     if self._target_reached(latest):
                         return self._finish_locked(latest, self._local_now())
+
+    def _scripted_hanjuku(self, state):
+        if state.get('game') != 'hanjuku-hero':
+            return False
+        from .hanjuku_run import enabled
+        return enabled(load_game(self.g, 'hanjuku-hero'))
+
+    def _wait_hanjuku(self, state):
+        """No fixed session deadline: observe until game-over or 300s stasis."""
+        from .adapters import make_adapter
+        from .agent.fence import AgentFence, shared_section
+        from .game_switch import DeadlineExceededError, GameSwitchBusyError
+        from .hanjuku_run import event
+        from .naming import runtime_directory
+        next_repair = 0.
+        owned_runtime = state.get('bot_runtime_id')
+        while True:
+            stopped = self._rotation_stop_result()
+            if stopped is not None:
+                return stopped
+            canonical, _missing = self.store.canonical.load()
+            active = canonical.get('active') or {}
+            if active.get('game') != 'hanjuku-hero':
+                with self._locked():
+                    return self._finish_locked(self._read_state(), self._local_now())
+            if owned_runtime is not None and active.get('runtime_id') != owned_runtime:
+                raise RetroCornerError('Hanjuku runtime changed during the corner')
+            owned_runtime = active.get('runtime_id')
+            fence = AgentFence(game=active['game'], runtime_id=active['runtime_id'],
+                               generation=active['generation'], lease_id=active['lease_id'])
+            adapter = make_adapter(self.g, load_game(self.g, 'hanjuku-hero'), fence=fence)
+            try:
+                observation = shared_section(self.g.state_dir, adapter.observe)
+            except (DeadlineExceededError, GameSwitchBusyError):
+                # Audio/menu maintenance can temporarily own the input gate.
+                # A missing observation is not an ending or unchanged frame.
+                # Recheck stop requests and canonical ownership on every retry.
+                event(runtime_directory(self.g.state_dir, owned_runtime), {
+                    'event': 'observation_retry', 'at': time.time(),
+                    'reason': 'input_or_switch_busy',
+                })
+                self._sleep(2.)
+                continue
+            run = observation.meta.get('hanjuku') or {}
+            with self._locked():
+                latest = self._read_state()
+                if latest.get('status') != 'active':
+                    return self._state_result(latest)
+                latest['ends_at'] = None
+                latest['end_reason'] = run.get('terminal_reason')
+                latest['bot_phase'] = run.get('phase')
+                latest['bot_actions_sent'] = run.get('actions_sent', 0)
+                latest['battles_started'] = run.get('battles_started', 0)
+                latest['battles_finished'] = run.get('battles_finished', 0)
+                latest['screen_unchanged_seconds'] = run.get('unchanged_seconds', 0)
+                latest['bot_runtime_id'] = active['runtime_id']
+                self._write_state(latest)
+                if run.get('terminal_reason') in {'game_over', 'screen_stalled'}:
+                    return self._finish_locked(latest, self._local_now())
+                if time.monotonic() >= next_repair:
+                    self._repair_active_agent(latest)
+                    next_repair = time.monotonic() + AGENT_REPAIR_POLL_SECONDS
+            self._sleep(2.)
 
     def _retry_restoring_tick(self, now: dt.datetime) -> CornerResult | None:
         """Retry a queued corner restore before considering a new slot."""
@@ -2274,6 +2392,10 @@ def _build_parser() -> argparse.ArgumentParser:
     once = sub.add_parser("improve-once")
     once.add_argument("--date", required=True, help="対象コーナー日 (YYYY-MM-DD)")
     once.add_argument("--game", default=None, help="終了したコーナーのゲーム (既定は日付から選択)")
+    once.add_argument("--started-at", type=float, default=None,
+                      help="確定済みコーナー開始 epoch秒 (queue dispatch用)")
+    once.add_argument("--ends-at", type=float, default=None,
+                      help="確定済みコーナー終了予定 epoch秒")
     once.add_argument("--agents", default=None, help="LLM委任先 (既定は設定値)")
     once.add_argument("--matches", type=int, default=None)
     once.add_argument("--margin-pct", type=float, default=None)
@@ -2300,11 +2422,17 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "improve-once":
             from .corner_improve import CornerImproveError
+            started_at = getattr(args, "started_at", None)
+            ends_at = getattr(args, "ends_at", None)
+            if (started_at is None) != (ends_at is None):
+                raise RetroCornerError("--started-at と --ends-at は同時に指定してください")
+            window = (started_at, ends_at) if started_at is not None else None
             try:
                 summary = manager.improve_once(
                     args.date, agents=args.agents, matches=args.matches,
                     margin_pct=args.margin_pct, dry_run=args.dry_run,
                     game=getattr(args, "game", None),
+                    window=window,
                 )
             except CornerImproveError as exc:
                 print(f"docich: エラー: {exc}", file=sys.stderr)

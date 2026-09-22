@@ -844,6 +844,50 @@ class TestSoren91CornerAgentSupervision(Soren91CornerTestBase):
         with self.assertRaises(Soren91CornerError):
             self.manager(["sorengame"], agent_liveness_strikes=0)
 
+    def test_default_liveness_cadence_ends_a_dead_bot_within_two_polls(self):
+        # The production default must stay short: the broadcast keeps showing
+        # the last captured frame until the corner ends (docich #464 /
+        # soviet_now #486, measured 2026-09-22). Two misses 10s apart are
+        # conclusive because main.pid is written once at bot startup and only
+        # removed by the bot's own cleanup.
+        clock = [self.now_value]
+
+        def sleep(seconds):
+            clock[0] = clock[0] + timedelta(seconds=seconds)
+
+        mgr, _coordinator = self.manager(
+            ["sorengame"],
+            now=lambda: clock[0],
+            sleep=sleep,
+            agent_alive_probe=lambda: False,
+        )
+        self.assertEqual(mgr._agent_liveness_poll_s, 10.0)
+        self.assertEqual(mgr._agent_liveness_strikes, 2)
+        result = mgr.start()
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(mgr.status().get("early_end_reason"), "soren91-agent-not-alive")
+        self.assertEqual(clock[0] - self.now_value, timedelta(seconds=20))
+
+
+
+class TestSoren91RotationTargetValidation(Soren91CornerTestBase):
+    """Same target-override contract as the NetHack corner (#986)."""
+
+    def test_accepts_the_rotation_target_override(self):
+        mgr, _ = self.manager([None])
+        mgr._validate_games(["soren91"])
+
+    def test_rejects_any_other_target(self):
+        mgr, _ = self.manager([None])
+        for names in (["ninvaders"], [], ["other", "soren91-manual"]):
+            with self.subTest(names=names):
+                with self.assertRaises(RetroCornerError):
+                    mgr._validate_games(names)
+
+    def test_default_call_still_validates_the_owned_game(self):
+        mgr, _ = self.manager([None])
+        mgr._validate_games()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -94,16 +94,16 @@ def test_cli_passes_the_game_name_and_uses_the_preset_cadence(monkeypatch, tmp_p
     assert params["interval_s"].default == 0.7 and params["max_turns"].default == 3000
 
 
-@pytest.mark.parametrize("game,rows", [
-    ("nsnake", 24),
-    ("ninvaders", 24),
-    ("bastet", 24),
-    ("moon-buggy", 24),
-    ("pacman4console", 32),
+@pytest.mark.parametrize("game,cols,rows", [
+    ("nsnake", 80, 24),
+    ("ninvaders", 80, 24),
+    ("bastet", 80, 24),
+    ("moon-buggy", 80, 24),
+    ("pacman4console", 29, 32),
 ])
-def test_every_live_command_brain_has_a_bounded_preset(game, rows):
+def test_every_live_command_brain_has_a_bounded_preset(game, cols, rows):
     preset = bot_eval.bot_preset(None, game)
-    assert preset["cols"] == 80
+    assert preset["cols"] == cols
     assert preset["rows"] == rows
     assert preset["bot_cmd"][-1].endswith(f"brains/{game}/brain.py")
     assert "game_over_res" in preset["run_kwargs"]
@@ -131,6 +131,23 @@ elif sys.argv[1] == "send-keys":
     bot = tmp_path / "bot.py"
     bot.write_text('import json, sys\nsys.stdin.read()\nprint(json.dumps({"actions": []}))\n')
     return {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "FAKE_ROOT": str(tmp_path)}, bot
+
+
+def test_tmux_calls_use_a_host_portable_term(monkeypatch):
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setenv("TERM", "xterm-ghostty")
+    monkeypatch.setattr(bot_eval.subprocess, "run", fake_run)
+    bot_eval._tmux(["list-sessions"])
+    assert calls[0][0] == ["tmux", "list-sessions"]
+    # A missing xterm-ghostty terminfo entry made the evaluation session fail
+    # before the first pane existed; the evaluation must not depend on the
+    # caller's terminal database.
+    assert calls[0][1]["env"]["TERM"] == "xterm"
 
 
 def test_run_bot_matches_finishes_a_ninvaders_match_when_the_title_returns(tmp_path, monkeypatch):

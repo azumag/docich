@@ -33,6 +33,10 @@ def test_rotation_projection_never_emits_seed_or_request_text(tmp_path):
     assert projection["slot"] == 3
     assert projection["pending"] is True
     assert projection["eligible_count"] == 2
+    # The configured dispatch policy is projected; the production profile runs
+    # the continuous queue with a 24h rolling cooldown (#948 follow-up).
+    assert projection["schedule_mode"] == "queue"
+    assert projection["cooldown_seconds"] == 86400.0
     assert "DO-NOT-PUBLISH" not in json.dumps(output)
 
 
@@ -52,6 +56,109 @@ def test_corner_match_target_projection_is_bounded_and_does_not_change_n(tmp_pat
         assert output["corner_rotation"]["eligible_count"] == 2
         assert output["corner_rotation"]["interval_seconds"] == 43200
         assert "SECRET" not in json.dumps(output)
+
+
+def test_hanjuku_telemetry_is_enum_only_and_never_publishes_frames_or_state():
+    module=load_collector()
+    state={'game':'hanjuku-hero','end_reason':'screen_stalled','bot_phase':'battle',
+           'bot_actions_sent':17,'battles_started':2,'battles_finished':1,
+           'screen_unchanged_seconds':300,'frame':'SECRET-FRAME','prompt':'SECRET-PROMPT'}
+    output=module._project_corner_state(state)
+    assert output['end_reason']=='screen_stalled'
+    assert output['bot_phase']=='battle' and output['bot_actions_sent']==17
+    assert output['battles_finished']==1
+    assert 'SECRET' not in json.dumps(output)
+    state.update(end_reason='SECRET-OUTCOME',bot_phase='SECRET-PHASE',bot_actions_sent='SECRET-COUNT',screen_unchanged_seconds=float('nan'))
+    output=module._project_corner_state(state)
+    assert output['end_reason'] is None and output['bot_phase'] is None
+    assert output['bot_actions_sent'] is None and output['screen_unchanged_seconds'] is None
+
+
+def _synthetic_environ(pairs):
+    return b'\x00'.join([f'{k}={v}'.encode() for k, v in pairs.items()] + [b''])
+
+
+def test_semantic_decision_absent_worker_reports_present_false():
+    module = load_collector()
+    assert module._collect_semantic_decision({'details': {}}) == {'present': False, 'readable': False}
+    dead = {'details': {'chat_worker': {'pid': 4242, 'alive': False}}}
+    assert module._collect_semantic_decision(dead) == {'present': False, 'readable': False}
+
+
+def test_semantic_decision_unreadable_environ_reports_present_true_readable_false():
+    module = load_collector()
+    workers = {'details': {'chat_worker': {'pid': 4242, 'alive': True}}}
+    with mock.patch.object(module.Path, 'read_bytes', side_effect=FileNotFoundError):
+        assert module._collect_semantic_decision(workers) == {'present': True, 'readable': False}
+
+
+def test_semantic_decision_reads_only_the_fixed_allowlist_and_hides_credential_values():
+    module = load_collector()
+    workers = {'details': {'chat_worker': {'pid': 4242, 'alive': True}}}
+    environ = _synthetic_environ({
+        'PATH': '/usr/bin',
+        'DOCICH_SEMANTIC_BACKEND': 'jev',
+        'DOCICH_JEV_ROUTE': 'vercel',
+        'DOCICH_JEV_VERCEL_API_KEY': 'SYNTHETIC_VERCEL_SECRET',
+        'COMMENT_CLASSIFIER_BACKEND': 'jev',
+        'UNRELATED_OTHER_SECRET': 'SHOULD_NEVER_APPEAR',
+    })
+    with mock.patch.object(module.Path, 'read_bytes', return_value=environ):
+        result = module._collect_semantic_decision(workers)
+    assert result == {'present': True, 'readable': True, 'comment_classifier_backend': 'jev',
+                      'backend': 'jev', 'route': 'vercel',
+                      'requested_model': 'typesafe-ai/jev', 'credential': 'present'}
+    assert 'SYNTHETIC_VERCEL_SECRET' not in json.dumps(result)
+    assert 'SHOULD_NEVER_APPEAR' not in json.dumps(result)
+
+
+def test_semantic_decision_direct_route_credential_absent_and_unflagged_backend():
+    module = load_collector()
+    workers = {'details': {'chat_worker': {'pid': 4242, 'alive': True}}}
+    with mock.patch.object(module.Path, 'read_bytes',
+                           return_value=_synthetic_environ({'DOCICH_SEMANTIC_BACKEND': 'jev'})):
+        result = module._collect_semantic_decision(workers)
+    assert result == {'present': True, 'readable': True, 'comment_classifier_backend': None,
+                      'backend': 'jev', 'route': 'direct',
+                      'requested_model': 'jev-1.13.0', 'credential': 'absent'}
+    with mock.patch.object(module.Path, 'read_bytes',
+                           return_value=_synthetic_environ({'TYPESAFE_API_KEY': 'unrelated-not-delegating'})):
+        result = module._collect_semantic_decision(workers)
+    assert result == {'present': True, 'readable': True, 'comment_classifier_backend': None,
+                      'backend': 'legacy', 'route': None,
+                      'requested_model': None, 'credential': 'not_applicable'}
+
+
+def test_semantic_decision_reports_comment_classifier_backend_prerequisite_gate():
+    # This is the #678 prerequisite: soviet_now's shell wrapper never even
+    # invokes the classifier (and so never consults DOCICH_SEMANTIC_BACKEND)
+    # unless this is exactly "jev". Reporting it lets an operator tell "jev
+    # delegation configured but inert" apart from "actually reachable".
+    module = load_collector()
+    workers = {'details': {'chat_worker': {'pid': 4242, 'alive': True}}}
+    with mock.patch.object(module.Path, 'read_bytes',
+                           return_value=_synthetic_environ({'COMMENT_CLASSIFIER_BACKEND': 'jev'})):
+        result = module._collect_semantic_decision(workers)
+    assert result['comment_classifier_backend'] == 'jev'
+
+    with mock.patch.object(module.Path, 'read_bytes',
+                           return_value=_synthetic_environ({'COMMENT_CLASSIFIER_BACKEND': ''})):
+        result = module._collect_semantic_decision(workers)
+    assert result['comment_classifier_backend'] is None
+
+    with mock.patch.object(module.Path, 'read_bytes', return_value=_synthetic_environ({})):
+        result = module._collect_semantic_decision(workers)
+    assert result['comment_classifier_backend'] is None
+
+
+def test_semantic_decision_comment_classifier_backend_is_length_capped():
+    module = load_collector()
+    workers = {'details': {'chat_worker': {'pid': 4242, 'alive': True}}}
+    huge = 'x' * 5000
+    with mock.patch.object(module.Path, 'read_bytes',
+                           return_value=_synthetic_environ({'COMMENT_CLASSIFIER_BACKEND': huge})):
+        result = module._collect_semantic_decision(workers)
+    assert result['comment_classifier_backend'] == 'x' * module.COMMENT_CLASSIFIER_BACKEND_STR_MAX
 
 
 class CollectorFixture(unittest.TestCase):
@@ -748,6 +855,175 @@ class NethackPaneTests(unittest.TestCase):
         self.assertIn("docich-game-g9:agent-g9", targets)
         self.assertEqual(entry["game"], ["Shall I pick a character? [yn]"])
         self.assertIn("nethack", entry["windows"])
+
+
+class RotationTimerUnitProjectionTests(unittest.TestCase):
+    """The corner_rotation_timer projection follows the reviewed unit rename."""
+
+    def setUp(self):
+        self.module = load_collector()
+        self.tmp = tempfile.TemporaryDirectory(prefix="vmops-rotation-unit-")
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+        self.prod = self.base / "docich"
+        self.prod.mkdir()
+        self.unit_dir = self.base / ".config" / "systemd" / "user"
+        self.unit_dir.mkdir(parents=True)
+        self.soren = self.base / "soren"
+        (self.soren / "tmp" / "state").mkdir(parents=True)
+
+    def test_pre_migration_reports_the_legacy_unit_without_an_alias(self):
+        (self.unit_dir / "docich-retro-corner.timer").write_text("[Timer]\n")
+        with mock.patch.object(self.module, "PROD_ROOT", self.prod):
+            unit, legacy_alias = self.module._rotation_timer_selection()
+        self.assertEqual(unit, "docich-retro-corner.timer")
+        self.assertIs(legacy_alias, False)
+
+    def test_post_migration_reports_the_canonical_unit_and_alias(self):
+        (self.unit_dir / "docich-corner-rotation.timer").write_text("[Timer]\n")
+        (self.unit_dir / "docich-retro-corner.timer").symlink_to(
+            "docich-corner-rotation.timer"
+        )
+        with mock.patch.object(self.module, "PROD_ROOT", self.prod):
+            unit, legacy_alias = self.module._rotation_timer_selection()
+        self.assertEqual(unit, "docich-corner-rotation.timer")
+        self.assertIs(legacy_alias, True)
+
+    def test_wrong_alias_target_is_not_reported_as_migrated(self):
+        (self.unit_dir / "docich-corner-rotation.timer").write_text("[Timer]\n")
+        (self.unit_dir / "docich-retro-corner.timer").symlink_to("somewhere-else.timer")
+        with mock.patch.object(self.module, "PROD_ROOT", self.prod):
+            unit, legacy_alias = self.module._rotation_timer_selection()
+        self.assertEqual(unit, "docich-corner-rotation.timer")
+        self.assertIs(legacy_alias, False)
+
+    def test_missing_unit_dir_fails_closed_to_the_legacy_name(self):
+        unit, legacy_alias = self.module._rotation_timer_selection(
+            unit_dir=self.unit_dir / "missing"
+        )
+        self.assertEqual(unit, "docich-retro-corner.timer")
+        self.assertIs(legacy_alias, False)
+
+    def test_programs_projection_keeps_fixed_keys_and_bounded_alias_boolean(self):
+        (self.unit_dir / "docich-corner-rotation.timer").write_text("[Timer]\n")
+        (self.unit_dir / "docich-retro-corner.timer").symlink_to(
+            "docich-corner-rotation.timer"
+        )
+        state_dir = self.prod / "run-soren-live"
+        state_dir.mkdir()
+        (state_dir / "corner_rotation.json").write_text(
+            json.dumps(
+                {
+                    "status": "waiting",
+                    "seed": "DO-NOT-PUBLISH-SEED",
+                    "pending": {"request_id": "DO-NOT-PUBLISH-REQUEST"},
+                }
+            )
+        )
+        with mock.patch.object(self.module, "PROD_ROOT", self.prod), mock.patch.object(
+            self.module, "_unit_is_active", return_value=True
+        ), mock.patch.object(self.module, "_unit_is_enabled", return_value=True):
+            result = self.module._collect_programs(state_dir, self.soren, 100)
+        for key in ("corner_rotation", "corner_rotation_timer", "retro_corner"):
+            self.assertIn(key, result)
+        timer = result["corner_rotation_timer"]
+        self.assertEqual(timer["unit"], "docich-corner-rotation.timer")
+        self.assertIs(timer["active"], True)
+        self.assertIs(timer["enabled"], True)
+        self.assertIs(timer["legacy_alias"], True)
+        self.assertNotIn("DO-NOT-PUBLISH", json.dumps(result))
+        self.assertNotIn(str(self.base), json.dumps(result))
+
+
+def test_rotation_latch_projects_fixed_identity_without_request_id(tmp_path):
+    """#986: an operator can see which reservation is latched, never its request id."""
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "recovery_required",
+        "reason": "execution-or-state-unverified",
+        "error_kind": "execution-unverified",
+        "seed": "DO-NOT-PUBLISH-SEED",
+        "slot": 9, "eligible": ["nsnake", "paper"],
+        "last_seen_at": 100, "next_due_at": 100, "last_slot_at": 90,
+        "pending": {"corner": "nsnake", "phase": "dispatched", "selected_at": 40.0,
+                    "request_id": "DO-NOT-PUBLISH-REQUEST",
+                    "prompt": "DO-NOT-PUBLISH-BODY"},
+    }))
+    (tmp_path / "retro_corner.json").write_text(json.dumps({
+        "game": "nsnake", "status": "active",
+        "rotation_request_id": "DO-NOT-PUBLISH-REQUEST",
+        "save": "SECRET-SAVE",
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    projection = output["corner_rotation"]
+    assert projection["status"] == "recovery_required"
+    assert projection["error_kind"] == "execution-unverified"
+    assert projection["pending"] is True
+    assert projection["pending_corner"] == "nsnake"
+    assert projection["pending_phase"] == "dispatched"
+    assert projection["pending_age_sec"] == 60
+    # the reservation is bound to the corner state that already recorded it
+    assert projection["pending_owner"] == "retro_corner"
+    assert projection["pending_owner_status"] == "active"
+    assert "DO-NOT-PUBLISH" not in json.dumps(output)
+    assert "SECRET" not in json.dumps(output)
+
+
+def test_rotation_pending_owner_never_claims_none_from_unreadable_state(tmp_path):
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "recovery_required", "error_kind": "unknown-kind",
+        "pending": {"corner": "paper", "phase": "selected", "selected_at": 0,
+                    "request_id": "req-1"},
+    }))
+    (tmp_path / "retro_corner.json").write_text("{ not json")
+    output = {}
+    module._collect_corner_files(tmp_path, output, 10)
+    projection = output["corner_rotation"]
+    assert projection["pending_owner"] == "unknown"
+    assert projection["pending_owner_status"] == "unknown"
+    assert projection["error_kind"] == "unknown"
+    assert projection["pending_age_sec"] == 10
+
+
+def test_rotation_projection_without_a_reservation_stays_absent(tmp_path):
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "waiting", "reason": "not-due", "last_seen_at": 100,
+        "next_due_at": 200, "slot": 4,
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    projection = output["corner_rotation"]
+    assert projection["pending"] is False
+    assert projection["pending_corner"] is None
+    assert projection["pending_phase"] is None
+    assert projection["pending_age_sec"] == -1
+    assert projection["pending_owner"] == "absent"
+    assert projection["error_kind"] is None
+
+
+def test_rotation_error_kind_taxonomy_matches_the_durable_ledger():
+    import sys
+
+    sys.path.insert(0, str(ROOT / "src"))
+    from docich.corner_rotation import ERROR_KINDS
+
+    assert load_collector().ROTATION_ERROR_KINDS == ERROR_KINDS
+
+
+def test_a_latched_common_rotation_reaches_warn_severity():
+    module = load_collector()
+    workers = {"required_down": [], "required_stale": [], "paused": [],
+               "unregistered": [], "duplicates": [], "zombies": []}
+    queues = {"stale_locks": 0}
+    ai = {"all_failed": 0, "queue_giveups": 0}
+    improvement = {"stale": False, "retry_pending": False}
+    quiet = lambda corners: module._severity(workers, queues, ai, improvement, corners)
+    assert quiet({"corner_rotation": {"status": "waiting"}}) == "ok"
+    # the shared plane can be healthy while every automatic corner is stopped
+    assert quiet({"corner_rotation": {"status": "recovery_required"}}) == "warn"
 
 
 if __name__ == "__main__":

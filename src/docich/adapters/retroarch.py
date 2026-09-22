@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import glob
 import os
+import re
 import sys
 import time
 from contextlib import nullcontext
@@ -139,10 +140,26 @@ def resolve_core(game) -> str:
     )
 
 
+def retroarch_audio(g, game) -> tuple[bool, str]:
+    """A game may use the existing broadcast bus without owning that bus."""
+    raw = retroarch_raw(game)
+    enabled = raw.get("audio_enabled", g.audio.enabled)
+    sink = raw.get("audio_sink", g.audio.sink_name)
+    if type(enabled) is not bool:
+        raise AdapterError("retroarch.audio_enabled must be a boolean")
+    if not isinstance(sink, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", sink):
+        raise AdapterError("retroarch.audio_sink must be a PulseAudio sink name")
+    return enabled, sink
+
+
 def retroarch_cfg_lines(g, game, cfg_path: Path, network_port: int) -> list[str]:
     buttons = resolved_buttons(game)
     d = g.display
-    audio_enable = "true" if g.audio.enabled else "false"
+    audio_enabled, audio_sink = retroarch_audio(g, game)
+    audio_enable = "true" if audio_enabled else "false"
+    latency = retroarch_raw(game).get("audio_latency_ms")
+    if latency is not None and (type(latency) is not int or not 8 <= latency <= 512):
+        raise AdapterError("retroarch.audio_latency_ms must be an integer from 8 to 512")
     rdir = cfg_path.parent
 
     lines = [
@@ -150,6 +167,8 @@ def retroarch_cfg_lines(g, game, cfg_path: Path, network_port: int) -> list[str]
         'video_driver = "sdl2"',
         'audio_driver = "pulse"',
         f'audio_enable = "{audio_enable}"',
+        *([f'audio_device = "{audio_sink}"'] if audio_enabled else []),
+        *([f'audio_latency = "{latency}"'] if audio_enabled and latency is not None else []),
         'video_fullscreen = "true"',
         f'video_fullscreen_x = "{d.width}"',
         f'video_fullscreen_y = "{d.height}"',
@@ -174,6 +193,10 @@ def retroarch_cfg_lines(g, game, cfg_path: Path, network_port: int) -> list[str]
         lines += ['video_fullscreen = "false"', 'video_scale = "3.0"',
                   'video_force_aspect = "true"', 'video_crop_overscan = "false"',
                   'savestate_auto_index = "false"', 'state_slot = "0"']
+    from ..hanjuku_run import enabled as scripted_hanjuku
+    if scripted_hanjuku(game):
+        # Stable native pixels for the deterministic screen signatures.
+        lines.append('video_smooth = "false"')
     return lines
 
 
@@ -277,12 +300,32 @@ class RetroArchAdapter(Adapter):
         self._check_fence()
         d = self.ctx.g.display
         out_path = self.ctx.state.screenshots_dir / "latest.png"
-        source, native = self._source()
-        if native:
-            result = source.screenshot(out_path, native["width"], native["height"],
-                                       window_id=native["window"])
-        else:
-            result = source.screenshot(out_path, d.width, d.height)
+        from .. import hanjuku_run
+        runtime_dir = self._runtime_dir()
+        scripted = hanjuku_run.enabled(self.ctx.game) and runtime_dir is not None
+        if scripted:
+            out_path = runtime_dir / 'screenshots' / 'latest.png'
+        meta = {}
+        # Both the agent and the corner monitor observe. Serialize capture,
+        # decode and terminal evidence with actual pad input for this runtime.
+        with (input_gate(runtime_dir, time.monotonic() + 15) if scripted else nullcontext()):
+            source, native = self._source()
+            if native:
+                result = source.screenshot(out_path, native["width"], native["height"],
+                                           window_id=native["window"])
+            else:
+                result = source.screenshot(out_path, d.width, d.height)
+            if scripted:
+                from ..hanjuku_pixels import read_png
+                frame = read_png(Path(result)).resized()
+                reply = send_ra_cmd('GET_STATUS', port=retroarch_network_port(self.ctx.fence.generation), wait_reply_s=.1)
+                paused = bool(reply and reply.startswith('GET_STATUS PAUSED '))
+                state = hanjuku_run.observe(runtime_dir, hanjuku_run.runtime_identity(self.ctx.fence),
+                                           frame, playing=not paused)
+                meta = {'runtime_dir': str(runtime_dir),
+                        'terminal_reason': state.get('terminal_reason'),
+                        'terminal_candidate': state.get('terminal_candidate', False),
+                        'hanjuku': state}
         return Observation(
             game=self.ctx.game.name,
             title=self.ctx.game.title,
@@ -290,6 +333,7 @@ class RetroArchAdapter(Adapter):
             ts=time.time(),
             kind="screenshot",
             screenshot=str(result),
+            meta=meta,
         )
 
     def _ensure_focus(self) -> None:
@@ -309,12 +353,19 @@ class RetroArchAdapter(Adapter):
         with (input_gate(runtime_dir, time.monotonic() + 5) if runtime_dir else nullcontext()):
             if runtime_dir:
                 require_input_open(runtime_dir)
+                from .. import hanjuku_run
+                if hanjuku_run.enabled(self.ctx.game):
+                    run = hanjuku_run.load(runtime_dir, hanjuku_run.runtime_identity(self.ctx.fence))
+                    if run.get('terminal_reason') or run.get('terminal_candidate'):
+                        raise AdapterError('Hanjuku terminal evidence holds input')
             source, native = self._source()
             if native:
                 # Never focus or inject into the broadcast presenter.
                 self.ctx.xkit = source
                 self._window_id = native["window"]
             self._act(action)
+            if runtime_dir and hanjuku_run.enabled(self.ctx.game):
+                hanjuku_run.action_sent(runtime_dir, hanjuku_run.runtime_identity(self.ctx.fence), action)
 
     def _act(self, action: Action) -> None:
         if action.type == "pad":
@@ -377,13 +428,14 @@ class RetroArchCoordinatorAdapter:
         if not self._contained():
             return command
         d = self.g.display
+        audio_enabled, audio_sink = retroarch_audio(self.g, self.game)
         return [sys.executable, str(Path(__file__).resolve().parents[1] / "presentation.py"),
                 '--display', d.name, '--title', f'docich-present-{self.spec.runtime_id}',
                 '--x', str(d.viewport_x), '--y', str(d.viewport_y),
                 '--width', str(d.viewport_width), '--height', str(d.viewport_height),
                 '--window-pattern', '^RetroArch',
                 '--runtime-state', str(self._presentation_path()),
-                *(['--audio-sink', self.g.audio.sink_name] if self.g.audio.enabled else []),
+                *(['--audio-sink', audio_sink] if audio_enabled else []),
                 '--', *command]
 
     def _ownership(self, role: str) -> TmuxOwnership:
@@ -560,6 +612,13 @@ class RetroArchCoordinatorAdapter:
                 record = read_record(self.spec.runtime_dir / BOUNDARY_FILE)
                 if not matches(record, self.spec, record.get("request_id")) or record.get("status") != "reached":
                     raise AdapterError("RetroArch committed runtime has no safe boundary")
+                from .. import hanjuku_run
+                if hanjuku_run.enabled(self.game):
+                    terminal = hanjuku_run.terminal(self.spec.runtime_dir, hanjuku_run.runtime_identity(self.spec))
+                    if (terminal and record.get('outcome') == terminal['terminal_reason']
+                            and record.get('frame_sha256') == terminal['frame_sha256']):
+                        return
+                    raise AdapterError('Hanjuku terminal evidence is missing')
                 if self.tmux.window_target_exists(self._game_window_target()):
                     states = self.tmux.pane_states_checked(self._game_window_target())
                     if not any(pane.dead for pane in states):
@@ -582,6 +641,9 @@ class RetroArchCoordinatorAdapter:
     def request_round_boundary(self, request_id: str, deadline: float, cancel) -> None:
         if not self._contained():
             raise RoundBoundaryUnsupportedError("RetroArch safe boundary requires private presentation")
+        from .. import hanjuku_run
+        if hanjuku_run.enabled(self.game):
+            return self._request_script_boundary(request_id, deadline, cancel)
         path = self.spec.runtime_dir / BOUNDARY_FILE
         with input_gate(self.spec.runtime_dir, deadline, cancel):
             self._check_active(deadline, cancel)
@@ -612,6 +674,31 @@ class RetroArchCoordinatorAdapter:
                 cancel.wait(min(0.05, max(0, deadline - time.monotonic())))
             else:
                 time.sleep(min(0.05, max(0, deadline - time.monotonic())))
+
+    def _request_script_boundary(self, request_id, deadline, cancel):
+        """Wait for game-over/stasis evidence while the bot continues playing."""
+        from .. import hanjuku_run
+        path = self.spec.runtime_dir / BOUNDARY_FILE
+        while True:
+            self._check_active(deadline, cancel)
+            if not self.alive(deadline, cancel):
+                raise AdapterError('Hanjuku exited before terminal evidence')
+            with input_gate(self.spec.runtime_dir, deadline, cancel):
+                record = read_record(path)
+                if record and record.get('status') != 'cancelled' and not matches(record, self.spec, request_id):
+                    raise AdapterError('Hanjuku boundary identity mismatch')
+                terminal = hanjuku_run.terminal(self.spec.runtime_dir, hanjuku_run.runtime_identity(self.spec))
+                if terminal:
+                    atomic_write_json(path, dict(identity(self.spec, request_id), status='reached',
+                        outcome=terminal['terminal_reason'], frame_sha256=terminal['frame_sha256']))
+                    return
+                if not record or record.get('status') == 'cancelled':
+                    atomic_write_json(path, dict(identity(self.spec, request_id), status='waiting',
+                                                requested_ns=time.time_ns()))
+            if cancel is not None:
+                cancel.wait(.1)
+            else:
+                time.sleep(.1)
 
     def _checkpoint(self, name: str) -> Path:
         if name != resolve_rom(self.g, self.game).stem + '.state':

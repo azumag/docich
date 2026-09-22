@@ -173,7 +173,14 @@ class TestAdvisoryController(unittest.TestCase):
         self.assertEqual(ctl.calls_used, 2)
 
     def test_dispatch_error_and_narration_error_are_fail_open(self) -> None:
-        strategist = FakeStrategist(StrategistDispatchResult(status="error", error="provider down"))
+        sentinel = "SECRET-provider-error-3d4e"
+        strategist = FakeStrategist(
+            StrategistDispatchResult(
+                status="error",
+                error=f"provider down: {sentinel}",
+                error_kind="process_failed",
+            )
+        )
 
         def broken_narrator(text: str) -> None:
             raise RuntimeError("audio down")
@@ -181,8 +188,32 @@ class TestAdvisoryController(unittest.TestCase):
         ctl = self.controller(strategist, narrator=broken_narrator)
         outcome = ctl.consider(visible_screen(), normalized(), emergency())
         self.assertEqual(outcome.status, "error")
-        self.assertEqual(outcome.error, "provider down")
+        self.assertEqual(outcome.error, f"provider down: {sentinel}")
         self.assertFalse(outcome.narrated)
+        log_path = self.root / "state" / "nethack" / "strategist" / "advisory.jsonl"
+        text = log_path.read_text(encoding="utf-8")
+        event = json.loads(text.splitlines()[-1])
+        self.assertEqual(event["error_kind"], "process_failed")
+        self.assertNotIn("error", event)
+        self.assertNotIn(sentinel, text)
+
+    def test_dispatch_exception_is_sanitized_before_advisory_persistence(self) -> None:
+        sentinel = "SECRET-exception-detail-9a7b"
+
+        class ExplodingStrategist:
+            def dispatch(self, request):
+                raise RuntimeError(f"provider exploded: {sentinel}")
+
+        ctl = self.controller(ExplodingStrategist())
+        outcome = ctl.consider(visible_screen(), normalized(), emergency())
+        self.assertEqual(outcome.status, "error")
+        self.assertIn(sentinel, outcome.error or "")
+        log_path = self.root / "state" / "nethack" / "strategist" / "advisory.jsonl"
+        text = log_path.read_text(encoding="utf-8")
+        event = json.loads(text.splitlines()[-1])
+        self.assertEqual(event["error_kind"], "internal_error")
+        self.assertNotIn("error", event)
+        self.assertNotIn(sentinel, text)
 
     def test_local_meaningful_decision_can_narrate_without_model_dispatch(self) -> None:
         spoken = []

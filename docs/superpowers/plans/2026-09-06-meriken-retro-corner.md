@@ -2,6 +2,10 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> 履歴資料。現行productionは全corner共通rotationで、canonical unit名は
+> `docich-corner-rotation.service/timer`。本文の `docich-retro-corner.*` は
+> 移行期間中の互換名として読み替える。
+
 **Goal:** Add a once-daily, one-hour Meriken AI CLI-game slot that overlays Robots on the existing Soren live display and safely reveals Soren again afterward.
 
 **Architecture:** `src/docich/retro_corner.py` owns program-slot state, timing, recovery and `GameSwitchCoordinator` calls. Production uses the existing `config/docich.soren-live.toml` handoff profile (`:99`, external display, no docich FFmpeg/audio ownership), so Soren keeps running underneath while Robots is displayed in the existing viewport. An hourly user timer calls `tick`; Python gates on `Asia/Tokyo` 20:00 and does not prepare tmux/runtime on healthy off-hours.

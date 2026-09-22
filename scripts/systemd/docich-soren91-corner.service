@@ -4,6 +4,9 @@ After=network.target
 
 [Service]
 Type=oneshot
+# The common rotation tick spawns follow-up jobs with systemd-run --user; a
+# timer-launched service does not reliably inherit XDG_RUNTIME_DIR (#947).
+Environment=XDG_RUNTIME_DIR=%t
 WorkingDirectory=__DOCICH_ROOT__
 # macOS ローカルエージェントの接続情報 (base URL / OCI Tailscale IP / token)。
 # これが無いと soren91 アダプタの preflight が fail-closed となり、コーナーは

@@ -66,6 +66,26 @@ from .runtime_backend import (
 
 # --- allowlist / validation --------------------------------------------------
 
+# Chains タブが編集するチェーン (フロントの chainKeys() と一致させる)。
+CHAIN_KEYS = (
+    "AI_COMMON_AGENTS",
+    "MODEL_IMPROVE_LIST",
+    "RADIO_AGENTS",
+    "RADIO_PREPASS_AGENTS",
+    "COMMENT_AGENTS",
+    "COMMENT_TRANSLATION_AGENTS",
+)
+# 一時停止の記録 (webui 専用の .env キー)。値は "index:agent" のカンマ区切りで、
+# index は停止前のチェーン内位置 (再開時に同じ位置へ戻すために使う)。停止中の
+# モデルは本体のチェーン値から除外して保存するため、ランタイムは *_PAUSED を
+# 参照しない (除外は保存時のチェーン値そのもので完結する)。
+CHAIN_PAUSE_KEYS = {key: f"{key}_PAUSED" for key in CHAIN_KEYS}
+CHAIN_PAUSE_KEY_TO_CHAIN = {v: k for k, v in CHAIN_PAUSE_KEYS.items()}
+CHAIN_PAUSE_MAX_ENTRIES = 64
+CHAIN_PAUSE_MAX_INDEX = 999
+# "index:agent" (agent 自体は AGENT_RE で別途検証する)
+PAUSED_ENTRY_RE = re.compile(r"^(\d{1,3}):(.+)$")
+
 WEBUI_ALLOWLIST = {
     # chain (core/config.sh:33-78)
     "AI_COMMON_AGENTS",
@@ -97,7 +117,7 @@ WEBUI_ALLOWLIST = {
     "SOREN_DIRECT_STREAM_AUDIO_DELAY_MS",
     "DOCICH_CC_ENABLED",
     "TWITCH_ADS_ENABLED",
-}
+} | set(CHAIN_PAUSE_KEYS.values())  # <CHAIN>_PAUSED (webui の停止位置記録)
 
 # hard defaults from core/config.sh
 DEFAULTS: dict[str, str] = {
@@ -128,6 +148,9 @@ DEFAULTS: dict[str, str] = {
     "DOCICH_CC_ENABLED": "0",
     "TWITCH_ADS_ENABLED": "1",
 }
+
+# 一時停止の記録 (空 = 停止なし)。DEFAULTS は GET /api/config の表示にも使う。
+DEFAULTS.update({key: "" for key in CHAIN_PAUSE_KEYS.values()})
 
 AGENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 # For AI_BACKOFF_SEC_ITEMS name part (model without prefix)
@@ -544,6 +567,26 @@ def _validate_value(key: str, value: str) -> None:
     if not isinstance(value, str):
         raise ValueError(f"{key} の値は文字列である必要があります")
     # .env は bash で source されるため、シェルメタ文字を許すキーは存在しない
+    if key in CHAIN_PAUSE_KEY_TO_CHAIN:
+        # 一時停止の位置記録 "index:agent" (空 = 停止なし)
+        if not value.strip():
+            return
+        parts = [p.strip() for p in value.split(",")]
+        if len(parts) > CHAIN_PAUSE_MAX_ENTRIES:
+            raise ValueError(f"{key} の要素が多すぎます (最大 {CHAIN_PAUSE_MAX_ENTRIES})")
+        # 同一 agent の複数エントリは、チェーン内に同じ agent が複数ある場合の
+        # 位置記録として正当 (index が異なる)。重複は許容する。
+        for part in parts:
+            m = PAUSED_ENTRY_RE.match(part)
+            if not m:
+                raise ValueError(f"{key} の要素 {part!r} は index:agent 形式である必要があります")
+            index = int(m.group(1))
+            agent = m.group(2)
+            if index > CHAIN_PAUSE_MAX_INDEX:
+                raise ValueError(f"{key} の index {index} が大きすぎます")
+            if not AGENT_RE.match(agent):
+                raise ValueError(f"{key} に不正なエージェント {agent!r} が含まれます")
+        return
     if key in ("AI_COMMON_AGENTS", "MODEL_IMPROVE_LIST", "MODEL_IMPROVE_PEAK_LIST", "RADIO_AGENTS", "RADIO_PREPASS_AGENTS", "COMMENT_AGENTS", "COMMENT_TRANSLATION_AGENTS", "PEAK_HOURS_AGENT_PREFERENCE"):
         if key == "AI_COMMON_AGENTS" and not value.strip():
             raise ValueError(f"{key} は空にできません")
@@ -2449,6 +2492,8 @@ canvas{width:100%;height:220px;background:#111319;border:1px solid var(--border)
 .ordered li{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);background:#111319;border-radius:8px;margin-bottom:6px}
 .ordered li.inherited{opacity:0.55;border-style:dashed}
 .ordered li.dragging{opacity:0.5}
+.ordered li.paused{opacity:0.7;border-style:dashed;background:#171a20}
+.ordered li.paused .mono{text-decoration:line-through;color:var(--muted)}
 .drag{cursor:grab;padding:2px 6px;color:var(--muted);font-size:14px;user-select:none}
 .timeline{display:grid;grid-template-columns:repeat(12,1fr);gap:6px}
 @media(max-width:640px){.timeline{grid-template-columns:repeat(6,1fr)}}
@@ -2719,7 +2764,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 </section>
 <!-- CHAINS -->
 <section id="tab-chains" style="display:none">
-<div class="card"><h2>モデルチェーン</h2><p class="desc">カンマ区切りで優先度順。先頭が最優先で失敗時に次へフォールバック（lib/ai_generate.sh）。<code>AI_COMMON_AGENTS</code> が原典で、他は空ならそれを継承します。変更は .env へ原子書き込み → 10秒以内に hot-reload。</p>
+<div class="card"><h2>モデルチェーン</h2><p class="desc">カンマ区切りで優先度順。先頭が最優先で失敗時に次へフォールバック（lib/ai_generate.sh）。<code>AI_COMMON_AGENTS</code> が原典で、他は空ならそれを継承します。各行の ⏸ で一時停止でき、停止中のモデルは順序と位置を保ったまま保存時にチェーンから除外されます（▶ で同じ位置へ復帰）。停止位置は <code>&lt;CHAIN&gt;_PAUSED</code> (index:agent) として .env に保存。変更は .env へ原子書き込み → 10秒以内に hot-reload。</p>
 <div id="chains-container"></div>
 <div class="actions"><button class="btn primary" id="chains-save">保存</button><button class="btn" id="chains-reload">再読込</button></div>
 <div class="help">保存後に radio/chat の reload を自動試行します（PIDファイル経由 USR1）。</div>
@@ -2913,6 +2958,46 @@ async function api(path, opts={}){
   return data;
 }
 function chainKeys(){ return ["AI_COMMON_AGENTS","MODEL_IMPROVE_LIST","RADIO_AGENTS","RADIO_PREPASS_AGENTS","COMMENT_AGENTS","COMMENT_TRANSLATION_AGENTS"]; }
+function pausedKey(k){ return k+"_PAUSED"; }
+function parsePausedEntries(raw){
+  // .env の "<CHAIN>_PAUSED" = "index:agent" のカンマ区切り。index は停止前の位置。
+  const out=[];
+  if(!raw) return out;
+  const seen=new Set();
+  for(const part of String(raw).split(",")){
+    const t=part.trim();
+    if(!t) continue;
+    const sep=t.indexOf(":");
+    if(sep<=0) continue;
+    const idx=parseInt(t.slice(0,sep),10);
+    const agent=t.slice(sep+1);
+    if(isNaN(idx)||idx<0||!AGENT_RE.test(agent)) continue;
+    const key=idx+":"+agent;
+    if(seen.has(key)) continue;
+    seen.add(key);
+    out.push({index:idx, agent});
+  }
+  out.sort((a,b)=>a.index-b.index);
+  return out;
+}
+function mergePausedItems(activeItems, raw){
+  // 停止中のモデルは本体チェーン値に含まれないため、記録した位置へ戻して表示する。
+  // index は「停止前のフルチェーン内の位置」。昇順に挿入すると元の並びへ復元できる。
+  // 本体チェーンに同じ agent が居る分は「外部編集で復帰済み」として消費し、その分の
+  // 停止エントリは無視する (稼働中が正)。同一 agent が複数あるチェーンでも、
+  // 停止していた出現回数だけ位置エントリが残るため、重複を保持したまま復元できる。
+  const paused=new Set();
+  const items=[...activeItems];
+  const activeCount={};
+  for(const a of activeItems) activeCount[a]=(activeCount[a]||0)+1;
+  for(const p of parsePausedEntries(raw)){
+    if((activeCount[p.agent]||0)>0){ activeCount[p.agent]--; continue; }
+    const pos=Math.min(p.index, items.length);
+    items.splice(pos,0,p.agent);
+    paused.add(p.agent);
+  }
+  return {items, paused};
+}
 function fieldLabel(k){
   const m={AI_COMMON_AGENTS:"AI_COMMON_AGENTS (共通原典)",MODEL_IMPROVE_LIST:"MODEL_IMPROVE_LIST (改善)",RADIO_AGENTS:"RADIO_AGENTS",RADIO_PREPASS_AGENTS:"RADIO_PREPASS_AGENTS",COMMENT_AGENTS:"COMMENT_AGENTS",COMMENT_TRANSLATION_AGENTS:"COMMENT_TRANSLATION_AGENTS"};
   return m[k]||k;
@@ -3045,24 +3130,28 @@ function renderChains(entries){
     const e=entries[k]||{value:"",effective:"",in_env:false,default:""};
     const inherited = !e.value;
     const src = inherited? e.effective : e.value;
-    const items = src? src.split(",").map(s=>s.trim()).filter(Boolean):[];
-    chainState[k]={e, inherited, items, value:e.value, effective:e.effective};
+    const activeItems = src? src.split(",").map(s=>s.trim()).filter(Boolean):[];
+    // 停止中のモデルは本体チェーンに含まれないため、<CHAIN>_PAUSED の位置へ戻して表示する。
+    const {items, paused} = mergePausedItems(activeItems, (entries[pausedKey(k)]||{}).value||"");
+    chainState[k]={e, inherited, items, paused, value:e.value, effective:e.effective};
+    const pausedCount=items.filter(a=>paused.has(a)).length;
     const wrap=document.createElement("div");
     wrap.className="card";
     wrap.dataset.key=k;
-    const badges = `${e.in_env?'<span class="badge ok">.envあり</span>':'<span class="badge">既定継承</span>'} ${e.effective && e.effective!==e.value?'<span class="badge warn">effective</span>':''}`;
+    const badges = `${e.in_env?'<span class="badge ok">.envあり</span>':'<span class="badge">既定継承</span>'} ${e.effective && e.effective!==e.value?'<span class="badge warn">effective</span>':''} ${pausedCount?`<span class="badge warn">停止中 ${pausedCount}</span>`:''}`;
     wrap.innerHTML=`
       <label>${fieldLabel(k)} ${badges}</label>
       <div class="inherit-row"><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-inh="${k}" ${inherited?"checked":""}> 継承 (空で既定に戻す)</label><span class="help">effective: <span class="mono">${esc(e.effective)}</span></span></div>
       <div><label>パレット (クリックで追加)</label><div class="palette" id="palette-${k}"></div></div>
-      <div><label>順序 (ドラッグ / 上下 / 削除)</label><ul class="ordered" id="list-${k}"></ul></div>
+      <div><label>順序 (ドラッグ / 上下 / 一時停止 / 削除)</label><ul class="ordered" id="list-${k}"></ul></div>
       <div class="row"><div style="flex:1"><input id="custom-${k}" placeholder="codex:xxx または local"/><div class="help">AGENT_RE <span class="mono">^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$</span></div></div><div style="align-self:end"><button class="btn" data-add="${k}">追加</button></div></div>
       <div style="margin-top:8px"><label>プリセット</label>
         <button class="preset-btn" data-preset="${k}" data-val="Latency">Latency</button>
         <button class="preset-btn" data-preset="${k}" data-val="Cost">Cost</button>
         <button class="preset-btn" data-preset="${k}" data-val="Local">Local</button>
       </div>
-      <div class="help">保存時はカンマ区切りにシリアライズ: <span class="mono" id="serial-${k}">${esc(items.join(","))}</span></div>
+      <div class="help">保存時の稼働チェーン: <span class="mono" id="serial-${k}">${esc(items.filter(a=>!paused.has(a)).join(","))}</span></div>
+      <div class="help">停止中 (保存でチェーンから除外): <span class="mono" id="paused-${k}">${esc(items.filter(a=>paused.has(a)).join(","))}</span></div>
     `;
     cont.appendChild(wrap);
   }
@@ -3077,6 +3166,7 @@ function renderChains(entries){
         chip.onclick=()=>{
           if(chainState[k].inherited){ toast("継承中は編集できません。チェックを外してください"); return; }
           if(!AGENT_RE.test(ag)){ toast(`不正なエージェント: ${ag}`); return; }
+          chainState[k].paused.delete(ag);
           chainState[k].items.push(ag);
           refreshChainList(k);
         };
@@ -3091,6 +3181,7 @@ function renderChains(entries){
       if(e.target.checked){
         const eff=chainState[k].effective||"";
         chainState[k].items = eff? eff.split(",").map(s=>s.trim()).filter(Boolean):[];
+        chainState[k].paused = new Set();
       } else {
         // keep current items but if inherited previously, start from effective
         // leave as is
@@ -3105,6 +3196,7 @@ function renderChains(entries){
       const v=inp.value.trim();
       if(!v){ toast("値を入力してください"); return; }
       if(!AGENT_RE.test(v)){ toast(`不正なエージェント: ${v}`); return; }
+      chainState[k].paused.delete(v);
       chainState[k].items.push(v);
       inp.value="";
       refreshChainList(k);
@@ -3117,6 +3209,7 @@ function renderChains(entries){
         const presetStr=CHAIN_PRESETS[kind]||"";
         if(!presetStr) return;
         chainState[k].items = presetStr.split(",").map(s=>s.trim()).filter(Boolean);
+        for(const ag of [...chainState[k].paused]) if(!chainState[k].items.includes(ag)) chainState[k].paused.delete(ag);
         refreshChainList(k);
       };
     }
@@ -3129,22 +3222,37 @@ function refreshChainList(k){
   ul.innerHTML="";
   const disabled = st.inherited;
   st.items.forEach((item, idx)=>{
+    const paused=st.paused.has(item);
     const li=document.createElement("li");
     li.draggable=!disabled;
     if(disabled) li.classList.add("inherited");
+    if(paused) li.classList.add("paused");
     li.dataset.idx=String(idx);
     li.innerHTML=`<span class="drag">≡</span><span class="mono" style="flex:1">${esc(item)}</span>
+      ${paused?'<span class="badge warn">停止中</span>':''}
+      <button class="btn" data-pause="${idx}" style="padding:4px 8px" title="${paused?"再開して同じ位置へ戻す":"一時停止 (保存でチェーンから除外)"}">${paused?"▶":"⏸"}</button>
       <button class="btn" data-up="${idx}" style="padding:4px 8px">↑</button>
       <button class="btn" data-down="${idx}" style="padding:4px 8px">↓</button>
       <button class="btn danger" data-rem="${idx}" style="padding:4px 8px">×</button>`;
     // buttons
+    const pz=li.querySelector(`[data-pause="${idx}"]`);
     const up=li.querySelector(`[data-up="${idx}"]`);
     const down=li.querySelector(`[data-down="${idx}"]`);
     const rem=li.querySelector(`[data-rem="${idx}"]`);
+    if(pz) pz.onclick=()=>{
+      if(disabled) return;
+      if(st.paused.has(item)){ st.paused.delete(item); }
+      else {
+        const activeCount=st.items.filter(a=>!st.paused.has(a)).length;
+        if(activeCount<=1){ toast("最後の1件は停止できません (空は継承扱いになるため)"); return; }
+        st.paused.add(item);
+      }
+      refreshChainList(k);
+    };
     if(up) up.onclick=()=>{ if(disabled) return; if(idx>0){ const a=st.items.splice(idx,1)[0]; st.items.splice(idx-1,0,a); refreshChainList(k); }};
     if(down) down.onclick=()=>{ if(disabled) return; if(idx<st.items.length-1){ const a=st.items.splice(idx,1)[0]; st.items.splice(idx+1,0,a); refreshChainList(k); }};
-    if(rem) rem.onclick=()=>{ if(disabled) return; st.items.splice(idx,1); refreshChainList(k); };
-    if(disabled){ up.disabled=true; down.disabled=true; rem.disabled=true; }
+    if(rem) rem.onclick=()=>{ if(disabled) return; st.items.splice(idx,1); st.paused.delete(item); refreshChainList(k); };
+    if(disabled){ pz.disabled=true; up.disabled=true; down.disabled=true; rem.disabled=true; }
     // drag
     li.addEventListener("dragstart", (e)=>{ if(disabled){ e.preventDefault(); return; } li.classList.add("dragging"); e.dataTransfer.effectAllowed="move"; e.dataTransfer.setData("text/plain", String(idx)); });
     li.addEventListener("dragend", ()=>li.classList.remove("dragging"));
@@ -3167,7 +3275,9 @@ function refreshChainList(k){
     }
   };
   const ser=document.getElementById(`serial-${k}`);
-  if(ser) ser.textContent = st.inherited? "(継承: "+esc(st.effective)+")" : st.items.join(",");
+  if(ser) ser.textContent = st.inherited? "(継承: "+esc(st.effective)+")" : st.items.filter(a=>!st.paused.has(a)).join(",");
+  const pzEl=document.getElementById(`paused-${k}`);
+  if(pzEl) pzEl.textContent = st.inherited? "" : st.items.filter(a=>st.paused.has(a)).join(",");
 }
 function renderBackoff(entries){
   const bi=entries["AI_BACKOFF_SEC_ITEMS"];
@@ -3526,15 +3636,17 @@ async function saveChains(){
   for(const k of chainKeys()){
     const st=chainState[k];
     if(!st) continue;
-    let val="";
-    if(st.inherited) val="";
-    else {
-      // validate
-      for(const ag of st.items){ if(!AGENT_RE.test(ag)){ toast(`${k} に不正なエージェント ${ag}`); return; } }
-      if(k==="AI_COMMON_AGENTS" && st.items.length===0){ toast("AI_COMMON_AGENTS は空にできません"); return; }
-      val=st.items.join(",");
-    }
-    payload[k]=val;
+    if(st.inherited){ payload[k]=""; payload[pausedKey(k)]=""; continue; }
+    const active=st.items.filter(a=>!st.paused.has(a));
+    // validate
+    for(const ag of active){ if(!AGENT_RE.test(ag)){ toast(`${k} に不正なエージェント ${ag}`); return; } }
+    if(k==="AI_COMMON_AGENTS" && active.length===0){ toast("AI_COMMON_AGENTS は空にできません (停止中のモデルを再開してください)"); return; }
+    if(st.items.length>0 && active.length===0){ toast(`${k}: 全て停止中は保存できません (1件以上を再開してください)`); return; }
+    // 停止中は本体チェーンから除外し、位置を <CHAIN>_PAUSED へ "index:agent" で保存
+    const pausedItems=[];
+    st.items.forEach((ag,idx)=>{ if(st.paused.has(ag)) pausedItems.push(`${idx}:${ag}`); });
+    payload[k]=active.join(",");
+    payload[pausedKey(k)]=pausedItems.join(",");
   }
   try{
     const res=await api("/api/config",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({values:payload,expected_mtime:ENV_MTIME,confirm:true})});

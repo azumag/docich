@@ -1,5 +1,10 @@
 # メリケンAI レトロゲームコーナー設計
 
+> 履歴資料。現行productionは[全corner共通rotation](../../corner-rotation.md)であり、
+> 定期tickはcanonical `docich-corner-rotation.service/timer` が実行する
+> （旧 `docich-retro-corner.service/timer` は移行期間中の互換alias）。
+> 本文の固定時刻・毎時tickの記述は当時の設計時点のものである。
+
 ## 目的
 
 `docich` が所有するゲーム切替基盤を使い、1日1回、20:00 JSTから60分間だけCLIゲームをSoren本番画面へ重ね、終了時に安全にSorenへ戻す「メリケンAIのレトロゲームコーナー」を提供する。

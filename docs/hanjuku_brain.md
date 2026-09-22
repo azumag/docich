@@ -1,4 +1,7 @@
-# 半熟英雄 brain 設計 (Phase 2)
+# 半熟英雄 brain 設計 (旧LLM実装)
+
+> 現行設定は[script bot](hanjuku_script_bot.md)を実行する。以下は未使用の旧`brain.py`の設計記録。
+> Claude/OpenCodeの操作時利用、認証・課金は現行botの要件ではない。
 
 `config/games/hanjuku-hero.toml` の `[agent]` から起動される **外部 brain コマンド**の設計書。
 docich 本体との境界は architecture.md §6 (CommandBrain) のまま変えない:

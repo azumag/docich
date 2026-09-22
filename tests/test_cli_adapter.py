@@ -50,8 +50,16 @@ class CliAdapterTestBase(unittest.TestCase):
         self._tmpdir = tempfile.TemporaryDirectory()
         self.repo_root = Path(self._tmpdir.name)
         self.g = config.load_global(self.repo_root)
+        # 別のテスト (cli.cmd_start 等) が世代別 session を os.environ へ
+        # 束縛したままにし得るため、この file の期待値 (既定 docich-game) を
+        # 固定する。同一起動プロセスで file をまたいで実行しても順序に依らない。
+        self._env_patch = mock.patch.dict(
+            "os.environ", {cli_game.RUNTIME_GAME_SESSION_ENV: cli_game.GAME_SESSION}
+        )
+        self._env_patch.start()
 
     def tearDown(self):
+        self._env_patch.stop()
         self._tmpdir.cleanup()
 
     def _make_ctx(self, *, cli_raw: dict, tmux=None) -> base.AdapterContext:
@@ -215,6 +223,39 @@ class TestCleanup(CliAdapterTestBase):
             with self.assertRaises(ValueError):
                 adapter.cleanup()
         self.assertNotIn(("stop_game_session_named", "docich"), tmux.calls)
+
+
+class TestCellAspect(CliAdapterTestBase):
+    def _game(self, value):
+        return config.GameConfig(
+            name="pacman4console",
+            title="Pac-Man",
+            adapter="cli",
+            raw={"cli": {"command": "pacman4console", "cell_aspect": value}},
+            agent=config.GameAgentConfig(),
+            path=self.repo_root / "config" / "games" / "pacman4console.toml",
+        )
+
+    def test_unset_keeps_native_window(self):
+        game = config.GameConfig(
+            name="nethack", title="NetHack", adapter="cli",
+            raw={"cli": {"command": "nethack"}},
+            agent=config.GameAgentConfig(),
+            path=self.repo_root / "config" / "games" / "nethack.toml",
+        )
+        self.assertIsNone(cli_game.cli_cell_aspect(game))
+
+    def test_valid_value_is_normalized(self):
+        self.assertEqual(cli_game.cli_cell_aspect(self._game(" 1:2 ")), "1:2")
+
+    def test_identity_ratio_disables_correction(self):
+        self.assertIsNone(cli_game.cli_cell_aspect(self._game("1:1")))
+
+    def test_invalid_values_fail_closed(self):
+        for value in ("", "1", "1:0", "1:5", 2, "abc"):
+            with self.subTest(value=value):
+                with self.assertRaises(base.AdapterError):
+                    cli_game.cli_cell_aspect(self._game(value))
 
 
 class TestRobotsCatalog(unittest.TestCase):

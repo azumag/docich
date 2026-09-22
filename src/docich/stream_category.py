@@ -17,6 +17,7 @@ from pathlib import Path
 
 from .config import GlobalConfig, load_game
 from .naming import NameValidationError, validate_game_name
+from .procs import user_bus_env
 
 SCRIPT_NAME = "update_stream_game.sh"
 LOG_NAME = "stream-game.log"
@@ -58,7 +59,55 @@ def twitch_category(g: GlobalConfig, game: str) -> str | None:
     return category_id.strip()
 
 
+def _submit_transient(child_argv: list[str], *, cwd: Path, log_path: Path) -> None:
+    """Submit the updater as an independent user unit.
+
+    The corner services are ``KillMode=control-group`` oneshots: a plain child
+    is killed when the tick exits, which is exactly when the end-of-corner
+    restore runs (the start-of-corner update survives because the tick keeps
+    running for the whole corner).  An independent transient unit outlives the
+    tick, like the improvement job's submission.
+    """
+    import uuid
+
+    command = [
+        "systemd-run", "--user", "--quiet", "--collect",
+        f"--unit=docich-stream-category-{uuid.uuid4().hex}",
+        "--property=Type=exec",
+        "--property=RuntimeMaxSec=120",
+        "--property=TimeoutStopSec=15",
+        "--property=UMask=0077",
+        f"--working-directory={Path(cwd).resolve()}",
+        f"--property=StandardOutput=append:{Path(log_path).resolve()}",
+        f"--property=StandardError=append:{Path(log_path).resolve()}",
+    ]
+    if os.environ.get("PATH"):
+        command.append(f"--setenv=PATH={os.environ['PATH']}")
+    try:
+        submitted = subprocess.run(
+            [*command, "--", *child_argv],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            stdin=subprocess.DEVNULL,
+            # The tick unit does not reliably carry the user-bus environment a
+            # timer-launched service needs for systemd-run --user (#947).
+            env=user_bus_env(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise StreamCategoryError(f"{SCRIPT_NAME} の投入がタイムアウトしました") from exc
+    except OSError as exc:
+        raise StreamCategoryError(f"{SCRIPT_NAME} を投入できません: {exc}") from exc
+    if submitted.returncode != 0:
+        detail = (submitted.stderr or "").strip().replace("\n", " ")[:200]
+        raise StreamCategoryError(
+            f"{SCRIPT_NAME} の投入に失敗しました (rc={submitted.returncode}): {detail}"
+        )
+
+
 def _spawn(argv: list[str], *, cwd: Path, log_path: Path) -> None:
+    log_path = Path(log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(log_path.parent, 0o700)
     # The child is detached and its output kept in a private log: the switch
@@ -76,6 +125,9 @@ def _spawn(argv: list[str], *, cwd: Path, log_path: Path) -> None:
             "--",
             *child_argv,
         ]
+    if sys.platform == "linux" and os.environ.get("INVOCATION_ID"):
+        _submit_transient(child_argv, cwd=Path(cwd), log_path=log_path)
+        return
     fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
         with os.fdopen(fd, "ab", closefd=True) as log:

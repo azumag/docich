@@ -6,6 +6,9 @@ adapter = "retroarch"
 [retroarch]
 rom = "games/roms/hanjuku-hero.sfc"   # 著作権物のためGit追跡外。自己吸い出しROMはVMのこの相対位置にのみ配置
 core = "auto"                          # or コア .so の絶対パス
+audio_enabled = true
+audio_sink = "soren_null"               # 既存の配信busへゲームBGM・効果音を出す
+audio_latency_ms = 289                  # CPU負荷時の音切れ軽減。本番で改善確認した値
 # [retroarch.pad_map] で既定マップの上書きも可能
 
 [lifecycle]
@@ -13,20 +16,25 @@ require_round_boundary = true
 boundary_timeout_s = 300
 
 [agent]
-enabled = true                         # VMのROM・認証・費用運用を前提に自動rotationで有効化
-# brain の詳細設計・知識注入 (games/hanjuku-sfc-speedrun submodule) は docs/hanjuku_brain.md 参照
+enabled = true
+# 決定的な画面判定・入力script。詳細は docs/hanjuku_brain.md。
 brain = "command"
-command = ["python3", "brains/hanjuku/brain.py"]
-interval_ms = 7000                     # LLM レイテンシ (3〜6秒) を織り込んだ周期
+command = ["python3", "brains/hanjuku/bot.py"]
+interval_ms = 1500
+
+[hanjuku]
+script_bot = true
+# 20分の時間制限なし。ゲームオーバー、または実ゲーム画面が300秒不変で終了。
+# OpenCodeによる試合後の自動改善は別途実装。操作中のLLM呼出しは行わない。
 
 # unified live rotationへ登録済み。ROM/core/実行ファイルが揃った環境だけ抽選候補になる。
-# 実機プレイ、brainの認証・費用、表示・保存境界のE2E確認は別ゲートであり、設定有効化だけでは証明しない。
+# 実機プレイ・表示・終了後の復帰は、設定有効化と分けて検証する。
 [retro_corner]
 enabled = true
 unattended = true
 # ROM/coreは実行ファイルではないためrequiresへ混ぜない。
-# claudeは既定brain backend用。存在だけでは認証・予算を保証しない。
-requires = ["retroarch", "dbus-run-session", "python3", "claude"]
+# 操作にclaude/opencode等のLLM CLIは不要。
+requires = ["retroarch", "dbus-run-session", "python3"]
 
 # Twitch 配信カテゴリー・タイトル連動 (soviet_now update_stream_game.sh が読む)。
 # category は IGDB 照合済み (SFC初代の副題付き項目を採用)。

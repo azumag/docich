@@ -6,7 +6,8 @@ OWNER_ID='9018513'
 REPOSITORY='azumag/docich'
 REPOSITORY_ID='1327276249'
 WORKFLOW='.github/workflows/vm-operations.yml'
-OPS={'deploy','exec','configure_jev','disable_jev','status','bootstrap','diagnostics','reclaim','rebaseline','market_paper'}
+OPS={'deploy','exec','configure_jev','disable_jev','configure_jev_route_direct','configure_jev_route_vercel',
+     'disable_jev_route','status','bootstrap','diagnostics','reclaim','rebaseline','market_paper','restart_webui'}
 TARGETS={'preview','production'}
 REF_RE=re.compile(r'[A-Za-z0-9][A-Za-z0-9_./-]{0,199}\Z')
 SHA_RE=re.compile(r'[0-9a-f]{40}\Z')
@@ -55,11 +56,18 @@ def main():
         if op=='rebaseline' and ref!='main': fail('rebaseline must run from main')
         if op=='market_paper' and target!='production': fail('market_paper is production-only')
         if op=='market_paper' and ref!='main': fail('market_paper must run from main')
+        if op=='restart_webui' and target!='production': fail('restart_webui is production-only')
+        if op=='restart_webui' and ref!='main': fail('restart_webui must run from main')
         if op=='configure_jev' and target!='production': fail('configure_jev is production-only')
         if op=='configure_jev' and ref!='main': fail('configure_jev must run from main')
         if op=='disable_jev' and target!='production': fail('disable_jev is production-only')
         if op=='disable_jev' and ref!='main': fail('disable_jev must run from main')
-        if target=='production' and op in {'exec','configure_jev','disable_jev','bootstrap','reclaim','rebaseline','market_paper'} and confirm!='production':
+        if op in {'configure_jev_route_direct','configure_jev_route_vercel','disable_jev_route'}:
+            if target!='production': fail(f'{op} is production-only')
+            if ref!='main': fail(f'{op} must run from main')
+        if target=='production' and op in {'exec','configure_jev','disable_jev','configure_jev_route_direct',
+                                            'configure_jev_route_vercel','disable_jev_route','bootstrap',
+                                            'reclaim','rebaseline','market_paper','restart_webui'} and confirm!='production':
             fail('production confirmation required')
         # diagnostics is read-only with sanitized bounded output, so it needs
         # owner-only gating (above) but no separate confirmation.

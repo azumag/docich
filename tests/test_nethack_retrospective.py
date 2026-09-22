@@ -143,6 +143,8 @@ class TestRetrospectiveEngine(unittest.TestCase):
                 "reason": "visible HP is critical",
                 "proposal": {"kind": "rest"},
                 "evaluation": {"status": "approved", "reason": "public-state checks passed"},
+                "error": "SECRET-old-advisory-error",
+                "error_kind": "process_failed",
                 "narrated": True,
             },
             {"ts": 1_789_550_000, "status": "proposed", "intent": "too_late"},
@@ -153,6 +155,8 @@ class TestRetrospectiveEngine(unittest.TestCase):
         advisory = result["advisory_evidence"]
         self.assertEqual(advisory["event_count"], 1)
         self.assertEqual(advisory["recent"][0]["intent"], "survival_emergency")
+        self.assertEqual(advisory["recent"][0]["error_kind"], "process_failed")
+        self.assertNotIn("error", advisory["recent"][0])
         categories = {item["category"] for item in result["candidate_lessons"]}
         self.assertIn("survival_signal", categories)
 

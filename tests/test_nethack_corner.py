@@ -696,5 +696,32 @@ class TestStreamCategoryFollowsTheCorner(NethackCornerTestBase):
         self.assertEqual(announced, [])
 
 
+
+class TestNethackRotationTargetValidation(NethackCornerTestBase):
+    """_begin_locked hands the selected game to _validate_games (#986).
+
+    A fixed manager that accepts no argument made every common rotation
+    dispatch die with a TypeError before the corner could record any state,
+    which latched the whole rotation.
+    """
+
+    def test_accepts_the_rotation_target_override(self):
+        mgr, _ = self.manager([None])
+        # exact call made by RetroCornerManager._begin_locked
+        mgr._validate_games(["nethack"])
+
+    def test_rejects_any_other_target(self):
+        mgr, _ = self.manager([None])
+        for names in (["ninvaders"], [], ["other", "nethack-hero"]):
+            with self.subTest(names=names):
+                with self.assertRaises(NethackCornerError):
+                    mgr._validate_games(names)
+
+    def test_default_call_and_playable_scan_still_work(self):
+        mgr, _ = self.manager([None])
+        mgr._validate_games()
+        self.assertIsInstance(mgr._playable_games(), list)
+
+
 if __name__ == "__main__":
     unittest.main()

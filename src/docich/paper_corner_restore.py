@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
-import os
 import subprocess
 import sys
 import time
@@ -22,6 +21,7 @@ from .game_switch import atomic_write_json
 from .paper_corner import PaperCornerError
 from .paper_corner_fast import FastPaperCornerManager
 from .paper_corner_manual import MANUAL_STATE_FILE, ManualPaperCornerManager
+from .procs import user_bus_env
 
 SCHEDULED_SERVICE = "docich-paper-corner.service"
 STOP_TIMEOUT_S = 15
@@ -35,8 +35,7 @@ def _repo_root() -> Path:
 
 
 def _stop_scheduled_service(*, run=subprocess.run) -> None:
-    env = dict(os.environ)
-    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    env = user_bus_env()
     try:
         result = run(
             ["systemctl", "--user", "stop", SCHEDULED_SERVICE],

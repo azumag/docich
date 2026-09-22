@@ -22,8 +22,10 @@ from .nethack_strategist import (
     CommandStrategist,
     ProposalEvaluation,
     StrategistDispatchResult,
+    dispatch_error_kind_for_exception,
     evaluate_proposal,
     execution_plan,
+    safe_dispatch_error_kind,
 )
 from .nethack_strategy import build_strategic_request, should_narrate
 
@@ -305,7 +307,11 @@ class NethackAdvisoryController:
         try:
             result = self.strategist.dispatch(request)
         except Exception as exc:
-            result = StrategistDispatchResult(status="error", error=str(exc).replace("\n", " ")[:240])
+            result = StrategistDispatchResult(
+                status="error",
+                error=str(exc).replace("\n", " ")[:240],
+                error_kind=dispatch_error_kind_for_exception(exc),
+            )
 
         evaluation: ProposalEvaluation | None = None
         proposal_kind: str | None = None
@@ -358,7 +364,11 @@ class NethackAdvisoryController:
                     if evaluation is not None
                     else None
                 ),
-                "error": result.error,
+                "error_kind": (
+                    safe_dispatch_error_kind(result.error_kind)
+                    if outcome.status == "error"
+                    else None
+                ),
                 "narrated": narrated,
                 "execution": "advisory_only",
             }

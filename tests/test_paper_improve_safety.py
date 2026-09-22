@@ -86,6 +86,22 @@ class TestBounds:
         )
         assert check_policy_bounds(current, candidate) == (True, "ok")
 
+    def test_momentum_snapshot_infeasible_upper_bound_is_rejected(self):
+        current = StrategyPolicy()
+        candidate = StrategyPolicy(
+            momentum_lookback=24,
+            momentum_threshold_bps="300",
+            mean_reversion_lookback=10,
+            mean_reversion_z="-1.5",
+            max_notional_fraction="0.15",
+        )
+        assert check_policy_bounds(current, candidate) == (False, "range-exceeded:momentum_lookback")
+
+    def test_mean_reversion_snapshot_length_24_remains_allowed(self):
+        current = StrategyPolicy(mean_reversion_lookback=12)
+        candidate = StrategyPolicy(mean_reversion_lookback=24)
+        assert check_policy_bounds(current, candidate) == (True, "ok")
+
     def test_extreme_lookback_rejected_by_range(self):
         current = StrategyPolicy()
         candidate = StrategyPolicy(
@@ -111,7 +127,7 @@ class TestBounds:
     def test_in_range_but_oversized_step_rejected_by_delta(self):
         current = StrategyPolicy()
         candidate = StrategyPolicy(
-            momentum_lookback=24,  # in [2, 24] but beyond 6*2
+            momentum_lookback=23,  # in [2, 23] but beyond 6*2
             momentum_threshold_bps="300",
             mean_reversion_lookback=10,
             mean_reversion_z="-1.5",
@@ -180,14 +196,25 @@ class TestAdoption:
         assert status["decision"] == "rejected"
         assert status["reason_code"] == "range-exceeded:momentum_lookback"
 
-    def test_signal_dead_candidate_rejected(self, tmp_path, live_facts):
+    def test_snapshot_infeasible_momentum_candidate_rejected(self, tmp_path, live_facts):
         trading = _trading(tmp_path)
         _seed_cache(trading, {"BTC": _rising(24)})
+        result = paper_improve.run_paper_improve(
+            _g(tmp_path), trading_dir=trading, agents="x", now=1000.0,
+            llm=_llm_with(_policy_json(momentum_lookback=24)),
+        )
+        assert result["status"] == "rejected"
+        assert result["reason_code"] == "range-exceeded:momentum_lookback"
+        assert result["changed"] is False
+
+    def test_signal_dead_candidate_rejected(self, tmp_path, live_facts):
+        trading = _trading(tmp_path)
+        _seed_cache(trading, {"BTC": _rising(23)})
         current = StrategyPolicy(momentum_lookback=12, mean_reversion_lookback=12)
         save_strategy_policy(trading, current)
         result = paper_improve.run_paper_improve(
             _g(tmp_path), trading_dir=trading, agents="x", now=1000.0,
-            llm=_llm_with(_policy_json(momentum_lookback=24, mean_reversion_lookback=24)),
+            llm=_llm_with(_policy_json(momentum_lookback=23, mean_reversion_lookback=24)),
         )
         assert result["status"] == "rejected"
         assert result["reason_code"] == "signal-dead"

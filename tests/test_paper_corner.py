@@ -655,8 +655,15 @@ def test_systemd_improve_submission_is_independent_and_bounded(tmp_path, monkeyp
     monkeypatch.setattr(sys, 'platform', 'linux')
     monkeypatch.setenv('INVOCATION_ID', 'parent-corner')
     monkeypatch.setenv('PRIVATE_TEST_TOKEN', 'must-not-forward')
+    # Reproduce the tick service environment that caused the production
+    # failures: no user-bus variables at all (#947).
+    monkeypatch.delenv('XDG_RUNTIME_DIR', raising=False)
+    monkeypatch.delenv('DBUS_SESSION_BUS_ADDRESS', raising=False)
     calls = []
-    monkeypatch.setattr(subprocess, 'run', lambda argv, **kw: calls.append((argv, kw)))
+    def fake_run(argv, **kw):
+        calls.append((argv, kw))
+        return subprocess.CompletedProcess(argv, 0, '', '')
+    monkeypatch.setattr(subprocess, 'run', fake_run)
     monkeypatch.setattr(subprocess, 'Popen', lambda *a, **kw: (_ for _ in ()).throw(AssertionError('child in parent cgroup')))
     child = ['/python', '-m', 'docich', 'trading', 'paper-improve']
     log = g.state_dir / 'logs' / 'improve.log'
@@ -664,14 +671,18 @@ def test_systemd_improve_submission_is_independent_and_bounded(tmp_path, monkeyp
     argv, kwargs = calls[0]
     assert argv[:4] == ['systemd-run', '--user', '--quiet', '--collect']
     assert '--property=Type=exec' in argv
-    assert '--property=RuntimeMaxSec=1500' in argv
+    assert '--property=RuntimeMaxSec=3600' in argv
     assert '--property=TimeoutStopSec=30' in argv
     assert '--setenv=DOCICH_ALLOW_REAL_AI=1' in argv
     assert f'--setenv=PYTHONPATH={g.repo_root / "src"}' in argv
     assert f'--property=StandardOutput=append:{log.resolve()}' in argv
     assert argv[argv.index('--') + 1:] == child
     assert 'must-not-forward' not in str(argv)
-    assert kwargs['check'] and kwargs['timeout'] == 30
+    assert kwargs['check'] is False
+    assert kwargs['timeout'] == 30
+    # The submission must carry the user-bus environment itself; the tick unit
+    # it runs under does not reliably provide it (#947).
+    assert kwargs['env']['XDG_RUNTIME_DIR'] == f'/run/user/{os.getuid()}'
 
 
 def test_failed_systemd_submission_is_recorded_without_unsafe_fallback(tmp_path, monkeypatch):
@@ -688,6 +699,27 @@ def test_failed_systemd_submission_is_recorded_without_unsafe_fallback(tmp_path,
     state = {'date': '2026-09-19'}
     mgr._spawn_improve_once(state)
     assert state['improve_job']['spawned'] is False
+
+
+def test_rejected_systemd_submission_keeps_the_systemd_message(tmp_path, monkeypatch):
+    """The durable record must classify the failure, not only flag it (#947)."""
+    import subprocess
+    g = setup(tmp_path)
+    mgr = manager(g)
+    mgr.improve_agents = 'test-agent'
+    monkeypatch.setattr(sys, 'platform', 'linux')
+    monkeypatch.setenv('INVOCATION_ID', 'parent-corner')
+    def rejected(argv, **kw):
+        return subprocess.CompletedProcess(
+            argv, 1, '', 'Failed to connect to bus: No medium found\n')
+    monkeypatch.setattr(subprocess, 'run', rejected)
+    monkeypatch.setattr(subprocess, 'Popen', lambda *a, **kw: (_ for _ in ()).throw(AssertionError('unsafe fallback')))
+    state = {'date': '2026-09-19'}
+    mgr._spawn_improve_once(state)
+    assert state['improve_job']['spawned'] is False
+    error = state['improve_job']['error']
+    assert 'rc=1' in error
+    assert 'No medium found' in error
 
 
 def test_non_systemd_improve_preserves_detached_launch(tmp_path, monkeypatch):

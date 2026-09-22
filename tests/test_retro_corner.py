@@ -807,6 +807,25 @@ class TestSystemdTemplates(unittest.TestCase):
         self.assertNotIn("OnCalendar=", timer)
         self.assertIn("Persistent=false", timer)
 
+    def test_canonical_service_and_timer_contract(self):
+        root = Path(__file__).resolve().parents[1]
+        service = (root / "scripts/systemd/docich-corner-rotation.service").read_text(encoding="utf-8")
+        timer = (root / "scripts/systemd/docich-corner-rotation.timer").read_text(encoding="utf-8")
+        self.assertIn(
+            "ExecStart=__DOCICH_ROOT__/bin/docich --config __DOCICH_ROOT__/config/docich.soren-live.toml corner-rotation tick",
+            service,
+        )
+        self.assertIn("TimeoutStartSec=infinity", service)
+        self.assertNotIn("[Install]", service)
+        self.assertIn("OnActiveSec=30s", timer)
+        self.assertIn("OnBootSec=30s", timer)
+        self.assertIn("OnUnitActiveSec=60s", timer)
+        self.assertIn("AccuracySec=5s", timer)
+        self.assertIn("Persistent=false", timer)
+        self.assertIn("Unit=docich-corner-rotation.service", timer)
+        self.assertIn("WantedBy=timers.target", timer)
+        self.assertNotIn("docich-retro-corner", timer)
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -1030,11 +1049,13 @@ class TestRetroCornerImproveSpawnEnv(RetroCornerTestBase):
 
         def fake_run(argv, **kwargs):
             calls.append((argv, kwargs))
-            return SimpleNamespace(returncode=0)
+            return SimpleNamespace(returncode=0, stderr="")
 
         mgr, _ = self.manager(["sorengame"])
+        # Reproduce the tick service environment that caused the production
+        # failures: no user-bus variables at all (#947).
         with patch.object(sys, "platform", "linux"), \
-             patch.dict(os.environ, {"INVOCATION_ID": "parent-corner"}, clear=False), \
+             patch.dict(os.environ, {"INVOCATION_ID": "parent-corner"}, clear=True), \
              patch("subprocess.run", side_effect=fake_run), \
              patch("subprocess.Popen", side_effect=AssertionError("unsafe parent cgroup")):
             mgr._default_spawn_improve_proc(
@@ -1047,13 +1068,19 @@ class TestRetroCornerImproveSpawnEnv(RetroCornerTestBase):
         assert argv[:4] == ["systemd-run", "--user", "--quiet", "--collect"]
         assert any(item.startswith("--unit=docich-retro-improve-") for item in argv)
         assert "--property=Type=exec" in argv
-        assert "--property=RuntimeMaxSec=1500" in argv
+        assert "--property=RuntimeMaxSec=3600" in argv
         assert "--property=TimeoutStopSec=30" in argv
         assert "--setenv=DOCICH_ALLOW_REAL_AI=1" in argv
         assert f"--setenv=PYTHONPATH={self.g.repo_root / 'src'}" in argv
         assert f"--property=StandardOutput=append:{(self.root / 'run' / 'x.log').resolve()}" in argv
         assert f"--property=StandardError=append:{(self.root / 'run' / 'x.log').resolve()}" in argv
-        assert kwargs["check"] and kwargs["timeout"] == 30
+        assert kwargs["check"] is False
+        assert kwargs["capture_output"] is True
+        assert kwargs["text"] is True
+        assert kwargs["timeout"] == 30
+        # A timer-launched tick unit does not reliably carry the user-bus
+        # environment; the submission must supply it itself (#947).
+        assert kwargs["env"]["XDG_RUNTIME_DIR"] == f"/run/user/{os.getuid()}"
 
     def test_failed_systemd_submission_is_recorded_without_fallback(self):
         from dataclasses import replace
@@ -1062,13 +1089,46 @@ class TestRetroCornerImproveSpawnEnv(RetroCornerTestBase):
         mgr, _ = self.manager(["sorengame"])
         mgr.config = replace(mgr.config, improve_agents="test-agent")
         state = {"date": "2026-09-06"}
+
+        def failed_run(argv, **kwargs):
+            return SimpleNamespace(
+                returncode=1,
+                stderr="Failed to start transient service unit: Unit is masked\n",
+            )
+
         with patch.object(sys, "platform", "linux"), \
              patch.dict(os.environ, {"INVOCATION_ID": "parent-corner"}, clear=False), \
-             patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "systemd-run")), \
+             patch("subprocess.run", side_effect=failed_run), \
              patch("subprocess.Popen", side_effect=AssertionError("unsafe parent cgroup")):
             mgr._spawn_improve_once(state)
 
         assert state["improve_job"]["spawned"] is False
+        error = state["improve_job"]["error"]
+        # The durable record must carry the exit status and systemd's message,
+        # not the argv that previously filled the 240-char limit.
+        assert "rc=1" in error
+        assert "Unit is masked" in error
+        assert "systemd-run" not in error
+
+    def test_systemd_submission_timeout_is_recorded(self):
+        from dataclasses import replace
+        from unittest.mock import patch
+
+        mgr, _ = self.manager(["sorengame"])
+        mgr.config = replace(mgr.config, improve_agents="test-agent")
+        state = {"date": "2026-09-06"}
+
+        def timed_out(argv, **kwargs):
+            raise subprocess.TimeoutExpired(cmd="systemd-run", timeout=30)
+
+        with patch.object(sys, "platform", "linux"), \
+             patch.dict(os.environ, {"INVOCATION_ID": "parent-corner"}, clear=False), \
+             patch("subprocess.run", side_effect=timed_out), \
+             patch("subprocess.Popen", side_effect=AssertionError("unsafe parent cgroup")):
+            mgr._spawn_improve_once(state)
+
+        assert state["improve_job"]["spawned"] is False
+        assert "タイムアウト" in state["improve_job"]["error"]
 
     def test_non_systemd_spawn_passes_real_ai_consent_to_child(self):
         import subprocess
@@ -1095,3 +1155,36 @@ class TestRetroCornerImproveSpawnEnv(RetroCornerTestBase):
         _, kwargs = calls[0]
         assert kwargs['env']['DOCICH_ALLOW_REAL_AI'] == '1'
         assert kwargs['start_new_session'] is True
+
+
+class TestRetroCornerImproveWindow(RetroCornerTestBase):
+    def test_spawn_passes_the_confirmed_corner_window(self):
+        from dataclasses import replace
+        from unittest.mock import patch
+
+        mgr, _ = self.manager(["sorengame"])
+        mgr.config = replace(mgr.config, improve_agents="test-agent")
+        state = {
+            "date": "2026-09-06",
+            "game": "nsnake",
+            "started_at": "2026-09-06T12:00:00+09:00",
+            "ends_at": "2026-09-06T12:20:00+09:00",
+        }
+        captured = []
+
+        def fake_run(argv, **kwargs):
+            captured.append(argv)
+            return SimpleNamespace(returncode=0, stderr="")
+
+        with patch.object(sys, "platform", "linux"), \
+             patch.dict(os.environ, {"INVOCATION_ID": "parent-corner"}, clear=True), \
+             patch("subprocess.run", side_effect=fake_run), \
+             patch("subprocess.Popen", side_effect=AssertionError("unsafe parent cgroup")):
+            mgr._spawn_improve_once(state)
+
+        assert state["improve_job"]["spawned"] is True
+        argv = captured[0]
+        start = datetime.fromisoformat(state["started_at"]).timestamp()
+        end = datetime.fromisoformat(state["ends_at"]).timestamp()
+        assert argv[argv.index("--started-at") + 1] == f"{start:.6f}"
+        assert argv[argv.index("--ends-at") + 1] == f"{end:.6f}"

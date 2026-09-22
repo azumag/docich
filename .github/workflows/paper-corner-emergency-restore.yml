@@ -1,12 +1,20 @@
 name: PAPER emergency restore
 
 on:
-  issues:
-    types: [edited]
+  workflow_call:
+    inputs:
+      nonce:
+        description: Owner-authenticated durable restore request nonce
+        required: true
+        type: string
 
 permissions:
   contents: read
+  issues: write
 
+# This is the only workflow that mutates production for the emergency request.
+# It deliberately shares the normal VM lane; the request marker is durable
+# outside this lane, so a pending run can be replaced without losing work.
 concurrency:
   group: vm-operations-${{ github.repository }}
   cancel-in-progress: false
@@ -14,12 +22,16 @@ concurrency:
 jobs:
   restore:
     if: >-
-      github.actor_id == 9018513 &&
-      github.triggering_actor == 'azumag' &&
       github.ref == 'refs/heads/main' &&
       github.ref_protected == true &&
-      github.event.issue.number == 569 &&
-      github.event.issue.user.id == 9018513
+      github.repository == 'azumag/docich' &&
+      inputs.nonce != '' &&
+      ((github.workflow_ref == 'azumag/docich/.github/workflows/paper-corner-emergency-request.yml@refs/heads/main' &&
+        github.event_name == 'issues' &&
+        github.actor_id == 9018513 &&
+        github.triggering_actor == 'azumag') ||
+       (github.workflow_ref == 'azumag/docich/.github/workflows/paper-corner-emergency-replay.yml@refs/heads/main' &&
+        github.event_name == 'schedule'))
     environment: vm-operations
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -32,26 +44,62 @@ jobs:
           persist-credentials: false
           submodules: false
 
-      - name: Authorize exact restore command
+      - name: Validate durable request and completion state
+        id: request
         shell: bash
         env:
-          BODY: ${{ github.event.issue.body }}
+          GH_TOKEN: ${{ github.token }}
+          NONCE: ${{ inputs.nonce }}
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import json, os, re
-          data = json.loads(os.environ['BODY'])
-          if not isinstance(data, dict) or set(data) != {'operation', 'confirm', 'nonce'}:
-              raise SystemExit('invalid restore command')
-          if data.get('operation') != 'restore-scheduled' or data.get('confirm') != 'production':
-              raise SystemExit('invalid restore command')
-          nonce = data.get('nonce')
-          if not isinstance(nonce, str) or re.fullmatch(r'[A-Za-z0-9._:-]{1,64}', nonce) is None:
-              raise SystemExit('invalid restore nonce')
+          issue_file="$RUNNER_TEMP/paper-restore-issue.json"
+          comments_file="$RUNNER_TEMP/paper-restore-comments.jsonl"
+          gh api "repos/$GITHUB_REPOSITORY/issues/569" > "$issue_file"
+          gh api --paginate --jq '.[]' "repos/$GITHUB_REPOSITORY/issues/569/comments?per_page=100" > "$comments_file"
+          issue_state="$(python3 - "$issue_file" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding='utf-8'))
+          if data.get('number') != 569:
+              raise SystemExit('unexpected restore issue')
+          user = data.get('user') or {}
+          if user.get('login') != 'azumag' or user.get('id') != 9018513:
+              raise SystemExit('unexpected restore issue owner')
+          print('open' if data.get('state') == 'open' else 'closed')
           PY
+          )"
+          if [[ "$issue_state" != open ]]; then
+            echo 'needed=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          state="$(python3 control/ops/vm_actions/paper_restore_queue.py state "$comments_file" "$NONCE")"
+          # The request recorder accepts only operation=restore-scheduled;
+          # this reusable workflow receives its already-validated nonce.
+          case "$state" in
+            state=pending)
+              echo 'needed=true' >> "$GITHUB_OUTPUT"
+              echo "nonce=$NONCE" >> "$GITHUB_OUTPUT"
+              ;;
+            state=complete|state=new)
+              echo 'needed=false' >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "unexpected restore request state: $state" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Authorize exact restore request
+        if: steps.request.outputs.needed == 'true'
+        shell: bash
+        env:
+          NONCE: ${{ steps.request.outputs.nonce }}
+        run: |
+          set -euo pipefail
+          [[ "$NONCE" =~ ^[A-Za-z0-9._:-]{1,64}$ ]]
 
       - name: Resolve immutable current-main SHA
         id: candidate
+        if: steps.request.outputs.needed == 'true'
         shell: bash
         env:
           EVENT_SHA: ${{ github.sha }}
@@ -63,6 +111,7 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: Configure pinned SSH client
+        if: steps.request.outputs.needed == 'true'
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -83,6 +132,7 @@ jobs:
           printf 'port=%s\n' "$port" >> "$GITHUB_ENV"
 
       - name: Require production to equal current protected main
+        if: steps.request.outputs.needed == 'true'
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -100,6 +150,7 @@ jobs:
           PY
 
       - name: Restore stuck scheduled PAPER corner
+        if: steps.request.outputs.needed == 'true'
         shell: bash
         env:
           VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
@@ -116,3 +167,14 @@ jobs:
           if data.get('status') != 'executed' or data.get('sha') != sys.argv[2] or data.get('exit_code') != 0:
               raise SystemExit('scheduled PAPER restore failed')
           PY
+
+      - name: Record durable successful restore receipt
+        if: steps.request.outputs.needed == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NONCE: ${{ steps.request.outputs.nonce }}
+        run: |
+          set -euo pipefail
+          body="$(printf '<!-- docich:paper-restore-complete nonce=%s -->\n\nPAPER emergency restore completed.' "$NONCE")"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/569/comments" -f "body=$body" > /dev/null

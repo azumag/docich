@@ -162,6 +162,114 @@ def test_bad_llm_output_raises(tmp_path):
         run_corner_improve(g, game='gnurobots', date_str='2026-09-10', agents='a',
                            llm=lambda prompt: 'not json',
                            evaluator=lambda strat: {'mean_score': 1.0, 'played': 2})
+    record = json.loads((state_dir / 'corner_improve_gnurobots.json').read_text())
+    assert record['status'] == 'failed'
+    assert record['reason_code'] == 'llm-format'
+    assert record['phase'] == 'llm'
+    assert 'not json' not in json.dumps(record)
+
+
+def test_eval_failure_records_reason_code(tmp_path):
+    state_dir = _setup_completed(tmp_path, [10, 20])
+    g = _G(state_dir)
+    key = sorted(_weights())[0]
+
+    def failing_evaluator(strat):
+        raise RuntimeError('sensitive evaluator detail')
+
+    with pytest.raises(CornerImproveError):
+        run_corner_improve(g, game='gnurobots', date_str='2026-09-10', agents='a',
+                           llm=lambda prompt: f'```json\n{{"{key}": 2.5}}\n```',
+                           evaluator=failing_evaluator)
+    record = json.loads((state_dir / 'corner_improve_gnurobots.json').read_text())
+    assert record['status'] == 'failed'
+    assert record['reason_code'] == 'eval'
+    assert record['phase'] == 'eval'
+    assert 'sensitive' not in json.dumps(record)
+
+
+def test_gate_disabled_records_reason_code(tmp_path, monkeypatch):
+    monkeypatch.delenv('DOCICH_ALLOW_REAL_AI', raising=False)
+    state_dir = _setup_completed(tmp_path, [10, 20])
+    g = _G(state_dir)
+    with pytest.raises(CornerImproveError):
+        run_corner_improve(g, game='gnurobots', date_str='2026-09-10', agents='a')
+    record = json.loads((state_dir / 'corner_improve_gnurobots.json').read_text())
+    assert record['status'] == 'failed'
+    assert record['reason_code'] == 'gate-disabled'
+    assert record['phase'] == 'llm'
+
+
+def test_untrusted_failure_metadata_is_clamped_before_persist(tmp_path):
+    state_dir = _setup_completed(tmp_path, [10, 20])
+    g = _G(state_dir)
+
+    def hostile_llm(_prompt):
+        raise CornerImproveError(
+            'sensitive exception body',
+            code={'secret-code': 'must-not-persist'},
+            phase=['secret-phase'],
+        )
+
+    with pytest.raises(CornerImproveError):
+        run_corner_improve(
+            g, game='gnurobots', date_str='2026-09-10', agents='a',
+            llm=hostile_llm,
+            evaluator=lambda strat: {'mean_score': 1.0, 'played': 2},
+        )
+    record = json.loads((state_dir / 'corner_improve_gnurobots.json').read_text())
+    assert record['status'] == 'failed'
+    assert record['reason_code'] == 'unexpected'
+    assert record['phase'] == 'unknown'
+    assert 'secret' not in json.dumps(record)
+
+
+def test_parse_candidate_attaches_fixed_codes():
+    keys = set(_weights())
+    key = sorted(keys)[0]
+    for payload, code in (
+        ('not json', 'llm-format'),
+        ('{}', 'llm-format'),
+        ('{"unknown-key": 1}', 'llm-keys'),
+        (f'{{"{key}": true}}', 'llm-values'),
+        (f'{{"{key}": 0.0009}}', 'llm-values'),
+    ):
+        with pytest.raises(CornerImproveError) as excinfo:
+            parse_candidate(payload, keys)
+        assert excinfo.value.code == code
+        assert excinfo.value.phase == 'llm'
+
+
+def test_prompt_shows_only_proposable_numeric_weights(tmp_path):
+    state_dir = tmp_path / 'run'
+    (state_dir / 'scores').mkdir(parents=True)
+    base = 1789034400  # 2026-09-10T19:00:00+09:00
+    (state_dir / 'scores' / 'nsnake.jsonl').write_text(
+        json.dumps({'ts': str(base + 60), 'game': 'nsnake', 'score': 10, 'source': 'wrapper'}) + '\n',
+        encoding='utf-8')
+    (state_dir / 'retro_corner.json').write_text(json.dumps({
+        'schema_version': 1, 'status': 'completed', 'date': '2026-09-10', 'game': 'nsnake',
+        'previous_game': 'sorengame',
+        'started_at': '2026-09-10T19:00:00+09:00',
+        'ends_at': '2026-09-10T19:30:00+09:00',
+        'completed_at': '2026-09-10T19:30:00+09:00',
+    }), encoding='utf-8')
+    g = _G(state_dir)
+    prompts = []
+
+    def llm(prompt):
+        prompts.append(prompt)
+        return '```json\n{"min_free": 9}\n```'
+
+    result = run_corner_improve(
+        g, game='nsnake', date_str='2026-09-10', agents='a',
+        llm=llm, evaluator=lambda strat: {'mean_score': 100.0, 'played': 2},
+    )
+    assert result['status'] == 'kept'
+    assert '"min_free"' in prompts[0]
+    # nsnake's fixed boolean flag must not be presented as a tunable weight;
+    # the model returned it once and the strict parser failed the whole job.
+    assert 'tail_passable' not in prompts[0]
 
 
 def test_parse_candidate_boundaries():
@@ -199,3 +307,62 @@ def test_already_running_is_skipped(tmp_path):
         fcntl.flock(held.fileno(), fcntl.LOCK_UN)
         held.close()
     assert result['status'] == 'skipped' and result['reason'] == 'already-running'
+
+
+def test_improve_lane_serializes_and_reports_busy(tmp_path):
+    from docich.corner_improve import improve_lane, improve_lane_free
+
+    state_dir = tmp_path / "run"
+    assert improve_lane_free(state_dir) is True
+    with improve_lane(state_dir) as first:
+        assert first is True
+        assert improve_lane_free(state_dir) is False
+        with improve_lane(state_dir, timeout=0.05, sleep=lambda _seconds: None) as second:
+            assert second is False
+    assert improve_lane_free(state_dir) is True
+
+
+def test_lane_busy_skip_is_recorded(tmp_path, monkeypatch):
+    import json as _json
+    from contextlib import contextmanager
+    from docich import corner_improve
+
+    @contextmanager
+    def busy(_state_dir, **_kwargs):
+        yield False
+
+    monkeypatch.setattr(corner_improve, "improve_lane", busy)
+    state_dir = _setup_completed(tmp_path, [10, 20])
+    result = run_corner_improve(_G(state_dir), game='gnurobots',
+                                date_str='2026-09-10', agents='a')
+
+    assert result['status'] == 'skipped' and result['reason'] == 'lane-busy'
+    status = _json.loads((state_dir / 'corner_improve_gnurobots.json').read_text())
+    assert status['status'] == 'skipped'
+    assert status['reason_code'] == 'lane-busy'
+
+
+def test_explicit_window_ignores_a_shared_state_owned_by_the_next_corner(tmp_path):
+    import datetime as dt
+
+    state_dir = tmp_path / 'run'
+    (state_dir / 'scores').mkdir(parents=True)
+    start = dt.datetime.fromisoformat('2026-09-10T19:00:00+09:00').timestamp()
+    (state_dir / 'scores' / 'gnurobots.jsonl').write_text(
+        json.dumps({'ts': str(start + 60), 'game': 'gnurobots', 'score': 42}) + '\n',
+        encoding='utf-8',
+    )
+    # The next queued corner already owns the shared state file.
+    (state_dir / 'retro_corner.json').write_text(json.dumps({
+        'status': 'active', 'game': 'moon-buggy', 'date': '2026-09-11',
+        'started_at': '2026-09-11T00:00:00+09:00',
+        'ends_at': '2026-09-11T00:20:00+09:00',
+    }), encoding='utf-8')
+
+    result = run_corner_improve(
+        _G(state_dir), game='gnurobots', date_str='2026-09-10', agents='a',
+        dry_run=True, window=(start, start + 1800),
+    )
+
+    assert result['status'] == 'dry-run'
+    assert result['stats']['n'] == 1 and result['stats']['best'] == 42

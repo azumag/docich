@@ -10,7 +10,7 @@ on:
         required: true
         default: status
         type: choice
-        options: [status, deploy, exec, configure_jev, disable_jev, bootstrap, diagnostics, reclaim, rebaseline, market_paper]
+        options: [status, deploy, exec, configure_jev, disable_jev, configure_jev_route_direct, configure_jev_route_vercel, disable_jev_route, bootstrap, diagnostics, reclaim, rebaseline, market_paper, restart_webui]
       target:
         description: VM target
         required: true
@@ -246,20 +246,19 @@ jobs:
             exit 1
           fi
 
-          {
-            # lineage (#279): converge a changed path only when its live
-            # bytes are cryptographically identical (sha256) to some actual
-            # reviewed commit's blob for that exact path within old_sub..
-            # new_sub -- never a guess, never applied to bytes that don't
-            # match real history. Anything else stays fail-closed exactly
-            # as before.
-            #
-            # attestation (#279): a reviewed branch commit dropped from
-            # old_sub..new_sub by a squash merge can be attested in
-            # reviewed_lineage_attestations.json. Only the exact reviewed
-            # sha256+mode recorded for this old/new pair is passed, and the
-            # VM converges only on an exact live byte+mode match.
-            attest_raw="$(python3 - "$old_sub" "$new_sub" control/ops/vm_actions/reviewed_lineage_attestations.json <<'PY'
+          # lineage (#279): converge a changed path only when its live
+          # bytes are cryptographically identical (sha256) to some actual
+          # reviewed commit's blob for that exact path within old_sub..
+          # new_sub -- never a guess, never applied to bytes that don't
+          # match real history. Anything else stays fail-closed exactly
+          # as before.
+          #
+          # attestation (#279): a reviewed branch commit dropped from
+          # old_sub..new_sub by a squash merge can be attested in
+          # reviewed_lineage_attestations.json. Only the exact reviewed
+          # sha256+mode recorded for this old/new pair is passed, and the
+          # VM converges only on an exact live byte+mode match.
+          attest_raw="$(python3 - "$old_sub" "$new_sub" control/ops/vm_actions/reviewed_lineage_attestations.json <<'PY'
           import json, re, sys
           old_sub, new_sub, path = sys.argv[1], sys.argv[2], sys.argv[3]
           try:
@@ -280,17 +279,17 @@ jobs:
               sys.stdout.write(" ".join(tokens))
           PY
           )"
-            attest_args=()
-            if [[ -n "$attest_raw" ]]; then read -r -a attest_args <<< "$attest_raw"; fi
-            # Issue #225: reconcile は専用の狭い gateway operation へ送る。
-            # stdin は厳格なトークン (old_root/old_sub/new_sub + lineage +
-            # attestation triples) のみで、任意シェルは一切流さない。
-            # fetch・ reviewed SHA からの helper 読込・固定 argv 実行は
-            # VM 側の reconcile op が shell なしで行う。
-            {
-              printf '%s %s %s lineage' "$old_root" "$old_sub" "$new_sub"
-              for token in "${attest_args[@]}"; do printf ' %s' "$token"; done
-            } | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "reconcile docich production $SHA"
+          attest_args=()
+          if [[ -n "$attest_raw" ]]; then read -r -a attest_args <<< "$attest_raw"; fi
+          # Issue #225: reconcile は専用の狭い gateway operation へ送る。
+          # stdin は厳格なトークン (old_root/old_sub/new_sub + lineage +
+          # attestation triples) のみで、任意シェルは一切流さない。
+          # fetch・ reviewed SHA からの helper 読込・固定 argv 実行は
+          # VM 側の reconcile op が shell なしで行う。
+          {
+            printf '%s %s %s lineage' "$old_root" "$old_sub" "$new_sub"
+            for token in "${attest_args[@]}"; do printf ' %s' "$token"; done
+          } | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "reconcile docich production $SHA"
 
       - name: Normalize other owned submodule checkouts
         id: normalize_other
@@ -346,7 +345,11 @@ jobs:
         shell: bash
         run: exit 1
 
-      - name: Ensure rolling corner rotation timer
+      # Canonical deploy hook for the common corner rotation timer. Stage 1
+      # keeps the legacy unit names active; the reviewed rename is gated by
+      # ops/vm_actions/corner_rotation_timer_migration_epoch (absent = legacy).
+      # The hook never restarts the shared display/Soren/audio/stream units.
+      - name: Ensure corner rotation timer
         if: ${{ steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
         shell: bash
         env:
@@ -384,6 +387,22 @@ jobs:
 
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
           cat control/ops/vm_actions/restart_radio_worker.sh | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
+      - name: Restart docich webui systemd unit
+        if: ${{ steps.auth.outputs.operation == 'restart_webui' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # The helper is a fixed reviewed script from the trusted main checkout.
+          # It runs only `systemctl --user` (no root/sudo) on the fixed unit
+          # docich-webui.service and fails closed unless the unit is active
+          # after the restart. Output stays in the VM-private exec log.
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          cat control/ops/vm_actions/restart_webui.sh | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Probe Moomoo JP quote readiness after reviewed production deploy
         id: market_provider_probe
@@ -506,6 +525,48 @@ jobs:
           set -euo pipefail
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
           < /dev/null ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "disable_jev docich production $SHA"
+
+      - name: Route Jev classification through the docich core (direct)
+        if: ${{ steps.auth.outputs.operation == 'configure_jev_route_direct' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          # No secret on stdin: the direct route reuses #678's already-live
+          # TYPESAFE_API_KEY on the running worker; it is never sent here.
+          < /dev/null ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "configure_jev_route_direct docich production $SHA"
+
+      - name: Route Jev classification through the docich core (vercel)
+        if: ${{ steps.auth.outputs.operation == 'configure_jev_route_vercel' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+          DOCICH_JEV_VERCEL_API_KEY: ${{ secrets.DOCICH_JEV_VERCEL_API_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$DOCICH_JEV_VERCEL_API_KEY" ]]
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          # The stdin payload is only the Vercel secret. The VM gateway loads
+          # the configurator from this exact reviewed SHA; no caller shell is run.
+          printf '%s' "$DOCICH_JEV_VERCEL_API_KEY" | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "configure_jev_route_vercel docich production $SHA"
+
+      - name: Disable docich Jev route delegation
+        if: ${{ steps.auth.outputs.operation == 'disable_jev_route' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          < /dev/null ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "disable_jev_route docich production $SHA"
 
       - name: Run reviewed storage reclaim
         if: ${{ steps.auth.outputs.operation == 'reclaim' }}

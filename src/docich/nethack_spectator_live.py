@@ -231,7 +231,12 @@ class LiveNethackSpectator:
             raise NethackSpectatorLiveError(
                 "active NetHack game window ownership does not match canonical runtime"
             )
-        return tmux.capture_pane_checked(runtime.target)
+        process_name = process_window_name(tmux.list_windows(), runtime)
+        if process_name is None:
+            raise NethackSpectatorLiveError(
+                "active NetHack process window cannot be resolved safely"
+            )
+        return tmux.capture_pane_checked(f"{runtime.adapter_session}:{process_name}")
 
     def render_once(self) -> str:
         """Render one snapshot and return active/idle/degraded."""

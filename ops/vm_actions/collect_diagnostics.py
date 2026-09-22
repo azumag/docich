@@ -40,6 +40,19 @@ Observed sources (all read-only):
     (tmp/state/corner_boundary_*.json, ab_state.json, ab_games.jsonl,
     ab_candidate/): only presence, counts, enums and mtimes; strategy/hash
     bodies and environment values are never read out.
+  - the registered chat_worker's own live environ (#882), restricted to a
+    fixed 5-name allowlist (never the raw block, never any other name):
+    four names projected through the already-reviewed
+    docich.semantic_decision.diagnostics.describe(), which returns only
+    backend/route/requested_model/credential-presence -- never a credential
+    value; plus COMMENT_CLASSIFIER_BACKEND (#678's own, non-secret enum
+    flag) reported as its plain, length-capped value, since it is the
+    prerequisite gate that decides whether the other four are ever
+    consulted at all. This is the one narrow, reviewed exception to "raw
+    environment values are never read out" above: it is a fixed-shape
+    projection of a handful of non-secret configuration strings and a
+    presence boolean, the same bounded-projection contract every other
+    source in this file already follows, never an environment dump.
 
 Never emitted during normal diagnostics: secrets, tokens, raw environment,
 prompt/generation bodies, HTTP headers, or file contents. Error previews are
@@ -56,6 +69,8 @@ in which case the gateway refuses fail-closed.
 import base64
 import configparser
 import datetime as dt
+import fcntl
+import hashlib
 import json
 import math
 import os
@@ -65,12 +80,14 @@ import stat
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 PROD_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROD_ROOT / "src"))
 
 from docich.runtime_backend import _pid_is_active, _process_is_zombie  # noqa: E402
+from docich.semantic_decision.diagnostics import describe as _describe_semantic_decision  # noqa: E402
 
 import importlib.util as _importlib_util  # noqa: E402
 
@@ -748,6 +765,74 @@ def _collect_workers(soren, now):
     }
 
 
+# Fixed name allowlist (#882): only these exact variable NAMES are ever read
+# from a live worker's environ. Values for the two credential names never
+# leave _read_allowlisted_environ; docich.semantic_decision.diagnostics.describe()
+# converts them to presence-only before this module ever formats output.
+# COMMENT_CLASSIFIER_BACKEND is #678's own key, not docich-owned, but its
+# value is a plain enum flag, never a credential, so it is reported as-is
+# below: it is the prerequisite gate soviet_now's shell wrapper checks
+# before ever invoking the classifier that would consult
+# DOCICH_SEMANTIC_BACKEND at all, so omitting it would make "backend":"jev"
+# here misleading about whether real classification is actually delegated.
+SEMANTIC_DECISION_ENV_ALLOWLIST = (
+    "DOCICH_SEMANTIC_BACKEND",
+    "DOCICH_JEV_ROUTE",
+    "TYPESAFE_API_KEY",
+    "DOCICH_JEV_VERCEL_API_KEY",
+    "COMMENT_CLASSIFIER_BACKEND",
+)
+COMMENT_CLASSIFIER_BACKEND_STR_MAX = 64
+
+
+def _read_allowlisted_environ(pid, names):
+    """Read only the given variable NAMES from /proc/<pid>/environ.
+
+    Returns None on any read failure (process gone, permission, non-Linux).
+    Never returns the raw environ block or a name outside ``names``.
+    """
+    try:
+        raw = (Path("/proc") / str(pid) / "environ").read_bytes()
+    except (FileNotFoundError, OSError):
+        return None
+    wanted = set(names)
+    result = {}
+    for item in raw.split(b"\0"):
+        if b"=" not in item:
+            continue
+        key, value = item.split(b"=", 1)
+        key = key.decode("utf-8", "replace")
+        if key in wanted:
+            result[key] = value.decode("utf-8", "replace")
+    return result
+
+
+def _collect_semantic_decision(workers):
+    """Effective docich semantic-decision config on the live chat_worker (#882).
+
+    Reports whether the registered chat_worker is delegating comment
+    classification to the reviewed docich core, and if so, over which route
+    -- never a credential value, only its presence. A missing/dead worker or
+    an unreadable environ is reported as such, never guessed as "legacy"
+    (an absent observation is not evidence of a disabled backend). Also
+    reports the #678 prerequisite gate (comment_classifier_backend) as its
+    plain value -- not a secret, and required context: DOCICH_SEMANTIC_BACKEND
+    is never consulted by soviet_now's shell wrapper unless this is "jev" too.
+    """
+    detail = workers.get("details", {}).get("chat_worker") or {}
+    pid = detail.get("pid")
+    if not pid or not detail.get("alive"):
+        return {"present": False, "readable": False}
+    env = _read_allowlisted_environ(pid, SEMANTIC_DECISION_ENV_ALLOWLIST)
+    if env is None:
+        return {"present": True, "readable": False}
+    classifier_backend = env.get("COMMENT_CLASSIFIER_BACKEND") or None
+    if type(classifier_backend) is str and len(classifier_backend) > COMMENT_CLASSIFIER_BACKEND_STR_MAX:
+        classifier_backend = classifier_backend[:COMMENT_CLASSIFIER_BACKEND_STR_MAX]
+    return {"present": True, "readable": True, "comment_classifier_backend": classifier_backend,
+            **_describe_semantic_decision(env)}
+
+
 def _parse_lock_owner(owner_path):
     """Parsequeue owner file. Never returns the owner token, only liveness facts."""
     raw = _read_text_capped(owner_path, 1024)
@@ -1356,6 +1441,184 @@ CORNER_STATE_FILES = {
     "nethack_corner_manual": "nethack_corner_manual.json",
 }
 
+# These are the remaining sources consulted by rotation's live and retired
+# adapters. Do not derive filenames from state, catalog rows or request IDs.
+ROTATION_CORNER_FILES = (
+    "retro_corner", "retro_corner_manual", "paper_corner", "paper_corner_manual",
+    "soren91_corner", "soren91_corner_manual", "nethack_corner", "nethack_corner_manual",
+)
+ROTATION_IMPROVE_GAMES = (
+    "gnurobots", "ninvaders", "nsnake", "bastet", "moon-buggy",
+    "pacman4console", "nethack", "hanjuku-hero", "soren91",
+)
+ROTATION_STATUSES = frozenset({
+    "idle", "waiting", "starting", "active", "restoring", "preparing",
+    "recovery_required", "failed", "completed", "interrupted", "expired",
+    "running", "promoted", "kept", "improved", "dry-run", "skipped",
+})
+
+# Fixed failure taxonomy of the end-of-corner improvement job. Keep in sync
+# with docich.corner_improve.CornerImproveError codes; unknown values stay
+# "unknown" instead of leaking a free-text reason.
+ROTATION_IMPROVE_REASON_CODES = frozenset({
+    "state-read", "corner-window", "gate-disabled", "llm-call", "llm-rc",
+    "llm-empty", "llm-format", "llm-keys", "llm-values", "llm-unexpected",
+    "eval", "lane-busy", "unexpected",
+})
+ROTATION_IMPROVE_PHASES = frozenset({"state", "llm", "eval", "unknown"})
+
+# Fixed latch taxonomy of `corner_rotation.json`'s `error_kind`. Keep in sync
+# with docich.corner_rotation.ERROR_KINDS (regression-tested): the exception
+# text is never persisted or published, only this category.
+ROTATION_ERROR_KINDS = frozenset({
+    "adapter-state",
+    "adapter-timestamp",
+    "catalog-mismatch",
+    "execution-error",
+    "execution-unverified",
+    "invalid-state",
+    "unexpected",
+})
+ROTATION_PENDING_PHASES = frozenset({"selected", "dispatched"})
+
+
+def _rotation_evidence_file(state_dir, relative):
+    """Bounded fixed-path read; do not follow links to unrelated runtime data."""
+    path = state_dir / relative
+    if any(parent.is_symlink() for parent in (path, *path.parents)):
+        return True, False, None
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > 65536:
+                return True, False, None
+            raw = handle.read(65537)
+            if len(raw) > 65536:
+                return True, False, None
+            data = json.loads(raw)
+            return True, isinstance(data, dict), data if isinstance(data, dict) else None
+    except FileNotFoundError:
+        return False, False, None
+    except (OSError, ValueError):
+        return True, False, None
+
+
+def _rotation_enum(value, allowed):
+    return value if isinstance(value, str) and value in allowed else "unknown"
+
+
+def _rotation_time(value):
+    from docich.corner_rotation import timestamp, RotationError
+    try:
+        return timestamp(value)
+    except (RotationError, ValueError, OverflowError, OSError):
+        return None
+
+
+def _rotation_lock_state(path):
+    """Probe only an existing lock, retaining no lock and creating no files."""
+    try:
+        if any(parent.is_symlink() for parent in (path, *path.parents)):
+            return "unknown"
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                return "unknown"
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return "held"
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            return "free"
+    except FileNotFoundError:
+        return "absent"
+    except OSError:
+        return "unknown"
+
+
+def _collect_rotation_evidence(state_dir):
+    """Evidence for an overdue wait, not permission to recover or dispatch.
+
+    Worker health does not cover per-game post-corner improvement jobs.
+    Preserve missing/failed/stale evidence so an operator can distinguish
+    those waits from a raw failed PAPER record or a retired corner owner.
+    """
+    result = {"corners": {}, "improvements": {}}
+    for name in ROTATION_CORNER_FILES:
+        present, readable, raw = _rotation_evidence_file(state_dir, name + ".json")
+        entry = {"present": present, "readable": readable}
+        if readable:
+            job = raw.get("improve_job")
+            entry.update(
+                status=_rotation_enum(raw.get("status"), ROTATION_STATUSES),
+                completed_at=_rotation_time(raw.get("completed_at")),
+                game=_rotation_enum(raw.get("game"), ROTATION_IMPROVE_GAMES),
+                previous_game=_rotation_enum(raw.get("previous_game"), (*ROTATION_IMPROVE_GAMES, "sorengame")),
+                improve_spawned=job.get("spawned") if isinstance(job, dict)
+                and type(job.get("spawned")) is bool else None,
+                recovery_required=raw.get("recovery_required")
+                if type(raw.get("recovery_required")) is bool else None,
+            )
+        result["corners"][name] = entry
+    for game in (*ROTATION_IMPROVE_GAMES, "paper"):
+        relative = ("trading/paper_improve_status.json" if game == "paper"
+                    else f"corner_improve_{game}.json")
+        lock_name = "paper-improve.lock" if game == "paper" else f"corner-improve-{game}.lock"
+        present, readable, raw = _rotation_evidence_file(state_dir, relative)
+        entry = {"present": present, "readable": readable,
+                 "lock": _rotation_lock_state(state_dir / "locks" / lock_name)}
+        if readable:
+            entry.update(
+                status=_rotation_enum(raw.get("status"), ROTATION_STATUSES),
+                started_at=_rotation_time(raw.get("started_at")),
+                completed_at=_rotation_time(raw.get("completed_at")),
+                reason_code=_rotation_enum(raw.get("reason_code"), ROTATION_IMPROVE_REASON_CODES),
+                phase=_rotation_enum(raw.get("phase"), ROTATION_IMPROVE_PHASES),
+            )
+        result["improvements"][game] = entry
+    return result
+
+
+# Canonical and legacy user-unit names for the common corner rotation timer.
+# The legacy name becomes a relative alias of the canonical unit after the
+# reviewed migration; diagnostics reports the governing unit name and whether
+# the legacy name currently is that alias.
+CANONICAL_ROTATION_TIMER = "docich-corner-rotation.timer"
+LEGACY_ROTATION_TIMER = "docich-retro-corner.timer"
+
+
+def _rotation_timer_selection(unit_dir=None):
+    """Return (unit, legacy_alias) without executing anything.
+
+    ``legacy_alias`` is True only when the legacy unit is a symlink resolving
+    to the canonical name, False for a regular/missing legacy unit, and None
+    when the unit directory cannot be inspected. Before migration the legacy
+    name governs the timer; after migration the canonical name does.
+    """
+    directory = (
+        Path(unit_dir)
+        if unit_dir is not None
+        else PROD_ROOT.parent / ".config" / "systemd" / "user"
+    )
+    legacy = directory / LEGACY_ROTATION_TIMER
+    canonical = directory / CANONICAL_ROTATION_TIMER
+    try:
+        legacy_is_link = legacy.is_symlink()
+        canonical_regular = canonical.is_file() and not canonical.is_symlink()
+    except OSError:
+        return LEGACY_ROTATION_TIMER, None
+    if legacy_is_link:
+        try:
+            alias_ok = os.readlink(legacy) == CANONICAL_ROTATION_TIMER
+        except OSError:
+            return LEGACY_ROTATION_TIMER, None
+        unit = CANONICAL_ROTATION_TIMER if (alias_ok or canonical_regular) else LEGACY_ROTATION_TIMER
+        return unit, alias_ok
+    if canonical_regular:
+        return CANONICAL_ROTATION_TIMER, False
+    return LEGACY_ROTATION_TIMER, False
+
 
 def _program_state_dir():
     """Return the docich state_dir that holds corner state (read-only).
@@ -1556,6 +1819,15 @@ def _project_corner_state(data):
         "recovery_required": recovery_required,
         "announcements": announcements,
         "improve_job": improve_job,
+        "end_reason": (data.get("end_reason") if data.get("end_reason")
+                       in {"game_over", "screen_stalled"} else None),
+        "bot_phase": (data.get("bot_phase") if data.get("bot_phase") in {
+            "transition", "name", "dialogue", "shop", "field", "field_menu",
+            "battle_intro", "battle", "title_or_intro", "title", "month_menu", "concert", "event"} else None),
+        "bot_actions_sent": _bounded_int(data.get("bot_actions_sent")),
+        "battles_started": _bounded_int(data.get("battles_started")),
+        "battles_finished": _bounded_int(data.get("battles_finished")),
+        "screen_unchanged_seconds": _finite_number(data.get("screen_unchanged_seconds")),
     }
 
 
@@ -1654,6 +1926,7 @@ def _collect_paper_improve_status(state_dir, now):
             "phase": _bounded_str(data.get("phase"), 32),
             "progress": progress,
             "detail": _bounded_str(data.get("detail"), 160),
+            "reason_code": _rotation_enum(data.get("reason_code"), ROTATION_IMPROVE_REASON_CODES),
             "started_at": _bounded_time(data.get("started_at")),
             "updated_at": _bounded_time(data.get("updated_at")),
             "completed_at": _bounded_time(data.get("completed_at")),
@@ -1661,6 +1934,86 @@ def _collect_paper_improve_status(state_dir, now):
         }
     )
     return entry
+
+
+def _rotation_policy():
+    """Fixed projection of the configured dispatch policy (no secrets).
+
+    Returns (schedule_mode, cooldown_seconds); unknown/unreadable stays None so
+    the projection never guesses a policy from stale files.
+    """
+    try:
+        import tomllib
+
+        raw = _read_text_capped(PROD_ROOT / "config" / "docich.soren-live.toml", 16384) or ""
+        section = tomllib.loads(raw).get("corner_rotation", {})
+        if not isinstance(section, dict):
+            return None, None
+        mode = section.get("schedule_mode", "interval")
+        if mode not in {"interval", "queue"}:
+            return None, None
+        cooldown = section.get("cooldown_hours", 24.0)
+        if type(cooldown) not in (int, float) or isinstance(cooldown, bool):
+            return None, None
+        if not 0 < float(cooldown) <= 24 * 30:
+            return None, None
+        return mode, float(cooldown) * 3600.0
+    except (OSError, ValueError, ImportError):
+        return None, None
+
+
+def _rotation_error_kind(value):
+    """Project only the fixed latch category; absent stays None, unknown is unknown."""
+    if value is None:
+        return None
+    if isinstance(value, str) and value in ROTATION_ERROR_KINDS:
+        return value
+    return "unknown"
+
+
+def _rotation_pending_projection(state_dir, data, now):
+    """Bounded identity of the latched reservation (#986), request id never emitted.
+
+    The reservation's request UUID is compared against the fixed corner state
+    files only, so an operator can tell "never started" from "already ended"
+    without publishing request identity, payloads or file contents.
+    """
+    out = {
+        "pending_corner": None,
+        "pending_phase": None,
+        "pending_age_sec": -1,
+        "pending_owner": "absent",
+        "pending_owner_status": "unknown",
+    }
+    pending = data.get("pending")
+    if not isinstance(pending, dict):
+        if pending is not None:
+            out["pending_phase"] = "unknown"
+        return out
+    out["pending_corner"] = _bounded_str(pending.get("corner"), 64)
+    out["pending_phase"] = (
+        pending.get("phase") if pending.get("phase") in ROTATION_PENDING_PHASES
+        else "unknown"
+    )
+    selected = _rotation_time(pending.get("selected_at"))
+    if selected is not None:
+        out["pending_age_sec"] = max(0, int(now - selected))
+    request_id = pending.get("request_id")
+    if not isinstance(request_id, str) or not request_id:
+        out["pending_owner"] = "unknown"
+        return out
+    out["pending_owner"] = "none"
+    for name in ROTATION_CORNER_FILES:
+        _, readable, raw = _rotation_evidence_file(state_dir, name + ".json")
+        if not readable:
+            # An unreadable fixed file may hold the owner; never report "none".
+            out["pending_owner"] = "unknown"
+            continue
+        if raw.get("rotation_request_id") == request_id:
+            out["pending_owner"] = name
+            out["pending_owner_status"] = _rotation_enum(raw.get("status"), ROTATION_STATUSES)
+            break
+    return out
 
 
 def _collect_corner_files(state_dir, payload, now):
@@ -1680,7 +2033,11 @@ def _collect_corner_files(state_dir, payload, now):
             slot=_bounded_int(data.get("slot")),
             eligible_count=len(data["eligible"]) if isinstance(data.get("eligible"), list) else None,
             pending=isinstance(data.get("pending"), dict),
+            error_kind=_rotation_error_kind(data.get("error_kind")),
         )
+        rotation.update(_rotation_pending_projection(state_dir, data, now))
+    mode, cooldown = _rotation_policy()
+    rotation.update(schedule_mode=mode, cooldown_seconds=cooldown)
     payload["corner_rotation"] = rotation
     present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES["game_switch"])
     entry = {"present": present, "readable": readable}
@@ -1728,6 +2085,7 @@ def _collect_corner_files(state_dir, payload, now):
         )
     payload["presentation"] = entry
     payload["paper_improve"] = _collect_paper_improve_status(state_dir, now)
+    payload["rotation_evidence"] = _collect_rotation_evidence(state_dir)
 
 
 def _collect_programs(state_dir, soren, now):
@@ -1739,13 +2097,15 @@ def _collect_programs(state_dir, soren, now):
     mutates any file.
     """
     state_dir = Path(state_dir)
+    timer_unit, legacy_alias = _rotation_timer_selection()
     payload = {
         "state_dir_found": state_dir.is_dir(),
         "corner_rotation": {"present": False, "readable": False},
         "corner_rotation_timer": {
-            "unit": "docich-retro-corner.timer",
-            "active": None,
-            "enabled": None,
+            "unit": timer_unit,
+            "active": _unit_is_active(timer_unit),
+            "enabled": _unit_is_enabled(timer_unit),
+            "legacy_alias": legacy_alias,
         },
         "game_switch": {"present": False, "readable": False},
         "game_switch_fifo": {
@@ -1766,11 +2126,6 @@ def _collect_programs(state_dir, soren, now):
     }
     if state_dir.is_dir():
         _collect_corner_files(state_dir, payload, now)
-    payload["corner_rotation_timer"] = {
-        "unit": "docich-retro-corner.timer",
-        "active": _unit_is_active("docich-retro-corner.timer"),
-        "enabled": _unit_is_enabled("docich-retro-corner.timer"),
-    }
     soren = Path(soren)
     payload["boundary"] = _collect_boundary(soren / "tmp" / "state", now)
     payload["ab"] = _collect_ab(soren, now)
@@ -1854,6 +2209,193 @@ def _unit_is_enabled(unit):
     if out in ("disabled", "masked", "masked-runtime", "not-found", "bad"):
         return False
     return None
+
+
+# --- webui unit / served-UI observation (read-only) ---------------------------
+#
+# The webui is a long-running process, so "deployed" and "what the operator
+# sees" can diverge: another instance holding the port, a unit installed from
+# a different checkout, or a unit that never came back after a restart. This
+# section answers only that question. Everything published is a bool / int /
+# null — no path, no cmdline, no response bytes — and severity is unchanged
+# (the webui is optional; see wiki/WebUI.md).
+
+WEBUI_UNIT = "docich-webui.service"
+WEBUI_PORT_DEFAULT = 8787
+WEBUI_HTTP_TIMEOUT_SEC = 4
+WEBUI_MAX_HTML_BYTES = 1_000_000
+WEBUI_SOURCE_MAX_BYTES = 4_000_000
+WEBUI_INDEX_RE = re.compile(r'INDEX_HTML = r"""(.*?)"""', re.S)
+
+
+def _webui_config_port():
+    """Port the service binds, read from the same config it reads."""
+    try:
+        import tomllib
+
+        with open(PROD_ROOT / "config" / "docich.toml", "rb") as fh:
+            cfg = tomllib.load(fh).get("webui") or {}
+        port = int(cfg.get("port", WEBUI_PORT_DEFAULT))
+    except Exception:
+        return WEBUI_PORT_DEFAULT
+    return port if 0 < port < 65536 else WEBUI_PORT_DEFAULT
+
+
+def _webui_unit_dir():
+    return PROD_ROOT.parent / ".config" / "systemd" / "user"
+
+
+def _webui_deployed_index_digest():
+    """sha256 of INDEX_HTML in the deployed src/docich/webui.py, or None."""
+    path = PROD_ROOT / "src" / "docich" / "webui.py"
+    try:
+        if path.stat().st_size > WEBUI_SOURCE_MAX_BYTES:
+            return None
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = WEBUI_INDEX_RE.search(text)
+    if not match:
+        return None
+    return hashlib.sha256(match.group(1).encode("utf-8")).digest()
+
+
+def _webui_fetch(port):
+    """Bounded loopback GET of the webui index.
+
+    Returns ``(body, error)`` with error in {None, "unreachable", "too_large"};
+    never raises and never trusts a proxy (loopback only)."""
+    url = f"http://127.0.0.1:{port}/"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    limit = WEBUI_MAX_HTML_BYTES
+    body = bytearray()
+    try:
+        with opener.open(url, timeout=WEBUI_HTTP_TIMEOUT_SEC) as resp:
+            length = resp.headers.get("Content-Length") if resp.headers is not None else None
+            if length:
+                try:
+                    if int(length) > limit:
+                        return b"", "too_large"
+                except ValueError:
+                    pass
+            while len(body) <= limit:
+                chunk = resp.read(min(65536, limit + 1 - len(body)))
+                if not chunk:
+                    break
+                body += chunk
+    except Exception:
+        return b"", "unreachable"
+    if len(body) > limit:
+        return bytes(body), "too_large"
+    return bytes(body), None
+
+
+def _webui_unit_properties():
+    """(MainPID, NRestarts) from one `systemctl --user show`, or None each."""
+    main_pid = n_restarts = None
+    result = _systemctl_user(
+        ["show", WEBUI_UNIT, "--property=MainPID", "--property=NRestarts"], timeout=4
+    )
+    if result is None:
+        return None, None
+    _, out = result
+    match = re.search(r"(?m)^MainPID=(\d+)$", out)
+    if match:
+        main_pid = int(match.group(1))
+    match = re.search(r"(?m)^NRestarts=(\d+)$", out)
+    if match:
+        n_restarts = int(match.group(1))
+    return main_pid, n_restarts
+
+
+def _listen_inodes(port):
+    """Socket inodes in TCP_LISTEN state on ``port``; None without /proc."""
+    if not Path("/proc/net/tcp").exists() and not Path("/proc/net/tcp6").exists():
+        return None
+    inodes = set()
+    for name in ("tcp", "tcp6"):
+        try:
+            text = Path("/proc/net", name).read_text(encoding="ascii", errors="ignore")
+        except OSError:
+            continue
+        for line in text.splitlines()[1:]:
+            parts = line.split()
+            if len(parts) < 10 or parts[3] != "0A":
+                continue
+            try:
+                if int(parts[1].rsplit(":", 1)[1], 16) != port:
+                    continue
+            except (IndexError, ValueError):
+                continue
+            inodes.add(parts[9])
+    return inodes
+
+
+def _pid_owns_socket(pid, inodes):
+    """True when pid holds one of inodes; False / None when it cannot."""
+    read_any = False
+    try:
+        # NOTE: Path(...).iterdir() is lazy, so a missing /proc/<pid> raises
+        # FileNotFoundError on iteration, not on creation.
+        for fd in Path(f"/proc/{pid}/fd").iterdir():
+            try:
+                target = os.readlink(fd)
+            except OSError:
+                continue
+            read_any = True
+            if target.startswith("socket:[") and target[8:-1] in inodes:
+                return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    if not read_any:
+        return None
+    return False
+
+
+def _listener_is_unit(port, main_pid):
+    """Is the unit's MainPID the process listening on the webui port?"""
+    inodes = _listen_inodes(port)
+    if inodes is None:
+        return None
+    if not inodes:
+        return False
+    if main_pid is None:
+        return None
+    if main_pid <= 0:
+        return False
+    return _pid_owns_socket(main_pid, inodes)
+
+
+def _collect_webui():
+    """Bounded observation: is the deployed UI what the operator can see?"""
+    port = _webui_config_port()
+    unit_file = (_webui_unit_dir() / WEBUI_UNIT).is_file()
+    active = _unit_is_active(WEBUI_UNIT)
+    enabled = _unit_is_enabled(WEBUI_UNIT)
+    main_pid, n_restarts = _webui_unit_properties()
+    listener = _listener_is_unit(port, main_pid)
+    expected = _webui_deployed_index_digest()
+    body, error = _webui_fetch(port)
+    reachable = error in (None, "too_large")
+    matches = None
+    if reachable and expected is not None:
+        if error == "too_large":
+            matches = False
+        else:
+            matches = hashlib.sha256(body).digest() == expected
+    return {
+        "unit_file": unit_file,
+        "unit_active": active,
+        "unit_enabled": enabled,
+        "main_pid": main_pid,
+        "n_restarts": n_restarts,
+        "served_port": port,
+        "served_reachable": reachable,
+        "served_matches_deployed": matches,
+        "listener_is_unit": listener,
+    }
 
 
 def _market_paper_report_age_sec(sqlite_path, market, now):
@@ -2026,6 +2568,11 @@ def _severity(workers, queues, ai, improvement, corners=None):
         return "critical"
     retro = corners.get("retro_corner") if isinstance(corners, dict) else None
     if isinstance(retro, dict) and retro.get("recovery_required") is True:
+        return "warn"
+    # A latched common rotation stops every automatic corner while the shared
+    # plane stays healthy, so it must reach the runtime health alert (#986).
+    rotation = corners.get("corner_rotation") if isinstance(corners, dict) else None
+    if isinstance(rotation, dict) and rotation.get("status") == "recovery_required":
         return "warn"
     if (
         _paused_workers_actionable(workers)
@@ -2494,6 +3041,7 @@ def main(argv):
         "meta": _collect_meta(soren, now),
         "tracked_drift": _collect_tracked_drift(PROD_ROOT),
         "workers": workers,
+        "semantic_decision": _collect_semantic_decision(workers),
         "queues": {**queues, "queue_giveups_15m": ai["queue_giveups"]},
         "ai": {
             **ai,
@@ -2509,6 +3057,7 @@ def main(argv):
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),
         "nethack_panes": _collect_nethack_panes(_program_state_dir(), now),
         "market_paper": _collect_market_paper(_program_state_dir(), now),
+        "webui": _collect_webui(),
         "storage_breakdown": _collect_storage_breakdown(soren, PROD_ROOT),
         "storage_artifacts": _collect_tmp_shared_objects(now),
         "soren91_drop_profile": _collect_soren91_drop_profile(soren),

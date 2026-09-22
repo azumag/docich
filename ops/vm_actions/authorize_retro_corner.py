@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Fail-closed authorization for fixed retro-corner operations."""
+"""Fail-closed authorization for fixed retro-corner operations.
+
+Kept as the compatibility entry while the canonical
+`corner-rotation-operator` workflow is staged in. Both reviewed workflow
+paths are accepted, but only as an exact
+`<repo>/<workflow path>@refs/heads/main` match; the operation set stays fixed.
+"""
 from __future__ import annotations
 
 import json
@@ -11,7 +17,10 @@ OWNER = "azumag"
 OWNER_ID = "9018513"
 REPOSITORY = "azumag/docich"
 REPOSITORY_ID = "1327276249"
-WORKFLOW = ".github/workflows/retro-corner-operator.yml"
+WORKFLOWS = (
+    ".github/workflows/retro-corner-operator.yml",
+    ".github/workflows/corner-rotation-operator.yml",
+)
 ALLOWED_OPERATIONS = {"restart-service", "recover-failed"}
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 
@@ -24,6 +33,7 @@ def fail(message: str) -> None:
 def main() -> None:
     env = os.environ
     repo = env.get("GITHUB_REPOSITORY", "")
+    allowed_refs = {f"{repo}/{workflow}@refs/heads/main" for workflow in WORKFLOWS}
     checks = [
         repo == REPOSITORY,
         env.get("GITHUB_REPOSITORY_ID") == REPOSITORY_ID,
@@ -35,7 +45,7 @@ def main() -> None:
         env.get("GITHUB_REF") == "refs/heads/main",
         env.get("GITHUB_REF_PROTECTED", "").lower() == "true",
         env.get("GITHUB_DEFAULT_BRANCH") == "main",
-        env.get("GITHUB_WORKFLOW_REF") == f"{repo}/{WORKFLOW}@refs/heads/main",
+        env.get("GITHUB_WORKFLOW_REF") in allowed_refs,
     ]
     if not all(checks):
         fail("retro corner authorization denied")

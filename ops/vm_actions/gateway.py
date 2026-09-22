@@ -13,9 +13,11 @@ _projection_spec.loader.exec_module(projection_io)
 
 SHA_RE=re.compile(r'[0-9a-f]{40}\Z')
 MAX_PAYLOAD=128*1024*1024
-OPS={'upload','deploy','bootstrap','status','exec','configure_jev','disable_jev','diagnostics','rebaseline','reconcile'}
+OPS={'upload','deploy','bootstrap','status','exec','configure_jev','disable_jev','configure_jev_route_direct',
+     'configure_jev_route_vercel','disable_jev_route','diagnostics','rebaseline','reconcile'}
 TARGETS={'preview','production'}
-DIAGNOSTICS_FILES=('ops/vm_actions/collect_diagnostics.py','ops/vm_actions/runtime_registry.py','src/docich/runtime_backend.py')
+DIAGNOSTICS_FILES=('ops/vm_actions/collect_diagnostics.py','ops/vm_actions/runtime_registry.py','src/docich/runtime_backend.py',
+                   'src/docich/semantic_decision/diagnostics.py','src/docich/semantic_decision/routes.py')
 DIAGNOSTICS_TIMEOUT=60
 DIAGNOSTICS_STDOUT_MAX=65536
 DIAGNOSTICS_JSON_MAX=49152
@@ -35,6 +37,28 @@ OWNED_SUBMODULES={
 
 def die(msg='VM operation rejected'):
     print(msg,file=sys.stderr); raise SystemExit(1)
+
+
+UNEXPECTED_TRACEBACK_MAX = 32768
+
+def _log_unexpected_traceback(cfg):
+    """Best-effort owner-only record of an unexpected failure (docich#410).
+
+    Never raises: logging must not change the fixed-code rejection contract.
+    Without a loaded config there is no state dir to write to; the fixed
+    response below still applies.
+    """
+    if cfg is None:
+        return
+    try:
+        import traceback
+        logs = state_root(cfg)/'logs'; logs.mkdir(parents=True,exist_ok=True)
+        opid = uuid.uuid4().hex; log = logs/f'unknown-{opid}.log'
+        fd = os.open(log,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+        with os.fdopen(fd,'w',encoding='utf-8',errors='replace') as out:
+            out.write(traceback.format_exc()[-UNEXPECTED_TRACEBACK_MAX:])
+    except Exception:
+        pass
 
 
 # Fixed, secret-free reason codes for deploy/bootstrap/rebaseline rejections (#377).
@@ -81,6 +105,11 @@ REASON_CODES={
  'configured Jev script missing':'configure_jev_script_missing',
  'invalid Jev API key payload':'configure_jev_key_invalid',
  'production checkout is not the requested commit':'configure_jev_stale_checkout',
+ 'configure_jev_route_direct is production-only':'configure_jev_route_production_only',
+ 'configure_jev_route_vercel is production-only':'configure_jev_route_production_only',
+ 'disable_jev_route is production-only':'disable_jev_route_production_only',
+ 'configured Jev route script missing':'configure_jev_route_script_missing',
+ 'invalid Jev route key payload':'configure_jev_route_key_invalid',
  'reconcile production only':'reconcile_production_only',
  'invalid reconcile payload':'reconcile_invalid_request',
  'reviewed reconcile helper missing':'reconcile_helper_missing',
@@ -1105,6 +1134,75 @@ def configure_jev(cfg,repo,target,sha,*,disable=False):
         result['error_code']=match.group(1).decode('ascii') if match else 'unexpected_failure'
     return result
 
+def configure_jev_route(cfg,repo,target,sha,*,route=None,disable=False):
+    """Run the fixed docich semantic-decision route configurator (#882), owner-only.
+
+    Mirrors configure_jev's own contract exactly, for the disjoint
+    DOCICH_SEMANTIC_BACKEND/DOCICH_JEV_ROUTE/DOCICH_JEV_VERCEL_API_KEY keys
+    instead of configure_jev's COMMENT_CLASSIFIER_*/TYPESAFE_API_KEY keys.
+    Never executes caller-supplied shell. Stdin carries the Vercel API key
+    only when route='vercel'; every other case (route='direct', disable)
+    requires empty stdin, since neither writes a new secret -- route='direct'
+    only requires TYPESAFE_API_KEY (#678's own key) to already be live on the
+    running worker, which the script itself verifies, not this gateway.
+    """
+    label='disable_jev_route' if disable else f'configure_jev_route_{route}'
+    if target != 'production':
+        raise ValueError(f'{label} is production-only')
+    root=Path(cfg['repos'][repo]['production'])
+    if git(root,'rev-parse','HEAD') != sha or not git_clean(root):
+        raise ValueError('production checkout is not the requested commit')
+    raw=sys.stdin.buffer.read(4097)
+    key=''
+    if disable or route=='direct':
+        if raw:
+            raise ValueError('invalid Jev route key payload')
+    else:
+        if not raw or len(raw)>4096 or b'\0' in raw or b'\r' in raw or b'\n' in raw:
+            raise ValueError('invalid Jev route key payload')
+        try:
+            key=raw.decode('ascii')
+        except UnicodeDecodeError as exc:
+            raise ValueError('invalid Jev route key payload') from exc
+        if not key or any(ord(char)<33 or ord(char)>126 for char in key):
+            raise ValueError('invalid Jev route key payload')
+    script_path='ops/vm_actions/configure_jev_route.py'
+    try:
+        script=subprocess.check_output(
+            ['git','-C',str(root),'-c','core.hooksPath=/dev/null','show',f'{sha}:{script_path}'],
+            stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, OSError) as exc:
+        raise ValueError('configured Jev route script missing') from exc
+    if len(script)>128*1024:
+        raise ValueError('configured Jev route script missing')
+    soren_root=cfg['repos'][repo].get('projections',{}).get('games/soviet_now')
+    if not isinstance(soren_root,str) or not Path(soren_root).is_dir():
+        raise ValueError('configured Jev route script missing')
+    logs=state_root(cfg)/'logs'; logs.mkdir(parents=True,exist_ok=True)
+    opid=uuid.uuid4().hex; log=logs/f'{opid}.log'
+    fd=os.open(log,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+    env={'PATH':'/usr/local/bin:/usr/bin:/bin','HOME':str(root.parent),'LANG':'C.UTF-8',
+         'SOREN_ROOT':soren_root}
+    if route=='vercel':
+        env['DOCICH_JEV_VERCEL_API_KEY']=key
+    argv=[sys.executable,'-','--soren-root',soren_root]
+    argv += ['--disable'] if disable else ['--route',route]
+    with os.fdopen(fd,'wb') as out:
+        p=subprocess.run(
+            argv,
+            input=script,cwd=root,env=env,stdout=out,stderr=subprocess.STDOUT,timeout=180,
+        )
+    result={'status':('disabled' if disable else 'configured') if p.returncode==0 else 'failed','sha':sha,
+            'exit_code':p.returncode,'output':'withheld','operation_id':opid}
+    if p.returncode:
+        try:
+            match=CONFIGURE_ERROR_RE.search(log.read_bytes()[-4096:])
+        except OSError:
+            match=None
+        result['error_code']=match.group(1).decode('ascii') if match else 'unexpected_failure'
+    return result
+
 def _sanitize_diagnostics(value, depth=0):
     if depth>8: raise ValueError('diagnostics output too deep')
     if value is None or isinstance(value,(bool,int,float)): return value
@@ -1271,9 +1369,10 @@ def status_result(cfg,repo,target,sha):
 
 def main():
     if len(sys.argv)!=2: die()
-    cfg=load_config(Path(sys.argv[1])); op,repo,target,sha=parse_command(cfg)
-    lock=state_root(cfg)/'vm-operations.lock'; lock.parent.mkdir(parents=True,exist_ok=True)
+    cfg = None
     try:
+        cfg=load_config(Path(sys.argv[1])); op,repo,target,sha=parse_command(cfg)
+        lock=state_root(cfg)/'vm-operations.lock'; lock.parent.mkdir(parents=True,exist_ok=True)
         with open(lock,'a+') as f:
             fcntl.flock(f,fcntl.LOCK_EX)
             if op=='upload': result=upload(cfg,repo,target,sha)
@@ -1285,10 +1384,22 @@ def main():
             elif op=='reconcile': result=reconcile_presynced(cfg,repo,target,sha)
             elif op=='configure_jev': result=configure_jev(cfg,repo,target,sha)
             elif op=='disable_jev': result=configure_jev(cfg,repo,target,sha,disable=True)
+            elif op=='configure_jev_route_direct': result=configure_jev_route(cfg,repo,target,sha,route='direct')
+            elif op=='configure_jev_route_vercel': result=configure_jev_route(cfg,repo,target,sha,route='vercel')
+            elif op=='disable_jev_route': result=configure_jev_route(cfg,repo,target,sha,disable=True)
             elif op=='diagnostics': result=diagnostics_result(cfg,repo,target,sha)
             else: result=status_result(cfg,repo,target,sha)
     except ValueError as exc:
         die('VM operation rejected: %s' % reason_code(exc))
+    except Exception:
+        # Issue #410: deploy経路の non-ValueError (CalledProcessError /
+        # TimeoutExpired / OSError 等) が bare raise で素通しし、traceback
+        # 越しに command argv や filesystem path を Actions へ出す経路を塞ぐ。
+        # 応答は固定 code のみ。raw traceback は owner 診断用に VM 側の
+        # 0600 ログへ best-effort で残し、stdout/stderr には出さない。
+        # KeyboardInterrupt / SystemExit (BaseException) は対象外。
+        _log_unexpected_traceback(cfg)
+        die('VM operation rejected: operation_rejected')
     print(json.dumps(result,separators=(',',':')))
     if result.get('exit_code',0): raise SystemExit(result['exit_code'])
 

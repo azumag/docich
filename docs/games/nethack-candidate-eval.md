@@ -112,6 +112,7 @@ candidate_fingerprint
 - evaluated_cases
 - coverage_complete
 - dispatch_errors
+- dispatch error category（各`dispatch_error` resultの`error_kind`。raw stderr/例外textは保存しない）
 - approved_proposals
 - rejected_proposals
 - proposal_kind_counts

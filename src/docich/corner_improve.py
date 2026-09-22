@@ -13,6 +13,7 @@ from __future__ import annotations
 import datetime as dt
 import fcntl
 import json
+import math
 import os
 import re
 import time
@@ -30,9 +31,35 @@ from .resolver.bot_eval import bot_games, run_bot_matches
 
 JSON_FENCE_RE = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
 
+# Durable failure metadata is an enum contract, not an exception serialization
+# surface. Keep unknown/future/injected exception attributes from becoming
+# free-text state; diagnostics applies the same allowlist at its read boundary.
+CORNER_IMPROVE_REASON_CODES = frozenset({
+    "state-read", "corner-window", "gate-disabled", "llm-call", "llm-rc",
+    "llm-empty", "llm-format", "llm-keys", "llm-values", "llm-unexpected",
+    "eval", "lane-busy", "unexpected",
+})
+
+# One improvement job at a time across every corner and the PAPER pipeline.
+# Queue dispatch no longer waits for the previous job, so the lane is what
+# keeps concurrent LLM/evaluation work bounded.  A job that cannot get the
+# lane within the bounded wait records a visible skip instead of piling up.
+IMPROVE_LANE_WAIT_S = 1800.0
+IMPROVE_LANE_POLL_S = 5.0
+CORNER_IMPROVE_PHASES = frozenset({"state", "llm", "eval", "unknown"})
+
+
+def _fixed_enum(value, allowed: frozenset[str], fallback: str) -> str:
+    return value if isinstance(value, str) and value in allowed else fallback
+
 
 class CornerImproveError(RuntimeError):
     """User-facing failure in the end-of-corner improvement job."""
+
+    def __init__(self, message, *, code="unexpected", phase="unknown"):
+        super().__init__(message)
+        self.code = code
+        self.phase = phase
 
 
 # Keep the improvement dispatch in lockstep with the headless evaluator.  Every
@@ -48,6 +75,49 @@ def numeric_weights(weights: dict) -> set[str]:
         key for key, value in weights.items()
         if isinstance(value, (int, float)) and not isinstance(value, bool)
     }
+
+
+def _lane_path(state_dir) -> Path:
+    return Path(state_dir) / "locks" / "corner-improve-lane.lock"
+
+
+def improve_lane_free(state_dir) -> bool:
+    """Probe the cross-corner improvement lane without keeping the lock."""
+    path = _lane_path(state_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        return True
+
+
+@contextmanager
+def improve_lane(state_dir, *, timeout: float = IMPROVE_LANE_WAIT_S, sleep=time.sleep):
+    """Serialize improvement jobs across corners; yield False on bounded timeout."""
+    path = _lane_path(state_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+")
+    try:
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    yield False
+                    return
+                sleep(min(IMPROVE_LANE_POLL_S, remaining))
+        try:
+            yield True
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
 
 
 @contextmanager
@@ -129,60 +199,88 @@ def parse_candidate(text: str, allowed_keys: set[str]) -> dict:
     try:
         data = json.loads(payload)
     except ValueError as exc:
-        raise CornerImproveError(f"LLM出力がJSONではありません: {_safe_detail(exc)}") from exc
+        raise CornerImproveError(
+            f"LLM出力がJSONではありません: {_safe_detail(exc)}",
+            code="llm-format", phase="llm",
+        ) from exc
     if not isinstance(data, dict) or not data:
-        raise CornerImproveError("LLM出力が空でないJSONオブジェクトではありません")
+        raise CornerImproveError(
+            "LLM出力が空でないJSONオブジェクトではありません",
+            code="llm-format", phase="llm",
+        )
     unknown = sorted(set(data) - set(allowed_keys))
     if unknown:
-        raise CornerImproveError(f"未知の重みキーがあります: {', '.join(unknown[:5])}")
+        raise CornerImproveError(
+            f"未知の重みキーがあります: {', '.join(unknown[:5])}",
+            code="llm-keys", phase="llm",
+        )
     candidate = {}
     for key, value in data.items():
         if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise CornerImproveError(f"重みは数値である必要があります: {key}")
+            raise CornerImproveError(
+                f"重みは数値である必要があります: {key}",
+                code="llm-values", phase="llm",
+            )
         if not (0.001 <= float(value) <= 1e6):
-            raise CornerImproveError(f"重みが範囲外です: {key}={value}")
+            raise CornerImproveError(
+                f"重みが範囲外です: {key}={value}",
+                code="llm-values", phase="llm",
+            )
         candidate[key] = value
     return candidate
 
 
 def _default_llm(g, *, agents: str, prompt_text: str, timeout: int = 600) -> str:
-    """sorengame と同じ dispatch 経路で1候補を生成する。本番実行のみ。"""
+    """Native docich dispatchで1候補を生成する。本番実行のみ。"""
     if os.environ.get("DOCICH_ALLOW_REAL_AI") != "1":
         raise CornerImproveError(
-            "LLM改善の実実行には DOCICH_ALLOW_REAL_AI=1 が必要です"
+            "LLM改善の実実行には DOCICH_ALLOW_REAL_AI=1 が必要です",
+            code="gate-disabled", phase="llm",
         )
-    import tempfile
+    from .ai_generate import AiError, run_prompt
 
-    from .ai_generate import build_ai_invocation
-    from .procs import run
-
-    with tempfile.TemporaryDirectory(prefix="docich-corner-improve-") as tmp:
-        prompt_file = Path(tmp) / "prompt.txt"
-        prompt_file.write_text(prompt_text, encoding="utf-8")
-        inv = build_ai_invocation(
+    try:
+        result = run_prompt(
             g,
-            game_name="sorengame",
             label="RADIO:retro-improve",
             agents=agents,
-            prompt_file=prompt_file,
+            prompt_text=prompt_text,
             timeout=timeout,
+            timeout_sec=float(timeout + 60),
         )
-        try:
-            completed = run(
-                inv.argv, cwd=str(inv.cwd), env_extra=inv.env,
-                timeout=float(timeout + 60), capture=True,
-            )
-        except Exception as exc:
-            raise CornerImproveError(f"LLM呼び出しに失敗しました: {_safe_detail(exc)}") from exc
-    if completed.returncode != 0:
+    except (AiError, OSError) as exc:
         raise CornerImproveError(
-            f"LLM改善が失敗しました (rc={completed.returncode}): "
-            f"{(completed.stderr or '').strip()[:200]}"
+            f"LLM呼び出しに失敗しました: {_safe_detail(exc)}",
+            code="llm-call", phase="llm",
+        ) from exc
+    if result.returncode != 0:
+        raise CornerImproveError(
+            f"LLM改善が失敗しました (rc={result.returncode}, kind={result.failure_kind or 'unknown'})",
+            code="llm-rc", phase="llm",
         )
-    output = (completed.stdout or "").strip()
+    output = result.output.strip()
     if not output:
-        raise CornerImproveError("LLM改善の出力が空でした")
+        raise CornerImproveError("LLM改善の出力が空でした", code="llm-empty", phase="llm")
     return output
+
+
+def validated_window(window) -> tuple[float, float]:
+    """Validate an explicit corner window passed by the spawner.
+
+    Queue dispatch can start the next corner before this job reads the shared
+    corner state, so the completion hands over (started_at, ends_at) directly
+    instead of racing the next state write.
+    """
+    try:
+        start, end = (float(window[0]), float(window[1]))
+    except (TypeError, ValueError, IndexError) as exc:
+        raise CornerImproveError(
+            f"コーナー期間が不正です: {_safe_detail(exc)}",
+            code="corner-window", phase="state",
+        ) from exc
+    if not (math.isfinite(start) and math.isfinite(end)) or not end >= start:
+        raise CornerImproveError("コーナー期間が不正です", code="corner-window", phase="state")
+    return start, end
 
 
 def _corner_window(state: dict) -> tuple[float, float]:
@@ -190,9 +288,12 @@ def _corner_window(state: dict) -> tuple[float, float]:
         start = dt.datetime.fromisoformat(str(state["started_at"])).timestamp()
         end = dt.datetime.fromisoformat(str(state["ends_at"])).timestamp()
     except (KeyError, ValueError, TypeError, OverflowError, OSError) as exc:
-        raise CornerImproveError(f"コーナー期間が不正です: {_safe_detail(exc)}") from exc
+        raise CornerImproveError(
+            f"コーナー期間が不正です: {_safe_detail(exc)}",
+            code="corner-window", phase="state",
+        ) from exc
     if not end >= start:
-        raise CornerImproveError("コーナー期間が不正です")
+        raise CornerImproveError("コーナー期間が不正です", code="corner-window", phase="state")
     return start, end
 
 
@@ -207,8 +308,14 @@ def run_corner_improve(
     dry_run: bool = False,
     llm=None,
     evaluator=None,
+    window: tuple[float, float] | None = None,
 ) -> dict:
-    """指定日次コーナー終了後の改善を1回実行する。結果サマリ dict を返す。"""
+    """指定日次コーナー終了後の改善を1回実行する。結果サマリ dict を返す。
+
+    ``window`` は終了時に確定した (started_at, ends_at) のepoch秒。queue
+    dispatchでは次コーナーが共有stateを上書きし得るため、spawn時に明示して
+    stateファイルとの競合を避ける。
+    """
 
     if game != "gnurobots" and game not in BOT_GAMES:
         return {"status": "skipped", "reason": f"unsupported-game:{game}"}
@@ -218,20 +325,60 @@ def run_corner_improve(
         from .game_switch import atomic_write_json
         status_path = Path(g.state_dir) / f"corner_improve_{game}.json"
         started = time.time()
-        atomic_write_json(status_path, {"status": "running", "started_at": started})
-        try:
-            result = _run_corner_improve(
-                g, game=game, date_str=date_str, agents=agents,
-                matches=matches, margin_pct=margin_pct, dry_run=dry_run,
-                llm=llm, evaluator=evaluator,
+        with improve_lane(g.state_dir) as lane:
+            if not lane:
+                # Another improvement job holds the lane for longer than the
+                # bounded wait. Keep the record visible instead of stacking
+                # concurrent LLM/evaluation work.
+                atomic_write_json(status_path, {
+                    "status": "skipped", "started_at": started, "completed_at": time.time(),
+                    "reason_code": "lane-busy", "phase": "unknown",
+                })
+                return {"status": "skipped", "reason": "lane-busy"}
+            return _run_corner_improve_locked(
+                g, status_path=status_path, started=started, game=game, date_str=date_str,
+                agents=agents, matches=matches, margin_pct=margin_pct, dry_run=dry_run,
+                llm=llm, evaluator=evaluator, window=window,
             )
-        except BaseException:
-            atomic_write_json(status_path, {"status": "failed", "started_at": started,
-                                           "completed_at": time.time()})
-            raise
-        atomic_write_json(status_path, {"status": result["status"], "started_at": started,
-                                       "completed_at": time.time()})
-        return result
+
+
+def _run_corner_improve_locked(
+    g,
+    *,
+    status_path,
+    started: float,
+    game: str,
+    date_str: str,
+    agents: str,
+    matches: int,
+    margin_pct: float,
+    dry_run: bool,
+    llm,
+    evaluator,
+    window=None,
+) -> dict:
+    from .game_switch import atomic_write_json
+
+    try:
+        result = _run_corner_improve(
+            g, game=game, date_str=date_str, agents=agents,
+            matches=matches, margin_pct=margin_pct, dry_run=dry_run,
+            llm=llm, evaluator=evaluator, window=window,
+        )
+    except BaseException as exc:
+        atomic_write_json(status_path, {
+            "status": "failed", "started_at": started, "completed_at": time.time(),
+            "reason_code": _fixed_enum(
+                getattr(exc, "code", None), CORNER_IMPROVE_REASON_CODES, "unexpected"
+            ),
+            "phase": _fixed_enum(
+                getattr(exc, "phase", None), CORNER_IMPROVE_PHASES, "unknown"
+            ),
+        })
+        raise
+    atomic_write_json(status_path, {"status": result["status"], "started_at": started,
+                                   "completed_at": time.time()})
+    return result
 
 
 def _bot_evaluator(g, game: str, matches: int):
@@ -292,17 +439,26 @@ def _run_corner_improve(
     dry_run: bool = False,
     llm=None,
     evaluator=None,
+    window=None,
 ) -> dict:
-    state_path = Path(g.state_dir) / "retro_corner.json"
-    try:
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise CornerImproveError(f"コーナー状態を読み込めません: {_safe_detail(exc)}") from exc
-    if not isinstance(state, dict) or state.get("date") != date_str:
-        return {"status": "skipped", "reason": "wrong-date"}
-    if state.get("status") != "completed":
-        return {"status": "skipped", "reason": f"wrong-status:{state.get('status')}"}
-    start_ts, end_ts = _corner_window(state)
+    if window is not None:
+        # The spawner confirmed this run's window at completion; do not read
+        # the shared state file, which the next queued corner may already own.
+        start_ts, end_ts = validated_window(window)
+    else:
+        state_path = Path(g.state_dir) / "retro_corner.json"
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise CornerImproveError(
+                f"コーナー状態を読み込めません: {_safe_detail(exc)}",
+                code="state-read", phase="state",
+            ) from exc
+        if not isinstance(state, dict) or state.get("date") != date_str:
+            return {"status": "skipped", "reason": "wrong-date"}
+        if state.get("status") != "completed":
+            return {"status": "skipped", "reason": f"wrong-status:{state.get('status')}"}
+        start_ts, end_ts = _corner_window(state)
 
     log_env = os.environ.get("GNUROBOTS_SCORELOG", "").strip()
     log_path = Path(log_env) if log_env else (Path(g.state_dir) / "scores" / f"{game}.jsonl")
@@ -334,7 +490,13 @@ def _run_corner_improve(
             previous = data if isinstance(data, dict) else {}
         except (OSError, ValueError):
             previous = {}
-    prompt_text = build_prompt(game=game, stats=stats, current=current, previous=previous)
+    # Show only the weights the candidate may change. The full strategy also
+    # carries fixed flags (for example nsnake's tail_passable boolean); showing
+    # them as tunable weights invited the model to return an unknown key, which
+    # the strict parser then rejected and failed the whole job.
+    prompt_current = {key: value for key, value in current.items() if key in proposable}
+    prompt_previous = {key: value for key, value in previous.items() if key in proposable}
+    prompt_text = build_prompt(game=game, stats=stats, current=prompt_current, previous=prompt_previous)
     if dry_run:
         return {"status": "dry-run", "stats": stats, "prompt_chars": len(prompt_text)}
 
@@ -345,7 +507,10 @@ def _run_corner_improve(
     except CornerImproveError:
         raise
     except Exception as exc:
-        raise CornerImproveError(f"候補生成に失敗しました: {_safe_detail(exc)}") from exc
+        raise CornerImproveError(
+            f"候補生成に失敗しました: {_safe_detail(exc)}",
+            code="llm-unexpected", phase="llm",
+        ) from exc
     candidate = dict(current)
     candidate.update(candidate_delta)
 
@@ -357,7 +522,10 @@ def _run_corner_improve(
         baseline_ev = evaluator(current)
         candidate_ev = evaluator(candidate)
     except Exception as exc:
-        raise CornerImproveError(f"候補評価に失敗しました: {_safe_detail(exc)}") from exc
+        raise CornerImproveError(
+            f"候補評価に失敗しました: {_safe_detail(exc)}",
+            code="eval", phase="eval",
+        ) from exc
     baseline_mean = float(baseline_ev.get("mean_score", 0.0) or 0.0)
     baseline_played = int(baseline_ev.get("played", 0) or 0)
     candidate_mean = float(candidate_ev.get("mean_score", 0.0) or 0.0)

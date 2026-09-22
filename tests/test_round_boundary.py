@@ -393,7 +393,13 @@ def test_boundary_failure_keeps_draining_until_cancel_ack(cancel_mode):
     class FailingCancelAdapter(BoundaryAdapter):
         def cancel_round_boundary(self, request_id, deadline, cancel):
             self.runtime.events.append("cancel_boundary")
-            self.boundary_release.set()
+            # Do not acknowledge the original boundary while testing a
+            # cancel failure.  Releasing it here makes the fixture introduce
+            # a second state transition whose completion can race the
+            # coordinator's failure path.  The timeout worker has already
+            # observed its cancellation event; the late-acknowledgement race
+            # is covered separately by
+            # test_expired_draining_recovery_cancels_stale_driver_without_stop.
             if cancel_mode == "false":
                 return False
             if cancel_mode == "error":
@@ -544,7 +550,9 @@ def test_fifo_maintenance_recovers_expired_drain_and_starts_only_queue_head():
     with tempfile.TemporaryDirectory() as tmp:
         state_dir = Path(tmp) / "run"
         factory = BoundaryFactory()
-        store, coordinator = _coordinator(factory, state_dir)
+        # This test expires deadline_at explicitly below. Keep the boundary
+        # step timeout out of the race so CI load cannot trigger recovery first.
+        store, coordinator = _coordinator(factory, state_dir, round_boundary_s=5.0)
         assert coordinator.start("nethack").status == "succeeded"
         old = factory.adapters[("nethack", 1)]
         first_result = []

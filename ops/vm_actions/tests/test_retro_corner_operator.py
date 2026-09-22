@@ -9,6 +9,9 @@ AUTH = ROOT / "ops/vm_actions/authorize_retro_corner.py"
 SCRIPT = ROOT / "ops/vm_actions/restart_retro_corner.sh"
 RECOVER_SCRIPT = ROOT / "ops/vm_actions/recover_retro_corner.sh"
 WF = ROOT / ".github/workflows/retro-corner-operator.yml"
+CANONICAL_REF = (
+    "azumag/docich/.github/workflows/corner-rotation-operator.yml@refs/heads/main"
+)
 
 
 class RetroCornerAuthorizeTests(unittest.TestCase):
@@ -58,6 +61,8 @@ class RetroCornerAuthorizeTests(unittest.TestCase):
             {"GITHUB_REF_PROTECTED": "false"},
             {"GITHUB_DEFAULT_BRANCH": "release"},
             {"GITHUB_WORKFLOW_REF": "azumag/docich/.github/workflows/retro-corner-operator.yml@refs/heads/feature"},
+            {"GITHUB_WORKFLOW_REF": "azumag/docich/.github/workflows/other-operator.yml@refs/heads/main"},
+            {"GITHUB_WORKFLOW_REF": ""},
             {"GITHUB_EVENT_NAME": "push"},
             {"INPUT_CONFIRM": ""},
             {"GITHUB_SHA": "not-a-sha"},
@@ -65,6 +70,20 @@ class RetroCornerAuthorizeTests(unittest.TestCase):
         for overrides in cases:
             with self.subTest(overrides=overrides):
                 self.assertNotEqual(self.run_auth(**overrides).returncode, 0)
+
+    def test_canonical_workflow_path_is_accepted_during_the_staged_rename(self):
+        result = self.run_auth(GITHUB_WORKFLOW_REF=CANONICAL_REF)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            json.loads(result.stdout),
+            {"operation": "restart-service", "target": "production", "ref": "main"},
+        )
+
+    def test_legacy_auth_does_not_expose_the_timer_rollback(self):
+        # The legacy workflow has no rollback option; its authorization set
+        # stays at the two fixed corner operations.
+        result = self.run_auth(INPUT_OPERATION="rollback-timer")
+        self.assertNotEqual(result.returncode, 0)
 
 
 class RetroCornerOperatorPolicyTests(unittest.TestCase):

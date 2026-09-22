@@ -402,6 +402,39 @@ def test_render_fallback_new_segments_are_grounded():
     assert "根拠が再現した結果か" in fallback["review"]
 
 
+@pytest.mark.parametrize(
+    ("realized", "expected", "forbidden"),
+    [
+        ("12", "12円の利益", "損失"),
+        ("-8", "-8円の損失", "損益なし"),
+        ("0", "0円の損益なし", "損失"),
+        (None, "損益は記録不明", "None円"),
+        ("not-a-number", "損益は記録不明", "損失"),
+        (True, "損益は記録不明", "損失"),
+        (float("nan"), "損益は記録不明", "損失"),
+        (float("inf"), "損益は記録不明", "損失"),
+    ],
+)
+def test_review_fallback_distinguishes_zero_and_unknown_pnl(realized, expected, forbidden):
+    fallback = render_fallback(
+        {
+            "policy": {},
+            "research": {},
+            "round_trips": [
+                {
+                    "symbol": "btc_jpy",
+                    "entry_reason": "momentum_breakout",
+                    "exit_reason": "take_profit",
+                    "realized_jpy": realized,
+                    "hold_sec": 60,
+                }
+            ],
+        }
+    )
+    assert expected in fallback["review"]
+    assert forbidden not in fallback["review"]
+
+
 def test_render_fallback_without_news_is_honest():
     fallback = render_fallback({"policy": {}, "research": {}})
     assert "取得" in fallback["news"]

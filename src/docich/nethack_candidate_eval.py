@@ -28,8 +28,10 @@ from .nethack_regression import NethackRegressionError, _load_suite, evaluate_su
 from .nethack_strategist import (
     CommandStrategist,
     StrategistDispatchResult,
+    dispatch_error_kind_for_exception,
     evaluate_proposal,
     execution_plan,
+    safe_dispatch_error_kind,
 )
 from .nethack_strategy import StrategicRequest, build_strategic_request
 
@@ -460,7 +462,11 @@ def evaluate_candidate(
         try:
             dispatch = strategist.dispatch(request)
         except Exception as exc:
-            dispatch = StrategistDispatchResult(status="error", error=str(exc).replace("\n", " ")[:240])
+            dispatch = StrategistDispatchResult(
+                status="error",
+                error=str(exc).replace("\n", " ")[:240],
+                error_kind=dispatch_error_kind_for_exception(exc),
+            )
         if dispatch.status != "proposed" or dispatch.proposal is None:
             dispatch_errors += 1
             results.append(
@@ -468,7 +474,7 @@ def evaluate_candidate(
                     "case_id": case_id,
                     "request_source": source,
                     "status": "dispatch_error",
-                    "error": dispatch.error,
+                    "error_kind": safe_dispatch_error_kind(dispatch.error_kind),
                     "proposal_kind": None,
                     "evaluation_status": None,
                     "execution_allowed": False,

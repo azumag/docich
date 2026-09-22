@@ -12,6 +12,7 @@ existing force-kill behavior.
 """
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
@@ -24,6 +25,42 @@ BOT_STOP_POLL_INTERVAL_S = 0.1
 
 class Soren91GracefulCoordinatorAdapter(_BaseSoren91CoordinatorAdapter):
     """Soren91 adapter that lets the bot restore the normal game before kill."""
+
+    def _bot_main_pid_alive(self) -> bool:
+        """Return whether the gameplay loop still owns its main PID marker.
+
+        ``main.mjs`` writes ``tmp/main.pid`` at startup and removes it from
+        ``cleanupRuntime()``.  The Node process can nevertheless remain alive
+        for a while after the gameplay loop gives up (for example after a
+        sustained remote-capture failure), so tmux pane liveness alone is not
+        sufficient evidence that Soren91 is still playing.
+
+        Treat a missing/malformed/stale marker as dead.  This is intentionally
+        fail-closed: the corner already requires two consecutive liveness
+        misses before it restores the previous game.
+        """
+        try:
+            raw = (Path(self._bot_cwd()) / "tmp" / "main.pid").read_text(
+                encoding="utf-8"
+            )
+            pid = int(raw.strip())
+            if pid <= 0:
+                return False
+            os.kill(pid, 0)
+        except (AdapterError, OSError, ValueError):
+            return False
+        return True
+
+    def agent_alive(self, deadline: float, cancel) -> bool:
+        # Preserve the base ownership/window/pane checks first.  Once the bot
+        # is enabled, also require the lifecycle marker emitted by main.mjs;
+        # otherwise an idle-but-still-live Node pane can mask a stopped game
+        # loop and leave the fixed Soren91 slot frozen until its scheduled end.
+        if not super().agent_alive(deadline, cancel):
+            return False
+        if not self.agent_enabled:
+            return True
+        return self._bot_main_pid_alive()
 
     def _request_bot_graceful_stop(self, target: str) -> None:
         # main.mjs already treats tmp/stop as an external graceful-stop request.

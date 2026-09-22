@@ -27,7 +27,7 @@ class DiagnosticsGatewayTests(unittest.TestCase):
         self.state.mkdir()
         self.doc = self.base / "docich"
         (self.doc / "ops" / "vm_actions").mkdir(parents=True)
-        (self.doc / "src" / "docich").mkdir(parents=True)
+        (self.doc / "src" / "docich" / "semantic_decision").mkdir(parents=True)
         self.soren = self.base / "soren"
         (self.soren / "tmp" / "state").mkdir(parents=True)
         for rel in (
@@ -35,6 +35,9 @@ class DiagnosticsGatewayTests(unittest.TestCase):
             "ops/vm_actions/runtime_registry.py",
             "src/docich/runtime_backend.py",
             "src/docich/__init__.py",
+            "src/docich/semantic_decision/__init__.py",
+            "src/docich/semantic_decision/diagnostics.py",
+            "src/docich/semantic_decision/routes.py",
         ):
             src = ROOT / rel
             if src.is_file():
@@ -87,9 +90,10 @@ class DiagnosticsGatewayTests(unittest.TestCase):
         self.assertEqual(data["status"], "diagnosed")
         diag = data["diagnostics"]
         self.assertIn(diag["status"], ("ok", "warn", "critical"))
-        for section in ("meta", "workers", "queues", "ai", "improvement", "corners"):
+        for section in ("meta", "workers", "queues", "ai", "improvement", "corners", "semantic_decision"):
             self.assertIn(section, diag)
         self.assertEqual(diag["workers"]["expected"] >= 10, True)
+        self.assertEqual(diag["semantic_decision"], {"present": False, "readable": False})
         self.assertEqual(self.snapshot(self.soren), before)
 
     def test_preview_diagnostics_is_rejected(self):
@@ -240,7 +244,9 @@ class DiagnosticsWorkflowTests(unittest.TestCase):
     def test_workflow_exposes_diagnostics_operation(self):
         text = WF.read_text(encoding="utf-8")
         self.assertIn(
-            "options: [status, deploy, exec, configure_jev, disable_jev, bootstrap, diagnostics, reclaim, rebaseline, market_paper]", text
+            "options: [status, deploy, exec, configure_jev, disable_jev, configure_jev_route_direct, "
+            "configure_jev_route_vercel, disable_jev_route, bootstrap, diagnostics, reclaim, rebaseline, "
+            "market_paper, restart_webui]", text
         )
         self.assertIn("Query read-only runtime diagnostics", text)
         self.assertIn('"diagnostics docich production $SHA"', text)

@@ -50,9 +50,52 @@ def _groups_stopped(children):
     return True
 
 
-def contain_filter(width: int, height: int) -> str:
-    return (f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
-            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1")
+CELL_ASPECT_MIN = 0.25
+CELL_ASPECT_MAX = 4.0
+
+
+def cell_aspect_scale(value: str) -> float:
+    """Return the horizontal scale that shows ``W:H`` cells as square cells.
+
+    Terminal fonts are roughly twice as tall as wide, so a tile-based CLI game
+    (pacman4console) draws its square-tile maze vertically stretched.  Callers
+    pass the terminal's real cell ratio explicitly; the presentation then
+    widens only the captured window before the contain fit.  Never guessed
+    from the window geometry here: the cell ratio is a property of the font.
+    """
+    if not isinstance(value, str):
+        raise ValueError(f"cell aspect must be a W:H string (got {value!r})")
+    match = re.fullmatch(r"\s*([0-9]+)\s*:\s*([0-9]+)\s*", value)
+    if match is None:
+        raise ValueError(f"cell aspect must be a W:H string (got {value!r})")
+    cell_width, cell_height = int(match.group(1)), int(match.group(2))
+    if not (1 <= cell_width <= 64 and 1 <= cell_height <= 64):
+        raise ValueError("cell aspect values must be between 1 and 64")
+    scale = cell_height / cell_width
+    if not (CELL_ASPECT_MIN <= scale <= CELL_ASPECT_MAX):
+        raise ValueError("cell aspect correction must stay within 1/4..4")
+    return scale
+
+
+def _cell_aspect(value: str) -> float:
+    try:
+        return cell_aspect_scale(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def contain_filter(width: int, height: int, *, cell_stretch: float = 1.0) -> str:
+    filters = []
+    if cell_stretch != 1.0:
+        # 端末セルを正方形として見せるための水平補正。等倍 (既定) では従来と
+        # 同一のフィルタ列を出し、配信経路の差分を増やさない。中間フレームの
+        # 幅が奇数になり得るが、x11grab の bgra 入力は間引きが無く、最終段の
+        # pad が 960x540 (偶数) に正規化するため配信フォーマットは変わらない。
+        filters.append(f"scale=iw*{cell_stretch:g}:ih:flags=neighbor")
+    filters.append(f"scale={width}:{height}:force_original_aspect_ratio=decrease")
+    filters.append(f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black")
+    filters.append("setsar=1")
+    return ",".join(filters)
 
 
 def _positive_int(value: str) -> int:
@@ -79,6 +122,10 @@ def _parser() -> argparse.ArgumentParser:
     # callers on that path pass a longer budget. The default stays at 10s
     # so local-render CLI/paper corners behave exactly as before.
     parser.add_argument('--viewer-wait-sec', type=_positive_int, default=10)
+    # Terminal games only: the terminal cell ratio (W:H). Setting it widens
+    # the captured window in the presentation so square tiles are displayed
+    # square (pacman4console's maze). The game window itself is untouched.
+    parser.add_argument('--cell-aspect', type=_cell_aspect, dest='cell_stretch')
     # Optional PulseAudio sink for the viewer's own audio. SRT viewers (the
     # Soren91 Mac remote renderer) carry game audio that must reach the
     # broadcast encoder, which listens on the shared `soren_null` sink.
@@ -179,13 +226,17 @@ def main(argv=None) -> int:
         width, height = int(dimensions['WIDTH']), int(dimensions['HEIGHT'])
         if width > 4096 or height > 2160:
             raise RuntimeError('native viewer exceeds private display capacity')
-        print(f'native={width}x{height} output={args.width}x{args.height} fit=contain', flush=True)
+        cell_note = '' if args.cell_stretch is None else f' cell-stretch={args.cell_stretch:g}'
+        print(f'native={width}x{height} output={args.width}x{args.height} fit=contain{cell_note}',
+              flush=True)
         output_env = dict(os.environ, DISPLAY=args.display)
         player = launch([
             'ffplay', '-loglevel', 'warning', '-nostats', '-an', '-sn',
             '-f', 'x11grab', '-framerate', '15', '-draw_mouse', '0',
             '-window_id', window, '-video_size', f'{width}x{height}',
-            '-i', f':{number}', '-vf', contain_filter(args.width, args.height),
+            '-i', f':{number}',
+            '-vf', contain_filter(args.width, args.height,
+                                  cell_stretch=args.cell_stretch or 1.0),
             '-noborder', '-window_title', args.title,
             '-left', str(args.x), '-top', str(args.y),
             '-x', str(args.width), '-y', str(args.height),

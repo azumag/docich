@@ -40,16 +40,26 @@ class FakeTmux:
         session: str,
         *,
         ownership: TmuxOwnership | None = None,
+        windows: list[str] | None = None,
         capture: str = "msg\n.@..\n.|>.\nHP:10\nDlvl:2\n",
     ) -> None:
         self.session = session
         self.ownership = ownership or TmuxOwnership(RUNTIME_ID, 3, "game")
+        self.windows = (
+            ["nethack-console", "game-g3", "agent-g3"]
+            if windows is None
+            else windows
+        )
         self.capture = capture
         self.calls: list[tuple[str, str]] = []
 
     def read_window_ownership(self, target: str) -> TmuxOwnership:
         self.calls.append(("ownership", target))
         return self.ownership
+
+    def list_windows(self) -> list[str]:
+        self.calls.append(("list", self.session))
+        return list(self.windows)
 
     def capture_pane_checked(self, target: str) -> str:
         self.calls.append(("capture", target))
@@ -124,9 +134,11 @@ class TestLiveSpectator(unittest.TestCase):
             made[0].calls,
             [
                 ("ownership", "docich-game-g3:game-g3"),
-                ("capture", "docich-game-g3:game-g3"),
+                ("list", "docich-game-g3"),
+                ("capture", "docich-game-g3:nethack-console"),
             ],
         )
+        self.assertNotIn(("capture", "docich-game-g3:game-g3"), made[0].calls)
         rendered = self.output.read_text(encoding="utf-8")
         self.assertIn("AI、ダンジョンに潜る", rendered)
         self.assertIn('class="cell player"', rendered)
@@ -176,6 +188,36 @@ class TestLiveSpectator(unittest.TestCase):
         self.assertEqual(status["status"], "degraded")
         self.assertEqual(status["runtime_id"], RUNTIME_ID)
         self.assertIn("ownership", status["error"])
+
+    def test_ambiguous_or_foreign_process_window_keeps_last_good_frame(self) -> None:
+        cases = (
+            [],
+            ["game-g3", "agent-g3"],
+            ["nethack-console", "game-g3", "agent-g3", "stray"],
+            ["nethack-console", "game-g3", "agent-g3", "agent-g2"],
+        )
+        for windows in cases:
+            with self.subTest(windows=windows):
+                self.output.parent.mkdir(parents=True, exist_ok=True)
+                self.output.write_text("LAST-GOOD", encoding="utf-8")
+                made: list[FakeTmux] = []
+
+                def factory(session: str) -> FakeTmux:
+                    tmux = FakeTmux(session, windows=windows)
+                    made.append(tmux)
+                    return tmux
+
+                spectator = self._spectator(ready_state(), tmux_factory=factory)
+                self.assertEqual(spectator.render_once(), "degraded")
+                self.assertEqual(self.output.read_text(encoding="utf-8"), "LAST-GOOD")
+                self.assertEqual(
+                    [call for call in made[0].calls if call[0] == "capture"], []
+                )
+                status = json.loads(
+                    (self.output.parent / "status.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(status["status"], "degraded")
+                self.assertIn("process window", status["error"])
 
     def test_transition_never_opens_candidate_tmux(self) -> None:
         opened: list[str] = []

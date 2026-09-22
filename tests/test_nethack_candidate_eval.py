@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import unittest
 import uuid
@@ -16,20 +17,23 @@ from docich.nethack_candidate_eval import (
     parse_public_replay_request,
 )
 from docich.nethack_regression import build_suite
-from docich.nethack_strategist import StrategistDispatchResult
+from docich.nethack_strategist import CommandStrategist, StrategistDispatchResult
 from docich.nethack_strategy import StrategicProposal
 
 
 class FakeStrategist:
-    def __init__(self, proposal=None, error=None):
+    def __init__(self, proposal=None, error=None, error_kind=None):
         self.proposal = proposal
         self.error = error
+        self.error_kind = error_kind
         self.requests = []
 
     def dispatch(self, request):
         self.requests.append(request)
         if self.error is not None:
-            return StrategistDispatchResult(status="error", error=self.error)
+            return StrategistDispatchResult(
+                status="error", error=self.error, error_kind=self.error_kind
+            )
         return StrategistDispatchResult(status="proposed", proposal=self.proposal)
 
 
@@ -222,6 +226,62 @@ class TestNethackCandidateEval(unittest.TestCase):
         self.assertFalse(report["candidate_safety_contract_passed"])
         self.assertEqual(report["dispatch_errors"], 1)
         self.assertEqual(report["results"][0]["status"], "dispatch_error")
+
+    def test_dispatch_error_report_persists_category_not_raw_detail(self):
+        self.build_survival_suite()
+        sentinel = "SECRET-candidate-report-error-4c2d"
+        fake = FakeStrategist(
+            error=f"provider down: {sentinel}",
+            error_kind="process_failed",
+        )
+        report = evaluate_candidate(self.g, self.manifest(), strategist=fake, now=self.now)
+        result = report["results"][0]
+        self.assertEqual(result["error_kind"], "process_failed")
+        self.assertNotIn("error", result)
+        report_paths = list((self.nh / "regression" / "candidates").rglob("*.json"))
+        self.assertEqual(len(report_paths), 1)
+        persisted = report_paths[0].read_text(encoding="utf-8")
+        self.assertNotIn(sentinel, persisted)
+        self.assertNotIn('"error":', persisted)
+
+    def test_dispatch_exception_report_fails_closed_without_raw_detail(self):
+        self.build_survival_suite()
+        sentinel = "SECRET-candidate-exception-71ef"
+
+        class ExplodingStrategist:
+            def dispatch(self, request):
+                raise RuntimeError(f"candidate exploded: {sentinel}")
+
+        report = evaluate_candidate(
+            self.g,
+            self.manifest(),
+            strategist=ExplodingStrategist(),
+            now=self.now,
+        )
+        self.assertEqual(report["results"][0]["error_kind"], "internal_error")
+        self.assertNotIn("error", report["results"][0])
+        report_paths = list((self.nh / "regression" / "candidates").rglob("*.json"))
+        self.assertEqual(len(report_paths), 1)
+        persisted = report_paths[0].read_text(encoding="utf-8")
+        self.assertNotIn(sentinel, persisted)
+
+    def test_stderr_secret_is_not_persisted_in_candidate_report(self):
+        self.build_survival_suite()
+        sentinel = "SECRET-candidate-stderr-82ab"
+        strategist = CommandStrategist(
+            [
+                sys.executable,
+                "-c",
+                f"import sys; sys.stderr.write({sentinel!r}); sys.exit(3)",
+            ],
+            timeout_s=2.0,
+        )
+        report = evaluate_candidate(self.g, self.manifest(), strategist=strategist, now=self.now)
+        self.assertEqual(report["results"][0]["error_kind"], "process_failed")
+        report_paths = list((self.nh / "regression" / "candidates").rglob("*.json"))
+        self.assertEqual(len(report_paths), 1)
+        persisted = report_paths[0].read_text(encoding="utf-8")
+        self.assertNotIn(sentinel, persisted)
 
     def test_hidden_or_unknown_recorded_request_is_never_forwarded(self):
         suite = self.build_survival_suite(with_hidden_replay=True)

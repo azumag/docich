@@ -1,8 +1,8 @@
-"""Reference-run helper for free-text AI generation (Issue #198, Stage 3).
+"""Native helper for free-text AI generation (Issue #198, Stage 3).
 
-Thin wrapper over ``docich.ai_generate``'s ``ai_generate_list`` dispatch. It
-exists so the PAPER corner narration and the end-of-corner strategy
-improvement can request plain text through one audited code path.
+Thin wrapper over ``docich.ai_generate``'s native dispatch. It exists so the
+PAPER corner narration and the end-of-corner strategy improvement can request
+plain text through one audited code path.
 
 A real invocation only happens when ``DOCICH_ALLOW_REAL_AI=1``; otherwise a
 typed error is raised so callers can fall back deterministically. Output is
@@ -109,66 +109,33 @@ def generate_text(
 
     Mirrors ``corner_improve._default_llm``: real execution is gated on
     ``DOCICH_ALLOW_REAL_AI=1`` and every failure (non-zero rc, empty output,
-    transport error) raises ``AiTextError``. The prompt is written to a private
-    temp file; only ``label``/``agents`` are forwarded to the dispatch layer.
+    transport error) raises ``AiTextError``. The prompt remains in memory and
+    only the typed request is forwarded to the dispatch layer.
     """
     if os.environ.get("DOCICH_ALLOW_REAL_AI") != "1":
         raise AiTextError("AI生成の実実行には DOCICH_ALLOW_REAL_AI=1 が必要です", kind="gate-disabled")
     if type(timeout) is not int or timeout < 1:
         raise AiTextError("timeout は1以上である必要があります", kind="invalid-timeout")
 
-    import subprocess
-    import tempfile
+    from ..ai_generate import AiError, run_prompt
 
-    from ..ai_generate import build_ai_invocation
-    from ..procs import run
-
-    with tempfile.TemporaryDirectory(prefix="docich-ai-text-") as tmp:
-        prompt_file = Path(tmp) / "prompt.txt"
-        prompt_file.write_text(prompt_text, encoding="utf-8")
-        # last_agent/failure_kind are written by the underlying ai_generate_list
-        # dispatch (soviet_now lib/ai_generate.sh) to a fixed, non-secret
-        # vocabulary (agent id already known to the caller; failure_kind is one
-        # of "rate_limit"/"failed"). Reading them back turns an opaque
-        # AiTextError into a diagnosable one without ever touching model
-        # output, prompt text, or stderr.
-        last_agent_file = Path(tmp) / "last_agent.txt"
-        failure_kind_file = Path(tmp) / "failure_kind.txt"
-        try:
-            inv = build_ai_invocation(
-                g,
-                game_name="sorengame",
-                label=label,
-                agents=agents,
-                prompt_file=prompt_file,
-                timeout=timeout,
-                last_agent_file=last_agent_file,
-                failure_kind_file=failure_kind_file,
-            )
-        except Exception as exc:
-            raise AiTextError(
-                f"AI呼び出しの準備に失敗しました: {_safe_detail(exc)}", kind="invocation-error"
-            ) from exc
-        try:
-            completed = run(
-                inv.argv, cwd=str(inv.cwd), env_extra=inv.env,
-                timeout=float(timeout + 60), capture=True,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise AiTextError(f"AI呼び出しがタイムアウトしました: {_safe_detail(exc)}", kind="timeout") from exc
-        except Exception as exc:
-            raise AiTextError(f"AI呼び出しに失敗しました: {_safe_detail(exc)}", kind="run-error") from exc
-        upstream_kind = ""
-        try:
-            upstream_kind = failure_kind_file.read_text(encoding="utf-8").strip()
-        except OSError:
-            upstream_kind = ""
-    if completed.returncode != 0:
-        raise AiTextError(
-            f"AI生成が失敗しました (rc={completed.returncode})",
-            kind=f"rc-{completed.returncode}:{upstream_kind or 'unclassified'}",
+    try:
+        result = run_prompt(
+            g,
+            label=label,
+            agents=agents,
+            prompt_text=prompt_text,
+            timeout=timeout,
+            timeout_sec=float(timeout + 60),
         )
-    output = (completed.stdout or "").strip()
+    except (AiError, OSError) as exc:
+        raise AiTextError(f"AI呼び出しに失敗しました: {_safe_detail(exc)}", kind="invocation-error") from exc
+    if result.returncode != 0:
+        raise AiTextError(
+            f"AI生成が失敗しました (rc={result.returncode})",
+            kind=f"rc-{result.returncode}:{result.failure_kind or 'unclassified'}",
+        )
+    output = result.output.strip()
     if not output:
         raise AiTextError("AI生成の出力が空でした", kind="empty-output")
     return output

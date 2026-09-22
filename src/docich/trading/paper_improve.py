@@ -538,23 +538,57 @@ def run_paper_improve(
     with _singleflight(g.state_dir) as single:
         if not single:
             return {"status": "skipped", "reason": "already-running"}
+        from ..corner_improve import improve_lane
+
         started_at = time.time() if now is None else float(now)
+        with improve_lane(g.state_dir) as lane:
+            if not lane:
+                # The cross-corner lane is held by another improvement job for
+                # longer than the bounded wait: record a visible skip instead
+                # of stacking concurrent LLM/evaluation work.
+                try:
+                    _write_improve_status(
+                        trading_dir, status="skipped", phase="lane", progress=0,
+                        started_at=started_at, updated_at=started_at,
+                        detail="改善レーンが使用中のため今回は見送りました",
+                        reason_code="lane-busy",
+                    )
+                except Exception:
+                    pass
+                return {"status": "skipped", "reason": "lane-busy"}
+            return _run_paper_improve_guarded(
+                g, trading_dir=trading_dir, agents=agents, dry_run=dry_run,
+                llm=llm, now=now, timeout=timeout, started_at=started_at,
+            )
+
+
+def _run_paper_improve_guarded(
+    g,
+    *,
+    trading_dir,
+    agents: str,
+    dry_run: bool,
+    llm,
+    now,
+    timeout: int,
+    started_at: float,
+) -> dict:
+    try:
+        with _sigterm_as_exception():
+            return _run_paper_improve(
+                g, trading_dir=trading_dir, agents=agents, dry_run=dry_run,
+                llm=llm, now=now, timeout=timeout,
+            )
+    except BaseException as exc:
         try:
-            with _sigterm_as_exception():
-                return _run_paper_improve(
-                    g, trading_dir=trading_dir, agents=agents, dry_run=dry_run,
-                    llm=llm, now=now, timeout=timeout,
-                )
-        except BaseException as exc:
-            try:
-                _terminalize_abnormal_exit(
-                    trading_dir,
-                    started_at=started_at,
-                    updated_at=time.time() if now is None else float(now),
-                    detail="terminated" if isinstance(exc, _PaperImproveTermination) else "abnormal-exit",
-                )
-            finally:
-                raise
+            _terminalize_abnormal_exit(
+                trading_dir,
+                started_at=started_at,
+                updated_at=time.time() if now is None else float(now),
+                detail="terminated" if isinstance(exc, _PaperImproveTermination) else "abnormal-exit",
+            )
+        finally:
+            raise
 
 
 def _run_paper_improve(

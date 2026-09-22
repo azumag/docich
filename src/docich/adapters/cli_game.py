@@ -25,6 +25,7 @@ from ..game_switch import (
     atomic_write_json,
 )
 from ..naming import NameValidationError, validate_tmux_name
+from ..presentation import cell_aspect_scale
 from ..tmux import OwnershipMismatchError, Tmux, TmuxOwnership
 from ..xkit import XKit
 from ..resolver.lease import activity_lock
@@ -81,6 +82,29 @@ def cli_font(game) -> str:
 
 def cli_font_size(game) -> int:
     return int(cli_raw(game).get("font_size", 18))
+
+
+def cli_cell_aspect(game) -> str | None:
+    """Return the validated terminal cell ratio (``"W:H"``) or ``None``.
+
+    ``[cli] cell_aspect`` is a per-game opt-in for the presentation path:
+    when set, the captured window is widened by H/W so the terminal cells are
+    displayed square.  pacman4console is the only game using it (its maze is
+    square-tile art; a 1:2 terminal cell would show it vertically stretched).
+    Unset (the default) keeps the native window exactly as captured.
+    """
+    raw = cli_raw(game).get("cell_aspect")
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw.strip():
+        raise AdapterError('[cli] cell_aspect は "W:H" 形式の文字列で指定してください')
+    try:
+        scale = cell_aspect_scale(raw)
+    except ValueError as exc:
+        raise AdapterError(f"[cli] cell_aspect が不正です: {exc}") from exc
+    if scale == 1.0:
+        return None
+    return raw.strip()
 
 
 def cli_game_session() -> str:
@@ -323,11 +347,13 @@ class CliCoordinatorAdapter:
         ]
         d = self.g.display
         if d.viewport_width > 0 and d.viewport_height > 0:
+            cell_aspect = cli_cell_aspect(self.game)
             return [
                 sys.executable, str(Path(__file__).resolve().parents[1] / 'presentation.py'),
                 '--display', d.name, '--title', f'docich-present-{self.spec.runtime_id}',
                 '--x', str(d.viewport_x), '--y', str(d.viewport_y),
                 '--width', str(d.viewport_width), '--height', str(d.viewport_height),
+                *(['--cell-aspect', cell_aspect] if cell_aspect else []),
                 '--', *command,
             ]
         return command
@@ -358,6 +384,9 @@ class CliCoordinatorAdapter:
         self._game_command()
         self._xterm_bin()
         if self.g.display.viewport_width > 0:
+            # 不正な cell_aspect はここで fail closed にする (materialize 前に
+            # 設定エラーとして止める)。
+            cli_cell_aspect(self.game)
             for binary in ('Xvfb', 'ffplay', 'xdotool'):
                 if not procs.which(binary):
                     raise AdapterError(f'{binary} が見つかりません')

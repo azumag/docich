@@ -737,24 +737,38 @@ def _review_text(facts: Mapping[str, object]) -> str:
         realized = item.get("realized_jpy")
         hold = item.get("hold_sec")
         hold_min = f"{float(hold) / 60:.0f}分" if isinstance(hold, (int, float)) else "保有時間不明"
-        try:
-            pnl = float(realized)
-        except (TypeError, ValueError):
+        if isinstance(realized, bool):
             pnl = None
-        realized_text = _fmt_num(realized) if pnl is not None else None
-        if realized_text is None:
-            realized_text = str(realized)
-        verdict = "利益" if pnl is not None and pnl > 0 else "損失"
+        else:
+            try:
+                pnl = float(realized)
+            except (TypeError, ValueError, OverflowError):
+                pnl = None
+        if pnl is not None and not math.isfinite(pnl):
+            pnl = None
+        if pnl is None:
+            outcome = "損益は記録不明です。"
+        else:
+            realized_text = _fmt_num(realized) or str(realized)
+            if pnl > 0:
+                verdict = "利益"
+            elif pnl < 0:
+                verdict = "損失"
+            else:
+                verdict = "損益なし"
+            outcome = f"{realized_text}円の{verdict}です。"
         entry_text = f"（{entry}）" if entry else ""
         if pnl is not None and pnl > 0:
             lesson = "利益にはなりましたが、根拠が再現した結果か、たまたま追い風だったかを分けて見ます。"
         elif pnl is not None and pnl < 0:
             lesson = "損失でしたが、条件どおりに撤退できたかまで含めて評価します。"
+        elif pnl == 0:
+            lesson = "損益はゼロなので、プラスマイナスの結果とは分けて判断の再現性を見ます。"
         else:
-            lesson = "損益が確定していないため、出口の判断はまだ保留です。"
+            lesson = "損益が記録不明のため、出口の判断はまだ保留です。"
         parts.append(
             f"{symbol}は{entry_reason}{entry_text}で入り、{exit_reason}で出口、{hold_min}保有で"
-            f"{realized_text}円の{verdict}です。{lesson}次に同じ形が来たらどうするかを"
+            f"{outcome}{lesson}次に同じ形が来たらどうするかを"
             "ここで切り分け、改善側の検証条件に渡します。"
         )
     return "".join(parts)

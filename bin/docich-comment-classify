@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# docich comment classifier launcher (#882 / #829).
+#
+# Runs only the reviewed docich.comment_classifier from this checkout. The
+# live chat worker calls it from the Soren root, so neither the caller's cwd
+# (-P: never prepend it to sys.path) nor its PYTHONPATH may shadow the package.
+# Usage: docich-comment-classify <comments_file>  -> JSON array on stdout.
+set -euo pipefail
+
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
+export PYTHONPATH="$ROOT/src"
+exec python3 -P -m docich.comment_classifier "$@"

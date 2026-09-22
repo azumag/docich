@@ -121,6 +121,15 @@ class RetroArchCoordinatorTestBase(unittest.TestCase):
 
 
 class TestPreflight(RetroArchCoordinatorTestBase):
+    def test_contained_viewer_routes_game_audio_to_existing_bus(self):
+        from dataclasses import replace
+        self.adapter.g = replace(self.g,
+            audio=replace(self.g.audio, enabled=False),
+            display=replace(self.g.display, viewport_width=960, viewport_height=540))
+        self.adapter.game.raw['retroarch'].update(audio_enabled=True, audio_sink='soren_null')
+        command = self.adapter._game_command()
+        self.assertEqual(command[command.index('--audio-sink') + 1], 'soren_null')
+
     def test_preflight_validates_rom_core_and_binaries(self):
         with mock.patch("docich.adapters.retroarch.procs.which", return_value="/usr/bin/retroarch"):
             self.adapter.preflight(time.monotonic() + 5, None)

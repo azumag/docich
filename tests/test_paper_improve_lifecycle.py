@@ -147,3 +147,78 @@ def test_sigterm_custom_handler_is_respected(monkeypatch):
         assert current[signal.SIGTERM] is custom
 
     assert calls == []
+
+
+def test_ai_timeout_terminalizes_as_failed_generate(tmp_path, monkeypatch):
+    """Issue #724: AI timeout must land in a durable terminal state."""
+    from docich.trading.ai_text import AiTextError
+
+    trading = tmp_path / "state" / "trading"
+    trading.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        paper_improve,
+        "build_facts",
+        lambda target, now=None, policy=None: {"capital_jpy": "1000000"},
+    )
+
+    def timeout_llm(prompt_text):
+        raise AiTextError("AI呼び出しがタイムアウトしました", kind="timeout")
+
+    summary = paper_improve.run_paper_improve(
+        _g(tmp_path), trading_dir=trading, agents="x", now=2000.0, llm=timeout_llm
+    )
+    assert summary["status"] == "failed"
+    assert summary["reason"] == "ai-error"
+    status = json.loads((trading / paper_improve.STATUS_FILENAME).read_text())
+    assert status["status"] == "failed"
+    assert status["phase"] == "generate"
+    assert status["completed_at"] == 2000.0
+    assert "decision" not in status
+
+
+def test_improve_path_sends_no_process_kill():
+    """Issue #724: stale detection must never broaden into killing workers.
+
+    The improve path owns no process handles: no pkill, no os.kill, no
+    SIGKILL, no signal delivery. Recovery is metadata-only (stale flag,
+    terminal states, next-run single-flight).
+    """
+    from pathlib import Path as _Path
+
+    repo_root = _Path(__file__).resolve().parents[1]
+    roots = [
+        repo_root / "src/docich/trading/paper_improve.py",
+        repo_root / "src/docich/trading/strategy_store.py",
+        repo_root / "src/docich/trading/strategies.py",
+    ]
+    forbidden = ("os.kill", "pkill", "SIGKILL", "send_signal", "kill -9", "kill(")
+    for root in roots:
+        text = root.read_text(encoding="utf-8")
+        for marker in forbidden:
+            assert marker not in text, f"{root}: forbidden process-kill marker {marker!r}"
+
+
+def test_lane_busy_is_skipped_and_recorded(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    from docich import corner_improve
+
+    @contextmanager
+    def busy(_state_dir, **_kwargs):
+        yield False
+
+    monkeypatch.setattr(corner_improve, "improve_lane", busy)
+    monkeypatch.setattr(
+        paper_improve, "_run_paper_improve",
+        lambda *_args, **_kwargs: pytest.fail("the lane must gate the job"),
+    )
+    trading = tmp_path / "state" / "trading"
+
+    result = paper_improve.run_paper_improve(
+        _g(tmp_path), trading_dir=trading, agents="x", now=123.0
+    )
+
+    assert result["status"] == "skipped" and result["reason"] == "lane-busy"
+    status = json.loads((trading / paper_improve.STATUS_FILENAME).read_text())
+    assert status["status"] == "skipped"
+    assert status["reason_code"] == "lane-busy"

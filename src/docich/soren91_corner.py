@@ -210,7 +210,14 @@ class Soren91CornerManager(RetroCornerManager):
         voice: Callable[[str], None] | None = None,
         spawn=None,
         agent_alive_probe: Callable[[], bool | None] | None = None,
-        agent_liveness_poll_s: float = 30.0,
+        # Bot liveness cadence (docich #464 / soviet_now #486): the slot must
+        # leave a dead bot quickly, because the broadcast keeps showing the
+        # last captured frame while the corner stays active. main.pid is
+        # written once at bot startup and only removed by the bot's own
+        # cleanup, so two consecutive misses 10s apart (~20s) are already
+        # conclusive; the old 30s cadence left the frozen frame visible for up
+        # to ~60s after the capture pipeline died (measured 2026-09-22).
+        agent_liveness_poll_s: float = 10.0,
         agent_liveness_strikes: int = 2,
         agent_liveness_timeout_s: float = 5.0,
     ):
@@ -260,7 +267,14 @@ class Soren91CornerManager(RetroCornerManager):
 
     # --- lifecycle customizations -------------------------------------------
 
-    def _validate_games(self) -> None:
+    def _validate_games(self, names: list[str] | None = None) -> None:
+        # Same target-override contract as the NetHack corner: a dispatch may
+        # pass the selected game, and this fixed manager owns exactly one.
+        if names is not None and (not names or GAME_NAME not in names):
+            raise RetroCornerError(
+                f"soren91 corner対象は{GAME_NAME}だけが有効です: "
+                + "、".join(str(name) for name in names)
+            )
         try:
             game = load_game(self.g, GAME_NAME)
         except Exception as exc:
