@@ -671,7 +671,7 @@ def test_systemd_improve_submission_is_independent_and_bounded(tmp_path, monkeyp
     argv, kwargs = calls[0]
     assert argv[:4] == ['systemd-run', '--user', '--quiet', '--collect']
     assert '--property=Type=exec' in argv
-    assert '--property=RuntimeMaxSec=1500' in argv
+    assert '--property=RuntimeMaxSec=3600' in argv
     assert '--property=TimeoutStopSec=30' in argv
     assert '--setenv=DOCICH_ALLOW_REAL_AI=1' in argv
     assert f'--setenv=PYTHONPATH={g.repo_root / "src"}' in argv

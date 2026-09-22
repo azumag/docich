@@ -29,7 +29,28 @@ JEVは自動有効化されていない手動のplayer-policy試験であり、�
 `config/market-paper.toml`の株式/FXも現行設定では双方無効。これらの有効化は本変更に含めない。
 新adapterが必要な項目を未対応名でcatalogに追加した場合は起動時に拒否する。
 
-## 時間と重複排除
+## dispatch policy（`schedule_mode`）
+
+- `interval`（既定）: 目標間隔は常に86400/N秒。毎tickに実効Nを再評価する。N=0なら待機する。
+  遅延やcornerの長さによってN回/日を保証しない。取りこぼしは1回にまとめ、過去slotを連発しない。
+- `queue`: 間隔アンカーを使わず、共有スロットが空き次第、rolling cooldown外の候補を
+  決定論的順位（seed・slot・corner IDのSHA-256）で連続発火する。`next_due_at`は
+  「次に発火可能な時刻」の意味になり、候補が空のときだけ最も早いcooldown明けへ再アンカーする。
+  発火は常に1本ずつで、重複・並行起動はしない（pending・共通program slotは両modeで同じ）。
+- `cooldown_hours`（既定24）は同一cornerを再選択できるまでのrolling窓。小さいほど連続性が上がる。
+  どのmodeでも予約・実開始・終了・手動使用をcooldownへ数える。
+- queue modeの実効間隔は `max(cooldownが許す範囲, 直前cornerの所要時間 + 改善レーンの待ち)`。
+  24h cooldownを維持する場合、eligible N件を消化した後は最も早いcooldown明けまで待機する。
+- queue modeでは次のcornerは前の改善ジョブの終端を待たない（`resources_released`の
+  改善待ちを外す）。改善ジョブは `locks/corner-improve-lane.lock` の共有レーンで直列化し、
+  同時実行を1本に制限する。レーン待ちは1800秒で打ち切り、取得できない回は
+  `status=skipped` / `reason_code=lane-busy` をdurable recordに残す。corner本体と
+  次の発火は止めない。interval modeは従来どおり改善ジョブの終端を待つ。
+- 改善ジョブが共有stateの上書きと競合しないよう、retroのspawnは確定済みの
+  `started_at` / `ends_at` をepoch秒でjobへ明示する（`--started-at` / `--ends-at`）。
+  次コーナーが先にstateを書き換えても、jobは自分のコーナー期間だけを評価する。
+
+## 時間と重複排除（interval mode）
 
 - 目標間隔は常に86400/N秒。毎tickに実効Nを再評価する。N=0なら待機する。
 - 選択候補は有効cornerのうち、予約・実開始・終了・手動使用が直近24時間にないもの。

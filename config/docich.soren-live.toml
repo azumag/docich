@@ -43,6 +43,11 @@ games = []
 
 [corner_rotation]
 enabled = true
+# "queue": 共有スロットが空き次第、cooldown外の候補を決定論的順で連続発火する
+# (24h/Nの間隔アンカーを使わない)。"interval" は従来のcadence。
+schedule_mode = "queue"
+# 同一cornerの再選択を許すまでのrolling窓。小さいほど連続性が上がる。
+cooldown_hours = 24.0
 # 唯一のproduction corner catalog。実行可能で休止していないN件で24h/N。
 # 選択・実行履歴はrolling 24hで除外。adapter設定のstart_hourは互換用のみ。
 # 定期tickは canonical `docich-corner-rotation.timer`（移行期間は

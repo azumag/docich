@@ -1379,7 +1379,7 @@ ROTATION_STATUSES = frozenset({
 ROTATION_IMPROVE_REASON_CODES = frozenset({
     "state-read", "corner-window", "gate-disabled", "llm-call", "llm-rc",
     "llm-empty", "llm-format", "llm-keys", "llm-values", "llm-unexpected",
-    "eval", "unexpected",
+    "eval", "lane-busy", "unexpected",
 })
 ROTATION_IMPROVE_PHASES = frozenset({"state", "llm", "eval", "unknown"})
 
@@ -1828,6 +1828,7 @@ def _collect_paper_improve_status(state_dir, now):
             "phase": _bounded_str(data.get("phase"), 32),
             "progress": progress,
             "detail": _bounded_str(data.get("detail"), 160),
+            "reason_code": _rotation_enum(data.get("reason_code"), ROTATION_IMPROVE_REASON_CODES),
             "started_at": _bounded_time(data.get("started_at")),
             "updated_at": _bounded_time(data.get("updated_at")),
             "completed_at": _bounded_time(data.get("completed_at")),
@@ -1835,6 +1836,32 @@ def _collect_paper_improve_status(state_dir, now):
         }
     )
     return entry
+
+
+def _rotation_policy():
+    """Fixed projection of the configured dispatch policy (no secrets).
+
+    Returns (schedule_mode, cooldown_seconds); unknown/unreadable stays None so
+    the projection never guesses a policy from stale files.
+    """
+    try:
+        import tomllib
+
+        raw = _read_text_capped(PROD_ROOT / "config" / "docich.soren-live.toml", 16384) or ""
+        section = tomllib.loads(raw).get("corner_rotation", {})
+        if not isinstance(section, dict):
+            return None, None
+        mode = section.get("schedule_mode", "interval")
+        if mode not in {"interval", "queue"}:
+            return None, None
+        cooldown = section.get("cooldown_hours", 24.0)
+        if type(cooldown) not in (int, float) or isinstance(cooldown, bool):
+            return None, None
+        if not 0 < float(cooldown) <= 24 * 30:
+            return None, None
+        return mode, float(cooldown) * 3600.0
+    except (OSError, ValueError, ImportError):
+        return None, None
 
 
 def _collect_corner_files(state_dir, payload, now):
@@ -1855,6 +1882,8 @@ def _collect_corner_files(state_dir, payload, now):
             eligible_count=len(data["eligible"]) if isinstance(data.get("eligible"), list) else None,
             pending=isinstance(data.get("pending"), dict),
         )
+    mode, cooldown = _rotation_policy()
+    rotation.update(schedule_mode=mode, cooldown_seconds=cooldown)
     payload["corner_rotation"] = rotation
     present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES["game_switch"])
     entry = {"present": present, "readable": readable}

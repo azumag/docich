@@ -546,7 +546,9 @@ class PaperCornerManager:
             command = [
                 'systemd-run', '--user', '--quiet', '--collect',
                 f'--unit=docich-paper-improve-{uuid.uuid4().hex}',
-                '--property=Type=exec', '--property=RuntimeMaxSec=1500',
+                # Bounded wait on the cross-corner improve lane (1800s) plus
+                # the job's own work budget.
+                '--property=Type=exec', '--property=RuntimeMaxSec=3600',
                 '--property=TimeoutStopSec=30', '--property=UMask=0077',
                 f'--working-directory={self.g.repo_root}',
                 f'--property=StandardOutput=append:{Path(log_path).resolve()}',

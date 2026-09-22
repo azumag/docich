@@ -805,7 +805,9 @@ class RetroCornerManager:
                 "systemd-run", "--user", "--quiet", "--collect",
                 f"--unit=docich-retro-improve-{uuid.uuid4().hex}",
                 "--property=Type=exec",
-                "--property=RuntimeMaxSec=1500",
+                # Bounded wait on the cross-corner improve lane (1800s) plus
+                # the job's own work budget.
+                "--property=RuntimeMaxSec=3600",
                 "--property=TimeoutStopSec=30",
                 "--property=UMask=0077",
                 f"--working-directory={repo_root}",
@@ -855,6 +857,20 @@ class RetroCornerManager:
                 env=env,
             )
 
+    @staticmethod
+    def _spawn_window_args(state: dict[str, object]) -> list[str]:
+        """確定したコーナー期間のepoch秒引数 (不正なら空でstate読みへ戻す)。"""
+        values = []
+        for key in ("started_at", "ends_at"):
+            raw = state.get(key)
+            if not isinstance(raw, str) or not raw:
+                return []
+            try:
+                values.append(dt.datetime.fromisoformat(raw).timestamp())
+            except (ValueError, TypeError, OverflowError, OSError):
+                return []
+        return ["--started-at", f"{values[0]:.6f}", "--ends-at", f"{values[1]:.6f}"]
+
     def _spawn_improve_once(self, state: dict[str, object]) -> None:
         """終了時改善ジョブを切り離して起動する。失敗しても finish を壊さない。"""
         if state.get('game') == 'hanjuku-hero':
@@ -885,6 +901,9 @@ class RetroCornerManager:
         game = state.get("game")
         if isinstance(game, str) and game:
             argv += ["--game", game]
+        # queue dispatchでは次コーナーが共有stateを上書きし得るため、確定済みの
+        # コーナー期間も明示して競合させる (job側のstate読みを不要にする)。
+        argv += self._spawn_window_args(state)
         try:
             self._spawn(argv, log_path)
             state["improve_job"] = {"spawned": True, "date": date_str, "log": str(log_path)}
@@ -900,6 +919,7 @@ class RetroCornerManager:
         margin_pct: float | None = None,
         dry_run: bool = False,
         game: str | None = None,
+        window: tuple[float, float] | None = None,
     ) -> dict:
         from .corner_improve import run_corner_improve
 
@@ -932,6 +952,7 @@ class RetroCornerManager:
             matches=matches,
             margin_pct=float(margin_pct),
             dry_run=dry_run,
+            window=window,
         )
 
     def _finish_locked(self, state: dict[str, object], completed_at: dt.datetime) -> CornerResult:
@@ -2371,6 +2392,10 @@ def _build_parser() -> argparse.ArgumentParser:
     once = sub.add_parser("improve-once")
     once.add_argument("--date", required=True, help="対象コーナー日 (YYYY-MM-DD)")
     once.add_argument("--game", default=None, help="終了したコーナーのゲーム (既定は日付から選択)")
+    once.add_argument("--started-at", type=float, default=None,
+                      help="確定済みコーナー開始 epoch秒 (queue dispatch用)")
+    once.add_argument("--ends-at", type=float, default=None,
+                      help="確定済みコーナー終了予定 epoch秒")
     once.add_argument("--agents", default=None, help="LLM委任先 (既定は設定値)")
     once.add_argument("--matches", type=int, default=None)
     once.add_argument("--margin-pct", type=float, default=None)
@@ -2397,11 +2422,17 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "improve-once":
             from .corner_improve import CornerImproveError
+            started_at = getattr(args, "started_at", None)
+            ends_at = getattr(args, "ends_at", None)
+            if (started_at is None) != (ends_at is None):
+                raise RetroCornerError("--started-at と --ends-at は同時に指定してください")
+            window = (started_at, ends_at) if started_at is not None else None
             try:
                 summary = manager.improve_once(
                     args.date, agents=args.agents, matches=args.matches,
                     margin_pct=args.margin_pct, dry_run=args.dry_run,
                     game=getattr(args, "game", None),
+                    window=window,
                 )
             except CornerImproveError as exc:
                 print(f"docich: エラー: {exc}", file=sys.stderr)

@@ -23,17 +23,39 @@ class Corner:
     target_matches: int | None = None
 
 
+# Dispatch policies. "interval" keeps the 24h/N cadence; "queue" fires the next
+# eligible corner as soon as the shared slot is free (cooldown-limited).
+SCHEDULE_MODES = ("interval", "queue")
+DEFAULT_COOLDOWN_HOURS = 24.0
+MAX_COOLDOWN_HOURS = 24 * 30
+
+
 def rotation_config(g) -> dict:
     if not getattr(g, "config_path", None) or not g.config_path.is_file():
         return {}
     raw = tomllib.loads(g.config_path.read_text()).get("corner_rotation", {})
     if not isinstance(raw, dict) or type(raw.get("enabled", False)) is not bool:
         raise CornerCatalogError("invalid corner_rotation configuration")
+    mode = raw.get("schedule_mode", "interval")
+    if mode not in SCHEDULE_MODES:
+        raise CornerCatalogError("corner_rotation.schedule_mode must be 'interval' or 'queue'")
+    cooldown = raw.get("cooldown_hours", DEFAULT_COOLDOWN_HOURS)
+    if (type(cooldown) not in (int, float) or isinstance(cooldown, bool)
+            or not 0 < float(cooldown) <= MAX_COOLDOWN_HOURS):
+        raise CornerCatalogError("corner_rotation.cooldown_hours must be a positive number")
     return raw
 
 
 def rotation_enabled(g) -> bool:
     return rotation_config(g).get("enabled", False)
+
+
+def schedule_mode(g) -> str:
+    return rotation_config(g).get("schedule_mode", "interval")
+
+
+def cooldown_seconds(g) -> float:
+    return float(rotation_config(g).get("cooldown_hours", DEFAULT_COOLDOWN_HOURS)) * 3600.0
 
 
 def load_catalog(g) -> tuple[Corner, ...]:
