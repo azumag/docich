@@ -147,6 +147,25 @@ def test_improvement_terminal_evidence_is_required(tmp_path):
     assert adapter.resources_released() is True
 
 
+def test_failed_improvement_releases_only_with_fresh_terminal_evidence(tmp_path):
+    corner = Corner("snake", "game", "nsnake")
+    adapter = GameCornerAdapter.__new__(GameCornerAdapter)
+    adapter.g = SimpleNamespace(state_dir=tmp_path)
+    adapter.corner = corner
+    adapter.observations = lambda: [{"completed_at": 100, "improve_job": {"spawned": True}}]
+    _, path = adapter.improvement_paths()
+    path.write_text(json.dumps({"status": "failed", "started_at": 101, "completed_at": 102}))
+    assert adapter.resources_released() is True
+    path.write_text(json.dumps({"status": "failed", "started_at": 99, "completed_at": 102}))
+    assert adapter.resources_released() is False
+    path.write_text(json.dumps({"status": "failed", "started_at": 101}))
+    assert adapter.resources_released() is False
+    path.write_text(json.dumps({"status": "failed", "started_at": 101, "completed_at": 100}))
+    assert adapter.resources_released() is False
+    path.write_text(json.dumps({"status": "running", "started_at": 101}))
+    assert adapter.resources_released() is False
+
+
 @pytest.mark.parametrize("configured", [None, 7])
 def test_game_adapter_inherits_global_match_target_when_omitted(tmp_path, configured):
     from docich.config import load_global
