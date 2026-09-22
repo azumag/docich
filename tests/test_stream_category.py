@@ -201,7 +201,8 @@ class TestRunningView(StreamCategoryTestBase):
 class TestSpawnMechanics(StreamCategoryTestBase):
     def test_child_is_detached_and_its_output_kept_in_a_private_log(self) -> None:
         script = self._install_script()
-        with mock.patch("docich.stream_category.subprocess.Popen") as popen:
+        with mock.patch.dict(os.environ, {"INVOCATION_ID": ""}, clear=False), \
+             mock.patch("docich.stream_category.subprocess.Popen") as popen:
             announce_stream_game(self.g, "nethack")
 
         kwargs = popen.call_args.kwargs
@@ -221,6 +222,44 @@ class TestSpawnMechanics(StreamCategoryTestBase):
         self.assertTrue(log.is_file())
         self.assertEqual(stat.S_IMODE(log.stat().st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(log.parent.stat().st_mode), 0o700)
+
+    def test_systemd_oneshot_submits_an_independent_transient_unit(self) -> None:
+        script = self._install_script()
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        with mock.patch.object(sys, "platform", "linux"), \
+             mock.patch.dict(os.environ, {"INVOCATION_ID": "parent-corner"}, clear=False), \
+             mock.patch("docich.stream_category.subprocess.run", side_effect=fake_run), \
+             mock.patch("docich.stream_category.subprocess.Popen",
+                        side_effect=AssertionError("unsafe parent cgroup")):
+            announce_stream_game(self.g, "nethack")
+
+        self.assertEqual(len(calls), 1)
+        argv, kwargs = calls[0]
+        self.assertEqual(argv[:4], ["systemd-run", "--user", "--quiet", "--collect"])
+        self.assertTrue(any(item.startswith("--unit=docich-stream-category-") for item in argv))
+        self.assertIn("--property=Type=exec", argv)
+        self.assertIn("--property=RuntimeMaxSec=120", argv)
+        self.assertIn("--property=TimeoutStopSec=15", argv)
+        self.assertTrue(any(item.startswith("--property=StandardOutput=append:") for item in argv))
+        self.assertTrue(any(item.startswith("--working-directory=") for item in argv))
+        separator = argv.index("--")
+        child = argv[separator + 1:]
+        runner = Path(__file__).resolve().parents[1] / "src/docich/stream_category_runner.py"
+        self.assertEqual(Path(child[0]).resolve(), Path(sys.executable).resolve())
+        self.assertEqual(Path(child[1]).resolve(), runner.resolve())
+        self.assertEqual(
+            Path(child[2]).resolve(),
+            (Path(self.g.state_dir) / "logs" / "stream-category.lock").resolve(),
+        )
+        self.assertEqual(child[3], "--")
+        self.assertEqual(Path(child[4]).resolve(), script.resolve())
+        self.assertFalse(kwargs["check"])
+        self.assertEqual(kwargs["timeout"], 30)
 
     def test_category_runner_executes_the_reviewed_command_under_the_lock(self) -> None:
         lock = self.root / "run" / "logs" / "stream-category.lock"
@@ -266,15 +305,17 @@ class TestSpawnMechanics(StreamCategoryTestBase):
         log.parent.mkdir(parents=True, exist_ok=True)
         log.write_text("earlier\n", encoding="utf-8")
         os.chmod(log, 0o600)
-        with mock.patch("docich.stream_category.subprocess.Popen"):
+        with mock.patch.dict(os.environ, {"INVOCATION_ID": ""}, clear=False), \
+             mock.patch("docich.stream_category.subprocess.Popen"):
             announce_stream_game(self.g, "nethack")
         self.assertEqual(log.read_text(encoding="utf-8"), "earlier\n")
 
     def test_a_failed_spawn_is_a_stream_category_error(self) -> None:
         self._install_script()
-        with mock.patch(
-            "docich.stream_category.subprocess.Popen", side_effect=OSError("no exec")
-        ):
+        with mock.patch.dict(os.environ, {"INVOCATION_ID": ""}, clear=False), \
+             mock.patch(
+                 "docich.stream_category.subprocess.Popen", side_effect=OSError("no exec")
+             ):
             with self.assertRaises(StreamCategoryError):
                 announce_stream_game(self.g, "nethack")
 
