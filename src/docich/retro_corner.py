@@ -1365,6 +1365,9 @@ class RetroCornerManager:
         """No fixed session deadline: observe until game-over or 300s stasis."""
         from .adapters import make_adapter
         from .agent.fence import AgentFence, shared_section
+        from .game_switch import DeadlineExceededError, GameSwitchBusyError
+        from .hanjuku_run import event
+        from .naming import runtime_directory
         next_repair = 0.
         owned_runtime = state.get('bot_runtime_id')
         while True:
@@ -1382,7 +1385,18 @@ class RetroCornerManager:
             fence = AgentFence(game=active['game'], runtime_id=active['runtime_id'],
                                generation=active['generation'], lease_id=active['lease_id'])
             adapter = make_adapter(self.g, load_game(self.g, 'hanjuku-hero'), fence=fence)
-            observation = shared_section(self.g.state_dir, adapter.observe)
+            try:
+                observation = shared_section(self.g.state_dir, adapter.observe)
+            except (DeadlineExceededError, GameSwitchBusyError):
+                # Audio/menu maintenance can temporarily own the input gate.
+                # A missing observation is not an ending or unchanged frame.
+                # Recheck stop requests and canonical ownership on every retry.
+                event(runtime_directory(self.g.state_dir, owned_runtime), {
+                    'event': 'observation_retry', 'at': time.time(),
+                    'reason': 'input_or_switch_busy',
+                })
+                self._sleep(2.)
+                continue
             run = observation.meta.get('hanjuku') or {}
             with self._locked():
                 latest = self._read_state()
