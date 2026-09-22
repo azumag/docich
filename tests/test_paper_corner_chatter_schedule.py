@@ -80,6 +80,12 @@ def _starting_state():
     }
 
 
+def _write_current_source(tmp_path, content, label, phase="playing"):
+    source = tmp_path / "soren/tmp/.say_queue/current_source"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(f"owner|{phase}|{content}|1000|{label}\n", encoding="utf-8")
+
+
 def test_ai_segments_are_spoken_as_generated_then_exhausted(tmp_path, monkeypatch):
     from docich.trading import corner_script
 
@@ -199,3 +205,79 @@ def test_corner_bounds_the_speech_wait(tmp_path):
 
     saved = json.loads(mgr.path.read_text())
     assert saved.get("speech_drain_timeout") is True
+
+
+def test_unrelated_comment_and_say_queue_do_not_block_paper_restore(tmp_path):
+    comment_queue = tmp_path / "soren/tmp/.comment_queue"
+    say_queue = tmp_path / "soren/tmp/.say_queue"
+    comment_queue.mkdir(parents=True)
+    say_queue.mkdir(parents=True)
+    (comment_queue / "comment_announce_1_unrelated.txt").write_text("chat", encoding="utf-8")
+    (say_queue / "content_unrelated.txt").write_text("radio", encoding="utf-8")
+
+    mgr, _coord = _manager(tmp_path, script_agents="")
+
+    assert mgr._pending_speech() is False
+
+
+def test_paper_queue_and_current_source_block_restore(tmp_path):
+    comment_queue = tmp_path / "soren/tmp/.comment_queue"
+    comment_queue.mkdir(parents=True)
+    paper_name = "comment_announce_1_" + ("a" * 64) + "_crypto_paper.playing"
+    (comment_queue / paper_name).write_text("PAPER", encoding="utf-8")
+    mgr, _coord = _manager(tmp_path, script_agents="")
+
+    assert mgr._pending_speech() is True
+
+    (comment_queue / paper_name).unlink()
+    _write_current_source(
+        tmp_path,
+        "tmp/.comment_queue/comment_announce_1_" + ("b" * 64) + "_crypto_paper.playing",
+        "crypto_paper",
+    )
+    assert mgr._pending_speech() is True
+
+
+def test_speaking_without_source_metadata_remains_fail_safe(tmp_path):
+    speaking = tmp_path / "soren/tmp/state/speaking.json"
+    speaking.parent.mkdir(parents=True)
+    speaking.write_text("{}", encoding="utf-8")
+    mgr, _coord = _manager(tmp_path, script_agents="")
+
+    assert mgr._pending_speech() is True
+
+    _write_current_source(tmp_path, "tmp/.comment_queue/comment_announce_2_other.playing", "comment")
+    assert mgr._pending_speech() is False
+
+    speaking.unlink()
+    (tmp_path / "soren/tmp/.say_queue/current_source").write_text("malformed\n", encoding="utf-8")
+    assert mgr._pending_speech() is True
+
+    _write_current_source(
+        tmp_path,
+        "tmp/.comment_queue/comment_announce_3_crypto_paper.txt",
+        "comment",
+    )
+    assert mgr._pending_speech() is True
+
+
+def test_handoff_to_unrelated_audio_reaches_stable_empty(tmp_path):
+    paper = tmp_path / "soren/tmp/.comment_queue" / (
+        "comment_announce_1_" + ("c" * 64) + "_crypto_paper.txt"
+    )
+    paper.parent.mkdir(parents=True)
+    paper.write_text("PAPER", encoding="utf-8")
+    speaking = tmp_path / "soren/tmp/state/speaking.json"
+    speaking.parent.mkdir(parents=True)
+    speaking.write_text("{}", encoding="utf-8")
+    sleeps = []
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        paper.unlink(missing_ok=True)
+        _write_current_source(tmp_path, "tmp/.comment_queue/comment_announce_2_other.playing", "comment")
+
+    mgr, _coord = _manager(tmp_path, script_agents="", sleep=sleep)
+
+    assert mgr._wait_for_speech({"status": "active"}) is True
+    assert sleeps == [2.0] * SPEECH_DRAIN_STABLE_POLLS

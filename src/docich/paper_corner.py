@@ -38,13 +38,19 @@ NARRATION_AI_RETRIES = 2
 # inactive, so the flag carries a sliding expiry refreshed on every segment.
 # If narration makes no progress for this long the radio resumes fail-open.
 PAPER_FLAG_TTL_S = 1800
+# Soren's durable PAPER delivery names carry this source marker.  The marker
+# is intentionally checked on the basename rather than by inspecting speech
+# text, which must never become a source-of-truth for lifecycle decisions.
+PAPER_AUDIO_SUFFIXES = ("_crypto_paper.txt", "_crypto_paper.playing")
+SPEECH_SOURCE_PHASES = frozenset({"waiting", "playing", "retry_wait"})
 # Bounded memory of already-spoken topic labels handed back to the narrator so
 # the model can avoid repeating itself across a long sequential run.
 MAX_COVERED_TOPICS = 24
 # After the last segment is generated, wait for the enqueued speech to finish
 # playing before handing the display back, so the corner never cuts off its own
-# narration. Poll the Soren audio queue (pending items + speaking state) and
-# give up after this bound so a wedged audio worker cannot pin the corner.
+# narration. Poll the Soren audio queue (PAPER items + source-specific speaking
+# state) and give up after this bound so a wedged audio worker cannot pin the
+# corner.
 SPEECH_DRAIN_TIMEOUT_S = 1800
 SPEECH_DRAIN_POLL_S = 2.0
 # Require the queues/playing state to stay empty for several consecutive polls
@@ -297,27 +303,73 @@ class PaperCornerManager:
         except Exception:
             pass
 
-    def _pending_speech(self) -> bool:
-        """True while corner/say audio is still queued or being spoken.
+    @staticmethod
+    def _is_paper_audio_path(value: str) -> bool:
+        name = Path(str(value or "")).name
+        return any(name.endswith(suffix) for suffix in PAPER_AUDIO_SUFFIXES)
 
-        Uses the Soren audio queue that :func:`enqueue_speech` feeds: pending
-        comment items, pending say-queue items, and the ``speaking.json`` state
-        the player writes while a line is playing. Any unreadable path is
-        treated as "not pending" so a missing Soren root never stalls the
-        corner.
+    def _current_speech_source(self, root: Path) -> str:
+        """Classify Soren's current playback metadata without reading content.
+
+        ``current_source`` is written as ``owner|phase|content|timestamp|label``
+        by Soren's ``say_enqueue.sh``.  A well-formed, mutually consistent
+        PAPER path/label proves PAPER playback; a well-formed non-PAPER pair
+        proves an unrelated source.  Missing or contradictory metadata remains
+        unknown so a concurrent ``speaking.json`` state keeps the old
+        fail-safe behavior.
+        """
+        source_file = root / "tmp/.say_queue/current_source"
+        try:
+            raw = source_file.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return "missing"
+        except OSError:
+            return "unknown"
+        fields = raw.rstrip("\n").split("|", 4)
+        if len(fields) != 5:
+            return "unknown"
+        owner, phase, content, timestamp, label = fields
+        if not owner or phase not in SPEECH_SOURCE_PHASES or not content:
+            return "unknown"
+        if not timestamp.isdigit():
+            return "unknown"
+        path_is_paper = self._is_paper_audio_path(content)
+        label_is_paper = label == "crypto_paper" or label.startswith("crypto_paper:")
+        if path_is_paper != label_is_paper:
+            return "unknown"
+        return "paper" if path_is_paper else "other"
+
+    def _pending_speech(self) -> bool:
+        """True while this corner's audio is still queued or being spoken.
+
+        PAPER's comment queue filenames and Soren's current-source metadata are
+        source-specific.  Derived ``.say_queue`` files are not independently
+        attributable to PAPER, so they do not block a restore unless the
+        current source proves PAPER.  An unreadable/malformed source together
+        with ``speaking.json`` remains pending to preserve the old fail-safe;
+        unrelated, well-formed playback is allowed to drain independently.
         """
         try:
             from .trading.soren_output import resolve_soren_root
 
             root = resolve_soren_root(self.g)
-            if (root / "tmp/state/speaking.json").exists():
+            comment_queue = root / "tmp/.comment_queue"
+            comment_items = list(comment_queue.glob("comment_*.txt"))
+            comment_items.extend(comment_queue.glob("comment_*.playing"))
+            if any(self._is_paper_audio_path(str(item)) for item in comment_items):
                 return True
-            if any((root / "tmp/.comment_queue").glob("comment_*.txt")):
+            source = self._current_speech_source(root)
+            if source == "paper":
                 return True
-            if any((root / "tmp/.say_queue").glob("*.txt")):
+            speaking = (root / "tmp/state/speaking.json").exists()
+            if speaking and source != "other":
+                return True
+            if source == "unknown":
                 return True
         except Exception:
-            return False
+            # A source read/parse failure must not weaken the previous
+            # speech-drain safety boundary.
+            return True
         return False
 
     def _wait_for_speech(self, state) -> bool:
