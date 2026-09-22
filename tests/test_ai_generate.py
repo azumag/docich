@@ -8,6 +8,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich import ai_generate  # noqa: E402
+from docich.llm.backoff import model_backoff_seconds  # noqa: E402
 from docich.llm.contracts import DispatchRequest, ProviderResult  # noqa: E402
 from docich.llm.dispatch import Dispatcher  # noqa: E402
 from docich.llm.policy import parse_agents  # noqa: E402
@@ -162,6 +163,22 @@ class TestNativeAiGenerate(unittest.TestCase):
             self.assertEqual(second.returncode, 0)
             self.assertEqual(second.last_agent, "local")
             self.assertEqual(second_calls, ["local"])
+
+    def test_muse_free_backoff_uses_model_suffix_and_utc_reset(self):
+        env = {
+            "AI_BACKOFF_SEC_ITEMS": (
+                "muse-spark-1.3-contributor-free:86400 "
+                "muse-spark-1.3-contributor:86400"
+            )
+        }
+        free = parse_agents("opencode:muse-spark-1.3-contributor-free", env)[0]
+        paid = parse_agents("opencode-go:muse-spark-1.3-contributor", env)[0]
+        self.assertEqual(model_backoff_seconds(free, "RADIO", env, now=1788807600), 18000)
+        self.assertEqual(model_backoff_seconds(paid, "RADIO", env, now=1788807600), 86400)
+
+        shorter = dict(env)
+        shorter["AI_BACKOFF_SEC_ITEMS"] = "muse-spark-1.3-contributor-free:300"
+        self.assertEqual(model_backoff_seconds(free, "RADIO", shorter, now=1788807600), 300)
 
     def test_validator_rejection_falls_back_without_model_backoff(self):
         with tempfile.TemporaryDirectory() as tmp:
