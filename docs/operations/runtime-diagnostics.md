@@ -43,6 +43,9 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   "workers": {"expected": 19, "running": 6, "stopped": [], "paused": [],
               "duplicates": [], "zombies": [], "stale_pid_files": [],
               "unregistered": [], "required_down": [], "required_stale": [], "details": {}},
+  "semantic_decision": {"present": true, "readable": true, "backend": "jev",
+                        "route": "direct", "requested_model": "jev-1.13.0",
+                        "credential": "present"},
   "queues": {"lanes": {"radio": {"locked": true, "owner_alive": true, "age_sec": 43}},
              "stale_locks": 0, "queue_giveups_15m": 0},
   "ai": {"attempts_15m": 0, "failures_15m": 0, "rate_limits_15m": 0,
@@ -118,6 +121,18 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
 - queue: `tmp/state/.ai_generation_locks/<lane>/owner`
  （token は出さず PID 生死・age のみ）。stale 閾値は 900s。
   `*.owner_guard.lock` / `*.owner_guard.d` は mutex guard のため lane 扱いしない。
+- semantic_decision（#882）: 登録済み `chat_worker` が生きている場合のみ、その
+  `/proc/<pid>/environ` から固定4キー名（`DOCICH_SEMANTIC_BACKEND` /
+  `DOCICH_JEV_ROUTE` / `TYPESAFE_API_KEY` / `DOCICH_JEV_VERCEL_API_KEY`）だけを
+  読み、既にレビュー済みの `docich.semantic_decision.diagnostics.describe()`
+  へそのまま通す。出力は `backend` / `route` / `requested_model` /
+  `credential`（`present`/`absent`/`not_applicable`/`unknown`のみ、値は不可）の
+  固定4項目のみ。生 environ・他の環境変数名・credential の値は一切出さない。
+  worker不在／死亡時は `present:false`、environ読み取り失敗時は
+  `present:true, readable:false`（未確認を"legacy"と誤認しない）。
+  `DIAGNOSTICS_FILES`（gateway.py）にこの projection とそのroute解決先
+  （`src/docich/semantic_decision/{diagnostics,routes}.py`）も追加し、
+  drift検証の対象に含めている。
 - AI: `tmp/state/ai_stats/YYYYMMDD.jsonl`（当日＋前日按分、直近 900s）。
   `attempt` / `ok` は件数のみ。`recent_events` は fail/winner/all_failed/
   queue_giveup/giveup 系のみ直近 20 件。error は 200 字に丸め・redact。

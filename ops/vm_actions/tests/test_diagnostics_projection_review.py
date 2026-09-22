@@ -203,6 +203,9 @@ class ProjectionReviewTests(unittest.TestCase):
             "ops/vm_actions/runtime_registry.py",
             "src/docich/runtime_backend.py",
             "src/docich/__init__.py",
+            "src/docich/semantic_decision/__init__.py",
+            "src/docich/semantic_decision/diagnostics.py",
+            "src/docich/semantic_decision/routes.py",
         ):
             src = ROOT / rel
             if src.is_file():
