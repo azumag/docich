@@ -2,13 +2,15 @@
   "baseline": {
     "docich_main": "da81989a91645cc52cbbf3207135aa8c396a6426",
     "soviet_now_gitlink": "9af382fbbaae9a79ed4d5921a0f6b9cbf3ef8e23",
-    "note": "PR-0 compat boundary pin for #829. docich chat/radio/ai remain reference-run wrappers; native pipeline is out of scope."
+    "note": "PR-1 migration boundary pin for #829. docich chat/radio remain reference-run wrappers; docich ai uses the native dispatcher."
   },
   "docich_wrappers": {
     "chat_source": "src/docich/chat.py",
     "comment_function": "generate_comment_response",
     "radio_function": "_radio_generate_and_play",
     "ai_function": "ai_generate_list",
+    "native_ai_source": "src/docich/llm/dispatch.py",
+    "native_ai_entry": "class Dispatcher",
     "comment_sources": ["twitch", "youtube"],
     "rc_contract": {"0": "success", "1": "generation failure", "2": "argument error"},
     "real_run_gates": {

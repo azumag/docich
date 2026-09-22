@@ -1,10 +1,9 @@
-"""PR-0 baseline: pin the broadcast compat boundary for #829.
+"""PR-0/PR-1 baseline: pin the broadcast migration boundary for #829.
 
 Mock only. No shell execution, no network, no secrets, no VM.
-Static reads assert that docich wrappers still reference the legacy
-soviet_now entry points with the documented rc contract and real-run
-gates. Any silent drift of the compat boundary fails here before the
-native port (PR-1..PR-3).
+Static reads assert that chat/radio remain compatibility wrappers while the
+AI entry point uses the native docich dispatcher. Any silent drift of the
+boundary fails before later native pipeline work.
 """
 
 import json
@@ -29,6 +28,9 @@ class TestBroadcastBaseline(unittest.TestCase):
         cls.ai_py = (REPO_ROOT / "src" / "docich" / "ai_generate.py").read_text(
             encoding="utf-8"
         )
+        cls.dispatch_py = (REPO_ROOT / "src" / "docich" / "llm" / "dispatch.py").read_text(
+            encoding="utf-8"
+        )
 
     def test_fixture_exists(self):
         self.assertTrue(FIXTURE.is_file())
@@ -43,9 +45,11 @@ class TestBroadcastBaseline(unittest.TestCase):
         w = self.golden["docich_wrappers"]
         self.assertIn(w["radio_function"], self.chat_py)
 
-    def test_ai_wrapper_references_legacy_entry(self):
+    def test_ai_entry_uses_native_dispatch(self):
         w = self.golden["docich_wrappers"]
-        self.assertIn(w["ai_function"], self.ai_py)
+        self.assertIn(w["native_ai_entry"], self.dispatch_py)
+        self.assertIn("Dispatcher", self.ai_py)
+        self.assertNotIn("game_submodule", self.ai_py)
 
     def test_rc_contract_documented(self):
         self.assertIn("rc 0", self.chat_py)
@@ -74,7 +78,8 @@ class TestBroadcastBaseline(unittest.TestCase):
             stages["prepass_budget"],
         ]
         missing = [p for p in paths if not (REPO_ROOT / p).is_file()]
-        if missing and not (REPO_ROOT / "games" / "soviet_now").is_dir():
+        submodule = REPO_ROOT / "games" / "soviet_now"
+        if missing and not (submodule / ".git").exists():
             raise unittest.SkipTest("games/soviet_now submodule not present")
         self.assertEqual(missing, [], f"missing stage files: {missing}")
 

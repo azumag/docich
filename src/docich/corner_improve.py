@@ -180,45 +180,34 @@ def parse_candidate(text: str, allowed_keys: set[str]) -> dict:
 
 
 def _default_llm(g, *, agents: str, prompt_text: str, timeout: int = 600) -> str:
-    """sorengame と同じ dispatch 経路で1候補を生成する。本番実行のみ。"""
+    """Native docich dispatchで1候補を生成する。本番実行のみ。"""
     if os.environ.get("DOCICH_ALLOW_REAL_AI") != "1":
         raise CornerImproveError(
             "LLM改善の実実行には DOCICH_ALLOW_REAL_AI=1 が必要です",
             code="gate-disabled", phase="llm",
         )
-    import tempfile
+    from .ai_generate import AiError, run_prompt
 
-    from .ai_generate import build_ai_invocation
-    from .procs import run
-
-    with tempfile.TemporaryDirectory(prefix="docich-corner-improve-") as tmp:
-        prompt_file = Path(tmp) / "prompt.txt"
-        prompt_file.write_text(prompt_text, encoding="utf-8")
-        inv = build_ai_invocation(
+    try:
+        result = run_prompt(
             g,
-            game_name="sorengame",
             label="RADIO:retro-improve",
             agents=agents,
-            prompt_file=prompt_file,
+            prompt_text=prompt_text,
             timeout=timeout,
+            timeout_sec=float(timeout + 60),
         )
-        try:
-            completed = run(
-                inv.argv, cwd=str(inv.cwd), env_extra=inv.env,
-                timeout=float(timeout + 60), capture=True,
-            )
-        except Exception as exc:
-            raise CornerImproveError(
-                f"LLM呼び出しに失敗しました: {_safe_detail(exc)}",
-                code="llm-call", phase="llm",
-            ) from exc
-    if completed.returncode != 0:
+    except (AiError, OSError) as exc:
         raise CornerImproveError(
-            f"LLM改善が失敗しました (rc={completed.returncode}): "
-            f"{(completed.stderr or '').strip()[:200]}",
+            f"LLM呼び出しに失敗しました: {_safe_detail(exc)}",
+            code="llm-call", phase="llm",
+        ) from exc
+    if result.returncode != 0:
+        raise CornerImproveError(
+            f"LLM改善が失敗しました (rc={result.returncode}, kind={result.failure_kind or 'unknown'})",
             code="llm-rc", phase="llm",
         )
-    output = (completed.stdout or "").strip()
+    output = result.output.strip()
     if not output:
         raise CornerImproveError("LLM改善の出力が空でした", code="llm-empty", phase="llm")
     return output
