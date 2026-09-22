@@ -123,6 +123,7 @@ elif sys.argv[1] == "send-keys":
     fake_game = bin_dir / "game"
     fake_game.write_text(f"#!{sys.executable}\n" + f'''import os, pathlib, time
 root = pathlib.Path(os.environ["FAKE_ROOT"])
+(root / "game_home").write_text(os.environ.get("HOME", ""))
 deadline = time.monotonic() + 40  # generous: CPU-starved runners are slow
 while time.monotonic() < deadline:
     try:
@@ -192,6 +193,17 @@ def test_bastet_first_menu_records_nothing(tmp_path):
     keys, scores = run_wrapper(tmp_path, "bastet_docich.sh", "BASTET_BIN", "BASTET_SCORELOG", panes)
     assert keys == [["-t", "%9", "Enter"]]
     assert scores == []
+
+
+def test_bastet_rebinds_drop_to_terminal_enter_in_isolated_home(tmp_path):
+    # Bastet gameplay defaults Drop to curses KEY_ENTER, while tmux "Enter"
+    # reaches the program as the ordinary Enter character (13).  The wrapper
+    # must make those contracts agree without touching the caller's HOME.
+    panes = [pane(BASTET_MENU), pane(BASTET_BOARD, "      0")]
+    run_wrapper(tmp_path, "bastet_docich.sh", "BASTET_BIN", "BASTET_SCORELOG", panes)
+    bastet_home = tmp_path / ".bastet-home"
+    assert (bastet_home / ".bastetrc").read_text() == "Drop = 13\n"
+    assert (tmp_path / "game_home").read_text() == str(bastet_home)
 
 
 def test_pacman_records_and_restarts_on_game_over_screen(tmp_path):
