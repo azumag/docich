@@ -4,6 +4,7 @@ import importlib.util
 from pathlib import Path
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -23,6 +24,20 @@ def load_module(path: Path, name: str):
 
 route = load_module(SCRIPT, "configure_jev_route")
 classifier = load_module(CLASSIFIER_SCRIPT, "configure_comment_classifier_jev_for_route_tests")
+
+
+class GatewayStdinExecutionTests(unittest.TestCase):
+    def test_reviewed_stdin_execution_can_load_classifier_sibling(self):
+        result = subprocess.run(
+            [sys.executable, "-", "--help"],
+            input=SCRIPT.read_bytes(),
+            cwd=ROOT,
+            capture_output=True,
+            timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", "replace"))
+        self.assertIn(b"--route", result.stdout)
+        self.assertIn(b"--disable", result.stdout)
 
 
 class OwnershipBoundaryTests(unittest.TestCase):
