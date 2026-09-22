@@ -157,6 +157,9 @@ def retroarch_cfg_lines(g, game, cfg_path: Path, network_port: int) -> list[str]
     d = g.display
     audio_enabled, audio_sink = retroarch_audio(g, game)
     audio_enable = "true" if audio_enabled else "false"
+    latency = retroarch_raw(game).get("audio_latency_ms")
+    if latency is not None and (type(latency) is not int or not 8 <= latency <= 512):
+        raise AdapterError("retroarch.audio_latency_ms must be an integer from 8 to 512")
     rdir = cfg_path.parent
 
     lines = [
@@ -165,6 +168,7 @@ def retroarch_cfg_lines(g, game, cfg_path: Path, network_port: int) -> list[str]
         'audio_driver = "pulse"',
         f'audio_enable = "{audio_enable}"',
         *([f'audio_device = "{audio_sink}"'] if audio_enabled else []),
+        *([f'audio_latency = "{latency}"'] if audio_enabled and latency is not None else []),
         'video_fullscreen = "true"',
         f'video_fullscreen_x = "{d.width}"',
         f'video_fullscreen_y = "{d.height}"',

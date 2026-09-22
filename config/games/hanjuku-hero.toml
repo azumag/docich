@@ -8,6 +8,7 @@ rom = "games/roms/hanjuku-hero.sfc"   # 著作権物のためGit追跡外。自�
 core = "auto"                          # or コア .so の絶対パス
 audio_enabled = true
 audio_sink = "soren_null"               # 既存の配信busへゲームBGM・効果音を出す
+audio_latency_ms = 289                  # CPU負荷時の音切れ軽減。本番で改善確認した値
 # [retroarch.pad_map] で既定マップの上書きも可能
 
 [lifecycle]
