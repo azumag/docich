@@ -350,13 +350,11 @@ def test_brain_prefers_real_step_and_uses_explicit_wait_without_one():
     step = brain.decide(observation("msg\n###@.\n     \n" + _status()))
     assert [a.text for a in step] in (["h"], ["j"], ["k"], ["l"])
     assert brain.last_decision.intent == "explore_step"
-    # The hunger tiers above Weak remain fail-closed until a reviewed recovery
-    # action is available; the Weak tier itself now spends one explicit wait
-    # turn (see test_nethack_progress).
-    assert brain.decide(observation("msg\n###@.\n     \n" + _status(extra="Fainting"))) == []
-    assert brain.last_decision.intent == "food_emergency"
-    assert [a.text for a in brain.decide(observation("msg\n###@.\n     \n" + _status(extra="Weak")))] == ["."]
-    assert brain.last_decision.intent == "food_emergency"
+    # owner decision 2026-09-23: 空腹の全tierで完全なframeなら `.` を送る
+    # (入力なしが永久凍結になるため)。質問・未知画面・player不明は依然無入力。
+    for extra in ("Fainting", "Weak", "Starved"):
+        assert [a.text for a in brain.decide(observation("msg\n###@.\n     \n" + _status(extra=extra)))] == ["."]
+        assert brain.last_decision.intent == "food_emergency"
 
 
 def test_brain_steps_out_of_the_production_deadlock():

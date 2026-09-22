@@ -258,21 +258,18 @@ def assert_p3b_safe(decision: PolicyDecision) -> None:
 # NetHack is turn-based: while the agent does nothing, nothing changes, so the
 # same frame comes back forever. A pet-like ambiguous glyph blocking the only
 # corridor or low HP that only time fixes can otherwise freeze a run for good.
-# The production agent lets one turn pass with NetHack's rest command for the
-# reviewed safe holds below. Severe status and the hunger tiers above `Weak`
-# remain fail-closed until an explicit recovery path is reviewed; a generic
-# rest can move them closer to death. The policy's own decision remains
-# available to advisory/shadow telemetry, but it is never exposed as a no-op
-# gameplay choice for the safe hold surface.
+# The production agent lets one turn pass with NetHack's rest command for any
+# decision that produced no reviewed action (owner decision 2026-09-23:
+# `.` はどんな時でも可). Only frames where a literal key could answer a
+# question -- prompts, unknown screens, player-less frames -- stay fail-closed
+# via turn_ready(). Severe status, every hunger tier (Hungry .. Starved) and a
+# visible creature no longer block the wait itself: movement/contact keep the
+# gameplay_ready gate in nethack_progress, and the resolver still tries a
+# retreat then one ordinary contact before resting beside a creature. Passing
+# turns can worsen hunger; that trade-off is accepted so a turn-based game
+# never sits input-free. The policy's own decision remains available to
+# advisory/shadow telemetry.
 REST_KEY = "."
-# Reviewed subset of the food emergency that may spend one explicit wait
-# turn. NetHack only advances hunger while the hero acts, so resting does
-# worsen nutrition -- but a turn-based game whose hero never acts can never
-# recover either, and the hero was observed frozen at `Weak` with 0 actions
-# on every iteration (2026-09-23 nethack slot). `Weak` is the entry tier of
-# that emergency; Fainting/Fainted/Starved keep the fail-closed boundary
-# below, so a Weak that keeps resting still stops resting once it worsens.
-RESTABLE_FOOD_CONDITIONS = frozenset({"Weak"})
 REST_HOLD_INTENTS = frozenset(
     {
         "exploration_blocked",
@@ -281,50 +278,24 @@ REST_HOLD_INTENTS = frozenset(
     }
 )
 
-# A critical-HP emergency may eventually need an active recovery plan. Until
-# one is available, returning no action permanently freezes the turn-based
-# game, so a single explicit ``.`` is allowed when the frame is otherwise
-# complete. Severe status and the non-restable hunger tiers are different:
-# passing a turn can worsen them, so they remain fail-closed until recovery
-# is reviewed. `food_emergency` joins this surface only for the restable
-# `Weak` tier, which the condition gate above enforces.
+# Kept as the step-out surface (not the rest surface): movement next to a
+# creature or during a food emergency is still only allowed through the
+# reviewed retreat/contact paths.
 REST_EMERGENCY_INTENTS = frozenset({"survival_emergency"})
-RESTABLE_INTENTS = REST_HOLD_INTENTS | REST_EMERGENCY_INTENTS
 
 
 def rest_action_for_hold(
     decision: PolicyDecision, obs: NethackObservation
 ) -> Action | None:
-    """Return the explicit ``.`` wait action for a reviewed safe hold.
+    """Return the explicit ``.`` wait action for any complete gameplay frame.
 
-    Unknown screens, prompts, player-less frames, visible creature contact,
-    hunger (`Hungry` and the tiers above `Weak`), and severe status
-    emergencies remain fail-closed because ``.`` is not a reviewed recovery
-    action for those states.
+    The only fail-closed cases are frames where a literal key could answer a
+    question instead of waiting (prompt, unknown screen, player-less frame,
+    all rejected by ``turn_ready``) and decisions that already carry a
+    reviewed action. Severe status, every hunger tier and an adjacent
+    creature may all spend one wait turn (owner decision 2026-09-23).
     """
-    if (
-        decision.actions
-        or decision.intent not in RESTABLE_INTENTS | {"food_emergency"}
-        or not turn_ready(obs)
-        or _visible_creature_contact(obs)
-        or "Hungry" in obs.conditions
-        or _has_any(obs, NethackLayeredPolicy._SEVERE_CONDITIONS)
-        or _has_any(obs, NethackLayeredPolicy._FOOD_EMERGENCY - RESTABLE_FOOD_CONDITIONS)
-    ):
-        return None
-    if decision.layer == "midlevel" and not decision.requires_llm:
-        allowed = decision.intent in REST_HOLD_INTENTS
-    elif decision.layer == "strategic":
-        allowed = decision.intent in REST_EMERGENCY_INTENTS or (
-            decision.intent == "food_emergency"
-            # The restable tier must actually be observed: a misleading
-            # food_emergency intent beside a clean status line never rests.
-            and _has_any(obs, RESTABLE_FOOD_CONDITIONS)
-            and not _has_any(obs, NethackLayeredPolicy._FOOD_EMERGENCY - RESTABLE_FOOD_CONDITIONS)
-        )
-    else:
-        allowed = False
-    if not allowed:
+    if decision.actions or not turn_ready(obs):
         return None
     return Action(type="text", text=REST_KEY)
 
