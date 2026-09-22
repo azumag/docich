@@ -55,6 +55,13 @@ def classify(frame: Frame) -> str:
             and f.fraction((80,48,140,65),green)>.3
             and f.fraction((0,80,8,216),lambda r,g,b:max(r,g,b)<25)>.85):
         return 'name'
+    # The red-curtain concert offers an optional looping music picker. B
+    # closes it; repeatedly confirming track 00 would never resume the game.
+    curtain=lambda r,g,b:r>140 and r>g*3 and r>b*3
+    if (f.fraction((0,0,32,128),curtain)>.25
+            and f.fraction((224,0,256,128),curtain)>.25
+            and f.fraction((18,150,236,207),green)>.5):
+        return 'concert'
     # Castle dialogue is a dark green full-width panel at the bottom.
     if (f.fraction((132,40,225,126),green)>.6
             and f.fraction((18,176,230,206),green)>.5):
@@ -101,6 +108,10 @@ def decide(frame: Frame, state: dict) -> tuple[list[dict], dict]:
         actions=[pad('a')] if phase_step==1 else [pad('start')]
     elif phase=='month_menu':
         actions=[pad('b' if phase_step==1 else 'a')]
+    elif phase=='concert':
+        gold=lambda r,g,b:r>150 and 80<g<180 and 30<b<120
+        confirm=any(frame.fraction((160,y,239,y+1),gold)>.8 for y in range(160,194))
+        actions=[pad('a' if confirm else 'b')]
     elif phase=='shop':
         actions=[pad('b')]
     elif phase in {'dialogue','field_menu','battle_intro','battle'}:

@@ -228,3 +228,14 @@ def test_corrupt_terminal_record_cannot_authorize_teardown(tmp_path):
         terminal_reason='screen_stalled',unchanged_seconds=0,frame_sha256='0'*64))
     with pytest.raises(AdapterError,match='terminal evidence'):
         hanjuku_run.terminal(tmp_path,IDENTITY)
+
+
+def test_optional_concert_exits_instead_of_selecting_the_same_track():
+    rgb=bytearray(frame((16,72,57)).rgb)
+    for y in range(128):
+        for x in (*range(32),*range(224,256)):
+            i=(y*256+x)*3
+            rgb[i:i+3]=bytes((200,0,0))
+    concert=Frame(256,224,bytes(rgb))
+    assert classify(concert)=='concert'
+    assert decide(concert,{})[0][0]['buttons']==['b']

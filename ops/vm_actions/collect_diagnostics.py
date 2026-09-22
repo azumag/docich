@@ -1725,7 +1725,7 @@ def _project_corner_state(data):
                        in {"game_over", "screen_stalled"} else None),
         "bot_phase": (data.get("bot_phase") if data.get("bot_phase") in {
             "transition", "name", "dialogue", "shop", "field", "field_menu",
-            "battle_intro", "battle", "title_or_intro", "title", "month_menu", "event"} else None),
+            "battle_intro", "battle", "title_or_intro", "title", "month_menu", "concert", "event"} else None),
         "bot_actions_sent": _bounded_int(data.get("bot_actions_sent")),
         "battles_started": _bounded_int(data.get("battles_started")),
         "battles_finished": _bounded_int(data.get("battles_finished")),
