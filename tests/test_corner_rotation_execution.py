@@ -162,6 +162,9 @@ def test_failed_improvement_releases_only_with_fresh_terminal_evidence(tmp_path)
     assert adapter.resources_released() is False
     path.write_text(json.dumps({"status": "failed", "started_at": 101, "completed_at": 100}))
     assert adapter.resources_released() is False
+    path.write_text(json.dumps({"status": "failed", "started_at": 101, "completed_at": 102,
+                                "recovery_required": True}))
+    assert adapter.resources_released() is False
     path.write_text(json.dumps({"status": "running", "started_at": 101}))
     assert adapter.resources_released() is False
 
