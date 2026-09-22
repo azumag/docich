@@ -5,9 +5,11 @@
 TTS C4 (`docs/common_parts_tts_c4.md`) と同じく、**実証済みの部品だけ**を docich
 正典へ移し、soviet_now 側を薄いラッパへ置換する。
 
-> **ステータス**: 設計 + C-S2 (AI 出力ガード) を docich 正典へ移植済み (2026-08-17)。
-> C-S1 (AI ディスパッチ) は **docich 正典への「完全移植」ではなく、参照実行ラッパ
-> (`docich ai`) として契約を固定** (2026-08-18)。C2 実実行 (docich chat 成功) の実証後。
+> **ステータス**: 設計 + C-S2 (AI 出力ガード) と C-S1 native dispatch の
+> 初回移植を docich 正典へ反映済み (2026-09-22)。
+> 旧 §5.1〜§5.3 は、native化前の参照実行wrapperを記録した履歴として残す。
+> #829 PR-1で `src/docich/llm/` へ段階移植し、`docich ai` はnative dispatchへ
+> 切り替えた。C2 chat/radioはまだlegacy互換経路である。
 > 参照実行 PoC (`docich chat` / `docich radio`) は既に動作 (common_parts_chat.md)。
 
 ## 1. 責務分割
@@ -108,6 +110,22 @@ soviet_now `lib/ai_generate.sh` (1,009 行) は、モデル選択・フォール
 - コメント翻訳 (C-S4) は字幕翻訳 (docich 正典) との二重管理を避ける設計が必要。
 - ラジオ生成コンテンツのバックアップ (issue #113) と連携し、docich 側でも生成物を
   保存できるようにするかは判断保留。
+
+### 5.4 C-S1 PR-1 native dispatch (2026-09-22)
+
+上記5.1〜5.3の参照実行wrapper記述はPR-0時点の履歴である。#829 PR-1で
+`src/docich/llm/` を正典として追加し、`src/docich/ai_generate.py` は
+`games/soviet_now` をsource/execしないnative ordered fallbackへ切り替えた。
+
+- `docich ai` はゲーム名なしでも実行できる（旧ゲーム名は互換引数として無視）。
+- COMMENT/RADIOのtimeout、provider allowlist、rc=79 backoff、failure streak、
+  generation lane、OpenCode lock、real-run gateを移植した。
+- `corner_improve.py` と `trading/ai_text.py` も同じtyped dispatcherを使う。
+- `docich chat` / `docich radio`、分類、翻訳、delivery、ラジオpromptはまだlegacy
+  compatibility経路であり、本節の変更だけでは#829完了とはしない。
+- 実API・本番queue・VMの反映は行わず、mock/focused testと後続release gateで分離する。
+
+詳細な変更契約と未完了境界は `docs/plans/829-pr1-native-llm-dispatch.md` を参照。
 
 ## 6. C-S4 / C-S5 の判定 (2026-08-19)
 
