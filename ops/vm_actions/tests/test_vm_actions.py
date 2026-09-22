@@ -254,6 +254,90 @@ class GatewayTests(unittest.TestCase):
         self.assertIn('VM operation rejected: tracked_vm_drift',err)
         self.assertNotIn('tracked VM drift detected',err)
 
+    # Issue #410: unexpected deploy exceptions must not bypass fixed reason
+    # codes with raw tracebacks (argv/paths) on Actions output.
+    def _load_gateway(self):
+        import importlib.util
+        spec=importlib.util.spec_from_file_location("gw410",str(GATEWAY))
+        module=importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def _run_main_with_failure(self, module):
+        import io
+        from contextlib import redirect_stderr
+        sha=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
+        env=dict(os.environ)
+        env['SSH_ORIGINAL_COMMAND']=f'deploy docich production {sha}'
+        env['VMOPS_TESTING']='1'
+        old_argv, old_environ = sys.argv, dict(os.environ)
+        os.environ.clear(); os.environ.update(env)
+        sys.argv=['gateway.py',str(self.config)]
+        buf=io.StringIO()
+        try:
+            with redirect_stderr(buf):
+                module.main()
+        except SystemExit as exc:
+            code=exc.code
+        finally:
+            sys.argv=old_argv; os.environ.clear(); os.environ.update(old_environ)
+        return code, buf.getvalue(), sha
+
+    def _raise_unexpected(self, exc):
+        def _fail(cfg, repo, sha):
+            raise exc
+        return _fail
+
+    def test_unexpected_deploy_errors_use_fixed_code_without_leak(self):
+        import subprocess as sp
+        module=self._load_gateway()
+        failures=[
+            sp.CalledProcessError(128,['git','SECRET-ARGV-MARKER','/tmp/SECRET-PATH-MARKER']),
+            sp.TimeoutExpired(['git','SECRET-ARGV-MARKER'],300),
+            OSError('SECRET-OSERROR-MARKER /tmp/SECRET-PATH-MARKER'),
+        ]
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__):
+                before=set((self.state/'logs').glob('unknown-*.log')) if (self.state/'logs').exists() else set()
+                module.deploy_prod=self._raise_unexpected(failure)
+                code, err, sha=self._run_main_with_failure(module)
+                self.assertEqual(code,1)
+                self.assertEqual(err,'VM operation rejected: operation_rejected\n')
+                for marker in ('Traceback','SECRET-ARGV-MARKER','SECRET-PATH-MARKER','SECRET-OSERROR-MARKER'):
+                    self.assertNotIn(marker,err)
+                after=set((self.state/'logs').glob('unknown-*.log'))
+                new_logs=after-before
+                self.assertEqual(len(new_logs),1)
+                log=next(iter(new_logs))
+                self.assertEqual(oct(log.stat().st_mode & 0o777),'0o600')
+                self.assertIn(type(failure).__name__,log.read_text(errors='replace'))
+
+    def test_keyboard_interrupt_is_not_swallowed(self):
+        module=self._load_gateway()
+        module.deploy_prod=self._raise_unexpected(KeyboardInterrupt())
+        with self.assertRaises(KeyboardInterrupt):
+            self._run_main_with_failure(module)
+
+    def test_known_value_error_keeps_specific_code(self):
+        module=self._load_gateway()
+        module.deploy_prod=self._raise_unexpected(ValueError('tracked VM drift detected'))
+        code, err, sha=self._run_main_with_failure(module)
+        self.assertEqual(code,1)
+        self.assertEqual(err,'VM operation rejected: tracked_vm_drift\n')
+
+    def test_broken_repo_deploy_never_prints_traceback(self):
+        import shutil
+        sha,bundle=self.make_docich_bundle()
+        self.assertEqual(self.call(f'upload docich production {sha}',bundle).returncode,0)
+        self.assertEqual(self.call(f'bootstrap docich production {sha}').returncode,0)
+        shutil.rmtree(self.doc/'.git')
+        (self.doc/'.git').write_text('broken\n')
+        p=self.call(f'deploy docich production {sha}')
+        self.assertNotEqual(p.returncode,0)
+        err=p.stderr.decode()
+        self.assertTrue(err.startswith('VM operation rejected: '),err)
+        self.assertNotIn('Traceback (most recent call last)',err)
+
     def test_rebaseline_recovers_ancestor_drift_then_deploys(self):
         base=subprocess.check_output(['git','-C',self.doc,'rev-parse','HEAD'],text=True).strip()
         subprocess.run(['git','-C',self.doc,'commit','--allow-empty','-qm','B'],check=True)
