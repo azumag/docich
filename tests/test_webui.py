@@ -1796,14 +1796,23 @@ class TestMutationGuard(TestHttpHandlers):
 
     def test_authz_audit_event_logged_without_secret_or_body(self):
         self.g.webui.token = "supersecret123"
+        # #972: pin the clock so the numeric `ts` itself contains the body
+        # value ("1790082626"). Asserting on the raw file text also matched
+        # that timestamp (and `latency_ms`, e.g. 1900), so the test failed
+        # only at certain wall-clock times even though nothing leaked. The
+        # body value may only appear in the string fields, so inspect those
+        # parsed fields and skip the numeric metadata.
+        pinned_ts = 1790082626
+        self.assertIn("900", str(pinned_ts))
         try:
-            self._request("PUT", "/api/config", {"values": {"AI_AGENT_BACKOFF_SEC": "900"}}, headers={"Origin": "http://evil.example"})
-            self._request(
-                "PUT",
-                "/api/config",
-                {"values": {"AI_AGENT_BACKOFF_SEC": "900"}},
-                headers={"Authorization": "Bearer supersecret123"},
-            )
+            with mock.patch.object(webui.time, "time", return_value=float(pinned_ts)):
+                self._request("PUT", "/api/config", {"values": {"AI_AGENT_BACKOFF_SEC": "900"}}, headers={"Origin": "http://evil.example"})
+                self._request(
+                    "PUT",
+                    "/api/config",
+                    {"values": {"AI_AGENT_BACKOFF_SEC": "900"}},
+                    headers={"Authorization": "Bearer supersecret123"},
+                )
         finally:
             self.g.webui.token = ""
         log_file = self.soren / "tmp/debug/webui.log"
@@ -1815,7 +1824,18 @@ class TestMutationGuard(TestHttpHandlers):
         raw = log_file.read_text(encoding="utf-8")
         self.assertNotIn("supersecret123", raw)
         self.assertNotIn("AI_AGENT_BACKOFF_SEC", raw)
-        self.assertNotIn("900", raw)
+        # Wall-clock metadata (`ts`, `latency_ms`) and the HTTP `status` are
+        # not body carriers; they may legitimately contain "900" by chance.
+        numeric_metadata = {"ts", "latency_ms", "status"}
+        for record in lines:
+            for key, value in record.items():
+                if key in numeric_metadata:
+                    continue
+                self.assertNotIn(
+                    "900",
+                    json.dumps(value, ensure_ascii=False),
+                    f"body value leaked into audit field {key}: {record}",
+                )
 
 
 class TestWebUIConfig(unittest.TestCase):
