@@ -3,7 +3,8 @@
   "source": "azumag/soviet_now broadcast/comment.sh _classify_comments_heuristic | _comment_normalize_classification_for_comments (+ lib/comment_bilingual.py)",
   "soviet_now_commit": "f2c20234487c9d70953181d5ef6f32c7ff9d2091",
   "generated_by": "executing that exact shell pipeline on each batch; expected = its stdout",
-  "purpose": "docich.comment_classifier.heuristic must reproduce this byte-for-byte (#882/#829 move)"
+  "purpose": "docich.comment_classifier.heuristic must reproduce this byte-for-byte (#882/#829 move)",
+  "note": "soviet_now_test_cases carries the cases of soviet_now tests/test_comment_card_heuristic.py and the english-safety cases of tests/test_comment_bilingual.py, which are deleted with the soviet_now copy"
  },
  "cases": [
   {
@@ -417,6 +418,93 @@
      "comment": "ソ連建国おめでとう",
      "category": "game_status",
      "is_english": false
+    }
+   ]
+  },
+  {
+   "name": "soviet_now_test_cases",
+   "lines": [
+    "dociai: alice が【カードA】赤いカードを獲得しました",
+    "dociai: alice が [カードA] 赤いカードを獲得しました",
+    "dociai: alice が10連ガチャで赤いカードを獲得しました",
+    "alice が【素材: 金】カードを獲得しました",
+    "alice: カードの素材: 金は何ですか？",
+    "alice: こんにちは",
+    "alice: が【カードA】赤いカードを獲得できません",
+    "dociai: alice が【カードA】素材: 赤を獲得しました",
+    "viewer: Amazing stream! https://example.com",
+    "natural: Hello from the stream!"
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "user": "dociai",
+     "comment": "alice が【カードA】赤いカードを獲得しました",
+     "category": "card_gacha",
+     "is_english": false
+    },
+    {
+     "index": 2,
+     "user": "dociai",
+     "comment": "alice が [カードA] 赤いカードを獲得しました",
+     "category": "card_gacha",
+     "is_english": false
+    },
+    {
+     "index": 3,
+     "user": "dociai",
+     "comment": "alice が10連ガチャで赤いカードを獲得しました",
+     "category": "card_gacha",
+     "is_english": false
+    },
+    {
+     "index": 4,
+     "user": "alice が【素材",
+     "comment": "金】カードを獲得しました",
+     "category": "card_gacha",
+     "is_english": false
+    },
+    {
+     "index": 5,
+     "user": "alice",
+     "comment": "カードの素材: 金は何ですか？",
+     "category": "general_question",
+     "is_english": false
+    },
+    {
+     "index": 6,
+     "user": "alice",
+     "comment": "こんにちは",
+     "category": "chitchat",
+     "is_english": false
+    },
+    {
+     "index": 7,
+     "user": "alice",
+     "comment": "が【カードA】赤いカードを獲得できません",
+     "category": "chitchat",
+     "is_english": false
+    },
+    {
+     "index": 8,
+     "user": "dociai",
+     "comment": "alice が【カードA】素材: 赤を獲得しました",
+     "category": "card_gacha",
+     "is_english": false
+    },
+    {
+     "index": 9,
+     "user": "viewer",
+     "comment": "Amazing stream! https://example.com",
+     "category": "chitchat",
+     "is_english": true
+    },
+    {
+     "index": 10,
+     "user": "natural",
+     "comment": "Hello from the stream!",
+     "category": "chitchat",
+     "is_english": true
     }
    ]
   },
