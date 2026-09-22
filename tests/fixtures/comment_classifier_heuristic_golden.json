@@ -4,7 +4,7 @@
   "soviet_now_commit": "f2c20234487c9d70953181d5ef6f32c7ff9d2091",
   "generated_by": "executing that exact shell pipeline on each batch; expected = its stdout",
   "purpose": "docich.comment_classifier.heuristic must reproduce this byte-for-byte (#882/#829 move)",
-  "note": "soviet_now_test_cases carries the cases of soviet_now tests/test_comment_card_heuristic.py and the english-safety cases of tests/test_comment_bilingual.py, which are deleted with the soviet_now copy"
+  "note": "soviet_now_test_cases carries the cases of soviet_now tests/test_comment_card_heuristic.py the english-safety cases of tests/test_comment_bilingual.py, and (stream_bug_vocabulary) the stream-bug vocabulary/examples that tests/test_escape_mechanisms.py pinned in comment.sh and prompts/comment_classifier.md, which are deleted with the soviet_now copy"
  },
  "cases": [
   {
@@ -505,6 +505,93 @@
      "comment": "Hello from the stream!",
      "category": "chitchat",
      "is_english": true
+    }
+   ]
+  },
+  {
+   "name": "stream_bug_vocabulary",
+   "lines": [
+    "viewer: 無音になってる？",
+    "viewer: ゲーム音なし",
+    "viewer: すぐゲーム音でなくなるね",
+    "viewer: 動いてねえんだわ",
+    "viewer: Record showing 0",
+    "viewer: 音楽止まった",
+    "viewer: いつもと違う音がする",
+    "viewer: BGM無し",
+    "viewer: recordが動いてない",
+    "viewer: 動いてねぇ"
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "user": "viewer",
+     "comment": "無音になってる？",
+     "category": "stream_bug_report",
+     "is_english": false
+    },
+    {
+     "index": 2,
+     "user": "viewer",
+     "comment": "ゲーム音なし",
+     "category": "stream_bug_report",
+     "is_english": false
+    },
+    {
+     "index": 3,
+     "user": "viewer",
+     "comment": "すぐゲーム音でなくなるね",
+     "category": "stream_bug_report",
+     "is_english": false
+    },
+    {
+     "index": 4,
+     "user": "viewer",
+     "comment": "動いてねえんだわ",
+     "category": "stream_bug_report",
+     "is_english": false
+    },
+    {
+     "index": 5,
+     "user": "viewer",
+     "comment": "Record showing 0",
+     "category": "chitchat",
+     "is_english": false
+    },
+    {
+     "index": 6,
+     "user": "viewer",
+     "comment": "音楽止まった",
+     "category": "stream_bug_report",
+     "is_english": false
+    },
+    {
+     "index": 7,
+     "user": "viewer",
+     "comment": "いつもと違う音がする",
+     "category": "stream_bug_report",
+     "is_english": false
+    },
+    {
+     "index": 8,
+     "user": "viewer",
+     "comment": "BGM無し",
+     "category": "stream_bug_report",
+     "is_english": false
+    },
+    {
+     "index": 9,
+     "user": "viewer",
+     "comment": "recordが動いてない",
+     "category": "stream_bug_report",
+     "is_english": false
+    },
+    {
+     "index": 10,
+     "user": "viewer",
+     "comment": "動いてねぇ",
+     "category": "stream_bug_report",
+     "is_english": false
     }
    ]
   },
