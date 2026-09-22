@@ -46,6 +46,10 @@ systemd --user で常駐させる場合 (雛形 `scripts/systemd/docich-webui.se
 ```bash
 sed "s|__DOCICH_ROOT__|$(pwd)|g" scripts/systemd/docich-webui.service \
   > ~/.config/systemd/user/docich-webui.service
+# (任意) Tailscale 経由の mutation 用 allowlist。無くても起動する
+mkdir -p ~/.config/docich
+echo 'DOCICH_WEBUI_ALLOWED_ORIGINS=https://<hostname>.<tailnet>.ts.net' > ~/.config/docich/webui.env
+chmod 600 ~/.config/docich/webui.env
 systemctl --user daemon-reload
 systemctl --user enable --now docich-webui.service
 ```
@@ -141,7 +145,7 @@ read_only = false         # true で閲覧専用
 
 - systemd --user `docich-webui.service` (`ExecStart` に `--soren-root /home/ubuntu/soren`)
 - `sudo tailscale serve --bg --https=443 http://127.0.0.1:8787`
-- 公開 URL: `https://<hostname>.<tailnet>.ts.net/` (実値は秘匿運用のため非公開。`webui.allowed_origins` には `DOCICH_WEBUI_ALLOWED_ORIGINS` 環境変数で指定する)
+- 公開 URL: `https://<hostname>.<tailnet>.ts.net/` (実値は秘匿運用のため非公開。`webui.allowed_origins` には `DOCICH_WEBUI_ALLOWED_ORIGINS` 環境変数で指定する。unit は `EnvironmentFile=-%h/.config/docich/webui.env` で読み込む)
 - 検証実績: 設定の読み書き / worker reload / backoff 表示・クリア / 統計表示を実測確認済み
 
 詳細は `src/docich/webui.py` の docstring を参照。
