@@ -1475,9 +1475,41 @@ class TestHttpHandlers(unittest.TestCase):
         self.assertEqual(data["corners"]["nethack_corner"]["status"], "completed")
         self.assertIs(data["corners"]["nethack_corner"]["recovery_required"], False)
         self.assertGreaterEqual(data["corners"]["nethack_corner"]["started_at"], 0)
+        # どの config / state を読んでいるか (basename のみ) を画面の警告用に出す
+        self.assertEqual(data["source"]["config"], Path(self.g.config_path).name)
+        self.assertEqual(data["source"]["state_dir"], "run")
+        self.assertTrue(ids["nsnake"]["eligible"])
+        self.assertEqual(ids["nethack"]["state_file"], "nethack_corner")
         # seed / request UUID / prompt は出さない (read-only でも泄漏しない)
         body = json.dumps(data, ensure_ascii=False)
         self.assertNotIn("DO-NOT-PUBLISH", body)
+
+    def test_get_corners_reports_last_run_and_remaining_cooldown(self):
+        self._write_catalog_config()
+        now = time.time()
+        self._write_rotation_state(history=[
+            {"corner": "nsnake", "at": now - 3600, "source": "execution"},
+            {"corner": "nsnake", "at": now - 7200, "source": "selection"},
+            {"corner": "nethack", "at": now - 90000, "source": "execution"},
+            {"corner": 7, "at": now},  # 不正行は無視
+        ])
+        status, data = self._request("GET", "/api/corners")
+        self.assertEqual(status, 200, data)
+        ids = {row["id"]: row for row in data["catalog"]}
+        self.assertAlmostEqual(ids["nsnake"]["last_run_at"], now - 3600, delta=1)
+        # 24h cooldown: 1時間前に実行 → 残り約23時間
+        self.assertAlmostEqual(ids["nsnake"]["cooldown_until"], now - 3600 + 86400, delta=1)
+        # 25時間前 → cooldown 明け済みは None
+        self.assertIsNone(ids["nethack"]["cooldown_until"])
+
+    def test_page_explains_corner_usage(self):
+        self.client.request("GET", "/")
+        res = self.client.getresponse()
+        text = res.read().decode("utf-8")
+        self.assertEqual(res.status, 200)
+        for marker in ('id="corners-catalog"', 'id="corners-summary"',
+                       'id="corners-source-warn"', "使い方", "function updateCornerButtons"):
+            self.assertIn(marker, text)
 
     def test_post_corners_requires_confirm(self):
         # /api/corners は dangerous action: confirm なしは 428 (issue #42 と同じ)
@@ -1500,7 +1532,9 @@ class TestHttpHandlers(unittest.TestCase):
         self.assertEqual(status, 200, data)
         argv = popen.call_args.args[0]
         self.assertTrue(argv[0].endswith("bin/docich-retro-corner-manual"), argv)
-        self.assertEqual(argv[1], "start")
+        # runner は webui と同じ config を読む (既定 config だと別 state_dir を操作する)
+        self.assertEqual(argv[1:3], ["--config", str(self.g.config_path)])
+        self.assertEqual(argv[3], "start")
         self.assertIn("--game", argv)
         self.assertIn("nsnake", argv)
         self.assertIn("--duration-minutes", argv)
@@ -1523,7 +1557,8 @@ class TestHttpHandlers(unittest.TestCase):
         self.assertEqual(status, 200, data)
         argv = popen.call_args.args[0]
         self.assertTrue(argv[0].endswith("bin/docich-nethack-corner-manual"), argv)
-        self.assertEqual(argv[1], "stop")
+        self.assertEqual(argv[1:3], ["--config", str(self.g.config_path)])
+        self.assertEqual(argv[3], "stop")
         self.assertNotIn("--duration-minutes", argv)  # stop には分数を渡さない
 
         for bad in (
