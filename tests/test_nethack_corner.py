@@ -712,15 +712,24 @@ class TestNethackRotationTargetValidation(NethackCornerTestBase):
 
     def test_rejects_any_other_target(self):
         mgr, _ = self.manager([None])
-        for names in (["ninvaders"], [], ["other", "nethack-hero"]):
+        # #998: a superset must be rejected too -- membership checks passed
+        # ``["nethack", "ninvaders"]`` and left the extra target unvalidated.
+        for names in (["ninvaders"], [], ["other", "nethack-hero"], ["nethack", "ninvaders"]):
             with self.subTest(names=names):
                 with self.assertRaises(NethackCornerError):
                     mgr._validate_games(names)
+                # The rejection message must not trail off for an empty list.
+                try:
+                    mgr._validate_games(names)
+                except NethackCornerError as exc:
+                    self.assertNotIn("有効です: ", str(exc).rstrip()[-1])
 
     def test_default_call_and_playable_scan_still_work(self):
         mgr, _ = self.manager([None])
         mgr._validate_games()
-        self.assertIsInstance(mgr._playable_games(), list)
+        # Exact value, not ``isinstance(..., list)``: ``[]`` was passing this
+        # assertion before #996 too, so it caught nothing (#998).
+        self.assertEqual(mgr._playable_games(), ["nethack"])
 
 
 if __name__ == "__main__":

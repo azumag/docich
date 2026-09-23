@@ -55,7 +55,14 @@ class RotationError(RuntimeError):
 
 
 def _error_kind(exc):
-    """Map a latch cause to a fixed category; never return exception text."""
+    """Map a latch cause to a fixed category; never return exception text.
+
+    Note the asymmetry is deliberate and load-bearing: a coding bug defined
+    *outside* ``docich.*`` (``TypeError``/``ValueError`` and friends) stays
+    ``unexpected``, while every corner-side failure -- whether it is
+    ``NethackCornerError`` or a bare ``RetroCornerError`` (soren91) -- means
+    the reviewed execution itself failed and reads ``execution-error`` (#998).
+    """
     kind = getattr(exc, "kind", None)
     if isinstance(kind, str) and kind in ERROR_KINDS:
         return kind

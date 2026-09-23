@@ -1145,7 +1145,10 @@ class RetroCornerManager:
         if target_override is not None:
             self._validate_games([target])
         else:
-            # サブクラス (soren91/nethack) は引数なしで override しているため、通常経路は従来どおり。
+            # Fixed managers (soren91/nethack) now take the same
+            # ``(names=None)`` contract, so every path passes the selected
+            # target or nothing at all (#996/#998). An unvalidated extra
+            # target is rejected rather than silently accepted.
             self._validate_games()
         self._ensure_runtime()
         try:
@@ -1810,7 +1813,14 @@ class RetroCornerManager:
         return all(self._executable_exists(path) for path in required)
 
     def _playable_games(self) -> list[str]:
-        """設定と実行環境が揃ったゲームだけを抽選候補にする。"""
+        """設定と実行環境が揃ったゲームだけを抽選候補にする。
+
+        Fixed single-game managers (nethack/soren91) now validate the exact
+        target instead of swallowing a signature mismatch, so a healthy one
+        returns ``["nethack"]`` / ``["soren91"]`` rather than the old silent
+        ``[]`` (#998). ``[]`` still means "nothing validated", never "no
+        games configured".
+        """
         playable = []
         for name in self.config.games:
             try:

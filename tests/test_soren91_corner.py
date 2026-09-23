@@ -889,5 +889,38 @@ class TestSoren91RotationTargetValidation(Soren91CornerTestBase):
         mgr._validate_games()
 
 
+class TestManualSoren91RotationTargetValidation(Soren91CornerTestBase):
+    """The manual corner must share the exact same contract (#998).
+
+    ``ManualSoren91CornerManager`` used to declare ``_validate_games(self)``
+    while ``RetroCornerManager._begin_locked`` passes ``[target]``, so the
+    #986 TypeError was one rotation mode away for this class too. Its config
+    is built with ``games=[GAME_NAME]``, so the fixed-manager rule applies
+    verbatim.
+    """
+
+    def _manual(self):
+        return ManualSoren91CornerManager(
+            self.g,
+            now=lambda: self.now_value,
+            sleep=lambda seconds: None,
+            active_game_reader=lambda: "sorengame",
+            ensure_runtime=lambda: None,
+        )
+
+    def test_accepts_the_owned_rotation_target(self):
+        self._manual()._validate_games(["soren91"])
+
+    def test_rejects_empty_unowned_and_superset_targets(self):
+        mgr = self._manual()
+        for names in ([], ["nsnake"], ["soren91", "nsnake"]):
+            with self.subTest(names=names):
+                with self.assertRaises(RetroCornerError):
+                    mgr._validate_games(names)
+
+    def test_default_call_still_validates_the_owned_game(self):
+        self._manual()._validate_games()
+
+
 if __name__ == "__main__":
     unittest.main()

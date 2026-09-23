@@ -11,7 +11,14 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from docich.config import load_global
 from docich.corner_catalog import Corner, load_catalog, CornerCatalogError
-from docich.corner_rotation import CornerRotationManager, RotationError, DAY, ERROR_KINDS
+from docich.corner_rotation import (
+    CornerRotationManager,
+    RotationError,
+    DAY,
+    ERROR_KINDS,
+    _error_kind,
+)
+from docich.corner_adapters import CornerExecutionError
 
 
 class Adapter:
@@ -949,6 +956,26 @@ def _latch(manager, executor, clock, error=None):
         manager.tick()
     executor.result = "completed"
     return state(manager)
+
+
+def test_error_kind_pins_builtins_coding_bugs_as_unexpected():
+    """A builtins coding bug must never read as a reviewed execution failure.
+
+    #986's real ``TypeError`` was classified ``unexpected``; nothing pinned
+    that, so a future change could relabel it as ``execution-error`` and hide
+    a coding bug behind the corner's own failure path (#998).
+    """
+    for error in (TypeError("positional argument"), ValueError("invalid literal")):
+        assert _error_kind(error) == "unexpected"
+        assert _error_kind(error) in ERROR_KINDS
+    # A corner-side failure still reads as the reviewed execution failing,
+    # whether it is the NetHack-specific type or a bare RetroCornerError.
+    assert _error_kind(CornerExecutionError("reviewed corner failure")) == "execution-error"
+    # An explicit ``kind`` attribute always wins over module inspection.
+    class Explicit(Exception):
+        kind = "invalid-state"
+
+    assert _error_kind(Explicit()) == "invalid-state"
 
 
 def test_latch_records_a_fixed_error_kind_and_never_the_exception_text(setup):
