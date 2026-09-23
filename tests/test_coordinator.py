@@ -7,13 +7,17 @@ import threading
 import time
 import unittest
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich import game_switch  # noqa: E402
+from docich import config  # noqa: E402
 from docich.adapters import AdapterError  # noqa: E402
 from docich.naming import runtime_names  # noqa: E402
+from docich.nethack_corner import NethackCornerManager  # noqa: E402
+from docich.nethack_run import NethackRunStore  # noqa: E402
 from docich.nethack_source import verify_restoration  # noqa: E402
 
 
@@ -1600,6 +1604,57 @@ class TestPostCommitHook(CoordinatorTestBase):
         result = coordinator.start("nethack")
         self.assertEqual(result.status, "succeeded")
         self.assertEqual(self.canonical()["active"]["game"], "nethack")
+
+
+class TestNethackPostRestoreIntegration(CoordinatorTestBase):
+    """Follow the real corner, coordinator receipts, and durable run record."""
+
+    def test_suspended_run_records_bound_source_after_restoring_previous_game(self):
+        root = Path(self.tempdir.name)
+        save_dir = root / "playground" / "save"
+        save_dir.mkdir(parents=True)
+        (root / "config" / "games").mkdir(parents=True)
+        (root / "config" / "docich.toml").write_text(
+            '[paths]\nstate_dir = "run"\ngames_dir = "config/games"\n'
+            '[nethack_corner]\nenabled = true\nrun_boundary = false\n'
+            'duration_minutes = 1\n', encoding="utf-8",
+        )
+        (root / "config" / "games" / "nethack.toml").write_text(
+            '[game]\nname = "nethack"\ntitle = "NetHack"\nadapter = "cli"\n'
+            '[cli]\ncommand = "nethack"\n'
+            '[agent]\nenabled = false\nbrain = "random"\n'
+            f'[nethack]\npersistent_run = true\nsave_dir = "{save_dir}"\n',
+            encoding="utf-8",
+        )
+        g = config.load_global(root)
+        self.assertEqual(Path(g.state_dir), self.state_dir)
+        self.assertEqual(self.coordinator.start("robots").status, "succeeded")
+        started_at = datetime.now(timezone.utc)
+
+        def current_game():
+            active = self.canonical().get("active")
+            return active.get("game") if isinstance(active, dict) else None
+
+        def finish_sleep(_seconds):
+            (save_dir / "1000docich").write_bytes(b"save")
+
+        manager = NethackCornerManager(
+            g, coordinator=self.coordinator, now=lambda: started_at,
+            sleep=finish_sleep, active_game_reader=current_game,
+            ensure_runtime=lambda: None, chat=lambda _text: None,
+            voice=lambda _text: None, stream_game=lambda _game: None,
+        )
+        self.assertEqual(manager.start().status, "completed")
+        run = NethackRunStore.from_global(g).current()
+        self.assertEqual(run["status"], "suspended")
+        session = run["sessions"][-1]
+        source = session["post_restore_source"]
+        self.assertEqual(source["eligibility"], "expedition_not_terminal")
+        self.assertEqual(source["authorized_mode"], "off")
+        self.assertEqual(source["restoration"]["source_runtime"], session["runtime"])
+        self.assertEqual(source["restoration"]["restored_runtime"]["game"], "robots")
+        self.assertEqual(manager.status()["source_evidence_status"], "recorded")
+        self.assertEqual(current_game(), "robots")
 
 
 if __name__ == "__main__":
