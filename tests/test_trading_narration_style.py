@@ -23,6 +23,7 @@ def test_known_lead_ins_at_the_head_are_removed():
         "結論から言えば、見送りです。": "見送りです。",
         "結論としては、見送りです。": "見送りです。",
         "結論から申し上げると、保留です。": "保留です。",
+        "結論から申しますと、保留です。": "保留です。",
         # Sentence closers substituted for a comma must not survive as a head.
         "結論から言うと。値幅は狭い。": "値幅は狭い。",
         # A doubled lead-in is fully removed within the bounded pass count.
