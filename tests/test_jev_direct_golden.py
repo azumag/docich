@@ -1,88 +1,78 @@
-"""PR-0 baseline: pin #882 direct golden against the soviet_now source.
+"""Pin the #882 direct-route golden against docich's own classifier.
 
-Mock only. No network, no secrets, no VM. Reads the移行元 file and the
-fixed fixture, and asserts the security/behavior contract has not drifted
-before the docich native port (PR-2). Skips when the submodule is absent.
+The golden was first fixed against soviet_now's ``lib/comment_classifier_jev.py``
+(PR-0). Classification is now owned by docich (``docich.comment_classifier`` +
+``docich.semantic_decision``) and soviet_now keeps no copy, so the same
+contract is asserted on the docich modules. Mock only: no network, no
+secrets, no VM, and no game checkout is needed.
 """
 
+import inspect
 import json
-import re
-import unittest
 from pathlib import Path
+import sys
+import unittest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "src"))
+
+from docich.comment_classifier import heuristic, jev  # noqa: E402
+from docich.semantic_decision import transport  # noqa: E402
+from docich.semantic_decision.routes import resolve_route  # noqa: E402
+
 FIXTURE = REPO_ROOT / "tests" / "fixtures" / "jev_direct_golden.json"
-SOURCE = REPO_ROOT / "games" / "soviet_now" / "lib" / "comment_classifier_jev.py"
-
-
-def _load_fixture():
-    return json.loads(FIXTURE.read_text(encoding="utf-8"))
 
 
 class TestJevDirectGolden(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        if not SOURCE.is_file():
-            raise unittest.SkipTest("games/soviet_now submodule not present")
-        cls.src = SOURCE.read_text(encoding="utf-8")
-        cls.golden = _load_fixture()
+        cls.golden = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        cls.route = resolve_route("direct")
 
-    def test_fixture_files_exist(self):
-        self.assertTrue(FIXTURE.is_file())
-
-    def test_endpoint_is_fixed_direct(self):
-        self.assertIn(
-            "ENDPOINT = 'https://api.typesafe.ai/v1/systemone'", self.src
-        )
-        self.assertEqual(
-            self.golden["route_direct"]["endpoint"],
-            "https://api.typesafe.ai/v1/systemone",
-        )
-
-    def test_requested_model_default(self):
-        self.assertIn("model: str = 'jev-1.13.0'", self.src)
-        self.assertEqual(
-            self.golden["route_direct"]["requested_model"], "jev-1.13.0"
-        )
-
-    def test_credential_env_is_typesafe_key(self):
-        self.assertIn("TYPESAFE_API_KEY", self.src)
-        self.assertEqual(
-            self.golden["route_direct"]["credential_env"], "TYPESAFE_API_KEY"
-        )
-        # The Vercel credential must not be introduced into the移行元.
-        self.assertNotIn("DOCICH_JEV_VERCEL_API_KEY", self.src)
+    def test_endpoint_model_and_credential_are_fixed(self):
+        direct = self.golden["route_direct"]
+        self.assertEqual(self.route.endpoint, direct["endpoint"])
+        self.assertEqual(self.route.requested_model, direct["requested_model"])
+        self.assertEqual(self.route.credential_env, direct["credential_env"])
+        self.assertEqual(jev.Config().model, direct["requested_model"])
+        self.assertEqual(jev.RUBRIC_VERSION, direct["rubric_version"])
 
     def test_transport_contract(self):
-        for token in (
-            "ProxyHandler({})",
-            "MAX_COMMENTS = 8",
-            "timeout_ms: int = 1500",
-            "min_confidence: float = 0.70",
-            "MAX_COMMENT_BYTES = 4096",
-            "MAX_REQUEST_BYTES = 32768",
-            "MAX_RESPONSE_BYTES = 131072",
-        ):
-            with self.subTest(token=token):
-                self.assertIn(token, self.src)
-        # retry 0: single transport call inside a single gated request
-        # (no retry loop around request_once/gated_request).
-        self.assertNotIn("for attempt in", self.src)
-        self.assertNotIn("for retry in", self.src)
+        contract, bounds = self.golden["transport"], self.golden["bounds"]
+        config = jev.Config()
+        self.assertEqual(config.timeout_ms, contract["timeout_ms"])
+        self.assertEqual(config.min_confidence, bounds["min_confidence"])
+        self.assertEqual(jev.MAX_COMMENTS, bounds["max_comments_per_request"])
+        self.assertEqual(jev.MAX_COMMENT_BYTES, bounds["max_comment_bytes"])
+        self.assertEqual(transport.MAX_REQUEST_BYTES, bounds["max_request_bytes"])
+        self.assertEqual(transport.MAX_RESPONSE_BYTES, bounds["max_response_bytes"])
+        source = inspect.getsource(transport)
+        self.assertIn("ProxyHandler({})", source)
+        self.assertIn("def redirect_request", source)
+        # retry 0: one transport call per gated request, no retry loop.
+        for module in (transport, jev):
+            text = inspect.getsource(module)
+            self.assertNotIn("for attempt in", text)
+            self.assertNotIn("for retry in", text)
 
-    def test_categories_match_golden(self):
-        m = re.search(r"CRITERIA = \{(.*?)\n\}", self.src, re.DOTALL)
-        self.assertIsNotNone(m)
-        keys = re.findall(r"^    '([a-z_]+)':", m.group(1), re.MULTILINE)
-        self.assertEqual(keys, self.golden["bounds"]["categories"])
+    def test_categories_notifications_and_system_users_match_golden(self):
+        bounds = self.golden["bounds"]
+        self.assertEqual(list(jev.CRITERIA), bounds["categories"])
+        self.assertEqual(jev.NOTIFICATIONS, set(bounds["notifications_not_sent"]))
+        self.assertEqual(heuristic.SYSTEM_USERS, set(bounds["system_users"]))
 
-    def test_projection_does_not_send_context(self):
-        # Docstring-level contract: never serialize event/context.
-        self.assertIn("Never serialize a received event/context", self.src)
-        self.assertIn("Never pass baseline labels to Jev", self.src)
-
-    def test_metrics_redaction_contract(self):
-        self.assertIn("no raw data", self.src)
+    def test_projection_sends_only_comment_bodies(self):
+        # Category names are rubric choices, so the baseline label is checked
+        # through the request shape; the other context uses unique markers.
+        rows = [{"index": 1, "user": "viewer_zq", "comment": "hello",
+                 "category": "chitchat", "is_english": True,
+                 "persona": "persona_zq", "game": "game_zq", "history": ["history_zq"]}]
+        request = jev.build_request(rows, jev.Config().model)
+        self.assertEqual(request["state"], {"comments": [{"index": 1, "text": "hello"}]})
+        self.assertEqual(set(request), {"model", "state", "questions"})
+        serialized = json.dumps(request)
+        for leaked in ("viewer_zq", "persona_zq", "game_zq", "history_zq", "is_english"):
+            self.assertNotIn(leaked, serialized)
 
 
 if __name__ == "__main__":

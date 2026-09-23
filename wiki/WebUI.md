@@ -46,6 +46,10 @@ systemd --user で常駐させる場合 (雛形 `scripts/systemd/docich-webui.se
 ```bash
 sed "s|__DOCICH_ROOT__|$(pwd)|g" scripts/systemd/docich-webui.service \
   > ~/.config/systemd/user/docich-webui.service
+# (任意) Tailscale 経由の mutation 用 allowlist。無くても起動する
+mkdir -p ~/.config/docich
+echo 'DOCICH_WEBUI_ALLOWED_ORIGINS=https://<hostname>.<tailnet>.ts.net' > ~/.config/docich/webui.env
+chmod 600 ~/.config/docich/webui.env
 systemctl --user daemon-reload
 systemctl --user enable --now docich-webui.service
 ```
@@ -58,6 +62,11 @@ owner-only の `restart_webui` operation で固定 unit だけを再起動する
 gh workflow run "VM operations" --repo azumag/docich --ref main \
   -f operation=restart_webui -f target=production -f ref=main -f confirm=production
 ```
+
+この operation は「unit が active」だけでなく、**配信中の HTML がデプロイ済み
+`INDEX_HTML` と一致するまで成功にしない**ため、別プロセスがポートを掴んで旧 UI を
+出し続けるケースも検出される（失敗時は step の終了コードで理由が分かる。定義は
+`ops/vm_actions/README.md`）。
 
 **重要**: 本番 VM で docich のサブモジュール (games/soviet_now) とは別に
 `/home/ubuntu/soren` を運用している場合、`--soren-root /home/ubuntu/soren` を必ず明示する
@@ -134,9 +143,9 @@ read_only = false         # true で閲覧専用
 
 ## 本番 VM での導入状況 (2026-08-20)
 
-- systemd --user `docich-webui.service` (`ExecStart` に `--soren-root /home/ubuntu/soren`)
+- systemd --user `docich-webui.service`（`ExecStart` は `bin/docich --config config/docich.soren-live.toml webui --soren-root /home/ubuntu/soren`。`--config` が無いと既定の `config/docich.toml`（state_dir=`run`）を読み、Corners タブが本番の `run-soren-live` ではなく空の state を表示する。2026-09-23 に修正）
 - `sudo tailscale serve --bg --https=443 http://127.0.0.1:8787`
-- 公開 URL: `https://<hostname>.<tailnet>.ts.net/` (実値は秘匿運用のため非公開。`webui.allowed_origins` には `DOCICH_WEBUI_ALLOWED_ORIGINS` 環境変数で指定する)
+- 公開 URL: `https://<hostname>.<tailnet>.ts.net/` (実値は秘匿運用のため非公開。`webui.allowed_origins` には `DOCICH_WEBUI_ALLOWED_ORIGINS` 環境変数で指定する。unit は `EnvironmentFile=-%h/.config/docich/webui.env` で読み込む)
 - 検証実績: 設定の読み書き / worker reload / backoff 表示・クリア / 統計表示を実測確認済み
 
 詳細は `src/docich/webui.py` の docstring を参照。

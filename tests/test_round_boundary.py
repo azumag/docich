@@ -372,10 +372,14 @@ def test_boundary_timeout_retains_old_active_without_cleanup():
     with tempfile.TemporaryDirectory() as tmp:
         state_dir = Path(tmp) / "run"
         factory = BoundaryFactory()
-        store, coordinator = _coordinator(factory, state_dir)
+        # Keep the request deadline comfortably above scheduler jitter while
+        # still well below the 5s boundary-step cap. The 0.2s request used by
+        # #1017 remained flaky under CI even after the equal-deadline race was
+        # removed; the adjacent request-deadline contract already uses 0.6s.
+        store, coordinator = _coordinator(factory, state_dir, round_boundary_s=5.0)
         assert coordinator.start("nethack").status == "succeeded"
         old = factory.adapters[("nethack", 1)]
-        result = coordinator.switch("robots", timeout_s=0.2)
+        result = coordinator.switch("robots", timeout_s=0.6)
         assert result.status == "failed"
         assert result.error_code == game_switch.ERROR_TIMEOUT
         state, _ = store.canonical.load()
@@ -550,7 +554,9 @@ def test_fifo_maintenance_recovers_expired_drain_and_starts_only_queue_head():
     with tempfile.TemporaryDirectory() as tmp:
         state_dir = Path(tmp) / "run"
         factory = BoundaryFactory()
-        store, coordinator = _coordinator(factory, state_dir)
+        # This test expires deadline_at explicitly below. Keep the boundary
+        # step timeout out of the race so CI load cannot trigger recovery first.
+        store, coordinator = _coordinator(factory, state_dir, round_boundary_s=5.0)
         assert coordinator.start("nethack").status == "succeeded"
         old = factory.adapters[("nethack", 1)]
         first_result = []

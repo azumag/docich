@@ -9,6 +9,7 @@ core = "auto"                          # or コア .so の絶対パス
 audio_enabled = true
 audio_sink = "soren_null"               # 既存の配信busへゲームBGM・効果音を出す
 audio_latency_ms = 289                  # CPU負荷時の音切れ軽減。本番で改善確認した値
+audio_volume_percent = 80               # 半熟英雄のゲーム音声streamだけを80%にする(共通bus・読み上げ・他ゲームは不変)
 # [retroarch.pad_map] で既定マップの上書きも可能
 
 [lifecycle]
@@ -17,15 +18,24 @@ boundary_timeout_s = 300
 
 [agent]
 enabled = true
-# 決定的な画面判定・入力script。詳細は docs/hanjuku_brain.md。
+# 決定的な画面判定・入力script。詳細は docs/hanjuku_script_bot.md。
 brain = "command"
 command = ["python3", "brains/hanjuku/bot.py"]
 interval_ms = 1500
 
 [hanjuku]
 script_bot = true
+# チャート準拠の決定的状態機械(hanjuku-chart-v2)。操作経路にLLMは入れない。
 # 20分の時間制限なし。ゲームオーバー、または実ゲーム画面が300秒不変で終了。
 # OpenCodeによる試合後の自動改善は別途実装。操作中のLLM呼出しは行わない。
+
+# 実況: botの決定記録から状況説明を作り、既存audio queueへ1件ずつ非同期enqueueする。
+# 半熟英雄プレイ中(このruntimeの観測中)だけ動く。同一key/同一文の連続・短間隔は抑止。
+[hanjuku.narration]
+enabled = true
+cooldown_s = 25
+max_age_s = 20
+speaker = ""
 
 # unified live rotationへ登録済み。ROM/core/実行ファイルが揃った環境だけ抽選候補になる。
 # 実機プレイ・表示・終了後の復帰は、設定有効化と分けて検証する。

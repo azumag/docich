@@ -33,20 +33,25 @@ def runtime_identity(spec):
     return {key:getattr(spec,key) for key in ('game','runtime_id','generation','lease_id')}
 
 
-def event(runtime_dir: Path, payload: dict):
-    path=runtime_dir/'hanjuku_events.jsonl'
+def append_log(runtime_dir: Path, name: str, payload: dict):
+    """Append one JSON line; rotate once at MAX_LOG_BYTES (current + previous)."""
+    path=runtime_dir/f'{name}.jsonl'
     if path.is_symlink():
-        raise AdapterError('Hanjuku event log may not be a symlink')
+        raise AdapterError('Hanjuku log may not be a symlink')
     if path.exists() and path.stat().st_size>=MAX_LOG_BYTES:
-        previous=runtime_dir/'hanjuku_events.previous.jsonl'
+        previous=runtime_dir/f'{name}.previous.jsonl'
         if previous.is_symlink():
             raise AdapterError('Hanjuku rotated log may not be a symlink')
         os.replace(path,previous)
     with path.open('a',encoding='utf-8') as stream:
-        stream.write(json.dumps(payload,separators=(',',':'),sort_keys=True)+'\n')
+        stream.write(json.dumps(payload,ensure_ascii=False,separators=(',',':'),sort_keys=True)+'\n')
         stream.flush()
         if payload.get('terminal_reason'):
             os.fsync(stream.fileno())
+
+
+def event(runtime_dir: Path, payload: dict):
+    append_log(runtime_dir,'hanjuku_events',payload)
 
 
 def load(runtime_dir: Path, identity: dict):

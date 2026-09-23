@@ -18,6 +18,11 @@ from .nethack_policy import (
 
 
 def gameplay_ready(obs: NethackObservation) -> bool:
+    """Complete gameplay frame with no condition tier that makes a move unsafe.
+
+    Movement and contact keep this gate (owner decision 2026-09-23): only the
+    ``.`` wait became unconditional.
+    """
     return (
         obs.prompt == "none" and obs.player is not None
         and obs.vitals.dungeon_level is not None
@@ -59,11 +64,9 @@ def assert_production_safe(decision: PolicyDecision, obs: NethackObservation) ->
             and _glyph(obs, target) != "I"
         )
     elif intent == "rest_turn":
-        allowed = (
-            gameplay_ready(obs) and key == "."
-            and not _visible_creature_contact(obs)
-            and "Hungry" not in obs.conditions
-        )
+        # Any complete frame may spend one wait turn (owner decision
+        # 2026-09-23); turn_ready is what keeps `.` from answering a prompt.
+        allowed = turn_ready(obs) and key == "."
     if not allowed:
         raise RuntimeError("production action violates its observed context")
 

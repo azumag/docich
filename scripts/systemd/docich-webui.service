@@ -5,7 +5,10 @@ After=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=__DOCICH_ROOT__
-ExecStart=__DOCICH_ROOT__/bin/docich webui
+# 本番 profile を明示する。既定の config/docich.toml は state_dir=run で、
+# Corners タブが本番の run-soren-live ではなく空の state を表示してしまう。
+ExecStart=__DOCICH_ROOT__/bin/docich --config __DOCICH_ROOT__/config/docich.soren-live.toml webui
+EnvironmentFile=-%h/.config/docich/webui.env
 Restart=on-failure
 RestartSec=5
 

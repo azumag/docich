@@ -1145,7 +1145,10 @@ class RetroCornerManager:
         if target_override is not None:
             self._validate_games([target])
         else:
-            # サブクラス (soren91/nethack) は引数なしで override しているため、通常経路は従来どおり。
+            # Fixed managers (soren91/nethack) now take the same
+            # ``(names=None)`` contract, so every path passes the selected
+            # target or nothing at all (#996/#998). An unvalidated extra
+            # target is rejected rather than silently accepted.
             self._validate_games()
         self._ensure_runtime()
         try:
@@ -1431,8 +1434,40 @@ class RetroCornerManager:
                 latest['battles_finished'] = run.get('battles_finished', 0)
                 latest['screen_unchanged_seconds'] = run.get('unchanged_seconds', 0)
                 latest['bot_runtime_id'] = active['runtime_id']
+                try:
+                    from .hanjuku_policy import summary
+                    from .retroarch_boundary import read_record
+                    bot = read_record(runtime_directory(self.g.state_dir, active['runtime_id'])
+                                      / 'hanjuku_bot.json')
+                    latest['bot_chart'] = summary(bot.get('policy'))
+                    latest['bot_version'] = bot.get('bot_version')
+                except Exception:
+                    latest['bot_chart'] = None
+                try:
+                    from .hanjuku_narration import delivery_summary
+                    from .retroarch_boundary import read_record
+                    runtime_dir = runtime_directory(self.g.state_dir, active['runtime_id'])
+                    latest['narration'] = delivery_summary(runtime_dir)
+                    audio = read_record(runtime_dir / 'audio_volume.json')
+                    streams = audio.get('streams') if isinstance(audio.get('streams'), list) else []
+                    latest['game_audio'] = {
+                        'status': audio.get('status'), 'target_percent': audio.get('target_percent'),
+                        'streams': [{k: st.get(k) for k in ('sink', 'volume_percent', 'mute')}
+                                    for st in streams[:4] if isinstance(st, dict)]}
+                except Exception:
+                    latest['game_audio'] = None
                 self._write_state(latest)
                 if run.get('terminal_reason') in {'game_over', 'screen_stalled'}:
+                    # Re-verify durable evidence bound to this runtime,
+                    # generation and lease before any teardown; a mismatch
+                    # or invalid record raises and fails closed.
+                    from .hanjuku_run import runtime_identity, terminal
+                    evidence = terminal(runtime_directory(self.g.state_dir, active['runtime_id']),
+                                        runtime_identity(fence))
+                    if evidence is None:
+                        raise RetroCornerError('Hanjuku terminal evidence is not durable')
+                    latest['terminal_evidence'] = evidence.get('terminal_evidence')
+                    latest['terminal_generation'] = evidence.get('generation')
                     return self._finish_locked(latest, self._local_now())
                 if time.monotonic() >= next_repair:
                     self._repair_active_agent(latest)
@@ -1810,7 +1845,14 @@ class RetroCornerManager:
         return all(self._executable_exists(path) for path in required)
 
     def _playable_games(self) -> list[str]:
-        """設定と実行環境が揃ったゲームだけを抽選候補にする。"""
+        """設定と実行環境が揃ったゲームだけを抽選候補にする。
+
+        Fixed single-game managers (nethack/soren91) now validate the exact
+        target instead of swallowing a signature mismatch, so a healthy one
+        returns ``["nethack"]`` / ``["soren91"]`` rather than the old silent
+        ``[]`` (#998). ``[]`` still means "nothing validated", never "no
+        games configured".
+        """
         playable = []
         for name in self.config.games:
             try:

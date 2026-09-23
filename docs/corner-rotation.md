@@ -75,6 +75,53 @@ last_seen、pending、request UUID、結果をatomic writeする。
 選択をside effectより先に記録する。program境界やFIFO待ちではpendingを消さず、
 同じrequest UUIDを既存game-switch receiptへ再投入する。
 
+### latchとoperator復旧（`status=recovery_required`、#986）
+
+予約後の実行が例外で終了すると、ledgerは `status=recovery_required` /
+`reason=execution-or-state-unverified` / `error_kind=<固定enum>` とlatchされ、
+`tick()` は冒頭で即returnする。例外本文はstateに書かない（provider出力やcredentialを
+含み得るため）。latchは自動では解けないfail-closed契約で、次の自動開始も手動startも拒否する。
+
+復旧は固定operation `recover-failed`（`ops/vm_actions/recover_corner_rotation.sh`）だけ:
+
+1. `bin/docich --config ... corner-rotation recover` がlatchを解決する。
+   - adapter観測に同じrequestの**terminal**があれば、それを完了としてcommitする
+     （request identity・history・cooldownを保ち、**二重起動しない**）。
+     自動予約は `pending`、手動予約は `manual_pending` を同じ規則で解決し、
+     手動のcompletedだけ `manual-completion` の履歴行を足す。
+   - そのrequestが**一度も起動していない**自動予約なら、ledgerは `waiting`/`execution-pending`
+     のまま予約を保持して戻す。以降は通常の `tick()` がgame-switch phase・program slot・
+     cooldown・所有権を検証してから同じrequestで実行する。原因が残っていれば再度latch
+     され、`error_kind` が固定分類として残る。
+   - 自分のrequestが**実行中／corner側が要復旧**（列挙順に依存しない。1件でもbusyなら拒否）、
+     `pending` と `manual_pending` の同時存在、catalogから削除された予約、時計逆行は
+     拒否してlatchのまま（exit非0、unitには触れない）。
+   - **手動予約でterminal観測がまだない**（一度も起動していない）場合は、予約を消さずに
+     `waiting` / `manual-request-needs-resume-or-recovery` へ戻す。以降の `tick()` は
+     自動発火を止めて待ち、**同じ手動 start が同じrequestで再開**するか、当該cornerの
+     手動 stop/recover と game-switch receipt が終了を証明するまで保持する
+     （操作者のスロットを暗黙に捨てない。観測が有れば同じ規則でcommitする）。
+   - 時計の逆行は**どの分支より先に**拒否する（復旧が `last_seen_at` を過去へ書き換えない）。
+   - 成功時だけ `last_seen_at` を現在時刻へ進める（長期latch後の復旧で、次のtickが
+     長期停止の隔離（24時間）へ落ちないようにするため。cooldownは履歴だけが決める。
+     前方ジャンプを隔離で検知できるのはこの復旧操作を経由した場合だけ、という意図的な非対称）。
+2. 成功した場合だけ `systemctl --user --no-block restart` でreviewed unitを起動し、
+   直後のtickが同じrecorded gameを再試行する。**成否の契約は「試した」ではなく
+   「ledgerから `recovery_required` が消えた」こと**で、残存時と、ledgerが存在して読めない
+   場合はCLIが非0（exit 4）を返してunitを触れない（ロック競合・rotation無効時も同じ。
+   ledgerが存在しなければlatchは無いので0）。結果JSONには `latch_resolved` を含め、
+   ログを読む側はexit codeとこのフラグで判定する。
+
+`tick()` 自身はlatchを自動解除しない（毎分のtimerが自動再試行ループを作るため）。
+ledgerの手編集・`pending`の強制clear・state削除・seed再生成・時計調整は復旧手順ではない。
+`error_kind` は**初回のlatch時**の固定分類として、次にlatchし直すまでledgerと診断に残る。
+復旧操作が拒否された時に上書きしない（拒否理由より元原因の分類を残す）。
+診断は `corners.corner_rotation` に `error_kind` と `pending_corner` / `pending_phase` /
+`pending_age_sec` / `pending_owner` / `pending_owner_status` を固定投影し（予約が在る限り、
+latch中かどうかを問わず出す）、latch自体を総合 `warn` としてruntime health alertへ届ける。
+復旧後の `tick()` のcooldown再検証は `phase=="selected"` の予約だけで、
+`dispatched` の復元はdispatch時の履歴行がcooldownを担保する。
+
 起動済みcornerは無効化後も安全な終了・復帰を継続する。まだ起動していない予約が無効化
 された場合は予約を保持して待機する。pending対象のcatalog削除は要復旧。
 各managerのstateには`rotation_request_id`と`rotation_runtime_id`を記録する。
@@ -101,7 +148,11 @@ terminal記録を書いてからlockを離す。`failed`は、corner完了以後
 SIGKILL後のrunning、終了記録欠落、corner完了より古い`started_at`、`completed_at`の欠落・逆行、
 `recovery_required`、所有権不明を停止済み扱いにしない。安全なPID所有権証明なしにkillする代替経路は設けない。
 
-手動startも共通lock/program slotを通し、同じrolling cooldownに使用を記録する。
+手動startも共通lock/program slotを通し、同じrolling cooldownに**使用を記録する**
+（以後の自動選択とcooldown集計は今までどおり）。ただし**手動start自体はrolling cooldownで
+選択を拒否しない**（オーナー決定2026-09-23: 手動起動はcooldownを無視。one-off runnerで
+テスト・operator起動を即座にできるため）。latch・自動pending・他ownerのprogram slotは
+引き続き手動startを拒否する。
 独立manual stateと既存のduration等は維持する。自動pendingがあれば手動startを拒否する。
 manual予約も`manual_pending`にrequest UUIDとowner state名を保存する。途中で切れた場合は、
 同じmanual startで同じrequestを再開するか、既存のmanual stop/recoverおよびgame-switch

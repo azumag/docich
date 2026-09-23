@@ -9,7 +9,13 @@ from docich.adapters.base import Observation
 from docich.agent.brains import NethackPolicyBrain
 from docich.nethack_exploration import DIRECTIONS, NethackExplorer
 from docich.nethack_observation import normalize_tty
-from docich.nethack_policy import NethackLayeredPolicy, PolicyDecision, rest_action_for_hold, step_out_of_hold
+from docich.nethack_policy import (
+    NethackLayeredPolicy,
+    PolicyDecision,
+    rest_action_for_hold,
+    step_out_of_hold,
+    turn_ready,
+)
 from docich.nethack_progress import assert_production_safe
 
 
@@ -100,31 +106,71 @@ def test_terrain_planner_and_bump_never_target_unreviewed_glyphs(glyph):
     assert act(brain(), text) == ["k"]  # only actual visible creature is eligible
 
 
-@pytest.mark.parametrize("condition", ["Sick", "FoodPois", "Ill", "Slime", "Strngl", "Stone", "TermIll", "Weak", "Fainting", "Fainted", "Starved"])
+@pytest.mark.parametrize("condition", ["Sick", "FoodPois", "Ill", "Slime", "Strngl", "Stone", "TermIll", "Fainting", "Fainted", "Starved"])
 @pytest.mark.parametrize("hp", ["16(16)", "4(16)"])
-def test_severe_status_and_starvation_dominate_hp_and_all_fallbacks(condition, hp):
+def test_severe_status_and_starvation_dominate_the_intent_and_still_wait(condition, hp):
+    # owner decision 2026-09-23: どんな状態でも完全なframeなら `.` を送る。
+    # 「dominate」は *movement* の意味で残る: 隣接creature+重症では退避/接触を
+    # 一切作らず、最後に1ターン待つだけ。
     text = frame({"k": "d", "n": "#"}, hp=hp, condition=condition)
     agent = brain()
-    assert act(agent, text) == []
+    assert act(agent, text) == ["."]
     assert agent.last_decision.intent in {"status_emergency", "food_emergency"}
+    assert agent.last_progress_decision.intent == "rest_turn"
     # Helpers also guard the observation even if a caller supplies a misleading
-    # survival intent (the exact critical-HP masking regression).
+    # survival intent (the exact critical-HP masking regression): movement stays
+    # blocked while a wait turn is allowed.
     obs = normalize_tty(text)
     fake = PolicyDecision("strategic", "survival_emergency", "test", requires_llm=True)
     assert step_out_of_hold(fake, obs, NethackExplorer()) is None
-    assert rest_action_for_hold(fake, normalize_tty(frame(hp=hp, condition=condition))) is None
+    rest = rest_action_for_hold(fake, normalize_tty(frame(hp=hp, condition=condition)))
+    assert rest is not None
+    assert rest.text == "."
+
+
+@pytest.mark.parametrize("hp", ["16(16)", "4(16)"])
+def test_weak_spends_one_explicit_wait_turn_instead_of_freezing(hp):
+    # 2026-09-23 nethack slot: the hero sat at `Weak` and sent 0 actions on
+    # every iteration, so a turn-based game could never move. The reviewed
+    # Weak tier of the food emergency now spends exactly one '.' wait turn;
+    # movement and bump stay gated by gameplay_ready; every hunger tier now
+    # waits instead of holding input-free (owner decision 2026-09-23).
+    text = frame(hp=hp, condition="Weak")
+    agent = brain()
+    assert act(agent, text) == ["."]
+    assert agent.last_decision.intent == "food_emergency"
+    assert agent.last_progress_decision.intent == "rest_turn"
+
+
+def test_weak_beside_a_visible_creature_still_spends_a_wait_turn():
+    # Movement/bump stay gated while the food emergency holds, so the resolver
+    # falls through to the explicit wait turn (owner decision 2026-09-23).
+    text = frame({"k": "d"}, hp="16(16)", condition="Weak")
+    agent = brain()
+    assert act(agent, text) == ["."]
+    assert agent.last_decision.intent == "food_emergency"
+    assert agent.last_progress_decision.intent == "rest_turn"
+    obs = normalize_tty(text)
+    decision = PolicyDecision("strategic", "food_emergency", "test", requires_llm=True)
+    assert rest_action_for_hold(decision, obs).text == "."
 
 
 @pytest.mark.parametrize("condition", ["Blind", "Conf", "Stun", "Hallu"])
 @pytest.mark.parametrize("hp", ["16(16)", "4(16)"])
-def test_impairment_never_moves_or_bumps_even_if_hp_masks_its_intent(condition, hp):
-    assert act(brain(), frame({"k": "d", "n": "#"}, hp=hp, condition=condition)) == []
+def test_impairment_never_moves_or_bumps_but_may_wait(condition, hp):
+    # movement_ready stays false (no move, no bump even beside a creature) ...
+    assert act(brain(), frame({"k": "d", "n": "#"}, hp=hp, condition=condition)) == ["."]
+    # ... and the wait turn is always available on a complete frame
     assert act(brain(), frame({"n": "#"}, hp=hp, condition=condition)) == ["."]
 
 
-def test_hungry_explores_instead_of_repeatedly_resting_until_weak():
+def test_hungry_explores_when_possible_and_waits_when_not():
+    # terrain first (seek_food keeps exploring) ...
     assert act(brain(), frame({"n": "#"}, condition="Hungry")) == ["n"]
-    assert act(brain(), frame(condition="Hungry")) == []
+    # ... otherwise one explicit wait turn instead of a permanent hold
+    agent = brain()
+    assert act(agent, frame(condition="Hungry")) == ["."]
+    assert agent.last_progress_decision.intent == "rest_turn"
 
 
 @pytest.mark.parametrize("message", [
@@ -226,9 +272,10 @@ def test_peaceful_attack_rejection_does_not_loop_bump_no_bump():
     assert act(agent, frame(occupied, message="Really attack the dog? [yn] (n)")) == ["n"]
     assert act(agent, frame(occupied, message="Never mind.")) == ["h"]
     assert act(agent, frame(occupied, message="Really attack the cat? [yn] (n)")) == ["n"]
-    # New messages/turns do not establish a peaceful creature is gone.
-    assert act(agent, frame(occupied, message="Never mind.", turn=13)) == []
-    assert agent.last_progress_decision.intent == "progress_blocked"
+    # New messages/turns do not establish a peaceful creature is gone, so the
+    # bounded contact retries stop and only a wait turn is sent (no bump loop).
+    assert act(agent, frame(occupied, message="Never mind.", turn=13)) == ["."]
+    assert agent.last_progress_decision.intent == "rest_turn"
     assert act(agent, frame({"h": "."}, turn=14)) == ["h"]
 
 
@@ -242,7 +289,8 @@ def test_rejected_diagonal_yields_to_another_route_then_bump():
     assert act(agent, text) == ["k"]
     assert agent.last_progress_decision.intent == "bump_creature"
     assert act(agent, text) == ["k"]
-    assert act(agent, text) == []  # remain fail-closed after bounded contact retries
+    # bounded contact retries are exhausted: one explicit wait turn, no loop
+    assert act(agent, text) == ["."]
     # New map/player/depth invalidates transient rejected edges.
     assert act(agent, frame({"k": "d", "b": ".", "n": "#"}, hp="4(16)", depth=2)) == ["b"]
 
@@ -259,7 +307,8 @@ def test_more_page_preserves_pending_contact_until_attack_confirmation():
     assert act(agent, frame({"h": "f"})) == ["h"]
     assert act(agent, frame({"h": "f"}, message="A message --More--")) == [" "]
     assert act(agent, frame({"h": "f"}, message="Really attack the cat? [yn] (n)")) == ["n"]
-    assert act(agent, frame({"h": "f"})) == []
+    # the rejected edge stays blocked: only a wait turn, never a repeat bump
+    assert act(agent, frame({"h": "f"})) == ["."]
 
 
 @pytest.mark.parametrize("key", ["Fh", "h.", "y\n", ">", "<", "o", "e", "q", "s", "\x1b"])
@@ -278,12 +327,20 @@ def test_final_guard_rechecks_context_instead_of_trusting_policy_intent():
         (move, frame({"n": "d"})), (move, frame({"n": "^"})),
         (move, frame({"n": "#"}, condition="Conf")),
         (attack, frame({"n": "."})), (attack, frame({"n": "I"})),
-        (rest, frame({"h": "f"})), (rest, frame(condition="Slime", hp="4(16)")),
+        # `.` is allowed on a complete frame even beside contact or with a
+        # severe status (owner decision 2026-09-23) ...
         (move, frame({"n": "#"}, hp="0(16)")),
         (replace(move, intent="decline_attack"), frame({"n": "#"})),
+        # ... but never where the key could answer a question
+        (rest, frame({"n": "#"}, message="Really quit? [yn]")),
+        (rest, frame(hp="0(16)")),
     ]:
         with pytest.raises(RuntimeError):
             assert_production_safe(decision, normalize_tty(text))
+    # allowed: complete frames, whatever the status line says
+    for text in (frame({"h": "f"}), frame(condition="Slime", hp="4(16)"),
+                 frame(condition="Starved")):
+        assert_production_safe(rest, normalize_tty(text))
 
 def test_missing_status_does_not_make_stale_map_actionable():
     text = "\n @#\n   \n"
@@ -298,8 +355,10 @@ def test_no_turn_field_bounds_unchanged_terrain_and_combat():
     assert act(agent, text) == ["k"]
     assert act(agent, text) == ["k"]
     for _ in range(4):
-        assert act(agent, text) == []
-        assert agent.last_progress_decision.intent == "progress_blocked"
+        # without a turn counter the frame looks unchanged, so bounded bumps
+        # stop here and only the explicit wait turn is sent
+        assert act(agent, text) == ["."]
+        assert agent.last_progress_decision.intent == "rest_turn"
     assert act(agent, frame({"k": "d", "n": "#"}, hp="4(16)", turn=None, depth=2)) == ["n"]
 
 
@@ -342,18 +401,24 @@ def test_new_contract_suite_is_in_explicit_ci_list():
 def test_real_tty_severe_condition_spelling_is_normalized(condition):
     text = frame({"n": "#"}, condition=condition, hp="4(16)")
     assert condition in normalize_tty(text).conditions
-    assert act(brain(), text) == []
+    agent = brain()
+    assert act(agent, text) == ["."]  # wait turn, owner decision 2026-09-23
+    assert agent.last_decision.intent == "status_emergency"
 
 
 @pytest.mark.parametrize("hp", ["4(16)", "8(16)", "16(16)"])
-def test_hungry_at_any_hp_uses_terrain_then_bump_then_hold(hp):
+def test_hungry_at_any_hp_uses_terrain_then_bump_then_wait(hp):
     assert act(brain(), frame({"n": "#", "k": "d"}, hp=hp, condition="Hungry")) == ["n"]
     assert act(brain(), frame({"n": "#"}, hp=hp, condition="Hungry")) == ["n"]
     assert act(brain(), frame({"k": "d"}, hp=hp, condition="Hungry")) == ["k"]
-    assert act(brain(), frame(hp=hp, condition="Hungry")) == []
+    # nothing left to move onto: one explicit wait turn (owner decision 2026-09-23)
+    assert act(brain(), frame(hp=hp, condition="Hungry")) == ["."]
     rest = PolicyDecision("tactical", "rest_turn", "test", (Action(type="text", text="."),))
+    # allowed on a complete frame ...
+    assert_production_safe(rest, normalize_tty(frame(hp=hp, condition="Hungry")))
+    # ... never where the key could answer a question
     with pytest.raises(RuntimeError):
-        assert_production_safe(rest, normalize_tty(frame(hp=hp, condition="Hungry")))
+        assert_production_safe(rest, normalize_tty(frame({"n": "#"}, message="Really quit? [yn]")))
 
 
 def test_same_more_frame_is_sent_once_until_frame_changes():
@@ -580,3 +645,55 @@ def test_unknown_and_severe_states_survive_candidate_public_replay():
         _, replay, _ = parse_public_replay_request(request.to_dict())
         assert replay.prompt == "unknown"
         assert condition in replay.conditions
+
+
+# --- message-window continuation evidence (owner decision 2026-09-23) ---------
+
+WELCOME79 = "Konnichi wa docich, welcome to NetHack!  You are a lawful female human Samurai."
+
+
+def test_full_width_message_without_continuation_row_is_not_a_wrap():
+    # Production 2026-09-23: this 79-column banner (cols=80) classified as
+    # `unknown`, so `.` was withheld forever and the hero never acted.
+    from docich.nethack_observation import _message_may_wrap
+
+    assert len(WELCOME79) == 79
+    lines = [WELCOME79, "", "", "-----", "|d..|", ".@..|", "-----"]
+    assert not _message_may_wrap(lines, 80)
+    text = "\n".join([WELCOME79, "", "", "-----", "|d..|", ".@..|", "-----",
+                      "Dlvl:1 HP:15(15) Pw:2(2) AC:4 Xp:1", "T:12"])
+    obs = normalize_tty(text)
+    assert obs.prompt == "none"
+    assert obs.player is not None
+    assert turn_ready(obs)
+
+
+def test_full_width_message_with_continuation_row_stays_fail_closed():
+    from docich.nethack_observation import _message_may_wrap
+
+    lines = [WELCOME79, "and more text that would be a wrapped question [yn", "-----"]
+    assert _message_may_wrap(lines, 80)
+    text = "\n".join([lines[0], lines[1], "-----", "|d..|", ".@..|", "-----",
+                      "Dlvl:1 HP:15(15) Pw:2(2) AC:4 Xp:1", "T:12"])
+    obs = normalize_tty(text)
+    assert obs.prompt == "unknown"
+    assert not turn_ready(obs)
+    assert act(brain(), text) == []
+
+
+def test_full_width_banner_unlocks_the_explicit_wait_turn():
+    # End-to-end: boxed-in hero behind a full-width banner still spends one
+    # explicit wait turn instead of holding input-free (0 actions deadlock).
+    # `#` is a passable corridor glyph, so walls here are `-`/`|` only.
+    text = "\n".join([
+        WELCOME79,
+        "",
+        "-------",
+        "-|-@|-",
+        "-------",
+        "Dlvl:1 HP:15(15) Pw:2(2) AC:4 Xp:1",
+        "T:12",
+    ])
+    agent = brain()
+    assert act(agent, text) == ["."]
+    assert agent.last_progress_decision.intent == "rest_turn"

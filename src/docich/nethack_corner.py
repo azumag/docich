@@ -306,8 +306,24 @@ class NethackCornerManager(RetroCornerManager):
                 latest["finish_reason"] = reason
                 return self._finish_locked(latest, now)
 
-    def _validate_games(self) -> None:
-        """Validate the existing CLI runtime without pretending an AI exists yet."""
+    def _validate_games(self, names: list[str] | None = None) -> None:
+        """Validate the existing CLI runtime without pretending an AI exists yet.
+
+        ``names`` carries the target-override contract of
+        ``RetroCornerManager._begin_locked`` (a common rotation dispatch always
+        passes the selected game). This manager owns exactly one game, so any
+        other requested target is rejected instead of silently accepted --
+        accepting no argument at all made every rotation dispatch die with a
+        TypeError before the corner could record any state (#986).
+        """
+        if names is not None and list(names) != [GAME_NAME]:
+            # Exact ownership, not membership: a superset such as
+            # ``["nethack", "ninvaders"]` would silently pass an unvalidated
+            # extra target (#998).
+            detail = "、".join(str(name) for name in names) if names else "(空)"
+            raise NethackCornerError(
+                f"nethack corner対象は{GAME_NAME}だけが有効です: {detail}"
+            )
         try:
             game = load_game(self.g, GAME_NAME)
         except Exception as exc:

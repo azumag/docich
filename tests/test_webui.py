@@ -1394,6 +1394,222 @@ class TestHttpHandlers(unittest.TestCase):
             self.g.webui.token = ""
 
 
+    # ---- corners / rotation: read-only view + one-off manual + latch recovery ----
+
+    def _write_rotation_state(self, **overrides):
+        run = self.repo_root / "run"
+        run.mkdir(parents=True, exist_ok=True)
+        state = {
+            "schema_version": 1,
+            "seed": "DO-NOT-PUBLISH-SEED",
+            "slot": 9,
+            "history": [],
+            "pending": {
+                "corner": "nsnake",
+                "phase": "dispatched",
+                "selected_at": time.time() - 120,
+                "request_id": "DO-NOT-PUBLISH-REQ",
+                "prompt": "DO-NOT-PUBLISH-BODY",
+            },
+            "status": "recovery_required",
+            "reason": "execution-or-state-unverified",
+            "error_kind": "unexpected",
+            "next_due_at": time.time() - 60,
+            "last_seen_at": time.time() - 60,
+            "last_slot_at": time.time() - 3600,
+            "eligible": ["nsnake", "nethack"],
+        }
+        state.update(overrides)
+        (run / "corner_rotation.json").write_text(json.dumps(state), encoding="utf-8")
+
+    def _write_catalog_config(self):
+        path = Path(self.g.config_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '[corner_rotation]\n'
+            'enabled = true\n'
+            'schedule_mode = "queue"\n'
+            'cooldown_hours = 24.0\n'
+            'corners = [\n'
+            '  {id = "nsnake", adapter = "game", game = "nsnake"},\n'
+            '  {id = "nethack", adapter = "nethack", game = "nethack"},\n'
+            ']\n',
+            encoding="utf-8",
+        )
+
+    def test_get_corners_is_bounded_read_only_projection(self):
+        self._write_catalog_config()
+        self._write_rotation_state()
+        run = self.repo_root / "run"
+        (run / "game_switch.json").write_text(json.dumps({
+            "phase": "ready",
+            "active": {"game": "nsnake", "generation": 3},
+            "last_result": {"status": "succeeded", "to_game": "nsnake"},
+            "updated_at": "2026-09-23T05:00:00+09:00",
+        }), encoding="utf-8")
+        (run / "nethack_corner.json").write_text(json.dumps({
+            "schema_version": 1, "status": "completed", "game": "nethack",
+            "started_at": "2026-09-23T05:24:47+09:00", "target_matches": 3,
+            "recovery_required": False,
+        }), encoding="utf-8")
+        status, data = self._request("GET", "/api/corners")
+        self.assertEqual(status, 200, data)
+        rotation = data["rotation"]
+        self.assertEqual(rotation["status"], "recovery_required")
+        self.assertTrue(rotation["latch"])
+        self.assertTrue(rotation["can_recover"])
+        self.assertEqual(rotation["error_kind"], "unexpected")
+        self.assertEqual(rotation["slot"], 9)
+        self.assertEqual(rotation["pending"]["corner"], "nsnake")
+        self.assertEqual(rotation["pending"]["phase"], "dispatched")
+        self.assertGreaterEqual(rotation["pending"]["age_sec"], 0)
+        self.assertIn("nsnake", rotation["eligible"])
+        self.assertEqual(rotation["schedule_mode"], "queue")
+        self.assertEqual(rotation["cooldown_seconds"], 86400.0)
+        self.assertTrue(rotation["enabled"])
+        ids = {row["id"]: row for row in data["catalog"]}
+        self.assertEqual(ids["nsnake"]["adapter"], "game")
+        self.assertTrue(ids["nsnake"]["manual"])
+        self.assertEqual(data["game_switch"]["active_game"], "nsnake")
+        self.assertEqual(data["game_switch"]["active_generation"], 3)
+        self.assertEqual(data["corners"]["nethack_corner"]["status"], "completed")
+        self.assertIs(data["corners"]["nethack_corner"]["recovery_required"], False)
+        self.assertGreaterEqual(data["corners"]["nethack_corner"]["started_at"], 0)
+        # どの config / state を読んでいるか (basename のみ) を画面の警告用に出す
+        self.assertEqual(data["source"]["config"], Path(self.g.config_path).name)
+        self.assertEqual(data["source"]["state_dir"], "run")
+        self.assertTrue(ids["nsnake"]["eligible"])
+        self.assertEqual(ids["nethack"]["state_file"], "nethack_corner")
+        # seed / request UUID / prompt は出さない (read-only でも泄漏しない)
+        body = json.dumps(data, ensure_ascii=False)
+        self.assertNotIn("DO-NOT-PUBLISH", body)
+
+    def test_get_corners_reports_last_run_and_remaining_cooldown(self):
+        self._write_catalog_config()
+        now = time.time()
+        self._write_rotation_state(history=[
+            {"corner": "nsnake", "at": now - 3600, "source": "execution"},
+            {"corner": "nsnake", "at": now - 7200, "source": "selection"},
+            {"corner": "nethack", "at": now - 90000, "source": "execution"},
+            {"corner": 7, "at": now},  # 不正行は無視
+        ])
+        status, data = self._request("GET", "/api/corners")
+        self.assertEqual(status, 200, data)
+        ids = {row["id"]: row for row in data["catalog"]}
+        self.assertAlmostEqual(ids["nsnake"]["last_run_at"], now - 3600, delta=1)
+        # 24h cooldown: 1時間前に実行 → 残り約23時間
+        self.assertAlmostEqual(ids["nsnake"]["cooldown_until"], now - 3600 + 86400, delta=1)
+        # 25時間前 → cooldown 明け済みは None
+        self.assertIsNone(ids["nethack"]["cooldown_until"])
+
+    def test_page_explains_corner_usage(self):
+        self.client.request("GET", "/")
+        res = self.client.getresponse()
+        text = res.read().decode("utf-8")
+        self.assertEqual(res.status, 200)
+        for marker in ('id="corners-catalog"', 'id="corners-summary"',
+                       'id="corners-source-warn"', "使い方", "function updateCornerButtons",
+                       '"all-corners-cooling-down"', '"clock-gap-quarantine"'):
+            self.assertIn(marker, text)
+
+    def test_post_corners_requires_confirm(self):
+        # /api/corners は dangerous action: confirm なしは 428 (issue #42 と同じ)
+        status, data = self._request("POST", "/api/corners",
+                                     {"action": "start", "corner": "nsnake"})
+        self.assertEqual(status, 428, data)
+        self.assertEqual(data["error"], "confirmation_required")
+        status, data = self._request("POST", "/api/corners", {"action": "recover"})
+        self.assertEqual(status, 428, data)
+
+    def test_post_corners_start_dispatches_reviewed_one_off_runner(self):
+        self._write_catalog_config()
+        with mock.patch("docich.webui.subprocess.Popen") as popen:
+            popen.return_value.pid = 4242
+            status, data = self._request(
+                "POST", "/api/corners",
+                {"action": "start", "corner": "nsnake", "duration_minutes": 7,
+                 "confirm": True},
+            )
+        self.assertEqual(status, 200, data)
+        argv = popen.call_args.args[0]
+        self.assertTrue(argv[0].endswith("bin/docich-retro-corner-manual"), argv)
+        # runner は webui と同じ config を読む (既定 config だと別 state_dir を操作する)
+        self.assertEqual(argv[1:3], ["--config", str(self.g.config_path)])
+        self.assertEqual(argv[3], "start")
+        self.assertIn("--game", argv)
+        self.assertIn("nsnake", argv)
+        self.assertIn("--duration-minutes", argv)
+        self.assertIn("7", argv)
+        kwargs = popen.call_args.kwargs
+        self.assertIs(kwargs.get("start_new_session"), True)
+        self.assertNotIn("shell", kwargs)  # list exec only: corner id は exec list 渡し
+        self.assertEqual(data["pid"], 4242)
+        self.assertEqual(data["corner"]["id"], "nsnake")
+        self.assertTrue(data["log"].startswith("tmp/logs/"))
+
+    def test_post_corners_stop_and_validation(self):
+        self._write_catalog_config()
+        with mock.patch("docich.webui.subprocess.Popen") as popen:
+            popen.return_value.pid = 4243
+            status, data = self._request(
+                "POST", "/api/corners",
+                {"action": "stop", "corner": "nethack", "confirm": True},
+            )
+        self.assertEqual(status, 200, data)
+        argv = popen.call_args.args[0]
+        self.assertTrue(argv[0].endswith("bin/docich-nethack-corner-manual"), argv)
+        self.assertEqual(argv[1:3], ["--config", str(self.g.config_path)])
+        self.assertEqual(argv[3], "stop")
+        self.assertNotIn("--duration-minutes", argv)  # stop には分数を渡さない
+
+        for bad in (
+            {"action": "start", "corner": "../../etc/passwd", "confirm": True},
+            {"action": "start", "corner": "unknown-corner", "confirm": True},
+            {"action": "start", "corner": "nsnake", "duration_minutes": 0, "confirm": True},
+            {"action": "start", "corner": "nsnake", "duration_minutes": 61, "confirm": True},
+            {"action": "launch", "corner": "nsnake", "confirm": True},
+        ):
+            with self.subTest(bad=bad), mock.patch("docich.webui.subprocess.Popen") as popen:
+                status, data = self._request("POST", "/api/corners", bad)
+                self.assertEqual(status, 400, (bad, data))
+                popen.assert_not_called()
+
+    def test_post_corners_recover_never_edits_the_ledger_itself(self):
+        self._write_rotation_state()
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout='{"status":"waiting","reason":"execution-pending","resumed":true}\n',
+            stderr="",
+        )
+        with mock.patch("docich.webui.subprocess.run", return_value=completed) as run:
+            status, data = self._request(
+                "POST", "/api/corners", {"action": "recover", "confirm": True})
+        self.assertEqual(status, 200, data)
+        argv = run.call_args.args[0]
+        self.assertTrue(argv[0].endswith("bin/docich"), argv)
+        self.assertIn("corner-rotation", argv)
+        self.assertIn("recover", argv)
+        # CLI を mock しているため ledger は webui 一切書き換えていない
+        kept = json.loads((self.repo_root / "run" / "corner_rotation.json").read_text())
+        self.assertEqual(kept["status"], "recovery_required")
+        self.assertEqual(kept["seed"], "DO-NOT-PUBLISH-SEED")
+        # latch が残る以上「成功」とは言わない (成否 = latch が消えたか)
+        self.assertFalse(data["ok"])
+        self.assertFalse(data["latch_resolved"])
+        self.assertEqual(data["exit_code"], 0)
+        self.assertEqual(data["outcome"].get("status"), "waiting")
+
+        # CLI が latch を解いた後 (exit 0) なら成功
+        self._write_rotation_state(status="waiting", reason="execution-pending",
+                                   pending=None, error_kind=None)
+        with mock.patch("docich.webui.subprocess.run", return_value=completed):
+            status, data = self._request(
+                "POST", "/api/corners", {"action": "recover", "confirm": True})
+        self.assertEqual(status, 200, data)
+        self.assertTrue(data["ok"])
+        self.assertTrue(data["latch_resolved"])
+
+
 class TestMutationGuard(TestHttpHandlers):
     """issue #42: Host/Origin allowlist・CSRF token・Content-Type・read-only identity・
     dangerous action の再確認・CORS wildcard+credentials 不可・authorization audit event。"""
@@ -1616,14 +1832,23 @@ class TestMutationGuard(TestHttpHandlers):
 
     def test_authz_audit_event_logged_without_secret_or_body(self):
         self.g.webui.token = "supersecret123"
+        # #972: pin the clock so the numeric `ts` contains the body value's
+        # "900" substring (ts = 1790082626). Asserting on the raw file text
+        # also matched that timestamp (and `latency_ms`, e.g. 1900), so the
+        # test failed only at certain wall-clock times even though nothing
+        # leaked. The body value may only appear in the string fields, so
+        # inspect those parsed fields and skip the numeric metadata.
+        pinned_ts = 1790082626
+        self.assertIn("900", str(pinned_ts))
         try:
-            self._request("PUT", "/api/config", {"values": {"AI_AGENT_BACKOFF_SEC": "900"}}, headers={"Origin": "http://evil.example"})
-            self._request(
-                "PUT",
-                "/api/config",
-                {"values": {"AI_AGENT_BACKOFF_SEC": "900"}},
-                headers={"Authorization": "Bearer supersecret123"},
-            )
+            with mock.patch.object(webui.time, "time", return_value=float(pinned_ts)):
+                self._request("PUT", "/api/config", {"values": {"AI_AGENT_BACKOFF_SEC": "900"}}, headers={"Origin": "http://evil.example"})
+                self._request(
+                    "PUT",
+                    "/api/config",
+                    {"values": {"AI_AGENT_BACKOFF_SEC": "900"}},
+                    headers={"Authorization": "Bearer supersecret123"},
+                )
         finally:
             self.g.webui.token = ""
         log_file = self.soren / "tmp/debug/webui.log"
@@ -1635,7 +1860,25 @@ class TestMutationGuard(TestHttpHandlers):
         raw = log_file.read_text(encoding="utf-8")
         self.assertNotIn("supersecret123", raw)
         self.assertNotIn("AI_AGENT_BACKOFF_SEC", raw)
-        self.assertNotIn("900", raw)
+        # `ts` and `latency_ms` are wall-clock metadata, so they may match
+        # "900" by chance (epoch seconds, or e.g. latency 1900). `status` is
+        # an int chosen by the handler -- never body-derived -- and this
+        # codebase returns no 9xx code at all.
+        numeric_metadata = {"ts", "latency_ms", "status"}
+        for record in lines:
+            for key, value in record.items():
+                if key in numeric_metadata:
+                    continue
+                self.assertNotIn(
+                    "900",
+                    json.dumps(value, ensure_ascii=False),
+                    f"body value leaked into audit field {key}: {record}",
+                )
+            self.assertNotIn(
+                "900",
+                json.dumps(sorted(record.keys()), ensure_ascii=False),
+                f"body key leaked into audit record keys: {record}",
+            )
 
 
 class TestWebUIConfig(unittest.TestCase):

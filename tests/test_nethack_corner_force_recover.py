@@ -249,7 +249,53 @@ class TestForceRecoverProductionShape(ForceRecoverBase):
         self.assertEqual(result["status"], "recovered")
         self.assertEqual(coord.calls[-1], ("switch", "sorengame"))
         self.assertEqual(self.canonical(), ("ready", "sorengame"))
+        # The restored corner must stop looking busy to the corner rotation
+        # (``failed`` is in its BUSY set), while the original error stays.
+        manual = self.manual_state()
+        self.assertEqual(manual["status"], "interrupted")
+        self.assertIs(manual["recovery_required"], False)
+        self.assertEqual(manual["last_error"], "boom")
         self.assertEqual(self.make_manager(coord).start().status, "completed")
+
+    def test_recover_ends_failed_state_when_restore_already_landed(self):
+        # Production 2026-09-23: an earlier recover restored sorengame but left
+        # the manual state failed, latching the rotation.
+        self.set_canonical("ready", "sorengame")
+        self.set_manual("failed", last_error="boom", recovery_required=True)
+        coord = StoreCoordinator(self)
+
+        self.assertEqual(self.operator_recover(coord)["status"], "recovered")
+        self.assertEqual(coord.calls, [])
+        manual = self.manual_state()
+        self.assertEqual(manual["status"], "interrupted")
+        self.assertIs(manual["recovery_required"], False)
+        self.assertEqual(manual["last_error"], "boom")
+
+    def test_recover_leaves_failed_state_when_another_game_is_active(self):
+        self.set_canonical("ready", "retroarch")
+        self.set_manual("failed", last_error="boom", recovery_required=True)
+        coord = StoreCoordinator(self)
+
+        self.assertEqual(self.operator_recover(coord)["status"], "noop")
+        self.assertEqual(coord.calls, [])
+        self.assertEqual(self.manual_state()["status"], "failed")
+
+    def test_recover_keeps_failed_while_restore_is_not_committed(self):
+        self.set_canonical("ready", "nethack")
+        self.set_manual("failed", last_error="boom", recovery_required=True)
+
+        class QueuedCoordinator(StoreCoordinator):
+            def switch(self, game):
+                # The switch was accepted but canonical has not moved yet.
+                self.calls.append(("switch", game))
+                return SimpleNamespace(status="queued", error_code=None, detail=None)
+
+        coord = QueuedCoordinator(self)
+        self.assertEqual(self.operator_recover(coord)["status"], "recovered")
+        self.assertEqual(self.canonical(), ("ready", "nethack"))
+        manual = self.manual_state()
+        self.assertEqual(manual["status"], "failed")
+        self.assertIs(manual["recovery_required"], True)
 
 
 class TestForceRecoverResolvesToStartable(ForceRecoverBase):
@@ -709,13 +755,26 @@ class NethackCancelAdapter(BoundaryAdapter):
     """Boundary adapter whose cancel is the *real* NetHack adapter's, over a fake pane."""
 
     def __init__(self, spec, tmux, **kwargs):
+        process_gone = kwargs.pop("process_gone", False)
         super().__init__(spec, **kwargs)
+        import tempfile
+
         real = object.__new__(nethack_adapter.NethackCoordinatorAdapter)
-        real.spec = SimpleNamespace(adapter_session="adapter")
+        runtime_dir = Path(spec.runtime_dir) if getattr(spec, "runtime_dir", None) else Path(tempfile.mkdtemp(prefix="nethack-boundary-"))
+        real.spec = SimpleNamespace(
+            adapter_session="adapter",
+            runtime_dir=runtime_dir,
+            game="nethack",
+            runtime_id=getattr(spec, "runtime_id", "g-test"),
+            generation=getattr(spec, "generation", 1),
+        )
+        real.player_name = "docich"
+        real.save_dir = Path(tempfile.mkdtemp(prefix="nethack-save-"))
         real.tmux = tmux
         real._check_active = lambda deadline, cancel: None
         real._verify_session_ownership = lambda: None
-        real._runtime_process_window_target = lambda: "adapter:nethack"
+        # The production wedge: presentation window present, birth window gone.
+        real._runtime_process_window_target = (lambda: None) if process_gone else (lambda: "adapter:nethack")
         self._real = real
 
     def cancel_round_boundary(self, request_id, deadline, cancel):
@@ -724,14 +783,18 @@ class NethackCancelAdapter(BoundaryAdapter):
 
 
 class NethackCancelFactory(ReleasingFactory):
-    def __init__(self, tmux):
+    def __init__(self, tmux, *, process_gone=False):
         super().__init__()
         self.tmux = tmux
+        self.process_gone = process_gone
 
     def __call__(self, spec):
         key = (spec.game, spec.generation)
         if key not in self.adapters and spec.game == "nethack":
-            adapter = NethackCancelAdapter(spec, self.tmux, required=True, method=True)
+            adapter = NethackCancelAdapter(
+                spec, self.tmux, required=True, method=True,
+                process_gone=self.process_gone,
+            )
             self.adapters[key] = adapter
             if self.auto_release:
                 adapter.boundary_release.set()
@@ -742,9 +805,9 @@ class NethackCancelFactory(ReleasingFactory):
 class TestForceRecoverWithTheRealNethackCancel(ForceRecoverBase):
     """The production wedge: NetHack parked on ``Really save? [yn] (n)`` after its driver died."""
 
-    def _wedge(self, pane):
+    def _wedge(self, pane, *, process_gone=False):
         tmux = _NethackPane(pane)
-        factory = NethackCancelFactory(tmux)
+        factory = NethackCancelFactory(tmux, process_gone=process_gone)
         store, coordinator = _coordinator(factory, Path(self.g.state_dir))
         self.assertEqual(coordinator.start("nethack").status, "succeeded")
         old = factory.adapters[("nethack", 1)]
@@ -781,6 +844,34 @@ class TestForceRecoverWithTheRealNethackCancel(ForceRecoverBase):
         factory.auto_release = True
         self.assertEqual(self.make_manager(coordinator).stop().status, "completed")
         self.assertEqual(self.canonical(), ("ready", "robots"))
+
+    def test_gone_process_window_is_terminalized_so_the_drain_can_be_cancelled(self):
+        # The live 2026-09-23 wedge: presentation window present, birth window
+        # gone -> no save prompt can exist. The adapter records the terminal
+        # boundary and acknowledges, so force-recover can leave draining.
+        tmux, factory, coordinator, old, worker = self._wedge(
+            "Dlvl:1 HP:16(16)", process_gone=True
+        )
+        try:
+            before = self.manual_path.read_text(encoding="utf-8")
+            self.assertEqual(self.force_recover(coordinator), "nethack_active_use_stop")
+            self.assertEqual(tmux.calls, [])          # no key is ever sent
+            self.assertEqual(self.canonical(), ("ready", "nethack"))
+            self.assertTrue(old.runtime.alive)
+            self.assertNotIn("stop_agent", old.runtime.events)
+            self.assertEqual(old.cancel_request_ids and True, True)
+            self.assertEqual(self.manual_state()["status"], "active")
+            payload = json.loads(
+                (factory.adapters[("nethack", 1)]._real.spec.runtime_dir
+                 / nethack_adapter.BOUNDARY_RESULT_FILENAME).read_text(encoding="utf-8")
+            )
+            self.assertEqual(payload["outcome"], "ended")
+            self.assertNotEqual(self.manual_path.read_text(encoding="utf-8"), None)
+            _ = before
+        finally:
+            old.boundary_release.set()
+            worker.join(3.0)
+        self.assertFalse(worker.is_alive())
 
     def test_without_a_pending_prompt_the_refusal_is_reported_and_nothing_is_sent(self):
         tmux, factory, coordinator, old, worker = self._wedge("Dlvl:1 HP:16(16)")

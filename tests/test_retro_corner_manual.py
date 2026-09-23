@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from docich import config
 from docich.retro_corner import RetroCornerConfig
 from docich.retro_corner_manual import ManualRetroCornerManager
+from docich.retro_corner import RetroCornerError  # noqa: E402
 
 
 class FakeCoordinator:
@@ -73,6 +74,42 @@ class ManualRetroCornerTests(unittest.TestCase):
     def test_manual_runner_does_not_mutate_daily_schedule_config(self):
         daily = RetroCornerConfig(enabled=True, games=["robots"])
         self.assertEqual(daily.games, ["robots"])
+
+
+class ManualRotationTargetContractTests(ManualRetroCornerTests):
+    """A rotation dispatch hands the selected target to every manager (#998).
+
+    This manual manager used to declare ``_validate_games(self)`` while the
+    shared ``_begin_locked`` passes ``[target]``, so the exact #986 TypeError
+    was one rotation mode away. The contract is now shared: an owned target
+    is accepted, an empty or unowned one is rejected instead of silently
+    validating the whole config.
+    """
+
+    def _manager(self):
+        return ManualRetroCornerManager(
+            self.g,
+            game="ninvaders",
+            duration_minutes=5,
+            coordinator=FakeCoordinator(["sorengame"]),
+            now=lambda: datetime(2026, 9, 6, 17, 32, tzinfo=ZoneInfo("Asia/Tokyo")),
+            sleep=lambda seconds: None,
+            active_game_reader=lambda: ["sorengame"][0],
+            ensure_runtime=lambda: None,
+        )
+
+    def test_accepts_the_owned_rotation_target(self):
+        self._manager()._validate_games(["ninvaders"])
+
+    def test_rejects_empty_unowned_and_superset_targets(self):
+        mgr = self._manager()
+        for names in ([], ["nsnake"], ["ninvaders", "nsnake"]):
+            with self.subTest(names=names):
+                with self.assertRaises(RetroCornerError):
+                    mgr._validate_games(names)
+
+    def test_default_call_still_validates_the_configured_games(self):
+        self._manager()._validate_games()
 
 
 if __name__ == "__main__":

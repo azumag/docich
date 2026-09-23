@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ..config import ConfigError, GlobalConfig, load_game
 from ..overlay_queue import append_event, regenerate_overlay
+from .narration_style import strip_leading_preamble
 
 
 class SorenOutputError(RuntimeError):
@@ -102,6 +103,10 @@ def _paper_corner_speech_text(text: str, event_id: str) -> str:
     suffix = parts[-1]
     if suffix != "opening" and body.startswith(_PAPER_CORNER_INTRO):
         body = body[len(_PAPER_CORNER_INTRO):].lstrip()
+    # Preamble removal is generation-side too (corner_script.parse_*), but a
+    # durable/replayed text or a model that ignores the prompt must still not
+    # open with 「結論からお伝えしますと、」 on air.
+    body = strip_leading_preamble(body)
     # Only the direct timed report ids are paper-corner:<date>:<slot>.
     # Script ids are paper-corner:<date>:script:<n> and already contain
     # substantial narration, so do not append the periodic chatter to them.

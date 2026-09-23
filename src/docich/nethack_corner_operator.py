@@ -224,6 +224,28 @@ def _record_stop_failure(g, returncode, stderr: str, *, category: str | None = N
         return
 
 
+def _end_restored_failed_state(manager, state: dict, previous: object) -> bool:
+    """End a ``failed`` manual state whose restore has durably landed.
+
+    Leaving it ``failed``/``recovery_required`` keeps the corner rotation
+    latched forever (it treats ``failed`` as busy, #1015 requirement 4).  End it
+    only when canonical shows ``ready`` with the recorded previous game active;
+    a queued/in-progress or unreadable canonical keeps ``failed`` so a later
+    recover can observe the finished switch.  ``last_error`` stays as evidence.
+    """
+    if not isinstance(previous, str) or not previous or previous == GAME_NAME:
+        return False
+    try:
+        canonical, _missing = manager.store.canonical.load()
+    except Exception:
+        return False
+    if canonical.get("phase") != "ready" or _runtime_game(canonical.get("active")) != previous:
+        return False
+    state.update(status="interrupted", recovery_required=False, finish_reason="recover")
+    manager._write_state(state)
+    return True
+
+
 def recover(config_path: Path) -> dict[str, object]:
     """Restore the game a failed manual corner could not switch back to.
 
@@ -245,12 +267,19 @@ def recover(config_path: Path) -> dict[str, object]:
         previous = state.get("previous_game")
         current = manager._active_game_reader()
         if current != GAME_NAME:
+            # A restore that already landed (e.g. an earlier recover before this
+            # state was terminalized) still has to release the rotation.
+            if state.get("status") == "failed" and _end_restored_failed_state(
+                manager, state, previous
+            ):
+                return {"status": "recovered", "from_game": GAME_NAME, "to_game": previous}
             return {"status": "noop", "detail": "nethack is not active", "active_game": current}
         if state.get("status") != "failed":
             raise NethackCornerError("recover は failed manual corner にのみ使用できます")
         if not isinstance(previous, str) or not previous or previous == GAME_NAME:
             raise NethackCornerError("restore target gameをmanual stateから特定できません")
         manager._transition_to(current, previous)
+        _end_restored_failed_state(manager, state, previous)
     return {"status": "recovered", "from_game": current, "to_game": previous}
 
 

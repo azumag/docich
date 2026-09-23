@@ -11,7 +11,14 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from docich.config import load_global
 from docich.corner_catalog import Corner, load_catalog, CornerCatalogError
-from docich.corner_rotation import CornerRotationManager, RotationError, DAY
+from docich.corner_rotation import (
+    CornerRotationManager,
+    RotationError,
+    DAY,
+    ERROR_KINDS,
+    _error_kind,
+)
+from docich.corner_adapters import CornerExecutionError
 
 
 class Adapter:
@@ -937,3 +944,523 @@ def test_queue_mode_does_not_wait_for_improvement_jobs(tmp_path):
     assert observer_for("interval").resources_released() is False
     # queue mode fires the next corner without waiting for the improvement job
     assert observer_for("queue").resources_released() is True
+
+
+# --- operator-gated latch recovery (#986) ----------------------------------
+
+
+def _latch(manager, executor, clock, error=None):
+    """Drive tick() into the durable recovery_required latch."""
+    executor.result = error if error is not None else RuntimeError("sensitive provider output")
+    with pytest.raises(RuntimeError):
+        manager.tick()
+    executor.result = "completed"
+    return state(manager)
+
+
+def test_error_kind_pins_builtins_coding_bugs_as_unexpected():
+    """A builtins coding bug must never read as a reviewed execution failure.
+
+    #986's real ``TypeError`` was classified ``unexpected``; nothing pinned
+    that, so a future change could relabel it as ``execution-error`` and hide
+    a coding bug behind the corner's own failure path (#998).
+    """
+    for error in (TypeError("positional argument"), ValueError("invalid literal")):
+        assert _error_kind(error) == "unexpected"
+        assert _error_kind(error) in ERROR_KINDS
+    # A corner-side failure still reads as the reviewed execution failing,
+    # whether it is the NetHack-specific type or a bare RetroCornerError.
+    assert _error_kind(CornerExecutionError("reviewed corner failure")) == "execution-error"
+    # An explicit ``kind`` attribute always wins over module inspection.
+    class Explicit(Exception):
+        kind = "invalid-state"
+
+    assert _error_kind(Explicit()) == "invalid-state"
+
+
+def test_latch_records_a_fixed_error_kind_and_never_the_exception_text(setup):
+    _, clock, _, executor, make = setup
+    manager = make()
+    latched = _latch(manager, executor, clock)
+    assert latched["status"] == "recovery_required"
+    assert latched["reason"] == "execution-or-state-unverified"
+    assert latched["error_kind"] in ERROR_KINDS
+    assert latched["error_kind"] == "unexpected"
+    assert "sensitive" not in manager.path.read_text()
+
+
+@pytest.mark.parametrize("error,expected", [
+    (RuntimeError("provider output"), "unexpected"),
+    ("execution-error-fixture", "execution-error"),
+])
+def test_latch_classifies_failures_into_fixed_kinds(setup, error, expected):
+    from docich.corner_adapters import CornerExecutionError
+
+    _, clock, _, executor, make = setup
+    if isinstance(error, str):
+        error = CornerExecutionError(error)
+    manager = make()
+    executor.result = error
+    with pytest.raises(RuntimeError):
+        manager.tick()
+    latched = state(manager)
+    assert latched["status"] == "recovery_required"
+    assert latched["error_kind"] == expected
+    assert latched["error_kind"] in ERROR_KINDS
+    assert str(error) not in manager.path.read_text()
+
+
+def test_recover_resumes_the_same_reservation_and_never_duplicates(setup):
+    _, clock, _, executor, make = setup
+    manager = make()
+    latched = _latch(manager, executor, clock)
+    request_id = latched["pending"]["request_id"]
+    corner_id = latched["pending"]["corner"]
+    history = [dict(row) for row in latched["history"]]
+    calls = len(executor.calls)
+
+    outcome = make().recover()
+    assert outcome["status"] == "waiting"
+    assert outcome["reason"] == "execution-pending"
+    assert outcome["corner"] == corner_id
+
+    resumed = state(make())
+    assert resumed["status"] == "waiting"
+    assert resumed["pending"]["request_id"] == request_id
+    assert resumed["pending"]["phase"] == "dispatched"
+    # request identity, history and cooldown are untouched by recovery
+    assert resumed["history"] == history
+    assert len(executor.calls) == calls
+
+    result = make().tick()
+    assert result == {"status": "ready", "corner": corner_id, "result": "completed"}
+    final = state(make())
+    assert final["status"] == "ready"
+    assert final["pending"] is None
+    assert len(executor.calls) == calls + 1
+    assert executor.calls[-1]["request_id"] == request_id
+
+
+def test_recover_commits_an_ended_reservation_without_relaunching(setup):
+    _, clock, _, executor, make = setup
+    manager = make()
+    latched = _latch(manager, executor, clock)
+    request_id = latched["pending"]["request_id"]
+    corner_id = latched["pending"]["corner"]
+    clock[0] += 60
+
+    resumed = make()
+    resumed.adapters[corner_id].states = [{
+        "status": "completed",
+        "rotation_request_id": request_id,
+        "started_at": 1000010.0,
+        "completed_at": 1000020.0,
+    }]
+    calls = len(executor.calls)
+    outcome = resumed.recover()
+
+    assert outcome == {"status": "ready", "corner": corner_id,
+                       "result": "completed", "recovered": True}
+    final = state(resumed)
+    assert final["status"] == "ready"
+    assert final["pending"] is None
+    assert final["last_result"]["request_id"] == request_id
+    assert final["last_slot_at"] == 1000020.0
+    assert any(row["corner"] == corner_id and row["source"] == "completion"
+               for row in final["history"])
+    # no duplicate corner launch: the adapter already ended this request
+    assert len(executor.calls) == calls
+
+
+def test_recover_never_launches_while_the_pending_corner_is_still_running(setup):
+    _, clock, _, executor, make = setup
+    manager = make()
+    latched = _latch(manager, executor, clock)
+    request_id = latched["pending"]["request_id"]
+    corner_id = latched["pending"]["corner"]
+
+    busy = make()
+    busy.adapters[corner_id].states = [{
+        "status": "active",
+        "rotation_request_id": request_id,
+        "started_at": clock[0] - 5,
+    }]
+    calls = len(executor.calls)
+    with pytest.raises(RotationError, match="corner-level recovery"):
+        busy.recover()
+    refused = state(busy)
+    assert refused["status"] == "recovery_required"
+    # a refusal never overwrites the classification of the original latch
+    assert refused["error_kind"] == "unexpected"
+    assert len(executor.calls) == calls
+
+
+def test_recover_waits_while_another_corner_holds_the_program_slot(setup):
+    _, clock, _, executor, make = setup
+    manager = make()
+    latched = _latch(manager, executor, clock)
+    request_id = latched["pending"]["request_id"]
+    corner_id = latched["pending"]["corner"]
+
+    waiting = make()
+    other = next(c.id for c in waiting.catalog if c.id != corner_id)
+    waiting.adapters[other].states = [{"status": "active", "started_at": clock[0] - 5}]
+    calls = len(executor.calls)
+    outcome = waiting.recover()
+
+    assert outcome == {"status": "waiting",
+                       "reason": "other-corner-needs-finish-or-recovery"}
+    kept = state(waiting)
+    assert kept["pending"]["request_id"] == request_id
+    assert kept["status"] == "waiting"
+    assert len(executor.calls) == calls
+
+
+def test_recover_requires_a_latched_state(setup):
+    _, _, _, _, make = setup
+    with pytest.raises(RotationError, match="not latched"):
+        make().recover()
+
+
+def test_recover_refuses_a_manual_reservation(setup):
+    import uuid as uuid_mod
+
+    _, clock, _, executor, make = setup
+    manager = make()
+    latched = _latch(manager, executor, clock)
+    latched["manual_pending"] = {
+        "corner": "paper", "state_file": "paper_corner.json",
+        "request_id": str(uuid_mod.uuid4()), "selected_at": clock[0],
+    }
+    manager.path.write_text(json.dumps(latched))
+    with pytest.raises(RotationError, match="manual reservation"):
+        make().recover()
+    assert state(make())["status"] == "recovery_required"
+
+
+def test_recover_retries_a_latch_that_has_no_reservation(setup):
+    _, clock, _, executor, make = setup
+    manager = make()
+    assert manager.tick()["status"] == "ready"
+    raw = state(manager)
+    raw.update(status="recovery_required", reason="execution-or-state-unverified",
+               error_kind="unexpected")
+    manager.path.write_text(json.dumps(raw))
+
+    assert make().recover() == {"status": "waiting", "reason": "recovery-retry"}
+    assert state(make())["status"] == "waiting"
+
+
+def test_recover_cli_refuses_with_a_fixed_message(tmp_path, capsys):
+    from docich import corner_rotation
+
+    state_dir = tmp_path / "run"
+    state_dir.mkdir()
+    config = tmp_path / "config.toml"
+    config.write_text(
+        '[corner_rotation]\nenabled=true\n'
+        f'[paths]\nstate_dir="{state_dir}"\n'
+    )
+    code = corner_rotation.main(["--config", str(config), "recover"])
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "corner rotation recovery refused: rotation state is not latched" in captured.err
+
+
+def _latch_manual(make, executor, clock, corner="paper"):
+    """Turn a latched automatic state into a latched manual reservation."""
+    import uuid as uuid_mod
+
+    manager = make()
+    latched = _latch(manager, executor, clock)
+    latched["pending"] = None
+    latched["manual_pending"] = {
+        "corner": corner, "state_file": f"{corner}_corner_manual.json",
+        "request_id": str(uuid_mod.uuid4()), "selected_at": clock[0],
+    }
+    manager.path.write_text(json.dumps(latched))
+    return manager, state(manager)["manual_pending"]["request_id"]
+
+
+def test_recover_commits_a_finished_manual_reservation(setup):
+    _, clock, _, executor, make = setup
+    manager, request_id = _latch_manual(make, executor, clock)
+    clock[0] += 60
+    manager.adapters["paper"].states = [{
+        "status": "completed",
+        "rotation_request_id": request_id,
+        "started_at": 1000010.0,
+        "completed_at": 1000020.0,
+    }]
+    calls = len(executor.calls)
+
+    outcome = manager.recover()
+    assert outcome == {"status": "ready", "corner": "paper",
+                       "result": "completed", "recovered": True}
+    final = state(manager)
+    assert final["status"] == "ready"
+    assert final["manual_pending"] is None
+    assert final["last_result"]["request_id"] == request_id
+    assert any(row["corner"] == "paper" and row["source"] == "manual-completion"
+               for row in final["history"])
+    assert len(executor.calls) == calls
+
+
+def test_recover_returns_a_started_less_manual_reservation_to_the_operator(setup):
+    _, clock, _, executor, make = setup
+    manager, _ = _latch_manual(make, executor, clock)
+    calls = len(executor.calls)
+
+    outcome = manager.recover()
+    assert outcome["status"] == "waiting"
+    assert outcome["reason"] == "manual-request-needs-resume-or-recovery"
+    kept = state(manager)
+    assert kept["status"] == "waiting"
+    # the operator's slot is kept, not deleted
+    assert kept["manual_pending"] is not None
+    assert kept["pending"] is None
+    # and the automatic path stays parked until that manual start resumes it
+    assert make().tick()["reason"] == "manual-request-needs-resume-or-recovery"
+    assert state(make())["manual_pending"] is not None
+    assert len(executor.calls) == calls
+
+
+def test_recover_refuses_a_running_manual_reservation(setup):
+    _, clock, _, executor, make = setup
+    manager, request_id = _latch_manual(make, executor, clock)
+    manager.adapters["paper"].states = [{
+        "status": "active",
+        "rotation_request_id": request_id,
+        "started_at": clock[0] - 5,
+    }]
+    with pytest.raises(RotationError, match="corner-level recovery"):
+        manager.recover()
+    assert state(manager)["status"] == "recovery_required"
+
+
+def test_recover_refuses_whenever_any_own_observation_is_busy(setup):
+    _, clock, _, executor, make = setup
+    manager = make()
+    latched = _latch(manager, executor, clock)
+    request_id = latched["pending"]["request_id"]
+    corner_id = latched["pending"]["corner"]
+    # a terminal row first, a busy row second: ordering must not decide safety
+    resumed = make()
+    resumed.adapters[corner_id].states = [
+        {"status": "completed", "rotation_request_id": request_id,
+         "completed_at": clock[0] + 10},
+        {"status": "active", "rotation_request_id": request_id,
+         "started_at": clock[0] + 5},
+    ]
+    calls = len(executor.calls)
+    with pytest.raises(RotationError, match="corner-level recovery"):
+        resumed.recover()
+    assert state(resumed)["status"] == "recovery_required"
+    assert len(executor.calls) == calls
+
+
+def test_recover_cli_fails_when_the_latch_remains(tmp_path, capsys):
+    from docich import corner_rotation
+
+    state_dir = tmp_path / "run"
+    state_dir.mkdir()
+    config = tmp_path / "disabled.toml"
+    config.write_text(
+        '[corner_rotation]\nenabled=false\n'
+        f'[paths]\nstate_dir="{state_dir}"\n'
+    )
+    (state_dir / "corner_rotation.json").write_text(json.dumps({
+        "schema_version": 1, "seed": "s", "slot": 3, "history": [],
+        "pending": None, "status": "recovery_required",
+        "reason": "execution-or-state-unverified",
+        "next_due_at": 0.0, "last_seen_at": 0.0,
+    }))
+    code = corner_rotation.main(["--config", str(config), "recover"])
+    captured = capsys.readouterr()
+    assert code == 4
+    assert "latch remains after recovery" in captured.err
+
+
+def test_recover_rejects_clock_regression_before_touching_any_timestamp(setup):
+    _, clock, _, executor, make = setup
+    manager = make()
+    latched = _latch(manager, executor, clock)
+    # no reservation at all: the branch that refreshes last_seen_at
+    latched["pending"] = None
+    latched["last_seen_at"] = clock[0] + DAY / 2
+    manager.path.write_text(json.dumps(latched))
+
+    before = state(manager)
+    with pytest.raises(RotationError, match="clock regressed"):
+        make().recover()
+    after = state(manager)
+    assert after["status"] == "recovery_required"
+    assert after["last_seen_at"] == before["last_seen_at"]
+
+
+def _cli_env(tmp_path, *, enabled, body=None):
+    from docich import corner_rotation
+
+    state_dir = tmp_path / "run"
+    state_dir.mkdir(exist_ok=True)
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f'[corner_rotation]\nenabled={"true" if enabled else "false"}\n'
+        f'[paths]\nstate_dir="{state_dir}"\n'
+    )
+    if body is not None:
+        (state_dir / "corner_rotation.json").write_text(body)
+    return corner_rotation, config, state_dir
+
+
+def _latched_ledger_text():
+    return json.dumps({
+        "schema_version": 1, "seed": "s", "slot": 3, "history": [],
+        "pending": None, "status": "recovery_required",
+        "reason": "execution-or-state-unverified",
+        "next_due_at": 0.0, "last_seen_at": 0.0,
+    })
+
+
+def test_recover_cli_cannot_claim_success_from_an_unreadable_ledger(tmp_path, capsys):
+    corner_rotation, config, state_dir = _cli_env(
+        tmp_path, enabled=False, body="{ not json")
+    code = corner_rotation.main(["--config", str(config), "recover"])
+    captured = capsys.readouterr()
+    assert code == 4
+    assert "latch remains after recovery" in captured.err
+    assert '"latch_resolved":false' in captured.out.replace(" ", "")
+    assert (state_dir / "corner_rotation.json").read_text() == "{ not json"
+
+
+def test_recover_cli_fails_while_the_scheduler_lock_is_busy(tmp_path, capsys):
+    import fcntl
+
+    corner_rotation, config, state_dir = _cli_env(
+        tmp_path, enabled=True, body=_latched_ledger_text())
+    lock_dir = state_dir / "locks"
+    lock_dir.mkdir()
+    handle = (lock_dir / "corner-rotation.lock").open("a")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        code = corner_rotation.main(["--config", str(config), "recover"])
+        captured = capsys.readouterr()
+    finally:
+        fcntl.flock(handle, fcntl.LOCK_UN)
+        handle.close()
+    assert code == 4
+    assert "already-running" in captured.out
+    assert "latch remains after recovery" in captured.err
+    # the unit is never restarted on this path: the script stops on non-zero
+    assert json.loads((state_dir / "corner_rotation.json").read_text())["status"] == "recovery_required"
+
+
+def test_recover_cli_reports_a_resolved_latch(tmp_path, capsys):
+    corner_rotation, config, _ = _cli_env(
+        tmp_path, enabled=True, body=_latched_ledger_text().replace(
+            '"recovery_required"', '"waiting"').replace(
+            '"execution-or-state-unverified"', '"not-due"'))
+    code = corner_rotation.main(["--config", str(config), "recover"])
+    captured = capsys.readouterr()
+    assert code == 2  # not latched: refused before any claim of success
+    assert "not latched" in captured.err
+
+
+@pytest.mark.parametrize("corner_id", ["ninvaders", "nethack", "meriken"])
+def test_rotation_target_override_validation_matches_the_manager_signature(
+        tmp_path, monkeypatch, corner_id):
+    """A common rotation dispatch always passes the selected game (#986).
+
+    ``RetroCornerManager._begin_locked`` calls ``_validate_games([target])``
+    whenever a target override is present. A fixed single-game manager whose
+    override accepted no argument therefore raised a TypeError before writing
+    any corner state, which latched the entire rotation.
+    """
+    from docich.retro_corner import RetroCornerManager
+
+    g = replace(load_global(ROOT, ROOT / "config/docich.soren-live.toml"),
+                state_dir=tmp_path)
+    monkeypatch.setattr(RetroCornerManager, "_executable_exists",
+                        staticmethod(lambda _: True))
+    monkeypatch.setattr("docich.adapters.retroarch.resolve_rom",
+                        lambda *_: ROOT / "vm-only.sfc")
+    monkeypatch.setattr("docich.adapters.retroarch.resolve_core",
+                        lambda *_: "/vm-only/core.so")
+    catalog = {c.id: c for c in load_catalog(g)}
+    corner = catalog[corner_id]
+    manager = CornerRotationManager(g)
+    adapter = manager.adapters[corner_id]
+    assert isinstance(adapter.manager, RetroCornerManager)
+    # the exact call _begin_locked makes for this dispatch
+    adapter.manager._validate_games([corner.game])
+
+
+def test_latch_classifies_corner_side_errors_as_execution_error(setup):
+    from docich.retro_corner import RetroCornerError
+
+    _, clock, _, executor, make = setup
+    manager = make()
+    executor.result = RetroCornerError("retro corner対象は登録済みですが無効です: nethack")
+    with pytest.raises(RetroCornerError):
+        manager.tick()
+    latched = state(manager)
+    assert latched["status"] == "recovery_required"
+    assert latched["error_kind"] == "execution-error"
+
+
+def test_manual_start_ignores_the_rolling_cooldown_but_still_counts_usage(setup, monkeypatch):
+    """Owner decision 2026-09-23: 手動起動は rolling cooldown を無視する。
+
+    使用の記録は残すので、自動 rotation 側の cooldown 集計は今までどおり効く。
+    latch / 自動pending / program slot の gate は変更しない。
+    """
+    from docich import corner_rotation
+
+    g, clock, _, executor, make = setup
+    monkeypatch.setattr(corner_rotation, "CornerRotationManager", lambda _: make())
+    manager = SimpleNamespace(path=g.state_dir / "paper_corner_manual.json")
+    executor.result = "completed"
+
+    # 1回目の手動開始: 成功し、使用を cooldown へ記録する
+    assert corner_rotation.run_manual(g, manager, ["paper-view"]) == "completed"
+    ledger = state(make())
+    assert any(row["corner"] == "paper" and row["source"] == "manual-reservation"
+               for row in ledger["history"])
+    assert not ledger.get("manual_pending")
+    assert ledger["status"] == "ready"
+
+    # cooldown 中でも2回目の手動開始は拒否されない
+    assert corner_rotation.run_manual(g, manager, ["paper-view"]) == "completed"
+    assert len(executor.calls) == 2
+
+    # 記録は残るので、自動 rotation は interval 到達後も paper を選ばない
+    clock[0] += DAY / 3 + 1
+    before = len(executor.calls)
+    result = make().tick()
+    assert len(executor.calls) == before + 1
+    assert result["corner"] != "paper"
+
+
+def test_manual_start_still_refuses_disabled_corners_and_latches(setup, monkeypatch):
+    from docich import corner_rotation
+
+    g, _, _, executor, make = setup
+    monkeypatch.setattr(corner_rotation, "CornerRotationManager", lambda _: make())
+    manager = SimpleNamespace(path=g.state_dir / "paper_corner_manual.json")
+
+    # cooldown を無視しても disabled/paused は選ばない（eligible gate は維持）
+    # run_manual は毎回新しい manager を建てるため、クラス側の hook で擬似遮断する
+    monkeypatch.setattr(type(make()), "_eligible",
+                        lambda self: ([], {"paper": "disabled-or-paused"}))
+    with pytest.raises(RotationError, match="no eligible manual corner"):
+        corner_rotation.run_manual(g, manager, ["paper-view"])
+    monkeypatch.undo()
+
+    # latch 中は拒否（手動も fail-closed）
+    executor.result = RuntimeError("boom")
+    latched = make()
+    with pytest.raises(RuntimeError):
+        latched.tick()
+    executor.result = "completed"
+    with pytest.raises(RotationError, match="pending corner must finish"):
+        corner_rotation.run_manual(g, manager, ["paper-view"])

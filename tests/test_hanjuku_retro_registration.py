@@ -46,6 +46,7 @@ def test_live_registration_is_enabled_but_keeps_vm_prerequisites_separate(manage
         "rom": "games/roms/hanjuku-hero.sfc", "core": "auto",
         "audio_enabled": True, "audio_sink": "soren_null",
         "audio_latency_ms": 289,
+        "audio_volume_percent": 80,
     }
     assert manager._rotation_interval_seconds() == 86400 / 6
 

@@ -170,7 +170,9 @@ def test_scripted_corner_ignores_old_elapsed_deadline(manager,monkeypatch):
 from test_retroarch_safe_boundary import adapter
 
 
-def test_translucent_deployment_menu_advances_then_sends_march_order():
+def test_map_without_measured_cursor_never_sends_blind_orders():
+    """v1 confirmed and marched along a fixed route; v2 waits until the
+    chart policy can read the cursor, the menus and the target castle."""
     rgb=bytearray(frame((40,140,20)).rgb)
     for y in (16,17):
         for x in range(35,110):
@@ -178,14 +180,10 @@ def test_translucent_deployment_menu_advances_then_sends_march_order():
             rgb[i:i+3]=bytes((255,56,57))
     menu=Frame(256,224,bytes(rgb))
     assert classify(menu)=='field_menu'
-    actions,state=decide(frame((40,140,20)),{})
-    assert actions[0]['buttons']==['a']
-    actions,state=decide(menu,state)
-    assert actions[0]['buttons']==['a']
-    for button in ('left','right','up','a'):
-        actions,state=decide(frame((40,140,20)),state)
-        assert actions[0]['buttons']==[button]
-    assert decide(frame((40,140,20)),state)[0]==[]
+    state={}
+    for screen in (frame((40,140,20)),menu,frame((40,140,20)),frame((40,140,20))):
+        actions,state=decide(screen,state)
+        assert actions==[]
 
 
 def test_green_map_encounter_prompt_is_confirmed_not_waited_on():
@@ -226,7 +224,10 @@ def test_corner_waits_past_deadline_then_restores_only_on_terminal(manager, monk
     monkeypatch.setattr(manager,'_sleep',sleep)
     finish=Mock(return_value='restored')
     monkeypatch.setattr(manager,'_finish_locked',finish)
+    verified=Mock(return_value={'terminal_evidence':None,'generation':IDENTITY['generation']})
+    monkeypatch.setattr('docich.hanjuku_run.terminal',verified)
     assert manager._wait_and_finish(state)=='restored'
+    assert verified.call_args.args[1]==IDENTITY
     assert sleep.call_count==2
     finish.assert_called_once()
     assert state['ends_at'] is None and state['end_reason']=='screen_stalled'
@@ -263,13 +264,42 @@ def test_corner_observation_contention_retries_then_finishes_only_on_game_over(m
     monkeypatch.setattr(manager,'_sleep',sleep)
     finish=Mock(return_value='restored')
     monkeypatch.setattr(manager,'_finish_locked',finish)
+    monkeypatch.setattr('docich.hanjuku_run.terminal',Mock(return_value={
+        'terminal_evidence':'title_return_after_gameplay','generation':IDENTITY['generation']}))
     assert manager._wait_hanjuku(state)=='restored'
+    assert finish.call_args.args[0]['terminal_evidence']=='title_return_after_gameplay'
     sleep.assert_called_once_with(2.)
     finish.assert_called_once()
     assert observe.call_count==2 and manager.store.canonical.load.call_count==2
     assert state['end_reason']=='game_over'
     retry=json.loads((runtime/'hanjuku_events.jsonl').read_text())
     assert retry['event']=='observation_retry' and 'terminal_reason' not in retry
+
+
+@pytest.mark.parametrize('evidence',[None,'invalid'])
+def test_corner_never_restores_on_unverified_terminal_evidence(manager, monkeypatch, evidence):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from docich.retro_corner import RetroCornerError
+    state={'status':'active','game':'hanjuku-hero','previous_game':'sorengame'}
+    manager.store.canonical.load=Mock(return_value=({'active':IDENTITY},False))
+    monkeypatch.setattr('docich.agent.fence.shared_section',lambda root,fn:fn())
+    monkeypatch.setattr('docich.adapters.make_adapter',lambda *a,**kw:SimpleNamespace(
+        observe=lambda:SimpleNamespace(meta={'hanjuku':{'phase':'title','terminal_reason':'game_over'}})))
+    monkeypatch.setattr(manager,'_rotation_stop_result',lambda:None)
+    monkeypatch.setattr(manager,'_read_state',lambda:dict(state))
+    monkeypatch.setattr(manager,'_write_state',lambda update:state.update(update))
+    finish=Mock()
+    monkeypatch.setattr(manager,'_finish_locked',finish)
+    if evidence=='invalid':
+        # No durable run record in the runtime: identity/evidence cannot verify.
+        check=Mock(side_effect=AdapterError('invalid Hanjuku terminal evidence'))
+    else:
+        check=Mock(return_value=None)
+    monkeypatch.setattr('docich.hanjuku_run.terminal',check)
+    with pytest.raises((AdapterError,RetroCornerError)):
+        manager._wait_hanjuku(state)
+    finish.assert_not_called()
 
 
 def test_corner_unknown_observation_failure_is_not_silently_retried(manager, monkeypatch):

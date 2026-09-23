@@ -8,8 +8,9 @@ main の本番反映、branch/commit の preview 反映、状態確認、owner c
 - VM credential、Environment `vm-operations`、SSH gateway、production/preview workflow は **docich だけ**が所有します。
 - `soviet_now` 側には VM 用 Environment / Secrets / workflow を置きません。`soviet_now` はゲーム・AI・ロジックの source repository として独立させます。
 - 本番で使う `soviet_now` の版は、docich の `games/soviet_now` gitlink が固定します。`soviet_now` main の更新だけでは VM は変わりません。
+- 運用handoffはdocichルートの非公開ローカル正本だけ。公開用の `ops/runtime_context/ops_brief.json` はdocichで追跡し、gatewayが同一deploy transaction内でruntime `prompts/ops_brief.md` を生成します。gitlink変更やSorenコミットは不要です。ソース照合・初回gateway導入・stale検出は [ops-brief.md](../../docs/operations/ops-brief.md) を参照してください。
 - docich production deploy は親 commit を更新した後、allowlist 済み submodule を親 gitlink の commit へ同期します。現在の allowlist は `games/soviet_now` と `games/hanjuku-sfc-speedrun` です。
-- 配信中の `/home/ubuntu/soren` への反映も **docich gatewayだけ**が担当します。`games/soviet_now` の旧gitlink→新gitlinkで変更されたtracked fileだけを投影し、変更対象のlive fileが旧commitと一致しなければ上書きせず停止します。
+- 配信中の `/home/ubuntu/soren` への反映も **docich gatewayだけ**が担当します。Sorenコードは `games/soviet_now` の旧gitlink→新gitlinkで変更されたtracked fileを投影します。親管理の `prompts/ops_brief.md` は親生成物から別途投影します。変更対象のlive fileが既知の旧内容と一致しなければ上書きせず停止します。
 - submodule URL、HEAD、tracked working tree、投影対象live file が期待値と違う場合は fail-closed します。
 
 ## Security boundary
@@ -104,15 +105,16 @@ sudo bash ops/vm_actions/install_vm_gateway.sh ~/.ssh/github-vm-ops.pub ubuntu
 ## Daily use
 
 - **docich main merge → production**: main push で最新mainを本番へ反映します。
-- **soviet_now更新を本番へ出す**: soviet_now側変更をmainへ入れた後、docichで `games/soviet_now` gitlinkをそのcommitへ更新してPR → docich mainへマージします。docich gatewayがgitlink差分だけをlive Sorenへ安全に投影します。
+- **soviet_now更新を本番へ出す**: soviet_now側変更をmainへ入れた後、docichで `games/soviet_now` gitlinkをそのcommitへ更新してPR → docich mainへマージします。docich gatewayがgitlink差分をlive Sorenへ安全に投影します。親管理のops_briefはdocich生成物が配布元で、gitlink更新とは独立して同期します。
 - **branch/commitをVM test areaへ**: `deploy / preview / ref=<branch-or-sha>`。成功時は展開済みpreviewを現在要求されたSHAを含む最大2世代へGCします（dirty/drift releaseは削除しません）。Git bundle は別の bounded retention で安全にローテーションします。
 - **preview command**: 同じrefで `exec / preview`。本番filesystem/networkから隔離されます。
 - **production command**: `exec / production / ref=main / confirm=production`。stdout/stderr本文はVM private logだけに保存します。
 - **status**: `status / production` または `status / preview`。production status は総容量・利用可能bytes・使用率だけを返し、pathやログ本文は返しません。
+- **reclaim**: `reclaim / production / ref=main / confirm=production` + `apply`（false=dry-run 既定 / true=適用）+ `voicevox_archive`・`aivis_engine`（いずれも opt-in）。reviewed helper `ops/vm_actions/storage_reclaim.sh` の固定 allowlist だけを対象にします: `soren/tmp` の21日超 stale 検証残骸・deploy-backups（`manual_challenge*`・`deploy`・`radio_quarantine` 含む）、HOME 直下と system `/tmp` の7日超 leftovers（絶対パス固定 allowlist＋参照プロセス0、live encoder の `build/` は除外）、origin/dirty/7日 gate を通った `/tmp` の古い clone と `soren-src`、7日超の snapd download cache、dangling image と7日超 build cache の docker prune（`until=168h`。tagged image・container・volume は绝不）、apt clean / journal vacuum / snap disabled revision / `/etc/logrotate.d/soren`。opt-in の `aivis_engine` は未使用の第二TTS `AivisSpeech-Engine`（1.11GB）を **VOICEVOX engine が intact なときだけ**削除。出力は VM private log のみで workflow には終了コードだけが現れます。安全条件と実測は `docs/operations/vm-storage-reclaim-runbook.md` を参照。
 - **market_paper**: `market_paper / production / ref=main / confirm=production` + `market_paper_action`(install/enable/disable/restart) + `market_paper_market`(stocks/fx)。opt-inのstocks/FXペーパートレードworker(`docich-market-worker@<market>.service` 等、`scripts/systemd/docich-market-*`)を `systemctl --user` だけで install/enable/disable/restart します。root/sudoは使いません。`config/market-paper.toml` は変更しません（enabled/mode切り替えは通常のcode reviewを通るdeployで行う）。結果は本操作自体では返らず(exec同様output withheld)、後続の `diagnostics` の `market_paper.{stocks,fx}` セクション(unit_active/health_status/feed_unavailable等)で確認します。
 - **Jevコメント分類器の有効化**: 先に Environment `vm-operations` へ `TYPESAFE_API_KEY` を登録し、`configure_jev / production / ref=main / confirm=production` を実行します。キーはstdinで固定gatewayへ渡され、呼び出し元のshellや任意commandは実行されません。VMの`.env`をatomic更新し、chat workerだけを完全再起動して、backend=`jev`・モデル・キー存在を実効環境で確認します。配信encoder、radio worker、共通基盤は再起動しません。
 - **Jevコメント分類器の無効化**: `disable_jev / production / ref=main / confirm=production` を実行します。`COMMENT_CLASSIFIER_BACKEND=`を明示し、Jev設定とキーを`.env`から除去してchat workerだけを完全再起動します。どちらの操作も直前の`.env`をVM内のmode 0600バックアップへ保存し、キー値はworkflow出力へ返しません。
-- **webui のコード更新を反映**: `restart_webui / production / ref=main / confirm=production`。`docich-webui.service` は常駐プロセスなので、deploy で `src/docich/webui.py` が更新されても再起動するまで旧 UI のままです。この operation は trusted main の固定スクリプト `ops/vm_actions/restart_webui.sh` だけを送り、`systemctl --user restart docich-webui.service` と active 確認（5秒上限、fail-closed）を行います。root/sudo は使わず、unit 名も固定で任意コマンド入力は受け取りません。出力は VM private log に留まります。arbitrary exec が無効な public repo でもこの operation は使えます。
+- **webui のコード更新を反映**: `restart_webui / production / ref=main / confirm=production`。`docich-webui.service` は常駐プロセスなので、deploy で `src/docich/webui.py` が更新されても再起動するまで旧 UI のままです。この operation は trusted main の固定スクリプト `ops/vm_actions/restart_webui.sh` だけを送り、`systemctl --user restart docich-webui.service` → 5秒以内に active を確認 → active 後はポート到達を0.2秒間隔・最大6秒で上限付きに待ち、到達後に **ローカルポートに配信されている HTML がデプロイ済み `src/docich/webui.py` の `INDEX_HTML` とバイト一致するまで成功にしない**（fail-closed。`Type=simple` は bind 完了前に active になるため、待たずに1回だけ取得すると起動直後に誤って `13` になる）。ユニットが active でも別プロセスがポートを掴んで旧 UI を配信し続けるケースを検出します。root/sudo は使わず、unit 名も固定で任意コマンド入力は受け取りません。出力は VM private log に留まり、step に現れるのは終了コードのみ: `0` 成功 / `10` restart 失敗 / `11` active にならない / `12` ExecStart が配備 root 以外（または `INDEX_HTML` 読込不能）/ `13` ローカル webui 到達不能 / `14` 配信 HTML が古い（別プロセスがポート保持 or restart 未反映）。arbitrary exec が無効な public repo でもこの operation は使えます。
 
 ## Preview release / Git bundle retention and storage alert
 

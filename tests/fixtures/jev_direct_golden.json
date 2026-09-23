@@ -2,8 +2,8 @@
   "baseline": {
     "docich_main": "da81989a91645cc52cbbf3207135aa8c396a6426",
     "soviet_now_gitlink": "9af382fbbaae9a79ed4d5921a0f6b9cbf3ef8e23",
-    "source_file": "games/soviet_now/lib/comment_classifier_jev.py",
-    "note": "PR-0 fixed golden for #882 direct route. Mock only; no live API, no secrets. Vercel transport is NOT implemented in soviet_now."
+    "source_file": "src/docich/comment_classifier/jev.py",
+    "note": "PR-0 fixed golden for #882 direct route, first pinned against soviet_now lib/comment_classifier_jev.py; classification is docich-owned since soviet_now#495, so the same contract is pinned on docich.comment_classifier. Mock only; no live API, no secrets."
   },
   "route_direct": {
     "endpoint": "https://api.typesafe.ai/v1/systemone",

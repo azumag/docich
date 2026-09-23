@@ -56,7 +56,7 @@ jobs:
           tests/test_corner_rotation.py tests/test_corner_rotation_execution.py
           tests/test_failed_improvement_terminal_recovery_required.py
           tests/test_hanjuku_retro_registration.py tests/test_hanjuku_brain.py
-          tests/test_hanjuku_script.py
+          tests/test_hanjuku_script.py tests/test_hanjuku_chart_bot.py
           tests/test_agent_loop.py tests/test_agent_fence.py tests/test_agent_action_lock.py
           tests/test_nethack_corner.py tests/test_nethack_corner_p5.py tests/test_nethack_corner_force_recover.py
           tests/test_nethack_run.py tests/test_nethack_run_recovery.py
@@ -92,9 +92,12 @@ jobs:
           tests/test_coordinator_adapter.py tests/test_cli_coordinator.py
           tests/test_cli_adapter.py
           tests/test_nethack_adapter.py tests/test_nethack_save_confirmation.py
+          tests/test_nethack_boundary_diag.py
           tests/test_soren91_graceful_stop.py
       - name: Round-boundary contract
         run: python3 -m pytest -q tests/test_round_boundary.py
+      - name: WebUI mutation guard and authz audit contract
+        run: python3 -m pytest -q tests/test_webui.py
       - name: RetroArch saved-boundary and native presentation contracts
         run: >-
           python3 -m pytest -q
@@ -109,8 +112,12 @@ jobs:
         run: python3 -m pytest -q tests/test_soren_news_spam_improve_wait_hotfix.py
       - name: Soren NEWS spam queue-wait hotfix contract
         run: python3 -m pytest -q tests/test_soren_news_spam_queue_wait_hotfix.py
-      - name: Broadcast baseline contract
-        run: python3 -m pytest -q tests/test_broadcast_baseline.py tests/test_jev_direct_golden.py
+      - name: Broadcast and comment-classifier ownership contracts
+        run: |
+          python3 -m pytest -q tests/test_broadcast_baseline.py
+          python3 games/soviet_now/tests/test_comment_classifier_docich.py
+      - name: Native comment prompt / output guard / state parity and legacy drift guard (#829 PR-3a/3b/3c)
+        run: python3 -m pytest -q tests/test_comment_prompt.py tests/test_comment_guard.py tests/test_comment_state.py tests/test_comment_viewer_memory.py tests/test_comment_viewer_memory_bridge.py
       - name: Improvement command deployment contract
         run: python3 -m unittest discover -s tests -p test_improve_command_deploy.py
       - name: Analysis contract deployment scope

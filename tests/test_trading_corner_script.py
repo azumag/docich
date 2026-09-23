@@ -17,6 +17,7 @@ from docich.trading.corner_script import (  # noqa: E402
     _condition_text,
     build_facts,
     build_next_prompt,
+    covered_entry,
     build_prompt,
     generate_corner_script,
     generate_next_narration,
@@ -489,7 +490,9 @@ def test_condition_text_explains_meaning_not_just_the_raw_feature_code():
     ]})
     assert "rsiが" not in overbought  # bare code name, not the plain-language label
     assert "買われすぎ" in overbought
-    assert "78.4" in overbought and "70" in overbought
+    # Whole-valued readings: the fraction of an ordinary figure is not spoken.
+    assert "RSI)が78で閾値70以上" in overbought
+    assert "78.4" not in overbought
     assert "以上" in overbought  # natural-language op, not a bare ">=" symbol
 
     # The same feature at/below threshold ("oversold") must read the other way.
@@ -544,12 +547,31 @@ def test_news_segment_explains_content_instead_of_reciting_title_and_source():
     assert "下向き" in news
 
 
-def test_spoken_numbers_are_rounded_to_two_decimals():
+def test_spoken_numbers_drop_decimals_except_subunit_values():
+    """Owner request (2026-09-23): never read the fraction of an ordinary
+
+    amount; only a value whose integer part is zero (0.3, -0.5 …) keeps two
+    decimals, so sub-unit quantities are not spoken as zero.
+    """
     from docich.trading.corner_script import _fmt_num
-    assert _fmt_num("-198.4754669238077029463999998") == "-198.48"
-    assert _fmt_num("7.843078654615100") == "7.84"
-    assert _fmt_num("69.31023953378063559684045000") == "69.31"
+    # Integer part present → no fraction, rounded and grouped.
+    assert _fmt_num("-198.4754669238077029463999998") == "-198"
+    assert _fmt_num("7.843078654615100") == "8"
+    assert _fmt_num("69.31023953378063559684045000") == "69"
+    assert _fmt_num("12345.67") == "12,346"
+    # Sub-unit magnitudes keep two decimals even when they nearly reach 1,
+    # and grouped whole numbers must not lose their trailing zeros.
+    assert _fmt_num("0.99") == "0.99"
     assert _fmt_num("10000") == "10,000"
+    assert _fmt_num("0.999") == "1"
+    # Integer part zero (both signs) → two decimals, trailing zeros stripped.
+    assert _fmt_num("0.3") == "0.3"
+    assert _fmt_num("0.6") == "0.6"
+    assert _fmt_num("0.30") == "0.3"
+    assert _fmt_num("-0.55") == "-0.55"
+    assert _fmt_num("0") == "0"
+    # A tiny quantity that two decimals would collapse to zero falls back to
+    # the raw string, exactly as before (never spoken as 0).
     assert _fmt_num("0.001") is None
     assert _fmt_num(None) is None
     assert _fmt_num("not-a-number") is None
@@ -581,13 +603,26 @@ def test_spoken_numbers_are_rounded_to_two_decimals():
         assert "198.47546692380" not in fallback[key]
         assert "7.84307865461" not in fallback[key]
         assert "69.31023953" not in fallback[key]
-    assert "-198.48" in fallback["result"]
-    assert "69.31" in fallback["fills"]
+    # The fallback prose speaks whole numbers: no fraction left behind.
+    assert "累積損益は-198円" in fallback["result"]
+    assert "-198.48" not in fallback["result"]
+    assert "69bps" in fallback["fills"]
+    assert "69.31" not in fallback["fills"]
 
 
-def test_prompt_instructs_two_decimal_speech():
+def test_prompt_instructs_whole_number_speech_with_subunit_exception():
     prompt = build_prompt({"policy": {}})
+    assert "小数点以下を読まず" in prompt
+    assert "整数部が0" in prompt
     assert "小数第2位" in prompt
+    assert "0.001のような極小数量はそのまま" in prompt
+    # The superseded instruction must not survive anywhere.
+    assert "小数第2位までに丸めて言うこと" not in prompt
+    next_prompt = build_next_prompt({"policy": {}}, [])
+    assert "小数点以下を読まず" in next_prompt
+    assert "整数部が0" in next_prompt
+    assert "小数第2位までに丸めて言うこと" not in next_prompt
+    # Untouched wording checks from the previous contract.
     assert "見出しの段階なので" in prompt
     assert "数字ではなく相場や判断の意味を先に言う" in prompt
     assert "だから何を見るか" in prompt
@@ -668,12 +703,107 @@ def test_prompt_requires_single_line_json(tmp_path):
     assert "1行で出力" in prompt
 
 
+def test_prompts_forbidding_spoken_lead_in_at_segment_head(tmp_path):
+    """The reported 「結論からお伝えしますと」 comes from the model paraphrasing
+
+    the 「結論を先に言い…」 instruction, so both narration prompts must forbid
+    the lead-in explicitly.
+    """
+    _write_status(tmp_path)
+    facts = build_facts(tmp_path, now=1010.0)
+    for prompt in (build_prompt(facts), build_next_prompt(facts, [])):
+        assert "結論からお伝えしますと" in prompt
+        assert "前口上・枕詞を置かない" in prompt
+        # 「結論は、」「結論として」も2026-09-23の本番で51/58本の書き出しに
+        # 残ったので、「結論」で話し始めること自体を禁じ、誘発元の
+        # 「結論を先に言い」という指示も使わない。
+        assert "「結論」という語で話し始めない" in prompt
+        assert "結論を先に言い" not in prompt
+
+
+def test_prompts_ask_for_plain_general_explanations(tmp_path):
+    """Owner request (2026-09-23): the narration should stay general and easy
+
+    to follow, so both prompts must state the plain-language contract instead
+    of leaving it to the model's habits.
+    """
+    _write_status(tmp_path)
+    facts = build_facts(tmp_path, now=1010.0)
+    for prompt in (build_prompt(facts), build_next_prompt(facts, [])):
+        assert "一般的で平易な言葉" in prompt
+        assert "専門用語・略語" in prompt
+        assert "身近なたとえ" in prompt
+
+
+def test_parse_script_drops_leading_conclusion_lead_in():
+    segments = parse_script(json.dumps({
+        "corner": "結論からお伝えしますと、本日の相場は方向感が乏しいです。",
+        "news": "通常の本文です。",
+    }))
+    assert segments["corner"] == "本日の相場は方向感が乏しいです。"
+    assert segments["news"] == "通常の本文です。"
+
+
+def test_parse_next_narration_drops_leading_conclusion_lead_in():
+    item = parse_next_narration(json.dumps(
+        {"topic": "相場", "text": "結論からお伝えしますと、見送りが正解でした。"}
+    ))
+    assert item == {"status": "item", "topic": "相場", "text": "見送りが正解でした。"}
+
+
+def test_plain_sentences_starting_with_conclusion_are_kept():
+    """Removal must be narrow: real statements that merely start with 結論, and
+
+    a segment that is nothing but the lead-in, are passed through unchanged.
+    """
+    kept = [
+        "結論は大事だ。そのうえで数字を見ます。",
+        "結論と判断するのは早計だが、勢いは強い。",
+        "結論からお伝えしますと",
+    ]
+    for text in kept:
+        item = parse_next_narration(json.dumps({"topic": "方針", "text": text}))
+        assert item["text"] == text, text
+        assert parse_script(json.dumps({"corner": text}))["corner"] == text
+
+
 def test_build_next_prompt_lists_covered_topics_and_done_option(tmp_path):
     _write_status(tmp_path)
     prompt = build_next_prompt(build_facts(tmp_path, now=1010.0), ["相場", "ニュース"])
     assert "相場" in prompt and "ニュース" in prompt
     assert '"done"' in prompt
     assert "JSON以外は出力しない" in prompt
+
+
+def test_build_next_prompt_numbers_every_covered_entry_and_forbids_relabelled_repeats(tmp_path):
+    _write_status(tmp_path)
+    covered = [f"切り口{index}" for index in range(1, 31)]
+    prompt = build_next_prompt(build_facts(tmp_path, now=1010.0), covered)
+    # Nothing is dropped: the earliest topic is still visible after 30 entries.
+    assert "\n1. 切り口1\n" in prompt
+    assert "\n30. 切り口30\n" in prompt
+    assert "見出しや言い回しを変えても同じ切り口とみなし" in prompt
+
+
+def test_covered_entry_keeps_label_opening_sentence_and_key_figures():
+    text = (
+        "結論からお伝えすると、今日の利益は理論上のうまい一往復にはまだ距離がある状態です。"
+        "比較用の理論値は1844.74円で、実際の今日の確定分109.50円との差は1735.24円、"
+        "到達率は5.93%でした。この理論値は当日の5分足終値だけを使い、1銘柄を1回だけ売買します。"
+    )
+    entry = covered_entry("理論値との差", text)
+    assert entry == (
+        "理論値との差：今日の利益は理論上のうまい一往復にはまだ距離がある状態です。"
+        "（数字: 1844.74円、109.50円、1735.24円、5.93%）"
+    )
+
+
+def test_covered_entry_skips_generic_counts_and_truncates_long_openings():
+    text = "あ" * 80 + "。直近24本で5分足と1銘柄、8万7000.00ドル、マイナス351.57円。"
+    entry = covered_entry("長文", text)
+    assert entry.startswith("長文：" + "あ" * 60 + "…")
+    assert entry.endswith("（数字: 24本、8万7000.00、マイナス351.57円）")
+    assert covered_entry("", "本文だけです。") == "本文だけです。"
 
 
 def test_parse_next_narration_accepts_item_and_done():

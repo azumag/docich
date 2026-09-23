@@ -43,9 +43,11 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   "workers": {"expected": 19, "running": 6, "stopped": [], "paused": [],
               "duplicates": [], "zombies": [], "stale_pid_files": [],
               "unregistered": [], "required_down": [], "required_stale": [], "details": {}},
-  "semantic_decision": {"present": true, "readable": true, "backend": "jev",
+  "semantic_decision": {"present": true, "readable": true,
+                        "comment_classifier_backend": "jev", "backend": "jev",
                         "route": "direct", "requested_model": "jev-1.13.0",
-                        "credential": "present"},
+                        "credential": "present", "fallback_route": "vercel",
+                        "fallback_credential": "present"},
   "queues": {"lanes": {"radio": {"locked": true, "owner_alive": true, "age_sec": 43}},
              "stale_locks": 0, "queue_giveups_15m": 0},
   "ai": {"attempts_15m": 0, "failures_15m": 0, "rate_limits_15m": 0,
@@ -63,14 +65,20 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
               "boundary": {"improvement": {"present": true, "completed_at": 0, "age_sec": 0},
                            "prediction": {"present": false, "completed_at": null, "age_sec": -1}},
               "ab": {"state_present": true, "pattern": "ABBA", "games_lines": 12,
-                     "games_tainted": 0, "games_age_sec": 42, "candidate_pending": true, ...}}
+                     "games_tainted": 0, "games_age_sec": 42, "candidate_pending": true, ...}},
+  "webui": {"unit_file": true, "unit_active": true, "unit_enabled": true,
+            "main_pid": 1234, "n_restarts": 0, "served_port": 8787,
+            "served_reachable": true, "served_matches_deployed": true,
+            "listener_is_unit": true}
 }
 ```
 
 - `status` は `ok` / `warn` / `critical` に正規化する。
 - critical: required worker の停止（pause 中を除く）/ required の stale PID。
 - warn: paused worker、未登録 PID、重複、zombie、stale lock、直近 all_failed /
-  queue give-up、改善ループの stale・retry 滞留。
+  queue give-up、改善ループの stale・retry 滞留、
+  および `corners.corner_rotation.status == "recovery_required"`
+  （共有面は健全でも全自動cornerが止まる latch。#986）。
 - 単発の rate-limit だけで critical にしない。rate-limit は件数のみ報告する。
 - queue waiter 数は lock 形式から観測できないため報告しない（不明は不明と扱う）。
 - 診断は stale lock を削除しない。観測のみ。
@@ -88,12 +96,29 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   `unknown=1`・`drift_detected=1` とし、失敗したscanを drift なしの0件扱いにしない。
   path・filename・diff・file bytes・raw exception は出さない。severity は変えない。
 
+- gatewayの `ops_brief_projection.status` は親コミットの公開用生成物とVMの
+  実バイト/modeを比較した `matched` / `drift` / `unmanaged` / `unknown`。
+  `drift` / `unknown` は少なくともwarnとする。mapping欠落時はcollectorを動かさず
+  `collection.status=unavailable` / `reason=projection_missing` を返し、worker等の
+  未観測項目を健全と推測しない。`unmanaged` は親生成物への移行前で同期成功を
+  意味しない。ソース本文・生成本文・SHAは返さない。詳細は [ops-brief.md](ops-brief.md)。
+
 ## 収集元（すべて read-only）
 
 - common rotation: `corner_rotation.json` の固定projectionを
   `corners.corner_rotation`へ出す。status、slot、next_due_at、last_seen_at、
   eligible_count、pending有無、および設定由来の `schedule_mode` / `cooldown_seconds`
   のみ。seed・request payload・自由文は出さない。
+  さらに、`error_kind`（`docich.corner_rotation.ERROR_KINDS` と同一の固定enum。
+  例外本文はstateにもdiagnosticsにも書かない。欠落はnull、不正値は`unknown`。
+  直近のlatch分類として次にlatchし直すまで残る）と、予約（`pending`）が在る限り
+  （latch中かどうかを問わず）次を足す:
+  `pending_corner`、`pending_phase`（`selected`/`dispatched`/`unknown`）、
+  `pending_age_sec`（-1は不明）、`pending_owner`（固定8種のcorner stateのうち
+  同じrequestを記録したstate名。該当なし`none`、読取不可`unknown`、予約なし`absent`）、
+  `pending_owner_status`。request UUIDは固定stateとの照合にだけ使い出力には含めない。
+  これで「まだ起動していない」「既に終了している」「実行中・corner側の復旧が要る」を
+  証跡から区別できる（#986）。
   `recovery_required`は次cornerを停止する実行契約であり、診断自体は復旧操作をしない。
   `corners.corner_rotation_timer` は支配的なtimer unit名（移行後は
   `docich-corner-rotation.timer`）、active/enabled、旧名が正しいaliasかを示す
@@ -123,14 +148,23 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
  （token は出さず PID 生死・age のみ）。stale 閾値は 900s。
   `*.owner_guard.lock` / `*.owner_guard.d` は mutex guard のため lane 扱いしない。
 - semantic_decision（#882）: 登録済み `chat_worker` が生きている場合のみ、その
-  `/proc/<pid>/environ` から固定4キー名（`DOCICH_SEMANTIC_BACKEND` /
-  `DOCICH_JEV_ROUTE` / `TYPESAFE_API_KEY` / `DOCICH_JEV_VERCEL_API_KEY`）だけを
-  読み、既にレビュー済みの `docich.semantic_decision.diagnostics.describe()`
-  へそのまま通す。出力は `backend` / `route` / `requested_model` /
-  `credential`（`present`/`absent`/`not_applicable`/`unknown`のみ、値は不可）の
-  固定4項目のみ。生 environ・他の環境変数名・credential の値は一切出さない。
+  `/proc/<pid>/environ` から固定4キー名（`COMMENT_CLASSIFIER_BACKEND` /
+  `DOCICH_JEV_ROUTE` / `TYPESAFE_API_KEY` / `DOCICH_JEV_VERCEL_API_KEY`）だけを読む。
+  いずれも docich のコメント分類器（`docich.comment_classifier`）が実際に読む
+  キーで、レビュー済みの `docich.semantic_decision.diagnostics.describe()` へ
+  そのまま通す。出力は `backend`（`jev` = `COMMENT_CLASSIFIER_BACKEND=jev` で
+  Jev を呼ぶ / `heuristic` = heuristic のみ / `unknown`）/ `route` /
+  `requested_model` / `credential`（`present`/`absent`/`not_applicable`/`unknown`
+  のみ、値は不可）/ `fallback_route` / `fallback_credential` の固定6項目。
+  `route` は優先経路。`DOCICH_JEV_ROUTE=direct,vercel` のように予備経路が
+  設定されているときは、`fallback_route` と、その経路自身の鍵の有無を
+  `fallback_credential` に出す（予備経路が無いときは `null` / `not_applicable`）。`COMMENT_CLASSIFIER_BACKEND` は非秘密の enum
+  なので `comment_classifier_backend` として値そのまま（64字上限）も出す。
+  旧 soviet_now adapter だけが読んでいた `DOCICH_SEMANTIC_BACKEND` は廃止済みで、
+  読まない。
+  生 environ・他の環境変数名・credential の値は一切出さない。
   worker不在／死亡時は `present:false`、environ読み取り失敗時は
-  `present:true, readable:false`（未確認を"legacy"と誤認しない）。
+  `present:true, readable:false`（未確認を"heuristic"と誤認しない）。
   `DIAGNOSTICS_FILES`（gateway.py）にこの projection とそのroute解決先
   （`src/docich/semantic_decision/{diagnostics,routes}.py`）も追加し、
   drift検証の対象に含めている。
@@ -157,6 +191,18 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   hash・env 文字列・戦略本文は読まない・出さない。A/B 中は improvement
   boundary が保留されるため、コーナー遅延の直接原因になる。
 - meta: デプロイ済み docich HEAD と soviet_now gitlink（検証用。secret ではない）。
+- webui: `docich-webui.service` の固定 projection と「配信 UI がデプロイ済み UI と一致するか」の観測。
+  `unit_file`（unit ファイル有無）、`unit_active` / `unit_enabled`（`systemctl --user is-active /
+  is-enabled`）、`main_pid` / `n_restarts`（`systemctl --user show`、再起動ループの検出用）、
+  `served_port`（`config/docich.toml` の `[webui].port`、読めなければ既定 8787）、
+  `served_reachable`（`http://127.0.0.1:<port>/` をプロキシ不使用・4秒・1MiB 上限で読み取れるか）、
+  `served_matches_deployed`（配信 HTML とデプロイ済み `src/docich/webui.py` の `INDEX_HTML` の sha256
+  一致。到達不能・ソース読込不能は `null`）、`listener_is_unit`（unit の MainPID がそのポートの LISTEN
+  所有者か。`/proc/net/tcp[6]` と `/proc/<pid>/fd` の読み取りのみ。判定不能は `null`）。
+  path・cmdline・HTML bytes は出さず、値は bool / int / null だけ。
+  **severity には加算しない**（webui は任意コンポーネント）。deploy 済みなのに
+  別プロセスがポートを掴んで旧 UI を出し続ける case を `served_matches_deployed=false` +
+  `listener_is_unit=false` で検出する（`restart_webui` operation の終了コード14と同じ状態）。
 
 ## Soren91 投下間の read-only 集計
 

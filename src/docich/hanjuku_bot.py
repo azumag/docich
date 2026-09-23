@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-script-v1'
+BOT_VERSION = 'hanjuku-chart-v2'
 
 
 # Native title copyright rows, measured from the owner's ROM. A strict match
@@ -120,56 +120,121 @@ def pad(button, ms=100):
     return {'type':'pad','buttons':[button],'hold_ms':ms}
 
 
+def legacy_actions(frame: Frame, phase: str, state: dict) -> list[dict]:
+    """Reviewed v1 rules for screens without readable text or cursor.
+
+    The v1 blind field route (confirm/left/right/up) is removed: map input
+    now comes only from the chart policy with a measured cursor. A map
+    without a detected cursor waits instead of confirming at an unknown cell.
+    """
+    phase_step=int(state.get('phase_step',1))
+    if phase=='transition':
+        return []
+    if phase=='name':
+        return [pad('a')] if phase_step==1 else [pad('start')]
+    if phase=='month_menu':
+        return [pad('b' if phase_step==1 else 'a')]
+    if phase=='concert':
+        gold=lambda r,g,b:r>150 and 80<g<180 and 30<b<120
+        picker=any(frame.fraction((200,y,239,y+1),gold)>.8 for y in range(178,196))
+        return [pad('b' if picker else 'a')]
+    if phase=='shop':
+        return [pad('a' if shop_exit_confirmation(frame) else 'b')]
+    if phase=='title':
+        return [pad('start')]
+    if phase in {'field','field_menu','battle'}:
+        # Battles are fought by the game's own melee; A in a battle has no
+        # measured benefit and A on the map would open a sortie menu.
+        return []
+    # Scripted scenes, battle prompts and dark cutscenes use confirm. No
+    # reset, emulator shortcuts, arbitrary keys or LLM-produced actions.
+    return [pad('a')]
+
+
 def decide(frame: Frame, state: dict) -> tuple[list[dict], dict]:
-    """Return bounded pad actions and new policy memory; never write or send."""
+    """Return bounded pad actions and new policy memory; never write or send.
+
+    Decision records produced for this observation are returned in
+    ``state['_records']`` for the caller to persist; they are not memory.
+    """
+    from . import hanjuku_policy as policy
+    from .hanjuku_screen import parse
     phase=classify(frame)
     step=int(state.get('step',0))+1
     phase_step=int(state.get('phase_step',0))+1 if state.get('phase')==phase else 1
+    mem=dict(state.get('policy') or {})
+    mem['_records']=[]
     updated={**state,'phase':phase,'step':step,'phase_step':phase_step,'bot_version':BOT_VERSION}
-    if phase=='transition':
-        actions=[]
-    elif phase=='name':
-        actions=[pad('a')] if phase_step==1 else [pad('start')]
-    elif phase=='month_menu':
-        actions=[pad('b' if phase_step==1 else 'a')]
-    elif phase=='concert':
-        gold=lambda r,g,b:r>150 and 80<g<180 and 30<b<120
-        picker=any(frame.fraction((200,y,239,y+1),gold)>.8 for y in range(178,196))
-        actions=[pad('b' if picker else 'a')]
-    elif phase=='shop':
-        actions=[pad('a' if shop_exit_confirmation(frame) else 'b')]
-    elif phase in {'dialogue','field_menu','battle_intro','battle'}:
-        if phase=='field_menu' and state.get('deployment_opened'):
-            updated['deployment_menu_seen']=True
-        actions=[pad('a')]
-    elif phase=='title':
-        actions=[pad('start')]
-    elif phase=='title_or_intro':
-        # Start can pause cutscenes. Only the verified title and name screen
-        # may receive it; dark in-game scenes advance with confirm.
-        actions=[pad('a')]
-    elif phase=='field':
-        # Sweep from the starting castle toward the first enemy holdings.
-        # Confirm at each waypoint, allowing the game's real-time troops to
-        # travel between observations. Menu recognition supersedes this path.
-        route=(('left',1800),('right',300),('up',700),('a',100))
-        cursor=int(state.get('field_step',0))
-        if not state.get('deployment_opened'):
-            updated['deployment_opened']=True
-            return [pad('a')],updated
-        if not state.get('deployment_menu_seen'):
-            return [pad('a')],updated
-        if cursor<len(route):
-            button,duration=route[cursor]
-            updated['field_step']=cursor+1
-            actions=[pad(button,duration)]
+    updated.pop('_records',None)
+    screen=parse(frame,phase=phase)
+    policy.observe_events(screen,mem)
+    kind=screen.kind
+    map_kinds={'map','map_target','castle_menu','general_list','card_select','sortie_confirm'}
+    if kind not in map_kinds and mem.get('cursor'):
+        # Battles, events and month menus can move the map cursor.
+        mem['uncertain']=True
+    if kind in {'castle_menu','general_list'}:
+        mem.pop('expect_menu',None)
+    flow=(mem.get('battle') or {}).get('card_flow')
+    card_list=bool(flow) and kind in {'text','unknown'} and any(
+        w in policy.CARD_NAMES for line in screen.lines for _,w in line.spans())
+    # Egg/card announcements and fades inside a battle are not its end; only
+    # a return to the map or a following event/menu closes the record.
+    if mem.get('battle') and kind in policy.AFTER_BATTLE_KINDS:
+        policy.battle_end(mem,kind)
+    if kind in policy.AFTER_BATTLE_KINDS:
+        mem['egg_battle']=False
+    actions=None
+    if kind=='name_entry':
+        if (mem.get('name') or {}).get('done'):
+            # A second name screen means a new game: never carry the previous
+            # game's orders, captures or cursor into it.
+            stats=mem.get('stats')
+            mem={'_records':mem['_records'],'previous_stats':stats}
+            policy._record(mem,'new_game_detected',chart_step='name',
+                           reason='名前入力画面を再度確認したため方策状態を初期化')
+        actions=policy.name_step(screen,mem)
+        if mem.get('name',{}).get('done') and not mem.get('chapter'):
+            mem['chapter']=1
+            mem['variant']='chart'
+            mem['cursor']=list(policy.chart.castles(1)['ほんじょう'])
+    elif card_list:
+        actions=policy.card_list_step(screen,mem)
+    elif kind=='battle':
+        actions=policy.battle_step(screen,mem)
+    elif kind=='egg_battle_menu' or (mem.get('egg_battle') and kind=='text'):
+        actions=policy.egg_battle_step(screen,mem)
+    elif kind=='battle_menu':
+        actions=policy.battle_menu_step(screen,mem)
+    elif kind in {'attack_started','defense_started'}:
+        actions=policy.message_step(screen,mem)
+    elif kind=='month_menu':
+        actions=policy.month_step(screen,mem)
+    elif kind in {'shop_list','shop_quantity_prompt','shop_quantity','shop_exit_confirm'}:
+        actions=policy.shop_step(screen,mem)
+    elif kind in {'castle_menu','general_list','card_select','sortie_confirm'} and mem.get('chapter'):
+        actions=policy.deploy_step(screen,mem)
+    elif kind=='map_target' and mem.get('chapter'):
+        actions=policy.target_step(screen,mem,frame)
+    elif kind=='map' and mem.get('chapter'):
+        actions=policy.map_step(screen,mem,frame)
+    elif kind=='gift_request':
+        actions=policy.gift_step(screen,mem)
+    elif kind=='yes_no':
+        actions=policy.yes_no_step(screen,mem)
+    elif kind in {'castle_info','sealed_castle','main_menu'}:
+        policy._record(mem,'close_panel',screen=kind,reason='意図しない情報画面を閉じる')
+        actions=[pad('b')]
+    if actions is None:
+        actions=legacy_actions(frame,phase,updated)
+        if kind in {'unknown'} and phase not in {'transition','title','title_or_intro'} and mem.get('chapter'):
+            if mem.get('held_phase')!=phase:
+                mem['held_phase']=phase
+                policy._record(mem,'situation_held',screen=kind,phase=phase,
+                               reason='状況判定保留: 文字・カーソル・戦闘表示を読めない画面')
         else:
-            # The real-time unit follows its assigned target. Further confirm
-            # would open castle statistics and stop the march, so wait until
-            # an observed battle prompt. Stasis is owned by the run monitor.
-            actions=[]
-    else:
-        # Scripted scenes and battle prompts use confirm. No reset, emulator
-        # shortcuts, arbitrary keys, or LLM-produced actions are permitted.
-        actions=[pad('a')]
+            mem['held_phase']=None
+    updated['screen_kind']=kind
+    updated['_records']=mem.pop('_records')
+    updated['policy']=mem
     return actions,updated

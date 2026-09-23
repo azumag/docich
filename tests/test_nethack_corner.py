@@ -696,5 +696,44 @@ class TestStreamCategoryFollowsTheCorner(NethackCornerTestBase):
         self.assertEqual(announced, [])
 
 
+
+class TestNethackRotationTargetValidation(NethackCornerTestBase):
+    """_begin_locked hands the selected game to _validate_games (#986).
+
+    A fixed manager that accepts no argument made every common rotation
+    dispatch die with a TypeError before the corner could record any state,
+    which latched the whole rotation.
+    """
+
+    def test_accepts_the_rotation_target_override(self):
+        mgr, _ = self.manager([None])
+        # exact call made by RetroCornerManager._begin_locked
+        mgr._validate_games(["nethack"])
+
+    def test_rejects_any_other_target(self):
+        mgr, _ = self.manager([None])
+        # #998: a superset must be rejected too -- membership checks passed
+        # ``["nethack", "ninvaders"]`` and left the extra target unvalidated.
+        for names in (["ninvaders"], [], ["other", "nethack-hero"], ["nethack", "ninvaders"]):
+            with self.subTest(names=names):
+                with self.assertRaises(NethackCornerError):
+                    mgr._validate_games(names)
+                # The rejection message must not trail off for an empty list.
+                # #1021 review: pin the whole suffix -- checking a substring
+                # against the *last character* was vacuously true.
+                try:
+                    mgr._validate_games(names)
+                except NethackCornerError as exc:
+                    if not names:
+                        self.assertIn("有効です: (空)", str(exc))
+
+    def test_default_call_and_playable_scan_still_work(self):
+        mgr, _ = self.manager([None])
+        mgr._validate_games()
+        # Exact value, not ``isinstance(..., list)``: ``[]`` was passing this
+        # assertion before #996 too, so it caught nothing (#998).
+        self.assertEqual(mgr._playable_games(), ["nethack"])
+
+
 if __name__ == "__main__":
     unittest.main()

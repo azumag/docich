@@ -44,9 +44,6 @@ PAPER_FLAG_TTL_S = 1800
 # text, which must never become a source-of-truth for lifecycle decisions.
 PAPER_AUDIO_SUFFIXES = ("_crypto_paper.txt", "_crypto_paper.playing")
 SPEECH_SOURCE_PHASES = frozenset({"waiting", "playing", "retry_wait"})
-# Bounded memory of already-spoken topic labels handed back to the narrator so
-# the model can avoid repeating itself across a long sequential run.
-MAX_COVERED_TOPICS = 24
 # After the last segment is generated, wait for the enqueued speech to finish
 # playing before handing the display back, so the corner never cuts off its own
 # narration. Poll the Soren audio queue (PAPER items + source-specific speaking
@@ -1024,9 +1021,14 @@ class PaperCornerManager:
                 self.announce(state, payload['key'], payload['text'])
                 topic = payload.get('topic')
                 if topic:
+                    # Keep every spoken segment (not just the latest few) with
+                    # its opening sentence and key figures, so the narrator
+                    # cannot re-tell an early topic under a new label.
+                    from .trading.corner_script import covered_entry
+
                     covered = self._covered_topics(state)
-                    covered.append(str(topic))
-                    state['covered_topics'] = covered[-MAX_COVERED_TOPICS:]
+                    covered.append(covered_entry(topic, payload.get('text')))
+                    state['covered_topics'] = covered
                 state['last_progress_at'] = self.clock()
                 self._refresh_paper_flag(state)
                 self.save(state)

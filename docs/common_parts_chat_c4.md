@@ -21,7 +21,7 @@ TTS C4 (`docs/common_parts_tts_c4.md`) と同じく、**実証済みの部品だ
 |---|---|---|---|---|
 | C-S1 | AI 呼び出しの共通ディスパッチ (モデル選択・フォールバック・タイムアウト・レート制限バックオフ) | `lib/ai_generate.sh` | **昇格候補 (優先度: 高)**。ゲーム非依存で、comment / radio の両方が使う | `src/docich/ai_generate.py` (docich 正典) |
 | C-S2 | AI 出力ガード (思考漏れ・tool protocol・作業メモの除去) | `lib/model_output_guard.py` (127 行) | **昇格候補 (優先度: 最高)**。既に単独 Python で、docich の `captions.py` の厳格パーサ思想と同系 | `src/docich/model_output_guard.py` (docich 正典) |
-| C-S3 | コメント分類 (heuristic / JSON 契約 / 編集フォールバック) | `broadcast/comment.sh` | 参照実行のまま (C2 実証後に昇格判断) | soviet_now |
+| C-S3 | コメント分類 (heuristic / Jev / 正規化・英語安全化) | `src/docich/comment_classifier/` (旧: `broadcast/comment.sh` + `lib/comment_classifier_jev.py`) | **docich へ昇格 (2026-09-23, #882/#829)**。soviet_now は呼び出し 1 行のみ | `src/docich/comment_classifier/` (docich 正典) |
 | C-S4 | 翻訳 (英訳) | `broadcast/comment.sh` + `lib/comment_bilingual.py` | 字幕翻訳は `src/docich/captions.py` が正典。コメント翻訳は C2 実証後に判断 | soviet_now (コメント) / docich (字幕) |
 | C-S5 | ラジオ生成 (テーマ・ニュース・コーナー別プロンプト) | `broadcast/radio_*.sh` | 参照実行のまま。ゲーム非依存だが、生成コンテンツの運用が一体 | soviet_now |
 | C-S6 | 再生キュー連携 (say_enqueue / deferred) | `broadcast/comment_lib.sh` + `radio_state.sh` | TTS 側 (`docich say`) の契約に委ねる。docich は追加キューを作らない | soviet_now 所有 |
@@ -168,25 +168,38 @@ soviet_now の `_radio_backup_script`(radio_state.sh) が、再生完了時に�
     `backups/radio_scripts/` へ退避 (既存動作のまま)。
 - したがって docich 側にバックアップを独自実装しない。「判断保留」→ **解決**。
 
-### 6.3 C-S3: コメント分類はゲーム特化のため、soviet_now 所有のまま (参照実行)
+### 6.3 C-S3: コメント分類は docich の共通部品 (2026-09-23 改訂, #882 / #829)
 
-`broadcast/comment.sh` の分類は 3 経路:
+**旧判断 (2026-08-19) を撤回する。** 旧判断は「heuristic の語彙がソ連ゲーム専用なので
+昇格できる汎用部品が無い」として soviet_now 所有・参照実行のままとした。しかし実際には
+分類器 (heuristic + Jev + 正規化) が soviet_now に置かれたことで、provider transport・
+endpoint・credential の正典まで soviet_now 側に引きずられ、docich の共通 semantic
+decision 基盤 (#882) と二重化した。オーナー判断 (2026-09-23): **分類器は共通部品として
+docich 側だけが持つ。soviet_now に分類器の影響を残さない。**
 
-- heuristic (`_classify_comments_heuristic`): ソ連ゲーム特化のキーワード (ロシア/ソ連/
-  盤面/併合/連鎖/建国 等)、配信不具合・gacha・サブ・歌リクエスト判定を一体で持つ。
-- AI による JSON 契約 (`_extract/validate/normalize_comment_classification_json`)。
-- 編集フォールバック (`_classify_comments_with_edit_contract`)。
-
-分類はゲーム文脈と一体で、docich に昇格できる汎用部品が無い (heuristic の語彙が
-ソ連ゲーム専用)。docich は `docich chat <game>` の参照実行で `generate_comment_response`
-に委ね、分類を再実装しない。**昇格はしない** (C-S4/C-S5 と同じ「参照実行で全経路を
-soviet_now へ委ねる」方針の延長)。docich 実装は変更なし。
+- 正典: `src/docich/comment_classifier/`
+  - `heuristic.py`: 旧 `_classify_comments_heuristic` / `_normalize_comment_classification_json` /
+    `_comment_enforce_english_safety` / `comment_bilingual.looks_like_english` の挙動保存移植。
+    soviet_now `f2c20234` の shell 出力を `tests/fixtures/comment_classifier_heuristic_golden.json`
+    に固定し、byte 一致をテストする。
+  - `jev.py`: 旧 `lib/comment_classifier_jev.py` の用途層 (固定 rubric・本文限定の投影・
+    閾値・通知保護・cooldown・sanitized metrics)。HTTP は `docich.semantic_decision` のみ。
+  - 入口: `bin/docich-comment-classify <file>` (= `python -m docich.comment_classifier`)。
+    stdout は従来と同じ JSON 配列契約 (index/user/comment/category/is_english)。
+- soviet_now 側は `_classify_comments` から上記入口を呼ぶだけにし、分類ロジック・
+  Jev 実装・rubric は削除する (別 PR)。コメント処理全体の docich 移行 (#829) で
+  この呼び出しも消える。
+- ゲーム特化語彙 (ロシア/ソ連/盤面 等) は現状 heuristic に残る。これは #829 の
+  GameContextProvider 導入時に purpose 設定へ切り出す対象であり、今回は挙動を変えない。
+- 旧 AI 生成による分類経路 (`COMMENT_CLASSIFIER_AI_ENABLED=1`、45/90 秒の edit/stdout 契約)
+  は移植しない。本番は `COMMENT_CLASSIFIER_BACKEND=jev` でこの経路を通らず、
+  Jev 無効時の既定も heuristic である。
 
 ### 6.4 進め方のまとめ (C-S3〜C-S7)
 
 | # | 責務 | 判定 (2026-08-19) |
 |---|---|---|
-| C-S3 | コメント分類 | soviet_now 所有 (参照実行)。昇格しない |
+| C-S3 | コメント分類 | **docich 所有** (2026-09-23 改訂)。soviet_now は呼び出しのみ |
 | C-S4 | コメント翻訳 | soviet_now 所有 (参照実行)。第三実装を作らない |
 | C-S5 | ラジオ生成 | soviet_now 所有 (参照実行)。バックアップは参照実行で接続済み |
 | C-S6 | 再生キュー | `docich say` の契約に委ねる。docich は追加キューを作らない |

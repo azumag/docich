@@ -41,15 +41,16 @@ Observed sources (all read-only):
     ab_candidate/): only presence, counts, enums and mtimes; strategy/hash
     bodies and environment values are never read out.
   - the registered chat_worker's own live environ (#882), restricted to a
-    fixed 4-name allowlist (never the raw block, never any other name) and
+    fixed 4-name allowlist (never the raw block, never any other name),
     projected through the already-reviewed
     docich.semantic_decision.diagnostics.describe(), which returns only
     backend/route/requested_model/credential-presence -- never a credential
-    value. This is the one narrow, reviewed exception to "raw environment
-    values are never read out" above: it is a fixed-shape projection of
-    exactly two non-secret configuration strings and a presence boolean,
-    the same bounded-projection contract every other source in this file
-    already follows, never an environment dump.
+    value; COMMENT_CLASSIFIER_BACKEND (the non-secret enum gate the docich
+    classifier reads) is also reported as its plain, length-capped value. This is the one narrow, reviewed exception to "raw
+    environment values are never read out" above: it is a fixed-shape
+    projection of a handful of non-secret configuration strings and a
+    presence boolean, the same bounded-projection contract every other
+    source in this file already follows, never an environment dump.
 
 Never emitted during normal diagnostics: secrets, tokens, raw environment,
 prompt/generation bodies, HTTP headers, or file contents. Error previews are
@@ -67,6 +68,7 @@ import base64
 import configparser
 import datetime as dt
 import fcntl
+import hashlib
 import json
 import math
 import os
@@ -76,6 +78,7 @@ import stat
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 PROD_ROOT = Path(__file__).resolve().parents[2]
@@ -764,12 +767,18 @@ def _collect_workers(soren, now):
 # from a live worker's environ. Values for the two credential names never
 # leave _read_allowlisted_environ; docich.semantic_decision.diagnostics.describe()
 # converts them to presence-only before this module ever formats output.
+# These are exactly the names docich.comment_classifier reads:
+# COMMENT_CLASSIFIER_BACKEND (plain enum gate, never a credential, so its
+# value is also reported as-is below) and DOCICH_JEV_ROUTE plus that route's
+# own credential. The retired DOCICH_SEMANTIC_BACKEND is no longer read by
+# anything, so it is deliberately not read here either.
 SEMANTIC_DECISION_ENV_ALLOWLIST = (
-    "DOCICH_SEMANTIC_BACKEND",
     "DOCICH_JEV_ROUTE",
     "TYPESAFE_API_KEY",
     "DOCICH_JEV_VERCEL_API_KEY",
+    "COMMENT_CLASSIFIER_BACKEND",
 )
+COMMENT_CLASSIFIER_BACKEND_STR_MAX = 64
 
 
 def _read_allowlisted_environ(pid, names):
@@ -795,13 +804,14 @@ def _read_allowlisted_environ(pid, names):
 
 
 def _collect_semantic_decision(workers):
-    """Effective docich semantic-decision config on the live chat_worker (#882).
+    """Effective docich comment-classifier config on the live chat_worker (#882).
 
-    Reports whether the registered chat_worker is delegating comment
-    classification to the reviewed docich core, and if so, over which route
-    -- never a credential value, only its presence. A missing/dead worker or
-    an unreadable environ is reported as such, never guessed as "legacy"
-    (an absent observation is not evidence of a disabled backend).
+    Reports whether the registered chat_worker's docich classifier calls Jev
+    ("backend":"jev") or runs the heuristic only, and over which route --
+    never a credential value, only its presence. A missing/dead worker or an
+    unreadable environ is reported as such, never guessed as "heuristic"
+    (an absent observation is not evidence of a disabled backend). The gate's
+    plain value is also kept as comment_classifier_backend.
     """
     detail = workers.get("details", {}).get("chat_worker") or {}
     pid = detail.get("pid")
@@ -810,7 +820,11 @@ def _collect_semantic_decision(workers):
     env = _read_allowlisted_environ(pid, SEMANTIC_DECISION_ENV_ALLOWLIST)
     if env is None:
         return {"present": True, "readable": False}
-    return {"present": True, "readable": True, **_describe_semantic_decision(env)}
+    classifier_backend = env.get("COMMENT_CLASSIFIER_BACKEND") or None
+    if type(classifier_backend) is str and len(classifier_backend) > COMMENT_CLASSIFIER_BACKEND_STR_MAX:
+        classifier_backend = classifier_backend[:COMMENT_CLASSIFIER_BACKEND_STR_MAX]
+    return {"present": True, "readable": True, "comment_classifier_backend": classifier_backend,
+            **_describe_semantic_decision(env)}
 
 
 def _parse_lock_owner(owner_path):
@@ -1447,6 +1461,20 @@ ROTATION_IMPROVE_REASON_CODES = frozenset({
 })
 ROTATION_IMPROVE_PHASES = frozenset({"state", "llm", "eval", "unknown"})
 
+# Fixed latch taxonomy of `corner_rotation.json`'s `error_kind`. Keep in sync
+# with docich.corner_rotation.ERROR_KINDS (regression-tested): the exception
+# text is never persisted or published, only this category.
+ROTATION_ERROR_KINDS = frozenset({
+    "adapter-state",
+    "adapter-timestamp",
+    "catalog-mismatch",
+    "execution-error",
+    "execution-unverified",
+    "invalid-state",
+    "unexpected",
+})
+ROTATION_PENDING_PHASES = frozenset({"selected", "dispatched"})
+
 
 def _rotation_evidence_file(state_dir, relative):
     """Bounded fixed-path read; do not follow links to unrelated runtime data."""
@@ -1794,7 +1822,69 @@ def _project_corner_state(data):
         "battles_started": _bounded_int(data.get("battles_started")),
         "battles_finished": _bounded_int(data.get("battles_finished")),
         "screen_unchanged_seconds": _finite_number(data.get("screen_unchanged_seconds")),
+        "bot_version": (data.get("bot_version") if data.get("bot_version") in {
+            "hanjuku-script-v1", "hanjuku-chart-v2"} else None),
+        "bot_chart": _project_bot_chart(data.get("bot_chart")),
+        "narration": _project_counts(data.get("narration"),
+                                     ("enqueued", "delivery_failed", "skipped")),
+        "game_audio": _project_game_audio(data.get("game_audio")),
     }
+
+
+def _project_counts(value, keys):
+    if not isinstance(value, dict):
+        return None
+    return {key: _bounded_int(value.get(key)) for key in keys}
+
+
+_SINK = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+
+
+def _project_game_audio(value):
+    """Per-game stream evidence: status, sink name, volume percents, mute."""
+    if not isinstance(value, dict):
+        return None
+    status = value.get("status")
+    streams = []
+    for item in (value.get("streams") or [])[:4] if isinstance(value.get("streams"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        percents = item.get("volume_percent")
+        streams.append({
+            "sink": item.get("sink") if isinstance(item.get("sink"), str) and _SINK.match(item["sink"]) else None,
+            "volume_percent": ([p for p in percents if type(p) is int and 0 <= p <= 200][:8]
+                               if isinstance(percents, list) else None),
+            "mute": item.get("mute") if isinstance(item.get("mute"), bool) else None,
+        })
+    return {
+        "status": status if status in {"applied", "unverified", "no_stream", "pactl_failed", "error"} else None,
+        "target_percent": _bounded_int(value.get("target_percent")),
+        "streams": streams,
+    }
+
+
+_CHART_STEP = re.compile(r"^[0-9]{1,2}-[A-Za-z0-9]{1,4}$")
+_MONTH = re.compile(r"^[0-9]{1,2}-[0-9]{1,2}$")
+_VARIANT = re.compile(r"^[a-z_]{1,40}$")
+
+
+def _project_bot_chart(value):
+    """Allowlisted chart-progress counters only (no text, names or reasons)."""
+    if not isinstance(value, dict):
+        return None
+    out = {}
+    for key in ("chapter", "orders_launched", "orders_failed", "captured", "wins", "losses",
+                "unclassified", "cards_used", "generals_lost", "gold"):
+        out[key] = _bounded_int(value.get(key))
+    step = value.get("chart_step")
+    out["chart_step"] = step if isinstance(step, str) and _CHART_STEP.match(step) else None
+    month = value.get("month")
+    out["month"] = month if isinstance(month, str) and _MONTH.match(month) else None
+    variant = value.get("strategy_variant")
+    out["strategy_variant"] = variant if isinstance(variant, str) and _VARIANT.match(variant) else None
+    out["name_entered"] = value.get("name_entered") is True
+    out["name_matches"] = value.get("name_matches") is True
+    return out
 
 
 FIFO_OPERATIONS = frozenset({"start", "stop", "switch", "restart", "rotate", "recover"})
@@ -1928,6 +2018,60 @@ def _rotation_policy():
         return None, None
 
 
+def _rotation_error_kind(value):
+    """Project only the fixed latch category; absent stays None, unknown is unknown."""
+    if value is None:
+        return None
+    if isinstance(value, str) and value in ROTATION_ERROR_KINDS:
+        return value
+    return "unknown"
+
+
+def _rotation_pending_projection(state_dir, data, now):
+    """Bounded identity of the latched reservation (#986), request id never emitted.
+
+    The reservation's request UUID is compared against the fixed corner state
+    files only, so an operator can tell "never started" from "already ended"
+    without publishing request identity, payloads or file contents.
+    """
+    out = {
+        "pending_corner": None,
+        "pending_phase": None,
+        "pending_age_sec": -1,
+        "pending_owner": "absent",
+        "pending_owner_status": "unknown",
+    }
+    pending = data.get("pending")
+    if not isinstance(pending, dict):
+        if pending is not None:
+            out["pending_phase"] = "unknown"
+        return out
+    out["pending_corner"] = _bounded_str(pending.get("corner"), 64)
+    out["pending_phase"] = (
+        pending.get("phase") if pending.get("phase") in ROTATION_PENDING_PHASES
+        else "unknown"
+    )
+    selected = _rotation_time(pending.get("selected_at"))
+    if selected is not None:
+        out["pending_age_sec"] = max(0, int(now - selected))
+    request_id = pending.get("request_id")
+    if not isinstance(request_id, str) or not request_id:
+        out["pending_owner"] = "unknown"
+        return out
+    out["pending_owner"] = "none"
+    for name in ROTATION_CORNER_FILES:
+        _, readable, raw = _rotation_evidence_file(state_dir, name + ".json")
+        if not readable:
+            # An unreadable fixed file may hold the owner; never report "none".
+            out["pending_owner"] = "unknown"
+            continue
+        if raw.get("rotation_request_id") == request_id:
+            out["pending_owner"] = name
+            out["pending_owner_status"] = _rotation_enum(raw.get("status"), ROTATION_STATUSES)
+            break
+    return out
+
+
 def _collect_corner_files(state_dir, payload, now):
     present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES["corner_rotation"])
     rotation = {"present": present, "readable": readable}
@@ -1945,7 +2089,9 @@ def _collect_corner_files(state_dir, payload, now):
             slot=_bounded_int(data.get("slot")),
             eligible_count=len(data["eligible"]) if isinstance(data.get("eligible"), list) else None,
             pending=isinstance(data.get("pending"), dict),
+            error_kind=_rotation_error_kind(data.get("error_kind")),
         )
+        rotation.update(_rotation_pending_projection(state_dir, data, now))
     mode, cooldown = _rotation_policy()
     rotation.update(schedule_mode=mode, cooldown_seconds=cooldown)
     payload["corner_rotation"] = rotation
@@ -2121,6 +2267,193 @@ def _unit_is_enabled(unit):
     return None
 
 
+# --- webui unit / served-UI observation (read-only) ---------------------------
+#
+# The webui is a long-running process, so "deployed" and "what the operator
+# sees" can diverge: another instance holding the port, a unit installed from
+# a different checkout, or a unit that never came back after a restart. This
+# section answers only that question. Everything published is a bool / int /
+# null — no path, no cmdline, no response bytes — and severity is unchanged
+# (the webui is optional; see wiki/WebUI.md).
+
+WEBUI_UNIT = "docich-webui.service"
+WEBUI_PORT_DEFAULT = 8787
+WEBUI_HTTP_TIMEOUT_SEC = 4
+WEBUI_MAX_HTML_BYTES = 1_000_000
+WEBUI_SOURCE_MAX_BYTES = 4_000_000
+WEBUI_INDEX_RE = re.compile(r'INDEX_HTML = r"""(.*?)"""', re.S)
+
+
+def _webui_config_port():
+    """Port the service binds, read from the same config it reads."""
+    try:
+        import tomllib
+
+        with open(PROD_ROOT / "config" / "docich.toml", "rb") as fh:
+            cfg = tomllib.load(fh).get("webui") or {}
+        port = int(cfg.get("port", WEBUI_PORT_DEFAULT))
+    except Exception:
+        return WEBUI_PORT_DEFAULT
+    return port if 0 < port < 65536 else WEBUI_PORT_DEFAULT
+
+
+def _webui_unit_dir():
+    return PROD_ROOT.parent / ".config" / "systemd" / "user"
+
+
+def _webui_deployed_index_digest():
+    """sha256 of INDEX_HTML in the deployed src/docich/webui.py, or None."""
+    path = PROD_ROOT / "src" / "docich" / "webui.py"
+    try:
+        if path.stat().st_size > WEBUI_SOURCE_MAX_BYTES:
+            return None
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = WEBUI_INDEX_RE.search(text)
+    if not match:
+        return None
+    return hashlib.sha256(match.group(1).encode("utf-8")).digest()
+
+
+def _webui_fetch(port):
+    """Bounded loopback GET of the webui index.
+
+    Returns ``(body, error)`` with error in {None, "unreachable", "too_large"};
+    never raises and never trusts a proxy (loopback only)."""
+    url = f"http://127.0.0.1:{port}/"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    limit = WEBUI_MAX_HTML_BYTES
+    body = bytearray()
+    try:
+        with opener.open(url, timeout=WEBUI_HTTP_TIMEOUT_SEC) as resp:
+            length = resp.headers.get("Content-Length") if resp.headers is not None else None
+            if length:
+                try:
+                    if int(length) > limit:
+                        return b"", "too_large"
+                except ValueError:
+                    pass
+            while len(body) <= limit:
+                chunk = resp.read(min(65536, limit + 1 - len(body)))
+                if not chunk:
+                    break
+                body += chunk
+    except Exception:
+        return b"", "unreachable"
+    if len(body) > limit:
+        return bytes(body), "too_large"
+    return bytes(body), None
+
+
+def _webui_unit_properties():
+    """(MainPID, NRestarts) from one `systemctl --user show`, or None each."""
+    main_pid = n_restarts = None
+    result = _systemctl_user(
+        ["show", WEBUI_UNIT, "--property=MainPID", "--property=NRestarts"], timeout=4
+    )
+    if result is None:
+        return None, None
+    _, out = result
+    match = re.search(r"(?m)^MainPID=(\d+)$", out)
+    if match:
+        main_pid = int(match.group(1))
+    match = re.search(r"(?m)^NRestarts=(\d+)$", out)
+    if match:
+        n_restarts = int(match.group(1))
+    return main_pid, n_restarts
+
+
+def _listen_inodes(port):
+    """Socket inodes in TCP_LISTEN state on ``port``; None without /proc."""
+    if not Path("/proc/net/tcp").exists() and not Path("/proc/net/tcp6").exists():
+        return None
+    inodes = set()
+    for name in ("tcp", "tcp6"):
+        try:
+            text = Path("/proc/net", name).read_text(encoding="ascii", errors="ignore")
+        except OSError:
+            continue
+        for line in text.splitlines()[1:]:
+            parts = line.split()
+            if len(parts) < 10 or parts[3] != "0A":
+                continue
+            try:
+                if int(parts[1].rsplit(":", 1)[1], 16) != port:
+                    continue
+            except (IndexError, ValueError):
+                continue
+            inodes.add(parts[9])
+    return inodes
+
+
+def _pid_owns_socket(pid, inodes):
+    """True when pid holds one of inodes; False / None when it cannot."""
+    read_any = False
+    try:
+        # NOTE: Path(...).iterdir() is lazy, so a missing /proc/<pid> raises
+        # FileNotFoundError on iteration, not on creation.
+        for fd in Path(f"/proc/{pid}/fd").iterdir():
+            try:
+                target = os.readlink(fd)
+            except OSError:
+                continue
+            read_any = True
+            if target.startswith("socket:[") and target[8:-1] in inodes:
+                return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    if not read_any:
+        return None
+    return False
+
+
+def _listener_is_unit(port, main_pid):
+    """Is the unit's MainPID the process listening on the webui port?"""
+    inodes = _listen_inodes(port)
+    if inodes is None:
+        return None
+    if not inodes:
+        return False
+    if main_pid is None:
+        return None
+    if main_pid <= 0:
+        return False
+    return _pid_owns_socket(main_pid, inodes)
+
+
+def _collect_webui():
+    """Bounded observation: is the deployed UI what the operator can see?"""
+    port = _webui_config_port()
+    unit_file = (_webui_unit_dir() / WEBUI_UNIT).is_file()
+    active = _unit_is_active(WEBUI_UNIT)
+    enabled = _unit_is_enabled(WEBUI_UNIT)
+    main_pid, n_restarts = _webui_unit_properties()
+    listener = _listener_is_unit(port, main_pid)
+    expected = _webui_deployed_index_digest()
+    body, error = _webui_fetch(port)
+    reachable = error in (None, "too_large")
+    matches = None
+    if reachable and expected is not None:
+        if error == "too_large":
+            matches = False
+        else:
+            matches = hashlib.sha256(body).digest() == expected
+    return {
+        "unit_file": unit_file,
+        "unit_active": active,
+        "unit_enabled": enabled,
+        "main_pid": main_pid,
+        "n_restarts": n_restarts,
+        "served_port": port,
+        "served_reachable": reachable,
+        "served_matches_deployed": matches,
+        "listener_is_unit": listener,
+    }
+
+
 def _market_paper_report_age_sec(sqlite_path, market, now):
     if not sqlite_path.is_file():
         return -1
@@ -2291,6 +2624,11 @@ def _severity(workers, queues, ai, improvement, corners=None):
         return "critical"
     retro = corners.get("retro_corner") if isinstance(corners, dict) else None
     if isinstance(retro, dict) and retro.get("recovery_required") is True:
+        return "warn"
+    # A latched common rotation stops every automatic corner while the shared
+    # plane stays healthy, so it must reach the runtime health alert (#986).
+    rotation = corners.get("corner_rotation") if isinstance(corners, dict) else None
+    if isinstance(rotation, dict) and rotation.get("status") == "recovery_required":
         return "warn"
     if (
         _paused_workers_actionable(workers)
@@ -2636,6 +2974,38 @@ def _collect_nethack_agent_log(state_dir, now):
 NETHACK_PANE_LINES = 14
 NETHACK_PANE_LINE_LIMIT = 240
 _TMUX_TARGET_RE = re.compile(r"^[A-Za-z0-9_.@:-]+$")
+_RUNTIME_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
+# Fixed vocabularies for the NetHack boundary diag (#1015). Kept in sync with
+# ``docich.adapters.nethack.CANCEL_REFUSAL_REASONS`` /
+# ``PROMPT_CLASSES`` by ``test_nethack_boundary_diag.py``; duplicated here so
+# this read-only collector never imports runtime code.
+_BOUNDARY_DIAG_REASONS = frozenset(
+    {
+        "deadline_exceeded",
+        "cancel_requested",
+        "session_missing",
+        "session_unowned",
+        "process_target_absent",
+        "process_window_ambiguous",
+        "process_window_probe_failed",
+        "capture_failed",
+        "prompt_not_pending",
+        "process_gone",
+        "post_key_probe_failed",
+        "post_key_capture_failed",
+        "wait_timeout",
+    }
+)
+_BOUNDARY_DIAG_PROMPT_CLASSES = frozenset(
+    {
+        "save_prompt_pending",
+        "save_confirmation",
+        "character_creation",
+        "capture_failed",
+        "unknown",
+    }
+)
+_BOUNDARY_DIAG_OUTCOMES = frozenset({"suspended", "ended", "unknown"})
 
 
 def _capture_tmux_pane(target, *, max_lines=NETHACK_PANE_LINES):
@@ -2674,6 +3044,87 @@ def _list_window_names(session):
     if proc.returncode != 0:
         return []
     return [name.strip() for name in proc.stdout.splitlines() if name.strip()]
+
+
+def _collect_nethack_boundary(state_dir, now):
+    """Bounded, sanitized view of the active NetHack boundary diag (#1015).
+
+    Reads only ``<state_dir>/runtimes/<runtime_id>/nethack_boundary_diag.json``
+    for the *active* runtime, and projects fixed enums/booleans only: why a
+    cancel was refused must be answerable without ever exposing pane text,
+    paths, keys or argv.
+    """
+    result = {
+        "present": False,
+        "readable": False,
+        "active_runtime": False,
+        "stale_runtime": False,
+        "operation": None,
+        "reason": None,
+        "prompt_class": None,
+        "process_target_present": None,
+        "process_alive": None,
+        "save_signature_changed": None,
+        "boundary_outcome": None,
+        "generation": None,
+        "age_sec": None,
+    }
+    try:
+        data = json.loads((Path(state_dir) / "game_switch.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return result
+    if not isinstance(data, dict):
+        return result
+    active = data.get("active")
+    if not isinstance(active, dict):
+        return result
+    runtime_id = active.get("runtime_id")
+    if not isinstance(runtime_id, str) or not _RUNTIME_ID_RE.fullmatch(runtime_id):
+        return result
+    result["active_runtime"] = True
+    generation = active.get("generation")
+    if type(generation) is int:
+        result["generation"] = generation
+    present, readable, diag = _load_state_file(
+        Path(state_dir) / "runtimes" / runtime_id / "nethack_boundary_diag.json"
+    )
+    result["present"] = present
+    result["readable"] = readable
+    if not readable or not isinstance(diag, dict):
+        return result
+    operation = diag.get("operation")
+    if operation in ("cancel", "wait"):
+        result["operation"] = operation
+    reason = diag.get("reason")
+    if isinstance(reason, str) and reason in _BOUNDARY_DIAG_REASONS:
+        result["reason"] = reason
+    prompt_class = diag.get("prompt_class")
+    if isinstance(prompt_class, str) and prompt_class in _BOUNDARY_DIAG_PROMPT_CLASSES:
+        result["prompt_class"] = prompt_class
+    boundary_outcome = diag.get("boundary_outcome")
+    if isinstance(boundary_outcome, str) and boundary_outcome in _BOUNDARY_DIAG_OUTCOMES:
+        result["boundary_outcome"] = boundary_outcome
+    for key in ("process_target_present", "process_alive", "save_signature_changed"):
+        value = diag.get(key)
+        if isinstance(value, bool):
+            result[key] = value
+    recorded = diag.get("recorded_at")
+    if isinstance(recorded, str):
+        try:
+            recorded_ts = dt.datetime.fromisoformat(recorded.replace("Z", "+00:00")).timestamp()
+            if 0 <= recorded_ts <= now + 86400:
+                result["age_sec"] = max(0, int(now - recorded_ts))
+        except ValueError:
+            pass
+    diag_generation = diag.get("generation")
+    if type(diag_generation) is int and diag_generation == generation:
+        result["active_runtime"] = True
+    else:
+        # A diag left behind by an older generation must never be read as the
+        # active runtime's evidence.
+        result["active_runtime"] = False
+        result["stale_runtime"] = True
+    return result
 
 
 def _collect_nethack_panes(state_dir, now):
@@ -2773,8 +3224,10 @@ def main(argv):
         "improvement": improvement,
         "corners": corners,
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),
+        "nethack_boundary": _collect_nethack_boundary(_program_state_dir(), now),
         "nethack_panes": _collect_nethack_panes(_program_state_dir(), now),
         "market_paper": _collect_market_paper(_program_state_dir(), now),
+        "webui": _collect_webui(),
         "storage_breakdown": _collect_storage_breakdown(soren, PROD_ROOT),
         "storage_artifacts": _collect_tmp_shared_objects(now),
         "soren91_drop_profile": _collect_soren91_drop_profile(soren),

@@ -18,6 +18,8 @@ jobs:
           persist-credentials: false
           submodules: false
       - run: python3 -m unittest discover -s ops/vm_actions/tests -v
+      - name: Validate parent-owned operations brief (private handoff stays local)
+        run: python3 ops/vm_actions/ops_brief.py check-artifact
       - run: python3 -m unittest discover -s ops/self_repair/tests -v
       - name: External VM monitor watchdog contracts
         run: node --test ops/vm_monitor_watchdog/worker.test.mjs
@@ -52,3 +54,4 @@ jobs:
           ops/vm_actions/install_nethack_canary_smoke.sh
           ops/vm_actions/request_nethack_canary_smoke.sh
           ops/vm_actions/restart_webui.sh
+          ops/vm_actions/storage_reclaim.sh

@@ -23,6 +23,7 @@ from .corner_research import (
     prepare_research_context,
 )
 from .dashboard_snapshot import build_dashboard_snapshot
+from .narration_style import strip_leading_preamble
 from .performance import build_round_trips
 from .strategy_store import load_strategy_policy, policy_to_payload
 from .strategies import StrategyPolicy
@@ -53,14 +54,18 @@ def _safe_reason(exc: BaseException) -> str:
     return type(exc).__name__
 
 
-def _fmt_num(value, ndigits: int = 2) -> str | None:
-    """Format a spoken number with at most ``ndigits`` decimals.
+def _fmt_num(value) -> str | None:
+    """Format a number the way the corner is supposed to speak it.
 
-    Long raw decimals (e.g. ``7.843078654615100``) are tedious when read aloud,
-    so narration rounds to two places. Trailing zeros are stripped (``10000``
-    stays ``10,000``, not ``10,000.00``). Returns None when the value is not
-    numeric, or when rounding would collapse a nonzero value to zero (tiny
-    quantities like ``0.001``); callers then fall back to the raw string.
+    Values with a nonzero integer part drop the fraction entirely and are
+    rounded, not truncated: ``12345.67`` reads as ``12,346`` and ``-198.475``
+    as ``-198`` (owner request 2026-09-23: do not read decimals aloud). Only
+    sub-unit magnitudes — integer part zero, e.g. ``0.3`` or ``-0.5`` — keep
+    up to two decimals with trailing zeros stripped (``0.30`` → ``0.3``).
+
+    Returns None when the value is not numeric, or when two decimals would
+    collapse a nonzero tiny quantity to zero (``0.001``); callers then fall
+    back to the raw string so the value is never spoken as zero.
     """
     try:
         if value is None or isinstance(value, bool):
@@ -68,12 +73,18 @@ def _fmt_num(value, ndigits: int = 2) -> str | None:
         number = float(value)
     except (TypeError, ValueError, OverflowError):
         return None
-    if number != 0.0 and round(number, ndigits) == 0.0:
-        return None
     import math
     if not math.isfinite(number):
         return None
-    text = f"{number:,.{ndigits}f}".rstrip("0").rstrip(".")
+    ndigits = 2 if abs(number) < 1 else 0
+    if number != 0.0 and round(number, ndigits) == 0.0:
+        return None
+    text = f"{number:,.{ndigits}f}"
+    if ndigits:
+        # Only strip the fractional zeros: with no fraction at all the plain
+        # rstrip would eat the grouped integer's trailing zeros ("10,000" →
+        # "10,"), which is how this helper used to break for whole numbers.
+        text = text.rstrip("0").rstrip(".")
     return text if text not in ("", "-", "-0") else "0"
 
 
@@ -295,11 +306,17 @@ def build_prompt(facts: Mapping[str, object]) -> str:
         "売買判断の根拠を捏造してはいけません。\n"
         "- 表示中のチャートは表示専用で、売買判断は保存済みの5分足と戦略パラメータで行っている点を必要なら一言添える。\n"
         "【話し方】\n"
-        "- です・ます調の自然な話し言葉。結論を先に言い、その後に理由や数字を添える。\n"
+        "- です・ます調の自然な話し言葉。いちばん伝えたいことを最初の文で言い、その後に理由や数字を添える。\n"
         "- 各セグメントの最初の一文は、数字ではなく相場や判断の意味を先に言う。\n"
+        "- 冒頭に「結論からお伝えしますと」「まず結論ですが」のような前口上・枕詞を置かない。"
+        "「結論は、」「結論として」「結論から言うと」も含め、「結論」という語で話し始めない。"
+        "前置きなしで最初の文から内容そのものを言う。\n"
+        "- 解説は、一般の視聴者にすぐ伝わる、一般的で平易な言葉にする。専門用語・略語・専門家の言い回しは原則避け、"
+        "避けて通れない用語は、意味を一言で噛み砕いてから使う。抽象的な指標や戦略は、身近なたとえに置き換えて説明する。\n"
         "- factsを順番に復唱するだけは禁止。数字同士を比較し、意味を説明する。\n"
         "- 数字は根拠として必要な分だけ使い、数値を二つ以上続けて読んだら、必ず『だから何を見るか』を続ける。\n"
-        "- 金額・価格・指標などの数値は小数第2位までに丸めて言うこと（0.001のような小さい数量はそのまま）。factsの桁数をそのまま読み上げない。\n"
+        "- 金額・価格・指標などの数値は小数点以下を読まず、整数で読む（例: 12,346円）。ただし整数部が0の小さな数量"
+        "（0.3、-0.5 など1未満）だけは小数第2位まで言い、0.001のような極小数量はそのまま。factsの桁数をそのまま読み上げない。\n"
         "- 「見出しの段階なので」のような決まり文句を各項目で繰り返さないこと。\n"
         "- 軽いツッコミ、たとえ、意外性のある一言を適度に入れる。ただし事実を曲げるギャグは禁止。\n"
         "- 損失なら言い訳せず率直に言う。利益でも一時的な含み益だけで戦略成功と断定しない。\n"
@@ -347,6 +364,10 @@ def parse_script(text: str) -> dict:
         if not isinstance(value, str) or not value.strip():
             continue
         cleaned = value.strip().replace("\n", " ")
+        # A spoken lead-in (「結論からお伝えしますと、」) is generated because the
+        # prompt asks for the conclusion first; it carries no content, so it is
+        # dropped before the segment is stored/overlayed/spoken.
+        cleaned = strip_leading_preamble(cleaned)
         if len(cleaned) > MAX_SEGMENT_CHARS:
             cleaned = cleaned[:MAX_SEGMENT_CHARS]
         segments[key] = cleaned
@@ -958,18 +979,58 @@ def generate_corner_script(
 #
 # The scheduled/manual PAPER corner no longer runs for a fixed duration. It
 # generates the next fact-grounded segment one at a time and reads it as soon as
-# it is ready; when the narrator has nothing new to say the corner ends. Read
-# "covered" is a bounded list of short topic labels already spoken, so the model
-# can avoid repeating itself and decide when it is done.
+# it is ready; when the narrator has nothing new to say the corner ends.
+# "covered" is the full list of segments already spoken in this corner, each
+# summarised by covered_entry() as label + opening sentence + key figures.
+# Labels alone were not enough: on 2026-09-23 a 58-segment corner re-told the
+# same 理論値 comparison 9 times under fresh labels, and the list was also cut
+# to the latest 24 so early topics were forgotten entirely.
 
 NEXT_SCRIPT_LABEL = "RADIO:paper-next"
+
+COVERED_SUMMARY_CHARS = 60
+COVERED_MAX_FIGURES = 4
+# Figures that identify what a segment was about: a number with a unit or a
+# decimal part. Single-digit counts (「1銘柄」「4つ」) and timeframe names
+# (「5分足」) are too generic to tell segments apart, so they are skipped.
+_COVERED_FIGURE_RE = re.compile(
+    r"(?:マイナス)?(?:\d[\d,万億]*\.\d+|\d[\d,万億]+)"
+    r"(?:円|%|％|bps|ベーシスポイント|銘柄|市場|本|件|分|秒)(?!足)"
+    r"|(?:マイナス)?\d[\d,万億]*\.\d+"
+)
+_SENTENCE_END_RE = re.compile(r"[。！？!?]")
+
+
+def covered_entry(topic: object, text: object) -> str:
+    """Summarise one spoken segment for the narrator's "already said" list."""
+    label = str(topic or "").strip().replace("\n", " ")
+    body = strip_leading_preamble(str(text or "").strip().replace("\n", " "))
+    match = _SENTENCE_END_RE.search(body)
+    first = body[: match.end()] if match else body
+    if len(first) > COVERED_SUMMARY_CHARS:
+        first = first[:COVERED_SUMMARY_CHARS] + "…"
+    figures: list[str] = []
+    for found in _COVERED_FIGURE_RE.findall(body):
+        if found not in figures:
+            figures.append(found)
+        if len(figures) >= COVERED_MAX_FIGURES:
+            break
+    parts = [part for part in (label, first) if part]
+    entry = "：".join(parts)
+    if figures:
+        entry += f"（数字: {'、'.join(figures)}）"
+    return entry
 
 
 def build_next_prompt(facts: Mapping[str, object], covered: Sequence[object] | None = None) -> str:
     """Prompt for exactly one next narration segment (or an explicit done)."""
     facts_json = json.dumps(dict(facts), ensure_ascii=False, sort_keys=True)
     covered_list = [str(item).strip() for item in (covered or []) if str(item).strip()]
-    covered_text = "、".join(covered_list) if covered_list else "（まだ何も話していません）"
+    covered_text = (
+        "\n" + "\n".join(f"{index}. {item}" for index, item in enumerate(covered_list, start=1))
+        if covered_list
+        else "（まだ何も話していません）"
+    )
     return (
         "あなたはPAPER暗号資産コーナーのラジオMC兼リサーチャーです。"
         "以下の実データ(facts)だけを根拠に、まだ話していない切り口を1つ選び、"
@@ -979,11 +1040,20 @@ def build_next_prompt(facts: Mapping[str, object], covered: Sequence[object] | N
         "【切り口の例】今日の相場の見取り図、ニュースの含意、時間足チャート、戦略パラメータの狙い、"
         "損益と保有、直近約定の理由、往復の振り返り、次回改善で検証したいこと。\n"
         "【話し方】\n"
-        "- です・ます調の自然な話し言葉。結論を先に言い、その後に理由や数字を添える。\n"
+        "- です・ます調の自然な話し言葉。いちばん伝えたいことを最初の文で言い、その後に理由や数字を添える。\n"
+        "- 冒頭に「結論からお伝えしますと」「まず結論ですが」のような前口上・枕詞を置かない。"
+        "「結論は、」「結論として」「結論から言うと」も含め、「結論」という語で話し始めない。"
+        "前置きなしで最初の文から内容そのものを言う。\n"
+        "- 解説は、一般の視聴者にすぐ伝わる、一般的で平易な言葉にする。専門用語・略語・専門家の言い回しは原則避け、"
+        "避けて通れない用語は、意味を一言で噛み砕いてから使う。抽象的な指標や戦略は、身近なたとえに置き換えて説明する。\n"
         "- factsを順番に復唱するだけは禁止。数字同士を比較し、意味を説明する。\n"
-        "- 金額・価格・指標などの数値は小数第2位までに丸めて言うこと。\n"
+        "- 金額・価格・指標などの数値は小数点以下を読まず、整数で読む（例: 12,346円）。ただし整数部が0の小さな数量"
+        "（0.3、-0.5 など1未満）だけは小数第2位まで言い、0.001のような極小数量はそのまま。\n"
         "- 事実と推測を言い分け、ニュースの見出しをそのまま読み上げない。\n"
         "- 同じ文型・同じオチを繰り返さない。箇条書き、見出し、マークダウンは禁止。\n"
+        "【重複の禁止】話し済み一覧にある事実・比較・数字を主題にした話は、見出しや言い回しを変えても"
+        "同じ切り口とみなし、もう一度話さない（別の話の補足として一言触れるのは可）。"
+        "数字が少し更新されただけの同じ比較も話し済みとみなす。\n"
         "もう話す価値のある新しい切り口が無いと判断したら、次のJSONだけを出力してください。\n"
         '{"done": true}\n'
         "それ以外の場合は、次のJSONだけを出力してください。\n"
@@ -1010,6 +1080,9 @@ def parse_next_narration(text: str) -> dict:
     if not isinstance(body, str) or not body.strip():
         raise CornerScriptError("次の台本に有効な本文がありません")
     cleaned = body.strip().replace("\n", " ")
+    # Same spoken lead-in removal as parse_script: the segment is spoken as
+    # soon as it is generated, so the preamble must not survive parsing.
+    cleaned = strip_leading_preamble(cleaned)
     if len(cleaned) > MAX_SEGMENT_CHARS:
         cleaned = cleaned[:MAX_SEGMENT_CHARS]
     topic = data.get("topic")
