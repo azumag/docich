@@ -31,6 +31,7 @@ import re
 import time
 
 from . import viewer_memory
+from .contexts import format_batch_context
 
 # core/config.sh constants (hard-coded there, not env-overridable).
 COMMENT_BATCH_DEDUP_TTL = 900
@@ -110,25 +111,6 @@ _THUMBNAIL_PATTERNS = (
 
 def needs_thumbnail_context(comments: str) -> bool:
     return bool(comments) and any(re.search(p, comments, re.I) for p in _THUMBNAIL_PATTERNS)
-
-
-def format_batch_context(text: str) -> str:
-    """Per-comment neighbours block (the legacy stdout, blank line after each item)."""
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    items = []
-    for ln in (raw.strip() for raw in text.splitlines()):
-        if not ln:
-            continue
-        user, msg = ln.split(": ", 1) if ": " in ln else ("不明", ln)
-        items.append((user.strip(), msg.strip(), ln))
-    out = []
-    for i, (user, msg, _raw) in enumerate(items, start=1):
-        prev_raw = items[i - 2][2] if i > 1 else "（なし）"
-        next_raw = items[i][2] if i < len(items) else "（なし）"
-        same = "あり" if i > 1 and items[i - 2][0] == user else "なし"
-        out += [f"[{i}] {user}: {msg}", f"  直前: {prev_raw}", f"  直後: {next_raw}",
-                f"  直前が同一ユーザー: {same}", ""]
-    return "".join(line + "\n" for line in out)
 
 
 @dataclass
