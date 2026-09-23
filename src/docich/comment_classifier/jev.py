@@ -9,6 +9,11 @@ so there is no second transport, endpoint, model or credential selector here.
 - The requested model is fixed by the reviewed route profile
   (``DOCICH_JEV_ROUTE``, default ``direct``); ``COMMENT_CLASSIFIER_JEV_MODEL``
   is no longer read.
+- ``DOCICH_JEV_ROUTE`` may name one owner-chosen fallback (``direct,vercel``).
+  The fallback is tried in the same batch only after a fast provider failure
+  or while the primary is in cooldown; a timeout spends the batch's budget, so
+  that batch keeps the heuristic and the primary's cooldown sends the next
+  batches to the fallback. Each route has its own cooldown gate.
 - The credential is the selected route's own env name (``TYPESAFE_API_KEY``
   for direct, ``DOCICH_JEV_VERCEL_API_KEY`` for vercel).
 - Timeout and threshold stay purpose settings
@@ -20,7 +25,7 @@ so there is no second transport, endpoint, model or credential selector here.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import datetime as dt
 import fcntl
 import hashlib
@@ -32,7 +37,7 @@ import time
 import uuid
 
 from docich.semantic_decision import transport as _transport
-from docich.semantic_decision.routes import resolve_route
+from docich.semantic_decision.routes import parse_route_chain, resolve_route
 from docich.semantic_decision.validator import dumps, number, strict_json
 
 from . import heuristic
@@ -67,6 +72,10 @@ COOLDOWNS = {'auth_error': 300, 'rate_limited': 30, 'overloaded': 10,
 # Core outcomes that are configuration/input facts, not provider health:
 # recorded truthfully, never turned into a cooldown.
 NO_COOLDOWN_STATUSES = frozenset({'missing_key', 'invalid_config', 'input_limit'})
+# Outcomes after which the configured fallback may be tried in the same batch.
+# Not 'timeout' (the batch's latency budget is spent), nor busy/state/input
+# facts that another route would not change.
+FAILOVER_STATUSES = frozenset(set(COOLDOWNS) - {'timeout'} | {'cooldown', 'missing_key'})
 _IMPLEMENTATION_FILES = (Path(__file__), Path(heuristic.__file__))
 
 
@@ -75,13 +84,18 @@ class Config:
     timeout_ms: int = 1500
     min_confidence: float = 0.70
     route: str = 'direct'
+    fallback: str | None = None
 
     def __post_init__(self):
         if type(self.timeout_ms) is not int or not 50 <= self.timeout_ms <= 5000:
             raise ValueError('invalid_config')
         if not number(self.min_confidence):
             raise ValueError('invalid_config')
-        resolve_route(self.route)
+        parse_route_chain(self.route if self.fallback is None else f'{self.route},{self.fallback}')
+
+    @property
+    def chain(self) -> tuple[str, ...]:
+        return (self.route,) if self.fallback is None else (self.route, self.fallback)
 
     @property
     def model(self) -> str:
@@ -89,9 +103,10 @@ class Config:
 
     @classmethod
     def from_env(cls, env):
+        chain = parse_route_chain(env.get('DOCICH_JEV_ROUTE', 'direct'))
         return cls(int(env.get('COMMENT_CLASSIFIER_JEV_TIMEOUT_MS', '1500')),
                    float(env.get('COMMENT_CLASSIFIER_JEV_MIN_CONFIDENCE', '0.70')),
-                   env.get('DOCICH_JEV_ROUTE', 'direct'))
+                   chain[0], chain[1] if len(chain) > 1 else None)
 
 
 def build_request(comments, model):
@@ -158,9 +173,14 @@ def locked_file(path):
         os.close(fd)
 
 
+def gate_path(state_dir, route):
+    """Per-route cooldown; direct keeps the original file so live state carries over."""
+    return state_dir / ('gate.json' if route == 'direct' else f'gate-{route}.json')
+
+
 def gated_request(request, config, state_dir, env, transport):
     try:
-        with locked_file(state_dir / 'gate.json') as stream:
+        with locked_file(gate_path(state_dir, config.route)) as stream:
             now = time.time()
             try:
                 state = strict_json(stream.read(2048))
@@ -237,15 +257,31 @@ def classify(rows, config, env, state_dir, *, transport=docich_transport):
              'jev_ms': None, 'usage': None, 'estimated_usd': None, 'rows': details}
     if not positions:
         return output, event
-    key = env.get(resolve_route(config.route).credential_env, '')
-    if not _transport._valid_key(key):
-        result = {'status': 'missing_key', 'attempted': False}
-    else:
-        started = time.monotonic()
-        result = gated_request(request, config, state_dir, env, transport)
-        if result['attempted']:
-            event['jev_ms'] = round((time.monotonic() - started) * 1000, 3)
-    event.update(status=result['status'], attempted=result['attempted'])
+    attempts, used = [], config.route
+    for route in config.chain:
+        leg = replace(config, route=route, fallback=None)
+        used = route
+        try:
+            leg_request = request if route == config.route else build_request(candidates, leg.model)
+        except ValueError:
+            result = {'status': 'input_limit', 'attempted': False}
+        else:
+            key = env.get(resolve_route(route).credential_env, '')
+            if not _transport._valid_key(key):
+                result = {'status': 'missing_key', 'attempted': False}
+            else:
+                started = time.monotonic()
+                result = gated_request(leg_request, leg, state_dir, env, transport)
+                if result['attempted']:
+                    elapsed = round((time.monotonic() - started) * 1000, 3)
+                    event['jev_ms'] = round((event['jev_ms'] or 0) + elapsed, 3)
+        attempts.append({'route': route, 'status': result['status'], 'attempted': result['attempted']})
+        if result['status'] not in FAILOVER_STATUSES:
+            break
+    event.update(route=used, requested_model=resolve_route(used).requested_model,
+                 route_chain=list(config.chain), attempts=attempts, failover=len(attempts) > 1,
+                 status=result['status'],
+                 attempted=any(leg_result['attempted'] for leg_result in attempts))
     for pos in positions:
         details[pos]['status'] = result['status']
     if result['status'] != 'ok':

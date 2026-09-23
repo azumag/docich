@@ -1,4 +1,9 @@
-"""Reviewed, immutable routes. No endpoint/model overrides or automatic failover."""
+"""Reviewed, immutable routes. No endpoint/model overrides.
+
+Failover is never implicit: only an owner-configured ordered chain of reviewed
+routes (``parse_route_chain``, e.g. ``direct,vercel``) lets a consumer try the
+next route, and the consumer decides which outcomes may do so.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -32,3 +37,19 @@ def resolve_route(name: str = "direct") -> RouteProfile:
     if type(name) is not str or name not in _PROFILES:
         raise ValueError("invalid_config")
     return _PROFILES[name]
+
+
+def parse_route_chain(value="direct") -> tuple[str, ...]:
+    """``"direct"`` or an ordered, comma-separated chain of distinct routes.
+
+    At most one fallback; whitespace, empty items, unknown or repeated routes
+    are rejected rather than guessed.
+    """
+    if type(value) is not str:
+        raise ValueError("invalid_config")
+    names = tuple(value.split(","))
+    if not 1 <= len(names) <= 2 or len(set(names)) != len(names):
+        raise ValueError("invalid_config")
+    for name in names:
+        resolve_route(name)
+    return names

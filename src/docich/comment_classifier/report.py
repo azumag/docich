@@ -18,7 +18,7 @@ from pathlib import Path
 import sys
 import tempfile
 
-from docich.semantic_decision.routes import resolve_route
+from docich.semantic_decision.routes import parse_route_chain, resolve_route
 from docich.semantic_decision.validator import dumps, number, strict_json
 
 from . import classify_file, jev
@@ -47,6 +47,7 @@ def summarize(events):
         'request_status_counts': dict(Counter(e['status'] for e in events)),
         'row_status_counts': dict(Counter(r['status'] for r in rows)),
         'route_counts': dict(Counter(e.get('route', 'direct') for e in events)),
+        'failover_batches': sum(e.get('failover') is True for e in events),
         'jev_coverage': ratio(sum(r['status'] == 'jev' for r in rows), len(rows)),
         'fallback_rate_excluding_local_notifications': ratio(
             sum(r['status'] not in ('jev', 'local_notification') for r in rows),
@@ -89,7 +90,7 @@ def score_predictions(pairs):
 
 def evaluate(path, *, env=None, transport=None):
     env = dict(os.environ if env is None else env)
-    profile = resolve_route(env.get('DOCICH_JEV_ROUTE', 'direct'))
+    profile = resolve_route(parse_route_chain(env.get('DOCICH_JEV_ROUTE', 'direct'))[0])
     if not env.get(profile.credential_env):
         raise ValueError('missing_key')
     examples = []

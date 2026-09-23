@@ -173,6 +173,102 @@ def test_vercel_route_uses_its_own_credential(tmp_path):
     assert event["route"] == "vercel" and event["estimated_usd"] is None  # cost unknown, never 0
 
 
+# ------------------------------------------------------------ route failover
+
+BOTH_KEYS = {"TYPESAFE_API_KEY": "test-key", "DOCICH_JEV_VERCEL_API_KEY": "v-key"}
+CHAIN = jev.Config(route="direct", fallback="vercel")
+
+
+def routed(outcomes):
+    """Per-route scripted transport: outcomes[route] -> status (or 'ok')."""
+    calls = []
+
+    def transport(req, config, env):
+        calls.append((config.route, req["model"], config.fallback))
+        status = outcomes[config.route]
+        return {"status": "ok", "data": response(req)} if status == "ok" else {"status": status}
+    return transport, calls
+
+
+def test_route_chain_is_parsed_strictly_from_the_one_route_key():
+    assert jev.Config.from_env({"DOCICH_JEV_ROUTE": "direct,vercel"}).chain == ("direct", "vercel")
+    assert jev.Config.from_env({}).chain == ("direct",)
+    for bad in ("direct,direct", "direct, vercel", "direct,vercel,direct", "direct,", "x,vercel"):
+        with pytest.raises(ValueError):
+            jev.Config.from_env({"DOCICH_JEV_ROUTE": bad})
+
+
+def test_healthy_primary_never_touches_the_fallback(tmp_path):
+    transport, calls = routed({"direct": "ok", "vercel": "ok"})
+    _, event = classify([row()], tmp_path, transport, env=BOTH_KEYS, config=CHAIN)
+    assert calls == [("direct", "jev-1.13.0", None)]
+    assert event["route"] == "direct" and event["failover"] is False
+    assert event["attempts"] == [{"route": "direct", "status": "ok", "attempted": True}]
+    assert not (tmp_path / "gate-vercel.json").exists()
+
+
+@pytest.mark.parametrize("reason", sorted(jev.FAILOVER_STATUSES - {"cooldown", "missing_key"}))
+def test_fast_primary_failure_fails_over_once_with_the_fallbacks_own_model(tmp_path, reason):
+    transport, calls = routed({"direct": reason, "vercel": "ok"})
+    output, event = classify([row()], tmp_path, transport, env=BOTH_KEYS, config=CHAIN)
+    # One request per route, the fallback leg carrying no further fallback.
+    assert calls == [("direct", "jev-1.13.0", None), ("vercel", "typesafe-ai/jev", None)]
+    assert output[0]["category"] == "stream_bug_report"
+    assert event["status"] == "ok" and event["route"] == "vercel" and event["failover"] is True
+    assert event["requested_model"] == "typesafe-ai/jev" and event["estimated_usd"] is None
+    assert [a["route"] for a in event["attempts"]] == ["direct", "vercel"]
+    # The failed primary is cooled down on its own gate only.
+    assert json.loads((tmp_path / "gate.json").read_text())["until"] > time.time()
+    assert json.loads((tmp_path / "gate-vercel.json").read_text())["until"] == 0
+
+
+def test_primary_timeout_does_not_spend_a_second_budget_in_the_same_batch(tmp_path):
+    transport, calls = routed({"direct": "timeout", "vercel": "ok"})
+    output, event = classify([row()], tmp_path, transport, env=BOTH_KEYS, config=CHAIN)
+    assert calls == [("direct", "jev-1.13.0", None)]
+    assert output == [row()] and event["status"] == "timeout" and event["failover"] is False
+    # ...but the primary's cooldown sends the next batch straight to the fallback.
+    transport, calls = routed({"direct": "ok", "vercel": "ok"})
+    _, event = classify([row()], tmp_path, transport, env=BOTH_KEYS, config=CHAIN)
+    assert calls == [("vercel", "typesafe-ai/jev", None)]
+    assert event["attempts"][0] == {"route": "direct", "status": "cooldown", "attempted": False}
+    assert event["status"] == "ok" and event["route"] == "vercel"
+
+
+def test_missing_primary_key_uses_the_fallback_without_a_primary_request(tmp_path):
+    transport, calls = routed({"direct": "ok", "vercel": "ok"})
+    _, event = classify([row()], tmp_path, transport, env={"DOCICH_JEV_VERCEL_API_KEY": "v-key"}, config=CHAIN)
+    assert calls == [("vercel", "typesafe-ai/jev", None)]
+    assert event["attempts"][0] == {"route": "direct", "status": "missing_key", "attempted": False}
+
+
+def test_both_routes_failing_keeps_the_heuristic_and_reports_the_last_leg(tmp_path):
+    transport, calls = routed({"direct": "server_error", "vercel": "rate_limited"})
+    output, event = classify([row()], tmp_path, transport, env=BOTH_KEYS, config=CHAIN)
+    assert len(calls) == 2 and output == [row()]
+    assert event["status"] == "rate_limited" and event["route"] == "vercel" and event["attempted"]
+
+
+@pytest.mark.parametrize("status", ["input_limit", "invalid_config"])
+def test_non_health_outcomes_do_not_fail_over(tmp_path, status):
+    transport, calls = routed({"direct": status, "vercel": "ok"})
+    _, event = classify([row()], tmp_path, transport, env=BOTH_KEYS, config=CHAIN)
+    assert [c[0] for c in calls] == ["direct"] and event["failover"] is False
+
+
+def test_a_busy_primary_gate_does_not_double_the_traffic_onto_the_fallback(tmp_path):
+    transport, calls = routed({"direct": "ok", "vercel": "ok"})
+    with jev.locked_file(jev.gate_path(tmp_path, "direct")):
+        _, event = classify([row()], tmp_path, transport, env=BOTH_KEYS, config=CHAIN)
+    assert calls == [] and event["status"] == "busy" and event["failover"] is False
+
+
+def test_single_route_config_never_fails_over(tmp_path):
+    transport, calls = routed({"direct": "server_error", "vercel": "ok"})
+    _, event = classify([row()], tmp_path, transport, env=BOTH_KEYS)
+    assert [c[0] for c in calls] == ["direct"] and event["route_chain"] == ["direct"]
+
+
 @pytest.mark.parametrize("reason", sorted(jev.COOLDOWNS))
 def test_provider_failures_fall_back_with_unknown_usage(tmp_path, reason):
     output, event = classify([row()], tmp_path, lambda *_: {"status": reason})
@@ -360,8 +456,12 @@ def test_report_denominators_and_abstentions(tmp_path):
     result = report.summarize([success, missing])
     assert result["comments"] == 2 and result["requests_attempted"] == 1
     assert result["jev_coverage"] == .5 and result["agreement_sample_count"] == 1
-    assert result["route_counts"] == {"direct": 2}
+    assert result["route_counts"] == {"direct": 2} and result["failover_batches"] == 0
     assert result["latency_ms"]["classification_ms"]["p95"] == 20
+    transport, _ = routed({"direct": "server_error", "vercel": "ok"})
+    _, failed_over = classify([row()], tmp_path / "c", transport, env=BOTH_KEYS, config=CHAIN)
+    result = report.summarize([success, failed_over])
+    assert result["route_counts"] == {"direct": 1, "vercel": 1} and result["failover_batches"] == 1
     scored = report.score_predictions([("chitchat", "chitchat"), ("stream_bug_report", None)])
     assert scored["coverage"] == .5 and scored["correct_fraction_all"] == .5
     assert scored["accuracy_on_available"] == 1

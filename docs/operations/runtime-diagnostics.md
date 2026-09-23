@@ -46,7 +46,8 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   "semantic_decision": {"present": true, "readable": true,
                         "comment_classifier_backend": "jev", "backend": "jev",
                         "route": "direct", "requested_model": "jev-1.13.0",
-                        "credential": "present"},
+                        "credential": "present", "fallback_route": "vercel",
+                        "fallback_credential": "present"},
   "queues": {"lanes": {"radio": {"locked": true, "owner_alive": true, "age_sec": 43}},
              "stale_locks": 0, "queue_giveups_15m": 0},
   "ai": {"attempts_15m": 0, "failures_15m": 0, "rate_limits_15m": 0,
@@ -154,7 +155,10 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   そのまま通す。出力は `backend`（`jev` = `COMMENT_CLASSIFIER_BACKEND=jev` で
   Jev を呼ぶ / `heuristic` = heuristic のみ / `unknown`）/ `route` /
   `requested_model` / `credential`（`present`/`absent`/`not_applicable`/`unknown`
-  のみ、値は不可）の固定4項目。`COMMENT_CLASSIFIER_BACKEND` は非秘密の enum
+  のみ、値は不可）/ `fallback_route` / `fallback_credential` の固定6項目。
+  `route` は優先経路。`DOCICH_JEV_ROUTE=direct,vercel` のように予備経路が
+  設定されているときは、`fallback_route` と、その経路自身の鍵の有無を
+  `fallback_credential` に出す（予備経路が無いときは `null` / `not_applicable`）。`COMMENT_CLASSIFIER_BACKEND` は非秘密の enum
   なので `comment_classifier_backend` として値そのまま（64字上限）も出す。
   旧 soviet_now adapter だけが読んでいた `DOCICH_SEMANTIC_BACKEND` は廃止済みで、
   読まない。
