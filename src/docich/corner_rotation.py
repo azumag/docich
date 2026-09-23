@@ -389,6 +389,36 @@ class CornerRotationManager:
                 # and stable canonical owner; never infer this from age alone.
                 if manual is not None:
                     adapter = self.adapters.get(manual.get("corner"))
+                    manager = getattr(adapter, "manager", None)
+                    run_rotation = getattr(manager, "run_rotation", None)
+                    state_path = getattr(adapter, "state_path", None)
+                    if (callable(run_rotation) and state_path is not None
+                            and state_path.name == manual.get("state_file")):
+                        owned = [raw for raw in adapter.observations()
+                                 if raw.get("rotation_request_id") == manual.get("request_id")]
+                        if len(owned) > 1:
+                            raise RotationError("ambiguous restoring manual owner",
+                                                kind="execution-unverified")
+                        if owned and owned[0].get("status") == "restoring":
+                            # Replay the exact reservation through the common
+                            # program-slot and GameSwitchCoordinator gates.
+                            resumed = self.executor.execute(adapter, manual)
+                            resumed_status = (resumed if isinstance(resumed, str)
+                                              else getattr(resumed, "status", None))
+                            if resumed_status in {"completed", "interrupted"}:
+                                settled_at = timestamp(self.clock())
+                                if settled_at < now:
+                                    raise RotationError("clock regressed", kind="invalid-state")
+                                now = settled_at
+                                outcome = self._resolve_reservation(
+                                    state, manual, now, manual=True
+                                )
+                                self.save(state)
+                                return outcome
+                            if resumed_status in {"queued", "waiting", "already-running"}:
+                                return self._wait(state, "manual-execution-pending")
+                            raise RotationError("manual restoring retry unverified",
+                                                kind="execution-unverified")
                     reconcile = getattr(adapter, "reconcile_failed_start", None)
                     if (callable(reconcile)
                             and getattr(adapter, "state_path", None) is not None
@@ -413,7 +443,9 @@ class CornerRotationManager:
                     )
                     if not completed:
                         return self._wait(state, "manual-request-needs-resume-or-recovery")
-                    state.pop("manual_pending")
+                    outcome = self._resolve_reservation(state, manual, now, manual=True)
+                    self.save(state)
+                    return outcome
                 eligible, excluded = self._eligible()
                 interval = DAY / len(eligible) if eligible else None
                 state.update(

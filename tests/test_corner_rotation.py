@@ -1299,6 +1299,81 @@ def test_recover_returns_a_started_less_manual_reservation_to_the_operator(setup
     assert len(executor.calls) == calls
 
 
+def test_tick_retries_queued_manual_restoration_with_same_request(setup):
+    from types import SimpleNamespace
+
+    g, clock, _, executor, make = setup
+    manager, request_id = _latch_manual(make, executor, clock, corner="retro")
+    raw = state(manager)
+    raw.update(status="waiting", reason="manual-execution-pending")
+    raw["manual_pending"]["state_file"] = "retro_corner.json"
+    manager.path.write_text(json.dumps(raw))
+    adapter = manager.adapters["retro"]
+    adapter.state_path = Path(g.state_dir) / "retro_corner.json"
+    adapter.manager = SimpleNamespace(run_rotation=lambda identity: None)
+    adapter.states = [{
+        "status": "restoring", "rotation_request_id": request_id,
+        "started_at": clock[0] - 10,
+    }]
+    calls_before = len(executor.calls)
+
+    retry_count = 0
+
+    def resume_exact_request(observed_adapter, request):
+        nonlocal retry_count
+        retry_count += 1
+        executor.calls.append(dict(request))
+        assert observed_adapter is adapter
+        if retry_count == 1:
+            return "queued"
+        observed_adapter.states = [{
+            "status": "completed", "rotation_request_id": request_id,
+            "started_at": clock[0] - 10, "completed_at": clock[0] - 1,
+        }]
+        return "completed"
+
+    executor.execute = resume_exact_request
+    first = manager.tick()
+    assert first == {"status": "waiting", "reason": "manual-execution-pending"}
+    assert state(manager)["manual_pending"]["request_id"] == request_id
+    assert adapter.states[0]["status"] == "restoring"
+
+    outcome = manager.tick()
+
+    assert outcome == {"status": "ready", "corner": "retro",
+                      "result": "completed", "recovered": True}
+    assert executor.calls[calls_before:] == [raw["manual_pending"], raw["manual_pending"]]
+    final = state(manager)
+    assert final["manual_pending"] is None
+    assert final["status"] == "ready"
+    assert final["last_result"]["request_id"] == request_id
+    assert any(row["corner"] == "retro" and row["source"] == "manual-completion"
+               for row in final["history"])
+
+
+def test_tick_does_not_commit_restoring_owner_without_terminal_corner_state(setup):
+    from types import SimpleNamespace
+
+    g, clock, _, executor, make = setup
+    manager, request_id = _latch_manual(make, executor, clock, corner="retro")
+    raw = state(manager)
+    raw.update(status="waiting", reason="manual-execution-pending")
+    raw["manual_pending"]["state_file"] = "retro_corner.json"
+    manager.path.write_text(json.dumps(raw))
+    adapter = manager.adapters["retro"]
+    adapter.state_path = Path(g.state_dir) / "retro_corner.json"
+    adapter.manager = SimpleNamespace(run_rotation=lambda identity: None)
+    adapter.states = [{"status": "restoring", "rotation_request_id": request_id}]
+    executor.execute = lambda observed_adapter, request: "completed"
+
+    with pytest.raises(RotationError, match="needs corner-level recovery"):
+        manager.tick()
+
+    final = state(manager)
+    assert final["status"] == "recovery_required"
+    assert final["manual_pending"]["request_id"] == request_id
+
+
 def test_tick_commits_exact_failed_game_start_without_relaunch(setup):
     g, clock, _, executor, make = setup
     manager, request_id = _latch_manual(make, executor, clock, corner="retro")
