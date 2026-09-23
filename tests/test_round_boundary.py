@@ -372,7 +372,13 @@ def test_boundary_timeout_retains_old_active_without_cleanup():
     with tempfile.TemporaryDirectory() as tmp:
         state_dir = Path(tmp) / "run"
         factory = BoundaryFactory()
-        store, coordinator = _coordinator(factory, state_dir)
+        # This test expects the *request* deadline (timeout_s=0.2) to win and
+        # produce ERROR_TIMEOUT. With the fixture default round_boundary_s=0.2
+        # both deadlines were equal, so under CI load the boundary step could
+        # time out first and finish a rollback, surfacing "rolled_back" instead
+        # of "failed" (#973). Keep the boundary step timeout out of the race,
+        # the same way #985 fixed the other two fixtures in this file.
+        store, coordinator = _coordinator(factory, state_dir, round_boundary_s=5.0)
         assert coordinator.start("nethack").status == "succeeded"
         old = factory.adapters[("nethack", 1)]
         result = coordinator.switch("robots", timeout_s=0.2)
