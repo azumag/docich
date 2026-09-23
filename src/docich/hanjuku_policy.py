@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 
 from . import hanjuku_chart as chart
-from .hanjuku_font import TextLine
+from .hanjuku_font import UNKNOWN, TextLine
 from .hanjuku_screen import HEADER as HEADER_RE, Screen, castle_roofs
 
 NAME = chart.HERO
@@ -40,7 +40,9 @@ def pad(button, frames=6):
 def _record(mem, kind, **fields):
     rec = {'decision': kind, 'chart_step': fields.pop('chart_step', mem.get('active')),
            'strategy_variant': fields.pop('strategy_variant', mem.get('variant', 'chart')),
-           'chapter': mem.get('chapter')}
+           'chapter': mem.get('chapter'), 'deviation_reason': None,
+           'expected_metric': None, 'observed_metric': None,
+           'resulting_stage': None, 'resulting_event': None}
     rec.update(fields)
     mem.setdefault('_records', []).append(rec)
     return rec
@@ -94,9 +96,13 @@ def kana_cell(ch):
 
 def name_step(screen: Screen, mem):
     box = next((line for line in screen.lines if 48 <= line.y <= 62), None)
-    typed = ''.join(box.words(64, 160)) if box else ''
+    typed = ''.join(box.span(64, 160).split()) if box else ''
     name = mem.setdefault('name', {'target': NAME, 'done': False, 'inputs': 0})
     name['typed'] = typed
+    if UNKNOWN in typed:
+        _record(mem, 'name_wait', chart_step='name', typed=typed,
+                reason='状況判定保留: 名前欄に未分類の文字があるため入力を保留')
+        return []
     if typed == NAME:
         _record(mem, 'name_confirm', chart_step='name', typed=typed,
                 reason='名前欄の実表示がどうしに一致したためSTARTで確定')
@@ -394,7 +400,7 @@ def deploy_step(screen: Screen, mem):
 
 # ---------------------------------------------------------------- battles
 def _battle_context(mem, ally):
-    """Castle/side/step for a battle, only when a message or order matches the ally."""
+    """Only a matching attack message establishes a battle location and side."""
     attack = mem.get('attack') or {}
     captured = set(mem.get('captured', []))
     if attack.get('side') == 'defense' or (attack.get('general') and attack.get('general') == ally):
@@ -405,8 +411,8 @@ def _battle_context(mem, ally):
     captured = set(mem.get('captured', []))
     for castle, info in (mem.get('launched') or {}).items():
         if info.get('general') == ally and castle not in captured:
-            return {'castle': castle, 'side': 'attack', 'step': info.get('step'),
-                    'context': 'inferred_from_order'}
+            return {'castle': None, 'side': None, 'step': info.get('step'),
+                    'context': 'unclassified_location'}
     return {'castle': None, 'side': None, 'step': None, 'context': 'unclassified'}
 
 
@@ -556,10 +562,8 @@ def battle_end(mem, next_kind):
     resulting = None
     if outcome == 'win' and boss and cur.get('enemy') == boss:
         resulting = f"chapter_{mem['chapter']}_boss_defeated"
-        mem['chapter'] = (mem.get('chapter') or 0) + 1
-        mem['variant'] = 'chart' if chart.orders(mem['chapter']) else 'chart_unavailable'
-        mem['captured'] = []
-        mem['orders'] = {}
+        # A boss HP reading proves this battle result, not the next chapter.
+        # Only a visible chapter header may advance and reset route state.
     elif outcome == 'win' and castle and cur.get('side') == 'attack':
         resulting = f'captured:{castle}'
     elif outcome == 'loss' and castle and cur.get('side') == 'defense':
@@ -568,7 +572,7 @@ def battle_end(mem, next_kind):
             ally=cur.get('ally'), castle=castle, side=cur.get('side'), outcome=outcome,
             observed_metric={'enemy_hp': enemy_hp, 'ally_hp': ally_hp,
                              'cards_used': cur.get('cards_used', [])},
-            resulting_event=resulting or outcome, next_screen=next_kind,
+            resulting_event=resulting or outcome, resulting_stage=None, next_screen=next_kind,
             reason='戦闘終了時のHP表示から判定' if outcome != 'unclassified'
             else '最終HPが0/非0で確定しないため未分類')
 
@@ -803,14 +807,28 @@ def observe_events(screen: Screen, mem):
     """Record chart-relevant facts that need no input (month header, harvest)."""
     header = screen.header
     if header:
+        chapter = header.get('chapter')
+        if chapter and chapter != mem.get('chapter'):
+            previous = mem.get('chapter')
+            # Route state belongs to the measured map of one chapter. Keep
+            # run-wide counters/name evidence, never carry coordinates/orders.
+            for key in ('active', 'anchor', 'attack', 'battle', 'battle_seen',
+                        'captured', 'card_override', 'cursor', 'egg_battle',
+                        'expect_menu', 'general_override', 'launched', 'month_exit',
+                        'nav_last', 'orders', 'picked', 'retries', 'shop',
+                        'source_override', 'uncertain', 'month'):
+                mem.pop(key, None)
+            mem['chapter'] = chapter
+            mem['variant'] = 'chart' if chart.orders(chapter) else 'chart_unavailable'
+            _record(mem, 'chapter_seen', previous_stage=previous,
+                    observed_metric={'chapter': chapter}, resulting_stage=chapter,
+                    reason='画面の章表示を確認し、前章の座標・出撃・購入状態を初期化')
         key = _month_key(header)
         if mem.get('month') != key:
             mem['month'] = key
             mem['gold'] = header['gold']
             _record(mem, 'month_seen', month=key, gold=header['gold'], reason='月の表示')
         mem['gold'] = header['gold']
-        if header.get('chapter') and header['chapter'] != mem.get('chapter'):
-            mem['chapter'] = header['chapter']
     if 'きょうさく' in screen.text and not mem.get('poor_harvest_' + str(mem.get('month'))):
         mem['poor_harvest_' + str(mem.get('month'))] = True
         _record(mem, 'poor_harvest', deviation_reason='reset_forbidden',

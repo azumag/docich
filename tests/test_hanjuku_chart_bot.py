@@ -256,36 +256,52 @@ def write_candidates(runtime, items):
             stream.write(json.dumps(item, ensure_ascii=False) + '\n')
 
 
-def test_narration_enqueues_one_line_off_thread_with_dedupe_and_cooldown(tmp_path):
+def test_narration_enqueues_one_line_off_thread_with_dedupe_and_cooldown(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from docich.game_switch import atomic_write_json
+    identity = {'game': 'hanjuku-hero', 'runtime_id': 'g1-test', 'generation': 1, 'lease_id': 'lease-1'}
+    g = SimpleNamespace(state_dir=tmp_path)
+    atomic_write_json(tmp_path / 'hanjuku_run.json', identity)
+    monkeypatch.setattr('docich.agent.fence.read_canonical', lambda _: {'active': identity})
     sent, release = [], threading.Event()
+    entered = threading.Event()
 
-    def slow_enqueue(g, text, *, context, speaker):
+    def slow_enqueue(g, text, *, context, speaker, runtime_fence):
+        assert runtime_fence == {**identity, "expires_at": now + 20}
+        entered.set()
         release.wait(5)
         sent.append((text, context))
     now = time.time()
     write_candidates(tmp_path, [{'seq': 1, 'at': now, 'key': 'a', 'text': '古い候補'},
-                                {'seq': 2, 'at': now, 'key': 'b', 'text': '新しい候補'}])
+                                {'seq': 2, 'at': now, 'key': 'b', 'text': '新しい候補', **identity}])
     started = time.monotonic()
-    chosen = hanjuku_narration.consider(None, Game(), tmp_path, now=now, enqueue=slow_enqueue)
+    chosen = hanjuku_narration.consider(g, Game(), tmp_path, now=now, enqueue=slow_enqueue)
     assert time.monotonic() - started < 1          # never waits for the audio queue
     assert chosen['seq'] == 2
-    release.set()
+    try:
+        assert entered.wait(1)
+        # Slow queue I/O must not retain the game-switch shared lock.
+        from docich.game_switch import GameSwitchStore
+        with GameSwitchStore(tmp_path).lock(exclusive=True):
+            pass
+    finally:
+        release.set()
     for _ in range(50):
         if sent:
             break
         time.sleep(.05)
-    assert sent == [('新しい候補', 'hanjuku:commentary')]
+    assert sent == [('新しい候補', 'hanjuku_commentary')]
     time.sleep(.1)
     log = [json.loads(l) for l in (tmp_path / 'hanjuku_narration.jsonl').read_text().splitlines()]
     assert {'seq': 1, 'status': 'skipped:superseded'}.items() <= log[0].items()
     assert log[-1]['status'] == 'enqueued'
     # Same key, same text or inside the cooldown: skipped, not queued.
     write_candidates(tmp_path, [{'seq': 3, 'at': now + 5, 'key': 'c', 'text': '別の候補'}])
-    assert hanjuku_narration.consider(None, Game(), tmp_path, now=now + 5, enqueue=slow_enqueue) is None
+    assert hanjuku_narration.consider(g, Game(), tmp_path, now=now + 5, enqueue=slow_enqueue) is None
     write_candidates(tmp_path, [{'seq': 4, 'at': now + 40, 'key': 'd', 'text': '新しい候補'}])
-    assert hanjuku_narration.consider(None, Game(), tmp_path, now=now + 40, enqueue=slow_enqueue) is None
+    assert hanjuku_narration.consider(g, Game(), tmp_path, now=now + 40, enqueue=slow_enqueue) is None
     write_candidates(tmp_path, [{'seq': 5, 'at': now + 80, 'key': 'e', 'text': None, 'status': 'held'}])
-    assert hanjuku_narration.consider(None, Game(), tmp_path, now=now + 80, enqueue=slow_enqueue) is None
+    assert hanjuku_narration.consider(g, Game(), tmp_path, now=now + 80, enqueue=slow_enqueue) is None
     statuses = [json.loads(l)['status'] for l in (tmp_path / 'hanjuku_narration.jsonl').read_text().splitlines()]
     assert statuses[-3:] == ['skipped:cooldown', 'skipped:repeat', 'skipped:held']
 
@@ -366,7 +382,8 @@ def test_battle_without_matching_message_or_order_is_not_attributed_to_a_castle(
            'launched': {'ゴーメン': {'general': 'どうし', 'step': '1-A2'}}}
     screen = Screen(lines=[], hand=None, text='', battle=Battle('クミン', 27, 'どうし', 90), kind='battle')
     policy.battle_step(screen, mem); policy.battle_step(screen, mem)
-    assert (mem['battle']['castle'], mem['battle']['step']) == ('ゴーメン', '1-A2')
+    assert (mem['battle']['castle'], mem['battle']['step']) == (None, '1-A2')
+    assert mem['battle']['side'] is None
     mem = {'chapter': 1, 'attack': {'general': 'ココット', 'castle': 'ジョンリギ', 'side': 'attack'}}
     policy.battle_step(screen, mem); policy.battle_step(screen, mem)
     assert mem['battle']['castle'] is None and mem['battle']['context'] == 'unclassified'
@@ -459,3 +476,155 @@ def test_narration_delivery_summary_counts_without_text(tmp_path):
         {'status': 'enqueued', 'text': 'a'}, {'status': 'skipped:cooldown'}, {'status': 'skipped:held'},
         {'status': 'delivery_failed'}]) + '\n')
     assert hanjuku_narration.delivery_summary(tmp_path) == {'enqueued': 1, 'delivery_failed': 1, 'skipped': 2}
+
+
+def test_name_confirmation_preserves_unknown_tiles_instead_of_erasing_them():
+    from docich.hanjuku_screen import Screen
+    from docich.hanjuku_font import TextLine
+    screen = Screen(lines=[TextLine(55, ((64, 'ど'), (72, UNKNOWN), (80, 'う'), (88, 'し')))],
+                    hand=None, text='', kind='name_entry')
+    mem = {}
+    assert policy.name_step(screen, mem) == []
+    assert not mem['name']['done']
+    assert mem['_records'][-1]['decision'] == 'name_wait'
+    assert UNKNOWN in mem['name']['typed']
+
+
+def test_unreadable_name_screen_never_uses_legacy_confirmation(monkeypatch):
+    from docich import hanjuku_bot, hanjuku_screen
+    monkeypatch.setattr(hanjuku_bot, 'classify', lambda frame: 'name')
+    monkeypatch.setattr(hanjuku_screen, 'parse', lambda *a, **k:
+                        hanjuku_screen.Screen(lines=[], hand=None, text='', kind='unknown'))
+    state = {}
+    for _ in range(3):
+        actions, state = hanjuku_bot.decide(Canvas().frame(), state)
+        assert actions == []
+        assert state['_records'][-1]['decision'] == 'name_wait'
+    assert not state['policy'].get('name', {}).get('done')
+
+
+@pytest.mark.parametrize('step,ally,hp,expected', [
+    ('1-V2', 'ヴィーナス', 60, 'フットバース'),
+    ('1-C2', 'ココット', 14, None),
+    ('1-C2', 'ココット', 13, 'ダイチスイム'),
+    ('1-A2', 'どうし', 25, None),
+    ('1-A2', 'どうし', 24, 'フットバース'),
+])
+def test_garbanzo_tactics_follow_each_generals_chart_branch(step, ally, hp, expected):
+    from docich.hanjuku_screen import Battle, Screen
+    mem = {'chapter': 1, 'attack': {'general': ally, 'castle': None, 'side': 'attack', 'step': step}}
+    screen = Screen(lines=[], hand=None, text='', battle=Battle('ガルバンゾー', hp, ally, 60), kind='battle')
+    assert policy.battle_step(screen, mem) == []
+    actions = policy.battle_step(screen, mem)
+    if expected is None:
+        assert actions == [] and not mem['battle'].get('card_flow')
+    else:
+        assert actions[0]['buttons'] == ['b']
+        assert mem['battle']['card_flow']['card'] == expected
+        assert mem['_records'][-1]['chart_step'] == step
+
+
+def test_route_order_is_not_evidence_of_a_castle_capture():
+    from docich.hanjuku_screen import Battle, Screen
+    mem = {'chapter': 1, 'launched': {'キカンドン': {'general': 'どうし', 'step': '1-A1'}}}
+    screen = Screen(lines=[], hand=None, text='', battle=Battle('ミント', 0, 'どうし', 90), kind='battle')
+    policy.battle_step(screen, mem); policy.battle_step(screen, mem)
+    policy.battle_end(mem, 'map'); policy.battle_end(mem, 'map')
+    assert mem['stats']['wins'] == 1
+    assert not mem.get('captured')
+    assert mem['_records'][-1]['resulting_event'] == 'win'
+
+
+def test_boss_win_does_not_invent_a_new_chapter():
+    mem = {'chapter': 1, 'battle': {'enemy': 'クイーン', 'ally': 'どうし', 'enemy_hp': 0,
+                                   'ally_hp': 70, 'castle': None, 'side': None, 'cards_used': []}}
+    policy.battle_end(mem, 'map'); policy.battle_end(mem, 'map')
+    assert mem['chapter'] == 1
+    assert mem['_records'][-1]['resulting_event'] == 'chapter_1_boss_defeated'
+    assert mem['_records'][-1]['resulting_stage'] is None
+
+
+def test_visible_chapter_transition_clears_old_route_state_and_records_evidence():
+    from docich.hanjuku_screen import Screen
+    mem = {'chapter': 1, 'active': '1-A2', 'orders': {'1-A2': 'launched'},
+           'captured': ['キカンドン'], 'launched': {'ゴーメン': {'general': 'どうし'}},
+           'cursor': [295, 606], 'shop': {'key': '1-5'}, 'retries': {'1-A2': 2},
+           'name': {'target': 'どうし', 'done': True}, 'stats': {'wins': 4}}
+    screen = Screen(lines=[], hand=None, text='', kind='main_menu',
+                    header={'chapter': 2, 'year': 1, 'month': 6, 'gold': 294})
+    policy.observe_events(screen, mem)
+    assert mem['chapter'] == 2 and mem['variant'] == 'chart_unavailable'
+    assert mem['name']['done'] and mem['stats']['wins'] == 4
+    for key in ('active', 'orders', 'captured', 'launched', 'cursor', 'shop', 'retries'):
+        assert not mem.get(key)
+    rec = next(r for r in mem['_records'] if r['decision'] == 'chapter_seen')
+    assert rec['observed_metric'] == {'chapter': 2}
+    assert rec['resulting_stage'] == 2 and rec['previous_stage'] == 1
+    assert all(r['chapter'] == 2 for r in mem['_records'])
+    mem['orders'] = {'2-A1': 'launched'}
+    policy.observe_events(screen, mem)
+    assert mem['orders'] == {'2-A1': 'launched'}
+
+
+@pytest.mark.parametrize('change', ['lease', 'game', 'terminal'])
+def test_narration_rechecks_identity_after_thread_dispatch(tmp_path, monkeypatch, change):
+    from types import SimpleNamespace
+    from docich.agent import fence
+    from docich.game_switch import atomic_write_json
+    identity = {'game': 'hanjuku-hero', 'runtime_id': 'g1-test', 'generation': 1, 'lease_id': 'lease-1'}
+    active = dict(identity)
+    atomic_write_json(tmp_path / 'hanjuku_run.json', identity)
+    monkeypatch.setattr(fence, 'read_canonical', lambda _: {'active': active})
+    ready, release = threading.Event(), threading.Event()
+    original = fence.shared_section
+    def delayed(root, fn, **kwargs):
+        ready.set()
+        assert release.wait(2)
+        return original(root, fn, **kwargs)
+    monkeypatch.setattr(fence, 'shared_section', delayed)
+    sent = []
+    write_candidates(tmp_path, [{'seq': 1, 'at': time.time(), 'key': 'a', 'text': '実況', **identity}])
+    start = time.monotonic()
+    hanjuku_narration.consider(SimpleNamespace(state_dir=tmp_path), Game(), tmp_path,
+                               enqueue=lambda *a, **k: sent.append(a))
+    assert time.monotonic() - start < 1
+    try:
+        assert ready.wait(1)
+        if change == 'lease':
+            active['lease_id'] = 'lease-2'
+        elif change == 'game':
+            active['game'] = 'sorengame'
+        else:
+            atomic_write_json(tmp_path / 'hanjuku_run.json', {**identity, 'terminal_reason': 'game_over'})
+    finally:
+        release.set()
+    log_path = tmp_path / 'hanjuku_narration.jsonl'
+    for _ in range(50):
+        if log_path.exists():
+            break
+        time.sleep(.02)
+    assert not sent
+    record = json.loads(log_path.read_text().splitlines()[-1])
+    assert record['status'] == ('skipped:terminal' if change == 'terminal' else 'skipped:fence_lost')
+
+
+def test_bot_records_plans_separately_from_sent_input_with_full_identity(tmp_path):
+    import importlib.util
+    path = Path(__file__).resolve().parents[1] / 'brains/hanjuku/bot.py'
+    spec = importlib.util.spec_from_file_location('hanjuku_bot_entry_trace_test', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    identity = {'game': 'hanjuku-hero', 'runtime_id': 'g1-test', 'generation': 1, 'lease_id': 'lease-1'}
+    state = {'step': 7, 'screen_kind': 'map', 'policy': {'active': '1-A1', 'variant': 'chart'}}
+    actions = [{'type': 'pad', 'buttons': ['right'], 'hold_ms': 100}]
+    module.persist(tmp_path, state, [{'decision': 'order_start', 'chart_step': '1-A1',
+                   'general': 'どうし', 'source': 'ほんじょう', 'target': 'キカンドン', 'cards': [], 'reason': 'チャート順'}],
+                   {'hanjuku': identity}, actions=actions, frame_sha256='b'*64)
+    plans = [json.loads(x) for x in (tmp_path/'hanjuku_decisions.jsonl').read_text().splitlines()]
+    assert plans[0]['dispatch_status'] == 'planned_not_yet_sent'
+    assert plans[0]['planned_actions'] == actions
+    assert plans[0]['decision_id'] == plans[1]['decision_id'] == state['decision_trace']['decision_id']
+    assert plans[1]['frame_sha256'] == 'b'*64
+    candidate = json.loads((tmp_path/'hanjuku_commentary.jsonl').read_text())
+    assert all(candidate[k] == v for k, v in identity.items())
+    assert not (tmp_path/'hanjuku_events.jsonl').exists()

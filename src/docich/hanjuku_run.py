@@ -170,8 +170,13 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
 
 def action_sent(runtime_dir: Path, identity: dict, action):
     state=load(runtime_dir,identity)
+    trace=(read_record(runtime_dir/'hanjuku_bot.json').get('decision_trace') or {})
+    if not isinstance(trace,dict) or any(trace.get(k)!=v for k,v in identity.items()):
+        trace={}
     event(runtime_dir,{'event':'input_sent','at':time.time(),'type':action.type,
                       'buttons':list(action.buttons),'hold_ms':action.hold_ms,
-                      'frame_sha256':state.get('frame_sha256'),'bot_version':BOT_VERSION})
+                      'frame_sha256':state.get('frame_sha256'),'bot_version':BOT_VERSION,
+                      'decision_id':trace.get('decision_id'),
+                      'decision_frame_sha256':trace.get('frame_sha256')})
     if state:
         atomic_write_json(runtime_dir/RUN_FILE,{**state,'actions_sent':int(state.get('actions_sent',0))+1})

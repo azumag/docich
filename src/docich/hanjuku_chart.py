@@ -63,6 +63,10 @@ CHAPTER_1_ORDERS = (
 # Battle tactics keyed by (chart step, enemy name). ``when_hp_at_most`` is
 # the enemy HP read from the battle panel; ``open`` fires once at the start.
 CHAPTER_1_TACTICS = (
+    {'step': '1-V2', 'enemy': 'ガルバンゾー', 'card': 'フットバース', 'open': True,
+     'note': 'ヴィーナス: ガルバンゾー出現時は開幕フットバース→白兵'},
+    {'step': '1-C2', 'enemy': 'ガルバンゾー', 'card': 'ダイチスイム', 'when_hp_at_most': 13,
+     'note': 'ココット: ガルバンゾーを白兵→敵HP13以下でダイチスイム'},
     {'step': '1-A2', 'enemy': 'ガルバンゾー', 'card': 'フットバース', 'when_hp_at_most': 24,
      'note': 'VSガルバンゾー 白兵→敵ＨＰ２４でフットバース'},
     {'step': '1-C2', 'enemy': 'タピオカ', 'card': 'ダイチスイム', 'open': True,
