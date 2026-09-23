@@ -1268,6 +1268,70 @@ def test_tick_commits_exact_failed_game_start_without_relaunch(setup):
     assert calls == [request_id]
 
 
+def test_tick_uses_post_reconcile_clock_for_new_terminal_timestamp(setup):
+    g, clock, _, executor, make = setup
+    manager, request_id = _latch_manual(make, executor, clock, corner="retro")
+    raw = state(manager)
+    raw.update(status="waiting", reason="manual-request-needs-resume-or-recovery")
+    raw["manual_pending"]["state_file"] = "retro_corner.json"
+    manager.path.write_text(json.dumps(raw))
+    adapter = manager.adapters["retro"]
+    adapter.state_path = Path(g.state_dir) / "retro_corner.json"
+    adapter.states = [{"status": "starting", "rotation_request_id": request_id,
+                       "started_at": clock[0] - 10}]
+
+    def reconcile(identity):
+        clock[0] += 2
+        adapter.states = [{"status": "interrupted", "rotation_request_id": identity,
+                           "started_at": clock[0] - 12,
+                           "completed_at": clock[0]}]
+        return True
+
+    adapter.reconcile_failed_start = reconcile
+    for candidate in manager.adapters.values():
+        candidate.available = False
+    original_calls = len(executor.calls)
+
+    assert manager.tick() == {"status": "waiting", "reason": "no-enabled-corner"}
+    final = state(manager)
+    assert final["status"] == "waiting"
+    assert final["manual_pending"] is None
+    assert final["last_result"]["request_id"] == request_id
+    assert final["last_result"]["status"] == "interrupted"
+    assert final["last_seen_at"] == clock[0]
+    assert len(executor.calls) == original_calls
+    assert manager.tick() == {"status": "waiting", "reason": "no-enabled-corner"}
+    assert state(manager)["last_result"] == final["last_result"]
+    assert len(executor.calls) == original_calls
+
+
+def test_tick_rejects_clock_regression_after_failed_start_reconciliation(setup):
+    g, clock, _, executor, make = setup
+    manager, request_id = _latch_manual(make, executor, clock, corner="retro")
+    raw = state(manager)
+    raw.update(status="waiting", reason="manual-request-needs-resume-or-recovery")
+    raw["manual_pending"]["state_file"] = "retro_corner.json"
+    manager.path.write_text(json.dumps(raw))
+    adapter = manager.adapters["retro"]
+    adapter.state_path = Path(g.state_dir) / "retro_corner.json"
+
+    def reconcile(identity):
+        clock[0] -= 1
+        adapter.states = [{"status": "interrupted", "rotation_request_id": identity,
+                           "completed_at": clock[0]}]
+        return True
+
+    adapter.reconcile_failed_start = reconcile
+    original_calls = len(executor.calls)
+    with pytest.raises(RotationError, match="clock regressed"):
+        manager.tick()
+    kept = state(manager)
+    assert kept["status"] == "recovery_required"
+    assert kept["error_kind"] == "invalid-state"
+    assert kept["manual_pending"]["request_id"] == request_id
+    assert len(executor.calls) == original_calls
+
+
 def test_tick_keeps_manual_game_start_when_terminal_proof_is_missing(setup):
     g, clock, _, executor, make = setup
     manager, request_id = _latch_manual(make, executor, clock, corner="retro")
