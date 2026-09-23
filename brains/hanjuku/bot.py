@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 import sys
 import time
+import tomllib
 
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'src'))
@@ -108,6 +109,38 @@ def publish_adjust_request(runtime: Path, records: list, obs_meta: dict):
     return hanjuku_chart_adjust.write_request(runtime,request,identity)
 
 
+def chart_adjust_settings():
+    try:
+        with (ROOT/'config/games/hanjuku-hero.toml').open('rb') as stream:
+            raw=tomllib.load(stream)
+        return hanjuku_chart_adjust.settings((raw.get('hanjuku') or {}).get('chart_adjust'))
+    except (OSError,ValueError,tomllib.TOMLDecodeError):
+        return hanjuku_chart_adjust.settings(None)
+
+
+def ask_interim(runtime: Path, state: dict, obs_meta: dict, *, settings=None, ask=None):
+    """Ask JEV once for the pending interim choice; the answer is applied next cycle."""
+    policy=state.get('policy') or {}
+    pending=policy.get('chart_adjust') or {}
+    if not pending.get('interim_wanted'):
+        return None
+    previous=state.get('chart_interim_answer') or {}
+    if (previous.get('request_id')==pending.get('request_id')
+            and previous.get('seq')==pending.get('interim_count',0)):
+        return None                  # answered; the policy applies it on the map
+    settings=settings or chart_adjust_settings()
+    if not settings['interim_jev']:
+        return None
+    if ask is None:
+        from docich.hanjuku_interim import ask
+    answer=ask(policy,timeout_ms=settings['interim_timeout_ms'])
+    state['chart_interim_answer']=answer
+    identity={k:(obs_meta.get('hanjuku') or {}).get(k) for k in ('game','runtime_id','generation','lease_id')}
+    append_log(runtime,hanjuku_chart_adjust.HISTORY_LOG,
+               {'event':'interim_answer','at':time.time(),**identity,**answer})
+    return answer
+
+
 def main():
     actions=[]
     code=0
@@ -123,10 +156,12 @@ def main():
         if not meta.get('terminal_reason') and not meta.get('terminal_candidate'):
             frame=read_png(Path(obs['screenshot'])).resized()
             state=read_record(runtime/'hanjuku_bot.json')
-            actions,state=decide(frame,state,adjusted=hanjuku_chart_adjust.load(runtime))
+            actions,state=decide(frame,state,adjusted=hanjuku_chart_adjust.load(runtime),
+                                 interim=state.get('chart_interim_answer'))
             records=state.pop('_records',[])
             persist(runtime,state,records,meta,actions=actions,frame_sha256=frame.digest(),frame=frame)
             publish_adjust_request(runtime,records,meta)
+            ask_interim(runtime,state,meta)
             atomic_write_json(runtime/'hanjuku_bot.json',state)
     except (KeyError,TypeError,ValueError,OSError):
         code=2

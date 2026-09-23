@@ -13,6 +13,7 @@ No model, provider or network calls happen here.
 from __future__ import annotations
 
 import hashlib
+import math
 import json
 from pathlib import Path
 
@@ -22,6 +23,7 @@ SCHEMA = 1
 REQUEST_FILE = 'hanjuku_chart_adjust_request.json'
 ADJUSTED_FILE = 'hanjuku_chart_adjusted.json'
 HISTORY_LOG = 'hanjuku_chart_history'
+INTERIM_PREFIX = 'I:'
 MAX_ORDERS = 16
 MAX_CARDS_PER_ORDER = 3
 MAX_NOTE = 80
@@ -32,10 +34,43 @@ CARD_NAMES = frozenset({
     'ハリケーン'})
 
 
+def settings(raw) -> dict:
+    """``[hanjuku.chart_adjust]``: a non-empty ``agents`` chain is consent to
+    billed LLM chart generation; ``interim_jev`` enables the JEV interim choice."""
+    raw = raw if isinstance(raw, dict) else {}
+    enabled = raw.get('enabled', False)
+    agents = raw.get('agents', '')
+    timeout = raw.get('timeout_s', 180)
+    attempts = raw.get('max_attempts', 2)
+    interim = raw.get('interim_jev', False)
+    interim_timeout = raw.get('interim_timeout_ms', 1500)
+    if type(enabled) is not bool or type(interim) is not bool:
+        raise ValueError('hanjuku.chart_adjust.enabled/interim_jev must be boolean')
+    if not isinstance(agents, str) or len(agents) > 1024:
+        raise ValueError('invalid hanjuku.chart_adjust.agents')
+    if type(timeout) is not int or not 30 <= timeout <= 600:
+        raise ValueError('hanjuku.chart_adjust.timeout_s must be 30..600')
+    if type(attempts) is not int or not 1 <= attempts <= 3:
+        raise ValueError('hanjuku.chart_adjust.max_attempts must be 1..3')
+    if type(interim_timeout) is not int or not 50 <= interim_timeout <= 5000:
+        raise ValueError('hanjuku.chart_adjust.interim_timeout_ms must be 50..5000')
+    return {'enabled': enabled and bool(agents.strip()), 'agents': agents.strip(),
+            'timeout_s': timeout, 'max_attempts': attempts,
+            'interim_jev': interim, 'interim_timeout_ms': interim_timeout}
+
+
+def game_settings(game) -> dict:
+    hanjuku = game.raw.get('hanjuku') if isinstance(game.raw.get('hanjuku'), dict) else {}
+    return settings(hanjuku.get('chart_adjust'))
+
+
 def request_id(mem) -> str:
     """Stable id of one off-chart situation: chapter, captures and order states."""
+    # Interim (JEV) orders do not change the situation the LLM was asked
+    # about; otherwise every interim sortie would discard a pending answer.
     basis = {'chapter': mem.get('chapter'), 'captured': sorted(mem.get('captured') or []),
-             'orders': dict(sorted((mem.get('orders') or {}).items()))}
+             'orders': dict(sorted((k, v) for k, v in (mem.get('orders') or {}).items()
+                                   if not str(k).startswith(INTERIM_PREFIX)))}
     raw = json.dumps(basis, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
@@ -66,8 +101,8 @@ def _order(raw, castles, base_steps):
     step = _text(raw.get('step'), 'step', limit=16)
     # Adjusted steps share the policy's order-status map with the base chart:
     # a colliding name would inherit or overwrite a base order's state.
-    if step in base_steps:
-        raise ValueError('adjusted step collides with base chart')
+    if step in base_steps or step.startswith(INTERIM_PREFIX):
+        raise ValueError('adjusted step collides with base chart or interim orders')
     source, target = raw.get('source'), raw.get('target')
     if source not in castles or target not in castles or source == target:
         raise ValueError('invalid source/target castle')
@@ -129,7 +164,8 @@ def validate(doc) -> dict:
         raise ValueError('duplicate step')
     return {'schema': SCHEMA, 'chapter': chapter, 'request_id': rid, 'orders': orders,
             'purchases': _purchases(doc.get('purchases')),
-            'generated_at': doc.get('generated_at'),
+            'generated_at': (doc['generated_at'] if type(doc.get('generated_at')) in (int, float)
+                             and math.isfinite(doc['generated_at']) else None),
             'source': _text(doc.get('source'), 'source', limit=40, required=False),
             'reason': _text(doc.get('reason'), 'reason', limit=200, required=False)}
 
@@ -153,8 +189,11 @@ def save(runtime_dir: Path, doc) -> dict:
     runtime_dir = Path(runtime_dir)
     if (runtime_dir / ADJUSTED_FILE).is_symlink():
         raise ValueError('adjusted chart may not be a symlink')
-    atomic_write_json(runtime_dir / ADJUSTED_FILE, doc)
-    append_log(runtime_dir, HISTORY_LOG, {'event': 'adjusted_chart_saved', **doc})
+    # Persist only the normalized fields: unknown keys in model output never
+    # reach the runtime file or the history.
+    stored = json.loads(json.dumps(normalized, ensure_ascii=False))
+    atomic_write_json(runtime_dir / ADJUSTED_FILE, stored)
+    append_log(runtime_dir, HISTORY_LOG, {'event': 'adjusted_chart_saved', **stored})
     return normalized
 
 

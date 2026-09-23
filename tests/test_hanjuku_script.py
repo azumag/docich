@@ -272,6 +272,9 @@ def test_corner_observation_contention_retries_then_finishes_only_on_game_over(m
     finish.assert_called_once()
     assert observe.call_count==2 and manager.store.canonical.load.call_count==2
     assert state['end_reason']=='game_over'
+    # #1085 L4: the chart review runs once on game over, before teardown.
+    assert finish.call_args.args[0]['chart_review']['file']=='hanjuku_chart_review.json'
+    assert (runtime/'hanjuku_chart_review.json').exists()
     retry=json.loads((runtime/'hanjuku_events.jsonl').read_text())
     assert retry['event']=='observation_retry' and 'terminal_reason' not in retry
 

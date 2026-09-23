@@ -1621,6 +1621,16 @@ class RetroCornerManager:
                         raise RetroCornerError('Hanjuku terminal evidence is not durable')
                     latest['terminal_evidence'] = evidence.get('terminal_evidence')
                     latest['terminal_generation'] = evidence.get('generation')
+                    if run.get('terminal_reason') == 'game_over':
+                        # #1085 L4: collate base/adjusted charts with outcomes
+                        # once; a failure must never block the teardown.
+                        try:
+                            from .hanjuku_chart_review import review
+                            latest['chart_review'] = review(
+                                runtime_directory(self.g.state_dir, active['runtime_id']),
+                                runtime_identity(fence))
+                        except Exception as exc:
+                            latest['chart_review'] = {'error': type(exc).__name__}
                     return self._finish_locked(latest, self._local_now())
                 if time.monotonic() >= next_repair:
                     self._repair_active_agent(latest)
