@@ -1,11 +1,11 @@
 {
-  "output_sha256": "1a93fcbb2a93c94cf054624a03d63fb0f7b7052863c5b33dae9938ea8b0e0d57",
+  "output_sha256": "3bcc2cb8e3cded45fd265c5bb1b7ae4afbccc976ae6202b37265ae44d5a3ef84",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "c60d0586a7fe35ab9aae90cffd8e8bb69137fbcd285289acb92523423a63514d",
+  "source_sha256": "d70f6b2347586ab7cb19d13282df01e6a1d3b5445b66a80e6f3cc8bef2f87a11",
   "topics": [
+    "PAPERコーナーの同話題繰り返し修正（ マージ・本番反映済み、稼働中コーナーを停止）",
     "ペーパーコーナー読み上げの「結論からお伝えしますと」除去（、CI監視中）",
-    "WebUI Corners タブ修正（本番 state 不参照の解消＋使い方の改善、/#1029）",
-    "NetHack draining固着(#1015)の修正 をレビュー修正→merge→本番反映→ 復旧完了（追加 ）"
+    "WebUI Corners タブ修正（本番 state 不参照の解消＋使い方の改善、/#1029）"
   ]
 }
