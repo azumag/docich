@@ -156,7 +156,10 @@ class RestartWebuiTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         text = self.installed_unit().read_text(encoding="utf-8")
         self.assertNotIn("__DOCICH_ROOT__", text)
-        self.assertIn(str(self.prod), text)
+        # restart_webui.sh renders the unit with `pwd -P` (physical path), so
+        # compare against the resolved production root rather than the raw
+        # tempdir path (which may go through symlinks such as /var -> /private/var).
+        self.assertIn(str(self.prod.resolve()), text)
         self.assertIn("config/docich.soren-live.toml webui", text)
         calls = self.calls()
         self.assertEqual(calls[0], "--user daemon-reload")
