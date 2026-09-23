@@ -371,7 +371,7 @@ def test_measured_card_menu_ignores_background_and_moves_to_footbath():
     assert record['decision'] == 'card_pick'
     assert record['resulting_event'] == 'selection_planned_not_yet_confirmed'
     assert record['observed_metric'] == {'stock': 2, 'remaining': 3,
-                                         'inventory_evidence': 'measured_four_row_card_select'}
+                                         'inventory_evidence': 'measured_four_row_card_select', 'observed_rows': 4}
     assert not mem['order_context']
 
 
@@ -397,14 +397,14 @@ def test_unknown_card_cursor_position_or_shape_is_held(hand):
     assert policy.deploy_step(screen, mem) == [] and mem['picked'] == []
 
 
-@pytest.mark.parametrize('change', ['zero_stock', 'zero_slots', 'missing_row', 'extra_row', 'wrong_name'])
+@pytest.mark.parametrize('change', ['zero_stock', 'zero_slots', 'missing_middle_row', 'extra_row', 'wrong_name'])
 def test_zero_inventory_or_unmeasured_list_layout_is_held(change):
     screen = measured_card_select(selected=3)
     if change == 'zero_stock':
         replace_cell(screen, 103, 232, '0')
     elif change == 'zero_slots':
         replace_cell(screen, 31, 224, '0')
-    elif change == 'missing_row':
+    elif change == 'missing_middle_row':
         screen.lines = [line for line in screen.lines if line.y != 87]
     elif change == 'extra_row':
         replace_cell(screen, 111, 160, 'あ')
@@ -451,7 +451,7 @@ def test_calibrated_card_cursor_decision_is_joined_to_action_plan(tmp_path, retr
     assert record['decision'] == 'sortie_input' and record['reason']
     observed = {'desired_card': 'フットバース', 'selected_y': 55, 'selected_card': 'イッテツーン',
                 'target_y': 103, 'target_stock': 2, 'remaining': 3,
-                'inventory_evidence': 'measured_four_row_card_select'}
+                'inventory_evidence': 'measured_four_row_card_select', 'observed_rows': 4}
     assert record['observed_metric'] == observed
     if retry:
         assert all(record[key] == value for key, value in context.items())
@@ -489,13 +489,16 @@ def test_known_text_in_card_row_cursor_margin_rejects_menu(y, x):
     assert mem['_records'][-1]['decision'] == 'situation_held'
 
 
-def measured_loaded_sortie(card='フットバース'):
+def measured_loaded_sortie(cards=('フットバース',)):
+    if isinstance(cards, str):
+        cards = (cards,)
     screen = measured_empty_sortie()
     rows = {line.y: dict(line.cells) for line in screen.lines}
     for y in (47, 63, 79):
         rows[y] = {x: ch for x, ch in rows[y].items() if x < 136}
     rows[47].update((136 + 8*i, ch) for i, ch in enumerate('きりふだ'))
-    rows[47].update((176 + 8*i, ch) for i, ch in enumerate(card))
+    for y, card in zip((47, 63, 79), cards):
+        rows[y].update((176 + 8*i, ch) for i, ch in enumerate(card))
     rows[47].update({16: 'H', 24: 'P', 56: '9', 64: '0', 72: '/', 88: '9', 96: '0'})
     rows.setdefault(31, {}).update({136: 'へ', 144: 'い', 152: 'し', 208: '6', 224: 'に', 232: 'ん'})
     screen.lines = [TextLine(y, tuple(sorted(cells.items()))) for y, cells in sorted(rows.items())]
@@ -507,7 +510,7 @@ def measured_loaded_sortie(card='フットバース'):
 def test_measured_single_card_receipt_ignores_left_stats_and_background(right_edge):
     screen = measured_loaded_sortie()
     screen.hand = (138, 105, right_edge, 118)
-    assert policy._single_card_sortie_inventory(screen) == ['フットバース']
+    assert policy._sortie_inventory(screen) == ['フットバース']
     mem = foot_order_memory()
     assert policy.deploy_step(screen, mem) == [policy.pad('a')]
     record = mem['_records'][-1]
@@ -522,7 +525,8 @@ def test_measured_single_card_receipt_ignores_left_stats_and_background(right_ed
 def test_partial_or_extra_single_card_receipt_is_held(y, x, value):
     screen = measured_loaded_sortie()
     replace_cell(screen, y, x, value)
-    assert policy._single_card_sortie_inventory(screen) is None
+    inventory = policy._sortie_inventory(screen)
+    assert inventory is None
     mem = foot_order_memory()
     assert policy.deploy_step(screen, mem) == []
     assert mem['_records'][-1]['decision'] == 'situation_held'
@@ -543,14 +547,139 @@ def test_single_card_and_empty_receipts_cannot_substitute_for_required_inventory
 
 
 @pytest.mark.parametrize('y', [63, 79, 143])
-def test_additional_card_is_not_a_calibrated_one_card_receipt(y):
+def test_additional_card_requires_exact_plan_or_rejects_unmeasured_row(y):
     screen = measured_loaded_sortie()
     for i, ch in enumerate('クースカン'):
         replace_cell(screen, y, 176 + i*8, ch)
-    assert policy._single_card_sortie_inventory(screen) is None
+    expected = ['フットバース', 'クースカン'] if y == 63 else None
+    assert policy._sortie_inventory(screen) == expected
     assert policy.deploy_step(screen, foot_order_memory()) == []
+
+
+@pytest.mark.parametrize('step,cards,general', [
+    ('1-B1', ('クースカン', 'ノリウツール'), 'どうし'),
+    ('1-C2', ('ダイチスイム', 'ダイチスイム', 'ブラッキー'), 'ココット'),
+])
+def test_structured_multi_card_slots_are_only_approved_on_exact_chart_match(step, cards, general):
+    screen = measured_loaded_sortie(cards)
+    mem = memory()
+    mem.update(active=step, orders={step: 'pending'},
+               sortie_general={step: general})
+    assert policy._sortie_inventory(screen) == list(cards)
+    assert policy.deploy_step(screen, mem) == [policy.pad('a')]
+    rec = mem['_records'][-1]
+    assert rec['inventory_evidence'] == 'structured_card_slots'
+    assert rec['cards'] == list(cards)
+    assert mem['order_context'][step]['observed_metric']['cards'] == list(cards)
+
+
+def test_structured_two_card_slots_never_fill_a_three_card_chart_plan():
+    mem = memory()
+    mem.update(active='1-C2', orders={'1-C2': 'pending'})
+    screen = measured_loaded_sortie(('ダイチスイム', 'ブラッキー'))
+    assert policy._sortie_inventory(screen) == ['ダイチスイム', 'ブラッキー']
+    assert policy.deploy_step(screen, mem) == []
+    assert mem['_records'][-1]['decision'] == 'situation_held'
+
+
+@pytest.mark.parametrize('change', ['unknown_glyph', 'partial_name', 'quantity_suffix',
+                                    'extra_row', 'unknown_cursor', 'gap'])
+def test_multi_card_inventory_requires_complete_contiguous_panel(change):
+    screen = measured_loaded_sortie(('クースカン', 'ノリウツール'))
+    if change == 'unknown_glyph':
+        replace_cell(screen, 63, 200, UNKNOWN)
+    elif change == 'partial_name':
+        replace_cell(screen, 63, 200, None)
+    elif change == 'quantity_suffix':
+        replace_cell(screen, 63, 240, '2')
+    elif change == 'extra_row':
+        replace_cell(screen, 87, 176, 'あ')
+    elif change == 'unknown_cursor':
+        screen.hand = None
+    elif change == 'gap':
+        for y in (63,):
+            screen.lines = [line for line in screen.lines if line.y != y]
+        screen.text = ''.join(line.known for line in screen.lines)
+    inventory = policy._sortie_inventory(screen)
+    if change == 'gap':
+        assert inventory == ['クースカン']
+    else:
+        assert inventory is None
+    mem = memory()
+    assert policy.deploy_step(screen, mem) == []
+    assert mem['_records'][-1]['decision'] == 'situation_held'
+    assert '1-B1' not in mem['order_context']
 
 
 def test_old_complete_name_synthetic_does_not_confirm_unmeasured_layout():
     screen = menu('sortie_confirm', ['うむッ!', 'フットバース'])
     assert policy.deploy_step(screen, foot_order_memory()) == []
+
+
+def test_measured_three_row_menu_after_final_footbath_pick_allows_only_valid_exit():
+    screen = measured_card_select(('イッテツーン', 'ダイチスイム', 'ブラッキー'), selected=2, remaining='2')
+    screen.hand = (138, 81, 156, 94)  # g328 step 3066 measured hand
+    mem = {'chapter': 1, 'active': '1-V2', 'variant': 'chart',
+           'orders': {'1-V2': 'pending'}, 'picked': ['フットバース']}
+    inventory = policy._measured_card_select(screen)
+    assert inventory['observed_rows'] == 3
+    assert inventory['inventory_evidence'] == 'structured_card_select'
+    assert policy.deploy_step(screen, mem) == [policy.pad('b')]
+    assert mem['picked'] == ['フットバース']
+    # A missing planned item is still unknown, never a confirmed shortage.
+    mem['picked'] = []
+    assert policy.deploy_step(screen, mem) == []
+    assert mem['picked'] == [] and mem['_records'][-1]['decision'] == 'situation_held'
+    assert not any(r['decision'] == 'card_missing' for r in mem['_records'])
+
+
+@pytest.mark.parametrize('row_count', [1, 2, 3])
+@pytest.mark.parametrize('right_edge', [156, 158])
+def test_structurally_complete_prefix_rows_are_not_labelled_as_measured_four_rows(row_count, right_edge):
+    # One/two-row layouts are structural contracts, not claims of live receipts.
+    names = ('フットバース', 'イッテツーン', 'ダイチスイム')[:row_count]
+    screen = measured_card_select(names)
+    screen.hand = (138, 49, right_edge, 62)
+    mem = foot_order_memory()
+    assert policy.deploy_step(screen, mem) == [policy.pad('a')]
+    assert mem['picked'] == ['フットバース']
+    record = mem['_records'][-1]
+    assert record['resulting_event'] == 'selection_planned_not_yet_confirmed'
+    assert record['observed_metric'] == {'stock': 2, 'remaining': 3,
+        'inventory_evidence': 'structured_card_select', 'observed_rows': row_count}
+
+
+@pytest.mark.parametrize('change', ['blank_cursor', 'zero_rows', 'missing_first', 'missing_middle',
+    'unknown_tail', 'count_only_tail', 'partial_tail', 'extra_text', 'unknown_name', 'unknown_stock',
+    'two_digit_stock', 'duplicate_name', 'wrong_hand'])
+def test_uncertain_short_inventory_never_exits_even_after_all_planned_picks(change):
+    screen = measured_card_select(('イッテツーン', 'ダイチスイム', 'ブラッキー'), selected=2, remaining='2')
+    if change == 'blank_cursor':
+        screen.hand = (138, 97, 158, 110)
+    elif change in {'zero_rows', 'missing_first', 'missing_middle'}:
+        removed = {55, 71, 87} if change == 'zero_rows' else {55 if change == 'missing_first' else 71}
+        screen.lines = [line for line in screen.lines if line.y not in removed]
+    elif change == 'unknown_tail':
+        replace_cell(screen, 103, 160, UNKNOWN)
+    elif change == 'count_only_tail':
+        replace_cell(screen, 103, 232, '2')
+    elif change == 'partial_tail':
+        replace_cell(screen, 103, 160, 'フ')
+    elif change == 'extra_text':
+        replace_cell(screen, 119, 160, 'あ')
+    elif change == 'unknown_name':
+        replace_cell(screen, 87, 160, UNKNOWN)
+    elif change == 'unknown_stock':
+        replace_cell(screen, 87, 232, UNKNOWN)
+    elif change == 'two_digit_stock':
+        replace_cell(screen, 87, 240, '0')
+    elif change == 'duplicate_name':
+        screen = measured_card_select(('イッテツーン', 'イッテツーン', 'ブラッキー'), selected=2)
+    elif change == 'wrong_hand':
+        screen.hand = (138, 81, 157, 94)
+    mem = foot_order_memory()
+    mem['picked'] = ['フットバース']
+    assert policy._measured_card_select(screen) is None
+    assert policy.deploy_step(screen, mem) == []
+    assert mem['picked'] == ['フットバース']
+    assert mem['_records'][-1]['decision'] == 'situation_held'
