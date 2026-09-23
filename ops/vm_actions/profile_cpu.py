@@ -314,8 +314,12 @@ def _classify_python(args):
     return "python"
 
 
-def worker_pid_labels(soren_root, workers):
-    """Map live worker PIDs (from registered pid files) to ``worker:<name>``."""
+def worker_pid_labels(soren_root, workers, proc_root):
+    """Map live worker processes (from registered pid files) to ``worker:<name>``.
+
+    Keys are ``(pid, starttime)`` read when the profile starts, so a worker PID
+    reused by another process during the window is not mislabelled as the worker.
+    """
     labels = {}
     if soren_root is None:
         return labels
@@ -327,7 +331,9 @@ def worker_pid_labels(soren_root, workers):
         tokens = text.split()
         token = tokens[0] if tokens else ""
         if token.isdigit():
-            labels[int(token)] = f"worker:{name}"
+            snap = read_proc(proc_root, int(token))
+            if snap is not None:
+                labels[(int(token), snap["starttime"])] = f"worker:{name}"
     return labels
 
 
@@ -372,8 +378,9 @@ class Tracker:
     def _own_label(self, pid, snap):
         if pid == self.self_pid:
             return "profiler"
-        if pid in self.worker_labels:
-            return self.worker_labels[pid]
+        label = self.worker_labels.get((pid, snap["starttime"]))
+        if label:
+            return label
         return classify(read_argv(self.proc_root, pid), snap["comm"])
 
     def resolve(self):
@@ -436,7 +443,7 @@ def sample(proc_root, duration, interval, soren_root, scenario, sleep=time.sleep
     clk_tck = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
     ncpu = os.cpu_count() or 1
     workers = _load_registry_workers()
-    tracker = Tracker(proc_root, worker_pid_labels(soren_root, workers), os.getpid())
+    tracker = Tracker(proc_root, worker_pid_labels(soren_root, workers, proc_root), os.getpid())
     self_start = os.times()
 
     host_start = read_host_cpu(proc_root)

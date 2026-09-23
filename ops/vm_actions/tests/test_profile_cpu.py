@@ -204,6 +204,29 @@ class SampleTests(unittest.TestCase):
         self.assertEqual(early["spawner"], "retroarch")
         self.assertEqual(late["spawner"], "xdotool")
 
+    def test_reused_worker_pid_is_not_the_worker(self):
+        p = self.proc
+        p.write_host()
+        p.put(200, ["bash", "/home/ubuntu/soren/radio_worker.sh"], ticks=50, starttime=10)
+
+        def step():
+            p.uptime += 1
+            p.write_host()
+            p.remove(200)
+            p.put(200, ["/usr/bin/xdotool", "key", "a"], ticks=4, starttime=100050, comm="xdotool")
+
+        report = self.run_sample([step])
+        comps = {r["component"]: r for r in report["components"]}
+        self.assertEqual(comps["worker:radio_worker"]["processes"], 1)
+        self.assertEqual(comps["xdotool"]["processes"], 1)
+        self.assertEqual(comps["xdotool"]["spawned"], 1)
+        self.assertEqual(report["meta"]["worker_pidfiles_resolved"], 1)
+
+    def test_stale_worker_pidfile_is_not_resolved(self):
+        self.proc.write_host()
+        report = self.run_sample([lambda: None])
+        self.assertEqual(report["meta"]["worker_pidfiles_resolved"], 0)
+
     def test_output_is_bounded(self):
         p = self.proc
         p.write_host()

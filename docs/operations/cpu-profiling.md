@@ -19,7 +19,7 @@ docich VM 全体で「何が CPU を使っているか」「どの経路が wake
     `game:<固定名>` など）と `ffmpeg:capture|stream|x11grab|other`
   - 検証済み名前: `docich:<subcommand>`（`[a-z0-9-]{1,32}`）、`py:<module|script.py>`、
     `sh:<script.sh>`
-  - `runtime_registry.WORKERS` の pid file から解決した `worker:<name>`
+  - `runtime_registry.WORKERS` の pid file から解決した `worker:<name>`（開始時の `(pid, starttime)` で照合し、計測中に再利用された PID は worker 扱いしない）
   - `kernel` / `shell` / `python` / `other` / `profiler`
 - 汎用ラベル（`shell` / `python` / `other`）の子は、最も近い `worker:*` 祖先に帰属させる。
   spawn は `component <- spawner` の組で数える（例: `ffmpeg:capture <- docich:run`）。
