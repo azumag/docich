@@ -1451,13 +1451,15 @@ ROTATION_STATUSES = frozenset({
     "running", "promoted", "kept", "improved", "dry-run", "skipped",
 })
 
-# Fixed failure taxonomy of the end-of-corner improvement job. Keep in sync
-# with docich.corner_improve.CornerImproveError codes; unknown values stay
-# "unknown" instead of leaking a free-text reason.
+# Fixed end-of-corner improvement reason taxonomy. Keep in sync with
+# docich.corner_improve; unknown values stay "unknown" instead of leaking
+# free-text result reasons or exception bodies.
 ROTATION_IMPROVE_REASON_CODES = frozenset({
     "state-read", "corner-window", "gate-disabled", "llm-call", "llm-rc",
     "llm-empty", "llm-format", "llm-keys", "llm-values", "llm-unexpected",
-    "eval", "lane-busy", "unexpected",
+    "eval", "lane-busy", "policy-promoted", "policy-incomplete", "policy-faults",
+    "policy-below-margin", "policy-not-significant", "policy-identical",
+    "policy-invalid", "policy-kept", "policy-eval", "unexpected",
 })
 ROTATION_IMPROVE_PHASES = frozenset({"state", "llm", "eval", "unknown"})
 

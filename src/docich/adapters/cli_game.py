@@ -68,6 +68,16 @@ def cli_command_list(game) -> list[str]:
     raise AdapterError("[cli] に command が設定されていません")
 
 
+def _game_launch_command(g, game, command: list[str]) -> list[str]:
+    """Pass the configured state root to the self-contained NInvaders policy runner."""
+    if game.name != "ninvaders":
+        return command
+    env_bin = procs.which("env")
+    if not env_bin:
+        raise AdapterError("NInvaders の状態パスを渡す env コマンドが見つかりません")
+    return [env_bin, f"DOCICH_STATE_DIR={Path(g.state_dir).resolve()}", *command]
+
+
 def cli_cols(game) -> int:
     return int(cli_raw(game).get("cols", 80))
 
@@ -192,7 +202,9 @@ class CliGameAdapter(Adapter):
             raise AdapterError(
                 f"コマンドが見つかりません: {cmd[0]} (PATH を確認してください。/usr/games も探索します)"
             )
-        resolved_cmd = [resolved, *cmd[1:]]
+        resolved_cmd = _game_launch_command(
+            self.ctx.g, self.ctx.game, [resolved, *cmd[1:]]
+        )
         session = self._session()
 
         if not self.ctx.tmux.has_session_named(session):
@@ -329,7 +341,7 @@ class CliCoordinatorAdapter:
             raise AdapterError(
                 f"コマンドが見つかりません: {cmd[0]} (PATH を確認してください。/usr/games も探索します)"
             )
-        return [resolved, *cmd[1:]]
+        return _game_launch_command(self.g, self.game, [resolved, *cmd[1:]])
 
     def _xterm_bin(self) -> str:
         resolved = procs.which("xterm")

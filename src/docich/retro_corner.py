@@ -301,6 +301,14 @@ def corner_intro(g: GlobalConfig, game_name: str) -> str:
 
 def describe_strategy_change(state_dir, game_name: str) -> str:
     """今回戦略と前回戦略の差分サマリ。履歴が無ければ初回扱いの一文を返す。"""
+    if game_name == "ninvaders":
+        from .ninvaders.store import PolicyStore
+
+        current = PolicyStore(Path(state_dir) / "resolver" / "ninvaders").current()
+        if current.get("origin") == "promoted":
+            return "評価を通過した改善ポリシーでお送りします。"
+        return "検証済みの初期ポリシーでお送りします。"
+
     from .resolver import strategy_path
 
     current_path = strategy_path(state_dir, game_name)

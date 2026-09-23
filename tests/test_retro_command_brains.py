@@ -40,13 +40,15 @@ def test_live_rolling_games():
         assert required and all(path.startswith("/usr/games/") for path in required), name
     for game in BRAIN_GAMES:
         loaded = load_game(g, game)
-        assert loaded.agent.enabled and loaded.agent.brain == "command"
+        if game == "ninvaders":
+            assert not loaded.agent.enabled and loaded.agent.brain == "command"
+            assert loaded.raw["cli"]["command"].endswith("ninvaders_docich.sh policy")
+        else:
+            assert loaded.agent.enabled and loaded.agent.brain == "command"
         assert loaded.agent.command == ["python3", f"brains/{game}/brain.py"]
         assert 0 < loaded.agent.interval_ms <= 500
-    # The baseline wrapper sweeps every 0.35s; the brain must not be slower.
-    assert load_game(g, "ninvaders").agent.interval_ms <= 350
     assert cli_command_list(load_game(g, "ninvaders")) == [
-        "/bin/sh", "games/cli-wrappers/ninvaders_docich.sh", "brain",
+        "/bin/sh", "games/cli-wrappers/ninvaders_docich.sh", "policy",
     ]
 
 
