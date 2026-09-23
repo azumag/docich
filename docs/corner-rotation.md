@@ -158,6 +158,14 @@ manual予約も`manual_pending`にrequest UUIDとowner state名を保存する�
 同じmanual startで同じrequestを再開するか、既存のmanual stop/recoverおよびgame-switch
 receiptを照合して復旧するまで次の自動枠を待たせる。暗黙の別cornerへの置換やキュー削除はしない。
 
+owner-only `corner-rotation recover` は、自動pendingのcorner stateが`failed`でも、同じ
+request IDを持つterminal `rolled_back` receipt、対象/元gameとerror codeの一致、canonicalの
+`ready`な元game、復帰generation以上のactive generation、candidate/previous/retiring不在、
+cleanup未完了でないことを確認できた場合だけ、その失敗startを`interrupted`として記録する。
+記録済み`completed_at`、pending request、cooldown履歴は保ち、同じcornerを二重起動しない。
+corner資源解放も確認し、receipt欠落・cleanup不明・別runtime・解放待ちはラッチを維持する。
+operatorはラッチ解消後にだけcorner rotation timerを再開する。
+
 ## 移行と互換入口
 
 `corner_rotation.enabled=true`のとき、旧retro/PAPER/メリケン/専用NetHackのtickは
