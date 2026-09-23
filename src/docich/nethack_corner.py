@@ -540,15 +540,35 @@ class NethackCornerManager(RetroCornerManager):
         self, state: dict[str, object], completed_at: dt.datetime
     ) -> CornerResult:
         before = self._observed_runtime()
+        expected_run = None
+        if self._run_store is not None:
+            try:
+                expected_run = self._run_store.current()
+            except Exception:
+                pass
         result = super()._finish_locked(state, completed_at)
         if self._run_store is not None and result.status == "completed":
             try:
-                restoration = self._restoration_summary(state, before)
+                if not isinstance(expected_run, dict):
+                    raise NethackRunError("切替前のNetHack runを確認できません")
+                sessions = expected_run.get("sessions")
+                expected_session = sessions[-1] if isinstance(sessions, list) and sessions else None
+                if not isinstance(expected_session, dict):
+                    raise NethackRunError("切替前のNetHack sessionを確認できません")
+                if not isinstance(expected_session.get("started_at"), str):
+                    raise NethackRunError("切替前のNetHack session開始時刻が不正です")
+                restoration = self._restoration_summary(
+                    state, before, expected_run["run_id"],
+                    expected_session.get("started_at"),
+                )
                 run = self._run_store.record_finished(
                     now=completed_at,
                     nethack_still_active=self._active_game_reader() == GAME_NAME,
                     restoration=restoration,
                     finish_reason=state.get("finish_reason", "unknown"),
+                    expected_run_id=expected_run["run_id"],
+                    expected_session_id=expected_session.get("session_id"),
+                    expected_session_started_at=expected_session.get("started_at"),
                 )
                 self._run_history_error = None
                 self._remember_run_in_state(state, run)
@@ -584,7 +604,8 @@ class NethackCornerManager(RetroCornerManager):
             return None
 
     def _restoration_summary(
-        self, state: dict[str, object], before: dict[str, object] | None
+        self, state: dict[str, object], before: dict[str, object] | None,
+        expected_run_id: str, expected_session_started_at: str | None,
     ) -> dict[str, object] | None:
         store = getattr(self.coordinator, "store", None)
         request_id = state.get("restore_request_id")
@@ -594,6 +615,10 @@ class NethackCornerManager(RetroCornerManager):
         try:
             run = self._run_store.current()
             session = run["sessions"][-1]
+            if (run.get("run_id") != expected_run_id
+                    or session.get("started_at") != expected_session_started_at):
+                state["source_evidence_status"] = "session_run_mismatch"
+                return None
             source = runtime_identity(session.get("runtime"))
             with store.lock(exclusive=False):
                 receipt = store.receipts.load(request_id)

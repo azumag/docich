@@ -285,6 +285,39 @@ class NethackRunStoreTest(unittest.TestCase):
         self.assertNotIn("post_restore_source", suspended)
         self.assertEqual(self.store.current()["run_id"], suspended["run_id"])
 
+    def test_old_session_cannot_finish_a_resumed_session(self):
+        first_context = new_session_context("scheduled", str(uuid.uuid4()))
+        runtime = {"game": "nethack", "generation": 10, "runtime_id": "g10-0123abcd"}
+        probe = self.store.prepare_start(current_is_nethack=False, now=self.now)
+        first = self.store.record_started(
+            probe, now=self.now, corner_context=first_context, runtime=runtime
+        )
+        (self.save_dir / "1000docich").write_bytes(b"save")
+        self.store.record_finished(
+            now=self.now + timedelta(hours=1), nethack_still_active=False,
+            expected_run_id=first["run_id"],
+            expected_session_id=first_context["session_id"],
+        )
+        second_context = new_session_context("manual", str(uuid.uuid4()))
+        probe = self.store.prepare_start(
+            current_is_nethack=False, now=self.now + timedelta(hours=2)
+        )
+        resumed = self.store.record_started(
+            probe, now=self.now + timedelta(hours=2),
+            corner_context=second_context, runtime={**runtime, "generation": 12,
+                                                     "runtime_id": "g12-abcd0123"},
+        )
+        with self.assertRaises(NethackRunError):
+            self.store.record_finished(
+                now=self.now + timedelta(hours=3), nethack_still_active=False,
+                expected_run_id=first["run_id"],
+                expected_session_id=first_context["session_id"],
+            )
+        current = self.store.current()
+        self.assertEqual(current["run_id"], resumed["run_id"])
+        self.assertEqual(current["status"], "active")
+        self.assertIsNone(current["sessions"][-1]["ended_at"])
+
     def test_ascension_and_amulet_bits_are_recorded(self):
         self.start()
         self.append_xlog(death="ascended", achieve="0x120", points=123456)

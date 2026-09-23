@@ -610,12 +610,28 @@ class NethackRunStore:
         nethack_still_active: bool,
         restoration: dict[str, object] | None = None,
         finish_reason: str = "unknown",
+        expected_run_id: str | None = None,
+        expected_session_id: str | None = None,
+        expected_session_started_at: str | None = None,
     ) -> dict[str, object]:
         """Close one program session and reconcile save/xlog evidence."""
         with self._locked():
             run = self._current_unlocked()
             if run is None:
                 raise NethackRunError("終了対象のcurrent NetHack runがありません")
+            if expected_run_id is not None and run.get("run_id") != expected_run_id:
+                raise NethackRunError("終了対象runが切替前のrunと一致しません")
+            sessions = run.get("sessions")
+            session = sessions[-1] if isinstance(sessions, list) and sessions else None
+            if expected_session_id is not None and (
+                not isinstance(session, dict) or session.get("session_id") != expected_session_id
+            ):
+                raise NethackRunError("終了対象sessionが切替前のsessionと一致しません")
+            if expected_session_started_at is not None and (
+                not isinstance(session, dict)
+                or session.get("started_at") != expected_session_started_at
+            ):
+                raise NethackRunError("終了対象session開始時刻が切替前と一致しません")
             if run.get("status") not in {"active", "suspended"}:
                 raise NethackRunError("終了対象runのstatusが不正です")
 
