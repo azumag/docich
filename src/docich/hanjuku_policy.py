@@ -389,6 +389,52 @@ def _empty_sortie_inventory(screen):
     return not any(card in word for _, _, word in _options(screen) for card in CARD_NAMES)
 
 
+def _measured_card_select(screen):
+    """Read only the measured four-row g328 menu, without guessing scrolls."""
+    if screen.kind != 'card_select':
+        return None
+    def cells(y, left):
+        return tuple((x, ch) for line in screen.lines if line.y == y
+                     for x, ch in line.cells if left <= x < 256)
+    def text_cells(x, text):
+        return tuple((x + 8 * i, ch) for i, ch in enumerate(text))
+    header = cells(31, 136)
+    remaining = dict(header).get(224)
+    if remaining not in ('0', '1', '2', '3'):
+        return None
+    if header != text_cells(136, 'きりふだセレクト') + text_cells(208, f'あと{remaining}こ'):
+        return None
+    if cells(127, 136) != text_cells(136, 'バトルようのきりふだです'):
+        return None
+    rows = []
+    for y in (55, 71, 87, 103):
+        row = cells(y, 160)
+        count = dict(row).get(232)
+        names = TextLine(y, tuple((x, ch) for x, ch in row if x < 232)).spans()
+        if len(names) != 1 or names[0][0] != 160 or names[0][1] not in CARD_NAMES:
+            return None
+        name = names[0][1]
+        if count not in tuple('0123456789') or row != text_cells(160, name) + ((232, count),):
+            return None
+        rows.append({'y': y, 'card': name, 'stock': int(count)})
+    if len({row['card'] for row in rows}) != len(rows):
+        return None
+    # Extra text rows would be an uncalibrated inventory/scroll layout. Mark
+    # rows above the known text can contain UNKNOWN and are not inventory.
+    if any(ch != UNKNOWN and 136 <= x < 256
+           and (line.y not in (55, 71, 87, 103) or x < 160)
+           for line in screen.lines if 32 <= line.y < 127
+           for x, ch in line.cells):
+        return None
+    if not screen.hand:
+        return None
+    x0, y0, x1, y1 = screen.hand
+    selected_y = y0 + 6
+    if x0 != 138 or x1 != 158 or y1 != selected_y + 7 or selected_y not in (55, 71, 87, 103):
+        return None
+    return {'rows': rows, 'selected_y': selected_y, 'remaining': int(remaining)}
+
+
 def deploy_step(screen: Screen, mem):
     order = _order(mem)
     kind = screen.kind
@@ -457,20 +503,35 @@ def deploy_step(screen: Screen, mem):
         for card in picked:
             if card in wanted:
                 wanted.remove(card)
+        card = wanted[0] if wanted else None
+        inventory = _measured_card_select(screen)
+        if inventory is None:
+            return _hold_deploy(screen, mem, order,
+                                '切り札一覧の名前・数量・配置またはカーソルが実測構造と一致しないため保留', card=card)
         if not wanted:
             return _deploy_input(screen, mem, order, [pad('b')], '予定切り札の選択入力後に携行確認へ進む')
-        card = wanted[0]
-        move = menu_to(screen, card)
-        if move is None or any(UNKNOWN in line.text for line in screen.lines):
-            reason = ('切り札選択カーソルを判定できないため欠品を確定せず保留'
-                      if not screen.hand else '予定切り札の完全な項目名を読めないため欠品を確定せず保留')
-            return _hold_deploy(screen, mem, order, reason, card=card)
-        if move == 'here':
+        row = next((row for row in inventory['rows'] if row['card'] == card), None)
+        if row is None or row['stock'] == 0 or inventory['remaining'] == 0:
+            return _hold_deploy(screen, mem, order,
+                                '予定切り札の正数在庫と携行余枠を確認できないため選択せず保留', card=card)
+        if inventory['selected_y'] == row['y']:
             picked.append(card)
             _record(mem, 'card_pick', **_deploy_context(order, mem), card=card,
+                    observed_metric={'stock': row['stock'], 'remaining': inventory['remaining'],
+                                     'inventory_evidence': 'measured_four_row_card_select'},
                     resulting_event='selection_planned_not_yet_confirmed', reason=order['note'])
             return [pad('a')]
-        return _deploy_input(screen, mem, order, [move], '予定切り札へ選択カーソルを移動')
+        move = pad('down' if row['y'] > inventory['selected_y'] else 'up')
+        selected = next(item for item in inventory['rows'] if item['y'] == inventory['selected_y'])
+        _record(mem, 'sortie_input',
+                **_deploy_context(order, mem, expected_metric={'card': card, 'goal': '予定切り札へカーソルを合わせる'}),
+                screen=screen.kind, card=card,
+                observed_metric={'desired_card': card, 'selected_y': selected['y'],
+                                 'selected_card': selected['card'], 'target_y': row['y'],
+                                 'target_stock': row['stock'], 'remaining': inventory['remaining'],
+                                 'inventory_evidence': 'measured_four_row_card_select'},
+                reason='実測配置の正数在庫と携行余枠を確認し、予定切り札へカーソルを移動')
+        return [move]
     if kind == 'sortie_confirm':
         mem.setdefault('order_context', {}).pop(order['step'], None)
         # Do not infer quantities from uncalibrated suffixes or turn partial
