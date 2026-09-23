@@ -243,3 +243,92 @@ def test_retry_hold_preserves_strategy_and_logs_current_uncertainty():
     assert record['observed_metric']['confirmation'] == 'unclassified'
     assert 'カーソル' in record['reason']
     assert mem['picked'] == []
+
+
+def measured_empty_sortie():
+    # Reconstruct only the measured text-cell layout, never the ROM screenshot.
+    spans = [(47, 136, 'きりふだ'), (63, 176, 'きりふだは'), (79, 176, 'ありません……'),
+             (95, 136, 'ーしゅつげき'), (95, 192, 'しますか?ー'),
+             (111, 160, 'うむッ!'), (127, 160, 'いかんッ!')]
+    rows = {}
+    for y, x, text in spans:
+        rows.setdefault(y, []).extend((x + 8 * i, ch) for i, ch in enumerate(text))
+    # Measured non-body glyph rows and left/cursor tiles are not card text.
+    for x, y in [(16, 23), (104, 23), (160, 39), (200, 55), (168, 87),
+                 (0, 95), (136, 103), (144, 103), (136, 111), (144, 111), (72, 119)]:
+        rows.setdefault(y, []).append((x, UNKNOWN))
+    lines = [TextLine(y, tuple(sorted(cells))) for y, cells in sorted(rows.items())]
+    return Screen(lines=lines, text=''.join(line.known for line in lines),
+                  kind='sortie_confirm', hand=(138, 105, 156, 118))
+
+
+def empty_order_memory():
+    return {'chapter': 1, 'active': '1-A1', 'variant': 'chart',
+            'orders': {'1-A1': 'pending'}, 'picked': []}
+
+
+def replace_cell(screen, y, x, value):
+    rows = {line.y: dict(line.cells) for line in screen.lines}
+    if value is None:
+        rows[y].pop(x)
+    else:
+        rows.setdefault(y, {})[x] = value
+    screen.lines = [TextLine(row_y, tuple(sorted(cells.items()))) for row_y, cells in sorted(rows.items())]
+    screen.text = ''.join(line.known for line in screen.lines)
+
+
+def test_measured_empty_sortie_ignores_only_background_and_cursor_unknowns():
+    screen = measured_empty_sortie()
+    assert any(UNKNOWN in line.text for line in screen.lines)
+    assert policy._empty_sortie_inventory(screen)
+    mem = empty_order_memory()
+    assert policy.deploy_step(screen, mem) == [policy.pad('a')]
+    record = mem['_records'][-1]
+    assert record['decision'] == 'sortie_confirm' and record['cards'] == []
+    assert record['inventory_evidence'] == 'measured_empty_sortie'
+    assert mem['order_context']['1-A1']['observed_metric']['cards'] == []
+
+
+@pytest.mark.parametrize('y,x,value', [(63, 208, None), (79, 224, None),
+    (63, 200, UNKNOWN), (79, 232, UNKNOWN), (47, 136, 'あ'),
+    (95, 192, UNKNOWN), (111, 160, UNKNOWN), (127, 192, None)])
+def test_partial_empty_receipt_and_unknown_body_cells_hold(y, x, value):
+    screen = measured_empty_sortie()
+    replace_cell(screen, y, x, value)
+    assert not policy._empty_sortie_inventory(screen)
+    mem = empty_order_memory()
+    assert policy.deploy_step(screen, mem) == []
+    assert mem['_records'][-1]['decision'] == 'situation_held'
+    assert '1-A1' not in mem['order_context']
+
+
+def test_empty_receipt_rejects_shifted_text_and_present_card_names():
+    for change in ('shift', 'card'):
+        screen = measured_empty_sortie()
+        if change == 'shift':
+            screen.lines = [TextLine(line.y, tuple((x - 8, ch) for x, ch in line.cells))
+                            if line.y == 63 else line for line in screen.lines]
+        else:
+            screen.lines.append(TextLine(143, tuple((136 + 8 * i, ch) for i, ch in enumerate('クースカン'))))
+        assert not policy._empty_sortie_inventory(screen)
+        assert policy.deploy_step(screen, empty_order_memory()) == []
+
+
+def test_missing_empty_receipt_never_turns_no_readable_cards_into_empty_inventory():
+    screen = menu('sortie_confirm', ['うむッ!', 'いかんッ!'])
+    assert policy.deploy_step(screen, empty_order_memory()) == []
+
+
+def test_measured_empty_receipt_does_not_approve_boss_without_its_kit():
+    mem = memory()
+    assert policy._empty_sortie_inventory(measured_empty_sortie())
+    assert policy.deploy_step(measured_empty_sortie(), mem) == []
+    assert mem['_records'][-1]['decision'] == 'situation_held'
+    assert '1-B1' not in mem['order_context']
+
+
+def test_nonempty_uncalibrated_unknowns_remain_held():
+    screen = menu('sortie_confirm', ['うむッ!', 'クースカン', 'ノリウツール'])
+    replace_cell(screen, 23, 16, UNKNOWN)
+    assert not policy._empty_sortie_inventory(screen)
+    assert policy.deploy_step(screen, memory()) == []

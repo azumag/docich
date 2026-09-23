@@ -1,11 +1,11 @@
 {
-  "output_sha256": "c73d71b573c1e59e30f706d51bf27b2b4afc11b653b3250661684d4ef4edb718",
+  "output_sha256": "532c9ab7d90873f788d6e17fe9dadcc9ba38970ba9d4f27cfc25f2d5c0b6dbcc",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "1d12c4cadb532aaa321dfb5d371985305c73ba0d46c084f7db4976cd902356da",
+  "source_sha256": "b1cfcd309264f8a6e78c6b0561bca61d837094bb22795213d314f343b35fea7e",
   "topics": [
+    "半熟英雄 #1072配備後の空携行品判定を実画面で校正中",
     "NInvaders automatic strategy repair and acceptance",
-    "半熟英雄 #1070配備・自然ゲームオーバーからSoren復帰（攻略受入は継続）",
-    "半熟英雄 #1068配備・どうし実入力と音声80%を実測（受入継続）"
+    "半熟英雄 #1070配備・自然ゲームオーバーからSoren復帰（攻略受入は継続）"
   ]
 }
