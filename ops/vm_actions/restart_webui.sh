@@ -1,36 +1,85 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Reviewed, bounded restart + verification for the docich Web UI unit.
+# Reviewed, bounded unit reconcile + restart + verification for the docich Web UI.
 #
 # Safety properties:
-#   - No root/sudo. Only `systemctl --user` on the fixed unit
-#     `docich-webui.service`. No arguments, no caller-supplied unit name and
-#     no arbitrary command; the only non-read-only action is the restart.
+#   - No root/sudo. Only the fixed user unit `docich-webui.service` is written,
+#     daemon-reloaded and restarted. No arguments, caller-supplied paths or unit
+#     names are accepted.
+#   - The installed unit is rendered only from the reviewed repository template
+#     `scripts/systemd/docich-webui.service`, replacing the single documented
+#     `__DOCICH_ROOT__` placeholder with the current production checkout root.
 #   - Production exec has no login session, so XDG_RUNTIME_DIR is set
-#     explicitly instead of relying on an ambient value (same convention as
-#     manage_market_paper_units.sh).
-#   - "Unit is active" is not enough to call this done: a stale process that
-#     already holds the port would keep serving the old UI. The operation
-#     therefore succeeds only when the HTML served on the configured local
-#     port is byte-identical to the `INDEX_HTML` of the deployed
-#     `src/docich/webui.py` (the production cwd of the exec).
-#   - Output goes to the VM-private exec log. The exit code is the only
-#     signal that reaches the workflow step log; keep these stable:
-#       0   restarted, active, served HTML == deployed INDEX_HTML
+#     explicitly instead of relying on an ambient value.
+#   - "Unit is active" is not enough to call this done: the operation succeeds
+#     only when the HTML served on the configured local port is byte-identical
+#     to the deployed `INDEX_HTML`.
+#   - Output goes to the VM-private exec log. The exit code is the only signal
+#     that reaches the workflow step log; keep these stable:
+#       0   unit reconciled/restarted, active, served HTML == deployed INDEX_HTML
 #       10  systemctl restart failed
 #       11  unit not active within the bounded wait
 #       12  deployed INDEX_HTML unreadable, or ExecStart runs another root
-#       13  local webui not reachable on the configured port within the
-#           bounded wait (Type=simple reports active before the socket is
-#           bound; a single-shot check raced the bind and reported 13)
+#       13  local webui not reachable on the configured port within the wait
 #       14  served HTML stale while ExecStart runs the production root
-#           (another process holds the port, or the restart missed it)
+#       15  reviewed unit template could not be rendered/installed/reloaded
 [[ $# -eq 0 ]] || { echo "no arguments accepted" >&2; exit 2; }
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 unit="docich-webui.service"
+root="$(pwd -P)"
+template="$root/scripts/systemd/docich-webui.service"
+unit_dir="$HOME/.config/systemd/user"
+unit_path="$unit_dir/$unit"
+
+# Reconcile the fixed user unit before restart. This is required when a reviewed
+# template change alters ExecStart (for example, the production --config added
+# by #1028); a plain restart would otherwise keep the stale, repo-external unit.
+if ! python3 - "$template" "$unit_dir" "$unit_path" "$root" <<'PY'
+import os
+from pathlib import Path
+import sys
+
+template = Path(sys.argv[1])
+unit_dir = Path(sys.argv[2])
+unit_path = Path(sys.argv[3])
+root = sys.argv[4]
+
+try:
+    source = template.read_text(encoding="utf-8")
+except OSError as exc:
+    raise SystemExit(f"cannot read reviewed webui unit template: {exc}")
+
+if "__DOCICH_ROOT__" not in source:
+    raise SystemExit("reviewed webui unit template is missing __DOCICH_ROOT__")
+rendered = source.replace("__DOCICH_ROOT__", root)
+if "__DOCICH_ROOT__" in rendered:
+    raise SystemExit("reviewed webui unit template placeholder remained after render")
+
+try:
+    unit_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp = unit_dir / f".{unit_path.name}.tmp-{os.getpid()}"
+    tmp.write_text(rendered, encoding="utf-8")
+    tmp.chmod(0o644)
+    os.replace(tmp, unit_path)
+except OSError as exc:
+    try:
+        tmp.unlink(missing_ok=True)
+    except Exception:
+        pass
+    raise SystemExit(f"cannot install reviewed webui unit template: {exc}")
+PY
+then
+  echo "reviewed webui unit template reconcile failed" >&2
+  exit 15
+fi
+
+if ! systemctl --user daemon-reload; then
+  echo "systemctl daemon-reload failed" >&2
+  exit 15
+fi
 
 if ! systemctl --user restart "$unit"; then
   echo "systemctl restart failed" >&2
@@ -49,20 +98,16 @@ if [[ "$active" -ne 1 ]]; then
 fi
 systemctl --user show "$unit" --property=ActiveState,SubState,MainPID,ExecMainStartTimestamp
 
-# The local endpoint comes from the same config the service reads; no knob can
-# be passed in because production exec scrubs the environment to
-# PATH/HOME/LANG. Loopback is tried first, then the configured bind. Reach
-# the port with a bounded wait: ActiveState flips to active as soon as the
-# Type=simple process spawns (measured: active at 0.04s, bind at 0.69s), so
-# one immediate GET raced the bind and reported a false 13. A reachable but
-# stale body still fails immediately with 14 — waiting cannot fix content.
+# Probe the same production profile embedded in the reviewed service template.
+# No runtime knob can be passed in because production exec scrubs the
+# environment to PATH/HOME/LANG.
 set +e
 python3 - <<'PY'
 import hashlib, re, sys, time, urllib.request
 
 try:
     import tomllib
-    with open("config/docich.toml", "rb") as fh:
+    with open("config/docich.soren-live.toml", "rb") as fh:
         webui_cfg = (tomllib.load(fh).get("webui") or {})
 except Exception:
     webui_cfg = {}
