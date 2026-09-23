@@ -17,6 +17,7 @@ from docich.trading.corner_script import (  # noqa: E402
     _condition_text,
     build_facts,
     build_next_prompt,
+    covered_entry,
     build_prompt,
     generate_corner_script,
     generate_next_narration,
@@ -679,6 +680,11 @@ def test_prompts_forbidding_spoken_lead_in_at_segment_head(tmp_path):
     for prompt in (build_prompt(facts), build_next_prompt(facts, [])):
         assert "結論からお伝えしますと" in prompt
         assert "前口上・枕詞を置かない" in prompt
+        # 「結論は、」「結論として」も2026-09-23の本番で51/58本の書き出しに
+        # 残ったので、「結論」で話し始めること自体を禁じ、誘発元の
+        # 「結論を先に言い」という指示も使わない。
+        assert "「結論」という語で話し始めない" in prompt
+        assert "結論を先に言い" not in prompt
 
 
 def test_prompts_ask_for_plain_general_explanations(tmp_path):
@@ -733,6 +739,37 @@ def test_build_next_prompt_lists_covered_topics_and_done_option(tmp_path):
     assert "相場" in prompt and "ニュース" in prompt
     assert '"done"' in prompt
     assert "JSON以外は出力しない" in prompt
+
+
+def test_build_next_prompt_numbers_every_covered_entry_and_forbids_relabelled_repeats(tmp_path):
+    _write_status(tmp_path)
+    covered = [f"切り口{index}" for index in range(1, 31)]
+    prompt = build_next_prompt(build_facts(tmp_path, now=1010.0), covered)
+    # Nothing is dropped: the earliest topic is still visible after 30 entries.
+    assert "\n1. 切り口1\n" in prompt
+    assert "\n30. 切り口30\n" in prompt
+    assert "見出しや言い回しを変えても同じ切り口とみなし" in prompt
+
+
+def test_covered_entry_keeps_label_opening_sentence_and_key_figures():
+    text = (
+        "結論からお伝えすると、今日の利益は理論上のうまい一往復にはまだ距離がある状態です。"
+        "比較用の理論値は1844.74円で、実際の今日の確定分109.50円との差は1735.24円、"
+        "到達率は5.93%でした。この理論値は当日の5分足終値だけを使い、1銘柄を1回だけ売買します。"
+    )
+    entry = covered_entry("理論値との差", text)
+    assert entry == (
+        "理論値との差：今日の利益は理論上のうまい一往復にはまだ距離がある状態です。"
+        "（数字: 1844.74円、109.50円、1735.24円、5.93%）"
+    )
+
+
+def test_covered_entry_skips_generic_counts_and_truncates_long_openings():
+    text = "あ" * 80 + "。直近24本で5分足と1銘柄、8万7000.00ドル、マイナス351.57円。"
+    entry = covered_entry("長文", text)
+    assert entry.startswith("長文：" + "あ" * 60 + "…")
+    assert entry.endswith("（数字: 24本、8万7000.00、マイナス351.57円）")
+    assert covered_entry("", "本文だけです。") == "本文だけです。"
 
 
 def test_parse_next_narration_accepts_item_and_done():
