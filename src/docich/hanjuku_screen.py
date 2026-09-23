@@ -207,6 +207,8 @@ def classify_text(s: Screen) -> str:
         return 'shop_quantity_prompt'
     if 'よろしいでっか' in t or 'なりまんな' in t:
         return 'shop_quantity'
+    if 'かいあたえ' in t:
+        return 'gift_request'
     if sum(1 for line in s.lines if PRICE.match(''.join(line.words(120, 256)))) >= 3:
         return 'shop_list'
     if 'しょうにん' in t and 'おしまい' in t:

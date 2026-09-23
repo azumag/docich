@@ -304,7 +304,8 @@ def target_step(screen: Screen, mem, frame):
                       cursor=mem.get('cursor'), anchor=mem.get('anchor'),
                       expected_metric='のりこんだ表示で目標城を確認',
                       reason=f"{order['general']}を{order['target']}へ出撃")
-        mem.setdefault('launched', {})[order['target']] = {'general': order['general'], 'step': order['step']}
+        general = mem.get('general_override', {}).get(order['step'], order['general'])
+        mem.setdefault('launched', {})[order['target']] = {'general': general, 'step': order['step']}
         return [pad('a')]
     return result or []
 
@@ -319,7 +320,8 @@ def deploy_step(screen: Screen, mem):
         move = menu_to(screen, 'しゅつげき')
         return [pad('a')] if move == 'here' else [move] if move else []
     if kind == 'general_list':
-        move = menu_to(screen, order['general'])
+        general = mem.get('general_override', {}).get(order['step'], order['general'])
+        move = menu_to(screen, general)
         if move is None and not mem.get('source_override', {}).get(order['step']):
             mem.setdefault('source_override', {})[order['step']] = 'ほんじょう'
             mem['orders'][order['step']] = 'pending'
@@ -327,6 +329,19 @@ def deploy_step(screen: Screen, mem):
                     deviation_reason=f"{order['general']}が{order['source']}にいない",
                     observed_metric=[w for _, _, w in _options(screen)][:12],
                     reason='本城から出撃し直す')
+            mem['active'] = None
+            return [pad('b'), pad('b')]
+        if move is None and not mem.get('general_override', {}).get(order['step']):
+            # The chart's general is gone (routed or lost). Chapter 1 keeps
+            # ゼウス at the home castle, so it substitutes rather than leave the
+            # castle (and every later step and the boss) unreachable.
+            mem.setdefault('general_override', {})[order['step']] = 'ゼウス'
+            mem.setdefault('source_override', {})[order['step']] = 'ほんじょう'
+            mem['orders'][order['step']] = 'pending'
+            _record(mem, 'order_substitute', strategy_variant='substitute_general',
+                    deviation_reason=f"{order['general']}が出撃できないためゼウスが代わりに出撃",
+                    observed_metric=[w for _, _, w in _options(screen)][:12],
+                    expected_metric=f"{order['target']}の占領", reason='後続手順とボス条件を満たすため')
             mem['active'] = None
             return [pad('b'), pad('b')]
         if move is None:
@@ -378,8 +393,12 @@ def deploy_step(screen: Screen, mem):
 def _battle_context(mem, ally):
     """Castle/side/step for a battle, only when a message or order matches the ally."""
     attack = mem.get('attack') or {}
+    captured = set(mem.get('captured', []))
     if attack.get('side') == 'defense' or (attack.get('general') and attack.get('general') == ally):
-        return {'castle': attack.get('castle'), 'side': attack.get('side'), 'step': attack.get('step')}
+        side = attack.get('side')
+        if side == 'attack' and attack.get('castle') in captured:
+            side = 'defense'          # a battle at a castle we hold is not a capture attempt
+        return {'castle': attack.get('castle'), 'side': side, 'step': attack.get('step')}
     captured = set(mem.get('captured', []))
     for castle, info in (mem.get('launched') or {}).items():
         if info.get('general') == ally and castle not in captured:
@@ -515,7 +534,8 @@ def battle_end(mem, next_kind):
     if outcome == 'loss':
         stats['generals_lost'] += 1
     step = cur.get('step')
-    if outcome == 'loss' and cur.get('side') == 'attack' and step:
+    if (outcome == 'loss' and cur.get('side') == 'attack' and step
+            and castle not in mem.get('captured', [])):
         retries = mem.setdefault('retries', {})
         retries[step] = retries.get(step, 0) + 1
         if retries[step] <= 2:
@@ -761,7 +781,9 @@ def quantity_step(screen: Screen, mem, soldiers=False):
 # ---------------------------------------------------------------- prompts
 def yes_no_step(screen: Screen, mem):
     text = screen.text
-    if 'はたしあい' in text or 'ごあいて' in text:
+    if re.search(r'\d+Gでいい', text):
+        choice, reason, variant = 'いかんッ!', '追加のおねだりは所持金を月一購入に残すため断る', 'decline_extra_gift'
+    elif 'はたしあい' in text or 'ごあいて' in text:
         # A lost duel can cost the hero; the chart does not require it.
         choice, reason = 'いかんッ!', '主人公の損失リスクを避け一騎打ちを断る'
         variant = 'decline_duel'
@@ -831,3 +853,24 @@ def egg_battle_step(screen: Screen, mem):
                     reason='コマンド待ちで停止しないよう既定のこうげきを選ぶ')
         return [pad('a')]
     return [pad('a')]
+
+
+def gift_step(screen: Screen, mem):
+    """「なにを かいあたえますか?」: the chart resets here; the bot cannot, so
+    it buys the cheapest listed item and records the deviation."""
+    items = []
+    for line in screen.lines:
+        m = re.match(r'^(\S+?)(\d+)G$', ''.join(line.words(64, 256)))
+        if m:
+            items.append((int(m.group(2)), m.group(1)))
+    if not items:
+        return []
+    price, name = min(items)
+    move = menu_to(screen, name)
+    if move == 'here':
+        _record(mem, 'gift', strategy_variant='cheapest_gift', item=name, price=price,
+                gold=(screen.header or {}).get('gold'), deviation_reason='reset_forbidden',
+                expected_metric={'chart': 'おねだりはリセット'}, observed_metric={'spent': price},
+                reason='リセットできないため最安の品を選ぶ')
+        return [pad('a')]
+    return [move] if move else []

@@ -405,3 +405,21 @@ def test_summoned_monster_turn_menu_is_answered_instead_of_stalling():
     m.text(40, 183, '59ポイントのダメージ!!')
     actions, state = decide(m.frame(), state)
     assert actions[0]['buttons'] == ['a']
+
+
+def test_gift_request_buys_the_cheapest_and_declines_extra_money():
+    c = Canvas()
+    c.text(48, 15, '1ねん 4のつき 100G')
+    c.text(24, 39, 'なにを かいあたえますか?')
+    c.text(168, 167, 'ゆびわ 10G')
+    c.text(168, 183, 'ペンダント 5G')
+    c.text(168, 199, 'コート 20G')
+    c.hand(146, 161)
+    mem = {}
+    assert policy.gift_step(parse(c.frame()), mem)[0]['buttons'] == ['down']
+    d = Canvas()
+    d.text(24, 183, '20Gで いい。')
+    d.text(184, 183, 'うむッ!')
+    d.text(184, 199, 'いかんッ!')
+    d.hand(162, 177)
+    assert policy.yes_no_step(parse(d.frame()), mem)[0]['buttons'] == ['down']

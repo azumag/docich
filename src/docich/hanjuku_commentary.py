@@ -37,6 +37,8 @@ def compose(rec: dict) -> tuple[str, str | None]:
                 'チャートどおりの白兵では負けたので、今度は開幕にイッテツーンを2枚使う作戦で同じ城へ攻め直します。')
     if kind == 'order_source_changed':
         return f'source:{step}', '出撃予定の城に将軍が見当たらないので、本城から出し直します。'
+    if kind == 'order_substitute':
+        return f'substitute:{step}', '予定の将軍が出撃できないので、本城のゼウス将軍を代わりに向かわせます。'
     if kind == 'attack_observed':
         return (f"attack:{rec.get('castle')}:{rec.get('general')}",
                 f"{rec['general']}将軍が{rec['castle']}城に乗り込みました。")
@@ -89,6 +91,12 @@ def compose(rec: dict) -> tuple[str, str | None]:
         return 'harvest', '凶作です。チャートならリセットする場面ですが、このまま進めます。'
     if kind == 'prompt' and rec.get('strategy_variant') == 'decline_duel':
         return 'duel', '一騎打ちの申し出は、主人公を守るために断ります。'
+    if kind == 'egg_battle':
+        return 'egg', '敵が卵で召喚獣を呼び出しました。コマンドはこうげきで応戦します。'
+    if kind == 'gift':
+        return 'gift', f"おねだりです。チャートならリセットですが、一番安い{rec['item']}を{rec['price']}ゴールドで買って済ませます。"
+    if kind == 'prompt' and rec.get('strategy_variant') == 'decline_extra_gift':
+        return 'gift_extra', '追加のおねだりは、月一の買い物に備えて断ります。'
     if kind == 'situation_held':
         return 'held', None
     return f'other:{kind}', None
@@ -98,4 +106,4 @@ def compose(rec: dict) -> tuple[str, str | None]:
 SPOKEN = frozenset({
     'name_confirm', 'order_start', 'order_retry', 'order_source_changed', 'attack_observed',
     'defense_observed', 'battle_start', 'battle_card', 'battle_result', 'month_plan', 'poor_harvest',
-    'prompt', 'situation_held'})
+    'prompt', 'situation_held', 'gift', 'egg_battle', 'order_substitute'})

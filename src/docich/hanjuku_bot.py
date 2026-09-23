@@ -186,6 +186,13 @@ def decide(frame: Frame, state: dict) -> tuple[list[dict], dict]:
         mem['egg_battle']=False
     actions=None
     if kind=='name_entry':
+        if (mem.get('name') or {}).get('done'):
+            # A second name screen means a new game: never carry the previous
+            # game's orders, captures or cursor into it.
+            stats=mem.get('stats')
+            mem={'_records':mem['_records'],'previous_stats':stats}
+            policy._record(mem,'new_game_detected',chart_step='name',
+                           reason='名前入力画面を再度確認したため方策状態を初期化')
         actions=policy.name_step(screen,mem)
         if mem.get('name',{}).get('done') and not mem.get('chapter'):
             mem['chapter']=1
@@ -211,6 +218,8 @@ def decide(frame: Frame, state: dict) -> tuple[list[dict], dict]:
         actions=policy.target_step(screen,mem,frame)
     elif kind=='map' and mem.get('chapter'):
         actions=policy.map_step(screen,mem,frame)
+    elif kind=='gift_request':
+        actions=policy.gift_step(screen,mem)
     elif kind=='yes_no':
         actions=policy.yes_no_step(screen,mem)
     elif kind in {'castle_info','sealed_castle','main_menu'}:
