@@ -389,6 +389,37 @@ def _empty_sortie_inventory(screen):
     return not any(card in word for _, _, word in _options(screen) for card in CARD_NAMES)
 
 
+def _single_card_sortie_inventory(screen):
+    """Measured g328 one-card receipt; no multi-card/quantity inference."""
+    if screen.kind != 'sortie_confirm' or screen.hand not in ((138, 105, 156, 118), (138, 105, 158, 118)):
+        return None
+    def cells(y, left=136):
+        return tuple((x, ch) for line in screen.lines if line.y == y
+                     for x, ch in line.cells if left <= x < 256)
+    def text_cells(x, text):
+        return tuple((x + 8*i, ch) for i, ch in enumerate(text))
+    first = cells(47)
+    names = TextLine(47, tuple((x, ch) for x, ch in first if x >= 176)).spans()
+    if len(names) != 1 or names[0][0] != 176 or names[0][1] not in CARD_NAMES:
+        return None
+    card = names[0][1]
+    expected = {47: text_cells(136, 'きりふだ') + text_cells(176, card), 63: (), 79: (),
+                95: text_cells(136, 'ーしゅつげき') + text_cells(192, 'しますか?ー'),
+                111: text_cells(160, 'うむッ!'), 127: text_cells(160, 'いかんッ!')}
+    for y, wanted in expected.items():
+        if cells(y, 160 if y in (111, 127) else 136) != wanted:
+            return None
+    # Background and dakuten/cursor UNKNOWNs are not body text. Additional
+    # known text anywhere else inside this right panel is uncalibrated.
+    if any(ch != UNKNOWN and 136 <= x < 256
+           and (line.y not in expected or (line.y in (111, 127) and x < 160))
+           for line in screen.lines if 32 <= line.y < 135 for x, ch in line.cells):
+        return None
+    if [word for _, _, word in _options(screen) if word in CARD_NAMES] != [card]:
+        return None
+    return [card]
+
+
 def _measured_card_select(screen):
     """Read only the measured four-row g328 menu, without guessing scrolls."""
     if screen.kind != 'card_select':
@@ -534,20 +565,13 @@ def deploy_step(screen: Screen, mem):
         return [move]
     if kind == 'sortie_confirm':
         mem.setdefault('order_context', {}).pop(order['step'], None)
-        # Do not infer quantities from uncalibrated suffixes or turn partial
-        # glyphs into an empty inventory. Only complete card-name spans count.
-        carried = [word for _, _, word in _options(screen) if word in CARD_NAMES]
-        card_lines = [line for line in screen.lines if any(card in line.text for card in CARD_NAMES)]
         empty_receipt = _empty_sortie_inventory(screen)
-        ambiguous = (UNKNOWN in screen.text or any(UNKNOWN in line.text for line in screen.lines)
-                     or any(re.search(r'\d', line.text) for line in card_lines)
-                     or any(any(card in word for card in CARD_NAMES) and word not in CARD_NAMES
-                            for _, _, word in _options(screen)))
-        if not carried:
-            # Absence of recognised card names is not evidence of emptiness.
-            ambiguous = not empty_receipt
+        single_receipt = _single_card_sortie_inventory(screen)
+        carried = [] if empty_receipt else single_receipt
+        inventory_evidence = 'measured_empty_sortie' if empty_receipt else 'measured_single_card_sortie'
+        ambiguous = carried is None
         want = sorted(_deploy_cards(order, mem))
-        got = sorted(carried)
+        got = sorted(carried) if carried is not None else None
         if ambiguous or got != want:
             return _hold_deploy(screen, mem, order,
                                 '携行切り札の読取が不確実または計画と不一致のため出撃承認を保留', carried=carried)
@@ -564,7 +588,7 @@ def deploy_step(screen: Screen, mem):
                                     else {'general': order['general'], 'cards': want}),
                 'observed_metric': {'general': context['general'], 'cards': got}}
             _record(mem, 'sortie_confirm', **context, cards=carried,
-                    inventory_evidence='measured_empty_sortie' if empty_receipt else 'complete_card_names',
+                    inventory_evidence=inventory_evidence,
                     observed_metric=got,
                     reason='出撃確認で読み取った切り札が計画と一致したため承認を予定')
             source = mem.get('source_override', {}).get(order['step'], order['source'])
