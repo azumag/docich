@@ -4653,6 +4653,13 @@ const ROT_REASON_JA={
   "recovery-retry":"復旧後の再試行待ちです",
   "manual-execution-unverified":"手動実行の結果を確認できず停止しました",
   "execution-or-state-unverified":"実行結果を確認できず停止しました",
+  "all-corners-cooling-down":"全コーナーが cooldown 中です。いちばん早く明けたコーナーから自動で再開します",
+  "selected-corner-cooling-down":"選ばれたコーナーが cooldown 中のため待っています",
+  "selected-corner-disabled-or-paused":"選ばれたコーナーが無効/休止のため待っています",
+  "no-enabled-corner":"自動選択できるコーナーがありません（全て無効/休止/対象外）",
+  "not-due":"次の実行時刻を待っています",
+  "clock-gap-quarantine":"長時間の停止を検知したため、安全のため一時待機しています",
+  "clock-regressed":"時計の逆行を検知したため待機しています",
 };
 const CORNER_STATUS_JA={idle:"待機",waiting:"待機",starting:"開始中",active:"実行中",restoring:"復帰中",preparing:"準備中",recovery_required:"要復旧",failed:"失敗",completed:"完了",interrupted:"中断",expired:"期限切れ",running:"実行中"};
 const CORNER_BUSY=new Set(["starting","active","restoring","preparing","waiting","recovery_required","failed"]);
