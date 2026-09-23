@@ -668,6 +668,51 @@ def test_prompt_requires_single_line_json(tmp_path):
     assert "1行で出力" in prompt
 
 
+def test_prompts_forbidding_spoken_lead_in_at_segment_head(tmp_path):
+    """The reported 「結論からお伝えしますと」 comes from the model paraphrasing
+
+    the 「結論を先に言い…」 instruction, so both narration prompts must forbid
+    the lead-in explicitly.
+    """
+    _write_status(tmp_path)
+    facts = build_facts(tmp_path, now=1010.0)
+    for prompt in (build_prompt(facts), build_next_prompt(facts, [])):
+        assert "結論からお伝えしますと" in prompt
+        assert "前口上・枕詞を置かない" in prompt
+
+
+def test_parse_script_drops_leading_conclusion_lead_in():
+    segments = parse_script(json.dumps({
+        "corner": "結論からお伝えしますと、本日の相場は方向感が乏しいです。",
+        "news": "通常の本文です。",
+    }))
+    assert segments["corner"] == "本日の相場は方向感が乏しいです。"
+    assert segments["news"] == "通常の本文です。"
+
+
+def test_parse_next_narration_drops_leading_conclusion_lead_in():
+    item = parse_next_narration(json.dumps(
+        {"topic": "相場", "text": "結論からお伝えしますと、見送りが正解でした。"}
+    ))
+    assert item == {"status": "item", "topic": "相場", "text": "見送りが正解でした。"}
+
+
+def test_plain_sentences_starting_with_conclusion_are_kept():
+    """Removal must be narrow: real statements that merely start with 結論, and
+
+    a segment that is nothing but the lead-in, are passed through unchanged.
+    """
+    kept = [
+        "結論は大事だ。そのうえで数字を見ます。",
+        "結論と判断するのは早計だが、勢いは強い。",
+        "結論からお伝えしますと",
+    ]
+    for text in kept:
+        item = parse_next_narration(json.dumps({"topic": "方針", "text": text}))
+        assert item["text"] == text, text
+        assert parse_script(json.dumps({"corner": text}))["corner"] == text
+
+
 def test_build_next_prompt_lists_covered_topics_and_done_option(tmp_path):
     _write_status(tmp_path)
     prompt = build_next_prompt(build_facts(tmp_path, now=1010.0), ["相場", "ニュース"])
