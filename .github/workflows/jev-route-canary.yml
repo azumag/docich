@@ -43,10 +43,10 @@ jobs:
           [[ "$GITHUB_REF" == 'refs/heads/main' ]]
           [[ "$GITHUB_WORKFLOW_REF" == 'azumag/docich/.github/workflows/jev-route-canary.yml@refs/heads/main' ]]
 
-      - name: Checkout reviewed main
+      - name: Checkout reviewed dispatch SHA
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
-          ref: main
+          ref: ${{ github.sha }}
           persist-credentials: false
           submodules: false
 
