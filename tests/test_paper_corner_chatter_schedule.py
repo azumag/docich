@@ -112,8 +112,38 @@ def test_ai_segments_are_spoken_as_generated_then_exhausted(tmp_path, monkeypatc
     assert saved["reports"]["ai:2"]["text"] == "二つ目のネタです。"
     assert not any(key.startswith("fallback:") for key in saved["reports"])
     assert "一つ目のネタです。" in spoken and "二つ目のネタです。" in spoken
-    # Covered topics are handed back so the narrator can avoid repeats.
-    assert saved["covered_topics"] == ["相場", "ニュース"]
+    # Covered topics are handed back with their opening sentence so the
+    # narrator can recognise a repeat even under a new label.
+    assert saved["covered_topics"] == ["相場：一つ目のネタです。", "ニュース：二つ目のネタです。"]
+
+
+def test_covered_topics_keep_every_spoken_segment(tmp_path, monkeypatch):
+    """A long corner must not forget its early topics (2026-09-23: the list was
+    cut to the latest 24 and a 58-segment corner re-told them)."""
+    from docich.trading import corner_script
+
+    mgr, _coord = _manager(
+        tmp_path, overlay=lambda g, payload: None, speech=lambda g, text, **kwargs: None,
+    )
+    queue = [
+        {"status": "item", "topic": f"話題{index}", "text": f"{index}番目のネタです。"}
+        for index in range(1, 31)
+    ] + [{"status": "done"}]
+    seen = []
+
+    def fake_next(*args, **kwargs):
+        seen.append(list(kwargs.get("covered") or []))
+        return queue.pop(0)
+
+    monkeypatch.setattr(corner_script, "generate_next_narration", fake_next)
+
+    assert mgr._run_locked(_starting_state()) == "completed"
+
+    saved = json.loads(mgr.path.read_text())
+    assert len(saved["covered_topics"]) == 30
+    assert saved["covered_topics"][0] == "話題1：1番目のネタです。"
+    # The final generation call still saw the very first topic.
+    assert seen[-1][0] == "話題1：1番目のネタです。" and len(seen[-1]) == 30
 
 
 def test_generation_failure_reads_finite_fallback_then_marks_degraded(tmp_path, monkeypatch):
