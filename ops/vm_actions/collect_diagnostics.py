@@ -2918,6 +2918,38 @@ def _collect_nethack_agent_log(state_dir, now):
 NETHACK_PANE_LINES = 14
 NETHACK_PANE_LINE_LIMIT = 240
 _TMUX_TARGET_RE = re.compile(r"^[A-Za-z0-9_.@:-]+$")
+_RUNTIME_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
+# Fixed vocabularies for the NetHack boundary diag (#1015). Kept in sync with
+# ``docich.adapters.nethack.CANCEL_REFUSAL_REASONS`` /
+# ``PROMPT_CLASSES`` by ``test_nethack_boundary_diag.py``; duplicated here so
+# this read-only collector never imports runtime code.
+_BOUNDARY_DIAG_REASONS = frozenset(
+    {
+        "deadline_exceeded",
+        "cancel_requested",
+        "session_missing",
+        "session_unowned",
+        "process_target_absent",
+        "process_window_ambiguous",
+        "process_window_probe_failed",
+        "capture_failed",
+        "prompt_not_pending",
+        "process_gone",
+        "post_key_probe_failed",
+        "post_key_capture_failed",
+        "wait_timeout",
+    }
+)
+_BOUNDARY_DIAG_PROMPT_CLASSES = frozenset(
+    {
+        "save_prompt_pending",
+        "save_confirmation",
+        "character_creation",
+        "capture_failed",
+        "unknown",
+    }
+)
+_BOUNDARY_DIAG_OUTCOMES = frozenset({"suspended", "ended", "unknown"})
 
 
 def _capture_tmux_pane(target, *, max_lines=NETHACK_PANE_LINES):
@@ -2956,6 +2988,87 @@ def _list_window_names(session):
     if proc.returncode != 0:
         return []
     return [name.strip() for name in proc.stdout.splitlines() if name.strip()]
+
+
+def _collect_nethack_boundary(state_dir, now):
+    """Bounded, sanitized view of the active NetHack boundary diag (#1015).
+
+    Reads only ``<state_dir>/runtimes/<runtime_id>/nethack_boundary_diag.json``
+    for the *active* runtime, and projects fixed enums/booleans only: why a
+    cancel was refused must be answerable without ever exposing pane text,
+    paths, keys or argv.
+    """
+    result = {
+        "present": False,
+        "readable": False,
+        "active_runtime": False,
+        "stale_runtime": False,
+        "operation": None,
+        "reason": None,
+        "prompt_class": None,
+        "process_target_present": None,
+        "process_alive": None,
+        "save_signature_changed": None,
+        "boundary_outcome": None,
+        "generation": None,
+        "age_sec": None,
+    }
+    try:
+        data = json.loads((Path(state_dir) / "game_switch.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return result
+    if not isinstance(data, dict):
+        return result
+    active = data.get("active")
+    if not isinstance(active, dict):
+        return result
+    runtime_id = active.get("runtime_id")
+    if not isinstance(runtime_id, str) or not _RUNTIME_ID_RE.fullmatch(runtime_id):
+        return result
+    result["active_runtime"] = True
+    generation = active.get("generation")
+    if type(generation) is int:
+        result["generation"] = generation
+    present, readable, diag = _load_state_file(
+        Path(state_dir) / "runtimes" / runtime_id / "nethack_boundary_diag.json"
+    )
+    result["present"] = present
+    result["readable"] = readable
+    if not readable or not isinstance(diag, dict):
+        return result
+    operation = diag.get("operation")
+    if operation in ("cancel", "wait"):
+        result["operation"] = operation
+    reason = diag.get("reason")
+    if isinstance(reason, str) and reason in _BOUNDARY_DIAG_REASONS:
+        result["reason"] = reason
+    prompt_class = diag.get("prompt_class")
+    if isinstance(prompt_class, str) and prompt_class in _BOUNDARY_DIAG_PROMPT_CLASSES:
+        result["prompt_class"] = prompt_class
+    boundary_outcome = diag.get("boundary_outcome")
+    if isinstance(boundary_outcome, str) and boundary_outcome in _BOUNDARY_DIAG_OUTCOMES:
+        result["boundary_outcome"] = boundary_outcome
+    for key in ("process_target_present", "process_alive", "save_signature_changed"):
+        value = diag.get(key)
+        if isinstance(value, bool):
+            result[key] = value
+    recorded = diag.get("recorded_at")
+    if isinstance(recorded, str):
+        try:
+            recorded_ts = dt.datetime.fromisoformat(recorded.replace("Z", "+00:00")).timestamp()
+            if 0 <= recorded_ts <= now + 86400:
+                result["age_sec"] = max(0, int(now - recorded_ts))
+        except ValueError:
+            pass
+    diag_generation = diag.get("generation")
+    if type(diag_generation) is int and diag_generation == generation:
+        result["active_runtime"] = True
+    else:
+        # A diag left behind by an older generation must never be read as the
+        # active runtime's evidence.
+        result["active_runtime"] = False
+        result["stale_runtime"] = True
+    return result
 
 
 def _collect_nethack_panes(state_dir, now):
@@ -3055,6 +3168,7 @@ def main(argv):
         "improvement": improvement,
         "corners": corners,
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),
+        "nethack_boundary": _collect_nethack_boundary(_program_state_dir(), now),
         "nethack_panes": _collect_nethack_panes(_program_state_dir(), now),
         "market_paper": _collect_market_paper(_program_state_dir(), now),
         "webui": _collect_webui(),

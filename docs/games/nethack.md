@@ -305,6 +305,17 @@ P1b の run history へ委ねる。
 
 境界の診断結果は generation runtime の `nethack_boundary.json` に `suspended` / `ended` として残す。
 
+cancel が拒否された時・save境界が期限切れになった時も、同じ runtime directory の
+`nethack_boundary_diag.json` に**固定enumだけ**の観測が残る（#1015）。中身は
+`operation`（`cancel` / `wait`）、`reason`（`prompt_not_pending` / `session_missing` /
+`capture_failed` / `process_gone` / `wait_timeout` / `deadline_exceeded` などの固定集合）、
+`prompt_class`（`save_prompt_pending` / `save_confirmation` / `character_creation` /
+`capture_failed` / `unknown`）、`process_target_present` / `process_alive` /
+`save_signature_changed` の boolean（不明なら `null`、決して `false` にしない）、
+`generation` / `runtime_id` / `recorded_at` のみで、**pane本文・path・キー・argv は書かない**。
+owner-only `diagnostics` は active runtime のそれだけを読み、世代が違うものは
+`stale_runtime` として区別する。記録に失敗しても cancel の fail-closed 判定は変えない。
+
 ### boundary の取消し（cancel）
 
 coordinator は boundary の待機が失敗・期限切れになると、adapter に boundary request の取消しを要求し、
