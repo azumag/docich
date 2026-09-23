@@ -389,8 +389,13 @@ def _empty_sortie_inventory(screen):
     return not any(card in word for _, _, word in _options(screen) for card in CARD_NAMES)
 
 
-def _single_card_sortie_inventory(screen):
-    """Measured g328 one-card receipt; no multi-card/quantity inference."""
+def _sortie_inventory(screen):
+    """Read complete card names from the fixed sortie panel slots.
+
+    The one-card placement is live-measured. Additional names are classified
+    only when each occupies a complete known slot and the whole panel matches;
+    this recognizes text, not quantities or partial names.
+    """
     if screen.kind != 'sortie_confirm' or screen.hand not in ((138, 105, 156, 118), (138, 105, 158, 118)):
         return None
     def cells(y, left=136):
@@ -399,13 +404,31 @@ def _single_card_sortie_inventory(screen):
     def text_cells(x, text):
         return tuple((x + 8*i, ch) for i, ch in enumerate(text))
     first = cells(47)
-    names = TextLine(47, tuple((x, ch) for x, ch in first if x >= 176)).spans()
-    if len(names) != 1 or names[0][0] != 176 or names[0][1] not in CARD_NAMES:
+    heading = text_cells(136, 'きりふだ')
+    first_spans = TextLine(47, tuple((x, ch) for x, ch in first if x >= 176)).spans()
+    if len(first_spans) != 1 or first_spans[0][0] != 176 or first_spans[0][1] not in CARD_NAMES:
         return None
-    card = names[0][1]
-    expected = {47: text_cells(136, 'きりふだ') + text_cells(176, card), 63: (), 79: (),
+    cards = [first_spans[0][1]]
+    if first != heading + text_cells(176, cards[0]):
+        return None
+    expected = {47: first, 63: (), 79: (),
                 95: text_cells(136, 'ーしゅつげき') + text_cells(192, 'しますか?ー'),
                 111: text_cells(160, 'うむッ!'), 127: text_cells(160, 'いかんッ!')}
+    empty_tail = False
+    for y in (63, 79):
+        row = cells(y)
+        if not row:
+            empty_tail = True
+            continue
+        if empty_tail:
+            return None
+        spans = TextLine(y, tuple((x, ch) for x, ch in row if x >= 176)).spans()
+        if len(spans) != 1 or spans[0][0] != 176 or spans[0][1] not in CARD_NAMES:
+            return None
+        if row != text_cells(176, spans[0][1]):
+            return None
+        cards.append(spans[0][1])
+        expected[y] = row
     for y, wanted in expected.items():
         if cells(y, 160 if y in (111, 127) else 136) != wanted:
             return None
@@ -415,13 +438,17 @@ def _single_card_sortie_inventory(screen):
            and (line.y not in expected or (line.y in (111, 127) and x < 160))
            for line in screen.lines if 32 <= line.y < 135 for x, ch in line.cells):
         return None
-    if [word for _, _, word in _options(screen) if word in CARD_NAMES] != [card]:
+    if [word for _, _, word in _options(screen) if word in CARD_NAMES] != cards:
         return None
-    return [card]
+    return cards
 
 
 def _measured_card_select(screen):
-    """Read only the measured four-row g328 menu, without guessing scrolls."""
+    """Read contiguous rows in the measured g328 panel, never infer stock.
+
+    Depleted final items disappear. Empty baselines must form a trailing
+    suffix; UNKNOWN cells are unreadable rows, not evidence of emptiness.
+    """
     if screen.kind != 'card_select':
         return None
     def cells(y, left):
@@ -438,8 +465,14 @@ def _measured_card_select(screen):
     if cells(127, 136) != text_cells(136, 'バトルようのきりふだです'):
         return None
     rows = []
+    empty_tail = False
     for y in (55, 71, 87, 103):
         row = cells(y, 160)
+        if not row:
+            empty_tail = True
+            continue
+        if empty_tail:
+            return None
         count = dict(row).get(232)
         names = TextLine(y, tuple((x, ch) for x, ch in row if x < 232)).spans()
         if len(names) != 1 or names[0][0] != 160 or names[0][1] not in CARD_NAMES:
@@ -448,7 +481,7 @@ def _measured_card_select(screen):
         if count not in tuple('0123456789') or row != text_cells(160, name) + ((232, count),):
             return None
         rows.append({'y': y, 'card': name, 'stock': int(count)})
-    if len({row['card'] for row in rows}) != len(rows):
+    if not rows or len({row['card'] for row in rows}) != len(rows):
         return None
     # Extra text rows would be an uncalibrated inventory/scroll layout. Mark
     # rows above the known text can contain UNKNOWN and are not inventory.
@@ -461,9 +494,12 @@ def _measured_card_select(screen):
         return None
     x0, y0, x1, y1 = screen.hand
     selected_y = y0 + 6
-    if x0 != 138 or x1 != 158 or y1 != selected_y + 7 or selected_y not in (55, 71, 87, 103):
+    if (x0 != 138 or x1 not in (156, 158) or y1 != selected_y + 7
+            or selected_y not in {row['y'] for row in rows}):
         return None
-    return {'rows': rows, 'selected_y': selected_y, 'remaining': int(remaining)}
+    return {'rows': rows, 'selected_y': selected_y, 'remaining': int(remaining),
+            'inventory_evidence': ('measured_four_row_card_select' if len(rows) == 4
+                                   else 'structured_card_select'), 'observed_rows': len(rows)}
 
 
 def deploy_step(screen: Screen, mem):
@@ -549,7 +585,8 @@ def deploy_step(screen: Screen, mem):
             picked.append(card)
             _record(mem, 'card_pick', **_deploy_context(order, mem), card=card,
                     observed_metric={'stock': row['stock'], 'remaining': inventory['remaining'],
-                                     'inventory_evidence': 'measured_four_row_card_select'},
+                                     'inventory_evidence': inventory['inventory_evidence'],
+                                 'observed_rows': inventory['observed_rows']},
                     resulting_event='selection_planned_not_yet_confirmed', reason=order['note'])
             return [pad('a')]
         move = pad('down' if row['y'] > inventory['selected_y'] else 'up')
@@ -560,15 +597,18 @@ def deploy_step(screen: Screen, mem):
                 observed_metric={'desired_card': card, 'selected_y': selected['y'],
                                  'selected_card': selected['card'], 'target_y': row['y'],
                                  'target_stock': row['stock'], 'remaining': inventory['remaining'],
-                                 'inventory_evidence': 'measured_four_row_card_select'},
+                                 'inventory_evidence': inventory['inventory_evidence'],
+                                 'observed_rows': inventory['observed_rows']},
                 reason='実測配置の正数在庫と携行余枠を確認し、予定切り札へカーソルを移動')
         return [move]
     if kind == 'sortie_confirm':
         mem.setdefault('order_context', {}).pop(order['step'], None)
         empty_receipt = _empty_sortie_inventory(screen)
-        single_receipt = _single_card_sortie_inventory(screen)
-        carried = [] if empty_receipt else single_receipt
-        inventory_evidence = 'measured_empty_sortie' if empty_receipt else 'measured_single_card_sortie'
+        slot_receipt = _sortie_inventory(screen)
+        carried = [] if empty_receipt else slot_receipt
+        inventory_evidence = ('measured_empty_sortie' if empty_receipt else
+                              'measured_single_card_sortie' if slot_receipt and len(slot_receipt) == 1 else
+                              'structured_card_slots')
         ambiguous = carried is None
         want = sorted(_deploy_cards(order, mem))
         got = sorted(carried) if carried is not None else None
