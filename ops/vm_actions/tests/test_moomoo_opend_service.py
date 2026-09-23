@@ -1,6 +1,7 @@
 import os
 import pathlib
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -70,6 +71,10 @@ class MoomooOpenDServiceTests(unittest.TestCase):
             check=False,
         )
 
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "production preflight requires Linux and GNU stat",
+    )
     def test_preflight_accepts_owned_private_runtime(self):
         with tempfile.TemporaryDirectory() as tmp:
             root, home, _ = self._runtime_fixture(pathlib.Path(tmp))
@@ -77,6 +82,10 @@ class MoomooOpenDServiceTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout, "")
 
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "production preflight requires Linux and GNU stat",
+    )
     def test_preflight_rejects_group_or_world_readable_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             root, home, _ = self._runtime_fixture(pathlib.Path(tmp), config_mode=0o644)
