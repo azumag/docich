@@ -1,7 +1,7 @@
 {
  "provenance": {
   "source": "azumag/soviet_now broadcast/comment.sh prompt stage (see scripts/golden/comment_prompt_golden.py)",
-  "soviet_now_commit": "a4db396b7662310d82eb4bb59fbafa58311b34f6",
+  "soviet_now_commit": "25a282b544ea50ac5922525d6146c4f23c74228b",
   "generated_by": "executing the legacy shell functions / verbatim inline python / envsubst; expected = stdout",
   "purpose": "docich.comment.prompt must reproduce these bytes (#829 PR-3a)"
  },

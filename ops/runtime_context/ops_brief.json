@@ -1,11 +1,11 @@
 {
-  "output_sha256": "1772d3a0581b8c2756d6b0bc2d03bc761b5059c74ac0503c0a63d6d9ccf311cc",
+  "output_sha256": "2be30bcee86a4c491a91f4a336a1b8366028f17b38a8a8d0f3d835e122d20017",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "8543584808db47a52956e8a2d817a110714c0b79078e5867f5aae1efe28b189d",
+  "source_sha256": "8a9f7ea81352eb1db4749a3b08e4e714f06cbfb5e8c8b32b2159c42680939d06",
   "topics": [
     "PAPERコーナーの数値読みを「整数のみ・整数部0だけ小数第2位」へ（、CI 5/5 green・マージ待ち）",
-    "ソ連建国STOP誤判定・クリップ不発を修正中（復旧時の盤面保持失敗を記録）",
+    "建国後の同盤面継続と5分待機をmain統合（本番反映待ち・復旧事故を記録）",
     "半熟英雄チャート準拠bot（、main統合・本番確認は進行中）"
   ]
 }
