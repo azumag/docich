@@ -11,6 +11,7 @@ import re
 import select
 import signal
 import subprocess
+import sys
 import time
 import json
 from pathlib import Path
@@ -216,9 +217,22 @@ def main(argv=None) -> int:
             source_env.setdefault('SDL_AUDIODRIVER', 'pulseaudio')
         viewer = launch(command, env=source_env)
         if args.audio_volume_percent is not None and args.runtime_state:
-            from .pulse_volume import keep_applied
-            keep_applied(viewer, args.audio_volume_percent,
-                         Path(args.runtime_state).with_name('audio_volume.json'), env=source_env)
+            evidence = Path(args.runtime_state).with_name('audio_volume.json')
+            # Production runs this file as a script (no parent package), so a
+            # package-relative import fails there.  Volume is optional: a
+            # setup failure is recorded, never allowed to stop the game.
+            try:
+                if __package__:
+                    from .pulse_volume import keep_applied
+                else:
+                    from pulse_volume import keep_applied
+                keep_applied(viewer, args.audio_volume_percent, evidence, env=source_env)
+            except Exception as exc:
+                print(f'audio volume setup failed: {type(exc).__name__}', file=sys.stderr, flush=True)
+                try:
+                    evidence.write_text(json.dumps({'status': 'setup_failed', 'at': time.time()}))
+                except OSError:
+                    pass
         deadline = time.monotonic() + args.viewer_wait_sec
         window = ''
         while time.monotonic() < deadline and viewer.poll() is None:
