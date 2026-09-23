@@ -22,6 +22,17 @@ from docich.hanjuku_run import append_log
 from docich.retroarch_boundary import read_record
 
 
+# Only records that explain this observation's planned input/hold may override
+# the active battle. Observation, migration and result records are not actions.
+INPUT_CONTEXT_DECISIONS=frozenset({
+    'name_wait','name_confirm','name_delete','name_type','order_start',
+    'unexpected_target','order_substitute','order_source_changed','card_missing',
+    'card_pick','sortie_confirm','battle_card','battle_card_missing','battle_card_selected',
+    'barrier_removed','month_plan','month_confirm','month_done','buy_skip','buy',
+    'soldier_refill','prompt','egg_battle','gift','close_panel','situation_held',
+})
+
+
 def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, actions, frame_sha256, frame=None):
     now=time.time()
     identity={k:(obs_meta.get('hanjuku') or {}).get(k) for k in ('game','runtime_id','generation','lease_id')}
@@ -29,7 +40,17 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
     state['decision_trace']={**identity, 'decision_id': decision_id, 'frame_sha256': frame_sha256}
     policy=state.get('policy') or {}
     snapshot=None
-    card_flow=(policy.get('battle') or {}).get('card_flow')
+    battle=policy.get('battle') if isinstance(policy.get('battle'),dict) else {}
+    chart_step=battle.get('step') if battle else policy.get('active')
+    strategy_variant=battle.get('strategy_variant') if battle else policy.get('variant')
+    deviation_reason=battle.get('deviation_reason')
+    input_context=next((r for r in reversed(records)
+                        if r.get('decision') in INPUT_CONTEXT_DECISIONS),None)
+    if input_context is not None:
+        chart_step=input_context.get('chart_step',chart_step)
+        strategy_variant=input_context.get('strategy_variant',strategy_variant)
+        deviation_reason=input_context.get('deviation_reason')
+    card_flow=battle.get('card_flow')
     capture=bool(card_flow) or any(
         r.get('decision') in {'name_confirm','chapter_seen','battle_result','barrier_removed'}
         or str(r.get('decision','')).startswith('battle_card') for r in records)
@@ -46,8 +67,9 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
     append_log(runtime,'hanjuku_decisions',{
         'schema':1,'event':'action_plan','at':now,'bot_version':BOT_VERSION,**identity,
         'decision_id':decision_id,'frame_sha256':frame_sha256,'snapshot':snapshot,
-        'screen_kind':state.get('screen_kind'),'chart_step':policy.get('active'),
-        'strategy_variant':policy.get('variant'),'planned_actions':actions,
+        'screen_kind':state.get('screen_kind'),'chart_step':chart_step,
+        'strategy_variant':strategy_variant,'deviation_reason':deviation_reason,
+        'planned_actions':actions,
         'reason_decisions':[r.get('decision') for r in records],
         'dispatch_status':'planned_not_yet_sent'})
     for record in records:

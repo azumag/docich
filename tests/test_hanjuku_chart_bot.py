@@ -905,3 +905,58 @@ def test_card_flow_and_event_frames_are_linked_from_action_plan(tmp_path, decisi
         assert len(entries) == 1
     else:
         assert entries[1]['snapshot'] == plan['snapshot']
+
+
+@pytest.mark.parametrize('in_battle', [False, True])
+def test_action_plan_and_summary_share_current_battle_strategy(tmp_path, in_battle):
+    import importlib.util
+    path = Path(__file__).resolve().parents[1] / 'brains/hanjuku/bot.py'
+    spec = importlib.util.spec_from_file_location('hanjuku_strategy_trace_test', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    mem = {'active': '1-A2', 'variant': 'chart'}
+    expected = {'chart_step': '1-A2', 'strategy_variant': 'chart', 'deviation_reason': None}
+    if in_battle:
+        mem['battle'] = {'step': '1-A1', 'strategy_variant': 'retry_with_opening_cards',
+                         'deviation_reason': '白兵で敗北したため開幕切り札で再攻撃'}
+        expected = {'chart_step': '1-A1', 'strategy_variant': 'retry_with_opening_cards',
+                    'deviation_reason': mem['battle']['deviation_reason']}
+    record = {'decision': 'battle_card_candidate', **expected}
+    state = {'step': 12, 'screen_kind': 'battle' if in_battle else 'map', 'policy': mem}
+    module.persist(tmp_path, state, [record], {'hanjuku': {'game': 'hanjuku-hero',
+                   'runtime_id': 'g1-test', 'generation': 1, 'lease_id': 'lease'}},
+                   actions=[], frame_sha256='d'*64)
+    entries = [json.loads(line) for line in (tmp_path/'hanjuku_decisions.jsonl').read_text().splitlines()]
+    plan, decision = entries
+    view = policy.summary(mem)
+    for key in ('chart_step', 'strategy_variant'):
+        assert plan[key] == view[key] == decision[key] == expected[key]
+    assert plan['deviation_reason'] == decision['deviation_reason'] == expected['deviation_reason']
+    assert record == {'decision': 'battle_card_candidate', **expected}
+
+
+@pytest.mark.parametrize('input_kind', ['barrier_removed', 'battle_card_selected'])
+def test_input_context_precedes_battle_but_informational_records_do_not(tmp_path, input_kind):
+    import importlib.util
+    path = Path(__file__).resolve().parents[1] / 'brains/hanjuku/bot.py'
+    spec = importlib.util.spec_from_file_location('hanjuku_input_context_test', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    battle = {'step': '1-A1', 'strategy_variant': 'retry_with_opening_cards',
+              'deviation_reason': '白兵敗北後の再攻撃'}
+    mem = {'active': '1-A2', 'variant': 'chart', 'battle': battle}
+    context = ({'chart_step': '1-barrier', 'strategy_variant': 'chart', 'deviation_reason': None}
+               if input_kind == 'barrier_removed' else
+               {'chart_step': battle['step'], 'strategy_variant': battle['strategy_variant'],
+                'deviation_reason': battle['deviation_reason']})
+    records = [{'decision': input_kind, **context},
+               {'decision': 'metric_invalidated', 'chart_step': 'wrong', 'strategy_variant': 'wrong'},
+               {'decision': 'battle_card_evidence_migrated', 'chart_step': 'wrong', 'strategy_variant': 'wrong'}]
+    module.persist(tmp_path, {'step': 8, 'policy': mem}, records, {'hanjuku': {}},
+                   actions=[{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}], frame_sha256='e'*64)
+    entries = [json.loads(line) for line in (tmp_path/'hanjuku_decisions.jsonl').read_text().splitlines()]
+    for key, value in context.items():
+        assert entries[0][key] == entries[1][key] == value
+    assert entries[-1]['strategy_variant'] == 'wrong'  # original records stay intact
+    assert policy.summary(mem)['chart_step'] == '1-A1'
+    assert policy.summary(mem)['strategy_variant'] == 'retry_with_opening_cards'

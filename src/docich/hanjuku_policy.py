@@ -981,11 +981,13 @@ def summary(mem: dict | None) -> dict:
     stats = mem.get('stats') if isinstance(mem.get('stats'), dict) else {}
     orders = mem.get('orders') if isinstance(mem.get('orders'), dict) else {}
     battle = mem.get('battle') if isinstance(mem.get('battle'), dict) else {}
+    chart_step = battle.get('step') if battle else mem.get('active')
+    strategy_variant = battle.get('strategy_variant') if battle else mem.get('variant')
     as_int = lambda v: v if type(v) is int and 0 <= v <= 10**6 else None
     return {
         'chapter': as_int(mem.get('chapter')),
-        'chart_step': mem.get('active') if isinstance(mem.get('active'), str) else None,
-        'strategy_variant': mem.get('variant') if isinstance(mem.get('variant'), str) else None,
+        'chart_step': chart_step if isinstance(chart_step, str) else None,
+        'strategy_variant': strategy_variant if isinstance(strategy_variant, str) else None,
         'orders_launched': sum(1 for v in orders.values() if v == 'launched'),
         'orders_failed': sum(1 for v in orders.values() if v == 'failed'),
         'captured': len(mem.get('captured') or []),
