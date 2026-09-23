@@ -89,14 +89,14 @@ class ConfigureDirectEnvTests(unittest.TestCase):
 
 
 class ConfigureVercelEnvTests(unittest.TestCase):
-    def test_writes_vercel_route_and_its_own_key(self):
+    def test_vercel_op_keeps_direct_primary_and_adds_vercel_as_fallback(self):
         with tempfile.TemporaryDirectory(prefix="jev-route-") as raw:
             env_file = Path(raw) / ".env"
             env_file.write_text("KEEP=value\n", encoding="utf-8")
             route.configure_vercel_env(env_file, "TEST_VERCEL_KEY_123")
             current = env_file.read_text(encoding="utf-8")
             self.assertNotIn("DOCICH_SEMANTIC_BACKEND", current)
-            self.assertIn("DOCICH_JEV_ROUTE=vercel\n", current)
+            self.assertIn("DOCICH_JEV_ROUTE=direct,vercel\n", current)
             self.assertIn("DOCICH_JEV_VERCEL_API_KEY=TEST_VERCEL_KEY_123\n", current)
 
     def test_quotes_shell_punctuation_in_key(self):
@@ -183,11 +183,20 @@ class VerifyJevRouteTests(unittest.TestCase):
         with self.assertRaises(route.ConfigureError):
             verify({"DOCICH_JEV_ROUTE": "direct"})
 
-    def test_vercel_requires_its_own_key_not_typesafe_api_key(self):
+    def test_vercel_op_verifies_the_live_chain_and_its_own_key(self):
         verify = route.verify_jev_route("vercel")
-        verify({"DOCICH_JEV_ROUTE": "vercel", "DOCICH_JEV_VERCEL_API_KEY": "present"})
+        verify({"DOCICH_JEV_ROUTE": "direct,vercel", "DOCICH_JEV_VERCEL_API_KEY": "present"})
         with self.assertRaises(route.ConfigureError):
-            verify({"DOCICH_JEV_ROUTE": "vercel", "TYPESAFE_API_KEY": "present"})
+            verify({"DOCICH_JEV_ROUTE": "direct,vercel", "TYPESAFE_API_KEY": "present"})
+        for stale in ("vercel", "direct", "vercel,direct"):
+            with self.subTest(stale=stale), self.assertRaises(route.ConfigureError):
+                verify({"DOCICH_JEV_ROUTE": stale, "DOCICH_JEV_VERCEL_API_KEY": "present"})
+
+    def test_every_written_route_value_is_one_the_classifier_accepts(self):
+        sys.path.insert(0, str(ROOT / "src"))
+        from docich.semantic_decision.routes import parse_route_chain
+        self.assertEqual(parse_route_chain(route.ROUTE_VALUES["direct"]), ("direct",))
+        self.assertEqual(parse_route_chain(route.ROUTE_VALUES["vercel"]), ("direct", "vercel"))
 
 
 class RefactoredClassifierVerificationTests(unittest.TestCase):

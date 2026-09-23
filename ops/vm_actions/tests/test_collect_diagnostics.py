@@ -107,7 +107,8 @@ def test_semantic_decision_reads_only_the_fixed_allowlist_and_hides_credential_v
         result = module._collect_semantic_decision(workers)
     assert result == {'present': True, 'readable': True, 'comment_classifier_backend': 'jev',
                       'backend': 'jev', 'route': 'vercel',
-                      'requested_model': 'typesafe-ai/jev', 'credential': 'present'}
+                      'requested_model': 'typesafe-ai/jev', 'credential': 'present',
+                      'fallback_route': None, 'fallback_credential': 'not_applicable'}
     assert 'SYNTHETIC_VERCEL_SECRET' not in json.dumps(result)
     assert 'SHOULD_NEVER_APPEAR' not in json.dumps(result)
     assert 'retired-and-never-read' not in json.dumps(result)
@@ -122,13 +123,15 @@ def test_semantic_decision_direct_route_credential_absent_and_unflagged_backend(
         result = module._collect_semantic_decision(workers)
     assert result == {'present': True, 'readable': True, 'comment_classifier_backend': 'jev',
                       'backend': 'jev', 'route': 'direct',
-                      'requested_model': 'jev-1.13.0', 'credential': 'absent'}
+                      'requested_model': 'jev-1.13.0', 'credential': 'absent',
+                      'fallback_route': None, 'fallback_credential': 'not_applicable'}
     with mock.patch.object(module.Path, 'read_bytes',
                            return_value=_synthetic_environ({'TYPESAFE_API_KEY': 'unrelated-not-delegating'})):
         result = module._collect_semantic_decision(workers)
     assert result == {'present': True, 'readable': True, 'comment_classifier_backend': None,
                       'backend': 'heuristic', 'route': None,
-                      'requested_model': None, 'credential': 'not_applicable'}
+                      'requested_model': None, 'credential': 'not_applicable',
+                      'fallback_route': None, 'fallback_credential': 'not_applicable'}
 
 
 def test_semantic_decision_reports_comment_classifier_backend_prerequisite_gate():

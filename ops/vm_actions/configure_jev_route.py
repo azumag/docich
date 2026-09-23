@@ -6,7 +6,16 @@ Manages ONLY ``DOCICH_JEV_ROUTE`` / ``DOCICH_JEV_VERCEL_API_KEY`` in soren's
 ``COMMENT_CLASSIFIER_BACKEND``, ``COMMENT_CLASSIFIER_JEV_*`` or
 ``TYPESAFE_API_KEY``: whether Jev is called at all, and its timeout/threshold
 and direct-route credential, stay owned by ``configure_comment_classifier_jev.py``
-(#678). This script only decides which reviewed route those calls use.
+(#678). This script only decides which reviewed route(s) those calls use.
+
+The fixed gateway operations map to fixed values (never caller-supplied):
+
+- ``configure_jev_route_direct`` (``--route direct``): ``DOCICH_JEV_ROUTE=direct``,
+  direct only, Vercel secret removed.
+- ``configure_jev_route_vercel`` (``--route vercel``): ``DOCICH_JEV_ROUTE=direct,vercel``
+  plus the Vercel secret -- direct stays primary and Vercel is the automatic
+  fallback the classifier uses after a fast direct failure or while direct
+  is cooling down (owner decision; see ``docich.comment_classifier.jev``).
 
 ``--disable`` (the ``disable_jev_route`` operation) removes both keys, so the
 classifier returns to its default ``direct`` route and the Vercel secret
@@ -71,6 +80,8 @@ restart_chat_worker_verified = _classifier.restart_chat_worker_verified
 MANAGED_KEYS = ("DOCICH_JEV_ROUTE", "DOCICH_JEV_VERCEL_API_KEY")
 RETIRED_KEYS = ("DOCICH_SEMANTIC_BACKEND",)
 ROUTES = ("direct", "vercel")
+# --route -> the exact DOCICH_JEV_ROUTE value written and then verified live.
+ROUTE_VALUES = {"direct": "direct", "vercel": "direct,vercel"}
 
 
 def validate_vercel_key(value: str) -> None:
@@ -116,14 +127,14 @@ def configure_direct_env(env_file: Path) -> Path:
     Does not write TYPESAFE_API_KEY: that credential is #678's own, and the
     caller (main()) must already have confirmed it is configured.
     """
-    return _rewrite_route_env(env_file, ["DOCICH_JEV_ROUTE=direct\n"])
+    return _rewrite_route_env(env_file, [f"DOCICH_JEV_ROUTE={ROUTE_VALUES['direct']}\n"])
 
 
 def configure_vercel_env(env_file: Path, vercel_api_key: str) -> Path:
-    """Switch the classifier to the vercel route."""
+    """Keep direct primary and add Vercel as the automatic fallback."""
     validate_vercel_key(vercel_api_key)
     return _rewrite_route_env(env_file, [
-        "DOCICH_JEV_ROUTE=vercel\n",
+        f"DOCICH_JEV_ROUTE={ROUTE_VALUES['vercel']}\n",
         # .env is sourced by the worker; quote the secret as a shell value so
         # printable punctuation cannot become shell syntax.
         f"DOCICH_JEV_VERCEL_API_KEY={shlex.quote(vercel_api_key)}\n",
@@ -162,7 +173,7 @@ def verify_jev_route(route: str | None):
                 raise ConfigureError("chat_worker_vercel_api_key_still_present")
             _require_default_direct_route_ready(runtime_env)
             return
-        if runtime_env.get("DOCICH_JEV_ROUTE") != route:
+        if runtime_env.get("DOCICH_JEV_ROUTE") != ROUTE_VALUES[route]:
             raise ConfigureError("chat_worker_docich_route_mismatch")
         if route == "vercel" and not runtime_env.get("DOCICH_JEV_VERCEL_API_KEY"):
             raise ConfigureError("chat_worker_vercel_api_key_missing")
@@ -210,7 +221,7 @@ def main() -> int:
         args.soren_root, verify=verify_jev_route(route))
     print(json.dumps({
         "status": "default_route" if route is None else "configured",
-        "route": route or "direct",
+        "route": ROUTE_VALUES[route] if route else "direct",
         "old_pid": old_pid,
         "new_pid": new_pid,
         "backup": str(backup),
