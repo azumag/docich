@@ -12,8 +12,8 @@ classifier moved out in soviet_now#495). Stage map: `829-pr0-baseline-inventory.
 
 | slice | scope (legacy source) | state |
 |---|---|---|
-| **3a prompt** | template/allowlist rendering (envsubst semantics), category→template map, dominant category, formatted classifications, English count, gacha completion note, context sanitizer, default resolution, time period, reply contract + speech vocabulary rule, retry addendum, mode persona/UI memo/intro/length policy. Assets copied to `src/docich/comment/prompts/`. | this PR |
-| 3b guard/validation | `_comment_strip_worknote_head`, `_comment_strip_reasoning_tags`, `_comment_guard_model_text` (→ existing `docich.model_output_guard`), `_comment_strip_nonjapanese_head`, `_comment_guard_japanese_text`, `_comment_is_valid_generation_candidate`, SING score extract/remove, named blocks (ADVICE/COMMENT_ADVICE/CODEX_ADVICE/SING/SOVIET_THEME) | next |
+| **3a prompt** | template/allowlist rendering (envsubst semantics), category→template map, dominant category, formatted classifications, English count, gacha completion note, context sanitizer, default resolution, time period, reply contract + speech vocabulary rule, retry addendum, mode persona/UI memo/intro/length policy. Assets copied to `src/docich/comment/prompts/`. | merged (#1038) |
+| **3b guard/validation** | `_comment_strip_worknote_head`, `_comment_strip_reasoning_tags`, `_comment_guard_model_text` (→ existing `docich.model_output_guard`), `_comment_strip_nonjapanese_head`, `_comment_guard_japanese_text`, `_comment_is_valid_generation_candidate`, `_contains_provider_error_text`, `_clean_comment_talk`, `_sanitize_onair_text` (→ shared `docich.onair_text`), effective `_is_valid_comment_talk` (base + speech-quality + honorific policy). SING / named blocks move to 3e with the output post-processing. | this PR |
 | 3c state | batch/line hashing, processed/inflight/recent-batch dedup, failure backoff, generation meta, viewer memory stage/commit (`lib/comment_viewer_memory.py`), spoken/reply remember, context history | |
 | 3d contexts | game-independent builders (batch context, recent spoken, follow-up hints, viewer memory, advice tail/extraction, past topics) + a typed `GameContextProvider` interface; sorengame game/ops/celebration/soren91 notes become one provider, never imported by the core | |
 | 3e orchestration | one batch end to end: intake DTO → docich classifier → contexts → prompt → `docich.llm` COMMENT dispatch with retry → guard → translation (`lib/comment_bilingual.py`) → delivery **contract** (queue file + sidecars, written to a caller-given sink) → ack; `docich comment` CLI that runs a fixture with no `games/soviet_now` | |
@@ -41,3 +41,15 @@ soviet_now copies) is deleted at cutover, when the soviet_now copies are.
   return `None` / `""` instead of raising, matching that.
 - `comment_response.md` is a radio input (`radio_engine.sh`), not a comment
   template, and belongs to the radio slices (PR-4).
+
+## Notes from 3b
+
+- Goldens are generated **on Linux** (GNU grep/tr, like the VM) with
+  `DOCICH_BIN` set as on the VM, and CI re-runs both generators against the
+  pinned submodule and requires identical output
+  (`test_golden_regenerates_identically_on_this_linux_host`).
+- Found and pinned, not fixed: `docich ai-guard`'s `WORK_NOTE_RE`
+  (`(?:検索|調査|確認).{0,16}(?:します…)`) rejects a plain reply such as
+  「…確認しますね。」 as a whole, so production drops it and regenerates.
+  The port keeps this; changing it is a separate, reviewed change.
+
