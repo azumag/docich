@@ -292,6 +292,18 @@ def test_parse_candidate_boundaries():
         assert 'k6' not in str(exc)
 
 
+def test_parse_candidate_allows_zero_only_when_game_policy_allows_it():
+    assert parse_candidate('{"hard_drop": 0}', {"hard_drop"}, minimum=0.0) == {
+        "hard_drop": 0,
+    }
+    with pytest.raises(CornerImproveError) as default_excinfo:
+        parse_candidate('{"hard_drop": 0}', {"hard_drop"})
+    assert default_excinfo.value.code == 'llm-values'
+    with pytest.raises(CornerImproveError) as excinfo:
+        parse_candidate('{"hard_drop": -0.001}', {"hard_drop"}, minimum=0.0)
+    assert excinfo.value.code == 'llm-values'
+
+
 def test_already_running_is_skipped(tmp_path):
     import fcntl
 
