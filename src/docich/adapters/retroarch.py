@@ -152,11 +152,20 @@ def retroarch_audio(g, game) -> tuple[bool, str]:
     return enabled, sink
 
 
+def retroarch_audio_volume(game):
+    """Optional per-game stream volume (percent) applied to this game only."""
+    value = retroarch_raw(game).get("audio_volume_percent")
+    if value is not None and (type(value) is not int or not 1 <= value <= 150):
+        raise AdapterError("retroarch.audio_volume_percent must be an integer from 1 to 150")
+    return value
+
+
 def retroarch_cfg_lines(g, game, cfg_path: Path, network_port: int) -> list[str]:
     buttons = resolved_buttons(game)
     d = g.display
     audio_enabled, audio_sink = retroarch_audio(g, game)
     audio_enable = "true" if audio_enabled else "false"
+    retroarch_audio_volume(game)       # validate early, before any process starts
     latency = retroarch_raw(game).get("audio_latency_ms")
     if latency is not None and (type(latency) is not int or not 8 <= latency <= 512):
         raise AdapterError("retroarch.audio_latency_ms must be an integer from 8 to 512")
@@ -322,6 +331,15 @@ class RetroArchAdapter(Adapter):
                 paused = bool(reply and reply.startswith('GET_STATUS PAUSED '))
                 state = hanjuku_run.observe(runtime_dir, hanjuku_run.runtime_identity(self.ctx.fence),
                                            frame, playing=not paused)
+                try:
+                    from .. import hanjuku_narration
+                    # Side channel only: at most one daemon-thread enqueue,
+                    # never blocking capture, input or terminal evidence.
+                    hanjuku_narration.consider(
+                        self.ctx.g, self.ctx.game, runtime_dir,
+                        terminal=bool(state.get('terminal_reason') or state.get('terminal_candidate')))
+                except Exception:
+                    print('[hanjuku-narration] status=consider_failed', file=sys.stderr)
                 meta = {'runtime_dir': str(runtime_dir),
                         'terminal_reason': state.get('terminal_reason'),
                         'terminal_candidate': state.get('terminal_candidate', False),
@@ -429,6 +447,7 @@ class RetroArchCoordinatorAdapter:
             return command
         d = self.g.display
         audio_enabled, audio_sink = retroarch_audio(self.g, self.game)
+        volume = retroarch_audio_volume(self.game)
         return [sys.executable, str(Path(__file__).resolve().parents[1] / "presentation.py"),
                 '--display', d.name, '--title', f'docich-present-{self.spec.runtime_id}',
                 '--x', str(d.viewport_x), '--y', str(d.viewport_y),
@@ -436,6 +455,7 @@ class RetroArchCoordinatorAdapter:
                 '--window-pattern', '^RetroArch',
                 '--runtime-state', str(self._presentation_path()),
                 *(['--audio-sink', audio_sink] if audio_enabled else []),
+                *(['--audio-volume-percent', str(volume)] if audio_enabled and volume is not None else []),
                 '--', *command]
 
     def _ownership(self, role: str) -> TmuxOwnership:

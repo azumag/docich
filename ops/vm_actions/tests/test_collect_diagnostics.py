@@ -74,6 +74,44 @@ def test_hanjuku_telemetry_is_enum_only_and_never_publishes_frames_or_state():
     assert output['bot_actions_sent'] is None and output['screen_unchanged_seconds'] is None
 
 
+def test_hanjuku_chart_progress_is_allowlisted_counters_only():
+    module=load_collector()
+    state={'game':'hanjuku-hero','bot_version':'hanjuku-chart-v2','bot_chart':{
+        'chapter':1,'chart_step':'1-A2','strategy_variant':'budget_boss_kit_first',
+        'orders_launched':4,'orders_failed':0,'captured':2,'wins':3,'losses':1,'unclassified':1,
+        'cards_used':2,'generals_lost':1,'gold':137,'month':'1-5','name_entered':True,
+        'reason':'SECRET-REASON','text':'SECRET-TEXT'}}
+    chart=module._project_corner_state(state)['bot_chart']
+    assert chart['chart_step']=='1-A2' and chart['captured']==2 and chart['gold']==137
+    assert chart['strategy_variant']=='budget_boss_kit_first' and chart['name_entered'] is True
+    output=module._project_corner_state(state)
+    assert output['bot_version']=='hanjuku-chart-v2'
+    assert 'SECRET' not in json.dumps(output)
+    state['bot_chart'].update(chart_step='SECRET step',month='SECRET',strategy_variant='SECRET-X',
+                              wins=True,gold='12')
+    state['bot_version']='SECRET'
+    output=module._project_corner_state(state)
+    chart=output['bot_chart']
+    assert chart['chart_step'] is None and chart['month'] is None and chart['strategy_variant'] is None
+    assert chart['wins'] is None and chart['gold'] is None and output['bot_version'] is None
+    assert module._project_corner_state({'bot_chart':'SECRET'})['bot_chart'] is None
+
+
+def test_hanjuku_audio_and_narration_evidence_is_bounded():
+    module=load_collector()
+    state={'game':'hanjuku-hero','narration':{'enqueued':3,'skipped':9,'delivery_failed':0,'text':'SECRET'},
+           'game_audio':{'status':'applied','target_percent':80,'streams':[
+               {'sink':'soren_null','volume_percent':[80,80],'mute':False,'secret':'SECRET'}]}}
+    out=module._project_corner_state(state)
+    assert out['narration']=={'enqueued':3,'delivery_failed':0,'skipped':9}
+    assert out['game_audio']=={'status':'applied','target_percent':80,'streams':[
+        {'sink':'soren_null','volume_percent':[80,80],'mute':False}]}
+    assert 'SECRET' not in json.dumps(out)
+    state['game_audio']={'status':'SECRET','streams':[{'sink':'bad sink;rm','volume_percent':['x'],'mute':'no'}]}
+    audio=module._project_corner_state(state)['game_audio']
+    assert audio['status'] is None and audio['streams']==[{'sink':None,'volume_percent':[],'mute':None}]
+
+
 def _synthetic_environ(pairs):
     return b'\x00'.join([f'{k}={v}'.encode() for k, v in pairs.items()] + [b''])
 
