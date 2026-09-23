@@ -2,7 +2,7 @@
   "output_sha256": "3bcc2cb8e3cded45fd265c5bb1b7ae4afbccc976ae6202b37265ae44d5a3ef84",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "d70f6b2347586ab7cb19d13282df01e6a1d3b5445b66a80e6f3cc8bef2f87a11",
+  "source_sha256": "ea145f3d9513788feb586a523906b5f7ce445eabd14552dbb85307acf995b0c5",
   "topics": [
     "PAPERコーナーの同話題繰り返し修正（ マージ・本番反映済み、稼働中コーナーを停止）",
     "ペーパーコーナー読み上げの「結論からお伝えしますと」除去（、CI監視中）",
