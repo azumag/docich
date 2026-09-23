@@ -100,17 +100,16 @@ def test_uncertain_or_mismatched_sortie_is_not_approved(cards, hand):
 def test_confirmed_card_names_record_selected_and_planned_generals_separately():
     mem = memory()
     mem.update(active='1-A2', orders={'1-A2': 'pending'},
-               general_override={'1-A2': 'ゼウス'},
-               card_override={'1-A2': ['クースカン', 'ノリウツール']})
-    screen = menu('sortie_confirm', ['うむッ!', 'クースカン', 'ノリウツール'])
+               general_override={'1-A2': 'ゼウス'})
+    screen = measured_loaded_sortie()
     assert policy.deploy_step(screen, mem) == [policy.pad('a')]
     rec = mem['_records'][-1]
     assert rec['general'] == 'ゼウス' and rec['planned_general'] == 'どうし'
     assert rec['strategy_variant'] == 'substitute_general' and rec['deviation_reason']
     context = mem['order_context']['1-A2']
     assert context['actual_general'] == 'ゼウス' and context['planned_general'] == 'どうし'
-    assert context['expected_metric'] == {'general': 'どうし', 'cards': ['クースカン', 'ノリウツール']}
-    assert context['observed_metric'] == {'general': 'ゼウス', 'cards': ['クースカン', 'ノリウツール']}
+    assert context['expected_metric'] == {'general': 'どうし', 'cards': ['フットバース']}
+    assert context['observed_metric'] == {'general': 'ゼウス', 'cards': ['フットバース']}
 
 
 def test_launch_record_uses_selected_general_and_keeps_chart_general(monkeypatch):
@@ -162,17 +161,25 @@ def test_boss_never_substitutes_for_an_unconfirmed_hero(words, hand):
     assert mem['_records'][-1]['decision'] == 'situation_held'
 
 
-def test_boss_visible_hero_replaces_legacy_override_and_requires_chart_kit(monkeypatch):
+def test_boss_visible_hero_does_not_authorize_an_uncalibrated_kit(monkeypatch):
     mem = memory()
     mem['general_override'] = {'1-B1': 'ゼウス'}
     mem['card_override'] = {'1-B1': ['イッテツーン', 'イッテツーン']}
     assert policy.deploy_step(menu('general_list', ['どうし', 'ゼウス']), mem) == [policy.pad('a')]
     assert mem['sortie_general']['1-B1'] == 'どうし' and '1-B1' not in mem['general_override']
-    assert policy.deploy_step(menu('sortie_confirm', ['うむッ!', 'イッテツーン', 'イッテツーン']), mem) == []
-    assert policy.deploy_step(menu('sortie_confirm', ['うむッ!', 'クースカン', 'ノリウツール']), mem) == [policy.pad('a')]
-    assert mem['order_context']['1-B1']['actual_general'] == 'どうし'
-    # Persisted stale overrides cannot relabel the verified boss hero at launch.
-    mem['general_override']['1-B1'] = 'ゼウス'
+    for cards in (['イッテツーン', 'イッテツーン'], ['クースカン', 'ノリウツール']):
+        assert policy.deploy_step(menu('sortie_confirm', ['うむッ!'] + cards), mem) == []
+    assert '1-B1' not in mem['order_context']
+    monkeypatch.setattr(policy, 'nav_step', lambda *args: pytest.fail('unverified boss navigation'))
+    assert policy.target_step(menu('map_target', []), mem, None) == []
+
+
+def test_boss_target_uses_existing_context_without_relabeling_hero(monkeypatch):
+    # Unit-test an already supplied context; this does not calibrate a receipt.
+    mem = memory()
+    mem['order_context'] = {'1-B1': {'actual_general': 'どうし',
+                                   'observed_metric': {'cards': ['クースカン', 'ノリウツール']}}}
+    mem['general_override'] = {'1-B1': 'ゼウス'}
     monkeypatch.setattr(policy, 'nav_step', lambda *args: 'arrived')
     assert policy.target_step(menu('map_target', []), mem, None) == [policy.pad('a')]
     assert mem['launched']['けっかい']['general'] == 'どうし'
@@ -205,21 +212,18 @@ def test_retry_context_follows_every_sortie_input_and_action_plan(tmp_path, monk
     spec = importlib.util.spec_from_file_location('sortie_retry_trace_bot', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    mem = memory()
-    context = retry_context()
+    mem = foot_order_memory()
+    context = {'strategy_variant': 'retry_with_opening_cards', 'deviation_reason': '敗北後の再出撃',
+               'expected_metric': {'cards': ['フットバース'], 'goal': '次戦勝利'}}
     if retry:
-        mem['retry_context'] = {'1-B1': context}
+        mem['retry_context'] = {'1-A2': context}
     nav_results = iter([[policy.pad('down')], 'arrived'])
     monkeypatch.setattr(policy, 'nav_step', lambda *args: next(nav_results))
     screens = [menu('castle_menu', ['しゅつげき']),
                menu('general_list', ['ゼウス', 'どうし']),
                menu('general_list', ['どうし']),
-               measured_card_select(('ノリウツール', 'クースカン', 'イッテツーン', 'ダイチスイム')),
-               measured_card_select(('クースカン', 'ノリウツール', 'イッテツーン', 'ダイチスイム')),
-               measured_card_select(('クースカン', 'ノリウツール', 'イッテツーン', 'ダイチスイム'), selected=1),
-               measured_card_select(),
-               menu('sortie_confirm', ['いかんッ!', 'うむッ!', 'クースカン', 'ノリウツール']),
-               menu('sortie_confirm', ['うむッ!', 'クースカン', 'ノリウツール']),
+               measured_card_select(), measured_card_select(selected=3),
+               measured_card_select(), measured_loaded_sortie(),
                menu('map_target', []), menu('map_target', [])]
     seen = set()
     for step, screen in enumerate(screens):
@@ -237,14 +241,14 @@ def test_retry_context_follows_every_sortie_input_and_action_plan(tmp_path, monk
             for key in ('strategy_variant', 'deviation_reason', 'expected_metric'):
                 assert plan[key] == context[key], (screen.kind, key)
                 assert all(record[key] == context[key] for record in records), (screen.kind, key)
-            assert plan['chart_step'] == '1-B1'
+            assert plan['chart_step'] == '1-A2'
         else:
             assert plan['strategy_variant'] == 'chart' and plan['deviation_reason'] is None
         seen.update(record['decision'] for record in records)
     assert {'card_pick', 'sortie_confirm', 'order_launched'} <= seen
     if retry:
         assert 'sortie_input' in seen
-        assert mem['order_context']['1-B1']['expected_metric'] == context['expected_metric']
+        assert mem['order_context']['1-A2']['expected_metric'] == context['expected_metric']
 
 
 def test_retry_hold_preserves_strategy_and_logs_current_uncertainty():
@@ -483,3 +487,70 @@ def test_known_text_in_card_row_cursor_margin_rejects_menu(y, x):
     assert policy.deploy_step(screen, mem) == []
     assert mem['picked'] == []
     assert mem['_records'][-1]['decision'] == 'situation_held'
+
+
+def measured_loaded_sortie(card='フットバース'):
+    screen = measured_empty_sortie()
+    rows = {line.y: dict(line.cells) for line in screen.lines}
+    for y in (47, 63, 79):
+        rows[y] = {x: ch for x, ch in rows[y].items() if x < 136}
+    rows[47].update((136 + 8*i, ch) for i, ch in enumerate('きりふだ'))
+    rows[47].update((176 + 8*i, ch) for i, ch in enumerate(card))
+    rows[47].update({16: 'H', 24: 'P', 56: '9', 64: '0', 72: '/', 88: '9', 96: '0'})
+    rows.setdefault(31, {}).update({136: 'へ', 144: 'い', 152: 'し', 208: '6', 224: 'に', 232: 'ん'})
+    screen.lines = [TextLine(y, tuple(sorted(cells.items()))) for y, cells in sorted(rows.items())]
+    screen.text = ''.join(line.known for line in screen.lines)
+    return screen
+
+
+@pytest.mark.parametrize('right_edge', [156, 158])
+def test_measured_single_card_receipt_ignores_left_stats_and_background(right_edge):
+    screen = measured_loaded_sortie()
+    screen.hand = (138, 105, right_edge, 118)
+    assert policy._single_card_sortie_inventory(screen) == ['フットバース']
+    mem = foot_order_memory()
+    assert policy.deploy_step(screen, mem) == [policy.pad('a')]
+    record = mem['_records'][-1]
+    assert record['cards'] == ['フットバース']
+    assert record['inventory_evidence'] == 'measured_single_card_sortie'
+    assert mem['order_context']['1-A2']['observed_metric']['cards'] == ['フットバース']
+
+
+@pytest.mark.parametrize('y,x,value', [(47, 200, UNKNOWN), (47, 216, None), (47, 224, '2'),
+    (47, 232, UNKNOWN), (63, 176, UNKNOWN), (79, 176, 'あ'), (55, 136, 'あ'),
+    (87, 160, 'あ'), (119, 160, 'あ'), (95, 136, UNKNOWN), (111, 160, UNKNOWN)])
+def test_partial_or_extra_single_card_receipt_is_held(y, x, value):
+    screen = measured_loaded_sortie()
+    replace_cell(screen, y, x, value)
+    assert policy._single_card_sortie_inventory(screen) is None
+    mem = foot_order_memory()
+    assert policy.deploy_step(screen, mem) == []
+    assert mem['_records'][-1]['decision'] == 'situation_held'
+    assert '1-A2' not in mem['order_context']
+
+
+@pytest.mark.parametrize('hand', [None, (130, 105, 150, 118), (138, 121, 156, 134)])
+def test_single_card_receipt_with_unknown_cursor_is_held(hand):
+    screen = measured_loaded_sortie()
+    screen.hand = hand
+    assert policy.deploy_step(screen, foot_order_memory()) == []
+
+
+def test_single_card_and_empty_receipts_cannot_substitute_for_required_inventory():
+    assert policy.deploy_step(measured_loaded_sortie(), empty_order_memory()) == []
+    assert policy.deploy_step(measured_empty_sortie(), foot_order_memory()) == []
+    assert policy.deploy_step(measured_loaded_sortie('クースカン'), memory()) == []
+
+
+@pytest.mark.parametrize('y', [63, 79, 143])
+def test_additional_card_is_not_a_calibrated_one_card_receipt(y):
+    screen = measured_loaded_sortie()
+    for i, ch in enumerate('クースカン'):
+        replace_cell(screen, y, 176 + i*8, ch)
+    assert policy._single_card_sortie_inventory(screen) is None
+    assert policy.deploy_step(screen, foot_order_memory()) == []
+
+
+def test_old_complete_name_synthetic_does_not_confirm_unmeasured_layout():
+    screen = menu('sortie_confirm', ['うむッ!', 'フットバース'])
+    assert policy.deploy_step(screen, foot_order_memory()) == []
