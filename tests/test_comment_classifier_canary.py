@@ -53,7 +53,6 @@ def test_same_fixture_over_both_routes_with_each_routes_own_model():
     assert [r["agreement"] for r in report["routes"]] == ["4/4", "4/4"]
     assert all(r["usage"] == {"input_tokens": 10, "output_tokens": 4} for r in report["routes"])
     assert all(r["cost_usd_available"] is False for r in report["routes"])
-    # Identical synthetic state, each route's own requested model, max bounded timeout.
     (_, direct_request, t1), (_, vercel_request, t2) = seen
     assert direct_request["state"] == vercel_request["state"]
     assert direct_request["model"] == "jev-1.13.0" and vercel_request["model"] == "typesafe-ai/jev"
@@ -119,6 +118,7 @@ def test_workflow_pins_owner_repo_and_reviewed_main_identity_before_using_secret
         "GITHUB_TRIGGERING_ACTOR\" == 'azumag'",
         "GITHUB_REF\" == 'refs/heads/main'",
         "GITHUB_WORKFLOW_REF\" == 'azumag/docich/.github/workflows/jev-route-canary.yml@refs/heads/main'",
+        "ref: ${{ github.sha }}",
     )
     for marker in required:
         assert marker in workflow
