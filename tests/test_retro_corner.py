@@ -243,6 +243,17 @@ class TestFailedRotationStartReconciliation(RetroCornerTestBase):
             self.assertFalse(mgr.reconcile_failed_rotation_start(request_id))
         self.assertEqual(mgr._read_state()["status"], "starting")
 
+    def test_canonical_validation_rejects_invalid_generation_on_disk(self):
+        from docich.game_switch import StateCorruptError
+
+        mgr, _, request_id = self._setup_failed_start()
+        canonical, _ = mgr.store.canonical.load()
+        canonical["active"]["generation"] = "3"
+        mgr.store.canonical.path.write_text(json.dumps(canonical), encoding="utf-8")
+        with self.assertRaises(StateCorruptError):
+            mgr.reconcile_failed_rotation_start(request_id)
+        self.assertEqual(mgr._read_state()["status"], "starting")
+
     def test_receipt_result_mismatch_keeps_start(self):
         mgr, _, request_id = self._setup_failed_start()
         receipt = mgr.store.receipts.load(request_id)
