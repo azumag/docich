@@ -2185,7 +2185,45 @@ def _collect_programs(state_dir, soren, now):
     soren = Path(soren)
     payload["boundary"] = _collect_boundary(soren / "tmp" / "state", now)
     payload["ab"] = _collect_ab(soren, now)
+    payload["soren_game"] = _collect_soren_game(soren, now)
     return payload
+
+
+def _collect_soren_game(soren, now):
+    """Fixed, read-only progress evidence for the active Soren match."""
+    soren = Path(soren)
+    path = soren / "game_state.json"
+    state = _read_json(path)
+    runner = _read_json(soren / "tmp/state/main_strategy_runner_active.json")
+    result = {"present": path.is_file(), "readable": isinstance(state, dict),
+              "state": "unknown", "age_sec": -1, "founding_seen": None,
+              "make_soren_count": None, "game_count": None,
+              "runner_pid": None, "runner_alive": None}
+    if isinstance(state, dict):
+        value = state.get("state")
+        result["state"] = value if value in {"MOVE", "STOP", "GAMEOVER"} else "unknown"
+        count = state.get("makeSorenCount")
+        result["make_soren_count"] = count if type(count) is int and 0 <= count <= 100000 else None
+        try:
+            result["age_sec"] = max(0, int(now - path.stat().st_mtime))
+        except OSError:
+            pass
+    result["founding_seen"] = (soren / "tmp/markers/.soviet_created").exists()
+    try:
+        count = int((soren / "game_count.txt").read_text(encoding="utf-8").strip())
+        result["game_count"] = count if 0 <= count <= 100000000 else None
+    except (OSError, ValueError):
+        pass
+    if isinstance(runner, dict):
+        pid = runner.get("pid")
+        if type(pid) is int and 0 < pid <= 4194304:
+            result["runner_pid"] = pid
+            try:
+                os.kill(pid, 0)
+                result["runner_alive"] = True
+            except (ProcessLookupError, PermissionError, OSError):
+                result["runner_alive"] = False
+    return result
 
 
 # Opt-in stocks/FX paper-trading corners (src/docich/trading/markets/). Both

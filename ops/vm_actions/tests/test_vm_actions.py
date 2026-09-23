@@ -229,6 +229,22 @@ class AuthorizeTests(unittest.TestCase):
         step = workflow.split("Restart docich webui systemd unit", 1)[1].split("- name:", 1)[0]
         self.assertNotIn("VM_COMMAND", step)
 
+    def test_recover_soren_game_is_fixed_production_operation(self):
+        for target, ref, confirm in (("preview", "main", "production"),
+                                     ("production", "feature", "production"),
+                                     ("production", "main", "")):
+            p = self.run_auth(INPUT_OPERATION="recover_soren_game", INPUT_TARGET=target,
+                              INPUT_REF=ref, INPUT_CONFIRM=confirm)
+            self.assertNotEqual(p.returncode, 0)
+        p = self.run_auth(GITHUB_REPOSITORY_PRIVATE="false",
+                          INPUT_OPERATION="recover_soren_game", INPUT_TARGET="production",
+                          INPUT_REF="main", INPUT_CONFIRM="production")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        workflow = WF.read_text(encoding="utf-8")
+        step = workflow.split("Recover a stale non-founding Soren match", 1)[1].split("- name:", 1)[0]
+        self.assertIn("cat control/ops/vm_actions/recover_soren_game.sh | ssh", step)
+        self.assertNotIn("VM_COMMAND", step)
+
     def test_push_is_fixed_to_production_deploy(self):
         p=self.run_auth(GITHUB_EVENT_NAME='push',INPUT_OPERATION='',INPUT_TARGET='',INPUT_REF='')
         self.assertEqual(p.returncode,0,p.stderr)

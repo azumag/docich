@@ -7,7 +7,8 @@ REPOSITORY='azumag/docich'
 REPOSITORY_ID='1327276249'
 WORKFLOW='.github/workflows/vm-operations.yml'
 OPS={'deploy','exec','configure_jev','disable_jev','configure_jev_route_direct','configure_jev_route_vercel',
-     'disable_jev_route','status','bootstrap','diagnostics','reclaim','rebaseline','market_paper','restart_webui'}
+     'disable_jev_route','status','bootstrap','diagnostics','reclaim','rebaseline','market_paper','restart_webui',
+     'recover_soren_game'}
 TARGETS={'preview','production'}
 REF_RE=re.compile(r'[A-Za-z0-9][A-Za-z0-9_./-]{0,199}\Z')
 SHA_RE=re.compile(r'[0-9a-f]{40}\Z')
@@ -58,6 +59,8 @@ def main():
         if op=='market_paper' and ref!='main': fail('market_paper must run from main')
         if op=='restart_webui' and target!='production': fail('restart_webui is production-only')
         if op=='restart_webui' and ref!='main': fail('restart_webui must run from main')
+        if op=='recover_soren_game' and target!='production': fail('recover_soren_game is production-only')
+        if op=='recover_soren_game' and ref!='main': fail('recover_soren_game must run from main')
         if op=='configure_jev' and target!='production': fail('configure_jev is production-only')
         if op=='configure_jev' and ref!='main': fail('configure_jev must run from main')
         if op=='disable_jev' and target!='production': fail('disable_jev is production-only')
@@ -67,7 +70,8 @@ def main():
             if ref!='main': fail(f'{op} must run from main')
         if target=='production' and op in {'exec','configure_jev','disable_jev','configure_jev_route_direct',
                                             'configure_jev_route_vercel','disable_jev_route','bootstrap',
-                                            'reclaim','rebaseline','market_paper','restart_webui'} and confirm!='production':
+                                            'reclaim','rebaseline','market_paper','restart_webui',
+                                            'recover_soren_game'} and confirm!='production':
             fail('production confirmation required')
         # diagnostics is read-only with sanitized bounded output, so it needs
         # owner-only gating (above) but no separate confirmation.
