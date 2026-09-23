@@ -2197,13 +2197,18 @@ def _collect_soren_game(soren, now):
     runner = _read_json(soren / "tmp/state/main_strategy_runner_active.json")
     result = {"present": path.is_file(), "readable": isinstance(state, dict),
               "state": "unknown", "age_sec": -1, "founding_seen": None,
-              "make_soren_count": None, "game_count": None,
+              "make_soren_count": None, "game_count": None, "score": None,
+              "pieces_count": None,
               "runner_pid": None, "runner_alive": None}
     if isinstance(state, dict):
         value = state.get("state")
-        result["state"] = value if value in {"MOVE", "STOP", "GAMEOVER"} else "unknown"
+        result["state"] = value if value in {"MOVE", "DROP", "WAITING", "STOP", "GAMEOVER"} else "unknown"
         count = state.get("makeSorenCount")
         result["make_soren_count"] = count if type(count) is int and 0 <= count <= 100000 else None
+        score = state.get("score")
+        result["score"] = score if type(score) is int and 0 <= score <= 1000000000 else None
+        pieces = state.get("pieces")
+        result["pieces_count"] = len(pieces) if isinstance(pieces, list) and len(pieces) <= 100000 else None
         try:
             result["age_sec"] = max(0, int(now - path.stat().st_mtime))
         except OSError:

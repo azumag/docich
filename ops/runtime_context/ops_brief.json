@@ -1,11 +1,11 @@
 {
-  "output_sha256": "0e6b69ce84bc2af0cf54ff40212bc98beff97bedb6b846414d38284788d5669a",
+  "output_sha256": "a9caa938aa743c4e70ae06cc211fb75ce51a971ce1aecffb0c6060412ccedc88",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "406725985221ccebf954990c5125c51b6b2056876a2c894f8d75f857c9a2ad82",
+  "source_sha256": "fdeb72d8069fcdac551d646d9ce4a88a7c72484df2d15d03f192af45731f1ff0",
   "topics": [
+    "半熟英雄が本番で起動不能だった根本原因を特定・修正 （CI 6/6 green、マージ待ち）",
     "配信画面停止の暫定復旧と再停止（継続対応が必要）",
-    "ニュース読み上げ冒頭欠落を修正・本番配備し自然放送キューまで確認",
-    "PAPERコーナーの数値読みを「整数のみ・整数部0だけ小数第2位」へ（、CI 5/5 green・マージ待ち）"
+    "ニュース読み上げ冒頭欠落を修正・本番配備し自然放送キューまで確認"
   ]
 }

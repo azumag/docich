@@ -23,15 +23,17 @@ def test_soren_game_projection_is_bounded_and_read_only(tmp_path):
     module = load_collector()
     (tmp_path / "tmp/state").mkdir(parents=True)
     (tmp_path / "game_state.json").write_text(json.dumps({
-        "state": "STOP", "makeSorenCount": 0, "secret": "DO-NOT-PUBLISH"}))
+        "state": "DROP", "makeSorenCount": 0, "score": 117,
+        "pieces": [{"secret": "DO-NOT-PUBLISH"}], "secret": "DO-NOT-PUBLISH"}))
     os.utime(tmp_path / "game_state.json", (100, 100))
     (tmp_path / "game_count.txt").write_text("12")
     (tmp_path / "tmp/state/main_strategy_runner_active.json").write_text(json.dumps({
         "pid": 1234, "secret": "DO-NOT-PUBLISH"}))
     with mock.patch.object(module.os, "kill"):
         output = module._collect_soren_game(tmp_path, 160)
-    assert output["state"] == "STOP" and output["age_sec"] == 60
+    assert output["state"] == "DROP" and output["age_sec"] == 60
     assert output["make_soren_count"] == 0 and output["game_count"] == 12
+    assert output["score"] == 117 and output["pieces_count"] == 1
     assert output["runner_pid"] == 1234 and output["runner_alive"] is True
     assert "DO-NOT-PUBLISH" not in json.dumps(output)
 
