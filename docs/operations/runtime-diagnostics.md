@@ -299,6 +299,11 @@ tracked drift の形（`drift_detected=1`）は tracked drift alert が扱うた
 しない。`configured` へ戻ると自動 close する。本文は固定 status enum・counter・
 commit SHA のみで、path・diff・bytes・raw exception を含めない。
 
+## CPU profiling
+
+CPU 消費・wake-up・spawn 経路の短時間 baseline は diagnostics とは別の read-only
+profiler で取る。契約と実行方法は [cpu-profiling.md](cpu-profiling.md)（#970）。
+
 ## Runtime 変更 checklist
 
 worker / queue / model / provider / fallback / runtime component を変えたら：
