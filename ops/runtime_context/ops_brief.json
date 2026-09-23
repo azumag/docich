@@ -1,11 +1,11 @@
 {
-  "output_sha256": "a215a4cba3fb5c6d0f556048b0fa766b8a53613533c2cedca65e249bc103b649",
+  "output_sha256": "1a93fcbb2a93c94cf054624a03d63fb0f7b7052863c5b33dae9938ea8b0e0d57",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "b673a7d772d8e8186204542d09db2a30cdd7a349cf5b3233f9af9429600882b7",
+  "source_sha256": "40c0a2f1050e5b9b238ccacb20b515976ed550d8c9f76e236e8931d4574c7c91",
   "topics": [
-    "webui の二重unit衝突を復旧して user unit へ収束（restart_webui も exit 0、 merge）",
-    "#225 のroot-owned gatewayを owner-only で更新し、 → canonical deploy で block…",
-    "Phase 2 reclaim を merge→dry-run→apply まで完遂（84% → 80%、+1.49GB 実測）・記録 m…"
+    "ペーパーコーナー読み上げの「結論からお伝えしますと」除去（、CI監視中）",
+    "WebUI Corners タブ修正（本番 state 不参照の解消＋使い方の改善、/#1029）",
+    "NetHack draining固着(#1015)の修正 をレビュー修正→merge→本番反映→ 復旧完了（追加 ）"
   ]
 }
