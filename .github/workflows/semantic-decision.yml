@@ -7,6 +7,8 @@ on:
       - 'src/docich/comment_classifier/**'
       - 'bin/docich-comment-classify'
       - 'tests/test_comment_classifier.py'
+      - 'tests/test_comment_classifier_canary.py'
+      - '.github/workflows/jev-route-canary.yml'
       - 'tests/fixtures/comment_classifier_heuristic_golden.json'
       - 'src/docich/__init__.py'
       - 'tests/test_semantic*.py'
@@ -23,6 +25,8 @@ on:
       - 'src/docich/comment_classifier/**'
       - 'bin/docich-comment-classify'
       - 'tests/test_comment_classifier.py'
+      - 'tests/test_comment_classifier_canary.py'
+      - '.github/workflows/jev-route-canary.yml'
       - 'tests/fixtures/comment_classifier_heuristic_golden.json'
       - 'src/docich/__init__.py'
       - 'tests/test_semantic*.py'
@@ -49,7 +53,7 @@ jobs:
       - name: Core without any game checkout
         run: python3 -m pytest -q tests/test_semantic_decision.py tests/test_semantic_decision_diagnostics.py
       - name: docich-owned comment classifier without any game checkout
-        run: python3 -m pytest -q tests/test_comment_classifier.py tests/test_jev_direct_golden.py
+        run: python3 -m pytest -q tests/test_comment_classifier.py tests/test_jev_direct_golden.py tests/test_comment_classifier_canary.py
       - name: Check out the reviewed Soren delegation contract
         run: |
           git submodule update --init games/soviet_now

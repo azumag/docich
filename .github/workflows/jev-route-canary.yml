@@ -1,0 +1,63 @@
+name: Jev route canary
+
+# Owner-only real-API canary for the docich comment classifier's Jev routes
+# (#882). Runs on a GitHub runner with a fixed synthetic batch; it never
+# contacts the VM or touches production state. Explicit dispatch only.
+on:
+  workflow_dispatch:
+    inputs:
+      routes:
+        description: Routes to probe with the same synthetic fixture
+        required: true
+        default: both
+        type: choice
+        options: [both, direct, vercel]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jev-route-canary-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/main' && github.ref_protected == true &&
+          github.actor_id == 9018513 && github.triggering_actor == 'azumag' }}
+    environment: vm-operations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout reviewed main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: main
+          persist-credentials: false
+          submodules: false
+
+      - name: Probe routes with the synthetic fixture
+        env:
+          ROUTES: ${{ inputs.routes }}
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          DOCICH_JEV_VERCEL_API_KEY: ${{ secrets.DOCICH_JEV_VERCEL_API_KEY }}
+        run: |
+          set -euo pipefail
+          case "$ROUTES" in
+            both) args=(--route direct --route vercel) ;;
+            direct|vercel) args=(--route "$ROUTES") ;;
+            *) echo "invalid routes input" >&2; exit 2 ;;
+          esac
+          set +e
+          PYTHONPATH=src python3 -P -m docich.comment_classifier.canary "${args[@]}" > "$RUNNER_TEMP/canary.json"
+          rc=$?
+          set -e
+          cat "$RUNNER_TEMP/canary.json"
+          {
+            echo '### Jev route canary'
+            echo '```json'
+            python3 -m json.tool --no-ensure-ascii "$RUNNER_TEMP/canary.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
