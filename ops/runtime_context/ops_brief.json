@@ -2,7 +2,7 @@
   "output_sha256": "1a93fcbb2a93c94cf054624a03d63fb0f7b7052863c5b33dae9938ea8b0e0d57",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "af2ddb0459331338f89b3c9bf328a45e8e4596575e3979cf4c34dec64d1c2682",
+  "source_sha256": "c8b021caf44ba320539c3c454260fb71c03fbe77e8b2f90d36b6d1106775a0d7",
   "topics": [
     "ペーパーコーナー読み上げの「結論からお伝えしますと」除去（、CI監視中）",
     "WebUI Corners タブ修正（本番 state 不参照の解消＋使い方の改善、/#1029）",
