@@ -249,7 +249,30 @@ class TestForceRecoverProductionShape(ForceRecoverBase):
         self.assertEqual(result["status"], "recovered")
         self.assertEqual(coord.calls[-1], ("switch", "sorengame"))
         self.assertEqual(self.canonical(), ("ready", "sorengame"))
+        # The restored corner must stop looking busy to the corner rotation
+        # (``failed`` is in its BUSY set), while the original error stays.
+        manual = self.manual_state()
+        self.assertEqual(manual["status"], "interrupted")
+        self.assertIs(manual["recovery_required"], False)
+        self.assertEqual(manual["last_error"], "boom")
         self.assertEqual(self.make_manager(coord).start().status, "completed")
+
+    def test_recover_keeps_failed_while_restore_is_not_committed(self):
+        self.set_canonical("ready", "nethack")
+        self.set_manual("failed", last_error="boom", recovery_required=True)
+
+        class QueuedCoordinator(StoreCoordinator):
+            def switch(self, game):
+                # The switch was accepted but canonical has not moved yet.
+                self.calls.append(("switch", game))
+                return SimpleNamespace(status="queued", error_code=None, detail=None)
+
+        coord = QueuedCoordinator(self)
+        self.assertEqual(self.operator_recover(coord)["status"], "recovered")
+        self.assertEqual(self.canonical(), ("ready", "nethack"))
+        manual = self.manual_state()
+        self.assertEqual(manual["status"], "failed")
+        self.assertIs(manual["recovery_required"], True)
 
 
 class TestForceRecoverResolvesToStartable(ForceRecoverBase):

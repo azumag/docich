@@ -251,6 +251,26 @@ def recover(config_path: Path) -> dict[str, object]:
         if not isinstance(previous, str) or not previous or previous == GAME_NAME:
             raise NethackCornerError("restore target gameをmanual stateから特定できません")
         manager._transition_to(current, previous)
+        # The restore is what the ``failed`` state was waiting for.  Leaving it
+        # ``failed``/``recovery_required`` keeps the corner rotation latched
+        # forever (it treats ``failed`` as busy, #1015 requirement 4), so end
+        # it -- but only once canonical durably shows the previous game back
+        # as the stable active game.  A queued/in-progress transition keeps
+        # ``failed`` so a later recover can observe the finished switch.
+        try:
+            canonical, _missing = manager.store.canonical.load()
+        except Exception:
+            canonical = {}
+        if (
+            canonical.get("phase") == "ready"
+            and _runtime_game(canonical.get("active")) == previous
+        ):
+            state.update(
+                status="interrupted",
+                recovery_required=False,
+                finish_reason="recover",
+            )
+            manager._write_state(state)
     return {"status": "recovered", "from_game": current, "to_game": previous}
 
 
