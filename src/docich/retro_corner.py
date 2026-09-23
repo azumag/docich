@@ -602,6 +602,7 @@ class RetroCornerManager:
                         or canonical.get("phase") != "ready"
                         or not isinstance(active, dict)
                         or active.get("game") != previous
+                        or type(active.get("generation")) is not int
                         or active.get("generation") < result.get("restored_generation")
                         or not active.get("runtime_id")
                         or canonical.get("candidate") is not None

@@ -9,6 +9,7 @@ from dataclasses import replace
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -232,6 +233,14 @@ class TestFailedRotationStartReconciliation(RetroCornerTestBase):
                                     adapter_session=names.adapter_session)
         mgr.store.canonical.save(canonical)
         self.assertFalse(mgr.reconcile_failed_rotation_start(request_id))
+        self.assertEqual(mgr._read_state()["status"], "starting")
+
+    def test_invalid_active_generation_fails_closed_without_corner_write(self):
+        mgr, _, request_id = self._setup_failed_start()
+        canonical, _ = mgr.store.canonical.load()
+        canonical["active"]["generation"] = "3"
+        with patch.object(mgr.store.canonical, "load", return_value=(canonical, False)):
+            self.assertFalse(mgr.reconcile_failed_rotation_start(request_id))
         self.assertEqual(mgr._read_state()["status"], "starting")
 
     def test_receipt_result_mismatch_keeps_start(self):
