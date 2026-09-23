@@ -166,4 +166,11 @@ temp file ごと破棄し、既存 bundle は触りません。
 
 ## Current migration note
 
+`recover_soren_game / production / ref=main / confirm=production` は、active が
+`sorengame` で、60秒以上変化しない非建国 `STOP` と一致する試合runnerだけに
+`SIGTERM` を送ります。`draining` 中は一致する lifecycle request の cancelled ack が必要です。
+runner の割り込み終了により試合loopが終了し、既存supervisorがゲーム専用プロセスを
+再起動する場合があります。配信・共通workerには直接触れません。実行後は `diagnostics` の
+`corners.soren_game` で新しい試合と runner の進行を別途確認します。
+
 既存VMの `/home/ubuntu/docich` に tracked差分またはowned submodule差分がある場合、bootstrapは拒否します。VMとrepositoryのどちらを正とするか確認して差分を整理してからbaselineを登録してください。`/home/ubuntu/soren` はbootstrap時に丸ごとsourceへ戻しません。以後、gitlink変更時に変更対象pathだけ旧sourceとの一致を検証して投影するため、既存runtime stateは保持されます。driftを無視して上書きする経路は用意しません。

@@ -57,6 +57,10 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   "corners": {"state_dir_found": true,
               "game_switch": {"present": true, "phase": "ready", "active_game": "sorengame",
                               "last_status": "succeeded", "last_error_code": null, ...},
+              "soren_game": {"present": true, "readable": true, "state": "MOVE",
+                             "age_sec": 2, "founding_seen": false,
+                             "make_soren_count": 0, "game_count": 12,
+                             "runner_pid": 1234, "runner_alive": true},
               "game_switch_fifo": {"present": true, "readable": true,
                                     "queued_count": 0, "head": null, ...},
               "retro_corner": {"present": true, "status": "active", "game": "gnurobots", ...},
@@ -89,6 +93,9 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
 - `game_switch_fifo` は `game-switch/requests` のreceiptを固定上限で読み、queued件数と
   FIFO先頭の operation/target/age だけを出す。request ID、payload、生成本文、秘密情報は
   出さない。malformed receiptやscan未完了は復旧せず、監視側で要対応として扱う。
+- `corners.soren_game` は試合状態の固定enum、state更新からの秒数、建国markerの有無、
+  試合数、試合runnerのPID/生存だけを出す。盤面、ログ、入力、生成文は出さない。
+  `STOP` が古くても `founding_seen=true` の場合は通常の試合終了と判定しない。
 - `tracked_drift` は deploy を拒否させる `git_clean(root)==false` の内訳を、
   **固定カテゴリとcounterだけ**で帰属する（#412）。`parent_tracked_dirty` /
   `owned_submodule_head_mismatch` / `owned_submodule_tracked_dirty` /

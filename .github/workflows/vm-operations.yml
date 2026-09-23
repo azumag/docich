@@ -10,7 +10,7 @@ on:
         required: true
         default: status
         type: choice
-        options: [status, deploy, exec, configure_jev, disable_jev, configure_jev_route_direct, configure_jev_route_vercel, disable_jev_route, bootstrap, diagnostics, reclaim, rebaseline, market_paper, restart_webui]
+        options: [status, deploy, exec, configure_jev, disable_jev, configure_jev_route_direct, configure_jev_route_vercel, disable_jev_route, bootstrap, diagnostics, reclaim, rebaseline, market_paper, restart_webui, recover_soren_game]
       target:
         description: VM target
         required: true
@@ -408,6 +408,18 @@ jobs:
           # after the restart. Output stays in the VM-private exec log.
           ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
           cat control/ops/vm_actions/restart_webui.sh | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
+      - name: Recover a stale non-founding Soren match
+        if: ${{ steps.auth.outputs.operation == 'recover_soren_game' }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          cat control/ops/vm_actions/recover_soren_game.sh | ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
 
       - name: Probe Moomoo JP quote readiness after reviewed production deploy
         id: market_provider_probe
