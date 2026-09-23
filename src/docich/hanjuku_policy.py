@@ -13,7 +13,7 @@ import re
 
 from . import hanjuku_chart as chart
 from .hanjuku_font import TextLine
-from .hanjuku_screen import Screen, castle_roofs
+from .hanjuku_screen import HEADER as HEADER_RE, Screen, castle_roofs
 
 NAME = chart.HERO
 FPS = 60
@@ -322,28 +322,31 @@ def deploy_step(screen: Screen, mem):
     if kind == 'general_list':
         general = mem.get('general_override', {}).get(order['step'], order['general'])
         move = menu_to(screen, general)
-        if move is None and not mem.get('source_override', {}).get(order['step']):
-            mem.setdefault('source_override', {})[order['step']] = 'ほんじょう'
-            mem['orders'][order['step']] = 'pending'
-            _record(mem, 'order_source_changed', strategy_variant='source_fallback',
-                    deviation_reason=f"{order['general']}が{order['source']}にいない",
-                    observed_metric=[w for _, _, w in _options(screen)][:12],
-                    reason='本城から出撃し直す')
-            mem['active'] = None
-            return [pad('b'), pad('b')]
-        if move is None and not mem.get('general_override', {}).get(order['step']):
-            # The chart's general is gone (routed or lost). Chapter 1 keeps
-            # ゼウス at the home castle, so it substitutes rather than leave the
-            # castle (and every later step and the boss) unreachable.
-            mem.setdefault('general_override', {})[order['step']] = 'ゼウス'
-            mem.setdefault('source_override', {})[order['step']] = 'ほんじょう'
-            mem['orders'][order['step']] = 'pending'
-            _record(mem, 'order_substitute', strategy_variant='substitute_general',
-                    deviation_reason=f"{order['general']}が出撃できないためゼウスが代わりに出撃",
-                    observed_metric=[w for _, _, w in _options(screen)][:12],
-                    expected_metric=f"{order['target']}の占領", reason='後続手順とボス条件を満たすため')
-            mem['active'] = None
-            return [pad('b'), pad('b')]
+        if move is None:
+            # The chart's general is not at this castle (routed or lost).
+            # Whoever is actually here goes instead, so the castle, later
+            # steps and the boss condition stay reachable.
+            ui = {'しゅつげき', 'ステータス'}
+            present = [w for x, y, w in _options(screen) if x > 100 and w not in ui
+                       and not re.search(r'\d', w)]
+            present.sort(key=lambda w: w == NAME)      # risk the hero last
+            if present and not mem.get('general_override', {}).get(order['step']):
+                mem.setdefault('general_override', {})[order['step']] = present[0]
+                _record(mem, 'order_substitute', strategy_variant='substitute_general',
+                        deviation_reason=f"{order['general']}が出撃元にいないため{present[0]}が代わりに出撃",
+                        observed_metric=present[:8], expected_metric=f"{order['target']}の占領",
+                        reason='後続手順とボス条件を満たすため')
+                move = menu_to(screen, present[0])
+                return [pad('a')] if move == 'here' else [move] if move else []
+            if not mem.get('source_override', {}).get(order['step']):
+                mem.setdefault('source_override', {})[order['step']] = 'ほんじょう'
+                mem.setdefault('general_override', {}).pop(order['step'], None)
+                mem['orders'][order['step']] = 'pending'
+                _record(mem, 'order_source_changed', strategy_variant='source_fallback',
+                        deviation_reason=f"{order['source']}に出撃できる将軍がいない",
+                        observed_metric=present[:8], reason='本城から出撃し直す')
+                mem['active'] = None
+                return [pad('b'), pad('b')]
         if move is None:
             _finish_order(mem, 'failed', deviation_reason=f"{order['general']}が出撃一覧に見えない",
                           observed_metric=[w for _, _, w in _options(screen)][:12],
@@ -860,17 +863,19 @@ def gift_step(screen: Screen, mem):
     it buys the cheapest listed item and records the deviation."""
     items = []
     for line in screen.lines:
-        m = re.match(r'^(\S+?)(\d+)G$', ''.join(line.words(64, 256)))
-        if m:
+        joined = ''.join(line.words(64, 256))
+        m = re.match(r'^(\S+?)(\d+)G$', joined)
+        if m and not HEADER_RE.search(line.known.replace(' ', '')):
             items.append((int(m.group(2)), m.group(1)))
     if not items:
         return []
     price, name = min(items)
-    move = menu_to(screen, name)
+    move = menu_to(screen, name, exact=False)    # the price can abut the name
     if move == 'here':
         _record(mem, 'gift', strategy_variant='cheapest_gift', item=name, price=price,
                 gold=(screen.header or {}).get('gold'), deviation_reason='reset_forbidden',
-                expected_metric={'chart': 'おねだりはリセット'}, observed_metric={'spent': price},
+                expected_metric={'chart': 'おねだりはリセット'},
+                observed_metric={'price': price, 'affordable': (screen.header or {}).get('gold', 0) >= price},
                 reason='リセットできないため最安の品を選ぶ')
         return [pad('a')]
     return [move] if move else []

@@ -38,7 +38,7 @@ def compose(rec: dict) -> tuple[str, str | None]:
     if kind == 'order_source_changed':
         return f'source:{step}', '出撃予定の城に将軍が見当たらないので、本城から出し直します。'
     if kind == 'order_substitute':
-        return f'substitute:{step}', '予定の将軍が出撃できないので、本城のゼウス将軍を代わりに向かわせます。'
+        return f'substitute:{step}', f"予定の将軍がいないので、{rec.get('observed_metric', ['別の将軍'])[0]}将軍を代わりに向かわせます。"
     if kind == 'attack_observed':
         return (f"attack:{rec.get('castle')}:{rec.get('general')}",
                 f"{rec['general']}将軍が{rec['castle']}城に乗り込みました。")

@@ -423,3 +423,32 @@ def test_gift_request_buys_the_cheapest_and_declines_extra_money():
     d.text(184, 199, 'いかんッ!')
     d.hand(162, 177)
     assert policy.yes_no_step(parse(d.frame()), mem)[0]['buttons'] == ['down']
+
+
+def test_unaffordable_gift_request_is_recognised_and_answered():
+    c = Canvas()
+    c.text(48, 15, '1ねん 6のつき 95G')
+    c.text(24, 39, 'どれか ほしいなー')
+    c.text(168, 167, 'こうすい100G')
+    c.text(168, 183, 'くるま 200G')
+    c.hand(146, 161)
+    mem = {}
+    s = parse(c.frame())
+    assert s.kind == 'gift_request'
+    assert policy.gift_step(s, mem)[0]['buttons'] == ['a']
+    assert mem['_records'][-1]['observed_metric'] == {'price': 100, 'affordable': False}
+
+
+def test_missing_chart_general_is_replaced_by_a_non_hero_present_at_the_source():
+    c = Canvas()
+    c.text(64, 31, 'しゅつげき')
+    c.text(64, 47, 'ステータス')
+    c.text(144, 39, 'どうし')
+    c.text(144, 55, 'ゼウス')
+    c.hand(122, 33)
+    mem = {'chapter': 1, 'active': '1-C1', 'orders': {'1-C1': 'pending'}}
+    s = parse(c.frame())
+    assert s.kind == 'general_list'
+    assert policy.deploy_step(s, mem)[0]['buttons'] == ['down']
+    rec = mem['_records'][-1]
+    assert rec['strategy_variant'] == 'substitute_general' and mem['general_override']['1-C1'] == 'ゼウス'
