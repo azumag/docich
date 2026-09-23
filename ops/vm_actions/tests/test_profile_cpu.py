@@ -166,6 +166,44 @@ class SampleTests(unittest.TestCase):
         self.assertEqual(comps["xdotool"]["spawned"], 1)
         self.assertEqual(comps["sleep"]["cpu_pct"], 0.0)
 
+    def test_reused_pid_parent_is_the_live_incarnation(self):
+        p = self.proc
+        p.write_host()
+        p.put(500, ["/usr/bin/retroarch"], ticks=100, starttime=10, comm="retroarch")
+        # child of the old incarnation, alive from the start
+        p.put(502, ["ffmpeg", "-f", "x11grab", "-i", ":1", "rtmp://x"], ticks=5, ppid=500,
+              starttime=20, comm="ffmpeg")
+
+        def step1():
+            p.uptime += 1
+            p.write_host()
+            p.remove(500)
+            p.put(500, ["xdotool", "key", "a"], ticks=3, starttime=100050, comm="xdotool")
+
+        def step2():
+            p.uptime += 1
+            p.write_host()
+            p.put(501, ["ffmpeg", "-f", "x11grab", "-frames:v", "1", "out.png"], ticks=2,
+                  ppid=500, starttime=100150, comm="ffmpeg")
+
+        report = self.run_sample([step1, step2])
+        self.assertIn({"component": "ffmpeg:capture", "spawner": "xdotool", "count": 1},
+                      report["spawns"])
+        self.assertNotIn("retroarch", [s["spawner"] for s in report["spawns"]])
+        tracker_recs = {r["pid"]: r for r in report["top_processes"]}
+        self.assertEqual(tracker_recs[501]["component"], "ffmpeg:capture")
+
+    def test_child_of_old_incarnation_keeps_old_parent(self):
+        tracker = mod.Tracker(self.proc.root, {}, -1)
+        old = {"pid": 500, "ppid": 1, "own": "retroarch", "first": {"starttime": 10}}
+        new = {"pid": 500, "ppid": 1, "own": "xdotool", "first": {"starttime": 100050}}
+        early = {"pid": 502, "ppid": 500, "own": "ffmpeg:stream", "first": {"starttime": 20}}
+        late = {"pid": 501, "ppid": 500, "own": "ffmpeg:capture", "first": {"starttime": 100150}}
+        tracker.procs = {(500, 10): old, (500, 100050): new, (502, 20): early, (501, 100150): late}
+        tracker.resolve()
+        self.assertEqual(early["spawner"], "retroarch")
+        self.assertEqual(late["spawner"], "xdotool")
+
     def test_output_is_bounded(self):
         p = self.proc
         p.write_host()

@@ -377,13 +377,32 @@ class Tracker:
         return classify(read_argv(self.proc_root, pid), snap["comm"])
 
     def resolve(self):
-        """Assign final components; generic processes inherit a worker ancestor."""
+        """Assign final components; generic processes inherit a worker ancestor.
+
+        A PID can be reused within the window, so ancestry resolves each ppid to
+        the incarnation that was alive when the child started: the latest one
+        whose starttime is not after the child's.
+        """
         by_pid = {}
-        for key, rec in self.procs.items():
-            by_pid.setdefault(rec["pid"], rec)
+        for rec in self.procs.values():
+            by_pid.setdefault(rec["pid"], []).append(rec)
+        for incarnations in by_pid.values():
+            incarnations.sort(key=lambda r: r["first"]["starttime"])
+
+        def parent_of(child):
+            candidates = by_pid.get(child["ppid"])
+            if not candidates:
+                return None
+            born = child["first"]["starttime"]
+            match = None
+            for cand in candidates:
+                if cand["first"]["starttime"] <= born:
+                    match = cand
+            return match
+
         for rec in self.procs.values():
             spawner = None
-            parent = by_pid.get(rec["ppid"])
+            direct = parent = parent_of(rec)
             depth = 0
             while parent is not None and depth < 32:
                 if parent["own"].startswith("worker:"):
@@ -391,9 +410,8 @@ class Tracker:
                     break
                 if spawner is None and parent["own"] not in GENERIC:
                     spawner = parent["own"]
-                parent = by_pid.get(parent["ppid"])
+                parent = parent_of(parent)
                 depth += 1
-            direct = by_pid.get(rec["ppid"])
             rec["spawner"] = spawner or (direct["own"] if direct else "unknown")
             own = rec["own"]
             rec["component"] = (
