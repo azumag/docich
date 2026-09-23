@@ -510,7 +510,30 @@ def card_list_step(screen: Screen, mem):
     return []
 
 
+def _hold_general_loss_metric(mem):
+    """HP defeat is not proof of death; invalidate old inferred counters once.
+
+    No death/roster-loss observer exists yet. Preserve HP battle counters and
+    original JSONL history, but mark both current and archived in-memory loss
+    totals unknown on the next observation, even if the old total was zero.
+    """
+    for scope in ('stats', 'previous_stats'):
+        old_stats = mem.get(scope)
+        if not isinstance(old_stats, dict):
+            continue
+        previous = old_stats.get('generals_lost')
+        mem[scope] = {**old_stats, 'generals_lost': None}
+        if previous is not None:
+            bounded_previous = previous if type(previous) is int and 0 <= previous <= 10**6 else None
+            _record(mem, 'metric_invalidated', metric='generals_lost', metric_scope=scope,
+                    expected_metric='将軍の死亡または喪失を直接確認する証拠',
+                    observed_metric={'previous_inferred_count': bounded_previous,
+                                     'generals_lost': None, 'status': 'unclassified'},
+                    reason='HP敗北から将軍喪失は確定できず、喪失観測器がないため旧集計を未分類化')
+
+
 def battle_end(mem, next_kind):
+    _hold_general_loss_metric(mem)
     cur = mem.get('battle')
     if not cur:
         return
@@ -537,11 +560,9 @@ def battle_end(mem, next_kind):
     if outcome == 'loss' and castle and cur.get('side') == 'defense':
         mem['captured'] = [c for c in mem.get('captured', []) if c != castle]
     stats = mem.setdefault('stats', {'wins': 0, 'losses': 0, 'unclassified': 0, 'cards_used': 0,
-                                     'generals_lost': 0})
+                                     'generals_lost': None})
     stats[{'win': 'wins', 'loss': 'losses'}.get(outcome, 'unclassified')] += 1
     stats['cards_used'] += len(cur.get('cards_used', []))
-    if outcome == 'loss':
-        stats['generals_lost'] += 1
     step = cur.get('step')
     if (outcome == 'loss' and cur.get('side') == 'attack' and step
             and castle not in mem.get('captured', [])):
@@ -571,7 +592,8 @@ def battle_end(mem, next_kind):
     _record(mem, 'battle_result', chart_step=cur.get('step'), enemy=cur.get('enemy'),
             ally=cur.get('ally'), castle=castle, side=cur.get('side'), outcome=outcome,
             observed_metric={'enemy_hp': enemy_hp, 'ally_hp': ally_hp,
-                             'cards_used': cur.get('cards_used', [])},
+                             'cards_used': cur.get('cards_used', []),
+                             'general_loss': 'unclassified'},
             resulting_event=resulting or outcome, resulting_stage=None, next_screen=next_kind,
             reason='戦闘終了時のHP表示から判定' if outcome != 'unclassified'
             else '最終HPが0/非0で確定しないため未分類')
@@ -805,6 +827,7 @@ def yes_no_step(screen: Screen, mem):
 
 def observe_events(screen: Screen, mem):
     """Record chart-relevant facts that need no input (month header, harvest)."""
+    _hold_general_loss_metric(mem)
     header = screen.header
     if header:
         chapter = header.get('chapter')
@@ -852,7 +875,8 @@ def summary(mem: dict | None) -> dict:
         'wins': as_int(stats.get('wins')), 'losses': as_int(stats.get('losses')),
         'unclassified': as_int(stats.get('unclassified')),
         'cards_used': as_int(stats.get('cards_used')),
-        'generals_lost': as_int(stats.get('generals_lost')),
+        # No direct loss observer exists: even a legacy zero is not evidence.
+        'generals_lost': None,
         'gold': as_int(mem.get('gold')),
         'month': mem.get('month') if isinstance(mem.get('month'), str) else None,
         'name_entered': bool((mem.get('name') or {}).get('done')),

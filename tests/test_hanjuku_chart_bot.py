@@ -577,6 +577,48 @@ def test_garbanzo_tactics_follow_each_generals_chart_branch(step, ally, hp, expe
         assert mem['_records'][-1]['chart_step'] == step
 
 
+
+def test_hp_defeat_followed_by_living_hero_does_not_count_a_general_loss():
+    from docich.hanjuku_screen import Screen
+    mem = {'chapter': 1, 'battle': {'enemy': 'だいじん', 'ally': 'どうし', 'enemy_hp': 15,
+                                   'ally_hp': 0, 'castle': None, 'side': None, 'cards_used': []}}
+    policy.battle_end(mem, 'map'); policy.battle_end(mem, 'map')
+    assert mem['stats']['losses'] == 1
+    assert mem['stats']['generals_lost'] is None
+    result = next(r for r in mem['_records'] if r['decision'] == 'battle_result')
+    assert result['outcome'] == 'loss' and result['observed_metric']['general_loss'] == 'unclassified'
+    mem['launched'] = {'キカンドン': {'general': 'どうし', 'step': '1-A1'}}
+    policy.message_step(Screen(lines=[], hand=None, text='どうししょうぐんがキカンドンじょうにのりこんだ',
+                               kind='attack_started'), mem)
+    assert mem['attack']['general'] == 'どうし'
+    assert policy.summary(mem)['losses'] == 1
+    assert policy.summary(mem)['generals_lost'] is None
+
+
+@pytest.mark.parametrize('legacy_count', [0, 1, 7])
+def test_next_observation_invalidates_legacy_general_loss_without_erasing_battle_counts(legacy_count):
+    from docich.hanjuku_screen import Screen
+    mem = {'chapter': 1, 'stats': {'wins': 2, 'losses': 1, 'unclassified': 3, 'cards_used': 4,
+                                  'generals_lost': legacy_count},
+           'previous_stats': {'wins': 1, 'losses': 2, 'generals_lost': 2}}
+    # Diagnostics must not expose the stale scalar even before another frame.
+    assert policy.summary(mem)['generals_lost'] is None
+    screen = Screen(lines=[], hand=None, text='', kind='unknown')
+    policy.observe_events(screen, mem)
+    assert mem['stats'] == {'wins': 2, 'losses': 1, 'unclassified': 3, 'cards_used': 4, 'generals_lost': None}
+    assert mem['previous_stats'] == {'wins': 1, 'losses': 2, 'generals_lost': None}
+    invalidations = [r for r in mem['_records'] if r['decision'] == 'metric_invalidated']
+    assert len(invalidations) == 2
+    assert invalidations[0]['observed_metric'] == {'previous_inferred_count': legacy_count,
+                                                 'generals_lost': None, 'status': 'unclassified'}
+    policy.observe_events(screen, mem)
+    assert len([r for r in mem['_records'] if r['decision'] == 'metric_invalidated']) == 2
+
+
+def test_no_battle_or_observer_does_not_report_zero_general_losses():
+    assert policy.summary(None)['generals_lost'] is None
+    assert policy.summary({'stats': {'generals_lost': 0}})['generals_lost'] is None
+
 def test_route_order_is_not_evidence_of_a_castle_capture():
     from docich.hanjuku_screen import Battle, Screen
     mem = {'chapter': 1, 'launched': {'キカンドン': {'general': 'どうし', 'step': '1-A1'}}}
