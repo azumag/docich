@@ -9,6 +9,7 @@ import unittest
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -17,7 +18,7 @@ from docich import config  # noqa: E402
 from docich.adapters import AdapterError  # noqa: E402
 from docich.naming import runtime_names  # noqa: E402
 from docich.nethack_corner import NethackCornerManager  # noqa: E402
-from docich.nethack_run import NethackRunStore  # noqa: E402
+from docich.nethack_run import NethackRunError, NethackRunStore  # noqa: E402
 from docich.nethack_source import verify_restoration  # noqa: E402
 
 
@@ -1655,6 +1656,16 @@ class TestNethackPostRestoreIntegration(CoordinatorTestBase):
         self.assertEqual(source["restoration"]["restored_runtime"]["game"], "robots")
         self.assertEqual(manager.status()["source_evidence_status"], "recorded")
         self.assertEqual(current_game(), "robots")
+
+        # A later persistence failure must not undo a completed coordinator
+        # restoration or misattribute the previous session's source to it.
+        with patch.object(manager._run_store, "record_finished",
+                          side_effect=NethackRunError("history write failed")):
+            self.assertEqual(manager.start().status, "completed")
+        self.assertEqual(current_game(), "robots")
+        self.assertIn("history write failed", manager.status()["run_history_error"])
+        latest = NethackRunStore.from_global(g).current()["sessions"][-1]
+        self.assertNotIn("post_restore_source", latest)
 
 
 if __name__ == "__main__":
