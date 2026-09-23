@@ -687,6 +687,20 @@ def test_prompts_forbidding_spoken_lead_in_at_segment_head(tmp_path):
         assert "結論を先に言い" not in prompt
 
 
+def test_prompts_ask_for_plain_general_explanations(tmp_path):
+    """Owner request (2026-09-23): the narration should stay general and easy
+
+    to follow, so both prompts must state the plain-language contract instead
+    of leaving it to the model's habits.
+    """
+    _write_status(tmp_path)
+    facts = build_facts(tmp_path, now=1010.0)
+    for prompt in (build_prompt(facts), build_next_prompt(facts, [])):
+        assert "一般的で平易な言葉" in prompt
+        assert "専門用語・略語" in prompt
+        assert "身近なたとえ" in prompt
+
+
 def test_parse_script_drops_leading_conclusion_lead_in():
     segments = parse_script(json.dumps({
         "corner": "結論からお伝えしますと、本日の相場は方向感が乏しいです。",
