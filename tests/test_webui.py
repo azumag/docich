@@ -1796,12 +1796,12 @@ class TestMutationGuard(TestHttpHandlers):
 
     def test_authz_audit_event_logged_without_secret_or_body(self):
         self.g.webui.token = "supersecret123"
-        # #972: pin the clock so the numeric `ts` itself contains the body
-        # value ("1790082626"). Asserting on the raw file text also matched
-        # that timestamp (and `latency_ms`, e.g. 1900), so the test failed
-        # only at certain wall-clock times even though nothing leaked. The
-        # body value may only appear in the string fields, so inspect those
-        # parsed fields and skip the numeric metadata.
+        # #972: pin the clock so the numeric `ts` contains the body value's
+        # "900" substring (ts = 1790082626). Asserting on the raw file text
+        # also matched that timestamp (and `latency_ms`, e.g. 1900), so the
+        # test failed only at certain wall-clock times even though nothing
+        # leaked. The body value may only appear in the string fields, so
+        # inspect those parsed fields and skip the numeric metadata.
         pinned_ts = 1790082626
         self.assertIn("900", str(pinned_ts))
         try:
@@ -1824,8 +1824,10 @@ class TestMutationGuard(TestHttpHandlers):
         raw = log_file.read_text(encoding="utf-8")
         self.assertNotIn("supersecret123", raw)
         self.assertNotIn("AI_AGENT_BACKOFF_SEC", raw)
-        # Wall-clock metadata (`ts`, `latency_ms`) and the HTTP `status` are
-        # not body carriers; they may legitimately contain "900" by chance.
+        # `ts` and `latency_ms` are wall-clock metadata, so they may match
+        # "900" by chance (epoch seconds, or e.g. latency 1900). `status` is
+        # an int chosen by the handler -- never body-derived -- and this
+        # codebase returns no 9xx code at all.
         numeric_metadata = {"ts", "latency_ms", "status"}
         for record in lines:
             for key, value in record.items():
@@ -1836,6 +1838,11 @@ class TestMutationGuard(TestHttpHandlers):
                     json.dumps(value, ensure_ascii=False),
                     f"body value leaked into audit field {key}: {record}",
                 )
+            self.assertNotIn(
+                "900",
+                json.dumps(sorted(record.keys()), ensure_ascii=False),
+                f"body key leaked into audit record keys: {record}",
+            )
 
 
 class TestWebUIConfig(unittest.TestCase):
