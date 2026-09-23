@@ -394,6 +394,14 @@ class CornerRotationManager:
                             and getattr(adapter, "state_path", None) is not None
                             and adapter.state_path.name == manual.get("state_file")
                             and reconcile(manual["request_id"])):
+                        # Reconciliation may have just written completed_at.
+                        # Comparing it with the time captured before that
+                        # write would falsely latch adapter-timestamp.
+                        settled_at = timestamp(self.clock())
+                        if settled_at < now:
+                            raise RotationError("clock regressed", kind="invalid-state")
+                        now = settled_at
+                        state["last_seen_at"] = now
                         self._resolve_reservation(state, manual, now, manual=True)
                         manual = None
                 busy = self._observe(state, now)
