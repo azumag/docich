@@ -1508,7 +1508,8 @@ class TestHttpHandlers(unittest.TestCase):
         text = res.read().decode("utf-8")
         self.assertEqual(res.status, 200)
         for marker in ('id="corners-catalog"', 'id="corners-summary"',
-                       'id="corners-source-warn"', "使い方", "function updateCornerButtons"):
+                       'id="corners-source-warn"', "使い方", "function updateCornerButtons",
+                       '"all-corners-cooling-down"', '"clock-gap-quarantine"'):
             self.assertIn(marker, text)
 
     def test_post_corners_requires_confirm(self):
