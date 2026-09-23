@@ -36,8 +36,16 @@ class WebuiSystemdTemplateTests(unittest.TestCase):
     def test_readme_install_sed_still_matches_placeholders(self):
         # README / wiki の sed 導入手順が壊れないよう placeholder を固定する。
         self.assertIn("WorkingDirectory=__DOCICH_ROOT__", self.text)
-        self.assertIn("ExecStart=__DOCICH_ROOT__/bin/docich webui", self.text)
-        self.assertEqual(self.text.count("__DOCICH_ROOT__"), 2)
+        self.assertIn("ExecStart=__DOCICH_ROOT__/bin/docich ", self.text)
+        self.assertEqual(self.text.count("__DOCICH_ROOT__"), 3)
+
+    def test_exec_start_uses_production_profile(self):
+        # 既定 config (state_dir=run) で起動すると Corners タブが本番の
+        # run-soren-live を読まず、ローテーションが「動いていない」ように見える
+        # (2026-09-23 実測: rotation present=false / catalog 空 / game_switch 9/15 のまま)。
+        line = next(l for l in self.text.splitlines() if l.startswith("ExecStart="))
+        self.assertIn("--config __DOCICH_ROOT__/config/docich.soren-live.toml", line)
+        self.assertLess(line.index("--config"), line.index(" webui"))
 
 
 if __name__ == "__main__":

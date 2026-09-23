@@ -143,7 +143,7 @@ read_only = false         # true で閲覧専用
 
 ## 本番 VM での導入状況 (2026-08-20)
 
-- systemd --user `docich-webui.service` (`ExecStart` に `--soren-root /home/ubuntu/soren`)
+- systemd --user `docich-webui.service`（`ExecStart` は `bin/docich --config config/docich.soren-live.toml webui --soren-root /home/ubuntu/soren`。`--config` が無いと既定の `config/docich.toml`（state_dir=`run`）を読み、Corners タブが本番の `run-soren-live` ではなく空の state を表示する。2026-09-23 に修正）
 - `sudo tailscale serve --bg --https=443 http://127.0.0.1:8787`
 - 公開 URL: `https://<hostname>.<tailnet>.ts.net/` (実値は秘匿運用のため非公開。`webui.allowed_origins` には `DOCICH_WEBUI_ALLOWED_ORIGINS` 環境変数で指定する。unit は `EnvironmentFile=-%h/.config/docich/webui.env` で読み込む)
 - 検証実績: 設定の読み書き / worker reload / backoff 表示・クリア / 統計表示を実測確認済み

@@ -1808,8 +1808,22 @@ def _corners_view(g: GlobalConfig) -> dict[str, Any]:
 
     state_dir = Path(g.state_dir)
     catalog: list[dict[str, Any]] = []
+    ledger = _load_json_file(state_dir / "corner_rotation.json")
+    last_run = _rotation_last_runs(ledger)
+    eligible_ids = set()
+    if isinstance(ledger, dict) and isinstance(ledger.get("eligible"), list):
+        eligible_ids = {item for item in ledger["eligible"] if isinstance(item, str)}
+    try:
+        from .corner_catalog import cooldown_seconds
+
+        cooldown = float(cooldown_seconds(g))
+    except Exception:
+        cooldown = None
+    now = time.time()
     try:
         for row in load_catalog(g):
+            last = last_run.get(row.id)
+            until = (last + cooldown) if (last is not None and cooldown) else None
             catalog.append({
                 "id": row.id,
                 "adapter": row.adapter,
@@ -1817,6 +1831,10 @@ def _corners_view(g: GlobalConfig) -> dict[str, Any]:
                 "enabled": bool(row.enabled),
                 "paused": bool(row.paused),
                 "manual": row.adapter in _CORNER_MANUAL_LAUNCHERS,
+                "eligible": row.id in eligible_ids,
+                "last_run_at": last,
+                "cooldown_until": until if (until is not None and until > now) else None,
+                "state_file": _CORNER_STATE_FILE_BY_ADAPTER.get(row.adapter),
             })
     except Exception:
         catalog = []
@@ -1842,11 +1860,43 @@ def _corners_view(g: GlobalConfig) -> dict[str, Any]:
         corners[name] = entry
     return {
         "generated_at": int(time.time()),
+        # どの config / state を読んでいるかを出す。本番は docich.soren-live.toml /
+        # run-soren-live。既定 config のまま起動すると空の state を見て「動いていない」
+        # ように見えるため、画面側で警告に使う（パスは basename のみ）。
+        "source": {
+            "config": Path(str(g.config_path)).name if g.config_path else None,
+            "state_dir": state_dir.name,
+        },
         "rotation": _rotation_view(g),
         "game_switch": _game_switch_view(g),
         "catalog": catalog,
         "corners": corners,
     }
+
+
+_CORNER_STATE_FILE_BY_ADAPTER = {
+    "game": "retro_corner",
+    "meriken": "soren91_corner",
+    "nethack": "nethack_corner",
+    "paper": "paper_corner",
+}
+
+
+def _rotation_last_runs(ledger: Any) -> dict[str, float]:
+    """Latest history timestamp per corner id (selection/execution/manual)."""
+    out: dict[str, float] = {}
+    if not isinstance(ledger, dict) or not isinstance(ledger.get("history"), list):
+        return out
+    for row in ledger["history"][-500:]:
+        if not isinstance(row, dict) or not isinstance(row.get("corner"), str):
+            continue
+        at = _view_time(row.get("at"))
+        if at is None:
+            continue
+        key = row["corner"][:64]
+        if at > out.get(key, 0.0):
+            out[key] = at
+    return out
 
 
 def _corner_manual_argv(g: GlobalConfig, corner_id: str, action: str,
@@ -1867,7 +1917,12 @@ def _corner_manual_argv(g: GlobalConfig, corner_id: str, action: str,
     if spec is None:
         raise ValueError("corner has no manual runner")
     launcher, supports_duration, needs_game = spec
-    argv = [str(Path(g.repo_root) / "bin" / launcher), action]
+    argv = [str(Path(g.repo_root) / "bin" / launcher)]
+    # runner は既定で config/docich.toml を読む。webui と同じ config（本番は
+    # docich.soren-live.toml）を明示しないと別の state_dir を操作してしまう。
+    if g.config_path:
+        argv += ["--config", str(g.config_path)]
+    argv.append(action)
     if needs_game:
         argv += ["--game", row.game]
     if action == "start" and supports_duration:
@@ -2818,22 +2873,34 @@ input:checked+.slider:before{transform:translateX(20px)}
 </section>
 <!-- CORNERS -->
 <section id="tab-corners" style="display:none">
-<div class="card"><h2>コーナーローテーション</h2><p class="desc"><code>corner_rotation.json</code> と <code>game_switch.json</code> の読み取り専用表示（seed / request UUID / 自由文は出しません）。タブ表示中は10秒ごとに自動更新。</p>
-<div id="corners-rotation" class="help">読込中…</div>
-<div id="corners-gsw" class="help" style="margin-top:8px">-</div>
+<div class="card"><h2>コーナーローテーション</h2>
+<p class="desc">配信の「コーナー」（レトロゲーム・NetHack・PAPER・メリケン）は、ローテーションが自動で1つずつ起動します。一度実行したコーナーは cooldown（既定24時間）が明けるまで自動では選ばれません。この画面は10秒ごとに自動更新されます。</p>
+<div id="corners-source-warn" class="help" style="display:none;color:var(--warn)"></div>
+<div id="corners-summary" class="kv">読込中…</div>
+<div id="corners-advice" class="help" style="margin-top:8px"></div>
+<details style="margin-top:8px"><summary class="help" style="cursor:pointer">詳細（ledger の生の値）</summary><div id="corners-rotation" class="help mono">-</div><div id="corners-gsw" class="help mono" style="margin-top:6px">-</div></details>
 </div>
-<div class="card"><h2>手動操作</h2><p class="desc">既存の one-off manual runner（<code>bin/*-corner-manual</code>）と固定復旧 CLI（<code>corner-rotation recover</code>）だけを起動します。rotation の 24h cooldown・latch の fail-closed は runner / CLI 側の既存契約どおりで、手動実行中は自動発火が program slot 待ちになります。復旧成功時は次回 timer tick（60秒）が同じ予約を再dispatchします。</p>
+<div class="card"><h2>コーナー一覧</h2>
+<p class="desc">各コーナーが次に自動で選ばれるかどうかと、選ばれない場合の理由です。行を押すと、下の手動操作の対象に選ばれます。</p>
+<div class="table-wrap"><table><thead><tr><th>コーナー</th><th>種類</th><th>自動選択</th><th>最終実行</th><th>cooldown 明け</th><th>手動の状態</th></tr></thead><tbody id="corners-catalog"></tbody></table></div>
+</div>
+<div class="card"><h2>手動操作</h2>
+<p class="desc">使い方:<br/>
+① <b>手動開始</b>: コーナーと分数を選ぶと、そのコーナーを今すぐ1回だけ実行します。実行中はローテーションの自動起動が待機します。<br/>
+② <b>手動停止</b>: 手動で開始したコーナーを途中で終わらせ、元のゲームへ戻します。<br/>
+③ <b>ローテーション復旧</b>: 状態が「要復旧」で止まったときだけ押せます。先に該当コーナーの停止/復旧を済ませてください。</p>
 <div class="row"><div><label>コーナー</label><select id="corners-select"></select></div>
-<div><label>分数 (1-60)</label><input id="corners-duration" type="number" min="1" max="60" value="5"/></div></div>
+<div><label>分数 (1-60、PAPER は無視)</label><input id="corners-duration" type="number" min="1" max="60" value="5"/></div></div>
 <div class="actions">
 <button class="btn primary" id="corners-start">手動開始</button>
 <button class="btn" id="corners-stop">手動停止</button>
 <button class="btn danger" id="corners-recover">ローテーション復旧</button>
 <button class="btn" id="corners-refresh">更新</button>
 </div>
+<div id="corners-hint" class="help"></div>
 <div id="corners-msg" class="help"></div>
 </div>
-<div class="card"><h2>コーナー状態</h2><div class="table-wrap"><table><thead><tr><th>state</th><th>status</th><th>game</th><th>started</th><th>ends</th><th>completed</th><th>recovery_required</th><th>matches</th></tr></thead><tbody id="corners-table"></tbody></table></div></div>
+<div class="card"><h2>コーナー状態ファイル</h2><p class="desc">各コーナーの自動/手動実行の最終記録です（問題調査用）。</p><div class="table-wrap"><table><thead><tr><th>state</th><th>状態</th><th>game</th><th>開始</th><th>終了予定</th><th>完了</th><th>要復旧</th><th>試合数</th></tr></thead><tbody id="corners-table"></tbody></table></div></div>
 </section>
 <!-- STREAM -->
 <section id="tab-stream" style="display:none">
@@ -4577,31 +4644,78 @@ async function loadCorners(){
     if(el) el.textContent=String(e);
   }
 }
+const ROT_STATUS_JA={ready:["準備完了","ok"],waiting:["待機中","ok"],running:["実行中","ok"],recovery_required:["要復旧（停止中）","bad"],unknown:["不明","warn"]};
+const ROT_REASON_JA={
+  "execution-pending":"予約済み。次の tick（1分以内）で起動します",
+  "manual-execution-pending":"手動開始を実行中です",
+  "manual-request-needs-resume-or-recovery":"手動予約が残っています。同じコーナーを手動開始で再開するか、手動停止してください",
+  "other-corner-needs-finish-or-recovery":"別のコーナーが実行中か要復旧のため待っています",
+  "recovery-retry":"復旧後の再試行待ちです",
+  "manual-execution-unverified":"手動実行の結果を確認できず停止しました",
+  "execution-or-state-unverified":"実行結果を確認できず停止しました",
+};
+const CORNER_STATUS_JA={idle:"待機",waiting:"待機",starting:"開始中",active:"実行中",restoring:"復帰中",preparing:"準備中",recovery_required:"要復旧",failed:"失敗",completed:"完了",interrupted:"中断",expired:"期限切れ",running:"実行中"};
+const CORNER_BUSY=new Set(["starting","active","restoring","preparing","waiting","recovery_required","failed"]);
+let CORNERS_DATA=null;
+function jaStatus(s){ return CORNER_STATUS_JA[s]||s||"-"; }
+function relTime(ts){
+  if(!ts) return "-";
+  const sec=Math.round(ts-Date.now()/1000);
+  const a=Math.abs(sec);
+  const t=a<90?`${a}秒`:a<5400?`${Math.round(a/60)}分`:`${(a/3600).toFixed(1)}時間`;
+  return sec>=0?`あと${t}`:`${t}前`;
+}
+function manualStateOf(d,c){
+  if(!c||!c.state_file||!d.corners) return null;
+  const m=d.corners[c.state_file+"_manual"];
+  if(!m||!m.present) return null;
+  if(c.adapter==="game" && m.game && m.game!==c.game) return null;
+  return m;
+}
 function renderCorners(d){
+  CORNERS_DATA=d;
   const r=d.rotation||{};
+  const gsw=d.game_switch||{};
+  const src=d.source||{};
+  const warn=document.getElementById("corners-source-warn");
+  if(warn){
+    const msgs=[];
+    if(r.present===false) msgs.push("ローテーションの ledger（corner_rotation.json）が見つかりません。");
+    if(r.enabled===false) msgs.push("この config ではローテーションが無効です。");
+    if(msgs.length){
+      warn.style.display="";
+      warn.textContent=`⚠ ${msgs.join(" ")} webui が本番以外の config を読んでいる可能性があります（config=${src.config||"-"} / state=${src.state_dir||"-"}。本番は docich.soren-live.toml / run-soren-live）。`;
+    } else { warn.style.display="none"; warn.textContent=""; }
+  }
+  const sum=document.getElementById("corners-summary");
+  if(sum){
+    const st=ROT_STATUS_JA[r.status]||ROT_STATUS_JA.unknown;
+    const rows=[
+      ["状態",`<span class="badge ${st[1]}">${esc(st[0])}</span>${r.reason?` <span class="help">${esc(ROT_REASON_JA[r.reason]||r.reason)}</span>`:""}`],
+      ["配信中のゲーム",`${esc(gsw.active_game||"なし")}${gsw.phase&&gsw.phase!=="ready"&&gsw.phase!=="idle"?` <span class="badge warn">切替中: ${esc(gsw.phase)}</span>`:""}`],
+      ["予約/実行中",r.pending?`${esc(r.pending.corner||"-")}（${r.pending.phase==="dispatched"?"起動済み":"選択済み"}、${r.pending.age_sec!=null?esc(Math.round(r.pending.age_sec/60))+"分前":"-"}）`:"なし"],
+      ["方式",`${r.schedule_mode==="queue"?"キュー（空き次第つぎを起動）":r.schedule_mode==="interval"?"一定間隔":esc(r.schedule_mode||"-")} / cooldown ${r.cooldown_seconds!=null?Math.round(r.cooldown_seconds/3600)+"時間":"-"}`],
+      ["自動選択できる数",`${r.eligible_count==null?"-":esc(r.eligible_count)} 件`],
+      ["参照中の設定",`<span class="mono">${esc(src.config||"-")} / ${esc(src.state_dir||"-")}</span>`],
+    ];
+    sum.innerHTML=rows.map(([k,v])=>`<dt>${esc(k)}</dt><dd>${v}</dd>`).join("");
+  }
+  const adv=document.getElementById("corners-advice");
+  if(adv){
+    let t="";
+    if(r.latch) t="⚠ ローテーションが安全のため停止しています。下の「コーナー状態ファイル」で要復旧/失敗のコーナーを確認し、そのコーナーを手動停止（または GitHub Actions の各 corner operator で recover）してから「ローテーション復旧」を押してください。";
+    else if(gsw.phase&&!["ready","idle"].includes(gsw.phase)) t="ゲーム切替の途中です。完了するまで手動開始はできません。";
+    adv.textContent=t;
+    adv.style.color=r.latch?"var(--bad)":"";
+  }
   const rotEl=document.getElementById("corners-rotation");
   if(rotEl){
-    const chip=r.latch
-      ? '<span class="badge" style="background:#5a1d26;color:#ffb3c0">recovery_required</span>'
-      : `<span class="badge">${esc(r.status||"-")}</span>`;
-    const pending=r.pending
-      ? ` / 予約 <b>${esc(r.pending.corner||"-")}</b> (${esc(r.pending.phase||"-")}, ${r.pending.age_sec!=null?esc(r.pending.age_sec)+"s":"-"})`
-      : "";
     rotEl.innerHTML=[
-      `状態 ${chip}`,
-      r.reason?` / reason=${esc(r.reason)}`:"",
-      r.error_kind?` / error_kind=${esc(r.error_kind)}`:"",
-      ` / slot=${r.slot==null?"-":esc(r.slot)}`,
-      pending,
-      ` / mode=${esc(r.schedule_mode||"-")} cooldown=${r.cooldown_seconds!=null?Math.round(r.cooldown_seconds/3600)+"h":"-"}`,
-      ` / eligible=${r.eligible_count==null?"-":esc(r.eligible_count)}${r.eligible&&r.eligible.length?` [${r.eligible.map(esc).join(", ")}]`:""}`,
-      ` / next_due=${fmtTime(r.next_due_at)} last_slot=${fmtTime(r.last_slot_at)} last_seen=${fmtTime(r.last_seen_at)}`,
-      r.enabled===false?" / <b>rotation disabled</b>":"",
+      `status=${esc(r.status||"-")} reason=${esc(r.reason||"-")} error_kind=${esc(r.error_kind||"-")} slot=${r.slot==null?"-":esc(r.slot)}`,
+      `next_due=${fmtTime(r.next_due_at)} last_slot=${fmtTime(r.last_slot_at)} last_seen=${fmtTime(r.last_seen_at)}`,
+      `eligible=[${(r.eligible||[]).map(esc).join(", ")}]`,
     ].join("<br/>");
-    const recoverBtn=document.getElementById("corners-recover");
-    if(recoverBtn) recoverBtn.disabled=!r.can_recover;
   }
-  const gsw=d.game_switch||{};
   const gswEl=document.getElementById("corners-gsw");
   if(gswEl){
     gswEl.textContent=`game-switch: phase=${gsw.phase||"-"} active=${gsw.active_game||"-"}`
@@ -4609,26 +4723,77 @@ function renderCorners(d){
       + ` last=${gsw.last_status||"-"}${gsw.last_error_code?"/"+gsw.last_error_code:""}`
       + ` to=${gsw.last_to_game||"-"} updated=${gsw.updated_at||"-"}`;
   }
+  const catalog=Array.isArray(d.catalog)?d.catalog:[];
+  const cat=document.getElementById("corners-catalog");
+  if(cat){
+    if(!catalog.length){
+      cat.innerHTML='<tr><td colspan="6" class="help">カタログが空です（config にコーナーが定義されていません）</td></tr>';
+    } else {
+      cat.innerHTML=catalog.map(c=>{
+        let auto;
+        if(!c.enabled) auto='<span class="badge">無効</span>';
+        else if(c.paused) auto='<span class="badge warn">休止中</span>';
+        else if(r.pending&&r.pending.corner===c.id) auto='<span class="badge ok">実行中</span>';
+        else if(c.cooldown_until) auto='<span class="badge">cooldown中</span>';
+        else if(c.eligible) auto='<span class="badge ok">候補</span>';
+        else auto='<span class="badge warn">対象外</span>';
+        const m=manualStateOf(d,c);
+        const ms=m?`${esc(jaStatus(m.status))}${m.recovery_required?' <span class="badge bad">要復旧</span>':""}`:"-";
+        return `<tr data-corner="${esc(c.id)}" style="cursor:pointer"><td class="mono">${esc(c.id)}</td><td>${esc(c.adapter)}${c.manual?"":' <span class="help">(手動不可)</span>'}</td>`
+          +`<td>${auto}</td><td title="${esc(fmtTime(c.last_run_at))}">${relTime(c.last_run_at)}</td>`
+          +`<td title="${esc(fmtTime(c.cooldown_until))}">${c.cooldown_until?relTime(c.cooldown_until):"-"}</td><td>${ms}</td></tr>`;
+      }).join("");
+      cat.querySelectorAll("tr[data-corner]").forEach(tr=>{
+        tr.onclick=()=>{ const sel=document.getElementById("corners-select"); if(sel&&[...sel.options].some(o=>o.value===tr.dataset.corner)){ sel.value=tr.dataset.corner; updateCornerButtons(); } };
+      });
+    }
+  }
   const sel=document.getElementById("corners-select");
-  if(sel && Array.isArray(d.catalog)){
+  if(sel){
     const keep=sel.value;
-    const manual=d.catalog.filter(c=>c.manual);
-    sel.innerHTML=manual.map(c=>
-      `<option value="${esc(c.id)}">${esc(c.id)} (${esc(c.adapter)})${c.enabled?"":" [disabled]"}</option>`
-    ).join("");
+    const manual=catalog.filter(c=>c.manual);
+    sel.innerHTML=manual.length
+      ? manual.map(c=>`<option value="${esc(c.id)}">${esc(c.id)}（${esc(c.game)}）${c.enabled?"":" [無効]"}</option>`).join("")
+      : '<option value="">（手動実行できるコーナーがありません）</option>';
     if(keep && manual.some(c=>c.id===keep)) sel.value=keep;
+    sel.onchange=updateCornerButtons;
   }
   const tb=document.getElementById("corners-table");
   if(tb && d.corners){
     tb.innerHTML=Object.entries(d.corners).map(([name,c])=>{
-      if(!c.present) return `<tr><td class="mono">${esc(name)}</td><td colspan="7" class="help">なし</td></tr>`;
-      return `<tr><td class="mono">${esc(name)}</td><td>${esc(c.status||"-")}</td>`
+      if(!c.present) return `<tr><td class="mono">${esc(name)}</td><td colspan="7" class="help">記録なし</td></tr>`;
+      return `<tr><td class="mono">${esc(name)}</td><td>${esc(jaStatus(c.status))}</td>`
         +`<td>${esc(c.game||"-")}</td><td>${fmtTime(c.started_at)}</td>`
         +`<td>${fmtTime(c.ends_at)}</td><td>${fmtTime(c.completed_at)}</td>`
-        +`<td>${c.recovery_required===true?"yes":(c.recovery_required===false?"no":"-")}</td>`
+        +`<td>${c.recovery_required===true?'<span class="badge bad">yes</span>':(c.recovery_required===false?"no":"-")}</td>`
         +`<td>${c.target_matches==null?"-":esc(c.target_matches)}</td></tr>`;
     }).join("");
   }
+  updateCornerButtons();
+}
+function updateCornerButtons(){
+  const d=CORNERS_DATA; if(!d) return;
+  const r=d.rotation||{}, gsw=d.game_switch||{};
+  const sel=document.getElementById("corners-select");
+  const c=(d.catalog||[]).find(x=>x.id===(sel?sel.value:""));
+  const m=manualStateOf(d,c);
+  const switching=gsw.phase&&!["ready","idle"].includes(gsw.phase);
+  const manualBusy=m&&CORNER_BUSY.has(m.status);
+  const hints=[];
+  const canStart=!!c && !switching && !r.latch && !manualBusy;
+  if(!c) hints.push("手動実行できるコーナーを選んでください。");
+  else if(r.latch) hints.push("ローテーションが要復旧のため、手動開始できません。");
+  else if(switching) hints.push("ゲーム切替中のため、手動開始できません。");
+  else if(manualBusy) hints.push(`${c.id} の手動実行の記録が「${jaStatus(m.status)}」です。先に手動停止してください。`);
+  else if(r.pending) hints.push(`いまは ${r.pending.corner} を実行中です。手動開始すると、現在のコーナーが終わってから始まります。`);
+  const startBtn=document.getElementById("corners-start");
+  const stopBtn=document.getElementById("corners-stop");
+  const recBtn=document.getElementById("corners-recover");
+  if(startBtn) startBtn.disabled=!canStart;
+  if(stopBtn) stopBtn.disabled=!(c&&m&&["starting","active","failed","recovery_required"].includes(m.status));
+  if(recBtn) recBtn.disabled=!r.can_recover;
+  if(r.can_recover) hints.push("「ローテーション復旧」を押せます。");
+  const h=document.getElementById("corners-hint"); if(h) h.textContent=hints.join(" ");
 }
 async function cornerAction(payload, confirmText){
   const msg=document.getElementById("corners-msg");
@@ -4636,7 +4801,12 @@ async function cornerAction(payload, confirmText){
   if(!confirm(confirmText)) return;
   try{
     const r=await api("/api/corners",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(Object.assign({confirm:true},payload))});
-    if(msg) msg.textContent=JSON.stringify(r);
+    if(msg){
+      let t;
+      if(r.action==="recover") t=r.ok?"復旧しました。次の tick（1分以内）でローテーションが再開します。":`復旧できませんでした（exit ${r.exit_code==null?"-":r.exit_code}）。先に要復旧のコーナーを停止/復旧してください。${r.detail?" 詳細: "+r.detail:""}`;
+      else t=`${r.action==="start"?"手動開始":"手動停止"}を受け付けました（${r.corner&&r.corner.id||"-"}）。進行はこの画面の状態欄に反映されます。ログ: ${r.log||"-"}`;
+      msg.textContent=t;
+    }
     toast(r.ok?`${r.action}: OK`:`${r.action}: ok=${r.ok} exit=${r.exit_code==null?"-":r.exit_code}`);
   }catch(e){
     if(msg) msg.textContent=String(e);
