@@ -97,6 +97,21 @@ def test_hanjuku_chart_progress_is_allowlisted_counters_only():
     assert module._project_corner_state({'bot_chart':'SECRET'})['bot_chart'] is None
 
 
+def test_hanjuku_audio_and_narration_evidence_is_bounded():
+    module=load_collector()
+    state={'game':'hanjuku-hero','narration':{'enqueued':3,'skipped':9,'delivery_failed':0,'text':'SECRET'},
+           'game_audio':{'status':'applied','target_percent':80,'streams':[
+               {'sink':'soren_null','volume_percent':[80,80],'mute':False,'secret':'SECRET'}]}}
+    out=module._project_corner_state(state)
+    assert out['narration']=={'enqueued':3,'delivery_failed':0,'skipped':9}
+    assert out['game_audio']=={'status':'applied','target_percent':80,'streams':[
+        {'sink':'soren_null','volume_percent':[80,80],'mute':False}]}
+    assert 'SECRET' not in json.dumps(out)
+    state['game_audio']={'status':'SECRET','streams':[{'sink':'bad sink;rm','volume_percent':['x'],'mute':'no'}]}
+    audio=module._project_corner_state(state)['game_audio']
+    assert audio['status'] is None and audio['streams']==[{'sink':None,'volume_percent':[],'mute':None}]
+
+
 def _synthetic_environ(pairs):
     return b'\x00'.join([f'{k}={v}'.encode() for k, v in pairs.items()] + [b''])
 

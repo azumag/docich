@@ -1443,6 +1443,19 @@ class RetroCornerManager:
                     latest['bot_version'] = bot.get('bot_version')
                 except Exception:
                     latest['bot_chart'] = None
+                try:
+                    from .hanjuku_narration import delivery_summary
+                    from .retroarch_boundary import read_record
+                    runtime_dir = runtime_directory(self.g.state_dir, active['runtime_id'])
+                    latest['narration'] = delivery_summary(runtime_dir)
+                    audio = read_record(runtime_dir / 'audio_volume.json')
+                    streams = audio.get('streams') if isinstance(audio.get('streams'), list) else []
+                    latest['game_audio'] = {
+                        'status': audio.get('status'), 'target_percent': audio.get('target_percent'),
+                        'streams': [{k: st.get(k) for k in ('sink', 'volume_percent', 'mute')}
+                                    for st in streams[:4] if isinstance(st, dict)]}
+                except Exception:
+                    latest['game_audio'] = None
                 self._write_state(latest)
                 if run.get('terminal_reason') in {'game_over', 'screen_stalled'}:
                     # Re-verify durable evidence bound to this runtime,

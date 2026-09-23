@@ -149,3 +149,27 @@ def consider(g, game, runtime_dir: Path, *, terminal=False, now=None, enqueue=No
         return chosen
     finally:
         os.close(fd)
+
+
+def delivery_summary(runtime_dir: Path) -> dict:
+    """Counts of narration outcomes for this runtime (no text)."""
+    counts = {}
+    for item in _tail_any(runtime_dir / 'hanjuku_narration.jsonl'):
+        status = str(item.get('status', ''))
+        key = status.split(':', 1)[0] if status else 'unknown'
+        counts[key] = counts.get(key, 0) + 1
+    return {k: counts.get(k, 0) for k in ('enqueued', 'delivery_failed', 'skipped')}
+
+
+def _tail_any(path: Path) -> list[dict]:
+    if not path.exists() or path.is_symlink():
+        return []
+    out = []
+    for line in path.read_text(encoding='utf-8', errors='ignore').splitlines()[-2000:]:
+        try:
+            item = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(item, dict):
+            out.append(item)
+    return out

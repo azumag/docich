@@ -452,3 +452,10 @@ def test_missing_chart_general_is_replaced_by_a_non_hero_present_at_the_source()
     assert policy.deploy_step(s, mem)[0]['buttons'] == ['down']
     rec = mem['_records'][-1]
     assert rec['strategy_variant'] == 'substitute_general' and mem['general_override']['1-C1'] == 'ゼウス'
+
+
+def test_narration_delivery_summary_counts_without_text(tmp_path):
+    (tmp_path / 'hanjuku_narration.jsonl').write_text('\n'.join(json.dumps(x) for x in [
+        {'status': 'enqueued', 'text': 'a'}, {'status': 'skipped:cooldown'}, {'status': 'skipped:held'},
+        {'status': 'delivery_failed'}]) + '\n')
+    assert hanjuku_narration.delivery_summary(tmp_path) == {'enqueued': 1, 'delivery_failed': 1, 'skipped': 2}

@@ -838,6 +838,7 @@ def summary(mem: dict | None) -> dict:
         'gold': as_int(mem.get('gold')),
         'month': mem.get('month') if isinstance(mem.get('month'), str) else None,
         'name_entered': bool((mem.get('name') or {}).get('done')),
+        'name_matches': (mem.get('name') or {}).get('typed') == NAME,
     }
 
 

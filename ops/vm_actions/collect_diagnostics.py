@@ -1825,6 +1825,41 @@ def _project_corner_state(data):
         "bot_version": (data.get("bot_version") if data.get("bot_version") in {
             "hanjuku-script-v1", "hanjuku-chart-v2"} else None),
         "bot_chart": _project_bot_chart(data.get("bot_chart")),
+        "narration": _project_counts(data.get("narration"),
+                                     ("enqueued", "delivery_failed", "skipped")),
+        "game_audio": _project_game_audio(data.get("game_audio")),
+    }
+
+
+def _project_counts(value, keys):
+    if not isinstance(value, dict):
+        return None
+    return {key: _bounded_int(value.get(key)) for key in keys}
+
+
+_SINK = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+
+
+def _project_game_audio(value):
+    """Per-game stream evidence: status, sink name, volume percents, mute."""
+    if not isinstance(value, dict):
+        return None
+    status = value.get("status")
+    streams = []
+    for item in (value.get("streams") or [])[:4] if isinstance(value.get("streams"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        percents = item.get("volume_percent")
+        streams.append({
+            "sink": item.get("sink") if isinstance(item.get("sink"), str) and _SINK.match(item["sink"]) else None,
+            "volume_percent": ([p for p in percents if type(p) is int and 0 <= p <= 200][:8]
+                               if isinstance(percents, list) else None),
+            "mute": item.get("mute") if isinstance(item.get("mute"), bool) else None,
+        })
+    return {
+        "status": status if status in {"applied", "unverified", "no_stream", "pactl_failed", "error"} else None,
+        "target_percent": _bounded_int(value.get("target_percent")),
+        "streams": streams,
     }
 
 
@@ -1848,6 +1883,7 @@ def _project_bot_chart(value):
     variant = value.get("strategy_variant")
     out["strategy_variant"] = variant if isinstance(variant, str) and _VARIANT.match(variant) else None
     out["name_entered"] = value.get("name_entered") is True
+    out["name_matches"] = value.get("name_matches") is True
     return out
 
 
