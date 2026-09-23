@@ -257,6 +257,29 @@ class TestForceRecoverProductionShape(ForceRecoverBase):
         self.assertEqual(manual["last_error"], "boom")
         self.assertEqual(self.make_manager(coord).start().status, "completed")
 
+    def test_recover_ends_failed_state_when_restore_already_landed(self):
+        # Production 2026-09-23: an earlier recover restored sorengame but left
+        # the manual state failed, latching the rotation.
+        self.set_canonical("ready", "sorengame")
+        self.set_manual("failed", last_error="boom", recovery_required=True)
+        coord = StoreCoordinator(self)
+
+        self.assertEqual(self.operator_recover(coord)["status"], "recovered")
+        self.assertEqual(coord.calls, [])
+        manual = self.manual_state()
+        self.assertEqual(manual["status"], "interrupted")
+        self.assertIs(manual["recovery_required"], False)
+        self.assertEqual(manual["last_error"], "boom")
+
+    def test_recover_leaves_failed_state_when_another_game_is_active(self):
+        self.set_canonical("ready", "retroarch")
+        self.set_manual("failed", last_error="boom", recovery_required=True)
+        coord = StoreCoordinator(self)
+
+        self.assertEqual(self.operator_recover(coord)["status"], "noop")
+        self.assertEqual(coord.calls, [])
+        self.assertEqual(self.manual_state()["status"], "failed")
+
     def test_recover_keeps_failed_while_restore_is_not_committed(self):
         self.set_canonical("ready", "nethack")
         self.set_manual("failed", last_error="boom", recovery_required=True)
