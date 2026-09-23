@@ -48,6 +48,16 @@ Claude、OpenCode、API、認証情報を操作時に使用しない。旧`brain
   リセット指示だが、botはリセットしないため `reset_forbidden` として記録する。
 - 攻撃で負けたチャート手順は同じ攻撃を最大2回まで再指示する（`retry_after_loss`）。
   出撃元の城に将軍がいなければ本城から出し直す（`source_fallback`）。
+- チャート外（出撃可能な指示が無い: `orders_locked` / `orders_exhausted` / `chart_unavailable`）では
+  マップで入力を保留し、状況（章・占領城・各指示の状態）ごとに1回だけ `chart_adjust_request` を記録して
+  runtime 配下の `hanjuku_chart_adjust_request.json` を atomic に更新する（#1085 L0→L1）。
+  非同期ワーカーが同じ `request_id` に答えて `hanjuku_chart_adjusted.json`（schema 1: 独自order列＋月次
+  purchases）を `hanjuku_chart_adjust.save()` で書くと、`hanjuku_chart_adjust.validate()` が城名・切り札名・
+  unlock条件を実測済みチャート事実で検証した上で、次のマップ観測時に `chart_adjust_applied` として
+  独立したorder列を採用する（`strategy_variant=chart_adjusted`）。基準チャートは実行時に変更しない。
+  基準と同名のstep、未知の城・切り札、別requestへの回答は採用しない。要求・保存履歴は
+  `hanjuku_chart_history.jsonl`。調整用LLMワーカー、保留中のJEV暫定行動、月次purchasesの実行、
+  GO後改善は未実装（#1085 の後続手順）。
 - 2話以降はチャート未実装。`chart_unavailable` として記録し、従来の確認入力だけで進める。
   全ステージ攻略・勝率は未確認であり、成功扱いしない。
 - 文字・カーソル・戦闘表示のどれも読めない画面は「状況判定保留」（`situation_held`）として記録し、

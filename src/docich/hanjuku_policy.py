@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 
 from . import hanjuku_chart as chart
+from . import hanjuku_chart_adjust as chart_adjust
 from .hanjuku_font import UNKNOWN, TextLine
 from .hanjuku_screen import HEADER as HEADER_RE, Screen, castle_roofs
 
@@ -249,9 +250,17 @@ def _ready(order, mem) -> bool:
     return False
 
 
+def _orders(mem):
+    """The order list in force: an adopted adjusted chart, else the base chart."""
+    adjusted = (mem.get('chart_adjust') or {}).get('orders')
+    if adjusted:
+        return adjusted
+    return chart.orders(mem.get('chapter') or 0)
+
+
 def next_order(mem):
     status = mem.setdefault('orders', {})
-    for order in chart.orders(mem.get('chapter') or 0):
+    for order in _orders(mem):
         if status.get(order['step']) in (None, 'pending') and _ready(order, mem):
             return order
     return None
@@ -259,7 +268,47 @@ def next_order(mem):
 
 def _order(mem):
     step = mem.get('active')
-    return next((o for o in chart.orders(mem.get('chapter') or 0) if o['step'] == step), None)
+    return next((o for o in (*_orders(mem), *chart.orders(mem.get('chapter') or 0))
+                 if o['step'] == step), None)
+
+
+def _off_chart(mem):
+    """No order is ready: request an adjusted chart, or adopt one that answered.
+
+    The base chart is never mutated. A request is recorded once per distinct
+    situation (chapter, captures, order states); an adjusted chart is adopted
+    only when it answers exactly that request, as a complete order list.
+    """
+    state = mem.setdefault('chart_adjust', {})
+    rid = chart_adjust.request_id(mem)
+    if state.get('request_id') != rid:
+        orders = _orders(mem)
+        status = mem.get('orders') or {}
+        blocked = [{'step': o['step'], 'after': list(o['after'] or ())} for o in orders
+                   if status.get(o['step']) in (None, 'pending')]
+        reason = ('chart_unavailable' if not orders
+                  else 'orders_locked' if blocked else 'orders_exhausted')
+        state.clear()
+        state['request_id'] = rid
+        _record(mem, 'chart_adjust_request', chart_step=None, strategy_variant='chart_adjust_pending',
+                request_id=rid, off_chart_reason=reason, blocked=blocked,
+                captured=sorted(mem.get('captured') or []), orders=dict(status),
+                gold=mem.get('gold'), month=mem.get('month'),
+                reason='チャート外: 出撃可能な指示がないため調整チャートを非同期に要求し入力を保留')
+        return
+    doc = mem.get('_adjusted')
+    if (doc and doc.get('request_id') == rid and doc.get('chapter') == mem.get('chapter')
+            and state.get('applied') != rid):
+        state['applied'] = rid
+        state['orders'] = [{**o, 'cards': list(o['cards']),
+                            'after': list(o['after']) if o['after'] else None}
+                           for o in doc['orders']]
+        state['purchases'] = doc.get('purchases')
+        mem['variant'] = 'chart_adjusted'
+        _record(mem, 'chart_adjust_applied', chart_step=None, strategy_variant='chart_adjusted',
+                request_id=rid, source=doc.get('source'),
+                steps=[o['step'] for o in doc['orders']],
+                reason='調整チャートを受信したため独自の指示列で出撃を再開')
 
 
 def _finish_order(mem, state, **fields):
@@ -279,6 +328,9 @@ def map_step(screen: Screen, mem, frame):
     order = _order(mem)
     if order is None:
         order = next_order(mem)
+        if order is None:
+            _off_chart(mem)
+            order = next_order(mem)
         if order is None:
             update_world(screen, mem, frame)
             return []           # nothing charted: let real time advance
@@ -1262,7 +1314,8 @@ def observe_events(screen: Screen, mem):
                         'captured', 'card_override', 'cursor', 'egg_battle',
                         'expect_menu', 'general_override', 'launched', 'month_exit',
                         'nav_last', 'orders', 'picked', 'retries', 'retry_context', 'shop',
-                        'source_override', 'uncertain', 'month', 'order_context', 'sortie_general'):
+                        'source_override', 'uncertain', 'month', 'order_context', 'sortie_general',
+                        'chart_adjust'):
                 mem.pop(key, None)
             mem['chapter'] = chapter
             mem['variant'] = 'chart' if chart.orders(chapter) else 'chart_unavailable'
