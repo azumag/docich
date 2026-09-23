@@ -37,7 +37,9 @@ JSON_FENCE_RE = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
 CORNER_IMPROVE_REASON_CODES = frozenset({
     "state-read", "corner-window", "gate-disabled", "llm-call", "llm-rc",
     "llm-empty", "llm-format", "llm-keys", "llm-values", "llm-unexpected",
-    "eval", "lane-busy", "unexpected",
+    "eval", "lane-busy", "policy-promoted", "policy-incomplete", "policy-faults",
+    "policy-below-margin", "policy-not-significant", "policy-identical",
+    "policy-invalid", "policy-kept", "policy-eval", "unexpected",
 })
 
 # One improvement job at a time across every corner and the PAPER pipeline.
@@ -376,8 +378,17 @@ def _run_corner_improve_locked(
             ),
         })
         raise
-    atomic_write_json(status_path, {"status": result["status"], "started_at": started,
-                                   "completed_at": time.time()})
+    record = {"status": result["status"], "started_at": started,
+              "completed_at": time.time()}
+    reason_code = _fixed_enum(
+        result.get("reason_code"), CORNER_IMPROVE_REASON_CODES, "unknown"
+    )
+    phase = _fixed_enum(result.get("phase"), CORNER_IMPROVE_PHASES, "unknown")
+    if reason_code != "unknown":
+        record["reason_code"] = reason_code
+    if phase != "unknown":
+        record["phase"] = phase
+    atomic_write_json(status_path, record)
     return result
 
 
@@ -428,6 +439,90 @@ def _bot_evaluator(g, game: str, matches: int):
     return evaluate
 
 
+def _ninvaders_policy_improve(g, *, agents: str, margin_pct: float,
+                              live_stats: dict, llm=None, dry_run: bool = False) -> dict:
+    """Rewrite and measure the live NInvaders policy with six paired samples.
+
+    The generic retro setting is two matches and only tunes two numeric
+    weights. NInvaders needs repeated samples for its structural policy gate;
+    keep that cost and behavior game-local instead of changing other corners.
+    """
+    from .ninvaders.improve import (
+        CORNER_EVAL_MATCHES,
+        CORNER_EVAL_MAX_SECONDS,
+        CORNER_EVAL_PARALLEL,
+        ImproveError,
+        improve_once,
+    )
+    from .ninvaders.store import PolicyStore
+
+    policy_dir = Path(g.state_dir) / "resolver" / "ninvaders"
+    store = PolicyStore(policy_dir)
+    llm_call = llm or (lambda prompt: _default_llm(g, agents=agents, prompt_text=prompt))
+    try:
+        result = improve_once(
+            store,
+            llm=llm_call,
+            matches=CORNER_EVAL_MATCHES,
+            parallel=CORNER_EVAL_PARALLEL,
+            margin_pct=margin_pct,
+            max_seconds=CORNER_EVAL_MAX_SECONDS,
+            live_stats=live_stats,
+            dry_run=dry_run,
+        )
+    except CornerImproveError:
+        raise
+    except (ImproveError, OSError, RuntimeError) as exc:
+        # Do not persist exception text: provider output and process details
+        # stay out of the fixed diagnostics projection.
+        raise CornerImproveError(
+            "NInvaders構造方策の評価に失敗しました",
+            code="policy-eval", phase="eval",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 - persist only fixed failure metadata
+        raise CornerImproveError(
+            "NInvaders構造方策の評価に失敗しました",
+            code="policy-eval", phase="eval",
+        ) from exc
+
+    status = result.get("status")
+    reason_code = None
+    phase = "eval"
+    if status == "promoted":
+        reason_code = "policy-promoted"
+    elif status == "rejected":
+        phase = "llm"
+        reason = result.get("reason", "")
+        if reason == "identical-to-incumbent":
+            reason_code = "policy-identical"
+        elif "static-gate" in str(reason) or "スモーク" in str(reason):
+            reason_code = "policy-invalid"
+        else:
+            reason_code = "policy-kept"
+    elif status == "skipped":
+        reason_code = "policy-incomplete"
+    elif status == "kept":
+        reasons = result.get("reasons", [])
+        joined = " ".join(str(item) for item in reasons)
+        if "too few" in joined:
+            reason_code = "policy-incomplete"
+        elif "faults" in joined:
+            reason_code = "policy-faults"
+        elif "margin" in joined:
+            reason_code = "policy-below-margin"
+        elif "significant" in joined:
+            reason_code = "policy-not-significant"
+        else:
+            reason_code = "policy-kept"
+    elif status == "dry-run":
+        phase = "unknown"
+    if reason_code:
+        result["reason_code"] = reason_code
+        result["phase"] = phase
+    result.setdefault("stats", live_stats)
+    return result
+
+
 def _run_corner_improve(
     g,
     *,
@@ -474,6 +569,16 @@ def _run_corner_improve(
         stats["basis"] = "bounded headless evaluation (live corner had no completed match)"
     else:
         stats["basis"] = "live scorelog plus bounded headless evaluation"
+
+    if game == "ninvaders":
+        return _ninvaders_policy_improve(
+            g,
+            agents=agents,
+            margin_pct=margin_pct,
+            live_stats=stats,
+            llm=llm,
+            dry_run=dry_run,
+        )
 
     defaults = _game_defaults(game)
     proposable = numeric_weights(defaults) if game in BOT_GAMES else set(defaults)

@@ -125,30 +125,63 @@ class TestDispatch(unittest.TestCase):
             live = tmp_path / "live-brain" / "nsnake" / "weights.json"
             self.assertEqual(json.loads(live.read_text(encoding="utf-8")), strategy)
 
-    def test_all_maxed_matches_fail_closed_and_keep(self):
+    def test_ninvaders_policy_uses_six_samples_and_skips_incomplete_incumbent(self):
         import tempfile
+        from unittest.mock import patch
+        from docich.ninvaders import arena, improve
 
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = _setup_completed(Path(tmp), "ninvaders", [30])
+            calls = []
 
-            def fake_run(**kwargs):
-                return {"game": "ninvaders",
-                        "matches": [{"score": 0, "turns": 3000, "maxed": True}],
-                        "mean_score": None}
+            def fake_eval(path, matches, **kwargs):
+                calls.append(matches)
+                items = [{"end": "title", "score": 0, "ticks": 1000,
+                          "policy": {"timeouts": 0, "errors": 0}}]
+                return {"summary": arena.summarize(items), "matches": items}
 
-            corner_improve.run_bot_matches = fake_run
-            try:
+            with patch.object(improve._arena, "evaluate", side_effect=fake_eval):
                 result = run_corner_improve(
                     _G(state_dir), game="ninvaders", date_str="2026-09-10", agents="a",
-                    llm=lambda prompt: '{"dodge_radius": 3}',
+                    llm=lambda prompt: (_ for _ in ()).throw(AssertionError("LLM must not run")),
                 )
-            finally:
-                corner_improve.run_bot_matches = __import__(
-                    "docich.resolver.bot_eval", fromlist=["run_bot_matches"]
-                ).run_bot_matches
-            self.assertEqual(result["status"], "kept")
-            self.assertFalse(result["promoted"])
-            self.assertEqual(result["candidate_played"], 0)
+            self.assertEqual(result["status"], "skipped")
+            self.assertEqual(result["reason_code"], "policy-incomplete")
+            self.assertEqual(calls, [6])
+
+    def test_ninvaders_structural_candidate_promotes_to_live_policy_store(self):
+        import tempfile
+        from unittest.mock import patch
+        from docich.ninvaders import arena, improve
+        from docich.ninvaders.sandbox import policy_sha
+        from docich.ninvaders.store import PolicyStore
+
+        candidate = "# CHANGE: track target motion\ndef decide(obs, state):\n    return ['Space']\n"
+        calls = []
+
+        def fake_eval(path, matches, parallel=1, max_seconds=1):
+            calls.append((matches, parallel, max_seconds))
+            score = 7000 if "track target motion" in Path(path).read_text(encoding="utf-8") else 5000
+            items = [{"end": "title", "score": score + i, "ticks": 900,
+                      "cause": "invasion", "last_frames": ["Score: 0005000"],
+                      "policy": {"timeouts": 0, "errors": 0}} for i in range(matches)]
+            return {"summary": arena.summarize(items), "matches": items}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = _setup_completed(Path(tmp), "ninvaders", [30])
+            with patch.object(improve._arena, "evaluate", side_effect=fake_eval):
+                result = run_corner_improve(
+                    _G(state_dir), game="ninvaders", date_str="2026-09-10", agents="a",
+                    llm=lambda prompt: f"```python\n{candidate}```",
+                )
+            self.assertEqual(result["status"], "promoted", result)
+            self.assertEqual(result["reason_code"], "policy-promoted")
+            self.assertEqual(result["phase"], "eval")
+            self.assertEqual(calls, [(improve.CORNER_EVAL_MATCHES,
+                                      improve.CORNER_EVAL_PARALLEL,
+                                      improve.CORNER_EVAL_MAX_SECONDS)] * 2)
+            store = PolicyStore(state_dir / "resolver" / "ninvaders")
+            self.assertEqual(store.current()["sha"], policy_sha(candidate))
 
     def test_bounded_nsnake_accepts_scored_maxed_matches(self):
         import tempfile
@@ -236,7 +269,7 @@ class TestLiveBrainHotSwap(unittest.TestCase):
     def test_promote_writes_candidate_weights_to_live_brain(self):
         import tempfile
 
-        for game, delta in (("nsnake", {"min_free": 6}), ("ninvaders", {"dodge_radius": 3})):
+        for game, delta in (("nsnake", {"min_free": 6}),):
             with self.subTest(game=game):
                 with tempfile.TemporaryDirectory() as tmp:
                     state_dir = _setup_completed(Path(tmp), game, [10, 20])

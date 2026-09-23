@@ -62,6 +62,13 @@ class RotationReleaseEvidenceTests(unittest.TestCase):
         row = module._collect_rotation_evidence(tmp_path)["improvements"]["nsnake"]
         self.assertEqual(row["reason_code"], "eval")
         self.assertEqual(row["phase"], "eval")
+        write(tmp_path / "corner_improve_ninvaders.json", {
+            "status": "kept", "started_at": 101, "completed_at": 102,
+            "reason_code": "policy-below-margin", "phase": "eval",
+        })
+        policy_row = module._collect_rotation_evidence(tmp_path)["improvements"]["ninvaders"]
+        self.assertEqual(policy_row["reason_code"], "policy-below-margin")
+        self.assertEqual(policy_row["phase"], "eval")
         write(status_path, {"status": "failed", "started_at": 101, "completed_at": 102,
                             "reason_code": "DO-NOT-EMIT", "phase": 7})
         row = module._collect_rotation_evidence(tmp_path)["improvements"]["nsnake"]

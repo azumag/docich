@@ -72,7 +72,11 @@ jobs:
           tests/test_nethack_canary_executor.py tests/test_nethack_canary_container.py
           tests/test_nethack_canary_worker.py tests/test_nethack_canary_candidate_broker.py
           tests/test_nethack_canary_image.py tests/test_nethack_canary_tactics.py
-          tests/test_ninvaders_wrapper.py tests/test_corner_boundary.py tests/test_paper_corner.py
+          tests/test_ninvaders_wrapper.py tests/test_ninvaders_wrapper_policy.py
+          tests/test_ninvaders_arena.py tests/test_ninvaders_frame.py tests/test_ninvaders_improve.py
+          tests/test_ninvaders_nudge.py tests/test_ninvaders_player.py tests/test_ninvaders_policy.py
+          tests/test_ninvaders_sandbox.py tests/test_ninvaders_store.py
+          tests/test_corner_boundary.py tests/test_paper_corner.py
           tests/test_retro_daily_schedule.py tests/test_corner_improve.py
           tests/test_corner_improve_dispatch.py tests/test_retro_command_brains.py
           tests/test_retro_wrapper_limits.py tests/test_retro_wrapper_real_panes.py

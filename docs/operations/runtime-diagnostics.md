@@ -149,6 +149,15 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   読み取りを順に行う観測なので、一つの原子的な状態スナップショットではない。
   この追加は待機条件・FIFO・scheduler・復旧操作を変更しない。
 
+- NInvaders改善は通常の2数値重み比較ではなく、生成方策を静的ゲートとworkerで
+  検証し、実ゲームを使う6試合ずつの incumbent/candidate 評価後にだけ昇格する。
+  `policy-promoted` / `policy-incomplete` / `policy-faults` / `policy-below-margin` /
+  `policy-not-significant` / `policy-identical` / `policy-invalid` / `policy-eval` は
+  固定理由コードで、生成コード・プロンプト・例外本文は診断へ出さない。昇格ポインタは
+  `<state_dir>/resolver/ninvaders/current.json`、ライブrunnerは次試合の開始時に読む。
+  workerは別プロセス、空の環境、math importだけ、CPU/file-descriptor/address-space上限を
+  使うが、これはOSレベルの隔離ではない。診断だけで実際の候補実行やキー入力を証明しない。
+
 - worker: `tmp/state/*.pid`（+ `tmp/.soren_loop.lock/pid`、
   `tmp/state/.soviet_watchdog.lock/owner`）、`*.paused` マーカー、
   `worker_duplicates.json`（supervisor 報告、10 分以内のみ採用）。
