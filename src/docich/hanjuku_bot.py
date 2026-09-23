@@ -182,6 +182,8 @@ def decide(frame: Frame, state: dict) -> tuple[list[dict], dict]:
     # a return to the map or a following event/menu closes the record.
     if mem.get('battle') and kind in policy.AFTER_BATTLE_KINDS:
         policy.battle_end(mem,kind)
+    if kind in policy.AFTER_BATTLE_KINDS:
+        mem['egg_battle']=False
     actions=None
     if kind=='name_entry':
         actions=policy.name_step(screen,mem)
@@ -193,6 +195,8 @@ def decide(frame: Frame, state: dict) -> tuple[list[dict], dict]:
         actions=policy.card_list_step(screen,mem)
     elif kind=='battle':
         actions=policy.battle_step(screen,mem)
+    elif kind=='egg_battle_menu' or (mem.get('egg_battle') and kind=='text'):
+        actions=policy.egg_battle_step(screen,mem)
     elif kind=='battle_menu':
         actions=policy.battle_menu_step(screen,mem)
     elif kind in {'attack_started','defense_started'}:

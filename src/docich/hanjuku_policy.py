@@ -403,7 +403,11 @@ def battle_step(screen: Screen, mem):
         cur = mem['battle'] = {'enemy': b.enemy, 'ally': b.ally, 'start_enemy_hp': b.enemy_hp,
                                'start_ally_hp': b.ally_hp, 'cards_used': [], 'plan': None,
                                **context}
+        planned = [t['card'] for t in chart.tactics(mem.get('chapter') or 0)
+                   if t['enemy'] == b.enemy and t.get('step') in (None, cur['step'])]
+        planned += list(mem.get('card_override', {}).get(cur['step']) or [])
         _record(mem, 'battle_start', chart_step=cur['step'], enemy=b.enemy, ally=b.ally,
+                planned_cards=planned, context=cur.get('context', 'message'),
                 enemy_hp=b.enemy_hp, ally_hp=b.ally_hp, castle=cur['castle'],
                 reason='戦闘パネルの将軍名とHPを確認')
     if (b.enemy, b.ally) != (cur['enemy'], cur['ally']):
@@ -559,7 +563,7 @@ def message_step(screen: Screen, mem):
         ours = general == launched.get('general') or general in (NAME, 'ヴィーナス', 'ココット', 'ゼウス')
         side = 'attack' if ours else 'enemy'
         step = launched.get('step') if launched.get('general') == general else None
-        if mem.get('attack', {}).get('castle') != castle or mem.get('attack', {}).get('general') != general:
+        if (mem.get('attack') or {}).get('castle') != castle or (mem.get('attack') or {}).get('general') != general:
             _record(mem, 'attack_observed', chart_step=step, general=general, castle=castle,
                     expected_metric=launched.get('general'), observed_metric=general,
                     deviation_reason=None if step or not ours else 'unplanned_attack',
@@ -569,7 +573,7 @@ def message_step(screen: Screen, mem):
     m = DEFENSE.search(text)
     if m:
         castle = m.group(1)
-        if mem.get('attack', {}).get('castle') != castle or mem.get('attack', {}).get('side') != 'defense':
+        if (mem.get('attack') or {}).get('castle') != castle or (mem.get('attack') or {}).get('side') != 'defense':
             _record(mem, 'defense_observed', castle=castle, reason='せめこまれました表示')
         mem['attack'] = {'general': None, 'castle': castle, 'side': 'defense', 'step': None}
         return [pad('a')]
@@ -810,3 +814,20 @@ def summary(mem: dict | None) -> dict:
         'month': mem.get('month') if isinstance(mem.get('month'), str) else None,
         'name_entered': bool((mem.get('name') or {}).get('done')),
     }
+
+
+def egg_battle_step(screen: Screen, mem):
+    """Summoned-monster battle: a turn menu that waits for a command.
+
+    The chart avoids provoking enemy eggs but gives no command for this
+    battle; the default こうげき (top item, where the cursor starts) keeps the
+    game moving instead of stalling. Messages inside it advance with A.
+    """
+    if screen.kind == 'egg_battle_menu':
+        if not mem.get('egg_battle'):
+            mem['egg_battle'] = True
+            _record(mem, 'egg_battle', strategy_variant='egg_battle_attack',
+                    deviation_reason='チャート外: 敵の卵召喚戦', expected_metric='召喚獣の撃破',
+                    reason='コマンド待ちで停止しないよう既定のこうげきを選ぶ')
+        return [pad('a')]
+    return [pad('a')]

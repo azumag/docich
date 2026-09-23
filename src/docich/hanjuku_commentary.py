@@ -34,7 +34,7 @@ def compose(rec: dict) -> tuple[str, str | None]:
         return f'launch:{step}', f"{rec['general']}将軍、{rec['target']}城へ出撃しました。"
     if kind == 'order_retry':
         return (f'retry:{step}',
-                'チャートどおりの白兵で負けてしまったので、同じ城へもう一度攻め込みます。')
+                'チャートどおりの白兵では負けたので、今度は開幕にイッテツーンを2枚使う作戦で同じ城へ攻め直します。')
     if kind == 'order_source_changed':
         return f'source:{step}', '出撃予定の城に将軍が見当たらないので、本城から出し直します。'
     if kind == 'attack_observed':
@@ -43,11 +43,27 @@ def compose(rec: dict) -> tuple[str, str | None]:
     if kind == 'defense_observed':
         return f"defense:{rec.get('castle')}", f"{rec['castle']}城が攻め込まれています。迎え撃ちます。"
     if kind == 'battle_start':
+        ally_hp, enemy_hp = rec.get('ally_hp'), rec.get('enemy_hp')
+        plan = rec.get('planned_cards') or []
+        if plan:
+            tail = f"チャートの予定どおり{'、'.join(plan)}を使います。"
+        elif isinstance(ally_hp, int) and isinstance(enemy_hp, int) and ally_hp < enemy_hp:
+            tail = '体力では負けているので、苦しい白兵戦になりそうです。'
+        elif isinstance(ally_hp, int) and isinstance(enemy_hp, int):
+            tail = '体力で上回っているので、切り札を温存して白兵で押します。'
+        else:
+            tail = ''
         return (f"battle:{rec.get('enemy')}:{rec.get('ally')}",
-                f"{rec['ally']}対{rec['enemy']}。体力は{rec['ally_hp']}対{rec['enemy_hp']}、まずは白兵で様子を見ます。")
+                f"{rec['ally']}対{rec['enemy']}、体力は{ally_hp}対{enemy_hp}。{tail}")
     if kind == 'battle_card':
-        return (f"card:{rec.get('card')}:{rec.get('enemy')}",
-                f"敵の{rec['enemy']}の体力が{rec['enemy_hp']}なので、{rec['card']}を使います。")
+        reason = rec.get('reason') or ''
+        if '開幕' in reason:
+            why = f"開幕に{rec['card']}を使います。"
+        elif 'ぶつかり' in reason:
+            why = f"一度ぶつかって敵の体力が{rec['enemy_hp']}になったので、{rec['card']}を使います。"
+        else:
+            why = f"敵の{rec['enemy']}の体力が{rec['enemy_hp']}まで下がったので、{rec['card']}を使います。"
+        return f"card:{rec.get('card')}:{rec.get('enemy')}", why
     if kind == 'battle_result':
         outcome = rec.get('outcome')
         ally, enemy = rec.get('ally'), rec.get('enemy')

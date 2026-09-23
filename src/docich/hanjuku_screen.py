@@ -213,6 +213,8 @@ def classify_text(s: Screen) -> str:
         return 'month_menu'
     if 'たまごをつかう' in t and 'たいきゃく' in t:
         return 'battle_menu'
+    if 'こうげき' in t and 'もうこうげき' in t and 'たまごをつかう' in t:
+        return 'egg_battle_menu'
     if 'しゅつげき' in t and 'ステータス' in t:
         # The general list opens beside the castle menu; its hand is right of it.
         if s.hand and s.hand[0] > 100:

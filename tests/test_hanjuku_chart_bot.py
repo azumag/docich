@@ -391,3 +391,17 @@ def test_chart_summary_is_bounded_counters():
     assert s['chapter'] == 1 and s['captured'] == 1 and s['wins'] == 2 and s['losses'] is None
     assert s['orders_launched'] == 1 and s['name_entered'] is True
     assert policy.summary(None)['chapter'] is None
+
+
+def test_summoned_monster_turn_menu_is_answered_instead_of_stalling():
+    c = Canvas()
+    c.text(176, 175, 'こうげき')
+    c.text(176, 191, 'もうこうげき')
+    c.text(176, 207, 'たまごをつかう')
+    actions, state = decide(c.frame(), {'policy': {'chapter': 1}})
+    assert actions[0]['buttons'] == ['a'] and state['screen_kind'] == 'egg_battle_menu'
+    assert state['_records'][0]['strategy_variant'] == 'egg_battle_attack'
+    m = Canvas((20, 120, 20))
+    m.text(40, 183, '59ポイントのダメージ!!')
+    actions, state = decide(m.frame(), state)
+    assert actions[0]['buttons'] == ['a']

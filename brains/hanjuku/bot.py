@@ -66,6 +66,12 @@ def main():
     except (KeyError,TypeError,ValueError,OSError):
         code=2
         print('hanjuku-bot: invalid observation',file=sys.stderr)
+    except Exception as exc:
+        # A policy defect must not crash the agent loop or send guesses:
+        # hold input for this observation and record only the error class.
+        code=2
+        actions=[]
+        print(f'hanjuku-bot: policy_error {type(exc).__name__}',file=sys.stderr)
     print(json.dumps({'actions':actions}),flush=True)
     return code
 
