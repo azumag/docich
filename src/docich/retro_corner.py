@@ -1434,8 +1434,27 @@ class RetroCornerManager:
                 latest['battles_finished'] = run.get('battles_finished', 0)
                 latest['screen_unchanged_seconds'] = run.get('unchanged_seconds', 0)
                 latest['bot_runtime_id'] = active['runtime_id']
+                try:
+                    from .hanjuku_policy import summary
+                    from .retroarch_boundary import read_record
+                    bot = read_record(runtime_directory(self.g.state_dir, active['runtime_id'])
+                                      / 'hanjuku_bot.json')
+                    latest['bot_chart'] = summary(bot.get('policy'))
+                    latest['bot_version'] = bot.get('bot_version')
+                except Exception:
+                    latest['bot_chart'] = None
                 self._write_state(latest)
                 if run.get('terminal_reason') in {'game_over', 'screen_stalled'}:
+                    # Re-verify durable evidence bound to this runtime,
+                    # generation and lease before any teardown; a mismatch
+                    # or invalid record raises and fails closed.
+                    from .hanjuku_run import runtime_identity, terminal
+                    evidence = terminal(runtime_directory(self.g.state_dir, active['runtime_id']),
+                                        runtime_identity(fence))
+                    if evidence is None:
+                        raise RetroCornerError('Hanjuku terminal evidence is not durable')
+                    latest['terminal_evidence'] = evidence.get('terminal_evidence')
+                    latest['terminal_generation'] = evidence.get('generation')
                     return self._finish_locked(latest, self._local_now())
                 if time.monotonic() >= next_repair:
                     self._repair_active_agent(latest)

@@ -108,6 +108,16 @@ def _positive_int(value: str) -> int:
     return number
 
 
+def _volume_percent(value: str) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(f"must be an integer percent (got {value!r})")
+    if not 1 <= number <= 150:
+        raise argparse.ArgumentTypeError(f"must be between 1 and 150 (got {value!r})")
+    return number
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument('--display', required=True)
@@ -130,6 +140,9 @@ def _parser() -> argparse.ArgumentParser:
     # Soren91 Mac remote renderer) carry game audio that must reach the
     # broadcast encoder, which listens on the shared `soren_null` sink.
     parser.add_argument('--audio-sink', default=None)
+    # Optional per-game playback volume for the viewer's own PulseAudio
+    # streams only (never the shared sink or other workers' streams).
+    parser.add_argument('--audio-volume-percent', type=_volume_percent, default=None)
     # Used by RetroArch only: dbus-run-session owns the process group, but
     # the X window belongs to its child. Search only the private X server.
     parser.add_argument('--window-pattern')
@@ -202,6 +215,10 @@ def main(argv=None) -> int:
             source_env['PULSE_SINK'] = str(args.audio_sink)
             source_env.setdefault('SDL_AUDIODRIVER', 'pulseaudio')
         viewer = launch(command, env=source_env)
+        if args.audio_volume_percent is not None and args.runtime_state:
+            from .pulse_volume import keep_applied
+            keep_applied(viewer, args.audio_volume_percent,
+                         Path(args.runtime_state).with_name('audio_volume.json'), env=source_env)
         deadline = time.monotonic() + args.viewer_wait_sec
         window = ''
         while time.monotonic() < deadline and viewer.poll() is None:

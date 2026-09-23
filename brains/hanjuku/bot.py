@@ -1,17 +1,47 @@
 #!/usr/bin/env python3
-"""Token-free Hanjuku command bot: Observation JSON -> bounded pad actions."""
+"""Token-free Hanjuku command bot: Observation JSON -> bounded pad actions.
+
+Writes the policy memory, structured decision records and commentary
+candidates into the generation's runtime directory. It never calls a model,
+provider, network or the audio queue; delivery is a separate side channel.
+"""
 from __future__ import annotations
 
 import json
 from pathlib import Path
 import sys
+import time
 
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'src'))
 from docich.game_switch import atomic_write_json
-from docich.hanjuku_bot import decide
+from docich.hanjuku_bot import BOT_VERSION, decide
+from docich.hanjuku_commentary import SPOKEN, compose
 from docich.hanjuku_pixels import read_png
+from docich.hanjuku_run import append_log
 from docich.retroarch_boundary import read_record
+
+
+def persist(runtime: Path, state: dict, records: list, obs_meta: dict):
+    now=time.time()
+    identity={k:(obs_meta.get('hanjuku') or {}).get(k) for k in ('runtime_id','generation')}
+    for record in records:
+        payload={'schema':1,'event':'decision','at':now,'bot_version':BOT_VERSION,
+                 'step':state.get('step'),'screen_kind':state.get('screen_kind'),
+                 'phase':state.get('phase'),**identity,**record}
+        append_log(runtime,'hanjuku_decisions',payload)
+        if record.get('decision') not in SPOKEN:
+            continue
+        key,text=compose(record)
+        seq=int(state.get('commentary_seq',0))+1
+        state['commentary_seq']=seq
+        append_log(runtime,'hanjuku_commentary',{
+            'schema':1,'seq':seq,'at':now,'key':key,'text':text,
+            'status':'candidate' if text else 'held',
+            'held_reason':None if text else '状況判定保留',
+            'decision':record.get('decision'),'chart_step':record.get('chart_step'),
+            'strategy_variant':record.get('strategy_variant'),'reason':record.get('reason'),
+            **identity})
 
 
 def main():
@@ -30,6 +60,8 @@ def main():
             frame=read_png(Path(obs['screenshot'])).resized()
             state=read_record(runtime/'hanjuku_bot.json')
             actions,state=decide(frame,state)
+            records=state.pop('_records',[])
+            persist(runtime,state,records,meta)
             atomic_write_json(runtime/'hanjuku_bot.json',state)
     except (KeyError,TypeError,ValueError,OSError):
         code=2

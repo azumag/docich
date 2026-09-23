@@ -1822,7 +1822,33 @@ def _project_corner_state(data):
         "battles_started": _bounded_int(data.get("battles_started")),
         "battles_finished": _bounded_int(data.get("battles_finished")),
         "screen_unchanged_seconds": _finite_number(data.get("screen_unchanged_seconds")),
+        "bot_version": (data.get("bot_version") if data.get("bot_version") in {
+            "hanjuku-script-v1", "hanjuku-chart-v2"} else None),
+        "bot_chart": _project_bot_chart(data.get("bot_chart")),
     }
+
+
+_CHART_STEP = re.compile(r"^[0-9]{1,2}-[A-Za-z0-9]{1,4}$")
+_MONTH = re.compile(r"^[0-9]{1,2}-[0-9]{1,2}$")
+_VARIANT = re.compile(r"^[a-z_]{1,40}$")
+
+
+def _project_bot_chart(value):
+    """Allowlisted chart-progress counters only (no text, names or reasons)."""
+    if not isinstance(value, dict):
+        return None
+    out = {}
+    for key in ("chapter", "orders_launched", "orders_failed", "captured", "wins", "losses",
+                "unclassified", "cards_used", "generals_lost", "gold"):
+        out[key] = _bounded_int(value.get(key))
+    step = value.get("chart_step")
+    out["chart_step"] = step if isinstance(step, str) and _CHART_STEP.match(step) else None
+    month = value.get("month")
+    out["month"] = month if isinstance(month, str) and _MONTH.match(month) else None
+    variant = value.get("strategy_variant")
+    out["strategy_variant"] = variant if isinstance(variant, str) and _VARIANT.match(variant) else None
+    out["name_entered"] = value.get("name_entered") is True
+    return out
 
 
 FIFO_OPERATIONS = frozenset({"start", "stop", "switch", "restart", "rotate", "recover"})
