@@ -1,11 +1,11 @@
 {
-  "output_sha256": "76502789f20f3f543cf5aa9b118cdabc7fc9e212a6710f0b86fff1ca4c552890",
+  "output_sha256": "2cf53cfb63228a5abc8829aadf21dd0b447f091fdb89d1697da10415b546e296",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "7df8d1dd61330eca0db8b6afbcd5a47e0c68355f1dafb8bbf85c5a5ccc8a5e20",
+  "source_sha256": "3cb4c1664158975c4a3d82a60f43b3721f93b239c7a42dbf7b853d16e2677254",
   "topics": [
+    "半熟英雄 #1068配備・どうし実入力と音声80%を実測（受入継続）",
     "半熟英雄の受入準備（開始・終了・実況の所有権検証）",
-    "半熟英雄起動不能の修正 #1059 はmain統合・配備済み（実起動未確認）",
-    "Soren試合境界の停止を修正・複数試合の自動再開を実測"
+    "半熟英雄起動不能の修正 #1059 はmain統合・配備済み（実起動未確認）"
   ]
 }

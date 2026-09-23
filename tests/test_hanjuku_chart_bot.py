@@ -245,6 +245,59 @@ def test_commentary_is_grounded_and_holds_when_unknown():
     assert hanjuku_commentary.compose({'decision': 'situation_held'})[1] is None
 
 
+@pytest.mark.parametrize('ally_hp,enemy_hp,expected', [
+    (90, 90, '体力は互角'),
+    (91, 90, '体力で上回っている'),
+    (89, 90, '体力では負けている'),
+])
+def test_battle_start_commentary_compares_only_observed_hp(ally_hp, enemy_hp, expected):
+    key, text = hanjuku_commentary.compose({'decision': 'battle_start', 'ally': 'どうし',
+        'enemy': 'ミント', 'ally_hp': ally_hp, 'enemy_hp': enemy_hp})
+    assert key == 'battle:ミント:どうし'
+    assert f'体力は{ally_hp}対{enemy_hp}' in text
+    assert expected in text
+    if ally_hp == enemy_hp:
+        assert '上回っている' not in text and '負けている' not in text
+
+
+def test_battle_start_commentary_equal_hp_keeps_verified_card_plan():
+    _, text = hanjuku_commentary.compose({'decision': 'battle_start', 'ally': 'どうし',
+        'enemy': 'にせヒーロー', 'ally_hp': 90, 'enemy_hp': 90,
+        'planned_cards': ['クースカン']})
+    assert '体力は互角' in text and 'クースカン' in text
+    assert '上回っている' not in text
+
+
+@pytest.mark.parametrize('ally_hp,enemy_hp', [
+    (None, 90), (90, None), (None, None), (True, 90), (90, False),
+    (-1, 90), (90, -1), ('90', 90), (90, float('nan')),
+])
+@pytest.mark.parametrize('plan', [[], ['クースカン']])
+def test_battle_start_commentary_holds_when_either_hp_is_unknown(ally_hp, enemy_hp, plan):
+    key, text = hanjuku_commentary.compose({'decision': 'battle_start', 'ally': 'どうし',
+        'enemy': 'ミント', 'ally_hp': ally_hp, 'enemy_hp': enemy_hp, 'planned_cards': plan})
+    assert key == 'battle:ミント:どうし'
+    assert text is None
+
+
+def test_battle_start_unknown_hp_is_logged_as_held_commentary(tmp_path):
+    import importlib.util
+    path = Path(__file__).resolve().parents[1] / 'brains/hanjuku/bot.py'
+    spec = importlib.util.spec_from_file_location('hanjuku_commentary_hp_test', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.persist(tmp_path, {'step': 1, 'screen_kind': 'battle'}, [
+        {'decision': 'battle_start', 'ally': 'どうし', 'enemy': 'ミント',
+         'ally_hp': 90, 'enemy_hp': None, 'planned_cards': ['クースカン']},
+    ], {'hanjuku': {'game': 'hanjuku-hero', 'runtime_id': 'g1-test',
+                   'generation': 1, 'lease_id': 'lease-1'}},
+        actions=[], frame_sha256='a' * 64)
+    candidate = json.loads((tmp_path / 'hanjuku_commentary.jsonl').read_text())
+    assert candidate['text'] is None
+    assert candidate['status'] == 'held'
+    assert candidate['held_reason'] == '状況判定保留'
+
+
 class Game:
     def __init__(self, **narration):
         self.raw = {'hanjuku': {'narration': {'enabled': True, 'cooldown_s': 25, **narration}}}

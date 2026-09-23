@@ -46,16 +46,20 @@ def compose(rec: dict) -> tuple[str, str | None]:
         return f"defense:{rec.get('castle')}", f"{rec['castle']}城が攻め込まれています。迎え撃ちます。"
     if kind == 'battle_start':
         ally_hp, enemy_hp = rec.get('ally_hp'), rec.get('enemy_hp')
+        key = f"battle:{rec.get('enemy')}:{rec.get('ally')}"
+        if any(type(hp) is not int or hp < 0 for hp in (ally_hp, enemy_hp)):
+            return key, None  # candidate writer records 状況判定保留
         plan = rec.get('planned_cards') or []
         if plan:
-            tail = f"チャートの予定どおり{'、'.join(plan)}を使います。"
-        elif isinstance(ally_hp, int) and isinstance(enemy_hp, int) and ally_hp < enemy_hp:
+            tail = ('体力は互角です。' if ally_hp == enemy_hp else '')
+            tail += f"チャートの予定どおり{'、'.join(plan)}を使います。"
+        elif ally_hp < enemy_hp:
             tail = '体力では負けているので、苦しい白兵戦になりそうです。'
-        elif isinstance(ally_hp, int) and isinstance(enemy_hp, int):
+        elif ally_hp > enemy_hp:
             tail = '体力で上回っているので、切り札を温存して白兵で押します。'
         else:
-            tail = ''
-        return (f"battle:{rec.get('enemy')}:{rec.get('ally')}",
+            tail = '体力は互角です。切り札を温存して白兵で戦います。'
+        return (key,
                 f"{rec['ally']}対{rec['enemy']}、体力は{ally_hp}対{enemy_hp}。{tail}")
     if kind == 'battle_card':
         reason = rec.get('reason') or ''
