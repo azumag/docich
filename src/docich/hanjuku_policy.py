@@ -421,8 +421,9 @@ def _measured_card_select(screen):
         return None
     # Extra text rows would be an uncalibrated inventory/scroll layout. Mark
     # rows above the known text can contain UNKNOWN and are not inventory.
-    if any(ch != UNKNOWN and 136 <= x < 256 for line in screen.lines
-           if 32 <= line.y < 127 and line.y not in (55, 71, 87, 103)
+    if any(ch != UNKNOWN and 136 <= x < 256
+           and (line.y not in (55, 71, 87, 103) or x < 160)
+           for line in screen.lines if 32 <= line.y < 127
            for x, ch in line.cells):
         return None
     if not screen.hand:

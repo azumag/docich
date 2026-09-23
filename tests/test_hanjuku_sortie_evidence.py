@@ -471,3 +471,15 @@ def test_calibrated_card_cursor_decision_is_joined_to_action_plan(tmp_path, retr
     for key in ('chart_step', 'strategy_variant', 'deviation_reason', 'expected_metric'):
         assert plan[key] == decision[key] == record[key]
     assert all(plan[key] == decision[key] == value for key, value in identity.items())
+
+
+@pytest.mark.parametrize('y', [55, 71, 87, 103])
+@pytest.mark.parametrize('x', [136, 144])
+def test_known_text_in_card_row_cursor_margin_rejects_menu(y, x):
+    screen = measured_card_select(selected=3)
+    replace_cell(screen, y, x, 'あ')
+    mem = foot_order_memory()
+    assert policy._measured_card_select(screen) is None
+    assert policy.deploy_step(screen, mem) == []
+    assert mem['picked'] == []
+    assert mem['_records'][-1]['decision'] == 'situation_held'
