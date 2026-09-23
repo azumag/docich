@@ -719,10 +719,13 @@ class TestNethackRotationTargetValidation(NethackCornerTestBase):
                 with self.assertRaises(NethackCornerError):
                     mgr._validate_games(names)
                 # The rejection message must not trail off for an empty list.
+                # #1021 review: pin the whole suffix -- checking a substring
+                # against the *last character* was vacuously true.
                 try:
                     mgr._validate_games(names)
                 except NethackCornerError as exc:
-                    self.assertNotIn("有効です: ", str(exc).rstrip()[-1])
+                    if not names:
+                        self.assertIn("有効です: (空)", str(exc))
 
     def test_default_call_and_playable_scan_still_work(self):
         mgr, _ = self.manager([None])

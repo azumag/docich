@@ -883,6 +883,13 @@ class TestSoren91RotationTargetValidation(Soren91CornerTestBase):
             with self.subTest(names=names):
                 with self.assertRaises(RetroCornerError):
                     mgr._validate_games(names)
+                if not names:
+                    # The empty list must not leave the message trailing off
+                    # (#998); pin the full suffix rather than a substring.
+                    try:
+                        mgr._validate_games(names)
+                    except RetroCornerError as exc:
+                        self.assertIn("有効です: (空)", str(exc))
 
     def test_default_call_still_validates_the_owned_game(self):
         mgr, _ = self.manager([None])
