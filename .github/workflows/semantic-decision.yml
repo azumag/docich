@@ -47,7 +47,7 @@ jobs:
       - name: Install test dependencies
         run: python3 -m pip install -r requirements-test.txt
       - name: Core without any game checkout
-        run: python3 -m pytest -q tests/test_semantic_decision.py
+        run: python3 -m pytest -q tests/test_semantic_decision.py tests/test_semantic_decision_diagnostics.py
       - name: docich-owned comment classifier without any game checkout
         run: python3 -m pytest -q tests/test_comment_classifier.py tests/test_jev_direct_golden.py
       - name: Check out the reviewed Soren delegation contract

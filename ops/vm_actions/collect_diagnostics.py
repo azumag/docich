@@ -41,14 +41,12 @@ Observed sources (all read-only):
     ab_candidate/): only presence, counts, enums and mtimes; strategy/hash
     bodies and environment values are never read out.
   - the registered chat_worker's own live environ (#882), restricted to a
-    fixed 5-name allowlist (never the raw block, never any other name):
-    four names projected through the already-reviewed
+    fixed 4-name allowlist (never the raw block, never any other name),
+    projected through the already-reviewed
     docich.semantic_decision.diagnostics.describe(), which returns only
     backend/route/requested_model/credential-presence -- never a credential
-    value; plus COMMENT_CLASSIFIER_BACKEND (#678's own, non-secret enum
-    flag) reported as its plain, length-capped value, since it is the
-    prerequisite gate that decides whether the other four are ever
-    consulted at all. This is the one narrow, reviewed exception to "raw
+    value; COMMENT_CLASSIFIER_BACKEND (the non-secret enum gate the docich
+    classifier reads) is also reported as its plain, length-capped value. This is the one narrow, reviewed exception to "raw
     environment values are never read out" above: it is a fixed-shape
     projection of a handful of non-secret configuration strings and a
     presence boolean, the same bounded-projection contract every other
@@ -769,14 +767,12 @@ def _collect_workers(soren, now):
 # from a live worker's environ. Values for the two credential names never
 # leave _read_allowlisted_environ; docich.semantic_decision.diagnostics.describe()
 # converts them to presence-only before this module ever formats output.
-# COMMENT_CLASSIFIER_BACKEND is #678's own key, not docich-owned, but its
-# value is a plain enum flag, never a credential, so it is reported as-is
-# below: it is the prerequisite gate soviet_now's shell wrapper checks
-# before ever invoking the classifier that would consult
-# DOCICH_SEMANTIC_BACKEND at all, so omitting it would make "backend":"jev"
-# here misleading about whether real classification is actually delegated.
+# These are exactly the names docich.comment_classifier reads:
+# COMMENT_CLASSIFIER_BACKEND (plain enum gate, never a credential, so its
+# value is also reported as-is below) and DOCICH_JEV_ROUTE plus that route's
+# own credential. The retired DOCICH_SEMANTIC_BACKEND is no longer read by
+# anything, so it is deliberately not read here either.
 SEMANTIC_DECISION_ENV_ALLOWLIST = (
-    "DOCICH_SEMANTIC_BACKEND",
     "DOCICH_JEV_ROUTE",
     "TYPESAFE_API_KEY",
     "DOCICH_JEV_VERCEL_API_KEY",
@@ -808,16 +804,14 @@ def _read_allowlisted_environ(pid, names):
 
 
 def _collect_semantic_decision(workers):
-    """Effective docich semantic-decision config on the live chat_worker (#882).
+    """Effective docich comment-classifier config on the live chat_worker (#882).
 
-    Reports whether the registered chat_worker is delegating comment
-    classification to the reviewed docich core, and if so, over which route
-    -- never a credential value, only its presence. A missing/dead worker or
-    an unreadable environ is reported as such, never guessed as "legacy"
-    (an absent observation is not evidence of a disabled backend). Also
-    reports the #678 prerequisite gate (comment_classifier_backend) as its
-    plain value -- not a secret, and required context: DOCICH_SEMANTIC_BACKEND
-    is never consulted by soviet_now's shell wrapper unless this is "jev" too.
+    Reports whether the registered chat_worker's docich classifier calls Jev
+    ("backend":"jev") or runs the heuristic only, and over which route --
+    never a credential value, only its presence. A missing/dead worker or an
+    unreadable environ is reported as such, never guessed as "heuristic"
+    (an absent observation is not evidence of a disabled backend). The gate's
+    plain value is also kept as comment_classifier_backend.
     """
     detail = workers.get("details", {}).get("chat_worker") or {}
     pid = detail.get("pid")
