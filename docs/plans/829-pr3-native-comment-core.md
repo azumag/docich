@@ -14,7 +14,7 @@ classifier moved out in soviet_now#495). Stage map: `829-pr0-baseline-inventory.
 |---|---|---|
 | **3a prompt** | template/allowlist rendering (envsubst semantics), category→template map, dominant category, formatted classifications, English count, gacha completion note, context sanitizer, default resolution, time period, reply contract + speech vocabulary rule, retry addendum, mode persona/UI memo/intro/length policy. Assets copied to `src/docich/comment/prompts/`. | merged (#1038) |
 | 3b guard/validation | `_comment_strip_worknote_head`, `_comment_strip_reasoning_tags`, `_comment_guard_model_text` (→ existing `docich.model_output_guard`), `_comment_strip_nonjapanese_head`, `_comment_guard_japanese_text`, `_comment_is_valid_generation_candidate`, `_contains_provider_error_text`, `_clean_comment_talk`, `_sanitize_onair_text` (→ shared `docich.onair_text`), effective `_is_valid_comment_talk` (base + speech-quality + honorific policy). SING / named blocks move to 3e with the output post-processing. | merged (#1042) |
-| **3c state** | 3c-1 (this PR): batch/line hashing + dedup key, processed/inflight/recent-batch dedup, failure backoff, sidecar paths, generation meta + history, backlog counts, spoken-reply history, batch neighbour context, thumbnail-need predicate — same file formats/paths so cutover needs no migration. 3c-2: viewer memory (`lib/comment_viewer_memory.py`), `_remember_spoken_comment` (needs host mode), context history | 3c-1 this PR |
+| 3c state | 3c-1 (#1047): batch/line hashing + dedup key, processed/inflight/recent-batch dedup, failure backoff, sidecar paths, generation meta + history, backlog counts, spoken-reply history, batch neighbour context, thumbnail-need predicate — same file formats/paths so cutover needs no migration. 3c-2 (this PR): viewer memory — `lib/comment_viewer_memory.py` moved byte-for-byte (+ its suite) and the three comment.sh wrappers; `_remember_spoken_comment` / context history go to 3e with host mode | 3c-1 merged, 3c-2 this PR |
 | 3d contexts | game-independent builders (batch context, recent spoken, follow-up hints, viewer memory, advice tail/extraction, past topics) + a typed `GameContextProvider` interface; sorengame game/ops/celebration/soren91 notes become one provider, never imported by the core | |
 | 3e orchestration | one batch end to end: intake DTO → docich classifier → contexts → prompt → `docich.llm` COMMENT dispatch with retry → guard → translation (`lib/comment_bilingual.py`) → delivery **contract** (queue file + sidecars, written to a caller-given sink) → ack; `docich comment` CLI that runs a fixture with no `games/soviet_now` | |
 
@@ -62,4 +62,15 @@ soviet_now copies) is deleted at cutover, when the soviet_now copies are.
   gitlink (provenance commit aside) instead of skipping when the gitlink moved,
   so a legacy change fails CI until the port follows.
 - Not ported: `_is_improve_running` (improvement-loop state, not comment state).
+
+## Notes from 3c-2
+
+- `lib/comment_viewer_memory.py` is already Python: it moves **byte-for-byte**
+  to `src/docich/comment/viewer_memory.py` with its soviet_now test suite, and a
+  drift guard requires the two copies to stay identical until cutover (the
+  chat fetchers `twitch_chat.sh` / `youtube_chat.sh` / `kick_chat.sh` also use
+  it; they move with the intake in 3e).
+- The golden pins only the comment.sh wrappers: the helper is replaced by an
+  argv-recording stub, so argv/defaults, stdout fallback and sidecar handling
+  are compared exactly while the helper's own clock never enters the golden.
 

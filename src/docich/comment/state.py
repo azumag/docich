@@ -19,6 +19,8 @@ dependence takes ``now`` so callers and tests control the clock.
 from __future__ import annotations
 
 from collections import deque
+import contextlib
+import io
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -27,6 +29,8 @@ import os
 from pathlib import Path
 import re
 import time
+
+from . import viewer_memory
 
 # core/config.sh constants (hard-coded there, not env-overridable).
 COMMENT_BATCH_DEDUP_TTL = 900
@@ -420,3 +424,80 @@ class CommentState:
         tmp.write_text("".join(line + "\n" for line in recent), encoding="utf-8")
         os.replace(tmp, history)
         return payload
+
+    # -- per-viewer memory (the comment.sh wrappers around viewer_memory) ------------
+    def _viewer_memory_enabled(self) -> bool:
+        return (self.env.get("COMMENT_VIEWER_MEMORY_ENABLED") or "1") == "1"
+
+    @property
+    def viewer_memory_file(self) -> str:
+        return self.env.get("COMMENT_VIEWER_MEMORY_FILE") or "tmp/state/comment_viewer_memory.json"
+
+    def _viewer_memory_setting(self, name: str, default: str) -> str:
+        return self.env.get(name) or default
+
+    def _run_viewer_memory(self, argv: list[str]) -> tuple[int, str]:
+        """``python3 lib/comment_viewer_memory.py ARGV 2>/dev/null`` from the Soren root."""
+        out = io.StringIO()
+        cwd = os.getcwd()
+        try:
+            os.chdir(self.root)
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                rc = viewer_memory.main(argv)
+        except SystemExit as exc:
+            rc = exc.code if isinstance(exc.code, int) else 1
+        except Exception:
+            rc = 1
+        finally:
+            os.chdir(cwd)
+        return rc, out.getvalue()
+
+    def viewer_memory_context(self, batch_file: str, source: str, mode: str) -> str:
+        """``_build_comment_viewer_memory_context`` (its stdout, fallback on any failure)."""
+        if not self._viewer_memory_enabled():
+            return "（投稿者別メモは無効）\n"
+        s = self._viewer_memory_setting
+        rc, out = self._run_viewer_memory([
+            "context", "--state", self.viewer_memory_file, "--batch", batch_file, "--source", source,
+            "--mode", mode, "--exclude", s("COMMENT_VIEWER_MEMORY_EXCLUDED_USERS", "dociai dociaich"),
+            "--metadata", batch_metadata_path(batch_file),
+            "--items", s("COMMENT_VIEWER_MEMORY_PROMPT_ITEMS", "4"),
+            "--max-chars", s("COMMENT_VIEWER_MEMORY_PROMPT_MAX_CHARS", "2200"),
+            "--comment-max-chars", s("COMMENT_VIEWER_MEMORY_COMMENT_MAX_CHARS", "240"),
+            "--reply-max-chars", s("COMMENT_VIEWER_MEMORY_REPLY_MAX_CHARS", "320"),
+            "--ttl-days", s("COMMENT_VIEWER_MEMORY_TTL_DAYS", "365")])
+        return out + ("（該当する投稿者別メモなし）\n" if rc else "")
+
+    def stage_viewer_memory(self, target: str, batch_file: str, reply_file: str, source: str, mode: str,
+                            batch_hash: str = "") -> bool:
+        """Stage this reply's memory next to the queued file; committed only after playback."""
+        if not self._viewer_memory_enabled():
+            return True
+        sidecar = viewer_memory_sidecar_path(target)
+        rc, out = self._run_viewer_memory([
+            "stage", "--sidecar", sidecar, "--batch", batch_file, "--reply", reply_file, "--source", source,
+            "--mode", mode,
+            "--exclude", self._viewer_memory_setting("COMMENT_VIEWER_MEMORY_EXCLUDED_USERS", "dociai dociaich"),
+            "--metadata", batch_metadata_path(batch_file), "--batch-hash", batch_hash])
+        count = out.rstrip("\n")
+        if rc:
+            self._p(sidecar).unlink(missing_ok=True)
+            return False
+        if count in ("", "0") or not count.isdigit():
+            self._p(sidecar).unlink(missing_ok=True)
+        return True
+
+    def commit_viewer_memory(self, target: str) -> bool:
+        """Commit the staged memory after the reply actually played."""
+        if not self._viewer_memory_enabled():
+            return True
+        sidecar = viewer_memory_sidecar_path(target)
+        if not self._p(sidecar).is_file():
+            return True
+        s = self._viewer_memory_setting
+        rc, _out = self._run_viewer_memory([
+            "commit", "--state", self.viewer_memory_file, "--sidecar", sidecar,
+            "--max-users", s("COMMENT_VIEWER_MEMORY_MAX_USERS", "500"),
+            "--max-exchanges", s("COMMENT_VIEWER_MEMORY_MAX_EXCHANGES", "24"),
+            "--ttl-days", s("COMMENT_VIEWER_MEMORY_TTL_DAYS", "365")])
+        return rc == 0
