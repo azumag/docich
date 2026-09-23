@@ -512,9 +512,20 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
         ours, its process window exists and the screen shows the *unanswered*
         prompt, then require the prompt gone and the process still alive before
         acknowledging.  After ``y`` the game is writing its save and exiting,
-        which cannot be undone; every other observation (no prompt, process
-        gone, capture failure) refuses without sending a key so recovery stays
+        which cannot be undone; a live process without that prompt and any
+        capture failure refuse without sending a key so recovery stays
         fail-closed.
+
+    There is one more acknowledgment (#1015 requirement 3): when the
+    presentation window exists but the birth window is gone, ``_runtime_process_
+    window_target`` guarantees the NetHack process genuinely ended, so no save
+    prompt can be pending and no process can be mid-save.  The same terminal
+    boundary the request path derives from that evidence (save file ->
+    ``suspended``, none -> ``ended``) is recorded first and only then
+    acknowledged, letting canonical leave ``draining`` while the active runtime
+    identity is retained.  If the evidence cannot be recorded, the cancel still
+    refuses.  This path never sends a key, never kills a process and never
+    edits canonical state.
 
         Every refusal path records a bounded observation first (#1015) so the
         owner can classify *why* the cancel was refused without pane text.
@@ -562,13 +573,57 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
             )
             raise
         if process_target is None:
-            self._refuse_cancel(
-                "process_target_absent",
-                present=False,
-                alive=None,
+            # Birth window gone + presentation window present means the game
+            # process genuinely ended (see _runtime_process_window_target).
+            # Record the same terminal boundary request_round_boundary derives
+            # from this evidence, then acknowledge so the expired drain can be
+            # cancelled (#1015 requirement 3). Refuse when the evidence itself
+            # cannot be recorded.
+            try:
+                existing = self._matching_save_files()
+            except Exception:
+                self._refuse_cancel(
+                    "process_target_absent",
+                    present=False,
+                    alive=None,
+                    prompt_class="unknown",
+                )
+                return False
+            save_file = None
+            if existing:
+                try:
+                    save_file = max(existing, key=lambda path: path.stat().st_mtime_ns)
+                except OSError:
+                    self._refuse_cancel(
+                        "process_target_absent",
+                        present=False,
+                        alive=None,
+                        prompt_class="unknown",
+                    )
+                    return False
+            outcome = "suspended" if save_file is not None else "ended"
+            try:
+                self._write_boundary_result(
+                    request_id, outcome=outcome, save_file=save_file
+                )
+            except Exception:
+                self._refuse_cancel(
+                    "process_target_absent",
+                    present=False,
+                    alive=None,
+                    prompt_class="unknown",
+                )
+                return False
+            self._record_boundary_diag(
+                "cancel",
+                reason="process_target_absent",
+                process_target_present=False,
+                process_alive=None,
                 prompt_class="unknown",
+                save_signature_changed=None,
+                boundary_outcome=outcome,
             )
-            return False
+            return True
         present = True
         try:
             alive = self.tmux.window_target_exists(process_target, strict=True)

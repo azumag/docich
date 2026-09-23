@@ -1,3 +1,4 @@
+import json
 import sys
 import time
 import unittest
@@ -107,9 +108,24 @@ class TestNethackSaveConfirmation(unittest.TestCase):
 
     # -- cancel: only an *unanswered* prompt may be withdrawn -------------------
 
-    def _cancel_adapter(self, tmux, *, target="adapter:nethack", order=None):
+    def _cancel_adapter(self, tmux, *, target="adapter:nethack", order=None,
+                        runtime_dir=None, save_dir=None):
         adapter = object.__new__(nethack_adapter.NethackCoordinatorAdapter)
-        adapter.spec = SimpleNamespace(adapter_session="adapter")
+        if runtime_dir is None:
+            import tempfile
+            runtime_dir = Path(tempfile.mkdtemp(prefix="nethack-boundary-"))
+        if save_dir is None:
+            import tempfile
+            save_dir = Path(tempfile.mkdtemp(prefix="nethack-save-"))
+        adapter.spec = SimpleNamespace(
+            adapter_session="adapter",
+            runtime_dir=runtime_dir,
+            game="nethack",
+            runtime_id="g-test",
+            generation=1,
+        )
+        adapter.player_name = "docich"
+        adapter.save_dir = save_dir
         adapter.tmux = tmux
 
         def check_active(deadline, cancel):
@@ -161,13 +177,58 @@ class TestNethackSaveConfirmation(unittest.TestCase):
                 self.assertFalse(adapter.cancel_round_boundary("req-1", time.monotonic() + 1.0, None))
                 self.assertEqual(self._sent_keys(tmux), [])
 
-    def test_cancel_refuses_when_the_process_window_or_session_is_gone(self):
+    def test_cancel_acknowledges_when_the_process_window_is_gone(self):
+        # Birth window gone + presentation window present == the game process
+        # genuinely ended (#1015 requirement 3): record the terminal boundary
+        # the request path derives, acknowledge, and send no key at all.
         tmux = _PromptTmux(pane="Really save? [yn] (n)")
         adapter = self._cancel_adapter(tmux)
         adapter._runtime_process_window_target = mock.Mock(return_value=None)
+        self.assertTrue(adapter.cancel_round_boundary("req-1", time.monotonic() + 1.0, None))
+        self.assertEqual(self._sent_keys(tmux), [])
+        saved = adapter.spec.runtime_dir / nethack_adapter.BOUNDARY_RESULT_FILENAME
+        self.assertTrue(saved.is_file())
+        payload = json.loads(saved.read_text(encoding="utf-8"))
+        self.assertEqual(payload["outcome"], "ended")
+        self.assertEqual(payload["request_id"], "req-1")
+        diag = adapter.spec.runtime_dir / nethack_adapter.BOUNDARY_DIAG_FILENAME
+        self.assertEqual(json.loads(diag.read_text(encoding="utf-8"))["reason"],
+                         "process_target_absent")
+        self.assertEqual(json.loads(diag.read_text(encoding="utf-8"))["boundary_outcome"],
+                         "ended")
+
+    def test_cancel_records_a_remaining_save_as_suspended(self):
+        import tempfile
+        save_dir = Path(tempfile.mkdtemp(prefix="nethack-save-"))
+        (save_dir / "1000docich").write_bytes(b"save-bytes")
+        tmux = _PromptTmux(pane="Dlvl:1 HP:16(16)")
+        adapter = self._cancel_adapter(tmux, save_dir=save_dir)
+        adapter._runtime_process_window_target = mock.Mock(return_value=None)
+        self.assertTrue(adapter.cancel_round_boundary("req-1", time.monotonic() + 1.0, None))
+        payload = json.loads(
+            (adapter.spec.runtime_dir / nethack_adapter.BOUNDARY_RESULT_FILENAME).read_text(encoding="utf-8")
+        )
+        self.assertEqual(payload["outcome"], "suspended")
+        self.assertEqual(payload["save_file"], "1000docich")
+        self.assertEqual(self._sent_keys(tmux), [])
+
+    def test_cancel_refuses_without_process_when_the_save_dir_cannot_be_read(self):
+        tmux = _PromptTmux(pane="Really save? [yn] (n)")
+        adapter = self._cancel_adapter(tmux)
+        adapter._runtime_process_window_target = mock.Mock(return_value=None)
+        adapter._matching_save_files = mock.Mock(side_effect=nethack_adapter.AdapterError("save dir"))
         self.assertFalse(adapter.cancel_round_boundary("req-1", time.monotonic() + 1.0, None))
         self.assertEqual(self._sent_keys(tmux), [])
 
+    def test_cancel_refuses_without_process_when_the_terminal_result_cannot_be_recorded(self):
+        tmux = _PromptTmux(pane="Really save? [yn] (n)")
+        adapter = self._cancel_adapter(tmux)
+        adapter._runtime_process_window_target = mock.Mock(return_value=None)
+        adapter._write_boundary_result = mock.Mock(side_effect=OSError("no space"))
+        self.assertFalse(adapter.cancel_round_boundary("req-1", time.monotonic() + 1.0, None))
+        self.assertEqual(self._sent_keys(tmux), [])
+
+    def test_cancel_refuses_when_the_session_is_gone(self):
         tmux = _PromptTmux(pane="Really save? [yn] (n)")
         tmux.session_target_exists = lambda session: False
         adapter = self._cancel_adapter(tmux)
