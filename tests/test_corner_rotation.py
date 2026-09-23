@@ -813,6 +813,40 @@ def test_manual_queue_replay_uses_same_durable_request(setup, monkeypatch):
     assert state(make()).get("manual_pending") is None
 
 
+def test_manual_wait_reason_changes_do_not_prove_a_new_execution_failure(setup, monkeypatch):
+    """A queued manual retry keeps historical error_kind and its reservation.
+
+    Reproduce the two reported diagnostic reasons without production execution:
+    timer observation must not consume or launch the manual slot by itself.
+    """
+    from docich import corner_rotation
+    g, clock, _, executor, make = setup
+    monkeypatch.setattr(corner_rotation, "CornerRotationManager", lambda _: make())
+    manager = SimpleNamespace(path=g.state_dir / "paper_corner_manual.json")
+    executor.result = CornerExecutionError("synthetic failure")
+    with pytest.raises(CornerExecutionError):
+        corner_rotation.run_manual(g, manager, ["paper-view"])
+    failed = state(make())
+    assert failed["error_kind"] == "execution-error"
+    make().recover()
+    executor.result = "queued"
+    clock[0] += 3 * 3600 + 38 * 60
+    assert corner_rotation.run_manual(g, manager, ["paper-view"]) == "queued"
+    queued = state(make())
+    assert queued["reason"] == "manual-execution-pending"
+    assert make().tick()["reason"] == "manual-request-needs-resume-or-recovery"
+    held = state(make())
+    for observed in (queued, held):
+        assert observed["status"] == "waiting"
+        assert observed["pending"] is None
+        assert observed["manual_pending"] == failed["manual_pending"]
+        assert observed["error_kind"] == "execution-error"
+        assert observed["last_slot_at"] == failed["last_slot_at"]
+        assert observed["slot"] == failed["slot"]
+    assert len(executor.calls) == 2
+    assert executor.calls[0]["request_id"] == executor.calls[1]["request_id"]
+
+
 def test_stop_reaches_owner_when_scheduler_lock_is_busy(tmp_path, monkeypatch):
     from contextlib import contextmanager
     from docich import corner_rotation

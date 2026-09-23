@@ -2077,6 +2077,57 @@ def _rotation_pending_projection(state_dir, data, now):
     return out
 
 
+def _rotation_manual_pending_projection(state_dir, data, now):
+    """Observe the manual reservation separately from automatic ``pending``.
+
+    A manual queue return keeps its reservation while automatic pending is
+    absent. Only the declared, fixed allowlisted owner file can prove ownership;
+    a matching request in a sibling file must not make it look resumable.
+    This is evidence, never an instruction to resume or recover a corner.
+    """
+    out = {
+        "manual_pending": isinstance(data.get("manual_pending"), dict),
+        "manual_pending_corner": None,
+        "manual_pending_state_file": None,
+        "manual_pending_age_sec": -1,
+        "manual_pending_owner": "absent",
+        "manual_pending_owner_status": "unknown",
+    }
+    manual = data.get("manual_pending")
+    if manual is None:
+        return out
+    out["manual_pending_owner"] = "unknown"
+    if not isinstance(manual, dict):
+        return out
+    out["manual_pending_corner"] = _rotation_enum(
+        manual.get("corner"), (*ROTATION_IMPROVE_GAMES, "paper", "meriken")
+    )
+    selected = _rotation_time(manual.get("selected_at"))
+    if selected is not None and selected <= now:
+        out["manual_pending_age_sec"] = int(now - selected)
+    # Never derive a filesystem path from reservation input, even a basename.
+    files = {name + ".json": name for name in ROTATION_CORNER_FILES}
+    filename = manual.get("state_file")
+    name = files.get(filename) if isinstance(filename, str) else None
+    request_id = manual.get("request_id")
+    if name is None:
+        return out
+    out["manual_pending_state_file"] = name
+    if not isinstance(request_id, str) or not request_id:
+        return out
+    present, readable, raw = _rotation_evidence_file(state_dir, name + ".json")
+    if not present:
+        out["manual_pending_owner"] = "none"
+    elif readable:
+        out["manual_pending_owner"] = "none"
+        if raw.get("rotation_request_id") == request_id:
+            out["manual_pending_owner"] = name
+            out["manual_pending_owner_status"] = _rotation_enum(
+                raw.get("status"), ROTATION_STATUSES
+            )
+    return out
+
+
 def _collect_corner_files(state_dir, payload, now):
     present, readable, data = _load_state_file(state_dir / CORNER_STATE_FILES["corner_rotation"])
     rotation = {"present": present, "readable": readable}
@@ -2097,6 +2148,7 @@ def _collect_corner_files(state_dir, payload, now):
             error_kind=_rotation_error_kind(data.get("error_kind")),
         )
         rotation.update(_rotation_pending_projection(state_dir, data, now))
+        rotation.update(_rotation_manual_pending_projection(state_dir, data, now))
     mode, cooldown = _rotation_policy()
     rotation.update(schedule_mode=mode, cooldown_seconds=cooldown)
     payload["corner_rotation"] = rotation
