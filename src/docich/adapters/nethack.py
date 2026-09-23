@@ -256,6 +256,29 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
             payload["save_file"] = save_file.name
         atomic_write_json(self.spec.runtime_dir / BOUNDARY_RESULT_FILENAME, payload)
 
+    def _record_ended_process_boundary(self, request_id: str) -> str:
+        """Record the terminal boundary of a NetHack process that already ended.
+
+        Shared by ``request_round_boundary`` and ``cancel_round_boundary`` so
+        both paths classify the same evidence identically.  A player/agent may
+        have used NetHack's normal save command: any matching save is kept as a
+        suspension (the newest one).  Stale saves are not expected here because
+        a normal restore consumes the previous save file, and no pre-``S``
+        baseline exists when the cancel runs in a different process.  Without a
+        save this is a terminal boundary (death/quit/ascension is classified
+        later).  Raises when the evidence cannot be read or written.
+        """
+        existing = self._matching_save_files()
+        save_file = None
+        if existing:
+            try:
+                save_file = max(existing, key=lambda path: path.stat().st_mtime_ns)
+            except OSError as exc:
+                raise AdapterError("NetHack save fileを検査できません") from exc
+        outcome = "suspended" if save_file is not None else "ended"
+        self._write_boundary_result(request_id, outcome=outcome, save_file=save_file)
+        return outcome
+
     def _boundary_wait_check(self, deadline: float, cancel) -> None:
         if cancel is not None and cancel.is_set():
             self._record_boundary_diag(
@@ -435,20 +458,7 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
 
         process_target = self._runtime_process_window_target()
         if process_target is None:
-            # A player/agent may have already used NetHack's normal save command.
-            # If a save exists, preserve that as a suspension.  Otherwise this
-            # is a terminal boundary (death/quit/ascension is classified later).
-            existing = self._matching_save_files()
-            if existing:
-                try:
-                    newest = max(existing, key=lambda path: path.stat().st_mtime_ns)
-                except OSError as exc:
-                    raise AdapterError("NetHack save fileを検査できません") from exc
-                self._write_boundary_result(
-                    request_id, outcome="suspended", save_file=newest
-                )
-            else:
-                self._write_boundary_result(request_id, outcome="ended")
+            self._record_ended_process_boundary(request_id)
             return
 
         if self._at_character_creation(process_target):
@@ -516,16 +526,16 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
         capture failure refuse without sending a key so recovery stays
         fail-closed.
 
-    There is one more acknowledgment (#1015 requirement 3): when the
-    presentation window exists but the birth window is gone, ``_runtime_process_
-    window_target`` guarantees the NetHack process genuinely ended, so no save
-    prompt can be pending and no process can be mid-save.  The same terminal
-    boundary the request path derives from that evidence (save file ->
-    ``suspended``, none -> ``ended``) is recorded first and only then
-    acknowledged, letting canonical leave ``draining`` while the active runtime
-    identity is retained.  If the evidence cannot be recorded, the cancel still
-    refuses.  This path never sends a key, never kills a process and never
-    edits canonical state.
+        There is one more acknowledgment (#1015 requirement 3): when the
+        presentation window exists but the birth window is gone,
+        ``_runtime_process_window_target`` guarantees the NetHack process
+        genuinely ended, so no save prompt can be pending and no process can be
+        mid-save.  The same terminal boundary the request path derives from that
+        evidence (``_record_ended_process_boundary``) is recorded first and only
+        then acknowledged, letting canonical leave ``draining`` while the active
+        runtime identity is retained.  If the evidence cannot be recorded, the
+        cancel still refuses.  This path never sends a key, never kills a
+        process and never edits canonical state.
 
         Every refusal path records a bounded observation first (#1015) so the
         owner can classify *why* the cancel was refused without pane text.
@@ -580,32 +590,7 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
             # cancelled (#1015 requirement 3). Refuse when the evidence itself
             # cannot be recorded.
             try:
-                existing = self._matching_save_files()
-            except Exception:
-                self._refuse_cancel(
-                    "process_target_absent",
-                    present=False,
-                    alive=None,
-                    prompt_class="unknown",
-                )
-                return False
-            save_file = None
-            if existing:
-                try:
-                    save_file = max(existing, key=lambda path: path.stat().st_mtime_ns)
-                except OSError:
-                    self._refuse_cancel(
-                        "process_target_absent",
-                        present=False,
-                        alive=None,
-                        prompt_class="unknown",
-                    )
-                    return False
-            outcome = "suspended" if save_file is not None else "ended"
-            try:
-                self._write_boundary_result(
-                    request_id, outcome=outcome, save_file=save_file
-                )
+                outcome = self._record_ended_process_boundary(request_id)
             except Exception:
                 self._refuse_cancel(
                     "process_target_absent",
