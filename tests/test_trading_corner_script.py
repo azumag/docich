@@ -490,7 +490,9 @@ def test_condition_text_explains_meaning_not_just_the_raw_feature_code():
     ]})
     assert "rsiが" not in overbought  # bare code name, not the plain-language label
     assert "買われすぎ" in overbought
-    assert "78.4" in overbought and "70" in overbought
+    # Whole-valued readings: the fraction of an ordinary figure is not spoken.
+    assert "RSI)が78で閾値70以上" in overbought
+    assert "78.4" not in overbought
     assert "以上" in overbought  # natural-language op, not a bare ">=" symbol
 
     # The same feature at/below threshold ("oversold") must read the other way.
@@ -545,12 +547,31 @@ def test_news_segment_explains_content_instead_of_reciting_title_and_source():
     assert "下向き" in news
 
 
-def test_spoken_numbers_are_rounded_to_two_decimals():
+def test_spoken_numbers_drop_decimals_except_subunit_values():
+    """Owner request (2026-09-23): never read the fraction of an ordinary
+
+    amount; only a value whose integer part is zero (0.3, -0.5 …) keeps two
+    decimals, so sub-unit quantities are not spoken as zero.
+    """
     from docich.trading.corner_script import _fmt_num
-    assert _fmt_num("-198.4754669238077029463999998") == "-198.48"
-    assert _fmt_num("7.843078654615100") == "7.84"
-    assert _fmt_num("69.31023953378063559684045000") == "69.31"
+    # Integer part present → no fraction, rounded and grouped.
+    assert _fmt_num("-198.4754669238077029463999998") == "-198"
+    assert _fmt_num("7.843078654615100") == "8"
+    assert _fmt_num("69.31023953378063559684045000") == "69"
+    assert _fmt_num("12345.67") == "12,346"
+    # Sub-unit magnitudes keep two decimals even when they nearly reach 1,
+    # and grouped whole numbers must not lose their trailing zeros.
+    assert _fmt_num("0.99") == "0.99"
     assert _fmt_num("10000") == "10,000"
+    assert _fmt_num("0.999") == "1"
+    # Integer part zero (both signs) → two decimals, trailing zeros stripped.
+    assert _fmt_num("0.3") == "0.3"
+    assert _fmt_num("0.6") == "0.6"
+    assert _fmt_num("0.30") == "0.3"
+    assert _fmt_num("-0.55") == "-0.55"
+    assert _fmt_num("0") == "0"
+    # A tiny quantity that two decimals would collapse to zero falls back to
+    # the raw string, exactly as before (never spoken as 0).
     assert _fmt_num("0.001") is None
     assert _fmt_num(None) is None
     assert _fmt_num("not-a-number") is None
@@ -582,13 +603,26 @@ def test_spoken_numbers_are_rounded_to_two_decimals():
         assert "198.47546692380" not in fallback[key]
         assert "7.84307865461" not in fallback[key]
         assert "69.31023953" not in fallback[key]
-    assert "-198.48" in fallback["result"]
-    assert "69.31" in fallback["fills"]
+    # The fallback prose speaks whole numbers: no fraction left behind.
+    assert "累積損益は-198円" in fallback["result"]
+    assert "-198.48" not in fallback["result"]
+    assert "69bps" in fallback["fills"]
+    assert "69.31" not in fallback["fills"]
 
 
-def test_prompt_instructs_two_decimal_speech():
+def test_prompt_instructs_whole_number_speech_with_subunit_exception():
     prompt = build_prompt({"policy": {}})
+    assert "小数点以下を読まず" in prompt
+    assert "整数部が0" in prompt
     assert "小数第2位" in prompt
+    assert "0.001のような極小数量はそのまま" in prompt
+    # The superseded instruction must not survive anywhere.
+    assert "小数第2位までに丸めて言うこと" not in prompt
+    next_prompt = build_next_prompt({"policy": {}}, [])
+    assert "小数点以下を読まず" in next_prompt
+    assert "整数部が0" in next_prompt
+    assert "小数第2位までに丸めて言うこと" not in next_prompt
+    # Untouched wording checks from the previous contract.
     assert "見出しの段階なので" in prompt
     assert "数字ではなく相場や判断の意味を先に言う" in prompt
     assert "だから何を見るか" in prompt

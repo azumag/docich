@@ -54,14 +54,18 @@ def _safe_reason(exc: BaseException) -> str:
     return type(exc).__name__
 
 
-def _fmt_num(value, ndigits: int = 2) -> str | None:
-    """Format a spoken number with at most ``ndigits`` decimals.
+def _fmt_num(value) -> str | None:
+    """Format a number the way the corner is supposed to speak it.
 
-    Long raw decimals (e.g. ``7.843078654615100``) are tedious when read aloud,
-    so narration rounds to two places. Trailing zeros are stripped (``10000``
-    stays ``10,000``, not ``10,000.00``). Returns None when the value is not
-    numeric, or when rounding would collapse a nonzero value to zero (tiny
-    quantities like ``0.001``); callers then fall back to the raw string.
+    Values with a nonzero integer part drop the fraction entirely and are
+    rounded, not truncated: ``12345.67`` reads as ``12,346`` and ``-198.475``
+    as ``-198`` (owner request 2026-09-23: do not read decimals aloud). Only
+    sub-unit magnitudes — integer part zero, e.g. ``0.3`` or ``-0.5`` — keep
+    up to two decimals with trailing zeros stripped (``0.30`` → ``0.3``).
+
+    Returns None when the value is not numeric, or when two decimals would
+    collapse a nonzero tiny quantity to zero (``0.001``); callers then fall
+    back to the raw string so the value is never spoken as zero.
     """
     try:
         if value is None or isinstance(value, bool):
@@ -69,12 +73,18 @@ def _fmt_num(value, ndigits: int = 2) -> str | None:
         number = float(value)
     except (TypeError, ValueError, OverflowError):
         return None
-    if number != 0.0 and round(number, ndigits) == 0.0:
-        return None
     import math
     if not math.isfinite(number):
         return None
-    text = f"{number:,.{ndigits}f}".rstrip("0").rstrip(".")
+    ndigits = 2 if abs(number) < 1 else 0
+    if number != 0.0 and round(number, ndigits) == 0.0:
+        return None
+    text = f"{number:,.{ndigits}f}"
+    if ndigits:
+        # Only strip the fractional zeros: with no fraction at all the plain
+        # rstrip would eat the grouped integer's trailing zeros ("10,000" →
+        # "10,"), which is how this helper used to break for whole numbers.
+        text = text.rstrip("0").rstrip(".")
     return text if text not in ("", "-", "-0") else "0"
 
 
@@ -305,7 +315,8 @@ def build_prompt(facts: Mapping[str, object]) -> str:
         "避けて通れない用語は、意味を一言で噛み砕いてから使う。抽象的な指標や戦略は、身近なたとえに置き換えて説明する。\n"
         "- factsを順番に復唱するだけは禁止。数字同士を比較し、意味を説明する。\n"
         "- 数字は根拠として必要な分だけ使い、数値を二つ以上続けて読んだら、必ず『だから何を見るか』を続ける。\n"
-        "- 金額・価格・指標などの数値は小数第2位までに丸めて言うこと（0.001のような小さい数量はそのまま）。factsの桁数をそのまま読み上げない。\n"
+        "- 金額・価格・指標などの数値は小数点以下を読まず、整数で読む（例: 12,346円）。ただし整数部が0の小さな数量"
+        "（0.3、-0.5 など1未満）だけは小数第2位まで言い、0.001のような極小数量はそのまま。factsの桁数をそのまま読み上げない。\n"
         "- 「見出しの段階なので」のような決まり文句を各項目で繰り返さないこと。\n"
         "- 軽いツッコミ、たとえ、意外性のある一言を適度に入れる。ただし事実を曲げるギャグは禁止。\n"
         "- 損失なら言い訳せず率直に言う。利益でも一時的な含み益だけで戦略成功と断定しない。\n"
@@ -1036,7 +1047,8 @@ def build_next_prompt(facts: Mapping[str, object], covered: Sequence[object] | N
         "- 解説は、一般の視聴者にすぐ伝わる、一般的で平易な言葉にする。専門用語・略語・専門家の言い回しは原則避け、"
         "避けて通れない用語は、意味を一言で噛み砕いてから使う。抽象的な指標や戦略は、身近なたとえに置き換えて説明する。\n"
         "- factsを順番に復唱するだけは禁止。数字同士を比較し、意味を説明する。\n"
-        "- 金額・価格・指標などの数値は小数第2位までに丸めて言うこと。\n"
+        "- 金額・価格・指標などの数値は小数点以下を読まず、整数で読む（例: 12,346円）。ただし整数部が0の小さな数量"
+        "（0.3、-0.5 など1未満）だけは小数第2位まで言い、0.001のような極小数量はそのまま。\n"
         "- 事実と推測を言い分け、ニュースの見出しをそのまま読み上げない。\n"
         "- 同じ文型・同じオチを繰り返さない。箇条書き、見出し、マークダウンは禁止。\n"
         "【重複の禁止】話し済み一覧にある事実・比較・数字を主題にした話は、見出しや言い回しを変えても"
