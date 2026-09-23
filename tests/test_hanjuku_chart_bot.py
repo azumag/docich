@@ -624,22 +624,34 @@ def test_missing_and_selected_cards_do_not_confirm_use_or_unlock_after_card():
     assert policy.battle_step(screen, mem) == []
 
 
-def test_explicit_card_use_receipt_confirms_once_and_unlocks_after_card():
+@pytest.mark.parametrize('statement', ['クースカンをつかった', 'クースカンをしようした'])
+def test_uncalibrated_card_text_never_confirms_use_or_unlocks_after_card(statement):
     mem, screen = _card_evidence_battle()
     cur = mem['battle']
     cur['card_flow'] = {'card': 'クースカン', 'stage': 'list'}
+    mem['stats'] = {'cards_used': 0, 'cards_confirmed': 0, 'card_evidence_version': 1,
+                    'wins': 0, 'losses': 0, 'unclassified': 0}
+    assert policy.summary(mem)['cards_used'] is None  # active flow, before selection
     policy.card_list_step(_card_screen(['クースカン']), mem)
-    receipt = _card_screen(['クースカン'], announcement='クースカンをつかった', hand=False)
-    policy.card_list_step(receipt, mem)
-    assert cur['cards_used'] == ['クースカン']
-    policy.card_list_step(receipt, mem)
-    assert cur['cards_used'] == ['クースカン']
-    assert policy.battle_step(screen, mem)[0]['buttons'] == ['b']
-    assert cur['card_flow']['card'] == 'ノリウツール'
-    cur['card_flow'] = None
+    assert cur['card_consumption_complete'] is False
+    assert policy.summary(mem)['cards_used'] is None  # selection planned, before next screen
+    candidate = _card_screen(['クースカン'], announcement=statement, hand=False)
+    policy.card_list_step(candidate, mem)
+    policy.card_list_step(candidate, mem)
+    assert cur['cards_used'] == []
+    assert policy.summary(mem)['cards_used'] is None
+    pending = [r for r in mem['_records'] if r['decision'] == 'battle_card_candidate']
+    assert len(pending) == 1 and pending[0]['observed_metric']['confirmation'] == 'unclassified'
+    assert not any(r['decision'] == 'battle_card_used' for r in mem['_records'])
+    # On return, bounded unconfirmed handling clears the flow without unlocking
+    # the dependent ノリウツール tactic, even for apparently explicit use text.
+    policy.battle_step(screen, mem); policy.battle_step(screen, mem)
+    assert cur['card_flow'] is None
+    assert policy.summary(mem)['cards_used'] is None  # unclassified despite cleared flow
+    assert policy.battle_step(screen, mem) == []
     cur['enemy_hp'] = 0
     policy.battle_end(mem, 'map'); policy.battle_end(mem, 'map')
-    assert mem['stats']['cards_used'] == mem['stats']['cards_confirmed'] == 1
+    assert mem['stats']['cards_used'] is None and mem['stats']['cards_confirmed'] == 0
 
 
 def test_retry_variant_survives_battle_card_and_result_records():
@@ -651,9 +663,9 @@ def test_retry_variant_survives_battle_card_and_result_records():
     cur['enemy_hp'] = 0
     policy.battle_end(mem, 'map'); policy.battle_end(mem, 'map')
     records = [r for r in mem['_records'] if r['decision'] in
-               {'battle_start', 'battle_card', 'battle_card_selected', 'battle_card_used', 'battle_result'}]
+               {'battle_start', 'battle_card', 'battle_card_selected', 'battle_card_candidate', 'battle_result'}]
     assert {r['decision'] for r in records} == {
-        'battle_start', 'battle_card', 'battle_card_selected', 'battle_card_used', 'battle_result'}
+        'battle_start', 'battle_card', 'battle_card_selected', 'battle_card_candidate', 'battle_result'}
     assert all(r['chart_step'] == '1-B1' and r['strategy_variant'] == 'retry_with_opening_cards'
                and r['deviation_reason'] and r['expected_metric'] is not None
                and r['observed_metric'] is not None for r in records)
@@ -670,7 +682,10 @@ def test_legacy_selected_cards_and_stats_are_not_confirmed_by_upgrade():
     policy.observe_events(Screen(lines=[], hand=None, text='', kind='unknown'), mem)
     assert mem['stats']['cards_used'] is None and mem['stats']['cards_confirmed'] == 0
     assert mem['battle']['cards_used'] == [] and mem['battle']['card_flow'] is None
-    assert mem['battle']['cards_unclassified']
+    assert mem['battle']['cards_unclassified'] == ['イッテツーン']
+    migrated = next(r for r in mem['_records'] if r['decision'] == 'battle_card_evidence_migrated')
+    assert migrated['observed_metric']['legacy_cards_unclassified'] == ['イッテツーン']
+    assert policy.summary(mem)['cards_used'] is None
     assert mem['battle']['strategy_variant'] == 'retry_with_opening_cards'
     old_log_count = len(mem['_records'])
     policy.observe_events(Screen(lines=[], hand=None, text='', kind='unknown'), mem)

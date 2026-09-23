@@ -462,7 +462,9 @@ def _migrate_card_evidence(mem):
                cards_unclassified=legacy, card_consumption_complete=False, card_evidence_version=1)
     flow = cur.get('card_flow')
     if flow and flow.get('stage') == 'announce':
-        cur['cards_unclassified'].append(flow.get('card'))
+        pending = flow.get('card')
+        if pending and pending not in legacy:
+            cur['cards_unclassified'].append(pending)
         cur['card_flow'] = None
     _record(mem, 'battle_card_evidence_migrated', **_battle_labels(cur),
             observed_metric={'legacy_cards_unclassified': legacy},
@@ -482,16 +484,6 @@ def _card_use_unclassified(mem, cur, reason):
             expected_metric='選択した切り札の実使用告知',
             observed_metric={'confirmation': 'unclassified'}, reason=reason)
     cur['card_flow'] = None
-
-
-def _card_announcement(screen, card):
-    # A single remaining card in a selection list is not a use receipt.
-    # Until a title-only announcement is calibrated, require an explicit
-    # action statement; unknown glyphs and a menu hand are not confirmation.
-    return (screen.kind == 'text' and screen.hand is None and screen.battle is None
-            and UNKNOWN not in screen.text
-            and not any(UNKNOWN in line.text for line in screen.lines)
-            and re.search(re.escape(card) + r'を(?:つかった|しようした)', screen.text) is not None)
 
 
 def battle_step(screen: Screen, mem):
@@ -598,17 +590,22 @@ def card_list_step(screen: Screen, mem):
         index = names.index(flow['card'])
         flow['stage'] = 'announce'
         flow['selection_planned'] = True
+        cur['card_consumption_complete'] = False
         cur.setdefault('cards_selected', []).append(flow['card'])
         _record(mem, 'battle_card_selected', **_battle_labels(cur), card=flow['card'],
                 expected_metric='実使用告知', observed_metric={'listed_cards': names},
                 resulting_event='selection_planned_not_yet_confirmed', reason='切り札選択入力を予定。消費は未確定')
         return [pad('down')] * index + [pad('a')]
-    if flow['stage'] == 'announce' and flow.get('selection_planned') and _card_announcement(screen, flow['card']):
-        cur['cards_used'].append(flow['card'])
-        _record(mem, 'battle_card_used', **_battle_labels(cur), card=flow['card'],
-                expected_metric={'card': flow['card']}, observed_metric={'card': flow['card'], 'receipt': 'explicit_use_text'},
-                resulting_event='card_use_confirmed', reason='選択した切り札の実使用文を確認')
-        cur['card_flow'] = None
+    if flow['stage'] == 'announce' and flow.get('selection_planned'):
+        # No live frame/parser signature has calibrated a use receipt yet.
+        # Keep capturing this flow, but never unlock after_card from guessed text.
+        cur['card_consumption_complete'] = False
+        if not flow.get('uncalibrated_candidate_recorded'):
+            flow['uncalibrated_candidate_recorded'] = True
+            _record(mem, 'battle_card_candidate', **_battle_labels(cur), card=flow['card'],
+                    expected_metric='実画面とparserで校正済みの切り札使用証拠',
+                    observed_metric={'confirmation': 'unclassified', 'screen_kind': screen.kind},
+                    resulting_event='card_use_unclassified', reason='告知署名が未校正のため消費を確定せず画像収集')
     return []
 
 
@@ -995,6 +992,7 @@ def summary(mem: dict | None) -> dict:
         'wins': as_int(stats.get('wins')), 'losses': as_int(stats.get('losses')),
         'unclassified': as_int(stats.get('unclassified')),
         'cards_used': (as_int(stats.get('cards_used')) if stats.get('card_evidence_version') == 1
+                       and not battle.get('card_flow')
                        and battle.get('card_consumption_complete', True) is True else None),
         # Lower bound confirmed under the new evidence contract, not total use.
         'cards_confirmed': as_int(stats.get('cards_confirmed')),
