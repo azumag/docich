@@ -446,6 +446,7 @@ def _sortie_inventory(screen):
 def _measured_card_select(screen):
     """Read contiguous rows in the measured g328 panel, never infer stock.
 
+    Stock is right-aligned at x=232; live tens for 10-99 sit at x=224.
     Depleted final items disappear. Empty baselines must form a trailing
     suffix; UNKNOWN cells are unreadable rows, not evidence of emptiness.
     """
@@ -473,14 +474,27 @@ def _measured_card_select(screen):
             continue
         if empty_tail:
             return None
-        count = dict(row).get(232)
-        names = TextLine(y, tuple((x, ch) for x, ch in row if x < 232)).spans()
+        digits = dict(row)
+        ones = digits.get(232)
+        if ones not in tuple('0123456789'):
+            return None
+        tens = digits.get(224)
+        # Live g328 stock is right-aligned at x=232; tens sit at x=224 (10-99).
+        if tens in tuple('123456789'):
+            stock_text = tens + ones
+            name_limit = 224
+            stock_cells = ((224, tens), (232, ones))
+        else:
+            stock_text = ones
+            name_limit = 232
+            stock_cells = ((232, ones),)
+        names = TextLine(y, tuple((x, ch) for x, ch in row if x < name_limit)).spans()
         if len(names) != 1 or names[0][0] != 160 or names[0][1] not in CARD_NAMES:
             return None
         name = names[0][1]
-        if count not in tuple('0123456789') or row != text_cells(160, name) + ((232, count),):
+        if row != text_cells(160, name) + stock_cells:
             return None
-        rows.append({'y': y, 'card': name, 'stock': int(count)})
+        rows.append({'y': y, 'card': name, 'stock': int(stock_text)})
     if not rows or len({row['card'] for row in rows}) != len(rows):
         return None
     # Extra text rows would be an uncalibrated inventory/scroll layout. Mark

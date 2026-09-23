@@ -426,7 +426,10 @@ def test_queued_request_retries_expired_drain_recovery_after_a_refusal():
     with tempfile.TemporaryDirectory() as tmp:
         state_dir = Path(tmp) / "run"
         factory = BoundaryFactory()
-        store, coordinator = _coordinator(factory, state_dir)
+        # Expire the durable deadline explicitly below. Give the blocked
+        # boundary call enough time that CI scheduling cannot time it out
+        # before the refusal and retry paths have run.
+        store, coordinator = _coordinator(factory, state_dir, round_boundary_s=5.0)
         assert coordinator.start("nethack").status == "succeeded"
         old = factory.adapters[("nethack", 1)]
         first_result = []
