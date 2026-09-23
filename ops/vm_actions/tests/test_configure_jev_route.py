@@ -144,17 +144,36 @@ class DisableEnvTests(unittest.TestCase):
             self.assertNotIn("SECRET_TO_REMOVE", current)
             self.assertIn("SECRET_TO_REMOVE", backup.read_text(encoding="utf-8"))
 
+    def test_default_direct_preflight_requires_typesafe_key_only_when_jev_is_live(self):
+        route._require_default_direct_route_ready({})
+        route._require_default_direct_route_ready({"COMMENT_CLASSIFIER_BACKEND": "heuristic"})
+        route._require_default_direct_route_ready({
+            "COMMENT_CLASSIFIER_BACKEND": "jev",
+            "TYPESAFE_API_KEY": "present",
+        })
+        with self.assertRaisesRegex(
+            route.ConfigureError,
+            "direct_route_requires_existing_typesafe_api_key",
+        ):
+            route._require_default_direct_route_ready({"COMMENT_CLASSIFIER_BACKEND": "jev"})
+
 
 class VerifyJevRouteTests(unittest.TestCase):
     def test_default_route_rejects_a_worker_still_pinned_or_holding_the_vercel_key(self):
         verify = route.verify_jev_route(None)
-        verify({})  # no error
+        verify({})  # Jev disabled: no direct credential is required.
         verify({"DOCICH_JEV_ROUTE": ""})  # no error
         verify({"DOCICH_SEMANTIC_BACKEND": "jev"})  # retired, ignored
+        verify({"COMMENT_CLASSIFIER_BACKEND": "jev", "TYPESAFE_API_KEY": "present"})
         with self.assertRaises(route.ConfigureError):
             verify({"DOCICH_JEV_ROUTE": "vercel"})
         with self.assertRaises(route.ConfigureError):
             verify({"DOCICH_JEV_VERCEL_API_KEY": "present"})
+        with self.assertRaisesRegex(
+            route.ConfigureError,
+            "direct_route_requires_existing_typesafe_api_key",
+        ):
+            verify({"COMMENT_CLASSIFIER_BACKEND": "jev"})
 
     def test_direct_requires_route_and_typesafe_key(self):
         verify = route.verify_jev_route("direct")
