@@ -567,29 +567,36 @@ class RetroArchCoordinatorAdapter:
             raise ReadinessTimeoutError("game paneがdeadです")
         # runtime 固有 network command port で status を確認する
         # (generic RetroArch window や screenshot の存在だけでは ready にしない)。
-        self._probe_network_status(deadline, cancel)
+        self._probe_network_status(deadline, cancel, check=self._require_presenter_not_terminal)
         if self._contained():
             presenter = XKit(self.g.display.name)
             while True:
                 self._check_active(deadline, cancel)
                 if not self.alive(deadline, cancel):
                     raise ReadinessTimeoutError("RetroArch presenter exited")
-                state = read_record(self._presentation_path())
-                if state.get("status") in {"presentation_failed", "cleanup_failed", "stopped"}:
-                    # Terminal presenter states never become ready; roll back
-                    # now instead of holding the switch until its deadline.
-                    raise ReadinessTimeoutError(
-                        f"RetroArch presentation is {state.get('status')}")
+                state = self._require_presenter_not_terminal()
                 if state.get("status") == "ready" and presenter.find_window(
                     f"^docich-present-{self.spec.runtime_id}$", timeout=0.1
                 ):
                     return
                 time.sleep(min(0.05, max(0, deadline - time.monotonic())))
 
-    def _probe_network_status(self, deadline: float, cancel) -> None:
+    def _require_presenter_not_terminal(self) -> dict:
+        """Terminal presenter states never become ready: roll back now
+        instead of holding the switch until its deadline (gen317)."""
+        if not self._contained():
+            return {}
+        state = read_record(self._presentation_path())
+        if state.get("status") in {"presentation_failed", "cleanup_failed", "stopped"}:
+            raise ReadinessTimeoutError(f"RetroArch presentation is {state.get('status')}")
+        return state
+
+    def _probe_network_status(self, deadline: float, cancel, check=None) -> None:
         while True:
             if cancel is not None and cancel.is_set():
                 raise ReadinessTimeoutError("adapter call はcancelされました")
+            if check is not None:
+                check()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise ReadinessTimeoutError("network command port からの応答がありません")

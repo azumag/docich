@@ -254,6 +254,21 @@ class TestReadiness(RetroArchCoordinatorTestBase):
                     self.adapter.readiness(time.monotonic() + 30, None)
             self.assertLess(time.monotonic() - started, 2.0, status)
 
+    def test_contained_network_probe_fails_fast_when_presenter_stopped(self):
+        """gen317: RetroArch was already torn down, so GET_STATUS never
+        answered and the probe waited for the whole request deadline."""
+        import json
+        self._contain()
+        self._ready_window()
+        path = self.adapter._presentation_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"status": "stopped"}), encoding="utf-8")
+        started = time.monotonic()
+        with mock.patch("docich.adapters.retroarch.send_ra_cmd", return_value=None):
+            with self.assertRaises(ReadinessTimeoutError):
+                self.adapter.readiness(time.monotonic() + 30, None)
+        self.assertLess(time.monotonic() - started, 2.0)
+
     def test_network_probe_cancel_during_udp_wait_converges_within_grace(self):
         cancel = threading.Event()
         started = time.monotonic()
