@@ -147,20 +147,20 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
  （token は出さず PID 生死・age のみ）。stale 閾値は 900s。
   `*.owner_guard.lock` / `*.owner_guard.d` は mutex guard のため lane 扱いしない。
 - semantic_decision（#882）: 登録済み `chat_worker` が生きている場合のみ、その
-  `/proc/<pid>/environ` から固定5キー名（`DOCICH_SEMANTIC_BACKEND` /
-  `DOCICH_JEV_ROUTE` / `TYPESAFE_API_KEY` / `DOCICH_JEV_VERCEL_API_KEY` /
-  `COMMENT_CLASSIFIER_BACKEND`）だけを読む。前4つは既にレビュー済みの
-  `docich.semantic_decision.diagnostics.describe()` へそのまま通し、出力は
-  `backend` / `route` / `requested_model` /
-  `credential`（`present`/`absent`/`not_applicable`/`unknown`のみ、値は不可）の
-  固定4項目のみ。`COMMENT_CLASSIFIER_BACKEND`（#678自身の非秘密enumフラグ）は
-  `comment_classifier_backend` として値そのまま（64字上限）を出す。soviet_now
-  のshell wrapperはこれが`jev`でない限りclassifier自体を呼ばず
-  `DOCICH_SEMANTIC_BACKEND`も一切参照しないため、これが無いと
-  `"backend":"jev"`だけでは実際に委譲が機能しているか判断できない。
+  `/proc/<pid>/environ` から固定4キー名（`COMMENT_CLASSIFIER_BACKEND` /
+  `DOCICH_JEV_ROUTE` / `TYPESAFE_API_KEY` / `DOCICH_JEV_VERCEL_API_KEY`）だけを読む。
+  いずれも docich のコメント分類器（`docich.comment_classifier`）が実際に読む
+  キーで、レビュー済みの `docich.semantic_decision.diagnostics.describe()` へ
+  そのまま通す。出力は `backend`（`jev` = `COMMENT_CLASSIFIER_BACKEND=jev` で
+  Jev を呼ぶ / `heuristic` = heuristic のみ / `unknown`）/ `route` /
+  `requested_model` / `credential`（`present`/`absent`/`not_applicable`/`unknown`
+  のみ、値は不可）の固定4項目。`COMMENT_CLASSIFIER_BACKEND` は非秘密の enum
+  なので `comment_classifier_backend` として値そのまま（64字上限）も出す。
+  旧 soviet_now adapter だけが読んでいた `DOCICH_SEMANTIC_BACKEND` は廃止済みで、
+  読まない。
   生 environ・他の環境変数名・credential の値は一切出さない。
   worker不在／死亡時は `present:false`、environ読み取り失敗時は
-  `present:true, readable:false`（未確認を"legacy"と誤認しない）。
+  `present:true, readable:false`（未確認を"heuristic"と誤認しない）。
   `DIAGNOSTICS_FILES`（gateway.py）にこの projection とそのroute解決先
   （`src/docich/semantic_decision/{diagnostics,routes}.py`）も追加し、
   drift検証の対象に含めている。

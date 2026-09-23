@@ -1,28 +1,25 @@
 #!/usr/bin/env python3
-"""Select/disable docich semantic-decision (Jev) routing (#882), owner-only.
+"""Select the docich comment classifier's Jev route (#882), owner-only.
 
-Manages ONLY ``DOCICH_SEMANTIC_BACKEND`` / ``DOCICH_JEV_ROUTE`` /
-``DOCICH_JEV_VERCEL_API_KEY`` in soren's .env. It never touches
+Manages ONLY ``DOCICH_JEV_ROUTE`` / ``DOCICH_JEV_VERCEL_API_KEY`` in soren's
+.env -- the route keys ``docich.comment_classifier`` reads. It never touches
 ``COMMENT_CLASSIFIER_BACKEND``, ``COMMENT_CLASSIFIER_JEV_*`` or
-``TYPESAFE_API_KEY`` -- those stay owned by ``configure_comment_classifier_jev.py``
-(#678). Provider route selection (this script) and purpose-level enable/
-model/threshold (that script) are independently owned and independently
-rollback-able: enabling ``route=direct`` here requires the operator to have
-already configured Jev classification (and its ``TYPESAFE_API_KEY``) with
-that script first -- this script only decides whether the already-enabled
-classifier's HTTP calls go through the reviewed docich core, and if so, over
-which reviewed route.
+``TYPESAFE_API_KEY``: whether Jev is called at all, and its timeout/threshold
+and direct-route credential, stay owned by ``configure_comment_classifier_jev.py``
+(#678). This script only decides which reviewed route those calls use.
+
+``--disable`` (the ``disable_jev_route`` operation) removes both keys, so the
+classifier returns to its default ``direct`` route and the Vercel secret
+leaves the runtime env. It does not turn Jev off; ``disable_jev`` does that.
+
+The retired ``DOCICH_SEMANTIC_BACKEND`` switch (read only by the removed
+soviet_now adapter) is never written; any stale assignment of it is dropped
+whenever this script rewrites .env.
 
 A Vercel API key is supplied only through this process's own environment by
 the reviewed control plane, exactly like ``configure_comment_classifier_jev.py``'s
 existing ``TYPESAFE_API_KEY`` contract. This script never prints or stores a
 secret outside soren's .env file and its protected rollback backup.
-
-``DOCICH_JEV_TIMEOUT_MS`` is deliberately not managed here: the only current
-consumer (soviet_now's ``docich_transport`` adapter, azumag/soviet_now#492)
-always passes its own timeout explicitly and never reads this env default.
-Add it once a real consumer needs it, rather than configuring something
-nothing reads yet.
 """
 from __future__ import annotations
 
@@ -71,7 +68,8 @@ _write_atomic = _classifier._write_atomic
 ASSIGNMENT = _classifier.ASSIGNMENT
 restart_chat_worker_verified = _classifier.restart_chat_worker_verified
 
-MANAGED_KEYS = ("DOCICH_SEMANTIC_BACKEND", "DOCICH_JEV_ROUTE", "DOCICH_JEV_VERCEL_API_KEY")
+MANAGED_KEYS = ("DOCICH_JEV_ROUTE", "DOCICH_JEV_VERCEL_API_KEY")
+RETIRED_KEYS = ("DOCICH_SEMANTIC_BACKEND",)
 ROUTES = ("direct", "vercel")
 
 
@@ -86,7 +84,8 @@ def _rewrite_route_env(env_file: Path, managed_lines: list[str]) -> Path:
     """Atomically replace only this script's own managed assignments.
 
     Reuses configure_comment_classifier_jev's backup/atomic-write primitives
-    with this script's own, disjoint MANAGED_KEYS -- never the #678 keys.
+    with this script's own, disjoint MANAGED_KEYS -- never the #678 keys --
+    and drops any stale RETIRED_KEYS assignment.
     """
     info = _regular_file(env_file, "env")
     try:
@@ -98,7 +97,7 @@ def _rewrite_route_env(env_file: Path, managed_lines: list[str]) -> Path:
     kept = []
     for line in text.splitlines(keepends=True):
         match = ASSIGNMENT.match(line)
-        if match and match.group(1) in MANAGED_KEYS:
+        if match and match.group(1) in MANAGED_KEYS + RETIRED_KEYS:
             continue
         kept.append(line)
     if kept and not kept[-1].endswith(("\n", "\r")):
@@ -112,22 +111,18 @@ def _rewrite_route_env(env_file: Path, managed_lines: list[str]) -> Path:
 
 
 def configure_direct_env(env_file: Path) -> Path:
-    """Opt into docich delegation on the direct route.
+    """Pin the classifier to the direct route.
 
     Does not write TYPESAFE_API_KEY: that credential is #678's own, and the
     caller (main()) must already have confirmed it is configured.
     """
-    return _rewrite_route_env(env_file, [
-        "DOCICH_SEMANTIC_BACKEND=jev\n",
-        "DOCICH_JEV_ROUTE=direct\n",
-    ])
+    return _rewrite_route_env(env_file, ["DOCICH_JEV_ROUTE=direct\n"])
 
 
 def configure_vercel_env(env_file: Path, vercel_api_key: str) -> Path:
-    """Opt into docich delegation on the vercel route."""
+    """Switch the classifier to the vercel route."""
     validate_vercel_key(vercel_api_key)
     return _rewrite_route_env(env_file, [
-        "DOCICH_SEMANTIC_BACKEND=jev\n",
         "DOCICH_JEV_ROUTE=vercel\n",
         # .env is sourced by the worker; quote the secret as a shell value so
         # printable punctuation cannot become shell syntax.
@@ -136,31 +131,30 @@ def configure_vercel_env(env_file: Path, vercel_api_key: str) -> Path:
 
 
 def disable_env(env_file: Path) -> Path:
-    """Disable docich delegation and remove the vercel secret from the runtime env.
+    """Return to the default direct route and remove the vercel secret.
 
-    COMMENT_CLASSIFIER_BACKEND/TYPESAFE_API_KEY are untouched: disabling
-    docich delegation falls back to the classifier's own unchanged legacy
-    HTTP path, not to the shell heuristic (that stays #678's own contract).
+    COMMENT_CLASSIFIER_BACKEND/TYPESAFE_API_KEY are untouched: whether Jev is
+    called at all stays #678's own contract (``disable_jev``).
     """
-    return _rewrite_route_env(env_file, ["DOCICH_SEMANTIC_BACKEND=\n"])
+    return _rewrite_route_env(env_file, [])
 
 
 def verify_jev_route(route: str | None):
-    """route=None means disabled; DOCICH_SEMANTIC_BACKEND must not be jev."""
+    """route=None means reset to the default route with no vercel secret."""
     def verify(runtime_env: dict[str, str]) -> None:
         if route is None:
-            if runtime_env.get("DOCICH_SEMANTIC_BACKEND") == "jev":
-                raise ConfigureError("chat_worker_docich_backend_still_jev")
+            if runtime_env.get("DOCICH_JEV_ROUTE"):
+                raise ConfigureError("chat_worker_docich_route_still_set")
+            if runtime_env.get("DOCICH_JEV_VERCEL_API_KEY"):
+                raise ConfigureError("chat_worker_vercel_api_key_still_present")
             return
-        if runtime_env.get("DOCICH_SEMANTIC_BACKEND") != "jev":
-            raise ConfigureError("chat_worker_docich_backend_not_jev")
         if runtime_env.get("DOCICH_JEV_ROUTE") != route:
             raise ConfigureError("chat_worker_docich_route_mismatch")
         if route == "vercel" and not runtime_env.get("DOCICH_JEV_VERCEL_API_KEY"):
             raise ConfigureError("chat_worker_vercel_api_key_missing")
         if route == "direct" and not runtime_env.get("TYPESAFE_API_KEY"):
             # This script never writes TYPESAFE_API_KEY; if the replacement
-            # worker does not have it, direct delegation cannot function,
+            # worker does not have it, the direct route cannot function,
             # even though it is #678's key, not this script's own.
             raise ConfigureError("chat_worker_api_key_missing_for_direct_route")
     return verify
@@ -197,9 +191,8 @@ def main() -> int:
     old_pid, new_pid = restart_chat_worker_verified(
         args.soren_root, verify=verify_jev_route(route))
     print(json.dumps({
-        "status": "disabled" if route is None else "configured",
-        "semantic_backend": "" if route is None else "jev",
-        "route": route,
+        "status": "default_route" if route is None else "configured",
+        "route": route or "direct",
         "old_pid": old_pid,
         "new_pid": new_pid,
         "backup": str(backup),

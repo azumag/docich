@@ -97,7 +97,7 @@ def test_semantic_decision_reads_only_the_fixed_allowlist_and_hides_credential_v
     workers = {'details': {'chat_worker': {'pid': 4242, 'alive': True}}}
     environ = _synthetic_environ({
         'PATH': '/usr/bin',
-        'DOCICH_SEMANTIC_BACKEND': 'jev',
+        'DOCICH_SEMANTIC_BACKEND': 'retired-and-never-read',
         'DOCICH_JEV_ROUTE': 'vercel',
         'DOCICH_JEV_VERCEL_API_KEY': 'SYNTHETIC_VERCEL_SECRET',
         'COMMENT_CLASSIFIER_BACKEND': 'jev',
@@ -110,30 +110,30 @@ def test_semantic_decision_reads_only_the_fixed_allowlist_and_hides_credential_v
                       'requested_model': 'typesafe-ai/jev', 'credential': 'present'}
     assert 'SYNTHETIC_VERCEL_SECRET' not in json.dumps(result)
     assert 'SHOULD_NEVER_APPEAR' not in json.dumps(result)
+    assert 'retired-and-never-read' not in json.dumps(result)
+    assert 'DOCICH_SEMANTIC_BACKEND' not in module.SEMANTIC_DECISION_ENV_ALLOWLIST
 
 
 def test_semantic_decision_direct_route_credential_absent_and_unflagged_backend():
     module = load_collector()
     workers = {'details': {'chat_worker': {'pid': 4242, 'alive': True}}}
     with mock.patch.object(module.Path, 'read_bytes',
-                           return_value=_synthetic_environ({'DOCICH_SEMANTIC_BACKEND': 'jev'})):
+                           return_value=_synthetic_environ({'COMMENT_CLASSIFIER_BACKEND': 'jev'})):
         result = module._collect_semantic_decision(workers)
-    assert result == {'present': True, 'readable': True, 'comment_classifier_backend': None,
+    assert result == {'present': True, 'readable': True, 'comment_classifier_backend': 'jev',
                       'backend': 'jev', 'route': 'direct',
                       'requested_model': 'jev-1.13.0', 'credential': 'absent'}
     with mock.patch.object(module.Path, 'read_bytes',
                            return_value=_synthetic_environ({'TYPESAFE_API_KEY': 'unrelated-not-delegating'})):
         result = module._collect_semantic_decision(workers)
     assert result == {'present': True, 'readable': True, 'comment_classifier_backend': None,
-                      'backend': 'legacy', 'route': None,
+                      'backend': 'heuristic', 'route': None,
                       'requested_model': None, 'credential': 'not_applicable'}
 
 
 def test_semantic_decision_reports_comment_classifier_backend_prerequisite_gate():
-    # This is the #678 prerequisite: soviet_now's shell wrapper never even
-    # invokes the classifier (and so never consults DOCICH_SEMANTIC_BACKEND)
-    # unless this is exactly "jev". Reporting it lets an operator tell "jev
-    # delegation configured but inert" apart from "actually reachable".
+    # The docich classifier calls Jev only when this is exactly "jev"; its
+    # plain value is kept alongside the derived "backend".
     module = load_collector()
     workers = {'details': {'chat_worker': {'pid': 4242, 'alive': True}}}
     with mock.patch.object(module.Path, 'read_bytes',
