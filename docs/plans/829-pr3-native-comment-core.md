@@ -13,8 +13,8 @@ classifier moved out in soviet_now#495). Stage map: `829-pr0-baseline-inventory.
 | slice | scope (legacy source) | state |
 |---|---|---|
 | **3a prompt** | template/allowlist rendering (envsubst semantics), category→template map, dominant category, formatted classifications, English count, gacha completion note, context sanitizer, default resolution, time period, reply contract + speech vocabulary rule, retry addendum, mode persona/UI memo/intro/length policy. Assets copied to `src/docich/comment/prompts/`. | merged (#1038) |
-| **3b guard/validation** | `_comment_strip_worknote_head`, `_comment_strip_reasoning_tags`, `_comment_guard_model_text` (→ existing `docich.model_output_guard`), `_comment_strip_nonjapanese_head`, `_comment_guard_japanese_text`, `_comment_is_valid_generation_candidate`, `_contains_provider_error_text`, `_clean_comment_talk`, `_sanitize_onair_text` (→ shared `docich.onair_text`), effective `_is_valid_comment_talk` (base + speech-quality + honorific policy). SING / named blocks move to 3e with the output post-processing. | this PR |
-| 3c state | batch/line hashing, processed/inflight/recent-batch dedup, failure backoff, generation meta, viewer memory stage/commit (`lib/comment_viewer_memory.py`), spoken/reply remember, context history | |
+| 3b guard/validation | `_comment_strip_worknote_head`, `_comment_strip_reasoning_tags`, `_comment_guard_model_text` (→ existing `docich.model_output_guard`), `_comment_strip_nonjapanese_head`, `_comment_guard_japanese_text`, `_comment_is_valid_generation_candidate`, `_contains_provider_error_text`, `_clean_comment_talk`, `_sanitize_onair_text` (→ shared `docich.onair_text`), effective `_is_valid_comment_talk` (base + speech-quality + honorific policy). SING / named blocks move to 3e with the output post-processing. | merged (#1042) |
+| **3c state** | 3c-1 (this PR): batch/line hashing + dedup key, processed/inflight/recent-batch dedup, failure backoff, sidecar paths, generation meta + history, backlog counts, spoken-reply history, batch neighbour context, thumbnail-need predicate — same file formats/paths so cutover needs no migration. 3c-2: viewer memory (`lib/comment_viewer_memory.py`), `_remember_spoken_comment` (needs host mode), context history | 3c-1 this PR |
 | 3d contexts | game-independent builders (batch context, recent spoken, follow-up hints, viewer memory, advice tail/extraction, past topics) + a typed `GameContextProvider` interface; sorengame game/ops/celebration/soren91 notes become one provider, never imported by the core | |
 | 3e orchestration | one batch end to end: intake DTO → docich classifier → contexts → prompt → `docich.llm` COMMENT dispatch with retry → guard → translation (`lib/comment_bilingual.py`) → delivery **contract** (queue file + sidecars, written to a caller-given sink) → ack; `docich comment` CLI that runs a fixture with no `games/soviet_now` | |
 
@@ -52,4 +52,14 @@ soviet_now copies) is deleted at cutover, when the soviet_now copies are.
   (`(?:検索|調査|確認).{0,16}(?:します…)`) rejects a plain reply such as
   「…確認しますね。」 as a whole, so production drops it and regenerates.
   The port keeps this; changing it is a separate, reviewed change.
+
+## Notes from 3c-1
+
+- The state golden is a *scenario*: 94 operations replayed in order on one
+  state directory with a fixed clock (`date` shim, `TZ=UTC`), recording each
+  step's output and the state files afterwards; the native test replays it.
+- Regeneration checks (3a/3b/3c) now compare against the **checked-out**
+  gitlink (provenance commit aside) instead of skipping when the gitlink moved,
+  so a legacy change fails CI until the port follows.
+- Not ported: `_is_improve_running` (improvement-loop state, not comment state).
 

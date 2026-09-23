@@ -1,0 +1,2391 @@
+{
+ "provenance": {
+  "source": "azumag/soviet_now broadcast/comment.sh state helpers as loaded by eloop_lib.sh (see scripts/golden/comment_state_golden.py)",
+  "soviet_now_commit": "54fa4a7a3c45e2bfbb795fb1e0b43270755775fb",
+  "generated_by": "one scenario replayed on Linux with a fixed clock; state kept between steps",
+  "purpose": "docich.comment.state must reproduce every step (#829 PR-3c)"
+ },
+ "effective_env": {
+  "COMMENT_FAILURE_BACKOFF_SEC": "600",
+  "COMMENT_SPOKEN_HISTORY_MAX_FILES": "16",
+  "COMMENT_GENERATION_HISTORY_KEEP": "500"
+ },
+ "steps": [
+  {
+   "op": "hash",
+   "args": [
+    "同志 alice: 今日も元気"
+   ],
+   "now": 1790000000,
+   "stdout": "acea674613bd446192afca164c7b99d3\n",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": null,
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "hash",
+   "args": [
+    ""
+   ],
+   "now": 1790000000,
+   "stdout": "d41d8cd98f00b204e9800998ecf8427e\n",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": null,
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "dedup_key",
+   "args": [
+    "alice: hi: there"
+   ],
+   "now": 1790000000,
+   "stdout": "hi: there",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": null,
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "dedup_key",
+   "args": [
+    "al ice : hi"
+   ],
+   "now": 1790000000,
+   "stdout": "al ice : hi",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": null,
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "dedup_key",
+   "args": [
+    "no separator"
+   ],
+   "now": 1790000000,
+   "stdout": "no separator",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": null,
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "dedup_key",
+   "args": [
+    "trailing space : x"
+   ],
+   "now": 1790000000,
+   "stdout": "trailing space : x",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": null,
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "backoff_remaining",
+   "args": [],
+   "now": 1790000000,
+   "stdout": "0\n",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": null,
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "handle_failure",
+   "args": [
+    "true"
+   ],
+   "now": 1790000000,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": null,
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": "1790000600\n",
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "backoff_remaining",
+   "args": [],
+   "now": 1790000100,
+   "stdout": "500\n",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": null,
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": "1790000600\n",
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "backoff_remaining",
+   "args": [],
+   "now": 1790000700,
+   "stdout": "0\n",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": null,
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "backoff_remaining",
+   "args": [],
+   "now": 1790000000,
+   "stdout": "0\n",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": null,
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "handle_failure",
+   "args": [
+    "true"
+   ],
+   "now": 1790000000,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": null,
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": "1790000600\n",
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "handle_failure",
+   "args": [
+    "false"
+   ],
+   "now": 1790000000,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": null,
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "backoff_remaining",
+   "args": [],
+   "now": 1790000000,
+   "stdout": "0\n",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": null,
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "backoff_set",
+   "args": [
+    "abc"
+   ],
+   "now": 1790000000,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": null,
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": "1790000600\n",
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "backoff_remaining",
+   "args": [],
+   "now": 1790000001,
+   "stdout": "599\n",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": null,
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": "1790000600\n",
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "backoff_set",
+   "args": [
+    "0"
+   ],
+   "now": 1790000000,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": null,
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": "1790000001\n",
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "backoff_remaining",
+   "args": [],
+   "now": 1790000000,
+   "stdout": "1\n",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": null,
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": "1790000001\n",
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "backoff_clear",
+   "args": [],
+   "now": 1790000000,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": null,
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "write",
+   "args": [
+    "tmp/state/comment_generation_backoff_until",
+    "12x\n"
+   ],
+   "now": 1790000000,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": null,
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": "12x\n",
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "backoff_remaining",
+   "args": [],
+   "now": 1790000000,
+   "stdout": "0\n",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": null,
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "recent_processed",
+   "args": [
+    "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+   ],
+   "now": 1790000000,
+   "stdout": "",
+   "rc": 1,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": null,
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "mark_processed",
+   "args": [
+    "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+   ],
+   "now": 1790000000,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790000000|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\n",
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "recent_processed",
+   "args": [
+    "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+   ],
+   "now": 1790000900,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790000000|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\n",
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "recent_processed",
+   "args": [
+    "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+   ],
+   "now": 1790000901,
+   "stdout": "",
+   "rc": 1,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790000000|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\n",
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "mark_processed",
+   "args": [
+    "abababababababababababababababab"
+   ],
+   "now": 1790001000,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790000000|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\n1790001000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "mark_processed",
+   "args": [
+    "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+   ],
+   "now": 1790001100,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790001000|abababababababababababababababab\n1790001100|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\n",
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "write_append",
+   "args": [
+    "tmp/.comment_queue/processed_batch_hashes.log",
+    "garbage\n|\n17x|abababababababababababababababab\n"
+   ],
+   "now": 1790001100,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790001000|abababababababababababababababab\n1790001100|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\ngarbage\n|\n17x|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "recent_processed",
+   "args": [
+    "abababababababababababababababab"
+   ],
+   "now": 1790001100,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790001000|abababababababababababababababab\n1790001100|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\ngarbage\n|\n17x|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "mark_processed",
+   "args": [
+    "abababababababababababababababab"
+   ],
+   "now": 1790004000,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "recent_processed",
+   "args": [
+    "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+   ],
+   "now": 1790004000,
+   "stdout": "",
+   "rc": 1,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "inflight",
+   "args": [
+    "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+   ],
+   "now": 1790000000,
+   "stdout": "",
+   "rc": 1,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "mark_inflight",
+   "args": [
+    "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+    ""
+   ],
+   "now": 1790000000,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790000000|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|\n",
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "inflight",
+   "args": [
+    "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+   ],
+   "now": 1790000010,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790000000|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|\n",
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "inflight",
+   "args": [
+    "abababababababababababababababab"
+   ],
+   "now": 1790000010,
+   "stdout": "",
+   "rc": 1,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790000000|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|\n",
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "clear_inflight",
+   "args": [
+    "abababababababababababababababab"
+   ],
+   "now": 1790000010,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790000000|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|\n",
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "inflight",
+   "args": [
+    "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+   ],
+   "now": 1790000901,
+   "stdout": "",
+   "rc": 1,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "mark_inflight",
+   "args": [
+    "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+    "999999"
+   ],
+   "now": 1790001000,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001000|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|999999\n",
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "inflight",
+   "args": [
+    "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+   ],
+   "now": 1790001001,
+   "stdout": "",
+   "rc": 1,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "mark_inflight",
+   "args": [
+    "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+    "abc|def"
+   ],
+   "now": 1790001100,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001100|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|abc|def\n",
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "inflight",
+   "args": [
+    "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+   ],
+   "now": 1790001101,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001100|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|abc|def\n",
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "clear_inflight",
+   "args": [
+    "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+   ],
+   "now": 1790001101,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "mark_inflight",
+   "args": [
+    "abababababababababababababababab",
+    "12"
+   ],
+   "now": 1790001200,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001200|abababababababababababababababab|12\n",
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "clear_inflight",
+   "args": [
+    ""
+   ],
+   "now": 1790001200,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": null,
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "write",
+   "args": [
+    "tmp/.comment_queue/inflight_batch.log",
+    "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|"
+   ],
+   "now": 1790001300,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "inflight",
+   "args": [
+    "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+   ],
+   "now": 1790001300,
+   "stdout": "",
+   "rc": 1,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "filter_lines",
+   "args": [
+    "alice: こんにちは\nbob: 音声が聞こえません\nalice: こんにちは\n\ncarol  : x: y"
+   ],
+   "now": 1790000000,
+   "stdout": "alice: こんにちは\nbob: 音声が聞こえません\nalice: こんにちは\n\ncarol  : x: y",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "has_line",
+   "args": [
+    "alice: こんにちは\nbob: 音声が聞こえません\nalice: こんにちは\n\ncarol  : x: y"
+   ],
+   "now": 1790000000,
+   "stdout": "",
+   "rc": 1,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": null,
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "record_lines",
+   "args": [
+    "alice: こんにちは"
+   ],
+   "now": 1790000000,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790000000|c0e89a293bd36c7a768e4e9d2c5475a8\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "filter_lines",
+   "args": [
+    "alice: こんにちは\nbob: 音声が聞こえません\nalice: こんにちは\n\ncarol  : x: y"
+   ],
+   "now": 1790000010,
+   "stdout": "bob: 音声が聞こえません\ncarol  : x: y",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790000000|c0e89a293bd36c7a768e4e9d2c5475a8\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "has_line",
+   "args": [
+    "alice: こんにちは\nbob: 音声が聞こえません\nalice: こんにちは\n\ncarol  : x: y"
+   ],
+   "now": 1790000010,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790000000|c0e89a293bd36c7a768e4e9d2c5475a8\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "has_line",
+   "args": [
+    "zed: こんにちは"
+   ],
+   "now": 1790000010,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790000000|c0e89a293bd36c7a768e4e9d2c5475a8\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "filter_lines",
+   "args": [
+    "alice: こんにちは\nbob: 音声が聞こえません\nalice: こんにちは\n\ncarol  : x: y"
+   ],
+   "now": 1790001801,
+   "stdout": "alice: こんにちは\nbob: 音声が聞こえません\nalice: こんにちは\ncarol  : x: y",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790000000|c0e89a293bd36c7a768e4e9d2c5475a8\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "record_lines",
+   "args": [
+    "alice: こんにちは\nbob: 音声が聞こえません\nalice: こんにちは\n\ncarol  : x: y"
+   ],
+   "now": 1790001900,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "filter_lines",
+   "args": [
+    "alice: こんにちは\nbob: 音声が聞こえません\nalice: こんにちは\n\ncarol  : x: y\ndave: new"
+   ],
+   "now": 1790001900,
+   "stdout": "dave: new",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "format_context",
+   "args": [
+    "alice: こんにちは\nbob: 音声が聞こえません\nalice: こんにちは\n\ncarol  : x: y"
+   ],
+   "now": 1790000000,
+   "stdout": "[1] alice: こんにちは\n  直前: （なし）\n  直後: bob: 音声が聞こえません\n  直前が同一ユーザー: なし\n\n[2] bob: 音声が聞こえません\n  直前: alice: こんにちは\n  直後: alice: こんにちは\n  直前が同一ユーザー: なし\n\n[3] alice: こんにちは\n  直前: bob: 音声が聞こえません\n  直後: carol  : x: y\n  直前が同一ユーザー: なし\n\n[4] carol: x: y\n  直前: alice: こんにちは\n  直後: （なし）\n  直前が同一ユーザー: なし\n\n",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "format_context",
+   "args": [
+    "  solo line  \r\nx: y"
+   ],
+   "now": 1790000000,
+   "stdout": "[1] 不明: solo line\n  直前: （なし）\n  直後: x: y\n  直前が同一ユーザー: なし\n\n[2] x: y\n  直前: solo line\n  直後: （なし）\n  直前が同一ユーザー: なし\n\n",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "format_context",
+   "args": [
+    ""
+   ],
+   "now": 1790000000,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "needs_thumbnail",
+   "args": [
+    "今の盤面どう？"
+   ],
+   "now": 1790000000,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "needs_thumbnail",
+   "args": [
+    "こんにちは"
+   ],
+   "now": 1790000000,
+   "stdout": "",
+   "rc": 1,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "needs_thumbnail",
+   "args": [
+    "NEXT piece"
+   ],
+   "now": 1790000000,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "needs_thumbnail",
+   "args": [
+    ""
+   ],
+   "now": 1790000000,
+   "stdout": "",
+   "rc": 1,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "backlog",
+   "args": [],
+   "now": 1790000000,
+   "stdout": "0 0\n",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "touch",
+   "args": [
+    "tmp/.comment_queue/comment_1.txt"
+   ],
+   "now": 1790000000,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "touch",
+   "args": [
+    "tmp/.comment_queue/comment_2.playing"
+   ],
+   "now": 1790000000,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "touch",
+   "args": [
+    "tmp/.comment_queue/other.txt"
+   ],
+   "now": 1790000000,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "touch",
+   "args": [
+    "tmp/.comment_queue/.comment_3.txt"
+   ],
+   "now": 1790000000,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "backlog",
+   "args": [],
+   "now": 1790000000,
+   "stdout": "1 1\n",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "backlog_high",
+   "args": [
+    "2",
+    "total"
+   ],
+   "now": 1790000000,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "backlog_high",
+   "args": [
+    "2",
+    "queued"
+   ],
+   "now": 1790000000,
+   "stdout": "",
+   "rc": 1,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": null,
+    "spoken_history_txt": [],
+    "spoken_history_modes": [],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "remember",
+   "args": [
+    "同志A、こんにちは。",
+    "main"
+   ],
+   "now": 1790000000,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": "483888bd7a8745f0b36465fb3f81fc64\n",
+    "spoken_history_txt": [
+     "同志A、こんにちは。\n"
+    ],
+    "spoken_history_modes": [
+     "main.txt"
+    ],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "remember",
+   "args": [
+    "同志A、こんにちは。",
+    "main"
+   ],
+   "now": 1790000001,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": "483888bd7a8745f0b36465fb3f81fc64\n",
+    "spoken_history_txt": [
+     "同志A、こんにちは。\n"
+    ],
+    "spoken_history_modes": [
+     "main.txt"
+    ],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "remember",
+   "args": [
+    "同志B、やあ。",
+    "soren91"
+   ],
+   "now": 1790000002,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": "483888bd7a8745f0b36465fb3f81fc64\n363f72878c72e62e3d07526ddfc237e3\n",
+    "spoken_history_txt": [
+     "同志A、こんにちは。\n",
+     "同志B、やあ。\n"
+    ],
+    "spoken_history_modes": [
+     "main.txt",
+     "soren91.txt"
+    ],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "remember",
+   "args": [
+    "",
+    "main"
+   ],
+   "now": 1790000003,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": "483888bd7a8745f0b36465fb3f81fc64\n363f72878c72e62e3d07526ddfc237e3\n",
+    "spoken_history_txt": [
+     "同志A、こんにちは。\n",
+     "同志B、やあ。\n"
+    ],
+    "spoken_history_modes": [
+     "main.txt",
+     "soren91.txt"
+    ],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "remember",
+   "args": [
+    "返信0です。",
+    "x"
+   ],
+   "now": 1790000010,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": "483888bd7a8745f0b36465fb3f81fc64\n363f72878c72e62e3d07526ddfc237e3\n622185b77726fab13948c2448bcedff5\n",
+    "spoken_history_txt": [
+     "同志A、こんにちは。\n",
+     "同志B、やあ。\n",
+     "返信0です。\n"
+    ],
+    "spoken_history_modes": [
+     "main.txt",
+     "main.txt",
+     "soren91.txt"
+    ],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "remember",
+   "args": [
+    "返信1です。",
+    "x"
+   ],
+   "now": 1790000011,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": "483888bd7a8745f0b36465fb3f81fc64\n363f72878c72e62e3d07526ddfc237e3\n622185b77726fab13948c2448bcedff5\nff678fae274d51958b760b3a88b5e096\n",
+    "spoken_history_txt": [
+     "同志A、こんにちは。\n",
+     "同志B、やあ。\n",
+     "返信0です。\n",
+     "返信1です。\n"
+    ],
+    "spoken_history_modes": [
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "soren91.txt"
+    ],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "remember",
+   "args": [
+    "返信2です。",
+    "x"
+   ],
+   "now": 1790000012,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": "483888bd7a8745f0b36465fb3f81fc64\n363f72878c72e62e3d07526ddfc237e3\n622185b77726fab13948c2448bcedff5\nff678fae274d51958b760b3a88b5e096\n0f5ebb3a1e6182b35d11feccf986d82b\n",
+    "spoken_history_txt": [
+     "同志A、こんにちは。\n",
+     "同志B、やあ。\n",
+     "返信0です。\n",
+     "返信1です。\n",
+     "返信2です。\n"
+    ],
+    "spoken_history_modes": [
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "soren91.txt"
+    ],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "remember",
+   "args": [
+    "返信3です。",
+    "x"
+   ],
+   "now": 1790000013,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": "483888bd7a8745f0b36465fb3f81fc64\n363f72878c72e62e3d07526ddfc237e3\n622185b77726fab13948c2448bcedff5\nff678fae274d51958b760b3a88b5e096\n0f5ebb3a1e6182b35d11feccf986d82b\n8098e2b50fff355e9e3a313e7f4d86fd\n",
+    "spoken_history_txt": [
+     "同志A、こんにちは。\n",
+     "同志B、やあ。\n",
+     "返信0です。\n",
+     "返信1です。\n",
+     "返信2です。\n",
+     "返信3です。\n"
+    ],
+    "spoken_history_modes": [
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "soren91.txt"
+    ],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "remember",
+   "args": [
+    "返信4です。",
+    "x"
+   ],
+   "now": 1790000014,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": "483888bd7a8745f0b36465fb3f81fc64\n363f72878c72e62e3d07526ddfc237e3\n622185b77726fab13948c2448bcedff5\nff678fae274d51958b760b3a88b5e096\n0f5ebb3a1e6182b35d11feccf986d82b\n8098e2b50fff355e9e3a313e7f4d86fd\n87cd9391cecd2c8df8d2bc657e5b4723\n",
+    "spoken_history_txt": [
+     "同志A、こんにちは。\n",
+     "同志B、やあ。\n",
+     "返信0です。\n",
+     "返信1です。\n",
+     "返信2です。\n",
+     "返信3です。\n",
+     "返信4です。\n"
+    ],
+    "spoken_history_modes": [
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "soren91.txt"
+    ],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "remember",
+   "args": [
+    "返信5です。",
+    "x"
+   ],
+   "now": 1790000015,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": "483888bd7a8745f0b36465fb3f81fc64\n363f72878c72e62e3d07526ddfc237e3\n622185b77726fab13948c2448bcedff5\nff678fae274d51958b760b3a88b5e096\n0f5ebb3a1e6182b35d11feccf986d82b\n8098e2b50fff355e9e3a313e7f4d86fd\n87cd9391cecd2c8df8d2bc657e5b4723\n9329239be4d3470e2cbaa39a1b7288a0\n",
+    "spoken_history_txt": [
+     "同志A、こんにちは。\n",
+     "同志B、やあ。\n",
+     "返信0です。\n",
+     "返信1です。\n",
+     "返信2です。\n",
+     "返信3です。\n",
+     "返信4です。\n",
+     "返信5です。\n"
+    ],
+    "spoken_history_modes": [
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "soren91.txt"
+    ],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "remember",
+   "args": [
+    "返信6です。",
+    "x"
+   ],
+   "now": 1790000016,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": "483888bd7a8745f0b36465fb3f81fc64\n363f72878c72e62e3d07526ddfc237e3\n622185b77726fab13948c2448bcedff5\nff678fae274d51958b760b3a88b5e096\n0f5ebb3a1e6182b35d11feccf986d82b\n8098e2b50fff355e9e3a313e7f4d86fd\n87cd9391cecd2c8df8d2bc657e5b4723\n9329239be4d3470e2cbaa39a1b7288a0\nf89bfcc3f82cb52ea374bb23e92ea4f9\n",
+    "spoken_history_txt": [
+     "同志A、こんにちは。\n",
+     "同志B、やあ。\n",
+     "返信0です。\n",
+     "返信1です。\n",
+     "返信2です。\n",
+     "返信3です。\n",
+     "返信4です。\n",
+     "返信5です。\n",
+     "返信6です。\n"
+    ],
+    "spoken_history_modes": [
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "soren91.txt"
+    ],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "remember",
+   "args": [
+    "返信7です。",
+    "x"
+   ],
+   "now": 1790000017,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": "483888bd7a8745f0b36465fb3f81fc64\n363f72878c72e62e3d07526ddfc237e3\n622185b77726fab13948c2448bcedff5\nff678fae274d51958b760b3a88b5e096\n0f5ebb3a1e6182b35d11feccf986d82b\n8098e2b50fff355e9e3a313e7f4d86fd\n87cd9391cecd2c8df8d2bc657e5b4723\n9329239be4d3470e2cbaa39a1b7288a0\nf89bfcc3f82cb52ea374bb23e92ea4f9\n24e9a5dec58501b7bd294fa5bc92c627\n",
+    "spoken_history_txt": [
+     "同志A、こんにちは。\n",
+     "同志B、やあ。\n",
+     "返信0です。\n",
+     "返信1です。\n",
+     "返信2です。\n",
+     "返信3です。\n",
+     "返信4です。\n",
+     "返信5です。\n",
+     "返信6です。\n",
+     "返信7です。\n"
+    ],
+    "spoken_history_modes": [
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "soren91.txt"
+    ],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "remember",
+   "args": [
+    "返信8です。",
+    "x"
+   ],
+   "now": 1790000018,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": "483888bd7a8745f0b36465fb3f81fc64\n363f72878c72e62e3d07526ddfc237e3\n622185b77726fab13948c2448bcedff5\nff678fae274d51958b760b3a88b5e096\n0f5ebb3a1e6182b35d11feccf986d82b\n8098e2b50fff355e9e3a313e7f4d86fd\n87cd9391cecd2c8df8d2bc657e5b4723\n9329239be4d3470e2cbaa39a1b7288a0\nf89bfcc3f82cb52ea374bb23e92ea4f9\n24e9a5dec58501b7bd294fa5bc92c627\nb72ab7c9d6580c989ce04f8bfcd96c82\n",
+    "spoken_history_txt": [
+     "同志A、こんにちは。\n",
+     "同志B、やあ。\n",
+     "返信0です。\n",
+     "返信1です。\n",
+     "返信2です。\n",
+     "返信3です。\n",
+     "返信4です。\n",
+     "返信5です。\n",
+     "返信6です。\n",
+     "返信7です。\n",
+     "返信8です。\n"
+    ],
+    "spoken_history_modes": [
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "soren91.txt"
+    ],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "remember",
+   "args": [
+    "返信9です。",
+    "x"
+   ],
+   "now": 1790000019,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": "483888bd7a8745f0b36465fb3f81fc64\n363f72878c72e62e3d07526ddfc237e3\n622185b77726fab13948c2448bcedff5\nff678fae274d51958b760b3a88b5e096\n0f5ebb3a1e6182b35d11feccf986d82b\n8098e2b50fff355e9e3a313e7f4d86fd\n87cd9391cecd2c8df8d2bc657e5b4723\n9329239be4d3470e2cbaa39a1b7288a0\nf89bfcc3f82cb52ea374bb23e92ea4f9\n24e9a5dec58501b7bd294fa5bc92c627\nb72ab7c9d6580c989ce04f8bfcd96c82\n21c9ba83ceb545331527dc3ec4a49594\n",
+    "spoken_history_txt": [
+     "同志A、こんにちは。\n",
+     "同志B、やあ。\n",
+     "返信0です。\n",
+     "返信1です。\n",
+     "返信2です。\n",
+     "返信3です。\n",
+     "返信4です。\n",
+     "返信5です。\n",
+     "返信6です。\n",
+     "返信7です。\n",
+     "返信8です。\n",
+     "返信9です。\n"
+    ],
+    "spoken_history_modes": [
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "soren91.txt"
+    ],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "remember",
+   "args": [
+    "返信10です。",
+    "x"
+   ],
+   "now": 1790000020,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": "483888bd7a8745f0b36465fb3f81fc64\n363f72878c72e62e3d07526ddfc237e3\n622185b77726fab13948c2448bcedff5\nff678fae274d51958b760b3a88b5e096\n0f5ebb3a1e6182b35d11feccf986d82b\n8098e2b50fff355e9e3a313e7f4d86fd\n87cd9391cecd2c8df8d2bc657e5b4723\n9329239be4d3470e2cbaa39a1b7288a0\nf89bfcc3f82cb52ea374bb23e92ea4f9\n24e9a5dec58501b7bd294fa5bc92c627\nb72ab7c9d6580c989ce04f8bfcd96c82\n21c9ba83ceb545331527dc3ec4a49594\n38d0e1b9b0a86c6f164fca5d516dc107\n",
+    "spoken_history_txt": [
+     "同志A、こんにちは。\n",
+     "同志B、やあ。\n",
+     "返信0です。\n",
+     "返信10です。\n",
+     "返信1です。\n",
+     "返信2です。\n",
+     "返信3です。\n",
+     "返信4です。\n",
+     "返信5です。\n",
+     "返信6です。\n",
+     "返信7です。\n",
+     "返信8です。\n",
+     "返信9です。\n"
+    ],
+    "spoken_history_modes": [
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "soren91.txt"
+    ],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "remember",
+   "args": [
+    "返信11です。",
+    "x"
+   ],
+   "now": 1790000021,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": "483888bd7a8745f0b36465fb3f81fc64\n363f72878c72e62e3d07526ddfc237e3\n622185b77726fab13948c2448bcedff5\nff678fae274d51958b760b3a88b5e096\n0f5ebb3a1e6182b35d11feccf986d82b\n8098e2b50fff355e9e3a313e7f4d86fd\n87cd9391cecd2c8df8d2bc657e5b4723\n9329239be4d3470e2cbaa39a1b7288a0\nf89bfcc3f82cb52ea374bb23e92ea4f9\n24e9a5dec58501b7bd294fa5bc92c627\nb72ab7c9d6580c989ce04f8bfcd96c82\n21c9ba83ceb545331527dc3ec4a49594\n38d0e1b9b0a86c6f164fca5d516dc107\n4a8c41413dd86f20fa53a04678f57e90\n",
+    "spoken_history_txt": [
+     "同志A、こんにちは。\n",
+     "同志B、やあ。\n",
+     "返信0です。\n",
+     "返信10です。\n",
+     "返信11です。\n",
+     "返信1です。\n",
+     "返信2です。\n",
+     "返信3です。\n",
+     "返信4です。\n",
+     "返信5です。\n",
+     "返信6です。\n",
+     "返信7です。\n",
+     "返信8です。\n",
+     "返信9です。\n"
+    ],
+    "spoken_history_modes": [
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "soren91.txt"
+    ],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "remember",
+   "args": [
+    "返信12です。",
+    "x"
+   ],
+   "now": 1790000022,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": "483888bd7a8745f0b36465fb3f81fc64\n363f72878c72e62e3d07526ddfc237e3\n622185b77726fab13948c2448bcedff5\nff678fae274d51958b760b3a88b5e096\n0f5ebb3a1e6182b35d11feccf986d82b\n8098e2b50fff355e9e3a313e7f4d86fd\n87cd9391cecd2c8df8d2bc657e5b4723\n9329239be4d3470e2cbaa39a1b7288a0\nf89bfcc3f82cb52ea374bb23e92ea4f9\n24e9a5dec58501b7bd294fa5bc92c627\nb72ab7c9d6580c989ce04f8bfcd96c82\n21c9ba83ceb545331527dc3ec4a49594\n38d0e1b9b0a86c6f164fca5d516dc107\n4a8c41413dd86f20fa53a04678f57e90\n7e3903910ccefcd43fd167639718db65\n",
+    "spoken_history_txt": [
+     "同志A、こんにちは。\n",
+     "同志B、やあ。\n",
+     "返信0です。\n",
+     "返信10です。\n",
+     "返信11です。\n",
+     "返信12です。\n",
+     "返信1です。\n",
+     "返信2です。\n",
+     "返信3です。\n",
+     "返信4です。\n",
+     "返信5です。\n",
+     "返信6です。\n",
+     "返信7です。\n",
+     "返信8です。\n",
+     "返信9です。\n"
+    ],
+    "spoken_history_modes": [
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "soren91.txt"
+    ],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "remember",
+   "args": [
+    "返信13です。",
+    "x"
+   ],
+   "now": 1790000023,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": "483888bd7a8745f0b36465fb3f81fc64\n363f72878c72e62e3d07526ddfc237e3\n622185b77726fab13948c2448bcedff5\nff678fae274d51958b760b3a88b5e096\n0f5ebb3a1e6182b35d11feccf986d82b\n8098e2b50fff355e9e3a313e7f4d86fd\n87cd9391cecd2c8df8d2bc657e5b4723\n9329239be4d3470e2cbaa39a1b7288a0\nf89bfcc3f82cb52ea374bb23e92ea4f9\n24e9a5dec58501b7bd294fa5bc92c627\nb72ab7c9d6580c989ce04f8bfcd96c82\n21c9ba83ceb545331527dc3ec4a49594\n38d0e1b9b0a86c6f164fca5d516dc107\n4a8c41413dd86f20fa53a04678f57e90\n7e3903910ccefcd43fd167639718db65\nb82fe91d29a93cd1282874ff49e3c40f\n",
+    "spoken_history_txt": [
+     "同志A、こんにちは。\n",
+     "同志B、やあ。\n",
+     "返信0です。\n",
+     "返信10です。\n",
+     "返信11です。\n",
+     "返信12です。\n",
+     "返信13です。\n",
+     "返信1です。\n",
+     "返信2です。\n",
+     "返信3です。\n",
+     "返信4です。\n",
+     "返信5です。\n",
+     "返信6です。\n",
+     "返信7です。\n",
+     "返信8です。\n",
+     "返信9です。\n"
+    ],
+    "spoken_history_modes": [
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "soren91.txt"
+    ],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "remember",
+   "args": [
+    "返信14です。",
+    "x"
+   ],
+   "now": 1790000024,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": "363f72878c72e62e3d07526ddfc237e3\n622185b77726fab13948c2448bcedff5\nff678fae274d51958b760b3a88b5e096\n0f5ebb3a1e6182b35d11feccf986d82b\n8098e2b50fff355e9e3a313e7f4d86fd\n87cd9391cecd2c8df8d2bc657e5b4723\n9329239be4d3470e2cbaa39a1b7288a0\nf89bfcc3f82cb52ea374bb23e92ea4f9\n24e9a5dec58501b7bd294fa5bc92c627\nb72ab7c9d6580c989ce04f8bfcd96c82\n21c9ba83ceb545331527dc3ec4a49594\n38d0e1b9b0a86c6f164fca5d516dc107\n4a8c41413dd86f20fa53a04678f57e90\n7e3903910ccefcd43fd167639718db65\nb82fe91d29a93cd1282874ff49e3c40f\ncfb7fc9d2cc5b42b04fa2d6ae53584ca\n",
+    "spoken_history_txt": [
+     "同志B、やあ。\n",
+     "返信0です。\n",
+     "返信10です。\n",
+     "返信11です。\n",
+     "返信12です。\n",
+     "返信13です。\n",
+     "返信14です。\n",
+     "返信1です。\n",
+     "返信2です。\n",
+     "返信3です。\n",
+     "返信4です。\n",
+     "返信5です。\n",
+     "返信6です。\n",
+     "返信7です。\n",
+     "返信8です。\n",
+     "返信9です。\n"
+    ],
+    "spoken_history_modes": [
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "soren91.txt"
+    ],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "remember",
+   "args": [
+    "返信15です。",
+    "x"
+   ],
+   "now": 1790000025,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": "622185b77726fab13948c2448bcedff5\nff678fae274d51958b760b3a88b5e096\n0f5ebb3a1e6182b35d11feccf986d82b\n8098e2b50fff355e9e3a313e7f4d86fd\n87cd9391cecd2c8df8d2bc657e5b4723\n9329239be4d3470e2cbaa39a1b7288a0\nf89bfcc3f82cb52ea374bb23e92ea4f9\n24e9a5dec58501b7bd294fa5bc92c627\nb72ab7c9d6580c989ce04f8bfcd96c82\n21c9ba83ceb545331527dc3ec4a49594\n38d0e1b9b0a86c6f164fca5d516dc107\n4a8c41413dd86f20fa53a04678f57e90\n7e3903910ccefcd43fd167639718db65\nb82fe91d29a93cd1282874ff49e3c40f\ncfb7fc9d2cc5b42b04fa2d6ae53584ca\ndf1e210c23d9bb1204464b1f989409d2\n",
+    "spoken_history_txt": [
+     "返信0です。\n",
+     "返信10です。\n",
+     "返信11です。\n",
+     "返信12です。\n",
+     "返信13です。\n",
+     "返信14です。\n",
+     "返信15です。\n",
+     "返信1です。\n",
+     "返信2です。\n",
+     "返信3です。\n",
+     "返信4です。\n",
+     "返信5です。\n",
+     "返信6です。\n",
+     "返信7です。\n",
+     "返信8です。\n",
+     "返信9です。\n"
+    ],
+    "spoken_history_modes": [
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt"
+    ],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "remember",
+   "args": [
+    "返信16です。",
+    "x"
+   ],
+   "now": 1790000026,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": "ff678fae274d51958b760b3a88b5e096\n0f5ebb3a1e6182b35d11feccf986d82b\n8098e2b50fff355e9e3a313e7f4d86fd\n87cd9391cecd2c8df8d2bc657e5b4723\n9329239be4d3470e2cbaa39a1b7288a0\nf89bfcc3f82cb52ea374bb23e92ea4f9\n24e9a5dec58501b7bd294fa5bc92c627\nb72ab7c9d6580c989ce04f8bfcd96c82\n21c9ba83ceb545331527dc3ec4a49594\n38d0e1b9b0a86c6f164fca5d516dc107\n4a8c41413dd86f20fa53a04678f57e90\n7e3903910ccefcd43fd167639718db65\nb82fe91d29a93cd1282874ff49e3c40f\ncfb7fc9d2cc5b42b04fa2d6ae53584ca\ndf1e210c23d9bb1204464b1f989409d2\nea7990aee1e4ada4e7f7e9fd127f588f\n",
+    "spoken_history_txt": [
+     "返信10です。\n",
+     "返信11です。\n",
+     "返信12です。\n",
+     "返信13です。\n",
+     "返信14です。\n",
+     "返信15です。\n",
+     "返信16です。\n",
+     "返信1です。\n",
+     "返信2です。\n",
+     "返信3です。\n",
+     "返信4です。\n",
+     "返信5です。\n",
+     "返信6です。\n",
+     "返信7です。\n",
+     "返信8です。\n",
+     "返信9です。\n"
+    ],
+    "spoken_history_modes": [
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt"
+    ],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "remember",
+   "args": [
+    "返信17です。",
+    "x"
+   ],
+   "now": 1790000027,
+   "stdout": "",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": "0f5ebb3a1e6182b35d11feccf986d82b\n8098e2b50fff355e9e3a313e7f4d86fd\n87cd9391cecd2c8df8d2bc657e5b4723\n9329239be4d3470e2cbaa39a1b7288a0\nf89bfcc3f82cb52ea374bb23e92ea4f9\n24e9a5dec58501b7bd294fa5bc92c627\nb72ab7c9d6580c989ce04f8bfcd96c82\n21c9ba83ceb545331527dc3ec4a49594\n38d0e1b9b0a86c6f164fca5d516dc107\n4a8c41413dd86f20fa53a04678f57e90\n7e3903910ccefcd43fd167639718db65\nb82fe91d29a93cd1282874ff49e3c40f\ncfb7fc9d2cc5b42b04fa2d6ae53584ca\ndf1e210c23d9bb1204464b1f989409d2\nea7990aee1e4ada4e7f7e9fd127f588f\n02e70af02e3862e438feb1ec2d86dd33\n",
+    "spoken_history_txt": [
+     "返信10です。\n",
+     "返信11です。\n",
+     "返信12です。\n",
+     "返信13です。\n",
+     "返信14です。\n",
+     "返信15です。\n",
+     "返信16です。\n",
+     "返信17です。\n",
+     "返信2です。\n",
+     "返信3です。\n",
+     "返信4です。\n",
+     "返信5です。\n",
+     "返信6です。\n",
+     "返信7です。\n",
+     "返信8です。\n",
+     "返信9です。\n"
+    ],
+    "spoken_history_modes": [
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt"
+    ],
+    "generation_history": []
+   }
+  },
+  {
+   "op": "store_meta",
+   "args": [
+    "tmp/.comment_queue/comment_9.txt",
+    "main",
+    "amd:DeepSeek",
+    "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+    "2",
+    "57",
+    "a",
+    "b",
+    ""
+   ],
+   "now": 1790000000,
+   "stdout": "{\"attempt\": 2, \"batch_hash\": \"0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\", \"chain\": {\"final\": \"amd:DeepSeek\", \"primary\": \"a\", \"secondary\": \"b\", \"tertiary\": \"\"}, \"chars\": 57, \"mode\": \"main\", \"model\": \"amd:DeepSeek\", \"queue_file\": \"comment_9.txt\", \"target_file\": \"tmp/.comment_queue/comment_9.txt\"}",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": "0f5ebb3a1e6182b35d11feccf986d82b\n8098e2b50fff355e9e3a313e7f4d86fd\n87cd9391cecd2c8df8d2bc657e5b4723\n9329239be4d3470e2cbaa39a1b7288a0\nf89bfcc3f82cb52ea374bb23e92ea4f9\n24e9a5dec58501b7bd294fa5bc92c627\nb72ab7c9d6580c989ce04f8bfcd96c82\n21c9ba83ceb545331527dc3ec4a49594\n38d0e1b9b0a86c6f164fca5d516dc107\n4a8c41413dd86f20fa53a04678f57e90\n7e3903910ccefcd43fd167639718db65\nb82fe91d29a93cd1282874ff49e3c40f\ncfb7fc9d2cc5b42b04fa2d6ae53584ca\ndf1e210c23d9bb1204464b1f989409d2\nea7990aee1e4ada4e7f7e9fd127f588f\n02e70af02e3862e438feb1ec2d86dd33\n",
+    "spoken_history_txt": [
+     "返信10です。\n",
+     "返信11です。\n",
+     "返信12です。\n",
+     "返信13です。\n",
+     "返信14です。\n",
+     "返信15です。\n",
+     "返信16です。\n",
+     "返信17です。\n",
+     "返信2です。\n",
+     "返信3です。\n",
+     "返信4です。\n",
+     "返信5です。\n",
+     "返信6です。\n",
+     "返信7です。\n",
+     "返信8です。\n",
+     "返信9です。\n"
+    ],
+    "spoken_history_modes": [
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt"
+    ],
+    "generation_history": [
+     {
+      "target_file": "tmp/.comment_queue/comment_9.txt",
+      "queue_file": "comment_9.txt",
+      "mode": "main",
+      "model": "amd:DeepSeek",
+      "batch_hash": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+      "attempt": 2,
+      "chars": 57,
+      "chain": {
+       "primary": "a",
+       "secondary": "b",
+       "tertiary": "",
+       "final": "amd:DeepSeek"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "op": "store_meta",
+   "args": [
+    "tmp/.comment_queue/comment_10.playing",
+    "",
+    "",
+    "",
+    "x",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "now": 1790000001,
+   "stdout": "{\"attempt\": 0, \"batch_hash\": \"\", \"chain\": {\"final\": \"unknown\", \"primary\": \"\", \"secondary\": \"\", \"tertiary\": \"\"}, \"chars\": 0, \"mode\": \"\", \"model\": \"unknown\", \"queue_file\": \"comment_10.playing\", \"target_file\": \"tmp/.comment_queue/comment_10.playing\"}",
+   "rc": 0,
+   "files": {
+    "tmp/.comment_queue/processed_batch_hashes.log": "1790004000|abababababababababababababababab\n",
+    "tmp/.comment_queue/inflight_batch.log": "1790001300|0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f|",
+    "tmp/.comment_queue/processed_line_hashes.log": "1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|79785482ffb8dddb57d5bfb3450adfe6\n1790001900|c0e89a293bd36c7a768e4e9d2c5475a8\n1790001900|ab6bb611d2d8679d8e94d3adab5a7f6d\n",
+    "tmp/state/comment_generation_backoff_until": null,
+    "tmp/.comment_queue/spoken_history/.reply_hashes": "0f5ebb3a1e6182b35d11feccf986d82b\n8098e2b50fff355e9e3a313e7f4d86fd\n87cd9391cecd2c8df8d2bc657e5b4723\n9329239be4d3470e2cbaa39a1b7288a0\nf89bfcc3f82cb52ea374bb23e92ea4f9\n24e9a5dec58501b7bd294fa5bc92c627\nb72ab7c9d6580c989ce04f8bfcd96c82\n21c9ba83ceb545331527dc3ec4a49594\n38d0e1b9b0a86c6f164fca5d516dc107\n4a8c41413dd86f20fa53a04678f57e90\n7e3903910ccefcd43fd167639718db65\nb82fe91d29a93cd1282874ff49e3c40f\ncfb7fc9d2cc5b42b04fa2d6ae53584ca\ndf1e210c23d9bb1204464b1f989409d2\nea7990aee1e4ada4e7f7e9fd127f588f\n02e70af02e3862e438feb1ec2d86dd33\n",
+    "spoken_history_txt": [
+     "返信10です。\n",
+     "返信11です。\n",
+     "返信12です。\n",
+     "返信13です。\n",
+     "返信14です。\n",
+     "返信15です。\n",
+     "返信16です。\n",
+     "返信17です。\n",
+     "返信2です。\n",
+     "返信3です。\n",
+     "返信4です。\n",
+     "返信5です。\n",
+     "返信6です。\n",
+     "返信7です。\n",
+     "返信8です。\n",
+     "返信9です。\n"
+    ],
+    "spoken_history_modes": [
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt",
+     "main.txt"
+    ],
+    "generation_history": [
+     {
+      "target_file": "tmp/.comment_queue/comment_9.txt",
+      "queue_file": "comment_9.txt",
+      "mode": "main",
+      "model": "amd:DeepSeek",
+      "batch_hash": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+      "attempt": 2,
+      "chars": 57,
+      "chain": {
+       "primary": "a",
+       "secondary": "b",
+       "tertiary": "",
+       "final": "amd:DeepSeek"
+      }
+     },
+     {
+      "target_file": "tmp/.comment_queue/comment_10.playing",
+      "queue_file": "comment_10.playing",
+      "mode": "",
+      "model": "unknown",
+      "batch_hash": "",
+      "attempt": 0,
+      "chars": 0,
+      "chain": {
+       "primary": "",
+       "secondary": "",
+       "tertiary": "",
+       "final": "unknown"
+      }
+     }
+    ]
+   }
+  }
+ ]
+}
