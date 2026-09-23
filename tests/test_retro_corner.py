@@ -105,13 +105,16 @@ brain = "resolver"
 
 
 class TestFailedRotationStartReconciliation(RetroCornerTestBase):
-    def _setup_failed_start(self, *, terminal=True, terminal_status="rolled_back"):
+    def _setup_failed_start(self, *, terminal=True, terminal_status="rolled_back",
+                            corner_status="starting", error_code="recovery"):
         mgr, coordinator = self.manager(["sorengame"])
         request_id = str(uuid.uuid4())
         state = mgr._default_state()
-        state.update(status="starting", game="robots", previous_game="sorengame",
+        state.update(status=corner_status, game="robots", previous_game="sorengame",
                      rotation_request_id=request_id, switch_request_id=request_id,
                      started_at=self.now_value.isoformat())
+        if corner_status == "failed":
+            state.update(completed_at=self.now_value.isoformat(), last_error_code=error_code)
         mgr._write_state(state)
         canonical = mgr.store.initialize()
         names = runtime_names(1)
@@ -129,7 +132,7 @@ class TestFailedRotationStartReconciliation(RetroCornerTestBase):
                 "request_id": request_id, "operation": "switch",
                 "status": terminal_status,
                 "from_game": "sorengame", "to_game": "robots",
-                "generation": accepted.generation, "error_code": "recovery",
+                "generation": accepted.generation, "error_code": error_code,
             }
             if terminal_status == "rolled_back":
                 result["restored_generation"] = accepted.generation + 1
@@ -160,6 +163,48 @@ class TestFailedRotationStartReconciliation(RetroCornerTestBase):
         self.assertTrue(mgr.reconcile_failed_rotation_start(request_id))
         self.assertEqual(mgr._read_state()["completed_at"], result["completed_at"])
         self.assertEqual(coordinator.calls, [])
+
+    def test_exact_start_failed_receipt_terminalizes_only_the_matching_failed_corner(self):
+        mgr, coordinator, request_id = self._setup_failed_start(
+            corner_status="failed", error_code="start_failed")
+        original_completed_at = mgr._read_state()["completed_at"]
+
+        self.assertTrue(mgr.reconcile_failed_rotation_start(request_id))
+
+        result = mgr._read_state()
+        self.assertEqual(result["status"], "interrupted")
+        self.assertEqual(result["end_reason"], "switch-terminal-before-corner-active")
+        self.assertEqual(result["rotation_request_id"], request_id)
+        self.assertEqual(result["completed_at"], original_completed_at)
+        self.assertIsNone(result["last_error_code"])
+        self.assertTrue(mgr.reconcile_failed_rotation_start(request_id))
+        self.assertEqual(mgr._read_state()["completed_at"], original_completed_at)
+        self.assertEqual(coordinator.calls, [])
+
+    def test_failed_corner_requires_known_matching_start_error_in_terminal_receipt(self):
+        for state_error, receipt_error in (
+            ("start_failed", "agent_start_failed"),
+            ("recovery", "recovery"),
+        ):
+            with self.subTest(state_error=state_error, receipt_error=receipt_error):
+                mgr, _, request_id = self._setup_failed_start(
+                    corner_status="failed", error_code=state_error)
+                receipt = mgr.store.receipts.load(request_id)
+                receipt["result"]["error_code"] = receipt_error
+                mgr.store.receipts.save(receipt)
+
+                self.assertFalse(mgr.reconcile_failed_rotation_start(request_id))
+                self.assertEqual(mgr._read_state()["status"], "failed")
+
+    def test_failed_corner_stays_failed_when_target_runtime_cleanup_is_pending(self):
+        mgr, _, request_id = self._setup_failed_start(
+            corner_status="failed", error_code="agent_start_failed")
+        receipt = mgr.store.receipts.load(request_id)
+        receipt["result"]["cleanup_pending"] = True
+        mgr.store.receipts.save(receipt)
+
+        self.assertFalse(mgr.reconcile_failed_rotation_start(request_id))
+        self.assertEqual(mgr._read_state()["status"], "failed")
 
     def test_nonterminal_receipt_and_draining_canonical_keep_start(self):
         mgr, _, request_id = self._setup_failed_start(terminal=False)

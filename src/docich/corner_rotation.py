@@ -535,6 +535,9 @@ class CornerRotationManager:
           re-validates game-switch phase, the program slot, cooldown and
           ownership before any side effect and re-latches with a fixed
           ``error_kind`` if the cause persists;
+        - an automatic failed start is terminalized only when its adapter
+          reconciles the exact rolled-back switch receipt, stable prior runtime,
+          cleanup state and released corner resources;
         - a reservation whose corner is still running or itself needs corner
           recovery, an inconsistent ledger, and a manual reservation that has
           no terminal observation yet, stay latched and fail closed. For the
@@ -572,6 +575,23 @@ class CornerRotationManager:
                 raise RotationError("pending corner removed from catalog",
                                     kind="catalog-mismatch")
             try:
+                # A failed automatic start can already have a terminal
+                # rolled-back game-switch receipt while its corner state still
+                # says ``failed``. Let only that adapter reconcile the exact
+                # request against the receipt and stable canonical owner; no
+                # retry or new execution is started by this path.
+                if pending is not None and manual is None:
+                    adapter = self.adapters[reservation["corner"]]
+                    reconcile = getattr(adapter, "reconcile_failed_start", None)
+                    if callable(reconcile) and reconcile(reservation["request_id"]):
+                        settled_at = timestamp(self.clock())
+                        if settled_at < now:
+                            raise RotationError("clock regressed", kind="invalid-state")
+                        now = settled_at
+                        resources_released = getattr(adapter, "resources_released", None)
+                        if callable(resources_released) and not resources_released():
+                            raise RotationError("pending corner resources are not released",
+                                                kind="execution-unverified")
                 outcome = self._resolve_reservation(state, reservation, now,
                                                     manual=manual is not None)
             except Exception as exc:
