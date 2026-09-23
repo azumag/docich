@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from pathlib import Path
 
@@ -210,7 +211,8 @@ def enqueue_chat(g: GlobalConfig, text: str, *, source: str = "docich") -> None:
 
 
 def enqueue_audio_text(
-    g: GlobalConfig, text: str, *, context: str = "soren91", speaker: str = ""
+    g: GlobalConfig, text: str, *, context: str = "soren91", speaker: str = "",
+    runtime_fence: dict | None = None,
 ) -> None:
     """Enqueue one TTS line into the Soren audio queue with an explicit speaker.
 
@@ -223,11 +225,15 @@ def enqueue_audio_text(
     if not text or not text.strip():
         raise SorenOutputError("empty audio text")
     root = resolve_soren_root(g)
+    command = ["bash", "-c",
+               'source lib/outbound_queue.sh && enqueue_audio_text "$0" "$1" "$2"',
+               text, context, str(speaker)]
+    if runtime_fence is not None:
+        command[2] = 'source lib/outbound_queue.sh && enqueue_audio_text "$0" "$1" "$2" "$3"'
+        command.append(json.dumps(runtime_fence, separators=(",", ":")))
     try:
         proc = subprocess.run(
-            ["bash", "-c",
-             'source lib/outbound_queue.sh && enqueue_audio_text "$0" "$1" "$2"',
-             text, context, str(speaker)],
+            command,
             cwd=str(root),
             text=True,
             capture_output=True,

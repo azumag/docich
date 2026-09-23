@@ -131,7 +131,7 @@ def legacy_actions(frame: Frame, phase: str, state: dict) -> list[dict]:
     if phase=='transition':
         return []
     if phase=='name':
-        return [pad('a')] if phase_step==1 else [pad('start')]
+        return []  # Only the readable name-entry policy may type or confirm.
     if phase=='month_menu':
         return [pad('b' if phase_step==1 else 'a')]
     if phase=='concert':
@@ -185,7 +185,11 @@ def decide(frame: Frame, state: dict) -> tuple[list[dict], dict]:
     if kind in policy.AFTER_BATTLE_KINDS:
         mem['egg_battle']=False
     actions=None
-    if kind=='name_entry':
+    if phase=='name' and kind!='name_entry':
+        policy._record(mem,'name_wait',chart_step='name',
+                       reason='状況判定保留: 名前入力画面の文字を読めないため入力を保留')
+        actions=[]
+    elif kind=='name_entry':
         if (mem.get('name') or {}).get('done'):
             # A second name screen means a new game: never carry the previous
             # game's orders, captures or cursor into it.

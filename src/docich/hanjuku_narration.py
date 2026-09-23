@@ -66,10 +66,39 @@ def _tail(path: Path) -> list[dict]:
     return out
 
 
-def _deliver(g, runtime_dir: Path, item: dict, speaker: str, enqueue):
+def _deliver(g, runtime_dir: Path, item: dict, speaker: str, enqueue, max_age):
+    from .agent.fence import AgentFence, FenceLost, check_fence, read_canonical, shared_section
+    from .hanjuku_run import load
+    from .game_switch import GameSwitchBusyError
+
     status = 'enqueued'
+    identity = {k: item.get(k) for k in ('game', 'runtime_id', 'generation', 'lease_id')}
+
+    def deliver_active():
+        # Check briefly under the transition lock; never hold it across
+        # queue I/O. The consumer rechecks identity/expiry before playback.
+        if (identity['game'] != 'hanjuku-hero' or not identity['runtime_id']
+                or type(identity['generation']) is not int or not identity['lease_id']):
+            raise FenceLost('incomplete commentary identity')
+        if time.time() - item['at'] > max_age:
+            return 'skipped:stale'
+        canonical = read_canonical(g.state_dir)
+        check_fence(AgentFence(**identity), canonical.get('active'))
+        run = load(runtime_dir, identity)
+        if not run or run.get('terminal_reason') or run.get('terminal_candidate'):
+            return 'skipped:terminal'
+        return 'ready'
+
     try:
-        enqueue(g, item['text'], context='hanjuku:commentary', speaker=speaker)
+        status = shared_section(g.state_dir, deliver_active, timeout_s=0)
+        if status == 'ready':
+            enqueue(g, item['text'], context='hanjuku_commentary', speaker=speaker,
+                    runtime_fence={**identity, 'expires_at': item['at'] + max_age})
+            status = 'enqueued'
+    except FenceLost:
+        status = 'skipped:fence_lost'
+    except GameSwitchBusyError:
+        status = 'skipped:switch_busy'
     except Exception:
         # No exception text: queue errors can carry private payloads.
         status = 'delivery_failed'
@@ -78,7 +107,7 @@ def _deliver(g, runtime_dir: Path, item: dict, speaker: str, enqueue):
     try:
         append_log(runtime_dir, 'hanjuku_narration', {
             'schema': 1, 'at': time.time(), 'seq': item['seq'], 'key': item.get('key'),
-            'status': status, 'text': item['text']})
+            'status': status, 'text': item['text'], **identity})
     except Exception:
         pass
 
@@ -141,7 +170,7 @@ def consider(g, game, runtime_dir: Path, *, terminal=False, now=None, enqueue=No
             if enqueue is None:
                 from .trading.soren_output import enqueue_audio_text as enqueue
             try:
-                threading.Thread(target=_deliver, args=(g, runtime_dir, chosen, cfg['speaker'], enqueue),
+                threading.Thread(target=_deliver, args=(g, runtime_dir, chosen, cfg['speaker'], enqueue, cfg['max_age_s']),
                                  daemon=True, name='hanjuku-narration').start()
             except Exception:
                 _busy.clear()

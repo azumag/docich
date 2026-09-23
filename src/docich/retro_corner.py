@@ -826,7 +826,7 @@ class RetroCornerManager:
             return self._transition_once(current, target, request_id=request_id)
 
     @staticmethod
-    def _invoke_coordinator(method, target=None, *, request_id: str | None = None):
+    def _invoke_coordinator(method, target=None, *, request_id: str | None = None, expected_source=None):
         """Call old test doubles and current coordinators with one request ID."""
 
         try:
@@ -843,6 +843,9 @@ class RetroCornerManager:
             if request_id is not None and accepts_request_id
             else {}
         )
+        if expected_source is not None:
+            # Never silently drop the fence for an older coordinator/test double.
+            kwargs["payload"] = {"expected_source": expected_source}
         return method(**kwargs) if target is None else method(target, **kwargs)
 
     def _announce_stream_game(self, game: str | None) -> None:
@@ -1087,6 +1090,11 @@ class RetroCornerManager:
             self._write_state(state)
             return self._state_result(state)
 
+        expected_source = None
+        if game == 'hanjuku-hero':
+            expected_source = state.get('bot_identity')
+            if not isinstance(expected_source, dict):
+                raise RetroCornerError('Hanjuku runtime identity missing before restore')
         request_id = state.get("switch_request_id")
         if not isinstance(request_id, str):
             request_id = new_request_id()
@@ -1096,12 +1104,12 @@ class RetroCornerManager:
         try:
             if previous is None:
                 result = self._invoke_coordinator(
-                    self.coordinator.stop, request_id=request_id
+                    self.coordinator.stop, request_id=request_id, expected_source=expected_source
                 )
                 action = "retro corner stop"
             elif isinstance(previous, str) and previous != game:
                 result = self._invoke_coordinator(
-                    self.coordinator.switch, previous, request_id=request_id
+                    self.coordinator.switch, previous, request_id=request_id, expected_source=expected_source
                 )
                 action = f"{game}->{previous} restore"
             else:
@@ -1174,6 +1182,31 @@ class RetroCornerManager:
         if ends_at is None or now >= ends_at:
             self._ensure_runtime()
             self._finish_locked(state, now)
+
+    @staticmethod
+    def _bind_hanjuku_start(state, transition):
+        if state.get('game') != 'hanjuku-hero':
+            return
+        # Bind the identity committed by THIS start, never whichever runtime
+        # happens to be active at the monitor's first observation.
+        receipt = getattr(transition, 'receipt', None)
+        result = receipt.get('result') if isinstance(receipt, dict) else None
+        identity = result.get('active_runtime') if isinstance(result, dict) else None
+        keys = ('game', 'runtime_id', 'generation', 'lease_id')
+        if (not isinstance(identity, dict) or set(identity) != set(keys)
+                or identity.get('game') != 'hanjuku-hero'
+                or type(identity.get('generation')) is not int or identity['generation'] < 1
+                or not all(isinstance(identity.get(k), str) and identity[k]
+                           for k in ('runtime_id', 'lease_id'))
+                or receipt.get('status') != 'succeeded'
+                or receipt.get('request_id') != state.get('switch_request_id')
+                or receipt.get('target') != 'hanjuku-hero'
+                or identity.get('runtime_id') != receipt.get('runtime_id')
+                or identity.get('generation') != receipt.get('generation')
+                or result.get('status') != 'succeeded'):
+            raise RetroCornerError('Hanjuku start has no committed runtime identity')
+        state['bot_identity'] = dict(identity)
+        state['bot_runtime_id'] = identity['runtime_id']
 
     def _begin_locked(
         self,
@@ -1304,6 +1337,7 @@ class RetroCornerManager:
                     detail=getattr(transition, "detail", None)
                     or "ゲーム切替キューで順番待ちです",
                 )
+            self._bind_hanjuku_start(state, transition)
             started = self._local_now()
             state.pop("switch_request_id", None)
             state.pop("switch_status", None)
@@ -1352,6 +1386,7 @@ class RetroCornerManager:
                     detail=getattr(transition, "detail", None)
                     or "ゲーム切替キューで順番待ちです",
                 )
+            self._bind_hanjuku_start(state, transition)
         except Exception as exc:
             state.update(
                 status="failed",
@@ -1497,6 +1532,9 @@ class RetroCornerManager:
         from .naming import runtime_directory
         next_repair = 0.
         owned_runtime = state.get('bot_runtime_id')
+        owned_identity = state.get('bot_identity')
+        if not isinstance(owned_identity, dict):
+            raise RetroCornerError('Hanjuku runtime identity missing before observation')
         while True:
             stopped = self._rotation_stop_result()
             if stopped is not None:
@@ -1508,6 +1546,10 @@ class RetroCornerManager:
                     return self._finish_locked(self._read_state(), self._local_now())
             if owned_runtime is not None and active.get('runtime_id') != owned_runtime:
                 raise RetroCornerError('Hanjuku runtime changed during the corner')
+            identity = {k: active.get(k) for k in ('game', 'runtime_id', 'generation', 'lease_id')}
+            if owned_identity is not None and identity != owned_identity:
+                raise RetroCornerError('Hanjuku runtime identity changed during the corner')
+            owned_identity = identity
             owned_runtime = active.get('runtime_id')
             fence = AgentFence(game=active['game'], runtime_id=active['runtime_id'],
                                generation=active['generation'], lease_id=active['lease_id'])
@@ -1537,6 +1579,7 @@ class RetroCornerManager:
                 latest['battles_finished'] = run.get('battles_finished', 0)
                 latest['screen_unchanged_seconds'] = run.get('unchanged_seconds', 0)
                 latest['bot_runtime_id'] = active['runtime_id']
+                latest['bot_identity'] = dict(owned_identity)
                 try:
                     from .hanjuku_policy import summary
                     from .retroarch_boundary import read_record

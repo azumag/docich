@@ -1258,6 +1258,7 @@ ERROR_RECOVERY_REQUIRED = "recovery_required"
 ERROR_PROBE_FAILED = "probe_failed"
 ERROR_TIMEOUT = "timeout"
 ERROR_INTERNAL = "internal"
+ERROR_SOURCE_FENCE_LOST = "source_fence_lost"
 
 IN_PROGRESS_PHASES = frozenset(PHASES - {"idle", "ready", "failed", "recovery_required"})
 
@@ -2401,6 +2402,7 @@ class GameSwitchCoordinator:
             and operation in {"start", "switch"}
             and isinstance(active, dict)
             and active.get("game") == target
+            and not (payload is not None and "expected_source" in payload)
         ):
             result = {
                 "request_id": request_id,
@@ -2472,7 +2474,8 @@ class GameSwitchCoordinator:
                         receipt=None,
                     )
                 target = active["game"]
-        if operation == "stop" and state.get("active") is None:
+        if (operation == "stop" and state.get("active") is None
+                and not (payload is not None and "expected_source" in payload)):
             if existing is not None and existing.get("status") == QUEUED_RECEIPT_STATUS:
                 result = {
                     "request_id": request_id,
@@ -2537,6 +2540,30 @@ class GameSwitchCoordinator:
             raise
         if acceptance.status in TERMINAL_RECEIPT_STATUSES:
             return _result_from_receipt(acceptance.receipt)
+        # Receipt conflict/FIFO/replay rules run first. The source check is
+        # atomic with teardown under this exclusive lock, and stale queued
+        # restores finish durably without touching the current runtime.
+        if payload is not None and "expected_source" in payload:
+            expected = payload["expected_source"]
+            keys = ("game", "runtime_id", "generation", "lease_id")
+            valid = (operation in {"stop", "switch"}
+                     and isinstance(expected, dict) and set(expected) == set(keys)
+                     and type(expected.get("generation")) is int and expected["generation"] > 0
+                     and all(isinstance(expected.get(k), str) and expected[k]
+                             for k in ("game", "runtime_id", "lease_id")))
+            if not valid or not isinstance(active, dict) or any(active.get(k) != expected[k] for k in keys):
+                result = {"request_id": request_id, "operation": operation, "status": "failed",
+                          "from_game": active.get("game") if isinstance(active, dict) else None,
+                          "to_game": target, "generation": acceptance.generation,
+                          "error_code": ERROR_SOURCE_FENCE_LOST,
+                          "detail": "expected source runtime identity no longer matches"}
+                tx.transition({"validating"}, "ready" if active else "idle", updates={
+                    "operation": None, "request_id": None, "deadline_at": None,
+                    "last_result": result,
+                    "last_error": {"error_code": result["error_code"], "detail": result["detail"]}},
+                    crash_hook=self.crash_hook)
+                saved = tx.finish_request(request_id, "failed", result)
+                return _result_from_receipt(saved)
         if acceptance.existing and not acceptance.claimed_from_queue:
             # The previous driver is provably dead (we hold the lock).
             # Converge fail-closed through the recovery path.
@@ -3572,6 +3599,8 @@ class GameSwitchCoordinator:
             "from_game": from_game,
             "to_game": target,
             "generation": acceptance.generation,
+            "active_runtime": {k: candidate_rd[k] for k in
+                               ("game", "runtime_id", "generation", "lease_id")},
         }
         # The single atomic commit write is the commit point (design §5 E).
         tx.transition(
