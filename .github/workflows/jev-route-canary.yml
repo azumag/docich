@@ -30,6 +30,19 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - name: Authorize owner canary
+        shell: bash --noprofile --norc -e -o pipefail {0}
+        run: |
+          [[ "$GITHUB_REPOSITORY" == 'azumag/docich' ]]
+          [[ "$GITHUB_REPOSITORY_ID" == '1327276249' ]]
+          [[ "$GITHUB_REPOSITORY_OWNER" == 'azumag' ]]
+          [[ "$GITHUB_REPOSITORY_OWNER_ID" == '9018513' ]]
+          [[ "$GITHUB_ACTOR" == 'azumag' ]]
+          [[ "$GITHUB_ACTOR_ID" == '9018513' ]]
+          [[ "$GITHUB_TRIGGERING_ACTOR" == 'azumag' ]]
+          [[ "$GITHUB_REF" == 'refs/heads/main' ]]
+          [[ "$GITHUB_WORKFLOW_REF" == 'azumag/docich/.github/workflows/jev-route-canary.yml@refs/heads/main' ]]
+
       - name: Checkout reviewed main
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
