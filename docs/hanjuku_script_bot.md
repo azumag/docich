@@ -109,7 +109,7 @@ runtimeの `audio_volume.json` に記録する。
 | `hanjuku_events.jsonl` | 時刻、画面SHA-256、画面判定、実際に送信したボタンと押下時間、戦闘遷移、終了理由 |
 | `hanjuku_events.previous.jsonl` | 4 MiBごとのローテート先。現行と合わせ最大約8 MiB |
 | `hanjuku_frames/frame-*.png` | 画面判定の変化、60秒間隔、終了時の画像。120枚のリング |
-| `hanjuku_frames/decision-*.png` | 名前確定・章確認・戦闘結果の判断に実際に使った画像。別の120枚リング |
+| `hanjuku_frames/decision-*.png` | 名前確定・章確認・戦闘結果、将軍一覧・携行品選択/確認、いばら解除、切り札選択中/関連判断、代役選択・装備付き出撃開始に実際に使った画像。別の120枚リング |
 | `hanjuku_bot.json` | botの現在の方策状態（チャート手順・占領・勝敗集計・所持金）。別世代へ持ち越さない |
 | `hanjuku_decisions.jsonl` | 決定記録: `decision`、`chart_step`、`strategy_variant`、状況（画面種別・将軍・城・HP・所持金）、`deviation_reason`、`expected_metric`、`observed_metric`、`resulting_event`、`reason` |
 | `hanjuku_commentary.jsonl` | 実況候補（文・意味key・生成元の決定・理由、または状況判定保留） |
@@ -122,6 +122,8 @@ runtimeの `audio_volume.json` に記録する。
 `action_plan` は未送信の入力予定として記録し、実送信は `input_sent` だけで確認する。
 両者を `decision_id` で結び、実際に判断に読んだ画像SHAと送信時の最新観測SHAは別フィールドに残す。
 別leaseの方策状態から実入力の判断IDを推測しない。
+再出撃の移動・将軍/装備選択・出撃確認は、元の `retry_context` の戦略名・逸脱理由・期待指標を
+決定と `action_plan` に継承する。入力のない判定保留も理由を残し、読取不能を欠品と数えない。
 
 ## runtime変更の確認項目
 
