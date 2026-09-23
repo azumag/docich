@@ -2,7 +2,7 @@
   "output_sha256": "68bae3e87731bc190ca73dd8e84840a1b8d34b8e2912726e44a8e08fa1c35365",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "9bfa7ba81d1b4e188c4da7773bdc4dadade66062c85313507abd3074eae2104e",
+  "source_sha256": "094ae9b951769b71f3c63852199cf2c13307ee219b324df3b19a49ae652b0b2c",
   "topics": [
     "半熟英雄起動不能の修正 #1059 はmain統合・配備済み（実起動未確認）",
     "Soren試合境界の停止を修正・複数試合の自動再開を実測",
