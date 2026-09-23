@@ -542,3 +542,117 @@ print(w.consider(None, G(), {str(tmp_path)!r}, generate=gen, background=False))
     out = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, timeout=30)
     assert out.stdout.split()[0] == 'GENERATED', out.stderr
     assert json.loads((tmp_path / worker.STATE).read_text(encoding='utf-8'))['attempts'] == 2
+
+
+# ---------------------------------------------------------------- re-review (#1086)
+def _text_screen(text, kind='text'):
+    value = Screen(lines=[], hand=None, text=text)
+    value.kind = kind
+    return value
+
+
+def _battle(mem, enemy, ally, hp_seq):
+    from docich.hanjuku_screen import Battle
+    out = []
+    for enemy_hp in hp_seq:
+        screen = _text_screen('', 'battle')
+        screen.battle = Battle(enemy=enemy, ally=ally, enemy_hp=enemy_hp, ally_hp=80)
+        out.append(policy.battle_step(screen, mem))
+    return out
+
+
+def _launch(monkeypatch, mem):
+    """target_step with the cursor on the goal: the sortie is confirmed."""
+    monkeypatch.setattr(policy, 'nav_step', lambda *a, **k: 'arrived')
+    return policy.target_step(_text_screen('', 'map_target'), mem, FRAME)
+
+
+def _adopt(mem, orders):
+    policy.map_step(map_screen(), mem, FRAME)
+    rid = mem['chart_adjust']['request_id']
+    mem['_adjusted'] = adjust.validate(adjusted_doc(rid, orders=orders))
+    policy.map_step(map_screen(), mem, FRAME)
+    mem['_adjusted'] = None
+    return rid
+
+
+def test_adjusted_boss_order_reaches_boss_entry_and_battle_tactics(monkeypatch):
+    mem = stuck_memory()
+    mem['captured'] += ['スペンソニア', 'ジョンリギ']
+    mem['orders']['1-B1'] = 'failed'
+    rid = _adopt(mem, [{'step': 'J2', 'general': chart.HERO, 'source': 'スペンソニア',
+                        'target': 'けっかい', 'cards': ['クースカン', 'ノリウツール']}])
+    j2 = adjust.execution_step(rid, 'J2')
+    assert mem['active'] == j2
+    # Boss guard still applies: no hero/cards evidence, no target confirmation.
+    assert _launch(monkeypatch, mem) == []
+    mem['order_context'] = {j2: {'actual_general': chart.HERO,
+                                 'observed_metric': {'cards': sorted(['クースカン', 'ノリウツール'])}}}
+    assert _launch(monkeypatch, mem) == [policy.pad('a')]
+    assert mem['launched']['けっかい'] == {'general': chart.HERO, 'step': j2}
+    # Unknown general on the measured boss entry text is still refused.
+    assert policy.message_step(_text_screen('ココットしょうぐんがボスじょうにせめこんだ!!'), mem) == []
+    entry = f'{chart.HERO}しょうぐんがボスじょうにせめこんだ!!'
+    assert policy.message_step(_text_screen(entry), mem) == [policy.pad('a')]
+    assert mem['attack']['step'] == j2 and mem['attack']['entry_evidence'] == 'measured_boss_entry'
+    assert _battle(mem, 'クイーン', chart.HERO, [90, 90, 85])[-1] == [policy.pad('b')]
+    assert mem['battle']['card_flow']['card'] == 'クースカン'
+    # A lost boss battle retries the same adjusted order with its own kit.
+    mem['battle'].update(enemy_hp=40, ally_hp=0, card_flow=None)
+    policy.battle_end(mem, 'map')
+    policy.battle_end(mem, 'map')
+    assert mem['orders'][j2] == 'pending'
+    assert mem['retry_context'][j2]['expected_metric']['cards'] == ['クースカン', 'ノリウツール']
+
+
+def test_launched_old_generation_keeps_its_tactics_after_a_new_plan(monkeypatch):
+    mem = stuck_memory()
+    first = _adopt(mem, [{'step': 'J1', 'general': 'ココット', 'source': 'ゴーメン',
+                          'target': 'スペンソニア', 'cards': ['ブンシーン']}])
+    old_j1 = adjust.execution_step(first, 'J1')
+    assert _launch(monkeypatch, mem) == [policy.pad('a')]
+    # A new plan arrives before ココット reaches スペンソニア.
+    second = _adopt(mem, [{'step': 'J1', 'general': 'ヴィーナス', 'source': 'カストーラ',
+                           'target': 'ジョンリギ'}])
+    assert second != first and mem['active'] == adjust.execution_step(second, 'J1')
+    assert policy.message_step(
+        _text_screen('ココットしょうぐんがスペンソニアじょうにのりこんだ'), mem) == [policy.pad('a')]
+    assert mem['attack']['step'] == old_j1
+    mem['_records'] = []
+    assert _battle(mem, 'ガルバンゾー', 'ココット', [50, 50])[-1] == [policy.pad('b')]
+    assert mem['battle']['card_flow']['card'] == 'ブンシーン'
+    assert decisions(mem, 'battle_start')[0]['planned_cards'] == ['ブンシーン']
+    # A lost battle retries the old order even though its plan was replaced.
+    mem['battle'].update(enemy_hp=30, ally_hp=0, card_flow=None, castle='スペンソニア', side='attack')
+    policy.battle_end(mem, 'map')
+    policy.battle_end(mem, 'map')
+    assert mem['orders'][old_j1] == 'pending'
+    mem['orders'][adjust.execution_step(second, 'J1')] = 'launched'
+    mem['active'] = None
+    assert policy.next_order(mem)['step'] == old_j1
+
+
+def test_interim_runs_after_an_exhausted_plan_but_not_while_a_plan_waits(monkeypatch):
+    mem = stuck_memory()
+    rid = _adopt(mem, [{'step': 'J1', 'general': 'ココット', 'source': 'ゴーメン', 'target': 'スペンソニア'},
+                       {'step': 'J2', 'general': chart.HERO, 'source': 'スペンソニア', 'target': 'けっかい',
+                        'after': ['captured', 'スペンソニア']}])
+    policy._finish_order(mem, 'launched')
+    policy.map_step(map_screen(), mem, FRAME)            # J2 waits for the capture
+    state = mem['chart_adjust']
+    assert state['request_id'] != rid and state['interim_wanted'] is False
+    mem['_interim'] = {'request_id': state['request_id'], 'seq': 0, 'status': 'ok',
+                       'choice': 'attack_1', 'confidence': 0.9}
+    policy.map_step(map_screen(), mem, FRAME)
+    assert mem.get('active') is None and not decisions(mem, 'chart_interim_order')
+    # Exhaust the plan: J2 failed. Now an interim sortie may run.
+    mem['orders'][adjust.execution_step(rid, 'J2')] = 'failed'
+    mem['_interim'] = None
+    policy.map_step(map_screen(), mem, FRAME)
+    state = mem['chart_adjust']
+    assert state['interim_wanted'] is True
+    mem['_interim'] = {'request_id': state['request_id'], 'seq': 0, 'status': 'ok',
+                       'choice': 'attack_1', 'confidence': 0.9}
+    policy.map_step(map_screen(), mem, FRAME)
+    assert mem['active'].startswith(adjust.INTERIM_PREFIX)
+    assert mem['chart_plan']['purchases'] is not None          # plan evidence kept

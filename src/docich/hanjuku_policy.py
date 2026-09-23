@@ -259,10 +259,28 @@ def _orders(mem):
     While no plan is waiting, one JEV-chosen interim order may run.
     """
     plan = mem.get('chart_plan') or {}
-    if plan.get('orders'):
-        return plan['orders']
     interim = (mem.get('chart_adjust') or {}).get('interim_order')
-    return (*chart.orders(mem.get('chapter') or 0), *((interim,) if interim else ()))
+    # An interim order only exists when no plan order is waiting (see
+    # ``_off_chart``), so it may follow an exhausted plan as well as the base.
+    base = plan['orders'] if plan.get('orders') else chart.orders(mem.get('chapter') or 0)
+    return (*base, *((interim,) if interim else ()))
+
+
+def _order_for_step(mem, step):
+    """The order behind an execution id, even after its plan was replaced.
+
+    A launched order's snapshot (``launched_orders``) keeps its general, cards,
+    target and tactics until its battle and retries are done.
+    """
+    if not step:
+        return None
+    return (next((o for o in (*_orders(mem), *chart.orders(mem.get('chapter') or 0))
+                  if o['step'] == step), None)
+            or (mem.get('launched_orders') or {}).get(step))
+
+
+def _is_boss_order(order, mem) -> bool:
+    return bool(order) and mem.get('chapter') == 1 and order.get('target') == BOSS_CASTLE
 
 
 def _plan_pending(mem) -> bool:
@@ -273,16 +291,20 @@ def _plan_pending(mem) -> bool:
 
 def next_order(mem):
     status = mem.setdefault('orders', {})
-    for order in _orders(mem):
+    current = list(_orders(mem))
+    steps = {o['step'] for o in current}
+    # A launched order put back to pending by a lost battle keeps its retry
+    # even if a newer plan replaced the one it came from.
+    retries = [o for step, o in (mem.get('launched_orders') or {}).items()
+               if step not in steps and status.get(step) == 'pending']
+    for order in (*current, *retries):
         if status.get(order['step']) in (None, 'pending') and _ready(order, mem):
             return order
     return None
 
 
 def _order(mem):
-    step = mem.get('active')
-    return next((o for o in (*_orders(mem), *chart.orders(mem.get('chapter') or 0))
-                 if o['step'] == step), None)
+    return _order_for_step(mem, mem.get('active'))
 
 
 def _tactics(mem, step):
@@ -295,7 +317,7 @@ def _tactics(mem, step):
     mechanism and evidence guards as a retry's opening cards.
     """
     base = chart.tactics(mem.get('chapter') or 0)
-    order = next((o for o in _orders(mem) if o['step'] == step), None) if step else None
+    order = _order_for_step(mem, step)
     if order is None or any(o['step'] == step for o in chart.orders(mem.get('chapter') or 0)):
         return base
     derived, seen = [], set()
@@ -474,7 +496,7 @@ def target_step(screen: Screen, mem, frame):
         # A marker we did not request: cancel instead of sending a general.
         _record(mem, 'unexpected_target', reason='指示中でない出撃先選択画面のためBで取消')
         return [pad('b')]
-    if order['step'] == '1-B1':
+    if _is_boss_order(order, mem):
         context = (mem.get('order_context') or {}).get(order['step']) or {}
         if (context.get('actual_general') != order['general']
                 or (context.get('observed_metric') or {}).get('cards') != sorted(order['cards'])):
@@ -488,17 +510,22 @@ def target_step(screen: Screen, mem, frame):
                       reason=f"{context['general']}を{order['target']}へ出撃")
         general = context['general']
         mem.setdefault('launched', {})[order['target']] = {'general': general, 'step': order['step']}
+        # Snapshot: the battle, boss entry and retries of this sortie must not
+        # depend on the plan still containing it.
+        mem.setdefault('launched_orders', {})[order['step']] = {
+            **order, 'cards': list(order['cards']),
+            'after': list(order['after']) if order['after'] else None}
         return [pad('a')]
     return _deploy_input(screen, mem, order, result or [], '出撃先へ目標カーソルを移動')
 
 
 def _deploy_cards(order, mem):
-    return list(order['cards'] if order['step'] == '1-B1'
+    return list(order['cards'] if _is_boss_order(order, mem)
                 else mem.get('card_override', {}).get(order['step'], order['cards']))
 
 
 def _deploy_context(order, mem, *, expected_metric=None):
-    general = (order['general'] if order['step'] == '1-B1'
+    general = (order['general'] if _is_boss_order(order, mem)
                else mem.get('general_override', {}).get(order['step'], order['general']))
     context = {'general': general, 'planned_general': order['general'],
             'expected_metric': expected_metric,
@@ -698,7 +725,7 @@ def deploy_step(screen: Screen, mem):
         return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move] if move else [],
                              '出撃メニューを選択')
     if kind == 'general_list':
-        if order['step'] == '1-B1':
+        if _is_boss_order(order, mem):
             mem.setdefault('sortie_general', {}).pop(order['step'], None)
             mem.setdefault('order_context', {}).pop(order['step'], None)
             move = menu_to(screen, order['general'])
@@ -744,7 +771,7 @@ def deploy_step(screen: Screen, mem):
                           reason='チャートの将軍が出撃元の城にいない')
             return [pad('b')]
         return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move], '出撃将軍を選択')
-    if kind in {'card_select', 'sortie_confirm'} and order['step'] == '1-B1':
+    if kind in {'card_select', 'sortie_confirm'} and _is_boss_order(order, mem):
         mem.setdefault('order_context', {}).pop(order['step'], None)
         if (mem.get('sortie_general') or {}).get(order['step']) != order['general']:
             return _hold_deploy(screen, mem, order, 'ボス出撃の主人公選択を確認できないため保留')
@@ -1107,7 +1134,8 @@ def battle_end(mem, next_kind):
     else:
         stats['cards_used'] = None
     step = cur.get('step')
-    boss_attempt = (mem.get('chapter') == 1 and step == '1-B1'
+    boss_order = _order_for_step(mem, step)
+    boss_attempt = (_is_boss_order(boss_order, mem)
                     and cur.get('enemy') == chart.BOSSES.get(1)
                     and cur.get('castle') == 'けっかい' and cur.get('side') == 'attack'
                     and cur.get('entry_evidence') == 'measured_boss_entry')
@@ -1120,7 +1148,8 @@ def battle_end(mem, next_kind):
             mem.setdefault('orders', {})[step] = 'pending'
             context = {'strategy_variant': 'retry_chart_boss_kit',
                        'deviation_reason': 'ボス戦のHP敗北を確認。主人公と既定切り札を再確認して再試行',
-                       'expected_metric': {'general': NAME, 'cards': ['クースカン', 'ノリウツール'],
+                       'expected_metric': {'general': boss_order['general'],
+                                           'cards': list(boss_order['cards']),
                                            'goal': 'クイーン戦勝利'}}
             mem.setdefault('retry_context', {})[step] = context
             _record(mem, 'order_retry', chart_step=step, **context,
@@ -1130,7 +1159,7 @@ def battle_end(mem, next_kind):
             mem.setdefault('orders', {})[step] = 'failed'
             _record(mem, 'situation_held', chart_step=step, strategy_variant='boss_retry_exhausted',
                     observed_metric={'retries': retries[step]}, reason='ボス再試行の上限に到達したため保留')
-    elif outcome == 'loss' and (step == '1-B1' or cur.get('enemy') == chart.BOSSES.get(1)):
+    elif outcome == 'loss' and (_is_boss_order(boss_order, mem) or cur.get('enemy') == chart.BOSSES.get(1)):
         _record(mem, 'situation_held', chart_step=step, strategy_variant='boss_entry_unclassified',
                 observed_metric={'castle': castle, 'side': cur.get('side'),
                                  'entry_evidence': cur.get('entry_evidence')},
@@ -1187,14 +1216,18 @@ def message_step(screen: Screen, mem):
     boss_entry = re.fullmatch(r'([^\ufffd\s]+)しょうぐんがボスじょうにせめこんだ!!', text)
     if boss_entry:
         general = boss_entry.group(1)
-        launched = (mem.get('launched') or {}).get('けっかい') or {}
-        if mem.get('chapter') != 1 or launched.get('step') != '1-B1' or launched.get('general') != general:
+        launched = (mem.get('launched') or {}).get(BOSS_CASTLE) or {}
+        step = launched.get('step')
+        # Base 1-B1 or an adjusted/interim boss order (generation-scoped id):
+        # the launched order itself must target the boss castle.
+        if (not _is_boss_order(_order_for_step(mem, step), mem)
+                or launched.get('general') != general):
             _record(mem, 'situation_held', screen='boss_attack_started',
                     observed_metric={'message': text}, reason='実測ボス突入文を読んだが出撃注文と一致しないため保留')
             return []
-        mem['attack'] = {'general': general, 'castle': 'けっかい', 'side': 'attack', 'step': '1-B1',
+        mem['attack'] = {'general': general, 'castle': BOSS_CASTLE, 'side': 'attack', 'step': step,
                          'entry_evidence': 'measured_boss_entry'}
-        _record(mem, 'attack_observed', chart_step='1-B1', general=general, castle='けっかい',
+        _record(mem, 'attack_observed', chart_step=step, general=general, castle=BOSS_CASTLE,
                 expected_metric={'general': launched['general']}, observed_metric={'general': general, 'message': text},
                 reason='実測済みのボス城突入文と出撃将軍が一致')
         return [pad('a')]
@@ -1467,7 +1500,7 @@ def observe_events(screen: Screen, mem):
                         'expect_menu', 'general_override', 'launched', 'month_exit',
                         'nav_last', 'orders', 'picked', 'retries', 'retry_context', 'shop',
                         'source_override', 'uncertain', 'month', 'order_context', 'sortie_general',
-                        'chart_adjust', 'chart_plan'):
+                        'chart_adjust', 'chart_plan', 'launched_orders'):
                 mem.pop(key, None)
             mem['chapter'] = chapter
             mem['variant'] = 'chart' if chart.orders(chapter) else 'chart_unavailable'
