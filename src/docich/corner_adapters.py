@@ -128,6 +128,9 @@ class GameCornerAdapter:
     def run(self, request):
         return self.manager.run_rotation(request["request_id"], self.corner.game)
 
+    def reconcile_failed_start(self, request_id):
+        return self.manager.reconcile_failed_rotation_start(request_id)
+
     def improvement_paths(self):
         root = Path(self.g.state_dir)
         return (root / "locks" / f"corner-improve-{self.corner.game}.lock",

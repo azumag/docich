@@ -4,6 +4,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from dataclasses import replace
 from datetime import datetime, date, timedelta
 from pathlib import Path
@@ -20,6 +21,7 @@ from docich.retro_corner import (  # noqa: E402
     load_retro_corner_config,
     select_game,
 )
+from docich.naming import runtime_names  # noqa: E402
 
 
 class FakeCoordinator:
@@ -99,6 +101,128 @@ brain = "resolver"
             ensure_runtime=lambda: None,
         )
         return mgr, coordinator
+
+
+class TestFailedRotationStartReconciliation(RetroCornerTestBase):
+    def _setup_failed_start(self, *, terminal=True, terminal_status="rolled_back"):
+        mgr, coordinator = self.manager(["sorengame"])
+        request_id = str(uuid.uuid4())
+        state = mgr._default_state()
+        state.update(status="starting", game="robots", previous_game="sorengame",
+                     rotation_request_id=request_id, switch_request_id=request_id,
+                     started_at=self.now_value.isoformat())
+        mgr._write_state(state)
+        canonical = mgr.store.initialize()
+        names = runtime_names(1)
+        canonical.update(phase="ready", next_generation=2, active={
+            "game": "sorengame", "adapter": "browser", "generation": 1,
+            "runtime_id": "g1-abcdef", "lease_id": str(uuid.uuid4()),
+            "game_window": names.game_window, "agent_window": names.agent_window,
+            "adapter_session": names.adapter_session,
+            "started_at": "2026-09-23T12:00:00Z",
+        })
+        mgr.store.canonical.save(canonical)
+        accepted = mgr.store.accept_request(request_id, "switch", "robots")
+        if terminal:
+            result = {
+                "request_id": request_id, "operation": "switch",
+                "status": terminal_status,
+                "from_game": "sorengame", "to_game": "robots",
+                "generation": accepted.generation, "error_code": "recovery",
+            }
+            if terminal_status == "rolled_back":
+                result["restored_generation"] = accepted.generation + 1
+            canonical, _ = mgr.store.canonical.load()
+            if terminal_status == "rolled_back":
+                restored = accepted.generation + 1
+                names = runtime_names(restored)
+                canonical["active"].update(
+                    generation=restored, runtime_id=f"g{restored}-abcdef",
+                    game_window=names.game_window, agent_window=names.agent_window,
+                    adapter_session=names.adapter_session,
+                )
+                canonical["next_generation"] = restored + 1
+            canonical.update(phase="ready", operation=None, request_id=None,
+                             deadline_at=None, last_result=result)
+            mgr.store.canonical.save(canonical)
+            mgr.store.finish_request(request_id, terminal_status, result)
+        return mgr, coordinator, request_id
+
+    def test_exact_terminal_receipt_and_ready_previous_game_interrupt_start(self):
+        mgr, coordinator, request_id = self._setup_failed_start()
+        self.assertTrue(mgr.reconcile_failed_rotation_start(request_id))
+        result = mgr._read_state()
+        self.assertEqual(result["status"], "interrupted")
+        self.assertEqual(result["end_reason"], "switch-terminal-before-corner-active")
+        self.assertEqual(result["rotation_request_id"], request_id)
+        self.assertIsNotNone(result["completed_at"])
+        self.assertTrue(mgr.reconcile_failed_rotation_start(request_id))
+        self.assertEqual(mgr._read_state()["completed_at"], result["completed_at"])
+        self.assertEqual(coordinator.calls, [])
+
+    def test_nonterminal_receipt_and_draining_canonical_keep_start(self):
+        mgr, _, request_id = self._setup_failed_start(terminal=False)
+        self.assertFalse(mgr.reconcile_failed_rotation_start(request_id))
+        self.assertEqual(mgr._read_state()["status"], "starting")
+        receipt = mgr.store.receipts.load(request_id)
+        mgr.store.finish_request(request_id, "failed", {
+            "request_id": request_id, "status": "failed",
+            "from_game": "sorengame", "to_game": "robots",
+            "generation": receipt["generation"], "error_code": "quiesce_failed",
+        })
+        canonical, _ = mgr.store.canonical.load()
+        canonical.update(phase="draining", operation="restart", request_id=str(uuid.uuid4()),
+                         deadline_at="2026-09-24T00:48:10Z")
+        mgr.store.canonical.save(canonical)
+        self.assertFalse(mgr.reconcile_failed_rotation_start(request_id))
+        self.assertEqual(mgr._read_state()["status"], "starting")
+
+    def test_failed_receipt_lacks_restored_generation_and_stays_latched(self):
+        mgr, _, request_id = self._setup_failed_start(terminal_status="failed")
+        self.assertFalse(mgr.reconcile_failed_rotation_start(request_id))
+        self.assertEqual(mgr._read_state()["status"], "starting")
+
+    def test_newer_canonical_result_or_different_generation_keeps_start(self):
+        mgr, _, request_id = self._setup_failed_start()
+        canonical, _ = mgr.store.canonical.load()
+        canonical["last_result"]["request_id"] = str(uuid.uuid4())
+        mgr.store.canonical.save(canonical)
+        self.assertFalse(mgr.reconcile_failed_rotation_start(request_id))
+        canonical["last_result"]["request_id"] = request_id
+        canonical["active"]["generation"] = 4
+        canonical["active"]["runtime_id"] = "g4-abcdef"
+        names = runtime_names(4)
+        canonical["active"].update(game_window=names.game_window,
+                                    agent_window=names.agent_window,
+                                    adapter_session=names.adapter_session)
+        canonical["next_generation"] = 5
+        mgr.store.canonical.save(canonical)
+        self.assertFalse(mgr.reconcile_failed_rotation_start(request_id))
+        self.assertEqual(mgr._read_state()["status"], "starting")
+
+    def test_receipt_result_mismatch_keeps_start(self):
+        mgr, _, request_id = self._setup_failed_start()
+        receipt = mgr.store.receipts.load(request_id)
+        receipt["result"]["from_game"] = "nethack"
+        mgr.store.receipts.save(receipt)
+        self.assertFalse(mgr.reconcile_failed_rotation_start(request_id))
+        self.assertEqual(mgr._read_state()["status"], "starting")
+
+    def test_mismatch_or_unreleased_runtime_keeps_start(self):
+        mgr, _, request_id = self._setup_failed_start()
+        self.assertFalse(mgr.reconcile_failed_rotation_start(str(uuid.uuid4())))
+        canonical, _ = mgr.store.canonical.load()
+        canonical["retiring"] = [dict(canonical["active"])]
+        canonical["retiring"][0]["generation"] = 4
+        canonical["retiring"][0]["runtime_id"] = "g4-abcdef"
+        names = runtime_names(4)
+        canonical["retiring"][0].update(game_window=names.game_window,
+                                         agent_window=names.agent_window,
+                                         adapter_session=names.adapter_session)
+        canonical["next_generation"] = 5
+        mgr.store.canonical.save(canonical)
+        self.assertFalse(mgr.reconcile_failed_rotation_start(request_id))
+        self.assertEqual(mgr._read_state()["status"], "starting")
 
 
 class TestRetroCornerConfig(RetroCornerTestBase):

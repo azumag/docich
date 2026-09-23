@@ -552,6 +552,74 @@ class RetroCornerManager:
         os.chmod(self.state_path.parent, 0o700)
         atomic_write_json(self.state_path, state)
 
+    def reconcile_failed_rotation_start(self, request_id: str) -> bool:
+        """Terminalize a failed switch that never made this corner active.
+
+        A stale ``starting`` record is not evidence of failure: the switch may
+        still be draining or rolling back. The durable terminal receipt and a
+        stable canonical owner must both prove that this exact switch ended.
+        """
+        from .game_switch import GameSwitchBusyError
+
+        try:
+            with self._locked(), self.store.lock(exclusive=False):
+                state = self._read_state()
+                target = state.get("game")
+                previous = state.get("previous_game")
+                if (state.get("status") not in {"starting", "interrupted"}
+                        or (state.get("status") == "interrupted"
+                            and state.get("end_reason") != "switch-terminal-before-corner-active")
+                        or state.get("rotation_request_id") != request_id
+                        or state.get("switch_request_id") != request_id
+                        or not isinstance(target, str)
+                        or target not in self.config.games
+                        or not isinstance(previous, str)
+                        or target == previous):
+                    return False
+                receipt = self.store.receipts.load(request_id)
+                canonical, missing = self.store.canonical.load()
+                if receipt is None or missing:
+                    return False
+                result = receipt.get("result")
+                active = canonical.get("active")
+                last_result = canonical.get("last_result")
+                if (receipt.get("operation") != "switch"
+                        or receipt.get("target") != target
+                        or receipt.get("status") != "rolled_back"
+                        or not isinstance(result, dict)
+                        or result.get("request_id") != request_id
+                        or result.get("status") != "rolled_back"
+                        or result.get("operation") != "switch"
+                        or result.get("from_game") != previous
+                        or result.get("to_game") != target
+                        or result.get("generation") != receipt.get("generation")
+                        or type(result.get("restored_generation")) is not int
+                        or result.get("cleanup_pending") is True
+                        or not isinstance(last_result, dict)
+                        or any(last_result.get(key) != result.get(key) for key in (
+                            "request_id", "status", "operation", "from_game", "to_game",
+                            "generation", "restored_generation"))
+                        or canonical.get("phase") != "ready"
+                        or not isinstance(active, dict)
+                        or active.get("game") != previous
+                        or active.get("generation") != result.get("restored_generation")
+                        or not active.get("runtime_id")
+                        or canonical.get("candidate") is not None
+                        or canonical.get("previous") is not None
+                        or canonical.get("retiring")):
+                    return False
+                if state["status"] == "starting":
+                    state.update(status="interrupted", completed_at=self._local_now().isoformat(),
+                                 end_reason="switch-terminal-before-corner-active",
+                                 last_error=None, last_error_code=None)
+                    state.pop("switch_status", None)
+                    self._write_state(state)
+                return True
+        except (RetroCornerError, GameSwitchBusyError):
+            # An owner still holds a lock: keep the reservation and retry on
+            # the next timer tick, without replaying the switch.
+            return False
+
     def _due_game(self, now: dt.datetime, state: dict) -> str | None:
         games = self.config.games if getattr(self.config, "daily_each_game", False) else [select_game(self.config.games, now.date())]
         attempted = state.get("daily_attempts", {}).get(now.date().isoformat(), [])

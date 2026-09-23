@@ -1225,6 +1225,67 @@ def test_recover_returns_a_started_less_manual_reservation_to_the_operator(setup
     assert len(executor.calls) == calls
 
 
+def test_tick_commits_exact_failed_game_start_without_relaunch(setup):
+    g, clock, _, executor, make = setup
+    manager, request_id = _latch_manual(make, executor, clock, corner="retro")
+    raw = state(manager)
+    raw.update(status="waiting", reason="manual-request-needs-resume-or-recovery")
+    raw["manual_pending"]["state_file"] = "retro_corner.json"
+    raw["history"].append({"corner": "retro", "at": clock[0] - 20,
+                           "source": "manual-reservation"})
+    manager.path.write_text(json.dumps(raw))
+    adapter = manager.adapters["retro"]
+    adapter.state_path = Path(g.state_dir) / "retro_corner.json"
+    adapter.states = [{"status": "starting", "rotation_request_id": request_id,
+                       "started_at": clock[0] - 10}]
+    calls = []
+
+    def reconcile(identity):
+        calls.append(identity)
+        adapter.states = [{"status": "interrupted", "rotation_request_id": identity,
+                           "started_at": clock[0] - 10,
+                           "completed_at": clock[0] - 1}]
+        return True
+
+    adapter.reconcile_failed_start = reconcile
+    for candidate in manager.adapters.values():
+        candidate.available = False
+    original_calls = len(executor.calls)
+    outcome = manager.tick()
+
+    assert outcome == {"status": "waiting", "reason": "no-enabled-corner"}
+    assert calls == [request_id]
+    final = state(manager)
+    assert final.get("manual_pending") is None
+    assert final["last_result"]["request_id"] == request_id
+    assert final["last_result"]["status"] == "interrupted"
+    assert any(row["source"] == "manual-reservation" and row["corner"] == "retro"
+               for row in final["history"])
+    assert len(executor.calls) == original_calls
+    history = list(final["history"])
+    assert manager.tick() == {"status": "waiting", "reason": "no-enabled-corner"}
+    assert state(manager)["history"] == history
+    assert calls == [request_id]
+
+
+def test_tick_keeps_manual_game_start_when_terminal_proof_is_missing(setup):
+    g, clock, _, executor, make = setup
+    manager, request_id = _latch_manual(make, executor, clock, corner="retro")
+    raw = state(manager)
+    raw.update(status="waiting", reason="manual-request-needs-resume-or-recovery")
+    raw["manual_pending"]["state_file"] = "retro_corner.json"
+    manager.path.write_text(json.dumps(raw))
+    adapter = manager.adapters["retro"]
+    adapter.state_path = Path(g.state_dir) / "retro_corner.json"
+    adapter.states = [{"status": "starting", "rotation_request_id": request_id}]
+    adapter.reconcile_failed_start = lambda _: False
+    original_calls = len(executor.calls)
+
+    assert manager.tick()["reason"] == "manual-request-needs-resume-or-recovery"
+    assert state(manager)["manual_pending"]["request_id"] == request_id
+    assert len(executor.calls) == original_calls
+
+
 def test_recover_refuses_a_running_manual_reservation(setup):
     _, clock, _, executor, make = setup
     manager, request_id = _latch_manual(make, executor, clock)

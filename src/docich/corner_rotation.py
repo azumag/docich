@@ -382,8 +382,21 @@ class CornerRotationManager:
             if now < state.get("clock_hold_until", 0):
                 return self._wait(state, "clock-gap-quarantine")
             try:
-                busy = self._observe(state, now)
                 manual = state.get("manual_pending")
+                # A failed switch may leave a retro start and its manual slot
+                # parked even after game-switch has returned to the old game.
+                # Only the game adapter can prove the exact terminal receipt
+                # and stable canonical owner; never infer this from age alone.
+                if manual is not None:
+                    adapter = self.adapters.get(manual.get("corner"))
+                    reconcile = getattr(adapter, "reconcile_failed_start", None)
+                    if (callable(reconcile)
+                            and getattr(adapter, "state_path", None) is not None
+                            and adapter.state_path.name == manual.get("state_file")
+                            and reconcile(manual["request_id"])):
+                        self._resolve_reservation(state, manual, now, manual=True)
+                        manual = None
+                busy = self._observe(state, now)
                 if manual is not None:
                     adapter = self.adapters.get(manual.get("corner"))
                     completed = adapter is not None and any(
