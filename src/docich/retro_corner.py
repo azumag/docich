@@ -583,6 +583,10 @@ class RetroCornerManager:
                 result = receipt.get("result")
                 active = canonical.get("active")
                 last_result = canonical.get("last_result")
+                # last_result is only the newest operation's summary and may
+                # now describe a Soren restart. The terminal receipt remains
+                # bound to this request; a newer active generation is safe
+                # only after all tracked candidate/retiring runtimes cleared.
                 if (receipt.get("operation") != "switch"
                         or receipt.get("target") != target
                         or receipt.get("status") != "rolled_back"
@@ -595,18 +599,16 @@ class RetroCornerManager:
                         or result.get("generation") != receipt.get("generation")
                         or type(result.get("restored_generation")) is not int
                         or result.get("cleanup_pending") is True
-                        or not isinstance(last_result, dict)
-                        or any(last_result.get(key) != result.get(key) for key in (
-                            "request_id", "status", "operation", "from_game", "to_game",
-                            "generation", "restored_generation"))
                         or canonical.get("phase") != "ready"
                         or not isinstance(active, dict)
                         or active.get("game") != previous
-                        or active.get("generation") != result.get("restored_generation")
+                        or active.get("generation") < result.get("restored_generation")
                         or not active.get("runtime_id")
                         or canonical.get("candidate") is not None
                         or canonical.get("previous") is not None
-                        or canonical.get("retiring")):
+                        or canonical.get("retiring")
+                        or (isinstance(last_result, dict)
+                            and last_result.get("cleanup_pending") is True)):
                     return False
                 if state["status"] == "starting":
                     state.update(status="interrupted", completed_at=self._local_now().isoformat(),
