@@ -596,9 +596,11 @@ class RetroCornerManager:
                         or result.get("operation") != "switch"
                         or result.get("from_game") != previous
                         or result.get("to_game") != target
+                        or type(result.get("generation")) is not int
                         or result.get("generation") != receipt.get("generation")
                         or type(result.get("restored_generation")) is not int
-                        or result.get("cleanup_pending") is True
+                        or (result.get("cleanup_pending") is not None
+                            and result.get("cleanup_pending") is not False)
                         or canonical.get("phase") != "ready"
                         or not isinstance(active, dict)
                         or active.get("game") != previous
@@ -608,8 +610,10 @@ class RetroCornerManager:
                         or canonical.get("candidate") is not None
                         or canonical.get("previous") is not None
                         or canonical.get("retiring")
+                        or (last_result is not None and not isinstance(last_result, dict))
                         or (isinstance(last_result, dict)
-                            and last_result.get("cleanup_pending") is True)):
+                            and last_result.get("cleanup_pending") is not None
+                            and last_result.get("cleanup_pending") is not False)):
                     return False
                 if state["status"] == "starting":
                     state.update(status="interrupted", completed_at=self._local_now().isoformat(),

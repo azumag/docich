@@ -262,6 +262,40 @@ class TestFailedRotationStartReconciliation(RetroCornerTestBase):
         self.assertFalse(mgr.reconcile_failed_rotation_start(request_id))
         self.assertEqual(mgr._read_state()["status"], "starting")
 
+    def test_boolean_result_generation_cannot_match_integer_receipt_generation(self):
+        mgr, _, request_id = self._setup_failed_start()
+        receipt = mgr.store.receipts.load(request_id)
+        receipt["result"]["generation"] = True
+        mgr.store.receipts.save(receipt)
+        self.assertFalse(mgr.reconcile_failed_rotation_start(request_id))
+        self.assertEqual(mgr._read_state()["status"], "starting")
+
+    def test_cleanup_pending_accepts_only_none_or_false(self):
+        for field in ("receipt", "last_result"):
+            for value, allowed in ((None, True), (False, True), (True, False),
+                                   (0, False), ("pending", False)):
+                with self.subTest(field=field, value=value):
+                    mgr, _, request_id = self._setup_failed_start()
+                    if field == "receipt":
+                        receipt = mgr.store.receipts.load(request_id)
+                        receipt["result"]["cleanup_pending"] = value
+                        mgr.store.receipts.save(receipt)
+                    else:
+                        canonical, _ = mgr.store.canonical.load()
+                        canonical["last_result"]["cleanup_pending"] = value
+                        mgr.store.canonical.save(canonical)
+                    self.assertEqual(mgr.reconcile_failed_rotation_start(request_id), allowed)
+                    self.assertEqual(mgr._read_state()["status"],
+                                     "interrupted" if allowed else "starting")
+
+    def test_malformed_last_result_keeps_start(self):
+        mgr, _, request_id = self._setup_failed_start()
+        canonical, _ = mgr.store.canonical.load()
+        canonical["last_result"] = "unknown"
+        mgr.store.canonical.save(canonical)
+        self.assertFalse(mgr.reconcile_failed_rotation_start(request_id))
+        self.assertEqual(mgr._read_state()["status"], "starting")
+
     def test_mismatch_or_unreleased_runtime_keeps_start(self):
         mgr, _, request_id = self._setup_failed_start()
         self.assertFalse(mgr.reconcile_failed_rotation_start(str(uuid.uuid4())))
