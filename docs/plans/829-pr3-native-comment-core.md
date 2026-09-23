@@ -24,6 +24,14 @@ soviet_now copies) is deleted at cutover, when the soviet_now copies are.
 
 ## Notes from 3a
 
+- **Golden must load the legacy like production.** Later layers wrap
+  `comment.sh`: `comment_runtime_policy.sh` re-defines
+  `_append_comment_reply_contract` to append the viewer-address / card-burst
+  contract. The generator therefore sources `eloop_lib.sh` (on a disposable
+  `git archive` export, re-asserting injected values because `core/config.sh`
+  assigns e.g. `GACHA_COMPLETED_USERS_FILE` unconditionally), and a test pins
+  which files define the ported prompt functions. Later slices must do the same.
+
 - `_group_comments_by_category` is dead code in the legacy file (defined,
   never called) and is not ported.
 - The legacy prompt reads mode assets with `$(cat …)`, which drops trailing

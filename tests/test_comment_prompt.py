@@ -133,8 +133,24 @@ def test_extracted_heredocs_have_not_drifted():
     comment_sh = SOVIET_NOW / "broadcast/comment.sh"
     if not comment_sh.is_file():
         pytest.skip("games/soviet_now not checked out")
-    text = comment_sh.read_text(encoding="utf-8")
-    for asset, marker in (("comment_reply_contract.md", "COMMENTREPLYCONTRACT"),
-                          ("comment_retry_addendum.md", "RETRYCOMMENT")):
+    for source, asset, marker in (("broadcast/comment.sh", "comment_reply_contract.md", "COMMENTREPLYCONTRACT"),
+                                  ("broadcast/comment.sh", "comment_retry_addendum.md", "RETRYCOMMENT"),
+                                  ("broadcast/comment_runtime_policy.sh", "comment_reply_policy_contract.md",
+                                   "COMMENTRUNTIMEPOLICY")):
+        text = (SOVIET_NOW / source).read_text(encoding="utf-8")
         start = text.index(f"<<'{marker}'\n") + len(marker) + 5
         assert text[start:text.index(f"{marker}\n", start)] == prompt.asset(asset), asset
+
+
+def test_only_the_reply_contract_is_rewrapped_by_later_legacy_layers():
+    """The golden loads eloop_lib.sh like production; if another layer starts
+    wrapping a prompt function, the port (and this list) must be revisited."""
+    if not (SOVIET_NOW / "eloop_lib.sh").is_file():
+        pytest.skip("games/soviet_now not checked out")
+    import subprocess
+    wrapped = subprocess.run(
+        ["git", "-C", str(SOVIET_NOW), "grep", "-l", "-E",
+         r"^(_build_category_prompt|_append_comment_reply_contract|_build_gacha_completion_note|"
+         r"_sanitize_comment_prompt_context|_comment_classification_english_count)\(\)", "--", "*.sh", ":!tests"],
+        capture_output=True, text=True).stdout.split()
+    assert sorted(wrapped) == ["broadcast/comment.sh", "broadcast/comment_runtime_policy.sh"]

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Regenerate tests/fixtures/comment_prompt_golden.json (#829 PR-3a).
 
-Executes the *legacy* soviet_now comment prompt code (sourced
-``broadcast/comment.sh`` functions, the inline python blocks of
+Executes the *legacy* soviet_now comment prompt code (functions as loaded by
+the production ``eloop_lib.sh`` -- so ``comment_runtime_policy.sh``'s wrappers
+apply -- the inline python blocks of
 ``generate_comment_response`` extracted verbatim, and ``envsubst`` on the
 real templates) for fixed synthetic inputs, and records its stdout. The
 docich native prompt layer (``docich.comment.prompt``) must reproduce these
@@ -16,6 +17,7 @@ import argparse
 import hashlib
 import json
 import os
+import shlex
 from pathlib import Path
 import subprocess
 import tempfile
@@ -63,7 +65,15 @@ def context(mode, sn):
 def bash(script, sn, env=None, stdin=None, args=()):
     base = {"PATH": os.environ["PATH"], "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "HOME": os.environ.get("HOME", "/tmp"),
             "ELOOP_LIB_DIR": str(sn)}
-    result = subprocess.run(["bash", "-c", 'log(){ :; }; source broadcast/comment.sh; ' + script, "golden", *args],
+    # Load exactly like production (eloop_lib.sh), so later layers such as
+    # comment_runtime_policy.sh wrap the comment.sh definitions. The checkout
+    # has no .env; nothing is started.
+    # core/config.sh assigns some of the same names unconditionally (e.g.
+    # GACHA_COMPLETED_USERS_FILE), so the injected values are re-exported
+    # after loading; otherwise the legacy would write into the checkout.
+    reassert = "".join(f"export {name}={shlex.quote(value)}; " for name, value in (env or {}).items())
+    result = subprocess.run(["bash", "-c", 'source ./eloop_lib.sh >/dev/null 2>&1; log(){ :; }; ' + reassert + script,
+                             "golden", *args],
                             cwd=sn, env={**base, **(env or {})}, input=stdin, capture_output=True,
                             text=True, timeout=60)
     if result.returncode:
@@ -91,8 +101,17 @@ def soren91_policies(sn):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--soviet-now", type=Path, required=True)
-    sn = parser.parse_args().soviet_now.resolve()
-    commit = subprocess.check_output(["git", "-C", str(sn), "rev-parse", "HEAD"], text=True).strip()
+    checkout = parser.parse_args().soviet_now.resolve()
+    commit = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
+    # Run on a disposable export of that commit: loading eloop_lib.sh creates
+    # tmp/ dirs and the gacha note appends to its list file.
+    with tempfile.TemporaryDirectory(prefix="legacy-soviet-now-") as export:
+        archive = subprocess.run(["git", "-C", str(checkout), "archive", commit], check=True, capture_output=True).stdout
+        subprocess.run(["tar", "-x", "-C", export], input=archive, check=True)
+        generate(Path(export), commit)
+
+
+def generate(sn, commit):
 
     sanitize_inputs = [
         "", "   \n\n", "普通の行\n  前後空白  \n\n次の行",
@@ -190,6 +209,9 @@ def main():
     # Verbatim heredocs / policy strings / default resolution of generate_comment_response.
     text = (sn / "broadcast/comment.sh").read_text(encoding="utf-8")
     contract = inline_python(sn, "<<'COMMENTREPLYCONTRACT'\n", "COMMENTREPLYCONTRACT\n")
+    policy_text = (sn / "broadcast/comment_runtime_policy.sh").read_text(encoding="utf-8")
+    start = policy_text.index("<<'COMMENTRUNTIMEPOLICY'\n") + len("<<'COMMENTRUNTIMEPOLICY'\n")
+    policy_contract = policy_text[start:policy_text.index("COMMENTRUNTIMEPOLICY\n", start)]
     retry_addendum = inline_python(sn, "<<'RETRYCOMMENT'\n", "RETRYCOMMENT\n")
     policies = soren91_policies(sn)
     defaults_src = inline_python(sn, "\t\t# Pre-resolve defaults for envsubst\n", "\n\n\t\t# Export all template variables")
@@ -218,7 +240,7 @@ def main():
         "sanitize": sanitize, "dominant_category": dominant, "english_count": english,
         "formatted_classifications": formatted, "gacha_completion_note": gacha,
         "time_period": periods, "prompts": prompts,
-        "reply_contract_heredoc": contract, "retry_addendum_heredoc": retry_addendum,
+        "reply_contract_heredoc": contract, "runtime_policy_contract_heredoc": policy_contract, "retry_addendum_heredoc": retry_addendum,
         "soren91_length_policy": policies[0], "soren91_retry_length_policy": policies[1],
         "prompt_defaults": defaults,
     }
