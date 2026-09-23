@@ -23,6 +23,7 @@ from .corner_research import (
     prepare_research_context,
 )
 from .dashboard_snapshot import build_dashboard_snapshot
+from .narration_style import strip_leading_preamble
 from .performance import build_round_trips
 from .strategy_store import load_strategy_policy, policy_to_payload
 from .strategies import StrategyPolicy
@@ -297,6 +298,8 @@ def build_prompt(facts: Mapping[str, object]) -> str:
         "【話し方】\n"
         "- です・ます調の自然な話し言葉。結論を先に言い、その後に理由や数字を添える。\n"
         "- 各セグメントの最初の一文は、数字ではなく相場や判断の意味を先に言う。\n"
+        "- 冒頭に「結論からお伝えしますと」「まず結論ですが」のような前口上・枕詞を置かない。"
+        "前置きなしで最初の文から内容そのものを言い、結論はその文で直接言う。\n"
         "- factsを順番に復唱するだけは禁止。数字同士を比較し、意味を説明する。\n"
         "- 数字は根拠として必要な分だけ使い、数値を二つ以上続けて読んだら、必ず『だから何を見るか』を続ける。\n"
         "- 金額・価格・指標などの数値は小数第2位までに丸めて言うこと（0.001のような小さい数量はそのまま）。factsの桁数をそのまま読み上げない。\n"
@@ -347,6 +350,10 @@ def parse_script(text: str) -> dict:
         if not isinstance(value, str) or not value.strip():
             continue
         cleaned = value.strip().replace("\n", " ")
+        # A spoken lead-in (「結論からお伝えしますと、」) is generated because the
+        # prompt asks for the conclusion first; it carries no content, so it is
+        # dropped before the segment is stored/overlayed/spoken.
+        cleaned = strip_leading_preamble(cleaned)
         if len(cleaned) > MAX_SEGMENT_CHARS:
             cleaned = cleaned[:MAX_SEGMENT_CHARS]
         segments[key] = cleaned
@@ -980,6 +987,8 @@ def build_next_prompt(facts: Mapping[str, object], covered: Sequence[object] | N
         "損益と保有、直近約定の理由、往復の振り返り、次回改善で検証したいこと。\n"
         "【話し方】\n"
         "- です・ます調の自然な話し言葉。結論を先に言い、その後に理由や数字を添える。\n"
+        "- 冒頭に「結論からお伝えしますと」「まず結論ですが」のような前口上・枕詞を置かない。"
+        "前置きなしで最初の文から内容そのものを言い、結論はその文で直接言う。\n"
         "- factsを順番に復唱するだけは禁止。数字同士を比較し、意味を説明する。\n"
         "- 金額・価格・指標などの数値は小数第2位までに丸めて言うこと。\n"
         "- 事実と推測を言い分け、ニュースの見出しをそのまま読み上げない。\n"
@@ -1010,6 +1019,9 @@ def parse_next_narration(text: str) -> dict:
     if not isinstance(body, str) or not body.strip():
         raise CornerScriptError("次の台本に有効な本文がありません")
     cleaned = body.strip().replace("\n", " ")
+    # Same spoken lead-in removal as parse_script: the segment is spoken as
+    # soon as it is generated, so the preamble must not survive parsing.
+    cleaned = strip_leading_preamble(cleaned)
     if len(cleaned) > MAX_SEGMENT_CHARS:
         cleaned = cleaned[:MAX_SEGMENT_CHARS]
     topic = data.get("topic")

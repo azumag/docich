@@ -81,6 +81,26 @@ class TestSorenOutputAdapter(unittest.TestCase):
         self.assertTrue(script.endswith("今日は損益を見ます。"))
         self.assertNotIn(intro, script)
 
+    def test_speech_drops_leading_conclusion_lead_in(self):
+        """Generation already strips it; a durable/replayed or disobedient
+
+        segment must still not open with the lead-in on air.
+        """
+        body = "結論からお伝えしますと、本日は損益が拮抗しています。"
+        for key in (
+            "paper-corner:2026-09-23:ai:1",
+            "paper-corner:2026-09-23:script:2",
+            "paper-corner-manual-abc123def456:2026-09-23:ai:3",
+        ):
+            self.assertEqual(
+                soren_output._paper_corner_speech_text(body, key),
+                "本日は損益が拮抗しています。",
+            )
+        # Non-paper deliveries keep their text verbatim.
+        self.assertEqual(
+            soren_output._paper_corner_speech_text(body, "fill:event-a"), body
+        )
+
     def test_periodic_paper_corner_report_adds_varied_chatter_without_intro(self):
         intro = "PAPER・暗号資産の模擬売買コーナーです。"
         first = soren_output._paper_corner_speech_text(
