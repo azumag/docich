@@ -1,7 +1,8 @@
 """Sortie uncertainty uses synthetic structured observations, not ROM assets.
 
-Quantity layouts remain uncalibrated; these fixtures assert holds rather than
-pretending a synthetic inventory format is measured on the live game.
+Quantity layouts are only as calibrated as the measured g328 panel: single
+digits at x=232 and two-digit stock with tens at x=224. Other placements
+assert holds rather than pretending an unmeasured inventory format is real.
 """
 import importlib.util
 import json
@@ -25,12 +26,20 @@ def menu(kind, words, hand=True):
 
 
 def measured_card_select(names=('イッテツーン', 'ダイチスイム', 'ブラッキー', 'フットバース'),
-                         *, selected=0, stock='2', remaining='3'):
+                         *, selected=0, stock='2', remaining='3', stocks=None):
     rows = {31: [(136 + 8*i, ch) for i, ch in enumerate('きりふだセレクト')]
                   + [(208 + 8*i, ch) for i, ch in enumerate(f'あと{remaining}こ')],
             127: [(136 + 8*i, ch) for i, ch in enumerate('バトルようのきりふだです')]}
     for i, name in enumerate(names):
-        rows[55 + 16*i] = [(160 + 8*j, ch) for j, ch in enumerate(name)] + [(232, stock)]
+        value = str((stocks[i] if stocks else stock))
+        cells = [(160 + 8*j, ch) for j, ch in enumerate(name)]
+        if len(value) == 1:
+            cells.append((232, value))
+        elif len(value) == 2:
+            cells.extend([(224, value[0]), (232, value[1])])
+        else:
+            raise ValueError(f'unsupported stock {value!r}')
+        rows[55 + 16*i] = cells
     for x, y in [(16, 23), (160, 23), (136, 47), (144, 47), (136, 55), (144, 55),
                  (160, 63), (160, 79), (32, 87), (184, 95), (32, 103), (208, 119)]:
         rows.setdefault(y, []).append((x, UNKNOWN))
@@ -358,6 +367,25 @@ def foot_order_memory():
             'orders': {'1-A2': 'pending'}, 'picked': []}
 
 
+def test_measured_two_digit_stock_row_keeps_cursor_and_moves_to_planned_card():
+    # Live g328: イッテツーン stock 10 is tens at x=224 and ones at x=232.
+    mem = {'chapter': 1, 'active': '1-C2', 'variant': 'chart',
+           'orders': {'1-C2': 'pending'}, 'picked': []}
+    screen = measured_card_select(('イッテツーン', 'ダイチスイム', 'ブラッキー', 'フットバース'),
+                                  stocks=('10', '2', '2', '2'), selected=0, remaining='3')
+    inventory = policy._measured_card_select(screen)
+    assert inventory is not None
+    assert inventory['rows'][0] == {'y': 55, 'card': 'イッテツーン', 'stock': 10}
+    assert inventory['inventory_evidence'] == 'measured_four_row_card_select'
+    assert policy.deploy_step(screen, mem) == [policy.pad('down')]
+    assert mem['picked'] == []
+    assert mem['_records'][-1]['observed_metric']['target_stock'] == 2
+    screen = measured_card_select(('イッテツーン', 'ダイチスイム', 'ブラッキー', 'フットバース'),
+                                  stocks=('10', '2', '2', '2'), selected=1, remaining='3')
+    assert policy.deploy_step(screen, mem) == [policy.pad('a')]
+    assert mem['picked'] == ['ダイチスイム']
+
+
 def test_measured_card_menu_ignores_background_and_moves_to_footbath():
     mem = foot_order_memory()
     for selected in range(3):
@@ -377,7 +405,7 @@ def test_measured_card_menu_ignores_background_and_moves_to_footbath():
 
 @pytest.mark.parametrize('y,x,value', [(31, 136, 'あ'), (31, 224, UNKNOWN), (31, 240, 'こ'),
     (55, 160, UNKNOWN), (71, 168, 'あ'), (103, 232, UNKNOWN), (103, 232, None),
-    (103, 224, '1'), (103, 240, '0'), (87, 208, UNKNOWN), (127, 136, None)])
+    (103, 216, '1'), (103, 224, '0'), (103, 240, '0'), (87, 208, UNKNOWN), (127, 136, None)])
 def test_unmeasured_card_menu_cells_never_select_or_infer_missing(y, x, value):
     screen = measured_card_select(selected=3)
     replace_cell(screen, y, x, value)
