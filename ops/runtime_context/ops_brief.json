@@ -1,11 +1,11 @@
 {
-  "output_sha256": "532c9ab7d90873f788d6e17fe9dadcc9ba38970ba9d4f27cfc25f2d5c0b6dbcc",
+  "output_sha256": "19d04ba1ffab26a2f30ab3acf01bfad9f13545e38b346b6fe9d8bada445d4db0",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "d69b4864c5b6792ab048fd60d41c8eef51052e045fba49d765b051db6d235e51",
+  "source_sha256": "5e9f17b8ce07fd3cb39069082e13cd36ef6f652d51900ca403ba0d64c2ffdeb1",
   "topics": [
-    "半熟英雄 #1072配備後の空携行品判定を実画面で校正中",
-    "NInvaders automatic strategy repair and acceptance",
-    "半熟英雄 #1070配備・自然ゲームオーバーからSoren復帰（攻略受入は継続）"
+    "webui Corners: 手動停止不可・稼働誤表示・開始Errno13を修正（ main統合・VM配備・webui再起動済み、ブラウザ…",
+    "半熟英雄: チャート外LLM動的調整の設計Issueを発行し実装前に停止",
+    "半熟英雄 #1072配備後の空携行品判定を実画面で校正中"
   ]
 }
