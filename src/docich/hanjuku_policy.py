@@ -365,6 +365,30 @@ def _hold_deploy(screen, mem, order, reason, *, card=None, carried=None):
     return []
 
 
+def _empty_sortie_inventory(screen):
+    """Measured g328 empty inventory, using exact text cells in its panels.
+
+    Only these text baselines establish the receipt. Left-side stats, mark
+    rows above glyphs and the hand left of the choices are outside them.
+    No quantity or nonempty-inventory format is inferred here.
+    """
+    if screen.kind != 'sortie_confirm':
+        return False
+    rows = ((47, 136, ((136, 'きりふだ'),)),
+            (63, 136, ((176, 'きりふだは'),)),
+            (79, 136, ((176, 'ありません……'),)),
+            (95, 136, ((136, 'ーしゅつげき'), (192, 'しますか?ー'))),
+            (111, 160, ((160, 'うむッ!'),)),
+            (127, 160, ((160, 'いかんッ!'),)))
+    for y, left, spans in rows:
+        expected = tuple((x + 8 * index, ch) for x, text in spans for index, ch in enumerate(text))
+        observed = tuple((x, ch) for line in screen.lines if line.y == y
+                         for x, ch in line.cells if left <= x < 240)
+        if observed != expected:
+            return False
+    return not any(card in word for _, _, word in _options(screen) for card in CARD_NAMES)
+
+
 def deploy_step(screen: Screen, mem):
     order = _order(mem)
     kind = screen.kind
@@ -453,10 +477,14 @@ def deploy_step(screen: Screen, mem):
         # glyphs into an empty inventory. Only complete card-name spans count.
         carried = [word for _, _, word in _options(screen) if word in CARD_NAMES]
         card_lines = [line for line in screen.lines if any(card in line.text for card in CARD_NAMES)]
+        empty_receipt = _empty_sortie_inventory(screen)
         ambiguous = (UNKNOWN in screen.text or any(UNKNOWN in line.text for line in screen.lines)
                      or any(re.search(r'\d', line.text) for line in card_lines)
                      or any(any(card in word for card in CARD_NAMES) and word not in CARD_NAMES
                             for _, _, word in _options(screen)))
+        if not carried:
+            # Absence of recognised card names is not evidence of emptiness.
+            ambiguous = not empty_receipt
         want = sorted(_deploy_cards(order, mem))
         got = sorted(carried)
         if ambiguous or got != want:
@@ -475,6 +503,7 @@ def deploy_step(screen: Screen, mem):
                                     else {'general': order['general'], 'cards': want}),
                 'observed_metric': {'general': context['general'], 'cards': got}}
             _record(mem, 'sortie_confirm', **context, cards=carried,
+                    inventory_evidence='measured_empty_sortie' if empty_receipt else 'complete_card_names',
                     observed_metric=got,
                     reason='出撃確認で読み取った切り札が計画と一致したため承認を予定')
             source = mem.get('source_override', {}).get(order['step'], order['source'])
