@@ -1,25 +1,29 @@
 # NetHack post-restore source: PR1の証跡契約
 
-Refs #859 / #490。これはPR1の最初の実装単位であり、PR1全体の完了や自動改善の稼働を意味しない。
+Refs #859 / #490。PR1は復帰後の観測証跡を保存する。自動改善の実行や有効化は行わない。
 
 ## 今回の範囲
 
-`src/docich/nethack_source.py` にI/Oを持たない証跡検証・正規化関数を追加する。
+`src/docich/nethack_source.py` にI/Oを持たない証跡検証・正規化関数を追加し、既存のCoordinator・コーナー・RunStoreへ接続する。
 
 - `new_session_context` / `validate_session_context`: corner/session/start requestのUUID、scheduled/rotation/manual/unknownを固定。許可は常に `authorized_mode=off`。
 - `verify_restoration`: 当該requestの成功receipt、復帰元runtime、復帰先runtime、canonical revisionとcleanupを照合する。readyやゲーム名だけでは成功にしない。
 - `build_post_restore_source`: run/session、終端xlogの時刻・所有関係、起動由来、終了理由を照合し、上限付きのsourceを作る。save継続、manual、operator stop、不明終端は自動改善対象にしない。
 - `validate_restoration_summary`: 保存用の固定フィールドだけを受理し、生のargv/例外/秘密情報を混入させない。
 
-このコミットはコーナーやRunStoreへの呼出しをまだ追加しない。`_spawn_improve_once()` は従来のno-opのまま。queue/worker/LLM/canary/promotion、本番Action・save、配信・共通音声・通知への操作はない。新しいtimerやworkflow実行権限も追加しない。既存CIのNetHackテスト列へ単体テストを登録するだけ。
+Coordinatorは成功したswitch/stopで、実際に停止を確認した旧runtimeの `game/generation/runtime_id` と `source_cleanup_completed=true` を同じrequest receiptに記録する。失敗・rollback・旧形式のreceiptには成功証跡を補完しない。
+
+コーナーは開始前に `scheduled` / `rotation` / `manual` の由来とrequest IDを固定し、rotation由来は既存の予約台帳と照合する。台帳が読めない、または一致しないときは `unknown` にする。開始したsessionには由来・run ID・canonical runtimeを記録する。復帰後に当該receiptとcanonical状態を照合できた場合だけ、RunStoreの終端/save記録と同じ書込みで `post_restore_source` を保存する。履歴や証跡の失敗は復帰済みゲームを巻き戻さない。
+
+`_spawn_improve_once()` は従来のno-opのまま。queue/worker/LLM/canary/promotion、本番Action・save、配信・共通音声・通知への操作はない。新しいtimerやworkflow実行権限も追加しない。
 
 ## 復帰元の同一性は推測しない
 
-調査基準 `3b7f3f91b20c839e77dceac9770605413d524cf5` の既存成功receiptは `from_game` を持つが、この検証器が要求する `result.from_runtime` の正確なsource tupleを持たない。そのため、現行receiptをそのまま入力しても `restore_source_unverified` として拒否する。これは意図した未接続状態である。
+旧成功receiptは `from_game` だけで `result.from_runtime` を持たない。その旧receiptは `restore_source_unverified` として拒否する。新しい証跡も、当該run/sessionのruntimeと一致しなければ拒否する。
 
 事前にNetHack世代10を見てから要求をqueueへ入れても、その要求が実行される前に世代が変わり得る。復帰先の世代が大きい、直前にNetHackだった、同じゲーム名へ戻った、という情報だけで補完してはならない。
 
-PR1の残作業で、Coordinatorが実際に停止対象を所有・確認する境界からsource tupleを既存receiptへ保存し、queued/recovery/rollback/cleanupまでテストする。モデル出力やcorner側の自己申告からこのフィールドを作らない。Coordinatorの正本を別ファイルで再実装しない。
+source tupleはCoordinatorが実際に停止対象を所有・確認する境界から発行する。モデル出力やcorner側の自己申告からこのフィールドを作らない。Coordinatorの正本を別ファイルで再実装しない。復帰後のread時点でcanonical状態がすでに次の切替へ進んでいれば、今回の観測は証明不能としてsourceを保存しない。
 
 ## データと権限
 
@@ -31,10 +35,12 @@ PR1の残作業で、Coordinatorが実際に停止対象を所有・確認する
 
 ## PR1の残作業
 
-- [ ] Coordinatorの実停止対象を復帰receiptへ結び付け、複数世代・queued/recovery競合を検証する。
-- [ ] scheduled/rolling rotation/manualの起動時にcontextを保存し、retryで起動由来を昇格させない。
-- [ ] RunStoreのexpected run/session照合、終端記録との同時保存、重複終了・次runとの競合を実装する。
-- [ ] コーナー終了・復帰をブロックせず、履歴保存失敗でも復帰成功を取り消さないことをlifecycleで検証する。
+- [x] Coordinatorの成功receiptへ実停止対象を保存し、失敗/rollbackを成功扱いしない。
+- [x] scheduled/rotation/manualのcontextを開始前に保存し、rotation予約がない場合はunknownにする。
+- [x] RunStoreの既存current runとsessionへsourceを同時保存し、save継続は改善対象外にする。
+- [ ] queued/recovery/rollbackと次runの競合を含む結合回帰を追加する。
+- [ ] コーナー終了・復帰をブロックせず、履歴保存失敗でも復帰成功を取り消さないことを実Coordinator経路で検証する。
+- [ ] xlogfile終端行と当該runの同一性を確定する。現状は `identity_verified` が無いため、terminal runでも `eligibility=terminal_unverified` となる。
 - [ ] 旧ゲーム改善停止規約と将来の隔離評価の例外をレビューする。このコミットでは例外を有効化しない。
 
 ## 検証

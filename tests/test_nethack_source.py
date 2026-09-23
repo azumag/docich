@@ -29,7 +29,7 @@ def restore_inputs():
             "updated_at": (NOW + dt.timedelta(seconds=100)).isoformat(),
             "result": {"status": "succeeded", "operation": "switch", "generation": 12,
                        "from_game": "nethack", "from_runtime": deepcopy(SOURCE),
-                       "to_game": "sorengame", "cleanup_pending": False},
+                       "to_game": "sorengame", "source_cleanup_completed": True},
         },
         "canonical": {"schema_version": 2, "revision": 42, "phase": "ready",
                       "active": deepcopy(TARGET), "operation": None, "request_id": None,
@@ -114,8 +114,8 @@ def test_ambiguous_restore_fails_closed(mutation):
     elif mutation == "wrong_request": r["request_id"] = str(uuid.uuid4())
     elif mutation == "wrong_target": args["previous_game"] = "robots"
     elif mutation == "target_new_generation": c["active"] = {**TARGET, "generation": 13, "runtime_id": "g13-abcd0123"}
-    elif mutation == "pending_cleanup": r["result"]["cleanup_pending"] = True
-    elif mutation == "missing_cleanup": del r["result"]["cleanup_pending"]
+    elif mutation == "pending_cleanup": r["result"]["source_cleanup_completed"] = False
+    elif mutation == "missing_cleanup": del r["result"]["source_cleanup_completed"]
     elif mutation == "retiring": c["retiring"] = [deepcopy(SOURCE)]
     elif mutation == "missing_retiring": del c["retiring"]
     elif mutation == "candidate": c["candidate"] = deepcopy(SOURCE)

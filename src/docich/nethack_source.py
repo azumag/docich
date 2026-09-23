@@ -144,7 +144,7 @@ def verify_restoration(
              "restore_not_stable")
     _require(canonical.get("candidate") is None and canonical.get("previous") is None
              and canonical.get("retiring") == [], "cleanup_unverified")
-    _require(result.get("cleanup_pending") is False, "cleanup_unverified")
+    _require(result.get("source_cleanup_completed") is True, "cleanup_unverified")
     _require(_integer(canonical.get("revision"), 1), "restore_unverified")
     _require(_integer(receipt.get("generation"), 1)
              and receipt["generation"] > source["generation"]

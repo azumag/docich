@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from docich import game_switch  # noqa: E402
 from docich.adapters import AdapterError  # noqa: E402
 from docich.naming import runtime_names  # noqa: E402
+from docich.nethack_source import verify_restoration  # noqa: E402
 
 
 class InjectedCrash(RuntimeError):
@@ -306,11 +307,25 @@ class TestStart(CoordinatorTestBase):
 class TestSwitch(CoordinatorTestBase):
     def test_switch_success_stops_old_then_starts_candidate(self):
         self.coordinator.start("nethack")
+        source = self.canonical()["active"]
         result = self.coordinator.switch("robots")
         self.assertEqual(result.status, "succeeded")
         self.assertEqual(result.from_game, "nethack")
         self.assertEqual(result.to_game, "robots")
         self.assertEqual(result.generation, 2)
+        self.assertEqual(result.receipt["result"]["from_runtime"], {
+            key: source[key] for key in ("game", "generation", "runtime_id")
+        })
+        self.assertIs(result.receipt["result"]["source_cleanup_completed"], True)
+        summary = verify_restoration(
+            request_id=result.request_id,
+            source_runtime=source,
+            before=source,
+            receipt=result.receipt,
+            canonical=self.canonical(),
+            previous_game="robots",
+        )
+        self.assertEqual(summary["source_runtime"]["runtime_id"], source["runtime_id"])
         state = self.canonical()
         self.assertEqual(state["phase"], "ready")
         self.assertEqual(state["active"]["game"], "robots")
@@ -374,8 +389,14 @@ class TestRestart(CoordinatorTestBase):
 class TestStop(CoordinatorTestBase):
     def test_stop_stops_agent_before_game(self):
         self.coordinator.start("nethack")
+        source = self.canonical()["active"]
         result = self.coordinator.stop()
         self.assertEqual(result.status, "succeeded")
+        summary = verify_restoration(
+            request_id=result.request_id, source_runtime=source, before=source,
+            receipt=result.receipt, canonical=self.canonical(), previous_game=None,
+        )
+        self.assertIsNone(summary["restored_runtime"])
         state = self.canonical()
         self.assertEqual(state["phase"], "idle")
         self.assertIsNone(state["active"])

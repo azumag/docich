@@ -20,6 +20,10 @@ from typing import Iterator
 
 from .config import GlobalConfig, load_game
 from .game_switch import atomic_write_json
+from .nethack_source import (
+    SourceEvidenceError, build_post_restore_source, runtime_identity,
+    validate_session_context,
+)
 
 SCHEMA_VERSION = 1
 ASCENDED_ACHIEVEMENT = 0x0100
@@ -439,6 +443,8 @@ class NethackRunStore:
         probe: dict[str, object],
         *,
         now: dt.datetime,
+        corner_context: dict[str, object] | None = None,
+        runtime: dict[str, object] | None = None,
     ) -> dict[str, object]:
         """Commit a start/resume only after the coordinator transition succeeded."""
         with self._locked():
@@ -512,6 +518,10 @@ class NethackRunStore:
                 raise NethackRunError("run sessionsが不正です")
             sessions.append(
                 {
+                    "run_id": run_id,
+                    "session_id": corner_context["session_id"] if corner_context else None,
+                    "corner_context": validate_session_context(corner_context) if corner_context else None,
+                    "runtime": runtime_identity(runtime) if runtime else None,
                     "started_at": now.isoformat(),
                     "ended_at": None,
                     "outcome": None,
@@ -598,6 +608,8 @@ class NethackRunStore:
         *,
         now: dt.datetime,
         nethack_still_active: bool,
+        restoration: dict[str, object] | None = None,
+        finish_reason: str = "unknown",
     ) -> dict[str, object]:
         """Close one program session and reconcile save/xlog evidence."""
         with self._locked():
@@ -618,6 +630,7 @@ class NethackRunStore:
                 self._close_open_session_unlocked(run, now, "suspended")
                 run["status"] = "suspended"
                 run["last_finished_at"] = now.isoformat()
+                self._attach_post_restore_source(run, restoration, finish_reason)
                 self._write_run_unlocked(run)
                 return dict(run)
 
@@ -658,9 +671,36 @@ class NethackRunStore:
                 if dump is not None:
                     run["dump_file"] = dump.name
 
+            self._attach_post_restore_source(run, restoration, finish_reason)
+
             # Persist the terminal body before clearing the public current
             # pointer. A crash between these writes leaves a stale pointer to a
             # complete terminal run; prepare_start repairs that case safely.
             self._write_run_unlocked(run)
             self._clear_current_unlocked()
             return dict(run)
+
+    @staticmethod
+    def _attach_post_restore_source(
+        run: dict[str, object], restoration: dict[str, object] | None,
+        finish_reason: str,
+    ) -> None:
+        if restoration is None:
+            return
+        sessions = run.get("sessions")
+        session = sessions[-1] if isinstance(sessions, list) and sessions else None
+        if not isinstance(session, dict):
+            return
+        try:
+            source = build_post_restore_source(
+                run, session, restoration, finish_reason=finish_reason
+            )
+        except SourceEvidenceError as exc:
+            # Terminal/save state still commits when analytics is incomplete.
+            session["post_restore_source_error"] = str(exc)
+        except Exception:
+            session["post_restore_source_error"] = "source_internal_error"
+        else:
+            session["post_restore_source"] = source
+            if run["status"] in TERMINAL_STATUSES:
+                run["post_restore_source"] = source

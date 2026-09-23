@@ -3602,6 +3602,13 @@ class GameSwitchCoordinator:
             "active_runtime": {k: candidate_rd[k] for k in
                                ("game", "runtime_id", "generation", "lease_id")},
         }
+        if old_active is not None:
+            # This is the runtime the coordinator actually stopped in this
+            # transaction. A caller's pre-queue snapshot cannot prove it.
+            last_result["from_runtime"] = {
+                key: old_active[key] for key in ("game", "generation", "runtime_id")
+            }
+            last_result["source_cleanup_completed"] = True
         # The single atomic commit write is the commit point (design §5 E).
         tx.transition(
             {"probing"}, "ready",
@@ -3788,8 +3795,13 @@ class GameSwitchCoordinator:
             "status": "succeeded",
             "from_game": active["game"] if active is not None else None,
             "to_game": None,
-            "generation": active["generation"] if active is not None else None,
+            "generation": acceptance.generation,
         }
+        if active is not None:
+            last_result["from_runtime"] = {
+                key: active[key] for key in ("game", "generation", "runtime_id")
+            }
+            last_result["source_cleanup_completed"] = True
         tx.transition(
             {"stopping"}, "idle",
             updates={

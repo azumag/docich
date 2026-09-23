@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from docich.nethack_run import (  # noqa: E402
     classify_terminal_record,
     parse_xlog_line,
 )
+from docich.nethack_source import new_session_context  # noqa: E402
 
 
 class NethackRunStoreTest(unittest.TestCase):
@@ -212,6 +214,76 @@ class NethackRunStoreTest(unittest.TestCase):
         self.assertEqual(finished["max_depth"], 5)
         self.assertEqual(finished["role"], "Val")
         self.assertIsNone(self.store.current())
+
+    def test_terminal_and_unverified_source_are_saved_in_the_same_run(self):
+        context = new_session_context("scheduled", str(uuid.uuid4()))
+        runtime = {"game": "nethack", "generation": 10, "runtime_id": "g10-0123abcd"}
+        probe = self.store.prepare_start(current_is_nethack=False, now=self.now)
+        run = self.store.record_started(
+            probe, now=self.now, corner_context=context, runtime=runtime
+        )
+        self.append_xlog()
+        restoration = {
+            "request_id": str(uuid.uuid4()), "source_runtime": runtime,
+            "restored_runtime": {"game": "robots", "generation": 12,
+                                 "runtime_id": "g12-abcd0123"},
+            "restore_generation": 12, "canonical_revision": 42,
+            "completed_at": (self.now + timedelta(hours=1, seconds=1)).isoformat(),
+            "cleanup_completed": True, "source_binding_verified": True,
+        }
+        finished = self.store.record_finished(
+            now=self.now + timedelta(hours=1), nethack_still_active=False,
+            restoration=restoration, finish_reason="terminal",
+        )
+        source = finished["post_restore_source"]
+        self.assertEqual(source["run_id"], run["run_id"])
+        self.assertEqual(source["origin"], "scheduled")
+        self.assertEqual(source["authorized_mode"], "off")
+        self.assertEqual(source["eligibility"], "terminal_unverified")
+        self.assertEqual(finished["sessions"][-1]["post_restore_source"], source)
+        self.assertIsNone(self.store.current())
+
+    def test_bad_source_does_not_undo_terminal_history(self):
+        context = new_session_context("manual", str(uuid.uuid4()))
+        runtime = {"game": "nethack", "generation": 10, "runtime_id": "g10-0123abcd"}
+        probe = self.store.prepare_start(current_is_nethack=False, now=self.now)
+        self.store.record_started(probe, now=self.now, corner_context=context, runtime=runtime)
+        self.append_xlog()
+        finished = self.store.record_finished(
+            now=self.now + timedelta(hours=1), nethack_still_active=False,
+            restoration={"untrusted": "data"}, finish_reason="terminal",
+        )
+        self.assertEqual(finished["status"], "dead")
+        self.assertNotIn("post_restore_source", finished)
+        self.assertEqual(
+            finished["sessions"][-1]["post_restore_source_error"], "restore_unverified"
+        )
+        self.assertIsNone(self.store.current())
+
+    def test_saved_expedition_records_observation_without_terminal_source(self):
+        context = new_session_context("scheduled", str(uuid.uuid4()))
+        runtime = {"game": "nethack", "generation": 10, "runtime_id": "g10-0123abcd"}
+        probe = self.store.prepare_start(current_is_nethack=False, now=self.now)
+        self.store.record_started(probe, now=self.now, corner_context=context, runtime=runtime)
+        (self.save_dir / "1000docich").write_bytes(b"save")
+        restoration = {
+            "request_id": str(uuid.uuid4()), "source_runtime": runtime,
+            "restored_runtime": None, "restore_generation": 12,
+            "canonical_revision": 42,
+            "completed_at": (self.now + timedelta(hours=1, seconds=1)).isoformat(),
+            "cleanup_completed": True, "source_binding_verified": True,
+        }
+        suspended = self.store.record_finished(
+            now=self.now + timedelta(hours=1), nethack_still_active=False,
+            restoration=restoration, finish_reason="unknown",
+        )
+        self.assertEqual(suspended["status"], "suspended")
+        self.assertEqual(
+            suspended["sessions"][-1]["post_restore_source"]["eligibility"],
+            "expedition_not_terminal",
+        )
+        self.assertNotIn("post_restore_source", suspended)
+        self.assertEqual(self.store.current()["run_id"], suspended["run_id"])
 
     def test_ascension_and_amulet_bits_are_recorded(self):
         self.start()
