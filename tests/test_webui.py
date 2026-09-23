@@ -1574,6 +1574,102 @@ class TestHttpHandlers(unittest.TestCase):
                 self.assertEqual(status, 400, (bad, data))
                 popen.assert_not_called()
 
+    def test_manual_corner_launchers_are_executable(self):
+        """Popen は bin/*-corner-manual を直接 exec する。実行 bit が落ちると
+        本番で [Errno 13] Permission denied → 500 corner_dispatch_failed になる。"""
+        bin_dir = Path(webui.__file__).resolve().parents[2] / "bin"
+        for adapter, (launcher, *_rest) in webui._CORNER_MANUAL_LAUNCHERS.items():
+            path = bin_dir / launcher
+            with self.subTest(adapter=adapter, launcher=launcher):
+                self.assertTrue(path.is_file(), path)
+                self.assertTrue(os.access(path, os.X_OK), f"{path} is not executable")
+
+    def test_post_corners_stop_routes_base_busy_to_base_cli(self):
+        """ローテーションが base state（retro_corner 等）で稼働中は手動 runner ではなく
+        base 停止 CLI へ渡す。手動記録が terminal のまま base が restoring だと、
+        従来は manual stop が no-op でコーナーを止められなかった。"""
+        self._write_catalog_config()
+        run = self.repo_root / "run"
+        run.mkdir(parents=True, exist_ok=True)
+        (run / "retro_corner.json").write_text(json.dumps({
+            "status": "restoring", "game": "nsnake",
+        }), encoding="utf-8")
+        (run / "retro_corner_manual.json").write_text(json.dumps({
+            "status": "completed", "game": "unknown",
+        }), encoding="utf-8")
+        with mock.patch("docich.webui.subprocess.Popen") as popen:
+            popen.return_value.pid = 4244
+            status, data = self._request(
+                "POST", "/api/corners",
+                {"action": "stop", "corner": "nsnake", "confirm": True},
+            )
+        self.assertEqual(status, 200, data)
+        argv = popen.call_args.args[0]
+        self.assertTrue(argv[0].endswith("bin/docich"), argv)
+        self.assertIn("retro-corner", argv)
+        self.assertEqual(argv[-1], "stop")
+        self.assertEqual(data["corner"].get("target"), "base")
+
+    def test_post_corners_stop_prefers_manual_when_manual_busy(self):
+        self._write_catalog_config()
+        run = self.repo_root / "run"
+        run.mkdir(parents=True, exist_ok=True)
+        (run / "retro_corner_manual.json").write_text(json.dumps({
+            "status": "active", "game": "nsnake",
+        }), encoding="utf-8")
+        (run / "retro_corner.json").write_text(json.dumps({
+            "status": "active", "game": "nsnake",
+        }), encoding="utf-8")
+        with mock.patch("docich.webui.subprocess.Popen") as popen:
+            popen.return_value.pid = 4245
+            status, data = self._request(
+                "POST", "/api/corners",
+                {"action": "stop", "corner": "nsnake", "confirm": True},
+            )
+        self.assertEqual(status, 200, data)
+        argv = popen.call_args.args[0]
+        self.assertTrue(argv[0].endswith("bin/docich-retro-corner-manual"), argv)
+        self.assertEqual(argv[3], "stop")
+        self.assertEqual(data["corner"].get("target"), "manual")
+
+    def test_corner_state_present_filters_other_game_and_unknown(self):
+        run = self.repo_root / "run"
+        run.mkdir(parents=True, exist_ok=True)
+        self._write_catalog_config()
+        from docich.webui import _corner_catalog_row, _corner_state_present
+        row_hanjuku = _corner_catalog_row(self.g, "nsnake")  # game adapter row
+        (run / "retro_corner.json").write_text(json.dumps({
+            "status": "restoring", "game": "nsnake",
+        }), encoding="utf-8")
+        present = _corner_state_present(self.g, "retro_corner", row_hanjuku)
+        self.assertIsNotNone(present)
+        # 別ゲームの base は別コーナー行へ表示しない
+        (run / "retro_corner.json").write_text(json.dumps({
+            "status": "restoring", "game": "other",
+        }), encoding="utf-8")
+        self.assertIsNone(_corner_state_present(self.g, "retro_corner", row_hanjuku))
+        # game=unknown の手動記録はどの game 行にも紐づかない
+        (run / "retro_corner_manual.json").write_text(json.dumps({
+            "status": "completed", "game": "unknown",
+        }), encoding="utf-8")
+        self.assertIsNone(
+            _corner_state_present(self.g, "retro_corner_manual", row_hanjuku)
+        )
+
+    def test_page_exposes_base_and_manual_state_helpers(self):
+        self.client.request("GET", "/")
+        res = self.client.getresponse()
+        text = res.read().decode("utf-8")
+        self.assertEqual(res.status, 200)
+        for marker in (
+            "function baseStateOf",
+            "function displayStateOf",
+            "function stopStateOf",
+            "CORNER_MANUAL_STOP",
+            "稼働/手動の状態",
+        ):
+            self.assertIn(marker, text)
+
     def test_post_corners_recover_never_edits_the_ledger_itself(self):
         self._write_rotation_state()
         completed = subprocess.CompletedProcess(
