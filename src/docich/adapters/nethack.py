@@ -32,6 +32,33 @@ from .cli_game import CliCoordinatorAdapter
 DEFAULT_PLAYER_NAME = "docich"
 DEFAULT_SAVE_DIR = Path("/var/games/nethack/save")
 BOUNDARY_RESULT_FILENAME = "nethack_boundary.json"
+BOUNDARY_DIAG_FILENAME = "nethack_boundary_diag.json"
+# #1015: bounded, sanitized observation for a refused cancel / timed-out save
+# boundary. Fixed enums only -- never raw pane text, paths, tokens or argv.
+CANCEL_REFUSAL_REASONS = frozenset(
+    {
+        "deadline_exceeded",
+        "cancel_requested",
+        "session_missing",
+        "session_unowned",
+        "process_target_absent",
+        "capture_failed",
+        "prompt_not_pending",
+        "process_gone",
+        "post_key_probe_failed",
+        "post_key_capture_failed",
+        "wait_timeout",
+    }
+)
+PROMPT_CLASSES = frozenset(
+    {
+        "save_prompt_pending",
+        "save_confirmation",
+        "character_creation",
+        "capture_failed",
+        "unknown",
+    }
+)
 _PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,31}$")
 _SAVE_CONFIRMATION_RE = re.compile(r"really\s+save\?\s*\[yn\]", re.IGNORECASE)
 # The confirmation while it is still waiting for an answer: NetHack shows the
@@ -224,9 +251,114 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
 
     def _boundary_wait_check(self, deadline: float, cancel) -> None:
         if cancel is not None and cancel.is_set():
+            self._record_boundary_diag(
+                "wait",
+                reason="cancel_requested",
+                process_target_present=None,
+                process_alive=None,
+                prompt_class="unknown",
+                save_signature_changed=None,
+            )
             raise DeadlineExceededError("NetHack save boundaryはcancelされました")
         if time.monotonic() >= deadline:
+            self._record_boundary_diag(
+                "wait",
+                reason="wait_timeout",
+                process_target_present=None,
+                process_alive=None,
+                prompt_class="unknown",
+                save_signature_changed=self._save_signature_changed(),
+            )
             raise ReadinessTimeoutError("NetHackの安全なsave終了を確認できませんでした")
+
+    @staticmethod
+    def _classify_prompt(text: str) -> str:
+        """Map observed pane text onto a fixed enum. Never returns pane text."""
+        if not text:
+            return "unknown"
+        if _is_save_prompt_pending(text):
+            return "save_prompt_pending"
+        if _is_save_confirmation_screen(text):
+            return "save_confirmation"
+        if _is_character_creation_screen(text):
+            return "character_creation"
+        return "unknown"
+
+    def _save_signature_changed(self) -> bool | None:
+        """Whether a save differs from the signature taken at boundary start.
+
+        ``None`` means "unknown": either the wait never recorded a baseline
+        (a different driver sent ``S``) or the save directory cannot be read
+        right now. Unknown must never be reported as ``False``.
+        """
+        before = getattr(self, "_boundary_save_before", None)
+        if before is None:
+            return None
+        try:
+            return self._new_or_changed_save(before) is not None
+        except AdapterError:
+            return None
+
+    def _record_boundary_diag(
+        self,
+        operation: str,
+        *,
+        reason: str,
+        process_target_present: bool | None,
+        process_alive: bool | None,
+        prompt_class: str,
+        save_signature_changed: bool | None,
+    ) -> None:
+        """Best-effort bounded observation for owner-only diagnostics (#1015).
+
+        Never raises and never writes pane text, paths or argv: a diagnostic
+        failure must not change the fail-closed cancel decision. The whole
+        body is guarded because fixtures and callers may carry a spec without
+        a runtime directory at all.
+        """
+        try:
+            if reason not in CANCEL_REFUSAL_REASONS or prompt_class not in PROMPT_CLASSES:
+                return
+            payload: dict[str, object] = {
+                "schema_version": 1,
+                "operation": operation,
+                "reason": reason,
+                "process_target_present": process_target_present,
+                "process_alive": process_alive,
+                "prompt_class": prompt_class,
+                "save_signature_changed": save_signature_changed,
+                "generation": self.spec.generation,
+                "runtime_id": self.spec.runtime_id,
+                "recorded_at": dt.datetime.now(dt.timezone.utc)
+                .isoformat()
+                .replace("+00:00", "Z"),
+            }
+            runtime_dir = self.spec.runtime_dir
+            atomic_write_json(Path(runtime_dir) / BOUNDARY_DIAG_FILENAME, payload)
+        except Exception:
+            pass
+
+    def _refuse_cancel(
+        self,
+        reason: str,
+        *,
+        present: bool | None,
+        alive: bool | None,
+        prompt_class: str,
+    ) -> None:
+        """Record a bounded observation for a refused cancel (#1015).
+
+        Best effort: the caller still returns ``False`` / re-raises exactly as
+        before, so a diagnostic problem can never turn a refusal into success.
+        """
+        self._record_boundary_diag(
+            "cancel",
+            reason=reason,
+            process_target_present=present,
+            process_alive=alive,
+            prompt_class=prompt_class,
+            save_signature_changed=self._save_signature_changed(),
+        )
 
     def _at_character_creation(self, process_target: str) -> bool:
         try:
@@ -269,6 +401,9 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
             return
 
         before = self._save_signatures()
+        # Keep the baseline so a refused cancel can report whether a save
+        # changed while waiting (#1015). Unknown must stay ``None``.
+        self._boundary_save_before = before
         # Leave menus/prompts before issuing the normal save command.  Escape
         # is non-destructive at the map prompt; if it cannot normalize the UI,
         # the absence of a verified fresh save below makes the operation fail closed.
@@ -322,35 +457,114 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
         which cannot be undone; every other observation (no prompt, process
         gone, capture failure) refuses without sending a key so recovery stays
         fail-closed.
+
+        Every refusal path records a bounded observation first (#1015) so the
+        owner can classify *why* the cancel was refused without pane text.
         """
-        self._check_active(deadline, cancel)
+        try:
+            self._check_active(deadline, cancel)
+        except DeadlineExceededError:
+            reason = (
+                "cancel_requested"
+                if cancel is not None and cancel.is_set()
+                else "deadline_exceeded"
+            )
+            self._refuse_cancel(
+                reason,
+                present=None,
+                alive=None,
+                prompt_class="unknown",
+            )
+            raise
         if not self.tmux.session_target_exists(self.spec.adapter_session):
+            self._refuse_cancel(
+                "session_missing", present=None, alive=None, prompt_class="unknown"
+            )
             return False
-        self._verify_session_ownership()
+        try:
+            self._verify_session_ownership()
+        except Exception:
+            self._refuse_cancel(
+                "session_unowned", present=None, alive=None, prompt_class="unknown"
+            )
+            raise
         process_target = self._runtime_process_window_target()
         if process_target is None:
+            self._refuse_cancel(
+                "process_target_absent",
+                present=False,
+                alive=None,
+                prompt_class="unknown",
+            )
             return False
+        present = True
+        try:
+            alive = self.tmux.window_target_exists(process_target, strict=True)
+        except Exception:
+            alive = None
         try:
             text = self.tmux.capture_pane(process_target)
         except Exception:
+            self._refuse_cancel(
+                "capture_failed",
+                present=present,
+                alive=alive,
+                prompt_class="capture_failed",
+            )
             return False
+        prompt_class = self._classify_prompt(text)
         if not _is_save_prompt_pending(text):
+            self._refuse_cancel(
+                "prompt_not_pending",
+                present=present,
+                alive=alive,
+                prompt_class=prompt_class,
+            )
             return False
 
         self._check_active(deadline, cancel)
         self.tmux.send_keys(process_target, ["n"], literal=True)
         while True:
-            self._check_active(deadline, cancel)
+            try:
+                self._check_active(deadline, cancel)
+            except DeadlineExceededError:
+                reason = (
+                    "cancel_requested"
+                    if cancel is not None and cancel.is_set()
+                    else "deadline_exceeded"
+                )
+                self._refuse_cancel(
+                    reason, present=present, alive=True, prompt_class="save_confirmation"
+                )
+                raise
             try:
                 alive = self.tmux.window_target_exists(process_target, strict=True)
             except Exception:
+                self._refuse_cancel(
+                    "post_key_probe_failed",
+                    present=present,
+                    alive=None,
+                    prompt_class="unknown",
+                )
                 return False
             if not alive:
                 # The save went through anyway; nothing was cancelled.
+                self._refuse_cancel(
+                    "process_gone",
+                    present=present,
+                    alive=False,
+                    prompt_class="unknown",
+                )
                 return False
             try:
                 text = self.tmux.capture_pane(process_target)
             except Exception:
+                self._refuse_cancel(
+                    "post_key_capture_failed",
+                    present=present,
+                    alive=True,
+                    prompt_class="capture_failed",
+                )
                 return False
             if not _is_save_confirmation_screen(text):
                 return True
