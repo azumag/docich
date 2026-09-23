@@ -20,6 +20,7 @@ new one.
 from __future__ import annotations
 
 import datetime as dt
+import json
 import re
 import time
 from dataclasses import replace
@@ -42,6 +43,8 @@ CANCEL_REFUSAL_REASONS = frozenset(
         "session_missing",
         "session_unowned",
         "process_target_absent",
+        "process_window_ambiguous",
+        "process_window_probe_failed",
         "capture_failed",
         "prompt_not_pending",
         "process_gone",
@@ -59,6 +62,10 @@ PROMPT_CLASSES = frozenset(
         "unknown",
     }
 )
+# The outcome already recorded in ``nethack_boundary.json`` for this runtime.
+# Needed because "the birth window is gone" is only safe to act on together
+# with reviewed boundary evidence (#1015).
+BOUNDARY_OUTCOMES = frozenset({"suspended", "ended", "unknown"})
 _PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,31}$")
 _SAVE_CONFIRMATION_RE = re.compile(r"really\s+save\?\s*\[yn\]", re.IGNORECASE)
 # The confirmation while it is still waiting for an answer: NetHack shows the
@@ -299,6 +306,51 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
         except AdapterError:
             return None
 
+    def _classify_process_window_for_diag(self) -> str:
+        """Classify the birth-window probe for diagnostics only (#1015).
+
+        Returns one of ``present`` / ``absent`` / ``ambiguous`` / ``probe_failed``.
+        This never feeds the fail-closed decision -- the caller already
+        refused -- it only labels *why* the reviewed resolver could not give a
+        target.
+        """
+        try:
+            names = self.tmux.list_windows()
+        except Exception:
+            return "probe_failed"
+        if not names:
+            return "probe_failed"
+        if getattr(self.spec, "game_window", None) not in names:
+            return "probe_failed"
+        excluded = {
+            getattr(self.spec, "game_window", None),
+            getattr(self.spec, "agent_window", None),
+        }
+        candidates = [name for name in names if name not in excluded]
+        if not candidates:
+            return "absent"
+        if len(candidates) != 1:
+            return "ambiguous"
+        return "present"
+
+    def _recorded_boundary_outcome(self) -> str:
+        """Outcome already durably recorded for this runtime, else ``unknown``.
+
+        Read-only and best effort: a missing/unreadable file is ``unknown``,
+        never a success claim (#1015).
+        """
+        try:
+            raw = (self.spec.runtime_dir / BOUNDARY_RESULT_FILENAME).read_text(
+                encoding="utf-8"
+            )
+            data = json.loads(raw)
+        except Exception:
+            return "unknown"
+        if not isinstance(data, dict):
+            return "unknown"
+        outcome = data.get("outcome")
+        return outcome if outcome in ("suspended", "ended") else "unknown"
+
     def _record_boundary_diag(
         self,
         operation: str,
@@ -308,6 +360,7 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
         process_alive: bool | None,
         prompt_class: str,
         save_signature_changed: bool | None,
+        boundary_outcome: str | None = None,
     ) -> None:
         """Best-effort bounded observation for owner-only diagnostics (#1015).
 
@@ -319,6 +372,10 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
         try:
             if reason not in CANCEL_REFUSAL_REASONS or prompt_class not in PROMPT_CLASSES:
                 return
+            if boundary_outcome is None:
+                boundary_outcome = self._recorded_boundary_outcome()
+            if boundary_outcome not in BOUNDARY_OUTCOMES:
+                boundary_outcome = "unknown"
             payload: dict[str, object] = {
                 "schema_version": 1,
                 "operation": operation,
@@ -327,6 +384,7 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
                 "process_alive": process_alive,
                 "prompt_class": prompt_class,
                 "save_signature_changed": save_signature_changed,
+                "boundary_outcome": boundary_outcome,
                 "generation": self.spec.generation,
                 "runtime_id": self.spec.runtime_id,
                 "recorded_at": dt.datetime.now(dt.timezone.utc)
@@ -488,7 +546,21 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
                 "session_unowned", present=None, alive=None, prompt_class="unknown"
             )
             raise
-        process_target = self._runtime_process_window_target()
+        try:
+            process_target = self._runtime_process_window_target()
+        except AdapterError:
+            # Presentation missing / ambiguous birth window: refuse without a
+            # key, and keep the distinction visible (#1015).
+            window_state = self._classify_process_window_for_diag()
+            self._refuse_cancel(
+                "process_window_ambiguous"
+                if window_state == "ambiguous"
+                else "process_window_probe_failed",
+                present=None,
+                alive=None,
+                prompt_class="unknown",
+            )
+            raise
         if process_target is None:
             self._refuse_cancel(
                 "process_target_absent",

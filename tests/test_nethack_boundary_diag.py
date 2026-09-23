@@ -191,6 +191,7 @@ class RefusedCancelIsObservedTests(unittest.TestCase):
                     "process_alive",
                     "prompt_class",
                     "save_signature_changed",
+                    "boundary_outcome",
                     "generation",
                     "runtime_id",
                     "recorded_at",
@@ -198,6 +199,9 @@ class RefusedCancelIsObservedTests(unittest.TestCase):
             )
             self.assertIn(payload["reason"], CANCEL_REFUSAL_REASONS)
             self.assertIn(payload["prompt_class"], PROMPT_CLASSES)
+            # No boundary result exists here, so the outcome must read as
+            # ``unknown`` -- never as a success claim.
+            self.assertEqual(payload["boundary_outcome"], "unknown")
 
     def test_diagnostic_failure_never_turns_a_refusal_into_success(self) -> None:
         # ``runtime_dir`` does not exist here: the write fails, the refusal

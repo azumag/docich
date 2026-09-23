@@ -2930,6 +2930,8 @@ _BOUNDARY_DIAG_REASONS = frozenset(
         "session_missing",
         "session_unowned",
         "process_target_absent",
+        "process_window_ambiguous",
+        "process_window_probe_failed",
         "capture_failed",
         "prompt_not_pending",
         "process_gone",
@@ -2947,6 +2949,7 @@ _BOUNDARY_DIAG_PROMPT_CLASSES = frozenset(
         "unknown",
     }
 )
+_BOUNDARY_DIAG_OUTCOMES = frozenset({"suspended", "ended", "unknown"})
 
 
 def _capture_tmux_pane(target, *, max_lines=NETHACK_PANE_LINES):
@@ -3006,6 +3009,7 @@ def _collect_nethack_boundary(state_dir, now):
         "process_target_present": None,
         "process_alive": None,
         "save_signature_changed": None,
+        "boundary_outcome": None,
         "generation": None,
         "age_sec": None,
     }
@@ -3041,6 +3045,9 @@ def _collect_nethack_boundary(state_dir, now):
     prompt_class = diag.get("prompt_class")
     if isinstance(prompt_class, str) and prompt_class in _BOUNDARY_DIAG_PROMPT_CLASSES:
         result["prompt_class"] = prompt_class
+    boundary_outcome = diag.get("boundary_outcome")
+    if isinstance(boundary_outcome, str) and boundary_outcome in _BOUNDARY_DIAG_OUTCOMES:
+        result["boundary_outcome"] = boundary_outcome
     for key in ("process_target_present", "process_alive", "save_signature_changed"):
         value = diag.get(key)
         if isinstance(value, bool):
