@@ -296,10 +296,11 @@ def build_prompt(facts: Mapping[str, object]) -> str:
         "売買判断の根拠を捏造してはいけません。\n"
         "- 表示中のチャートは表示専用で、売買判断は保存済みの5分足と戦略パラメータで行っている点を必要なら一言添える。\n"
         "【話し方】\n"
-        "- です・ます調の自然な話し言葉。結論を先に言い、その後に理由や数字を添える。\n"
+        "- です・ます調の自然な話し言葉。いちばん伝えたいことを最初の文で言い、その後に理由や数字を添える。\n"
         "- 各セグメントの最初の一文は、数字ではなく相場や判断の意味を先に言う。\n"
         "- 冒頭に「結論からお伝えしますと」「まず結論ですが」のような前口上・枕詞を置かない。"
-        "前置きなしで最初の文から内容そのものを言い、結論はその文で直接言う。\n"
+        "「結論は、」「結論として」「結論から言うと」も含め、「結論」という語で話し始めない。"
+        "前置きなしで最初の文から内容そのものを言う。\n"
         "- factsを順番に復唱するだけは禁止。数字同士を比較し、意味を説明する。\n"
         "- 数字は根拠として必要な分だけ使い、数値を二つ以上続けて読んだら、必ず『だから何を見るか』を続ける。\n"
         "- 金額・価格・指標などの数値は小数第2位までに丸めて言うこと（0.001のような小さい数量はそのまま）。factsの桁数をそのまま読み上げない。\n"
@@ -965,18 +966,58 @@ def generate_corner_script(
 #
 # The scheduled/manual PAPER corner no longer runs for a fixed duration. It
 # generates the next fact-grounded segment one at a time and reads it as soon as
-# it is ready; when the narrator has nothing new to say the corner ends. Read
-# "covered" is a bounded list of short topic labels already spoken, so the model
-# can avoid repeating itself and decide when it is done.
+# it is ready; when the narrator has nothing new to say the corner ends.
+# "covered" is the full list of segments already spoken in this corner, each
+# summarised by covered_entry() as label + opening sentence + key figures.
+# Labels alone were not enough: on 2026-09-23 a 58-segment corner re-told the
+# same 理論値 comparison 9 times under fresh labels, and the list was also cut
+# to the latest 24 so early topics were forgotten entirely.
 
 NEXT_SCRIPT_LABEL = "RADIO:paper-next"
+
+COVERED_SUMMARY_CHARS = 60
+COVERED_MAX_FIGURES = 4
+# Figures that identify what a segment was about: a number with a unit or a
+# decimal part. Single-digit counts (「1銘柄」「4つ」) and timeframe names
+# (「5分足」) are too generic to tell segments apart, so they are skipped.
+_COVERED_FIGURE_RE = re.compile(
+    r"(?:マイナス)?(?:\d[\d,万億]*\.\d+|\d[\d,万億]+)"
+    r"(?:円|%|％|bps|ベーシスポイント|銘柄|市場|本|件|分|秒)(?!足)"
+    r"|(?:マイナス)?\d[\d,万億]*\.\d+"
+)
+_SENTENCE_END_RE = re.compile(r"[。！？!?]")
+
+
+def covered_entry(topic: object, text: object) -> str:
+    """Summarise one spoken segment for the narrator's "already said" list."""
+    label = str(topic or "").strip().replace("\n", " ")
+    body = strip_leading_preamble(str(text or "").strip().replace("\n", " "))
+    match = _SENTENCE_END_RE.search(body)
+    first = body[: match.end()] if match else body
+    if len(first) > COVERED_SUMMARY_CHARS:
+        first = first[:COVERED_SUMMARY_CHARS] + "…"
+    figures: list[str] = []
+    for found in _COVERED_FIGURE_RE.findall(body):
+        if found not in figures:
+            figures.append(found)
+        if len(figures) >= COVERED_MAX_FIGURES:
+            break
+    parts = [part for part in (label, first) if part]
+    entry = "：".join(parts)
+    if figures:
+        entry += f"（数字: {'、'.join(figures)}）"
+    return entry
 
 
 def build_next_prompt(facts: Mapping[str, object], covered: Sequence[object] | None = None) -> str:
     """Prompt for exactly one next narration segment (or an explicit done)."""
     facts_json = json.dumps(dict(facts), ensure_ascii=False, sort_keys=True)
     covered_list = [str(item).strip() for item in (covered or []) if str(item).strip()]
-    covered_text = "、".join(covered_list) if covered_list else "（まだ何も話していません）"
+    covered_text = (
+        "\n" + "\n".join(f"{index}. {item}" for index, item in enumerate(covered_list, start=1))
+        if covered_list
+        else "（まだ何も話していません）"
+    )
     return (
         "あなたはPAPER暗号資産コーナーのラジオMC兼リサーチャーです。"
         "以下の実データ(facts)だけを根拠に、まだ話していない切り口を1つ選び、"
@@ -986,13 +1027,17 @@ def build_next_prompt(facts: Mapping[str, object], covered: Sequence[object] | N
         "【切り口の例】今日の相場の見取り図、ニュースの含意、時間足チャート、戦略パラメータの狙い、"
         "損益と保有、直近約定の理由、往復の振り返り、次回改善で検証したいこと。\n"
         "【話し方】\n"
-        "- です・ます調の自然な話し言葉。結論を先に言い、その後に理由や数字を添える。\n"
+        "- です・ます調の自然な話し言葉。いちばん伝えたいことを最初の文で言い、その後に理由や数字を添える。\n"
         "- 冒頭に「結論からお伝えしますと」「まず結論ですが」のような前口上・枕詞を置かない。"
-        "前置きなしで最初の文から内容そのものを言い、結論はその文で直接言う。\n"
+        "「結論は、」「結論として」「結論から言うと」も含め、「結論」という語で話し始めない。"
+        "前置きなしで最初の文から内容そのものを言う。\n"
         "- factsを順番に復唱するだけは禁止。数字同士を比較し、意味を説明する。\n"
         "- 金額・価格・指標などの数値は小数第2位までに丸めて言うこと。\n"
         "- 事実と推測を言い分け、ニュースの見出しをそのまま読み上げない。\n"
         "- 同じ文型・同じオチを繰り返さない。箇条書き、見出し、マークダウンは禁止。\n"
+        "【重複の禁止】話し済み一覧にある事実・比較・数字を主題にした話は、見出しや言い回しを変えても"
+        "同じ切り口とみなし、もう一度話さない（別の話の補足として一言触れるのは可）。"
+        "数字が少し更新されただけの同じ比較も話し済みとみなす。\n"
         "もう話す価値のある新しい切り口が無いと判断したら、次のJSONだけを出力してください。\n"
         '{"done": true}\n'
         "それ以外の場合は、次のJSONだけを出力してください。\n"
