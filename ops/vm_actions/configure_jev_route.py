@@ -139,6 +139,19 @@ def disable_env(env_file: Path) -> Path:
     return _rewrite_route_env(env_file, [])
 
 
+def _require_default_direct_route_ready(runtime_env: dict[str, str]) -> None:
+    """Fail closed if resetting the route would silently disable live Jev.
+
+    With no DOCICH_JEV_ROUTE the classifier defaults to ``direct``. If the
+    purpose-level Jev gate is active, that route requires #678's existing
+    TYPESAFE_API_KEY. Check this before mutating .env and again on the
+    replacement worker so ``disable_jev_route`` cannot turn a working Vercel
+    configuration into heuristic fallback while reporting success.
+    """
+    if runtime_env.get("COMMENT_CLASSIFIER_BACKEND") == "jev" and not runtime_env.get("TYPESAFE_API_KEY"):
+        raise ConfigureError("direct_route_requires_existing_typesafe_api_key")
+
+
 def verify_jev_route(route: str | None):
     """route=None means reset to the default route with no vercel secret."""
     def verify(runtime_env: dict[str, str]) -> None:
@@ -147,6 +160,7 @@ def verify_jev_route(route: str | None):
                 raise ConfigureError("chat_worker_docich_route_still_set")
             if runtime_env.get("DOCICH_JEV_VERCEL_API_KEY"):
                 raise ConfigureError("chat_worker_vercel_api_key_still_present")
+            _require_default_direct_route_ready(runtime_env)
             return
         if runtime_env.get("DOCICH_JEV_ROUTE") != route:
             raise ConfigureError("chat_worker_docich_route_mismatch")
@@ -169,13 +183,17 @@ def main() -> int:
     args = parser.parse_args()
 
     env_file = args.soren_root / ".env"
+    current = _classifier._process_env(
+        _classifier._read_worker_pid(args.soren_root / _classifier.WORKER_PID_FILE) or -1
+    )
     if args.disable:
+        # Reset means default-direct, not "turn Jev off". If Jev is currently
+        # active, prove the direct credential exists before removing the
+        # working Vercel route/secret from .env.
+        _require_default_direct_route_ready(current)
         backup = disable_env(env_file)
         route = None
     elif args.route == "direct":
-        current = _classifier._process_env(
-            _classifier._read_worker_pid(args.soren_root / _classifier.WORKER_PID_FILE) or -1
-        )
         if not current.get("TYPESAFE_API_KEY"):
             # Fail closed before writing anything: direct route needs #678's
             # own credential already configured and live on the current
