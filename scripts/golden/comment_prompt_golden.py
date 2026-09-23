@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import shlex
+import shutil
 from pathlib import Path
 import subprocess
 import tempfile
@@ -101,17 +102,25 @@ def soren91_policies(sn):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--soviet-now", type=Path, required=True)
-    checkout = parser.parse_args().soviet_now.resolve()
-    commit = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
+    parser.add_argument("--out", type=Path, default=OUT)
+    parser.add_argument("--commit", help="for a plain `git archive` export (e.g. inside a Linux container)")
+    args = parser.parse_args()
+    checkout = args.soviet_now.resolve()
     # Run on a disposable export of that commit: loading eloop_lib.sh creates
     # tmp/ dirs and the gacha note appends to its list file.
     with tempfile.TemporaryDirectory(prefix="legacy-soviet-now-") as export:
-        archive = subprocess.run(["git", "-C", str(checkout), "archive", commit], check=True, capture_output=True).stdout
-        subprocess.run(["tar", "-x", "-C", export], input=archive, check=True)
-        generate(Path(export), commit)
+        if args.commit:
+            commit = args.commit
+            shutil.copytree(checkout, export, dirs_exist_ok=True)
+        else:
+            commit = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
+            archive = subprocess.run(["git", "-C", str(checkout), "archive", commit],
+                                     check=True, capture_output=True).stdout
+            subprocess.run(["tar", "-x", "-C", export], input=archive, check=True)
+        generate(Path(export), commit, args.out)
 
 
-def generate(sn, commit):
+def generate(sn, commit, out_path):
 
     sanitize_inputs = [
         "", "   \n\n", "普通の行\n  前後空白  \n\n次の行",
@@ -244,8 +253,8 @@ def generate(sn, commit):
         "soren91_length_policy": policies[0], "soren91_retry_length_policy": policies[1],
         "prompt_defaults": defaults,
     }
-    OUT.write_text(json.dumps(golden, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
-    print(f"wrote {OUT} ({len(prompts)} prompts) from soviet_now {commit[:8]}")
+    out_path.write_text(json.dumps(golden, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    print(f"wrote {out_path} ({len(prompts)} prompts) from soviet_now {commit[:8]}")
 
 
 if __name__ == "__main__":
