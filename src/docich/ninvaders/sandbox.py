@@ -86,6 +86,8 @@ def validate_policy_source(source: str) -> ast.Module:
                 raise PolicyRejected(f"許可されないimport: {node.module}")
             if any(a.name == "*" for a in node.names):
                 raise PolicyRejected("from ... import * は禁止です")
+            if any(a.name.startswith("_") for a in node.names):
+                raise PolicyRejected("private import は禁止です")
         elif isinstance(node, ast.Name):
             if node.id in FORBIDDEN_NAMES:
                 raise PolicyRejected(f"禁止された名前: {node.id}")
@@ -125,7 +127,9 @@ def sanitize_keys(keys) -> list[str]:
 # ---------------------------------------------------------------- worker side
 
 def _guarded_import(name, globals=None, locals=None, fromlist=(), level=0):  # noqa: A002
-    if level != 0 or name.split(".")[0] not in ALLOWED_IMPORTS or "." in name:
+    requested = tuple(fromlist or ())
+    if (level != 0 or name.split(".")[0] not in ALLOWED_IMPORTS or "." in name
+            or any(part == "*" or str(part).startswith("_") for part in requested)):
         raise ImportError(f"import not allowed: {name}")
     return __import__(name, globals, locals, fromlist, level)
 
