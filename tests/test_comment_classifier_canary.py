@@ -107,3 +107,19 @@ def test_a_credential_echoed_into_the_report_is_refused():
     assert code == 1
     assert VERCEL_KEY not in out
     assert json.loads(out) == {"status": "refused_credential_in_report"}
+
+
+def test_workflow_pins_owner_repo_and_reviewed_main_identity_before_using_secrets():
+    workflow = (ROOT / ".github" / "workflows" / "jev-route-canary.yml").read_text(encoding="utf-8")
+    required = (
+        "GITHUB_REPOSITORY\" == 'azumag/docich'",
+        "GITHUB_REPOSITORY_ID\" == '1327276249'",
+        "GITHUB_REPOSITORY_OWNER_ID\" == '9018513'",
+        "GITHUB_ACTOR_ID\" == '9018513'",
+        "GITHUB_TRIGGERING_ACTOR\" == 'azumag'",
+        "GITHUB_REF\" == 'refs/heads/main'",
+        "GITHUB_WORKFLOW_REF\" == 'azumag/docich/.github/workflows/jev-route-canary.yml@refs/heads/main'",
+    )
+    for marker in required:
+        assert marker in workflow
+    assert workflow.index("Authorize owner canary") < workflow.index("DOCICH_JEV_VERCEL_API_KEY: ${{ secrets.DOCICH_JEV_VERCEL_API_KEY }}")
