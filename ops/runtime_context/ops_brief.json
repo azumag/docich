@@ -2,7 +2,7 @@
   "output_sha256": "07f4d035e5deb1acd507bb86948ff1ea0760ae21195b1c4e0be204b06be6c43d",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "7ebb63f70c90b262531e3bea6b8a18ee6b0beb15243d9d594917debe41724dba",
+  "source_sha256": "b6bb2eef53ba514bbe26b36776335b8a482aa3d0082764b10fa9bad73bb102ea",
   "topics": [
     "PAPERコーナーの数値読みを「整数のみ・整数部0だけ小数第2位」へ（、CI 5/5 green・マージ待ち）",
     "建国後の同盤面継続・5分待機・クリップ修正を配備（旧盤面喪失と自然建国未検証を記録）",
