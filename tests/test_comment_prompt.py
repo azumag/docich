@@ -157,15 +157,17 @@ def test_only_the_reply_contract_is_rewrapped_by_later_legacy_layers():
 
 
 def test_golden_regenerates_identically_on_this_linux_host():
-    """CI (Ubuntu, submodule checked out): the committed golden must equal a
-    fresh run of the legacy, so it can never drift from what production does."""
+    """CI (Ubuntu, submodule checked out): a fresh run of the legacy at the
+    checked-out gitlink must equal the committed golden (provenance commit aside)."""
     import subprocess
     if not (SOVIET_NOW / "eloop_lib.sh").is_file() or sys.platform != "linux":
         pytest.skip("needs the soviet_now checkout on Linux (GNU tools, like production)")
-    commit = subprocess.check_output(["git", "-C", str(SOVIET_NOW), "rev-parse", "HEAD"], text=True).strip()
-    if commit != GOLDEN["provenance"]["soviet_now_commit"]:
-        pytest.skip("golden pinned to another soviet_now commit; the drift guard above covers content")
     out = Path(subprocess.check_output(["mktemp"], text=True).strip())
     subprocess.run([sys.executable, str(ROOT / "scripts/golden/comment_prompt_golden.py"),
                     "--soviet-now", str(SOVIET_NOW), "--out", str(out)], check=True, capture_output=True)
-    assert json.loads(out.read_text(encoding="utf-8")) == GOLDEN
+    fresh = json.loads(out.read_text(encoding="utf-8"))
+    fresh["provenance"].pop("soviet_now_commit")
+    pinned = json.loads(json.dumps(GOLDEN))
+    pinned["provenance"].pop("soviet_now_commit")
+    # Against the *checked-out* gitlink: a legacy change fails here until the port follows.
+    assert fresh == pinned
