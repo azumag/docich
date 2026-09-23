@@ -7,53 +7,63 @@ phrase carries no information and was reported as unnecessary on air
 (2026-09-23), so it is removed from generated segments before they are stored
 and spoken.
 
-The rule is deliberately narrow: only a known lead-in form at the very start of
-the text is removed, and at least one character after 「結論」 must be consumed.
-Plain statements that merely begin with 結論 (「結論は大事だ。…」,
-「結論と判断するのは早計だが、…」) are therefore kept untouched.
+The rule is deliberately narrow: only a known lead-in verb phrase, or the
+fixed 「まず結論ですが」 form, at the very start of the text is removed.
+Statements that merely begin with 結論 keep their subject/origin:
+「結論は、まだ確定していない。」 and 「結論から、逆算する戦略は取らない。」 are
+left untouched, as are 「結論は大事だ。」 and mid-text occurrences.
 """
 from __future__ import annotations
 
 import re
 
 # Longer forms first: Python's alternation takes the first branch that matches,
-# so 「言いますと」 has to be tried before 「言うと」.
+# so 「言いますと」 has to be tried before 「言うと」.  None of these is a prefix
+# of another, so ordering is belt-and-braces rather than load-bearing.
 _LEADING_PREAMBLE_CONNECTORS = (
     "お伝えしますと",
     "お伝えいたしますと",
     "お伝えすると",
     "お話ししますと",
     "申し上げますと",
-    "申しますと",
+    "申し上げると",
     "言わせてもらいますと",
+    "言わせてもらえますと",
+    "言わせていただくと",
     "言いますと",
+    "言うならば",
     "述べますと",
     "述べると",
     "言うと",
     "いうと",
     "言えば",
     "いえば",
+    "としては",
     "すれば",
     "すると",
     "見ると",
     "見れば",
 )
-_PUNCT_CLASS = r"[、,：: \t]"
+# Trailing separators after the lead-in: commas/colons, the sentence closers a
+# model may substitute for a comma, ideographic/half-width space, tab, CR.
+_PUNCT_CLASS = r"[、,：:。．！？!?　 \t\r]"
 
-# 「まず結論」も同じ前口上として扱う。読み替え不能な平叙文（「結論は大事だ。」
-# 「結論と判断するのは早計だが、」）は、既知の接続表現か直後の句読点のどちらかが
-# 必須なので、内容文が誤って削られることはない。
-_LEADING_PREAMBLE_PREFIX = r"(?:まず)?結論(?:から|を先に|は|ですが)"
+# 「まず結論ですが」はそれ自体が前口上なので、続く区切り文字ごと落としてよい。
+# 一方「結論は」「結論から」だけでは主語・起点になり得る（「結論は、まだ確定
+# していない。」）ため識別は接続表現を必須とし、「結論は大事だ。」
+# 「結論と判断するのは早計だが、」のような内容文は削らない。
+_BARE_PUNCT_PREFIX = r"まず結論ですが"
 
-# Branch 1: 「結論(から/を先に/は)」 + a known lead-in verb phrase + optional
-# punctuation.  Branch 2: 「結論(から/を先に/は)」 immediately followed by
-# punctuation (「結論は、…」「結論から、…」).  Neither branch can match an empty
-# remainder, so nothing is removed unless the head really is a lead-in.
+# Branch 1: 結論(から/を先に/は) — 任意 — + optional spacing + a known lead-in
+# verb phrase + optional separator.  The connector is mandatory, so a plain
+# statement (「結論は大事だ。」「結論は\n大事だ。」「結論は 大事だ。」「結論とは
+# 違う。」) can never match, while 「結論としては、」と「結論を先に言えば、」は
+# それでも捕捉できる。Branch 2: the fixed 「まず結論ですが」 + separator.
 _LEADING_PREAMBLE_RE = re.compile(
-    rf"\A{_LEADING_PREAMBLE_PREFIX}(?:"
+    r"\A(?:まず)?結論(?:から|を先に|は|とは)?[ \t]*(?:"
     + "|".join(_LEADING_PREAMBLE_CONNECTORS)
     + rf"){_PUNCT_CLASS}*"
-    rf"|\A{_LEADING_PREAMBLE_PREFIX}{_PUNCT_CLASS}+"
+    rf"|\A{_BARE_PUNCT_PREFIX}{_PUNCT_CLASS}+"
 )
 
 # Bounded so a pathological input cannot loop; two passes already cover a
