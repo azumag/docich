@@ -251,15 +251,24 @@ def _ready(order, mem) -> bool:
 
 
 def _orders(mem):
-    """The order list in force: an adopted adjusted chart, else the base chart.
+    """The order list in force: an adopted adjusted plan, else the base chart.
 
-    While an adjusted chart is pending, one JEV-chosen interim order may run.
+    The adopted plan (``chart_plan``) is separate from the request state
+    (``chart_adjust``): a new off-chart request never discards a plan that is
+    still waiting on a capture; only adopting a newer validated plan does.
+    While no plan is waiting, one JEV-chosen interim order may run.
     """
-    state = mem.get('chart_adjust') or {}
-    if state.get('orders'):
-        return state['orders']
-    interim = state.get('interim_order')
+    plan = mem.get('chart_plan') or {}
+    if plan.get('orders'):
+        return plan['orders']
+    interim = (mem.get('chart_adjust') or {}).get('interim_order')
     return (*chart.orders(mem.get('chapter') or 0), *((interim,) if interim else ()))
+
+
+def _plan_pending(mem) -> bool:
+    status = mem.get('orders') or {}
+    return any(status.get(o['step']) in (None, 'pending')
+               for o in (mem.get('chart_plan') or {}).get('orders') or ())
 
 
 def next_order(mem):
@@ -274,6 +283,33 @@ def _order(mem):
     step = mem.get('active')
     return next((o for o in (*_orders(mem), *chart.orders(mem.get('chapter') or 0))
                  if o['step'] == step), None)
+
+
+def _tactics(mem, step):
+    """Battle tactics for a step: the base chart's, plus derived ones for adjusted
+    and interim orders (their steps never match a base tactic's step).
+
+    A carried card reuses every verified base tactic for that card (its enemy
+    and timing), re-keyed to this step. A card with no verified tactic uses the
+    explicit default: once at the battle opening against any enemy, the same
+    mechanism and evidence guards as a retry's opening cards.
+    """
+    base = chart.tactics(mem.get('chapter') or 0)
+    order = next((o for o in _orders(mem) if o['step'] == step), None) if step else None
+    if order is None or any(o['step'] == step for o in chart.orders(mem.get('chapter') or 0)):
+        return base
+    derived, seen = [], set()
+    for card in order.get('cards') or ():
+        verified = [t for t in base if t['card'] == card]
+        if verified:
+            if card in seen:
+                continue
+            seen.add(card)
+            derived += [{**t, 'step': step, 'note': f"調整: {t['note']}"} for t in verified]
+        else:
+            derived.append({'enemy': None, 'card': card, 'open': True, 'step': step,
+                            'note': '調整チャート既定: 検証済み戦術のない携行切り札を開幕使用'})
+    return (*base, *derived)
 
 
 INTERIM_LIMIT = 2             # JEV answers per off-chart situation
@@ -331,13 +367,34 @@ def _adopt_interim(mem, state, rid):
             reason='調整チャート待ちの間、JEVが決定的候補から暫定出撃を選択')
 
 
+def _adopt_plan(mem, doc, rid):
+    """Adopt a validated adjusted chart as the plan, with per-generation step ids."""
+    orders = [{**o, 'step': chart_adjust.execution_step(rid, o['step']), 'local_step': o['step'],
+               'cards': list(o['cards']), 'after': list(o['after']) if o['after'] else None}
+              for o in doc['orders']]
+    purchases = doc.get('purchases')
+    mem['chart_plan'] = {
+        'request_id': rid, 'source': doc.get('source'), 'orders': orders,
+        'purchases': ({**purchases, 'month': list(purchases['month']),
+                       'cards': [list(c) for c in purchases['cards']]} if purchases else None)}
+    state = mem.setdefault('chart_adjust', {})
+    state['interim_wanted'] = False
+    state.pop('interim_order', None)
+    mem['variant'] = 'chart_adjusted'
+    _record(mem, 'chart_adjust_applied', chart_step=None, strategy_variant='chart_adjusted',
+            request_id=rid, source=doc.get('source'), steps=[o['step'] for o in orders],
+            local_steps=[o['local_step'] for o in orders],
+            reason='調整チャートを受信したため独自の指示列で出撃を再開')
+
+
 def _off_chart(mem):
     """No order is ready: request an adjusted chart, or adopt one that answered.
 
     The base chart is never mutated. A request is recorded once per distinct
     situation (chapter, captures, order states); an adjusted chart is adopted
-    only when it answers exactly that request, as a complete order list.
-    Until then a bounded number of JEV-chosen interim orders may run.
+    only when it answers exactly that request, as a complete order list that
+    replaces the previous plan. Until then the previous plan keeps waiting, or,
+    with no plan waiting, a bounded number of JEV-chosen interim orders may run.
     """
     state = mem.setdefault('chart_adjust', {})
     rid = chart_adjust.request_id(mem)
@@ -350,7 +407,7 @@ def _off_chart(mem):
                   else 'orders_locked' if blocked else 'orders_exhausted')
         state.clear()
         state['request_id'] = rid
-        state['interim_wanted'] = bool(interim_candidates(mem))
+        state['interim_wanted'] = not _plan_pending(mem) and bool(interim_candidates(mem))
         _record(mem, 'chart_adjust_request', chart_step=None, strategy_variant='chart_adjust_pending',
                 request_id=rid, off_chart_reason=reason, blocked=blocked,
                 captured=sorted(mem.get('captured') or []), orders=dict(status),
@@ -358,24 +415,13 @@ def _off_chart(mem):
                 reason='チャート外: 出撃可能な指示がないため調整チャートを非同期に要求し入力を保留')
         return
     doc = mem.get('_adjusted')
+    plan = mem.get('chart_plan') or {}
     if (doc and doc.get('request_id') == rid and doc.get('chapter') == mem.get('chapter')
-            and state.get('applied') != rid):
-        state['applied'] = rid
-        state['interim_wanted'] = False
-        state.pop('interim_order', None)
-        state['orders'] = [{**o, 'cards': list(o['cards']),
-                            'after': list(o['after']) if o['after'] else None}
-                           for o in doc['orders']]
-        state['purchases'] = ({**doc['purchases'], 'month': list(doc['purchases']['month']),
-                               'cards': [list(c) for c in doc['purchases']['cards']]}
-                              if doc.get('purchases') else None)
-        mem['variant'] = 'chart_adjusted'
-        _record(mem, 'chart_adjust_applied', chart_step=None, strategy_variant='chart_adjusted',
-                request_id=rid, source=doc.get('source'),
-                steps=[o['step'] for o in doc['orders']],
-                reason='調整チャートを受信したため独自の指示列で出撃を再開')
+            and plan.get('request_id') != rid):
+        _adopt_plan(mem, doc, rid)
         return
-    if state.get('applied') == rid:
+    if plan.get('request_id') == rid or _plan_pending(mem):
+        state['interim_wanted'] = False
         return
     _adopt_interim(mem, state, rid)
     interim = state.get('interim_order')
@@ -893,8 +939,8 @@ def battle_step(screen: Screen, mem):
                                'card_consumption_complete': True, 'card_evidence_version': 1,
                                **context}
         _bind_battle_strategy(mem, cur)
-        planned = [t['card'] for t in chart.tactics(mem.get('chapter') or 0)
-                   if t['enemy'] == b.enemy and t.get('step') in (None, cur['step'])]
+        planned = [t['card'] for t in _tactics(mem, cur['step'])
+                   if t['enemy'] in (None, b.enemy) and t.get('step') in (None, cur['step'])]
         planned += list(mem.get('card_override', {}).get(cur['step']) or [])
         _record(mem, 'battle_start', **_battle_labels(cur), enemy=b.enemy, ally=b.ally,
                 expected_metric=cur['strategy_expected'],
@@ -920,9 +966,9 @@ def battle_step(screen: Screen, mem):
               'note': '再攻撃の開幕切り札(チャート逸脱)'}
              for card in mem.get('card_override', {}).get(cur.get('step')) or []]
     done = cur.setdefault('tactics_done', [])
-    for index, tactic in enumerate([*extra, *chart.tactics(mem.get('chapter') or 0)]):
+    for index, tactic in enumerate([*extra, *_tactics(mem, cur.get('step'))]):
         tid = f"{'x' if index < len(extra) else 'c'}{index}:{tactic['card']}"
-        if tactic['enemy'] != b.enemy or tid in done:
+        if tactic['enemy'] not in (None, b.enemy) or tid in done:
             continue
         if tactic.get('step') and tactic['step'] != cur.get('step'):
             continue
@@ -1192,7 +1238,7 @@ def _adjusted_plan(mem, header, key):
     left after known card prices. General recruitment has no measured menu
     yet, so it is recorded as a deviation and not attempted.
     """
-    spec = (mem.get('chart_adjust') or {}).get('purchases')
+    spec = (mem.get('chart_plan') or {}).get('purchases')
     if not spec or key != f'{spec["month"][0]}-{spec["month"][1]}':
         return None
     gold = header['gold']
@@ -1421,7 +1467,7 @@ def observe_events(screen: Screen, mem):
                         'expect_menu', 'general_override', 'launched', 'month_exit',
                         'nav_last', 'orders', 'picked', 'retries', 'retry_context', 'shop',
                         'source_override', 'uncertain', 'month', 'order_context', 'sortie_general',
-                        'chart_adjust'):
+                        'chart_adjust', 'chart_plan'):
                 mem.pop(key, None)
             mem['chapter'] = chapter
             mem['variant'] = 'chart' if chart.orders(chapter) else 'chart_unavailable'

@@ -45,7 +45,9 @@ def _kind(step, base_steps):
         return 'base'
     if isinstance(step, str) and step.startswith(adjust.INTERIM_PREFIX):
         return 'interim'
-    return 'adjusted'
+    if isinstance(step, str) and step.startswith(adjust.PLAN_PREFIX):
+        return 'adjusted'
+    return 'unknown'
 
 
 def collate(runtime_dir: Path) -> dict:
@@ -59,7 +61,11 @@ def collate(runtime_dir: Path) -> dict:
             except ValueError:
                 continue
             for order in doc['orders']:
-                adjusted_orders[order['step']] = {**order, 'cards': list(order['cards']),
+                # Keyed by the per-generation execution id the policy records,
+                # so charts reusing a local name (J1) never mix outcomes.
+                step = adjust.execution_step(doc['request_id'], order['step'])
+                adjusted_orders[step] = {**order, 'step': step, 'local_step': order['step'],
+                                         'cards': list(order['cards']),
                                                   'after': list(order['after'] or ()) or None,
                                                   'chapter': doc['chapter'],
                                                   'request_id': doc['request_id']}

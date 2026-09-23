@@ -3,7 +3,8 @@
 Whichever long-lived process observes the runtime (agent or corner monitor)
 calls ``consider`` after each observation. Under a non-blocking file lock it
 claims the latest ``hanjuku_chart_adjust_request.json`` and starts at most one
-daemon thread that asks the configured AI chain for a complete order list.
+daemon thread (which keeps the lock until the answer is saved, so agent and
+corner observers never generate the same request twice in parallel) that asks the configured AI chain for a complete order list.
 The answer is accepted only through ``hanjuku_chart_adjust.save`` (strict
 validation against measured chart facts). The bot keeps holding (or runs a
 JEV interim order) until a valid answer lands; nothing here sends input.
@@ -70,8 +71,8 @@ def build_prompt(request: dict, results: list[dict]) -> str:
         '## 制約',
         f'- 城名は次のいずれか: {json.dumps(sorted(chart.castles(chapter)), ensure_ascii=False)}',
         f'- 切り札名は次のいずれか: {json.dumps(sorted(adjust.CARD_NAMES), ensure_ascii=False)}',
-        f'- 指示は1〜{adjust.MAX_ORDERS}件。step は英数字の一意な名前（例 J1, J2）。'
-        f'基準チャートのstep名と "{adjust.INTERIM_PREFIX}" で始まる名前は禁止。',
+        f'- 指示は1〜{adjust.MAX_ORDERS}件。step は英数字・_・- の12文字以内の一意な名前（例 J1, J2）。'
+        '基準チャートのstep名は禁止。',
         f'- cards は1指示あたり最大{adjust.MAX_CARDS_PER_ORDER}枚。在庫は保証されないので必要な時だけ。',
         '- after は null / ["captured", 城名] / ["all_captured"] のいずれか。',
         '- source は将軍を出す自軍の城。target は攻める城。general は将軍名。',
@@ -125,7 +126,10 @@ def _default_generate(g, cfg, prompt: str) -> tuple[str, str]:
     return result.output, result.last_agent
 
 
-def _run(g, runtime_dir: Path, request: dict, cfg, generate):
+def _run(g, runtime_dir: Path, request: dict, cfg, generate, lock_fd=None):
+    """Generate once. ``lock_fd`` (the claimed worker lock) is released only
+    after the answer is saved and logged, so no other observer process can
+    start a second generation for this runtime meanwhile."""
     status, detail = 'saved', None
     started = time.monotonic()
     try:
@@ -153,6 +157,9 @@ def _run(g, runtime_dir: Path, request: dict, cfg, generate):
             **{k: request.get(k) for k in ('game', 'runtime_id', 'generation', 'lease_id')}})
     except Exception:
         pass
+    finally:
+        if lock_fd is not None:
+            os.close(lock_fd)
 
 
 def consider(g, game, runtime_dir: Path, *, terminal=False, generate=None, background=True):
@@ -168,6 +175,7 @@ def consider(g, game, runtime_dir: Path, *, terminal=False, generate=None, backg
     if lock_path.is_symlink():
         return None
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    owned = True                 # this frame owns fd until handed to a generation
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -186,15 +194,19 @@ def consider(g, game, runtime_dir: Path, *, terminal=False, generate=None, backg
                                                 'attempts': attempts + 1, 'at': time.time()})
         _busy.set()
         generate = generate or _default_generate
+        owned = False
         if not background:
-            _run(g, runtime_dir, request, cfg, generate)
+            _run(g, runtime_dir, request, cfg, generate, fd)
             return request['request_id']
         try:
-            threading.Thread(target=_run, args=(g, runtime_dir, request, cfg, generate),
+            # The thread inherits the locked fd and releases it when done.
+            threading.Thread(target=_run, args=(g, runtime_dir, request, cfg, generate, fd),
                              daemon=True, name='hanjuku-chart-adjust').start()
         except Exception:
+            owned = True
             _busy.clear()
             return None
         return request['request_id']
     finally:
-        os.close(fd)
+        if owned:
+            os.close(fd)

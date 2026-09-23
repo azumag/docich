@@ -62,9 +62,16 @@ Claude、OpenCode、API、認証情報を操作時に使用しない。旧`brain
     ラベルを1つだけ選ばせる。policy が候補を再導出してから既存のマップ移動で実行する（`chart_interim_order`）。
     失敗・タイムアウト・鍵なし・確信度0.7未満・候補外は無入力ホールド（`chart_interim_hold`）。1状況あたり最大2回。
   - L2 採用: 同じ `request_id` への回答だけを次のマップ観測時に `chart_adjust_applied` として独立したorder列で
-    採用する（`strategy_variant=chart_adjusted`）。基準チャートは実行時に変更しない。基準と同名・`I:` 始まりのstep、
-    未知の城・切り札は採用しない。月次は調整チャートの purchases 月が来たら既存の商人・兵士補充手順で買う
+    採用する（`strategy_variant=chart_adjusted`）。採用済み計画（`chart_plan`）は要求状態（`chart_adjust`）と分離し、
+    占領待ちなどで新しい要求を出しても保持する。置き換えるのは次世代の検証済み計画を採用した時だけ。
+    計画が占領待ちの間は暫定JEVを使わない。各orderは `A:<request_id先頭8桁>:<ローカルstep>` の実行IDで
+    記録するため、別世代が `J1` を再利用しても実行状態・再攻撃・実績が混ざらない。ローカルstepは
+    英数字・_・- の12文字以内、基準と同名は不可。基準チャートは実行時に変更しない。
+    調整・暫定orderの携行切り札は、検証済みの基準戦術（敵・タイミング）があればそれを流用し、
+    無い切り札は明示の既定として任意の敵に対し開幕で1回使う（再攻撃の開幕切り札と同じ使用証拠ガード）。
+    月次は調整チャートの purchases 月が来たら既存の商人・兵士補充手順で買う
     （既知価格の残額で兵士数を上限）。将軍の新規登用はメニュー未実測のため `recruit_menu_unmeasured` として記録のみ。
+    非同期ワーカーはworker lockを生成完了（保存・記録）まで保持し、agent/corner監視の別プロセスが同じ要求を並列生成しない。
   - L4 GO後照合: `game_over` 確定時、teardown 前に `hanjuku_chart_review.review()` が基準・保存された調整チャート・
     `hanjuku_decisions.jsonl` の実績を照合し `hanjuku_chart_review.json`（提案: `promote_adjusted_step` /
     `promote_interim_attack` / `review_base_step` / `cover_off_chart`）を書く。`hanjuku_chart.py` は編集しない。

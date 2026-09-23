@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 import json
 from pathlib import Path
 
@@ -64,6 +65,14 @@ def game_settings(game) -> dict:
     return settings(hanjuku.get('chart_adjust'))
 
 
+PLAN_PREFIX = 'A:'
+
+
+def execution_step(rid: str, local_step: str) -> str:
+    """Per-generation execution id: two charts reusing ``J1`` never share state."""
+    return f'{PLAN_PREFIX}{rid[:8]}:{local_step}'
+
+
 def request_id(mem) -> str:
     """Stable id of one off-chart situation: chapter, captures and order states."""
     # Interim (JEV) orders do not change the situation the LLM was asked
@@ -98,11 +107,14 @@ def _after(value, castles):
 def _order(raw, castles, base_steps):
     if not isinstance(raw, dict):
         raise ValueError('invalid order')
-    step = _text(raw.get('step'), 'step', limit=16)
-    # Adjusted steps share the policy's order-status map with the base chart:
-    # a colliding name would inherit or overwrite a base order's state.
-    if step in base_steps or step.startswith(INTERIM_PREFIX):
-        raise ValueError('adjusted step collides with base chart or interim orders')
+    step = raw.get('step')
+    # A local name only; the policy executes it as ``execution_step(rid, step)``
+    # so it can never share order state with the base chart, interim orders or
+    # another generation's plan. Base names are still refused to avoid confusion.
+    if not isinstance(step, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,12}', step):
+        raise ValueError('invalid step')
+    if step in base_steps:
+        raise ValueError('adjusted step collides with base chart')
     source, target = raw.get('source'), raw.get('target')
     if source not in castles or target not in castles or source == target:
         raise ValueError('invalid source/target castle')

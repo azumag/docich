@@ -80,6 +80,7 @@ def test_matching_adjusted_chart_is_adopted_as_an_independent_order_list():
     mem = stuck_memory()
     policy.map_step(map_screen(), mem, FRAME)
     rid = mem['chart_adjust']['request_id']
+    j1, j2 = adjust.execution_step(rid, 'J1'), adjust.execution_step(rid, 'J2')
     # A stale answer (other request) is ignored.
     mem['_adjusted'] = adjust.validate(adjusted_doc('0' * 16))
     policy.map_step(map_screen(), mem, FRAME)
@@ -87,29 +88,99 @@ def test_matching_adjusted_chart_is_adopted_as_an_independent_order_list():
     mem['_adjusted'] = adjust.validate(adjusted_doc(rid))
     policy.map_step(map_screen(), mem, FRAME)
     [applied] = decisions(mem, 'chart_adjust_applied')
-    assert applied['steps'] == ['J1', 'J2'] and mem['variant'] == 'chart_adjusted'
-    assert mem['active'] == 'J1'
+    assert applied['steps'] == [j1, j2] and applied['local_steps'] == ['J1', 'J2']
+    assert mem['variant'] == 'chart_adjusted' and mem['active'] == j1
     [start] = decisions(mem, 'order_start')
     assert start['target'] == 'スペンソニア' and start['strategy_variant'] == 'chart_adjusted'
     # The adopted list survives without the file (persisted in memory, JSON-safe).
     mem = json.loads(json.dumps({k: v for k, v in mem.items() if k != '_adjusted'}))
-    assert policy._order(mem)['step'] == 'J1'
-    mem['orders']['J1'] = 'launched'
-    mem['active'] = None
-    assert policy.next_order(mem) is None
+    mem['_records'] = []
+    assert policy._order(mem)['step'] == j1
+    # Real flow: J1 launches, then plain map frames while waiting for the capture.
+    policy._finish_order(mem, 'launched')
+    for _ in range(3):
+        assert policy.map_step(map_screen(), mem, FRAME) == []
+    # A new request may be issued, but the adopted plan and purchases survive it.
+    assert len(decisions(mem, 'chart_adjust_request')) == 1
+    assert [o['step'] for o in mem['chart_plan']['orders']] == [j1, j2]
+    assert mem['chart_plan']['purchases']['month'] == [1, 8]
+    assert mem['chart_adjust']['interim_wanted'] is False     # plan still waiting: no JEV
     mem['captured'].append('スペンソニア')
-    assert policy.next_order(mem)['step'] == 'J2'
+    policy.map_step(map_screen(), mem, FRAME)
+    assert mem['active'] == j2
     # The base chart is never mutated.
     assert chart.CHAPTER_1_ORDERS == BASE_ORDERS
+
+
+def test_second_generation_reusing_local_steps_runs_its_own_orders():
+    mem = stuck_memory()
+    policy.map_step(map_screen(), mem, FRAME)
+    first = mem['chart_adjust']['request_id']
+    mem['_adjusted'] = adjust.validate(adjusted_doc(first, orders=[
+        {'step': 'J1', 'general': 'ココット', 'source': 'ゴーメン', 'target': 'スペンソニア'}]))
+    policy.map_step(map_screen(), mem, FRAME)
+    policy._finish_order(mem, 'launched')
+    mem['_adjusted'] = None
+    policy.map_step(map_screen(), mem, FRAME)            # exhausted: new request
+    second = mem['chart_adjust']['request_id']
+    assert second != first
+    mem['_adjusted'] = adjust.validate(adjusted_doc(second, orders=[
+        {'step': 'J1', 'general': 'ヴィーナス', 'source': 'カストーラ', 'target': 'スペンソニア'}]))
+    policy.map_step(map_screen(), mem, FRAME)
+    new_j1 = adjust.execution_step(second, 'J1')
+    assert new_j1 != adjust.execution_step(first, 'J1')
+    assert mem['active'] == new_j1
+    assert decisions(mem, 'order_start')[-1]['general'] == 'ヴィーナス'
+    assert mem['orders'][adjust.execution_step(first, 'J1')] == 'launched'
+
+
+def test_adjusted_order_cards_drive_battle_tactics():
+    from docich.hanjuku_screen import Battle
+    mem = stuck_memory()
+    policy.map_step(map_screen(), mem, FRAME)
+    rid = mem['chart_adjust']['request_id']
+    mem['_adjusted'] = adjust.validate(adjusted_doc(rid, orders=[
+        {'step': 'J2', 'general': chart.HERO, 'source': 'ゴーメン', 'target': 'けっかい',
+         'cards': ['クースカン', 'ノリウツール']},
+        {'step': 'J3', 'general': 'ココット', 'source': 'ゴーメン', 'target': 'スペンソニア',
+         'cards': ['ブンシーン']}]))
+    policy.map_step(map_screen(), mem, FRAME)
+    j2, j3 = adjust.execution_step(rid, 'J2'), adjust.execution_step(rid, 'J3')
+    base = [t['card'] for t in policy._tactics(mem, '1-B1')]
+    assert base == [t['card'] for t in chart.tactics(1)]
+    derived = [t for t in policy._tactics(mem, j2) if t.get('step') == j2]
+    assert [(t['enemy'], t['card']) for t in derived] == [('クイーン', 'クースカン'), ('クイーン', 'ノリウツール')]
+    assert derived[0]['after_clash'] and derived[1]['after_card'] == 'クースカン'
+    [default] = [t for t in policy._tactics(mem, j3) if t.get('step') == j3]
+    assert default['enemy'] is None and default['open'] and default['card'] == 'ブンシーン'
+
+    def fight(step, enemy, hp_seq):
+        mem['battle'] = None
+        mem['attack'] = {'general': chart.HERO, 'castle': 'けっかい', 'side': 'attack', 'step': step}
+        out = []
+        for enemy_hp in hp_seq:
+            screen = Screen(lines=[], hand=None, text='')
+            screen.kind = 'battle'
+            screen.battle = Battle(enemy=enemy, ally=chart.HERO, enemy_hp=enemy_hp, ally_hp=80)
+            out.append(policy.battle_step(screen, mem))
+        return out
+    # Same HP/clash state as the base 1-B1: the adjusted step now opens クースカン.
+    assert fight(j2, 'クイーン', [90, 90, 85]) == fight('1-B1', 'クイーン', [90, 90, 85])
+    assert fight(j2, 'クイーン', [90, 90, 85])[-1] == [policy.pad('b')]
+    assert mem['battle']['card_flow']['card'] == 'クースカン'
+    # Explicit default: an unverified card is used once at the opening, any enemy.
+    assert fight(j3, 'ガルバンゾー', [50, 50])[-1] == [policy.pad('b')]
+    assert mem['battle']['card_flow']['card'] == 'ブンシーン'
 
 
 def test_chapter_change_drops_adjusted_chart():
     from docich.hanjuku_screen import Screen as S
     mem = stuck_memory()
-    mem['chart_adjust'] = {'request_id': 'x', 'orders': [{'step': 'J1'}]}
+    mem['chart_adjust'] = {'request_id': 'x'}
+    mem['chart_plan'] = {'request_id': 'x', 'orders': [{'step': 'A:x:J1'}]}
     screen = S(lines=[], hand=None, text='', header={'chapter': 2, 'year': 1, 'month': 1, 'gold': 0})
     policy.observe_events(screen, mem)
-    assert 'chart_adjust' not in mem
+    assert 'chart_adjust' not in mem and 'chart_plan' not in mem
 
 
 @pytest.mark.parametrize('patch', [
@@ -174,7 +245,7 @@ def test_bot_entry_publishes_request_and_offers_saved_chart(tmp_path):
     adjust.save(tmp_path, adjusted_doc(request['request_id']))
     mem['_adjusted'] = adjust.load(tmp_path)
     policy.map_step(map_screen(), mem, FRAME)
-    assert mem['active'] == 'J1'
+    assert mem['active'] == adjust.execution_step(request['request_id'], 'J1')
 
 
 def test_decide_offers_adjusted_chart_without_persisting_it(monkeypatch):
@@ -187,7 +258,8 @@ def test_decide_offers_adjusted_chart_without_persisting_it(monkeypatch):
     rid = state['policy']['chart_adjust']['request_id']
     assert actions == [] and [r['decision'] for r in state['_records']] == ['chart_adjust_request']
     actions, state = hanjuku_bot.decide(FRAME, state, adjusted=adjust.validate(adjusted_doc(rid)))
-    assert state['policy']['active'] == 'J1' and '_adjusted' not in state['policy']
+    assert state['policy']['active'] == adjust.execution_step(rid, 'J1')
+    assert '_adjusted' not in state['policy']
 
 
 # ---------------------------------------------------------------- step 4: JEV interim
@@ -235,7 +307,8 @@ def test_jev_interim_choice_becomes_a_bounded_deterministic_order():
     # The LLM chart still wins when it arrives.
     mem['_adjusted'] = adjust.validate(adjusted_doc(rid))
     policy.map_step(map_screen(), mem, FRAME)
-    assert mem['active'] == 'J1' and 'interim_order' not in mem['chart_adjust']
+    assert mem['active'] == adjust.execution_step(rid, 'J1')
+    assert 'interim_order' not in mem['chart_adjust']
 
 
 @pytest.mark.parametrize('answer', [
@@ -389,6 +462,9 @@ def test_review_collates_base_adjusted_and_outcomes(tmp_path):
     from docich import hanjuku_chart_review as review
     from docich.hanjuku_run import append_log
     adjust.save(tmp_path, adjusted_doc('d' * 16))
+    adjust.save(tmp_path, adjusted_doc('e' * 16, orders=[
+        {'step': 'J1', 'general': chart.HERO, 'source': 'ゴーメン', 'target': 'けっかい'}]))
+    j1, other_j1 = adjust.execution_step('d' * 16, 'J1'), adjust.execution_step('e' * 16, 'J1')
     rows = [
         {'decision': 'order_start', 'chart_step': '1-C2', 'target': 'スペンソニア', 'general': 'ココット'},
         {'decision': 'battle_result', 'chart_step': '1-C2', 'outcome': 'loss', 'side': 'attack',
@@ -396,9 +472,13 @@ def test_review_collates_base_adjusted_and_outcomes(tmp_path):
         {'decision': 'order_retry', 'chart_step': '1-C2'},
         {'decision': 'chart_adjust_request', 'chart_step': None, 'request_id': 'd' * 16,
          'off_chart_reason': 'orders_locked', 'blocked': [{'step': '1-B1', 'after': ['all_captured']}]},
-        {'decision': 'order_start', 'chart_step': 'J1', 'target': 'スペンソニア', 'general': 'ココット'},
-        {'decision': 'battle_result', 'chart_step': 'J1', 'outcome': 'win', 'side': 'attack',
+        {'decision': 'order_start', 'chart_step': j1, 'target': 'スペンソニア', 'general': 'ココット'},
+        {'decision': 'battle_result', 'chart_step': j1, 'outcome': 'win', 'side': 'attack',
          'castle': 'スペンソニア'},
+        # A later generation reusing J1 (different target) does not mix outcomes.
+        {'decision': 'order_start', 'chart_step': other_j1, 'target': 'けっかい', 'general': 'どうし'},
+        {'decision': 'battle_result', 'chart_step': other_j1, 'outcome': 'loss', 'side': 'attack',
+         'castle': 'けっかい'},
     ]
     for row in rows:
         append_log(tmp_path, 'hanjuku_decisions', {'event': 'decision', 'chapter': 1, **row})
@@ -408,7 +488,9 @@ def test_review_collates_base_adjusted_and_outcomes(tmp_path):
     assert types['review_base_step']['step'] == '1-C2'
     assert types['promote_adjusted_step']['order']['target'] == 'スペンソニア'
     assert types['cover_off_chart']['off_chart_reason'] == 'orders_locked'
-    assert report['steps']['J1']['kind'] == 'adjusted' and report['runtime_id'] == 'r'
+    assert types['promote_adjusted_step']['step'] == j1
+    assert report['steps'][j1]['kind'] == 'adjusted' and report['runtime_id'] == 'r'
+    assert report['steps'][other_j1]['wins'] == 0 and report['steps'][j1]['losses'] == 0
     assert summary['proposals'] == 3
     assert chart.CHAPTER_1_ORDERS == BASE_ORDERS
 
@@ -418,3 +500,45 @@ def test_save_persists_only_normalized_fields(tmp_path):
     stored = json.loads((tmp_path / adjust.ADJUSTED_FILE).read_text(encoding='utf-8'))
     assert 'injected' not in stored and stored['generated_at'] is None
     assert adjust.load(tmp_path)['request_id'] == 'e' * 16
+
+
+def test_invalid_local_step_names_are_rejected():
+    for step in ('A:x', 'I:1', 'x' * 13, '', '1-A1'):
+        with pytest.raises(ValueError):
+            adjust.validate(adjusted_doc('a' * 16, orders=[
+                {'step': step, 'general': 'x', 'source': 'ゴーメン', 'target': 'けっかい'}]))
+
+
+def test_worker_lock_is_held_across_processes_until_generation_finishes(tmp_path):
+    import subprocess
+    import threading
+    from docich import hanjuku_chart_worker as worker
+    _requested(tmp_path)
+    release, entered = threading.Event(), threading.Event()
+
+    def slow(g, cfg, prompt):
+        entered.set()
+        release.wait(10)
+        return 'not json', 'codex'
+    assert worker.consider(None, Game(), tmp_path, generate=slow)
+    assert entered.wait(5)
+    # A second observer process sees the lock held and never generates.
+    code = f"""
+import sys; sys.path.insert(0, {str(Path(__file__).resolve().parents[1] / 'src')!r})
+from docich import hanjuku_chart_worker as w
+class G: raw = {{'hanjuku': {{'chart_adjust': {{'enabled': True, 'agents': 'codex'}}}}}}
+def gen(*a): print('GENERATED'); return '', ''
+print(w.consider(None, G(), {str(tmp_path)!r}, generate=gen, background=False))
+"""
+    out = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, timeout=30)
+    assert out.stdout.split() == ['None'], out.stderr
+    state = json.loads((tmp_path / worker.STATE).read_text(encoding='utf-8'))
+    assert state['attempts'] == 1
+    release.set()
+    for thread in threading.enumerate():
+        if thread.name == 'hanjuku-chart-adjust':
+            thread.join(5)
+    # After the (failed) generation the lock is free: the next attempt may run.
+    out = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, timeout=30)
+    assert out.stdout.split()[0] == 'GENERATED', out.stderr
+    assert json.loads((tmp_path / worker.STATE).read_text(encoding='utf-8'))['attempts'] == 2
