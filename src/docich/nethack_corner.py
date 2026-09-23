@@ -316,10 +316,13 @@ class NethackCornerManager(RetroCornerManager):
         accepting no argument at all made every rotation dispatch die with a
         TypeError before the corner could record any state (#986).
         """
-        if names is not None and (not names or GAME_NAME not in names):
+        if names is not None and list(names) != [GAME_NAME]:
+            # Exact ownership, not membership: a superset such as
+            # ``["nethack", "ninvaders"]` would silently pass an unvalidated
+            # extra target (#998).
+            detail = "、".join(str(name) for name in names) if names else "(空)"
             raise NethackCornerError(
-                f"nethack corner対象は{GAME_NAME}だけが有効です: "
-                + "、".join(str(name) for name in names)
+                f"nethack corner対象は{GAME_NAME}だけが有効です: {detail}"
             )
         try:
             game = load_game(self.g, GAME_NAME)

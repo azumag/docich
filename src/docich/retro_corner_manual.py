@@ -68,8 +68,15 @@ class ManualRetroCornerManager(RetroCornerManager):
         self.state_path = Path(g.state_dir) / MANUAL_STATE_FILE
         self.lock_path = Path(g.state_dir) / MANUAL_LOCK_FILE
 
-    def _validate_games(self) -> None:
-        for name in self.config.games:
+    def _validate_games(self, names: list[str] | None = None) -> None:
+        # Same ``(names=None)`` contract as the fixed managers: a rotation
+        # dispatch may hand over the selected target, and every requested
+        # name must be one this manual corner owns (#998).
+        owned = list(self.config.games)
+        if names is not None and (not names or any(name not in owned for name in names)):
+            detail = "、".join(str(name) for name in names) if names else "(空)"
+            raise RetroCornerError(f"手動retro cornerの対象外のゲームです: {detail}")
+        for name in (list(names) if names is not None else owned):
             try:
                 game = load_game(self.g, name)
             except Exception as exc:

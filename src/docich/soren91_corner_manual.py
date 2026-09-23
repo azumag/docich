@@ -83,8 +83,17 @@ class ManualSoren91CornerManager(RetroCornerManager):
             )
         )
 
-    def _validate_games(self) -> None:
-        for name in self.config.games:
+    def _validate_games(self, names: list[str] | None = None) -> None:
+        # Same target-override contract as the soren91 corner: this manual
+        # corner owns exactly ``GAME_NAME`` (the config is built with
+        # ``games=[GAME_NAME]``), so anything else is rejected rather than
+        # dying later with a TypeError (#998).
+        if names is not None and list(names) != [GAME_NAME]:
+            detail = "、".join(str(name) for name in names) if names else "(空)"
+            raise RetroCornerError(
+                f"手動soren91 corner対象は{GAME_NAME}だけが有効です: {detail}"
+            )
+        for name in (list(names) if names is not None else list(self.config.games)):
             try:
                 game = load_game(self.g, name)
             except Exception as exc:
