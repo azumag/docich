@@ -205,7 +205,7 @@ def test_green_map_encounter_prompt_is_confirmed_not_waited_on():
 def test_corner_waits_past_deadline_then_restores_only_on_terminal(manager, monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import Mock
-    state={'status':'active','game':'hanjuku-hero','previous_game':'sorengame',
+    state={'status':'active','game':'hanjuku-hero','previous_game':'sorengame','bot_identity':dict(IDENTITY),
            'ends_at':'2000-01-01T00:00:00+00:00'}
     observations=iter([
         {'phase':'battle','terminal_reason':None,'actions_sent':5},
@@ -248,7 +248,7 @@ def test_corner_observation_contention_retries_then_finishes_only_on_game_over(m
     from unittest.mock import Mock
     from docich.game_switch import DeadlineExceededError, GameSwitchBusyError
     from docich.naming import runtime_directory
-    state={'status':'active','game':'hanjuku-hero','previous_game':'sorengame'}
+    state={'status':'active','game':'hanjuku-hero','previous_game':'sorengame','bot_identity':dict(IDENTITY)}
     runtime=runtime_directory(manager.g.state_dir,IDENTITY['runtime_id'])
     runtime.mkdir(parents=True)
     error=DeadlineExceededError('busy') if busy_kind=='input' else GameSwitchBusyError('busy')
@@ -281,7 +281,7 @@ def test_corner_never_restores_on_unverified_terminal_evidence(manager, monkeypa
     from types import SimpleNamespace
     from unittest.mock import Mock
     from docich.retro_corner import RetroCornerError
-    state={'status':'active','game':'hanjuku-hero','previous_game':'sorengame'}
+    state={'status':'active','game':'hanjuku-hero','previous_game':'sorengame','bot_identity':dict(IDENTITY)}
     manager.store.canonical.load=Mock(return_value=({'active':IDENTITY},False))
     monkeypatch.setattr('docich.agent.fence.shared_section',lambda root,fn:fn())
     monkeypatch.setattr('docich.adapters.make_adapter',lambda *a,**kw:SimpleNamespace(
@@ -311,7 +311,7 @@ def test_corner_unknown_observation_failure_is_not_silently_retried(manager, mon
         observe=Mock(side_effect=AdapterError('ownership unknown'))))
     monkeypatch.setattr(manager,'_rotation_stop_result',lambda:None)
     with pytest.raises(AdapterError,match='ownership unknown'):
-        manager._wait_hanjuku({'status':'active','game':'hanjuku-hero'})
+        manager._wait_hanjuku({'status':'active','game':'hanjuku-hero','bot_identity':dict(IDENTITY)})
 
 
 def test_optional_concert_exits_instead_of_selecting_the_same_track():
@@ -421,3 +421,53 @@ def test_sent_input_links_to_bound_decision_not_another_lease(tmp_path):
     atomic_write_json(tmp_path / 'hanjuku_bot.json', {'decision_trace': {**trace, 'lease_id': 'old'}})
     hanjuku_run.action_sent(tmp_path, IDENTITY, action)
     assert json.loads((tmp_path / 'hanjuku_events.jsonl').read_text().splitlines()[-1])['decision_id'] is None
+
+
+@pytest.mark.parametrize('queued', [False, True])
+def test_corner_binds_committed_start_before_first_observation(manager, monkeypatch, queued):
+    import uuid
+    from unittest.mock import Mock
+    from docich import game_switch
+    from docich.retro_corner import RetroCornerError
+    from test_coordinator import FakeAdapterFactory
+    factory = FakeAdapterFactory({'hanjuku-hero': {}})
+    manager.coordinator = game_switch.GameSwitchCoordinator(manager.store, factory)
+    monkeypatch.setattr(manager, '_validate_games', lambda *a: None)
+    monkeypatch.setattr(manager, '_announce_start_locked', lambda *a: None)
+    if queued:
+        request = str(uuid.uuid4())
+        manager.store.initialize()
+        with manager.store.transaction() as tx:
+            tx.enqueue_request(request, 'start', 'hanjuku-hero')
+        starting = {**manager._default_state(), 'status': 'starting', 'game': 'hanjuku-hero', 'previous_game': None,
+                    'switch_request_id': request}
+        state, pending = manager._resume_queued_start_locked(starting, manager._local_now())
+    else:
+        state, pending = manager._begin_locked(manager._local_now(), scheduled=False,
+                                               target_override='hanjuku-hero')
+    assert pending is None and state['status'] == 'active'
+    canonical, _ = manager.store.canonical.load()
+    expected = {k: canonical['active'][k] for k in ('game', 'runtime_id', 'generation', 'lease_id')}
+    assert state['bot_identity'] == expected == manager._read_state()['bot_identity']
+    # Another same-name lease replaces A before the first observation.
+    canonical['active']['lease_id'] = str(uuid.uuid4())
+    manager.store.canonical.save(canonical)
+    observe = Mock()
+    monkeypatch.setattr('docich.adapters.make_adapter', observe)
+    monkeypatch.setattr(manager, '_rotation_stop_result', lambda: None)
+    finish = Mock()
+    monkeypatch.setattr(manager, '_finish_locked', finish)
+    with pytest.raises(RetroCornerError, match='identity changed'):
+        manager._wait_hanjuku(state)
+    observe.assert_not_called()
+    finish.assert_not_called()
+
+
+def test_missing_start_identity_cannot_adopt_the_first_active_runtime(manager, monkeypatch):
+    from unittest.mock import Mock
+    from docich.retro_corner import RetroCornerError
+    observe = Mock()
+    monkeypatch.setattr('docich.adapters.make_adapter', observe)
+    with pytest.raises(RetroCornerError, match='identity missing'):
+        manager._wait_hanjuku({'status': 'active', 'game': 'hanjuku-hero'})
+    observe.assert_not_called()

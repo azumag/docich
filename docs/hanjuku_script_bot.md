@@ -64,6 +64,8 @@ Claude、OpenCode、API、認証情報を操作時に使用しない。旧`brain
   他のRetroArchゲームの明示pause/save契約は変更しない。
 - 復帰直前にcorner監視は `hanjuku_run.terminal()` で永続化された終了証拠を runtime_id・generation・
   lease と照合し直す。一致しない・証拠が不正な場合は復帰せず失敗として止める（fail-closed）。
+  起動成功receiptが返した完全なidentityをcornerのactive保存前に固定する。初回観測時に
+  現在のruntimeを後から所有したことにはせず、identity欠落や同名別leaseへの置換はfail-closed。
   coordinatorにも固定した `bot_identity` を `payload.expected_source` として渡す。排他ロック内で
   完全一致を確認してから停止へ進み、観測後に別leaseへ変わった場合は `source_fence_lost` で拒否する。
   元のゲームがあればそのゲームへ、なければcoordinatorのstopでidleへ戻す。
@@ -107,6 +109,7 @@ runtimeの `audio_volume.json` に記録する。
 | `hanjuku_events.jsonl` | 時刻、画面SHA-256、画面判定、実際に送信したボタンと押下時間、戦闘遷移、終了理由 |
 | `hanjuku_events.previous.jsonl` | 4 MiBごとのローテート先。現行と合わせ最大約8 MiB |
 | `hanjuku_frames/frame-*.png` | 画面判定の変化、60秒間隔、終了時の画像。120枚のリング |
+| `hanjuku_frames/decision-*.png` | 名前確定・章確認・戦闘結果の判断に実際に使った画像。別の120枚リング |
 | `hanjuku_bot.json` | botの現在の方策状態（チャート手順・占領・勝敗集計・所持金）。別世代へ持ち越さない |
 | `hanjuku_decisions.jsonl` | 決定記録: `decision`、`chart_step`、`strategy_variant`、状況（画面種別・将軍・城・HP・所持金）、`deviation_reason`、`expected_metric`、`observed_metric`、`resulting_event`、`reason` |
 | `hanjuku_commentary.jsonl` | 実況候補（文・意味key・生成元の決定・理由、または状況判定保留） |

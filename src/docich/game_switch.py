@@ -3599,6 +3599,8 @@ class GameSwitchCoordinator:
             "from_game": from_game,
             "to_game": target,
             "generation": acceptance.generation,
+            "active_runtime": {k: candidate_rd[k] for k in
+                               ("game", "runtime_id", "generation", "lease_id")},
         }
         # The single atomic commit write is the commit point (design §5 E).
         tx.transition(

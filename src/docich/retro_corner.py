@@ -1183,6 +1183,31 @@ class RetroCornerManager:
             self._ensure_runtime()
             self._finish_locked(state, now)
 
+    @staticmethod
+    def _bind_hanjuku_start(state, transition):
+        if state.get('game') != 'hanjuku-hero':
+            return
+        # Bind the identity committed by THIS start, never whichever runtime
+        # happens to be active at the monitor's first observation.
+        receipt = getattr(transition, 'receipt', None)
+        result = receipt.get('result') if isinstance(receipt, dict) else None
+        identity = result.get('active_runtime') if isinstance(result, dict) else None
+        keys = ('game', 'runtime_id', 'generation', 'lease_id')
+        if (not isinstance(identity, dict) or set(identity) != set(keys)
+                or identity.get('game') != 'hanjuku-hero'
+                or type(identity.get('generation')) is not int or identity['generation'] < 1
+                or not all(isinstance(identity.get(k), str) and identity[k]
+                           for k in ('runtime_id', 'lease_id'))
+                or receipt.get('status') != 'succeeded'
+                or receipt.get('request_id') != state.get('switch_request_id')
+                or receipt.get('target') != 'hanjuku-hero'
+                or identity.get('runtime_id') != receipt.get('runtime_id')
+                or identity.get('generation') != receipt.get('generation')
+                or result.get('status') != 'succeeded'):
+            raise RetroCornerError('Hanjuku start has no committed runtime identity')
+        state['bot_identity'] = dict(identity)
+        state['bot_runtime_id'] = identity['runtime_id']
+
     def _begin_locked(
         self,
         now: dt.datetime,
@@ -1312,6 +1337,7 @@ class RetroCornerManager:
                     detail=getattr(transition, "detail", None)
                     or "ゲーム切替キューで順番待ちです",
                 )
+            self._bind_hanjuku_start(state, transition)
             started = self._local_now()
             state.pop("switch_request_id", None)
             state.pop("switch_status", None)
@@ -1360,6 +1386,7 @@ class RetroCornerManager:
                     detail=getattr(transition, "detail", None)
                     or "ゲーム切替キューで順番待ちです",
                 )
+            self._bind_hanjuku_start(state, transition)
         except Exception as exc:
             state.update(
                 status="failed",
@@ -1506,6 +1533,8 @@ class RetroCornerManager:
         next_repair = 0.
         owned_runtime = state.get('bot_runtime_id')
         owned_identity = state.get('bot_identity')
+        if not isinstance(owned_identity, dict):
+            raise RetroCornerError('Hanjuku runtime identity missing before observation')
         while True:
             stopped = self._rotation_stop_result()
             if stopped is not None:

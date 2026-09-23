@@ -628,3 +628,24 @@ def test_bot_records_plans_separately_from_sent_input_with_full_identity(tmp_pat
     candidate = json.loads((tmp_path/'hanjuku_commentary.jsonl').read_text())
     assert all(candidate[k] == v for k, v in identity.items())
     assert not (tmp_path/'hanjuku_events.jsonl').exists()
+
+
+def test_name_confirmation_keeps_the_exact_decision_frame(tmp_path):
+    import importlib.util
+    path = Path(__file__).resolve().parents[1] / 'brains/hanjuku/bot.py'
+    spec = importlib.util.spec_from_file_location('hanjuku_name_snapshot_test', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    canvas = Canvas()
+    canvas.text(64, 55, 'どうし')
+    frame = canvas.frame()
+    state = {'step': 123, 'screen_kind': 'name_entry'}
+    module.persist(tmp_path, state, [{'decision': 'name_confirm', 'typed': 'どうし'}],
+                   {'hanjuku': {'game': 'hanjuku-hero', 'runtime_id': 'g1-test',
+                    'generation': 1, 'lease_id': 'lease'}},
+                   actions=[{'type': 'pad', 'buttons': ['start'], 'hold_ms': 100}],
+                   frame_sha256=frame.digest(), frame=frame)
+    record = json.loads((tmp_path/'hanjuku_decisions.jsonl').read_text().splitlines()[-1])
+    from docich.hanjuku_pixels import read_png
+    assert read_png(tmp_path/'hanjuku_frames'/record['snapshot']).digest() == record['frame_sha256']
+    assert record['snapshot'] == 'decision-003.png'
