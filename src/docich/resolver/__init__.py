@@ -37,6 +37,34 @@ def strategy_path(state_dir, game_name: str) -> Path:
     return Path(state_dir) / "resolver" / f"{game_name}_strategy.json"
 
 
+def strategy_history_dir(state_dir, game_name: str) -> Path:
+    """Where one game's promoted strategy snapshots are archived."""
+    return Path(state_dir) / "resolver" / "history" / game_name
+
+
+def latest_strategy_snapshot(state_dir, game_name: str) -> dict | None:
+    """Return the newest usable snapshot for this game, if one exists.
+
+    Older releases stored every game's snapshots in the same directory with
+    no game identity. Those files cannot be attributed safely and are ignored.
+    """
+    try:
+        snapshots = sorted(
+            strategy_history_dir(state_dir, game_name).glob("*.json"),
+            reverse=True,
+        )
+    except OSError:
+        return None
+    for snapshot in snapshots:
+        try:
+            data = json.loads(snapshot.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and data:
+            return data
+    return None
+
+
 def read_strategy(path: Path) -> dict:
     """Current strategy merged over the defaults (missing file = defaults)."""
     st = dict(DEFAULT_STRATEGY)

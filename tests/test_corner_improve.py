@@ -110,13 +110,20 @@ def test_no_matches_skipped(tmp_path):
 def test_promote_and_keep_paths(tmp_path, monkeypatch):
     _patch_resolver_path(monkeypatch, tmp_path)
     key = sorted(_weights())[0]
-    llm = lambda prompt: f'```json\n{{"{key}": 2.5}}\n```'
+    prompts = []
+    llm = lambda prompt: (prompts.append(prompt) or f'```json\n{{"{key}": 2.5}}\n```')
 
     state_dir = _setup_completed(tmp_path, [10, 20])
     g = _G(state_dir)
     (state_dir / 'resolver').mkdir(parents=True, exist_ok=True)
     (state_dir / 'resolver' / 'gnurobots_strategy.json').write_text(
         json.dumps(_weights()), encoding='utf-8')
+    history = state_dir / 'resolver' / 'history'
+    history.mkdir(parents=True, exist_ok=True)
+    (history / '20990101.json').write_text(json.dumps(_weights()), encoding='utf-8')
+    other_game_history = history / 'bastet'
+    other_game_history.mkdir()
+    (other_game_history / '20990102.json').write_text(json.dumps(_weights()), encoding='utf-8')
 
     def better_candidate(strat):
         mean = 120.0 if strat.get(key) == 2.5 else 100.0
@@ -130,9 +137,10 @@ def test_promote_and_keep_paths(tmp_path, monkeypatch):
     assert result['status'] == 'promoted'
     assert result['baseline_mean'] == 100.0
     assert result['candidate_mean'] == 120.0
+    assert '前回の戦略重み (JSON):\n{}' in prompts[0]
     strategy = json.loads((state_dir / 'resolver' / 'gnurobots_strategy.json').read_text())
     assert strategy[key] == 2.5
-    assert list((state_dir / 'resolver' / 'history').glob('*.json'))
+    assert list((history / 'gnurobots').glob('*.json'))
     assert (tmp_path / 'resolver.scm').exists()
     assert (state_dir / 'resolver' / 'improve_log.jsonl').exists()
 

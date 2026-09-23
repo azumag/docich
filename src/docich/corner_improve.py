@@ -19,7 +19,7 @@ import re
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from .resolver import strategy_path
+from .resolver import latest_strategy_snapshot, strategy_path
 from .resolver.improve import (
     _append_log,
     _game_defaults,
@@ -583,18 +583,7 @@ def _run_corner_improve(
     defaults = _game_defaults(game)
     proposable = numeric_weights(defaults) if game in BOT_GAMES else set(defaults)
     current = read_strategy_for_game(game, strategy_path(g.state_dir, game))
-    history_dir = Path(g.state_dir) / "resolver" / "history"
-    try:
-        snapshots = sorted(history_dir.glob("*.json"))
-    except OSError:
-        snapshots = []
-    previous: dict = {}
-    if snapshots:
-        try:
-            data = json.loads(snapshots[-1].read_text(encoding="utf-8"))
-            previous = data if isinstance(data, dict) else {}
-        except (OSError, ValueError):
-            previous = {}
+    previous = latest_strategy_snapshot(g.state_dir, game) or {}
     # Show only the weights the candidate may change. The full strategy also
     # carries fixed flags (for example nsnake's tail_passable boolean); showing
     # them as tunable weights invited the model to return an unknown key, which

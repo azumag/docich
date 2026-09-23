@@ -19,6 +19,7 @@ from docich.retro_corner import (  # noqa: E402
     RetroCornerConfig,
     RetroCornerError,
     RetroCornerManager,
+    describe_strategy_change,
     load_retro_corner_config,
     select_game,
 )
@@ -1174,8 +1175,75 @@ class TestRetroCornerAnnounce(RetroCornerTestBase):
         self.assertEqual(len(chats), 1)
         self.assertIn("レトロゲームコーナー", chats[0])
         self.assertIn("Robotsをお送りします", chats[0])
-        self.assertIn("最新戦略", chats[0])
+        self.assertIn("同じゲームの過去戦略を確認できない", chats[0])
         self.assertTrue(mgr.status().get("announced"))
+
+    def test_strategy_announcement_uses_game_scoped_history_and_all_value_types(self):
+        from docich.resolver import strategy_history_dir, strategy_path
+        from docich.resolver.robots import DEFAULT_STRATEGY
+
+        previous = dict(DEFAULT_STRATEGY)
+        previous["w_collision"] = 10.0
+        previous["teleport_when_trapped"] = True
+        current = dict(previous)
+        current["w_collision"] = 20.0
+        current["teleport_when_trapped"] = False
+
+        current_path = strategy_path(self.g.state_dir, "robots")
+        current_path.parent.mkdir(parents=True, exist_ok=True)
+        current_path.write_text(json.dumps(current), encoding="utf-8")
+
+        history_root = current_path.parent / "history"
+        history_root.mkdir(parents=True, exist_ok=True)
+        # Legacy unscoped and another game's newer entry must not be treated
+        # as the previous Robots strategy.
+        (history_root / "20990101.json").write_text(json.dumps(current), encoding="utf-8")
+        other_game = strategy_history_dir(self.g.state_dir, "bastet")
+        other_game.mkdir(parents=True, exist_ok=True)
+        (other_game / "20990102.json").write_text(json.dumps(current), encoding="utf-8")
+        own_history = strategy_history_dir(self.g.state_dir, "robots")
+        own_history.mkdir(parents=True, exist_ok=True)
+        (own_history / "20260101.json").write_text(json.dumps(previous), encoding="utf-8")
+
+        message = describe_strategy_change(self.g.state_dir, "robots")
+        self.assertIn("w_collision 10.0→20.0", message)
+        self.assertIn("teleport_when_trapped 有効→無効", message)
+        self.assertNotIn("前回と同じ戦略", message)
+
+    def test_unscoped_legacy_history_never_claims_same_strategy(self):
+        from docich.resolver import strategy_path
+        from docich.resolver.robots import DEFAULT_STRATEGY
+
+        current_path = strategy_path(self.g.state_dir, "robots")
+        current_path.parent.mkdir(parents=True, exist_ok=True)
+        current_path.write_text(json.dumps(DEFAULT_STRATEGY), encoding="utf-8")
+        legacy_history = current_path.parent / "history"
+        legacy_history.mkdir(parents=True, exist_ok=True)
+        (legacy_history / "20990101.json").write_text(
+            json.dumps(DEFAULT_STRATEGY), encoding="utf-8"
+        )
+
+        message = describe_strategy_change(self.g.state_dir, "robots")
+        self.assertIn("同じゲームの過去戦略を確認できない", message)
+        self.assertNotIn("前回と同じ戦略", message)
+
+    def test_same_strategy_message_requires_matching_game_history(self):
+        from docich.resolver import strategy_history_dir, strategy_path
+        from docich.resolver.robots import DEFAULT_STRATEGY
+
+        current_path = strategy_path(self.g.state_dir, "robots")
+        current_path.parent.mkdir(parents=True, exist_ok=True)
+        current_path.write_text(json.dumps(DEFAULT_STRATEGY), encoding="utf-8")
+        own_history = strategy_history_dir(self.g.state_dir, "robots")
+        own_history.mkdir(parents=True, exist_ok=True)
+        (own_history / "20260101.json").write_text(
+            json.dumps(DEFAULT_STRATEGY), encoding="utf-8"
+        )
+
+        self.assertEqual(
+            describe_strategy_change(self.g.state_dir, "robots"),
+            "前回と同じ戦略でお送りします。",
+        )
 
     def test_announce_failure_does_not_fail_corner(self):
         def boom(text):
