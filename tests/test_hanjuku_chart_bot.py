@@ -245,6 +245,59 @@ def test_commentary_is_grounded_and_holds_when_unknown():
     assert hanjuku_commentary.compose({'decision': 'situation_held'})[1] is None
 
 
+@pytest.mark.parametrize('ally_hp,enemy_hp,expected', [
+    (90, 90, '体力は互角'),
+    (91, 90, '体力で上回っている'),
+    (89, 90, '体力では負けている'),
+])
+def test_battle_start_commentary_compares_only_observed_hp(ally_hp, enemy_hp, expected):
+    key, text = hanjuku_commentary.compose({'decision': 'battle_start', 'ally': 'どうし',
+        'enemy': 'ミント', 'ally_hp': ally_hp, 'enemy_hp': enemy_hp})
+    assert key == 'battle:ミント:どうし'
+    assert f'体力は{ally_hp}対{enemy_hp}' in text
+    assert expected in text
+    if ally_hp == enemy_hp:
+        assert '上回っている' not in text and '負けている' not in text
+
+
+def test_battle_start_commentary_equal_hp_keeps_verified_card_plan():
+    _, text = hanjuku_commentary.compose({'decision': 'battle_start', 'ally': 'どうし',
+        'enemy': 'にせヒーロー', 'ally_hp': 90, 'enemy_hp': 90,
+        'planned_cards': ['クースカン']})
+    assert '体力は互角' in text and 'クースカン' in text
+    assert '上回っている' not in text
+
+
+@pytest.mark.parametrize('ally_hp,enemy_hp', [
+    (None, 90), (90, None), (None, None), (True, 90), (90, False),
+    (-1, 90), (90, -1), ('90', 90), (90, float('nan')),
+])
+@pytest.mark.parametrize('plan', [[], ['クースカン']])
+def test_battle_start_commentary_holds_when_either_hp_is_unknown(ally_hp, enemy_hp, plan):
+    key, text = hanjuku_commentary.compose({'decision': 'battle_start', 'ally': 'どうし',
+        'enemy': 'ミント', 'ally_hp': ally_hp, 'enemy_hp': enemy_hp, 'planned_cards': plan})
+    assert key == 'battle:ミント:どうし'
+    assert text is None
+
+
+def test_battle_start_unknown_hp_is_logged_as_held_commentary(tmp_path):
+    import importlib.util
+    path = Path(__file__).resolve().parents[1] / 'brains/hanjuku/bot.py'
+    spec = importlib.util.spec_from_file_location('hanjuku_commentary_hp_test', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.persist(tmp_path, {'step': 1, 'screen_kind': 'battle'}, [
+        {'decision': 'battle_start', 'ally': 'どうし', 'enemy': 'ミント',
+         'ally_hp': 90, 'enemy_hp': None, 'planned_cards': ['クースカン']},
+    ], {'hanjuku': {'game': 'hanjuku-hero', 'runtime_id': 'g1-test',
+                   'generation': 1, 'lease_id': 'lease-1'}},
+        actions=[], frame_sha256='a' * 64)
+    candidate = json.loads((tmp_path / 'hanjuku_commentary.jsonl').read_text())
+    assert candidate['text'] is None
+    assert candidate['status'] == 'held'
+    assert candidate['held_reason'] == '状況判定保留'
+
+
 class Game:
     def __init__(self, **narration):
         self.raw = {'hanjuku': {'narration': {'enabled': True, 'cooldown_s': 25, **narration}}}
@@ -524,6 +577,175 @@ def test_garbanzo_tactics_follow_each_generals_chart_branch(step, ally, hp, expe
         assert mem['_records'][-1]['chart_step'] == step
 
 
+
+
+def _card_evidence_battle(*, retry=False):
+    from docich.hanjuku_screen import Battle, Screen
+    mem = {'chapter': 1, 'attack': {'general': 'どうし', 'castle': 'けっかい',
+                                   'side': 'attack', 'step': '1-B1'}}
+    if retry:
+        mem['card_override'] = {'1-B1': ['イッテツーン', 'イッテツーン']}
+    screen = Screen(lines=[], hand=None, text='', battle=Battle('クイーン', 60, 'どうし', 90), kind='battle')
+    policy.battle_step(screen, mem); policy.battle_step(screen, mem)
+    if not retry:
+        screen.battle.enemy_hp = 59
+        policy.battle_step(screen, mem)  # the observed clash schedules クースカン
+    return mem, screen
+
+
+def _card_screen(cards, *, announcement=None, hand=True):
+    from docich.hanjuku_font import TextLine
+    from docich.hanjuku_screen import Screen
+    lines = [TextLine(176 + index * 16, tuple((176 + i * 8, ch) for i, ch in enumerate(card)))
+             for index, card in enumerate(cards)]
+    return Screen(lines=lines, hand=(150, 170, 172, 186) if hand else None,
+                  text=announcement or ''.join(cards), kind='text')
+
+
+def test_missing_and_selected_cards_do_not_confirm_use_or_unlock_after_card():
+    mem, screen = _card_evidence_battle()
+    cur = mem['battle']
+    cur['card_flow'] = {'card': 'クースカン', 'stage': 'list'}
+    assert policy.card_list_step(_card_screen(['ノリウツール']), mem)
+    assert cur['cards_used'] == [] and cur['cards_missing'] == ['クースカン']
+    missing = mem['_records'][-1]
+    assert missing['strategy_variant'] == 'chart_card_unavailable' and missing['deviation_reason']
+    assert policy.battle_step(screen, mem) == []  # no ノリウツール without confirmed クースカン
+    cur['card_flow'] = {'card': 'クースカン', 'stage': 'list'}
+    policy.card_list_step(_card_screen(['クースカン']), mem)
+    assert cur['cards_selected'] == ['クースカン'] and cur['cards_used'] == []
+    # A one-card list, missing hand, wrong card, or incomplete text is no receipt.
+    for candidate in (_card_screen(['クースカン']), _card_screen(['クースカン'], hand=False),
+                      _card_screen(['ノリウツール'], announcement='ノリウツールをつかった', hand=False)):
+        assert policy.card_list_step(candidate, mem) == []
+        assert cur['cards_used'] == []
+    policy.battle_step(screen, mem); policy.battle_step(screen, mem)
+    assert cur['card_flow'] is None and cur['cards_unclassified'] == ['クースカン']
+    assert policy.battle_step(screen, mem) == []
+
+
+@pytest.mark.parametrize('statement', ['クースカンをつかった', 'クースカンをしようした'])
+def test_uncalibrated_card_text_never_confirms_use_or_unlocks_after_card(statement):
+    mem, screen = _card_evidence_battle()
+    cur = mem['battle']
+    cur['card_flow'] = {'card': 'クースカン', 'stage': 'list'}
+    mem['stats'] = {'cards_used': 0, 'cards_confirmed': 0, 'card_evidence_version': 1,
+                    'wins': 0, 'losses': 0, 'unclassified': 0}
+    assert policy.summary(mem)['cards_used'] is None  # active flow, before selection
+    policy.card_list_step(_card_screen(['クースカン']), mem)
+    assert cur['card_consumption_complete'] is False
+    assert policy.summary(mem)['cards_used'] is None  # selection planned, before next screen
+    candidate = _card_screen(['クースカン'], announcement=statement, hand=False)
+    policy.card_list_step(candidate, mem)
+    policy.card_list_step(candidate, mem)
+    assert cur['cards_used'] == []
+    assert policy.summary(mem)['cards_used'] is None
+    pending = [r for r in mem['_records'] if r['decision'] == 'battle_card_candidate']
+    assert len(pending) == 1 and pending[0]['observed_metric']['confirmation'] == 'unclassified'
+    assert not any(r['decision'] == 'battle_card_used' for r in mem['_records'])
+    # On return, bounded unconfirmed handling clears the flow without unlocking
+    # the dependent ノリウツール tactic, even for apparently explicit use text.
+    policy.battle_step(screen, mem); policy.battle_step(screen, mem)
+    assert cur['card_flow'] is None
+    assert policy.summary(mem)['cards_used'] is None  # unclassified despite cleared flow
+    assert policy.battle_step(screen, mem) == []
+    cur['enemy_hp'] = 0
+    policy.battle_end(mem, 'map'); policy.battle_end(mem, 'map')
+    assert mem['stats']['cards_used'] is None and mem['stats']['cards_confirmed'] == 0
+
+
+def test_retry_variant_survives_battle_card_and_result_records():
+    mem, screen = _card_evidence_battle(retry=True)
+    cur = mem['battle']
+    cur['card_flow']['stage'] = 'list'
+    policy.card_list_step(_card_screen(['イッテツーン']), mem)
+    policy.card_list_step(_card_screen(['イッテツーン'], announcement='イッテツーンをつかった', hand=False), mem)
+    cur['enemy_hp'] = 0
+    policy.battle_end(mem, 'map'); policy.battle_end(mem, 'map')
+    records = [r for r in mem['_records'] if r['decision'] in
+               {'battle_start', 'battle_card', 'battle_card_selected', 'battle_card_candidate', 'battle_result'}]
+    assert {r['decision'] for r in records} == {
+        'battle_start', 'battle_card', 'battle_card_selected', 'battle_card_candidate', 'battle_result'}
+    assert all(r['chart_step'] == '1-B1' and r['strategy_variant'] == 'retry_with_opening_cards'
+               and r['deviation_reason'] and r['expected_metric'] is not None
+               and r['observed_metric'] is not None for r in records)
+    assert records[-1]['resulting_event'] == 'chapter_1_boss_defeated'
+
+
+def test_legacy_selected_cards_and_stats_are_not_confirmed_by_upgrade():
+    from docich.hanjuku_screen import Screen
+    mem = {'chapter': 1, 'stats': {'wins': 1, 'losses': 1, 'unclassified': 0, 'cards_used': 4},
+           'card_override': {'1-C1': ['イッテツーン', 'イッテツーン']},
+           'battle': {'step': '1-C1', 'enemy': 'ラズベリー', 'ally': 'ココット',
+                      'cards_used': ['イッテツーン'], 'card_flow': {'card': 'イッテツーン', 'stage': 'announce'}}}
+    assert policy.summary(mem)['cards_used'] is None
+    policy.observe_events(Screen(lines=[], hand=None, text='', kind='unknown'), mem)
+    assert mem['stats']['cards_used'] is None and mem['stats']['cards_confirmed'] == 0
+    assert mem['battle']['cards_used'] == [] and mem['battle']['card_flow'] is None
+    assert mem['battle']['cards_unclassified'] == ['イッテツーン']
+    migrated = next(r for r in mem['_records'] if r['decision'] == 'battle_card_evidence_migrated')
+    assert migrated['observed_metric']['legacy_cards_unclassified'] == ['イッテツーン']
+    assert policy.summary(mem)['cards_used'] is None
+    assert mem['battle']['strategy_variant'] == 'retry_with_opening_cards'
+    old_log_count = len(mem['_records'])
+    policy.observe_events(Screen(lines=[], hand=None, text='', kind='unknown'), mem)
+    assert len(mem['_records']) == old_log_count
+
+
+@pytest.mark.parametrize('stage', ['menu', 'down', 'list', 'announce'])
+def test_unconfirmed_card_flow_is_bounded_after_return_to_battle(stage):
+    mem, screen = _card_evidence_battle()
+    cur = mem['battle']
+    cur['card_flow'] = {'card': 'クースカン', 'stage': stage}
+    policy.battle_step(screen, mem); policy.battle_step(screen, mem)
+    assert cur['card_flow'] is None
+    assert cur['cards_used'] == []
+    assert cur['cards_unclassified'] == ['クースカン']
+
+def test_hp_defeat_followed_by_living_hero_does_not_count_a_general_loss():
+    from docich.hanjuku_screen import Screen
+    mem = {'chapter': 1, 'battle': {'enemy': 'だいじん', 'ally': 'どうし', 'enemy_hp': 15,
+                                   'ally_hp': 0, 'castle': None, 'side': None, 'cards_used': []}}
+    policy.battle_end(mem, 'map'); policy.battle_end(mem, 'map')
+    assert mem['stats']['losses'] == 1
+    assert mem['stats']['generals_lost'] is None
+    result = next(r for r in mem['_records'] if r['decision'] == 'battle_result')
+    assert result['outcome'] == 'loss' and result['observed_metric']['general_loss'] == 'unclassified'
+    mem['launched'] = {'キカンドン': {'general': 'どうし', 'step': '1-A1'}}
+    policy.message_step(Screen(lines=[], hand=None, text='どうししょうぐんがキカンドンじょうにのりこんだ',
+                               kind='attack_started'), mem)
+    assert mem['attack']['general'] == 'どうし'
+    assert policy.summary(mem)['losses'] == 1
+    assert policy.summary(mem)['generals_lost'] is None
+
+
+@pytest.mark.parametrize('legacy_count', [0, 1, 7])
+def test_next_observation_invalidates_legacy_general_loss_without_erasing_battle_counts(legacy_count):
+    from docich.hanjuku_screen import Screen
+    mem = {'chapter': 1, 'stats': {'wins': 2, 'losses': 1, 'unclassified': 3, 'cards_used': 4,
+                                  'generals_lost': legacy_count},
+           'previous_stats': {'wins': 1, 'losses': 2, 'generals_lost': 2}}
+    # Diagnostics must not expose the stale scalar even before another frame.
+    assert policy.summary(mem)['generals_lost'] is None
+    screen = Screen(lines=[], hand=None, text='', kind='unknown')
+    policy.observe_events(screen, mem)
+    assert {k: mem['stats'][k] for k in ('wins', 'losses', 'unclassified', 'generals_lost')} == {
+        'wins': 2, 'losses': 1, 'unclassified': 3, 'generals_lost': None}
+    assert mem['stats']['cards_used'] is None
+    assert mem['previous_stats']['wins'] == 1 and mem['previous_stats']['losses'] == 2
+    assert mem['previous_stats']['generals_lost'] is None
+    invalidations = [r for r in mem['_records'] if r['decision'] == 'metric_invalidated' and r['metric'] == 'generals_lost']
+    assert len(invalidations) == 2
+    assert invalidations[0]['observed_metric'] == {'previous_inferred_count': legacy_count,
+                                                 'generals_lost': None, 'status': 'unclassified'}
+    policy.observe_events(screen, mem)
+    assert len([r for r in mem['_records'] if r['decision'] == 'metric_invalidated' and r['metric'] == 'generals_lost']) == 2
+
+
+def test_no_battle_or_observer_does_not_report_zero_general_losses():
+    assert policy.summary(None)['generals_lost'] is None
+    assert policy.summary({'stats': {'generals_lost': 0}})['generals_lost'] is None
+
 def test_route_order_is_not_evidence_of_a_castle_capture():
     from docich.hanjuku_screen import Battle, Screen
     mem = {'chapter': 1, 'launched': {'キカンドン': {'general': 'どうし', 'step': '1-A1'}}}
@@ -649,3 +871,111 @@ def test_name_confirmation_keeps_the_exact_decision_frame(tmp_path):
     from docich.hanjuku_pixels import read_png
     assert read_png(tmp_path/'hanjuku_frames'/record['snapshot']).digest() == record['frame_sha256']
     assert record['snapshot'] == 'decision-003.png'
+
+
+@pytest.mark.parametrize('decision', [None, 'battle_card', 'battle_card_selected',
+                                     'battle_card_used', 'battle_card_missing',
+                                     'battle_card_unclassified', 'barrier_removed'])
+def test_card_flow_and_event_frames_are_linked_from_action_plan(tmp_path, decision):
+    import importlib.util
+    from docich.hanjuku_pixels import read_png
+    path = Path(__file__).resolve().parents[1] / 'brains/hanjuku/bot.py'
+    spec = importlib.util.spec_from_file_location('hanjuku_card_snapshot_test', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    canvas = Canvas()
+    canvas.text(64, 55, 'イッテツーン')
+    frame = canvas.frame()
+    state = {'step': 124, 'screen_kind': 'text', 'phase': 'event',
+             'policy': {'battle': {'card_flow': {'card': 'イッテツーン', 'stage': 'announce'}
+                                  if decision is None else None}}}
+    records = [] if decision is None else [{'decision': decision, 'card': 'イッテツーン',
+                                           'enemy': 'だいじん', 'enemy_hp': 90, 'reason': '開幕'}]
+    module.persist(tmp_path, state, records, {'hanjuku': {'game': 'hanjuku-hero',
+                   'runtime_id': 'g1-test', 'generation': 1, 'lease_id': 'lease'}},
+                   actions=[], frame_sha256=frame.digest(), frame=frame)
+    entries = [json.loads(line) for line in (tmp_path/'hanjuku_decisions.jsonl').read_text().splitlines()]
+    plan = entries[0]
+    assert plan['event'] == 'action_plan' and plan['snapshot'] == 'decision-004.png'
+    assert plan['dispatch_status'] == 'planned_not_yet_sent'
+    assert read_png(tmp_path/'hanjuku_frames'/plan['snapshot']).digest() == plan['frame_sha256']
+    assert plan['frame_sha256'] == state['decision_trace']['frame_sha256']
+    assert plan['decision_id'] == state['decision_trace']['decision_id']
+    if decision is None:
+        assert len(entries) == 1
+    else:
+        assert entries[1]['snapshot'] == plan['snapshot']
+
+
+@pytest.mark.parametrize('in_battle', [False, True])
+def test_action_plan_and_summary_share_current_battle_strategy(tmp_path, in_battle):
+    import importlib.util
+    path = Path(__file__).resolve().parents[1] / 'brains/hanjuku/bot.py'
+    spec = importlib.util.spec_from_file_location('hanjuku_strategy_trace_test', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    mem = {'active': '1-A2', 'variant': 'chart'}
+    expected = {'chart_step': '1-A2', 'strategy_variant': 'chart', 'deviation_reason': None}
+    if in_battle:
+        mem['battle'] = {'step': '1-A1', 'strategy_variant': 'retry_with_opening_cards',
+                         'deviation_reason': '白兵で敗北したため開幕切り札で再攻撃'}
+        expected = {'chart_step': '1-A1', 'strategy_variant': 'retry_with_opening_cards',
+                    'deviation_reason': mem['battle']['deviation_reason']}
+    record = {'decision': 'battle_card_candidate', **expected}
+    state = {'step': 12, 'screen_kind': 'battle' if in_battle else 'map', 'policy': mem}
+    module.persist(tmp_path, state, [record], {'hanjuku': {'game': 'hanjuku-hero',
+                   'runtime_id': 'g1-test', 'generation': 1, 'lease_id': 'lease'}},
+                   actions=[], frame_sha256='d'*64)
+    entries = [json.loads(line) for line in (tmp_path/'hanjuku_decisions.jsonl').read_text().splitlines()]
+    plan, decision = entries
+    view = policy.summary(mem)
+    for key in ('chart_step', 'strategy_variant'):
+        assert plan[key] == view[key] == decision[key] == expected[key]
+    assert plan['deviation_reason'] == decision['deviation_reason'] == expected['deviation_reason']
+    assert record == {'decision': 'battle_card_candidate', **expected}
+
+
+@pytest.mark.parametrize('input_kind', ['barrier_removed', 'battle_card_selected'])
+def test_input_context_precedes_battle_but_informational_records_do_not(tmp_path, input_kind):
+    import importlib.util
+    path = Path(__file__).resolve().parents[1] / 'brains/hanjuku/bot.py'
+    spec = importlib.util.spec_from_file_location('hanjuku_input_context_test', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    battle = {'step': '1-A1', 'strategy_variant': 'retry_with_opening_cards',
+              'deviation_reason': '白兵敗北後の再攻撃'}
+    mem = {'active': '1-A2', 'variant': 'chart', 'battle': battle}
+    context = ({'chart_step': '1-barrier', 'strategy_variant': 'chart', 'deviation_reason': None}
+               if input_kind == 'barrier_removed' else
+               {'chart_step': battle['step'], 'strategy_variant': battle['strategy_variant'],
+                'deviation_reason': battle['deviation_reason']})
+    records = [{'decision': input_kind, **context},
+               {'decision': 'metric_invalidated', 'chart_step': 'wrong', 'strategy_variant': 'wrong'},
+               {'decision': 'battle_card_evidence_migrated', 'chart_step': 'wrong', 'strategy_variant': 'wrong'}]
+    module.persist(tmp_path, {'step': 8, 'policy': mem}, records, {'hanjuku': {}},
+                   actions=[{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}], frame_sha256='e'*64)
+    entries = [json.loads(line) for line in (tmp_path/'hanjuku_decisions.jsonl').read_text().splitlines()]
+    for key, value in context.items():
+        assert entries[0][key] == entries[1][key] == value
+    assert entries[-1]['strategy_variant'] == 'wrong'  # original records stay intact
+    assert policy.summary(mem)['chart_step'] == '1-A1'
+    assert policy.summary(mem)['strategy_variant'] == 'retry_with_opening_cards'
+
+
+@pytest.mark.parametrize('decision', ['order_launched', 'order_failed', 'attack_observed', 'defense_observed'])
+def test_input_context_survives_order_cleanup_and_later_information(tmp_path, decision):
+    import importlib.util
+    path = Path(__file__).resolve().parents[1] / 'brains/hanjuku/bot.py'
+    spec = importlib.util.spec_from_file_location('hanjuku_finished_order_trace_test', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    record = {'decision': decision, 'chart_step': '1-C1',
+              'strategy_variant': 'retry_with_opening_cards', 'deviation_reason': '白兵敗北後の再攻撃',
+              'general': 'ゼウス', 'castle': 'ジョンリギ'}
+    module.persist(tmp_path, {'step': 9, 'policy': {'active': None, 'variant': 'chart'}},
+                   [record, {'decision': 'metric_invalidated', 'chart_step': 'wrong'}],
+                   {'hanjuku': {}}, actions=[{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}],
+                   frame_sha256='f'*64)
+    plan = json.loads((tmp_path/'hanjuku_decisions.jsonl').read_text().splitlines()[0])
+    for key in ('chart_step', 'strategy_variant', 'deviation_reason'):
+        assert plan[key] == record[key]

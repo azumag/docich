@@ -180,9 +180,10 @@ def decide(frame: Frame, state: dict) -> tuple[list[dict], dict]:
         w in policy.CARD_NAMES for line in screen.lines for _,w in line.spans())
     # Egg/card announcements and fades inside a battle are not its end; only
     # a return to the map or a following event/menu closes the record.
-    if mem.get('battle') and kind in policy.AFTER_BATTLE_KINDS:
+    after_battle = kind in policy.AFTER_BATTLE_KINDS or kind == 'barrier_removed'
+    if mem.get('battle') and after_battle:
         policy.battle_end(mem,kind)
-    if kind in policy.AFTER_BATTLE_KINDS:
+    if after_battle:
         mem['egg_battle']=False
     actions=None
     if phase=='name' and kind!='name_entry':
@@ -212,6 +213,17 @@ def decide(frame: Frame, state: dict) -> tuple[list[dict], dict]:
         actions=policy.battle_menu_step(screen,mem)
     elif kind in {'attack_started','defense_started'}:
         actions=policy.message_step(screen,mem)
+    elif kind=='barrier_removed':
+        if mem.get('chapter') == 1:
+            policy._record(mem,'barrier_removed',chart_step='1-barrier',
+                           observed_metric={'message':screen.text},
+                           resulting_event='barrier_removed',
+                           reason='実測済みのいばら消滅確認文を読んだためAで閉じる')
+            actions=[pad('a')]
+        else:
+            policy._record(mem,'situation_held',screen=kind,
+                           reason='いばら消滅表示を確認したが章を確定できないため保留')
+            actions=[]
     elif kind=='month_menu':
         actions=policy.month_step(screen,mem)
     elif kind in {'shop_list','shop_quantity_prompt','shop_quantity','shop_exit_confirm'}:

@@ -416,7 +416,78 @@ def _battle_context(mem, ally):
     return {'castle': None, 'side': None, 'step': None, 'context': 'unclassified'}
 
 
+def _battle_labels(cur):
+    return {'chart_step': cur.get('step'),
+            'strategy_variant': cur.get('strategy_variant', 'chart'),
+            'deviation_reason': cur.get('deviation_reason')}
+
+
+def _bind_battle_strategy(mem, cur):
+    if 'strategy_variant' in cur:
+        return
+    step = cur.get('step')
+    retry = (mem.get('retry_context') or {}).get(step)
+    if retry or (mem.get('card_override') or {}).get(step):
+        cur['strategy_variant'] = 'retry_with_opening_cards'
+        cur['deviation_reason'] = (retry or {}).get('deviation_reason') or '保存済みの再攻撃用切り札計画を適用（元の敗北詳細は未分類）'
+        cur['strategy_expected'] = (retry or {}).get('expected_metric') or {'goal': '敵HP減少と戦闘勝利'}
+    else:
+        cur['strategy_variant'] = mem.get('variant', 'chart')
+        cur['deviation_reason'] = None
+        cur['strategy_expected'] = {'goal': 'チャート戦術による戦闘勝利'}
+
+
+def _migrate_card_evidence(mem):
+    """Legacy cards_used mixed selections/missing cards with actual use."""
+    for scope in ('stats', 'previous_stats'):
+        stats = mem.get(scope)
+        if not isinstance(stats, dict) or stats.get('card_evidence_version') == 1:
+            continue
+        had_previous = 'cards_used' in stats
+        previous = stats.get('cards_used')
+        stats.update(cards_used=None, cards_confirmed=0, card_evidence_version=1)
+        if had_previous:
+            _record(mem, 'metric_invalidated', metric='cards_used', metric_scope=scope,
+                    observed_metric={'previous_inferred_count': previous if type(previous) is int else None,
+                                     'cards_used': None},
+                    reason='旧切り札集計は予定・欠品を含むため未分類化。以後は実使用証拠のみ別途加算')
+    cur = mem.get('battle')
+    if not isinstance(cur, dict):
+        return
+    _bind_battle_strategy(mem, cur)
+    if cur.get('card_evidence_version') == 1:
+        return
+    legacy = list(cur.get('cards_used') or [])
+    cur.update(cards_used=[], cards_selected=[], cards_missing=[],
+               cards_unclassified=legacy, card_consumption_complete=False, card_evidence_version=1)
+    flow = cur.get('card_flow')
+    if flow and flow.get('stage') == 'announce':
+        pending = flow.get('card')
+        if pending and pending not in legacy:
+            cur['cards_unclassified'].append(pending)
+        cur['card_flow'] = None
+    _record(mem, 'battle_card_evidence_migrated', **_battle_labels(cur),
+            observed_metric={'legacy_cards_unclassified': legacy},
+            reason='旧戦闘の選択済みリストは実使用証拠でないためafter_cardを解禁しない')
+
+
+def _card_use_unclassified(mem, cur, reason):
+    flow = cur.get('card_flow') or {}
+    card = flow.get('card')
+    if card:
+        cur.setdefault('cards_unclassified', []).append(card)
+    cur['card_consumption_complete'] = False
+    if not cur.get('deviation_reason'):
+        cur['strategy_variant'] = 'card_use_unclassified'
+        cur['deviation_reason'] = reason
+    _record(mem, 'battle_card_unclassified', **_battle_labels(cur), card=card,
+            expected_metric='選択した切り札の実使用告知',
+            observed_metric={'confirmation': 'unclassified'}, reason=reason)
+    cur['card_flow'] = None
+
+
 def battle_step(screen: Screen, mem):
+    _migrate_card_evidence(mem)
     b = screen.battle
     cur = mem.get('battle')
     if cur is None:
@@ -430,11 +501,16 @@ def battle_step(screen: Screen, mem):
         context = _battle_context(mem, b.ally)
         cur = mem['battle'] = {'enemy': b.enemy, 'ally': b.ally, 'start_enemy_hp': b.enemy_hp,
                                'start_ally_hp': b.ally_hp, 'cards_used': [], 'plan': None,
+                               'cards_selected': [], 'cards_missing': [], 'cards_unclassified': [],
+                               'card_consumption_complete': True, 'card_evidence_version': 1,
                                **context}
+        _bind_battle_strategy(mem, cur)
         planned = [t['card'] for t in chart.tactics(mem.get('chapter') or 0)
                    if t['enemy'] == b.enemy and t.get('step') in (None, cur['step'])]
         planned += list(mem.get('card_override', {}).get(cur['step']) or [])
-        _record(mem, 'battle_start', chart_step=cur['step'], enemy=b.enemy, ally=b.ally,
+        _record(mem, 'battle_start', **_battle_labels(cur), enemy=b.enemy, ally=b.ally,
+                expected_metric=cur['strategy_expected'],
+                observed_metric={'enemy_hp': b.enemy_hp, 'ally_hp': b.ally_hp},
                 planned_cards=planned, context=cur.get('context', 'message'),
                 enemy_hp=b.enemy_hp, ally_hp=b.ally_hp, castle=cur['castle'],
                 reason='戦闘パネルの将軍名とHPを確認')
@@ -445,6 +521,10 @@ def battle_step(screen: Screen, mem):
     if b.enemy_hp is not None and cur.get('start_enemy_hp') is not None and b.enemy_hp < cur['start_enemy_hp']:
         cur['clashed'] = True
     if cur.get('card_flow'):
+        flow = cur['card_flow']
+        flow['battle_frames_without_receipt'] = flow.get('battle_frames_without_receipt', 0) + 1
+        if flow['battle_frames_without_receipt'] >= 2:
+            _card_use_unclassified(mem, cur, '実使用告知を確認できないまま白兵戦へ復帰')
         return []
     extra = [{'enemy': b.enemy, 'card': card, 'open': True, 'step': cur.get('step'),
               'note': '再攻撃の開幕切り札(チャート逸脱)'}
@@ -464,14 +544,17 @@ def battle_step(screen: Screen, mem):
         if due:
             done.append(tid)
             cur['card_flow'] = {'card': tactic['card'], 'stage': 'menu', 'note': tactic['note']}
-            _record(mem, 'battle_card', chart_step=cur['step'], card=tactic['card'], enemy=b.enemy,
+            _record(mem, 'battle_card', **_battle_labels(cur), card=tactic['card'], enemy=b.enemy,
                     enemy_hp=b.enemy_hp, ally_hp=b.ally_hp, reason=tactic['note'],
-                    expected_metric='敵HP減少')
+                    expected_metric='選択後の実使用告知と敵HP減少',
+                    observed_metric={'enemy_hp': b.enemy_hp, 'ally_hp': b.ally_hp},
+                    resulting_event='card_planned')
             return [pad('b')]
     return []
 
 
 def battle_menu_step(screen: Screen, mem):
+    _migrate_card_evidence(mem)
     cur = mem.get('battle') or {}
     flow = cur.get('card_flow')
     if screen.kind == 'battle_menu':
@@ -486,7 +569,8 @@ def battle_menu_step(screen: Screen, mem):
 
 
 def card_list_step(screen: Screen, mem):
-    """Battle card list: order is the carried order; the cursor starts at the top."""
+    """Keep card intention/selection separate from observed consumption."""
+    _migrate_card_evidence(mem)
     cur = mem.get('battle') or {}
     flow = cur.get('card_flow')
     names = [w for _, _, w in _options(screen) if w in CARD_NAMES]
@@ -494,23 +578,62 @@ def card_list_step(screen: Screen, mem):
         return [pad('b')]
     if flow['stage'] == 'list':
         if flow['card'] not in names:
-            _record(mem, 'battle_card_missing', card=flow['card'], observed_metric=names,
-                    deviation_reason='切り札を携行していない', reason='白兵を継続')
-            cur['cards_used'].append(flow['card'])
+            cur.setdefault('cards_missing', []).append(flow['card'])
+            if not cur.get('deviation_reason'):
+                cur['strategy_variant'] = 'chart_card_unavailable'
+                cur['deviation_reason'] = 'チャートで予定した切り札を携行していない'
+            _record(mem, 'battle_card_missing', **_battle_labels(cur), card=flow['card'],
+                    expected_metric={'carried_card': flow['card']}, observed_metric={'listed_cards': names},
+                    resulting_event='card_not_selected', reason='切り札を携行していないため白兵を継続')
             cur['card_flow'] = None
             return [pad('b'), pad('b')]
         index = names.index(flow['card'])
         flow['stage'] = 'announce'
-        cur['cards_used'].append(flow['card'])
+        flow['selection_planned'] = True
+        cur['card_consumption_complete'] = False
+        cur.setdefault('cards_selected', []).append(flow['card'])
+        _record(mem, 'battle_card_selected', **_battle_labels(cur), card=flow['card'],
+                expected_metric='実使用告知', observed_metric={'listed_cards': names},
+                resulting_event='selection_planned_not_yet_confirmed', reason='切り札選択入力を予定。消費は未確定')
         return [pad('down')] * index + [pad('a')]
-    if flow['stage'] == 'announce' and len(names) == 1:
-        _record(mem, 'battle_card_used', card=names[0], expected_metric=flow['card'],
-                observed_metric=names[0], reason='切り札の告知表示を確認')
-        cur['card_flow'] = None
+    if flow['stage'] == 'announce' and flow.get('selection_planned'):
+        # No live frame/parser signature has calibrated a use receipt yet.
+        # Keep capturing this flow, but never unlock after_card from guessed text.
+        cur['card_consumption_complete'] = False
+        if not flow.get('uncalibrated_candidate_recorded'):
+            flow['uncalibrated_candidate_recorded'] = True
+            _record(mem, 'battle_card_candidate', **_battle_labels(cur), card=flow['card'],
+                    expected_metric='実画面とparserで校正済みの切り札使用証拠',
+                    observed_metric={'confirmation': 'unclassified', 'screen_kind': screen.kind},
+                    resulting_event='card_use_unclassified', reason='告知署名が未校正のため消費を確定せず画像収集')
     return []
 
 
+def _hold_general_loss_metric(mem):
+    """HP defeat is not proof of death; invalidate old inferred counters once.
+
+    No death/roster-loss observer exists yet. Preserve HP battle counters and
+    original JSONL history, but mark both current and archived in-memory loss
+    totals unknown on the next observation, even if the old total was zero.
+    """
+    for scope in ('stats', 'previous_stats'):
+        old_stats = mem.get(scope)
+        if not isinstance(old_stats, dict):
+            continue
+        previous = old_stats.get('generals_lost')
+        mem[scope] = {**old_stats, 'generals_lost': None}
+        if previous is not None:
+            bounded_previous = previous if type(previous) is int and 0 <= previous <= 10**6 else None
+            _record(mem, 'metric_invalidated', metric='generals_lost', metric_scope=scope,
+                    expected_metric='将軍の死亡または喪失を直接確認する証拠',
+                    observed_metric={'previous_inferred_count': bounded_previous,
+                                     'generals_lost': None, 'status': 'unclassified'},
+                    reason='HP敗北から将軍喪失は確定できず、喪失観測器がないため旧集計を未分類化')
+
+
 def battle_end(mem, next_kind):
+    _hold_general_loss_metric(mem)
+    _migrate_card_evidence(mem)
     cur = mem.get('battle')
     if not cur:
         return
@@ -519,6 +642,8 @@ def battle_end(mem, next_kind):
     cur['away'] = cur.get('away', 0) + 1
     if cur['away'] < 2:
         return
+    if (cur.get('card_flow') or {}).get('stage') == 'announce':
+        _card_use_unclassified(mem, cur, '実使用告知がないまま戦闘が終了')
     mem['battle_seen'] = None
     mem.pop('battle', None)
     mem['attack'] = None
@@ -537,11 +662,14 @@ def battle_end(mem, next_kind):
     if outcome == 'loss' and castle and cur.get('side') == 'defense':
         mem['captured'] = [c for c in mem.get('captured', []) if c != castle]
     stats = mem.setdefault('stats', {'wins': 0, 'losses': 0, 'unclassified': 0, 'cards_used': 0,
-                                     'generals_lost': 0})
+                                     'generals_lost': None, 'cards_confirmed': 0, 'card_evidence_version': 1})
     stats[{'win': 'wins', 'loss': 'losses'}.get(outcome, 'unclassified')] += 1
-    stats['cards_used'] += len(cur.get('cards_used', []))
-    if outcome == 'loss':
-        stats['generals_lost'] += 1
+    confirmed = len(cur.get('cards_used', []))
+    stats['cards_confirmed'] = stats.get('cards_confirmed', 0) + confirmed
+    if stats.get('cards_used') is not None and cur.get('card_consumption_complete') is True:
+        stats['cards_used'] += confirmed
+    else:
+        stats['cards_used'] = None
     step = cur.get('step')
     if (outcome == 'loss' and cur.get('side') == 'attack' and step
             and castle not in mem.get('captured', [])):
@@ -553,6 +681,9 @@ def battle_end(mem, next_kind):
             # (10 general damage each per the chart's card table).
             extra = ['イッテツーン', 'イッテツーン']
             mem.setdefault('card_override', {})[step] = extra
+            mem.setdefault('retry_context', {})[step] = {
+                'deviation_reason': 'チャートの白兵で敗北したため、開幕イッテツーン2枚で再攻撃',
+                'expected_metric': {'enemy_hp_after_open': max(0, (enemy_hp or 0) - 20)}}
             _record(mem, 'order_retry', chart_step=step, strategy_variant='retry_with_opening_cards',
                     deviation_reason='チャートの白兵で敗北したため、開幕イッテツーン2枚で再攻撃',
                     expected_metric={'enemy_hp_after_open': max(0, (enemy_hp or 0) - 20)},
@@ -568,10 +699,16 @@ def battle_end(mem, next_kind):
         resulting = f'captured:{castle}'
     elif outcome == 'loss' and castle and cur.get('side') == 'defense':
         resulting = f'lost:{castle}'
-    _record(mem, 'battle_result', chart_step=cur.get('step'), enemy=cur.get('enemy'),
+    _record(mem, 'battle_result', **_battle_labels(cur), enemy=cur.get('enemy'),
+            expected_metric=cur.get('strategy_expected'),
             ally=cur.get('ally'), castle=castle, side=cur.get('side'), outcome=outcome,
             observed_metric={'enemy_hp': enemy_hp, 'ally_hp': ally_hp,
-                             'cards_used': cur.get('cards_used', [])},
+                             'cards_used': cur.get('cards_used', []),
+                             'cards_selected': cur.get('cards_selected', []),
+                             'cards_missing': cur.get('cards_missing', []),
+                             'cards_unclassified': cur.get('cards_unclassified', []),
+                             'card_consumption_complete': cur.get('card_consumption_complete', False),
+                             'general_loss': 'unclassified'},
             resulting_event=resulting or outcome, resulting_stage=None, next_screen=next_kind,
             reason='戦闘終了時のHP表示から判定' if outcome != 'unclassified'
             else '最終HPが0/非0で確定しないため未分類')
@@ -805,6 +942,8 @@ def yes_no_step(screen: Screen, mem):
 
 def observe_events(screen: Screen, mem):
     """Record chart-relevant facts that need no input (month header, harvest)."""
+    _hold_general_loss_metric(mem)
+    _migrate_card_evidence(mem)
     header = screen.header
     if header:
         chapter = header.get('chapter')
@@ -815,7 +954,7 @@ def observe_events(screen: Screen, mem):
             for key in ('active', 'anchor', 'attack', 'battle', 'battle_seen',
                         'captured', 'card_override', 'cursor', 'egg_battle',
                         'expect_menu', 'general_override', 'launched', 'month_exit',
-                        'nav_last', 'orders', 'picked', 'retries', 'shop',
+                        'nav_last', 'orders', 'picked', 'retries', 'retry_context', 'shop',
                         'source_override', 'uncertain', 'month'):
                 mem.pop(key, None)
             mem['chapter'] = chapter
@@ -841,18 +980,26 @@ def summary(mem: dict | None) -> dict:
     mem = mem if isinstance(mem, dict) else {}
     stats = mem.get('stats') if isinstance(mem.get('stats'), dict) else {}
     orders = mem.get('orders') if isinstance(mem.get('orders'), dict) else {}
+    battle = mem.get('battle') if isinstance(mem.get('battle'), dict) else {}
+    chart_step = battle.get('step') if battle else mem.get('active')
+    strategy_variant = battle.get('strategy_variant') if battle else mem.get('variant')
     as_int = lambda v: v if type(v) is int and 0 <= v <= 10**6 else None
     return {
         'chapter': as_int(mem.get('chapter')),
-        'chart_step': mem.get('active') if isinstance(mem.get('active'), str) else None,
-        'strategy_variant': mem.get('variant') if isinstance(mem.get('variant'), str) else None,
+        'chart_step': chart_step if isinstance(chart_step, str) else None,
+        'strategy_variant': strategy_variant if isinstance(strategy_variant, str) else None,
         'orders_launched': sum(1 for v in orders.values() if v == 'launched'),
         'orders_failed': sum(1 for v in orders.values() if v == 'failed'),
         'captured': len(mem.get('captured') or []),
         'wins': as_int(stats.get('wins')), 'losses': as_int(stats.get('losses')),
         'unclassified': as_int(stats.get('unclassified')),
-        'cards_used': as_int(stats.get('cards_used')),
-        'generals_lost': as_int(stats.get('generals_lost')),
+        'cards_used': (as_int(stats.get('cards_used')) if stats.get('card_evidence_version') == 1
+                       and not battle.get('card_flow')
+                       and battle.get('card_consumption_complete', True) is True else None),
+        # Lower bound confirmed under the new evidence contract, not total use.
+        'cards_confirmed': as_int(stats.get('cards_confirmed')),
+        # No direct loss observer exists: even a legacy zero is not evidence.
+        'generals_lost': None,
         'gold': as_int(mem.get('gold')),
         'month': mem.get('month') if isinstance(mem.get('month'), str) else None,
         'name_entered': bool((mem.get('name') or {}).get('done')),
