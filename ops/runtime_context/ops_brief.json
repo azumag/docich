@@ -1,11 +1,11 @@
 {
-  "output_sha256": "9f5970d9acceba559e8b0c5d381d890bd8421b261d7267bf78b8999ee802cd21",
+  "output_sha256": "c73d71b573c1e59e30f706d51bf27b2b4afc11b653b3250661684d4ef4edb718",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "821f71b55d806fd80b36cf87b0fc337997e612568ffc1e1828f3aecb8ae23290",
+  "source_sha256": "1d12c4cadb532aaa321dfb5d371985305c73ba0d46c084f7db4976cd902356da",
   "topics": [
+    "NInvaders automatic strategy repair and acceptance",
     "半熟英雄 #1070配備・自然ゲームオーバーからSoren復帰（攻略受入は継続）",
-    "半熟英雄 #1068配備・どうし実入力と音声80%を実測（受入継続）",
-    "半熟英雄の受入準備（開始・終了・実況の所有権検証）"
+    "半熟英雄 #1068配備・どうし実入力と音声80%を実測（受入継続）"
   ]
 }
