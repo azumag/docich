@@ -52,7 +52,9 @@ def compose(rec: dict) -> tuple[str, str | None]:
         plan = rec.get('planned_cards') or []
         if plan:
             tail = ('体力は互角です。' if ally_hp == enemy_hp else '')
-            tail += f"チャートの予定どおり{'、'.join(plan)}を使います。"
+            prefix = ('再攻撃の作戦として' if rec.get('strategy_variant') == 'retry_with_opening_cards'
+                      else 'チャートの予定どおり')
+            tail += f"{prefix}{'、'.join(plan)}を使う予定です。"
         elif ally_hp < enemy_hp:
             tail = '体力では負けているので、苦しい白兵戦になりそうです。'
         elif ally_hp > enemy_hp:

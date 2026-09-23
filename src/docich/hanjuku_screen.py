@@ -195,6 +195,8 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
 
 def classify_text(s: Screen) -> str:
     t = s.text
+    if t == 'いばらのとうをとりまいていたすべてのいばらがしょうめつしました!':
+        return 'barrier_removed'
     if 'なまえのかきとり' in t:
         return 'name_entry'
     if 'きりふだセレクト' in t:

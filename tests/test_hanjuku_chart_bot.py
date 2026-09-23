@@ -578,6 +578,115 @@ def test_garbanzo_tactics_follow_each_generals_chart_branch(step, ally, hp, expe
 
 
 
+
+def _card_evidence_battle(*, retry=False):
+    from docich.hanjuku_screen import Battle, Screen
+    mem = {'chapter': 1, 'attack': {'general': 'どうし', 'castle': 'けっかい',
+                                   'side': 'attack', 'step': '1-B1'}}
+    if retry:
+        mem['card_override'] = {'1-B1': ['イッテツーン', 'イッテツーン']}
+    screen = Screen(lines=[], hand=None, text='', battle=Battle('クイーン', 60, 'どうし', 90), kind='battle')
+    policy.battle_step(screen, mem); policy.battle_step(screen, mem)
+    if not retry:
+        screen.battle.enemy_hp = 59
+        policy.battle_step(screen, mem)  # the observed clash schedules クースカン
+    return mem, screen
+
+
+def _card_screen(cards, *, announcement=None, hand=True):
+    from docich.hanjuku_font import TextLine
+    from docich.hanjuku_screen import Screen
+    lines = [TextLine(176 + index * 16, tuple((176 + i * 8, ch) for i, ch in enumerate(card)))
+             for index, card in enumerate(cards)]
+    return Screen(lines=lines, hand=(150, 170, 172, 186) if hand else None,
+                  text=announcement or ''.join(cards), kind='text')
+
+
+def test_missing_and_selected_cards_do_not_confirm_use_or_unlock_after_card():
+    mem, screen = _card_evidence_battle()
+    cur = mem['battle']
+    cur['card_flow'] = {'card': 'クースカン', 'stage': 'list'}
+    assert policy.card_list_step(_card_screen(['ノリウツール']), mem)
+    assert cur['cards_used'] == [] and cur['cards_missing'] == ['クースカン']
+    missing = mem['_records'][-1]
+    assert missing['strategy_variant'] == 'chart_card_unavailable' and missing['deviation_reason']
+    assert policy.battle_step(screen, mem) == []  # no ノリウツール without confirmed クースカン
+    cur['card_flow'] = {'card': 'クースカン', 'stage': 'list'}
+    policy.card_list_step(_card_screen(['クースカン']), mem)
+    assert cur['cards_selected'] == ['クースカン'] and cur['cards_used'] == []
+    # A one-card list, missing hand, wrong card, or incomplete text is no receipt.
+    for candidate in (_card_screen(['クースカン']), _card_screen(['クースカン'], hand=False),
+                      _card_screen(['ノリウツール'], announcement='ノリウツールをつかった', hand=False)):
+        assert policy.card_list_step(candidate, mem) == []
+        assert cur['cards_used'] == []
+    policy.battle_step(screen, mem); policy.battle_step(screen, mem)
+    assert cur['card_flow'] is None and cur['cards_unclassified'] == ['クースカン']
+    assert policy.battle_step(screen, mem) == []
+
+
+def test_explicit_card_use_receipt_confirms_once_and_unlocks_after_card():
+    mem, screen = _card_evidence_battle()
+    cur = mem['battle']
+    cur['card_flow'] = {'card': 'クースカン', 'stage': 'list'}
+    policy.card_list_step(_card_screen(['クースカン']), mem)
+    receipt = _card_screen(['クースカン'], announcement='クースカンをつかった', hand=False)
+    policy.card_list_step(receipt, mem)
+    assert cur['cards_used'] == ['クースカン']
+    policy.card_list_step(receipt, mem)
+    assert cur['cards_used'] == ['クースカン']
+    assert policy.battle_step(screen, mem)[0]['buttons'] == ['b']
+    assert cur['card_flow']['card'] == 'ノリウツール'
+    cur['card_flow'] = None
+    cur['enemy_hp'] = 0
+    policy.battle_end(mem, 'map'); policy.battle_end(mem, 'map')
+    assert mem['stats']['cards_used'] == mem['stats']['cards_confirmed'] == 1
+
+
+def test_retry_variant_survives_battle_card_and_result_records():
+    mem, screen = _card_evidence_battle(retry=True)
+    cur = mem['battle']
+    cur['card_flow']['stage'] = 'list'
+    policy.card_list_step(_card_screen(['イッテツーン']), mem)
+    policy.card_list_step(_card_screen(['イッテツーン'], announcement='イッテツーンをつかった', hand=False), mem)
+    cur['enemy_hp'] = 0
+    policy.battle_end(mem, 'map'); policy.battle_end(mem, 'map')
+    records = [r for r in mem['_records'] if r['decision'] in
+               {'battle_start', 'battle_card', 'battle_card_selected', 'battle_card_used', 'battle_result'}]
+    assert {r['decision'] for r in records} == {
+        'battle_start', 'battle_card', 'battle_card_selected', 'battle_card_used', 'battle_result'}
+    assert all(r['chart_step'] == '1-B1' and r['strategy_variant'] == 'retry_with_opening_cards'
+               and r['deviation_reason'] and r['expected_metric'] is not None
+               and r['observed_metric'] is not None for r in records)
+    assert records[-1]['resulting_event'] == 'chapter_1_boss_defeated'
+
+
+def test_legacy_selected_cards_and_stats_are_not_confirmed_by_upgrade():
+    from docich.hanjuku_screen import Screen
+    mem = {'chapter': 1, 'stats': {'wins': 1, 'losses': 1, 'unclassified': 0, 'cards_used': 4},
+           'card_override': {'1-C1': ['イッテツーン', 'イッテツーン']},
+           'battle': {'step': '1-C1', 'enemy': 'ラズベリー', 'ally': 'ココット',
+                      'cards_used': ['イッテツーン'], 'card_flow': {'card': 'イッテツーン', 'stage': 'announce'}}}
+    assert policy.summary(mem)['cards_used'] is None
+    policy.observe_events(Screen(lines=[], hand=None, text='', kind='unknown'), mem)
+    assert mem['stats']['cards_used'] is None and mem['stats']['cards_confirmed'] == 0
+    assert mem['battle']['cards_used'] == [] and mem['battle']['card_flow'] is None
+    assert mem['battle']['cards_unclassified']
+    assert mem['battle']['strategy_variant'] == 'retry_with_opening_cards'
+    old_log_count = len(mem['_records'])
+    policy.observe_events(Screen(lines=[], hand=None, text='', kind='unknown'), mem)
+    assert len(mem['_records']) == old_log_count
+
+
+@pytest.mark.parametrize('stage', ['menu', 'down', 'list', 'announce'])
+def test_unconfirmed_card_flow_is_bounded_after_return_to_battle(stage):
+    mem, screen = _card_evidence_battle()
+    cur = mem['battle']
+    cur['card_flow'] = {'card': 'クースカン', 'stage': stage}
+    policy.battle_step(screen, mem); policy.battle_step(screen, mem)
+    assert cur['card_flow'] is None
+    assert cur['cards_used'] == []
+    assert cur['cards_unclassified'] == ['クースカン']
+
 def test_hp_defeat_followed_by_living_hero_does_not_count_a_general_loss():
     from docich.hanjuku_screen import Screen
     mem = {'chapter': 1, 'battle': {'enemy': 'だいじん', 'ally': 'どうし', 'enemy_hp': 15,
@@ -605,14 +714,17 @@ def test_next_observation_invalidates_legacy_general_loss_without_erasing_battle
     assert policy.summary(mem)['generals_lost'] is None
     screen = Screen(lines=[], hand=None, text='', kind='unknown')
     policy.observe_events(screen, mem)
-    assert mem['stats'] == {'wins': 2, 'losses': 1, 'unclassified': 3, 'cards_used': 4, 'generals_lost': None}
-    assert mem['previous_stats'] == {'wins': 1, 'losses': 2, 'generals_lost': None}
-    invalidations = [r for r in mem['_records'] if r['decision'] == 'metric_invalidated']
+    assert {k: mem['stats'][k] for k in ('wins', 'losses', 'unclassified', 'generals_lost')} == {
+        'wins': 2, 'losses': 1, 'unclassified': 3, 'generals_lost': None}
+    assert mem['stats']['cards_used'] is None
+    assert mem['previous_stats']['wins'] == 1 and mem['previous_stats']['losses'] == 2
+    assert mem['previous_stats']['generals_lost'] is None
+    invalidations = [r for r in mem['_records'] if r['decision'] == 'metric_invalidated' and r['metric'] == 'generals_lost']
     assert len(invalidations) == 2
     assert invalidations[0]['observed_metric'] == {'previous_inferred_count': legacy_count,
                                                  'generals_lost': None, 'status': 'unclassified'}
     policy.observe_events(screen, mem)
-    assert len([r for r in mem['_records'] if r['decision'] == 'metric_invalidated']) == 2
+    assert len([r for r in mem['_records'] if r['decision'] == 'metric_invalidated' and r['metric'] == 'generals_lost']) == 2
 
 
 def test_no_battle_or_observer_does_not_report_zero_general_losses():
@@ -744,3 +856,37 @@ def test_name_confirmation_keeps_the_exact_decision_frame(tmp_path):
     from docich.hanjuku_pixels import read_png
     assert read_png(tmp_path/'hanjuku_frames'/record['snapshot']).digest() == record['frame_sha256']
     assert record['snapshot'] == 'decision-003.png'
+
+
+@pytest.mark.parametrize('decision', [None, 'battle_card', 'battle_card_selected',
+                                     'battle_card_used', 'battle_card_missing',
+                                     'battle_card_unclassified', 'barrier_removed'])
+def test_card_flow_and_event_frames_are_linked_from_action_plan(tmp_path, decision):
+    import importlib.util
+    from docich.hanjuku_pixels import read_png
+    path = Path(__file__).resolve().parents[1] / 'brains/hanjuku/bot.py'
+    spec = importlib.util.spec_from_file_location('hanjuku_card_snapshot_test', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    canvas = Canvas()
+    canvas.text(64, 55, 'イッテツーン')
+    frame = canvas.frame()
+    state = {'step': 124, 'screen_kind': 'text', 'phase': 'event',
+             'policy': {'battle': {'card_flow': {'card': 'イッテツーン', 'stage': 'announce'}
+                                  if decision is None else None}}}
+    records = [] if decision is None else [{'decision': decision, 'card': 'イッテツーン',
+                                           'enemy': 'だいじん', 'enemy_hp': 90, 'reason': '開幕'}]
+    module.persist(tmp_path, state, records, {'hanjuku': {'game': 'hanjuku-hero',
+                   'runtime_id': 'g1-test', 'generation': 1, 'lease_id': 'lease'}},
+                   actions=[], frame_sha256=frame.digest(), frame=frame)
+    entries = [json.loads(line) for line in (tmp_path/'hanjuku_decisions.jsonl').read_text().splitlines()]
+    plan = entries[0]
+    assert plan['event'] == 'action_plan' and plan['snapshot'] == 'decision-004.png'
+    assert plan['dispatch_status'] == 'planned_not_yet_sent'
+    assert read_png(tmp_path/'hanjuku_frames'/plan['snapshot']).digest() == plan['frame_sha256']
+    assert plan['frame_sha256'] == state['decision_trace']['frame_sha256']
+    assert plan['decision_id'] == state['decision_trace']['decision_id']
+    if decision is None:
+        assert len(entries) == 1
+    else:
+        assert entries[1]['snapshot'] == plan['snapshot']

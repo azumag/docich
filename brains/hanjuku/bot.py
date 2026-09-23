@@ -29,7 +29,11 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
     state['decision_trace']={**identity, 'decision_id': decision_id, 'frame_sha256': frame_sha256}
     policy=state.get('policy') or {}
     snapshot=None
-    if frame is not None and any(r.get('decision') in {'name_confirm','chapter_seen','battle_result'} for r in records):
+    card_flow=(policy.get('battle') or {}).get('card_flow')
+    capture=bool(card_flow) or any(
+        r.get('decision') in {'name_confirm','chapter_seen','battle_result','barrier_removed'}
+        or str(r.get('decision','')).startswith('battle_card') for r in records)
+    if frame is not None and capture:
         directory=runtime/'hanjuku_frames'
         if directory.is_symlink():
             raise ValueError('unsafe frame directory')
@@ -41,7 +45,7 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
         target.write_bytes(frame.png_bytes())
     append_log(runtime,'hanjuku_decisions',{
         'schema':1,'event':'action_plan','at':now,'bot_version':BOT_VERSION,**identity,
-        'decision_id':decision_id,'frame_sha256':frame_sha256,
+        'decision_id':decision_id,'frame_sha256':frame_sha256,'snapshot':snapshot,
         'screen_kind':state.get('screen_kind'),'chart_step':policy.get('active'),
         'strategy_variant':policy.get('variant'),'planned_actions':actions,
         'reason_decisions':[r.get('decision') for r in records],
