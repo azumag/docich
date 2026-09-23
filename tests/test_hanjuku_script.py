@@ -234,6 +234,95 @@ def test_corner_waits_past_deadline_then_restores_only_on_terminal(manager, monk
     assert state['bot_runtime_id']==IDENTITY['runtime_id']
 
 
+def _write_restoring_hanjuku_owner(manager, tmp_path, *, terminal_generation=None):
+    import uuid
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from docich.game_switch import atomic_write_json
+    from docich.naming import runtime_directory
+
+    rotation_request_id = str(uuid.uuid4())
+    switch_request_id = str(uuid.uuid4())
+    runtime = runtime_directory(manager.g.state_dir, IDENTITY['runtime_id'])
+    runtime.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(runtime / hanjuku_run.RUN_FILE, {
+        **IDENTITY, 'terminal_reason': 'game_over',
+        'terminal_evidence': 'title_return_after_gameplay',
+        'phase': 'title', 'frame_sha256': '0' * 64,
+        'title_count': 3, 'title_since': 1.0, 'observed_monotonic': 4.0,
+        'name_entered': True, 'gameplay_seen': True,
+    })
+    manager._active_game_reader = lambda: 'hanjuku-hero'
+    manager.store.canonical.load = Mock(return_value=(
+        {'phase': 'ready', 'active': dict(IDENTITY)}, False
+    ))
+    manager.coordinator.switch.return_value = SimpleNamespace(
+        status='succeeded', error_code=None, detail=None
+    )
+    manager._write_state({
+        'schema_version': 1, 'status': 'restoring',
+        'game': 'hanjuku-hero', 'previous_game': 'sorengame',
+        'rotation_request_id': rotation_request_id,
+        'rotation_runtime_id': IDENTITY['runtime_id'],
+        'switch_request_id': switch_request_id,
+        'bot_identity': dict(IDENTITY), 'bot_runtime_id': IDENTITY['runtime_id'],
+        'end_reason': 'game_over',
+        'terminal_evidence': 'title_return_after_gameplay',
+        'terminal_generation': (IDENTITY['generation'] if terminal_generation is None
+                                else terminal_generation),
+    })
+    return rotation_request_id, switch_request_id
+
+
+def test_replaying_restoring_hanjuku_rechecks_durable_terminal_and_source_identity(
+        manager, tmp_path):
+    rotation_request_id, switch_request_id = _write_restoring_hanjuku_owner(manager, tmp_path)
+
+    result = manager.run_rotation(rotation_request_id)
+
+    assert result.status == 'completed'
+    manager.coordinator.switch.assert_called_once()
+    args, kwargs = manager.coordinator.switch.call_args
+    assert args == ('sorengame',)
+    assert kwargs['request_id'] == switch_request_id
+    assert kwargs['payload']['expected_source'] == IDENTITY
+    assert manager._read_state()['status'] == 'completed'
+
+
+def test_replaying_restoring_hanjuku_fails_closed_when_terminal_generation_differs(
+        manager, tmp_path):
+    from docich.retro_corner import RetroCornerError
+
+    rotation_request_id, _ = _write_restoring_hanjuku_owner(
+        manager, tmp_path, terminal_generation=IDENTITY['generation'] + 1
+    )
+
+    with pytest.raises(RetroCornerError, match='terminal generation'):
+        manager.run_rotation(rotation_request_id)
+
+    manager.coordinator.switch.assert_not_called()
+    assert manager._read_state()['status'] == 'restoring'
+
+
+def test_replaying_restoring_hanjuku_fails_closed_when_durable_terminal_is_missing(
+        manager, tmp_path):
+    from docich.game_switch import atomic_write_json
+    from docich.naming import runtime_directory
+    from docich.retro_corner import RetroCornerError
+
+    rotation_request_id, _ = _write_restoring_hanjuku_owner(manager, tmp_path)
+    runtime = runtime_directory(manager.g.state_dir, IDENTITY['runtime_id'])
+    atomic_write_json(runtime / hanjuku_run.RUN_FILE, {
+        **IDENTITY, 'terminal_reason': None,
+    })
+
+    with pytest.raises(RetroCornerError, match='terminal evidence changed'):
+        manager.run_rotation(rotation_request_id)
+
+    manager.coordinator.switch.assert_not_called()
+    assert manager._read_state()['status'] == 'restoring'
+
+
 def test_corrupt_terminal_record_cannot_authorize_teardown(tmp_path):
     from docich.game_switch import atomic_write_json
     atomic_write_json(tmp_path/hanjuku_run.RUN_FILE,dict(IDENTITY,
