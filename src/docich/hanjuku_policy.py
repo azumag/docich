@@ -25,7 +25,7 @@ ANCHOR_PX = 24                # roof-to-castle association radius (castles >=100
 BATTLE_MENU = ('たまごをつかう', 'きりふだ', 'たいきゃく')
 AFTER_BATTLE_KINDS = frozenset({'map', 'map_target', 'castle_menu', 'general_list', 'month_menu',
                                 'attack_started', 'defense_started', 'castle_info', 'main_menu',
-                                'yes_no', 'shop_list'})
+                                'yes_no', 'shop_list', 'boss_attack_started'})
 CARD_NAMES = frozenset({
     'イッテツーン', 'ダイチスイム', 'ブラッキー', 'フットバース', 'グリンボー', 'ピッグローラー',
     'カンケリン', 'ノリウツール', 'クースカン', 'ゼンマイン', 'ミックミー', 'デッドガン',
@@ -284,7 +284,7 @@ def map_step(screen: Screen, mem, frame):
             return []           # nothing charted: let real time advance
         mem['active'] = order['step']
         mem['picked'] = []
-        _record(mem, 'order_start', chart_step=order['step'], general=order['general'],
+        _record(mem, 'order_start', chart_step=order['step'], **_deploy_context(order, mem),
                 source=order['source'], target=order['target'], cards=list(order['cards']),
                 reason=order['note'])
     source = mem.get('source_override', {}).get(order['step'], order['source'])
@@ -293,8 +293,8 @@ def map_step(screen: Screen, mem, frame):
     if result == 'arrived':
         # If no castle menu follows, the cell was wrong: re-localize.
         mem['expect_menu'] = True
-        return [pad('a')]
-    return result or []
+        return _deploy_input(screen, mem, order, [pad('a')], '出撃元の城を選択')
+    return _deploy_input(screen, mem, order, result or [], '出撃元の城へカーソルを移動')
 
 
 def target_step(screen: Screen, mem, frame):
@@ -303,17 +303,66 @@ def target_step(screen: Screen, mem, frame):
         # A marker we did not request: cancel instead of sending a general.
         _record(mem, 'unexpected_target', reason='指示中でない出撃先選択画面のためBで取消')
         return [pad('b')]
+    if order['step'] == '1-B1':
+        context = (mem.get('order_context') or {}).get(order['step']) or {}
+        if (context.get('actual_general') != order['general']
+                or (context.get('observed_metric') or {}).get('cards') != sorted(order['cards'])):
+            return _hold_deploy(screen, mem, order, 'ボス出撃の主人公と携行品の確認証拠がないため目標確定を保留')
     goal = chart.castles(mem['chapter'])[order['target']]
     result = nav_step(screen, mem, frame, goal)
     if result == 'arrived':
-        _finish_order(mem, 'launched', general=order['general'], target=order['target'],
+        context = _deploy_context(order, mem, expected_metric='のりこんだ表示で目標城を確認')
+        _finish_order(mem, 'launched', **context, target=order['target'],
                       cursor=mem.get('cursor'), anchor=mem.get('anchor'),
-                      expected_metric='のりこんだ表示で目標城を確認',
-                      reason=f"{order['general']}を{order['target']}へ出撃")
-        general = mem.get('general_override', {}).get(order['step'], order['general'])
+                      reason=f"{context['general']}を{order['target']}へ出撃")
+        general = context['general']
         mem.setdefault('launched', {})[order['target']] = {'general': general, 'step': order['step']}
         return [pad('a')]
-    return result or []
+    return _deploy_input(screen, mem, order, result or [], '出撃先へ目標カーソルを移動')
+
+
+def _deploy_cards(order, mem):
+    return list(order['cards'] if order['step'] == '1-B1'
+                else mem.get('card_override', {}).get(order['step'], order['cards']))
+
+
+def _deploy_context(order, mem, *, expected_metric=None):
+    general = (order['general'] if order['step'] == '1-B1'
+               else mem.get('general_override', {}).get(order['step'], order['general']))
+    context = {'general': general, 'planned_general': order['general'],
+            'expected_metric': expected_metric,
+            'strategy_variant': 'substitute_general' if general != order['general'] else mem.get('variant', 'chart'),
+            'deviation_reason': (f"計画の{order['general']}に代わり{general}を出撃させる"
+                                 if general != order['general'] else None)}
+    retry = (mem.get('retry_context') or {}).get(order['step'])
+    if retry:
+        context.update(strategy_variant=retry.get('strategy_variant', 'retry_with_opening_cards'),
+                       deviation_reason=retry.get('deviation_reason'),
+                       expected_metric=retry.get('expected_metric'))
+    return context
+
+
+def _deploy_input(screen, mem, order, actions, reason):
+    # Retry navigation used to have no decision record, losing its context in
+    # action_plan. Ordinary first-attempt records retain their existing shape.
+    if (mem.get('retry_context') or {}).get(order['step']):
+        _record(mem, 'sortie_input', **_deploy_context(order, mem), screen=screen.kind,
+                observed_metric={'planned_buttons': [a.get('buttons') for a in actions]},
+                reason=reason)
+    return actions
+
+
+def _hold_deploy(screen, mem, order, reason, *, card=None, carried=None):
+    context = _deploy_context(order, mem, expected_metric={'cards': _deploy_cards(order, mem)})
+    if not (mem.get('retry_context') or {}).get(order['step']):
+        context.update(strategy_variant='sortie_cards_unclassified' if screen.kind == 'sortie_confirm'
+                       else 'sortie_menu_unclassified', deviation_reason=reason)
+    _record(mem, 'situation_held', **context, screen=screen.kind, card=card,
+            observed_metric={'hand': screen.hand,
+                             'candidates': [{'x': x, 'y': y, 'text': w[:80]} for x, y, w in _options(screen)[:32]],
+                             'carried_cards_read': carried, 'confirmation': 'unclassified'},
+            reason=reason)
+    return []
 
 
 def deploy_step(screen: Screen, mem):
@@ -324,8 +373,22 @@ def deploy_step(screen: Screen, mem):
         return [pad('b')]
     if kind == 'castle_menu':
         move = menu_to(screen, 'しゅつげき')
-        return [pad('a')] if move == 'here' else [move] if move else []
+        return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move] if move else [],
+                             '出撃メニューを選択')
     if kind == 'general_list':
+        if order['step'] == '1-B1':
+            mem.setdefault('sortie_general', {}).pop(order['step'], None)
+            mem.setdefault('order_context', {}).pop(order['step'], None)
+            move = menu_to(screen, order['general'])
+            if move is None or any(UNKNOWN in line.text and order['general'] in line.text for line in screen.lines):
+                return _hold_deploy(screen, mem, order, 'ボス出撃の主人公を一覧とカーソルで確認できないため代役を選ばず保留')
+            if move == 'here':
+                mem.setdefault('general_override', {}).pop(order['step'], None)
+                mem['sortie_general'][order['step']] = order['general']
+                return _deploy_input(screen, mem, order, [pad('a')], 'ボス戦へ主人公を選択')
+            return _deploy_input(screen, mem, order, [move], 'ボス戦の主人公へ選択カーソルを移動')
+        if not screen.hand:
+            return _hold_deploy(screen, mem, order, '将軍選択カーソルを判定できないため入力を保留')
         general = mem.get('general_override', {}).get(order['step'], order['general'])
         move = menu_to(screen, general)
         if move is None:
@@ -358,43 +421,67 @@ def deploy_step(screen: Screen, mem):
                           observed_metric=[w for _, _, w in _options(screen)][:12],
                           reason='チャートの将軍が出撃元の城にいない')
             return [pad('b')]
-        return [pad('a')] if move == 'here' else [move]
+        return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move], '出撃将軍を選択')
+    if kind in {'card_select', 'sortie_confirm'} and order['step'] == '1-B1':
+        mem.setdefault('order_context', {}).pop(order['step'], None)
+        if (mem.get('sortie_general') or {}).get(order['step']) != order['general']:
+            return _hold_deploy(screen, mem, order, 'ボス出撃の主人公選択を確認できないため保留')
     if kind == 'card_select':
+        mem.setdefault('order_context', {}).pop(order['step'], None)
         picked = mem.setdefault('picked', [])
-        wanted = list(mem.get('card_override', {}).get(order['step'], order['cards']))
+        wanted = _deploy_cards(order, mem)
         for card in picked:
             if card in wanted:
                 wanted.remove(card)
         if not wanted:
-            return [pad('b')]
+            return _deploy_input(screen, mem, order, [pad('b')], '予定切り札の選択入力後に携行確認へ進む')
         card = wanted[0]
         move = menu_to(screen, card)
-        if move is None:
-            _record(mem, 'card_missing', deviation_reason=f'{card}が在庫一覧に見えない',
-                    expected_metric=list(order['cards']), observed_metric=picked,
-                    reason='在庫にない切り札は持たずに出撃')
-            mem['picked'] = picked + [card]
-            return []
+        if move is None or any(UNKNOWN in line.text for line in screen.lines):
+            reason = ('切り札選択カーソルを判定できないため欠品を確定せず保留'
+                      if not screen.hand else '予定切り札の完全な項目名を読めないため欠品を確定せず保留')
+            return _hold_deploy(screen, mem, order, reason, card=card)
         if move == 'here':
             picked.append(card)
-            _record(mem, 'card_pick', card=card, reason=order['note'])
+            _record(mem, 'card_pick', **_deploy_context(order, mem), card=card,
+                    resulting_event='selection_planned_not_yet_confirmed', reason=order['note'])
             return [pad('a')]
-        return [move]
+        return _deploy_input(screen, mem, order, [move], '予定切り札へ選択カーソルを移動')
     if kind == 'sortie_confirm':
-        carried = re.findall('|'.join(sorted(CARD_NAMES, key=len, reverse=True)), screen.text)
+        mem.setdefault('order_context', {}).pop(order['step'], None)
+        # Do not infer quantities from uncalibrated suffixes or turn partial
+        # glyphs into an empty inventory. Only complete card-name spans count.
+        carried = [word for _, _, word in _options(screen) if word in CARD_NAMES]
+        card_lines = [line for line in screen.lines if any(card in line.text for card in CARD_NAMES)]
+        ambiguous = (UNKNOWN in screen.text or any(UNKNOWN in line.text for line in screen.lines)
+                     or any(re.search(r'\d', line.text) for line in card_lines)
+                     or any(any(card in word for card in CARD_NAMES) and word not in CARD_NAMES
+                            for _, _, word in _options(screen)))
+        want = sorted(_deploy_cards(order, mem))
+        got = sorted(carried)
+        if ambiguous or got != want:
+            return _hold_deploy(screen, mem, order,
+                                '携行切り札の読取が不確実または計画と不一致のため出撃承認を保留', carried=carried)
         move = menu_to(screen, 'うむッ!')
+        if move is None:
+            return _hold_deploy(screen, mem, order, '出撃確認カーソルまたは承認項目を読めないため保留', carried=carried)
         if move == 'here':
-            want = sorted(mem.get('card_override', {}).get(order['step'], order['cards']))
-            got = sorted(carried)
-            _record(mem, 'sortie_confirm', general=order['general'], cards=carried,
-                    expected_metric=want, observed_metric=got,
-                    deviation_reason=None if got == want else 'carried_cards_differ',
-                    reason='出撃確認で所持切り札を照合')
+            context = _deploy_context(order, mem, expected_metric=want)
+            mem['order_context'][order['step']] = {
+                'strategy_variant': context['strategy_variant'],
+                'deviation_reason': context['deviation_reason'],
+                'actual_general': context['general'], 'planned_general': order['general'],
+                'expected_metric': (context['expected_metric'] if (mem.get('retry_context') or {}).get(order['step'])
+                                    else {'general': order['general'], 'cards': want}),
+                'observed_metric': {'general': context['general'], 'cards': got}}
+            _record(mem, 'sortie_confirm', **context, cards=carried,
+                    observed_metric=got,
+                    reason='出撃確認で読み取った切り札が計画と一致したため承認を予定')
             source = mem.get('source_override', {}).get(order['step'], order['source'])
             mem['cursor'] = list(chart.castles(mem['chapter'])[source])
             mem['uncertain'] = False      # the target marker starts on the source castle
             return [pad('a')]
-        return [move] if move else []
+        return _deploy_input(screen, mem, order, [move], '携行品一致を確認したため出撃承認項目へ移動')
     return []
 
 
@@ -407,7 +494,8 @@ def _battle_context(mem, ally):
         side = attack.get('side')
         if side == 'attack' and attack.get('castle') in captured:
             side = 'defense'          # a battle at a castle we hold is not a capture attempt
-        return {'castle': attack.get('castle'), 'side': side, 'step': attack.get('step')}
+        return {'castle': attack.get('castle'), 'side': side, 'step': attack.get('step'),
+                'entry_evidence': attack.get('entry_evidence')}
     captured = set(mem.get('captured', []))
     for castle, info in (mem.get('launched') or {}).items():
         if info.get('general') == ally and castle not in captured:
@@ -427,10 +515,17 @@ def _bind_battle_strategy(mem, cur):
         return
     step = cur.get('step')
     retry = (mem.get('retry_context') or {}).get(step)
+    sortie = (mem.get('order_context') or {}).get(step) or {}
+    if sortie.get('actual_general') != cur.get('ally'):
+        sortie = {}
     if retry or (mem.get('card_override') or {}).get(step):
-        cur['strategy_variant'] = 'retry_with_opening_cards'
+        cur['strategy_variant'] = (retry or {}).get('strategy_variant', 'retry_with_opening_cards')
         cur['deviation_reason'] = (retry or {}).get('deviation_reason') or '保存済みの再攻撃用切り札計画を適用（元の敗北詳細は未分類）'
         cur['strategy_expected'] = (retry or {}).get('expected_metric') or {'goal': '敵HP減少と戦闘勝利'}
+    elif sortie:
+        cur['strategy_variant'] = sortie.get('strategy_variant', 'chart')
+        cur['deviation_reason'] = sortie.get('deviation_reason')
+        cur['strategy_expected'] = sortie.get('expected_metric')
     else:
         cur['strategy_variant'] = mem.get('variant', 'chart')
         cur['deviation_reason'] = None
@@ -526,6 +621,8 @@ def battle_step(screen: Screen, mem):
         if flow['battle_frames_without_receipt'] >= 2:
             _card_use_unclassified(mem, cur, '実使用告知を確認できないまま白兵戦へ復帰')
         return []
+    if b.enemy_hp == 0 or b.ally_hp == 0:
+        return []  # Do not open a card menu after the human panel has ended.
     extra = [{'enemy': b.enemy, 'card': card, 'open': True, 'step': cur.get('step'),
               'note': '再攻撃の開幕切り札(チャート逸脱)'}
              for card in mem.get('card_override', {}).get(cur.get('step')) or []]
@@ -671,7 +768,35 @@ def battle_end(mem, next_kind):
     else:
         stats['cards_used'] = None
     step = cur.get('step')
-    if (outcome == 'loss' and cur.get('side') == 'attack' and step
+    boss_attempt = (mem.get('chapter') == 1 and step == '1-B1'
+                    and cur.get('enemy') == chart.BOSSES.get(1)
+                    and cur.get('castle') == 'けっかい' and cur.get('side') == 'attack'
+                    and cur.get('entry_evidence') == 'measured_boss_entry')
+    if outcome == 'loss' and boss_attempt:
+        retries = mem.setdefault('retries', {})
+        retries[step] = retries.get(step, 0) + 1
+        for key in ('general_override', 'card_override', 'order_context', 'sortie_general'):
+            mem.setdefault(key, {}).pop(step, None)
+        if retries[step] <= 3:
+            mem.setdefault('orders', {})[step] = 'pending'
+            context = {'strategy_variant': 'retry_chart_boss_kit',
+                       'deviation_reason': 'ボス戦のHP敗北を確認。主人公と既定切り札を再確認して再試行',
+                       'expected_metric': {'general': NAME, 'cards': ['クースカン', 'ノリウツール'],
+                                           'goal': 'クイーン戦勝利'}}
+            mem.setdefault('retry_context', {})[step] = context
+            _record(mem, 'order_retry', chart_step=step, **context,
+                    observed_metric={'outcome': outcome, 'enemy_hp': enemy_hp, 'ally_hp': ally_hp},
+                    resulting_event=f'retry:{retries[step]}', reason='既定のチャート装備を確認してボスへ再挑戦')
+        else:
+            mem.setdefault('orders', {})[step] = 'failed'
+            _record(mem, 'situation_held', chart_step=step, strategy_variant='boss_retry_exhausted',
+                    observed_metric={'retries': retries[step]}, reason='ボス再試行の上限に到達したため保留')
+    elif outcome == 'loss' and (step == '1-B1' or cur.get('enemy') == chart.BOSSES.get(1)):
+        _record(mem, 'situation_held', chart_step=step, strategy_variant='boss_entry_unclassified',
+                observed_metric={'castle': castle, 'side': cur.get('side'),
+                                 'entry_evidence': cur.get('entry_evidence')},
+                reason='実測ボス突入の証拠がないため再出撃を保留')
+    elif (outcome == 'loss' and cur.get('side') == 'attack' and step
             and castle not in mem.get('captured', [])):
         retries = mem.setdefault('retries', {})
         retries[step] = retries.get(step, 0) + 1
@@ -720,6 +845,20 @@ DEFENSE = re.compile(r'(\S+?)じょうがてきにせめこまれ')
 
 def message_step(screen: Screen, mem):
     text = screen.text
+    boss_entry = re.fullmatch(r'([^\ufffd\s]+)しょうぐんがボスじょうにせめこんだ!!', text)
+    if boss_entry:
+        general = boss_entry.group(1)
+        launched = (mem.get('launched') or {}).get('けっかい') or {}
+        if mem.get('chapter') != 1 or launched.get('step') != '1-B1' or launched.get('general') != general:
+            _record(mem, 'situation_held', screen='boss_attack_started',
+                    observed_metric={'message': text}, reason='実測ボス突入文を読んだが出撃注文と一致しないため保留')
+            return []
+        mem['attack'] = {'general': general, 'castle': 'けっかい', 'side': 'attack', 'step': '1-B1',
+                         'entry_evidence': 'measured_boss_entry'}
+        _record(mem, 'attack_observed', chart_step='1-B1', general=general, castle='けっかい',
+                expected_metric={'general': launched['general']}, observed_metric={'general': general, 'message': text},
+                reason='実測済みのボス城突入文と出撃将軍が一致')
+        return [pad('a')]
     m = ATTACK.search(text)
     if m:
         general, castle = m.groups()
@@ -955,7 +1094,7 @@ def observe_events(screen: Screen, mem):
                         'captured', 'card_override', 'cursor', 'egg_battle',
                         'expect_menu', 'general_override', 'launched', 'month_exit',
                         'nav_last', 'orders', 'picked', 'retries', 'retry_context', 'shop',
-                        'source_override', 'uncertain', 'month'):
+                        'source_override', 'uncertain', 'month', 'order_context', 'sortie_general'):
                 mem.pop(key, None)
             mem['chapter'] = chapter
             mem['variant'] = 'chart' if chart.orders(chapter) else 'chart_unavailable'

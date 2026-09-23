@@ -33,6 +33,8 @@ def compose(rec: dict) -> tuple[str, str | None]:
     if kind == 'order_launched':
         return f'launch:{step}', f"{rec['general']}将軍、{rec['target']}城へ出撃しました。"
     if kind == 'order_retry':
+        if rec.get('strategy_variant') == 'retry_chart_boss_kit':
+            return f'retry:{step}', 'ボス戦に敗れたので、主人公とチャートの切り札を確認して再攻撃を準備します。'
         return (f'retry:{step}',
                 'チャートどおりの白兵では負けたので、今度は開幕にイッテツーンを2枚使う作戦で同じ城へ攻め直します。')
     if kind == 'order_source_changed':

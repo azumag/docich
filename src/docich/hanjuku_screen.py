@@ -224,6 +224,8 @@ def classify_text(s: Screen) -> str:
         if s.hand and s.hand[0] > 100:
             return 'general_list'
         return 'castle_menu'
+    if re.fullmatch(r'[^\ufffd\s]+しょうぐんがボスじょうにせめこんだ!!', t):
+        return 'boss_attack_started'
     if 'のりこんだ' in t:
         return 'attack_started'
     if 'せめこまれ' in t:

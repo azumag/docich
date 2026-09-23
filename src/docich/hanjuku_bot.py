@@ -211,7 +211,7 @@ def decide(frame: Frame, state: dict) -> tuple[list[dict], dict]:
         actions=policy.egg_battle_step(screen,mem)
     elif kind=='battle_menu':
         actions=policy.battle_menu_step(screen,mem)
-    elif kind in {'attack_started','defense_started'}:
+    elif kind in {'attack_started','defense_started','boss_attack_started'}:
         actions=policy.message_step(screen,mem)
     elif kind=='barrier_removed':
         if mem.get('chapter') == 1:

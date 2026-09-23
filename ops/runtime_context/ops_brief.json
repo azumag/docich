@@ -1,11 +1,11 @@
 {
-  "output_sha256": "2cf53cfb63228a5abc8829aadf21dd0b447f091fdb89d1697da10415b546e296",
+  "output_sha256": "9f5970d9acceba559e8b0c5d381d890bd8421b261d7267bf78b8999ee802cd21",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "2151ed9a7431eca0da257425de9295261a1addbf94b613e9df66fde0bade6cc6",
+  "source_sha256": "821f71b55d806fd80b36cf87b0fc337997e612568ffc1e1828f3aecb8ae23290",
   "topics": [
+    "半熟英雄 #1070配備・自然ゲームオーバーからSoren復帰（攻略受入は継続）",
     "半熟英雄 #1068配備・どうし実入力と音声80%を実測（受入継続）",
-    "半熟英雄の受入準備（開始・終了・実況の所有権検証）",
-    "半熟英雄起動不能の修正 #1059 はmain統合・配備済み（実起動未確認）"
+    "半熟英雄の受入準備（開始・終了・実況の所有権検証）"
   ]
 }
