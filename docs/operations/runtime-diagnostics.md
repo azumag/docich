@@ -201,6 +201,17 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   固定boolean `corner_paper_degraded` としてのみ要約する。state_dir は固定 config
   (`config/docich.soren-live.toml`) の `paths.state_dir` から解決し、
   production checkout 内に制約する。
+- Hanjuku実況再生: retro_corner が status=active / game=hanjuku-hero の場合だけ、
+  Soren の tmp/.say_queue/debug.log 末尾を最大128KiB・2048行で読み、半熟英雄キューに
+  限った queue_started / queue_completed / queue_failed / queue_unmatched_starts と、
+  明示的な external_kill_markers / truncated_playback_suspected /
+  partial_audio_retry_suppressed の件数を retro_corner.narration_playback に出す。
+  実行中ログはメモリ内だけで解析し、本文・行・ファイル名・パス・tokenは返さない。
+  固定ディレクトリをsymlinkなしで開き、通常ファイル以外や読取失敗は
+  status=unavailable と各値nullにする。tail_truncated=true は全ログではなく末尾の
+  観測であることを示す。queue_unmatched_starts は観測範囲で終端記録が見つからない数で、
+  再生中またはログ切替でも起きるため、キャンセル確定数ではない。
+  queue_completed も音声全体が聞こえた証明ではなく、リスナー側の実聴確認を代替しない。
 - boundary: Soren `tmp/state/corner_boundary_improvement.json` /
   `corner_boundary_prediction.json` の `completed_at` と age のみ。コーナーの
   境界待ちの可否を判定できる。
