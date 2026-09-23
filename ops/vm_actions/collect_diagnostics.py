@@ -28,10 +28,13 @@ Observed sources (all read-only):
     counters only. Announcement/script bodies, prompts and log bodies are
     never read out. FIFO output is limited to queued count and the head's
     fixed operation/target/age fields.
+  - while the retro corner is actively running Hanjuku Hero, a bounded tail
+    of Soren's speech debug log is parsed in memory for Hanjuku-only queue
+    outcome counters. No log lines, queue names or speech text are emitted.
   - a bounded, redacted tail (last lines only) of the NetHack agent's own log
     (state_dir/logs/agent.log, written by supervise.run_callable_loop) so a
-    corner that reaches gameplay but never acts stays diagnosable. No other
-    log body is read.
+    corner that reaches gameplay but never acts stays diagnosable. No
+    unrelated log body is read.
   - bounded, redacted captures of the committed NetHack runtime's tmux
     windows (window names, the birth/process window TTY, and the agent window)
     so a corner that is active but not progressing stays diagnosable. Never
@@ -2185,10 +2188,147 @@ def _collect_programs(state_dir, soren, now):
     if state_dir.is_dir():
         _collect_corner_files(state_dir, payload, now)
     soren = Path(soren)
+    retro = payload.get("retro_corner")
+    game_switch = payload.get("game_switch")
+    if (isinstance(retro, dict) and retro.get("readable") is True
+            and retro.get("status") == "active"
+            and retro.get("game") == "hanjuku-hero"
+            and isinstance(game_switch, dict)
+            and game_switch.get("active_game") == "hanjuku-hero"):
+        retro["narration_playback"] = _collect_hanjuku_narration_playback(soren)
     payload["boundary"] = _collect_boundary(soren / "tmp" / "state", now)
     payload["ab"] = _collect_ab(soren, now)
     payload["soren_game"] = _collect_soren_game(soren, now)
     return payload
+
+
+HANJUKU_PLAYBACK_LOG_MAX_BYTES = 128 * 1024
+HANJUKU_PLAYBACK_LOG_MAX_LINES = 2048
+_HANJUKU_QUEUE_BASENAME_RE = re.compile(
+    r"(?P<name>[^/\s]*_hanjuku(?:_commentary|:commentary)\.(?:txt|playing))(?=$|[\s),])"
+)
+_HANJUKU_PLAYBACK_EMPTY = {
+    "status": "unavailable",
+    "sampled_bytes": None,
+    "sampled_lines": None,
+    "tail_truncated": None,
+    "queue_started": None,
+    "queue_completed": None,
+    "queue_failed": None,
+    "queue_unmatched_starts": None,
+    "external_kill_markers": None,
+    "truncated_playback_suspected": None,
+    "partial_audio_retry_suppressed": None,
+}
+
+
+def _open_hanjuku_playback_log(soren):
+    """Open one fixed log without following symlinks in the Soren path."""
+    directory_flags = (
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    )
+    directory_fd = os.open(Path(soren), directory_flags)
+    try:
+        for part in ("tmp", ".say_queue"):
+            next_fd = os.open(part, directory_flags, dir_fd=directory_fd)
+            os.close(directory_fd)
+            directory_fd = next_fd
+        return os.open(
+            "debug.log",
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+            dir_fd=directory_fd,
+        )
+    finally:
+        os.close(directory_fd)
+
+
+def _collect_hanjuku_narration_playback(soren):
+    """Return fixed Hanjuku playback counters from a bounded, private log tail.
+
+    Queue basenames are used only as in-memory correlation keys. A start with
+    no matching terminal event is evidence of an incomplete observation, not
+    proof of cancellation: it can also be the currently playing item or fall
+    across log rotation.
+    """
+    result = dict(_HANJUKU_PLAYBACK_EMPTY)
+    fd = None
+    try:
+        fd = _open_hanjuku_playback_log(soren)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return result
+        offset = max(0, info.st_size - HANJUKU_PLAYBACK_LOG_MAX_BYTES)
+        os.lseek(fd, offset, os.SEEK_SET)
+        chunks = []
+        remaining = HANJUKU_PLAYBACK_LOG_MAX_BYTES + 1
+        while remaining:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        truncated = offset > 0 or len(raw) > HANJUKU_PLAYBACK_LOG_MAX_BYTES
+        raw = raw[:HANJUKU_PLAYBACK_LOG_MAX_BYTES]
+        if offset > 0:
+            newline = raw.find(b"\n")
+            raw = raw[newline + 1:] if newline >= 0 else b""
+        lines = raw.decode("utf-8", errors="replace").splitlines()
+        if len(lines) > HANJUKU_PLAYBACK_LOG_MAX_LINES:
+            lines = lines[-HANJUKU_PLAYBACK_LOG_MAX_LINES:]
+            truncated = True
+    except (OSError, ValueError, TypeError):
+        return result
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+    active = {}
+    started = completed = failed = 0
+    kill_markers = truncated_suspected = retry_suppressed = 0
+    for line in lines:
+        match = _HANJUKU_QUEUE_BASENAME_RE.search(line)
+        if match is None:
+            continue
+        identity = match.group("name").rsplit(".", 1)[0]
+        if line.startswith("[_play_comment_queue "):
+            if "再生開始:" in line:
+                started += 1
+                active[identity] = active.get(identity, 0) + 1
+            elif "再生完了:" in line:
+                completed += 1
+                if active.get(identity, 0) > 1:
+                    active[identity] -= 1
+                else:
+                    active.pop(identity, None)
+            elif "再生失敗:" in line:
+                failed += 1
+                if active.get(identity, 0) > 1:
+                    active[identity] -= 1
+                else:
+                    active.pop(identity, None)
+        elif line.startswith("[say_enqueue ") and "label=hanjuku_commentary" in line:
+            if "外部killフラグ検出" in line:
+                kill_markers += 1
+            if "say途中切断の疑い" in line:
+                truncated_suspected += 1
+            if "再試行せず完了扱い" in line and "既に" in line:
+                retry_suppressed += 1
+
+    result.update({
+        "status": "available",
+        "sampled_bytes": len(raw),
+        "sampled_lines": len(lines),
+        "tail_truncated": truncated,
+        "queue_started": started,
+        "queue_completed": completed,
+        "queue_failed": failed,
+        "queue_unmatched_starts": sum(active.values()),
+        "external_kill_markers": kill_markers,
+        "truncated_playback_suspected": truncated_suspected,
+        "partial_audio_retry_suppressed": retry_suppressed,
+    })
+    return result
 
 
 def _collect_soren_game(soren, now):
