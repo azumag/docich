@@ -9,7 +9,13 @@ from docich.adapters.base import Observation
 from docich.agent.brains import NethackPolicyBrain
 from docich.nethack_exploration import DIRECTIONS, NethackExplorer
 from docich.nethack_observation import normalize_tty
-from docich.nethack_policy import NethackLayeredPolicy, PolicyDecision, rest_action_for_hold, step_out_of_hold
+from docich.nethack_policy import (
+    NethackLayeredPolicy,
+    PolicyDecision,
+    rest_action_for_hold,
+    step_out_of_hold,
+    turn_ready,
+)
 from docich.nethack_progress import assert_production_safe
 
 
@@ -639,3 +645,55 @@ def test_unknown_and_severe_states_survive_candidate_public_replay():
         _, replay, _ = parse_public_replay_request(request.to_dict())
         assert replay.prompt == "unknown"
         assert condition in replay.conditions
+
+
+# --- message-window continuation evidence (owner decision 2026-09-23) ---------
+
+WELCOME79 = "Konnichi wa docich, welcome to NetHack!  You are a lawful female human Samurai."
+
+
+def test_full_width_message_without_continuation_row_is_not_a_wrap():
+    # Production 2026-09-23: this 79-column banner (cols=80) classified as
+    # `unknown`, so `.` was withheld forever and the hero never acted.
+    from docich.nethack_observation import _message_may_wrap
+
+    assert len(WELCOME79) == 79
+    lines = [WELCOME79, "", "", "-----", "|d..|", ".@..|", "-----"]
+    assert not _message_may_wrap(lines, 80)
+    text = "\n".join([WELCOME79, "", "", "-----", "|d..|", ".@..|", "-----",
+                      "Dlvl:1 HP:15(15) Pw:2(2) AC:4 Xp:1", "T:12"])
+    obs = normalize_tty(text)
+    assert obs.prompt == "none"
+    assert obs.player is not None
+    assert turn_ready(obs)
+
+
+def test_full_width_message_with_continuation_row_stays_fail_closed():
+    from docich.nethack_observation import _message_may_wrap
+
+    lines = [WELCOME79, "and more text that would be a wrapped question [yn", "-----"]
+    assert _message_may_wrap(lines, 80)
+    text = "\n".join([lines[0], lines[1], "-----", "|d..|", ".@..|", "-----",
+                      "Dlvl:1 HP:15(15) Pw:2(2) AC:4 Xp:1", "T:12"])
+    obs = normalize_tty(text)
+    assert obs.prompt == "unknown"
+    assert not turn_ready(obs)
+    assert act(brain(), text) == []
+
+
+def test_full_width_banner_unlocks_the_explicit_wait_turn():
+    # End-to-end: boxed-in hero behind a full-width banner still spends one
+    # explicit wait turn instead of holding input-free (0 actions deadlock).
+    # `#` is a passable corridor glyph, so walls here are `-`/`|` only.
+    text = "\n".join([
+        WELCOME79,
+        "",
+        "-------",
+        "-|-@|-",
+        "-------",
+        "Dlvl:1 HP:15(15) Pw:2(2) AC:4 Xp:1",
+        "T:12",
+    ])
+    agent = brain()
+    assert act(agent, text) == ["."]
+    assert agent.last_progress_decision.intent == "rest_turn"
