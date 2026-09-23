@@ -960,3 +960,22 @@ def test_input_context_precedes_battle_but_informational_records_do_not(tmp_path
     assert entries[-1]['strategy_variant'] == 'wrong'  # original records stay intact
     assert policy.summary(mem)['chart_step'] == '1-A1'
     assert policy.summary(mem)['strategy_variant'] == 'retry_with_opening_cards'
+
+
+@pytest.mark.parametrize('decision', ['order_launched', 'order_failed', 'attack_observed', 'defense_observed'])
+def test_input_context_survives_order_cleanup_and_later_information(tmp_path, decision):
+    import importlib.util
+    path = Path(__file__).resolve().parents[1] / 'brains/hanjuku/bot.py'
+    spec = importlib.util.spec_from_file_location('hanjuku_finished_order_trace_test', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    record = {'decision': decision, 'chart_step': '1-C1',
+              'strategy_variant': 'retry_with_opening_cards', 'deviation_reason': '白兵敗北後の再攻撃',
+              'general': 'ゼウス', 'castle': 'ジョンリギ'}
+    module.persist(tmp_path, {'step': 9, 'policy': {'active': None, 'variant': 'chart'}},
+                   [record, {'decision': 'metric_invalidated', 'chart_step': 'wrong'}],
+                   {'hanjuku': {}}, actions=[{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}],
+                   frame_sha256='f'*64)
+    plan = json.loads((tmp_path/'hanjuku_decisions.jsonl').read_text().splitlines()[0])
+    for key in ('chart_step', 'strategy_variant', 'deviation_reason'):
+        assert plan[key] == record[key]
