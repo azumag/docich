@@ -1072,6 +1072,80 @@ def test_recover_commits_an_ended_reservation_without_relaunching(setup):
     assert len(executor.calls) == calls
 
 
+def test_recover_reconciles_an_exact_failed_start_without_relaunching(setup):
+    _, clock, _, executor, make = setup
+    manager = make()
+    latched = _latch(manager, executor, clock)
+    request_id = latched["pending"]["request_id"]
+    corner_id = latched["pending"]["corner"]
+    adapter = manager.adapters[corner_id]
+    adapter.states = [{
+        "status": "failed",
+        "rotation_request_id": request_id,
+        "started_at": clock[0] - 10,
+        "completed_at": clock[0],
+    }]
+    reconciled = []
+    resources_checked = []
+
+    def reconcile(identity):
+        assert identity == request_id
+        reconciled.append(identity)
+        adapter.states[0]["status"] = "interrupted"
+        return True
+
+    def resources_released():
+        resources_checked.append(True)
+        return True
+
+    adapter.reconcile_failed_start = reconcile
+    adapter.resources_released = resources_released
+    calls = len(executor.calls)
+
+    outcome = manager.recover()
+
+    assert outcome == {"status": "ready", "corner": corner_id,
+                       "result": "interrupted", "recovered": True}
+    assert reconciled == [request_id]
+    assert resources_checked == [True]
+    final = state(manager)
+    assert final["status"] == "ready"
+    assert final["pending"] is None
+    assert final["last_result"]["request_id"] == request_id
+    assert final["last_result"]["status"] == "interrupted"
+    assert any(row["corner"] == corner_id and row["source"] == "completion"
+               for row in final["history"])
+    assert len(executor.calls) == calls
+
+
+def test_recover_keeps_failed_start_latched_until_corner_resources_are_released(setup):
+    _, clock, _, executor, make = setup
+    manager = make()
+    latched = _latch(manager, executor, clock)
+    request_id = latched["pending"]["request_id"]
+    corner_id = latched["pending"]["corner"]
+    adapter = manager.adapters[corner_id]
+    adapter.states = [{
+        "status": "failed",
+        "rotation_request_id": request_id,
+        "started_at": clock[0] - 10,
+        "completed_at": clock[0],
+    }]
+    adapter.reconcile_failed_start = lambda identity: (
+        adapter.states[0].update(status="interrupted") or identity == request_id
+    )
+    adapter.resources_released = lambda: False
+    calls = len(executor.calls)
+
+    with pytest.raises(RotationError, match="resources are not released"):
+        manager.recover()
+
+    final = state(manager)
+    assert final["status"] == "recovery_required"
+    assert final["pending"]["request_id"] == request_id
+    assert len(executor.calls) == calls
+
+
 def test_recover_never_launches_while_the_pending_corner_is_still_running(setup):
     _, clock, _, executor, make = setup
     manager = make()

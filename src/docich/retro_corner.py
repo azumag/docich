@@ -558,16 +558,36 @@ class RetroCornerManager:
         A stale ``starting`` record is not evidence of failure: the switch may
         still be draining or rolling back. The durable terminal receipt and a
         stable canonical owner must both prove that this exact switch ended.
+        A ``failed`` state is accepted only for a known switch-start error whose
+        own terminal rollback receipt carries the same error code.
         """
-        from .game_switch import GameSwitchBusyError
+        from .game_switch import (
+            ERROR_AGENT_START_FAILED,
+            ERROR_START_FAILED,
+            GameSwitchBusyError,
+        )
 
         try:
             with self._locked(), self.store.lock(exclusive=False):
                 state = self._read_state()
                 target = state.get("game")
                 previous = state.get("previous_game")
-                if (state.get("status") not in {"starting", "interrupted"}
-                        or (state.get("status") == "interrupted"
+                status = state.get("status")
+                failed_start = status == "failed"
+                if failed_start:
+                    completed_at = state.get("completed_at")
+                    try:
+                        completed = dt.datetime.fromisoformat(completed_at)
+                        completed_ts = completed.timestamp()
+                    except (OSError, OverflowError, TypeError, ValueError):
+                        return False
+                    if (completed.tzinfo is None or completed_ts < 0
+                            or state.get("last_error_code") not in {
+                                ERROR_START_FAILED, ERROR_AGENT_START_FAILED,
+                            }):
+                        return False
+                if ((status not in {"starting", "interrupted"} and not failed_start)
+                        or (status == "interrupted"
                             and state.get("end_reason") != "switch-terminal-before-corner-active")
                         or state.get("rotation_request_id") != request_id
                         or state.get("switch_request_id") != request_id
@@ -594,6 +614,8 @@ class RetroCornerManager:
                         or result.get("request_id") != request_id
                         or result.get("status") != "rolled_back"
                         or result.get("operation") != "switch"
+                        or (failed_start
+                            and result.get("error_code") != state.get("last_error_code"))
                         or result.get("from_game") != previous
                         or result.get("to_game") != target
                         or type(result.get("generation")) is not int
@@ -615,10 +637,16 @@ class RetroCornerManager:
                             and last_result.get("cleanup_pending") is not None
                             and last_result.get("cleanup_pending") is not False)):
                     return False
-                if state["status"] == "starting":
-                    state.update(status="interrupted", completed_at=self._local_now().isoformat(),
-                                 end_reason="switch-terminal-before-corner-active",
-                                 last_error=None, last_error_code=None)
+                if state["status"] in {"starting", "failed"}:
+                    updates = dict(
+                        status="interrupted",
+                        end_reason="switch-terminal-before-corner-active",
+                        last_error=None,
+                        last_error_code=None,
+                    )
+                    if not failed_start:
+                        updates["completed_at"] = self._local_now().isoformat()
+                    state.update(updates)
                     state.pop("switch_status", None)
                     self._write_state(state)
                 return True
