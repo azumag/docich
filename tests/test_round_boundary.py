@@ -236,6 +236,96 @@ def test_boundary_timeout_override_extends_request_deadline():
         assert time.monotonic() - started > 0.6
 
 
+class HangingReadinessAdapter(BoundaryAdapter):
+    """Target runtime that never becomes ready (e.g. a hung emulator)."""
+
+    def __init__(self, spec, **kwargs):
+        super().__init__(spec, **kwargs)
+        self.readiness_deadline_left = None
+
+    def readiness(self, deadline, cancel):
+        self.readiness_deadline_left = deadline - time.monotonic()
+        while not cancel.wait(0.01):
+            if time.monotonic() >= deadline:
+                raise game_switch.ReadinessTimeoutError("runtime never became ready")
+        raise game_switch.ReadinessTimeoutError("readiness cancelled")
+
+
+class HangingTargetFactory(BoundaryFactory):
+    def __init__(self, hang_game, **kwargs):
+        super().__init__(**kwargs)
+        self.hang_game = hang_game
+
+    def __call__(self, spec):
+        key = (spec.game, spec.generation)
+        if key not in self.adapters and spec.game == self.hang_game:
+            self.adapters[key] = HangingReadinessAdapter(
+                spec, required=self.required, method=self.method,
+                boundary_timeout_s=self.boundary_timeout_s,
+            )
+        return super().__call__(spec)
+
+
+def test_boundary_override_does_not_extend_post_boundary_steps():
+    """Only the boundary wait is extended; start/readiness keep the budget.
+
+    Production 2026-09-23 (gen317): a 7200s boundary override leaked into
+    readiness, so a target that never became ready held the exclusive
+    writer in ``probing`` for 42 minutes instead of rolling back.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp) / "run"
+        factory = HangingTargetFactory("robots", boundary_timeout_s=30.0)
+        store, coordinator = _coordinator(factory, state_dir)
+        assert coordinator.start("nethack").status == "succeeded"
+        old = factory.adapters[("nethack", 1)]
+        old.boundary_release.set()          # the match ends immediately
+        started = time.monotonic()
+        result = coordinator.switch("robots", timeout_s=0.6)
+        elapsed = time.monotonic() - started
+        assert result.status in {"failed", "rolled_back"}
+        assert elapsed < 5.0, elapsed
+        target = factory.adapters[("robots", 2)]
+        assert target.readiness_deadline_left is not None
+        assert target.readiness_deadline_left <= 0.6
+        state, _ = store.canonical.load()
+        assert state["phase"] == "ready"
+        assert state["active"]["game"] == "nethack"
+
+
+def test_boundary_override_post_boundary_deadline_is_durable():
+    """Canonical deadline_at shrinks back once the boundary is reached, so a
+    crash during start/probing is recoverable without waiting for the
+    extended boundary window."""
+    import datetime as _dt
+
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp) / "run"
+        factory = HangingTargetFactory("robots", boundary_timeout_s=30.0)
+        store, coordinator = _coordinator(factory, state_dir)
+        assert coordinator.start("nethack").status == "succeeded"
+        factory.adapters[("nethack", 1)].boundary_release.set()
+        seen = []
+
+        def watch():
+            limit = time.monotonic() + 3.0
+            while time.monotonic() < limit:
+                state, _ = store.canonical.load()
+                if state["phase"] == "probing":
+                    seen.append((state["deadline_at"], _dt.datetime.now(_dt.timezone.utc)))
+                    return
+                time.sleep(0.005)
+
+        watcher = threading.Thread(target=watch)
+        watcher.start()
+        coordinator.switch("robots", timeout_s=0.6)
+        watcher.join(4.0)
+        assert seen, "probing phase was not observed"
+        raw, observed_at = seen[0]
+        deadline_at = _dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        assert deadline_at < observed_at + _dt.timedelta(seconds=5.0)
+
+
 def test_boundary_without_override_times_out_at_request_deadline():
     """Without the override the request deadline still caps the wait."""
     with tempfile.TemporaryDirectory() as tmp:

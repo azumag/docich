@@ -2955,11 +2955,13 @@ class GameSwitchCoordinator:
         writer and verifies every identity field before the caller is allowed
         to stop the old runtime.
 
-        Returns the effective deadline for the rest of the transaction: the
-        request deadline, unless the game declares ``boundary_timeout_s``,
-        in which case only the boundary wait is extended (canonical
-        ``deadline_at`` is extended with it, before the lock is released, so
-        a concurrent recovery honors the same window).
+        Returns the effective deadline for the rest of the transaction.  When
+        the game declares ``boundary_timeout_s`` only the boundary wait is
+        extended (canonical ``deadline_at`` is extended with it, before the
+        lock is released, so a concurrent recovery honors the same window).
+        Once the boundary is reached, the remaining steps get back the request
+        budget that was left when the wait began, and ``deadline_at`` is
+        shortened to match.
         """
 
         method = getattr(adapter, "request_round_boundary", None)
@@ -2978,6 +2980,11 @@ class GameSwitchCoordinator:
 
         override_s = self._boundary_timeout_override(adapter)
         wait_deadline = deadline
+        # The boundary wait is the only step the override extends.  Keep the
+        # request budget that was left when the wait began for the remaining
+        # stop/start/readiness steps (a hung candidate must roll back within
+        # the ordinary budget, not hold the writer for the boundary window).
+        remaining_before_wait = max(deadline - time.monotonic(), 0.0)
         if override_s is not None:
             extended = time.monotonic() + override_s
             if extended > wait_deadline:
@@ -3050,7 +3057,25 @@ class GameSwitchCoordinator:
                 "draining中にcanonicalのrequest/active identityが変化しました"
             )
         self._log("round_boundary_reached", phase="draining")
-        return wait_deadline
+        if wait_deadline <= deadline:
+            return wait_deadline
+        post_deadline = min(wait_deadline, time.monotonic() + remaining_before_wait)
+        post_deadline_at = (
+            dt.datetime.now(dt.timezone.utc)
+            + dt.timedelta(seconds=max(post_deadline - time.monotonic(), 0.0))
+        ).isoformat().replace("+00:00", "Z")
+        tx.transition(
+            {"draining"},
+            "draining",
+            updates={"deadline_at": post_deadline_at},
+            crash_hook=self.crash_hook,
+        )
+        self._log(
+            "round_boundary_budget_restored",
+            phase="draining",
+            detail=f"remaining_s={remaining_before_wait:.1f}",
+        )
+        return post_deadline
 
     def _cancel_round_boundary_locked(
         self,

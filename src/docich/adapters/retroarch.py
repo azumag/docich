@@ -575,6 +575,11 @@ class RetroArchCoordinatorAdapter:
                 if not self.alive(deadline, cancel):
                     raise ReadinessTimeoutError("RetroArch presenter exited")
                 state = read_record(self._presentation_path())
+                if state.get("status") in {"presentation_failed", "cleanup_failed", "stopped"}:
+                    # Terminal presenter states never become ready; roll back
+                    # now instead of holding the switch until its deadline.
+                    raise ReadinessTimeoutError(
+                        f"RetroArch presentation is {state.get('status')}")
                 if state.get("status") == "ready" and presenter.find_window(
                     f"^docich-present-{self.spec.runtime_id}$", timeout=0.1
                 ):
