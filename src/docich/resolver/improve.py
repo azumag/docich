@@ -4,7 +4,7 @@ Token-free by default: candidates are parameter perturbations of the current
 strategy, evaluated by playing real headless matches (docich.resolver.runner).
 A candidate is promoted only when its mean score beats the current strategy by
 ``--margin-pct``; the previous strategy is archived under
-``<state_dir>/resolver/history/`` and the loop appends every cycle to
+``<state_dir>/resolver/history/<game>/`` and the loop appends every cycle to
 ``<state_dir>/resolver/improve_log.jsonl``.
 
 Per-game evaluation:
@@ -38,7 +38,7 @@ from pathlib import Path
 
 from ..adapters.cli_game import cli_cols, cli_command_list, cli_rows
 from ..config import load_game, load_global
-from . import resolver_policy, strategy_path
+from . import resolver_policy, strategy_history_dir, strategy_path
 from . import gnurobots as gnurobots_resolver
 from .runner import EvaluationCleanupError, _session_absent, resolve_command, run_match
 from .bot_eval import bot_games as _bot_games
@@ -336,10 +336,10 @@ def improve_once(
 
 def _promote(g, game_name: str, s_file: Path, old: dict, new: dict) -> None:
     s_file.parent.mkdir(parents=True, exist_ok=True)
-    history = s_file.parent / "history"
-    history.mkdir(exist_ok=True)
+    history = strategy_history_dir(g.state_dir, game_name)
+    history.mkdir(parents=True, exist_ok=True)
     if s_file.exists():
-        stamp = time.strftime("%Y%m%d-%H%M%S")
+        stamp = f"{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns()}"
         (history / f"{stamp}.json").write_text(
             json.dumps(old, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )

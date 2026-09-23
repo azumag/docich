@@ -300,7 +300,7 @@ def corner_intro(g: GlobalConfig, game_name: str) -> str:
 
 
 def describe_strategy_change(state_dir, game_name: str) -> str:
-    """今回戦略と前回戦略の差分サマリ。履歴が無ければ初回扱いの一文を返す。"""
+    """今回戦略と同じゲームの前回戦略を比較し、差分を短く説明する。"""
     if game_name == "ninvaders":
         from .ninvaders.store import PolicyStore
 
@@ -309,41 +309,40 @@ def describe_strategy_change(state_dir, game_name: str) -> str:
             return "評価を通過した改善ポリシーでお送りします。"
         return "検証済みの初期ポリシーでお送りします。"
 
-    from .resolver import strategy_path
+    from .resolver import latest_strategy_snapshot, strategy_path
+    from .resolver.improve import read_strategy_for_game
 
     current_path = strategy_path(state_dir, game_name)
-    try:
-        current = json.loads(Path(current_path).read_text(encoding="utf-8"))
-        if not isinstance(current, dict):
-            current = {}
-    except (OSError, ValueError):
-        current = {}
-    history_dir = Path(state_dir) / "resolver" / "history"
-    try:
-        snapshots = sorted(history_dir.glob("*.json"))
-    except OSError:
-        snapshots = []
-    previous = {}
-    if snapshots:
-        try:
-            data = json.loads(snapshots[-1].read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                previous = data
-        except (OSError, ValueError):
-            previous = {}
-    if not previous:
-        return "改善済みの最新戦略でお送りします。"
+    current = read_strategy_for_game(game_name, current_path)
+    previous = latest_strategy_snapshot(state_dir, game_name)
+    if previous is None:
+        return "同じゲームの過去戦略を確認できないため、現在の戦略でお送りします。"
+
+    missing = object()
     changes = []
     for key in sorted(set(previous) | set(current)):
-        old, new = previous.get(key), current.get(key)
-        if old == new or not isinstance(old, (int, float)) or not isinstance(new, (int, float)):
+        old, new = previous.get(key, missing), current.get(key, missing)
+        if old == new:
             continue
-        changes.append(f"{key} {old}→{new}")
+        old_text = "なし" if old is missing else _strategy_value_text(old)
+        new_text = "なし" if new is missing else _strategy_value_text(new)
+        changes.append(f"{key} {old_text}→{new_text}")
     if not changes:
         return "前回と同じ戦略でお送りします。"
     shown = "、".join(changes[:3])
     extra = f"ほか{len(changes) - 3}件" if len(changes) > 3 else ""
     return f"前回から戦略を調整しました（{shown}{extra}）。"
+
+
+def _strategy_value_text(value) -> str:
+    if isinstance(value, bool):
+        return "有効" if value else "無効"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if value is None:
+        return "未設定"
+    text = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return text if len(text) <= 32 else text[:29] + "…"
 
 
 class RetroCornerManager:
