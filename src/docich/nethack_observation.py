@@ -148,14 +148,29 @@ class NethackObservation:
 def _message_may_wrap(raw_lines: list[str], cols: int) -> bool:
     """Reject an ambiguous top line without interpreting map glyphs as prose.
 
-    Only the top row is evidence: lower rows may be walls, corridors or
-    creatures, not message continuations. Keep the one-column terminal margin
-    and reject joined captures wider than cols. This cannot detect arbitrary
-    short word-wrapped questions without message-window/cursor metadata.
+    The message window's own rows are the evidence: a top row that fits below
+    the one-column margin never wraps, and a top row that fills the line is a
+    wrap only when the row directly under it carries the continuation (NetHack
+    pushes the map down by exactly the wrapped rows). Rows further down may be
+    walls, corridors or creatures, so they are never consulted.
+
+    This matters because a message that *fits* the full width is common: the
+    79-column ``welcome to NetHack! ... Samurai.`` banner measured on
+    production 2026-09-23 (cols=80) used to classify as ``unknown``, which
+    blocked every input forever (owner decision 2026-09-23: use the presence
+    of a continuation row instead of the line length alone). A genuinely
+    wrapped question still shows its continuation on the next row and keeps
+    the fail-closed ``unknown`` classification; short word-wrapped questions
+    without markers remain undetectable exactly as before.
     """
     if not raw_lines or not raw_lines[0].rstrip():
         return False
-    return len(raw_lines[0].rstrip()) >= cols - 1
+    if len(raw_lines[0].rstrip()) < cols - 1:
+        return False
+    # The top row fills the line: only a non-blank next row proves a wrap.
+    if len(raw_lines) < 2:
+        return True
+    return bool(raw_lines[1].rstrip())
 
 
 def _prompt_kind(message: str, *, may_wrap: bool) -> str:
