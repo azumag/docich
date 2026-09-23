@@ -421,8 +421,8 @@ def _measured_card_select(screen):
         return None
     # Extra text rows would be an uncalibrated inventory/scroll layout. Mark
     # rows above the known text can contain UNKNOWN and are not inventory.
-    if any(ch != UNKNOWN and 160 <= x < 256 for line in screen.lines
-           if 47 <= line.y <= 111 and line.y not in (55, 71, 87, 103)
+    if any(ch != UNKNOWN and 136 <= x < 256 for line in screen.lines
+           if 32 <= line.y < 127 and line.y not in (55, 71, 87, 103)
            for x, ch in line.cells):
         return None
     if not screen.hand:
@@ -521,7 +521,16 @@ def deploy_step(screen: Screen, mem):
                     resulting_event='selection_planned_not_yet_confirmed', reason=order['note'])
             return [pad('a')]
         move = pad('down' if row['y'] > inventory['selected_y'] else 'up')
-        return _deploy_input(screen, mem, order, [move], '予定切り札へ選択カーソルを移動')
+        selected = next(item for item in inventory['rows'] if item['y'] == inventory['selected_y'])
+        _record(mem, 'sortie_input',
+                **_deploy_context(order, mem, expected_metric={'card': card, 'goal': '予定切り札へカーソルを合わせる'}),
+                screen=screen.kind, card=card,
+                observed_metric={'desired_card': card, 'selected_y': selected['y'],
+                                 'selected_card': selected['card'], 'target_y': row['y'],
+                                 'target_stock': row['stock'], 'remaining': inventory['remaining'],
+                                 'inventory_evidence': 'measured_four_row_card_select'},
+                reason='実測配置の正数在庫と携行余枠を確認し、予定切り札へカーソルを移動')
+        return [move]
     if kind == 'sortie_confirm':
         mem.setdefault('order_context', {}).pop(order['step'], None)
         # Do not infer quantities from uncalibrated suffixes or turn partial

@@ -416,3 +416,58 @@ def test_old_minimal_synthetic_card_label_is_not_a_measured_inventory():
     mem = foot_order_memory()
     assert policy.deploy_step(menu('card_select', ['フットバース']), mem) == []
     assert mem['picked'] == []
+
+
+@pytest.mark.parametrize('y,x,text', [(119, 160, 'クースカン'), (119, 136, 'あ'),
+                                     (39, 136, 'あ'), (39, 160, 'ノリウツール')])
+def test_extra_right_pane_text_outside_measured_rows_rejects_menu(y, x, text):
+    screen = measured_card_select(selected=3)
+    for i, ch in enumerate(text):
+        replace_cell(screen, y, x + 8*i, ch)
+    mem = foot_order_memory()
+    assert policy._measured_card_select(screen) is None
+    assert policy.deploy_step(screen, mem) == []
+    assert mem['picked'] == []
+    assert mem['_records'][-1]['decision'] == 'situation_held'
+
+
+@pytest.mark.parametrize('retry', [False, True])
+def test_calibrated_card_cursor_decision_is_joined_to_action_plan(tmp_path, retry):
+    mem = foot_order_memory()
+    context = {'strategy_variant': 'retry_with_opening_cards',
+               'deviation_reason': '戦闘敗北後の再出撃',
+               'expected_metric': {'goal': '次戦の勝利'}}
+    if retry:
+        mem['retry_context'] = {'1-A2': context}
+    actions = policy.deploy_step(measured_card_select(), mem)
+    assert actions == [policy.pad('down')]
+    assert mem['picked'] == []
+    assert len(mem['_records']) == 1
+    record = mem['_records'][0]
+    assert record['decision'] == 'sortie_input' and record['reason']
+    observed = {'desired_card': 'フットバース', 'selected_y': 55, 'selected_card': 'イッテツーン',
+                'target_y': 103, 'target_stock': 2, 'remaining': 3,
+                'inventory_evidence': 'measured_four_row_card_select'}
+    assert record['observed_metric'] == observed
+    if retry:
+        assert all(record[key] == value for key, value in context.items())
+    else:
+        assert record['strategy_variant'] == 'chart' and record['deviation_reason'] is None
+        assert record['expected_metric'] == {'card': 'フットバース', 'goal': '予定切り札へカーソルを合わせる'}
+    path = Path(__file__).resolve().parents[1] / 'brains/hanjuku/bot.py'
+    spec = importlib.util.spec_from_file_location('sortie_card_move_trace_bot', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    state = {'step': 1115, 'screen_kind': 'card_select', 'policy': mem}
+    identity = {'game': 'hanjuku-hero', 'runtime_id': 'g328-test', 'generation': 328, 'lease_id': 'test-lease'}
+    module.persist(tmp_path, state, mem['_records'], {'hanjuku': identity},
+                   actions=actions, frame_sha256='c'*64)
+    entries = [json.loads(line) for line in (tmp_path/'hanjuku_decisions.jsonl').read_text().splitlines()]
+    plan, decision = entries
+    assert plan['reason_decisions'] == ['sortie_input']
+    assert plan['decision_id'] == decision['decision_id'] == state['decision_trace']['decision_id']
+    assert plan['frame_sha256'] == decision['frame_sha256'] == 'c'*64
+    assert decision['observed_metric'] == observed
+    for key in ('chart_step', 'strategy_variant', 'deviation_reason', 'expected_metric'):
+        assert plan[key] == decision[key] == record[key]
+    assert all(plan[key] == decision[key] == value for key, value in identity.items())
