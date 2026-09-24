@@ -1,8 +1,8 @@
 """Loopback-only, latest-frame HTTP surface for the NetHack presentation.
 
 This module is a library only. It does not install or start a system service;
-the runtime-scoped presentation supervisor owns its lifetime in the follow-up
-integration stage.
+the generation-scoped tile presentation supervisor owns it when tiles mode is
+explicitly selected.
 """
 from __future__ import annotations
 
@@ -37,6 +37,7 @@ class NethackSpectatorFrameServer:
         *,
         snapshots: SnapshotStore,
         presentation_epoch: str,
+        window_title: str = "NetHack",
         poll_interval_ms: int = 500,
         stale_after_ms: int = 3000,
         now_monotonic=None,
@@ -58,6 +59,7 @@ class NethackSpectatorFrameServer:
             runtime_id=initial.runtime.runtime_id,
             generation=initial.runtime.generation,
             presentation_epoch=presentation_epoch,
+            window_title=window_title,
             poll_interval_ms=poll_interval_ms,
             stale_after_ms=stale_after_ms,
         ).encode("utf-8")

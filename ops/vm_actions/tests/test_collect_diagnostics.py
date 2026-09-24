@@ -917,6 +917,78 @@ class NethackPaneTests(unittest.TestCase):
         self.assertIn("nethack", entry["windows"])
 
 
+class NethackTilesDiagnosticTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="vmops-nethack-tiles-")
+        self.state = Path(self.tmp.name) / "run"
+        self.state.mkdir(parents=True)
+        self.runtime = {
+            "game": "nethack",
+            "runtime_id": "g9-abcdef",
+            "generation": 9,
+            "adapter_session": "docich-game-g9",
+            "game_window": "game-g9",
+        }
+        (self.state / "game_switch.json").write_text(
+            json.dumps({"phase": "ready", "active": self.runtime}), encoding="utf-8"
+        )
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _manifest_path(self):
+        path = self.state / "runtimes" / self.runtime["runtime_id"] / "nethack_tiles.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def test_manifest_projects_only_fixed_sanitized_health(self):
+        module = load_collector()
+        self._manifest_path().write_text(json.dumps({
+            "schema_version": 1,
+            "status": "fallback_tty",
+            "mode": "tty",
+            "runtime_id": "g9-abcdef",
+            "generation": 9,
+            "adapter_session": "docich-game-g9",
+            "game_window": "game-g9",
+            "owner_pid": 12345,
+            "browser_pid": 12346,
+            "argv": "DO-NOT-PUBLISH",
+            "profile_path": "DO-NOT-PUBLISH",
+            "reason": "projection_failed",
+            "cleanup_complete": False,
+            "updated_at": 100,
+            "raw_error": "DO-NOT-PUBLISH",
+        }), encoding="utf-8")
+        entry = module._collect_nethack_tiles(self.state, 130)
+        self.assertEqual(entry["status"], "fallback_tty")
+        self.assertEqual(entry["mode"], "tty")
+        self.assertEqual(entry["reason"], "projection_failed")
+        self.assertTrue(entry["active_runtime"])
+        self.assertEqual(entry["age_sec"], 30)
+        self.assertFalse(entry["cleanup_complete"])
+        self.assertNotIn("DO-NOT-PUBLISH", json.dumps(entry))
+        self.assertNotIn("pid", json.dumps(entry))
+
+    def test_old_runtime_manifest_is_never_attributed_to_active_generation(self):
+        module = load_collector()
+        stale = {
+            "schema_version": 1,
+            "status": "tiles_active",
+            "mode": "tiles",
+            "runtime_id": "g8-old",
+            "generation": 8,
+            "adapter_session": "docich-game-g8",
+            "game_window": "game-g8",
+            "reason": "browser_exited",
+        }
+        self._manifest_path().write_text(json.dumps(stale), encoding="utf-8")
+        entry = module._collect_nethack_tiles(self.state, 130)
+        self.assertFalse(entry["active_runtime"])
+        self.assertTrue(entry["stale_runtime"])
+        self.assertEqual(entry["status"], "unknown")
+
+
 class RotationTimerUnitProjectionTests(unittest.TestCase):
     """The corner_rotation_timer projection follows the reviewed unit rename."""
 

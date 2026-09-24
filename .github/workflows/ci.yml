@@ -9,6 +9,32 @@ permissions:
   contents: read
 
 jobs:
+  nethack-tiles-gui-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Install isolated X11 smoke dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg tmux xterm xdotool xvfb
+      - name: Require a real Chromium-family browser
+        run: |
+          for name in chromium chromium-browser google-chrome google-chrome-stable; do
+            if command -v "$name" >/dev/null 2>&1; then
+              browser="$name"
+              break
+            fi
+          done
+          test -n "${browser:-}" || { echo "Chromium-family browser is required" >&2; exit 1; }
+          PYTHONPATH=src python3 -c 'from docich.nethack_tiles_supervisor import browser_binary; assert browser_binary(), "Chromium-family browser is required"'
+      - name: Install test dependencies
+        run: python3 -m pip install -r requirements-test.txt
+      - name: Run isolated NetHack tile GUI smoke
+        run: PYTHONPATH=src python3 -m pytest -q tests/test_nethack_tiles_gui_smoke.py
+
   feature-regressions:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -62,6 +88,7 @@ jobs:
           tests/test_nethack_corner.py tests/test_nethack_corner_p5.py tests/test_nethack_corner_force_recover.py
           tests/test_nethack_run.py tests/test_nethack_run_recovery.py
           tests/test_nethack_spectator.py tests/test_nethack_spectator_live.py
+          tests/test_nethack_spectator_server.py
           tests/test_nethack_observation.py tests/test_nethack_policy.py tests/test_nethack_exploration.py
           tests/test_nethack_progress.py
           tests/test_nethack_narration.py
@@ -96,7 +123,8 @@ jobs:
           tests/test_game_switch.py tests/test_coordinator.py tests/test_coordinator_source_fence.py
           tests/test_coordinator_adapter.py tests/test_cli_coordinator.py
           tests/test_cli_adapter.py
-          tests/test_nethack_adapter.py tests/test_nethack_save_confirmation.py
+          tests/test_nethack_adapter.py tests/test_nethack_tiles_supervisor.py
+          tests/test_nethack_save_confirmation.py
           tests/test_nethack_boundary_diag.py
           tests/test_soren91_graceful_stop.py
       - name: Round-boundary contract

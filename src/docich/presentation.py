@@ -147,6 +147,11 @@ def _parser() -> argparse.ArgumentParser:
     # Used by RetroArch only: dbus-run-session owns the process group, but
     # the X window belongs to its child. Search only the private X server.
     parser.add_argument('--window-pattern')
+    # Some runtime-owned viewers (NetHack's tile shell) may replace their X11
+    # window with a native TTY fallback. Rebind the projection only when the
+    # exact named window changes; never restart repeatedly against one failed
+    # window.
+    parser.add_argument('--rebind-window', action='store_true')
     parser.add_argument('--runtime-state')
     parser.add_argument('command', nargs=argparse.REMAINDER)
     return parser
@@ -158,6 +163,8 @@ def main(argv=None) -> int:
     command = args.command[1:] if args.command[:1] == ['--'] else args.command
     if not command or min(args.width, args.height) <= 0:
         parser.error('command and positive presentation dimensions are required')
+    if args.rebind_window and not args.window_pattern:
+        parser.error('--rebind-window requires --window-pattern')
     children = []
 
     def stop(_sig, _frame):
@@ -173,6 +180,7 @@ def main(argv=None) -> int:
         return process
 
     display_read_fd = None
+    viewer = None
     try:
         read_fd, write_fd = os.pipe()
         display_read_fd = read_fd
@@ -215,6 +223,9 @@ def main(argv=None) -> int:
         if args.audio_sink:
             source_env['PULSE_SINK'] = str(args.audio_sink)
             source_env.setdefault('SDL_AUDIODRIVER', 'pulseaudio')
+        if args.runtime_state and args.rebind_window:
+            _write_state(args.runtime_state, status='starting', display=f':{number}',
+                         groups=[child.pid for child in children])
         viewer = launch(command, env=source_env)
         if args.audio_volume_percent is not None and args.runtime_state:
             evidence = Path(args.runtime_state).with_name('audio_volume.json')
@@ -233,45 +244,55 @@ def main(argv=None) -> int:
                     evidence.write_text(json.dumps({'status': 'setup_failed', 'at': time.time()}))
                 except OSError:
                     pass
-        deadline = time.monotonic() + args.viewer_wait_sec
-        window = ''
-        while time.monotonic() < deadline and viewer.poll() is None:
+        def find_window():
             selector = (['--name', args.window_pattern] if args.window_pattern
                         else ['--pid', str(viewer.pid)])
             found = subprocess.run(
                 ['xdotool', 'search', '--onlyvisible', *selector],
                 env=source_env, capture_output=True, text=True, timeout=2)
-            if found.returncode == 0 and found.stdout.strip():
-                windows = found.stdout.strip().splitlines()
-                if args.window_pattern and len(windows) != 1:
-                    raise RuntimeError('native game window is ambiguous')
-                window = windows[0]
+            if found.returncode != 0 or not found.stdout.strip():
+                return ''
+            windows = found.stdout.strip().splitlines()
+            if args.window_pattern and len(windows) != 1:
+                raise RuntimeError('native game window is ambiguous')
+            return windows[0]
+
+        deadline = time.monotonic() + args.viewer_wait_sec
+        window = ''
+        while time.monotonic() < deadline and viewer.poll() is None:
+            window = find_window()
+            if window:
                 break
             time.sleep(0.1)
         if not window:
             raise RuntimeError('native game viewer did not appear')
-        geometry = subprocess.check_output(
-            ['xdotool', 'getwindowgeometry', '--shell', window],
-            env=source_env, text=True, timeout=2)
-        dimensions = dict(re.findall(r'^(WIDTH|HEIGHT)=(\d+)$', geometry, re.M))
-        width, height = int(dimensions['WIDTH']), int(dimensions['HEIGHT'])
-        if width > 4096 or height > 2160:
-            raise RuntimeError('native viewer exceeds private display capacity')
-        cell_note = '' if args.cell_stretch is None else f' cell-stretch={args.cell_stretch:g}'
-        print(f'native={width}x{height} output={args.width}x{args.height} fit=contain{cell_note}',
-              flush=True)
         output_env = dict(os.environ, DISPLAY=args.display)
-        player = launch([
-            'ffplay', '-loglevel', 'warning', '-nostats', '-an', '-sn',
-            '-f', 'x11grab', '-framerate', '15', '-draw_mouse', '0',
-            '-window_id', window, '-video_size', f'{width}x{height}',
-            '-i', f':{number}',
-            '-vf', contain_filter(args.width, args.height,
-                                  cell_stretch=args.cell_stretch or 1.0),
-            '-noborder', '-window_title', args.title,
-            '-left', str(args.x), '-top', str(args.y),
-            '-x', str(args.width), '-y', str(args.height),
-        ], env=output_env)
+
+        def start_projection(window_id):
+            geometry = subprocess.check_output(
+                ['xdotool', 'getwindowgeometry', '--shell', window_id],
+                env=source_env, text=True, timeout=2)
+            dimensions = dict(re.findall(r'^(WIDTH|HEIGHT)=(\d+)$', geometry, re.M))
+            width, height = int(dimensions['WIDTH']), int(dimensions['HEIGHT'])
+            if width > 4096 or height > 2160:
+                raise RuntimeError('native viewer exceeds private display capacity')
+            cell_note = '' if args.cell_stretch is None else f' cell-stretch={args.cell_stretch:g}'
+            print(f'native={width}x{height} output={args.width}x{args.height} fit=contain{cell_note}',
+                  flush=True)
+            process = launch([
+                'ffplay', '-loglevel', 'warning', '-nostats', '-an', '-sn',
+                '-f', 'x11grab', '-framerate', '15', '-draw_mouse', '0',
+                '-window_id', window_id, '-video_size', f'{width}x{height}',
+                '-i', f':{number}',
+                '-vf', contain_filter(args.width, args.height,
+                                      cell_stretch=args.cell_stretch or 1.0),
+                '-noborder', '-window_title', args.title,
+                '-left', str(args.x), '-top', str(args.y),
+                '-x', str(args.width), '-y', str(args.height),
+            ], env=output_env)
+            return process, width, height
+
+        player, width, height = start_projection(window)
         _write_state(args.runtime_state, status='ready', display=f':{number}',
                      window=window, width=width, height=height,
                      groups=[child.pid for child in children])
@@ -280,12 +301,59 @@ def main(argv=None) -> int:
         # ordinary TERM/HUP handling remains responsive for owned cleanup.
         watched = children[:-1] if args.runtime_state else children
         projection_failed = False
+        projection_failed_at = None
+        missing_since = None
         while all(process.poll() is None for process in watched):
             if args.runtime_state and player.poll() is not None and not projection_failed:
                 _write_state(args.runtime_state, status='presentation_failed',
                              display=f':{number}', window=window, width=width, height=height,
                              groups=[child.pid for child in children])
                 projection_failed = True
+                projection_failed_at = time.monotonic()
+            if args.rebind_window:
+                current_window = find_window()
+                now = time.monotonic()
+                if not current_window:
+                    missing_since = now if missing_since is None else missing_since
+                    if (args.runtime_state and not projection_failed
+                            and now - missing_since >= 0.75):
+                        _write_state(args.runtime_state, status='presentation_failed',
+                                     display=f':{number}', window=window, width=width,
+                                     height=height, groups=[child.pid for child in children])
+                        projection_failed = True
+                        projection_failed_at = now
+                else:
+                    missing_since = None
+                    # A live source window changing XID (browser -> TTY) is a
+                    # normal fallback transition. Rebind once to that new
+                    # identity. After a projection failure, leave a short
+                    # observation window for the owning supervisor to react;
+                    # a dead player on the same XID is never restarted.
+                    can_rebind = (not projection_failed or projection_failed_at is None
+                                  or now - projection_failed_at >= 0.75)
+                    if current_window != window and can_rebind:
+                        if player.poll() is None:
+                            try:
+                                os.killpg(player.pid, signal.SIGTERM)
+                            except ProcessLookupError:
+                                pass
+                            try:
+                                player.wait(timeout=2)
+                            except subprocess.TimeoutExpired:
+                                try:
+                                    os.killpg(player.pid, signal.SIGKILL)
+                                except ProcessLookupError:
+                                    pass
+                                player.wait()
+                        window = current_window
+                        player, width, height = start_projection(window)
+                        projection_failed = False
+                        projection_failed_at = None
+                        if args.runtime_state:
+                            _write_state(args.runtime_state, status='ready',
+                                         display=f':{number}', window=window,
+                                         width=width, height=height,
+                                         groups=[child.pid for child in children])
             time.sleep(0.2)
         return player.returncode or 1
     finally:
@@ -296,7 +364,7 @@ def main(argv=None) -> int:
                 pass
         for process in reversed(children):
             try:
-                process.wait(timeout=3)
+                process.wait(timeout=8 if args.rebind_window and process is viewer else 3)
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
