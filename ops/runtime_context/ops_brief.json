@@ -1,11 +1,11 @@
 {
-  "output_sha256": "f384668d4dd88bf17e4afc49b9ac0536fd44b5a717dac628b3831564ca1f4f94",
+  "output_sha256": "ee57c80e8cfa735a7ab976b3a2f1b357c114f6c297207c13a572e3a9f1c6078a",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "93693f685a0853bbc88853821c24c27605aeb78372dfa0aa0e49dc5e463b36f3",
+  "source_sha256": "4573283a546d56f1dc90831b58aae65915173fac3f2fc0d1f8a7085f4ab0a532",
   "topics": [
-    "半熟英雄: 海上A連打復旧・JEV no-hold・チャート実況（#1104反映、ライブ未実測）",
-    "NetHack latest-main sync and review gate",
-    "VM高負荷: 孤立moon-buggy停止と設定読込fork削減、残負荷を追跡"
+    "Moon Buggy ABBA #1103 main/production release; next candidate pending",
+    "半熟英雄: 前回ラン実績を開始案内に反映（#1099 main/VM配備済み、読み上げ受入待ち）",
+    "半熟英雄: 海上A連打復旧・JEV no-hold・チャート実況（#1104反映、ライブ未実測）"
   ]
 }
