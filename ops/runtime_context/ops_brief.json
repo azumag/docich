@@ -1,11 +1,11 @@
 {
-  "output_sha256": "ee57c80e8cfa735a7ab976b3a2f1b357c114f6c297207c13a572e3a9f1c6078a",
+  "output_sha256": "942aa8573541284bc4f4d7add94861ecb4701da428c7d7128506fcd24c23b0ba",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "b7eddf548290f051cac963a5c93bec8b9cc7dc5c413ab7de29945dbbc296ad8a",
+  "source_sha256": "1feebe024674b9cf547ba607045dea33ff438633686089ea6c4d1a6d448aad64",
   "topics": [
+    "Pac-Man ABBA再開後の実測",
     "Moon Buggy ABBA #1103 main/production release; next candidate pending",
-    "半熟英雄: 前回ラン実績を開始案内に反映（#1099 main/VM配備済み、読み上げ受入待ち）",
-    "半熟英雄: 海上A連打復旧・JEV no-hold・チャート実況（#1104反映、ライブ未実測）"
+    "半熟英雄: 前回ラン実績を開始案内に反映（#1099 main/VM配備済み、読み上げ受入待ち）"
   ]
 }
