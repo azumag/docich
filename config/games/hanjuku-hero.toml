@@ -32,8 +32,8 @@ script_bot = true
 # チャート外(#1085): 出撃可能な指示が無い時だけ、操作経路の外でLLMが独自order列を非同期生成する。
 # 出力は城名・切り札名・unlock条件を実測済みチャート事実で検証してから採用し、キー送信は決定的botのみ。
 # agents が非空であることを課金LLM実行の合意とみなす（DOCICH_ALLOW_REAL_AI=1 を付与）。
-# interim_jev: 調整チャート待ちの間、JEV(jev-1.13.0)が決定的候補(ボス以外の未占領城の再攻撃/hold)から
-# ラベルを1つ選ぶ。失敗・低確信・候補外は無入力ホールド。1状況あたり最大2回。
+# interim_jev: 調整チャート待ちの間、JEV(jev-1.13.0)が決定的候補(ボス以外の未占領城の再攻撃)から
+# ラベルを1つ選ぶ。hold(見送り)は無い。失敗・低確信・候補外は最初の攻撃候補で必ず出撃。JEV確認は1状況あたり最大2回。
 [hanjuku.chart_adjust]
 enabled = true
 agents = "opencode-go:deepseek-v4.1-flash,amd:DeepSeek-V4-Flash,opencode-go:deepseek-v4-flash,opencode-go:muse-spark-1.3-contributor"

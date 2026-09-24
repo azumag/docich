@@ -6,8 +6,8 @@ claims the latest ``hanjuku_chart_adjust_request.json`` and starts at most one
 daemon thread (which keeps the lock until the answer is saved, so agent and
 corner observers never generate the same request twice in parallel) that asks the configured AI chain for a complete order list.
 The answer is accepted only through ``hanjuku_chart_adjust.save`` (strict
-validation against measured chart facts). The bot keeps holding (or runs a
-JEV interim order) until a valid answer lands; nothing here sends input.
+validation against measured chart facts). The bot keeps running a JEV interim
+sortie (no hold) until a valid answer lands; nothing here sends input.
 """
 from __future__ import annotations
 
