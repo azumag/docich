@@ -3183,8 +3183,10 @@ class GameSwitchCoordinator:
             or state.get("request_id") != acceptance.request_id
             or state.get("active") != dict(old_active)
         ):
-            raise RoundBoundaryStateChangedError(
-                "round boundary失敗時にcanonical identityが変化しています"
+            return self._round_boundary_stale_result(
+                acceptance,
+                target,
+                "round boundary失敗処理前にcanonical identityが変化しています",
             )
 
         if cancel_boundary:
