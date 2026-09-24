@@ -11,6 +11,8 @@ Refs #859 / #490。PR1は復帰後の観測証跡を保存する。自動改善�
 - `build_post_restore_source`: run/session、終端xlogの時刻・所有関係、起動由来、終了理由を照合し、上限付きのsourceを作る。save継続、manual、operator stop、不明終端は自動改善対象にしない。
 - `validate_restoration_summary`: 保存用の固定フィールドだけを受理し、生のargv/例外/秘密情報を混入させない。
 
+新規runの `birth_not_before_epoch` は、NetHack起動要求の直前に保存する。終了時はxlogのbyte baselineより後にある対象playerの終端行が一件だけで、`starttime <= endtime <= finish time` とbirth下限を満たす場合だけ `identity_verified=true` にする。NetHack 3.6.7の[`topten.c`](https://sources.debian.org/src/nethack/3.6.7-1/src/topten.c/)はxlog `starttime` にキャラクター誕生時刻 (`ubirthday`) を書くため、Coordinatorがprocess開始を記録した後になる場合がある。既存saveの採用、既存runtimeの採用、複数行、時刻欠落・不整合は未検証のままにする。実VMのxlog writer/pathが正しいことは別途 #753 で確認する。
+
 Coordinatorは成功したswitch/stopで、実際に停止を確認した旧runtimeの `game/generation/runtime_id` と `source_cleanup_completed=true` を同じrequest receiptに記録する。失敗・rollback・旧形式のreceiptには成功証跡を補完しない。
 
 コーナーは開始前に `scheduled` / `rotation` / `manual` の由来とrequest IDを固定し、rotation由来は既存の予約台帳と照合する。台帳が読めない、または一致しないときは `unknown` にする。開始したsessionには由来・run ID・canonical runtimeを記録する。復帰後に当該receiptとcanonical状態を照合できた場合だけ、RunStoreの終端/save記録と同じ書込みで `post_restore_source` を保存する。履歴や証跡の失敗は復帰済みゲームを巻き戻さない。
@@ -40,7 +42,8 @@ source tupleはCoordinatorが実際に停止対象を所有・確認する境界
 - [x] RunStoreの既存current runとsessionへsourceを同時保存し、save継続は改善対象外にする。
 - [ ] queued/recovery/rollbackと次runの競合を含む結合回帰を追加する。
 - [x] 実Coordinator経路でコーナー終了・復帰・RunStoreへのsource保存を検証し、後続sessionの履歴保存失敗でも復帰成功を取り消さず、先行sessionのsourceを誤帰属しないことを確認する。
-- [ ] xlogfile終端行と当該runの同一性を確定する。現状は `identity_verified` が無いため、terminal runでも `eligibility=terminal_unverified` となる。
+- [x] RunStoreでbyte baseline後の一意なplayer行と時刻下限を照合し、証拠が揃うrunだけ `identity_verified=true` にする。
+- [ ] 実VMでxlogのcanonical path・writerとterminal行の発生を確認する（#753）。証拠がない間はterminal sourceを有効にしない。
 - [ ] 旧ゲーム改善停止規約と将来の隔離評価の例外をレビューする。このコミットでは例外を有効化しない。
 
 ## 検証

@@ -239,8 +239,12 @@ def build_post_restore_source(
         confirmed = (
             terminal.get("identity_verified") is True
             and _integer(birth_floor) and _integer(start) and _integer(end)
-            and birth_floor <= start <= int(_time(run.get("started_at")).timestamp())
-            and start <= end <= int(_time(session.get("ended_at")).timestamp())
+            # starttime is NetHack's character-birth time. It can be later
+            # than the coordinator's process-start record, so bind it to the
+            # trusted pre-start floor and the terminal evidence instead.
+            and birth_floor <= int(_time(run.get("started_at")).timestamp())
+            and birth_floor <= start <= end
+            and end <= int(_time(session.get("ended_at")).timestamp())
             and end >= int(_time(session.get("started_at")).timestamp())
             and end <= int(_time(restoration.get("completed_at")).timestamp())
             and run.get("recovered_existing_save") is False

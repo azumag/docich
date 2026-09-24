@@ -435,6 +435,10 @@ class NethackRunStore:
                 "run_id": str(uuid.uuid4()),
                 "expected_expedition": expedition,
                 "xlog_offset": self._xlog_offset(),
+                # NetHack sets xlog starttime when the character is born, which
+                # may be after the terminal process/runtime has started. Keep
+                # the earlier trusted start request as its lower time bound.
+                "birth_not_before_epoch": int(now.timestamp()) if kind == "new" else None,
                 "dump_baseline_mtime_ns": self._dump_baseline(),
             }
 
@@ -473,9 +477,17 @@ class NethackRunStore:
                 ):
                     raise NethackRunError("expedition counterがstart中に変更されました")
                 xlog_offset = probe.get("xlog_offset")
+                birth_not_before_epoch = probe.get("birth_not_before_epoch")
                 dump_baseline = probe.get("dump_baseline_mtime_ns")
                 if type(xlog_offset) is not int or xlog_offset < 0:
                     raise NethackRunError("xlog baselineが不正です")
+                if kind == "new":
+                    if (type(birth_not_before_epoch) is not int
+                            or birth_not_before_epoch < 0
+                            or birth_not_before_epoch > int(now.timestamp())):
+                        raise NethackRunError("NetHack birth timeの下限が不正です")
+                elif birth_not_before_epoch is not None:
+                    raise NethackRunError("新規run以外にbirth time下限を設定できません")
                 if type(dump_baseline) is not int or dump_baseline < 0:
                     raise NethackRunError("dump baselineが不正です")
                 run = {
@@ -489,6 +501,7 @@ class NethackRunStore:
                     "last_started_at": now.isoformat(),
                     "last_finished_at": None,
                     "xlog_offset": xlog_offset,
+                    "birth_not_before_epoch": birth_not_before_epoch,
                     "dump_baseline_mtime_ns": dump_baseline,
                     "recovered_existing_save": kind == "recovered_save",
                     "adopted_active_runtime": kind == "adopted_active_runtime",
@@ -579,13 +592,37 @@ class NethackRunStore:
                 records.append(record)
         if not records:
             return None, "no-new-player-xlog-record"
-        return records[-1], None
+        if len(records) != 1:
+            return None, "ambiguous-new-player-xlog-record"
+        return records[0], None
 
     @staticmethod
-    def _terminal_payload(record: dict[str, str]) -> dict[str, object]:
+    def _terminal_identity_verified(
+        record: dict[str, str], run: dict[str, object], now: dt.datetime
+    ) -> bool:
+        """Prove a unique new xlog row fits this tracked, newly born run."""
+        birth_floor = run.get("birth_not_before_epoch")
+        start = _int_field(record, "starttime")
+        end = _int_field(record, "endtime")
+        if (
+            run.get("recovered_existing_save") is not False
+            or run.get("adopted_active_runtime") is not False
+            or type(birth_floor) is not int
+            or type(start) is not int
+            or type(end) is not int
+        ):
+            return False
+        now_epoch = int(now.timestamp())
+        return 0 <= birth_floor <= start <= end <= now_epoch
+
+    @staticmethod
+    def _terminal_payload(
+        record: dict[str, str], *, identity_verified: bool
+    ) -> dict[str, object]:
         bits = _achievement_bits(record)
         return {
             "source": "xlogfile",
+            "identity_verified": identity_verified,
             "death": record.get("death"),
             "points": _int_field(record, "points"),
             "turns": _int_field(record, "turns"),
@@ -664,7 +701,10 @@ class NethackRunStore:
                 }
             else:
                 status = classify_terminal_record(record)
-                terminal = self._terminal_payload(record)
+                terminal = self._terminal_payload(
+                    record,
+                    identity_verified=self._terminal_identity_verified(record, run, now),
+                )
                 run["status"] = status
                 run["terminal"] = terminal
                 run["score"] = terminal["points"]
