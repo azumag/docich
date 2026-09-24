@@ -1,11 +1,11 @@
 {
-  "output_sha256": "0a95d28ef0028698729faf75b7efc93ab898455be612da2211c24d10eb8c4db0",
+  "output_sha256": "c7284040247d4ca525d3f536ae8bb72cd1880a61a2c6621a99c3194738b77ff7",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "2d50972028113b65c2001df216a74286f271eff6f0d30f3b33bb10fd58c1a6b0",
+  "source_sha256": "ea06bb03072c799554bb2a81a7927cd75fcf8e2f47f847ff5509396a6f605640",
   "topics": [
-    "PAPER WebUI手動停止の稼働owner振分けをmain・VMへ反映（実PAPER受入待ち）",
-    "半熟英雄: 原典戦術6パターンとの突合・source_pattern 付与（main/VM反映済み、ライブ実測待ち）",
-    "半熟英雄: 敵召喚たまご応戦＋チャート準拠の独自判断・経験記憶（ローカル実装、未commit・未実機）"
+    "半熟英雄: 2話以降チャート実装・計測ゲート・gcgx参照表（ローカル未commit）",
+    "reader/frame契約をPR #1127として提出（review/CI待ち）",
+    "PAPER WebUI手動停止の稼働owner振分けをmain・VMへ反映（実PAPER受入待ち）"
   ]
 }

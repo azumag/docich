@@ -246,7 +246,9 @@ def _ready(order, mem) -> bool:
     if after[0] == 'captured':
         return after[1] in captured
     if after[0] == 'all_captured':
-        chapter_castles = set(chart.castles(mem.get('chapter') or 1)) - {'ほんじょう', 'けっかい'}
+        chapter = mem.get('chapter') or 1
+        chapter_castles = set(chart.castles(chapter)) - {
+            chart.home_castle(chapter), chart.boss_castle(chapter)}
         return chapter_castles <= captured
     return False
 
@@ -281,7 +283,8 @@ def _order_for_step(mem, step):
 
 
 def _is_boss_order(order, mem) -> bool:
-    return bool(order) and mem.get('chapter') == 1 and order.get('target') == BOSS_CASTLE
+    chapter = mem.get('chapter') or 0
+    return bool(order) and order.get('target') == chart.boss_castle(chapter)
 
 
 def _plan_pending(mem) -> bool:
@@ -337,7 +340,6 @@ def _tactics(mem, step):
 
 INTERIM_LIMIT = 2             # JEV answers per off-chart situation
 INTERIM_MIN_CONFIDENCE = 0.7
-BOSS_CASTLE = 'けっかい'
 
 
 def interim_candidates(mem) -> dict:
@@ -350,18 +352,20 @@ def interim_candidates(mem) -> dict:
     """
     chapter = mem.get('chapter') or 0
     castles = chart.castles(chapter)
-    owned = set(mem.get('captured') or []) | {'ほんじょう'}
+    home = chart.home_castle(chapter)
+    boss = chart.boss_castle(chapter)
+    owned = set(mem.get('captured') or []) | {home}
     out, seen = {}, set()
     for order in chart.orders(chapter):
         target = order['target']
-        if target in owned or target == BOSS_CASTLE or target not in castles:
+        if target in owned or target == boss or target not in castles:
             continue
         if (order['general'], target) in seen:
             continue
         seen.add((order['general'], target))
         out[f'attack_{len(out) + 1}'] = {
             'general': order['general'], 'target': target, 'cards': [],
-            'source': order['source'] if order['source'] in owned else 'ほんじょう',
+            'source': order['source'] if order['source'] in owned else home,
             'after': None, 'note': f"暫定: {order['general']}で{target}を再攻撃"}
     return out
 
@@ -840,7 +844,8 @@ def deploy_step(screen: Screen, mem):
                 move = menu_to(screen, present[0])
                 return [pad('a')] if move == 'here' else [move] if move else []
             if not mem.get('source_override', {}).get(order['step']):
-                mem.setdefault('source_override', {})[order['step']] = 'ほんじょう'
+                mem.setdefault('source_override', {})[order['step']] = chart.home_castle(
+                    mem.get('chapter') or 1)
                 mem.setdefault('general_override', {}).pop(order['step'], None)
                 mem['orders'][order['step']] = 'pending'
                 _record(mem, 'order_source_changed', strategy_variant='source_fallback',
@@ -1303,9 +1308,12 @@ def battle_end(mem, next_kind):
                 reason='独自判断の結果を経験記憶へ反映')
     step = cur.get('step')
     boss_order = _order_for_step(mem, step)
+    chapter = mem.get('chapter') or 0
+    boss_name = chart.BOSSES.get(chapter)
+    boss_cell = chart.boss_castle(chapter)
     boss_attempt = (_is_boss_order(boss_order, mem)
-                    and cur.get('enemy') == chart.BOSSES.get(1)
-                    and cur.get('castle') == 'けっかい' and cur.get('side') == 'attack'
+                    and cur.get('enemy') == boss_name
+                    and cur.get('castle') == boss_cell and cur.get('side') == 'attack'
                     and cur.get('entry_evidence') == 'measured_boss_entry')
     if outcome == 'loss' and boss_attempt:
         retries = mem.setdefault('retries', {})
@@ -1318,7 +1326,7 @@ def battle_end(mem, next_kind):
                        'deviation_reason': 'ボス戦のHP敗北を確認。主人公と既定切り札を再確認して再試行',
                        'expected_metric': {'general': boss_order['general'],
                                            'cards': list(boss_order['cards']),
-                                           'goal': 'クイーン戦勝利'}}
+                                           'goal': f'{boss_name or "ボス"}戦勝利'}}
             mem.setdefault('retry_context', {})[step] = context
             _record(mem, 'order_retry', chart_step=step, **context,
                     observed_metric={'outcome': outcome, 'enemy_hp': enemy_hp, 'ally_hp': ally_hp},
@@ -1327,7 +1335,7 @@ def battle_end(mem, next_kind):
             mem.setdefault('orders', {})[step] = 'failed'
             _record(mem, 'situation_held', chart_step=step, strategy_variant='boss_retry_exhausted',
                     observed_metric={'retries': retries[step]}, reason='ボス再試行の上限に到達したため保留')
-    elif outcome == 'loss' and (_is_boss_order(boss_order, mem) or cur.get('enemy') == chart.BOSSES.get(1)):
+    elif outcome == 'loss' and (_is_boss_order(boss_order, mem) or cur.get('enemy') == boss_name):
         _record(mem, 'situation_held', chart_step=step, strategy_variant='boss_entry_unclassified',
                 observed_metric={'castle': castle, 'side': cur.get('side'),
                                  'entry_evidence': cur.get('entry_evidence')},
@@ -1384,23 +1392,24 @@ def message_step(screen: Screen, mem):
     boss_entry = re.fullmatch(r'([^\ufffd\s]+)しょうぐんがボスじょうにせめこんだ!!', text)
     if boss_entry:
         general = boss_entry.group(1)
+        boss_cell = chart.boss_castle(mem.get('chapter') or 0)
         current = mem.get('attack') or {}
-        step, match = _match_sortie(mem, BOSS_CASTLE, general)
-        if (match != 'matched' and current.get('castle') == BOSS_CASTLE
+        step, match = _match_sortie(mem, boss_cell, general)
+        if (match != 'matched' and current.get('castle') == boss_cell
                 and current.get('general') == general
                 and current.get('entry_evidence') == 'measured_boss_entry'):
             return [pad('a')]              # same entry text still on screen
-        # Base 1-B1 or an adjusted/interim boss order (generation-scoped id):
-        # the launched order itself must target the boss castle.
+        # Base boss order or an adjusted/interim boss order (generation-scoped id):
+        # the launched order itself must target this chapter's boss castle.
         if not _is_boss_order(_order_for_step(mem, step), mem):
             _record(mem, 'situation_held', screen='boss_attack_started',
                     observed_metric={'message': text, 'sortie_match': match},
                     reason='実測ボス突入文を読んだが出撃注文と一致しないため保留')
             return []
         _bind_sortie(mem, step)
-        mem['attack'] = {'general': general, 'castle': BOSS_CASTLE, 'side': 'attack', 'step': step,
+        mem['attack'] = {'general': general, 'castle': boss_cell, 'side': 'attack', 'step': step,
                          'entry_evidence': 'measured_boss_entry'}
-        _record(mem, 'attack_observed', chart_step=step, general=general, castle=BOSS_CASTLE,
+        _record(mem, 'attack_observed', chart_step=step, general=general, castle=boss_cell,
                 expected_metric={'general': general}, observed_metric={'general': general, 'message': text},
                 reason='実測済みのボス城突入文と出撃将軍が一致')
         return [pad('a')]
@@ -1493,7 +1502,6 @@ def _recalc_soldiers(screen, mem, shop):
 
 
 def _plan(mem, header):
-    spec = chart.purchases(mem.get('chapter') or 0)
     key = _month_key(header)
     shop = mem.get('shop')
     if shop and shop.get('key') == key:
@@ -1501,7 +1509,10 @@ def _plan(mem, header):
     adjusted = _adjusted_plan(mem, header, key) if header else None
     if adjusted:
         return adjusted
-    if not spec or key != f'{spec["month"][0]}-{spec["month"][1]}':
+    spec = None
+    if header:
+        spec = chart.purchase_for(mem.get('chapter') or 0, header['year'], header['month'])
+    if not spec:
         return None
     gold = header['gold']
     if gold >= spec['chart_gold']:
@@ -1664,9 +1675,11 @@ def quantity_step(screen: Screen, mem, soldiers=False):
         return [pad('up' if (want_ones - ones) % 10 <= 5 else 'down')]
     if soldiers:
         shop['soldiers_done'] = True
+        year, month = (int(p) for p in shop.get('key', '0-0').split('-'))
+        expected = (chart.purchase_for(mem.get('chapter') or 0, year, month) or {}).get('soldiers')
         _record(mem, 'soldier_refill', qty=value, chart_step='1-month',
                 strategy_variant=shop.get('variant', 'chart'),
-                expected_metric=(chart.purchases(mem.get('chapter') or 0) or {}).get('soldiers'),
+                expected_metric=expected,
                 observed_metric=value, reason='兵士補充数を確認して確定')
     return [pad('a')]
 

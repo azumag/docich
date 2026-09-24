@@ -31,7 +31,8 @@ def build_request(mem, candidates: dict, model: str) -> dict:
         criteria[label] = (f"Attack the uncaptured castle {order['target']} with general "
                            f"{order['general']} from {order['source']}, melee only, no cards.")
     state = {'chapter': chapter, 'captured': captured,
-             'uncaptured': [c for c in castles if c not in captured and c != 'ほんじょう'],
+             'uncaptured': [c for c in castles
+                            if c not in captured and c != policy.chart.home_castle(chapter)],
              'gold': mem.get('gold') if type(mem.get('gold')) is int else None,
              'month': mem.get('month') if isinstance(mem.get('month'), str) else None,
              'orders': {k: v for k, v in (mem.get('orders') or {}).items()
