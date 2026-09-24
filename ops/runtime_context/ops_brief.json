@@ -1,11 +1,11 @@
 {
-  "output_sha256": "84b8aa2240b44d12d4ae9805d62e3b5caf958e4dccf6364cc1fb3132d5a0876c",
+  "output_sha256": "a226b618b07389ea8a1e4e49edbd15e2b116746c42ae2bc1c61d3ddebd793aeb",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "72c08094b240a26d61b7490edb139a1555adcfe96c29dc6496141c4aea890cd4",
+  "source_sha256": "6d1f9fd3c5c6440073a7e694ec663177d909ca62b437c11900404e01ca034879",
   "topics": [
+    "VM高負荷: 孤立moon-buggy停止と設定読込fork削減、残負荷を追跡",
     "半熟英雄: チャート外LLM動的調整（#1086 main統合済み）のVM配備突き合わせと実機実測",
-    "webui Corners: 手動停止不可・稼働誤表示・開始Errno13を修正（#1087+#1090 main・VM・API/laun…",
-    "半熟英雄: チャート外LLM動的調整の設計Issueを発行し実装前に停止"
+    "webui Corners: 手動停止不可・稼働誤表示・開始Errno13を修正（#1087+#1090 main・VM・API/laun…"
   ]
 }
