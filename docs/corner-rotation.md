@@ -12,6 +12,10 @@ ROM/core/adapter適格性を通った項目だけを有効数Nに数える。ゲ
 省略時は従来の`retro_corner.target_matches`（既定3）を継承する。
 productionの`nsnake`は1試合とし、開始以降のscorelog保存を確認して既存の終了・復帰へ進む。
 時間上限、試合境界待ち、次slotの間隔とcooldownは維持する。試合数はNに加算しない。
+Moon Buggyに未評価の改善候補がある場合は、次の枠をABBAの4試合（途中終了なら残り試合）にし、
+各試合の開始時にbaseline/candidateの重みを固定する。scorelogには腕と重みSHA-256を残す。
+4試合後、各腕2試合の平均スコアが高い方を採り、同点はbaselineを維持する。候補は
+headless評価の点差だけでは棄却せず、比較が完了した改善ジョブでのみ昇格する。
 試合数を扱わないPAPER/メリケン/専用NetHack adapterへの指定と不正値は設定エラーとする。
 
 `corner_catalog.py` は登録検証、`corner_rotation.py` は選択・時刻・履歴・予約、

@@ -87,7 +87,8 @@ start_window_minutes = 30
 # 最初の5ゲームは command brain と bot_eval の bounded headless 評価を使う。
 # NetHackは専用adapterで同列のcatalogに入り、persistent_runのセーブ境界を使うbounded slot。
 # 旧来の [nethack_corner] 固定tickを別途有効化しない。
-# コーナー終了後は対応ゲームだけ同じ baseline/candidate 比較から改善候補を判定する。
+# コーナー終了後は対応ゲームだけ改善候補を判定する。Moon Buggy候補は次枠でABBA実戦比較し、
+# 平均スコアの高い腕を採用する。
 # improve_agents はゲーム一覧ではなく既存のAI委任先チェーン。
 improve_agents = "opencode-go:deepseek-v4.1-flash,amd:DeepSeek-V4-Flash,opencode-go:deepseek-v4-flash,opencode-go:muse-spark-1.3-contributor"
 improve_matches = 2

@@ -114,6 +114,47 @@ def test_real_command_brain_contract(game, text, tmp_path, monkeypatch):
     assert parse_actions({"actions": [{"type": "key", "keys": actions[0].keys}]})
 
 
+def test_command_brain_pins_moon_buggy_ab_environment_and_fails_closed_if_state_disappears(tmp_path, monkeypatch):
+    from docich import moon_buggy_ab
+
+    g = SimpleNamespace(
+        state_dir=tmp_path,
+        repo_root=ROOT,
+        agent=SimpleNamespace(brain_timeout_s=1.0),
+    )
+    game = load_game(load_global(ROOT, ROOT / "config/docich.soren-live.toml"), "moon-buggy")
+    game.agent.command = [sys.executable, "brains/moon-buggy/brain.py"]
+    obs = SimpleNamespace(to_json=lambda: json.dumps({"game": "moon-buggy", "text": "score: 0\nlevel: 1"}))
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(returncode=0, stdout='{"actions":[]}', stderr="")
+
+    monkeypatch.setattr("docich.agent.brains.procs.run", fake_run)
+    moon_buggy_ab.stage(
+        tmp_path, {"laser_period": 7.0}, {"laser_period": 8.0},
+        source_date="2026-09-24", headless_baseline_mean=10.0,
+        headless_candidate_mean=5.0,
+    )
+    experiment_id = moon_buggy_ab.read_experiment(tmp_path)["experiment_id"]
+    moon_buggy_ab.select_arm(tmp_path)
+
+    CommandBrain(g, game).decide(obs)
+    assert calls[-1]["env_extra"] == {
+        "DOCICH_MOON_BUGGY_AB_ACTIVE": str(moon_buggy_ab.active_path(tmp_path)),
+        "DOCICH_MOON_BUGGY_AB_EXPERIMENT_ID": experiment_id,
+        "DOCICH_MOON_BUGGY_AB_MATCH_INDEX": "0",
+    }
+
+    moon_buggy_ab.state_path(tmp_path).unlink()
+    CommandBrain(g, game).decide(obs)
+    assert calls[-1]["env_extra"]["DOCICH_MOON_BUGGY_AB_ACTIVE"] == str(
+        moon_buggy_ab.active_path(tmp_path)
+    )
+    assert calls[-1]["env_extra"]["DOCICH_MOON_BUGGY_AB_EXPERIMENT_ID"] == ""
+
+
 @pytest.mark.parametrize("game", ("ninvaders", *GAMES))
 def test_default_weight_path_and_numeric_keys(game, monkeypatch):
     monkeypatch.delenv("DOCICH_BRAIN_WEIGHTS", raising=False)

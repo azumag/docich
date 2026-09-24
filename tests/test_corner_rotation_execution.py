@@ -208,6 +208,55 @@ def test_runtime_environment_uses_persisted_target_for_resumed_request(tmp_path,
         assert os.environ["NSNAKE_MAX_MATCHES"] == "3"
 
 
+def test_moon_buggy_ab_runtime_environment_caps_to_remaining_matches(tmp_path, monkeypatch):
+    from docich import moon_buggy_ab
+    from docich.config import load_global
+
+    path = tmp_path / "config.toml"
+    path.write_text('[retro_corner]\ngames=["moon-buggy"]\ntarget_matches=3\n')
+    g = load_global(tmp_path, path)
+    corner = Corner("moon-buggy", "game", "moon-buggy", target_matches=3)
+    adapter = GameCornerAdapter(g, corner)
+    moon_buggy_ab.stage(
+        g.state_dir, {"laser_period": 7.0}, {"laser_period": 8.0},
+        source_date="2026-09-24", headless_baseline_mean=10.0,
+        headless_candidate_mean=5.0,
+    )
+    selected = moon_buggy_ab.select_arm(g.state_dir)
+    moon_buggy_ab.record_score(g.state_dir, Path(g.state_dir) / "scores.jsonl", 20)
+    request_id = "12345678-1234-5678-1234-567812345678"
+    for name in (
+        "DOCICH_TARGET_MATCHES", "MOONBUGGY_MAX_MATCHES",
+        "DOCICH_MOON_BUGGY_AB_STATE", "DOCICH_MOON_BUGGY_AB_ACTIVE",
+        "DOCICH_MOON_BUGGY_AB_REQUEST",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    original_config = adapter.manager.config
+
+    with adapter.runtime_environment({"request_id": request_id}):
+        assert os.environ["DOCICH_TARGET_MATCHES"] == "3"
+        assert os.environ["MOONBUGGY_MAX_MATCHES"] == "3"
+        assert os.environ["DOCICH_MOON_BUGGY_AB_STATE"] == str(moon_buggy_ab.state_path(g.state_dir))
+        assert os.environ["DOCICH_MOON_BUGGY_AB_ACTIVE"] == str(moon_buggy_ab.active_path(g.state_dir))
+        assert os.environ["DOCICH_MOON_BUGGY_AB_REQUEST"] == request_id
+        assert adapter.manager.config.target_matches == 3
+    assert adapter.manager.config == original_config
+    assert moon_buggy_ab.pending_matches(g.state_dir) == 3
+    assert selected["arm"] == "A"
+
+
+def test_moon_buggy_ab_staged_improvement_is_terminal_for_rotation(tmp_path):
+    from docich.corner_adapters import _improvement_released
+
+    status_path = tmp_path / "corner_improve_moon-buggy.json"
+    status_path.write_text(json.dumps({
+        "status": "ab-staged",
+        "started_at": "2026-09-24T00:02:00+00:00",
+    }))
+    corner_state = {"completed_at": "2026-09-24T00:01:00+00:00"}
+    assert _improvement_released(status_path, corner_state)
+
+
 @pytest.mark.parametrize("adapter_name", ["paper", "nethack"])
 def test_adapters_without_game_match_target_have_no_runtime_environment_side_effect(adapter_name):
     from docich.corner_adapters import NethackCornerAdapter, PaperCornerAdapter

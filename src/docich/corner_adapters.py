@@ -23,7 +23,9 @@ def _queue_dispatch(g) -> bool:
     return schedule_mode(g) == "queue"
 
 
-TERMINAL_IMPROVEMENT_STATUSES = frozenset({"promoted", "kept", "improved", "dry-run", "skipped"})
+TERMINAL_IMPROVEMENT_STATUSES = frozenset({
+    "promoted", "kept", "improved", "dry-run", "skipped", "ab-staged",
+})
 
 
 def _improvement_released(status_path, state):
@@ -93,7 +95,25 @@ class GameCornerAdapter:
         cap equal to the per-corner target prevents a second match from being
         started during the poll interval before the manager restores Soren.
         """
-        target_matches = self._runtime_target_matches(request) if hasattr(self, "target_matches") else None
+        ab_remaining = None
+        ab_active = False
+        if getattr(getattr(self, "corner", None), "game", None) == "moon-buggy":
+            from .moon_buggy_ab import MoonBuggyABError, pending_matches
+
+            request_id = request.get("request_id") if isinstance(request, dict) else None
+            if isinstance(request_id, str):
+                try:
+                    ab_remaining = pending_matches(self.g.state_dir)
+                except MoonBuggyABError as exc:
+                    raise CornerExecutionError("Moon Buggy A/B state is invalid") from exc
+                ab_active = ab_remaining is not None
+
+        if ab_active:
+            target_matches = ab_remaining
+        elif hasattr(self, "target_matches"):
+            target_matches = self._runtime_target_matches(request)
+        else:
+            target_matches = None
         if target_matches is None:
             yield
             return
@@ -102,12 +122,28 @@ class GameCornerAdapter:
         target_env = getattr(self, "_target_matches_env", None)
         if target_env:
             env_names.append(target_env)
+        if ab_active:
+            env_names.extend((
+                "DOCICH_MOON_BUGGY_AB_STATE", "DOCICH_MOON_BUGGY_AB_ACTIVE",
+                "DOCICH_MOON_BUGGY_AB_REQUEST",
+            ))
         previous = {name: os.environ.get(name) for name in env_names}
         for name in env_names:
-            os.environ[name] = str(target_matches)
+            if name == "DOCICH_TARGET_MATCHES" or name == target_env:
+                os.environ[name] = str(target_matches)
+        manager_config = self.manager.config if ab_active else None
+        if ab_active:
+            from .moon_buggy_ab import active_path, state_path
+
+            os.environ["DOCICH_MOON_BUGGY_AB_STATE"] = str(state_path(self.g.state_dir))
+            os.environ["DOCICH_MOON_BUGGY_AB_ACTIVE"] = str(active_path(self.g.state_dir))
+            os.environ["DOCICH_MOON_BUGGY_AB_REQUEST"] = request_id
+            self.manager.config = replace(manager_config, target_matches=target_matches)
         try:
             yield
         finally:
+            if ab_active:
+                self.manager.config = manager_config
             for name, value in previous.items():
                 if value is None:
                     os.environ.pop(name, None)

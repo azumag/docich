@@ -3,10 +3,11 @@
 Replaces the continuous daemon rhythm for corner games: during the corner
 only match logs accumulate; when the corner ends, one improvement job runs.
 The candidate comes from an LLM (sorengame-style delegation via
-docich.ai_generate). Generic games use a headless margin gate; Pac-Man holds
-each candidate for an interleaved ABBA evaluation on the following improvement
-cycle. Promotion reuses docich.resolver.improve history/rendering, so the next
-corner announces the strategy diff automatically (see
+docich.ai_generate). Generic games use a headless margin gate; Pac-Man compares
+each candidate with an interleaved headless ABBA evaluation on the following
+improvement cycle. Moon Buggy stages differing candidates for a fixed live ABBA
+comparison. Promotion reuses docich.resolver.improve history/rendering, so the
+next corner announces the strategy diff automatically (see
 retro_corner.describe_strategy_change).
 """
 from __future__ import annotations
@@ -44,7 +45,7 @@ CORNER_IMPROVE_REASON_CODES = frozenset({
     "policy-below-margin", "policy-not-significant", "policy-identical",
     "policy-invalid", "policy-kept", "policy-eval", "ab-pending",
     "ab-incomplete", "ab-adopted", "ab-rejected", "ab-stale", "ab-invalid",
-    "ab-eval", "unexpected",
+    "ab-eval", "ab-state", "ab-baseline-changed", "unexpected",
 })
 
 PACMAN_AB_GAME = "pacman4console"
@@ -862,6 +863,74 @@ def _run_corner_improve(
             return {"status": "skipped", "reason": f"wrong-status:{state.get('status')}"}
         start_ts, end_ts = _corner_window(state)
 
+    if game == "moon-buggy":
+        from .moon_buggy_ab import (
+            MoonBuggyABError,
+            finish as finish_moon_buggy_ab,
+            read_experiment,
+            weights_sha256,
+        )
+
+        try:
+            experiment = read_experiment(g.state_dir)
+        except MoonBuggyABError as exc:
+            raise CornerImproveError(
+                "Moon Buggy A/B state is invalid", code="ab-state", phase="state"
+            ) from exc
+        if dry_run and experiment:
+            return {
+                "status": "dry-run",
+                "ab_status": experiment["status"],
+                "ab_matches": len(experiment["results"]),
+                "ab_winner": experiment.get("winner"),
+            }
+        if experiment and experiment["status"] in {"staged", "running"}:
+            return {
+                "status": "skipped", "reason": "ab-pending",
+                "reason_code": "ab-pending", "phase": "state",
+            }
+        if experiment and experiment["status"] == "completed":
+            winner = experiment["winner"]
+            means = experiment["means"]
+            promoted = False
+            reason_code = None
+            if winner == "B":
+                s_file = strategy_path(g.state_dir, game)
+                current = read_strategy_for_game(game, s_file)
+                current_hash = weights_sha256(current)
+                if current_hash not in {
+                    experiment["baseline_sha256"], experiment["candidate_sha256"]
+                }:
+                    reason_code = "ab-baseline-changed"
+                    finish_moon_buggy_ab(g.state_dir, status="kept")
+                else:
+                    try:
+                        old_raw = json.loads(Path(s_file).read_text(encoding="utf-8"))
+                        old = old_raw if isinstance(old_raw, dict) else dict(current)
+                    except (OSError, ValueError):
+                        old = dict(current)
+                    # Reapplying is safe if a previous run stopped between
+                    # writing the strategy file and updating the live brain.
+                    _promote(g, game, s_file, old, experiment["candidate"])
+                    finish_moon_buggy_ab(g.state_dir, status="promoted")
+                    promoted = True
+            else:
+                finish_moon_buggy_ab(g.state_dir, status="kept")
+            summary = {
+                "game": game,
+                "ab_pattern": "ABBA",
+                "ab_winner": winner,
+                "ab_baseline_mean": means["A"],
+                "ab_candidate_mean": means["B"],
+                "ab_matches": len(experiment["results"]),
+                "promoted": promoted,
+            }
+            if reason_code:
+                summary["reason_code"] = reason_code
+                summary["phase"] = "state"
+            _append_log(g.state_dir, game, summary)
+            return {"status": "promoted" if promoted else "kept", **summary}
+
     log_env = os.environ.get("GNUROBOTS_SCORELOG", "").strip()
     log_path = Path(log_env) if log_env else (Path(g.state_dir) / "scores" / f"{game}.jsonl")
     corner_matches = slice_corner_matches(log_path, game, start_ts, end_ts)
@@ -985,21 +1054,64 @@ def _run_corner_improve(
         "candidate_mean": round(candidate_mean, 1), "candidate_played": candidate_played,
         "matches": matches, "margin_pct": margin_pct,
     }
-    # Promotion gate は current/candidate を同じ headless evaluator で比較する。
-    # 実配信ログは候補生成の文脈・外部品質の観測値として保持するが、異なる
-    # 実行条件のスコアを直接 promotion threshold に混ぜない。
-    threshold = baseline_mean * (1 + margin_pct / 100.0) if baseline_mean > 0 else 0.0
-    if baseline_played > 0 and candidate_played > 0 and candidate_mean > threshold:
-        s_file = strategy_path(g.state_dir, game)
-        try:
-            old_raw = json.loads(Path(s_file).read_text(encoding="utf-8"))
-            old = old_raw if isinstance(old_raw, dict) else dict(current)
-        except (OSError, ValueError):
-            old = dict(current)
-        _promote(g, game, s_file, old, candidate)
-        summary["promoted"] = True
-        _append_log(g.state_dir, game, {**summary, "promoted": True})
-        return {"status": "promoted", **summary}
-    summary["promoted"] = False
-    _append_log(g.state_dir, game, {**summary, "promoted": False})
-    return {"status": "kept", **summary}
+    if game == "moon-buggy":
+        summary.pop("margin_pct", None)
+        summary["promotion_method"] = "live-abba"
+    if game != "moon-buggy":
+        # All other games keep the existing headless promotion gate.
+        threshold = baseline_mean * (1 + margin_pct / 100.0) if baseline_mean > 0 else 0.0
+        if baseline_played > 0 and candidate_played > 0 and candidate_mean > threshold:
+            s_file = strategy_path(g.state_dir, game)
+            try:
+                old_raw = json.loads(Path(s_file).read_text(encoding="utf-8"))
+                old = old_raw if isinstance(old_raw, dict) else dict(current)
+            except (OSError, ValueError):
+                old = dict(current)
+            _promote(g, game, s_file, old, candidate)
+            summary["promoted"] = True
+            _append_log(g.state_dir, game, {**summary, "promoted": True})
+            return {"status": "promoted", **summary}
+        summary["promoted"] = False
+        _append_log(g.state_dir, game, {**summary, "promoted": False})
+        return {"status": "kept", **summary}
+
+    # Headless evaluation remains a validity check and context for the next
+    # experiment. A lower candidate is not discarded here: the next live
+    # corner compares immutable A/B snapshots at game boundaries and chooses
+    # the higher-scoring arm from one complete ABBA block.
+    if baseline_played <= 0 or candidate_played <= 0:
+        summary.update(promoted=False, ab_staged=False)
+        _append_log(g.state_dir, game, summary)
+        return {"status": "kept", **summary}
+    from .moon_buggy_ab import (
+        MoonBuggyABError,
+        stage as stage_moon_buggy_ab,
+        weights_sha256,
+    )
+
+    try:
+        if weights_sha256(current) == weights_sha256(candidate):
+            summary.update(promoted=False, ab_staged=False, reason_code="policy-identical")
+            _append_log(g.state_dir, game, summary)
+            return {"status": "kept", **summary}
+        experiment = stage_moon_buggy_ab(
+            g.state_dir,
+            current,
+            candidate,
+            source_date=date_str,
+            headless_baseline_mean=baseline_mean,
+            headless_candidate_mean=candidate_mean,
+        )
+    except MoonBuggyABError as exc:
+        raise CornerImproveError(
+            "Moon Buggy A/B candidate could not be staged", code="ab-state", phase="state"
+        ) from exc
+    summary.update(
+        promoted=False,
+        ab_staged=True,
+        ab_pattern="ABBA",
+        ab_experiment_id=experiment["experiment_id"],
+        ab_candidate_sha256=experiment["candidate_sha256"],
+    )
+    _append_log(g.state_dir, game, summary)
+    return {"status": "ab-staged", **summary}

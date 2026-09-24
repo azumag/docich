@@ -69,13 +69,27 @@ def cli_command_list(game) -> list[str]:
 
 
 def _game_launch_command(g, game, command: list[str]) -> list[str]:
-    """Pass the configured state root to the self-contained NInvaders policy runner."""
-    if game.name != "ninvaders":
+    """Pass fixed runtime paths through tmux to CLI wrappers that need them."""
+    if game.name not in {"ninvaders", "moon-buggy"}:
         return command
     env_bin = procs.which("env")
     if not env_bin:
-        raise AdapterError("NInvaders の状態パスを渡す env コマンドが見つかりません")
-    return [env_bin, f"DOCICH_STATE_DIR={Path(g.state_dir).resolve()}", *command]
+        if game.name == "ninvaders":
+            raise AdapterError("NInvaders の状態パスを渡す env コマンドが見つかりません")
+        raise AdapterError("Moon Buggyの状態パスを渡す env コマンドが見つかりません")
+    values = {"DOCICH_STATE_DIR": str(Path(g.state_dir).resolve())}
+    if game.name == "moon-buggy":
+        for name in (
+            "DOCICH_TARGET_MATCHES",
+            "MOONBUGGY_MAX_MATCHES",
+            "DOCICH_MOON_BUGGY_AB_STATE",
+            "DOCICH_MOON_BUGGY_AB_ACTIVE",
+            "DOCICH_MOON_BUGGY_AB_REQUEST",
+        ):
+            if name in os.environ:
+                values[name] = os.environ[name]
+    assignments = [f"{name}={value}" for name, value in values.items()]
+    return [env_bin, *assignments, *command]
 
 
 def cli_cols(game) -> int:

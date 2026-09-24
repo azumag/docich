@@ -21,6 +21,7 @@ font_size = 18
 [agent]
 # ジャンプ・射撃は brain、開始・再開は wrapper が所有する。
 # DOCICH_BRAIN_WEIGHTS または run/brain/moon-buggy/weights.json を毎回読む。
+# ABBA実験中は共通agentが試合固定snapshotを選び、試合結果とarm/hashを対応付ける。
 enabled = true
 brain = "command"
 command = ["python3", "brains/moon-buggy/brain.py"]

@@ -155,6 +155,10 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   読み取りを順に行う観測なので、一つの原子的な状態スナップショットではない。
   この追加は待機条件・FIFO・scheduler・復旧操作を変更しない。
 
+- `corners.rotation_evidence.moon_buggy_ab` は Moon Buggy のA/B状態について、
+  `staged` / `running` / `completed` / `promoted` / `kept`、完了済み試合数、
+  目標4試合を返す。完了後は勝者と両腕の平均スコアも出す。候補重みやスコアログ本文は出さない。
+
 - NInvaders改善は通常の2数値重み比較ではなく、生成方策を静的ゲートとworkerで
   検証し、実ゲームを使う6試合ずつの incumbent/candidate 評価後にだけ昇格する。
   `policy-promoted` / `policy-incomplete` / `policy-faults` / `policy-below-margin` /
