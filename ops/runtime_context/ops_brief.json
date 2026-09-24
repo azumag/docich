@@ -2,7 +2,7 @@
   "output_sha256": "84b8aa2240b44d12d4ae9805d62e3b5caf958e4dccf6364cc1fb3132d5a0876c",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "6e9fc4d0716788766b3756f59d07f09188535fc300b47b4c9b1ebb5c309908b6",
+  "source_sha256": "72c08094b240a26d61b7490edb139a1555adcfe96c29dc6496141c4aea890cd4",
   "topics": [
     "半熟英雄: チャート外LLM動的調整（#1086 main統合済み）のVM配備突き合わせと実機実測",
     "webui Corners: 手動停止不可・稼働誤表示・開始Errno13を修正（#1087+#1090 main・VM・API/laun…",
