@@ -1,6 +1,6 @@
 """Fact-grounded narration script for the PAPER corner.
 
-The corner speaks four substantial segments. Trading facts are augmented, when
+The corner speaks eight ordered segments. Trading facts are augmented, when
 real AI narration is enabled, with bounded public crypto-news research and one
 actually-held asset spotlight. Research failures never fail the corner and raw
 model output is never persisted.
@@ -30,6 +30,11 @@ from .strategies import StrategyPolicy
 
 
 SEGMENT_KEYS = ("corner", "news", "chart", "strategy", "result", "fills", "review", "improve")
+SEGMENT_LABELS = {
+    "corner": "市場概況", "news": "ニュースの含意", "chart": "時間足チャート",
+    "strategy": "戦略パラメータ", "result": "損益と保有", "fills": "直近約定の理由",
+    "review": "往復売買の振り返り", "improve": "次回改善の検証案",
+}
 MAX_SEGMENT_CHARS = 700
 MIN_SEGMENT_CHARS = 300
 SCRIPT_LABEL = "RADIO:paper-script"
@@ -798,58 +803,24 @@ def _review_text(facts: Mapping[str, object]) -> str:
 def render_fallback(facts: Mapping[str, object]) -> dict:
     """Deterministic narration from the same trading/research facts."""
     positions = facts.get("open_positions_top") or []
-    fills = facts.get("recent_fills") or []
-    skipped = facts.get("skipped_decisions") or []
     focus = facts.get("focus") if isinstance(facts.get("focus"), Mapping) else {}
     improvement = facts.get("improvement") if isinstance(facts.get("improvement"), Mapping) else {}
-    research = facts.get("research") if isinstance(facts.get("research"), Mapping) else {}
-    news = research.get("news_items") if isinstance(research.get("news_items"), list) else []
-    asset = research.get("asset") if isinstance(research.get("asset"), Mapping) else {}
 
-    corner = (
-        "PAPER・暗号資産の模擬売買コーナーです。今日は単に何を買ったかだけでなく、"
-        "なぜその注文を出したのか、その判断が正しかったのかまで、時間をかけて見ていきます。"
-        "ニュース、時間足チャート、約定の根拠、往復の振り返り、改善の順でお送りします。"
-    )
+    if focus.get("symbol") and _fmt_num(focus.get("change_pct")) is not None:
+        direction = "上向き" if float(focus["change_pct"]) > 0 else (
+            "下向き" if float(focus["change_pct"]) < 0 else "横ばい")
+        corner = (
+            f"市場概況です。注目中の{focus['symbol']}は観測期間で{direction}です。"
+            "この値動きを、模擬売買の判断を考えるための背景として見ます。"
+        )
+    else:
+        corner = "市場概況です。確認できる価格の動きが不足しているため、相場の方向を断定せず、データの更新を待ちます。"
 
     result = (
         f"まず成績の読み方です。{_pnl_text(facts)}模擬資金は{_fmt_num(facts.get('capital_jpy')) or facts.get('capital_jpy')}円、"
         f"投入は{_fmt_num(facts.get('deployed_jpy')) or facts.get('deployed_jpy')}円、保有は{facts.get('position_count', len(positions))}銘柄です。"
     )
     result += _benchmark_text(facts)
-    if fills:
-        first = fills[0]
-        side_label = "買い" if str(first.get("side")) == "buy" else "売り"
-        condition = _condition_text(first.get("signal"))
-        result += (
-            f"直近の約定は{first.get('symbol')}の{side_label}でした。"
-        )
-        if condition:
-            result += f"数字の大小だけでなく、{condition}という条件がそろったことが判断の中心です。"
-        else:
-            result += "発注根拠の詳細は残っていないため、結果だけで判断を後付けしません。"
-        if first.get("side") == "sell" and first.get("realized_pnl_jpy") is not None:
-            pnl_text = _fmt_num(first.get("realized_pnl_jpy")) or first.get("realized_pnl_jpy")
-            result += f"損益は{pnl_text}円です。"
-    else:
-        result += "直近の約定はなく、BOTは様子見を選んでいます。"
-    if skipped:
-        examples = [
-            f"{item.get('symbol')}の{item.get('side_label')}は{item.get('reason')}"
-            for item in skipped[:3] if isinstance(item, Mapping)
-        ]
-        if examples:
-            result += "見送りでは、" + "、".join(examples) + "でした。"
-    if focus.get("symbol"):
-        result += (
-            f"注目している{focus.get('symbol')}は直近{focus.get('bars')}本で"
-            f"{_fmt_num(focus.get('change_pct')) or focus.get('change_pct')}パーセント動いています。"
-        )
-    if asset.get("symbol"):
-        result += (
-            f"保有中の{asset.get('symbol')}については、今回は{asset.get('angle_label')}という切り口で調べています。"
-            "AI分析が使えない場合でも、実際に保有している銘柄だけを対象にしています。"
-        )
 
     improve = (
         "最後に改善です。利益が出ていても一回の利確だけで作戦成功とは決めませんし、"
@@ -867,8 +838,7 @@ def render_fallback(facts: Mapping[str, object]) -> dict:
         "corner": corner,
         "news": _news_text(facts),
         "chart": _chart_text(facts),
-        "strategy": _policy_text(dict(facts.get("policy") or {}))
-        + " 設定値そのものより、その結果として損益と見送りがどう動いたかを見るのが今回のポイントです。",
+        "strategy": _policy_text(dict(facts.get("policy") or {})),
         "result": result,
         "fills": _fills_text(facts),
         "review": _review_text(facts),
@@ -975,11 +945,7 @@ def generate_corner_script(
     }
 
 
-# --- Content-driven sequential narration -------------------------------------
-#
-# The scheduled/manual PAPER corner no longer runs for a fixed duration. It
-# generates the next fact-grounded segment one at a time and reads it as soon as
-# it is ready; when the narrator has nothing new to say the corner ends.
+# --- Single-slot narration ----------------------------------------------------
 # "covered" is the full list of segments already spoken in this corner, each
 # summarised by covered_entry() as label + opening sentence + key figures.
 # Labels alone were not enough: on 2026-09-23 a 58-segment corner re-told the
@@ -1022,8 +988,13 @@ def covered_entry(topic: object, text: object) -> str:
     return entry
 
 
-def build_next_prompt(facts: Mapping[str, object], covered: Sequence[object] | None = None) -> str:
-    """Prompt for exactly one next narration segment (or an explicit done)."""
+def build_next_prompt(
+    facts: Mapping[str, object], covered: Sequence[object] | None = None,
+    target_key: str | None = None,
+) -> str:
+    """Prompt for one specified segment; untargeted callers retain the legacy API."""
+    if target_key is not None and target_key not in SEGMENT_KEYS:
+        raise ValueError("invalid narration target")
     facts_json = json.dumps(dict(facts), ensure_ascii=False, sort_keys=True)
     covered_list = [str(item).strip() for item in (covered or []) if str(item).strip()]
     covered_text = (
@@ -1031,14 +1002,30 @@ def build_next_prompt(facts: Mapping[str, object], covered: Sequence[object] | N
         if covered_list
         else "（まだ何も話していません）"
     )
+    target_instruction = (
+        f"【今回の固定枠】{target_key}（{SEGMENT_LABELS[target_key]}）。"
+        "この枠の内容だけを書き、別の枠の説明や総括を混ぜないでください。"
+        "新しい切り口が少なくてもこの枠を省略せず、factsで裏付けられる範囲だけを述べてください。\n"
+        if target_key is not None else
+        "【切り口の例】今日の相場の見取り図、ニュースの含意、時間足チャート、戦略パラメータの狙い、"
+        "損益と保有、直近約定の理由、往復の振り返り、次回改善で検証したいこと。\n"
+    )
+    response_instruction = (
+        f'次のJSONだけを出力してください。{{"slot": "{target_key}", "topic": "短い日本語ラベル", "text": "本文"}}\n'
+        "doneは出力しないでください。\n"
+        if target_key is not None else
+        'もう話す価値のある新しい切り口が無いと判断したら、次のJSONだけを出力してください。\n'
+        '{"done": true}\n'
+        'それ以外の場合は、次のJSONだけを出力してください。\n'
+        '{"topic": "切り口を表す短い日本語ラベル", "text": "本文"}\n'
+    )
     return (
         "あなたはPAPER暗号資産コーナーのラジオMC兼リサーチャーです。"
-        "以下の実データ(facts)だけを根拠に、まだ話していない切り口を1つ選び、"
+        "以下の実データ(facts)だけを根拠に、"
         "次の読み上げセグメントを1つだけ作ってください。存在しない数値・銘柄・ニュース・因果関係は絶対に作らないでください。\n"
         f"{facts_json}\n\n"
         f"【話し済みの切り口】{covered_text}\n"
-        "【切り口の例】今日の相場の見取り図、ニュースの含意、時間足チャート、戦略パラメータの狙い、"
-        "損益と保有、直近約定の理由、往復の振り返り、次回改善で検証したいこと。\n"
+        f"{target_instruction}"
         "【話し方】\n"
         "- です・ます調の自然な話し言葉。いちばん伝えたいことを最初の文で言い、その後に理由や数字を添える。\n"
         "- 冒頭に「結論からお伝えしますと」「まず結論ですが」のような前口上・枕詞を置かない。"
@@ -1054,16 +1041,13 @@ def build_next_prompt(facts: Mapping[str, object], covered: Sequence[object] | N
         "【重複の禁止】話し済み一覧にある事実・比較・数字を主題にした話は、見出しや言い回しを変えても"
         "同じ切り口とみなし、もう一度話さない（別の話の補足として一言触れるのは可）。"
         "数字が少し更新されただけの同じ比較も話し済みとみなす。\n"
-        "もう話す価値のある新しい切り口が無いと判断したら、次のJSONだけを出力してください。\n"
-        '{"done": true}\n'
-        "それ以外の場合は、次のJSONだけを出力してください。\n"
-        '{"topic": "切り口を表す短い日本語ラベル", "text": "本文"}\n'
+        f"{response_instruction}"
         f"textは日本語で{MIN_SEGMENT_CHARS}〜{MAX_SEGMENT_CHARS}文字程度にすること。"
         "JSONは1行で出力し、文字列値の中に改行や制御文字を入れないこと。JSON以外は出力しないこと。"
     )
 
 
-def parse_next_narration(text: str) -> dict:
+def parse_next_narration(text: str, target_key: str | None = None) -> dict:
     """Parse one next-narration response.
 
     Returns ``{"status": "done"}`` for an explicit exhaustion signal, or
@@ -1076,6 +1060,8 @@ def parse_next_narration(text: str) -> dict:
         raise CornerScriptError("次の台本のJSONオブジェクトを抽出できません")
     if data.get("done") is True:
         return {"status": "done"}
+    if target_key is not None and data.get("slot") != target_key:
+        raise CornerScriptError("次の台本の枠が一致しません")
     body = data.get("text")
     if not isinstance(body, str) or not body.strip():
         raise CornerScriptError("次の台本に有効な本文がありません")
@@ -1097,6 +1083,7 @@ def generate_next_narration(
     agents: str,
     timeout: int = 180,
     covered: Sequence[object] | None = None,
+    target_key: str | None = None,
     now=None,
     policy: StrategyPolicy | None = None,
     timeframe_facts: Mapping[str, object] | None = None,
@@ -1139,11 +1126,11 @@ def generate_next_narration(
         return {"status": "failed", "reason": _safe_reason(exc)}
 
     try:
-        prompt = build_next_prompt(facts, covered)
+        prompt = build_next_prompt(facts, covered, target_key)
         raw = generate_text(
             g, label=NEXT_SCRIPT_LABEL, agents=cleaned_agents, prompt_text=prompt, timeout=timeout
         )
-        return parse_next_narration(raw)
+        return parse_next_narration(raw, target_key)
     except CornerScriptError as exc:
         message = str(exc)
         kind = "no-json-object" if "抽出" in message else "no-usable-segment"

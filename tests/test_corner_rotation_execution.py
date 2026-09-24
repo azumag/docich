@@ -308,7 +308,9 @@ def test_paper_rotation_replays_same_request_and_remains_non_live(tmp_path, monk
     mgr = manager(g, clock=lambda: now[0], overlay=lambda *a, **k: None,
                   speech=lambda *a, **k: None, stream_paper=lambda: None)
     mgr._ensure_fallback_script = lambda state: None
-    mgr._next_narration_item = lambda state: ("exhausted", None)
+    mgr._next_narration_item = lambda state, index: {
+        "key": f"script:{index}", "text": f"slot {index}", "source": "fallback"
+    }
     mgr._wait_for_speech = lambda state: True
     mgr._refresh_paper_flag = lambda state: None
     mgr._clear_paper_flag = lambda: None
