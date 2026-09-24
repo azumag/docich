@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from docich.nethack_spectator_live import ActiveRuntime  # noqa: E402
 from docich.nethack_tiles_supervisor import (  # noqa: E402
     NethackTilesSupervisor,
+    browser_binary,
     manifest_matches,
 )
 
@@ -78,6 +79,20 @@ class NethackTilesSupervisorTests(unittest.TestCase):
         )
         self.assertEqual(profile.parent, supervisor.runtime_dir)
         self.assertFalse(any("remote-debugging" in arg for arg in command))
+
+    def test_browser_binary_prefers_installed_google_chrome(self):
+        calls = []
+        paths = {
+            "google-chrome-stable": "/usr/bin/google-chrome-stable",
+            "chromium": "/usr/bin/chromium",
+        }
+
+        def which(name):
+            calls.append(name)
+            return paths.get(name)
+
+        self.assertEqual(browser_binary(which), "/usr/bin/google-chrome-stable")
+        self.assertEqual(calls, ["google-chrome-stable"])
 
     def test_server_failure_falls_back_once_and_records_owned_tty(self):
         supervisor = self.supervisor()
