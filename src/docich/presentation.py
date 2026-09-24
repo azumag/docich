@@ -245,17 +245,33 @@ def main(argv=None) -> int:
                 except OSError:
                     pass
         def find_window():
-            selector = (['--name', args.window_pattern] if args.window_pattern
-                        else ['--pid', str(viewer.pid)])
-            found = subprocess.run(
-                ['xdotool', 'search', '--onlyvisible', *selector],
-                env=source_env, capture_output=True, text=True, timeout=2)
-            if found.returncode != 0 or not found.stdout.strip():
-                return ''
-            windows = found.stdout.strip().splitlines()
-            if args.window_pattern and len(windows) != 1:
+            def search(*selector):
+                found = subprocess.run(
+                    ['xdotool', 'search', '--onlyvisible', *selector],
+                    env=source_env, capture_output=True, text=True, timeout=2)
+                if found.returncode != 0 or not found.stdout.strip():
+                    return []
+                return found.stdout.strip().splitlines()
+
+            owned = search('--pid', str(viewer.pid))
+            if len(owned) == 1:
+                return owned[0]
+            if not args.window_pattern:
+                return owned[0] if owned else ''
+            if len(owned) > 1:
+                owned_named = search('--all', '--pid', str(viewer.pid),
+                                     '--name', args.window_pattern)
+                if len(owned_named) == 1:
+                    return owned_named[0]
+                if len(owned_named) > 1:
+                    raise RuntimeError('native game window is ambiguous')
+
+            # Some X clients omit _NET_WM_PID. Use the exact runtime-owned
+            # title pattern only when the process-based lookup has no result.
+            windows = search('--name', args.window_pattern)
+            if len(windows) > 1:
                 raise RuntimeError('native game window is ambiguous')
-            return windows[0]
+            return windows[0] if windows else ''
 
         deadline = time.monotonic() + args.viewer_wait_sec
         window = ''

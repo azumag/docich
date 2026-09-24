@@ -285,29 +285,44 @@ class NethackTilesSupervisor:
                 self._sleep(0.05)
         raise RuntimeError("server_start_failed")
 
-    def _window_id(self) -> str | None:
+    def _window_id(self, process: subprocess.Popen | None = None) -> str | None:
         xdotool = self._which("xdotool")
         if not xdotool:
             return None
-        try:
-            found = subprocess.run(
-                [
-                    xdotool,
-                    "search",
-                    "--onlyvisible",
-                    "--name",
+
+        def search(*selector: str) -> list[str]:
+            try:
+                found = subprocess.run(
+                    [xdotool, "search", "--onlyvisible", *selector],
+                    capture_output=True,
+                    text=True,
+                    timeout=1.0,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                return []
+            if found.returncode != 0 or not found.stdout.strip():
+                return []
+            return found.stdout.split()
+
+        pid = getattr(process, "pid", None)
+        if isinstance(pid, int) and pid > 0:
+            owned = search("--pid", str(pid))
+            if len(owned) == 1:
+                return owned[0]
+            if len(owned) > 1:
+                owned_named = search(
+                    "--all", "--pid", str(pid), "--name",
                     presentation_window_pattern(self.window_title),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=1.0,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return None
-        if found.returncode != 0 or not found.stdout.strip():
-            return None
-        windows = found.stdout.split()
+                )
+                if len(owned_named) == 1:
+                    return owned_named[0]
+                if len(owned_named) > 1:
+                    return None
+
+        # Some X clients omit _NET_WM_PID. Retain the strict runtime-title
+        # match as a fallback, but only accept a unique visible window.
+        windows = search("--name", presentation_window_pattern(self.window_title))
         return windows[0] if len(windows) == 1 else None
 
     def _wait_window(self, process: subprocess.Popen, *, timeout_s: float) -> bool:
@@ -315,7 +330,7 @@ class NethackTilesSupervisor:
         while self._clock() < deadline and not self._stop.is_set():
             if process.poll() is not None:
                 return False
-            if self._window_id() is not None:
+            if self._window_id(process) is not None:
                 return True
             self._sleep(0.1)
         return False
@@ -544,7 +559,7 @@ class NethackTilesSupervisor:
             presentation = _load_json(self.presentation_state_path)
             if presentation.get("status") == "presentation_failed":
                 return "projection_failed"
-            if self._window_id() is None:
+            if self._window_id(self._browser) is None:
                 self._window_seen_at = self._window_seen_at or self._clock()
                 if self._clock() - self._window_seen_at >= 1.0:
                     return "browser_window_missing"
@@ -555,7 +570,7 @@ class NethackTilesSupervisor:
         elif self._status == "fallback_tty":
             if self._tty is None or self._tty.poll() is not None:
                 return "fallback_exited"
-            if self._window_id() is None:
+            if self._window_id(self._tty) is None:
                 self._window_seen_at = self._window_seen_at or self._clock()
                 if self._clock() - self._window_seen_at >= 1.0:
                     return "fallback_window_missing"
