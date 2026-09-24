@@ -1,11 +1,11 @@
 {
-  "output_sha256": "a8c95a71ee9ff7f9868fe32665c84f059be6e9e630eacd776ac9e4d16fe26474",
+  "output_sha256": "5e8a6dfff292b4ed3a79be874da80f956863429eef92ec4946b7890cb94a49fa",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "a719112263f79ee0fead069f9d275ce083cf0a706650efaa7b3b512f3355430a",
+  "source_sha256": "df5939c51b12e616f29e2e2d186ce92ea8c688398b4f2b514a3ce30486e8c865",
   "topics": [
-    "半熟英雄: 本番 start-hanjuku 実施→game_over終了、兵士補充を main/VM 反映",
-    "NetHack review gates更新・CI再実行成功",
-    "NetHack GUI smoke修正をpush（最新CI待ち）"
+    "半熟英雄: ループ修正・一騎打ち受諾・音声切断修正の3件を main/VM 反映",
+    "NetHack PID lookup後もGUI smoke failure・X11診断追加",
+    "NetHack GUI window ownership failure修正"
   ]
 }
