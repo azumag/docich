@@ -820,6 +820,8 @@ def render_fallback(facts: Mapping[str, object]) -> dict:
         f"まず成績の読み方です。{_pnl_text(facts)}模擬資金は{_fmt_num(facts.get('capital_jpy')) or facts.get('capital_jpy')}円、"
         f"投入は{_fmt_num(facts.get('deployed_jpy')) or facts.get('deployed_jpy')}円、保有は{facts.get('position_count', len(positions))}銘柄です。"
     )
+    if positions and isinstance(positions[0], Mapping) and positions[0].get('symbol'):
+        result += f"保有の代表例は{positions[0]['symbol']}です。"
     result += _benchmark_text(facts)
 
     improve = (
