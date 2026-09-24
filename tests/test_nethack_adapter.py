@@ -38,6 +38,7 @@ def _root(
     player_name: str = "docich",
     command: str = "nethack",
     persistent_run: bool = True,
+    presentation_mode: str | None = None,
 ) -> Path:
     root = save_dir.parent / "repo"
     (root / "config" / "games").mkdir(parents=True, exist_ok=True)
@@ -46,13 +47,19 @@ def _root(
         encoding="utf-8",
     )
     persistent = "true" if persistent_run else "false"
+    presentation = (
+        f'\n[nethack.presentation]\nmode = "{presentation_mode}"\n'
+        if presentation_mode is not None
+        else ""
+    )
     (root / "config" / "games" / "nethack.toml").write_text(
         '[game]\nname = "nethack"\ntitle = "NetHack"\nadapter = "cli"\n\n'
         f'[cli]\ncommand = "{command}"\ncols = 80\nrows = 24\n\n'
         '[nethack]\n'
         f'persistent_run = {persistent}\n'
         f'player_name = "{player_name}"\n'
-        f'save_dir = "{save_dir}"\n',
+        f'save_dir = "{save_dir}"\n'
+        f'{presentation}',
         encoding="utf-8",
     )
     return root
@@ -149,6 +156,56 @@ class TestNethackCoordinatorAdapter(unittest.TestCase):
             self.assertEqual(
                 adapter._game_command(),
                 ["/usr/games/nethack", "-u", "docich"],
+            )
+
+    def test_presentation_defaults_to_native_tty(self):
+        adapter = self.adapter()
+        self.assertEqual(adapter.presentation_mode, "tty")
+        with mock.patch("docich.adapters.cli_game.procs.which", return_value="/usr/bin/xterm"):
+            command = adapter._xterm_command()
+        self.assertEqual(command[0], "/usr/bin/xterm")
+        self.assertNotIn("nethack_tiles_supervisor.py", " ".join(command))
+
+    def test_tiles_mode_connects_generation_scoped_supervisor(self):
+        root = _root(self.save_dir, presentation_mode="tiles")
+        g = config.load_global(root)
+        g.display.viewport_x = 0
+        g.display.viewport_y = 90
+        g.display.viewport_width = 960
+        g.display.viewport_height = 540
+        adapter = nethack_adapter.NethackCoordinatorAdapter(
+            g, config.load_game(g, "nethack"), _spec(root)
+        )
+        command = adapter._xterm_command()
+        joined = " ".join(command)
+        self.assertIn("nethack_tiles_supervisor.py", joined)
+        self.assertIn("--rebind-window", command)
+        self.assertIn("--runtime-id", command)
+        self.assertIn(adapter.spec.runtime_id, command)
+        self.assertIn("--adapter-session", command)
+        self.assertIn(adapter.spec.adapter_session, command)
+        self.assertEqual(command[command.index("--title") + 1],
+                         f"docich-present-{adapter.spec.runtime_id}")
+
+    def test_tiles_mode_requires_configured_viewport(self):
+        root = _root(self.save_dir, presentation_mode="tiles")
+        g = config.load_global(root)
+        adapter = nethack_adapter.NethackCoordinatorAdapter(
+            g, config.load_game(g, "nethack"), _spec(root)
+        )
+        with self.assertRaises(AdapterError):
+            adapter._xterm_command()
+
+    def test_unknown_presentation_mode_is_rejected(self):
+        root = _root(self.save_dir)
+        path = root / "config" / "games" / "nethack.toml"
+        path.write_text(path.read_text(encoding="utf-8") +
+                        '\n[nethack.presentation]\nmode = "autostart"\n',
+                        encoding="utf-8")
+        g = config.load_global(root)
+        with self.assertRaises(AdapterError):
+            nethack_adapter.NethackCoordinatorAdapter(
+                g, config.load_game(g, "nethack"), _spec(root)
             )
 
     def test_ambiguous_command_line_player_name_is_rejected(self):

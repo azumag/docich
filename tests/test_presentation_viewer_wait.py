@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from docich.presentation import _parser  # noqa: E402
+from docich.presentation import _parser, main  # noqa: E402
 
 
 def _args(extra=()):
@@ -30,6 +30,16 @@ class ViewerWaitTests(unittest.TestCase):
                 "--display", ":97", "--title", "t",
                 "--x", "0", "--y", "0", "--width", "1", "--height", "1",
                 "--viewer-wait-sec", "0", "--", "true",
+            ])
+
+    def test_rebind_option_is_opt_in_and_requires_a_named_window(self):
+        self.assertFalse(_args().rebind_window)
+        self.assertTrue(_args(("--window-pattern", "^viewer$", "--rebind-window")).rebind_window)
+        with self.assertRaises(SystemExit):
+            main([
+                "--display", ":97", "--title", "t",
+                "--x", "0", "--y", "0", "--width", "1", "--height", "1",
+                "--rebind-window", "--", "true",
             ])
 
 
