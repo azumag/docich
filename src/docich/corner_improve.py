@@ -30,6 +30,8 @@ from .resolver.improve import (
 from .resolver.bot_eval import bot_games, run_bot_matches
 
 JSON_FENCE_RE = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
+MIN_CANDIDATE_WEIGHT = 0.001
+MAX_CANDIDATE_WEIGHT = 1e6
 
 # Durable failure metadata is an enum contract, not an exception serialization
 # surface. Keep unknown/future/injected exception attributes from becoming
@@ -69,6 +71,11 @@ class CornerImproveError(RuntimeError):
 # lifecycle; adding a game to only one of these lists silently disables its
 # improvement path.
 BOT_GAMES = bot_games()
+
+
+def _minimum_candidate_weight(game: str) -> float:
+    """Bastet の hard_drop は 0 で soft drop を選べる。"""
+    return 0.0 if game == "bastet" else MIN_CANDIDATE_WEIGHT
 
 
 def numeric_weights(weights: dict) -> set[str]:
@@ -179,6 +186,14 @@ def summarize_matches(matches: list[dict]) -> dict:
 
 def build_prompt(*, game: str, stats: dict, current: dict, previous: dict) -> str:
     basis = stats.get("basis", "live scorelog")
+    minimum = _minimum_candidate_weight(game)
+    game_guidance = ""
+    if game == "bastet":
+        game_guidance = (
+            "\nBastet の hard_drop は 0.5 以上で Enter によるハードドロップ、"
+            "0.5 未満で Down によるソフトドロップです。0.0 は有効な候補です。"
+            "評価では 0.0 と 1.0 の方策を比較してください。\n"
+        )
     return f"""あなたはレトロゲームコーナーの戦略改善担当です。
 対象ゲーム: {game}
 今回コーナーの実戦成績: {stats['n']}試合、平均{stats['mean']:.1f}点、最高{stats['best']}点
@@ -190,11 +205,17 @@ def build_prompt(*, game: str, stats: dict, current: dict, previous: dict) -> st
 
 今回の成績を踏まえ、平均スコアを上げる方向に数値重みだけを調整した候補を
 1つ提案してください。キー構成は変えず、既存キーの数値のみ変更すること。
+各値は有限なJSON数値で {minimum:g} 以上 {MAX_CANDIDATE_WEIGHT:g} 以下にしてください。{game_guidance}
 出力はJSONオブジェクト1つのみ。説明文は書かず、```jsonフェンスで囲むこと。
 """
 
 
-def parse_candidate(text: str, allowed_keys: set[str]) -> dict:
+def parse_candidate(
+    text: str,
+    allowed_keys: set[str],
+    *,
+    minimum: float = MIN_CANDIDATE_WEIGHT,
+) -> dict:
     """LLM出力から候補重みを取り出す。形式不正は CornerImproveError。"""
     match = JSON_FENCE_RE.search(text or "")
     payload = match.group(1) if match else (text or "")
@@ -223,7 +244,12 @@ def parse_candidate(text: str, allowed_keys: set[str]) -> dict:
                 f"重みは数値である必要があります: {key}",
                 code="llm-values", phase="llm",
             )
-        if not (0.001 <= float(value) <= 1e6):
+        try:
+            numeric_value = float(value)
+        except (OverflowError, ValueError):
+            numeric_value = float("inf")
+        outside_range = not minimum <= numeric_value <= MAX_CANDIDATE_WEIGHT
+        if not math.isfinite(numeric_value) or outside_range:
             raise CornerImproveError(
                 f"重みが範囲外です: {key}={value}",
                 code="llm-values", phase="llm",
@@ -597,7 +623,8 @@ def _run_corner_improve(
     llm = llm or (lambda text: _default_llm(g, agents=agents, prompt_text=text))
     try:
         raw_output = llm(prompt_text)
-        candidate_delta = parse_candidate(raw_output, proposable)
+        minimum_weight = _minimum_candidate_weight(game)
+        candidate_delta = parse_candidate(raw_output, proposable, minimum=minimum_weight)
     except CornerImproveError:
         raise
     except Exception as exc:
