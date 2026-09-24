@@ -1320,12 +1320,21 @@ class RetroCornerManager:
             previous = self._active_game_reader()
         except RetroCornerError:
             # A concurrent coordinator drain is still allowed to own the
-            # canonical transition.  Preserve the currently active runtime
-            # as the return target and let GameSwitchCoordinator queue this
-            # corner's request instead of cancelling it.
+            # canonical transition. Before quiescing, the old runtime remains
+            # in ``active``; after quiescing it moves to ``previous`` while
+            # ``active`` is empty. Preserve that runtime as the return target
+            # and let GameSwitchCoordinator queue this corner's request
+            # instead of losing the restore target.
             canonical, _missing = self.store.canonical.load()
             active = canonical.get("active")
-            previous = active.get("game") if isinstance(active, dict) else None
+            if isinstance(active, dict):
+                previous = active.get("game")
+            else:
+                restore_runtime = canonical.get("previous")
+                previous = (
+                    restore_runtime.get("game")
+                    if isinstance(restore_runtime, dict) else None
+                )
         ends_at = now + dt.timedelta(minutes=self.config.duration_minutes)
         if extra_state and extra_state.get("rotation_request_id") and previous == target:
             raise RetroCornerError("rotation target already owned by another execution")

@@ -40,7 +40,7 @@ source tupleはCoordinatorが実際に停止対象を所有・確認する境界
 - [x] Coordinatorの成功receiptへ実停止対象を保存し、失敗/rollbackを成功扱いしない。
 - [x] scheduled/rotation/manualのcontextを開始前に保存し、rotation予約がない場合はunknownにする。
 - [x] RunStoreの既存current runとsessionへsourceを同時保存し、save継続は改善対象外にする。
-- [ ] queued/recovery/rollbackと次runの競合を含む結合回帰を追加する。
+- [x] queued/recovery/rollbackと次runの競合を含む結合回帰を追加する。遷移中の`previous`を復帰先として維持し、rollback失敗後のrecover・queued switch retryを通したうえで、復帰直後にcanonicalが次runへ進んだ場合は前runのsourceを保存しない。
 - [x] 実Coordinator経路でコーナー終了・復帰・RunStoreへのsource保存を検証し、後続sessionの履歴保存失敗でも復帰成功を取り消さず、先行sessionのsourceを誤帰属しないことを確認する。
 - [x] RunStoreでbyte baseline後の一意なplayer行と時刻下限を照合し、証拠が揃うrunだけ `identity_verified=true` にする。
 - [ ] 実VMでxlogのcanonical path・writerとterminal行の発生を確認する（#753）。証拠がない間はterminal sourceを有効にしない。
@@ -48,10 +48,10 @@ source tupleはCoordinatorが実際に停止対象を所有・確認する境界
 
 ## 検証
 
-`PYTHONPATH=src python -m pytest -q tests/test_nethack_source.py`
+`PYTHONPATH=src python3 -m pytest -q tests/test_coordinator.py tests/test_nethack_corner.py tests/test_nethack_run.py tests/test_nethack_source.py`: 220 passed / 27 subtests。
 
 純粋なfixtureで、manual/save/operator/不明終端、欠落receipt、別世代、pending/rollback、cleanup不足、UUID・型・過大入力、深いコピーを確認する。成功fixtureの `from_runtime` は将来契約を表す合成証跡であり、実環境で取得できた証拠ではない。
 
-`tests/test_coordinator.py::TestNethackPostRestoreIntegration` はfake adapterを用いた実Coordinator・コーナー・RunStoreの結合テストであり、復帰後のsave継続source保存と履歴保存失敗時の復帰維持を検証する。実NetHack/VMでの受入ではない。
+`tests/test_coordinator.py::TestNethackPostRestoreIntegration` はfake adapterを用いた実Coordinator・コーナー・RunStoreの結合テストであり、復帰後のsave継続source保存、履歴保存失敗時の復帰維持、queued startが遷移中のprevious runtimeを保持すること、rollback失敗後のrecoverとqueue再試行、次runが先にcanonicalを進めた場合のsource fail-closedを検証する。実NetHack/VMでの受入ではない。
 
 フルrepository CI、独立レビュー、実機検証の結果はPR本文で別に記録する。単体テストの成功を配備・本番有効化・攻略改善の証明にしない。

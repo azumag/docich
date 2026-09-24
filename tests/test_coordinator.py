@@ -1667,6 +1667,92 @@ class TestNethackPostRestoreIntegration(CoordinatorTestBase):
         latest = NethackRunStore.from_global(g).current()["sessions"][-1]
         self.assertNotIn("post_restore_source", latest)
 
+    def test_queued_start_recovers_rollback_and_fences_next_run_competition(self):
+        root = Path(self.tempdir.name)
+        save_dir = root / "playground" / "save"
+        save_dir.mkdir(parents=True)
+        (root / "config" / "games").mkdir(parents=True)
+        (root / "config" / "docich.toml").write_text(
+            '[paths]\nstate_dir = "run"\ngames_dir = "config/games"\n'
+            '[nethack_corner]\nenabled = true\nrun_boundary = false\n'
+            'duration_minutes = 1\n', encoding="utf-8",
+        )
+        (root / "config" / "games" / "nethack.toml").write_text(
+            '[game]\nname = "nethack"\ntitle = "NetHack"\nadapter = "cli"\n'
+            '[cli]\ncommand = "nethack"\n'
+            '[agent]\nenabled = false\nbrain = "random"\n'
+            f'[nethack]\npersistent_run = true\nsave_dir = "{save_dir}"\n',
+            encoding="utf-8",
+        )
+        g = config.load_global(root)
+        self.assertEqual(Path(g.state_dir), self.state_dir)
+        self.assertEqual(self.coordinator.start("robots").status, "succeeded")
+
+        # Leave a real coordinator switch durably after candidate materialize.
+        # The first recovery rollback cannot rematerialize the previous
+        # runtime; a second recovery must restore it before the queued
+        # NetHack corner request can proceed.
+        interrupted_request = str(uuid.uuid4())
+        self.behaviors["robots"]["materialize_error"] = FailOn(
+            AdapterError("rollback unavailable"), 1
+        )
+        self.coordinator.crash_hook = self._crash_on_replace(4)
+        with self.assertRaises(InjectedCrash):
+            self.coordinator.switch("hanjuku", request_id=interrupted_request)
+        self.coordinator.crash_hook = None
+        canonical = self.canonical()
+        self.assertEqual(canonical["phase"], "probing")
+        self.assertIsNone(canonical["active"])
+        self.assertEqual(canonical["previous"]["game"], "robots")
+        self.assertTrue(self.factory.adapter("hanjuku", 2).runtime.alive)
+
+        def finish_sleep(_seconds):
+            (save_dir / "1000docich").write_bytes(b"save")
+
+        manager = NethackCornerManager(
+            g, coordinator=self.coordinator, sleep=finish_sleep,
+            ensure_runtime=lambda: None, chat=lambda _text: None,
+            voice=lambda _text: None, stream_game=lambda _game: None,
+        )
+        self.assertEqual(manager.start().status, "queued")
+        queued_state = manager.status()
+        self.assertEqual(queued_state["status"], "starting")
+        self.assertEqual(queued_state["previous_game"], "robots")
+        queued_request = queued_state["switch_request_id"]
+        queued_receipt = self.store.receipts.load(queued_request)
+        self.assertEqual(queued_receipt["status"], "queued")
+        self.assertEqual(queued_receipt["operation"], "switch")
+
+        failed_recovery = self.coordinator.recover()
+        self.assertEqual(failed_recovery.status, "failed")
+        self.assertEqual(self.canonical()["phase"], "failed")
+        recovered = self.coordinator.recover()
+        self.assertEqual(recovered.status, "rolled_back")
+        self.assertEqual(self.canonical()["active"]["game"], "robots")
+        self.assertEqual(self.canonical()["phase"], "ready")
+
+        original_summary = manager._restoration_summary
+
+        def compete_with_next_run(state, before, run_id, session_started_at):
+            # Model a separate next run winning the coordinator immediately
+            # after restore commits but before the prior run binds its source.
+            self.assertEqual(self.canonical()["phase"], "ready")
+            self.assertEqual(self.canonical()["active"]["game"], "robots")
+            self.assertEqual(self.coordinator.switch("hanjuku").status, "succeeded")
+            return original_summary(state, before, run_id, session_started_at)
+
+        with patch.object(manager, "_restoration_summary", side_effect=compete_with_next_run):
+            self.assertEqual(manager.tick().status, "completed")
+
+        self.assertEqual(self.canonical()["active"]["game"], "hanjuku")
+        run = NethackRunStore.from_global(g).current()
+        self.assertEqual(run["status"], "suspended")
+        session = run["sessions"][-1]
+        self.assertNotIn("post_restore_source", session)
+        self.assertEqual(
+            manager.status()["source_evidence_status"], "restore_generation_mismatch"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
