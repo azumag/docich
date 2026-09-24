@@ -37,6 +37,43 @@ GUI_BINARIES = ("Xvfb", "xdotool", "tmux", "ffplay", "xterm")
 GUI_AVAILABLE = all(shutil.which(name) for name in GUI_BINARIES) and browser_binary() is not None
 
 
+def _visible_window_summary(display: str | None) -> dict:
+    """Return bounded, fixture-only X11 titles/classes for smoke failures."""
+    xdotool = shutil.which("xdotool")
+    if not xdotool or not isinstance(display, str) or not display.startswith(":"):
+        return {"available": False}
+    if not display[1:].isdigit():
+        return {"available": False}
+    env = dict(os.environ, DISPLAY=display)
+    try:
+        found = subprocess.run(
+            [xdotool, "search", "--onlyvisible", "--name", ".*"],
+            env=env, capture_output=True, text=True, timeout=1, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {"available": False}
+    ids = found.stdout.split() if found.returncode == 0 else []
+    windows = []
+    for window_id in ids[:16]:
+        details = {}
+        for field, command in (
+            ("title", "getwindowname"),
+            ("class", "getwindowclassname"),
+        ):
+            try:
+                value = subprocess.run(
+                    [xdotool, command, window_id],
+                    env=env, capture_output=True, text=True, timeout=1, check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if value.returncode == 0 and value.stdout.strip():
+                details[field] = value.stdout.strip()[:128]
+        if details:
+            windows.append(details)
+    return {"available": True, "visible_count": len(ids), "windows": windows}
+
+
 def _start_outer_xvfb() -> tuple[subprocess.Popen, str]:
     read_fd, write_fd = os.pipe()
     process = subprocess.Popen(
@@ -193,6 +230,12 @@ class NethackTilesGuiSmokeTests(unittest.TestCase):
                 adapter.readiness(time.monotonic() + 30, None)
                 manifest_path = runtime_dir / "nethack_tiles.json"
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                try:
+                    presentation = json.loads(
+                        adapter._presentation_path().read_text(encoding="utf-8")
+                    )
+                except (OSError, ValueError):
+                    presentation = {}
                 self.assertEqual(
                     manifest["status"],
                     "tiles_active",
@@ -202,6 +245,10 @@ class NethackTilesGuiSmokeTests(unittest.TestCase):
                             "mode": manifest.get("mode"),
                             "reason": manifest.get("reason"),
                             "status": manifest.get("status"),
+                            "presentation_status": presentation.get("status"),
+                            "presentation_has_window": bool(presentation.get("window")),
+                            "private_x11": _visible_window_summary(presentation.get("display")),
+                            "outer_x11": _visible_window_summary(display_name),
                         },
                         sort_keys=True,
                     ),
