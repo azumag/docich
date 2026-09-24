@@ -611,10 +611,14 @@ def test_launched_old_generation_keeps_its_tactics_after_a_new_plan(monkeypatch)
                           'target': 'スペンソニア', 'cards': ['ブンシーン']}])
     old_j1 = adjust.execution_step(first, 'J1')
     assert _launch(monkeypatch, mem) == [policy.pad('a')]
-    # A new plan arrives before ココット reaches スペンソニア.
+    # A new plan arrives before ココット reaches スペンソニア, and its unit is
+    # also sent to スペンソニア (overwriting the per-castle launched record).
     second = _adopt(mem, [{'step': 'J1', 'general': 'ヴィーナス', 'source': 'カストーラ',
-                           'target': 'ジョンリギ'}])
-    assert second != first and mem['active'] == adjust.execution_step(second, 'J1')
+                           'target': 'スペンソニア'}])
+    new_j1 = adjust.execution_step(second, 'J1')
+    assert second != first and mem['active'] == new_j1
+    assert _launch(monkeypatch, mem) == [policy.pad('a')]
+    assert mem['launched']['スペンソニア']['general'] == 'ヴィーナス'
     assert policy.message_step(
         _text_screen('ココットしょうぐんがスペンソニアじょうにのりこんだ'), mem) == [policy.pad('a')]
     assert mem['attack']['step'] == old_j1
@@ -627,9 +631,34 @@ def test_launched_old_generation_keeps_its_tactics_after_a_new_plan(monkeypatch)
     policy.battle_end(mem, 'map')
     policy.battle_end(mem, 'map')
     assert mem['orders'][old_j1] == 'pending'
-    mem['orders'][adjust.execution_step(second, 'J1')] = 'launched'
     mem['active'] = None
     assert policy.next_order(mem)['step'] == old_j1
+    # The later unit still binds to its own execution id when it arrives.
+    assert policy.message_step(
+        _text_screen('ヴィーナスしょうぐんがスペンソニアじょうにのりこんだ'), mem) == [policy.pad('a')]
+    assert mem['attack']['step'] == new_j1
+
+
+def test_ambiguous_sorties_are_not_guessed(monkeypatch):
+    mem = stuck_memory()
+    mem['sorties'] = {
+        'A:aaaaaaaa:J1': {'general': 'ココット', 'target': 'スペンソニア', 'status': 'en_route'},
+        'A:bbbbbbbb:J1': {'general': 'ココット', 'target': 'スペンソニア', 'status': 'en_route'},
+        'A:cccccccc:J9': {'general': chart.HERO, 'target': 'けっかい', 'status': 'en_route'},
+        'A:dddddddd:J9': {'general': chart.HERO, 'target': 'けっかい', 'status': 'en_route'}}
+    mem['launched_orders'] = {k: {'step': k, 'general': v['general'], 'target': v['target'],
+                                  'source': 'ゴーメン', 'cards': [], 'after': None}
+                              for k, v in mem['sorties'].items()}
+    assert policy.message_step(
+        _text_screen('ココットしょうぐんがスペンソニアじょうにのりこんだ'), mem) == [policy.pad('a')]
+    assert mem['attack']['step'] is None
+    assert decisions(mem, 'attack_observed')[-1]['deviation_reason'] == 'ambiguous_sortie'
+    assert all(v['status'] == 'en_route' for v in mem['sorties'].values())
+    # An ambiguous boss entry is held, never bound to either sortie.
+    mem['attack'] = None
+    entry = f'{chart.HERO}しょうぐんがボスじょうにせめこんだ!!'
+    assert policy.message_step(_text_screen(entry), mem) == []
+    assert decisions(mem, 'situation_held')[-1]['observed_metric']['sortie_match'] == 'ambiguous'
 
 
 def test_interim_runs_after_an_exhausted_plan_but_not_while_a_plan_waits(monkeypatch):

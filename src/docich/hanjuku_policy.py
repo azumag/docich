@@ -515,6 +515,11 @@ def target_step(screen: Screen, mem, frame):
         mem.setdefault('launched_orders', {})[order['step']] = {
             **order, 'cards': list(order['cards']),
             'after': list(order['after']) if order['after'] else None}
+        # Per execution id: ``launched`` keeps one sortie per castle, so a later
+        # sortie to the same castle must not unbind an earlier unit en route.
+        mem.setdefault('sorties', {})[order['step']] = {
+            'general': general, 'target': order['target'], 'status': 'en_route',
+            'evidence': (mem.get('order_context') or {}).get(order['step'])}
         return [pad('a')]
     return _deploy_input(screen, mem, order, result or [], '出撃先へ目標カーソルを移動')
 
@@ -852,6 +857,33 @@ def deploy_step(screen: Screen, mem):
 
 
 # ---------------------------------------------------------------- battles
+def _match_sortie(mem, castle, general):
+    """The execution id of the sortie a measured entry message belongs to.
+
+    Returns ``(step, status)``: exactly one en-route sortie of this general to
+    this castle is ``matched``; several are ``ambiguous`` (never guessed);
+    none falls back to the legacy per-castle record.
+    """
+    sorties = mem.get('sorties') or {}
+    candidates = [step for step, sortie in sorties.items()
+                  if sortie.get('status') == 'en_route' and sortie.get('target') == castle
+                  and sortie.get('general') == general]
+    if len(candidates) == 1:
+        return candidates[0], 'matched'
+    if candidates:
+        return None, 'ambiguous'
+    launched = (mem.get('launched') or {}).get(castle) or {}
+    if launched.get('general') == general and launched.get('step') not in sorties:
+        return launched.get('step'), 'legacy'
+    return None, 'none'
+
+
+def _bind_sortie(mem, step):
+    sortie = (mem.get('sorties') or {}).get(step)
+    if sortie:
+        sortie['status'] = 'arrived'
+
+
 def _battle_context(mem, ally):
     """Only a matching attack message establishes a battle location and side."""
     attack = mem.get('attack') or {}
@@ -863,6 +895,14 @@ def _battle_context(mem, ally):
         return {'castle': attack.get('castle'), 'side': side, 'step': attack.get('step'),
                 'entry_evidence': attack.get('entry_evidence')}
     captured = set(mem.get('captured', []))
+    en_route = [step for step, sortie in (mem.get('sorties') or {}).items()
+                if sortie.get('general') == ally and sortie.get('status') in ('en_route', 'arrived')
+                and sortie.get('target') not in captured]
+    if len(en_route) == 1:
+        return {'castle': None, 'side': None, 'step': en_route[0],
+                'context': 'unclassified_location'}
+    if en_route:
+        return {'castle': None, 'side': None, 'step': None, 'context': 'ambiguous_sortie'}
     for castle, info in (mem.get('launched') or {}).items():
         if info.get('general') == ally and castle not in captured:
             return {'castle': None, 'side': None, 'step': info.get('step'),
@@ -1216,33 +1256,42 @@ def message_step(screen: Screen, mem):
     boss_entry = re.fullmatch(r'([^\ufffd\s]+)しょうぐんがボスじょうにせめこんだ!!', text)
     if boss_entry:
         general = boss_entry.group(1)
-        launched = (mem.get('launched') or {}).get(BOSS_CASTLE) or {}
-        step = launched.get('step')
+        current = mem.get('attack') or {}
+        step, match = _match_sortie(mem, BOSS_CASTLE, general)
+        if (match != 'matched' and current.get('castle') == BOSS_CASTLE
+                and current.get('general') == general
+                and current.get('entry_evidence') == 'measured_boss_entry'):
+            return [pad('a')]              # same entry text still on screen
         # Base 1-B1 or an adjusted/interim boss order (generation-scoped id):
         # the launched order itself must target the boss castle.
-        if (not _is_boss_order(_order_for_step(mem, step), mem)
-                or launched.get('general') != general):
+        if not _is_boss_order(_order_for_step(mem, step), mem):
             _record(mem, 'situation_held', screen='boss_attack_started',
-                    observed_metric={'message': text}, reason='実測ボス突入文を読んだが出撃注文と一致しないため保留')
+                    observed_metric={'message': text, 'sortie_match': match},
+                    reason='実測ボス突入文を読んだが出撃注文と一致しないため保留')
             return []
+        _bind_sortie(mem, step)
         mem['attack'] = {'general': general, 'castle': BOSS_CASTLE, 'side': 'attack', 'step': step,
                          'entry_evidence': 'measured_boss_entry'}
         _record(mem, 'attack_observed', chart_step=step, general=general, castle=BOSS_CASTLE,
-                expected_metric={'general': launched['general']}, observed_metric={'general': general, 'message': text},
+                expected_metric={'general': general}, observed_metric={'general': general, 'message': text},
                 reason='実測済みのボス城突入文と出撃将軍が一致')
         return [pad('a')]
     m = ATTACK.search(text)
     if m:
         general, castle = m.groups()
         launched = (mem.get('launched') or {}).get(castle) or {}
-        ours = general == launched.get('general') or general in (NAME, 'ヴィーナス', 'ココット', 'ゼウス')
+        current = mem.get('attack') or {}
+        step, match = _match_sortie(mem, castle, general)
+        if match != 'matched' and current.get('castle') == castle and current.get('general') == general:
+            return [pad('a')]              # same entry text still on screen
+        ours = step is not None or match == 'ambiguous' or general in (NAME, 'ヴィーナス', 'ココット', 'ゼウス')
         side = 'attack' if ours else 'enemy'
-        step = launched.get('step') if launched.get('general') == general else None
-        if (mem.get('attack') or {}).get('castle') != castle or (mem.get('attack') or {}).get('general') != general:
-            _record(mem, 'attack_observed', chart_step=step, general=general, castle=castle,
-                    expected_metric=launched.get('general'), observed_metric=general,
-                    deviation_reason=None if step or not ours else 'unplanned_attack',
-                    reason='のりこんだ表示')
+        _bind_sortie(mem, step)
+        _record(mem, 'attack_observed', chart_step=step, general=general, castle=castle,
+                expected_metric=launched.get('general'), observed_metric=general,
+                deviation_reason=(None if step or not ours
+                                  else 'ambiguous_sortie' if match == 'ambiguous' else 'unplanned_attack'),
+                reason='のりこんだ表示')
         mem['attack'] = {'general': general, 'castle': castle, 'side': side, 'step': step}
         return [pad('a')]
     m = DEFENSE.search(text)
@@ -1500,7 +1549,7 @@ def observe_events(screen: Screen, mem):
                         'expect_menu', 'general_override', 'launched', 'month_exit',
                         'nav_last', 'orders', 'picked', 'retries', 'retry_context', 'shop',
                         'source_override', 'uncertain', 'month', 'order_context', 'sortie_general',
-                        'chart_adjust', 'chart_plan', 'launched_orders'):
+                        'chart_adjust', 'chart_plan', 'launched_orders', 'sorties'):
                 mem.pop(key, None)
             mem['chapter'] = chapter
             mem['variant'] = 'chart' if chart.orders(chapter) else 'chart_unavailable'
