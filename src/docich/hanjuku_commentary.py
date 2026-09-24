@@ -107,6 +107,33 @@ def compose(rec: dict) -> tuple[str, str | None]:
         return 'gift_extra', '追加のおねだりは、月一の買い物に備えて断ります。'
     if kind == 'situation_held':
         return 'held', None
+    if kind == 'chart_adjust_request':
+        reason = rec.get('off_chart_reason') or ''
+        why = {'orders_locked': '次の指示が未達で出撃待ち',
+               'orders_exhausted': '出撃可能な指示が尽きた',
+               'chart_unavailable': '基準チャートが使えない'}.get(reason, '出撃可能な指示がない')
+        return 'chart_adjust_request', f'{why}ので、AIに新しい攻略チャートを作らせています。'
+    if kind == 'chart_adjust_applied':
+        digest = rec.get('order_digest') or []
+        heads = [f"{d['general']}→{d['target']}" for d in digest
+                 if isinstance(d, dict) and d.get('general') and d.get('target')]
+        if not heads:
+            steps = rec.get('local_steps') or rec.get('steps') or []
+            return 'chart_adjust_applied', f'AIの調整チャートを採用。指示は{len(steps)}手です。'
+        if len(heads) > 3:
+            return 'chart_adjust_applied', f"AIの調整チャートを採用。{'、'.join(heads[:3])}など{len(heads)}手。"
+        return 'chart_adjust_applied', f"AIの調整チャートを採用。{'、'.join(heads)}。"
+    if kind == 'chart_interim_order':
+        conf = rec.get('confidence')
+        conf_s = f'確信度{conf:.2f}。' if type(conf) in (int, float) else ''
+        if rec.get('strategy_variant') == 'chart_interim_fallback':
+            return (f"jev_interim:{rec.get('target')}",
+                    f"調整チャートを待つ間、{rec['general']}が{rec['target']}を白兵で再攻撃します。")
+        return (f"jev_interim:{rec.get('target')}",
+                f"JEVは調整チャートを待つ間、{rec['general']}が{rec['target']}を白兵で再攻撃すると判断しました。{conf_s}")
+    if kind == 'chart_interim_hold':
+        # Only when there is literally nothing left to attack.
+        return 'jev_interim_hold', '再攻撃できる城が無いため、調整チャートを待っています。'
     return f'other:{kind}', None
 
 
@@ -114,4 +141,5 @@ def compose(rec: dict) -> tuple[str, str | None]:
 SPOKEN = frozenset({
     'name_confirm', 'order_start', 'order_retry', 'order_source_changed', 'attack_observed',
     'defense_observed', 'battle_start', 'battle_card', 'battle_result', 'month_plan', 'poor_harvest',
-    'prompt', 'situation_held', 'gift', 'egg_battle', 'order_substitute'})
+    'prompt', 'situation_held', 'gift', 'egg_battle', 'order_substitute',
+    'chart_adjust_request', 'chart_adjust_applied', 'chart_interim_order', 'chart_interim_hold'})

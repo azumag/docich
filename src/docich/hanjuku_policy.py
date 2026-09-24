@@ -343,8 +343,9 @@ def interim_candidates(mem) -> dict:
     """Deterministic interim orders JEV may choose from while a chart is pending.
 
     Only re-attacks of uncaptured non-boss castles by a general the base chart
-    already sends there, without cards (stock is not verified). ``hold`` is
-    always available. JEV picks a label; it never produces keys or orders.
+    already sends there, without cards (stock is not verified). There is no
+    hold label: JEV must pick an attack, and an unusable answer falls back to
+    the first candidate. JEV never produces keys or orders itself.
     """
     chapter = mem.get('chapter') or 0
     castles = chart.castles(chapter)
@@ -364,6 +365,18 @@ def interim_candidates(mem) -> dict:
     return out
 
 
+def _pick_interim_order(candidates: dict, answer: dict):
+    """Return (label, order, confidence, fallback) — always an attack order."""
+    choice, confidence = answer.get('choice'), answer.get('confidence')
+    order = candidates.get(choice)
+    confident = type(confidence) in (int, float) and confidence >= INTERIM_MIN_CONFIDENCE
+    if answer.get('status') == 'ok' and order is not None and confident:
+        return choice, order, confidence, False
+    # No hold: an unusable JEV answer still takes the first attack candidate.
+    label = next(iter(candidates))
+    return label, candidates[label], None, True
+
+
 def _adopt_interim(mem, state, rid):
     answer = mem.get('_interim')
     if (not isinstance(answer, dict) or answer.get('request_id') != rid
@@ -372,21 +385,27 @@ def _adopt_interim(mem, state, rid):
     state['interim_count'] = state.get('interim_count', 0) + 1
     state['interim_wanted'] = False
     candidates = interim_candidates(mem)
-    choice, confidence = answer.get('choice'), answer.get('confidence')
-    order = candidates.get(choice)
-    confident = type(confidence) in (int, float) and confidence >= INTERIM_MIN_CONFIDENCE
-    if answer.get('status') != 'ok' or order is None or not confident:
+    if not candidates:
+        # Nothing to attack in this chapter/state: the only remaining wait.
         _record(mem, 'chart_interim_hold', chart_step=None, strategy_variant='chart_adjust_pending',
-                request_id=rid, choice=choice, confidence=confidence, jev_status=answer.get('status'),
-                deviation_reason=None if choice == 'hold' else 'interim_rejected',
-                reason='JEV暫定判断が保留・低確信・候補外のため無入力で調整チャートを待つ')
+                request_id=rid, choice=None, confidence=None, jev_status=answer.get('status') or 'no_candidates',
+                deviation_reason='interim_no_candidates',
+                reason='再攻撃できる未占領城が無いため暫定出撃を作らず調整チャートを待つ')
         return
+    choice, order, confidence, fallback = _pick_interim_order(candidates, answer)
     step = f"{chart_adjust.INTERIM_PREFIX}{rid[:6]}:{state['interim_count']}"
     state['interim_order'] = {**order, 'step': step}
-    _record(mem, 'chart_interim_order', chart_step=step, strategy_variant='chart_interim_jev',
-            request_id=rid, choice=choice, confidence=confidence, general=order['general'],
-            source=order['source'], target=order['target'],
-            reason='調整チャート待ちの間、JEVが決定的候補から暫定出撃を選択')
+    if fallback:
+        _record(mem, 'chart_interim_order', chart_step=step, strategy_variant='chart_interim_fallback',
+                request_id=rid, choice=choice, confidence=confidence, general=order['general'],
+                source=order['source'], target=order['target'], jev_status=answer.get('status'),
+                deviation_reason='interim_fallback',
+                reason='JEV暫定判断が保留・低確信・候補外のため最初の攻撃候補で必ず出撃')
+    else:
+        _record(mem, 'chart_interim_order', chart_step=step, strategy_variant='chart_interim_jev',
+                request_id=rid, choice=choice, confidence=confidence, general=order['general'],
+                source=order['source'], target=order['target'],
+                reason='調整チャート待ちの間、JEVが決定的候補から暫定出撃を選択')
 
 
 def _adopt_plan(mem, doc, rid):
@@ -403,9 +422,12 @@ def _adopt_plan(mem, doc, rid):
     state['interim_wanted'] = False
     state.pop('interim_order', None)
     mem['variant'] = 'chart_adjusted'
+    # Digest for commentary: grounded order content, not the full plan blob.
+    order_digest = [{'general': o['general'], 'source': o['source'],
+                     'target': o['target'], 'cards': list(o['cards'])} for o in orders]
     _record(mem, 'chart_adjust_applied', chart_step=None, strategy_variant='chart_adjusted',
             request_id=rid, source=doc.get('source'), steps=[o['step'] for o in orders],
-            local_steps=[o['local_step'] for o in orders],
+            local_steps=[o['local_step'] for o in orders], order_digest=order_digest,
             reason='調整チャートを受信したため独自の指示列で出撃を再開')
 
 
@@ -447,9 +469,27 @@ def _off_chart(mem):
         return
     _adopt_interim(mem, state, rid)
     interim = state.get('interim_order')
-    busy = interim and (mem.get('orders') or {}).get(interim['step']) in (None, 'pending')
-    state['interim_wanted'] = (not busy and state.get('interim_count', 0) < INTERIM_LIMIT
-                               and bool(interim_candidates(mem)))
+    status = mem.get('orders') or {}
+    busy = interim and status.get(interim['step']) in (None, 'pending')
+    candidates = interim_candidates(mem)
+    if busy or not candidates:
+        state['interim_wanted'] = False
+    elif state.get('interim_count', 0) < INTERIM_LIMIT:
+        state['interim_wanted'] = True
+    else:
+        # JEV budget spent: still sortie with the first candidate (no hold).
+        state['interim_wanted'] = False
+        if not interim or status.get(interim['step']) not in (None, 'pending'):
+            state['interim_count'] = state.get('interim_count', 0) + 1
+            label, order = next(iter(candidates.items()))
+            step = f"{chart_adjust.INTERIM_PREFIX}{rid[:6]}:{state['interim_count']}"
+            state['interim_order'] = {**order, 'step': step}
+            _record(mem, 'chart_interim_order', chart_step=step,
+                    strategy_variant='chart_interim_fallback',
+                    request_id=rid, choice=label, confidence=None,
+                    general=order['general'], source=order['source'], target=order['target'],
+                    deviation_reason='interim_fallback',
+                    reason='JEV暫定回数の上限に達したため最初の攻撃候補で必ず出撃')
 
 
 def _finish_order(mem, state, **fields):
@@ -463,9 +503,19 @@ def _finish_order(mem, state, **fields):
 
 def map_step(screen: Screen, mem, frame):
     if mem.pop('expect_menu', False):
+        mem['menu_miss'] = int(mem.get('menu_miss', 0)) + 1
         mem['uncertain'] = True
         _record(mem, 'localize', reason='城で決定したがメニューが出ないため位置を再測定',
-                observed_metric=mem.get('cursor'))
+                observed_metric=mem.get('cursor'),
+                expected_metric={'menu_miss': mem['menu_miss']})
+        # Integrated motion put the cursor on a non-castle cell (g340: A on
+        # open water forever). Drop the estimate; only a fresh roof anchor
+        # may re-enable confirming a cell.
+        for key in ('cursor', 'anchor', 'nav_last'):
+            mem.pop(key, None)
+        _record(mem, 'nav_reset',
+                reason='城で決定してもメニューが出ないため位置推定を破棄して屋根アンカーで再特定する',
+                observed_metric={'menu_miss': mem['menu_miss']})
     order = _order(mem)
     if order is None:
         order = next_order(mem)
@@ -483,11 +533,32 @@ def map_step(screen: Screen, mem, frame):
     source = mem.get('source_override', {}).get(order['step'], order['source'])
     goal = chart.castles(mem['chapter'])[source]
     result = nav_step(screen, mem, frame, goal)
+    if mem.get('menu_miss'):
+        if mem.get('anchor') and not mem.get('uncertain') and mem.get('cursor'):
+            mem['menu_miss'] = 0   # roofs re-anchored: confirming is allowed again
+        elif result == 'arrived':
+            _record(mem, 'situation_held', screen=screen.kind,
+                    observed_metric={'cursor': mem.get('cursor'),
+                                     'screen_cursor': list(_cursor(screen) or ())},
+                    reason='城メニュー未確認のため位置を信用せず入力を保留して再アンカーを待つ')
+            return []
+        elif result is None:
+            if _cursor(screen):
+                _record(mem, 'situation_held', screen=screen.kind,
+                        observed_metric={'screen_cursor': list(_cursor(screen))},
+                        reason='マップ位置を屋根アンカーで再特定できないため入力を保留')
+            return []
     if result == 'arrived':
         # If no castle menu follows, the cell was wrong: re-localize.
         mem['expect_menu'] = True
         return _deploy_input(screen, mem, order, [pad('a')], '出撃元の城を選択')
-    return _deploy_input(screen, mem, order, result or [], '出撃元の城へカーソルを移動')
+    if result is None:
+        if _cursor(screen):
+            _record(mem, 'situation_held', screen=screen.kind,
+                    observed_metric={'screen_cursor': list(_cursor(screen))},
+                    reason='マップ位置を屋根アンカーで再特定できないため入力を保留')
+        return []
+    return _deploy_input(screen, mem, order, result, '出撃元の城へカーソルを移動')
 
 
 def target_step(screen: Screen, mem, frame):
@@ -1580,7 +1651,7 @@ def observe_events(screen: Screen, mem):
             # run-wide counters/name evidence, never carry coordinates/orders.
             for key in ('active', 'anchor', 'attack', 'battle', 'battle_seen',
                         'captured', 'card_override', 'cursor', 'egg_battle',
-                        'expect_menu', 'general_override', 'launched', 'month_exit',
+                        'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit',
                         'nav_last', 'orders', 'picked', 'retries', 'retry_context', 'shop',
                         'source_override', 'uncertain', 'month', 'order_context', 'sortie_general',
                         'chart_adjust', 'chart_plan', 'launched_orders', 'sorties'):

@@ -58,9 +58,12 @@ Claude、OpenCode、API、認証情報を操作時に使用しない。旧`brain
     正規化済みフィールドだけを `hanjuku_chart_adjusted.json`（schema 1: 独自order列＋月次purchases）へ保存する。
     request_id/章はモデル出力ではなく要求から付ける。1要求あたり最大 `max_attempts` 回、要求が更新済みなら破棄。
   - L1b 暫定JEV: 調整チャート未着の間、bot（main thread）が JEV（semantic_decision の choice API、既定1.5秒）に
-    決定的候補（ボス以外の未占領城を、基準チャートでそこへ向かう将軍が切り札なしで再攻撃／`hold`）から
-    ラベルを1つだけ選ばせる。policy が候補を再導出してから既存のマップ移動で実行する（`chart_interim_order`）。
-    失敗・タイムアウト・鍵なし・確信度0.7未満・候補外は無入力ホールド（`chart_interim_hold`）。1状況あたり最大2回。
+    決定的候補（ボス以外の未占領城を、基準チャートでそこへ向かう将軍が切り札なしで再攻撃）から
+    ラベルを1つだけ選ばせる。`hold`（見送り）は選択肢に無い。policy が候補を再導出してから既存のマップ移動で
+    実行する（`chart_interim_order`）。失敗・タイムアウト・鍵なし・確信度0.7未満・候補外は、見送りではなく
+    最初の攻撃候補へフォールバックして必ず出撃する（`strategy_variant=chart_interim_fallback`）。
+    1状況あたりJEV確認は最大2回。上限到達後も候補があれば最初の攻撃候補で出撃を続ける。
+    再攻撃できる未占領城が尽きた場合だけ `chart_interim_hold`（調整チャート待ち）となる。
   - L2 採用: 同じ `request_id` への回答だけを次のマップ観測時に `chart_adjust_applied` として独立したorder列で
     採用する（`strategy_variant=chart_adjusted`）。採用済み計画（`chart_plan`）は要求状態（`chart_adjust`）と分離し、
     占領待ちなどで新しい要求を出しても保持する。置き換えるのは次世代の検証済み計画を採用した時だけ。

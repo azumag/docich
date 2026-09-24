@@ -995,3 +995,106 @@ def test_input_context_survives_order_cleanup_and_later_information(tmp_path, de
     plan = json.loads((tmp_path/'hanjuku_decisions.jsonl').read_text().splitlines()[0])
     for key in ('chart_step', 'strategy_variant', 'deviation_reason'):
         assert plan[key] == record[key]
+
+
+def test_failed_menu_drops_cursor_estimate_and_stops_sea_a_spam():
+    """g340: A on open water with a stale ほんじょう estimate looped forever."""
+    from docich.hanjuku_pixels import Frame
+    from docich.hanjuku_screen import Screen
+    frame = Frame(256, 224, bytes(256 * 224 * 3))
+    mem = {'chapter': 1, 'variant': 'chart', 'active': '1-A1',
+           'orders': {'1-A1': 'pending'}, 'picked': [],
+           'cursor': list(policy.chart.castles(1)['ほんじょう']),
+           'expect_menu': True, '_records': []}
+    screen = Screen(lines=[], hand=None, text='', kind='map',
+                    cursor=(200, 160))  # bracket on water, not a roof cell
+    actions = policy.map_step(screen, mem, frame)
+    assert actions == []
+    kinds = [r['decision'] for r in mem['_records']]
+    assert 'localize' in kinds and 'nav_reset' in kinds
+    assert not mem.get('cursor') and not mem.get('nav_last')
+    assert mem['menu_miss'] == 1 and mem['uncertain'] is True
+    # Without a roof anchor, a later arrived must not re-send A.
+    mem['_records'] = []
+    mem['expect_menu'] = False
+    # Simulate update_world wrongly still "at goal" without anchor.
+    mem['cursor'] = list(policy.chart.castles(1)['ほんじょう'])
+    monkey_arrived = Screen(lines=[], hand=None, text='', kind='map', cursor=(200, 160))
+    # menu_miss path: arrived but no anchor → hold, no A
+    def arrived(*_a, **_k):
+        return 'arrived'
+    import docich.hanjuku_policy as pol
+    old = pol.nav_step
+    pol.nav_step = arrived
+    try:
+        actions = policy.map_step(monkey_arrived, mem, frame)
+    finally:
+        pol.nav_step = old
+    assert actions == []
+    assert [r['decision'] for r in mem['_records']] == ['situation_held']
+    assert not any(a.get('buttons') == ['a'] for a in actions)
+
+
+def test_castle_menu_seen_clears_menu_miss():
+    state = {'policy': {'chapter': 1, 'menu_miss': 2, 'expect_menu': True,
+                        'orders': {}, 'picked': []}}
+    c = Canvas()
+    c.text(64, 31, 'しゅつげき')
+    c.text(64, 47, 'ステータス')
+    c.hand(40, 29)
+    actions, state = decide(c.frame(), state)
+    assert 'menu_miss' not in state['policy']
+    assert 'expect_menu' not in state['policy']
+
+
+def test_chart_adjust_request_commentary_states_ai_is_generating():
+    key, text = hanjuku_commentary.compose(
+        {'decision': 'chart_adjust_request', 'off_chart_reason': 'orders_exhausted'})
+    assert key == 'chart_adjust_request'
+    assert 'AI' in text and 'チャート' in text
+    assert 'chart_adjust_request' in hanjuku_commentary.SPOKEN
+
+
+def test_chart_adjust_applied_commentary_lists_order_content():
+    key, text = hanjuku_commentary.compose({
+        'decision': 'chart_adjust_applied',
+        'order_digest': [
+            {'general': 'ココット', 'source': 'ほんじょう', 'target': 'ジョンリギ', 'cards': []},
+            {'general': 'ヴィーナス', 'source': 'ナキューメラ', 'target': 'カストーラ', 'cards': ['フットバース']},
+            {'general': 'どうし', 'source': 'ゴーメン', 'target': 'スペンソニア', 'cards': []},
+            {'general': 'どうし', 'source': 'スペンソニア', 'target': 'けっかい', 'cards': ['クースカン']},
+        ],
+        'local_steps': ['J1', 'J2', 'J3', 'J4'],
+    })
+    assert key == 'chart_adjust_applied'
+    assert 'AI' in text and 'ココット' in text and 'ジョンリギ' in text
+    assert len(text) <= 120
+    assert 'chart_adjust_applied' in hanjuku_commentary.SPOKEN
+    # Long plans collapse to a bounded line instead of exceeding MAX_TEXT.
+    long_digest = [{'general': f'将軍{i}', 'source': 'ほんじょう', 'target': f'城{i}', 'cards': []}
+                   for i in range(8)]
+    _, long_text = hanjuku_commentary.compose(
+        {'decision': 'chart_adjust_applied', 'order_digest': long_digest})
+    assert len(long_text) <= 120 and 'など' in long_text and '8手' in long_text
+
+
+def test_jev_interim_commentary_includes_choice_and_confidence():
+    key, text = hanjuku_commentary.compose({
+        'decision': 'chart_interim_order', 'general': 'どうし', 'target': 'スペンソニア',
+        'source': 'ほんじょう', 'confidence': 0.85})
+    assert key == 'jev_interim:スペンソニア'
+    assert 'JEV' in text and 'スペンソニア' in text and '0.85' in text
+    assert 'chart_interim_order' in hanjuku_commentary.SPOKEN
+
+    # Fallback (no hold): always announces the sortie, never見送り.
+    fb_key, fb = hanjuku_commentary.compose({
+        'decision': 'chart_interim_order', 'general': 'ココット', 'target': 'ジョンリギ',
+        'confidence': None, 'strategy_variant': 'chart_interim_fallback'})
+    assert fb_key == 'jev_interim:ジョンリギ'
+    assert 'ココット' in fb and '再攻撃' in fb and '見送' not in fb
+    assert len(fb) <= 120
+
+    _, hold = hanjuku_commentary.compose(
+        {'decision': 'chart_interim_hold', 'deviation_reason': 'interim_no_candidates'})
+    assert '調整チャート' in hold and '見送' not in hold
+    assert 'chart_interim_hold' in hanjuku_commentary.SPOKEN

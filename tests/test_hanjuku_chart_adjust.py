@@ -300,11 +300,24 @@ def test_jev_interim_choice_becomes_a_bounded_deterministic_order():
     mem['_interim'] = {**_answer(mem, label), 'seq': 0}
     policy.map_step(map_screen(), mem, FRAME)
     assert len(decisions(mem, 'chart_interim_order')) == 1
+    # hold is not a choice: the answer falls back to the first attack candidate.
     mem['_interim'] = _answer(mem, 'hold')
     policy.map_step(map_screen(), mem, FRAME)
-    assert decisions(mem, 'chart_interim_hold')[0]['choice'] == 'hold'
-    assert mem['chart_adjust']['interim_wanted'] is False     # limit reached: pure hold
-    # The LLM chart still wins when it arrives.
+    orders = decisions(mem, 'chart_interim_order')
+    assert len(orders) == 2
+    assert orders[-1]['strategy_variant'] == 'chart_interim_fallback'
+    assert orders[-1]['target'] in {'ジョンリギ', 'スペンソニア'}
+    assert not decisions(mem, 'chart_interim_hold')
+    assert mem['chart_adjust']['interim_wanted'] is False     # JEV budget spent
+    # Even after the JEV budget, the next free slot still sorties (no pure hold).
+    mem['orders'][mem['active']] = 'launched'
+    mem['active'] = None
+    policy.map_step(map_screen(), mem, FRAME)
+    assert len(decisions(mem, 'chart_interim_order')) == 3
+    assert mem['active'] is not None
+    # The LLM chart still wins when it arrives (finish the interim first).
+    mem['orders'][mem['active']] = 'launched'
+    mem['active'] = None
     mem['_adjusted'] = adjust.validate(adjusted_doc(rid))
     policy.map_step(map_screen(), mem, FRAME)
     assert mem['active'] == adjust.execution_step(rid, 'J1')
@@ -313,13 +326,18 @@ def test_jev_interim_choice_becomes_a_bounded_deterministic_order():
 
 @pytest.mark.parametrize('answer', [
     {'choice': 'attack_99'}, {'choice': None, 'status': 'timeout'},
-    {'confidence': 0.2}, {'status': 'missing_key', 'choice': None}])
-def test_unusable_jev_answers_hold_without_input(answer):
+    {'confidence': 0.2}, {'status': 'missing_key', 'choice': None},
+    {'choice': 'hold'}])
+def test_unusable_jev_answers_fallback_to_first_attack(answer):
     mem = stuck_memory()
     policy.map_step(map_screen(), mem, FRAME)
     mem['_interim'] = {**_answer(mem, 'attack_1'), **answer}
-    assert policy.map_step(map_screen(), mem, FRAME) == []
-    assert mem.get('active') is None and decisions(mem, 'chart_interim_hold')
+    policy.map_step(map_screen(), mem, FRAME)
+    [order] = decisions(mem, 'chart_interim_order')
+    assert order['strategy_variant'] == 'chart_interim_fallback'
+    assert order['target'] in {'ジョンリギ', 'スペンソニア'}
+    assert mem.get('active') == order['chart_step']
+    assert not decisions(mem, 'chart_interim_hold')
 
 
 def test_hanjuku_interim_ask_projects_state_and_validates_choice():
@@ -336,11 +354,16 @@ def test_hanjuku_interim_ask_projects_state_and_validates_choice():
     assert answer['status'] == 'ok' and answer['choice'] == 'attack_1' and answer['seq'] == 0
     request = seen['request']
     assert set(request) == {'model', 'state', 'questions'}
-    assert set(request['questions']['interim_action']['criteria']) == {'hold', *policy.interim_candidates(mem)}
+    # No hold/skip label: only attack candidates.
+    assert set(request['questions']['interim_action']['criteria']) == set(policy.interim_candidates(mem))
+    assert 'hold' not in request['questions']['interim_action']['criteria']
     assert '_records' not in json.dumps(request, ensure_ascii=False)
     bad = hanjuku_interim.ask(mem, env={}, transport=lambda r, **k: {
         'status': 'ok', 'data': {'answers': {'interim_action': {'choice': 'up', 'confidence': 1}}}})
     assert bad['status'] == 'invalid_response' and bad['choice'] is None
+    hold_out = hanjuku_interim.ask(mem, env={}, transport=lambda r, **k: {
+        'status': 'ok', 'data': {'answers': {'interim_action': {'choice': 'hold', 'confidence': 1}}}})
+    assert hold_out['status'] == 'invalid_response' and hold_out['choice'] is None
     boom = hanjuku_interim.ask(mem, env={}, transport=lambda r, **k: 1 / 0)
     assert boom['status'] == 'network_error'
 
@@ -356,10 +379,10 @@ def test_bot_asks_jev_once_per_pending_seq(tmp_path):
     del mem['_records']
     state = {'policy': mem}
     calls = []
-    fake = lambda m, **k: calls.append(1) or _answer(m, 'hold')
+    fake = lambda m, **k: calls.append(1) or _answer(m, 'attack_1')
     cfg = {'interim_jev': True, 'interim_timeout_ms': 1500}
     meta = {'hanjuku': {'game': 'hanjuku-hero', 'runtime_id': 'r', 'generation': 1, 'lease_id': 'l'}}
-    assert module.ask_interim(tmp_path, state, meta, settings=cfg, ask=fake)['choice'] == 'hold'
+    assert module.ask_interim(tmp_path, state, meta, settings=cfg, ask=fake)['choice'] == 'attack_1'
     assert module.ask_interim(tmp_path, state, meta, settings=cfg, ask=fake) is None
     assert len(calls) == 1
     assert module.ask_interim(tmp_path, {'policy': mem}, meta, settings={**cfg, 'interim_jev': False},

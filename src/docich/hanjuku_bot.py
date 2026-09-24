@@ -183,6 +183,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         mem['uncertain']=True
     if kind in {'castle_menu','general_list'}:
         mem.pop('expect_menu',None)
+        mem.pop('menu_miss',None)   # a real menu proves the cell was correct
     flow=(mem.get('battle') or {}).get('card_flow')
     card_list=bool(flow) and kind in {'text','unknown'} and any(
         w in policy.CARD_NAMES for line in screen.lines for _,w in line.spans())
