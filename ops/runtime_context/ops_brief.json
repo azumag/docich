@@ -1,11 +1,11 @@
 {
-  "output_sha256": "c0e504856ef2227bdac09c61cb0ca471445c39e845f3ecc06d0f32acad9364a2",
+  "output_sha256": "04351ba2ff7f2cf58e37491cd7d2fdd1a9495c7fead0f31e70fbd17da87aa564",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "8b3227b956b07d1a11c5e84232ac37e1eba56d3250590945907c716be94bf759",
+  "source_sha256": "e9f3ec118d27a5acf38cebb0c93c9c518cf739da8469a0c60fdb1dee65f897bf",
   "topics": [
-    "半熟英雄: start-hanjuku ライブ実測（#1104 未実測3項目を g344 で裏取り）",
-    "NetHack P1修正を再push（最新HEADのCI成功、レビュー継続）",
-    "Pac-Man ABBA再開後の実測"
+    "半熟英雄: 原典戦術6パターンとの突合・source_pattern 付与（ローカル実装、未commit・未実機）",
+    "半熟英雄: 敵召喚たまご応戦＋チャート準拠の独自判断・経験記憶（ローカル実装、未commit・未実機）",
+    "NetHack P1確認済み、最新main同期・CI green"
   ]
 }

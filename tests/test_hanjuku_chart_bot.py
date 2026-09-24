@@ -469,12 +469,97 @@ def test_summoned_monster_turn_menu_is_answered_instead_of_stalling():
     c.text(176, 191, 'もうこうげき')
     c.text(176, 207, 'たまごをつかう')
     actions, state = decide(c.frame(), {'policy': {'chapter': 1}})
-    assert actions[0]['buttons'] == ['a'] and state['screen_kind'] == 'egg_battle_menu'
-    assert state['_records'][0]['strategy_variant'] == 'egg_battle_attack'
+    # Independent judgment defaults to たまご (two downs from こうげき), not attack.
+    assert actions[0]['buttons'] == ['down'] and state['screen_kind'] == 'egg_battle_menu'
+    assert state['_records'][0]['strategy_variant'] == 'egg_battle_use_egg'
+    # Enemy summon answer is original pattern ⑥ (own egg when melee is not enough).
+    assert state['_records'][0]['source_pattern'] == '⑥'
+    actions, state = decide(c.frame(), state)
+    assert actions[0]['buttons'] == ['down']
+    actions, state = decide(c.frame(), state)
+    assert actions[0]['buttons'] == ['a']
     m = Canvas((20, 120, 20))
     m.text(40, 183, '59ポイントのダメージ!!')
     actions, state = decide(m.frame(), state)
     assert actions[0]['buttons'] == ['a']
+
+
+def test_experience_prefers_a_better_action_and_stays_with_an_untried_default():
+    from docich import hanjuku_experience as exp_mod
+    assert exp_mod.preferred(None, 'k', default='use_egg', kind='egg_summon') == 'use_egg'
+    mem = {'_experience': exp_mod.empty()}
+    key = exp_mod.situation_key('egg_summon', {'chapter': 1, 'battle': {'enemy': 'ミント', 'ally': 'どうし'}})
+    assert exp_mod.record(mem, key, 'use_egg', 'loss')
+    assert exp_mod.record(mem, key, 'attack', 'win')
+    assert exp_mod.preferred(mem['_experience'], key, default='use_egg', kind='egg_summon') == 'attack'
+    assert exp_mod.preferred(mem['_experience'], key, default='attack', kind='egg_summon') == 'attack'
+    # Losing default with an untried alternative explores the alternative.
+    only_loss = {'schema': 1, 'situations': {'k': {'actions': {'use_egg': {'wins': 0, 'losses': 2}}}}}
+    assert exp_mod.preferred(only_loss, 'k', default='use_egg', kind='egg_summon') == 'attack'
+    # Untried default stays default.
+    assert exp_mod.preferred(exp_mod.empty(), 'k', default='use_egg', kind='egg_summon') == 'use_egg'
+
+
+def test_experience_file_round_trips_and_rejects_symlinks(tmp_path):
+    from docich import hanjuku_experience as exp_mod
+    path = tmp_path / 'hanjuku_experience.json'
+    mem = {'_experience': exp_mod.empty()}
+    exp_mod.record(mem, 'egg_summon|1|ミント|どうし|1-A1', 'use_egg', 'win')
+    exp_mod.save(path, mem['_experience'])
+    loaded = exp_mod.load(path)
+    assert loaded['situations']['egg_summon|1|ミント|どうし|1-A1']['actions']['use_egg']['wins'] == 1
+    assert exp_mod.load(tmp_path / 'missing.json') == exp_mod.empty()
+    path.write_text('not-json')
+    assert exp_mod.load(path) == exp_mod.empty()
+
+
+def test_battle_menu_without_chart_tactic_records_independent_judgment():
+    from docich.hanjuku_screen import Screen
+    from docich.hanjuku_font import TextLine
+    screen = Screen(lines=[TextLine(175, ((160, 'たまごをつかう'),)),
+                           TextLine(191, ((160, 'きりふだ'),)),
+                           TextLine(207, ((160, 'たいきゃく'),))],
+                    hand=None, text='たまごをつかうきりふだたいきゃく', kind='battle_menu')
+    mem = {'chapter': 1, 'battle': {'enemy': 'ミント', 'ally': 'どうし', 'enemy_hp': 50,
+                                    'ally_hp': 20, 'cards_used': []}}
+    actions = policy.battle_menu_step(screen, mem)
+    assert actions[0]['buttons'] == ['a']  # top item = たまご (behind on HP)
+    rec = mem['_records'][-1]
+    assert rec['decision'] == 'independent_menu'
+    assert rec['strategy_variant'] == 'independent_use_egg'
+    # Behind on HP with no chart card due maps to original pattern ⑥ (own egg).
+    assert rec['source_pattern'] == '⑥'
+    assert mem['battle']['independent']['kind'] == 'battle_menu'
+    assert mem['battle']['independent']['pattern'] == '⑥'
+    # Same menu: choice is held, not re-decided.
+    assert policy.battle_menu_step(screen, mem)[0]['buttons'] == ['a']
+    assert len([r for r in mem['_records'] if r['decision'] == 'independent_menu']) == 1
+    # Ahead on HP defaults to pass (B) — original pattern ① (melee push).
+    mem2 = {'chapter': 1, 'battle': {'enemy': 'ミント', 'ally': 'どうし', 'enemy_hp': 20,
+                                     'ally_hp': 90, 'cards_used': []}}
+    assert policy.battle_menu_step(screen, mem2)[0]['buttons'] == ['b']
+    assert mem2['_records'][-1]['strategy_variant'] == 'independent_pass'
+    assert mem2['_records'][-1]['source_pattern'] == '①'
+    # Even HP after a clash maps to pattern ③ (adjusted melee), still pass.
+    mem3 = {'chapter': 1, 'battle': {'enemy': 'ミント', 'ally': 'どうし', 'enemy_hp': 50,
+                                     'ally_hp': 50, 'cards_used': [], 'clashed': True}}
+    assert policy.battle_menu_step(screen, mem3)[0]['buttons'] == ['b']
+    assert mem3['_records'][-1]['source_pattern'] == '③'
+
+
+def test_battle_end_records_independent_choice_outcome_into_experience():
+    from docich import hanjuku_experience as exp_mod
+    mem = {'chapter': 1, '_experience': exp_mod.empty(),
+           'battle': {'enemy': 'ミント', 'ally': 'どうし', 'enemy_hp': 0, 'ally_hp': 30,
+                      'castle': None, 'side': None, 'cards_used': [],
+                      'independent': {'kind': 'battle_menu', 'key': 'battle_menu|1|ミント|どうし|1-A1|behind',
+                                      'action': 'use_egg'}}}
+    policy.battle_end(mem, 'map')
+    policy.battle_end(mem, 'map')
+    row = mem['_experience']['situations']['battle_menu|1|ミント|どうし|1-A1|behind']
+    assert row['actions']['use_egg']['wins'] == 1
+    result = next(r for r in mem['_records'] if r['decision'] == 'experience_result')
+    assert result['experience_action'] == 'use_egg' and result['outcome'] == 'win'
 
 
 def test_gift_request_buys_the_cheapest_and_declines_extra_money():

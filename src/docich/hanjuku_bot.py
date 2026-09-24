@@ -152,17 +152,20 @@ def legacy_actions(frame: Frame, phase: str, state: dict) -> list[dict]:
 
 
 def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
-           interim: dict | None = None) -> tuple[list[dict], dict]:
+           interim: dict | None = None, experience: dict | None = None) -> tuple[list[dict], dict]:
     """Return bounded pad actions and new policy memory; never write or send.
 
     ``adjusted`` is a validated runtime-adjusted chart (``hanjuku_chart_adjust``)
     offered for adoption when the base chart has no ready order. ``interim``
     is a JEV answer (a candidate label, never keys) for the pending request.
-    Neither is persisted in memory.
+    ``experience`` is the persistent independent-judgment memory
+    (``hanjuku_experience``). None of these are persisted in policy memory.
 
     Decision records produced for this observation are returned in
-    ``state['_records']`` for the caller to persist; they are not memory.
+    ``state['_records']`` for the caller to persist; the updated experience
+    is returned in ``state['_experience']``. Neither is memory.
     """
+    from . import hanjuku_experience as experience_module
     from . import hanjuku_policy as policy
     from .hanjuku_screen import parse
     phase=classify(frame)
@@ -172,8 +175,10 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     mem['_records']=[]
     mem['_adjusted']=adjusted
     mem['_interim']=interim
+    mem['_experience']=experience if isinstance(experience, dict) else experience_module.empty()
     updated={**state,'phase':phase,'step':step,'phase_step':phase_step,'bot_version':BOT_VERSION}
     updated.pop('_records',None)
+    updated.pop('_experience',None)
     screen=parse(frame,phase=phase)
     policy.observe_events(screen,mem)
     kind=screen.kind
@@ -194,6 +199,14 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         policy.battle_end(mem,kind)
     if after_battle:
         mem['egg_battle']=False
+        for key in ('egg_action','egg_key','egg_menu_stage','indep_menu',
+                    'indep_menu_key','indep_menu_action'):
+            mem.pop(key,None)
+    if kind != 'egg_battle_menu':
+        mem.pop('egg_menu_stage',None)
+    if kind != 'battle_menu':
+        for key in ('indep_menu','indep_menu_key','indep_menu_action'):
+            mem.pop(key,None)
     actions=None
     if phase=='name' and kind!='name_entry':
         policy._record(mem,'name_wait',chart_step='name',
@@ -204,7 +217,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
             # A second name screen means a new game: never carry the previous
             # game's orders, captures or cursor into it.
             stats=mem.get('stats')
-            mem={'_records':mem['_records'],'previous_stats':stats}
+            kept_experience=mem.get('_experience')
+            mem={'_records':mem['_records'],'previous_stats':stats,'_experience':kept_experience}
             policy._record(mem,'new_game_detected',chart_step='name',
                            reason='名前入力画面を再度確認したため方策状態を初期化')
         actions=policy.name_step(screen,mem)
@@ -263,5 +277,6 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     mem.pop('_adjusted',None)
     mem.pop('_interim',None)
     updated['_records']=mem.pop('_records')
+    updated['_experience']=mem.pop('_experience',None)
     updated['policy']=mem
     return actions,updated

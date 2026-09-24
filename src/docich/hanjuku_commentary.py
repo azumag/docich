@@ -100,7 +100,16 @@ def compose(rec: dict) -> tuple[str, str | None]:
     if kind == 'prompt' and rec.get('strategy_variant') == 'decline_duel':
         return 'duel', '一騎打ちの申し出は、主人公を守るために断ります。'
     if kind == 'egg_battle':
+        if rec.get('strategy_variant') == 'egg_battle_use_egg':
+            return 'egg', '敵が卵で召喚獣を呼び出しました。こちらもたまごで応戦します。'
         return 'egg', '敵が卵で召喚獣を呼び出しました。コマンドはこうげきで応戦します。'
+    if kind == 'independent_menu':
+        action = (rec.get('strategy_variant') or '').removeprefix('independent_')
+        if action == 'use_egg':
+            return 'independent_menu', 'チャートに指示がないので、状況判断でたまごを使います。'
+        if rec.get('source_pattern') == '③' or rec.get('observed_metric', {}).get('source_pattern') == '③':
+            return 'independent_menu', 'チャートに指示がないので、原典の戦術③どおり白兵を続けます。'
+        return 'independent_menu', 'チャートに指示がないので、状況判断で白兵を続けます。'
     if kind == 'gift':
         return 'gift', f"おねだりです。チャートならリセットですが、一番安い{rec['item']}を{rec['price']}ゴールドで買って済ませます。"
     if kind == 'prompt' and rec.get('strategy_variant') == 'decline_extra_gift':
@@ -141,5 +150,5 @@ def compose(rec: dict) -> tuple[str, str | None]:
 SPOKEN = frozenset({
     'name_confirm', 'order_start', 'order_retry', 'order_source_changed', 'attack_observed',
     'defense_observed', 'battle_start', 'battle_card', 'battle_result', 'month_plan', 'poor_harvest',
-    'prompt', 'situation_held', 'gift', 'egg_battle', 'order_substitute',
+    'prompt', 'situation_held', 'gift', 'egg_battle', 'order_substitute', 'independent_menu',
     'chart_adjust_request', 'chart_adjust_applied', 'chart_interim_order', 'chart_interim_hold'})
