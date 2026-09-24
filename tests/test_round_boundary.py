@@ -280,14 +280,19 @@ def test_boundary_override_does_not_extend_post_boundary_steps():
         assert coordinator.start("nethack").status == "succeeded"
         old = factory.adapters[("nethack", 1)]
         old.boundary_release.set()          # the match ends immediately
+        # Keep scheduler jitter before target construction outside the
+        # assertion we care about. The restored post-boundary budget must
+        # still be the ordinary request budget, never the 30s override.
+        request_timeout_s = 2.0
         started = time.monotonic()
-        result = coordinator.switch("robots", timeout_s=0.6)
+        result = coordinator.switch("robots", timeout_s=request_timeout_s)
         elapsed = time.monotonic() - started
         assert result.status in {"failed", "rolled_back"}
         assert elapsed < 5.0, elapsed
         target = factory.adapters[("robots", 2)]
         assert target.readiness_deadline_left is not None
-        assert target.readiness_deadline_left <= 0.6
+        assert target.readiness_deadline_left <= request_timeout_s
+        assert target.readiness_deadline_left < factory.boundary_timeout_s
         state, _ = store.canonical.load()
         assert state["phase"] == "ready"
         assert state["active"]["game"] == "nethack"
