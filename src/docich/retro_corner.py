@@ -300,7 +300,12 @@ def corner_intro(g: GlobalConfig, game_name: str) -> str:
 
 
 def describe_strategy_change(state_dir, game_name: str) -> str:
-    """今回戦略と同じゲームの前回戦略を比較し、差分を短く説明する。"""
+    """ゲーム固有の前回履歴を今回の開始案内向けに短く説明する。"""
+    if game_name == "hanjuku-hero":
+        from .hanjuku_history import describe_latest_run
+
+        return describe_latest_run(Path(state_dir))
+
     if game_name == "ninvaders":
         from .ninvaders.store import PolicyStore
 
