@@ -74,9 +74,8 @@ def measure(chapter: int, samples, *, seed: tuple[int, int] | None = None,
     castles: dict[str, tuple[int, int]] = dict(known or {})
     world: list[int] | None = None
     last_screen: list[int] | None = None
-    expected = [0, 0]
     uncertain = True
-    seeded = bool(castles) or seed is not None
+    seeded = bool(castles)
 
     for item in samples:
         if isinstance(item, tuple):
@@ -93,13 +92,16 @@ def measure(chapter: int, samples, *, seed: tuple[int, int] | None = None,
             continue
 
         if world is not None and last_screen is not None and not uncertain:
-            moved = []
-            for axis, bounds in ((0, EDGE_X), (1, EDGE_Y)):
-                if _at_edge(s[axis], bounds) or _at_edge(last_screen[axis], bounds):
-                    moved.append(expected[axis])
-                else:
-                    moved.append(s[axis] - last_screen[axis])
-            world = [world[0] + moved[0], world[1] + moved[1]]
+            if any(
+                _at_edge(s[axis], bounds) or _at_edge(last_screen[axis], bounds)
+                for axis, bounds in ((0, EDGE_X), (1, EDGE_Y))
+            ):
+                uncertain = True
+            else:
+                world = [
+                    world[0] + s[0] - last_screen[0],
+                    world[1] + s[1] - last_screen[1],
+                ]
 
         box = (s[0] - 2, s[1] - 2, s[0] + 18, s[1] + 18)
         roofs = [r for r in castle_roofs(frame, exclude=box) if not r['clipped']]
@@ -109,21 +111,22 @@ def measure(chapter: int, samples, *, seed: tuple[int, int] | None = None,
             cam, _anchor = found
             world = [cam[0] + s[0], cam[1] + s[1]]
             uncertain = False
-        elif label and label not in castles and (not seeded or seed is not None):
-            # First sample (or seed override): place this castle at the origin.
-            if seed is not None and not any(castles.values()):
-                world = [seed[0], seed[1]]
-            elif world is None:
-                world = [s[0], s[1]]
-            castles[label] = (world[0], world[1])
-            uncertain = False
-            seeded = True
-        elif label and label not in castles and world is not None and not uncertain:
-            castles[label] = (world[0], world[1])
+
+        if label:
+            if label in castles:
+                world = [castles[label][0], castles[label][1]]
+                uncertain = False
+                seeded = True
+            elif not seeded:
+                origin = seed if seed is not None else (s[0], s[1])
+                world = [origin[0], origin[1]]
+                castles[label] = (world[0], world[1])
+                uncertain = False
+                seeded = True
+            elif world is not None and not uncertain:
+                castles[label] = (world[0], world[1])
 
         last_screen = list(s)
-        expected = [0, 0]  # offline: no pad log; roofs re-anchor after edges
-        uncertain = world is None or uncertain and label not in castles
 
     return castles
 

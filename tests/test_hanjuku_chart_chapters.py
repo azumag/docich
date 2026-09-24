@@ -142,6 +142,37 @@ def test_measure_emits_python_dict_for_partial_seed():
     assert "'ボス': (10, 20)," in text
 
 
+
+def test_measure_edge_scroll_blocks_unknown_castle_until_exact_reanchor(monkeypatch):
+    class FakeFrame:
+        width = 256
+        height = 224
+
+        def __init__(self, cursor):
+            self.cursor = cursor
+
+    def fake_parse(frame, phase):
+        assert phase == 'field'
+        return type('FakeScreen', (), {'marker': frame.cursor, 'cursor': None})()
+
+    monkeypatch.setattr(measure, 'parse', fake_parse)
+    monkeypatch.setattr(measure, 'castle_roofs', lambda frame, exclude: [])
+
+    castles = measure.measure(
+        2,
+        [
+            (FakeFrame((100, 100)), 'A'),
+            (FakeFrame((232, 100)), 'B'),
+            (FakeFrame((80, 100)), 'A'),
+            (FakeFrame((90, 100)), 'B'),
+        ],
+        seed=(1000, 2000),
+    )
+
+    assert castles['A'] == (1000, 2000)
+    assert castles['B'] == (1010, 2000)
+
+
 def test_is_boss_order_uses_chapter_boss_castle():
     assert policy._is_boss_order({'target': 'けっかい'}, {'chapter': 1})
     assert not policy._is_boss_order({'target': 'ボス'}, {'chapter': 1})
