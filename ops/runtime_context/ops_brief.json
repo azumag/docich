@@ -1,11 +1,11 @@
 {
-  "output_sha256": "942aa8573541284bc4f4d7add94861ecb4701da428c7d7128506fcd24c23b0ba",
+  "output_sha256": "c0e504856ef2227bdac09c61cb0ca471445c39e845f3ecc06d0f32acad9364a2",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "1feebe024674b9cf547ba607045dea33ff438633686089ea6c4d1a6d448aad64",
+  "source_sha256": "223060840777a455f27e2a3a8d0ac9601faa6a7bf52f489983a732faeeaef242",
   "topics": [
-    "Pac-Man ABBA再開後の実測",
-    "Moon Buggy ABBA #1103 main/production release; next candidate pending",
-    "半熟英雄: 前回ラン実績を開始案内に反映（#1099 main/VM配備済み、読み上げ受入待ち）"
+    "半熟英雄: start-hanjuku ライブ実測（#1104 未実測3項目を g344 で裏取り）",
+    "NetHack P1修正を再push（最新HEADのCI成功、レビュー継続）",
+    "Pac-Man ABBA再開後の実測"
   ]
 }
