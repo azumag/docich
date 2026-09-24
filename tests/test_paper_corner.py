@@ -122,6 +122,7 @@ def test_switch_notice_announced_when_displacing_game(tmp_path):
     mgr=manager(g,clock=lambda:now[0],sleep=sleep,
                 overlay=lambda g,p:None,speech=lambda g,t,**kw:None,
                 coordinator=coord)
+    mgr._wait_for_speech=lambda state: True
     seen={'n':0}
 
     def _active():
@@ -211,6 +212,7 @@ def test_commit_verification_fails_when_old_game_remains(tmp_path):
     import pytest
     from docich.paper_corner import PaperCornerError
     mgr.save({'status':'starting','date':'2026-09-08','previous_game':'sorengame',
+              'narration_schema':2,
               'requested_at':now[0]})
     with pytest.raises(PaperCornerError):
         mgr._tick_locked(None,datetime.fromtimestamp(now[0],tz=ZoneInfo('Asia/Tokyo')))
@@ -276,6 +278,7 @@ def test_view_switch_and_restore_cycle(tmp_path):
     mgr = manager(g, clock=lambda: now[0], sleep=sleep,
                   overlay=lambda g, p: None, speech=lambda g, t, **kw: None,
                   coordinator=coord)
+    mgr._wait_for_speech = lambda state: True
     seen = {'n': 0}
 
     def _active():
@@ -622,6 +625,7 @@ def test_start_prepares_fallback_before_switch(tmp_path):
                   sleep=lambda t: now.__setitem__(0, now[0] + 2000),
                   overlay=lambda g, p: None, speech=lambda g, t, **kw: None,
                   coordinator=coord)
+    mgr._wait_for_speech = lambda state: True
     mgr._next_narration_item = lambda state, index: {'key': f'script:{index}', 'text': '本文', 'source': 'fallback'}
 
     def spy(state):
