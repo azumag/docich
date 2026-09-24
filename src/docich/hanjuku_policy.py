@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 
 from . import hanjuku_chart as chart
+from . import hanjuku_chart_adjust as chart_adjust
 from .hanjuku_font import UNKNOWN, TextLine
 from .hanjuku_screen import HEADER as HEADER_RE, Screen, castle_roofs
 
@@ -249,17 +250,206 @@ def _ready(order, mem) -> bool:
     return False
 
 
+def _orders(mem):
+    """The order list in force: an adopted adjusted plan, else the base chart.
+
+    The adopted plan (``chart_plan``) is separate from the request state
+    (``chart_adjust``): a new off-chart request never discards a plan that is
+    still waiting on a capture; only adopting a newer validated plan does.
+    While no plan is waiting, one JEV-chosen interim order may run.
+    """
+    plan = mem.get('chart_plan') or {}
+    interim = (mem.get('chart_adjust') or {}).get('interim_order')
+    # An interim order only exists when no plan order is waiting (see
+    # ``_off_chart``), so it may follow an exhausted plan as well as the base.
+    base = plan['orders'] if plan.get('orders') else chart.orders(mem.get('chapter') or 0)
+    return (*base, *((interim,) if interim else ()))
+
+
+def _order_for_step(mem, step):
+    """The order behind an execution id, even after its plan was replaced.
+
+    A launched order's snapshot (``launched_orders``) keeps its general, cards,
+    target and tactics until its battle and retries are done.
+    """
+    if not step:
+        return None
+    return (next((o for o in (*_orders(mem), *chart.orders(mem.get('chapter') or 0))
+                  if o['step'] == step), None)
+            or (mem.get('launched_orders') or {}).get(step))
+
+
+def _is_boss_order(order, mem) -> bool:
+    return bool(order) and mem.get('chapter') == 1 and order.get('target') == BOSS_CASTLE
+
+
+def _plan_pending(mem) -> bool:
+    status = mem.get('orders') or {}
+    return any(status.get(o['step']) in (None, 'pending')
+               for o in (mem.get('chart_plan') or {}).get('orders') or ())
+
+
 def next_order(mem):
     status = mem.setdefault('orders', {})
-    for order in chart.orders(mem.get('chapter') or 0):
+    current = list(_orders(mem))
+    steps = {o['step'] for o in current}
+    # A launched order put back to pending by a lost battle keeps its retry
+    # even if a newer plan replaced the one it came from.
+    retries = [o for step, o in (mem.get('launched_orders') or {}).items()
+               if step not in steps and status.get(step) == 'pending']
+    for order in (*current, *retries):
         if status.get(order['step']) in (None, 'pending') and _ready(order, mem):
             return order
     return None
 
 
 def _order(mem):
-    step = mem.get('active')
-    return next((o for o in chart.orders(mem.get('chapter') or 0) if o['step'] == step), None)
+    return _order_for_step(mem, mem.get('active'))
+
+
+def _tactics(mem, step):
+    """Battle tactics for a step: the base chart's, plus derived ones for adjusted
+    and interim orders (their steps never match a base tactic's step).
+
+    A carried card reuses every verified base tactic for that card (its enemy
+    and timing), re-keyed to this step. A card with no verified tactic uses the
+    explicit default: once at the battle opening against any enemy, the same
+    mechanism and evidence guards as a retry's opening cards.
+    """
+    base = chart.tactics(mem.get('chapter') or 0)
+    order = _order_for_step(mem, step)
+    if order is None or any(o['step'] == step for o in chart.orders(mem.get('chapter') or 0)):
+        return base
+    derived, seen = [], set()
+    for card in order.get('cards') or ():
+        verified = [t for t in base if t['card'] == card]
+        if verified:
+            if card in seen:
+                continue
+            seen.add(card)
+            derived += [{**t, 'step': step, 'note': f"調整: {t['note']}"} for t in verified]
+        else:
+            derived.append({'enemy': None, 'card': card, 'open': True, 'step': step,
+                            'note': '調整チャート既定: 検証済み戦術のない携行切り札を開幕使用'})
+    return (*base, *derived)
+
+
+INTERIM_LIMIT = 2             # JEV answers per off-chart situation
+INTERIM_MIN_CONFIDENCE = 0.7
+BOSS_CASTLE = 'けっかい'
+
+
+def interim_candidates(mem) -> dict:
+    """Deterministic interim orders JEV may choose from while a chart is pending.
+
+    Only re-attacks of uncaptured non-boss castles by a general the base chart
+    already sends there, without cards (stock is not verified). ``hold`` is
+    always available. JEV picks a label; it never produces keys or orders.
+    """
+    chapter = mem.get('chapter') or 0
+    castles = chart.castles(chapter)
+    owned = set(mem.get('captured') or []) | {'ほんじょう'}
+    out, seen = {}, set()
+    for order in chart.orders(chapter):
+        target = order['target']
+        if target in owned or target == BOSS_CASTLE or target not in castles:
+            continue
+        if (order['general'], target) in seen:
+            continue
+        seen.add((order['general'], target))
+        out[f'attack_{len(out) + 1}'] = {
+            'general': order['general'], 'target': target, 'cards': [],
+            'source': order['source'] if order['source'] in owned else 'ほんじょう',
+            'after': None, 'note': f"暫定: {order['general']}で{target}を再攻撃"}
+    return out
+
+
+def _adopt_interim(mem, state, rid):
+    answer = mem.get('_interim')
+    if (not isinstance(answer, dict) or answer.get('request_id') != rid
+            or answer.get('seq') != state.get('interim_count', 0)):
+        return
+    state['interim_count'] = state.get('interim_count', 0) + 1
+    state['interim_wanted'] = False
+    candidates = interim_candidates(mem)
+    choice, confidence = answer.get('choice'), answer.get('confidence')
+    order = candidates.get(choice)
+    confident = type(confidence) in (int, float) and confidence >= INTERIM_MIN_CONFIDENCE
+    if answer.get('status') != 'ok' or order is None or not confident:
+        _record(mem, 'chart_interim_hold', chart_step=None, strategy_variant='chart_adjust_pending',
+                request_id=rid, choice=choice, confidence=confidence, jev_status=answer.get('status'),
+                deviation_reason=None if choice == 'hold' else 'interim_rejected',
+                reason='JEV暫定判断が保留・低確信・候補外のため無入力で調整チャートを待つ')
+        return
+    step = f"{chart_adjust.INTERIM_PREFIX}{rid[:6]}:{state['interim_count']}"
+    state['interim_order'] = {**order, 'step': step}
+    _record(mem, 'chart_interim_order', chart_step=step, strategy_variant='chart_interim_jev',
+            request_id=rid, choice=choice, confidence=confidence, general=order['general'],
+            source=order['source'], target=order['target'],
+            reason='調整チャート待ちの間、JEVが決定的候補から暫定出撃を選択')
+
+
+def _adopt_plan(mem, doc, rid):
+    """Adopt a validated adjusted chart as the plan, with per-generation step ids."""
+    orders = [{**o, 'step': chart_adjust.execution_step(rid, o['step']), 'local_step': o['step'],
+               'cards': list(o['cards']), 'after': list(o['after']) if o['after'] else None}
+              for o in doc['orders']]
+    purchases = doc.get('purchases')
+    mem['chart_plan'] = {
+        'request_id': rid, 'source': doc.get('source'), 'orders': orders,
+        'purchases': ({**purchases, 'month': list(purchases['month']),
+                       'cards': [list(c) for c in purchases['cards']]} if purchases else None)}
+    state = mem.setdefault('chart_adjust', {})
+    state['interim_wanted'] = False
+    state.pop('interim_order', None)
+    mem['variant'] = 'chart_adjusted'
+    _record(mem, 'chart_adjust_applied', chart_step=None, strategy_variant='chart_adjusted',
+            request_id=rid, source=doc.get('source'), steps=[o['step'] for o in orders],
+            local_steps=[o['local_step'] for o in orders],
+            reason='調整チャートを受信したため独自の指示列で出撃を再開')
+
+
+def _off_chart(mem):
+    """No order is ready: request an adjusted chart, or adopt one that answered.
+
+    The base chart is never mutated. A request is recorded once per distinct
+    situation (chapter, captures, order states); an adjusted chart is adopted
+    only when it answers exactly that request, as a complete order list that
+    replaces the previous plan. Until then the previous plan keeps waiting, or,
+    with no plan waiting, a bounded number of JEV-chosen interim orders may run.
+    """
+    state = mem.setdefault('chart_adjust', {})
+    rid = chart_adjust.request_id(mem)
+    if state.get('request_id') != rid:
+        orders = [o for o in _orders(mem) if not o['step'].startswith(chart_adjust.INTERIM_PREFIX)]
+        status = mem.get('orders') or {}
+        blocked = [{'step': o['step'], 'after': list(o['after'] or ())} for o in orders
+                   if status.get(o['step']) in (None, 'pending')]
+        reason = ('chart_unavailable' if not orders
+                  else 'orders_locked' if blocked else 'orders_exhausted')
+        state.clear()
+        state['request_id'] = rid
+        state['interim_wanted'] = not _plan_pending(mem) and bool(interim_candidates(mem))
+        _record(mem, 'chart_adjust_request', chart_step=None, strategy_variant='chart_adjust_pending',
+                request_id=rid, off_chart_reason=reason, blocked=blocked,
+                captured=sorted(mem.get('captured') or []), orders=dict(status),
+                gold=mem.get('gold'), month=mem.get('month'),
+                reason='チャート外: 出撃可能な指示がないため調整チャートを非同期に要求し入力を保留')
+        return
+    doc = mem.get('_adjusted')
+    plan = mem.get('chart_plan') or {}
+    if (doc and doc.get('request_id') == rid and doc.get('chapter') == mem.get('chapter')
+            and plan.get('request_id') != rid):
+        _adopt_plan(mem, doc, rid)
+        return
+    if plan.get('request_id') == rid or _plan_pending(mem):
+        state['interim_wanted'] = False
+        return
+    _adopt_interim(mem, state, rid)
+    interim = state.get('interim_order')
+    busy = interim and (mem.get('orders') or {}).get(interim['step']) in (None, 'pending')
+    state['interim_wanted'] = (not busy and state.get('interim_count', 0) < INTERIM_LIMIT
+                               and bool(interim_candidates(mem)))
 
 
 def _finish_order(mem, state, **fields):
@@ -279,6 +469,9 @@ def map_step(screen: Screen, mem, frame):
     order = _order(mem)
     if order is None:
         order = next_order(mem)
+        if order is None:
+            _off_chart(mem)
+            order = next_order(mem)
         if order is None:
             update_world(screen, mem, frame)
             return []           # nothing charted: let real time advance
@@ -303,7 +496,7 @@ def target_step(screen: Screen, mem, frame):
         # A marker we did not request: cancel instead of sending a general.
         _record(mem, 'unexpected_target', reason='指示中でない出撃先選択画面のためBで取消')
         return [pad('b')]
-    if order['step'] == '1-B1':
+    if _is_boss_order(order, mem):
         context = (mem.get('order_context') or {}).get(order['step']) or {}
         if (context.get('actual_general') != order['general']
                 or (context.get('observed_metric') or {}).get('cards') != sorted(order['cards'])):
@@ -317,17 +510,27 @@ def target_step(screen: Screen, mem, frame):
                       reason=f"{context['general']}を{order['target']}へ出撃")
         general = context['general']
         mem.setdefault('launched', {})[order['target']] = {'general': general, 'step': order['step']}
+        # Snapshot: the battle, boss entry and retries of this sortie must not
+        # depend on the plan still containing it.
+        mem.setdefault('launched_orders', {})[order['step']] = {
+            **order, 'cards': list(order['cards']),
+            'after': list(order['after']) if order['after'] else None}
+        # Per execution id: ``launched`` keeps one sortie per castle, so a later
+        # sortie to the same castle must not unbind an earlier unit en route.
+        mem.setdefault('sorties', {})[order['step']] = {
+            'general': general, 'target': order['target'], 'status': 'en_route',
+            'evidence': (mem.get('order_context') or {}).get(order['step'])}
         return [pad('a')]
     return _deploy_input(screen, mem, order, result or [], '出撃先へ目標カーソルを移動')
 
 
 def _deploy_cards(order, mem):
-    return list(order['cards'] if order['step'] == '1-B1'
+    return list(order['cards'] if _is_boss_order(order, mem)
                 else mem.get('card_override', {}).get(order['step'], order['cards']))
 
 
 def _deploy_context(order, mem, *, expected_metric=None):
-    general = (order['general'] if order['step'] == '1-B1'
+    general = (order['general'] if _is_boss_order(order, mem)
                else mem.get('general_override', {}).get(order['step'], order['general']))
     context = {'general': general, 'planned_general': order['general'],
             'expected_metric': expected_metric,
@@ -527,7 +730,7 @@ def deploy_step(screen: Screen, mem):
         return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move] if move else [],
                              '出撃メニューを選択')
     if kind == 'general_list':
-        if order['step'] == '1-B1':
+        if _is_boss_order(order, mem):
             mem.setdefault('sortie_general', {}).pop(order['step'], None)
             mem.setdefault('order_context', {}).pop(order['step'], None)
             move = menu_to(screen, order['general'])
@@ -573,7 +776,7 @@ def deploy_step(screen: Screen, mem):
                           reason='チャートの将軍が出撃元の城にいない')
             return [pad('b')]
         return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move], '出撃将軍を選択')
-    if kind in {'card_select', 'sortie_confirm'} and order['step'] == '1-B1':
+    if kind in {'card_select', 'sortie_confirm'} and _is_boss_order(order, mem):
         mem.setdefault('order_context', {}).pop(order['step'], None)
         if (mem.get('sortie_general') or {}).get(order['step']) != order['general']:
             return _hold_deploy(screen, mem, order, 'ボス出撃の主人公選択を確認できないため保留')
@@ -654,6 +857,33 @@ def deploy_step(screen: Screen, mem):
 
 
 # ---------------------------------------------------------------- battles
+def _match_sortie(mem, castle, general):
+    """The execution id of the sortie a measured entry message belongs to.
+
+    Returns ``(step, status)``: exactly one en-route sortie of this general to
+    this castle is ``matched``; several are ``ambiguous`` (never guessed);
+    none falls back to the legacy per-castle record.
+    """
+    sorties = mem.get('sorties') or {}
+    candidates = [step for step, sortie in sorties.items()
+                  if sortie.get('status') == 'en_route' and sortie.get('target') == castle
+                  and sortie.get('general') == general]
+    if len(candidates) == 1:
+        return candidates[0], 'matched'
+    if candidates:
+        return None, 'ambiguous'
+    launched = (mem.get('launched') or {}).get(castle) or {}
+    if launched.get('general') == general and launched.get('step') not in sorties:
+        return launched.get('step'), 'legacy'
+    return None, 'none'
+
+
+def _bind_sortie(mem, step):
+    sortie = (mem.get('sorties') or {}).get(step)
+    if sortie:
+        sortie['status'] = 'arrived'
+
+
 def _battle_context(mem, ally):
     """Only a matching attack message establishes a battle location and side."""
     attack = mem.get('attack') or {}
@@ -665,6 +895,14 @@ def _battle_context(mem, ally):
         return {'castle': attack.get('castle'), 'side': side, 'step': attack.get('step'),
                 'entry_evidence': attack.get('entry_evidence')}
     captured = set(mem.get('captured', []))
+    en_route = [step for step, sortie in (mem.get('sorties') or {}).items()
+                if sortie.get('general') == ally and sortie.get('status') in ('en_route', 'arrived')
+                and sortie.get('target') not in captured]
+    if len(en_route) == 1:
+        return {'castle': None, 'side': None, 'step': en_route[0],
+                'context': 'unclassified_location'}
+    if en_route:
+        return {'castle': None, 'side': None, 'step': None, 'context': 'ambiguous_sortie'}
     for castle, info in (mem.get('launched') or {}).items():
         if info.get('general') == ally and castle not in captured:
             return {'castle': None, 'side': None, 'step': info.get('step'),
@@ -768,8 +1006,8 @@ def battle_step(screen: Screen, mem):
                                'card_consumption_complete': True, 'card_evidence_version': 1,
                                **context}
         _bind_battle_strategy(mem, cur)
-        planned = [t['card'] for t in chart.tactics(mem.get('chapter') or 0)
-                   if t['enemy'] == b.enemy and t.get('step') in (None, cur['step'])]
+        planned = [t['card'] for t in _tactics(mem, cur['step'])
+                   if t['enemy'] in (None, b.enemy) and t.get('step') in (None, cur['step'])]
         planned += list(mem.get('card_override', {}).get(cur['step']) or [])
         _record(mem, 'battle_start', **_battle_labels(cur), enemy=b.enemy, ally=b.ally,
                 expected_metric=cur['strategy_expected'],
@@ -795,9 +1033,9 @@ def battle_step(screen: Screen, mem):
               'note': '再攻撃の開幕切り札(チャート逸脱)'}
              for card in mem.get('card_override', {}).get(cur.get('step')) or []]
     done = cur.setdefault('tactics_done', [])
-    for index, tactic in enumerate([*extra, *chart.tactics(mem.get('chapter') or 0)]):
+    for index, tactic in enumerate([*extra, *_tactics(mem, cur.get('step'))]):
         tid = f"{'x' if index < len(extra) else 'c'}{index}:{tactic['card']}"
-        if tactic['enemy'] != b.enemy or tid in done:
+        if tactic['enemy'] not in (None, b.enemy) or tid in done:
             continue
         if tactic.get('step') and tactic['step'] != cur.get('step'):
             continue
@@ -936,7 +1174,8 @@ def battle_end(mem, next_kind):
     else:
         stats['cards_used'] = None
     step = cur.get('step')
-    boss_attempt = (mem.get('chapter') == 1 and step == '1-B1'
+    boss_order = _order_for_step(mem, step)
+    boss_attempt = (_is_boss_order(boss_order, mem)
                     and cur.get('enemy') == chart.BOSSES.get(1)
                     and cur.get('castle') == 'けっかい' and cur.get('side') == 'attack'
                     and cur.get('entry_evidence') == 'measured_boss_entry')
@@ -949,7 +1188,8 @@ def battle_end(mem, next_kind):
             mem.setdefault('orders', {})[step] = 'pending'
             context = {'strategy_variant': 'retry_chart_boss_kit',
                        'deviation_reason': 'ボス戦のHP敗北を確認。主人公と既定切り札を再確認して再試行',
-                       'expected_metric': {'general': NAME, 'cards': ['クースカン', 'ノリウツール'],
+                       'expected_metric': {'general': boss_order['general'],
+                                           'cards': list(boss_order['cards']),
                                            'goal': 'クイーン戦勝利'}}
             mem.setdefault('retry_context', {})[step] = context
             _record(mem, 'order_retry', chart_step=step, **context,
@@ -959,7 +1199,7 @@ def battle_end(mem, next_kind):
             mem.setdefault('orders', {})[step] = 'failed'
             _record(mem, 'situation_held', chart_step=step, strategy_variant='boss_retry_exhausted',
                     observed_metric={'retries': retries[step]}, reason='ボス再試行の上限に到達したため保留')
-    elif outcome == 'loss' and (step == '1-B1' or cur.get('enemy') == chart.BOSSES.get(1)):
+    elif outcome == 'loss' and (_is_boss_order(boss_order, mem) or cur.get('enemy') == chart.BOSSES.get(1)):
         _record(mem, 'situation_held', chart_step=step, strategy_variant='boss_entry_unclassified',
                 observed_metric={'castle': castle, 'side': cur.get('side'),
                                  'entry_evidence': cur.get('entry_evidence')},
@@ -1016,29 +1256,42 @@ def message_step(screen: Screen, mem):
     boss_entry = re.fullmatch(r'([^\ufffd\s]+)しょうぐんがボスじょうにせめこんだ!!', text)
     if boss_entry:
         general = boss_entry.group(1)
-        launched = (mem.get('launched') or {}).get('けっかい') or {}
-        if mem.get('chapter') != 1 or launched.get('step') != '1-B1' or launched.get('general') != general:
+        current = mem.get('attack') or {}
+        step, match = _match_sortie(mem, BOSS_CASTLE, general)
+        if (match != 'matched' and current.get('castle') == BOSS_CASTLE
+                and current.get('general') == general
+                and current.get('entry_evidence') == 'measured_boss_entry'):
+            return [pad('a')]              # same entry text still on screen
+        # Base 1-B1 or an adjusted/interim boss order (generation-scoped id):
+        # the launched order itself must target the boss castle.
+        if not _is_boss_order(_order_for_step(mem, step), mem):
             _record(mem, 'situation_held', screen='boss_attack_started',
-                    observed_metric={'message': text}, reason='実測ボス突入文を読んだが出撃注文と一致しないため保留')
+                    observed_metric={'message': text, 'sortie_match': match},
+                    reason='実測ボス突入文を読んだが出撃注文と一致しないため保留')
             return []
-        mem['attack'] = {'general': general, 'castle': 'けっかい', 'side': 'attack', 'step': '1-B1',
+        _bind_sortie(mem, step)
+        mem['attack'] = {'general': general, 'castle': BOSS_CASTLE, 'side': 'attack', 'step': step,
                          'entry_evidence': 'measured_boss_entry'}
-        _record(mem, 'attack_observed', chart_step='1-B1', general=general, castle='けっかい',
-                expected_metric={'general': launched['general']}, observed_metric={'general': general, 'message': text},
+        _record(mem, 'attack_observed', chart_step=step, general=general, castle=BOSS_CASTLE,
+                expected_metric={'general': general}, observed_metric={'general': general, 'message': text},
                 reason='実測済みのボス城突入文と出撃将軍が一致')
         return [pad('a')]
     m = ATTACK.search(text)
     if m:
         general, castle = m.groups()
         launched = (mem.get('launched') or {}).get(castle) or {}
-        ours = general == launched.get('general') or general in (NAME, 'ヴィーナス', 'ココット', 'ゼウス')
+        current = mem.get('attack') or {}
+        step, match = _match_sortie(mem, castle, general)
+        if match != 'matched' and current.get('castle') == castle and current.get('general') == general:
+            return [pad('a')]              # same entry text still on screen
+        ours = step is not None or match == 'ambiguous' or general in (NAME, 'ヴィーナス', 'ココット', 'ゼウス')
         side = 'attack' if ours else 'enemy'
-        step = launched.get('step') if launched.get('general') == general else None
-        if (mem.get('attack') or {}).get('castle') != castle or (mem.get('attack') or {}).get('general') != general:
-            _record(mem, 'attack_observed', chart_step=step, general=general, castle=castle,
-                    expected_metric=launched.get('general'), observed_metric=general,
-                    deviation_reason=None if step or not ours else 'unplanned_attack',
-                    reason='のりこんだ表示')
+        _bind_sortie(mem, step)
+        _record(mem, 'attack_observed', chart_step=step, general=general, castle=castle,
+                expected_metric=launched.get('general'), observed_metric=general,
+                deviation_reason=(None if step or not ours
+                                  else 'ambiguous_sortie' if match == 'ambiguous' else 'unplanned_attack'),
+                reason='のりこんだ表示')
         mem['attack'] = {'general': general, 'castle': castle, 'side': side, 'step': step}
         return [pad('a')]
     m = DEFENSE.search(text)
@@ -1056,26 +1309,83 @@ def _month_key(header):
     return f"{header['year']}-{header['month']}" if header else None
 
 
+KNOWN_PRICES = {'イッテツーン': 1, 'ノリウツール': 18, 'クースカン': 24, 'ゼンマイン': 32}
+
+
+def _adjusted_plan(mem, header, key):
+    """Month purchases from an adopted adjusted chart (#1085 L2).
+
+    Cards reuse the merchant flow (unlisted/unaffordable items are skipped
+    and recorded there). An adjusted chart may buy cards whose price was never
+    measured, so the soldier count here is only a provisional estimate: after
+    the merchant, ``month_step`` recomputes it from the gold read on screen
+    (``_recalc_soldiers``) before opening the refill. General recruitment has
+    no measured menu yet, so it is recorded as a deviation and not attempted.
+    """
+    spec = (mem.get('chart_plan') or {}).get('purchases')
+    if not spec or key != f'{spec["month"][0]}-{spec["month"][1]}':
+        return None
+    gold = header['gold']
+    items = [list(i) for i in spec['cards']]
+    target = min(spec['soldiers'], 99)
+    unpriced = sorted({name for name, _ in items if name not in KNOWN_PRICES})
+    left = gold - sum(KNOWN_PRICES.get(name, 0) * qty for name, qty in items)
+    soldiers = max(0, min(target, left))
+    shop = mem['shop'] = {'key': key, 'items': items, 'soldiers': soldiers, 'merchant_done': False,
+                          'variant': 'chart_adjusted', 'soldiers_done': target == 0,
+                          'soldiers_target': target, 'soldiers_from_gold': True,
+                          'gold_start': gold}
+    _record(mem, 'month_plan', chart_step='adjusted-month', strategy_variant='chart_adjusted',
+            month=key, gold=gold,
+            plan={'cards': items, 'soldiers_provisional': soldiers, 'unpriced_cards': unpriced},
+            deviation_reason=('recruit_menu_unmeasured' if spec.get('generals') else None),
+            expected_metric={'adjusted_cards': [list(i) for i in spec['cards']],
+                             'adjusted_soldiers': spec['soldiers'],
+                             'adjusted_generals': spec.get('generals', 0)},
+            reason=spec.get('note') or '調整チャートの月次購入')
+    return shop
+
+
+def _recalc_soldiers(screen, mem, shop):
+    """Adjusted plans: size the refill from the gold actually left after the
+    merchant (1G per soldier, as in the base budget plan). Unreadable gold
+    holds input rather than guessing."""
+    gold = (screen.header or {}).get('gold')
+    if type(gold) is not int:
+        return False
+    shop['soldiers'] = max(0, min(shop.get('soldiers_target', 0), gold))
+    shop['soldiers_done'] = shop['soldiers'] == 0
+    shop['soldiers_recalculated'] = True
+    _record(mem, 'soldier_plan_recalc', chart_step='adjusted-month',
+            strategy_variant=shop.get('variant', 'chart_adjusted'), month=shop.get('key'),
+            expected_metric={'soldiers_target': shop.get('soldiers_target')},
+            observed_metric={'gold_after_merchant': gold, 'soldiers': shop['soldiers']},
+            reason='商人での実購入後の所持金から兵士補充数を再計算')
+    return True
+
+
 def _plan(mem, header):
     spec = chart.purchases(mem.get('chapter') or 0)
     key = _month_key(header)
-    if not spec or key != f'{spec["month"][0]}-{spec["month"][1]}':
-        return None
     shop = mem.get('shop')
     if shop and shop.get('key') == key:
         return shop
+    adjusted = _adjusted_plan(mem, header, key) if header else None
+    if adjusted:
+        return adjusted
+    if not spec or key != f'{spec["month"][0]}-{spec["month"][1]}':
+        return None
     gold = header['gold']
     if gold >= spec['chart_gold']:
         items = [list(i) for i in spec['cards']]
         soldiers, variant, deviation = spec['soldiers'], 'chart', None
     else:
         items, left = [], gold
-        prices = {'イッテツーン': 1, 'ノリウツール': 18, 'クースカン': 24, 'ゼンマイン': 32}
         for name, qty in spec['priority']:
-            n = min(qty, left // prices[name])
+            n = min(qty, left // KNOWN_PRICES[name])
             if n:
                 items.append([name, n])
-                left -= n * prices[name]
+                left -= n * KNOWN_PRICES[name]
         soldiers = min(spec['soldiers'], left)
         variant = 'budget_boss_kit_first'
         deviation = f"所持金{gold}Gがチャート想定{spec['chart_gold']}G未満"
@@ -1107,6 +1417,10 @@ def month_step(screen: Screen, mem):
     if shop and not shop['merchant_done'] and shop['items']:
         move = menu_to(screen, 'しょうにん')
         return [pad('a')] if move == 'here' else [move] if move else []
+    if (shop and shop.get('soldiers_from_gold') and not shop.get('soldiers_recalculated')
+            and not shop['soldiers_done']):
+        if not _recalc_soldiers(screen, mem, shop):
+            return []
     if shop and not shop['soldiers_done']:
         move = menu_to(screen, 'へいしほじゅう')
         return [pad('a')] if move == 'here' else [move] if move else []
@@ -1262,7 +1576,8 @@ def observe_events(screen: Screen, mem):
                         'captured', 'card_override', 'cursor', 'egg_battle',
                         'expect_menu', 'general_override', 'launched', 'month_exit',
                         'nav_last', 'orders', 'picked', 'retries', 'retry_context', 'shop',
-                        'source_override', 'uncertain', 'month', 'order_context', 'sortie_general'):
+                        'source_override', 'uncertain', 'month', 'order_context', 'sortie_general',
+                        'chart_adjust', 'chart_plan', 'launched_orders', 'sorties'):
                 mem.pop(key, None)
             mem['chapter'] = chapter
             mem['variant'] = 'chart' if chart.orders(chapter) else 'chart_unavailable'

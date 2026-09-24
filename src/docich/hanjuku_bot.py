@@ -151,8 +151,14 @@ def legacy_actions(frame: Frame, phase: str, state: dict) -> list[dict]:
     return [pad('a')]
 
 
-def decide(frame: Frame, state: dict) -> tuple[list[dict], dict]:
+def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
+           interim: dict | None = None) -> tuple[list[dict], dict]:
     """Return bounded pad actions and new policy memory; never write or send.
+
+    ``adjusted`` is a validated runtime-adjusted chart (``hanjuku_chart_adjust``)
+    offered for adoption when the base chart has no ready order. ``interim``
+    is a JEV answer (a candidate label, never keys) for the pending request.
+    Neither is persisted in memory.
 
     Decision records produced for this observation are returned in
     ``state['_records']`` for the caller to persist; they are not memory.
@@ -164,6 +170,8 @@ def decide(frame: Frame, state: dict) -> tuple[list[dict], dict]:
     phase_step=int(state.get('phase_step',0))+1 if state.get('phase')==phase else 1
     mem=dict(state.get('policy') or {})
     mem['_records']=[]
+    mem['_adjusted']=adjusted
+    mem['_interim']=interim
     updated={**state,'phase':phase,'step':step,'phase_step':phase_step,'bot_version':BOT_VERSION}
     updated.pop('_records',None)
     screen=parse(frame,phase=phase)
@@ -251,6 +259,8 @@ def decide(frame: Frame, state: dict) -> tuple[list[dict], dict]:
         else:
             mem['held_phase']=None
     updated['screen_kind']=kind
+    mem.pop('_adjusted',None)
+    mem.pop('_interim',None)
     updated['_records']=mem.pop('_records')
     updated['policy']=mem
     return actions,updated
