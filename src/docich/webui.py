@@ -1693,12 +1693,13 @@ _CORNER_MANUAL_LAUNCHERS = {
     "paper": ("docich-paper-corner-manual", False, False),
 }
 # rotation / 自動起動が書く base state の停止経路（webui stop は manual だけを見ない）。
-# 値は bin/ の相対名、または bin/docich のサブコマンド（prefix "--" 始まりは使わない）。
+# paper は専用 restore CLI が scheduled service を止めて表示を復帰するため、
+# bin/docich の paper-corner stop ではなく専用 launcher を使う。
 _CORNER_BASE_STOP_CLI = {
     "game": ("docich", "retro-corner"),
     "meriken": ("docich-soren91-corner",),
     "nethack": ("docich-nethack-corner",),
-    "paper": ("docich", "paper-corner"),
+    "paper": ("docich-paper-corner-restore",),
 }
 # 停止可能 status（画面のボタン有効化と POST stop の振り分けで共通）。
 # manual: 既存の手動停止契約 + restoring（中断からの復帰中も手動で終わらせる）。
@@ -1706,6 +1707,7 @@ _CORNER_BASE_STOP_CLI = {
 _CORNER_MANUAL_STOP_STATUSES = frozenset(
     {"starting", "active", "restoring", "failed", "recovery_required"}
 )
+_CORNER_MANUAL_ACTIVE_STOP_STATUSES = frozenset({"starting", "active", "restoring"})
 _CORNER_BASE_STOP_STATUSES = frozenset({"starting", "active", "restoring"})
 
 
@@ -1973,6 +1975,14 @@ def _corner_base_stop_argv(g: GlobalConfig, corner_id: str) -> tuple[list[str], 
     if spec is None:
         raise ValueError("corner has no base runner")
     bin_dir = Path(g.repo_root) / "bin"
+    if row.adapter == "paper":
+        if not g.config_path:
+            raise ValueError("PAPER restore requires an explicit config")
+        argv = [str(bin_dir / spec[0])]
+        argv += ["--config", str(g.config_path)]
+        return argv, {
+            "id": row.id, "adapter": row.adapter, "game": row.game, "target": "base"
+        }
     if len(spec) == 1:
         argv = [str(bin_dir / spec[0])]
     else:
@@ -1991,9 +2001,10 @@ def _corner_base_stop_argv(g: GlobalConfig, corner_id: str) -> tuple[list[str], 
 
 def _corner_stop_argv(g: GlobalConfig, corner_id: str,
                       duration: int) -> tuple[list[str], dict[str, Any]]:
-    """stop の振り分け: 手動記録が止まれば manual runner、base 稼働中は base CLI。
+    """進行中の手動実行、次に base 実行へ stop を振り分ける。
 
-    どちらも止まらない場合は従来どおり manual runner へ落とす（API 契約維持）。
+    手動側の failed / recovery_required は base の進行を隠さない。
+    実行中の対象がない場合は、既存の manual stop 契約を維持する。
     """
     try:
         row = _corner_catalog_row(g, corner_id)
@@ -2002,12 +2013,19 @@ def _corner_stop_argv(g: GlobalConfig, corner_id: str,
     base_file = _CORNER_STATE_FILE_BY_ADAPTER.get(row.adapter)
     manual = _corner_state_present(g, f"{base_file}_manual" if base_file else "", row)
     base = _corner_state_present(g, base_file or "", row)
-    if manual and manual.get("status") in _CORNER_MANUAL_STOP_STATUSES:
+    # A failed/recovery-required manual record can be stale while the scheduled
+    # runner owns the current PAPER view. Prefer an actually progressing owner;
+    # retry the manual failure only when no base run is active.
+    if manual and manual.get("status") in _CORNER_MANUAL_ACTIVE_STOP_STATUSES:
         argv, meta = _corner_manual_argv(g, corner_id, "stop", duration)
         meta = {**meta, "target": "manual"}
         return argv, meta
     if base and base.get("status") in _CORNER_BASE_STOP_STATUSES:
         return _corner_base_stop_argv(g, corner_id)
+    if manual and manual.get("status") in _CORNER_MANUAL_STOP_STATUSES:
+        argv, meta = _corner_manual_argv(g, corner_id, "stop", duration)
+        meta = {**meta, "target": "manual"}
+        return argv, meta
     argv, meta = _corner_manual_argv(g, corner_id, "stop", duration)
     meta = {**meta, "target": "manual"}
     return argv, meta
@@ -4746,6 +4764,7 @@ const ROT_REASON_JA={
 };
 const CORNER_STATUS_JA={idle:"待機",waiting:"待機",starting:"開始中",active:"実行中",restoring:"復帰中",preparing:"準備中",recovery_required:"要復旧",failed:"失敗",completed:"完了",interrupted:"中断",expired:"期限切れ",running:"実行中"};
 const CORNER_BUSY=new Set(["starting","active","restoring","preparing","waiting","recovery_required","failed"]);
+const CORNER_ACTIVE_STOP=new Set(["starting","active","restoring"]);
 let CORNERS_DATA=null;
 function jaStatus(s){ return CORNER_STATUS_JA[s]||s||"-"; }
 function relTime(ts){
@@ -4774,6 +4793,9 @@ function baseStateOf(d,c){
 function displayStateOf(d,c){
   const m=manualStateOf(d,c), b=baseStateOf(d,c);
   const busy=x=>x&&CORNER_BUSY.has(x.status);
+  const progressing=x=>x&&CORNER_ACTIVE_STOP.has(x.status);
+  if(progressing(m)) return m;
+  if(progressing(b)) return b;
   if(busy(m)) return m;
   if(busy(b)) return b;
   return m||b||null;
@@ -4783,8 +4805,9 @@ const CORNER_MANUAL_STOP=new Set(["starting","active","restoring","failed","reco
 const CORNER_BASE_STOP=new Set(["starting","active","restoring"]);
 function stopStateOf(d,c){
   const m=manualStateOf(d,c), b=baseStateOf(d,c);
-  if(m&&CORNER_MANUAL_STOP.has(m.status)) return m;
+  if(m&&CORNER_ACTIVE_STOP.has(m.status)) return m;
   if(b&&CORNER_BASE_STOP.has(b.status)) return b;
+  if(m&&CORNER_MANUAL_STOP.has(m.status)) return m;
   return null;
 }
 function renderCorners(d){
@@ -4894,7 +4917,8 @@ function updateCornerButtons(){
   const m=manualStateOf(d,c);
   const b=baseStateOf(d,c);
   const switching=gsw.phase&&!["ready","idle"].includes(gsw.phase);
-  const busy=(m&&CORNER_BUSY.has(m.status))?m:((b&&CORNER_BUSY.has(b.status))?b:null);
+  const progressing=x=>x&&CORNER_ACTIVE_STOP.has(x.status);
+  const busy=progressing(m)?m:(progressing(b)?b:((m&&CORNER_BUSY.has(m.status))?m:((b&&CORNER_BUSY.has(b.status))?b:null)));
   const stopTarget=stopStateOf(d,c);
   const hints=[];
   const canStart=!!c && !switching && !r.latch && !busy;
@@ -4924,7 +4948,10 @@ async function cornerAction(payload, confirmText){
     if(msg){
       let t;
       if(r.action==="recover") t=r.ok?"復旧しました。次の tick（1分以内）でローテーションが再開します。":`復旧できませんでした（exit ${r.exit_code==null?"-":r.exit_code}）。先に要復旧のコーナーを停止/復旧してください。${r.detail?" 詳細: "+r.detail:""}`;
-      else t=`${r.action==="start"?"手動開始":"手動停止"}を受け付けました（${r.corner&&r.corner.id||"-"}）。進行はこの画面の状態欄に反映されます。ログ: ${r.log||"-"}`;
+      else {
+        const target=r.corner&&r.corner.target==="base"?"自動実行":"手動実行";
+        t=`${r.action==="start"?"手動開始":"手動停止"}を受け付けました（${r.corner&&r.corner.id||"-"}・${target}）。進行と完了はこの画面の状態欄をご確認ください。ログ: ${r.log||"-"}`;
+      }
       msg.textContent=t;
     }
     toast(r.ok?`${r.action}: OK`:`${r.action}: ok=${r.ok} exit=${r.exit_code==null?"-":r.exit_code}`);
