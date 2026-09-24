@@ -7,6 +7,7 @@ run (architecture.md §9.6).
 from __future__ import annotations
 
 import shlex
+import subprocess
 from dataclasses import dataclass
 
 from . import procs
@@ -76,6 +77,27 @@ class Tmux:
             raise TmuxError(f"tmux {operation} に失敗しました{suffix}")
         return result
 
+    @staticmethod
+    def _run_bounded(
+        args: list[str],
+        *,
+        operation: str,
+        max_output_bytes: int,
+        timeout_s: float,
+    ) -> bytes:
+        try:
+            result = procs.run_bounded_output(
+                ["tmux", *args],
+                max_output_bytes=max_output_bytes,
+                timeout=timeout_s,
+                strip_tmux=True,
+            )
+        except (procs.OutputLimitExceeded, subprocess.TimeoutExpired) as exc:
+            raise TmuxError(f"tmux {operation} exceeded its resource bound") from exc
+        if result.returncode != 0:
+            raise TmuxError(f"tmux {operation} failed")
+        return result.stdout
+
     # --- default session (SESSION) ---
 
     def has_session(self) -> bool:
@@ -97,6 +119,22 @@ class Tmux:
         if r.returncode != 0:
             return []
         return [line for line in r.stdout.splitlines() if line]
+
+    def list_windows_bounded(
+        self,
+        session: str,
+        *,
+        max_bytes: int = 4096,
+        timeout_s: float = 0.5,
+    ) -> list[str]:
+        validate_tmux_session_ref(session)
+        output = self._run_bounded(
+            ["list-windows", "-t", session, "-F", "#{window_name}"],
+            operation="window list",
+            max_output_bytes=max_bytes,
+            timeout_s=timeout_s,
+        )
+        return [line for line in output.decode("utf-8", errors="replace").splitlines() if line]
 
     def new_window(self, name: str, cmd: list[str], env: dict | None = None) -> None:
         args = ["new-window", "-d", "-t", self.session, "-n", name]
@@ -273,6 +311,26 @@ class Tmux:
         result = self._checked(args, "ownership確認")
         return result.stdout.strip()
 
+    def _read_option_bounded(
+        self,
+        target: str,
+        option: str,
+        *,
+        window: bool,
+        timeout_s: float,
+    ) -> str:
+        args = ["show-options"]
+        if window:
+            args.append("-w")
+        args += ["-v", "-t", target, option]
+        output = self._run_bounded(
+            args,
+            operation="ownership check",
+            max_output_bytes=256,
+            timeout_s=timeout_s,
+        )
+        return output.decode("utf-8", errors="replace").strip()
+
     def window_target_exists(self, target: str, *, strict: bool = False) -> bool:
         """Return True when the window exists.
 
@@ -358,6 +416,54 @@ class Tmux:
             )
         except (ValueError, TypeError) as exc:
             raise OwnershipMismatchError("session ownership tagが不正です") from exc
+
+    def read_window_ownership_bounded(
+        self,
+        target: str,
+        *,
+        timeout_s: float = 0.5,
+    ) -> TmuxOwnership:
+        validate_tmux_window_ref(target)
+        try:
+            return TmuxOwnership(
+                runtime_id=self._read_option_bounded(
+                    target, "@docich_runtime_id", window=True, timeout_s=timeout_s
+                ),
+                generation=int(
+                    self._read_option_bounded(
+                        target, "@docich_generation", window=True, timeout_s=timeout_s
+                    )
+                ),
+                role=self._read_option_bounded(
+                    target, "@docich_role", window=True, timeout_s=timeout_s
+                ),
+            )
+        except (ValueError, TypeError) as exc:
+            raise OwnershipMismatchError("bounded window ownership tag is invalid") from exc
+
+    def read_session_ownership_bounded(
+        self,
+        session: str,
+        *,
+        timeout_s: float = 0.5,
+    ) -> TmuxOwnership:
+        validate_tmux_session_ref(session)
+        try:
+            return TmuxOwnership(
+                runtime_id=self._read_option_bounded(
+                    session, "@docich_runtime_id", window=False, timeout_s=timeout_s
+                ),
+                generation=int(
+                    self._read_option_bounded(
+                        session, "@docich_generation", window=False, timeout_s=timeout_s
+                    )
+                ),
+                role=self._read_option_bounded(
+                    session, "@docich_role", window=False, timeout_s=timeout_s
+                ),
+            )
+        except (ValueError, TypeError) as exc:
+            raise OwnershipMismatchError("bounded session ownership tag is invalid") from exc
 
     def _pane_pids(self, target: str) -> list[int]:
         """Return pane leaders for an already ownership-checked target."""
@@ -451,6 +557,71 @@ class Tmux:
     def capture_pane_checked(self, target: str) -> str:
         validate_tmux_target(target)
         return self._checked(["capture-pane", "-p", "-t", target], "pane capture").stdout
+
+    def capture_pane_bounded_checked(
+        self,
+        target: str,
+        *,
+        cols: int,
+        rows: int,
+        max_bytes: int = 65_536,
+        timeout_s: float = 1.0,
+    ) -> str:
+        """Capture only the visible, expected-sized pane under a hard byte cap."""
+        validate_tmux_target(target)
+        if type(cols) is not int or not 1 <= cols <= 80:
+            raise ValueError("cols must be between 1 and 80")
+        if type(rows) is not int or not 3 <= rows <= 24:
+            raise ValueError("rows must be between 3 and 24")
+        if type(max_bytes) is not int or not 1 <= max_bytes <= 65_536:
+            raise ValueError("max_bytes must be between 1 and 65536")
+        if type(timeout_s) not in (int, float) or not 0 < timeout_s <= 5:
+            raise ValueError("timeout_s must be greater than 0 and at most 5 seconds")
+
+        def pane_size() -> tuple[int, int]:
+            output = self._run_bounded(
+                [
+                    "display-message",
+                    "-p",
+                    "-t",
+                    target,
+                    "#{pane_width}\t#{pane_height}",
+                ],
+                operation="pane size check",
+                max_output_bytes=64,
+                timeout_s=float(timeout_s),
+            )
+            parts = output.decode("ascii", errors="replace").strip().split("\t")
+            if len(parts) != 2:
+                raise TmuxError("tmux pane size response is invalid")
+            try:
+                return int(parts[0]), int(parts[1])
+            except ValueError as exc:
+                raise TmuxError("tmux pane size response is invalid") from exc
+
+        if pane_size() != (cols, rows):
+            raise TmuxError("tmux pane size does not match the NetHack TTY")
+
+        try:
+            result = procs.run_bounded_output(
+                [
+                    "tmux",
+                    "capture-pane",
+                    "-p",
+                    "-t",
+                    target,
+                ],
+                max_output_bytes=max_bytes,
+                timeout=float(timeout_s),
+                strip_tmux=True,
+            )
+        except (procs.OutputLimitExceeded, subprocess.TimeoutExpired) as exc:
+            raise TmuxError("tmux pane capture exceeded its resource bound") from exc
+        if result.returncode != 0:
+            raise TmuxError("tmux pane capture failed")
+        if pane_size() != (cols, rows):
+            raise TmuxError("tmux pane size changed during the NetHack TTY capture")
+        return result.stdout.decode("utf-8", errors="replace")
 
     def pane_states_checked(self, target: str) -> list[PaneState]:
         validate_tmux_target(target)

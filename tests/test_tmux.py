@@ -224,6 +224,57 @@ class TestCheckedOperations(unittest.TestCase):
         with self.assertRaises(tmux_mod.TmuxError):
             self.tmux.capture_pane_checked("docich-game-g1")
 
+    @mock.patch("docich.tmux.procs.run_bounded_output")
+    def test_bounded_capture_checks_dimensions_then_caps_visible_rows(self, mock_bounded):
+        mock_bounded.side_effect = [
+            subprocess.CompletedProcess(args=[], returncode=0, stdout=b"80\t24\n", stderr=b""),
+            subprocess.CompletedProcess(args=[], returncode=0, stdout=b"msg\n", stderr=b""),
+            subprocess.CompletedProcess(args=[], returncode=0, stdout=b"80\t24\n", stderr=b""),
+        ]
+        text = self.tmux.capture_pane_bounded_checked(
+            "docich-game-g1:nethack-console",
+            cols=80,
+            rows=24,
+            max_bytes=65536,
+            timeout_s=0.75,
+        )
+        self.assertEqual(text, "msg\n")
+        self.assertEqual(
+            mock_bounded.call_args_list[0].args[0],
+            [
+                "tmux", "display-message", "-p", "-t",
+                "docich-game-g1:nethack-console", "#{pane_width}\t#{pane_height}",
+            ],
+        )
+        cmd = mock_bounded.call_args_list[1].args[0]
+        self.assertEqual(
+            cmd,
+            [
+                "tmux", "capture-pane", "-p", "-t",
+                "docich-game-g1:nethack-console",
+            ],
+        )
+        self.assertEqual(mock_bounded.call_args_list[0].kwargs["max_output_bytes"], 64)
+        self.assertEqual(mock_bounded.call_args_list[1].kwargs["max_output_bytes"], 65536)
+        self.assertEqual(mock_bounded.call_args_list[1].kwargs["timeout"], 0.75)
+        self.assertTrue(mock_bounded.call_args_list[1].kwargs["strip_tmux"])
+        self.assertEqual(mock_bounded.call_args_list[2].args[0][1], "display-message")
+
+    @mock.patch("docich.tmux.procs.run_bounded_output")
+    def test_bounded_capture_refuses_resized_pane_before_reading(self, mock_bounded):
+        mock_bounded.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=b"120\t40\n", stderr=b""
+        )
+        with self.assertRaises(tmux_mod.TmuxError):
+            self.tmux.capture_pane_bounded_checked(
+                "docich-game-g1:nethack-console", cols=80, rows=24
+            )
+        self.assertEqual(mock_bounded.call_count, 1)
+
+    def test_bounded_capture_rejects_bool_dimensions(self):
+        with self.assertRaises(ValueError):
+            self.tmux.capture_pane_bounded_checked("docich-game-g1", cols=True, rows=24)
+
     @mock.patch("docich.tmux.procs.run")
     def test_pane_state_parses_dead_and_pid(self, mock_run):
         mock_run.return_value = _ok("0\t123\n1\t456\n")
@@ -298,6 +349,44 @@ class TestCheckedOperations(unittest.TestCase):
         )
         self.assertFalse(self.tmux.kill_window_owned("docich:game-g1", self.owner))
         self.assertEqual(len(mock_run.call_args_list), 1)
+
+    @mock.patch("docich.tmux.procs.run_bounded_output")
+    def test_bounded_session_ownership_uses_small_timed_reads(self, mock_bounded):
+        mock_bounded.side_effect = [
+            subprocess.CompletedProcess(args=[], returncode=0, stdout=b"g1-abcdef\n", stderr=b""),
+            subprocess.CompletedProcess(args=[], returncode=0, stdout=b"1\n", stderr=b""),
+            subprocess.CompletedProcess(args=[], returncode=0, stdout=b"adapter\n", stderr=b""),
+        ]
+        self.assertEqual(
+            self.tmux.read_session_ownership_bounded("docich-game-g1"),
+            tmux_mod.TmuxOwnership("g1-abcdef", 1, "adapter"),
+        )
+        for call in mock_bounded.call_args_list:
+            self.assertLessEqual(call.kwargs["max_output_bytes"], 256)
+            self.assertLessEqual(call.kwargs["timeout"], 0.5)
+            self.assertTrue(call.kwargs["strip_tmux"])
+            self.assertIn("show-options", call.args[0])
+
+    @mock.patch("docich.tmux.procs.run_bounded_output")
+    def test_bounded_window_listing_fails_closed_and_caps_output(self, mock_bounded):
+        mock_bounded.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=b"console\ngame-g1\nagent-g1\n", stderr=b""
+        )
+        self.assertEqual(
+            self.tmux.list_windows_bounded("docich-game-g1"),
+            ["console", "game-g1", "agent-g1"],
+        )
+        args, kwargs = mock_bounded.call_args
+        self.assertEqual(args[0], ["tmux", "list-windows", "-t", "docich-game-g1", "-F", "#{window_name}"])
+        self.assertEqual(kwargs["max_output_bytes"], 4096)
+        self.assertEqual(kwargs["timeout"], 0.5)
+        self.assertTrue(kwargs["strip_tmux"])
+
+        mock_bounded.return_value = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout=b"", stderr=b"private"
+        )
+        with self.assertRaises(tmux_mod.TmuxError):
+            self.tmux.list_windows_bounded("docich-game-g1")
 
     @mock.patch("docich.tmux.procs.run")
     def test_owned_kill_fails_closed_on_unexpected_probe_error(self, mock_run):
