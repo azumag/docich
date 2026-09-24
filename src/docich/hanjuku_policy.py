@@ -1446,7 +1446,13 @@ def _month_key(header):
     return f"{header['year']}-{header['month']}" if header else None
 
 
-KNOWN_PRICES = {'イッテツーン': 1, 'ノリウツール': 18, 'クースカン': 24, 'ゼンマイン': 32}
+# Measured cart prices. グリンボー/ミックミー/ブラッキー come from the base
+# charts (2.md -66G/11個・-80G/2個, 3.md -63G/21個); the rest are measured.
+KNOWN_PRICES = {'イッテツーン': 1, 'ノリウツール': 18, 'クースカン': 24, 'ゼンマイン': 32,
+                'グリンボー': 6, 'ミックミー': 40, 'ブラッキー': 3}
+
+# 兵士は1G=1人で2桁入力が上限。チャート計画の無い月の残金はここまでの補充に使う。
+SOLDIER_CAP = 99
 
 
 def _adjusted_plan(mem, header, key):
@@ -1501,6 +1507,22 @@ def _recalc_soldiers(screen, mem, shop):
     return True
 
 
+def _charted_purchase_ahead(mem, header):
+    """True while a charted month purchase still lies ahead.
+
+    Its budget stays reserved: the chart's own soldier count caps the refill
+    there, and a month the chart does not cover buys nothing at all.
+    """
+    if not header:
+        return False
+    here = (header['year'], header['month'])
+    planned = [tuple(p.get('month') or ()) for p in chart.purchases(mem.get('chapter') or 0)]
+    adjusted = ((mem.get('chart_plan') or {}).get('purchases') or {}).get('month')
+    if adjusted:
+        planned.append(tuple(adjusted))
+    return any(plan > here for plan in planned)
+
+
 def _plan(mem, header):
     key = _month_key(header)
     shop = mem.get('shop')
@@ -1512,22 +1534,32 @@ def _plan(mem, header):
     spec = None
     if header:
         spec = chart.purchase_for(mem.get('chapter') or 0, header['year'], header['month'])
+    ahead = _charted_purchase_ahead(mem, header)
     if not spec:
-        return None
+        return None if ahead else _soldier_refill_plan(mem, header, key)
     gold = header['gold']
     if gold >= spec['chart_gold']:
         items = [list(i) for i in spec['cards']]
-        soldiers, variant, deviation = spec['soldiers'], 'chart', None
+        variant, deviation = 'chart', None
+        # Unpriced cards would overstate the gold left for soldiers.
+        leftover = (gold - sum(KNOWN_PRICES[name] * qty for name, qty in items)
+                    if all(name in KNOWN_PRICES for name, _ in items) else None)
     else:
         items, left = [], gold
         for name, qty in spec['priority']:
+            if name not in KNOWN_PRICES:
+                break
             n = min(qty, left // KNOWN_PRICES[name])
             if n:
                 items.append([name, n])
                 left -= n * KNOWN_PRICES[name]
-        soldiers = min(spec['soldiers'], left)
+        leftover = left
         variant = 'budget_boss_kit_first'
         deviation = f"所持金{gold}Gがチャート想定{spec['chart_gold']}G未満"
+    # With a later charted purchase ahead, its budget wins: the chart's own
+    # soldier count is the ceiling. Otherwise the gold left goes to soldiers.
+    limit = spec['soldiers'] if ahead else SOLDIER_CAP
+    soldiers = spec['soldiers'] if leftover is None else max(0, min(limit, leftover))
     shop = mem['shop'] = {'key': key, 'items': items, 'soldiers': soldiers, 'merchant_done': False,
                           'variant': variant,
                           'soldiers_done': soldiers == 0, 'gold_start': gold}
@@ -1536,6 +1568,27 @@ def _plan(mem, header):
             expected_metric={'chart_cards': [list(i) for i in spec['cards']],
                              'chart_soldiers': spec['soldiers'], 'chart_gold': spec['chart_gold']},
             reason=spec['note'])
+    return shop
+
+
+def _soldier_refill_plan(mem, header, key):
+    """Months the chart has no purchase for: spend the gold left on soldiers.
+
+    The owner policy (2026-09-25) is 毎月・残金で99人まで: without this the
+    month menu exits before へいしほじゅう and the army empties.
+    """
+    if not header:
+        return None
+    gold = header['gold']
+    soldiers = min(SOLDIER_CAP, max(0, gold))
+    shop = mem['shop'] = {'key': key, 'items': [], 'soldiers': soldiers, 'merchant_done': False,
+                          'variant': 'soldier_refill_only', 'soldiers_done': soldiers == 0,
+                          'gold_start': gold}
+    _record(mem, 'month_plan', chart_step='1-month', strategy_variant='soldier_refill_only',
+            month=key, gold=gold, plan={'cards': [], 'soldiers': soldiers},
+            deviation_reason='chart_month_uncovered',
+            expected_metric={'soldier_cap': SOLDIER_CAP},
+            reason='チャートに当月の購入計画がないため残金で兵士を補充')
     return shop
 
 
