@@ -1647,6 +1647,52 @@ class RetroCornerManager:
             self._ensure_runtime()
             return self._finish_locked(state, now)
 
+    def _verify_restoring_request(self, state: dict[str, object], request_id: str) -> None:
+        """Fail closed before replaying a persisted restoration request."""
+        if (state.get("status") != "restoring"
+                or state.get("rotation_request_id") != request_id
+                or not isinstance(state.get("switch_request_id"), str)
+                or not state.get("switch_request_id")):
+            raise RetroCornerError("restoring request ownership is unverified")
+        if not self._scripted_hanjuku(state):
+            return
+
+        identity = state.get("bot_identity")
+        identity_keys = {"game", "runtime_id", "generation", "lease_id"}
+        if (not isinstance(identity, dict) or set(identity) != identity_keys
+                or identity.get("game") != "hanjuku-hero"
+                or type(identity.get("generation")) is not int
+                or identity["generation"] < 1
+                or not isinstance(identity.get("runtime_id"), str)
+                or not identity["runtime_id"]
+                or not isinstance(identity.get("lease_id"), str)
+                or not identity["lease_id"]
+                or state.get("bot_runtime_id") != identity["runtime_id"]):
+            raise RetroCornerError("Hanjuku runtime identity is unverified before restore")
+
+        reason = state.get("end_reason")
+        if reason not in {"game_over", "screen_stalled"}:
+            # Explicit stop paths can enter restoring without a terminal frame.
+            # Their source runtime is still fenced by verify_runtime and the
+            # coordinator's expected_source check in _finish_locked.
+            return
+        terminal_generation = state.get("terminal_generation")
+        if (type(terminal_generation) is not int
+                or terminal_generation != identity["generation"]):
+            raise RetroCornerError("Hanjuku terminal generation does not match runtime")
+
+        from .hanjuku_run import terminal
+        from .naming import runtime_directory
+
+        evidence = terminal(
+            runtime_directory(self.g.state_dir, identity["runtime_id"]), identity
+        )
+        if (evidence is None
+                or evidence.get("terminal_reason") != reason
+                or evidence.get("generation") != identity["generation"]
+                or evidence.get("terminal_evidence") != state.get("terminal_evidence")):
+            raise RetroCornerError("Hanjuku terminal evidence changed before restore")
+
     def _retry_starting_tick(self, now: dt.datetime) -> CornerResult | None:
         """Retry a queued corner start independently of its schedule window."""
 
@@ -1794,6 +1840,7 @@ class RetroCornerManager:
                         if result is not None:
                             return result
                     elif status == "restoring":
+                        self._verify_restoring_request(state, request_id)
                         return self._finish_locked(state, self._local_now())
                     elif status != "active":
                         raise RetroCornerError("rotation execution requires recovery")
