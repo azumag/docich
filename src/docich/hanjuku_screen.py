@@ -223,6 +223,11 @@ def classify_text(s: Screen) -> str:
         # The general list opens beside the castle menu; its hand is right of it.
         if s.hand and s.hand[0] > 100:
             return 'general_list'
+        # An empty list draws「しょうぐんはおりません……」and no hand cursor.
+        # Without this the screen is misread as castle_menu and menu_to() never
+        # moves (no hand), so the bot plans zero actions forever (g340 stall).
+        if 'おりません' in t:
+            return 'general_list'
         return 'castle_menu'
     if re.fullmatch(r'[^\ufffd\s]+しょうぐんがボスじょうにせめこんだ!!', t):
         return 'boss_attack_started'

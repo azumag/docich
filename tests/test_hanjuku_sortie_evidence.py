@@ -711,3 +711,63 @@ def test_uncertain_short_inventory_never_exits_even_after_all_planned_picks(chan
     assert policy.deploy_step(screen, mem) == []
     assert mem['picked'] == ['フットバース']
     assert mem['_records'][-1]['decision'] == 'situation_held'
+
+
+def empty_general_list_screen():
+    """Measured g340 stall frame: empty list beside the castle menu, no hand."""
+    def line(y, x, word):
+        return TextLine(y, tuple((x + 8 * i, ch) for i, ch in enumerate(word)))
+    lines = [line(31, 64, 'しゅつげき'), line(39, 136, 'しょうぐんは'),
+             line(47, 64, 'ステータス'), line(79, 152, 'おりません……')]
+    from docich.hanjuku_screen import joined, classify_text
+    text = joined(lines)
+    screen = Screen(lines=lines, hand=None, text=text, kind='unknown')
+    screen.kind = classify_text(screen)
+    return screen
+
+
+def test_empty_general_list_without_hand_is_not_misread_as_castle_menu():
+    screen = empty_general_list_screen()
+    assert screen.kind == 'general_list'
+    assert screen.hand is None
+    assert 'おりません' in screen.text
+
+
+def empty_list_memory():
+    # 1-C1 is a non-boss order sourced from ほんじょう (empty-list recovery path).
+    return {'chapter': 1, 'active': '1-C1', 'variant': 'chart',
+            'orders': {'1-C1': 'pending'}, 'picked': []}
+
+
+def test_empty_general_list_falls_back_to_home_source_instead_of_silent_hold():
+    mem = empty_list_memory()  # 1-C1 sources from ほんじょう when not overridden;
+    # simulate a non-home source so the fallback must redirect.
+    # Base chart source is ほんじょう; force a routed source for the assertion.
+    screen = empty_general_list_screen()
+    # With source already ほんじょう the first empty observation still installs
+    # the override and closes the menus (same as any missing general).
+    assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
+    assert mem['source_override']['1-C1'] == 'ほんじょう'
+    assert mem['active'] is None and mem['orders']['1-C1'] == 'pending'
+    assert mem['_records'][-1]['decision'] == 'order_source_changed'
+    assert not mem.get('general_override')
+
+
+def test_empty_general_list_after_home_fallback_fails_the_order_with_evidence():
+    mem = empty_list_memory()
+    mem['source_override'] = {'1-C1': 'ほんじょう'}
+    screen = empty_general_list_screen()
+    assert policy.deploy_step(screen, mem) == [policy.pad('b')]
+    assert mem['orders']['1-C1'] == 'failed' and mem['active'] is None
+    rec = mem['_records'][-1]
+    assert rec['decision'] == 'order_failed'
+    assert rec['deviation_reason']
+
+
+def test_castle_menu_without_hand_holds_with_evidence_instead_of_empty_plan():
+    mem = memory()
+    screen = menu('castle_menu', ['しゅつげき', 'ステータス'], hand=False)
+    assert policy.deploy_step(screen, mem) == []
+    assert mem['active'] == '1-B1'
+    assert mem['_records'][-1]['decision'] == 'situation_held'
+    assert 'しゅつげき' in mem['_records'][-1]['reason']
