@@ -88,14 +88,13 @@ def test_prewarm_ignores_non_waiting_states(tmp_path):
     assert "fallback_segments" not in state
 
 
-def test_fast_manager_runs_content_driven_narration(tmp_path, monkeypatch):
+def test_fast_manager_runs_fixed_narration_slots(tmp_path, monkeypatch):
     from docich.trading import corner_script
 
     mgr, coord = _manager(tmp_path, script_agents="fixture:agent")
     queue = [
         {"status": "item", "topic": "相場", "text": "最初のネタです。"},
-        {"status": "done"},
-    ]
+    ] + [{"status": "done"}] * 14
     monkeypatch.setattr(
         corner_script, "generate_next_narration", lambda *a, **k: queue.pop(0)
     )
@@ -104,10 +103,13 @@ def test_fast_manager_runs_content_driven_narration(tmp_path, monkeypatch):
         "status": "starting",
         "date": "2026-09-17",
         "previous_game": "sorengame",
+        "narration_schema": 2,
         "reports": {},
     }) == "completed"
 
     saved = json.loads(mgr.path.read_text())
-    assert saved["end_reason"] == "exhausted"
-    assert saved["reports"]["ai:1"]["text"] == "最初のネタです。"
+    assert saved["end_reason"] == "eight-slots-drained"
+    assert saved["reports"]["script:1"]["text"] == "最初のネタです。"
+    assert all(saved["reports"][f"script:{index}"]["source"] == "fallback"
+               for index in range(2, 9))
     assert coord.calls[0] == ("switch", "paper-view")

@@ -3,7 +3,7 @@
 Manual runs use a separate state/lock from the scheduled daily corner so an
 ad-hoc test never consumes the day's 22:00 slot. The normal
 :class:`PaperCornerManager` switch/narrate/restore lifecycle is reused; the run
-ends when the narrator runs out of material or the operator stops it.
+ends after eight spoken slots or when the operator stops it.
 """
 from __future__ import annotations
 

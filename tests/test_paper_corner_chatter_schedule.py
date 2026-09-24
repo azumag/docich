@@ -5,7 +5,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from docich.config import load_global
-from docich.paper_corner import SPEECH_DRAIN_STABLE_POLLS, PaperCornerManager
+from docich.paper_corner import NARRATION_AI_RETRIES, SPEECH_DRAIN_STABLE_POLLS, PaperCornerManager
+from docich.trading.corner_script import SEGMENT_KEYS
 
 
 class Result:
@@ -76,6 +77,7 @@ def _starting_state():
         "status": "starting",
         "date": "2026-09-20",
         "previous_game": "sorengame",
+        "narration_schema": 2,
         "reports": {},
     }
 
@@ -86,7 +88,7 @@ def _write_current_source(tmp_path, content, label, phase="playing"):
     source.write_text(f"owner|{phase}|{content}|1000|{label}\n", encoding="utf-8")
 
 
-def test_ai_segments_are_spoken_as_generated_then_exhausted(tmp_path, monkeypatch):
+def test_ai_segments_are_spoken_in_fixed_order(tmp_path, monkeypatch):
     from docich.trading import corner_script
 
     spoken = []
@@ -95,40 +97,37 @@ def test_ai_segments_are_spoken_as_generated_then_exhausted(tmp_path, monkeypatc
         overlay=lambda g, payload: None,
         speech=lambda g, text, **kwargs: spoken.append(text),
     )
-    queue = [
-        {"status": "item", "topic": "相場", "text": "一つ目のネタです。"},
-        {"status": "item", "topic": "ニュース", "text": "二つ目のネタです。"},
-        {"status": "done"},
-    ]
+    queue = [{"status": "item", "topic": key, "text": f"{key}のネタです。"}
+             for key in SEGMENT_KEYS]
+    targets = []
+    def fake_next(*args, **kwargs):
+        targets.append(kwargs["target_key"])
+        return queue.pop(0)
     monkeypatch.setattr(
-        corner_script, "generate_next_narration", lambda *a, **k: queue.pop(0)
+        corner_script, "generate_next_narration", fake_next
     )
 
     assert mgr._run_locked(_starting_state()) == "completed"
 
     saved = json.loads(mgr.path.read_text())
-    assert saved["end_reason"] == "exhausted"
-    assert saved["reports"]["ai:1"]["text"] == "一つ目のネタです。"
-    assert saved["reports"]["ai:2"]["text"] == "二つ目のネタです。"
-    assert not any(key.startswith("fallback:") for key in saved["reports"])
-    assert "一つ目のネタです。" in spoken and "二つ目のネタです。" in spoken
-    # Covered topics are handed back with their opening sentence so the
-    # narrator can recognise a repeat even under a new label.
-    assert saved["covered_topics"] == ["相場：一つ目のネタです。", "ニュース：二つ目のネタです。"]
+    assert saved["end_reason"] == "eight-slots-drained"
+    assert targets == list(SEGMENT_KEYS)
+    assert [saved["reports"][f"script:{i}"]["text"] for i in range(1, 9)] == [
+        f"{key}のネタです。" for key in SEGMENT_KEYS]
+    assert all(saved["reports"][f"script:{i}"]["drained"] for i in range(1, 9))
+    assert all(f"{key}のネタです。" in spoken for key in SEGMENT_KEYS)
+    assert saved["covered_topics"][0] == "corner：cornerのネタです。"
 
 
-def test_covered_topics_keep_every_spoken_segment(tmp_path, monkeypatch):
-    """A long corner must not forget its early topics (2026-09-23: the list was
-    cut to the latest 24 and a 58-segment corner re-told them)."""
+def test_covered_topics_keep_every_spoken_slot(tmp_path, monkeypatch):
+    """Each later slot sees all prior spoken topics."""
     from docich.trading import corner_script
 
     mgr, _coord = _manager(
         tmp_path, overlay=lambda g, payload: None, speech=lambda g, text, **kwargs: None,
     )
-    queue = [
-        {"status": "item", "topic": f"話題{index}", "text": f"{index}番目のネタです。"}
-        for index in range(1, 31)
-    ] + [{"status": "done"}]
+    queue = [{"status": "item", "topic": f"話題{index}", "text": f"{index}番目のネタです。"}
+             for index in range(1, 9)]
     seen = []
 
     def fake_next(*args, **kwargs):
@@ -140,10 +139,9 @@ def test_covered_topics_keep_every_spoken_segment(tmp_path, monkeypatch):
     assert mgr._run_locked(_starting_state()) == "completed"
 
     saved = json.loads(mgr.path.read_text())
-    assert len(saved["covered_topics"]) == 30
+    assert len(saved["covered_topics"]) == 8
     assert saved["covered_topics"][0] == "話題1：1番目のネタです。"
-    # The final generation call still saw the very first topic.
-    assert seen[-1][0] == "話題1：1番目のネタです。" and len(seen[-1]) == 30
+    assert seen[-1][0] == "話題1：1番目のネタです。" and len(seen[-1]) == 7
 
 
 def test_generation_failure_reads_finite_fallback_then_marks_degraded(tmp_path, monkeypatch):
@@ -161,40 +159,38 @@ def test_generation_failure_reads_finite_fallback_then_marks_degraded(tmp_path, 
     assert mgr._run_locked(_starting_state()) == "completed"
 
     saved = json.loads(mgr.path.read_text())
-    assert calls["n"] == 2, "a transient failure must be retried a bounded number of times"
-    assert saved["end_reason"] == "generation-failed"
+    assert calls["n"] == 8 * NARRATION_AI_RETRIES
+    assert saved["end_reason"] == "eight-slots-drained"
     assert saved["degraded"] is True
     assert "timeout" in saved["end_detail"]
-    delivered = {key for key in saved["reports"] if key.startswith("fallback:")}
-    assert delivered == {f"fallback:{index}" for index in range(1, 9)}
+    assert set(saved["generation_failures"]) == set(SEGMENT_KEYS)
+    assert all(saved["reports"][f"script:{index}"]["source"] == "fallback"
+               for index in range(1, 9))
 
 
-def test_ai_disabled_reads_finite_fallback_and_ends_exhausted(tmp_path):
+def test_ai_disabled_reads_all_eight_fallback_slots(tmp_path):
     mgr, _coord = _manager(tmp_path, script_agents="")
 
     assert mgr._run_locked(_starting_state()) == "completed"
 
     saved = json.loads(mgr.path.read_text())
-    assert saved["end_reason"] == "exhausted"
+    assert saved["end_reason"] == "eight-slots-drained"
     assert "degraded" not in saved
-    delivered = {key for key in saved["reports"] if key.startswith("fallback:")}
-    assert delivered == {f"fallback:{index}" for index in range(1, 9)}
+    assert [saved["reports"][f"script:{index}"]["slot"] for index in range(1, 9)] == list(SEGMENT_KEYS)
 
 
-def test_no_explicit_narration_interval_between_segments(tmp_path, monkeypatch):
+def test_each_slot_waits_for_audio_monitor_before_next(tmp_path, monkeypatch):
     from docich.trading import corner_script
 
     sleeps = []
     mgr, _coord = _manager(tmp_path, sleep=lambda seconds: sleeps.append(seconds))
-    queue = [{"status": "item", "topic": "a", "text": "A"},
-             {"status": "item", "topic": "b", "text": "B"},
-             {"status": "done"}]
+    queue = [{"status": "item", "topic": key, "text": key} for key in SEGMENT_KEYS]
     monkeypatch.setattr(
         corner_script, "generate_next_narration", lambda *a, **k: queue.pop(0)
     )
 
     assert mgr._run_locked(_starting_state()) == "completed"
-    assert sleeps == [], "segments must be spoken as generated, with no fixed interval"
+    assert sleeps == [2.0] * (9 * (SPEECH_DRAIN_STABLE_POLLS - 1))
 
 
 def test_corner_waits_for_speech_to_finish_before_restoring(tmp_path):
@@ -211,7 +207,7 @@ def test_corner_waits_for_speech_to_finish_before_restoring(tmp_path):
 
     assert mgr._run_locked(_starting_state()) == "completed"
 
-    assert sleeps == [2.0] * SPEECH_DRAIN_STABLE_POLLS, (
+    assert len(sleeps) >= SPEECH_DRAIN_STABLE_POLLS and all(s == 2.0 for s in sleeps), (
         "the corner must wait for the audio queue to drain"
     )
     saved = json.loads(mgr.path.read_text())
@@ -231,7 +227,7 @@ def test_corner_bounds_the_speech_wait(tmp_path):
         sleep=lambda seconds: now.__setitem__(0, now[0] + seconds),
     )
 
-    assert mgr._run_locked(_starting_state()) == "completed"
+    assert mgr._run_locked(_starting_state()) == "pending"
 
     saved = json.loads(mgr.path.read_text())
     assert saved.get("speech_drain_timeout") is True

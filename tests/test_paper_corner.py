@@ -59,7 +59,7 @@ def manager(g, **kwargs):
     return PaperCornerManager(g, **kwargs)
 
 
-def test_delayed_boundary_runs_until_narration_exhausted(tmp_path):
+def test_delayed_boundary_runs_all_eight_narrations(tmp_path):
     g=setup(tmp_path)
     now=[datetime(2026,9,8,22,tzinfo=ZoneInfo('Asia/Tokyo')).timestamp()]
     due=now[0]; output=[]; voice=[]
@@ -77,12 +77,14 @@ def test_delayed_boundary_runs_until_narration_exhausted(tmp_path):
     assert mgr.tick() == 'completed'
     saved=json.loads(mgr.path.read_text())
     assert saved['status']=='completed'
-    assert saved['end_reason']=='exhausted'
+    assert saved['end_reason']=='eight-slots-drained'
     assert saved['started_at']==due+2100
     # opening + eight finite fallback segments + end (no AI configured)
     assert len(output)==len(voice)==10
-    delivered={key for key in saved['reports'] if key.startswith('fallback:')}
-    assert delivered=={f'fallback:{i}' for i in range(1,9)}
+    delivered={key for key in saved['reports'] if key.startswith('script:')}
+    assert delivered=={f'script:{i}' for i in range(1,9)}
+    assert all(saved['reports'][key]['source']=='fallback' and saved['reports'][key]['drained']
+               for key in delivered)
     assert all(p['body'] for p in output)
     assert all(str(kw.get('event_id', '')).startswith('paper-corner:') for kw in voice)
     assert '切り替えました' in saved['reports']['opening']['text']
@@ -120,6 +122,7 @@ def test_switch_notice_announced_when_displacing_game(tmp_path):
     mgr=manager(g,clock=lambda:now[0],sleep=sleep,
                 overlay=lambda g,p:None,speech=lambda g,t,**kw:None,
                 coordinator=coord)
+    mgr._wait_for_speech=lambda state: True
     seen={'n':0}
 
     def _active():
@@ -155,13 +158,14 @@ def test_stream_category_follows_paper_view_and_restored_game(tmp_path):
         stream_game=lambda game: events.append(f'announce:{game}'),
     )
     mgr._active_game = lambda: coord.active_game
-    mgr._next_narration_item = lambda state: ('done', 'test')
+    mgr._next_narration_item = lambda state, index: {'key': f'script:{index}', 'text': '本文', 'source': 'fallback'}
 
     assert mgr._run_locked({
         'status': 'starting',
         'date': '2026-09-08',
         'previous_game': 'sorengame',
         'reports': {},
+        'narration_schema': 2,
     }) == 'completed'
     assert events == [
         'switch:paper-view',
@@ -185,13 +189,14 @@ def test_stream_category_failure_does_not_fail_paper_corner(tmp_path):
         stream_paper=lambda: (_ for _ in ()).throw(RuntimeError('twitch unreachable')),
     )
     mgr._active_game = lambda: coord.active_game
-    mgr._next_narration_item = lambda state: ('done', 'test')
+    mgr._next_narration_item = lambda state, index: {'key': f'script:{index}', 'text': '本文', 'source': 'fallback'}
 
     assert mgr._run_locked({
         'status': 'starting',
         'date': '2026-09-08',
         'previous_game': 'paper-view',
         'reports': {},
+        'narration_schema': 2,
     }) == 'completed'
 
 
@@ -207,6 +212,7 @@ def test_commit_verification_fails_when_old_game_remains(tmp_path):
     import pytest
     from docich.paper_corner import PaperCornerError
     mgr.save({'status':'starting','date':'2026-09-08','previous_game':'sorengame',
+              'narration_schema':2,
               'requested_at':now[0]})
     with pytest.raises(PaperCornerError):
         mgr._tick_locked(None,datetime.fromtimestamp(now[0],tz=ZoneInfo('Asia/Tokyo')))
@@ -220,22 +226,22 @@ def test_restart_retries_only_failed_sink_and_preserves_completed_items(tmp_path
         raise RuntimeError('sink unavailable')
     mgr=manager(g,clock=lambda:now[0],sleep=lambda t:now.__setitem__(0,now[0]+t),
                 overlay=lambda g,p:overlay.append(p),speech=flaky_speech)
-    state={'status':'active','date':'2026-09-08','started_at':now[0],
+    state={'status':'active','date':'2026-09-08','started_at':now[0], 'narration_schema':2,
            'reports':{}, 'fallback_segments':{str(i):f'文{i}です。' for i in range(1,9)}}
     mgr.save(state)
     import pytest
     with pytest.raises(RuntimeError):mgr.tick()
     assert len(overlay)==1
     # The overlay half of the failed item was already committed durably.
-    assert json.loads(mgr.path.read_text())['reports']['fallback:1']['overlay'] is True
+    assert json.loads(mgr.path.read_text())['reports']['script:1']['overlay'] is True
     mgr.speech=lambda *a,**k:speech.append(k)
     now[0]+=10
     assert mgr.tick()=='completed'
     saved=json.loads(mgr.path.read_text())
-    assert saved['end_reason']=='exhausted'
+    assert saved['end_reason']=='eight-slots-drained'
     # eight fallback items + the closing announcement; overlay:1 is not repeated.
     assert len(overlay)==9 and len(speech)==9
-    assert saved['reports']['fallback:1']['overlay'] is True
+    assert saved['reports']['script:1']['overlay'] is True
 
 
 def test_another_crashed_active_corner_blocks_new_start(tmp_path):
@@ -272,6 +278,7 @@ def test_view_switch_and_restore_cycle(tmp_path):
     mgr = manager(g, clock=lambda: now[0], sleep=sleep,
                   overlay=lambda g, p: None, speech=lambda g, t, **kw: None,
                   coordinator=coord)
+    mgr._wait_for_speech = lambda state: True
     seen = {'n': 0}
 
     def _active():
@@ -618,7 +625,8 @@ def test_start_prepares_fallback_before_switch(tmp_path):
                   sleep=lambda t: now.__setitem__(0, now[0] + 2000),
                   overlay=lambda g, p: None, speech=lambda g, t, **kw: None,
                   coordinator=coord)
-    mgr._next_narration_item = lambda state: ('done', 'test')
+    mgr._wait_for_speech = lambda state: True
+    mgr._next_narration_item = lambda state, index: {'key': f'script:{index}', 'text': '本文', 'source': 'fallback'}
 
     def spy(state):
         order.append('fallback')
