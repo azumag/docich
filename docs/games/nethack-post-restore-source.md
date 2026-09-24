@@ -19,6 +19,14 @@ Coordinatorは成功したswitch/stopで、実際に停止を確認した旧runt
 
 `_spawn_improve_once()` は従来のno-opのまま。queue/worker/LLM/canary/promotion、本番Action・save、配信・共通音声・通知への操作はない。新しいtimerやworkflow実行権限も追加しない。
 
+## ゲーム切替と将来の隔離評価
+
+このPRは、旧ゲーム切替時の停止規約を変更しない。切替元の試合と保存境界を完了した後、旧ゲームの改善ジョブと子プロセスを停止し、描画・ゲーム実行・操作AIを終了してから次のゲームへ進む。配信・音声・通知などの共通基盤は維持する。sourceの記録はCoordinatorが旧runtimeの停止とcleanupを確認した後だけ行う。
+
+`eligibility=terminal_scheduled` は観測分類であり、改善実行の許可ではない。現在の契約は `authorized_mode=off` / `slot_release_verified=false` のまま、`_spawn_improve_once()` もno-opである。ライブ改善を旧ゲームの停止後も走らせる例外はこのPRでは導入しない。
+
+将来、隔離評価を例外として認める場合も、旧ゲームの停止を省略したり、その実runtime・save・xlog・dump・canonical stateを共有したりしてはならない。評価は別の明示opt-in契約と専用領域を持ち、ネットワーク遮断・有限の資源上限・終了後cleanupを検証する別変更としてレビューする。隔離状態と所有境界をsupervisorが確認できない場合は、旧ゲーム改善ジョブと同じく停止対象としてfail-closedにする。本PRから将来の隔離評価を起動・継続する経路はない。
+
 ## 復帰元の同一性は推測しない
 
 旧成功receiptは `from_game` だけで `result.from_runtime` を持たない。その旧receiptは `restore_source_unverified` として拒否する。新しい証跡も、当該run/sessionのruntimeと一致しなければ拒否する。
