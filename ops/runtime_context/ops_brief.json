@@ -1,10 +1,10 @@
 {
-  "output_sha256": "2827df01026ceb23406c70e336cd35a6ea84ecadd05516775b44c806d6fae92f",
+  "output_sha256": "8cd45db529bb98c8b57f27f4c17bdf0b88b66702029e28cd5ba3f86155e36d4a",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "718ec4f33162ef04f55fc59e0ec34809cc061eefa29631f0b1f8c8e17515bb16",
+  "source_sha256": "360973b237938295af5bc8a1bc840216661b2c178311af01e19b2828239f6cb4",
   "topics": [
-    "半熟英雄: 原典戦術6パターンとの突合・source_pattern 付与（、CI監視中・未マージ・未VM）",
+    "半熟英雄: 原典戦術6パターンとの突合・source_pattern 付与（ CI green・マージ/VM待ち）",
     "半熟英雄: 敵召喚たまご応戦＋チャート準拠の独自判断・経験記憶（ローカル実装、未commit・未実機）",
     "NetHack P1確認済み、最新main同期・CI green"
   ]
