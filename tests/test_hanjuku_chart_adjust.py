@@ -685,3 +685,45 @@ def test_interim_runs_after_an_exhausted_plan_but_not_while_a_plan_waits(monkeyp
     policy.map_step(map_screen(), mem, FRAME)
     assert mem['active'].startswith(adjust.INTERIM_PREFIX)
     assert mem['chart_plan']['purchases'] is not None          # plan evidence kept
+
+
+def test_unpriced_adjusted_cards_resize_soldiers_from_gold_after_merchant():
+    mem = stuck_memory()
+    policy.map_step(map_screen(), mem, FRAME)
+    doc = adjusted_doc(mem['chart_adjust']['request_id'])
+    # ダイチスイム is a valid purchase whose price was never measured.
+    doc['purchases'] = {'month': [1, 8], 'cards': [['ダイチスイム', 5]], 'soldiers': 50}
+    mem['_adjusted'] = adjust.validate(doc)
+    policy.map_step(map_screen(), mem, FRAME)
+    mem['_adjusted'] = None
+    mem['_records'] = []
+    header = {'chapter': 1, 'year': 1, 'month': 8, 'gold': 60}
+    shop = policy._plan(mem, header)
+    [plan] = decisions(mem, 'month_plan')
+    assert plan['plan']['unpriced_cards'] == ['ダイチスイム']
+    assert shop['soldiers'] == 50 and shop['soldiers_from_gold']     # provisional only
+    # The merchant really charged for the cards: 20G remain on screen.
+    shop['merchant_done'] = True
+    month = _text_screen('', 'month_menu')
+    month.header = {**header, 'gold': 20}
+    policy.month_step(month, mem)
+    [recalc] = decisions(mem, 'soldier_plan_recalc')
+    assert shop['soldiers'] == 20 and recalc['observed_metric']['gold_after_merchant'] == 20
+    # Recomputed once; a later frame does not resize again.
+    month.header = {**header, 'gold': 5}
+    policy.month_step(month, mem)
+    assert shop['soldiers'] == 20 and len(decisions(mem, 'soldier_plan_recalc')) == 1
+
+
+def test_soldier_recalc_holds_on_unreadable_gold_and_skips_when_broke():
+    mem = {'chapter': 1, '_records': [], 'chart_plan': {'purchases': {
+        'month': [1, 8], 'cards': [['ダイチスイム', 5]], 'soldiers': 30, 'generals': 0, 'note': ''}}}
+    header = {'chapter': 1, 'year': 1, 'month': 8, 'gold': 40}
+    shop = policy._plan(mem, header)
+    shop['merchant_done'] = True
+    month = _text_screen('', 'month_menu')
+    month.header = None
+    assert policy.month_step(month, mem) == [] and not shop.get('soldiers_recalculated')
+    month.header = {**header, 'gold': 0}
+    policy.month_step(month, mem)
+    assert shop['soldiers'] == 0 and shop['soldiers_done'] is True

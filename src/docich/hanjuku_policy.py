@@ -1316,28 +1316,52 @@ def _adjusted_plan(mem, header, key):
     """Month purchases from an adopted adjusted chart (#1085 L2).
 
     Cards reuse the merchant flow (unlisted/unaffordable items are skipped
-    and recorded there); soldiers reuse the refill editor, capped by the gold
-    left after known card prices. General recruitment has no measured menu
-    yet, so it is recorded as a deviation and not attempted.
+    and recorded there). An adjusted chart may buy cards whose price was never
+    measured, so the soldier count here is only a provisional estimate: after
+    the merchant, ``month_step`` recomputes it from the gold read on screen
+    (``_recalc_soldiers``) before opening the refill. General recruitment has
+    no measured menu yet, so it is recorded as a deviation and not attempted.
     """
     spec = (mem.get('chart_plan') or {}).get('purchases')
     if not spec or key != f'{spec["month"][0]}-{spec["month"][1]}':
         return None
     gold = header['gold']
     items = [list(i) for i in spec['cards']]
+    target = min(spec['soldiers'], 99)
+    unpriced = sorted({name for name, _ in items if name not in KNOWN_PRICES})
     left = gold - sum(KNOWN_PRICES.get(name, 0) * qty for name, qty in items)
-    soldiers = max(0, min(spec['soldiers'], left, 99))
+    soldiers = max(0, min(target, left))
     shop = mem['shop'] = {'key': key, 'items': items, 'soldiers': soldiers, 'merchant_done': False,
-                          'variant': 'chart_adjusted', 'soldiers_done': soldiers == 0,
+                          'variant': 'chart_adjusted', 'soldiers_done': target == 0,
+                          'soldiers_target': target, 'soldiers_from_gold': True,
                           'gold_start': gold}
     _record(mem, 'month_plan', chart_step='adjusted-month', strategy_variant='chart_adjusted',
-            month=key, gold=gold, plan={'cards': items, 'soldiers': soldiers},
+            month=key, gold=gold,
+            plan={'cards': items, 'soldiers_provisional': soldiers, 'unpriced_cards': unpriced},
             deviation_reason=('recruit_menu_unmeasured' if spec.get('generals') else None),
             expected_metric={'adjusted_cards': [list(i) for i in spec['cards']],
                              'adjusted_soldiers': spec['soldiers'],
                              'adjusted_generals': spec.get('generals', 0)},
             reason=spec.get('note') or '調整チャートの月次購入')
     return shop
+
+
+def _recalc_soldiers(screen, mem, shop):
+    """Adjusted plans: size the refill from the gold actually left after the
+    merchant (1G per soldier, as in the base budget plan). Unreadable gold
+    holds input rather than guessing."""
+    gold = (screen.header or {}).get('gold')
+    if type(gold) is not int:
+        return False
+    shop['soldiers'] = max(0, min(shop.get('soldiers_target', 0), gold))
+    shop['soldiers_done'] = shop['soldiers'] == 0
+    shop['soldiers_recalculated'] = True
+    _record(mem, 'soldier_plan_recalc', chart_step='adjusted-month',
+            strategy_variant=shop.get('variant', 'chart_adjusted'), month=shop.get('key'),
+            expected_metric={'soldiers_target': shop.get('soldiers_target')},
+            observed_metric={'gold_after_merchant': gold, 'soldiers': shop['soldiers']},
+            reason='商人での実購入後の所持金から兵士補充数を再計算')
+    return True
 
 
 def _plan(mem, header):
@@ -1393,6 +1417,10 @@ def month_step(screen: Screen, mem):
     if shop and not shop['merchant_done'] and shop['items']:
         move = menu_to(screen, 'しょうにん')
         return [pad('a')] if move == 'here' else [move] if move else []
+    if (shop and shop.get('soldiers_from_gold') and not shop.get('soldiers_recalculated')
+            and not shop['soldiers_done']):
+        if not _recalc_soldiers(screen, mem, shop):
+            return []
     if shop and not shop['soldiers_done']:
         move = menu_to(screen, 'へいしほじゅう')
         return [pad('a')] if move == 'here' else [move] if move else []
