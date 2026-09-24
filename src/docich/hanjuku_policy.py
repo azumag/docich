@@ -522,6 +522,19 @@ def map_step(screen: Screen, mem, frame):
                 reason='城で決定してもメニューが出ないため位置推定を破棄して屋根アンカーで再特定する',
                 observed_metric={'menu_miss': mem['menu_miss']})
     order = _order(mem)
+    if order is not None and not _ready(order, mem):
+        # A defense loss revokes the capture an order was picked on. Holding
+        # ``active`` past that keeps steering the cursor at the now-foreign
+        # castle and pressing A there forever (g350, 2026-09-25: ジョンリギを
+        # 失ったあとも J3 の出撃元へ戻って城情報だけを開き続けた)。前提が
+        # 戻るまで次に選べる指示へ切り替える。
+        _record(mem, 'order_precondition_lost', chart_step=order['step'],
+                observed_metric={'captured': sorted(mem.get('captured') or []),
+                                 'after': list(order.get('after') or ())},
+                reason='実行中の指示の前提が失われたため指示を選び直す')
+        mem['active'] = None
+        mem['picked'] = []
+        order = None
     if order is None:
         order = next_order(mem)
         if order is None:
@@ -1743,9 +1756,11 @@ def yes_no_step(screen: Screen, mem):
     if re.search(r'\d+Gでいい', text):
         choice, reason, variant = 'いかんッ!', '追加のおねだりは所持金を月一購入に残すため断る', 'decline_extra_gift'
     elif 'はたしあい' in text or 'ごあいて' in text:
-        # A lost duel can cost the hero; the chart does not require it.
-        choice, reason = 'いかんッ!', '主人公の損失リスクを避け一騎打ちを断る'
-        variant = 'decline_duel'
+        # Owner decision (2026-09-25): accept. A duel fought with the blue
+        # gauge spent properly is a near-certain win, so the hero no longer
+        # needs shielding from the offer.
+        choice, reason = 'うむッ!', '一騎打ちは青ゲージを消費する前提で受ける'
+        variant = 'accept_duel'
     else:
         choice, reason, variant = 'うむッ!', '未分類の確認は既定で進行', 'unclassified_prompt'
     move = menu_to(screen, choice)

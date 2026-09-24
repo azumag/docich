@@ -254,14 +254,16 @@ def test_quantity_editor_uses_the_digit_cursor_and_the_price_message():
     assert policy.quantity_step(s, mem)[0]['buttons'] == ['left']
 
 
-def test_decline_duels_and_do_not_confirm_unrequested_month_exit():
+def test_accept_duels_and_do_not_confirm_unrequested_month_exit():
     c = Canvas()
     c.text(24, 183, 'いって ごあいて ねがえぬか?')
     c.text(184, 183, 'うむッ!')
     c.text(184, 199, 'いかんッ!')
     c.hand(162, 177)
     mem = {}
-    assert policy.yes_no_step(parse(c.frame()), mem)[0]['buttons'] == ['down']
+    # うむッ! is already under the hand, so the duel is taken with one press.
+    assert policy.yes_no_step(parse(c.frame()), mem)[0]['buttons'] == ['a']
+    assert mem['_records'][-1]['strategy_variant'] == 'accept_duel'
     c2 = Canvas()
     c2.text(48, 15, '1ねん 5のつき 20G')
     c2.text(48, 47, 'しょうにん')
@@ -271,6 +273,28 @@ def test_decline_duels_and_do_not_confirm_unrequested_month_exit():
     c2.hand(162, 177)
     assert policy.month_step(parse(c2.frame()), {'chapter': 2})[0]['buttons'] == ['down']
     assert policy.month_step(parse(c2.frame()), {'chapter': 2, 'month_exit': True})[0]['buttons'] == ['a']
+
+
+def test_a_lost_source_castle_releases_the_running_order_instead_of_steer_back():
+    from docich.hanjuku_screen import Screen as S
+    order = {'step': 'A:test:J3', 'general': 'ゼウス', 'source': 'ジョンリギ',
+             'target': 'スペンソニア', 'cards': [], 'after': ['captured', 'ジョンリギ'],
+             'note': 'ジョンリギ制圧後ゼウスでスペンソニアへ'}
+    mem = {'chapter': 1, 'captured': [], 'active': 'A:test:J3', 'orders': {},
+           'chart_plan': {'request_id': 'test', 'orders': [order]}}
+    for base in chart.orders(1):
+        mem['orders'][base['step']] = 'launched'
+    screen = S(lines=[], hand=None, text='', kind='map')
+    # The source castle was taken back: the cursor must not be steered there.
+    assert policy.map_step(screen, mem, None) == []
+    names = [r['decision'] for r in mem['_records']]
+    assert 'order_precondition_lost' in names
+    lost = next(r for r in mem['_records'] if r['decision'] == 'order_precondition_lost')
+    assert lost['chart_step'] == 'A:test:J3'
+    assert lost['observed_metric'] == {'captured': [], 'after': ['captured', 'ジョンリギ']}
+    assert mem['active'] is None
+    assert 'order_start' not in names          # never re-picks the unready order
+    assert 'chart_adjust_request' in names     # holds for a chart instead
 
 
 def test_commentary_is_grounded_and_holds_when_unknown():
