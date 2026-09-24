@@ -62,10 +62,10 @@ FAILURE_REASONS = frozenset(
 _RUNTIME_TOKEN_RE = re.compile(r"^[A-Za-z0-9._-]{1,96}$")
 _TMUX_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _BROWSER_NAMES = (
+    "google-chrome-stable",
+    "google-chrome",
     "chromium",
     "chromium-browser",
-    "google-chrome",
-    "google-chrome-stable",
     "/snap/bin/chromium",
 )
 _POLL_INTERVAL_S = 0.5
