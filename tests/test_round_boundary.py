@@ -567,6 +567,7 @@ def test_required_boundary_without_capability_fails_closed():
         assert state["phase"] == "ready"
         assert state["active"]["game"] == "nethack"
         assert old.runtime.alive
+        assert "stop_agent" not in old.runtime.events
 
 
 @pytest.mark.parametrize("legacy_cancel", [False, True])
