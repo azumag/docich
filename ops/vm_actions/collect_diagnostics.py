@@ -1462,7 +1462,9 @@ ROTATION_IMPROVE_REASON_CODES = frozenset({
     "llm-empty", "llm-format", "llm-keys", "llm-values", "llm-unexpected",
     "eval", "lane-busy", "policy-promoted", "policy-incomplete", "policy-faults",
     "policy-below-margin", "policy-not-significant", "policy-identical",
-    "policy-invalid", "policy-kept", "policy-eval", "unexpected",
+    "policy-invalid", "policy-kept", "policy-eval", "ab-pending",
+    "ab-incomplete", "ab-adopted", "ab-rejected", "ab-stale", "ab-invalid",
+    "ab-eval", "unexpected",
 })
 ROTATION_IMPROVE_PHASES = frozenset({"state", "llm", "eval", "unknown"})
 
