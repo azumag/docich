@@ -3,19 +3,22 @@
 Replaces the continuous daemon rhythm for corner games: during the corner
 only match logs accumulate; when the corner ends, one improvement job runs.
 The candidate comes from an LLM (sorengame-style delegation via
-docich.ai_generate), is evaluated against the current strategy with the same
-headless evaluator, and is promoted only past the margin gate.  Promotion
-reuses docich.resolver.improve history/rendering, so the next corner announces
-the strategy diff automatically (see retro_corner.describe_strategy_change).
+docich.ai_generate). Generic games use a headless margin gate; Pac-Man holds
+each candidate for an interleaved ABBA evaluation on the following improvement
+cycle. Promotion reuses docich.resolver.improve history/rendering, so the next
+corner announces the strategy diff automatically (see
+retro_corner.describe_strategy_change).
 """
 from __future__ import annotations
 
 import datetime as dt
 import fcntl
+import hashlib
 import json
 import math
 import os
 import re
+import stat as statmod
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -39,8 +42,13 @@ CORNER_IMPROVE_REASON_CODES = frozenset({
     "llm-empty", "llm-format", "llm-keys", "llm-values", "llm-unexpected",
     "eval", "lane-busy", "policy-promoted", "policy-incomplete", "policy-faults",
     "policy-below-margin", "policy-not-significant", "policy-identical",
-    "policy-invalid", "policy-kept", "policy-eval", "unexpected",
+    "policy-invalid", "policy-kept", "policy-eval", "ab-pending",
+    "ab-incomplete", "ab-adopted", "ab-rejected", "ab-stale", "ab-invalid",
+    "ab-eval", "unexpected",
 })
+
+PACMAN_AB_GAME = "pacman4console"
+PACMAN_AB_TRIAL_NAME = "pacman4console_ab_trial.json"
 
 # One improvement job at a time across every corner and the PAPER pipeline.
 # Queue dispatch no longer waits for the previous job, so the lane is what
@@ -175,6 +183,305 @@ def summarize_matches(matches: list[dict]) -> dict:
     if not scores:
         return {"n": 0, "mean": 0.0, "best": 0}
     return {"n": len(scores), "mean": sum(scores) / len(scores), "best": max(scores)}
+
+
+def _strategy_digest(strategy: dict) -> str:
+    payload = json.dumps(
+        strategy, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _finite_number(value) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (OverflowError, ValueError):
+        return False
+
+
+def _pacman_ab_path(state_dir) -> Path:
+    return Path(state_dir) / "resolver" / PACMAN_AB_TRIAL_NAME
+
+
+def _valid_pacman_strategy(value, defaults: dict) -> bool:
+    if not isinstance(value, dict) or set(value) != set(defaults):
+        return False
+    for key, default in defaults.items():
+        item = value.get(key)
+        if isinstance(default, bool):
+            if type(item) is not bool:
+                return False
+        elif isinstance(default, (int, float)) and not isinstance(default, bool):
+            if isinstance(item, bool) or not isinstance(item, (int, float)):
+                return False
+            try:
+                if not math.isfinite(float(item)) or not 0.001 <= float(item) <= 1e6:
+                    return False
+            except (OverflowError, ValueError):
+                return False
+        elif type(item) is not type(default):
+            return False
+    return True
+
+
+def _read_pacman_ab_trial(path: Path, defaults: dict) -> dict | None:
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, "r", encoding="utf-8") as stream:
+            info = os.fstat(stream.fileno())
+            if not statmod.S_ISREG(info.st_mode) or info.st_size > 65536:
+                raise ValueError("invalid trial file")
+            payload = stream.read(65537)
+            if len(payload) > 65536:
+                raise ValueError("trial file too large")
+        raw = json.loads(payload)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, RecursionError) as exc:
+        raise CornerImproveError(
+            "Pac-Man A/B候補の状態を読み込めません",
+            code="ab-invalid", phase="state",
+        ) from exc
+    if (
+        not isinstance(raw, dict)
+        or type(raw.get("schema_version")) is not int
+        or raw.get("schema_version") != 1
+        or not isinstance(raw.get("status"), str)
+        or raw.get("status") not in {"pending", "promoting", "rejected"}
+        or raw.get("game") != PACMAN_AB_GAME
+        or not _finite_number(raw.get("created_at"))
+        or not _valid_pacman_strategy(raw.get("baseline"), defaults)
+        or not _valid_pacman_strategy(raw.get("candidate"), defaults)
+    ):
+        raise CornerImproveError(
+            "Pac-Man A/B候補の状態が不正です",
+            code="ab-invalid", phase="state",
+        )
+    expected_fields = {
+        "schema_version", "status", "created_at", "game", "baseline_sha256",
+        "candidate_sha256", "baseline", "candidate",
+    }
+    if raw["status"] in {"promoting", "rejected"}:
+        expected_fields.add("summary")
+    if set(raw) != expected_fields:
+        raise CornerImproveError(
+            "Pac-Man A/B候補の状態に未知の項目があります",
+            code="ab-invalid", phase="state",
+        )
+    try:
+        if (raw.get("baseline_sha256") == raw.get("candidate_sha256")
+                or raw.get("baseline_sha256") != _strategy_digest(raw["baseline"])
+                or raw.get("candidate_sha256") != _strategy_digest(raw["candidate"])):
+            raise ValueError("digest mismatch")
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise CornerImproveError(
+            "Pac-Man A/B候補のハッシュが一致しません",
+            code="ab-invalid", phase="state",
+        ) from exc
+    if raw["status"] in {"promoting", "rejected"}:
+        summary = raw.get("summary")
+        if (not _valid_pacman_ab_summary(summary, raw)
+                or summary["promoted"] != (raw["status"] == "promoting")):
+            raise CornerImproveError(
+                "Pac-Man A/B判定記録が不正です",
+                code="ab-invalid", phase="state",
+            )
+    return raw
+
+
+def _valid_pacman_ab_summary(value, trial: dict) -> bool:
+    fields = {
+        "game", "date", "corner_n", "corner_mean", "corner_best", "ab_pattern",
+        "ab_matches_per_arm", "baseline_sha256", "candidate_sha256", "baseline_scores",
+        "candidate_scores", "baseline_mean", "candidate_mean", "baseline_played",
+        "candidate_played", "promoted",
+    }
+    if not isinstance(value, dict) or set(value) != fields:
+        return False
+    if (value.get("game") != PACMAN_AB_GAME
+            or not isinstance(value.get("date"), str)
+            or re.fullmatch(r"\d{4}-\d{2}-\d{2}", value["date"]) is None
+            or value.get("ab_pattern") != "ABBA"
+            or value.get("baseline_sha256") != trial.get("baseline_sha256")
+            or value.get("candidate_sha256") != trial.get("candidate_sha256")
+            or type(value.get("promoted")) is not bool):
+        return False
+    matches = value.get("ab_matches_per_arm")
+    if type(matches) is not int or not 1 <= matches <= 10:
+        return False
+    if (type(value.get("corner_n")) is not int or value["corner_n"] < 0
+            or type(value.get("corner_best")) is not int or value["corner_best"] < 0
+            or type(value.get("baseline_played")) is not int
+            or value["baseline_played"] != matches
+            or type(value.get("candidate_played")) is not int
+            or value["candidate_played"] != matches):
+        return False
+    for name in ("corner_mean", "baseline_mean", "candidate_mean"):
+        number = value.get(name)
+        if not _finite_number(number):
+            return False
+    for name in ("baseline_scores", "candidate_scores"):
+        scores = value.get(name)
+        if (not isinstance(scores, list) or len(scores) != matches
+                or any(not _finite_number(score) for score in scores)):
+            return False
+    raw_a = sum(value["baseline_scores"]) / matches
+    raw_b = sum(value["candidate_scores"]) / matches
+    expected_a = round(raw_a, 1)
+    expected_b = round(raw_b, 1)
+    return (
+        value["baseline_mean"] == expected_a
+        and value["candidate_mean"] == expected_b
+        and value["promoted"] == (raw_b > raw_a)
+    )
+
+
+def _pacman_ab_order(matches_per_arm: int) -> list[str]:
+    """Build a balanced, interleaved ABBA order for the requested sample count."""
+    if type(matches_per_arm) is not int or not 1 <= matches_per_arm <= 10:
+        raise ValueError("Pac-Man A/B matches must be in 1..10 per arm")
+    count = matches_per_arm
+    pattern = ("A", "B", "B", "A")
+    return [pattern[index % len(pattern)] for index in range(2 * count)]
+
+
+def _pacman_ab_block(g, baseline: dict, candidate: dict, *, matches: int, evaluator=None):
+    """Evaluate one Pac-Man ABBA block, requiring every bounded match to score."""
+    evaluate = evaluator or _bot_evaluator(g, PACMAN_AB_GAME, 1)
+    scores = {"A": [], "B": []}
+    for arm in _pacman_ab_order(matches):
+        try:
+            result = evaluate(baseline if arm == "A" else candidate)
+        except Exception as exc:
+            raise CornerImproveError(
+                "Pac-Man A/B評価に失敗しました", code="ab-eval", phase="eval",
+            ) from exc
+        if not isinstance(result, dict):
+            return None
+        played = result.get("played")
+        raw_score = result.get("mean_score")
+        if type(played) is not int or played != 1 or not _finite_number(raw_score):
+            return None
+        score = float(raw_score)
+        scores[arm].append(score)
+    if len(scores["A"]) != matches or len(scores["B"]) != matches:
+        return None
+    return scores
+
+
+def _pacman_ab_summary(trial: dict, scores: dict[str, list[float]], *, date_str: str,
+                       corner_stats: dict, matches: int) -> dict:
+    baseline_mean = sum(scores["A"]) / len(scores["A"])
+    candidate_mean = sum(scores["B"]) / len(scores["B"])
+    return {
+        "game": PACMAN_AB_GAME,
+        "date": date_str,
+        "corner_n": corner_stats["n"],
+        "corner_mean": round(corner_stats["mean"], 1),
+        "corner_best": corner_stats["best"],
+        "ab_pattern": "ABBA",
+        "ab_matches_per_arm": matches,
+        "baseline_sha256": trial["baseline_sha256"],
+        "candidate_sha256": trial["candidate_sha256"],
+        "baseline_scores": scores["A"],
+        "candidate_scores": scores["B"],
+        "baseline_mean": round(baseline_mean, 1),
+        "candidate_mean": round(candidate_mean, 1),
+        "baseline_played": len(scores["A"]),
+        "candidate_played": len(scores["B"]),
+        "promoted": candidate_mean > baseline_mean,
+    }
+
+
+def _run_pacman_ab_trial(g, *, path: Path, trial: dict, current: dict, date_str: str,
+                         corner_stats: dict, matches: int, evaluator=None) -> dict:
+    from .game_switch import atomic_write_json
+
+    current_digest = _strategy_digest(current)
+    baseline_digest = trial["baseline_sha256"]
+    candidate_digest = trial["candidate_sha256"]
+    allowed_current = ({baseline_digest, candidate_digest}
+                       if trial["status"] == "promoting" else {baseline_digest})
+    if current_digest not in allowed_current:
+        path.unlink(missing_ok=True)
+        summary = {
+            "game": PACMAN_AB_GAME, "date": date_str,
+            "baseline_sha256": baseline_digest, "candidate_sha256": candidate_digest,
+            "current_sha256": current_digest, "promoted": False,
+        }
+        _append_log(g.state_dir, PACMAN_AB_GAME,
+                    {**summary, "reason_code": "ab-stale"})
+        return {"status": "kept", "reason_code": "ab-stale", "phase": "state", **summary}
+
+    strategy_file = strategy_path(g.state_dir, PACMAN_AB_GAME)
+    if trial["status"] == "rejected":
+        path.unlink(missing_ok=True)
+        summary = trial.get("summary")
+        if not isinstance(summary, dict):
+            raise CornerImproveError("Pac-Man A/B見送り記録が不正です",
+                                     code="ab-invalid", phase="state")
+        _append_log(g.state_dir, PACMAN_AB_GAME,
+                    {**summary, "reason_code": "ab-rejected"})
+        return {"status": "kept", "reason_code": "ab-rejected", "phase": "eval", **summary}
+
+    if trial["status"] == "promoting":
+        if current_digest == baseline_digest:
+            _promote(g, PACMAN_AB_GAME, strategy_file, trial["baseline"], trial["candidate"])
+        else:
+            from .resolver.bot_eval import bot_brain_weights_path
+
+            live_path = bot_brain_weights_path(PACMAN_AB_GAME)
+            live_path.parent.mkdir(parents=True, exist_ok=True)
+            live_path.write_text(
+                json.dumps(trial["candidate"], ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        path.unlink(missing_ok=True)
+        summary = trial.get("summary")
+        if not isinstance(summary, dict):
+            raise CornerImproveError("Pac-Man A/B採用記録が不正です",
+                                     code="ab-invalid", phase="state")
+        _append_log(g.state_dir, PACMAN_AB_GAME,
+                    {**summary, "promoted": True, "reason_code": "ab-adopted"})
+        return {"status": "promoted", "reason_code": "ab-adopted", "phase": "eval", **summary}
+
+    scores = _pacman_ab_block(
+        g, trial["baseline"], trial["candidate"], matches=matches, evaluator=evaluator,
+    )
+    if scores is None:
+        summary = {
+            "game": PACMAN_AB_GAME, "date": date_str,
+            "baseline_sha256": baseline_digest, "candidate_sha256": candidate_digest,
+            "ab_pattern": "ABBA", "ab_matches_per_arm": matches,
+            "promoted": False,
+        }
+        _append_log(g.state_dir, PACMAN_AB_GAME,
+                    {**summary, "reason_code": "ab-incomplete"})
+        return {"status": "kept", "reason_code": "ab-incomplete", "phase": "eval", **summary}
+
+    summary = _pacman_ab_summary(
+        trial, scores, date_str=date_str, corner_stats=corner_stats, matches=matches,
+    )
+    if summary["promoted"]:
+        # Mark the decision durably before changing strategy files. If the job
+        # is interrupted during promotion, the next cycle finishes the same
+        # decision instead of rerunning the trial with a different outcome.
+        trial.update(status="promoting", summary=summary)
+        atomic_write_json(path, trial)
+        _promote(g, PACMAN_AB_GAME, strategy_file, trial["baseline"], trial["candidate"])
+        path.unlink(missing_ok=True)
+        _append_log(g.state_dir, PACMAN_AB_GAME,
+                    {**summary, "reason_code": "ab-adopted"})
+        return {"status": "promoted", "reason_code": "ab-adopted", "phase": "eval", **summary}
+
+    trial.update(status="rejected", summary=summary)
+    atomic_write_json(path, trial)
+    path.unlink(missing_ok=True)
+    _append_log(g.state_dir, PACMAN_AB_GAME,
+                {**summary, "reason_code": "ab-rejected"})
+    return {"status": "kept", "reason_code": "ab-rejected", "phase": "eval", **summary}
 
 
 def build_prompt(*, game: str, stats: dict, current: dict, previous: dict) -> str:
@@ -583,6 +890,18 @@ def _run_corner_improve(
     defaults = _game_defaults(game)
     proposable = numeric_weights(defaults) if game in BOT_GAMES else set(defaults)
     current = read_strategy_for_game(game, strategy_path(g.state_dir, game))
+    if game == PACMAN_AB_GAME:
+        trial_path = _pacman_ab_path(g.state_dir)
+        trial = _read_pacman_ab_trial(trial_path, defaults)
+        if trial is not None:
+            if dry_run:
+                return {"status": "dry-run", "ab_pending": True,
+                        "baseline_sha256": trial["baseline_sha256"],
+                        "candidate_sha256": trial["candidate_sha256"]}
+            return _run_pacman_ab_trial(
+                g, path=trial_path, trial=trial, current=current, date_str=date_str,
+                corner_stats=stats, matches=matches, evaluator=evaluator,
+            )
     previous = latest_strategy_snapshot(g.state_dir, game) or {}
     # Show only the weights the candidate may change. The full strategy also
     # carries fixed flags (for example nsnake's tail_passable boolean); showing
@@ -607,6 +926,41 @@ def _run_corner_improve(
         ) from exc
     candidate = dict(current)
     candidate.update(candidate_delta)
+
+    if game == PACMAN_AB_GAME:
+        if candidate == current:
+            summary = {
+                "game": game, "date": date_str, "corner_n": stats["n"],
+                "corner_mean": round(stats["mean"], 1), "corner_best": stats["best"],
+                "baseline_sha256": _strategy_digest(current),
+                "candidate_sha256": _strategy_digest(candidate), "promoted": False,
+            }
+            _append_log(g.state_dir, game, {**summary, "reason_code": "policy-identical"})
+            return {"status": "kept", "reason_code": "policy-identical",
+                    "phase": "llm", **summary}
+        trial = {
+            "schema_version": 1,
+            "status": "pending",
+            "created_at": time.time(),
+            "game": game,
+            "baseline_sha256": _strategy_digest(current),
+            "candidate_sha256": _strategy_digest(candidate),
+            "baseline": current,
+            "candidate": candidate,
+        }
+        from .game_switch import atomic_write_json
+
+        atomic_write_json(_pacman_ab_path(g.state_dir), trial)
+        summary = {
+            "game": game, "date": date_str, "corner_n": stats["n"],
+            "corner_mean": round(stats["mean"], 1), "corner_best": stats["best"],
+            "ab_pattern": "ABBA", "ab_matches_per_arm": matches,
+            "baseline_sha256": trial["baseline_sha256"],
+            "candidate_sha256": trial["candidate_sha256"], "promoted": False,
+        }
+        _append_log(g.state_dir, game, {**summary, "reason_code": "ab-pending"})
+        return {"status": "kept", "reason_code": "ab-pending",
+                "phase": "state", **summary}
 
     if game in BOT_GAMES:
         evaluator = evaluator or _bot_evaluator(g, game, matches)

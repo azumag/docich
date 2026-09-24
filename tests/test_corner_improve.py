@@ -4,6 +4,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 import pytest
 
+import docich.corner_improve as corner_improve
 from docich.corner_improve import (
     CornerImproveError,
     build_prompt,
@@ -12,6 +13,7 @@ from docich.corner_improve import (
     slice_corner_matches,
     summarize_matches,
 )
+from docich.resolver.bot_eval import bot_default_weights
 from docich.resolver import gnurobots as gnurobots_resolver
 
 
@@ -374,3 +376,191 @@ def test_explicit_window_ignores_a_shared_state_owned_by_the_next_corner(tmp_pat
 
     assert result['status'] == 'dry-run'
     assert result['stats']['n'] == 1 and result['stats']['best'] == 42
+
+
+def _setup_completed_pacman(tmp_path):
+    state_dir = tmp_path / 'pacman-run'
+    (state_dir / 'scores').mkdir(parents=True)
+    base = 1789034400
+    (state_dir / 'scores' / 'pacman4console.jsonl').write_text('\n'.join(
+        json.dumps({'ts': str(base + i * 60), 'game': 'pacman4console',
+                    'score': score, 'source': 'wrapper'})
+        for i, score in enumerate([100, 200])
+    ) + '\n', encoding='utf-8')
+    (state_dir / 'retro_corner.json').write_text(json.dumps({
+        'schema_version': 1, 'status': 'completed', 'date': '2026-09-10',
+        'game': 'pacman4console', 'previous_game': 'sorengame',
+        'started_at': '2026-09-10T19:00:00+09:00',
+        'ends_at': '2026-09-10T19:30:00+09:00',
+        'completed_at': '2026-09-10T19:30:00+09:00',
+    }), encoding='utf-8')
+    return state_dir
+
+
+def _pacman_candidate():
+    defaults = bot_default_weights('pacman4console')
+    key = sorted(corner_improve.numeric_weights(defaults))[0]
+    baseline_value = defaults[key]
+    candidate_value = min(float(baseline_value) + 1.0, 1e6)
+    if candidate_value == baseline_value:
+        candidate_value = max(float(baseline_value) - 1.0, 0.001)
+    return defaults, key, candidate_value
+
+
+def _stage_pacman_candidate(state_dir, key, candidate_value):
+    return run_corner_improve(
+        _G(state_dir), game='pacman4console', date_str='2026-09-10', agents='a',
+        llm=lambda _prompt: json.dumps({key: candidate_value}),
+        evaluator=lambda _strategy: (_ for _ in ()).throw(
+            AssertionError('candidate staging must not run the evaluator')
+        ),
+    )
+
+
+def test_pacman_candidate_is_staged_then_promoted_by_abba_score(tmp_path, monkeypatch):
+    state_dir = _setup_completed_pacman(tmp_path)
+    defaults, key, candidate_value = _pacman_candidate()
+    monkeypatch.setenv('DOCICH_BOT_BRAIN_DIR', str(tmp_path / 'live-brain'))
+
+    staged = _stage_pacman_candidate(state_dir, key, candidate_value)
+    assert staged['status'] == 'kept'
+    assert staged['reason_code'] == 'ab-pending'
+    trial_path = state_dir / 'resolver' / 'pacman4console_ab_trial.json'
+    trial = json.loads(trial_path.read_text(encoding='utf-8'))
+    assert trial['status'] == 'pending'
+    assert trial['baseline'] == defaults
+    assert trial['candidate'][key] == candidate_value
+
+    played_strategies = []
+
+    def evaluator(strategy):
+        played_strategies.append(strategy[key])
+        return {'mean_score': 100 if strategy[key] == candidate_value else 50, 'played': 1}
+
+    result = run_corner_improve(
+        _G(state_dir), game='pacman4console', date_str='2026-09-10', agents='a',
+        evaluator=evaluator,
+    )
+
+    assert played_strategies == [defaults[key], candidate_value, candidate_value, defaults[key]]
+    assert result['status'] == 'promoted'
+    assert result['reason_code'] == 'ab-adopted'
+    assert result['baseline_mean'] == 50
+    assert result['candidate_mean'] == 100
+    assert not trial_path.exists()
+    promoted = json.loads((state_dir / 'resolver' / 'pacman4console_strategy.json').read_text())
+    live = json.loads((tmp_path / 'live-brain' / 'pacman4console' / 'weights.json').read_text())
+    assert promoted == live == trial['candidate']
+
+
+def test_pacman_incomplete_ab_retries_and_tie_keeps_baseline(tmp_path, monkeypatch):
+    state_dir = _setup_completed_pacman(tmp_path)
+    defaults, key, candidate_value = _pacman_candidate()
+    monkeypatch.setenv('DOCICH_BOT_BRAIN_DIR', str(tmp_path / 'live-brain'))
+    staged = _stage_pacman_candidate(state_dir, key, candidate_value)
+    assert staged['reason_code'] == 'ab-pending'
+
+    calls = []
+
+    def incomplete_once(strategy):
+        calls.append(strategy[key])
+        return {'mean_score': 0, 'played': 0}
+
+    incomplete = run_corner_improve(
+        _G(state_dir), game='pacman4console', date_str='2026-09-10', agents='a',
+        evaluator=incomplete_once,
+    )
+    trial_path = state_dir / 'resolver' / 'pacman4console_ab_trial.json'
+    assert incomplete['reason_code'] == 'ab-incomplete'
+    assert calls == [defaults[key]]
+    assert json.loads(trial_path.read_text())['status'] == 'pending'
+
+    equal = run_corner_improve(
+        _G(state_dir), game='pacman4console', date_str='2026-09-10', agents='a',
+        evaluator=lambda _strategy: {'mean_score': 75, 'played': 1},
+    )
+    assert equal['status'] == 'kept'
+    assert equal['reason_code'] == 'ab-rejected'
+    assert not trial_path.exists()
+    assert not (state_dir / 'resolver' / 'pacman4console_strategy.json').exists()
+
+
+def test_pacman_ab_discards_candidate_when_baseline_changes(tmp_path):
+    state_dir = _setup_completed_pacman(tmp_path)
+    defaults, key, candidate_value = _pacman_candidate()
+    _stage_pacman_candidate(state_dir, key, candidate_value)
+    changed = dict(defaults)
+    changed[key] = candidate_value
+    strategy_file = state_dir / 'resolver' / 'pacman4console_strategy.json'
+    strategy_file.write_text(json.dumps(changed), encoding='utf-8')
+
+    result = run_corner_improve(
+        _G(state_dir), game='pacman4console', date_str='2026-09-10', agents='a',
+        evaluator=lambda _strategy: (_ for _ in ()).throw(
+            AssertionError('stale candidate must not be evaluated')
+        ),
+    )
+
+    assert result['status'] == 'kept'
+    assert result['reason_code'] == 'ab-stale'
+    assert not (state_dir / 'resolver' / 'pacman4console_ab_trial.json').exists()
+
+
+def test_pacman_ab_promotion_flag_uses_unrounded_means():
+    defaults, key, candidate_value = _pacman_candidate()
+    candidate = dict(defaults)
+    candidate[key] = candidate_value
+    trial = {
+        'status': 'pending', 'game': 'pacman4console',
+        'baseline': defaults, 'candidate': candidate,
+        'baseline_sha256': corner_improve._strategy_digest(defaults),
+        'candidate_sha256': corner_improve._strategy_digest(candidate),
+    }
+    summary = corner_improve._pacman_ab_summary(
+        trial, {'A': [10.01, 10.01], 'B': [10.02, 10.02]},
+        date_str='2026-09-10', corner_stats={'n': 1, 'mean': 10, 'best': 10}, matches=2,
+    )
+    assert summary['baseline_mean'] == summary['candidate_mean'] == 10.0
+    assert summary['promoted'] is True
+    promoted_trial = {**trial, 'status': 'promoting', 'summary': summary}
+    assert corner_improve._valid_pacman_ab_summary(summary, promoted_trial)
+
+
+def test_pacman_interrupted_promotion_finishes_without_rerunning_ab(tmp_path, monkeypatch):
+    state_dir = _setup_completed_pacman(tmp_path)
+    defaults, key, candidate_value = _pacman_candidate()
+    monkeypatch.setenv('DOCICH_BOT_BRAIN_DIR', str(tmp_path / 'live-brain'))
+    _stage_pacman_candidate(state_dir, key, candidate_value)
+    original_promote = corner_improve._promote
+
+    def interrupted_promote(_g, _game, strategy_file, _old, new):
+        strategy_file.parent.mkdir(parents=True, exist_ok=True)
+        strategy_file.write_text(json.dumps(new), encoding='utf-8')
+        raise OSError('simulated interruption after strategy replacement')
+
+    corner_improve._promote = interrupted_promote
+    try:
+        with pytest.raises(OSError):
+            run_corner_improve(
+                _G(state_dir), game='pacman4console', date_str='2026-09-10', agents='a',
+                evaluator=lambda strategy: {
+                    'mean_score': 100 if strategy[key] == candidate_value else 50,
+                    'played': 1,
+                },
+            )
+    finally:
+        corner_improve._promote = original_promote
+
+    trial_path = state_dir / 'resolver' / 'pacman4console_ab_trial.json'
+    assert json.loads(trial_path.read_text())['status'] == 'promoting'
+    rerun = run_corner_improve(
+        _G(state_dir), game='pacman4console', date_str='2026-09-10', agents='a',
+        evaluator=lambda _strategy: (_ for _ in ()).throw(
+            AssertionError('durable promotion decision must not be reevaluated')
+        ),
+    )
+    assert rerun['status'] == 'promoted'
+    assert rerun['reason_code'] == 'ab-adopted'
+    assert not trial_path.exists()
+    live = json.loads((tmp_path / 'live-brain' / 'pacman4console' / 'weights.json').read_text())
+    assert live[key] == candidate_value

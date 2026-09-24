@@ -1073,6 +1073,37 @@ def test_rotation_error_kind_taxonomy_matches_the_durable_ledger():
     assert load_collector().ROTATION_ERROR_KINDS == ERROR_KINDS
 
 
+def test_pacman_ab_improvement_reason_codes_are_projected_as_fixed_enum(tmp_path):
+    module = load_collector()
+    (tmp_path / "corner_improve_pacman4console.json").write_text(json.dumps({
+        "status": "kept", "started_at": 1, "completed_at": 2,
+        "reason_code": "ab-pending", "phase": "state",
+        "candidate": "DO-NOT-PUBLISH-CANDIDATE",
+    }))
+    output = module._collect_rotation_evidence(tmp_path)
+    item = output["improvements"]["pacman4console"]
+    assert item["reason_code"] == "ab-pending"
+    assert item["phase"] == "state"
+    assert "DO-NOT-PUBLISH" not in json.dumps(output)
+
+    (tmp_path / "corner_improve_pacman4console.json").write_text(json.dumps({
+        "status": "kept", "reason_code": "DO-NOT-PUBLISH-UNKNOWN",
+        "phase": "state",
+    }))
+    output = module._collect_rotation_evidence(tmp_path)
+    assert output["improvements"]["pacman4console"]["reason_code"] == "unknown"
+    assert "DO-NOT-PUBLISH" not in json.dumps(output)
+
+
+def test_corner_improve_reason_enum_matches_diagnostics_allowlist():
+    import sys
+
+    sys.path.insert(0, str(ROOT / "src"))
+    from docich.corner_improve import CORNER_IMPROVE_REASON_CODES
+
+    assert load_collector().ROTATION_IMPROVE_REASON_CODES == CORNER_IMPROVE_REASON_CODES
+
+
 def test_a_latched_common_rotation_reaches_warn_severity():
     module = load_collector()
     workers = {"required_down": [], "required_stale": [], "paused": [],

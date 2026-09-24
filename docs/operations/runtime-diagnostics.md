@@ -139,6 +139,12 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   improve起動boolean、明示的なrecovery_requiredを観測する。改善結果は
   status、started_at、completed_at、失敗理由の固定enum `reason_code` / `phase`
   （欠落・未知は `unknown`）と既存lockの `held/free/absent/unknown` のみ。
+  Pac-Manは候補生成後の次回改善ジョブでゲーム本体をheadless起動し、現行/候補をABBA順に
+  各設定試合数ずつ評価する（配信中の実試合ではない）。全試合でスコアが取れたときだけ
+  平均を比較し、高い方を選ぶ。同点または不成立なら現行を維持する。`ab-pending` /
+  `ab-incomplete` はA/Bの保留/不成立、
+  `ab-adopted` / `ab-rejected` はABBA評価後の採用/見送り、`ab-stale` は基準戦略変更による
+  無効化、`ab-invalid` / `ab-eval` は状態/評価の失敗を示す。
   `spawned=true` と正常なrequired workerだけでは、改善の終了証跡を確認できない。
   改善status欠落・failed・running・corner完了より古いstarted_at・保持中lockを
   区別し、`other-corner-needs-finish-or-recovery` の調査に用いる。
