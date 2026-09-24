@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -16,6 +17,7 @@ from docich.nethack_tiles_supervisor import (  # noqa: E402
     NethackTilesSupervisor,
     browser_binary,
     manifest_matches,
+    presentation_window_pattern,
 )
 
 
@@ -93,6 +95,34 @@ class NethackTilesSupervisorTests(unittest.TestCase):
 
         self.assertEqual(browser_binary(which), "/usr/bin/google-chrome-stable")
         self.assertEqual(calls, ["google-chrome-stable"])
+
+    def test_presentation_window_pattern_is_exact_except_known_browser_suffixes(self):
+        title = "docich.present-g9-abcdef"
+        pattern = presentation_window_pattern(title)
+        self.assertNotIn(r"\-", pattern)
+        self.assertIsNotNone(re.fullmatch(pattern, title))
+        self.assertIsNotNone(
+            re.fullmatch(pattern, f"{title} - Google Chrome")
+        )
+        self.assertIsNotNone(
+            re.fullmatch(pattern, f"{title} - Chromium Web Browser")
+        )
+        self.assertIsNone(re.fullmatch(pattern, f"{title} - Firefox"))
+        self.assertIsNone(re.fullmatch(pattern, "xdocich.present-g9-abcdef"))
+        with self.assertRaises(ValueError):
+            presentation_window_pattern("viewer.*")
+
+    def test_browser_window_wait_failure_distinguishes_exit_from_missing_window(self):
+        process = _FakeProcess()
+        self.assertEqual(
+            NethackTilesSupervisor._window_wait_failure_reason(process),
+            "browser_window_missing",
+        )
+        process.returncode = 1
+        self.assertEqual(
+            NethackTilesSupervisor._window_wait_failure_reason(process),
+            "browser_exited",
+        )
 
     def test_server_failure_falls_back_once_and_records_owned_tty(self):
         supervisor = self.supervisor()
