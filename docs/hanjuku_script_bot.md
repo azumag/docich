@@ -81,6 +81,9 @@ Claude、OpenCode、API、認証情報を操作時に使用しない。旧`brain
   - L4 GO後照合: `game_over` 確定時、teardown 前に `hanjuku_chart_review.review()` が基準・保存された調整チャート・
     `hanjuku_decisions.jsonl` の実績を照合し `hanjuku_chart_review.json`（提案: `promote_adjusted_step` /
     `promote_interim_attack` / `review_base_step` / `cover_off_chart`）を書く。`hanjuku_chart.py` は編集しない。
+    次回の開始案内は、直近2048ランタイムを探索し、世代・leaseとゲームオーバー証拠が一致する完了レビューから
+    勝敗・実行した調整手順・成功した攻略先・見直し候補を読み上げる。履歴は案内に反映し、
+    基本チャートは自動変更しない。
   要求・保存・JEV回答・ワーカー結果・照合の履歴は `hanjuku_chart_history.jsonl`。
 - 2話以降はチャート未実装。`chart_unavailable` として記録し、従来の確認入力だけで進める。
   全ステージ攻略・勝率は未確認であり、成功扱いしない。
