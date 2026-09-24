@@ -1,11 +1,11 @@
 {
-  "output_sha256": "913a98e27af8e012f6b7d625418bb6ba0cd5e74418f800f27733ec1d763e525a",
+  "output_sha256": "0a95d28ef0028698729faf75b7efc93ab898455be612da2211c24d10eb8c4db0",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "a22a28b1d6bbe8241cfefee95932f748dc340eae198fd248f9d587721e06be2d",
+  "source_sha256": "2d50972028113b65c2001df216a74286f271eff6f0d30f3b33bb10fd58c1a6b0",
   "topics": [
+    "PAPER WebUI手動停止の稼働owner振分けをmain・VMへ反映（実PAPER受入待ち）",
     "半熟英雄: 原典戦術6パターンとの突合・source_pattern 付与（main/VM反映済み、ライブ実測待ち）",
-    "半熟英雄: 敵召喚たまご応戦＋チャート準拠の独自判断・経験記憶（ローカル実装、未commit・未実機）",
-    "NetHack P1確認済み、最新main同期・CI green"
+    "半熟英雄: 敵召喚たまご応戦＋チャート準拠の独自判断・経験記憶（ローカル実装、未commit・未実機）"
   ]
 }
