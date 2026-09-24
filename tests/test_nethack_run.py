@@ -215,6 +215,42 @@ class NethackRunStoreTest(unittest.TestCase):
         self.assertEqual(finished["role"], "Val")
         self.assertIsNone(self.store.current())
 
+    def test_multiple_new_player_records_keep_terminal_but_unverify_source(self):
+        context = new_session_context("scheduled", str(uuid.uuid4()))
+        runtime = {"game": "nethack", "generation": 10, "runtime_id": "g10-0123abcd"}
+        probe = self.store.prepare_start(current_is_nethack=False, now=self.now)
+        run = self.store.record_started(
+            probe, now=self.now, corner_context=context, runtime=runtime
+        )
+        self.append_xlog(death="quit", points=123, turns=4)
+        self.append_xlog(
+            death="killed by a water elemental", points=972, turns=3711, maxlvl=5
+        )
+        restoration = {
+            "request_id": str(uuid.uuid4()), "source_runtime": runtime,
+            "restored_runtime": {"game": "robots", "generation": 12,
+                                 "runtime_id": "g12-abcd0123"},
+            "restore_generation": 12, "canonical_revision": 42,
+            "completed_at": (self.now + timedelta(hours=1, seconds=1)).isoformat(),
+            "cleanup_completed": True, "source_binding_verified": True,
+        }
+
+        finished = self.store.record_finished(
+            now=self.now + timedelta(hours=1),
+            nethack_still_active=False,
+            restoration=restoration,
+            finish_reason="terminal",
+        )
+
+        self.assertEqual(finished["run_id"], run["run_id"])
+        self.assertEqual(finished["status"], "dead")
+        self.assertEqual(finished["score"], 972)
+        self.assertEqual(finished["death_reason"], "killed by a water elemental")
+        self.assertFalse(finished["terminal"]["identity_verified"])
+        self.assertEqual(
+            finished["post_restore_source"]["eligibility"], "terminal_unverified"
+        )
+
     def test_terminal_and_unverified_source_are_saved_in_the_same_run(self):
         context = new_session_context("scheduled", str(uuid.uuid4()))
         runtime = {"game": "nethack", "generation": 10, "runtime_id": "g10-0123abcd"}

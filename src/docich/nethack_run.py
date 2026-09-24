@@ -570,15 +570,15 @@ class NethackRunStore:
 
     def _terminal_record_since(
         self, offset: int
-    ) -> tuple[dict[str, str] | None, str | None]:
+    ) -> tuple[dict[str, str] | None, str | None, bool]:
         try:
             size = self.settings.xlogfile.stat().st_size
         except FileNotFoundError:
-            return None, "xlogfile-missing"
+            return None, "xlogfile-missing", False
         except OSError as exc:
             raise NethackRunError("NetHack xlogfileを検査できません") from exc
         if size < offset:
-            return None, "xlogfile-truncated"
+            return None, "xlogfile-truncated", False
         try:
             with self.settings.xlogfile.open("rb") as stream:
                 stream.seek(offset)
@@ -591,21 +591,26 @@ class NethackRunStore:
             if record.get("name") == self.settings.player_name:
                 records.append(record)
         if not records:
-            return None, "no-new-player-xlog-record"
-        if len(records) != 1:
-            return None, "ambiguous-new-player-xlog-record"
-        return records[0], None
+            return None, "no-new-player-xlog-record", False
+        # Preserve the canonical terminal-history selection. Candidate
+        # ambiguity affects source identity, not the run's recorded result.
+        return records[-1], None, len(records) == 1
 
     @staticmethod
     def _terminal_identity_verified(
-        record: dict[str, str], run: dict[str, object], now: dt.datetime
+        record: dict[str, str],
+        run: dict[str, object],
+        now: dt.datetime,
+        *,
+        single_new_player_record: bool,
     ) -> bool:
         """Prove a unique new xlog row fits this tracked, newly born run."""
         birth_floor = run.get("birth_not_before_epoch")
         start = _int_field(record, "starttime")
         end = _int_field(record, "endtime")
         if (
-            run.get("recovered_existing_save") is not False
+            not single_new_player_record
+            or run.get("recovered_existing_save") is not False
             or run.get("adopted_active_runtime") is not False
             or type(birth_floor) is not int
             or type(start) is not int
@@ -690,7 +695,9 @@ class NethackRunStore:
             offset = run.get("xlog_offset")
             if type(offset) is not int or offset < 0:
                 raise NethackRunError("run xlog_offsetが不正です")
-            record, analysis_error = self._terminal_record_since(offset)
+            record, analysis_error, single_new_player_record = (
+                self._terminal_record_since(offset)
+            )
             self._close_open_session_unlocked(run, now, "terminal")
             run["last_finished_at"] = now.isoformat()
             if record is None:
@@ -703,7 +710,12 @@ class NethackRunStore:
                 status = classify_terminal_record(record)
                 terminal = self._terminal_payload(
                     record,
-                    identity_verified=self._terminal_identity_verified(record, run, now),
+                    identity_verified=self._terminal_identity_verified(
+                        record,
+                        run,
+                        now,
+                        single_new_player_record=single_new_player_record,
+                    ),
                 )
                 run["status"] = status
                 run["terminal"] = terminal
