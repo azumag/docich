@@ -2,7 +2,7 @@
   "output_sha256": "c0e504856ef2227bdac09c61cb0ca471445c39e845f3ecc06d0f32acad9364a2",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "223060840777a455f27e2a3a8d0ac9601faa6a7bf52f489983a732faeeaef242",
+  "source_sha256": "8b3227b956b07d1a11c5e84232ac37e1eba56d3250590945907c716be94bf759",
   "topics": [
     "半熟英雄: start-hanjuku ライブ実測（#1104 未実測3項目を g344 で裏取り）",
     "NetHack P1修正を再push（最新HEADのCI成功、レビュー継続）",
