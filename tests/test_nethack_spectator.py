@@ -9,6 +9,7 @@ from docich.nethack_spectator import (
     classify_char,
     main,
     parse_tty,
+    render_live_shell,
     render_html,
 )
 from docich.nethack_tiles import TILESET_NAME, tile_key
@@ -121,6 +122,63 @@ class TestNethackSpectator(unittest.TestCase):
             parse_tty("", cols=0)
         with self.assertRaises(ValueError):
             parse_tty("", rows=2)
+
+    def test_non_map_screens_keep_the_entire_tty(self) -> None:
+        cases = {
+            "inventory": "Inventory:\n a - a +0 short sword\n b - a food ration\n",
+            "menu": "What do you want to use? @\n a - a +0 short sword\n b - a food ration\n",
+            "tombstone": "You were killed by a grid bug.\n\n\n\nRIP docich\n",
+            "startup": "Shall I pick a character for you? [ynq]\n\n\n\n\n",
+        }
+        for name, terminal in cases.items():
+            with self.subTest(screen=name):
+                frame = parse_tty(terminal, cols=40, rows=5)
+                self.assertEqual(frame.frame_kind, "text")
+                self.assertEqual(len(frame.tty_lines), 5)
+                rendered = render_html(frame)
+                self.assertIn('class="tty-screen"', rendered)
+                self.assertIn(terminal.splitlines()[0], rendered)
+                self.assertNotIn('class="board"', rendered)
+
+    def test_uncertain_map_and_unknown_glyphs_fail_safe(self) -> None:
+        menu_with_map_cursor = "What do you want? @\n.|+..\n.....\nHP:10\nDlvl:1\n"
+        frame = parse_tty(menu_with_map_cursor, cols=24, rows=5)
+        self.assertEqual(frame.frame_kind, "text")
+        self.assertIn("@", render_html(frame))
+
+        unknown = parse_tty("msg\n.@}#\n.|+>\nHP:10\nDlvl:1\n", cols=8, rows=5)
+        self.assertEqual(unknown.frame_kind, "map")
+        self.assertIn('data-glyph="}"', render_html(unknown))
+        self.assertIn('href="#tile-other"', render_html(unknown))
+
+    def test_live_shell_is_fixed_incremental_and_epoch_pinned(self) -> None:
+        shell = render_live_shell(
+            runtime_id="g3-deadbeef",
+            generation=3,
+            presentation_epoch="p-0123456789abcdef",
+            poll_interval_ms=500,
+            stale_after_ms=3000,
+        )
+        self.assertIn('fetch(\'/frame\'', shell)
+        self.assertIn('payload.runtime_id !== expectedRuntimeId', shell)
+        self.assertIn('payload.generation !== expectedGeneration', shell)
+        self.assertIn('payload.presentation_epoch !== expectedEpoch', shell)
+        self.assertIn("textContent", shell)
+        self.assertNotIn("innerHTML", shell)
+        self.assertNotIn("location.reload", shell)
+        self.assertNotIn("https://", shell)
+        with self.assertRaises(ValueError):
+            render_live_shell(
+                runtime_id="g3-deadbeef",
+                generation=3,
+                presentation_epoch="bad/epoch",
+            )
+        with self.assertRaises(ValueError):
+            render_live_shell(
+                runtime_id="g3-deadbeef",
+                generation=True,
+                presentation_epoch="p-valid",
+            )
 
 
 if __name__ == "__main__":
