@@ -112,6 +112,45 @@ class NethackTilesSupervisorTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             presentation_window_pattern("viewer.*")
 
+    def test_window_lookup_prefers_unique_window_owned_by_child_process(self):
+        supervisor = object.__new__(NethackTilesSupervisor)
+        supervisor._which = lambda _name: "/usr/bin/xdotool"
+        supervisor.window_title = "docich-present-g9-abcdef"
+        process = _FakeProcess()
+        result = subprocess.CompletedProcess(
+            ["xdotool"], 0, stdout="0x123\n", stderr=""
+        )
+        with mock.patch(
+            "docich.nethack_tiles_supervisor.subprocess.run", return_value=result
+        ) as run:
+            self.assertEqual(supervisor._window_id(process), "0x123")
+        self.assertEqual(
+            run.call_args.args[0],
+            ["/usr/bin/xdotool", "search", "--onlyvisible", "--pid", "34567"],
+        )
+
+    def test_window_lookup_falls_back_to_unique_runtime_title_without_pid_metadata(self):
+        supervisor = object.__new__(NethackTilesSupervisor)
+        supervisor._which = lambda _name: "/usr/bin/xdotool"
+        supervisor.window_title = "docich-present-g9-abcdef"
+        process = _FakeProcess()
+        results = [
+            subprocess.CompletedProcess(["xdotool"], 1, stdout="", stderr=""),
+            subprocess.CompletedProcess(["xdotool"], 0, stdout="0x456\n", stderr=""),
+        ]
+        with mock.patch(
+            "docich.nethack_tiles_supervisor.subprocess.run", side_effect=results
+        ) as run:
+            self.assertEqual(supervisor._window_id(process), "0x456")
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "/usr/bin/xdotool", "search", "--onlyvisible", "--name",
+                presentation_window_pattern(supervisor.window_title),
+            ],
+        )
+
     def test_browser_window_wait_failure_distinguishes_exit_from_missing_window(self):
         process = _FakeProcess()
         self.assertEqual(
