@@ -61,6 +61,7 @@ FAILURE_REASONS = frozenset(
 )
 _RUNTIME_TOKEN_RE = re.compile(r"^[A-Za-z0-9._-]{1,96}$")
 _TMUX_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_WINDOW_TITLE_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _BROWSER_NAMES = (
     "google-chrome-stable",
     "google-chrome",
@@ -80,6 +81,16 @@ def browser_binary(which: Callable[[str], str | None] = shutil.which) -> str | N
         if resolved:
             return resolved
     return None
+
+
+def presentation_window_pattern(window_title: str) -> str:
+    """Match the exact owned app title with only known Chromium title suffixes."""
+    if not isinstance(window_title, str) or not _WINDOW_TITLE_RE.fullmatch(window_title):
+        raise ValueError("window_title is invalid")
+    suffix = r"( - (Google Chrome|Chromium( Web Browser)?))?"
+    # The allowlist leaves only dot as a POSIX extended-regex metacharacter.
+    escaped_title = window_title.replace(".", r"\.")
+    return f"^{escaped_title}{suffix}$"
 
 
 def _proc_start_ticks(pid: int) -> int | None:
@@ -280,7 +291,13 @@ class NethackTilesSupervisor:
             return None
         try:
             found = subprocess.run(
-                [xdotool, "search", "--onlyvisible", "--name", f"^{re.escape(self.window_title)}$"],
+                [
+                    xdotool,
+                    "search",
+                    "--onlyvisible",
+                    "--name",
+                    presentation_window_pattern(self.window_title),
+                ],
                 capture_output=True,
                 text=True,
                 timeout=1.0,
@@ -302,6 +319,12 @@ class NethackTilesSupervisor:
                 return True
             self._sleep(0.1)
         return False
+
+    @staticmethod
+    def _window_wait_failure_reason(process: subprocess.Popen) -> str:
+        if process.poll() is not None:
+            return "browser_exited"
+        return "browser_window_missing"
 
     def _prepare_profile(self) -> Path:
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -359,7 +382,7 @@ class NethackTilesSupervisor:
             raise RuntimeError("browser_start_failed") from exc
         self._write_manifest()
         if not self._wait_window(self._browser, timeout_s=_WINDOW_WAIT_S):
-            raise RuntimeError("browser_start_failed")
+            raise RuntimeError(self._window_wait_failure_reason(self._browser))
         if not self._server_thread.is_alive():
             raise RuntimeError("server_stopped")
 

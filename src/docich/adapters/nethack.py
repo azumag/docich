@@ -28,7 +28,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from ..game_switch import DeadlineExceededError, ReadinessTimeoutError, atomic_write_json
-from ..nethack_tiles_supervisor import browser_binary
+from ..nethack_tiles_supervisor import browser_binary, presentation_window_pattern
 from ..xkit import XKit
 from .base import AdapterError
 from .cli_game import (
@@ -250,7 +250,7 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
             "--width", str(display.viewport_width),
             "--height", str(display.viewport_height),
             "--viewer-wait-sec", "20",
-            "--window-pattern", f"^{re.escape(window_title)}$",
+            "--window-pattern", presentation_window_pattern(window_title),
             "--rebind-window",
             "--runtime-state", str(self._presentation_path()),
             "--",
@@ -337,7 +337,7 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
             raise ReadinessTimeoutError("paneがdeadです")
         self.tmux.capture_pane_checked(self.spec.adapter_session)
         presenter = XKit(self.g.display.name)
-        pattern = f"^docich-present-{self.spec.runtime_id}$"
+        pattern = presentation_window_pattern(f"docich-present-{self.spec.runtime_id}")
         while True:
             self._check_active(deadline, cancel)
             if not self.tmux.session_target_exists(self.spec.adapter_session):
