@@ -1,10 +1,10 @@
 {
-  "output_sha256": "19d04ba1ffab26a2f30ab3acf01bfad9f13545e38b346b6fe9d8bada445d4db0",
+  "output_sha256": "de173495b825a1117a2c30da09fb509853dfbf3bba44af3c272dbf2552ed888f",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "5e9f17b8ce07fd3cb39069082e13cd36ef6f652d51900ca403ba0d64c2ffdeb1",
+  "source_sha256": "a8476ade8f6d3243243733dfce8782d08190970f235c4b778c5c8dfa3b7f5c31",
   "topics": [
-    "webui Corners: 手動停止不可・稼働誤表示・開始Errno13を修正（ main統合・VM配備・webui再起動済み、ブラウザ…",
+    "webui Corners: 手動停止不可・稼働誤表示・開始Errno13を修正（ main統合・VM配備・webui再起動・API/la…",
     "半熟英雄: チャート外LLM動的調整の設計Issueを発行し実装前に停止",
     "半熟英雄 #1072配備後の空携行品判定を実画面で校正中"
   ]
