@@ -76,6 +76,36 @@ class CliAdapterTestBase(unittest.TestCase):
 
 
 class TestPrepare(CliAdapterTestBase):
+    def test_moon_buggy_launch_passes_only_whitelisted_ab_runtime_values(self):
+        game = config.GameConfig(
+            name="moon-buggy",
+            title="Moon Buggy",
+            adapter="cli",
+            raw={},
+            path=self.repo_root / "config" / "games" / "moon-buggy.toml",
+        )
+        values = {
+            "DOCICH_TARGET_MATCHES": "2",
+            "DOCICH_MOON_BUGGY_AB_STATE": "/runtime/moon_buggy_ab.json",
+            "DOCICH_MOON_BUGGY_AB_ACTIVE": "/runtime/moon_buggy_ab_active.json",
+            "DOCICH_MOON_BUGGY_AB_REQUEST": "12345678-1234-5678-1234-567812345678",
+            "DOCICH_UNLISTED_SECRET": "must-not-pass",
+        }
+        with mock.patch.dict("os.environ", values), mock.patch(
+            "docich.adapters.cli_game.procs.which", return_value="/usr/bin/env"
+        ):
+            command = cli_game._game_launch_command(
+                self.g, game, ["/bin/sh", "games/cli-wrappers/moon-buggy_docich.sh"]
+            )
+
+        assignments = set(command[1:])
+        self.assertIn(f"DOCICH_STATE_DIR={Path(self.g.state_dir).resolve()}", assignments)
+        for name in values:
+            if name == "DOCICH_UNLISTED_SECRET":
+                self.assertNotIn(f"{name}=must-not-pass", assignments)
+            else:
+                self.assertIn(f"{name}={values[name]}", assignments)
+
     def test_which_resolves_command_head_to_absolute_path(self):
         tmux = FakeTmux()
         ctx = self._make_ctx(cli_raw={"command": "nethack"}, tmux=tmux)

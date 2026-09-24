@@ -1451,7 +1451,7 @@ ROTATION_IMPROVE_GAMES = (
 ROTATION_STATUSES = frozenset({
     "idle", "waiting", "starting", "active", "restoring", "preparing",
     "recovery_required", "failed", "completed", "interrupted", "expired",
-    "running", "promoted", "kept", "improved", "dry-run", "skipped",
+    "running", "promoted", "kept", "improved", "dry-run", "skipped", "ab-staged",
 })
 
 # Fixed end-of-corner improvement reason taxonomy. Keep in sync with
@@ -1464,7 +1464,7 @@ ROTATION_IMPROVE_REASON_CODES = frozenset({
     "policy-below-margin", "policy-not-significant", "policy-identical",
     "policy-invalid", "policy-kept", "policy-eval", "ab-pending",
     "ab-incomplete", "ab-adopted", "ab-rejected", "ab-stale", "ab-invalid",
-    "ab-eval", "unexpected",
+    "ab-eval", "ab-state", "ab-baseline-changed", "unexpected",
 })
 ROTATION_IMPROVE_PHASES = frozenset({"state", "llm", "eval", "unknown"})
 
@@ -1578,6 +1578,28 @@ def _collect_rotation_evidence(state_dir):
                 phase=_rotation_enum(raw.get("phase"), ROTATION_IMPROVE_PHASES),
             )
         result["improvements"][game] = entry
+    present, readable, raw = _rotation_evidence_file(state_dir, "moon_buggy_ab.json")
+    ab = {"present": present, "readable": readable}
+    if readable:
+        status = raw.get("status")
+        ab["status"] = _rotation_enum(
+            status, {"staged", "running", "completed", "promoted", "kept"}
+        )
+        results = raw.get("results")
+        ab["matches"] = len(results) if isinstance(results, list) and len(results) <= 4 else None
+        ab["target_matches"] = 4
+        winner = raw.get("winner")
+        ab["winner"] = winner if isinstance(winner, str) and winner in {"A", "B"} else None
+        means = raw.get("means")
+        if isinstance(means, dict):
+            for arm, key in (("A", "baseline_mean"), ("B", "candidate_mean")):
+                value = means.get(arm)
+                try:
+                    number = float(value) if type(value) in (int, float) else None
+                except (OverflowError, ValueError):
+                    number = None
+                ab[key] = number if number is not None and math.isfinite(number) else None
+    result["moon_buggy_ab"] = ab
     return result
 
 

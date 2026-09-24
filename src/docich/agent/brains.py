@@ -38,9 +38,38 @@ class CommandBrain:
         raise AdapterError("[agent] brain='command' には command の設定が必要です")
 
     def decide(self, obs: Observation) -> list[Action]:
+        env_extra = None
+        if self.game.name == "moon-buggy":
+            from ..moon_buggy_ab import MoonBuggyABError, active_path, read_experiment
+
+            selected_path = ""
+            experiment_id = ""
+            match_index = ""
+            try:
+                experiment = read_experiment(self.g.state_dir)
+            except MoonBuggyABError:
+                # A malformed pending experiment must fail closed in the brain.
+                selected_path = str(active_path(self.g.state_dir))
+            else:
+                if experiment and experiment["status"] == "running":
+                    selected_path = str(active_path(self.g.state_dir))
+                    experiment_id = experiment["experiment_id"]
+                    match_index = str(len(experiment["results"]))
+                elif experiment is None:
+                    # If the state record disappears while a snapshot remains,
+                    # do not silently fall back to mutable live weights.
+                    active = active_path(self.g.state_dir)
+                    if active.is_symlink() or active.exists():
+                        selected_path = str(active)
+            env_extra = {
+                "DOCICH_MOON_BUGGY_AB_ACTIVE": selected_path,
+                "DOCICH_MOON_BUGGY_AB_EXPERIMENT_ID": experiment_id,
+                "DOCICH_MOON_BUGGY_AB_MATCH_INDEX": match_index,
+            }
         try:
             result = procs.run(
                 self.cmd,
+                env_extra=env_extra,
                 timeout=self.g.agent.brain_timeout_s,
                 input=obs.to_json(),
                 # tmux セッションの cwd に依存せず、brain の相対パス参照
