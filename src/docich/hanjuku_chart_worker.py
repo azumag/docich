@@ -56,7 +56,9 @@ def _recent_results(runtime_dir: Path, limit=24) -> list[dict]:
 def build_prompt(request: dict, results: list[dict]) -> str:
     chapter = request.get('chapter') or 1
     base = [{k: (list(v) if isinstance(v, tuple) else v) for k, v in o.items()}
-            for o in chart.orders(chapter)]
+            for o in chart.all_orders(chapter)]
+    measured = sorted(chart.castles(chapter))
+    allowed_castles = measured or sorted(chart.CASTLE_NAMES.get(chapter, ()))
     example = {'orders': [{'step': 'J1', 'general': 'ココット', 'source': 'ほんじょう',
                            'target': 'スペンソニア', 'cards': ['ダイチスイム'], 'after': None,
                            'note': '理由を短く'}],
@@ -69,7 +71,7 @@ def build_prompt(request: dict, results: list[dict]) -> str:
         '現在の状況から、基準チャートとは独立した「完全な指示列」をJSONで作ってください。',
         '',
         '## 制約',
-        f'- 城名は次のいずれか: {json.dumps(sorted(chart.castles(chapter)), ensure_ascii=False)}',
+        f'- 城名は次のいずれか: {json.dumps(allowed_castles, ensure_ascii=False)}',
         f'- 切り札名は次のいずれか: {json.dumps(sorted(adjust.CARD_NAMES), ensure_ascii=False)}',
         f'- 指示は1〜{adjust.MAX_ORDERS}件。step は英数字・_・- の12文字以内の一意な名前（例 J1, J2）。'
         '基準チャートのstep名は禁止。',

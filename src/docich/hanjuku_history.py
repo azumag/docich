@@ -124,9 +124,17 @@ def _count(value) -> int:
     return 0
 
 
+def _known_targets() -> set[str]:
+    known: set[str] = set()
+    for chapter, names in hanjuku_chart.CASTLE_NAMES.items():
+        known.update(names)
+        known.update(hanjuku_chart.castles(chapter))
+        known.update(o['target'] for o in hanjuku_chart.all_orders(chapter))
+    return known
+
+
 def _targets(proposals: list, kinds: set[str]) -> list[str]:
-    known = {order["target"] for order in hanjuku_chart.orders(1)}
-    known.update(hanjuku_chart.castles(1))
+    known = _known_targets()
     result: list[str] = []
     for proposal in proposals:
         if not isinstance(proposal, dict) or proposal.get("type") not in kinds:
@@ -142,8 +150,7 @@ def _targets(proposals: list, kinds: set[str]) -> list[str]:
 
 
 def _missed_adjusted_targets(steps: dict) -> list[str]:
-    known = {order["target"] for order in hanjuku_chart.orders(1)}
-    known.update(hanjuku_chart.castles(1))
+    known = _known_targets()
     result: list[str] = []
     for row in steps.values():
         if (not isinstance(row, dict) or row.get("kind") != "adjusted"

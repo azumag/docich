@@ -224,8 +224,11 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         actions=policy.name_step(screen,mem)
         if mem.get('name',{}).get('done') and not mem.get('chapter'):
             mem['chapter']=1
-            mem['variant']='chart'
-            mem['cursor']=list(policy.chart.castles(1)['ほんじょう'])
+            mem['variant']='chart' if policy.chart.orders(1) else 'chart_unavailable'
+            home=policy.chart.home_castle(1)
+            castles=policy.chart.castles(1)
+            if home in castles:
+                mem['cursor']=list(castles[home])
     elif card_list:
         actions=policy.card_list_step(screen,mem)
     elif kind=='battle':
