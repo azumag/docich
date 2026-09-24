@@ -17,6 +17,7 @@ ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'src'))
 from docich.game_switch import atomic_write_json
 from docich import hanjuku_chart_adjust
+from docich import hanjuku_experience
 from docich.hanjuku_bot import BOT_VERSION, decide
 from docich.hanjuku_commentary import SPOKEN, compose
 from docich.hanjuku_pixels import read_png
@@ -33,7 +34,7 @@ INPUT_CONTEXT_DECISIONS=frozenset({
     'card_pick','sortie_confirm','sortie_input','battle_card','battle_card_missing','battle_card_selected',
     'barrier_removed','month_plan','month_confirm','month_done','buy_skip','buy',
     'soldier_refill','prompt','egg_battle','gift','close_panel','situation_held',
-    'chart_adjust_request','chart_adjust_applied',
+    'chart_adjust_request','chart_adjust_applied','independent_menu',
 })
 
 
@@ -156,13 +157,23 @@ def main():
         if not meta.get('terminal_reason') and not meta.get('terminal_candidate'):
             frame=read_png(Path(obs['screenshot'])).resized()
             state=read_record(runtime/'hanjuku_bot.json')
+            experience_path=ROOT/'run'/hanjuku_experience.EXPERIENCE_FILE
+            experience=hanjuku_experience.load(experience_path)
             actions,state=decide(frame,state,adjusted=hanjuku_chart_adjust.load(runtime),
-                                 interim=state.get('chart_interim_answer'))
+                                 interim=state.get('chart_interim_answer'),
+                                 experience=experience)
             records=state.pop('_records',[])
+            updated_experience=state.pop('_experience',None)
             persist(runtime,state,records,meta,actions=actions,frame_sha256=frame.digest(),frame=frame)
             publish_adjust_request(runtime,records,meta)
             ask_interim(runtime,state,meta)
             atomic_write_json(runtime/'hanjuku_bot.json',state)
+            if isinstance(updated_experience,dict):
+                try:
+                    hanjuku_experience.save(experience_path,updated_experience)
+                except (OSError,ValueError):
+                    # Losing one experience sample must not drop this frame's input.
+                    print('hanjuku-bot: experience_save_failed',file=sys.stderr)
     except (KeyError,TypeError,ValueError,OSError):
         code=2
         print('hanjuku-bot: invalid observation',file=sys.stderr)

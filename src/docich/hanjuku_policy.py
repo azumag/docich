@@ -13,6 +13,7 @@ import re
 
 from . import hanjuku_chart as chart
 from . import hanjuku_chart_adjust as chart_adjust
+from . import hanjuku_experience as experience
 from .hanjuku_font import UNKNOWN, TextLine
 from .hanjuku_screen import HEADER as HEADER_RE, Screen, castle_roofs
 
@@ -1133,19 +1134,63 @@ def battle_step(screen: Screen, mem):
     return []
 
 
+def _behind(cur: dict) -> bool:
+    enemy_hp, ally_hp = cur.get('enemy_hp'), cur.get('ally_hp')
+    if type(enemy_hp) is not int or type(ally_hp) is not int:
+        return False
+    return ally_hp < enemy_hp
+
+
 def battle_menu_step(screen: Screen, mem):
     _migrate_card_evidence(mem)
     cur = mem.get('battle') or {}
     flow = cur.get('card_flow')
-    if screen.kind == 'battle_menu':
-        if not flow:
-            return [pad('b')]
+    if screen.kind != 'battle_menu':
+        return []
+    if flow:
         if flow['stage'] == 'menu':
             flow['stage'] = 'down'
             return [pad('down')]
         flow['stage'] = 'list'
         return [pad('a')]
-    return []
+    # Chart has no card due this frame: independent judgment under the chart,
+    # mapped from the original six melee patterns (①③ pass / ⑥ egg; ②④⑤ are
+    # chart-directed cards and never chosen blindly here).
+    exp = mem.get('_experience')
+    key = experience.situation_key('battle_menu', mem)
+    if not mem.get('indep_menu'):
+        mem['indep_menu'] = True
+        default = 'use_egg' if _behind(cur) else 'pass'
+        action = experience.preferred(exp, key, default=default, kind='battle_menu')
+        mem['indep_menu_key'] = key
+        mem['indep_menu_action'] = action
+        # Original patterns: ①/③ continue melee when not behind; ⑥ use egg
+        # only when behind (melee+chart cards insufficient / none due).
+        pattern = '⑥' if action == 'use_egg' else ('③' if cur.get('clashed') else '①')
+        battle = mem.get('battle')
+        if isinstance(battle, dict):
+            battle['independent'] = {'kind': 'battle_menu', 'key': key, 'action': action,
+                                     'pattern': pattern}
+        _record(mem, 'independent_menu',
+                strategy_variant=f'independent_{action}',
+                deviation_reason='チャートに戦術なし: 状況判断',
+                expected_metric='戦闘結果による判断の検証',
+                observed_metric={'enemy_hp': cur.get('enemy_hp'), 'ally_hp': cur.get('ally_hp'),
+                                 'experience_key': key, 'source_pattern': pattern},
+                source_pattern=pattern,
+                reason='チャートが当該フレームに切り札を指示していないための独自判断（原典戦術'
+                       + pattern + 'に相当）')
+    action = mem.get('indep_menu_action', 'pass')
+    if action == 'use_egg':
+        if screen.hand:
+            move = menu_to(screen, 'たまごをつかう')
+            if move == 'here':
+                return [pad('a')]
+            if move:
+                return [move]
+            # Hand present but the label is unreadable: top item is たまご.
+        return [pad('a')]
+    return [pad('b')]
 
 
 def card_list_step(screen: Screen, mem):
@@ -1250,6 +1295,12 @@ def battle_end(mem, next_kind):
         stats['cards_used'] += confirmed
     else:
         stats['cards_used'] = None
+    indep = cur.get('independent')
+    if isinstance(indep, dict) and outcome in ('win', 'loss'):
+        experience.record(mem, indep.get('key'), indep.get('action'), outcome)
+        _record(mem, 'experience_result', experience_key=indep.get('key'),
+                experience_action=indep.get('action'), outcome=outcome,
+                reason='独自判断の結果を経験記憶へ反映')
     step = cur.get('step')
     boss_order = _order_for_step(mem, step)
     boss_attempt = (_is_boss_order(boss_order, mem)
@@ -1654,7 +1705,9 @@ def observe_events(screen: Screen, mem):
                         'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit',
                         'nav_last', 'orders', 'picked', 'retries', 'retry_context', 'shop',
                         'source_override', 'uncertain', 'month', 'order_context', 'sortie_general',
-                        'chart_adjust', 'chart_plan', 'launched_orders', 'sorties'):
+                        'chart_adjust', 'chart_plan', 'launched_orders', 'sorties',
+                        'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
+                        'indep_menu_key', 'indep_menu_action'):
                 mem.pop(key, None)
             mem['chapter'] = chapter
             mem['variant'] = 'chart' if chart.orders(chapter) else 'chart_unavailable'
@@ -1710,16 +1763,45 @@ def egg_battle_step(screen: Screen, mem):
     """Summoned-monster battle: a turn menu that waits for a command.
 
     The chart avoids provoking enemy eggs but gives no command for this
-    battle; the default こうげき (top item, where the cursor starts) keeps the
-    game moving instead of stalling. Messages inside it advance with A.
+    battle. Independent judgment defaults to たまごをつかう so an enemy
+    summon is answered with an egg rather than a stall or blind attack.
+    This is original pattern ⑥ (own egg when melee is not enough); patterns
+    ②④⑤ stay chart-directed. Messages inside it advance with A.
     """
-    if screen.kind == 'egg_battle_menu':
-        if not mem.get('egg_battle'):
-            mem['egg_battle'] = True
-            _record(mem, 'egg_battle', strategy_variant='egg_battle_attack',
-                    deviation_reason='チャート外: 敵の卵召喚戦', expected_metric='召喚獣の撃破',
-                    reason='コマンド待ちで停止しないよう既定のこうげきを選ぶ')
+    if screen.kind != 'egg_battle_menu':
+        mem.pop('egg_menu_stage', None)
         return [pad('a')]
+    if not mem.get('egg_battle'):
+        mem['egg_battle'] = True
+        exp = mem.get('_experience')
+        key = experience.situation_key('egg_summon', mem)
+        action = experience.preferred(exp, key, default='use_egg', kind='egg_summon')
+        mem['egg_action'] = action
+        mem['egg_key'] = key
+        battle = mem.get('battle')
+        if isinstance(battle, dict):
+            battle['independent'] = {'kind': 'egg_summon', 'key': key, 'action': action,
+                                     'pattern': '⑥'}
+        _record(mem, 'egg_battle', strategy_variant=f'egg_battle_{action}',
+                deviation_reason='チャート外: 敵の卵召喚戦',
+                expected_metric='召喚獣への対処と戦闘結果',
+                observed_metric={'experience_key': key}, source_pattern='⑥',
+                reason='チャートに召喚戦の指示がないための独自判断（原典戦術⑥、既定はたまご）')
+    action = mem.get('egg_action', 'use_egg')
+    if action == 'attack':
+        return [pad('a')]
+    if screen.hand:
+        move = menu_to(screen, 'たまごをつかう')
+        if move == 'here':
+            return [pad('a')]
+        if move:
+            return [move]
+        # Hand present but the label is unreadable: keep moving like no-hand.
+    # No hand (or unreadable hand): walk down twice from こうげき to たまご.
+    stage = int(mem.get('egg_menu_stage') or 0)
+    if stage < 2:
+        mem['egg_menu_stage'] = stage + 1
+        return [pad('down')]
     return [pad('a')]
 
 

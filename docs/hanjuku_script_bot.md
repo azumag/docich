@@ -24,7 +24,10 @@ Claude、OpenCode、API、認証情報を操作時に使用しない。旧`brain
   「どうし」と一致した時だけSTARTで確定し、目標の前方一致でなければBで1文字削除する。未分類の字形を除去して名前一致とせず、
   未読文字が残る場合や名前画面を構造化できない場合は入力・確定を保留する。
   手が目標文字に重なって読めない場合は実測済みの表配置から目標セルを求める。
-- チャート（`hanjuku_chart.py`、出典 `games/hanjuku-sfc-speedrun` の charts/1.md・overview.md）:
+- チャート（`hanjuku_chart.py`、出典 `games/hanjuku-sfc-speedrun` の charts/1.md・overview.md。
+  原典は [ブラッキーチャート冒頭](http://blog.livedoor.jp/hanjukueiyu/archives/1035528547.html)
+  （同リポジトリ README が転記元と明記。アドリブ前提・連射機禁止・基本切り札
+  ブラッキー/クースカン/ファバード・敵に卵を使わせない方針も原典由来）:
   第1話は 1-A1 どうし→キカンドン、1-V1 ヴィーナス→ナキューメラ、1-C1 ココット→ジョンリギ（チャート表記
   ジョリンギ）を切り札なしで出撃し、占領を確認した城から 1-A2 フットバース→ゴーメン、
   1-V2 フットバース→カストーラ、1-C2 ダイチスイム×2・ブラッキー→スペンソニア、1-A3 どうし→スペンソニア、
@@ -32,6 +35,35 @@ Claude、OpenCode、API、認証情報を操作時に使用しない。旧`brain
   戦術は ガルバンゾー戦で主人公は敵HP24以下でフットバース、ヴィーナスは開幕フットバース、
   ココットは白兵後に敵HP13以下でダイチスイム、タピオカ戦は開幕ダイチスイム・ブラッキー、
   クイーン戦は最初のぶつかり合いの後にクースカン→ノリウツール。それ以外は白兵（戦闘中は入力しない）。
+  チャートに戦術のない場面（敵の卵召喚、切り札未指示の戦闘メニュー）は、チャートに沿った上で
+  状況から独自判断する（`egg_battle` / `independent_menu`）。判断と勝敗は `run/hanjuku_experience.json` に
+  状況キー単位で保存し、次回は勝率の高い方を選ぶ（`hanjuku_experience.py`）。チャートが指示する
+  戦術は常に優先する。実測は未実施のため、勝率改善は未確認とする。
+
+### 原典の将軍vs将軍・戦術6パターンと独自判断の対応
+
+原典冒頭の6戦術（①〜⑥）は、チャート指示がある場面では `CHAPTER_1_TACTICS`（card_flow）が常に優先する。
+チャートが当該フレームに切り札を指示しないときの `independent_menu` / `egg_battle` のみ、
+観測可能な範囲で次の既定に写像する（`hanjuku_policy.battle_menu_step` / `egg_battle_step`）。
+
+| 原典 | 内容 | 独自判断への写像 |
+|---|---|---|
+| ① パワー全開で押し込む | せんとう勝ち・卵なしなら白兵押し切り | HP不利なし → `pass`（白兵継続） |
+| ② 切り札で兵士削り→押し込む | チャート指示の切り札（card_flow） | 独自既定にはしない（どの切り札か画面から一意に決められないため） |
+| ③ パワー調整・中央ぶつかり/壁当て | せんとう同格の白兵調整 | HP同格/有利 → `pass`（①と同じく白兵継続） |
+| ④ クースカン後は兵士消耗まで抑える→ブラッキー | チャート指示の切り札 | 独自既定にはしない（②同様） |
+| ⑤ ファバードで勝つ | チャート指示の切り札 | 独自既定にはしない（②同様） |
+| ⑥ 自軍が卵を使って勝つ | 白兵+切り札で足りないとき、卵なし敵へエグモン | HP不利かつチャートに切り札指示なし → `use_egg` |
+
+- 敵の召喚（`egg_battle`）は原典「敵に卵を使わせない」方針が既に破られた局面のため、
+  既定 `use_egg` で応戦する（経験記憶で `attack` に切り替え可能）。これは⑥の「自軍が卵を使う」
+  に相当し、②〜⑤の切り札戦術はチャートが due な時だけ動く。
+- 原典は「白兵で勝てそうなら白兵、不足なら切り札、それでも足りなければ卵」と優先順位を明記する。
+  独自既定はこの優先順位に従い、**勝てる時（HP不利なし）は卵を使わない**。
+- 具体的な切り札名・タイミング（ファバード多投、クースカン→ブラッキー等）は原典チャートの
+  各話手順（`games/hanjuku-sfc-speedrun/charts/*.md`）が正本であり、botは第1話以外を
+  `chart_unavailable` として扱う（勝手に後半チャートを実装しない）。
+- 連射機（A連打）は原典RTA規約でも戦闘中禁止。botは1フレーム最大28押下の既存制約を維持する。
 - 月一（1ねん4のつき→5のつき、画面上は「1ねん 5のつき」）: 所持金がチャート想定214G以上なら
   チャートどおり（イッテツーン9・ノリウツール2・クースカン4・ゼンマイン1・兵士41）。
   不足時は `budget_boss_kit_first`（ボス用クースカン・ノリウツールを先に、次にイッテツーン最低6個）へ
@@ -151,9 +183,10 @@ runtimeの `audio_volume.json` に記録する。
 | `hanjuku_frames/frame-*.png` | 画面判定の変化、60秒間隔、終了時の画像。120枚のリング |
 | `hanjuku_frames/decision-*.png` | 名前確定・章確認・戦闘結果、将軍一覧・携行品選択/確認、いばら解除、切り札選択中/関連判断、代役選択・装備付き出撃開始に実際に使った画像。別の120枚リング |
 | `hanjuku_bot.json` | botの現在の方策状態（チャート手順・占領・勝敗集計・所持金）。別世代へ持ち越さない |
-| `hanjuku_decisions.jsonl` | 決定記録: `decision`、`chart_step`、`strategy_variant`、状況（画面種別・将軍・城・HP・所持金）、`deviation_reason`、`expected_metric`、`observed_metric`、`resulting_event`、`reason` |
+| `hanjuku_decisions.jsonl` | 決定記録: `decision`、`chart_step`、`strategy_variant`、状況（画面種別・将軍・城・HP・所持金）、`deviation_reason`、`expected_metric`、`observed_metric`、`resulting_event`、`reason`、独自判断の原典戦術番号 `source_pattern`（①/③/⑥） |
 | `hanjuku_commentary.jsonl` | 実況候補（文・意味key・生成元の決定・理由、または状況判定保留） |
 | `hanjuku_narration.jsonl` | 実況の配信結果（enqueued/delivery_failed/skipped:理由） |
+| `hanjuku_experience.json` | 状況キー別の独自判断実績（wins/losses）。世代をまたいで使用。gitignore済み`run/`配下 |
 | `audio_volume.json` | ゲーム音声streamのsink・音量・mute実測 |
 
 ログにLLMプロンプト、認証情報、ROM本体、セーブデータを含めない。画像と詳細イベントはVMローカルに保ち、
