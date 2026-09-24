@@ -1,11 +1,11 @@
 {
-  "output_sha256": "8b066cadec7e35a2be1f684507e60e76ab925e8835f648cf2bd152194029d120",
+  "output_sha256": "a8c95a71ee9ff7f9868fe32665c84f059be6e9e630eacd776ac9e4d16fe26474",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "c65aead410a51cba6c9403f37329dc22047a571c8e28971ba66f74c01544c353",
+  "source_sha256": "a719112263f79ee0fead069f9d275ce083cf0a706650efaa7b3b512f3355430a",
   "topics": [
-    "半熟英雄: 2話以降チャート実装・計測ゲート・gcgx参照表（main/VM反映済み、座標計測待ち）",
-    "reader/frame契約をPR #1127として提出（review/CI待ち）",
-    "PAPER WebUI手動停止の稼働owner振分けをmain・VMへ反映（実PAPER受入待ち）"
+    "半熟英雄: 本番 start-hanjuku 実施→game_over終了、兵士補充を main/VM 反映",
+    "NetHack review gates更新・CI再実行成功",
+    "NetHack GUI smoke修正をpush（最新CI待ち）"
   ]
 }
