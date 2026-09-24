@@ -97,8 +97,8 @@ def compose(rec: dict) -> tuple[str, str | None]:
         return 'soldiers', f"兵士を{rec['qty']}人補充します。"
     if kind == 'poor_harvest':
         return 'harvest', '凶作です。チャートならリセットする場面ですが、このまま進めます。'
-    if kind == 'prompt' and rec.get('strategy_variant') == 'decline_duel':
-        return 'duel', '一騎打ちの申し出は、主人公を守るために断ります。'
+    if kind == 'prompt' and rec.get('strategy_variant') == 'accept_duel':
+        return 'duel', '一騎打ちの申し出を受けた。青ゲージを消費して勝負します。'
     if kind == 'egg_battle':
         if rec.get('strategy_variant') == 'egg_battle_use_egg':
             return 'egg', '敵が卵で召喚獣を呼び出しました。こちらもたまごで応戦します。'
