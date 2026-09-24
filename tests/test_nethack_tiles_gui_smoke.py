@@ -193,7 +193,19 @@ class NethackTilesGuiSmokeTests(unittest.TestCase):
                 adapter.readiness(time.monotonic() + 30, None)
                 manifest_path = runtime_dir / "nethack_tiles.json"
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                self.assertEqual(manifest["status"], "tiles_active")
+                self.assertEqual(
+                    manifest["status"],
+                    "tiles_active",
+                    "tiles startup fell back: "
+                    + json.dumps(
+                        {
+                            "mode": manifest.get("mode"),
+                            "reason": manifest.get("reason"),
+                            "status": manifest.get("status"),
+                        },
+                        sort_keys=True,
+                    ),
+                )
                 self.assertEqual(manifest["runtime_id"], runtime_id)
                 self.assertIsInstance(manifest.get("browser_pid"), int)
 
