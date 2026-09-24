@@ -727,7 +727,11 @@ def deploy_step(screen: Screen, mem):
         return [pad('b')]
     if kind == 'castle_menu':
         move = menu_to(screen, 'しゅつげき')
-        return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move] if move else [],
+        if move is None:
+            # No hand (or unreadable menu): hold with evidence instead of a
+            # silent empty plan that never advances and never explains itself.
+            return _hold_deploy(screen, mem, order, '出撃メニューのしゅつげきをカーソルで判定できないため保留')
+        return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move],
                              '出撃メニューを選択')
     if kind == 'general_list':
         if _is_boss_order(order, mem):
@@ -741,17 +745,19 @@ def deploy_step(screen: Screen, mem):
                 mem['sortie_general'][order['step']] = order['general']
                 return _deploy_input(screen, mem, order, [pad('a')], 'ボス戦へ主人公を選択')
             return _deploy_input(screen, mem, order, [move], 'ボス戦の主人公へ選択カーソルを移動')
-        if not screen.hand:
+        empty_list = 'おりません' in screen.text
+        if not screen.hand and not empty_list:
             return _hold_deploy(screen, mem, order, '将軍選択カーソルを判定できないため入力を保留')
         general = mem.get('general_override', {}).get(order['step'], order['general'])
-        move = menu_to(screen, general)
+        move = menu_to(screen, general) if screen.hand else None
         if move is None:
             # The chart's general is not at this castle (routed or lost).
             # Whoever is actually here goes instead, so the castle, later
             # steps and the boss condition stay reachable.
-            ui = {'しゅつげき', 'ステータス'}
-            present = [w for x, y, w in _options(screen) if x > 100 and w not in ui
-                       and not re.search(r'\d', w)]
+            # An empty list message is not a general name.
+            ui = {'しゅつげき', 'ステータス', 'しょうぐんは', 'おりません', 'おりません……'}
+            present = [] if empty_list else [w for x, y, w in _options(screen) if x > 100 and w not in ui
+                                             and not re.search(r'\d', w) and 'おりません' not in w]
             present.sort(key=lambda w: w == NAME)      # risk the hero last
             if present and not mem.get('general_override', {}).get(order['step']):
                 mem.setdefault('general_override', {})[order['step']] = present[0]

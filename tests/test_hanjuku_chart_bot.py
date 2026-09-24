@@ -524,6 +524,22 @@ def test_missing_chart_general_is_replaced_by_a_non_hero_present_at_the_source()
     assert rec['strategy_variant'] == 'substitute_general' and mem['general_override']['1-C1'] == 'ゼウス'
 
 
+def test_empty_general_list_canvas_parses_as_general_list_without_hand():
+    c = Canvas()
+    c.text(64, 31, 'しゅつげき')
+    c.text(136, 39, 'しょうぐんは')
+    c.text(64, 47, 'ステータス')
+    c.text(152, 79, 'おりません……')
+    s = parse(c.frame())
+    assert s.hand is None
+    assert s.kind == 'general_list'
+    mem = {'chapter': 1, 'active': '1-C1', 'orders': {'1-C1': 'pending'}}
+    actions = policy.deploy_step(s, mem)
+    assert actions == [policy.pad('b'), policy.pad('b')]
+    assert mem['source_override']['1-C1'] == 'ほんじょう'
+    assert mem['_records'][-1]['decision'] == 'order_source_changed'
+
+
 def test_narration_delivery_summary_counts_without_text(tmp_path):
     (tmp_path / 'hanjuku_narration.jsonl').write_text('\n'.join(json.dumps(x) for x in [
         {'status': 'enqueued', 'text': 'a'}, {'status': 'skipped:cooldown'}, {'status': 'skipped:held'},
