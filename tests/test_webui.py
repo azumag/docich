@@ -1437,6 +1437,17 @@ class TestHttpHandlers(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def _write_paper_catalog_config(self):
+        path = Path(self.g.config_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '[corner_rotation]\n'
+            'enabled = true\n'
+            'schedule_mode = "queue"\n'
+            'corners = [{id = "paper", adapter = "paper", game = "paper-view"}]\n',
+            encoding="utf-8",
+        )
+
     def test_get_corners_is_bounded_read_only_projection(self):
         self._write_catalog_config()
         self._write_rotation_state()
@@ -1578,7 +1589,11 @@ class TestHttpHandlers(unittest.TestCase):
         """Popen は bin/*-corner-manual を直接 exec する。実行 bit が落ちると
         本番で [Errno 13] Permission denied → 500 corner_dispatch_failed になる。"""
         bin_dir = Path(webui.__file__).resolve().parents[2] / "bin"
-        for adapter, (launcher, *_rest) in webui._CORNER_MANUAL_LAUNCHERS.items():
+        launchers = {
+            **{adapter: spec[0] for adapter, spec in webui._CORNER_MANUAL_LAUNCHERS.items()},
+            "paper-restore": "docich-paper-corner-restore",
+        }
+        for adapter, launcher in launchers.items():
             path = bin_dir / launcher
             with self.subTest(adapter=adapter, launcher=launcher):
                 self.assertTrue(path.is_file(), path)
@@ -1609,6 +1624,39 @@ class TestHttpHandlers(unittest.TestCase):
         self.assertIn("retro-corner", argv)
         self.assertEqual(argv[-1], "stop")
         self.assertEqual(data["corner"].get("target"), "base")
+
+    def test_post_corners_stop_restores_active_paper_when_manual_record_is_stale(self):
+        """Stale manual failures must not hide a scheduled PAPER run.
+
+        The scheduled PAPER runner has no ``paper-corner stop`` CLI; stopping
+        it must use the dedicated restore command, which stops its service and
+        restores the recorded previous game.
+        """
+        self._write_paper_catalog_config()
+        run = self.repo_root / "run"
+        run.mkdir(parents=True, exist_ok=True)
+        for manual_status in ("failed", "recovery_required"):
+            for base_status in ("active", "restoring"):
+                with self.subTest(manual_status=manual_status, base_status=base_status):
+                    (run / "paper_corner.json").write_text(json.dumps({
+                        "status": base_status, "game": "paper-view",
+                    }), encoding="utf-8")
+                    (run / "paper_corner_manual.json").write_text(json.dumps({
+                        "status": manual_status, "game": "paper-view",
+                    }), encoding="utf-8")
+                    with mock.patch("docich.webui.subprocess.Popen") as popen:
+                        popen.return_value.pid = 4246
+                        status, data = self._request(
+                            "POST", "/api/corners",
+                            {"action": "stop", "corner": "paper", "confirm": True},
+                        )
+                    self.assertEqual(status, 200, data)
+                    argv = popen.call_args.args[0]
+                    self.assertEqual(argv, [
+                        str(self.repo_root / "bin" / "docich-paper-corner-restore"),
+                        "--config", str(self.g.config_path),
+                    ])
+                    self.assertEqual(data["corner"].get("target"), "base")
 
     def test_post_corners_stop_prefers_manual_when_manual_busy(self):
         self._write_catalog_config()
