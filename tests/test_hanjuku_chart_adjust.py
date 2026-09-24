@@ -474,7 +474,10 @@ def test_adjusted_month_purchases_replace_the_plan_and_record_recruit_gap():
     [plan] = decisions(mem, 'month_plan')
     assert plan['strategy_variant'] == 'chart_adjusted'
     assert plan['deviation_reason'] == 'recruit_menu_unmeasured'
-    assert policy._plan(mem, {**header, 'month': 9}) is None
+    # An uncovered month refills soldiers with the gold left (up to 99).
+    refill = policy._plan(mem, {**header, 'month': 9})
+    assert refill['items'] == [] and refill['soldiers'] == 60
+    assert refill['variant'] == 'soldier_refill_only'
     # The base chart month still uses the base plan.
     mem['shop'] = None
     assert policy._plan(mem, {**header, 'month': 5, 'gold': 300})['variant'] == 'chart'

@@ -153,7 +153,43 @@ def test_budget_plan_prioritises_boss_kit_and_records_deviation():
     full = policy._plan({'chapter': 1}, {'year': 1, 'month': 5, 'gold': 214})
     assert full['items'] == [list(i) for i in chart.CHAPTER_1_PURCHASES['cards']]
     assert full['soldiers'] == 41
-    assert policy._plan({'chapter': 1}, {'year': 1, 'month': 6, 'gold': 999}) is None
+    # Before the charted month the gold is reserved for it.
+    assert policy._plan({'chapter': 1}, {'year': 1, 'month': 4, 'gold': 999}) is None
+    # Afterwards every month refills soldiers with the gold left (up to 99).
+    refill = policy._plan({'chapter': 1}, {'year': 1, 'month': 6, 'gold': 999})
+    assert refill['items'] == [] and refill['soldiers'] == 99
+    assert refill['variant'] == 'soldier_refill_only'
+
+
+def test_uncovered_month_opens_refill_instead_of_leaving_the_menu():
+    mem = {'chapter': 1}
+    shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 130})
+    assert shop['items'] == [] and shop['soldiers'] == 99 and shop['soldiers_done'] is False
+    rec = mem['_records'][-1]
+    assert rec['strategy_variant'] == 'soldier_refill_only'
+    assert rec['deviation_reason'] == 'chart_month_uncovered'
+    assert rec['plan'] == {'cards': [], 'soldiers': 99}
+    # No gold left: the month closes without opening the refill.
+    assert policy._plan({'chapter': 1}, {'year': 1, 'month': 8, 'gold': 0})['soldiers_done'] is True
+    c = Canvas()
+    c.text(48, 15, '1ねん 7のつき 130G')
+    c.text(48, 47, 'しょうにん')
+    c.text(48, 63, 'へいしほじゅう')
+    c.text(128, 95, 'も〜おしまい!')
+    c.hand(26, 41)
+    assert policy.month_step(parse(c.frame()), mem)[0]['buttons'] == ['down']
+
+
+def test_a_charted_purchase_still_ahead_keeps_its_own_soldier_budget():
+    # 1ねん7つきのチャート(兵士0)は、後続の807G/1738G予定を温存するための配分。
+    # 後に購入月がある間は残金を99人へ回さず、チャート人数が上限になる。
+    mem = {'chapter': 3}
+    shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 475})
+    assert shop['items'] == [list(i) for i in chart.CHAPTER_3_PURCHASES[0]['cards']]
+    assert shop['soldiers'] == chart.CHAPTER_3_PURCHASES[0]['soldiers'] == 0
+    assert shop['soldiers_done'] is True
+    # 9のつきは11のつきの購入予定が残るので、残金でも補充しない。
+    assert policy._plan({'chapter': 3}, {'year': 1, 'month': 9, 'gold': 900}) is None
 
 
 def test_battle_result_uses_only_visible_hp_and_captures_on_attack_win():
