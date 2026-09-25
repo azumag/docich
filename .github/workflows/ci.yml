@@ -107,6 +107,7 @@ jobs:
         run: >-
           python3 -m pytest -q
           tests/test_retroarch_safe_boundary.py tests/test_retroarch_adapter.py
+          tests/test_hanjuku_saved_stop.py
           tests/test_coordinator_adapter_retroarch.py tests/test_retroarch_readiness_contract.py
           tests/test_presentation.py tests/test_presentation_viewer_wait.py tests/test_presentation_script_volume.py
       - name: Robots resolver contract

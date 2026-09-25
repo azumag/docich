@@ -1843,7 +1843,7 @@ def _project_corner_state(data):
         "announcements": announcements,
         "improve_job": improve_job,
         "end_reason": (data.get("end_reason") if data.get("end_reason")
-                       in {"game_over", "screen_stalled"} else None),
+                       in {"game_over", "screen_stalled", "manual_saved_stop"} else None),
         "bot_phase": (data.get("bot_phase") if data.get("bot_phase") in {
             "transition", "name", "dialogue", "shop", "field", "field_menu",
             "battle_intro", "battle", "title_or_intro", "title", "month_menu", "concert", "event"} else None),

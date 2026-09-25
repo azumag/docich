@@ -22,7 +22,7 @@ from ..actions import Action
 from ..game_switch import (DeadlineExceededError, ReadinessTimeoutError, RuntimeSpec,
                            RoundBoundaryUnsupportedError, atomic_write_json)
 from ..netcmd import send_ra_cmd
-from ..retroarch_boundary import (BOUNDARY_FILE, checkpoint_digest, identity,
+from ..retroarch_boundary import (BOUNDARY_FILE, MANUAL_SAVE_FILE, checkpoint_digest, identity,
                                  input_gate, matches, read_record, require_input_open)
 from ..naming import runtime_directory
 from ..xkit import XKit
@@ -655,6 +655,9 @@ class RetroArchCoordinatorAdapter:
                     raise AdapterError("RetroArch committed runtime has no safe boundary")
                 from .. import hanjuku_run
                 if hanjuku_run.enabled(self.game):
+                    if record.get('outcome') == 'suspended':
+                        self._verify_manual_save(record, deadline, cancel, allow_stopped=True)
+                        return
                     terminal = hanjuku_run.terminal(self.spec.runtime_dir, hanjuku_run.runtime_identity(self.spec))
                     if (terminal and record.get('outcome') == terminal['terminal_reason']
                             and record.get('frame_sha256') == terminal['frame_sha256']):
@@ -728,6 +731,13 @@ class RetroArchCoordinatorAdapter:
                 record = read_record(path)
                 if record and record.get('status') != 'cancelled' and not matches(record, self.spec, request_id):
                     raise AdapterError('Hanjuku boundary identity mismatch')
+                manual = read_record(self.spec.runtime_dir / MANUAL_SAVE_FILE)
+                if manual and matches(manual, self.spec, request_id):
+                    if record.get('status') == 'reached':
+                        self._verify_manual_save(record, deadline, cancel)
+                        return
+                    self._save_manual_boundary(request_id, deadline, cancel)
+                    return
                 terminal = hanjuku_run.terminal(self.spec.runtime_dir, hanjuku_run.runtime_identity(self.spec))
                 if terminal:
                     atomic_write_json(path, dict(identity(self.spec, request_id), status='reached',
@@ -740,6 +750,79 @@ class RetroArchCoordinatorAdapter:
                 cancel.wait(.1)
             else:
                 time.sleep(.1)
+
+    def _verify_manual_save(self, record, deadline, cancel, *, allow_stopped=False):
+        manual = read_record(self.spec.runtime_dir / MANUAL_SAVE_FILE)
+        if (not matches(manual, self.spec, record.get('request_id'))
+                or record.get('outcome') != 'suspended'):
+            raise AdapterError('Hanjuku manual save request mismatch')
+        live = True
+        if allow_stopped:
+            target = self._game_window_target()
+            live = self.tmux.window_target_exists(target)
+            if live:
+                self._verify_window_ownership(target, 'game')
+                live = not any(pane.dead for pane in self.tmux.pane_states_checked(target))
+        if live:
+            self._require_paused(deadline, cancel)
+        if checkpoint_digest(self._checkpoint(record.get('checkpoint')), deadline, cancel) != record.get('sha256'):
+            raise AdapterError('Hanjuku saved checkpoint changed')
+
+    def _save_manual_boundary(self, request_id, deadline, cancel):
+        """Called under the input gate; only a fenced operator request opts in."""
+        deadline = min(deadline, time.monotonic() + 10)
+        name = resolve_rom(self.g, self.game).stem + '.state'
+        saved = self._checkpoint(name)
+        if saved.is_symlink():
+            raise AdapterError('Hanjuku checkpoint may not be a symlink')
+        self._check_active(deadline, cancel)
+        self._verify_window_ownership(self._game_window_target(), 'game')
+        reply = send_ra_cmd('GET_STATUS', port=self._network_port(), wait_reply_s=.1)
+        stem = resolve_rom(self.g, self.game).stem
+        paused = bool(reply and reply.startswith('GET_STATUS PAUSED '))
+        prefix = 'GET_STATUS PAUSED ' if paused else 'GET_STATUS PLAYING '
+        fields = reply[len(prefix):].strip().split(',') if reply and reply.startswith(prefix) else []
+        if len(fields) < 2 or fields[1] != stem:
+            raise AdapterError('Hanjuku save content identity is unconfirmed')
+        record = dict(identity(self.spec, request_id), status='waiting', requested_ns=time.time_ns())
+        atomic_write_json(self.spec.runtime_dir / BOUNDARY_FILE, record)
+        paused_here = False
+        try:
+            if not paused:
+                send_ra_cmd('PAUSE_TOGGLE', port=self._network_port(), wait_reply_s=.1)
+                paused_here = True
+            self._require_paused(deadline, cancel)
+            send_ra_cmd('SAVE_STATE', port=self._network_port(), wait_reply_s=.1)
+            previous = None
+            while True:
+                self._check_active(deadline, cancel)
+                if saved.exists():
+                    digest = checkpoint_digest(saved, deadline, cancel)
+                    metadata = saved.stat()
+                    current = (metadata.st_mtime_ns, metadata.st_size, digest)
+                    if metadata.st_mtime_ns >= record['requested_ns'] and current == previous:
+                        with saved.open('rb') as stream:
+                            os.fsync(stream.fileno())
+                        self._require_paused(deadline, cancel)
+                        if checkpoint_digest(saved, deadline, cancel) != digest:
+                            raise AdapterError('Hanjuku checkpoint is still changing')
+                        atomic_write_json(self.spec.runtime_dir / BOUNDARY_FILE,
+                                          dict(record, status='reached', checkpoint=name,
+                                               sha256=digest, outcome='suspended'))
+                        return
+                    previous = current
+                time.sleep(.1)
+        except Exception:
+            # Preserve a pre-existing operator pause. Undo only our own pause
+            # while this request still owns an unconfirmed boundary.
+            current = read_record(self.spec.runtime_dir / BOUNDARY_FILE)
+            if paused_here and matches(current, self.spec, request_id) and current.get('status') == 'waiting':
+                try:
+                    self._require_paused(time.monotonic() + 1, None)
+                    send_ra_cmd('PAUSE_TOGGLE', port=self._network_port(), wait_reply_s=.1)
+                except Exception:
+                    pass
+            raise
 
     def _checkpoint(self, name: str) -> Path:
         if name != resolve_rom(self.g, self.game).stem + '.state':
