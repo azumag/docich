@@ -1190,7 +1190,7 @@ class TestRetroCornerAnnounce(RetroCornerTestBase):
         self.assertEqual(len(chats), 1)
         self.assertIn("レトロゲームコーナー", chats[0])
         self.assertIn("Robotsをお送りします", chats[0])
-        self.assertIn("同じゲームの過去戦略を確認できない", chats[0])
+        self.assertIn("比較に使える同じゲームの過去戦略記録が見つからない", chats[0])
         self.assertTrue(mgr.status().get("announced"))
 
     def test_strategy_announcement_uses_game_scoped_history_and_all_value_types(self):
@@ -1239,7 +1239,7 @@ class TestRetroCornerAnnounce(RetroCornerTestBase):
         )
 
         message = describe_strategy_change(self.g.state_dir, "robots")
-        self.assertIn("同じゲームの過去戦略を確認できない", message)
+        self.assertIn("比較に使える同じゲームの過去戦略記録が見つからない", message)
         self.assertNotIn("前回と同じ戦略", message)
 
     def test_same_strategy_message_requires_matching_game_history(self):
