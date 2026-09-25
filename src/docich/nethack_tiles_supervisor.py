@@ -70,7 +70,11 @@ _BROWSER_NAMES = (
     "/snap/bin/chromium",
 )
 _POLL_INTERVAL_S = 0.5
-_WINDOW_WAIT_S = 8.0
+# Give cold Chromium startup time under Xvfb. The parent presentation process
+# must outlive this wait so it can observe either the browser or TTY fallback.
+BROWSER_WINDOW_WAIT_S = 20.0
+PRESENTATION_WINDOW_WAIT_S = 30.0
+_TTY_WINDOW_WAIT_S = 8.0
 _READER_GRACE_S = 12.0
 
 
@@ -396,7 +400,7 @@ class NethackTilesSupervisor:
         except OSError as exc:
             raise RuntimeError("browser_start_failed") from exc
         self._write_manifest()
-        if not self._wait_window(self._browser, timeout_s=_WINDOW_WAIT_S):
+        if not self._wait_window(self._browser, timeout_s=BROWSER_WINDOW_WAIT_S):
             raise RuntimeError(self._window_wait_failure_reason(self._browser))
         if not self._server_thread.is_alive():
             raise RuntimeError("server_stopped")
@@ -427,7 +431,7 @@ class NethackTilesSupervisor:
         except OSError as exc:
             raise RuntimeError("fallback_start_failed") from exc
         self._write_manifest()
-        if not self._wait_window(self._tty, timeout_s=_WINDOW_WAIT_S):
+        if not self._wait_window(self._tty, timeout_s=_TTY_WINDOW_WAIT_S):
             raise RuntimeError("fallback_start_failed")
 
     @staticmethod
