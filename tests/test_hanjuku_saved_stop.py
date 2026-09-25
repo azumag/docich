@@ -1,4 +1,4 @@
-"""Saved operator stop must preserve the runtime and user pause on failure."""
+"""Operator stop saves first and only an explicit policy permits unsaved exit."""
 import time
 from unittest.mock import Mock
 
@@ -96,6 +96,7 @@ def test_stop_retries_same_owned_runtime_with_a_fresh_request(manager, monkeypat
     record = read_record(manager.g.state_dir / 'runtimes/g1-abcdef' / MANUAL_SAVE_FILE)
     assert record['request_id'] == result['switch_request_id']
     assert record['runtime_id'] == expected['runtime_id']
+    assert record['allow_unsaved_stop'] is True
 
 
 def test_failed_stop_cannot_suspend_another_generation(manager, monkeypatch):
@@ -110,7 +111,8 @@ def test_failed_stop_cannot_suspend_another_generation(manager, monkeypatch):
     assert not list(manager.g.state_dir.glob('runtimes/*/' + MANUAL_SAVE_FILE))
 
 
-def test_manager_reports_saved_stop_only_after_successful_restore(manager, monkeypatch):
+@pytest.mark.parametrize('forced', [False, True])
+def test_manager_reports_save_outcome_only_after_successful_restore(manager, monkeypatch, forced):
     from types import SimpleNamespace
     expected = {'game': 'hanjuku-hero', 'runtime_id': 'g1-abcdef', 'generation': 1, 'lease_id': 'lease'}
     state = {**manager._default_state(), 'status': 'failed', 'game': 'hanjuku-hero',
@@ -118,10 +120,15 @@ def test_manager_reports_saved_stop_only_after_successful_restore(manager, monke
     manager._write_state(state)
     monkeypatch.setattr(manager.store.canonical, 'load', lambda: ({'phase': 'ready', 'active': expected}, False))
     monkeypatch.setattr(manager, '_active_game_reader', lambda: 'hanjuku-hero')
-    manager.coordinator.switch.return_value = SimpleNamespace(status='succeeded')
+    def switched(*args, **kwargs):
+        game_switch.atomic_write_json(manager.g.state_dir / 'runtimes/g1-abcdef' / BOUNDARY_FILE,
+            {**expected, 'schema': 1, 'request_id': kwargs['request_id'], 'status': 'reached',
+             'outcome': 'manual_forced_stop' if forced else 'suspended'})
+        return SimpleNamespace(status='succeeded')
+    manager.coordinator.switch.side_effect = switched
     result = manager._stop_direct()
     assert result.status == 'completed'
-    assert manager._read_state()['end_reason'] == 'manual_saved_stop'
+    assert manager._read_state()['end_reason'] == ('manual_forced_stop' if forced else 'manual_saved_stop')
     assert manager.coordinator.switch.call_args.kwargs['payload']['expected_source'] == expected
 
 
@@ -141,3 +148,69 @@ def test_suspended_cleanup_requires_operator_marker(adapter, monkeypatch):
     (adapter.spec.runtime_dir / MANUAL_SAVE_FILE).unlink()
     with pytest.raises(AdapterError, match='request mismatch'):
         adapter._verify_manual_save(record, time.monotonic() + 1, None)
+
+
+def allow_unsaved(adapter):
+    game_switch.atomic_write_json(adapter.spec.runtime_dir / MANUAL_SAVE_FILE,
+                                 dict(identity(adapter.spec, 'manual-stop'), allow_unsaved_stop=True))
+
+
+def test_save_timeout_with_explicit_policy_fences_input_and_allows_owned_cleanup(adapter, monkeypatch):
+    calls = emulator(adapter, monkeypatch, save=False)
+    allow_unsaved(adapter)
+    monkeypatch.setattr('docich.adapters.retroarch.MANUAL_SAVE_TIMEOUT_S', .05)
+    adapter.request_round_boundary('manual-stop', time.monotonic() + 2, None)
+    record = read_record(adapter.spec.runtime_dir / BOUNDARY_FILE)
+    assert record['status'] == 'reached'
+    assert record['outcome'] == 'manual_forced_stop'
+    assert record['save_error'] == 'save_timeout'
+    assert 'checkpoint' not in record and 'sha256' not in record
+    with pytest.raises(AdapterError, match='holds input'):
+        require_input_open(adapter.spec.runtime_dir)
+    adapter.request_round_boundary('manual-stop', time.monotonic() + 1, None)
+    assert calls.count('SAVE_STATE') == 1
+    adapter._verify_manual_boundary(record, time.monotonic() + 1, None, allow_stopped=True)
+    (adapter.spec.runtime_dir / MANUAL_SAVE_FILE).unlink()
+    with pytest.raises(AdapterError, match='authorization mismatch'):
+        adapter._verify_manual_boundary(record, time.monotonic() + 1, None, allow_stopped=True)
+
+
+def test_save_failure_without_force_policy_preserves_game(adapter, monkeypatch):
+    from docich.adapters.retroarch import ManualSaveTimeout
+    emulator(adapter, monkeypatch, save=False)
+    monkeypatch.setattr('docich.adapters.retroarch.MANUAL_SAVE_TIMEOUT_S', .05)
+    with pytest.raises(ManualSaveTimeout):
+        adapter.request_round_boundary('manual-stop', time.monotonic() + 2, None)
+    assert read_record(adapter.spec.runtime_dir / BOUNDARY_FILE)['status'] == 'waiting'
+
+
+def test_outer_deadline_does_not_authorize_forced_stop(adapter, monkeypatch):
+    emulator(adapter, monkeypatch, save=False)
+    allow_unsaved(adapter)
+    with pytest.raises(game_switch.DeadlineExceededError):
+        adapter.request_round_boundary('manual-stop', time.monotonic() + .05, None)
+    assert read_record(adapter.spec.runtime_dir / BOUNDARY_FILE)['status'] == 'waiting'
+
+
+def test_wrong_content_after_save_timeout_cannot_force_stop(adapter, monkeypatch):
+    calls = emulator(adapter, monkeypatch, save=False)
+    allow_unsaved(adapter)
+    monkeypatch.setattr('docich.adapters.retroarch.MANUAL_SAVE_TIMEOUT_S', .05)
+    original = adapter._verify_manual_content
+    def wrong_content(deadline, cancel):
+        monkeypatch.setattr('docich.adapters.retroarch.send_ra_cmd',
+                            lambda *a, **k: 'GET_STATUS PLAYING snes,other-game')
+        original(deadline, cancel)
+    monkeypatch.setattr(adapter, '_verify_manual_content', wrong_content)
+    with pytest.raises(AdapterError, match='identity'):
+        adapter.request_round_boundary('manual-stop', time.monotonic() + 2, None)
+    assert read_record(adapter.spec.runtime_dir / BOUNDARY_FILE)['status'] == 'waiting'
+
+
+def test_hanjuku_save_config_has_fixed_path_and_core_serialization_check(adapter):
+    from docich.adapters.retroarch import retroarch_cfg_lines
+    adapter.game.raw['hanjuku'] = {'script_bot': True}
+    lines = retroarch_cfg_lines(adapter.g, adapter.game, adapter._cfg_path(), 55555)
+    assert 'core_info_savestate_bypass = "true"' in lines
+    assert 'sort_savestates_enable = "false"' in lines
+    assert 'sort_savestates_by_content_enable = "false"' in lines

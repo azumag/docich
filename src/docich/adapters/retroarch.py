@@ -34,6 +34,11 @@ NETWORK_CMD_PORT = 55355
 NETWORK_PORT_RANGE = 1000
 RA_READY_POLL_S = 0.5
 RA_READY_IO_TIMEOUT_S = 0.1
+MANUAL_SAVE_TIMEOUT_S = 10.0
+
+
+class ManualSaveTimeout(AdapterError):
+    """A save attempt timed out while its outer operation is still live."""
 
 # core = "auto" の探索順 (architecture.md §4.1)。
 CORE_CANDIDATES = ("snes9x", "bsnes_mercury_performance", "bsnes_mercury_balanced")
@@ -205,7 +210,12 @@ def retroarch_cfg_lines(g, game, cfg_path: Path, network_port: int) -> list[str]
     from ..hanjuku_run import enabled as scripted_hanjuku
     if scripted_hanjuku(game):
         # Stable native pixels for the deterministic screen signatures.
-        lines.append('video_smooth = "false"')
+        lines += ['video_smooth = "false"',
+                  # Custom configs may have no core-info search directory. The
+                  # loaded core still has to provide a nonzero serialize size.
+                  'core_info_savestate_bypass = "true"',
+                  'sort_savestates_enable = "false"',
+                  'sort_savestates_by_content_enable = "false"']
     return lines
 
 
@@ -655,8 +665,8 @@ class RetroArchCoordinatorAdapter:
                     raise AdapterError("RetroArch committed runtime has no safe boundary")
                 from .. import hanjuku_run
                 if hanjuku_run.enabled(self.game):
-                    if record.get('outcome') == 'suspended':
-                        self._verify_manual_save(record, deadline, cancel, allow_stopped=True)
+                    if record.get('outcome') in {'suspended', 'manual_forced_stop'}:
+                        self._verify_manual_boundary(record, deadline, cancel, allow_stopped=True)
                         return
                     terminal = hanjuku_run.terminal(self.spec.runtime_dir, hanjuku_run.runtime_identity(self.spec))
                     if (terminal and record.get('outcome') == terminal['terminal_reason']
@@ -734,9 +744,18 @@ class RetroArchCoordinatorAdapter:
                 manual = read_record(self.spec.runtime_dir / MANUAL_SAVE_FILE)
                 if manual and matches(manual, self.spec, request_id):
                     if record.get('status') == 'reached':
-                        self._verify_manual_save(record, deadline, cancel)
+                        self._verify_manual_boundary(record, deadline, cancel)
                         return
-                    self._save_manual_boundary(request_id, deadline, cancel)
+                    try:
+                        self._save_manual_boundary(request_id, deadline, cancel)
+                    except ManualSaveTimeout:
+                        self._check_active(deadline, cancel)
+                        manual = read_record(self.spec.runtime_dir / MANUAL_SAVE_FILE)
+                        if not matches(manual, self.spec, request_id) or manual.get('allow_unsaved_stop') is not True:
+                            raise
+                        self._verify_manual_content(deadline, cancel)
+                        atomic_write_json(path, dict(identity(self.spec, request_id),
+                            status='reached', outcome='manual_forced_stop', save_error='save_timeout'))
                     return
                 terminal = hanjuku_run.terminal(self.spec.runtime_dir, hanjuku_run.runtime_identity(self.spec))
                 if terminal:
@@ -750,6 +769,29 @@ class RetroArchCoordinatorAdapter:
                 cancel.wait(.1)
             else:
                 time.sleep(.1)
+
+    def _verify_manual_boundary(self, record, deadline, cancel, *, allow_stopped=False):
+        if record.get('outcome') != 'manual_forced_stop':
+            return self._verify_manual_save(record, deadline, cancel, allow_stopped=allow_stopped)
+        self._check_active(deadline, cancel)
+        manual = read_record(self.spec.runtime_dir / MANUAL_SAVE_FILE)
+        if (not matches(manual, self.spec, record.get('request_id'))
+                or manual.get('allow_unsaved_stop') is not True
+                or record.get('save_error') != 'save_timeout'):
+            raise AdapterError('Hanjuku unsaved stop authorization mismatch')
+        if not allow_stopped:
+            self._verify_manual_content(deadline, cancel)
+
+    def _verify_manual_content(self, deadline, cancel):
+        self._check_active(deadline, cancel)
+        self._verify_window_ownership(self._game_window_target(), 'game')
+        reply = send_ra_cmd('GET_STATUS', port=self._network_port(), wait_reply_s=.1)
+        self._check_active(deadline, cancel)
+        fields = reply.split(' ', 2) if reply else []
+        if (len(fields) != 3 or fields[0] != 'GET_STATUS' or fields[1] not in {'PLAYING', 'PAUSED'}
+                or len(fields[2].split(',')) < 2
+                or fields[2].strip().split(',')[1] != resolve_rom(self.g, self.game).stem):
+            raise AdapterError('Hanjuku force-stop content identity is unconfirmed')
 
     def _verify_manual_save(self, record, deadline, cancel, *, allow_stopped=False):
         manual = read_record(self.spec.runtime_dir / MANUAL_SAVE_FILE)
@@ -770,7 +812,7 @@ class RetroArchCoordinatorAdapter:
 
     def _save_manual_boundary(self, request_id, deadline, cancel):
         """Called under the input gate; only a fenced operator request opts in."""
-        deadline = min(deadline, time.monotonic() + 10)
+        save_deadline = time.monotonic() + MANUAL_SAVE_TIMEOUT_S
         name = resolve_rom(self.g, self.game).stem + '.state'
         saved = self._checkpoint(name)
         if saved.is_symlink():
@@ -796,6 +838,8 @@ class RetroArchCoordinatorAdapter:
             previous = None
             while True:
                 self._check_active(deadline, cancel)
+                if time.monotonic() >= save_deadline:
+                    raise ManualSaveTimeout('Hanjuku save did not complete before timeout')
                 if saved.exists():
                     digest = checkpoint_digest(saved, deadline, cancel)
                     metadata = saved.stat()

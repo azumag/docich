@@ -1158,6 +1158,14 @@ class RetroCornerManager:
             )
             if state.pop("manual_stop_requested", False):
                 state["end_reason"] = "manual_saved_stop"
+                from .naming import runtime_directory
+                from .retroarch_boundary import BOUNDARY_FILE, read_record
+                boundary = read_record(runtime_directory(self.g.state_dir, expected_source['runtime_id']) / BOUNDARY_FILE)
+                if (boundary.get('outcome') == 'manual_forced_stop'
+                        and boundary.get('request_id') == request_id
+                        and all(boundary.get(key) == expected_source.get(key) for key in
+                                ('game', 'runtime_id', 'generation', 'lease_id'))):
+                    state['end_reason'] = 'manual_forced_stop'
             state.pop("switch_request_id", None)
             state.pop("switch_status", None)
             # Persist the terminal corner state before handing control to the
@@ -1884,8 +1892,8 @@ class RetroCornerManager:
         with self._locked():
             state = self._read_state()
             if self._scripted_hanjuku(state) and state.get("status") in {"active", "failed"}:
-                # Explicit operator stop is a saved suspension. Natural endings
-                # still use terminal evidence and never create this request.
+                # Explicit operator stop attempts a save, then permits an
+                # unsaved stop on failure. Natural endings do not opt in.
                 from .agent.fence import shared_section
                 from .naming import runtime_directory
                 from .retroarch_boundary import MANUAL_SAVE_FILE
@@ -1902,7 +1910,8 @@ class RetroCornerManager:
                     request_id = new_request_id()
                     atomic_write_json(runtime_directory(self.g.state_dir, active["runtime_id"])
                                       / MANUAL_SAVE_FILE,
-                                      {**expected, "schema": 1, "request_id": request_id})
+                                      {**expected, "schema": 1, "request_id": request_id,
+                                       "allow_unsaved_stop": True})
                     state.update(status="active", switch_request_id=request_id,
                                  manual_stop_requested=True)
 

@@ -1,11 +1,11 @@
 {
-  "output_sha256": "ab5edc764541829484c1befdc3df86490dfa27fe9ee469b62e7c300e90c789a7",
+  "output_sha256": "3616861b11af03627464b302f959edfefc9a8d5c66cd92671a3b1f0a630ea5dd",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "1ad1674fb9e99533470ae93d7598d8430d5d069ca2e0394dd625346171be5d1f",
+  "source_sha256": "9944a8a48af63e595687e8b64565b3e4aed57ace99365df16e97422a10eab06a",
   "topics": [
-    "半熟英雄のWebUI停止を保存終了へ変更する方針を承認",
-    "NetHack を最新mainへ再同期・関連suite再確認",
-    "半熟英雄: ループ修正・一騎打ち受諾・音声切断修正の3件を main/VM 反映"
+    "半熟英雄の保存失敗時は強制終了して復帰する仕様へ変更",
+    "NetHack を最新mainへ再同期・related suite再確認",
+    "半熟英雄のWebUI停止を保存終了へ変更する方針を承認"
   ]
 }
