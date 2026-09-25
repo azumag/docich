@@ -321,7 +321,7 @@ def describe_strategy_change(state_dir, game_name: str) -> str:
     current = read_strategy_for_game(game_name, current_path)
     previous = latest_strategy_snapshot(state_dir, game_name)
     if previous is None:
-        return "同じゲームの過去戦略を確認できないため、現在の戦略でお送りします。"
+        return "比較に使える同じゲームの過去戦略記録が見つからないため、現在の戦略でお送りします。"
 
     missing = object()
     changes = []

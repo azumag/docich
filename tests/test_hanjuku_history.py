@@ -75,7 +75,7 @@ def test_hanjuku_start_announcement_summarizes_latest_verified_run(tmp_path):
     assert "調整手順の見直し候補は" + hanjuku_chart.orders(1)[1]["target"] in message
     assert "基本手順の見直し候補は" + hanjuku_chart.orders(1)[2]["target"] in message
     assert "今回は前回の実績も案内に反映" in message
-    assert "同じゲームの過去戦略を確認できない" not in message
+    assert "比較に使える同じゲームの過去戦略記録が見つからない" not in message
 
 
 def test_hanjuku_announcement_rejects_review_with_mismatched_run_identity(tmp_path):
