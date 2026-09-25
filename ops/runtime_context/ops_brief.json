@@ -1,10 +1,10 @@
 {
-  "output_sha256": "4028165165b3ef2a5a7c645b772c297791a7118541145486a2f809f15b72f703",
+  "output_sha256": "85cbe6ecb544d558e069ed455e33c52bb09f2a2d715b4d056d7432f96c8af1ec",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "23e910b07322bd936f344cd43b940d120b3d4dec898340d7cfd4fda8852b0460",
+  "source_sha256": "f0cfddbb3b717e531d3abe9df1749eba3175430c3ad1cf731a8200041e0c84f9",
   "topics": [
-    "NetHack を最新mainへ再同期・focused tests再確認（push/CI待ち）",
+    "NetHack fresh CI成功、read-only VM診断で残ゲート確認",
     "NetHack GUI smokeのbrowser startup timeoutを調整",
     "VM高負荷の実測とラジオ更新検査の起動削減、CPU飽和は継続"
   ]
