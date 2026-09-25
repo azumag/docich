@@ -1156,6 +1156,8 @@ class RetroCornerManager:
                 last_error=None,
                 last_error_code=None,
             )
+            if state.pop("manual_stop_requested", False):
+                state["end_reason"] = "manual_saved_stop"
             state.pop("switch_request_id", None)
             state.pop("switch_status", None)
             # Persist the terminal corner state before handing control to the
@@ -1881,6 +1883,30 @@ class RetroCornerManager:
     def _stop_direct(self) -> CornerResult:
         with self._locked():
             state = self._read_state()
+            if self._scripted_hanjuku(state) and state.get("status") in {"active", "failed"}:
+                # Explicit operator stop is a saved suspension. Natural endings
+                # still use terminal evidence and never create this request.
+                from .agent.fence import shared_section
+                from .naming import runtime_directory
+                from .retroarch_boundary import MANUAL_SAVE_FILE
+
+                def request_save():
+                    canonical, _ = self.store.canonical.load()
+                    active = canonical.get("active") or {}
+                    expected = state.get("bot_identity")
+                    if (canonical.get("phase") != "ready" or not isinstance(expected, dict)
+                            or active.get("game") != "hanjuku-hero"
+                            or any(active.get(k) is None or active.get(k) != expected.get(k) for k in
+                                   ("game", "runtime_id", "generation", "lease_id"))):
+                        raise RetroCornerError("Hanjuku stop runtime identity is unverified")
+                    request_id = new_request_id()
+                    atomic_write_json(runtime_directory(self.g.state_dir, active["runtime_id"])
+                                      / MANUAL_SAVE_FILE,
+                                      {**expected, "schema": 1, "request_id": request_id})
+                    state.update(status="active", switch_request_id=request_id,
+                                 manual_stop_requested=True)
+
+                shared_section(self.g.state_dir, request_save)
             if state.get("status") not in {"active", "restoring"}:
                 return CornerResult("noop", detail="not-active")
             self._ensure_runtime()

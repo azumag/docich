@@ -16,6 +16,7 @@ from .adapters.base import AdapterError
 from .game_switch import DeadlineExceededError
 
 BOUNDARY_FILE = "retroarch_boundary.json"
+MANUAL_SAVE_FILE = "hanjuku_manual_save.json"
 
 
 def read_record(path: Path) -> dict:

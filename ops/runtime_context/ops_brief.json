@@ -1,11 +1,11 @@
 {
-  "output_sha256": "5e8a6dfff292b4ed3a79be874da80f956863429eef92ec4946b7890cb94a49fa",
+  "output_sha256": "ab5edc764541829484c1befdc3df86490dfa27fe9ee469b62e7c300e90c789a7",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "df5939c51b12e616f29e2e2d186ce92ea8c688398b4f2b514a3ce30486e8c865",
+  "source_sha256": "1ad1674fb9e99533470ae93d7598d8430d5d069ca2e0394dd625346171be5d1f",
   "topics": [
-    "半熟英雄: ループ修正・一騎打ち受諾・音声切断修正の3件を main/VM 反映",
-    "NetHack PID lookup後もGUI smoke failure・X11診断追加",
-    "NetHack GUI window ownership failure修正"
+    "半熟英雄のWebUI停止を保存終了へ変更する方針を承認",
+    "NetHack を最新mainへ再同期・関連suite再確認",
+    "半熟英雄: ループ修正・一騎打ち受諾・音声切断修正の3件を main/VM 反映"
   ]
 }

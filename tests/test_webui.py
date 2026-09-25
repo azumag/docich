@@ -1680,6 +1680,33 @@ class TestHttpHandlers(unittest.TestCase):
         self.assertEqual(argv[3], "stop")
         self.assertEqual(data["corner"].get("target"), "manual")
 
+    def test_failed_hanjuku_base_stop_can_retry_only_the_current_runtime(self):
+        self._write_catalog_config()
+        config = Path(self.g.config_path)
+        config.write_text(config.read_text().replace('nsnake', 'hanjuku-hero'))
+        run = self.repo_root / "run"
+        run.mkdir(parents=True, exist_ok=True)
+        expected = {"game": "hanjuku-hero", "runtime_id": "g358-current",
+                    "generation": 358, "lease_id": "current-lease"}
+        (run / "retro_corner.json").write_text(json.dumps({
+            "status": "failed", "game": "hanjuku-hero", "bot_identity": expected,
+            "last_error_code": "timeout",
+        }))
+        for generation, retry in ((358, True), (359, False)):
+            (run / "game_switch.json").write_text(json.dumps({
+                "phase": "ready", "active": {**expected, "generation": generation},
+            }))
+            status, data = self._request("GET", "/api/corners")
+            self.assertEqual(status, 200)
+            self.assertEqual(data["corners"]["retro_corner"]["stop_retryable"], retry)
+            with mock.patch("docich.webui.subprocess.Popen") as popen:
+                popen.return_value.pid = 4247
+                status, data = self._request("POST", "/api/corners", {
+                    "action": "stop", "corner": "hanjuku-hero", "confirm": True,
+                })
+            self.assertEqual(status, 200)
+            self.assertEqual(data["corner"]["target"], "base" if retry else "manual")
+
     def test_corner_state_present_filters_other_game_and_unknown(self):
         run = self.repo_root / "run"
         run.mkdir(parents=True, exist_ok=True)

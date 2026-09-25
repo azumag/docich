@@ -1873,6 +1873,10 @@ def _corners_view(g: GlobalConfig) -> dict[str, Any]:
                                    if isinstance(raw.get("recovery_required"), bool) else None),
                 target_matches=(target if isinstance(target, int)
                                 and not isinstance(target, bool) and 1 <= target <= 100 else None),
+                stop_retryable=_hanjuku_stop_retryable(g, raw),
+                end_reason=(raw.get("end_reason") if raw.get("end_reason") in
+                            {"game_over", "screen_stalled", "manual_saved_stop"} else None),
+                last_error_code=_view_str(raw.get("last_error_code")),
             )
         corners[name] = entry
     return {
@@ -1999,6 +2003,18 @@ def _corner_base_stop_argv(g: GlobalConfig, corner_id: str) -> tuple[list[str], 
     return argv, {"id": row.id, "adapter": row.adapter, "game": row.game, "target": "base"}
 
 
+def _hanjuku_stop_retryable(g: GlobalConfig, state: dict) -> bool:
+    if state.get("game") != "hanjuku-hero" or state.get("status") != "failed":
+        return False
+    canonical = _load_json_file(Path(g.state_dir) / "game_switch.json") or {}
+    active = canonical.get("active") or {}
+    expected = state.get("bot_identity")
+    return (canonical.get("phase") == "ready" and isinstance(active, dict)
+            and active.get("game") == "hanjuku-hero" and isinstance(expected, dict)
+            and all(active.get(k) is not None and active.get(k) == expected.get(k)
+                    for k in ("game", "runtime_id", "generation", "lease_id")))
+
+
 def _corner_stop_argv(g: GlobalConfig, corner_id: str,
                       duration: int) -> tuple[list[str], dict[str, Any]]:
     """進行中の手動実行、次に base 実行へ stop を振り分ける。
@@ -2020,7 +2036,7 @@ def _corner_stop_argv(g: GlobalConfig, corner_id: str,
         argv, meta = _corner_manual_argv(g, corner_id, "stop", duration)
         meta = {**meta, "target": "manual"}
         return argv, meta
-    if base and base.get("status") in _CORNER_BASE_STOP_STATUSES:
+    if base and (base.get("status") in _CORNER_BASE_STOP_STATUSES or _hanjuku_stop_retryable(g, base)):
         return _corner_base_stop_argv(g, corner_id)
     if manual and manual.get("status") in _CORNER_MANUAL_STOP_STATUSES:
         argv, meta = _corner_manual_argv(g, corner_id, "stop", duration)
@@ -4806,7 +4822,7 @@ const CORNER_BASE_STOP=new Set(["starting","active","restoring"]);
 function stopStateOf(d,c){
   const m=manualStateOf(d,c), b=baseStateOf(d,c);
   if(m&&CORNER_ACTIVE_STOP.has(m.status)) return m;
-  if(b&&CORNER_BASE_STOP.has(b.status)) return b;
+  if(b&&(CORNER_BASE_STOP.has(b.status)||b.stop_retryable===true)) return b;
   if(m&&CORNER_MANUAL_STOP.has(m.status)) return m;
   return null;
 }
@@ -4900,7 +4916,8 @@ function renderCorners(d){
   if(tb && d.corners){
     tb.innerHTML=Object.entries(d.corners).map(([name,c])=>{
       if(!c.present) return `<tr><td class="mono">${esc(name)}</td><td colspan="7" class="help">記録なし</td></tr>`;
-      return `<tr><td class="mono">${esc(name)}</td><td>${esc(jaStatus(c.status))}</td>`
+      const detail=c.last_error_code?` / ${esc(c.last_error_code)}`:(c.end_reason==="manual_saved_stop"?" / セーブして終了":"");
+      return `<tr><td class="mono">${esc(name)}</td><td>${esc(jaStatus(c.status))}${detail}</td>`
         +`<td>${esc(c.game||"-")}</td><td>${fmtTime(c.started_at)}</td>`
         +`<td>${fmtTime(c.ends_at)}</td><td>${fmtTime(c.completed_at)}</td>`
         +`<td>${c.recovery_required===true?'<span class="badge bad">yes</span>':(c.recovery_required===false?"no":"-")}</td>`
