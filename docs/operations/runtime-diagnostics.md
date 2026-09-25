@@ -325,6 +325,10 @@ commit SHA のみで、path・diff・bytes・raw exception を含めない。
 CPU 消費・wake-up・spawn 経路の短時間 baseline は diagnostics とは別の read-only
 profiler で取る。契約と実行方法は [cpu-profiling.md](cpu-profiling.md)（#970）。
 
+NetHack tiles の `nethack_tiles.json` はruntime固有のprivate ownership manifestである。
+diagnostics は active runtime と manifest のgeneration/ownership一致、固定status/mode/reason、
+更新からの経過秒、cleanup完了だけを投影する。PID、argv、profile path、例外本文は公開しない。
+
 ## Runtime 変更 checklist
 
 worker / queue / model / provider / fallback / runtime component を変えたら：

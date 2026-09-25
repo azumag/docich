@@ -287,6 +287,7 @@ def render_live_shell(
     runtime_id: str,
     generation: int,
     presentation_epoch: str,
+    window_title: str = "NetHack",
     poll_interval_ms: int = 500,
     stale_after_ms: int = 3000,
 ) -> str:
@@ -306,6 +307,10 @@ def render_live_shell(
         r"[A-Za-z0-9._-]{1,96}", presentation_epoch
     ):
         raise ValueError("presentation_epoch is invalid")
+    if not isinstance(window_title, str) or not re.fullmatch(
+        r"[A-Za-z0-9._-]{1,128}", window_title
+    ):
+        raise ValueError("window_title is invalid")
     if type(poll_interval_ms) is not int or not 100 <= poll_interval_ms <= 2000:
         raise ValueError("poll_interval_ms must be between 100 and 2000")
     if type(stale_after_ms) is not int or not 1000 <= stale_after_ms <= 10_000:
@@ -465,7 +470,7 @@ def render_live_shell(
 <html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="docich-tileset" content="{html.escape(TILESET_NAME, quote=True)}">
-<title>NetHack</title><style>
+<title>{html.escape(window_title)}</title><style>
 :root {{ color-scheme:dark; background:#07090c; }}
 * {{ box-sizing:border-box; }}
 body {{ margin:0; background:#07090c; color:#f3f4f6; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }}

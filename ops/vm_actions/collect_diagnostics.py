@@ -39,6 +39,9 @@ Observed sources (all read-only):
     windows (window names, the birth/process window TTY, and the agent window)
     so a corner that is active but not progressing stays diagnosable. Never
     sends tmux input.
+  - the committed NetHack tile supervisor manifest, projected to fixed
+    lifecycle/mode/reason enums, generation match and age only. Ownership PIDs,
+    process arguments, filesystem paths and raw failure details stay private.
   - Soren boundary/A-B wait markers the corners gate on
     (tmp/state/corner_boundary_*.json, ab_state.json, ab_games.jsonl,
     ab_candidate/): only presence, counts, enums and mtimes; strategy/hash
@@ -3389,6 +3392,95 @@ def _collect_nethack_panes(state_dir, now):
     return result
 
 
+def _collect_nethack_tiles(state_dir, now):
+    """Project the fixed, generation-owned tile supervisor health fields.
+
+    The private manifest contains ownership PIDs and paths for local cleanup;
+    the diagnostics boundary deliberately exposes neither. Raw browser/server
+    output, argv, and exception details are never part of this projection.
+    """
+    statuses = {
+        "starting", "tiles_active", "fallback_starting", "fallback_tty",
+        "failed", "stopped", "cleanup_failed",
+    }
+    reasons = {
+        "server_start_failed", "server_stopped", "browser_start_failed",
+        "browser_exited", "browser_window_missing", "projection_failed",
+        "reader_failed", "reader_unavailable", "fallback_start_failed",
+        "fallback_exited", "fallback_window_missing", "startup_failed",
+    }
+    result = {
+        "present": False,
+        "status": "unknown",
+        "mode": "unknown",
+        "reason": None,
+        "active_runtime": False,
+        "stale_runtime": False,
+        "age_sec": None,
+        "cleanup_complete": None,
+    }
+    try:
+        switch = json.loads((Path(state_dir) / "game_switch.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return result
+    if not isinstance(switch, dict):
+        return result
+    active = switch.get("active")
+    if not isinstance(active, dict) or active.get("game") != "nethack":
+        return result
+    runtime_id = active.get("runtime_id")
+    generation = active.get("generation")
+    session = active.get("adapter_session")
+    game_window = active.get("game_window")
+    if (
+        not isinstance(runtime_id, str)
+        or re.fullmatch(r"[A-Za-z0-9._-]{1,96}", runtime_id) is None
+        or type(generation) is not int
+        or generation < 1
+        or not isinstance(session, str)
+        or not isinstance(game_window, str)
+    ):
+        return result
+    path = Path(state_dir) / "runtimes" / runtime_id / "nethack_tiles.json"
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return result
+    if not isinstance(manifest, dict):
+        result["present"] = True
+        return result
+    result["present"] = True
+    matches = (
+        type(manifest.get("schema_version")) is int
+        and manifest.get("schema_version") == 1
+        and type(manifest.get("generation")) is int
+        and manifest.get("runtime_id") == runtime_id
+        and manifest.get("generation") == generation
+        and manifest.get("adapter_session") == session
+        and manifest.get("game_window") == game_window
+    )
+    result["active_runtime"] = bool(matches)
+    result["stale_runtime"] = not matches
+    if not matches:
+        return result
+    status = manifest.get("status")
+    if isinstance(status, str) and status in statuses:
+        result["status"] = status
+    mode = manifest.get("mode")
+    if isinstance(mode, str) and mode in {"tiles", "tty"}:
+        result["mode"] = mode
+    reason = manifest.get("reason")
+    if isinstance(reason, str) and reason in reasons:
+        result["reason"] = reason
+    cleanup_complete = manifest.get("cleanup_complete")
+    if isinstance(cleanup_complete, bool):
+        result["cleanup_complete"] = cleanup_complete
+    updated_at = manifest.get("updated_at")
+    if type(updated_at) in (int, float) and 0 <= updated_at <= now + 86400:
+        result["age_sec"] = max(0, int(now - updated_at))
+    return result
+
+
 def main(argv):
     if len(argv) != 2:
         print("usage: collect_diagnostics.py <soren_root>", file=sys.stderr)
@@ -3435,6 +3527,7 @@ def main(argv):
         "nethack_agent": _collect_nethack_agent_log(_program_state_dir(), now),
         "nethack_boundary": _collect_nethack_boundary(_program_state_dir(), now),
         "nethack_panes": _collect_nethack_panes(_program_state_dir(), now),
+        "nethack_tiles": _collect_nethack_tiles(_program_state_dir(), now),
         "market_paper": _collect_market_paper(_program_state_dir(), now),
         "webui": _collect_webui(),
         "storage_breakdown": _collect_storage_breakdown(soren, PROD_ROOT),

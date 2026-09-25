@@ -1,11 +1,11 @@
 {
-  "output_sha256": "8711773cce035a0cf7a8726053adf23ceaf49dc74df4f0351a91e2ab9cbdf1da",
+  "output_sha256": "4a0353521c5d6527b1e21388bb27e6f118061bd29742d3b50692c4e0d823da5f",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "e4b89e17fbffdebf2021bdc8aad08c2bd062178766b7ce6719b129a190862130",
+  "source_sha256": "52b98ac2cf9b22471b0d523923b839c297006050b1d62840449ad4b930d191aa",
   "topics": [
+    "NetHack をmain bfa26e6へ再同期",
     "半熟英雄: 召喚獣ターンの技メニュー選択を main/VM 配備（実機未確認）",
-    "NetHack を最新mainへ再同期・mergeability不一致を確認",
-    "PAPER音声停止を復旧し終了状態修正をVMへ反映"
+    "NetHack を最新mainへ再同期・mergeability不一致を確認"
   ]
 }
