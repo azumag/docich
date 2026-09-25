@@ -15,6 +15,14 @@ from .hanjuku_pixels import Frame
 HEADER = re.compile(r'(?:(\d+)わ)?(\d+)ねん(\d+)のつき(\d+)G')
 PRICE = re.compile(r'^(\S+?)(\d+)G$')
 HAND_COLORS = ((255, 174, 82), (205, 105, 24), (205, 149, 32))
+# Summoned-monster turn menu: a knight sprite sits left of the selected option
+# row, and the stacked HP panel carries an ally (red) / enemy (blue) drop mark.
+# Both measurements come from live frames (decision-003/024/029).
+KNIGHT_COLORS = ((230, 105, 74), (230, 149, 74), (148, 80, 230), (123, 56, 222),
+                 (255, 165, 139), (255, 189, 180), (172, 113, 230), (230, 198, 74))
+ALLY_MARK = (222, 72, 65)
+ENEMY_MARK = (57, 121, 189)
+MENU_ROW_Y = 148          # option rows live in the bottom command box band
 
 
 def _near(pixel, color, tolerance=10):
@@ -135,6 +143,14 @@ class Battle:
 
 
 @dataclass
+class EggRow:
+    name: str
+    hp: int
+    side: str | None
+    y: int
+
+
+@dataclass
 class Screen:
     lines: list[TextLine]
     hand: tuple | None
@@ -146,6 +162,9 @@ class Screen:
     cursor: tuple | None = None
     kind: str = 'unknown'
     options: list = field(default_factory=list)
+    menu_rows: list[TextLine] = field(default_factory=list)
+    menu_cursor: int | None = None
+    egg_rows: list[EggRow] = field(default_factory=list)
 
     def has(self, needle: str) -> bool:
         return needle.replace(' ', '') in self.text
@@ -172,6 +191,71 @@ def _battle(frame: Frame) -> Battle | None:
     return None
 
 
+def _menu_rows(lines: list[TextLine]) -> list[TextLine]:
+    """Light option rows of the bottom command box (first word x=40 or x=176)."""
+    rows = []
+    for line in lines:
+        if line.y < MENU_ROW_Y:
+            continue
+        spans = line.spans()
+        if spans and (32 <= spans[0][0] <= 56 or 168 <= spans[0][0] <= 192):
+            rows.append(line)
+    return rows
+
+
+def _knight_count(frame: Frame, line: TextLine) -> int:
+    spans = line.spans()
+    if not spans:
+        return 0
+    x = spans[0][0]
+    n = 0
+    for y in range(max(0, line.y - 8), min(frame.height, line.y + 9)):
+        for px in range(max(0, x - 34), max(0, x - 1)):
+            pixel = frame.pixel(px, y)
+            if any(_near(pixel, c, 25) for c in KNIGHT_COLORS):
+                n += 1
+    return n
+
+
+def _menu_cursor(frame: Frame, rows: list[TextLine]) -> int | None:
+    """Row y whose knight sprite sits just left of that row's first word."""
+    best_y, best_n = None, 0
+    for line in rows:
+        n = _knight_count(frame, line)
+        if n > best_n:
+            best_y, best_n = line.y, n
+    return best_y if best_n >= 8 else None
+
+
+def _egg_rows(frame: Frame) -> list[EggRow]:
+    """Stacked ally/enemy HP rows of the summoned-monster turn menu.
+
+    The panel is always on the opposite side of the command box, so the mark
+    window follows the row's first word: x>=128 means the panel sits right,
+    otherwise it sits left.
+    """
+    rows = []
+    for line in read_lines(frame, predicate=dark, rect=(0, 140, 256, 216)):
+        left, right = line.words(0, 128), line.words(128, 256)
+        if len(left) >= 2 and len(right) >= 2:
+            continue          # the standard side-by-side battle panel
+        spans = line.spans()
+        if len(spans) < 2 or not spans[-1][1].isdigit() or spans[0][1].isdigit():
+            continue
+        window = range(120, 248) if spans[0][0] >= 128 else range(0, 120)
+        red = blue = 0
+        for y in range(max(0, line.y - 8), min(frame.height, line.y + 9)):
+            for x in window:
+                pixel = frame.pixel(x, y)
+                if _near(pixel, ALLY_MARK, 25):
+                    red += 1
+                elif _near(pixel, ENEMY_MARK, 25):
+                    blue += 1
+        side = 'ally' if red >= 12 and red > blue else ('enemy' if blue >= 12 else None)
+        rows.append(EggRow(''.join(w for _, w in spans[:-1]), int(spans[-1][1]), side, line.y))
+    return rows
+
+
 def parse(frame: Frame, *, phase: str | None = None) -> Screen:
     masks = row_masks(frame, light)
     lines = read_lines(frame, masks=masks)
@@ -185,6 +269,10 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
                          'year': int(year), 'month': int(month), 'gold': int(gold)}
     screen.selected = _selected(lines, hand)
     screen.battle = _battle(frame)
+    screen.menu_rows = _menu_rows(lines)
+    if screen.menu_rows:
+        screen.menu_cursor = _menu_cursor(frame, screen.menu_rows)
+        screen.egg_rows = _egg_rows(frame)
     if phase in (None, 'field', 'field_menu', 'battle_intro', 'event'):
         screen.marker = _target_marker(frame)
         white = row_masks(frame, lambda r, g, b: min(r, g, b) > 200)
@@ -219,6 +307,9 @@ def classify_text(s: Screen) -> str:
         return 'battle_menu'
     if 'こうげき' in t and 'もうこうげき' in t and 'たまごをつかう' in t:
         return 'egg_battle_menu'
+    if 'たまごに' in t and 'もどれ' in t and any('もどれ' in r.known.replace(' ', '') for r in s.menu_rows):
+        # Our summoned monster's own turn: the option box with たまごに もどれ.
+        return 'monster_menu'
     if 'しゅつげき' in t and 'ステータス' in t:
         # The general list opens beside the castle menu; its hand is right of it.
         if s.hand and s.hand[0] > 100:

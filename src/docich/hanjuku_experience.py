@@ -24,10 +24,13 @@ MAX_ACTIONS = 8
 # losing and an alternative has not been tried yet. Map to the original six
 # melee patterns: egg_summon/battle_menu only ever expose ⑥ (use_egg) vs
 # ①③ (pass/attack=continue melee); ②④⑤ are chart-directed cards and are
-# never independent alternatives.
+# never independent alternatives. monster_menu has no original pattern: it
+# exposes the first skill, the special second skill and retreating to the
+# egg.
 ALTERNATIVES = {
     'egg_summon': ('use_egg', 'attack'),
     'battle_menu': ('use_egg', 'pass'),
+    'monster_menu': ('skill1', 'skill2', 'retreat'),
 }
 
 
@@ -57,6 +60,12 @@ def situation_key(kind: str, mem: dict) -> str:
     ]
     if kind == 'battle_menu':
         parts.append(_hp_band(battle.get('enemy_hp'), battle.get('ally_hp')))
+    if kind == 'monster_menu':
+        # The summoned monsters decide the skill menu, not the hero battle.
+        panel = mem.get('monster_panel') if isinstance(mem.get('monster_panel'), dict) else {}
+        parts.append(str(panel.get('ally') or ''))
+        parts.append(str(panel.get('enemy') or ''))
+        parts.append(_hp_band(panel.get('enemy_hp'), panel.get('ally_hp')))
     return '|'.join(part.replace('|', '/') for part in parts)
 
 

@@ -200,10 +200,16 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     if after_battle:
         mem['egg_battle']=False
         for key in ('egg_action','egg_key','egg_menu_stage','indep_menu',
-                    'indep_menu_key','indep_menu_action'):
+                    'indep_menu_key','indep_menu_action',
+                    'monster_menu_key','monster_menu_cursor','monster_menu_hold',
+                    'monster_menu_choice','monster_menu_choice_key','monster_panel'):
             mem.pop(key,None)
     if kind != 'egg_battle_menu':
         mem.pop('egg_menu_stage',None)
+    if kind != 'monster_menu':
+        for key in ('monster_menu_key','monster_menu_cursor','monster_menu_hold',
+                    'monster_menu_choice','monster_menu_choice_key','monster_panel'):
+            mem.pop(key,None)
     if kind != 'battle_menu':
         for key in ('indep_menu','indep_menu_key','indep_menu_action'):
             mem.pop(key,None)
@@ -233,6 +239,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         actions=policy.card_list_step(screen,mem)
     elif kind=='battle':
         actions=policy.battle_step(screen,mem)
+    elif kind=='monster_menu':
+        actions=policy.monster_menu_step(screen,mem)
     elif kind=='egg_battle_menu' or (mem.get('egg_battle') and kind=='text'):
         actions=policy.egg_battle_step(screen,mem)
     elif kind=='battle_menu':
