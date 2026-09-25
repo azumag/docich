@@ -571,10 +571,15 @@ class RetroCornerManager:
         still be draining or rolling back. The durable terminal receipt and a
         stable canonical owner must both prove that this exact switch ended.
         A ``failed`` state is accepted only for a known switch-start error whose
-        own terminal rollback receipt carries the same error code.
+        own terminal rollback receipt carries the same error code. A switch
+        quiesce failure (``quiesce_failed``) qualifies: the outgoing runtime is
+        kept and restored as ``active``, so the receipt below proves the very
+        same property that this method exists for, that the corner never became
+        active.
         """
         from .game_switch import (
             ERROR_AGENT_START_FAILED,
+            ERROR_QUIESCE_FAILED,
             ERROR_START_FAILED,
             GameSwitchBusyError,
         )
@@ -596,6 +601,7 @@ class RetroCornerManager:
                     if (completed.tzinfo is None or completed_ts < 0
                             or state.get("last_error_code") not in {
                                 ERROR_START_FAILED, ERROR_AGENT_START_FAILED,
+                                ERROR_QUIESCE_FAILED,
                             }):
                         return False
                 if ((status not in {"starting", "interrupted"} and not failed_start)
