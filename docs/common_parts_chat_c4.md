@@ -146,6 +146,9 @@ docich 側には、これを並列で再実装する翻訳スタックを**作�
   codex:openrouter/free → codex:amd-token-factory-deepseek-v4-flash →
   codex:deepseek-v4-flash → codex:minimax-m3`。字幕翻訳
   `DOCICH_CC_TRANSLATION_MODELS=deepseek-v4-flash,minimax-m3`。
+  (2026-09-23 追記: docich の既定チェーンへ `opencode:mimo-v2.6-flash-free` /
+  `opencode-go:mimo-v2.6-flash` を muse の後・deepseek の前に追加したが、
+  VM の `.env` / `core/config.sh` は未反映のため上記の本番実測値はそのまま。)
 
 docich 実装は変更なし。将来、仕様を詰める場合のみ `docich translate` (段落向け厳格
 クライアント) を検討するが、`docich chat` の参照実行が既に覆うため現時点では不要。
