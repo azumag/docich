@@ -14,6 +14,7 @@ import re
 from . import hanjuku_chart as chart
 from . import hanjuku_chart_adjust as chart_adjust
 from . import hanjuku_experience as experience
+from . import hanjuku_reference as reference
 from .hanjuku_font import UNKNOWN, TextLine
 from .hanjuku_screen import HEADER as HEADER_RE, Screen, castle_roofs
 
@@ -1788,7 +1789,9 @@ def observe_events(screen: Screen, mem):
                         'source_override', 'uncertain', 'month', 'order_context', 'sortie_general',
                         'chart_adjust', 'chart_plan', 'launched_orders', 'sorties',
                         'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
-                        'indep_menu_key', 'indep_menu_action'):
+                        'indep_menu_key', 'indep_menu_action',
+                        'monster_menu_key', 'monster_menu_cursor', 'monster_menu_hold',
+                        'monster_menu_choice', 'monster_menu_choice_key', 'monster_panel'):
                 mem.pop(key, None)
             mem['chapter'] = chapter
             mem['variant'] = 'chart' if chart.orders(chapter) else 'chart_unavailable'
@@ -1883,6 +1886,157 @@ def egg_battle_step(screen: Screen, mem):
     if stage < 2:
         mem['egg_menu_stage'] = stage + 1
         return [pad('down')]
+    return [pad('a')]
+
+
+# The skill table is matched kana-blind: the tile reader can drop a dakuten
+# mark (live とけこむそー vs the transcribed とけこむぞー).
+_KANA_FOLD = str.maketrans(
+    'がぎぐげござじずぜぞだぢづでどばびぶべぼ'
+    'ガギグゲゴザジズゼゾダヂヅデドバビブベボヴ'
+    'ぱぴぷぺぽパピプペポ',
+    'かきくけこさしすせそたちつてとはひふへほ'
+    'カキクケコサシスセソタチツテトハヒフヘホウ'
+    'はひふへほハヒフヘホ')
+# Enemy-owned menu: hold this many observations before acting anyway. The
+# agent observes every 1500 ms (config/games/hanjuku-hero.toml interval_ms),
+# so 30 observations ≈ 45 s - long enough for the observed enemy selection
+# window (g344 kept the same menu for 31 s) and far below the 300 s stasis
+# limit, yet bounded so a stuck screen cannot freeze the corner.
+MONSTER_MENU_HOLD_LIMIT = 30
+
+
+def _fold_skill(text: str) -> str:
+    return text.replace(' ', '').translate(_KANA_FOLD)
+
+
+_MONSTER_SKILLS = {name: frozenset(_fold_skill(s) for s in skills)
+                   for name, skills in reference.MONSTER_SKILLS.items()}
+_MONSTER_EFFECTS = frozenset(_fold_skill(s) for s in reference.MONSTER_EFFECT_SKILLS)
+
+
+def _monster_owner(skill_lines, ally, enemy) -> str | None:
+    """Which side the visible skill rows belong to, or None when ambiguous."""
+    shown = {_fold_skill(''.join(line.known.split())) for line in skill_lines}
+    ally_set = _MONSTER_SKILLS.get(ally.name) if ally else None
+    enemy_set = _MONSTER_SKILLS.get(enemy.name) if enemy else None
+    hit_ally = bool(shown & ally_set) if ally_set else False
+    hit_enemy = bool(shown & enemy_set) if enemy_set else False
+    if hit_ally and not hit_enemy:
+        return 'ally'
+    if hit_enemy and not hit_ally:
+        return 'enemy'
+    return None
+
+
+def _monster_effectful(skill: str) -> bool:
+    return _fold_skill(skill) in _MONSTER_EFFECTS
+
+
+def monster_menu_step(screen: Screen, mem):
+    """Our summoned monster's own turn: a skill menu with independent judgment.
+
+    The chart has no command for this menu. The owner is decided from the
+    skill table: an enemy-owned menu waits for the enemy AI, bounded by
+    MONSTER_MENU_HOLD_LIMIT so a stuck screen cannot freeze the bot. An
+    allied menu retreats at half HP or less, keeps the special second skill
+    while behind, otherwise uses the first skill, refined by measured
+    experience. Movement follows the knight cursor when visible and a
+    row-step stage when it is not.
+    """
+    rows = screen.menu_rows
+    if not rows:
+        return []
+    row_texts = [''.join(line.known.split()) for line in rows]
+    menu_key = tuple(row_texts)
+    if mem.get('monster_menu_key') != menu_key:
+        mem['monster_menu_key'] = menu_key
+        for key in ('monster_menu_cursor', 'monster_menu_choice', 'monster_menu_choice_key'):
+            mem.pop(key, None)
+        mem['monster_menu_hold'] = 0
+    skill_lines = [line for line, text in zip(rows, row_texts) if 'もどれ' not in text]
+    if not skill_lines:
+        # The menu is still drawing: acting now could land on the retreat row.
+        return []
+    return_index = next((i for i, text in enumerate(row_texts) if 'もどれ' in text), None)
+    panel = {row.side: row for row in screen.egg_rows if row.side}
+    ally, enemy = panel.get('ally'), panel.get('enemy')
+    mem['monster_panel'] = {'ally': ally.name if ally else None,
+                            'ally_hp': ally.hp if ally else None,
+                            'enemy': enemy.name if enemy else None,
+                            'enemy_hp': enemy.hp if enemy else None}
+    owner = _monster_owner(skill_lines, ally, enemy)
+    if owner == 'enemy':
+        hold = int(mem.get('monster_menu_hold') or 0) + 1
+        mem['monster_menu_hold'] = hold
+        if hold <= MONSTER_MENU_HOLD_LIMIT:
+            if hold == 1:
+                _record(mem, 'monster_menu_wait',
+                        observed_metric={'owner': owner,
+                                         'enemy': enemy.name if enemy else None,
+                                         'enemy_hp': enemy.hp if enemy else None,
+                                         'menu': list(menu_key)},
+                        reason='技選択は敵側の表示（敵AIが選ぶ）ため入力を保留')
+            return []
+        if hold == MONSTER_MENU_HOLD_LIMIT + 1:
+            _record(mem, 'monster_menu_wait', deviation_reason='enemy_menu_stuck',
+                    observed_metric={'hold_observations': hold, 'menu': list(menu_key)},
+                    reason='敵側表示のまま停留が上限を超えたため、画面停止を避けて選択へ移行')
+    else:
+        mem['monster_menu_hold'] = 0
+    if not mem.get('monster_menu_choice'):
+        ally_hp = ally.hp if ally else None
+        enemy_hp = enemy.hp if enemy else None
+        behind = _behind({'ally_hp': ally_hp, 'enemy_hp': enemy_hp})
+        retreat = type(ally_hp) is int and type(enemy_hp) is int and ally_hp * 2 <= enemy_hp
+        default = 'skill1'
+        if behind and len(skill_lines) >= 2 and _monster_effectful(''.join(skill_lines[1].known.split())):
+            default = 'skill2'
+        exp = mem.get('_experience')
+        key = experience.situation_key('monster_menu', mem)
+        action = 'retreat' if retreat else experience.preferred(exp, key, default=default, kind='monster_menu')
+        mem['monster_menu_choice'] = action
+        mem['monster_menu_choice_key'] = key
+        battle = mem.get('battle')
+        if isinstance(battle, dict):
+            battle['independent'] = {'kind': 'monster_menu', 'key': key, 'action': action}
+        if action == 'retreat':
+            label, why = 'たまごに もどれ', '味方HPが敵の半分以下なので撤退して見守る'
+        elif action == 'skill2' and len(skill_lines) >= 2:
+            label, why = ''.join(skill_lines[1].known.split()), '味方が劣勢で効果付きの2技目'
+        else:
+            label, why = ''.join(skill_lines[0].known.split()), '先手を取れる1技目を続ける'
+        if action != default and action != 'retreat':
+            why = f'過去の結果に基づく経験の選択（既定 {default}）'
+        _record(mem, 'monster_menu_choice',
+                strategy_variant=f'monster_menu_{action}',
+                deviation_reason='チャートに召喚獣ターンの指示がない',
+                expected_metric='召喚獣ターンの選択と戦闘結果',
+                observed_metric={'action': action, 'owner': owner, 'menu': list(menu_key),
+                                 'ally_hp': ally_hp, 'enemy_hp': enemy_hp,
+                                 'experience_key': key},
+                reason=f'召喚獣の技メニューで「{label}」を選択: {why}')
+    action = mem.get('monster_menu_choice')
+    if action == 'retreat':
+        if return_index is None:
+            return []
+        target_index = return_index
+    elif action == 'skill2' and len(skill_lines) >= 2:
+        target_index = rows.index(skill_lines[1])
+    else:
+        target_index = rows.index(skill_lines[0])
+    target = rows[target_index].y
+    cur = screen.menu_cursor
+    if cur is None:
+        cur = mem.get('monster_menu_cursor')
+    if cur is None:
+        cur = rows[0].y
+    if target > cur + 4:
+        mem['monster_menu_cursor'] = cur + 16
+        return [pad('down')]
+    if target < cur - 4:
+        mem['monster_menu_cursor'] = cur - 16
+        return [pad('up')]
     return [pad('a')]
 
 

@@ -1243,3 +1243,165 @@ def test_jev_interim_commentary_includes_choice_and_confidence():
         {'decision': 'chart_interim_hold', 'deviation_reason': 'interim_no_candidates'})
     assert '調整チャート' in hold and '見送' not in hold
     assert 'chart_interim_hold' in hanjuku_commentary.SPOKEN
+
+
+def monster_menu_frame(skills, *, ally=None, enemy=None, cursor=0, menu_left=True):
+    """Bottom command box plus stacked HP panel, as measured on live frames.
+
+    The command box sits left (x=40) or right (x=176) and the HP panel always
+    on the opposite side; the knight sprite sits immediately left of the
+    selected row. The drop mark names the ally (top, red) and enemy (bottom,
+    blue) side of the panel.
+    """
+    c = Canvas()
+    mx = 40 if menu_left else 176
+    for i, skill in enumerate(skills):
+        c.text(mx, 176 + 16 * i, skill)
+    c.text(mx, 176 + 16 * len(skills), 'たまごに もどれ')
+    if cursor is not None:
+        ky = 176 + 16 * cursor
+        for dy in range(14):
+            for dx in range(12):
+                c.put(mx - 30 + dx, ky - 6 + dy, (230, 105, 74))
+    px0 = 128 if menu_left else 0
+    for row, unit in ((0, ally), (1, enemy)):
+        if not unit:
+            continue
+        name, hp = unit
+        y = 176 + 24 * row
+        for yy in range(y - 8, y + 8):
+            for xx in range(px0, px0 + 120):
+                c.put(xx, yy, (238, 238, 238))
+        mark = (222, 72, 65) if row == 0 else (57, 121, 189)
+        for yy in range(y - 6, y + 6):
+            for xx in range(px0 + 1, px0 + 17):
+                c.put(xx, yy, mark)
+        c.text(24 if px0 == 0 else 136, y, name, (32, 32, 32))
+        hp_text = str(hp)
+        c.text((120 if px0 == 0 else 240) - 8 * len(hp_text), y, hp_text, (32, 32, 32))
+    return c.frame()
+
+
+def test_monster_menu_reads_option_rows_knight_and_summoned_panel():
+    frame = monster_menu_frame(['ダッシュプレス', 'メガトンプレス'],
+                               ally=('ローラーキラー', 348), enemy=('クイーン', 70), cursor=0)
+    s = parse(frame)
+    assert s.kind == 'monster_menu'
+    assert [line.y for line in s.menu_rows] == [176, 192, 208]
+    assert s.menu_rows[2].words() == ['たまごに', 'もどれ']
+    assert s.menu_cursor == 176
+    assert [(e.name, e.hp, e.side, e.y) for e in s.egg_rows] == [
+        ('ローラーキラー', 348, 'ally', 176), ('クイーン', 70, 'enemy', 200)]
+
+
+def test_monster_menu_uses_the_first_skill_on_our_turn():
+    frame = monster_menu_frame(['ダッシュプレス', 'メガトンプレス'],
+                               ally=('ローラーキラー', 348), enemy=('クイーン', 70), cursor=0)
+    state = {'policy': {'chapter': 1, 'battle': {'enemy': 'クイーン', 'ally': 'ゼウス',
+                                                 'enemy_hp': 70, 'ally_hp': 8, 'step': '1-A3'}}}
+    actions, state = decide(frame, state)
+    assert state['screen_kind'] == 'monster_menu'
+    assert actions[0]['buttons'] == ['a']
+    choice = next(r for r in state['_records'] if r['decision'] == 'monster_menu_choice')
+    assert choice['strategy_variant'] == 'monster_menu_skill1'
+    independent = state['policy']['battle']['independent']
+    assert independent['kind'] == 'monster_menu' and independent['action'] == 'skill1'
+    assert independent['key'].startswith('monster_menu|1|クイーン|ゼウス|1-A3|')
+    # Same menu: the choice is held instead of being re-decided.
+    actions, state = decide(frame, state)
+    assert actions[0]['buttons'] == ['a']
+    assert not [r for r in state['_records'] if r['decision'] == 'monster_menu_choice']
+
+
+def test_monster_menu_retreats_at_half_hp_or_less():
+    frame = monster_menu_frame(['ダッシュプレス', 'メガトンプレス'],
+                               ally=('ローラーキラー', 40), enemy=('クイーン', 100), cursor=0)
+    actions, state = decide(frame, {'policy': {'chapter': 1}})
+    choice = next(r for r in state['_records'] if r['decision'] == 'monster_menu_choice')
+    assert choice['strategy_variant'] == 'monster_menu_retreat'
+    # The knight sits on row 0, so the retreat row needs a step down.
+    assert actions[0]['buttons'] == ['down']
+    # HP exactly at half still retreats; above half does not.
+    ok = monster_menu_frame(['ダッシュプレス'], ally=('ローラーキラー', 51),
+                            enemy=('クイーン', 100), cursor=0)
+    _, state = decide(ok, {'policy': {'chapter': 1}})
+    choice = next(r for r in state['_records'] if r['decision'] == 'monster_menu_choice')
+    assert choice['strategy_variant'] == 'monster_menu_skill1'
+
+
+def test_monster_menu_prefers_the_effectful_second_skill_while_behind():
+    # とけこむそー is how the live reader renders the table's とけこむぞー.
+    frame = monster_menu_frame(['たべちゃうぞー', 'とけこむそー'],
+                               ally=('カメレオンマン', 60), enemy=('ダークエルフ', 100), cursor=0)
+    actions, state = decide(frame, {'policy': {'chapter': 1}})
+    choice = next(r for r in state['_records'] if r['decision'] == 'monster_menu_choice')
+    assert choice['strategy_variant'] == 'monster_menu_skill2'
+    assert choice['observed_metric']['menu'][1] == 'とけこむそー'
+    assert actions[0]['buttons'] == ['down']
+
+
+def test_monster_menu_owner_matches_the_skill_table_despite_a_dropped_dakuten():
+    frame = monster_menu_frame(['たべちゃうぞー', 'とけこむそー'],
+                               ally=('どうし', 90), enemy=('カメレオンマン', 180), cursor=0)
+    actions, state = decide(frame, {'policy': {'chapter': 1}})
+    # The skills belong to the enemy summon: wait for its AI instead of acting.
+    assert actions == []
+    assert state['policy']['monster_menu_hold'] == 1
+    wait = next(r for r in state['_records'] if r['decision'] == 'monster_menu_wait')
+    assert wait['observed_metric']['enemy'] == 'カメレオンマン'
+    assert not [r for r in state['_records'] if r['decision'] == 'monster_menu_choice']
+
+
+def test_monster_menu_holds_for_the_enemy_ai_then_act_beyond_the_limit():
+    frame = monster_menu_frame(['ダイナマイト', 'ミサイルくん'],
+                               ally=('どうし', 90), enemy=('セクシーボンバー', 77), cursor=0)
+    state = {'policy': {'chapter': 1}}
+    records = []
+    actions, state = decide(frame, state)
+    records += state['_records']
+    assert actions == []
+    for _ in range(policy.MONSTER_MENU_HOLD_LIMIT - 1):
+        actions, state = decide(frame, state)
+        records += state['_records']
+    assert actions == []
+    assert len([r for r in records if r['decision'] == 'monster_menu_wait']) == 1
+    # A menu stuck on the enemy side beyond the limit must not freeze the bot.
+    actions, state = decide(frame, state)
+    records += state['_records']
+    assert actions[0]['buttons'] == ['a']
+    stuck = [r for r in records if r['decision'] == 'monster_menu_wait']
+    assert stuck[-1]['deviation_reason'] == 'enemy_menu_stuck'
+    assert [r for r in records if r['decision'] == 'monster_menu_choice']
+
+
+def test_monster_menu_without_a_knight_steps_rows_then_confirms():
+    frame = monster_menu_frame(['ダッシュプレス', 'メガトンプレス'],
+                               ally=('ローラーキラー', 40), enemy=('クイーン', 100), cursor=None)
+    state = {'policy': {'chapter': 1}}
+    for expected in ('down', 'down', 'a'):
+        actions, state = decide(frame, state)
+        assert actions[0]['buttons'] == [expected]
+    assert state['policy']['monster_menu_choice'] == 'retreat'
+
+
+def test_monster_menu_memory_is_cleared_once_the_menu_leaves():
+    frame = monster_menu_frame(['ダッシュプレス'], ally=('ローラーキラー', 348),
+                               enemy=('クイーン', 70), cursor=0)
+    _, state = decide(frame, {'policy': {'chapter': 1}})
+    assert state['policy']['monster_menu_choice'] == 'skill1'
+    assert state['policy']['monster_panel']['enemy'] == 'クイーン'
+    m = Canvas()
+    m.text(48, 15, '1ねん 1のつき 100G')
+    _, state = decide(m.frame(), state)
+    for key in ('monster_menu_key', 'monster_menu_cursor', 'monster_menu_hold',
+                'monster_menu_choice', 'monster_menu_choice_key', 'monster_panel'):
+        assert key not in state['policy']
+
+
+def test_monster_menu_situation_key_uses_the_summoned_panel():
+    from docich import hanjuku_experience as exp_mod
+    mem = {'chapter': 1, 'battle': {'enemy': 'クイーン', 'ally': 'ゼウス', 'step': '1-A3'},
+           'monster_panel': {'ally': 'ローラーキラー', 'enemy': 'ヒュドラ',
+                             'ally_hp': 348, 'enemy_hp': 135}}
+    assert exp_mod.situation_key('monster_menu', mem) == (
+        'monster_menu|1|クイーン|ゼウス|1-A3|ローラーキラー|ヒュドラ|ahead')
