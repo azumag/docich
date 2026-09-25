@@ -1875,7 +1875,7 @@ def _corners_view(g: GlobalConfig) -> dict[str, Any]:
                                 and not isinstance(target, bool) and 1 <= target <= 100 else None),
                 stop_retryable=_hanjuku_stop_retryable(g, raw),
                 end_reason=(raw.get("end_reason") if raw.get("end_reason") in
-                            {"game_over", "screen_stalled", "manual_saved_stop"} else None),
+                            {"game_over", "screen_stalled", "manual_saved_stop", "manual_forced_stop"} else None),
                 last_error_code=_view_str(raw.get("last_error_code")),
             )
         corners[name] = entry
@@ -4916,7 +4916,7 @@ function renderCorners(d){
   if(tb && d.corners){
     tb.innerHTML=Object.entries(d.corners).map(([name,c])=>{
       if(!c.present) return `<tr><td class="mono">${esc(name)}</td><td colspan="7" class="help">記録なし</td></tr>`;
-      const detail=c.last_error_code?` / ${esc(c.last_error_code)}`:(c.end_reason==="manual_saved_stop"?" / セーブして終了":"");
+      const detail=c.last_error_code?` / ${esc(c.last_error_code)}`:(c.end_reason==="manual_saved_stop"?" / セーブして終了":c.end_reason==="manual_forced_stop"?" / セーブ失敗・強制終了":"");
       return `<tr><td class="mono">${esc(name)}</td><td>${esc(jaStatus(c.status))}${detail}</td>`
         +`<td>${esc(c.game||"-")}</td><td>${fmtTime(c.started_at)}</td>`
         +`<td>${fmtTime(c.ends_at)}</td><td>${fmtTime(c.completed_at)}</td>`
