@@ -1,11 +1,11 @@
 {
-  "output_sha256": "c871653aa2ee64311b5983889103d863b771f7728894354c279339fea8656869",
+  "output_sha256": "8711773cce035a0cf7a8726053adf23ceaf49dc74df4f0351a91e2ab9cbdf1da",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "18514b1d9d294b03c5ebca8f4b5524ba56bfdf0a8dfb1532f755a3d9ff5a3b87",
+  "source_sha256": "e4b89e17fbffdebf2021bdc8aad08c2bd062178766b7ce6719b129a190862130",
   "topics": [
-    "PAPER音声停止を復旧し終了状態修正をVMへ反映",
-    "NetHack CI rerun success、外部レビューと#753証跡待ち",
-    "NetHack fresh CI成功、read-only VM診断で残ゲート確認"
+    "半熟英雄: 召喚獣ターンの技メニュー選択を main/VM 配備（実機未確認）",
+    "NetHack を最新mainへ再同期・mergeability不一致を確認",
+    "PAPER音声停止を復旧し終了状態修正をVMへ反映"
   ]
 }
