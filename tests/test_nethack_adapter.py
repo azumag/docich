@@ -14,7 +14,11 @@ from docich.adapters import AdapterError, make_coordinator_adapter  # noqa: E402
 from docich.adapters import cli_game, nethack as nethack_adapter  # noqa: E402
 from docich.game_switch import ReadinessTimeoutError, RuntimeSpec  # noqa: E402
 from docich.naming import runtime_names  # noqa: E402
-from docich.nethack_tiles_supervisor import presentation_window_pattern  # noqa: E402
+from docich.nethack_tiles_supervisor import (  # noqa: E402
+    BROWSER_WINDOW_WAIT_S,
+    PRESENTATION_WINDOW_WAIT_S,
+    presentation_window_pattern,
+)
 from docich.tmux import TmuxOwnership  # noqa: E402
 
 
@@ -190,6 +194,11 @@ class TestNethackCoordinatorAdapter(unittest.TestCase):
         self.assertEqual(
             command[command.index("--window-pattern") + 1],
             presentation_window_pattern(f"docich-present-{adapter.spec.runtime_id}"),
+        )
+        self.assertGreater(PRESENTATION_WINDOW_WAIT_S, BROWSER_WINDOW_WAIT_S)
+        self.assertEqual(
+            command[command.index("--viewer-wait-sec") + 1],
+            str(int(PRESENTATION_WINDOW_WAIT_S)),
         )
 
     def test_tiles_mode_requires_configured_viewport(self):

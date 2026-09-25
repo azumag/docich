@@ -28,7 +28,11 @@ from dataclasses import replace
 from pathlib import Path
 
 from ..game_switch import DeadlineExceededError, ReadinessTimeoutError, atomic_write_json
-from ..nethack_tiles_supervisor import browser_binary, presentation_window_pattern
+from ..nethack_tiles_supervisor import (
+    PRESENTATION_WINDOW_WAIT_S,
+    browser_binary,
+    presentation_window_pattern,
+)
 from ..xkit import XKit
 from .base import AdapterError
 from .cli_game import (
@@ -249,7 +253,7 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
             "--y", str(display.viewport_y),
             "--width", str(display.viewport_width),
             "--height", str(display.viewport_height),
-            "--viewer-wait-sec", "20",
+            "--viewer-wait-sec", str(int(PRESENTATION_WINDOW_WAIT_S)),
             "--window-pattern", presentation_window_pattern(window_title),
             "--rebind-window",
             "--runtime-state", str(self._presentation_path()),
