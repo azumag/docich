@@ -1,11 +1,11 @@
 {
-  "output_sha256": "7b2817ceff7f07ada627ec4fbcd701a955a5511e1c0ae9d9e5d78a4592e9b8dc",
+  "output_sha256": "ef23922b82f3bc6ce79baff38cc3fc59c80be84a41d18afb9ca83cb7dbaab881",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "c7d56c50d84d2bdfe7defdb35a7aeed5b10c163eed92354a4afb20c395ae6488",
+  "source_sha256": "a9031b48bdb8abf86e232c72da4cf5a36c2584187cc4f3342972170a07f28613",
   "topics": [
-    "NetHack GUI smokeのbrowser startup timeoutを調整",
-    "VM高負荷の実測とラジオ更新検査の起動削減、CPU飽和は継続",
-    "半熟英雄のWebUI停止とソ連復帰を実配信で確認"
+    "NetHack CI rerun success、外部レビューと#753証跡待ち",
+    "NetHack fresh CI成功、read-only VM診断で残ゲート確認",
+    "NetHack GUI smokeのbrowser startup timeoutを調整"
   ]
 }

@@ -2,6 +2,7 @@ import json
 import sys
 import tempfile
 import unittest
+import uuid
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta
@@ -190,6 +191,9 @@ class TestNethackCornerLifecycle(NethackCornerTestBase):
         )
         self.assertEqual(current[0], "robots")
         self.assertEqual(sleeps, [30 * 60])
+        context = mgr.status()["corner_context"]
+        self.assertEqual(context["origin"], "manual")
+        self.assertEqual(context["authorized_mode"], "off")
 
     def test_start_from_idle_returns_to_idle(self):
         current = [None]
@@ -230,6 +234,7 @@ class TestNethackCornerLifecycle(NethackCornerTestBase):
             [("start", "nethack"), ("stop", None)],
         )
         self.assertEqual(sleeps, [30 * 60])
+        self.assertEqual(mgr.status()["corner_context"]["origin"], "scheduled")
 
         self.now_value = self.now_value.replace(hour=21)
         self.assertEqual(mgr._scheduled_tick(self.now_value).detail, "outside-window")
@@ -266,11 +271,14 @@ class TestNethackCornerLifecycle(NethackCornerTestBase):
         coordinator = QueueOnce(current)
         mgr, _ = self.manager(current, coordinator=coordinator)
         self.assertEqual(mgr.start().status, "queued")
+        queued_context = mgr.status()["corner_context"]
+        self.assertEqual(queued_context["origin"], "manual")
 
         self.now_value = self.now_value.replace(hour=21)
         result = mgr.tick()
 
         self.assertEqual(result.status, "completed")
+        self.assertEqual(mgr.status()["corner_context"], queued_context)
         self.assertEqual(current[0], "robots")
         self.assertEqual(coordinator.calls, [("switch", "nethack"), ("switch", "robots")])
 
@@ -709,6 +717,25 @@ class TestNethackRotationTargetValidation(NethackCornerTestBase):
         mgr, _ = self.manager([None])
         # exact call made by RetroCornerManager._begin_locked
         mgr._validate_games(["nethack"])
+
+    def test_unowned_rotation_cannot_claim_scheduled_origin(self):
+        mgr, _ = self.manager([None])
+        request_id = str(uuid.uuid4())
+        state = {"switch_request_id": request_id, "rotation_request_id": request_id}
+        mgr._prepare_start_state(state, scheduled=False)
+        self.assertEqual(state["corner_context"]["origin"], "unknown")
+
+    def test_rotation_origin_requires_matching_scheduler_reservation(self):
+        mgr, _ = self.manager([None])
+        request_id = str(uuid.uuid4())
+        self.g.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.g.state_dir / "corner_rotation.json").write_text(
+            json.dumps({"pending": {"corner": "nethack", "request_id": request_id}}),
+            encoding="utf-8",
+        )
+        state = {"switch_request_id": request_id, "rotation_request_id": request_id}
+        mgr._prepare_start_state(state, scheduled=False)
+        self.assertEqual(state["corner_context"]["origin"], "rotation")
 
     def test_rejects_any_other_target(self):
         mgr, _ = self.manager([None])

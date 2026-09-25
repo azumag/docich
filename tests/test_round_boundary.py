@@ -382,6 +382,7 @@ def test_new_request_recovers_expired_drain_and_consumes_queue_head():
         first_worker.join(2.0)
         assert not first_worker.is_alive()
         assert first_result[0].status == "failed"
+        assert store.canonical.load()[0]["active"]["game"] == "hanjuku"
         assert old.cancel_request_ids == [first_id]
 
 

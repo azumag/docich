@@ -816,7 +816,7 @@ def run_manual(g, manager, games):
     the latch/pending gates, the common lock and the program slot still apply.
     """
     from types import SimpleNamespace
-    from .retro_corner import CornerResult
+    from .retro_corner import CornerResult, RetroCornerManager
     rotation = CornerRotationManager(g)
     with rotation.locked() as acquired:
         if not acquired:
@@ -874,7 +874,11 @@ def run_manual(g, manager, games):
         adapter = SimpleNamespace(
             manager=manager,
             state_path=path,
-            run=lambda req: manager.run_rotation(req["request_id"]),
+            run=lambda req: (
+                manager.run_rotation(req["request_id"], origin="manual")
+                if isinstance(manager, RetroCornerManager)
+                else manager.run_rotation(req["request_id"])
+            ),
             runtime_environment=getattr(selected_adapter, "runtime_environment", None),
         )
         try:

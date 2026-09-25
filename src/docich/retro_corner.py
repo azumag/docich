@@ -1156,6 +1156,7 @@ class RetroCornerManager:
                 last_error=None,
                 last_error_code=None,
             )
+            state["restore_request_id"] = request_id
             if state.pop("manual_stop_requested", False):
                 state["end_reason"] = "manual_saved_stop"
                 from .naming import runtime_directory
@@ -1319,12 +1320,21 @@ class RetroCornerManager:
             previous = self._active_game_reader()
         except RetroCornerError:
             # A concurrent coordinator drain is still allowed to own the
-            # canonical transition.  Preserve the currently active runtime
-            # as the return target and let GameSwitchCoordinator queue this
-            # corner's request instead of cancelling it.
+            # canonical transition. Before quiescing, the old runtime remains
+            # in ``active``; after quiescing it moves to ``previous`` while
+            # ``active`` is empty. Preserve that runtime as the return target
+            # and let GameSwitchCoordinator queue this corner's request
+            # instead of losing the restore target.
             canonical, _missing = self.store.canonical.load()
             active = canonical.get("active")
-            previous = active.get("game") if isinstance(active, dict) else None
+            if isinstance(active, dict):
+                previous = active.get("game")
+            else:
+                restore_runtime = canonical.get("previous")
+                previous = (
+                    restore_runtime.get("game")
+                    if isinstance(restore_runtime, dict) else None
+                )
         ends_at = now + dt.timedelta(minutes=self.config.duration_minutes)
         if extra_state and extra_state.get("rotation_request_id") and previous == target:
             raise RetroCornerError("rotation target already owned by another execution")
@@ -1348,6 +1358,7 @@ class RetroCornerManager:
             state["target_matches"] = getattr(self.config, "target_matches", 3)
         if extra_state:
             state.update(extra_state)
+        self._prepare_start_state(state, scheduled=scheduled)
         self._write_state(state)
         try:
             transition = self._transition_to(
@@ -1385,6 +1396,10 @@ class RetroCornerManager:
                 raise
             raise RetroCornerError(_safe_detail(exc)) from exc
         return state, None
+
+    def _prepare_start_state(self, state: dict[str, object], *, scheduled: bool) -> None:
+        """Allow a game corner to persist its own start evidence before dispatch."""
+
 
     def _resume_queued_start_locked(
         self, state: dict[str, object], now: dt.datetime
@@ -1845,8 +1860,12 @@ class RetroCornerManager:
         assert state is not None
         return self._wait_and_finish(state)
 
-    def run_rotation(self, request_id: str, target: str | None = None) -> CornerResult:
+    def run_rotation(
+        self, request_id: str, target: str | None = None, *, origin: str = "rotation"
+    ) -> CornerResult:
         """Execute/replay one common rotation request, bypassing legacy calendars."""
+        if origin not in {"rotation", "manual"}:
+            raise RetroCornerError("rotation origin is invalid")
         with self._tick_guard() as single:
             if not single:
                 return CornerResult("queued", detail="already-running")
@@ -1873,7 +1892,8 @@ class RetroCornerManager:
                         raise RetroCornerError("rotation execution owner mismatch")
                     state, result = self._begin_locked(
                         self._local_now(), scheduled=False, target_override=target,
-                        extra_state={"rotation_request_id": request_id, "switch_request_id": request_id},
+                        extra_state={"rotation_request_id": request_id,
+                                     "rotation_origin": origin, "switch_request_id": request_id},
                     )
                     if result is not None:
                         return result

@@ -20,6 +20,10 @@ from typing import Iterator
 
 from .config import GlobalConfig, load_game
 from .game_switch import atomic_write_json
+from .nethack_source import (
+    SourceEvidenceError, build_post_restore_source, runtime_identity,
+    validate_session_context,
+)
 
 SCHEMA_VERSION = 1
 ASCENDED_ACHIEVEMENT = 0x0100
@@ -431,6 +435,10 @@ class NethackRunStore:
                 "run_id": str(uuid.uuid4()),
                 "expected_expedition": expedition,
                 "xlog_offset": self._xlog_offset(),
+                # NetHack sets xlog starttime when the character is born, which
+                # may be after the terminal process/runtime has started. Keep
+                # the earlier trusted start request as its lower time bound.
+                "birth_not_before_epoch": int(now.timestamp()) if kind == "new" else None,
                 "dump_baseline_mtime_ns": self._dump_baseline(),
             }
 
@@ -439,6 +447,8 @@ class NethackRunStore:
         probe: dict[str, object],
         *,
         now: dt.datetime,
+        corner_context: dict[str, object] | None = None,
+        runtime: dict[str, object] | None = None,
     ) -> dict[str, object]:
         """Commit a start/resume only after the coordinator transition succeeded."""
         with self._locked():
@@ -467,9 +477,17 @@ class NethackRunStore:
                 ):
                     raise NethackRunError("expedition counterがstart中に変更されました")
                 xlog_offset = probe.get("xlog_offset")
+                birth_not_before_epoch = probe.get("birth_not_before_epoch")
                 dump_baseline = probe.get("dump_baseline_mtime_ns")
                 if type(xlog_offset) is not int or xlog_offset < 0:
                     raise NethackRunError("xlog baselineが不正です")
+                if kind == "new":
+                    if (type(birth_not_before_epoch) is not int
+                            or birth_not_before_epoch < 0
+                            or birth_not_before_epoch > int(now.timestamp())):
+                        raise NethackRunError("NetHack birth timeの下限が不正です")
+                elif birth_not_before_epoch is not None:
+                    raise NethackRunError("新規run以外にbirth time下限を設定できません")
                 if type(dump_baseline) is not int or dump_baseline < 0:
                     raise NethackRunError("dump baselineが不正です")
                 run = {
@@ -483,6 +501,7 @@ class NethackRunStore:
                     "last_started_at": now.isoformat(),
                     "last_finished_at": None,
                     "xlog_offset": xlog_offset,
+                    "birth_not_before_epoch": birth_not_before_epoch,
                     "dump_baseline_mtime_ns": dump_baseline,
                     "recovered_existing_save": kind == "recovered_save",
                     "adopted_active_runtime": kind == "adopted_active_runtime",
@@ -512,6 +531,10 @@ class NethackRunStore:
                 raise NethackRunError("run sessionsが不正です")
             sessions.append(
                 {
+                    "run_id": run_id,
+                    "session_id": corner_context["session_id"] if corner_context else None,
+                    "corner_context": validate_session_context(corner_context) if corner_context else None,
+                    "runtime": runtime_identity(runtime) if runtime else None,
                     "started_at": now.isoformat(),
                     "ended_at": None,
                     "outcome": None,
@@ -547,15 +570,15 @@ class NethackRunStore:
 
     def _terminal_record_since(
         self, offset: int
-    ) -> tuple[dict[str, str] | None, str | None]:
+    ) -> tuple[dict[str, str] | None, str | None, bool]:
         try:
             size = self.settings.xlogfile.stat().st_size
         except FileNotFoundError:
-            return None, "xlogfile-missing"
+            return None, "xlogfile-missing", False
         except OSError as exc:
             raise NethackRunError("NetHack xlogfileを検査できません") from exc
         if size < offset:
-            return None, "xlogfile-truncated"
+            return None, "xlogfile-truncated", False
         try:
             with self.settings.xlogfile.open("rb") as stream:
                 stream.seek(offset)
@@ -568,14 +591,43 @@ class NethackRunStore:
             if record.get("name") == self.settings.player_name:
                 records.append(record)
         if not records:
-            return None, "no-new-player-xlog-record"
-        return records[-1], None
+            return None, "no-new-player-xlog-record", False
+        # Preserve the canonical terminal-history selection. Candidate
+        # ambiguity affects source identity, not the run's recorded result.
+        return records[-1], None, len(records) == 1
 
     @staticmethod
-    def _terminal_payload(record: dict[str, str]) -> dict[str, object]:
+    def _terminal_identity_verified(
+        record: dict[str, str],
+        run: dict[str, object],
+        now: dt.datetime,
+        *,
+        single_new_player_record: bool,
+    ) -> bool:
+        """Prove a unique new xlog row fits this tracked, newly born run."""
+        birth_floor = run.get("birth_not_before_epoch")
+        start = _int_field(record, "starttime")
+        end = _int_field(record, "endtime")
+        if (
+            not single_new_player_record
+            or run.get("recovered_existing_save") is not False
+            or run.get("adopted_active_runtime") is not False
+            or type(birth_floor) is not int
+            or type(start) is not int
+            or type(end) is not int
+        ):
+            return False
+        now_epoch = int(now.timestamp())
+        return 0 <= birth_floor <= start <= end <= now_epoch
+
+    @staticmethod
+    def _terminal_payload(
+        record: dict[str, str], *, identity_verified: bool
+    ) -> dict[str, object]:
         bits = _achievement_bits(record)
         return {
             "source": "xlogfile",
+            "identity_verified": identity_verified,
             "death": record.get("death"),
             "points": _int_field(record, "points"),
             "turns": _int_field(record, "turns"),
@@ -598,12 +650,30 @@ class NethackRunStore:
         *,
         now: dt.datetime,
         nethack_still_active: bool,
+        restoration: dict[str, object] | None = None,
+        finish_reason: str = "unknown",
+        expected_run_id: str | None = None,
+        expected_session_id: str | None = None,
+        expected_session_started_at: str | None = None,
     ) -> dict[str, object]:
         """Close one program session and reconcile save/xlog evidence."""
         with self._locked():
             run = self._current_unlocked()
             if run is None:
                 raise NethackRunError("終了対象のcurrent NetHack runがありません")
+            if expected_run_id is not None and run.get("run_id") != expected_run_id:
+                raise NethackRunError("終了対象runが切替前のrunと一致しません")
+            sessions = run.get("sessions")
+            session = sessions[-1] if isinstance(sessions, list) and sessions else None
+            if expected_session_id is not None and (
+                not isinstance(session, dict) or session.get("session_id") != expected_session_id
+            ):
+                raise NethackRunError("終了対象sessionが切替前のsessionと一致しません")
+            if expected_session_started_at is not None and (
+                not isinstance(session, dict)
+                or session.get("started_at") != expected_session_started_at
+            ):
+                raise NethackRunError("終了対象session開始時刻が切替前と一致しません")
             if run.get("status") not in {"active", "suspended"}:
                 raise NethackRunError("終了対象runのstatusが不正です")
 
@@ -618,13 +688,16 @@ class NethackRunStore:
                 self._close_open_session_unlocked(run, now, "suspended")
                 run["status"] = "suspended"
                 run["last_finished_at"] = now.isoformat()
+                self._attach_post_restore_source(run, restoration, finish_reason)
                 self._write_run_unlocked(run)
                 return dict(run)
 
             offset = run.get("xlog_offset")
             if type(offset) is not int or offset < 0:
                 raise NethackRunError("run xlog_offsetが不正です")
-            record, analysis_error = self._terminal_record_since(offset)
+            record, analysis_error, single_new_player_record = (
+                self._terminal_record_since(offset)
+            )
             self._close_open_session_unlocked(run, now, "terminal")
             run["last_finished_at"] = now.isoformat()
             if record is None:
@@ -635,7 +708,15 @@ class NethackRunStore:
                 }
             else:
                 status = classify_terminal_record(record)
-                terminal = self._terminal_payload(record)
+                terminal = self._terminal_payload(
+                    record,
+                    identity_verified=self._terminal_identity_verified(
+                        record,
+                        run,
+                        now,
+                        single_new_player_record=single_new_player_record,
+                    ),
+                )
                 run["status"] = status
                 run["terminal"] = terminal
                 run["score"] = terminal["points"]
@@ -658,9 +739,36 @@ class NethackRunStore:
                 if dump is not None:
                     run["dump_file"] = dump.name
 
+            self._attach_post_restore_source(run, restoration, finish_reason)
+
             # Persist the terminal body before clearing the public current
             # pointer. A crash between these writes leaves a stale pointer to a
             # complete terminal run; prepare_start repairs that case safely.
             self._write_run_unlocked(run)
             self._clear_current_unlocked()
             return dict(run)
+
+    @staticmethod
+    def _attach_post_restore_source(
+        run: dict[str, object], restoration: dict[str, object] | None,
+        finish_reason: str,
+    ) -> None:
+        if restoration is None:
+            return
+        sessions = run.get("sessions")
+        session = sessions[-1] if isinstance(sessions, list) and sessions else None
+        if not isinstance(session, dict):
+            return
+        try:
+            source = build_post_restore_source(
+                run, session, restoration, finish_reason=finish_reason
+            )
+        except SourceEvidenceError as exc:
+            # Terminal/save state still commits when analytics is incomplete.
+            session["post_restore_source_error"] = str(exc)
+        except Exception:
+            session["post_restore_source_error"] = "source_internal_error"
+        else:
+            session["post_restore_source"] = source
+            if run["status"] in TERMINAL_STATUSES:
+                run["post_restore_source"] = source
