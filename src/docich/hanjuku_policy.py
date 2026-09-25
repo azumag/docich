@@ -1966,6 +1966,19 @@ def monster_menu_step(screen: Screen, mem):
                             'enemy': enemy.name if enemy else None,
                             'enemy_hp': enemy.hp if enemy else None}
     owner = _monster_owner(skill_lines, ally, enemy)
+    if owner is None:
+        # Ownership is an input-safety boundary: an OCR/table mismatch must
+        # never be treated as our turn merely because it was not proven enemy.
+        hold = int(mem.get('monster_menu_hold') or 0) + 1
+        mem['monster_menu_hold'] = hold
+        if hold == 1:
+            _record(mem, 'monster_menu_wait',
+                    observed_metric={'owner': None,
+                                     'ally': ally.name if ally else None,
+                                     'enemy': enemy.name if enemy else None,
+                                     'menu': list(menu_key)},
+                    reason='技メニューの所有者を確定できないため入力を保留')
+        return []
     if owner == 'enemy':
         hold = int(mem.get('monster_menu_hold') or 0) + 1
         mem['monster_menu_hold'] = hold
