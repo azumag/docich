@@ -128,6 +128,20 @@ ChatGPT → GitHub Actions → owner-only VM gateway → sanitized read-only dia
   `pending_owner_status`。request UUIDは固定stateとの照合にだけ使い出力には含めない。
   これで「まだ起動していない」「既に終了している」「実行中・corner側の復旧が要る」を
   証跡から区別できる（#986）。
+  自動予約とは別に `manual_pending`（bool）、`manual_pending_corner`（固定enum）、
+  `manual_pending_state_file`（固定8種のstate名、拡張子なし）、
+  `manual_pending_age_sec`（未観測/未来時刻は-1）、`manual_pending_owner`、
+  `manual_pending_owner_status` を出す。手動予約が指定した固定allowlist内のstateで
+  requestが一致した場合だけownerを報告する。別state内の一致を代用しない。
+  ownerは予約なし`absent`、指定state不在/別requestなら`none`、
+  不正予約・allowlist外・読取不可は`unknown`。request UUID・任意pathは公開しない。
+  `pending=false/pending_owner=absent`だけでは手動予約の不在を意味しない。
+  `manual-execution-pending`は手動executorのqueued/waiting/already-running返却、
+  `manual-request-needs-resume-or-recovery`はtimerによる未完了手動予約の保持を表す。
+  両者の変化や保持された`error_kind`だけで新しい実行失敗と断定しない。
+  queueモードの過去`next_due_at`やcanonical `ready`も枠の解放を証明しない。
+  `corners.retro_corner.status`と`corners.retro_corner.game_audio.status`は別物で、
+  `applied`は後者の音量適用結果。これらの診断値は復旧/再開の許可ではない。
   `recovery_required`は次cornerを停止する実行契約であり、診断自体は復旧操作をしない。
   `corners.corner_rotation_timer` は支配的なtimer unit名（移行後は
   `docich-corner-rotation.timer`）、active/enabled、旧名が正しいaliasかを示す

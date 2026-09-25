@@ -1062,6 +1062,117 @@ def test_rotation_projection_without_a_reservation_stays_absent(tmp_path):
     assert projection["pending_age_sec"] == -1
     assert projection["pending_owner"] == "absent"
     assert projection["error_kind"] is None
+    assert projection["manual_pending"] is False
+    assert projection["manual_pending_owner"] == "absent"
+
+
+def test_manual_reservation_is_visible_without_automatic_pending(tmp_path):
+    module = load_collector()
+    reservation = {
+        "corner": "hanjuku-hero", "state_file": "retro_corner.json",
+        "selected_at": 100, "request_id": "DO-NOT-PUBLISH-REQUEST",
+        "prompt": "DO-NOT-PUBLISH-PROMPT",
+    }
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "status": "waiting", "reason": "manual-execution-pending",
+        "pending": None, "manual_pending": reservation,
+        "error_kind": "execution-error", "last_slot_at": 100, "next_due_at": 100,
+    }))
+    (tmp_path / "retro_corner.json").write_text(json.dumps({
+        "game": "hanjuku-hero", "status": "active",
+        "rotation_request_id": reservation["request_id"],
+        "game_audio": {"status": "applied"}, "save": "DO-NOT-PUBLISH-SAVE",
+    }))
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100 + 3 * 3600 + 38 * 60)
+    rotation = output["corner_rotation"]
+    assert rotation["pending"] is False
+    assert rotation["pending_owner"] == "absent"
+    assert rotation["manual_pending"] is True
+    assert rotation["manual_pending_corner"] == "hanjuku-hero"
+    assert rotation["manual_pending_state_file"] == "retro_corner"
+    assert rotation["manual_pending_owner"] == "retro_corner"
+    assert rotation["manual_pending_owner_status"] == "active"
+    assert rotation["manual_pending_age_sec"] == 13080
+    assert rotation["error_kind"] == "execution-error"
+    assert output["retro_corner"]["status"] == "active"
+    assert output["retro_corner"]["game_audio"]["status"] == "applied"
+    assert "DO-NOT-PUBLISH" not in json.dumps(output)
+    assert before == {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+
+
+def test_manual_projection_requires_exact_declared_owner(tmp_path):
+    module = load_collector()
+    data = {"manual_pending": {
+        "corner": "paper", "state_file": "paper_corner_manual.json",
+        "selected_at": 100, "request_id": "request-1",
+    }}
+    (tmp_path / "paper_corner.json").write_text(json.dumps({
+        "rotation_request_id": "request-1", "status": "completed",
+    }))
+    project = lambda: module._rotation_manual_pending_projection(tmp_path, data, 200)
+    assert project()["manual_pending_owner"] == "none"
+    declared = tmp_path / "paper_corner_manual.json"
+    declared.write_text(json.dumps({"rotation_request_id": "other", "status": "completed"}))
+    assert project()["manual_pending_owner"] == "none"
+    for status in ("active", "starting", "restoring", "failed", "completed", "interrupted"):
+        declared.write_text(json.dumps({"rotation_request_id": "request-1", "status": status}))
+        assert project()["manual_pending_owner"] == "paper_corner_manual"
+        assert project()["manual_pending_owner_status"] == status
+    declared.write_text(json.dumps({"rotation_request_id": "request-1", "status": "SECRET"}))
+    assert project()["manual_pending_owner_status"] == "unknown"
+    assert "SECRET" not in json.dumps(project())
+    declared.write_text("{invalid")
+    assert project()["manual_pending_owner"] == "unknown"
+    declared.unlink()
+    declared.symlink_to(tmp_path / "paper_corner.json")
+    assert project()["manual_pending_owner"] == "unknown"
+
+
+def test_manual_projection_rejects_arbitrary_paths_and_free_text(tmp_path):
+    module = load_collector()
+    for invalid in ("DO-NOT-PUBLISH", [], 3):
+        projection = module._rotation_manual_pending_projection(
+            tmp_path, {"manual_pending": invalid}, 200)
+        assert projection["manual_pending_owner"] == "unknown"
+        assert "DO-NOT-PUBLISH" not in json.dumps(projection)
+    for request in (None, "", [], 7):
+        with mock.patch.object(module, "_rotation_evidence_file") as read:
+            projection = module._rotation_manual_pending_projection(tmp_path, {"manual_pending": {
+                "corner": "hanjuku-hero", "state_file": "retro_corner.json",
+                "selected_at": 100, "request_id": request,
+            }}, 200)
+            read.assert_not_called()
+        assert projection["manual_pending_owner"] == "unknown"
+    for filename in ("../SECRET.json", "/SECRET.json", "unknown.json", [], None):
+        with mock.patch.object(module, "_rotation_evidence_file") as read:
+            projection = module._rotation_manual_pending_projection(tmp_path, {"manual_pending": {
+                "corner": "DO-NOT-PUBLISH", "state_file": filename,
+                "selected_at": 300, "request_id": "DO-NOT-PUBLISH",
+            }}, 200)
+            read.assert_not_called()
+        assert projection["manual_pending_owner"] == "unknown"
+        assert projection["manual_pending_state_file"] is None
+        assert projection["manual_pending_corner"] == "unknown"
+        assert projection["manual_pending_age_sec"] == -1
+        assert "DO-NOT-PUBLISH" not in json.dumps(projection)
+
+
+def test_manual_and_automatic_projection_do_not_hide_each_other(tmp_path):
+    module = load_collector()
+    (tmp_path / "corner_rotation.json").write_text(json.dumps({
+        "pending": {"corner": "nsnake", "phase": "selected", "selected_at": 0,
+                    "request_id": "auto"},
+        "manual_pending": {"corner": "paper", "selected_at": 0,
+                           "state_file": "paper_corner_manual.json", "request_id": "manual"},
+    }))
+    for filename, request in (("retro_corner.json", "auto"), ("paper_corner_manual.json", "manual")):
+        (tmp_path / filename).write_text(json.dumps({"rotation_request_id": request, "status": "active"}))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    assert output["corner_rotation"]["pending_owner"] == "retro_corner"
+    assert output["corner_rotation"]["manual_pending_owner"] == "paper_corner_manual"
 
 
 def test_rotation_error_kind_taxonomy_matches_the_durable_ledger():
