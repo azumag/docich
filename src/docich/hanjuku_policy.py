@@ -188,7 +188,10 @@ def update_world(screen: Screen, mem, frame):
     castles = chart.castles(mem.get('chapter') or 1)
     world = mem.get('cursor')
     last = mem.get('nav_last')
-    if world and last and last.get('screen') and not mem.get('uncertain'):
+    # A search step (see ``nav_step``) is our own measured motion, so it
+    # integrates even while uncertain; motion from before an off-map screen
+    # never does.
+    if world and last and last.get('screen') and (not mem.get('uncertain') or last.get('search')):
         moved = []
         for axis, bounds in ((0, EDGE_X), (1, EDGE_Y)):
             if _at_edge(s[axis], bounds) or _at_edge(last['screen'][axis], bounds):
@@ -208,6 +211,7 @@ def update_world(screen: Screen, mem, frame):
         if mem.get('uncertain') or not world or abs(new[0] - world[0]) + abs(new[1] - world[1]) <= 48:
             world = new
             mem['uncertain'] = False
+            mem.pop('nav_search', None)
         else:
             anchored = None
     mem['cursor'] = world
@@ -215,17 +219,32 @@ def update_world(screen: Screen, mem, frame):
     return world
 
 
+def _search_goal(mem):
+    """Centroid of the chapter's castles: inland, where roofs can re-anchor."""
+    cells = list(chart.castles(mem.get('chapter') or 1).values())
+    return (sum(x for x, _ in cells) // len(cells), sum(y for _, y in cells) // len(cells))
+
+
 def nav_step(screen: Screen, mem, frame, goal):
-    """Holds toward ``goal`` (map cell); 'arrived' within ARRIVE_PX."""
+    """Holds toward ``goal`` (map cell); 'arrived' within ARRIVE_PX.
+
+    After a failed castle menu (``nav_search``) the estimate is known to be
+    wrong, typically pushed past the coast where no roof is visible (g358:
+    the camera froze on open water for 140 s). Until roofs re-anchor, steer
+    toward the castles' centroid instead of the goal so land comes into view.
+    """
     world = update_world(screen, mem, frame)
     s = _cursor(screen)
     if not world or not s:
         return None
+    search = bool(mem.get('uncertain') and mem.get('nav_search'))
+    if search:
+        goal = _search_goal(mem)
     dx, dy = goal[0] - world[0], goal[1] - world[1]
     if abs(dx) <= ARRIVE_PX and abs(dy) <= ARRIVE_PX:
         if mem.get('uncertain'):
             # Never confirm an unverified cell: nudge to reveal more roofs.
-            mem['nav_last'] = {'screen': list(s), 'expected': [0, 0]}
+            mem['nav_last'] = {'screen': list(s), 'expected': [0, 0], 'search': search}
             return [pad('up', 12)] if s[1] > 100 else [pad('down', 12)]
         return 'arrived'
     actions, expected = [], [0, 0]
@@ -234,7 +253,7 @@ def nav_step(screen: Screen, mem, frame, goal):
             frames = min(abs(d), MAX_HOLD_FRAMES)
             actions.append(pad(pos if d > 0 else neg, frames))
             expected[axis] = frames if d > 0 else -frames
-    mem['nav_last'] = {'screen': list(s), 'expected': expected}
+    mem['nav_last'] = {'screen': list(s), 'expected': expected, 'search': search}
     return actions
 
 
@@ -515,12 +534,15 @@ def map_step(screen: Screen, mem, frame):
                 observed_metric=mem.get('cursor'),
                 expected_metric={'menu_miss': mem['menu_miss']})
         # Integrated motion put the cursor on a non-castle cell (g340: A on
-        # open water forever). Drop the estimate; only a fresh roof anchor
-        # may re-enable confirming a cell.
-        for key in ('cursor', 'anchor', 'nav_last'):
+        # open water forever). Distrust the estimate; only a fresh roof
+        # anchor may re-enable confirming a cell. Keep the cell itself as a
+        # dead-reckoning origin: without it navigation returned None and the
+        # camera froze on open water with no roof to re-anchor (g358).
+        for key in ('anchor', 'nav_last'):
             mem.pop(key, None)
+        mem['nav_search'] = True
         _record(mem, 'nav_reset',
-                reason='城で決定してもメニューが出ないため位置推定を破棄して屋根アンカーで再特定する',
+                reason='城で決定してもメニューが出ないため位置推定を信用せず、城の多い内陸へ動かして屋根アンカーで再特定する',
                 observed_metric={'menu_miss': mem['menu_miss']})
     order = _order(mem)
     if order is not None and not _ready(order, mem):
@@ -948,6 +970,7 @@ def deploy_step(screen: Screen, mem):
             source = mem.get('source_override', {}).get(order['step'], order['source'])
             mem['cursor'] = list(chart.castles(mem['chapter'])[source])
             mem['uncertain'] = False      # the target marker starts on the source castle
+            mem.pop('nav_search', None)
             return [pad('a')]
         return _deploy_input(screen, mem, order, [move], '携行品一致を確認したため出撃承認項目へ移動')
     return []
@@ -1785,7 +1808,7 @@ def observe_events(screen: Screen, mem):
             for key in ('active', 'anchor', 'attack', 'battle', 'battle_seen',
                         'captured', 'card_override', 'cursor', 'egg_battle',
                         'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit',
-                        'nav_last', 'orders', 'picked', 'retries', 'retry_context', 'shop',
+                        'nav_last', 'nav_search', 'orders', 'picked', 'retries', 'retry_context', 'shop',
                         'source_override', 'uncertain', 'month', 'order_context', 'sortie_general',
                         'chart_adjust', 'chart_plan', 'launched_orders', 'sorties',
                         'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
