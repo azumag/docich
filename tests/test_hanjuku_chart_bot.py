@@ -1352,6 +1352,25 @@ def test_monster_menu_owner_matches_the_skill_table_despite_a_dropped_dakuten():
     assert not [r for r in state['_records'] if r['decision'] == 'monster_menu_choice']
 
 
+def test_monster_menu_unknown_owner_stays_fail_closed_beyond_hold_limit():
+    # Skills that belong to neither visible summon leave ownership ambiguous.
+    # The hold limit is only an enemy-AI anti-stall escape hatch; ambiguity must
+    # never turn into an input permission.
+    frame = monster_menu_frame(['たべちゃうぞー', 'とけこむそー'],
+                               ally=('ローラーキラー', 348), enemy=('クイーン', 70), cursor=0)
+    state = {'policy': {'chapter': 1}}
+    records = []
+    for _ in range(policy.MONSTER_MENU_HOLD_LIMIT + 2):
+        actions, state = decide(frame, state)
+        records += state['_records']
+        assert actions == []
+    assert state['policy']['monster_menu_hold'] == policy.MONSTER_MENU_HOLD_LIMIT + 2
+    waits = [r for r in records if r['decision'] == 'monster_menu_wait']
+    assert len(waits) == 1
+    assert waits[0]['observed_metric']['owner'] is None
+    assert not [r for r in records if r['decision'] == 'monster_menu_choice']
+
+
 def test_monster_menu_holds_for_the_enemy_ai_then_act_beyond_the_limit():
     frame = monster_menu_frame(['ダイナマイト', 'ミサイルくん'],
                                ally=('どうし', 90), enemy=('セクシーボンバー', 77), cursor=0)
