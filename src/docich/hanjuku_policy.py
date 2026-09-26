@@ -1467,6 +1467,47 @@ KNOWN_PRICES = {'イッテツーン': 1, 'ノリウツール': 18, 'クースカ
 
 # 兵士は1G=1人で2桁入力が上限。チャート計画の無い月の残金はここまでの補充に使う。
 SOLDIER_CAP = 99
+# 月一の たまごのかいふく / しょうぐんぼしゅう (gcgx: どちらも50G)。
+EGG_RECOVER_COST = 50
+RECRUIT_COST = 50
+MONTH_SUB_LIMIT = 8              # A presses through an unmeasured sub-screen
+
+
+def _egg_row(screen):
+    """(general, egg, uses) from card_select/sortie_confirm (measured rows:
+    general at x=16 before しょうぐん, egg row「たまご エラベルエッグ 4」).
+    たまごなし and unreadable counts return None."""
+    general = egg = uses = None
+    for line in screen.lines:
+        cells = dict(line.spans())
+        if cells.get(80) == 'しょうぐん' and cells.get(16):
+            general = cells[16]
+        if cells.get(16) == 'たまご' and cells.get(48) and (cells.get(112) or '').isdigit():
+            egg, uses = cells[48], int(cells[112])
+    if not general or UNKNOWN in general or egg is None:
+        return None
+    return general, egg, uses
+
+
+def _extras_reserve(mem, header):
+    """Gold held back from soldiers for たまごのかいふく, and whether this
+    month may recruit. A charted purchase ahead keeps its whole budget."""
+    if _charted_purchase_ahead(mem, header):
+        return 0, False
+    empty = any(uses == 0 for uses in (mem.get('egg_uses') or {}).values())
+    return (EGG_RECOVER_COST if empty else 0), True
+
+
+def _plan_extras(mem, shop, reserve, recruit):
+    shop['reserve'] = reserve
+    shop['egg'] = 'pending' if reserve else None
+    shop['recruit'] = 'check' if recruit else None
+    if reserve or recruit:
+        _record(mem, 'month_extras_plan', chart_step='1-month', month=shop['key'],
+                strategy_variant=shop.get('variant', 'chart'),
+                observed_metric={'egg_uses': dict(mem.get('egg_uses') or {})},
+                plan={'egg_recover': bool(reserve), 'recruit_if_left': RECRUIT_COST if recruit else None},
+                reason='卵の残数0を見たため回復費を兵士より先に確保し、兵士99人分の後に余りがあれば将軍を募集')
 
 
 def _adjusted_plan(mem, header, key):
@@ -1486,16 +1527,18 @@ def _adjusted_plan(mem, header, key):
     items = [list(i) for i in spec['cards']]
     target = min(spec['soldiers'], 99)
     unpriced = sorted({name for name, _ in items if name not in KNOWN_PRICES})
-    left = gold - sum(KNOWN_PRICES.get(name, 0) * qty for name, qty in items)
+    reserve, recruit = _extras_reserve(mem, header)
+    left = gold - sum(KNOWN_PRICES.get(name, 0) * qty for name, qty in items) - reserve
     soldiers = max(0, min(target, left))
     shop = mem['shop'] = {'key': key, 'items': items, 'soldiers': soldiers, 'merchant_done': False,
                           'variant': 'chart_adjusted', 'soldiers_done': target == 0,
                           'soldiers_target': target, 'soldiers_from_gold': True,
                           'gold_start': gold}
+    _plan_extras(mem, shop, reserve, recruit)
     _record(mem, 'month_plan', chart_step='adjusted-month', strategy_variant='chart_adjusted',
             month=key, gold=gold,
             plan={'cards': items, 'soldiers_provisional': soldiers, 'unpriced_cards': unpriced},
-            deviation_reason=('recruit_menu_unmeasured' if spec.get('generals') else None),
+            deviation_reason=('recruit_owner_rule' if spec.get('generals') else None),
             expected_metric={'adjusted_cards': [list(i) for i in spec['cards']],
                              'adjusted_soldiers': spec['soldiers'],
                              'adjusted_generals': spec.get('generals', 0)},
@@ -1510,7 +1553,7 @@ def _recalc_soldiers(screen, mem, shop):
     gold = (screen.header or {}).get('gold')
     if type(gold) is not int:
         return False
-    shop['soldiers'] = max(0, min(shop.get('soldiers_target', 0), gold))
+    shop['soldiers'] = max(0, min(shop.get('soldiers_target', 0), gold - shop.get('reserve', 0)))
     shop['soldiers_done'] = shop['soldiers'] == 0
     shop['soldiers_recalculated'] = True
     _record(mem, 'soldier_plan_recalc', chart_step='adjusted-month',
@@ -1573,10 +1616,14 @@ def _plan(mem, header):
     # With a later charted purchase ahead, its budget wins: the chart's own
     # soldier count is the ceiling. Otherwise the gold left goes to soldiers.
     limit = spec['soldiers'] if ahead else SOLDIER_CAP
-    soldiers = spec['soldiers'] if leftover is None else max(0, min(limit, leftover))
+    reserve, recruit = _extras_reserve(mem, header)
+    if leftover is None:
+        reserve = 0          # unpriced cards: no measured room for the egg
+    soldiers = spec['soldiers'] if leftover is None else max(0, min(limit, leftover - reserve))
     shop = mem['shop'] = {'key': key, 'items': items, 'soldiers': soldiers, 'merchant_done': False,
                           'variant': variant,
                           'soldiers_done': soldiers == 0, 'gold_start': gold}
+    _plan_extras(mem, shop, reserve, recruit)
     _record(mem, 'month_plan', chart_step='1-month', strategy_variant=variant, month=key, gold=gold,
             plan={'cards': items, 'soldiers': soldiers}, deviation_reason=deviation,
             expected_metric={'chart_cards': [list(i) for i in spec['cards']],
@@ -1594,10 +1641,12 @@ def _soldier_refill_plan(mem, header, key):
     if not header:
         return None
     gold = header['gold']
-    soldiers = min(SOLDIER_CAP, max(0, gold))
+    reserve, recruit = _extras_reserve(mem, header)
+    soldiers = min(SOLDIER_CAP, max(0, gold - reserve))
     shop = mem['shop'] = {'key': key, 'items': [], 'soldiers': soldiers, 'merchant_done': False,
                           'variant': 'soldier_refill_only', 'soldiers_done': soldiers == 0,
                           'gold_start': gold}
+    _plan_extras(mem, shop, reserve, recruit)
     _record(mem, 'month_plan', chart_step='1-month', strategy_variant='soldier_refill_only',
             month=key, gold=gold, plan={'cards': [], 'soldiers': soldiers},
             deviation_reason='chart_month_uncovered',
@@ -1612,7 +1661,7 @@ def month_step(screen: Screen, mem):
         return quantity_step(screen, mem, soldiers=True)
     if screen.has('うむッ') and screen.has('いかんッ'):
         # "よろしいですかな?" after も〜おしまい!: confirm only our own exit.
-        choice = 'うむッ!' if mem.get('month_exit') else 'いかんッ!'
+        choice = 'うむッ!' if mem.get('month_exit') or mem.get('month_sub') else 'いかんッ!'
         move = menu_to(screen, choice)
         if move == 'here':
             if choice == 'うむッ!':
@@ -1630,6 +1679,11 @@ def month_step(screen: Screen, mem):
     if shop and not shop['soldiers_done']:
         move = menu_to(screen, 'へいしほじゅう')
         return [pad('a')] if move == 'here' else [move] if move else []
+    if mem.get('month_sub'):
+        _finish_month_sub(screen, mem, shop)
+    extra = _month_extra(screen, mem, shop)
+    if extra is not None:
+        return extra
     if shop and not shop.get('closed'):
         shop['closed'] = True
         _record(mem, 'month_done', month=shop['key'], gold_after=(screen.header or {}).get('gold'),
@@ -1642,6 +1696,102 @@ def month_step(screen: Screen, mem):
         mem['month_exit'] = True
         return [pad('a')]
     return [move] if move else []
+
+
+def _month_extra(screen, mem, shop):
+    """After soldiers: たまごのかいふく, then しょうぐんぼしゅう (owner order)."""
+    if not shop:
+        return None
+    gold = (screen.header or {}).get('gold')
+    for sub, label, cost in (('egg', 'たまごのかいふく', EGG_RECOVER_COST),
+                             ('recruit', 'しょうぐんぼしゅう', RECRUIT_COST)):
+        status = shop.get(sub)
+        if status not in ('pending', 'check'):
+            continue
+        if status == 'check':
+            # Owner rule (2026-09-27): recruit only when the soldiers got
+            # their full 99 and 50G or more is still left.
+            if type(gold) is not int or shop.get('soldiers', 0) < SOLDIER_CAP or gold < cost:
+                shop[sub] = 'skipped'
+                _record(mem, 'recruit_skip', month=shop.get('key'), gold=gold,
+                        observed_metric={'soldiers': shop.get('soldiers'), 'gold': gold},
+                        reason='兵士99人分の後に50G以上残っていないため将軍を募集しない')
+                continue
+        elif type(gold) is not int or gold < cost:
+            shop[sub] = 'skipped'
+            _record(mem, 'egg_recover_skip', month=shop.get('key'), gold=gold,
+                    reason='所持金が卵の回復費に足りないため見送る')
+            continue
+        move = menu_to(screen, label)
+        if move == 'here':
+            shop[sub] = 'opened'
+            mem['month_sub'] = {'kind': sub, 'gold_before': gold, 'presses': 0, 'key': shop.get('key')}
+            _record(mem, 'month_sub_open', month=shop.get('key'), gold=gold, choice=label,
+                    reason=f'{label}を選択')
+            return [pad('a')]
+        if move is None:
+            shop[sub] = 'skipped'
+            _record(mem, 'situation_held', screen=screen.kind, choice=label,
+                    reason=f'月一メニューに{label}が読めないため見送る')
+            continue
+        return [move]
+    return None
+
+
+def _finish_month_sub(screen, mem, shop):
+    """Back on the month menu: judge the sub-action by the gold it cost."""
+    sub = mem.pop('month_sub')
+    gold = (screen.header or {}).get('gold')
+    before = sub.get('gold_before')
+    cost = EGG_RECOVER_COST if sub['kind'] == 'egg' else RECRUIT_COST
+    paid = type(gold) is int and type(before) is int and before - gold >= cost
+    if shop and shop.get(sub['kind']) == 'opened':
+        shop[sub['kind']] = 'done' if paid else 'unverified'
+    if paid and sub['kind'] == 'egg':
+        mem['egg_uses'] = {}      # counts are re-read at the next sorties
+    _record(mem, 'egg_recover' if sub['kind'] == 'egg' else 'recruit', month=sub.get('key'),
+            strategy_variant='recruit_default_cursor' if sub['kind'] == 'recruit' else 'egg_recover',
+            observed_metric={'gold_before': before, 'gold_after': gold, 'presses': sub.get('presses'),
+                             'aborted': sub.get('aborted', False)},
+            deviation_reason=None if paid else 'cost_not_observed',
+            reason='月一メニュー復帰時の所持金で実行を確認' if paid
+            else '月一メニューに戻ったが所持金の減少を確認できない')
+
+
+def month_sub_step(screen: Screen, mem):
+    """Screens inside たまごのかいふく / しょうぐんぼしゅう (not yet measured).
+
+    Advance with A (the default cursor: the first audition candidate, owner
+    rule) and うむッ! on confirmations, at most MONTH_SUB_LIMIT presses; then
+    B out and record. A map or battle means the month is over: drop it.
+    """
+    sub = mem['month_sub']
+    kind = screen.kind
+    if kind in MONTH_SUB_EXIT_KINDS:
+        mem.pop('month_sub')
+        _record(mem, 'month_sub_lost', screen=kind, observed_metric=sub,
+                reason='月一の実行中に月一メニューへ戻らず別画面になったため追跡をやめる')
+        return None
+    sub['presses'] = int(sub.get('presses', 0)) + 1
+    if sub['presses'] > MONTH_SUB_LIMIT:
+        if not sub.get('aborted'):
+            sub['aborted'] = True
+            _record(mem, 'month_sub_abort', screen=kind, observed_metric={'text': screen.text[-40:]},
+                    reason='月一の未測定画面が上限回数で終わらないためBで離脱')
+        return [pad('b')]
+    if kind == 'yes_no' or (screen.has('うむッ') and screen.has('いかんッ')):
+        move = menu_to(screen, 'うむッ!')
+        if move and move != 'here':
+            return [move]
+    _record(mem, 'month_sub_step', screen=kind, choice=screen.selected,
+            observed_metric={'kind': sub['kind'], 'presses': sub['presses'], 'text': screen.text[-60:]},
+            reason='月一の実行画面を既定カーソルのまま決定')
+    return [pad('a')]
+
+
+MONTH_SUB_EXIT_KINDS = frozenset({'map', 'map_target', 'battle', 'battle_menu', 'egg_battle_menu',
+                                  'monster_menu', 'attack_started', 'defense_started',
+                                  'boss_attack_started', 'name_entry', 'castle_menu'})
 
 
 def shop_step(screen: Screen, mem):
@@ -1775,6 +1925,13 @@ def observe_events(screen: Screen, mem):
     """Record chart-relevant facts that need no input (month header, harvest)."""
     _hold_general_loss_metric(mem)
     _migrate_card_evidence(mem)
+    if screen.kind in ('card_select', 'sortie_confirm'):
+        row = _egg_row(screen)
+        eggs = mem.setdefault('egg_uses', {})
+        if row and eggs.get(row[0]) != row[2]:
+            eggs[row[0]] = row[2]
+            _record(mem, 'egg_uses_seen', general=row[0], egg=row[1], observed_metric=row[2],
+                    reason='出撃画面のたまご行から卵の残り使用回数を記録')
     header = screen.header
     if header:
         chapter = header.get('chapter')
@@ -1784,7 +1941,7 @@ def observe_events(screen: Screen, mem):
             # run-wide counters/name evidence, never carry coordinates/orders.
             for key in ('active', 'anchor', 'attack', 'battle', 'battle_seen',
                         'captured', 'card_override', 'cursor', 'egg_battle',
-                        'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit',
+                        'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit', 'month_sub',
                         'nav_last', 'orders', 'picked', 'retries', 'retry_context', 'shop',
                         'source_override', 'uncertain', 'month', 'order_context', 'sortie_general',
                         'chart_adjust', 'chart_plan', 'launched_orders', 'sorties',
