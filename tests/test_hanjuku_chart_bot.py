@@ -1405,3 +1405,124 @@ def test_monster_menu_situation_key_uses_the_summoned_panel():
                              'ally_hp': 348, 'enemy_hp': 135}}
     assert exp_mod.situation_key('monster_menu', mem) == (
         'monster_menu|1|クイーン|ゼウス|1-A3|ローラーキラー|ヒュドラ|ahead')
+
+
+# ---------------------------------------------------------------- 月一: 卵の回復・将軍募集
+MONTH_GRID = {'しょうにん': (48, 47), 'しょうぐんぼしゅう': (144, 47),
+              'へいしほじゅう': (48, 63), 'しょうぐんかいこ': (144, 63),
+              'ちくじょう': (48, 79), 'たまごのかいふく': (144, 79),
+              'メインメニュー': (48, 95), 'も〜おしまい!': (144, 95)}
+
+
+def month_canvas(gold, on='しょうにん', month=7):
+    c = Canvas()
+    c.text(48, 15, f'1ねん {month}のつき {gold}G')
+    for label, (x, y) in MONTH_GRID.items():
+        c.text(x, y, label)
+    x, y = MONTH_GRID[on]
+    c.hand(x - 22, y - 6)
+    return c.frame()
+
+
+def sortie_canvas(general, uses):
+    c = Canvas()
+    c.text(16, 31, general)
+    c.text(80, 31, 'しょうぐん')
+    c.text(136, 31, 'きりふだセレクト')
+    c.text(16, 111, 'たまご')
+    c.text(48, 111, 'エラベルエッグ')
+    c.text(112, 111, str(uses))
+    return parse(c.frame())
+
+
+def test_sortie_screens_record_each_generals_remaining_egg_uses():
+    mem = {'chapter': 1}
+    screen = sortie_canvas('どうし', 4)
+    assert screen.kind == 'card_select'
+    policy.observe_events(screen, mem)
+    policy.observe_events(sortie_canvas('ココット', 0), mem)
+    policy.observe_events(sortie_canvas('ココット', 0), mem)       # unchanged: one record
+    assert mem['egg_uses'] == {'どうし': 4, 'ココット': 0}
+    assert [r['decision'] for r in mem['_records']].count('egg_uses_seen') == 2
+
+
+def test_an_empty_egg_reserves_its_recovery_ahead_of_soldiers():
+    mem = {'chapter': 1, 'egg_uses': {'どうし': 4, 'ココット': 0}}
+    shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 130})
+    assert shop['soldiers'] == 80 and shop['egg'] == 'pending' and shop['recruit'] == 'check'
+    # No empty egg: soldiers keep the whole gold as before.
+    shop = policy._plan({'chapter': 1, 'egg_uses': {'どうし': 4}}, {'year': 1, 'month': 7, 'gold': 130})
+    assert shop['soldiers'] == 99 and shop['egg'] is None and shop['recruit'] == 'check'
+    # A charted purchase still ahead keeps its budget: no extras at all.
+    mem = {'chapter': 3, 'egg_uses': {'どうし': 0}}
+    shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 475})
+    assert shop['egg'] is None and shop['recruit'] is None
+
+
+def test_month_menu_recovers_the_egg_then_recruits_when_gold_is_left():
+    home = {'year': 1, 'month': 7, 'gold': 300}
+    mem = {'chapter': 1, 'egg_uses': {'ココット': 0}, 'orders': {}, 'picked': []}
+    shop = policy._plan(mem, home)
+    shop['soldiers_done'] = True                                   # refill already bought 99
+    assert shop['soldiers'] == 99
+    state = {'policy': mem}
+    actions, state = decide(month_canvas(201), state)
+    assert actions[0]['buttons'] == ['down']                       # toward たまごのかいふく
+    actions, state = decide(month_canvas(201, on='たまごのかいふく'), state)
+    assert actions[0]['buttons'] == ['a'] and state['policy']['month_sub']['kind'] == 'egg'
+    # Unmeasured inner screens: A, and うむッ! on a confirmation.
+    c = Canvas((0, 0, 0))
+    c.text(24, 183, 'たまごを かいふく しますぞ')
+    actions, state = decide(c.frame(), state)
+    assert actions[0]['buttons'] == ['a']
+    c = Canvas()
+    c.text(24, 183, '50Gでいいですかな?')
+    c.text(184, 183, 'うむッ!')
+    c.text(184, 199, 'いかんッ!')
+    c.hand(162, 193)                                               # on いかんッ!
+    actions, state = decide(c.frame(), state)
+    assert actions[0]['buttons'] == ['up']
+    # Back on the month menu with 50G fewer: done, then recruit (99 soldiers, 151G left).
+    actions, state = decide(month_canvas(151, on='たまごのかいふく'), state)
+    mem = state['policy']
+    assert mem['shop']['egg'] == 'done' and mem['egg_uses'] == {} and 'month_sub' not in mem
+    assert [r for r in state['_records'] if r['decision'] == 'egg_recover'][0]['deviation_reason'] is None
+    assert actions[0]['buttons'] == ['up']                         # toward しょうぐんぼしゅう
+    actions, state = decide(month_canvas(151, on='しょうぐんぼしゅう'), state)
+    assert actions[0]['buttons'] == ['a'] and state['policy']['month_sub']['kind'] == 'recruit'
+    actions, state = decide(month_canvas(101, on='しょうぐんぼしゅう'), state)
+    assert state['policy']['shop']['recruit'] == 'done'
+    assert actions[0]['buttons'] == ['down']                       # on to も〜おしまい!
+
+
+def test_recruit_needs_the_full_99_soldiers_and_50g_left():
+    for soldiers, gold in ((99, 49), (60, 200)):
+        mem = {'chapter': 1, 'shop': {'key': '1-7', 'items': [], 'soldiers': soldiers,
+                                      'merchant_done': True, 'soldiers_done': True,
+                                      'egg': None, 'recruit': 'check', 'gold_start': 300}}
+        actions = policy.month_step(parse(month_canvas(gold)), mem)
+        assert mem['shop']['recruit'] == 'skipped'
+        assert [r['decision'] for r in mem['_records']][:1] == ['recruit_skip']
+        assert actions[0]['buttons'] != ['a'] or mem['month_exit']
+
+
+def test_unmeasured_month_sub_screen_leaves_with_b_after_the_limit():
+    mem = {'chapter': 1, 'month_sub': {'kind': 'recruit', 'gold_before': 151, 'presses': 0, 'key': '1-7'},
+           'orders': {}, 'picked': []}
+    state = {'policy': mem}
+    c = Canvas((0, 0, 0))
+    c.text(24, 183, 'オーディション')
+    for _ in range(policy.MONTH_SUB_LIMIT):
+        actions, state = decide(c.frame(), state)
+        assert actions[0]['buttons'] == ['a']
+    actions, state = decide(c.frame(), state)
+    assert actions[0]['buttons'] == ['b']
+    assert 'month_sub_abort' in [r['decision'] for r in state['_records']]
+
+
+def test_month_sub_is_dropped_when_the_map_returns():
+    from docich.hanjuku_screen import Screen
+    mem = {'month_sub': {'kind': 'egg', 'gold_before': 60, 'presses': 2, 'key': '1-7'}}
+    screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(100, 100))
+    assert policy.month_sub_step(screen, mem) is None
+    assert 'month_sub' not in mem and mem['_records'][-1]['decision'] == 'month_sub_lost'

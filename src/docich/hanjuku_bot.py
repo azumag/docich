@@ -213,8 +213,10 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     if kind != 'battle_menu':
         for key in ('indep_menu','indep_menu_key','indep_menu_action'):
             mem.pop(key,None)
-    actions=None
-    if phase=='name' and kind!='name_entry':
+    actions=policy.month_sub_step(screen,mem) if mem.get('month_sub') and kind!='month_menu' else None
+    if actions is not None:
+        pass
+    elif phase=='name' and kind!='name_entry':
         policy._record(mem,'name_wait',chart_step='name',
                        reason='状況判定保留: 名前入力画面の文字を読めないため入力を保留')
         actions=[]
