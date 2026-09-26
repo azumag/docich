@@ -1,11 +1,11 @@
 {
-  "output_sha256": "8711773cce035a0cf7a8726053adf23ceaf49dc74df4f0351a91e2ab9cbdf1da",
+  "output_sha256": "af7c78d42da4417390b962a8150485d0339ae046c985fe0a83c99a82575f1d33",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "e4b89e17fbffdebf2021bdc8aad08c2bd062178766b7ce6719b129a190862130",
+  "source_sha256": "6c822511e9641d43642e900d734dd1c89ec7a0719f7927237808fe225ff9efe5",
   "topics": [
-    "半熟英雄: 召喚獣ターンの技メニュー選択を main/VM 配備（実機未確認）",
-    "NetHack を最新mainへ再同期・mergeability不一致を確認",
-    "PAPER音声停止を復旧し終了状態修正をVMへ反映"
+    "Meriken接続失敗によるローテーション停止を復旧（Mac agent復旧は未完了）",
+    "NetHack をmain bfa26e6へ再同期",
+    "半熟英雄: 召喚獣ターンの技メニュー選択を main/VM 配備（実機未確認）"
   ]
 }
