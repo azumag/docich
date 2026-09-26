@@ -268,6 +268,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         actions=policy.target_step(screen,mem,frame)
     elif kind=='map' and mem.get('chapter'):
         actions=policy.map_step(screen,mem,frame)
+    elif kind=='discharge_menu':
+        actions=policy.discharge_step(screen,mem)
     elif kind=='gift_request':
         actions=policy.gift_step(screen,mem)
     elif kind=='yes_no':

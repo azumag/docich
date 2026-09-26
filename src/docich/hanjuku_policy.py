@@ -1752,6 +1752,38 @@ def quantity_step(screen: Screen, mem, soldiers=False):
 
 
 # ---------------------------------------------------------------- prompts
+DISCHARGE_LIMIT = 6              # A presses per month on the forced list
+
+
+def discharge_step(screen: Screen, mem):
+    """Forced discharge after debt: confirm the general under the cursor.
+
+    The game offers no cancel; follow-up confirmations go through the
+    ordinary yes/no and text handlers until the month menu returns. Past
+    the per-month limit, hold so the screen-stall terminal can recover.
+    """
+    month = re.search(r'(\d+)ねん(\d+)のつき', screen.text)
+    key = f'{month[1]}-{month[2]}' if month else None
+    state = mem.get('discharge') or {}
+    if state.get('key') != key:
+        state = {'key': key, 'presses': 0}
+    mem['discharge'] = state
+    if state['presses'] >= DISCHARGE_LIMIT:
+        if not state.get('held'):
+            state['held'] = True
+            _record(mem, 'situation_held', screen=screen.kind, strategy_variant='discharge_limit',
+                    observed_metric={'month': key, 'presses': state['presses']},
+                    reason='解雇画面で上限回数まで決定しても抜けないため入力を保留')
+        return []
+    state['presses'] += 1
+    _record(mem, 'discharge_general', general=screen.selected,
+            strategy_variant='forced_discharge_default_cursor',
+            observed_metric={'month': key, 'presses': state['presses'],
+                             'hand': list(screen.hand) if screen.hand else None},
+            reason='所持金不足で将軍の解雇を強制されたため既定カーソルの将軍を解雇')
+    return [pad('a')]
+
+
 def yes_no_step(screen: Screen, mem):
     text = screen.text
     if re.search(r'\d+Gでいい', text):
