@@ -186,6 +186,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     if kind not in map_kinds and mem.get('cursor'):
         # Battles, events and month menus can move the map cursor.
         mem['uncertain']=True
+        mem.pop('nav_last',None)
     if kind in {'castle_menu','general_list'}:
         mem.pop('expect_menu',None)
         mem.pop('menu_miss',None)   # a real menu proves the cell was correct

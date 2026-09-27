@@ -1154,10 +1154,12 @@ def test_failed_menu_drops_cursor_estimate_and_stops_sea_a_spam():
     screen = Screen(lines=[], hand=None, text='', kind='map',
                     cursor=(200, 160))  # bracket on water, not a roof cell
     actions = policy.map_step(screen, mem, frame)
-    assert actions == []
+    # g358: dropping the estimate froze the camera on open water. The
+    # cursor keeps steering (toward land) but never confirms with A.
+    assert actions and all(a['buttons'][0] in ('up', 'down', 'left', 'right') for a in actions)
     kinds = [r['decision'] for r in mem['_records']]
     assert 'localize' in kinds and 'nav_reset' in kinds
-    assert not mem.get('cursor') and not mem.get('nav_last')
+    assert mem.get('cursor') and not mem.get('anchor') and mem.get('nav_search') is True
     assert mem['menu_miss'] == 1 and mem['uncertain'] is True
     # Without a roof anchor, a later arrived must not re-send A.
     mem['_records'] = []
@@ -1178,6 +1180,56 @@ def test_failed_menu_drops_cursor_estimate_and_stops_sea_a_spam():
     assert actions == []
     assert [r['decision'] for r in mem['_records']] == ['situation_held']
     assert not any(a.get('buttons') == ['a'] for a in actions)
+
+
+def test_failed_menu_on_open_sea_steers_inland_until_roofs_reanchor(monkeypatch):
+    """g358: after nav_reset on open water every map frame held input (140 s)."""
+    from docich.hanjuku_pixels import Frame
+    from docich.hanjuku_screen import Screen
+    frame = Frame(256, 224, bytes(256 * 224 * 3))
+    monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: [])
+    home = policy.chart.castles(1)['ほんじょう']
+    mem = {'chapter': 1, 'variant': 'chart', 'active': '1-A1',
+           'orders': {'1-A1': 'pending'}, 'picked': [],
+           'cursor': [home[0] - 3, home[1]], 'expect_menu': True, '_records': []}
+    centroid = policy._search_goal(mem)
+    distance = lambda: abs(mem['cursor'][0] - centroid[0]) + abs(mem['cursor'][1] - centroid[1])
+    screen = lambda x, y: Screen(lines=[], hand=None, text='', kind='map', cursor=(x, y))
+
+    start = distance()
+    actions = policy.map_step(screen(232, 200), mem, frame)   # pinned at the EDGE cell
+    assert {a['buttons'][0] for a in actions} == {'left', 'up'}
+    for x, y in ((204, 172), (176, 144), (148, 116)):
+        mem['_records'] = []
+        actions = policy.map_step(screen(x, y), mem, frame)
+        assert actions and not any(a['buttons'] == ['a'] for a in actions)
+        assert 'situation_held' not in [r['decision'] for r in mem['_records']]
+    assert distance() < start - 3 * 28
+    assert mem['uncertain'] is True and mem['menu_miss'] == 1
+
+    # Land in view: two roofs agree on the camera, so the estimate re-anchors,
+    # search ends and confirming a cell is allowed again.
+    kikan, nakyu = policy.chart.castles(1)['キカンドン'], policy.chart.castles(1)['ナキューメラ']
+    cam = (500, 600)
+    roofs = [{'target': (kikan[0] - cam[0], kikan[1] - cam[1]), 'clipped': False},
+             {'target': (nakyu[0] - cam[0], nakyu[1] - cam[1]), 'clipped': False}]
+    monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: roofs)
+    mem['_records'] = []
+    actions = policy.map_step(screen(120, 100), mem, frame)
+    assert mem['cursor'] == [cam[0] + 120, cam[1] + 100]
+    assert mem['uncertain'] is False and 'nav_search' not in mem
+    assert mem['menu_miss'] == 0
+    # Normal navigation resumes toward the order's source (ほんじょう).
+    assert {a['buttons'][0] for a in actions} == {'right', 'down'}
+
+
+def test_leaving_the_map_discards_pending_motion():
+    state = {'policy': {'chapter': 1, 'cursor': [500, 500], 'nav_search': True,
+                        'nav_last': {'screen': [100, 100], 'expected': [28, 0], 'search': True},
+                        'orders': {}, 'picked': []}}
+    _, state = decide(Canvas().frame(), state)      # an off-map (unreadable) screen
+    assert state['policy']['uncertain'] is True
+    assert 'nav_last' not in state['policy']
 
 
 def test_castle_menu_seen_clears_menu_miss():
