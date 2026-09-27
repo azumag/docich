@@ -3145,22 +3145,45 @@ def quantity_step(screen: Screen, mem, soldiers=False):
 
 
 # ---------------------------------------------------------------- prompts
-DISCHARGE_LIMIT = 6              # A presses per month on the forced list
+DISCHARGE_LIMIT = 6              # A presses per month while the balance is negative
+DISCHARGE_EXIT_LIMIT = 4         # B presses per month once the balance is paid up
 
 
 def discharge_step(screen: Screen, mem):
-    """Forced discharge after debt: confirm the general under the cursor.
+    """Forced discharge list: dismiss generals only while the balance is negative.
 
-    The game offers no cancel; follow-up confirmations go through the
-    ordinary yes/no and text handlers until the month menu returns. Past
-    the per-month limit, hold so the screen-stall terminal can recover.
+    Wages come out at the month boundary; a negative balance forces
+    dismissing generals (their 賃金 becomes cash) until it is back to at
+    least zero (gcgx 収入). While the balance is negative the header gold is
+    unreadable (the game prints ー1G and the header only matches digits) and
+    B is refused. Once the balance is non-negative the header gold parses:
+    leave with B instead of dismissing more generals (owner 2026-09-28:
+    そもそも将軍解雇はしないで欲しい). A list that refuses every bounded B
+    press holds for the screen-stall terminal.
     """
     month = re.search(r'(\d+)ねん(\d+)のつき', screen.text)
     key = f'{month[1]}-{month[2]}' if month else None
+    gold = (screen.header or {}).get('gold')
+    paid_up = type(gold) is int
     state = mem.get('discharge') or {}
     if state.get('key') != key:
-        state = {'key': key, 'presses': 0}
+        state = {'key': key, 'presses': 0, 'exits': 0}
     mem['discharge'] = state
+    if paid_up:
+        exits = int(state.get('exits') or 0)
+        if exits >= DISCHARGE_EXIT_LIMIT:
+            if not state.get('held'):
+                state['held'] = True
+                _record(mem, 'situation_held', screen=screen.kind, strategy_variant='discharge_exit_failed',
+                        observed_metric={'month': key, 'gold': gold, 'exits': exits},
+                        reason='所持金が0以上でも解雇画面がBで抜けないため入力を保留')
+            return []
+        state['exits'] = exits + 1
+        _record(mem, 'discharge_exit', strategy_variant='paid_up_leave_with_b',
+                observed_metric={'month': key, 'gold': gold, 'exits': state['exits'],
+                                 'selected': screen.selected},
+                reason='所持金が0以上になったため解雇を続けずBで画面を出る')
+        return [pad('b')]
     if state['presses'] >= DISCHARGE_LIMIT:
         if not state.get('held'):
             state['held'] = True

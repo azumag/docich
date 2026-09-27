@@ -515,7 +515,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v25-monster-heal-skill'
+    assert state['bot_version'] == 'hanjuku-chart-v26-discharge-minimal-exit'
     assert '_records' not in state['policy']
 
 
@@ -1543,9 +1543,11 @@ def test_monster_menu_situation_key_uses_the_summoned_panel():
         'monster_menu|1|クイーン|ゼウス|1-A3|ローラーキラー|ヒュドラ|ahead')
 
 
-def _discharge_canvas(month=8):
+def _discharge_canvas(month=8, gold=None):
     c = Canvas()
-    c.text(16, 15, f'2ねん{month}のつき')
+    # A negative balance prints as ー1G, which the digit-only header regex
+    # cannot match: gold=None here stands for the still-in-debt screen.
+    c.text(16, 15, f'2ねん{month}のつき{gold or ""}')
     c.text(24, 47, 'ミント')
     c.text(24, 63, 'ゼウス')
     c.text(16, 191, 'どのしょうぐんをかいこに')
@@ -1562,6 +1564,25 @@ def test_forced_discharge_list_confirms_default_cursor_instead_of_b():
     record = state['_records'][-1]
     assert record['decision'] == 'discharge_general' and record['general'] == 'ミント'
     assert record['observed_metric']['month'] == '2-8'
+
+
+def test_paid_up_discharge_list_leaves_with_b_instead_of_discharging():
+    """g407 04:xx: the balance was already +32G yet the bot dismissed six more
+    generals (DISCHARGE_LIMIT) and held. Once the header gold parses (not in
+    debt) the list must be left with B, never with another dismissal."""
+    state = {'policy': {'chapter': 1, 'orders': {}, 'picked': []}}
+    for _ in range(policy.DISCHARGE_EXIT_LIMIT):
+        actions, state = decide(_discharge_canvas(gold='32G').frame(), state)
+        assert actions and actions[0]['buttons'] == ['b']
+    exit_record = next(r for r in state['_records'] if r['decision'] == 'discharge_exit')
+    assert exit_record['observed_metric']['gold'] == 32
+    assert not [r for r in state['_records'] if r['decision'] == 'discharge_general']
+    actions, state = decide(_discharge_canvas(gold='32G').frame(), state)
+    assert actions == []
+    assert 'situation_held' in [r['decision'] for r in state['_records']]
+    # A still-negative month discharges again; the exit counter is per month.
+    actions, state = decide(_discharge_canvas(month=9).frame(), state)
+    assert actions and actions[0]['buttons'] == ['a']
 
 
 def test_forced_discharge_holds_after_monthly_limit_and_resets_next_month():
