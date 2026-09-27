@@ -109,6 +109,16 @@ def _is_save_prompt_pending(text: str) -> bool:
     return _SAVE_PROMPT_PENDING_RE.search(text) is not None
 
 
+def _is_dead_disclosure_prompt(text: str) -> bool:
+    """Only the observed death disclosure; never infer death from prose alone."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return bool(
+        lines
+        and lines[0] == "Do you want your possessions identified? [ynq] (n)"
+        and re.search(r"^Dlvl:\d+\s+.*\bHP:0\(\d+\)", text, re.MULTILINE)
+    )
+
+
 class NethackCoordinatorAdapter(CliCoordinatorAdapter):
     """CLI coordinator adapter with NetHack's suspend/resume boundary."""
 
@@ -467,6 +477,29 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
             # that cannot be written, which would leave the active game stuck.
             self._write_boundary_result(request_id, outcome="ended")
             return
+
+        # A dead character cannot be saved.  The corner already recognizes
+        # this terminal prompt, but previously its restore sent S and waited
+        # forever for a save that the disclosure UI cannot create (#1163).
+        try:
+            terminal_text = self.tmux.capture_pane(process_target)
+        except Exception:
+            terminal_text = ""
+        if _is_dead_disclosure_prompt(terminal_text):
+            self._check_active(deadline, cancel)
+            self.tmux.send_keys(process_target, ["q"], literal=True)
+            while True:
+                self._boundary_wait_check(deadline, cancel)
+                self._verify_session_ownership()
+                remaining_target = self._runtime_process_window_target()
+                if remaining_target is None:
+                    # The owned presentation survives and the actual game
+                    # process is gone. Preserve xlog/result files untouched.
+                    self._write_boundary_result(request_id, outcome="ended")
+                    return
+                if remaining_target != process_target:
+                    raise AdapterError("NetHack terminal process identityが変化しました")
+                time.sleep(min(0.1, max(0.01, deadline - time.monotonic())))
 
         before = self._save_signatures()
         # Keep the baseline so a refused cancel can report whether a save
