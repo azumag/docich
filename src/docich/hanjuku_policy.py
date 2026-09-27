@@ -3288,7 +3288,7 @@ def discharge_step(screen: Screen, mem):
     gold = (screen.header or {}).get('gold')
     paid_up = type(gold) is int
     state = mem.get('discharge') or {}
-    if state.get('key') != key:
+    if state.get('key') != key or not isinstance(state.get('presses'), int):
         state = {'key': key, 'presses': 0, 'exits': 0}
     mem['discharge'] = state
     if paid_up:
