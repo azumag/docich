@@ -1173,7 +1173,24 @@ def battle_step(screen: Screen, mem):
                     observed_metric={'enemy_hp': b.enemy_hp, 'ally_hp': b.ally_hp},
                     resulting_event='card_planned')
             return [pad('b')]
-    return []
+    return _power_mash(mem, cur)
+
+
+# 白兵のぶつかり合いでPOWERバーが青い間にA連打すると踏ん張って押し込める
+# (gcgx 戦闘システム)。入力しないと剣術の稽古(だいじん 90 vs どうし 90)でも
+# 0-15 で負ける。隔離libretro実測(2026-09-27)では、判断1回あたり3フレーム押下
+# ×4〜10回の間欠連打でも 1〜19 残しで全勝した。判断周期(約1.5秒)では青の
+# 瞬間を狙えないため、パネル表示中は常に連打する。
+POWER_TAPS = 6
+
+
+def _power_mash(mem, cur):
+    if not cur.get('power_mash'):
+        cur['power_mash'] = True
+        _record(mem, 'battle_power', **_battle_labels(cur),
+                observed_metric={'enemy_hp': cur.get('enemy_hp'), 'ally_hp': cur.get('ally_hp')},
+                reason='白兵のぶつかり合いで押し負けないようA連打で踏ん張る')
+    return [pad('a', 3)] * POWER_TAPS
 
 
 def _behind(cur: dict) -> bool:
@@ -1223,6 +1240,13 @@ def battle_menu_step(screen: Screen, mem):
                 reason='チャートが当該フレームに切り札を指示していないための独自判断（原典戦術'
                        + pattern + 'に相当）')
     action = mem.get('indep_menu_action', 'pass')
+    if action == 'use_egg' and 'たまごをつかう' not in screen.text:
+        # A spent egg greys its row out (unreadable): A there does nothing.
+        if not mem.get('egg_row_dead'):
+            mem['egg_row_dead'] = True
+            _record(mem, 'situation_held', screen=screen.kind, strategy_variant='egg_unavailable',
+                    reason='たまごをつかうが使えない表示のため卵を諦めて白兵へ戻る')
+        return [pad('b')]
     if action == 'use_egg':
         if screen.hand:
             move = menu_to(screen, 'たまごをつかう')

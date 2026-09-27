@@ -143,8 +143,9 @@ def legacy_actions(frame: Frame, phase: str, state: dict) -> list[dict]:
     if phase=='title':
         return [pad('start')]
     if phase in {'field','field_menu','battle'}:
-        # Battles are fought by the game's own melee; A in a battle has no
-        # measured benefit and A on the map would open a sortie menu.
+        # A readable battle panel goes through policy.battle_step (A mash);
+        # without one the target is unknown, and A on the map would open a
+        # sortie menu.
         return []
     # Scripted scenes, battle prompts and dark cutscenes use confirm. No
     # reset, emulator shortcuts, arbitrary keys or LLM-produced actions.
@@ -212,7 +213,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
                     'monster_menu_choice','monster_menu_choice_key','monster_panel'):
             mem.pop(key,None)
     if kind != 'battle_menu':
-        for key in ('indep_menu','indep_menu_key','indep_menu_action'):
+        for key in ('indep_menu','indep_menu_key','indep_menu_action','egg_row_dead'):
             mem.pop(key,None)
     actions=policy.month_sub_step(screen,mem) if mem.get('month_sub') and kind!='month_menu' else None
     if actions is not None:

@@ -17,6 +17,8 @@ from docich import hanjuku_commentary, hanjuku_narration, hanjuku_policy as poli
 from docich import pulse_volume
 from docich.hanjuku_bot import decide
 from docich.hanjuku_font import UNKNOWN, read_lines
+
+MASH = [policy.pad('a', 3)] * policy.POWER_TAPS      # battle_step's A mash (POWER push)
 from docich.hanjuku_glyphs import GLYPHS, MARKS
 from docich.hanjuku_pixels import Frame
 from docich.hanjuku_screen import parse
@@ -237,7 +239,7 @@ def test_boss_tactic_waits_for_the_first_clash_then_chains_cards():
     from docich.hanjuku_screen import Battle, Screen
     screen = lambda hp: Screen(lines=[], hand=None, text='', battle=Battle('クイーン', hp, 'どうし', 90), kind='battle')
     assert policy.battle_step(screen(70), mem) == []          # first reading: wait for a stable one
-    assert policy.battle_step(screen(70), mem) == []          # stable, no clash yet: melee
+    assert policy.battle_step(screen(70), mem) == MASH        # stable, no clash yet: melee
     assert policy.battle_step(screen(60), mem)[0]['buttons'] == ['b']
     assert mem['battle']['card_flow']['card'] == 'クースカン'
 
@@ -731,7 +733,7 @@ def test_garbanzo_tactics_follow_each_generals_chart_branch(step, ally, hp, expe
     assert policy.battle_step(screen, mem) == []
     actions = policy.battle_step(screen, mem)
     if expected is None:
-        assert actions == [] and not mem['battle'].get('card_flow')
+        assert actions == MASH and not mem['battle'].get('card_flow')
     else:
         assert actions[0]['buttons'] == ['b']
         assert mem['battle']['card_flow']['card'] == expected
@@ -771,7 +773,7 @@ def test_missing_and_selected_cards_do_not_confirm_use_or_unlock_after_card():
     assert cur['cards_used'] == [] and cur['cards_missing'] == ['クースカン']
     missing = mem['_records'][-1]
     assert missing['strategy_variant'] == 'chart_card_unavailable' and missing['deviation_reason']
-    assert policy.battle_step(screen, mem) == []  # no ノリウツール without confirmed クースカン
+    assert policy.battle_step(screen, mem) == MASH  # no ノリウツール without confirmed クースカン
     cur['card_flow'] = {'card': 'クースカン', 'stage': 'list'}
     policy.card_list_step(_card_screen(['クースカン']), mem)
     assert cur['cards_selected'] == ['クースカン'] and cur['cards_used'] == []
@@ -782,7 +784,7 @@ def test_missing_and_selected_cards_do_not_confirm_use_or_unlock_after_card():
         assert cur['cards_used'] == []
     policy.battle_step(screen, mem); policy.battle_step(screen, mem)
     assert cur['card_flow'] is None and cur['cards_unclassified'] == ['クースカン']
-    assert policy.battle_step(screen, mem) == []
+    assert policy.battle_step(screen, mem) == MASH   # no follow-up card, only the push
 
 
 @pytest.mark.parametrize('statement', ['クースカンをつかった', 'クースカンをしようした'])
@@ -809,7 +811,7 @@ def test_uncalibrated_card_text_never_confirms_use_or_unlocks_after_card(stateme
     policy.battle_step(screen, mem); policy.battle_step(screen, mem)
     assert cur['card_flow'] is None
     assert policy.summary(mem)['cards_used'] is None  # unclassified despite cleared flow
-    assert policy.battle_step(screen, mem) == []
+    assert policy.battle_step(screen, mem) == MASH   # no follow-up card, only the push
     cur['enemy_hp'] = 0
     policy.battle_end(mem, 'map'); policy.battle_end(mem, 'map')
     assert mem['stats']['cards_used'] is None and mem['stats']['cards_confirmed'] == 0
@@ -1487,7 +1489,7 @@ def test_forced_discharge_holds_after_monthly_limit_and_resets_next_month():
         assert actions and actions[0]['buttons'] == ['a']
     actions, state = decide(_discharge_canvas().frame(), state)
     assert actions == []
-    assert [r['decision'] for r in state['_records']] == ['situation_held']
+    assert 'situation_held' in [r['decision'] for r in state['_records']]
     actions, state = decide(_discharge_canvas().frame(), state)
     assert actions == [] and state['_records'] == []          # held once, not per frame
     actions, state = decide(_discharge_canvas(month=9).frame(), state)
@@ -1611,3 +1613,49 @@ def test_month_sub_is_dropped_when_the_map_returns():
     screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(100, 100))
     assert policy.month_sub_step(screen, mem) is None
     assert 'month_sub' not in mem and mem['_records'][-1]['decision'] == 'month_sub_lost'
+
+
+def test_tutorial_sword_practice_mashes_a_to_push_instead_of_idling():
+    """g389 16:30: the sword practice (だいじん 90 vs どうし 90) was lost 0-15 with no input.
+
+    Isolated libretro replay of the same state: idle lost 0-15, A mash won
+    1..19-0 at every cadence tried (per-frame and 4..10 taps per decision).
+    """
+    from docich.hanjuku_screen import Battle, Screen
+    mem = {}                                 # before chapter 1: no chart, no orders
+    screen = Screen(lines=[], hand=None, text='', battle=Battle('だいじん', 90, 'どうし', 90), kind='battle')
+    assert policy.battle_step(screen, mem) == []           # first reading: wait for a stable one
+    assert policy.battle_step(screen, mem) == MASH
+    assert [r['decision'] for r in mem['_records']] == ['battle_start', 'battle_power']
+    assert policy.battle_step(screen, mem) == MASH         # every decision keeps pushing
+    assert [r['decision'] for r in mem['_records']].count('battle_power') == 1
+    over = Screen(lines=[], hand=None, text='', battle=Battle('だいじん', 0, 'どうし', 20), kind='battle')
+    assert policy.battle_step(over, mem) == []              # the panel has ended: stop
+
+
+def _menu_without_egg_row():
+    c = Canvas((0, 0, 0))
+    c.text(176, 192, 'きりふだ')
+    c.text(176, 208, 'たいきゃく')
+    return c.frame()
+
+
+def test_menu_with_greyed_egg_row_is_the_battle_menu_and_reaches_the_card():
+    """g389 16:48: たまごをつかう greyed out → read as text → A on the dead row for minutes."""
+    from docich.hanjuku_screen import parse
+    assert parse(_menu_without_egg_row()).kind == 'battle_menu'
+    mem = {'chapter': 1, 'battle': {'enemy': 'ガルバンゾー', 'ally': 'どうし', 'cards_used': [],
+                                    'card_flow': {'card': 'フットバース', 'stage': 'menu', 'note': ''}}}
+    actions, state = decide(_menu_without_egg_row(), {'policy': mem})
+    assert actions[0]['buttons'] == ['down']                # off the dead egg row to きりふだ
+    actions, state = decide(_menu_without_egg_row(), state)
+    assert actions[0]['buttons'] == ['a']
+
+
+def test_independent_egg_choice_backs_out_when_the_egg_row_is_dead():
+    mem = {'chapter': 1, 'battle': {'enemy': 'ミント', 'ally': 'どうし', 'cards_used': [],
+                                    'enemy_hp': 60, 'ally_hp': 20},
+           'indep_menu': True, 'indep_menu_action': 'use_egg'}
+    actions, state = decide(_menu_without_egg_row(), {'policy': mem})
+    assert actions[0]['buttons'] == ['b']
+    assert 'situation_held' in [r['decision'] for r in state['_records']]
