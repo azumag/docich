@@ -208,6 +208,13 @@ def retroarch_cfg_lines(g, game, cfg_path: Path, network_port: int) -> list[str]
                   'video_force_aspect = "true"', 'video_crop_overscan = "false"',
                   'savestate_auto_index = "false"', 'state_slot = "0"']
     from ..hanjuku_run import enabled as scripted_hanjuku
+    if scripted_hanjuku(game) and d.viewport_width > 0:
+        # Render native 256x224 (the bot's own frame size) instead of 3x:
+        # far fewer pixels to draw, capture and decode. The presentation
+        # stretches it to the broadcast rectangle (g389: stutter under load).
+        lines = [line for line in lines
+                 if not line.startswith(('video_scale', 'video_force_aspect'))]
+        lines += ['video_scale = "1.0"', 'video_force_aspect = "false"']
     if scripted_hanjuku(game):
         # Stable native pixels for the deterministic screen signatures.
         lines += ['video_smooth = "false"',
@@ -467,11 +474,13 @@ class RetroArchCoordinatorAdapter:
         d = self.g.display
         audio_enabled, audio_sink = retroarch_audio(self.g, self.game)
         volume = retroarch_audio_volume(self.game)
+        from ..hanjuku_run import enabled as scripted_hanjuku
         return [sys.executable, str(Path(__file__).resolve().parents[1] / "presentation.py"),
                 '--display', d.name, '--title', f'docich-present-{self.spec.runtime_id}',
                 '--x', str(d.viewport_x), '--y', str(d.viewport_y),
                 '--width', str(d.viewport_width), '--height', str(d.viewport_height),
                 '--window-pattern', '^RetroArch',
+                *(['--framerate', '30', '--fit', 'stretch'] if scripted_hanjuku(self.game) else []),
                 '--runtime-state', str(self._presentation_path()),
                 *(['--audio-sink', audio_sink] if audio_enabled else []),
                 *(['--audio-volume-percent', str(volume)] if audio_enabled and volume is not None else []),

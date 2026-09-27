@@ -99,6 +99,12 @@ def contain_filter(width: int, height: int, *, cell_stretch: float = 1.0) -> str
     return ",".join(filters)
 
 
+def stretch_filter(width: int, height: int) -> str:
+    """Fill the rectangle exactly (nearest neighbour): a native 256x224 SNES
+    frame shown 4:3 as on a TV, with cheap, crisp pixel doubling."""
+    return f"scale={width}:{height}:flags=neighbor,setsar=1"
+
+
 def _positive_int(value: str) -> int:
     try:
         number = int(value)
@@ -147,6 +153,10 @@ def _parser() -> argparse.ArgumentParser:
     # Used by RetroArch only: dbus-run-session owns the process group, but
     # the X window belongs to its child. Search only the private X server.
     parser.add_argument('--window-pattern')
+    # Projection capture rate and fit. The broadcast encoder runs at 30 fps;
+    # 15 fps (the default, unchanged for other games) shows every frame twice.
+    parser.add_argument('--framerate', type=_positive_int, default=15)
+    parser.add_argument('--fit', choices=('contain', 'stretch'), default='contain')
     parser.add_argument('--runtime-state')
     parser.add_argument('command', nargs=argparse.REMAINDER)
     return parser
@@ -258,16 +268,17 @@ def main(argv=None) -> int:
         if width > 4096 or height > 2160:
             raise RuntimeError('native viewer exceeds private display capacity')
         cell_note = '' if args.cell_stretch is None else f' cell-stretch={args.cell_stretch:g}'
-        print(f'native={width}x{height} output={args.width}x{args.height} fit=contain{cell_note}',
-              flush=True)
+        print(f'native={width}x{height} output={args.width}x{args.height} fit={args.fit}'
+              f' fps={args.framerate}{cell_note}', flush=True)
         output_env = dict(os.environ, DISPLAY=args.display)
         player = launch([
             'ffplay', '-loglevel', 'warning', '-nostats', '-an', '-sn',
-            '-f', 'x11grab', '-framerate', '15', '-draw_mouse', '0',
+            '-f', 'x11grab', '-framerate', str(args.framerate), '-draw_mouse', '0',
             '-window_id', window, '-video_size', f'{width}x{height}',
             '-i', f':{number}',
-            '-vf', contain_filter(args.width, args.height,
-                                  cell_stretch=args.cell_stretch or 1.0),
+            '-vf', (stretch_filter(args.width, args.height) if args.fit == 'stretch'
+                    else contain_filter(args.width, args.height,
+                                        cell_stretch=args.cell_stretch or 1.0)),
             '-noborder', '-window_title', args.title,
             '-left', str(args.x), '-top', str(args.y),
             '-x', str(args.width), '-y', str(args.height),
