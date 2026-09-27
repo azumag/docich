@@ -38,6 +38,12 @@ BASTET_TRY_AGAIN = [
     "                            x     Try again!      x xLines:      0 x",
     "                            mqqqqqqqqqqqqqqqqqqqqqj xLevel:      0 x",
 ]
+BASTET_NAME = [
+    "                            lqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqk",
+    "                            x Congratulations! You got a high score  x",
+    "                            x Please enter your name                 x",
+    "                            x                                          x",
+]
 BASTET_MENU = [
     "                         lqqqqqqqqqqqqqqqqqqqqqqqqqqqkqqqqqqqqqqqqqk",
     "                         x -> Play! (normal version) x             x",
@@ -162,6 +168,22 @@ def test_bastet_records_right_aligned_score_and_retries(tmp_path, score):
     # One Enter dismisses "Try again!", one starts the next game from the menu.
     assert keys == [["-t", "%9", "Enter"], ["-t", "%9", "Enter"]]
     assert [(s["game"], s["score"]) for s in scores] == [("bastet", int(score))]
+
+
+def test_bastet_enters_neutral_name_after_high_score(tmp_path):
+    panes = [
+        pane(BASTET_BOARD, "300"), pane(BASTET_NAME), pane(BASTET_NAME),
+        pane(BASTET_MENU), pane(BASTET_BOARD, "0"),
+    ]
+    keys, scores = run_wrapper(
+        tmp_path, "bastet_docich.sh", "BASTET_BIN", "BASTET_SCORELOG", panes,
+    )
+    assert keys == [
+        ["-t", "%9", "-l", "Docich"],
+        ["-t", "%9", "Enter"],
+        ["-t", "%9", "Enter"],
+    ]
+    assert [(s["game"], s["score"]) for s in scores] == [("bastet", 300)]
 
 
 def test_moon_buggy_enters_name_then_records_and_restarts(tmp_path):

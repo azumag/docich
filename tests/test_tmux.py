@@ -45,6 +45,7 @@ class TestTmuxCallsUseStripTmux(unittest.TestCase):
         self.tmux.new_game_session("docich-game", ["nethack"], 80, 24)
         self.tmux.set_status_off("docich-game")
         self.tmux.capture_pane("docich-game")
+        self.tmux.capture_pane_colored("docich-game")
         self.tmux.send_keys("docich-game", ["hello"], literal=True)
         self.tmux.set_manual_size("docich-game", 80, 24)
 
@@ -52,6 +53,16 @@ class TestTmuxCallsUseStripTmux(unittest.TestCase):
             _, kwargs = call
             self.assertTrue(kwargs.get("strip_tmux"), f"strip_tmux missing in call: {call}")
             self.assertEqual(call.args[0][0], "tmux")
+
+
+class TestColoredCapture(unittest.TestCase):
+    @mock.patch("docich.tmux.procs.run")
+    def test_capture_keeps_colors_and_trailing_spaces(self, mock_run):
+        mock_run.return_value = _ok("\x1b[44m  \x1b[0m  \n")
+        result = tmux_mod.Tmux().capture_pane_colored("docich-game")
+        self.assertEqual(result, "\x1b[44m  \x1b[0m  \n")
+        args = mock_run.call_args.args[0]
+        self.assertEqual(args, ["tmux", "capture-pane", "-e", "-N", "-p", "-t", "docich-game"])
 
 
 class TestNewWindowArgs(unittest.TestCase):

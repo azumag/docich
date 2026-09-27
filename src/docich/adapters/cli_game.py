@@ -47,6 +47,7 @@ ROUND_BOUNDARY_PROMPT = "another game?"
 ROUND_BOUNDARY_SCORE_RE = re.compile(r"score:\s*([0-9,]+)", re.IGNORECASE)
 ROUND_BOUNDARY_TAIL_LINES = 15
 ROUND_BOUNDARY_RESULT_FILENAME = "round_boundary_result.json"
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|[\x0e\x0f]")
 
 
 # --- shared [cli] table helpers --------------------------------------------
@@ -237,8 +238,21 @@ class CliGameAdapter(Adapter):
 
     def observe(self) -> Observation:
         self._check_fence()
-        text = self.ctx.tmux.capture_pane(self._session())
         meta = {}
+        session = self._session()
+        if self.ctx.game.name == "bastet":
+            capture_colored = getattr(self.ctx.tmux, "capture_pane_colored", None)
+            colored = capture_colored(session) if callable(capture_colored) else ""
+            if colored:
+                # Bastet draws every occupied square as two colored spaces.
+                # Keep the styled capture for its brain and remove control
+                # sequences from the ordinary text used for status checks.
+                meta["bastet_color_text"] = colored
+                text = ANSI_ESCAPE_RE.sub("", colored)
+            else:
+                text = self.ctx.tmux.capture_pane(session)
+        else:
+            text = self.ctx.tmux.capture_pane(session)
         if text == "":
             meta["warning"] = "capture が空です (セッション停止の可能性)"
         return Observation(

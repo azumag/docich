@@ -41,7 +41,12 @@ REAL_PLAY = "\n".join([
 ])
 
 
-def run(raw, weights):
+def run(raw, weights, color_text=None):
+    if color_text is not None:
+        raw = json.dumps({
+            "game": "bastet", "text": raw,
+            "meta": {"bastet_color_text": color_text},
+        })
     proc = subprocess.run(
         [sys.executable, str(BRAIN)], input=raw, capture_output=True,
         text=True, timeout=15,
@@ -57,17 +62,53 @@ def decide(text, tmp_path):
     return out["actions"]
 
 
+def incoming_i_board():
+    board = [[None] * 10 for _ in range(20)]
+    for dx in range(4):
+        board[1][3 + dx] = "I"
+    return board
+
+
+def colored_capture(board, *, acs_controls=False):
+    """Build an ANSI capture matching Bastet's two-colored-space cell layout."""
+    color = {"O": 47, "I": 46, "Z": 41, "T": 45, "J": 44, "S": 42, "L": 43}
+    left = "\x0e" if acs_controls else ""
+    right = "\x0f" if acs_controls else ""
+    lines = ["     " + left + "l" + "q" * 20 + "k" + right]
+    for row in board:
+        line = "     " + left + "x" + right
+        for cell in row:
+            if cell is None:
+                line += "  "
+            else:
+                line += f"\x1b[{color[cell]}m  \x1b[0m"
+        line += left + "x" + right
+        lines.append(line)
+    lines.append("     " + left + "m" + "q" * 20 + "j" + right)
+    lines.append("Score:      0")
+    return "\n".join(lines)
+
+
+def plain_capture(styled):
+    import re
+    return re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]|[\x0e\x0f]", "", styled)
+
+
+def colored_decide(styled, tmp_path):
+    code, out = run(plain_capture(styled), tmp_path / "weights.json", styled)
+    assert code == 0
+    return out["actions"]
+
+
 def test_places_piece(tmp_path):
-    assert decide(PLAY, tmp_path) == [{"type": "key", "keys": ["Enter"]}]
+    assert decide(PLAY, tmp_path) == []
     assert decide(PLAY, tmp_path) == decide(PLAY, tmp_path)
 
 
 def test_places_piece_on_real_captured_pane(tmp_path):
-    assert decide(REAL_PLAY, tmp_path) == [{"type": "key", "keys": ["Enter"]}]
+    assert decide(REAL_PLAY, tmp_path) == []
     # High-scoring boards keep the border letter glued to the label too.
-    assert decide(REAL_PLAY.replace("Score:      0", "Score:   1200"), tmp_path) == [
-        {"type": "key", "keys": ["Enter"]}
-    ]
+    assert decide(REAL_PLAY.replace("Score:      0", "Score:   1200"), tmp_path) == []
     assert decide(REAL_PLAY + "\nTry again!", tmp_path) == []
 
 
@@ -89,16 +130,61 @@ def test_bad_input(raw, tmp_path):
 
 def test_weight_hot_swap(tmp_path):
     weights = tmp_path / "weights.json"
+    styled = colored_capture(incoming_i_board())
+    text = plain_capture(styled)
     weights.write_text('{"hard_drop":0}')
-    assert decide(PLAY, tmp_path)[0]["keys"] == ["Down"]
+    code, out = run(text, weights, styled)
+    assert code == 0
+    assert out["actions"][0]["keys"] == ["Down"]
     weights.write_text('{"hard_drop":1}')
-    assert decide(PLAY, tmp_path)[0]["keys"] == ["Enter"]
+    code, out = run(text, weights, styled)
+    assert code == 0
+    assert out["actions"][0]["keys"] == ["Enter"]
+
+
+def test_colored_board_plans_line_clear(tmp_path):
+    board = [[None] * 10 for _ in range(20)]
+    # The bottom row has a four-cell gap under the incoming horizontal I.
+    for x in range(10):
+        if x not in range(4, 8):
+            board[19][x] = "Z"
+    for dx, dy in ((0, 1), (1, 1), (2, 1), (3, 1)):
+        board[dy][3 + dx] = "I"
+
+    actions = colored_decide(colored_capture(board), tmp_path)
+    assert actions == [{"type": "key", "keys": ["Right", "Enter"]}]
+
+
+def test_colored_board_waits_until_piece_is_visible(tmp_path):
+    board = [[None] * 10 for _ in range(20)]
+    assert colored_decide(colored_capture(board), tmp_path) == []
+
+
+def test_colored_board_does_not_treat_settled_piece_as_active(tmp_path):
+    board = [[None] * 10 for _ in range(20)]
+    for dx, dy in ((0, 1), (1, 1), (2, 1), (2, 0)):
+        board[18 + dy][3 + dx] = "L"
+    assert colored_decide(colored_capture(board), tmp_path) == []
+
+
+def test_colored_board_ignores_tmux_acs_mode_controls(tmp_path):
+    assert colored_decide(colored_capture(incoming_i_board(), acs_controls=True), tmp_path) == [
+        {"type": "key", "keys": ["Enter"]}
+    ]
+
+
+def test_colored_capture_menu_remains_silent(tmp_path):
+    board = [[None] * 10 for _ in range(20)]
+    for dx, dy in ((0, 1), (1, 1), (2, 1), (3, 1)):
+        board[dy][3 + dx] = "I"
+    assert colored_decide(colored_capture(board) + "\nTry again!", tmp_path) == []
 
 
 @pytest.mark.parametrize("raw", ['bad', '[]', '{"hard_drop":"q"}', '{"hard_drop":null}', '{"hard_drop":true}', '{"hard_drop":NaN}', '{"hard_drop":Infinity}'])
 def test_invalid_weights_fall_back(raw, tmp_path):
     (tmp_path / "weights.json").write_text(raw)
-    assert decide(PLAY, tmp_path)[0]["keys"] == ["Enter"]
+    actions = colored_decide(colored_capture(incoming_i_board()), tmp_path)
+    assert actions == [{"type": "key", "keys": ["Enter"]}]
 
 
 def test_config_contract():
