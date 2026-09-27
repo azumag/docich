@@ -1,10 +1,10 @@
 {
-  "output_sha256": "2355d685f20300cd13c01f9ce1a6581bb7b606c9124be6d7733dfae06f11e641",
+  "output_sha256": "89dcfbefdb5c7ede5ef096795f13254766a65dd4936480d8d72a6e13c9546c58",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "7de5102ab2e01d2f11879cf53122e7d27341f85ced984eada6ce89dbb65b34f7",
+  "source_sha256": "1838ad84a944eac5734bbe16f9a4be18fd3c033c0406151af188a0ac8c103f75",
   "topics": [
-    "敵卵リスクPhase 0をホットロード確認、Phase 1aのHP遮蔽修正はPR準備",
+    "敵卵リスクPhase 0をホットロード確認、Phase 1aのHP遮蔽修正をPR化",
     "敵卵リスクPhase 0の配備準備と次フェーズ調査",
     "召喚獣メニューのおくのて誤分類を修正・配備（Claude Code）"
   ]
