@@ -1,11 +1,11 @@
 {
-  "output_sha256": "b4fdb61dd0b580aa07bd123f373b16c3c87feb564aa811696ca3ef70ba91b161",
+  "output_sha256": "e348fec780e0710834b17c4672040ad8677a312fa26116315b398192a5d6060e",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "59b16fb4dfc0f3f37674813bce117fd4d84610c0d88e8c13ac0766eeca0bc3ec",
+  "source_sha256": "508c14054b0a4236ba32468095c35bca3e076a86738ff3e4c1533bbd35b89a2b",
   "topics": [
-    "敵卵リスクPhase 0の配備準備と次フェーズ調査",
-    "召喚獣メニューのおくのて誤分類を修正・配備（Claude Code）",
-    "半熟g401はscreen_stalledで終了、位置固着修正#1191配備（Claude Code）"
+    "g403起動・出撃先の位置ずれ修正（#1193→退行→#1195）（Claude Code）",
+    "敵卵リスクPhase 0をホットロード確認、Phase 1aのHP遮蔽修正をPR化",
+    "敵卵リスクPhase 0の配備準備と次フェーズ調査"
   ]
 }

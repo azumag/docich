@@ -172,18 +172,21 @@ def test_parser_to_policy_partial_or_black_fade_holds(monkeypatch):
     from test_hanjuku_chart_bot import Canvas
     from docich import hanjuku_bot
     from docich.hanjuku_screen import parse
-    c = Canvas((214, 214, 181))
-    c.text(8, 176, 'ミント 27', color=(0, 0, 0))
-    c.text(136, 176, 'どうし 90', color=(0, 0, 0))
+    c = Canvas((238, 238, 238))
+    c.text(24, 176, 'ミント', color=(32, 32, 32))
+    c.text(96, 176, '27', color=(32, 32, 32))
+    c.text(152, 176, 'どうし', color=(32, 32, 32))
+    c.text(224, 176, '90', color=(32, 32, 32))
     assert parse(c.frame()).battle == Battle('ミント', 27, 'どうし', 90)
     mem = memory()
     assert enter(parse(c.frame()), mem) == MASH
     # Hold the broad scene classifier at battle to test its unreadable-panel
     # fallback as well as policy's name/HP guards.
     monkeypatch.setattr(hanjuku_bot, 'classify', lambda frame: 'battle')
-    partial = Canvas((214, 214, 181))
-    partial.text(8, 176, 'ミント', color=(0, 0, 0))
-    partial.text(136, 176, 'どうし 90', color=(0, 0, 0))
+    partial = Canvas((238, 238, 238))
+    partial.text(24, 176, 'ミント', color=(32, 32, 32))
+    partial.text(152, 176, 'どうし', color=(32, 32, 32))
+    partial.text(224, 176, '90', color=(32, 32, 32))
     for frame in (partial.frame(), Canvas((0, 0, 0)).frame()):
         assert parse(frame).battle is None
         actions, _ = hanjuku_bot.decide(frame, {'policy': mem})
