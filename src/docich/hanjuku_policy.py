@@ -621,6 +621,9 @@ def _interim_source(mem, target, chart_order, owned, busy):
     return None
 
 
+MOVE_ANY_GENERAL = 'しょうぐん'    # move from an unread list: the spare is picked on the list
+
+
 def interim_candidates(mem) -> dict:
     """Deterministic off-chart sorties JEV may choose from while a chart is pending.
 
@@ -669,17 +672,25 @@ def interim_candidates(mem) -> dict:
     empty = [c for c in sorted(owned, key=lambda c: _distance(chapter, home, c))
              if garrison.get(c) == [] and c not in heading]
     for target in empty:
-        donors = sorted((c for c in owned if c != target
-                         and len([g for g in garrison.get(c) or () if g not in busy]) >= 2),
-                        key=lambda c: _distance(chapter, c, target))
+        # A castle whose list was never read may hold several generals: the
+        # bot reads lists only when it sorties, so g407 knew one castle while
+        # the stream showed crowded ones. Opening its list for the move is
+        # the reading; with fewer than two there the move is cancelled
+        # (deploy_step), which records the list and drops the donor.
+        known = [c for c in owned if c != target
+                 and len([g for g in garrison.get(c) or () if g not in busy]) >= 2]
+        unread = [c for c in owned if c != target and garrison.get(c) is None]
+        donors = (sorted(known, key=lambda c: _distance(chapter, c, target))
+                  + sorted(unread, key=lambda c: _distance(chapter, c, target)))
         if not donors:
             continue
-        spare = [g for g in garrison[donors[0]] if g not in busy]
+        spare = [g for g in garrison.get(donors[0]) or () if g not in busy]
         spare.sort(key=lambda g: g == NAME)
+        general = spare[0] if spare else MOVE_ANY_GENERAL
         moves.append({
-            'general': spare[0], 'target': target, 'cards': [], 'source': donors[0],
+            'general': general, 'target': target, 'cards': [], 'source': donors[0],
             'after': None, 'purpose': 'move',
-            'note': f"暫定: {spare[0]}を{donors[0]}から空の{target}へ移動"})
+            'note': f"暫定: {general}を{donors[0]}から空の{target}へ移動"})
     out = {}
     for order in (*sorties['retake'], *moves, *sorties['attack']):
         out[f"{order['purpose']}_{len(out) + 1}"] = order
@@ -1380,6 +1391,32 @@ def _measured_card_select(screen):
                                    else 'structured_card_select'), 'observed_rows': len(rows)}
 
 
+def _move_general_pick(screen, mem, order):
+    """Pick the general a move sends: never the donor's last one."""
+    present = _present_generals(screen)
+    if present is None:
+        return _hold_deploy(screen, mem, order, '移動元の将軍一覧を読めないため保留')
+    busy = _en_route(mem)[0]
+    spare = sorted((g for g in present if g not in busy), key=lambda g: g == NAME)
+    if len(present) < 2 or not spare:
+        _finish_order(mem, 'failed', deviation_reason='移動元に残す将軍がいない',
+                      observed_metric=present[:8], source=_source(order, mem),
+                      reason='移動元の将軍が1人以下のため移動を取り消す（一覧は駐留として記録）')
+        return [pad('b'), pad('b')]
+    general = mem.get('general_override', {}).get(order['step'])
+    if general not in spare:
+        general = spare[0]
+        mem.setdefault('general_override', {})[order['step']] = general
+        _record(mem, 'move_general_picked', chart_step=order['step'], general=general,
+                source=_source(order, mem), target=order['target'], observed_metric=present[:8],
+                reason='移動元に1人以上残して主人公以外の将軍を空の城へ送る')
+    move = menu_to(screen, general)
+    if move is None:
+        return _hold_deploy(screen, mem, order, '移動させる将軍へカーソルを合わせられないため保留')
+    return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move],
+                         '移動させる将軍を選択')
+
+
 GENERAL_LIST_UI = frozenset({'しゅつげき', 'ステータス', 'しょうぐんは', 'おりません', 'おりません……'})
 
 
@@ -1441,6 +1478,8 @@ def deploy_step(screen: Screen, mem):
         _observe_garrison(screen, mem, order)
         if (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
             return _verify_sortie_source(screen, mem, order)
+        if order.get('purpose') == 'move':
+            return _move_general_pick(screen, mem, order)
         if _is_boss_order(order, mem):
             mem.setdefault('sortie_general', {}).pop(order['step'], None)
             mem.setdefault('order_context', {}).pop(order['step'], None)
