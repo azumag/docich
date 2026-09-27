@@ -1316,6 +1316,7 @@ def _survival_menu(screen, mem, cur):
         rescue['cards_checked'] += 1
         cur['card_flow'] = {'card': None, 'stage': 'list', 'survival': True, 'list_ticks': 0}
     else:
+        _egg_recheck(mem)
         rescue['egg_attempted'] = True
         rescue['egg_pending'] = True
     _record(mem, 'battle_survival_select', **_battle_labels(cur),
@@ -1411,6 +1412,7 @@ def battle_menu_step(screen: Screen, mem):
                     reason='たまごをつかうが使えない表示のため卵を諦めて白兵へ戻る')
         return [pad('b')]
     if action == 'use_egg':
+        _egg_recheck(mem)
         if screen.hand:
             move = menu_to(screen, 'たまごをつかう')
             if move == 'here':
@@ -1688,6 +1690,7 @@ SOLDIER_CAP = 99
 EGG_RECOVER_COST = 50
 RECRUIT_COST = 50
 MONTH_SUB_LIMIT = 8              # A presses through an unmeasured sub-screen
+EGG_RITUAL_LIMIT = 64            # measured paid recovery includes a long chant
 
 
 def _egg_row(screen):
@@ -1706,13 +1709,33 @@ def _egg_row(screen):
     return general, egg, uses
 
 
+def _egg_recovery_targets(mem):
+    # Ordinary eggs recover to four, while one-shot/king eggs hold only one.
+    types = mem.get('egg_types') or {}
+    counts = mem.get('egg_uses') or {}
+    targets = {name for name, uses in counts.items()
+               if type(uses) is int and 0 <= uses < (
+                   1 if types.get(name) in {'いっぱつエッグ', 'キングエッグ'} else 4)}
+    # An attempted summon makes the sortie count stale. Check the recovery
+    # screen; this flag is not proof of consumption and never decrements stock.
+    targets.update(mem.get('egg_recheck') or [])
+    return sorted(targets)
+
+
 def _extras_reserve(mem, header):
-    """Gold held back from soldiers for たまごのかいふく, and whether this
-    month may recruit. A charted purchase ahead keeps its whole budget."""
-    if _charted_purchase_ahead(mem, header):
-        return 0, False
-    empty = any(uses == 0 for uses in (mem.get('egg_uses') or {}).values())
-    return (EGG_RECOVER_COST if empty else 0), True
+    """Reserve the cost of all observed depleted eggs before soldiers."""
+    cost = EGG_RECOVER_COST * len(_egg_recovery_targets(mem))
+    gold = (header or {}).get('gold')
+    reserve = cost if type(gold) is int and gold >= cost else 0
+    return reserve, not _charted_purchase_ahead(mem, header)
+
+
+def _egg_recheck(mem):
+    ally = (mem.get('battle') or {}).get('ally')
+    if ally:
+        pending = mem.setdefault('egg_recheck', [])
+        if ally not in pending:
+            pending.append(ally)
 
 
 def _plan_extras(mem, shop, reserve, recruit):
@@ -1723,8 +1746,10 @@ def _plan_extras(mem, shop, reserve, recruit):
         _record(mem, 'month_extras_plan', chart_step='1-month', month=shop['key'],
                 strategy_variant=shop.get('variant', 'chart'),
                 observed_metric={'egg_uses': dict(mem.get('egg_uses') or {})},
-                plan={'egg_recover': bool(reserve), 'recruit_if_left': RECRUIT_COST if recruit else None},
-                reason='卵の残数0を見たため回復費を兵士より先に確保し、兵士99人分の後に余りがあれば将軍を募集')
+                plan={'egg_recover': bool(reserve), 'egg_recover_budget': reserve,
+                      'egg_recover_targets': _egg_recovery_targets(mem),
+                      'recruit_if_left': RECRUIT_COST if recruit else None},
+                reason='使用回数が減った卵の全回復費を兵士より先に確保し、兵士99人分の後に余りがあれば将軍を募集')
 
 
 def _adjusted_plan(mem, header, key):
@@ -1810,7 +1835,16 @@ def _plan(mem, header):
         spec = chart.purchase_for(mem.get('chapter') or 0, header['year'], header['month'])
     ahead = _charted_purchase_ahead(mem, header)
     if not spec:
-        return None if ahead else _soldier_refill_plan(mem, header, key)
+        if ahead:
+            reserve, _ = _extras_reserve(mem, header)
+            if not reserve:
+                return None
+            shop = mem['shop'] = {'key': key, 'items': [], 'soldiers': 0,
+                'merchant_done': True, 'soldiers_done': True, 'gold_start': header['gold'],
+                'variant': 'egg_recovery_only'}
+            _plan_extras(mem, shop, reserve, False)
+            return shop
+        return _soldier_refill_plan(mem, header, key)
     gold = header['gold']
     if gold >= spec['chart_gold']:
         items = [list(i) for i in spec['cards']]
@@ -1896,6 +1930,15 @@ def month_step(screen: Screen, mem):
     if shop and not shop['soldiers_done']:
         move = menu_to(screen, 'へいしほじゅう')
         return [pad('a')] if move == 'here' else [move] if move else []
+    if (mem.get('month_sub', {}).get('kind') == 'egg'
+            and screen.has('おはらいのひつような') and screen.has('たまごはありませんぞ')):
+        mem.pop('month_sub')
+        mem.pop('egg_recheck', None)
+        mem['egg_uses'] = {}  # the game says none need recovery; reobserve quantities
+        if shop:
+            shop['egg'] = 'not_needed'
+        _record(mem, 'egg_recover_not_needed', reason='ゲームが回復不要と表示したため支払わず説明を閉じる')
+        return [pad('a')]
     if mem.get('month_sub'):
         _finish_month_sub(screen, mem, shop)
     extra = _month_extra(screen, mem, shop)
@@ -1920,7 +1963,7 @@ def _month_extra(screen, mem, shop):
     if not shop:
         return None
     gold = (screen.header or {}).get('gold')
-    for sub, label, cost in (('egg', 'たまごのかいふく', EGG_RECOVER_COST),
+    for sub, label, cost in (('egg', 'たまごのかいふく', shop.get('reserve') or EGG_RECOVER_COST),
                              ('recruit', 'しょうぐんぼしゅう', RECRUIT_COST)):
         status = shop.get(sub)
         if status not in ('pending', 'check'):
@@ -1960,25 +2003,29 @@ def _finish_month_sub(screen, mem, shop):
     sub = mem.pop('month_sub')
     gold = (screen.header or {}).get('gold')
     before = sub.get('gold_before')
-    cost = EGG_RECOVER_COST if sub['kind'] == 'egg' else RECRUIT_COST
-    paid = type(gold) is int and type(before) is int and before - gold >= cost
+    cost = sub.get('quoted_cost') if sub['kind'] == 'egg' else RECRUIT_COST
+    paid = (type(cost) is int and cost > 0 and type(gold) is int and type(before) is int
+            and before - gold == cost
+            and (sub['kind'] != 'egg' or sub.get('full_selected') is True))
     if shop and shop.get(sub['kind']) == 'opened':
         shop[sub['kind']] = 'done' if paid else 'unverified'
     if paid and sub['kind'] == 'egg':
         mem['egg_uses'] = {}      # counts are re-read at the next sorties
+        mem.pop('egg_recheck', None)
     _record(mem, 'egg_recover' if sub['kind'] == 'egg' else 'recruit', month=sub.get('key'),
             strategy_variant='recruit_default_cursor' if sub['kind'] == 'recruit' else 'egg_recover',
             observed_metric={'gold_before': before, 'gold_after': gold, 'presses': sub.get('presses'),
-                             'aborted': sub.get('aborted', False)},
+                             'aborted': sub.get('aborted', False),
+                             'full_selected': sub.get('full_selected'), 'quoted_cost': cost},
             deviation_reason=None if paid else 'cost_not_observed',
             reason='月一メニュー復帰時の所持金で実行を確認' if paid
             else '月一メニューに戻ったが所持金の減少を確認できない')
 
 
 def month_sub_step(screen: Screen, mem):
-    """Screens inside たまごのかいふく / しょうぐんぼしゅう (not yet measured).
+    """Screens inside measured egg recovery / unmeasured general recruitment.
 
-    Advance with A (the default cursor: the first audition candidate, owner
+    Recruitment advances with A (first audition candidate, owner
     rule) and うむッ! on confirmations, at most MONTH_SUB_LIMIT presses; then
     B out and record. A map or battle means the month is over: drop it.
     """
@@ -1990,12 +2037,15 @@ def month_sub_step(screen: Screen, mem):
                 reason='月一の実行中に月一メニューへ戻らず別画面になったため追跡をやめる')
         return None
     sub['presses'] = int(sub.get('presses', 0)) + 1
-    if sub['presses'] > MONTH_SUB_LIMIT:
+    limit = EGG_RITUAL_LIMIT if sub.get('stage') == 'recovering' else MONTH_SUB_LIMIT
+    if sub.get('aborted') or sub['presses'] > limit:
         if not sub.get('aborted'):
             sub['aborted'] = True
             _record(mem, 'month_sub_abort', screen=kind, observed_metric={'text': screen.text[-40:]},
                     reason='月一の未測定画面が上限回数で終わらないためBで離脱')
         return [pad('b')]
+    if sub['kind'] == 'egg':
+        return _egg_recovery_step(screen, mem, sub)
     if kind == 'yes_no' or (screen.has('うむッ') and screen.has('いかんッ')):
         move = menu_to(screen, 'うむッ!')
         if move and move != 'here':
@@ -2004,6 +2054,41 @@ def month_sub_step(screen: Screen, mem):
             observed_metric={'kind': sub['kind'], 'presses': sub['presses'], 'text': screen.text[-60:]},
             reason='月一の実行画面を既定カーソルのまま決定')
     return [pad('a')]
+
+
+def _egg_recovery_step(screen, mem, sub):
+    """Measured full-recovery list and NこでNG confirmation; never guess a row."""
+    if screen.has('うむッ') and screen.has('いかんッ'):
+        body = ''.join(line.known.replace(' ', '') for line in screen.lines if line.y >= 140)
+        quote = re.search(r'(\d+)こで(\d+)Gになりまんな', body)
+        gold = (screen.header or {}).get('gold')
+        if (not sub.get('full_selected') or not quote
+                or int(quote[1]) <= 0 or int(quote[2]) != int(quote[1]) * EGG_RECOVER_COST
+                or type(gold) is not int or gold < int(quote[2])):
+            sub['aborted'] = True
+            _record(mem, 'egg_recover_skip', observed_metric={'gold': gold, 'quote_read': bool(quote)},
+                    reason='全回復の選択・費用・所持金を確認できないか、費用が足りないため戻る')
+            return [pad('b')]
+        move = menu_to(screen, 'うむッ!')
+        if move == 'here':
+            sub.update(quoted_cost=int(quote[2]), stage='recovering')
+            _record(mem, 'egg_recover_confirm', choice='ぜんかいふく',
+                    observed_metric={'eggs': int(quote[1]), 'cost': int(quote[2]), 'gold': gold},
+                    reason='全回復の表示費用が所持金以内なので決定。回復完了は未確定')
+            return [pad('a')]
+        return [move] if move else []
+    if sub.get('stage') != 'recovering' and any(
+            x == 32 and y == 47 and word == 'ぜんかいふく' for x, y, word in _options(screen)):
+        move = menu_to(screen, 'ぜんかいふく')
+        if move == 'here':
+            sub['full_selected'] = True
+            _record(mem, 'egg_recover_select', choice='ぜんかいふく',
+                    reason='残数が0でない卵も含めて全回復を選択し、次画面で費用を確認')
+            return [pad('a')]
+        return [move] if move else []
+    if screen.hand and sub.get('stage') != 'recovering':
+        return []  # unknown option: no default A on an individual egg
+    return [pad('a')]  # bounded introduction/paid ritual dialogue
 
 
 MONTH_SUB_EXIT_KINDS = frozenset({'map', 'map_target', 'battle', 'battle_menu', 'egg_battle_menu',
@@ -2177,6 +2262,10 @@ def observe_events(screen: Screen, mem):
     if screen.kind in ('card_select', 'sortie_confirm'):
         row = _egg_row(screen)
         eggs = mem.setdefault('egg_uses', {})
+        if row:
+            mem.setdefault('egg_types', {})[row[0]] = row[1]
+            if row[0] in (mem.get('egg_recheck') or []):
+                mem['egg_recheck'].remove(row[0])
         if row and eggs.get(row[0]) != row[2]:
             eggs[row[0]] = row[2]
             _record(mem, 'egg_uses_seen', general=row[0], egg=row[1], observed_metric=row[2],
@@ -2280,6 +2369,7 @@ def egg_battle_step(screen: Screen, mem):
     action = mem.get('egg_action', 'use_egg')
     if action == 'attack':
         return [pad('a')]
+    _egg_recheck(mem)
     if screen.hand:
         move = menu_to(screen, 'たまごをつかう')
         if move == 'here':

@@ -29,6 +29,7 @@ from docich.retroarch_boundary import read_record
 # the active battle. Observation, migration and result records are not actions.
 INPUT_CONTEXT_DECISIONS=frozenset({
     'battle_survival','battle_survival_select','battle_survival_unavailable',
+    'egg_recover_select','egg_recover_confirm','egg_recover_skip',
     'name_wait','name_confirm','name_delete','name_type','order_start',
     'unexpected_target','order_substitute','order_source_changed','order_launched','order_failed',
     'attack_observed','defense_observed','card_missing',
@@ -62,7 +63,7 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
                               'card_pick','card_missing','sortie_confirm','order_substitute'}
         or (r.get('decision') == 'order_start' and r.get('cards'))
         or (r.get('decision') == 'situation_held' and r.get('screen') in {'card_select','sortie_confirm'})
-        or str(r.get('decision','')).startswith(('battle_card','battle_survival')) for r in records))
+        or str(r.get('decision','')).startswith(('battle_card','battle_survival','egg_recover')) for r in records))
     if frame is not None and capture:
         directory=runtime/'hanjuku_frames'
         if directory.is_symlink():
