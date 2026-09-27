@@ -175,7 +175,7 @@ def _localize(roofs, castles, predicted_cam):
     return cam, name
 
 
-def update_world(screen: Screen, mem, frame):
+def update_world(screen: Screen, mem, frame, goal_name=None):
     """Track the cursor's map cell from measured screen motion and roof anchors.
 
     Leaving the map (battles, events, month menus) can move the cursor, so the
@@ -208,17 +208,94 @@ def update_world(screen: Screen, mem, frame):
     anchored = None
     if found:
         cam, anchored = found
+        cam, anchored = _goal_anchor(roofs, castles, cam, anchored, goal_name)
         new = [cam[0] + s[0], cam[1] + s[1]]
         if mem.get('uncertain') or not world or abs(new[0] - world[0]) + abs(new[1] - world[1]) <= 48:
             world = new
             mem['uncertain'] = False
             mem.pop('nav_search', None)
             mem.pop('nav_search_leg', None)
+            if not screen.marker:
+                observe_owners(mem, roofs, cam)
         else:
             anchored = None
     mem['cursor'] = world
     mem['anchor'] = anchored
     return world
+
+
+GOAL_ANCHOR_PX = 16           # voted camera error seen between castles (g401: 11 px)
+
+
+def _goal_anchor(roofs, castles, cam, anchored, goal_name):
+    """Re-anchor the camera on the goal castle's own roof when it is visible.
+
+    The measured castle cells disagree with each other by several pixels, so
+    a camera voted from another roof can put the cursor one cell off the
+    goal while the estimate says it arrived (g401 2026-09-27: the cursor sat
+    11 px below キカンドン and A opened nothing 900 times). The goal roof
+    itself is the ground truth for the cell that opens its menu.
+    """
+    if not goal_name or goal_name not in castles:
+        return cam, anchored
+    gx, gy = castles[goal_name]
+    near = [(abs(r['target'][0] + cam[0] - gx) + abs(r['target'][1] + cam[1] - gy), r)
+            for r in roofs]
+    near = [(d, r) for d, r in near if d <= GOAL_ANCHOR_PX]
+    if len(near) != 1:
+        return cam, anchored
+    roof = near[0][1]
+    return (gx - roof['target'][0], gy - roof['target'][1]), goal_name
+
+
+OWNER_CONFIRM = 2             # consecutive anchored map readings before a change
+
+
+def observe_owners(mem, roofs, cam):
+    """Track castle ownership from roof colours on anchored map frames.
+
+    A castle taken while nobody defends it shows only 「せめこまれました」 and no
+    battle, so ``battle_end`` never revokes it (g401: ジョンリギ turned blue at
+    20:12 but stayed "captured", and its chart order kept waiting on it).
+    Two consecutive readings are needed; home and boss castles are ignored.
+    """
+    chapter = mem.get('chapter') or 0
+    castles = chart.castles(chapter)
+    fixed = {chart.home_castle(chapter), chart.boss_castle(chapter)}
+    if len(roofs) < 2:
+        return                      # one lone roof: camera association not trusted
+    seen = {}
+    for roof in roofs:
+        wx, wy = roof['target'][0] + cam[0], roof['target'][1] + cam[1]
+        hits = [name for name, (x, y) in castles.items() if abs(wx - x) + abs(wy - y) <= 12]
+        if len(hits) == 1 and hits[0] not in fixed and roof.get('kind') in ('own', 'enemy'):
+            seen[hits[0]] = roof['kind']
+    streak = mem.setdefault('owner_streak', {})
+    for castle, kind in seen.items():
+        prev = streak.get(castle) or {}
+        count = prev.get('count', 0) + 1 if prev.get('kind') == kind else 1
+        streak[castle] = {'kind': kind, 'count': count}
+        if count < OWNER_CONFIRM:
+            continue
+        captured = mem.setdefault('captured', [])
+        if kind == 'enemy' and castle in captured:
+            mem['captured'] = [c for c in captured if c != castle]
+            lost = mem.setdefault('lost', [])
+            if castle not in lost:
+                lost.append(castle)
+            (mem.get('garrison') or {}).pop(castle, None)
+            _record(mem, 'castle_lost_observed', castle=castle,
+                    observed_metric={'roof': kind, 'readings': count},
+                    resulting_event=f'lost:{castle}',
+                    reason='占領していた城の屋根が敵の色になったため失陥として奪還対象にする')
+        elif kind == 'own' and castle not in captured:
+            captured.append(castle)
+            if castle in (mem.get('lost') or []):
+                mem['lost'] = [c for c in mem['lost'] if c != castle]
+            _record(mem, 'castle_owned_observed', castle=castle,
+                    observed_metric={'roof': kind, 'readings': count},
+                    resulting_event=f'captured:{castle}',
+                    reason='城の屋根が自軍の色のため占領として扱う')
 
 
 SEARCH_RING_PX = 120                  # spiral step around the castles' centroid
@@ -240,7 +317,7 @@ def _search_goal(mem):
     return (cx + ux * ring * SEARCH_RING_PX, cy + uy * ring * SEARCH_RING_PX)
 
 
-def nav_step(screen: Screen, mem, frame, goal):
+def nav_step(screen: Screen, mem, frame, goal, goal_name=None):
     """Holds toward ``goal`` (map cell); 'arrived' within ARRIVE_PX.
 
     After a failed castle menu (``nav_search``) the estimate is known to be
@@ -248,7 +325,7 @@ def nav_step(screen: Screen, mem, frame, goal):
     the camera froze on open water for 140 s). Until roofs re-anchor, steer
     toward the castles' centroid instead of the goal so land comes into view.
     """
-    world = update_world(screen, mem, frame)
+    world = update_world(screen, mem, frame, goal_name)
     s = _cursor(screen)
     if not world or not s:
         return None
@@ -346,8 +423,10 @@ def next_order(mem):
     # even if a newer plan replaced the one it came from.
     retries = [o for step, o in (mem.get('launched_orders') or {}).items()
                if step not in steps and status.get(step) == 'pending']
+    owned = _owned(mem)
     for order in (*current, *retries):
-        if status.get(order['step']) in (None, 'pending') and _ready(order, mem):
+        if (status.get(order['step']) in (None, 'pending') and _ready(order, mem)
+                and _source(order, mem) in owned):
             return order
     return None
 
@@ -387,42 +466,110 @@ INTERIM_LIMIT = 2             # JEV answers per off-chart situation
 INTERIM_MIN_CONFIDENCE = 0.7
 
 
-def interim_candidates(mem) -> dict:
-    """Deterministic interim orders JEV may choose from while a chart is pending.
+def _distance(chapter, a, b) -> int:
+    castles = chart.castles(chapter)
+    (ax, ay), (bx, by) = castles[a], castles[b]
+    return abs(ax - bx) + abs(ay - by)
 
-    Only re-attacks of uncaptured non-boss castles by a general the base chart
-    already sends there, without cards (stock is not verified). There is no
-    hold label: JEV must pick an attack, and an unusable answer falls back to
-    the first candidate. JEV never produces keys or orders itself.
+
+def _en_route(mem):
+    """(generals, targets) of sorties launched but not yet seen arriving."""
+    sorties = [s for s in (mem.get('sorties') or {}).values() if s.get('status') == 'en_route']
+    return {s.get('general') for s in sorties}, {s.get('target') for s in sorties}
+
+
+def _interim_source(mem, target, chart_order, owned, busy):
+    """(source, general) for an interim sortie to ``target``, or None.
+
+    A castle whose general list we last read is used as measured: an empty one
+    is never a source (g401: the chart general had already left キカンドン and
+    the bot pressed A there for 14 minutes). Without a reading, fall back to
+    the chart's source, then the home castle, as before.
+    """
+    chapter = mem.get('chapter') or 0
+    home = chart.home_castle(chapter)
+    garrison = mem.get('garrison') or {}
+    free = {c: [g for g in garrison.get(c) or () if g not in busy] for c in owned}
+    # Emptying a castle is how the undefended ジョンリギ fell (g401), so a
+    # castle that keeps somebody behind goes first, then the nearest.
+    staffed = sorted((c for c in owned if free[c]),
+                     key=lambda c: (len(free[c]) < 2, _distance(chapter, c, target)))
+    if staffed:
+        present = [g for g in garrison[staffed[0]] if g not in busy]
+        present.sort(key=lambda g: g == NAME)          # risk the hero last
+        return staffed[0], present[0]
+    general = chart_order['general'] if chart_order else NAME
+    for source in ((chart_order or {}).get('source'), home):
+        if source in owned and garrison.get(source) is None:
+            return source, general
+    return None
+
+
+def interim_candidates(mem) -> dict:
+    """Deterministic off-chart sorties JEV may choose from while a chart is pending.
+
+    Retake castles we lost, then attack every other uncaptured non-boss castle
+    (chart targets first), then move a spare general into an owned castle last
+    seen empty. Sources and generals come from measured general lists when
+    known (``garrison``), so an idle general at any castle is used instead of
+    only the chart's general. No cards (stock is not verified). There is no
+    hold label: JEV must pick one, and an unusable answer falls back to the
+    first candidate. JEV never produces keys or orders itself.
     """
     chapter = mem.get('chapter') or 0
     castles = chart.castles(chapter)
     home = chart.home_castle(chapter)
     boss = chart.boss_castle(chapter)
-    owned = set(mem.get('captured') or []) | {home}
-    out, seen = {}, set()
+    owned = (set(mem.get('captured') or []) | {home}) & set(castles)
+    busy, heading = _en_route(mem)
+    chart_orders = {}
     for order in chart.orders(chapter):
-        target = order['target']
-        if target in owned or target == boss or target not in castles:
+        chart_orders.setdefault(order['target'], order)
+    lost = [c for c in mem.get('lost') or () if c in castles]
+    targets = [c for c in (*lost, *chart_orders, *castles)
+               if c in castles and c not in owned and c != boss]
+    targets = list(dict.fromkeys(targets))
+    # A castle a unit is already marching on goes last, not away: that unit
+    # may never arrive (g401: 1-A2 stayed en_route for 20 minutes).
+    targets.sort(key=lambda c: c in heading)
+    out = {}
+    for target in targets:
+        picked = _interim_source(mem, target, chart_orders.get(target), owned, busy)
+        if picked is None:
             continue
-        if (order['general'], target) in seen:
+        source, general = picked
+        purpose = 'retake' if target in lost else 'attack'
+        note = (f"暫定: {general}で奪われた{target}を奪還" if purpose == 'retake'
+                else f"暫定: {general}で{target}を攻撃")
+        out[f'{purpose}_{len(out) + 1}'] = {
+            'general': general, 'target': target, 'cards': [], 'source': source,
+            'after': None, 'purpose': purpose, 'note': note}
+    garrison = mem.get('garrison') or {}
+    empty = [c for c in sorted(owned, key=lambda c: _distance(chapter, home, c))
+             if c != home and garrison.get(c) == [] and c not in heading]
+    for target in empty:
+        donors = sorted((c for c in owned if c != target
+                         and len([g for g in garrison.get(c) or () if g not in busy]) >= 2),
+                        key=lambda c: _distance(chapter, c, target))
+        if not donors:
             continue
-        seen.add((order['general'], target))
-        out[f'attack_{len(out) + 1}'] = {
-            'general': order['general'], 'target': target, 'cards': [],
-            'source': order['source'] if order['source'] in owned else home,
-            'after': None, 'note': f"暫定: {order['general']}で{target}を再攻撃"}
+        spare = [g for g in garrison[donors[0]] if g not in busy]
+        spare.sort(key=lambda g: g == NAME)
+        out[f'move_{len(out) + 1}'] = {
+            'general': spare[0], 'target': target, 'cards': [], 'source': donors[0],
+            'after': None, 'purpose': 'move',
+            'note': f"暫定: {spare[0]}を{donors[0]}から空の{target}へ移動"}
     return out
 
 
 def _pick_interim_order(candidates: dict, answer: dict):
-    """Return (label, order, confidence, fallback) — always an attack order."""
+    """Return (label, order, confidence, fallback) — always a sortie order."""
     choice, confidence = answer.get('choice'), answer.get('confidence')
     order = candidates.get(choice)
     confident = type(confidence) in (int, float) and confidence >= INTERIM_MIN_CONFIDENCE
     if answer.get('status') == 'ok' and order is not None and confident:
         return choice, order, confidence, False
-    # No hold: an unusable JEV answer still takes the first attack candidate.
+    # No hold: an unusable JEV answer still takes the first candidate.
     label = next(iter(candidates))
     return label, candidates[label], None, True
 
@@ -436,11 +583,11 @@ def _adopt_interim(mem, state, rid):
     state['interim_wanted'] = False
     candidates = interim_candidates(mem)
     if not candidates:
-        # Nothing to attack in this chapter/state: the only remaining wait.
+        # No castle to retake, attack or staff with a known general: the only wait.
         _record(mem, 'chart_interim_hold', chart_step=None, strategy_variant='chart_adjust_pending',
                 request_id=rid, choice=None, confidence=None, jev_status=answer.get('status') or 'no_candidates',
                 deviation_reason='interim_no_candidates',
-                reason='再攻撃できる未占領城が無いため暫定出撃を作らず調整チャートを待つ')
+                reason='奪還・攻撃・移動できる候補が無いため暫定出撃を作らず調整チャートを待つ')
         return
     choice, order, confidence, fallback = _pick_interim_order(candidates, answer)
     step = f"{chart_adjust.INTERIM_PREFIX}{rid[:6]}:{state['interim_count']}"
@@ -448,13 +595,14 @@ def _adopt_interim(mem, state, rid):
     if fallback:
         _record(mem, 'chart_interim_order', chart_step=step, strategy_variant='chart_interim_fallback',
                 request_id=rid, choice=choice, confidence=confidence, general=order['general'],
-                source=order['source'], target=order['target'], jev_status=answer.get('status'),
+                source=order['source'], target=order['target'], purpose=order.get('purpose'),
+                jev_status=answer.get('status'),
                 deviation_reason='interim_fallback',
-                reason='JEV暫定判断が保留・低確信・候補外のため最初の攻撃候補で必ず出撃')
+                reason='JEV暫定判断が保留・低確信・候補外のため最初の候補で必ず出撃')
     else:
         _record(mem, 'chart_interim_order', chart_step=step, strategy_variant='chart_interim_jev',
                 request_id=rid, choice=choice, confidence=confidence, general=order['general'],
-                source=order['source'], target=order['target'],
+                source=order['source'], target=order['target'], purpose=order.get('purpose'),
                 reason='調整チャート待ちの間、JEVが決定的候補から暫定出撃を選択')
 
 
@@ -520,7 +668,10 @@ def _off_chart(mem):
     _adopt_interim(mem, state, rid)
     interim = state.get('interim_order')
     status = mem.get('orders') or {}
-    busy = interim and status.get(interim['step']) in (None, 'pending')
+    # An interim order whose source castle was lost can never run: it must
+    # not block the next one.
+    busy = (interim and status.get(interim['step']) in (None, 'pending')
+            and _source(interim, mem) in _owned(mem))
     candidates = interim_candidates(mem)
     if busy or not candidates:
         state['interim_wanted'] = False
@@ -529,7 +680,7 @@ def _off_chart(mem):
     else:
         # JEV budget spent: still sortie with the first candidate (no hold).
         state['interim_wanted'] = False
-        if not interim or status.get(interim['step']) not in (None, 'pending'):
+        if not busy:
             state['interim_count'] = state.get('interim_count', 0) + 1
             label, order = next(iter(candidates.items()))
             step = f"{chart_adjust.INTERIM_PREFIX}{rid[:6]}:{state['interim_count']}"
@@ -538,8 +689,9 @@ def _off_chart(mem):
                     strategy_variant='chart_interim_fallback',
                     request_id=rid, choice=label, confidence=None,
                     general=order['general'], source=order['source'], target=order['target'],
+                    purpose=order.get('purpose'),
                     deviation_reason='interim_fallback',
-                    reason='JEV暫定回数の上限に達したため最初の攻撃候補で必ず出撃')
+                    reason='JEV暫定回数の上限に達したため最初の候補で必ず出撃')
 
 
 def _finish_order(mem, state, **fields):
@@ -551,9 +703,51 @@ def _finish_order(mem, state, **fields):
     mem['picked'] = []
 
 
+SOURCE_MISS_LIMIT = 3         # failed castle menus per order before giving the source up
+
+
+def _source(order, mem):
+    return mem.get('source_override', {}).get(order['step'], order['source'])
+
+
+def _owned(mem):
+    return set(mem.get('captured') or []) | {chart.home_castle(mem.get('chapter') or 0)}
+
+
+def _give_up_source(mem, order):
+    """Bound A on a castle that never opens its menu (g401: 900 presses).
+
+    The chart's own source falls back to the home castle once, as for an
+    empty general list; after that the order fails with evidence so the next
+    order (or an off-chart sortie) runs instead of a permanent loop.
+    """
+    step = order['step']
+    source = _source(order, mem)
+    home = chart.home_castle(mem.get('chapter') or 0)
+    # Navigation state is left to the nav_reset of this same miss: dropping
+    # the cell would freeze the camera on open sea again (g358).
+    misses = mem.get('source_miss', {}).pop(step, 0)
+    garrison = mem.get('garrison') or {}
+    if source != home and not mem.get('source_override', {}).get(step):
+        mem.setdefault('source_override', {})[step] = home
+        garrison.pop(source, None)
+        _record(mem, 'order_source_changed', chart_step=step, strategy_variant='source_fallback',
+                deviation_reason=f'{source}で決定しても城メニューが{misses}回開かない',
+                observed_metric={'source': source, 'menu_miss': misses},
+                reason='本城から出撃し直す')
+        return
+    _finish_order(mem, 'failed', deviation_reason=f'{source}で決定しても城メニューが{misses}回開かない',
+                  observed_metric={'source': source, 'menu_miss': misses},
+                  reason='出撃元の城を選べないため指示を諦めて次の指示へ進む')
+
+
 def map_step(screen: Screen, mem, frame):
     if mem.pop('expect_menu', False):
         mem['menu_miss'] = int(mem.get('menu_miss', 0)) + 1
+        missed = _order(mem)
+        if missed is not None:
+            misses = mem.setdefault('source_miss', {})
+            misses[missed['step']] = misses.get(missed['step'], 0) + 1
         mem['uncertain'] = True
         _record(mem, 'localize', reason='城で決定したがメニューが出ないため位置を再測定',
                 observed_metric=mem.get('cursor'),
@@ -573,7 +767,10 @@ def map_step(screen: Screen, mem, frame):
                                  'screen_cursor': list(_cursor(screen) or ()),
                                  'roofs': mem.get('roofs_seen')})
     order = _order(mem)
-    if order is not None and not _ready(order, mem):
+    if order is not None and (mem.get('source_miss') or {}).get(order['step'], 0) >= SOURCE_MISS_LIMIT:
+        _give_up_source(mem, order)
+        order = _order(mem)
+    if order is not None and (not _ready(order, mem) or _source(order, mem) not in _owned(mem)):
         # A defense loss revokes the capture an order was picked on. Holding
         # ``active`` past that keeps steering the cursor at the now-foreign
         # castle and pressing A there forever (g350, 2026-09-25: ジョンリギを
@@ -581,7 +778,8 @@ def map_step(screen: Screen, mem, frame):
         # 戻るまで次に選べる指示へ切り替える。
         _record(mem, 'order_precondition_lost', chart_step=order['step'],
                 observed_metric={'captured': sorted(mem.get('captured') or []),
-                                 'after': list(order.get('after') or ())},
+                                 'after': list(order.get('after') or ()),
+                                 'source': _source(order, mem)},
                 reason='実行中の指示の前提が失われたため指示を選び直す')
         mem['active'] = None
         mem['picked'] = []
@@ -597,11 +795,12 @@ def map_step(screen: Screen, mem, frame):
         mem['active'] = order['step']
         mem['picked'] = []
         _record(mem, 'order_start', chart_step=order['step'], **_deploy_context(order, mem),
-                source=order['source'], target=order['target'], cards=list(order['cards']),
+                source=order['source'], target=order['target'], purpose=order.get('purpose'),
+                cards=list(order['cards']),
                 reason=order['note'])
-    source = mem.get('source_override', {}).get(order['step'], order['source'])
+    source = _source(order, mem)
     goal = chart.castles(mem['chapter'])[source]
-    result = nav_step(screen, mem, frame, goal)
+    result = nav_step(screen, mem, frame, goal, source)
     if mem.get('menu_miss'):
         if mem.get('anchor') and not mem.get('uncertain') and mem.get('cursor'):
             mem['menu_miss'] = 0   # roofs re-anchored: confirming is allowed again
@@ -649,6 +848,7 @@ def target_step(screen: Screen, mem, frame):
                       cursor=mem.get('cursor'), anchor=mem.get('anchor'),
                       reason=f"{context['general']}を{order['target']}へ出撃")
         general = context['general']
+        _garrison_move(mem, general, source=_source(order, mem))
         mem.setdefault('launched', {})[order['target']] = {'general': general, 'step': order['step']}
         # Snapshot: the battle, boss entry and retries of this sortie must not
         # depend on the plan still containing it.
@@ -859,6 +1059,45 @@ def _measured_card_select(screen):
                                    else 'structured_card_select'), 'observed_rows': len(rows)}
 
 
+GENERAL_LIST_UI = frozenset({'しゅつげき', 'ステータス', 'しょうぐんは', 'おりません', 'おりません……'})
+
+
+def _present_generals(screen):
+    """Names on a general list, [] for the empty-list message, None if unreadable."""
+    if 'おりません' in screen.text:
+        return []
+    if not screen.hand:
+        return None
+    names = [w for x, y, w in _options(screen) if x > 100 and w not in GENERAL_LIST_UI
+             and not re.search(r'\d', w) and 'おりません' not in w]
+    if not names or any(UNKNOWN in w for w in names):
+        return None               # a partial reading is not evidence of who is absent
+    return names
+
+
+def _observe_garrison(screen, mem, order):
+    """Remember who a castle's general list showed (``interim_candidates``)."""
+    present = _present_generals(screen)
+    castle = _source(order, mem)
+    if present is None or not castle:
+        return
+    garrison = mem.setdefault('garrison', {})
+    if garrison.get(castle) != present:
+        garrison[castle] = present
+        _record(mem, 'garrison_seen', **_deploy_context(order, mem), castle=castle,
+                observed_metric=present[:8], reason='出撃元の将軍一覧から駐留将軍を記録')
+
+
+def _garrison_move(mem, general, source=None, target=None):
+    """A general left ``source`` and/or now holds ``target`` (known lists only)."""
+    garrison = mem.setdefault('garrison', {})
+    if source and garrison.get(source) is not None:
+        garrison[source] = [g for g in garrison[source] if g != general]
+    if target and general:
+        here = [g for g in garrison.get(target) or () if g != general]
+        garrison[target] = [*here, general]
+
+
 def deploy_step(screen: Screen, mem):
     order = _order(mem)
     kind = screen.kind
@@ -866,6 +1105,7 @@ def deploy_step(screen: Screen, mem):
         # Menus we did not open (e.g. confirm pressed by an earlier fallback).
         return [pad('b')]
     if kind == 'castle_menu':
+        (mem.get('source_miss') or {}).pop(order['step'], None)
         move = menu_to(screen, 'しゅつげき')
         if move is None:
             # No hand (or unreadable menu): hold with evidence instead of a
@@ -874,6 +1114,7 @@ def deploy_step(screen: Screen, mem):
         return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move],
                              '出撃メニューを選択')
     if kind == 'general_list':
+        _observe_garrison(screen, mem, order)
         if _is_boss_order(order, mem):
             mem.setdefault('sortie_general', {}).pop(order['step'], None)
             mem.setdefault('order_context', {}).pop(order['step'], None)
@@ -1555,8 +1796,18 @@ def battle_end(mem, next_kind):
         captured = mem.setdefault('captured', [])
         if castle not in captured:
             captured.append(castle)
+        mem['lost'] = [c for c in mem.get('lost') or [] if c != castle]
+        # The winner occupies the castle it took.
+        mem.setdefault('garrison', {})[castle] = []
+        _garrison_move(mem, cur.get('ally'), target=castle)
+    if outcome == 'win' and castle and cur.get('side') == 'defense':
+        _garrison_move(mem, cur.get('ally'), target=castle)
     if outcome == 'loss' and castle and cur.get('side') == 'defense':
         mem['captured'] = [c for c in mem.get('captured', []) if c != castle]
+        (mem.get('garrison') or {}).pop(castle, None)
+        lost = mem.setdefault('lost', [])
+        if castle not in lost:
+            lost.append(castle)
     stats = mem.setdefault('stats', {'wins': 0, 'losses': 0, 'unclassified': 0, 'cards_used': 0,
                                      'generals_lost': None, 'cards_confirmed': 0, 'card_evidence_version': 1})
     stats[{'win': 'wins', 'loss': 'losses'}.get(outcome, 'unclassified')] += 1
@@ -2320,6 +2571,7 @@ def observe_events(screen: Screen, mem):
                         'nav_last', 'nav_search', 'nav_search_leg', 'orders', 'picked', 'retries', 'retry_context', 'shop',
                         'source_override', 'uncertain', 'month', 'order_context', 'sortie_general',
                         'chart_adjust', 'chart_plan', 'launched_orders', 'sorties',
+                        'garrison', 'lost', 'owner_streak', 'source_miss',
                         'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
                         'indep_menu_key', 'indep_menu_action',
                         'monster_menu_key', 'monster_menu_cursor', 'monster_menu_hold',
