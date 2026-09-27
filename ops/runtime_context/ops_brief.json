@@ -1,11 +1,11 @@
 {
-  "output_sha256": "e348fec780e0710834b17c4672040ad8677a312fa26116315b398192a5d6060e",
+  "output_sha256": "611e0462e7d19fb9bbbc7eef5363d9a4cb398da0452fc1a56a038e2b22815977",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "508c14054b0a4236ba32468095c35bca3e076a86738ff3e4c1533bbd35b89a2b",
+  "source_sha256": "e4fdf2262ae7afcbd6773f17b55073a34f74d5c7507779608c94ce3178827b0f",
   "topics": [
+    "HP遮蔽修正を再起動なしで配備、戦線校正の否定例を整理",
     "g403起動・出撃先の位置ずれ修正（#1193→退行→#1195）（Claude Code）",
-    "敵卵リスクPhase 0をホットロード確認、Phase 1aのHP遮蔽修正をPR化",
-    "敵卵リスクPhase 0の配備準備と次フェーズ調査"
+    "敵卵リスクPhase 0をホットロード確認、Phase 1aのHP遮蔽修正をPR化"
   ]
 }
