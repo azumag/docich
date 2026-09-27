@@ -421,3 +421,25 @@ def test_a_recruit_makes_the_home_garrison_unknown_again():
     screen.header = {'gold': 100 - policy.RECRUIT_COST}
     policy._finish_month_sub(screen, mem, {'recruit': 'opened'})
     assert 'ほんじょう' not in mem['garrison'] and mem['garrison']['ジョンリギ'] == ['ココット']
+
+
+def _egg_menu(cursor_y=176):
+    from docich.hanjuku_font import TextLine
+    from docich.hanjuku_screen import classify_text
+    rows = [TextLine(176, tuple((176 + 8 * i, ch) for i, ch in enumerate('こうげき'))),
+            TextLine(192, tuple((176 + 8 * i, ch) for i, ch in enumerate('もうこうげき')))]
+    screen = Screen(lines=rows, hand=None, text='こうげきもうこうげき', menu_rows=rows,
+                    menu_cursor=cursor_y)
+    screen.kind = classify_text(screen)
+    return screen
+
+
+def test_an_egg_battle_menu_with_a_greyed_egg_row_is_answered_with_attack():
+    """g407 02:43: たまごをつかう greyed out, read as plain text and held for 20 minutes."""
+    screen = _egg_menu()
+    assert screen.kind == 'egg_battle_menu'
+    mem = {'chapter': 1, '_records': []}
+    assert policy.egg_battle_step(screen, mem) == [policy.pad('a')]
+    assert decisions(mem, 'egg_battle_egg_unavailable')
+    # Cursor on もうこうげき: move back up to こうげき first.
+    assert policy.egg_battle_step(_egg_menu(192), mem) == [policy.pad('up')]

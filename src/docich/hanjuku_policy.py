@@ -3158,6 +3158,19 @@ def egg_battle_step(screen: Screen, mem):
                 observed_metric={'experience_key': key}, source_pattern='⑥',
                 reason='チャートに召喚戦の指示がないための独自判断（原典戦術⑥、既定はたまご）')
     action = mem.get('egg_action', 'use_egg')
+    if action != 'attack' and 'たまごをつかう' not in screen.text.replace(' ', ''):
+        # The egg row is greyed out (spent): walking down to it and pressing A
+        # does nothing. Attack instead (g407 02:43).
+        if not mem.get('egg_unavailable'):
+            mem['egg_unavailable'] = True
+            _record(mem, 'egg_battle_egg_unavailable', strategy_variant='egg_battle_attack',
+                    deviation_reason='たまごをつかうが灰色で選べない',
+                    observed_metric={'rows': [r.known for r in screen.menu_rows]},
+                    reason='卵が使えないため召喚獣戦はこうげきを選ぶ')
+        attack_row = next((r.y for r in screen.menu_rows if r.known.replace(' ', '') == 'こうげき'), None)
+        if screen.menu_cursor is not None and attack_row is not None and screen.menu_cursor != attack_row:
+            return [pad('up')]
+        return [pad('a')]
     if action == 'attack':
         return [pad('a')]
     _egg_recheck(mem)

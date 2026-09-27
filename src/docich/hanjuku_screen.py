@@ -380,6 +380,11 @@ def classify_text(s: Screen) -> str:
         return 'battle_menu'
     if 'こうげき' in t and 'もうこうげき' in t and 'たまごをつかう' in t:
         return 'egg_battle_menu'
+    rows = [r.known.replace(' ', '') for r in s.menu_rows]
+    if s.menu_cursor is not None and rows[:2] == ['こうげき', 'もうこうげき']:
+        # A spent egg draws たまごをつかう greyed out and unread; as plain text
+        # the bot held this menu for 20 minutes (g407 02:43).
+        return 'egg_battle_menu'
     if 'たまごに' in t and 'もどれ' in t and any('もどれ' in r.known.replace(' ', '') for r in s.menu_rows):
         # Our summoned monster's own turn: the option box with たまごに もどれ.
         return 'monster_menu'
