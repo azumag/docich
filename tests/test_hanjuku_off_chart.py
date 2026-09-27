@@ -188,9 +188,13 @@ def test_a_spare_general_moves_into_an_owned_castle_last_seen_empty():
     move = candidates['move_1']
     assert (move['general'], move['source'], move['target'], move['purpose']) == (
         'ゼウス', 'ほんじょう', 'キカンドン', 'move')
-    # A lone general is never pulled out of its castle.
+    # A lone general is never pulled out of its castle; only an unread list
+    # (opened and checked by the move itself) may be the donor then.
     mem['garrison']['ほんじょう'] = ['ゼウス']
-    assert policy.interim_candidates(mem) == {}
+    moves = [c for c in policy.interim_candidates(mem).values() if c['purpose'] == 'move']
+    assert moves and all(c['source'] != 'ほんじょう' for c in moves)
+    assert all(mem['garrison'].get(c['source']) is None for c in moves)
+    assert all(c['general'] == policy.MOVE_ANY_GENERAL for c in moves)
 
 
 def test_launch_and_battles_update_the_measured_garrison():
@@ -421,3 +425,38 @@ def test_a_recruit_makes_the_home_garrison_unknown_again():
     screen.header = {'gold': 100 - policy.RECRUIT_COST}
     policy._finish_month_sub(screen, mem, {'recruit': 'opened'})
     assert 'ほんじょう' not in mem['garrison'] and mem['garrison']['ジョンリギ'] == ['ココット']
+
+
+def _move_list(names):
+    from docich.hanjuku_font import TextLine
+    lines = [TextLine(47, tuple((64 + 8 * i, ch) for i, ch in enumerate('しゅつげき'))),
+             TextLine(63, tuple((64 + 8 * i, ch) for i, ch in enumerate('ステータス')))]
+    lines += [TextLine(39 + 16 * n, tuple((144 + 8 * i, ch) for i, ch in enumerate(name)))
+              for n, name in enumerate(names)]
+    return Screen(lines=lines, hand=(122, 33, 139, 45), kind='general_list',
+                  text='しゅつげきステータス' + ''.join(names))
+
+
+def _move_memory():
+    order = {'step': 'I:m:1', 'general': policy.MOVE_ANY_GENERAL, 'source': 'ジョンリギ',
+             'target': 'ほんじょう', 'cards': [], 'after': None, 'purpose': 'move', 'note': 't'}
+    return {'chapter': 1, 'captured': ['ジョンリギ'], 'orders': {}, 'picked': [], '_records': [],
+            'active': 'I:m:1', 'chart_adjust': {'request_id': 'm', 'interim_order': order}}
+
+
+def test_a_move_from_an_unread_castle_sends_a_non_hero_and_keeps_one_behind():
+    mem = _move_memory()
+    actions = policy.deploy_step(_move_list([chart.HERO, 'キャラウェイ']), mem)
+    assert mem['general_override']['I:m:1'] == 'キャラウェイ'
+    assert mem['garrison']['ジョンリギ'] == [chart.HERO, 'キャラウェイ']
+    assert decisions(mem, 'move_general_picked')
+    assert actions and actions[0]['buttons'] in (['down'], ['a'])
+
+
+def test_a_move_from_a_castle_with_one_general_is_cancelled_and_remembered():
+    """g407: ジョンリギ held only ココット; the move must not empty it."""
+    mem = _move_memory()
+    assert policy.deploy_step(_move_list(['ココット']), mem) == [policy.pad('b'), policy.pad('b')]
+    assert mem['orders']['I:m:1'] == 'failed' and mem['garrison']['ジョンリギ'] == ['ココット']
+    assert not [c for c in policy.interim_candidates(mem).values()
+                if c['purpose'] == 'move' and c['source'] == 'ジョンリギ']
