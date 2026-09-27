@@ -3210,6 +3210,7 @@ _BOUNDARY_DIAG_PROMPT_CLASSES = frozenset(
         "save_prompt_pending",
         "save_confirmation",
         "character_creation",
+        "dead_disclosure",
         "capture_failed",
         "unknown",
     }

@@ -58,6 +58,7 @@ PROMPT_CLASSES = frozenset(
         "save_prompt_pending",
         "save_confirmation",
         "character_creation",
+        "dead_disclosure",
         "capture_failed",
         "unknown",
     }
@@ -322,6 +323,8 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
             return "save_confirmation"
         if _is_character_creation_screen(text):
             return "character_creation"
+        if _is_dead_disclosure_prompt(text):
+            return "dead_disclosure"
         return "unknown"
 
     def _save_signature_changed(self) -> bool | None:
@@ -570,6 +573,16 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
         cancel still refuses.  This path never sends a key, never kills a
         process and never edits canonical state.
 
+        A dead character is acknowledged the same way (#1163 follow-up): when
+        the screen is the verified death disclosure
+        (``_is_dead_disclosure_prompt``) there is no save to withdraw and the process can only end.  Without this, a
+        request path that expired there left ``force-recover`` refusing (code
+        30) until someone typed at the VM.  Send ``q`` -- NetHack's normal
+        answer that skips the remaining disclosure -- exactly once, wait for the
+        birth window to disappear, then record and acknowledge the terminal
+        boundary as above.  A process that does not exit, a changed process
+        identity or any probe failure still refuses.
+
         Every refusal path records a bounded observation first (#1015) so the
         owner can classify *why* the cancel was refused without pane text.
         """
@@ -658,6 +671,10 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
             )
             return False
         prompt_class = self._classify_prompt(text)
+        if prompt_class == "dead_disclosure":
+            return self._cancel_by_finishing_dead_disclosure(
+                request_id, process_target, deadline, cancel
+            )
         if not _is_save_prompt_pending(text):
             self._refuse_cancel(
                 "prompt_not_pending",
@@ -713,4 +730,65 @@ class NethackCoordinatorAdapter(CliCoordinatorAdapter):
                 return False
             if not _is_save_confirmation_screen(text):
                 return True
+            time.sleep(min(0.1, max(0.01, deadline - time.monotonic())))
+
+    def _cancel_by_finishing_dead_disclosure(
+        self, request_id: str, process_target: str, deadline: float, cancel
+    ) -> bool:
+        """Close a verified death disclosure and acknowledge once the game exits."""
+        self._check_active(deadline, cancel)
+        self.tmux.send_keys(process_target, ["q"], literal=True)
+        while True:
+            try:
+                self._check_active(deadline, cancel)
+            except DeadlineExceededError:
+                reason = (
+                    "cancel_requested"
+                    if cancel is not None and cancel.is_set()
+                    else "deadline_exceeded"
+                )
+                self._refuse_cancel(
+                    reason, present=True, alive=True, prompt_class="dead_disclosure"
+                )
+                raise
+            try:
+                self._verify_session_ownership()
+                remaining_target = self._runtime_process_window_target()
+            except Exception:
+                self._refuse_cancel(
+                    "post_key_probe_failed",
+                    present=True,
+                    alive=None,
+                    prompt_class="unknown",
+                )
+                return False
+            if remaining_target is None:
+                try:
+                    outcome = self._record_ended_process_boundary(request_id)
+                except Exception:
+                    self._refuse_cancel(
+                        "process_target_absent",
+                        present=False,
+                        alive=None,
+                        prompt_class="dead_disclosure",
+                    )
+                    return False
+                self._record_boundary_diag(
+                    "cancel",
+                    reason="process_target_absent",
+                    process_target_present=False,
+                    process_alive=None,
+                    prompt_class="dead_disclosure",
+                    save_signature_changed=None,
+                    boundary_outcome=outcome,
+                )
+                return True
+            if remaining_target != process_target:
+                self._refuse_cancel(
+                    "process_window_ambiguous",
+                    present=True,
+                    alive=None,
+                    prompt_class="unknown",
+                )
+                return False
             time.sleep(min(0.1, max(0.01, deadline - time.monotonic())))
