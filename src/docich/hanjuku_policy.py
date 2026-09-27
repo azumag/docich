@@ -2958,7 +2958,7 @@ def discharge_step(screen: Screen, mem):
     month = re.search(r'(\d+)ねん(\d+)のつき', screen.text)
     key = f'{month[1]}-{month[2]}' if month else None
     state = mem.get('discharge') or {}
-    if state.get('key') != key:
+    if state.get('key') != key or not isinstance(state.get('presses'), int):
         state = {'key': key, 'presses': 0}
     mem['discharge'] = state
     if state['presses'] >= DISCHARGE_LIMIT:
