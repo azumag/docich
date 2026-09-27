@@ -277,6 +277,88 @@ class TestNethackSaveConfirmation(unittest.TestCase):
         self.assertFalse(adapter.cancel_round_boundary("req-1", time.monotonic() + 1.0, None))
         self.assertEqual(len(self._sent_keys(tmux)), 1)
 
+    # -- cancel: a dead character has no save to withdraw, only an exit -------
+
+    # Shape of the production screen that wedged rotation on 2026-09-27.
+    DEAD_PANE = (
+        "Do you want your possessions identified? [ynq] (n) \n"
+        "\n"
+        "      ------      ---------------\n"
+        "    #   @            #########\n"
+        "\n"
+        "[Docich the Hatamoto           ] St:16 Dx:17 Co:17 In:9 Wi:8 Ch:6 Lawful\n"
+        "Dlvl:1 $:0 HP:0(15) Pw:2(2) AC:4 Xp:1 Starved Deaf  \n"
+    )
+
+    def _dead_cancel_adapter(self, tmux, *, exits_on_q=True, order=None):
+        adapter = self._cancel_adapter(tmux, order=order)
+        targets = ["adapter:nethack"]
+        adapter._runtime_process_window_target = mock.Mock(side_effect=lambda: targets[-1])
+        real_send = tmux.send_keys
+
+        def send(target, keys, literal=False):
+            if order is not None:
+                order.append("send")
+            real_send(target, keys, literal)
+            if keys == ["q"] and exits_on_q:
+                tmux.process_alive = False
+                targets.append(None)
+
+        tmux.send_keys = send
+        return adapter, targets
+
+    def test_cancel_finishes_a_verified_death_disclosure_and_acknowledges(self):
+        tmux = _PromptTmux(pane=self.DEAD_PANE)
+        order = []
+        adapter, _ = self._dead_cancel_adapter(tmux, order=order)
+
+        self.assertTrue(adapter.cancel_round_boundary("req-1", time.monotonic() + 1.0, None))
+
+        self.assertEqual(self._sent_keys(tmux), [("send_keys", "adapter:nethack", ["q"], True)])
+        self.assertEqual(order[:2], ["ownership", "send"])  # ownership verified before any key
+        payload = json.loads(
+            (adapter.spec.runtime_dir / nethack_adapter.BOUNDARY_RESULT_FILENAME).read_text(encoding="utf-8")
+        )
+        self.assertEqual(payload["outcome"], "ended")
+        self.assertEqual(payload["request_id"], "req-1")
+        diag = json.loads(
+            (adapter.spec.runtime_dir / nethack_adapter.BOUNDARY_DIAG_FILENAME).read_text(encoding="utf-8")
+        )
+        self.assertEqual(diag["prompt_class"], "dead_disclosure")
+        self.assertEqual(diag["boundary_outcome"], "ended")
+
+    def test_cancel_is_not_acknowledged_while_the_dead_game_keeps_running(self):
+        tmux = _PromptTmux(pane=self.DEAD_PANE)
+        adapter, _ = self._dead_cancel_adapter(tmux, exits_on_q=False)
+        with self.assertRaises(DeadlineExceededError):
+            adapter.cancel_round_boundary("req-1", time.monotonic() + 0.3, None)
+        # one ``q`` only, and no terminal boundary without the process exit
+        self.assertEqual(self._sent_keys(tmux), [("send_keys", "adapter:nethack", ["q"], True)])
+        self.assertFalse(
+            (adapter.spec.runtime_dir / nethack_adapter.BOUNDARY_RESULT_FILENAME).exists()
+        )
+
+    def test_cancel_refuses_when_the_dead_process_identity_changes(self):
+        tmux = _PromptTmux(pane=self.DEAD_PANE)
+        adapter, targets = self._dead_cancel_adapter(tmux, exits_on_q=False)
+        real_send = tmux.send_keys
+        tmux.send_keys = lambda *a, **k: (real_send(*a, **k), targets.append("adapter:other"))[0]
+        self.assertFalse(adapter.cancel_round_boundary("req-1", time.monotonic() + 1.0, None))
+        self.assertFalse(
+            (adapter.spec.runtime_dir / nethack_adapter.BOUNDARY_RESULT_FILENAME).exists()
+        )
+
+    def test_cancel_never_answers_the_disclosure_for_a_living_or_ambiguous_screen(self):
+        prompt = "Do you want your possessions identified? [ynq] (n)"
+        for pane in (prompt, prompt + "\nDlvl:1 HP:1(15)",
+                     "old message\n" + prompt + "\nDlvl:1 HP:0(15)",
+                     "You die...\nDlvl:1 HP:0(15)"):
+            with self.subTest(pane=pane):
+                tmux = _PromptTmux(pane=pane)
+                adapter, _ = self._dead_cancel_adapter(tmux)
+                self.assertFalse(adapter.cancel_round_boundary("req-1", time.monotonic() + 1.0, None))
+                self.assertEqual(self._sent_keys(tmux), [])
+
     def test_pending_prompt_match_is_specific(self):
         self.assertTrue(nethack_adapter._is_save_prompt_pending("Really save? [yn] (n)"))
         self.assertTrue(nethack_adapter._is_save_prompt_pending("  Really save? [yn] (n)  \n|@|"))
