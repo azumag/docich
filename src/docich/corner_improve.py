@@ -59,6 +59,13 @@ IMPROVE_LANE_WAIT_S = 1800.0
 IMPROVE_LANE_POLL_S = 5.0
 CORNER_IMPROVE_PHASES = frozenset({"state", "llm", "eval", "unknown"})
 
+# NInvadersの構造方策はポリシー全文の書き換えで、数値重みの候補より桁違いに
+# 重い。先頭エージェントの上限を300sに抑え、チェーン全体1260sの中に
+# 4エージェント分の再試行余地を残す (2026-09-25/09-27 は600s固まった先頭が
+# 予算をほぼ使い切り、残り48sでフォールバックが全滅して llm-rc になった)。
+NINVADERS_LLM_AGENT_TIMEOUT_S = 300
+NINVADERS_LLM_TOTAL_TIMEOUT_S = 1260.0
+
 
 def _fixed_enum(value, allowed: frozenset[str], fallback: str) -> str:
     return value if isinstance(value, str) and value in allowed else fallback
@@ -540,8 +547,15 @@ def parse_candidate(text: str, allowed_keys: set[str]) -> dict:
     return candidate
 
 
-def _default_llm(g, *, agents: str, prompt_text: str, timeout: int = 600) -> str:
-    """Native docich dispatchで1候補を生成する。本番実行のみ。"""
+def _default_llm(g, *, agents: str, prompt_text: str, timeout: int = 600,
+                 timeout_sec: float | None = None) -> str:
+    """Native docich dispatchで1候補を生成する。本番実行のみ。
+
+    ``timeout`` は1エージェントあたり、``timeout_sec`` はチェーン全体の上限。
+    数値重みだけの軽い候補は既定 (600s/660s) で足りるが、ポリシー全文を
+    書き換える重い候補は先頭エージェントが全体予算を食い潰すとフォール
+    バックが動けないため、呼び出し側が分割した予算を渡せるようにする。
+    """
     if os.environ.get("DOCICH_ALLOW_REAL_AI") != "1":
         raise CornerImproveError(
             "LLM改善の実実行には DOCICH_ALLOW_REAL_AI=1 が必要です",
@@ -556,7 +570,9 @@ def _default_llm(g, *, agents: str, prompt_text: str, timeout: int = 600) -> str
             agents=agents,
             prompt_text=prompt_text,
             timeout=timeout,
-            timeout_sec=float(timeout + 60),
+            timeout_sec=(
+                float(timeout + 60) if timeout_sec is None else float(timeout_sec)
+            ),
         )
     except (AiError, OSError) as exc:
         raise CornerImproveError(
@@ -747,6 +763,15 @@ def _bot_evaluator(g, game: str, matches: int):
     return evaluate
 
 
+def _ninvaders_llm_call(g, *, agents: str):
+    """NInvaders構造方策の既定LLM呼び出し。予算をチェーンへ配分する。"""
+    return lambda prompt: _default_llm(
+        g, agents=agents, prompt_text=prompt,
+        timeout=NINVADERS_LLM_AGENT_TIMEOUT_S,
+        timeout_sec=NINVADERS_LLM_TOTAL_TIMEOUT_S,
+    )
+
+
 def _ninvaders_policy_improve(g, *, agents: str, margin_pct: float,
                               live_stats: dict, llm=None, dry_run: bool = False) -> dict:
     """Rewrite and measure the live NInvaders policy with six paired samples.
@@ -766,7 +791,7 @@ def _ninvaders_policy_improve(g, *, agents: str, margin_pct: float,
 
     policy_dir = Path(g.state_dir) / "resolver" / "ninvaders"
     store = PolicyStore(policy_dir)
-    llm_call = llm or (lambda prompt: _default_llm(g, agents=agents, prompt_text=prompt))
+    llm_call = llm or _ninvaders_llm_call(g, agents=agents)
     try:
         result = improve_once(
             store,

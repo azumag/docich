@@ -271,3 +271,21 @@ def test_run_corner_improve_code_route_keeps_the_existing_guards(tmp_path, monke
     assert corner_improve.run_corner_improve(g, game="ninvaders", date_str="2026-01-01", agents="a")["reason"] == "wrong-date"
     dry = corner_improve.run_corner_improve(g, game="ninvaders", date_str="2026-09-10", agents="a", dry_run=True)
     assert dry["status"] == "dry-run" and "incumbent" in dry
+
+
+def test_default_llm_call_bounds_each_agent_and_reserves_fallback_budget(monkeypatch):
+    captured = {}
+
+    def fake_default_llm(g, *, agents, prompt_text, timeout=600, timeout_sec=None):
+        captured.update(agents=agents, prompt_text=prompt_text,
+                        timeout=timeout, timeout_sec=timeout_sec)
+        return "raw"
+
+    monkeypatch.setattr(corner_improve, "_default_llm", fake_default_llm)
+    call = corner_improve._ninvaders_llm_call(object(), agents="a:1,b:2,c:3,d:4")
+    assert call("prompt") == "raw"
+    assert captured["agents"] == "a:1,b:2,c:3,d:4"
+    assert captured["timeout"] == corner_improve.NINVADERS_LLM_AGENT_TIMEOUT_S
+    assert captured["timeout_sec"] == corner_improve.NINVADERS_LLM_TOTAL_TIMEOUT_S
+    # チェーン全員が1エージェント上限の満額を使っても全体予算に収まる
+    assert captured["timeout"] * 4 <= captured["timeout_sec"]

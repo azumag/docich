@@ -564,3 +564,32 @@ def test_pacman_interrupted_promotion_finishes_without_rerunning_ab(tmp_path, mo
     assert not trial_path.exists()
     live = json.loads((tmp_path / 'live-brain' / 'pacman4console' / 'weights.json').read_text())
     assert live[key] == candidate_value
+
+
+def test_default_llm_forwards_the_split_timeout_budget(monkeypatch):
+    import docich.ai_generate as ai_generate
+
+    captured = {}
+
+    class _Result:
+        returncode = 0
+        output = 'ok'
+        failure_kind = None
+
+    def fake_run_prompt(g, *, label, agents, prompt_text, timeout=None, timeout_sec=None):
+        captured.update(label=label, timeout=timeout, timeout_sec=timeout_sec)
+        return _Result()
+
+    monkeypatch.setenv('DOCICH_ALLOW_REAL_AI', '1')
+    monkeypatch.setattr(ai_generate, 'run_prompt', fake_run_prompt)
+
+    assert corner_improve._default_llm(
+        None, agents='a', prompt_text='p', timeout=300, timeout_sec=1260.0) == 'ok'
+    assert captured == {
+        'label': 'RADIO:retro-improve', 'timeout': 300, 'timeout_sec': 1260.0,
+    }
+
+    # 予算未指定の従来呼び出し (数値重みの軽い候補) は既定のまま変えない。
+    assert corner_improve._default_llm(None, agents='a', prompt_text='p') == 'ok'
+    assert captured['timeout'] == 600
+    assert captured['timeout_sec'] == 660.0
