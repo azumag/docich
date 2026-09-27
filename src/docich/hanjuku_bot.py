@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v22-move-unread'
+BOT_VERSION = 'hanjuku-chart-v23-world-map'
 
 
 # Native title copyright rows, measured from the owner's ROM. A strict match
@@ -277,6 +277,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         actions=policy.deploy_step(screen,mem)
     elif kind=='map_target' and mem.get('chapter'):
         actions=policy.target_step(screen,mem,frame)
+    elif kind=='world_map' and mem.get('chapter'):
+        actions=policy.world_map_step(screen,mem,frame)
     elif kind=='map' and mem.get('chapter'):
         actions=policy.map_step(screen,mem,frame)
     elif kind=='discharge_menu':

@@ -460,3 +460,52 @@ def test_a_move_from_a_castle_with_one_general_is_cancelled_and_remembered():
     assert mem['orders']['I:m:1'] == 'failed' and mem['garrison']['ジョンリギ'] == ['ココット']
     assert not [c for c in policy.interim_candidates(mem).values()
                 if c['purpose'] == 'move' and c['source'] == 'ジョンリギ']
+
+
+def _world_map_frame(owners):
+    """Synthetic Y view: gold frame pixel, open sea, one flag per castle (chapter 1)."""
+    from docich import hanjuku_screen
+    px = bytearray(256 * 224 * 3)
+
+    def put(x, y, rgb):
+        i = (y * 256 + x) * 3
+        px[i:i + 3] = bytes(rgb)
+    for x in range(256):
+        for y in range(224):
+            put(x, y, hanjuku_screen.WORLD_SEA)
+    put(128, 10, hanjuku_screen.WORLD_BORDER)
+    ox, oy = policy.WORLD_MAP_OFFSET[1]
+    for name, owner in owners.items():
+        wx, wy = CASTLES[name]
+        mx, my = round(wx / 8 + ox), round(wy / 8 + oy)
+        rgb = policy.WORLD_FLAG_OWN if owner == 'own' else policy.WORLD_FLAG_ENEMY
+        for dx in range(4):
+            for dy in range(2):
+                put(mx + dx, my + dy, rgb)
+    return Frame(256, 224, bytes(px))
+
+
+def test_the_y_whole_map_view_updates_every_castle_owner_and_closes_with_y():
+    from docich.hanjuku_screen import parse
+    frame = _world_map_frame({'ほんじょう': 'own', 'キカンドン': 'enemy', 'ジョンリギ': 'own'})
+    screen = parse(frame)
+    assert screen.kind == 'world_map'
+    mem = {'chapter': 1, 'captured': ['キカンドン'], '_records': [], 'tick': 7}
+    assert policy.world_map_step(screen, mem, frame) == [policy.pad('y')]
+    assert mem['captured'] == ['ジョンリギ'] and mem['lost'] == ['キカンドン']
+    [owners] = decisions(mem, 'world_map_owners')
+    assert owners['observed_metric'] == {'ほんじょう': 'own', 'キカンドン': 'enemy', 'ジョンリギ': 'own'}
+
+
+def test_the_map_opens_the_y_view_when_idle_and_a_survey_is_due():
+    mem = {'chapter': 1, 'orders': {}, 'picked': [], '_records': [], 'tick': 10}
+    assert policy.map_step(map_screen(100, 100), mem, FRAME) == [policy.pad('y')]
+    assert decisions(mem, 'world_map_open') and mem['world_map_tick'] == 10
+    mem['_records'] = []
+    assert policy._world_map_wanted(mem) is False
+    mem['world_map_due'] = True                              # a castle was attacked
+    assert policy._world_map_wanted(mem) is True
+    mem.pop('world_map_due')
+    mem['tick'] = 10 + policy.WORLD_SURVEY_TICKS
+    assert policy._world_map_wanted(mem) is True
+    assert policy._world_map_wanted({'chapter': 2, 'tick': 0}) is False   # not calibrated
