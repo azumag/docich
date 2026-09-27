@@ -208,14 +208,6 @@ def retroarch_cfg_lines(g, game, cfg_path: Path, network_port: int) -> list[str]
                   'video_force_aspect = "true"', 'video_crop_overscan = "false"',
                   'savestate_auto_index = "false"', 'state_slot = "0"']
     from ..hanjuku_run import enabled as scripted_hanjuku
-    if scripted_hanjuku(game) and d.viewport_width > 0:
-        # Render native 256x224 (the bot's own frame size) instead of 3x:
-        # far fewer pixels to draw, capture and decode. The presentation
-        # scales it back to 4:3 inside the broadcast rectangle (g389: stutter
-        # under load).
-        lines = [line for line in lines
-                 if not line.startswith(('video_scale', 'video_force_aspect'))]
-        lines += ['video_scale = "1.0"', 'video_force_aspect = "false"']
     if scripted_hanjuku(game):
         # Stable native pixels for the deterministic screen signatures.
         lines += ['video_smooth = "false"',

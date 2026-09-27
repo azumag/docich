@@ -480,13 +480,14 @@ def test_presenter_tracks_child_groups_and_private_window_without_resizing(tmp_p
     assert set(pid for pid, sig in signals if sig) == {40000, 40001, 40002}
 
 
-def test_scripted_hanjuku_renders_native_and_projects_stretched_at_broadcast_rate(adapter):
-    """g389: 3x render + 15 fps projection stuttered on the loaded VM."""
+def test_scripted_hanjuku_keeps_3x_render_and_projects_4_3_at_broadcast_rate(adapter):
+    """g389: the 15 fps projection stuttered; the render itself stays 3x."""
     adapter.game = replace(adapter.game, name='hanjuku-hero',
                            raw={**adapter.game.raw, 'hanjuku': {'script_bot': True}})
     lines = retroarch_cfg_lines(adapter.g, adapter.game, adapter._cfg_path(), adapter._network_port())
-    assert 'video_scale = "1.0"' in lines and 'video_force_aspect = "false"' in lines
-    assert not any(line.startswith('video_scale = "3') for line in lines)
+    # Native 1x broke text reading (g391: the name screen read as text and
+    # A typed ああああ...), so the 3x render the signatures were built on stays.
+    assert 'video_scale = "3.0"' in lines and 'video_force_aspect = "true"' in lines
     command = adapter._game_command()
     assert command[command.index('--framerate') + 1] == '30'
     assert command[command.index('--fit') + 1] == 'tv'
