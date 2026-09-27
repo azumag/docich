@@ -1,11 +1,11 @@
 {
-  "output_sha256": "09b267eb64dad11e658181ab68e12da64b2b0b3a26ad2464a978b442a34ea247",
+  "output_sha256": "d83f0e8262ea17fb816c9f3d360b771944f3ccb2f290853cc2568e9e2fa9734a",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "f55932b5516645b27f016cacf0efde3cce7157e790bd3c939ef2aeda0d074da4",
+  "source_sha256": "52c921bfb1d7e4d7ae69c9092beccfd2ec119c68456d78cc673b9b1f967a9137",
   "topics": [
+    "半熟英雄の部分使用卵を全回復する方策を検証",
     "半熟英雄の低HP救済を配備し次の回を起動",
-    "半熟英雄の低HP救済戦略を実装・隔離検証",
-    "半熟英雄の戦闘改善を配備し本番稽古で勝利"
+    "半熟英雄の低HP救済戦略を実装・隔離検証"
   ]
 }
