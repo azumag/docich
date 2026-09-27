@@ -369,7 +369,55 @@ def test_moves_come_before_attacks_and_staff_an_empty_home_castle():
 
 
 def test_a_move_already_marching_is_not_offered_again():
-    mem = {'chapter': 1, 'orders': {}, '_records': [], 'captured': ['キカンドン'],
+    mem = {'chapter': 1, 'orders': {}, '_records': [], 'captured': ['キカンドン'], 'tick': 10,
            'garrison': {'ほんじょう': [], 'キカンドン': ['どうし', 'ゼウス', 'ココット']},
-           'sorties': {'I:x:1': {'general': 'ゼウス', 'target': 'ほんじょう', 'status': 'en_route'}}}
+           'sorties': {'I:x:1': {'general': 'ゼウス', 'target': 'ほんじょう', 'status': 'en_route',
+                                 'tick': 5}}}
     assert not [c for c in policy.interim_candidates(mem).values() if c['purpose'] == 'move']
+
+
+def _stuck_plan_memory():
+    """g407 01:38-02:39: every plan order's general was a stale "marching" unit."""
+    plan = [{'step': 'A:p:K1', 'general': 'どうし', 'source': 'ほんじょう', 'target': 'キカンドン',
+             'cards': [], 'after': None, 'note': 't'},
+            {'step': 'A:p:K3', 'general': 'ココット', 'source': 'ジョンリギ', 'target': 'スペンソニア',
+             'cards': [], 'after': None, 'note': 't'},
+            {'step': 'A:p:K4', 'general': 'どうし', 'source': 'キカンドン', 'target': 'ゴーメン',
+             'cards': [], 'after': ['captured', 'キカンドン'], 'note': 't'}]
+    return {'chapter': 1, 'orders': {'1-A2': 'launched_unconfirmed', 'I:b:1': 'launched'},
+            '_records': [], 'captured': ['ジョンリギ'], 'lost': ['キカンドン'],
+            'chart_plan': {'request_id': 'p', 'orders': plan},
+            'garrison': {'ほんじょう': [], 'ジョンリギ': ['ココット']},
+            'sorties': {'1-A2': {'general': 'どうし', 'target': None, 'status': 'launched_unconfirmed'},
+                        'I:b:1': {'general': 'ココット', 'target': 'スペンソニア', 'status': 'en_route'}}}
+
+
+def test_sorties_without_a_recent_tick_no_longer_block_their_generals():
+    mem = _stuck_plan_memory()
+    assert policy._en_route(mem) == (set(), set())          # legacy records: no tick
+    # K1's source was last read empty, so the next runnable order is ココット's K3.
+    assert policy.next_order(mem)['step'] == 'A:p:K3'
+    mem['tick'] = 50
+    mem['sorties']['I:b:1']['tick'] = 45
+    assert policy.next_order(mem) is None                     # ココット marching right now
+    mem['tick'] = 45 + policy.SORTIE_BUSY_TICKS
+    assert policy.next_order(mem)['step'] == 'A:p:K3'         # ...but not forever
+
+
+def test_a_plan_of_orders_that_can_never_run_does_not_block_off_chart_sorties():
+    mem = _stuck_plan_memory()
+    mem['orders'].update({'A:p:K1': 'failed', 'A:p:K3': 'failed'})
+    # K4 waits on キカンドン, which no marching unit is taking.
+    assert policy._plan_pending(mem) is False
+    mem['tick'] = 10
+    mem['sorties']['X'] = {'general': 'ゼウス', 'target': 'キカンドン', 'status': 'en_route', 'tick': 9}
+    assert policy._plan_pending(mem) is True
+
+
+def test_a_recruit_makes_the_home_garrison_unknown_again():
+    mem = {'chapter': 1, '_records': [], 'garrison': {'ほんじょう': [], 'ジョンリギ': ['ココット']},
+           'month_sub': {'kind': 'recruit', 'gold_before': 100, 'key': '1-9'}}
+    screen = Screen(lines=[], hand=None, text='', kind='month_menu')
+    screen.header = {'gold': 100 - policy.RECRUIT_COST}
+    policy._finish_month_sub(screen, mem, {'recruit': 'opened'})
+    assert 'ほんじょう' not in mem['garrison'] and mem['garrison']['ジョンリギ'] == ['ココット']

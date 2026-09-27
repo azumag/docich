@@ -488,9 +488,27 @@ def _is_boss_order(order, mem) -> bool:
 
 
 def _plan_pending(mem) -> bool:
+    """An adopted plan still has an order that can run, or one waiting on a
+    capture that a marching unit is making.
+
+    Orders that can never run (source lost, capture nobody is making) kept
+    off-chart sorties (retake, staffing) off for an hour in g407.
+    """
     status = mem.get('orders') or {}
-    return any(status.get(o['step']) in (None, 'pending')
-               for o in (mem.get('chart_plan') or {}).get('orders') or ())
+    owned = _owned(mem)
+    sorties = mem.get('sorties') or {}
+    plan = (mem.get('chart_plan') or {}).get('orders') or ()
+    # A recent sortie, or a launched plan order with no sortie record to age.
+    heading = _en_route(mem)[1] | {o['target'] for o in plan
+                                   if status.get(o['step']) == 'launched' and o['step'] not in sorties}
+
+    def live(o):
+        after = o.get('after') or ()
+        if after and after[0] == 'captured' and after[1] not in owned:
+            return after[1] in heading          # waits on a capture somebody is making
+        return _ready(o, mem) and _source(o, mem) in owned
+
+    return any(status.get(o['step']) in (None, 'pending') and live(o) for o in plan)
 
 
 def next_order(mem):
@@ -502,9 +520,13 @@ def next_order(mem):
     retries = [o for step, o in (mem.get('launched_orders') or {}).items()
                if step not in steps and status.get(step) == 'pending']
     owned = _owned(mem)
+    garrison = mem.get('garrison') or {}
     for order in (*current, *retries):
         if (status.get(order['step']) in (None, 'pending') and _ready(order, mem)
                 and _source(order, mem) in owned
+                # A source last read empty would open an empty list and fail
+                # the order (g407: the plan's どうし/ヴィーナス from an empty home).
+                and garrison.get(_source(order, mem)) != []
                 and mem.get('general_override', {}).get(order['step'], order['general']) not in _en_route(mem)[0]):
             return order
     return None
@@ -551,9 +573,21 @@ def _distance(chapter, a, b) -> int:
     return abs(ax - bx) + abs(ay - by)
 
 
+SORTIE_BUSY_TICKS = 400       # observations (~10 min at 1.5 s) a marching general stays busy
+
+
 def _en_route(mem):
-    """(generals, targets) of sorties launched but not yet seen arriving."""
-    sorties = [s for s in (mem.get('sorties') or {}).values() if s.get('status') in ('en_route', 'launched_unconfirmed')]
+    """(generals, targets) of sorties launched but not yet seen arriving.
+
+    Only recent ones: an arrival that was never read kept どうし and ココット
+    "marching" for over an hour in g407 (01:38-02:39), which blocked every
+    order of the adopted plan and, through it, every off-chart sortie. A
+    sortie without a tick predates this bound and no longer counts.
+    """
+    now = int(mem.get('tick') or 0)
+    sorties = [s for s in (mem.get('sorties') or {}).values()
+               if s.get('status') in ('en_route', 'launched_unconfirmed')
+               and s.get('tick') is not None and now - int(s['tick']) < SORTIE_BUSY_TICKS]
     return {s.get('general') for s in sorties}, {s['target'] for s in sorties if s.get('target')}
 
 
@@ -832,7 +866,7 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
     mem.setdefault('sorties', {})[step] = {
         'general': general, 'source': _source(order, mem), 'target': None,
         'planned_target': order['target'], 'status': 'launched_unconfirmed',
-        'evidence': context}
+        'evidence': context, 'tick': int(mem.get('tick') or 0)}
     _finish_order(mem, 'launched_unconfirmed', general=general, target=None,
                   planned_target=order['target'], screen=screen.kind,
                   reason='目標決定前に出撃先選択を離れたため出撃の成否と行先を未確定として記録')
@@ -1103,7 +1137,8 @@ def target_step(screen: Screen, mem, frame):
         # sortie to the same castle must not unbind an earlier unit en route.
         mem.setdefault('sorties', {})[order['step']] = {
             'general': general, 'target': order['target'], 'status': 'en_route',
-            'evidence': (mem.get('order_context') or {}).get(order['step'])}
+            'evidence': (mem.get('order_context') or {}).get(order['step']),
+            'tick': int(mem.get('tick') or 0)}
         return [pad('a')]
     return _deploy_input(screen, mem, order, result or [], '出撃先へ目標カーソルを移動')
 
@@ -2729,6 +2764,10 @@ def _finish_month_sub(screen, mem, shop):
             and (sub['kind'] != 'egg' or sub.get('full_selected') is True))
     if shop and shop.get(sub['kind']) == 'opened':
         shop[sub['kind']] = 'done' if paid else 'unverified'
+    if sub['kind'] == 'recruit':
+        # A recruit (paid or not confirmed) may now stand in the home castle:
+        # its last reading no longer proves it empty.
+        (mem.get('garrison') or {}).pop(chart.home_castle(mem.get('chapter') or 0), None)
     if paid and sub['kind'] == 'egg':
         mem['egg_uses'] = {}      # counts are re-read at the next sorties
         mem.pop('egg_recheck', None)
@@ -3006,6 +3045,7 @@ def yes_no_step(screen: Screen, mem):
 
 def observe_events(screen: Screen, mem):
     """Record chart-relevant facts that need no input (month header, harvest)."""
+    mem['tick'] = int(mem.get('tick') or 0) + 1      # observations: ages sorties (_en_route)
     _hold_general_loss_metric(mem)
     _migrate_card_evidence(mem)
     if screen.kind in ('card_select', 'sortie_confirm'):
