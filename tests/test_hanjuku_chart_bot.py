@@ -1504,7 +1504,8 @@ def test_monster_menu_situation_key_uses_the_summoned_panel():
 
 def _discharge_canvas(month=8):
     c = Canvas()
-    c.text(16, 15, f'2ねん{month}のつき')
+    if month is not None:
+        c.text(16, 15, f'2ねん{month}のつき')
     c.text(24, 47, 'ミント')
     c.text(24, 63, 'ゼウス')
     c.text(16, 191, 'どのしょうぐんをかいこに')
@@ -1521,6 +1522,17 @@ def test_forced_discharge_list_confirms_default_cursor_instead_of_b():
     record = state['_records'][-1]
     assert record['decision'] == 'discharge_general' and record['general'] == 'ミント'
     assert record['observed_metric']['month'] == '2-8'
+
+
+def test_forced_discharge_initializes_counter_without_month_header():
+    state = {'policy': {'chapter': 1, 'orders': {}, 'picked': []}}
+    actions, state = decide(_discharge_canvas(month=None).frame(), state)
+    assert state['screen_kind'] == 'discharge_menu'
+    assert actions == [{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}]
+    assert state['policy']['discharge'] == {'key': None, 'presses': 1}
+    record = state['_records'][-1]
+    assert record['decision'] == 'discharge_general'
+    assert record['observed_metric']['month'] is None
 
 
 def test_forced_discharge_holds_after_monthly_limit_and_resets_next_month():
