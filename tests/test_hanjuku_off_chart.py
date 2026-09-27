@@ -280,3 +280,22 @@ def test_moving_cursor_or_leaving_the_map_never_counts_as_stuck(monkeypatch):
     for step in range(6):
         policy.map_step(map_screen(40 + 20 * step, 40 + 20 * step), mem, FRAME)
     assert not decisions(mem, 'nav_stuck')
+
+
+def test_a_dead_reckoned_arrival_is_not_confirmed_until_roofs_agree(monkeypatch):
+    """g403 23:04: edge scrolls drifted ~60 px and ココット was sent north of ジョンリギ."""
+    jonrigi = CASTLES['ジョンリギ']
+    true_cell = [jonrigi[0] - 7, jonrigi[1] - 62]          # where the cursor really was
+    cam = (true_cell[0] - 8, true_cell[1] - 8)
+    roofs = [{'kind': 'enemy', 'target': (jonrigi[0] - cam[0], jonrigi[1] - cam[1]), 'clipped': False},
+             {'kind': 'own', 'target': (CASTLES['キカンドン'][0] - cam[0],
+                                        CASTLES['キカンドン'][1] - cam[1]), 'clipped': False}]
+    monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: roofs)
+    mem = {'chapter': 1, 'cursor': [jonrigi[0] + 3, jonrigi[1]], 'uncertain': False, '_records': []}
+    screen = Screen(lines=[], hand=None, text='', kind='map_target', marker=(8, 8))
+    first = policy.nav_step(screen, mem, FRAME, jonrigi)
+    assert first != 'arrived' and mem['uncertain'] is True
+    assert decisions(mem, 'arrival_unverified')
+    second = policy.nav_step(screen, mem, FRAME, jonrigi)
+    assert mem['cursor'] == true_cell and mem['anchor'] == 'ジョンリギ'
+    assert {a['buttons'][0] for a in second} == {'right', 'down'}
