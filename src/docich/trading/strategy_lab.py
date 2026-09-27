@@ -279,6 +279,23 @@ def save_strategy_experiment(trading_dir, spec: StrategyExperiment, *, activated
     return target
 
 
+def load_pending_experiment(trading_dir) -> StrategyExperiment | None:
+    """Load the queued next candidate, or None when absent/invalid.
+
+    Pending candidates are validated on save, so a malformed file is treated as
+    unusable evidence (never activated) instead of raising into the improvement
+    job.
+    """
+    path = Path(trading_dir) / PENDING_FILENAME
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, Mapping) or data.get("schema_version") != 1:
+            return None
+        return experiment_from_mapping(data)
+    except (OSError, ValueError, StrategyLabError, TradingValidationError):
+        return None
+
+
 def save_pending_experiment(trading_dir, spec: StrategyExperiment, *, proposed_at: float) -> Path:
     payload = experiment_to_payload(spec)
     payload["proposed_at"] = float(proposed_at)

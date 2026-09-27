@@ -29,6 +29,7 @@ from .strategy_lab import (
     StrategyLabError,
     experiment_from_mapping,
     experiment_to_payload,
+    load_pending_experiment,
     load_strategy_experiment,
     persist_evaluation,
     save_pending_experiment,
@@ -491,6 +492,15 @@ def parse_experiment_candidate(text: str) -> StrategyExperiment:
         raise PaperImproveError(_safe_reason(exc)) from exc
 
 
+def _same_experiment(left: StrategyExperiment, right: StrategyExperiment) -> bool:
+    """Compare two specs ignoring their activation timestamps."""
+    left_payload = experiment_to_payload(left)
+    right_payload = experiment_to_payload(right)
+    left_payload.pop("activated_at", None)
+    right_payload.pop("activated_at", None)
+    return left_payload == right_payload
+
+
 def _should_rotate_experiment(
     active: StrategyExperiment | None,
     evaluation: Mapping[str, object] | None,
@@ -704,15 +714,40 @@ def _run_paper_improve(
     try:
         if experiment is not None:
             if _should_rotate_experiment(active_experiment, evaluation, now=moment):
-                save_strategy_experiment(target, experiment, activated_at=moment)
-                changed = active_experiment is None or experiment_to_payload(experiment) != experiment_to_payload(active_experiment)
-                detail = "新しいPAPER戦略実験を開始"
+                # The candidate queued while the previous experiment was still
+                # under evaluation is the one to run next; the freshly
+                # generated candidate becomes the new queued candidate instead
+                # of discarding one of the two.
+                pending = load_pending_experiment(target)
+                if (
+                    pending is not None
+                    and active_experiment is not None
+                    and _same_experiment(pending, active_experiment)
+                ):
+                    # Re-activating the same spec would reset the evaluation
+                    # clock without changing anything; prefer the new candidate.
+                    pending = None
+                activated = pending if pending is not None else experiment
+                save_strategy_experiment(target, activated, activated_at=moment)
+                changed = active_experiment is None or experiment_to_payload(activated) != experiment_to_payload(active_experiment)
+                if pending is not None and experiment_to_payload(experiment) != experiment_to_payload(pending):
+                    save_pending_experiment(target, experiment, proposed_at=moment)
+                    detail = "保存済みの次候補を開始し、今回候補を次回用に保存"
+                    queued = True
+                elif pending is not None:
+                    detail = "保存済みの次候補を開始"
+                    queued = False
+                else:
+                    detail = "新しいPAPER戦略実験を開始"
+                    queued = False
                 result = {
                     "status": "improved",
                     "kind": "strategy-experiment",
-                    "experiment": experiment_to_payload(experiment),
+                    "experiment": experiment_to_payload(activated),
                     "changed": changed,
                     "activated": True,
+                    "activated_from": "pending" if pending is not None else "generated",
+                    "pending_queued": queued,
                 }
             else:
                 save_pending_experiment(target, experiment, proposed_at=moment)

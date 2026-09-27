@@ -861,3 +861,90 @@ def test_generate_next_narration_reports_unusable_output_as_failure(tmp_path, mo
         timeframe_facts=_TIMEFRAME_FACTS,
     )
     assert result == {"status": "failed", "reason": "CornerScriptError:no-json-object"}
+
+
+def test_build_next_prompt_news_slot_requests_hints_only_with_research(tmp_path):
+    _write_status(tmp_path)
+    facts = build_facts(tmp_path, now=1010.0)
+    facts["research"] = {"status": "prepared", "news_items": [{"title": "見出し"}]}
+    news_prompt = build_next_prompt(facts, ["旧"], target_key="news")
+    assert "improvement_hints" in news_prompt
+    assert "検証方法" in news_prompt
+    chart_prompt = build_next_prompt(facts, ["旧"], target_key="chart")
+    assert "improvement_hints" not in chart_prompt
+
+    empty = build_facts(tmp_path, now=1010.0)
+    empty["research"] = {"status": "prepared", "news_items": []}
+    assert "improvement_hints" not in build_next_prompt(empty, ["旧"], target_key="news")
+
+
+def test_generate_next_narration_news_slot_finalizes_research_for_improvement(tmp_path, monkeypatch):
+    from docich.trading import corner_script
+    from docich.trading.corner_research import load_research_result
+    from docich.trading.paper_improve import build_improve_prompt
+
+    _write_status(tmp_path)
+    monkeypatch.setenv("DOCICH_ALLOW_REAL_AI", "1")
+    research = {
+        "schema_version": 1,
+        "status": "prepared",
+        "date": "2027-01-15",
+        "news_items": [{"title": "Exchange liquidity changes", "source": "Source D"}],
+    }
+    monkeypatch.setattr(corner_script, "prepare_research_context", lambda *a, **k: dict(research))
+    response = json.dumps({
+        "slot": "news",
+        "topic": "流動性",
+        "text": "板厚の変化を観測します。",
+        "improvement_hints": [{
+            "kind": "data",
+            "title": "板厚の継続変化を観測する",
+            "rationale": "ニュース単発ではなく継続変化を条件にして反証する。",
+            "evidence": "Exchange liquidity changes",
+            "confidence": "medium",
+        }],
+    })
+    monkeypatch.setattr(corner_script, "generate_text", lambda *a, **k: response)
+
+    item = generate_next_narration(
+        object(), trading_dir=tmp_path, agents="opencode:x", target_key="news",
+        now=1010.0, timeframe_facts=_TIMEFRAME_FACTS,
+    )
+    assert item["status"] == "item"
+    assert item["text"] == "板厚の変化を観測します。"
+
+    saved = load_research_result(tmp_path)
+    assert saved["status"] == "finalized"
+    assert saved["news_analysis"] == "板厚の変化を観測します。"
+    assert saved["improvement_hints"][0]["title"] == "板厚の継続変化を観測する"
+
+    prompt = build_improve_prompt(build_facts(tmp_path, now=1010.0))
+    assert "external_research_hypotheses" in prompt
+    assert "板厚の継続変化を観測する" in prompt
+    assert "Exchange liquidity changes" in prompt
+
+
+def test_generate_next_narration_keeps_segment_when_research_finalize_fails(tmp_path, monkeypatch):
+    from docich.trading import corner_script
+
+    _write_status(tmp_path)
+    monkeypatch.setenv("DOCICH_ALLOW_REAL_AI", "1")
+    monkeypatch.setattr(
+        corner_script, "prepare_research_context",
+        lambda *a, **k: {"schema_version": 1, "status": "prepared", "news_items": [{"title": "x"}]},
+    )
+    monkeypatch.setattr(corner_script, "generate_text", lambda *a, **k: json.dumps({
+        "slot": "news", "topic": "流動性", "text": "板厚の変化を観測します。",
+        "improvement_hints": [{"kind": "data", "title": "板厚", "rationale": "r", "confidence": "low"}],
+    }))
+
+    def boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(corner_script, "finalize_research_result", boom)
+    item = generate_next_narration(
+        object(), trading_dir=tmp_path, agents="opencode:x", target_key="news",
+        now=1010.0, timeframe_facts=_TIMEFRAME_FACTS,
+    )
+    assert item["status"] == "item"
+    assert item["text"] == "板厚の変化を観測します。"

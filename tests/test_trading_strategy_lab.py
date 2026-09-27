@@ -24,6 +24,7 @@ from docich.trading.strategy_lab import (  # noqa: E402
     experiment_from_mapping,
     load_strategy_experiment,
     persist_evaluation,
+    save_pending_experiment,
     save_strategy_experiment,
 )
 from docich.trading.strategy_runtime import set_active_experiment  # noqa: E402
@@ -235,6 +236,47 @@ def test_fresh_active_experiment_keeps_next_candidate_pending(tmp_path):
     assert load_strategy_experiment(trading_dir).experiment_id == "active"
     pending = json.loads((trading_dir / "paper_strategy_pending.json").read_text(encoding="utf-8"))
     assert pending["experiment_id"] == "next"
+
+
+def test_rotation_activates_queued_pending_and_queues_new_candidate(tmp_path):
+    g = _global(tmp_path)
+    trading_dir = _trading_dir(g)
+    stale = experiment_from_mapping(experiment_payload("lab-old"))
+    save_strategy_experiment(trading_dir, stale, activated_at=NOW - 49 * 3600)
+    queued = experiment_from_mapping(experiment_payload("lab-queued"))
+    save_pending_experiment(trading_dir, queued, proposed_at=NOW - 3600)
+
+    response = json.dumps({"strategy_experiment": experiment_payload("lab-fresh")})
+    result = run_paper_improve(
+        g, trading_dir=trading_dir, agents="opencode:x", llm=lambda prompt: response, now=NOW
+    )
+    assert result["status"] == "improved"
+    assert result["activated"] is True
+    assert result["activated_from"] == "pending"
+    assert result["pending_queued"] is True
+    active = load_strategy_experiment(trading_dir)
+    assert active is not None and active.experiment_id == "lab-queued"
+    pending = json.loads((trading_dir / "paper_strategy_pending.json").read_text(encoding="utf-8"))
+    assert pending["experiment_id"] == "lab-fresh"
+    assert pending["proposed_at"] == NOW
+
+
+def test_rotation_ignores_pending_identical_to_active(tmp_path):
+    g = _global(tmp_path)
+    trading_dir = _trading_dir(g)
+    same = experiment_from_mapping(experiment_payload("lab-same"))
+    save_strategy_experiment(trading_dir, same, activated_at=NOW - 49 * 3600)
+    save_pending_experiment(
+        trading_dir, experiment_from_mapping(experiment_payload("lab-same")), proposed_at=NOW - 60
+    )
+
+    response = json.dumps({"strategy_experiment": experiment_payload("lab-fresh")})
+    result = run_paper_improve(
+        g, trading_dir=trading_dir, agents="opencode:x", llm=lambda prompt: response, now=NOW
+    )
+    assert result["activated_from"] == "generated"
+    active = load_strategy_experiment(trading_dir)
+    assert active is not None and active.experiment_id == "lab-fresh"
 
 
 def test_promotion_candidate_is_evidence_only_and_private(tmp_path):
