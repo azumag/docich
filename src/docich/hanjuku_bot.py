@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v15-sortie-interruption'
+BOT_VERSION = 'hanjuku-chart-v16-month-dialog'
 
 
 # Native title copyright rows, measured from the owner's ROM. A strict match
@@ -218,7 +218,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     if kind != 'battle_menu':
         for key in ('indep_menu','indep_menu_key','indep_menu_action','egg_row_dead'):
             mem.pop(key,None)
-    actions=policy.month_sub_step(screen,mem) if mem.get('month_sub') and kind!='month_menu' else None
+    recruit_dialog = (mem.get('month_sub') or {}).get('kind') == 'recruit' and not policy.month_menu_ready(screen)
+    actions=policy.month_sub_step(screen,mem) if mem.get('month_sub') and (kind!='month_menu' or recruit_dialog) else None
     if actions is not None:
         pass
     elif phase=='name' and kind!='name_entry':
