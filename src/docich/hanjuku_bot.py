@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v14-visible-hp'
+BOT_VERSION = 'hanjuku-chart-v15-sortie-interruption'
 
 
 # Native title copyright rows, measured from the owner's ROM. A strict match
@@ -182,6 +182,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     updated.pop('_experience',None)
     screen=parse(frame,phase=phase)
     policy.observe_events(screen,mem)
+    policy.observe_sortie_transition(screen,mem,state.get('screen_kind'))
     kind=screen.kind
     map_kinds={'map','map_target','castle_menu','general_list','card_select','sortie_confirm'}
     if kind not in map_kinds and mem.get('cursor'):

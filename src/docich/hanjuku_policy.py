@@ -211,12 +211,31 @@ def update_world(screen: Screen, mem, frame, goal_name=None):
     found = (None if mem.get('nav_search') and len(roofs) < 2
              else _localize(roofs, castles, predicted))
     anchored = None
+    # Once the goal's own roof located a nearby free cursor, do not alternate
+    # that correction with another castle's vote as the cursor covers the
+    # roof (g403: x=216 -> 205 -> right 10 -> left 10). Away from screen
+    # edges, screen displacement is measured; at an edge the camera scrolls
+    # and dead reckoning alone is insufficient, so re-localize normally.
+    locked = (mem.get('goal_anchor_lock') == goal_name and goal_name and world and last
+              and last.get('screen') and not mem.get('uncertain') and not screen.marker
+              and goal_name in castles
+              and all(not _at_edge(s[a], bounds) and not _at_edge(last['screen'][a], bounds)
+                      for a, bounds in ((0, EDGE_X), (1, EDGE_Y)))
+              and sum(abs(world[a] - castles[goal_name][a]) for a in (0, 1)) <= 48)
+    if locked:
+        mem['cursor'] = world
+        mem['anchor'] = goal_name
+        return world
+    mem.pop('goal_anchor_lock', None)
     if found:
         cam, anchored = found
         cam, anchored = _goal_anchor(roofs, castles, cam, anchored, goal_name)
         new = [cam[0] + s[0], cam[1] + s[1]]
         if mem.get('uncertain') or not world or abs(new[0] - world[0]) + abs(new[1] - world[1]) <= 48:
             world = new
+            if (goal_name and anchored == goal_name and not screen.marker
+                    and sum(abs(new[a] - castles[goal_name][a]) for a in (0, 1)) <= 48):
+                mem['goal_anchor_lock'] = goal_name
             mem['uncertain'] = False
             mem.pop('nav_search', None)
             mem.pop('nav_search_leg', None)
@@ -485,7 +504,8 @@ def next_order(mem):
     owned = _owned(mem)
     for order in (*current, *retries):
         if (status.get(order['step']) in (None, 'pending') and _ready(order, mem)
-                and _source(order, mem) in owned):
+                and _source(order, mem) in owned
+                and mem.get('general_override', {}).get(order['step'], order['general']) not in _en_route(mem)[0]):
             return order
     return None
 
@@ -533,8 +553,8 @@ def _distance(chapter, a, b) -> int:
 
 def _en_route(mem):
     """(generals, targets) of sorties launched but not yet seen arriving."""
-    sorties = [s for s in (mem.get('sorties') or {}).values() if s.get('status') == 'en_route']
-    return {s.get('general') for s in sorties}, {s.get('target') for s in sorties}
+    sorties = [s for s in (mem.get('sorties') or {}).values() if s.get('status') in ('en_route', 'launched_unconfirmed')]
+    return {s.get('general') for s in sorties}, {s['target'] for s in sorties if s.get('target')}
 
 
 def _interim_source(mem, target, chart_order, owned, busy):
@@ -548,6 +568,7 @@ def _interim_source(mem, target, chart_order, owned, busy):
     chapter = mem.get('chapter') or 0
     home = chart.home_castle(chapter)
     garrison = mem.get('garrison') or {}
+    busy = busy | set(mem.get('general_location_unknown') or ())
     free = {c: [g for g in garrison.get(c) or () if g not in busy] for c in owned}
     # Emptying a castle is how the undefended ジョンリギ fell (g401), so a
     # castle that keeps somebody behind goes first, then the nearest.
@@ -558,6 +579,8 @@ def _interim_source(mem, target, chart_order, owned, busy):
         present.sort(key=lambda g: g == NAME)          # risk the hero last
         return staffed[0], present[0]
     general = chart_order['general'] if chart_order else NAME
+    if general in busy:
+        return None
     for source in ((chart_order or {}).get('source'), home):
         if source in owned and garrison.get(source) is None:
             return source, general
@@ -762,6 +785,104 @@ def _finish_order(mem, state, **fields):
     mem['picked'] = []
 
 
+def observe_sortie_transition(screen, mem, previous_kind=None):
+    """An interrupted target cursor is a possible departure, never a retry.
+
+    A hotloaded old policy has no attempt marker; its verified confirmation
+    context and previous map_target observation provide the same evidence.
+    """
+    order = _order(mem)
+    attempt = mem.get('sortie_attempt')
+    if not attempt and order and previous_kind == 'map_target':
+        context = (mem.get('order_context') or {}).get(order['step']) or {}
+        if context.get('actual_general'):
+            attempt = {'step': order['step'], 'target_seen': True}
+            mem['sortie_attempt'] = attempt
+    if not attempt:
+        return
+    if screen.kind == 'map_target':
+        if not order or order['step'] == attempt['step']:
+            step = attempt['step']
+            if (mem.get('orders') or {}).get(step) == 'launched_unconfirmed':
+                mem['active'] = step
+                mem['orders'][step] = 'pending'
+                (mem.get('sorties') or {}).pop(step, None)
+                _record(mem, 'sortie_target_resumed', chart_step=step,
+                        reason='割り込み後に同じ出撃先マーカーが戻ったため目標選択を再開')
+        attempt['target_seen'] = True
+        attempt.pop('interrupted', None)
+        return
+    if (attempt.get('interrupted') or not attempt.get('target_seen')
+            or not order or order['step'] != attempt['step']):
+        return
+    step = order['step']
+    context = (mem.get('order_context') or {}).get(step) or {}
+    general = context.get('actual_general')
+    if not general:
+        return
+    mem.setdefault('launched_orders', {})[step] = dict(order)
+    mem.setdefault('sorties', {})[step] = {
+        'general': general, 'source': _source(order, mem), 'target': None,
+        'planned_target': order['target'], 'status': 'launched_unconfirmed',
+        'evidence': context}
+    _finish_order(mem, 'launched_unconfirmed', general=general, target=None,
+                  planned_target=order['target'], screen=screen.kind,
+                  reason='目標決定前に出撃先選択を離れたため出撃の成否と行先を未確定として記録')
+    attempt['interrupted'] = True
+    mem.pop('expect_menu', None)
+
+
+def _general_visible(screen, general):
+    """Exact name with no adjacent unknown glyph; ignore hand/border pixels."""
+    for line in screen.lines:
+        for x, word in line.spans():
+            if x <= 100 or word != general:
+                continue
+            neighbors = (x - 8, x + 8 * len(word))
+            if not any(ch == UNKNOWN and cx in neighbors
+                       and not (screen.hand and screen.hand[0] <= cx <= screen.hand[2])
+                       for cx, ch in line.cells):
+                return True
+    return False
+
+
+def _verify_sortie_source(screen, mem, order):
+    """Never select a replacement while checking an interrupted departure.
+
+    Presence proves cancellation. Only the explicit empty-list message proves
+    absence here: a nonempty panel can be partial or scrolled, so missing a
+    name on it is not evidence of departure.
+    """
+    step = order['step']
+    sortie = mem['sorties'][step]
+    present = _present_generals(screen)
+    if present and sortie['general'] in present and not _general_visible(screen, sortie['general']):
+        present = None
+    if present is None or (present and sortie['general'] not in present):
+        sortie['verification_reads'] = sortie.get('verification_reads', 0) + 1
+        if sortie['verification_reads'] >= 3:
+            sortie['verification_unavailable'] = True
+            mem['active'] = None
+            _record(mem, 'sortie_verification_held', chart_step=step,
+                    reason='一覧で在城・不在を確定できないため出撃未確定を維持して別の指示へ進む')
+            return [pad('b'), pad('b')]
+        return _hold_deploy(screen, mem, order, '出撃未確定の将軍の在城・不在を一覧で確定できないため保留')
+    cancelled = sortie['general'] in present
+    sortie['status'] = 'cancelled' if cancelled else 'en_route'
+    mem.setdefault('orders', {})[step] = 'pending' if cancelled else 'launched'
+    if not cancelled:
+        _garrison_move(mem, sortie['general'], source=sortie['source'])
+    _record(mem, 'sortie_cancelled_observed' if cancelled else 'sortie_departed_observed',
+            chart_step=step, general=sortie['general'], source=sortie['source'], target=None,
+            observed_metric=present,
+            reason='将軍一覧で本人の在城を確認したため再試行可能' if cancelled
+            else '出撃元が無人と確認できたため出撃を確定、行先は未確認')
+    mem.pop('sortie_attempt', None)
+    mem['active'] = None
+    mem['picked'] = []
+    return [pad('b'), pad('b')]
+
+
 SOURCE_MISS_LIMIT = 3         # failed castle menus per order before giving the source up
 
 
@@ -782,6 +903,12 @@ def _give_up_source(mem, order):
     """
     step = order['step']
     source = _source(order, mem)
+    if (mem.get('orders') or {}).get(step) == 'launched_unconfirmed':
+        mem['sorties'][step]['verification_unavailable'] = True
+        mem['active'] = None
+        _record(mem, 'sortie_verification_held', chart_step=step,
+                reason='出撃元の一覧を開けないため未確定の出撃を維持し再指示を抑止')
+        return
     home = chart.home_castle(mem.get('chapter') or 0)
     # Navigation state is left to the nav_reset of this same miss: dropping
     # the cell would freeze the camera on open sea again (g358).
@@ -829,7 +956,8 @@ def map_step(screen: Screen, mem, frame):
     if order is not None and (mem.get('source_miss') or {}).get(order['step'], 0) >= SOURCE_MISS_LIMIT:
         _give_up_source(mem, order)
         order = _order(mem)
-    if order is not None and (not _ready(order, mem) or _source(order, mem) not in _owned(mem)):
+    verifying = order is not None and (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed'
+    if order is not None and ((not verifying and not _ready(order, mem)) or _source(order, mem) not in _owned(mem)):
         # A defense loss revokes the capture an order was picked on. Holding
         # ``active`` past that keeps steering the cursor at the now-foreign
         # castle and pressing A there forever (g350, 2026-09-25: ジョンリギを
@@ -844,7 +972,11 @@ def map_step(screen: Screen, mem, frame):
         mem['picked'] = []
         order = None
     if order is None:
-        order = next_order(mem)
+        order = next((_order_for_step(mem, step) for step, sortie in (mem.get('sorties') or {}).items()
+                      if sortie.get('status') == 'launched_unconfirmed'
+                      and not sortie.get('verification_unavailable')
+                      and sortie.get('source') in _owned(mem)), None)
+        order = order or next_order(mem)
         if order is None:
             _off_chart(mem)
             order = next_order(mem)
@@ -902,6 +1034,7 @@ def target_step(screen: Screen, mem, frame):
     goal = chart.castles(mem['chapter'])[order['target']]
     result = nav_step(screen, mem, frame, goal)
     if result == 'arrived':
+        mem.pop('sortie_attempt', None)
         context = _deploy_context(order, mem, expected_metric='のりこんだ表示で目標城を確認')
         _finish_order(mem, 'launched', **context, target=order['target'],
                       cursor=mem.get('cursor'), anchor=mem.get('anchor'),
@@ -1183,6 +1316,8 @@ def _observe_garrison(screen, mem, order):
     if present is None or not castle:
         return
     garrison = mem.setdefault('garrison', {})
+    mem['general_location_unknown'] = [g for g in mem.get('general_location_unknown') or ()
+                                       if g not in present or not _general_visible(screen, g)]
     if garrison.get(castle) != present:
         garrison[castle] = present
         _record(mem, 'garrison_seen', **_deploy_context(order, mem), castle=castle,
@@ -1195,6 +1330,7 @@ def _garrison_move(mem, general, source=None, target=None):
     if source and garrison.get(source) is not None:
         garrison[source] = [g for g in garrison[source] if g != general]
     if target and general:
+        mem['general_location_unknown'] = [g for g in mem.get('general_location_unknown') or () if g != general]
         here = [g for g in garrison.get(target) or () if g != general]
         garrison[target] = [*here, general]
 
@@ -1216,6 +1352,8 @@ def deploy_step(screen: Screen, mem):
                              '出撃メニューを選択')
     if kind == 'general_list':
         _observe_garrison(screen, mem, order)
+        if (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
+            return _verify_sortie_source(screen, mem, order)
         if _is_boss_order(order, mem):
             mem.setdefault('sortie_general', {}).pop(order['step'], None)
             mem.setdefault('order_context', {}).pop(order['step'], None)
@@ -1240,6 +1378,7 @@ def deploy_step(screen: Screen, mem):
             ui = {'しゅつげき', 'ステータス', 'しょうぐんは', 'おりません', 'おりません……'}
             present = [] if empty_list else [w for x, y, w in _options(screen) if x > 100 and w not in ui
                                              and not re.search(r'\d', w) and 'おりません' not in w]
+            present = [g for g in present if g not in _en_route(mem)[0]]
             present.sort(key=lambda w: w == NAME)      # risk the hero last
             if present and not mem.get('general_override', {}).get(order['step']):
                 mem.setdefault('general_override', {})[order['step']] = present[0]
@@ -1342,6 +1481,7 @@ def deploy_step(screen: Screen, mem):
                     observed_metric=got,
                     reason='出撃確認で読み取った切り札が計画と一致したため承認を予定')
             source = mem.get('source_override', {}).get(order['step'], order['source'])
+            mem['sortie_attempt'] = {'step': order['step'], 'target_seen': False}
             mem['cursor'] = list(chart.castles(mem['chapter'])[source])
             mem['uncertain'] = False      # the target marker starts on the source castle
             mem.pop('nav_search', None)
@@ -1361,7 +1501,8 @@ def _match_sortie(mem, castle, general):
     """
     sorties = mem.get('sorties') or {}
     candidates = [step for step, sortie in sorties.items()
-                  if sortie.get('status') == 'en_route' and sortie.get('target') == castle
+                  if sortie.get('status') in ('en_route', 'launched_unconfirmed')
+                  and sortie.get('target') in (None, castle)
                   and sortie.get('general') == general]
     if len(candidates) == 1:
         return candidates[0], 'matched'
@@ -1373,10 +1514,19 @@ def _match_sortie(mem, castle, general):
     return None, 'none'
 
 
-def _bind_sortie(mem, step):
+def _bind_sortie(mem, step, castle):
     sortie = (mem.get('sorties') or {}).get(step)
     if sortie:
-        sortie['status'] = 'arrived'
+        if sortie.get('target') is None:
+            _record(mem, 'sortie_arrival_confirmed', chart_step=step, general=sortie['general'],
+                    castle=castle, reason='将軍名の一致する入城表示で未確定だった出撃と行先を確定')
+            _garrison_move(mem, sortie['general'], source=sortie.get('source'))
+            mem.setdefault('orders', {})[step] = 'launched'
+            if mem.get('active') == step:
+                mem['active'] = None
+            if (mem.get('sortie_attempt') or {}).get('step') == step:
+                mem.pop('sortie_attempt', None)
+        sortie.update(status='arrived', target=castle)
 
 
 def _battle_context(mem, ally):
@@ -2010,6 +2160,15 @@ def battle_end(mem, next_kind):
         lost = mem.setdefault('lost', [])
         if castle not in lost:
             lost.append(castle)
+    if outcome == 'loss' and cur.get('side') == 'attack' and cur.get('ally'):
+        general = cur['ally']
+        for source in list(mem.get('garrison') or {}):
+            _garrison_move(mem, general, source=source)
+        unknown = mem.setdefault('general_location_unknown', [])
+        if general not in unknown:
+            unknown.append(general)
+        _record(mem, 'general_location_unclassified', general=general, castle=castle,
+                reason='攻撃敗北後の所在は未確認のため古い駐留情報を破棄し、一覧での再確認を待つ')
     stats = mem.setdefault('stats', {'wins': 0, 'losses': 0, 'unclassified': 0, 'cards_used': 0,
                                      'generals_lost': None, 'cards_confirmed': 0, 'card_evidence_version': 1})
     stats[{'win': 'wins', 'loss': 'losses'}.get(outcome, 'unclassified')] += 1
@@ -2126,7 +2285,7 @@ def message_step(screen: Screen, mem):
                     observed_metric={'message': text, 'sortie_match': match},
                     reason='実測ボス突入文を読んだが出撃注文と一致しないため保留')
             return []
-        _bind_sortie(mem, step)
+        _bind_sortie(mem, step, boss_cell)
         mem['attack'] = {'general': general, 'castle': boss_cell, 'side': 'attack', 'step': step,
                          'entry_evidence': 'measured_boss_entry'}
         _record(mem, 'attack_observed', chart_step=step, general=general, castle=boss_cell,
@@ -2143,7 +2302,7 @@ def message_step(screen: Screen, mem):
             return [pad('a')]              # same entry text still on screen
         ours = step is not None or match == 'ambiguous' or general in (NAME, 'ヴィーナス', 'ココット', 'ゼウス')
         side = 'attack' if ours else 'enemy'
-        _bind_sortie(mem, step)
+        _bind_sortie(mem, step, castle)
         _record(mem, 'attack_observed', chart_step=step, general=general, castle=castle,
                 expected_metric=launched.get('general'), observed_metric=general,
                 deviation_reason=(None if step or not ours
@@ -2768,13 +2927,13 @@ def observe_events(screen: Screen, mem):
             previous = mem.get('chapter')
             # Route state belongs to the measured map of one chapter. Keep
             # run-wide counters/name evidence, never carry coordinates/orders.
-            for key in ('active', 'anchor', 'attack', 'battle', 'battle_seen',
+            for key in ('active', 'anchor', 'goal_anchor_lock', 'attack', 'battle', 'battle_seen',
                         'captured', 'card_override', 'cursor', 'egg_battle',
                         'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit', 'month_sub',
                         'nav_last', 'nav_search', 'nav_search_leg', 'orders', 'picked', 'retries', 'retry_context', 'shop',
                         'source_override', 'uncertain', 'month', 'order_context', 'sortie_general',
-                        'chart_adjust', 'chart_plan', 'launched_orders', 'sorties',
-                        'garrison', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
+                        'chart_adjust', 'chart_plan', 'launched_orders', 'sorties', 'sortie_attempt',
+                        'garrison', 'general_location_unknown', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
                         'nav_prev', 'nav_still', 'nav_pressed', 'unverified',
                         'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
                         'indep_menu_key', 'indep_menu_action',
