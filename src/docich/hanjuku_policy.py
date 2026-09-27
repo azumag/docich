@@ -1202,6 +1202,14 @@ def battle_step(screen: Screen, mem):
                     observed_metric={'enemy_hp': b.enemy_hp, 'ally_hp': b.ally_hp},
                     resulting_event='card_planned')
             return [pad('b')]
+    if _survival_needed(cur):
+        rescue = _survival_state(mem, cur)
+        if (not rescue.get('exhausted') and rescue['opens'] < 12
+                and rescue.get('pending_opens', 0) < 3):
+            rescue['opens'] += 1
+            rescue['pending_opens'] = rescue.get('pending_opens', 0) + 1
+            rescue['menu_ticks'] = 0
+            return [pad('b')]
     return _power_mash(mem, cur)
 
 
@@ -1232,18 +1240,141 @@ def _behind(cur: dict) -> bool:
     return ally_hp < enemy_hp
 
 
+# Only non-sacrificial cards are eligible for automatic survival use. Rank
+# healing first, then control/damage; this is not a guaranteed damage model.
+# Effects: https://gcgx.games/hanjuku/kirihuda.html
+SURVIVAL_CARDS = ('エンジェリン', 'ミックミー', 'マグネガキン', 'クースカン',
+                  'グリンボー', 'ゼンマイン', 'ブラッキー', 'ファイアーボイス',
+                  'ハリケーン', 'ブンシーン', 'ピッグローラー', 'イッテツーン',
+                  'カンケリン', 'フットバース', 'ダイチスイム', 'ノリウツール')
+
+
+def _survival_needed(cur):
+    hp, enemy, start = (cur.get(k) for k in ('ally_hp', 'enemy_hp', 'start_ally_hp'))
+    if any(type(n) is not int or n <= 0 for n in (hp, enemy, start)):
+        return False
+    # Sword practice has no resource menu. Preserve its released A bursts.
+    if (cur.get('enemy'), cur.get('ally'), start, cur.get('start_enemy_hp'), cur.get('step')) == (
+            'だいじん', 'どうし', 90, 90, None):
+        return False
+    return hp <= 12 or (hp < enemy and hp * 5 <= start * 2)
+
+
+def _survival_state(mem, cur):
+    if 'survival' not in cur:
+        cur['survival'] = {'opens': 0, 'menu_ticks': 0, 'cards_checked': 0,
+                           'cards_attempted': [], 'egg_attempted': False}
+        _record(mem, 'battle_survival', **_battle_labels(cur),
+                observed_metric={'ally_hp': cur.get('ally_hp'), 'enemy_hp': cur.get('enemy_hp')},
+                expected_metric='使用可能な切り札・たまごを確認して選択',
+                reason='HP低下のため温存を中止し、戦闘メニューで救済手段を確認')
+    return cur['survival']
+
+
+def _battle_menu_to(screen, label):
+    if screen.hand:
+        return menu_to(screen, label)
+    target = [y for x, y, word in _options(screen) if word == label]
+    if screen.menu_cursor is None or not target:
+        return None
+    y = min(target, key=lambda y: abs(y - screen.menu_cursor))
+    if y == screen.menu_cursor:
+        return 'here'
+    return pad('down' if y > screen.menu_cursor else 'up')
+
+
+def _survival_menu(screen, mem, cur):
+    rescue = _survival_state(mem, cur)
+    rescue['pending_opens'] = 0
+    rescue['menu_ticks'] += 1
+    if rescue.get('egg_pending'):
+        rescue['egg_wait'] = rescue.get('egg_wait', 0) + 1
+        if rescue['egg_wait'] <= 3:
+            return []  # allow the accepted summon to leave its menu
+        rescue['egg_pending'] = False
+    if rescue['menu_ticks'] > 12 or rescue.get('exhausted'):
+        rescue['exhausted'] = True
+        return [pad('b')]
+    # A visible list is authoritative. Do not infer carried cards from the
+    # chart, a different general's sortie, or a planned inventory.
+    labels = {word for _, _, word in _options(screen)}
+    if ('きりふだ' in labels and not rescue.get('cards_exhausted')
+            and rescue['cards_checked'] < 3):
+        label = 'きりふだ'
+    elif 'たまごをつかう' in labels and not rescue['egg_attempted']:
+        label = 'たまごをつかう'
+    else:
+        rescue['exhausted'] = True
+        _record(mem, 'battle_survival_unavailable', **_battle_labels(cur),
+                observed_metric={'labels': sorted(labels)},
+                reason='読み取れる未試行の救済手段がないため白兵へ戻る')
+        return [pad('b')]
+    move = _battle_menu_to(screen, label)
+    if move != 'here':
+        return [move] if move else []  # no blind A on a missing cursor
+    if label == 'きりふだ':
+        rescue['cards_checked'] += 1
+        cur['card_flow'] = {'card': None, 'stage': 'list', 'survival': True, 'list_ticks': 0}
+    else:
+        rescue['egg_attempted'] = True
+        rescue['egg_pending'] = True
+    _record(mem, 'battle_survival_select', **_battle_labels(cur),
+            observed_metric={'label': label}, resulting_event='selection_planned_not_yet_confirmed',
+            reason='カーソルと有効な項目を確認して救済行動を選択')
+    return [pad('a')]
+
+
+def _survival_card_list(screen, mem, cur, flow, names):
+    rescue = cur['survival']
+    flow['list_ticks'] += 1
+    # Names can disappear during a fade. Bound the wait and return to the
+    # parent menu once, so an empty/unsupported list can still lead to an egg.
+    candidates = [c for c in SURVIVAL_CARDS if c in names and c not in rescue['cards_attempted']]
+    if not candidates or flow['list_ticks'] > 10:
+        if not names and flow['list_ticks'] <= 3:
+            return []
+        rescue['cards_exhausted'] = True
+        cur['card_flow'] = None
+        return [pad('b')]
+    card = candidates[0]
+    move = _battle_menu_to(screen, card)
+    if move != 'here':
+        return [move] if move else []
+    flow.update(card=card, stage='announce', selection_planned=True)
+    rescue['cards_attempted'].append(card)
+    cur['card_consumption_complete'] = False
+    cur.setdefault('cards_selected', []).append(card)
+    _record(mem, 'battle_card_selected', **_battle_labels(cur), card=card,
+            expected_metric='実使用告知', observed_metric={'listed_cards': names, 'survival': True},
+            resulting_event='selection_planned_not_yet_confirmed',
+            reason='HP低下に対処する切り札を選択。消費は未確定')
+    return [pad('a')]
+
+
 def battle_menu_step(screen: Screen, mem):
     _migrate_card_evidence(mem)
     cur = mem.get('battle') or {}
     flow = cur.get('card_flow')
     if screen.kind != 'battle_menu':
         return []
+    if flow and flow.get('survival'):
+        flow['menu_returns'] = flow.get('menu_returns', 0) + 1
+        if flow['stage'] == 'list' and flow['menu_returns'] <= 2:
+            return [pad('a')] if _battle_menu_to(screen, 'きりふだ') == 'here' else []
+        if flow['stage'] == 'announce':
+            _card_use_unclassified(mem, cur, '実使用告知を確認できないまま戦闘メニューへ復帰')
+        else:
+            cur['survival']['cards_exhausted'] = True
+            cur['card_flow'] = None
+        return _survival_menu(screen, mem, cur)
     if flow:
         if flow['stage'] == 'menu':
             flow['stage'] = 'down'
             return [pad('down')]
         flow['stage'] = 'list'
         return [pad('a')]
+    if cur.get('survival') or _survival_needed(cur):
+        return _survival_menu(screen, mem, cur)
     # Chart has no card due this frame: independent judgment under the chart,
     # mapped from the original six melee patterns (①③ pass / ⑥ egg; ②④⑤ are
     # chart-directed cards and never chosen blindly here).
@@ -1299,6 +1430,8 @@ def card_list_step(screen: Screen, mem):
     names = [w for _, _, w in _options(screen) if w in CARD_NAMES]
     if not flow:
         return [pad('b')]
+    if flow['stage'] == 'list' and flow.get('survival'):
+        return _survival_card_list(screen, mem, cur, flow, names)
     if flow['stage'] == 'list':
         if flow['card'] not in names:
             cur.setdefault('cards_missing', []).append(flow['card'])
@@ -1320,6 +1453,11 @@ def card_list_step(screen: Screen, mem):
                 resulting_event='selection_planned_not_yet_confirmed', reason='切り札選択入力を予定。消費は未確定')
         return [pad('down')] * index + [pad('a')]
     if flow['stage'] == 'announce' and flow.get('selection_planned'):
+        if flow.get('survival'):
+            flow['announce_ticks'] = flow.get('announce_ticks', 0) + 1
+            if flow['announce_ticks'] > 6:
+                _card_use_unclassified(mem, cur, '切り札の告知待ち上限に達したため選択画面から戻る')
+                return [pad('b')]
         # No live frame/parser signature has calibrated a use receipt yet.
         # Keep capturing this flow, but never unlock after_card from guessed text.
         cur['card_consumption_complete'] = False

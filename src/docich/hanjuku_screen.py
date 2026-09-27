@@ -256,6 +256,16 @@ def _egg_rows(frame: Frame) -> list[EggRow]:
     return rows
 
 
+# Measured human battle command box. Disabled rows are dark and absent from
+# OCR; in castle defense with no cards, only the first row may remain readable.
+_BATTLE_COMMANDS = ((176, 'たまごをつかう'), (192, 'きりふだ'), (208, 'たいきゃく'))
+
+
+def _human_commands(screen):
+    return any(line.y == y and line.spans() == [(176, label)]
+               for line in screen.menu_rows for y, label in _BATTLE_COMMANDS)
+
+
 def parse(frame: Frame, *, phase: str | None = None) -> Screen:
     masks = row_masks(frame, light)
     lines = read_lines(frame, masks=masks)
@@ -271,7 +281,9 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
     screen.battle = _battle(frame)
     screen.menu_rows = _menu_rows(lines)
     if screen.menu_rows:
-        screen.menu_cursor = _menu_cursor(frame, screen.menu_rows)
+        cursor_rows = ([TextLine(y, ((176, label),)) for y, label in _BATTLE_COMMANDS]
+                       if _human_commands(screen) else screen.menu_rows)
+        screen.menu_cursor = _menu_cursor(frame, cursor_rows)
         screen.egg_rows = _egg_rows(frame)
     if phase in (None, 'field', 'field_menu', 'battle_intro', 'event'):
         screen.marker = _target_marker(frame)
@@ -307,6 +319,8 @@ def classify_text(s: Screen) -> str:
         return 'shop_list'
     if 'しょうにん' in t and 'おしまい' in t:
         return 'month_menu'
+    if _human_commands(s):
+        return 'battle_menu'
     if 'たまごをつかう' in t and 'たいきゃく' in t:
         return 'battle_menu'
     if 'きりふだ' in t and 'たいきゃく' in t and any('たいきゃく' in r.known.replace(' ', '') for r in s.menu_rows):

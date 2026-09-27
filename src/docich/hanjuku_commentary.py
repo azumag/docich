@@ -65,6 +65,9 @@ def compose(rec: dict) -> tuple[str, str | None]:
             tail = '体力は互角です。切り札を温存して白兵で戦います。'
         return (key,
                 f"{rec['ally']}対{rec['enemy']}、体力は{ally_hp}対{enemy_hp}。{tail}")
+    if kind == 'battle_survival':
+        hp = (rec.get('observed_metric') or {}).get('ally_hp')
+        return f'survival:{step}', f'体力が{hp}まで減ったので、切り札とたまごを確認して使える手を選びます。'
     if kind == 'battle_card':
         reason = rec.get('reason') or ''
         if '開幕' in reason:
@@ -149,6 +152,6 @@ def compose(rec: dict) -> tuple[str, str | None]:
 # Decisions worth speaking. Menu steps and waits are logged, not narrated.
 SPOKEN = frozenset({
     'name_confirm', 'order_start', 'order_retry', 'order_source_changed', 'attack_observed',
-    'defense_observed', 'battle_start', 'battle_card', 'battle_result', 'month_plan', 'poor_harvest',
+    'defense_observed', 'battle_start', 'battle_survival', 'battle_card', 'battle_result', 'month_plan', 'poor_harvest',
     'prompt', 'situation_held', 'gift', 'egg_battle', 'order_substitute', 'independent_menu',
     'chart_adjust_request', 'chart_adjust_applied', 'chart_interim_order', 'chart_interim_hold'})

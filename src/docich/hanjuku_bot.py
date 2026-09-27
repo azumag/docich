@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v2'
+BOT_VERSION = 'hanjuku-chart-v3-survival'
 
 
 # Native title copyright rows, measured from the owner's ROM. A strict match
@@ -192,8 +192,9 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         mem.pop('expect_menu',None)
         mem.pop('menu_miss',None)   # a real menu proves the cell was correct
     flow=(mem.get('battle') or {}).get('card_flow')
-    card_list=bool(flow) and kind in {'text','unknown'} and any(
-        w in policy.CARD_NAMES for line in screen.lines for _,w in line.spans())
+    card_list=bool(flow) and kind in {'text','unknown'} and (
+        (flow.get('survival') and flow.get('stage') == 'list') or any(
+            w in policy.CARD_NAMES for line in screen.lines for _,w in line.spans()))
     # Egg/card announcements and fades inside a battle are not its end; only
     # a return to the map or a following event/menu closes the record.
     after_battle = kind in policy.AFTER_BATTLE_KINDS or kind == 'barrier_removed'
