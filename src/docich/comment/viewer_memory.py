@@ -29,7 +29,7 @@ VALID_SOURCES = {"twitch", "youtube", "kick"}
 VALID_MODES = {"main", "soren91"}
 EVENT_PREFIX_RE = re.compile(r"^(?:\[(?:BITS|SUB|視聴記録)\]\s*)+", re.IGNORECASE)
 CARD_ACQUIRED_RE = re.compile(
-    r"^(?P<viewer>[^:\n]{1,80}?)\s*が\s*(?P<card>【[^】]{1,80}】.{1,240}?)\s*を獲得しました(?P<detail>.*)$"
+    r"(?P<viewer>[^:\n]{1,80}?)\s*が\s*(?P<card>(?:【[^】]{1,80}】|\[[^\]]{1,80}\]).{1,240}?)\s*を獲得しました(?P<detail>.*)$"
 )
 WHITESPACE_RE = re.compile(r"\s+")
 
@@ -362,10 +362,17 @@ def parse_batch(
         # is never enough to mark a human comment as such.
         sender_normalized = normalize_name(raw_name)
         metadata_sender_normalized = normalize_name(metadata_display or str(entry.get("login") or ""))
-        card_match = CARD_ACQUIRED_RE.match(raw_comment)
         trusted_card = "trusted-card" in (entry.get("flags") or [])
+        card_match = None
+        if trusted_card:
+            # Collector-authenticated card notifications may include the poster
+            # prefix and contain ": " inside their own text, so match the whole
+            # line instead of the ": "-split remainder.
+            card_match = CARD_ACQUIRED_RE.search(line_without_event)
+        if card_match is None:
+            card_match = CARD_ACQUIRED_RE.search(raw_comment)
         if card_match and trusted_card and metadata_sender_normalized in excluded:
-            display_name = _collapse(card_match.group("viewer"), 80)
+            display_name = _collapse(card_match.group("viewer").strip().lstrip("@"), 80)
             normalized_name = normalize_name(display_name)
             card = _collapse(card_match.group("card"), 320)
             detail = _collapse(card_match.group("detail"), 200)
