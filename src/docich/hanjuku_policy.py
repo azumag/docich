@@ -3158,6 +3158,18 @@ def egg_battle_step(screen: Screen, mem):
                 observed_metric={'experience_key': key}, source_pattern='⑥',
                 reason='チャートに召喚戦の指示がないための独自判断（原典戦術⑥、既定はたまご）')
     action = mem.get('egg_action', 'use_egg')
+    if action == 'use_egg' and 'たまごをつかう' not in screen.text:
+        # A spent egg greys the row out and drops it from OCR (mirrors
+        # battle_menu_step's きりふだ/たいきゃく fallback); chasing a label
+        # that never appears held the bot here forever (viewer report
+        # 2026-09-28: 持ってないタマゴを使おうとして止まっている). The
+        # panel opens with the cursor on こうげき, so answer with a plain
+        # attack instead.
+        if not mem.get('egg_battle_row_dead'):
+            mem['egg_battle_row_dead'] = True
+            _record(mem, 'situation_held', screen=screen.kind, strategy_variant='egg_unavailable',
+                    reason='たまごをつかうが使えない表示のため卵を諦めてこうげきで応戦する')
+        action = 'attack'
     if action == 'attack':
         return [pad('a')]
     _egg_recheck(mem)

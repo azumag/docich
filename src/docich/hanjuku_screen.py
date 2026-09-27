@@ -380,6 +380,13 @@ def classify_text(s: Screen) -> str:
         return 'battle_menu'
     if 'こうげき' in t and 'もうこうげき' in t and 'たまごをつかう' in t:
         return 'egg_battle_menu'
+    if 'こうげき' in t and 'もうこうげき' in t and any(
+            'もうこうげき' in r.known.replace(' ', '') for r in s.menu_rows):
+        # The same spent-egg greying as the きりふだ/たいきゃく fallback above:
+        # たまごをつかう drops out of OCR and this panel otherwise falls to
+        # kind 'text' with no cursor, holding the bot forever (viewer report
+        # 2026-09-28: 持ってないタマゴを使おうとして止まっている).
+        return 'egg_battle_menu'
     if 'たまごに' in t and 'もどれ' in t and any('もどれ' in r.known.replace(' ', '') for r in s.menu_rows):
         # Our summoned monster's own turn: the option box with たまごに もどれ.
         return 'monster_menu'
