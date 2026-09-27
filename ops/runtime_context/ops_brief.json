@@ -1,11 +1,11 @@
 {
-  "output_sha256": "aeeb1e8bb95a279aa972ace40af42b860e3bc30f8e33f802137694935910dcbd",
+  "output_sha256": "8874bb8c32a25be5cfde2997d36627ef788e796e0edab1a32ab7e00ca82e0ff3",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "db606d2638c6f6b4be233f905c1ecbd36457264eaca89b54a70a2ec765817714",
+  "source_sha256": "c7ff678214de5897ddd798e8ed4d105802c8d54e0062967b4af2d75961bcbf0c",
   "topics": [
-    "どうし将軍の緊急退却方策を実装",
-    "半熟英雄の防衛停止をホットロードで解消し勝利",
-    "半熟英雄の防衛メニュー停止をリセットせず修復する緊急対応"
+    "半熟英雄の卵リスク制御Phase 0をPR用に実装（未配備）",
+    "どうしの緊急退却を再起動なしで配備",
+    "半熟英雄のチャート外出撃（奪還・待機将軍・空城移動）を配備（Claude Code）"
   ]
 }

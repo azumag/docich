@@ -122,7 +122,7 @@ def test_reference_tables_and_endure_rule():
     assert ref.enemy_egg_likely([20, 20, 8])
     assert not ref.enemy_egg_likely([10, 10])
     assert ref.egg_drop_threshold(31) == 31 % 16 + 1
-    assert ref.CARD_IDS['ファバード'] == 16
+    assert ref.CARD_IDS['ファバード'] == 31
     assert ref.MELEE_PATTERNS['⑥']['action'] == 'use_egg'
     assert ref.HALF_RAW_LEVEL_NEED[9] == 2000
     assert '凶作' in ref.EVENT_TABLES['monthly']
