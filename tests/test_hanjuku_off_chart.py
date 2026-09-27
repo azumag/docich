@@ -620,3 +620,27 @@ def test_the_y_cursor_is_found_with_live_capture_colour_shifts():
         frame = _y_view((150.0, 140.0), gold=gold, shift=1)
         found = policy.world_cursor(frame)
         assert found is not None and abs(found[0] - 150) <= 1 and abs(found[1] - 140) <= 1
+
+
+def test_a_target_is_confirmed_only_on_a_roof_of_the_expected_owner(monkeypatch):
+    """g419 08:34/08:44: the hero and ココット were sent to open fields by dead reckoning."""
+    def arrived(_screen, mem, *_a, **_k):
+        return 'arrived'
+    monkeypatch.setattr(policy, 'nav_step', arrived)
+    monkeypatch.setattr(policy, 'Y_JUMP_OFFSET', {})
+    order = {'step': 'X', 'general': 'どうし', 'source': 'ほんじょう', 'target': 'ゴーメン',
+             'cards': [], 'after': None, 'note': 't'}
+    mem = {'chapter': 1, 'orders': {}, 'picked': [], '_records': [], 'active': 'X',
+           'launched_orders': {'X': order}}
+    marker = Screen(lines=[], hand=None, text='', kind='map_target', marker=(8, 55))
+    monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: [])     # open field
+    for _ in range(policy.TARGET_MISS_LIMIT - 1):
+        assert policy.target_step(marker, mem, FRAME) == []
+    assert policy.target_step(marker, mem, FRAME) == [policy.pad('b')]    # cancelled, not sent
+    assert mem['orders']['X'] == 'pending' and not decisions(mem, 'order_launched')
+    # On the enemy roof it launches.
+    mem['active'] = 'X'
+    monkeypatch.setattr(policy, 'castle_roofs',
+                        lambda *_a, **_k: [{'kind': 'enemy', 'target': (10, 57), 'clipped': False}])
+    assert policy.target_step(marker, mem, FRAME) == [policy.pad('a')]
+    assert decisions(mem, 'order_launched')
