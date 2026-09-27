@@ -8,6 +8,8 @@ No model or network is used. Delivery is owned by ``hanjuku_narration``.
 """
 from __future__ import annotations
 
+COMMENTARY_VERSION = "hanjuku-commentary-v2-observed-context"
+
 _STEP_LABEL = {
     '1-A1': '主人公の初手', '1-V1': 'ヴィーナスの初手', '1-C1': 'ココットの初手',
     '1-A2': '主人公の二手目', '1-V2': 'ヴィーナスの二手目', '1-C2': 'ココットの二手目',
@@ -28,10 +30,12 @@ def compose(rec: dict) -> tuple[str, str | None]:
         return 'name', '主人公の名前を「どうし」と入力して、冒険を始めます。'
     if kind == 'order_start':
         return (f'order:{step}',
-                f"{label}です。{rec['general']}将軍を{rec['source']}から{rec['target']}城へ向かわせます。"
+                f"出撃準備の予定です。{rec['general']}将軍を{rec['source']}から{rec['target']}城へ向かわせる計画です。"
                 f"持たせる切り札は{_cards(rec.get('cards'))}です。")
     if kind == 'order_launched':
         return f'launch:{step}', f"{rec['general']}将軍、{rec['target']}城へ出撃しました。"
+    if kind == 'order_launched_unconfirmed':
+        return f'launch_unconfirmed:{step}', f"{rec['general']}将軍の出撃先選択が中断されました。出撃の成否と行き先を確認します。"
     if kind == 'order_retry':
         if rec.get('strategy_variant') == 'retry_chart_boss_kit':
             return f'retry:{step}', 'ボス戦に敗れたので、主人公とチャートの切り札を確認して再攻撃を準備します。'
@@ -60,9 +64,9 @@ def compose(rec: dict) -> tuple[str, str | None]:
         elif ally_hp < enemy_hp:
             tail = '体力では負けているので、苦しい白兵戦になりそうです。'
         elif ally_hp > enemy_hp:
-            tail = '体力で上回っているので、切り札を温存して白兵で押します。'
+            tail = '体力で上回っています。状況を見て使える手を選びます。'
         else:
-            tail = '体力は互角です。切り札を温存して白兵で戦います。'
+            tail = '体力は互角です。状況を見て使える手を選びます。'
         return (key,
                 f"{rec['ally']}対{rec['enemy']}、体力は{ally_hp}対{enemy_hp}。{tail}")
     if kind == 'battle_survival':
@@ -148,7 +152,7 @@ def compose(rec: dict) -> tuple[str, str | None]:
         return (f"jev_interim:{rec.get('target')}",
                 f"JEVは調整チャートを待つ間、{rec['general']}が{stem}{plain}と判断しました。{conf_s}")
     if kind == 'castle_lost_observed':
-        return f"lost:{rec.get('castle')}", f"{rec.get('castle')}を敵に奪われました。取り返しに向かいます。"
+        return f"lost:{rec.get('castle')}", f"{rec.get('castle')}が敵の城になっているのを確認しました。"
     if kind == 'chart_interim_hold':
         # Only when there is literally nothing left to retake, attack or staff.
         return 'jev_interim_hold', '動かせる将軍と攻め先が無いため、調整チャートを待っています。'
@@ -158,7 +162,7 @@ def compose(rec: dict) -> tuple[str, str | None]:
 # Decisions worth speaking. Menu steps and waits are logged, not narrated.
 SPOKEN = frozenset({
     'name_confirm', 'order_start', 'order_retry', 'order_source_changed', 'attack_observed',
-    'defense_observed', 'battle_start', 'battle_survival', 'battle_card', 'battle_result', 'month_plan', 'poor_harvest',
+    'order_launched_unconfirmed', 'defense_observed', 'battle_start', 'battle_survival', 'battle_card', 'battle_result', 'month_plan', 'poor_harvest',
     'prompt', 'situation_held', 'gift', 'egg_battle', 'order_substitute', 'independent_menu',
     'chart_adjust_request', 'chart_adjust_applied', 'chart_interim_order', 'chart_interim_hold',
     'castle_lost_observed'})

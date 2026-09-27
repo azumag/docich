@@ -337,7 +337,7 @@ def test_commentary_is_grounded_and_holds_when_unknown():
 
 @pytest.mark.parametrize('ally_hp,enemy_hp,expected', [
     (90, 90, '体力は互角'),
-    (91, 90, '体力で上回っている'),
+    (91, 90, '体力で上回っています'),
     (89, 90, '体力では負けている'),
 ])
 def test_battle_start_commentary_compares_only_observed_hp(ally_hp, enemy_hp, expected):
@@ -515,7 +515,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v17-recruit-candidate'
+    assert state['bot_version'] == 'hanjuku-chart-v18-commentary-context'
     assert '_records' not in state['policy']
 
 
@@ -1930,3 +1930,16 @@ def test_unpaid_or_unreadable_candidate_never_resets_aborted_flow():
         mem={'month_sub':{'kind':'recruit','gold_before':158,'presses':70,'aborted':True}}
         assert policy.month_sub_step(sc,mem)==[policy.pad('b')]
         assert not mem['month_sub'].get('paid_candidates')
+
+
+def test_commentary_separates_plan_unknown_departure_and_observation():
+    rec = {'decision': 'order_start', 'chart_step': 'I:test:1', 'general': 'ココット',
+           'source': 'ジョンリギ', 'target': 'スペンソニア', 'cards': []}
+    assert '計画です' in hanjuku_commentary.compose(rec)[1]
+    rec.update(decision='order_launched_unconfirmed', target=None, planned_target='スペンソニア')
+    assert 'order_launched_unconfirmed' in hanjuku_commentary.SPOKEN
+    text = hanjuku_commentary.compose(rec)[1]
+    assert '成否と行き先を確認' in text and 'スペンソニア' not in text
+    _, text = hanjuku_commentary.compose({'decision': 'battle_start', 'ally': 'どうし',
+        'enemy': 'ミント', 'ally_hp': 90, 'enemy_hp': 32})
+    assert '温存' not in text and '90対32' in text

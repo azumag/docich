@@ -245,7 +245,7 @@ def test_jev_criteria_and_commentary_name_the_purpose():
                                            'target': 'キカンドン', 'purpose': 'move'})
     assert move == '調整チャートを待つ間、アルテミスがほんじょうから空のキカンドンへ移ります。'
     _, lost = hanjuku_commentary.compose({'decision': 'castle_lost_observed', 'castle': 'ジョンリギ'})
-    assert lost == 'ジョンリギを敵に奪われました。取り返しに向かいます。'
+    assert lost == 'ジョンリギが敵の城になっているのを確認しました。'
 
 
 def test_a_cell_that_pressing_never_moves_falls_back_to_the_inland_search(monkeypatch):
