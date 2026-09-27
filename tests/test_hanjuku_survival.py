@@ -333,3 +333,17 @@ def test_egg_opponent_menu_is_not_the_scrollable_human_retreat_menu():
     for y in range(168,180):
         for x in range(152,164): c.put(x,y,(230,105,74))
     assert parse(c.frame()).kind=='egg_battle_menu'
+
+
+def test_egg_opponent_menu_with_spent_egg_row_greyed_out_is_still_recognized():
+    # A general whose egg is spent draws たまごをつかう greyed out here too
+    # (mirrors the きりふだ/たいきゃく battle_menu fallback), so only the
+    # first two rows survive OCR. Without a fallback the panel falls to
+    # kind 'text' with no cursor and holds the bot forever.
+    from docich.hanjuku_screen import parse
+    c=Canvas()
+    for i,label in enumerate(('こうげき','もうこうげき')):
+        c.text(176,176+16*i,label)
+    for y in range(168,180):
+        for x in range(152,164): c.put(x,y,(230,105,74))
+    assert parse(c.frame()).kind=='egg_battle_menu'
