@@ -196,6 +196,23 @@ class TestFailedRotationStartReconciliation(RetroCornerTestBase):
         self.assertIsNone(result["last_error_code"])
         self.assertEqual(coordinator.calls, [])
 
+    def test_readiness_timeout_receipt_terminalizes_the_rolled_back_failed_corner(self):
+        # A target that never became ready rolls back to the previous game
+        # exactly like the other known start errors; without this case the
+        # whole corner rotation latches forever and recover-failed refuses.
+        mgr, coordinator, request_id = self._setup_failed_start(
+            corner_status="failed", error_code="readiness_timeout")
+
+        self.assertTrue(mgr.reconcile_failed_rotation_start(request_id))
+
+        result = mgr._read_state()
+        self.assertEqual(result["status"], "interrupted")
+        self.assertEqual(result["end_reason"], "switch-terminal-before-corner-active")
+        self.assertEqual(result["rotation_request_id"], request_id)
+        self.assertIsNone(result["last_error"])
+        self.assertIsNone(result["last_error_code"])
+        self.assertEqual(coordinator.calls, [])
+
     def test_failed_corner_requires_known_matching_start_error_in_terminal_receipt(self):
         for state_error, receipt_error in (
             ("start_failed", "agent_start_failed"),
