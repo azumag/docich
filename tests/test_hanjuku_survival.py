@@ -154,6 +154,53 @@ def command_frame(enabled=(0,1,2), cursor=0):
     return c.frame()
 
 
+def test_all_disabled_commands_scroll_to_hidden_okunote_without_selecting_grey_rows():
+    from docich.hanjuku_screen import parse
+    c = Canvas()
+    for i,label in enumerate(p.BATTLE_MENU):
+        c.text(176,176+16*i,label,color=(106,105,106))
+    assert parse(c.frame()).kind != 'battle_menu'  # no knight: do not infer a menu
+    for y in range(168,180):
+        for x in range(152,164): c.put(x,y,(230,105,74))
+    actions,state=decide(c.frame(),{'policy':memory(6,30)})
+    assert state['screen_kind']=='battle_menu' and actions==[p.pad('down')]
+    assert parse(c.frame()).text==''  # disabled rows are never selectable labels
+    c=Canvas()
+    c.text(176,176,'きりふだ',color=(106,105,106))
+    c.text(176,192,'たいきゃく',color=(106,105,106))
+    c.text(176,208,'おくのて')
+    for y in range(200,212):
+        for x in range(152,164): c.put(x,y,(230,105,74))
+    actions,state=decide(c.frame(),state)
+    assert actions==[p.pad('a')]
+    assert any(r['decision']=='battle_okunote_select' for r in state['_records'])
+
+
+@pytest.mark.parametrize('labels,winner', [
+    (('ヤケクソ','せっとく','ウェイブもどき'),'ウェイブもどき'),
+    (('あやまる','うそなき','しんだフリ'),'しんだフリ'),
+    (('だいじんアタック','ファバードもどき','いあつする'),'だいじんアタック'),
+])
+def test_okunote_chooses_the_best_visible_candidate(labels,winner):
+    c=Canvas()
+    for i,label in enumerate(labels): c.text(176,176+16*i,label)
+    target=labels.index(winner)
+    for y in range(168+16*target,180+16*target):
+        for x in range(152,164): c.put(x,y,(230,105,74))
+    actions,state=decide(c.frame(),{'policy':memory(6,30)})
+    assert state['screen_kind']=='okunote_menu' and actions==[p.pad('a')]
+    assert any(r.get('choice')==winner for r in state['_records'])
+
+
+def test_okunote_scroll_is_bounded_and_a_new_melee_reading_resets_the_attempt():
+    screen=Screen([],None,'',kind='battle_menu',menu_cursor=176,hidden_battle_commands=True)
+    mem=memory(6,30)
+    for _ in range(16): assert p.okunote_step(screen,mem)==[p.pad('down')]
+    assert p.okunote_step(screen,mem)==[p.pad('b')]
+    p.battle_step(battle(mem),mem)
+    assert 'okunote_flow' not in mem['battle']
+
+
 def test_defense_egg_only_command_box_is_not_dialogue():
     mem = memory()
     p.battle_step(battle(mem), mem)

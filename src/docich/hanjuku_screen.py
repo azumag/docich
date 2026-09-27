@@ -23,6 +23,11 @@ KNIGHT_COLORS = ((230, 105, 74), (230, 149, 74), (148, 80, 230), (123, 56, 222),
 ALLY_MARK = (222, 72, 65)
 ENEMY_MARK = (57, 121, 189)
 MENU_ROW_Y = 148          # option rows live in the bottom command box band
+# Increasing effect order; choose the strongest of the three offered moves.
+OKUNOTE_CHOICES = ('ヤケクソ', 'おどす', 'よたる', 'あやまる', 'うそなき',
+                   'しんだフリ', 'てぶくろ', 'ハダカでぶつかる', 'せっとく',
+                   'くすぐってみる', 'せいしゅん', 'いあつする', 'ブンシーンもどき',
+                   'リューキシもどき', 'ウェイブもどき', 'ファバードもどき', 'だいじんアタック')
 
 
 def _near(pixel, color, tolerance=10):
@@ -165,6 +170,7 @@ class Screen:
     menu_rows: list[TextLine] = field(default_factory=list)
     menu_cursor: int | None = None
     egg_rows: list[EggRow] = field(default_factory=list)
+    hidden_battle_commands: bool = False
 
     def has(self, needle: str) -> bool:
         return needle.replace(' ', '') in self.text
@@ -262,8 +268,10 @@ _BATTLE_COMMANDS = ((176, 'たまごをつかう'), (192, 'きりふだ'), (208,
 
 
 def _human_commands(screen):
-    return any(line.y == y and line.spans() == [(176, label)]
-               for line in screen.menu_rows for y, label in _BATTLE_COMMANDS)
+    return any(line.y in (176, 192, 208)
+               and line.spans() in [[(176, label)] for label in
+                                    ('たまごをつかう', 'きりふだ', 'たいきゃく', 'おくのて')]
+               for line in screen.menu_rows)
 
 
 def parse(frame: Frame, *, phase: str | None = None) -> Screen:
@@ -280,10 +288,21 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
     screen.selected = _selected(lines, hand)
     screen.battle = _battle(frame)
     screen.menu_rows = _menu_rows(lines)
-    if screen.menu_rows:
+    if not screen.menu_rows:
+        # Measured disabled text is (106,105,106), not white. Keep it out
+        # of selectable labels: only use all three exact rows to detect the
+        # scrollable human menu, then require its knight cursor as well.
+        grey = read_lines(frame, predicate=lambda r,g,b: 95 <= min(r,g,b)
+                          and max(r,g,b) <= 120 and max(r,g,b)-min(r,g,b) <= 5,
+                          rect=(176,176,256,216))
+        screen.hidden_battle_commands = all(
+            any(line.y == y and line.spans() == [(176,label)] for line in grey)
+            for y,label in _BATTLE_COMMANDS)
+    if screen.menu_rows or screen.hidden_battle_commands:
         cursor_rows = ([TextLine(y, ((176, label),)) for y, label in _BATTLE_COMMANDS]
-                       if _human_commands(screen) else screen.menu_rows)
+                       if _human_commands(screen) or screen.hidden_battle_commands else screen.menu_rows)
         screen.menu_cursor = _menu_cursor(frame, cursor_rows)
+        screen.hidden_battle_commands &= screen.menu_cursor is not None
         screen.egg_rows = _egg_rows(frame)
     if phase in (None, 'field', 'field_menu', 'battle_intro', 'event'):
         screen.marker = _target_marker(frame)
@@ -319,7 +338,10 @@ def classify_text(s: Screen) -> str:
         return 'shop_list'
     if 'しょうにん' in t and 'おしまい' in t:
         return 'month_menu'
-    if _human_commands(s):
+    if s.menu_cursor is not None and any(
+            word in OKUNOTE_CHOICES for line in s.menu_rows for _,word in line.spans()):
+        return 'okunote_menu'
+    if _human_commands(s) or s.hidden_battle_commands:
         return 'battle_menu'
     if 'たまごをつかう' in t and 'たいきゃく' in t:
         return 'battle_menu'
