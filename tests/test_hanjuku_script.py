@@ -563,3 +563,23 @@ def test_missing_start_identity_cannot_adopt_the_first_active_runtime(manager, m
     with pytest.raises(RetroCornerError, match='identity missing'):
         manager._wait_hanjuku({'status': 'active', 'game': 'hanjuku-hero'})
     observe.assert_not_called()
+
+
+def test_blinking_two_image_screen_still_stalls(tmp_path):
+    """g358: a blinking hand alternated two digests, so 50 min of ignored B never stalled."""
+    a, b = frame(), frame((31,90,50))
+    for now in range(0,310,10):
+        result=hanjuku_run.observe(tmp_path,IDENTITY,b if now%70==10 else a,now=now,wall=1000+now)
+        assert result['terminal_reason'] is None
+    result=hanjuku_run.observe(tmp_path,IDENTITY,a,now=310,wall=1310)   # 300 s since b first appeared
+    assert result['terminal_reason']=='screen_stalled'
+
+
+def test_third_image_resets_two_image_stasis(tmp_path):
+    a, b, c = frame(), frame((31,90,50)), frame((32,90,50))
+    for now in range(0,290,10):
+        hanjuku_run.observe(tmp_path,IDENTITY,(a,b)[now//10%2],now=now,wall=1000+now)
+    result=hanjuku_run.observe(tmp_path,IDENTITY,c,now=290,wall=1290)
+    assert result['terminal_reason'] is None and result['unchanged_seconds']==0
+    result=hanjuku_run.observe(tmp_path,IDENTITY,a,now=300,wall=1300)
+    assert result['terminal_reason'] is None      # a fell out of the two recent images

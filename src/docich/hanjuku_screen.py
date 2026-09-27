@@ -289,6 +289,10 @@ def classify_text(s: Screen) -> str:
         return 'name_entry'
     if 'きりふだセレクト' in t:
         return 'card_select'
+    if 'しょうぐん' in t and 'かいこに' in t:
+        # Debt forces「どのしょうぐんをかいこに?」on a green list panel
+        # that classify() calls shop; B there is ignored (g358: 2700 B).
+        return 'discharge_menu'
     if 'しゅつげきしますか' in t:
         return 'sortie_confirm'
     if 'みせじまい' in t:

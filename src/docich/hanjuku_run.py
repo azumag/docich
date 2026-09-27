@@ -104,7 +104,12 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
     phase=classify(frame)
     previous=old.get('observed_monotonic')
     consecutive=(type(previous) in (int,float) and 0 <= now-previous <= MAX_SAMPLE_GAP)
-    unchanged=consecutive and old.get('frame_sha256')==digest and playing and old.get('playing') is True
+    # A blinking cursor alternates two images forever (g358: the forced
+    # discharge list never stalled while B was ignored for 50 min). Treat the
+    # two most recent distinct images as one unchanged screen.
+    recent=[d for d in (old.get('recent_frame_sha256') or [old.get('frame_sha256')]) if isinstance(d,str)][:2]
+    unchanged=consecutive and digest in recent and playing and old.get('playing') is True
+    recent=[digest]+[d for d in recent if d!=digest][:1]
     since=old.get('unchanged_since',now) if unchanged else now
     if type(since) not in (int,float) or not math.isfinite(since):
         raise AdapterError('invalid Hanjuku stasis evidence')
@@ -126,7 +131,7 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
     if battle_started: battle_active=True
     if battle_ended: battle_active=False
     state={**identity,'schema':1,'bot_version':BOT_VERSION,
-           'phase':phase,'frame_sha256':digest,'observed_monotonic':now,
+           'phase':phase,'frame_sha256':digest,'recent_frame_sha256':recent,'observed_monotonic':now,
            'observed_at':wall,'unchanged_since':since,'unchanged_seconds':duration,
            'playing':playing,'terminal_reason':reason,
            'name_entered':named,'gameplay_seen':played,
