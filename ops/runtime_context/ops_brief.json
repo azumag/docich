@@ -1,11 +1,11 @@
 {
-  "output_sha256": "00e12d4d08ec35103837c450d6e82938000ac54298207c0618b3ea3fccbdd348",
+  "output_sha256": "f0db917113a2cc7b623fefa35a93643ba2949b0aba461e09218d0ffa81425c0b",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "9cd8daa9cbb65a992692422967e59857312605a20e8dc0c772fe0838daa3e2a0",
+  "source_sha256": "abd5e7e08b284fc1c18262e53051162f3b1a5ce99832537501c305d6959cb732",
   "topics": [
+    "エグモン回復ループ（v25）・借金解雇の最小化＋B退出（v26）配備、hanjuku再起動はrotation保留で待ち（Claude Co…",
     "エグモン戦の回復ループ修正（v25）配備・本番実測、v24配備確認（Claude Code）",
-    "本城失陥・SELECT（v24）マージ、引き継ぎプロンプト作成（Claude Code）",
-    "Y全体マップで全城の所有を読む（v23）、次の課題（Claude Code）"
+    "本城失陥・SELECT（v24）マージ、引き継ぎプロンプト作成（Claude Code）"
   ]
 }
