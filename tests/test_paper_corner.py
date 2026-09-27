@@ -4,6 +4,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from pathlib import Path
 import sys
+import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from docich.config import load_global
 from docich.paper_corner import PaperCornerManager
@@ -57,6 +58,39 @@ class FakeCoordinator:
 def manager(g, **kwargs):
     kwargs.setdefault('coordinator', FakeCoordinator())
     return PaperCornerManager(g, **kwargs)
+
+
+@pytest.mark.parametrize('manual', [False, True])
+@pytest.mark.parametrize('busy', [None, 'writer', 'switch'])
+def test_terminal_failure_reconciliation_holds_both_ownership_guards(tmp_path, monkeypatch, manual, busy):
+    import fcntl
+    from docich.game_switch import CanonicalStateStore
+    from docich.paper_corner_manual import ManualPaperCornerManager
+
+    g = setup(tmp_path)
+    mgr = (ManualPaperCornerManager if manual else PaperCornerManager)(g)
+    original = {'status': 'failed', 'previous_game': 'sorengame', 'completed_at': 100,
+                'last_error': 'original restore failure'}
+    mgr.save(original)
+    original_bytes = mgr.path.read_bytes()
+    canonical = {'phase': 'ready', 'active': {'game': 'sorengame'}}
+    monkeypatch.setattr(CanonicalStateStore, 'load', lambda self: (canonical, False))
+    if busy == 'writer':
+        mgr.tick_guard_path.parent.mkdir(parents=True, exist_ok=True)
+        with mgr.tick_guard_path.open('a') as guard:
+            fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            assert mgr.reconcile_terminal_failure() == 'already-running'
+            assert mgr.path.read_bytes() == original_bytes
+    elif busy == 'switch':
+        with mgr.store.lock(exclusive=True):
+            assert mgr.reconcile_terminal_failure() == 'switch-busy'
+            assert mgr.path.read_bytes() == original_bytes
+
+    assert mgr.reconcile_terminal_failure() == 'reconciled'
+    assert json.loads(mgr.path.read_text()) == {**original, 'status': 'completed'}
+    canonical['active']['game'] = 'moon-buggy'
+    assert mgr.reconcile_terminal_failure() == 'unchanged'
+    assert json.loads(mgr.path.read_text()) == {**original, 'status': 'completed'}
 
 
 def test_delayed_boundary_runs_all_eight_narrations(tmp_path):

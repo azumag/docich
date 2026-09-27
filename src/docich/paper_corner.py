@@ -186,6 +186,33 @@ class PaperCornerManager:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_json(self.path, state)
 
+    def reconcile_terminal_failure(self):
+        """Persist proven recovery before a later corner changes the display.
+
+        A read-only terminal observation is temporary: once the next game is
+        active, the old failed record no longer matches its previous game.
+        Use the normal writer guard and hold canonical ownership stable while
+        settling that record. Preserve the original error and completion time.
+        """
+        from .corner_terminal import normalize_terminal_paper_failure
+        from .game_switch import GameSwitchBusyError
+
+        def reconcile():
+            state = self._read_state()
+            if state.get('status') != 'failed':
+                return 'unchanged'
+            try:
+                with self.store.lock(exclusive=False):
+                    terminal = normalize_terminal_paper_failure(self.g.state_dir, state)
+                    if terminal is state:
+                        return 'unchanged'
+                    self.save(terminal)
+                    return 'reconciled'
+            except GameSwitchBusyError:
+                return 'switch-busy'
+
+        return self._with_guard(reconcile)
+
     def summary(self):
         try:
             data = json.loads((self.g.state_dir / 'trading/status.json').read_text())

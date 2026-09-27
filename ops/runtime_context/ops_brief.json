@@ -1,11 +1,11 @@
 {
-  "output_sha256": "33898dae4a4a3724ee2b1ddc19f79c1785e6cc4c63134a69c9f1d43fa102118d",
+  "output_sha256": "5136177b64a6d9956dff35668e9f44352f42fa1551ac2a06b3b537b165c169aa",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "62e700ad4e58057c5a3bcf4af67b392016c583717d8b794024f0a134077323be",
+  "source_sha256": "c930560073611b20898d6ac38e9a0d6ef4a1b64fc09a79ab8c308176a520ff3e",
   "topics": [
+    "PAPERの古い失敗記録による再停止を復旧・修正",
     "ローテーション二原因の復旧・再発防止を本番照合",
-    "Mac常駐化をmainへ統合、NetHack死亡後の停止も復旧",
-    "Mac agentを復旧しGUIサービスの自動再起動を検証"
+    "Mac常駐化をmainへ統合、NetHack死亡後の停止も復旧"
   ]
 }

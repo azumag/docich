@@ -292,6 +292,8 @@ def test_terminal_failed_manual_paper_state_does_not_pin_rotation(tmp_path, monk
     from docich.corner_adapters import RetiredCornerObserver
 
     config = load_global(tmp_path)
+    config.config_path.parent.mkdir(parents=True, exist_ok=True)
+    config.config_path.write_text('')
     config.state_dir.mkdir(parents=True, exist_ok=True)
     (config.state_dir / "paper_corner_manual.json").write_text(json.dumps({
         "status": "failed",
@@ -394,7 +396,13 @@ def test_paper_terminal_contract_through_rotation_tick(tmp_path, monkeypatch, re
     else:
         assert result["reason"] == "other-corner-needs-finish-or-recovery"
         assert not executor.calls
-    assert state_path.read_text() == original
+    if case in {"restored", "idle-restored"}:
+        assert json.loads(state_path.read_text()) == {**paper_state, "status": "completed"}
+        canonical.update(phase="ready", active={"game": "nsnake"})
+        # A later game's display must not resurrect the settled failure.
+        assert manager._observe(manager.load(1000), 1000) is False
+    else:
+        assert state_path.read_text() == original
 
 
 def test_unstable_failed_manual_paper_state_still_blocks_rotation(tmp_path, monkeypatch):
@@ -402,6 +410,8 @@ def test_unstable_failed_manual_paper_state_still_blocks_rotation(tmp_path, monk
     from docich.corner_adapters import RetiredCornerObserver
 
     config = load_global(tmp_path)
+    config.config_path.parent.mkdir(parents=True, exist_ok=True)
+    config.config_path.write_text('')
     config.state_dir.mkdir(parents=True, exist_ok=True)
     (config.state_dir / "paper_corner_manual.json").write_text(json.dumps({
         "status": "failed",
@@ -456,8 +466,9 @@ def test_recovered_paper_owner_allows_real_coordinator_slot_dispatch(tmp_path, m
     registry = tmp_path / "tmp/state" / corner_boundary.REGISTRY_FILE
     registry.parent.mkdir(parents=True)
     registry.write_text(json.dumps({"owner_state": str(paper_path)}))
+    canonical = {"phase": "ready", "active": {"game": "sorengame"}}
     store = SimpleNamespace(
-        canonical=SimpleNamespace(load=lambda: ({"phase": "ready", "active": {"game": "sorengame"}}, False)),
+        canonical=SimpleNamespace(load=lambda: (canonical, False)),
         lock=lambda **_: nullcontext(),
     )
     monkeypatch.setattr(corner_terminal, "GameSwitchStore", lambda _: store)
@@ -470,15 +481,30 @@ def test_recovered_paper_owner_allows_real_coordinator_slot_dispatch(tmp_path, m
     game = Adapter(g, Corner("nsnake", "game", "nsnake", target_matches=1))
     game.manager = SimpleNamespace(store=store)
     game.state_path = g.state_dir / "retro_corner.json"
-    game.run = lambda request: calls.append(request) or "completed"
+    def run(request):
+        calls.append(request)
+        canonical["active"]["game"] = "nsnake" if len(calls) == 1 else "sorengame"
+        return "queued" if len(calls) == 1 else "completed"
+    game.run = run
     executor = CornerExecutionCoordinator(g, clock=time.time, sleep=lambda _: None, wait_seconds=-1)
     manager = CornerRotationManager(g, catalog=[game.corner, paper.corner], executor=executor,
                                     adapter_factory=lambda _, c: paper if c.adapter == "paper" else game)
+    assert manager.tick()["status"] == "waiting"
+    # The next tick must replay the queued request even while nsnake is active.
     assert manager.tick()["status"] == "ready"
-    assert len(calls) == 1
+    assert len(calls) == 2
+    assert calls[0]["request_id"] == calls[1]["request_id"]
     assert calls[0]["corner"] == "nsnake"
     assert json.loads(registry.read_text())["owner_state"] == str(game.state_path)
-    assert paper_path.read_text() == original
+    assert json.loads(paper_path.read_text()) == {**json.loads(original), "status": "completed"}
+
+
+def test_busy_terminal_reconciliation_does_not_release_next_corner(setup):
+    _, _, _, executor, make = setup
+    manager = make()
+    manager.adapters['paper'].reconcile_terminal_failures = lambda: False
+    assert manager.tick()['reason'] == 'other-corner-needs-finish-or-recovery'
+    assert not executor.calls
 
 
 def test_removed_corner_keeps_improvement_release_gate(setup):
