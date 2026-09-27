@@ -63,7 +63,9 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
     card_flow=battle.get('card_flow')
     capture=(bool(card_flow) or (bool(battle.get('survival')) and state.get('screen_kind') == 'battle_menu') or state.get('screen_kind') in {'general_list','card_select','sortie_confirm'} or any(
         r.get('decision') in {'name_confirm','chapter_seen','battle_result','barrier_removed',
-                              'card_pick','card_missing','sortie_confirm','order_substitute'}
+                              'card_pick','card_missing','sortie_confirm','order_substitute',
+                              'order_launched_unconfirmed','sortie_arrival_confirmed',
+                              'sortie_departed_observed','sortie_cancelled_observed'}
         or (r.get('decision') == 'order_start' and r.get('cards'))
         or (r.get('decision') == 'situation_held' and r.get('screen') in {'card_select','sortie_confirm'})
         or str(r.get('decision','')).startswith(('battle_card','battle_survival','battle_okunote','battle_hero_retreat','egg_recover')) for r in records))
