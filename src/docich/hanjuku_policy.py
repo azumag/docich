@@ -2694,11 +2694,6 @@ KNOWN_PRICES = {'イッテツーン': 1, 'ノリウツール': 18, 'クースカ
 
 # 兵士は1G=1人で2桁入力が上限。チャート計画の無い月の残金はここまでの補充に使う。
 SOLDIER_CAP = 99
-# The month boundary pays 収入 − 総賃金; ending a month at 0G forced a
-# dismissal in g358 (-1G) and g407 (-3G, 6 generals lost). Keep this much
-# gold unspent so a shortfall month cannot push the balance negative
-# (owner 2026-09-28: そもそも将軍解雇はしないで欲しい).
-WAGE_RESERVE = 30
 # 月一の たまごのかいふく / しょうぐんぼしゅう (gcgx: どちらも50G)。
 EGG_RECOVER_COST = 50
 RECRUIT_COST = 50
@@ -2785,7 +2780,7 @@ def _adjusted_plan(mem, header, key):
     unpriced = sorted({name for name, _ in items if name not in KNOWN_PRICES})
     reserve, recruit = _extras_reserve(mem, header)
     left = gold - sum(KNOWN_PRICES.get(name, 0) * qty for name, qty in items) - reserve
-    soldiers = max(0, min(target, left - WAGE_RESERVE))
+    soldiers = max(0, min(target, left))
     shop = mem['shop'] = {'key': key, 'items': items, 'soldiers': soldiers, 'merchant_done': False,
                           'variant': 'chart_adjusted', 'soldiers_done': target == 0,
                           'soldiers_target': target, 'soldiers_from_gold': True,
@@ -2809,8 +2804,7 @@ def _recalc_soldiers(screen, mem, shop):
     gold = (screen.header or {}).get('gold')
     if type(gold) is not int:
         return False
-    shop['soldiers'] = max(0, min(shop.get('soldiers_target', 0),
-                                  gold - shop.get('reserve', 0) - WAGE_RESERVE))
+    shop['soldiers'] = max(0, min(shop.get('soldiers_target', 0), gold - shop.get('reserve', 0)))
     shop['soldiers_done'] = shop['soldiers'] == 0
     shop['soldiers_recalculated'] = True
     _record(mem, 'soldier_plan_recalc', chart_step='adjusted-month',
@@ -2885,8 +2879,7 @@ def _plan(mem, header):
     reserve, recruit = _extras_reserve(mem, header)
     if leftover is None:
         reserve = 0          # unpriced cards: no measured room for the egg
-    soldiers = (spec['soldiers'] if leftover is None
-                else max(0, min(limit, leftover - reserve - WAGE_RESERVE)))
+    soldiers = spec['soldiers'] if leftover is None else max(0, min(limit, leftover - reserve))
     shop = mem['shop'] = {'key': key, 'items': items, 'soldiers': soldiers, 'merchant_done': False,
                           'variant': variant,
                           'soldiers_done': soldiers == 0, 'gold_start': gold}
@@ -2909,7 +2902,7 @@ def _soldier_refill_plan(mem, header, key):
         return None
     gold = header['gold']
     reserve, recruit = _extras_reserve(mem, header)
-    soldiers = min(SOLDIER_CAP, max(0, gold - reserve - WAGE_RESERVE))
+    soldiers = min(SOLDIER_CAP, max(0, gold - reserve))
     shop = mem['shop'] = {'key': key, 'items': [], 'soldiers': soldiers, 'merchant_done': False,
                           'variant': 'soldier_refill_only', 'soldiers_done': soldiers == 0,
                           'gold_start': gold}
@@ -3007,13 +3000,12 @@ def _month_extra(screen, mem, shop):
             continue
         if status == 'check':
             # Owner rule (2026-09-27): recruit only when the soldiers got
-            # their full 99 and the fee plus the wage reserve is still left.
-            if (type(gold) is not int or shop.get('soldiers', 0) < SOLDIER_CAP
-                    or gold < cost + WAGE_RESERVE):
+            # their full 99 and 50G or more is still left.
+            if type(gold) is not int or shop.get('soldiers', 0) < SOLDIER_CAP or gold < cost:
                 shop[sub] = 'skipped'
                 _record(mem, 'recruit_skip', month=shop.get('key'), gold=gold,
                         observed_metric={'soldiers': shop.get('soldiers'), 'gold': gold},
-                        reason='兵士99人分と賃金リザーブの後に募集費が残っていないため将軍を募集しない')
+                        reason='兵士99人分の後に50G以上残っていないため将軍を募集しない')
                 continue
         elif type(gold) is not int or gold < cost:
             shop[sub] = 'skipped'
@@ -3296,7 +3288,7 @@ def discharge_step(screen: Screen, mem):
     gold = (screen.header or {}).get('gold')
     paid_up = type(gold) is int
     state = mem.get('discharge') or {}
-    if state.get('key') != key:
+    if state.get('key') != key or not isinstance(state.get('presses'), int):
         state = {'key': key, 'presses': 0, 'exits': 0}
     mem['discharge'] = state
     if paid_up:
