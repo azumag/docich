@@ -1004,6 +1004,24 @@ def build_next_prompt(
         if covered_list
         else "（まだ何も話していません）"
     )
+    # The news slot doubles as the sequential narration's research pass: it is
+    # the only slot asked for the structured hypotheses the end-of-corner
+    # improvement consumes. Only requested when public research exists, so the
+    # other seven slots keep their plain one-segment contract.
+    research = facts.get("research") if isinstance(facts.get("research"), Mapping) else {}
+    news_hints = target_key == "news" and bool(research.get("news_items"))
+    hints_guidance = (
+        "【改善への接続】\n"
+        "- ニュース分析からBOT改善に有用な仮説がある場合だけ improvement_hints に構造化してください。無理に案を作らないでください。\n"
+        "- kind は parameter / feature / risk / data のいずれか。各案に根拠(evidence)と確信度(confidence: low/medium/high)を付けます。\n"
+        "- ニュース単発を根拠に自動売買ルールを直接追加する提案は禁止。検証方法・反証条件をrationaleに含めてください。\n"
+        if news_hints else ""
+    )
+    hints_suffix = (
+        ', "improvement_hints": [{"kind": "parameter|feature|risk|data", "title": "短い日本語", '
+        '"rationale": "検証方法と反証条件", "evidence": "根拠", "confidence": "low|medium|high"}]'
+        if news_hints else ""
+    )
     target_instruction = (
         f"【今回の固定枠】{target_key}（{SEGMENT_LABELS[target_key]}）。"
         "この枠の内容だけを書き、別の枠の説明や総括を混ぜないでください。"
@@ -1013,7 +1031,8 @@ def build_next_prompt(
         "損益と保有、直近約定の理由、往復の振り返り、次回改善で検証したいこと。\n"
     )
     response_instruction = (
-        f'次のJSONだけを出力してください。{{"slot": "{target_key}", "topic": "短い日本語ラベル", "text": "本文"}}\n'
+        '次のJSONだけを出力してください。'
+        f'{{"slot": "{target_key}", "topic": "短い日本語ラベル", "text": "本文"{hints_suffix}}}\n'
         "doneは出力しないでください。\n"
         if target_key is not None else
         'もう話す価値のある新しい切り口が無いと判断したら、次のJSONだけを出力してください。\n'
@@ -1043,6 +1062,7 @@ def build_next_prompt(
         "【重複の禁止】話し済み一覧にある事実・比較・数字を主題にした話は、見出しや言い回しを変えても"
         "同じ切り口とみなし、もう一度話さない（別の話の補足として一言触れるのは可）。"
         "数字が少し更新されただけの同じ比較も話し済みとみなす。\n"
+        f"{hints_guidance}"
         f"{response_instruction}"
         f"textは日本語で{MIN_SEGMENT_CHARS}〜{MAX_SEGMENT_CHARS}文字程度にすること。"
         "JSONは1行で出力し、文字列値の中に改行や制御文字を入れないこと。JSON以外は出力しないこと。"
@@ -1075,7 +1095,17 @@ def parse_next_narration(text: str, target_key: str | None = None) -> dict:
         cleaned = cleaned[:MAX_SEGMENT_CHARS]
     topic = data.get("topic")
     label = topic.strip().replace("\n", " ")[:40] if isinstance(topic, str) and topic.strip() else cleaned[:20]
-    return {"status": "item", "topic": label, "text": cleaned}
+    item = {"status": "item", "topic": label, "text": cleaned}
+    if target_key == "news":
+        # The news slot carries the bounded research analysis and the optional
+        # structured hypotheses; generate_next_narration persists them through
+        # finalize_research_result so the end-of-corner improvement receives
+        # researched hypotheses instead of an eternal "prepared" record.
+        item["news_analysis"] = cleaned
+        hints = data.get("improvement_hints")
+        if isinstance(hints, list):
+            item["improvement_hints"] = hints[:4]
+    return item
 
 
 def generate_next_narration(
@@ -1132,7 +1162,29 @@ def generate_next_narration(
         raw = generate_text(
             g, label=NEXT_SCRIPT_LABEL, agents=cleaned_agents, prompt_text=prompt, timeout=timeout
         )
-        return parse_next_narration(raw, target_key)
+        item = parse_next_narration(raw, target_key)
+        if (
+            isinstance(item, Mapping)
+            and item.get("status") == "item"
+            and "news_analysis" in item
+            and isinstance(research_context, Mapping)
+            and research_context.get("status") == "prepared"
+        ):
+            try:
+                finalize_research_result(
+                    target,
+                    research_context,
+                    {
+                        "news_analysis": item.get("news_analysis"),
+                        "improvement_hints": item.get("improvement_hints"),
+                    },
+                    now=moment,
+                )
+            except Exception:
+                # Research persistence is improvement/commentary support only;
+                # it must never lose the segment that was already generated.
+                pass
+        return item
     except CornerScriptError as exc:
         message = str(exc)
         kind = "no-json-object" if "抽出" in message else "no-usable-segment"
