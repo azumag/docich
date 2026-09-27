@@ -1373,8 +1373,11 @@ def target_step(screen: Screen, mem, frame):
     if screen.marker and _want_y_jump(mem, order, order['target'], 'target'):
         return _start_y_jump(mem, order, order['target'], 'target')
     result = nav_step(screen, mem, frame, goal)
+    if result == 'arrived' and not _target_roof_under_marker(screen, mem, frame, order):
+        return _unverified_target(screen, mem, order)
     if result == 'arrived':
         mem.pop('sortie_attempt', None)
+        (mem.get('target_miss') or {}).pop(order['step'], None)
         context = _deploy_context(order, mem, expected_metric='のりこんだ表示で目標城を確認')
         _finish_order(mem, 'launched', **context, target=order['target'],
                       cursor=mem.get('cursor'), anchor=mem.get('anchor'),
@@ -1395,6 +1398,52 @@ def target_step(screen: Screen, mem, frame):
             'tick': int(mem.get('tick') or 0)}
         return [pad('a')]
     return _deploy_input(screen, mem, order, result or [], '出撃先へ目標カーソルを移動')
+
+
+TARGET_MISS_LIMIT = 3          # unverified target arrivals before cancelling the sortie
+TARGET_CANCEL_LIMIT = 2        # cancelled sorties per order before failing it
+
+
+def _target_roof_under_marker(screen, mem, frame, order) -> bool:
+    """The marker stands on a castle roof of the expected owner.
+
+    g419 08:34/08:44: after failed Y jumps the capped unverified arrival
+    confirmed a target by dead reckoning alone, and the hero and ココット
+    marched to open fields and camped. A target is confirmed only on a roof:
+    enemy for an attack, ours for a move.
+    """
+    s = _cursor(screen)
+    if not s or frame is None:
+        return True
+    want = 'own' if order['target'] in _owned(mem) else 'enemy'
+    return any(r['kind'] == want
+               and abs(r['target'][0] - s[0]) <= UNDER_CURSOR_PX
+               and abs(r['target'][1] - s[1]) <= UNDER_CURSOR_PX
+               for r in castle_roofs(frame))
+
+
+def _unverified_target(screen, mem, order):
+    step = order['step']
+    misses = mem.setdefault('target_miss', {})
+    misses[step] = misses.get(step, 0) + 1
+    if misses[step] < TARGET_MISS_LIMIT:
+        mem['uncertain'] = True               # re-anchor on roofs before confirming
+        mem.pop('anchor', None)
+        _record(mem, 'target_not_under_marker', chart_step=step, target=order['target'],
+                observed_metric={'cursor': mem.get('cursor'), 'marker': list(_cursor(screen) or ()),
+                                 'misses': misses[step]},
+                reason='出撃先マーカーの位置に目的の城の屋根が無いため決定せず位置を取り直す')
+        return []
+    misses.pop(step, None)
+    cancels = mem.setdefault('target_cancel', {})
+    cancels[step] = cancels.get(step, 0) + 1
+    mem.pop('sortie_attempt', None)
+    state = 'failed' if cancels[step] >= TARGET_CANCEL_LIMIT else 'pending'
+    _finish_order(mem, state, target=order['target'],
+                  deviation_reason='出撃先を屋根で確認できない',
+                  observed_metric={'marker': list(_cursor(screen) or ()), 'cancels': cancels[step]},
+                  reason='誤った場所へ出撃させないよう出撃を取り消す（将軍は城に残る）')
+    return [pad('b')]
 
 
 def _deploy_cards(order, mem):
@@ -3389,6 +3438,7 @@ def observe_events(screen: Screen, mem):
                         'chart_adjust', 'chart_plan', 'launched_orders', 'sorties', 'sortie_attempt',
                         'garrison', 'general_location_unknown', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
                         'nav_prev', 'nav_still', 'nav_pressed', 'unverified', 'off_castle',
+                        'target_miss', 'target_cancel',
                         'world_map_tick', 'world_map_due', 'world_map_wait', 'home_lost',
                         'y_jump', 'y_jumps', 'y_jump_return',
                         'select_used',
