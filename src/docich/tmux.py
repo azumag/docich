@@ -554,6 +554,11 @@ class Tmux:
         r = self._run(["capture-pane", "-p", "-t", session])
         return r.stdout if r.returncode == 0 else ""
 
+    def capture_pane_colored(self, session: str) -> str:
+        """Capture visible text with cell colors and trailing spaces preserved."""
+        r = self._run(["capture-pane", "-e", "-N", "-p", "-t", session])
+        return r.stdout if r.returncode == 0 else ""
+
     def capture_pane_checked(self, target: str) -> str:
         validate_tmux_target(target)
         return self._checked(["capture-pane", "-p", "-t", target], "pane capture").stdout
