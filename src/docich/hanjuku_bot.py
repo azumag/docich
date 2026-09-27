@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v8-egg-safe'
+BOT_VERSION = 'hanjuku-chart-v11-egg-safe'
 
 
 # Native title copyright rows, measured from the owner's ROM. A strict match
@@ -187,7 +187,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     if kind not in map_kinds and mem.get('cursor'):
         # Battles, events and month menus can move the map cursor.
         mem['uncertain']=True
-        mem.pop('nav_last',None)
+        for key in ('nav_last','nav_pressed','nav_still'):
+            mem.pop(key,None)
     if kind in {'castle_menu','general_list'}:
         mem.pop('expect_menu',None)
         mem.pop('menu_miss',None)   # a real menu proves the cell was correct

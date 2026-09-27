@@ -515,7 +515,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v8-egg-safe'
+    assert state['bot_version'] == 'hanjuku-chart-v11-egg-safe'
     assert '_records' not in state['policy']
 
 
@@ -1374,6 +1374,19 @@ def test_monster_menu_reads_option_rows_knight_and_summoned_panel():
     assert s.menu_cursor == 176
     assert [(e.name, e.hp, e.side, e.y) for e in s.egg_rows] == [
         ('ローラーキラー', 348, 'ally', 176), ('クイーン', 70, 'enemy', 200)]
+
+
+def test_monster_skill_named_like_an_okunote_choice_is_still_our_monster_turn():
+    """g401 21:58: かみつく/おどす/たまごに もどれ was read as okunote and stalled 300 s."""
+    frame = monster_menu_frame(['かみつく', 'おどす'], menu_left=False,
+                               ally=('コマイス', 158), enemy=('カメレオンマン', 75), cursor=0)
+    screen = parse(frame)
+    assert screen.menu_cursor is not None
+    assert screen.kind == 'monster_menu'
+    state = {'policy': {'chapter': 1, 'battle': {'enemy': 'カメレオンマン', 'ally': 'コマイス',
+                                                 'enemy_hp': 75, 'ally_hp': 158, 'step': None}}}
+    actions, state = decide(frame, state)
+    assert state['screen_kind'] == 'monster_menu' and actions[0]['buttons'] == ['a']
 
 
 def test_monster_menu_uses_the_first_skill_on_our_turn():

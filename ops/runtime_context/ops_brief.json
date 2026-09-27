@@ -1,11 +1,11 @@
 {
-  "output_sha256": "8874bb8c32a25be5cfde2997d36627ef788e796e0edab1a32ab7e00ca82e0ff3",
+  "output_sha256": "b4fdb61dd0b580aa07bd123f373b16c3c87feb564aa811696ca3ef70ba91b161",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "c7ff678214de5897ddd798e8ed4d105802c8d54e0062967b4af2d75961bcbf0c",
+  "source_sha256": "59b16fb4dfc0f3f37674813bce117fd4d84610c0d88e8c13ac0766eeca0bc3ec",
   "topics": [
-    "半熟英雄の卵リスク制御Phase 0をPR用に実装（未配備）",
-    "どうしの緊急退却を再起動なしで配備",
-    "半熟英雄のチャート外出撃（奪還・待機将軍・空城移動）を配備（Claude Code）"
+    "敵卵リスクPhase 0の配備準備と次フェーズ調査",
+    "召喚獣メニューのおくのて誤分類を修正・配備（Claude Code）",
+    "半熟g401はscreen_stalledで終了、位置固着修正#1191配備（Claude Code）"
   ]
 }

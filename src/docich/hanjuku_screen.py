@@ -339,8 +339,11 @@ def classify_text(s: Screen) -> str:
         return 'shop_list'
     if 'しょうにん' in t and 'おしまい' in t:
         return 'month_menu'
+    # おどす is also a summoned monster's skill: a たまごに もどれ row makes it
+    # our monster's turn (g401 21:58: read as okunote, held 300 s, stalled).
     if s.menu_cursor is not None and any(
-            word in OKUNOTE_CHOICES for line in s.menu_rows for _,word in line.spans()):
+            word in OKUNOTE_CHOICES for line in s.menu_rows for _,word in line.spans()) and not any(
+            'もどれ' in r.known.replace(' ', '') for r in s.menu_rows):
         return 'okunote_menu'
     if _human_commands(s) or s.hidden_battle_commands:
         return 'battle_menu'

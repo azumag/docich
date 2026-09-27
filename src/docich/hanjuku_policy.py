@@ -206,7 +206,10 @@ def update_world(screen: Screen, mem, frame, goal_name=None):
     roofs = [r for r in castle_roofs(frame, exclude=box) if not r['clipped']]
     predicted = (world[0] - s[0], world[1] - s[1]) if world else None
     mem['roofs_seen'] = len(roofs)
-    found = _localize(roofs, castles, predicted)
+    # While searching after a wrong cell, a lone roof is exactly what was
+    # mis-voted before (g401 21:31): anchor only on a constellation.
+    found = (None if mem.get('nav_search') and len(roofs) < 2
+             else _localize(roofs, castles, predicted))
     anchored = None
     if found:
         cam, anchored = found
@@ -300,6 +303,38 @@ def observe_owners(mem, roofs, cam):
                     reason='城の屋根が自軍の色のため占領として扱う')
 
 
+NAV_STILL_LIMIT = 3                   # pressed frames with no motion before distrusting the cell
+
+
+def _nav_stuck(screen, mem, world, s):
+    """Distrust a cell that pressing no longer changes.
+
+    g401 21:31: one roof at the top-left (ほんじょう) was voted as ジョンリギ, so
+    the cell said ほんじょう was below; the cursor sat pinned at the map's
+    bottom-right corner on open sea and "down" was pressed for 16 minutes.
+    When neither the screen cursor nor the cell moves across pressed frames,
+    drop to the inland search, which only re-anchors on two or more roofs.
+    """
+    key = [list(s), list(world)]
+    pressed = bool(mem.get('nav_pressed'))
+    still = pressed and mem.get('nav_prev') == key
+    mem['nav_prev'] = key
+    mem['nav_still'] = int(mem.get('nav_still') or 0) + 1 if still else 0
+    mem['nav_pressed'] = False
+    if mem['nav_still'] < NAV_STILL_LIMIT:
+        return False
+    mem['nav_still'] = 0
+    mem['uncertain'] = True
+    mem['nav_search'] = True
+    mem.pop('nav_search_leg', None)
+    mem.pop('anchor', None)
+    _record(mem, 'nav_stuck', screen=screen.kind,
+            observed_metric={'cursor': list(world), 'screen_cursor': list(s),
+                             'roofs': mem.get('roofs_seen'), 'pressed_frames': NAV_STILL_LIMIT},
+            reason='押してもカーソルも推定位置も動かないため位置推定を捨て、内陸を探索して複数の屋根で再特定する')
+    return True
+
+
 SEARCH_RING_PX = 120                  # spiral step around the castles' centroid
 SEARCH_RINGS = 4
 
@@ -331,6 +366,8 @@ def nav_step(screen: Screen, mem, frame, goal, goal_name=None):
     s = _cursor(screen)
     if not world or not s:
         return None
+    if _nav_stuck(screen, mem, world, s):
+        return None
     search = bool(mem.get('uncertain') and mem.get('nav_search'))
     if search:
         goal = _search_goal(mem)
@@ -358,6 +395,7 @@ def nav_step(screen: Screen, mem, frame, goal, goal_name=None):
             actions.append(pad(pos if d > 0 else neg, frames))
             expected[axis] = frames if d > 0 else -frames
     mem['nav_last'] = {'screen': list(s), 'expected': expected, 'search': search}
+    mem['nav_pressed'] = bool(actions)
     return actions
 
 
@@ -867,8 +905,50 @@ def target_step(screen: Screen, mem, frame):
 
 
 def _deploy_cards(order, mem):
-    return list(order['cards'] if _is_boss_order(order, mem)
-                else mem.get('card_override', {}).get(order['step'], order['cards']))
+    if _is_boss_order(order, mem):
+        return list(order['cards'])
+    cards = list(mem.get('card_override', {}).get(order['step'], order['cards']))
+    for card in (mem.get('card_drop') or {}).get(order['step']) or ():
+        cards = [c for c in cards if c != card]
+    return cards
+
+
+CARD_MISS_LIMIT = 5           # card_select readings before a missing card is left behind
+
+
+def _drop_card(screen, mem, order, card, inventory):
+    """Leave a planned card behind after it stays unselectable (non-boss only).
+
+    A measured panel shows at most four rows, so a card absent from a full
+    panel is not proven to be out of stock (it may be scrolled off), but
+    holding forever is worse: g401 21:16 an adjusted-chart order wanted
+    ダイチスイム and the sortie screen stayed open for minutes. After
+    ``CARD_MISS_LIMIT`` readings the card is dropped with evidence; with no
+    carry slot left every remaining card is dropped.
+    """
+    misses = mem.setdefault('card_miss', {})
+    key = f"{order['step']}:{card}"
+    misses[key] = misses.get(key, 0) + 1
+    if misses[key] < CARD_MISS_LIMIT:
+        return None
+    misses.pop(key, None)
+    wanted = _deploy_cards(order, mem)
+    for picked in mem.get('picked') or ():
+        if picked in wanted:
+            wanted.remove(picked)
+    dropped = sorted(set(wanted)) if inventory['remaining'] == 0 else [card]
+    mem.setdefault('card_drop', {}).setdefault(order['step'], []).extend(
+        c for c in dropped if c not in mem['card_drop'][order['step']])
+    context = {**_deploy_context(order, mem),
+               'deviation_reason': f'{card}を選べないため携行せずに出撃する'}
+    _record(mem, 'card_dropped', **context, card=card, dropped=dropped,
+            observed_metric={'rows': [[r['card'], r['stock']] for r in inventory['rows']],
+                             'remaining': inventory['remaining'],
+                             # fewer than 4 rows is the whole stock; 4 may hide more
+                             'complete_list': len(inventory['rows']) < 4,
+                             'readings': CARD_MISS_LIMIT},
+            reason='予定切り札の在庫・携行枠を確認できない状態が続いたため、その札を外して出撃を続ける')
+    return []
 
 
 def _deploy_context(order, mem, *, expected_metric=None):
@@ -1186,6 +1266,10 @@ def deploy_step(screen: Screen, mem):
             return _deploy_input(screen, mem, order, [pad('b')], '予定切り札の選択入力後に携行確認へ進む')
         row = next((row for row in inventory['rows'] if row['card'] == card), None)
         if row is None or row['stock'] == 0 or inventory['remaining'] == 0:
+            if not _is_boss_order(order, mem):
+                dropped = _drop_card(screen, mem, order, card, inventory)
+                if dropped is not None:
+                    return dropped
             return _hold_deploy(screen, mem, order,
                                 '予定切り札の正数在庫と携行余枠を確認できないため選択せず保留', card=card)
         if inventory['selected_y'] == row['y']:
@@ -2671,7 +2755,8 @@ def observe_events(screen: Screen, mem):
                         'nav_last', 'nav_search', 'nav_search_leg', 'orders', 'picked', 'retries', 'retry_context', 'shop',
                         'source_override', 'uncertain', 'month', 'order_context', 'sortie_general',
                         'chart_adjust', 'chart_plan', 'launched_orders', 'sorties',
-                        'garrison', 'lost', 'owner_streak', 'source_miss',
+                        'garrison', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
+                        'nav_prev', 'nav_still', 'nav_pressed',
                         'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
                         'indep_menu_key', 'indep_menu_action',
                         'monster_menu_key', 'monster_menu_cursor', 'monster_menu_hold',
