@@ -83,6 +83,9 @@ def test_a_source_that_never_opens_its_menu_falls_back_home_then_fails(monkeypat
         mem['anchor'], mem['uncertain'], mem['cursor'] = 'キカンドン', False, [567, 725]
         return 'arrived'
     monkeypatch.setattr(policy, 'nav_step', arrived)
+    # A roof sits under the cursor, yet the menu never opens.
+    monkeypatch.setattr(policy, 'castle_roofs',
+                        lambda *_a, **_k: [{'kind': 'own', 'target': (190, 200), 'clipped': False}])
     order = {'step': 'I:abc:1', 'general': 'どうし', 'source': 'キカンドン',
              'target': 'ゴーメン', 'cards': [], 'after': None, 'note': 'test'}
     mem = {**g401_memory(), 'active': order['step'],
@@ -315,3 +318,34 @@ def test_an_unverifiable_arrival_is_held_at_most_a_few_times(monkeypatch):
     results = [policy.nav_step(screen, mem, FRAME, goal) for _ in range(policy.UNVERIFIED_LIMIT + 1)]
     assert results[-1] == 'arrived' and all(r != 'arrived' for r in results[:-1])
     assert len(decisions(mem, 'arrival_unverified')) == policy.UNVERIFIED_LIMIT
+
+
+def test_no_roof_under_the_cursor_refuses_a_bounded_number_of_source_presses(monkeypatch):
+    """g405 00:26: a lone ほんじょう roof voted as キカンドン; A on open sea failed 1-C1."""
+    def arrived(_screen, mem, *_a, **_k):
+        mem['anchor'], mem['uncertain'] = 'ほんじょう', False
+        return 'arrived'
+    monkeypatch.setattr(policy, 'nav_step', arrived)
+    far = [{'kind': 'own', 'target': (51, 109), 'clipped': False}]
+    monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: far)
+    mem = {'chapter': 1, 'orders': {}, 'picked': [], '_records': [], 'active': '1-C1'}
+    sea = map_screen(215, 189)
+    for _ in range(policy.OFF_CASTLE_LIMIT):
+        assert policy.map_step(sea, mem, FRAME) == []
+    refused = decisions(mem, 'source_not_under_cursor')
+    assert len(refused) == policy.OFF_CASTLE_LIMIT and mem['nav_search'] is True
+    assert not mem.get('expect_menu')
+    # Bounded: afterwards A is pressed and the menu-miss path takes over.
+    assert policy.map_step(sea, mem, FRAME) == [policy.pad('a')]
+
+
+def test_a_roof_under_the_cursor_confirms_the_source(monkeypatch):
+    def arrived(_screen, mem, *_a, **_k):
+        mem['anchor'], mem['uncertain'] = 'ほんじょう', False
+        return 'arrived'
+    monkeypatch.setattr(policy, 'nav_step', arrived)
+    monkeypatch.setattr(policy, 'castle_roofs',
+                        lambda *_a, **_k: [{'kind': 'own', 'target': (35, 109), 'clipped': False}])
+    mem = {'chapter': 1, 'orders': {}, 'picked': [], '_records': [], 'active': '1-C1'}
+    assert policy.map_step(map_screen(32, 108), mem, FRAME) == [policy.pad('a')]
+    assert not decisions(mem, 'source_not_under_cursor')
