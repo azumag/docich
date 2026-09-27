@@ -305,6 +305,20 @@ class NethackCornerAdapter(GameCornerAdapter):
         return all(self.manager._executable_exists(path) for path in required)
 
 
+def _reconcile_terminal_paper_failures(g):
+    from .paper_corner import PaperCornerManager
+    from .paper_corner_manual import ManualPaperCornerManager
+
+    ready = True
+    for filename, manager_type in (("paper_corner.json", PaperCornerManager),
+                                   ("paper_corner_manual.json", ManualPaperCornerManager)):
+        if not (Path(g.state_dir) / filename).exists():
+            continue
+        if manager_type(g).reconcile_terminal_failure() in {"already-running", "switch-busy"}:
+            ready = False
+    return ready
+
+
 class PaperCornerAdapter(GameCornerAdapter):
     def __init__(self, g, corner):
         from .paper_corner_fast import FastPaperCornerManager
@@ -334,6 +348,9 @@ class PaperCornerAdapter(GameCornerAdapter):
             if not isinstance(state, dict):
                 raise CornerExecutionError("invalid adapter state")
             yield normalize_terminal_paper_failure(self.g.state_dir, state, self.corner.game)
+
+    def reconcile_terminal_failures(self):
+        return _reconcile_terminal_paper_failures(self.g)
 
     def run(self, request):
         return self.manager.run_rotation(request["request_id"])
@@ -372,6 +389,11 @@ class RetiredCornerObserver:
                 if self.adapter_name == "paper":
                     state = normalize_terminal_paper_failure(self.g.state_dir, state, self.game)
                 yield state
+
+    def reconcile_terminal_failures(self):
+        if self.adapter_name == "paper":
+            return _reconcile_terminal_paper_failures(self.g)
+        return True
 
     def improvement_paths(self):
         root = Path(self.g.state_dir)

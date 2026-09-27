@@ -132,14 +132,17 @@ latch中かどうかを問わず出す）、latch自体を総合 `warn` とし�
 同名ゲームでもruntime世代が違えば復帰せず要復旧。終了境界不明、timeout、停止未確認、
 canonicalの危険phase、failed/restoringの他ownerも次の開始を阻止する。例外はPAPERの
 手動枠が復帰失敗を記録した後、stateに完了時刻があり、`recovery_required`でなく、canonicalが
-`ready`で記録済みの元ゲームへ戻っていることを確認できる場合だけである。この場合はstateを
-削除・上書きせず、観測上のみterminalとして扱う。canonicalが読めない、遷移中、元ゲームが
+`ready`で記録済みの元ゲームへ戻っていることを確認できる場合だけである。読み取り観測は
+terminalとして扱い、rotation tickは次のdispatch前にPAPERの既存writer guardとcanonicalの
+共有lockを取得して`status=completed`を保存する。元のエラー・完了時刻・要求IDは保存し、
+次のゲームへの遷移後に古い失敗が再びbusyへ戻ることを防ぐ。lock競合時は次のdispatchを待つ。
+canonicalが読めない、遷移中、元ゲームが
 一致しない場合は従来どおりfail-closedで次の開始を阻止する。
 PAPERの専用stateは`game=null`の旧手動記録も観測する。canonical欠落や`previous_game`キー欠落は
 復帰の証拠としない。明示された`previous_game=null`だけは、実在するcanonicalのidle/activeなしを要求する。
 この例外は現行catalogと削除済みPAPERの双方に適用し、retroなど他cornerのfailed判定は変えない。
 共有program slotのowner記録にも同じ観測判定を使い、復帰済みPAPERのraw failedで再び待たせない。
-対象は同じcanonical stateディレクトリ内のPAPER専用stateだけで、元stateは保存する。
+対象は同じcanonical stateディレクトリ内のPAPER専用stateだけで、読み取り専用のslot観測はstateを変更しない。
 完了時刻は有限非負数またはtimezone付きISOを要求し、`recovery_required`がある場合はboolean falseのみ許可する。
 共通encoder/audio/通知/statusの停止・再起動経路は追加しない。
 

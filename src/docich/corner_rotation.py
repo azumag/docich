@@ -302,6 +302,9 @@ class CornerRotationManager:
         pending = state.get("pending")
         busy = False
         for corner_id, adapter in self._observers(state).items():
+            reconcile = getattr(adapter, "reconcile_terminal_failures", None)
+            if callable(reconcile) and reconcile() is False:
+                busy = True
             history_id = getattr(adapter, "corner_id", corner_id)
             released = getattr(adapter, "resources_released", None)
             if released is not None and not released():
