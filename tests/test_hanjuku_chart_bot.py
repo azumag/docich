@@ -18,7 +18,8 @@ from docich import pulse_volume
 from docich.hanjuku_bot import decide
 from docich.hanjuku_font import UNKNOWN, read_lines
 
-MASH = [policy.pad('a', 3)] * policy.POWER_TAPS      # battle_step's A mash (POWER push)
+MASH = [action for _ in range(policy.POWER_TAPS)
+        for action in (policy.pad('a', 3), {'type': 'wait', 'ms': 50})]
 from docich.hanjuku_glyphs import GLYPHS, MARKS
 from docich.hanjuku_pixels import Frame
 from docich.hanjuku_screen import parse

@@ -1205,21 +1205,24 @@ def battle_step(screen: Screen, mem):
     return _power_mash(mem, cur)
 
 
-# 白兵のぶつかり合いでPOWERバーが青い間にA連打すると踏ん張って押し込める
-# (gcgx 戦闘システム)。入力しないと剣術の稽古(だいじん 90 vs どうし 90)でも
-# 0-15 で負ける。隔離libretro実測(2026-09-27)では、判断1回あたり3フレーム押下
-# ×4〜10回の間欠連打でも 1〜19 残しで全勝した。判断周期(約1.5秒)では青の
-# 瞬間を狙えないため、パネル表示中は常に連打する。
-POWER_TAPS = 6
+# Short, released A bursts cover the POWER window without relying on an old
+# screenshot to time its leading edge. Reobserve after 400 ms of planned input;
+# card/egg menus still use their own policies. Six taps without release waits
+# lost the isolated RetroArch tutorial, despite winning a frame-stepped replay.
+POWER_TAPS = 4
 
 
 def _power_mash(mem, cur):
     if not cur.get('power_mash'):
         cur['power_mash'] = True
         _record(mem, 'battle_power', **_battle_labels(cur),
+                expected_metric={'taps': POWER_TAPS, 'hold_ms': 50, 'release_ms': 50},
                 observed_metric={'enemy_hp': cur.get('enemy_hp'), 'ally_hp': cur.get('ally_hp')},
                 reason='白兵のぶつかり合いで押し負けないようA連打で踏ん張る')
-    return [pad('a', 3)] * POWER_TAPS
+    # xdotool's keyup/next keydown can fall between emulator polls. An
+    # explicit release is necessary for four distinct presses, not a hold.
+    return [action for _ in range(POWER_TAPS)
+            for action in (pad('a', 3), {'type': 'wait', 'ms': 50})]
 
 
 def _behind(cur: dict) -> bool:

@@ -76,6 +76,7 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
         'schema':1,'event':'action_plan','at':now,'bot_version':BOT_VERSION,**identity,
         'decision_id':decision_id,'frame_sha256':frame_sha256,'snapshot':snapshot,
         'screen_kind':state.get('screen_kind'),'chart_step':chart_step,
+        'observation_interval_ms':observation_interval_ms(state),
         'strategy_variant':strategy_variant,'deviation_reason':deviation_reason,
         'expected_metric':input_context.get('expected_metric') if input_context is not None else battle.get('strategy_expected'),
         'planned_actions':actions,
@@ -142,8 +143,20 @@ def ask_interim(runtime: Path, state: dict, obs_meta: dict, *, settings=None, as
     return answer
 
 
+def observation_interval_ms(state):
+    """Short feedback cycles only for readable, living human melee panels."""
+    policy=state.get('policy') or {}
+    battle=policy.get('battle') or {}
+    living=all(type(battle.get(k)) is int and battle[k]>0 for k in ('ally_hp','enemy_hp'))
+    if (state.get('screen_kind')=='battle' and living
+            and not policy.get('egg_battle') and not battle.get('card_flow')):
+        return 500
+    return 1500
+
+
 def main():
     actions=[]
+    interval_ms=1500
     code=0
     try:
         obs=json.load(sys.stdin)
@@ -162,6 +175,7 @@ def main():
             actions,state=decide(frame,state,adjusted=hanjuku_chart_adjust.load(runtime),
                                  interim=state.get('chart_interim_answer'),
                                  experience=experience)
+            interval_ms=observation_interval_ms(state)
             records=state.pop('_records',[])
             updated_experience=state.pop('_experience',None)
             persist(runtime,state,records,meta,actions=actions,frame_sha256=frame.digest(),frame=frame)
@@ -183,7 +197,7 @@ def main():
         code=2
         actions=[]
         print(f'hanjuku-bot: policy_error {type(exc).__name__}',file=sys.stderr)
-    print(json.dumps({'actions':actions}),flush=True)
+    print(json.dumps({'actions':actions, 'observation_interval_ms':interval_ms}),flush=True)
     return code
 
 

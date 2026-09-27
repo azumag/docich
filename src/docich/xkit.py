@@ -31,7 +31,8 @@ class XKit:
             time.sleep(0.5)
         return self.display_ready()
 
-    def screenshot(self, out_path: Path, width: int, height: int, *, window_id: str | None = None) -> Path:
+    def screenshot(self, out_path: Path, width: int, height: int, *, window_id: str | None = None,
+                   low_latency: bool = False) -> Path:
         out_path = Path(out_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_name = tempfile.mkstemp(
@@ -43,6 +44,9 @@ class XKit:
             procs.run(
                 [
                     "ffmpeg", "-loglevel", "error", "-y", "-filter_threads", "1",
+                    # x11grab has known geometry/format; probing many frames
+                    # before returning one adds latency to reactive gameplay.
+                    *(["-probesize", "32", "-analyzeduration", "0"] if low_latency else []),
                     # -draw_mouse 0 が無いとマウスポインタが画面中央に映り込む (architecture.md §5)
                     "-f", "x11grab", "-draw_mouse", "0",
                     *(["-window_id", window_id] if window_id is not None else []),

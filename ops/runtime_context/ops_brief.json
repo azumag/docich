@@ -1,11 +1,11 @@
 {
-  "output_sha256": "6aecb201da4a49c2651e0f21db4b669589582452e9340ae7323e7a606a7e193e",
+  "output_sha256": "b0d509ca4008c0fd992911c6edee214d37fd6036e95477787fd5840c4f84b37d",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "fbdec893329e8f6f58308a04495bd9823ff894dd39a98aceca1728f73a287197",
+  "source_sha256": "b8f5c0a1b5e22bc248d3e108e9a6af03950550aac6481bc60d62885533e2e2e8",
   "topics": [
-    "メリケンAIコーナーのWindows委任（docich側 draft ）",
-    "半熟英雄の小さい描画と縦横比維持を隔離実機で検証",
-    "コーナー別の成績統計と推移の反映準備"
+    "半熟英雄の白兵入力と観測周期の改善を検証",
+    "半熟英雄の小さい描画を本番反映し名前入力の進行を確認",
+    "メリケンAIコーナーのWindows委任（docich側 draft ）"
   ]
 }

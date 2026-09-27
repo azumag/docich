@@ -337,7 +337,8 @@ class RetroArchAdapter(Adapter):
             source, native = self._source()
             if native:
                 result = source.screenshot(out_path, native["width"], native["height"],
-                                           window_id=native["window"])
+                                           window_id=native["window"],
+                                           **({'low_latency': True} if scripted else {}))
             else:
                 result = source.screenshot(out_path, d.width, d.height)
             if scripted:
