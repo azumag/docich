@@ -309,6 +309,11 @@ def classify_text(s: Screen) -> str:
         return 'month_menu'
     if 'たまごをつかう' in t and 'たいきゃく' in t:
         return 'battle_menu'
+    if 'きりふだ' in t and 'たいきゃく' in t and any('たいきゃく' in r.known.replace(' ', '') for r in s.menu_rows):
+        # A general whose egg is spent draws たまごをつかう greyed out, so it
+        # is not read; the cursor still starts on it. As text, legacy A hit
+        # the dead row forever (g389 16:48, フットバース due at ガルバンゾー 18).
+        return 'battle_menu'
     if 'こうげき' in t and 'もうこうげき' in t and 'たまごをつかう' in t:
         return 'egg_battle_menu'
     if 'たまごに' in t and 'もどれ' in t and any('もどれ' in r.known.replace(' ', '') for r in s.menu_rows):
