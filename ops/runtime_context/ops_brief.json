@@ -1,11 +1,11 @@
 {
-  "output_sha256": "3530c2d1d962ca309d4ca53f4cad5f1665e0e22934103eccb0a0ff4bbbfc188d",
+  "output_sha256": "aeeb1e8bb95a279aa972ace40af42b860e3bc30f8e33f802137694935910dcbd",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "b6eb39ed920101e34c2aaefc82a51d0bc6d8bb9de1d96e1e07d720c857ac6763",
+  "source_sha256": "c048b3fb37a3ad0646dad9a1d501ad2e625ae4d5ea057bca38fc7e677b298043",
   "topics": [
-    "半熟英雄の防衛メニュー停止をリセットせず修復する緊急対応",
-    "半熟英雄の全回復を本番確認、復帰暗転への入力を追補修正",
-    "半熟英雄の部分使用卵を全回復する方策を検証"
+    "どうし将軍の緊急退却方策を実装",
+    "半熟英雄の防衛停止をホットロードで解消し勝利",
+    "半熟英雄の防衛メニュー停止をリセットせず修復する緊急対応"
   ]
 }

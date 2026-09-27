@@ -255,3 +255,71 @@ def test_observed_menu_resets_open_retries_for_following_resource():
     p.battle_step(battle(mem), mem)
     p.battle_step(battle(mem), mem)
     assert p.battle_step(battle(mem), mem) == [p.pad('b')]
+
+
+@pytest.mark.parametrize('hp,enemy,expected', [(12,3,True),(13,10,False),(22,50,True),
+    (23,50,False),(22,20,False),(0,40,False),(12,0,False),(None,50,False)])
+def test_hero_emergency_retreat_threshold_is_stricter_than_resource_rescue(hp,enemy,expected):
+    assert p._hero_retreat_needed(memory(hp,enemy)['battle']) is expected
+
+
+def test_hero_retreat_opens_before_chart_and_selects_only_visible_retreat(monkeypatch):
+    monkeypatch.setattr(p,'_tactics',lambda *args:[{'enemy':'ミント','card':'グリンボー','open':True,'note':'開幕'}])
+    mem=memory(12,50)
+    assert p.battle_step(battle(mem),mem)==[p.pad('b')]
+    assert mem['battle']['hero_retreat']['opens']==1
+    assert not mem['battle'].get('card_flow')
+    actions,state=decide(command_frame(),{'policy':mem})
+    assert actions==[p.pad('down')]
+    actions,state=decide(command_frame(cursor=1),state)
+    assert actions==[p.pad('down')]
+    actions,state=decide(command_frame(cursor=2),state)
+    assert actions==[p.pad('a')]
+    assert state['policy']['battle']['hero_retreat']['selected']==1
+    assert state['_records'][-1]['resulting_event']=='retreat_selected_not_yet_confirmed'
+
+
+def test_hero_disabled_retreat_falls_back_to_an_egg_and_other_generals_keep_fighting():
+    mem=memory(12,50)
+    mem['battle']['side']='defense'
+    p.battle_step(battle(mem),mem)
+    assert 'hero_retreat' not in mem['battle']
+    actions,state=decide(command_frame(enabled=(0,)),{'policy':mem})
+    assert actions==[p.pad('a')]
+    assert state['policy']['battle']['hero_retreat']['unavailable']
+    assert state['policy']['battle']['survival']['egg_attempted']
+    mem=memory(6,50);mem['battle']['ally']='ココット'
+    assert not p._hero_retreat_needed(mem['battle'])
+    p.battle_step(battle(mem),mem)
+    assert p.battle_menu_step(menu(),mem)==[p.pad('down')]  # card, not retreat
+
+
+def test_hero_retreat_cancels_only_unselected_cards():
+    mem=memory(12,50)
+    mem['battle']['card_flow']={'stage':'list','card':'グリンボー'}
+    assert p.card_list_step(menu(('グリンボー',),kind='text'),mem)==[p.pad('b')]
+    assert mem['battle']['card_flow'] is None
+    mem['battle']['card_flow']={'stage':'announce','card':'グリンボー','selection_planned':True}
+    assert p._hero_retreat_open(mem,mem['battle']) is None
+
+
+def test_hero_retreat_cursor_wait_and_selection_retry_are_bounded():
+    mem=memory(12,50)
+    for _ in range(8):assert p.battle_menu_step(menu(selected=None),mem)==[]
+    assert p.battle_menu_step(menu(selected=None),mem)==[p.pad('b')]
+    assert mem['battle']['hero_retreat']['exhausted']
+    mem=memory(12,50)
+    assert p.battle_menu_step(menu(selected=2),mem)==[p.pad('a')]
+    for _ in range(3):assert p.battle_menu_step(menu(selected=2),mem)==[]
+    assert p.battle_menu_step(menu(selected=2),mem)==[p.pad('a')]
+    for _ in range(3):assert p.battle_menu_step(menu(selected=2),mem)==[]
+    assert p.battle_menu_step(menu(selected=2),mem)==[p.pad('b')]
+
+
+def test_hero_retreat_selection_is_not_counted_as_victory_or_confirmed_escape():
+    mem=memory(12,50);mem['battle']['hero_retreat']={'selected':1}
+    p.battle_end(mem,'map');p.battle_end(mem,'map')
+    result=next(r for r in mem['_records'] if r['decision']=='battle_result')
+    assert result['outcome']=='unclassified'
+    assert result['observed_metric']['hero_retreat_selected'] is True
+    assert mem['stats']['wins']==mem['stats']['losses']==0

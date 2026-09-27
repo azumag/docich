@@ -1412,14 +1412,17 @@ def battle_step(screen: Screen, mem):
     cur['enemy_hp'], cur['ally_hp'] = b.enemy_hp, b.ally_hp
     if b.enemy_hp is not None and cur.get('start_enemy_hp') is not None and b.enemy_hp < cur['start_enemy_hp']:
         cur['clashed'] = True
+    if b.enemy_hp == 0 or b.ally_hp == 0:
+        return []
+    retreat = _hero_retreat_open(mem, cur)
+    if retreat is not None:
+        return retreat
     if cur.get('card_flow'):
         flow = cur['card_flow']
         flow['battle_frames_without_receipt'] = flow.get('battle_frames_without_receipt', 0) + 1
         if flow['battle_frames_without_receipt'] >= 2:
             _card_use_unclassified(mem, cur, '実使用告知を確認できないまま白兵戦へ復帰')
         return []
-    if b.enemy_hp == 0 or b.ally_hp == 0:
-        return []  # Do not open a card menu after the human panel has ended.
     extra = [{'enemy': b.enemy, 'card': card, 'open': True, 'step': cur.get('step'),
               'note': '再攻撃の開幕切り札(チャート逸脱)'}
              for card in mem.get('card_override', {}).get(cur.get('step')) or []]
@@ -1513,6 +1516,69 @@ def _survival_state(mem, cur):
     return cur['survival']
 
 
+def _hero_retreat_needed(cur):
+    if cur.get('ally') != NAME or not _survival_needed(cur):
+        return False
+    hp, enemy, start = (cur.get(k) for k in ('ally_hp', 'enemy_hp', 'start_ally_hp'))
+    return hp <= 12 or (hp < enemy and hp * 4 <= start)
+
+
+def _hero_retreat_open(mem, cur):
+    if not _hero_retreat_needed(cur) or cur.get('side') == 'defense':
+        return None
+    # A selected card is already executing; preserve its receipt observer.
+    if (cur.get('card_flow') or {}).get('stage') == 'announce':
+        return None
+    flow = cur.setdefault('hero_retreat', {})
+    if flow.get('unavailable') or flow.get('exhausted') or flow.get('opens', 0) >= 3:
+        return None
+    flow['opens'] = flow.get('opens', 0) + 1
+    cur['card_flow'] = None  # supersede an unselected chart card intention
+    _record(mem, 'battle_hero_retreat_open', **_battle_labels(cur),
+            observed_metric={'ally_hp': cur['ally_hp'], 'enemy_hp': cur['enemy_hp'],
+                             'start_ally_hp': cur['start_ally_hp']},
+            reason='どうしの敗北によるゲームオーバーを避けるため退却の可否を確認')
+    return [pad('b')]
+
+
+def _hero_retreat_menu(screen, mem, cur):
+    if not _hero_retreat_needed(cur):
+        return None
+    flow = cur.setdefault('hero_retreat', {})
+    if flow.get('unavailable') or flow.get('exhausted'):
+        return None
+    if 'たいきゃく' not in {w for _,_,w in _options(screen)}:
+        flow['unavailable'] = True
+        _record(mem, 'battle_hero_retreat_unavailable', **_battle_labels(cur),
+                reason='退却が有効な項目として読めないため卵・切り札・奥の手で対処')
+        return None
+    if flow.get('selected'):
+        flow['wait'] = flow.get('wait', 0) + 1
+        if flow['wait'] <= 3:
+            return []
+        if flow['selected'] >= 2:
+            flow['exhausted'] = True
+            return [pad('b')]
+    flow['menu_ticks'] = flow.get('menu_ticks', 0) + 1
+    if flow['menu_ticks'] > 8:
+        flow['exhausted'] = True
+        return [pad('b')]
+    move = _battle_menu_to(screen, 'たいきゃく')
+    if move != 'here':
+        return [move] if move else []
+    if (cur.get('card_flow') or {}).get('selection_planned'):
+        _card_use_unclassified(mem, cur, '退却を優先し切り札の実使用は未確認')
+    else:
+        cur['card_flow'] = None
+    flow['selected'] = flow.get('selected', 0) + 1
+    flow['wait'] = 0
+    _record(mem, 'battle_hero_retreat_select', **_battle_labels(cur), choice='たいきゃく',
+            observed_metric={'ally_hp': cur['ally_hp'], 'enemy_hp': cur['enemy_hp']},
+            resulting_event='retreat_selected_not_yet_confirmed',
+            reason='どうしの危険な戦闘を打ち切るため有効な退却行とカーソルを確認して決定')
+    return [pad('a')]
+
+
 def _battle_menu_to(screen, label):
     if screen.hand:
         return menu_to(screen, label)
@@ -1602,6 +1668,9 @@ def battle_menu_step(screen: Screen, mem):
         return []
     if screen.hidden_battle_commands or screen.has('おくのて'):
         return okunote_step(screen, mem)
+    retreat = _hero_retreat_menu(screen, mem, cur)
+    if retreat is not None:
+        return retreat
     if flow and flow.get('survival'):
         flow['menu_returns'] = flow.get('menu_returns', 0) + 1
         if flow['stage'] == 'list' and flow['menu_returns'] <= 2:
@@ -1703,6 +1772,13 @@ def card_list_step(screen: Screen, mem):
     _migrate_card_evidence(mem)
     cur = mem.get('battle') or {}
     flow = cur.get('card_flow')
+    if (_hero_retreat_needed(cur) and flow and flow.get('stage') == 'list'
+            and not (cur.get('hero_retreat') or {}).get('unavailable')
+            and not (cur.get('hero_retreat') or {}).get('exhausted')):
+        cur['card_flow'] = None
+        _record(mem, 'battle_hero_retreat_cancel_card', **_battle_labels(cur),
+                reason='未選択の切り札一覧を閉じ、どうしの緊急退却を優先')
+        return [pad('b')]
     names = [w for _, _, w in _options(screen) if w in CARD_NAMES]
     if not flow:
         return [pad('b')]
@@ -1894,6 +1970,7 @@ def battle_end(mem, next_kind):
                              'cards_missing': cur.get('cards_missing', []),
                              'cards_unclassified': cur.get('cards_unclassified', []),
                              'card_consumption_complete': cur.get('card_consumption_complete', False),
+                             'hero_retreat_selected': bool((cur.get('hero_retreat') or {}).get('selected')),
                              'general_loss': 'unclassified'},
             resulting_event=resulting or outcome, resulting_stage=None, next_screen=next_kind,
             reason='戦闘終了時のHP表示から判定' if outcome != 'unclassified'
