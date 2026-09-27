@@ -936,6 +936,79 @@ def _verify_sortie_source(screen, mem, order):
     return [pad('b'), pad('b')]
 
 
+# Y shows the whole island at 1/8 scale; each castle's flag sits at the
+# castle cell / 8 + offset (chapter 1 measured in an isolated emulator on
+# 2026-09-28, all seven flags within 1 px). Blue fill = enemy, red = ours.
+WORLD_MAP_OFFSET = {1: (64.5, 44.4)}
+WORLD_FLAG_ENEMY = (0, 64, 189)
+WORLD_FLAG_OWN = (230, 56, 90)
+WORLD_SURVEY_TICKS = 200       # observations between surveys (~5 min at 1.5 s)
+WORLD_MAP_WAIT = 4             # fade frames before giving up a reading
+
+
+def world_flags(frame, chapter):
+    """{castle: 'own'|'enemy'} read from the whole-island view, unread ones left out."""
+    offset = WORLD_MAP_OFFSET.get(chapter)
+    if not offset or frame is None:
+        return {}
+    out = {}
+    for name, (wx, wy) in chart.castles(chapter).items():
+        mx, my = round(wx / 8 + offset[0]), round(wy / 8 + offset[1])
+        box = {frame.pixel(x, y) for x in range(mx - 2, mx + 6) for y in range(my - 2, my + 5)
+               if 0 <= x < frame.width and 0 <= y < frame.height}
+        enemy, own = WORLD_FLAG_ENEMY in box, WORLD_FLAG_OWN in box
+        if enemy != own:
+            out[name] = 'enemy' if enemy else 'own'
+    return out
+
+
+def _world_map_wanted(mem) -> bool:
+    if (mem.get('chapter') or 0) not in WORLD_MAP_OFFSET:
+        return False
+    last = mem.get('world_map_tick')
+    tick = int(mem.get('tick') or 0)
+    return (last is None or bool(mem.get('world_map_due'))
+            or tick - int(last) >= WORLD_SURVEY_TICKS)
+
+
+def world_map_step(screen, mem, frame):
+    """Read every castle's owner from the Y view, then close it with Y."""
+    flags = world_flags(frame, mem.get('chapter') or 0)
+    if not flags:
+        waited = int(mem.get('world_map_wait') or 0) + 1
+        mem['world_map_wait'] = waited
+        return [] if waited < WORLD_MAP_WAIT else [pad('y')]
+    mem.pop('world_map_wait', None)
+    chapter = mem.get('chapter') or 0
+    fixed = {chart.home_castle(chapter), chart.boss_castle(chapter)}
+    captured = mem.setdefault('captured', [])
+    changed = []
+    for castle, owner in flags.items():
+        if castle in fixed:
+            continue
+        if owner == 'enemy' and castle in captured:
+            mem['captured'] = captured = [c for c in captured if c != castle]
+            lost = mem.setdefault('lost', [])
+            if castle not in lost:
+                lost.append(castle)
+            (mem.get('garrison') or {}).pop(castle, None)
+            changed.append(('lost', castle))
+        elif owner == 'own' and castle not in captured:
+            captured.append(castle)
+            mem['lost'] = [c for c in mem.get('lost') or [] if c != castle]
+            changed.append(('captured', castle))
+    _record(mem, 'world_map_owners', observed_metric=flags,
+            resulting_event=[f'{k}:{c}' for k, c in changed] or None,
+            reason='全体マップの旗の色で全城の所有を確認')
+    for kind, castle in changed:
+        _record(mem, 'castle_lost_observed' if kind == 'lost' else 'castle_owned_observed',
+                castle=castle, observed_metric={'world_map': flags[castle]},
+                resulting_event=f'{kind}:{castle}',
+                reason=('全体マップで城の旗が敵の色になったため失陥として奪還対象にする'
+                        if kind == 'lost' else '全体マップで城の旗が自軍の色のため占領として扱う'))
+    return [pad('y')]
+
+
 SOURCE_MISS_LIMIT = 3         # failed castle menus per order before giving the source up
 
 
@@ -1065,6 +1138,13 @@ def map_step(screen: Screen, mem, frame):
         mem['active'] = None
         mem['picked'] = []
         order = None
+    if order is None and _cursor(screen) and not screen.marker and _world_map_wanted(mem):
+        # Before choosing what to do next, read every castle's owner at once.
+        mem['world_map_tick'] = int(mem.get('tick') or 0)   # bounded even if Y shows nothing
+        mem.pop('world_map_due', None)
+        _record(mem, 'world_map_open', screen=screen.kind,
+                reason='全城の所有を全体マップで確認するためYを押す')
+        return [pad('y')]
     if order is None:
         order = next((_order_for_step(mem, step) for step, sortie in (mem.get('sorties') or {}).items()
                       if sortie.get('status') == 'launched_unconfirmed'
@@ -2441,6 +2521,7 @@ def message_step(screen: Screen, mem):
         castle = m.group(1)
         if (mem.get('attack') or {}).get('castle') != castle or (mem.get('attack') or {}).get('side') != 'defense':
             _record(mem, 'defense_observed', castle=castle, reason='せめこまれました表示')
+            mem['world_map_due'] = True      # the castle may have fallen without a battle
         mem['attack'] = {'general': None, 'castle': castle, 'side': 'defense', 'step': None}
         return [pad('a')]
     return None
@@ -3113,6 +3194,7 @@ def observe_events(screen: Screen, mem):
                         'chart_adjust', 'chart_plan', 'launched_orders', 'sorties', 'sortie_attempt',
                         'garrison', 'general_location_unknown', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
                         'nav_prev', 'nav_still', 'nav_pressed', 'unverified', 'off_castle',
+                        'world_map_tick', 'world_map_due', 'world_map_wait',
                         'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
                         'indep_menu_key', 'indep_menu_action',
                         'monster_menu_key', 'monster_menu_cursor', 'monster_menu_hold',

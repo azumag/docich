@@ -334,7 +334,21 @@ def parse(frame: Frame, *, phase: str | None = None) -> Screen:
         white = row_masks(frame, lambda r, g, b: min(r, g, b) > 200)
         screen.cursor = _free_cursor(white, frame)
     screen.kind = classify_text(screen)
+    if screen.kind == 'unknown' and is_world_map(frame):
+        screen.kind = 'world_map'
     return screen
+
+
+WORLD_SEA = (106, 165, 205)
+WORLD_BORDER = (57, 40, 16)
+
+
+def is_world_map(frame: Frame) -> bool:
+    """The Y whole-island view: open sea inside the gold frame (measured 2026-09-28)."""
+    if frame.pixel(128, 10) != WORLD_BORDER:
+        return False
+    sea = sum(1 for x in range(60, 200, 2) for y in range(60, 180, 2) if frame.pixel(x, y) == WORLD_SEA)
+    return sea >= 1500
 
 
 def classify_text(s: Screen) -> str:
