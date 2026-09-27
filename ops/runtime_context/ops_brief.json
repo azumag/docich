@@ -1,11 +1,11 @@
 {
-  "output_sha256": "535086716247ee26311b079b548ca587a68641137194335cab60fdcd40e89236",
+  "output_sha256": "d7f6c35cb6f647378dc20f98d31481aa909116498f072c065d0679311c89bfb3",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "a102ddceb668415c2ca38bba959322af986f63ec1ea31b7567a2c52d848f05c4",
+  "source_sha256": "f17ac48857a7e947a5f0c46121b5852c53726323e185398ef49c6905734e1fa1",
   "topics": [
-    "PAPER改善の研究経路断絶と未使用pendingを修正・配備（Claude Code）",
-    "コーナー統計の自然実表示を受入、監視終了",
-    "Yの全体マップで城を直接選ぶ航法（v27）、半熟を再起動（Claude Code）"
+    "NInvaders戦略改善の2停止（LLM予算枯渇・評価インフラ失敗）を修正・配備（Claude Code）",
+    "rotationラッチをreadiness_timeout対応で復旧、PAPER改善の日次観測を開始（Claude Code）",
+    "半熟の再起動はローテーション保留で拒否（Claude Code）"
   ]
 }
