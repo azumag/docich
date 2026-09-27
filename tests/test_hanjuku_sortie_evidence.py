@@ -771,3 +771,47 @@ def test_castle_menu_without_hand_holds_with_evidence_instead_of_empty_plan():
     assert mem['active'] == '1-B1'
     assert mem['_records'][-1]['decision'] == 'situation_held'
     assert 'しゅつげき' in mem['_records'][-1]['reason']
+
+
+def _c2_memory():
+    """1-C2 wants ダイチスイム x2 + ブラッキー (non-boss)."""
+    return {'chapter': 1, 'active': '1-C2', 'variant': 'chart', 'captured': ['ジョンリギ'],
+            'orders': {'1-C2': 'pending'}, 'picked': []}
+
+
+def test_a_card_absent_from_the_panel_is_left_behind_after_bounded_readings():
+    """g401 21:16: ダイチスイム was not on the panel and the sortie screen stayed open."""
+    mem = _c2_memory()
+    screen = measured_card_select(('イッテツーン', 'ブラッキー', 'フットバース', 'ノリウツール'),
+                                  stocks=('11', '1', '1', '1'))
+    for _ in range(policy.CARD_MISS_LIMIT - 1):
+        assert policy.deploy_step(screen, mem) == []
+        assert mem['_records'][-1]['decision'] == 'situation_held'
+    assert policy.deploy_step(screen, mem) == []
+    rec = mem['_records'][-1]
+    assert rec['decision'] == 'card_dropped' and rec['dropped'] == ['ダイチスイム']
+    assert rec['observed_metric']['complete_list'] is False      # 4 rows may hide more
+    assert rec['deviation_reason'] == 'ダイチスイムを選べないため携行せずに出撃する'
+    assert policy._deploy_cards(policy._order(mem), mem) == ['ブラッキー']
+    # The next reading goes for the remaining planned card.
+    assert policy.deploy_step(screen, mem) == [policy.pad('down')]
+
+
+def test_no_carry_slot_left_drops_every_remaining_card():
+    mem = _c2_memory()
+    mem['picked'] = ['ブラッキー']
+    screen = measured_card_select(('ダイチスイム', 'ブラッキー'), stocks=('2', '1'), remaining='0')
+    for _ in range(policy.CARD_MISS_LIMIT):
+        policy.deploy_step(screen, mem)
+    assert mem['_records'][-1]['dropped'] == ['ダイチスイム']
+    assert policy._deploy_cards(policy._order(mem), mem) == ['ブラッキー']
+    assert policy.deploy_step(screen, mem) == [policy.pad('b')]   # on to the sortie confirm
+
+
+def test_boss_kit_is_never_dropped():
+    mem = memory()
+    screen = measured_card_select(('イッテツーン', 'ブラッキー'), stocks=('3', '1'))
+    for _ in range(policy.CARD_MISS_LIMIT * 2):
+        assert policy.deploy_step(screen, mem) == []
+    assert not mem.get('card_drop')
+    assert policy._deploy_cards(policy._order(mem), mem) == ['クースカン', 'ノリウツール']
