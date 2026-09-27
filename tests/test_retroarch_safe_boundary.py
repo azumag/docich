@@ -489,7 +489,7 @@ def test_scripted_hanjuku_renders_native_and_projects_stretched_at_broadcast_rat
     assert not any(line.startswith('video_scale = "3') for line in lines)
     command = adapter._game_command()
     assert command[command.index('--framerate') + 1] == '30'
-    assert command[command.index('--fit') + 1] == 'stretch'
+    assert command[command.index('--fit') + 1] == 'tv'
     assert command.index('--fit') < command.index('--')
 
 
