@@ -204,7 +204,10 @@ def update_world(screen: Screen, mem, frame, goal_name=None):
     roofs = [r for r in castle_roofs(frame, exclude=box) if not r['clipped']]
     predicted = (world[0] - s[0], world[1] - s[1]) if world else None
     mem['roofs_seen'] = len(roofs)
-    found = _localize(roofs, castles, predicted)
+    # While searching after a wrong cell, a lone roof is exactly what was
+    # mis-voted before (g401 21:31): anchor only on a constellation.
+    found = (None if mem.get('nav_search') and len(roofs) < 2
+             else _localize(roofs, castles, predicted))
     anchored = None
     if found:
         cam, anchored = found
@@ -298,6 +301,38 @@ def observe_owners(mem, roofs, cam):
                     reason='城の屋根が自軍の色のため占領として扱う')
 
 
+NAV_STILL_LIMIT = 3                   # pressed frames with no motion before distrusting the cell
+
+
+def _nav_stuck(screen, mem, world, s):
+    """Distrust a cell that pressing no longer changes.
+
+    g401 21:31: one roof at the top-left (ほんじょう) was voted as ジョンリギ, so
+    the cell said ほんじょう was below; the cursor sat pinned at the map's
+    bottom-right corner on open sea and "down" was pressed for 16 minutes.
+    When neither the screen cursor nor the cell moves across pressed frames,
+    drop to the inland search, which only re-anchors on two or more roofs.
+    """
+    key = [list(s), list(world)]
+    pressed = bool(mem.get('nav_pressed'))
+    still = pressed and mem.get('nav_prev') == key
+    mem['nav_prev'] = key
+    mem['nav_still'] = int(mem.get('nav_still') or 0) + 1 if still else 0
+    mem['nav_pressed'] = False
+    if mem['nav_still'] < NAV_STILL_LIMIT:
+        return False
+    mem['nav_still'] = 0
+    mem['uncertain'] = True
+    mem['nav_search'] = True
+    mem.pop('nav_search_leg', None)
+    mem.pop('anchor', None)
+    _record(mem, 'nav_stuck', screen=screen.kind,
+            observed_metric={'cursor': list(world), 'screen_cursor': list(s),
+                             'roofs': mem.get('roofs_seen'), 'pressed_frames': NAV_STILL_LIMIT},
+            reason='押してもカーソルも推定位置も動かないため位置推定を捨て、内陸を探索して複数の屋根で再特定する')
+    return True
+
+
 SEARCH_RING_PX = 120                  # spiral step around the castles' centroid
 SEARCH_RINGS = 4
 
@@ -329,6 +364,8 @@ def nav_step(screen: Screen, mem, frame, goal, goal_name=None):
     s = _cursor(screen)
     if not world or not s:
         return None
+    if _nav_stuck(screen, mem, world, s):
+        return None
     search = bool(mem.get('uncertain') and mem.get('nav_search'))
     if search:
         goal = _search_goal(mem)
@@ -356,6 +393,7 @@ def nav_step(screen: Screen, mem, frame, goal, goal_name=None):
             actions.append(pad(pos if d > 0 else neg, frames))
             expected[axis] = frames if d > 0 else -frames
     mem['nav_last'] = {'screen': list(s), 'expected': expected, 'search': search}
+    mem['nav_pressed'] = bool(actions)
     return actions
 
 
@@ -2695,6 +2733,7 @@ def observe_events(screen: Screen, mem):
                         'source_override', 'uncertain', 'month', 'order_context', 'sortie_general',
                         'chart_adjust', 'chart_plan', 'launched_orders', 'sorties',
                         'garrison', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
+                        'nav_prev', 'nav_still', 'nav_pressed',
                         'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
                         'indep_menu_key', 'indep_menu_action',
                         'monster_menu_key', 'monster_menu_cursor', 'monster_menu_hold',

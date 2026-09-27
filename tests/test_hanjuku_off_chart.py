@@ -246,3 +246,37 @@ def test_jev_criteria_and_commentary_name_the_purpose():
     assert move == '調整チャートを待つ間、アルテミスがほんじょうから空のキカンドンへ移ります。'
     _, lost = hanjuku_commentary.compose({'decision': 'castle_lost_observed', 'castle': 'ジョンリギ'})
     assert lost == 'ジョンリギを敵に奪われました。取り返しに向かいます。'
+
+
+def test_a_cell_that_pressing_never_moves_falls_back_to_the_inland_search(monkeypatch):
+    """g401 21:31: a lone ほんじょう roof voted as ジョンリギ; "down" for 16 minutes."""
+    home, jonrigi = CASTLES['ほんじょう'], CASTLES['ジョンリギ']
+    lone = [{'kind': 'own', 'target': (51, 13), 'clipped': False}]
+    monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: lone)
+    order = {'step': 'X1', 'general': 'ココット', 'source': 'ほんじょう', 'target': 'ゴーメン',
+             'cards': [], 'after': None, 'note': 'test'}
+    wrong = [jonrigi[0] - 51 + 232, jonrigi[1] - 13 + 200]
+    mem = {'chapter': 1, 'captured': [], 'orders': {}, 'picked': [], '_records': [],
+           'active': 'X1', 'launched_orders': {'X1': order}, 'cursor': wrong, 'uncertain': False}
+    pinned = map_screen(232, 200)                      # map corner: the cursor cannot move
+    for _ in range(policy.NAV_STILL_LIMIT):
+        assert [a['buttons'][0] for a in policy.map_step(pinned, mem, FRAME)] == ['down']
+    assert policy.map_step(pinned, mem, FRAME) == []
+    [stuck] = decisions(mem, 'nav_stuck')
+    assert stuck['observed_metric']['cursor'] == wrong
+    assert mem['uncertain'] is True and mem['nav_search'] is True
+    # Searching steers inland and the same lone roof no longer anchors.
+    assert {a['buttons'][0] for a in policy.map_step(pinned, mem, FRAME)} == {'left', 'up'}
+    assert mem['uncertain'] is True and home != tuple(mem['cursor'])
+
+
+def test_moving_cursor_or_leaving_the_map_never_counts_as_stuck(monkeypatch):
+    monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: [])
+    order = {'step': 'X1', 'general': 'ココット', 'source': 'ほんじょう', 'target': 'ゴーメン',
+             'cards': [], 'after': None, 'note': 'test'}
+    mem = {'chapter': 1, 'captured': [], 'orders': {}, 'picked': [], '_records': [],
+           'active': 'X1', 'launched_orders': {'X1': order}, 'cursor': [300, 300],
+           'uncertain': False}
+    for step in range(6):
+        policy.map_step(map_screen(40 + 20 * step, 40 + 20 * step), mem, FRAME)
+    assert not decisions(mem, 'nav_stuck')
