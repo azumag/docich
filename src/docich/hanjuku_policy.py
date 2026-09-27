@@ -927,6 +927,47 @@ def _give_up_source(mem, order):
                   reason='出撃元の城を選べないため指示を諦めて次の指示へ進む')
 
 
+UNDER_CURSOR_PX = 8            # roof target vs cursor cell when standing on a castle
+OFF_CASTLE_LIMIT = 3           # refusals before pressing A anyway (bounded)
+
+
+def _roof_under_cursor(screen, frame) -> bool:
+    """A castle roof whose selecting cell is the cursor's cell, read directly.
+
+    No exclusion box: the cursor brackets overlap the roof they select.
+    """
+    s = _cursor(screen)
+    if not s or frame is None:
+        return True                  # nothing to check against: keep old behaviour
+    return any(abs(r['target'][0] - s[0]) <= UNDER_CURSOR_PX
+               and abs(r['target'][1] - s[1]) <= UNDER_CURSOR_PX
+               for r in castle_roofs(frame))
+
+
+def _hold_off_castle(screen, mem, order) -> bool:
+    """Refuse A when the estimate says "on the source" but no roof is there.
+
+    A lone roof is ambiguous: g401 21:31 and g405 00:26 voted ほんじょう's roof
+    as another castle, so the cell said "on ほんじょう" while the cursor was on
+    open sea; three A presses failed the chart's 1-C1 for good. Distrust the
+    cell and search inland (anchoring on 2+ roofs). Bounded per order.
+    """
+    held = mem.setdefault('off_castle', {})
+    count = held.get(order['step'], 0)
+    if count >= OFF_CASTLE_LIMIT:
+        return False
+    held[order['step']] = count + 1
+    mem['uncertain'] = True
+    mem['nav_search'] = True
+    mem.pop('nav_search_leg', None)
+    mem.pop('anchor', None)
+    _record(mem, 'source_not_under_cursor', chart_step=order['step'], screen=screen.kind,
+            observed_metric={'cursor': mem.get('cursor'), 'screen_cursor': list(_cursor(screen)),
+                             'roofs': mem.get('roofs_seen'), 'held': count + 1},
+            reason='出撃元に着いたと推定したがカーソル位置に城の屋根が無いため、決定せず内陸で再特定する')
+    return True
+
+
 def map_step(screen: Screen, mem, frame):
     if mem.pop('expect_menu', False):
         mem['menu_miss'] = int(mem.get('menu_miss', 0)) + 1
@@ -1008,6 +1049,9 @@ def map_step(screen: Screen, mem, frame):
                         reason='マップ位置を屋根アンカーで再特定できないため入力を保留')
             return []
     if result == 'arrived':
+        if not _roof_under_cursor(screen, frame) and _hold_off_castle(screen, mem, order):
+            return []
+        mem.pop('off_castle', None)
         # If no castle menu follows, the cell was wrong: re-localize.
         mem['expect_menu'] = True
         return _deploy_input(screen, mem, order, [pad('a')], '出撃元の城を選択')
@@ -2981,7 +3025,7 @@ def observe_events(screen: Screen, mem):
                         'source_override', 'uncertain', 'month', 'order_context', 'sortie_general',
                         'chart_adjust', 'chart_plan', 'launched_orders', 'sorties', 'sortie_attempt',
                         'garrison', 'general_location_unknown', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
-                        'nav_prev', 'nav_still', 'nav_pressed', 'unverified',
+                        'nav_prev', 'nav_still', 'nav_pressed', 'unverified', 'off_castle',
                         'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
                         'indep_menu_key', 'indep_menu_action',
                         'monster_menu_key', 'monster_menu_cursor', 'monster_menu_hold',
