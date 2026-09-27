@@ -548,7 +548,7 @@ def test_a_home_castle_shown_taken_on_the_y_map_is_retaken_first_and_never_a_fal
     assert mem['home_lost'] is False and 'ほんじょう' in policy._owned(mem)
 
 
-def _y_view(cursor_centre, *, gold=False):
+def _y_view(cursor_centre, *, gold=False, shift=0):
     """Synthetic Y view with the jump cursor (white ring or gold G corners) at a centre."""
     from docich import hanjuku_screen
     px = bytearray(256 * 224 * 3)
@@ -564,7 +564,7 @@ def _y_view(cursor_centre, *, gold=False):
     import math
     for a in range(0, 360, 12):
         x, y = round(cx + 5.5 * math.cos(math.radians(a))), round(cy + 5.5 * math.sin(math.radians(a)))
-        put(x, y, (255, 182, 0) if gold else (255, 255, 255))
+        put(x, y, (255, 182 - shift, 0) if gold else (255, 255 - shift, 255))
     return Frame(256, 224, bytes(px))
 
 
@@ -612,3 +612,11 @@ def test_the_sortie_target_jump_reads_the_gold_g_cursor_and_is_bounded():
     assert results[-1] == [policy.pad('y')] and decisions(mem, 'y_jump_failed')
     mem['cursor'] = list(CASTLES['ほんじょう'])
     assert policy.target_step(marker, mem, FRAME) != [policy.pad('y')]    # limit reached
+
+
+def test_the_y_cursor_is_found_with_live_capture_colour_shifts():
+    """g419 08:23: live frames drew gold 255,181,0 and white 255,254,255, so every jump failed."""
+    for gold in (False, True):
+        frame = _y_view((150.0, 140.0), gold=gold, shift=1)
+        found = policy.world_cursor(frame)
+        assert found is not None and abs(found[0] - 150) <= 1 and abs(found[1] - 140) <= 1
