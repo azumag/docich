@@ -2336,6 +2336,7 @@ SOLDIER_CAP = 99
 EGG_RECOVER_COST = 50
 RECRUIT_COST = 50
 MONTH_SUB_LIMIT = 8              # A presses through an unmeasured sub-screen
+RECRUIT_CANDIDATE_LIMIT = 32     # paid candidate introductions outlast the generic 8 observations
 EGG_RITUAL_LIMIT = 64            # measured paid recovery includes a long chant
 
 
@@ -2689,6 +2690,20 @@ def _finish_month_sub(screen, mem, shop):
             else '月一メニューに戻ったが所持金の減少を確認できない')
 
 
+def _paid_recruit_candidate(screen, sub):
+    """Measured candidate biography + paid recruitment receipt, not a blank fade."""
+    gold = (screen.header or {}).get('gold')
+    before = sub.get('gold_before')
+    if sub.get('kind') != 'recruit' or type(gold) is not int or type(before) is not int or before - gold != RECRUIT_COST:
+        return None
+    body = ''.join(line.span(8, 248).replace(' ', '') for line in screen.lines if line.y == 151)
+    match = re.fullmatch(r'「わたしのなは([^\ufffd]+)ともうします。', body)
+    words = ''.join(line.known.replace(' ', '') for line in screen.lines if line.y >= 167)
+    if (screen.kind != 'text' or not match or not all(w in words for w in ('HP', 'たまご', 'せんとう', 'ないせい', 'ちんぎん'))):
+        return None
+    return match[1]
+
+
 def month_sub_step(screen: Screen, mem):
     """Screens inside measured egg recovery / unmeasured general recruitment.
 
@@ -2703,8 +2718,19 @@ def month_sub_step(screen: Screen, mem):
         _record(mem, 'month_sub_lost', screen=kind, observed_metric=sub,
                 reason='月一の実行中に月一メニューへ戻らず別画面になったため追跡をやめる')
         return None
+    candidate = _paid_recruit_candidate(screen, sub)
+    if candidate and not sub.get('paid_candidates'):
+        # v16 may already have entered the old 8-observation abort. The
+        # measured paid candidate screen is new progress, so recover once;
+        # repeated/unknown screens can never reset this second bound again.
+        sub['paid_candidates'] = True
+        sub['presses'] = 0
+        sub.pop('aborted', None)
+        _record(mem, 'recruit_candidates_seen', general=candidate,
+                reason='募集費50G支払い後の候補紹介を実測し、上限付き候補選択へ進む')
     sub['presses'] = int(sub.get('presses', 0)) + 1
-    limit = EGG_RITUAL_LIMIT if sub.get('stage') == 'recovering' else MONTH_SUB_LIMIT
+    limit = (EGG_RITUAL_LIMIT if sub.get('stage') == 'recovering' else
+             RECRUIT_CANDIDATE_LIMIT if sub.get('paid_candidates') else MONTH_SUB_LIMIT)
     if sub.get('aborted') or sub['presses'] > limit:
         if not sub.get('aborted'):
             sub['aborted'] = True
