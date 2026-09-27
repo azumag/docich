@@ -1,11 +1,11 @@
 {
-  "output_sha256": "122b69e13a0ae5845f41991cb8969a7a70ed2a366c79074c33ab9bfff752c6cc",
+  "output_sha256": "d94bfead827da51e30be7235bb0444d176e41ca3aed4cad7b7620ddd356bc5f4",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "e6ee6d72bed713b598f08965d27e8a61390a1b87c37a43a02bf0ab5c7f0afd95",
+  "source_sha256": "43062f7cf8e53ac5d79876a821e25bd173eca80eff8b18f58e0bc8710056dd6d",
   "topics": [
     "Meriken黒画面の原因特定（Mac TCC責任プロセス未許可）・許可後に本番経路の映像到達を実測・24h監視設置",
-    "NInvaders戦略改善の2停止（LLM予算枯渇・評価インフラ失敗）を修正・配備（Claude Code）",
-    "rotationラッチをreadiness_timeout対応で復旧、PAPER改善の日次観測を開始（Claude Code）"
+    "予約: NInvaders改善の自然発火24時間後確認（オーナー指示）",
+    "NInvaders戦略改善の2停止（LLM予算枯渇・評価インフラ失敗）を修正・配備（Claude Code）"
   ]
 }
