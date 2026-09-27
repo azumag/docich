@@ -174,7 +174,7 @@ def test_budget_plan_prioritises_boss_kit_and_records_deviation():
     assert '214' in rec['deviation_reason'] and rec['expected_metric']['chart_gold'] == 214
     full = policy._plan({'chapter': 1}, {'year': 1, 'month': 5, 'gold': 214})
     assert full['items'] == [list(i) for i in chart.CHAPTER_1_PURCHASES['cards']]
-    assert full['soldiers'] == 41
+    assert full['soldiers'] == 41 - policy.WAGE_RESERVE
     # Before the charted month the gold is reserved for it.
     assert policy._plan({'chapter': 1}, {'year': 1, 'month': 4, 'gold': 999}) is None
     # Afterwards every month refills soldiers with the gold left (up to 99).
@@ -515,7 +515,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v27-y-jump'
+    assert state['bot_version'] == 'hanjuku-chart-v28-wage-reserve'
     assert '_records' not in state['policy']
 
 
@@ -1639,7 +1639,8 @@ def test_sortie_screens_record_each_generals_remaining_egg_uses():
 def test_an_empty_egg_reserves_its_recovery_ahead_of_soldiers():
     mem = {'chapter': 1, 'egg_uses': {'どうし': 4, 'ココット': 0}}
     shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 130})
-    assert shop['soldiers'] == 80 and shop['egg'] == 'pending' and shop['recruit'] == 'check'
+    assert (shop['soldiers'] == 80 - policy.WAGE_RESERVE and shop['egg'] == 'pending'
+            and shop['recruit'] == 'check')
     # No empty egg: soldiers keep the whole gold as before.
     shop = policy._plan({'chapter': 1, 'egg_uses': {'どうし': 4}}, {'year': 1, 'month': 7, 'gold': 130})
     assert shop['soldiers'] == 99 and shop['egg'] is None and shop['recruit'] == 'check'
@@ -1698,7 +1699,7 @@ def test_month_menu_recovers_the_egg_then_recruits_when_gold_is_left():
 
 
 def test_recruit_needs_the_full_99_soldiers_and_50g_left():
-    for soldiers, gold in ((99, 49), (60, 200)):
+    for soldiers, gold in ((99, 49), (99, 79), (60, 200)):
         mem = {'chapter': 1, 'shop': {'key': '1-7', 'items': [], 'soldiers': soldiers,
                                       'merchant_done': True, 'soldiers_done': True,
                                       'egg': None, 'recruit': 'check', 'gold_start': 300}}
@@ -1804,7 +1805,8 @@ def test_open_sea_search_spirals_around_the_centroid_and_records_each_leg(monkey
 def test_partial_egg_reserves_full_recovery_cost(uses):
     mem = {'chapter': 1, 'egg_uses': {'ココット': uses}}
     shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 130})
-    assert shop['reserve'] == 50 and shop['soldiers'] == 80 and shop['egg'] == 'pending'
+    assert (shop['reserve'] == 50 and shop['soldiers'] == 80 - policy.WAGE_RESERVE
+            and shop['egg'] == 'pending')
 
 
 def test_all_depleted_eggs_are_budgeted_and_invalid_or_full_counts_are_ignored():
@@ -1812,11 +1814,22 @@ def test_all_depleted_eggs_are_budgeted_and_invalid_or_full_counts_are_ignored()
            'bad': True, 'unknown': None, 'negative': -1, 'boosted': 5, 'one-shot': 1},
            'egg_types': {'one-shot': 'いっぱつエッグ'}}
     shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 180})
-    assert shop['reserve'] == 100 and shop['soldiers'] == 80
+    assert shop['reserve'] == 100 and shop['soldiers'] == 80 - policy.WAGE_RESERVE
     assert policy._egg_recovery_targets(mem) == ['どうし', 'ココット']
     poor = {'chapter': 1, 'egg_uses': {'どうし': 3, 'ココット': 1}}
     shop = policy._plan(poor, {'year': 1, 'month': 7, 'gold': 99})
-    assert shop['egg'] is None and shop['soldiers'] == 99
+    assert shop['egg'] is None and shop['soldiers'] == 99 - policy.WAGE_RESERVE
+
+
+def test_soldiers_never_spend_the_wage_reserve():
+    # g358/g407: spending the month down to 0G made the month-boundary wage
+    # payment negative and the game forced dismissals (owner 2026-09-28:
+    # そもそも将軍解雇はしないで欲しい). The reserve stays back.
+    mem = {'chapter': 1}
+    shop = policy._plan(mem, {'year': 2, 'month': 4, 'gold': 40})
+    assert shop['soldiers'] == 40 - policy.WAGE_RESERVE
+    shop = policy._plan({'chapter': 1}, {'year': 2, 'month': 4, 'gold': policy.WAGE_RESERVE})
+    assert shop['soldiers'] == 0
 
 
 def test_attempted_summon_rechecks_stale_full_sortie_count():
