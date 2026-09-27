@@ -515,7 +515,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v23-world-map'
+    assert state['bot_version'] == 'hanjuku-chart-v24-home-lost-select'
     assert '_records' not in state['policy']
 
 
@@ -1205,7 +1205,7 @@ def test_failed_menu_drops_cursor_estimate_and_stops_sea_a_spam():
     mem = {'chapter': 1, 'variant': 'chart', 'active': '1-A1',
            'orders': {'1-A1': 'pending'}, 'picked': [],
            'cursor': list(policy.chart.castles(1)['ほんじょう']),
-           'expect_menu': True, '_records': []}
+           'expect_menu': True, '_records': [], 'select_used': True}
     screen = Screen(lines=[], hand=None, text='', kind='map',
                     cursor=(200, 160))  # bracket on water, not a roof cell
     actions = policy.map_step(screen, mem, frame)
@@ -1246,7 +1246,8 @@ def test_failed_menu_on_open_sea_steers_inland_until_roofs_reanchor(monkeypatch)
     home = policy.chart.castles(1)['ほんじょう']
     mem = {'chapter': 1, 'variant': 'chart', 'active': '1-A1',
            'orders': {'1-A1': 'pending'}, 'picked': [],
-           'cursor': [home[0] - 3, home[1]], 'expect_menu': True, '_records': []}
+           'cursor': [home[0] - 3, home[1]], 'expect_menu': True, '_records': [],
+           'select_used': True}
     centroid = policy._search_goal(mem)
     distance = lambda: abs(mem['cursor'][0] - centroid[0]) + abs(mem['cursor'][1] - centroid[1])
     screen = lambda x, y: Screen(lines=[], hand=None, text='', kind='map', cursor=(x, y))
@@ -1746,7 +1747,8 @@ def test_open_sea_search_spirals_around_the_centroid_and_records_each_leg(monkey
     frame = Frame(256, 224, bytes(256 * 224 * 3))
     monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: [])
     mem = {'chapter': 1, 'variant': 'chart', 'active': '1-A1', 'orders': {'1-A1': 'pending'},
-           'picked': [], 'uncertain': True, 'nav_search': True, 'menu_miss': 1, '_records': []}
+           'picked': [], 'uncertain': True, 'nav_search': True, 'menu_miss': 1, '_records': [],
+           'select_used': True}
     centroid = policy._search_goal(mem)
     mem['cursor'] = list(centroid)
     screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(120, 120))

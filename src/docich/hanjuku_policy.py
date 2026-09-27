@@ -239,6 +239,7 @@ def update_world(screen: Screen, mem, frame, goal_name=None):
             mem['uncertain'] = False
             mem.pop('nav_search', None)
             mem.pop('nav_search_leg', None)
+            mem.pop('select_used', None)
             if not screen.marker:
                 observe_owners(mem, roofs, cam)
         else:
@@ -388,6 +389,20 @@ def nav_step(screen: Screen, mem, frame, goal, goal_name=None):
         return None
     if _nav_stuck(screen, mem, world, s):
         return None
+    if (mem.get('uncertain') and mem.get('nav_search') and not mem.get('select_used')
+            and screen.cursor and not screen.marker):
+        # SELECT centres the camera on the hero, who is usually at or near a
+        # castle: roofs come into view far sooner than an inland spiral from
+        # a wrong cell (owner hint 2026-09-28, measured in the isolated
+        # emulator: the cursor lands at the screen centre). The jump is not
+        # our measured motion, so nothing is integrated for it.
+        mem['select_used'] = True
+        mem['nav_last'] = None
+        _record(mem, 'select_to_hero', screen=screen.kind,
+                observed_metric={'cursor': list(world), 'screen_cursor': list(s),
+                                 'roofs': mem.get('roofs_seen')},
+                reason='位置を見失ったためSELECTで主人公の周辺を映し、屋根で再特定する')
+        return [pad('select')]
     search = bool(mem.get('uncertain') and mem.get('nav_search'))
     if search:
         goal = _search_goal(mem)
@@ -643,12 +658,13 @@ def interim_candidates(mem) -> dict:
     castles = chart.castles(chapter)
     home = chart.home_castle(chapter)
     boss = chart.boss_castle(chapter)
-    owned = (set(mem.get('captured') or []) | {home}) & set(castles)
+    owned = _owned(mem) & set(castles)
     busy, heading = _en_route(mem)
     chart_orders = {}
     for order in chart.orders(chapter):
         chart_orders.setdefault(order['target'], order)
     lost = [c for c in mem.get('lost') or () if c in castles]
+    lost.sort(key=lambda c: c != home)          # a lost home castle is retaken first
     targets = [c for c in (*lost, *chart_orders, *castles)
                if c in castles and c not in owned and c != boss]
     targets = list(dict.fromkeys(targets))
@@ -980,11 +996,25 @@ def world_map_step(screen, mem, frame):
         return [] if waited < WORLD_MAP_WAIT else [pad('y')]
     mem.pop('world_map_wait', None)
     chapter = mem.get('chapter') or 0
-    fixed = {chart.home_castle(chapter), chart.boss_castle(chapter)}
+    home = chart.home_castle(chapter)
     captured = mem.setdefault('captured', [])
     changed = []
+    home_owner = flags.get(home)
+    if home_owner == 'enemy' and not mem.get('home_lost'):
+        # g407 03:53: the home castle flew an enemy flag while every sortie
+        # still treated it as ours and fell back to it.
+        mem['home_lost'] = True
+        lost = mem.setdefault('lost', [])
+        if home not in lost:
+            lost.insert(0, home)
+        (mem.get('garrison') or {}).pop(home, None)
+        changed.append(('lost', home))
+    elif home_owner == 'own' and mem.get('home_lost'):
+        mem['home_lost'] = False
+        mem['lost'] = [c for c in mem.get('lost') or [] if c != home]
+        changed.append(('captured', home))
     for castle, owner in flags.items():
-        if castle in fixed:
+        if castle in (home, chart.boss_castle(chapter)):
             continue
         if owner == 'enemy' and castle in captured:
             mem['captured'] = captured = [c for c in captured if c != castle]
@@ -1017,7 +1047,9 @@ def _source(order, mem):
 
 
 def _owned(mem):
-    return set(mem.get('captured') or []) | {chart.home_castle(mem.get('chapter') or 0)}
+    """Captured castles plus the home castle, unless the Y map showed it taken (g407 03:53)."""
+    home = set() if mem.get('home_lost') else {chart.home_castle(mem.get('chapter') or 0)}
+    return set(mem.get('captured') or []) | home
 
 
 def _give_up_source(mem, order):
@@ -1040,7 +1072,7 @@ def _give_up_source(mem, order):
     # the cell would freeze the camera on open sea again (g358).
     misses = mem.get('source_miss', {}).pop(step, 0)
     garrison = mem.get('garrison') or {}
-    if source != home and not mem.get('source_override', {}).get(step):
+    if source != home and home in _owned(mem) and not mem.get('source_override', {}).get(step):
         mem.setdefault('source_override', {})[step] = home
         garrison.pop(source, None)
         _record(mem, 'order_source_changed', chart_step=step, strategy_variant='source_fallback',
@@ -1594,7 +1626,8 @@ def deploy_step(screen: Screen, mem):
                         reason='後続手順とボス条件を満たすため')
                 move = menu_to(screen, present[0])
                 return [pad('a')] if move == 'here' else [move] if move else []
-            if not mem.get('source_override', {}).get(order['step']):
+            if (not mem.get('source_override', {}).get(order['step'])
+                    and chart.home_castle(mem.get('chapter') or 1) in _owned(mem)):
                 mem.setdefault('source_override', {})[order['step']] = chart.home_castle(
                     mem.get('chapter') or 1)
                 mem.setdefault('general_override', {}).pop(order['step'], None)
@@ -3194,7 +3227,8 @@ def observe_events(screen: Screen, mem):
                         'chart_adjust', 'chart_plan', 'launched_orders', 'sorties', 'sortie_attempt',
                         'garrison', 'general_location_unknown', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
                         'nav_prev', 'nav_still', 'nav_pressed', 'unverified', 'off_castle',
-                        'world_map_tick', 'world_map_due', 'world_map_wait',
+                        'world_map_tick', 'world_map_due', 'world_map_wait', 'home_lost',
+                        'select_used',
                         'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
                         'indep_menu_key', 'indep_menu_action',
                         'monster_menu_key', 'monster_menu_cursor', 'monster_menu_hold',
