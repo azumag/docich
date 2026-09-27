@@ -1,0 +1,211 @@
+{
+  "schema": 1,
+  "coordinate_system": "256x224 via existing Frame.resized()",
+  "annotation_status": "visually reviewed general regions; negative contact examples only",
+  "regions": "coarse enclosing rectangles, not precise sprite segmentation or gameplay thresholds",
+  "rows": [
+    {
+      "image": "passive-final/000161.png",
+      "png_sha256": "f26b33850b8d5f435b30f173a3e7a1cfd1042bff7bc04006a00255a8c8d96028",
+      "scene": "tutorial",
+      "enemy": "だいじん",
+      "ally": "どうし",
+      "enemy_region": [
+        22,
+        90,
+        40,
+        111
+      ],
+      "ally_region": [
+        223,
+        90,
+        242,
+        111
+      ],
+      "contact": "not_visible",
+      "front_x": null,
+      "note": "dialogue_before_melee"
+    },
+    {
+      "image": "passive-final/000172.png",
+      "png_sha256": "edb0f5b5fb33216ee85bbe4c540e86f37da097cc84b9d6708ca7797ddb8eb33f",
+      "scene": "tutorial",
+      "enemy": "だいじん",
+      "ally": "どうし",
+      "enemy_region": [
+        100,
+        90,
+        119,
+        111
+      ],
+      "ally_region": [
+        174,
+        90,
+        194,
+        111
+      ],
+      "contact": "not_visible",
+      "front_x": null,
+      "note": "hp_changed_but_generals_separated"
+    },
+    {
+      "image": "passive-final/000174.png",
+      "png_sha256": "97899a09adc7703dfa9a106734a5c8104d58043dd4ed707f2a4473ae9229748f",
+      "scene": "tutorial",
+      "enemy": "だいじん",
+      "ally": "どうし",
+      "enemy_region": [
+        55,
+        90,
+        74,
+        111
+      ],
+      "ally_region": [
+        214,
+        90,
+        234,
+        111
+      ],
+      "contact": "not_visible",
+      "front_x": null,
+      "note": "hp_changed_but_generals_separated"
+    },
+    {
+      "image": "rapid/batch-2/frame-0001.png",
+      "png_sha256": "be1a337f2f07f8ca34459c68fd8ab26ecf04a2ee591ec8382ab308b8b2ff3553",
+      "scene": "blue_hall",
+      "enemy": "コリアンダー",
+      "ally": "ヴィーナス",
+      "enemy_region": [
+        3,
+        90,
+        21,
+        111
+      ],
+      "ally_region": [
+        168,
+        90,
+        190,
+        111
+      ],
+      "contact": "not_visible",
+      "front_x": null,
+      "note": "flying_soldiers_over_hp"
+    },
+    {
+      "image": "risk-rapid/batch-1/frame-0001.png",
+      "png_sha256": "aa0e9956776be1c3a6f3e04aafb86bb5f366aa12bfa706d067da89c1b61f4e2c",
+      "scene": "flower_field",
+      "enemy": "クミン",
+      "ally": "どうし",
+      "enemy_region": [
+        19,
+        90,
+        39,
+        111
+      ],
+      "ally_region": [
+        117,
+        90,
+        139,
+        111
+      ],
+      "contact": "not_visible",
+      "front_x": null,
+      "note": "flying_soldiers_over_hp"
+    },
+    {
+      "image": "risk-rapid/batch-1/frame-0040.png",
+      "png_sha256": "151e9db72215b9fa75bf3c3038891674a581aa5187eaf12f4ea425b42264ea05",
+      "scene": "flower_field",
+      "enemy": "クミン",
+      "ally": "どうし",
+      "enemy_region": [
+        34,
+        90,
+        59,
+        111
+      ],
+      "ally_region": [
+        83,
+        90,
+        109,
+        111
+      ],
+      "contact": "not_visible",
+      "front_x": null,
+      "note": "generals_approaching_not_contacting"
+    },
+    {
+      "image": "risk-rapid/batch-1/frame-0060.png",
+      "png_sha256": "144b9c7688ed755a32892b0e40ac30c77bfb8c488f4dc184f9466b2ee209b7c3",
+      "scene": "flower_field",
+      "enemy": "クミン",
+      "ally": "どうし",
+      "enemy_region": [
+        34,
+        90,
+        59,
+        111
+      ],
+      "ally_region": [
+        83,
+        90,
+        109,
+        111
+      ],
+      "contact": "not_visible",
+      "front_x": null,
+      "note": "enemy_egg_announcement"
+    },
+    {
+      "image": "contact60/batch-1/frame-0001.png",
+      "png_sha256": "310be8c512e0ad29a82fd2d1c2d4830b2d918abd2f3e0bbc1fa802ef6b5afa60",
+      "scene": "ochre_field",
+      "enemy": "ガルバンゾー",
+      "ally": "どうし",
+      "enemy_region": [
+        22,
+        90,
+        41,
+        112
+      ],
+      "ally_region": [
+        223,
+        90,
+        243,
+        112
+      ],
+      "contact": "not_visible",
+      "front_x": null,
+      "note": "dialogue_before_melee"
+    },
+    {
+      "image": "contact60/batch-1/frame-0120.png",
+      "png_sha256": "a3b6757f14bec5cc1ef7e833a8e8c71025256c9cf72c31dbe43f4f9830c73d7d",
+      "scene": "ochre_field",
+      "enemy": "ガルバンゾー",
+      "ally": "どうし",
+      "enemy_region": [
+        67,
+        90,
+        84,
+        112
+      ],
+      "ally_region": [
+        139,
+        90,
+        161,
+        112
+      ],
+      "contact": "not_visible",
+      "front_x": null,
+      "note": "soldier_clash_not_general_contact"
+    }
+  ],
+  "purpose": "offline calibration evidence; never loaded by runtime policy",
+  "evidence_root": "run/hanjuku-1180-front-evidence",
+  "normalization": "docich.hanjuku_pixels.read_png(path).resized(256, 224)",
+  "review": "author visual review; no independent reviewer",
+  "chapter": 1
+}
