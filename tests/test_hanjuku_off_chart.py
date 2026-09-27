@@ -349,3 +349,27 @@ def test_a_roof_under_the_cursor_confirms_the_source(monkeypatch):
     mem = {'chapter': 1, 'orders': {}, 'picked': [], '_records': [], 'active': '1-C1'}
     assert policy.map_step(map_screen(32, 108), mem, FRAME) == [policy.pad('a')]
     assert not decisions(mem, 'source_not_under_cursor')
+
+
+def test_moves_come_before_attacks_and_staff_an_empty_home_castle():
+    """g407 01:40: home empty, キカンドン held どうし+ゼウス; moves were listed last and never ran."""
+    mem = {'chapter': 1, 'orders': {}, '_records': [],
+           'captured': ['キカンドン', 'ジョンリギ'], 'lost': ['ナキューメラ'],
+           'garrison': {'ほんじょう': [], 'キカンドン': ['どうし', 'ゼウス'], 'ジョンリギ': ['ココット']}}
+    candidates = policy.interim_candidates(mem)
+    purposes = [c['purpose'] for c in candidates.values()]
+    assert purposes[0] == 'retake' and purposes[1] == 'move'
+    assert set(purposes[2:]) == {'attack'}
+    move = candidates['move_2']
+    assert (move['general'], move['source'], move['target']) == ('ゼウス', 'キカンドン', 'ほんじょう')
+    # With nothing to retake, the move is the first candidate (the fallback).
+    mem['lost'] = []
+    first_label, first = next(iter(policy.interim_candidates(mem).items()))
+    assert first_label == 'move_1' and first['target'] == 'ほんじょう'
+
+
+def test_a_move_already_marching_is_not_offered_again():
+    mem = {'chapter': 1, 'orders': {}, '_records': [], 'captured': ['キカンドン'],
+           'garrison': {'ほんじょう': [], 'キカンドン': ['どうし', 'ゼウス', 'ココット']},
+           'sorties': {'I:x:1': {'general': 'ゼウス', 'target': 'ほんじょう', 'status': 'en_route'}}}
+    assert not [c for c in policy.interim_candidates(mem).values() if c['purpose'] == 'move']

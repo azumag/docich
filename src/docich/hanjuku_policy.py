@@ -590,13 +590,17 @@ def _interim_source(mem, target, chart_order, owned, busy):
 def interim_candidates(mem) -> dict:
     """Deterministic off-chart sorties JEV may choose from while a chart is pending.
 
-    Retake castles we lost, then attack every other uncaptured non-boss castle
-    (chart targets first), then move a spare general into an owned castle last
-    seen empty. Sources and generals come from measured general lists when
-    known (``garrison``), so an idle general at any castle is used instead of
-    only the chart's general. No cards (stock is not verified). There is no
-    hold label: JEV must pick one, and an unusable answer falls back to the
-    first candidate. JEV never produces keys or orders itself.
+    Retake castles we lost, then staff owned castles last seen empty (the home
+    castle first) with a spare general from a castle that keeps somebody,
+    then attack every other uncaptured non-boss castle (chart targets first).
+    Moves come before attacks because the first candidate is also the
+    fallback: listed last they never ran (g403-g407), while undefended
+    castles fell without a battle and g407 left the home castle empty.
+    Sources and generals come from measured general lists when known
+    (``garrison``), so an idle general at any castle is used instead of only
+    the chart's general. No cards (stock is not verified). There is no hold
+    label: JEV must pick one, and an unusable answer falls back to the first
+    candidate. JEV never produces keys or orders itself.
     """
     chapter = mem.get('chapter') or 0
     castles = chart.castles(chapter)
@@ -614,7 +618,7 @@ def interim_candidates(mem) -> dict:
     # A castle a unit is already marching on goes last, not away: that unit
     # may never arrive (g401: 1-A2 stayed en_route for 20 minutes).
     targets.sort(key=lambda c: c in heading)
-    out = {}
+    sorties = {'retake': [], 'attack': []}
     for target in targets:
         picked = _interim_source(mem, target, chart_orders.get(target), owned, busy)
         if picked is None:
@@ -623,12 +627,13 @@ def interim_candidates(mem) -> dict:
         purpose = 'retake' if target in lost else 'attack'
         note = (f"暫定: {general}で奪われた{target}を奪還" if purpose == 'retake'
                 else f"暫定: {general}で{target}を攻撃")
-        out[f'{purpose}_{len(out) + 1}'] = {
+        sorties[purpose].append({
             'general': general, 'target': target, 'cards': [], 'source': source,
-            'after': None, 'purpose': purpose, 'note': note}
+            'after': None, 'purpose': purpose, 'note': note})
     garrison = mem.get('garrison') or {}
+    moves = []
     empty = [c for c in sorted(owned, key=lambda c: _distance(chapter, home, c))
-             if c != home and garrison.get(c) == [] and c not in heading]
+             if garrison.get(c) == [] and c not in heading]
     for target in empty:
         donors = sorted((c for c in owned if c != target
                          and len([g for g in garrison.get(c) or () if g not in busy]) >= 2),
@@ -637,10 +642,13 @@ def interim_candidates(mem) -> dict:
             continue
         spare = [g for g in garrison[donors[0]] if g not in busy]
         spare.sort(key=lambda g: g == NAME)
-        out[f'move_{len(out) + 1}'] = {
+        moves.append({
             'general': spare[0], 'target': target, 'cards': [], 'source': donors[0],
             'after': None, 'purpose': 'move',
-            'note': f"暫定: {spare[0]}を{donors[0]}から空の{target}へ移動"}
+            'note': f"暫定: {spare[0]}を{donors[0]}から空の{target}へ移動"})
+    out = {}
+    for order in (*sorties['retake'], *moves, *sorties['attack']):
+        out[f"{order['purpose']}_{len(out) + 1}"] = order
     return out
 
 
