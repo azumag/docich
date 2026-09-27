@@ -1,11 +1,11 @@
 {
-  "output_sha256": "5136177b64a6d9956dff35668e9f44352f42fa1551ac2a06b3b537b165c169aa",
+  "output_sha256": "0c8ff886b042c07d8d81b92db9cc7920ea622fa61527997d211b2344c620eefe",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "c930560073611b20898d6ac38e9a0d6ef4a1b64fc09a79ab8c308176a520ff3e",
+  "source_sha256": "4b45d3fc52a179b2f977f5b12c27542905efca2ebc925f334799a9ffe23297dd",
   "topics": [
+    "三つのローテーション停止原因の修正をmain・VMで照合",
     "PAPERの古い失敗記録による再停止を復旧・修正",
-    "ローテーション二原因の復旧・再発防止を本番照合",
-    "Mac常駐化をmainへ統合、NetHack死亡後の停止も復旧"
+    "ローテーション二原因の復旧・再発防止を本番照合"
   ]
 }
