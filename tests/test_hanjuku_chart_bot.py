@@ -1813,3 +1813,15 @@ def test_new_sortie_reading_clears_the_old_summon_recheck():
     mem={'egg_recheck':['どうし'],'egg_uses':{'どうし':4}}
     policy.observe_events(sortie_canvas('どうし',3),mem)
     assert mem['egg_recheck']==[] and policy._egg_recovery_targets(mem)==['どうし']
+
+
+def test_egg_ritual_fade_holds_input_before_returning_to_month_menu():
+    state = {'policy': {'chapter': 1, 'month_sub': {
+        'kind': 'egg', 'gold_before': 50, 'presses': 20,
+        'full_selected': True, 'quoted_cost': 50, 'stage': 'recovering'}}}
+    actions, state = decide(Canvas((0, 0, 0)).frame(), state)
+    assert actions == []
+    assert state['policy']['month_sub']['stage'] == 'recovering'
+    actions, state = decide(month_canvas(0, on='しょうにん'), state)
+    assert 'month_sub' not in state['policy']
+    assert actions != [policy.pad('a')]  # do not open the merchant

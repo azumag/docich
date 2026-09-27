@@ -2058,6 +2058,10 @@ def month_sub_step(screen: Screen, mem):
 
 def _egg_recovery_step(screen, mem, sub):
     """Measured full-recovery list and NこでNG confirmation; never guess a row."""
+    if not screen.text:
+        # The paid ritual fades back into the month menu. A on that blank
+        # frame can be buffered and open the newly focused merchant row.
+        return []
     if screen.has('うむッ') and screen.has('いかんッ'):
         body = ''.join(line.known.replace(' ', '') for line in screen.lines if line.y >= 140)
         quote = re.search(r'(\d+)こで(\d+)Gになりまんな', body)
