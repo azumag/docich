@@ -3367,6 +3367,7 @@ def _fold_skill(text: str) -> str:
 _MONSTER_SKILLS = {name: frozenset(_fold_skill(s) for s in skills)
                    for name, skills in reference.MONSTER_SKILLS.items()}
 _MONSTER_EFFECTS = frozenset(_fold_skill(s) for s in reference.MONSTER_EFFECT_SKILLS)
+_MONSTER_HEALS = frozenset(_fold_skill(s) for s in reference.MONSTER_HEAL_SKILLS)
 
 
 def _monster_owner(skill_lines, ally, enemy) -> str | None:
@@ -3387,6 +3388,10 @@ def _monster_effectful(skill: str) -> bool:
     return _fold_skill(skill) in _MONSTER_EFFECTS
 
 
+def _monster_heal(skill: str) -> bool:
+    return _fold_skill(skill) in _MONSTER_HEALS
+
+
 def monster_menu_step(screen: Screen, mem):
     """Our summoned monster's own turn: a skill menu with independent judgment.
 
@@ -3394,7 +3399,8 @@ def monster_menu_step(screen: Screen, mem):
     skill table: an enemy-owned menu waits for the enemy AI, bounded by
     MONSTER_MENU_HOLD_LIMIT so a stuck screen cannot freeze the bot. An
     allied menu retreats at half HP or less, keeps the special second skill
-    while behind, otherwise uses the first skill, refined by measured
+    while behind, skips a heal-first skill while ahead so damage still
+    happens, otherwise uses the first skill, refined by measured
     experience. Movement follows the knight cursor when visible and a
     row-step stage when it is not.
     """
@@ -3443,8 +3449,15 @@ def monster_menu_step(screen: Screen, mem):
         enemy_hp = enemy.hp if enemy else None
         behind = _behind({'ally_hp': ally_hp, 'enemy_hp': enemy_hp})
         retreat = type(ally_hp) is int and type(enemy_hp) is int and ally_hp * 2 <= enemy_hp
+        first = ''.join(skill_lines[0].known.split())
+        second = ''.join(skill_lines[1].known.split()) if len(skill_lines) >= 2 else ''
+        heal_first = bool(second) and _monster_heal(first) and not _monster_heal(second)
         default = 'skill1'
-        if behind and len(skill_lines) >= 2 and _monster_effectful(''.join(skill_lines[1].known.split())):
+        if behind and len(skill_lines) >= 2 and _monster_effectful(second):
+            default = 'skill2'
+        elif heal_first and not behind:
+            # Healing at full HP loops forever without ever lowering the
+            # enemy (g407: ふくらむ x71 vs an enemy left at 12 HP).
             default = 'skill2'
         exp = mem.get('_experience')
         key = experience.situation_key('monster_menu', mem)
@@ -3457,9 +3470,11 @@ def monster_menu_step(screen: Screen, mem):
         if action == 'retreat':
             label, why = 'たまごに もどれ', '味方HPが敵の半分以下なので撤退して見守る'
         elif action == 'skill2' and len(skill_lines) >= 2:
-            label, why = ''.join(skill_lines[1].known.split()), '味方が劣勢で効果付きの2技目'
+            label = second
+            why = ('1技目が回復技のため敵を減らす2技目を選ぶ'
+                   if heal_first and not behind else '味方が劣勢で効果付きの2技目')
         else:
-            label, why = ''.join(skill_lines[0].known.split()), '先手を取れる1技目を続ける'
+            label, why = first, '先手を取れる1技目を続ける'
         if action != default and action != 'retreat':
             why = f'過去の結果に基づく経験の選択（既定 {default}）'
         _record(mem, 'monster_menu_choice',

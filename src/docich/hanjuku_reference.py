@@ -233,9 +233,12 @@ MONSTER_EFFECT_SKILLS: frozenset[str] = frozenset({
     'ダークフォース', 'デスのカマ', 'デビルオーラ', 'トリップダケ', 'ナーガいもの', 'ニオウンデス',
     'ハルマゲドン', 'バブー', 'バリカンでかる', 'パオーのおなか', 'ファラオのさばき', 'ホットないちげき',
     'ホームラン', 'マリオネット', 'ミカンをおす', 'ミサイルくん', 'ムシャムシャくう', 'メイクアップ',
-    'メイクイーン', 'メガトンプレス', 'モーニングスター', 'リトルモアモア', 'ワライダケ', 'ヴァイオリン',
+    'メイクイーン', 'メガトンプレス', 'モーニングスター', 'リトルモアモア', 'ワライダケ',
+    'ヴァイオリン',
 })
-
+# Owner-confirmed heals (2026-09-28): バルーンフィンチ's ふくらむ was picked
+# 71 times in a row at full HP, so the enemy never took damage (g407 loop).
+MONSTER_HEAL_SKILLS: frozenset[str] = frozenset({'ふくらむ', 'ケアル'})
 
 #食いしばり (endure): lethal card damage clamps to HP-1 when
 # damage <= current_hp + 16.
