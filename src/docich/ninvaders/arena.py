@@ -164,11 +164,31 @@ def summarize(matches: list[dict]) -> dict:
     }
 
 
-def evaluate(policy_path, matches: int, *, parallel: int = 4, **kwargs) -> dict:
-    """Play ``matches`` matches (``parallel`` at a time) and summarize."""
+def evaluate(policy_path, matches: int, *, parallel: int = 4, retries: int = 1, **kwargs) -> dict:
+    """Play ``matches`` matches (``parallel`` at a time) and summarize.
+
+    A slot that ends without a game result (``no-start`` / ``session-lost`` /
+    ``error``) is an infrastructure failure on a loaded VM, not a policy result.
+    Replay those slots up to ``retries`` more times so one bad capture cannot
+    fail-close the promotion gate with "completed matches too few".
+    """
     matches = max(1, int(matches))
-    with ThreadPoolExecutor(max_workers=max(1, min(int(parallel), matches))) as pool:
-        results = list(pool.map(lambda _i: _safe_match(policy_path, kwargs), range(matches)))
+    retries = max(0, int(retries))
+
+    def play_slots(indices):
+        with ThreadPoolExecutor(max_workers=max(1, min(int(parallel), len(indices)))) as pool:
+            return list(pool.map(lambda _i: _safe_match(policy_path, kwargs), indices))
+
+    results = play_slots(range(matches))
+    for _ in range(retries):
+        bad = [
+            i for i, m in enumerate(results)
+            if m.get("end") not in VALID_ENDS or not isinstance(m.get("score"), int)
+        ]
+        if not bad:
+            break
+        for i, m in zip(bad, play_slots(bad)):
+            results[i] = m
     return {"summary": summarize(results), "matches": results}
 
 
