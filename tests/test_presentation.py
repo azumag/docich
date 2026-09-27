@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from docich.presentation import _parser, cell_aspect_scale, contain_filter, stretch_filter
+from docich.presentation import _parser, cell_aspect_scale, contain_filter, tv_filter
 
 
 def _content_bbox(raw, width, height, threshold=200):
@@ -64,15 +64,16 @@ class PresentationPixels(unittest.TestCase):
                     self.assertTrue(all(abs(v - expected) <= 2
                                         for v in result.stdout[offset:offset+3]))
 
-    def test_stretch_fills_the_rectangle_from_a_native_snes_frame(self):
-        # Hanjuku: native 256x224 fills 720x540 edge to edge (4:3), no bars.
+    def test_tv_fit_keeps_the_previous_4_3_picture_centred(self):
+        # Hanjuku: native 256x224 -> 720x540 (4:3, as the old 897x672 was),
+        # centred in the 960x540 viewport; never stretched to 16:9.
         result = subprocess.run([
             'ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'color=white:s=256x224',
-            '-vf', stretch_filter(720, 540),
+            '-vf', tv_filter(960, 540),
             '-frames:v', '1', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-',
         ], capture_output=True, check=True, timeout=20)
-        self.assertEqual(len(result.stdout), 720 * 540 * 3)
-        self.assertEqual(_content_bbox(result.stdout, 720, 540), (0, 0, 719, 539))
+        self.assertEqual(len(result.stdout), 960 * 540 * 3)
+        self.assertEqual(_content_bbox(result.stdout, 960, 540), (120, 0, 839, 539))
 
     def test_cell_stretch_squares_tiles_without_changing_window_fit(self):
         # pacman4console の実寸: 29x32 cells (cell 11x21 px)、maze は (1,1) の 28x29 cells。
@@ -134,8 +135,8 @@ class CellAspectOptionTests(unittest.TestCase):
     def test_framerate_and_fit_default_to_the_existing_projection(self):
         args = self._parse([])
         self.assertEqual((args.framerate, args.fit), (15, 'contain'))
-        args = self._parse(['--framerate', '30', '--fit', 'stretch'])
-        self.assertEqual((args.framerate, args.fit), (30, 'stretch'))
+        args = self._parse(['--framerate', '30', '--fit', 'tv'])
+        self.assertEqual((args.framerate, args.fit), (30, 'tv'))
 
     def _parse(self, extra):
         return _parser().parse_args([

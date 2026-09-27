@@ -99,10 +99,14 @@ def contain_filter(width: int, height: int, *, cell_stretch: float = 1.0) -> str
     return ",".join(filters)
 
 
-def stretch_filter(width: int, height: int) -> str:
-    """Fill the rectangle exactly (nearest neighbour): a native 256x224 SNES
-    frame shown 4:3 as on a TV, with cheap, crisp pixel doubling."""
-    return f"scale={width}:{height}:flags=neighbor,setsar=1"
+def tv_filter(width: int, height: int) -> str:
+    """A native 256x224 SNES frame at the 4:3 it had when RetroArch drew it
+    3x (897x672), centred with bars, nearest neighbour (crisp and cheap).
+    Filling a 16:9 rectangle stretched it sideways (owner, 2026-09-27)."""
+    w, h = min(width, height * 4 // 3), min(height, width * 3 // 4)
+    w, h = w - w % 2, h - h % 2
+    return (f"scale={w}:{h}:flags=neighbor,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1")
 
 
 def _positive_int(value: str) -> int:
@@ -156,7 +160,7 @@ def _parser() -> argparse.ArgumentParser:
     # Projection capture rate and fit. The broadcast encoder runs at 30 fps;
     # 15 fps (the default, unchanged for other games) shows every frame twice.
     parser.add_argument('--framerate', type=_positive_int, default=15)
-    parser.add_argument('--fit', choices=('contain', 'stretch'), default='contain')
+    parser.add_argument('--fit', choices=('contain', 'tv'), default='contain')
     parser.add_argument('--runtime-state')
     parser.add_argument('command', nargs=argparse.REMAINDER)
     return parser
@@ -276,7 +280,7 @@ def main(argv=None) -> int:
             '-f', 'x11grab', '-framerate', str(args.framerate), '-draw_mouse', '0',
             '-window_id', window, '-video_size', f'{width}x{height}',
             '-i', f':{number}',
-            '-vf', (stretch_filter(args.width, args.height) if args.fit == 'stretch'
+            '-vf', (tv_filter(args.width, args.height) if args.fit == 'tv'
                     else contain_filter(args.width, args.height,
                                         cell_stretch=args.cell_stretch or 1.0)),
             '-noborder', '-window_title', args.title,

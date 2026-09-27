@@ -211,7 +211,8 @@ def retroarch_cfg_lines(g, game, cfg_path: Path, network_port: int) -> list[str]
     if scripted_hanjuku(game) and d.viewport_width > 0:
         # Render native 256x224 (the bot's own frame size) instead of 3x:
         # far fewer pixels to draw, capture and decode. The presentation
-        # stretches it to the broadcast rectangle (g389: stutter under load).
+        # scales it back to 4:3 inside the broadcast rectangle (g389: stutter
+        # under load).
         lines = [line for line in lines
                  if not line.startswith(('video_scale', 'video_force_aspect'))]
         lines += ['video_scale = "1.0"', 'video_force_aspect = "false"']
@@ -480,7 +481,7 @@ class RetroArchCoordinatorAdapter:
                 '--x', str(d.viewport_x), '--y', str(d.viewport_y),
                 '--width', str(d.viewport_width), '--height', str(d.viewport_height),
                 '--window-pattern', '^RetroArch',
-                *(['--framerate', '30', '--fit', 'stretch'] if scripted_hanjuku(self.game) else []),
+                *(['--framerate', '30', '--fit', 'tv'] if scripted_hanjuku(self.game) else []),
                 '--runtime-state', str(self._presentation_path()),
                 *(['--audio-sink', audio_sink] if audio_enabled else []),
                 *(['--audio-volume-percent', str(volume)] if audio_enabled and volume is not None else []),
