@@ -1,11 +1,11 @@
 {
-  "output_sha256": "0c8ff886b042c07d8d81b92db9cc7920ea622fa61527997d211b2344c620eefe",
+  "output_sha256": "9db1a7d93c99b0d824469a1e1196fec463c4d6f5f6f90371232f73cb9b719ea8",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "4b45d3fc52a179b2f977f5b12c27542905efca2ebc925f334799a9ffe23297dd",
+  "source_sha256": "d3a23301b3a958a452a364b99e144a81a964fc131a704712ab51c6c5b1d1c47f",
   "topics": [
+    "半熟英雄の再起動で名前入力と表示比率の不具合を再確認",
     "三つのローテーション停止原因の修正をmain・VMで照合",
-    "PAPERの古い失敗記録による再停止を復旧・修正",
-    "ローテーション二原因の復旧・再発防止を本番照合"
+    "PAPERの古い失敗記録による再停止を復旧・修正"
   ]
 }
