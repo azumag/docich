@@ -515,7 +515,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v24-home-lost-select'
+    assert state['bot_version'] == 'hanjuku-chart-v25-monster-heal-skill'
     assert '_records' not in state['policy']
 
 
@@ -1458,6 +1458,21 @@ def test_monster_menu_prefers_the_effectful_second_skill_while_behind():
     choice = next(r for r in state['_records'] if r['decision'] == 'monster_menu_choice')
     assert choice['strategy_variant'] == 'monster_menu_skill2'
     assert choice['observed_metric']['menu'][1] == 'とけこむそー'
+    assert actions[0]['buttons'] == ['down']
+
+
+def test_monster_menu_skips_a_full_hp_heal_first_skill_for_damage():
+    # g407: バルーンフィンチ chose ふくらむ 71 times at 9999HP while the enemy
+    # sat at 12HP, so the battle never ended. While ahead a heal-first skill
+    # is skipped in favor of the damaging second skill.
+    frame = monster_menu_frame(['ふくらむ', 'シャウト'],
+                               ally=('バルーンフィンチ', 9999), enemy=('ダークエルフ', 12), cursor=0)
+    actions, state = decide(frame, {'policy': {'chapter': 1}})
+    choice = next(r for r in state['_records'] if r['decision'] == 'monster_menu_choice')
+    assert choice['strategy_variant'] == 'monster_menu_skill2'
+    assert choice['observed_metric']['action'] == 'skill2'
+    assert choice['observed_metric']['menu'] == ['ふくらむ', 'シャウト', 'たまごにもどれ']
+    assert '回復技' in choice['reason']
     assert actions[0]['buttons'] == ['down']
 
 
