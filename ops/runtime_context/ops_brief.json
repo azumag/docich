@@ -1,11 +1,11 @@
 {
-  "output_sha256": "633b73c15f891b9df92ccb089a683d52d8941e42e328bb3c9efa7a405f304331",
+  "output_sha256": "ce1f651ed97025d0c6468b02e1f7d73b4d409d6933ac7ef429d2d4c8148f4dd7",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "e6f253131255d7194883c54f1c145f47b5cd9e0cf92f3458250b7da5d87ea2ef",
+  "source_sha256": "7a2459875c14dd1b89888e7c1b8174b25a9a94202ae24b77dd584659a5f8adce",
   "topics": [
+    "Mac常駐化をmainへ統合、NetHack死亡後の停止も復旧",
     "Mac agentを復旧しGUIサービスの自動再起動を検証",
-    "Meriken接続失敗によるローテーション停止を復旧（Mac agent復旧は未完了）",
-    "NetHack をmain bfa26e6へ再同期"
+    "NetHack g380 死亡プロンプト固着の復旧確認"
   ]
 }
