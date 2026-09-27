@@ -507,7 +507,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v3-survival'
+    assert state['bot_version'] == 'hanjuku-chart-v4-egg-recovery'
     assert '_records' not in state['policy']
 
 
@@ -1560,10 +1560,10 @@ def test_an_empty_egg_reserves_its_recovery_ahead_of_soldiers():
     # No empty egg: soldiers keep the whole gold as before.
     shop = policy._plan({'chapter': 1, 'egg_uses': {'どうし': 4}}, {'year': 1, 'month': 7, 'gold': 130})
     assert shop['soldiers'] == 99 and shop['egg'] is None and shop['recruit'] == 'check'
-    # A charted purchase still ahead keeps its budget: no extras at all.
+    # The owner now prioritizes affordable egg recovery even before a later chart purchase.
     mem = {'chapter': 3, 'egg_uses': {'どうし': 0}}
     shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 475})
-    assert shop['egg'] is None and shop['recruit'] is None
+    assert shop['egg'] == 'pending' and shop['reserve'] == 50 and shop['recruit'] is None
 
 
 def test_month_menu_recovers_the_egg_then_recruits_when_gold_is_left():
@@ -1583,12 +1583,24 @@ def test_month_menu_recovers_the_egg_then_recruits_when_gold_is_left():
     actions, state = decide(c.frame(), state)
     assert actions[0]['buttons'] == ['a']
     c = Canvas()
-    c.text(24, 183, '50Gでいいですかな?')
+    c.text(32, 47, 'ぜんかいふく')
+    c.text(32, 71, 'ココット')
+    c.hand(10, 41)
+    actions, state = decide(c.frame(), state)
+    assert actions == [policy.pad('a')]
+    c = Canvas()
+    c.text(72, 15, '1ねん 7のつき 201G')
+    c.text(24, 183, '1こで50Gになりまんな')
     c.text(184, 183, 'うむッ!')
     c.text(184, 199, 'いかんッ!')
     c.hand(162, 193)                                               # on いかんッ!
     actions, state = decide(c.frame(), state)
     assert actions[0]['buttons'] == ['up']
+    for y in range(193,206):
+        for x in range(162,180): c.put(x,y,GREEN)
+    c.hand(162,177)
+    actions, state = decide(c.frame(), state)
+    assert actions == [policy.pad('a')]
     # Back on the month menu with 50G fewer: done, then recruit (99 soldiers, 151G left).
     actions, state = decide(month_canvas(151, on='たまごのかいふく'), state)
     mem = state['policy']
@@ -1701,3 +1713,103 @@ def test_open_sea_search_spirals_around_the_centroid_and_records_each_leg(monkey
     mem['nav_search_leg'] = 5                                       # second ring, north again
     assert policy._search_goal(mem) == (centroid[0], centroid[1] - 2 * policy.SEARCH_RING_PX)
     assert not any(a['buttons'] == ['a'] for a in actions)
+
+
+@pytest.mark.parametrize('uses', [0, 1, 2, 3])
+def test_partial_egg_reserves_full_recovery_cost(uses):
+    mem = {'chapter': 1, 'egg_uses': {'ココット': uses}}
+    shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 130})
+    assert shop['reserve'] == 50 and shop['soldiers'] == 80 and shop['egg'] == 'pending'
+
+
+def test_all_depleted_eggs_are_budgeted_and_invalid_or_full_counts_are_ignored():
+    mem = {'chapter': 1, 'egg_uses': {'どうし': 3, 'ココット': 1, 'ヴィーナス': 4,
+           'bad': True, 'unknown': None, 'negative': -1, 'boosted': 5, 'one-shot': 1},
+           'egg_types': {'one-shot': 'いっぱつエッグ'}}
+    shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 180})
+    assert shop['reserve'] == 100 and shop['soldiers'] == 80
+    assert policy._egg_recovery_targets(mem) == ['どうし', 'ココット']
+    poor = {'chapter': 1, 'egg_uses': {'どうし': 3, 'ココット': 1}}
+    shop = policy._plan(poor, {'year': 1, 'month': 7, 'gold': 99})
+    assert shop['egg'] is None and shop['soldiers'] == 99
+
+
+def test_attempted_summon_rechecks_stale_full_sortie_count():
+    mem = {'battle': {'ally': 'どうし'}, 'egg_uses': {'どうし': 4}}
+    policy._egg_recheck(mem)
+    policy._egg_recheck(mem)
+    assert mem['egg_recheck'] == ['どうし']
+    assert mem['egg_uses'] == {'どうし': 4}  # never invent a consumed quantity
+    assert policy._extras_reserve(mem, {'year': 1, 'month': 7, 'gold': 50})[0] == 50
+
+
+def test_full_recovery_moves_from_an_individual_egg_to_full_option():
+    mem = {'month_sub': {'kind': 'egg', 'gold_before': 119, 'presses': 0}}
+    c = Canvas()
+    c.text(32,47,'ぜんかいふく'); c.text(32,71,'ココット'); c.text(104,71,'3')
+    c.hand(10,65)
+    assert policy.month_sub_step(parse(c.frame()), mem) == [policy.pad('up')]
+    assert not mem['month_sub'].get('full_selected')
+
+
+@pytest.mark.parametrize('gold,quote,selected,expected', [
+    (100,'2こで100Gになりまんな',True,'a'),
+    (99,'2こで100Gになりまんな',True,'b'),
+    (100,'2こで100Gになりまんな',False,'b'),
+    (100,'2こで50Gになりまんな',True,'b'),
+    (100,'よろしいでっか?',True,'b'),
+])
+def test_full_recovery_confirms_only_observed_affordable_total(gold, quote, selected, expected):
+    c = Canvas()
+    c.text(72,15,f'1ねん 7のつき {gold}G')
+    c.text(24,183,quote); c.text(184,183,'うむッ!'); c.text(184,199,'いかんッ!')
+    c.hand(162,177)
+    mem = {'month_sub': {'kind':'egg','gold_before':gold,'presses':0,'full_selected':selected}}
+    assert policy.month_sub_step(parse(c.frame()), mem) == [policy.pad(expected)]
+    assert mem['month_sub'].get('stage') == ('recovering' if expected == 'a' else None)
+
+
+def test_paid_recovery_ritual_has_bounded_longer_wait_without_inferring_stock():
+    mem = {'month_sub': {'kind':'egg','gold_before':100,'presses':8,
+                        'full_selected':True,'quoted_cost':100,'stage':'recovering'},
+           'egg_uses':{'どうし':1,'ココット':3}}
+    c=Canvas((0,0,0)); c.text(24,183,'ほんだららった')
+    assert policy.month_sub_step(parse(c.frame()), mem) == [policy.pad('a')]
+    assert mem['egg_uses'] == {'どうし':1,'ココット':3}
+    mem['month_sub']['presses']=policy.EGG_RITUAL_LIMIT
+    assert policy.month_sub_step(parse(c.frame()), mem) == [policy.pad('b')]
+
+
+def test_recovery_only_month_preserves_later_chart_budget(monkeypatch):
+    monkeypatch.setattr(policy, '_charted_purchase_ahead', lambda *args: True)
+    monkeypatch.setattr(policy.chart, 'purchase_for', lambda *args: None)
+    mem={'chapter':3,'egg_uses':{'どうし':2}}
+    shop=policy._plan(mem,{'year':1,'month':7,'gold':300})
+    assert shop['reserve']==50 and shop['egg']=='pending'
+    assert shop['items']==[] and shop['soldiers']==0 and shop['recruit'] is None
+
+
+def test_no_recovery_needed_message_is_closed_without_paying_or_reopening():
+    mem={'chapter':1,'egg_uses':{'ココット':3},'egg_recheck':['ココット']}
+    policy._plan(mem,{'year':1,'month':7,'gold':130})
+    mem['shop']['soldiers_done']=True
+    mem['shop']['egg']='opened'
+    mem['month_sub']={'kind':'egg','gold_before':50,'presses':0}
+    screen=parse(month_canvas(50,on='たまごのかいふく'))
+    screen.text+='わがぐんにはいまおはらいのひつようなたまごはありませんぞ!'
+    assert policy.month_step(screen,mem)==[policy.pad('a')]
+    assert mem['shop']['egg']=='not_needed' and 'month_sub' not in mem
+    assert 'egg_recheck' not in mem
+
+
+def test_unreadable_egg_row_does_not_crash_or_invent_an_egg_type():
+    from docich.hanjuku_screen import Screen
+    mem = {}
+    policy.observe_events(Screen([],None,'',kind='card_select'),mem)
+    assert mem.get('egg_uses') == {} and not mem.get('egg_types')
+
+
+def test_new_sortie_reading_clears_the_old_summon_recheck():
+    mem={'egg_recheck':['どうし'],'egg_uses':{'どうし':4}}
+    policy.observe_events(sortie_canvas('どうし',3),mem)
+    assert mem['egg_recheck']==[] and policy._egg_recovery_targets(mem)==['どうし']
