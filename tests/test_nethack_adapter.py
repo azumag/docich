@@ -335,6 +335,66 @@ class TestNethackCoordinatorAdapter(unittest.TestCase):
         )
         self.assertEqual(marker["outcome"], "suspended")
 
+    def test_death_disclosure_exits_normally_without_save(self):
+        adapter = self.adapter()
+        tmux = FakeTmux(self.spec, self.save_dir, create_save=False)
+        tmux.pane_text = ("Do you want your possessions identified? [ynq] (n)\n"
+                          "Dlvl:1 $:0 HP:0(15) Pw:2(2) AC:4 Xp:1 Starved Deaf\n")
+        original = tmux.send_keys
+
+        def send(target, keys, literal=False):
+            original(target, keys, literal)
+            if keys == ["q"]:
+                tmux.process_alive = False
+
+        tmux.send_keys = send
+        adapter.tmux = tmux
+        request_id = str(uuid.uuid4())
+        adapter.request_round_boundary(request_id, time.monotonic() + 1, None)
+        sent = [call[2] for call in tmux.calls if call[0] == "send_keys"]
+        self.assertEqual(sent, [["q"]])
+        marker = json.loads((self.spec.runtime_dir / nethack_adapter.BOUNDARY_RESULT_FILENAME).read_text())
+        self.assertEqual(marker["outcome"], "ended")
+        self.assertEqual(marker["request_id"], request_id)
+        self.assertFalse(list(self.save_dir.iterdir()))
+
+    def test_death_disclosure_must_really_exit_before_boundary_is_accepted(self):
+        adapter = self.adapter()
+        tmux = FakeTmux(self.spec, self.save_dir)
+        tmux.pane_text = ("Do you want your possessions identified? [ynq] (n)\n"
+                          "Dlvl:1 $:0 HP:0(15)\n")
+        adapter.tmux = tmux
+        with self.assertRaises(ReadinessTimeoutError):
+            adapter.request_round_boundary(str(uuid.uuid4()), time.monotonic() + 0.03, None)
+        self.assertTrue(tmux.process_alive)
+        self.assertFalse((self.spec.runtime_dir / nethack_adapter.BOUNDARY_RESULT_FILENAME).exists())
+        self.assertEqual([c[2] for c in tmux.calls if c[0] == "send_keys"], [["q"]])
+
+    def test_death_disclosure_never_answers_for_living_or_ambiguous_screens(self):
+        prompt = "Do you want your possessions identified? [ynq] (n)"
+        for screen in [prompt, prompt + "\nDlvl:1 HP:1(15)",
+                       "Really save? [yn] (n)\nDlvl:1 HP:0(15)",
+                       "old message\n" + prompt + "\nDlvl:1 HP:0(15)",
+                       "You die...\nDlvl:1 HP:0(15)"]:
+            with self.subTest(screen=screen):
+                adapter = self.adapter()
+                tmux = FakeTmux(self.spec, self.save_dir)
+                tmux.pane_text = screen
+                adapter.tmux = tmux
+                adapter.request_round_boundary(str(uuid.uuid4()), time.monotonic() + 1, None)
+                self.assertNotIn(["q"], [c[2] for c in tmux.calls if c[0] == "send_keys"])
+
+    def test_death_disclosure_checks_session_ownership_before_any_input(self):
+        adapter = self.adapter()
+        tmux = FakeTmux(self.spec, self.save_dir)
+        tmux.pane_text = ("Do you want your possessions identified? [ynq] (n)\n"
+                          "Dlvl:1 $:0 HP:0(15)\n")
+        adapter.tmux = tmux
+        with mock.patch.object(adapter, "_verify_session_ownership", side_effect=AdapterError("unowned")):
+            with self.assertRaises(AdapterError):
+                adapter.request_round_boundary(str(uuid.uuid4()), time.monotonic() + 1, None)
+        self.assertFalse(any(c[0] == "send_keys" for c in tmux.calls))
+
     def test_character_creation_markers_are_specific(self):
         for marker in (
             "Do you want a tutorial?",
