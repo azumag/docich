@@ -25,7 +25,7 @@ interval_ms = 1500
 
 [hanjuku]
 script_bot = true
-# チャート準拠の決定的状態機械(hanjuku-chart-v13-visible-hp)。操作経路(キー送信)にLLMは入れない。
+# チャート準拠の決定的状態機械(hanjuku-chart-v14-visible-hp)。操作経路(キー送信)にLLMは入れない。
 # 20分の時間制限なし。ゲームオーバー、または実ゲーム画面が300秒不変で終了。
 # OpenCodeによる試合後の自動改善は別途実装。操作中のLLM呼出しは行わない。
 

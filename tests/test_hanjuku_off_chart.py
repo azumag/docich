@@ -299,3 +299,19 @@ def test_a_dead_reckoned_arrival_is_not_confirmed_until_roofs_agree(monkeypatch)
     second = policy.nav_step(screen, mem, FRAME, jonrigi)
     assert mem['cursor'] == true_cell and mem['anchor'] == 'ジョンリギ'
     assert {a['buttons'][0] for a in second} == {'right', 'down'}
+
+
+def test_an_unverifiable_arrival_is_held_at_most_a_few_times(monkeypatch):
+    """g403 23:24 (v12): a clipped goal at the screen edge showed no roof; nudged for 70 s."""
+    monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: [])
+    goal = CASTLES['スペンソニア']
+    mem = {'chapter': 1, 'cursor': list(goal), 'uncertain': False, '_records': []}
+    screen = Screen(lines=[], hand=None, text='', kind='map_target', marker=(16, 8))
+    # No roof in view: nothing could re-anchor, so the old dead-reckoned arrival stands.
+    assert policy.nav_step(screen, mem, FRAME, goal) == 'arrived'
+    assert not decisions(mem, 'arrival_unverified')
+    # An uncertain cell that roofs never re-anchor is held a bounded number of times.
+    mem = {'chapter': 1, 'cursor': list(goal), 'uncertain': True, '_records': []}
+    results = [policy.nav_step(screen, mem, FRAME, goal) for _ in range(policy.UNVERIFIED_LIMIT + 1)]
+    assert results[-1] == 'arrived' and all(r != 'arrived' for r in results[:-1])
+    assert len(decisions(mem, 'arrival_unverified')) == policy.UNVERIFIED_LIMIT

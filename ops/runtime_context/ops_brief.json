@@ -1,11 +1,11 @@
 {
-  "output_sha256": "89dcfbefdb5c7ede5ef096795f13254766a65dd4936480d8d72a6e13c9546c58",
+  "output_sha256": "e348fec780e0710834b17c4672040ad8677a312fa26116315b398192a5d6060e",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "1838ad84a944eac5734bbe16f9a4be18fd3c033c0406151af188a0ac8c103f75",
+  "source_sha256": "508c14054b0a4236ba32468095c35bca3e076a86738ff3e4c1533bbd35b89a2b",
   "topics": [
+    "g403起動・出撃先の位置ずれ修正（#1193→退行→#1195）（Claude Code）",
     "敵卵リスクPhase 0をホットロード確認、Phase 1aのHP遮蔽修正をPR化",
-    "敵卵リスクPhase 0の配備準備と次フェーズ調査",
-    "召喚獣メニューのおくのて誤分類を修正・配備（Claude Code）"
+    "敵卵リスクPhase 0の配備準備と次フェーズ調査"
   ]
 }
