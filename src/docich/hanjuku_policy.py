@@ -969,6 +969,13 @@ WORLD_SURVEY_TICKS = 200       # observations between surveys (~5 min at 1.5 s)
 WORLD_MAP_WAIT = 4             # fade frames before giving up a reading
 
 
+WORLD_COLOUR_TOL = 8           # live capture shifts colours by ~1 (g419: gold 255,181,0)
+
+
+def _near_colour(pixel, colour, tol=WORLD_COLOUR_TOL):
+    return all(abs(a - b) <= tol for a, b in zip(pixel, colour))
+
+
 def world_flags(frame, chapter, cursor=None):
     """{castle: 'own'|'enemy'} read from the whole-island view, unread ones left out.
 
@@ -985,7 +992,8 @@ def world_flags(frame, chapter, cursor=None):
             continue
         box = {frame.pixel(x, y) for x in range(mx - 2, mx + 6) for y in range(my - 2, my + 5)
                if 0 <= x < frame.width and 0 <= y < frame.height}
-        enemy, own = WORLD_FLAG_ENEMY in box, WORLD_FLAG_OWN in box
+        enemy = any(_near_colour(px, WORLD_FLAG_ENEMY) for px in box)
+        own = any(_near_colour(px, WORLD_FLAG_OWN) for px in box)
         if enemy != own:
             out[name] = 'enemy' if enemy else 'own'
     return out
@@ -1079,14 +1087,15 @@ _Y_RING = [(dx, dy) for dx in range(-13, 14) for dy in range(-13, 14)
 
 def world_cursor(frame):
     """Centre of the Y view's cursor: gold G corners, else the white dashed ring."""
-    gold = [(x, y) for x in range(40, 220) for y in range(40, 200) if frame.pixel(x, y) == (255, 182, 0)]
+    gold = [(x, y) for x in range(40, 220) for y in range(40, 200)
+            if _near_colour(frame.pixel(x, y), (255, 182, 0))]
     if len(gold) >= 12:
         xs = [x for x, _ in gold]; ys = [y for _, y in gold]
         return ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
     votes = {}
     for x in range(40, 220):
         for y in range(40, 200):
-            if frame.pixel(x, y) == (255, 255, 255):
+            if _near_colour(frame.pixel(x, y), (255, 255, 255)):
                 for dx, dy in _Y_RING:
                     key = (2 * x + dx, 2 * y + dy)
                     votes[key] = votes.get(key, 0) + 1

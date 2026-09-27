@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v28-wage-reserve'
+BOT_VERSION = 'hanjuku-chart-v29-y-colour'
 
 
 # Native title copyright rows, measured from the owner's ROM. A strict match
