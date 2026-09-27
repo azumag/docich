@@ -79,6 +79,7 @@ def test_goal_anchor_ignores_ambiguous_or_absent_goal_roofs():
 
 
 def test_a_source_that_never_opens_its_menu_falls_back_home_then_fails(monkeypatch):
+    monkeypatch.setattr(policy, 'Y_JUMP_OFFSET', {})     # exercises roof navigation, not Y jumps
     def arrived(_screen, mem, *_a, **_k):
         mem['anchor'], mem['uncertain'], mem['cursor'] = 'キカンドン', False, [567, 725]
         return 'arrived'
@@ -329,6 +330,7 @@ def test_an_unverifiable_arrival_is_held_at_most_a_few_times(monkeypatch):
 
 def test_no_roof_under_the_cursor_refuses_a_bounded_number_of_source_presses(monkeypatch):
     """g405 00:26: a lone ほんじょう roof voted as キカンドン; A on open sea failed 1-C1."""
+    monkeypatch.setattr(policy, 'Y_JUMP_OFFSET', {})     # exercises roof navigation, not Y jumps
     def arrived(_screen, mem, *_a, **_k):
         mem['anchor'], mem['uncertain'] = 'ほんじょう', False
         return 'arrived'
@@ -347,6 +349,7 @@ def test_no_roof_under_the_cursor_refuses_a_bounded_number_of_source_presses(mon
 
 
 def test_a_roof_under_the_cursor_confirms_the_source(monkeypatch):
+    monkeypatch.setattr(policy, 'Y_JUMP_OFFSET', {})     # exercises roof navigation, not Y jumps
     def arrived(_screen, mem, *_a, **_k):
         mem['anchor'], mem['uncertain'] = 'ほんじょう', False
         return 'arrived'
@@ -543,3 +546,69 @@ def test_a_home_castle_shown_taken_on_the_y_map_is_retaken_first_and_never_a_fal
     frame = _world_map_frame({'ほんじょう': 'own'})
     policy.world_map_step(parse(frame), mem, frame)
     assert mem['home_lost'] is False and 'ほんじょう' in policy._owned(mem)
+
+
+def _y_view(cursor_centre, *, gold=False):
+    """Synthetic Y view with the jump cursor (white ring or gold G corners) at a centre."""
+    from docich import hanjuku_screen
+    px = bytearray(256 * 224 * 3)
+
+    def put(x, y, rgb):
+        i = (y * 256 + x) * 3
+        px[i:i + 3] = bytes(rgb)
+    for x in range(256):
+        for y in range(224):
+            put(x, y, hanjuku_screen.WORLD_SEA)
+    put(128, 10, hanjuku_screen.WORLD_BORDER)
+    cx, cy = cursor_centre
+    import math
+    for a in range(0, 360, 12):
+        x, y = round(cx + 5.5 * math.cos(math.radians(a))), round(cy + 5.5 * math.sin(math.radians(a)))
+        put(x, y, (255, 182, 0) if gold else (255, 255, 255))
+    return Frame(256, 224, bytes(px))
+
+
+def test_a_far_source_is_reached_through_the_y_map_cursor():
+    from docich.hanjuku_screen import parse
+    order = {'step': 'X', 'general': 'ゼウス', 'source': 'ジョンリギ', 'target': 'スペンソニア',
+             'cards': [], 'after': None, 'note': 't'}
+    mem = {'chapter': 1, 'captured': ['ジョンリギ'], 'orders': {}, 'picked': [], '_records': [],
+           'active': 'X', 'launched_orders': {'X': order}, 'cursor': list(CASTLES['ほんじょう'])}
+    assert policy.map_step(map_screen(140, 120), mem, FRAME) == [policy.pad('y')]
+    assert mem['y_jump']['goal'] == 'ジョンリギ'
+    gx, gy = CASTLES['ジョンリギ']
+    ox, oy = policy.Y_JUMP_OFFSET[1]
+    start = (CASTLES['ほんじょう'][0] / 8 + ox, CASTLES['ほんじょう'][1] / 8 + oy)
+    frame = _y_view(start)
+    assert parse(frame).kind == 'world_map'
+    actions = policy.world_map_step(parse(frame), mem, frame)
+    assert {a['buttons'][0] for a in actions} == {'left', 'up'}
+    frame = _y_view((gx / 8 + ox, gy / 8 + oy))
+    assert policy.world_map_step(parse(frame), mem, frame) == [policy.pad('a')]
+    assert mem['cursor'] == [gx, gy] and 'y_jump' not in mem
+    assert decisions(mem, 'y_jump_confirm')
+    # Close enough now: no second jump.
+    assert not policy._want_y_jump(mem, order, 'ジョンリギ', 'map')
+
+
+def test_the_sortie_target_jump_reads_the_gold_g_cursor_and_is_bounded():
+    from docich.hanjuku_screen import parse
+    order = {'step': 'X', 'general': 'ゼウス', 'source': 'ほんじょう', 'target': 'キカンドン',
+             'cards': [], 'after': None, 'note': 't'}
+    mem = {'chapter': 1, 'orders': {}, 'picked': [], '_records': [], 'active': 'X',
+           'launched_orders': {'X': order}, 'cursor': list(CASTLES['ほんじょう'])}
+    marker = Screen(lines=[], hand=None, text='', kind='map_target', marker=(140, 120))
+    assert policy.target_step(marker, mem, FRAME) == [policy.pad('y')]
+    gx, gy = CASTLES['キカンドン']
+    ox, oy = policy.Y_JUMP_OFFSET[1]
+    frame = _y_view((gx / 8 + ox, gy / 8 + oy), gold=True)
+    assert policy.world_cursor(frame) is not None
+    assert policy.world_map_step(parse(frame), mem, frame) == [policy.pad('a')]
+    # An unreadable cursor closes Y after a few frames and falls back.
+    mem['cursor'] = list(CASTLES['ほんじょう'])
+    assert policy.target_step(marker, mem, FRAME) == [policy.pad('y')]
+    blank = _world_map_frame({})
+    results = [policy.world_map_step(parse(blank), mem, blank) for _ in range(policy.Y_JUMP_WAIT)]
+    assert results[-1] == [policy.pad('y')] and decisions(mem, 'y_jump_failed')
+    mem['cursor'] = list(CASTLES['ほんじょう'])
+    assert policy.target_step(marker, mem, FRAME) != [policy.pad('y')]    # limit reached
