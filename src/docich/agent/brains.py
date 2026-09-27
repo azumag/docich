@@ -14,7 +14,7 @@ import sys
 from copy import deepcopy
 
 from .. import procs
-from ..actions import Action, ActionError, parse_actions
+from ..actions import Action, ActionError, extract_json, parse_actions
 from ..adapters import AdapterError, Observation
 from ..config import GameConfig, GlobalConfig
 
@@ -28,6 +28,7 @@ class CommandBrain:
         self.g = g
         self.game = game
         self.cmd = self._resolve_command(game.agent.command)
+        self.observation_interval_ms = None
 
     @staticmethod
     def _resolve_command(command) -> list[str]:
@@ -38,6 +39,8 @@ class CommandBrain:
         raise AdapterError("[agent] brain='command' には command の設定が必要です")
 
     def decide(self, obs: Observation) -> list[Action]:
+        # Never carry a fast cadence across an error or a non-melee response.
+        self.observation_interval_ms = None
         env_extra = None
         if self.game.name == "moon-buggy":
             from ..moon_buggy_ab import MoonBuggyABError, active_path, read_experiment
@@ -92,7 +95,13 @@ class CommandBrain:
             return []
 
         try:
-            return parse_actions(result.stdout)
+            actions = parse_actions(result.stdout)
+            if self.game.name == "hanjuku-hero" and self.game.raw.get("hanjuku", {}).get("script_bot") is True:
+                payload = json.loads(extract_json(result.stdout))
+                interval = payload.get("observation_interval_ms") if isinstance(payload, dict) else None
+                if type(interval) is int and interval in (500, 1500):
+                    self.observation_interval_ms = interval
+            return actions
         except ActionError as exc:
             print(
                 f"docich: 警告: brain の出力を解析できませんでした ({self.game.name}): {exc}",
