@@ -203,6 +203,7 @@ def update_world(screen: Screen, mem, frame):
     box = (s[0] - 2, s[1] - 2, s[0] + 18, s[1] + 18)
     roofs = [r for r in castle_roofs(frame, exclude=box) if not r['clipped']]
     predicted = (world[0] - s[0], world[1] - s[1]) if world else None
+    mem['roofs_seen'] = len(roofs)
     found = _localize(roofs, castles, predicted)
     anchored = None
     if found:
@@ -212,6 +213,7 @@ def update_world(screen: Screen, mem, frame):
             world = new
             mem['uncertain'] = False
             mem.pop('nav_search', None)
+            mem.pop('nav_search_leg', None)
         else:
             anchored = None
     mem['cursor'] = world
@@ -219,10 +221,23 @@ def update_world(screen: Screen, mem, frame):
     return world
 
 
+SEARCH_RING_PX = 120                  # spiral step around the castles' centroid
+SEARCH_RINGS = 4
+
+
 def _search_goal(mem):
-    """Centroid of the chapter's castles: inland, where roofs can re-anchor."""
+    """Search waypoint: the castles' centroid (inland), then a widening
+    square spiral around it. g389 16:41: reaching the centroid by dead
+    reckoning alone still showed only water, and the old up/down nudge there
+    never uncovered a roof."""
     cells = list(chart.castles(mem.get('chapter') or 1).values())
-    return (sum(x for x, _ in cells) // len(cells), sum(y for _, y in cells) // len(cells))
+    cx, cy = sum(x for x, _ in cells) // len(cells), sum(y for _, y in cells) // len(cells)
+    leg = int(mem.get('nav_search_leg') or 0)
+    if leg <= 0:
+        return (cx, cy)
+    ring = (leg - 1) // 4 % SEARCH_RINGS + 1
+    ux, uy = ((0, -1), (1, 0), (0, 1), (-1, 0))[(leg - 1) % 4]
+    return (cx + ux * ring * SEARCH_RING_PX, cy + uy * ring * SEARCH_RING_PX)
 
 
 def nav_step(screen: Screen, mem, frame, goal):
@@ -241,6 +256,16 @@ def nav_step(screen: Screen, mem, frame, goal):
     if search:
         goal = _search_goal(mem)
     dx, dy = goal[0] - world[0], goal[1] - world[1]
+    if search and abs(dx) <= ARRIVE_PX and abs(dy) <= ARRIVE_PX:
+        # Waypoint reached with no anchor yet: go on to the next spiral leg.
+        # The record keeps a snapshot of what the camera shows (evidence).
+        mem['nav_search_leg'] = int(mem.get('nav_search_leg') or 0) + 1
+        _record(mem, 'nav_search_leg', screen=screen.kind,
+                observed_metric={'leg': mem['nav_search_leg'], 'cursor': list(world),
+                                 'screen_cursor': list(s), 'roofs': mem.get('roofs_seen')},
+                reason='屋根が見つからないため探索点を内陸の渦巻きの次の点へ進める')
+        goal = _search_goal(mem)
+        dx, dy = goal[0] - world[0], goal[1] - world[1]
     if abs(dx) <= ARRIVE_PX and abs(dy) <= ARRIVE_PX:
         if mem.get('uncertain'):
             # Never confirm an unverified cell: nudge to reveal more roofs.
@@ -541,9 +566,12 @@ def map_step(screen: Screen, mem, frame):
         for key in ('anchor', 'nav_last'):
             mem.pop(key, None)
         mem['nav_search'] = True
+        mem.pop('nav_search_leg', None)
         _record(mem, 'nav_reset',
                 reason='城で決定してもメニューが出ないため位置推定を信用せず、城の多い内陸へ動かして屋根アンカーで再特定する',
-                observed_metric={'menu_miss': mem['menu_miss']})
+                observed_metric={'menu_miss': mem['menu_miss'], 'cursor': mem.get('cursor'),
+                                 'screen_cursor': list(_cursor(screen) or ()),
+                                 'roofs': mem.get('roofs_seen')})
     order = _order(mem)
     if order is not None and not _ready(order, mem):
         # A defense loss revokes the capture an order was picked on. Holding
@@ -971,6 +999,7 @@ def deploy_step(screen: Screen, mem):
             mem['cursor'] = list(chart.castles(mem['chapter'])[source])
             mem['uncertain'] = False      # the target marker starts on the source castle
             mem.pop('nav_search', None)
+            mem.pop('nav_search_leg', None)
             return [pad('a')]
         return _deploy_input(screen, mem, order, [move], '携行品一致を確認したため出撃承認項目へ移動')
     return []
@@ -2021,7 +2050,7 @@ def observe_events(screen: Screen, mem):
             for key in ('active', 'anchor', 'attack', 'battle', 'battle_seen',
                         'captured', 'card_override', 'cursor', 'egg_battle',
                         'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit', 'month_sub',
-                        'nav_last', 'nav_search', 'orders', 'picked', 'retries', 'retry_context', 'shop',
+                        'nav_last', 'nav_search', 'nav_search_leg', 'orders', 'picked', 'retries', 'retry_context', 'shop',
                         'source_override', 'uncertain', 'month', 'order_context', 'sortie_general',
                         'chart_adjust', 'chart_plan', 'launched_orders', 'sorties',
                         'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',

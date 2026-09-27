@@ -1659,3 +1659,25 @@ def test_independent_egg_choice_backs_out_when_the_egg_row_is_dead():
     actions, state = decide(_menu_without_egg_row(), {'policy': mem})
     assert actions[0]['buttons'] == ['b']
     assert 'situation_held' in [r['decision'] for r in state['_records']]
+
+
+def test_open_sea_search_spirals_around_the_centroid_and_records_each_leg(monkeypatch):
+    """g389 16:41: at the centroid (by dead reckoning) the old nudge only bobbed up/down."""
+    from docich.hanjuku_pixels import Frame
+    from docich.hanjuku_screen import Screen
+    frame = Frame(256, 224, bytes(256 * 224 * 3))
+    monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: [])
+    mem = {'chapter': 1, 'variant': 'chart', 'active': '1-A1', 'orders': {'1-A1': 'pending'},
+           'picked': [], 'uncertain': True, 'nav_search': True, 'menu_miss': 1, '_records': []}
+    centroid = policy._search_goal(mem)
+    mem['cursor'] = list(centroid)
+    screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(120, 120))
+    actions = policy.map_step(screen, mem, frame)
+    assert mem['nav_search_leg'] == 1
+    assert [a['buttons'][0] for a in actions] == ['up']            # first leg: 120 px north
+    leg = [r for r in mem['_records'] if r['decision'] == 'nav_search_leg'][0]
+    assert leg['observed_metric']['roofs'] == 0 and leg['observed_metric']['screen_cursor'] == [120, 120]
+    assert policy._search_goal(mem) == (centroid[0], centroid[1] - policy.SEARCH_RING_PX)
+    mem['nav_search_leg'] = 5                                       # second ring, north again
+    assert policy._search_goal(mem) == (centroid[0], centroid[1] - 2 * policy.SEARCH_RING_PX)
+    assert not any(a['buttons'] == ['a'] for a in actions)
