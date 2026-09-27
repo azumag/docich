@@ -138,14 +138,20 @@ def compose(rec: dict) -> tuple[str, str | None]:
     if kind == 'chart_interim_order':
         conf = rec.get('confidence')
         conf_s = f'確信度{conf:.2f}。' if type(conf) in (int, float) else ''
+        stem, polite, plain = {
+            'retake': (f"奪われた{rec['target']}を白兵で奪い", '返します', '返す'),
+            'move': (f"{rec.get('source')}から空の{rec['target']}へ", '移ります', '移る'),
+        }.get(rec.get('purpose'), (f"{rec['target']}を白兵で", '攻めます', '攻める'))
         if rec.get('strategy_variant') == 'chart_interim_fallback':
             return (f"jev_interim:{rec.get('target')}",
-                    f"調整チャートを待つ間、{rec['general']}が{rec['target']}を白兵で再攻撃します。")
+                    f"調整チャートを待つ間、{rec['general']}が{stem}{polite}。")
         return (f"jev_interim:{rec.get('target')}",
-                f"JEVは調整チャートを待つ間、{rec['general']}が{rec['target']}を白兵で再攻撃すると判断しました。{conf_s}")
+                f"JEVは調整チャートを待つ間、{rec['general']}が{stem}{plain}と判断しました。{conf_s}")
+    if kind == 'castle_lost_observed':
+        return f"lost:{rec.get('castle')}", f"{rec.get('castle')}を敵に奪われました。取り返しに向かいます。"
     if kind == 'chart_interim_hold':
-        # Only when there is literally nothing left to attack.
-        return 'jev_interim_hold', '再攻撃できる城が無いため、調整チャートを待っています。'
+        # Only when there is literally nothing left to retake, attack or staff.
+        return 'jev_interim_hold', '動かせる将軍と攻め先が無いため、調整チャートを待っています。'
     return f'other:{kind}', None
 
 
@@ -154,4 +160,5 @@ SPOKEN = frozenset({
     'name_confirm', 'order_start', 'order_retry', 'order_source_changed', 'attack_observed',
     'defense_observed', 'battle_start', 'battle_survival', 'battle_card', 'battle_result', 'month_plan', 'poor_harvest',
     'prompt', 'situation_held', 'gift', 'egg_battle', 'order_substitute', 'independent_menu',
-    'chart_adjust_request', 'chart_adjust_applied', 'chart_interim_order', 'chart_interim_hold'})
+    'chart_adjust_request', 'chart_adjust_applied', 'chart_interim_order', 'chart_interim_hold',
+    'castle_lost_observed'})

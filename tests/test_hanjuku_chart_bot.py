@@ -313,7 +313,8 @@ def test_a_lost_source_castle_releases_the_running_order_instead_of_steer_back()
     assert 'order_precondition_lost' in names
     lost = next(r for r in mem['_records'] if r['decision'] == 'order_precondition_lost')
     assert lost['chart_step'] == 'A:test:J3'
-    assert lost['observed_metric'] == {'captured': [], 'after': ['captured', 'ジョンリギ']}
+    assert lost['observed_metric'] == {'captured': [], 'after': ['captured', 'ジョンリギ'],
+                                      'source': 'ジョンリギ'}
     assert mem['active'] is None
     assert 'order_start' not in names          # never re-picks the unready order
     assert 'chart_adjust_request' in names     # holds for a chart instead
@@ -507,7 +508,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v5-okunote'
+    assert state['bot_version'] == 'hanjuku-chart-v6-off-chart'
     assert '_records' not in state['policy']
 
 
@@ -1310,7 +1311,7 @@ def test_jev_interim_commentary_includes_choice_and_confidence():
         'decision': 'chart_interim_order', 'general': 'ココット', 'target': 'ジョンリギ',
         'confidence': None, 'strategy_variant': 'chart_interim_fallback'})
     assert fb_key == 'jev_interim:ジョンリギ'
-    assert 'ココット' in fb and '再攻撃' in fb and '見送' not in fb
+    assert 'ココット' in fb and '攻めます' in fb and '見送' not in fb
     assert len(fb) <= 120
 
     _, hold = hanjuku_commentary.compose(
