@@ -515,7 +515,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v16-month-dialog'
+    assert state['bot_version'] == 'hanjuku-chart-v17-recruit-candidate'
     assert '_records' not in state['policy']
 
 
@@ -1902,3 +1902,31 @@ def test_unknown_month_dialogue_is_not_a_recruit_recovery():
     mem=recruit_overlay_memory()
     assert policy.month_step(sc,mem)==[]
     assert not mem.get('month_sub')
+
+
+def paid_recruit_screen(gold=108, name='ラズベリー'):
+    from docich.hanjuku_screen import Screen
+    from docich.hanjuku_font import TextLine
+    words=['「わたしのなは'+name+'ともうします。','HPー45Pたまごーなし',
+           'せんとうー8Pないせいー2P','ちんぎんー7G']
+    lines=[TextLine(151+16*i,tuple((8+8*j,c) for j,c in enumerate(w))) for i,w in enumerate(words)]
+    return Screen(lines=lines,hand=None,text=''.join(words),kind='text',header={'gold':gold})
+
+
+def test_paid_candidate_recovers_previous_abort_once_with_new_finite_bound():
+    mem={'month_sub':{'kind':'recruit','gold_before':158,'presses':70,'aborted':True}}
+    sc=paid_recruit_screen()
+    assert policy.month_sub_step(sc,mem)==[policy.pad('a')]
+    assert mem['month_sub']['presses']==1 and not mem['month_sub'].get('aborted')
+    for _ in range(policy.RECRUIT_CANDIDATE_LIMIT-1):
+        assert policy.month_sub_step(sc,mem)==[policy.pad('a')]
+    assert policy.month_sub_step(sc,mem)==[policy.pad('b')]
+    assert policy.month_sub_step(sc,mem)==[policy.pad('b')]  # same biography cannot reset the bound
+
+
+def test_unpaid_or_unreadable_candidate_never_resets_aborted_flow():
+    from docich.hanjuku_font import UNKNOWN
+    for sc in (paid_recruit_screen(gold=158),paid_recruit_screen(name='ラズ'+UNKNOWN+'ベリー')):
+        mem={'month_sub':{'kind':'recruit','gold_before':158,'presses':70,'aborted':True}}
+        assert policy.month_sub_step(sc,mem)==[policy.pad('b')]
+        assert not mem['month_sub'].get('paid_candidates')
