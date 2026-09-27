@@ -115,6 +115,25 @@ def name_screen(typed='', cell=None, menu=False):
     return c.frame()
 
 
+@pytest.mark.parametrize('size', [(299, 224), (897, 672)])
+def test_small_aspect_preserved_capture_reads_name_and_confirms_only_correct_text(tmp_path, size):
+    """Exercise capture normalization, glyphs, cursor and policy together."""
+    from docich.hanjuku_pixels import read_png
+
+    state = {}
+    for typed, cell, button in [('ああ', 'あ', 'b'), ('', 'ど', 'a'),
+                                ('ど', 'う', 'a'), ('どう', 'し', 'a'),
+                                ('どうし', 'し', 'start')]:
+        path = tmp_path / 'capture.png'
+        path.write_bytes(name_screen(typed, cell=cell).resized(*size).png_bytes())
+        normalized = read_png(path).resized()
+        assert parse(normalized).kind == 'name_entry'
+        actions, state = decide(normalized, state)
+        assert actions == [policy.pad(button)]
+        assert state['policy']['name']['typed'] == typed
+        assert state['policy']['name']['done'] == (typed == 'どうし')
+
+
 def test_name_entry_types_どうし_through_the_grid_and_confirms_only_on_screen_text():
     mem = {}
     s = parse(name_screen(menu=True))

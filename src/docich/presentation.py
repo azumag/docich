@@ -85,7 +85,8 @@ def _cell_aspect(value: str) -> float:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
-def contain_filter(width: int, height: int, *, cell_stretch: float = 1.0) -> str:
+def contain_filter(width: int, height: int, *, cell_stretch: float = 1.0,
+                   nearest: bool = False) -> str:
     filters = []
     if cell_stretch != 1.0:
         # 端末セルを正方形として見せるための水平補正。等倍 (既定) では従来と
@@ -93,7 +94,8 @@ def contain_filter(width: int, height: int, *, cell_stretch: float = 1.0) -> str
         # 幅が奇数になり得るが、x11grab の bgra 入力は間引きが無く、最終段の
         # pad が 960x540 (偶数) に正規化するため配信フォーマットは変わらない。
         filters.append(f"scale=iw*{cell_stretch:g}:ih:flags=neighbor")
-    filters.append(f"scale={width}:{height}:force_original_aspect_ratio=decrease")
+    filters.append(f"scale={width}:{height}:force_original_aspect_ratio=decrease"
+                   + (":flags=neighbor" if nearest else ""))
     filters.append(f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black")
     filters.append("setsar=1")
     return ",".join(filters)
@@ -161,6 +163,8 @@ def _parser() -> argparse.ArgumentParser:
     # 15 fps (the default, unchanged for other games) shows every frame twice.
     parser.add_argument('--framerate', type=_positive_int, default=15)
     parser.add_argument('--fit', choices=('contain', 'tv'), default='contain')
+    parser.add_argument('--nearest', action='store_true',
+                        help='Use nearest-neighbour scaling for contained pixel-art sources')
     parser.add_argument('--runtime-state')
     parser.add_argument('command', nargs=argparse.REMAINDER)
     return parser
@@ -282,7 +286,8 @@ def main(argv=None) -> int:
             '-i', f':{number}',
             '-vf', (tv_filter(args.width, args.height) if args.fit == 'tv'
                     else contain_filter(args.width, args.height,
-                                        cell_stretch=args.cell_stretch or 1.0)),
+                                        cell_stretch=args.cell_stretch or 1.0,
+                                        nearest=args.nearest)),
             '-noborder', '-window_title', args.title,
             '-left', str(args.x), '-top', str(args.y),
             '-x', str(args.width), '-y', str(args.height),

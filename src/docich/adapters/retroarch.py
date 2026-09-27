@@ -209,6 +209,12 @@ def retroarch_cfg_lines(g, game, cfg_path: Path, network_port: int) -> list[str]
                   'savestate_auto_index = "false"', 'state_slot = "0"']
     from ..hanjuku_run import enabled as scripted_hanjuku
     if scripted_hanjuku(game):
+        if d.viewport_width > 0:
+            # Keep the core's aspect ratio at the small window scale (Snes9x:
+            # 299x224). Disabling force_aspect produces a 256x224 window with
+            # vertically compressed content, breaking exact-tile recognition.
+            lines = [line for line in lines if not line.startswith('video_scale =')]
+            lines.append('video_scale = "1.0"')
         # Stable native pixels for the deterministic screen signatures.
         lines += ['video_smooth = "false"',
                   # Custom configs may have no core-info search directory. The
@@ -473,7 +479,7 @@ class RetroArchCoordinatorAdapter:
                 '--x', str(d.viewport_x), '--y', str(d.viewport_y),
                 '--width', str(d.viewport_width), '--height', str(d.viewport_height),
                 '--window-pattern', '^RetroArch',
-                *(['--framerate', '30', '--fit', 'tv'] if scripted_hanjuku(self.game) else []),
+                *(['--framerate', '30', '--nearest'] if scripted_hanjuku(self.game) else []),
                 '--runtime-state', str(self._presentation_path()),
                 *(['--audio-sink', audio_sink] if audio_enabled else []),
                 *(['--audio-volume-percent', str(volume)] if audio_enabled and volume is not None else []),
