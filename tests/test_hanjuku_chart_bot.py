@@ -515,7 +515,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v15-sortie-interruption'
+    assert state['bot_version'] == 'hanjuku-chart-v16-month-dialog'
     assert '_records' not in state['policy']
 
 
@@ -1846,3 +1846,59 @@ def test_egg_ritual_fade_holds_input_before_returning_to_month_menu():
     actions, state = decide(month_canvas(0, on='しょうにん'), state)
     assert 'month_sub' not in state['policy']
     assert actions != [policy.pad('a')]  # do not open the merchant
+
+
+def recruit_overlay_screen():
+    from docich.hanjuku_font import TextLine
+    screen = parse(month_canvas(158, on='しょうぐんぼしゅう'))
+    screen.hand = None
+    words = ['ども!しょうぐんえんごかいのものです。', 'しょうぐんのぼしゅうでございますね?']
+    screen.lines.extend(TextLine(183+16*i, tuple((8+8*j,ch) for j,ch in enumerate(w)))
+                        for i,w in enumerate(words))
+    screen.text += ''.join(words)
+    return screen
+
+
+def recruit_overlay_memory():
+    return {'chapter':1,'shop':{'key':'1-7','items':[],'soldiers':99,'soldiers_done':True,
+            'merchant_done':False,'egg':'done','recruit':'unverified','closed':True,'gold_start':307}}
+
+
+def test_recruit_intro_restores_lost_tracking_only_from_measured_dialogue():
+    mem=recruit_overlay_memory()
+    assert policy.month_step(recruit_overlay_screen(),mem)==[policy.pad('a')]
+    assert mem['month_sub']['kind']=='recruit' and mem['month_sub']['gold_before']==158
+    assert mem['shop']['recruit']=='opened'
+    assert mem['_records'][0]['decision']=='month_sub_resumed'
+
+
+def test_month_background_does_not_end_active_recruit_dialogue(monkeypatch):
+    from docich import hanjuku_screen
+    sc=recruit_overlay_screen();mem=recruit_overlay_memory()
+    mem['shop']['recruit']='opened'
+    mem['month_sub']={'kind':'recruit','gold_before':158,'presses':0,'key':'1-7'}
+    monkeypatch.setattr(hanjuku_screen,'parse',lambda *a,**k:sc)
+    actions,state=decide(month_canvas(158),{'policy':mem})
+    assert actions==[policy.pad('a')]
+    assert state['policy']['month_sub']['presses']==1
+    assert state['policy']['shop']['recruit']=='opened'
+    assert not any(r['decision']=='recruit' for r in state['_records'])
+    sc.hand=(160,177,177,189)  # a bottom dialogue cursor is also not the menu
+    assert not policy.month_menu_ready(sc)
+    sc.hand=(160,41,177,53)
+    assert policy.month_menu_ready(sc)
+
+
+def test_recruit_overlay_recovery_keeps_army_and_budget_guards():
+    for gold,soldiers in ((49,99),(158,60)):
+        sc=recruit_overlay_screen();sc.header['gold']=gold
+        mem=recruit_overlay_memory();mem['shop']['soldiers']=soldiers
+        assert policy.month_step(sc,mem)==[]
+        assert not mem.get('month_sub')
+
+
+def test_unknown_month_dialogue_is_not_a_recruit_recovery():
+    sc=recruit_overlay_screen();sc.lines=sc.lines[:-2]
+    mem=recruit_overlay_memory()
+    assert policy.month_step(sc,mem)==[]
+    assert not mem.get('month_sub')

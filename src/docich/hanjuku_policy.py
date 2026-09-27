@@ -2552,8 +2552,29 @@ def _soldier_refill_plan(mem, header, key):
     return shop
 
 
+def month_menu_ready(screen):
+    """A month menu background remains behind sub-dialogues; require its hand."""
+    return screen.kind == 'month_menu' and bool(screen.hand and screen.hand[1] < 120)
+
+
 def month_step(screen: Screen, mem):
     shop = _plan(mem, screen.header)
+    body = ''.join(line.known.replace(' ', '') for line in screen.lines if line.y >= 175)
+    if (not screen.hand and body == 'ども!しょうぐんえんごかいのものです。しょうぐんのぼしゅうでございますね?'
+            and all(UNKNOWN not in line.span(8, 248) for line in screen.lines if line.y in (183, 199))):
+        # v14 dropped month_sub on this measured introduction because the
+        # menu remains in the background. Recover only this exact dialogue
+        # with the existing recruitment budget/army preconditions.
+        gold = (screen.header or {}).get('gold')
+        if (shop and shop.get('recruit') == 'unverified' and type(gold) is int
+                and gold >= RECRUIT_COST and shop.get('soldiers', 0) >= SOLDIER_CAP):
+            mem['month_sub'] = {'kind': 'recruit', 'gold_before': gold, 'presses': 0,
+                                'key': shop['key']}
+            shop['recruit'] = 'opened'
+            _record(mem, 'month_sub_resumed', choice='しょうぐんぼしゅう',
+                    reason='実測した募集導入文と費用条件が一致したため失われた会話追跡を再開')
+            return month_sub_step(screen, mem)
+        return []
     if screen.has('じゅうじキー'):
         return quantity_step(screen, mem, soldiers=True)
     if screen.has('うむッ') and screen.has('いかんッ'):
