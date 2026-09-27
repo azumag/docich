@@ -383,6 +383,17 @@ def nav_step(screen: Screen, mem, frame, goal, goal_name=None):
         goal = _search_goal(mem)
         dx, dy = goal[0] - world[0], goal[1] - world[1]
     if abs(dx) <= ARRIVE_PX and abs(dy) <= ARRIVE_PX:
+        if not mem.get('uncertain') and not mem.get('anchor'):
+            # Dead reckoning alone reached the cell. Camera scrolls at the
+            # screen edge are only estimated, so the error builds up (g403
+            # 23:04: ココット was sent ~60 px north of ジョンリギ) and a roof
+            # anchor more than 48 px away is then refused. Distrust the
+            # cell so the next roof reading re-anchors it before confirming.
+            mem['uncertain'] = True
+            _record(mem, 'arrival_unverified', screen=screen.kind,
+                    observed_metric={'cursor': list(world), 'screen_cursor': list(s),
+                                     'roofs': mem.get('roofs_seen')},
+                    reason='屋根で位置を確認できないまま到着と推定したため、決定せず屋根で再特定する')
         if mem.get('uncertain'):
             # Never confirm an unverified cell: nudge to reveal more roofs.
             mem['nav_last'] = {'screen': list(s), 'expected': [0, 0], 'search': search}
