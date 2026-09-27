@@ -83,7 +83,18 @@ class SorenGameContextProvider:
 
     def build(self, *, host_mode: str) -> GameContext:
         mode = normalize_host_mode(host_mode)
-        game_state = SOREN91_GAME_STATE_NOTE if mode == "soren91" else self._game_state_context()
+        canonical = self._read_json(self._path(
+            "DOCICH_GAME_SWITCH_CANONICAL_FILE", "/home/ubuntu/docich/run-soren-live/game_switch.json"))
+        active = canonical.get("active")
+        game = active.get("game") if isinstance(active, dict) else None
+        if mode == "soren91":
+            game_state = SOREN91_GAME_STATE_NOTE
+        elif isinstance(game, str) and game != "sorengame":
+            game_state = (f"現在のメイン画面: {game} — {GAME_BLURBS.get(game, '')}。"
+                          "ソ連ゲームのスコア・盤面・ピース・建国統計はこのゲームの状況ではありません。"
+                          "現在の戦闘・勝敗・操作の情報はこのメモにはありません。推測して補わないでください。")
+        else:
+            game_state = self._game_state_context()
         return GameContext(
             game_state_context=game_state,
             comment_ops_context=self._ops_context(mode),

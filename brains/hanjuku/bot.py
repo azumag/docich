@@ -19,7 +19,7 @@ from docich.game_switch import atomic_write_json
 from docich import hanjuku_chart_adjust
 from docich import hanjuku_experience
 from docich.hanjuku_bot import BOT_VERSION, decide
-from docich.hanjuku_commentary import SPOKEN, compose
+from docich.hanjuku_commentary import COMMENTARY_VERSION, SPOKEN, compose
 from docich.hanjuku_pixels import read_png
 from docich.hanjuku_run import append_log
 from docich.retroarch_boundary import read_record
@@ -102,6 +102,7 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
         state['commentary_seq']=seq
         append_log(runtime,'hanjuku_commentary',{
             'schema':1,'seq':seq,'at':now,'key':key,'text':text,
+            'commentary_version':COMMENTARY_VERSION,
             'status':'candidate' if text else 'held',
             'held_reason':None if text else '状況判定保留',
             'decision':record.get('decision'),'chart_step':record.get('chart_step'),
