@@ -16,7 +16,7 @@ from . import hanjuku_chart_adjust as chart_adjust
 from . import hanjuku_experience as experience
 from . import hanjuku_reference as reference
 from .hanjuku_font import UNKNOWN, TextLine
-from .hanjuku_screen import HEADER as HEADER_RE, Screen, castle_roofs
+from .hanjuku_screen import HEADER as HEADER_RE, OKUNOTE_CHOICES, Screen, castle_roofs
 
 NAME = chart.HERO
 FPS = 60
@@ -1167,6 +1167,7 @@ def battle_step(screen: Screen, mem):
     if (b.enemy, b.ally) != (cur['enemy'], cur['ally']):
         return []            # faded/partial panel: keep the last clear reading
     cur['away'] = 0
+    cur.pop('okunote_flow', None)  # the command finished; a later use is a new attempt
     cur['enemy_hp'], cur['ally_hp'] = b.enemy_hp, b.ally_hp
     if b.enemy_hp is not None and cur.get('start_enemy_hp') is not None and b.enemy_hp < cur['start_enemy_hp']:
         cur['clashed'] = True
@@ -1358,6 +1359,8 @@ def battle_menu_step(screen: Screen, mem):
     flow = cur.get('card_flow')
     if screen.kind != 'battle_menu':
         return []
+    if screen.hidden_battle_commands or screen.has('おくのて'):
+        return okunote_step(screen, mem)
     if flow and flow.get('survival'):
         flow['menu_returns'] = flow.get('menu_returns', 0) + 1
         if flow['stage'] == 'list' and flow['menu_returns'] <= 2:
@@ -1422,6 +1425,36 @@ def battle_menu_step(screen: Screen, mem):
             # Hand present but the label is unreadable: top item is たまご.
         return [pad('a')]
     return [pad('b')]
+
+
+def okunote_step(screen, mem):
+    cur = mem.get('battle')
+    if not cur:
+        return []
+    flow = cur.setdefault('okunote_flow', {'ticks': 0})
+    flow['ticks'] += 1
+    if flow['ticks'] > 16:
+        return [pad('b')] if screen.kind == 'battle_menu' else []
+    if screen.hidden_battle_commands:
+        _record(mem, 'battle_okunote_scroll', **_battle_labels(cur),
+                observed_metric={'cursor_y': screen.menu_cursor},
+                reason='灰色のたまご・切り札・退却の下にあるおくのてへスクロール')
+        return [pad('down')]
+    names = {w for _,_,w in _options(screen)}
+    if screen.kind == 'battle_menu' and 'おくのて' in names:
+        label = 'おくのて'
+    else:
+        candidates = [w for w in OKUNOTE_CHOICES if w in names]
+        if not candidates:
+            return []
+        label = candidates[-1]
+    move = _battle_menu_to(screen, label)
+    if move != 'here':
+        return [move] if move else []
+    _record(mem, 'battle_okunote_select', **_battle_labels(cur), choice=label,
+            observed_metric={'options': sorted(names)},
+            reason='奥の手のカーソルを確認して選択。候補は効果が高いものを優先')
+    return [pad('a')]
 
 
 def card_list_step(screen: Screen, mem):

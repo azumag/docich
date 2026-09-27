@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v4-egg-recovery'
+BOT_VERSION = 'hanjuku-chart-v5-okunote'
 
 
 # Native title copyright rows, measured from the owner's ROM. A strict match
@@ -248,6 +248,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         actions=policy.monster_menu_step(screen,mem)
     elif kind=='egg_battle_menu' or (mem.get('egg_battle') and kind=='text'):
         actions=policy.egg_battle_step(screen,mem)
+    elif kind=='okunote_menu':
+        actions=policy.okunote_step(screen,mem)
     elif kind=='battle_menu':
         actions=policy.battle_menu_step(screen,mem)
     elif kind in {'attack_started','defense_started','boss_attack_started'}:
