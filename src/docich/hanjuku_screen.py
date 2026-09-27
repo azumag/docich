@@ -268,10 +268,11 @@ _BATTLE_COMMANDS = ((176, 'たまごをつかう'), (192, 'きりふだ'), (208,
 
 
 def _human_commands(screen):
-    return any(line.y in (176, 192, 208)
-               and line.spans() in [[(176, label)] for label in
-                                    ('たまごをつかう', 'きりふだ', 'たいきゃく', 'おくのて')]
-               for line in screen.menu_rows)
+    # The egg-opponent menu has たまごをつかう on its third row. Only
+    # おくのて may move rows as the human command box scrolls.
+    return any((line.y == y and line.spans() == [(176, label)])
+               or (line.y in (176, 192, 208) and line.spans() == [(176, 'おくのて')])
+               for line in screen.menu_rows for y, label in _BATTLE_COMMANDS)
 
 
 def parse(frame: Frame, *, phase: str | None = None) -> Screen:

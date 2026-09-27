@@ -323,3 +323,13 @@ def test_hero_retreat_selection_is_not_counted_as_victory_or_confirmed_escape():
     assert result['outcome']=='unclassified'
     assert result['observed_metric']['hero_retreat_selected'] is True
     assert mem['stats']['wins']==mem['stats']['losses']==0
+
+
+def test_egg_opponent_menu_is_not_the_scrollable_human_retreat_menu():
+    from docich.hanjuku_screen import parse
+    c=Canvas()
+    for i,label in enumerate(('こうげき','もうこうげき','たまごをつかう')):
+        c.text(176,176+16*i,label)
+    for y in range(168,180):
+        for x in range(152,164): c.put(x,y,(230,105,74))
+    assert parse(c.frame()).kind=='egg_battle_menu'

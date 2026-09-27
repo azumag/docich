@@ -2,7 +2,7 @@
   "output_sha256": "aeeb1e8bb95a279aa972ace40af42b860e3bc30f8e33f802137694935910dcbd",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "c048b3fb37a3ad0646dad9a1d501ad2e625ae4d5ea057bca38fc7e677b298043",
+  "source_sha256": "db606d2638c6f6b4be233f905c1ecbd36457264eaca89b54a70a2ec765817714",
   "topics": [
     "どうし将軍の緊急退却方策を実装",
     "半熟英雄の防衛停止をホットロードで解消し勝利",
