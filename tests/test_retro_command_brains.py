@@ -93,6 +93,18 @@ def test_improvement_dry_run_accepts_without_live_matches(game, tmp_path):
     assert "bounded headless evaluation" in result["stats"]["basis"]
 
 
+def _bastet_color_capture():
+    """Styled capture with the spawned I piece, as CliGameAdapter passes it."""
+    rows = ["     lqqqqqqqqqqqqqqqqqqqqk"]
+    for y in range(20):
+        cells = "".join(
+            "\x1b[46m  \x1b[0m" if y == 1 and 3 <= x < 7 else "  " for x in range(10)
+        )
+        rows.append(f"     x{cells}x")
+    rows.append("     mqqqqqqqqqqqqqqqqqqqqj")
+    return "\n".join(rows + ["Score: 0", "Lines: 0", "Level: 0"])
+
+
 @pytest.mark.parametrize("game,text", [
     ("bastet", "Score: 0\nLines: 0\nLevel: 0"),
     ("moon-buggy", "score: 0\nlevel: 1"),
@@ -106,7 +118,11 @@ def test_real_command_brain_contract(game, text, tmp_path, monkeypatch):
     loaded = load_game(g, game)
     # Match test interpreter instead of relying on whichever python3 is on PATH.
     loaded.agent.command[0] = sys.executable
-    obs = SimpleNamespace(to_json=lambda: json.dumps({"text": text, "game": game}))
+    payload = {"text": text, "game": game}
+    if game == "bastet":
+        # Bastet's brain only acts on the colored board the adapter supplies.
+        payload["meta"] = {"bastet_color_text": _bastet_color_capture()}
+    obs = SimpleNamespace(to_json=lambda: json.dumps(payload))
     actions = CommandBrain(g, loaded).decide(obs)
     assert len(actions) == 1
     assert actions[0].type == "key"
