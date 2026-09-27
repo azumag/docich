@@ -264,7 +264,8 @@ def test_a_cell_that_pressing_never_moves_falls_back_to_the_inland_search(monkey
              'cards': [], 'after': None, 'note': 'test'}
     wrong = [jonrigi[0] - 51 + 232, jonrigi[1] - 13 + 200]
     mem = {'chapter': 1, 'captured': [], 'orders': {}, 'picked': [], '_records': [],
-           'active': 'X1', 'launched_orders': {'X1': order}, 'cursor': wrong, 'uncertain': False}
+           'active': 'X1', 'launched_orders': {'X1': order}, 'cursor': wrong, 'uncertain': False,
+           'select_used': True}
     pinned = map_screen(232, 200)                      # map corner: the cursor cannot move
     for _ in range(policy.NAV_STILL_LIMIT):
         assert [a['buttons'][0] for a in policy.map_step(pinned, mem, FRAME)] == ['down']
@@ -272,7 +273,9 @@ def test_a_cell_that_pressing_never_moves_falls_back_to_the_inland_search(monkey
     [stuck] = decisions(mem, 'nav_stuck')
     assert stuck['observed_metric']['cursor'] == wrong
     assert mem['uncertain'] is True and mem['nav_search'] is True
-    # Searching steers inland and the same lone roof no longer anchors.
+    # Searching first shows the hero with SELECT, then steers inland; the
+    # same lone roof no longer anchors.
+    assert policy.map_step(pinned, mem, FRAME) == [policy.pad('select')]
     assert {a['buttons'][0] for a in policy.map_step(pinned, mem, FRAME)} == {'left', 'up'}
     assert mem['uncertain'] is True and home != tuple(mem['cursor'])
 
@@ -509,3 +512,34 @@ def test_the_map_opens_the_y_view_when_idle_and_a_survey_is_due():
     mem['tick'] = 10 + policy.WORLD_SURVEY_TICKS
     assert policy._world_map_wanted(mem) is True
     assert policy._world_map_wanted({'chapter': 2, 'tick': 0}) is False   # not calibrated
+
+
+def test_a_lost_search_first_presses_select_to_show_the_hero(monkeypatch):
+    monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: [])
+    mem = {'chapter': 1, 'orders': {}, 'picked': [], '_records': [], 'cursor': [500, 500],
+           'uncertain': True, 'nav_search': True}
+    goal = CASTLES['ほんじょう']
+    assert policy.nav_step(map_screen(120, 120), mem, FRAME, goal) == [policy.pad('select')]
+    assert decisions(mem, 'select_to_hero') and mem['select_used'] is True
+    assert policy.nav_step(map_screen(140, 120), mem, FRAME, goal) != [policy.pad('select')]
+    # Never on the sortie target marker.
+    mem = {'chapter': 1, '_records': [], 'cursor': [500, 500], 'uncertain': True, 'nav_search': True}
+    marker = Screen(lines=[], hand=None, text='', kind='map_target', marker=(120, 120))
+    assert policy.nav_step(marker, mem, FRAME, goal) != [policy.pad('select')]
+
+
+def test_a_home_castle_shown_taken_on_the_y_map_is_retaken_first_and_never_a_fallback():
+    frame = _world_map_frame({'ほんじょう': 'enemy', 'ゴーメン': 'own', 'ジョンリギ': 'own'})
+    from docich.hanjuku_screen import parse
+    mem = {'chapter': 1, 'captured': [], '_records': [], 'tick': 3, 'orders': {},
+           'garrison': {'ほんじょう': [], 'ジョンリギ': ['ココット', 'ゼウス']}}
+    policy.world_map_step(parse(frame), mem, frame)
+    assert mem['home_lost'] is True and mem['lost'][0] == 'ほんじょう'
+    assert 'ほんじょう' not in policy._owned(mem)
+    first_label, first = next(iter(policy.interim_candidates(mem).items()))
+    assert first_label == 'retake_1' and first['target'] == 'ほんじょう'
+    assert first['source'] == 'ジョンリギ'
+    # Recaptured: back to normal.
+    frame = _world_map_frame({'ほんじょう': 'own'})
+    policy.world_map_step(parse(frame), mem, frame)
+    assert mem['home_lost'] is False and 'ほんじょう' in policy._owned(mem)
