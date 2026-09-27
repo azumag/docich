@@ -196,3 +196,22 @@ def test_config_contract():
     assert cfg["corner"]["self_play"] and cfg["corner"]["intro"]
     assert cfg["retro_corner"]["unattended"]
     assert cfg["lifecycle"]["require_round_boundary"] is False
+
+
+def test_colored_board_acts_on_partially_visible_spawn(tmp_path):
+    # Real bastet 0.43: right after spawning, an L shows only its three-cell
+    # row on the top line; its fourth cell is still above the well.
+    board = [[None] * 10 for _ in range(20)]
+    for x in range(3, 6):
+        board[0][x] = "L"
+    actions = colored_decide(colored_capture(board), tmp_path)
+    assert len(actions) == 1
+    assert actions[0]["keys"][-1] == "Enter"
+
+
+def test_partially_visible_spawn_needs_matching_color(tmp_path):
+    board = [[None] * 10 for _ in range(20)]
+    for x in range(3, 6):
+        board[0][x] = "L"
+    board[0][4] = "J"  # mixed colors are not one piece
+    assert colored_decide(colored_capture(board), tmp_path) == []

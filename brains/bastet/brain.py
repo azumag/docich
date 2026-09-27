@@ -26,7 +26,11 @@ DEFAULT_WEIGHTS = {"hard_drop": 1.0}
 BOARD_WIDTH = 10
 BOARD_HEIGHT = 20
 SPAWN_X = 3
+# A freshly spawned piece sits partly above the well (e.g. only the three-cell
+# row of an L is visible), so the search starts above row 0.
+MIN_ACTIVE_ANCHOR_Y = -2
 MAX_ACTIVE_ANCHOR_Y = 6
+MIN_VISIBLE_ACTIVE_CELLS = 2
 MAX_PLAN_KEYS = 10
 
 # Coordinates are relative to Bastet's BlockPosition anchor.
@@ -256,30 +260,36 @@ def _find_active(board: list[list[str | None]]):
     path and prevent it reaching a lower position. Choosing the highest exact
     colored shape therefore disambiguates it without cross-cycle memory.
     """
-    for y in range(MAX_ACTIVE_ANCHOR_Y + 1):
+    for y in range(MIN_ACTIVE_ANCHOR_Y, MAX_ACTIVE_ANCHOR_Y + 1):
         for piece, orientations in SHAPES.items():
             points = tuple((SPAWN_X + dx, y + dy) for dx, dy in orientations[0])
-            if all(
-                0 <= row < BOARD_HEIGHT
+            # Cells above the well are not drawn; the colored visible cells
+            # must match exactly and be enough to tell the shape apart.
+            visible = tuple((col, row) for col, row in points if row >= 0)
+            if len(visible) >= MIN_VISIBLE_ACTIVE_CELLS and all(
+                row < BOARD_HEIGHT
                 and 0 <= col < BOARD_WIDTH
                 and board[row][col] == piece
-                for col, row in points
+                for col, row in visible
             ):
-                return piece, SPAWN_X, y, 0, points
+                return piece, SPAWN_X, y, 0, visible
     return None
 
 
 def _fits(board, shape, x: int, y: int) -> bool:
     for dx, dy in shape:
         col, row = x + dx, y + dy
-        if col < 0 or col >= BOARD_WIDTH or row < 0 or row >= BOARD_HEIGHT:
+        if col < 0 or col >= BOARD_WIDTH or row >= BOARD_HEIGHT:
             return False
-        if board[row][col] is not None:
+        # Rows above the well are open space for a piece that is still entering.
+        if row >= 0 and board[row][col] is not None:
             return False
     return True
 
 
 def _lock_and_clear(board, shape, x: int, y: int, piece: str):
+    if any(y + dy < 0 for _, dy in shape):
+        return None  # locking above the well tops out
     locked = [row.copy() for row in board]
     for dx, dy in shape:
         locked[y + dy][x + dx] = piece
@@ -347,12 +357,14 @@ def plan_keys(board: list[list[str | None]]) -> list[str] | None:
         landing_y = y
         while _fits(static, shape, x, landing_y + 1):
             landing_y += 1
-        settled, cleared = _lock_and_clear(static, shape, x, landing_y, piece)
-        value = _board_value(settled, cleared) - len(path) * 0.03
-        piece_center = x + sum(dx for dx, _ in shape) / len(shape)
-        value -= abs(piece_center - (BOARD_WIDTH - 1) / 2) * 0.15
-        if value > best_value:
-            best_value, best_path = value, path
+        locked = _lock_and_clear(static, shape, x, landing_y, piece)
+        if locked is not None:
+            settled, cleared = locked
+            value = _board_value(settled, cleared) - len(path) * 0.03
+            piece_center = x + sum(dx for dx, _ in shape) / len(shape)
+            value -= abs(piece_center - (BOARD_WIDTH - 1) / 2) * 0.15
+            if value > best_value:
+                best_value, best_path = value, path
 
         for dx, dy, turn, key in move_keys:
             next_orientation = (orientation + turn) % 4
