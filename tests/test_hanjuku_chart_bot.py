@@ -259,9 +259,16 @@ def test_boss_tactic_waits_for_the_first_clash_then_chains_cards():
     from docich.hanjuku_screen import Battle, Screen
     screen = lambda hp: Screen(lines=[], hand=None, text='', battle=Battle('クイーン', hp, 'どうし', 90), kind='battle')
     assert policy.battle_step(screen(70), mem) == []          # first reading: wait for a stable one
-    assert policy.battle_step(screen(70), mem) == MASH        # stable, no clash yet: melee
+    assert policy.battle_step(screen(70), mem) == []          # risky queen: wait for natural clash
     assert policy.battle_step(screen(60), mem)[0]['buttons'] == ['b']
     assert mem['battle']['card_flow']['card'] == 'クースカン'
+    # A still-pending card has priority over both follow-up tactics and melee.
+    assert policy.battle_step(screen(60), mem) == []
+    # The after_card contract consumes confirmed-use memory, never selection.
+    mem['battle']['cards_used'] = ['クースカン']
+    mem['battle']['card_flow'] = None
+    assert policy.battle_step(screen(30), mem) == [policy.pad('b')]
+    assert mem['battle']['card_flow']['card'] == 'ノリウツール'
 
 
 def test_quantity_editor_uses_the_digit_cursor_and_the_price_message():
@@ -508,7 +515,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v10-monster-menu'
+    assert state['bot_version'] == 'hanjuku-chart-v11-egg-safe'
     assert '_records' not in state['policy']
 
 
@@ -754,7 +761,7 @@ def test_garbanzo_tactics_follow_each_generals_chart_branch(step, ally, hp, expe
     assert policy.battle_step(screen, mem) == []
     actions = policy.battle_step(screen, mem)
     if expected is None:
-        assert actions == MASH and not mem['battle'].get('card_flow')
+        assert actions == [] and not mem['battle'].get('card_flow')
     else:
         assert actions[0]['buttons'] == ['b']
         assert mem['battle']['card_flow']['card'] == expected
@@ -794,7 +801,7 @@ def test_missing_and_selected_cards_do_not_confirm_use_or_unlock_after_card():
     assert cur['cards_used'] == [] and cur['cards_missing'] == ['クースカン']
     missing = mem['_records'][-1]
     assert missing['strategy_variant'] == 'chart_card_unavailable' and missing['deviation_reason']
-    assert policy.battle_step(screen, mem) == MASH  # no ノリウツール without confirmed クースカン
+    assert policy.battle_step(screen, mem) == []  # no ノリウツール without confirmed クースカン
     cur['card_flow'] = {'card': 'クースカン', 'stage': 'list'}
     policy.card_list_step(_card_screen(['クースカン']), mem)
     assert cur['cards_selected'] == ['クースカン'] and cur['cards_used'] == []
@@ -805,7 +812,7 @@ def test_missing_and_selected_cards_do_not_confirm_use_or_unlock_after_card():
         assert cur['cards_used'] == []
     policy.battle_step(screen, mem); policy.battle_step(screen, mem)
     assert cur['card_flow'] is None and cur['cards_unclassified'] == ['クースカン']
-    assert policy.battle_step(screen, mem) == MASH   # no follow-up card, only the push
+    assert policy.battle_step(screen, mem) == []     # no follow-up card; risky queen stays held
 
 
 @pytest.mark.parametrize('statement', ['クースカンをつかった', 'クースカンをしようした'])
@@ -832,7 +839,7 @@ def test_uncalibrated_card_text_never_confirms_use_or_unlocks_after_card(stateme
     policy.battle_step(screen, mem); policy.battle_step(screen, mem)
     assert cur['card_flow'] is None
     assert policy.summary(mem)['cards_used'] is None  # unclassified despite cleared flow
-    assert policy.battle_step(screen, mem) == MASH   # no follow-up card, only the push
+    assert policy.battle_step(screen, mem) == []     # no follow-up card; risky queen stays held
     cur['enemy_hp'] = 0
     policy.battle_end(mem, 'map'); policy.battle_end(mem, 'map')
     assert mem['stats']['cards_used'] is None and mem['stats']['cards_confirmed'] == 0
@@ -1672,7 +1679,7 @@ def test_tutorial_sword_practice_mashes_a_to_push_instead_of_idling():
     screen = Screen(lines=[], hand=None, text='', battle=Battle('だいじん', 90, 'どうし', 90), kind='battle')
     assert policy.battle_step(screen, mem) == []           # first reading: wait for a stable one
     assert policy.battle_step(screen, mem) == MASH
-    assert [r['decision'] for r in mem['_records']] == ['battle_start', 'battle_power']
+    assert [r['decision'] for r in mem['_records']] == ['battle_start', 'battle_power', 'battle_melee']
     assert policy.battle_step(screen, mem) == MASH         # every decision keeps pushing
     assert [r['decision'] for r in mem['_records']].count('battle_power') == 1
     over = Screen(lines=[], hand=None, text='', battle=Battle('だいじん', 0, 'どうし', 20), kind='battle')

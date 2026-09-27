@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v10-monster-menu'
+BOT_VERSION = 'hanjuku-chart-v11-egg-safe'
 
 
 # Native title copyright rows, measured from the owner's ROM. A strict match
@@ -143,7 +143,7 @@ def legacy_actions(frame: Frame, phase: str, state: dict) -> list[dict]:
     if phase=='title':
         return [pad('start')]
     if phase in {'field','field_menu','battle'}:
-        # A readable battle panel goes through policy.battle_step (A mash);
+        # A readable battle panel goes through the risk-aware policy.battle_step;
         # without one the target is unknown, and A on the map would open a
         # sortie menu.
         return []

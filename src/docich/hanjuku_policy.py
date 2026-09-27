@@ -10,11 +10,13 @@ policy never invents a battle result, stage or amount.
 from __future__ import annotations
 
 import re
+from dataclasses import asdict
 
 from . import hanjuku_chart as chart
 from . import hanjuku_chart_adjust as chart_adjust
 from . import hanjuku_experience as experience
 from . import hanjuku_reference as reference
+from .hanjuku_egg_reference import enemy_egg_triggers
 from .hanjuku_font import UNKNOWN, TextLine
 from .hanjuku_screen import HEADER as HEADER_RE, OKUNOTE_CHOICES, Screen, castle_roofs
 
@@ -1462,8 +1464,12 @@ def _card_use_unclassified(mem, cur, reason):
 
 
 def battle_step(screen: Screen, mem):
-    _migrate_card_evidence(mem)
     b = screen.battle
+    if (b is None or not b.enemy or not b.ally or UNKNOWN in b.enemy or UNKNOWN in b.ally
+            or any(type(hp) is not int or hp < 0 for hp in (b.enemy_hp, b.ally_hp))):
+        mem['battle_seen'] = None
+        return []  # partial panel must not replace the last clear HP/context
+    _migrate_card_evidence(mem)
     cur = mem.get('battle')
     if cur is None:
         # Fades dim the panel and can drop dakuten; open a battle record only
@@ -1539,7 +1545,24 @@ def battle_step(screen: Screen, mem):
             rescue['pending_opens'] = rescue.get('pending_opens', 0) + 1
             rescue['menu_ticks'] = 0
             return [pad('b')]
-    return _power_mash(mem, cur)
+    return _melee_step(mem, cur)
+
+
+def _melee_step(mem, cur):
+    side = cur.get('side')
+    defense = True if side == 'defense' else False if side == 'attack' else None
+    triggers = enemy_egg_triggers(cur.get('enemy'), player_castle_defense=defense)
+    safe = triggers.has_egg is False or triggers.clash_position is False
+    mode = 'power_mash' if safe else 'egg_safe_hold'
+    actions = _power_mash(mem, cur) if safe else []
+    # Per returned action batch, not just the first use in a fight. These are
+    # requested A frames; the executor's fence/delivery result remains separate.
+    _record(mem, 'battle_melee', **_battle_labels(cur),
+            enemy=cur.get('enemy'), enemy_hp=cur.get('enemy_hp'), ally_hp=cur.get('ally_hp'),
+            egg_risk_flags=asdict(triggers), melee_control_mode=mode,
+            a_frames_sent=POWER_TAPS * 3 if safe else 0,
+            reason='卵の激突判定なし' if safe else '卵の激突リスクあり・戦線位置未校正のため入力保留')
+    return actions
 
 
 # Short, released A bursts cover the POWER window without relying on an old
