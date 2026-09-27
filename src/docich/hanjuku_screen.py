@@ -188,12 +188,36 @@ def _selected(lines: list[TextLine], hand) -> str | None:
     return None
 
 
+def _human_hp(frame: Frame, line: TextLine, x0: int) -> int | None:
+    """Read the entire right-aligned three-cell field, including blank cells.
+
+    Measured 256x224 human panels use x=88..111 / 216..239, y=176.
+    A flying soldier can cover the tens digit of 32 while leaving a valid 2.
+    words() intentionally skips unknown glyphs, so it is unsafe for this field.
+    Both the normal background and HP ink are achromatic; sprite colours or
+    unknown cells invalidate the observation instead of inventing lower HP.
+    """
+    if line.y != 176:
+        return None
+    for y in range(176, 184):
+        for x in range(x0, x0 + 24):
+            r, g, b = frame.pixel(x, y)
+            if r != g or g != b:
+                return None
+    cells = dict(line.cells)
+    text = ''.join(cells.get(x, ' ') for x in range(x0, x0 + 24, 8))
+    return int(text) if re.fullmatch(r' *[0-9]{1,3}', text) else None
+
+
 def _battle(frame: Frame) -> Battle | None:
     lines = read_lines(frame, predicate=dark, rect=(0, 160, 256, 200))
     for line in lines:
         left, right = line.words(0, 128), line.words(128, 256)
         if len(left) >= 2 and len(right) >= 2 and left[-1].isdigit() and right[-1].isdigit():
-            return Battle(left[0], int(left[-1]), right[0], int(right[-1]))
+            enemy_hp, ally_hp = _human_hp(frame, line, 88), _human_hp(frame, line, 216)
+            if (enemy_hp is not None and ally_hp is not None
+                    and str(enemy_hp) == left[-1] and str(ally_hp) == right[-1]):
+                return Battle(left[0], enemy_hp, right[0], ally_hp)
     return None
 
 
