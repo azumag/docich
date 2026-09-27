@@ -24,6 +24,26 @@ def _content_bbox(raw, width, height, threshold=200):
 
 @unittest.skipUnless(shutil.which('ffmpeg'), 'FFmpeg required')
 class PresentationPixels(unittest.TestCase):
+    def test_nearest_contain_preserves_small_source_aspect_and_all_edges(self):
+        # Odd native width must not be rounded down by a YUV test generator.
+        # Include a non-4:3 source to catch accidental fixed-TV stretching.
+        for width, height in [(299, 224), (300, 300)]:
+            with self.subTest(size=(width, height)):
+                raw = bytes((255, 255, 255)) * width * height
+                result = subprocess.run([
+                    'ffmpeg', '-v', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgb24',
+                    '-s', f'{width}x{height}', '-i', 'pipe:0',
+                    '-vf', contain_filter(960, 540, nearest=True), '-frames:v', '1',
+                    '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-',
+                ], input=raw, capture_output=True, check=True, timeout=20)
+                left, top, right, bottom = _content_bbox(result.stdout, 960, 540)
+                self.assertEqual((top, bottom), (0, 539))
+                self.assertAlmostEqual(right - left + 1, 540 * width / height, delta=1)
+                self.assertLessEqual(abs(left - (959 - right)), 1)
+                for x in (left - 1, right + 1):
+                    offset = (270 * 960 + x) * 3
+                    self.assertEqual(result.stdout[offset:offset + 3], b'\0\0\0')
+
     def test_all_four_edges_survive_and_padding_is_centered(self):
         for dimensions, left, top, width, height in [
             ('600x600', 210, 0, 540, 540), ('800x600', 120, 0, 720, 540),
@@ -135,6 +155,8 @@ class CellAspectOptionTests(unittest.TestCase):
     def test_framerate_and_fit_default_to_the_existing_projection(self):
         args = self._parse([])
         self.assertEqual((args.framerate, args.fit), (15, 'contain'))
+        self.assertFalse(args.nearest)
+        self.assertTrue(self._parse(['--nearest']).nearest)
         args = self._parse(['--framerate', '30', '--fit', 'tv'])
         self.assertEqual((args.framerate, args.fit), (30, 'tv'))
 

@@ -480,20 +480,22 @@ def test_presenter_tracks_child_groups_and_private_window_without_resizing(tmp_p
     assert set(pid for pid, sig in signals if sig) == {40000, 40001, 40002}
 
 
-def test_scripted_hanjuku_keeps_3x_render_and_projects_4_3_at_broadcast_rate(adapter):
-    """g389: the 15 fps projection stuttered; the render itself stays 3x."""
+def test_scripted_hanjuku_small_render_keeps_aspect_and_contains_at_broadcast_rate(adapter):
+    """Small rendering must retain the aspect that exact-tile recognition uses."""
     adapter.game = replace(adapter.game, name='hanjuku-hero',
                            raw={**adapter.game.raw, 'hanjuku': {'script_bot': True}})
     lines = retroarch_cfg_lines(adapter.g, adapter.game, adapter._cfg_path(), adapter._network_port())
-    # Native 1x broke text reading (g391: the name screen read as text and
-    # A typed ああああ...), so the 3x render the signatures were built on stays.
-    assert 'video_scale = "3.0"' in lines and 'video_force_aspect = "true"' in lines
+    assert 'video_scale = "1.0"' in lines and 'video_force_aspect = "true"' in lines
+    assert sum(line.startswith('video_scale =') for line in lines) == 1
+    assert 'video_smooth = "false"' in lines
     command = adapter._game_command()
     assert command[command.index('--framerate') + 1] == '30'
-    assert command[command.index('--fit') + 1] == 'tv'
-    assert command.index('--fit') < command.index('--')
+    assert '--fit' not in command  # default contain preserves the source aspect
+    assert command.index('--nearest') < command.index('--')
 
 
 def test_other_retroarch_games_keep_the_3x_contain_projection(adapter):
     command = adapter._game_command()
-    assert '--framerate' not in command and '--fit' not in command
+    assert '--framerate' not in command and '--fit' not in command and '--nearest' not in command
+    lines = retroarch_cfg_lines(adapter.g, adapter.game, adapter._cfg_path(), adapter._network_port())
+    assert 'video_scale = "3.0"' in lines and 'video_force_aspect = "true"' in lines
