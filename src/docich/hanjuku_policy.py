@@ -303,6 +303,7 @@ def observe_owners(mem, roofs, cam):
                     reason='城の屋根が自軍の色のため占領として扱う')
 
 
+UNVERIFIED_LIMIT = 3                  # unanchored arrivals held before confirming anyway
 NAV_STILL_LIMIT = 3                   # pressed frames with no motion before distrusting the cell
 
 
@@ -383,21 +384,28 @@ def nav_step(screen: Screen, mem, frame, goal, goal_name=None):
         goal = _search_goal(mem)
         dx, dy = goal[0] - world[0], goal[1] - world[1]
     if abs(dx) <= ARRIVE_PX and abs(dy) <= ARRIVE_PX:
-        if not mem.get('uncertain') and not mem.get('anchor'):
+        held = int(mem.get('unverified') or 0)
+        if mem.get('anchor') and not mem.get('uncertain'):
+            mem.pop('unverified', None)
+            return 'arrived'
+        if held < UNVERIFIED_LIMIT and (mem.get('uncertain') or (mem.get('roofs_seen') or 0) >= 2):
             # Dead reckoning alone reached the cell. Camera scrolls at the
             # screen edge are only estimated, so the error builds up (g403
             # 23:04: ココット was sent ~60 px north of ジョンリギ) and a roof
-            # anchor more than 48 px away is then refused. Distrust the
-            # cell so the next roof reading re-anchors it before confirming.
+            # anchor more than 48 px away is then refused. Distrust the cell
+            # so the next roof reading re-anchors it before confirming.
+            # Bounded: with no roof in view (a clipped goal at the screen
+            # edge) nudging looped for 70 s (g403 23:24, v12).
             mem['uncertain'] = True
+            mem['unverified'] = held + 1
             _record(mem, 'arrival_unverified', screen=screen.kind,
                     observed_metric={'cursor': list(world), 'screen_cursor': list(s),
-                                     'roofs': mem.get('roofs_seen')},
+                                     'roofs': mem.get('roofs_seen'), 'held': held + 1},
                     reason='屋根で位置を確認できないまま到着と推定したため、決定せず屋根で再特定する')
-        if mem.get('uncertain'):
-            # Never confirm an unverified cell: nudge to reveal more roofs.
             mem['nav_last'] = {'screen': list(s), 'expected': [0, 0], 'search': search}
             return [pad('up', 12)] if s[1] > 100 else [pad('down', 12)]
+        mem.pop('unverified', None)
+        mem['uncertain'] = False
         return 'arrived'
     actions, expected = [], [0, 0]
     for axis, d, neg, pos in ((0, dx, 'left', 'right'), (1, dy, 'up', 'down')):
@@ -2767,7 +2775,7 @@ def observe_events(screen: Screen, mem):
                         'source_override', 'uncertain', 'month', 'order_context', 'sortie_general',
                         'chart_adjust', 'chart_plan', 'launched_orders', 'sorties',
                         'garrison', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
-                        'nav_prev', 'nav_still', 'nav_pressed',
+                        'nav_prev', 'nav_still', 'nav_pressed', 'unverified',
                         'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
                         'indep_menu_key', 'indep_menu_action',
                         'monster_menu_key', 'monster_menu_cursor', 'monster_menu_hold',
