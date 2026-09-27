@@ -575,11 +575,14 @@ class RetroCornerManager:
         quiesce failure (``quiesce_failed``) qualifies: the outgoing runtime is
         kept and restored as ``active``, so the receipt below proves the very
         same property that this method exists for, that the corner never became
-        active.
+        active. The same holds for a target that never became ready
+        (``readiness_timeout``): the switch rolled back to the previous game,
+        so the corner never became active either.
         """
         from .game_switch import (
             ERROR_AGENT_START_FAILED,
             ERROR_QUIESCE_FAILED,
+            ERROR_READINESS_TIMEOUT,
             ERROR_START_FAILED,
             GameSwitchBusyError,
         )
@@ -601,7 +604,7 @@ class RetroCornerManager:
                     if (completed.tzinfo is None or completed_ts < 0
                             or state.get("last_error_code") not in {
                                 ERROR_START_FAILED, ERROR_AGENT_START_FAILED,
-                                ERROR_QUIESCE_FAILED,
+                                ERROR_QUIESCE_FAILED, ERROR_READINESS_TIMEOUT,
                             }):
                         return False
                 if ((status not in {"starting", "interrupted"} and not failed_start)
