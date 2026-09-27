@@ -869,6 +869,13 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
             mem['sortie_attempt'] = attempt
     if not attempt:
         return
+    if (mem.get('y_jump') or {}).get('mode') == 'target' or mem.get('y_jump_return') == 'target':
+        # Our own Y jump for the target (the view and the fade back), not an
+        # interruption.
+        if screen.kind in ('map_target', 'map'):
+            mem.pop('y_jump_return', None)      # back on a map: normal tracking resumes
+        else:
+            return
     if screen.kind == 'map_target':
         if not order or order['step'] == attempt['step']:
             step = attempt['step']
@@ -962,14 +969,20 @@ WORLD_SURVEY_TICKS = 200       # observations between surveys (~5 min at 1.5 s)
 WORLD_MAP_WAIT = 4             # fade frames before giving up a reading
 
 
-def world_flags(frame, chapter):
-    """{castle: 'own'|'enemy'} read from the whole-island view, unread ones left out."""
+def world_flags(frame, chapter, cursor=None):
+    """{castle: 'own'|'enemy'} read from the whole-island view, unread ones left out.
+
+    A flag under the Y cursor is not read: the sortie cursor's G is the same
+    blue as an enemy flag (isolated probe: the home flag read as enemy).
+    """
     offset = WORLD_MAP_OFFSET.get(chapter)
     if not offset or frame is None:
         return {}
     out = {}
     for name, (wx, wy) in chart.castles(chapter).items():
         mx, my = round(wx / 8 + offset[0]), round(wy / 8 + offset[1])
+        if cursor and abs(mx + 2 - cursor[0]) <= 10 and abs(my + 1 - cursor[1]) <= 10:
+            continue
         box = {frame.pixel(x, y) for x in range(mx - 2, mx + 6) for y in range(my - 2, my + 5)
                if 0 <= x < frame.width and 0 <= y < frame.height}
         enemy, own = WORLD_FLAG_ENEMY in box, WORLD_FLAG_OWN in box
@@ -988,13 +1001,21 @@ def _world_map_wanted(mem) -> bool:
 
 
 def world_map_step(screen, mem, frame):
-    """Read every castle's owner from the Y view, then close it with Y."""
+    """Read every castle's owner from the Y view, then close it with Y
+    (or, while a Y jump is running, steer its cursor to the goal castle)."""
+    if mem.get('y_jump'):
+        return _y_jump_step(mem, frame)
     flags = world_flags(frame, mem.get('chapter') or 0)
     if not flags:
         waited = int(mem.get('world_map_wait') or 0) + 1
         mem['world_map_wait'] = waited
         return [] if waited < WORLD_MAP_WAIT else [pad('y')]
     mem.pop('world_map_wait', None)
+    _apply_world_flags(mem, flags)
+    return [pad('y')]
+
+
+def _apply_world_flags(mem, flags):
     chapter = mem.get('chapter') or 0
     home = chart.home_castle(chapter)
     captured = mem.setdefault('captured', [])
@@ -1036,7 +1057,104 @@ def world_map_step(screen, mem, frame):
                 resulting_event=f'{kind}:{castle}',
                 reason=('全体マップで城の旗が敵の色になったため失陥として奪還対象にする'
                         if kind == 'lost' else '全体マップで城の旗が自軍の色のため占領として扱う'))
+
+
+# Y jump (owner hint 2026-09-28: "select the castle on the Y map instead of
+# moving the cursor"). Measured in the isolated emulator: the Y view shows a
+# cursor - a white dashed ring on the map, gold-cornered G while choosing a
+# sortie target - centred at cell/8 + offset; the D-pad moves it 0.5 px per
+# frame and A returns with the map cursor (or target marker) on that cell.
+# Jumps to キカンドン, ジョンリギ, スペンソニア and ほんじょう landed 4-9 px from
+# each roof, and the target marker 5 px from キカンドン's roof. Roof-based
+# cursor motion was the source of most mis-sorties (lone-roof mix-ups,
+# edge-scroll drift of ~60 px), so far goals go through Y instead.
+Y_JUMP_OFFSET = {1: (63.0, 47.5)}
+Y_JUMP_FAR = 48                # world px from the goal before a jump is worth it
+Y_JUMP_LIMIT = 2               # jumps per order and screen mode
+Y_JUMP_MOVES = 8               # D-pad steps inside one jump before confirming anyway
+Y_JUMP_WAIT = 6                # frames without a readable cursor before closing Y
+_Y_RING = [(dx, dy) for dx in range(-13, 14) for dy in range(-13, 14)
+           if 100 <= dx * dx + dy * dy <= 169]          # radius 5-6.5 px, half-pixel units
+
+
+def world_cursor(frame):
+    """Centre of the Y view's cursor: gold G corners, else the white dashed ring."""
+    gold = [(x, y) for x in range(40, 220) for y in range(40, 200) if frame.pixel(x, y) == (255, 182, 0)]
+    if len(gold) >= 12:
+        xs = [x for x, _ in gold]; ys = [y for _, y in gold]
+        return ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
+    votes = {}
+    for x in range(40, 220):
+        for y in range(40, 200):
+            if frame.pixel(x, y) == (255, 255, 255):
+                for dx, dy in _Y_RING:
+                    key = (2 * x + dx, 2 * y + dy)
+                    votes[key] = votes.get(key, 0) + 1
+    if not votes:
+        return None
+    key, count = max(votes.items(), key=lambda kv: kv[1])
+    return (key[0] / 2, key[1] / 2) if count >= 18 else None
+
+
+def _want_y_jump(mem, order, name, mode) -> bool:
+    chapter = mem.get('chapter') or 0
+    if chapter not in Y_JUMP_OFFSET or mem.get('y_jump'):
+        return False
+    key = f"{order['step']}:{mode}"
+    if (mem.get('y_jumps') or {}).get(key, 0) >= Y_JUMP_LIMIT:
+        return False
+    world, goal = mem.get('cursor'), chart.castles(chapter)[name]
+    return not world or abs(world[0] - goal[0]) + abs(world[1] - goal[1]) > Y_JUMP_FAR
+
+
+def _start_y_jump(mem, order, name, mode):
+    key = f"{order['step']}:{mode}"
+    jumps = mem.setdefault('y_jumps', {})
+    jumps[key] = jumps.get(key, 0) + 1
+    mem['y_jump'] = {'goal': name, 'mode': mode, 'step': order['step'], 'moves': 0, 'wait': 0}
+    _record(mem, 'y_jump_open', chart_step=order['step'], target=name,
+            observed_metric={'cursor': mem.get('cursor'), 'mode': mode, 'attempt': jumps[key]},
+            reason='全体マップ（Y）で目的の城を直接選ぶ')
     return [pad('y')]
+
+
+def _y_jump_step(mem, frame):
+    jump = mem['y_jump']
+    chapter = mem.get('chapter') or 0
+    cursor = world_cursor(frame)
+    flags = world_flags(frame, chapter, cursor) if cursor else {}
+    if flags and not jump.get('owners'):
+        jump['owners'] = True
+        _apply_world_flags(mem, flags)          # the same view also shows every owner
+    if cursor is None:
+        jump['wait'] += 1
+        if jump['wait'] < Y_JUMP_WAIT:
+            return []
+        mem.pop('y_jump', None)
+        _record(mem, 'y_jump_failed', chart_step=jump['step'], target=jump['goal'],
+                reason='全体マップのカーソルを読めないため閉じて通常の移動に戻る')
+        return [pad('y')]
+    gx, gy = chart.castles(chapter)[jump['goal']]
+    ox, oy = Y_JUMP_OFFSET[chapter]
+    dx, dy = gx / 8 + ox - cursor[0], gy / 8 + oy - cursor[1]
+    if (abs(dx) <= 0.5 and abs(dy) <= 0.5) or jump['moves'] >= Y_JUMP_MOVES:
+        mem.pop('y_jump', None)
+        mem['y_jump_return'] = jump['mode']
+        mem['cursor'] = [gx, gy]
+        mem['uncertain'] = False
+        for key in ('anchor', 'nav_last', 'nav_search', 'nav_search_leg'):
+            mem.pop(key, None)
+        _record(mem, 'y_jump_confirm', chart_step=jump['step'], target=jump['goal'],
+                observed_metric={'world_cursor': list(cursor), 'residual': [round(dx, 1), round(dy, 1)],
+                                 'moves': jump['moves']},
+                reason='全体マップのカーソルを目的の城に合わせて決定')
+        return [pad('a')]
+    jump['moves'] += 1
+    actions = []
+    for d, neg, pos in ((dx, 'left', 'right'), (dy, 'up', 'down')):
+        if abs(d) > 0.5:
+            actions.append(pad(pos if d > 0 else neg, min(56, max(1, round(abs(d) * 2)))))
+    return actions
 
 
 SOURCE_MISS_LIMIT = 3         # failed castle menus per order before giving the source up
@@ -1197,6 +1315,8 @@ def map_step(screen: Screen, mem, frame):
                 reason=order['note'])
     source = _source(order, mem)
     goal = chart.castles(mem['chapter'])[source]
+    if screen.cursor and not screen.marker and _want_y_jump(mem, order, source, 'map'):
+        return _start_y_jump(mem, order, source, 'map')
     result = nav_step(screen, mem, frame, goal, source)
     if mem.get('menu_miss'):
         if mem.get('anchor') and not mem.get('uncertain') and mem.get('cursor'):
@@ -1241,6 +1361,8 @@ def target_step(screen: Screen, mem, frame):
                 or (context.get('observed_metric') or {}).get('cards') != sorted(order['cards'])):
             return _hold_deploy(screen, mem, order, 'ボス出撃の主人公と携行品の確認証拠がないため目標確定を保留')
     goal = chart.castles(mem['chapter'])[order['target']]
+    if screen.marker and _want_y_jump(mem, order, order['target'], 'target'):
+        return _start_y_jump(mem, order, order['target'], 'target')
     result = nav_step(screen, mem, frame, goal)
     if result == 'arrived':
         mem.pop('sortie_attempt', None)
@@ -3251,6 +3373,7 @@ def observe_events(screen: Screen, mem):
                         'garrison', 'general_location_unknown', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
                         'nav_prev', 'nav_still', 'nav_pressed', 'unverified', 'off_castle',
                         'world_map_tick', 'world_map_due', 'world_map_wait', 'home_lost',
+                        'y_jump', 'y_jumps', 'y_jump_return',
                         'select_used',
                         'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
                         'indep_menu_key', 'indep_menu_action',

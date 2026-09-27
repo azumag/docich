@@ -515,7 +515,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v26-discharge-minimal-exit'
+    assert state['bot_version'] == 'hanjuku-chart-v27-y-jump'
     assert '_records' not in state['policy']
 
 
@@ -1778,6 +1778,7 @@ def test_independent_egg_choice_backs_out_when_the_egg_row_is_dead():
 
 def test_open_sea_search_spirals_around_the_centroid_and_records_each_leg(monkeypatch):
     """g389 16:41: at the centroid (by dead reckoning) the old nudge only bobbed up/down."""
+    monkeypatch.setattr(policy, 'Y_JUMP_OFFSET', {})     # exercises roof navigation, not Y jumps
     from docich.hanjuku_pixels import Frame
     from docich.hanjuku_screen import Screen
     frame = Frame(256, 224, bytes(256 * 224 * 3))
