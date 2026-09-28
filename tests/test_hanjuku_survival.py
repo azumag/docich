@@ -359,3 +359,16 @@ def test_a_hero_who_starts_weak_is_judged_against_his_full_strength():
     assert p._hero_retreat_needed(cur)
     # A healthy hero ahead of the enemy keeps fighting.
     assert not p._hero_retreat_needed({**cur, 'ally_hp': 60, 'start_ally_hp': 60})
+
+
+def test_a_general_behind_from_the_start_opens_the_rescue_before_the_melee():
+    # g438 03:31: ココット 22 vs キッシュ 26, melee 22 -> 10 before any card, died.
+    cur = {'ally': 'ココット', 'enemy': 'キッシュ', 'ally_hp': 22, 'enemy_hp': 26,
+           'start_ally_hp': 22, 'start_enemy_hp': 26, 'planned_cards': []}
+    assert p._survival_needed(cur)
+    # A charted card plan or a boss fight keeps its own timing.
+    assert not p._survival_needed({**cur, 'planned_cards': ['クースカン']})
+    boss = next(iter(p.chart.BOSSES.values()))
+    assert not p._survival_needed({**cur, 'enemy': boss})
+    # Ahead at the start: melee as before.
+    assert not p._survival_needed({**cur, 'start_ally_hp': 30, 'ally_hp': 30})

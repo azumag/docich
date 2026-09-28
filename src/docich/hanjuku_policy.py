@@ -2406,7 +2406,8 @@ def _keep_last_castle(screen, mem, order):
         return None                        # the boss battle ends the chapter; a move keeps one (_move_general_pick)
     source = _source(order, mem)
     present = _present_generals(screen)
-    if present is None or len(present) != 1 or source not in _owned(mem) or _staffed_elsewhere(mem, source):
+    if (present is None or len(present) != 1 or source not in _owned(mem)
+            or not _few_castles(mem) or _staffed_elsewhere(mem, source)):
         return None
     mem['last_castle_hold'] = {'castle': source, 'tick': int(mem.get('tick') or 0)}
     mem['orders'][order['step']] = 'pending'
@@ -2418,11 +2419,22 @@ def _keep_last_castle(screen, mem, order):
     return [pad('b'), {'type': 'wait', 'ms': 300}, pad('b')]
 
 
+LAST_CASTLE_GUARD_OWNED = 2   # the guard only matters while so few castles remain
+
+
+def _few_castles(mem) -> bool:
+    """Owner (2026-09-29): with six castles the guard only cancelled the chart's
+    hero sortie to スペンソニア on stream; a total loss (game over) is a risk
+    only when one or two castles are left (g436 18:57: the last one fell)."""
+    owned = _owned(mem) & set(chart.castles(mem.get('chapter') or 0))
+    return len(owned) <= LAST_CASTLE_GUARD_OWNED
+
+
 def _last_castle_held(mem, order) -> bool:
     hold = mem.get('last_castle_hold') or {}
     source = _source(order, mem)
     return (not _is_boss_order(order, mem) and order.get('purpose') != 'move' and hold.get('castle') == source
-            and not _staffed_elsewhere(mem, source)
+            and _few_castles(mem) and not _staffed_elsewhere(mem, source)
             and int(mem.get('tick') or 0) - int(hold.get('tick') or 0) < LAST_CASTLE_HOLD_TICKS)
 
 
@@ -2791,6 +2803,7 @@ def battle_step(screen: Screen, mem):
         planned = [t['card'] for t in _tactics(mem, cur['step'])
                    if t['enemy'] in (None, b.enemy) and t.get('step') in (None, cur['step'])]
         planned += list(mem.get('card_override', {}).get(cur['step']) or [])
+        cur['planned_cards'] = list(planned)
         _record(mem, 'battle_start', **_battle_labels(cur), enemy=b.enemy, ally=b.ally,
                 expected_metric=cur['strategy_expected'],
                 observed_metric={'enemy_hp': b.enemy_hp, 'ally_hp': b.ally_hp},
@@ -2918,8 +2931,14 @@ def _survival_needed(cur):
     # only at HP ~10, after the melee had already decided the fight, and
     # generals died with an unused egg (g421 15:09 26 vs 48, 15:13 27 vs 38;
     # owner: eggs unused while dying).
+    # Behind from the very start (g438 03:31: ココット 22 vs キッシュ 26 went
+    # 22 -> 10 in one observation of melee before any card was used, then
+    # died). The rescue (cards first, then the egg) opens before the melee.
+    # Not for boss fights or battles with charted cards: their plan runs.
+    behind_start = (type(cur.get('start_enemy_hp')) is int and start < cur['start_enemy_hp']
+                    and not cur.get('planned_cards') and cur.get('enemy') not in chart.BOSSES.values())
     return (hp <= 12 or (hp < enemy and hp * 5 <= start * 2)
-            or hp * 10 <= enemy * BEHIND_EGG_RATIO_TENTHS)
+            or hp * 10 <= enemy * BEHIND_EGG_RATIO_TENTHS or behind_start)
 
 
 def _survival_state(mem, cur):
@@ -3024,6 +3043,7 @@ def _survival_menu(screen, mem, cur):
     # A visible list is authoritative. Do not infer carried cards from the
     # chart, a different general's sortie, or a planned inventory.
     labels = {word for _, _, word in _options(screen)}
+    # Cards first, then the egg (owner: 切り札が先 - the chart's order).
     if ('きりふだ' in labels and not rescue.get('cards_exhausted')
             and rescue['cards_checked'] < 3):
         label = 'きりふだ'
