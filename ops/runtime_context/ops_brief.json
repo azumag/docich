@@ -1,11 +1,11 @@
 {
-  "output_sha256": "63e4dfeea52625e863ee9c319b5d0dfe8ac35623c124406728bfd974a4a0b16b",
+  "output_sha256": "dfcf35b049796e92402114204a4abfa57067796bd21a624e2ba2e7635e07ab8d",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "90bef17ebf47040d7c9ae1ba4bc5a32ef6b7ca16dc002238f7ad896c541a1c2f",
+  "source_sha256": "f5f7203c8b98eec7543d022814d628c051dbeb518aa902ed75acd79f85805272",
   "topics": [
+    "野営の帰還（v35）実装・配備（Claude Code）",
     "#1232（雪原カーソル）続き: g419 本番受け入れを実測で確認（Claude Code）",
-    "Merikenドロップ速度の改善（観測ゲート閾値）をmain/VMへ配備、hanjuku終了後に自動検証",
-    "Meriken黒画面の原因特定（Mac TCC責任プロセス未許可）・許可後に本番経路の映像到達を実測・24h監視設置"
+    "Merikenドロップ速度の改善（観測ゲート閾値）をmain/VMへ配備、hanjuku終了後に自動検証"
   ]
 }
