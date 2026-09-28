@@ -69,31 +69,34 @@ def test_no_safe_card_returns_to_parent_menu_and_uses_egg(cards):
 
 
 def test_rescue_prefers_a_card_that_drops_the_enemy_egg():
-    # gcgx: 卵落 > (敵+味方 max HP) mod 16. 51+32 = 83 -> 余り3: グリンボー(4)
-    # drops, ブラッキー(3) does not.
-    mem = memory()
-    mem['battle'].update(enemy='キッシュ', start_enemy_hp=51, start_ally_hp=32,
-                         ally='ココット', ally_hp=22, enemy_hp=26)
-    assert p._rescue_card(['ブラッキー', 'グリンボー'], mem['battle']) == 'グリンボー'
+    # gcgx: 卵落 > (敵+味方 max HP) mod 16, with the fixed char.csv HP
+    # (クミン27 + ココット24 = 51 -> 余り3): グリンボー(4) drops, ブラッキー(3)
+    # does not. A wounded start reading must not change this.
+    cur = memory()['battle']
+    cur.update(enemy='クミン', ally='ココット', start_enemy_hp=12, start_ally_hp=9,
+               enemy_hp=12, ally_hp=9)
+    assert p._rescue_card(['ブラッキー', 'グリンボー'], cur) == 'グリンボー'
 
 
 def test_rescue_keeps_the_heal_and_fixed_order_when_nothing_drops():
     cur = memory()['battle']
-    cur.update(enemy='キッシュ', start_enemy_hp=60, start_ally_hp=24)
-    # 84 -> 余り4: グリンボー(4) is not greater, so the fixed order stands.
+    cur.update(enemy='ブリー', ally='ココット')       # 29+24 = 53 -> 余り5
+    # グリンボー(4) is not greater than 5, so the fixed order stands.
     assert p._rescue_card(['ブラッキー', 'グリンボー'], cur) == 'ブラッキー'
     assert p._rescue_card(['エンジェリン', 'ブラッキー'], cur) == 'エンジェリン'
     # An eggless enemy never spends a card on a drop.
     assert p._rescue_card(['ブラッキー', 'グリンボー'], {**cur, 'enemy': 'バジル'}) == 'ブラッキー'
-    # Unreadable HP stands the fixed order too.
+    # An unknown general's max HP fails closed to the fixed order.
     assert p._rescue_card(['グリンボー', 'ブラッキー'],
-                          {**cur, 'start_enemy_hp': None}) == 'グリンボー'
+                          {**cur, 'enemy': 'アルベルト'}) == 'グリンボー'
+    assert p._rescue_card(['グリンボー', 'ブラッキー'],
+                          {**cur, 'ally': 'だれか'}) == 'グリンボー'
 
 
 def test_rescue_selection_records_the_egg_drop_evidence():
     mem = memory()
-    mem['battle'].update(enemy='キッシュ', start_enemy_hp=51, start_ally_hp=32,
-                         ally='ココット', ally_hp=22, enemy_hp=26)
+    mem['battle'].update(enemy='クミン', ally='ココット', start_enemy_hp=27,
+                         start_ally_hp=24, enemy_hp=24, ally_hp=22)
     p.battle_step(battle(mem), mem)
     p.battle_menu_step(menu(selected=1), mem)
     cards = ('ブラッキー', 'グリンボー')
@@ -102,7 +105,7 @@ def test_rescue_selection_records_the_egg_drop_evidence():
     rec = mem['_records'][-1]
     assert rec['card'] == 'グリンボー'
     assert rec['observed_metric']['egg_drop'] == {
-        'value': 4, 'threshold': 4, 'max_hp_sum': 83, 'drops': True}
+        'value': 4, 'threshold': 4, 'max_hp_sum': 51, 'drops': True}
 
 
 def test_no_card_row_uses_readable_egg_despite_learned_pass():

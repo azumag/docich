@@ -551,6 +551,38 @@ def test_sent_input_links_to_bound_decision_not_another_lease(tmp_path):
     assert json.loads((tmp_path / 'hanjuku_events.jsonl').read_text().splitlines()[-1])['decision_id'] is None
 
 
+def test_bot_state_record_limit_allows_large_policy_memory_but_stays_bounded(tmp_path):
+    from docich.adapters.base import AdapterError
+    from docich.retroarch_boundary import read_record
+    state = {'decision_trace': {**IDENTITY}, 'policy': {'x': 'a' * (20 * 1024)}}
+    path = tmp_path / 'hanjuku_bot.json'
+    path.write_text(json.dumps(state), encoding='utf-8')
+    # g438 04:18: the policy memory passed 16 KiB after a long game and every
+    # observation failed to load it (no input, screen_stalled).
+    with pytest.raises(AdapterError):
+        read_record(path)
+    assert read_record(path, limit=256 * 1024) == state
+    path.write_text(json.dumps({'policy': {'x': 'a' * (300 * 1024)}}), encoding='utf-8')
+    with pytest.raises(AdapterError):
+        read_record(path, limit=256 * 1024)
+
+
+def test_action_sent_reads_the_bot_state_with_the_raised_limit(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from docich.game_switch import atomic_write_json
+    from docich import hanjuku_run as run
+    atomic_write_json(tmp_path / 'hanjuku_run.json', {**IDENTITY})
+    atomic_write_json(tmp_path / 'hanjuku_bot.json', {'decision_trace': {**IDENTITY}})
+    original, limits = run.read_record, {}
+    def spy(path, **kwargs):
+        limits[Path(path).name] = kwargs.get('limit')
+        return original(path, **kwargs)
+    monkeypatch.setattr(run, 'read_record', spy)
+    run.action_sent(tmp_path, IDENTITY, SimpleNamespace(type='pad', buttons=['a'], hold_ms=100))
+    assert limits['hanjuku_bot.json'] == 256 * 1024
+    assert limits['hanjuku_run.json'] is None      # the 16 KiB boundary default stands
+
+
 @pytest.mark.parametrize('queued', [False, True])
 def test_corner_binds_committed_start_before_first_observation(manager, monkeypatch, queued):
     import uuid

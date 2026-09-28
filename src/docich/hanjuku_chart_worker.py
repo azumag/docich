@@ -21,6 +21,7 @@ import time
 from . import hanjuku_chart as chart
 from . import hanjuku_chart_adjust as adjust
 from . import hanjuku_reference as reference
+from .hanjuku_egg_reference import general_max_hp
 from .game_switch import atomic_write_json
 from .hanjuku_run import append_log
 from .retroarch_boundary import read_record
@@ -48,12 +49,18 @@ def _recent_results(runtime_dir: Path, limit=24) -> list[dict]:
         except ValueError:
             continue
         if isinstance(item, dict) and item.get('decision') in RESULT_DECISIONS:
-            # ``battle_start`` carries the opening HP (the max-HP estimate the
-            # 卵落 rule needs); battle_result/order records just omit them.
-            out.append({k: item.get(k) for k in ('decision', 'chart_step', 'general', 'ally', 'castle',
-                                                  'target', 'enemy', 'outcome', 'side',
-                                                  'enemy_hp', 'ally_hp')
-                        if item.get(k) is not None})
+            entry = {k: item.get(k) for k in ('decision', 'chart_step', 'general', 'ally', 'castle',
+                                              'target', 'enemy', 'outcome', 'side',
+                                              'enemy_hp', 'ally_hp')
+                     if item.get(k) is not None}
+            # The 卵落 rule needs max HP, which a wounded opening reading is
+            # not: add the fixed char.csv HP for names it knows.
+            for side in ('ally', 'enemy'):
+                max_hp = general_max_hp(entry.get(side))
+                if max_hp is not None:
+                    entry[f'{side}_max_hp'] = max_hp
+            if entry:
+                out.append(entry)
     return out[-limit:]
 
 
@@ -98,8 +105,9 @@ def build_prompt(request: dict, results: list[dict]) -> str:
         '敵は卵を落とし、以後召喚を使えなくなる。卵落値: '
         + '、'.join(f'{n}={v}' for n, v in sorted(reference.EGG_DROP_VALUES.items(),
                                                   key=lambda kv: (-kv[1], kv[0]))) + '。'
-        '将軍を倒し切れない相手や召喚が脅威の場面では、会戦する将軍のHP合計から余りを計算し、'
-        '卵落値が上回る札を携行するとよい（HP合計は「直近の実績」の battle_start にある開戦時HPから読める）。',
+        '将軍を倒し切れない相手や召喚が脅威の場面では、会戦する将軍の最大HP合計から余りを計算し、'
+        '卵落値が上回る札を携行するとよい。開戦時HPは負傷していることがあるため使わず、'
+        '「直近の実績」の battle_start にある ally_max_hp / enemy_max_hp（固定最大HPの判明分）で計算すること。',
         '- 基本戦術: 城レベルが高いほど防衛側のエッグモンスターの防御・速さと防衛将軍の突撃速度が上がる'
         '（ボス城は補正なし）。定員は城Lv−1で、防衛側は将軍が倒されるたびに城レベルが1下がる。',
         '- after は null / ["captured", 城名] / ["all_captured"] のいずれか。',
@@ -167,7 +175,10 @@ def _run(g, runtime_dir: Path, request: dict, cfg, generate, lock_fd=None):
         prompt = build_prompt(request, _recent_results(runtime_dir))
         output, agent = generate(g, cfg, prompt)
         current = read_record(runtime_dir / adjust.REQUEST_FILE) or {}
-        if current.get('request_id') != request['request_id']:
+        if (current.get('request_id') != request['request_id']
+                or current.get('request_digest') != request.get('request_digest')):
+            # The payload revision changed while generating: the answer may
+            # plan from stock/garrison facts that are no longer current.
             status = 'superseded'
         else:
             adjust.save(runtime_dir, parse_output(output, request, agent or 'unknown'), request)
@@ -215,13 +226,17 @@ def consider(g, game, runtime_dir: Path, *, terminal=False, generate=None, backg
         if _busy.is_set():
             return None
         adjusted = adjust.load(runtime_dir)
-        if adjusted and adjusted['request_id'] == request['request_id']:
+        if (adjusted and adjusted['request_id'] == request['request_id']
+                and adjusted.get('request_digest') == request.get('request_digest')):
             return None
         state = read_record(runtime_dir / STATE) or {}
-        attempts = state.get('attempts', 0) if state.get('request_id') == request['request_id'] else 0
+        same_revision = (state.get('request_id') == request['request_id']
+                         and state.get('request_digest') == request.get('request_digest'))
+        attempts = state.get('attempts', 0) if same_revision else 0
         if attempts >= cfg['max_attempts']:
             return None
         atomic_write_json(runtime_dir / STATE, {'request_id': request['request_id'],
+                                                'request_digest': request.get('request_digest'),
                                                 'attempts': attempts + 1, 'at': time.time()})
         _busy.set()
         generate = generate or _default_generate
