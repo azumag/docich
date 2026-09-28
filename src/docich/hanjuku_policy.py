@@ -3452,10 +3452,24 @@ def _egg_recovery_targets(mem):
 
 
 def _extras_reserve(mem, header):
-    """Reserve the cost of all observed depleted eggs before soldiers."""
+    """Reserve the cost of all observed depleted eggs before soldiers.
+
+    Owner rule (2026-09-28): with 50+ soldiers on hand (read from the
+    「へいしすうはNめい」 line), egg recovery wins even when the gold is
+    short of the full cost: hold ALL of it for the egg and buy no soldiers,
+    so the balance grows until the recovery can run.
+    """
     cost = EGG_RECOVER_COST * len(_egg_recovery_targets(mem))
     gold = (header or {}).get('gold')
-    reserve = cost if type(gold) is int and gold >= cost else 0
+    if type(gold) is not int or gold < 0:
+        reserve = 0
+    elif gold >= cost:
+        reserve = cost
+    elif cost and (mem.get('soldiers_seen') or 0) >= 50:
+        # 兵士50人以上なら卵へ温存（兵士は今月見送り）。賃金リザーブは守る。
+        reserve = max(0, gold - WAGE_RESERVE)
+    else:
+        reserve = 0
     return reserve, not _charted_purchase_ahead(mem, header)
 
 
@@ -4110,6 +4124,16 @@ def observe_events(screen: Screen, mem):
         _record(mem, 'poor_harvest', deviation_reason='reset_forbidden',
                 reason='チャートは凶作でリセット指示だがbotはリセットしない',
                 expected_metric='収入減')
+    # Owner rule (2026-09-28): with 50+ soldiers on hand, egg recovery wins
+    # over buying more soldiers. The army total is read wherever the game
+    # states it (e.g. 「げんざい わがぐんの へいしすうは Nめいです」).
+    m = re.search(r'へいしすうは([0-9０-９]+)めい', screen.text.replace(' ', ''))
+    if m:
+        seen = int(m.group(1).translate(str.maketrans('０１２３４５６７８９', '0123456789')))
+        if seen != mem.get('soldiers_seen'):
+            mem['soldiers_seen'] = seen
+            _record(mem, 'soldiers_seen', observed_metric={'soldiers': seen},
+                    reason='兵士の総数を画面の文言から読み取った')
 
 
 def summary(mem: dict | None) -> dict:
