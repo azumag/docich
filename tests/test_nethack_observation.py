@@ -94,6 +94,13 @@ def test_wrapped_questions_in_full_tty_are_unknown_not_answers(message, wrap):
 BANNER = "Konnichi wa docich, welcome to NetHack!  You are a lawful female human Samurai."
 
 
+@pytest.mark.parametrize(("length", "expected"), [(71, "none"), (72, "more"), (79, "more")])
+def test_more_marker_next_row_starts_at_tty_co_minus_marker_width(length, expected):
+    message = "x" * length
+    obs = normalize_tty(tty_layout(message, "--More--"))
+    assert obs.prompt == expected
+
+
 def test_more_marker_pushed_to_the_next_row_is_a_more_prompt():
     # Production 2026-09-28 gen427: the 79-column banner leaves no room for
     # ``--More--``, so NetHack prints the marker alone on the next row. That

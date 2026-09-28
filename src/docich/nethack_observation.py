@@ -174,17 +174,16 @@ def _message_may_wrap(raw_lines: list[str], cols: int) -> bool:
 
 
 def _more_marker_on_next_row(raw_lines: list[str], cols: int) -> bool:
-    """True when a full-width top row's ``--More--`` was pushed to row one.
+    """True when NetHack had to push ``--More--`` to row one.
 
-    NetHack prints ``--More--`` after the message; when the message fills the
-    row there is no room left, so the marker appears alone on the next row
-    (production 2026-09-28 gen427: the 79-column welcome banner). That row is
-    NetHack's own marker, not question text, so it is not wrap evidence. Only
-    a bare marker counts; anything else on that row stays a possible wrap.
+    TTY ``more()`` moves the marker to the next row once the cursor reaches
+    ``CO - 8``, so on an 80-column terminal a 72-column message is already
+    enough. Only a bare marker counts; anything else stays possible wrap text.
     """
     return (
         len(raw_lines) >= 2
-        and len(raw_lines[0].rstrip()) >= cols - 1
+        and cols >= len("--More--")
+        and len(raw_lines[0].rstrip()) >= cols - len("--More--")
         and raw_lines[1].strip() == "--More--"
     )
 
