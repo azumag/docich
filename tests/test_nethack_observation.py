@@ -115,6 +115,7 @@ def test_more_marker_pushed_to_the_next_row_is_a_more_prompt():
 @pytest.mark.parametrize("message", [
     "Really attack the " + "very " * 12 + "peaceful kitten? [yn] (n)",
     "Would you like to inspect " + "this unusual object " * 2 + "before continuing now",
+    "x" * 79 + ":",
 ])
 def test_more_marker_row_never_turns_a_full_width_question_into_more(message):
     row = message[:80]

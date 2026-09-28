@@ -315,6 +315,15 @@ def normalize_tty(
         for condition in _CONDITIONS
         if re.search(rf"(?<![A-Za-z]){re.escape(condition.lower())}(?![A-Za-z])", status_lower)
     )
+    more_on_next_row = _more_marker_on_next_row(raw_lines, cols)
+    prompt = _prompt_kind(
+        message,
+        may_wrap=False if more_on_next_row else _message_may_wrap(raw_lines, cols),
+    )
+    # Preserve every top-row prompt signal before accepting the next-row marker.
+    if more_on_next_row and prompt == "none":
+        prompt = "more"
+
     return NethackObservation(
         raw_text=text,
         message=message,
@@ -323,10 +332,5 @@ def normalize_tty(
         player=player,
         vitals=_parse_vitals(status),
         conditions=conditions,
-        prompt=(
-            # Question markers on the top row still classify as ``unknown``.
-            _prompt_kind(message + " --More--", may_wrap=False)
-            if _more_marker_on_next_row(raw_lines, cols)
-            else _prompt_kind(message, may_wrap=_message_may_wrap(raw_lines, cols))
-        ),
+        prompt=prompt,
     )
