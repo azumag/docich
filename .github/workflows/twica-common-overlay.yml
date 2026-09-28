@@ -41,7 +41,7 @@ jobs:
           persist-credentials: false
           submodules: false
       - name: Check out exact reviewed Soren integration
-        run: git submodule update --init -- games/soviet_now
+        run: git submodule update --init --depth 1 -- games/soviet_now
       - name: Install isolated test dependencies
         run: |
           python3 -m venv .ci-twica-venv

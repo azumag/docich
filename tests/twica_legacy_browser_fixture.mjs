@@ -12,6 +12,7 @@ const {installTwicaLegacyOwner}=await import(pathToFileURL(path.join(process.env
 const dir=fs.mkdtempSync(path.join(os.tmpdir(),'twica-real-'));
 const streams=new Set();let total=0,max=0;
 const server=http.createServer((req,res)=>{
+  if(requests.length<30) requests.push(req.url==='/events'?'events':req.url==='/host'?'host':'overlay');
   if(req.url==='/events'){
     res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-store'});
     res.write(': ready\n\n');streams.add(res);total++;max=Math.max(max,streams.size);
@@ -24,9 +25,18 @@ const server=http.createServer((req,res)=>{
 await new Promise(r=>server.listen(0,'127.0.0.1',r));
 const url=`http://127.0.0.1:${server.address().port}/overlay/x`;
 const browser=await chromium.launch({headless:true,executablePath:process.env.SOREN_CHROME_EXECUTABLE_PATH||undefined});
-const guards=[];
+const guards=[]; const pageErrors=[]; const requests=[]; let phase='initial';
+browser.on('page', p=>p.on('pageerror', e=>pageErrors.push(e.name)));
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-async function wait(fn){for(let i=0;i<100;i++){if(await fn())return;await sleep(20);}throw new Error('fixture timeout');}
+async function wait(fn){
+ for(let i=0;i<250;i++){if(await fn())return;await sleep(20);}
+ const pages=await Promise.all(browser.contexts().flatMap(c=>c.pages()).map(async p=>{
+   try{return await p.evaluate(()=>({body:!!document.body,frames:document.querySelectorAll('iframe').length,top:window.top===window}));}
+   catch{return {unavailable:true};}
+ }));
+ throw new Error('fixture timeout '+JSON.stringify({phase,total,max,active:streams.size,
+   guards:guards.map(g=>({managed:g.managed,subscribed:g.subscribed,stopped:g.stopped})),pages,pageErrors,requests}));
+}
 function policy(owner,legacy_role='game'){
  fs.writeFileSync(path.join(dir,'control.json'),JSON.stringify({schema:1,owner,legacy_role,generation:(owner==='common'?'c':owner==='none'?'b':'a').repeat(32)}),{mode:0o600});
 }
@@ -38,10 +48,11 @@ try{
  guards.push(await installTwicaLegacyOwner(game,item,{directory:dir,role:'game',intervalMs:20}));
  guards.push(await installTwicaLegacyOwner(shared,item,{directory:dir,role:'shared',intervalMs:20}));
  await wait(()=>streams.size===1);
- policy('none');await wait(()=>streams.size===0);
- policy('common');
+ phase='legacy quiescence';policy('none');await wait(()=>streams.size===0);
+ phase='common subscription';policy('common');
  const common=await browser.newPage();await common.goto(url);await wait(()=>streams.size===1);
  for(let id=1;id<=8;id++){
+   phase='event '+id;
    await game.reload();await shared.reload();await sleep(30);
    for(const stream of streams)stream.write(`data: ${id}\n\n`);
    await wait(async()=>await common.evaluate('events.length')===id);
@@ -50,7 +61,7 @@ try{
  const events=await common.evaluate('events');assert.deepEqual(events,[1,2,3,4,5,6,7,8]);
  assert.equal(total,2);assert.equal(max,1);
  await common.close();await wait(()=>streams.size===0);
- policy('legacy','shared');await wait(()=>streams.size===1);
+ phase='rollback shared';policy('legacy','shared');await wait(()=>streams.size===1);
  assert.equal(total,3);assert.equal(max,1);
  console.log(JSON.stringify({passed:true,events:events.length,max_subscriptions:max,total_subscriptions:total}));
 }finally{
