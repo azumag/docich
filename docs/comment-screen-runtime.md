@@ -2,7 +2,7 @@
 
 ## 状態
 
-PR #1235 の画面要否判定に続く実装。分類の契約は [comment-screen-context.md](comment-screen-context.md) を維持する。この文書は取得・生成の後段だけを扱う。soviet_now側の接続は PR #522。ローカルでは元ファイルのGit blobを照合したsource subsetで84件のテストを実行した。実HTTPアダプターの送信bodyはモック通信境界で検証したが、完全checkoutの既存全体スイート・実API・本番受入は未実施。CI結果はPRの最新HEADで確認する。
+PR #1235 の画面要否判定に続く実装。分類の契約は [comment-screen-context.md](comment-screen-context.md) を維持する。soviet_now #522 は `bc92f38e5af537e97b5f7a62124ffc0fe9e0010f` で統合済みで、docich の gitlink と legacy game prompt mirror/golden も同じ確定版へ同期している。この文書は取得・生成の後段だけを扱う。soviet_now側の接続は PR #522。ローカルでは元ファイルのGit blobを照合したsource subsetで84件のテストを実行した。実HTTPアダプターの送信bodyはモック通信境界で検証したが、完全checkoutの既存全体スイート・実API・本番受入は未実施。CI結果はPRの最新HEADで確認する。
 
 この変更だけで既存の画像非対応モデルが画像対応になるわけではない。初期の画像実行先は、既存チェーンに含まれ、運用者が実機で確認した `local:<model>` のOpenAI互換チャット経路のみ。OpenCode / Codex CLI / AMD / OpenRouter / Vercelへの画像添付はこの候補では未対応。設定した対応モデルがなければ、撮影せずテキストで返答する。
 
