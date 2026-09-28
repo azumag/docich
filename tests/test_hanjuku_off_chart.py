@@ -796,3 +796,41 @@ def test_a_boss_sortie_without_its_general_gives_up_and_a_cancelled_boss_retries
     assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
     assert mem['orders']['F2'] == 'failed'
     assert policy.next_order(mem)['step'] == 'F1'          # boss hero retry is still due
+
+
+def test_after_a_y_jump_the_cursor_is_walked_onto_the_nearest_roof_then_selects(monkeypatch):
+    """g421 14:45: a jump landed a few px off スペンソニア and fell into a 20-minute search."""
+    order = {'step': 'J3', 'general': 'どうし', 'source': 'スペンソニア', 'target': 'けっかい',
+             'cards': [], 'after': None, 'note': 't'}
+    mem = {'chapter': 1, 'orders': {}, 'picked': [], '_records': [], 'active': 'J3',
+           'captured': ['スペンソニア'], 'launched_orders': {'J3': order},
+           'cursor': list(CASTLES['スペンソニア']),
+           'near_goal': {'step': 'J3', 'goal': 'スペンソニア', 'mode': 'map'}}
+    roofs = [{'kind': 'own', 'target': (150, 110), 'clipped': False}]
+    monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: roofs)
+    moves = policy.map_step(map_screen(140, 120), mem, FRAME)
+    assert {a['buttons'][0] for a in moves} == {'right', 'up'}
+    assert policy.map_step(map_screen(149, 111), mem, FRAME) == [policy.pad('a')]
+    assert mem['expect_menu'] is True and 'near_goal' not in mem
+    # No roof near the landing: re-open Y instead of searching.
+    mem.update(near_goal={'step': 'J3', 'goal': 'スペンソニア', 'mode': 'map'}, expect_menu=False)
+    monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: [])
+    assert policy.map_step(map_screen(140, 120), mem, FRAME) == [policy.pad('y')]
+    assert decisions(mem, 'align_failed') and not mem.get('nav_search')
+
+
+def test_select_re_places_a_lost_cursor_on_the_heros_castle(monkeypatch):
+    """Owner hint: use SELECT when the position is lost (g421 wandered 11 min in 2 h)."""
+    monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: [])
+    mem = {'chapter': 1, '_records': [], 'cursor': [500, 500], 'uncertain': True,
+           'captured': ['スペンソニア'], 'garrison': {'スペンソニア': ['どうし', 'リーキ']}}
+    goal = CASTLES['ゴーメン']
+    first = policy.nav_step(map_screen(120, 120), mem, FRAME, goal)
+    assert first != [policy.pad('select')]                            # one unanchored frame
+    assert policy.nav_step(map_screen(120, 120), mem, FRAME, goal) == [policy.pad('select')]
+    assert mem['cursor'] == list(CASTLES['スペンソニア']) and decisions(mem, 'select_to_hero')
+    # Hero marching: his castle is unknown, so no re-placement.
+    mem = {'chapter': 1, '_records': [], 'cursor': [500, 500], 'uncertain': True, 'tick': 5,
+           'captured': ['スペンソニア'], 'garrison': {'スペンソニア': ['どうし']},
+           'sorties': {'X': {'general': 'どうし', 'target': 'ゴーメン', 'status': 'en_route', 'tick': 4}}}
+    assert policy._hero_castle(mem) is None
