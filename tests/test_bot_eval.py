@@ -116,21 +116,25 @@ def _fake_tmux_env(tmp_path, frames):
     (tmp_path / "frames.json").write_text(json.dumps(frames))
     tmux = bin_dir / "tmux"
     tmux.write_text(f"#!{sys.executable}\n" + '''import json, os, pathlib, sys
+args = sys.argv[1:]
+if args[:1] == ["-L"]:
+    args = args[2:]  # private evaluation server socket (Issue #1280)
 root = pathlib.Path(os.environ["FAKE_ROOT"])
-if sys.argv[1] == "capture-pane":
+if args[0] == "capture-pane":
     frames = json.loads((root / "frames.json").read_text())
     state = root / "n"
     n = int(state.read_text()) if state.exists() else 0
     state.write_text(str(n + 1))
     print(frames[min(n, len(frames) - 1)])
-elif sys.argv[1] == "send-keys":
+elif args[0] == "send-keys":
     with (root / "keys").open("a") as stream:
-        stream.write(json.dumps(sys.argv[2:]) + "\\n")
+        stream.write(json.dumps(args[1:]) + "\\n")
 ''')
     tmux.chmod(0o700)
     bot = tmp_path / "bot.py"
     bot.write_text('import json, sys\nsys.stdin.read()\nprint(json.dumps({"actions": []}))\n')
-    return {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "FAKE_ROOT": str(tmp_path)}, bot
+    return {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "FAKE_ROOT": str(tmp_path),
+            "DOCICH_EVAL_PANE_LEDGER": str(tmp_path / "eval-panes.json")}, bot
 
 
 def test_tmux_calls_use_a_host_portable_term(monkeypatch):
@@ -143,7 +147,10 @@ def test_tmux_calls_use_a_host_portable_term(monkeypatch):
     monkeypatch.setenv("TERM", "xterm-ghostty")
     monkeypatch.setattr(bot_eval.subprocess, "run", fake_run)
     bot_eval._tmux(["list-sessions"])
-    assert calls[0][0] == ["tmux", "list-sessions"]
+    # Evaluations use their own tmux server: a transient improve unit that
+    # happens to start the default server would own it in its own cgroup and
+    # systemd would kill every production pane when the unit ends (Issue #1280).
+    assert calls[0][0] == ["tmux", "-L", "docich-eval", "list-sessions"]
     # A missing xterm-ghostty terminfo entry made the evaluation session fail
     # before the first pane existed; the evaluation must not depend on the
     # caller's terminal database.

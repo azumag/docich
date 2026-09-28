@@ -9,6 +9,7 @@ AUTH = ROOT / "ops/vm_actions/authorize_corner_rotation.py"
 LEGACY_AUTH = ROOT / "ops/vm_actions/authorize_retro_corner.py"
 SCRIPT = ROOT / "ops/vm_actions/restart_corner_rotation.sh"
 RECOVER_SCRIPT = ROOT / "ops/vm_actions/recover_corner_rotation.sh"
+RECOVER_RUNTIME_SCRIPT = ROOT / "ops/vm_actions/recover_hanjuku_runtime.sh"
 WF = ROOT / ".github/workflows/corner-rotation-operator.yml"
 LEGACY_WF = ROOT / ".github/workflows/retro-corner-operator.yml"
 
@@ -64,7 +65,15 @@ class CornerRotationAuthorizeTests(unittest.TestCase):
         self.assertEqual(self.run_auth(INPUT_OPERATION="start-hanjuku").returncode, 0)
         self.assertNotEqual(self.run_auth(INPUT_OPERATION="start-hanjuku",GITHUB_WORKFLOW_REF=LEGACY_REF).returncode, 0)
         self.assertNotEqual(self.run_auth(INPUT_OPERATION="start-hanjuku;id").returncode, 0)
-        for operation in ("status", "restart", "exec", "restart-service;id", "", "recover-failed;id", "rollback-timer;id"):
+        recovered_runtime = self.run_auth(INPUT_OPERATION="recover-runtime")
+        self.assertEqual(recovered_runtime.returncode, 0, recovered_runtime.stderr)
+        self.assertEqual(
+            json.loads(recovered_runtime.stdout),
+            {"operation": "recover-runtime", "target": "production", "ref": "main"},
+        )
+        self.assertNotEqual(self.run_auth(INPUT_OPERATION="recover-runtime",GITHUB_WORKFLOW_REF=LEGACY_REF).returncode, 0)
+        self.assertNotEqual(self.run_auth(INPUT_OPERATION="recover-runtime;id").returncode, 0)
+        for operation in ("status", "restart", "exec", "restart-service;id", "", "recover-failed;id", "rollback-timer;id", "recover-runtime;id"):
             with self.subTest(operation=operation):
                 self.assertNotEqual(self.run_auth(INPUT_OPERATION=operation).returncode, 0)
 
@@ -153,10 +162,28 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
         self.assertNotIn("rm -", text)
         self.assertNotIn("corner-rotation tick", text)
 
+    def test_recover_runtime_script_is_fixed_and_runs_the_reviewed_cli(self):
+        text = RECOVER_RUNTIME_SCRIPT.read_text(encoding="utf-8")
+        for required in (
+            'launcher="$DOCICH_PROD_ROOT/bin/docich"',
+            'config="$DOCICH_PROD_ROOT/config/docich.soren-live.toml"',
+            'exec "$launcher" --config "$config" retro-corner recover-runtime',
+            "reviewed docich launcher or config missing; refusing to recover",
+            "recover-runtime accepts no arguments",
+        ):
+            self.assertIn(required, text)
+        self.assertNotIn("$@", text)
+        self.assertNotIn("eval ", text)
+        self.assertNotIn("sudo", text)
+        self.assertNotIn("docich.service", text)
+        self.assertNotIn("systemctl", text)
+        self.assertNotIn("rm -", text)
+        self.assertNotIn("corner-rotation tick", text)
+
     def test_workflow_is_fixed_and_never_exposes_arbitrary_command_input(self):
         text = WF.read_text(encoding="utf-8")
         for required in (
-            "options: [restart-service, recover-failed, rollback-timer, start-hanjuku]",
+            "options: [restart-service, recover-failed, rollback-timer, start-hanjuku, recover-runtime]",
             "github.actor_id == 9018513",
             "github.triggering_actor == 'azumag'",
             "github.ref_protected == true",
@@ -167,12 +194,15 @@ class CornerRotationOperatorPolicyTests(unittest.TestCase):
             "control/ops/vm_actions/recover_corner_rotation.sh",
             "control/ops/vm_actions/rollback_corner_rotation_timer.sh",
             "control/ops/vm_actions/start_hanjuku_corner.sh",
+            "control/ops/vm_actions/recover_hanjuku_runtime.sh",
             "Recover only the failed corner rotation slot",
             "Restart only the corner rotation service",
             "Roll back only the corner rotation timer",
+            "Recover a dead Hanjuku runtime through the reviewed CLI",
             "if: steps.auth.outputs.operation == 'recover-failed'",
             "if: steps.auth.outputs.operation == 'restart-service'",
             "if: steps.auth.outputs.operation == 'rollback-timer'",
+            "if: steps.auth.outputs.operation == 'recover-runtime'",
             "StrictHostKeyChecking=yes",
             "ForwardAgent=no",
             "ClearAllForwardings=yes",
@@ -198,6 +228,30 @@ def test_hanjuku_operator_rejects_extra_arguments_before_any_launch():
     result=subprocess.run(['bash',str(script),'arbitrary-command'],capture_output=True,text=True)
     assert result.returncode==64
     assert 'accepts no arguments' in result.stderr
+
+
+def test_recover_runtime_operator_rejects_extra_arguments_before_any_launch():
+    script=ROOT/'ops/vm_actions/recover_hanjuku_runtime.sh'
+    result=subprocess.run(['bash',str(script),'arbitrary-command'],capture_output=True,text=True)
+    assert result.returncode==64
+    assert 'accepts no arguments' in result.stderr
+
+
+def test_fixed_recover_runtime_script_runs_only_the_reviewed_cli(tmp_path):
+    import os
+    root=tmp_path/'docich'
+    (root/'bin').mkdir(parents=True)
+    (root/'config').mkdir()
+    (root/'config'/'docich.soren-live.toml').write_text('')
+    tool=root/'bin'/'docich'
+    tool.write_text('#!/usr/bin/env python3\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n')
+    tool.chmod(0o755)
+    result=subprocess.run(['bash',str(ROOT/'ops/vm_actions/recover_hanjuku_runtime.sh')],
+        env={**os.environ,'DOCICH_PROD_ROOT':str(root)},
+        capture_output=True,text=True)
+    assert result.returncode==0,result.stderr
+    args=json.loads(result.stdout.splitlines()[0])
+    assert args==['--config',str(root/'config'/'docich.soren-live.toml'),'retro-corner','recover-runtime']
 
 
 def test_hanjuku_start_reuses_common_reservation_without_overriding_policy(monkeypatch):

@@ -38,11 +38,19 @@ from pathlib import Path
 
 from ..adapters.cli_game import cli_cols, cli_command_list, cli_rows
 from ..config import load_game, load_global
+from ..eval_tmux import kill_session, pane_pids, record_pane, register, release
+from ..tmux import eval_tmux_argv
 from . import resolver_policy, strategy_history_dir, strategy_path
 from . import gnurobots as gnurobots_resolver
 from .runner import EvaluationCleanupError, _session_absent, resolve_command, run_match
 from .bot_eval import bot_games as _bot_games
 from .lease import activity_lock
+
+
+def _tmux(args: list[str]) -> subprocess.CompletedProcess:
+    # 評価は本番tmuxサーバを共有しない (Issue #1280)。
+    return subprocess.run(eval_tmux_argv(args), capture_output=True, text=True)
+
 
 GNUROBOTS_BIN = os.environ.get("GNUROBOTS_BIN", "/usr/local/bin/gnurobots")
 GNUROBOTS_MAP = os.environ.get("GNUROBOTS_MAP", "/usr/local/share/gnurobots/maps/small.map")
@@ -86,11 +94,9 @@ def _run_match_gnurobots(script_text: str, *, interval_s: float = 0.25, max_s: f
     os.close(fd2)
     session = f"evalr-{os.getpid()}-{int(time.time() * 1000) % 1000000}"
 
-    def _tmux(args: list[str]) -> subprocess.CompletedProcess:
-        return subprocess.run(["tmux", *args], capture_output=True, text=True)
-
+    register()
     try:
-        _tmux(["kill-session", "-t", session])
+        _tmux(["kill-session", "-t", f"={session}"])
         if session_hook is not None:
             session_hook("add",session)
         # The game prints STATISTICS to stdout at exit.  Redirect it into a
@@ -109,6 +115,8 @@ def _run_match_gnurobots(script_text: str, *, interval_s: float = 0.25, max_s: f
         )
         if created.returncode != 0:
             raise RuntimeError(f"評価用セッションの起動に失敗しました: {created.stderr.strip()}")
+        for pane in pane_pids(_tmux, session):
+            record_pane(pane)
         start = time.monotonic()
         dead = False
         last_text = ""
@@ -116,7 +124,7 @@ def _run_match_gnurobots(script_text: str, *, interval_s: float = 0.25, max_s: f
             if guard is not None:
                 guard()
             time.sleep(interval_s)
-            listed = _tmux(["list-panes", "-t", session, "-F", "#{pane_dead}"])
+            listed = _tmux(["list-panes", "-t", f"={session}", "-F", "#{pane_dead}"])
             if listed.returncode != 0 or not listed.stdout.strip():
                 # the game IS the session command: its exit closes the session
                 dead = True
@@ -143,9 +151,14 @@ def _run_match_gnurobots(script_text: str, *, interval_s: float = 0.25, max_s: f
             "seconds": round(time.monotonic() - start, 1),
         }
     finally:
-        _tmux(["kill-session", "-t", session])
-        if not _session_absent(_tmux(["has-session", "-t", session])):
+        remaining = kill_session(_tmux, session)
+        if remaining:
+            raise EvaluationCleanupError(
+                f"評価用セッションの子プロセスが停止しませんでした: {remaining}"
+            )
+        if not _session_absent(_tmux(["has-session", "-t", f"={session}"])):
             raise EvaluationCleanupError(f"評価用セッションの停止に失敗しました: {session}")
+        release()
         if session_hook is not None:
             session_hook("remove",session)
         for junk in (script_path, log_path):
@@ -416,8 +429,7 @@ def _claim_activity_marker(marker: Path, claim: dict) -> None:
             if owner_alive:
                 raise EvaluationCleanupError("既存の改善ownerが生存しています")
             for session in sessions:
-                result=subprocess.run(["tmux","has-session","-t",session],capture_output=True,text=True)
-                if not _session_absent(result):
+                if not _session_absent(_tmux(["has-session", "-t", f"={session}"])):
                     raise EvaluationCleanupError(f"既存の評価sessionが残っています: {session}")
             marker.unlink()
             continue

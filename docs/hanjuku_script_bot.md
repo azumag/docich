@@ -340,6 +340,30 @@ protected mainとVMのSHA一致を検証し、ゲーム・コマンド・unitを
 要求の受理とゲームの実起動は別であり、`retro_corner.json`と世代別botログで実起動を確認する。
 他のコーナーが稼働中の場合に強制停止したり、cooldown/stateを削除したりしない。
 
+### 死んだruntimeの正規復旧（`recover-runtime`）
+
+tmuxサーバ消滅などでgame/agentペインが死に、canonicalは`hanjuku-hero`をready/activeの
+まま保持し、terminal evidenceが無い場合、通常のstop/switchは
+`Hanjuku exited before terminal evidence`で拒否される。ownerは次の固定operation/CLIで
+復旧する（ad-hocなrelaunchスクリプトを使わない）。
+
+1. owner workflow `Corner rotation operator`の`recover-runtime`（`confirm=production`）を実行する。
+   正規経路はこのworkflowまたは許可されたVMセッションの
+   `bin/docich --config config/docich.soren-live.toml retro-corner recover-runtime`。
+   - `retro_corner.json`がhanjukuのactive/failed、canonicalがreadyで`bot_identity`と
+     完全一致する場合だけ動く。不一致は何も起動せず拒否する。
+   - 共有session/displayを作り直し（`docich up`相当）、記録済みruntimeの
+     `preflight`→`materialize_runtime`→`readiness`をアダプタ自身の契約で再実行する。
+     ウィンドウが生きていればownership検証だけ行い、再作成しない。
+   - その後、既存のoperator stop経路でセーブを試み、失敗時のみ`manual_forced_stop`を
+     許可してコーナーを終了する。
+   - cornerのtickが実行中（guard保持中）なら何も操作せずqueuedを返す。並行して
+     `stop`を押したり、state/canonicalを手で編集したりしない。
+2. 完了後、`corner-rotation-operator`の`recover-failed`でローテーションのラッチを解除する
+   （既存手順。recover-runtime自身はラッチを解除しない）。
+3. `retro_corner.json`のstatus、canonicalのphase/active game、ゲームウィンドウと配信フレーム、
+   共通配信・音声PIDの維持を別々に実測する。コマンドの成功と実機復旧は区別する。
+
 ### 防衛戦の奥の手
 
 - 灰色の「たまごをつかう」「きりふだ」「たいきゃく」が実位置に揃い、騎士カーソルを確認した場合は下へスクロールして「おくのて」を選ぶ。灰色の項目を使用可能扱いにはしない。

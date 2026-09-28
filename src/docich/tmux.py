@@ -6,6 +6,7 @@ run (architecture.md §9.6).
 """
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
 from dataclasses import dataclass
@@ -24,6 +25,35 @@ from .naming import (
 from .process_tree import terminate_process_tree
 
 SESSION = "docich"
+
+# Throwaway evaluation sessions (resolver/bot_eval/improve/ninvaders arena)
+# must never share the production tmux server.  A tmux client with no server
+# running starts one in the caller's cgroup; when that caller is a transient
+# `systemd-run` improvement unit, systemd kills the whole cgroup when the unit
+# ends and takes every production pane with it (Issue #1280).  Evaluations get
+# their own tmux socket so a crashed or unit-owned server can only lose eval
+# sessions.
+EVAL_SERVER = "docich-eval"
+
+
+def eval_server_name() -> str:
+    """Name of the private tmux server used for evaluation sessions.
+
+    ``DOCICH_EVAL_TMUX_SERVER`` overrides the default for isolated tests or
+    side-by-side evaluators.
+    """
+
+    override = os.environ.get("DOCICH_EVAL_TMUX_SERVER", "").strip()
+    if override:
+        validate_tmux_name(override)
+        return override
+    return EVAL_SERVER
+
+
+def eval_tmux_argv(args: list[str]) -> list[str]:
+    """tmux argv targeting the private evaluation server."""
+
+    return ["tmux", "-L", eval_server_name(), *args]
 
 
 # strict existence で「不在」とみなす stderr マーカー。共有
@@ -63,11 +93,16 @@ class PaneState:
 
 
 class Tmux:
-    def __init__(self, session: str = SESSION):
+    def __init__(self, session: str = SESSION, *, server: str | None = None):
         self.session = validate_tmux_name(session)
+        # An explicit private server (``tmux -L``) keeps evaluation sockets
+        # apart from the production server (Issue #1280).  ``None`` keeps the
+        # default server used by every production component.
+        self.server = validate_tmux_name(server) if server is not None else None
 
     def _run(self, args: list[str], **kwargs):
-        return procs.run(["tmux", *args], strip_tmux=True, **kwargs)
+        command = ["tmux", "-L", self.server, *args] if self.server is not None else ["tmux", *args]
+        return procs.run(command, strip_tmux=True, **kwargs)
 
     def _checked(self, args: list[str], operation: str):
         result = self._run(args)
