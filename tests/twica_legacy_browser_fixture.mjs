@@ -9,7 +9,9 @@ import { pathToFileURL } from 'node:url';
 const require=createRequire(import.meta.url);
 const {chromium}=require(process.env.DOCICH_NODE_PLAYWRIGHT || 'playwright');
 const {installTwicaLegacyOwner,readLegacyPolicy}=await import(pathToFileURL(path.join(process.env.DOCICH_SOREN_ROOT,'lib/twica_legacy_owner.mjs')));
-const dir=fs.mkdtempSync(path.join(os.tmpdir(),'twica-real-'));
+// CI may spell TMPDIR through a symlink; create this owned fixture under its
+// canonical parent, without weakening the production guard's no-link policy.
+const dir=fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()),'twica-real-'));
 const streams=new Set();let total=0,max=0;
 const server=http.createServer((req,res)=>{
   if(requests.length<30) requests.push(req.url==='/events'?'events':req.url==='/host'?'host':'overlay');
