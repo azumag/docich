@@ -791,6 +791,26 @@ def _adopt_interim(mem, state, rid):
                 reason='調整チャート待ちの間、JEVが決定的候補から暫定出撃を選択')
 
 
+def _adjust_situation(mem):
+    """Where the generals are, for the adjusted-chart request.
+
+    g421 (e7df88f1): the LLM chart sent F2/F3/F5 with generals that were not
+    in their source castles (it was never told who stood where) and each
+    order failed at the castle menu. The request now carries the recorded
+    garrisons, marching generals and lost castles so the worker can prompt
+    with them and drop orders that cannot start.
+    """
+    now = int(mem.get('tick') or 0)
+    # Same bound as _en_route: an unread arrival stops counting as marching.
+    marching = sorted({(s['general'], s.get('target')) for s in (mem.get('sorties') or {}).values()
+                       if s.get('status') in ('en_route', 'launched_unconfirmed') and s.get('general')
+                       and s.get('tick') is not None and now - int(s['tick']) < SORTIE_BUSY_TICKS},
+                      key=str)
+    return {'garrison': {castle: sorted(names) for castle, names in sorted((mem.get('garrison') or {}).items())},
+            'lost': sorted(mem.get('lost') or []), 'home_lost': bool(mem.get('home_lost')),
+            'en_route': [{'general': g, 'target': t} for g, t in marching]}
+
+
 def _adopt_plan(mem, doc, rid):
     """Adopt a validated adjusted chart as the plan, with per-generation step ids."""
     orders = [{**o, 'step': chart_adjust.execution_step(rid, o['step']), 'local_step': o['step'],
@@ -838,7 +858,7 @@ def _off_chart(mem):
         _record(mem, 'chart_adjust_request', chart_step=None, strategy_variant='chart_adjust_pending',
                 request_id=rid, off_chart_reason=reason, blocked=blocked,
                 captured=sorted(mem.get('captured') or []), orders=dict(status),
-                gold=mem.get('gold'), month=mem.get('month'),
+                gold=mem.get('gold'), month=mem.get('month'), **_adjust_situation(mem),
                 reason='チャート外: 出撃可能な指示がないため調整チャートを非同期に要求し入力を保留')
         return
     doc = mem.get('_adjusted')
