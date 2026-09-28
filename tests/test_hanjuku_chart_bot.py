@@ -17,6 +17,7 @@ from docich import hanjuku_commentary, hanjuku_narration, hanjuku_policy as poli
 from docich import pulse_volume
 from docich.hanjuku_bot import decide
 from docich.hanjuku_font import UNKNOWN, read_lines
+from docich.hanjuku_screen import Screen
 
 MASH = [action for _ in range(policy.POWER_TAPS)
         for action in (policy.pad('a', 3), {'type': 'wait', 'ms': 50})]
@@ -515,7 +516,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v34-y-open-grace'
+    assert state['bot_version'] == 'hanjuku-chart-v35-camp-recall'
     assert '_records' not in state['policy']
 
 
@@ -2040,3 +2041,79 @@ def test_commentary_separates_plan_unknown_departure_and_observation():
     _, text = hanjuku_commentary.compose({'decision': 'battle_start', 'ally': 'どうし',
         'enemy': 'ミント', 'ally_hp': 90, 'enemy_hp': 32})
     assert '温存' not in text and '90対32' in text
+
+
+def _camp_frame():
+    """A map frame with our camping tent (probe-measured sprite)."""
+    c = Canvas()
+    for yy in range(72, 81):
+        for xx in range(30, 39):
+            c.put(xx, yy, (238, 198, 65) if yy < 76 else (238, 113, 57))
+    for p in ((34, 68), (35, 68), (34, 69)):
+        c.put(p[0], p[1], (255, 0, 0))
+    return c.frame()
+
+
+def _own_roof_frame():
+    """A map frame with one own castle roof (selecting cell (165, 117))."""
+    c = Canvas()
+    for yy in range(105, 126):
+        for xx in range(150, 181):
+            c.put(xx, yy, (230, 56, 90))
+    return c.frame()
+
+
+def test_own_camps_finds_the_tent_and_skips_roof_reds():
+    from docich.hanjuku_screen import own_camps
+    camps = own_camps(_camp_frame())
+    assert [c['target'] for c in camps] == [(26, 66)]
+    assert own_camps(_own_roof_frame()) == []
+
+
+def test_camp_recall_walks_cursor_menu_and_own_castle(monkeypatch):
+    frame = _camp_frame()
+    mem = {'chapter': 1, '_records': []}
+    screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(80, 90))
+    assert policy.camp_recall_step(screen, mem, frame) == [policy.pad('left', 8)]
+    assert mem['recall']['stage'] == 'to_camp'
+    assert [r['decision'] for r in mem['_records']] == ['camp_found']
+
+    screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(27, 67))
+    assert policy.camp_recall_step(screen, mem, frame) == [policy.pad('a')]
+    assert mem['recall']['stage'] == 'menu'
+    assert [r['decision'] for r in mem['_records']][-1] == 'camp_enter'
+
+    window = Screen(lines=[], hand=None, text='いどう ステータス キャンプ きかん', kind='text')
+    for _ in range(3):
+        assert policy.camp_recall_step(window, mem, frame) == [policy.pad('down')]
+    assert policy.camp_recall_step(window, mem, frame) == [policy.pad('a')]
+    assert mem['recall']['stage'] == 'dest'
+
+    monkeypatch.setattr(policy, 'castle_roofs',
+                        lambda frame, exclude=None: [{'kind': 'own', 'target': (165, 117), 'clipped': False}])
+    far = Screen(lines=[], hand=None, text='', kind='map_target', marker=(160, 110))
+    assert policy.camp_recall_step(far, mem, frame) == [policy.pad('down', 6)]
+    near = Screen(lines=[], hand=None, text='', kind='map_target', marker=(163, 115))
+    assert policy.camp_recall_step(near, mem, frame) == [policy.pad('a')]
+    assert 'recall' not in mem
+    assert [r['decision'] for r in mem['_records']][-1] == 'camp_recall'
+    assert mem.get('uncertain') is True
+
+
+def test_camp_recall_cancels_when_no_own_castle_is_visible():
+    frame = _camp_frame()
+    mem = {'chapter': 1, '_records': [], 'recall': {'stage': 'dest', 'target': [26, 66], 'steps': 1}}
+    marker_only = Screen(lines=[], hand=None, text='', kind='map_target', marker=(100, 100))
+    assert policy.camp_recall_step(marker_only, mem, frame) == [policy.pad('b')]
+    assert 'recall' not in mem
+    assert [r['decision'] for r in mem['_records']][-1] == 'camp_recall_skipped'
+
+
+def test_map_step_recalls_a_camp_when_nothing_is_charted(monkeypatch):
+    frame = _camp_frame()
+    monkeypatch.setattr(policy, 'next_order', lambda mem: None)
+    mem = {'chapter': 1, 'variant': 'chart', 'picked': [], '_records': [],
+           'tick': 500, 'world_map_tick': 400}
+    screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(80, 90))
+    assert policy.map_step(screen, mem, frame) == [policy.pad('left', 8)]
+    assert mem['recall']['stage'] == 'to_camp'

@@ -18,7 +18,7 @@ from . import hanjuku_experience as experience
 from . import hanjuku_reference as reference
 from .hanjuku_egg_reference import enemy_egg_triggers
 from .hanjuku_font import UNKNOWN, TextLine
-from .hanjuku_screen import HEADER as HEADER_RE, OKUNOTE_CHOICES, Screen, castle_roofs
+from .hanjuku_screen import HEADER as HEADER_RE, OKUNOTE_CHOICES, Screen, castle_roofs, own_camps
 
 NAME = chart.HERO
 FPS = 60
@@ -1282,6 +1282,101 @@ def _hold_off_castle(screen, mem, order) -> bool:
 
 MENU_HOLD_LIMIT = 10           # arrived-but-unanchored holds after a failed castle menu
 
+RECALL_LIMIT = 90              # observations for one camp recall
+RECALL_ARRIVE_PX = 4           # cursor cell onto the tent
+RECALL_CONFIRM_PX = 4          # marker onto the own castle's selecting cell
+
+
+def camp_recall_step(screen: Screen, mem, frame):
+    """Owner rule (2026-09-28): a camp (野営) seen on screen is recalled.
+
+    Measured in the isolated probe: A on our tent opens
+    いどう/ステータス/キャンプ/きかん with the cursor on いどう; down x3 then A
+    opens the destination marker (kind map_target), and A over an own castle's
+    roof cell sends the general home. The destination is the nearest visible
+    own castle (補給できる城). ``None`` means "no recall in flight": the
+    caller keeps its ordinary map steering.
+    """
+    state = mem.get('recall')
+    if state is None:
+        if screen.kind != 'map' or frame is None:
+            return None
+        camps = own_camps(frame)
+        if not camps:
+            return None
+        cursor = _cursor(screen)
+        camp = min(camps, key=lambda c: (abs(c['target'][0] - cursor[0])
+                                         + abs(c['target'][1] - cursor[1])) if cursor else 0)
+        state = mem['recall'] = {'stage': 'to_camp', 'target': list(camp['target']), 'steps': 0}
+        _record(mem, 'camp_found', observed_metric={'camp': list(camp['target'])},
+                reason='画面に自軍の野営を見つけたため補給できる自軍城への帰還を指示する')
+    state['steps'] = int(state.get('steps') or 0) + 1
+    if state['steps'] > RECALL_LIMIT:
+        _record(mem, 'camp_recall_aborted',
+                observed_metric={'stage': state.get('stage'), 'steps': state['steps']},
+                reason='野営の帰還指示が上限内に完了しないため断念し位置を再測定する')
+        mem.pop('recall', None)
+        mem['uncertain'] = True
+        return []
+    stage = state.get('stage')
+    if stage == 'to_camp':
+        if screen.kind != 'map':
+            mem.pop('recall', None)
+            mem['uncertain'] = True
+            return []
+        cursor = _cursor(screen)
+        if not cursor:
+            return []
+        dx = state['target'][0] - cursor[0]
+        dy = state['target'][1] - cursor[1]
+        if abs(dx) <= RECALL_ARRIVE_PX and abs(dy) <= RECALL_ARRIVE_PX:
+            state['stage'] = 'menu'
+            _record(mem, 'camp_enter', observed_metric={'camp': list(state['target'])},
+                    reason='野営にカーソルを合わせて決定し、きかんを選ぶ')
+            return [pad('a')]
+        if abs(dx) >= abs(dy):
+            return [pad('right' if dx > 0 else 'left', min(8, abs(dx)))]
+        return [pad('down' if dy > 0 else 'up', min(8, abs(dy)))]
+    if stage == 'menu':
+        if 'きかん' not in screen.text and 'いどう' not in screen.text:
+            return []              # the window is still fading in
+        downs = int(state.get('downs') or 0)
+        if downs < 3:
+            state['downs'] = downs + 1
+            return [pad('down')]   # いどう → ステータス → キャンプ → きかん
+        state['stage'] = 'dest'
+        return [pad('a')]
+    if stage == 'dest':
+        if screen.kind != 'map_target':
+            if screen.kind == 'map':
+                mem.pop('recall', None)
+                mem['uncertain'] = True
+            return []
+        marker = screen.marker
+        roofs = ([r for r in castle_roofs(frame) if r['kind'] == 'own' and not r['clipped']]
+                 if frame is not None else [])
+        if not marker or not roofs:
+            mem.pop('recall', None)
+            mem['uncertain'] = True
+            _record(mem, 'camp_recall_skipped',
+                    observed_metric={'marker': list(marker) if marker else None, 'roofs': len(roofs)},
+                    reason='可視範囲に自軍城の屋根がなく帰還先を選べないため取り消す')
+            return [pad('b')]
+        roof = min(roofs, key=lambda r: abs(r['target'][0] - marker[0]) + abs(r['target'][1] - marker[1]))
+        dx = roof['target'][0] - marker[0]
+        dy = roof['target'][1] - marker[1]
+        if abs(dx) <= RECALL_CONFIRM_PX and abs(dy) <= RECALL_CONFIRM_PX:
+            mem.pop('recall', None)
+            mem['uncertain'] = True
+            _record(mem, 'camp_recall',
+                    observed_metric={'castle': list(roof['target']), 'camp': list(state.get('target') or ())},
+                    reason='野営の将軍に補給できる自軍城への帰還を指示')
+            return [pad('a')]
+        if abs(dx) >= abs(dy):
+            return [pad('right' if dx > 0 else 'left', min(6, abs(dx)))]
+        return [pad('down' if dy > 0 else 'up', min(6, abs(dy)))]
+    return []
+
 
 def map_step(screen: Screen, mem, frame):
     if _drop_stale_y_jump(screen, mem):
@@ -1346,6 +1441,9 @@ def map_step(screen: Screen, mem, frame):
             _off_chart(mem)
             order = next_order(mem)
         if order is None:
+            recall = camp_recall_step(screen, mem, frame)
+            if recall is not None:
+                return recall
             update_world(screen, mem, frame)
             return []           # nothing charted: let real time advance
         mem['active'] = order['step']

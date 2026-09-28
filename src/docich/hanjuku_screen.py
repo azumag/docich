@@ -145,6 +145,39 @@ def castle_roofs(frame: Frame, exclude=None) -> list[dict]:
     return out
 
 
+# Our camping tent (野営): a small yellow/orange tent with a pure-red flag.
+# Measured in the isolated probe (2026-09-28): A on it opens
+# いどう/ステータス/キャンプ/きかん. Enemy camps fly another flag.
+CAMP_FLAG = (255, 0, 0)
+CAMP_YELLOW = (238, 198, 65)
+CAMP_ORANGE = (238, 113, 57)
+
+
+def own_camps(frame: Frame) -> list[dict]:
+    """Our camping tents (野営) with the cursor cell that selects them."""
+    found = []
+    for y in range(3, frame.height - 15):
+        for x in range(3, frame.width - 10):
+            if frame.pixel(x, y) != CAMP_FLAG:
+                continue
+            yellow = orange = 0
+            for yy in range(y + 2, y + 14):
+                for xx in range(x - 5, x + 6):
+                    p = frame.pixel(xx, yy)
+                    if p == CAMP_YELLOW:
+                        yellow += 1
+                    elif p == CAMP_ORANGE:
+                        orange += 1
+            if yellow < 6 or orange < 6:
+                continue
+            target = (x - 8, y - 2)
+            if any(abs(t['target'][0] - target[0]) <= 6 and abs(t['target'][1] - target[1]) <= 6
+                   for t in found):
+                continue
+            found.append({'target': target})
+    return found
+
+
 @dataclass
 class Battle:
     enemy: str | None
