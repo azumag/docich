@@ -1,11 +1,11 @@
 {
-  "output_sha256": "dfcf35b049796e92402114204a4abfa57067796bd21a624e2ba2e7635e07ab8d",
+  "output_sha256": "b15e9ebe653d8ea1491952f187309d69550566718e7a8ce9cc19d8a46739a871",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "f5f7203c8b98eec7543d022814d628c051dbeb518aa902ed75acd79f85805272",
+  "source_sha256": "8219ecf4506cc1fdbe149204c3f6026142087ba17e76c5957c836b3f01813aa5",
   "topics": [
-    "野営の帰還（v35）実装・配備（Claude Code）",
-    "#1232（雪原カーソル）続き: g419 本番受け入れを実測で確認（Claude Code）",
-    "Merikenドロップ速度の改善（観測ゲート閾値）をmain/VMへ配備、hanjuku終了後に自動検証"
+    "野営の帰還が発火しない不具合を修正（v46）配備（Claude Code）",
+    "第2章判定の修正・調整チャートの将軍検証（Claude Code）",
+    "TODO追加: 調整チャートの将軍指定（Claude Code）"
   ]
 }
