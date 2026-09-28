@@ -673,6 +673,9 @@ def _interim_source(mem, target, chart_order, owned, busy):
 MOVE_ANY_GENERAL = 'しょうぐん'    # move from an unread list: the spare is picked on the list
 
 
+INTERIM_CARDS = ('イッテツーン', 'イッテツーン')   # same opener as a lost melee's retry
+
+
 def interim_candidates(mem) -> dict:
     """Deterministic off-chart sorties JEV may choose from while a chart is pending.
 
@@ -684,7 +687,7 @@ def interim_candidates(mem) -> dict:
     castles fell without a battle and g407 left the home castle empty.
     Sources and generals come from measured general lists when known
     (``garrison``), so an idle general at any castle is used instead of only
-    the chart's general. No cards (stock is not verified). There is no hold
+    the chart's general. Attacks carry cards (INTERIM_CARDS). There is no hold
     label: JEV must pick one, and an unusable answer falls back to the first
     candidate. JEV never produces keys or orders itself.
     """
@@ -714,8 +717,13 @@ def interim_candidates(mem) -> dict:
         purpose = 'retake' if target in lost else 'attack'
         note = (f"暫定: {general}で奪われた{target}を奪還" if purpose == 'retake'
                 else f"暫定: {general}で{target}を攻撃")
+        # Owner (2026-09-28): 切り札は持たせたほうが良い. The chart's cards for
+        # this castle, else the retry opener (two イッテツーン). Cards out of
+        # stock are dropped at the card list (card_drop), never waited for.
+        base = chart_orders.get(target)
+        cards = list(base['cards']) if base and base.get('cards') else list(INTERIM_CARDS)
         sorties[purpose].append({
-            'general': general, 'target': target, 'cards': [], 'source': source,
+            'general': general, 'target': target, 'cards': cards, 'source': source,
             'after': None, 'purpose': purpose, 'note': note})
     garrison = mem.get('garrison') or {}
     moves = []
