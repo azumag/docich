@@ -3080,6 +3080,7 @@ def message_step(screen: Screen, mem):
     m = ATTACK.search(text)
     if m:
         general, castle = m.groups()
+        observe_chapter_castle(mem, castle)
         launched = (mem.get('launched') or {}).get(castle) or {}
         current = mem.get('attack') or {}
         step, match = _match_sortie(mem, castle, general)
@@ -3098,12 +3099,65 @@ def message_step(screen: Screen, mem):
     m = DEFENSE.search(text)
     if m:
         castle = m.group(1)
+        observe_chapter_castle(mem, castle)
         if (mem.get('attack') or {}).get('castle') != castle or (mem.get('attack') or {}).get('side') != 'defense':
             _record(mem, 'defense_observed', castle=castle, reason='せめこまれました表示')
             mem['world_map_due'] = True      # the castle may have fallen without a battle
         mem['attack'] = {'general': None, 'castle': castle, 'side': 'defense', 'step': None}
         return [pad('a')]
     return None
+
+
+def _enter_chapter(mem, chapter, *, reason, evidence=None):
+    previous = mem.get('chapter')
+    # Route state belongs to the measured map of one chapter. Keep
+    # run-wide counters/name evidence, never carry coordinates/orders.
+    for key in ('active', 'anchor', 'goal_anchor_lock', 'attack', 'battle', 'battle_seen',
+                'captured', 'card_override', 'cursor', 'egg_battle',
+                'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit', 'month_sub',
+                'nav_last', 'nav_search', 'nav_search_leg', 'orders', 'picked', 'retries', 'retry_context', 'shop',
+                'source_override', 'uncertain', 'month', 'order_context', 'sortie_general',
+                'chart_adjust', 'chart_plan', 'launched_orders', 'sorties', 'sortie_attempt',
+                'garrison', 'general_location_unknown', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
+                'nav_prev', 'nav_still', 'nav_pressed', 'unverified', 'off_castle',
+                'target_miss', 'target_cancel', 'menu_hold', 'card_scroll',
+                'world_map_tick', 'world_map_due', 'world_map_wait', 'home_lost',
+                'y_jump', 'y_jumps', 'y_jump_return', 'y_jumped', 'boss_absent',
+                'near_goal', 'align_steps', 'unanchored', 'select_tick',
+                'select_used',
+                'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
+                'indep_menu_key', 'indep_menu_action',
+                'monster_menu_key', 'monster_menu_cursor', 'monster_menu_hold',
+                'monster_menu_choice', 'monster_menu_choice_key', 'monster_panel'):
+        mem.pop(key, None)
+    mem['chapter'] = chapter
+    mem['variant'] = 'chart' if chart.orders(chapter) else 'chart_unavailable'
+    _record(mem, 'chapter_seen', previous_stage=previous,
+            observed_metric={'chapter': chapter, **({'evidence': evidence} if evidence else {})},
+            resulting_stage=chapter,
+            reason=reason)
+
+
+def observe_chapter_castle(mem, castle):
+    """Advance the chapter on a castle name that only the next chapter has.
+
+    The month header reads 「2ねん5のつき」 (year, month) and never shows the
+    chapter, so the header branch never fired: g421 beat クイーン at 14:41,
+    fought at アルマムーン from 14:47 and navigated chapter 2 with chapter 1
+    coordinates for 80 minutes (every Y jump and roof check missed).
+    A name absent from this chapter and present in the next one is proof.
+    """
+    chapter = mem.get('chapter') or 0
+    if not castle or not chapter:
+        return
+    here = set(chart.CASTLE_NAMES.get(chapter, ())) | {chart.home_castle(chapter), chart.boss_castle(chapter)}
+    if castle in here:
+        return
+    nxt = chapter + 1
+    if castle in chart.CASTLE_NAMES.get(nxt, ()) or castle == chart.home_castle(nxt):
+        _enter_chapter(mem, nxt, evidence=castle,
+                       reason='次章にしかない城名を確認したため章を進め、前章の座標・出撃・購入状態を初期化')
+
 
 
 # ---------------------------------------------------------------- month
@@ -3793,32 +3847,7 @@ def observe_events(screen: Screen, mem):
     if header:
         chapter = header.get('chapter')
         if chapter and chapter != mem.get('chapter'):
-            previous = mem.get('chapter')
-            # Route state belongs to the measured map of one chapter. Keep
-            # run-wide counters/name evidence, never carry coordinates/orders.
-            for key in ('active', 'anchor', 'goal_anchor_lock', 'attack', 'battle', 'battle_seen',
-                        'captured', 'card_override', 'cursor', 'egg_battle',
-                        'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit', 'month_sub',
-                        'nav_last', 'nav_search', 'nav_search_leg', 'orders', 'picked', 'retries', 'retry_context', 'shop',
-                        'source_override', 'uncertain', 'month', 'order_context', 'sortie_general',
-                        'chart_adjust', 'chart_plan', 'launched_orders', 'sorties', 'sortie_attempt',
-                        'garrison', 'general_location_unknown', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
-                        'nav_prev', 'nav_still', 'nav_pressed', 'unverified', 'off_castle',
-                        'target_miss', 'target_cancel', 'menu_hold', 'card_scroll',
-                        'world_map_tick', 'world_map_due', 'world_map_wait', 'home_lost',
-                        'y_jump', 'y_jumps', 'y_jump_return', 'y_jumped', 'boss_absent',
-                        'near_goal', 'align_steps', 'unanchored', 'select_tick',
-                        'select_used',
-                        'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
-                        'indep_menu_key', 'indep_menu_action',
-                        'monster_menu_key', 'monster_menu_cursor', 'monster_menu_hold',
-                        'monster_menu_choice', 'monster_menu_choice_key', 'monster_panel'):
-                mem.pop(key, None)
-            mem['chapter'] = chapter
-            mem['variant'] = 'chart' if chart.orders(chapter) else 'chart_unavailable'
-            _record(mem, 'chapter_seen', previous_stage=previous,
-                    observed_metric={'chapter': chapter}, resulting_stage=chapter,
-                    reason='画面の章表示を確認し、前章の座標・出撃・購入状態を初期化')
+            _enter_chapter(mem, chapter, reason='画面の章表示を確認し、前章の座標・出撃・購入状態を初期化')
         key = _month_key(header)
         if mem.get('month') != key:
             mem['month'] = key
