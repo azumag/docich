@@ -937,6 +937,11 @@ def observe_sortie_transition(screen, mem, previous_kind=None):
                 mem['active'] = step
                 mem['orders'][step] = 'pending'
                 (mem.get('sorties') or {}).pop(step, None)
+                # The interruption moved the camera: the resumed selection gets
+                # fresh target jumps (g421 18:24: six were spent before a defense
+                # battle, the marker came back unplaced and the bot idled).
+                (mem.get('y_jumps') or {}).pop(f'{step}:target', None)
+                (mem.get('y_jumped') or {}).pop(step, None)
                 _record(mem, 'sortie_target_resumed', chart_step=step,
                         reason='割り込み後に同じ出撃先マーカーが戻ったため目標選択を再開')
         attempt['target_seen'] = True
@@ -1805,6 +1810,11 @@ def target_step(screen: Screen, mem, frame):
         return _start_y_jump(mem, order, order['target'], 'target')
     if result is None:
         result = nav_step(screen, mem, frame, goal)
+        if not result and screen.marker and not mem.get('cursor'):
+            # Jumps spent and the marker's place unknown: nothing steers it
+            # (g421 18:24: 70 idle observations). Count it as an unverified
+            # arrival so the sortie is cancelled and retried within its bounds.
+            return _unverified_target(screen, mem, order)
     if result == 'arrived' and not _target_roof_under_marker(screen, mem, frame, order):
         return _unverified_target(screen, mem, order)
     if result == 'arrived':

@@ -996,3 +996,23 @@ def test_a_winter_map_without_readable_roofs_trusts_the_confirmed_jump(monkeypat
     assert policy._target_roof_under_marker(marker, mem, FRAME, order) is True
     # Without a jump to that castle there is still no confirmation by guesswork.
     assert policy._target_roof_under_marker(marker, {'chapter': 2, '_records': []}, FRAME, order) is False
+
+
+def test_a_resumed_target_gets_fresh_jumps_and_an_unplaced_marker_never_idles(monkeypatch):
+    # g421 18:24: six target jumps were spent before a defense battle; after it
+    # the marker came back with no known place and the bot pressed nothing.
+    monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: [])
+    order = {'step': '2-Z1', 'general': 'ゼウス', 'source': 'アルマムーン', 'target': 'フーリック',
+             'cards': [], 'after': None, 'note': 't'}
+    marker = Screen(lines=[], hand=None, text='', kind='map_target', marker=(140, 120))
+    mem = {'chapter': 2, 'orders': {'2-Z1': 'pending'}, 'picked': [], '_records': [], 'active': '2-Z1',
+           'launched_orders': {'2-Z1': order}, 'y_jumps': {'2-Z1:target': policy.Y_JUMP_LIMIT}}
+    results = [policy.target_step(marker, mem, FRAME) for _ in range(policy.TARGET_MISS_LIMIT)]
+    assert results[-1] != [] and decisions(mem, 'target_not_under_marker')
+    # Resuming after an interruption restores the target jumps.
+    mem = {'chapter': 2, 'orders': {'2-Z1': 'launched_unconfirmed'}, '_records': [],
+           'sortie_attempt': {'step': '2-Z1', 'target_seen': True},
+           'y_jumps': {'2-Z1:target': policy.Y_JUMP_LIMIT, '2-Z1:map': 1}, 'y_jumped': {'2-Z1': 'フーリック'}}
+    policy.observe_sortie_transition(marker, mem, 'battle')
+    assert decisions(mem, 'sortie_target_resumed')
+    assert mem['y_jumps'] == {'2-Z1:map': 1} and '2-Z1' not in mem['y_jumped']
