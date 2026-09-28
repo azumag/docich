@@ -116,8 +116,8 @@ def classify(user: str, comment: str) -> str:
         return "strategy_advice"
     if "?" in text or "？" in text:
         strategy_question = (
-            re.search(r"戦略|盤面|併合|連鎖|next|nextnext|hold|type\\s*[a-z0-9]+|置|積|デッドライン|ゲームオーバー|merge|drop|ピース|ロシア|ソ連|建国|おじゃま|相手|順位|盤面タイプ", text, re.I)
-            or re.fullmatch(r"\\s*(?:右|左)(?:に|へ|側|のほう|の方)?(?:じゃない|じゃね|かな|でいい|がいい|が良い|のがいい|のが良い)?[?？]?\\s*", text, re.I)
+            re.search(r"戦略|盤面|併合|連鎖|next|nextnext|hold|type\s*[a-z0-9]+|置|積|デッドライン|ゲームオーバー|merge|drop|ピース|ロシア|ソ連|建国|おじゃま|相手|順位|盤面タイプ", text, re.I)
+            or re.fullmatch(r"\s*(?:右|左)(?:に|へ|側|のほう|の方)?(?:じゃない|じゃね|かな|でいい|がいい|が良い|がよくない|が良くない|のがいい|のが良い)?[?？]?\s*", text, re.I)
         )
         if strategy_question or re.search(r"ゲーム|スコア|盤面|戦略|ロシア|ソ連|建国|何点|何試合", text):
             return "game_question"
