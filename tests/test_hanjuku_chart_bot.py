@@ -548,7 +548,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v56-egg-priority'
+    assert state['bot_version'] == 'hanjuku-chart-v57-game-over-recap'
     assert '_records' not in state['policy']
 
 
@@ -2263,3 +2263,86 @@ def test_egg_recovery_holds_the_gold_over_more_soldiers_when_army_is_big():
     assert policy._extras_reserve(mem2, {'year': 2, 'month': 4, 'gold': 45})[0] == 0
     # full cost still reserves normally
     assert policy._extras_reserve(dict(mem), {'year': 2, 'month': 4, 'gold': 130})[0] == 50
+
+
+def test_summarize_recap_counts_only_the_runs_own_story(tmp_path):
+    from docich.hanjuku_commentary import summarize_recap
+    rows = [
+        {'event': 'decision', 'decision': 'month_seen', 'month': '2-7'},
+        {'event': 'decision', 'decision': 'order_launched'},
+        {'event': 'decision', 'decision': 'order_launched'},
+        {'event': 'decision', 'decision': 'order_launched_unconfirmed'},
+        {'event': 'decision', 'decision': 'discharge_general'},
+        {'event': 'decision', 'decision': 'castle_owned_observed',
+         'resulting_event': 'captured:ジョンリギ'},
+        {'event': 'decision', 'decision': 'world_map_owners',
+         'resulting_event': ['captured:ゴーメン', 'lost:ココット']},
+        {'event': 'decision', 'chapter': 2},
+        {'event': 'action_plan', 'chapter': 5},          # not a decision: ignored
+    ]
+    (tmp_path / 'hanjuku_decisions.jsonl').write_text(
+        ''.join(json.dumps(r, ensure_ascii=False) + '\n' for r in rows))
+    key, text = summarize_recap(tmp_path, {'battles_finished': 42})
+    assert key == 'game_over_recap'
+    assert text == ('ゲームオーバー。第2章まで進み、2城を獲得、2回出撃と42回戦闘を重ね、'
+                    '2年7月まで戦いました（将軍の解雇1回）。今回の挑戦はここまでです。')
+    assert len(text) <= 120
+    _, bare = summarize_recap(tmp_path, {})
+    assert bare.startswith('ゲームオーバー。')
+
+
+def test_narration_delivers_only_the_game_over_recap_at_terminal(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from docich.game_switch import atomic_write_json
+    identity = {'game': 'hanjuku-hero', 'runtime_id': 'g9-test', 'generation': 9,
+                'lease_id': 'lease-9'}
+    g = SimpleNamespace(state_dir=tmp_path)
+    atomic_write_json(tmp_path / 'hanjuku_run.json',
+                      {**identity, 'terminal_reason': 'game_over'})
+    monkeypatch.setattr('docich.agent.fence.read_canonical', lambda _: {'active': identity})
+    sent, now = [], time.time()
+    write_candidates(tmp_path, [
+        {'seq': 1, 'at': now, 'key': 'battle:x', 'text': 'たたかいの実況', **identity},
+        {'seq': 2, 'at': now, 'key': 'game_over_recap',
+         'text': 'ゲームオーバー。第1章までの記録でした。', 'terminal_recap': True, **identity},
+    ])
+    hanjuku_narration.consider(g, Game(), tmp_path, terminal=True, now=now,
+                               enqueue=lambda *a, **k: sent.append((a, k)))
+    log_path = tmp_path / 'hanjuku_narration.jsonl'
+    for _ in range(100):
+        try:
+            log = [json.loads(x) for x in log_path.read_text().splitlines()]
+        except FileNotFoundError:
+            log = []
+        if len(log) >= 2 and len(sent) >= 1:
+            break
+        time.sleep(0.02)
+    statuses = {i['seq']: i['status'] for i in log}
+    assert statuses[1] == 'skipped:terminal'          # the ordinary line stays silent
+    assert statuses[2] == 'enqueued'
+    assert len(sent) == 1
+    args, kwargs = sent[0]
+    assert kwargs.get('runtime_fence') is None        # teardown-safe delivery
+
+
+def test_narration_stays_silent_at_terminal_without_a_recap(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from docich.game_switch import atomic_write_json
+    identity = {'game': 'hanjuku-hero', 'runtime_id': 'g10-test', 'generation': 10,
+                'lease_id': 'lease-10'}
+    g = SimpleNamespace(state_dir=tmp_path)
+    atomic_write_json(tmp_path / 'hanjuku_run.json',
+                      {**identity, 'terminal_reason': 'game_over'})
+    monkeypatch.setattr('docich.agent.fence.read_canonical', lambda _: {'active': identity})
+    sent, now = [], time.time()
+    write_candidates(tmp_path, [{'seq': 1, 'at': now, 'key': 'a', 'text': '通常の実況', **identity}])
+    hanjuku_narration.consider(g, Game(), tmp_path, terminal=True, now=now,
+                               enqueue=lambda *a, **k: sent.append(a))
+    log_path = tmp_path / 'hanjuku_narration.jsonl'
+    for _ in range(100):
+        if log_path.exists():
+            break
+        time.sleep(0.02)
+    log = [json.loads(x) for x in log_path.read_text().splitlines()]
+    assert log and log[0]['status'] == 'skipped:terminal'
+    assert not sent
