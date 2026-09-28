@@ -58,10 +58,12 @@ class AgentServiceTest(unittest.TestCase):
     def test_environment_keeps_existing_secret_but_drops_shell_overrides(self):
         env = agent.environment(self.config, {"HOME": str(self.root),
             "SOREN91_LOCAL_SESSION_MODE": "session", "NODE_OPTIONS": "--inspect=0.0.0.0",
-            "HTTP_PROXY": "http://untrusted", "UNRELATED_SECRET": "not-copied"})
+            "SOREN91_LOCAL_AUDIO_GAIN": "9", "HTTP_PROXY": "http://untrusted",
+            "UNRELATED_SECRET": "not-copied"})
         self.assertEqual(env["SOREN91_LOCAL_AGENT_TOKEN"], self.secret)
         self.assertEqual(env["SOREN91_LOCAL_SESSION_MODE"], "cdp-host")
         self.assertEqual(env["SOREN91_LOCAL_FFMPEG_BIN"], "/bin/sh")
+        self.assertEqual(env["SOREN91_LOCAL_AUDIO_GAIN"], "1.4")
         self.assertNotIn("NODE_OPTIONS", env)
         self.assertNotIn("HTTP_PROXY", env)
         self.assertNotIn("UNRELATED_SECRET", env)

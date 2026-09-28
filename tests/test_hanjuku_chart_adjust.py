@@ -195,6 +195,7 @@ def test_chapter_change_drops_adjusted_chart():
     {'orders': [{'step': 'J1', 'general': 'x', 'source': 'ゴーメン', 'target': 'けっかい',
                  'after': ['whenever']}]},
     {'orders': [{'step': 'J1', 'general': 'x', 'source': 'ゴーメン', 'target': 'けっかい'}] * 2},
+    {'request_digest': 'nothex'},
     {'purchases': {'month': [1, 13]}},
     {'purchases': {'month': [1, 8], 'cards': [['ハッキング', 1]]}},
     {'purchases': {'month': [1, 8], 'soldiers': -1}},
@@ -879,9 +880,10 @@ def test_adjust_prompt_grounds_cards_in_observed_stock_and_chapter_purchases(tmp
     # The chapter's charted month purchases tell the model which cards its
     # shops sell (chapter 1 lists no ミックミー/エンジェリン).
     assert '"purchases"' in prompt and '"chart_gold"' in prompt
-    # The 卵落 rule grounds which cards can actually drop an egg.
+    # The 卵落 rule grounds which cards can actually drop an egg, on max HP.
     assert '卵落値: ' in prompt and 'イッテツーン=8' in prompt and 'クースカン=0' in prompt
-    assert 'mod 16' in prompt
+    assert 'mod 16' in prompt and 'ally_max_hp / enemy_max_hp' in prompt
+    assert '開戦時HPは負傷していることがある' in prompt
 
 
 def test_recent_results_carry_battle_start_hp_for_the_egg_drop_rule(tmp_path):
@@ -894,8 +896,87 @@ def test_recent_results_carry_battle_start_hp_for_the_egg_drop_rule(tmp_path):
         '\n'.join(json.dumps(r, ensure_ascii=False) for r in records) + '\n', encoding='utf-8')
     assert worker._recent_results(tmp_path) == [
         {'decision': 'battle_start', 'enemy': 'キッシュ', 'ally': 'ココット',
-         'enemy_hp': 26, 'ally_hp': 24, 'chart_step': 'A:x:J1'},
+         'enemy_hp': 26, 'ally_hp': 24, 'chart_step': 'A:x:J1',
+         'ally_max_hp': 24, 'enemy_max_hp': 26},
         {'decision': 'order_failed', 'general': 'ココット'}]
+
+
+def test_recent_results_maps_the_named_hero_to_fixed_max_hp(tmp_path):
+    from docich import hanjuku_chart_worker as worker
+    record = {'event': 'decision', 'decision': 'battle_start', 'enemy': 'キッシュ',
+              'ally': chart.HERO, 'enemy_hp': 20, 'ally_hp': 60, 'chart_step': 'A:x:J1'}
+    (tmp_path / 'hanjuku_decisions.jsonl').write_text(
+        json.dumps(record, ensure_ascii=False) + '\n', encoding='utf-8')
+    [result] = worker._recent_results(tmp_path)
+    assert result['ally'] == chart.HERO
+    assert result['ally_max_hp'] == 90
+    assert result['enemy_max_hp'] == 26
+
+
+def test_same_situation_with_new_card_stock_republishes_the_request():
+    mem = stuck_memory()
+    policy.map_step(map_screen(), mem, FRAME)
+    [first] = decisions(mem, 'chart_adjust_request')
+    rid, digest = first['request_id'], mem['chart_adjust']['request_digest']
+    assert digest == adjust.request_digest(first)
+    mem['card_stock'] = {'クースカン': 2}
+    policy.map_step(map_screen(), mem, FRAME)
+    requests = decisions(mem, 'chart_adjust_request')
+    assert len(requests) == 2
+    second = requests[-1]
+    assert second['request_id'] == rid and second['card_stock'] == {'クースカン': 2}
+    assert mem['chart_adjust']['request_digest'] != digest
+
+
+def test_write_request_binds_the_payload_revision(tmp_path):
+    mem = stuck_memory()
+    policy.map_step(map_screen(), mem, FRAME)
+    [record] = decisions(mem, 'chart_adjust_request')
+    payload = adjust.write_request(tmp_path, record, {'game': 'hanjuku-hero', 'runtime_id': 'r',
+                                                      'generation': 1, 'lease_id': 'l'})
+    assert payload['request_digest'] == adjust.request_digest(record)
+    written = json.loads((tmp_path / adjust.REQUEST_FILE).read_text(encoding='utf-8'))
+    assert written['request_digest'] == payload['request_digest']
+    assert adjust.request_digest({**record, 'card_stock': {'クースカン': 2}}) \
+        != payload['request_digest']
+
+
+def test_a_bound_answer_is_adopted_only_for_the_current_payload_revision():
+    mem = stuck_memory()
+    policy.map_step(map_screen(), mem, FRAME)
+    rid = mem['chart_adjust']['request_id']
+    digest = mem['chart_adjust']['request_digest']
+    mem['_adjusted'] = adjust.validate(adjusted_doc(rid, request_digest='0' * 64))
+    policy.map_step(map_screen(), mem, FRAME)
+    assert not decisions(mem, 'chart_adjust_applied') and mem.get('active') is None
+    mem['_adjusted'] = adjust.validate(adjusted_doc(rid, request_digest=digest))
+    policy.map_step(map_screen(), mem, FRAME)
+    [applied] = decisions(mem, 'chart_adjust_applied')
+    assert applied['steps'] == [adjust.execution_step(rid, 'J1'),
+                                adjust.execution_step(rid, 'J2')]
+    # A digestless answer predates the revision field: adopted once (hot-load).
+    mem = stuck_memory()
+    policy.map_step(map_screen(), mem, FRAME)
+    mem['_adjusted'] = adjust.validate(adjusted_doc(mem['chart_adjust']['request_id']))
+    policy.map_step(map_screen(), mem, FRAME)
+    assert decisions(mem, 'chart_adjust_applied')
+
+
+def test_worker_discards_answer_when_the_payload_revision_changed(tmp_path):
+    from docich import hanjuku_chart_worker as worker
+    request = _requested(tmp_path)
+
+    def generate(g, cfg, prompt):
+        current = json.loads((tmp_path / adjust.REQUEST_FILE).read_text(encoding='utf-8'))
+        current['card_stock'] = {'イッテツーン': 0}
+        current['request_digest'] = adjust.request_digest(current)
+        (tmp_path / adjust.REQUEST_FILE).write_text(json.dumps(current), encoding='utf-8')
+        return json.dumps(adjusted_doc(request['request_id'])), 'codex'
+    assert worker.consider(None, Game(), tmp_path, generate=generate, background=False)
+    assert adjust.load(tmp_path) is None
+    events = [json.loads(line) for line in
+              (tmp_path / f'{adjust.HISTORY_LOG}.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert [e['status'] for e in events if e['event'] == 'adjust_worker'] == ['superseded']
 
 
 def test_an_answer_with_no_startable_order_is_invalid(tmp_path):

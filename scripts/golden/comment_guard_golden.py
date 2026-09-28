@@ -24,7 +24,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from comment_prompt_golden import bash  # noqa: E402  (production-style legacy loader)
+from comment_prompt_golden import bash_many  # noqa: E402  (production-style legacy loader)
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "tests/fixtures/comment_guard_golden.json"
@@ -79,20 +79,26 @@ TEXT_FUNCTIONS = ["_comment_strip_worknote_head", "_comment_strip_reasoning_tags
 
 def run(sn, commit, out_path, docich_root):
     env = {"DOCICH_BIN": str(docich_root / "bin/docich")}
-    cases = []
-    for text in CORPUS:
-        case = {"input": text}
+    cases = [{"input": text} for text in CORPUS]
+    plan = []
+    calls = []
+    for index, text in enumerate(CORPUS):
         for fn in TEXT_FUNCTIONS:
-            case[fn] = bash(fn, sn, env=env, stdin=text)
-        case["_comment_guard_model_text"] = bash('_comment_guard_model_text "$1"', sn, env=env, args=(text,))
-        case["_comment_guard_japanese_text"] = bash('_comment_guard_japanese_text "$1"', sn, env=env, args=(text,))
+            plan.append((index, fn))
+            calls.append({"script": fn, "stdin": text})
+        plan.append((index, "_comment_guard_model_text"))
+        calls.append({"script": '_comment_guard_model_text "$1"', "args": (text,)})
+        plan.append((index, "_comment_guard_japanese_text"))
+        calls.append({"script": '_comment_guard_japanese_text "$1"', "args": (text,)})
         for preserve in ("0", "1"):
-            case[f"_clean_comment_talk_{preserve}"] = bash('_clean_comment_talk "$1" "$2"', sn, env=env,
-                                                          args=(text, preserve))
+            plan.append((index, f"_clean_comment_talk_{preserve}"))
+            calls.append({"script": '_clean_comment_talk "$1" "$2"', "args": (text, preserve)})
         for fn in ("_contains_provider_error_text", "_is_valid_comment_talk",
                    "_comment_is_valid_generation_candidate"):
-            case[fn] = bash(f'if {fn} "$1"; then printf 0; else printf 1; fi', sn, env=env, args=(text,))
-        cases.append(case)
+            plan.append((index, fn))
+            calls.append({"script": f'if {fn} "$1"; then printf 0; else printf 1; fi', "args": (text,)})
+    for (index, key), (stdout, _) in zip(plan, bash_many(sn, calls, env=env)):
+        cases[index][key] = stdout
     golden = {
         "provenance": {
             "source": "azumag/soviet_now comment output guard/validation as loaded by eloop_lib.sh "

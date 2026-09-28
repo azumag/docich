@@ -171,3 +171,97 @@ def test_golden_regenerates_identically_on_this_linux_host():
     pinned["provenance"].pop("soviet_now_commit")
     # Against the *checked-out* gitlink: a legacy change fails here until the port follows.
     assert fresh == pinned
+
+
+# --------------------------------------------------------- batched golden shell parity
+
+def _golden_shell_helpers():
+    scripts = str(ROOT / "scripts/golden")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    import comment_prompt_golden
+    return comment_prompt_golden
+
+
+def _fake_legacy_checkout(tmp_path):
+    checkout = tmp_path / "legacy"
+    checkout.mkdir()
+    (checkout / "eloop_lib.sh").write_text(
+        'LOADER_SAW="${PARITY_ENV:-unset}"\n'
+        'PARITY_ENV="loader-overrode"\n',
+        encoding="utf-8",
+    )
+    return checkout
+
+
+def test_bash_many_matches_bash_io_env_and_stderr_contract(tmp_path):
+    golden = _golden_shell_helpers()
+    checkout = _fake_legacy_checkout(tmp_path)
+    script = (
+        'printf "%s|%s|" "$LOADER_SAW" "$PARITY_ENV"; '
+        'cat; '
+        'printf "|%s|%s" "$1" "$2"; '
+        'printf "ignored-stderr" >&2'
+    )
+    stdin = "line1\r\nline2\r\n"
+    args = ("a b", "x'y")
+    env = {"PARITY_ENV": "from-env"}
+    expected = golden.bash(script, checkout, env=env, stdin=stdin, args=args)
+    assert golden.bash_many(
+        checkout, [{"script": script, "stdin": stdin, "args": args}], env=env
+    ) == [(expected, 0)]
+
+
+def test_bash_many_failure_matches_bash_stderr_and_is_fail_fast(tmp_path):
+    golden = _golden_shell_helpers()
+    checkout = _fake_legacy_checkout(tmp_path)
+    script = 'printf "legacy-boom" >&2; exit 7'
+    with pytest.raises(SystemExit) as single:
+        golden.bash(script, checkout)
+
+    sentinel = tmp_path / "must-not-run"
+    with pytest.raises(SystemExit) as batch:
+        golden.bash_many(
+            checkout,
+            [
+                {"script": script},
+                {"script": 'printf ran > "$SENTINEL"',
+                 "env": {"SENTINEL": str(sentinel)}},
+            ],
+        )
+
+    assert str(batch.value) == str(single.value)
+    assert not sentinel.exists()
+
+
+def test_bash_many_keeps_old_marker_looking_stdout_opaque(tmp_path, monkeypatch):
+    golden = _golden_shell_helpers()
+    checkout = _fake_legacy_checkout(tmp_path)
+    # The previous stdout framing used this value when os.urandom returned
+    # eight zero bytes. Pinning it makes the regression fail on that parser.
+    monkeypatch.setattr(golden.os, "urandom", lambda size: b"\0" * size)
+    payload = (
+        "__docich_batch_0000000000000000[0]\n"
+        "legacy-output\n"
+        "__docich_batch_0000000000000000[0]=rc=9\n"
+    )
+    expected = golden.bash("cat", checkout, stdin=payload)
+    assert golden.bash_many(
+        checkout, [{"script": "cat", "stdin": payload}]
+    ) == [(expected, 0)]
+
+
+
+def test_bash_many_preserves_loader_errexit_semantics(tmp_path):
+    golden = _golden_shell_helpers()
+    checkout = tmp_path / "legacy-errexit"
+    checkout.mkdir()
+    (checkout / "eloop_lib.sh").write_text("set -e\n", encoding="utf-8")
+    script = 'false; printf "must-not-print"'
+
+    with pytest.raises(SystemExit) as single:
+        golden.bash(script, checkout)
+    with pytest.raises(SystemExit) as batch:
+        golden.bash_many(checkout, [{"script": script}])
+
+    assert str(batch.value) == str(single.value)

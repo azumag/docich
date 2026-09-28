@@ -91,9 +91,17 @@ def test_sortie_card_stock_is_recorded_for_the_adjusted_chart():
     assert mem['card_stock'] == {'イッテツーン': 10, 'ブラッキー': 1,
                                  'フットバース': 2, 'クースカン': 2}
     assert policy._adjust_situation(mem)['card_stock'] == mem['card_stock']
-    # A later panel updates the stock of the cards it shows and keeps the rest.
+    # Fewer than four rows is the whole inventory: a known card that is no
+    # longer shown is out of stock now (depleted items disappear).
     policy.deploy_step(measured_card_select(('ブラッキー', 'クースカン'), stocks=[1, 1]), mem)
-    assert mem['card_stock']['フットバース'] == 2
+    assert mem['card_stock'] == {'イッテツーン': 0, 'ブラッキー': 1,
+                                 'フットバース': 0, 'クースカン': 1}
+    # A four-row panel is a window: only the rows it shows are updated.
+    policy.deploy_step(measured_card_select(('イッテツーン', 'ブラッキー', 'フットバース', 'クースカン'),
+                                            stocks=[1, 1, 1, 1]), mem)
+    policy.deploy_step(measured_card_select(('イッテツーン', 'ブラッキー', 'フットバース', 'クースカン'),
+                                            stocks=[2, 1, 1, 1]), mem)
+    assert mem['card_stock']['イッテツーン'] == 2
     assert mem['card_stock']['クースカン'] == 1
 
 
