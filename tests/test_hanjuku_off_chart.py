@@ -847,3 +847,36 @@ def test_a_general_far_behind_opens_the_rescue_menu_before_the_melee_decides():
     assert policy._survival_needed(close)
     ahead = {'ally_hp': 82, 'enemy_hp': 39, 'start_ally_hp': 82, 'enemy': 'カシュー', 'ally': 'ヴィーナス'}
     assert not policy._survival_needed(ahead)
+
+
+def _message(text):
+    return Screen(lines=[], hand=None, text=text, kind='text')
+
+
+def test_a_castle_only_the_next_chapter_has_advances_the_chapter_and_drops_chapter_1_routes():
+    # g421: the header reads 「2ねん5のつき」 (no chapter), so after クイーン fell
+    # at 14:41 the bot fought at アルマムーン yet steered by chapter 1 cells.
+    mem = {**g401_memory(), 'cursor': [265, 270], 'y_jumps': {'I:1:map': 3}, 'lost': ['ゴーメン']}
+    assert policy.message_step(_message('アルマムーンじょうがてきにせめこまれました!'), mem) == [policy.pad('a')]
+    assert mem['chapter'] == 2
+    assert mem['variant'] == 'chart_unavailable'          # chapter 2 cells are unmeasured
+    for key in ('cursor', 'orders', 'sorties', 'garrison', 'captured', 'lost', 'y_jumps'):
+        assert key not in mem
+    assert decisions(mem, 'chapter_seen')[0]['observed_metric'] == {'chapter': 2, 'evidence': 'アルマムーン'}
+    assert decisions(mem, 'defense_observed')[0]['castle'] == 'アルマムーン'
+    # Unmeasured chapter: no cursor walk on another chapter's cells.
+    assert policy.map_step(map_screen(140, 120), mem, FRAME) in ([], None)
+
+
+def test_chapter_1_castle_names_never_advance_the_chapter():
+    for text in ('ジョンリギじょうがてきにせめこまれました!', 'ほんじょうじょうがてきにせめこまれました!',
+                 'ゼウスしょうぐんがゴーメンじょうにのりこんだ!'):
+        mem = g401_memory()
+        policy.message_step(_message(text), mem)
+        assert mem['chapter'] == 1 and not decisions(mem, 'chapter_seen')
+
+
+def test_the_year_month_header_is_not_a_chapter():
+    from docich.hanjuku_screen import HEADER
+    year, month = HEADER.search('2ねん5のつき35Gしょうにん').groups()[1:3]
+    assert HEADER.search('2ねん5のつき35G').group(1) is None and (year, month) == ('2', '5')
