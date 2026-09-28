@@ -46,6 +46,31 @@ CARD_IDS: dict[str, int] = {
     'ブレイコウ': 12, 'ブンシーン': 14, 'ファイアーボイス': 18, 'ファバード': 31,
     'エンジェリン': 22, 'マグネガキン': 27, 'ハリケーン': 30,
 }
+# The whole gcgx kirihuda.html decimal ID table (0-31), for ID sums.
+ALL_CARD_IDS: dict[str, int] = {**CARD_IDS,
+    'ダンスライン': 4, 'カルゲンジー': 6, 'ラピニアール': 8, 'バルムンク': 16, 'グルミー': 19,
+    'ブラックホール': 20, 'シュプレボイス': 21, 'ころぼぐんだん': 23, 'バグストーム': 24,
+    'リューキーシ': 25, 'ドデカヘー': 26, 'キャトルミュー': 28, 'ビッグウェイブ': 29,
+}
+
+# Owner advice (2026-09-29, gcgx ai.html): the enemy uses its egg when the
+# battle's card IDs total 48 or more, so a sortie carries 47 or less, e.g.
+# クースカン+ミックミー×2 (47: クースカン then ミックミー wipes a general of
+# HP<=69 with his soldiers), クースカン+ビッグウェイブ+イッテツーン (42),
+# イッテツーン+グリンボー+ころぼぐんだん (28: cheap, ころぼぐんだん drops eggs
+# often), エンジェリン×2+イッテツーン (44: エンジェリン fully heals).
+RECOMMENDED_CARD_SETS = (
+    ('クースカン', 'ミックミー', 'ミックミー'),
+    ('クースカン', 'ビッグウェイブ', 'イッテツーン'),
+    ('イッテツーン', 'グリンボー', 'ころぼぐんだん'),
+    ('エンジェリン', 'エンジェリン', 'イッテツーン'),
+)
+
+# Castle level (wikiwiki.jp/hjksfc/城, 2026-09-29): the defender's egg monster
+# gains +level defense and speed (also egg vs general), a defending general's
+# charge speed +level, garrison capacity is level-1 (over it the AI sorties),
+# and a defender loses one level per general killed. No bonus at boss castles.
+CASTLE_LEVEL_DEFENSE_BONUS = True
 
 # Egg-drop formula: 卵落 > (敵・味方将軍の最大HP合計 mod 16).
 EGG_DROP_MOD = 16

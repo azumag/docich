@@ -1123,15 +1123,21 @@ def world_map_step(screen, mem, frame):
         return _y_jump_step(mem, frame)
     recall = mem.get('recall')
     if recall and recall.get('stage') == 'dest':
-        # Chapter 2 (isolated probe, g421 state): きかん opened a whole-island
-        # picker instead of the destination marker. Y does not close it (the
-        # bot pressed Y for minutes); B then A returns to the map.
+        # きかん opens a whole-island picker (chapter 1 and 2, isolated probe
+        # 2026-09-29): the R ring starts on the home castle, A selects it and a
+        # second A confirms; the general then walks back home (measured: the
+        # hero turned from キカンドン towards ほんじょう). Y does not close it.
         mem.pop('recall', None)
         mem['uncertain'] = True
-        mem['recall_skip'] = {'target': recall.get('target'), 'tick': int(mem.get('tick') or 0)}
-        _record(mem, 'camp_recall_skipped', observed_metric={'screen': 'world_map', 'camp': recall.get('target')},
-                reason='帰還先が全体マップ型の選択画面になり城を選べないため取り消して地図に戻る')
-        return [pad('b'), {'type': 'wait', 'ms': 700}, pad('a')]
+        home = chart.home_castle(mem.get('chapter') or 0)
+        if recall.get('hero'):
+            actions = _finish_hero_recall(mem, recall, home)
+        else:
+            _record(mem, 'camp_recall', observed_metric={'castle': home, 'camp': recall.get('target'),
+                                                          'screen': 'world_map'},
+                    reason='野営の将軍に本城への帰還を指示（全体マップ型の帰還先選択でAを2回）')
+            actions = [pad('a')]
+        return actions + [{'type': 'wait', 'ms': 700}, pad('a')]
     flags = world_flags(frame, mem.get('chapter') or 0)
     if not flags:
         waited = int(mem.get('world_map_wait') or 0) + 1
@@ -1562,6 +1568,18 @@ def camp_recall_step(screen: Screen, mem, frame):
         mem['uncertain'] = True
         return []
     stage = state.get('stage')
+    if stage == 'hero_focus':
+        if screen.kind != 'map':
+            return []                  # battle results and messages fade out first
+        state['stage'], state['steps'] = 'hero_open', 0
+        return [pad('select')]         # measured: SELECT centres the cursor on the hero
+    if stage == 'hero_open':
+        if screen.kind != 'map':
+            return []
+        state['stage'], state['steps'] = 'menu', 0
+        _record(mem, 'camp_enter', observed_metric={'hero': True, 'cursor': list(_cursor(screen) or ())},
+                reason='主人公にカーソルを合わせて決定し、きかんを選ぶ')
+        return [pad('a')]
     if stage == 'to_camp':
         if screen.kind != 'map':
             mem.pop('recall', None)
@@ -1591,6 +1609,14 @@ def camp_recall_step(screen: Screen, mem, frame):
             return [pad('right' if dx > 0 else 'left', min(8, abs(dx)))]
         return [pad('down' if dy > 0 else 'up', min(8, abs(dy)))]
     if stage == 'menu':
+        if state.get('hero') and (screen.kind in ('castle_menu', 'general_list')
+                                  or (screen.kind == 'map' and state['steps'] > 4)):
+            # SELECT put the cursor on a castle (the hero is inside one) or on
+            # nothing: he is not marching, so there is nothing to call off.
+            mem.pop('recall', None)
+            _record(mem, 'hero_recall_skipped', observed_metric={'screen': screen.kind},
+                    reason='主人公の部隊メニューが開かない（城内など）ため帰還指示を取り消す')
+            return [pad('b')] if screen.kind != 'map' else []
         if 'きかん' not in screen.text and 'いどう' not in screen.text:
             return []              # the window is still fading in
         downs = int(state.get('downs') or 0)
@@ -1609,6 +1635,14 @@ def camp_recall_step(screen: Screen, mem, frame):
         marker = screen.marker
         roofs = ([r for r in castle_roofs(frame) if r['kind'] == 'own' and not r['clipped']]
                  if frame is not None else [])
+        if state.get('hero') and marker:
+            goal = state.get('goal') or _recall_goal(mem)
+            state['goal'] = goal
+            jumped = (mem.get('y_jumped') or {}).get('RECALL') == goal
+            if goal and jumped and not castle_roofs(frame):
+                return _finish_hero_recall(mem, state, goal)      # roofs hidden: trust the jump
+            if goal and not roofs and not jumped and (mem.get('y_jumps') or {}).get('RECALL:target', 0) < 2:
+                return _start_y_jump(mem, {'step': 'RECALL'}, goal, 'target')
         if not marker or not roofs:
             mem.pop('recall', None)
             mem['uncertain'] = True
@@ -1620,6 +1654,8 @@ def camp_recall_step(screen: Screen, mem, frame):
         dx = roof['target'][0] - marker[0]
         dy = roof['target'][1] - marker[1]
         if abs(dx) <= RECALL_CONFIRM_PX and abs(dy) <= RECALL_CONFIRM_PX:
+            if state.get('hero'):
+                return _finish_hero_recall(mem, state, state.get('goal'))
             mem.pop('recall', None)
             mem['uncertain'] = True
             _record(mem, 'camp_recall',
@@ -1630,6 +1666,37 @@ def camp_recall_step(screen: Screen, mem, frame):
             return [pad('right' if dx > 0 else 'left', min(6, abs(dx)))]
         return [pad('down' if dy > 0 else 'up', min(6, abs(dy)))]
     return []
+
+
+def _recall_goal(mem):
+    """The owned castle the hero returns to: where he set out from, else the nearest to home."""
+    chapter = mem.get('chapter') or 0
+    cells = chart.castles(chapter)
+    owned = [c for c in _owned(mem) if c in cells]
+    for step in (mem.get('recall') or {}).get('sorties') or ():
+        source = ((mem.get('sorties') or {}).get(step) or {}).get('source')
+        if source in owned:
+            return source
+    home = chart.home_castle(chapter)
+    if home in owned:
+        return home
+    return owned[0] if owned else None
+
+
+def _finish_hero_recall(mem, state, goal):
+    mem.pop('recall', None)
+    mem['uncertain'] = True
+    tick = int(mem.get('tick') or 0)
+    for step in state.get('sorties') or ():
+        sortie = (mem.get('sorties') or {}).get(step)
+        if sortie:
+            sortie['status'] = 'recalled'
+    if goal:
+        mem.setdefault('sorties', {})[f'RECALL:{tick}'] = {
+            'general': NAME, 'target': goal, 'status': 'en_route', 'purpose': 'move', 'tick': tick}
+    _record(mem, 'hero_recalled', observed_metric={'castle': goal, 'sorties': state.get('sorties')},
+            reason='弱った主人公の進軍を取りやめ自軍城へ帰還させた')
+    return [pad('a')]
 
 
 def map_step(screen: Screen, mem, frame):
@@ -1919,13 +1986,38 @@ def _unverified_target(screen, mem, order):
     return [pad('b')]
 
 
+# Owner (2026-09-29): 敵にエッグを使わせない. gcgx ai.html: an enemy general
+# uses its egg when the battle's card IDs total 48 or more (patterns 1-3).
+CARD_IDS = reference.ALL_CARD_IDS
+ENEMY_EGG_CARD_ID_SUM = reference.ENEMY_EGG_CARD_ID_SUM
+
+
+def _cap_card_ids(cards):
+    """Keep cards in plan order while their ID total stays under the enemy egg threshold."""
+    kept, total = [], 0
+    for card in cards:
+        card_id = CARD_IDS.get(card)
+        if card_id is None or total + card_id >= ENEMY_EGG_CARD_ID_SUM:
+            continue
+        kept.append(card)
+        total += card_id
+    return kept
+
+
 def _deploy_cards(order, mem):
     if _is_boss_order(order, mem):
         return list(order['cards'])
     cards = list(mem.get('card_override', {}).get(order['step'], order['cards']))
     for card in (mem.get('card_drop') or {}).get(order['step']) or ():
         cards = [c for c in cards if c != card]
-    return cards
+    capped = _cap_card_ids(cards)
+    if capped != cards and (mem.get('cards_capped') or {}).get(order['step']) != capped:
+        mem.setdefault('cards_capped', {})[order['step']] = capped
+        _record(mem, 'cards_capped', chart_step=order['step'],
+                observed_metric={'planned': cards, 'carried': capped,
+                                 'id_sum': sum(CARD_IDS[c] for c in capped)},
+                reason='切り札IDの合計が48以上だと敵がエッグを使うため、47以下になるよう携行札を絞る')
+    return capped
 
 
 CARD_SCROLL_LIMIT = 8         # downward presses looking for a card below a full panel
@@ -3310,6 +3402,43 @@ def battle_end(mem, next_kind):
             resulting_event=resulting or outcome, resulting_stage=None, next_screen=next_kind,
             reason='戦闘終了時のHP表示から判定' if outcome != 'unclassified'
             else '最終HPが0/非0で確定しないため未分類')
+    _maybe_recall_weak_hero(mem, cur, outcome, ally_hp)
+
+
+HERO_RECALL_RATIO_TENTHS = 4   # hero HP at or below 40% of his full strength after a win
+HERO_RECALL_MIN_HP = 20        # and never below this when his full strength is unknown
+
+
+def _hero_marching(mem):
+    now = int(mem.get('tick') or 0)
+    return [step for step, s in (mem.get('sorties') or {}).items()
+            if s.get('general') == NAME and s.get('status') in ('en_route', 'launched_unconfirmed')
+            and s.get('tick') is not None and now - int(s['tick']) < SORTIE_BUSY_TICKS]
+
+
+def _maybe_recall_weak_hero(mem, cur, outcome, ally_hp):
+    """Pull the hero back to a castle after a win that left him weak.
+
+    g436 23:15-23:18: the hero, marching on ゴーメン (1-A2), won a road battle
+    90 -> 14 HP with no soldiers left, marched on, and fell there within two
+    seconds of the next battle opening (14 -> 9 -> 0): too fast for any
+    in-battle retreat. The march itself has to be called off. The unit menu
+    SELECT + A opens is the camp menu (g436 22:04), so the camp recall's
+    きかん path is reused.
+    """
+    if cur.get('ally') != NAME or outcome != 'win' or type(ally_hp) is not int or mem.get('recall'):
+        return
+    full = int(mem.get('hero_max_hp') or 0)
+    limit = max(HERO_RECALL_MIN_HP, full * HERO_RECALL_RATIO_TENTHS // 10)
+    marching = _hero_marching(mem)
+    if ally_hp > limit or not marching:
+        return
+    mem['recall'] = {'stage': 'hero_focus', 'hero': True, 'steps': 0, 'sorties': marching}
+    (mem.get('y_jumps') or {}).pop('RECALL:target', None)
+    (mem.get('y_jumped') or {}).pop('RECALL', None)
+    _record(mem, 'hero_recall_start', observed_metric={'ally_hp': ally_hp, 'full_hp': full,
+                                                        'sorties': marching},
+            reason=f'主人公がHP{ally_hp}まで減って進軍中のため、次の戦闘で倒れる前に自軍城へ帰還させる')
 
 
 ATTACK = re.compile(r'(\S+?)しょうぐんが(\S+?)じょうにのりこんだ')
@@ -3546,6 +3675,7 @@ def _plan_extras(mem, shop, reserve, recruit):
     shop['reserve'] = reserve
     shop['egg'] = 'pending' if reserve else None
     shop['recruit'] = 'check' if recruit else None
+    shop['chikujou'] = 'check'
     if reserve or recruit:
         _record(mem, 'month_extras_plan', chart_step='1-month', month=shop['key'],
                 strategy_variant=shop.get('variant', 'chart'),
@@ -3823,7 +3953,67 @@ def _month_extra(screen, mem, shop):
                     reason=f'月一メニューに{label}が読めないため見送る')
             continue
         return [move]
-    return None
+    return _month_chikujou(screen, mem, shop)
+
+
+CHIKUJOU_SPARE = 40            # gold beyond the wage reserve before a castle is upgraded
+
+
+def _month_chikujou(screen, mem, shop):
+    """Owner (2026-09-29): with money to spare, ちくじょう raises a castle's level.
+
+    wikiwiki 城: a defender's egg monster gains +level defense and speed and a
+    defending general +level charge speed. Measured (isolated probe, chapter
+    2): ちくじょう lists our castles (the first row is the home castle),
+    「NGかかりますがよろしいですかな」 asks うむッ!/いかんッ!, and one level per
+    month is allowed (「これいじょうのぞうちくはできませんぞ!!」).
+    """
+    if shop.get('chikujou') != 'check':
+        return None
+    gold = (screen.header or {}).get('gold')
+    if type(gold) is not int or gold < WAGE_RESERVE + CHIKUJOU_SPARE:
+        shop['chikujou'] = 'skipped'
+        return None
+    move = menu_to(screen, 'ちくじょう')
+    if move is None:
+        shop['chikujou'] = 'skipped'
+        return None
+    if move != 'here':
+        return [move]
+    shop['chikujou'] = 'opened'
+    mem['month_sub'] = {'kind': 'chikujou', 'gold_before': gold, 'presses': 0, 'key': shop.get('key')}
+    _record(mem, 'month_sub_open', month=shop.get('key'), gold=gold, choice='ちくじょう',
+            reason='所持金に余裕があるため、ちくじょうで城の防衛力を上げる')
+    return [pad('a')]
+
+
+def _chikujou_step(screen, mem, sub):
+    text = screen.text
+    if screen.has('うむッ') and screen.has('いかんッ'):
+        quote = re.search(r'(\d+)Gかかりますが', text)
+        gold = (screen.header or {}).get('gold')
+        cost = int(quote[1]) if quote else None
+        if cost is None or type(gold) is not int or gold - cost < WAGE_RESERVE:
+            sub['declined'] = True
+            move = menu_to(screen, 'いかんッ!')
+            _record(mem, 'chikujou_declined', observed_metric={'cost': cost, 'gold': gold},
+                    reason='ちくじょう費用を払うと賃金リザーブを割るか費用が読めないため見送る')
+            return [pad('a')] if move == 'here' else [move] if move else [pad('b')]
+        move = menu_to(screen, 'うむッ!')
+        if move == 'here':
+            sub['quoted_cost'] = cost
+            _record(mem, 'chikujou_confirm', observed_metric={'cost': cost, 'gold': gold},
+                    reason=f'{cost}Gで城のレベルを上げる')
+            return [pad('a')]
+        return [move] if move else []
+    if 'になりましたぞ' in text:
+        sub['upgraded'] = True
+        return [pad('a')]
+    if 'これいじょう' in text or sub.get('upgraded') or sub.get('declined'):
+        return [pad('b')]              # one level per month: back to the month menu
+    if 'ぞうちく' in text:
+        return [pad('a')]              # the first row: the home castle
+    return []
 
 
 def _finish_month_sub(screen, mem, shop):
@@ -3831,7 +4021,7 @@ def _finish_month_sub(screen, mem, shop):
     sub = mem.pop('month_sub')
     gold = (screen.header or {}).get('gold')
     before = sub.get('gold_before')
-    cost = sub.get('quoted_cost') if sub['kind'] == 'egg' else RECRUIT_COST
+    cost = sub.get('quoted_cost') if sub['kind'] in ('egg', 'chikujou') else RECRUIT_COST
     paid = (type(cost) is int and cost > 0 and type(gold) is int and type(before) is int
             and before - gold == cost
             and (sub['kind'] != 'egg' or sub.get('full_selected') is True))
@@ -3844,6 +4034,14 @@ def _finish_month_sub(screen, mem, shop):
     if paid and sub['kind'] == 'egg':
         mem['egg_uses'] = {}      # counts are re-read at the next sorties
         mem.pop('egg_recheck', None)
+    if sub['kind'] == 'chikujou':
+        _record(mem, 'chikujou', month=sub.get('key'),
+                observed_metric={'gold_before': before, 'gold_after': gold, 'quoted_cost': cost,
+                                 'declined': sub.get('declined', False)},
+                deviation_reason=None if paid or sub.get('declined') else 'cost_not_observed',
+                reason='月一メニュー復帰時の所持金でちくじょうの支払いを確認' if paid
+                else 'ちくじょうを見送った／支払いを確認できない')
+        return
     _record(mem, 'egg_recover' if sub['kind'] == 'egg' else 'recruit', month=sub.get('key'),
             strategy_variant='recruit_default_cursor' if sub['kind'] == 'recruit' else 'egg_recover',
             observed_metric={'gold_before': before, 'gold_after': gold, 'presses': sub.get('presses'),
@@ -3903,6 +4101,8 @@ def month_sub_step(screen: Screen, mem):
         return [pad('b')]
     if sub['kind'] == 'egg':
         return _egg_recovery_step(screen, mem, sub)
+    if sub['kind'] == 'chikujou':
+        return _chikujou_step(screen, mem, sub)
     if kind == 'yes_no' or (screen.has('うむッ') and screen.has('いかんッ')):
         move = menu_to(screen, 'うむッ!')
         if move and move != 'here':

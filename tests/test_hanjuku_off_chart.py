@@ -904,15 +904,24 @@ def test_chapter_2_cells_put_every_measured_flag_on_the_y_view_grid():
     assert [o['step'] for o in chart.orders(2)] == ['2-Z1', '2-C1', '2-V1', '2-S1', '2-Z2', '2-V2', '2-Z3']
 
 
-def test_a_camp_recall_that_opens_the_island_picker_backs_out_and_pauses():
+def test_the_island_picker_confirms_the_home_castle_with_a_twice():
+    # Isolated probe 2026-09-29: きかん opens a whole-island picker with the R
+    # ring on the home castle; A, A sends the general home (B, A cancels).
     mem = {'chapter': 2, 'tick': 50, '_records': [],
            'recall': {'stage': 'dest', 'target': [141, 122], 'steps': 5}}
     view = Screen(lines=[], hand=None, text='', kind='world_map')
-    assert policy.world_map_step(view, mem, FRAME) == [policy.pad('b'), {'type': 'wait', 'ms': 700},
+    assert policy.world_map_step(view, mem, FRAME) == [policy.pad('a'), {'type': 'wait', 'ms': 700},
                                                         policy.pad('a')]
-    assert 'recall' not in mem and decisions(mem, 'camp_recall_skipped')
-    mem['tick'] = 60
-    assert policy.camp_recall_step(map_screen(140, 120), mem, FRAME) is None   # no tent retried
+    assert 'recall' not in mem
+    assert decisions(mem, 'camp_recall')[0]['observed_metric']['castle'] == 'アルマムーン'
+    # The weak hero's recall ends the same way and cancels his attack march.
+    mem = {'chapter': 1, 'tick': 50, '_records': [],
+           'sorties': {'1-A2': {'general': policy.NAME, 'target': 'ゴーメン', 'status': 'en_route', 'tick': 40}},
+           'recall': {'stage': 'dest', 'hero': True, 'steps': 1, 'sorties': ['1-A2']}}
+    assert policy.world_map_step(view, mem, FRAME) == [policy.pad('a'), {'type': 'wait', 'ms': 700},
+                                                        policy.pad('a')]
+    assert mem['sorties']['1-A2']['status'] == 'recalled'
+    assert decisions(mem, 'hero_recalled')[0]['observed_metric']['castle'] == 'ほんじょう'
 
 
 def test_the_g_cursor_is_read_beside_another_gold_icon():
@@ -1122,3 +1131,85 @@ def test_a_stray_camp_menu_is_recognized_for_closing():
     menu = Screen(lines=[], hand=(50, 25), text='いどうステータスキャンプきかん', kind='text')
     assert policy.is_camp_menu(menu)
     assert not policy.is_camp_menu(Screen(lines=[], hand=None, text='しゅつげきステータス', kind='castle_menu'))
+
+
+def test_a_hero_weakened_by_a_road_battle_is_recalled_before_his_next_fight(monkeypatch):
+    # g436 23:15-23:18: won a road battle 90 -> 14 HP while marching on ゴーメン,
+    # marched on and died there (game over).
+    mem = {'chapter': 1, 'tick': 100, '_records': [], 'hero_max_hp': 90, 'captured': ['キカンドン'],
+           'sorties': {'1-A2': {'general': policy.NAME, 'target': 'ゴーメン', 'source': 'キカンドン',
+                                'status': 'en_route', 'tick': 90}}}
+    policy._maybe_recall_weak_hero(mem, {'ally': policy.NAME}, 'win', 14)
+    assert mem['recall']['stage'] == 'hero_focus' and decisions(mem, 'hero_recall_start')
+    # A healthy win, or a hero not marching, leaves him alone.
+    calm = {**mem, 'recall': None, '_records': []}
+    calm.pop('recall')
+    policy._maybe_recall_weak_hero(calm, {'ally': policy.NAME}, 'win', 70)
+    assert 'recall' not in calm
+    # SELECT, then A on the hero, then the menu walk to きかん.
+    assert policy.camp_recall_step(map_screen(140, 120), mem, FRAME) == [policy.pad('select')]
+    assert policy.camp_recall_step(map_screen(140, 120), mem, FRAME) == [policy.pad('a')]
+    menu = Screen(lines=[], hand=(50, 25), text='いどうステータスキャンプきかん', kind='text')
+    assert [policy.camp_recall_step(menu, mem, FRAME) for _ in range(4)] == [[policy.pad('down')]] * 3 + [[policy.pad('a')]]
+    # Destination marker with no own roof in view: jump to the castle he came from.
+    monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: [])
+    marker = Screen(lines=[], hand=None, text='', kind='map_target', marker=(140, 120))
+    assert policy.camp_recall_step(marker, mem, FRAME) == [policy.pad('y')]
+    assert mem['y_jump']['goal'] == 'キカンドン' and mem['y_jump']['mode'] == 'target'
+    mem.pop('y_jump')
+    mem.setdefault('y_jumped', {})['RECALL'] = 'キカンドン'          # the jump confirmed there
+    assert policy.camp_recall_step(marker, mem, FRAME) == [policy.pad('a')]
+    assert 'recall' not in mem and mem['sorties']['1-A2']['status'] == 'recalled'
+    assert decisions(mem, 'hero_recalled')[0]['observed_metric']['castle'] == 'キカンドン'
+
+
+def test_a_hero_inside_a_castle_is_not_recalled():
+    mem = {'chapter': 1, 'tick': 100, '_records': [], 'recall': {'stage': 'menu', 'hero': True, 'steps': 0}}
+    castle_menu = Screen(lines=[], hand=(42, 25), text='しゅつげきステータス', kind='castle_menu')
+    assert policy.camp_recall_step(castle_menu, mem, FRAME) == [policy.pad('b')]
+    assert 'recall' not in mem and decisions(mem, 'hero_recall_skipped')
+
+
+def test_carried_cards_stay_below_the_enemy_egg_threshold():
+    # gcgx ai.html: the enemy uses its egg when the cards total 48+ card IDs.
+    assert policy._cap_card_ids(['クースカン', 'ミックミー', 'ミックミー']) == ['クースカン', 'ミックミー', 'ミックミー']  # 47
+    assert policy._cap_card_ids(['エンジェリン', 'エンジェリン', 'イッテツーン']) == ['エンジェリン', 'エンジェリン', 'イッテツーン']  # 44
+    # Chapter 2's エンジェリン+マグネガキン+ファバード (80) keeps what fits in plan order.
+    assert policy._cap_card_ids(['エンジェリン', 'マグネガキン', 'ファバード']) == ['エンジェリン']
+    order = {'step': '2-X', 'general': 'ゼウス', 'source': 'アルマムーン', 'target': 'グロン',
+             'cards': ('エンジェリン', 'マグネガキン', 'イッテツーン'), 'after': None, 'note': 't'}
+    mem = {'chapter': 2, '_records': []}
+    assert policy._deploy_cards(order, mem) == ['エンジェリン', 'イッテツーン']
+    assert decisions(mem, 'cards_capped')[0]['observed_metric']['id_sum'] == 22
+    policy._deploy_cards(order, mem)
+    assert len(decisions(mem, 'cards_capped')) == 1          # recorded once per plan
+
+
+def test_monthly_chikujou_raises_a_castle_only_with_money_to_spare(monkeypatch):
+    # Owner (2026-09-29): ちくじょう when there is money to spare. Flow measured
+    # in the isolated probe (chapter 2 month menu).
+    from docich.hanjuku_screen import Screen as S
+    original = policy.menu_to
+    monkeypatch.setattr(policy, 'menu_to',
+                        lambda screen, label: 'here' if label in ('うむッ!', 'いかんッ!') else original(screen, label))
+    mem = {'chapter': 2, '_records': [], 'month_sub': {'kind': 'chikujou', 'gold_before': 96, 'presses': 0}}
+    sub = mem['month_sub']
+    ask = S(lines=[], hand=None, kind='text', text='アルマムーン1どのしろをぞうちくなさいますか?',
+            header={'chapter': None, 'year': 2, 'month': 6, 'gold': 96})
+    assert policy._chikujou_step(ask, mem, sub) == [policy.pad('a')]
+    confirm = S(lines=[], hand=None, kind='yes_no',
+                text='アルマムーンじょうですなうむッ!5Gかかりますがよろしいですかないかんッ!',
+                header={'chapter': None, 'year': 2, 'month': 6, 'gold': 96})
+    assert policy._chikujou_step(confirm, mem, sub) == [policy.pad('a')]
+    assert sub['quoted_cost'] == 5
+    done = S(lines=[], hand=None, kind='text', text='アルマムーンじょうのレベルが2になりましたぞ', header=None)
+    assert policy._chikujou_step(done, mem, sub) == [policy.pad('a')]
+    again = S(lines=[], hand=None, kind='text', text='これいじょうのぞうちくはできませんぞ!!どのしろをぞうちくなさいますか?',
+              header=None)
+    assert policy._chikujou_step(again, mem, sub) == [policy.pad('b')]
+    # Too little left after the wage reserve: decline.
+    poor = {'chapter': 2, '_records': [], 'month_sub': {'kind': 'chikujou', 'gold_before': 40, 'presses': 0}}
+    pricey = S(lines=[], hand=None, kind='yes_no', text='うむッ!15Gかかりますがよろしいですかないかんッ!',
+               header={'chapter': None, 'year': 2, 'month': 6, 'gold': 40})
+    assert policy._chikujou_step(pricey, poor, poor['month_sub']) == [policy.pad('a')]   # on いかんッ!
+    assert poor['month_sub'].get('declined') and decisions(poor, 'chikujou_declined')
