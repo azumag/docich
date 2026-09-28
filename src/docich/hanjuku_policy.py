@@ -1712,6 +1712,7 @@ def map_step(screen: Screen, mem, frame):
         mem['picked'] = []
         mem['y_jumps'] = {k: v for k, v in (mem.get('y_jumps') or {}).items()
                           if not k.startswith(f"{order['step']}:")}
+        mem.pop('castle_verified', None)
         _record(mem, 'order_start', chart_step=order['step'], **_deploy_context(order, mem),
                 source=order['source'], target=order['target'], purpose=order.get('purpose'),
                 cards=list(order['cards']),
@@ -2225,6 +2226,44 @@ def _name_read_cleanly(line, name) -> bool:
             and cells.get(span + 8 * len(name)) != UNKNOWN)
 
 
+CASTLE_STATUS = re.compile(r'(?:しゅつげき)?([^\ufffd\s]+?)じょうステータスしゅうにゅう')
+
+
+def _check_source_castle(screen, mem, order):
+    """Read the castle's name (ステータス) before sending anyone from it.
+
+    g421 18:13: a Y jump to アルマムーン closed early, A opened the menu of
+    the castle under the cursor - フーリック, where the hero stood - and the
+    bot recorded どうし at アルマムーン and sent him to フーリック itself; the
+    sortie went nowhere. Measured (isolated probe): ステータス shows
+    「<name>じょう しゅうにゅう… しょうぐんNめい …」 beside the menu and B
+    returns to it. ``None`` means verified: continue with しゅつげき.
+    """
+    step, source = order['step'], _source(order, mem)
+    if mem.get('castle_verified') == step:
+        return None
+    m = CASTLE_STATUS.search(screen.text)
+    if m is None:
+        move = menu_to(screen, 'ステータス')
+        if move is None:
+            return None                   # unreadable menu: the old path holds with evidence
+        return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move],
+                             '出撃前に城のステータスで城名を確認')
+    name = m.group(1)
+    if name == source:
+        mem['castle_verified'] = step
+        return [pad('b')]
+    cells = chart.castles(mem.get('chapter') or 0)
+    if name in cells:
+        mem['cursor'], mem['uncertain'] = list(cells[name]), False     # we know where we are now
+    misses = mem.setdefault('source_miss', {})
+    misses[step] = misses.get(step, 0) + 1
+    _record(mem, 'source_castle_mismatch', chart_step=step, source=source,
+            observed_metric={'castle': name, 'misses': misses[step]},
+            reason=f'出撃元{source}のつもりで開いた城が{name}だったため出撃せず現在地を直して向かい直す')
+    return [pad('b'), {'type': 'wait', 'ms': 500}, pad('b')]
+
+
 def deploy_step(screen: Screen, mem):
     order = _order(mem)
     kind = screen.kind
@@ -2232,6 +2271,9 @@ def deploy_step(screen: Screen, mem):
         # Menus we did not open (e.g. confirm pressed by an earlier fallback).
         return [pad('b')]
     if kind == 'castle_menu':
+        checked = _check_source_castle(screen, mem, order)
+        if checked is not None:
+            return checked
         (mem.get('source_miss') or {}).pop(order['step'], None)
         move = menu_to(screen, 'しゅつげき')
         if move is None:
@@ -3267,7 +3309,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'world_map_tick', 'world_map_due', 'world_map_wait', 'home_lost',
                 'y_jump', 'y_jumps', 'y_jump_return', 'y_jumped', 'boss_absent', 'recall', 'recall_skip',
                 'near_goal', 'align_steps', 'unanchored', 'select_tick',
-                'select_used',
+                'select_used', 'castle_verified',
                 'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
                 'indep_menu_key', 'indep_menu_action',
                 'monster_menu_key', 'monster_menu_cursor', 'monster_menu_hold',
