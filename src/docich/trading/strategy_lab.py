@@ -24,7 +24,22 @@ D = Decimal
 EXPERIMENT_FILENAME = "paper_strategy_experiment.json"
 PENDING_FILENAME = "paper_strategy_pending.json"
 EVALUATION_FILENAME = "paper_strategy_evaluation.json"
+EVALUATION_HISTORY_FILENAME = "paper_strategy_evaluation_history.json"
 PROMOTION_FILENAME = "paper_strategy_promotion_candidate.json"
+EVALUATION_HISTORY_MAX = 20
+_EVALUATION_HISTORY_KEYS = (
+    "schema_version",
+    "experiment_id",
+    "activated_at",
+    "closed_sells",
+    "wins",
+    "win_rate",
+    "realized_pnl_jpy",
+    "profit_factor",
+    "max_realized_drawdown_pct",
+    "ignored_unpaired_exits",
+    "promotion_ready",
+)
 
 ENTRY_FEATURES = {
     "return_bps", "zscore", "rsi", "sma_gap_bps", "volatility_bps",
@@ -649,9 +664,56 @@ def evaluate_experiment(trading_dir, spec: StrategyExperiment, *, capital_jpy: o
     }
 
 
+def _record_evaluation_history(trading_dir: Path, evaluation: Mapping[str, object]) -> None:
+    """Upsert one bounded row per experiment so improvement can compare them.
+
+    Best effort: the current-evaluation file is the primary record and a
+    history write failure must never fail the improvement job.
+    """
+    experiment_id = str(evaluation.get("experiment_id") or "")
+    if not experiment_id:
+        return
+    entry = {"evaluated_at": time.time()}
+    for key in _EVALUATION_HISTORY_KEYS:
+        if key in evaluation:
+            entry[key] = evaluation[key]
+    entries = [
+        item for item in load_evaluation_history(trading_dir, limit=EVALUATION_HISTORY_MAX)
+        if item.get("experiment_id") != experiment_id
+    ]
+    entries.append(entry)
+    try:
+        _atomic_json(
+            Path(trading_dir) / EVALUATION_HISTORY_FILENAME,
+            {"schema_version": 1, "entries": entries[-EVALUATION_HISTORY_MAX:]},
+        )
+    except OSError:
+        pass
+
+
+def load_evaluation_history(trading_dir, *, limit: int = 6) -> list[dict[str, object]]:
+    """Most recent evaluation rows per experiment, oldest first (bounded)."""
+    if limit <= 0:
+        return []
+    path = Path(trading_dir) / EVALUATION_HISTORY_FILENAME
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    raw = data.get("entries") if isinstance(data, Mapping) else None
+    if not isinstance(raw, list):
+        return []
+    entries = [
+        dict(item) for item in raw
+        if isinstance(item, Mapping) and item.get("experiment_id")
+    ]
+    return entries[-int(limit):]
+
+
 def persist_evaluation(trading_dir, evaluation: Mapping[str, object], spec: StrategyExperiment) -> None:
     target = Path(trading_dir)
     _atomic_json(target / EVALUATION_FILENAME, evaluation)
+    _record_evaluation_history(target, evaluation)
     if evaluation.get("promotion_ready") is True:
         _atomic_json(
             target / PROMOTION_FILENAME,
