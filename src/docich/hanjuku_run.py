@@ -209,7 +209,7 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
 
 def action_sent(runtime_dir: Path, identity: dict, action):
     state=load(runtime_dir,identity)
-    trace=(read_record(runtime_dir/'hanjuku_bot.json').get('decision_trace') or {})
+    trace=(read_record(runtime_dir/'hanjuku_bot.json', limit=256 * 1024).get('decision_trace') or {})
     if not isinstance(trace,dict) or any(trace.get(k)!=v for k,v in identity.items()):
         trace={}
     event(runtime_dir,{'event':'input_sent','at':time.time(),'type':action.type,

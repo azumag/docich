@@ -1642,7 +1642,7 @@ class RetroCornerManager:
                     from .hanjuku_policy import summary
                     from .retroarch_boundary import read_record
                     bot = read_record(runtime_directory(self.g.state_dir, active['runtime_id'])
-                                      / 'hanjuku_bot.json')
+                                      / 'hanjuku_bot.json', limit=256 * 1024)
                     latest['bot_chart'] = summary(bot.get('policy'))
                     latest['bot_version'] = bot.get('bot_version')
                 except Exception:

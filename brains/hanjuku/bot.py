@@ -24,6 +24,8 @@ from docich.hanjuku_pixels import read_png
 from docich.hanjuku_run import append_log
 from docich.retroarch_boundary import read_record
 
+BOT_STATE_LIMIT = 256 * 1024   # the bot's own memory file, not a boundary record
+
 
 # Only records that explain this observation's planned input/hold may override
 # the active battle. Observation, migration and result records are not actions.
@@ -177,7 +179,9 @@ def main():
             raise ValueError('invalid runtime')
         if not meta.get('terminal_reason') and not meta.get('terminal_candidate'):
             frame=read_png(Path(obs['screenshot'])).resized()
-            state=read_record(runtime/'hanjuku_bot.json')
+            # g438 04:18: the policy memory passed 16 KiB after a long game and
+            # every observation failed to load it (no input, screen_stalled).
+            state=read_record(runtime/'hanjuku_bot.json',limit=BOT_STATE_LIMIT)
             experience_path=ROOT/'run'/hanjuku_experience.EXPERIENCE_FILE
             experience=hanjuku_experience.load(experience_path)
             actions,state=decide(frame,state,adjusted=hanjuku_chart_adjust.load(runtime),
