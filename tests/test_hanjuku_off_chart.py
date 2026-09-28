@@ -1077,3 +1077,23 @@ def test_a_held_order_is_skipped_for_one_from_a_staffed_castle(monkeypatch):
     assert policy.next_order(mem) is other
     mem['garrison']['アルマムーン'] = ['ヴィーナス', 'どうし']        # someone stays home: the hold lifts
     assert policy.next_order(mem) is held
+
+
+def test_chapter_1_home_is_verified_by_its_real_name_and_wrongly_failed_orders_return():
+    # g436 21:19: ステータス shows 「アルマムーンじょう」 for the chart's ほんじょう;
+    # every home sortie was refused and 1-A1/1-V1 failed before leaving.
+    order = next(o for o in chart.orders(1) if o['step'] == '1-A1')
+    mem = {'chapter': 1, 'orders': {'1-A1': 'pending'}, 'picked': [], '_records': [], 'active': '1-A1'}
+    status = Screen(lines=[], hand=None, kind='castle_menu',
+                    text='しゅつげきアルマムーンじょうステータスしゅうにゅう30Gレベル1しょうぐん4めいどうし')
+    assert policy._check_source_castle(status, mem, order) == [policy.pad('b')]
+    assert mem['castle_verified'] == '1-A1' and not decisions(mem, 'source_castle_mismatch')
+    # Orders failed by the old check come back once; launched ones stay.
+    mem = {'chapter': 1, '_records': [], 'orders': {'1-A1': 'failed', '1-V1': 'failed', '1-C1': 'launched'},
+           'launched_orders': {'1-C1': {}}, 'source_miss': {'1-V1': 2}}
+    policy._repair_home_alias_failures(mem)
+    assert mem['orders'] == {'1-C1': 'launched'} and mem['source_miss'] == {}
+    assert decisions(mem, 'orders_restored')[0]['observed_metric'] == ['1-A1', '1-V1']
+    mem['orders']['1-A1'] = 'failed'
+    policy._repair_home_alias_failures(mem)                 # once only
+    assert mem['orders']['1-A1'] == 'failed'
