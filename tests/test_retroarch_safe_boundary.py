@@ -1,5 +1,6 @@
 """Offline safe-boundary/contain contracts; never launch RetroArch or a ROM."""
 from dataclasses import replace
+import json
 import os
 from pathlib import Path
 import sys
@@ -174,6 +175,16 @@ def test_malformed_boundary_never_opens_input_or_acknowledges(adapter, contents)
         require_input_open(adapter.spec.runtime_dir)
     with pytest.raises(AdapterError):
         adapter.request_round_boundary('request-1', time.monotonic() + 1, None)
+
+
+def test_read_record_explicit_large_limit_preserves_default_boundary_limit(tmp_path):
+    record = {'history': ['observed'] * 1800}
+    path = tmp_path / 'hanjuku_bot.json'
+    path.write_text(json.dumps(record), encoding='utf-8')
+    assert 16384 < path.stat().st_size < 256 * 1024
+    assert read_record(path, limit=256 * 1024) == record
+    with pytest.raises(AdapterError, match='bounded regular record'):
+        read_record(path)
 
 
 def test_checkpoint_verification_respects_cancel(adapter):
