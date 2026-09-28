@@ -28,7 +28,6 @@ async def preflight(profile: Path, url: str) -> None:
             executable_path=os.environ.get('SOREN_CHROME_EXECUTABLE_PATH') or None)
         try:
             page = await browser.new_page(viewport={'width': 32, 'height': 32})
-            # HEAD checks upstream availability without opening a subscribing page.
             response = await page.request.head(url, timeout=5000)
             if not response.ok:
                 raise RuntimeError('overlay preflight unavailable')
@@ -39,7 +38,6 @@ async def preflight(profile: Path, url: str) -> None:
 
 
 async def serve(config, *, width: int, height: int, stop: asyncio.Event) -> None:
-    # A second service cannot even preflight/start a browser for this stream.
     with lease(config.state, 'renderer-service'):
         profile = config.state / 'browser-profile'
         flag = os.environ.get('SOREN_DIRECT_TWICA_OVERLAY_ENABLED', '1').lower().strip()
@@ -51,7 +49,6 @@ async def serve(config, *, width: int, height: int, stop: asyncio.Event) -> None
         render_stop = None
         try:
             while not stop.is_set():
-                # A killed stream runner must not leave an orphan subscriber/lease.
                 parent = os.environ.get('DOCICH_TWICA_PARENT_PID')
                 if parent and not alive({'pid': int(parent),
                         'birth': os.environ.get('DOCICH_TWICA_PARENT_BIRTH'),
@@ -60,12 +57,13 @@ async def serve(config, *, width: int, height: int, stop: asyncio.Event) -> None
                 current = owner(config.state)
                 compositor = component(config.state, 'compositor')
                 running = (current['mode'] == 'common' and fresh(compositor)
-                           and compositor.get('state') == 'running'
-                           and retired(config.state, current['generation']))
+                           and compositor.get('state') == 'running')
                 if running and task is None:
-                    # Check only at a renderer start, not for every video frame.
-                    # A not-yet-upgraded legacy host must not be mistaken for absent.
-                    if await asyncio.to_thread(proxy_inventory, config.proxy_ports):
+                    # The activation handshake retires old consumers. A newly
+                    # starting guarded game cannot create legacy frames in common
+                    # mode, so its pending ACK must not tear down an active page.
+                    if (retired(config.state, current['generation'])
+                            and await asyncio.to_thread(proxy_inventory, config.proxy_ports)):
                         render_stop = asyncio.Event()
                         task = asyncio.create_task(run_renderer(
                             url, config.frames, width=width, height=height,
@@ -73,8 +71,6 @@ async def serve(config, *, width: int, height: int, stop: asyncio.Event) -> None
                             profile=profile, stop=render_stop))
                 elif not running and task is not None:
                     render_stop.set()
-                    # A failed close exits nonzero; the owning runner tears down only
-                    # this process group before creating another browser owner.
                     await asyncio.wait_for(task, timeout=8)
                     task = None
                 if task is not None and task.done():
@@ -91,7 +87,6 @@ async def serve(config, *, width: int, height: int, stop: asyncio.Event) -> None
             if task is not None:
                 render_stop.set()
                 await asyncio.wait_for(task, timeout=8)
-            # This record is written only after browser/context cleanup returned.
             heartbeat(config.state, 'renderer', state='standby', browser_active=False,
                       generation=owner(config.state)['generation'])
 
@@ -119,7 +114,6 @@ def main(argv=None) -> int:
         asyncio.run(run())
         return 0
     except Exception:
-        # The runner reports only this fixed state and bounded restart counters.
         return 1
 
 if __name__ == '__main__':

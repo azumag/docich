@@ -32,6 +32,11 @@ def test_native_record_foreground_audio_recovery_and_constant_encoder_pid(tmp_pa
         assert shutil.which(binary),f'required CI dependency missing: {binary}'
     soren=Path(os.environ['DOCICH_TWICA_SOREN_CHECKOUT']).resolve()
     root=Path(__file__).resolve().parents[1]
+    # Preserve the installed browser location before giving the fixture a private
+    # HOME. Production uses its configured executable or normal owner cache.
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        browser_executable=os.environ.get('SOREN_CHROME_EXECUTABLE_PATH') or p.chromium.executable_path
     children=[]; reader,writer=os.pipe()
     try:
         xvfb=subprocess.Popen(['Xvfb','-displayfd',str(writer),'-screen','0','320x180x24','-nolisten','tcp'],
@@ -61,21 +66,27 @@ def test_native_record_foreground_audio_recovery_and_constant_encoder_pid(tmp_pa
         x.XMapRaised(d,window);x.XSync(d,0)
         output=tmp_path/'native.mkv';log=tmp_path/'wrapper.log'
         with upstream() as (url,requests):
-            # The fixture is silent; AAC input and browser lifecycle are tested,
-            # not the production TwiCa effect sound.
             env.update(DOCICH_ROOT=str(root),DOCICH_TWICA_COMMON_ENABLED='1',DOCICH_TWICA_PYTHON=sys.executable,
                 DOCICH_TWICA_STATE_DIR=str(tmp_path/'state'),DOCICH_TWICA_FRAME_DIR=str(runtime/'frames'),
                 SOREN_DIRECT_TWICA_OVERLAY_URL=url,SOREN_STREAM_BACKEND='ffmpeg',SOREN_DIRECT_STREAM_DISPLAY=display,
                 SOREN_DIRECT_STREAM_SIZE='320x180',SOREN_DIRECT_STREAM_PULSE_SOURCE='twica_fixture.monitor',
                 SOREN_DIRECT_STREAM_STATE_DIR=str(tmp_path/'stream'),SOREN_DIRECT_STREAM_LOG_FILE=str(tmp_path/'ffmpeg.log'),
                 SOREN_DIRECT_STREAM_FPS='15',SOREN_ENV_FILE=str(tmp_path/'nonexistent-env'),
-                DOCICH_TWICA_AUDIO_SINK='twica_fixture',DOCICH_CC_ENABLED='0')
+                DOCICH_TWICA_AUDIO_SINK='twica_fixture',DOCICH_CC_ENABLED='0',
+                SOREN_CHROME_EXECUTABLE_PATH=browser_executable)
             with log.open('wb') as stream:
                 child=subprocess.Popen(['bash',str(soren/'direct_stream.sh'),'record','--output',str(output),'--duration','25'],
                     env=env,stdout=stream,stderr=stream,start_new_session=True)
                 children.append(child)
                 cfg=load_common_config(soren,env)
-                wait_for(lambda:fresh(component(cfg.state,'renderer')) and component(cfg.state,'compositor').get('frames_sent',0)>=2)
+                try:
+                    wait_for(lambda:fresh(component(cfg.state,'renderer')) and component(cfg.state,'compositor').get('frames_sent',0)>=2)
+                except AssertionError:
+                    ffmpeg_log=tmp_path/'ffmpeg.log'
+                    raise AssertionError(json.dumps({'renderer':component(cfg.state,'renderer'),
+                        'compositor':component(cfg.state,'compositor'),
+                        'wrapper':log.read_text()[-2000:],
+                        'ffmpeg':ffmpeg_log.read_text()[-2000:] if ffmpeg_log.exists() else 'not-started'})) from None
                 OwnerControl(cfg.state,timeout=5).activate()
                 wait_for(lambda:component(cfg.state,'compositor').get('frame_state')=='fresh')
                 pid=component(cfg.state,'compositor')['ffmpeg_pid']
@@ -96,8 +107,6 @@ def test_native_record_foreground_audio_recovery_and_constant_encoder_pid(tmp_pa
         assert {s['codec_type'] for s in metadata['streams']}=={'audio','video'}
         raw=subprocess.check_output(['ffmpeg','-v','error','-i',str(output),'-vf','fps=4','-pix_fmt','rgb24','-f','rawvideo','pipe:1'])
         size=320*180*3
-        # x=236 is inside the native game window (x<240), proving that final
-        # compositing crosses OS stacking rather than just CSS z-index.
         pixels=[raw[i+((90*320+236)*3):i+((90*320+236)*3)+3] for i in range(0,len(raw),size)]
         assert any(len(p)==3 and min(p)>220 for p in pixels)
         assert any(len(p)==3 and min(p)<100 for p in pixels)
