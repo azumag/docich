@@ -1908,6 +1908,21 @@ def _garrison_move(mem, general, source=None, target=None):
         garrison[target] = [*here, general]
 
 
+def _name_read_cleanly(line, name) -> bool:
+    """The name is one whole word with no unread tile touching it.
+
+    The hand cursor and the row's icon are unread tiles on the same row but
+    one cell away from the name; counting them held the boss sortie for over
+    80 minutes (g421 11:48: どうし read cleanly, hand on its row).
+    """
+    span = next((x for x, word in line.spans() if word == name), None)
+    if span is None:
+        return False
+    cells = dict(line.cells)
+    return (cells.get(span - 8) != UNKNOWN
+            and cells.get(span + 8 * len(name)) != UNKNOWN)
+
+
 def deploy_step(screen: Screen, mem):
     order = _order(mem)
     kind = screen.kind
@@ -1933,7 +1948,8 @@ def deploy_step(screen: Screen, mem):
             mem.setdefault('sortie_general', {}).pop(order['step'], None)
             mem.setdefault('order_context', {}).pop(order['step'], None)
             move = menu_to(screen, order['general'])
-            if move is None or any(UNKNOWN in line.text and order['general'] in line.text for line in screen.lines):
+            if move is None or any(order['general'] in line.text and not _name_read_cleanly(line, order['general'])
+                                   for line in screen.lines):
                 return _hold_deploy(screen, mem, order, 'ボス出撃の主人公を一覧とカーソルで確認できないため代役を選ばず保留')
             if move == 'here':
                 mem.setdefault('general_override', {}).pop(order['step'], None)

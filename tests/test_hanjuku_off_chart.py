@@ -745,3 +745,15 @@ def test_gold_edge_arrows_are_not_a_cursor_and_a_far_jump_is_never_confirmed():
     view = _y_view((150.0, 140.0))                # far from ゴーメン
     assert policy.world_map_step(parse(view), mem, view) == [policy.pad('y')]
     assert decisions(mem, 'y_jump_failed') and 'y_jump' not in mem
+
+
+def test_the_boss_sortie_accepts_the_hero_row_despite_the_hand_and_icon_tiles():
+    """g421 11:48: どうし read cleanly with the hand and an icon on its row; held 80+ minutes."""
+    from docich.hanjuku_font import TextLine, UNKNOWN
+    clean = TextLine(39, ((120, UNKNOWN), (128, UNKNOWN), (144, 'ど'), (152, 'う'), (160, 'し'),
+                          (208, UNKNOWN)))
+    assert policy._name_read_cleanly(clean, 'どうし')
+    assert not policy._name_read_cleanly(
+        TextLine(39, ((136, UNKNOWN), (144, 'ど'), (152, 'う'), (160, 'し'))), 'どうし')
+    assert not policy._name_read_cleanly(
+        TextLine(39, ((144, 'ど'), (152, UNKNOWN), (160, 'し'))), 'どうし')
