@@ -359,3 +359,14 @@ def test_a_hero_who_starts_weak_is_judged_against_his_full_strength():
     assert p._hero_retreat_needed(cur)
     # A healthy hero ahead of the enemy keeps fighting.
     assert not p._hero_retreat_needed({**cur, 'ally_hp': 60, 'start_ally_hp': 60})
+
+
+def test_hero_full_strength_retreat_bypasses_generic_survival_gate():
+    cur = {'ally': p.NAME, 'enemy': 'リースリング', 'ally_hp': 20, 'enemy_hp': 21,
+           'start_ally_hp': 20, 'start_enemy_hp': 21, 'ref_ally_hp': 90, 'step': '1-A2'}
+    assert not p._survival_needed(cur)
+    assert p._hero_retreat_needed(cur)
+
+    tutorial = {'ally': p.NAME, 'enemy': 'だいじん', 'ally_hp': 8, 'enemy_hp': 20,
+                'start_ally_hp': 90, 'start_enemy_hp': 90, 'ref_ally_hp': 90, 'step': None}
+    assert not p._hero_retreat_needed(tutorial)
