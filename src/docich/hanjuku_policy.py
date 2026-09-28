@@ -3334,6 +3334,7 @@ def message_step(screen: Screen, mem):
     if m:
         general, castle = m.groups()
         observe_chapter_castle(mem, castle)
+        castle = _castle_label(mem, castle)
         launched = (mem.get('launched') or {}).get(castle) or {}
         current = mem.get('attack') or {}
         step, match = _match_sortie(mem, castle, general)
@@ -3353,6 +3354,7 @@ def message_step(screen: Screen, mem):
     if m:
         castle = m.group(1)
         observe_chapter_castle(mem, castle)
+        castle = _castle_label(mem, castle)
         if (mem.get('attack') or {}).get('castle') != castle or (mem.get('attack') or {}).get('side') != 'defense':
             _record(mem, 'defense_observed', castle=castle, reason='せめこまれました表示')
             mem['world_map_due'] = True      # the castle may have fallen without a battle
@@ -3384,6 +3386,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'monster_menu_choice', 'monster_menu_choice_key', 'monster_panel'):
         mem.pop(key, None)
     mem['chapter'] = chapter
+    mem['chapter_evidence'] = evidence or 'header'
     mem['variant'] = 'chart' if chart.orders(chapter) else 'chart_unavailable'
     _record(mem, 'chapter_seen', previous_stage=previous,
             observed_metric={'chapter': chapter, **({'evidence': evidence} if evidence else {})},
@@ -3404,12 +3407,42 @@ def observe_chapter_castle(mem, castle):
     if not castle or not chapter:
         return
     here = set(chart.CASTLE_NAMES.get(chapter, ())) | {chart.home_castle(chapter), chart.boss_castle(chapter)}
+    # The home castle is アルマムーン in every chapter; chapter 1's chart only
+    # labels it ほんじょう (g436 21:33: a defense of アルマムーン in chapter 1
+    # switched the bot to chapter 2 cells and parked the cursor at sea).
+    here |= {STATUS_NAMES.get(label, label) for label in here}
     if castle in here:
         return
     nxt = chapter + 1
     if castle in chart.CASTLE_NAMES.get(nxt, ()) or castle == chart.home_castle(nxt):
         _enter_chapter(mem, nxt, evidence=castle,
                        reason='次章にしかない城名を確認したため章を進め、前章の座標・出撃・購入状態を初期化')
+
+
+def _castle_label(mem, name):
+    """The chart label for a castle name read from a message (アルマムーン -> ほんじょう in chapter 1)."""
+    cells = chart.castles(mem.get('chapter') or 0)
+    if name in cells:
+        return name
+    return next((label for label, real in STATUS_NAMES.items() if real == name and label in cells), name)
+
+
+def _repair_home_name_chapter(mem):
+    """Undo the chapter 2 switch that only a defense of アルマムーン caused (v44-v60).
+
+    Chapter entries now keep their evidence; a chapter 2 memory without it
+    predates this fix, and the only such live game (g436, 21:33) was still
+    in chapter 1. Its route state is reset for chapter 1 once.
+    """
+    # Only a game that v60 already saw in chapter 1 (its one-time repair flag)
+    # and that then entered chapter 2 without recorded evidence.
+    if ((mem.get('chapter') or 0) != 2 or 'chapter_evidence' in mem
+            or not mem.get('home_alias_repaired')):
+        return
+    mem['chapter_evidence'] = 'reverted_home_name'
+    _enter_chapter(mem, 1, evidence='reverted_home_name',
+                   reason='本城の実名アルマムーンを次章の証拠と誤認して第2章にしていたため第1章へ戻す')
+    mem['chapter_evidence'] = 'reverted_home_name'
 
 
 
@@ -4138,6 +4171,7 @@ def _repair_home_alias_failures(mem):
 
 def observe_events(screen: Screen, mem):
     """Record chart-relevant facts that need no input (month header, harvest)."""
+    _repair_home_name_chapter(mem)
     _repair_home_alias_failures(mem)
     mem['tick'] = int(mem.get('tick') or 0) + 1      # observations: ages sorties (_en_route)
     _hold_general_loss_metric(mem)

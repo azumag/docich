@@ -859,18 +859,36 @@ def test_a_castle_only_the_next_chapter_has_advances_the_chapter_and_drops_chapt
     # g421: the header reads 「2ねん5のつき」 (no chapter), so after クイーン fell
     # at 14:41 the bot fought at アルマムーン yet steered by chapter 1 cells.
     mem = {**g401_memory(), 'cursor': [265, 270], 'y_jumps': {'I:1:map': 3}, 'lost': ['ゴーメン']}
+    # The home castle is アルマムーン in every chapter: never evidence (g436 21:33).
     assert policy.message_step(_message('アルマムーンじょうがてきにせめこまれました!'), mem) == [policy.pad('a')]
-    assert mem['chapter'] == 2
+    assert mem['chapter'] == 1 and not decisions(mem, 'chapter_seen')
+    assert decisions(mem, 'defense_observed')[0]['castle'] == 'ほんじょう'   # chapter 1 label
+    assert policy.message_step(_message('フーリックじょうがてきにせめこまれました!'), mem) == [policy.pad('a')]
+    assert mem['chapter'] == 2 and mem['chapter_evidence'] == 'フーリック'
     assert mem['variant'] == 'chart'                      # chapter 2 cells were measured
     for key in ('cursor', 'orders', 'sorties', 'garrison', 'captured', 'lost', 'y_jumps'):
         assert key not in mem
-    assert decisions(mem, 'chapter_seen')[0]['observed_metric'] == {'chapter': 2, 'evidence': 'アルマムーン'}
-    assert decisions(mem, 'defense_observed')[0]['castle'] == 'アルマムーン'
+    assert decisions(mem, 'chapter_seen')[0]['observed_metric'] == {'chapter': 2, 'evidence': 'フーリック'}
+    assert decisions(mem, 'defense_observed')[-1]['castle'] == 'フーリック'
+
+
+def test_a_chapter_2_memory_without_evidence_returns_to_chapter_1_once():
+    # g436: the v44-v60 check had switched a chapter 1 game to chapter 2 on アルマムーン.
+    mem = {'chapter': 2, 'variant': 'chart', '_records': [], 'orders': {'2-Z1': 'pending'}, 'cursor': [522, 847]}
+    policy._repair_home_name_chapter(mem)
+    assert mem['chapter'] == 2                            # no chapter 1 history: untouched
+    mem['home_alias_repaired'] = True                     # v60 ran while it was chapter 1
+    policy._repair_home_name_chapter(mem)
+    assert mem['chapter'] == 1 and mem['chapter_evidence'] == 'reverted_home_name'
+    assert 'orders' not in mem and 'cursor' not in mem
+    assert decisions(mem, 'chapter_seen')[0]['resulting_stage'] == 1
+    mem['chapter'] = 2
+    policy._repair_home_name_chapter(mem)                 # a chapter entered with evidence stays
+    assert mem['chapter'] == 2
 
 
 def test_an_unmeasured_chapter_never_walks_another_chapters_cells():
     mem = {'chapter': 2, 'variant': 'chart', '_records': [], 'name': {'done': True}}
-    policy.message_step(_message('アルマムーンじょうがてきにせめこまれました!'), mem)
     policy.observe_chapter_castle(mem, 'グリン')             # only chapter 3 has グリン
     assert mem['chapter'] == 3 and mem['variant'] == 'chart_unavailable'
     assert policy.map_step(map_screen(140, 120), mem, FRAME) in ([], None)
