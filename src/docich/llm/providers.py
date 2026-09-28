@@ -11,9 +11,10 @@ import subprocess
 import tempfile
 import time
 from urllib.error import HTTPError, URLError
-from urllib.request import ProxyHandler, Request, build_opener
+from urllib.request import ProxyHandler, Request, build_opener, HTTPRedirectHandler
 
 from .contracts import AgentSpec, DispatchRequest, ProviderResult
+from .images import image_capable, user_content, validate_images
 
 
 RATE_LIMIT_RE = re.compile(
@@ -203,13 +204,18 @@ def _opencode(spec: AgentSpec, request: DispatchRequest, timeout: float, env: di
     return ProviderResult(0, output=output)
 
 
+class _NoImageRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def _local(spec: AgentSpec, request: DispatchRequest, timeout: float, env: dict[str, str]) -> ProviderResult:
     model = spec.model or env.get("LOCAL_LLM_MODEL", "gemma4:12b")
     base_url = env.get("LOCAL_LLM_BASE_URL", "http://100.112.104.102:11434").rstrip("/")
     body = json.dumps(
         {
             "model": model,
-            "messages": [{"role": "user", "content": request.prompt}],
+            "messages": [{"role": "user", "content": user_content(request.prompt, request.images)}],
             "stream": False,
             "temperature": 0.7,
             "num_predict": 1600,
@@ -222,7 +228,8 @@ def _local(spec: AgentSpec, request: DispatchRequest, timeout: float, env: dict[
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    opener = build_opener(ProxyHandler({}))
+    opener = (build_opener(ProxyHandler({}), _NoImageRedirect()) if request.images
+              else build_opener(ProxyHandler({})))
     try:
         with opener.open(req, timeout=max(float(timeout), 0.1)) as response:
             raw = response.read(MAX_OUTPUT_BYTES + 1)
@@ -242,7 +249,7 @@ def _local(spec: AgentSpec, request: DispatchRequest, timeout: float, env: dict[
         return ProviderResult(1, failure_kind="empty_output", detail="empty_output")
     if PROVIDER_ERROR_RE.search(output):
         return ProviderResult(1, failure_kind="provider_failed", detail="provider_error")
-    return ProviderResult(0, output=output)
+    return ProviderResult(0, output=output, images_sent=len(request.images))
 
 
 def call_agent(
@@ -252,6 +259,19 @@ def call_agent(
     timeout: float,
     env: dict[str, str],
 ) -> ProviderResult:
+    try:
+        validate_images(request.images)
+    except ValueError:
+        return ProviderResult(2, failure_kind="invalid_response", detail="invalid_images")
+    if request.images:
+        if not image_capable(spec, env):
+            return ProviderResult(2, failure_kind="unsupported_image_model")
+        try:
+            fresh = request.image_guard is not None and request.image_guard()
+        except Exception:
+            fresh = False
+        if fresh is not True:
+            return ProviderResult(1, failure_kind="image_context_expired")
     if spec.provider == "codex":
         return _codex(spec, request, timeout, env)
     if spec.provider in {"amd", "openrouter", "opencode", "opencode-go", "vercel"}:
