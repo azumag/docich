@@ -119,9 +119,9 @@ def generate_screen_reply(request: DispatchRequest, rows, *, env, dispatcher=Non
     if not result.ok or result.images_sent != 1:
         return text_only("image_generation_failed", capture_ms, image_requested=True,
                          image_bytes=len(frame.image.data))
-    # Freshness is checked immediately before sending by call_agent. A response
-    # may take >5 seconds; its explicitly timestamped still remains valid, but a
-    # scene change must never deliver the old scene as the new one.
+    # call_agent checks freshness immediately before sending the image to the
+    # model. After generation, scene identity and frame age are checked again:
+    # game_switch identity does not advance for ordinary board updates.
     try:
         same_scene = provider.reader() == frame.scene
     except Exception:
