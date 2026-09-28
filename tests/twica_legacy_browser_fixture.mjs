@@ -8,7 +8,7 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 const require=createRequire(import.meta.url);
 const {chromium}=require(process.env.DOCICH_NODE_PLAYWRIGHT || 'playwright');
-const {installTwicaLegacyOwner}=await import(pathToFileURL(path.join(process.env.DOCICH_SOREN_ROOT,'lib/twica_legacy_owner.mjs')));
+const {installTwicaLegacyOwner,readLegacyPolicy}=await import(pathToFileURL(path.join(process.env.DOCICH_SOREN_ROOT,'lib/twica_legacy_owner.mjs')));
 const dir=fs.mkdtempSync(path.join(os.tmpdir(),'twica-real-'));
 const streams=new Set();let total=0,max=0;
 const server=http.createServer((req,res)=>{
@@ -26,7 +26,13 @@ await new Promise(r=>server.listen(0,'127.0.0.1',r));
 const url=`http://127.0.0.1:${server.address().port}/overlay/x`;
 const browser=await chromium.launch({headless:true,executablePath:process.env.SOREN_CHROME_EXECUTABLE_PATH||undefined});
 const guards=[]; const pageErrors=[]; const requests=[]; let phase='initial';
-browser.on('page', p=>p.on('pageerror', e=>pageErrors.push(e.name)));
+function observePage(p){
+ p.on('pageerror',e=>pageErrors.push(e.name));
+ const evaluate=p.evaluate.bind(p);
+ p.evaluate=async (...args)=>{try{return await evaluate(...args);}catch(e){
+   if(pageErrors.length<10)pageErrors.push(String(e.message).slice(0,400));throw e;
+ }};
+}
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function wait(fn){
  for(let i=0;i<250;i++){if(await fn())return;await sleep(20);}
@@ -35,14 +41,16 @@ async function wait(fn){
    catch{return {unavailable:true};}
  }));
  throw new Error('fixture timeout '+JSON.stringify({phase,total,max,active:streams.size,
-   guards:guards.map(g=>({managed:g.managed,subscribed:g.subscribed,stopped:g.stopped})),pages,pageErrors,requests}));
+   policy:readLegacyPolicy(dir), guards:guards.map(g=>({managed:g.managed,subscribed:g.subscribed,stopped:g.stopped})),pages,pageErrors,requests}));
 }
 function policy(owner,legacy_role='game'){
  fs.writeFileSync(path.join(dir,'control.json'),JSON.stringify({schema:1,owner,legacy_role,generation:(owner==='common'?'c':owner==='none'?'b':'a').repeat(32)}),{mode:0o600});
 }
 try{
  policy('legacy');
+ assert.equal(readLegacyPolicy(dir).owner,'legacy','fixture must be an accepted private policy');
  const game=await browser.newPage(), shared=await browser.newPage();
+ observePage(game);observePage(shared);
  await game.goto(new URL('/host',url).href);await shared.goto(new URL('/host',url).href);
  const item={title:'TwiCa',srcUrl:url,style:{inset:'0',width:'100vw',height:'100vh'}};
  guards.push(await installTwicaLegacyOwner(game,item,{directory:dir,role:'game',intervalMs:20}));
