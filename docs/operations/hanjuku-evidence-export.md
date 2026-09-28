@@ -131,11 +131,16 @@ python3 ops/vm_actions/receive_hanjuku_evidence.py \
 
 ## テスト
 
+**PR #1302作成時点ではテストファイルのGitHub書き込みがツール側でブロックされ、未登録。**
+ローカルで25テスト成功を確認したが、このPRのCIで新テストを実行したとは扱わない。
+下のコマンドは `test_hanjuku_evidence.py` 登録後の実行用。未登録のままでは0件で終了するため、
+件数0を成功証跡にしない。テスト登録と再CIをready化の前提とする。
+
 ```sh
 python3 -m unittest discover -s ops/vm_actions/tests -p 'test_hanjuku_evidence.py' -v
 ```
 
-標準ライブラリのunittestなので既存 `VM operations CI` のdiscover対象になる。
+登録後は標準ライブラリのunittestとして既存 `VM operations CI` のdiscover対象になる。
 合成ピクセル・合成ログを使用し、ゲーム起動やネットワーク通信は行わない。
 ネイティブ終了判定との片方向互換（exportが元判定より緩くならないこと）と、
 実OpenSSLによる暗号化→復号・改ざん拒否もテストする。
