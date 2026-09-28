@@ -16,7 +16,7 @@ from . import hanjuku_chart as chart
 from . import hanjuku_chart_adjust as chart_adjust
 from . import hanjuku_experience as experience
 from . import hanjuku_reference as reference
-from .hanjuku_egg_reference import enemy_egg_triggers
+from .hanjuku_egg_reference import enemy_egg_triggers, general_max_hp
 from .hanjuku_font import UNKNOWN, TextLine
 from .hanjuku_screen import HEADER as HEADER_RE, OKUNOTE_CHOICES, Screen, castle_roofs, own_camps
 
@@ -892,26 +892,45 @@ def _off_chart(mem):
     """
     state = mem.setdefault('chart_adjust', {})
     rid = chart_adjust.request_id(mem)
+    orders = [o for o in _orders(mem) if not o['step'].startswith(chart_adjust.INTERIM_PREFIX)]
+    status = mem.get('orders') or {}
+    blocked = [{'step': o['step'], 'after': list(o['after'] or ())} for o in orders
+               if status.get(o['step']) in (None, 'pending')]
+    reason = ('chart_unavailable' if not orders
+              else 'orders_locked' if blocked else 'orders_exhausted')
+    fields = {'request_id': rid, 'off_chart_reason': reason, 'blocked': blocked,
+              'captured': sorted(mem.get('captured') or []), 'orders': dict(status),
+              'gold': mem.get('gold'), 'month': mem.get('month'), **_adjust_situation(mem)}
+    digest = chart_adjust.request_digest(fields)
+    prior_digest = state.get('request_digest')
     if state.get('request_id') != rid:
-        orders = [o for o in _orders(mem) if not o['step'].startswith(chart_adjust.INTERIM_PREFIX)]
-        status = mem.get('orders') or {}
-        blocked = [{'step': o['step'], 'after': list(o['after'] or ())} for o in orders
-                   if status.get(o['step']) in (None, 'pending')]
-        reason = ('chart_unavailable' if not orders
-                  else 'orders_locked' if blocked else 'orders_exhausted')
         state.clear()
         state['request_id'] = rid
+        state['request_digest'] = digest
         state['interim_wanted'] = not _plan_pending(mem) and bool(interim_candidates(mem))
         _record(mem, 'chart_adjust_request', chart_step=None, strategy_variant='chart_adjust_pending',
-                request_id=rid, off_chart_reason=reason, blocked=blocked,
-                captured=sorted(mem.get('captured') or []), orders=dict(status),
-                gold=mem.get('gold'), month=mem.get('month'), **_adjust_situation(mem),
+                **fields,
                 reason='チャート外: 出撃可能な指示がないため調整チャートを非同期に要求し入力を保留')
         return
+    revision_changed = prior_digest is not None and prior_digest != digest
+    if prior_digest != digest:
+        # Same situation, newer payload (stock, gold, lost castles): republish
+        # so the worker answers the current revision, then keep going so the
+        # interim fallback still progresses this observation.
+        state['request_digest'] = digest
+        _record(mem, 'chart_adjust_request', chart_step=None, strategy_variant='chart_adjust_pending',
+                **fields,
+                reason='チャート外: 状況が更新されたため同じ要求を最新の在庫・配置で再要求')
     doc = mem.get('_adjusted')
     plan = mem.get('chart_plan') or {}
+    doc_digest = doc.get('request_digest') if doc else None
     if (doc and doc.get('request_id') == rid and doc.get('chapter') == mem.get('chapter')
-            and plan.get('request_id') != rid):
+            and plan.get('request_id') != rid
+            and ((doc_digest == state.get('request_digest'))
+                 # A digestless answer predates the revision field (old worker
+                 # during a hot-load): accepted until a revision actually
+                 # changed under it, then only a bound answer counts.
+                 or (doc_digest is None and not revision_changed))):
         _adopt_plan(mem, doc, rid)
         return
     if plan.get('request_id') == rid or _plan_pending(mem):
@@ -2074,16 +2093,21 @@ CARD_STOCK_LIMIT = 24         # observed card names kept for the adjusted-chart 
 def _observe_card_stock(mem, inventory):
     """Remember the stocks a sortie card panel showed (chart-adjust grounding).
 
-    The panel is a window (at most four rows), so a card missing from one
-    reading is not proven absent; only cards that were shown are recorded.
-    g438 04:04: the adjusted chart planned ミックミー and エンジェリン for
-    chapter 1, where neither was ever in the panel -- the model was never told
-    what the player actually holds. The request now carries this so it plans
-    from observed stock.
+    Fewer than four rows is the whole inventory (depleted items disappear), so
+    a known card absent from it is out of stock now and recorded as 0; a
+    four-row panel is a window and only its rows are updated. g438 04:04: the
+    adjusted chart planned ミックミー and エンジェリン for chapter 1, where
+    neither was ever in the panel -- the model was never told what the player
+    actually holds. The request now carries this so it plans from observed
+    stock.
     """
     stock = mem.setdefault('card_stock', {})
-    for row in inventory['rows']:
-        stock[row['card']] = row['stock']
+    shown = {row['card']: row['stock'] for row in inventory['rows']}
+    stock.update(shown)
+    if len(inventory['rows']) < 4:
+        for card in stock:
+            if card not in shown:
+                stock[card] = 0
     while len(stock) > CARD_STOCK_LIMIT:
         stock.pop(next(iter(stock)))
 
@@ -2987,17 +3011,23 @@ SURVIVAL_CARDS = ('エンジェリン', 'ミックミー', 'マグネガキン',
 
 
 def _egg_drop_evidence(cur, card):
-    """This battle's 卵落 fit for ``card``, or None when HP is unreadable.
+    """This battle's 卵落 fit for ``card``, or None when max HP is unknown.
 
     gcgx: a card drops the enemy egg when its 卵落 exceeds the two generals'
-    max-HP sum mod 16. The start readings stand in for max HP; the hero's
-    full strength is remembered across battles (``ref_ally_hp``).
+    *max* HP sum mod 16. A wounded battle reading is not max HP, so the
+    comparison uses the fixed char.csv HP (hero: the remembered full-strength
+    ``ref_ally_hp``) and fails closed to the fixed priority when the general
+    is unknown.
     """
-    enemy_hp, ally_hp = cur.get('start_enemy_hp'), cur.get('ref_ally_hp') or cur.get('start_ally_hp')
+    ally_max = cur.get('ref_ally_hp')
+    if type(ally_max) is not int or ally_max <= 0:
+        ally_name = 'しゅじんこう' if cur.get('ally') == NAME else cur.get('ally')
+        ally_max = general_max_hp(ally_name)
+    enemy_max = general_max_hp(cur.get('enemy'))
     value = reference.egg_drop_value(card)
-    if value is None or any(type(n) is not int or n <= 0 for n in (enemy_hp, ally_hp)):
+    if value is None or any(type(n) is not int or n <= 0 for n in (enemy_max, ally_max)):
         return None
-    total = enemy_hp + ally_hp
+    total = enemy_max + ally_max
     return {'value': value, 'threshold': reference.egg_drop_threshold(total),
             'max_hp_sum': total, 'drops': reference.can_drop_egg(card, total)}
 
