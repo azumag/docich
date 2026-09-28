@@ -1191,7 +1191,8 @@ def test_monthly_chikujou_raises_a_castle_only_with_money_to_spare(monkeypatch):
     from docich.hanjuku_screen import Screen as S
     original = policy.menu_to
     monkeypatch.setattr(policy, 'menu_to',
-                        lambda screen, label: 'here' if label in ('うむッ!', 'いかんッ!') else original(screen, label))
+                        lambda screen, label: 'here' if label in ('うむッ!', 'いかんッ!', 'アルマムーン')
+                        else original(screen, label))
     mem = {'chapter': 2, '_records': [], 'month_sub': {'kind': 'chikujou', 'gold_before': 96, 'presses': 0}}
     sub = mem['month_sub']
     ask = S(lines=[], hand=None, kind='text', text='アルマムーン1どのしろをぞうちくなさいますか?',
@@ -1213,3 +1214,17 @@ def test_monthly_chikujou_raises_a_castle_only_with_money_to_spare(monkeypatch):
                header={'chapter': None, 'year': 2, 'month': 6, 'gold': 40})
     assert policy._chikujou_step(pricey, poor, poor['month_sub']) == [policy.pad('a')]   # on いかんッ!
     assert poor['month_sub'].get('declined') and decisions(poor, 'chikujou_declined')
+
+
+def test_the_castle_guard_only_holds_while_few_castles_remain(monkeypatch):
+    # Owner (2026-09-29): with six castles the guard cancelled the hero's charted
+    # sortie to スペンソニア; only one or two castles risk a total loss.
+    monkeypatch.setattr(policy, '_present_generals', lambda _screen: [policy.NAME])
+    order = {'step': '1-A3', 'general': policy.NAME, 'source': 'ゴーメン', 'target': 'スペンソニア',
+             'cards': [], 'after': None, 'note': 't'}
+    screen = Screen(lines=[], hand=(150, 40), text='', kind='general_list')
+    mem = {'chapter': 1, 'tick': 10, '_records': [], 'orders': {'1-A3': 'pending'},
+           'captured': ['キカンドン', 'ナキューメラ', 'ジョンリギ', 'カストーラ', 'ゴーメン']}
+    assert policy._keep_last_castle(screen, mem, order) is None
+    mem['captured'] = ['ゴーメン']                    # home + ゴーメン: two castles
+    assert policy._keep_last_castle(screen, mem, order) is not None

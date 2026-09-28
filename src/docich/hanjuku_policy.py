@@ -2406,7 +2406,8 @@ def _keep_last_castle(screen, mem, order):
         return None                        # the boss battle ends the chapter; a move keeps one (_move_general_pick)
     source = _source(order, mem)
     present = _present_generals(screen)
-    if present is None or len(present) != 1 or source not in _owned(mem) or _staffed_elsewhere(mem, source):
+    if (present is None or len(present) != 1 or source not in _owned(mem)
+            or not _few_castles(mem) or _staffed_elsewhere(mem, source)):
         return None
     mem['last_castle_hold'] = {'castle': source, 'tick': int(mem.get('tick') or 0)}
     mem['orders'][order['step']] = 'pending'
@@ -2418,11 +2419,22 @@ def _keep_last_castle(screen, mem, order):
     return [pad('b'), {'type': 'wait', 'ms': 300}, pad('b')]
 
 
+LAST_CASTLE_GUARD_OWNED = 2   # the guard only matters while so few castles remain
+
+
+def _few_castles(mem) -> bool:
+    """Owner (2026-09-29): with six castles the guard only cancelled the chart's
+    hero sortie to スペンソニア on stream; a total loss (game over) is a risk
+    only when one or two castles are left (g436 18:57: the last one fell)."""
+    owned = _owned(mem) & set(chart.castles(mem.get('chapter') or 0))
+    return len(owned) <= LAST_CASTLE_GUARD_OWNED
+
+
 def _last_castle_held(mem, order) -> bool:
     hold = mem.get('last_castle_hold') or {}
     source = _source(order, mem)
     return (not _is_boss_order(order, mem) and order.get('purpose') != 'move' and hold.get('castle') == source
-            and not _staffed_elsewhere(mem, source)
+            and _few_castles(mem) and not _staffed_elsewhere(mem, source)
             and int(mem.get('tick') or 0) - int(hold.get('tick') or 0) < LAST_CASTLE_HOLD_TICKS)
 
 
@@ -2791,6 +2803,7 @@ def battle_step(screen: Screen, mem):
         planned = [t['card'] for t in _tactics(mem, cur['step'])
                    if t['enemy'] in (None, b.enemy) and t.get('step') in (None, cur['step'])]
         planned += list(mem.get('card_override', {}).get(cur['step']) or [])
+        cur['planned_cards'] = list(planned)
         _record(mem, 'battle_start', **_battle_labels(cur), enemy=b.enemy, ally=b.ally,
                 expected_metric=cur['strategy_expected'],
                 observed_metric={'enemy_hp': b.enemy_hp, 'ally_hp': b.ally_hp},
@@ -2918,8 +2931,14 @@ def _survival_needed(cur):
     # only at HP ~10, after the melee had already decided the fight, and
     # generals died with an unused egg (g421 15:09 26 vs 48, 15:13 27 vs 38;
     # owner: eggs unused while dying).
+    # Behind from the very start (g438 03:31: ココット 22 vs キッシュ 26 went
+    # 22 -> 10 in one observation of melee before any card was used, then
+    # died). The rescue (cards first, then the egg) opens before the melee.
+    # Not for boss fights or battles with charted cards: their plan runs.
+    behind_start = (type(cur.get('start_enemy_hp')) is int and start < cur['start_enemy_hp']
+                    and not cur.get('planned_cards') and cur.get('enemy') not in chart.BOSSES.values())
     return (hp <= 12 or (hp < enemy and hp * 5 <= start * 2)
-            or hp * 10 <= enemy * BEHIND_EGG_RATIO_TENTHS)
+            or hp * 10 <= enemy * BEHIND_EGG_RATIO_TENTHS or behind_start)
 
 
 def _survival_state(mem, cur):
@@ -3024,6 +3043,7 @@ def _survival_menu(screen, mem, cur):
     # A visible list is authoritative. Do not infer carried cards from the
     # chart, a different general's sortie, or a planned inventory.
     labels = {word for _, _, word in _options(screen)}
+    # Cards first, then the egg (owner: 切り札が先 - the chart's order).
     if ('きりふだ' in labels and not rescue.get('cards_exhausted')
             and rescue['cards_checked'] < 3):
         label = 'きりふだ'
@@ -3651,7 +3671,11 @@ def _extras_reserve(mem, header):
     """
     cost = EGG_RECOVER_COST * len(_egg_recovery_targets(mem))
     gold = (header or {}).get('gold')
-    if type(gold) is not int or gold < 0:
+    # Owner (2026-09-29): 兵士の数を確認せず卵回復した - the army is read on the
+    # soldier screen, so without this month's count the soldiers go first and
+    # the eggs are recovered from what is left (_plan_extras: egg 'check').
+    counted = (mem.get('soldiers_seen_key') == _month_key(header) if header else False)
+    if type(gold) is not int or gold < 0 or not counted or (mem.get('soldiers_seen') or 0) < 50:
         reserve = 0
     elif gold >= cost:
         reserve = cost
@@ -3673,7 +3697,9 @@ def _egg_recheck(mem):
 
 def _plan_extras(mem, shop, reserve, recruit):
     shop['reserve'] = reserve
-    shop['egg'] = 'pending' if reserve else None
+    egg_cost = EGG_RECOVER_COST * len(_egg_recovery_targets(mem))
+    shop['egg'] = 'pending' if reserve else ('check' if egg_cost else None)
+    shop['egg_cost'] = egg_cost
     shop['recruit'] = 'check' if recruit else None
     shop['chikujou'] = 'check'
     if reserve or recruit:
@@ -3925,7 +3951,16 @@ def _month_extra(screen, mem, shop):
         status = shop.get(sub)
         if status not in ('pending', 'check'):
             continue
-        if status == 'check':
+        if sub == 'egg' and status == 'check':
+            # After the soldiers: recover the eggs only from what is left.
+            cost = shop.get('egg_cost') or EGG_RECOVER_COST
+            if type(gold) is not int or gold < cost + WAGE_RESERVE:
+                shop[sub] = 'skipped'
+                _record(mem, 'egg_recover_skip', month=shop.get('key'), gold=gold,
+                        observed_metric={'cost': cost, 'gold': gold},
+                        reason='兵士補充の後の残金が卵の回復費と賃金リザーブに足りないため見送る')
+                continue
+        elif status == 'check':
             # Owner rule (2026-09-27): recruit only when the soldiers got
             # their full 99 and the fee plus the wage reserve is still left.
             if (type(gold) is not int or shop.get('soldiers', 0) < SOLDIER_CAP
@@ -4012,7 +4047,32 @@ def _chikujou_step(screen, mem, sub):
     if 'これいじょう' in text or sub.get('upgraded') or sub.get('declined'):
         return [pad('b')]              # one level per month: back to the month menu
     if 'ぞうちく' in text:
-        return [pad('a')]              # the first row: the home castle
+        # g438 03:37: the first row was ジョンリギ with nobody inside
+        # (「しょうぐんがおりませなんだ」) and the upgrade never happened. Pick the
+        # home castle, else a castle a general is known to hold.
+        chapter = mem.get('chapter') or 0
+        home = chart.home_castle(chapter)
+        names = [STATUS_NAMES.get(home, home)] + [
+            STATUS_NAMES.get(c, c) for c, gs in (mem.get('garrison') or {}).items() if gs and c != home]
+        tried = sub.setdefault('rows_tried', [])
+        for name in names:
+            if name in tried:
+                continue
+            move = menu_to(screen, name)
+            if move is None:
+                tried.append(name)
+                continue
+            if move == 'here':
+                if 'おりませなんだ' in text and sub.get('chosen') == name:
+                    tried.append(name)     # nobody there: try the next castle
+                    continue
+                sub['chosen'] = name
+                return [pad('a')]
+            return [move]
+        sub['declined'] = True
+        _record(mem, 'chikujou_declined', observed_metric={'tried': tried},
+                reason='将軍のいる城を一覧で選べないため、ちくじょうを見送る')
+        return [pad('b')]
     return []
 
 
@@ -4421,6 +4481,7 @@ def observe_events(screen: Screen, mem):
     m = re.search(r'へいしすうは([0-9０-９]+)めい', screen.text.replace(' ', ''))
     if m:
         seen = int(m.group(1).translate(str.maketrans('０１２３４５６７８９', '0123456789')))
+        mem['soldiers_seen_key'] = mem.get('month')
         if seen != mem.get('soldiers_seen'):
             mem['soldiers_seen'] = seen
             _record(mem, 'soldiers_seen', observed_metric={'soldiers': seen},
