@@ -1115,3 +1115,10 @@ def test_chapter_1_home_is_verified_by_its_real_name_and_wrongly_failed_orders_r
     mem['orders']['1-A1'] = 'failed'
     policy._repair_home_alias_failures(mem)                 # once only
     assert mem['orders']['1-A1'] == 'failed'
+
+
+def test_a_stray_camp_menu_is_recognized_for_closing():
+    # g436 22:04: the camp menu opened by a stray A stayed open for an hour.
+    menu = Screen(lines=[], hand=(50, 25), text='いどうステータスキャンプきかん', kind='text')
+    assert policy.is_camp_menu(menu)
+    assert not policy.is_camp_menu(Screen(lines=[], hand=None, text='しゅつげきステータス', kind='castle_menu'))

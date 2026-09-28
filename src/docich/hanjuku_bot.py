@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v61-home-name-not-chapter'
+BOT_VERSION = 'hanjuku-chart-v62-close-stray-camp-menu'
 
 
 # Native title copyright rows, measured from the owner's ROM. A strict match
@@ -292,6 +292,12 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
         actions=policy.yes_no_step(screen,mem)
     elif kind in {'castle_info','sealed_castle','main_menu'}:
         policy._record(mem,'close_panel',screen=kind,reason='意図しない情報画面を閉じる')
+        actions=[pad('b')]
+    elif kind=='text' and policy.is_camp_menu(screen):
+        # g436 22:04: an A after closing the Y view landed on the hero's tent
+        # and opened いどう/ステータス/キャンプ/きかん with no recall in flight;
+        # nothing handled it and the bot pressed nothing for over an hour.
+        policy._record(mem,'close_panel',screen='camp_menu',reason='帰還指示中でない野営メニューを閉じる')
         actions=[pad('b')]
     if actions is None:
         actions=legacy_actions(frame,phase,updated)

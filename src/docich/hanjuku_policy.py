@@ -1520,6 +1520,11 @@ RECALL_CONFIRM_PX = 4          # marker onto the own castle's selecting cell
 RECALL_SKIP_TICKS = 400        # observations without recalls after a skipped picker
 
 
+def is_camp_menu(screen) -> bool:
+    """Our tent's menu: いどう/ステータス/キャンプ/きかん (isolated probe, g436 22:04)."""
+    return all(word in screen.text for word in ('いどう', 'ステータス', 'キャンプ', 'きかん'))
+
+
 def camp_recall_step(screen: Screen, mem, frame):
     """Owner rule (2026-09-28): a camp (野営) seen on screen is recalled.
 
