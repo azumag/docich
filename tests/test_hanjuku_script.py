@@ -406,6 +406,42 @@ def test_corner_unknown_observation_failure_is_not_silently_retried(manager, mon
         manager._wait_hanjuku({'status':'active','game':'hanjuku-hero','bot_identity':dict(IDENTITY)})
 
 
+def test_a_presentation_still_starting_is_retried_within_a_bound(manager, monkeypatch):
+    """Issue #1280 (g433 20:22): one 'not ready' killed the manager on the first try."""
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from docich.naming import runtime_directory
+    from docich.retro_corner import PRESENTATION_NOT_READY, PRESENTATION_RETRY_LIMIT
+    import inspect
+    from docich.adapters import retroarch
+    assert PRESENTATION_NOT_READY in inspect.getsource(retroarch.RetroArchAdapter._source)
+    state={'status':'active','game':'hanjuku-hero','previous_game':'sorengame','bot_identity':dict(IDENTITY)}
+    runtime=runtime_directory(manager.g.state_dir,IDENTITY['runtime_id'])
+    runtime.mkdir(parents=True)
+    observe=Mock(side_effect=[AdapterError(PRESENTATION_NOT_READY)]*3+[SimpleNamespace(meta={'hanjuku':{
+        'phase':'title','terminal_reason':'game_over','actions_sent':5}})])
+    manager.store.canonical.load=Mock(return_value=({'active':IDENTITY},False))
+    monkeypatch.setattr('docich.agent.fence.shared_section',lambda root,fn:fn())
+    monkeypatch.setattr('docich.adapters.make_adapter',lambda *a,**kw:SimpleNamespace(observe=observe))
+    monkeypatch.setattr(manager,'_rotation_stop_result',lambda:None)
+    monkeypatch.setattr(manager,'_read_state',lambda:dict(state))
+    monkeypatch.setattr(manager,'_write_state',lambda update:state.update(update))
+    monkeypatch.setattr(manager,'_sleep',Mock())
+    monkeypatch.setattr(manager,'_finish_locked',Mock(return_value='restored'))
+    monkeypatch.setattr('docich.hanjuku_run.terminal',Mock(return_value={
+        'terminal_evidence':'title_return_after_gameplay','generation':IDENTITY['generation']}))
+    assert manager._wait_hanjuku(state)=='restored' and observe.call_count==4
+    reasons=[json.loads(line)['reason'] for line in (runtime/'hanjuku_events.jsonl').read_text().splitlines()
+             if json.loads(line).get('event')=='observation_retry']
+    assert reasons==['presentation_not_ready']*3
+    # A presenter that never becomes ready still fails closed after the bound.
+    observe=Mock(side_effect=AdapterError(PRESENTATION_NOT_READY))
+    monkeypatch.setattr('docich.adapters.make_adapter',lambda *a,**kw:SimpleNamespace(observe=observe))
+    with pytest.raises(AdapterError,match='not ready'):
+        manager._wait_hanjuku(dict(state))
+    assert observe.call_count==PRESENTATION_RETRY_LIMIT+1
+
+
 def test_optional_concert_exits_instead_of_selecting_the_same_track():
     rgb=bytearray(frame((160,110,60)).rgb)
     for y in range(150,208):
@@ -583,3 +619,34 @@ def test_third_image_resets_two_image_stasis(tmp_path):
     assert result['terminal_reason'] is None and result['unchanged_seconds']==0
     result=hanjuku_run.observe(tmp_path,IDENTITY,a,now=300,wall=1300)
     assert result['terminal_reason'] is None      # a fell out of the two recent images
+
+
+def test_game_over_writes_a_grounded_recap_candidate(tmp_path):
+    """Owner rule 2026-09-28: a game over narrates a recap of the run."""
+    title = title_frame()
+    for now in range(4):
+        hanjuku_run.observe(tmp_path, IDENTITY, title, now=now, wall=1000 + now)
+    run = hanjuku_run.observe(tmp_path, IDENTITY, frame(), now=4, wall=1004)
+    from docich.game_switch import atomic_write_json
+    atomic_write_json(tmp_path / hanjuku_run.RUN_FILE,
+                      {**run, 'name_entered': True, 'gameplay_seen': True})
+    (tmp_path / 'hanjuku_decisions.jsonl').write_text(
+        json.dumps({'event': 'decision', 'decision': 'month_seen', 'month': '1-5'},
+                   ensure_ascii=False) + '\n' +
+        json.dumps({'event': 'decision', 'decision': 'order_launched', 'chapter': 1},
+                   ensure_ascii=False) + '\n')
+    for now in (6, 7):
+        hanjuku_run.observe(tmp_path, IDENTITY, title, now=now, wall=1000 + now)
+    run = hanjuku_run.observe(tmp_path, IDENTITY, title, now=8, wall=1008)
+    assert run['terminal_reason'] == 'game_over'
+    lines = [json.loads(x) for x in (tmp_path / 'hanjuku_commentary.jsonl').read_text().splitlines()]
+    recap = [x for x in lines if x.get('terminal_recap')]
+    assert len(recap) == 1
+    item = recap[0]
+    assert item['key'] == 'game_over_recap' and item['seq'] == 1
+    assert item['game'] == IDENTITY['game'] and item['runtime_id'] == IDENTITY['runtime_id']
+    assert '第1章' in item['text'] and '1年5月' in item['text'] and '1回出撃' in item['text']
+    assert item['text'].startswith('ゲームオーバー。') and len(item['text']) <= 120
+    # The terminal latch returns the old state: never a second recap.
+    hanjuku_run.observe(tmp_path, IDENTITY, title, now=9, wall=1009)
+    assert len((tmp_path / 'hanjuku_commentary.jsonl').read_text().splitlines()) == 1

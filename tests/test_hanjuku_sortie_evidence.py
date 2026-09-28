@@ -439,6 +439,9 @@ def test_zero_inventory_or_unmeasured_list_layout_is_held(change):
     else:
         screen = measured_card_select(('クースカン', 'ダイチスイム', 'ブラッキー', 'ノリウツール'))
     mem = foot_order_memory()
+    if change == 'wrong_name':
+        # A full panel is first scrolled for the card; past that bound it holds.
+        mem['card_scroll'] = {mem['active']: policy.CARD_SCROLL_LIMIT}
     assert policy.deploy_step(screen, mem) == []
     assert mem['picked'] == []
     assert mem['_records'][-1]['decision'] == 'situation_held'
@@ -784,6 +787,8 @@ def test_a_card_absent_from_the_panel_is_left_behind_after_bounded_readings():
     mem = _c2_memory()
     screen = measured_card_select(('イッテツーン', 'ブラッキー', 'フットバース', 'ノリウツール'),
                                   stocks=('11', '1', '1', '1'))
+    mem['card_scroll'] = {'1-C2': policy.CARD_SCROLL_LIMIT}      # already scrolled for it
+    mem['picked'] = ['ブラッキー']                                # the visible card goes first
     for _ in range(policy.CARD_MISS_LIMIT - 1):
         assert policy.deploy_step(screen, mem) == []
         assert mem['_records'][-1]['decision'] == 'situation_held'
@@ -793,8 +798,8 @@ def test_a_card_absent_from_the_panel_is_left_behind_after_bounded_readings():
     assert rec['observed_metric']['complete_list'] is False      # 4 rows may hide more
     assert rec['deviation_reason'] == 'ダイチスイムを選べないため携行せずに出撃する'
     assert policy._deploy_cards(policy._order(mem), mem) == ['ブラッキー']
-    # The next reading goes for the remaining planned card.
-    assert policy.deploy_step(screen, mem) == [policy.pad('down')]
+    # Every remaining planned card is picked: on to the sortie confirmation.
+    assert policy.deploy_step(screen, mem) == [policy.pad('b')]
 
 
 def test_no_carry_slot_left_drops_every_remaining_card():
@@ -815,3 +820,17 @@ def test_boss_kit_is_never_dropped():
         assert policy.deploy_step(screen, mem) == []
     assert not mem.get('card_drop')
     assert policy._deploy_cards(policy._order(mem), mem) == ['クースカン', 'ノリウツール']
+
+
+def test_a_boss_card_below_a_full_panel_is_reached_by_scrolling_after_visible_ones():
+    """g421 13:27: クースカン (bought x4) was below the 4-row panel; the boss sortie held."""
+    mem = memory()                                   # 1-B1: クースカン + ノリウツール
+    panel = measured_card_select(('イッテツーン', 'ブラッキー', 'フットバース', 'ノリウツール'),
+                                 stocks=('11', '1', '1', '2'), selected=3)
+    assert policy.deploy_step(panel, mem) == [policy.pad('a')]          # visible ノリウツール first
+    assert mem['picked'] == ['ノリウツール']
+    assert policy.deploy_step(panel, mem) == [policy.pad('down')]       # scroll for クースカン
+    assert mem['_records'][-1]['decision'] == 'card_scroll'
+    for _ in range(policy.CARD_SCROLL_LIMIT - 1):
+        policy.deploy_step(panel, mem)
+    assert policy.deploy_step(panel, mem) == []                          # bounded: boss kit holds

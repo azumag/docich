@@ -347,3 +347,28 @@ def test_egg_opponent_menu_with_spent_egg_row_greyed_out_is_still_recognized():
     for y in range(168,180):
         for x in range(152,164): c.put(x,y,(230,105,74))
     assert parse(c.frame()).kind=='egg_battle_menu'
+
+
+def test_a_hero_who_starts_weak_is_judged_against_his_full_strength():
+    # g436 23:15-23:17: 90 -> 14 HP in a road battle, then into ゴーメン (enemy 37):
+    # 14*4 > 14 (this battle's start) never asked for a retreat, and he died.
+    cur = {'ally': p.NAME, 'enemy': 'リースリング', 'ally_hp': 14, 'enemy_hp': 37,
+           'start_ally_hp': 14, 'start_enemy_hp': 37}
+    assert not p._hero_retreat_needed(cur)
+    cur['ref_ally_hp'] = 90
+    assert p._hero_retreat_needed(cur)
+    # A healthy hero ahead of the enemy keeps fighting.
+    assert not p._hero_retreat_needed({**cur, 'ally_hp': 60, 'start_ally_hp': 60})
+
+
+def test_a_general_behind_from_the_start_opens_the_rescue_before_the_melee():
+    # g438 03:31: ココット 22 vs キッシュ 26, melee 22 -> 10 before any card, died.
+    cur = {'ally': 'ココット', 'enemy': 'キッシュ', 'ally_hp': 22, 'enemy_hp': 26,
+           'start_ally_hp': 22, 'start_enemy_hp': 26, 'planned_cards': []}
+    assert p._survival_needed(cur)
+    # A charted card plan or a boss fight keeps its own timing.
+    assert not p._survival_needed({**cur, 'planned_cards': ['クースカン']})
+    boss = next(iter(p.chart.BOSSES.values()))
+    assert not p._survival_needed({**cur, 'enemy': boss})
+    # Ahead at the start: melee as before.
+    assert not p._survival_needed({**cur, 'start_ally_hp': 30, 'ally_hp': 30})

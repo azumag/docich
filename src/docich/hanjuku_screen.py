@@ -145,6 +145,77 @@ def castle_roofs(frame: Frame, exclude=None) -> list[dict]:
     return out
 
 
+# Our camping tent (野営): a yellow/orange body with a light-blue base band
+# and a pure-red flag above it (isolated probe 2026-09-28, confirmed on a
+# live frame). The flag can be clipped by the top edge in live frames
+# (g421 17:06: body at y0-8, no red anywhere in the frame), so the band
+# carries the body signature when the flag is out of view.
+# いどう/ステータス/キャンプ/きかん opens on A; enemy camps fly another flag.
+CAMP_FLAG = (255, 0, 0)
+CAMP_YELLOW = (238, 198, 65)
+CAMP_ORANGE = (238, 113, 57)
+CAMP_BAND = (131, 198, 222)
+
+
+def _camp_flagish(p) -> bool:
+    return p[0] >= 190 and p[1] <= 110 and p[2] <= 110
+
+
+def own_camps(frame: Frame) -> list[dict]:
+    """Our camping tents (野営) with the cursor cell that selects them.
+
+    A fully visible tent must show its red flag above the body. A tent
+    clipped by the top edge has no flag in frame: the body (yellow+orange
+    with the light-blue band) still counts, and the target may sit above
+    the screen so the servo scrolls the camera until the flag appears.
+    """
+    body = {(x, y) for y in range(frame.height) for x in range(frame.width)
+            if frame.pixel(x, y) in (CAMP_YELLOW, CAMP_ORANGE, CAMP_BAND)}
+    found, seen = [], set()
+    for start in sorted(body):
+        if start in seen:
+            continue
+        stack, comp = [start], []
+        seen.add(start)
+        while stack:
+            x, y = stack.pop()
+            comp.append((x, y))
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    n = (x + dx, y + dy)
+                    if n in body and n not in seen:
+                        seen.add(n)
+                        stack.append(n)
+        if not 12 <= len(comp) <= 200:
+            continue
+        xs = [c[0] for c in comp]
+        ys = [c[1] for c in comp]
+        x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+        if x1 - x0 > 16 or y1 - y0 > 16:
+            continue
+        yellow = sum(1 for c in comp if frame.pixel(*c) == CAMP_YELLOW)
+        orange = sum(1 for c in comp if frame.pixel(*c) == CAMP_ORANGE)
+        band = sum(1 for c in comp if frame.pixel(*c) == CAMP_BAND)
+        if yellow < 6 or orange < 6 or band < 3:
+            continue
+        flag = None
+        for yy in range(max(0, y0 - 4), y0):
+            hits = [(xx, yy) for xx in range(max(0, x0 - 6), min(frame.width, x1 + 7))
+                    if _camp_flagish(frame.pixel(xx, yy))]
+            if len(hits) >= 2:
+                flag = hits[0]
+                break
+        clipped = y0 - 6 < 0
+        if flag is None and not clipped:
+            continue
+        target = (flag[0] - 8, flag[1] - 2) if flag else (x0 - 6, y0 - 6)
+        if any(abs(t['target'][0] - target[0]) <= 8 and abs(t['target'][1] - target[1]) <= 8
+               for t in found):
+            continue
+        found.append({'target': target, 'clipped': flag is None})
+    return found
+
+
 @dataclass
 class Battle:
     enemy: str | None

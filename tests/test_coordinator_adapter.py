@@ -162,6 +162,7 @@ class CoordinatorAdapterTestBase(unittest.TestCase):
         )
         adapter = cli_game.CliCoordinatorAdapter(self.g, config.load_game(self.g, "nethack"), self.spec)
         adapter.tmux = self.tmux
+        adapter.eval_tmux = self.tmux
         self.adapter = adapter
 
     def tearDown(self):

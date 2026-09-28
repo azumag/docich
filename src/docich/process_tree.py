@@ -115,6 +115,48 @@ def descendant_pids(root_pids: list[int] | tuple[int, ...]) -> list[int]:
     return result
 
 
+def process_start_ticks(pid: int) -> int | None:
+    """Linux ``/proc/<pid>/stat`` start time (field 22) or ``None``.
+
+    Recorded with an evaluation pane PID so a later sweep can refuse to touch
+    a recycled PID that now belongs to a different process.
+    """
+
+    if not isinstance(pid, int) or pid <= 0:
+        return None
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    closing = raw.rfind(")")
+    if closing < 0:
+        return None
+    fields = raw[closing + 2 :].split()
+    if len(fields) < 20:
+        return None
+    try:
+        return int(fields[19])
+    except ValueError:
+        return None
+
+
+def process_cgroup(pid: int) -> str | None:
+    """Linux cgroup path of a process (``/proc/<pid>/cgroup``) or ``None``."""
+
+    if not isinstance(pid, int) or pid <= 0:
+        return None
+    try:
+        return Path(f"/proc/{pid}/cgroup").read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def is_running(pid: int) -> bool:
+    """Public liveness check used by orphan sweeps (zombies count as dead)."""
+
+    return _is_running(pid)
+
+
 def _is_running(pid: int) -> bool:
     """Return false for missing and zombie processes."""
 

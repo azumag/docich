@@ -91,6 +91,23 @@ def terminal(runtime_dir: Path, identity: dict):
     return state
 
 
+def _next_commentary_seq(runtime_dir: Path) -> int:
+    """One past the highest seq in the (bounded) commentary tail."""
+    path = runtime_dir / 'hanjuku_commentary.jsonl'
+    seq = 0
+    if path.exists() and not path.is_symlink():
+        with path.open('rb') as stream:
+            stream.seek(max(0, stream.stat().st_size - 8192))
+            for line in stream.read().decode('utf-8', 'ignore').splitlines():
+                try:
+                    item = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(item, dict) and type(item.get('seq')) is int:
+                    seq = max(seq, item['seq'])
+    return seq + 1
+
+
 def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
             now=None, wall=None, playing=True):
     now=time.monotonic() if now is None else now
@@ -125,6 +142,23 @@ def observe(runtime_dir: Path, identity: dict, frame: Frame, *,
     reason='game_over' if candidate and title_count>=3 and now-title_since>=2 else None
     if not reason and duration>=STALL_SECONDS:
         reason='screen_stalled'
+    if reason == 'game_over':
+        # Owner rule (2026-09-28): narrate a grounded recap of the run when it
+        # ends. Written BEFORE the terminal state is persisted so the adapter's
+        # narration claim in the same capture tick can deliver it. A recap
+        # failure must never block the terminal latch.
+        try:
+            from .hanjuku_commentary import COMMENTARY_VERSION, summarize_recap
+            key, text = summarize_recap(runtime_dir, old)
+            if text:
+                append_log(runtime_dir, 'hanjuku_commentary', {
+                    'schema': 1, 'seq': _next_commentary_seq(runtime_dir), 'at': wall,
+                    'key': key, 'text': text, 'commentary_version': COMMENTARY_VERSION,
+                    'status': 'candidate', 'held_reason': None, 'decision': 'game_over_recap',
+                    'chart_step': None, 'strategy_variant': None,
+                    'reason': 'ゲームオーバーの振り返り実況', 'terminal_recap': True, **identity})
+        except Exception:
+            pass
     battle_active=old.get('battle_active',False)
     battle_started=phase=='battle' and not battle_active
     battle_ended=battle_active and phase in {'field','field_menu','dialogue','shop','month_menu'}

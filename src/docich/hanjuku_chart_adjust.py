@@ -84,6 +84,35 @@ def request_id(mem) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
+REQUEST_FIELDS = ('request_id', 'chapter', 'off_chart_reason', 'captured', 'orders', 'blocked',
+                  'gold', 'month', 'garrison', 'lost', 'home_lost', 'en_route')
+
+
+def startable(order, request) -> str | None:
+    """Why ``order`` cannot start in the requested situation, or None.
+
+    Allowed: the general is recorded in the source castle, or nothing is
+    recorded about that general (unknown). Refused: a lost source, a
+    general recorded in another castle or marching (g421 e7df88f1: F2/F3/F5
+    named generals absent from their sources and all failed).
+    """
+    if not isinstance(request, dict):
+        return None
+    source, general = order['source'], order['general']
+    lost = set(request.get('lost') or ())
+    if source in lost:
+        return 'source_lost'
+    marching = {item.get('general') for item in request.get('en_route') or () if isinstance(item, dict)}
+    if general in marching:
+        return 'general_marching'
+    garrison = request.get('garrison') if isinstance(request.get('garrison'), dict) else {}
+    if general in (garrison.get(source) or ()):
+        return None
+    if any(general in (names or ()) for castle, names in garrison.items() if castle != source):
+        return 'general_elsewhere'
+    return None
+
+
 def _text(value, field, *, limit=MAX_NOTE, required=True):
     if value is None and not required:
         return ''
@@ -193,11 +222,25 @@ def load(runtime_dir: Path):
         return None
 
 
-def save(runtime_dir: Path, doc) -> dict:
-    """Validate, write atomically and append the history (worker side)."""
+def save(runtime_dir: Path, doc, request=None) -> dict:
+    """Validate, write atomically and append the history (worker side).
+
+    With the ``request`` it answers, orders that cannot start there
+    (``startable``) are dropped; a chart left with none is invalid.
+    """
     from .game_switch import atomic_write_json
     from .hanjuku_run import append_log
     normalized = validate(doc)
+    dropped = [{'step': o['step'], 'general': o['general'], 'source': o['source'], 'why': why}
+               for o in normalized['orders'] for why in [startable(o, request)] if why]
+    if dropped:
+        kept = tuple(o for o in normalized['orders'] if not startable(o, request))
+        append_log(Path(runtime_dir), HISTORY_LOG, {'event': 'adjusted_orders_dropped',
+                                                    'request_id': normalized['request_id'],
+                                                    'dropped': dropped})
+        if not kept:
+            raise ValueError('no startable order')
+        normalized = {**normalized, 'orders': kept}
     runtime_dir = Path(runtime_dir)
     if (runtime_dir / ADJUSTED_FILE).is_symlink():
         raise ValueError('adjusted chart may not be a symlink')
@@ -217,8 +260,7 @@ def write_request(runtime_dir: Path, record: dict, identity: dict):
     if (runtime_dir / REQUEST_FILE).is_symlink():
         raise ValueError('adjust request may not be a symlink')
     payload = {'schema': SCHEMA, **identity,
-               **{k: record.get(k) for k in ('request_id', 'chapter', 'off_chart_reason',
-                                               'captured', 'orders', 'blocked', 'gold', 'month')}}
+               **{k: record.get(k) for k in REQUEST_FIELDS}}
     atomic_write_json(runtime_dir / REQUEST_FILE, payload)
     append_log(runtime_dir, HISTORY_LOG, {'event': 'adjust_requested', **payload})
     return payload
