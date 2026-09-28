@@ -82,6 +82,58 @@ def bash(script, sn, env=None, stdin=None, args=()):
     return result.stdout
 
 
+def bash_many(sn, calls, env=None):
+    """Run several legacy snippets in one bash process, loading eloop_lib once.
+
+    ``calls`` is a list of mappings with ``script`` (required) and optional
+    ``env``, ``args`` and ``stdin``. Each snippet runs in its own subshell, so
+    exports, variables and functions it creates cannot leak into the next one,
+    matching the process-per-call isolation of ``bash()``. A call's ``env`` is
+    applied inside its subshell after the load; pass values the loader itself
+    must see at source time through the top-level ``env``. Returns each
+    snippet's ``(stdout, rc)`` in order; raises like ``bash()`` on failure.
+    """
+    base = {"PATH": os.environ["PATH"], "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
+            "HOME": os.environ.get("HOME", "/tmp"), "ELOOP_LIB_DIR": str(sn)}
+    base.update(env or {})
+    marker = f"__docich_batch_{os.urandom(8).hex()}"
+    lines = ["source ./eloop_lib.sh >/dev/null 2>&1; log(){ :; }"]
+    with tempfile.TemporaryDirectory(prefix="docich-bash-many-") as tmp:
+        for i, call in enumerate(calls):
+            reassert = "".join(f"export {name}={shlex.quote(value)}; "
+                               for name, value in (call.get("env") or {}).items())
+            stdin = ""
+            if call.get("stdin") is not None:
+                payload = Path(tmp) / f"stdin-{i}"
+                payload.write_text(call["stdin"], encoding="utf-8")
+                stdin = f" < {shlex.quote(str(payload))}"
+            args = "".join(f" {shlex.quote(arg)}" for arg in call.get("args", ()))
+            stderr = Path(tmp) / f"stderr-{i}"
+            func = f"_docich_batch_call_{i}"
+            lines.append(f"printf '%s[{i}]\\n' {shlex.quote(marker)}")
+            lines.append(f"( {reassert}{func}() {{ {call['script']}; }}; "
+                         f"{func}{args}{stdin} 2>{shlex.quote(str(stderr))} )")
+            lines.append(f"printf '%s[{i}]=rc=%s\\n' {shlex.quote(marker)} \"$?\"")
+        result = subprocess.run(["bash", "-c", "\n".join(lines), "golden"], cwd=sn, env=base,
+                                capture_output=True, text=True, timeout=300)
+        if result.returncode:
+            raise SystemExit(f"legacy batch failed: {result.stderr[-400:]}")
+        outputs = []
+        for i, call in enumerate(calls):
+            head = f"{marker}[{i}]\n"
+            start = result.stdout.index(head) + len(head)
+            tail = f"{marker}[{i}]=rc="
+            end = result.stdout.index(tail, start)
+            stdout = result.stdout[start:end]
+            rc_end = result.stdout.index("\n", end + len(tail))
+            rc = int(result.stdout[end + len(tail):rc_end])
+            if rc:
+                stderr = (Path(tmp) / f"stderr-{i}").read_text(encoding="utf-8", errors="replace")
+                raise SystemExit(f"legacy call failed ({call['script'][:60]}): {stderr[-400:]}")
+            outputs.append((stdout, rc))
+    return outputs
+
+
 def inline_python(sn, start_marker, end_marker):
     """The verbatim python source of an inline block in generate_comment_response."""
     text = (sn / "broadcast/comment.sh").read_text(encoding="utf-8")
