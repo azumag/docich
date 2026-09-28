@@ -173,6 +173,22 @@ def _message_may_wrap(raw_lines: list[str], cols: int) -> bool:
     return bool(raw_lines[1].rstrip())
 
 
+def _more_marker_on_next_row(raw_lines: list[str], cols: int) -> bool:
+    """True when a full-width top row's ``--More--`` was pushed to row one.
+
+    NetHack prints ``--More--`` after the message; when the message fills the
+    row there is no room left, so the marker appears alone on the next row
+    (production 2026-09-28 gen427: the 79-column welcome banner). That row is
+    NetHack's own marker, not question text, so it is not wrap evidence. Only
+    a bare marker counts; anything else on that row stays a possible wrap.
+    """
+    return (
+        len(raw_lines) >= 2
+        and len(raw_lines[0].rstrip()) >= cols - 1
+        and raw_lines[1].strip() == "--More--"
+    )
+
+
 def _prompt_kind(message: str, *, may_wrap: bool) -> str:
     # Only row zero is the unambiguous message region of the classic TTY.
     # In particular, armor '[' next to monsters 'y'/'n' in the map is NOT a
@@ -308,5 +324,10 @@ def normalize_tty(
         player=player,
         vitals=_parse_vitals(status),
         conditions=conditions,
-        prompt=_prompt_kind(message, may_wrap=_message_may_wrap(raw_lines, cols)),
+        prompt=(
+            # Question markers on the top row still classify as ``unknown``.
+            _prompt_kind(message + " --More--", may_wrap=False)
+            if _more_marker_on_next_row(raw_lines, cols)
+            else _prompt_kind(message, may_wrap=_message_may_wrap(raw_lines, cols))
+        ),
     )

@@ -697,3 +697,24 @@ def test_full_width_banner_unlocks_the_explicit_wait_turn():
     agent = brain()
     assert act(agent, text) == ["."]
     assert agent.last_progress_decision.intent == "rest_turn"
+
+
+def test_welcome_banner_with_more_on_next_row_is_advanced():
+    # Production 2026-09-28 gen427 frame: the 79-column banner pushes
+    # `--More--` alone onto row one. It was classified as a wrapped question,
+    # the brain sent 0 actions for 10 minutes and the corner ended `stalled`.
+    text = "\n".join([
+        WELCOME79,
+        "--More--",
+        *[""] * 9,
+        "                      ---------",
+        "                      |!......|",
+        "                      |d@.....|",
+        "                      |.......+",
+        "                      ---------",
+        *[""] * 6,
+        "[Docich the Hatamoto           ] St:16 Dx:14 Co:18 In:11 Wi:9 Ch:7 Lawful",
+        "Dlvl:1 $:0 HP:15(15) Pw:2(2) AC:4 Xp:1",
+    ])
+    assert normalize_tty(text).prompt == "more"
+    assert act(brain(), text) == [" "]

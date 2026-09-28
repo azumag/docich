@@ -91,6 +91,38 @@ def test_wrapped_questions_in_full_tty_are_unknown_not_answers(message, wrap):
     assert obs.player == (40, 14)  # wrapped text must not shift map coordinates
 
 
+BANNER = "Konnichi wa docich, welcome to NetHack!  You are a lawful female human Samurai."
+
+
+def test_more_marker_pushed_to_the_next_row_is_a_more_prompt():
+    # Production 2026-09-28 gen427: the 79-column banner leaves no room for
+    # ``--More--``, so NetHack prints the marker alone on the next row. That
+    # row carries no question text; treating it as a wrapped question held
+    # every input until the corner's stall guard fired.
+    assert len(BANNER) == 79
+    obs = normalize_tty(tty_layout(BANNER, "--More--"))
+    assert obs.prompt == "more"
+    assert obs.player == (40, 14)
+
+
+@pytest.mark.parametrize("message", [
+    "Really attack the " + "very " * 12 + "peaceful kitten? [yn] (n)",
+    "Would you like to inspect " + "this unusual object " * 2 + "before continuing now",
+])
+def test_more_marker_row_never_turns_a_full_width_question_into_more(message):
+    row = message[:80]
+    assert len(row) >= 79
+    obs = normalize_tty(tty_layout(row, "--More--"))
+    assert obs.prompt == "unknown"
+    assert decline_prompt(obs) is None
+
+
+@pytest.mark.parametrize("continuation", ["--More-- y", "x --More--", "--More--?"])
+def test_only_a_bare_more_marker_row_is_trusted(continuation):
+    obs = normalize_tty(tty_layout(BANNER, continuation))
+    assert obs.prompt == "unknown"
+
+
 def test_hard_wrap_without_recognizable_question_stem_is_unknown():
     # The only question mark is on the second row. The top row's width, not
     # the following glyphs or question vocabulary, is the blocking evidence.
