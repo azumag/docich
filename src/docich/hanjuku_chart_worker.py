@@ -29,8 +29,8 @@ STATE = 'hanjuku_chart_worker.json'
 LOCK = 'hanjuku_chart_worker.lock'
 LABEL = 'RADIO:hanjuku-chart-adjust'
 DECISION_TAIL_BYTES = 131072
-RESULT_DECISIONS = frozenset({'order_launched', 'order_failed', 'order_retry', 'battle_result',
-                              'chart_adjust_applied', 'chart_interim_order'})
+RESULT_DECISIONS = frozenset({'order_launched', 'order_failed', 'order_retry', 'battle_start',
+                              'battle_result', 'chart_adjust_applied', 'chart_interim_order'})
 _busy = threading.Event()
 
 
@@ -48,8 +48,11 @@ def _recent_results(runtime_dir: Path, limit=24) -> list[dict]:
         except ValueError:
             continue
         if isinstance(item, dict) and item.get('decision') in RESULT_DECISIONS:
+            # ``battle_start`` carries the opening HP (the max-HP estimate the
+            # 卵落 rule needs); battle_result/order records just omit them.
             out.append({k: item.get(k) for k in ('decision', 'chart_step', 'general', 'ally', 'castle',
-                                                  'target', 'enemy', 'outcome', 'side')
+                                                  'target', 'enemy', 'outcome', 'side',
+                                                  'enemy_hp', 'ally_hp')
                         if item.get(k) is not None})
     return out[-limit:]
 
@@ -58,6 +61,10 @@ def build_prompt(request: dict, results: list[dict]) -> str:
     chapter = request.get('chapter') or 1
     base = [{k: (list(v) if isinstance(v, tuple) else v) for k, v in o.items()}
             for o in chart.all_orders(chapter)]
+    purchases = [{**plan, 'month': list(plan['month']),
+                  'cards': [list(card) for card in plan['cards']],
+                  'priority': [list(card) for card in plan.get('priority') or ()]}
+                 for plan in chart.purchases(chapter)]
     measured = sorted(chart.castles(chapter))
     allowed_castles = measured or sorted(chart.CASTLE_NAMES.get(chapter, ()))
     example = {'orders': [{'step': 'J1', 'general': 'ココット', 'source': 'ほんじょう',
@@ -77,12 +84,22 @@ def build_prompt(request: dict, results: list[dict]) -> str:
         f'- 指示は1〜{adjust.MAX_ORDERS}件。step は英数字・_・- の12文字以内の一意な名前（例 J1, J2）。'
         '基準チャートのstep名は禁止。',
         f'- cards は1指示あたり最大{adjust.MAX_CARDS_PER_ORDER}枚。在庫は保証されないので必要な時だけ。',
+        '- 携行する cards は「現在の状況」の card_stock で在庫が1以上と実測された札だけにすること。'
+        'card_stock に無い札・在庫0の札は、そのプランの purchases で買う札を除いて cards に含めない'
+        '（card_stock が空または無い場合は携行在庫が不明なので cards は空にする）。'
+        '章に存在しない切り札を計画すると、出撃時に選べず保留と破棄になる。',
         '- 基本戦術: 携行する切り札のID合計が48以上だと敵将軍がエッグを使う。cards のID合計は47以下にすること'
         '（ID: ' + '、'.join(f'{n}={i}' for n, i in sorted(reference.ALL_CARD_IDS.items(), key=lambda kv: kv[1])
                              if n in adjust.CARD_NAMES) + '）。'
         '推奨の組: ' + ' / '.join('+'.join(s) for s in reference.RECOMMENDED_CARD_SETS
                                  if all(c in adjust.CARD_NAMES for c in s)) + '。'
         '48以上になる分はbotが実行時に外す。',
+        '- 基本戦術: 敵将軍が卵持ちのとき、切り札の卵落値 > (敵・味方将軍の最大HP合計 mod 16) なら'
+        '敵は卵を落とし、以後召喚を使えなくなる。卵落値: '
+        + '、'.join(f'{n}={v}' for n, v in sorted(reference.EGG_DROP_VALUES.items(),
+                                                  key=lambda kv: (-kv[1], kv[0]))) + '。'
+        '将軍を倒し切れない相手や召喚が脅威の場面では、会戦する将軍のHP合計から余りを計算し、'
+        '卵落値が上回る札を携行するとよい（HP合計は「直近の実績」の battle_start にある開戦時HPから読める）。',
         '- 基本戦術: 城レベルが高いほど防衛側のエッグモンスターの防御・速さと防衛将軍の突撃速度が上がる'
         '（ボス城は補正なし）。定員は城Lv−1で、防衛側は将軍が倒されるたびに城レベルが1下がる。',
         '- after は null / ["captured", 城名] / ["all_captured"] のいずれか。',
@@ -90,11 +107,12 @@ def build_prompt(request: dict, results: list[dict]) -> str:
         '- general は「駐留（garrison）」でその source にいると記録された将軍にすること。'
         '別の城にいると記録された将軍・進軍中（en_route）の将軍・失った城（lost）からの出撃は実行できず破棄される。'
         '駐留が記録されていない城は将軍不明として扱う。',
-        '- purchases は任意。month は [年, 月]（これから来る月初）。generals は新規登用人数（現状は記録のみ）。',
+        '- purchases は任意。month は [年, 月]（これから来る月初）。generals は新規登用人数（現状は記録のみ）。'
+        'cards は基準チャートの購入予定にある札か、card_stock で在庫を見たことのある札だけにすること。',
         '- 出力はJSONオブジェクト1つだけ。説明文やコードフェンスは不要。',
         '',
         '## 基準チャート（参考。書き換え不可）',
-        json.dumps(base, ensure_ascii=False),
+        json.dumps({'orders': base, 'purchases': purchases}, ensure_ascii=False),
         '',
         '## 現在の状況',
         json.dumps({k: request.get(k) for k in adjust.REQUEST_FIELDS if k != 'request_id'},
