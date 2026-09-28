@@ -611,6 +611,7 @@ def test_the_sortie_target_jump_reads_the_gold_g_cursor_and_is_bounded():
     results = [policy.world_map_step(parse(blank), mem, blank) for _ in range(policy.Y_JUMP_WAIT)]
     assert results[-1] == [policy.pad('y')] and decisions(mem, 'y_jump_failed')
     mem['cursor'] = list(CASTLES['ほんじょう'])
+    mem['y_jumps'] = {'X:target': policy.Y_JUMP_LIMIT}
     assert policy.target_step(marker, mem, FRAME) != [policy.pad('y')]    # limit reached
 
 
