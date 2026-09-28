@@ -46,6 +46,10 @@ Claude、OpenCode、API、認証情報を操作時に使用しない。旧`brain
   状況から独自判断する（`egg_battle` / `independent_menu`）。判断と勝敗は `run/hanjuku_experience.json` に
   状況キー単位で保存し、次回は勝率の高い方を選ぶ（`hanjuku_experience.py`）。チャートが指示する
   戦術は常に優先する。実測は未実施のため、勝率改善は未確認とする。
+- 戦闘中の切り札は出撃で携行した札だけを計画する。選択した札の実使用告知が未校正のまま戦闘が終わると、
+  その札は当該出撃の携行から外し（`kit_spent`、同じ手順の再出撃でリセット）、次の戦闘で使い切った札を
+  再計画しない。読み取れる札名が無い一覧でも、開いた一覧（`card_flow.stage=list` の text 画面）は
+  `battle_card_missing` として B で閉じ、A連打で停止しない（g452 07:14 ヴィーナス）。
 
 ### 低HP時の救済
 
