@@ -274,7 +274,11 @@ def test_interim_candidates_exclude_boss_and_captured_castles():
     candidates = policy.interim_candidates(mem)
     targets = {c['target'] for c in candidates.values()}
     assert targets == {'ジョンリギ', 'スペンソニア'}
-    assert all(c['cards'] == [] and c['after'] is None for c in candidates.values())
+    assert all(c['after'] is None for c in candidates.values())
+    # Owner (2026-09-28): attacks carry cards - the chart's for that castle, else the opener.
+    chart_cards = {o['target']: list(o['cards']) for o in chart.orders(1) if o['cards']}
+    for c in candidates.values():
+        assert c['cards'] == chart_cards.get(c['target'], list(policy.INTERIM_CARDS))
     # ジョンリギ is uncaptured: 1-C2 (ココット from ジョンリギ) starts from ほんじょう.
     assert all(c['source'] in set(mem['captured']) | {'ほんじょう'} for c in candidates.values())
 
