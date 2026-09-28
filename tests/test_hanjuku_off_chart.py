@@ -1055,6 +1055,25 @@ def test_the_last_general_never_leaves_our_last_castle(monkeypatch):
     assert policy._last_castle_held(mem, order)
     mem['tick'] = 100 + policy.LAST_CASTLE_HOLD_TICKS
     assert not policy._last_castle_held(mem, order)                   # bounded: read the list again
-    # With a second castle the same sortie goes on.
+    # A second castle only helps when somebody is known to stand in it.
     mem['captured'] = ['フーリック']
+    assert policy._keep_last_castle(alone, mem, order) is not None           # フーリック never read
+    mem['garrison'] = {'フーリック': ['ゼウス']}
     assert policy._keep_last_castle(alone, mem, order) is None
+    # ... and is not marching away (isolated probe: both castles emptied at once).
+    mem['sorties'] = {'2-Z2': {'general': 'ゼウス', 'target': 'ウラノポリス', 'status': 'en_route',
+                               'tick': mem['tick']}}
+    assert policy._keep_last_castle(alone, mem, order) is not None
+
+
+def test_a_held_order_is_skipped_for_one_from_a_staffed_castle(monkeypatch):
+    held = {'step': 'A', 'general': 'ゼウス', 'source': 'フーリック', 'target': 'ウラノポリス',
+            'cards': [], 'after': None, 'note': 't'}
+    other = {'step': 'B', 'general': 'ヴィーナス', 'source': 'アルマムーン', 'target': 'ハドリバーグ',
+             'cards': [], 'after': None, 'note': 't'}
+    monkeypatch.setattr(policy, '_orders', lambda _mem: (held, other))
+    mem = {'chapter': 2, 'tick': 10, 'orders': {}, 'captured': ['フーリック'], '_records': [],
+           'garrison': {'フーリック': ['ゼウス']}, 'last_castle_hold': {'castle': 'フーリック', 'tick': 5}}
+    assert policy.next_order(mem) is other
+    mem['garrison']['アルマムーン'] = ['ヴィーナス', 'どうし']        # someone stays home: the hold lifts
+    assert policy.next_order(mem) is held
