@@ -97,7 +97,7 @@ def bash_many(sn, calls, env=None):
             "HOME": os.environ.get("HOME", "/tmp"), "ELOOP_LIB_DIR": str(sn)}
     base.update(env or {})
     marker = f"__docich_batch_{os.urandom(8).hex()}"
-    lines = ["source ./eloop_lib.sh >/dev/null 2>&1; log(){ :; }"]
+    lines = ["set --", "source ./eloop_lib.sh >/dev/null 2>&1; log(){ :; }"]
     with tempfile.TemporaryDirectory(prefix="docich-bash-many-") as tmp:
         for i, call in enumerate(calls):
             reassert = "".join(f"export {name}={shlex.quote(value)}; "
@@ -114,8 +114,12 @@ def bash_many(sn, calls, env=None):
             lines.append(f"( {reassert}{func}() {{ {call['script']}; }}; "
                          f"{func}{args}{stdin} 2>{shlex.quote(str(stderr))} )")
             lines.append(f"printf '%s[{i}]=rc=%s\\n' {shlex.quote(marker)} \"$?\"")
-        result = subprocess.run(["bash", "-c", "\n".join(lines), "golden"], cwd=sn, env=base,
-                                capture_output=True, text=True, timeout=300)
+        program = Path(tmp) / "batch.sh"
+        program.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        # Keep $0 = "golden" and run from a file: Linux caps a single argv
+        # string (MAX_ARG_STRLEN), and the batch program outgrows it quickly.
+        result = subprocess.run(["bash", "-c", 'source "$1"', "golden", str(program)],
+                                cwd=sn, env=base, capture_output=True, text=True, timeout=300)
         if result.returncode:
             raise SystemExit(f"legacy batch failed: {result.stderr[-400:]}")
         outputs = []
