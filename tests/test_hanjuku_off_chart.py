@@ -834,3 +834,15 @@ def test_select_re_places_a_lost_cursor_on_the_heros_castle(monkeypatch):
            'captured': ['スペンソニア'], 'garrison': {'スペンソニア': ['どうし']},
            'sorties': {'X': {'general': 'どうし', 'target': 'ゴーメン', 'status': 'en_route', 'tick': 4}}}
     assert policy._hero_castle(mem) is None
+
+
+def test_a_general_far_behind_opens_the_rescue_menu_before_the_melee_decides():
+    """g421 15:09/15:13: 26 vs 48 and 27 vs 38 died with an unused egg."""
+    far = {'ally_hp': 26, 'enemy_hp': 48, 'start_ally_hp': 26, 'enemy': 'ソーピニヨン', 'ally': 'キャンディー'}
+    assert policy._survival_needed(far)
+    close = {'ally_hp': 27, 'enemy_hp': 38, 'start_ally_hp': 27, 'enemy': 'コリアンダー', 'ally': 'ビシソワーズ'}
+    assert not policy._survival_needed(close)
+    close['ally_hp'] = 26                                  # after one clash: 26 <= 70% of 38
+    assert policy._survival_needed(close)
+    ahead = {'ally_hp': 82, 'enemy_hp': 39, 'start_ally_hp': 82, 'enemy': 'カシュー', 'ally': 'ヴィーナス'}
+    assert not policy._survival_needed(ahead)

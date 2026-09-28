@@ -2544,6 +2544,9 @@ SURVIVAL_CARDS = ('エンジェリン', 'ミックミー', 'マグネガキン',
                   'カンケリン', 'フットバース', 'ダイチスイム', 'ノリウツール')
 
 
+BEHIND_EGG_RATIO_TENTHS = 7    # ally HP at or below 70% of the enemy's: rescue (egg) now
+
+
 def _survival_needed(cur):
     hp, enemy, start = (cur.get(k) for k in ('ally_hp', 'enemy_hp', 'start_ally_hp'))
     if any(type(n) is not int or n <= 0 for n in (hp, enemy, start)):
@@ -2552,7 +2555,12 @@ def _survival_needed(cur):
     if (cur.get('enemy'), cur.get('ally'), start, cur.get('start_enemy_hp'), cur.get('step')) == (
             'だいじん', 'どうし', 90, 90, None):
         return False
-    return hp <= 12 or (hp < enemy and hp * 5 <= start * 2)
+    # Far behind the enemy from the start: the old 40%-of-start rule fired
+    # only at HP ~10, after the melee had already decided the fight, and
+    # generals died with an unused egg (g421 15:09 26 vs 48, 15:13 27 vs 38;
+    # owner: eggs unused while dying).
+    return (hp <= 12 or (hp < enemy and hp * 5 <= start * 2)
+            or hp * 10 <= enemy * BEHIND_EGG_RATIO_TENTHS)
 
 
 def _survival_state(mem, cur):
