@@ -1081,6 +1081,8 @@ Y_JUMP_FAR = 48                # world px from the goal before a jump is worth i
 Y_JUMP_LIMIT = 2               # jumps per order and screen mode
 Y_JUMP_MOVES = 8               # D-pad steps inside one jump before confirming anyway
 Y_JUMP_WAIT = 6                # frames without a readable cursor before closing Y
+Y_JUMP_TOL = 1.0               # view px (8 world px); roofs close the rest. 0.5 oscillated
+                               # around a flag in g419 (ring and flag overlap: +-1 px jitter)
 _Y_RING = [(dx, dy) for dx in range(-13, 14) for dy in range(-13, 14)
            if 100 <= dx * dx + dy * dy <= 169]          # radius 5-6.5 px, half-pixel units
 
@@ -1103,6 +1105,17 @@ def world_cursor(frame):
         return None
     key, count = max(votes.items(), key=lambda kv: kv[1])
     return (key[0] / 2, key[1] / 2) if count >= 18 else None
+
+
+def _drop_stale_y_jump(screen, mem):
+    """Back on a map screen with a jump still open: the Y view was closed by
+    something else (g419 08:45: an event ended it at 8 moves and the stale
+    jump blocked every later jump for 10 minutes)."""
+    jump = mem.pop('y_jump', None)
+    if jump:
+        _record(mem, 'y_jump_failed', chart_step=jump.get('step'), target=jump.get('goal'),
+                screen=screen.kind, observed_metric={'moves': jump.get('moves')},
+                reason='全体マップが決定前に閉じたためジャンプを中断として扱う')
 
 
 def _want_y_jump(mem, order, name, mode) -> bool:
@@ -1146,7 +1159,7 @@ def _y_jump_step(mem, frame):
     gx, gy = chart.castles(chapter)[jump['goal']]
     ox, oy = Y_JUMP_OFFSET[chapter]
     dx, dy = gx / 8 + ox - cursor[0], gy / 8 + oy - cursor[1]
-    if (abs(dx) <= 0.5 and abs(dy) <= 0.5) or jump['moves'] >= Y_JUMP_MOVES:
+    if (abs(dx) <= Y_JUMP_TOL and abs(dy) <= Y_JUMP_TOL) or jump['moves'] >= Y_JUMP_MOVES:
         mem.pop('y_jump', None)
         mem['y_jump_return'] = jump['mode']
         mem['cursor'] = [gx, gy]
@@ -1161,7 +1174,7 @@ def _y_jump_step(mem, frame):
     jump['moves'] += 1
     actions = []
     for d, neg, pos in ((dx, 'left', 'right'), (dy, 'up', 'down')):
-        if abs(d) > 0.5:
+        if abs(d) > Y_JUMP_TOL:
             actions.append(pad(pos if d > 0 else neg, min(56, max(1, round(abs(d) * 2)))))
     return actions
 
@@ -1254,6 +1267,7 @@ def _hold_off_castle(screen, mem, order) -> bool:
 
 
 def map_step(screen: Screen, mem, frame):
+    _drop_stale_y_jump(screen, mem)
     if mem.pop('expect_menu', False):
         mem['menu_miss'] = int(mem.get('menu_miss', 0)) + 1
         missed = _order(mem)
@@ -1359,6 +1373,7 @@ def map_step(screen: Screen, mem, frame):
 
 
 def target_step(screen: Screen, mem, frame):
+    _drop_stale_y_jump(screen, mem)
     order = _order(mem)
     if order is None:
         # A marker we did not request: cancel instead of sending a general.
