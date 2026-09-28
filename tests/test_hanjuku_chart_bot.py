@@ -252,7 +252,7 @@ def test_chart_orders_follow_the_chart_and_unlock_on_captures():
     mem['captured'] = ['キカンドン', 'ナキューメラ', 'ジョンリギ', 'ゴーメン', 'スペンソニア', 'カストーラ']
     mem['orders'].update({s: 'launched' for s in ('1-A2', '1-V2', '1-C2', '1-A3')})
     assert policy.next_order(mem)['target'] == 'けっかい'
-    assert policy.next_order({'chapter': 2, 'orders': {}}) is None
+    assert policy.next_order({'chapter': 3, 'orders': {}}) is None
 
 
 def test_boss_tactic_waits_for_the_first_clash_then_chains_cards():
@@ -516,7 +516,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v49-recall-stage-budget'
+    assert state['bot_version'] == 'hanjuku-chart-v50-chapter2-map'
     assert '_records' not in state['policy']
 
 
@@ -992,7 +992,7 @@ def test_visible_chapter_transition_clears_old_route_state_and_records_evidence(
     screen = Screen(lines=[], hand=None, text='', kind='main_menu',
                     header={'chapter': 2, 'year': 1, 'month': 6, 'gold': 294})
     policy.observe_events(screen, mem)
-    assert mem['chapter'] == 2 and mem['variant'] == 'chart_unavailable'
+    assert mem['chapter'] == 2 and mem['variant'] == 'chart'
     assert mem['name']['done'] and mem['stats']['wins'] == 4
     for key in ('active', 'orders', 'captured', 'launched', 'cursor', 'shop', 'retries'):
         assert not mem.get(key)

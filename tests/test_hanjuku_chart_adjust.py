@@ -67,7 +67,7 @@ def test_off_chart_records_one_request_per_situation_and_holds():
 
 
 def test_unavailable_and_exhausted_charts_are_distinguished():
-    mem = {'chapter': 2, 'orders': {}, '_records': []}
+    mem = {'chapter': 3, 'orders': {}, '_records': []}
     policy.map_step(map_screen(), mem, FRAME)
     assert decisions(mem, 'chart_adjust_request')[0]['off_chart_reason'] == 'chart_unavailable'
     mem = stuck_memory()

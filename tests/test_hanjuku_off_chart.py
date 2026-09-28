@@ -514,7 +514,7 @@ def test_the_map_opens_the_y_view_when_idle_and_a_survey_is_due():
     mem.pop('world_map_due')
     mem['tick'] = 10 + policy.WORLD_SURVEY_TICKS
     assert policy._world_map_wanted(mem) is True
-    assert policy._world_map_wanted({'chapter': 2, 'tick': 0}) is False   # not calibrated
+    assert policy._world_map_wanted({'chapter': 3, 'tick': 0}) is False   # not calibrated
 
 
 def test_a_lost_search_first_presses_select_to_show_the_hero(monkeypatch):
@@ -859,13 +859,59 @@ def test_a_castle_only_the_next_chapter_has_advances_the_chapter_and_drops_chapt
     mem = {**g401_memory(), 'cursor': [265, 270], 'y_jumps': {'I:1:map': 3}, 'lost': ['ゴーメン']}
     assert policy.message_step(_message('アルマムーンじょうがてきにせめこまれました!'), mem) == [policy.pad('a')]
     assert mem['chapter'] == 2
-    assert mem['variant'] == 'chart_unavailable'          # chapter 2 cells are unmeasured
+    assert mem['variant'] == 'chart'                      # chapter 2 cells were measured
     for key in ('cursor', 'orders', 'sorties', 'garrison', 'captured', 'lost', 'y_jumps'):
         assert key not in mem
     assert decisions(mem, 'chapter_seen')[0]['observed_metric'] == {'chapter': 2, 'evidence': 'アルマムーン'}
     assert decisions(mem, 'defense_observed')[0]['castle'] == 'アルマムーン'
-    # Unmeasured chapter: no cursor walk on another chapter's cells.
+
+
+def test_an_unmeasured_chapter_never_walks_another_chapters_cells():
+    mem = {'chapter': 2, 'variant': 'chart', '_records': [], 'name': {'done': True}}
+    policy.message_step(_message('アルマムーンじょうがてきにせめこまれました!'), mem)
+    policy.observe_chapter_castle(mem, 'グリン')             # only chapter 3 has グリン
+    assert mem['chapter'] == 3 and mem['variant'] == 'chart_unavailable'
     assert policy.map_step(map_screen(140, 120), mem, FRAME) in ([], None)
+
+
+def test_chapter_2_cells_put_every_measured_flag_on_the_y_view_grid():
+    # Isolated probe (g421 chapter 2 state): the Y flags' top-left pixels.
+    flags = {'アウスパジア': (101, 81), 'ドミノーラ': (125, 107), 'ハドリバーグ': (157, 137)}
+    ox, oy = policy.WORLD_MAP_OFFSET[2]
+    for name, (fx, fy) in flags.items():
+        x, y = chart.castles(2)[name]
+        assert abs(x / 8 + ox - fx) <= 1 and abs(y / 8 + oy - fy) <= 1
+    assert [o['step'] for o in chart.orders(2)] == ['2-Z1', '2-C1', '2-V1', '2-S1', '2-Z2', '2-V2', '2-Z3']
+
+
+def test_a_camp_recall_that_opens_the_island_picker_backs_out_and_pauses():
+    mem = {'chapter': 2, 'tick': 50, '_records': [],
+           'recall': {'stage': 'dest', 'target': [141, 122], 'steps': 5}}
+    view = Screen(lines=[], hand=None, text='', kind='world_map')
+    assert policy.world_map_step(view, mem, FRAME) == [policy.pad('b'), {'type': 'wait', 'ms': 700},
+                                                        policy.pad('a')]
+    assert 'recall' not in mem and decisions(mem, 'camp_recall_skipped')
+    mem['tick'] = 60
+    assert policy.camp_recall_step(map_screen(140, 120), mem, FRAME) is None   # no tent retried
+
+
+def test_the_g_cursor_is_read_beside_another_gold_icon():
+    pixels = bytearray(256 * 224 * 3)
+
+    def put(x, y, colour):
+        pixels[(y * 256 + x) * 3:(y * 256 + x) * 3 + 3] = bytes(colour)
+    for dx in range(0, 15):                                 # G corners, 15 px box
+        for x, y in ((120 + dx, 146), (120 + dx, 160)):
+            if dx < 4 or dx > 10:
+                put(x, y, (255, 182, 0))
+    for dy in range(0, 15):
+        for x, y in ((120, 146 + dy), (134, 146 + dy)):
+            if dy < 4 or dy > 10:
+                put(x, y, (255, 182, 0))
+    for x in range(98, 104):                                # a gold camp triangle 25 px away
+        put(x, 124, (255, 182, 0)); put(x, 125, (255, 182, 0))
+    frame = Frame(256, 224, bytes(pixels))
+    assert policy.world_cursor(frame) == (127.0, 153.0)
 
 
 def test_chapter_1_castle_names_never_advance_the_chapter():

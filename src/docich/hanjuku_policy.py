@@ -1016,7 +1016,7 @@ def _verify_sortie_source(screen, mem, order):
 # Y shows the whole island at 1/8 scale; each castle's flag sits at the
 # castle cell / 8 + offset (chapter 1 measured in an isolated emulator on
 # 2026-09-28, all seven flags within 1 px). Blue fill = enemy, red = ours.
-WORLD_MAP_OFFSET = {1: (64.5, 44.4)}
+WORLD_MAP_OFFSET = {1: (64.5, 44.4), 2: (64.2, 45.0)}   # chapter 2: 3 flags vs measured cells
 WORLD_FLAG_ENEMY = (0, 64, 189)
 WORLD_FLAG_OWN = (230, 56, 90)
 WORLD_MARKER = (255, 24, 0)     # ▲ army marker on the Y view (probe-measured)
@@ -1107,6 +1107,17 @@ def world_map_step(screen, mem, frame):
     (or, while a Y jump is running, steer its cursor to the goal castle)."""
     if mem.get('y_jump'):
         return _y_jump_step(mem, frame)
+    recall = mem.get('recall')
+    if recall and recall.get('stage') == 'dest':
+        # Chapter 2 (isolated probe, g421 state): きかん opened a whole-island
+        # picker instead of the destination marker. Y does not close it (the
+        # bot pressed Y for minutes); B then A returns to the map.
+        mem.pop('recall', None)
+        mem['uncertain'] = True
+        mem['recall_skip'] = {'target': recall.get('target'), 'tick': int(mem.get('tick') or 0)}
+        _record(mem, 'camp_recall_skipped', observed_metric={'screen': 'world_map', 'camp': recall.get('target')},
+                reason='帰還先が全体マップ型の選択画面になり城を選べないため取り消して地図に戻る')
+        return [pad('b'), {'type': 'wait', 'ms': 700}, pad('a')]
     flags = world_flags(frame, mem.get('chapter') or 0)
     if not flags:
         waited = int(mem.get('world_map_wait') or 0) + 1
@@ -1175,7 +1186,7 @@ def _apply_world_flags(mem, flags):
 # each roof, and the target marker 5 px from キカンドン's roof. Roof-based
 # cursor motion was the source of most mis-sorties (lone-roof mix-ups,
 # edge-scroll drift of ~60 px), so far goals go through Y instead.
-Y_JUMP_OFFSET = {1: (63.0, 47.5)}
+Y_JUMP_OFFSET = {1: (63.0, 47.5), 2: (63.0, 47.5)}
 Y_JUMP_FAR = 48                # world px from the goal before a jump is worth it
 Y_JUMP_LIMIT = 6               # jumps per order and screen mode (reset when the order starts).
                                # 2 ran out mid-order and left roof walking (g421 15:25: SELECT loops)
@@ -1193,11 +1204,20 @@ def world_cursor(frame):
     """Centre of the Y view's cursor: gold G corners, else the white dashed ring."""
     gold = [(x, y) for x in range(40, 220) for y in range(40, 200)
             if _near_colour(frame.pixel(x, y), (255, 182, 0))]
-    if len(gold) >= 12:
-        xs = [x for x, _ in gold]; ys = [y for _, y in gold]
-        # Only the compact G corners (~14 px): the map's gold edge arrows are
-        # far apart and their joint box read as a cursor (g419 10:49).
-        if max(xs) - min(xs) <= 18 and max(ys) - min(ys) <= 18:
+    # Only the compact G corners (~15 px box): the map's gold edge arrows are
+    # far apart and their joint box read as a cursor (g419 10:49), and chapter
+    # 2's gold camp triangle beside フーリック widened the box so no target
+    # jump there could read the G (isolated probe, g421 state). Take the
+    # G-sized window holding the most gold instead of the whole box.
+    best = None
+    for x0 in sorted({x for x, _ in gold}):
+        for y0 in sorted({y for _, y in gold}):
+            inside = [(x, y) for x, y in gold if x0 <= x <= x0 + 18 and y0 <= y <= y0 + 18]
+            if best is None or len(inside) > len(best):
+                best = inside
+    if best and len(best) >= 12:
+        xs = [x for x, _ in best]; ys = [y for _, y in best]
+        if max(xs) - min(xs) >= 10 and max(ys) - min(ys) >= 10:
             return ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
     votes = {}
     for x in range(40, 220):
@@ -1477,6 +1497,7 @@ MENU_HOLD_LIMIT = 10           # arrived-but-unanchored holds after a failed cas
 RECALL_LIMIT = 90              # observations for one camp recall
 RECALL_ARRIVE_PX = 4           # cursor cell onto the tent
 RECALL_CONFIRM_PX = 4          # marker onto the own castle's selecting cell
+RECALL_SKIP_TICKS = 400        # observations without recalls after a skipped picker
 
 
 def camp_recall_step(screen: Screen, mem, frame):
@@ -1494,6 +1515,11 @@ def camp_recall_step(screen: Screen, mem, frame):
         if screen.kind != 'map' or frame is None:
             return None
         camps = own_camps(frame)
+        skip = mem.get('recall_skip')
+        if skip and int(mem.get('tick') or 0) - int(skip.get('tick') or 0) < RECALL_SKIP_TICKS:
+            # A skipped camp would reopen the same picker on every map frame.
+            # The cursor moves with the camera, so skip every camp meanwhile.
+            camps = []
         if not camps:
             return None
         cursor = _cursor(screen)
@@ -3220,7 +3246,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'nav_prev', 'nav_still', 'nav_pressed', 'unverified', 'off_castle',
                 'target_miss', 'target_cancel', 'menu_hold', 'card_scroll',
                 'world_map_tick', 'world_map_due', 'world_map_wait', 'home_lost',
-                'y_jump', 'y_jumps', 'y_jump_return', 'y_jumped', 'boss_absent',
+                'y_jump', 'y_jumps', 'y_jump_return', 'y_jumped', 'boss_absent', 'recall', 'recall_skip',
                 'near_goal', 'align_steps', 'unanchored', 'select_tick',
                 'select_used',
                 'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
