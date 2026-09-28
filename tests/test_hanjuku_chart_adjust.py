@@ -636,6 +636,64 @@ def test_adjusted_boss_order_reaches_boss_entry_and_battle_tactics(monkeypatch):
     assert mem['retry_context'][j2]['expected_metric']['cards'] == ['クースカン', 'ノリウツール']
 
 
+def test_dropped_chart_card_is_never_planned_or_announced_in_battle():
+    # g438 04:18: the sortie dropped ミックミー (never in stock), but the battle
+    # still planned it and announced 開幕にミックミーを使います for the missing card.
+    mem = stuck_memory()
+    mem['captured'] += ['スペンソニア', 'ジョンリギ']
+    mem['orders']['1-B1'] = 'failed'
+    rid = _adopt(mem, [{'step': 'J2', 'general': chart.HERO, 'source': 'スペンソニア',
+                        'target': 'けっかい', 'cards': ['クースカン', 'ミックミー', 'ミックミー']}])
+    j2 = adjust.execution_step(rid, 'J2')
+    mem['card_drop'] = {j2: ['ミックミー']}
+    derived = [t for t in policy._tactics(mem, j2) if t.get('step') == j2]
+    assert [(t['enemy'], t['card']) for t in derived] == [('クイーン', 'クースカン')]
+    mem['_records'] = []
+    mem['attack'] = {'general': chart.HERO, 'castle': 'けっかい', 'side': 'attack',
+                     'step': j2, 'entry_evidence': 'measured_boss_entry'}
+    assert _battle(mem, 'クイーン', chart.HERO, [90, 90, 85])[-1] == [policy.pad('b')]
+    assert mem['battle']['card_flow']['card'] == 'クースカン'
+    assert [r['card'] for r in decisions(mem, 'battle_card')] == ['クースカン']
+    assert decisions(mem, 'battle_start')[0]['planned_cards'] == ['クースカン']
+
+
+def test_boss_kits_unverified_card_waits_for_the_measured_boss_entry():
+    # The boss kit must not fire in the road/guard fight on the way (g438
+    # 04:18: ソーピニヨン road battle opened the boss kit's ミックミー).
+    mem = stuck_memory()
+    mem['captured'] += ['スペンソニア', 'ジョンリギ']
+    mem['orders']['1-B1'] = 'failed'
+    rid = _adopt(mem, [{'step': 'J2', 'general': 'ヴィーナス', 'source': 'スペンソニア',
+                        'target': 'けっかい', 'cards': ['クースカン', 'ミックミー', 'ミックミー']}])
+    j2 = adjust.execution_step(rid, 'J2')
+    defaults = [t for t in policy._tactics(mem, j2)
+                if t.get('step') == j2 and t['card'] == 'ミックミー']
+    assert defaults and all(t['open'] and t['boss_only'] for t in defaults)
+
+    def fight(enemy, hp_seq, **attack):
+        mem['battle'] = None
+        mem['battle_seen'] = None
+        mem['_records'] = []
+        mem['attack'] = attack or None
+        from docich.hanjuku_screen import Battle
+        out = []
+        for enemy_hp in hp_seq:
+            screen = _text_screen('', 'battle')
+            screen.battle = Battle(enemy=enemy, ally='ヴィーナス', enemy_hp=enemy_hp, ally_hp=80)
+            out.append(policy.battle_step(screen, mem))
+        return out
+    # An unmeasured location never opens the kit.
+    fight('ソーピニヨン', [48, 48])
+    assert not decisions(mem, 'battle_card')
+    assert 'card_flow' not in (mem['battle'] or {})
+    assert decisions(mem, 'battle_start')[0]['planned_cards'] == []
+    # The measured boss entry does.
+    fight('クイーン', [90, 90], general='ヴィーナス', castle='けっかい', side='attack',
+          step=j2, entry_evidence='measured_boss_entry')
+    assert [r['card'] for r in decisions(mem, 'battle_card')] == ['ミックミー']
+    assert mem['battle']['card_flow']['card'] == 'ミックミー'
+
+
 def test_launched_old_generation_keeps_its_tactics_after_a_new_plan(monkeypatch):
     mem = stuck_memory()
     first = _adopt(mem, [{'step': 'J1', 'general': 'ココット', 'source': 'ゴーメン',
@@ -800,6 +858,44 @@ def test_worker_prompts_with_garrisons_and_drops_orders_whose_general_is_elsewhe
     [dropped] = [e for e in events if e['event'] == 'adjusted_orders_dropped']
     assert {d['step']: d['why'] for d in dropped['dropped']} == {
         'F2': 'general_elsewhere', 'F3': 'general_marching', 'F5': 'source_lost'}
+
+
+def test_adjust_prompt_grounds_cards_in_observed_stock_and_chapter_purchases(tmp_path):
+    # g438 04:04: the model planned ミックミー/エンジェリン for chapter 1, where
+    # neither is sold or owned; it was never told what the player holds.
+    from docich import hanjuku_chart_worker as worker
+    mem = stuck_memory()
+    mem['card_stock'] = {'イッテツーン': 10, 'クースカン': 2}
+    policy.map_step(map_screen(), mem, FRAME)
+    [record] = decisions(mem, 'chart_adjust_request')
+    assert record['card_stock'] == {'イッテツーン': 10, 'クースカン': 2}
+    adjust.write_request(tmp_path, record, {'game': 'hanjuku-hero', 'runtime_id': 'r',
+                                            'generation': 1, 'lease_id': 'l'})
+    request = json.loads((tmp_path / adjust.REQUEST_FILE).read_text(encoding='utf-8'))
+    assert request['card_stock'] == {'イッテツーン': 10, 'クースカン': 2}
+    prompt = worker.build_prompt(request, [])
+    assert '"card_stock"' in prompt and '"クースカン": 2' in prompt
+    assert 'card_stock に無い札・在庫0の札' in prompt
+    # The chapter's charted month purchases tell the model which cards its
+    # shops sell (chapter 1 lists no ミックミー/エンジェリン).
+    assert '"purchases"' in prompt and '"chart_gold"' in prompt
+    # The 卵落 rule grounds which cards can actually drop an egg.
+    assert '卵落値: ' in prompt and 'イッテツーン=8' in prompt and 'クースカン=0' in prompt
+    assert 'mod 16' in prompt
+
+
+def test_recent_results_carry_battle_start_hp_for_the_egg_drop_rule(tmp_path):
+    from docich import hanjuku_chart_worker as worker
+    records = [{'event': 'decision', 'decision': 'battle_start', 'enemy': 'キッシュ',
+                'ally': 'ココット', 'enemy_hp': 26, 'ally_hp': 24, 'chart_step': 'A:x:J1'},
+               {'event': 'decision', 'decision': 'battle_card_selected', 'card': 'グリンボー'},
+               {'event': 'decision', 'decision': 'order_failed', 'general': 'ココット'}]
+    (tmp_path / 'hanjuku_decisions.jsonl').write_text(
+        '\n'.join(json.dumps(r, ensure_ascii=False) for r in records) + '\n', encoding='utf-8')
+    assert worker._recent_results(tmp_path) == [
+        {'decision': 'battle_start', 'enemy': 'キッシュ', 'ally': 'ココット',
+         'enemy_hp': 26, 'ally_hp': 24, 'chart_step': 'A:x:J1'},
+        {'decision': 'order_failed', 'general': 'ココット'}]
 
 
 def test_an_answer_with_no_startable_order_is_invalid(tmp_path):

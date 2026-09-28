@@ -621,15 +621,22 @@ def _tactics(mem, step):
 
     A carried card reuses every verified base tactic for that card (its enemy
     and timing), re-keyed to this step. A card with no verified tactic uses the
-    explicit default: once at the battle opening against any enemy, the same
-    mechanism and evidence guards as a retry's opening cards.
+    explicit default: once at the battle opening, the same mechanism and
+    evidence guards as a retry's opening cards. Only cards the sortie actually
+    carried count (``_deploy_cards``): a card left behind at card select must
+    never be planned or announced in battle (g438 04:18: the bot opened the
+    card menu for ミックミー after the sortie had dropped it). A boss-castle
+    order's unverified card opens only in the measured boss entry, so the boss
+    kit never fires in the road/guard fights on the way there.
     """
     base = chart.tactics(mem.get('chapter') or 0)
     order = _order_for_step(mem, step)
     if order is None or any(o['step'] == step for o in chart.orders(mem.get('chapter') or 0)):
         return base
+    override = set((mem.get('card_override') or {}).get(step) or ())
+    carried = [card for card in _deploy_cards(order, mem) if card not in override]
     derived, seen = [], set()
-    for card in order.get('cards') or ():
+    for card in carried:
         verified = [t for t in base if t['card'] == card]
         if verified:
             if card in seen:
@@ -638,6 +645,7 @@ def _tactics(mem, step):
             derived += [{**t, 'step': step, 'note': f"調整: {t['note']}"} for t in verified]
         else:
             derived.append({'enemy': None, 'card': card, 'open': True, 'step': step,
+                            'boss_only': _is_boss_order(order, mem),
                             'note': '調整チャート既定: 検証済み戦術のない携行切り札を開幕使用'})
     return (*base, *derived)
 
@@ -846,7 +854,8 @@ def _adjust_situation(mem):
                       key=str)
     return {'garrison': {castle: sorted(names) for castle, names in sorted((mem.get('garrison') or {}).items())},
             'lost': sorted(mem.get('lost') or []), 'home_lost': bool(mem.get('home_lost')),
-            'en_route': [{'general': g, 'target': t} for g, t in marching]}
+            'en_route': [{'general': g, 'target': t} for g, t in marching],
+            'card_stock': dict(sorted((mem.get('card_stock') or {}).items()))}
 
 
 def _adopt_plan(mem, doc, rid):
@@ -2059,6 +2068,24 @@ def _deploy_cards(order, mem):
 
 CARD_SCROLL_LIMIT = 8         # downward presses looking for a card below a full panel
 CARD_MISS_LIMIT = 5           # card_select readings before a missing card is left behind
+CARD_STOCK_LIMIT = 24         # observed card names kept for the adjusted-chart request
+
+
+def _observe_card_stock(mem, inventory):
+    """Remember the stocks a sortie card panel showed (chart-adjust grounding).
+
+    The panel is a window (at most four rows), so a card missing from one
+    reading is not proven absent; only cards that were shown are recorded.
+    g438 04:04: the adjusted chart planned ミックミー and エンジェリン for
+    chapter 1, where neither was ever in the panel -- the model was never told
+    what the player actually holds. The request now carries this so it plans
+    from observed stock.
+    """
+    stock = mem.setdefault('card_stock', {})
+    for row in inventory['rows']:
+        stock[row['card']] = row['stock']
+    while len(stock) > CARD_STOCK_LIMIT:
+        stock.pop(next(iter(stock)))
 
 
 def _drop_card(screen, mem, order, card, inventory):
@@ -2583,6 +2610,7 @@ def deploy_step(screen: Screen, mem):
         if inventory is None:
             return _hold_deploy(screen, mem, order,
                                 '切り札一覧の名前・数量・配置またはカーソルが実測構造と一致しないため保留', card=card)
+        _observe_card_stock(mem, inventory)
         if not wanted:
             return _deploy_input(screen, mem, order, [pad('b')], '予定切り札の選択入力後に携行確認へ進む')
         # Pick what is on screen first: a full 4-row panel scrolls, and a card
@@ -2838,7 +2866,9 @@ def battle_step(screen: Screen, mem):
             cur['ref_ally_hp'] = mem['hero_max_hp']
         _bind_battle_strategy(mem, cur)
         planned = [t['card'] for t in _tactics(mem, cur['step'])
-                   if t['enemy'] in (None, b.enemy) and t.get('step') in (None, cur['step'])]
+                   if t['enemy'] in (None, b.enemy) and t.get('step') in (None, cur['step'])
+                   and not (t.get('boss_only')
+                            and cur.get('entry_evidence') != 'measured_boss_entry')]
         planned += list(mem.get('card_override', {}).get(cur['step']) or [])
         cur['planned_cards'] = list(planned)
         _record(mem, 'battle_start', **_battle_labels(cur), enemy=b.enemy, ally=b.ally,
@@ -2875,6 +2905,9 @@ def battle_step(screen: Screen, mem):
             continue
         if tactic.get('step') and tactic['step'] != cur.get('step'):
             continue
+        if (tactic.get('boss_only')
+                and cur.get('entry_evidence') != 'measured_boss_entry'):
+            continue          # the boss kit waits for the measured boss entry
         due = (tactic.get('open')
                or (tactic.get('when_hp_at_most') is not None and b.enemy_hp is not None
                    and b.enemy_hp <= tactic['when_hp_at_most'])
@@ -2951,6 +2984,44 @@ SURVIVAL_CARDS = ('エンジェリン', 'ミックミー', 'マグネガキン',
                   'グリンボー', 'ゼンマイン', 'ブラッキー', 'ファイアーボイス',
                   'ハリケーン', 'ブンシーン', 'ピッグローラー', 'イッテツーン',
                   'カンケリン', 'フットバース', 'ダイチスイム', 'ノリウツール')
+
+
+def _egg_drop_evidence(cur, card):
+    """This battle's 卵落 fit for ``card``, or None when HP is unreadable.
+
+    gcgx: a card drops the enemy egg when its 卵落 exceeds the two generals'
+    max-HP sum mod 16. The start readings stand in for max HP; the hero's
+    full strength is remembered across battles (``ref_ally_hp``).
+    """
+    enemy_hp, ally_hp = cur.get('start_enemy_hp'), cur.get('ref_ally_hp') or cur.get('start_ally_hp')
+    value = reference.egg_drop_value(card)
+    if value is None or any(type(n) is not int or n <= 0 for n in (enemy_hp, ally_hp)):
+        return None
+    total = enemy_hp + ally_hp
+    return {'value': value, 'threshold': reference.egg_drop_threshold(total),
+            'max_hp_sum': total, 'drops': reference.can_drop_egg(card, total)}
+
+
+def _rescue_card(candidates, cur):
+    """The rescue card: a visible heal first, else the best egg dropper.
+
+    ``SURVIVAL_CARDS`` stays the damage/control fallback. A card that would
+    drop this battle's egg goes before it: the enemy summon is what a
+    low-HP rescue is usually racing. HPs are the battle's start readings
+    (the hero's remembered full strength); without them the fixed order stands.
+    """
+    if not candidates:
+        return None
+    if 'エンジェリン' in candidates:
+        return 'エンジェリン'                     # heal always goes first
+    if enemy_egg_triggers(cur.get('enemy')).has_egg is False:
+        return candidates[0]                      # no egg to drop
+    droppers = [card for card in candidates
+                if (_egg_drop_evidence(cur, card) or {}).get('drops')]
+    if not droppers:
+        return candidates[0]
+    return min(droppers, key=lambda card: (-reference.egg_drop_value(card),
+                                           SURVIVAL_CARDS.index(card)))
 
 
 BEHIND_EGG_RATIO_TENTHS = 7    # ally HP at or below 70% of the enemy's: rescue (egg) now
@@ -3120,7 +3191,7 @@ def _survival_card_list(screen, mem, cur, flow, names):
         rescue['cards_exhausted'] = True
         cur['card_flow'] = None
         return [pad('b')]
-    card = candidates[0]
+    card = _rescue_card(candidates, cur)
     move = _battle_menu_to(screen, card)
     if move != 'here':
         return [move] if move else []
@@ -3128,10 +3199,13 @@ def _survival_card_list(screen, mem, cur, flow, names):
     rescue['cards_attempted'].append(card)
     cur['card_consumption_complete'] = False
     cur.setdefault('cards_selected', []).append(card)
+    egg_drop = _egg_drop_evidence(cur, card)
     _record(mem, 'battle_card_selected', **_battle_labels(cur), card=card,
-            expected_metric='実使用告知', observed_metric={'listed_cards': names, 'survival': True},
+            expected_metric='実使用告知と卵落' if egg_drop and egg_drop['drops'] else '実使用告知',
+            observed_metric={'listed_cards': names, 'survival': True, 'egg_drop': egg_drop},
             resulting_event='selection_planned_not_yet_confirmed',
-            reason='HP低下に対処する切り札を選択。消費は未確定')
+            reason=('HP低下で卵を落とせる切り札を選択。消費は未確定' if egg_drop and egg_drop['drops']
+                    else 'HP低下に対処する切り札を選択。消費は未確定'))
     return [pad('a')]
 
 

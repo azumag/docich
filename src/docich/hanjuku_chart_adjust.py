@@ -85,7 +85,7 @@ def request_id(mem) -> str:
 
 
 REQUEST_FIELDS = ('request_id', 'chapter', 'off_chart_reason', 'captured', 'orders', 'blocked',
-                  'gold', 'month', 'garrison', 'lost', 'home_lost', 'en_route')
+                  'gold', 'month', 'garrison', 'lost', 'home_lost', 'en_route', 'card_stock')
 
 
 def startable(order, request) -> str | None:
