@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import threading
 from pathlib import Path
@@ -160,6 +161,84 @@ def test_start_prefetch_declines_when_not_useful(tmp_path):
 
     disabled, _coord = _manager(tmp_path, script_agents="")
     assert disabled._start_prefetch({}, 2, None) is None
+
+
+def test_narration_generation_keeps_the_gate_out_of_process_env(tmp_path, monkeypatch):
+    """The prefetch grants the real-AI gate in a private env copy only."""
+    from docich.trading import corner_script
+
+    monkeypatch.delenv("DOCICH_ALLOW_REAL_AI", raising=False)
+    mgr, _coord = _manager(tmp_path)
+    seen = {}
+
+    def fake_next(*args, **kwargs):
+        seen["env_gate"] = dict(kwargs.get("env") or {}).get("DOCICH_ALLOW_REAL_AI")
+        seen["process_gate"] = os.environ.get("DOCICH_ALLOW_REAL_AI")
+        return {"status": "item", "topic": "話題", "text": "本文です。"}
+
+    monkeypatch.setattr(corner_script, "generate_next_narration", fake_next)
+
+    item = mgr._generate_narration_text(1, [], "fallback")
+
+    assert item["source"] == "ai"
+    assert seen["env_gate"] == "1"
+    assert seen["process_gate"] is None
+    assert "DOCICH_ALLOW_REAL_AI" not in os.environ
+
+
+def test_stale_prefetch_blocks_new_ai_until_it_ends(tmp_path, monkeypatch):
+    """A timed-out worker must not overlap the next AI call or break its gate."""
+    from docich.trading import corner_script
+
+    now = [1000.0]
+    mgr, _coord = _manager(
+        tmp_path,
+        clock=lambda: now[0],
+        sleep=lambda seconds: now.__setitem__(0, now[0] + seconds),
+    )
+    release = threading.Event()
+    calls = []
+
+    def fake_next(*args, **kwargs):
+        slot = kwargs["target_key"]
+        calls.append(slot)
+        if slot == "news":
+            release.wait(10.0)
+        return {"status": "item", "topic": slot, "text": f"{slot}本文"}
+
+    monkeypatch.setattr(corner_script, "generate_next_narration", fake_next)
+
+    assert mgr._run_locked(_starting_state()) == "completed"
+
+    saved = json.loads(mgr.path.read_text())
+    assert saved["reports"]["script:2"]["source"] == "fallback"
+    assert saved["generation_failures"]["news"] == "prefetch-timeout"
+    # No other AI call overlapped the abandoned worker.
+    assert calls == ["corner", "news"]
+    assert all(saved["generation_failures"][key] == "prefetch-busy"
+               for key in SEGMENT_KEYS[2:])
+
+    # Releasing the worker lets it exit; prefetching then resumes and the
+    # real-AI gate still reaches the provider through the explicit env.
+    stale = mgr._stale_prefetch
+    release.set()
+    stale["thread"].join(5)
+    assert not stale["thread"].is_alive()
+
+    seen_gate = {}
+    original = fake_next
+
+    def gated_next(*args, **kwargs):
+        seen_gate["env"] = dict(kwargs.get("env") or {}).get("DOCICH_ALLOW_REAL_AI")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(corner_script, "generate_next_narration", gated_next)
+    state = {"reports": {}}
+    handle = mgr._start_prefetch(state, 3, None)
+    assert handle is not None
+    item = mgr._consume_prefetch(state, handle)
+    assert item["source"] == "ai"
+    assert seen_gate["env"] == "1"
 
 
 def test_prefetch_timeout_uses_fallback_without_another_ai_attempt(tmp_path, monkeypatch):

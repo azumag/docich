@@ -123,6 +123,9 @@ class PaperCornerManager:
         # corner's audio deliveries.
         self.delivery_scope = 'paper-corner'
         self.store = GameSwitchStore(g.state_dir)
+        # A prefetch worker abandoned at its wait deadline; no new narration
+        # worker starts until it has actually exited.
+        self._stale_prefetch = None
         if coordinator is None:
             from .game_switch import GameSwitchCoordinator
             from .stream_category import commit_hook
@@ -508,13 +511,15 @@ class PaperCornerManager:
         return {'text': text, 'topic': SEGMENT_LABELS[slot], 'source': 'fallback',
                 'failure': failure}
 
-    def _generate_narration_text(self, index, covered, fallback_text) -> dict:
+    def _generate_narration_text(self, index, covered, fallback_text, *, cancel=None) -> dict:
         """Generate one slot's text without touching shared state.
 
         Runs unchanged from a prefetch worker thread, so it must not read or
         write ``state``/``save`` (the caller owns those on the main thread).
-        Returns the fallback item with a bounded ``failure`` reason when AI is
-        unavailable or exhausted.
+        The real-AI gate travels in a private ``env`` copy: mutating
+        ``os.environ`` here would race with other narration workers. Returns
+        the fallback item with a bounded ``failure`` reason when AI is
+        unavailable, exhausted, or the caller cancelled the prefetch.
         """
         from .trading.corner_script import SEGMENT_KEYS, generate_next_narration
 
@@ -523,36 +528,34 @@ class PaperCornerManager:
             return self._fallback_item(index, fallback_text)
 
         last_reason = 'generation-failed'
-        previous_gate = os.environ.get('DOCICH_ALLOW_REAL_AI')
-        os.environ['DOCICH_ALLOW_REAL_AI'] = '1'
-        try:
-            for _ in range(NARRATION_AI_RETRIES):
-                try:
-                    result = generate_next_narration(
-                        self.g,
-                        trading_dir=self.trading_dir,
-                        agents=self.script_agents,
-                        timeout=self.script_timeout,
-                        covered=covered,
-                        target_key=slot,
-                        now=self.clock(),
-                    )
-                except Exception as exc:
-                    last_reason = _safe_detail(exc)
-                    continue
-                status = result.get('status') if isinstance(result, dict) else None
-                if status == 'item' and isinstance(result.get('text'), str) and result['text'].strip():
-                    return {'text': result['text'].strip(),
-                            'topic': str(result.get('topic', '')), 'source': 'ai',
-                            'failure': None}
-                last_reason = ('model-done' if status == 'done' else
-                               str(result.get('reason') or 'generation-failed')[:120]
-                               if isinstance(result, dict) else 'invalid-response')
-        finally:
-            if previous_gate is None:
-                os.environ.pop('DOCICH_ALLOW_REAL_AI', None)
-            else:
-                os.environ['DOCICH_ALLOW_REAL_AI'] = previous_gate
+        dispatch_env = dict(os.environ)
+        dispatch_env['DOCICH_ALLOW_REAL_AI'] = '1'
+        for _ in range(NARRATION_AI_RETRIES):
+            if cancel is not None and cancel.is_set():
+                last_reason = 'prefetch-cancelled'
+                break
+            try:
+                result = generate_next_narration(
+                    self.g,
+                    trading_dir=self.trading_dir,
+                    agents=self.script_agents,
+                    timeout=self.script_timeout,
+                    covered=covered,
+                    target_key=slot,
+                    now=self.clock(),
+                    env=dispatch_env,
+                )
+            except Exception as exc:
+                last_reason = _safe_detail(exc)
+                continue
+            status = result.get('status') if isinstance(result, dict) else None
+            if status == 'item' and isinstance(result.get('text'), str) and result['text'].strip():
+                return {'text': result['text'].strip(),
+                        'topic': str(result.get('topic', '')), 'source': 'ai',
+                        'failure': None}
+            last_reason = ('model-done' if status == 'done' else
+                           str(result.get('reason') or 'generation-failed')[:120]
+                           if isinstance(result, dict) else 'invalid-response')
         return self._fallback_item(index, fallback_text, failure=last_reason)
 
     def _record_narration_item(self, state, index, item) -> dict:
@@ -583,6 +586,13 @@ class PaperCornerManager:
 
         if index < 1 or index > len(SEGMENT_KEYS) or not self._ai_narration_enabled():
             return None
+        stale = self._stale_prefetch
+        if stale is not None:
+            if stale['thread'].is_alive():
+                # Never run two narration workers at once: an abandoned
+                # timeout worker may still hold a provider call.
+                return None
+            self._stale_prefetch = None
         reports = state.get('reports') if isinstance(state.get('reports'), dict) else {}
         if reports.get(f'script:{index}') is not None:
             return None
@@ -601,10 +611,12 @@ class PaperCornerManager:
         if not fallback_text.strip():
             return None
         box = {}
+        cancel = threading.Event()
 
         def run():
             try:
-                box['item'] = self._generate_narration_text(index, covered, fallback_text)
+                box['item'] = self._generate_narration_text(
+                    index, covered, fallback_text, cancel=cancel)
             except BaseException as exc:
                 # A prefetch must never surface as an unhandled thread error;
                 # the main thread falls back to synchronous generation.
@@ -612,7 +624,8 @@ class PaperCornerManager:
 
         thread = threading.Thread(target=run, name=f'paper-corner-prefetch-{index}', daemon=True)
         thread.start()
-        return {'index': index, 'thread': thread, 'box': box, 'fallback_text': fallback_text}
+        return {'index': index, 'thread': thread, 'box': box,
+                'fallback_text': fallback_text, 'cancel': cancel}
 
     def _consume_prefetch(self, state, prefetch):
         """Wait for a prefetched slot while refreshing corner liveness.
@@ -627,6 +640,10 @@ class PaperCornerManager:
                     + PREFETCH_WAIT_GRACE_S)
         while thread.is_alive():
             if self.clock() >= deadline:
+                # Stop the worker before its next retry and remember it so no
+                # new AI work starts until this one has actually exited.
+                prefetch['cancel'].set()
+                self._stale_prefetch = prefetch
                 return self._fallback_item(prefetch['index'], prefetch['fallback_text'],
                                            failure='prefetch-timeout')
             state['last_progress_at'] = self.clock()
@@ -1165,7 +1182,17 @@ class PaperCornerManager:
                 if item is not None:
                     item = self._record_narration_item(state, index, item)
             if item is None:
-                item = self._next_narration_item(state, index)
+                stale = self._stale_prefetch
+                if stale is not None and stale['thread'].is_alive():
+                    # An abandoned worker still holds a provider call; use the
+                    # deterministic fallback instead of overlapping AI work.
+                    item = self._record_narration_item(
+                        state, index,
+                        self._fallback_item(index, self._fallback_text(state, index),
+                                            failure='prefetch-busy'))
+                else:
+                    self._stale_prefetch = None
+                    item = self._next_narration_item(state, index)
             if report is None:
                 report = {'slot': slot, 'text': item['text'],
                           'topic': item.get('topic', ''), 'source': item['source'],
@@ -1178,6 +1205,9 @@ class PaperCornerManager:
             # computes text; it is consumed at the top of the next iteration.
             pending = self._start_prefetch(state, index + 1, report)
             if not self._wait_for_speech(state):
+                if pending is not None:
+                    pending['cancel'].set()
+                    self._stale_prefetch = pending
                 pending = None
                 return 'pending'
             report['drained'] = True
