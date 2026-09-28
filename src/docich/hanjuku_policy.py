@@ -1471,6 +1471,15 @@ def camp_recall_step(screen: Screen, mem, frame):
             mem.pop('recall', None)
             mem['uncertain'] = True
             return []
+        # Re-detect every step: a tent clipped by the top edge is targeted
+        # above the screen, and the cursor servo there scrolls the camera
+        # until the flag shows and the real selecting cell is known.
+        camps = own_camps(frame) if frame is not None else []
+        if camps:
+            cursor = _cursor(screen)
+            camp = min(camps, key=lambda c: (abs(c['target'][0] - cursor[0])
+                                             + abs(c['target'][1] - cursor[1])) if cursor else 0)
+            state['target'] = list(camp['target'])
         cursor = _cursor(screen)
         if not cursor:
             return []
