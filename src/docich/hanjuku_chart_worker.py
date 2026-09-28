@@ -78,6 +78,9 @@ def build_prompt(request: dict, results: list[dict]) -> str:
         f'- cards は1指示あたり最大{adjust.MAX_CARDS_PER_ORDER}枚。在庫は保証されないので必要な時だけ。',
         '- after は null / ["captured", 城名] / ["all_captured"] のいずれか。',
         '- source は将軍を出す自軍の城。target は攻める城。general は将軍名。',
+        '- general は「駐留（garrison）」でその source にいると記録された将軍にすること。'
+        '別の城にいると記録された将軍・進軍中（en_route）の将軍・失った城（lost）からの出撃は実行できず破棄される。'
+        '駐留が記録されていない城は将軍不明として扱う。',
         '- purchases は任意。month は [年, 月]（これから来る月初）。generals は新規登用人数（現状は記録のみ）。',
         '- 出力はJSONオブジェクト1つだけ。説明文やコードフェンスは不要。',
         '',
@@ -85,8 +88,7 @@ def build_prompt(request: dict, results: list[dict]) -> str:
         json.dumps(base, ensure_ascii=False),
         '',
         '## 現在の状況',
-        json.dumps({k: request.get(k) for k in ('chapter', 'off_chart_reason', 'captured',
-                                                 'orders', 'blocked', 'gold', 'month')},
+        json.dumps({k: request.get(k) for k in adjust.REQUEST_FIELDS if k != 'request_id'},
                    ensure_ascii=False),
         '',
         '## 直近の実績',
@@ -141,7 +143,7 @@ def _run(g, runtime_dir: Path, request: dict, cfg, generate, lock_fd=None):
         if current.get('request_id') != request['request_id']:
             status = 'superseded'
         else:
-            adjust.save(runtime_dir, parse_output(output, request, agent or 'unknown'))
+            adjust.save(runtime_dir, parse_output(output, request, agent or 'unknown'), request)
     except ValueError:
         status = 'invalid_output'
     except RuntimeError as exc:
