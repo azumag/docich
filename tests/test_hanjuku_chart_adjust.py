@@ -901,6 +901,18 @@ def test_recent_results_carry_battle_start_hp_for_the_egg_drop_rule(tmp_path):
         {'decision': 'order_failed', 'general': 'ココット'}]
 
 
+def test_recent_results_maps_the_named_hero_to_fixed_max_hp(tmp_path):
+    from docich import hanjuku_chart_worker as worker
+    record = {'event': 'decision', 'decision': 'battle_start', 'enemy': 'キッシュ',
+              'ally': chart.HERO, 'enemy_hp': 20, 'ally_hp': 60, 'chart_step': 'A:x:J1'}
+    (tmp_path / 'hanjuku_decisions.jsonl').write_text(
+        json.dumps(record, ensure_ascii=False) + '\n', encoding='utf-8')
+    [result] = worker._recent_results(tmp_path)
+    assert result['ally'] == chart.HERO
+    assert result['ally_max_hp'] == 90
+    assert result['enemy_max_hp'] == 26
+
+
 def test_same_situation_with_new_card_stock_republishes_the_request():
     mem = stuck_memory()
     policy.map_step(map_screen(), mem, FRAME)

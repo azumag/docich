@@ -56,7 +56,10 @@ def _recent_results(runtime_dir: Path, limit=24) -> list[dict]:
             # The 卵落 rule needs max HP, which a wounded opening reading is
             # not: add the fixed char.csv HP for names it knows.
             for side in ('ally', 'enemy'):
-                max_hp = general_max_hp(entry.get(side))
+                name = entry.get(side)
+                if side == 'ally' and name == chart.HERO:
+                    name = 'しゅじんこう'
+                max_hp = general_max_hp(name)
                 if max_hp is not None:
                     entry[f'{side}_max_hp'] = max_hp
             if entry:
