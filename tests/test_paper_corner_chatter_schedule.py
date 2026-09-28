@@ -190,7 +190,11 @@ def test_each_slot_waits_for_audio_monitor_before_next(tmp_path, monkeypatch):
     )
 
     assert mgr._run_locked(_starting_state()) == "completed"
-    assert sleeps == [2.0] * (9 * (SPEECH_DRAIN_STABLE_POLLS - 1))
+    # Every wait polls the audio monitor at its fixed cadence. A prefetch may
+    # add the same cadence while it waits for the next slot's generation, so
+    # require at least the nine drain waits instead of an exact count.
+    assert set(sleeps) == {2.0}
+    assert len(sleeps) >= 9 * (SPEECH_DRAIN_STABLE_POLLS - 1)
 
 
 def test_corner_waits_for_speech_to_finish_before_restoring(tmp_path):
