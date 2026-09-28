@@ -516,7 +516,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v45-adjust-garrison'
+    assert state['bot_version'] == 'hanjuku-chart-v46-camp-always'
     assert '_records' not in state['policy']
 
 
@@ -2109,11 +2109,25 @@ def test_camp_recall_cancels_when_no_own_castle_is_visible():
     assert [r['decision'] for r in mem['_records']][-1] == 'camp_recall_skipped'
 
 
-def test_map_step_recalls_a_camp_when_nothing_is_charted(monkeypatch):
+def test_map_step_recalls_a_visible_camp_before_any_order():
+    # g421: the recall never started because it waited for a chartless idle
+    # map. A visible camp must win over any order state.
     frame = _camp_frame()
-    monkeypatch.setattr(policy, 'next_order', lambda mem: None)
     mem = {'chapter': 1, 'variant': 'chart', 'picked': [], '_records': [],
-           'tick': 500, 'world_map_tick': 400}
+           'tick': 500, 'world_map_tick': 400, 'active': 'I:test:1'}
     screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(80, 90))
     assert policy.map_step(screen, mem, frame) == [policy.pad('left', 8)]
     assert mem['recall']['stage'] == 'to_camp'
+    assert [r['decision'] for r in mem['_records']][-1] == 'camp_found'
+
+
+def test_map_step_does_not_start_a_camp_recall_while_a_y_jump_view_is_opening():
+    frame = _camp_frame()
+    mem = {'chapter': 1, 'variant': 'chart', 'picked': [], '_records': [],
+           'tick': 500, 'world_map_tick': 400,
+           'y_jump': {'goal': 'ジョンリギ', 'mode': 'map', 'step': 'I:test:1',
+                      'moves': 0, 'wait': 0, 'tick': 500}}
+    screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(80, 90))
+    policy.map_step(screen, mem, frame)
+    assert 'recall' not in mem
+    assert not [r for r in mem['_records'] if r['decision'] == 'camp_found']
