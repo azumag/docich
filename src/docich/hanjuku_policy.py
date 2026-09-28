@@ -1190,6 +1190,8 @@ def _y_jump_step(mem, frame):
     if (abs(dx) <= Y_JUMP_TOL and abs(dy) <= Y_JUMP_TOL) or jump['moves'] >= Y_JUMP_MOVES:
         mem.pop('y_jump', None)
         mem['y_jump_return'] = jump['mode']
+        if jump['mode'] == 'target':
+            mem.setdefault('y_jumped', {})[jump['step']] = jump['goal']
         mem.pop('menu_miss', None)            # a fresh placement, not the missed cell
         mem.pop('menu_hold', None)
         mem['cursor'] = [gx, gy]
@@ -1572,6 +1574,10 @@ def _target_roof_under_marker(screen, mem, frame, order) -> bool:
     s = _cursor(screen)
     if not s or frame is None:
         return True
+    if order['target'] == chart.boss_castle(mem.get('chapter') or 0):
+        # The boss tower has no own/enemy roof (g421 13:48: two cancels).
+        # Accept it only when a Y jump placed the marker on it.
+        return (mem.get('y_jumped') or {}).get(order['step']) == order['target']
     want = 'own' if order['target'] in _owned(mem) else 'enemy'
     return any(r['kind'] == want
                and abs(r['target'][0] - s[0]) <= UNDER_CURSOR_PX
@@ -1592,6 +1598,11 @@ def _unverified_target(screen, mem, order):
                 reason='出撃先マーカーの位置に目的の城の屋根が無いため決定せず位置を取り直す')
         return []
     misses.pop(step, None)
+    # A retry of this order starts with fresh Y jumps (g421 13:48: the limit
+    # carried over from the first attempt, so the boss target was walked to).
+    mem['y_jumps'] = {k: v for k, v in (mem.get('y_jumps') or {}).items()
+                      if not k.startswith(f'{step}:')}
+    (mem.get('y_jumped') or {}).pop(step, None)
     cancels = mem.setdefault('target_cancel', {})
     cancels[step] = cancels.get(step, 0) + 1
     mem.pop('sortie_attempt', None)
@@ -3627,7 +3638,7 @@ def observe_events(screen: Screen, mem):
                         'nav_prev', 'nav_still', 'nav_pressed', 'unverified', 'off_castle',
                         'target_miss', 'target_cancel', 'menu_hold', 'card_scroll',
                         'world_map_tick', 'world_map_due', 'world_map_wait', 'home_lost',
-                        'y_jump', 'y_jumps', 'y_jump_return',
+                        'y_jump', 'y_jumps', 'y_jump_return', 'y_jumped',
                         'select_used',
                         'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
                         'indep_menu_key', 'indep_menu_action',

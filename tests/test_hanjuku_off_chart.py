@@ -757,3 +757,20 @@ def test_the_boss_sortie_accepts_the_hero_row_despite_the_hand_and_icon_tiles():
         TextLine(39, ((136, UNKNOWN), (144, 'ど'), (152, 'う'), (160, 'し'))), 'どうし')
     assert not policy._name_read_cleanly(
         TextLine(39, ((144, 'ど'), (152, UNKNOWN), (160, 'し'))), 'どうし')
+
+
+def test_the_boss_tower_target_needs_a_y_jump_and_a_cancel_resets_the_jumps(monkeypatch):
+    """g421 13:48: the tower has no own/enemy roof; the jump limit carried over a cancel."""
+    monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: [])
+    order = {'step': 'F1', 'general': 'どうし', 'source': 'スペンソニア', 'target': 'けっかい',
+             'cards': [], 'after': None, 'note': 't'}
+    mem = {'chapter': 1, 'orders': {}, 'picked': [], '_records': [], 'active': 'F1',
+           'launched_orders': {'F1': order}, 'y_jumps': {'F1:target': 2, 'F1:map': 1, 'G:map': 1}}
+    marker = Screen(lines=[], hand=None, text='', kind='map_target', marker=(8, 8))
+    assert not policy._target_roof_under_marker(marker, mem, FRAME, order)
+    mem['y_jumped'] = {'F1': 'けっかい'}
+    assert policy._target_roof_under_marker(marker, mem, FRAME, order)
+    mem.pop('y_jumped')
+    mem['target_miss'] = {'F1': policy.TARGET_MISS_LIMIT - 1}
+    assert policy._unverified_target(marker, mem, order) == [policy.pad('b')]
+    assert mem['y_jumps'] == {'G:map': 1}                     # the retry may jump again
