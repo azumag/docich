@@ -88,33 +88,49 @@ def bash_many(sn, calls, env=None):
     ``calls`` is a list of mappings with ``script`` (required) and optional
     ``env``, ``args`` and ``stdin``. Each snippet runs in its own subshell, so
     exports, variables and functions it creates cannot leak into the next one,
-    matching the process-per-call isolation of ``bash()``. A call's ``env`` is
-    applied inside its subshell after the load; pass values the loader itself
-    must see at source time through the top-level ``env``. Returns each
-    snippet's ``(stdout, rc)`` in order; raises like ``bash()`` on failure.
+    matching the process-per-call isolation of ``bash()``. Top-level ``env``
+    is visible while loading the legacy shim and is re-exported after the load,
+    exactly like ``bash()``; per-call ``env`` is an additional post-load
+    override. Returns each snippet's ``(stdout, rc)`` in order and stops at the
+    first failing call, matching a sequential loop over ``bash()``.
+
+    stdout/stderr and return-code control data live in separate temp files.
+    This keeps arbitrary legacy stdout (including old marker-looking bytes)
+    opaque while still paying for only one bash process / one eloop_lib load.
     """
     base = {"PATH": os.environ["PATH"], "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
             "HOME": os.environ.get("HOME", "/tmp"), "ELOOP_LIB_DIR": str(sn)}
     base.update(env or {})
-    marker = f"__docich_batch_{os.urandom(8).hex()}"
     lines = ["set --", "source ./eloop_lib.sh >/dev/null 2>&1; log(){ :; }"]
     with tempfile.TemporaryDirectory(prefix="docich-bash-many-") as tmp:
+        tmp_path = Path(tmp)
+        result_paths = []
         for i, call in enumerate(calls):
+            call_env = {**(env or {}), **(call.get("env") or {})}
             reassert = "".join(f"export {name}={shlex.quote(value)}; "
-                               for name, value in (call.get("env") or {}).items())
+                               for name, value in call_env.items())
             stdin = ""
             if call.get("stdin") is not None:
-                payload = Path(tmp) / f"stdin-{i}"
+                payload = tmp_path / f"stdin-{i}"
                 payload.write_text(call["stdin"], encoding="utf-8")
                 stdin = f" < {shlex.quote(str(payload))}"
             args = "".join(f" {shlex.quote(arg)}" for arg in call.get("args", ()))
-            stderr = Path(tmp) / f"stderr-{i}"
+            stdout = tmp_path / f"stdout-{i}"
+            stderr = tmp_path / f"stderr-{i}"
+            rcfile = tmp_path / f"rc-{i}"
             func = f"_docich_batch_call_{i}"
-            lines.append(f"printf '%s[{i}]\\n' {shlex.quote(marker)}")
-            lines.append(f"( {reassert}{func}() {{ {call['script']}; }}; "
-                         f"{func}{args}{stdin} 2>{shlex.quote(str(stderr))} )")
-            lines.append(f"printf '%s[{i}]=rc=%s\\n' {shlex.quote(marker)} \"$?\"")
-        program = Path(tmp) / "batch.sh"
+            lines.append(
+                f"if ( {reassert}{func}() {{ {call['script']}; }}; "
+                f"{func}{args}{stdin} ) >{shlex.quote(str(stdout))} "
+                f"2>{shlex.quote(str(stderr))}; "
+                f"then _docich_batch_rc=0; else _docich_batch_rc=$?; fi"
+            )
+            lines.append(f"printf '%s\\n' \"$_docich_batch_rc\" >{shlex.quote(str(rcfile))}")
+            # bash() raises immediately; do not run later legacy calls after a
+            # failure just because they share one shell process.
+            lines.append('if [ "$_docich_batch_rc" -ne 0 ]; then exit 0; fi')
+            result_paths.append((stdout, stderr, rcfile))
+        program = tmp_path / "batch.sh"
         program.write_text("\n".join(lines) + "\n", encoding="utf-8")
         # Keep $0 = "golden" and run from a file: Linux caps a single argv
         # string (MAX_ARG_STRLEN), and the batch program outgrows it quickly.
@@ -124,17 +140,14 @@ def bash_many(sn, calls, env=None):
             raise SystemExit(f"legacy batch failed: {result.stderr[-400:]}")
         outputs = []
         for i, call in enumerate(calls):
-            head = f"{marker}[{i}]\n"
-            start = result.stdout.index(head) + len(head)
-            tail = f"{marker}[{i}]=rc="
-            end = result.stdout.index(tail, start)
-            stdout = result.stdout[start:end]
-            rc_end = result.stdout.index("\n", end + len(tail))
-            rc = int(result.stdout[end + len(tail):rc_end])
+            stdout, stderr, rcfile = result_paths[i]
+            if not rcfile.is_file():
+                raise SystemExit(f"legacy batch stopped before call {i}")
+            rc = int(rcfile.read_text(encoding="utf-8").strip())
             if rc:
-                stderr = (Path(tmp) / f"stderr-{i}").read_text(encoding="utf-8", errors="replace")
-                raise SystemExit(f"legacy call failed ({call['script'][:60]}): {stderr[-400:]}")
-            outputs.append((stdout, rc))
+                error = stderr.read_text(encoding="utf-8", errors="replace")
+                raise SystemExit(f"legacy call failed ({call['script'][:60]}): {error[-400:]}")
+            outputs.append((stdout.read_text(encoding="utf-8"), rc))
     return outputs
 
 
