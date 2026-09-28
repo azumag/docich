@@ -798,6 +798,28 @@ def test_a_boss_sortie_without_its_general_gives_up_and_a_cancelled_boss_retries
     assert policy.next_order(mem)['step'] == 'F1'          # boss hero retry is still due
 
 
+def test_an_absent_boss_general_retires_an_old_target_cancel_retry():
+    """A target-cancel retry must not loop forever after its general is confirmed absent."""
+    from docich.hanjuku_font import TextLine
+    order = {'step': 'F1', 'general': 'どうし', 'source': 'スペンソニア', 'target': 'けっかい',
+             'cards': [], 'after': None, 'note': 't'}
+    mem = {'chapter': 1, 'orders': {'F1': 'failed'}, 'picked': [], '_records': [], 'active': 'F1',
+           'target_cancel': {'F1': 2}, 'captured': ['スペンソニア'],
+           'garrison': {'スペンソニア': ['リーキ']},
+           'chart_plan': {'request_id': 'x', 'orders': [order]}}
+    rows = [TextLine(47, tuple((64 + 8 * i, ch) for i, ch in enumerate('しゅつげき'))),
+            TextLine(39, tuple((144 + 8 * i, ch) for i, ch in enumerate('リーキ')))]
+    screen = Screen(lines=rows, hand=(122, 33, 139, 45), kind='general_list',
+                    text='しゅつげきリーキステータス')
+    assert policy.next_order(mem)['step'] == 'F1'
+    for _ in range(policy.BOSS_ABSENT_LIMIT - 1):
+        assert policy.deploy_step(screen, mem) == []
+    assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
+    assert mem['orders']['F1'] == 'failed'
+    assert 'F1' not in mem.get('target_cancel', {})
+    assert policy.next_order(mem) is None
+
+
 def test_after_a_y_jump_the_cursor_is_walked_onto_the_nearest_roof_then_selects(monkeypatch):
     """g421 14:45: a jump landed a few px off スペンソニア and fell into a 20-minute search."""
     order = {'step': 'J3', 'general': 'どうし', 'source': 'スペンソニア', 'target': 'けっかい',
