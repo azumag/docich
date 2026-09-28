@@ -279,7 +279,7 @@ def gacha_completion_note(comments_block: str, list_file: Path) -> str:
 
 def category_template(category: str) -> str:
     template = {"game_question": "game", "game_status": "game",
-                "strategy_advice": "default", "comment_advice": "default", "general_question": "default",
+                "strategy_advice": "game", "comment_advice": "default", "general_question": "default",
                 "subscription": "default", "stream_goal": "default", "bits": "default",
                 "other": "default"}.get(category, category)
     path = PROMPTS_DIR / f"comment_response_{template}.md"
