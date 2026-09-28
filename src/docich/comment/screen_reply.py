@@ -131,4 +131,12 @@ def generate_screen_reply(request: DispatchRequest, rows, *, env, dispatcher=Non
                                  "scene_changed_before_delivery", len(indices), image_bytes=len(frame.image.data),
                                  capture_ms=capture_ms,
                                  image_dispatch_requested=True)
+    # The game-switch identity does not change for ordinary board updates.
+    # Re-check the frame-age contract at delivery so a slow multimodal reply
+    # cannot describe an old board as if it were still current.
+    if not provider.current(frame):
+        return ScreenReplyResult(DispatchResult(1, failure_kind="screen_frame_stale"),
+                                 "stale_before_delivery", len(indices), image_bytes=len(frame.image.data),
+                                 capture_ms=capture_ms,
+                                 image_dispatch_requested=True)
     return ScreenReplyResult(result, "attached", len(indices), len(frame.image.data), capture_ms, True)
