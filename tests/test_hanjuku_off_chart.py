@@ -774,3 +774,25 @@ def test_the_boss_tower_target_needs_a_y_jump_and_a_cancel_resets_the_jumps(monk
     mem['target_miss'] = {'F1': policy.TARGET_MISS_LIMIT - 1}
     assert policy._unverified_target(marker, mem, order) == [policy.pad('b')]
     assert mem['y_jumps'] == {'G:map': 1}                     # the retry may jump again
+
+
+def test_a_boss_sortie_without_its_general_gives_up_and_a_cancelled_boss_retries():
+    """g421 14:08: ココット was not at スペンソニア and the boss backup held 12+ minutes."""
+    from docich.hanjuku_font import TextLine
+    order = {'step': 'F2', 'general': 'ココット', 'source': 'スペンソニア', 'target': 'けっかい',
+             'cards': [], 'after': None, 'note': 't'}
+    hero = {'step': 'F1', 'general': 'どうし', 'source': 'スペンソニア', 'target': 'けっかい',
+            'cards': [], 'after': None, 'note': 't'}
+    mem = {'chapter': 1, 'orders': {'F1': 'failed'}, 'picked': [], '_records': [], 'active': 'F2',
+           'launched_orders': {'F2': order}, 'target_cancel': {'F1': 2},
+           'captured': ['スペンソニア'], 'chart_plan': {'request_id': 'x', 'orders': [hero, order]}}
+    rows = [TextLine(47, tuple((64 + 8 * i, ch) for i, ch in enumerate('しゅつげき'))),
+            TextLine(39, tuple((144 + 8 * i, ch) for i, ch in enumerate('どうし'))),
+            TextLine(55, tuple((144 + 8 * i, ch) for i, ch in enumerate('リーキ')))]
+    screen = Screen(lines=rows, hand=(122, 33, 139, 45), kind='general_list',
+                    text='しゅつげきどうしリーキステータス')
+    for _ in range(policy.BOSS_ABSENT_LIMIT - 1):
+        assert policy.deploy_step(screen, mem) == []
+    assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
+    assert mem['orders']['F2'] == 'failed'
+    assert policy.next_order(mem)['step'] == 'F1'          # boss hero retry is still due

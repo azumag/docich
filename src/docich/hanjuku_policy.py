@@ -526,6 +526,14 @@ def _plan_pending(mem) -> bool:
     return any(status.get(o['step']) in (None, 'pending') and live(o) for o in plan)
 
 
+def _boss_retry_due(order, mem) -> bool:
+    """A boss sortie failed only by cancelled targets gets its remaining retries
+    (g421 13:48: the tower-roof check cancelled どうし twice before #1251)."""
+    return ((mem.get('orders') or {}).get(order['step']) == 'failed'
+            and order.get('target') == chart.boss_castle(mem.get('chapter') or 0)
+            and 0 < (mem.get('target_cancel') or {}).get(order['step'], 0) < BOSS_TARGET_CANCEL_LIMIT)
+
+
 def next_order(mem):
     status = mem.setdefault('orders', {})
     current = list(_orders(mem))
@@ -537,7 +545,8 @@ def next_order(mem):
     owned = _owned(mem)
     garrison = mem.get('garrison') or {}
     for order in (*current, *retries):
-        if (status.get(order['step']) in (None, 'pending') and _ready(order, mem)
+        if ((status.get(order['step']) in (None, 'pending') or _boss_retry_due(order, mem))
+                and _ready(order, mem)
                 and _source(order, mem) in owned
                 # A source last read empty would open an empty list and fail
                 # the order (g407: the plan's どうし/ヴィーナス from an empty home).
@@ -1561,6 +1570,8 @@ def target_step(screen: Screen, mem, frame):
 
 TARGET_MISS_LIMIT = 3          # unverified target arrivals before cancelling the sortie
 TARGET_CANCEL_LIMIT = 2        # cancelled sorties per order before failing it
+BOSS_TARGET_CANCEL_LIMIT = 4   # the boss sortie is worth more retries
+BOSS_ABSENT_LIMIT = 10         # general-list readings without the boss general before giving up
 
 
 def _target_roof_under_marker(screen, mem, frame, order) -> bool:
@@ -1606,7 +1617,9 @@ def _unverified_target(screen, mem, order):
     cancels = mem.setdefault('target_cancel', {})
     cancels[step] = cancels.get(step, 0) + 1
     mem.pop('sortie_attempt', None)
-    state = 'failed' if cancels[step] >= TARGET_CANCEL_LIMIT else 'pending'
+    limit = (BOSS_TARGET_CANCEL_LIMIT if order['target'] == chart.boss_castle(mem.get('chapter') or 0)
+             else TARGET_CANCEL_LIMIT)
+    state = 'failed' if cancels[step] >= limit else 'pending'
     _finish_order(mem, state, target=order['target'],
                   deviation_reason='出撃先を屋根で確認できない',
                   observed_metric={'marker': list(_cursor(screen) or ()), 'cancels': cancels[step]},
@@ -1960,6 +1973,19 @@ def deploy_step(screen: Screen, mem):
             mem.setdefault('sortie_general', {}).pop(order['step'], None)
             mem.setdefault('order_context', {}).pop(order['step'], None)
             move = menu_to(screen, order['general'])
+            present = _present_generals(screen)
+            if move is None and present is not None and order['general'] not in present:
+                # The planned general is not in this castle's full list: a
+                # boss sortie never substitutes, and holding here stalled
+                # g421 for 12+ minutes (ココット at スペンソニア). Give it up.
+                holds = mem.setdefault('boss_absent', {})
+                holds[order['step']] = holds.get(order['step'], 0) + 1
+                if holds[order['step']] >= BOSS_ABSENT_LIMIT:
+                    holds.pop(order['step'], None)
+                    _finish_order(mem, 'failed', deviation_reason=f"{order['general']}が出撃元にいない",
+                                  observed_metric=present[:8], source=_source(order, mem),
+                                  reason='ボス出撃の将軍が出撃元の一覧にいないため指示を諦めて次へ進む')
+                    return [pad('b'), pad('b')]
             if move is None or any(order['general'] in line.text and not _name_read_cleanly(line, order['general'])
                                    for line in screen.lines):
                 return _hold_deploy(screen, mem, order, 'ボス出撃の主人公を一覧とカーソルで確認できないため代役を選ばず保留')
@@ -3638,7 +3664,7 @@ def observe_events(screen: Screen, mem):
                         'nav_prev', 'nav_still', 'nav_pressed', 'unverified', 'off_castle',
                         'target_miss', 'target_cancel', 'menu_hold', 'card_scroll',
                         'world_map_tick', 'world_map_due', 'world_map_wait', 'home_lost',
-                        'y_jump', 'y_jumps', 'y_jump_return', 'y_jumped',
+                        'y_jump', 'y_jumps', 'y_jump_return', 'y_jumped', 'boss_absent',
                         'select_used',
                         'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
                         'indep_menu_key', 'indep_menu_action',
