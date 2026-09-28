@@ -81,8 +81,9 @@ def test_spatial_strategy_questions_stay_in_game_context(text):
     assert row["category"] == "game_question"
 
 
-def test_unrelated_question_is_still_general():
-    assert heuristic.baseline(["viewer: 明日の天気は？"])[0]["category"] == "general_question"
+@pytest.mark.parametrize("text", ["明日の天気は？", "右派って何？", "左派の意味は？"])
+def test_unrelated_question_is_still_general(text):
+    assert heuristic.baseline([f"viewer: {text}"])[0]["category"] == "general_question"
 
 
 def test_english_safety_restores_source_fields_and_clears_noise():
