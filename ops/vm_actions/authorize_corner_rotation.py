@@ -22,7 +22,11 @@ WORKFLOWS = (
     ".github/workflows/corner-rotation-operator.yml",
     ".github/workflows/retro-corner-operator.yml",
 )
-ALLOWED_OPERATIONS = {"restart-service", "recover-failed", "rollback-timer", "start-hanjuku"}
+ALLOWED_OPERATIONS = {
+    "restart-service", "recover-failed", "rollback-timer", "start-hanjuku",
+    "recover-runtime",
+}
+CANONICAL_ONLY_OPERATIONS = {"start-hanjuku", "recover-runtime"}
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 
 
@@ -61,8 +65,8 @@ def main() -> None:
     if operation not in ALLOWED_OPERATIONS:
         fail("unsupported corner rotation operation")
 
-    if operation == "start-hanjuku" and env.get("GITHUB_WORKFLOW_REF") != f"{REPOSITORY}/{WORKFLOWS[0]}@refs/heads/main":
-        fail("Hanjuku start requires the canonical operator workflow")
+    if operation in CANONICAL_ONLY_OPERATIONS and env.get("GITHUB_WORKFLOW_REF") != f"{REPOSITORY}/{WORKFLOWS[0]}@refs/heads/main":
+        fail("Hanjuku recovery requires the canonical operator workflow")
 
     result = {"operation": operation, "target": "production", "ref": "main"}
     output = env.get("GITHUB_OUTPUT")

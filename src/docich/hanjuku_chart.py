@@ -30,7 +30,21 @@ CASTLES: dict[int, dict[str, tuple[int, int]]] = {
         'カストーラ': (599, 382),
         'けっかい': (265, 270),
     },
-    # 2–12: measured at runtime / via hanjuku_measure; intentionally empty.
+    # Measured 2026-09-28 in the isolated emulator from a g421 chapter 2
+    # savestate: Y jump to each flag, cursor walked onto the roof, A showed
+    # the castle's name (castle_info). Cells use the same Y frame as chapter 1
+    # (Y cursor = cell/8 + (63, 47.5)). The boss castle is not on the map yet.
+    2: {
+        'アルマムーン': (522, 847),
+        'アウスパジア': (298, 291),
+        'スペランザ': (646, 355),
+        'ウラノポリス': (274, 488),
+        'ドミノーラ': (486, 495),
+        'グロン': (762, 479),
+        'フーリック': (358, 712),
+        'ハドリバーグ': (742, 732),
+    },
+    # 3–12: measured at runtime / via hanjuku_measure; intentionally empty.
 }
 
 # Expected on-screen castle labels per chapter (gcgx + charts). Navigation

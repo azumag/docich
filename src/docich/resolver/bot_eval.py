@@ -17,14 +17,19 @@ import sys
 import time
 from pathlib import Path
 
+from ..tmux import eval_tmux_argv
+from ..eval_tmux import kill_session, pane_pids, record_pane, register, release
+
 
 def _tmux(args: list[str]) -> subprocess.CompletedProcess:
     # The headless evaluation only needs a terminfo entry that exists on the
     # host. A caller's TERM (for example xterm-ghostty over SSH) is not
     # installed everywhere and made tmux fail before the first pane existed.
+    # Evaluations use their own tmux server, never the production one
+    # (Issue #1280).
     env = dict(os.environ)
     env["TERM"] = "xterm"
-    return subprocess.run(["tmux", *args], capture_output=True, text=True, env=env)
+    return subprocess.run(eval_tmux_argv(args), capture_output=True, text=True, env=env)
 
 
 def _run_bot_once(
@@ -107,13 +112,16 @@ def run_bot_matches(
     over = [re.compile(p) for p in game_over_res]
     score_pats = [re.compile(p) for p in score_res]
     session = f"evalr-{os.getpid()}-{int(time.time() * 1000) % 1000000}"
-    _tmux(["kill-session", "-t", session])
+    register()
+    _tmux(["kill-session", "-t", f"={session}"])
     created = _tmux(
         ["new-session", "-d", "-x", str(cols), "-y", str(rows), "-s", session,
          shlex.join(binary)]
     )
     if created.returncode != 0:
         raise RuntimeError(f"評価用セッションの起動に失敗しました: {created.stderr.strip()}")
+    for pane in pane_pids(_tmux, session):
+        record_pane(pane)
 
     def capture() -> str:
         got = _tmux(["capture-pane", "-p", "-t", session])
@@ -184,7 +192,8 @@ def run_bot_matches(
                 if not is_over(capture()):
                     break
     finally:
-        _tmux(["kill-session", "-t", session])
+        kill_session(_tmux, session)
+        release()
     scores = [r["score"] for r in results if isinstance(r.get("score"), int)]
     return {
         "game": label,

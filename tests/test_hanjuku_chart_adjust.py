@@ -67,7 +67,7 @@ def test_off_chart_records_one_request_per_situation_and_holds():
 
 
 def test_unavailable_and_exhausted_charts_are_distinguished():
-    mem = {'chapter': 2, 'orders': {}, '_records': []}
+    mem = {'chapter': 3, 'orders': {}, '_records': []}
     policy.map_step(map_screen(), mem, FRAME)
     assert decisions(mem, 'chart_adjust_request')[0]['off_chart_reason'] == 'chart_unavailable'
     mem = stuck_memory()
@@ -274,7 +274,11 @@ def test_interim_candidates_exclude_boss_and_captured_castles():
     candidates = policy.interim_candidates(mem)
     targets = {c['target'] for c in candidates.values()}
     assert targets == {'ジョンリギ', 'スペンソニア'}
-    assert all(c['cards'] == [] and c['after'] is None for c in candidates.values())
+    assert all(c['after'] is None for c in candidates.values())
+    # Owner (2026-09-28): attacks carry cards - the chart's for that castle, else the opener.
+    chart_cards = {o['target']: list(o['cards']) for o in chart.orders(1) if o['cards']}
+    for c in candidates.values():
+        assert c['cards'] == chart_cards.get(c['target'], list(policy.INTERIM_CARDS))
     # ジョンリギ is uncaptured: 1-C2 (ココット from ジョンリギ) starts from ほんじょう.
     assert all(c['source'] in set(mem['captured']) | {'ほんじょう'} for c in candidates.values())
 
@@ -754,3 +758,56 @@ def test_soldier_recalc_holds_on_unreadable_gold_and_skips_when_broke():
     month.header = {**header, 'gold': 0}
     policy.month_step(month, mem)
     assert shop['soldiers'] == 0 and shop['soldiers_done'] is True
+
+
+def test_worker_prompts_with_garrisons_and_drops_orders_whose_general_is_elsewhere(tmp_path):
+    # g421 e7df88f1: F2/F3/F5 sent ココット/ヴィーナス from スペンソニア, where only
+    # どうし stood; each failed at the castle list. The request now says who is
+    # where, and orders that cannot start are dropped at save.
+    from docich import hanjuku_chart_worker as worker
+    mem = stuck_memory()
+    mem.update(tick=500, lost=['ジョンリギ'],
+               garrison={'スペンソニア': [chart.HERO], 'カストーラ': ['ヴィーナス']},
+               sorties={'I:1': {'general': 'ゼウス', 'target': 'スペンソニア', 'status': 'en_route', 'tick': 450},
+                        'I:0': {'general': 'ココット', 'target': 'ゴーメン', 'status': 'en_route', 'tick': 1}})
+    policy.map_step(map_screen(), mem, FRAME)
+    [record] = decisions(mem, 'chart_adjust_request')
+    assert record['garrison'] == {'カストーラ': ['ヴィーナス'], 'スペンソニア': [chart.HERO]}
+    assert record['lost'] == ['ジョンリギ'] and record['home_lost'] is False
+    assert record['en_route'] == [{'general': 'ゼウス', 'target': 'スペンソニア'}]   # stale ココット ages out
+    adjust.write_request(tmp_path, record, {'game': 'hanjuku-hero', 'runtime_id': 'r', 'generation': 1,
+                                            'lease_id': 'l'})
+    prompts = []
+
+    def order(step, general, source):
+        return {'step': step, 'general': general, 'source': source, 'target': 'けっかい',
+                'cards': [], 'after': None}
+
+    def generate(g, cfg, prompt):
+        prompts.append(prompt)
+        body = {'orders': [order('F1', chart.HERO, 'スペンソニア'),      # recorded there
+                           order('F2', 'ヴィーナス', 'スペンソニア'),     # recorded at カストーラ
+                           order('F3', 'ゼウス', 'スペンソニア'),         # marching
+                           order('F4', 'ココット', 'ゴーメン'),           # unknown: allowed
+                           order('F5', chart.HERO, 'ジョンリギ')]}        # lost source
+        return json.dumps(body, ensure_ascii=False), 'codex'
+    assert worker.consider(None, Game(), tmp_path, generate=generate, background=False)
+    assert '"garrison"' in prompts[0] and 'カストーラ' in prompts[0] and '"en_route"' in prompts[0]
+    saved = adjust.load(tmp_path)
+    assert [o['step'] for o in saved['orders']] == ['F1', 'F4']
+    events = [json.loads(line) for line in
+              (tmp_path / f'{adjust.HISTORY_LOG}.jsonl').read_text(encoding='utf-8').splitlines()]
+    [dropped] = [e for e in events if e['event'] == 'adjusted_orders_dropped']
+    assert {d['step']: d['why'] for d in dropped['dropped']} == {
+        'F2': 'general_elsewhere', 'F3': 'general_marching', 'F5': 'source_lost'}
+
+
+def test_an_answer_with_no_startable_order_is_invalid(tmp_path):
+    request = {'request_id': 'a' * 16, 'lost': [], 'en_route': [],
+               'garrison': {'スペンソニア': [chart.HERO], 'ゴーメン': ['ココット']}}
+    doc = adjusted_doc('a' * 16, orders=[{'step': 'J1', 'general': 'ココット', 'source': 'スペンソニア',
+                                          'target': 'けっかい', 'cards': [], 'after': None}])
+    with pytest.raises(ValueError):
+        adjust.save(tmp_path, doc, request)
+    assert adjust.load(tmp_path) is None
+    assert adjust.save(tmp_path, doc)['orders'][0]['step'] == 'J1'   # no request: unchanged behaviour
