@@ -1228,3 +1228,20 @@ def test_the_castle_guard_only_holds_while_few_castles_remain(monkeypatch):
     assert policy._keep_last_castle(screen, mem, order) is None
     mem['captured'] = ['ゴーメン']                    # home + ゴーメン: two castles
     assert policy._keep_last_castle(screen, mem, order) is not None
+
+
+def test_a_plan_that_cannot_run_falls_back_to_the_base_boss_order_from_the_heros_castle():
+    # g438 03:48: the adopted plan's only order sent the dead ココット from an
+    # empty ジョンリギ; every castle but the boss's was ours and the bot idled.
+    mem = {'chapter': 1, 'tick': 1800, '_records': [], 'orders': {'A:x:J1': 'pending'},
+           'captured': ['カストーラ', 'キカンドン', 'ゴーメン', 'ジョンリギ', 'スペンソニア', 'ナキューメラ'],
+           'garrison': {'ほんじょう': [], 'ジョンリギ': [], 'ゴーメン': [policy.NAME], 'スペンソニア': ['ヴィーナス']},
+           'chart_plan': {'request_id': 'x', 'orders': [
+               {'step': 'A:x:J1', 'general': 'ココット', 'source': 'ジョンリギ', 'target': 'スペンソニア',
+                'cards': [], 'after': None, 'note': 't', 'local_step': 'J1'}]}}
+    assert not policy._plan_pending(mem)
+    order = policy.next_order(mem)
+    assert order['target'] == policy.chart.boss_castle(1) and order['general'] == policy.NAME
+    assert policy._source(order, mem) == 'ゴーメン'
+    assert decisions(mem, 'order_source_changed')[0]['observed_metric'] == {'source': 'スペンソニア',
+                                                                             'general_at': 'ゴーメン'}

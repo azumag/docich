@@ -542,11 +542,14 @@ def _plan_pending(mem) -> bool:
     heading = _en_route(mem)[1] | {o['target'] for o in plan
                                    if status.get(o['step']) == 'launched' and o['step'] not in sorties}
 
+    garrison = mem.get('garrison') or {}
+
     def live(o):
         after = o.get('after') or ()
         if after and after[0] == 'captured' and after[1] not in owned:
             return after[1] in heading          # waits on a capture somebody is making
-        return _ready(o, mem) and _source(o, mem) in owned
+        # A source read empty cannot start the order (g438: dead ココット's J1).
+        return _ready(o, mem) and _source(o, mem) in owned and garrison.get(_source(o, mem)) != []
 
     return any(status.get(o['step']) in (None, 'pending') and live(o) for o in plan)
 
@@ -569,7 +572,18 @@ def next_order(mem):
                if step not in steps and status.get(step) == 'pending']
     owned = _owned(mem)
     garrison = mem.get('garrison') or {}
-    for order in (*current, *retries):
+    # The base chart's remaining orders follow an adopted plan that cannot run
+    # (g438 03:48: the plan's only order sent the dead ココット from an empty
+    # ジョンリギ, so the bot idled with every castle but the boss's taken while
+    # the base 1-B1 boss sortie was never looked at).
+    base = [o for o in chart.orders(mem.get('chapter') or 0)
+            if o['step'] not in steps and o['target'] not in owned] if mem.get('chart_plan') else []
+    chart_steps = {o['step'] for o in chart.orders(mem.get('chapter') or 0)}
+    for order in (*current, *retries, *base):
+        if (order['step'] in chart_steps
+                and (status.get(order['step']) in (None, 'pending') or _boss_retry_due(order, mem))
+                and _ready(order, mem)):
+            _follow_general(mem, order, garrison, owned)
         if ((status.get(order['step']) in (None, 'pending') or _boss_retry_due(order, mem))
                 and _ready(order, mem)
                 and _source(order, mem) in owned
@@ -580,6 +594,21 @@ def next_order(mem):
                 and mem.get('general_override', {}).get(order['step'], order['general']) not in _en_route(mem)[0]):
             return order
     return None
+
+
+def _follow_general(mem, order, garrison, owned):
+    """Send the order from the castle its general is recorded in (g438: 1-B1
+    assumes どうし at スペンソニア, but he held ゴーメン)."""
+    general = order.get('general')
+    source = _source(order, mem)
+    if not general or general in (garrison.get(source) or ()):
+        return
+    where = next((c for c, names in garrison.items() if general in (names or ()) and c in owned), None)
+    if where and where != source and not mem.get('source_override', {}).get(order['step']):
+        mem.setdefault('source_override', {})[order['step']] = where
+        _record(mem, 'order_source_changed', chart_step=order['step'], strategy_variant='follow_general',
+                observed_metric={'source': source, 'general_at': where},
+                reason=f'{general}は{where}にいると記録されているため、そこから出撃させる')
 
 
 def _order(mem):
