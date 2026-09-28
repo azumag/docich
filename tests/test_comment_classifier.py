@@ -70,6 +70,21 @@ def test_empty_batch_is_unusable():
         heuristic.baseline([])
 
 
+@pytest.mark.parametrize("text", [
+    "右じゃない？",
+    "左のほうが良くない？",
+    "そこに置くんじゃない？",
+    "next使った方がよくない？",
+])
+def test_spatial_strategy_questions_stay_in_game_context(text):
+    row = heuristic.baseline([f"viewer: {text}"])[0]
+    assert row["category"] == "game_question"
+
+
+def test_unrelated_question_is_still_general():
+    assert heuristic.baseline(["viewer: 明日の天気は？"])[0]["category"] == "general_question"
+
+
 def test_english_safety_restores_source_fields_and_clears_noise():
     rows = [{"index": 1, "user": "X", "comment": "echoed", "category": "chitchat", "is_english": True}]
     out = heuristic.enforce_english_safety(rows, ["viewer: LUL LUL LUL"])
