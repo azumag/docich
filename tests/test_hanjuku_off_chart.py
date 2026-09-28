@@ -1245,3 +1245,17 @@ def test_a_plan_that_cannot_run_falls_back_to_the_base_boss_order_from_the_heros
     assert policy._source(order, mem) == 'ゴーメン'
     assert decisions(mem, 'order_source_changed')[0]['observed_metric'] == {'source': 'スペンソニア',
                                                                              'general_at': 'ゴーメン'}
+
+
+def test_an_adjusted_boss_order_leaves_an_unowned_card_behind_but_the_base_boss_order_does_not():
+    # g438 04:03: the plan's J1 (けっかい) wanted ミックミー that nobody owned and
+    # card_select held for good; the base 1-B1 keeps its charted cards exactly.
+    boss = policy.chart.boss_castle(1)
+    plan_order = {'step': 'A:x:J1', 'general': 'ヴィーナス', 'source': 'スペンソニア', 'target': boss,
+                  'cards': ('クースカン', 'ミックミー', 'ミックミー'), 'after': ('all_captured',), 'note': 't'}
+    mem = {'chapter': 1, '_records': [], 'card_drop': {'A:x:J1': ['ミックミー']}}
+    assert not policy._strict_boss_cards(plan_order, mem)
+    assert policy._deploy_cards(plan_order, mem) == ['クースカン']
+    base = next(o for o in policy.chart.orders(1) if o['target'] == boss)
+    assert policy._strict_boss_cards(base, mem)
+    assert policy._deploy_cards(base, {**mem, 'card_drop': {base['step']: ['クースカン']}}) == list(base['cards'])

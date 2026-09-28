@@ -1896,7 +1896,7 @@ def target_step(screen: Screen, mem, frame):
     if _is_boss_order(order, mem):
         context = (mem.get('order_context') or {}).get(order['step']) or {}
         if (context.get('actual_general') != order['general']
-                or (context.get('observed_metric') or {}).get('cards') != sorted(order['cards'])):
+                or (context.get('observed_metric') or {}).get('cards') != sorted(_deploy_cards(order, mem))):
             return _hold_deploy(screen, mem, order, 'ボス出撃の主人公と携行品の確認証拠がないため目標確定を保留')
     goal = chart.castles(mem['chapter'])[order['target']]
     result = None
@@ -2033,8 +2033,16 @@ def _cap_card_ids(cards):
     return kept
 
 
+def _strict_boss_cards(order, mem) -> bool:
+    """The base chart's boss sortie carries exactly its charted cards; an
+    adjusted/interim boss order may leave an unavailable card behind (g438
+    04:03: J1 wanted ミックミー, none was owned, and card_select held for good)."""
+    return _is_boss_order(order, mem) and any(
+        o['step'] == order['step'] for o in chart.orders(mem.get('chapter') or 0))
+
+
 def _deploy_cards(order, mem):
-    if _is_boss_order(order, mem):
+    if _strict_boss_cards(order, mem):
         return list(order['cards'])
     cards = list(mem.get('card_override', {}).get(order['step'], order['cards']))
     for card in (mem.get('card_drop') or {}).get(order['step']) or ():
@@ -2592,7 +2600,7 @@ def deploy_step(screen: Screen, mem):
                     reason='予定切り札が一覧に見えないため下へ送って隠れた行を表示する')
             return [pad('down')]
         if row is None or row['stock'] == 0 or inventory['remaining'] == 0:
-            if not _is_boss_order(order, mem):
+            if not _strict_boss_cards(order, mem):
                 dropped = _drop_card(screen, mem, order, card, inventory)
                 if dropped is not None:
                     return dropped
