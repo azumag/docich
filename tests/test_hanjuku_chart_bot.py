@@ -516,7 +516,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v46-camp-always'
+    assert state['bot_version'] == 'hanjuku-chart-v47-camp-tent-body'
     assert '_records' not in state['policy']
 
 
@@ -2049,8 +2049,25 @@ def _camp_frame():
     for yy in range(72, 81):
         for xx in range(30, 39):
             c.put(xx, yy, (238, 198, 65) if yy < 76 else (238, 113, 57))
+    for yy in (77, 78):                       # light-blue base band
+        for xx in range(31, 39):
+            c.put(xx, yy, (131, 198, 222))
     for p in ((34, 68), (35, 68), (34, 69)):
         c.put(p[0], p[1], (255, 0, 0))
+    return c.frame()
+
+
+def _clipped_camp_frame():
+    """A tent touching the top edge: flag off-screen (g421 live frame)."""
+    c = Canvas()
+    for yy in range(0, 4):
+        for xx in range(30, 39):
+            c.put(xx, yy, (238, 198, 65))
+    for yy in range(4, 8):
+        for xx in range(30, 39):
+            c.put(xx, yy, (238, 113, 57))
+    for xx in range(31, 39):
+        c.put(xx, 8, (131, 198, 222))
     return c.frame()
 
 
@@ -2067,7 +2084,40 @@ def test_own_camps_finds_the_tent_and_skips_roof_reds():
     from docich.hanjuku_screen import own_camps
     camps = own_camps(_camp_frame())
     assert [c['target'] for c in camps] == [(26, 66)]
+    assert camps[0]['clipped'] is False
     assert own_camps(_own_roof_frame()) == []
+
+
+def test_own_camps_accepts_a_tent_clipped_by_the_top_edge():
+    from docich.hanjuku_screen import own_camps
+    camps = own_camps(_clipped_camp_frame())
+    assert len(camps) == 1
+    assert camps[0]['clipped'] is True
+    # selecting cell above the screen: the servo must scroll the camera up
+    assert camps[0]['target'] == (24, -6)
+
+
+def test_own_camps_rejects_a_full_tent_without_a_visible_flag():
+    from docich.hanjuku_screen import own_camps
+    c = Canvas()
+    for yy in range(20, 24):
+        for xx in range(30, 39):
+            c.put(xx, yy, (238, 198, 65))
+    for yy in range(24, 28):
+        for xx in range(30, 39):
+            c.put(xx, yy, (238, 113, 57))
+    for xx in range(31, 39):
+        c.put(xx, 28, (131, 198, 222))
+    assert own_camps(c.frame()) == []
+
+
+def test_camp_recall_scrolls_the_camera_for_a_tent_clipped_at_the_top():
+    frame = _clipped_camp_frame()
+    mem = {'chapter': 1, '_records': []}
+    screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(100, 100))
+    actions = policy.camp_recall_step(screen, mem, frame)
+    assert actions == [policy.pad('up', 8)]
+    assert mem['recall']['stage'] == 'to_camp'
 
 
 def test_camp_recall_walks_cursor_menu_and_own_castle(monkeypatch):
