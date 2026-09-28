@@ -115,7 +115,7 @@ def classify(user: str, comment: str) -> str:
     if strategy_hint and advice_hint:
         return "strategy_advice"
     if "?" in text or "？" in text:
-        if re.search(r"ゲーム|スコア|盤面|戦略|ロシア|ソ連|建国|何点|何試合", text):
+        if strategy_hint or re.search(r"ゲーム|スコア|盤面|戦略|ロシア|ソ連|建国|何点|何試合", text):
             return "game_question"
         return "general_question"
     if re.search(r"スコア|点|ロシア|ソ連|建国|ウクライナ|カザフ|盤面|落下|テンポ", text):
