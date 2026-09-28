@@ -515,7 +515,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v30-target-verified'
+    assert state['bot_version'] == 'hanjuku-chart-v31-y-jump-stale'
     assert '_records' not in state['policy']
 
 
@@ -1239,6 +1239,7 @@ def test_failed_menu_drops_cursor_estimate_and_stops_sea_a_spam():
 
 def test_failed_menu_on_open_sea_steers_inland_until_roofs_reanchor(monkeypatch):
     """g358: after nav_reset on open water every map frame held input (140 s)."""
+    monkeypatch.setattr(policy, 'Y_JUMP_OFFSET', {})     # exercises roof navigation, not Y jumps
     from docich.hanjuku_pixels import Frame
     from docich.hanjuku_screen import Screen
     frame = Frame(256, 224, bytes(256 * 224 * 3))

@@ -644,3 +644,27 @@ def test_a_target_is_confirmed_only_on_a_roof_of_the_expected_owner(monkeypatch)
                         lambda *_a, **_k: [{'kind': 'enemy', 'target': (10, 57), 'clipped': False}])
     assert policy.target_step(marker, mem, FRAME) == [policy.pad('a')]
     assert decisions(mem, 'order_launched')
+
+
+def test_a_jump_whose_view_closed_early_does_not_block_later_jumps():
+    """g419 08:45: an event closed the Y view mid-jump; the stale jump blocked jumps for 10 min."""
+    order = {'step': 'X', 'general': 'ゼウス', 'source': 'ほんじょう', 'target': 'キカンドン',
+             'cards': [], 'after': None, 'note': 't'}
+    mem = {'chapter': 1, 'orders': {}, 'picked': [], '_records': [], 'active': 'X',
+           'launched_orders': {'X': order}, 'cursor': [300, 300],
+           'y_jump': {'goal': 'ほんじょう', 'mode': 'map', 'step': 'X', 'moves': 8, 'wait': 0}}
+    assert policy.map_step(map_screen(140, 120), mem, FRAME) == [policy.pad('y')]
+    assert decisions(mem, 'y_jump_failed') and mem['y_jump']['moves'] == 0
+
+
+def test_a_jump_confirms_within_one_view_pixel():
+    from docich.hanjuku_screen import parse
+    gx, gy = CASTLES['ほんじょう']
+    ox, oy = policy.Y_JUMP_OFFSET[1]
+    mem = {'chapter': 1, '_records': [], 'y_jump': {'goal': 'ほんじょう', 'mode': 'map', 'step': 'X',
+                                                    'moves': 0, 'wait': 0}}
+    frame = _y_view((gx / 8 + ox, gy / 8 + oy))
+    found = policy.world_cursor(frame)
+    assert abs(found[0] - (gx / 8 + ox)) <= policy.Y_JUMP_TOL
+    assert abs(found[1] - (gy / 8 + oy)) <= policy.Y_JUMP_TOL
+    assert policy.world_map_step(parse(frame), mem, frame) == [policy.pad('a')]
