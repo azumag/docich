@@ -249,3 +249,19 @@ def test_bash_many_keeps_old_marker_looking_stdout_opaque(tmp_path, monkeypatch)
     assert golden.bash_many(
         checkout, [{"script": "cat", "stdin": payload}]
     ) == [(expected, 0)]
+
+
+
+def test_bash_many_preserves_loader_errexit_semantics(tmp_path):
+    golden = _golden_shell_helpers()
+    checkout = tmp_path / "legacy-errexit"
+    checkout.mkdir()
+    (checkout / "eloop_lib.sh").write_text("set -e\n", encoding="utf-8")
+    script = 'false; printf "must-not-print"'
+
+    with pytest.raises(SystemExit) as single:
+        golden.bash(script, checkout)
+    with pytest.raises(SystemExit) as batch:
+        golden.bash_many(checkout, [{"script": script}])
+
+    assert str(batch.value) == str(single.value)
