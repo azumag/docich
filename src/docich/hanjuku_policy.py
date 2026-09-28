@@ -1612,6 +1612,7 @@ def _deploy_cards(order, mem):
     return cards
 
 
+CARD_SCROLL_LIMIT = 8         # downward presses looking for a card below a full panel
 CARD_MISS_LIMIT = 5           # card_select readings before a missing card is left behind
 
 
@@ -2014,7 +2015,20 @@ def deploy_step(screen: Screen, mem):
                                 '切り札一覧の名前・数量・配置またはカーソルが実測構造と一致しないため保留', card=card)
         if not wanted:
             return _deploy_input(screen, mem, order, [pad('b')], '予定切り札の選択入力後に携行確認へ進む')
+        # Pick what is on screen first: a full 4-row panel scrolls, and a card
+        # below it (g421 13:27: クースカン, bought x4) is reached by scrolling.
+        shown = {r['card'] for r in inventory['rows'] if r['stock'] > 0}
+        card = next((c for c in wanted if c in shown), card)
         row = next((row for row in inventory['rows'] if row['card'] == card), None)
+        if (row is None and len(inventory['rows']) == 4 and inventory['remaining'] > 0
+                and int((mem.get('card_scroll') or {}).get(order['step'], 0)) < CARD_SCROLL_LIMIT):
+            scrolls = mem.setdefault('card_scroll', {})
+            scrolls[order['step']] = scrolls.get(order['step'], 0) + 1
+            _record(mem, 'card_scroll', **_deploy_context(order, mem), card=card,
+                    observed_metric={'rows': [[r['card'], r['stock']] for r in inventory['rows']],
+                                     'selected_y': inventory['selected_y'], 'scrolls': scrolls[order['step']]},
+                    reason='予定切り札が一覧に見えないため下へ送って隠れた行を表示する')
+            return [pad('down')]
         if row is None or row['stock'] == 0 or inventory['remaining'] == 0:
             if not _is_boss_order(order, mem):
                 dropped = _drop_card(screen, mem, order, card, inventory)
@@ -3611,7 +3625,7 @@ def observe_events(screen: Screen, mem):
                         'chart_adjust', 'chart_plan', 'launched_orders', 'sorties', 'sortie_attempt',
                         'garrison', 'general_location_unknown', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
                         'nav_prev', 'nav_still', 'nav_pressed', 'unverified', 'off_castle',
-                        'target_miss', 'target_cancel', 'menu_hold',
+                        'target_miss', 'target_cancel', 'menu_hold', 'card_scroll',
                         'world_map_tick', 'world_map_due', 'world_map_wait', 'home_lost',
                         'y_jump', 'y_jumps', 'y_jump_return',
                         'select_used',
