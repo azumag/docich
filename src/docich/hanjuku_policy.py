@@ -1467,7 +1467,13 @@ def _align_on_roof(screen, mem, frame, kinds, key):
     s = _cursor(screen)
     if not s or frame is None:
         return None
-    near = [(abs(r['target'][0] - s[0]) + abs(r['target'][1] - s[1]), r) for r in castle_roofs(frame)
+    roofs = castle_roofs(frame)
+    if not roofs:
+        # Winter repaints the map (g421 18:13: the G stood on フーリック's
+        # castle, no roof was read, and the jump was reopened six times).
+        # A confirmed jump lands on the castle; nothing on screen contradicts it.
+        return 'on'
+    near = [(abs(r['target'][0] - s[0]) + abs(r['target'][1] - s[1]), r) for r in roofs
             if r['kind'] in kinds and abs(r['target'][0] - s[0]) <= ALIGN_RADIUS
             and abs(r['target'][1] - s[1]) <= ALIGN_RADIUS]
     if not near:
@@ -1847,11 +1853,14 @@ def _target_roof_under_marker(screen, mem, frame, order) -> bool:
         # The boss tower has no own/enemy roof (g421 13:48: two cancels).
         # Accept it only when a Y jump placed the marker on it.
         return (mem.get('y_jumped') or {}).get(order['step']) == order['target']
+    roofs = castle_roofs(frame)
+    if not roofs and (mem.get('y_jumped') or {}).get(order['step']) == order['target']:
+        return True                           # winter palette: trust the Y jump (g421 18:13)
     want = 'own' if order['target'] in _owned(mem) else 'enemy'
     return any(r['kind'] == want
                and abs(r['target'][0] - s[0]) <= UNDER_CURSOR_PX
                and abs(r['target'][1] - s[1]) <= UNDER_CURSOR_PX
-               for r in castle_roofs(frame))
+               for r in roofs)
 
 
 def _unverified_target(screen, mem, order):
