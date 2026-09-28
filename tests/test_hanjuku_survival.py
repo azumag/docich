@@ -361,6 +361,21 @@ def test_a_hero_who_starts_weak_is_judged_against_his_full_strength():
     assert not p._hero_retreat_needed({**cur, 'ally_hp': 60, 'start_ally_hp': 60})
 
 
+def test_hero_full_strength_retreat_bypasses_generic_survival_gate():
+    # Started ahead, then fell slightly behind: generic rescue still says no,
+    # but 20 HP is below 25% of the hero's remembered 90 HP full strength.
+    cur = {'ally': p.NAME, 'enemy': 'リースリング', 'ally_hp': 20, 'enemy_hp': 21,
+           'start_ally_hp': 30, 'start_enemy_hp': 25, 'ref_ally_hp': 90,
+           'planned_cards': [], 'step': '1-A2'}
+    assert not p._survival_needed(cur)
+    assert p._hero_retreat_needed(cur)
+
+    # Sword practice has no retreat row.
+    tutorial = {'ally': p.NAME, 'enemy': 'だいじん', 'ally_hp': 8, 'enemy_hp': 20,
+                'start_ally_hp': 90, 'start_enemy_hp': 90, 'ref_ally_hp': 90, 'step': None}
+    assert not p._hero_retreat_needed(tutorial)
+
+
 def test_a_general_behind_from_the_start_opens_the_rescue_before_the_melee():
     # g438 03:31: ココット 22 vs キッシュ 26, melee 22 -> 10 before any card, died.
     cur = {'ally': 'ココット', 'enemy': 'キッシュ', 'ally_hp': 22, 'enemy_hp': 26,

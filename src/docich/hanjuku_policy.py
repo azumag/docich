@@ -2990,10 +2990,19 @@ def _survival_state(mem, cur):
 
 
 def _hero_retreat_needed(cur):
-    if cur.get('ally') != NAME or not _survival_needed(cur):
+    if cur.get('ally') != NAME:
         return False
     hp, enemy, start = (cur.get(k) for k in ('ally_hp', 'enemy_hp', 'start_ally_hp'))
-    ref = max(start, int(cur.get('ref_ally_hp') or 0))
+    if any(type(n) is not int or n <= 0 for n in (hp, enemy, start)):
+        return False
+    # Sword practice has no retreat menu. Keep this exception local instead
+    # of inheriting the generic survival gate: hero retreat is intentionally
+    # judged against the hero's remembered full-strength HP.
+    if (cur.get('enemy'), cur.get('ally'), start, cur.get('start_enemy_hp'), cur.get('step')) == (
+            'だいじん', 'どうし', 90, 90, None):
+        return False
+    ref_hp = cur.get('ref_ally_hp')
+    ref = max(start, ref_hp if type(ref_hp) is int and ref_hp > 0 else 0)
     return hp <= 12 or (hp < enemy and hp * 4 <= ref)
 
 
