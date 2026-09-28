@@ -1016,3 +1016,24 @@ def test_a_resumed_target_gets_fresh_jumps_and_an_unplaced_marker_never_idles(mo
     policy.observe_sortie_transition(marker, mem, 'battle')
     assert decisions(mem, 'sortie_target_resumed')
     assert mem['y_jumps'] == {'2-Z1:map': 1} and '2-Z1' not in mem['y_jumped']
+
+
+def test_the_source_castle_name_is_read_before_anyone_is_sent():
+    # g421 18:13: A opened フーリック's menu (the hero's castle) while the bot
+    # believed it was at アルマムーン, and the hero was "sent" to his own castle.
+    order = {'step': '2-Z1', 'general': 'ゼウス', 'source': 'アルマムーン', 'target': 'フーリック',
+             'cards': [], 'after': None, 'note': 't'}
+    mem = {'chapter': 2, 'orders': {'2-Z1': 'pending'}, 'picked': [], '_records': [], 'active': '2-Z1',
+           'launched_orders': {'2-Z1': order}, 'cursor': list(chart.castles(2)['アルマムーン'])}
+
+    status = Screen(lines=[], hand=None, text='しゅつげきフーリックじょうステータスしゅうにゅう22Gレベル2しょうぐん1めいどうし',
+                    kind='castle_menu')
+    assert policy._check_source_castle(status, mem, order) == [policy.pad('b'), {'type': 'wait', 'ms': 500},
+                                                                policy.pad('b')]
+    assert mem['cursor'] == list(chart.castles(2)['フーリック']) and mem['source_miss']['2-Z1'] == 1
+    assert decisions(mem, 'source_castle_mismatch')[0]['observed_metric']['castle'] == 'フーリック'
+    right = Screen(lines=[], hand=None, text='しゅつげきアルマムーンじょうステータスしゅうにゅう30Gレベル1しょうぐん3めいゼウス',
+                   kind='castle_menu')
+    assert policy._check_source_castle(right, mem, order) == [policy.pad('b')]
+    assert mem['castle_verified'] == '2-Z1'
+    assert policy._check_source_castle(right, mem, order) is None       # verified: go on to しゅつげき
