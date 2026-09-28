@@ -1112,7 +1112,8 @@ def _apply_world_flags(mem, flags):
 # edge-scroll drift of ~60 px), so far goals go through Y instead.
 Y_JUMP_OFFSET = {1: (63.0, 47.5)}
 Y_JUMP_FAR = 48                # world px from the goal before a jump is worth it
-Y_JUMP_LIMIT = 2               # jumps per order and screen mode
+Y_JUMP_LIMIT = 6               # jumps per order and screen mode (reset when the order starts).
+                               # 2 ran out mid-order and left roof walking (g421 15:25: SELECT loops)
 Y_JUMP_MOVES = 8               # D-pad steps inside one jump before confirming anyway
 Y_JUMP_WAIT = 6                # frames without a readable cursor before closing Y
 Y_JUMP_FINAL_TOL = 3.0         # view px: beyond this at the move limit the jump is abandoned
@@ -1574,6 +1575,8 @@ def map_step(screen: Screen, mem, frame):
             return []           # nothing charted: let real time advance
         mem['active'] = order['step']
         mem['picked'] = []
+        mem['y_jumps'] = {k: v for k, v in (mem.get('y_jumps') or {}).items()
+                          if not k.startswith(f"{order['step']}:")}
         _record(mem, 'order_start', chart_step=order['step'], **_deploy_context(order, mem),
                 source=order['source'], target=order['target'], purpose=order.get('purpose'),
                 cards=list(order['cards']),
