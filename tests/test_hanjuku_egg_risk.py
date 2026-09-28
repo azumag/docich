@@ -8,7 +8,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from docich import hanjuku_policy as policy, hanjuku_reference as reference
-from docich.hanjuku_egg_reference import GENERAL_EGGS, GENERAL_HP, enemy_egg_triggers, general_max_hp
+from docich.hanjuku_egg_reference import (GENERAL_DEBUT, GENERAL_EGGS, GENERAL_HP,
+                                          enemy_egg_triggers, general_debut_chapter, general_max_hp)
 from docich.hanjuku_screen import Battle, Screen
 
 MASH = [action for _ in range(policy.POWER_TAPS)
@@ -50,8 +51,11 @@ def test_static_sfc_roster_matches_local_canonical_source_when_available():
     assert GENERAL_EGGS == expected
     assert len(expected) == 128
     assert GENERAL_HP == {r['名前']: int(r['HP']) for r in rows}
+    assert GENERAL_DEBUT == {r['名前']: int(r['話']) for r in rows if int(r['話']) > 0}
     assert general_max_hp('クイーン') == 70 and general_max_hp('キッシュ') == 26
     assert general_max_hp('しゅじんこう') == 90
+    assert general_debut_chapter('ピオーネ') == 2 and general_debut_chapter('クイーン') == 1
+    assert general_debut_chapter('ヒュドラ') is None
     assert enemy_egg_triggers('アルベルト').has_egg is None  # not an SFC roster row
     assert general_max_hp('アルベルト') is None       # fail-closed outside the roster
 
