@@ -2689,6 +2689,12 @@ def battle_step(screen: Screen, mem):
                                'cards_selected': [], 'cards_missing': [], 'cards_unclassified': [],
                                'card_consumption_complete': True, 'card_evidence_version': 1,
                                **context}
+        if b.ally == NAME and type(b.ally_hp) is int:
+            # The hero's full strength, remembered across battles: a hero who
+            # starts a fight already weak never looks "far down" against his
+            # own start HP (g436 23:17: 14 HP after a road battle, then died).
+            mem['hero_max_hp'] = max(int(mem.get('hero_max_hp') or 0), b.ally_hp)
+            cur['ref_ally_hp'] = mem['hero_max_hp']
         _bind_battle_strategy(mem, cur)
         planned = [t['card'] for t in _tactics(mem, cur['step'])
                    if t['enemy'] in (None, b.enemy) and t.get('step') in (None, cur['step'])]
@@ -2839,7 +2845,8 @@ def _hero_retreat_needed(cur):
     if cur.get('ally') != NAME or not _survival_needed(cur):
         return False
     hp, enemy, start = (cur.get(k) for k in ('ally_hp', 'enemy_hp', 'start_ally_hp'))
-    return hp <= 12 or (hp < enemy and hp * 4 <= start)
+    ref = max(start, int(cur.get('ref_ally_hp') or 0))
+    return hp <= 12 or (hp < enemy and hp * 4 <= ref)
 
 
 def _hero_retreat_open(mem, cur):
