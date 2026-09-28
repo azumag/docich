@@ -548,7 +548,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v55-trade-decline'
+    assert state['bot_version'] == 'hanjuku-chart-v56-egg-priority'
     assert '_records' not in state['policy']
 
 
@@ -2235,3 +2235,31 @@ def test_map_step_refocuses_on_the_hero_periodically():
     assert 'select_focus' in [r['decision'] for r in mem['_records']]
     assert mem['nav_last'] is None
     assert mem['uncertain'] is True
+
+
+def test_soldier_count_is_read_from_the_army_total_line():
+    from docich.hanjuku_screen import Screen as S
+    mem = {'_records': []}
+    screen = S(lines=[], hand=None, kind='text',
+               text='げんざい わがぐんの へいしすうは 60めいです')
+    policy.observe_events(screen, mem)
+    assert mem['soldiers_seen'] == 60
+    assert [r['decision'] for r in mem['_records']] == ['soldiers_seen']
+    policy.observe_events(screen, mem)          # unchanged: no duplicate record
+    assert [r['decision'] for r in mem['_records']].count('soldiers_seen') == 1
+
+
+def test_egg_recovery_holds_the_gold_over_more_soldiers_when_army_is_big():
+    # Owner rule 2026-09-28: 50+ soldiers → egg recovery wins; no soldiers.
+    mem = {'chapter': 1, 'egg_uses': {'ココット': 0}, 'soldiers_seen': 60}
+    # gold is short of the 50G cost but above the wage reserve: hold it all
+    # for the egg and buy no soldiers (today the gap (30, 50) was eaten).
+    reserve, _ = policy._extras_reserve(mem, {'year': 2, 'month': 4, 'gold': 45})
+    assert reserve == 45 - policy.WAGE_RESERVE
+    shop = policy._plan(dict(mem), {'year': 2, 'month': 4, 'gold': 45})
+    assert shop['soldiers'] == 0 and shop['egg'] == 'pending'
+    # a weak army (<50) keeps today's behaviour: no hold below the cost
+    mem2 = {'chapter': 1, 'egg_uses': {'ココット': 0}, 'soldiers_seen': 40}
+    assert policy._extras_reserve(mem2, {'year': 2, 'month': 4, 'gold': 45})[0] == 0
+    # full cost still reserves normally
+    assert policy._extras_reserve(dict(mem), {'year': 2, 'month': 4, 'gold': 130})[0] == 50
