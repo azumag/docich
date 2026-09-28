@@ -1019,8 +1019,10 @@ def _verify_sortie_source(screen, mem, order):
 WORLD_MAP_OFFSET = {1: (64.5, 44.4)}
 WORLD_FLAG_ENEMY = (0, 64, 189)
 WORLD_FLAG_OWN = (230, 56, 90)
+WORLD_MARKER = (255, 24, 0)     # ▲ army marker on the Y view (probe-measured)
 WORLD_SURVEY_TICKS = 200       # observations between surveys (~5 min at 1.5 s)
 WORLD_MAP_WAIT = 4             # fade frames before giving up a reading
+SELECT_FOCUS_INTERVAL = 300    # observations between hero re-focuses (~7.5 min)
 
 
 WORLD_COLOUR_TOL = 8           # live capture shifts colours by ~1 (g419: gold 255,181,0)
@@ -1053,6 +1055,44 @@ def world_flags(frame, chapter, cursor=None):
     return out
 
 
+def world_markers(frame) -> list:
+    """▲ army markers on the whole-island view, as (x0, y0, x1, y1) boxes.
+
+    Owner rule (2026-09-28): the Y view also shows ▲ marks for units, and
+    they must be checked on every survey. Measured in the isolated probe:
+    an own marker is a ~7x6 bright red-orange triangle (255,24,0); castle
+    flags (230,56,90)/(0,64,189) sit far outside that colour's tolerance.
+    """
+    if frame is None:
+        return []
+    pts = [(x, y) for y in range(frame.height) for x in range(frame.width)
+           if _near_colour(frame.pixel(x, y), WORLD_MARKER)]
+    seen, out = set(), []
+    for p in sorted(pts):
+        if p in seen:
+            continue
+        stack, comp = [p], []
+        seen.add(p)
+        while stack:
+            x, y = stack.pop()
+            comp.append((x, y))
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    n = (x + dx, y + dy)
+                    if (n not in seen and 0 <= n[0] < frame.width and 0 <= n[1] < frame.height
+                            and _near_colour(frame.pixel(*n), WORLD_MARKER)):
+                        seen.add(n)
+                        stack.append(n)
+        if not 6 <= len(comp) <= 60:
+            continue
+        xs = [c[0] for c in comp]
+        ys = [c[1] for c in comp]
+        if max(xs) - min(xs) > 12 or max(ys) - min(ys) > 12:
+            continue
+        out.append((min(xs), min(ys), max(xs), max(ys)))
+    return out
+
+
 def _world_map_wanted(mem) -> bool:
     if (mem.get('chapter') or 0) not in WORLD_MAP_OFFSET:
         return False
@@ -1074,6 +1114,11 @@ def world_map_step(screen, mem, frame):
         return [] if waited < WORLD_MAP_WAIT else [pad('y')]
     mem.pop('world_map_wait', None)
     _apply_world_flags(mem, flags)
+    markers = world_markers(frame)
+    if markers:
+        _record(mem, 'world_map_units', observed_metric={'count': len(markers),
+                'boxes': [list(m) for m in markers]},
+                reason='全体マップの▲（部隊マーカー）を定期確認')
     return [pad('y')]
 
 
@@ -1569,6 +1614,23 @@ def map_step(screen: Screen, mem, frame):
     recall = camp_recall_step(screen, mem, frame)
     if recall is not None:
         return recall
+    # Owner rule (2026-09-28): periodically SELECT to the hero's position to
+    # re-focus the view on where we are. The jump is camera motion we did not
+    # measure: drop nav_last and demand a re-anchor (mirrors the search's
+    # select_to_hero). Seeded on the first map frame, then every interval.
+    if (_cursor(screen) and not screen.marker and not mem.get('y_jump')
+            and not mem.get('select_used') and not mem.get('near_goal')):
+        tick = int(mem.get('tick') or 0)
+        last = mem.get('select_focus_tick')
+        if last is None:
+            mem['select_focus_tick'] = tick
+        elif tick - int(last) >= SELECT_FOCUS_INTERVAL:
+            mem['select_focus_tick'] = tick
+            mem['nav_last'] = None
+            mem['uncertain'] = True
+            _record(mem, 'select_focus', observed_metric={'screen_cursor': list(_cursor(screen))},
+                    reason='定期的にSELECTで主人公の位置へフォーカスして現在地を確認')
+            return [pad('select')]
     order = _order(mem)
     if order is not None and (mem.get('source_miss') or {}).get(order['step'], 0) >= SOURCE_MISS_LIMIT:
         _give_up_source(mem, order)

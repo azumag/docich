@@ -880,3 +880,57 @@ def test_the_year_month_header_is_not_a_chapter():
     from docich.hanjuku_screen import HEADER
     year, month = HEADER.search('2ねん5のつき35Gしょうにん').groups()[1:3]
     assert HEADER.search('2ねん5のつき35G').group(1) is None and (year, month) == ('2', '5')
+
+
+TRIANGLE = [(0, 0), (1, 0), (0, 1), (1, 1), (2, 1), (0, 2), (1, 2), (2, 2), (3, 2),
+            (0, 3), (1, 3), (2, 3), (3, 3), (4, 3),
+            (0, 4), (1, 4), (2, 4), (3, 4), (4, 4), (5, 4),
+            (0, 5), (1, 5), (2, 5), (3, 5), (4, 5), (5, 5), (6, 5)]
+
+
+def _y_view_with_marker():
+    from docich import hanjuku_screen
+    px = bytearray(256 * 224 * 3)
+
+    def put(x, y, rgb):
+        i = (y * 256 + x) * 3
+        px[i:i + 3] = bytes(rgb)
+    for x in range(256):
+        for y in range(224):
+            put(x, y, hanjuku_screen.WORLD_SEA)
+    put(128, 10, hanjuku_screen.WORLD_BORDER)
+    for dx, dy in TRIANGLE:
+        put(120 + dx, 120 + dy, policy.WORLD_MARKER)
+    ox, oy = policy.WORLD_MAP_OFFSET[1]
+    for name, owner in (('ほんじょう', 'own'), ('キカンドン', 'enemy')):
+        wx, wy = CASTLES[name]
+        mx, my = round(wx / 8 + ox), round(wy / 8 + oy)
+        rgb = policy.WORLD_FLAG_OWN if owner == 'own' else policy.WORLD_FLAG_ENEMY
+        for dx in range(4):
+            for dy in range(2):
+                put(mx + dx, my + dy, rgb)
+    return Frame(256, 224, bytes(px))
+
+
+def test_world_markers_reads_a_triangle_and_skips_castle_flags():
+    assert policy.world_markers(_y_view_with_marker()) == [(120, 120, 126, 125)]
+
+
+def test_the_y_view_records_army_markers_on_the_survey():
+    from docich.hanjuku_screen import parse
+    frame = _y_view_with_marker()
+    screen = parse(frame)
+    assert screen.kind == 'world_map'
+    mem = {'chapter': 1, 'captured': [], '_records': [], 'tick': 7}
+    assert policy.world_map_step(screen, mem, frame) == [policy.pad('y')]
+    [units] = decisions(mem, 'world_map_units')
+    assert units['observed_metric'] == {'count': 1, 'boxes': [[120, 120, 126, 125]]}
+    assert '▲' in units['reason']
+
+
+def test_the_y_view_silent_without_markers():
+    from docich.hanjuku_screen import parse
+    frame = _world_map_frame({'ほんじょう': 'own'})
+    mem = {'chapter': 1, 'captured': [], '_records': [], 'tick': 7}
+    policy.world_map_step(parse(frame), mem, frame)
+    assert not decisions(mem, 'world_map_units')
