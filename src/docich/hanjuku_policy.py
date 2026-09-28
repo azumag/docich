@@ -3951,6 +3951,12 @@ def discharge_step(screen: Screen, mem):
     return [pad('a')]
 
 
+# The general-trade event (花いちもんめ) must always be declined (owner rule
+# 2026-09-28). 'トレード' is the measured question word; the song title is a
+# belt-and-braces match for a variant scene.
+TRADE_DECLINE_TOKENS = ('トレード', 'はないちもんめ', 'いちもんめ')
+
+
 def yes_no_step(screen: Screen, mem):
     text = screen.text
     if re.search(r'\d+Gでいい', text):
@@ -3961,6 +3967,14 @@ def yes_no_step(screen: Screen, mem):
         # needs shielding from the offer.
         choice, reason = 'うむッ!', '一騎打ちは青ゲージを消費する前提で受ける'
         variant = 'accept_duel'
+    elif any(tok in text for tok in TRADE_DECLINE_TOKENS):
+        # Owner rule (2026-09-28): the general trade (花いちもんめ) almost
+        # always offers an unfair deal (odoru7094: ろくでもないのしか手に
+        # 入らないのでやってはいけない), so decline it. Measured question
+        # (倒転王国 月イチイベント): 「ここで将軍同士のトレードをしようじゃ
+        # ないか。そちらの◯◯将軍と我が軍のイキのいいのとではどーだ?」
+        choice, reason = 'いかんッ!', '将軍トレード（花いちもんめ）は不平等な提案が多いため断る'
+        variant = 'decline_general_trade'
     else:
         choice, reason, variant = 'うむッ!', '未分類の確認は既定で進行', 'unclassified_prompt'
     move = menu_to(screen, choice)

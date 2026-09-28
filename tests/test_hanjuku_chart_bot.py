@@ -305,6 +305,38 @@ def test_accept_duels_and_do_not_confirm_unrequested_month_exit():
     assert policy.month_step(parse(c2.frame()), {'chapter': 2, 'month_exit': True})[0]['buttons'] == ['a']
 
 
+def test_decline_the_general_trade_prompt():
+    # Owner rule 2026-09-28: 花いちもんめ (将軍トレード) is always declined —
+    # the offers are almost always unfair. Question wording measured on
+    # 倒転王国's monthly-event page.
+    c = Canvas()
+    c.text(24, 183, 'しょうぐんどうしのトレードだ!')
+    c.text(184, 183, 'うむッ!')
+    c.text(184, 199, 'いかんッ!')
+    c.hand(162, 177)
+    mem = {'_records': []}
+    # The cursor starts on うむッ! (accept): step down to いかんッ! first.
+    assert policy.yes_no_step(parse(c.frame()), mem)[0]['buttons'] == ['down']
+    c2 = Canvas()
+    c2.text(24, 183, 'しょうぐんどうしのトレードだ!')
+    c2.text(184, 183, 'うむッ!')
+    c2.text(184, 199, 'いかんッ!')
+    c2.hand(162, 193)
+    assert policy.yes_no_step(parse(c2.frame()), mem)[0]['buttons'] == ['a']
+    rec = mem['_records'][-1]
+    assert rec['strategy_variant'] == 'decline_general_trade'
+    assert rec['choice'] == 'いかんッ!'
+    # An unclassified prompt still proceeds by default.
+    c3 = Canvas()
+    c3.text(24, 183, 'たまごを つかいますか?')
+    c3.text(184, 183, 'うむッ!')
+    c3.text(184, 199, 'いかんッ!')
+    c3.hand(162, 177)
+    mem3 = {'_records': []}
+    assert policy.yes_no_step(parse(c3.frame()), mem3)[0]['buttons'] == ['a']
+    assert mem3['_records'][-1]['strategy_variant'] == 'unclassified_prompt'
+
+
 def test_a_lost_source_castle_releases_the_running_order_instead_of_steer_back():
     from docich.hanjuku_screen import Screen as S
     order = {'step': 'A:test:J3', 'general': 'ゼウス', 'source': 'ジョンリギ',
@@ -516,7 +548,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v52-target-resume'
+    assert state['bot_version'] == 'hanjuku-chart-v53-trade-decline'
     assert '_records' not in state['policy']
 
 
