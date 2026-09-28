@@ -606,6 +606,7 @@ def test_the_sortie_target_jump_reads_the_gold_g_cursor_and_is_bounded():
     assert policy.world_map_step(parse(frame), mem, frame) == [policy.pad('a')]
     # An unreadable cursor closes Y after a few frames and falls back.
     mem['cursor'] = list(CASTLES['ほんじょう'])
+    mem.pop('near_goal', None)                 # a fresh target selection, not the jump's landing
     assert policy.target_step(marker, mem, FRAME) == [policy.pad('y')]
     blank = _world_map_frame({})
     results = [policy.world_map_step(parse(blank), mem, blank) for _ in range(policy.Y_JUMP_WAIT)]
@@ -813,9 +814,10 @@ def test_after_a_y_jump_the_cursor_is_walked_onto_the_nearest_roof_then_selects(
     assert {a['buttons'][0] for a in moves} == {'right', 'up'}
     assert policy.map_step(map_screen(149, 111), mem, FRAME) == [policy.pad('a')]
     assert mem['expect_menu'] is True and 'near_goal' not in mem
-    # No roof near the landing: re-open Y instead of searching.
+    # No roof near the landing (only a far one): re-open Y instead of searching.
     mem.update(near_goal={'step': 'J3', 'goal': 'スペンソニア', 'mode': 'map'}, expect_menu=False)
-    monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: [])
+    monkeypatch.setattr(policy, 'castle_roofs',
+                        lambda *_a, **_k: [{'kind': 'own', 'target': (20, 20), 'clipped': False}])
     assert policy.map_step(map_screen(140, 120), mem, FRAME) == [policy.pad('y')]
     assert decisions(mem, 'align_failed') and not mem.get('nav_search')
 
@@ -980,3 +982,17 @@ def test_the_y_view_silent_without_markers():
     mem = {'chapter': 1, 'captured': [], '_records': [], 'tick': 7}
     policy.world_map_step(parse(frame), mem, frame)
     assert not decisions(mem, 'world_map_units')
+
+
+def test_a_winter_map_without_readable_roofs_trusts_the_confirmed_jump(monkeypatch):
+    # g421 18:13: winter repainted the map, the G stood on フーリック's castle,
+    # no roof was read and the jump was reopened six times.
+    monkeypatch.setattr(policy, 'castle_roofs', lambda *_a, **_k: [])
+    order = {'step': '2-Z1', 'general': 'ゼウス', 'source': 'アルマムーン', 'target': 'フーリック',
+             'cards': (), 'after': None, 'note': 'test'}
+    marker = Screen(lines=[], hand=None, text='', kind='map_target', marker=(140, 120))
+    mem = {'chapter': 2, '_records': [], 'y_jumped': {'2-Z1': 'フーリック'}}
+    assert policy._align_on_roof(marker, mem, FRAME, ('enemy',), '2-Z1:target') == 'on'
+    assert policy._target_roof_under_marker(marker, mem, FRAME, order) is True
+    # Without a jump to that castle there is still no confirmation by guesswork.
+    assert policy._target_roof_under_marker(marker, {'chapter': 2, '_records': []}, FRAME, order) is False
