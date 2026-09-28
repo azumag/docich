@@ -969,6 +969,10 @@ def _finish_order(mem, state, **fields):
     step = mem.get('active')
     if step:
         mem.setdefault('orders', {})[step] = state
+        if state == 'launched':
+            # A new sortie carries a fresh kit: attempted uses from the
+            # previous one must not shrink it (``kit_spent`` is per sortie).
+            (mem.get('kit_spent') or {}).pop(step, None)
         _record(mem, 'order_' + state, chart_step=step, **fields)
     mem['active'] = None
     mem['picked'] = []
@@ -2075,6 +2079,12 @@ def _deploy_cards(order, mem):
     cards = list(mem.get('card_override', {}).get(order['step'], order['cards']))
     for card in (mem.get('card_drop') or {}).get(order['step']) or ():
         cards = [c for c in cards if c != card]
+    # One carried copy leaves the kit per attempted use in this sortie (g452:
+    # ヴィーナス spent both イッテツーン in one battle and the next battle
+    # re-planned them, opened an empty きりふだ list and stalled).
+    for card in (mem.get('kit_spent') or {}).get(order['step']) or ():
+        if card in cards:
+            cards.remove(card)
     capped = _cap_card_ids(cards)
     if capped != cards and (mem.get('cards_capped') or {}).get(order['step']) != capped:
         mem.setdefault('cards_capped', {})[order['step']] = capped
@@ -2850,6 +2860,12 @@ def _card_use_unclassified(mem, cur, reason):
     card = flow.get('card')
     if card:
         cur.setdefault('cards_unclassified', []).append(card)
+        # A selected card with no calibrated receipt still leaves the kit for
+        # this sortie: re-planning it would open an empty list next battle.
+        step = cur.get('step')
+        if step:
+            spent = mem.setdefault('kit_spent', {}).setdefault(step, [])
+            spent.append(card)
     cur['card_consumption_complete'] = False
     if not cur.get('deviation_reason'):
         cur['strategy_variant'] = 'card_use_unclassified'
