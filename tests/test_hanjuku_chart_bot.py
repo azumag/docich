@@ -1567,6 +1567,25 @@ def test_forced_discharge_list_confirms_default_cursor_instead_of_b():
     assert record['observed_metric']['month'] == '2-8'
 
 
+def test_forced_discharge_without_month_header_initializes_state_and_confirms():
+    """A missed month OCR must not leave the discharge counters uninitialized."""
+    canvas = Canvas()
+    canvas.text(24, 47, 'ミント')
+    canvas.text(24, 63, 'ゼウス')
+    canvas.text(16, 191, 'どのしょうぐんをかいこに')
+    canvas.hand(2, 41)
+    state = {'policy': {'chapter': 1, 'orders': {}, 'picked': []}}
+
+    actions, state = decide(canvas.frame(), state)
+
+    assert state['screen_kind'] == 'discharge_menu'
+    assert actions == [{'type': 'pad', 'buttons': ['a'], 'hold_ms': 100}]
+    assert state['policy']['discharge'] == {'key': None, 'presses': 1, 'exits': 0}
+    record = state['_records'][-1]
+    assert record['decision'] == 'discharge_general'
+    assert record['observed_metric']['month'] is None
+
+
 def test_paid_up_discharge_list_leaves_with_b_instead_of_discharging():
     """g407 04:xx: the balance was already +32G yet the bot dismissed six more
     generals (DISCHARGE_LIMIT) and held. Once the header gold parses (not in
