@@ -723,3 +723,25 @@ def test_a_just_opened_jump_waits_for_the_view_instead_of_being_dropped():
     mem['tick'] = 10 + policy.Y_JUMP_OPEN_GRACE
     policy.target_step(marker, mem, FRAME)
     assert decisions(mem, 'y_jump_failed')                              # bounded
+
+
+def test_gold_edge_arrows_are_not_a_cursor_and_a_far_jump_is_never_confirmed():
+    """g419 10:49: two gold edge arrows read as one cursor; the jump confirmed 50 px off."""
+    from docich.hanjuku_screen import parse
+    f2 = _world_map_frame({})
+
+    def with_gold(points):
+        buf = bytearray(256 * 224 * 3)
+        for x in range(256):
+            for y in range(224):
+                buf[(y * 256 + x) * 3:(y * 256 + x) * 3 + 3] = bytes(f2.pixel(x, y))
+        for x, y in points:
+            buf[(y * 256 + x) * 3:(y * 256 + x) * 3 + 3] = bytes((255, 181, 0))
+        return Frame(256, 224, bytes(buf))
+    far = [(x, 55) for x in range(118, 125)] + [(x, 150) for x in range(60, 67)]
+    assert policy.world_cursor(with_gold(far)) is None
+    mem = {'chapter': 1, '_records': [], 'y_jump': {'goal': 'ゴーメン', 'mode': 'map', 'step': 'X',
+                                                    'moves': policy.Y_JUMP_MOVES, 'wait': 0}}
+    view = _y_view((150.0, 140.0))                # far from ゴーメン
+    assert policy.world_map_step(parse(view), mem, view) == [policy.pad('y')]
+    assert decisions(mem, 'y_jump_failed') and 'y_jump' not in mem
