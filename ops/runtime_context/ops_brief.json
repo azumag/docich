@@ -1,11 +1,11 @@
 {
-  "output_sha256": "b15e9ebe653d8ea1491952f187309d69550566718e7a8ce9cc19d8a46739a871",
+  "output_sha256": "8caf4044d332bea68033fd86512f5b10c686423cc69cb8ac0c6510e87b995e2f",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "8219ecf4506cc1fdbe149204c3f6026142087ba17e76c5957c836b3f01813aa5",
+  "source_sha256": "93b7bef53c91dca09db916d42e7061b2f3e1ccddc127d58943e3f2257ea1cc94",
   "topics": [
+    "野営の見切れ検出(v47)・定期SELECT/Yの▲確認(v48)・帰還の段階予算(v49) 配備（Claude Code）",
     "野営の帰還が発火しない不具合を修正（v46）配備（Claude Code）",
-    "第2章判定の修正・調整チャートの将軍検証（Claude Code）",
-    "TODO追加: 調整チャートの将軍指定（Claude Code）"
+    "第2章判定の修正・調整チャートの将軍検証（Claude Code）"
   ]
 }
