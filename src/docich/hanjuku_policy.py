@@ -2235,6 +2235,10 @@ def _name_read_cleanly(line, name) -> bool:
             and cells.get(span + 8 * len(name)) != UNKNOWN)
 
 
+# Chart label -> the name ステータス shows. Chapter 1's home is labelled
+# ほんじょう in the chart but the game names it アルマムーン (g436 21:19: every
+# home sortie was refused as "the wrong castle" and 1-A1/1-V1 failed).
+STATUS_NAMES = {'ほんじょう': 'アルマムーン'}
 CASTLE_STATUS = re.compile(r'(?:しゅつげき)?([^\ufffd\s]+?)じょうステータスしゅうにゅう')
 
 
@@ -2259,12 +2263,13 @@ def _check_source_castle(screen, mem, order):
         return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move],
                              '出撃前に城のステータスで城名を確認')
     name = m.group(1)
-    if name == source:
+    if name == source or STATUS_NAMES.get(source) == name:
         mem['castle_verified'] = step
         return [pad('b')]
     cells = chart.castles(mem.get('chapter') or 0)
-    if name in cells:
-        mem['cursor'], mem['uncertain'] = list(cells[name]), False     # we know where we are now
+    label = next((k for k, v in STATUS_NAMES.items() if v == name and k in cells), name)
+    if label in cells:
+        mem['cursor'], mem['uncertain'] = list(cells[label]), False    # we know where we are now
     misses = mem.setdefault('source_miss', {})
     misses[step] = misses.get(step, 0) + 1
     _record(mem, 'source_castle_mismatch', chart_step=step, source=source,
@@ -4103,8 +4108,37 @@ def yes_no_step(screen: Screen, mem):
     return [move] if move else []
 
 
+def _repair_home_alias_failures(mem):
+    """Undo order failures caused by the ほんじょう/アルマムーン name check (v53-v59).
+
+    g436 (21:19): the status check refused chapter 1's home castle as a
+    mismatch three times per order and failed 1-A1, 1-V1, 1-C1... before any
+    of them left. Orders from the home castle that failed without ever
+    launching go back to pending once.
+    """
+    if mem.get('home_alias_repaired') or (mem.get('chapter') or 0) != 1:
+        return
+    mem['home_alias_repaired'] = True
+    status = mem.get('orders') or {}
+    launched = mem.get('launched_orders') or {}
+    home = chart.home_castle(1)
+    restored = []
+    for order in chart.orders(1):
+        step = order['step']
+        if status.get(step) == 'failed' and order['source'] == home and step not in launched:
+            status.pop(step, None)
+            for key in ('source_miss', 'source_override', 'general_override'):
+                (mem.get(key) or {}).pop(step, None)
+            restored.append(step)
+    if restored:
+        mem['active'] = None
+        _record(mem, 'orders_restored', observed_metric=restored,
+                reason='本城の城名確認の誤判定（ほんじょう/アルマムーン）で失敗扱いになった指示を未実行に戻す')
+
+
 def observe_events(screen: Screen, mem):
     """Record chart-relevant facts that need no input (month header, harvest)."""
+    _repair_home_alias_failures(mem)
     mem['tick'] = int(mem.get('tick') or 0) + 1      # observations: ages sorties (_en_route)
     _hold_general_loss_metric(mem)
     _migrate_card_evidence(mem)
