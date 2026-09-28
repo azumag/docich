@@ -1713,6 +1713,8 @@ def map_step(screen: Screen, mem, frame):
         if order is None:
             _off_chart(mem)
             order = next_order(mem)
+        if order is not None and _last_castle_held(mem, order):
+            order = None                   # wait: sending him would empty our last castle
         if order is None:
             update_world(screen, mem, frame)
             return []           # nothing charted: let real time advance
@@ -2272,6 +2274,45 @@ def _check_source_castle(screen, mem, order):
     return [pad('b'), {'type': 'wait', 'ms': 500}, pad('b')]
 
 
+LAST_CASTLE_HOLD_TICKS = 300   # observations before the last castle's list is read again
+
+
+def _only_castle(mem):
+    owned = _owned(mem) & set(chart.castles(mem.get('chapter') or 0))
+    return next(iter(owned)) if len(owned) == 1 else None
+
+
+def _keep_last_castle(screen, mem, order):
+    """Never send the last general out of our last castle.
+
+    g421 18:55: フーリック had fallen, アルマムーン was our only castle and どうし
+    its only general; he was sent to ドミノーラ, the empty castle was taken at
+    18:57 and with no castle left the game ended (title, game_over). A sortie
+    that would leave the only castle empty is cancelled and sorties from it
+    wait (bounded) for a second general. ``None`` lets the sortie go on.
+    """
+    if _is_boss_order(order, mem):
+        return None                        # the boss battle ends the chapter
+    source = _source(order, mem)
+    present = _present_generals(screen)
+    if present is None or _only_castle(mem) != source or len(present) != 1:
+        return None
+    mem['last_castle_hold'] = {'castle': source, 'tick': int(mem.get('tick') or 0)}
+    mem['orders'][order['step']] = 'pending'
+    mem['active'] = None
+    mem['picked'] = []
+    _record(mem, 'sortie_held_last_castle', chart_step=order['step'], source=source,
+            observed_metric=present[:4],
+            reason=f'{source}が唯一の城で将軍が{len(present)}人のため、空にして落城・ゲームオーバーにならないよう出撃しない')
+    return [pad('b'), {'type': 'wait', 'ms': 300}, pad('b')]
+
+
+def _last_castle_held(mem, order) -> bool:
+    hold = mem.get('last_castle_hold') or {}
+    return (not _is_boss_order(order, mem) and hold.get('castle') == _source(order, mem) == _only_castle(mem)
+            and int(mem.get('tick') or 0) - int(hold.get('tick') or 0) < LAST_CASTLE_HOLD_TICKS)
+
+
 def deploy_step(screen: Screen, mem):
     order = _order(mem)
     kind = screen.kind
@@ -2294,6 +2335,9 @@ def deploy_step(screen: Screen, mem):
         _observe_garrison(screen, mem, order)
         if (mem.get('orders') or {}).get(order['step']) == 'launched_unconfirmed':
             return _verify_sortie_source(screen, mem, order)
+        guard = _keep_last_castle(screen, mem, order)
+        if guard is not None:
+            return guard
         if order.get('purpose') == 'move':
             return _move_general_pick(screen, mem, order)
         if _is_boss_order(order, mem):
@@ -3317,7 +3361,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'world_map_tick', 'world_map_due', 'world_map_wait', 'home_lost',
                 'y_jump', 'y_jumps', 'y_jump_return', 'y_jumped', 'boss_absent', 'recall', 'recall_skip',
                 'near_goal', 'align_steps', 'unanchored', 'select_tick',
-                'select_used', 'castle_verified',
+                'select_used', 'castle_verified', 'last_castle_hold',
                 'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
                 'indep_menu_key', 'indep_menu_action',
                 'monster_menu_key', 'monster_menu_cursor', 'monster_menu_hold',

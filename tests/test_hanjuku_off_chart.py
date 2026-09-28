@@ -1037,3 +1037,24 @@ def test_the_source_castle_name_is_read_before_anyone_is_sent():
     assert policy._check_source_castle(right, mem, order) == [policy.pad('b')]
     assert mem['castle_verified'] == '2-Z1'
     assert policy._check_source_castle(right, mem, order) is None       # verified: go on to しゅつげき
+
+
+def test_the_last_general_never_leaves_our_last_castle(monkeypatch):
+    # g421 18:55: アルマムーン was our only castle and どうし its only general;
+    # he was sent to ドミノーラ, the empty castle fell at 18:57 and the game ended.
+    order = {'step': '2-C1', 'general': 'ココット', 'source': 'アルマムーン', 'target': 'ドミノーラ',
+             'cards': [], 'after': None, 'note': 't'}
+    mem = {'chapter': 2, 'tick': 100, 'orders': {'2-C1': 'pending'}, 'picked': [], '_records': [],
+           'active': '2-C1', 'launched_orders': {'2-C1': order}, 'captured': [], 'lost': ['フーリック'],
+           'castle_verified': '2-C1'}
+    alone = Screen(lines=[], hand=(150, 40), text='しゅつげきステータスどうし', kind='general_list')
+    monkeypatch.setattr(policy, '_present_generals', lambda _screen: ['どうし'])
+    assert policy.deploy_step(alone, mem) == [policy.pad('b'), {'type': 'wait', 'ms': 300}, policy.pad('b')]
+    assert mem['orders']['2-C1'] == 'pending' and mem['active'] is None
+    assert decisions(mem, 'sortie_held_last_castle')
+    assert policy._last_castle_held(mem, order)
+    mem['tick'] = 100 + policy.LAST_CASTLE_HOLD_TICKS
+    assert not policy._last_castle_held(mem, order)                   # bounded: read the list again
+    # With a second castle the same sortie goes on.
+    mem['captured'] = ['フーリック']
+    assert policy._keep_last_castle(alone, mem, order) is None
