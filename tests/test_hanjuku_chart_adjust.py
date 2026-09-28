@@ -637,6 +637,40 @@ def test_adjusted_boss_order_reaches_boss_entry_and_battle_tactics(monkeypatch):
     assert mem['retry_context'][j2]['expected_metric']['cards'] == ['クースカン', 'ノリウツール']
 
 
+def test_a_later_chapter_enemy_general_advances_the_chapter():
+    # g454 08:24: クイーン defeated, then ピオーネ/ヘラ (debut chapter 2)
+    # attacked; no chapter-2 castle name appeared and the bot stayed on
+    # chapter 1 coordinates.
+    mem = stuck_memory()
+    policy.observe_chapter_general(mem, 'ピオーネ')
+    assert mem['chapter'] == 2
+    [seen] = decisions(mem, 'chapter_seen')
+    assert seen['observed_metric'] == {'chapter': 2, 'evidence': 'ピオーネ'}
+    # A chapter-1 general or an unknown name never moves the chapter.
+    mem = stuck_memory()
+    policy.observe_chapter_general(mem, 'クイーン')
+    policy.observe_chapter_general(mem, 'ヒュドラ')
+    assert mem['chapter'] == 1 and not decisions(mem, 'chapter_seen')
+    # A further jump (debut 7) needs this chapter's boss defeat as context;
+    # with it, the chapter advances to the general's debut chapter.
+    policy.observe_chapter_general(mem, 'ミモザ')
+    assert mem['chapter'] == 1
+    mem['boss_defeated'] = 1
+    policy.observe_chapter_general(mem, 'ミモザ')
+    assert mem['chapter'] == 7
+
+
+def test_a_battle_panel_with_a_next_chapter_enemy_advances_the_chapter():
+    from docich.hanjuku_screen import Battle
+    mem = stuck_memory()
+    for _ in range(2):
+        screen = _text_screen('', 'battle')
+        screen.battle = Battle(enemy='ピオーネ', ally='どうし', enemy_hp=46, ally_hp=90)
+        policy.battle_step(screen, mem)
+    assert mem['chapter'] == 2
+    assert decisions(mem, 'chapter_seen')[-1]['observed_metric']['evidence'] == 'ピオーネ'
+
+
 def test_an_unclassified_card_use_leaves_the_sortie_kit():
     # g452 07:14: ヴィーナス selected both carried イッテツーン (no calibrated
     # receipt); the next battle re-planned them and opened an empty list.

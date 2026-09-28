@@ -16,7 +16,7 @@ from . import hanjuku_chart as chart
 from . import hanjuku_chart_adjust as chart_adjust
 from . import hanjuku_experience as experience
 from . import hanjuku_reference as reference
-from .hanjuku_egg_reference import enemy_egg_triggers, general_max_hp
+from .hanjuku_egg_reference import enemy_egg_triggers, general_debut_chapter, general_max_hp
 from .hanjuku_font import UNKNOWN, TextLine
 from .hanjuku_screen import HEADER as HEADER_RE, OKUNOTE_CHOICES, Screen, castle_roofs, own_camps
 
@@ -2892,6 +2892,11 @@ def battle_step(screen: Screen, mem):
             mem['battle_seen'] = reading
             return []
         mem['battle_seen'] = None
+        # The panel's opponent is a chapter fact: a general whose debut
+        # chapter is later than ours proves the game advanced (g454: ピオーネ/
+        # ヘラ after the chapter 1 boss). This resets the chapter state, so it
+        # runs before the new battle record is built.
+        observe_chapter_general(mem, b.enemy)
         context = _battle_context(mem, b.ally)
         cur = mem['battle'] = {'enemy': b.enemy, 'ally': b.ally, 'start_enemy_hp': b.enemy_hp,
                                'start_ally_hp': b.ally_hp, 'cards_used': [], 'plan': None,
@@ -3560,7 +3565,10 @@ def battle_end(mem, next_kind):
     if outcome == 'win' and boss and cur.get('enemy') == boss:
         resulting = f"chapter_{mem['chapter']}_boss_defeated"
         # A boss HP reading proves this battle result, not the next chapter.
-        # Only a visible chapter header may advance and reset route state.
+        # Only a visible chapter header or a next-chapter fact (castle name,
+        # enemy general debut) may advance and reset route state; the defeat
+        # is the context a further-jump general needs (observe_chapter_general).
+        mem['boss_defeated'] = mem.get('chapter')
     elif outcome == 'win' and castle and cur.get('side') == 'attack':
         resulting = f'captured:{castle}'
     elif outcome == 'loss' and castle and cur.get('side') == 'defense':
@@ -3690,6 +3698,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit', 'month_sub',
                 'nav_last', 'nav_search', 'nav_search_leg', 'orders', 'picked', 'retries', 'retry_context', 'shop',
                 'source_override', 'uncertain', 'month', 'order_context', 'sortie_general',
+                'boss_defeated',
                 'chart_adjust', 'chart_plan', 'launched_orders', 'sorties', 'sortie_attempt',
                 'garrison', 'general_location_unknown', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
                 'nav_prev', 'nav_still', 'nav_pressed', 'unverified', 'off_castle',
@@ -3735,6 +3744,28 @@ def observe_chapter_castle(mem, castle):
     if castle in chart.CASTLE_NAMES.get(nxt, ()) or castle == chart.home_castle(nxt):
         _enter_chapter(mem, nxt, evidence=castle,
                        reason='次章にしかない城名を確認したため章を進め、前章の座標・出撃・購入状態を初期化')
+
+
+def observe_chapter_general(mem, general):
+    """Advance the chapter on an enemy general that only later chapters have.
+
+    g454 08:24: どうし defeated クイーン, but the bot stayed on chapter 1 while
+    ピオーネ and ヘラ (char.csv 話=2) attacked its castles. No chapter-2 castle
+    name ever appeared, so ``observe_chapter_castle`` had no evidence and the
+    bot navigated chapter 1 coordinates for 30+ minutes. The battle panel's
+    enemy general is a chapter fact; a debut chapter later than the bot's
+    current one proves the game advanced.
+    """
+    chapter = mem.get('chapter') or 0
+    debut = general_debut_chapter(general)
+    if not chapter or debut is None or debut <= chapter:
+        return
+    # The immediate next chapter's roster is proof by itself; a further jump
+    # (a missed transition) needs this chapter's boss defeated as context.
+    if debut != chapter + 1 and mem.get('boss_defeated') != chapter:
+        return
+    _enter_chapter(mem, debut, evidence=general,
+                   reason='次章以降に初登場する敵将軍を確認したため章を進め、前章の座標・出撃・購入状態を初期化')
 
 
 def _castle_label(mem, name):
