@@ -668,3 +668,19 @@ def test_a_jump_confirms_within_one_view_pixel():
     assert abs(found[0] - (gx / 8 + ox)) <= policy.Y_JUMP_TOL
     assert abs(found[1] - (gy / 8 + oy)) <= policy.Y_JUMP_TOL
     assert policy.world_map_step(parse(frame), mem, frame) == [policy.pad('a')]
+
+
+def test_the_failed_menu_hold_is_bounded_and_cleared_by_a_y_jump(monkeypatch):
+    """g419 09:06: 221 holds after a Y jump left the cell unanchored with menu_miss set."""
+    def arrived(_screen, mem, *_a, **_k):
+        mem['anchor'], mem['uncertain'] = None, False
+        return 'arrived'
+    monkeypatch.setattr(policy, 'nav_step', arrived)
+    monkeypatch.setattr(policy, 'Y_JUMP_OFFSET', {})
+    monkeypatch.setattr(policy, 'castle_roofs',
+                        lambda *_a, **_k: [{'kind': 'own', 'target': (140, 120), 'clipped': False}])
+    mem = {'chapter': 1, 'orders': {}, 'picked': [], '_records': [], 'active': '1-C1',
+           'menu_miss': 1, 'cursor': list(CASTLES['ほんじょう'])}
+    held = [policy.map_step(map_screen(140, 120), mem, FRAME) for _ in range(policy.MENU_HOLD_LIMIT)]
+    assert all(h == [] for h in held)
+    assert policy.map_step(map_screen(140, 120), mem, FRAME) == [policy.pad('a')]

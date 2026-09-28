@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v31-y-jump-stale'
+BOT_VERSION = 'hanjuku-chart-v32-menu-hold-bound'
 
 
 # Native title copyright rows, measured from the owner's ROM. A strict match

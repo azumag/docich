@@ -1162,6 +1162,8 @@ def _y_jump_step(mem, frame):
     if (abs(dx) <= Y_JUMP_TOL and abs(dy) <= Y_JUMP_TOL) or jump['moves'] >= Y_JUMP_MOVES:
         mem.pop('y_jump', None)
         mem['y_jump_return'] = jump['mode']
+        mem.pop('menu_miss', None)            # a fresh placement, not the missed cell
+        mem.pop('menu_hold', None)
         mem['cursor'] = [gx, gy]
         mem['uncertain'] = False
         for key in ('anchor', 'nav_last', 'nav_search', 'nav_search_leg'):
@@ -1266,6 +1268,9 @@ def _hold_off_castle(screen, mem, order) -> bool:
     return True
 
 
+MENU_HOLD_LIMIT = 10           # arrived-but-unanchored holds after a failed castle menu
+
+
 def map_step(screen: Screen, mem, frame):
     _drop_stale_y_jump(screen, mem)
     if mem.pop('expect_menu', False):
@@ -1344,12 +1349,21 @@ def map_step(screen: Screen, mem, frame):
     if mem.get('menu_miss'):
         if mem.get('anchor') and not mem.get('uncertain') and mem.get('cursor'):
             mem['menu_miss'] = 0   # roofs re-anchored: confirming is allowed again
-        elif result == 'arrived':
+            mem.pop('menu_hold', None)
+        elif result == 'arrived' and int(mem.get('menu_hold') or 0) < MENU_HOLD_LIMIT:
+            # Bounded (g419 09:06: 221 holds, ~10 min, after a Y jump had
+            # cleared the anchor). Past the bound, the roof-under-cursor
+            # check below still guards the press.
+            mem['menu_hold'] = int(mem.get('menu_hold') or 0) + 1
             _record(mem, 'situation_held', screen=screen.kind,
                     observed_metric={'cursor': mem.get('cursor'),
-                                     'screen_cursor': list(_cursor(screen) or ())},
+                                     'screen_cursor': list(_cursor(screen) or ()),
+                                     'held': mem['menu_hold']},
                     reason='城メニュー未確認のため位置を信用せず入力を保留して再アンカーを待つ')
             return []
+        elif result == 'arrived':
+            mem['menu_miss'] = 0
+            mem.pop('menu_hold', None)
         elif result is None:
             if _cursor(screen):
                 _record(mem, 'situation_held', screen=screen.kind,
@@ -3453,7 +3467,7 @@ def observe_events(screen: Screen, mem):
                         'chart_adjust', 'chart_plan', 'launched_orders', 'sorties', 'sortie_attempt',
                         'garrison', 'general_location_unknown', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
                         'nav_prev', 'nav_still', 'nav_pressed', 'unverified', 'off_castle',
-                        'target_miss', 'target_cancel',
+                        'target_miss', 'target_cancel', 'menu_hold',
                         'world_map_tick', 'world_map_due', 'world_map_wait', 'home_lost',
                         'y_jump', 'y_jumps', 'y_jump_return',
                         'select_used',
