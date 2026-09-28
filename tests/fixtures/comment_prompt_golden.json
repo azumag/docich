@@ -1,7 +1,7 @@
 {
  "provenance": {
   "source": "azumag/soviet_now broadcast/comment.sh prompt stage (see scripts/golden/comment_prompt_golden.py)",
-  "soviet_now_commit": "bd6cc5b0b7e0fa64d60f6c99c2f864a66895fa08",
+  "soviet_now_commit": "e41f237f64a3ca6721e807b91f04bc293cb34a81",
   "generated_by": "executing the legacy shell functions / verbatim inline python / envsubst; expected = stdout",
   "purpose": "docich.comment.prompt must reproduce these bytes (#829 PR-3a)"
  },
@@ -515,16 +515,6 @@
   }
  ],
  "time_period": {
-  "00": "夜",
-  "01": "夜",
-  "02": "未明",
-  "03": "未明",
-  "04": "未明",
-  "05": "朝",
-  "06": "朝",
-  "07": "朝",
-  "08": "朝",
-  "09": "午前",
   "10": "午前",
   "11": "午前",
   "12": "午後",
@@ -538,7 +528,17 @@
   "20": "夕方",
   "21": "夜",
   "22": "夜",
-  "23": "夜"
+  "23": "夜",
+  "00": "夜",
+  "01": "夜",
+  "02": "未明",
+  "03": "未明",
+  "04": "未明",
+  "05": "朝",
+  "06": "朝",
+  "07": "朝",
+  "08": "朝",
+  "09": "午前"
  },
  "prompts": [
   {
@@ -581,14 +581,14 @@
   {
    "mode": "main",
    "category": "game_question",
-   "sha256": "797d7186e4c1f1284bca23a7efa8ea27d71e235e6d87a6bc03c86b68289fe805",
-   "bytes": 18938
+   "sha256": "3ecb1a8b0ea5471810cedaa87b6196b7433df2b08af1d7fa4fd0d8308c7f91c2",
+   "bytes": 19203
   },
   {
    "mode": "main",
    "category": "game_status",
-   "sha256": "797d7186e4c1f1284bca23a7efa8ea27d71e235e6d87a6bc03c86b68289fe805",
-   "bytes": 18938
+   "sha256": "3ecb1a8b0ea5471810cedaa87b6196b7433df2b08af1d7fa4fd0d8308c7f91c2",
+   "bytes": 19203
   },
   {
    "mode": "main",
@@ -599,8 +599,8 @@
   {
    "mode": "main",
    "category": "strategy_advice",
-   "sha256": "cc74d79ea8d72c21739b346e347a62d5995f360f6475f2f316d24f7f3236891d",
-   "bytes": 19965
+   "sha256": "3ecb1a8b0ea5471810cedaa87b6196b7433df2b08af1d7fa4fd0d8308c7f91c2",
+   "bytes": 19203
   },
   {
    "mode": "main",
@@ -671,14 +671,14 @@
   {
    "mode": "soren91",
    "category": "game_question",
-   "sha256": "dd4ce979353e333c6b8bb6cc55bb6501b476a09cb4bc584cbb3aa6233511e768",
-   "bytes": 20598
+   "sha256": "cab32328e3e579c8fa2d9f72e4dcb6d94f75857296d092fe184d17161e8f7cee",
+   "bytes": 20863
   },
   {
    "mode": "soren91",
    "category": "game_status",
-   "sha256": "dd4ce979353e333c6b8bb6cc55bb6501b476a09cb4bc584cbb3aa6233511e768",
-   "bytes": 20598
+   "sha256": "cab32328e3e579c8fa2d9f72e4dcb6d94f75857296d092fe184d17161e8f7cee",
+   "bytes": 20863
   },
   {
    "mode": "soren91",
@@ -689,8 +689,8 @@
   {
    "mode": "soren91",
    "category": "strategy_advice",
-   "sha256": "bcb3cc69de99df9a58aedd355e848420483aced55223ca9966ab57d27131bd95",
-   "bytes": 21625
+   "sha256": "cab32328e3e579c8fa2d9f72e4dcb6d94f75857296d092fe184d17161e8f7cee",
+   "bytes": 20863
   },
   {
    "mode": "soren91",
