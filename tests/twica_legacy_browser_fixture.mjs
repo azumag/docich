@@ -48,7 +48,12 @@ function policy(owner,legacy_role='game'){
 }
 try{
  policy('legacy');
- assert.equal(readLegacyPolicy(dir).owner,'legacy','fixture must be an accepted private policy');
+ const directoryInfo=fs.lstatSync(dir), fileInfo=fs.lstatSync(path.join(dir,'control.json'));
+ const checks={directoryMode:directoryInfo.mode&0o777,directoryOwned:directoryInfo.uid===process.getuid(),
+   canonical:fs.realpathSync(dir)===path.resolve(dir),fileMode:fileInfo.mode&0o777,
+   fileOwned:fileInfo.uid===process.getuid(),links:fileInfo.nlink,bytes:fileInfo.size,
+   raw:JSON.parse(fs.readFileSync(path.join(dir,'control.json'),'utf8'))};
+ assert.equal(readLegacyPolicy(dir).owner,'legacy','private policy diagnostics '+JSON.stringify(checks));
  const game=await browser.newPage(), shared=await browser.newPage();
  observePage(game);observePage(shared);
  await game.goto(new URL('/host',url).href);await shared.goto(new URL('/host',url).href);
