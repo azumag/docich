@@ -576,6 +576,7 @@ def next_order(mem):
                 # A source last read empty would open an empty list and fail
                 # the order (g407: the plan's どうし/ヴィーナス from an empty home).
                 and garrison.get(_source(order, mem)) != []
+                and not _last_castle_held(mem, order)      # its castle must keep its last general
                 and mem.get('general_override', {}).get(order['step'], order['general']) not in _en_route(mem)[0]):
             return order
     return None
@@ -1713,8 +1714,6 @@ def map_step(screen: Screen, mem, frame):
         if order is None:
             _off_chart(mem)
             order = next_order(mem)
-        if order is not None and _last_castle_held(mem, order):
-            order = None                   # wait: sending him would empty our last castle
         if order is None:
             update_world(screen, mem, frame)
             return []           # nothing charted: let real time advance
@@ -2277,25 +2276,35 @@ def _check_source_castle(screen, mem, order):
 LAST_CASTLE_HOLD_TICKS = 300   # observations before the last castle's list is read again
 
 
-def _only_castle(mem):
+def _staffed_elsewhere(mem, source) -> bool:
+    """Another castle of ours is known to hold a general who is not marching.
+
+    A castle whose list was never read (or was cleared by a recruit) is not
+    counted: the guard below errs towards keeping someone home.
+    """
+    busy, _ = _en_route(mem)
+    garrison = mem.get('garrison') or {}
     owned = _owned(mem) & set(chart.castles(mem.get('chapter') or 0))
-    return next(iter(owned)) if len(owned) == 1 else None
+    return any(c != source and any(g not in busy for g in garrison.get(c) or ()) for c in owned)
 
 
 def _keep_last_castle(screen, mem, order):
-    """Never send the last general out of our last castle.
+    """Never send out the last general standing in any castle of ours.
 
     g421 18:55: フーリック had fallen, アルマムーン was our only castle and どうし
     its only general; he was sent to ドミノーラ, the empty castle was taken at
-    18:57 and with no castle left the game ended (title, game_over). A sortie
-    that would leave the only castle empty is cancelled and sorties from it
-    wait (bounded) for a second general. ``None`` lets the sortie go on.
+    18:57 and with no castle left the game ended (title, game_over). The
+    isolated probe then showed the same with two castles: エシャロット left
+    アルマムーン and ゼウス left フーリック, both empty at once. A sortie whose
+    list shows one general, while no other castle of ours is known to keep
+    one, is cancelled and waits (bounded) for another general. ``None`` lets
+    the sortie go on.
     """
-    if _is_boss_order(order, mem):
-        return None                        # the boss battle ends the chapter
+    if _is_boss_order(order, mem) or order.get('purpose') == 'move':
+        return None                        # the boss battle ends the chapter; a move keeps one (_move_general_pick)
     source = _source(order, mem)
     present = _present_generals(screen)
-    if present is None or _only_castle(mem) != source or len(present) != 1:
+    if present is None or len(present) != 1 or source not in _owned(mem) or _staffed_elsewhere(mem, source):
         return None
     mem['last_castle_hold'] = {'castle': source, 'tick': int(mem.get('tick') or 0)}
     mem['orders'][order['step']] = 'pending'
@@ -2303,13 +2312,15 @@ def _keep_last_castle(screen, mem, order):
     mem['picked'] = []
     _record(mem, 'sortie_held_last_castle', chart_step=order['step'], source=source,
             observed_metric=present[:4],
-            reason=f'{source}が唯一の城で将軍が{len(present)}人のため、空にして落城・ゲームオーバーにならないよう出撃しない')
+            reason=f'{source}の将軍が{len(present)}人で他の自軍城に待機将軍がいないため、全城を空にして落城・ゲームオーバーにならないよう出撃しない')
     return [pad('b'), {'type': 'wait', 'ms': 300}, pad('b')]
 
 
 def _last_castle_held(mem, order) -> bool:
     hold = mem.get('last_castle_hold') or {}
-    return (not _is_boss_order(order, mem) and hold.get('castle') == _source(order, mem) == _only_castle(mem)
+    source = _source(order, mem)
+    return (not _is_boss_order(order, mem) and order.get('purpose') != 'move' and hold.get('castle') == source
+            and not _staffed_elsewhere(mem, source)
             and int(mem.get('tick') or 0) - int(hold.get('tick') or 0) < LAST_CASTLE_HOLD_TICKS)
 
 
