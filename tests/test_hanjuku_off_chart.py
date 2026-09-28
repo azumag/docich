@@ -652,7 +652,8 @@ def test_a_jump_whose_view_closed_early_does_not_block_later_jumps():
              'cards': [], 'after': None, 'note': 't'}
     mem = {'chapter': 1, 'orders': {}, 'picked': [], '_records': [], 'active': 'X',
            'launched_orders': {'X': order}, 'cursor': [300, 300],
-           'y_jump': {'goal': 'ほんじょう', 'mode': 'map', 'step': 'X', 'moves': 8, 'wait': 0}}
+           'y_jump': {'goal': 'ほんじょう', 'mode': 'map', 'step': 'X', 'moves': 8, 'wait': 0,
+                      'seen': True}}
     assert policy.map_step(map_screen(140, 120), mem, FRAME) == [policy.pad('y')]
     assert decisions(mem, 'y_jump_failed') and mem['y_jump']['moves'] == 0
 
@@ -706,3 +707,19 @@ def test_the_map_cursor_is_found_next_to_solid_white_snow():
         put(cx + 14, cy + d, (255, 255, 255))
     screen = parse(Frame(256, 224, bytes(px)), phase='field')
     assert screen.cursor == (cx, cy)
+
+
+def test_a_just_opened_jump_waits_for_the_view_instead_of_being_dropped():
+    """g419 09:52: the target screen still showed right after Y, and the jump was dropped at 0 moves."""
+    order = {'step': 'X', 'general': 'ゼウス', 'source': 'ほんじょう', 'target': 'ゴーメン',
+             'cards': [], 'after': None, 'note': 't'}
+    mem = {'chapter': 1, 'orders': {}, 'picked': [], '_records': [], 'active': 'X', 'tick': 10,
+           'launched_orders': {'X': order}, 'cursor': list(CASTLES['ほんじょう'])}
+    marker = Screen(lines=[], hand=None, text='', kind='map_target', marker=(140, 120))
+    assert policy.target_step(marker, mem, FRAME) == [policy.pad('y')]
+    mem['tick'] = 11
+    assert policy.target_step(marker, mem, FRAME) == []                 # still opening
+    assert mem['y_jump'] and not decisions(mem, 'y_jump_failed')
+    mem['tick'] = 10 + policy.Y_JUMP_OPEN_GRACE
+    policy.target_step(marker, mem, FRAME)
+    assert decisions(mem, 'y_jump_failed')                              # bounded

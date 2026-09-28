@@ -1081,6 +1081,7 @@ Y_JUMP_FAR = 48                # world px from the goal before a jump is worth i
 Y_JUMP_LIMIT = 2               # jumps per order and screen mode
 Y_JUMP_MOVES = 8               # D-pad steps inside one jump before confirming anyway
 Y_JUMP_WAIT = 6                # frames without a readable cursor before closing Y
+Y_JUMP_OPEN_GRACE = 6          # observations the old screen may still show after Y
 Y_JUMP_TOL = 1.0               # view px (8 world px); roofs close the rest. 0.5 oscillated
                                # around a flag in g419 (ring and flag overlap: +-1 px jitter)
 _Y_RING = [(dx, dy) for dx in range(-13, 14) for dy in range(-13, 14)
@@ -1111,11 +1112,20 @@ def _drop_stale_y_jump(screen, mem):
     """Back on a map screen with a jump still open: the Y view was closed by
     something else (g419 08:45: an event ended it at 8 moves and the stale
     jump blocked every later jump for 10 minutes)."""
-    jump = mem.pop('y_jump', None)
+    jump = mem.get('y_jump')
+    if not jump:
+        return False
+    # Right after Y the old screen is still shown for a frame or two; only a
+    # jump that already saw the view, or has waited long, was closed early
+    # (g419 09:52: every target jump was dropped 3 s after opening, 0 moves).
+    if not jump.get('seen') and int(mem.get('tick') or 0) - int(jump.get('tick') or 0) < Y_JUMP_OPEN_GRACE:
+        return True                      # the view is still opening: press nothing
+    mem.pop('y_jump', None)
     if jump:
         _record(mem, 'y_jump_failed', chart_step=jump.get('step'), target=jump.get('goal'),
                 screen=screen.kind, observed_metric={'moves': jump.get('moves')},
                 reason='全体マップが決定前に閉じたためジャンプを中断として扱う')
+    return False
 
 
 def _want_y_jump(mem, order, name, mode) -> bool:
@@ -1133,7 +1143,8 @@ def _start_y_jump(mem, order, name, mode):
     key = f"{order['step']}:{mode}"
     jumps = mem.setdefault('y_jumps', {})
     jumps[key] = jumps.get(key, 0) + 1
-    mem['y_jump'] = {'goal': name, 'mode': mode, 'step': order['step'], 'moves': 0, 'wait': 0}
+    mem['y_jump'] = {'goal': name, 'mode': mode, 'step': order['step'], 'moves': 0, 'wait': 0,
+                     'tick': int(mem.get('tick') or 0)}
     _record(mem, 'y_jump_open', chart_step=order['step'], target=name,
             observed_metric={'cursor': mem.get('cursor'), 'mode': mode, 'attempt': jumps[key]},
             reason='全体マップ（Y）で目的の城を直接選ぶ')
@@ -1142,6 +1153,7 @@ def _start_y_jump(mem, order, name, mode):
 
 def _y_jump_step(mem, frame):
     jump = mem['y_jump']
+    jump['seen'] = True
     chapter = mem.get('chapter') or 0
     cursor = world_cursor(frame)
     flags = world_flags(frame, chapter, cursor) if cursor else {}
@@ -1272,7 +1284,8 @@ MENU_HOLD_LIMIT = 10           # arrived-but-unanchored holds after a failed cas
 
 
 def map_step(screen: Screen, mem, frame):
-    _drop_stale_y_jump(screen, mem)
+    if _drop_stale_y_jump(screen, mem):
+        return []
     if mem.pop('expect_menu', False):
         mem['menu_miss'] = int(mem.get('menu_miss', 0)) + 1
         missed = _order(mem)
@@ -1387,7 +1400,8 @@ def map_step(screen: Screen, mem, frame):
 
 
 def target_step(screen: Screen, mem, frame):
-    _drop_stale_y_jump(screen, mem)
+    if _drop_stale_y_jump(screen, mem):
+        return []
     order = _order(mem)
     if order is None:
         # A marker we did not request: cancel instead of sending a general.
