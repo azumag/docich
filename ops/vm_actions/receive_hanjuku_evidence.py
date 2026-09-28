@@ -14,6 +14,7 @@ import zipfile
 # Resolve the sibling by absolute installed path, never the current directory.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hanjuku_evidence as evidence
+import validate_hanjuku_ciphertext as transport
 
 
 def verify_archive(raw):
@@ -66,6 +67,7 @@ def verify_archive(raw):
 def decrypt(ciphertext, key, certificate, *, runtime_id):
     if len(ciphertext) > evidence.MAX_TOTAL + 1024 * 1024:
         raise evidence.EvidenceError("ciphertext_too_large")
+    transport.validate(ciphertext)
     # OpenSSL can emit partial plaintext before an authentication error. The
     # helper captures it in memory and returns nothing unless its exit is zero.
     clear = evidence._openssl(["cms", "-decrypt", "-binary", "-inform", "DER",

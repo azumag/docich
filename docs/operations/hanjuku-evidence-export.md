@@ -1,64 +1,100 @@
-# 半熟英雄・終了済みランの非公開エクスポート
+# 半熟英雄・終了済みランの暗号化エクスポート
 
-## 現在の範囲
+## 実装範囲と導入状態
 
-終了済みランを固定ファイル一覧から読み取り、受信者だけが復号できる `.cms` にする
-オペレーター用CLI。受信側CLIは復号の認証とZIPの検査が成功するまで平文ファイルを作らない。
-Python標準ライブラリと `/usr/bin/openssl` のOpenSSL 3を使う。Linuxでの利用を前提とする。
+保存済みの1ランから、判断・実入力・結果・対応画像を収集する。CLIに加え、
+owner-only Actions → 専用SSH operation → 暗号化artifact → 受信側検証の経路を実装した。
+**コードと合成テストの完了は、本番への導入・実ログ取得の完了ではない。**
+管理者によるgateway更新と、protected mainの正規デプロイ後に初めて利用できる。
+実ログ・画像の取得、実機での性能・互換性検証、戦略変更は本PRでは実施していない。
 
-**この変更はVM gateway / Actionsに新しい権限を付けない。ChatGPTからVMへの自動取得は未接続。**
-実行には既存の承認済みVMセッションが必要で、暗号文の転送もオーナーが行う。
-公開リポジトリで拒否される汎用 `exec` を迂回してはいけない。
-本番配備、gatewayの拡張、実ログの取得・実機受入はこの変更の検証結果に含めない。
+Python標準ライブラリと `/usr/bin/openssl` のOpenSSL 3、Linuxを使用する。
+受信者の秘密鍵は受信側だけに保持し、VM・GitHub・Actionsに送らない。
 
-## 出力内容と検証
+## 取得経路
 
-`ops/vm_actions/hanjuku_evidence.py` は `--runtime-id` に明示した1世代だけを対象にする。
-`latest`、稼働中の世代、手動停止、終了証拠のないクラッシュ、lease不明の旧形式は拒否する。
-正常な `game_over` と `screen_stalled` の証拠は `hanjuku_run.terminal` の条件に合わせて検証する。
+1. 受信側（このChatGPTセッション等）で使い捨てRSA鍵と公開証明書を生成する。
+2. `hanjuku-evidence-export.yml` をmainから明示dispatchする。入力は対象runtime ID、
+   公開証明書PEM、`confirm=production`。`latest` や任意パスは指定できない。
+3. workflowはowner名・不変ID、repository名・不変ID、triggering actor、protected main、
+   workflow ref、イベント種別を照合する。実行SHAと現在のmainも取得前後に確認する。
+4. pinned known_hostsでSSH接続し、固定 `hanjuku_evidence docich production <SHA>` だけを呼ぶ。
+   stdinは `{schema: 1, runtime_id, recipient}` の固定JSON。余分なキー、秘密鍵は拒否する。
+5. VMは既存のdeployment lockを共有・非ブロッキングで取得する。本番statusがconfigured、
+   実SHA一致、root-ownedなインストール済み6ファイルが指定commitと一致する場合だけ収集する。
+6. 固定 `/home/ubuntu/docich/run-soren-live` 配下の終了済みランを読み取り、
+   平文ZIPをディスク保存せず暗号化する。stdoutは暗号文だけで、拒否時は固定エラーと空stdout。
+7. ActionsはサイズとDER AuthEnvelopedDataの外側の形式を検査し、`evidence.cms` **だけ**を
+   `hanjuku-evidence-<run_id>-<run_attempt>` artifactへ保存する。保存期間は1日。
+8. 受信側は当該workflow run・attempt・head SHA・実行者・結論・artifact名/IDを照合して取得する。
+   CMSの認証とZIP・対象runtime ID・ファイルSHAの検証後にだけ、0600のZIPを新規保存する。
 
-収集するものは次に限定する。
+artifact ZIPの取得にはGitHub Actionsのartifact download APIまたは接続済みGitHubの
+`download_workflow_artifact`を使う。外側ZIPには `evidence.cms` 1件だけがあることを確認し、
+リンクや重複、過大サイズを拒否して取り出す。内容の自動実行・任意パスへの展開は行わない。
+鍵紛失やセッション消失時は新しい公開証明書で再取得する。秘密鍵をチャット本文に貼らない。
 
-- `hanjuku_run.json`、`hanjuku_bot.json`、調整チャート・調整要求・終了後レビューのJSON。
-- `hanjuku_events`、`hanjuku_decisions`、`hanjuku_chart_history` の現行・previous JSONL。
-- `hanjuku_frames/frame-*.png` と `decision-*.png`（合計240枚まで）。
+**owner限定の起動はartifact自体を非公開にはしない。公開artifactにも平文を置かない。**
+暗号化は送信元署名ではない。公開証明書を知る第三者も暗号文を作れるので、
+復号成功だけで本番由来とせず、取得元のGitHub run/artifactの照合を必須とする。
+Actions側の外形検査はMAC検証ではなく、MAC検証は秘密鍵を持つ受信側で行う。
 
-ROM、セーブ、`.env`、実況文、音声ログ、共有の経験記憶、任意のパスは収集しない。
-JSONのcredential/prompt関連キーは入れ子も伏せる。ただし自由文の完全な秘密検出器ではない。
+## gatewayの導入
+
+`gateway_entry.py` は新operationだけを専用helperへ渡し、その他は既存 `gateway.main()` へ
+そのまま渡す。既存 `gateway.py` のoperation一覧・exec制限・diagnostics予算は変更しない。
+新operationが拒否された際のexec/diagnosticsへのフォールバックはない。
+
+管理者がレビュー済みprotected mainから既存 `ops/vm_actions/install_vm_gateway.sh` を更新実行する。
+既存のActions SSH公開鍵を用い、秘密鍵の再生成・公開は不要。installerは3つの新しいhelperを
+root-ownedで配置し、既存のforced-commandをPython `-I`で起動するentryへ切り替える。
+既存のroot-owned設定・他のauthorized_keysは従来どおり保持する。
+この管理者操作を、通常deployや公開リポジトリの汎用execへ紛れ込ませない。
+
+未更新gatewayは新operationを拒否する。helperの欠落、変更、指定commitとの不一致でも拒否する。
+root-owned設定のproduction rootとoperations stateが既定の固定パスと違う場合も、
+勝手に別のrootへ広げず拒否する。`VMOPS_TESTING`による本番チェックの無効化はない。
+後でこれらのインストール済み6ファイルを変更した場合は、再び管理者の更新が必要になる。
+
+新operationだけにCPU 60秒・アドレス空間512 MiB・実時間120秒・core dump無効を適用する。
+Actions側も実時間と一時ファイル容量を制限する。ゲームや配信のプロセス制限は変更しない。
+
+## 収集内容と検証
+
+`--runtime-id` に明示した1世代だけを対象にする。稼働中の世代、手動停止、
+終了証拠のないクラッシュ、lease不明の旧形式は拒否する。
+`game_over` と `screen_stalled` は `hanjuku_run.terminal` より緩くならない条件で検証する。
+
+対象は `hanjuku_run.json`、`hanjuku_bot.json`、調整チャート・調整要求・終了後レビューのJSON、
+`hanjuku_events` / `hanjuku_decisions` / `hanjuku_chart_history` の現行・previous JSONL、
+`hanjuku_frames/frame-*.png` / `decision-*.png`（合計240枚まで）に限定する。
+ROM・セーブ・`.env`・実況文・音声ログ・共有の経験記憶・任意パスは含めない。
+JSONのcredential/prompt関連キーは入れ子も伏せるが、自由文の完全な秘密検出器ではない。
 **復号したZIPや画像をpublic Issue、PR、Actionsログ・artifactへ転載しない。**
 
-`manifest.json` はruntime/game/generation/lease、保存されていたbot版、ファイルごとの
-source SHA-256とexport SHA-256、欠落ファイル、不正JSONL行、欠落画像SHAを記録する。
-不正JSONL行は元の行番号を保ったエラーレコードに置換し、破損したバイトを転載しない。
-JSON状態ファイルの破損や、別世代・別leaseを示すレコードがある場合は全体を拒否する。
+manifestにはruntime/game/generation/lease、bot版、source/exportファイルSHA-256、
+欠落ファイル、不正JSONL行、欠落画像SHAを記録する。不正JSONLは元の行番号を保つ
+エラーレコードへ置換する。状態JSONの破損や別世代・別leaseのレコードは全体を拒否する。
 
-画像は実装が保存する256×224・RGB・filter 0のPNGだけを受け付ける。
-`rgb_sha256` は画素バイト列のSHAであり、PNGファイル自体のSHAではない。
-イベントの `frame_sha256` / `decision_frame_sha256` と画像をこのRGB SHAで照合する。
-未校正の画像形式、CRC不一致、追加メタデータ、過大な展開結果は拒否する。
-
-`action_plan` と `input_sent` は別レコードのまま残す。前者を実送信・成功と数えない。
-ローテーション済みログと画像リングから全履歴の存在は証明できないため、
-`history_complete` は常に `false`。欠落画像を推測で別の画像へ割り当てない。
+画像は256×224・RGB・filter 0のPNGに限定し、CRC・展開サイズ・追加メタデータを検査する。
+`rgb_sha256` は画素バイト列のSHAで、PNGファイルSHAとは別。
+イベントの `frame_sha256` / `decision_frame_sha256` とこのRGB SHAで対応付ける。
+`action_plan` は実送信ではなく、`input_sent`とは別のまま残す。
+画像リングとローテーションログは全履歴ではないため、`history_complete` は常にfalse。
+欠落画像を推測で別画像へ割り当てない。
 
 ## 読み取り境界
 
-既存の `locks/game-switch.lock` に共有ロックを非ブロッキングで取り、競合時は即拒否する。
-ロックは作成しない。canonicalの安定phaseとactive/retiringを読み、対象世代が稼働側にないことを確認する。
-データのコピー前後にcanonical・終了証拠・各ファイルを照合する。
-ディレクトリfdと `O_NOFOLLOW` を使い、symlink、hardlink、FIFO、ファイルの差し替えを拒否する。
+既存 `locks/game-switch.lock` を共有・非ブロッキングで取得し、競合時は即拒否する。
+ロックは作らず、canonicalの安定phaseとactive/retiringを確認する。
+コピー前後のcanonical・終了証拠・各ファイルを照合し、差し替え・書込み中のsnapshotを拒否する。
+dirfd/O_NOFOLLOWで全パスをたどり、symlink・hardlink・FIFOを拒否する。
+目標3秒、合計32 MiB、ログ単体5 MiB等の上限を適用する。
+単一のディスクreadそのものにハードリアルタイム期限を保証するものではない。
+PNG解析・JSON加工・圧縮・暗号化はgame-switch lockの解放後に行う。
+ゲーム入力、起動停止、配信・音声の変更、runtime状態書換えは行わない。
 
-スナップショットの目標上限は3秒、合計32 MiB。5 MiBを超えるログ、過大な状態JSON・画像、
-過大なフレーム一覧も拒否する。ディスクの単一read自体にハードリアルタイムの期限を保証するものではない。
-PNG解析、JSON加工、ZIP圧縮、暗号化は共有ロックを解放した後に行う。
-既存のgame-switch、agent、コーナー、配信、音声の起動・停止・設定変更は行わない。
-
-## 手動での受け渡し
-
-### 1. 受信側で鍵を用意
-
-受信するオーナーのLinux環境で実行する。秘密鍵をVM、GitHub、Actionsへ渡さない。
-ChatGPT側で受信する場合も、秘密鍵は当該セッションの作業領域だけに保持する。
+## 受信側の準備と復号
 
 ```sh
 umask 077
@@ -69,78 +105,33 @@ openssl req -x509 -newkey rsa:3072 -nodes -days 7 \
   -out hanjuku-receive/recipient.pem
 ```
 
-VMへ渡すのは公開証明書 `recipient.pem` だけ。鍵紛失・セッション消失時は暗号文を復号できないため、
-新しい受信鍵でエクスポートをやり直す。秘密鍵をPRやチャット本文へ貼り付けない。
-
-### 2. 承認済みのVMセッションで書き出す
-
-対象runtime IDは実際に終了したものを確認して指定する。以下のIDは形式例であり、存在を示すものではない。
-`recipient.pem` はオーナーが確認した公開証明書を配置済みとする。
-
-```sh
-umask 077
-mkdir -m 700 "$HOME/hanjuku-export"
-python3 ops/vm_actions/hanjuku_evidence.py \
-  --state-dir run \
-  --runtime-id g7-1234abcd \
-  --recipient "$HOME/hanjuku-export/recipient.pem" \
-  --output "$HOME/hanjuku-export/evidence.cms"
-```
-
-出力先の親はオーナー所有・0700相当が必要。ファイルは0600で排他的に新規作成し、既存ファイルを上書きしない。
-標準出力は固定の成功メッセージだけ。例外の生文字列、ファイル内容、秘密鍵は出さない。
-暗号化はAES-256-GCM + RSA-OAEP（OAEP/MGF1ともSHA-256）。平文ZIPをVMのディスクへ保存しない。
-
-### 3. 暗号文を受信側へ渡す
-
-オーナーが `.cms` だけを既存の認証済み手段で取得する。
-このセッションで公開鍵を生成した場合は、暗号文をこのセッションへ添付する。
-**現時点でこの手順をActionsやChatGPTから自動実行できるとは扱わない。**
-
-暗号化は受信者以外から内容を隠し、暗号文の変更を検出するが、送信元の署名ではない。
-公開証明書を知る第三者も暗号文を作れるため、取得元・対象runtime・ファイルSHAを確認する。
-
-### 4. 受信側で復号・検査
+dispatchに渡すのは `recipient.pem` の内容だけ。IDは実際の終了済み記録を確認して指定する。
+受信した暗号文を外側artifact ZIPから検査して取り出した後、次を実行する。
+以下のruntime IDは形式例であり、実データの存在を意味しない。
 
 ```sh
 python3 ops/vm_actions/receive_hanjuku_evidence.py \
-  --input hanjuku-receive/evidence.cms \
-  --runtime-id g7-1234abcd \
-  --key hanjuku-receive/private.pem \
-  --recipient hanjuku-receive/recipient.pem \
+  --input hanjuku-receive/evidence.cms --runtime-id g7-1234abcd \
+  --key hanjuku-receive/private.pem --recipient hanjuku-receive/recipient.pem \
   --output hanjuku-receive/verified.zip
 ```
 
-復号の認証、ZIPのパス・件数・展開サイズ、要求したruntime ID、manifestと各ファイルのSHA、終了証拠を検証してから、
-0600のZIPを新規作成する。自動展開やコード実行はしない。認証失敗時の部分平文も保存しない。
-これ以降に `manifest.json` の欠落を確認し、判断→実入力→結果→画像を対応させて戦略を分析する。
+AES-256-GCM + RSA-OAEP（OAEP/MGF1ともSHA-256）で暗号化する。
+受信側は認証なしCMS形式を復号前に拒否する。OpenSSLが認証エラー前に出す部分平文も保存しない。
+認証・ZIPのパス/件数/展開サイズ/種別・manifest/各SHA・要求IDの検証後だけ新規保存し、
+既存ファイルの上書きや自動展開はしない。CLI単体の手動exportも引き続き使用できる。
 
-## 自動取得を完成させるための未実装部分
-
-通常のdiagnosticsやSoren91専用フィールドに暗号文を紛れ込ませず、別レビューで専用の固定operationを追加する。
-必要な契約は以下。
-
-1. オーナー限定workflow・production/main・実SHAの一致。入力はruntime IDと公開証明書のみ。
-2. 固定collectorと固定state root。任意パス・任意コマンド・任意送信先・秘密鍵は受け取らない。
-3. 平文をVMから出さず、サイズ上限付き暗号文のみを返す。通常診断の機密境界は不変。
-4. artifactのオーナー限定起動を、artifactそのものの非公開性と混同しない。公開artifactでも中身は暗号文だけ。
-5. 当該runのartifactをChatGPTが取得し、セッション内の鍵で復号・検査する実機受入。
-
-受入ではruntime/state/ゲーム/配信の非変更、対象ID・leaseの一致、画像のRGB SHA対応、
-鍵不一致・破損・欠落の扱いを個別に記録する。実ログ、画像、ROMはPRに添付しない。
-
-## テスト
-
-**PR #1302作成時点ではテストファイルのGitHub書き込みがツール側でブロックされ、未登録。**
-ローカルで25テスト成功を確認したが、このPRのCIで新テストを実行したとは扱わない。
-下のコマンドは `test_hanjuku_evidence.py` 登録後の実行用。未登録のままでは0件で終了するため、
-件数0を成功証跡にしない。テスト登録と再CIをready化の前提とする。
+## テストと実機受入
 
 ```sh
-python3 -m unittest discover -s ops/vm_actions/tests -p 'test_hanjuku_evidence.py' -v
+python3 -m unittest discover -s ops/vm_actions/tests -p 'test_hanjuku_evidence*.py' -v
 ```
 
-登録後は標準ライブラリのunittestとして既存 `VM operations CI` のdiscover対象になる。
-合成ピクセル・合成ログを使用し、ゲーム起動やネットワーク通信は行わない。
-ネイティブ終了判定との片方向互換（exportが元判定より緩くならないこと）と、
-実OpenSSLによる暗号化→復号・改ざん拒否もテストする。
+当初未登録だった25テストを登録済み。専用経路を含め56件の合成テストを実装した。
+既存 `VM operations CI` のunittest discover対象となる。
+合成ログ・画像、ローカル一時Git repository、使い捨て鍵による実OpenSSLを使用する。
+SSH・ゲーム起動・本番接続は行わない。native終了判定との片方向互換はCI上の実ファイルで照合する。
+
+実機受入では、終了済みの明示IDについてworkflowからartifactを取得し、run/attempt/SHAと
+鍵・ID・lease・画像RGB SHA・欠落を確認する。runtimeファイルの非変更と共有プロセスの継続も
+確認し、成功/未確認を区別して記録する。合成テスト成功だけで実ログ互換性を保証しない。
