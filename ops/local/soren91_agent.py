@@ -70,6 +70,11 @@ def environment(config, inherited=None):
         "SOREN91_CDP_BIND_IP": config["host"],
         "SOREN91_LOCAL_FFMPEG_BIN": config["ffmpeg"],
         "SOREN91_CDP_HOST_SESSION_SEC": "2400",
+        # Game-audio gain applied on the Mac ffmpeg audio chain (volume=<gain>).
+        # The game's native tap level reads quiet next to the comment voice;
+        # owner asked to lift it modestly (2026-09-29). Kept explicit here (not
+        # inherited) so a shell override can never change the on-air mix.
+        "SOREN91_LOCAL_AUDIO_GAIN": "1.4",
     })
     return env
 
