@@ -8,6 +8,9 @@ No model or network is used. Delivery is owned by ``hanjuku_narration``.
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 COMMENTARY_VERSION = "hanjuku-commentary-v2-observed-context"
 
 _STEP_LABEL = {
@@ -166,3 +169,71 @@ SPOKEN = frozenset({
     'prompt', 'situation_held', 'gift', 'egg_battle', 'order_substitute', 'independent_menu',
     'chart_adjust_request', 'chart_adjust_applied', 'chart_interim_order', 'chart_interim_hold',
     'castle_lost_observed'})
+
+
+# ---------------------------------------------------------------- game over
+_MAX_DECISIONS = 200000
+
+
+def _decisions(runtime_dir):
+    for name in ('hanjuku_decisions.jsonl', 'hanjuku_decisions.previous.jsonl'):
+        path = Path(runtime_dir) / name
+        if not path.exists() or path.is_symlink():
+            continue
+        with path.open(encoding='utf-8', errors='ignore') as stream:
+            for index, line in enumerate(stream):
+                if index >= _MAX_DECISIONS:
+                    break
+                try:
+                    item = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(item, dict) and item.get('event') == 'decision':
+                    yield item
+
+
+def summarize_recap(runtime_dir, run_state) -> tuple[str, str]:
+    """A grounded game-over recap for the 实況 (owner rule 2026-09-28).
+
+    Looks back over this run's own decision log and run state: the story
+    (how far the chapters went) and the actions (sorties, battles, captures,
+    dismissals). Every number is read from the run's records; nothing is
+    invented, per the module contract.
+    """
+    chapter, captured, launches, discharged, months = 1, set(), 0, 0, []
+    for rec in _decisions(runtime_dir):
+        ch = rec.get('chapter')
+        if type(ch) is int and 1 <= ch <= 99:
+            chapter = max(chapter, ch)
+        kind = rec.get('decision')
+        if kind == 'order_launched':
+            launches += 1
+        elif kind == 'discharge_general':
+            discharged += 1
+        elif kind == 'month_seen':
+            key = rec.get('month')
+            if isinstance(key, str) and '-' in key:
+                year, month = key.split('-', 1)
+                if year.isdigit() and month.isdigit():
+                    months.append((int(year), int(month)))
+        elif kind in ('castle_owned_observed', 'world_map_owners'):
+            events = rec.get('resulting_event')
+            if isinstance(events, str):
+                events = [events]
+            for event in events or ():
+                if isinstance(event, str) and event.startswith('captured:'):
+                    captured.add(event.split(':', 1)[1])
+    try:
+        battles = int((run_state or {}).get('battles_finished') or 0)
+    except (TypeError, ValueError):
+        battles = 0
+    label = None
+    if months:
+        year, month = max(months)
+        label = f'{year}年{month}月'
+    text = f'ゲームオーバー。第{chapter}章まで進み、{len(captured)}城を獲得、{launches}回出撃と{battles}回戦闘を重ね、'
+    text += f'{label}まで戦いました' if label else '進軍を続けました'
+    if discharged:
+        text += f'（将軍の解雇{discharged}回）'
+    text += '。今回の挑戦はここまでです。'
+    return 'game_over_recap', text

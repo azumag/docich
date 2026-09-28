@@ -85,15 +85,21 @@ def _deliver(g, runtime_dir: Path, item: dict, speaker: str, enqueue, max_age):
         canonical = read_canonical(g.state_dir)
         check_fence(AgentFence(**identity), canonical.get('active'))
         run = load(runtime_dir, identity)
-        if not run or run.get('terminal_reason') or run.get('terminal_candidate'):
+        if not run or ((run.get('terminal_reason') or run.get('terminal_candidate'))
+                       and not item.get('terminal_recap')):
             return 'skipped:terminal'
         return 'ready'
 
     try:
         status = shared_section(g.state_dir, deliver_active, timeout_s=0)
         if status == 'ready':
+            # The game-over recap is a fixed statement of a finished run:
+            # deliver it without the runtime fence so the queue-side
+            # identity/expiry recheck cannot drop it during teardown.
+            fence = None if item.get('terminal_recap') else {
+                **identity, 'expires_at': item['at'] + max_age}
             enqueue(g, item['text'], context='hanjuku_commentary', speaker=speaker,
-                    runtime_fence={**identity, 'expires_at': item['at'] + max_age})
+                    runtime_fence=fence)
             status = 'enqueued'
     except FenceLost:
         status = 'skipped:fence_lost'
@@ -113,9 +119,14 @@ def _deliver(g, runtime_dir: Path, item: dict, speaker: str, enqueue, max_age):
 
 
 def consider(g, game, runtime_dir: Path, *, terminal=False, now=None, enqueue=None):
-    """Claim new candidates and start at most one enqueue. Never blocks on audio."""
+    """Claim new candidates and start at most one enqueue. Never blocks on audio.
+
+    At a terminal only the ``terminal_recap`` candidate (the game-over recap,
+    owner rule 2026-09-28) may be claimed; ordinary lines stay silent so a
+    dying run never narrates stale situations.
+    """
     cfg = settings(game)
-    if not cfg['enabled'] or terminal:
+    if not cfg['enabled']:
         return None
     now = time.time() if now is None else now
     lock_path = runtime_dir / 'hanjuku_narration.lock'
@@ -140,6 +151,8 @@ def consider(g, game, runtime_dir: Path, *, terminal=False, now=None, enqueue=No
             reason = None
             if not text:
                 reason = 'held'
+            elif terminal and not item.get('terminal_recap'):
+                reason = 'terminal'
             elif chosen is not None:
                 reason = 'superseded'
             elif not isinstance(item.get('at'), (int, float)) or now - item['at'] > cfg['max_age_s']:

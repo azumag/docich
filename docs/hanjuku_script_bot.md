@@ -273,6 +273,11 @@ runtimeの `audio_volume.json` に記録する。
   120字超。送信直前にも完全なruntime identity・終了状態・期限を再検証する。
   キューのsidecarへidentityとexpires_atを渡し、再生側でもclaim時・再生直前に照合して
   終了済み・別lease・期限切れを破棄する。結果は `hanjuku_narration.jsonl` に残す。
+- ゲームオーバー時の振り返り実況（オーナー指示 2026-09-28）: `terminal_reason=='game_over'` の
+  確定時に、当該ランの判断記録とラン状態だけから（第N章まで・獲得した城・出撃/戦闘回数・最終月・解雇回数を数えた）
+  1行を `terminal_recap` 付き候補として `hanjuku_run.observe` 内で書く（実況の失敗で終了処理は塞がない）。
+  terminal中は通常候補をすべて沈黙させ、この振り返りだけを `runtime_fence` なしで即時配信する
+  （teardown中のidentity再検証・期限で落ちないため）。
 
 ## 改善用ログ
 

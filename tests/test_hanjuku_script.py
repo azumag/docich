@@ -583,3 +583,34 @@ def test_third_image_resets_two_image_stasis(tmp_path):
     assert result['terminal_reason'] is None and result['unchanged_seconds']==0
     result=hanjuku_run.observe(tmp_path,IDENTITY,a,now=300,wall=1300)
     assert result['terminal_reason'] is None      # a fell out of the two recent images
+
+
+def test_game_over_writes_a_grounded_recap_candidate(tmp_path):
+    """Owner rule 2026-09-28: a game over narrates a recap of the run."""
+    title = title_frame()
+    for now in range(4):
+        hanjuku_run.observe(tmp_path, IDENTITY, title, now=now, wall=1000 + now)
+    run = hanjuku_run.observe(tmp_path, IDENTITY, frame(), now=4, wall=1004)
+    from docich.game_switch import atomic_write_json
+    atomic_write_json(tmp_path / hanjuku_run.RUN_FILE,
+                      {**run, 'name_entered': True, 'gameplay_seen': True})
+    (tmp_path / 'hanjuku_decisions.jsonl').write_text(
+        json.dumps({'event': 'decision', 'decision': 'month_seen', 'month': '1-5'},
+                   ensure_ascii=False) + '\n' +
+        json.dumps({'event': 'decision', 'decision': 'order_launched', 'chapter': 1},
+                   ensure_ascii=False) + '\n')
+    for now in (6, 7):
+        hanjuku_run.observe(tmp_path, IDENTITY, title, now=now, wall=1000 + now)
+    run = hanjuku_run.observe(tmp_path, IDENTITY, title, now=8, wall=1008)
+    assert run['terminal_reason'] == 'game_over'
+    lines = [json.loads(x) for x in (tmp_path / 'hanjuku_commentary.jsonl').read_text().splitlines()]
+    recap = [x for x in lines if x.get('terminal_recap')]
+    assert len(recap) == 1
+    item = recap[0]
+    assert item['key'] == 'game_over_recap' and item['seq'] == 1
+    assert item['game'] == IDENTITY['game'] and item['runtime_id'] == IDENTITY['runtime_id']
+    assert '第1章' in item['text'] and '1年5月' in item['text'] and '1回出撃' in item['text']
+    assert item['text'].startswith('ゲームオーバー。') and len(item['text']) <= 120
+    # The terminal latch returns the old state: never a second recap.
+    hanjuku_run.observe(tmp_path, IDENTITY, title, now=9, wall=1009)
+    assert len((tmp_path / 'hanjuku_commentary.jsonl').read_text().splitlines()) == 1
