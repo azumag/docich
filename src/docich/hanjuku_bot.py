@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v47-camp-tent-body'
+BOT_VERSION = 'hanjuku-chart-v48-select-focus-y-markers'
 
 
 # Native title copyright rows, measured from the owner's ROM. A strict match

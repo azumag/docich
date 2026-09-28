@@ -516,7 +516,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v47-camp-tent-body'
+    assert state['bot_version'] == 'hanjuku-chart-v48-select-focus-y-markers'
     assert '_records' not in state['policy']
 
 
@@ -2181,3 +2181,22 @@ def test_map_step_does_not_start_a_camp_recall_while_a_y_jump_view_is_opening():
     policy.map_step(screen, mem, frame)
     assert 'recall' not in mem
     assert not [r for r in mem['_records'] if r['decision'] == 'camp_found']
+
+
+def test_map_step_refocuses_on_the_hero_periodically():
+    # Owner rule (2026-09-28): periodically SELECT to the hero's position.
+    # The first map frame only seeds the interval; the press comes later.
+    frame = _own_roof_frame()
+    mem = {'chapter': 1, 'variant': 'chart', 'picked': [], '_records': [],
+           'tick': 500, 'world_map_tick': 500}
+    screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(80, 90))
+    actions = policy.map_step(screen, mem, frame)
+    assert actions != [policy.pad('select')]
+    assert mem['select_focus_tick'] == 500
+    mem['tick'] = 500 + policy.SELECT_FOCUS_INTERVAL
+    mem['_records'] = []
+    actions = policy.map_step(screen, mem, frame)
+    assert actions == [policy.pad('select')]
+    assert 'select_focus' in [r['decision'] for r in mem['_records']]
+    assert mem['nav_last'] is None
+    assert mem['uncertain'] is True
