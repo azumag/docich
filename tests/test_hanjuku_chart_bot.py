@@ -516,7 +516,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v48-select-focus-y-markers'
+    assert state['bot_version'] == 'hanjuku-chart-v49-recall-stage-budget'
     assert '_records' not in state['policy']
 
 
@@ -2129,8 +2129,10 @@ def test_camp_recall_walks_cursor_menu_and_own_castle(monkeypatch):
     assert [r['decision'] for r in mem['_records']] == ['camp_found']
 
     screen = Screen(lines=[], hand=None, text='', kind='map', cursor=(27, 67))
+    mem['recall']['steps'] = 89                      # the long scroll may eat the budget
     assert policy.camp_recall_step(screen, mem, frame) == [policy.pad('a')]
     assert mem['recall']['stage'] == 'menu'
+    assert mem['recall']['steps'] == 0               # each stage restarts the budget
     assert [r['decision'] for r in mem['_records']][-1] == 'camp_enter'
 
     window = Screen(lines=[], hand=None, text='いどう ステータス キャンプ きかん', kind='text')
@@ -2138,6 +2140,7 @@ def test_camp_recall_walks_cursor_menu_and_own_castle(monkeypatch):
         assert policy.camp_recall_step(window, mem, frame) == [policy.pad('down')]
     assert policy.camp_recall_step(window, mem, frame) == [policy.pad('a')]
     assert mem['recall']['stage'] == 'dest'
+    assert mem['recall']['steps'] == 0               # destination gets a full budget too
 
     monkeypatch.setattr(policy, 'castle_roofs',
                         lambda frame, exclude=None: [{'kind': 'own', 'target': (165, 117), 'clipped': False}])

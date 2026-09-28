@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v48-select-focus-y-markers'
+BOT_VERSION = 'hanjuku-chart-v49-recall-stage-budget'
 
 
 # Native title copyright rows, measured from the owner's ROM. A strict match

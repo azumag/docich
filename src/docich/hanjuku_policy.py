@@ -1532,6 +1532,7 @@ def camp_recall_step(screen: Screen, mem, frame):
         dy = state['target'][1] - cursor[1]
         if abs(dx) <= RECALL_ARRIVE_PX and abs(dy) <= RECALL_ARRIVE_PX:
             state['stage'] = 'menu'
+            state['steps'] = 0        # each stage gets the full observation budget
             _record(mem, 'camp_enter', observed_metric={'camp': list(state['target'])},
                     reason='野営にカーソルを合わせて決定し、きかんを選ぶ')
             return [pad('a')]
@@ -1546,6 +1547,7 @@ def camp_recall_step(screen: Screen, mem, frame):
             state['downs'] = downs + 1
             return [pad('down')]   # いどう → ステータス → キャンプ → きかん
         state['stage'] = 'dest'
+        state['steps'] = 0            # each stage gets the full observation budget
         return [pad('a')]
     if stage == 'dest':
         if screen.kind != 'map_target':
