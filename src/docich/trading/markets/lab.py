@@ -122,7 +122,9 @@ def advance_challenger(book: PaperBook, root: Path, quotes: list, *, now: float,
     policies = {name: Policy(**candidate[name]) for name in ("baseline", "policy")}
     exit_comparison = validate_exit_comparison(policies["baseline"], policies["policy"])
     if now <= created_at:
-        return {"status": "awaiting_future_quotes", "id": candidate["id"], "as_of": now}
+        # Preserve the existing status contract without consuming early quotes.
+        return {"status": "collecting", "reason": "awaiting_future_quotes",
+                "id": candidate["id"], "as_of": now}
     # A cached pre-proposal quote is not prospective evidence, even if still fresh.
     quotes = [q for q in quotes if q.ts > created_at]
     folder = root / "experiments" / candidate["id"]
