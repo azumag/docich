@@ -406,6 +406,42 @@ def test_corner_unknown_observation_failure_is_not_silently_retried(manager, mon
         manager._wait_hanjuku({'status':'active','game':'hanjuku-hero','bot_identity':dict(IDENTITY)})
 
 
+def test_a_presentation_still_starting_is_retried_within_a_bound(manager, monkeypatch):
+    """Issue #1280 (g433 20:22): one 'not ready' killed the manager on the first try."""
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from docich.naming import runtime_directory
+    from docich.retro_corner import PRESENTATION_NOT_READY, PRESENTATION_RETRY_LIMIT
+    import inspect
+    from docich.adapters import retroarch
+    assert PRESENTATION_NOT_READY in inspect.getsource(retroarch.RetroArchAdapter._source)
+    state={'status':'active','game':'hanjuku-hero','previous_game':'sorengame','bot_identity':dict(IDENTITY)}
+    runtime=runtime_directory(manager.g.state_dir,IDENTITY['runtime_id'])
+    runtime.mkdir(parents=True)
+    observe=Mock(side_effect=[AdapterError(PRESENTATION_NOT_READY)]*3+[SimpleNamespace(meta={'hanjuku':{
+        'phase':'title','terminal_reason':'game_over','actions_sent':5}})])
+    manager.store.canonical.load=Mock(return_value=({'active':IDENTITY},False))
+    monkeypatch.setattr('docich.agent.fence.shared_section',lambda root,fn:fn())
+    monkeypatch.setattr('docich.adapters.make_adapter',lambda *a,**kw:SimpleNamespace(observe=observe))
+    monkeypatch.setattr(manager,'_rotation_stop_result',lambda:None)
+    monkeypatch.setattr(manager,'_read_state',lambda:dict(state))
+    monkeypatch.setattr(manager,'_write_state',lambda update:state.update(update))
+    monkeypatch.setattr(manager,'_sleep',Mock())
+    monkeypatch.setattr(manager,'_finish_locked',Mock(return_value='restored'))
+    monkeypatch.setattr('docich.hanjuku_run.terminal',Mock(return_value={
+        'terminal_evidence':'title_return_after_gameplay','generation':IDENTITY['generation']}))
+    assert manager._wait_hanjuku(state)=='restored' and observe.call_count==4
+    reasons=[json.loads(line)['reason'] for line in (runtime/'hanjuku_events.jsonl').read_text().splitlines()
+             if json.loads(line).get('event')=='observation_retry']
+    assert reasons==['presentation_not_ready']*3
+    # A presenter that never becomes ready still fails closed after the bound.
+    observe=Mock(side_effect=AdapterError(PRESENTATION_NOT_READY))
+    monkeypatch.setattr('docich.adapters.make_adapter',lambda *a,**kw:SimpleNamespace(observe=observe))
+    with pytest.raises(AdapterError,match='not ready'):
+        manager._wait_hanjuku(dict(state))
+    assert observe.call_count==PRESENTATION_RETRY_LIMIT+1
+
+
 def test_optional_concert_exits_instead_of_selecting_the_same_track():
     rgb=bytearray(frame((160,110,60)).rgb)
     for y in range(150,208):

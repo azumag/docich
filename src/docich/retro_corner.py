@@ -350,6 +350,10 @@ def _strategy_value_text(value) -> str:
     return text if len(text) <= 32 else text[:29] + "…"
 
 
+PRESENTATION_NOT_READY = "RetroArch native presentation is not ready"
+PRESENTATION_RETRY_LIMIT = 45  # x 2 s: a presenter still starting under load (Issue #1280)
+
+
 class RetroCornerManager:
     def __init__(
         self,
@@ -1561,7 +1565,9 @@ class RetroCornerManager:
         from .game_switch import DeadlineExceededError, GameSwitchBusyError
         from .hanjuku_run import event
         from .naming import runtime_directory
+        from .adapters.base import AdapterError
         next_repair = 0.
+        not_ready = 0
         owned_runtime = state.get('bot_runtime_id')
         owned_identity = state.get('bot_identity')
         if not isinstance(owned_identity, dict):
@@ -1597,6 +1603,22 @@ class RetroCornerManager:
                 })
                 self._sleep(2.)
                 continue
+            except AdapterError as exc:
+                # g433 (2026-09-28 20:22): one "presentation is not ready"
+                # right after the switch killed the manager on the first try
+                # and left canonical on a runtime nobody watched (Issue #1280).
+                # Only this exact state is retried, and only for a bounded
+                # window; any other adapter error still fails closed.
+                if str(exc) != PRESENTATION_NOT_READY or not_ready >= PRESENTATION_RETRY_LIMIT:
+                    raise
+                not_ready += 1
+                event(runtime_directory(self.g.state_dir, owned_runtime), {
+                    'event': 'observation_retry', 'at': time.time(),
+                    'reason': 'presentation_not_ready', 'attempt': not_ready,
+                })
+                self._sleep(2.)
+                continue
+            not_ready = 0
             run = observation.meta.get('hanjuku') or {}
             with self._locked():
                 latest = self._read_state()
