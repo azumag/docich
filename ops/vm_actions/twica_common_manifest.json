@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "component": "twica_common",
+  "owner": "direct_stream",
+  "process_module": "docich.twica_renderer_service",
+  "game_lifecycle_owned": false,
+  "optional": true,
+  "default_enabled": false,
+  "single_instance_locks": ["direct_stream.lock", "renderer-service.lock", "publisher.lock"],
+  "private_state_files": ["owner.json", "renderer.json", "compositor.json"],
+  "transient_frame_file": "frame.rgba",
+  "diagnostics_entrypoint": "docich.twica_control status",
+  "fixed_gateway_operator": "ops/vm_actions/twica_common_operation.sh",
+  "renderer_failure_policy": "transparent_without_encoder_restart",
+  "initial_activation_requires_encoder_input_reconfiguration": true
+}

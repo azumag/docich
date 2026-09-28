@@ -1,0 +1,74 @@
+name: TwiCa common overlay operation
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        type: choice
+        required: true
+        default: status
+        options: [status, prepare, activate, rollback]
+      confirm:
+        description: Type production for prepare, activate, or rollback
+        type: string
+        default: ''
+permissions:
+  contents: read
+concurrency:
+  group: vm-operations-${{ github.repository }}
+  cancel-in-progress: false
+jobs:
+  operate:
+    if: ${{ github.repository == 'azumag/docich' && github.repository_id == 1327276249 && github.actor_id == 9018513 && github.triggering_actor == 'azumag' && github.ref == 'refs/heads/main' && github.ref_protected == true }}
+    environment: vm-operations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: main
+          persist-credentials: false
+          submodules: false
+      - name: Fixed owner operation through the existing VM gateway
+        env:
+          OPERATION: ${{ inputs.operation }}
+          CONFIRM: ${{ inputs.confirm }}
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          VM_SSH_PORT: ${{ secrets.VM_SSH_PORT }}
+          VM_SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          VM_SSH_KNOWN_HOSTS: ${{ secrets.VM_SSH_KNOWN_HOSTS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$OPERATION" in status|prepare|activate|rollback) ;; *) exit 64 ;; esac
+          [[ "$OPERATION" == status || "$CONFIRM" == production ]] || exit 64
+          sha=$(git rev-parse HEAD)
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$VM_SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]
+          [[ "$VM_SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          port="${VM_SSH_PORT:-22}"
+          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+          install -m 700 -d "$RUNNER_TEMP/twica-ssh"
+          printf '%s\n' "$VM_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/twica-ssh/key"
+          printf '%s\n' "$VM_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/twica-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/twica-ssh/"*
+          trap 'rm -f "$RUNNER_TEMP/twica-ssh/key" "$RUNNER_TEMP/twica-ssh/known_hosts"' EXIT
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/twica-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/twica-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          bash -n ops/vm_actions/twica_common_operation.sh
+          set +e
+          { printf 'set -- %s\n' "$OPERATION"; cat ops/vm_actions/twica_common_operation.sh; } |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $sha" >/dev/null
+          rc=$?
+          set -e
+          if [[ "$OPERATION" == status ]]; then
+            case "$rc" in
+              0) echo 'TwiCa common foreground: active and fresh' ;;
+              10) echo 'TwiCa common foreground: legacy / not activated' ;;
+              11) echo '::warning::TwiCa common foreground: degraded or unavailable' ;;
+              12) echo '::warning::TwiCa common foreground: blocked / draining' ;;
+              *) echo '::error::TwiCa status unavailable'; exit 1 ;;
+            esac
+          else
+            [[ "$rc" == 0 ]] || { echo '::error::TwiCa operation failed; no raw VM output is published'; exit 1; }
+            echo "TwiCa fixed operation completed: $OPERATION"
+          fi
