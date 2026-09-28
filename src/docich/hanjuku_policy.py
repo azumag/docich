@@ -389,6 +389,31 @@ def nav_step(screen: Screen, mem, frame, goal, goal_name=None):
         return None
     if _nav_stuck(screen, mem, world, s):
         return None
+    if mem.get('uncertain') and not mem.get('anchor'):
+        mem['unanchored'] = int(mem.get('unanchored') or 0) + 1
+    else:
+        mem.pop('unanchored', None)
+    hero_at = _hero_castle(mem)
+    tick = int(mem.get('tick') or 0)
+    if (hero_at and mem.get('uncertain') and int(mem.get('unanchored') or 0) >= SELECT_AFTER
+            and tick - int(mem.get('select_tick') if mem.get('select_tick') is not None else -SELECT_EVERY)
+            >= SELECT_EVERY
+            and screen.cursor and not screen.marker):
+        # Owner hint: SELECT to find the cursor again. SELECT centres the
+        # camera on the hero; with the hero's castle known, the cursor is on
+        # that castle's cell, so the lost cell is re-placed at once instead
+        # of wandering (g421: 11 minutes of cursor walking in 2 hours).
+        mem['select_used'] = True
+        mem['select_tick'] = tick
+        mem['nav_last'] = None
+        mem['cursor'] = list(chart.castles(mem.get('chapter') or 0)[hero_at])
+        mem.pop('nav_search', None)
+        mem.pop('nav_search_leg', None)
+        _record(mem, 'select_to_hero', screen=screen.kind, target=hero_at,
+                observed_metric={'cursor_before': list(world), 'screen_cursor': list(s),
+                                 'hero_castle': hero_at, 'roofs': mem.get('roofs_seen')},
+                reason='位置を見失ったためSELECTで主人公の城へカーソルを戻し、その城の座標から再開する')
+        return [pad('select')]
     if (mem.get('uncertain') and mem.get('nav_search') and not mem.get('select_used')
             and screen.cursor and not screen.marker):
         # SELECT centres the camera on the hero, who is usually at or near a
@@ -1201,6 +1226,8 @@ def _y_jump_step(mem, frame):
         mem['y_jump_return'] = jump['mode']
         if jump['mode'] == 'target':
             mem.setdefault('y_jumped', {})[jump['step']] = jump['goal']
+        mem['near_goal'] = {'step': jump['step'], 'goal': jump['goal'], 'mode': jump['mode']}
+        (mem.get('align_steps') or {}).pop(f"{jump['step']}:{jump['mode']}", None)
         mem.pop('menu_miss', None)            # a fresh placement, not the missed cell
         mem.pop('menu_hold', None)
         mem['cursor'] = [gx, gy]
@@ -1297,6 +1324,16 @@ def _hold_off_castle(screen, mem, order) -> bool:
         return False
     held[order['step']] = count + 1
     mem['uncertain'] = True
+    if ((mem.get('chapter') or 0) in Y_JUMP_OFFSET
+            and (mem.get('y_jumps') or {}).get(f"{order['step']}:map", 0) < Y_JUMP_LIMIT):
+        # A Y jump re-places the cursor directly; the search wandered for
+        # minutes (g421). Dropping the cell makes the next map frame jump.
+        mem.pop('cursor', None)
+        mem.pop('anchor', None)
+        _record(mem, 'source_not_under_cursor', chart_step=order['step'], screen=screen.kind,
+                observed_metric={'screen_cursor': list(_cursor(screen)), 'held': count + 1},
+                reason='出撃元に着いたと推定したがカーソル位置に城の屋根が無いため全体マップで選び直す')
+        return True
     mem['nav_search'] = True
     mem.pop('nav_search_leg', None)
     mem.pop('anchor', None)
@@ -1305,6 +1342,68 @@ def _hold_off_castle(screen, mem, order) -> bool:
                              'roofs': mem.get('roofs_seen'), 'held': count + 1},
             reason='出撃元に着いたと推定したがカーソル位置に城の屋根が無いため、決定せず内陸で再特定する')
     return True
+
+
+SELECT_AFTER = 2               # unanchored map frames before SELECT re-places the cursor
+SELECT_EVERY = 40              # observations between hero-castle SELECTs
+
+
+def _hero_castle(mem):
+    """The owned castle the hero is last known to stand in, or None.
+
+    Known from a read general list, or the castle the hero last took. A
+    recent sortie of the hero means he is out in the field.
+    """
+    if NAME in _en_route(mem)[0]:
+        return None
+    owned = _owned(mem)
+    castles = chart.castles(mem.get('chapter') or 0)
+    for castle, present in (mem.get('garrison') or {}).items():
+        if castle in owned and castle in castles and NAME in (present or ()):
+            return castle
+    return None
+
+
+ALIGN_RADIUS = 28              # screen px: a roof this close to the cursor after a Y jump
+ALIGN_TOL = 3                  # cursor-to-roof-target distance that selects the castle
+ALIGN_LIMIT = 10               # aligning steps before the jump is redone
+
+
+def _align_on_roof(screen, mem, frame, kinds, key):
+    """Walk the cursor onto the nearest roof of the expected kind, on screen.
+
+    After a Y jump the cursor lands 0-9 px from the castle. Trusting the
+    world estimate there dropped into roof-voting and the inland search
+    (g421 14:45: source_not_under_cursor -> SELECT -> 20+ minutes of
+    wandering). The roof in view is the ground truth: steer by its offset.
+    Returns 'on', a list of pad actions, or None (no such roof / too long).
+    """
+    s = _cursor(screen)
+    if not s or frame is None:
+        return None
+    near = [(abs(r['target'][0] - s[0]) + abs(r['target'][1] - s[1]), r) for r in castle_roofs(frame)
+            if r['kind'] in kinds and abs(r['target'][0] - s[0]) <= ALIGN_RADIUS
+            and abs(r['target'][1] - s[1]) <= ALIGN_RADIUS]
+    if not near:
+        return None
+    roof = min(near, key=lambda item: item[0])[1]
+    dx, dy = roof['target'][0] - s[0], roof['target'][1] - s[1]
+    if abs(dx) <= ALIGN_TOL and abs(dy) <= ALIGN_TOL:
+        return 'on'
+    steps = mem.setdefault('align_steps', {})
+    steps[key] = steps.get(key, 0) + 1
+    if steps[key] > ALIGN_LIMIT:
+        return None
+    actions = []
+    for d, neg, pos in ((dx, 'left', 'right'), (dy, 'up', 'down')):
+        if abs(d) > ALIGN_TOL:
+            actions.append(pad(pos if d > 0 else neg, min(abs(d), MAX_HOLD_FRAMES)))
+    return actions
+
+
+def _near_goal(mem, order, name, mode):
+    near = mem.get('near_goal') or {}
+    return near.get('step') == order['step'] and near.get('goal') == name and near.get('mode') == mode
 
 
 MENU_HOLD_LIMIT = 10           # arrived-but-unanchored holds after a failed castle menu
@@ -1481,6 +1580,19 @@ def map_step(screen: Screen, mem, frame):
                 reason=order['note'])
     source = _source(order, mem)
     goal = chart.castles(mem['chapter'])[source]
+    if screen.cursor and not screen.marker and _near_goal(mem, order, source, 'map'):
+        aligned = _align_on_roof(screen, mem, frame, ('own',), f"{order['step']}:map")
+        if aligned == 'on':
+            mem.pop('near_goal', None)
+            mem['cursor'], mem['uncertain'] = list(goal), False
+            mem['expect_menu'] = True
+            return _deploy_input(screen, mem, order, [pad('a')], '全体マップで選んだ出撃元の屋根に合わせて城を選択')
+        if aligned:
+            return _deploy_input(screen, mem, order, aligned, '全体マップで選んだ出撃元の屋根へカーソルを合わせる')
+        mem.pop('near_goal', None)
+        mem.pop('cursor', None)                  # no roof near: jump again rather than search
+        _record(mem, 'align_failed', chart_step=order['step'], target=source, screen=screen.kind,
+                reason='全体マップで選んだ出撃元の近くに屋根が無いため全体マップを開き直す')
     if screen.cursor and not screen.marker and _want_y_jump(mem, order, source, 'map'):
         return _start_y_jump(mem, order, source, 'map')
     result = nav_step(screen, mem, frame, goal, source)
@@ -1538,9 +1650,28 @@ def target_step(screen: Screen, mem, frame):
                 or (context.get('observed_metric') or {}).get('cards') != sorted(order['cards'])):
             return _hold_deploy(screen, mem, order, 'ボス出撃の主人公と携行品の確認証拠がないため目標確定を保留')
     goal = chart.castles(mem['chapter'])[order['target']]
-    if screen.marker and _want_y_jump(mem, order, order['target'], 'target'):
+    result = None
+    if screen.marker and _near_goal(mem, order, order['target'], 'target'):
+        if order['target'] == chart.boss_castle(mem.get('chapter') or 0):
+            aligned = 'on'                        # the tower has no own/enemy roof
+        else:
+            kinds = ('own',) if order['target'] in _owned(mem) else ('enemy',)
+            aligned = _align_on_roof(screen, mem, frame, kinds, f"{order['step']}:target")
+        if aligned == 'on':
+            mem.pop('near_goal', None)
+            mem['cursor'], mem['uncertain'] = list(goal), False
+            result = 'arrived'
+        elif aligned:
+            return _deploy_input(screen, mem, order, aligned, '全体マップで選んだ出撃先の屋根へマーカーを合わせる')
+        else:
+            mem.pop('near_goal', None)
+            mem.pop('cursor', None)
+            _record(mem, 'align_failed', chart_step=order['step'], target=order['target'],
+                    screen=screen.kind, reason='全体マップで選んだ出撃先の近くに屋根が無いため全体マップを開き直す')
+    if result is None and screen.marker and _want_y_jump(mem, order, order['target'], 'target'):
         return _start_y_jump(mem, order, order['target'], 'target')
-    result = nav_step(screen, mem, frame, goal)
+    if result is None:
+        result = nav_step(screen, mem, frame, goal)
     if result == 'arrived' and not _target_roof_under_marker(screen, mem, frame, order):
         return _unverified_target(screen, mem, order)
     if result == 'arrived':
@@ -3665,6 +3796,7 @@ def observe_events(screen: Screen, mem):
                         'target_miss', 'target_cancel', 'menu_hold', 'card_scroll',
                         'world_map_tick', 'world_map_due', 'world_map_wait', 'home_lost',
                         'y_jump', 'y_jumps', 'y_jump_return', 'y_jumped', 'boss_absent',
+                        'near_goal', 'align_steps', 'unanchored', 'select_tick',
                         'select_used',
                         'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
                         'indep_menu_key', 'indep_menu_action',
