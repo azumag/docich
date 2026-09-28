@@ -684,3 +684,25 @@ def test_the_failed_menu_hold_is_bounded_and_cleared_by_a_y_jump(monkeypatch):
     held = [policy.map_step(map_screen(140, 120), mem, FRAME) for _ in range(policy.MENU_HOLD_LIMIT)]
     assert all(h == [] for h in held)
     assert policy.map_step(map_screen(140, 120), mem, FRAME) == [policy.pad('a')]
+
+
+def test_the_map_cursor_is_found_next_to_solid_white_snow():
+    """g419 09:26: snow matched the bracket pattern everywhere; 220 frames read no cursor."""
+    from docich.hanjuku_screen import parse
+    px = bytearray(256 * 224 * 3)
+
+    def put(x, y, rgb):
+        i = (y * 256 + x) * 3
+        px[i:i + 3] = bytes(rgb)
+    for x in range(256):
+        for y in range(224):
+            put(x, y, (240, 240, 240) if x >= 150 else (8, 149, 255))    # snow | sea
+    cx, cy = 90, 110                                                    # cursor top-left
+    for yy in (cy + 1, cy + 14):
+        for xx in (*range(cx + 2, cx + 5), *range(cx + 11, cx + 14)):
+            put(xx, yy, (255, 255, 255))
+    for d in (2, 3, 4, 10, 11, 12):
+        put(cx + 1, cy + d, (255, 255, 255))
+        put(cx + 14, cy + d, (255, 255, 255))
+    screen = parse(Frame(256, 224, bytes(px)), phase='field')
+    assert screen.cursor == (cx, cy)

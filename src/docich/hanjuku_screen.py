@@ -90,8 +90,14 @@ def _free_cursor(masks_white, frame: Frame):
             bottom = masks_white[y + 13]
             if not (_bits(bottom, width, x + 2, 3) and _bits(bottom, width, x + 11, 3)):
                 continue
-            if all(_bits(masks_white[y + d], width, x + 1, 1) for d in (1, 2, 3)):
-                found.append((x, y - 1))
+            if not all(_bits(masks_white[y + d], width, x + 1, 1) for d in (1, 2, 3)):
+                continue
+            # Each corner bar is exactly 3 px with a dark pixel on both sides.
+            # Snow (winter maps) is solid white and matched everywhere, so the
+            # single real cursor was never unique (g419 09:26: 220 unread frames).
+            if any(_bits(line, width, x + k, 1) for line in (row, bottom) for k in (1, 5, 10, 14)):
+                continue
+            found.append((x, y - 1))
     return found[0] if len(found) == 1 else None
 
 
