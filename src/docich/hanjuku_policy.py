@@ -1532,6 +1532,14 @@ def map_step(screen: Screen, mem, frame):
                 observed_metric={'menu_miss': mem['menu_miss'], 'cursor': mem.get('cursor'),
                                  'screen_cursor': list(_cursor(screen) or ()),
                                  'roofs': mem.get('roofs_seen')})
+    # Owner rule (2026-09-28): a camp (野営) seen on screen is recalled, even
+    # while an order is being driven (g421: a visible camp produced no
+    # camp_found because the recall only started on chartless idle maps).
+    # A Y jump in flight has already returned above (_drop_stale_y_jump), so
+    # a jump can neither be hijacked nor block a later recall.
+    recall = camp_recall_step(screen, mem, frame)
+    if recall is not None:
+        return recall
     order = _order(mem)
     if order is not None and (mem.get('source_miss') or {}).get(order['step'], 0) >= SOURCE_MISS_LIMIT:
         _give_up_source(mem, order)
@@ -1568,9 +1576,6 @@ def map_step(screen: Screen, mem, frame):
             _off_chart(mem)
             order = next_order(mem)
         if order is None:
-            recall = camp_recall_step(screen, mem, frame)
-            if recall is not None:
-                return recall
             update_world(screen, mem, frame)
             return []           # nothing charted: let real time advance
         mem['active'] = order['step']
