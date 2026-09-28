@@ -40,7 +40,7 @@ from docich.semantic_decision import transport as _transport
 from docich.semantic_decision.routes import parse_route_chain, resolve_route
 from docich.semantic_decision.validator import dumps, number, strict_json
 
-from . import heuristic
+from . import heuristic, screen
 
 RUBRIC_VERSION = 'comment-body-v1'
 MAX_COMMENTS = 8
@@ -76,7 +76,7 @@ NO_COOLDOWN_STATUSES = frozenset({'missing_key', 'invalid_config', 'input_limit'
 # Not 'timeout' (the batch's latency budget is spent), nor busy/state/input
 # facts that another route would not change.
 FAILOVER_STATUSES = frozenset(set(COOLDOWNS) - {'timeout'} | {'cooldown', 'missing_key'})
-_IMPLEMENTATION_FILES = (Path(__file__), Path(heuristic.__file__))
+_IMPLEMENTATION_FILES = (Path(__file__), Path(heuristic.__file__), Path(screen.__file__))
 
 
 @dataclass(frozen=True)
@@ -85,9 +85,14 @@ class Config:
     min_confidence: float = 0.70
     route: str = 'direct'
     fallback: str | None = None
+    screen_enabled: bool = False
+    screen_min_confidence: float = 0.70
 
     def __post_init__(self):
         if type(self.timeout_ms) is not int or not 50 <= self.timeout_ms <= 5000:
+            raise ValueError('invalid_config')
+        if (type(self.screen_enabled) is not bool
+                or not number(self.screen_min_confidence)):
             raise ValueError('invalid_config')
         if not number(self.min_confidence):
             raise ValueError('invalid_config')
@@ -104,13 +109,17 @@ class Config:
     @classmethod
     def from_env(cls, env):
         chain = parse_route_chain(env.get('DOCICH_JEV_ROUTE', 'direct'))
+        screen_enabled, screen_min_confidence = screen.settings(env)
         return cls(int(env.get('COMMENT_CLASSIFIER_JEV_TIMEOUT_MS', '1500')),
                    float(env.get('COMMENT_CLASSIFIER_JEV_MIN_CONFIDENCE', '0.70')),
-                   chain[0], chain[1] if len(chain) > 1 else None)
+                   chain[0], chain[1] if len(chain) > 1 else None,
+                   screen_enabled, screen_min_confidence)
 
 
-def build_request(comments, model):
+def build_request(comments, model, *, screen_enabled=False):
     """Allowlist projection. Never serialize a received event/context dictionary."""
+    if type(screen_enabled) is not bool:
+        raise ValueError('invalid_config')
     if not 1 <= len(comments) <= MAX_COMMENTS:
         raise ValueError('input_limit')
     state, questions = [], {}
@@ -132,6 +141,8 @@ def build_request(comments, model):
                 'a word that is also a game term need not refer to gameplay.'),
             'criteria': dict(CRITERIA),
         }
+        if screen_enabled:
+            questions[f's{index}'] = screen.question(index)
     request = {'model': model, 'state': {'comments': state}, 'questions': questions}
     if len(dumps(request).encode('utf-8')) > MAX_REQUEST_BYTES:
         raise ValueError('input_limit')
@@ -150,9 +161,9 @@ def _valid_answers(data, request):
         raise ValueError('invalid_response')
     if set(data['answers']) != set(request['questions']):
         raise ValueError('invalid_response')
-    for key in request['questions']:
+    for key, question in request['questions'].items():
         answer = data['answers'][key]
-        if (not isinstance(answer, dict) or answer.get('choice') not in CRITERIA
+        if (not isinstance(answer, dict) or answer.get('choice') not in question['criteria']
                 or not number(answer.get('confidence'))):
             raise ValueError('invalid_response')
     return data
@@ -227,21 +238,33 @@ def validate_baseline(rows):
             raise ValueError('invalid_baseline')
 
 
+def _protected_notification(row):
+    return row['user'].casefold() in SYSTEM_USERS or row['category'] in NOTIFICATIONS
+
+
+def screen_fallback(rows, status):
+    """Keep the local category, adding only unavailable screen decisions."""
+    return [dict(row, **screen.fields(status, protected=_protected_notification(row)))
+            for row in rows]
+
+
 def classify(rows, config, env, state_dir, *, transport=docich_transport):
     """Return canonical rows and metadata ONLY. Never pass baseline labels to Jev."""
     validate_baseline(rows)
-    output = [dict(row) for row in rows]
+    output = (screen_fallback(rows, 'input_limit') if config.screen_enabled
+              else [dict(row) for row in rows])
     details = [{'baseline': row['category'], 'candidate': None,
                 'selected': row['category'], 'status': 'input_limit'} for row in rows]
     positions, candidates, request = [], [], None
     for i, row in enumerate(rows):
-        if row['user'].casefold() in SYSTEM_USERS or row['category'] in NOTIFICATIONS:
+        if _protected_notification(row):
             details[i]['status'] = 'local_notification'
             continue
         if len(candidates) == MAX_COMMENTS:
             continue
         try:
-            next_request = build_request(candidates + [row], config.model)
+            next_request = build_request(candidates + [row], config.model,
+                                         screen_enabled=config.screen_enabled)
         except ValueError:
             continue
         positions.append(i)
@@ -255,6 +278,11 @@ def classify(rows, config, env, state_dir, *, transport=docich_transport):
              'batch_size': len(rows), 'eligible_count': len(positions),
              'attempted': False, 'status': 'no_candidates', 'resolved_model': None,
              'jev_ms': None, 'usage': None, 'estimated_usd': None, 'rows': details}
+    if config.screen_enabled:
+        event.update(screen_rubric_version=screen.RUBRIC_VERSION,
+                     screen_min_confidence=config.screen_min_confidence)
+        for detail, row in zip(details, output):
+            detail.update({key: row[key] for key in screen.fields('input_limit')})
     if not positions:
         return output, event
     attempts, used = [], config.route
@@ -262,7 +290,8 @@ def classify(rows, config, env, state_dir, *, transport=docich_transport):
         leg = replace(config, route=route, fallback=None)
         used = route
         try:
-            leg_request = request if route == config.route else build_request(candidates, leg.model)
+            leg_request = request if route == config.route else build_request(
+                candidates, leg.model, screen_enabled=leg.screen_enabled)
         except ValueError:
             result = {'status': 'input_limit', 'attempted': False}
         else:
@@ -285,6 +314,11 @@ def classify(rows, config, env, state_dir, *, transport=docich_transport):
     for pos in positions:
         details[pos]['status'] = result['status']
     if result['status'] != 'ok':
+        if config.screen_enabled:
+            for pos in positions:
+                fallback = screen.fields(result['status'])
+                output[pos].update(fallback)
+                details[pos].update(fallback)
         return output, event
     data = result['data']
     event.update(resolved_model=data.get('model'), usage=data.get('usage'))
@@ -305,6 +339,11 @@ def classify(rows, config, env, state_dir, *, transport=docich_transport):
         else:
             output[pos]['category'] = answer['choice']
             detail.update(selected=answer['choice'], status='jev')
+        if config.screen_enabled:
+            screen_answer = data['answers'][f's{index}']
+            selected_screen = screen.select(screen_answer, config.screen_min_confidence)
+            output[pos].update(selected_screen)
+            detail.update(selected_screen, screen_candidate=screen_answer['choice'])
     return output, event
 
 
@@ -355,12 +394,17 @@ def run_jev(rows, *, env, heuristic_ms, started, transport=docich_transport):
         config = Config.from_env(env)
     except (ValueError, TypeError, OverflowError):
         # Invalid settings must not enable a long/unsafe request.
-        output, event = classify(rows, Config(), {}, Path('tmp/state/comment_classifier_jev'),
-                                 transport=transport)
+        screen_enabled = env.get(screen.ENABLE_ENV) == '1'
+        output, event = classify(rows, Config(screen_enabled=screen_enabled), {},
+                                 Path('tmp/state/comment_classifier_jev'), transport=transport)
         event['status'] = 'invalid_config'
         for item in event['rows']:
             if item['status'] == 'missing_key':
                 item['status'] = 'invalid_config'
+        if screen_enabled:
+            output = screen_fallback(rows, 'invalid_config')
+            for item, row in zip(event['rows'], output):
+                item.update({key: row[key] for key in screen.fields('invalid_config')})
     else:
         directory = Path(env.get('COMMENT_CLASSIFIER_JEV_STATE_DIR', 'tmp/state/comment_classifier_jev'))
         output, event = classify(rows, config, env, directory, transport=transport)

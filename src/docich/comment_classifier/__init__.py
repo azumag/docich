@@ -12,11 +12,14 @@ import os
 from pathlib import Path
 import time
 
-from . import heuristic, jev
+from . import heuristic, jev, screen
 
 
 def classify_file(path, *, env=None, transport=None):
     """Return ``(rows, event)``; ``event`` is None unless Jev was selected.
+
+    With COMMENT_SCREEN_CONTEXT_ENABLED=1, rows also carry an independent
+    screen_need/screen_confidence/screen_status decision (not a captured frame).
 
     Raises ValueError only when the batch itself is unusable (missing/empty),
     in which case there is no classification to fall back to.
@@ -27,10 +30,14 @@ def classify_file(path, *, env=None, transport=None):
     rows = heuristic.baseline(lines)
     heuristic_ms = (time.monotonic() - started) * 1000
     if env.get('COMMENT_CLASSIFIER_BACKEND') != 'jev':
+        if env.get(screen.ENABLE_ENV) == '1':
+            rows = jev.screen_fallback(rows, 'backend_unavailable')
         return rows, None
     try:
         return jev.run_jev(rows, env=env, heuristic_ms=heuristic_ms, started=started,
                            transport=transport or jev.docich_transport)
     except Exception:
         # A Jev-side defect must never cost the batch its classification.
+        if env.get(screen.ENABLE_ENV) == '1':
+            rows = jev.screen_fallback(rows, 'classifier_error')
         return rows, None

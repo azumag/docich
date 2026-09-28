@@ -3,7 +3,8 @@
 Prints the canonical classification JSON array (index/user/comment/category/
 is_english) on stdout and exits 0, or prints nothing and exits 1 when the
 batch is unusable. Never prints raw errors, comment text or credentials to
-stderr.
+stderr. Opt-in screen decisions add screen_need/confidence/status fields;
+none of these fields means that an image has been captured or viewed.
 """
 from __future__ import annotations
 
