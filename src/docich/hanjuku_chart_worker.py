@@ -20,6 +20,7 @@ import time
 
 from . import hanjuku_chart as chart
 from . import hanjuku_chart_adjust as adjust
+from . import hanjuku_reference as reference
 from .game_switch import atomic_write_json
 from .hanjuku_run import append_log
 from .retroarch_boundary import read_record
@@ -76,6 +77,14 @@ def build_prompt(request: dict, results: list[dict]) -> str:
         f'- 指示は1〜{adjust.MAX_ORDERS}件。step は英数字・_・- の12文字以内の一意な名前（例 J1, J2）。'
         '基準チャートのstep名は禁止。',
         f'- cards は1指示あたり最大{adjust.MAX_CARDS_PER_ORDER}枚。在庫は保証されないので必要な時だけ。',
+        '- 基本戦術: 携行する切り札のID合計が48以上だと敵将軍がエッグを使う。cards のID合計は47以下にすること'
+        '（ID: ' + '、'.join(f'{n}={i}' for n, i in sorted(reference.ALL_CARD_IDS.items(), key=lambda kv: kv[1])
+                             if n in adjust.CARD_NAMES) + '）。'
+        '推奨の組: ' + ' / '.join('+'.join(s) for s in reference.RECOMMENDED_CARD_SETS
+                                 if all(c in adjust.CARD_NAMES for c in s)) + '。'
+        '48以上になる分はbotが実行時に外す。',
+        '- 基本戦術: 城レベルが高いほど防衛側のエッグモンスターの防御・速さと防衛将軍の突撃速度が上がる'
+        '（ボス城は補正なし）。定員は城Lv−1で、防衛側は将軍が倒されるたびに城レベルが1下がる。',
         '- after は null / ["captured", 城名] / ["all_captured"] のいずれか。',
         '- source は将軍を出す自軍の城。target は攻める城。general は将軍名。',
         '- general は「駐留（garrison）」でその source にいると記録された将軍にすること。'
