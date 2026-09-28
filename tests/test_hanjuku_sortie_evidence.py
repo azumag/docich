@@ -80,6 +80,23 @@ def test_exact_card_selection_is_only_a_plan_and_clears_stale_context():
     assert mem['_records'][-1]['resulting_event'] == 'selection_planned_not_yet_confirmed'
 
 
+def test_sortie_card_stock_is_recorded_for_the_adjusted_chart():
+    # g438 04:04: the adjusted chart planned ミックミー/エンジェリン that the
+    # player never held. The card panel now feeds the request's card_stock.
+    mem = {'chapter': 1, 'active': '1-A2', 'variant': 'chart',
+           'orders': {'1-A2': 'pending'}, 'picked': []}
+    screen = measured_card_select(('イッテツーン', 'ブラッキー', 'フットバース', 'クースカン'),
+                                  stocks=[10, 1, 2, 2])
+    policy.deploy_step(screen, mem)
+    assert mem['card_stock'] == {'イッテツーン': 10, 'ブラッキー': 1,
+                                 'フットバース': 2, 'クースカン': 2}
+    assert policy._adjust_situation(mem)['card_stock'] == mem['card_stock']
+    # A later panel updates the stock of the cards it shows and keeps the rest.
+    policy.deploy_step(measured_card_select(('ブラッキー', 'クースカン'), stocks=[1, 1]), mem)
+    assert mem['card_stock']['フットバース'] == 2
+    assert mem['card_stock']['クースカン'] == 1
+
+
 def test_general_cursor_failure_does_not_install_a_substitute():
     mem = memory()
     assert policy.deploy_step(menu('general_list', ['どうし', 'ゼウス'], hand=False), mem) == []

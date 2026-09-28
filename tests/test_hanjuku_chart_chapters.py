@@ -119,6 +119,14 @@ def test_reference_tables_and_endure_rule():
     assert ref.enemy_egg_likely([20, 20, 8])
     assert not ref.enemy_egg_likely([10, 10])
     assert ref.egg_drop_threshold(31) == 31 % 16 + 1
+    # 卵落 > HP合計 mod 16 drops the egg (gcgx); the local combo table's
+    # イッテツーン/グリンボー/ブラッキー thresholds 7/3/2 agree.
+    assert ref.egg_drop_value('イッテツーン') == 8
+    assert ref.can_drop_egg('イッテツーン', 16 * 3 + 7)
+    assert not ref.can_drop_egg('イッテツーン', 16 * 3 + 8)
+    assert ref.can_drop_egg('グリンボー', 16 * 3 + 3)
+    assert not ref.can_drop_egg('ブラッキー', 16 * 3 + 3)
+    assert not ref.can_drop_egg('クースカン', 0)          # 卵落0 never drops
     assert ref.CARD_IDS['ファバード'] == 31
     assert ref.MELEE_PATTERNS['⑥']['action'] == 'use_egg'
     assert ref.HALF_RAW_LEVEL_NEED[9] == 2000

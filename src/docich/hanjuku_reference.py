@@ -37,6 +37,18 @@ CARDS: dict[str, dict] = {
     'ハリケーン': {'general_damage': None, 'price': 38},
 }
 
+# 卵落 values (gcgx card table, fetched 2026-09-29; the local
+# egg-drop-table.md's 余り7/3/2 thresholds agree with 8/4/3). A card drops the
+# enemy egg when its 卵落 is strictly greater than the two generals' max-HP sum
+# mod 16 (see egg_drop_threshold / can_drop_egg).
+EGG_DROP_VALUES: dict[str, int] = {
+    'イッテツーン': 8, 'ダイチスイム': 1, 'ブラッキー': 3, 'フットバース': 5,
+    'グリンボー': 4, 'ピッグローラー': 2, 'カンケリン': 1, 'ノリウツール': 0,
+    'クースカン': 0, 'ゼンマイン': 3, 'ミックミー': 2, 'デッドガン': 0,
+    'ブレイコウ': 0, 'ブンシーン': 3, 'ファイアーボイス': 4, 'ファバード': 0,
+    'エンジェリン': 0, 'マグネガキン': 8, 'ハリケーン': 0,
+}
+
 # Actual zero-based No., not price or this module's supported-card order.
 # Local README examples + https://wikiwiki.jp/hjksfc/切り札 (No. column).
 CARD_IDS: dict[str, int] = {
@@ -285,3 +297,18 @@ def enemy_egg_likely(card_ids: list[int]) -> bool:
 def egg_drop_threshold(max_hp_sum: int) -> int:
     """Minimum 卵落 value required to drop an egg given combined max HPs."""
     return max_hp_sum % EGG_DROP_MOD + 1
+
+
+def egg_drop_value(card: str) -> int | None:
+    """The card's 卵落 value, or None when it is outside the measured table."""
+    return EGG_DROP_VALUES.get(card)
+
+
+def can_drop_egg(card: str, max_hp_sum: int) -> bool:
+    """True when this card's 卵落 exceeds the HP-sum remainder (gcgx rule).
+
+    ``卵落 > 敵・味方将軍の最大HP合計 mod 16`` drops the enemy's egg, which
+    makes its summons unusable for the rest of the battle.
+    """
+    value = EGG_DROP_VALUES.get(card)
+    return value is not None and value > max_hp_sum % EGG_DROP_MOD

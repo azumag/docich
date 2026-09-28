@@ -50,7 +50,7 @@ Claude、OpenCode、API、認証情報を操作時に使用しない。旧`brain
 ### 低HP時の救済
 
 - 読み取れた双方のHPが正で、味方HPが開始時の40%以下かつ敵より少ない、または味方HPが12以下なら、Bで戦闘メニューを開く。剣術の稽古（どうし・だいじん、開始90対90、出撃なし）は対象外。当該時点で実行条件を満たすチャート戦術は先に処理する。
-- 実際に読める切り札リストから、エンジェリンによる回復、次に安全な攻撃・妨害札を選ぶ。ダメージ量や撃破は推測で確定しない。自軍にも被害のあるデッドガン・ファバードは自動救済の候補にしない（効果の参考: [攻略・解析の切り札表](https://gcgx.games/hanjuku/kirihuda.html)）。
+- 実際に読める切り札リストから、エンジェリンによる回復を最優先し、次に卵を落とせる札を選ぶ。卵落は gcgx の規則「卵落 > 敵・味方将軍の最大HP合計 mod 16」で判定し、開始HPを最大HPの実測値として使う（主人公は持ち越しの全快HP `ref_ally_hp`）。落とせる札が無い場合は安全な攻撃・妨害札の固定順（`SURVIVAL_CARDS`）へ戻る。ダメージ量や撃破は推測で確定しない。自軍にも被害のあるデッドガン・ファバードは自動救済の候補にしない（効果と卵落の参考: [攻略・解析の切り札表](https://gcgx.games/hanjuku/kirihuda.html)）。卵落の実測値は `hanjuku_reference.EGG_DROP_VALUES` に保持する。
 - 安全な未試行の札がない・札が使用不能なら、読める「たまごをつかう」へ進む。防衛戦で卵だけが有効なメニューも認識する。戦闘用の騎士カーソルを追い、無効な先頭行にカーソルがあれば目的行まで動かしてからAを押す。
 - メニューの応答待ちは最大3回（戦闘全体で12回まで）、切り札一覧確認は最大3回、同名札と卵の選択は各1回。メニュー／一覧の認識待ちと移動にも上限を設ける。読めないカーソルでAを押さず、救済手段が尽きたら白兵に戻る。無条件の勝利や撤退は保証しない。
 - `battle_survival` / `battle_survival_select` にHPと選択理由を記録し、対象フレームを保存する。札を選択しただけでは消費を確定せず、既存の `cards_selected` / `cards_unclassified` と実使用証拠を区別する。救済は経験記憶の `pass` では抑止しない。
@@ -176,7 +176,9 @@ Claude、OpenCode、API、認証情報を操作時に使用しない。旧`brain
   `chart_adjust_request` を記録して runtime 配下の `hanjuku_chart_adjust_request.json` を atomic に更新する（#1085）。
   - L1 非同期調整: 観測プロセス（agent/corner監視）が `hanjuku_chart_worker.consider()` で要求を
     非ブロッキングlock下に取り、daemon thread で1件だけ `ai_generate.run_prompt`
-    （`[hanjuku.chart_adjust].agents`、label `RADIO:hanjuku-chart-adjust`）へ状況・基準チャート・直近実績を渡す。
+    （`[hanjuku.chart_adjust].agents`、label `RADIO:hanjuku-chart-adjust`）へ状況・基準チャート（ordersと章の購入予定）・
+    直近実績を渡す。状況には `card_stock`（出撃切り札一覧で実測した在庫）を含め、prompt は
+    在庫に無い札を携行させず、卵落値と「卵落 > 最大HP合計 mod 16」の規則で卵を落とせる札を選ばせる。
     出力は `hanjuku_chart_adjust.save()` が城名・切り札名・unlock条件を実測済みチャート事実で検証し、
     正規化済みフィールドだけを `hanjuku_chart_adjusted.json`（schema 1: 独自order列＋月次purchases）へ保存する。
     request_id/章はモデル出力ではなく要求から付ける。1要求あたり最大 `max_attempts` 回、要求が更新済みなら破棄。
