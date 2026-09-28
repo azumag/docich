@@ -3671,7 +3671,11 @@ def _extras_reserve(mem, header):
     """
     cost = EGG_RECOVER_COST * len(_egg_recovery_targets(mem))
     gold = (header or {}).get('gold')
-    if type(gold) is not int or gold < 0:
+    # Owner (2026-09-29): 兵士の数を確認せず卵回復した - the army is read on the
+    # soldier screen, so without this month's count the soldiers go first and
+    # the eggs are recovered from what is left (_plan_extras: egg 'check').
+    counted = (mem.get('soldiers_seen_key') == _month_key(header) if header else False)
+    if type(gold) is not int or gold < 0 or not counted or (mem.get('soldiers_seen') or 0) < 50:
         reserve = 0
     elif gold >= cost:
         reserve = cost
@@ -3693,7 +3697,9 @@ def _egg_recheck(mem):
 
 def _plan_extras(mem, shop, reserve, recruit):
     shop['reserve'] = reserve
-    shop['egg'] = 'pending' if reserve else None
+    egg_cost = EGG_RECOVER_COST * len(_egg_recovery_targets(mem))
+    shop['egg'] = 'pending' if reserve else ('check' if egg_cost else None)
+    shop['egg_cost'] = egg_cost
     shop['recruit'] = 'check' if recruit else None
     shop['chikujou'] = 'check'
     if reserve or recruit:
@@ -3945,7 +3951,16 @@ def _month_extra(screen, mem, shop):
         status = shop.get(sub)
         if status not in ('pending', 'check'):
             continue
-        if status == 'check':
+        if sub == 'egg' and status == 'check':
+            # After the soldiers: recover the eggs only from what is left.
+            cost = shop.get('egg_cost') or EGG_RECOVER_COST
+            if type(gold) is not int or gold < cost + WAGE_RESERVE:
+                shop[sub] = 'skipped'
+                _record(mem, 'egg_recover_skip', month=shop.get('key'), gold=gold,
+                        observed_metric={'cost': cost, 'gold': gold},
+                        reason='兵士補充の後の残金が卵の回復費と賃金リザーブに足りないため見送る')
+                continue
+        elif status == 'check':
             # Owner rule (2026-09-27): recruit only when the soldiers got
             # their full 99 and the fee plus the wage reserve is still left.
             if (type(gold) is not int or shop.get('soldiers', 0) < SOLDIER_CAP
@@ -4032,7 +4047,32 @@ def _chikujou_step(screen, mem, sub):
     if 'これいじょう' in text or sub.get('upgraded') or sub.get('declined'):
         return [pad('b')]              # one level per month: back to the month menu
     if 'ぞうちく' in text:
-        return [pad('a')]              # the first row: the home castle
+        # g438 03:37: the first row was ジョンリギ with nobody inside
+        # (「しょうぐんがおりませなんだ」) and the upgrade never happened. Pick the
+        # home castle, else a castle a general is known to hold.
+        chapter = mem.get('chapter') or 0
+        home = chart.home_castle(chapter)
+        names = [STATUS_NAMES.get(home, home)] + [
+            STATUS_NAMES.get(c, c) for c, gs in (mem.get('garrison') or {}).items() if gs and c != home]
+        tried = sub.setdefault('rows_tried', [])
+        for name in names:
+            if name in tried:
+                continue
+            move = menu_to(screen, name)
+            if move is None:
+                tried.append(name)
+                continue
+            if move == 'here':
+                if 'おりませなんだ' in text and sub.get('chosen') == name:
+                    tried.append(name)     # nobody there: try the next castle
+                    continue
+                sub['chosen'] = name
+                return [pad('a')]
+            return [move]
+        sub['declined'] = True
+        _record(mem, 'chikujou_declined', observed_metric={'tried': tried},
+                reason='将軍のいる城を一覧で選べないため、ちくじょうを見送る')
+        return [pad('b')]
     return []
 
 
@@ -4441,6 +4481,7 @@ def observe_events(screen: Screen, mem):
     m = re.search(r'へいしすうは([0-9０-９]+)めい', screen.text.replace(' ', ''))
     if m:
         seen = int(m.group(1).translate(str.maketrans('０１２３４５６７８９', '0123456789')))
+        mem['soldiers_seen_key'] = mem.get('month')
         if seen != mem.get('soldiers_seen'):
             mem['soldiers_seen'] = seen
             _record(mem, 'soldiers_seen', observed_metric={'soldiers': seen},

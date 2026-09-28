@@ -1191,7 +1191,8 @@ def test_monthly_chikujou_raises_a_castle_only_with_money_to_spare(monkeypatch):
     from docich.hanjuku_screen import Screen as S
     original = policy.menu_to
     monkeypatch.setattr(policy, 'menu_to',
-                        lambda screen, label: 'here' if label in ('うむッ!', 'いかんッ!') else original(screen, label))
+                        lambda screen, label: 'here' if label in ('うむッ!', 'いかんッ!', 'アルマムーン')
+                        else original(screen, label))
     mem = {'chapter': 2, '_records': [], 'month_sub': {'kind': 'chikujou', 'gold_before': 96, 'presses': 0}}
     sub = mem['month_sub']
     ask = S(lines=[], hand=None, kind='text', text='アルマムーン1どのしろをぞうちくなさいますか?',

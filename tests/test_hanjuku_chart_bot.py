@@ -548,7 +548,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v65-rescue-from-start'
+    assert state['bot_version'] == 'hanjuku-chart-v66-soldiers-before-eggs'
     assert '_records' not in state['policy']
 
 
@@ -1690,15 +1690,19 @@ def test_sortie_screens_record_each_generals_remaining_egg_uses():
 
 
 def test_an_empty_egg_reserves_its_recovery_ahead_of_soldiers():
-    mem = {'chapter': 1, 'egg_uses': {'どうし': 4, 'ココット': 0}}
+    # Owner 2026-09-29: eggs go first only with this month's army counted at 50+.
+    mem = {'chapter': 1, 'egg_uses': {'どうし': 4, 'ココット': 0}, 'soldiers_seen': 60, 'soldiers_seen_key': '1-7'}
     shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 130})
     assert (shop['soldiers'] == 80 - policy.WAGE_RESERVE and shop['egg'] == 'pending'
             and shop['recruit'] == 'check')
+    # Army not counted this month: soldiers first, the egg from what is left.
+    shop = policy._plan({'chapter': 1, 'egg_uses': {'ココット': 0}}, {'year': 1, 'month': 7, 'gold': 130})
+    assert shop['soldiers'] == 99 and shop['egg'] == 'check' and shop['reserve'] == 0
     # No empty egg: soldiers keep the whole gold as before.
     shop = policy._plan({'chapter': 1, 'egg_uses': {'どうし': 4}}, {'year': 1, 'month': 7, 'gold': 130})
     assert shop['soldiers'] == 99 and shop['egg'] is None and shop['recruit'] == 'check'
     # The owner now prioritizes affordable egg recovery even before a later chart purchase.
-    mem = {'chapter': 3, 'egg_uses': {'どうし': 0}}
+    mem = {'chapter': 3, 'egg_uses': {'どうし': 0}, 'soldiers_seen': 60, 'soldiers_seen_key': '1-7'}
     shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 475})
     assert shop['egg'] == 'pending' and shop['reserve'] == 50 and shop['recruit'] is None
 
@@ -1856,7 +1860,7 @@ def test_open_sea_search_spirals_around_the_centroid_and_records_each_leg(monkey
 
 @pytest.mark.parametrize('uses', [0, 1, 2, 3])
 def test_partial_egg_reserves_full_recovery_cost(uses):
-    mem = {'chapter': 1, 'egg_uses': {'ココット': uses}}
+    mem = {'chapter': 1, 'egg_uses': {'ココット': uses}, 'soldiers_seen': 60, 'soldiers_seen_key': '1-7'}
     shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 130})
     assert (shop['reserve'] == 50 and shop['soldiers'] == 80 - policy.WAGE_RESERVE
             and shop['egg'] == 'pending')
@@ -1865,13 +1869,13 @@ def test_partial_egg_reserves_full_recovery_cost(uses):
 def test_all_depleted_eggs_are_budgeted_and_invalid_or_full_counts_are_ignored():
     mem = {'chapter': 1, 'egg_uses': {'どうし': 3, 'ココット': 1, 'ヴィーナス': 4,
            'bad': True, 'unknown': None, 'negative': -1, 'boosted': 5, 'one-shot': 1},
-           'egg_types': {'one-shot': 'いっぱつエッグ'}}
+           'egg_types': {'one-shot': 'いっぱつエッグ'}, 'soldiers_seen': 60, 'soldiers_seen_key': '1-7'}
     shop = policy._plan(mem, {'year': 1, 'month': 7, 'gold': 180})
     assert shop['reserve'] == 100 and shop['soldiers'] == 80 - policy.WAGE_RESERVE
     assert policy._egg_recovery_targets(mem) == ['どうし', 'ココット']
-    poor = {'chapter': 1, 'egg_uses': {'どうし': 3, 'ココット': 1}}
+    poor = {'chapter': 1, 'egg_uses': {'どうし': 3, 'ココット': 1}, 'soldiers_seen': 60, 'soldiers_seen_key': '1-7'}
     shop = policy._plan(poor, {'year': 1, 'month': 7, 'gold': 99})
-    assert shop['egg'] is None and shop['soldiers'] == 99 - policy.WAGE_RESERVE
+    assert shop['egg'] == 'pending' and shop['soldiers'] == 0
 
 
 def test_soldiers_never_spend_the_wage_reserve():
@@ -1886,7 +1890,7 @@ def test_soldiers_never_spend_the_wage_reserve():
 
 
 def test_attempted_summon_rechecks_stale_full_sortie_count():
-    mem = {'battle': {'ally': 'どうし'}, 'egg_uses': {'どうし': 4}}
+    mem = {'battle': {'ally': 'どうし'}, 'egg_uses': {'どうし': 4}, 'soldiers_seen': 60, 'soldiers_seen_key': '1-7'}
     policy._egg_recheck(mem)
     policy._egg_recheck(mem)
     assert mem['egg_recheck'] == ['どうし']
@@ -1934,7 +1938,7 @@ def test_paid_recovery_ritual_has_bounded_longer_wait_without_inferring_stock():
 def test_recovery_only_month_preserves_later_chart_budget(monkeypatch):
     monkeypatch.setattr(policy, '_charted_purchase_ahead', lambda *args: True)
     monkeypatch.setattr(policy.chart, 'purchase_for', lambda *args: None)
-    mem={'chapter':3,'egg_uses':{'どうし':2}}
+    mem={'chapter':3,'egg_uses':{'どうし':2}, 'soldiers_seen': 60, 'soldiers_seen_key': '1-7'}
     shop=policy._plan(mem,{'year':1,'month':7,'gold':300})
     assert shop['reserve']==50 and shop['egg']=='pending'
     assert shop['items']==[] and shop['soldiers']==0 and shop['recruit'] is None
@@ -2251,7 +2255,7 @@ def test_soldier_count_is_read_from_the_army_total_line():
 
 def test_egg_recovery_holds_the_gold_over_more_soldiers_when_army_is_big():
     # Owner rule 2026-09-28: 50+ soldiers → egg recovery wins; no soldiers.
-    mem = {'chapter': 1, 'egg_uses': {'ココット': 0}, 'soldiers_seen': 60}
+    mem = {'chapter': 1, 'egg_uses': {'ココット': 0}, 'soldiers_seen': 60, 'soldiers_seen_key': '2-4'}
     # gold is short of the 50G cost but above the wage reserve: hold it all
     # for the egg and buy no soldiers (today the gap (30, 50) was eaten).
     reserve, _ = policy._extras_reserve(mem, {'year': 2, 'month': 4, 'gold': 45})
