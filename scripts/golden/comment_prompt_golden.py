@@ -85,23 +85,24 @@ def bash(script, sn, env=None, stdin=None, args=()):
 def bash_many(sn, calls, env=None):
     """Run several legacy snippets in one bash process, loading eloop_lib once.
 
-    ``calls`` is a list of mappings with ``script`` (required) and optional
-    ``env``, ``args`` and ``stdin``. Each snippet runs in its own subshell, so
-    exports, variables and functions it creates cannot leak into the next one,
-    matching the process-per-call isolation of ``bash()``. Top-level ``env``
-    is visible while loading the legacy shim and is re-exported after the load,
-    exactly like ``bash()``; per-call ``env`` is an additional post-load
-    override. Returns each snippet's ``(stdout, rc)`` in order and stops at the
-    first failing call, matching a sequential loop over ``bash()``.
+    calls is a list of mappings with script (required) and optional env, args
+    and stdin. Each snippet runs in its own subshell, so state cannot leak into
+    the next one. Top-level env is visible while loading the legacy shim and is
+    re-exported after the load, exactly like bash(); per-call env is an
+    additional post-load override. Calls stop at the first nonzero status,
+    matching a sequential loop over bash().
 
     stdout/stderr and return-code control data live in separate temp files.
-    This keeps arbitrary legacy stdout (including old marker-looking bytes)
-    opaque while still paying for only one bash process / one eloop_lib load.
+    This keeps arbitrary legacy stdout opaque while still paying for only one
+    bash process / one eloop_lib load.
     """
     base = {"PATH": os.environ["PATH"], "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
             "HOME": os.environ.get("HOME", "/tmp"), "ELOOP_LIB_DIR": str(sn)}
     base.update(env or {})
-    lines = ["set --", "source ./eloop_lib.sh >/dev/null 2>&1; log(){ :; }"]
+    lines = ["set --", "source ./eloop_lib.sh >/dev/null 2>&1; log(){ :; }",
+             "_docich_batch_errexit=0",
+             'case $- in *e*) _docich_batch_errexit=1;; esac',
+             "set +e"]
     with tempfile.TemporaryDirectory(prefix="docich-bash-many-") as tmp:
         tmp_path = Path(tmp)
         result_paths = []
@@ -118,13 +119,16 @@ def bash_many(sn, calls, env=None):
             stdout = tmp_path / f"stdout-{i}"
             stderr = tmp_path / f"stderr-{i}"
             rcfile = tmp_path / f"rc-{i}"
-            func = f"_docich_batch_call_{i}"
+            # Keep the snippet top-level, as in bash -c. A function wrapper
+            # changes return/local/FUNCNAME semantics. The batch parent has
+            # errexit disabled only so it can record a failing child status;
+            # each child restores the option state observed after the loader.
             lines.append(
-                f"if ( {reassert}{func}() {{ {call['script']}; }}; "
-                f"{func}{args}{stdin} ) >{shlex.quote(str(stdout))} "
-                f"2>{shlex.quote(str(stderr))}; "
-                f"then _docich_batch_rc=0; else _docich_batch_rc=$?; fi"
+                f'( [ "$_docich_batch_errexit" -eq 0 ] || set -e; '
+                f'{reassert}set --{args}; {call["script"]} ){stdin} '
+                f'>{shlex.quote(str(stdout))} 2>{shlex.quote(str(stderr))}'
             )
+            lines.append("_docich_batch_rc=$?")
             lines.append(f"printf '%s\\n' \"$_docich_batch_rc\" >{shlex.quote(str(rcfile))}")
             # bash() raises immediately; do not run later legacy calls after a
             # failure just because they share one shell process.
