@@ -219,7 +219,7 @@ def test_all_disabled_commands_scroll_to_hidden_okunote_without_selecting_grey_r
     assert parse(c.frame()).kind != 'battle_menu'  # no knight: do not infer a menu
     for y in range(168,180):
         for x in range(152,164): c.put(x,y,(230,105,74))
-    actions,state=decide(c.frame(),{'policy':memory(6,30)})
+    actions,state=decide(c.frame(),{'policy':memory(90,100)})
     assert state['screen_kind']=='battle_menu' and actions==[p.pad('down')]
     assert parse(c.frame()).text==''  # disabled rows are never selectable labels
     c=Canvas()
@@ -251,7 +251,7 @@ def test_okunote_chooses_the_best_visible_candidate(labels,winner):
 
 def test_okunote_scroll_is_bounded_and_a_new_melee_reading_resets_the_attempt():
     screen=Screen([],None,'',kind='battle_menu',menu_cursor=176,hidden_battle_commands=True)
-    mem=memory(6,30)
+    mem=memory(90,100)
     for _ in range(16): assert p.okunote_step(screen,mem)==[p.pad('down')]
     assert p.okunote_step(screen,mem)==[p.pad('b')]
     p.battle_step(battle(mem),mem)
@@ -543,3 +543,20 @@ def test_a_general_behind_from_the_start_opens_the_rescue_before_the_melee():
     assert not p._survival_needed({**cur, 'enemy': boss})
     # Ahead at the start: melee as before.
     assert not p._survival_needed({**cur, 'start_ally_hp': 30, 'ally_hp': 30})
+
+
+@pytest.mark.parametrize('hp', [34, 6, 88, None])
+@pytest.mark.parametrize('hidden', [True, False])
+def test_low_hp_does_not_enter_irreversible_self_damage_lottery(hp, hidden):
+    mem = memory(34, 59)
+    mem['battle']['ally_hp'] = hp
+    mem['battle']['side'] = 'defense'
+    screen = menu(('おくのて',), kind='battle_menu')
+    screen.hidden_battle_commands = hidden
+    assert p.okunote_step(screen, mem) == [p.pad('b')]
+    assert mem['battle']['survival']['exhausted']
+    assert mem['_records'][-1]['decision'] == 'battle_okunote_risk_declined'
+    # Repeated observations of the fading parent menu do not duplicate records.
+    records = len(mem['_records'])
+    assert p.okunote_step(screen, mem) == [p.pad('b')]
+    assert len(mem['_records']) == records
