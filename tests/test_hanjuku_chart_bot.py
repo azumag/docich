@@ -272,19 +272,17 @@ def test_month_plan_commentary_follows_the_actual_plan():
     assert 'クースカン' not in text
 
 
-def test_charted_boss_kit_opens_the_fight_then_chains_cards():
+def test_charted_boss_kit_waits_for_clash_then_chains_cards():
     mem = {'chapter': 1, 'attack': {'general': 'どうし', 'castle': 'けっかい', 'side': 'attack', 'step': '1-B1'}}
     from docich.hanjuku_screen import Battle, Screen
     screen = lambda hp: Screen(lines=[], hand=None, text='', battle=Battle('クイーン', hp, 'どうし', 90), kind='battle')
     assert policy.battle_step(screen(70), mem) == []          # first reading: wait for a stable one
-    # The contact that makes クースカン due is the very contact that fires
-    # クイーン's clash-position egg, and after that egg the command menu never
-    # comes back (g464 18:52: melee -> たまごをつかう -> ヒュドラ -> どうし 0
-    # with tactics_done empty). The kit therefore opens the fight, like every
-    # other opening card (g462 17:59:29 pushes B from the first battle frame).
-    assert policy.battle_step(screen(70), mem) == [policy.pad('b')]
+    # Follow the actual chart: one measured clash, then the ordered kit.
+    assert policy.battle_step(screen(70), mem)[0]['buttons'] == ['a']
+    assert not mem['battle'].get('card_flow')
+    assert policy.battle_step(screen(68), mem) == [policy.pad('b')]
     assert mem['battle']['card_flow']['card'] == 'クースカン'
-    assert mem['battle']['strategy_variant'] == 'clash_kit_open_timing'
+    assert mem['battle'].get('strategy_variant') != 'clash_kit_open_timing'
     # The menu ask is retried instead of handing the turn back to melee, and
     # it stays bounded (g462 17:59:31: two idle frames dropped the first card).
     for _ in range(policy.CARD_MENU_OPEN_RETRIES):
@@ -576,7 +574,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v86-measured-boss-kit'
+    assert state['bot_version'] == 'hanjuku-chart-v89-chart-clash-chain'
     assert '_records' not in state['policy']
 
 
@@ -857,11 +855,10 @@ def test_unreadable_name_screen_never_uses_legacy_confirmation(monkeypatch):
 
 @pytest.mark.parametrize('step,ally,hp,expected', [
     ('1-V2', 'ヴィーナス', 60, 'フットバース'),
-    # Egg-denial timing (owner 2026-09-29): ガルバンゾー's clash triggers its
-    # egg, so the fight's only HP-gated card opens instead of waiting.
-    ('1-C2', 'ココット', 14, 'ダイチスイム'),
+    # User 2026-09-30: preserve the chart's actual HP gates.
+    ('1-C2', 'ココット', 14, None),
     ('1-C2', 'ココット', 13, 'ダイチスイム'),
-    ('1-A2', 'どうし', 25, 'フットバース'),
+    ('1-A2', 'どうし', 25, None),
     ('1-A2', 'どうし', 24, 'フットバース'),
 ])
 def test_garbanzo_tactics_follow_each_generals_chart_branch(step, ally, hp, expected):
@@ -908,7 +905,7 @@ def _card_screen(cards, *, announcement=None, hand=True):
 
 def test_a_chained_hp_card_does_not_early_fire_for_the_egg():
     # 3-B1 プリンス: ゼンマイン (HP25) follows クースカン open/after_card, so it
-    # keeps its gate; only a fight's first-and-only HP card moves to the opening.
+    # keeps its gate, as do the other HP-gated chart tactics.
     from docich.hanjuku_screen import Battle, Screen
     mem = {'chapter': 3, 'attack': {'general': 'どうし', 'castle': None, 'side': 'attack', 'step': '3-B1'}}
     screen = Screen(lines=[], hand=None, text='', battle=Battle('プリンス', 100, 'どうし', 90), kind='battle')
@@ -2475,7 +2472,8 @@ def test_boss_selected_card_hp_drop_chains_without_idle_frames(selected, enemy_h
     def screen(hp):
         return Screen(lines=[], hand=None, text='', kind='battle',
                       battle=Battle('クイーン', hp, 'どうし', 90))
-    policy.battle_step(screen(68), mem)
+    policy.battle_step(screen(70), mem)
+    policy.battle_step(screen(70), mem)
     policy.battle_step(screen(68), mem)
     cur = mem['battle']
     cur['card_flow']['stage'] = 'announce'

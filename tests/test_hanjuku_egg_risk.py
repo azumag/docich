@@ -85,18 +85,17 @@ def test_known_no_clash_risk_preserves_exact_released_mash(enemy):
     assert rec['enemy_hp'] == 27 and rec['ally_hp'] == 90
 
 
-def test_an_hp_gated_chart_card_opens_before_the_clash_egg():
-    # g456 14:13 / g460 16:08: ガルバンゾー's clash triggers its egg, so the
-    # fight's only HP-gated card opens instead of waiting for the gate.
+def test_an_hp_gated_chart_card_keeps_its_gate_despite_egg_risk():
     mem = memory(step='1-A2')
-    actions = enter(panel('ガルバンゾー', 30), mem)
-    assert actions and actions[0]['buttons'] == ['b']
+    assert enter(panel('ガルバンゾー', 30), mem) == MASH
+    assert not mem['battle'].get('card_flow')
+    assert policy.battle_step(panel('ガルバンゾー', 24), mem) == [policy.pad('b')]
     assert mem['battle']['card_flow']['card'] == 'フットバース'
-    assert mem['battle']['strategy_variant'] == 'egg_denial_timing'
+    assert mem['battle'].get('strategy_variant') != 'egg_denial_timing'
 
 
 def test_an_egg_risk_hold_is_bounded_and_then_engages():
-    mem = memory()                       # no charted tactic for クミン
+    mem = memory(side='defense')         # retreat/pre-clash rescue is not a defense tactic
     policy.battle_step(panel('クミン'), mem)          # first reading: wait for a stable one
     for _ in range(policy.MELEE_HOLD_LIMIT):
         assert policy.battle_step(panel('クミン'), mem) == []
@@ -105,23 +104,26 @@ def test_an_egg_risk_hold_is_bounded_and_then_engages():
     assert '保留上限' in mem['_records'][-1]['reason']
 
 
-def test_charted_boss_clash_opens_the_fight_with_the_kit():
-    # g454 08:19 held with no input and never reached after_clash; g464 18:52
-    # mashed instead, the clash-position egg fired たまごをつかう and the
-    # command menu never came back (どうし 90 -> 0 with tactics_done empty).
-    # The 1-B1 kit therefore opens the fight instead of waiting for a clash.
+def test_charted_boss_kit_waits_for_a_measured_clash():
     mem = memory(step='1-B1')
-    assert enter(panel('クイーン'), mem) == [policy.pad('b')]
+    assert enter(panel('クイーン', 70), mem) == MASH
+    assert not mem['battle'].get('card_flow')
+    assert not mem['battle'].get('clashed')
+    assert policy.battle_step(panel('クイーン', 68), mem) == [policy.pad('b')]
+    assert mem['battle']['clashed'] is True
     assert mem['battle']['card_flow']['card'] == 'クースカン'
-    assert mem['battle']['strategy_variant'] == 'clash_kit_open_timing'
-    assert not any(r['decision'] == 'battle_melee' for r in mem['_records'])
-    # Without the boss step the same panel still holds (no charted clash).
+    assert mem['battle'].get('strategy_variant') != 'clash_kit_open_timing'
     assert enter(panel('クイーン'), memory()) == []
 
 
+
 @pytest.mark.parametrize('enemy,chapter', [('クミン', 1), ('クイーン', 1), ('オレガノ', 10), ('不明', 10)])
-def test_risk_or_unknown_enemy_holds_without_any_assist_pulse(enemy, chapter):
+def test_risk_or_unknown_enemy_avoids_assist_pulses_until_resources_are_checked(enemy, chapter):
     mem = memory(chapter=chapter)
+    if enemy in ('クミン', 'オレガノ'):
+        assert enter(panel(enemy), mem) == [policy.pad('b')]
+        assert mem['_records'][-1]['decision'] == 'battle_survival'
+        return  # a known unarmed egg fight now checks resources before contact
     assert enter(panel(enemy), mem) == []
     for _ in range(3):
         assert policy.battle_step(panel(enemy), mem) == []
@@ -187,7 +189,7 @@ def test_melee_observability_survives_existing_schema_one_persistence(tmp_path, 
     spec = importlib.util.spec_from_file_location('egg_risk_persistence', path)
     entry = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(entry)
-    mem = memory()
+    mem = memory(side='defense')
     actions = enter(panel(enemy), mem)
     rec = mem['_records'][-1]
     state = {'step': 2, 'screen_kind': 'battle', 'phase': 'battle', 'policy': mem}

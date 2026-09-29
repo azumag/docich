@@ -481,7 +481,18 @@ def nav_step(screen: Screen, mem, frame, goal, goal_name=None):
 
 
 # ---------------------------------------------------------------- orders
+def _boss_egg_depleted(order, mem) -> bool:
+    # g486: どうし left with 3 uses and lost to the Queen's Hydra after
+    # the second card missed its input window. Chapter 1's source recommends
+    # a fully recovered egg as the backup; do not invent a missing count.
+    uses = (mem.get('egg_uses') or {}).get(NAME)
+    return (mem.get('chapter') == 1 and order.get('general') == NAME
+            and _is_boss_order(order, mem) and type(uses) is int and 0 <= uses < 4)
+
+
 def _ready(order, mem) -> bool:
+    if _boss_egg_depleted(order, mem):
+        return False
     after = order['after']
     captured = set(mem.get('captured', []))
     if after is None:
@@ -893,6 +904,22 @@ def _off_chart(mem):
     replaces the previous plan. Until then the previous plan keeps waiting, or,
     with no plan waiting, a bounded number of JEV-chosen interim orders may run.
     """
+    # A deliberate recovery wait is not an exhausted chart. Do not ask the
+    # planner to replace the boss order or send an interim sortie while the
+    # next normal month advances. Other ready orders were considered first.
+    waiting = next((o for o in _orders(mem) if _boss_egg_depleted(o, mem)
+                    and _ready(o, {**mem, 'egg_uses': {}})
+                    and (mem.get('orders') or {}).get(o['step']) in (None, 'pending')), None)
+    if waiting:
+        key = (waiting['step'], mem.get('month'), (mem.get('egg_uses') or {}).get(NAME))
+        if mem.get('boss_egg_wait') != list(key):
+            mem['boss_egg_wait'] = list(key)
+            _record(mem, 'boss_egg_recovery_wait', chart_step=waiting['step'],
+                    observed_metric={'general': NAME, 'egg_uses': key[2], 'month': key[1]},
+                    expected_metric={'egg_uses': 4},
+                    reason='第1話ボス出撃前に主人公の卵が消耗しているため、通常の月次回復を待つ')
+        return
+    mem.pop('boss_egg_wait', None)
     state = mem.setdefault('chart_adjust', {})
     rid = chart_adjust.request_id(mem)
     orders = [o for o in _orders(mem) if not o['step'].startswith(chart_adjust.INTERIM_PREFIX)]
@@ -2646,6 +2673,18 @@ def deploy_step(screen: Screen, mem):
                           reason='チャートの将軍が出撃元の城にいない')
             return [pad('b')]
         return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move], '出撃将軍を選択')
+    if kind in {'card_select', 'sortie_confirm'} and _boss_egg_depleted(order, mem):
+        # observe_events reads the egg row before this decision. Cancel a
+        # sortie that was chosen while its quantity was still unknown.
+        mem.setdefault('orders', {})[order['step']] = 'pending'
+        mem['active'] = None
+        mem['picked'] = []
+        mem.setdefault('order_context', {}).pop(order['step'], None)
+        _record(mem, 'boss_sortie_cancelled_for_egg', chart_step=order['step'],
+                observed_metric={'general': NAME, 'egg_uses': mem['egg_uses'][NAME],
+                                 'screen': kind}, expected_metric={'egg_uses': 4},
+                reason='出撃画面で主人公の卵の消耗を確認したため、ボス出撃を取り消して回復を待つ')
+        return [pad('b'), pad('b')]
     if kind in {'card_select', 'sortie_confirm'} and _is_boss_order(order, mem):
         mem.setdefault('order_context', {}).pop(order['step'], None)
         if (mem.get('sortie_general') or {}).get(order['step']) != order['general']:
@@ -3081,50 +3120,9 @@ def battle_step(screen: Screen, mem):
         # strategy never fires its second card (1-B1: クースカン→ノリウツール)
         # and the queen summons. The chain is recorded as a deviation.
         attempted = [*cur['cards_used'], *(cur.get('cards_unclassified') or [])]
-        # Egg-denial timing (owner 2026-09-29): against an enemy whose clash
-        # triggers its egg, an HP-gated card that is the fight's only charted
-        # card cannot wait for the gate -- the clash comes first and the enemy
-        # summons (g460 16:08: ココット's 1-C2 ダイチスイム at enemy HP13 came
-        # after the clash and ガルバンゾー summoned カメレオンマン). Such a card
-        # opens the fight instead.
-        egg_denial = (tactic.get('when_hp_at_most') is not None
-                      and b.enemy_hp is not None
-                      and b.enemy_hp > tactic['when_hp_at_most']
-                      and enemy_egg_triggers(
-                          b.enemy, player_castle_defense=cur.get('side') == 'defense'
-                      ).clash_position is True
-                      and not any(other is not tactic
-                                  and other.get('enemy') in (None, b.enemy)
-                                  and (not other.get('step') or other.get('step') == cur.get('step'))
-                                  and (other.get('open') or other.get('after_clash')
-                                       or other.get('after_card'))
-                                  for other in tactics))
-        # Clash-kit timing (g464 18:52): the contact that makes an
-        # ``after_clash`` card due is the very contact that fires a
-        # clash-position egg, and once that egg fires the command menu never
-        # comes back -- どうし 90 vs クイーン 70 went melee -> たまごをつかう ->
-        # our egg -> ヒュドラ 361 -> どうし 0 with tactics_done empty. The
-        # charted 1-B1 order (クースカン -> ノリウツール) therefore opens the
-        # fight instead: B from the melee panel reaches the command menu
-        # (g458 15:15:46 battle_menu, g462 17:59:32 card list). A successor of
-        # this card (``after_card`` == this card) waits for it and never blocks
-        # it; any other opening card still goes first.
-        clash_kit_open = (tactic.get('after_clash') is True
-                          and enemy_egg_triggers(
-                              b.enemy, player_castle_defense=cur.get('side') == 'defense'
-                          ).clash_position is True
-                          and not any(other is not tactic
-                                      and other.get('enemy') in (None, b.enemy)
-                                      and (not other.get('step') or other.get('step') == cur.get('step'))
-                                      and (other.get('open') or other.get('after_clash')
-                                           or (other.get('after_card')
-                                               and other.get('after_card') != tactic.get('card')))
-                                      for other in tactics))
         due = (tactic.get('open')
                or (tactic.get('when_hp_at_most') is not None and b.enemy_hp is not None
                    and b.enemy_hp <= tactic['when_hp_at_most'])
-               or egg_denial
-               or clash_kit_open
                or (tactic.get('after_clash') and cur.get('clashed'))
                or (tactic.get('after_card') and tactic['after_card'] in attempted))
         if due:
@@ -3133,16 +3131,6 @@ def battle_step(screen: Screen, mem):
                                    and tactic['after_card'] not in cur['cards_used']
                                    and tactic['after_card'] in (cur.get('cards_unclassified') or []))
             note = tactic['note']
-            if egg_denial:
-                note = f"{note}（卵を使われる前に開幕使用）"
-                if not cur.get('deviation_reason'):
-                    cur['strategy_variant'] = 'egg_denial_timing'
-                    cur['deviation_reason'] = '卵持ち敵のHP条件札を開幕に前倒し（ぶつかり合いの卵召喚を防ぐ）'
-            if clash_kit_open and not egg_denial:
-                note = f"{note}（ぶつかり合いの卵召喚で戦闘メニューが戻らないため開幕使用）"
-                if not cur.get('deviation_reason'):
-                    cur['strategy_variant'] = 'clash_kit_open_timing'
-                    cur['deviation_reason'] = '激突位置の卵召喚を持つ敵に対し、after_clash札を開幕に前倒し'
             if chained_unconfirmed:
                 note = f"{note}（前札の実使用告知は未校正のため選択記録で連続使用）"
                 if not cur.get('deviation_reason'):
@@ -3299,6 +3287,15 @@ BEHIND_EGG_RATIO_TENTHS = 7    # ally HP at or below 70% of the enemy's: rescue 
 GENERAL_CRITICAL_RETREAT_HP = 12
 
 
+def _unarmed_clash_risk(cur):
+    """Check resources before a non-boss egg clash, rather than idle into it."""
+    if (cur.get('side') == 'defense' or cur.get('planned_cards')
+            or cur.get('enemy') in chart.BOSSES.values()):
+        return False
+    triggers = enemy_egg_triggers(cur.get('enemy'))
+    return triggers.has_egg is True and triggers.clash_position is True
+
+
 def _survival_needed(cur):
     hp, enemy, start = (cur.get(k) for k in ('ally_hp', 'enemy_hp', 'start_ally_hp'))
     if any(type(n) is not int or n <= 0 for n in (hp, enemy, start)):
@@ -3318,7 +3315,8 @@ def _survival_needed(cur):
     behind_start = (type(cur.get('start_enemy_hp')) is int and start < cur['start_enemy_hp']
                     and not cur.get('planned_cards') and cur.get('enemy') not in chart.BOSSES.values())
     return (hp <= GENERAL_CRITICAL_RETREAT_HP or (hp < enemy and hp * 5 <= start * 2)
-            or hp * 10 <= enemy * BEHIND_EGG_RATIO_TENTHS or behind_start)
+            or hp * 10 <= enemy * BEHIND_EGG_RATIO_TENTHS or behind_start
+            or _unarmed_clash_risk(cur))
 
 
 def _survival_state(mem, cur):
@@ -3328,7 +3326,9 @@ def _survival_state(mem, cur):
         _record(mem, 'battle_survival', **_battle_labels(cur),
                 observed_metric={'ally_hp': cur.get('ally_hp'), 'enemy_hp': cur.get('enemy_hp')},
                 expected_metric='使用可能な切り札・たまごを確認して選択',
-                reason='HP低下のため温存を中止し、戦闘メニューで救済手段を確認')
+                reason=('携行戦術のない卵持ち敵との衝突前に、戦闘メニューで救済手段を確認'
+                        if _unarmed_clash_risk(cur)
+                        else 'HP低下のため温存を中止し、戦闘メニューで救済手段を確認'))
     return cur['survival']
 
 
@@ -3343,6 +3343,8 @@ def _hero_retreat_needed(cur):
         return False
     hp, enemy, start = (cur.get(k) for k in ('ally_hp', 'enemy_hp', 'start_ally_hp'))
     ref = (max(start, int(cur.get('ref_ally_hp') or 0)) if cur.get('ally') == NAME else start)
+    if _unarmed_clash_risk(cur) and (cur.get('survival') or {}).get('exhausted'):
+        return True  # no observed rescue remains; retreat before the summon
     if cur.get('egg_battle'):
         # An enemy summon we cannot answer (no egg left, no cards) is not a
         # winnable melee: retreat before the general dies (owner 2026-09-29;

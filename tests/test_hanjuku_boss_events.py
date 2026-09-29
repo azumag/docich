@@ -62,8 +62,9 @@ def test_no_new_card_command_after_a_panel_reaches_zero(ally_hp, enemy_hp):
     initial = Screen([], None, '', battle=Battle('クイーン', 70, 'ゼウス', 74), kind='battle')
     policy.battle_step(initial, mem)
     policy.battle_step(initial, mem)
-    # v82 opens the clash kit from the first stable reading (g464 18:52: the
-    # clash that would make it due never comes back before the enemy egg).
+    # The chart's first card waits for one measured HP drop.
+    assert not mem['battle'].get('card_flow')
+    policy.battle_step(Screen([], None, '', battle=Battle('クイーン', 68, 'ゼウス', 74), kind='battle'), mem)
     assert mem['battle'].get('card_flow')['card'] == 'クースカン'
     before = len(mem['_records'])
     zero = Screen([], None, '', battle=Battle('クイーン', enemy_hp, 'ゼウス', ally_hp), kind='battle')

@@ -21,7 +21,13 @@ T=6なら **6話突破（新記録） / 3〜5話突破 / 3話突破できず** �
 目標と選択肢は予想作成時に固定し、挑戦途中に新記録が出ても変更しない。
 次回の予想から更新する。全12話突破後は不可能な「13話突破」を作らない。
 
-既定受付は120秒。実行中に新記録達成が既に観測できたら受付をロックするが、
+受付時間は **エンディング到達の受付時間 × 新記録目標話数 ÷ 全12話**
+（整数秒で切り捨て、Twitchの最短30秒を下限）で決める。
+エンディング到達は既定1800秒（30分）。2話なら300秒（5分）、
+6話なら900秒（15分）、12話なら1800秒（30分）となる。
+受付時間も作成前のintentへ保存し、既存予想や再試行の途中では変更しない。
+導入前に開始した120秒の予想はそのまま追跡・精算する。
+実行中に新記録達成が既に観測できたら受付をロックするが、
 最終記録・精算は挑戦終了まで待つ。既に新記録が確定している途中参加では
 結果既知の予想を作成しない。コーナーの時間制限や既存の終了判定は変更しない。
 
@@ -78,7 +84,8 @@ PR作成・ローカル試験だけでは配備済みとしない。既存Soren�
 3. game_overまたはscreen_stalledで確認済み突破数に精算され、次回の目標に反映される。
 
 設定は `config/games/hanjuku-hero.toml` の `[hanjuku.predictions]`。
-`enabled` はboolean、`seed_best_cleared` は1〜12、`window_seconds` は1〜1800。
+`enabled` はboolean、`seed_best_cleared` は1〜12、
+`ending_window_seconds` は30〜1800（エンディング到達の受付時間）。
 OAuthは既存Soren `.env` / 環境の `TWITCH_PREDICTIONS_ENABLED`,
 `TWITCH_PREDICTIONS_TOKEN`, `TWITCH_CLIENT_ID`, `TWITCH_BROADCASTER_ID` を使う。
 `EXPLORE_MODE=1` または既存Twitch設定無効ならAPI操作しない。シェルをeval/sourceせず、
@@ -91,7 +98,7 @@ OAuthは既存Soren `.env` / 環境の `TWITCH_PREDICTIONS_ENABLED`,
   既存corner/rotation tickを使用。Soren prediction_workerの規約は変更しない。
 - queues: 新規キュー、音声、チャット投稿は追加しない。
 - telemetry / diagnostics: `run/hanjuku_predictions.json` のmode/error、最高突破数、
-  固定目標、中間、remote status、最終突破数、次回試行時刻だけを固定collectorで投影する。
+  固定目標、中間、受付秒数、remote status、最終突破数、次回試行時刻だけを固定collectorで投影する。
   作成タイトル、outcome IDs、認証情報は診断に含めない。
 - regression: `tests/test_hanjuku_predictions.py` と既存半熟英雄/retro/rotation/診断試験。
   CIで実Twitch・ROM・本番VMへ接続しない。

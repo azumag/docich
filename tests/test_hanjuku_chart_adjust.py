@@ -707,7 +707,8 @@ def test_a_second_battle_does_not_replan_a_spent_sortie_card():
     actions = _battle(mem, 'キャンディー', 'ヴィーナス', [26, 26])
     assert decisions(mem, 'battle_card') == []
     assert decisions(mem, 'battle_start')[0]['planned_cards'] == []
-    assert actions[-1] != [policy.pad('b')]
+    assert actions[-1] == [policy.pad('b')]  # check rescue resources, never re-plan a spent card
+    assert decisions(mem, 'battle_survival')
 
 
 def test_dropped_chart_card_is_never_planned_or_announced_in_battle():

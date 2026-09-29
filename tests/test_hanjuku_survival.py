@@ -560,3 +560,30 @@ def test_low_hp_does_not_enter_irreversible_self_damage_lottery(hp, hidden):
     records = len(mem['_records'])
     assert p.okunote_step(screen, mem) == [p.pad('b')]
     assert len(mem['_records']) == records
+
+
+@pytest.mark.parametrize('side', ['attack', None])
+def test_unarmed_egg_enemy_checks_rescue_before_clash_and_retreats_if_unavailable(side):
+    # g486: Venus 76 vs Chicory 18 idled down to 40, then could not answer
+    # Dark Elf and lost. General HP advantage is not a monster advantage.
+    mem = memory(hp=76, enemy=18)
+    cur = mem['battle']
+    cur.update(ally='ヴィーナス', enemy='チコリ', start_ally_hp=76,
+               start_enemy_hp=18, side=side, planned_cards=[])
+    assert p.battle_step(battle(mem), mem) == [p.pad('b')]
+    assert not cur.get('melee_holds')
+    assert '衝突前' in mem['_records'][-1]['reason']
+    assert p.battle_menu_step(menu(('こうげき', 'たいきゃく')), mem) == [p.pad('b')]
+    assert cur['survival']['exhausted']
+    assert p.battle_step(battle(mem), mem) == [p.pad('b')]
+    assert p.battle_menu_step(menu(('こうげき', 'たいきゃく'), selected=1), mem) == [p.pad('a')]
+    assert cur['hero_retreat']['selected']
+
+
+@pytest.mark.parametrize('enemy,side,cards', [('チコリ', 'defense', []),
+                                            ('チコリ', 'attack', ['イッテツーン']),
+                                            ('クイーン', 'attack', []),
+                                            ('ミント', 'attack', [])])
+def test_preclash_rescue_leaves_defense_charted_boss_and_no_egg_battles_unchanged(enemy, side, cards):
+    cur = {'enemy': enemy, 'side': side, 'planned_cards': cards}
+    assert not p._unarmed_clash_risk(cur)
