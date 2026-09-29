@@ -3011,6 +3011,11 @@ def battle_step(screen: Screen, mem):
     if b.enemy_hp is not None and cur.get('start_enemy_hp') is not None and b.enemy_hp < cur['start_enemy_hp']:
         cur['clashed'] = True
     if b.enemy_hp == 0 or b.ally_hp == 0:
+        if (cur.get('card_flow') or {}).get('stage') == 'menu':
+            # A panel at zero is the end of the fight: drop the opening card
+            # that has not reached the command menu yet instead of pushing B
+            # after a resolution the chart cannot follow up on.
+            cur['card_flow'] = None
         return []
     retreat = _hero_retreat_open(mem, cur)
     if retreat is not None:
@@ -3018,7 +3023,16 @@ def battle_step(screen: Screen, mem):
     if cur.get('card_flow'):
         flow = cur['card_flow']
         flow['battle_frames_without_receipt'] = flow.get('battle_frames_without_receipt', 0) + 1
-        if flow['battle_frames_without_receipt'] >= 2:
+        waited = flow['battle_frames_without_receipt']
+        opening = flow.get('stage') == 'menu'
+        if opening and waited <= CARD_MENU_OPEN_RETRIES:
+            # The flow opened the command menu with B and is still waiting for
+            # it: the panel is what B has to be sent at. Idling for two frames
+            # and declaring the card unclassified is what dropped the first
+            # opening card of the chain (g462 17:59:29 ダイチスイム -> 17:59:31
+            # unclassified -> only the second card reached the list).
+            return [pad('b')]
+        if waited >= (CARD_MENU_OPEN_RETRIES + 1 if opening else 2):
             _card_use_unclassified(mem, cur, '実使用告知を確認できないまま白兵戦へ復帰')
         return []
     extra = [{'enemy': b.enemy, 'card': card, 'open': True, 'step': cur.get('step'),
@@ -3058,10 +3072,32 @@ def battle_step(screen: Screen, mem):
                                   and (other.get('open') or other.get('after_clash')
                                        or other.get('after_card'))
                                   for other in tactics))
+        # Clash-kit timing (g464 18:52): the contact that makes an
+        # ``after_clash`` card due is the very contact that fires a
+        # clash-position egg, and once that egg fires the command menu never
+        # comes back -- どうし 90 vs クイーン 70 went melee -> たまごをつかう ->
+        # our egg -> ヒュドラ 361 -> どうし 0 with tactics_done empty. The
+        # charted 1-B1 order (クースカン -> ノリウツール) therefore opens the
+        # fight instead: B from the melee panel reaches the command menu
+        # (g458 15:15:46 battle_menu, g462 17:59:32 card list). A successor of
+        # this card (``after_card`` == this card) waits for it and never blocks
+        # it; any other opening card still goes first.
+        clash_kit_open = (tactic.get('after_clash') is True
+                          and enemy_egg_triggers(
+                              b.enemy, player_castle_defense=cur.get('side') == 'defense'
+                          ).clash_position is True
+                          and not any(other is not tactic
+                                      and other.get('enemy') in (None, b.enemy)
+                                      and (not other.get('step') or other.get('step') == cur.get('step'))
+                                      and (other.get('open') or other.get('after_clash')
+                                           or (other.get('after_card')
+                                               and other.get('after_card') != tactic.get('card')))
+                                      for other in tactics))
         due = (tactic.get('open')
                or (tactic.get('when_hp_at_most') is not None and b.enemy_hp is not None
                    and b.enemy_hp <= tactic['when_hp_at_most'])
                or egg_denial
+               or clash_kit_open
                or (tactic.get('after_clash') and cur.get('clashed'))
                or (tactic.get('after_card') and tactic['after_card'] in attempted))
         if due:
@@ -3075,6 +3111,11 @@ def battle_step(screen: Screen, mem):
                 if not cur.get('deviation_reason'):
                     cur['strategy_variant'] = 'egg_denial_timing'
                     cur['deviation_reason'] = '卵持ち敵のHP条件札を開幕に前倒し（ぶつかり合いの卵召喚を防ぐ）'
+            if clash_kit_open and not egg_denial:
+                note = f"{note}（ぶつかり合いの卵召喚で戦闘メニューが戻らないため開幕使用）"
+                if not cur.get('deviation_reason'):
+                    cur['strategy_variant'] = 'clash_kit_open_timing'
+                    cur['deviation_reason'] = '激突位置の卵召喚を持つ敵に対し、after_clash札を開幕に前倒し'
             if chained_unconfirmed:
                 note = f"{note}（前札の実使用告知は未校正のため選択記録で連続使用）"
                 if not cur.get('deviation_reason'):
@@ -3098,6 +3139,7 @@ def battle_step(screen: Screen, mem):
     return _melee_step(mem, cur)
 
 
+CARD_MENU_OPEN_RETRIES = 4    # B repeats while the command menu has not opened yet
 MELEE_HOLD_LIMIT = 8          # egg-safe holds in one fight before melee proceeds
 
 
