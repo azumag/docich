@@ -1,11 +1,11 @@
 {
-  "output_sha256": "c77689c54c6ee5fd8a2386324770cfcbae7f4912c04704da30c67a5c2c9cbdc7",
+  "output_sha256": "cd71a45a7fdbb2b55e7fe1066b1b8592c7183f14a497747a060b4a4c546d1019",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "8dd88fc61a0e2a1ed52674cd2518a6e63f61934ce5f01a8e01a87750058823d1",
+  "source_sha256": "d0d78b185301d88d6531f18e909648a4207f59dadc919f1d81de6caeaebda068",
   "topics": [
+    "Soren分析再試行のPR作成とCI成功（main統合・本番反映は保留）",
     "Soren改善の再失敗を検知し、検証理由付き再分析をローカル修正（本番未反映）",
-    "Soren戦略改善の検証器が入力除外条件を誤判定（診断のみ・未修正）",
-    "全将軍の卵修理v83を配備し隔離試験で復旧確認（Codex、本番発火未観測）"
+    "Soren戦略改善の検証器が入力除外条件を誤判定（診断のみ・未修正）"
   ]
 }
