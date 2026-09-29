@@ -552,7 +552,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v77-hero-egg-reserve'
+    assert state['bot_version'] == 'hanjuku-chart-v78-egg-denial-retreat'
     assert '_records' not in state['policy']
 
 
@@ -811,9 +811,11 @@ def test_unreadable_name_screen_never_uses_legacy_confirmation(monkeypatch):
 
 @pytest.mark.parametrize('step,ally,hp,expected', [
     ('1-V2', 'ヴィーナス', 60, 'フットバース'),
-    ('1-C2', 'ココット', 14, None),
+    # Egg-denial timing (owner 2026-09-29): ガルバンゾー's clash triggers its
+    # egg, so the fight's only HP-gated card opens instead of waiting.
+    ('1-C2', 'ココット', 14, 'ダイチスイム'),
     ('1-C2', 'ココット', 13, 'ダイチスイム'),
-    ('1-A2', 'どうし', 25, None),
+    ('1-A2', 'どうし', 25, 'フットバース'),
     ('1-A2', 'どうし', 24, 'フットバース'),
 ])
 def test_garbanzo_tactics_follow_each_generals_chart_branch(step, ally, hp, expected):
@@ -856,6 +858,20 @@ def _card_screen(cards, *, announcement=None, hand=True):
              for index, card in enumerate(cards)]
     return Screen(lines=lines, hand=(150, 170, 172, 186) if hand else None,
                   text=announcement or ''.join(cards), kind='text')
+
+
+def test_a_chained_hp_card_does_not_early_fire_for_the_egg():
+    # 3-B1 プリンス: ゼンマイン (HP25) follows クースカン open/after_card, so it
+    # keeps its gate; only a fight's first-and-only HP card moves to the opening.
+    from docich.hanjuku_screen import Battle, Screen
+    mem = {'chapter': 3, 'attack': {'general': 'どうし', 'castle': None, 'side': 'attack', 'step': '3-B1'}}
+    screen = Screen(lines=[], hand=None, text='', battle=Battle('プリンス', 100, 'どうし', 90), kind='battle')
+    assert policy.battle_step(screen, mem) == []
+    actions = policy.battle_step(screen, mem)
+    assert actions and actions[0]['buttons'] == ['b']
+    assert mem['battle']['card_flow']['card'] == 'クースカン'
+    assert 'ゼンマイン' not in [r.get('card') for r in mem['_records']
+                                if r.get('decision') == 'battle_card']
 
 
 def test_missing_and_selected_cards_do_not_confirm_use_but_chain_the_charted_follow_up():
