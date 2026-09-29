@@ -3481,6 +3481,58 @@ def _collect_nethack_panes(state_dir, now):
     return result
 
 
+
+def _render_bounded_payload(payload):
+    """Render diagnostics within the gateway budget without hiding AI failures early.
+
+    The public runtime alert derives fixed failure attribution from
+    ``ai.recent_events``. When optional diagnostics make the payload exceed
+    the collector budget, discard redundant/detail-heavy projections first
+    and keep that bounded redacted evidence until the final fallback.
+    """
+    def render():
+        return json.dumps(payload, sort_keys=True, ensure_ascii=False)
+
+    text = render()
+    if len(text.encode("utf-8")) <= MAX_JSON_BYTES:
+        return text
+
+    workers = payload.get("workers")
+    if isinstance(workers, dict):
+        workers["details"] = {}
+    text = render()
+    if len(text.encode("utf-8")) <= MAX_JSON_BYTES:
+        return text
+
+    ai = payload.get("ai")
+    if isinstance(ai, dict):
+        ai["anomalous_components"] = {}
+    text = render()
+    if len(text.encode("utf-8")) <= MAX_JSON_BYTES:
+        return text
+
+    profile = payload.get("soren91_drop_profile")
+    if isinstance(profile, dict) and profile.get("profileStatus") == "ok":
+        groups = profile.get("groups")
+        games = profile.get("games")
+        profile["omittedComparisonGroups"] = int(profile.get("omittedComparisonGroups") or 0) + (
+            len(groups) if isinstance(groups, dict) else 0
+        )
+        profile["omittedGameGroups"] = int(profile.get("omittedGameGroups") or 0) + (
+            len(games) if isinstance(games, list) else 0
+        )
+        profile["groups"] = {}
+        profile["games"] = []
+        profile["slowest"] = []
+        profile["representativeOmitted"] = True
+    text = render()
+    if len(text.encode("utf-8")) <= MAX_JSON_BYTES:
+        return text
+
+    if isinstance(ai, dict):
+        ai["recent_events"] = []
+    return render()
+
 def main(argv):
     if len(argv) != 2:
         print("usage: collect_diagnostics.py <soren_root>", file=sys.stderr)
@@ -3542,24 +3594,7 @@ def main(argv):
         or retention["timer"].get("active") is not True
     ):
         payload["status"] = "warn"
-    text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
-    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
-        payload["ai"]["recent_events"] = []
-        payload["workers"]["details"] = {}
-        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
-        if len(text.encode("utf-8")) > MAX_JSON_BYTES:
-            payload["ai"]["anomalous_components"] = {}
-            text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
-    if len(text.encode("utf-8")) > MAX_JSON_BYTES:
-        profile = payload["soren91_drop_profile"]
-        if profile.get('profileStatus') == 'ok':
-            profile['omittedComparisonGroups'] += len(profile['groups'])
-            profile['omittedGameGroups'] += len(profile['games'])
-            profile['groups'] = {}
-            profile['games'] = []
-            profile['slowest'] = []
-            profile['representativeOmitted'] = True
-        text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    text = _render_bounded_payload(payload)
     sys.stdout.write(text + "\n")
     return 0
 
