@@ -1,11 +1,11 @@
 {
-  "output_sha256": "f0b8bc8a79499ec98e8c3784c9d557bd6398fdd200083eba65e7fe3aa4ad320a",
+  "output_sha256": "143f3126af27a9ba7ad4adddc324e23d77fbe1e0f158940da00ede16e0365fc1",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "c0e894d251962aae0280f303a4faed5295c860a59bc86c74079f1f937263cc47",
+  "source_sha256": "a28e5fa1c43c46ba098e927e3fbfbbef8a890c7d2f6fb61a94b0b4d5e882d036",
   "topics": [
+    "Moon Buggy auto-promotion PR の最新main同期と再検証",
     "Moon Buggy ABBA勝者の自動採用（・レビュー待ち）",
-    "Soren限定再分析を本番配布しファイル・配信継続を照合",
-    "Soren分析再試行をmain統合し正規配布を準備"
+    "Soren限定再分析を本番配布しファイル・配信継続を照合"
   ]
 }
