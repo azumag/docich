@@ -82,12 +82,12 @@ def exit_reason(pos: dict, *, now: float, direction: int,
     side = pos["side"]
     signed_return = (px / entry - 1) * side * 10000
     reason = state["requested_reason"]
-    if force_flat:
-        reason = "session_end"
-    elif risk_stopped:
-        reason = "risk_stop"
-    elif reason is None:
-        if signed_return <= -pos["stop_bps"]:
+    if reason is None:
+        if force_flat:
+            reason = "session_end"
+        elif risk_stopped:
+            reason = "risk_stop"
+        elif signed_return <= -pos["stop_bps"]:
             reason = "stop_loss"
         elif (pos.get("exit_mode", "fixed") == "trailing" and state["armed"]
               and (px - _number(state["stop_price"])) * side <= 0):

@@ -173,6 +173,33 @@ class TrailingPaperTests(unittest.TestCase):
         self.assertEqual(fill["trigger_quote_ts"], self.now + 4)
         self.assertEqual(D(fill["price"]), D(103))
 
+    def test_latched_exit_reason_survives_later_session_end(self):
+        self.warm()
+        self.tick(3, 102)
+        self.tick(4, 101, bid_size="1")
+        requested = self.position()["exit_state"]
+        self.assertEqual(requested["requested_reason"], "trailing_stop")
+        self.tick(5, 103, force_flat=True)
+        fill = self.last_fill()
+        self.assertEqual(fill["reason"], "trailing_stop")
+        self.assertEqual(fill["trigger_quote_ts"], self.now + 4)
+        self.assertEqual(fill["trigger_stop_price"], requested["trigger_stop_price"])
+
+    def test_latched_exit_reason_survives_later_risk_stop(self):
+        self.warm()
+        self.tick(3, 102)
+        self.tick(4, 101, bid_size="1")
+        requested = self.position()["exit_state"]
+        state = self.book.state()
+        state["risk_stopped"] = True
+        with self.book.db:
+            self.book.db.execute("UPDATE account SET body=?", (json.dumps(state),))
+        self.tick(5, 103)
+        fill = self.last_fill()
+        self.assertEqual(fill["reason"], "trailing_stop")
+        self.assertEqual(fill["trigger_quote_ts"], self.now + 4)
+        self.assertEqual(fill["trigger_stop_price"], requested["trigger_stop_price"])
+
     def test_restart_keeps_armed_extrema_and_stop(self):
         self.warm()
         self.tick(3, 102)
