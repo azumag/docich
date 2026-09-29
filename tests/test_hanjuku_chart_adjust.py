@@ -826,6 +826,44 @@ def test_ambiguous_sorties_are_not_guessed(monkeypatch):
     assert all(v['status'] == 'en_route' for v in mem['sorties'].values())
 
 
+def test_ambiguous_boss_entry_fights_with_the_marching_sorties_kit():
+    # g460 17:32: the boss entry could not name which どうし->けっかい sortie it
+    # was - the base 1-B1 and the adjusted K1 were both still on the road - so
+    # no order may be bound. The battle must still fight with the kit of the
+    # sortie that is marching: with an unknown step every charted tactic is
+    # filtered out and the hero swings bare-handed (planned_cards=[] -> HP
+    # 88..0 -> 17:35 game over).
+    mem = stuck_memory()
+    mem['captured'] += ['スペンソニア', 'ジョンリギ']
+    k1 = 'A:bd2304e3:K1'
+    base = {'step': '1-B1', 'general': chart.HERO, 'source': 'スペンソニア', 'target': 'けっかい',
+            'cards': ['クースカン', 'ノリウツール'], 'after': None,
+            'note': 'クースカン ノリウツールを持ちボス城へ 途中敵は無視'}
+    adjusted = {'step': k1, 'general': chart.HERO, 'source': 'スペンソニア', 'target': 'けっかい',
+                'cards': ['クースカン', 'ノリウツール', 'イッテツーン'],
+                'after': ['captured', 'スペンソニア'], 'note': '卵落としにイッテツーンを携行'}
+    mem['orders'].update({'1-B1': 'launched', k1: 'launched'})
+    mem['launched_orders'] = {'1-B1': base, k1: adjusted}
+    mem['sorties'] = {
+        '1-B1': {'general': chart.HERO, 'target': 'けっかい', 'status': 'en_route', 'tick': 1684},
+        k1: {'general': chart.HERO, 'target': 'けっかい', 'status': 'en_route', 'tick': 2292}}
+    mem['_records'] = []
+    entry = f'{chart.HERO}しょうぐんがボスじょうにせめこんだ!!'
+    assert policy.message_step(_text_screen(entry), mem) == [policy.pad('a')]
+    assert mem['attack'] == {'general': chart.HERO, 'castle': 'けっかい', 'side': 'attack',
+                             'step': None, 'entry_evidence': 'measured_boss_entry'}
+    _battle(mem, 'クイーン', chart.HERO, [70, 70])
+    assert decisions(mem, 'battle_start')[0]['planned_cards'] \
+        == ['クースカン', 'ノリウツール', 'イッテツーン']
+    assert [r['observed_metric']['sortie_step'] for r in decisions(mem, 'battle_step_resolved')] == [k1]
+    # A battle at a castle we hold is a defence and keeps its own step.
+    context = policy._battle_context({'attack': {'general': chart.HERO, 'castle': 'スペンソニア',
+                                                 'side': 'attack', 'step': None},
+                                      'captured': ['スペンソニア'], 'sorties': mem['sorties']},
+                                     chart.HERO)
+    assert (context['side'], context['step']) == ('defense', None)
+
+
 def test_interim_runs_after_an_exhausted_plan_but_not_while_a_plan_waits(monkeypatch):
     mem = stuck_memory()
     rid = _adopt(mem, [{'step': 'J1', 'general': 'ココット', 'source': 'ゴーメン', 'target': 'スペンソニア'},
