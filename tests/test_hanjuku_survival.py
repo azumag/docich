@@ -320,6 +320,37 @@ def test_hero_emergency_retreat_threshold_is_stricter_than_resource_rescue(hp,en
     assert p._hero_retreat_needed(memory(hp,enemy)['battle']) is expected
 
 
+def test_a_summoned_monster_raises_the_retreat_threshold():
+    cur = {'ally': 'ヴィーナス', 'enemy': 'カメレオンマン', 'ally_hp': 54, 'enemy_hp': 200,
+           'start_ally_hp': 82}
+    assert not p._hero_retreat_needed(cur)
+    assert p._hero_retreat_needed({**cur, 'egg_battle': True})
+    # A winnable summon keeps fighting.
+    assert not p._hero_retreat_needed({**cur, 'egg_battle': True, 'ally_hp': 82, 'enemy_hp': 60})
+
+
+def egg_menu_screen():
+    from docich.hanjuku_font import TextLine
+    lines = [TextLine(176, tuple((176 + 8 * i, ch) for i, ch in enumerate('こうげき'))),
+             TextLine(192, tuple((176 + 8 * i, ch) for i, ch in enumerate('もうこうげき')))]
+    return Screen(lines=lines, hand=(150, 170, 172, 186),
+                  text='こうげきもうこうげき', kind='egg_battle_menu')
+
+
+def test_a_hopeless_egg_battle_tries_the_retreat_before_attacking():
+    # g460 16:46: ヴィーナス 82 vs アルファルファ 38 was summoned on; the egg
+    # was spent and no cards were left, yet the bot chose こうげき and died.
+    mem = memory(54, 200)
+    mem['battle'].update(enemy='カメレオンマン', side='attack', planned_cards=[])
+    screen = egg_menu_screen()
+    assert p.egg_battle_step(screen, mem) == [p.pad('b')]
+    assert mem['battle']['egg_retreat_tried']
+    assert p.egg_battle_step(screen, mem) == [p.pad('a')]      # one attempt only
+    # A castle defense cannot retreat: attack as before.
+    mem['battle'].update(side='defense', egg_retreat_tried=False)
+    assert p.egg_battle_step(screen, mem) == [p.pad('a')]
+
+
 def test_a_low_general_retreats_in_an_attack_battle():
     # g460 16:11: ココット 24 vs タピオカ 50 spent the fight in card menus,
     # fell to 12 and died; no retreat existed for a non-hero general.

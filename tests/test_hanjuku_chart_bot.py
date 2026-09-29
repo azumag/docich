@@ -569,7 +569,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v78-egg-denial-retreat'
+    assert state['bot_version'] == 'hanjuku-chart-v79-summon-retreat'
     assert '_records' not in state['policy']
 
 
@@ -628,6 +628,24 @@ def test_summoned_monster_turn_menu_is_answered_instead_of_stalling():
     assert actions[0]['buttons'] == ['a']
 
 
+def test_a_heal_first_monster_inflates_then_shouts():
+    # バルーンフィンチ: ふくらむ to the tracked max, then シャウト while at max
+    # (owner 2026-09-29); damage re-enables the heal.
+    def run(ally_hp, state=None):
+        frame = monster_menu_frame(['ふくらむ', 'シャウト'],
+                                   ally=('バルーンフィンチ', ally_hp), enemy=('クミン', 40), cursor=0)
+        state = state or {'policy': {'chapter': 1, 'battle': {
+            'enemy': 'クミン', 'ally': 'バルーンフィンチ', 'enemy_hp': 40,
+            'ally_hp': ally_hp, 'step': None}}}
+        return decide(frame, state)
+    _, state = run(30)                                             # hurt: inflate first
+    assert state['policy']['monster_menu_choice'] == 'skill1'
+    _, state = run(120, state)                                     # healed to the new max
+    assert state['policy']['monster_menu_choice'] == 'skill2'      # shout at full
+    _, state = run(30, state)                                      # damaged again
+    assert state['policy']['monster_menu_choice'] == 'skill1'
+
+
 def test_egg_summon_menu_falls_back_to_attack_when_the_egg_is_spent():
     # 2026-09-28 live incident: a general whose egg is already spent draws
     # たまごをつかう greyed out (dropped from OCR) on the enemy-summon menu.
@@ -646,9 +664,13 @@ def test_egg_summon_menu_falls_back_to_attack_when_the_egg_is_spent():
     spent.text(176, 191, 'もうこうげき')
     actions, state = decide(spent.frame(), state)
     assert state['screen_kind'] == 'egg_battle_menu'
-    assert actions[0]['buttons'] == ['a']
+    # With no cards left the bot tries the retreat once (owner 2026-09-29)
+    # instead of attacking into a summon it cannot answer.
+    assert actions[0]['buttons'] == ['b']
     assert state['policy']['egg_battle_row_dead'] is True
-    # Repeats cleanly rather than resuming the dead down/down/a search.
+    # One attempt only: the fallback is a plain attack, bounded (no dead search).
+    actions, state = decide(spent.frame(), state)
+    assert actions[0]['buttons'] == ['a']
     actions, state = decide(spent.frame(), state)
     assert actions[0]['buttons'] == ['a']
 
