@@ -1,3 +1,38 @@
+# Issueコメントから終了済み半熟英雄の証拠を取得する
+
+固定Issue [#1339](https://github.com/azumag/docich/issues/1339) にownerが次のいずれかを
+**完全一致の1行**でコメントする。証明書・秘密鍵・ローカル復号は不要。
+
+```text
+/hanjuku-evidence list
+/hanjuku-evidence export g7-1234abcd
+```
+
+上記IDは形式例。先に `list` の `candidates.json` artifactを取得し、候補から実在する
+runtime IDを明示選択する。候補は正常な終了証拠がありactive/retiringではない世代の最大20件。
+世代・終了理由・観測数・入力数のみを返す。`latest` や任意pathは受け付けない。
+
+`Hanjuku evidence query` runのevent/actor/SHA/attemptとIssueコメント時刻を照合し、
+GitHub connectorのworkflow artifacts一覧とdownloadを使う。export artifactの内側にある
+`evidence.zip` はログ・最大240画像・manifestを含む。保持は1日で、ユーザー判断により
+ゲーム画面・ゲームログの平文artifactを許可する。秘密鍵やSSH設定はartifactに含めない。
+
+認可はowner ID・comment author ID・固定Issue・protected main・workflow refを固定する。
+Actionsは実行前と公開直前に最新mainを照合し、gatewayはproduction configured SHAと
+root-owned導入コードの一致を検証する。mainが進んだ場合は失敗し、新しいコメントで再実行する。
+診断や汎用execへのfallbackはない。受信したZIPはmanifest・PNG/RGB SHA・runtime IDを
+検証してから公開する。画像とログ本文はActionsログへ出さない。
+
+`hanjuku_evidence_query docich production <SHA> list|export <runtime-id>` は固定の
+read-only gateway operationである。通常deployに加えて、レビュー済みmainから既存
+`install_vm_gateway.sh` を管理者経路で一度更新する必要がある。通常deploy成功だけで
+root gateway更新済みとはみなさない。以後はIssueコメントだけで取得できる。
+
+取得後は [画像認識評価](hanjuku-vision-evaluation.md) に従い、実画像を目視したラベルで
+baselineを測る。parserの出力を正解ラベルにせず、ゲーム入力・配信・音声は変更しない。
+
+以下は既存の暗号化exportの後方互換手順。Issueコメント経路では不要。
+
 # 半熟英雄・終了済みランの暗号化エクスポート
 
 ## 実装範囲と導入状態
@@ -70,7 +105,8 @@ Actions側も実時間と一時ファイル容量を制限する。ゲームや�
 `hanjuku_frames/frame-*.png` / `decision-*.png`（合計240枚まで）に限定する。
 ROM・セーブ・`.env`・実況文・音声ログ・共有の経験記憶・任意パスは含めない。
 JSONのcredential/prompt関連キーは入れ子も伏せるが、自由文の完全な秘密検出器ではない。
-**復号したZIPや画像をpublic Issue、PR、Actionsログ・artifactへ転載しない。**
+ゲーム画面・scrub済みゲームログの平文Actions artifactはownerの明示判断で許可されている。
+Actionsログへ本文を出さず、認証情報・ROM・セーブは引き続き収集しない。
 
 manifestにはruntime/game/generation/lease、bot版、source/exportファイルSHA-256、
 欠落ファイル、不正JSONL行、欠落画像SHAを記録する。不正JSONLは元の行番号を保つ

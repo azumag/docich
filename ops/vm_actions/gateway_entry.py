@@ -14,7 +14,7 @@ def main():
     if len(sys.argv) != 2:
         gateway.die()
     command = os.environ.get("SSH_ORIGINAL_COMMAND", "")
-    if command.split()[:1] == ["hanjuku_evidence"]:
+    if command.split()[:1] in (["hanjuku_evidence"], ["hanjuku_evidence_query"]):
         import hanjuku_evidence_gateway
         return hanjuku_evidence_gateway.main(gateway, sys.argv[1])
     # Same argv, parser, lock, command allowlist and output/error behavior.
