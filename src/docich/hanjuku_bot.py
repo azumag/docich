@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v80-boss-kit-step'
+BOT_VERSION = 'hanjuku-chart-v81-chikujou-hold'
 
 
 # Native title copyright rows, measured from the owner's ROM. A strict match
@@ -298,6 +298,8 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     elif kind in {'castle_info','sealed_castle','main_menu'}:
         policy._record(mem,'close_panel',screen=kind,reason='意図しない情報画面を閉じる')
         actions=[pad('b')]
+    elif kind == 'text' and policy.chikujou_leftover(screen, mem):
+        actions = [pad('b')]
     elif kind=='text' and policy.is_camp_menu(screen):
         # g436 22:04: an A after closing the Y view landed on the hero's tent
         # and opened いどう/ステータス/キャンプ/きかん with no recall in flight;

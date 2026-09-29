@@ -1216,6 +1216,55 @@ def test_monthly_chikujou_raises_a_castle_only_with_money_to_spare(monkeypatch):
     assert poor['month_sub'].get('declined') and decisions(poor, 'chikujou_declined')
 
 
+def test_a_chikujou_sub_stays_tracked_until_the_flow_leaves_the_month_menu():
+    # g462 18:06:02-18:11:15: the month menu was still on screen when ちくじょう
+    # opened, so the sub ended before the game reacted. The castle list and its
+    # confirm then ran through the generic paths, the upgrade finished, and the
+    # 「これいじょうのぞうちく」 exit screen repeated A for 300 s until the run
+    # watchdog ended the corner.
+    from docich.hanjuku_screen import Screen as S
+    menu = S(lines=[], hand=None, kind='month_menu', text='', header={'gold': 80})
+    mem = {'chapter': 1, '_records': [],
+           'month_sub': {'kind': 'chikujou', 'gold_before': 80, 'presses': 0, 'left_menu': False}}
+    for _ in range(policy.MONTH_SUB_MENU_WAIT - 1):
+        assert policy._finish_month_sub(menu, mem, {'chikujou': 'opened'}) is False
+        assert mem['month_sub'] and not decisions(mem, 'chikujou')
+    ask = S(lines=[], hand=None, kind='text', text='アルマムーン1どのしろをぞうちくなさいますか?',
+            header={'gold': 80})
+    policy.month_sub_step(ask, mem)                       # a non-menu frame: the flow left
+    assert mem['month_sub'].get('left_menu') is True
+    mem['month_sub']['quoted_cost'] = 5
+    paid = S(lines=[], hand=None, kind='month_menu', text='', header={'gold': 75})
+    assert policy._finish_month_sub(paid, mem, {'chikujou': 'opened'}) is True
+    assert 'month_sub' not in mem
+    assert decisions(mem, 'chikujou')[0]['observed_metric']['gold_after'] == 75
+    assert decisions(mem, 'chikujou')[0]['deviation_reason'] is None
+    # A menu the game never leaves cannot hold the month forever.
+    stalled = {'chapter': 1, '_records': [],
+               'month_sub': {'kind': 'chikujou', 'gold_before': 80, 'presses': 0, 'left_menu': False}}
+    for _ in range(policy.MONTH_SUB_MENU_WAIT - 1):
+        assert policy._finish_month_sub(menu, stalled, {'chikujou': 'opened'}) is False
+    assert policy._finish_month_sub(menu, stalled, {'chikujou': 'opened'}) is True
+    assert 'month_sub' not in stalled
+
+
+def test_an_untracked_chikujou_screen_is_closed_with_b():
+    from docich.hanjuku_screen import Screen as S
+    mem = {'chapter': 1, '_records': []}
+    stuck = S(lines=[], hand=None, kind='text',
+              text='アルマムーン3これいじょうのぞうちくはできませんぞ!!どのしろをぞうちくなさいますか?',
+              header=None)
+    assert policy.chikujou_leftover(stuck, mem) is True
+    assert decisions(mem, 'chikujou_leftover')[0]['deviation_reason'] == 'chikujou_state_lost'
+    assert policy.chikujou_leftover(stuck, mem) is True
+    assert len(decisions(mem, 'chikujou_leftover')) == 1    # recorded once, B keeps going
+    mem['month_sub'] = {'kind': 'chikujou', 'gold_before': 80, 'presses': 0}
+    assert policy.chikujou_leftover(stuck, mem) is False     # the tracked flow owns the screen
+    mem.pop('month_sub')
+    talk = S(lines=[], hand=None, kind='text', text='てきにんしゃはゼウスしょうぐんですな', header=None)
+    assert policy.chikujou_leftover(talk, mem) is False
+
+
 def test_the_castle_guard_only_holds_while_few_castles_remain(monkeypatch):
     # Owner (2026-09-29): with six castles the guard cancelled the hero's charted
     # sortie to スペンソニア; only one or two castles risk a total loss.

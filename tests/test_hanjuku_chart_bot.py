@@ -569,7 +569,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v80-boss-kit-step'
+    assert state['bot_version'] == 'hanjuku-chart-v81-chikujou-hold'
     assert '_records' not in state['policy']
 
 
@@ -2076,6 +2076,18 @@ def test_recruit_intro_restores_lost_tracking_only_from_measured_dialogue():
     assert mem['month_sub']['kind']=='recruit' and mem['month_sub']['gold_before']==158
     assert mem['shop']['recruit']=='opened'
     assert mem['_records'][0]['decision']=='month_sub_resumed'
+
+
+def test_the_untracked_chikujou_overlay_is_closed_with_b(monkeypatch):
+    # g462 18:06:10-18:11:11: legacy A presses on the ちくじょう exit screen
+    # changed nothing for 300 s and the run watchdog ended the corner.
+    from docich import hanjuku_screen
+    sc = Screen(lines=[], hand=None, kind='text', header=None,
+                text='アルマムーン3これいじょうのぞうちくはできませんぞ!!どのしろをぞうちくなさいますか?')
+    monkeypatch.setattr(hanjuku_screen, 'parse', lambda *a, **k: sc)
+    actions, state = decide(month_canvas(75), {'policy': {'chapter': 1, '_records': []}})
+    assert actions == [policy.pad('b')]
+    assert state['_records'][0]['decision'] == 'chikujou_leftover'
 
 
 def test_month_background_does_not_end_active_recruit_dialogue(monkeypatch):
