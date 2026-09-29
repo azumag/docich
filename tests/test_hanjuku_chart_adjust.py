@@ -637,6 +637,79 @@ def test_adjusted_boss_order_reaches_boss_entry_and_battle_tactics(monkeypatch):
     assert mem['retry_context'][j2]['expected_metric']['cards'] == ['クースカン', 'ノリウツール']
 
 
+def test_a_later_chapter_enemy_general_advances_the_chapter():
+    # g454 08:24: クイーン defeated, then ピオーネ/ヘラ (debut chapter 2)
+    # attacked; no chapter-2 castle name appeared and the bot stayed on
+    # chapter 1 coordinates.
+    mem = stuck_memory()
+    policy.observe_chapter_general(mem, 'ピオーネ')
+    assert mem['chapter'] == 2
+    [seen] = decisions(mem, 'chapter_seen')
+    assert seen['observed_metric'] == {'chapter': 2, 'evidence': 'ピオーネ'}
+    # A chapter-1 general or an unknown name never moves the chapter.
+    mem = stuck_memory()
+    policy.observe_chapter_general(mem, 'クイーン')
+    policy.observe_chapter_general(mem, 'ヒュドラ')
+    assert mem['chapter'] == 1 and not decisions(mem, 'chapter_seen')
+    # A further jump (debut 7) needs this chapter's boss defeat as context;
+    # with it, the chapter advances to the general's debut chapter.
+    policy.observe_chapter_general(mem, 'ミモザ')
+    assert mem['chapter'] == 1
+    mem['boss_defeated'] = 1
+    policy.observe_chapter_general(mem, 'ミモザ')
+    assert mem['chapter'] == 7
+
+
+def test_a_battle_panel_with_a_next_chapter_enemy_advances_the_chapter():
+    from docich.hanjuku_screen import Battle
+    mem = stuck_memory()
+    for _ in range(2):
+        screen = _text_screen('', 'battle')
+        screen.battle = Battle(enemy='ピオーネ', ally='どうし', enemy_hp=46, ally_hp=90)
+        policy.battle_step(screen, mem)
+    assert mem['chapter'] == 2
+    assert decisions(mem, 'chapter_seen')[-1]['observed_metric']['evidence'] == 'ピオーネ'
+
+
+def test_an_unclassified_card_use_leaves_the_sortie_kit():
+    # g452 07:14: ヴィーナス selected both carried イッテツーン (no calibrated
+    # receipt); the next battle re-planned them and opened an empty list.
+    mem = {'_records': []}
+    order = {'step': 'I:x:1', 'general': 'ヴィーナス', 'source': 'スペンソニア',
+             'target': 'ジョンリギ', 'cards': ['イッテツーン', 'イッテツーン'], 'after': None}
+    mem['launched_orders'] = {'I:x:1': order}
+    for _ in range(2):
+        policy._card_use_unclassified(
+            mem, {'step': 'I:x:1', 'cards_unclassified': [], 'card_flow': {'card': 'イッテツーン'}},
+            '実使用告知を確認できないまま白兵戦へ復帰')
+    assert mem['kit_spent'] == {'I:x:1': ['イッテツーン', 'イッテツーン']}
+    assert policy._deploy_cards(order, mem) == []
+    assert [t['card'] for t in policy._tactics(mem, 'I:x:1') if t.get('step') == 'I:x:1'] == []
+    # A new sortie of the same order carries a fresh kit.
+    mem['active'] = 'I:x:1'
+    policy._finish_order(mem, 'launched')
+    assert policy._deploy_cards(order, mem) == ['イッテツーン', 'イッテツーン']
+    assert [t['card'] for t in policy._tactics(mem, 'I:x:1') if t.get('step') == 'I:x:1'] \
+        == ['イッテツーン', 'イッテツーン']
+
+
+def test_a_second_battle_does_not_replan_a_spent_sortie_card():
+    mem = stuck_memory()
+    step = 'I:abc:1'
+    order = {'step': step, 'general': 'ヴィーナス', 'source': 'スペンソニア',
+             'target': 'ジョンリギ', 'cards': ['イッテツーン', 'イッテツーン'], 'after': None}
+    mem['orders'] = {step: 'launched'}
+    mem['launched_orders'] = {step: order}
+    mem['kit_spent'] = {step: ['イッテツーン', 'イッテツーン']}
+    mem['_records'] = []
+    mem['attack'] = {'general': 'ヴィーナス', 'castle': 'ジョンリギ', 'side': 'attack',
+                     'step': step, 'entry_evidence': None}
+    actions = _battle(mem, 'キャンディー', 'ヴィーナス', [26, 26])
+    assert decisions(mem, 'battle_card') == []
+    assert decisions(mem, 'battle_start')[0]['planned_cards'] == []
+    assert actions[-1] != [policy.pad('b')]
+
+
 def test_dropped_chart_card_is_never_planned_or_announced_in_battle():
     # g438 04:18: the sortie dropped ミックミー (never in stock), but the battle
     # still planned it and announced 開幕にミックミーを使います for the missing card.

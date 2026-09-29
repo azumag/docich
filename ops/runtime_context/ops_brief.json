@@ -1,11 +1,11 @@
 {
-  "output_sha256": "4d8cbbd5d74418fcd2f4aa2acf132632aeb6514fdd5dbdcdf94fda58daeba58f",
+  "output_sha256": "0589dbafc6f27095109256f2b52abd946f90e975d10714b64c2d61a85f877a93",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "19ea078e7956e90295494e8dc26872204d54c02e51e3a5b31a1f6784e1cf8036",
+  "source_sha256": "6803df0a0c2721e24abfc11139860874d713954358ccc31b624850d5d98487b2",
   "topics": [
-    "PAPER読み上げの先読み生成 （Claude Code）",
-    "卵落/携行札/revisionのレビュー対応、#1294/#1298/#1299 main・VM配備（opencode）",
-    "g438 は記憶ファイル肥大で終了、 未マージ（Claude Code）"
+    "hanjuku g452 空の切り札一覧フリーズ修正（v71）と g454 稼働・6時間監視（opencode）",
+    "PAPER改善日次観測Cycle 2: #1215発火確認、履歴記憶とコスト明示を配備（Claude Code）",
+    "PAPER読み上げの先読み生成 （Claude Code）"
   ]
 }
