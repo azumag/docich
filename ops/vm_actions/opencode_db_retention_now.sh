@@ -20,6 +20,8 @@ case "${1:-}" in
   *) exit 2 ;;
 esac
 export OPENCODE_ROTATION_GATE_WAIT_SEC=600
+# Use a private tmpfs copy only under disk pressure and with >=4 GiB RAM reserved.
+export OPENCODE_RETENTION_MEMORY_COMPACTION=1
 export OPENCODE_RETENTION_DEADLINE_EPOCH=$(( $(date +%s) + 780 ))
 export OPENCODE_RETENTION_STATE_DIR="$root/tmp/state"
 env_file="$root/.env"
