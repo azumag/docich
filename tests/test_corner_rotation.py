@@ -839,6 +839,58 @@ def test_manual_queue_replay_uses_same_durable_request(setup, monkeypatch):
     assert state(make()).get("manual_pending") is None
 
 
+@pytest.mark.parametrize("proven_rollback", [True, False])
+def test_manual_failed_start_latches_only_without_exact_rollback_proof(
+        setup, monkeypatch, proven_rollback):
+    from docich import corner_rotation
+
+    g, clock, _, executor, make = setup
+    rotation = make()
+    monkeypatch.setattr(corner_rotation, "CornerRotationManager", lambda _: rotation)
+    owner = SimpleNamespace(path=g.state_dir / "soren91_corner_manual.json")
+    adapter = rotation.adapters["meriken"]
+
+    def reconcile(request_id, *, state_file=None):
+        assert state_file == "soren91_corner_manual.json"
+        if not proven_rollback:
+            return False
+        assert request_id == state(rotation)["manual_pending"]["request_id"]
+        adapter.states = [{
+            "status": "interrupted",
+            "rotation_request_id": request_id,
+            "started_at": clock[0] - 10,
+            "completed_at": clock[0],
+        }]
+        return True
+
+    adapter.reconcile_failed_start = reconcile
+
+    def fail_dispatch(_adapter, request):
+        adapter.states = [{
+            "status": "failed",
+            "rotation_request_id": request["request_id"],
+            "started_at": clock[0] - 10,
+            "completed_at": clock[0],
+        }]
+        raise RuntimeError("launch failed: private diagnostic text")
+
+    executor.execute = fail_dispatch
+    with pytest.raises(RuntimeError, match="launch failed"):
+        corner_rotation.run_manual(g, owner, ["soren91"])
+
+    final = state(rotation)
+    assert "private diagnostic text" not in rotation.path.read_text()
+    if proven_rollback:
+        assert final["status"] == "ready"
+        assert final["manual_pending"] is None
+        assert final["last_result"]["status"] == "interrupted"
+        assert any(row["corner"] == "meriken" and row["source"] == "manual-reservation"
+                   for row in final["history"])
+    else:
+        assert final["status"] == "recovery_required"
+        assert final["manual_pending"]["corner"] == "meriken"
+
+
 def test_stop_reaches_owner_when_scheduler_lock_is_busy(tmp_path, monkeypatch):
     from contextlib import contextmanager
     from docich import corner_rotation
@@ -1238,6 +1290,70 @@ def test_recover_refuses_a_manual_reservation(setup):
     assert state(make())["status"] == "recovery_required"
 
 
+def test_recover_reconciles_manual_failed_start_from_exact_rollback(setup):
+    g, clock, _, executor, make = setup
+    manager, request_id = _latch_manual(make, executor, clock, corner="meriken")
+    raw = state(manager)
+    raw["manual_pending"]["state_file"] = "soren91_corner_manual.json"
+    for row in raw["history"]:
+        if row["corner"] == "meriken":
+            row["source"] = "manual-reservation"
+    manager.path.write_text(json.dumps(raw))
+    adapter = manager.adapters["meriken"]
+    adapter.state_path = Path(g.state_dir) / "soren91_corner.json"
+    adapter.states = [{
+        "status": "failed",
+        "rotation_request_id": request_id,
+        "started_at": clock[0] - 10,
+        "completed_at": clock[0],
+    }]
+    reconciled = []
+    resources_checked = []
+
+    def reconcile(identity, *, state_file=None):
+        assert identity == request_id
+        assert state_file == "soren91_corner_manual.json"
+        reconciled.append((identity, state_file))
+        adapter.states[0]["status"] = "interrupted"
+        return True
+
+    adapter.reconcile_failed_start = reconcile
+    adapter.resources_released = lambda: resources_checked.append(True) or True
+    calls = len(executor.calls)
+
+    outcome = manager.recover()
+
+    assert outcome == {"status": "ready", "corner": "meriken",
+                       "result": "interrupted", "recovered": True}
+    assert reconciled == [(request_id, "soren91_corner_manual.json")]
+    assert resources_checked == [True]
+    final = state(manager)
+    assert final["status"] == "ready"
+    assert final["manual_pending"] is None
+    assert final["last_result"]["request_id"] == request_id
+    assert final["last_result"]["status"] == "interrupted"
+    assert any(row["corner"] == "meriken" and row["source"] == "manual-reservation"
+               for row in final["history"])
+    assert len(executor.calls) == calls
+
+
+def test_recover_keeps_manual_failed_start_latched_without_rollback_proof(setup):
+    _, clock, _, executor, make = setup
+    manager, request_id = _latch_manual(make, executor, clock, corner="meriken")
+    adapter = manager.adapters["meriken"]
+    adapter.states = [{"status": "failed", "rotation_request_id": request_id}]
+    adapter.reconcile_failed_start = lambda identity, **_: False
+    calls = len(executor.calls)
+
+    with pytest.raises(RotationError, match="corner-level recovery"):
+        manager.recover()
+
+    final = state(manager)
+    assert final["status"] == "recovery_required"
+    assert final["manual_pending"]["request_id"] == request_id
+    assert len(executor.calls) == calls
+
+
 def test_recover_retries_a_latch_that_has_no_reservation(setup):
     _, clock, _, executor, make = setup
     manager = make()
@@ -1415,7 +1531,8 @@ def test_tick_commits_exact_failed_game_start_without_relaunch(setup):
                        "started_at": clock[0] - 10}]
     calls = []
 
-    def reconcile(identity):
+    def reconcile(identity, *, state_file=None):
+        assert state_file == "retro_corner.json"
         calls.append(identity)
         adapter.states = [{"status": "interrupted", "rotation_request_id": identity,
                            "started_at": clock[0] - 10,
@@ -1455,7 +1572,8 @@ def test_tick_uses_post_reconcile_clock_for_new_terminal_timestamp(setup):
     adapter.states = [{"status": "starting", "rotation_request_id": request_id,
                        "started_at": clock[0] - 10}]
 
-    def reconcile(identity):
+    def reconcile(identity, *, state_file=None):
+        assert state_file == "retro_corner.json"
         clock[0] += 2
         adapter.states = [{"status": "interrupted", "rotation_request_id": identity,
                            "started_at": clock[0] - 12,
@@ -1490,7 +1608,8 @@ def test_tick_rejects_clock_regression_after_failed_start_reconciliation(setup):
     adapter = manager.adapters["retro"]
     adapter.state_path = Path(g.state_dir) / "retro_corner.json"
 
-    def reconcile(identity):
+    def reconcile(identity, *, state_file=None):
+        assert state_file == "retro_corner.json"
         clock[0] -= 1
         adapter.states = [{"status": "interrupted", "rotation_request_id": identity,
                            "completed_at": clock[0]}]
@@ -1517,7 +1636,7 @@ def test_tick_keeps_manual_game_start_when_terminal_proof_is_missing(setup):
     adapter = manager.adapters["retro"]
     adapter.state_path = Path(g.state_dir) / "retro_corner.json"
     adapter.states = [{"status": "starting", "rotation_request_id": request_id}]
-    adapter.reconcile_failed_start = lambda _: False
+    adapter.reconcile_failed_start = lambda _, **__: False
     original_calls = len(executor.calls)
 
     assert manager.tick()["reason"] == "manual-request-needs-resume-or-recovery"

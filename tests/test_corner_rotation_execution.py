@@ -180,6 +180,37 @@ def test_game_adapter_inherits_global_match_target_when_omitted(tmp_path, config
     assert adapter.manager.config.target_matches == (configured or 3)
 
 
+def test_game_adapter_reconciles_only_the_reserved_manual_state_file(tmp_path, monkeypatch):
+    from docich import soren91_corner_manual
+
+    corner = Corner("meriken", "meriken", "soren91")
+    main_reconcile = Mock(return_value=False)
+    manual_reconcile = Mock(return_value=True)
+    adapter = GameCornerAdapter.__new__(GameCornerAdapter)
+    adapter.g = SimpleNamespace(state_dir=tmp_path)
+    adapter.corner = corner
+    adapter.manager = SimpleNamespace(
+        state_path=tmp_path / "soren91_corner.json",
+        reconcile_failed_rotation_start=main_reconcile,
+    )
+    manual_manager = SimpleNamespace(
+        state_path=tmp_path / "soren91_corner_manual.json",
+        reconcile_failed_rotation_start=manual_reconcile,
+    )
+    monkeypatch.setattr(
+        soren91_corner_manual, "ManualSoren91CornerManager", lambda _g: manual_manager
+    )
+
+    assert adapter.reconcile_failed_start(
+        "exact-request", state_file="soren91_corner_manual.json"
+    ) is True
+    manual_reconcile.assert_called_once_with("exact-request")
+    main_reconcile.assert_not_called()
+    assert adapter.reconcile_failed_start(
+        "other-request", state_file="../soren91_corner_manual.json"
+    ) is False
+
+
 def test_runtime_environment_uses_persisted_target_for_resumed_request(tmp_path, monkeypatch):
     from docich.config import load_global
 
