@@ -1119,20 +1119,24 @@ def generate_next_narration(
     now=None,
     policy: StrategyPolicy | None = None,
     timeframe_facts: Mapping[str, object] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> dict:
     """Generate the single next narration segment from the freshest facts.
 
     Distinguishes exhaustion (``status="done"``) from any failure
     (``status="failed"`` with a bounded, non-secret ``reason``). The caller owns
     the real-AI gate and the fallback policy; failures are returned, never
-    raised, so a broken model chain cannot crash the corner loop.
+    raised, so a broken model chain cannot crash the corner loop. ``env``
+    carries the dispatch environment for concurrent callers that must not
+    mutate the process-wide gate.
     """
     target = Path(trading_dir)
     moment = time.time() if now is None else float(now)
     cleaned_agents = (agents or "").strip()
     if not cleaned_agents:
         return {"status": "failed", "reason": "no-agents"}
-    if os.environ.get("DOCICH_ALLOW_REAL_AI") != "1":
+    effective_env = os.environ if env is None else env
+    if effective_env.get("DOCICH_ALLOW_REAL_AI") != "1":
         return {"status": "failed", "reason": "real-ai-disabled"}
 
     research_context: dict = {}
@@ -1160,7 +1164,8 @@ def generate_next_narration(
     try:
         prompt = build_next_prompt(facts, covered, target_key)
         raw = generate_text(
-            g, label=NEXT_SCRIPT_LABEL, agents=cleaned_agents, prompt_text=prompt, timeout=timeout
+            g, label=NEXT_SCRIPT_LABEL, agents=cleaned_agents, prompt_text=prompt,
+            timeout=timeout, env=env,
         )
         item = parse_next_narration(raw, target_key)
         if (
