@@ -719,7 +719,7 @@ def test_dropped_chart_card_is_never_planned_or_announced_in_battle():
     rid = _adopt(mem, [{'step': 'J2', 'general': chart.HERO, 'source': 'スペンソニア',
                         'target': 'けっかい', 'cards': ['クースカン', 'ミックミー', 'ミックミー']}])
     j2 = adjust.execution_step(rid, 'J2')
-    mem['card_drop'] = {j2: ['ミックミー']}
+    mem['card_drop'] = {j2: ['ミックミー', 'ミックミー']}   # both copies left behind
     derived = [t for t in policy._tactics(mem, j2) if t.get('step') == j2]
     assert [(t['enemy'], t['card']) for t in derived] == [('クイーン', 'クースカン')]
     mem['_records'] = []

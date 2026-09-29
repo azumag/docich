@@ -976,6 +976,7 @@ def _finish_order(mem, state, **fields):
             # A new sortie carries a fresh kit: attempted uses from the
             # previous one must not shrink it (``kit_spent`` is per sortie).
             (mem.get('kit_spent') or {}).pop(step, None)
+            (mem.get('sortie_confirm_miss') or {}).pop(step, None)
         _record(mem, 'order_' + state, chart_step=step, **fields)
     mem['active'] = None
     mem['picked'] = []
@@ -2080,8 +2081,13 @@ def _deploy_cards(order, mem):
     if _strict_boss_cards(order, mem):
         return list(order['cards'])
     cards = list(mem.get('card_override', {}).get(order['step'], order['cards']))
+    # One planned copy leaves the kit per drop entry. g454 12:22: a planned
+    # イッテツーン x2 had one copy already picked and the second recorded as
+    # dropped; removing every copy of the card shrank the plan below what the
+    # sortie actually carried and the confirmation held forever.
     for card in (mem.get('card_drop') or {}).get(order['step']) or ():
-        cards = [c for c in cards if c != card]
+        if card in cards:
+            cards.remove(card)
     # One carried copy leaves the kit per attempted use in this sortie (g452:
     # ヴィーナス spent both イッテツーン in one battle and the next battle
     # re-planned them, opened an empty きりふだ list and stalled).
@@ -2101,6 +2107,7 @@ def _deploy_cards(order, mem):
 CARD_SCROLL_LIMIT = 8         # downward presses looking for a card below a full panel
 CARD_MISS_LIMIT = 5           # card_select readings before a missing card is left behind
 CARD_UNREADABLE_LIMIT = 6     # unreadable card_select readings before cancelling the sortie
+SORTIE_CONFIRM_LIMIT = 8      # readings before a readable but mismatched kit is approved
 CARD_STOCK_LIMIT = 24         # observed card names kept for the adjusted-chart request
 
 
@@ -2146,9 +2153,11 @@ def _drop_card(screen, mem, order, card, inventory):
     for picked in mem.get('picked') or ():
         if picked in wanted:
             wanted.remove(picked)
-    dropped = sorted(set(wanted)) if inventory['remaining'] == 0 else [card]
-    mem.setdefault('card_drop', {}).setdefault(order['step'], []).extend(
-        c for c in dropped if c not in mem['card_drop'][order['step']])
+    # One entry per unselectable copy: with no carry slot left every remaining
+    # planned copy goes, otherwise every copy of the missing card does.
+    dropped = (list(wanted) if inventory['remaining'] == 0
+               else [c for c in wanted if c == card])
+    mem.setdefault('card_drop', {}).setdefault(order['step'], []).extend(dropped)
     context = {**_deploy_context(order, mem),
                'deviation_reason': f'{card}を選べないため携行せずに出撃する'}
     _record(mem, 'card_dropped', **context, card=card, dropped=dropped,
@@ -2723,8 +2732,28 @@ def deploy_step(screen: Screen, mem):
         want = sorted(_deploy_cards(order, mem))
         got = sorted(carried) if carried is not None else None
         if ambiguous or got != want:
-            return _hold_deploy(screen, mem, order,
-                                '携行切り札の読取が不確実または計画と不一致のため出撃承認を保留', carried=carried)
+            misses = mem.setdefault('sortie_confirm_miss', {})
+            misses[order['step']] = misses.get(order['step'], 0) + 1
+            if (not _strict_boss_cards(order, mem)
+                    and misses[order['step']] >= SORTIE_CONFIRM_LIMIT):
+                if carried is None:
+                    misses.pop(order['step'], None)
+                    _finish_order(mem, 'failed', deviation_reason='出撃確認の携行札を読めない',
+                                  observed_metric={'carried': None},
+                                  reason='出撃確認を読み取れないため出撃を取り消して次の指示へ進む')
+                    return [pad('b'), pad('b')]
+                if misses[order['step']] == SORTIE_CONFIRM_LIMIT:
+                    # A readable panel is the truth: approve the shown kit.
+                    _record(mem, 'sortie_kit_mismatch',
+                            **_deploy_context(order, mem, expected_metric=want),
+                            carried=carried,
+                            observed_metric={'carried': carried, 'planned': want},
+                            reason='読み取れた携行札を実際の携行として出撃を承認（計画と不一致）')
+            else:
+                return _hold_deploy(screen, mem, order,
+                                    '携行切り札の読取が不確実または計画と不一致のため出撃承認を保留', carried=carried)
+        else:
+            mem.get('sortie_confirm_miss', {}).pop(order['step'], None)
         move = menu_to(screen, 'うむッ!')
         if move is None:
             return _hold_deploy(screen, mem, order, '出撃確認カーソルまたは承認項目を読めないため保留', carried=carried)
@@ -3725,7 +3754,8 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'chart_adjust', 'chart_plan', 'launched_orders', 'sorties', 'sortie_attempt',
                 'garrison', 'general_location_unknown', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
                 'nav_prev', 'nav_still', 'nav_pressed', 'unverified', 'off_castle',
-                'target_miss', 'target_cancel', 'menu_hold', 'card_scroll',
+                'target_miss', 'target_cancel', 'menu_hold', 'card_scroll', 'card_unreadable',
+                'sortie_confirm_miss',
                 'world_map_tick', 'world_map_due', 'world_map_wait', 'home_lost',
                 'y_jump', 'y_jumps', 'y_jump_return', 'y_jumped', 'boss_absent', 'recall', 'recall_skip',
                 'near_goal', 'align_steps', 'unanchored', 'select_tick',
