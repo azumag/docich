@@ -52,6 +52,13 @@ def outcome_titles(target, middle):
     return [f'{target}話突破（新記録）', middle_title, f'{middle}話突破できず']
 
 
+def voting_window(target, ending_window):
+    if (type(target) is not int or not 1 <= target <= progress.MAX_CHAPTER
+            or type(ending_window) is not int or not 30 <= ending_window <= 1800):
+        raise ValueError('invalid prediction window')
+    return max(30, ending_window * target // progress.MAX_CHAPTER)
+
+
 def winner(cleared, target, middle):
     progress.count(cleared)
     if (type(target) is not int or type(middle) is not int
@@ -66,11 +73,11 @@ def config(g):
         raise ValueError('invalid predictions config')
     enabled = raw.get('enabled', False)
     seed = raw.get('seed_best_cleared', 1)
-    window = raw.get('window_seconds', 120)
+    ending_window = raw.get('ending_window_seconds', 1800)
     if (type(enabled) is not bool or type(seed) is not int or not 1 <= seed <= 12
-            or type(window) is not int or not 1 <= window <= 1800):
+            or type(ending_window) is not int or not 30 <= ending_window <= 1800):
         raise ValueError('invalid predictions config')
-    return enabled, seed, window
+    return enabled, seed, ending_window
 
 
 def _stamp(value):
@@ -192,7 +199,7 @@ def summary(state):
             'next_poll_at': state.get('next_poll_at')}
 
 
-def _advance(g, root, state, identity, now, enabled, window, client_factory):
+def _advance(g, root, state, identity, now, enabled, ending_window, client_factory):
     row = state.get('round')
     # Capture completion and record BEFORE checking pauses, auth or API cooldown.
     # A previously verified, fsynced receipt survives runtime retention and
@@ -312,7 +319,8 @@ def _advance(g, root, state, identity, now, enabled, window, client_factory):
             return
         nonce = secrets.token_hex(6)
         row = {**identity, **bounds, 'nonce': nonce, 'title': _title(nonce),
-               'outcome_titles': outcome_titles(**bounds), 'window': window,
+               'outcome_titles': outcome_titles(**bounds),
+               'window': voting_window(bounds['target'], ending_window),
                'attempted': False, 'status': 'INTENT'}
         state['round'] = row
     # A previous rejected POST may be retried much later. Recheck that the
@@ -356,7 +364,7 @@ def tick(g, identity=None, *, now=None, client_factory=configured_client):
     root = Path(g.state_dir)
     try:
         now = _stamp(time.time() if now is None else now)
-        enabled, seed, window = config(g)
+        enabled, seed, ending_window = config(g)
         if identity is not None:
             identity = progress.checked_identity(identity)
         # Ordinary timer ticks without an existing prediction have no work and
@@ -368,7 +376,7 @@ def tick(g, identity=None, *, now=None, client_factory=configured_client):
                 return {'mode': 'pending', 'error': None}
             state = _load(root, seed)
             try:
-                _advance(g, root, state, identity, now, enabled, window, client_factory)
+                _advance(g, root, state, identity, now, enabled, ending_window, client_factory)
             except APIError as exc:
                 state.update(mode='error', error=exc.code if exc.code in ERRORS else 'unexpected',
                              next_poll_at=now + RETRY_SECONDS)

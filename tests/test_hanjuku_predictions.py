@@ -138,11 +138,72 @@ def test_initial_create_and_no_duplicate_after_restart(env):
     assert env.tick()['mode'] == 'active'
     state = env.state()
     assert state['round']['target'] == 2 and state['round']['middle'] == 1
-    assert state['round']['window'] == 120
+    assert state['round']['window'] == 300
     assert len(state['round']['title']) <= 45
     for t in (101, 130, 160, 190):
         assert env.tick(t)['mode'] == 'active'
     assert len([c for c in env.remote.calls if c[0] == 'POST']) == 1
+
+
+@pytest.mark.parametrize('best, seconds', [(1, 300), (5, 900), (11, 1800)])
+def test_created_window_scales_with_frozen_target(env, best, seconds):
+    state = p._load(env.g.state_dir, 1)
+    state['best_cleared'] = best
+    atomic_write_json(env.g.state_dir / p.FILE, state)
+    assert env.tick()['mode'] == 'active'
+    assert env.state()['round']['window'] == seconds
+    assert [call[-1] for call in env.remote.calls if call[0] == 'POST'] == [seconds]
+
+
+def test_existing_legacy_window_is_preserved_when_setting_changes(env, monkeypatch):
+    env.tick()
+    state = env.state()
+    state['round']['window'] = 120
+    atomic_write_json(env.g.state_dir / p.FILE, state)
+    monkeypatch.setattr(p, 'config', lambda _: (True, 1, 600))
+    assert env.tick(130)['mode'] == 'active'
+    assert env.state()['round']['window'] == 120
+    assert len([call for call in env.remote.calls if call[0] == 'POST']) == 1
+
+
+def test_rejected_create_retry_keeps_intent_window(env, monkeypatch):
+    create = env.remote.create
+
+    def reject(*args):
+        raise api.APIError('rejected', rejected=True)
+
+    monkeypatch.setattr(env.remote, 'create', reject)
+    assert env.tick()['error'] == 'rejected'
+    assert env.state()['round']['window'] == 300
+    monkeypatch.setattr(env.remote, 'create', create)
+    monkeypatch.setattr(p, 'config', lambda _: (True, 1, 600))
+    assert env.tick(400)['mode'] == 'active'
+    assert [call[-1] for call in env.remote.calls if call[0] == 'POST'] == [300]
+
+
+@pytest.mark.parametrize('ending', [30, 61, 600, 1800])
+def test_scaled_windows_stay_within_api_limits_and_end_at_maximum(ending):
+    windows = [p.voting_window(target, ending) for target in range(1, 13)]
+    assert windows == sorted(windows)
+    assert all(30 <= window <= ending for window in windows)
+    assert windows[-1] == ending
+    assert p.voting_window(5, 61) == 30
+    assert p.voting_window(7, 61) == 35
+
+
+@pytest.mark.parametrize('target, ending', [(True, 1800), (0, 1800), (13, 1800),
+                                          (2, True), (2, 29), (2, 1801)])
+def test_invalid_voting_window_fails_closed(target, ending):
+    with pytest.raises(ValueError):
+        p.voting_window(target, ending)
+
+
+@pytest.mark.parametrize('ending', [True, '1800', 29, 1801])
+def test_invalid_ending_window_config_fails_closed(env, monkeypatch, ending):
+    monkeypatch.setattr(p, 'load_game', lambda *_: SimpleNamespace(raw={
+        'hanjuku': {'predictions': {'enabled': True, 'ending_window_seconds': ending}}}))
+    assert env.tick()['error'] == 'invalid_state'
+    assert env.remote.calls == []
 
 
 @pytest.mark.parametrize('status', ['ACTIVE', 'LOCKED'])
@@ -433,6 +494,7 @@ def test_diagnostics_is_allowlisted_and_contains_no_titles_or_tokens(env):
     atomic_write_json(env.g.state_dir/p.FILE, state)
     result = module._collect_hanjuku_predictions(env.g.state_dir)
     assert result['target'] == 2 and result['middle'] == 1 and result['best_cleared'] == 1
+    assert result['window_seconds'] == 300
     assert 'not-for-logs' not in json.dumps(result)
 
 

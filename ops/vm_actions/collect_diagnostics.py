@@ -2257,6 +2257,8 @@ def _collect_hanjuku_predictions(state_dir):
             "error": choice(data.get("error"), errors),
             "best_cleared": chapter(data.get("best_cleared")),
             "target": chapter(row.get("target")), "middle": chapter(row.get("middle")),
+            "window_seconds": (row.get("window") if type(row.get("window")) is int
+                               and 1 <= row["window"] <= 1800 else None),
             "status": choice(row.get("status"), {
                 "INTENT", "ACTIVE", "LOCKED", "RESOLVED", "CANCELED"}),
             "cleared": chapter(result.get("cleared")),
