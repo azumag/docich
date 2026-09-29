@@ -3268,6 +3268,7 @@ def _rescue_card(candidates, cur):
 
 
 BEHIND_EGG_RATIO_TENTHS = 7    # ally HP at or below 70% of the enemy's: rescue (egg) now
+GENERAL_CRITICAL_RETREAT_HP = 12
 
 
 def _survival_needed(cur):
@@ -3288,7 +3289,7 @@ def _survival_needed(cur):
     # Not for boss fights or battles with charted cards: their plan runs.
     behind_start = (type(cur.get('start_enemy_hp')) is int and start < cur['start_enemy_hp']
                     and not cur.get('planned_cards') and cur.get('enemy') not in chart.BOSSES.values())
-    return (hp <= 12 or (hp < enemy and hp * 5 <= start * 2)
+    return (hp <= GENERAL_CRITICAL_RETREAT_HP or (hp < enemy and hp * 5 <= start * 2)
             or hp * 10 <= enemy * BEHIND_EGG_RATIO_TENTHS or behind_start)
 
 
@@ -3319,25 +3320,43 @@ def _hero_retreat_needed(cur):
         # winnable melee: retreat before the general dies (owner 2026-09-29;
         # g460 16:46: ヴィーナス 82 vs アルファルファ 38 summoned and killed
         # her while the bot chose こうげき and the retreat came too late).
-        return hp <= 12 or hp * 2 <= enemy or hp * 2 <= ref
-    return hp <= 12 or (hp < enemy and hp * 4 <= ref)
+        return hp <= GENERAL_CRITICAL_RETREAT_HP or hp * 2 <= enemy or hp * 2 <= ref
+    return hp <= GENERAL_CRITICAL_RETREAT_HP or (hp < enemy and hp * 4 <= ref)
 
 
 def _hero_retreat_open(mem, cur):
     if not _hero_retreat_needed(cur) or cur.get('side') == 'defense':
         return None
-    # A selected card is already executing; preserve its receipt observer.
-    if (cur.get('card_flow') or {}).get('stage') == 'announce':
-        return None
-    flow = cur.setdefault('hero_retreat', {})
+    flow = cur.get('hero_retreat') or {}
     if flow.get('unavailable') or flow.get('exhausted') or flow.get('opens', 0) >= 3:
         return None
+    card_flow = cur.get('card_flow') or {}
+    if card_flow.get('stage') == 'announce':
+        # Preserve a selected card's receipt while HP is above the critical
+        # threshold. At critical HP, waiting for an uncalibrated receipt can
+        # cost the general before the retreat menu opens (g460: ココット
+        # 24 -> 12 -> 0 while stuck in card menus). Unknown card use stays
+        # unknown; survival takes precedence over continuing that selection.
+        hp = cur.get('ally_hp')
+        if type(hp) is not int or hp > GENERAL_CRITICAL_RETREAT_HP:
+            return None
+        pending_card = card_flow.get('card')
+        _card_use_unclassified(mem, cur, '危険HPに達したため未確認の切り札を保留し、退却を優先')
+        _record(mem, 'battle_retreat_preempted_card', **_battle_labels(cur),
+                general=cur.get('ally'), enemy=cur.get('enemy'), card=pending_card,
+                observed_metric={'ally_hp': hp, 'enemy_hp': cur.get('enemy_hp'),
+                                 'card_confirmation': 'unclassified'},
+                resulting_event='retreat_preempted_card_use',
+                reason='切り札の使用確認を待つ間に将軍を失わず、主人公の敗北も避けるため退却を優先')
+    flow = cur.setdefault('hero_retreat', {})
     flow['opens'] = flow.get('opens', 0) + 1
     cur['card_flow'] = None  # supersede an unselected chart card intention
     _record(mem, 'battle_hero_retreat_open', **_battle_labels(cur),
+            general=cur.get('ally'), enemy=cur.get('enemy'),
+            castle=cur.get('castle'), side=cur.get('side'),
             observed_metric={'ally_hp': cur['ally_hp'], 'enemy_hp': cur['enemy_hp'],
                              'start_ally_hp': cur['start_ally_hp']},
-            reason='どうしの敗北によるゲームオーバーを避けるため退却の可否を確認')
+            reason='主人公の敗北によるゲームオーバーまたは一般将軍の喪失を避けるため退却の可否を確認')
     return [pad('b')]
 
 
@@ -3352,6 +3371,8 @@ def _hero_retreat_menu(screen, mem, cur):
     if 'たいきゃく' not in {w for _,_,w in _options(screen)}:
         flow['unavailable'] = True
         _record(mem, 'battle_hero_retreat_unavailable', **_battle_labels(cur),
+                general=cur.get('ally'), enemy=cur.get('enemy'),
+                castle=cur.get('castle'), side=cur.get('side'),
                 reason='退却が有効な項目として読めないため卵・切り札・奥の手で対処')
         return None
     if flow.get('selected'):
@@ -3374,10 +3395,12 @@ def _hero_retreat_menu(screen, mem, cur):
         cur['card_flow'] = None
     flow['selected'] = flow.get('selected', 0) + 1
     flow['wait'] = 0
-    _record(mem, 'battle_hero_retreat_select', **_battle_labels(cur), choice='たいきゃく',
+    _record(mem, 'battle_hero_retreat_select', **_battle_labels(cur),
+            general=cur.get('ally'), enemy=cur.get('enemy'),
+            castle=cur.get('castle'), side=cur.get('side'), choice='たいきゃく',
             observed_metric={'ally_hp': cur['ally_hp'], 'enemy_hp': cur['enemy_hp']},
             resulting_event='retreat_selected_not_yet_confirmed',
-            reason='どうしの危険な戦闘を打ち切るため有効な退却行とカーソルを確認して決定')
+            reason='主人公または将軍の危険な敗北を避けるため有効な退却行とカーソルを確認して決定')
     return [pad('a')]
 
 

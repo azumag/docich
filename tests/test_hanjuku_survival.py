@@ -414,13 +414,64 @@ def test_hero_disabled_retreat_falls_back_to_an_egg_and_other_generals_keep_figh
     assert p.battle_menu_step(menu(),mem)==[p.pad('down')]  # card, not retreat
 
 
-def test_hero_retreat_cancels_only_unselected_cards():
+def test_hero_retreat_cancels_unselected_cards_and_preempts_critical_pending_card():
     mem=memory(12,50)
     mem['battle']['card_flow']={'stage':'list','card':'グリンボー'}
     assert p.card_list_step(menu(('グリンボー',),kind='text'),mem)==[p.pad('b')]
     assert mem['battle']['card_flow'] is None
     mem['battle']['card_flow']={'stage':'announce','card':'グリンボー','selection_planned':True}
-    assert p._hero_retreat_open(mem,mem['battle']) is None
+    assert p._hero_retreat_open(mem,mem['battle']) == [p.pad('b')]
+    assert mem['battle']['card_flow'] is None
+    assert mem['battle']['cards_used'] == []
+    assert mem['battle']['cards_unclassified'] == ['グリンボー']
+    assert mem['battle']['card_consumption_complete'] is False
+    assert any(r['decision'] == 'battle_card_unclassified' for r in mem['_records'])
+    assert any(r['decision'] == 'battle_retreat_preempted_card' for r in mem['_records'])
+
+
+@pytest.mark.parametrize('general', ['どうし', 'ココット', 'ヴィーナス', 'ゼウス'])
+def test_critical_hp_preempts_unconfirmed_card_for_every_general(general):
+    mem = memory(12, 50)
+    mem['battle'].update(ally=general, enemy='タピオカ', start_ally_hp=24,
+                         side='attack', card_flow={
+                             'stage': 'announce', 'card': 'グリンボー',
+                             'selection_planned': True})
+    assert p.battle_step(battle(mem), mem) == [p.pad('b')]
+    assert mem['battle']['cards_used'] == []
+    assert mem['battle']['cards_unclassified'] == ['グリンボー']
+    record = next(r for r in mem['_records']
+                  if r['decision'] == 'battle_retreat_preempted_card')
+    assert record['general'] == general
+    assert record['enemy'] == 'タピオカ'
+    assert record['observed_metric'] == {
+        'ally_hp': 12, 'enemy_hp': 50, 'card_confirmation': 'unclassified'}
+
+
+def test_pending_card_is_preserved_above_critical_general_hp():
+    mem = memory(13, 50)
+    mem['battle'].update(ally='ココット', enemy='タピオカ', start_ally_hp=24,
+                         side='attack', card_flow={
+                             'stage': 'announce', 'card': 'グリンボー',
+                             'selection_planned': True})
+    assert p.battle_step(battle(mem), mem) == []
+    assert mem['battle']['card_flow']['stage'] == 'announce'
+    assert 'hero_retreat' not in mem['battle']
+    assert mem['battle'].get('cards_unclassified', []) == []
+    assert not any(r['decision'] == 'battle_retreat_preempted_card'
+                   for r in mem.get('_records', []))
+
+
+def test_exhausted_retreat_flow_does_not_discard_pending_card():
+    mem = memory(12, 50)
+    mem['battle'].update(ally='ココット', enemy='タピオカ', start_ally_hp=24,
+                         side='attack', hero_retreat={'opens': 3}, card_flow={
+                             'stage': 'announce', 'card': 'グリンボー',
+                             'selection_planned': True})
+    assert p.battle_step(battle(mem), mem) == []
+    assert mem['battle']['card_flow']['stage'] == 'announce'
+    assert mem['battle'].get('cards_unclassified', []) == []
+    assert not any(r['decision'] == 'battle_retreat_preempted_card'
+                   for r in mem.get('_records', []))
 
 
 def test_hero_retreat_cursor_wait_and_selection_retry_are_bounded():
