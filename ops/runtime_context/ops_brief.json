@@ -1,11 +1,11 @@
 {
-  "output_sha256": "5f3a3f449085468654b28b87c1e78458b17232d2dfd36409d05e2c06a5fd438f",
+  "output_sha256": "6d08c4c0c9e7a8a9bc80b5fa9e489acb5f96c0ec892afa0cdc0c887aa67be721",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "4f2284a1b78ce777f0d8a90e64d5833ddf436d9940e8b40712573641bcc3d130",
+  "source_sha256": "7bd3b8fd336565f4a6a05c98a4baabede8edb37d7f7214b193b71812726a29cf",
   "topics": [
+    "卵使わせない戦略の白兵死結を修正（v75/v76）とg458稼働・24時間監視（opencode）",
     "g454 出撃確認の不一致で画面停止→v74修正・ホットロード復帰（opencode）",
-    "g454 切り札一覧の未知札で画面停止→v73修正・ホットロード復帰（opencode）",
-    "g454 二話進行失敗の修正（v72）とライブ復帰（opencode）"
+    "g454 切り札一覧の未知札で画面停止→v73修正・ホットロード復帰（opencode）"
   ]
 }
