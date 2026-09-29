@@ -13,7 +13,7 @@ set -euo pipefail
 root="/home/ubuntu/soren"
 default_db="/home/ubuntu/.local/share/opencode/opencode.db"
 worker_db="$root/tmp/state/xdg_data/opencode/opencode.db"
-retention_days=3
+retention_days=1
 env_file="$root/.env"
 
 [[ -d "$root" ]] || { echo "soren root missing" >&2; exit 2; }
