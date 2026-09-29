@@ -2,7 +2,7 @@
   "output_sha256": "eea15c8b47800b0b31c7c9039030ba0b3f8534aa9f474d3225b328f2fc493af8",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "de8f177f4eb86f0403dbff081a197026f5bf0e4eed5344df975619f2a8baa261",
+  "source_sha256": "eb819b548e41b8b20b108659040e5f3f363360ce0cca6b357df9eaac166c21d0",
   "topics": [
     "OpenCode ENOSPC対策を配備し容量回収完了（Codex）",
     "OpenCode容量回収の安全化と定期実行を実装（VM反映前・Codex）",
