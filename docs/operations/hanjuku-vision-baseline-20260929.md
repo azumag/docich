@@ -18,8 +18,27 @@ artifact ZIP digest、manifest、終了identity、各PNG SHA-256、RGB SHA-256�
 出典のarchive/PNG/RGBハッシュを `ops/vm_actions/tests/fixtures/hanjuku/` に固定した。
 ユーザーの判断に従いゲーム画面は平文で扱い、ROM/セーブ/認証情報は含めない。
 
+## 固定Issueだけによる最終受入
+
+結果の自動返信を追加した [#1347](https://github.com/azumag/docich/pull/1347) は
+main `670526b92997dad80e4475bcc40ee3ff87047b90` に統合され、
+[canonical deploy 36560363615](https://github.com/azumag/docich/actions/runs/36560363615) が成功した。
+このmainで再度connectorからコメントし、Issueのbot返信に載ったIDだけで
+artifact一覧取得・downloadを完了した。ユーザーによる鍵やCLIの操作はない。
+
+| 操作 | Issueの結果返信 | Actions run / attempt | Artifact ID |
+|---|---|---|---|
+| list | [5889105738](https://github.com/azumag/docich/issues/1339#issuecomment-5889105738) | [36560489716 / 1](https://github.com/azumag/docich/actions/runs/36560489716) | 11029449695 |
+| export g464-4425b813 | [5889129606](https://github.com/azumag/docich/issues/1339#issuecomment-5889129606) | [36560620508 / 1](https://github.com/azumag/docich/actions/runs/36560620508) | 11029474945 |
+
+両runの取得・検証・返信・後片付けは成功。export artifactのSHA-256は
+`c7b284fd91365ce1e4bcd36bccc4090dc7cc9f2fb91d9a762641c660544d441c`、
+内側evidence ZIPは `3356d4ac2ac2ce406bb2c6740f214ba49bfcf985bfa8b200f91571a1c618e632`。
+検証済みのZIPは初回baselineで使ったものとバイト単位で一致した。
+
 ## baselineの結果と限界
 
+3ランで623画像（g464: 198、g460: 239、g462: 186）を取得した。
 g464のRGB重複除去後183画像から6件ごとに31画像、g460の202画像から7件ごとに29画像を
 選択した。g464の1枚は未ラベルとし、合計59画像に105項目の目視正解を付けた。
 小さい一覧だけでは札名・手カーソルの行を読み違えるため、差の出た文字は原画像を

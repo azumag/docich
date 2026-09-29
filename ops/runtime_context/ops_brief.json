@@ -1,11 +1,11 @@
 {
-  "output_sha256": "a6485a0d4336336c1c33b9f96067bf097dc47548f10815dc788068ba3ab4fa25",
+  "output_sha256": "43ce8a4674dd67cb31a42c7ec4d770bd918c569323ab3f6d853e9bb027396582",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "c1d6f30fea789a8056f08d57b9285ee90b0ce8f74fc0477a4386303f86d5d8ec",
+  "source_sha256": "980b6dd3e85a76d2f09ecd55e7e604391a59841abe926c4676a28813dac89dc3",
   "topics": [
     "半熟終了後のTwitchカテゴリ不一致報告を確認（Codex）",
-    "半熟英雄のIssue証拠取得を実測、実画像baselineと結果返信を検証（Codex）",
+    "半熟英雄のIssue証拠取得と実画像baselineを確認（Codex）",
     "OpenCode ENOSPC対策を配備し容量回収完了（Codex）"
   ]
 }
