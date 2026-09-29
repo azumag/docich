@@ -1625,10 +1625,15 @@ class RetroCornerManager:
                 continue
             not_ready = 0
             run = observation.meta.get('hanjuku') or {}
+            # Network side channel runs only AFTER shared_section has released
+            # the input gate. It re-verifies durable terminal evidence itself.
+            from .hanjuku_predictions import tick as prediction_tick
+            prediction = prediction_tick(self.g, owned_identity)
             with self._locked():
                 latest = self._read_state()
                 if latest.get('status') != 'active':
                     return self._state_result(latest)
+                latest['prediction'] = prediction
                 latest['ends_at'] = None
                 latest['end_reason'] = run.get('terminal_reason')
                 latest['bot_phase'] = run.get('phase')
@@ -2006,6 +2011,9 @@ class RetroCornerManager:
             return self._finish_locked(state, self._local_now())
 
     def tick(self) -> CornerResult:
+        # Retry our durable result after a network failure, even after teardown.
+        from .hanjuku_predictions import tick as prediction_tick
+        prediction_tick(self.g)
         from .corner_catalog import rotation_enabled
         if rotation_enabled(self.g):
             from .corner_rotation import CornerRotationManager
