@@ -817,11 +817,13 @@ def test_ambiguous_sorties_are_not_guessed(monkeypatch):
     assert mem['attack']['step'] is None
     assert decisions(mem, 'attack_observed')[-1]['deviation_reason'] == 'ambiguous_sortie'
     assert all(v['status'] == 'en_route' for v in mem['sorties'].values())
-    # An ambiguous boss entry is held, never bound to either sortie.
+    # An ambiguous boss entry advances the screen without binding either sortie.
     mem['attack'] = None
     entry = f'{chart.HERO}しょうぐんがボスじょうにせめこんだ!!'
-    assert policy.message_step(_text_screen(entry), mem) == []
-    assert decisions(mem, 'situation_held')[-1]['observed_metric']['sortie_match'] == 'ambiguous'
+    assert policy.message_step(_text_screen(entry), mem) == [policy.pad('a')]
+    assert mem['attack']['step'] is None
+    assert decisions(mem, 'attack_observed')[-1]['deviation_reason'] == 'ambiguous_sortie'
+    assert all(v['status'] == 'en_route' for v in mem['sorties'].values())
 
 
 def test_interim_runs_after_an_exhausted_plan_but_not_while_a_plan_waits(monkeypatch):

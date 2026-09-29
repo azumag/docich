@@ -28,6 +28,30 @@ def test_boss_message_without_matching_chapter_and_order_holds(chapter, general)
     assert 'attack' not in mem
     assert mem['_records'][-1]['decision'] == 'situation_held'
 
+
+def test_unmatched_boss_entry_is_closed_after_the_hold_limit():
+    """g460 16:43-17:30: an unmatched entry message held forever froze the screen."""
+    text = 'どうししょうぐんがボスじょうにせめこんだ!!'
+    mem = {'chapter': 1, 'launched': {'けっかい': {'general': 'ゼウス', 'step': '1-B1'}}}
+    for _ in range(policy.BOSS_ENTRY_HOLD_LIMIT - 1):
+        assert policy.message_step(entry(text), mem) == []
+    assert 'attack' not in mem
+    assert sum(1 for r in mem['_records'] if r['decision'] == 'situation_held') \
+        == policy.BOSS_ENTRY_HOLD_LIMIT - 1
+    assert policy.message_step(entry(text), mem) == [policy.pad('a')]
+    assert mem['attack'] == {'general': 'どうし', 'castle': 'けっかい', 'side': 'attack',
+                             'step': None, 'entry_evidence': 'measured_boss_entry'}
+    assert mem['_records'][-1]['decision'] == 'attack_observed'
+    assert mem['_records'][-1]['deviation_reason'] == 'boss_entry_hold_released'
+    assert 'boss_entry_hold' not in mem
+    # A different message starts a fresh count instead of releasing at once.
+    mem = {'chapter': 1, 'launched': {'けっかい': {'general': 'ゼウス', 'step': '1-B1'}}}
+    other = 'ヴィーナスしょうぐんがボスじょうにせめこんだ!!'
+    for _ in range(policy.BOSS_ENTRY_HOLD_LIMIT - 1):
+        assert policy.message_step(entry(other), mem) == []
+    assert policy.message_step(entry(text), mem) == []
+
+
 def test_partial_or_unknown_boss_message_is_not_calibrated():
     assert entry(MESSAGE[:-1]).kind == 'text'
     assert entry(MESSAGE.replace('ゼ', '�')).kind == 'text'
