@@ -60,3 +60,4 @@ jobs:
           ops/vm_actions/recover_soren_game.sh
           ops/vm_actions/storage_reclaim.sh
           ops/vm_actions/opencode_db_retention_now.sh
+          ops/vm_actions/ensure_opencode_retention_timer.sh

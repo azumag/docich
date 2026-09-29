@@ -337,3 +337,19 @@ worker / queue / model / provider / fallback / runtime component を変えたら
 - [ ] regression tests（正常・停止・stale・重複・未登録・malformed・redact・bound）
 - [ ] secret-redaction（新規 field が出ていないか）
 - [ ] deploy 影響（collector はデプロイ済み main から動くこと）
+
+## OpenCode retention health
+
+`opencode_retention` は固定stateの `attempt` / `default` / `worker` と専用timerのactive/enabledを返す。
+statusは `running/completed/gate_timeout/disabled/deferred/failed`、reason/stageは固定enum、前後bytes・page数・削除件数・日時だけを許可する。
+最新attemptが失敗/延期/ロック待機切れ、3時間超stale、timer停止ならWARN。古いDB単位のcompletedを最新attemptの成功とみなさない。
+秘密・prompt・DB行の内容・例外本文は出力しない。DBファイルサイズと実際のroot空き容量は別に実測する。
+
+`docich-opencode-retention.timer` はゲームから独立した1時間毎のoneshot maintenanceで、supervisor worker / AI queueは追加しない。
+直近1日のOpenCode実行履歴を残す（認証・ゲーム結果・戦略履歴は別管理）。3日分で5GB級に再増加したため、#1337の回復後も1日保持を定期適用する。
+既存のdefault DB retention opt-outは維持する。timerはcanonical deployだけで導入し、ゲーム・配信・共通音声を再起動しない。
+status 75は未実行/延期であり、serviceの異常終了ループを避けてもdiagnosticsで成功には変換しない。
+
+回収は1GiBの空きを確保し、gate→SQLite EXCLUSIVE→transactional prune→checkpoint→private VACUUM INTO→transactional backup→checkpointを使う。
+各段の見込み容量と途中の空きを判定する。コピーのサイズを実測してから書き戻しを予算化する。ライブDB/WALをrename/unlinkしない。
+デプロイepoch=3の1回回収後はtimerが継続担当する。回収が失敗/延期ならcanonical runも非成功になり、`diagnostics`で段階・理由と容量を確認する。
