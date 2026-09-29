@@ -353,3 +353,5 @@ status 75は未実行/延期であり、serviceの異常終了ループを避け
 回収は1GiBの空きを確保し、gate→SQLite EXCLUSIVE→transactional prune→checkpoint→private VACUUM INTO→transactional backup→checkpointを使う。
 各段の見込み容量と途中の空きを判定する。コピーのサイズを実測してから書き戻しを予算化する。ライブDB/WALをrename/unlinkしない。
 デプロイepoch=3の1回回収後はtimerが継続担当する。回収が失敗/延期ならcanonical runも非成功になり、`diagnostics`で段階・理由と容量を確認する。
+
+OpenCodeの `compact_storage` は `disk` / `memory` を区別する。圧縮コピーにtmpfsを利用した場合も、root空き1GiB・利用可能RAM4GiB（cgroup制限込み）を予約する。`insufficient_memory` / `memory_unknown` は成功ではなく延期で、次回の定期実行へ持ち越す。

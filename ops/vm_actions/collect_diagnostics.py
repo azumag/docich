@@ -175,7 +175,9 @@ def _collect_opencode_retention(soren, now):
     enums = {
         "status": {"running", "completed", "gate_timeout", "disabled", "deferred", "failed"},
         "reason": {"ok", "deadline", "insufficient_space", "space_unknown", "checkpoint_busy",
-                   "unsafe_journal_mode", "sqlite_busy", "sqlite_error", "filesystem_or_input", "interrupted"},
+                   "unsafe_journal_mode", "sqlite_busy", "sqlite_error", "filesystem_or_input", "interrupted",
+                   "insufficient_memory", "memory_unknown"},
+        "compact_storage": {"disk", "memory"},
         "stage": {"preflight", "delete", "compact_copy", "compact_writeback", "checkpoint", "vacuum", "done"},
     }
     numbers = ("started_at", "completed_at", "retention_days", "deleted_sessions", "eligible_sessions",

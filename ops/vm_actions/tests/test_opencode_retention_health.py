@@ -31,6 +31,16 @@ class RetentionHealthTests(unittest.TestCase):
             self.assertNotIn('prompt',item);self.assertNotIn('page_count',item)
             self.assertNotIn('secret',json.dumps(item))
 
+    def test_memory_compaction_status_is_sanitized_and_visible(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);state=root/'tmp/state';state.mkdir(parents=True)
+            (state/'opencode_retention_default.json').write_text(json.dumps(dict(status='deferred',reason='insufficient_memory',compact_storage='memory',completed_at=9999)))
+            with patch.object(collector.subprocess,'run') as run:
+                run.return_value.returncode=0
+                result=collector._collect_opencode_retention(root,10000)
+            self.assertEqual(result['default']['compact_storage'],'memory')
+            self.assertEqual(result['default']['reason'],'insufficient_memory')
+
     def test_missing_malformed_large_and_symlink_are_not_success(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td);state=root/'tmp/state';state.mkdir(parents=True)
