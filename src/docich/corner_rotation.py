@@ -340,8 +340,9 @@ class CornerRotationManager:
                 raise RotationError("no unique eligible manual corner")
             chosen = choices[0]
             queued = self._read_manual_queue() or state.get("queued_manual")
-            pending = state.get("pending") or {}
-            if queued is None and pending.get("source") == "manual":
+            pending = state.get("manual_pending") or state.get("pending") or {}
+            if queued is None and (pending.get("source") == "manual"
+                                   or pending.get("corner") == chosen):
                 queued = pending
             if queued is not None:
                 if queued["corner"] != chosen:

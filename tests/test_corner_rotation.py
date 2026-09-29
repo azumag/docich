@@ -1976,3 +1976,24 @@ def test_manual_queue_transfer_replay_is_idempotent(setup):
     manager.tick()
     assert len(executor.calls) == 1
     assert executor.calls[0]['request_id'] == request['request_id']
+
+
+@pytest.mark.parametrize('manual', [False, True])
+def test_manual_queue_deduplicates_existing_same_corner_reservation(setup, manual):
+    _, clock, _, executor, make = setup
+    import uuid
+    manager = make()
+    initial = manager.load(clock[0])
+    request = dict(corner='retro', selected_at=clock[0], request_id=str(uuid.uuid4()))
+    if manual:
+        request['state_file'] = 'retro_corner.json'
+        initial['manual_pending'] = request
+    else:
+        request['phase'] = 'dispatched'
+        initial['pending'] = request
+    initial['status'] = 'running'
+    manager.save(initial)
+    result = manager.queue_manual('nsnake')
+    assert result['request_id'] == request['request_id']
+    assert not manager._manual_queue_path.exists()
+    assert executor.calls == []
