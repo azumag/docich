@@ -1,11 +1,11 @@
 {
-  "output_sha256": "0589dbafc6f27095109256f2b52abd946f90e975d10714b64c2d61a85f877a93",
+  "output_sha256": "ce02745736693bac9650cbac5b301d963110375d2cbd61aeb7f8133dc9ff3ae5",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "6803df0a0c2721e24abfc11139860874d713954358ccc31b624850d5d98487b2",
+  "source_sha256": "d0ae85bfa6bea92743485bb0cb6c392a30f6577c822c1f14fa95797cc39638a8",
   "topics": [
-    "hanjuku g452 空の切り札一覧フリーズ修正（v71）と g454 稼働・6時間監視（opencode）",
-    "PAPER改善日次観測Cycle 2: #1215発火確認、履歴記憶とコスト明示を配備（Claude Code）",
-    "PAPER読み上げの先読み生成 （Claude Code）"
+    "g454 切り札一覧の未知札で画面停止→v73修正・ホットロード復帰（opencode）",
+    "g454 二話進行失敗の修正（v72）とライブ復帰（opencode）",
+    "hanjuku g452 空の切り札一覧フリーズ修正（v71）と g454 稼働・6時間監視（opencode）"
   ]
 }
