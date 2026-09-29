@@ -1,11 +1,11 @@
 {
-  "output_sha256": "d94b314e9af6b4ff49438be19c123402909766e02514905c6c69ddbb21ce81c9",
+  "output_sha256": "42af5a1edbf8345c050924050d4c246f9cd9ff89d4a3063993211ebd8c64808b",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "ea6db4b4ca03d88923c7de2b93d2338ff1e4ba836a5034aa28be6cf740acbea7",
+  "source_sha256": "f99e994f457df4f3e7919185dd6d132e172a8e443224ac04a020612c38d8588b",
   "topics": [
-    "半熟の入力保留停止を正規手動stop＋recover-failedで復旧（配信sorengame復帰・実測）",
-    "Moon Buggy ABBA勝者の自動採用をmain/VMへ反映（実機未観測）",
-    "Moon Buggy 再同期後のfresh CI待ち"
+    "半熟英雄クリアまでの監視再開と商人入力保留修正（進行中）",
+    "ニュース重複対策を自己レビューしSoren mainへ統合（親配備準備）",
+    "ニュース重複対策PRを作成しCI成功（レビュー・配備待ち）"
   ]
 }
