@@ -350,6 +350,27 @@ jobs:
         shell: bash
         run: exit 1
 
+      - name: Run gated OpenCode retention after retention-control update
+        if: ${{ github.event_name == 'push' && steps.auth.outputs.operation == 'deploy' && steps.auth.outputs.target == 'production' && (steps.deploy_initial.outcome == 'success' || steps.deploy_retry.outcome == 'success') }}
+        shell: bash
+        env:
+          VM_SSH_HOST: ${{ secrets.VM_SSH_HOST }}
+          VM_SSH_USER: ${{ secrets.VM_SSH_USER }}
+          SHA: ${{ steps.candidate.outputs.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          if git -C candidate diff --quiet "$BEFORE_SHA" "$SHA" -- ops/vm_actions/opencode_db_retention_now.sh; then
+            echo "OpenCode retention control unchanged; skip immediate pass."
+            exit 0
+          fi
+          bash -n control/ops/vm_actions/opencode_db_retention_now.sh
+          ssh_args=(-F /dev/null -T -p "$port" -i "$RUNNER_TEMP/vm-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -o ClearAllForwardings=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/vm-ssh/known_hosts" -o GlobalKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20)
+          cat control/ops/vm_actions/opencode_db_retention_now.sh |
+            ssh "${ssh_args[@]}" "$VM_SSH_USER@$VM_SSH_HOST" "exec docich production $SHA"
+
       # Canonical deploy hook for the common corner rotation timer. Stage 1
       # keeps the legacy unit names active; the reviewed rename is gated by
       # ops/vm_actions/corner_rotation_timer_migration_epoch (absent = legacy).
