@@ -7,7 +7,7 @@ import pytest
 from docich.actions import Action
 from docich.adapters.base import Observation
 from docich.agent.brains import NethackPolicyBrain
-from docich.nethack_exploration import DIRECTIONS, NethackExplorer
+from docich.nethack_exploration import DIRECTIONS, NethackExplorer, visible_safe_step
 from docich.nethack_observation import normalize_tty
 from docich.nethack_policy import (
     NethackLayeredPolicy,
@@ -309,6 +309,78 @@ def test_more_page_preserves_pending_contact_until_attack_confirmation():
     assert act(agent, frame({"h": "f"}, message="Really attack the cat? [yn] (n)")) == ["n"]
     # the rejected edge stays blocked: only a wait turn, never a repeat bump
     assert act(agent, frame({"h": "f"})) == ["."]
+
+
+def test_production_opens_an_adjacent_door_over_two_fresh_frames():
+    agent = brain()
+    door = (1, 41, 14)
+
+    assert act(agent, frame({"l": "+"})) == ["o"]
+    assert agent.last_progress_decision.intent == "open_door_start"
+
+    prompt = frame({"l": "+"}, message="In what direction? [hykulnjb]")
+    assert normalize_tty(prompt).prompt == "direction"
+    assert act(agent, prompt) == ["l"]
+    assert agent.last_progress_decision.intent == "open_door_direction"
+
+    opened = frame({"l": "-"}, message="The door opens.", turn=13)
+    act(agent, opened)
+    assert door in agent.policy.explorer.opened_doors
+    assert visible_safe_step(normalize_tty(opened), "l", agent.policy.explorer.opened_doors)
+
+
+def test_locked_door_is_marked_failed_and_not_retried():
+    agent = brain()
+    door = (1, 41, 14)
+    assert act(agent, frame({"l": "+"})) == ["o"]
+    assert act(agent, frame({"l": "+"}, message="In what direction?")) == ["l"]
+
+    locked = frame({"l": "+"}, message="The door is locked.", turn=13)
+    assert "o" not in act(agent, locked)
+    assert door in agent.policy.explorer.failed_doors
+    assert "o" not in act(agent, frame({"l": "+"}, turn=14))
+
+
+@pytest.mark.parametrize(("hp", "condition"), [
+    ("8(16)", ""),
+    ("4(16)", "Hungry"),
+    ("4(16)", "Weak"),
+    ("4(16)", "Fainting"),
+])
+def test_door_opening_is_available_at_low_hp_and_food_emergency(hp, condition):
+    agent = brain()
+    assert act(agent, frame({"l": "+"}, hp=hp, condition=condition)) == ["o"]
+    assert agent.last_progress_decision.intent == "open_door_start"
+
+
+@pytest.mark.parametrize(("condition", "extra"), [
+    ("Sick", {}),
+    ("Fainted", {}),
+    ("Conf", {}),
+    ("", {"k": "d"}),
+])
+def test_door_opening_is_blocked_by_severe_status_impairment_or_contact(condition, extra):
+    agent = brain()
+    neighbors = {"l": "+", **extra}
+    actions = act(agent, frame(neighbors, condition=condition))
+    assert "o" not in actions
+    assert agent.last_progress_decision.intent != "open_door_start"
+
+
+def test_unmatched_direction_prompt_after_open_is_left_unanswered():
+    agent = brain()
+    assert act(agent, frame({"l": "+"})) == ["o"]
+    actions = act(agent, frame({"l": "+"}, message="In what direction do you want to attack?"))
+    assert actions == []
+    assert agent.last_progress_decision.intent == "progress_blocked"
+
+
+@pytest.mark.parametrize("glyph", ["-", "|", "−"])
+def test_open_door_glyph_is_passable_only_when_its_coordinate_was_verified(glyph):
+    obs = normalize_tty(frame({"l": glyph}))
+    door = (1, 41, 14)
+    assert not visible_safe_step(obs, "l")
+    assert visible_safe_step(obs, "l", {door})
 
 
 @pytest.mark.parametrize("key", ["Fh", "h.", "y\n", ">", "<", "o", "e", "q", "s", "\x1b"])

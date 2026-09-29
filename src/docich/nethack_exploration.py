@@ -26,6 +26,7 @@ DIAGONAL = ((-1, -1, "y"), (1, -1, "u"), (-1, 1, "b"), (1, 1, "n"))
 DIRECTIONS = CARDINAL + DIAGONAL
 MOVE_KEYS = frozenset(key for _dx, _dy, key in DIRECTIONS)
 PASSABLE = frozenset({".", "#", "<", ">"})
+OPEN_DOOR_GLYPHS = frozenset({"-", "|", "−"})
 
 
 @dataclass
@@ -67,10 +68,22 @@ def _glyph(obs: NethackObservation, pos: tuple[int, int]) -> str:
     return row[x]
 
 
-def _passable(obs: NethackObservation, pos: tuple[int, int]) -> bool:
+def _passable(
+    obs: NethackObservation,
+    pos: tuple[int, int],
+    opened_doors: set[tuple[int, int, int]] | frozenset[tuple[int, int, int]] = frozenset(),
+) -> bool:
     if pos == obs.player:
         return True
-    return _glyph(obs, pos) in PASSABLE
+    glyph = _glyph(obs, pos)
+    if glyph in PASSABLE:
+        return True
+    depth = obs.vitals.dungeon_level
+    return (
+        glyph in OPEN_DOOR_GLYPHS
+        and depth is not None
+        and (depth, pos[0], pos[1]) in opened_doors
+    )
 
 
 def move_target(obs: NethackObservation, key: str) -> tuple[int, int] | None:
@@ -82,21 +95,34 @@ def move_target(obs: NethackObservation, key: str) -> tuple[int, int] | None:
     return None
 
 
-def visible_safe_step(obs: NethackObservation, key: str) -> bool:
+def visible_safe_step(
+    obs: NethackObservation,
+    key: str,
+    opened_doors: set[tuple[int, int, int]] | frozenset[tuple[int, int, int]] = frozenset(),
+) -> bool:
     target = move_target(obs, key)
-    return obs.prompt == "none" and target is not None and _glyph(obs, target) in PASSABLE
+    return obs.prompt == "none" and target is not None and _passable(obs, target, opened_doors)
 
 
-def _frontier(obs: NethackObservation, pos: tuple[int, int]) -> bool:
+def _frontier(
+    obs: NethackObservation,
+    pos: tuple[int, int],
+    failed_doors: set[tuple[int, int, int]] | frozenset[tuple[int, int, int]] = frozenset(),
+) -> bool:
     """True when a safe cell borders something not yet visible/passable.
 
-    A closed door is a useful frontier even though P3b will not open it; the
-    planner can approach it and then safely stop for a later policy layer.
+    A closed door is a useful frontier until this runtime has tried and
+    failed to open it. Failed doors must not keep drawing the explorer back.
     """
     for dx, dy, _key in CARDINAL:
-        glyph = _glyph(obs, (pos[0] + dx, pos[1] + dy))
-        if glyph in {" ", "+"}:
+        target = (pos[0] + dx, pos[1] + dy)
+        glyph = _glyph(obs, target)
+        if glyph == " ":
             return True
+        if glyph == "+":
+            depth = obs.vitals.dungeon_level
+            if depth is None or (depth, target[0], target[1]) not in failed_doors:
+                return True
     return False
 
 
@@ -117,11 +143,21 @@ class NethackExplorer:
         # Updated only by the production resolver from returned action plans.
         # A visible floor does not prove a diagonal doorway/squeeze is legal.
         self.blocked_steps: set[tuple[tuple[int, int], str]] = set()
+        # '-' and '|' also draw walls. Treat them as passable only after this
+        # runtime opened the coordinate from a visible '+' door.
+        self.opened_doors: set[tuple[int, int, int]] = set()
+        self.failed_doors: set[tuple[int, int, int]] = set()
+
+    def mark_opened_door(self, door: tuple[int, int, int]) -> None:
+        self.opened_doors.add(door)
+
+    def mark_failed_door(self, door: tuple[int, int, int]) -> None:
+        self.failed_doors.add(door)
 
     def _neighbors(self, obs: NethackObservation, pos: tuple[int, int], directions):
         for dx, dy, key in directions:
             nxt = (pos[0] + dx, pos[1] + dy)
-            if _passable(obs, nxt) and (pos, key) not in self.blocked_steps:
+            if _passable(obs, nxt, self.opened_doors) and (pos, key) not in self.blocked_steps:
                 yield nxt, key
 
     def plan_step(self, obs: NethackObservation) -> ExplorationStep | None:
@@ -141,7 +177,7 @@ class NethackExplorer:
 
         while queue:
             pos = queue.popleft()
-            if pos != start and _frontier(obs, pos):
+            if pos != start and _frontier(obs, pos, self.failed_doors):
                 candidates.append(pos)
             for nxt, key in self._neighbors(obs, pos, directions):
                 if nxt in parent:

@@ -1,20 +1,115 @@
-"""Production action arbitration for NetHack's turn-based waits (#490).
+"""Production action arbitration for NetHack waits and visible doors (#490).
 
 Safety is a bounded command contract, not a promise that the hero survives.
 A normal bump may fight a hostile creature or displace a pet. It is allowed
-only after visible retreat fails; force-fight and affirmative confirmations
-are never generated. See docs/games/nethack-progress-contract.md.
+only after visible retreat fails; door opening is limited to a verified
+adjacent target and a matching prompt on the next frame. Force-fight and
+affirmative confirmations are never generated. See
+``docs/games/nethack-progress-contract.md``.
 """
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
+
 from .actions import Action
-from .nethack_exploration import DIRECTIONS, MOVE_KEYS, _glyph, move_target, visible_safe_step
+from .nethack_exploration import (
+    CARDINAL,
+    DIRECTIONS,
+    MOVE_KEYS,
+    OPEN_DOOR_GLYPHS,
+    _glyph,
+    move_target,
+    visible_safe_step,
+)
 from .nethack_observation import NethackObservation
 from .nethack_policy import (
     NethackLayeredPolicy, PolicyDecision, STEP_OUT_INTENTS, _has_any,
     _visible_creature_contact, creature_glyph, decline_prompt,
     rest_action_for_hold, step_out_of_hold, turn_ready,
 )
+
+
+DoorKey = tuple[int, int, int]
+
+
+@dataclass(frozen=True)
+class _DoorTarget:
+    key: DoorKey
+    player: tuple[int, int]
+    direction: str
+
+
+_OPEN_DOOR_DIRECTION_PROMPT = re.compile(
+    r"In what direction\?(?:\s*\[[^\r\n]*\])?", re.IGNORECASE
+)
+
+
+def _is_open_door_direction_prompt(obs: NethackObservation) -> bool:
+    return (
+        obs.prompt == "direction"
+        and _OPEN_DOOR_DIRECTION_PROMPT.fullmatch(obs.message.strip()) is not None
+    )
+
+
+def _door_action_ready(obs: NethackObservation, *, direction_prompt: bool = False) -> bool:
+    allowed_prompts = {"direction"} if direction_prompt else {"none"}
+    return (
+        obs.prompt in allowed_prompts
+        and obs.player is not None
+        and obs.vitals.dungeon_level is not None
+        and obs.vitals.hp is not None
+        and obs.vitals.hp > 0
+        and obs.vitals.hp_max is not None
+        and obs.vitals.hp_max > 0
+        and "Fainted" not in obs.conditions
+        and not _has_any(
+            obs,
+            NethackLayeredPolicy._SEVERE_CONDITIONS
+            | NethackLayeredPolicy._MOVEMENT_IMPAIRING,
+        )
+        and not _visible_creature_contact(obs)
+    )
+
+
+def _door_target_at(obs: NethackObservation, dx: int, dy: int, direction: str) -> _DoorTarget | None:
+    if obs.player is None or obs.vitals.dungeon_level is None:
+        return None
+    x, y = obs.player[0] + dx, obs.player[1] + dy
+    if _glyph(obs, (x, y)) != "+":
+        return None
+    return _DoorTarget((obs.vitals.dungeon_level, x, y), obs.player, direction)
+
+
+def _next_unattempted_door(
+    obs: NethackObservation, attempted_doors: set[DoorKey] | frozenset[DoorKey]
+) -> _DoorTarget | None:
+    if not _door_action_ready(obs):
+        return None
+    for dx, dy, direction in CARDINAL:
+        target = _door_target_at(obs, dx, dy, direction)
+        if target is not None and target.key not in attempted_doors:
+            return target
+    return None
+
+
+def _door_target_matches(obs: NethackObservation, target: _DoorTarget | None) -> bool:
+    player = obs.player
+    if (
+        target is None
+        or not _is_open_door_direction_prompt(obs)
+        or not _door_action_ready(obs, direction_prompt=True)
+        or player is None
+        or player != target.player
+        or obs.vitals.dungeon_level != target.key[0]
+    ):
+        return False
+    for dx, dy, direction in CARDINAL:
+        if direction == target.direction:
+            return (player[0] + dx, player[1] + dy) == target.key[1:] and _glyph(
+                obs, target.key[1:]
+            ) == "+"
+    return False
 
 
 def gameplay_ready(obs: NethackObservation) -> bool:
@@ -36,7 +131,14 @@ def movement_ready(obs: NethackObservation) -> bool:
     return gameplay_ready(obs) and not _has_any(obs, NethackLayeredPolicy._MOVEMENT_IMPAIRING)
 
 
-def assert_production_safe(decision: PolicyDecision, obs: NethackObservation) -> None:
+def assert_production_safe(
+    decision: PolicyDecision,
+    obs: NethackObservation,
+    *,
+    attempted_doors: set[DoorKey] | frozenset[DoorKey] = frozenset(),
+    pending_door: _DoorTarget | None = None,
+    opened_doors: set[DoorKey] | frozenset[DoorKey] = frozenset(),
+) -> None:
     """Check the observation as well as key shape at the final action boundary.
 
     In particular, 'n' means southeast on the map and no at a confirmation.
@@ -54,7 +156,7 @@ def assert_production_safe(decision: PolicyDecision, obs: NethackObservation) ->
     elif intent in {"decline_save", "decline_attack"}:
         allowed = key == "n" and decline_prompt(obs) == intent
     elif intent in {"explore_step", "retreat_step"}:
-        allowed = movement_ready(obs) and visible_safe_step(obs, key)
+        allowed = movement_ready(obs) and visible_safe_step(obs, key, opened_doors)
     elif intent == "bump_creature":
         target = move_target(obs, key)
         allowed = (
@@ -67,12 +169,20 @@ def assert_production_safe(decision: PolicyDecision, obs: NethackObservation) ->
         # Any complete frame may spend one wait turn (owner decision
         # 2026-09-23); turn_ready is what keeps `.` from answering a prompt.
         allowed = turn_ready(obs) and key == "."
+    elif intent == "open_door_start":
+        allowed = key == "o" and _next_unattempted_door(obs, attempted_doors) is not None
+    elif intent == "open_door_direction":
+        allowed = (
+            pending_door is not None
+            and key == pending_door.direction
+            and _door_target_matches(obs, pending_door)
+        )
     if not allowed:
         raise RuntimeError("production action violates its observed context")
 
 
 class NethackProgressResolver:
-    """Resolve reviewed waits without changing advisory/shadow policy intent.
+    """Resolve reviewed waits and door prompts without changing policy intent.
 
     Memory is local to a brain/runtime, bounded by the current visible scene.
     Rejected movement/bump edges expire when map, player or depth changes;
@@ -84,10 +194,31 @@ class NethackProgressResolver:
         self._pending: tuple[NethackObservation, str, str] | None = None
         self._failed: dict[str, int] = {}
         self._answered_prompt: str | None = None
+        self._attempted_doors: set[DoorKey] = set()
+        self._pending_door: _DoorTarget | None = None
+        self._door_result_pending: _DoorTarget | None = None
 
     def observe(self, obs: NethackObservation, explorer) -> None:
         if obs.raw_text != self._answered_prompt:
             self._answered_prompt = None
+        if self._pending_door is not None and obs.prompt == "none":
+            target = self._pending_door
+            if (
+                obs.vitals.dungeon_level == target.key[0]
+                and obs.player == target.player
+                and _glyph(obs, target.key[1:]) == "+"
+            ):
+                explorer.mark_failed_door(target.key)
+            self._pending_door = None
+        if self._door_result_pending is not None and obs.prompt == "none":
+            target = self._door_result_pending
+            self._door_result_pending = None
+            if obs.vitals.dungeon_level == target.key[0] and obs.player == target.player:
+                glyph = _glyph(obs, target.key[1:])
+                if glyph in OPEN_DOOR_GLYPHS:
+                    explorer.mark_opened_door(target.key)
+                elif glyph == "+":
+                    explorer.mark_failed_door(target.key)
         decline = decline_prompt(obs)
         if decline is not None:
             # An observed rejection is causal only if our preceding action
@@ -129,8 +260,19 @@ class NethackProgressResolver:
 
     def resolve(self, decision: PolicyDecision, obs: NethackObservation, explorer) -> PolicyDecision:
         result = self._resolve(decision, obs, explorer)
-        assert_production_safe(result, obs)
+        self.assert_action_safe(result, obs, explorer)
         return result
+
+    def assert_action_safe(
+        self, decision: PolicyDecision, obs: NethackObservation, explorer
+    ) -> None:
+        assert_production_safe(
+            decision,
+            obs,
+            attempted_doors=self._attempted_doors,
+            pending_door=self._pending_door,
+            opened_doors=getattr(explorer, "opened_doors", frozenset()),
+        )
 
     def sent(self, decision: PolicyDecision, obs: NethackObservation) -> None:
         """Record only after fresh validation and adapter.act returned normally.
@@ -139,6 +281,20 @@ class NethackProgressResolver:
         resolve() alone must never spend retry budgets or create pending edges.
         """
         if decision.actions:
+            if decision.intent == "open_door_start":
+                target = _next_unattempted_door(obs, self._attempted_doors)
+                if target is None:
+                    raise RuntimeError("open door action lost its visible target")
+                self._attempted_doors.add(target.key)
+                self._pending_door = target
+                return
+            if decision.intent == "open_door_direction":
+                target = self._pending_door
+                if not _door_target_matches(obs, target):
+                    raise RuntimeError("open door direction lost its prompt context")
+                self._door_result_pending = target
+                self._pending_door = None
+                return
             key = decision.actions[0].text
             if decision.intent in {"decline_save", "decline_attack", "advance_message"}:
                 self._answered_prompt = obs.raw_text
@@ -159,6 +315,42 @@ class NethackProgressResolver:
         decline = decline_prompt(obs)
         if decline == "decline_attack":
             decision = self._action(decline, "decline an observed attack confirmation", "n")
+        if self._pending_door is not None:
+            if obs.prompt == "direction":
+                if _door_target_matches(obs, self._pending_door):
+                    return self._action(
+                        "open_door_direction",
+                        "answer the direction prompt for the same visible closed door",
+                        self._pending_door.direction,
+                    )
+                return self._hold("direction prompt no longer matches the attempted door")
+            if obs.prompt != "none":
+                return decision
+            # observe() normally records this failed command. Keep a defensive
+            # clear here for direct resolver callers that skipped observe().
+            target = self._pending_door
+            if (
+                obs.vitals.dungeon_level == target.key[0]
+                and obs.player == target.player
+                and _glyph(obs, target.key[1:]) == "+"
+            ):
+                explorer.mark_failed_door(target.key)
+            self._pending_door = None
+        if decision.intent in {
+            "explore_step",
+            "exploration_blocked",
+            "seek_food",
+            "hold_low_hp",
+            "survival_emergency",
+            "food_emergency",
+        }:
+            door = _next_unattempted_door(obs, self._attempted_doors)
+            if door is not None:
+                return self._action(
+                    "open_door_start",
+                    f"open visible adjacent door at {door.key[1:]}",
+                    "o",
+                )
         if decision.actions:
             if decision.intent in {"decline_save", "decline_attack", "advance_message"} and self._answered_prompt == obs.raw_text:
                 return self._hold("prompt already answered; waiting for a new frame")
