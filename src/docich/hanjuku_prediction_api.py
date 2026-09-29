@@ -123,7 +123,8 @@ class Helix:
             raise APIError('transport') from None
 
     def list(self, prediction_id=None):
-        return self.request('GET', **({'id': prediction_id} if prediction_id else {'first': 100}))
+        # Helix returns newest first; only one prediction can be live at once.
+        return self.request('GET', **({'id': prediction_id} if prediction_id else {'first': 1}))
 
     def create(self, title, outcomes, window):
         return self.request('POST', {'title': title, 'outcomes': [{'title': o} for o in outcomes],

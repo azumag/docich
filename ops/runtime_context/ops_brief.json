@@ -1,11 +1,11 @@
 {
-  "output_sha256": "d94b314e9af6b4ff49438be19c123402909766e02514905c6c69ddbb21ce81c9",
+  "output_sha256": "83bf477e521d18b6edfbde85e6c5d464d956e8c73e59fc20ead3cfc9531fb059",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "ea6db4b4ca03d88923c7de2b93d2338ff1e4ba836a5034aa28be6cf740acbea7",
+  "source_sha256": "dfdaa34253532639147fb9803419d9704568bfa6ee8906ce6c2d4a6a8899c007",
   "topics": [
-    "半熟の入力保留停止を正規手動stop＋recover-failedで復旧（配信sorengame復帰・実測）",
-    "Moon Buggy ABBA勝者の自動採用をmain/VMへ反映（実機未観測）",
-    "Moon Buggy 再同期後のfresh CI待ち"
+    "半熟英雄の予想一覧を最新1件へ修正（配備準備）",
+    "半熟ボス戦改善を正規配備し再起動（クリア監視継続）",
+    "ニュース重複対策をmain・本番へ反映しSHA・配信継続を照合"
   ]
 }

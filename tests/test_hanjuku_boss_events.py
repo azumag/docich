@@ -149,3 +149,12 @@ def test_legacy_or_unclassified_boss_loss_never_falls_back_to_generic_retry(side
     assert not any(r['decision'] == 'order_retry' for r in mem['_records'])
     assert any(r['decision'] == 'situation_held' and r['strategy_variant'] == 'boss_entry_unclassified'
                for r in mem['_records'])
+
+
+@pytest.mark.parametrize('chapter,step,enemy', [(1, None, 'クイーン'),
+                                             (1, '1-A1', 'クイーン'),
+                                             (2, '1-B1', 'クイーン'),
+                                             (1, '1-B1', 'ミント')])
+def test_measured_boss_name_requires_matching_chapter_and_boss_sortie(chapter, step, enemy):
+    mem = {'chapter': chapter}
+    assert not policy._boss_tactics_allowed(mem, {'enemy': enemy, 'step': step})
