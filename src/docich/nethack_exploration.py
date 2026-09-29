@@ -228,7 +228,7 @@ class NethackExplorer:
         if first_key is None or first_target is None:
             return None
         glyph = _glyph(obs, first_target)
-        if glyph not in PASSABLE:
+        if not _passable(obs, first_target, self.opened_doors):
             # Final fail-closed check: never let a stale parent map move onto a
             # creature, item, trap, door or blank cell.
             return None

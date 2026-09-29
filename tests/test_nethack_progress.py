@@ -324,9 +324,38 @@ def test_production_opens_an_adjacent_door_over_two_fresh_frames():
     assert agent.last_progress_decision.intent == "open_door_direction"
 
     opened = frame({"l": "-"}, message="The door opens.", turn=13)
-    act(agent, opened)
+    assert act(agent, opened) == ["l"]
     assert door in agent.policy.explorer.opened_doors
     assert visible_safe_step(normalize_tty(opened), "l", agent.policy.explorer.opened_doors)
+
+
+def test_unchanged_capture_after_open_door_waits_for_delayed_direction_prompt():
+    agent = brain()
+    closed = frame({"l": "+"})
+    door = (1, 41, 14)
+    assert act(agent, closed) == ["o"]
+
+    for _ in range(4):
+        assert act(agent, closed) == []
+        assert agent.last_progress_decision.intent == "progress_blocked"
+        assert door not in agent.policy.explorer.failed_doors
+    assert "repeated unchanged captures" in agent.last_progress_decision.reason
+
+    prompt = frame({"l": "+"}, message="In what direction?")
+    assert act(agent, prompt) == ["l"]
+    assert agent.last_progress_decision.intent == "open_door_direction"
+
+
+def test_pending_door_more_prompt_is_advanced_only_once():
+    agent = brain()
+    assert act(agent, frame({"l": "+"})) == ["o"]
+    more = frame({"l": "+"}, message="A message appears. --More--")
+    assert act(agent, more) == [" "]
+    assert act(agent, more) == []
+    assert agent.last_progress_decision.intent == "progress_blocked"
+
+    prompt = frame({"l": "+"}, message="In what direction?")
+    assert act(agent, prompt) == ["l"]
 
 
 def test_locked_door_is_marked_failed_and_not_retried():

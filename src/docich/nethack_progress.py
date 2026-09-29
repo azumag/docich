@@ -31,6 +31,7 @@ from .nethack_policy import (
 
 
 DoorKey = tuple[int, int, int]
+MAX_UNCHANGED_DOOR_CAPTURES = 3
 
 
 @dataclass(frozen=True)
@@ -196,20 +197,48 @@ class NethackProgressResolver:
         self._answered_prompt: str | None = None
         self._attempted_doors: set[DoorKey] = set()
         self._pending_door: _DoorTarget | None = None
+        self._pending_door_raw_text: str | None = None
+        self._pending_door_unchanged_captures = 0
         self._door_result_pending: _DoorTarget | None = None
+
+    def _pending_door_capture_unchanged(self, obs: NethackObservation) -> bool:
+        target = self._pending_door
+        return (
+            target is not None
+            and self._pending_door_raw_text is not None
+            and obs.prompt == "none"
+            and obs.raw_text == self._pending_door_raw_text
+            and obs.vitals.dungeon_level == target.key[0]
+            and obs.player == target.player
+        )
+
+    def _clear_pending_door(self) -> None:
+        self._pending_door = None
+        self._pending_door_raw_text = None
+        self._pending_door_unchanged_captures = 0
 
     def observe(self, obs: NethackObservation, explorer) -> None:
         if obs.raw_text != self._answered_prompt:
             self._answered_prompt = None
         if self._pending_door is not None and obs.prompt == "none":
             target = self._pending_door
-            if (
-                obs.vitals.dungeon_level == target.key[0]
-                and obs.player == target.player
-                and _glyph(obs, target.key[1:]) == "+"
-            ):
-                explorer.mark_failed_door(target.key)
-            self._pending_door = None
+            if self._pending_door_capture_unchanged(obs):
+                # tmux send_keys acknowledges transport only. A repeated copy
+                # of the pre-command frame is not evidence that NetHack
+                # rejected `o`; retain the target so a delayed direction
+                # prompt can still be answered safely.
+                self._pending_door_unchanged_captures = min(
+                    self._pending_door_unchanged_captures + 1,
+                    MAX_UNCHANGED_DOOR_CAPTURES,
+                )
+            else:
+                if obs.vitals.dungeon_level == target.key[0] and obs.player == target.player:
+                    glyph = _glyph(obs, target.key[1:])
+                    if glyph in OPEN_DOOR_GLYPHS:
+                        explorer.mark_opened_door(target.key)
+                    elif glyph == "+":
+                        explorer.mark_failed_door(target.key)
+                self._clear_pending_door()
         if self._door_result_pending is not None and obs.prompt == "none":
             target = self._door_result_pending
             self._door_result_pending = None
@@ -287,13 +316,15 @@ class NethackProgressResolver:
                     raise RuntimeError("open door action lost its visible target")
                 self._attempted_doors.add(target.key)
                 self._pending_door = target
+                self._pending_door_raw_text = obs.raw_text
+                self._pending_door_unchanged_captures = 0
                 return
             if decision.intent == "open_door_direction":
                 target = self._pending_door
                 if not _door_target_matches(obs, target):
                     raise RuntimeError("open door direction lost its prompt context")
                 self._door_result_pending = target
-                self._pending_door = None
+                self._clear_pending_door()
                 return
             key = decision.actions[0].text
             if decision.intent in {"decline_save", "decline_attack", "advance_message"}:
@@ -315,6 +346,11 @@ class NethackProgressResolver:
         decline = decline_prompt(obs)
         if decline == "decline_attack":
             decision = self._action(decline, "decline an observed attack confirmation", "n")
+        if (
+            decision.intent in {"decline_save", "decline_attack", "advance_message"}
+            and self._answered_prompt == obs.raw_text
+        ):
+            return self._hold("prompt already answered; waiting for a new frame")
         if self._pending_door is not None:
             if obs.prompt == "direction":
                 if _door_target_matches(obs, self._pending_door):
@@ -324,8 +360,17 @@ class NethackProgressResolver:
                         self._pending_door.direction,
                     )
                 return self._hold("direction prompt no longer matches the attempted door")
-            if obs.prompt != "none":
+            if obs.prompt == "more":
                 return decision
+            if obs.prompt != "none":
+                return self._hold("waiting for the attempted door response; unexpected prompt")
+            if self._pending_door_capture_unchanged(obs):
+                wait_reason = (
+                    "door response remains pending after repeated unchanged captures"
+                    if self._pending_door_unchanged_captures >= MAX_UNCHANGED_DOOR_CAPTURES
+                    else "door response is pending; waiting for a changed frame"
+                )
+                return self._hold(wait_reason)
             # observe() normally records this failed command. Keep a defensive
             # clear here for direct resolver callers that skipped observe().
             target = self._pending_door
@@ -335,7 +380,7 @@ class NethackProgressResolver:
                 and _glyph(obs, target.key[1:]) == "+"
             ):
                 explorer.mark_failed_door(target.key)
-            self._pending_door = None
+            self._clear_pending_door()
         if decision.intent in {
             "explore_step",
             "exploration_blocked",
@@ -352,8 +397,6 @@ class NethackProgressResolver:
                     "o",
                 )
         if decision.actions:
-            if decision.intent in {"decline_save", "decline_attack", "advance_message"} and self._answered_prompt == obs.raw_text:
-                return self._hold("prompt already answered; waiting for a new frame")
             return decision
         if not turn_ready(obs):
             return decision
