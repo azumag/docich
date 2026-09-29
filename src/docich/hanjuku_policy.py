@@ -3243,6 +3243,12 @@ def _hero_retreat_needed(cur):
         return False
     hp, enemy, start = (cur.get(k) for k in ('ally_hp', 'enemy_hp', 'start_ally_hp'))
     ref = (max(start, int(cur.get('ref_ally_hp') or 0)) if cur.get('ally') == NAME else start)
+    if cur.get('egg_battle'):
+        # An enemy summon we cannot answer (no egg left, no cards) is not a
+        # winnable melee: retreat before the general dies (owner 2026-09-29;
+        # g460 16:46: ヴィーナス 82 vs アルファルファ 38 summoned and killed
+        # her while the bot chose こうげき and the retreat came too late).
+        return hp <= 12 or hp * 2 <= enemy or hp * 2 <= ref
     return hp <= 12 or (hp < enemy and hp * 4 <= ref)
 
 
@@ -4866,6 +4872,7 @@ def egg_battle_step(screen: Screen, mem):
         if isinstance(battle, dict):
             battle['independent'] = {'kind': 'egg_summon', 'key': key, 'action': action,
                                      'pattern': '⑥'}
+            battle['egg_battle'] = True     # earlier retreat threshold (see _hero_retreat_needed)
         _record(mem, 'egg_battle', strategy_variant=f'egg_battle_{action}',
                 deviation_reason='チャート外: 敵の卵召喚戦',
                 expected_metric='召喚獣への対処と戦闘結果',
@@ -4885,6 +4892,23 @@ def egg_battle_step(screen: Screen, mem):
                     reason='たまごをつかうが使えない表示のため卵を諦めてこうげきで応戦する')
         action = 'attack'
     if action == 'attack':
+        battle = mem.get('battle') if isinstance(mem.get('battle'), dict) else {}
+        attempted = {*(battle.get('cards_selected') or []), *(battle.get('cards_used') or []),
+                     *(battle.get('cards_unclassified') or [])}
+        cards_left = [c for c in (battle.get('planned_cards') or []) if c not in attempted]
+        # Owner 2026-09-29: with no egg, no cards and no soldiers left, do not
+        # answer the summon with こうげき -- try the retreat (g460 16:46:
+        # ヴィーナス 82 vs アルファルファ 38 was summoned on and died while the
+        # bot chose こうげき). B leaves this menu; the standard command menu
+        # (たいきゃく) handles the rest. One attempt per battle.
+        if (not cards_left and battle.get('side') != 'defense'
+                and not battle.get('egg_retreat_tried')):
+            battle['egg_retreat_tried'] = True
+            _record(mem, 'battle_egg_retreat_attempt', **_battle_labels(battle),
+                    observed_metric={'enemy': battle.get('enemy'), 'ally_hp': battle.get('ally_hp'),
+                                     'enemy_hp': battle.get('enemy_hp')},
+                    reason='卵も切り札も残らない召喚戦のため、こうげきではなく退却を試す')
+            return [pad('b')]
         return [pad('a')]
     _egg_recheck(mem)
     if screen.hand:
