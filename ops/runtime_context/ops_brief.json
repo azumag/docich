@@ -1,11 +1,11 @@
 {
-  "output_sha256": "336debb51f3d68137ad51ced387e69e176b844c1b6bf8405e9f228e0923d64ba",
+  "output_sha256": "5921f8a0dffce963846b329736df7ec6219b83e1a964e092ba32cf234c7e2e54",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "5f34d88bd8db0221206ba8a8cd3db92fa476620c04ac2993a6f4201be6c41ba5",
+  "source_sha256": "67dd8ebd1c4487f455aeb156f12fb3c8733d8126784b1ce0023cc196c95d6502",
   "topics": [
+    "半熟v90配備照合完了・Paper終了待ち",
     "g490ゲームオーバー分析とv90修理・帰還経路の強化（配備準備）",
-    "半熟v90札一覧の途中描画を不足と区別（配備準備）",
-    "チャート遵守v89を同一g490へホットロード"
+    "半熟v90札一覧の途中描画を不足と区別（配備準備）"
   ]
 }
