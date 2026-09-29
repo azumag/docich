@@ -1,11 +1,11 @@
 {
-  "output_sha256": "d893e734b971206da1f8180fcdeb2ff240e3acd068ea1a6ffa4b74b603af117f",
+  "output_sha256": "0b7b959853eb2f2aaa1fd9eff3ff36942e2745d17296e38018c56b0f85cd64a4",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "c81e3c75cb657a451837156115cca8e4badb90eea6d2bb4f35611ce9972097bc",
+  "source_sha256": "c5836fcccb719b3ef2e24f396c799e25ac092d5ac15dea7f245495063ab9ffa0",
   "topics": [
+    "半熟v88配備照合完了・Bastet終了待ち",
     "半熟g486ゲームオーバー分析とボス卵回復待ち",
-    "半熟英雄の話数比例予想受付を本番反映（次回予想から適用）",
-    "半熟英雄の予想受付を目標話数で比例配分（配備準備）"
+    "半熟英雄の話数比例予想受付を本番反映（次回予想から適用）"
   ]
 }
