@@ -3944,6 +3944,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'world_map_tick', 'world_map_due', 'world_map_wait', 'home_lost',
                 'y_jump', 'y_jumps', 'y_jump_return', 'y_jumped', 'boss_absent', 'recall', 'recall_skip',
                 'near_goal', 'align_steps', 'unanchored', 'select_tick',
+                'house', 'house_scan_tick', 'house_scan_month', 'house_eggs',
                 'select_used', 'castle_verified', 'last_castle_hold',
                 'egg_action', 'egg_key', 'egg_menu_stage', 'indep_menu',
                 'indep_menu_key', 'indep_menu_action',

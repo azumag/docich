@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v82-open-clash-kit'
+BOT_VERSION = 'hanjuku-chart-v83-house-all-generals'
 
 
 # Native title copyright rows, measured from the owner's ROM. A strict match
@@ -168,6 +168,7 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
     """
     from . import hanjuku_experience as experience_module
     from . import hanjuku_policy as policy
+    from . import hanjuku_house
     from .hanjuku_screen import parse
     phase=classify(frame)
     step=int(state.get('step',0))+1
@@ -226,9 +227,15 @@ def decide(frame: Frame, state: dict, *, adjusted: dict | None = None,
             mem.pop(key,None)
     recruit_dialog = (mem.get('month_sub') or {}).get('kind') == 'recruit' and not policy.month_menu_ready(screen)
     recall_dialog = mem.get('recall') and not mem.get('month_sub') and kind in ('map', 'map_target', 'text')
+    # Cancel an outstanding repair before an emergency recall can move its
+    # general; the old house route must not resume afterwards.
+    if mem.get('house') and mem.get('recall'):
+        hanjuku_house.step(screen, mem, frame)
     actions = (policy.camp_recall_step(screen, mem, frame) if recall_dialog
                else policy.month_sub_step(screen, mem) if mem.get('month_sub') and (kind != 'month_menu' or recruit_dialog)
                else None)
+    if actions is None:
+        actions = hanjuku_house.step(screen, mem, frame)
     if actions is not None:
         pass
     elif phase=='name' and kind!='name_entry':
