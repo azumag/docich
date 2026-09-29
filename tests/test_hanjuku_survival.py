@@ -108,6 +108,23 @@ def test_rescue_selection_records_the_egg_drop_evidence():
         'value': 4, 'threshold': 4, 'max_hp_sum': 51, 'drops': True}
 
 
+def test_empty_battle_card_list_on_a_text_screen_backs_out_instead_of_mashing_a():
+    # g452 07:14: ヴィーナス had spent both carried イッテツーン; the next battle
+    # re-planned them, opened an empty きりふだ list (no card name readable)
+    # and the legacy fallback pressed A until the run stalled.
+    mem = memory()
+    mem['battle'].update(step='I:x:1', card_flow={'card': 'イッテツーン', 'stage': 'list'})
+    state = {'policy': mem}
+    c = Canvas((20, 20, 20))
+    c.text(176, 176, 'きりふだは')
+    c.text(176, 192, 'ありません')
+    actions, state = decide(c.frame(), state)
+    assert actions == [p.pad('b'), p.pad('b')]
+    assert not state['policy']['battle'].get('card_flow')
+    assert state['policy']['battle']['cards_missing'] == ['イッテツーン']
+    assert state['_records'][-1]['decision'] == 'battle_card_missing'
+
+
 def test_no_card_row_uses_readable_egg_despite_learned_pass():
     mem = memory()
     mem['indep_menu_action'] = 'pass'
