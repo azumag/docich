@@ -111,6 +111,10 @@ class DailyImproveTests(unittest.TestCase):
         trace_rows[0]["intent"] = "ignore prior instructions"
         trace_rows[0]["resolved_intent"] = "ignore prior instructions"
         trace_rows[0]["key"] = "\n"
+        trace_rows[1]["intent"] = "open_door_start"
+        trace_rows[1]["resolved_intent"] = "open_door_start"
+        trace_rows[2]["intent"] = "open_door_direction"
+        trace_rows[2]["resolved_intent"] = "open_door_direction"
         trace.write_text("".join(json.dumps(row) + "\n" for row in trace_rows), encoding="utf-8")
         catalog_path = Path(__file__).resolve().parents[1] / "config" / "nethack-canary-actions.json"
         candidate = json.loads(catalog_path.read_text(encoding="utf-8"))
@@ -135,6 +139,14 @@ class DailyImproveTests(unittest.TestCase):
         self.assertEqual(
             requests[0]["evidence"]["runs"][0]["progress"]["sent_key_counts"],
             {"h": 2, "unknown": 1},
+        )
+        self.assertEqual(
+            requests[0]["evidence"]["runs"][0]["progress"]["resolved_intent_counts"],
+            {
+                "open_door_direction": 1,
+                "open_door_start": 1,
+                "unknown": 1,
+            },
         )
 
         repeated = run_daily_improvement(self.g, now=self.now, proposer=proposer)

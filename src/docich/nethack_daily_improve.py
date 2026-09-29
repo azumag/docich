@@ -45,7 +45,7 @@ _PROGRESS_INTENTS = frozenset({
     "status_emergency", "food_emergency", "survival_emergency", "seek_food",
     "hold_low_hp", "hold_impaired", "inspect_screen", "assess_contact",
     "explore_step", "exploration_blocked", "progress_blocked", "rest_turn",
-    "retreat_step", "bump_creature",
+    "retreat_step", "bump_creature", "open_door_start", "open_door_direction",
 })
 _PROGRESS_KEYS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ .")
 
