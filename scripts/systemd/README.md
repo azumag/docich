@@ -151,10 +151,21 @@ commit しない):
 - `SOREN91_MACOS_AGENT_BASE_URL` … Mac エージェントの base URL (Tailscale IPv4 + port)
 - `SOREN91_OCI_TAILSCALE_IP` … OCI 側の Tailscale IPv4
 - `SOREN91_LOCAL_AGENT_TOKEN` … Mac エージェントの Bearer token
+- `SOREN91_WINDOWS_AGENT_BASE_URL` / `SOREN91_WINDOWS_AGENT_TOKEN` … (任意) 有線 Windows
+  エージェントの base URL と Bearer token。未設定なら Windows は候補から外れる
+
+描画ホストの選び方は webui「Corners → メリケンAI 描画ホスト」で切り替える
+(`state_dir/soren91_renderer.json`、既定は `auto`)。`auto` は Windows → Mac の順に
+試し、到達できない・renderer 起動を拒否された・CDP プロキシが応答しないホストは
+`/v1/stop` してから次へ進む。`windows` / `mac` はそのホストだけを使う (フォールバック
+しない)。実際に使ったホストと試行結果はランタイムごとに
+`state_dir/soren91_renderer_active.json` に残り、同じランタイムの停止・状態確認は
+その記録どおりのホストへ送る。コーナー実行中のホスト切替 (途中フェイルオーバー) は
+行わない。
 
 `docich-soren91-corner.service` はこのファイルを `EnvironmentFile=` で読む。
 現行の共通rotation timerでは同じファイルをunit全体へ継承せず、メリケンadapterが
-allowlistした3項目だけを実行中に読み込むため、レトロ/PAPER子プロセスへ秘密を渡しません。
+allowlistした項目だけを実行中に読み込むため、レトロ/PAPER子プロセスへ秘密を渡しません。
 手動でコーナーを実行する場合 (検証時) も同じ env が必要:
 
 ```sh

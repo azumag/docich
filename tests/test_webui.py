@@ -1448,6 +1448,38 @@ class TestHttpHandlers(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def test_soren91_renderer_mode_roundtrip_without_secrets(self):
+        env_file = self.repo_root / "soren91.env"
+        env_file.write_text(
+            "SOREN91_MACOS_AGENT_BASE_URL=http://100.64.0.2:8787\n"
+            "SOREN91_LOCAL_AGENT_TOKEN=mac-secret-token\n",
+            encoding="utf-8",
+        )
+        with mock.patch.dict(os.environ, {"DOCICH_SOREN91_ENV_FILE": str(env_file)}):
+            status, data = self._request("GET", "/api/soren91/renderer")
+            self.assertEqual(status, 200, data)
+            self.assertEqual(data["mode"], "auto")
+            self.assertEqual(data["order"], ["windows", "mac"])
+            self.assertEqual(data["configured"], {"windows": False, "mac": True})
+            self.assertIsNone(data["selection"])
+            status, data = self._request("POST", "/api/soren91/renderer", {"mode": "mac"})
+            self.assertEqual(status, 200, data)
+            self.assertEqual(data["order"], ["mac"])
+            status, data = self._request("POST", "/api/soren91/renderer", {"mode": "linux"})
+            self.assertEqual(status, 400, data)
+            from docich import soren91_renderer
+            soren91_renderer.record_selection(
+                self.g.state_dir, "g9-abc", "mac",
+                [{"host": "windows", "error": "Windows agent に到達できません (URLError)"},
+                 {"host": "mac", "error": None}],
+            )
+            status, data = self._request("GET", "/api/soren91/renderer")
+        self.assertEqual(data["mode"], "mac")
+        self.assertEqual(data["selection"]["host"], "mac")
+        self.assertEqual([a["ok"] for a in data["selection"]["attempts"]], [False, True])
+        self.assertNotIn("mac-secret-token", json.dumps(data))
+        self.assertNotIn("100.64.0.2", json.dumps(data))
+
     def test_get_corners_is_bounded_read_only_projection(self):
         self._write_catalog_config()
         self._write_rotation_state()
