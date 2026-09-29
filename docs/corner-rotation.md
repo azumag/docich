@@ -15,7 +15,9 @@ productionの`nsnake`は1試合とし、開始以降のscorelog保存を確認�
 Moon Buggyに未評価の改善候補がある場合は、次の枠をABBAの4試合（途中終了なら残り試合）にし、
 各試合の開始時にbaseline/candidateの重みを固定する。scorelogには腕と重みSHA-256を残す。
 4試合後、各腕2試合の平均スコアが高い方を採り、同点はbaselineを維持する。候補は
-headless評価の点差だけでは棄却せず、比較が完了した改善ジョブでのみ昇格する。
+headless評価の点差だけでは棄却しない。4試合目のスコア記録後、candidateの平均が
+baselineを上回ればその場でstrategyとlive brainへ反映する。baselineが勝つか同点なら
+現行戦略を維持する。比較中にstrategyが別変更されていた場合も上書きしない。
 試合数を扱わないPAPER/メリケン/専用NetHack adapterへの指定と不正値は設定エラーとする。
 
 `corner_catalog.py` は登録検証、`corner_rotation.py` は選択・時刻・履歴・予約、
