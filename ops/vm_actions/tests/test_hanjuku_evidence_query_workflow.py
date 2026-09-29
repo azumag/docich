@@ -152,6 +152,12 @@ class QueryGatewayTests(EvidenceFixture, unittest.TestCase):
         payload = json.loads(gateway._completed_candidates(self.state))
         self.assertEqual(payload["runtimes"], [])
 
+    def test_runtime_scan_has_independent_bound(self):
+        with patch.object(gateway, "MAX_RUNTIME_ENTRIES", 0), self.assertRaisesRegex(
+            Exception, "runtime_scan_limit"
+        ):
+            gateway._completed_candidates(self.state)
+
     def test_query_export_returns_verified_plain_zip_without_encryption(self):
         sha = "a" * 40
         command = f"hanjuku_evidence_query docich production {sha} export {RID}"
