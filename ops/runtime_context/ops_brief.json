@@ -1,11 +1,11 @@
 {
-  "output_sha256": "a9ef00ad5ab20d416278a590ac0f69c75fab98bb988e4757185f9f0de2e2d450",
+  "output_sha256": "8b6fa4261fd2bac7a1e2e0d8ac8135837dbc7aa8f60cc7287c6c6b69e1374927",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "dcb2e61c05f74f4a02700eaf3ad52408fed3215fbef81b56d18d6e56b1809d66",
+  "source_sha256": "e4ca317adcd55bb600ecc33b757c2d3b7fbcf980625632eecdde8d421733a06c",
   "topics": [
+    "ニュース重複対策を自己レビューしSoren mainへ統合（親配備準備）",
     "ニュース重複対策PRを作成しCI成功（レビュー・配備待ち）",
-    "ニュース反復の読み取り調査（未修正）",
-    "半熟の入力保留停止を正規手動stop＋recover-failedで復旧（配信sorengame復帰・実測）"
+    "ニュース反復の読み取り調査（未修正）"
   ]
 }
