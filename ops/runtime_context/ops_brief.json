@@ -1,11 +1,11 @@
 {
-  "output_sha256": "eea15c8b47800b0b31c7c9039030ba0b3f8534aa9f474d3225b328f2fc493af8",
+  "output_sha256": "c97fc7b24f33e87e6cd762c0d653b6ce95641b3975bc6fc18e1b96ccae32293b",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "eb819b548e41b8b20b108659040e5f3f363360ce0cca6b357df9eaac166c21d0",
+  "source_sha256": "0477e4f3d0d9a9c9f5d081b3b767902ecd4f57a55b1510131031e69002eb7ab2",
   "topics": [
+    "半熟英雄のIssue証拠取得と評価器をmainへ統合、gateway導入承認待ち（Codex）",
     "OpenCode ENOSPC対策を配備し容量回収完了（Codex）",
-    "OpenCode容量回収の安全化と定期実行を実装（VM反映前・Codex）",
-    "容量回収時の一時的な満量と配信復帰を調査（Codex）"
+    "OpenCode容量回収の安全化と定期実行を実装（VM反映前・Codex）"
   ]
 }
