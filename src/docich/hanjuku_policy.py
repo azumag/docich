@@ -3044,14 +3044,20 @@ def battle_step(screen: Screen, mem):
     return _melee_step(mem, cur)
 
 
-def _charted_clash(mem, cur) -> bool:
-    """The chart wants this fight's clash (1-B1: 白兵で一回ぶつかり合う→札).
+MELEE_HOLD_LIMIT = 8          # egg-safe holds in one fight before melee proceeds
 
-    Holding input under the clash egg risk never reaches ``after_clash`` and
-    the boss summons instead (g454 08:19: the queen battle held without any
-    input, どうし fell to 43 and the rescue used its own egg -> ヒュドラ).
+
+def _charted_melee(mem, cur) -> bool:
+    """The chart needs this fight's melee to progress toward a card.
+
+    Holding input under the clash egg risk never reaches ``after_clash`` or
+    the HP gate of a ``when_hp_at_most`` card (g454 08:19: the queen battle
+    held, どうし fell to 43 and the rescue used its own egg -> ヒュドラ; g456
+    14:13: どうし 90 vs ガルバンゾー 30 held until the フットバース gate at
+    enemy HP 24 was unreachable, and the hero died).
     """
-    return any(t.get('after_clash') and t.get('enemy') in (None, cur.get('enemy'))
+    return any((t.get('after_clash') or t.get('when_hp_at_most') is not None)
+               and t.get('enemy') in (None, cur.get('enemy'))
                and t.get('step') in (None, cur.get('step'))
                for t in _tactics(mem, cur.get('step')))
 
@@ -3060,8 +3066,16 @@ def _melee_step(mem, cur):
     side = cur.get('side')
     defense = True if side == 'defense' else False if side == 'attack' else None
     triggers = enemy_egg_triggers(cur.get('enemy'), player_castle_defense=defense)
-    charted = _charted_clash(mem, cur)
-    safe = triggers.has_egg is False or triggers.clash_position is False or charted
+    charted = _charted_melee(mem, cur)
+    holds = int(cur.get('melee_holds') or 0)
+    forced = bool(cur.get('melee_forced')) or holds >= MELEE_HOLD_LIMIT
+    # An unbounded hold is a passive death: after the bound the melee proceeds
+    # for the rest of the fight even at the clash egg risk (the rescue already
+    # had its chances).
+    safe = (triggers.has_egg is False or triggers.clash_position is False
+            or charted or forced)
+    cur['melee_forced'] = forced
+    cur['melee_holds'] = 0 if safe else holds + 1
     mode = 'power_mash' if safe else 'egg_safe_hold'
     actions = _power_mash(mem, cur) if safe else []
     # Per returned action batch, not just the first use in a fight. These are
@@ -3071,6 +3085,7 @@ def _melee_step(mem, cur):
             egg_risk_flags=asdict(triggers), melee_control_mode=mode,
             a_frames_sent=POWER_TAPS * 3 if safe else 0,
             reason=('チャートのぶつかり合いに向けて押し込む' if charted
+                    else '卵の激突リスクの保留上限に達したため押し込む' if forced
                     else '卵の激突判定なし' if safe
                     else '卵の激突リスクあり・戦線位置未校正のため入力保留'))
     return actions

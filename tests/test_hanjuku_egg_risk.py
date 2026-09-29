@@ -85,6 +85,24 @@ def test_known_no_clash_risk_preserves_exact_released_mash(enemy):
     assert rec['enemy_hp'] == 27 and rec['ally_hp'] == 90
 
 
+def test_an_hp_gated_chart_card_mashes_toward_its_gate():
+    # g456 14:13: the 1-A2 ガルバンゾー tactic (フットバース at enemy HP<=24)
+    # held at どうし 90 vs 30, so the gate was unreachable and the hero died.
+    mem = memory(step='1-A2')
+    assert enter(panel('ガルバンゾー', 30), mem) == MASH
+    assert mem['_records'][-1]['melee_control_mode'] == 'power_mash'
+
+
+def test_an_egg_risk_hold_is_bounded_and_then_engages():
+    mem = memory()                       # no charted tactic for クミン
+    policy.battle_step(panel('クミン'), mem)          # first reading: wait for a stable one
+    for _ in range(policy.MELEE_HOLD_LIMIT):
+        assert policy.battle_step(panel('クミン'), mem) == []
+    assert policy.battle_step(panel('クミン'), mem) == MASH
+    assert mem['_records'][-1]['melee_control_mode'] == 'power_mash'
+    assert '保留上限' in mem['_records'][-1]['reason']
+
+
 def test_charted_boss_clash_mashes_despite_the_clash_egg_risk():
     # g454 08:19: the 1-B1 queen battle held without any input under the clash
     # egg risk, never reached after_clash and the rescue used its own egg.

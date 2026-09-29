@@ -552,7 +552,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v75-charted-clash-chain'
+    assert state['bot_version'] == 'hanjuku-chart-v76-melee-progress-bound'
     assert '_records' not in state['policy']
 
 
@@ -823,7 +823,10 @@ def test_garbanzo_tactics_follow_each_generals_chart_branch(step, ally, hp, expe
     assert policy.battle_step(screen, mem) == []
     actions = policy.battle_step(screen, mem)
     if expected is None:
-        assert actions == [] and not mem['battle'].get('card_flow')
+        # The gate is not reached yet: push the melee toward it instead of
+        # holding (an unbounded hold never reaches the HP gate).
+        assert actions and actions[0]['buttons'] == ['a']
+        assert not mem['battle'].get('card_flow')
     else:
         assert actions[0]['buttons'] == ['b']
         assert mem['battle']['card_flow']['card'] == expected
