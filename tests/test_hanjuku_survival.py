@@ -320,6 +320,16 @@ def test_hero_emergency_retreat_threshold_is_stricter_than_resource_rescue(hp,en
     assert p._hero_retreat_needed(memory(hp,enemy)['battle']) is expected
 
 
+def test_a_defense_battle_never_opens_the_hero_retreat():
+    # Owner 2026-09-29: a castle defense cannot retreat (no たいきゃく row).
+    mem = memory(6, 50)
+    mem['battle']['side'] = 'defense'
+    assert p._hero_retreat_needed(mem['battle'])
+    p.battle_step(battle(mem), mem)
+    assert 'hero_retreat' not in mem['battle']
+    assert p._hero_retreat_menu(menu(), mem, mem['battle']) is None
+
+
 def test_hero_retreat_opens_before_chart_and_selects_only_visible_retreat(monkeypatch):
     monkeypatch.setattr(p,'_tactics',lambda *args:[{'enemy':'ミント','card':'グリンボー','open':True,'note':'開幕'}])
     mem=memory(12,50)
@@ -343,7 +353,8 @@ def test_hero_disabled_retreat_falls_back_to_an_egg_and_other_generals_keep_figh
     assert 'hero_retreat' not in mem['battle']
     actions,state=decide(command_frame(enabled=(0,)),{'policy':mem})
     assert actions==[p.pad('a')]
-    assert state['policy']['battle']['hero_retreat']['unavailable']
+    # A defense never probes the retreat row at all: straight to the egg.
+    assert 'hero_retreat' not in state['policy']['battle']
     assert state['policy']['battle']['survival']['egg_attempted']
     mem=memory(6,50);mem['battle']['ally']='ココット'
     assert not p._hero_retreat_needed(mem['battle'])

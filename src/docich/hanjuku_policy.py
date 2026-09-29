@@ -3234,7 +3234,9 @@ def _hero_retreat_open(mem, cur):
 
 
 def _hero_retreat_menu(screen, mem, cur):
-    if not _hero_retreat_needed(cur):
+    # A castle defense cannot retreat (owner 2026-09-29; the menu has no
+    # たいきゃく row there), so never try to select it.
+    if not _hero_retreat_needed(cur) or cur.get('side') == 'defense':
         return None
     flow = cur.setdefault('hero_retreat', {})
     if flow.get('unavailable') or flow.get('exhausted'):
@@ -3953,20 +3955,25 @@ def _extras_reserve(mem, header):
     「へいしすうはNめい」 line), egg recovery wins even when the gold is
     short of the full cost: hold ALL of it for the egg and buy no soldiers,
     so the balance grows until the recovery can run.
+
+    The hero's depleted egg reserves first even without the soldier count:
+    a castle defense cannot be retreated from and an eggless hero cannot
+    answer a summon (g458 15:45: どうし 90 vs シェーブル 27, the enemy's egg
+    summon came, the hero's egg was spent and he died -> game over).
     """
-    cost = EGG_RECOVER_COST * len(_egg_recovery_targets(mem))
+    targets = _egg_recovery_targets(mem)
+    cost = EGG_RECOVER_COST * len(targets)
     gold = (header or {}).get('gold')
     # Owner (2026-09-29): 兵士の数を確認せず卵回復した - the army is read on the
     # soldier screen, so without this month's count the soldiers go first and
     # the eggs are recovered from what is left (_plan_extras: egg 'check').
     counted = (mem.get('soldiers_seen_key') == _month_key(header) if header else False)
-    if type(gold) is not int or gold < 0 or not counted or (mem.get('soldiers_seen') or 0) < 50:
+    big_army = counted and (mem.get('soldiers_seen') or 0) >= 50
+    if type(gold) is not int or gold < 0 or not cost:
         reserve = 0
-    elif gold >= cost:
-        reserve = cost
-    elif cost and (mem.get('soldiers_seen') or 0) >= 50:
-        # 兵士50人以上なら卵へ温存（兵士は今月見送り）。賃金リザーブは守る。
-        reserve = max(0, gold - WAGE_RESERVE)
+    elif NAME in targets or big_army:
+        # 卵へ温存（兵士は今月見送り）。賃金リザーブは守る。
+        reserve = cost if gold >= cost else max(0, gold - WAGE_RESERVE)
     else:
         reserve = 0
     return reserve, not _charted_purchase_ahead(mem, header)
