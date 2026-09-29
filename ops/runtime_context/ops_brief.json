@@ -1,11 +1,11 @@
 {
-  "output_sha256": "43ce8a4674dd67cb31a42c7ec4d770bd918c569323ab3f6d853e9bb027396582",
+  "output_sha256": "235f60ef2305e4da0def24aeb0b021798153836816e9a96ba8fcf5770fd5192e",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "980b6dd3e85a76d2f09ecd55e7e604391a59841abe926c4676a28813dac89dc3",
+  "source_sha256": "806a4a8f2fbbddee5770f05114049567b47cdbd5ba2add26948e559ebff0e905",
   "topics": [
+    "g464のクイーン戦敗因を特定しv82（開幕クースカン）をmain・VMへ反映（opencode）",
     "半熟終了後のTwitchカテゴリ不一致報告を確認（Codex）",
-    "半熟英雄のIssue証拠取得と実画像baselineを確認（Codex）",
-    "OpenCode ENOSPC対策を配備し容量回収完了（Codex）"
+    "半熟英雄のIssue証拠取得と実画像baselineを確認（Codex）"
   ]
 }
