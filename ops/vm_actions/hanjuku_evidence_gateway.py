@@ -33,6 +33,7 @@ MAX_REQUEST = 24 * 1024
 MAX_CIPHERTEXT = evidence.MAX_TOTAL + 1024 * 1024
 MAX_QUERY_JSON = 64 * 1024
 MAX_CANDIDATES = 20
+MAX_RUNTIME_ENTRIES = 4096
 INSTALLED_FILES = (
     "gateway_entry.py", "gateway.py", "ops_brief.py", "projection_io.py",
     "hanjuku_evidence_gateway.py", "hanjuku_evidence.py",
@@ -167,8 +168,8 @@ def _completed_candidates(state_dir):
             candidates = []
             with evidence._child(root_fd, "runtimes") as runtimes_fd:
                 names = os.listdir(runtimes_fd)
-                if len(names) > evidence.MAX_ENTRIES:
-                    raise evidence.EvidenceError("entry_count_limit")
+                if len(names) > MAX_RUNTIME_ENTRIES:
+                    raise evidence.EvidenceError("runtime_scan_limit")
                 for name in names:
                     match = evidence.RUN_ID.fullmatch(name)
                     if not match:
