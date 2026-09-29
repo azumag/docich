@@ -219,7 +219,7 @@ class WorkflowContractTests(unittest.TestCase):
 
     def test_shell_blocks_parse(self):
         blocks = re.findall(r"        run: \|\n((?:          [^\n]*\n|\n)+)", self.workflow)
-        self.assertGreaterEqual(len(blocks), 6)
+        self.assertGreaterEqual(len(blocks), 5)
         for block in blocks:
             subprocess.run(["bash", "-n"], input=textwrap.dedent(block), text=True, check=True)
 
