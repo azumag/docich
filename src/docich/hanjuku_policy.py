@@ -4902,8 +4902,10 @@ def egg_battle_step(screen: Screen, mem):
         # bot chose こうげき). B leaves this menu; the standard command menu
         # (たいきゃく) handles the rest. One attempt per battle.
         if (not cards_left and battle.get('side') != 'defense'
-                and not battle.get('egg_retreat_tried')):
-            battle['egg_retreat_tried'] = True
+                and not mem.get('egg_retreat_tried') and not battle.get('egg_retreat_tried')):
+            mem['egg_retreat_tried'] = True
+            if isinstance(mem.get('battle'), dict):
+                mem['battle']['egg_retreat_tried'] = True
             _record(mem, 'battle_egg_retreat_attempt', **_battle_labels(battle),
                     observed_metric={'enemy': battle.get('enemy'), 'ally_hp': battle.get('ally_hp'),
                                      'enemy_hp': battle.get('enemy_hp')},
@@ -4994,7 +4996,8 @@ def monster_menu_step(screen: Screen, mem):
     menu_key = tuple(row_texts)
     if mem.get('monster_menu_key') != menu_key:
         mem['monster_menu_key'] = menu_key
-        for key in ('monster_menu_cursor', 'monster_menu_choice', 'monster_menu_choice_key'):
+        for key in ('monster_menu_cursor', 'monster_menu_choice', 'monster_menu_choice_key',
+                    'monster_menu_choice_hp', 'monster_ally_max_hp'):
             mem.pop(key, None)
         mem['monster_menu_hold'] = 0
     skill_lines = [line for line, text in zip(rows, row_texts) if 'もどれ' not in text]
@@ -5027,7 +5030,11 @@ def monster_menu_step(screen: Screen, mem):
                     reason='敵側表示のまま停留が上限を超えたため、画面停止を避けて選択へ移行')
     else:
         mem['monster_menu_hold'] = 0
-    if not mem.get('monster_menu_choice'):
+    # Re-decide when the panel HP changed: a cached choice repeated the same
+    # skill every turn (g407: ふくらむ x71) and never let a heal-first monster
+    # alternate ふくらむ→シャウト (owner 2026-09-29).
+    hp_state = (ally.hp if ally else None, enemy.hp if enemy else None)
+    if not mem.get('monster_menu_choice') or mem.get('monster_menu_choice_hp') != hp_state:
         ally_hp = ally.hp if ally else None
         enemy_hp = enemy.hp if enemy else None
         behind = _behind({'ally_hp': ally_hp, 'enemy_hp': enemy_hp})
@@ -5036,17 +5043,29 @@ def monster_menu_step(screen: Screen, mem):
         second = ''.join(skill_lines[1].known.split()) if len(skill_lines) >= 2 else ''
         heal_first = bool(second) and _monster_heal(first) and not _monster_heal(second)
         default = 'skill1'
-        if behind and len(skill_lines) >= 2 and _monster_effectful(second):
-            default = 'skill2'
-        elif heal_first and not behind:
-            # Healing at full HP loops forever without ever lowering the
-            # enemy (g407: ふくらむ x71 vs an enemy left at 12 HP).
+        if heal_first:
+            # バルーンフィンチ: ふくらむ→シャウト (owner 2026-09-29). Inflate to
+            # the tracked max first (the first turn heals so a damaged summon
+            # reaches it), then shout while at max; damage re-enables the heal.
+            # The old "heal at full forever" loop (g407: ふくらむ x71) stays
+            # impossible because a full HP attacks instead.
+            seen = mem.get('monster_ally_max_hp')
+            if type(ally_hp) is not int:
+                default = 'skill1'
+            elif behind or (type(seen) is int and ally_hp < seen):
+                default = 'skill1'      # hurt: inflate back to the tracked max
+            else:
+                default = 'skill2'      # at max (or ahead): shout
+            if type(ally_hp) is int:
+                mem['monster_ally_max_hp'] = max(int(seen or 0), ally_hp)
+        elif behind and len(skill_lines) >= 2 and _monster_effectful(second):
             default = 'skill2'
         exp = mem.get('_experience')
         key = experience.situation_key('monster_menu', mem)
         action = 'retreat' if retreat else experience.preferred(exp, key, default=default, kind='monster_menu')
         mem['monster_menu_choice'] = action
         mem['monster_menu_choice_key'] = key
+        mem['monster_menu_choice_hp'] = hp_state
         battle = mem.get('battle')
         if isinstance(battle, dict):
             battle['independent'] = {'kind': 'monster_menu', 'key': key, 'action': action}
