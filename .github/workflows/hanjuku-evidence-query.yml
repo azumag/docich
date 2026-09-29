@@ -13,6 +13,9 @@ concurrency:
 
 jobs:
   query:
+    permissions:
+      contents: read
+      issues: write
     if: >-
       github.actor_id == 9018513 &&
       github.triggering_actor == 'azumag' &&
@@ -55,6 +58,11 @@ jobs:
         run: |
           set -euo pipefail
           python3 control/ops/vm_actions/authorize_hanjuku_evidence_query.py
+
+      - name: Require the event to remain current main
+        shell: bash
+        run: |
+          set -euo pipefail
           [[ "$(git -C control rev-parse HEAD)" == "$GITHUB_SHA" ]]
           current="$(git -C control ls-remote --exit-code origin refs/heads/main | cut -f1)"
           [[ "$current" == "$GITHUB_SHA" ]]
@@ -189,6 +197,7 @@ jobs:
           [[ "$current" == "$SHA" ]]
 
       - name: Upload short-lived plaintext query result
+        id: upload
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: hanjuku-evidence-query-${{ github.run_id }}-${{ github.run_attempt }}
@@ -198,6 +207,29 @@ jobs:
           compression-level: 0
           overwrite: false
           include-hidden-files: false
+
+      - name: Return fixed result metadata to the control Issue
+        if: ${{ always() && steps.auth.outcome == 'success' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_COMMENT_ID: ${{ github.event.comment.id }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_SHA: ${{ github.sha }}
+          QUERY_MODE: ${{ steps.auth.outputs.mode }}
+          RUNTIME_ID: ${{ steps.auth.outputs.runtime_id }}
+          UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          umask 077
+          work="$RUNNER_TEMP/hanjuku-query"
+          install -m 700 -d "$work"
+          python3 control/ops/vm_actions/hanjuku_evidence_query_reply.py > "$work/reply.json"
+          gh api --method POST repos/azumag/docich/issues/1339/comments \
+            --input "$work/reply.json" > /dev/null
 
       - name: Clear runner staging
         if: ${{ always() }}
