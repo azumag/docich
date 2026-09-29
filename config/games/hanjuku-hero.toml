@@ -71,4 +71,4 @@ title_prefix = "[半熟英雄]"
 [hanjuku.predictions]
 enabled = true
 seed_best_cleared = 1
-window_seconds = 120
+ending_window_seconds = 1800
