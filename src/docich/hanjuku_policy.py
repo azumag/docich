@@ -1219,15 +1219,34 @@ def world_map_step(screen, mem, frame):
         # 2026-09-29): the R ring starts on the home castle, A selects it and a
         # second A confirms; the general then walks back home (measured: the
         # hero turned from キカンドン towards ほんじょう). Y does not close it.
+        chapter = mem.get('chapter') or 0
+        cursor = world_cursor(frame) if frame is not None else None
+        flags = world_flags(frame, chapter)
+        if flags:
+            _apply_world_flags(mem, flags)
+        offset = WORLD_MAP_OFFSET.get(chapter)
+        nearby = [name for name, (x, y) in chart.castles(chapter).items()
+                  if cursor and offset and abs(x / 8 + offset[0] - cursor[0]) <= 6
+                  and abs(y / 8 + offset[1] - cursor[1]) <= 6]
+        recall['picker_observations'] = int(recall.get('picker_observations', 0)) + 1
+        if len(nearby) != 1 or flags.get(nearby[0]) != 'own':
+            if recall['picker_observations'] >= RECALL_LIMIT:
+                _record(mem, 'camp_recall_aborted',
+                        observed_metric={'cursor': cursor, 'flags': flags},
+                        reason='帰還先の自軍旗を確認できないため敵城へ確定せず帰還操作を取り消す')
+                mem.pop('recall', None)
+                mem['uncertain'] = True
+                return [pad('b')]
+            return [pad('right')] if cursor else []
+        home = nearby[0]  # the measured R picker, never an assumed home castle
         mem.pop('recall', None)
         mem['uncertain'] = True
-        home = chart.home_castle(mem.get('chapter') or 0)
         if recall.get('hero'):
             actions = _finish_hero_recall(mem, recall, home)
         else:
             _record(mem, 'camp_recall', observed_metric={'castle': home, 'camp': recall.get('target'),
                                                           'screen': 'world_map'},
-                    reason='野営の将軍に本城への帰還を指示（全体マップ型の帰還先選択でAを2回）')
+                    reason='野営の将軍に自軍旗を確認した城への帰還を指示（全体マップ型の帰還先選択でAを2回）')
             actions = [pad('a')]
         return actions + [{'type': 'wait', 'ms': 700}, pad('a')]
     flags = world_flags(frame, mem.get('chapter') or 0)

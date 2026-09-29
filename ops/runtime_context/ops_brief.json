@@ -1,11 +1,11 @@
 {
-  "output_sha256": "7b02c1d1ec3f5efe98267639138f7c663795b3bba318f6d8759be5f84f68cb9f",
+  "output_sha256": "336debb51f3d68137ad51ced387e69e176b844c1b6bf8405e9f228e0923d64ba",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "6f0e059de3082b7721e6eaad7b2e28ed44f8efba66354185166d269807c639b7",
+  "source_sha256": "5f34d88bd8db0221206ba8a8cd3db92fa476620c04ac2993a6f4201be6c41ba5",
   "topics": [
+    "g490ゲームオーバー分析とv90修理・帰還経路の強化（配備準備）",
     "半熟v90札一覧の途中描画を不足と区別（配備準備）",
-    "チャート遵守v89を同一g490へホットロード",
-    "owner指摘によりチャート札手順の前倒しを修正"
+    "チャート遵守v89を同一g490へホットロード"
   ]
 }
