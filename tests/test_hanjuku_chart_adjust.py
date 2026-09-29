@@ -731,7 +731,7 @@ def test_dropped_chart_card_is_never_planned_or_announced_in_battle():
     assert decisions(mem, 'battle_start')[0]['planned_cards'] == ['クースカン']
 
 
-def test_boss_kits_unverified_card_waits_for_the_measured_boss_entry():
+def test_boss_kits_unverified_card_requires_measured_boss_evidence():
     # The boss kit must not fire in the road/guard fight on the way (g438
     # 04:18: ソーピニヨン road battle opened the boss kit's ミックミー).
     mem = stuck_memory()
@@ -766,6 +766,19 @@ def test_boss_kits_unverified_card_waits_for_the_measured_boss_entry():
           step=j2, entry_evidence='measured_boss_entry')
     assert [r['card'] for r in decisions(mem, 'battle_card')] == ['ミックミー']
     assert mem['battle']['card_flow']['card'] == 'ミックミー'
+    # g484: entry text was not recognized, but the Queen panel was measured.
+    # Use the known carried kit without inventing a castle/side/entry receipt.
+    mem['sorties'] = {j2: {'general': 'ヴィーナス', 'target': 'けっかい',
+                          'status': 'en_route'}}
+    fight('クイーン', [70, 70])
+    assert [r['card'] for r in decisions(mem, 'battle_card')] == ['ミックミー']
+    assert decisions(mem, 'battle_start')[0]['planned_cards'] == ['クースカン', 'ミックミー', 'ミックミー']
+    assert mem['battle']['castle'] is None and mem['battle']['side'] is None
+    assert mem['battle'].get('entry_evidence') is None
+    # A boss name from another chapter cannot unlock this chapter's kit.
+    fight('にせヒーロー', [70, 70])
+    assert not decisions(mem, 'battle_card')
+    assert decisions(mem, 'battle_start')[0]['planned_cards'] == []
 
 
 def test_launched_old_generation_keeps_its_tactics_after_a_new_plan(monkeypatch):

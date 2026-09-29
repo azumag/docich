@@ -576,7 +576,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v85-cursor-safe-okunote'
+    assert state['bot_version'] == 'hanjuku-chart-v86-measured-boss-kit'
     assert '_records' not in state['policy']
 
 
@@ -2463,3 +2463,29 @@ def test_narration_stays_silent_at_terminal_without_a_recap(tmp_path, monkeypatc
     log = [json.loads(x) for x in log_path.read_text().splitlines()]
     assert log and log[0]['status'] == 'skipped:terminal'
     assert not sent
+
+
+@pytest.mark.parametrize('selected,enemy_hp,expected_card', [(True, 34, 'ノリウツール'),
+                                                         (False, 34, 'クースカン'),
+                                                         (True, 68, 'クースカン')])
+def test_boss_selected_card_hp_drop_chains_without_idle_frames(selected, enemy_hp, expected_card):
+    from docich.hanjuku_screen import Battle, Screen
+    mem = {'chapter': 1, 'attack': {'general': 'どうし', 'castle': 'けっかい',
+                                  'side': 'attack', 'step': '1-B1'}}
+    def screen(hp):
+        return Screen(lines=[], hand=None, text='', kind='battle',
+                      battle=Battle('クイーン', hp, 'どうし', 90))
+    policy.battle_step(screen(68), mem)
+    policy.battle_step(screen(68), mem)
+    cur = mem['battle']
+    cur['card_flow']['stage'] = 'announce'
+    cur['cards_selected'] = ['クースカン'] if selected else []
+    out = policy.battle_step(screen(enemy_hp), mem)
+    assert cur['card_flow']['card'] == expected_card
+    assert cur['cards_used'] == []
+    if expected_card == 'ノリウツール':
+        assert out == [policy.pad('b')]
+        assert cur['cards_unclassified'] == ['クースカン']
+        assert cur['card_consumption_complete'] is False
+    else:
+        assert out == []
