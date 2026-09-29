@@ -17,7 +17,7 @@ class OpenCodeRetentionNowContractTest(unittest.TestCase):
         self.assertIn("retention_days=3", text)
         self.assertIn('source "$root/lib/opencode_db_retention.sh"', text)
         self.assertIn('_opencode_db_retention_rotate "$retention_days" "$worker_db" "$default_db"', text)
-        self.assertNotIn("OPENCODE_DEFAULT_DB_RETENTION_ENABLED=1\n", text)
+        self.assertEqual(text.count("export OPENCODE_DEFAULT_DB_RETENTION_ENABLED=1"), 1)
         for forbidden in ("sudo ", "systemctl ", "kill ", "rm -", "rm "):
             self.assertNotIn(forbidden, text)
 
