@@ -38,7 +38,7 @@ INPUT_CONTEXT_DECISIONS=frozenset({
     'name_wait','name_confirm','name_delete','name_type','order_start',
     'unexpected_target','order_substitute','order_source_changed','order_launched','order_failed',
     'attack_observed','defense_observed','card_missing',
-    'card_pick','sortie_confirm','sortie_input','battle_card','battle_card_missing','battle_card_selected','battle_card_list_unclassified',
+    'card_pick','sortie_confirm','sortie_input','battle_card','battle_card_missing','battle_card_selected','battle_card_list_unclassified','battle_card_open_unclassified',
     'barrier_removed','month_plan','month_confirm','month_done','buy_skip','buy',
     'soldier_refill','prompt','egg_battle','gift','close_panel','situation_held',
     'chart_adjust_request','chart_adjust_applied','independent_menu',

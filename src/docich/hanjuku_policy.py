@@ -650,6 +650,8 @@ def _tactics(mem, step):
     override = set((mem.get('card_override') or {}).get(step) or ())
     carried = [card for card in _deploy_cards(order, mem) if card not in override]
     derived, seen = [], set()
+    occurrences = {}
+    spent = (mem.get('kit_spent') or {}).get(step, [])
     for card in carried:
         verified = [t for t in base if t['card'] == card]
         if verified:
@@ -658,7 +660,12 @@ def _tactics(mem, step):
             seen.add(card)
             derived += [{**t, 'step': step, 'note': f"調整: {t['note']}"} for t in verified]
         else:
+            ordinal = spent.count(card) + occurrences.get(card, 0)
+            occurrences[card] = occurrences.get(card, 0) + 1
+            # Removing the first spent card must not renumber the second
+            # into an already-done tactic (two carried イッテツーン).
             derived.append({'enemy': None, 'card': card, 'open': True, 'step': step,
+                            'tactic_id': f'd:{step}:{card}:{ordinal}',
                             'boss_only': _is_boss_order(order, mem),
                             'note': '調整チャート既定: 検証済み戦術のない携行切り札を開幕使用'})
     return (*base, *derived)
@@ -3005,6 +3012,32 @@ def _migrate_card_evidence(mem):
 def _card_use_unclassified(mem, cur, reason):
     flow = cur.get('card_flow') or {}
     card = flow.get('card')
+    selected = (flow.get('selection_planned') is True
+                or (flow.get('stage') == 'announce'
+                    and card in cur.get('cards_selected', [])))
+    if not selected:
+        # g496: the B/menu opening expired before any list selection, but the
+        # old path consumed an イッテツーン and counted it for after_card.
+        # Preserve the carried kit and retry only this tactic, boundedly.
+        tid = flow.get('tactic_id')
+        done = cur.get('tactics_done', [])
+        if tid is None and card:
+            matches = [item for item in done if item.endswith(':' + card)]
+            if len(matches) == 1:
+                tid = matches[0]  # a flow opened by the previous bot version
+        failures = cur.setdefault('card_open_failures', {})
+        count = int(failures.get(tid, 0)) + 1 if tid else CARD_OPEN_ATTEMPTS
+        if tid:
+            failures[tid] = count
+            if count < CARD_OPEN_ATTEMPTS and tid in done:
+                done.remove(tid)
+        _record(mem, 'battle_card_open_unclassified', **_battle_labels(cur), card=card,
+                expected_metric='実メニューと札一覧の選択',
+                observed_metric={'selection_planned': False, 'attempts': count,
+                                 'retry_allowed': bool(tid and count < CARD_OPEN_ATTEMPTS)},
+                reason='札の選択前に操作が戻ったため携行札を差し引かず、有限回だけ再試行')
+        cur['card_flow'] = None
+        return
     if card:
         cur.setdefault('cards_unclassified', []).append(card)
         # A selected card with no calibrated receipt still leaves the kit for
@@ -3126,7 +3159,7 @@ def battle_step(screen: Screen, mem):
     tactics = [*extra, *_tactics(mem, cur.get('step'))]
     done = cur.setdefault('tactics_done', [])
     for index, tactic in enumerate(tactics):
-        tid = f"{'x' if index < len(extra) else 'c'}{index}:{tactic['card']}"
+        tid = tactic.get('tactic_id') or f"{'x' if index < len(extra) else 'c'}{index}:{tactic['card']}"
         if tactic['enemy'] not in (None, b.enemy) or tid in done:
             continue
         if tactic.get('step') and tactic['step'] != cur.get('step'):
@@ -3138,7 +3171,8 @@ def battle_step(screen: Screen, mem):
         # is the best evidence there is. Without chaining on it the charted boss
         # strategy never fires its second card (1-B1: クースカン→ノリウツール)
         # and the queen summons. The chain is recorded as a deviation.
-        attempted = [*cur['cards_used'], *(cur.get('cards_unclassified') or [])]
+        attempted = [*cur['cards_used'], *[card for card in (cur.get('cards_unclassified') or [])
+                                          if card in cur.get('cards_selected', [])]]
         due = (tactic.get('open')
                or (tactic.get('when_hp_at_most') is not None and b.enemy_hp is not None
                    and b.enemy_hp <= tactic['when_hp_at_most'])
@@ -3156,7 +3190,7 @@ def battle_step(screen: Screen, mem):
                     cur['strategy_variant'] = 'after_card_unconfirmed'
                     cur['deviation_reason'] = '前の切り札の実使用告知が未校正のため、選択記録を根拠に連続使用を継続'
             cur['card_flow'] = {'card': tactic['card'], 'stage': 'menu', 'note': note,
-                                'enemy_hp_at_open': b.enemy_hp}
+                                'enemy_hp_at_open': b.enemy_hp, 'tactic_id': tid}
             _record(mem, 'battle_card', **_battle_labels(cur), card=tactic['card'], enemy=b.enemy,
                     enemy_hp=b.enemy_hp, ally_hp=b.ally_hp, reason=note,
                     expected_metric='選択後の実使用告知と敵HP減少',
@@ -3174,6 +3208,7 @@ def battle_step(screen: Screen, mem):
     return _melee_step(mem, cur)
 
 
+CARD_OPEN_ATTEMPTS = 2        # initial chart opening plus one bounded retry
 CARD_MENU_OPEN_RETRIES = 4    # B repeats while the command menu has not opened yet
 MELEE_HOLD_LIMIT = 8          # egg-safe holds in one fight before melee proceeds
 
@@ -4414,19 +4449,30 @@ def _soldier_refill_plan(mem, header, key):
     return shop
 
 
+RECRUIT_INTRO = 'ども!しょうぐんえんごかいのものです。しょうぐんのぼしゅうでございますね?'
+RECRUIT_GOODBYE = 'それではまたのきかいに。ごようのさいはいつでもおまかせを。'
+
+
+def _month_dialog_body(screen):
+    return ''.join(line.known.replace(' ', '') for line in screen.lines if line.y >= 175)
+
+
 def month_menu_ready(screen):
-    """A month menu background remains behind sub-dialogues; require its hand."""
-    return screen.kind == 'month_menu' and bool(screen.hand and screen.hand[1] < 120)
+    """The recruitment overlay can retain the background menu's upper hand."""
+    return (screen.kind == 'month_menu' and bool(screen.hand and screen.hand[1] < 120)
+            and _month_dialog_body(screen) not in (RECRUIT_INTRO, RECRUIT_GOODBYE))
 
 
 def month_step(screen: Screen, mem):
     shop = _plan(mem, screen.header)
-    body = ''.join(line.known.replace(' ', '') for line in screen.lines if line.y >= 175)
-    if (not screen.hand and body == 'ども!しょうぐんえんごかいのものです。しょうぐんのぼしゅうでございますね?'
+    body = _month_dialog_body(screen)
+    if body == RECRUIT_GOODBYE:
+        _record(mem, 'month_recruit_goodbye', reason='実測した募集終了文を閉じて本メニューへ戻る')
+        return [pad('a')]
+    if (body == RECRUIT_INTRO
             and all(UNKNOWN not in line.span(8, 248) for line in screen.lines if line.y in (183, 199))):
-        # v14 dropped month_sub on this measured introduction because the
-        # menu remains in the background. Recover only this exact dialogue
-        # with the existing recruitment budget/army preconditions.
+        # g496: the real background hand remained visible, so a hand alone
+        # could neither prove menu return nor rule out this measured dialogue.
         gold = (screen.header or {}).get('gold')
         if (shop and shop.get('recruit') == 'unverified' and type(gold) is int
                 and gold >= RECRUIT_COST and shop.get('soldiers', 0) >= SOLDIER_CAP):
