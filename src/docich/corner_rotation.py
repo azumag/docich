@@ -364,6 +364,45 @@ class CornerRotationManager:
         ]
         return min(deadlines) if deadlines else None
 
+    def _reconcile_failed_start(self, adapter, reservation, *, manual, now):
+        """Prove a failed start rolled back before terminalizing its reservation."""
+
+        reconcile = getattr(adapter, "reconcile_failed_start", None)
+        request_id = reservation.get("request_id")
+        if not callable(reconcile) or not isinstance(request_id, str):
+            return None
+        if manual:
+            state_file = reservation.get("state_file")
+            if not isinstance(state_file, str):
+                return None
+            reconciled = reconcile(request_id, state_file=state_file)
+        else:
+            reconciled = reconcile(request_id)
+        if not reconciled:
+            return None
+
+        settled_at = timestamp(self.clock())
+        if settled_at < now:
+            raise RotationError("clock regressed", kind="invalid-state")
+        resources_released = getattr(adapter, "resources_released", None)
+        if callable(resources_released) and not resources_released():
+            raise RotationError("pending corner resources are not released",
+                                kind="execution-unverified")
+        return settled_at
+
+    def _commit_verified_failed_start(self, state, reservation, adapter, *, manual, now):
+        """Commit only after the adapter proved the exact start rolled back."""
+
+        settled_at = self._reconcile_failed_start(
+            adapter, reservation, manual=manual, now=now
+        )
+        if settled_at is None:
+            return None
+        state["last_seen_at"] = settled_at
+        return self._resolve_reservation(
+            state, reservation, settled_at, manual=manual
+        )
+
     def tick(self):
         if not rotation_enabled(self.g):
             return {"status": "disabled"}
@@ -422,21 +461,13 @@ class CornerRotationManager:
                                 return self._wait(state, "manual-execution-pending")
                             raise RotationError("manual restoring retry unverified",
                                                 kind="execution-unverified")
-                    reconcile = getattr(adapter, "reconcile_failed_start", None)
-                    if (callable(reconcile)
-                            and getattr(adapter, "state_path", None) is not None
-                            and adapter.state_path.name == manual.get("state_file")
-                            and reconcile(manual["request_id"])):
-                        # Reconciliation may have just written completed_at.
-                        # Comparing it with the time captured before that
-                        # write would falsely latch adapter-timestamp.
-                        settled_at = timestamp(self.clock())
-                        if settled_at < now:
-                            raise RotationError("clock regressed", kind="invalid-state")
-                        now = settled_at
-                        state["last_seen_at"] = now
-                        self._resolve_reservation(state, manual, now, manual=True)
+                    outcome = self._commit_verified_failed_start(
+                        state, manual, adapter, manual=True, now=now
+                    )
+                    if outcome is not None:
+                        now = state["last_seen_at"]
                         manual = None
+                        self.save(state)
                 busy = self._observe(state, now)
                 if manual is not None:
                     adapter = self.adapters.get(manual.get("corner"))
@@ -546,11 +577,36 @@ class CornerRotationManager:
                 self.save(state)
                 return {"status": state["status"], "corner": pending["corner"], "result": status}
             except Exception as exc:
+                # A failed dispatch need not block every later corner when its
+                # exact request has a terminal rollback receipt and the prior
+                # canonical runtime is stable. Unknown outcomes remain latched.
+                pending = state.get("pending")
+                manual = state.get("manual_pending")
+                if not (pending is not None and manual is not None):
+                    reservation = pending if pending is not None else manual
+                    if isinstance(reservation, dict):
+                        adapter = self.adapters.get(reservation.get("corner"))
+                        try:
+                            outcome = self._commit_verified_failed_start(
+                                state, reservation, adapter,
+                                manual=manual is not None, now=now,
+                            )
+                        except Exception as recovery_error:
+                            error = recovery_error
+                        else:
+                            if outcome is not None:
+                                self.save(state)
+                                return outcome
+                            error = exc
+                    else:
+                        error = exc
+                else:
+                    error = exc
                 # Do not persist exception text: provider/config errors may carry
                 # output or credentials. The pending request remains inspectable.
                 state.update(status="recovery_required",
                              reason="execution-or-state-unverified",
-                             error_kind=_error_kind(exc))
+                             error_kind=_error_kind(error))
                 self.save(state)
                 raise
 
@@ -615,18 +671,13 @@ class CornerRotationManager:
                 # says ``failed``. Let only that adapter reconcile the exact
                 # request against the receipt and stable canonical owner; no
                 # retry or new execution is started by this path.
-                if pending is not None and manual is None:
-                    adapter = self.adapters[reservation["corner"]]
-                    reconcile = getattr(adapter, "reconcile_failed_start", None)
-                    if callable(reconcile) and reconcile(reservation["request_id"]):
-                        settled_at = timestamp(self.clock())
-                        if settled_at < now:
-                            raise RotationError("clock regressed", kind="invalid-state")
-                        now = settled_at
-                        resources_released = getattr(adapter, "resources_released", None)
-                        if callable(resources_released) and not resources_released():
-                            raise RotationError("pending corner resources are not released",
-                                                kind="execution-unverified")
+                adapter = self.adapters[reservation["corner"]]
+                outcome = self._commit_verified_failed_start(
+                    state, reservation, adapter, manual=manual is not None, now=now
+                )
+                if outcome is not None:
+                    self.save(state)
+                    return outcome
                 outcome = self._resolve_reservation(state, reservation, now,
                                                     manual=manual is not None)
             except Exception as exc:
@@ -896,17 +947,39 @@ def run_manual(g, manager, games):
                 state.update(status="ready", reason=None)
                 state.pop("manual_pending", None)
             elif status not in {"queued", "waiting", "already-running"}:
+                try:
+                    outcome = rotation._commit_verified_failed_start(
+                        state, request, selected_adapter, manual=True, now=now
+                    )
+                except Exception as recovery_error:
+                    error_kind = _error_kind(recovery_error)
+                else:
+                    if outcome is not None:
+                        rotation.save(state)
+                        return result
+                    error_kind = "execution-unverified"
                 state.update(status="recovery_required",
                              reason="manual-execution-unverified",
-                             error_kind="execution-unverified")
+                             error_kind=error_kind)
             rotation.save(state)
             if isinstance(result, str) and hasattr(manager, "state_path"):
                 return CornerResult(result, game=chosen.game)
             return result
         except Exception as exc:
+            error = exc
+            try:
+                outcome = rotation._commit_verified_failed_start(
+                    state, request, selected_adapter, manual=True, now=now
+                )
+            except Exception as recovery_error:
+                error = recovery_error
+                outcome = None
+            if outcome is not None:
+                rotation.save(state)
+                raise
             state.update(status="recovery_required",
                          reason="manual-execution-unverified",
-                         error_kind=_error_kind(exc))
+                         error_kind=_error_kind(error))
             rotation.save(state)
             raise
 

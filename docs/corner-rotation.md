@@ -81,16 +81,21 @@ last_seen、pending、request UUID、結果をatomic writeする。
 
 ### latchとoperator復旧（`status=recovery_required`、#986）
 
-予約後の実行が例外で終了すると、ledgerは `status=recovery_required` /
-`reason=execution-or-state-unverified` / `error_kind=<固定enum>` とlatchされ、
-`tick()` は冒頭で即returnする。例外本文はstateに書かない（provider出力やcredentialを
-含み得るため）。latchは自動では解けないfail-closed契約で、次の自動開始も手動startも拒否する。
+予約後の実行が例外で終了した場合、まず当該requestのadapter state、同一requestのterminalな
+rollback receipt、復帰先のcanonical owner、残存資源を照合する。失敗したstartが一度もcornerを
+activeにせず、安全に元へ戻ったと全て確認できれば、corner stateを`interrupted`として予約を
+確定し、`recovery_required`へ移行しない。手動予約ではledgerに記録された`state_file`を使い、
+そのcorner固有の手動stateだけを照合する。例外本文はstateに書かない（provider出力やcredentialを
+含み得るため）。rollback証拠がない、cornerが実行中、所有権や資源解放が不明な場合は
+`status=recovery_required` / `reason=execution-or-state-unverified` / `error_kind=<固定enum>`で
+latchし、`tick()`は自動開始と手動startを拒否する。latchは自動では解けないfail-closed契約とする。
 
 復旧は固定operation `recover-failed`（`ops/vm_actions/recover_corner_rotation.sh`）だけ:
 
 1. `bin/docich --config ... corner-rotation recover` がlatchを解決する。
-   - adapter観測に同じrequestの**terminal**があれば、それを完了としてcommitする
+   - adapter観測に同じrequestの**terminal**があれば、それを確定する
      （request identity・history・cooldownを保ち、**二重起動しない**）。
+     失敗startのterminal rollback証拠が揃う場合は`interrupted`として確定する。
      自動予約は `pending`、手動予約は `manual_pending` を同じ規則で解決し、
      手動のcompletedだけ `manual-completion` の履歴行を足す。
    - そのrequestが**一度も起動していない**自動予約なら、ledgerは `waiting`/`execution-pending`
