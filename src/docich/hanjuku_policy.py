@@ -481,7 +481,18 @@ def nav_step(screen: Screen, mem, frame, goal, goal_name=None):
 
 
 # ---------------------------------------------------------------- orders
+def _boss_egg_depleted(order, mem) -> bool:
+    # g486: どうし left with 3 uses and lost to the Queen's Hydra after
+    # the second card missed its input window. Chapter 1's source recommends
+    # a fully recovered egg as the backup; do not invent a missing count.
+    uses = (mem.get('egg_uses') or {}).get(NAME)
+    return (mem.get('chapter') == 1 and order.get('general') == NAME
+            and _is_boss_order(order, mem) and type(uses) is int and 0 <= uses < 4)
+
+
 def _ready(order, mem) -> bool:
+    if _boss_egg_depleted(order, mem):
+        return False
     after = order['after']
     captured = set(mem.get('captured', []))
     if after is None:
@@ -893,6 +904,22 @@ def _off_chart(mem):
     replaces the previous plan. Until then the previous plan keeps waiting, or,
     with no plan waiting, a bounded number of JEV-chosen interim orders may run.
     """
+    # A deliberate recovery wait is not an exhausted chart. Do not ask the
+    # planner to replace the boss order or send an interim sortie while the
+    # next normal month advances. Other ready orders were considered first.
+    waiting = next((o for o in _orders(mem) if _boss_egg_depleted(o, mem)
+                    and _ready(o, {**mem, 'egg_uses': {}})
+                    and (mem.get('orders') or {}).get(o['step']) in (None, 'pending')), None)
+    if waiting:
+        key = (waiting['step'], mem.get('month'), (mem.get('egg_uses') or {}).get(NAME))
+        if mem.get('boss_egg_wait') != list(key):
+            mem['boss_egg_wait'] = list(key)
+            _record(mem, 'boss_egg_recovery_wait', chart_step=waiting['step'],
+                    observed_metric={'general': NAME, 'egg_uses': key[2], 'month': key[1]},
+                    expected_metric={'egg_uses': 4},
+                    reason='第1話ボス出撃前に主人公の卵が消耗しているため、通常の月次回復を待つ')
+        return
+    mem.pop('boss_egg_wait', None)
     state = mem.setdefault('chart_adjust', {})
     rid = chart_adjust.request_id(mem)
     orders = [o for o in _orders(mem) if not o['step'].startswith(chart_adjust.INTERIM_PREFIX)]
@@ -2646,6 +2673,18 @@ def deploy_step(screen: Screen, mem):
                           reason='チャートの将軍が出撃元の城にいない')
             return [pad('b')]
         return _deploy_input(screen, mem, order, [pad('a')] if move == 'here' else [move], '出撃将軍を選択')
+    if kind in {'card_select', 'sortie_confirm'} and _boss_egg_depleted(order, mem):
+        # observe_events reads the egg row before this decision. Cancel a
+        # sortie that was chosen while its quantity was still unknown.
+        mem.setdefault('orders', {})[order['step']] = 'pending'
+        mem['active'] = None
+        mem['picked'] = []
+        mem.setdefault('order_context', {}).pop(order['step'], None)
+        _record(mem, 'boss_sortie_cancelled_for_egg', chart_step=order['step'],
+                observed_metric={'general': NAME, 'egg_uses': mem['egg_uses'][NAME],
+                                 'screen': kind}, expected_metric={'egg_uses': 4},
+                reason='出撃画面で主人公の卵の消耗を確認したため、ボス出撃を取り消して回復を待つ')
+        return [pad('b'), pad('b')]
     if kind in {'card_select', 'sortie_confirm'} and _is_boss_order(order, mem):
         mem.setdefault('order_context', {}).pop(order['step'], None)
         if (mem.get('sortie_general') or {}).get(order['step']) != order['general']:

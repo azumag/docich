@@ -1,11 +1,11 @@
 {
-  "output_sha256": "fc064558ddc6f29a9b3fa80f059592139376bb8b0c1e1bfd06bc7691d50adcf2",
+  "output_sha256": "d893e734b971206da1f8180fcdeb2ff240e3acd068ea1a6ffa4b74b603af117f",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "05fbffdb14bc29c5bc865efb23d49eae3131b5d3758f2471aeedcdb296f932ce",
+  "source_sha256": "c81e3c75cb657a451837156115cca8e4badb90eea6d2bb4f35611ce9972097bc",
   "topics": [
+    "半熟g486ゲームオーバー分析とボス卵回復待ち",
     "半熟英雄の話数比例予想受付を本番反映（次回予想から適用）",
-    "半熟英雄の予想受付を目標話数で比例配分（配備準備）",
-    "半熟g486の無装備卵戦敗北を分析し衝突前救済を強化中"
+    "半熟英雄の予想受付を目標話数で比例配分（配備準備）"
   ]
 }
