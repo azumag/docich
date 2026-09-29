@@ -2867,6 +2867,21 @@ def _battle_context(mem, ally):
     return {'castle': None, 'side': None, 'step': None, 'context': 'unclassified'}
 
 
+def _boss_tactics_allowed(mem, cur):
+    """Gate carried boss cards on entry text or a measured chapter-boss name.
+
+    A boss dialogue may hide/skip the entry message (g484: Venus vs Queen).
+    Reading the boss in the battle panel authorizes its carried tactics, but
+    does not establish castle ownership, arrival, or a retry context.
+    """
+    if cur.get('entry_evidence') == 'measured_boss_entry':
+        return True
+    chapter = mem.get('chapter')
+    boss = chart.BOSSES.get(chapter)
+    return bool(boss and cur.get('enemy') == boss
+                and _is_boss_order(_order_for_step(mem, cur.get('step')), mem))
+
+
 def _battle_labels(cur):
     return {'chart_step': cur.get('step'),
             'strategy_variant': cur.get('strategy_variant', 'chart'),
@@ -2994,7 +3009,7 @@ def battle_step(screen: Screen, mem):
         planned = [t['card'] for t in _tactics(mem, cur['step'])
                    if t['enemy'] in (None, b.enemy) and t.get('step') in (None, cur['step'])
                    and not (t.get('boss_only')
-                            and cur.get('entry_evidence') != 'measured_boss_entry')]
+                            and not _boss_tactics_allowed(mem, cur))]
         planned += list(mem.get('card_override', {}).get(cur['step']) or [])
         cur['planned_cards'] = list(planned)
         _record(mem, 'battle_start', **_battle_labels(cur), enemy=b.enemy, ally=b.ally,
@@ -3022,19 +3037,31 @@ def battle_step(screen: Screen, mem):
         return retreat
     if cur.get('card_flow'):
         flow = cur['card_flow']
-        flow['battle_frames_without_receipt'] = flow.get('battle_frames_without_receipt', 0) + 1
-        waited = flow['battle_frames_without_receipt']
-        opening = flow.get('stage') == 'menu'
-        if opening and waited <= CARD_MENU_OPEN_RETRIES:
-            # The flow opened the command menu with B and is still waiting for
-            # it: the panel is what B has to be sent at. Idling for two frames
-            # and declaring the card unclassified is what dropped the first
-            # opening card of the chain (g462 17:59:29 ダイチスイム -> 17:59:31
-            # unclassified -> only the second card reached the list).
-            return [pad('b')]
-        if waited >= (CARD_MENU_OPEN_RETRIES + 1 if opening else 2):
-            _card_use_unclassified(mem, cur, '実使用告知を確認できないまま白兵戦へ復帰')
-        return []
+        opening_hp = flow.get('enemy_hp_at_open')
+        # g484: Queen 68->34 after selected クースカン, but two idle
+        # observations before reopening B let the Queen summon. A measured
+        # HP drop after selection is enough to continue an existing chain;
+        # the uncalibrated consumption receipt remains unclassified.
+        fast_chain = (flow.get('stage') == 'announce'
+                      and flow.get('card') in cur.get('cards_selected', [])
+                      and type(opening_hp) is int and type(b.enemy_hp) is int
+                      and b.enemy_hp < opening_hp
+                      and _boss_tactics_allowed(mem, cur)
+                      and any(t.get('after_card') == flow.get('card')
+                              and t.get('enemy') in (None, b.enemy)
+                              and t.get('step') in (None, cur.get('step'))
+                              for t in _tactics(mem, cur.get('step'))))
+        if fast_chain:
+            _card_use_unclassified(mem, cur, '選択後の敵HP低下と白兵復帰を実測したため、使用告知は未確認のまま後続札へ進む')
+        else:
+            flow['battle_frames_without_receipt'] = flow.get('battle_frames_without_receipt', 0) + 1
+            waited = flow['battle_frames_without_receipt']
+            opening = flow.get('stage') == 'menu'
+            if opening and waited <= CARD_MENU_OPEN_RETRIES:
+                return [pad('b')]
+            if waited >= (CARD_MENU_OPEN_RETRIES + 1 if opening else 2):
+                _card_use_unclassified(mem, cur, '実使用告知を確認できないまま白兵戦へ復帰')
+            return []
     extra = [{'enemy': b.enemy, 'card': card, 'open': True, 'step': cur.get('step'),
               'note': '再攻撃の開幕切り札(チャート逸脱)'}
              for card in mem.get('card_override', {}).get(cur.get('step')) or []]
@@ -3047,8 +3074,8 @@ def battle_step(screen: Screen, mem):
         if tactic.get('step') and tactic['step'] != cur.get('step'):
             continue
         if (tactic.get('boss_only')
-                and cur.get('entry_evidence') != 'measured_boss_entry'):
-            continue          # the boss kit waits for the measured boss entry
+                and not _boss_tactics_allowed(mem, cur)):
+            continue          # do not spend the boss kit in an unmeasured road fight
         # No calibrated use receipt exists, so a selected-then-unclassified card
         # is the best evidence there is. Without chaining on it the charted boss
         # strategy never fires its second card (1-B1: クースカン→ノリウツール)
@@ -3121,7 +3148,8 @@ def battle_step(screen: Screen, mem):
                 if not cur.get('deviation_reason'):
                     cur['strategy_variant'] = 'after_card_unconfirmed'
                     cur['deviation_reason'] = '前の切り札の実使用告知が未校正のため、選択記録を根拠に連続使用を継続'
-            cur['card_flow'] = {'card': tactic['card'], 'stage': 'menu', 'note': note}
+            cur['card_flow'] = {'card': tactic['card'], 'stage': 'menu', 'note': note,
+                                'enemy_hp_at_open': b.enemy_hp}
             _record(mem, 'battle_card', **_battle_labels(cur), card=tactic['card'], enemy=b.enemy,
                     enemy_hp=b.enemy_hp, ally_hp=b.ally_hp, reason=note,
                     expected_metric='選択後の実使用告知と敵HP減少',
@@ -3566,12 +3594,31 @@ def battle_menu_step(screen: Screen, mem):
     return [pad('b')]
 
 
+OKUNOTE_MAX_SELF_DAMAGE = 88  # gcgx: ヤケクソ at castle Lv1; higher levels reduce it
+
+
 def okunote_step(screen, mem):
     cur = mem.get('battle')
     if not cur:
         return []
     flow = cur.setdefault('okunote_flow', {'ticks': 0})
     flow['ticks'] += 1
+    if screen.kind == 'battle_menu':
+        hp = cur.get('ally_hp')
+        # g482: パプリカ34 entered the irreversible random choices and chose
+        # しんだフリ (28..48 self damage), then lost at HP0. Before opening
+        # the candidates, require enough *current* HP to survive even the
+        # worst Lv1 result. An already-open list cannot be cancelled: below
+        # we still choose the strongest visible candidate there.
+        if type(hp) is not int or hp <= OKUNOTE_MAX_SELF_DAMAGE:
+            rescue = _survival_state(mem, cur)
+            if not flow.get('risk_declined'):
+                flow['risk_declined'] = True
+                _record(mem, 'battle_okunote_risk_declined', **_battle_labels(cur),
+                        observed_metric={'ally_hp': hp, 'max_self_damage': OKUNOTE_MAX_SELF_DAMAGE},
+                        reason='奥の手は候補確認後にキャンセルできず自傷もあるため、低HPでは開かず白兵へ戻る')
+            rescue['exhausted'] = True
+            return [pad('b')]
     if flow['ticks'] > 16:
         return [pad('b')] if screen.kind == 'battle_menu' else []
     if screen.hidden_battle_commands:
@@ -4918,6 +4965,10 @@ def yes_no_step(screen: Screen, mem):
     if move == 'here':
         _record(mem, 'prompt', choice=choice, prompt=text[-40:], reason=reason, strategy_variant=variant)
         return [pad('a')]
+    if move is None:
+        _record(mem, 'situation_held', screen=screen.kind,
+                observed_metric={'choice': choice, 'hand_visible': screen.hand is not None},
+                reason='確認画面の選択位置を読めないため決定せず再観測')
     return [move] if move else []
 
 

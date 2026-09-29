@@ -36,7 +36,7 @@ def _near(pixel, color, tolerance=10):
 
 def find_hand(frame: Frame):
     """Bounding box of the orange pointing-hand menu cursor, or None."""
-    xs, ys = [], []
+    points = set()
     rgb, width = frame.rgb, frame.width
     for y in range(frame.height):
         base = y * width * 3
@@ -44,15 +44,37 @@ def find_hand(frame: Frame):
             i = base + 3 * x
             pixel = (rgb[i], rgb[i + 1], rgb[i + 2])
             if pixel[0] >= 195 and any(_near(pixel, c) for c in HAND_COLORS):
-                xs.append(x)
-                ys.append(y)
-    if len(xs) < 40:
+                points.add((x, y))
+    if len(points) < 40:
         return None
+    xs, ys = zip(*points)
     # The hand is 18-20 px wide; a wider spread means two orange objects.
     x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
-    if x1 - x0 > 26 or y1 - y0 > 18:
-        return None
-    return x0, y0, x1, y1
+    if x1 - x0 <= 26 and y1 - y0 <= 18:
+        return x0, y0, x1, y1
+    # g478: the merchant's orange sprite shares the cursor palette. A
+    # global box merges both objects and loses the hand. Keep only a unique
+    # connected component of the measured hand size; ambiguity still holds.
+    candidates = []
+    while points:
+        seed = points.pop()
+        component, pending = [seed], [seed]
+        while pending:
+            x, y = pending.pop()
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    neighbor = (x + dx, y + dy)
+                    if neighbor in points:
+                        points.remove(neighbor)
+                        component.append(neighbor)
+                        pending.append(neighbor)
+        if len(component) < 40:
+            continue
+        xs, ys = zip(*component)
+        box = min(xs), min(ys), max(xs), max(ys)
+        if 12 <= box[2] - box[0] <= 26 and 8 <= box[3] - box[1] <= 18:
+            candidates.append(box)
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _target_marker(frame: Frame):
