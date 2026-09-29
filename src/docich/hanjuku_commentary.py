@@ -9,9 +9,10 @@ No model or network is used. Delivery is owned by ``hanjuku_narration``.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
-COMMENTARY_VERSION = "hanjuku-commentary-v2-observed-context"
+COMMENTARY_VERSION = "hanjuku-commentary-v3-grounded-month-plan"
 
 _STEP_LABEL = {
     '1-A1': '主人公の初手', '1-V1': 'ヴィーナスの初手', '1-C1': 'ココットの初手',
@@ -95,11 +96,20 @@ def compose(rec: dict) -> tuple[str, str | None]:
         return 'result:held', None
     if kind == 'month_plan':
         plan = rec.get('plan') or {}
-        cards = '、'.join(f'{n}{q}個' for n, q in plan.get('cards', [])) or 'なし'
+        cards = '、'.join(f'{n}{q}個' for n, q in plan.get('cards', []))
+        soldiers = plan.get('soldiers')
         text = f"{rec['month'].replace('-', '年')}月、所持金は{rec['gold']}ゴールドです。"
-        if rec.get('deviation_reason'):
-            text += 'チャート想定の214ゴールドに届かないので、ボス用のクースカンとノリウツールを優先して買います。'
-        text += f'購入予定は{cards}です。'
+        deviation = rec.get('deviation_reason') or ''
+        shortfall = re.search(r'チャート想定(\d+)G', deviation)
+        if deviation == 'chart_month_uncovered':
+            text += '今月はチャートの購入予定がないので、'
+        elif shortfall:
+            text += f"チャート想定の{shortfall.group(1)}ゴールドに届かないので、優先順で買える分を買います。"
+        elif deviation:
+            text += 'チャートの予定と条件が異なるため、買える範囲で進めます。'
+        text += f'購入予定は{cards}です。' if cards else '切り札の購入はありません。'
+        if type(soldiers) is int and soldiers > 0:
+            text += f'兵士を{soldiers}人補充します。'
         return f"plan:{rec['month']}", text
     if kind == 'buy':
         return f"buy:{rec.get('card')}:{rec.get('qty')}", f"{rec['card']}を{rec['qty']}個買いました。"

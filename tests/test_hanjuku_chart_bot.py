@@ -255,6 +255,23 @@ def test_chart_orders_follow_the_chart_and_unlock_on_captures():
     assert policy.next_order({'chapter': 3, 'orders': {}}) is None
 
 
+def test_month_plan_commentary_follows_the_actual_plan():
+    key, text = hanjuku_commentary.compose({
+        'decision': 'month_plan', 'month': '1-5', 'gold': 171,
+        'deviation_reason': '所持金171Gがチャート想定214G未満',
+        'plan': {'cards': [['クースカン', 1], ['イッテツーン', 6]], 'soldiers': 40}})
+    assert '214' in text and 'クースカン1個' in text and '兵士を40人補充します' in text
+    assert '優先順で買える分' in text
+    # A chart-uncovered month must not claim it buys the boss kit (g460 1年6月:
+    # the commentary said it would buy クースカン/ノリウツール with an empty plan).
+    _, text = hanjuku_commentary.compose({
+        'decision': 'month_plan', 'month': '1-6', 'gold': 185,
+        'deviation_reason': 'chart_month_uncovered',
+        'plan': {'cards': [], 'soldiers': 0}})
+    assert 'チャートの購入予定がない' in text and '切り札の購入はありません' in text
+    assert 'クースカン' not in text
+
+
 def test_boss_tactic_waits_for_the_first_clash_then_chains_cards():
     mem = {'chapter': 1, 'attack': {'general': 'どうし', 'castle': 'けっかい', 'side': 'attack', 'step': '1-B1'}}
     from docich.hanjuku_screen import Battle, Screen
