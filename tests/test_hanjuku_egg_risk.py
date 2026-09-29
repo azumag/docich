@@ -85,6 +85,17 @@ def test_known_no_clash_risk_preserves_exact_released_mash(enemy):
     assert rec['enemy_hp'] == 27 and rec['ally_hp'] == 90
 
 
+def test_charted_boss_clash_mashes_despite_the_clash_egg_risk():
+    # g454 08:19: the 1-B1 queen battle held without any input under the clash
+    # egg risk, never reached after_clash and the rescue used its own egg.
+    mem = memory(step='1-B1')
+    assert enter(panel('クイーン'), mem) == MASH
+    rec = mem['_records'][-1]
+    assert rec['decision'] == 'battle_melee' and rec['melee_control_mode'] == 'power_mash'
+    # Without the boss step the same panel still holds (no charted clash).
+    assert enter(panel('クイーン'), memory()) == []
+
+
 @pytest.mark.parametrize('enemy,chapter', [('クミン', 1), ('クイーン', 1), ('オレガノ', 10), ('不明', 10)])
 def test_risk_or_unknown_enemy_holds_without_any_assist_pulse(enemy, chapter):
     mem = memory(chapter=chapter)

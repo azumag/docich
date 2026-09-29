@@ -260,7 +260,11 @@ def test_boss_tactic_waits_for_the_first_clash_then_chains_cards():
     from docich.hanjuku_screen import Battle, Screen
     screen = lambda hp: Screen(lines=[], hand=None, text='', battle=Battle('クイーン', hp, 'どうし', 90), kind='battle')
     assert policy.battle_step(screen(70), mem) == []          # first reading: wait for a stable one
-    assert policy.battle_step(screen(70), mem) == []          # risky queen: wait for natural clash
+    # The charted clash is the plan: push toward it even under the clash egg
+    # risk instead of holding forever (g454 08:19 never reached after_clash).
+    mash = policy.battle_step(screen(70), mem)
+    assert mash[0]['buttons'] == ['a']
+    assert mem['_records'][-1]['melee_control_mode'] == 'power_mash'
     assert policy.battle_step(screen(60), mem)[0]['buttons'] == ['b']
     assert mem['battle']['card_flow']['card'] == 'クースカン'
     # A still-pending card has priority over both follow-up tactics and melee.
@@ -548,7 +552,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v74-drop-keeps-picked'
+    assert state['bot_version'] == 'hanjuku-chart-v75-charted-clash-chain'
     assert '_records' not in state['policy']
 
 
@@ -851,7 +855,7 @@ def _card_screen(cards, *, announcement=None, hand=True):
                   text=announcement or ''.join(cards), kind='text')
 
 
-def test_missing_and_selected_cards_do_not_confirm_use_or_unlock_after_card():
+def test_missing_and_selected_cards_do_not_confirm_use_but_chain_the_charted_follow_up():
     mem, screen = _card_evidence_battle()
     cur = mem['battle']
     cur['card_flow'] = {'card': 'クースカン', 'stage': 'list'}
@@ -859,7 +863,9 @@ def test_missing_and_selected_cards_do_not_confirm_use_or_unlock_after_card():
     assert cur['cards_used'] == [] and cur['cards_missing'] == ['クースカン']
     missing = mem['_records'][-1]
     assert missing['strategy_variant'] == 'chart_card_unavailable' and missing['deviation_reason']
-    assert policy.battle_step(screen, mem) == []  # no ノリウツール without confirmed クースカン
+    # No ノリウツール without a confirmed クースカン; the clash proceeds.
+    assert cur.get('card_flow') is None
+    assert policy.battle_step(screen, mem)[0]['buttons'] == ['a']
     cur['card_flow'] = {'card': 'クースカン', 'stage': 'list'}
     policy.card_list_step(_card_screen(['クースカン']), mem)
     assert cur['cards_selected'] == ['クースカン'] and cur['cards_used'] == []
@@ -870,11 +876,15 @@ def test_missing_and_selected_cards_do_not_confirm_use_or_unlock_after_card():
         assert cur['cards_used'] == []
     policy.battle_step(screen, mem); policy.battle_step(screen, mem)
     assert cur['card_flow'] is None and cur['cards_unclassified'] == ['クースカン']
-    assert policy.battle_step(screen, mem) == []     # no follow-up card; risky queen stays held
+    # No calibrated use receipt exists, so the charted follow-up continues on
+    # the selection record and is recorded as a deviation.
+    assert policy.battle_step(screen, mem)[0]['buttons'] == ['b']
+    assert cur['card_flow']['card'] == 'ノリウツール'
+    assert '未校正' in mem['_records'][-1]['reason']
 
 
 @pytest.mark.parametrize('statement', ['クースカンをつかった', 'クースカンをしようした'])
-def test_uncalibrated_card_text_never_confirms_use_or_unlocks_after_card(statement):
+def test_uncalibrated_card_text_never_confirms_use_but_chains_the_charted_follow_up(statement):
     mem, screen = _card_evidence_battle()
     cur = mem['battle']
     cur['card_flow'] = {'card': 'クースカン', 'stage': 'list'}
@@ -897,7 +907,11 @@ def test_uncalibrated_card_text_never_confirms_use_or_unlocks_after_card(stateme
     policy.battle_step(screen, mem); policy.battle_step(screen, mem)
     assert cur['card_flow'] is None
     assert policy.summary(mem)['cards_used'] is None  # unclassified despite cleared flow
-    assert policy.battle_step(screen, mem) == []     # no follow-up card; risky queen stays held
+    # The charted follow-up continues on the selection record (deviation);
+    # consumption itself stays unclassified.
+    assert policy.battle_step(screen, mem)[0]['buttons'] == ['b']
+    assert cur['card_flow']['card'] == 'ノリウツール'
+    assert policy.summary(mem)['cards_used'] is None
     cur['enemy_hp'] = 0
     policy.battle_end(mem, 'map'); policy.battle_end(mem, 'map')
     assert mem['stats']['cards_used'] is None and mem['stats']['cards_confirmed'] == 0
