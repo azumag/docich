@@ -2,7 +2,7 @@
   "output_sha256": "a2399c85f8a35b29e5b05e215cf80dc05069fb046d00c4391d736e367b7c7d91",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "ce03713cde87be8ab9d8a89fb283306793787a18d842fa2ac1190938e0fcb8df",
+  "source_sha256": "549bbdf454c7d730dfb80e9de357ff6cf75de5f21dd9b38321490fcc2343bce4",
   "topics": [
     "Soren戦略改善の検証器が入力除外条件を誤判定（診断のみ・未修正）",
     "全将軍の卵修理v83を配備し隔離試験で復旧確認（Codex、本番発火未観測）",
