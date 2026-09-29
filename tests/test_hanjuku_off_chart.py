@@ -1253,7 +1253,7 @@ def test_an_adjusted_boss_order_leaves_an_unowned_card_behind_but_the_base_boss_
     boss = policy.chart.boss_castle(1)
     plan_order = {'step': 'A:x:J1', 'general': 'ヴィーナス', 'source': 'スペンソニア', 'target': boss,
                   'cards': ('クースカン', 'ミックミー', 'ミックミー'), 'after': ('all_captured',), 'note': 't'}
-    mem = {'chapter': 1, '_records': [], 'card_drop': {'A:x:J1': ['ミックミー']}}
+    mem = {'chapter': 1, '_records': [], 'card_drop': {'A:x:J1': ['ミックミー', 'ミックミー']}}
     assert not policy._strict_boss_cards(plan_order, mem)
     assert policy._deploy_cards(plan_order, mem) == ['クースカン']
     base = next(o for o in policy.chart.orders(1) if o['target'] == boss)
