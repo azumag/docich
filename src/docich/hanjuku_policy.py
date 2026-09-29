@@ -3005,16 +3005,30 @@ def battle_step(screen: Screen, mem):
         if (tactic.get('boss_only')
                 and cur.get('entry_evidence') != 'measured_boss_entry'):
             continue          # the boss kit waits for the measured boss entry
+        # No calibrated use receipt exists, so a selected-then-unclassified card
+        # is the best evidence there is. Without chaining on it the charted boss
+        # strategy never fires its second card (1-B1: クースカン→ノリウツール)
+        # and the queen summons. The chain is recorded as a deviation.
+        attempted = [*cur['cards_used'], *(cur.get('cards_unclassified') or [])]
         due = (tactic.get('open')
                or (tactic.get('when_hp_at_most') is not None and b.enemy_hp is not None
                    and b.enemy_hp <= tactic['when_hp_at_most'])
                or (tactic.get('after_clash') and cur.get('clashed'))
-               or (tactic.get('after_card') and tactic['after_card'] in cur['cards_used']))
+               or (tactic.get('after_card') and tactic['after_card'] in attempted))
         if due:
             done.append(tid)
-            cur['card_flow'] = {'card': tactic['card'], 'stage': 'menu', 'note': tactic['note']}
+            chained_unconfirmed = (tactic.get('after_card')
+                                   and tactic['after_card'] not in cur['cards_used']
+                                   and tactic['after_card'] in (cur.get('cards_unclassified') or []))
+            note = tactic['note']
+            if chained_unconfirmed:
+                note = f"{note}（前札の実使用告知は未校正のため選択記録で連続使用）"
+                if not cur.get('deviation_reason'):
+                    cur['strategy_variant'] = 'after_card_unconfirmed'
+                    cur['deviation_reason'] = '前の切り札の実使用告知が未校正のため、選択記録を根拠に連続使用を継続'
+            cur['card_flow'] = {'card': tactic['card'], 'stage': 'menu', 'note': note}
             _record(mem, 'battle_card', **_battle_labels(cur), card=tactic['card'], enemy=b.enemy,
-                    enemy_hp=b.enemy_hp, ally_hp=b.ally_hp, reason=tactic['note'],
+                    enemy_hp=b.enemy_hp, ally_hp=b.ally_hp, reason=note,
                     expected_metric='選択後の実使用告知と敵HP減少',
                     observed_metric={'enemy_hp': b.enemy_hp, 'ally_hp': b.ally_hp},
                     resulting_event='card_planned')
@@ -3030,11 +3044,24 @@ def battle_step(screen: Screen, mem):
     return _melee_step(mem, cur)
 
 
+def _charted_clash(mem, cur) -> bool:
+    """The chart wants this fight's clash (1-B1: 白兵で一回ぶつかり合う→札).
+
+    Holding input under the clash egg risk never reaches ``after_clash`` and
+    the boss summons instead (g454 08:19: the queen battle held without any
+    input, どうし fell to 43 and the rescue used its own egg -> ヒュドラ).
+    """
+    return any(t.get('after_clash') and t.get('enemy') in (None, cur.get('enemy'))
+               and t.get('step') in (None, cur.get('step'))
+               for t in _tactics(mem, cur.get('step')))
+
+
 def _melee_step(mem, cur):
     side = cur.get('side')
     defense = True if side == 'defense' else False if side == 'attack' else None
     triggers = enemy_egg_triggers(cur.get('enemy'), player_castle_defense=defense)
-    safe = triggers.has_egg is False or triggers.clash_position is False
+    charted = _charted_clash(mem, cur)
+    safe = triggers.has_egg is False or triggers.clash_position is False or charted
     mode = 'power_mash' if safe else 'egg_safe_hold'
     actions = _power_mash(mem, cur) if safe else []
     # Per returned action batch, not just the first use in a fight. These are
@@ -3043,7 +3070,9 @@ def _melee_step(mem, cur):
             enemy=cur.get('enemy'), enemy_hp=cur.get('enemy_hp'), ally_hp=cur.get('ally_hp'),
             egg_risk_flags=asdict(triggers), melee_control_mode=mode,
             a_frames_sent=POWER_TAPS * 3 if safe else 0,
-            reason='卵の激突判定なし' if safe else '卵の激突リスクあり・戦線位置未校正のため入力保留')
+            reason=('チャートのぶつかり合いに向けて押し込む' if charted
+                    else '卵の激突判定なし' if safe
+                    else '卵の激突リスクあり・戦線位置未校正のため入力保留'))
     return actions
 
 
