@@ -4918,6 +4918,10 @@ def yes_no_step(screen: Screen, mem):
     if move == 'here':
         _record(mem, 'prompt', choice=choice, prompt=text[-40:], reason=reason, strategy_variant=variant)
         return [pad('a')]
+    if move is None:
+        _record(mem, 'situation_held', screen=screen.kind,
+                observed_metric={'choice': choice, 'hand_visible': screen.hand is not None},
+                reason='確認画面の選択位置を読めないため決定せず再観測')
     return [move] if move else []
 
 
