@@ -1,10 +1,10 @@
 {
-  "output_sha256": "66ec9604ef19b1985852aeaea898629302962439314c6e47e3ac7ee3163a3bae",
+  "output_sha256": "408631f4cdfa665c464a3cfa1182abfa5ce8654a28a118ebcac9a944b0cfaeec",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "afdde0955e1f86a169e7c15d7e16022f5de9e287753c75645e07855ded014770",
+  "source_sha256": "e233f7fd7325f49b2c5b3cd6e9f2e5887dc45dc7dec09f273d5ba9ff7fe14b5f",
   "topics": [
-    "半熟ボス戦敗北を分析し切り札の適用・連続使用を修正中",
+    "半熟ボス戦改善を正規配備し再起動（クリア監視継続）",
     "ニュース重複対策をmain・本番へ反映しSHA・配信継続を照合",
     "半熟英雄クリアまでの監視再開と商人入力保留修正（進行中）"
   ]
