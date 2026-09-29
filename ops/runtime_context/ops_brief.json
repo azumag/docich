@@ -1,11 +1,11 @@
 {
-  "output_sha256": "408631f4cdfa665c464a3cfa1182abfa5ce8654a28a118ebcac9a944b0cfaeec",
+  "output_sha256": "83bf477e521d18b6edfbde85e6c5d464d956e8c73e59fc20ead3cfc9531fb059",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "e233f7fd7325f49b2c5b3cd6e9f2e5887dc45dc7dec09f273d5ba9ff7fe14b5f",
+  "source_sha256": "dfdaa34253532639147fb9803419d9704568bfa6ee8906ce6c2d4a6a8899c007",
   "topics": [
+    "半熟英雄の予想一覧を最新1件へ修正（配備準備）",
     "半熟ボス戦改善を正規配備し再起動（クリア監視継続）",
-    "ニュース重複対策をmain・本番へ反映しSHA・配信継続を照合",
-    "半熟英雄クリアまでの監視再開と商人入力保留修正（進行中）"
+    "ニュース重複対策をmain・本番へ反映しSHA・配信継続を照合"
   ]
 }
