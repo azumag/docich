@@ -1,11 +1,11 @@
 {
-  "output_sha256": "cd71a45a7fdbb2b55e7fe1066b1b8592c7183f14a497747a060b4a4c546d1019",
+  "output_sha256": "75fbd0af9114310e7a876d905ff62d0073b7ccc14d9cf1d6662751b51367177b",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "d0d78b185301d88d6531f18e909648a4207f59dadc919f1d81de6caeaebda068",
+  "source_sha256": "082ab6b2a57381a4c408dbfcaf48073bc6d322e0b9d35c0ffe0c9e8b5e426b58",
   "topics": [
+    "Soren分析再試行をmain統合し正規配布を準備",
     "Soren分析再試行のPR作成とCI成功（main統合・本番反映は保留）",
-    "Soren改善の再失敗を検知し、検証理由付き再分析をローカル修正（本番未反映）",
-    "Soren戦略改善の検証器が入力除外条件を誤判定（診断のみ・未修正）"
+    "Soren改善の再失敗を検知し、検証理由付き再分析をローカル修正（本番未反映）"
   ]
 }
