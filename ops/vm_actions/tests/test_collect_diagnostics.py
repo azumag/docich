@@ -1119,3 +1119,20 @@ def test_a_latched_common_rotation_reaches_warn_severity():
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_manual_corner_queue_projection_is_boolean_only(tmp_path):
+    module = load_collector()
+    (tmp_path / 'corner_rotation.json').write_text(json.dumps({'status': 'ready'}))
+    (tmp_path / 'corner_manual_queue.json').write_text(json.dumps({
+        'corner': 'hanjuku-hero', 'request_id': 'DO-NOT-PUBLISH-UUID',
+        'prompt': 'DO-NOT-PUBLISH-BODY',
+    }))
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    assert output['corner_rotation']['queued_manual'] is True
+    assert 'DO-NOT-PUBLISH' not in json.dumps(output)
+    (tmp_path / 'corner_manual_queue.json').unlink()
+    output = {}
+    module._collect_corner_files(tmp_path, output, 100)
+    assert output['corner_rotation']['queued_manual'] is False

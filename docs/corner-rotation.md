@@ -357,3 +357,18 @@ read-only diagnostics に投影される。
   epochのrevert PRが必要。
 - 実機rollbackは未実施。受入は固定operationのreview/CIと、配線後のdeployでcanonical維持が
   継続することまで。
+
+### 半熟英雄の次枠手動予約
+
+固定operator `start-hanjuku` は `hanjuku_corner` から `queue_manual('hanjuku-hero')` を呼ぶ。
+現在のコーナーが実行lockを保持していても、独立した短時間lockで
+`state_dir/corner_manual_queue.json` に1件の予約をatomic writeする。
+同じ依頼の再送は同一request UUIDを返し、異なる依頼との競合は拒否する。
+共通timerは実行lockの下でinboxを `corner_rotation.json.queued_manual` へ保存した後に
+inboxを削除する。転送途中のcrashは同一UUIDで再開する。
+既存pending/manual_pendingとadapter資源が全て解放された後、自動選択より先に
+queued_manualをpendingへ移す。現在の枠・試合を中断せず、program-slotとgame-switchの
+境界契約も通常経路を通す。手動起動の既存方針に従いcooldownだけを無視する。
+無効化・利用者のpause・recovery latchは維持する。待機中にpauseされた予約は保持して待機する。
+追加workerはなく、既存timerが消費する1件の運用queueである。diagnosticsは予約有無のみを
+固定booleanで出し、UUIDや任意payloadは公開しない。配備でtimerを強制再起動しない。

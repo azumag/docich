@@ -1883,3 +1883,96 @@ def test_manual_start_still_refuses_disabled_corners_and_latches(setup, monkeypa
     executor.result = "completed"
     with pytest.raises(RotationError, match="pending corner must finish"):
         corner_rotation.run_manual(g, manager, ["paper-view"])
+
+
+def test_manual_queue_survives_restart_and_precedes_cooldown(setup):
+    _, clock, _, executor, make = setup
+    manager = make()
+    # This corner was used just now, but owner manual requests bypass cooldown.
+    initial = manager.load(clock[0])
+    initial['history'] = [dict(corner='retro', at=clock[0], source='completion')]
+    manager.save(initial)
+    queued = manager.queue_manual('nsnake')
+    assert manager.queue_manual('nsnake') == queued
+    assert executor.calls == []
+    result = make().tick()
+    assert result['corner'] == 'retro'
+    assert executor.calls[0]['request_id'] == queued['request_id']
+    assert executor.calls[0]['source'] == 'manual'
+    assert state(manager)['queued_manual'] is None
+    assert state(manager)['pending'] is None
+
+
+def test_manual_queue_preserves_live_reservation_and_waits_for_release(setup):
+    _, clock, _, executor, make = setup
+    manager = make()
+    executor.result = 'queued'
+    manager.tick()
+    before = state(manager)['pending']
+    other = next(c for c in manager.catalog if c.id != before['corner'])
+    queued = manager.queue_manual(other.game)
+    assert state(manager)['pending'] == before
+    # Live resources owned by the earlier request prevent the queued start.
+    manager.adapters[before['corner']].resources_released = lambda: False
+    assert manager.tick()['reason'] == 'other-corner-needs-finish-or-recovery'
+    assert len(executor.calls) == 1
+    assert state(manager)['queued_manual'] == {k:queued[k] for k in ('corner','request_id')} | {'selected_at':clock[0]}
+    manager.adapters[before['corner']].resources_released = lambda: True
+    executor.result = 'completed'
+    manager.tick()  # settles the existing request first
+    assert executor.calls[-1]['request_id'] == before['request_id']
+    manager.tick()
+    assert executor.calls[-1]['request_id'] == queued['request_id']
+
+
+def test_manual_queue_respects_pause_and_refuses_conflicting_request(setup):
+    _, _, _, executor, make = setup
+    manager = make()
+    manager.queue_manual('nsnake')
+    with pytest.raises(RotationError, match='already queued'):
+        manager.queue_manual('paper-view')
+    manager.adapters['retro'].available = False
+    assert manager.tick()['reason'] == 'queued-manual-disabled-or-paused'
+    assert executor.calls == []
+    assert state(manager)['queued_manual']['corner'] == 'retro'
+
+
+def test_manual_queue_does_not_clear_recovery_latch(setup):
+    _, clock, _, executor, make = setup
+    manager = make()
+    initial = manager.load(clock[0])
+    initial.update(status='recovery_required', reason='execution-unverified')
+    manager.save(initial)
+    with pytest.raises(RotationError, match='recovery required'):
+        manager.queue_manual('nsnake')
+    assert state(manager)['status'] == 'recovery_required'
+    assert executor.calls == []
+
+
+def test_manual_queue_is_available_while_execution_lock_is_held(setup):
+    _, _, _, executor, make = setup
+    owner = make()
+    with owner.locked() as acquired:
+        assert acquired
+        request = make().queue_manual('nsnake')
+        assert request['status'] == 'queued'
+        assert owner._manual_queue_path.exists()
+        assert executor.calls == []
+    owner.tick()
+    assert executor.calls[0]['request_id'] == request['request_id']
+    assert not owner._manual_queue_path.exists()
+
+
+def test_manual_queue_transfer_replay_is_idempotent(setup):
+    _, clock, _, executor, make = setup
+    manager = make()
+    request = manager.queue_manual('nsnake')
+    ledger = manager.load(clock[0])
+    manager._import_manual_queue(ledger)
+    assert manager.queue_manual('nsnake') == request
+    # Simulate a crash after saving the transfer but before unlinking inbox.
+    from docich.game_switch import atomic_write_json
+    atomic_write_json(manager._manual_queue_path, ledger['queued_manual'])
+    manager.tick()
+    assert len(executor.calls) == 1
+    assert executor.calls[0]['request_id'] == request['request_id']

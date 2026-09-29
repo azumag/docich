@@ -2181,6 +2181,8 @@ def _collect_corner_files(state_dir, payload, now):
             slot=_bounded_int(data.get("slot")),
             eligible_count=len(data["eligible"]) if isinstance(data.get("eligible"), list) else None,
             pending=isinstance(data.get("pending"), dict),
+            queued_manual=(isinstance(data.get("queued_manual"), dict)
+                           or (state_dir / "corner_manual_queue.json").is_file()),
             error_kind=_rotation_error_kind(data.get("error_kind")),
         )
         rotation.update(_rotation_pending_projection(state_dir, data, now))
