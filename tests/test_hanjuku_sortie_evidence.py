@@ -842,6 +842,39 @@ def _c2_memory():
             'orders': {'1-C2': 'pending'}, 'picked': []}
 
 
+def test_a_picked_card_kept_after_its_drop_approves_the_sortie():
+    # g454 12:22: the plan イッテツーンx2 had one copy picked and the second
+    # dropped as out of stock; removing every copy of the card shrank the plan
+    # below what the game carried and the confirmation held forever.
+    mem = _c2_memory()
+    mem['picked'] = ['ブラッキー', 'ダイチスイム']
+    mem['card_drop'] = {'1-C2': ['ダイチスイム']}    # one unpicked copy left behind
+    screen = measured_loaded_sortie(('ブラッキー', 'ダイチスイム'))
+    assert policy._deploy_cards(policy._order(mem), mem) == ['ダイチスイム', 'ブラッキー']
+    assert policy.deploy_step(screen, mem) == [policy.pad('a')]
+    assert mem['_records'][-1]['decision'] == 'sortie_confirm'
+
+
+def test_a_readable_but_mismatched_kit_is_approved_after_bounded_readings():
+    mem = _c2_memory()
+    mem['picked'] = ['ブラッキー']
+    screen = measured_loaded_sortie(('ブラッキー', 'ダイチスイム'))
+    for _ in range(policy.SORTIE_CONFIRM_LIMIT - 1):
+        assert policy.deploy_step(screen, mem) == []
+        assert mem['_records'][-1]['decision'] == 'situation_held'
+    assert policy.deploy_step(screen, mem) == [policy.pad('a')]
+    assert [r['decision'] for r in mem['_records'][-2:]] == ['sortie_kit_mismatch', 'sortie_confirm']
+
+
+def test_an_unreadable_sortie_confirmation_is_bounded_and_cancelled():
+    mem = _c2_memory()
+    screen = menu('sortie_confirm', ['うむッ!'], hand=False)
+    for _ in range(policy.SORTIE_CONFIRM_LIMIT - 1):
+        assert policy.deploy_step(screen, mem) == []
+    assert policy.deploy_step(screen, mem) == [policy.pad('b'), policy.pad('b')]
+    assert mem['orders']['1-C2'] == 'failed' and mem['active'] is None
+
+
 def test_a_card_absent_from_the_panel_is_left_behind_after_bounded_readings():
     """g401 21:16: ダイチスイム was not on the panel and the sortie screen stayed open."""
     mem = _c2_memory()
@@ -854,7 +887,7 @@ def test_a_card_absent_from_the_panel_is_left_behind_after_bounded_readings():
         assert mem['_records'][-1]['decision'] == 'situation_held'
     assert policy.deploy_step(screen, mem) == []
     rec = mem['_records'][-1]
-    assert rec['decision'] == 'card_dropped' and rec['dropped'] == ['ダイチスイム']
+    assert rec['decision'] == 'card_dropped' and rec['dropped'] == ['ダイチスイム', 'ダイチスイム']
     assert rec['observed_metric']['complete_list'] is False      # 4 rows may hide more
     assert rec['deviation_reason'] == 'ダイチスイムを選べないため携行せずに出撃する'
     assert policy._deploy_cards(policy._order(mem), mem) == ['ブラッキー']
@@ -868,7 +901,7 @@ def test_no_carry_slot_left_drops_every_remaining_card():
     screen = measured_card_select(('ダイチスイム', 'ブラッキー'), stocks=('2', '1'), remaining='0')
     for _ in range(policy.CARD_MISS_LIMIT):
         policy.deploy_step(screen, mem)
-    assert mem['_records'][-1]['dropped'] == ['ダイチスイム']
+    assert mem['_records'][-1]['dropped'] == ['ダイチスイム', 'ダイチスイム']
     assert policy._deploy_cards(policy._order(mem), mem) == ['ブラッキー']
     assert policy.deploy_step(screen, mem) == [policy.pad('b')]   # on to the sortie confirm
 
