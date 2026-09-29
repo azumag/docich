@@ -270,6 +270,15 @@ def test_manual_interruption_only_cancels_owned_prediction(env):
     assert not (env.runtime / p.RESULT_FILE).exists()
 
 
+def test_remote_canceled_owned_prediction_is_not_recreated_in_same_run(env):
+    env.tick()
+    assert len([c for c in env.remote.calls if c[0] == 'POST']) == 1
+    env.remote.rows[0]['status'] = 'CANCELED'
+    assert env.tick(131)['mode'] == 'canceled'
+    assert env.tick(161)['mode'] == 'canceled'
+    assert len([c for c in env.remote.calls if c[0] == 'POST']) == 1
+
+
 def test_global_retry_never_creates_prediction(env):
     assert env.tick(100, None)['mode'] == 'idle'
     assert env.remote.calls == []

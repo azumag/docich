@@ -290,7 +290,10 @@ def _advance(g, root, state, identity, now, enabled, window, client_factory):
     else:
         if not live_owner:
             return
-        if row and same(row) and row['status'] == 'RESOLVED':
+        if row and same(row) and row['status'] in DONE:
+            # A remotely ended prediction belongs to this attempt even when it
+            # was canceled/refunded. Respect that terminal state and do not
+            # silently open a second wager in the same run.
             return
         if paused:
             state['mode'] = 'paused'
