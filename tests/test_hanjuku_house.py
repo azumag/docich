@@ -17,13 +17,13 @@ class Canvas(BaseCanvas):
                 self.tile(x + i * 8, y - 8, MARK['゛'], color)
 
 
-def status(name='ゼウス', egg='こわれている', *, main=True, castle=True, gold=250):
+def status(name='ゼウス', egg='こわれている', *, main=True, castle=True, gold=250, hp=85, max_hp=85):
     c = Canvas()
     x, y = (24, 39) if main else (16, 31)
     c.text(x, y, name)
     c.text(x + 64, y, 'しょうぐん')
     c.text(x, y + 16, 'HP')
-    c.text(x + 40, y + 16, '85/ 85 P')
+    c.text(x + 40, y + 16, f'{hp}/ {max_hp} P')
     c.text(x, y + 80, 'たまご')
     c.text(x + 32, y + 80, egg)
     if main:
@@ -326,3 +326,28 @@ def test_old_house_state_cannot_consume_a_new_game_name_screen():
     mem = memory('travel')
     assert house.step(Screen([], None, '', kind='name_entry'), mem, None) is None
     assert 'house' not in mem
+
+
+@pytest.mark.parametrize('hp', [0, 18, 84])
+def test_injured_broken_egg_general_returns_instead_of_unarmed_repair_trip(hp):
+    mem = memory('field_read', general='どうし')
+    assert feed(mem, status('どうし', main=False, castle=False, hp=hp)) == [p.pad('b')]
+    assert mem['house']['returning'] is True
+    assert mem['house']['phase'] == 'unit_move'
+    assert any(r['decision'] == 'house_recall_needed' for r in mem['_records'])
+
+
+def test_injured_castle_general_is_not_dispatched_to_repair():
+    mem = memory('castle_kit', general='どうし')
+    screen = parse(status('どうし', main=False, hp=18))
+    screen.kind = 'card_select'
+    assert house.step(screen, mem, None) == []
+    assert mem['house']['phase'] == 'close'
+
+
+def test_unknown_hp_does_not_authorize_a_repair_trip():
+    mem = memory('field_read', general='どうし')
+    screen = parse(status('どうし', main=False, castle=False))
+    screen.lines = [r for r in screen.lines if r.y != 47]
+    assert house.step(screen, mem, None) == [p.pad('b')]
+    assert mem['house']['returning'] is True

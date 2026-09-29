@@ -1,11 +1,11 @@
 {
-  "output_sha256": "1f1d3ee40e8156e3286933ee45f983ca593e11b1a2afae5536ed91a41fc5f08e",
+  "output_sha256": "336debb51f3d68137ad51ced387e69e176b844c1b6bf8405e9f228e0923d64ba",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "6dba9074a58943a0256a0dc6a4d415dcfecc5caac7b3c20c3496586b31210618",
+  "source_sha256": "5f34d88bd8db0221206ba8a8cd3db92fa476620c04ac2993a6f4201be6c41ba5",
   "topics": [
-    "チャート遵守v89を同一g490へホットロード",
-    "owner指摘によりチャート札手順の前倒しを修正",
-    "半熟v88配備照合完了・Bastet終了待ち"
+    "g490ゲームオーバー分析とv90修理・帰還経路の強化（配備準備）",
+    "半熟v90札一覧の途中描画を不足と区別（配備準備）",
+    "チャート遵守v89を同一g490へホットロード"
   ]
 }

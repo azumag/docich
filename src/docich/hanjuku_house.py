@@ -45,10 +45,22 @@ def general_status(screen):
         uses = re.fullmatch(r'(.+?)([0-4])', body)
         if not broken and body != 'なし' and not uses:
             continue
-        return {'general': name, 'broken': broken,
+        hp_row = next((r for r in screen.lines if r.y == y + 16), None)
+        hp_text = hp_row.span(x + 40, x + 112) if hp_row else ''
+        hp_read = re.fullmatch(r'(\d+)\s*/\s*(\d+)\s*P?', hp_text)
+        hp = int(hp_read[1]) if hp_read else None
+        max_hp = int(hp_read[2]) if hp_read else None
+        if hp is not None and not 0 <= hp <= max_hp:
+            hp, max_hp = None, None
+        return {'general': name, 'broken': broken, 'hp': hp, 'max_hp': max_hp,
                 'egg': uses[1] if uses else None, 'uses': int(uses[2]) if uses else None,
                 'location': 'castle' if 'しろのなかにいます' in screen.text else 'field'}
     return None
+
+
+def _repair_hp_ready(info):
+    hp, maximum = info.get('hp'), info.get('max_hp')
+    return type(hp) is int and type(maximum) is int and maximum > 0 and hp == maximum
 
 
 def roster(screen):
@@ -383,6 +395,8 @@ def _repair_step(screen, mem, frame):
             return []
         if info['general'] != name or not info['broken']:
             return _exit(mem, '出撃画面で対象本人の卵割れを確認できないため派遣しない')
+        if not _repair_hp_ready(info):
+            return _exit(mem, '負傷またはHP未確認の将軍を無装備の卵修理へ派遣せず在城で回復を待つ')
         _phase(state, 'castle_confirm')
         return [p.pad('b')]  # no battle cards are spent on a repair trip
     if phase == 'castle_confirm':
@@ -392,6 +406,8 @@ def _repair_step(screen, mem, frame):
         if (not info or info['general'] != name or not info['broken']
                 or not p._empty_sortie_inventory(screen)):
             return []
+        if not _repair_hp_ready(info):
+            return _exit(mem, '派遣確定前に全快HPを確認できないため出撃を取り消す')
         if not affordable_gift(mem.get('gold'), p.WAGE_RESERVE):
             return _exit(mem, '派遣前に修理資金が不足したため出撃を取り消す')
         actions = _choose(screen, 'うむッ!')
@@ -606,6 +622,10 @@ def _field_step(screen, mem, frame):
             return []
         if info['general'] != name or (not state.get('returning') and not info['broken']):
             return _exit(mem, '本人の卵割れまたは帰還対象を確認できないため操作を中止')
+        if not state.get('returning') and not _repair_hp_ready(info):
+            state['returning'] = True
+            _record(mem, 'recall_needed', observed_metric={'hp': info.get('hp'), 'max_hp': info.get('max_hp')},
+                    reason='負傷またはHP未確認の卵割れ将軍は修理へ向かわせず、自軍旗を確認した城へ帰還する')
         _phase(state, 'unit_move')
         return [p.pad('b')]
     if phase == 'unit_move':

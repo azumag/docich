@@ -906,12 +906,18 @@ def test_chapter_2_cells_put_every_measured_flag_on_the_y_view_grid():
     assert [o['step'] for o in chart.orders(2)] == ['2-Z1', '2-C1', '2-V1', '2-S1', '2-Z2', '2-V2', '2-Z3']
 
 
-def test_the_island_picker_confirms_the_home_castle_with_a_twice():
+def test_the_island_picker_confirms_the_observed_owned_castle_with_a_twice(monkeypatch):
     # Isolated probe 2026-09-29: きかん opens a whole-island picker with the R
     # ring on the home castle; A, A sends the general home (B, A cancels).
     mem = {'chapter': 2, 'tick': 50, '_records': [],
            'recall': {'stage': 'dest', 'target': [141, 122], 'steps': 5}}
     view = Screen(lines=[], hand=None, text='', kind='world_map')
+    def owned_cursor(frame):
+        x, y = chart.castles(mem['chapter'])[chart.home_castle(mem['chapter'])]
+        ox, oy = policy.WORLD_MAP_OFFSET[mem['chapter']]
+        return x / 8 + ox, y / 8 + oy
+    monkeypatch.setattr(policy, 'world_cursor', owned_cursor)
+    monkeypatch.setattr(policy, 'world_flags', lambda frame, chapter: {chart.home_castle(chapter): 'own'})
     assert policy.world_map_step(view, mem, FRAME) == [policy.pad('a'), {'type': 'wait', 'ms': 700},
                                                         policy.pad('a')]
     assert 'recall' not in mem
@@ -1310,3 +1316,18 @@ def test_an_adjusted_boss_order_leaves_an_unowned_card_behind_but_the_base_boss_
     base = next(o for o in policy.chart.orders(1) if o['target'] == boss)
     assert policy._strict_boss_cards(base, mem)
     assert policy._deploy_cards(base, {**mem, 'card_drop': {base['step']: ['クースカン']}}) == list(base['cards'])
+
+
+def test_recall_picker_never_confirms_enemy_or_unread_flag(monkeypatch):
+    mem = {'chapter': 1, '_records': [], 'recall': {'stage': 'dest'}}
+    x, y = chart.castles(1)['キカンドン'];ox, oy = policy.WORLD_MAP_OFFSET[1]
+    monkeypatch.setattr(policy, 'world_cursor', lambda frame: (x / 8 + ox, y / 8 + oy))
+    monkeypatch.setattr(policy, 'world_flags', lambda frame, chapter: {'キカンドン': 'enemy'})
+    screen = Screen([], None, '', kind='world_map')
+    assert policy.world_map_step(screen, mem, FRAME) == [policy.pad('right')]
+    assert mem.get('recall')
+    assert not decisions(mem, 'camp_recall')
+    mem['recall']['picker_observations'] = policy.RECALL_LIMIT - 1
+    assert policy.world_map_step(screen, mem, FRAME) == [policy.pad('b')]
+    assert not mem.get('recall')
+    assert decisions(mem, 'camp_recall_aborted')

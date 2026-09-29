@@ -1219,15 +1219,34 @@ def world_map_step(screen, mem, frame):
         # 2026-09-29): the R ring starts on the home castle, A selects it and a
         # second A confirms; the general then walks back home (measured: the
         # hero turned from キカンドン towards ほんじょう). Y does not close it.
+        chapter = mem.get('chapter') or 0
+        cursor = world_cursor(frame) if frame is not None else None
+        flags = world_flags(frame, chapter)
+        if flags:
+            _apply_world_flags(mem, flags)
+        offset = WORLD_MAP_OFFSET.get(chapter)
+        nearby = [name for name, (x, y) in chart.castles(chapter).items()
+                  if cursor and offset and abs(x / 8 + offset[0] - cursor[0]) <= 6
+                  and abs(y / 8 + offset[1] - cursor[1]) <= 6]
+        recall['picker_observations'] = int(recall.get('picker_observations', 0)) + 1
+        if len(nearby) != 1 or flags.get(nearby[0]) != 'own':
+            if recall['picker_observations'] >= RECALL_LIMIT:
+                _record(mem, 'camp_recall_aborted',
+                        observed_metric={'cursor': cursor, 'flags': flags},
+                        reason='帰還先の自軍旗を確認できないため敵城へ確定せず帰還操作を取り消す')
+                mem.pop('recall', None)
+                mem['uncertain'] = True
+                return [pad('b')]
+            return [pad('right')] if cursor else []
+        home = nearby[0]  # the measured R picker, never an assumed home castle
         mem.pop('recall', None)
         mem['uncertain'] = True
-        home = chart.home_castle(mem.get('chapter') or 0)
         if recall.get('hero'):
             actions = _finish_hero_recall(mem, recall, home)
         else:
             _record(mem, 'camp_recall', observed_metric={'castle': home, 'camp': recall.get('target'),
                                                           'screen': 'world_map'},
-                    reason='野営の将軍に本城への帰還を指示（全体マップ型の帰還先選択でAを2回）')
+                    reason='野営の将軍に自軍旗を確認した城への帰還を指示（全体マップ型の帰還先選択でAを2回）')
             actions = [pad('a')]
         return actions + [{'type': 'wait', 'ms': 700}, pad('a')]
     flags = world_flags(frame, mem.get('chapter') or 0)
@@ -3664,6 +3683,26 @@ def card_list_step(screen: Screen, mem):
         return _survival_card_list(screen, mem, cur, flow, names)
     if flow['stage'] == 'list':
         if flow['card'] not in names:
+            # A 500-ms observation can catch the opening text before the
+            # carried names draw (g490: two confirmed イッテツーン, then an
+            # empty OCR list). An unreadable frame is not a missing-card
+            # receipt. Explicit absence stays immediate; other readable
+            # lists must agree twice, and unreadable lists back out boundedly.
+            absent = any(text in ''.join(screen.text.split()) for text in
+                         ('きりふだはありません', 'きりふだなし'))
+            flow['list_observations'] = int(flow.get('list_observations', 0)) + 1
+            previous = flow.get('missing_list_names')
+            flow['missing_list_names'] = names
+            if not absent and (not names or previous != names):
+                if flow['list_observations'] < 4:
+                    return []
+                _record(mem, 'battle_card_list_unclassified', **_battle_labels(cur),
+                        card=flow['card'], observed_metric={'listed_cards': names,
+                                                           'observations': flow['list_observations']},
+                        expected_metric='読める切り札一覧または明示的な切り札なし表示',
+                        reason='札一覧を確定できないため、携行不足と断定せず入力を戻す')
+                cur['card_flow'] = None
+                return [pad('b'), pad('b')]
             cur.setdefault('cards_missing', []).append(flow['card'])
             if not cur.get('deviation_reason'):
                 cur['strategy_variant'] = 'chart_card_unavailable'
@@ -5348,7 +5387,9 @@ def gift_step(screen: Screen, mem):
     it buys the cheapest listed item and records the deviation."""
     items = []
     for line in screen.lines:
-        joined = ''.join(line.words(64, 256))
+        # The live gift prompt shares the first price row. Restrict the
+        # item/price to the right menu, not the dialogue at its left.
+        joined = ''.join(word for x, word in line.spans() if x >= 144)
         m = re.match(r'^(\S+?)(\d+)G$', joined)
         if m and not HEADER_RE.search(line.known.replace(' ', '')):
             items.append((int(m.group(2)), m.group(1)))

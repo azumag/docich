@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .hanjuku_pixels import Frame
 
-BOT_VERSION = 'hanjuku-chart-v89-chart-clash-chain'
+BOT_VERSION = 'hanjuku-chart-v90-card-list-evidence'
 
 
 # Native title copyright rows, measured from the owner's ROM. A strict match

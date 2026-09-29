@@ -574,7 +574,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v89-chart-clash-chain'
+    assert state['bot_version'] == 'hanjuku-chart-v90-card-list-evidence'
     assert '_records' not in state['policy']
 
 
@@ -924,6 +924,7 @@ def test_missing_and_selected_cards_do_not_confirm_use_but_chain_the_charted_fol
     # missing-card reporting is checked on a fight with no deviation of its own.
     cur.pop('strategy_variant', None); cur.pop('deviation_reason', None)
     cur['card_flow'] = {'card': 'クースカン', 'stage': 'list'}
+    assert policy.card_list_step(_card_screen(['ノリウツール']), mem) == []
     assert policy.card_list_step(_card_screen(['ノリウツール']), mem)
     assert cur['cards_used'] == [] and cur['cards_missing'] == ['クースカン']
     missing = mem['_records'][-1]
@@ -2487,3 +2488,18 @@ def test_boss_selected_card_hp_drop_chains_without_idle_frames(selected, enemy_h
         assert cur['card_consumption_complete'] is False
     else:
         assert out == []
+
+
+def test_month_gift_request_with_three_prices_is_not_a_merchant_list():
+    from docich.hanjuku_screen import parse
+    c = Canvas((20, 20, 20))
+    c.text(16, 176, 'だからなんかかって。')
+    for y, label in [(176, 'エンドマン50G'), (192, 'みずまき100G'), (208, 'スカラーベ200G')]:
+        c.text(160, y, label)
+    screen = parse(c.frame())
+    assert screen.kind == 'gift_request'
+    mem = {'chapter': 1, '_records': []}
+    screen.hand = (138, 169, 156, 181)
+    assert policy.gift_step(screen, mem) == [policy.pad('a')]
+    assert mem['_records'][-1]['decision'] == 'gift'
+    assert mem['_records'][-1]['price'] == 50

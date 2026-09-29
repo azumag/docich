@@ -587,3 +587,32 @@ def test_unarmed_egg_enemy_checks_rescue_before_clash_and_retreats_if_unavailabl
 def test_preclash_rescue_leaves_defense_charted_boss_and_no_egg_battles_unchanged(enemy, side, cards):
     cur = {'enemy': enemy, 'side': side, 'planned_cards': cards}
     assert not p._unarmed_clash_risk(cur)
+
+
+def test_chart_card_waits_for_drawing_list_then_selects_without_false_missing():
+    mem = memory(hp=85, enemy=36)
+    mem['battle']['card_flow'] = {'card': 'イッテツーン', 'stage': 'list'}
+    assert p.card_list_step(menu(('きりふだは',), kind='text'), mem) == []
+    assert not mem['battle'].get('cards_missing')
+    assert p.card_list_step(menu(('イッテツーン',), kind='text'), mem) == [p.pad('a')]
+    assert mem['battle']['cards_selected'] == ['イッテツーン']
+    assert not mem['battle'].get('cards_missing')
+
+
+def test_unreadable_chart_list_backs_out_boundedly_without_inventing_absence():
+    mem = memory(hp=85, enemy=36)
+    mem['battle']['card_flow'] = {'card': 'イッテツーン', 'stage': 'list'}
+    for _ in range(3):
+        assert p.card_list_step(menu(('きりふだは',), kind='text'), mem) == []
+    assert p.card_list_step(menu(('きりふだは',), kind='text'), mem) == [p.pad('b'), p.pad('b')]
+    assert not mem['battle'].get('cards_missing')
+    assert mem['_records'][-1]['decision'] == 'battle_card_list_unclassified'
+
+
+def test_missing_list_does_not_accumulate_intermittent_partial_names():
+    mem = memory(hp=85, enemy=36)
+    mem['battle']['card_flow'] = {'card': 'クースカン', 'stage': 'list'}
+    for labels in [('ノリウツール',), ('イッテツーン',), ('ノリウツール',)]:
+        assert p.card_list_step(menu(labels, kind='text'), mem) == []
+    assert not mem['battle'].get('cards_missing')
+    assert p.card_list_step(menu(('クースカン',), kind='text'), mem) == [p.pad('a')]
