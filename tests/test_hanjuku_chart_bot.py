@@ -574,7 +574,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v89-chart-clash-chain'
+    assert state['bot_version'] == 'hanjuku-chart-v90-card-list-evidence'
     assert '_records' not in state['policy']
 
 
@@ -924,6 +924,7 @@ def test_missing_and_selected_cards_do_not_confirm_use_but_chain_the_charted_fol
     # missing-card reporting is checked on a fight with no deviation of its own.
     cur.pop('strategy_variant', None); cur.pop('deviation_reason', None)
     cur['card_flow'] = {'card': 'クースカン', 'stage': 'list'}
+    assert policy.card_list_step(_card_screen(['ノリウツール']), mem) == []
     assert policy.card_list_step(_card_screen(['ノリウツール']), mem)
     assert cur['cards_used'] == [] and cur['cards_missing'] == ['クースカン']
     missing = mem['_records'][-1]

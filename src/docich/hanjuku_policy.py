@@ -3664,6 +3664,26 @@ def card_list_step(screen: Screen, mem):
         return _survival_card_list(screen, mem, cur, flow, names)
     if flow['stage'] == 'list':
         if flow['card'] not in names:
+            # A 500-ms observation can catch the opening text before the
+            # carried names draw (g490: two confirmed イッテツーン, then an
+            # empty OCR list). An unreadable frame is not a missing-card
+            # receipt. Explicit absence stays immediate; other readable
+            # lists must agree twice, and unreadable lists back out boundedly.
+            absent = any(text in ''.join(screen.text.split()) for text in
+                         ('きりふだはありません', 'きりふだなし'))
+            flow['list_observations'] = int(flow.get('list_observations', 0)) + 1
+            previous = flow.get('missing_list_names')
+            flow['missing_list_names'] = names
+            if not absent and (not names or previous != names):
+                if flow['list_observations'] < 4:
+                    return []
+                _record(mem, 'battle_card_list_unclassified', **_battle_labels(cur),
+                        card=flow['card'], observed_metric={'listed_cards': names,
+                                                           'observations': flow['list_observations']},
+                        expected_metric='読める切り札一覧または明示的な切り札なし表示',
+                        reason='札一覧を確定できないため、携行不足と断定せず入力を戻す')
+                cur['card_flow'] = None
+                return [pad('b'), pad('b')]
             cur.setdefault('cards_missing', []).append(flow['card'])
             if not cur.get('deviation_reason'):
                 cur['strategy_variant'] = 'chart_card_unavailable'
