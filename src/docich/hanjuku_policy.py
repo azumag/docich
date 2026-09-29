@@ -3763,6 +3763,7 @@ def _maybe_recall_weak_hero(mem, cur, outcome, ally_hp):
 
 ATTACK = re.compile(r'(\S+?)しょうぐんが(\S+?)じょうにのりこんだ')
 DEFENSE = re.compile(r'(\S+?)じょうがてきにせめこまれ')
+BOSS_ENTRY_HOLD_LIMIT = 8   # unmatched boss entry messages before the screen is closed anyway
 
 
 def message_step(screen: Screen, mem):
@@ -3780,10 +3781,40 @@ def message_step(screen: Screen, mem):
         # Base boss order or an adjusted/interim boss order (generation-scoped id):
         # the launched order itself must target this chapter's boss castle.
         if not _is_boss_order(_order_for_step(mem, step), mem):
-            _record(mem, 'situation_held', screen='boss_attack_started',
-                    observed_metric={'message': text, 'sortie_match': match},
-                    reason='実測ボス突入文を読んだが出撃注文と一致しないため保留')
-            return []
+            if match == 'ambiguous':
+                # Two sorties of this general are still heading for the boss
+                # castle (g460 17:10: the base order and its adjusted wave), so
+                # the order id is unknown. Never bind either of them - but the
+                # message is measured and the screen must keep moving.
+                _record(mem, 'attack_observed', chart_step=None, general=general, castle=boss_cell,
+                        expected_metric=None,
+                        observed_metric={'general': general, 'message': text, 'sortie_match': match},
+                        deviation_reason='ambiguous_sortie',
+                        reason='ボス城への出撃が複数在途のため注文は特定せず、実測文のみで進行')
+                mem['attack'] = {'general': general, 'castle': boss_cell, 'side': 'attack',
+                                 'step': None, 'entry_evidence': 'measured_boss_entry'}
+                return [pad('a')]
+            held = mem.get('boss_entry_hold') or {}
+            misses = held.get('n') + 1 if held.get('text') == text else 1
+            if misses < BOSS_ENTRY_HOLD_LIMIT:
+                mem['boss_entry_hold'] = {'text': text, 'n': misses}
+                _record(mem, 'situation_held', screen='boss_attack_started',
+                        observed_metric={'message': text, 'sortie_match': match,
+                                         'hold_count': misses},
+                        reason='実測ボス突入文を読んだが出撃注文と一致しないため保留')
+                return []
+            # Unmatched for the whole limit: the game already committed this
+            # attack, so holding the message freezes the screen forever
+            # (g460 16:43-). Close it and let the battle be measured.
+            mem.pop('boss_entry_hold', None)
+            _record(mem, 'attack_observed', chart_step=step, general=general, castle=boss_cell,
+                    expected_metric=None,
+                    observed_metric={'general': general, 'message': text, 'sortie_match': match},
+                    deviation_reason='boss_entry_hold_released',
+                    reason=f'出撃注文と一致しない突入文を{BOSS_ENTRY_HOLD_LIMIT}回保留したため表示を閉じる')
+            mem['attack'] = {'general': general, 'castle': boss_cell, 'side': 'attack',
+                             'step': step, 'entry_evidence': 'measured_boss_entry'}
+            return [pad('a')]
         _bind_sortie(mem, step, boss_cell)
         mem['attack'] = {'general': general, 'castle': boss_cell, 'side': 'attack', 'step': step,
                          'entry_evidence': 'measured_boss_entry'}
@@ -3833,7 +3864,7 @@ def _enter_chapter(mem, chapter, *, reason, evidence=None):
                 'expect_menu', 'general_override', 'launched', 'menu_miss', 'month_exit', 'month_sub',
                 'nav_last', 'nav_search', 'nav_search_leg', 'orders', 'picked', 'retries', 'retry_context', 'shop',
                 'source_override', 'uncertain', 'month', 'order_context', 'sortie_general',
-                'boss_defeated',
+                'boss_defeated', 'boss_entry_hold',
                 'chart_adjust', 'chart_plan', 'launched_orders', 'sorties', 'sortie_attempt',
                 'garrison', 'general_location_unknown', 'lost', 'owner_streak', 'source_miss', 'card_drop', 'card_miss',
                 'nav_prev', 'nav_still', 'nav_pressed', 'unverified', 'off_castle',
