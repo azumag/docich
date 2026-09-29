@@ -2819,6 +2819,25 @@ def _bind_sortie(mem, step, castle):
         sortie.update(status='arrived', target=castle)
 
 
+def _sortie_step_for(mem, general, castle):
+    """The newest sortie of this general already bound to this castle.
+
+    An ambiguous boss entry (g460 17:32: the base 1-B1 and the adjusted
+    A:bd2304e3:K1 were both still marching on けっかい) must not bind an order
+    id that was never read. The battle still has to fight with the kit of the
+    sortie that is actually out there: with an unknown step every charted
+    tactic is filtered out and the hero swings bare-handed (g460 17:32:
+    planned_cards=[] -> ally HP 88..0 -> 17:35 game over)."""
+    if not general or not castle:
+        return None
+    march = [(sortie.get('tick') or 0, step)
+             for step, sortie in (mem.get('sorties') or {}).items()
+             if sortie.get('general') == general
+             and sortie.get('target') == castle
+             and sortie.get('status') in ('en_route', 'arrived')]
+    return max(march)[1] if march else None
+
+
 def _battle_context(mem, ally):
     """Only a matching attack message establishes a battle location and side."""
     attack = mem.get('attack') or {}
@@ -2827,7 +2846,10 @@ def _battle_context(mem, ally):
         side = attack.get('side')
         if side == 'attack' and attack.get('castle') in captured:
             side = 'defense'          # a battle at a castle we hold is not a capture attempt
-        return {'castle': attack.get('castle'), 'side': side, 'step': attack.get('step'),
+        step = attack.get('step')
+        if step is None and side == 'attack':
+            step = _sortie_step_for(mem, ally, attack.get('castle'))
+        return {'castle': attack.get('castle'), 'side': side, 'step': step,
                 'entry_evidence': attack.get('entry_evidence')}
     captured = set(mem.get('captured', []))
     en_route = [step for step, sortie in (mem.get('sorties') or {}).items()
@@ -2962,6 +2984,13 @@ def battle_step(screen: Screen, mem):
             mem['hero_max_hp'] = max(int(mem.get('hero_max_hp') or 0), b.ally_hp)
             cur['ref_ally_hp'] = mem['hero_max_hp']
         _bind_battle_strategy(mem, cur)
+        if cur.get('step') and not (mem.get('attack') or {}).get('step'):
+            # The order id stayed unknown (ambiguous entry): only the marching
+            # sortie's kit is bound, and the record says so.
+            _record(mem, 'battle_step_resolved', **_battle_labels(cur), enemy=b.enemy, ally=b.ally,
+                    castle=cur.get('castle'), side=cur.get('side'),
+                    observed_metric={'sortie_step': cur['step']},
+                    reason='出撃注文を特定できない突入のため、同じ将軍の進軍中出撃の携行札だけを結び付け')
         planned = [t['card'] for t in _tactics(mem, cur['step'])
                    if t['enemy'] in (None, b.enemy) and t.get('step') in (None, cur['step'])
                    and not (t.get('boss_only')
