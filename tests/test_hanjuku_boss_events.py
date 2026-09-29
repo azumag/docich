@@ -62,10 +62,15 @@ def test_no_new_card_command_after_a_panel_reaches_zero(ally_hp, enemy_hp):
     initial = Screen([], None, '', battle=Battle('クイーン', 70, 'ゼウス', 74), kind='battle')
     policy.battle_step(initial, mem)
     policy.battle_step(initial, mem)
-    actions = policy.battle_step(Screen([], None, '', battle=Battle('クイーン', enemy_hp, 'ゼウス', ally_hp), kind='battle'), mem)
+    # v82 opens the clash kit from the first stable reading (g464 18:52: the
+    # clash that would make it due never comes back before the enemy egg).
+    assert mem['battle'].get('card_flow')['card'] == 'クースカン'
+    before = len(mem['_records'])
+    zero = Screen([], None, '', battle=Battle('クイーン', enemy_hp, 'ゼウス', ally_hp), kind='battle')
+    actions = policy.battle_step(zero, mem)
     assert actions == []
     assert not mem['battle'].get('card_flow')
-    assert not any(r['decision']=='battle_card' for r in mem['_records'])
+    assert not any(r['decision'] == 'battle_card' for r in mem['_records'][before:])
 
 
 def boss_loss(retries=0, side='attack', castle='けっかい', measured=True):

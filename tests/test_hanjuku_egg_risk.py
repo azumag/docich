@@ -105,13 +105,16 @@ def test_an_egg_risk_hold_is_bounded_and_then_engages():
     assert '保留上限' in mem['_records'][-1]['reason']
 
 
-def test_charted_boss_clash_mashes_despite_the_clash_egg_risk():
-    # g454 08:19: the 1-B1 queen battle held without any input under the clash
-    # egg risk, never reached after_clash and the rescue used its own egg.
+def test_charted_boss_clash_opens_the_fight_with_the_kit():
+    # g454 08:19 held with no input and never reached after_clash; g464 18:52
+    # mashed instead, the clash-position egg fired たまごをつかう and the
+    # command menu never came back (どうし 90 -> 0 with tactics_done empty).
+    # The 1-B1 kit therefore opens the fight instead of waiting for a clash.
     mem = memory(step='1-B1')
-    assert enter(panel('クイーン'), mem) == MASH
-    rec = mem['_records'][-1]
-    assert rec['decision'] == 'battle_melee' and rec['melee_control_mode'] == 'power_mash'
+    assert enter(panel('クイーン'), mem) == [policy.pad('b')]
+    assert mem['battle']['card_flow']['card'] == 'クースカン'
+    assert mem['battle']['strategy_variant'] == 'clash_kit_open_timing'
+    assert not any(r['decision'] == 'battle_melee' for r in mem['_records'])
     # Without the boss step the same panel still holds (no charted clash).
     assert enter(panel('クイーン'), memory()) == []
 

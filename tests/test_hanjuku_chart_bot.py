@@ -272,25 +272,32 @@ def test_month_plan_commentary_follows_the_actual_plan():
     assert 'クースカン' not in text
 
 
-def test_boss_tactic_waits_for_the_first_clash_then_chains_cards():
+def test_charted_boss_kit_opens_the_fight_then_chains_cards():
     mem = {'chapter': 1, 'attack': {'general': 'どうし', 'castle': 'けっかい', 'side': 'attack', 'step': '1-B1'}}
     from docich.hanjuku_screen import Battle, Screen
     screen = lambda hp: Screen(lines=[], hand=None, text='', battle=Battle('クイーン', hp, 'どうし', 90), kind='battle')
     assert policy.battle_step(screen(70), mem) == []          # first reading: wait for a stable one
-    # The charted clash is the plan: push toward it even under the clash egg
-    # risk instead of holding forever (g454 08:19 never reached after_clash).
-    mash = policy.battle_step(screen(70), mem)
-    assert mash[0]['buttons'] == ['a']
-    assert mem['_records'][-1]['melee_control_mode'] == 'power_mash'
-    assert policy.battle_step(screen(60), mem)[0]['buttons'] == ['b']
+    # The contact that makes クースカン due is the very contact that fires
+    # クイーン's clash-position egg, and after that egg the command menu never
+    # comes back (g464 18:52: melee -> たまごをつかう -> ヒュドラ -> どうし 0
+    # with tactics_done empty). The kit therefore opens the fight, like every
+    # other opening card (g462 17:59:29 pushes B from the first battle frame).
+    assert policy.battle_step(screen(70), mem) == [policy.pad('b')]
     assert mem['battle']['card_flow']['card'] == 'クースカン'
-    # A still-pending card has priority over both follow-up tactics and melee.
+    assert mem['battle']['strategy_variant'] == 'clash_kit_open_timing'
+    # The menu ask is retried instead of handing the turn back to melee, and
+    # it stays bounded (g462 17:59:31: two idle frames dropped the first card).
+    for _ in range(policy.CARD_MENU_OPEN_RETRIES):
+        assert policy.battle_step(screen(70), mem) == [policy.pad('b')]
     assert policy.battle_step(screen(60), mem) == []
-    # The after_card contract consumes confirmed-use memory, never selection.
-    mem['battle']['cards_used'] = ['クースカン']
-    mem['battle']['card_flow'] = None
+    assert mem['battle'].get('card_flow') is None
+    assert mem['battle']['cards_unclassified'] == ['クースカン']
+    # A still-unconfirmed card has priority over both follow-up tactics and
+    # melee: the after_card contract consumes use/unclassified memory, never
+    # the selection record alone.
     assert policy.battle_step(screen(30), mem) == [policy.pad('b')]
     assert mem['battle']['card_flow']['card'] == 'ノリウツール'
+    assert '未校正' in mem['_records'][-1]['reason']
 
 
 def test_quantity_editor_uses_the_digit_cursor_and_the_price_message():
@@ -569,7 +576,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v81-chikujou-hold'
+    assert state['bot_version'] == 'hanjuku-chart-v82-open-clash-kit'
     assert '_records' not in state['policy']
 
 
@@ -916,10 +923,15 @@ def test_a_chained_hp_card_does_not_early_fire_for_the_egg():
 def test_missing_and_selected_cards_do_not_confirm_use_but_chain_the_charted_follow_up():
     mem, screen = _card_evidence_battle()
     cur = mem['battle']
+    # The opening kit already claimed this fight's deviation slot (v82), so the
+    # missing-card reporting is checked on a fight with no deviation of its own.
+    cur.pop('strategy_variant', None); cur.pop('deviation_reason', None)
     cur['card_flow'] = {'card': 'クースカン', 'stage': 'list'}
     assert policy.card_list_step(_card_screen(['ノリウツール']), mem)
     assert cur['cards_used'] == [] and cur['cards_missing'] == ['クースカン']
     missing = mem['_records'][-1]
+    assert missing['decision'] == 'battle_card_missing' and missing['card'] == 'クースカン'
+    assert missing['expected_metric'] == {'carried_card': 'クースカン'}
     assert missing['strategy_variant'] == 'chart_card_unavailable' and missing['deviation_reason']
     # No ノリウツール without a confirmed クースカン; the clash proceeds.
     assert cur.get('card_flow') is None
@@ -1018,7 +1030,11 @@ def test_unconfirmed_card_flow_is_bounded_after_return_to_battle(stage):
     mem, screen = _card_evidence_battle()
     cur = mem['battle']
     cur['card_flow'] = {'card': 'クースカン', 'stage': stage}
-    policy.battle_step(screen, mem); policy.battle_step(screen, mem)
+    # The opening stage keeps asking the panel for the menu it never got
+    # (g462 17:59:29); every other stage is already past the menu ask and
+    # gives up as soon as the second observation carries no receipt.
+    for _ in range(policy.CARD_MENU_OPEN_RETRIES + 1 if stage == 'menu' else 2):
+        policy.battle_step(screen, mem)
     assert cur['card_flow'] is None
     assert cur['cards_used'] == []
     assert cur['cards_unclassified'] == ['クースカン']
