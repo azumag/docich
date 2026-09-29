@@ -27,21 +27,26 @@ class OpenCodeRetentionNowContractTest(unittest.TestCase):
         self.assertNotIn("source \"$env_file\"", text)
         self.assertIn('value not in {"0", "1"}', text)
 
-    def test_push_deploy_runs_helper_only_when_helper_changed(self):
+    def test_push_deploy_runs_bounded_reclaim_then_retention_once_per_epoch(self):
         text = WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("Run gated OpenCode retention after retention-control update", text)
+        self.assertIn("Detect one-time critical storage reclaim epoch", text)
+        self.assertIn("Run bounded storage reclaim before critical OpenCode VACUUM", text)
+        self.assertIn("Retry gated OpenCode retention after bounded reclaim", text)
         self.assertIn("github.event_name == 'push'", text)
         self.assertIn("steps.auth.outputs.operation == 'deploy'", text)
         self.assertIn("steps.auth.outputs.target == 'production'", text)
         self.assertIn(
             'git -C candidate diff --quiet "$BEFORE_SHA" "$SHA" -- '
-            'ops/vm_actions/opencode_db_retention_now.sh',
+            'ops/vm_actions/opencode_db_retention_reclaim_epoch',
             text,
         )
-        self.assertIn(
-            'cat control/ops/vm_actions/opencode_db_retention_now.sh |',
-            text,
-        )
+        self.assertIn("APPLY=1", text)
+        self.assertIn("VOICEVOX_ARCHIVE=0", text)
+        self.assertIn("AIVIS_ENGINE=0", text)
+        reclaim = text.index("Run bounded storage reclaim before critical OpenCode VACUUM")
+        retention = text.index("Retry gated OpenCode retention after bounded reclaim")
+        self.assertLess(reclaim, retention)
+        self.assertIn('cat control/ops/vm_actions/opencode_db_retention_now.sh |', text)
         self.assertIn('"exec docich production $SHA"', text)
 
     def test_ci_shell_parses_helper(self):
