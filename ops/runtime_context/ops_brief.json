@@ -1,11 +1,11 @@
 {
-  "output_sha256": "d94b314e9af6b4ff49438be19c123402909766e02514905c6c69ddbb21ce81c9",
+  "output_sha256": "a9ef00ad5ab20d416278a590ac0f69c75fab98bb988e4757185f9f0de2e2d450",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "ea6db4b4ca03d88923c7de2b93d2338ff1e4ba836a5034aa28be6cf740acbea7",
+  "source_sha256": "dcb2e61c05f74f4a02700eaf3ad52408fed3215fbef81b56d18d6e56b1809d66",
   "topics": [
-    "半熟の入力保留停止を正規手動stop＋recover-failedで復旧（配信sorengame復帰・実測）",
-    "Moon Buggy ABBA勝者の自動採用をmain/VMへ反映（実機未観測）",
-    "Moon Buggy 再同期後のfresh CI待ち"
+    "ニュース重複対策PRを作成しCI成功（レビュー・配備待ち）",
+    "ニュース反復の読み取り調査（未修正）",
+    "半熟の入力保留停止を正規手動stop＋recover-failedで復旧（配信sorengame復帰・実測）"
   ]
 }
