@@ -1,11 +1,11 @@
 {
-  "output_sha256": "a2399c85f8a35b29e5b05e215cf80dc05069fb046d00c4391d736e367b7c7d91",
+  "output_sha256": "c77689c54c6ee5fd8a2386324770cfcbae7f4912c04704da30c67a5c2c9cbdc7",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "549bbdf454c7d730dfb80e9de357ff6cf75de5f21dd9b38321490fcc2343bce4",
+  "source_sha256": "8dd88fc61a0e2a1ed52674cd2518a6e63f61934ce5f01a8e01a87750058823d1",
   "topics": [
+    "Soren改善の再失敗を検知し、検証理由付き再分析をローカル修正（本番未反映）",
     "Soren戦略改善の検証器が入力除外条件を誤判定（診断のみ・未修正）",
-    "全将軍の卵修理v83を配備し隔離試験で復旧確認（Codex、本番発火未観測）",
-    "g464のクイーン戦敗因を特定しv82（開幕クースカン）をmain・VMへ反映（opencode）"
+    "全将軍の卵修理v83を配備し隔離試験で復旧確認（Codex、本番発火未観測）"
   ]
 }
