@@ -316,7 +316,6 @@ class NethackPolicyBrain:
         is not compared. No progress memory is mutated on rejection.
         """
         from ..nethack_observation import normalize_tty
-        from ..nethack_progress import assert_production_safe
 
         self._action_validated = False
         if self._action_plan is None or fresh.game != "nethack" or fresh.adapter != "cli" or fresh.text is None:
@@ -341,7 +340,7 @@ class NethackPolicyBrain:
             ):
                 return False
         if decision is not None:
-            assert_production_safe(decision, current)
+            self.progress.assert_action_safe(decision, current, self.policy.explorer)
         # Startup has its own reviewed answers; exact-frame equality applies
         # there too, without passing gameplay y/n semantics to the startup gate.
         self._action_validated = True
