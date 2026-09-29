@@ -374,12 +374,16 @@ class TestLiveBrainHotSwap(unittest.TestCase):
                 headless_baseline_mean=100.0, headless_candidate_mean=10.0,
             )
             scorelog = state_dir / "scores" / "moon-buggy.jsonl"
+            request_id = "12345678-1234-5678-1234-567812345678"
             for score in [10, 100, 90, 20]:
-                moon_buggy_ab.select_arm(state_dir)
+                moon_buggy_ab.select_arm(state_dir, request_id=request_id)
                 moon_buggy_ab.record_score(state_dir, scorelog, score)
 
+            completed_at = moon_buggy_ab.read_experiment(state_dir)["completed_at"]
             result = run_corner_improve(
                 _G(state_dir), game="moon-buggy", date_str="2026-09-10", agents="a",
+                window=(completed_at - 1, completed_at + 1),
+                rotation_request_id=request_id,
             )
 
             self.assertEqual(result["status"], "promoted", result)
@@ -388,6 +392,18 @@ class TestLiveBrainHotSwap(unittest.TestCase):
             self.assertEqual(result["ab_candidate_mean"], 95.0)
             live = self.brain / "moon-buggy" / "weights.json"
             self.assertEqual(json.loads(live.read_text()), candidate)
+            self.assertEqual(moon_buggy_ab.read_experiment(state_dir)["status"], "promoted")
+            self.assertEqual(
+                run_corner_improve(
+                    _G(state_dir), game="moon-buggy", date_str="2026-09-10", agents="a",
+                    window=(completed_at - 1, completed_at + 1),
+                    rotation_request_id=request_id,
+                    llm=lambda _prompt: '{"laser_period": 9.0}',
+                )["status"],
+                "promoted",
+            )
+            # The detached job for the ABBA corner must not stage a fresh
+            # candidate from the same four matches after automatic adoption.
             self.assertEqual(moon_buggy_ab.read_experiment(state_dir)["status"], "promoted")
 
     def test_moon_buggy_ab_does_not_overwrite_concurrent_strategy_change(self):
@@ -404,20 +420,19 @@ class TestLiveBrainHotSwap(unittest.TestCase):
                 headless_baseline_mean=100.0, headless_candidate_mean=10.0,
             )
             scorelog = state_dir / "scores" / "moon-buggy.jsonl"
-            for score in [10, 100, 90, 20]:
+            for score in [10, 100, 90]:
                 moon_buggy_ab.select_arm(state_dir)
                 moon_buggy_ab.record_score(state_dir, scorelog, score)
             concurrent = {**baseline, "laser_period": 9.0}
             strategy = state_dir / "resolver" / "moon-buggy_strategy.json"
             strategy.parent.mkdir(parents=True, exist_ok=True)
             strategy.write_text(json.dumps(concurrent), encoding="utf-8")
-
-            result = run_corner_improve(
-                _G(state_dir), game="moon-buggy", date_str="2026-09-10", agents="a",
-            )
+            moon_buggy_ab.select_arm(state_dir)
+            result = moon_buggy_ab.record_score(state_dir, scorelog, 20)
 
             self.assertEqual(result["status"], "kept")
             self.assertEqual(result["reason_code"], "ab-baseline-changed")
+            self.assertEqual(moon_buggy_ab.read_experiment(state_dir)["status"], "kept")
             self.assertEqual(json.loads(strategy.read_text()), concurrent)
             self.assertFalse((self.brain / "moon-buggy" / "weights.json").exists())
 
