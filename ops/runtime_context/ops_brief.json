@@ -1,11 +1,11 @@
 {
-  "output_sha256": "5df986169e05c6a35a1f679a8fc76d9e654dbd46055e2c4bd02be9c37dc13c2f",
+  "output_sha256": "75fbd0af9114310e7a876d905ff62d0073b7ccc14d9cf1d6662751b51367177b",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "381bf982771c8086a7dc72fa3c4cedf765d2c80bd9225fc6e7dd81842622d8d3",
+  "source_sha256": "082ab6b2a57381a4c408dbfcaf48073bc6d322e0b9d35c0ffe0c9e8b5e426b58",
   "topics": [
-    "全将軍の卵修理v83を配備し隔離試験で復旧確認（Codex、本番発火未観測）",
-    "g464のクイーン戦敗因を特定しv82（開幕クースカン）をmain・VMへ反映（opencode）",
-    "半熟終了後のTwitchカテゴリ不一致報告を確認（Codex）"
+    "Soren分析再試行をmain統合し正規配布を準備",
+    "Soren分析再試行のPR作成とCI成功（main統合・本番反映は保留）",
+    "Soren改善の再失敗を検知し、検証理由付き再分析をローカル修正（本番未反映）"
   ]
 }
