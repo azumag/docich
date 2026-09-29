@@ -111,6 +111,57 @@ class NethackRunStoreTest(unittest.TestCase):
             0o600,
         )
 
+    def test_progress_samples_are_bounded_private_and_run_scoped(self):
+        run = self.start()
+        sample = {
+            "ts": self.now.timestamp() + 1,
+            "phase": "sent",
+            "turn": 1,
+            "depth": 1,
+            "hp": 12,
+            "hp_max": 12,
+            "conditions": [],
+            "prompt": "none",
+            "player": [3, 4],
+            "intent": "explore_step",
+            "resolved_intent": "explore_step",
+            "key": "l",
+            "frame_hash": "a" * 64,
+            "map_hash": "b" * 64,
+        }
+        self.assertTrue(self.store.append_progress_sample(sample))
+        trace = self.g.state_dir / "nethack" / "progress" / f"{run['run_id']}.jsonl"
+        self.assertEqual(trace.stat().st_mode & 0o777, 0o600)
+        record = json.loads(trace.read_text(encoding="utf-8"))
+        self.assertEqual(record["phase"], "sent")
+        self.assertNotIn("raw_text", record)
+        self.assertEqual(
+            (self.g.state_dir / "nethack" / "progress").stat().st_mode & 0o777,
+            0o700,
+        )
+
+    def test_progress_samples_reject_raw_terminal_content(self):
+        self.start()
+        sample = {
+            "ts": self.now.timestamp(),
+            "phase": "hold",
+            "turn": None,
+            "depth": None,
+            "hp": None,
+            "hp_max": None,
+            "conditions": [],
+            "prompt": "unknown",
+            "player": None,
+            "intent": "prompt_decision",
+            "resolved_intent": "prompt_decision",
+            "key": None,
+            "frame_hash": "a" * 64,
+            "map_hash": "b" * 64,
+            "raw_text": "secret tty",
+        }
+        with self.assertRaises(NethackRunError):
+            self.store.append_progress_sample(sample)
+
     def test_suspend_and_resume_keep_same_expedition(self):
         first = self.start()
         (self.save_dir / "1000docich").write_bytes(b"save")

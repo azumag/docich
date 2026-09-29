@@ -66,6 +66,12 @@ corners = [
   { id = "meriken", adapter = "meriken", game = "soren91" },
 ]
 
+[nethack_corner]
+# NetHackの固定時刻cornerは無効のまま、毎朝のローカルretrospectiveだけ有効化する。
+enabled = false
+daily_improvement = true
+daily_improvement_timezone = "Asia/Tokyo"
+
 # docich側canonicalがidleなら、終了時はstopして背景のSorenへ自然に戻る。
 [retro_corner]
 enabled = true

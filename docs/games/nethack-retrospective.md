@@ -1,8 +1,10 @@
-# NetHack retrospective / lessons memory (P5a)
+# NetHack retrospective / daily strategy candidates (P5a + daily)
 
 P5aは、終了したNetHack遠征について **事実ベースのpostmortem** を作り、次の改善段階で使うcandidate lessonを永続化する。
 
-この段階ではlessonを攻略policyへ自動適用しない。
+retrospective自体はローカルに保存する。日次処理は設定済みAI委任先へ、終了区分・score・turn/depth・HP比率・phase/intent/keyの集計だけを送り、canary用catalog候補を作る。生TTY、画面/map、run ID、死因の生文字列は送らない。
+
+候補はseed-paired隔離canary評価待ちとして保存され、production policyへ自動適用しない。
 
 ## Source of truth
 
@@ -25,6 +27,12 @@ P5aはdeath reasonを推測しない。
 `ended_unknown` の場合は「terminal evidence不足」というcandidateだけを作り、架空の死因や戦略原因を生成しない。
 
 ## Additional evidence
+
+### Progress trace
+
+NetHack brainは、persistent runがactiveの間、送信キー・policy/resolved intent・HP・階層・状態異常・prompt種別と画面/mapのSHA-256だけをrun単位で記録する。raw TTYは保存しない。`state_dir/nethack/progress/<run_id>.jsonl` は2MiB/run、0600 file / 0700 directoryで上限を持ち、記録失敗はゲーム操作を止めない。
+
+retrospectiveはtraceからturn/depth/HP・intent/key集計と同一画面への反復送信を要約する。daily provider requestは既知intent・ASCII key・数値集計だけを許し、run ID・timestamp・生画面を含めない。
 
 ### Strategist advisory
 
@@ -171,6 +179,14 @@ bin/docich --config config/docich.soren-live.toml \
 
 stdoutにはretrospective JSONを1件出す。
 
+日次候補生成はproduction profileで次を実行する。
+
+```bash
+bin/docich --config config/docich.soren-live.toml nethack-daily-improve
+```
+
+canonical user timer `docich-nethack-daily-improve.timer` は毎日05:10 JSTに実行する。完了済みの未処理runがない日はproviderを呼ばない。最大8 runを1日あたり処理し、結果は `state_dir/nethack/daily-improvements/YYYY-MM-DD.json`、変更catalogは同じディレクトリの `candidates/` に保存する。候補statusは `pending_canary_evaluation` で、productionへ反映するには既存の隔離評価と明示的な昇格が別途必要。
+
 ## P5aで行わないこと
 
 - candidate lessonをpolicyへ自動反映
@@ -180,8 +196,4 @@ stdoutにはretrospective JSONを1件出す。
 - run evidenceがない教訓の生成
 - 既存NetHack save/xlogfileの変更
 
-## 次
-
-P5bではterminal run確定後にretrospectiveを自動起動し、番組終了時に「今回の死因と次回の改善候補」を短く読み上げられるようにする。
-
-P5cではcandidate lessonを回帰fixtureへ変換し、評価で改善が確認できたlessonだけをversioned policy候補へ昇格する。昇格/rollbackは別の明示操作とする。
+日次処理が行うのは、結果・経過の分析と隔離canary候補の生成までである。ゲーム実行、TTY送信、production policy変更は行わない。

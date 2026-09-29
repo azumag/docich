@@ -101,6 +101,7 @@ def build_proposal_request(
     allowed_effects: frozenset[str],
     allowed_action_ids: frozenset[str] | None = None,
     constraints: tuple[str, ...] = (),
+    evidence: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     allowed_new_action_effects = sorted(
         effect for effect in allowed_effects if effect != GENERIC_LITERAL_EFFECT
@@ -128,6 +129,8 @@ def build_proposal_request(
     if allowed_action_ids is not None:
         # Deprecated P6f field, kept for backward-compatible readers.
         request["allowed_actions"] = sorted(allowed_action_ids)
+    if evidence is not None:
+        request["evidence"] = dict(evidence)
     return request
 
 
@@ -182,6 +185,27 @@ def _validate_candidate_contract(
             raise CatalogProposalError(f"proposer catalog changed fixed key_pattern for {spec_id}")
 
 
+def validate_catalog_proposal(
+    request: Mapping[str, object],
+    response: object,
+    *,
+    allowed_effects: frozenset[str],
+    allowed_action_ids: frozenset[str] | None = None,
+) -> tuple[ActionSpec, ...]:
+    """Validate decoded JSON with the same contract as the command API."""
+    baseline = _proposal_baseline(
+        request, allowed_effects=allowed_effects, allowed_action_ids=allowed_action_ids
+    )
+    try:
+        candidate = parse_action_catalog(
+            response, allowed_effects=allowed_effects, allowed_action_ids=allowed_action_ids
+        )
+    except ValueError as exc:
+        raise CatalogProposalError(f"proposer catalog is invalid: {exc}") from exc
+    _validate_candidate_contract(baseline, candidate)
+    return candidate
+
+
 @dataclass(frozen=True)
 class CommandCatalogProposer:
     """Run an external command that turns a proposal request into a catalog."""
@@ -230,11 +254,9 @@ class CommandCatalogProposer:
             raw = json.loads(bytes(stdout).decode("utf-8", "strict"))
         except (UnicodeError, json.JSONDecodeError) as exc:
             raise CatalogProposalError("proposer response is not valid JSON") from exc
-        try:
-            candidate = parse_action_catalog(
-                raw, allowed_effects=allowed_effects, allowed_action_ids=allowed_action_ids
-            )
-        except ValueError as exc:
-            raise CatalogProposalError(f"proposer catalog is invalid: {exc}") from exc
-        _validate_candidate_contract(baseline, candidate)
-        return candidate
+        return validate_catalog_proposal(
+            request,
+            raw,
+            allowed_effects=allowed_effects,
+            allowed_action_ids=allowed_action_ids,
+        )

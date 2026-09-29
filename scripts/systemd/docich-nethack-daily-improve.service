@@ -1,0 +1,12 @@
+[Unit]
+Description=docich NetHack daily local strategy retrospective
+After=network.target
+
+[Service]
+Type=oneshot
+Environment=XDG_RUNTIME_DIR=%t
+Environment=DOCICH_ALLOW_REAL_AI=1
+WorkingDirectory=__DOCICH_ROOT__
+ExecStart=__DOCICH_ROOT__/bin/docich --config __DOCICH_ROOT__/config/docich.soren-live.toml nethack-daily-improve
+UMask=0077
+TimeoutStartSec=25min

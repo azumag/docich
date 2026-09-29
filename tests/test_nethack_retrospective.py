@@ -12,6 +12,7 @@ from docich.nethack_retrospective import (
     NethackRetrospectiveEngine,
     normalize_death_signature,
 )
+from docich.nethack_run import PROGRESS_SCHEMA_VERSION  # noqa: E402
 
 
 class TestDeathSignature(unittest.TestCase):
@@ -186,6 +187,43 @@ class TestRetrospectiveEngine(unittest.TestCase):
         self.assertEqual(evidence["file"], dump.name)
         self.assertLessEqual(len(evidence["tail_excerpt"]), 12)
         self.assertEqual(len(evidence["tail_sha256"]), 64)
+
+    def test_progress_trace_is_summarized_without_raw_terminal_text(self) -> None:
+        run = self.make_run(1)
+        progress_dir = self.state / "nethack" / "progress"
+        progress_dir.mkdir(parents=True)
+        start = run["started_epoch"]
+        samples = []
+        for offset in (10, 12, 20):
+            turn = 42 if offset < 20 else 43
+            samples.append({
+                "schema_version": PROGRESS_SCHEMA_VERSION,
+                "ts": start + offset,
+                "phase": "sent",
+                "turn": turn,
+                "depth": 3,
+                "hp": 3 if offset < 20 else 2,
+                "hp_max": 12,
+                "conditions": [],
+                "prompt": "none",
+                "player": [4, 5],
+                "intent": "explore_step",
+                "resolved_intent": "explore_step",
+                "key": "h",
+                "frame_hash": "a" * 64 if offset < 20 else "b" * 64,
+                "map_hash": "c" * 64,
+            })
+        trace = progress_dir / f"{run['run_id']}.jsonl"
+        trace.write_text("".join(json.dumps(item) + "\n" for item in samples), encoding="utf-8")
+
+        result = NethackRetrospectiveEngine(self.g).generate(run_id=run["run_id"], now=self.now)
+        progress = result["progress_evidence"]
+        self.assertEqual(progress["sample_count"], 3)
+        self.assertEqual(progress["same_frame_sent_pairs"], 1)
+        self.assertEqual(progress["max_same_frame_sent_streak"], 2)
+        self.assertEqual(progress["min_hp_ratio"], 0.167)
+        self.assertEqual(progress["sent_key_counts"], {"h": 3})
+        self.assertNotIn("raw_text", json.dumps(progress))
 
     def test_ended_unknown_never_invents_death_reason(self) -> None:
         run = self.make_run(1, status="ended_unknown", death=None)
