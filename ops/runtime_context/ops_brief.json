@@ -2,7 +2,7 @@
   "output_sha256": "7b02c1d1ec3f5efe98267639138f7c663795b3bba318f6d8759be5f84f68cb9f",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "df32f423950519b2f97f8f5383d0caf6adf676a73d84182c123f2f988d8dfb67",
+  "source_sha256": "6f0e059de3082b7721e6eaad7b2e28ed44f8efba66354185166d269807c639b7",
   "topics": [
     "半熟v90札一覧の途中描画を不足と区別（配備準備）",
     "チャート遵守v89を同一g490へホットロード",

@@ -2488,3 +2488,18 @@ def test_boss_selected_card_hp_drop_chains_without_idle_frames(selected, enemy_h
         assert cur['card_consumption_complete'] is False
     else:
         assert out == []
+
+
+def test_month_gift_request_with_three_prices_is_not_a_merchant_list():
+    from docich.hanjuku_screen import parse
+    c = Canvas((20, 20, 20))
+    c.text(16, 176, 'だからなんかかって。')
+    for y, label in [(176, 'エンドマン50G'), (192, 'みずまき100G'), (208, 'スカラーベ200G')]:
+        c.text(160, y, label)
+    screen = parse(c.frame())
+    assert screen.kind == 'gift_request'
+    mem = {'chapter': 1, '_records': []}
+    screen.hand = (138, 169, 156, 181)
+    assert policy.gift_step(screen, mem) == [policy.pad('a')]
+    assert mem['_records'][-1]['decision'] == 'gift'
+    assert mem['_records'][-1]['price'] == 50

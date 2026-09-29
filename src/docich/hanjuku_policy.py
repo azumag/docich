@@ -5368,7 +5368,9 @@ def gift_step(screen: Screen, mem):
     it buys the cheapest listed item and records the deviation."""
     items = []
     for line in screen.lines:
-        joined = ''.join(line.words(64, 256))
+        # The live gift prompt shares the first price row. Restrict the
+        # item/price to the right menu, not the dialogue at its left.
+        joined = ''.join(word for x, word in line.spans() if x >= 144)
         m = re.match(r'^(\S+?)(\d+)G$', joined)
         if m and not HEADER_RE.search(line.known.replace(' ', '')):
             items.append((int(m.group(2)), m.group(1)))
