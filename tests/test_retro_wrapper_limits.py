@@ -75,6 +75,56 @@ raise SystemExit(1)
     keys = [json.loads(line) for line in (tmp_path / "keys").read_text().splitlines()]
     start_key = "Space" if game == "ninvaders" else "Enter"
     assert keys.count(["-t", "%9", start_key]) == (1 if save_fails else limit)
+    if game == "nsnake":
+        speed_key = ["-t", "%9", "3"]
+        assert keys.count(speed_key) == 1
+        assert keys.index(speed_key) < keys.index(["-t", "%9", "Enter"])
+
+
+def test_nsnake_wrapper_uses_speed_override_before_start(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_tmux = bin_dir / "tmux"
+    fake_tmux.write_text(f"#!{sys.executable}\n" + '''import json, os, sys
+if sys.argv[1] == "capture-pane":
+    print("Main Menu")
+elif sys.argv[1] == "send-keys":
+    with open(os.environ["FAKE_KEYS"], "a", encoding="utf-8") as stream:
+        stream.write(json.dumps(sys.argv[2:]) + "\\n")
+''')
+    fake_tmux.chmod(0o700)
+    fake_game = bin_dir / "game"
+    fake_game.write_text(f"#!{sys.executable}\n" + '''import os, pathlib, time
+keys = pathlib.Path(os.environ["FAKE_KEYS"])
+deadline = time.monotonic() + 3
+while time.monotonic() < deadline:
+    try:
+        if len(keys.read_text(encoding="utf-8").splitlines()) >= 2:
+            raise SystemExit(0)
+    except FileNotFoundError:
+        pass
+    time.sleep(0.005)
+raise SystemExit(1)
+''')
+    fake_game.chmod(0o700)
+    keys_file = tmp_path / "keys.jsonl"
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "TMUX_PANE": "%9",
+        "FAKE_KEYS": str(keys_file),
+        "NSNAKE_BIN": str(fake_game),
+        "NSNAKE_DRIVER_INTERVAL": "0.02",
+        "NSNAKE_SPEED": "4",
+        "NSNAKE_SCORELOG": str(tmp_path / "scores.jsonl"),
+    }
+    result = subprocess.run(
+        ["/bin/sh", str(ROOT / "games/cli-wrappers/nsnake_docich.sh")],
+        env=env, capture_output=True, text=True, timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    keys = [json.loads(line) for line in keys_file.read_text(encoding="utf-8").splitlines()]
+    assert keys == [["-t", "%9", "4"], ["-t", "%9", "Enter"]]
 
 
 @pytest.mark.parametrize("game", ["ninvaders", "nsnake"])
@@ -85,6 +135,17 @@ def test_wrapper_rejects_invalid_limits(game, value):
                             env=env, capture_output=True, text=True, timeout=5)
     assert result.returncode == 2
     assert "positive integer" in result.stderr
+
+
+@pytest.mark.parametrize("value", ["0", "10", "abc", "01", " 3"])
+def test_nsnake_wrapper_rejects_invalid_speed(value):
+    env = {**os.environ, "NSNAKE_SPEED": value}
+    result = subprocess.run(
+        ["/bin/sh", str(ROOT / "games/cli-wrappers/nsnake_docich.sh")],
+        env=env, capture_output=True, text=True, timeout=5,
+    )
+    assert result.returncode == 2
+    assert "NSNAKE_SPEED must be an integer from 1 to 9" in result.stderr
 
 
 @pytest.mark.parametrize("env_prefix,script_name", [
