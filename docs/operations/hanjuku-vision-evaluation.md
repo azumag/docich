@@ -2,7 +2,7 @@
 
 ## 目的と境界
 
-`ops/vm_actions/evaluate_hanjuku_vision.py` は、#1302 の経路で取得・復号した
+`ops/vm_actions/evaluate_hanjuku_vision.py` は、Issue #1339の取得経路（または既存の暗号化経路）で検証した
 終了済みランのZIPを、**受信側だけで**評価する。既存 `verify_archive()` による
 終了証拠、固定収集対象、ファイルSHA、RGB SHA、ZIP種別・サイズの検査を再使用する。
 画像はメモリ内で読む。ZIPの展開、ゲーム起動、入力送信、VM接続、モデル呼出し、
@@ -10,22 +10,24 @@
 
 このツールは取得経路や権限の代替ではない。取得前のcanonical非稼働確認・共有lockは
 #1302のexport側が担当する。GitHub run/attempt/SHA/actor/artifactの照合と
-`receive_hanjuku_evidence.py` による認証付き復号を先に完了する。
+`receive_hanjuku_evidence.verify_archive()` による検証を先に完了する。
+既存のCMS経路を使う場合だけ、同ツールによる認証付き復号も必要となる。
 **ZIPのハッシュ整合性だけでは本番由来とは証明できない。**
 
-暗号化取得workflowが使えない場合に、汎用exec/diagnosticsで平文を取り出さない。
-秘密鍵は受信側にだけ保持し、VM・リポジトリ・Actions artifactへ置かない。
+取得workflowが使えない場合に、汎用exec/diagnosticsへfallbackしない。
+Issueコメント経路は平文artifactを1日保持し、ユーザーの鍵管理を必要としない。
 
 ## 準備
 
 レビュー済みcheckoutのルートで、新規のCLIプロセスとして実行する。
 以下の `g12-12345678` は説明用であり、実際に要求・検証したruntime IDに置き換える。
-`$PRIVATE` はリポジトリ外の本人専用ディレクトリ（0700）。ZIP、ラベル、評価結果は
-私的データを含み得るため、公開PR・CI artifact・ログへアップロードしない。
+`$PRIVATE` は本人専用の作業ディレクトリ（0700）。ユーザー判断により、ゲーム画像と
+scrub済みゲームログの平文Actions artifactを許可する。秘密情報・ROM・セーブは含めず、
+本文をActionsログへ流さない。評価の出典としてrun/attempt/SHAと画像ハッシュを残す。
 出力は0600で新規作成し、既存ファイルを上書きしない。
 
 ```sh
-# evidence.zip は既存の受信ツールで検証・復号済みであること。
+# evidence.zip は固定Issue経路で取得し、manifestとハッシュを検証済みであること。
 python3 ops/vm_actions/evaluate_hanjuku_vision.py \
   --archive "$PRIVATE/evidence.zip" --runtime-id g12-12345678 \
   --prepare holdout --output "$PRIVATE/labels.json"
