@@ -289,13 +289,12 @@ def test_charted_boss_kit_waits_for_clash_then_chains_cards():
         assert policy.battle_step(screen(70), mem) == [policy.pad('b')]
     assert policy.battle_step(screen(60), mem) == []
     assert mem['battle'].get('card_flow') is None
-    assert mem['battle']['cards_unclassified'] == ['クースカン']
-    # A still-unconfirmed card has priority over both follow-up tactics and
-    # melee: the after_card contract consumes use/unclassified memory, never
-    # the selection record alone.
+    assert mem['battle']['cards_unclassified'] == []
+    assert not mem.get('kit_spent')
+    # Opening never reached a selection: retry the first chart card, without
+    # falsely unlocking the dependent ノリウツール.
     assert policy.battle_step(screen(30), mem) == [policy.pad('b')]
-    assert mem['battle']['card_flow']['card'] == 'ノリウツール'
-    assert '未校正' in mem['_records'][-1]['reason']
+    assert mem['battle']['card_flow']['card'] == 'クースカン'
 
 
 def test_quantity_editor_uses_the_digit_cursor_and_the_price_message():
@@ -574,7 +573,7 @@ def test_decide_emits_records_and_never_calls_models(monkeypatch):
     actions, state = decide(name_screen(cell='ど'), {})
     assert actions[0]['buttons'] == ['a']
     assert state['_records'][0]['decision'] == 'name_type'
-    assert state['bot_version'] == 'hanjuku-chart-v90-card-list-evidence'
+    assert state['bot_version'] == 'hanjuku-chart-v91-unselected-card-retry'
     assert '_records' not in state['policy']
 
 
@@ -1035,7 +1034,9 @@ def test_unconfirmed_card_flow_is_bounded_after_return_to_battle(stage):
         policy.battle_step(screen, mem)
     assert cur['card_flow'] is None
     assert cur['cards_used'] == []
-    assert cur['cards_unclassified'] == ['クースカン']
+    assert cur['cards_unclassified'] == []
+    assert not mem.get('kit_spent')
+    assert mem['_records'][-1]['decision'] == 'battle_card_open_unclassified'
 
 def test_hp_defeat_followed_by_living_hero_does_not_count_a_general_loss():
     from docich.hanjuku_screen import Screen
@@ -2118,6 +2119,8 @@ def test_month_background_does_not_end_active_recruit_dialogue(monkeypatch):
     sc.hand=(160,177,177,189)  # a bottom dialogue cursor is also not the menu
     assert not policy.month_menu_ready(sc)
     sc.hand=(160,41,177,53)
+    assert not policy.month_menu_ready(sc)  # g496 retained this background hand
+    sc.lines=[line for line in sc.lines if line.y < 175]
     assert policy.month_menu_ready(sc)
 
 
@@ -2503,3 +2506,88 @@ def test_month_gift_request_with_three_prices_is_not_a_merchant_list():
     assert policy.gift_step(screen, mem) == [policy.pad('a')]
     assert mem['_records'][-1]['decision'] == 'gift'
     assert mem['_records'][-1]['price'] == 50
+
+
+@pytest.mark.parametrize('stage', ['menu', 'down', 'list', 'announce'])
+def test_unselected_card_return_never_spends_kit_or_unlocks_after_card(stage):
+    mem, screen = _card_evidence_battle()
+    cur = mem['battle']
+    tid = cur['card_flow']['tactic_id']
+    cur['tactics_done'] = [tid]
+    cur['card_flow'] = {'card': 'クースカン', 'stage': stage, 'tactic_id': tid}
+    policy._card_use_unclassified(mem, cur, '白兵へ復帰')
+    assert cur['cards_selected'] == []
+    assert cur['cards_unclassified'] == []
+    assert not mem.get('kit_spent')
+    assert cur['card_flow'] is None
+    assert cur['tactics_done'] == []
+    assert mem['_records'][-1]['decision'] == 'battle_card_open_unclassified'
+    assert mem['_records'][-1]['observed_metric']['retry_allowed'] is True
+    out = policy.battle_step(screen, mem)
+    assert out == [policy.pad('b')]
+    assert cur['card_flow']['card'] == 'クースカン'  # not dependent ノリウツール
+
+
+def test_unselected_chart_open_retry_is_bounded_and_keeps_the_carried_card():
+    mem, screen = _card_evidence_battle()
+    cur = mem['battle']
+    tid = cur['card_flow']['tactic_id']
+    cur['tactics_done'] = [tid]
+    for attempt in (1, 2):
+        cur['card_flow'] = {'card': 'クースカン', 'stage': 'menu', 'tactic_id': tid}
+        policy._card_use_unclassified(mem, cur, '表示待ち上限')
+        assert cur['card_open_failures'][tid] == attempt
+        if attempt == 1:
+            assert policy.battle_step(screen, mem) == [policy.pad('b')]
+    assert cur['tactics_done'] == [tid]
+    assert not mem.get('kit_spent')
+    assert cur['cards_unclassified'] == []
+    assert mem['_records'][-1]['observed_metric']['retry_allowed'] is False
+    for _ in range(5):
+        policy.battle_step(screen, mem)
+        assert cur.get('card_flow') is None
+
+
+def test_selected_unconfirmed_card_still_spends_and_chains_once():
+    mem, screen = _card_evidence_battle()
+    cur = mem['battle']
+    tid = cur['card_flow']['tactic_id']
+    cur['tactics_done'] = [tid]
+    cur['card_flow'] = {'card': 'クースカン', 'stage': 'list'}
+    policy.card_list_step(_card_screen(['クースカン']), mem)
+    policy._card_use_unclassified(mem, cur, '告知未確認')
+    assert mem['kit_spent']['1-B1'] == ['クースカン']
+    assert cur['cards_unclassified'] == ['クースカン']
+    assert cur['tactics_done'] == [tid]
+    assert policy.battle_step(screen, mem) == [policy.pad('b')]
+    assert cur['card_flow']['card'] == 'ノリウツール'
+
+
+
+def test_recruit_intro_with_upper_background_hand_resumes_only_guarded_flow():
+    sc = recruit_overlay_screen()
+    sc.hand = (115, 41, 132, 54)
+    mem = recruit_overlay_memory()
+    assert policy.month_step(sc, mem) == [policy.pad('a')]
+    assert mem['month_sub']['kind'] == 'recruit'
+    assert not policy.month_menu_ready(sc)
+    for gold, soldiers in ((49, 99), (158, 60)):
+        sc.header['gold'] = gold
+        guarded = recruit_overlay_memory()
+        guarded['shop']['soldiers'] = soldiers
+        assert policy.month_step(sc, guarded) == []
+        assert not guarded.get('month_sub')
+
+
+@pytest.mark.parametrize('hand', [None, (115, 41, 132, 54)])
+def test_measured_recruit_goodbye_closes_without_navigating_background(hand):
+    from docich.hanjuku_font import TextLine
+    sc = recruit_overlay_screen()
+    sc.lines = [line for line in sc.lines if line.y < 175]
+    sc.lines.extend(TextLine(183+16*i, tuple((8+8*j,ch) for j,ch in enumerate(w)))
+                    for i,w in enumerate(['それではまたのきかいに。', 'ごようのさいはいつでもおまかせを。']))
+    sc.hand = hand
+    mem = recruit_overlay_memory()
+    assert not policy.month_menu_ready(sc)
+    assert policy.month_step(sc, mem) == [policy.pad('a')]
+    assert mem['_records'][-1]['decision'] == 'month_recruit_goodbye'

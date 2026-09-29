@@ -1,11 +1,11 @@
 {
-  "output_sha256": "302807c97331a571bfe35cf18177f7d60030fc464378c9b14a6bd1c443ad7aab",
+  "output_sha256": "fbe60a9452d9314a7d9b96ac1acbef5c063d09970f7dede58e2e212e737608f6",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "2c377c0391257b8bc1845876a697cfef996c1e6297402c259c9f4c94f02a365d",
+  "source_sha256": "dad5dff1c3f11033dc616ef6234e4bef60c27103b1e3667d10250c5977ffe2c1",
   "topics": [
+    "半熟v91未選択札・2枚連携・募集停滞を修正準備",
     "半熟の次枠予約配備・v90新ラン入力・確認間隔30分",
-    "半熟英雄の次枠手動予約を実装・配備準備",
-    "半熟v90配備照合完了・Paper終了待ち"
+    "半熟英雄の次枠手動予約を実装・配備準備"
   ]
 }

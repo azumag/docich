@@ -680,7 +680,8 @@ def test_an_unclassified_card_use_leaves_the_sortie_kit():
     mem['launched_orders'] = {'I:x:1': order}
     for _ in range(2):
         policy._card_use_unclassified(
-            mem, {'step': 'I:x:1', 'cards_unclassified': [], 'card_flow': {'card': 'イッテツーン'}},
+            mem, {'step': 'I:x:1', 'cards_selected': ['イッテツーン'], 'cards_unclassified': [],
+                  'card_flow': {'card': 'イッテツーン', 'stage': 'announce', 'selection_planned': True}},
             '実使用告知を確認できないまま白兵戦へ復帰')
     assert mem['kit_spent'] == {'I:x:1': ['イッテツーン', 'イッテツーン']}
     assert policy._deploy_cards(order, mem) == []
@@ -1115,3 +1116,35 @@ def test_an_answer_with_no_startable_order_is_invalid(tmp_path):
         adjust.save(tmp_path, doc, request)
     assert adjust.load(tmp_path) is None
     assert adjust.save(tmp_path, doc)['orders'][0]['step'] == 'J1'   # no request: unchanged behaviour
+
+
+
+def test_two_carried_unverified_cards_keep_distinct_identity_after_first_selection():
+    from docich.hanjuku_screen import Battle, Screen
+    from docich.hanjuku_font import TextLine
+    order = {'step': 'I:pair:1', 'general': 'ヴィーナス', 'source': 'カストーラ',
+             'target': 'キカンドン', 'cards': ['イッテツーン', 'イッテツーン'], 'after': None}
+    mem = {'chapter': 1, 'launched_orders': {'I:pair:1': order},
+           'attack': {'general': 'ヴィーナス', 'castle': 'キカンドン', 'side': 'attack', 'step': 'I:pair:1'}}
+    battle = Screen(lines=[], hand=None, text='', kind='battle',
+                    battle=Battle('ガルバンゾー', 30, 'ヴィーナス', 82))
+    policy.battle_step(battle, mem)
+    assert policy.battle_step(battle, mem) == [policy.pad('b')]
+    cur = mem['battle']
+    first = cur['card_flow']['tactic_id']
+    for expected_remaining in (1, 0):
+        cur['card_flow']['stage'] = 'list'
+        listing = Screen(lines=[TextLine(176, tuple((176+8*i,c) for i,c in enumerate('イッテツーン')))],
+                         hand=(150,170,172,186), text='イッテツーン', kind='text')
+        assert policy.card_list_step(listing, mem) == [policy.pad('a')]
+        policy._card_use_unclassified(mem, cur, '選択後の告知未確認')
+        assert len(policy._deploy_cards(order, mem)) == expected_remaining
+        out = policy.battle_step(battle, mem)
+        if expected_remaining:
+            assert out == [policy.pad('b')]
+            assert cur['card_flow']['card'] == 'イッテツーン'
+            assert cur['card_flow']['tactic_id'] != first
+        else:
+            assert cur['card_flow'] is None
+    assert mem['kit_spent']['I:pair:1'] == ['イッテツーン', 'イッテツーン']
+    assert len(set(cur['tactics_done'])) == 2
