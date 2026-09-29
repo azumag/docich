@@ -2,7 +2,7 @@
   "output_sha256": "ce02745736693bac9650cbac5b301d963110375d2cbd61aeb7f8133dc9ff3ae5",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "d0ae85bfa6bea92743485bb0cb6c392a30f6577c822c1f14fa95797cc39638a8",
+  "source_sha256": "547555f9f7adbebdcd5b3d4bd40ee8693eb8ed0b2c7643ca5a9a57f6218b2ab8",
   "topics": [
     "g454 切り札一覧の未知札で画面停止→v73修正・ホットロード復帰（opencode）",
     "g454 二話進行失敗の修正（v72）とライブ復帰（opencode）",
