@@ -161,12 +161,19 @@ def ask_interim(runtime: Path, state: dict, obs_meta: dict, *, settings=None, as
 
 
 def observation_interval_ms(state):
-    """Short feedback cycles only for readable, living human melee panels."""
+    """Short feedback for living melee and its in-flight card command.
+
+    g486: slowing to 1500 ms as soon as B planned a card let the Queen
+    summon between the chained B and its next readable command menu.
+    Keep the existing allowed 500 ms cycle across card-menu fades too.
+    """
     policy=state.get('policy') or {}
     battle=policy.get('battle') or {}
     living=all(type(battle.get(k)) is int and battle[k]>0 for k in ('ally_hp','enemy_hp'))
-    if (state.get('screen_kind')=='battle' and living
-            and not policy.get('egg_battle') and not battle.get('card_flow')):
+    if (living and not policy.get('egg_battle')
+            and (state.get('screen_kind') == 'battle'
+                 or (battle.get('card_flow') and state.get('screen_kind') in
+                     {'unknown', 'text', 'battle_menu'}))):
         return 500
     return 1500
 

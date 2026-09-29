@@ -30,11 +30,29 @@ def test_short_feedback_only_for_living_human_melee():
     for kind in ('unknown', 'text', 'battle_menu', 'egg_battle_menu', 'monster_menu', 'name_entry', 'map'):
         assert entry.observation_interval_ms({**state, 'screen_kind': kind}) == 1500
     for flag, value in [('egg_battle', True), ('battle', {'ally_hp': 0, 'enemy_hp': 15}),
-                        ('battle', {'ally_hp': None, 'enemy_hp': 15}),
-                        ('battle', {'ally_hp': 90, 'enemy_hp': 90, 'card_flow': {'stage': 'menu'}})]:
+                        ('battle', {'ally_hp': None, 'enemy_hp': 15})]:
         changed = melee_state()
         changed['policy'][flag] = value
         assert entry.observation_interval_ms(changed) == 1500
+
+
+@pytest.mark.parametrize('stage', ['menu', 'cards', 'announce'])
+@pytest.mark.parametrize('kind', ['battle', 'unknown', 'text', 'battle_menu'])
+def test_card_chain_keeps_short_feedback_across_command_fades(stage, kind):
+    state = melee_state()
+    state['screen_kind'] = kind
+    state['policy']['battle']['card_flow'] = {'stage': stage, 'card': 'クースカン'}
+    assert entry.observation_interval_ms(state) == 500
+    state['policy']['egg_battle'] = True
+    assert entry.observation_interval_ms(state) == 1500
+
+
+def test_card_flow_does_not_speed_up_field_or_resolved_battle():
+    state = melee_state()
+    state['policy']['battle']['card_flow'] = {'stage': 'menu'}
+    assert entry.observation_interval_ms({**state, 'screen_kind': 'map'}) == 1500
+    state['policy']['battle']['ally_hp'] = 0
+    assert entry.observation_interval_ms(state) == 1500
 
 
 @pytest.mark.parametrize('name,scripted,interval,expected', [

@@ -3120,50 +3120,9 @@ def battle_step(screen: Screen, mem):
         # strategy never fires its second card (1-B1: クースカン→ノリウツール)
         # and the queen summons. The chain is recorded as a deviation.
         attempted = [*cur['cards_used'], *(cur.get('cards_unclassified') or [])]
-        # Egg-denial timing (owner 2026-09-29): against an enemy whose clash
-        # triggers its egg, an HP-gated card that is the fight's only charted
-        # card cannot wait for the gate -- the clash comes first and the enemy
-        # summons (g460 16:08: ココット's 1-C2 ダイチスイム at enemy HP13 came
-        # after the clash and ガルバンゾー summoned カメレオンマン). Such a card
-        # opens the fight instead.
-        egg_denial = (tactic.get('when_hp_at_most') is not None
-                      and b.enemy_hp is not None
-                      and b.enemy_hp > tactic['when_hp_at_most']
-                      and enemy_egg_triggers(
-                          b.enemy, player_castle_defense=cur.get('side') == 'defense'
-                      ).clash_position is True
-                      and not any(other is not tactic
-                                  and other.get('enemy') in (None, b.enemy)
-                                  and (not other.get('step') or other.get('step') == cur.get('step'))
-                                  and (other.get('open') or other.get('after_clash')
-                                       or other.get('after_card'))
-                                  for other in tactics))
-        # Clash-kit timing (g464 18:52): the contact that makes an
-        # ``after_clash`` card due is the very contact that fires a
-        # clash-position egg, and once that egg fires the command menu never
-        # comes back -- どうし 90 vs クイーン 70 went melee -> たまごをつかう ->
-        # our egg -> ヒュドラ 361 -> どうし 0 with tactics_done empty. The
-        # charted 1-B1 order (クースカン -> ノリウツール) therefore opens the
-        # fight instead: B from the melee panel reaches the command menu
-        # (g458 15:15:46 battle_menu, g462 17:59:32 card list). A successor of
-        # this card (``after_card`` == this card) waits for it and never blocks
-        # it; any other opening card still goes first.
-        clash_kit_open = (tactic.get('after_clash') is True
-                          and enemy_egg_triggers(
-                              b.enemy, player_castle_defense=cur.get('side') == 'defense'
-                          ).clash_position is True
-                          and not any(other is not tactic
-                                      and other.get('enemy') in (None, b.enemy)
-                                      and (not other.get('step') or other.get('step') == cur.get('step'))
-                                      and (other.get('open') or other.get('after_clash')
-                                           or (other.get('after_card')
-                                               and other.get('after_card') != tactic.get('card')))
-                                      for other in tactics))
         due = (tactic.get('open')
                or (tactic.get('when_hp_at_most') is not None and b.enemy_hp is not None
                    and b.enemy_hp <= tactic['when_hp_at_most'])
-               or egg_denial
-               or clash_kit_open
                or (tactic.get('after_clash') and cur.get('clashed'))
                or (tactic.get('after_card') and tactic['after_card'] in attempted))
         if due:
@@ -3172,16 +3131,6 @@ def battle_step(screen: Screen, mem):
                                    and tactic['after_card'] not in cur['cards_used']
                                    and tactic['after_card'] in (cur.get('cards_unclassified') or []))
             note = tactic['note']
-            if egg_denial:
-                note = f"{note}（卵を使われる前に開幕使用）"
-                if not cur.get('deviation_reason'):
-                    cur['strategy_variant'] = 'egg_denial_timing'
-                    cur['deviation_reason'] = '卵持ち敵のHP条件札を開幕に前倒し（ぶつかり合いの卵召喚を防ぐ）'
-            if clash_kit_open and not egg_denial:
-                note = f"{note}（ぶつかり合いの卵召喚で戦闘メニューが戻らないため開幕使用）"
-                if not cur.get('deviation_reason'):
-                    cur['strategy_variant'] = 'clash_kit_open_timing'
-                    cur['deviation_reason'] = '激突位置の卵召喚を持つ敵に対し、after_clash札を開幕に前倒し'
             if chained_unconfirmed:
                 note = f"{note}（前札の実使用告知は未校正のため選択記録で連続使用）"
                 if not cur.get('deviation_reason'):
