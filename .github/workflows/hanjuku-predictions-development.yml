@@ -1,0 +1,24 @@
+name: Hanjuku prediction development snapshot
+on:
+  push:
+    branches: [feat/hanjuku-channel-predictions-20260930]
+    paths: [.github/workflows/hanjuku-predictions-development.yml]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Export tracked source only
+        run: |
+          mkdir -p "$RUNNER_TEMP/hanjuku-source"
+          git archive --format=tar.gz --output="$RUNNER_TEMP/hanjuku-source/source.tar.gz" HEAD
+          git rev-parse HEAD > "$RUNNER_TEMP/hanjuku-source/source-commit.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hanjuku-predictions-source
+          path: ${{ runner.temp }}/hanjuku-source/
+          retention-days: 1
