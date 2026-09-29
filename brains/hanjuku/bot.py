@@ -51,6 +51,13 @@ def persist(runtime: Path, state: dict, records: list, obs_meta: dict, *, action
     decision_id=f"{identity['runtime_id']}:{identity['generation']}:{state.get('step')}"
     state['decision_trace']={**identity, 'decision_id': decision_id, 'frame_sha256': frame_sha256}
     policy=state.get('policy') or {}
+    # A durable maximum survives log rotation, policy resets and corner teardown.
+    # Prediction bookkeeping must not drop an otherwise valid gameplay action.
+    try:
+        from docich.hanjuku_progress import record as record_progress
+        record_progress(runtime, identity, policy, records, frame_sha256)
+    except Exception:
+        print('hanjuku-bot: progress_record_failed', file=sys.stderr)
     snapshot=None
     battle=policy.get('battle') if isinstance(policy.get('battle'),dict) else {}
     chart_step=battle.get('step') if battle else policy.get('active')

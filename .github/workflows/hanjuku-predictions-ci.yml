@@ -1,0 +1,44 @@
+name: Hanjuku prediction contracts
+on:
+  pull_request:
+    paths:
+      - 'src/docich/**'
+      - 'brains/hanjuku/**'
+      - 'config/games/hanjuku-hero.toml'
+      - 'tests/test_hanjuku*.py'
+      - 'tests/test_retro_corner.py'
+      - 'tests/test_corner_rotation.py'
+      - 'ops/vm_actions/collect_diagnostics.py'
+      - 'ops/vm_actions/tests/**'
+      - 'requirements-test.txt'
+      - '.github/workflows/hanjuku-predictions-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/docich/**'
+      - 'brains/hanjuku/**'
+      - 'config/games/hanjuku-hero.toml'
+      - 'tests/test_hanjuku*.py'
+      - 'tests/test_retro_corner.py'
+      - 'tests/test_corner_rotation.py'
+      - 'ops/vm_actions/collect_diagnostics.py'
+      - 'ops/vm_actions/tests/**'
+      - 'requirements-test.txt'
+      - '.github/workflows/hanjuku-predictions-ci.yml'
+permissions:
+  contents: read
+jobs:
+  prediction-regressions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Install test requirements
+        run: python3 -m pip install -r requirements-test.txt
+      - name: Offline prediction and corner regressions
+        env:
+          PYTHONPATH: src
+        run: |
+          python3 -m pytest -q tests/test_hanjuku_predictions.py tests/test_hanjuku_script.py tests/test_hanjuku_chart_bot.py tests/test_hanjuku_sortie_evidence.py tests/test_retro_corner.py tests/test_corner_rotation.py ops/vm_actions/tests/test_collect_diagnostics.py ops/vm_actions/tests/test_diagnostics_projection_review.py ops/vm_actions/tests/test_hanjuku_narration_diagnostics.py

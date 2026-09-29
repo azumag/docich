@@ -404,6 +404,9 @@ class CornerRotationManager:
         )
 
     def tick(self):
+        # The common timer owns only retry/reconciliation, never new predictions.
+        from .hanjuku_predictions import tick as prediction_tick
+        prediction_tick(self.g)
         if not rotation_enabled(self.g):
             return {"status": "disabled"}
         with self.locked() as acquired:
