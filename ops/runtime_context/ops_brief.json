@@ -1,11 +1,11 @@
 {
-  "output_sha256": "eb1d448d7d46a89201424fd344c6abe248074cc8b09cfb5cc991f2df93e48562",
+  "output_sha256": "6335083782fc7c874edf3f5a89d3f6a2bbdcee80a4cae8f3ce53bf8c171c5d6a",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "89edab53fca5dbb4fd75b46082fdd53f6f5a64ca6b8c17ebc95926d7129fe31f",
+  "source_sha256": "c4d4b56a5fea01bd4753808258183d7dc47ae879441fea519b8d3ed66a641f70",
   "topics": [
+    "半熟英雄の予想受付を目標話数で比例配分（配備準備）",
     "半熟g486の無装備卵戦敗北を分析し衝突前救済を強化中",
-    "半熟英雄の予想取得修正を本番反映、実予想開始を確認",
-    "半熟英雄の予想一覧を最新1件へ修正（配備準備）"
+    "半熟英雄の予想取得修正を本番反映、実予想開始を確認"
   ]
 }
