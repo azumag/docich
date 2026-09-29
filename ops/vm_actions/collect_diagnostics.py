@@ -2236,6 +2236,33 @@ def _collect_corner_files(state_dir, payload, now):
     payload["rotation_evidence"] = _collect_rotation_evidence(state_dir)
 
 
+def _collect_hanjuku_predictions(state_dir):
+    """Read-only bounded projection; never expose OAuth config or API payloads."""
+    present, readable, data = _load_state_file(Path(state_dir) / "hanjuku_predictions.json")
+    data = data if isinstance(data, dict) else {}
+    row = data.get("round")
+    row = row if isinstance(row, dict) else {}
+    result = row.get("result") if isinstance(row.get("result"), dict) else {}
+    modes = {"incompatible_soren", "idle", "disabled", "explore", "unconfigured", "paused", "blocked", "pending",
+             "active", "settling", "resolved", "canceled", "known_result", "complete_record", "error"}
+    errors = {"transport", "auth", "rate_limited", "rejected", "invalid_response", "configuration",
+              "invalid_state", "unexpected", "create_unknown", "remote_missing", "remote_mismatch",
+              "clock_regressed"}
+    def chapter(value):
+        return value if type(value) is int and 0 <= value <= 12 else None
+    def choice(value, allowed):
+        return value if isinstance(value, str) and value in allowed else None
+    return {"present": present, "readable": readable,
+            "mode": choice(data.get("mode"), modes),
+            "error": choice(data.get("error"), errors),
+            "best_cleared": chapter(data.get("best_cleared")),
+            "target": chapter(row.get("target")), "middle": chapter(row.get("middle")),
+            "status": choice(row.get("status"), {
+                "INTENT", "ACTIVE", "LOCKED", "RESOLVED", "CANCELED"}),
+            "cleared": chapter(result.get("cleared")),
+            "next_poll_at": _finite_number(data.get("next_poll_at"))}
+
+
 def _collect_programs(state_dir, soren, now):
     """Sanitized corner/program lifecycle plus boundary and A/B wait state.
 
@@ -2283,6 +2310,7 @@ def _collect_programs(state_dir, soren, now):
             and isinstance(game_switch, dict)
             and game_switch.get("active_game") == "hanjuku-hero"):
         retro["narration_playback"] = _collect_hanjuku_narration_playback(soren)
+    payload["hanjuku_predictions"] = _collect_hanjuku_predictions(state_dir)
     payload["boundary"] = _collect_boundary(soren / "tmp" / "state", now)
     payload["ab"] = _collect_ab(soren, now)
     payload["soren_game"] = _collect_soren_game(soren, now)
