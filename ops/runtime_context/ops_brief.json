@@ -1,11 +1,11 @@
 {
-  "output_sha256": "7b7bb3bf80f5c49a78195374bf558f5500b1bdb5873ed766a7d1b8c311f934a8",
+  "output_sha256": "9cbaf324a2b7fb669f9f6808f82c9b0b805e94ccba52e16cd2f8c2d56a41a8b3",
   "schema": 1,
   "source": "handoff.md",
-  "source_sha256": "0000b85b4a8a0f2ad1d387586ba099e0848590bd88ebe26b8628487736ec78f2",
+  "source_sha256": "51bede51fdf6593cf06290f1aca686e52c6e3b82b0cf96b900fd4857a4d37b05",
   "topics": [
-    "敵卵召喚後の退却優先と召喚獣の回復/攻撃交互（v79）をライブ修正（opencode）",
-    "敗因分析に基づく卵温存・開幕札・他将軍退却・月一実況の修正（v77/v78）と監視停止（opencode）",
-    "卵使わせない戦略の白兵死結を修正（v75/v76）とg458稼働・24時間監視（opencode）"
+    "OpenCode容量回収の安全化と定期実行を実装（VM反映前・Codex）",
+    "容量回収時の一時的な満量と配信復帰を調査（Codex）",
+    "敵卵召喚後の退却優先と召喚獣の回復/攻撃交互（v79）をライブ修正（opencode）"
   ]
 }

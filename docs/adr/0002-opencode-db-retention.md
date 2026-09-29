@@ -179,3 +179,12 @@ rotation を docich の独立 operation にするより、**既に producer 内�
 
 この修正版を実装する（gate: flock、保持: 3日、対象: 両DB、実行: ループ内 cleanup から定期）。§5 の control-plane operation 案は、任意トリガ（owner が任意タイミングで回したい場合）用の将来オプションとして残す。
 
+
+## 11. 2026-09-29 ENOSPC remediation (#1337)
+
+配備済みretentionの通常VACUUMがdisk fullを起こし、後続試行はwriter gate timeoutだったが双方とも成功扱いになった。
+1GiB予約容量、段階別の容量予算、実行中guard、失敗/延期の終了コードと構造化結果を追加する。
+WALではEXCLUSIVE connectionを維持したVACUUM INTO+SQLite Backup API+checkpointで同じinodeへ書き戻す。
+PRAGMA locking_modeの保持契約とbackup_finishのrollback契約を使い、DBファイル差し替え・journal無効化・全履歴初期化は行わない。
+根拠: https://www.sqlite.org/c3ref/backup_finish.html と https://www.sqlite.org/pragma.html#pragma_locking_mode 。
+ゲームが休止しても動くdocich user timerで1時間毎・1日保持へ変更する。producerの通常共有gateや緊急opt-outは維持する。
