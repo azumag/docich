@@ -14,6 +14,11 @@ runs on OCI.  This adapter puts that remote game on the same
   gated by ``[agent] enabled`` so Phase 2 display-switch tests can run with
   the bot off.
 
+Renderer hosts: the same agent contract runs on a wired Windows desktop
+(primary) and the Mac (failover).  ``docich.soren91_renderer`` holds the
+operator policy (webui: auto / windows / mac) and the per-runtime record of
+the host actually used; materialize tries the policy hosts in order.
+
 Fail-closed: missing env, an unreachable Mac agent, or no SRT listener all
 fail ``preflight`` / ``materialize_runtime`` / ``readiness`` instead of
 reporting a successful start.  The bearer token never appears in logs or
@@ -34,6 +39,7 @@ import urllib.request
 from pathlib import Path
 
 from .. import procs
+from .. import soren91_renderer as renderer_hosts
 from ..game_switch import (
     DeadlineExceededError,
     ReadinessTimeoutError,
@@ -44,6 +50,8 @@ from .cli_game import CliCoordinatorAdapter
 
 DEFAULT_AGENT_BASE_URL_ENV = "SOREN91_MACOS_AGENT_BASE_URL"
 DEFAULT_AGENT_TOKEN_ENV = "SOREN91_LOCAL_AGENT_TOKEN"
+DEFAULT_WINDOWS_AGENT_BASE_URL_ENV = "SOREN91_WINDOWS_AGENT_BASE_URL"
+DEFAULT_WINDOWS_AGENT_TOKEN_ENV = "SOREN91_WINDOWS_AGENT_TOKEN"
 DEFAULT_OCI_TAILSCALE_IP_ENV = "SOREN91_OCI_TAILSCALE_IP"
 DEFAULT_SRT_PORT = 19192
 DEFAULT_CDP_PORT = 9322
@@ -204,9 +212,26 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
         self.oci_tailscale_ip_env = str(
             raw.get("oci_tailscale_ip_env", DEFAULT_OCI_TAILSCALE_IP_ENV)
         )
-        for key in ("agent_base_url_env", "agent_token_env", "oci_tailscale_ip_env"):
+        self.windows_agent_base_url_env = str(
+            raw.get("windows_agent_base_url_env", DEFAULT_WINDOWS_AGENT_BASE_URL_ENV)
+        )
+        self.windows_agent_token_env = str(
+            raw.get("windows_agent_token_env", DEFAULT_WINDOWS_AGENT_TOKEN_ENV)
+        )
+        for key in (
+            "agent_base_url_env", "agent_token_env", "oci_tailscale_ip_env",
+            "windows_agent_base_url_env", "windows_agent_token_env",
+        ):
             if not getattr(self, key).strip() or "\x00" in getattr(self, key):
                 raise AdapterError(f"[soren91].{key} は空でない環境変数名である必要があります")
+        # Renderer hosts: the existing agent_* keys stay the Mac host so old
+        # configs keep working; Windows is the wired primary when configured.
+        self._host_env = {
+            "mac": (self.agent_base_url_env, self.agent_token_env),
+            "windows": (self.windows_agent_base_url_env, self.windows_agent_token_env),
+        }
+        # Host this instance talks to; resolved lazily (see _host_for_call).
+        self._host: str | None = None
         self.srt_port = _validated_port(raw.get("srt_port"), key="srt_port", default=DEFAULT_SRT_PORT)
         self.cdp_port = _validated_port(raw.get("cdp_port"), key="cdp_port", default=DEFAULT_CDP_PORT)
         self.ffplay_bin = str(raw.get("ffplay_bin", DEFAULT_FFPLAY_BIN))
@@ -260,30 +285,71 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
 
     # --- resolved runtime values (env is read per call, never cached) -------
 
-    def _agent_base(self) -> tuple[str, str]:
-        """Return (base_url, host) for the Mac local agent, validated."""
-        value = (os.environ.get(self.agent_base_url_env) or "").strip()
+    # --- renderer host selection (Windows primary, Mac failover) -------------
+
+    def _host_configured(self, host: str) -> bool:
+        url_env, _token_env = self._host_env[host]
+        return bool((os.environ.get(url_env) or "").strip())
+
+    def candidate_hosts(self) -> list[str]:
+        """Policy-ordered hosts whose base URL is present in the env."""
+        order = renderer_hosts.host_order(self.g.state_dir)
+        return [host for host in order if self._host_configured(host)]
+
+    def _recorded_host(self) -> str | None:
+        return renderer_hosts.selected_host(self.g.state_dir, self.spec.runtime_id)
+
+    def _host_for_call(self) -> str:
+        """Host for agent calls: this runtime's recorded choice, else policy head.
+
+        Start, stop and liveness run in different adapter instances, so the
+        host chosen during materialize is read back from the durable record.
+        Before any choice exists, the first configured policy host is used
+        (with only the Mac configured this is the historical behaviour).
+        """
+        if self._host is None:
+            self._host = self._recorded_host()
+        if self._host is not None:
+            return self._host
+        candidates = self.candidate_hosts()
+        if candidates:
+            return candidates[0]
+        order = renderer_hosts.host_order(self.g.state_dir)
+        label = "/".join(renderer_hosts.HOST_LABELS[host] for host in order)
+        raise AdapterError(f"{label} agent の base URL が設定されていません")
+
+    def _label(self, host: str | None = None) -> str:
+        return renderer_hosts.HOST_LABELS[host or self._host_for_call()]
+
+    def _agent_base(self, host: str | None = None) -> tuple[str, str]:
+        """Return (base_url, host) for the selected local agent, validated."""
+        host = host or self._host_for_call()
+        label = self._label(host)
+        url_env, _token_env = self._host_env[host]
+        value = (os.environ.get(url_env) or "").strip()
         if not value:
-            raise AdapterError("Mac agent の base URL が設定されていません")
+            raise AdapterError(f"{label} agent の base URL が設定されていません")
         try:
             parsed = urllib.parse.urlparse(value)
         except ValueError as exc:
-            raise AdapterError("Mac agent の base URL が不正です") from exc
+            raise AdapterError(f"{label} agent の base URL が不正です") from exc
         if parsed.scheme not in ("http", "https"):
-            raise AdapterError("Mac agent の base URL はhttp(s)である必要があります")
+            raise AdapterError(f"{label} agent の base URL はhttp(s)である必要があります")
         if parsed.username or parsed.password:
-            raise AdapterError("Mac agent の base URL にuserinfoは使えません")
-        host = (parsed.hostname or "").strip()
-        if not is_tailscale_ipv4(host):
-            raise AdapterError("Mac agent の host はTailscale IPv4である必要があります")
+            raise AdapterError(f"{label} agent の base URL にuserinfoは使えません")
+        ip = (parsed.hostname or "").strip()
+        if not is_tailscale_ipv4(ip):
+            raise AdapterError(f"{label} agent の host はTailscale IPv4である必要があります")
         if not parsed.port:
-            raise AdapterError("Mac agent の base URL にはportが必要です")
-        return value.rstrip("/"), host
+            raise AdapterError(f"{label} agent の base URL にはportが必要です")
+        return value.rstrip("/"), ip
 
-    def _agent_token(self) -> str:
-        token = os.environ.get(self.agent_token_env) or ""
+    def _agent_token(self, host: str | None = None) -> str:
+        host = host or self._host_for_call()
+        _url_env, token_env = self._host_env[host]
+        token = os.environ.get(token_env) or ""
         if not token:
-            raise AdapterError("Mac agent の token が設定されていません")
+            raise AdapterError(f"{self._label(host)} agent の token が設定されていません")
         return token
 
     def _oci_ip(self) -> str:
@@ -303,7 +369,7 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
         return f"srt://{self._oci_ip()}:{self.srt_port}?mode=listener"
 
     def remote_cdp_url(self) -> str:
-        """CDP URL the OCI bot uses to drive the Mac renderer."""
+        """CDP URL the OCI bot uses to drive the selected remote renderer."""
         _, host = self._agent_base()
         return f"http://{host}:{self.cdp_port}"
 
@@ -317,7 +383,10 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
         hung adapter cannot hold the lock past the request budget
         (default 600s: 180s CDP wait + 120s margin = 300s fits).
         """
-        return self.cdp_wait_sec + MATERIALIZE_MARGIN_S
+        # Each failover candidate may spend a full CDP wait before the next
+        # one is tried; the request-wide deadline still bounds the total.
+        hosts = max(1, len(self.candidate_hosts()))
+        return self.cdp_wait_sec * hosts + MATERIALIZE_MARGIN_S
 
     # --- viewer / session commands -------------------------------------------
 
@@ -397,10 +466,12 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
     # --- Mac local-agent HTTP -------------------------------------------------
 
     def _agent_request(
-        self, method: str, path: str, deadline: float, cancel, *, body: dict | None = None
+        self, method: str, path: str, deadline: float, cancel, *, body: dict | None = None,
+        host: str | None = None,
     ) -> tuple[int, dict]:
-        base, _host = self._agent_base()
-        token = self._agent_token()
+        host = host or self._host_for_call()
+        base, _ip = self._agent_base(host)
+        token = self._agent_token(host)
         data = None
         headers = {"Authorization": f"Bearer {token}"}
         if body is not None:
@@ -422,7 +493,9 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
                 payload = {}
             return exc.code, payload if isinstance(payload, dict) else {}
         except (urllib.error.URLError, OSError, ValueError, TimeoutError) as exc:
-            raise AdapterError(f"Mac agent に到達できません ({type(exc).__name__})") from exc
+            raise AdapterError(
+                f"{self._label(host)} agent に到達できません ({type(exc).__name__})"
+            ) from exc
 
     def _agent_running(self, deadline: float, cancel) -> bool:
         _status, payload = self._agent_request("GET", "/v1/status", deadline, cancel)
@@ -479,17 +552,17 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
                 raise DeadlineExceededError("adapter call はcancelされました")
             now = time.monotonic()
             if now >= budget_until or now >= deadline:
-                raise ReadinessTimeoutError("Mac CDP proxy が応答しませんでした")
+                raise ReadinessTimeoutError(f"{self._label()} CDP proxy が応答しませんでした")
             time.sleep(min(CDP_POLL_INTERVAL_S, max(0.0, deadline - now)))
 
     # --- CoordinatorAdapter contract ------------------------------------------
 
     def preflight(self, deadline: float, cancel) -> None:
         self._check_active(deadline, cancel)
-        # Fail closed before any side effect: env/ports shape first.
-        self._agent_base()
-        if not self._agent_token():
-            raise AdapterError("Mac agent の token が設定されていません")
+        # Fail closed before any side effect: env/ports shape first.  At
+        # least one renderer host must be fully configured; a broken
+        # candidate is only skipped (and reported) when another one is usable.
+        self._usable_hosts()
         self._oci_ip()
         self._game_command()
         if not (procs.which(self.ffplay_bin) or shutil.which(self.ffplay_bin)):
@@ -514,6 +587,28 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
             # base URL fails here, not mid-corner.
             self.remote_cdp_url()
         self._check_active(deadline, cancel)
+
+    def _usable_hosts(self) -> list[str]:
+        """Candidates whose URL and token pass validation, in policy order."""
+        recorded = self._recorded_host()
+        candidates = [recorded] if recorded else self.candidate_hosts()
+        usable: list[str] = []
+        first_error: AdapterError | None = None
+        for host in candidates:
+            try:
+                self._agent_base(host)
+                self._agent_token(host)
+            except AdapterError as exc:
+                first_error = first_error or exc
+                print(f"[soren91] renderer host {host} skipped: {exc}", file=sys.stderr)
+                continue
+            usable.append(host)
+        if usable:
+            return usable
+        if first_error is not None:
+            raise first_error
+        self._host_for_call()  # raises the "not configured" error
+        return usable
 
     def _check_ffplay_srt(self) -> None:
         try:
@@ -573,10 +668,42 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
         self._check_active(deadline, cancel)
         self._wait_listener(deadline, cancel)
         self._check_active(deadline, cancel)
-        try:
-            renderer_running = self._agent_running(deadline, cancel)
-        except AdapterError:
-            raise
+        # Failover: try each usable host in policy order (Windows, then Mac
+        # under ``auto``).  A host that is unreachable, refuses to start or
+        # never opens its CDP proxy is stopped (best-effort) and the next one
+        # is tried.  A runtime that already recorded its host keeps it.
+        hosts = self._usable_hosts()
+        attempts: list[dict] = []
+        for index, host in enumerate(hosts):
+            self._host = host
+            try:
+                self._start_remote_renderer(deadline, cancel)
+            except (AdapterError, ReadinessTimeoutError) as exc:
+                if cancel is not None and cancel.is_set():
+                    raise
+                attempts.append({"host": host, "error": str(exc)[:200]})
+                print(f"[soren91] renderer host {host} failed: {exc}", file=sys.stderr)
+                # The last host's failure is final: the coordinator rollback
+                # runs cleanup_runtime, which stops every candidate host.
+                if index == len(hosts) - 1 or time.monotonic() >= deadline:
+                    raise
+                try:
+                    self._agent_request("POST", "/v1/stop", deadline, cancel, host=host)
+                except AdapterError:
+                    pass
+                continue
+            attempts.append({"host": host, "error": None})
+            renderer_hosts.record_selection(
+                self.g.state_dir, self.spec.runtime_id, host, attempts
+            )
+            break
+        if self.agent_enabled:
+            self._check_active(deadline, cancel)
+            self._launch_bot_window(deadline, cancel)
+
+    def _start_remote_renderer(self, deadline: float, cancel) -> None:
+        """Ask the current host to dial our listener; wait for its CDP proxy."""
+        renderer_running = self._agent_running(deadline, cancel)
         if not renderer_running:
             _status, payload = self._agent_request(
                 "POST", "/v1/start", deadline, cancel, body={"srtUrl": self.caller_srt_url()}
@@ -584,15 +711,14 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
             if _status == 409:
                 pass
             elif _status not in (200, 202) or payload.get("ok") is not True:
-                raise AdapterError("Mac agent の renderer 起動に失敗しました")
+                raise AdapterError(f"{self._label()} agent の renderer 起動に失敗しました")
         if self.agent_enabled:
-            # The Mac proxy only answers once Chrome finished booting. The
+            # The remote proxy only answers once Chrome finished booting. The
             # bot must wait for it: connecting early fails and the bot falls
-            # back to a standalone browser (no Mac stream ever starts).
+            # back to a standalone browser (no remote stream ever starts).
             self._check_active(deadline, cancel)
             self._wait_cdp_proxy(deadline, cancel)
             self._check_active(deadline, cancel)
-            self._launch_bot_window(deadline, cancel)
 
     def readiness(self, deadline: float, cancel) -> None:
         # The contained presenter window must exist (super), the Mac renderer
@@ -618,7 +744,9 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
                 raise DeadlineExceededError("adapter call はcancelされました")
             if time.monotonic() >= deadline:
                 if not running:
-                    raise ReadinessTimeoutError("Mac renderer がrunningになりませんでした")
+                    raise ReadinessTimeoutError(
+                        f"{self._label()} renderer がrunningになりませんでした"
+                    )
                 raise ReadinessTimeoutError("SRT listener がbindされませんでした")
             time.sleep(min(STATUS_POLL_INTERVAL_S, max(0.0, deadline - time.monotonic())))
 
@@ -639,10 +767,14 @@ class Soren91CoordinatorAdapter(CliCoordinatorAdapter):
             self.stop_agent(deadline, cancel)
         except AdapterError:
             self._check_active(deadline, cancel)
-        try:
-            self._agent_request("POST", "/v1/stop", deadline, cancel)
-        except AdapterError:
-            self._check_active(deadline, cancel)
+        # Stop the host this runtime started on; without a record (e.g. the
+        # start never got that far) stop every configured host, best-effort.
+        recorded = self._recorded_host()
+        for host in [recorded] if recorded else self.candidate_hosts():
+            try:
+                self._agent_request("POST", "/v1/stop", deadline, cancel, host=host)
+            except AdapterError:
+                self._check_active(deadline, cancel)
         super().cleanup_runtime(deadline, cancel)
         self._check_active(deadline, cancel)
         grace_until = time.monotonic() + min(
