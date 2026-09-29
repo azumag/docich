@@ -2995,8 +2995,9 @@ def battle_step(screen: Screen, mem):
     extra = [{'enemy': b.enemy, 'card': card, 'open': True, 'step': cur.get('step'),
               'note': '再攻撃の開幕切り札(チャート逸脱)'}
              for card in mem.get('card_override', {}).get(cur.get('step')) or []]
+    tactics = [*extra, *_tactics(mem, cur.get('step'))]
     done = cur.setdefault('tactics_done', [])
-    for index, tactic in enumerate([*extra, *_tactics(mem, cur.get('step'))]):
+    for index, tactic in enumerate(tactics):
         tid = f"{'x' if index < len(extra) else 'c'}{index}:{tactic['card']}"
         if tactic['enemy'] not in (None, b.enemy) or tid in done:
             continue
@@ -3010,9 +3011,28 @@ def battle_step(screen: Screen, mem):
         # strategy never fires its second card (1-B1: クースカン→ノリウツール)
         # and the queen summons. The chain is recorded as a deviation.
         attempted = [*cur['cards_used'], *(cur.get('cards_unclassified') or [])]
+        # Egg-denial timing (owner 2026-09-29): against an enemy whose clash
+        # triggers its egg, an HP-gated card that is the fight's only charted
+        # card cannot wait for the gate -- the clash comes first and the enemy
+        # summons (g460 16:08: ココット's 1-C2 ダイチスイム at enemy HP13 came
+        # after the clash and ガルバンゾー summoned カメレオンマン). Such a card
+        # opens the fight instead.
+        egg_denial = (tactic.get('when_hp_at_most') is not None
+                      and b.enemy_hp is not None
+                      and b.enemy_hp > tactic['when_hp_at_most']
+                      and enemy_egg_triggers(
+                          b.enemy, player_castle_defense=cur.get('side') == 'defense'
+                      ).clash_position is True
+                      and not any(other is not tactic
+                                  and other.get('enemy') in (None, b.enemy)
+                                  and (not other.get('step') or other.get('step') == cur.get('step'))
+                                  and (other.get('open') or other.get('after_clash')
+                                       or other.get('after_card'))
+                                  for other in tactics))
         due = (tactic.get('open')
                or (tactic.get('when_hp_at_most') is not None and b.enemy_hp is not None
                    and b.enemy_hp <= tactic['when_hp_at_most'])
+               or egg_denial
                or (tactic.get('after_clash') and cur.get('clashed'))
                or (tactic.get('after_card') and tactic['after_card'] in attempted))
         if due:
@@ -3021,6 +3041,11 @@ def battle_step(screen: Screen, mem):
                                    and tactic['after_card'] not in cur['cards_used']
                                    and tactic['after_card'] in (cur.get('cards_unclassified') or []))
             note = tactic['note']
+            if egg_denial:
+                note = f"{note}（卵を使われる前に開幕使用）"
+                if not cur.get('deviation_reason'):
+                    cur['strategy_variant'] = 'egg_denial_timing'
+                    cur['deviation_reason'] = '卵持ち敵のHP条件札を開幕に前倒し（ぶつかり合いの卵召喚を防ぐ）'
             if chained_unconfirmed:
                 note = f"{note}（前札の実使用告知は未校正のため選択記録で連続使用）"
                 if not cur.get('deviation_reason'):
@@ -3208,10 +3233,16 @@ def _survival_state(mem, cur):
 
 
 def _hero_retreat_needed(cur):
-    if cur.get('ally') != NAME or not _survival_needed(cur):
+    """Any general's retreat threshold in an attack battle.
+
+    The hero keeps his remembered full-strength reference; another general
+    uses this battle's start HP (g460 16:11: ココット 24 vs タピオカ 50 spent
+    the whole fight in card menus, fell 24->12->0 and died with no retreat).
+    """
+    if not cur.get('ally') or not _survival_needed(cur):
         return False
     hp, enemy, start = (cur.get(k) for k in ('ally_hp', 'enemy_hp', 'start_ally_hp'))
-    ref = max(start, int(cur.get('ref_ally_hp') or 0))
+    ref = (max(start, int(cur.get('ref_ally_hp') or 0)) if cur.get('ally') == NAME else start)
     return hp <= 12 or (hp < enemy and hp * 4 <= ref)
 
 

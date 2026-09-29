@@ -320,6 +320,21 @@ def test_hero_emergency_retreat_threshold_is_stricter_than_resource_rescue(hp,en
     assert p._hero_retreat_needed(memory(hp,enemy)['battle']) is expected
 
 
+def test_a_low_general_retreats_in_an_attack_battle():
+    # g460 16:11: ココット 24 vs タピオカ 50 spent the fight in card menus,
+    # fell to 12 and died; no retreat existed for a non-hero general.
+    mem = memory(12, 50)
+    mem['battle']['ally'] = 'ココット'
+    mem['battle']['start_ally_hp'] = 24
+    assert p._hero_retreat_needed(mem['battle'])
+    assert p.battle_step(battle(mem), mem) == [p.pad('b')]
+    assert mem['battle']['hero_retreat']['opens'] == 1
+    # The menu selects the retreat row for her too.
+    actions, state = decide(command_frame(cursor=2), {'policy': mem})
+    assert actions == [p.pad('a')]
+    assert state['policy']['battle']['hero_retreat']['selected'] == 1
+
+
 def test_a_defense_battle_never_opens_the_hero_retreat():
     # Owner 2026-09-29: a castle defense cannot retreat (no たいきゃく row).
     mem = memory(6, 50)
@@ -356,7 +371,13 @@ def test_hero_disabled_retreat_falls_back_to_an_egg_and_other_generals_keep_figh
     # A defense never probes the retreat row at all: straight to the egg.
     assert 'hero_retreat' not in state['policy']['battle']
     assert state['policy']['battle']['survival']['egg_attempted']
+    # A low general now retreats too (no hero-only gate).
     mem=memory(6,50);mem['battle']['ally']='ココット'
+    assert p._hero_retreat_needed(mem['battle'])
+    p.battle_step(battle(mem),mem)
+    assert mem['battle']['hero_retreat']['opens'] == 1
+    # Above the threshold she keeps fighting and the survival menu opens.
+    mem=memory(30,50);mem['battle']['ally']='ココット'
     assert not p._hero_retreat_needed(mem['battle'])
     p.battle_step(battle(mem),mem)
     assert p.battle_menu_step(menu(),mem)==[p.pad('down')]  # card, not retreat

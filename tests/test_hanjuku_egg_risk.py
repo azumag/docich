@@ -85,12 +85,14 @@ def test_known_no_clash_risk_preserves_exact_released_mash(enemy):
     assert rec['enemy_hp'] == 27 and rec['ally_hp'] == 90
 
 
-def test_an_hp_gated_chart_card_mashes_toward_its_gate():
-    # g456 14:13: the 1-A2 ガルバンゾー tactic (フットバース at enemy HP<=24)
-    # held at どうし 90 vs 30, so the gate was unreachable and the hero died.
+def test_an_hp_gated_chart_card_opens_before_the_clash_egg():
+    # g456 14:13 / g460 16:08: ガルバンゾー's clash triggers its egg, so the
+    # fight's only HP-gated card opens instead of waiting for the gate.
     mem = memory(step='1-A2')
-    assert enter(panel('ガルバンゾー', 30), mem) == MASH
-    assert mem['_records'][-1]['melee_control_mode'] == 'power_mash'
+    actions = enter(panel('ガルバンゾー', 30), mem)
+    assert actions and actions[0]['buttons'] == ['b']
+    assert mem['battle']['card_flow']['card'] == 'フットバース'
+    assert mem['battle']['strategy_variant'] == 'egg_denial_timing'
 
 
 def test_an_egg_risk_hold_is_bounded_and_then_engages():
